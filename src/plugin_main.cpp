@@ -1,0 +1,63 @@
+// SPDX-License-Identifier: MIT
+//
+// Reaper extension entry point. Phase 0: registers a single action that
+// opens an empty WGL viewer window. No mesh loading, no transport sync.
+
+#include "reaper_api.h"
+#include "viewer_window.h"
+
+namespace fbxav {
+namespace {
+
+constexpr const char kCommandName[] = "FBXAV_OPEN_VIEWER";
+constexpr const char kActionDesc[]  = "FBXAV: Open Viewer Window";
+
+int                     g_command_id      = 0;
+gaccel_register_t       g_accel           = {};
+REAPER_PLUGIN_HINSTANCE g_hinstance       = nullptr;
+HWND                    g_reaper_main     = nullptr;
+
+bool OnHookCommand(int command, int /*flag*/)
+{
+    if (command != g_command_id || g_command_id == 0) return false;
+    OpenViewerWindow(g_hinstance, g_reaper_main);
+    return true;
+}
+
+}  // namespace
+}  // namespace fbxav
+
+extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
+    REAPER_PLUGIN_HINSTANCE hInstance,
+    reaper_plugin_info_t*   rec)
+{
+    using namespace fbxav;
+
+    if (!rec) {
+        // Reaper is unloading us: tear down everything we registered.
+        CloseViewerWindow();
+        return 0;
+    }
+
+    if (rec->caller_version != REAPER_PLUGIN_VERSION) return 0;
+
+    if (REAPERAPI_LoadAPI(rec->GetFunc) != 0) {
+        // At least one required function failed to resolve. Bail before
+        // we touch a null function pointer.
+        return 0;
+    }
+
+    g_hinstance   = hInstance;
+    g_reaper_main = rec->hwnd_main;
+
+    g_command_id = rec->Register("command_id", const_cast<char*>(kCommandName));
+    if (g_command_id == 0) return 0;
+
+    g_accel.accel.cmd = g_command_id;
+    g_accel.desc      = kActionDesc;
+    rec->Register("gaccel", &g_accel);
+    rec->Register("hookcommand", reinterpret_cast<void*>(&OnHookCommand));
+
+    ShowConsoleMsg("[FBXAV] extension loaded (Phase 0)\n");
+    return 1;
+}

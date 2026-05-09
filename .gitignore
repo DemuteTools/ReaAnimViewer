@@ -1,0 +1,45 @@
+# Build outputs
+build/
+build-*/
+out/
+cmake-build-*/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.aps
+*.pch
+*.vcxproj.filters
+*.vcxproj.user
+*.sln.docstates
+
+# CMake
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+install_manifest.txt
+compile_commands.json
+
+# Compiled artifacts
+*.o
+*.obj
+*.lib
+*.exp
+*.pdb
+*.idb
+*.ilk
+*.dll
+*.exe
+
+# Editor / OS
+.idea/
+.vscode/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Local-only
+*.local

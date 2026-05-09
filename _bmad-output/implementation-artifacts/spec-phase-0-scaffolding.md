@@ -2,7 +2,7 @@
 title: 'Phase 0 — Repo scaffolding, build system, Reaper extension boilerplate, empty viewer window'
 type: 'feature'
 created: '2026-05-09'
-status: 'in-review'
+status: 'done'
 baseline_commit: 'b41ae5b'
 context:
   - '{project-root}/_bmad-output/planning-artifacts/prfaq-FBXAnimationViewer.md'
@@ -126,3 +126,59 @@ context:
 
 **Sanity check available to me on WSL:**
 - `cmake -B build-linux` from project root — expected: configure succeeds (Linux build may be stub-target or skipped). Catches CMake script errors early without needing Windows turnaround.
+
+## Suggested Review Order
+
+**Reaper extension entry point**
+
+- Where Reaper enters the DLL: caller_version handshake, API loader, action registration triple, symmetric unregister on unload.
+  [`plugin_main.cpp:33`](../../src/plugin_main.cpp#L33)
+
+- The hookcommand callback fires for every action — guard by command_id, then route to the window opener.
+  [`plugin_main.cpp:23`](../../src/plugin_main.cpp#L23)
+
+- Single-TU API loader using REAPERAPI_MINIMAL + WANT_ShowConsoleMsg — extension surface for later phases.
+  [`reaper_api.h:1`](../../src/reaper_api.h#L1)
+
+**Window + WGL plumbing**
+
+- Public Open/Close API: idempotent re-trigger, owned by Reaper main hwnd.
+  [`viewer_window.cpp:146`](../../src/viewer_window.cpp#L146)
+
+- WGL context creation: PIXELFORMATDESCRIPTOR, ChoosePixelFormat, wglCreateContext — failure paths self-clean.
+  [`viewer_window.cpp:41`](../../src/viewer_window.cpp#L41)
+
+- Window class registration: CS_OWNDC for stable WGL DC, hInstance remembered for symmetric UnregisterClassW on unload.
+  [`viewer_window.cpp:123`](../../src/viewer_window.cpp#L123)
+
+- WindowProc message handling: WM_CREATE/WM_PAINT/WM_DESTROY routing.
+  [`viewer_window.cpp:88`](../../src/viewer_window.cpp#L88)
+
+**Build system**
+
+- Top-level CMake: Win32 path links opengl32/gdi32/user32; non-Windows path emits a build-time no-op message.
+  [`CMakeLists.txt:17`](../../CMakeLists.txt#L17)
+
+- The reusable Reaper-extension helper: forces `reaper_` filename prefix, sets C++17, MSVC `/W3 /permissive-`.
+  [`ReaperPlugin.cmake:16`](../../cmake/ReaperPlugin.cmake#L16)
+
+**Vendoring & distribution**
+
+- Why headers are in-tree instead of submodules — drvfs trigger, validator-simplicity rationale, re-vendor procedure.
+  [`VENDORED.md:1`](../../extern/VENDORED.md#L1)
+
+- ReaPack manifest skeleton — version `0.0.1-phase0`, placeholder source URL deferred to Phase 5.
+  [`index.xml:21`](../../reapack/index.xml#L21)
+
+**Validator gate**
+
+- Antho-facing 8-row acceptance checklist — clone, build, install, Reaper checks, shutdown.
+  [`PHASE0_VALIDATOR_GATE.md:1`](../../docs/PHASE0_VALIDATOR_GATE.md#L1)
+
+**Spec audit trail**
+
+- Sanctioned deviation: vendor instead of submodule, defer WDL — trigger, amendment, KEEP discipline.
+  [`spec-phase-0-scaffolding.md:90`](spec-phase-0-scaffolding.md#L90)
+
+- Six follow-ups deferred with explicit pickup triggers.
+  [`deferred-work.md:1`](deferred-work.md#L1)

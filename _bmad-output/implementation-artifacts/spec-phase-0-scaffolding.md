@@ -2,7 +2,7 @@
 title: 'Phase 0 — Repo scaffolding, build system, Reaper extension boilerplate, empty viewer window'
 type: 'feature'
 created: '2026-05-09'
-status: 'in-progress'
+status: 'in-review'
 baseline_commit: 'b41ae5b'
 context:
   - '{project-root}/_bmad-output/planning-artifacts/prfaq-FBXAnimationViewer.md'
@@ -114,8 +114,7 @@ context:
 ## Verification
 
 **Commands (run by Antho on Windows after clone):**
-- `git submodule update --init --recursive` — expected: `extern/reaper-sdk` and `extern/WDL` populated
-- `cmake -B build -G "Visual Studio 17 2022" -A x64` — expected: configure succeeds, no missing-dependency errors
+- `cmake -B build -G "Visual Studio 17 2022" -A x64` — expected: configure succeeds, no missing-dependency errors. (No `git submodule update` step — SDK headers are vendored; see Spec Change Log.)
 - `cmake --build build --config Release` — expected: `build/Release/reaper_fbxanimationviewer.dll` produced, zero warnings at `/W3`
 
 **Manual checks (validator gate — Antho in Reaper):**

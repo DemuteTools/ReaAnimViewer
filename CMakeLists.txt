@@ -27,5 +27,12 @@ else()
         "fbxanimationviewer: non-Windows platform detected — Phase 0 only "
         "supports Windows. Build target stubbed."
     )
-    add_library(fbxanimationviewer_stub INTERFACE)
+    # Echo the same notice at build time so a developer running just
+    # `cmake --build` (without re-configure) cannot mistake the no-op for a
+    # successful Windows build.
+    add_custom_target(fbxanimationviewer ALL
+        COMMAND ${CMAKE_COMMAND} -E echo
+            "[fbxanimationviewer] Phase 0 supports Windows only — nothing to build on this platform."
+        VERBATIM
+    )
 endif()

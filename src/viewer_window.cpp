@@ -23,6 +23,7 @@ HWND  g_hwnd  = nullptr;
 HDC   g_hdc   = nullptr;
 HGLRC g_hglrc = nullptr;
 bool  g_class_registered = false;
+REAPER_PLUGIN_HINSTANCE g_class_hinst = nullptr;  // remembered so unload can UnregisterClass with the correct module
 
 void DestroyGLContext()
 {
@@ -67,13 +68,13 @@ bool CreateGLContextFor(HWND hwnd)
     return true;
 }
 
-void PaintFrame()
+void PaintFrame(HWND hwnd)
 {
     if (!g_hdc || !g_hglrc) return;
     wglMakeCurrent(g_hdc, g_hglrc);
 
     RECT rc;
-    GetClientRect(g_hwnd, &rc);
+    GetClientRect(hwnd, &rc);
     glViewport(0, 0, rc.right - rc.left, rc.bottom - rc.top);
 
     glClearColor(0.10f, 0.10f, 0.12f, 1.0f);
@@ -95,7 +96,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_PAINT: {
         PAINTSTRUCT ps;
         BeginPaint(hwnd, &ps);
-        PaintFrame();
+        PaintFrame(hwnd);
         EndPaint(hwnd, &ps);
         return 0;
     }
@@ -136,6 +137,7 @@ bool EnsureClassRegistered(REAPER_PLUGIN_HINSTANCE hInst)
         if (err != ERROR_CLASS_ALREADY_EXISTS) return false;
     }
     g_class_registered = true;
+    g_class_hinst      = hInst;
     return true;
 }
 
@@ -177,6 +179,14 @@ void CloseViewerWindow()
         DestroyWindow(g_hwnd);
     }
     g_hwnd = nullptr;
+
+    // Unregister the window class so a future DLL load doesn't inherit a
+    // stale lpfnWndProc pointing into our unmapped image.
+    if (g_class_registered) {
+        UnregisterClassW(kWindowClassName, g_class_hinst);
+        g_class_registered = false;
+        g_class_hinst      = nullptr;
+    }
 }
 
 }  // namespace fbxav

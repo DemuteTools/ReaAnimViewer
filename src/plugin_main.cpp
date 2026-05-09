@@ -17,6 +17,9 @@ gaccel_register_t       g_accel           = {};
 REAPER_PLUGIN_HINSTANCE g_hinstance       = nullptr;
 HWND                    g_reaper_main     = nullptr;
 
+// Captured at load so the rec==nullptr unload path can deregister symmetrically.
+int (*g_register)(const char*, void*) = nullptr;
+
 bool OnHookCommand(int command, int /*flag*/)
 {
     if (command != g_command_id || g_command_id == 0) return false;
@@ -34,8 +37,13 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     using namespace fbxav;
 
     if (!rec) {
-        // Reaper is unloading us: tear down everything we registered.
+        // Reaper is unloading us: tear down everything we registered, in
+        // reverse order, so no live pointers into our DLL outlive it.
         CloseViewerWindow();
+        if (g_register) {
+            g_register("-hookcommand", (void*)&OnHookCommand);
+            g_register("-gaccel",      &g_accel);
+        }
         return 0;
     }
 
@@ -49,14 +57,15 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
 
     g_hinstance   = hInstance;
     g_reaper_main = rec->hwnd_main;
+    g_register    = rec->Register;
 
     g_command_id = rec->Register("command_id", const_cast<char*>(kCommandName));
     if (g_command_id == 0) return 0;
 
-    g_accel.accel.cmd = g_command_id;
+    g_accel.accel.cmd = static_cast<WORD>(g_command_id);
     g_accel.desc      = kActionDesc;
     rec->Register("gaccel", &g_accel);
-    rec->Register("hookcommand", reinterpret_cast<void*>(&OnHookCommand));
+    rec->Register("hookcommand", (void*)&OnHookCommand);
 
     ShowConsoleMsg("[FBXAV] extension loaded (Phase 0)\n");
     return 1;

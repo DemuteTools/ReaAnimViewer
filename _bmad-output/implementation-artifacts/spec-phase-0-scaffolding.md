@@ -3,7 +3,7 @@ title: 'Phase 0 — Repo scaffolding, build system, Reaper extension boilerplate
 type: 'feature'
 created: '2026-05-09'
 status: 'in-progress'
-baseline_commit: 'NO_VCS'
+baseline_commit: 'b41ae5b'
 context:
   - '{project-root}/_bmad-output/planning-artifacts/prfaq-FBXAnimationViewer.md'
 ---
@@ -88,6 +88,18 @@ context:
 - Given the repo is opened on Linux or macOS with CMake, when `cmake -B build` runs, then configuration succeeds (build target may be a stub or no-op — Phase 0 only requires Windows to actually link).
 
 ## Spec Change Log
+
+### 2026-05-09 — Vendor reaper-sdk headers instead of git submodule; defer WDL
+
+**Trigger:** During implementation, `git submodule add` failed on the WSL drvfs mount (Windows D: drive accessed via 9p) — `chmod` calls on `.git/config.lock` and `.gitmodules.lock` are forbidden by drvfs. Workarounds (`--separate-git-dir` to a Linux-native path) produced a fragile setup that would leave broken `.git` files in `extern/*` from a Windows-side perspective.
+
+**Amendment:** Replaced the submodule strategy for Phase 0 with direct vendoring of the two needed headers (`reaper_plugin.h`, `reaper_plugin_functions.h` ~700 KB total) into `extern/reaper-sdk/sdk/`. Source attribution and re-vendoring procedure documented in `extern/VENDORED.md`. WDL/SWELL is dropped from Phase 0 entirely — Win32 + WGL on Windows do not need it (consistent with the spec's Design Notes), and it will be vendored when the Linux/macOS port begins.
+
+**Rationale (validator simplicity):** Antho's primary success criterion is "simple to test on Windows". Vendoring removes the `git submodule update --init` step from his workflow and avoids any drvfs-induced repo inconsistency between WSL and Windows clones.
+
+**Avoided bad state:** A submodule layout where `extern/reaper-sdk/.git` is a file pointing at `/home/antho/.fbxav-modules/...` (a Linux-only path) would render `git status` and `git submodule status` errored when Antho runs them from Windows. Vendoring removes the WSL/Windows asymmetry entirely.
+
+**KEEP:** Pinned-commit + upstream-URL discipline in `extern/VENDORED.md`. Even without submodules we treat the vendored source as an immutable third-party dependency with a documented bump procedure.
 
 ## Design Notes
 

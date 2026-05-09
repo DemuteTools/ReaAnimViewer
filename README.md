@@ -24,7 +24,6 @@ Steps:
 ```sh
 git clone <repo-url> FBXAnimationViewer
 cd FBXAnimationViewer
-git submodule update --init --recursive
 cmake -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 ```
@@ -49,16 +48,14 @@ Detailed Phase 0 acceptance test instructions live in
 
 ## Vendored dependencies
 
-These ship as git submodules under `extern/`:
+The Reaper Extension SDK headers required for Phase 0 are committed
+directly under `extern/reaper-sdk/sdk/`. No `git submodule init` step is
+needed. See [`extern/VENDORED.md`](extern/VENDORED.md) for upstream
+source URLs, pinned commits, and the re-vendoring procedure.
 
-| Path | Source | Pinned commit |
-|---|---|---|
-| `extern/reaper-sdk` | https://github.com/justinfrankel/reaper-sdk | _set on submodule add_ |
-| `extern/WDL` | https://github.com/justinfrankel/WDL | _set on submodule add_ |
-
-Pinned commit hashes are recorded in `.gitmodules` and locked by the gitlink
-in the parent tree. Always run `git submodule update --init --recursive`
-after a fresh clone or pull.
+WDL/SWELL is referenced by the project's stack but not required for
+Phase 0 (Windows uses native Win32 + WGL). It will be vendored when the
+Linux/macOS port lands.
 
 ## License
 

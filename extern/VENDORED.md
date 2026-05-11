@@ -41,10 +41,32 @@ rm -rf /tmp/reaper-sdk
 
 Update the table above and commit with message `chore(extern): bump reaper-sdk to <short-sha>`.
 
-## extern/WDL (deferred)
+## extern/WDL (deferred → likely no longer needed)
 
-WDL/SWELL is part of the project's stack (per the PRFAQ), but Phase 0 uses
-direct Win32 + WGL on Windows and does not need SWELL. WDL will be
-vendored when the Linux/macOS port is implemented (Phase 1+). At that
-point a `extern/WDL/` entry will be added here following the same
-pattern.
+WDL/SWELL was originally part of the project's stack (per the PRFAQ) for a future Mac/Linux port. The 2026-05-10 architectural decision to render the viewer inside a ReaImGui dockable panel removes the cross-platform window-management burden from us — ReaImGui already uses SWELL internally on Mac/Linux. WDL vendoring is therefore likely never needed; we re-evaluate at the Mac/Linux port phase, but the default position is to not vendor it.
+
+## extern/reaimgui (runtime dependency, header-only vendoring)
+
+| Field | Value |
+|---|---|
+| Upstream | https://github.com/cfillion/reaimgui |
+| Distribution | ReaPack: `cfillion/reaimgui` (auto-installed as our extension's dependency) |
+| License | Per-source, mixed (LGPL3+ for the extension; MIT for the underlying Dear ImGui). See upstream LICENSE. |
+
+**Runtime model:** ReaImGui ships as a separate Reaper extension (DLL). Our extension calls its API via `rec->GetFunc("ImGui_*")` function-pointer resolution — same pattern as the Reaper API itself. At plugin load we verify that ReaImGui is present (e.g. `ImGui_CreateContext` resolves non-null); if not, we emit a console message instructing the user to install `cfillion/reaimgui` and bail cleanly without registering our action.
+
+**Header vendoring:** the ReaImGui project ships a generated `reaper_imgui_functions.h` header analogous to `reaper_plugin_functions.h`. We vendor that header under `extern/reaimgui/include/` to get function-pointer typedefs and the `IMGUI_*` enum/struct definitions we use. Pinned commit recorded here at the time of vendoring (TBD when Phase 0.5 lands).
+
+**Why not statically link Dear ImGui directly?** Three reasons:
+1. ReaImGui already solves Reaper-specific concerns (docking integration with Reaper's docker, theming, project state hooks). Re-doing that from scratch would be weeks of work.
+2. Visual consistency with the rest of the Reaper ecosystem — users see ReaImGui's familiar look across many ReaPack tools.
+3. Updates to ImGui (security/UX) propagate via ReaPack without us shipping a new DLL.
+
+**Re-vendoring procedure** (when ReaImGui upgrades its API surface):
+
+```sh
+git clone --depth 1 https://github.com/cfillion/reaimgui.git /tmp/reaimgui
+cp /tmp/reaimgui/api/reaper_imgui_functions.h extern/reaimgui/include/
+git -C /tmp/reaimgui rev-parse HEAD  # record pinned commit in this file
+rm -rf /tmp/reaimgui
+```

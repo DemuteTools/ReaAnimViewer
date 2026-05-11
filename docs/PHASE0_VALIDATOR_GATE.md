@@ -21,6 +21,8 @@ Reaper exits cleanly with no crash.
 - CMake ≥ 3.20 on PATH
 - Git for Windows
 
+> **Phase 0 only** uses Win32 + WGL directly and has **no ReaImGui dependency**. From Phase 0.5 onward, the viewer refactors to a ReaImGui dockable panel (per PRD architectural decision 2026-05-10) and ReaImGui (`cfillion/reaimgui` via ReaPack) becomes a runtime prerequisite. This document covers the Phase 0 acceptance test only — see the PRD (`_bmad-output/planning-artifacts/prd.md`) for the post-Phase-0.5 install flow.
+
 ## 1. Build
 
 Open a Developer Command Prompt for VS 2022 (or any shell where `cmake.exe` and `cl.exe` are on PATH) and run:

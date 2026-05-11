@@ -32,7 +32,15 @@ Output: `build/Release/reaper_fbxanimationviewer.dll`.
 
 ## Install
 
-Copy `reaper_fbxanimationviewer.dll` into:
+**Prerequisite (Phase 0.5+): ReaImGui must be installed.** The viewer renders as a ReaImGui dockable panel. Install via ReaPack:
+
+1. In Reaper: **Extensions → ReaPack → Browse packages…**
+2. Search `reaimgui`, install the `cfillion/reaimgui` package.
+3. Restart Reaper.
+
+Once the FBXAnimationViewer ReaPack listing is live (Phase 5), ReaImGui will be declared as an auto-install dependency — you won't need this step manually. For the current pre-release build distributed by copying the DLL, install ReaImGui first as described above.
+
+Then copy `reaper_fbxanimationviewer.dll` into:
 
 ```
 %APPDATA%\REAPER\UserPlugins\
@@ -40,6 +48,8 @@ Copy `reaper_fbxanimationviewer.dll` into:
 
 Restart Reaper. Open **Actions → Show action list…** and search `FBXAV`. You
 should see `FBXAV: Open Viewer Window`.
+
+> **Phase 0 note (2026-05-09):** the shipped Phase 0 DLL opens a standalone Win32 window (no ReaImGui dependency yet). Phase 0.5 will refactor this into a ReaImGui dockable panel; the ReaImGui prerequisite above takes effect from that build onward.
 
 ## Validator Gate (Phase 0)
 

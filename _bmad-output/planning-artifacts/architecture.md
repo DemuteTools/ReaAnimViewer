@@ -442,6 +442,28 @@ Manifest also declares: MIT license, Demute author/maintainer, "as-is / no-SLA" 
 - **Dev install (Phase 0 → Phase 5 internal):** copy `build/Release/reaper_fbxanimationviewer.dll` to `%APPDATA%\REAPER\UserPlugins\`. Documented in `docs/PHASE0_VALIDATOR_GATE.md` (and per-phase validator gates as we go).
 - **Released install (Phase 5+):** ReaPack subscription URL pointing at the GitHub-hosted `reapack/index.xml`. Subscribe in Reaper → install in two clicks (FBXAnimationViewer + ReaImGui auto-pulled). Restart Reaper, done. Documented in README.md to be written in Phase 5.
 
+### Animation Browser & Transient Preview (D18)
+
+*(Added 2026-06-22, post-original-architecture, to cover the Animation Browser scope — FR42–FR45, Epic 5 — that postdates D1–D17. Epic 5 slots after Phase 3 / Epic 4, reusing the PCM_source surface (D8) and the viewer (D11–D14).)*
+
+#### D18 — Browser panel + transient preview asset lifecycle
+
+**Browser panel (FR42, FR43).** A second ReaImGui panel (own dock, same `RAV` action family, distinct window id) that renders a filesystem listing. Directory traversal and listing run on Reaper's main thread (AR18) using `std::filesystem`; entries are filtered to `.glb`/`.gltf`/`.fbx` for the *selectable* list (directories always shown for navigation). A directory that fails to read emits a `ShowConsoleMsg` diagnostic and leaves the prior listing intact — never throws across the panel callback (AR16, AR17, D5). No background indexing, no watcher (consistent with manual-reload posture, D4).
+
+**The new problem — display source ambiguity.** Until Epic 5, the viewer's displayed `Asset` is unambiguous: it comes from the PCM_source item spanning the playhead (D8/D14, panel state). Preview (FR44) requires displaying an `Asset` that is **bound to no item and no track**. The decision resolves who owns that asset and how the viewer chooses what to show.
+
+**Decision — a single owned "preview slot" with explicit precedence:**
+
+- The browser owns an optional `std::unique_ptr<Asset> g_preview_asset` (RAII, D2) — at most one live preview at a time. Selecting "preview" loads the chosen file through the *same* loader path as items (D1/D6 `LoadResult`); a malformed file yields a console diagnostic and leaves the previous preview (and the playhead-driven display) intact (AR17, FR34-aligned).
+- **Viewer display precedence is explicit and total:** if `g_preview_asset` is non-null, the viewer renders the preview; otherwise it renders the playhead-spanning item's asset (the pre-Epic-5 behaviour). There is never an attempt to show both. This keeps Epic 5 from perturbing the Epic 4 transport-driven path — that path is untouched when no preview is active.
+- **Preview teardown** (frees the GPU resources via RAII) happens on exactly one of: the user dismisses preview, selects a different file to preview (old slot replaced), or places the previewed file on a track (FR45).
+
+**Place-on-track (FR45) reuses Epic 4, no parallel path.** "Place" calls the same PCM_source creation used by drag-drop (D8, Epic 4 Story 4.1/4.2): it creates an item bound to the chosen path on the target track. The transient preview asset is then dropped; from that point the asset is owned by the item exactly like a drag-dropped one, and the playhead drives it via the normal Epic 4 path. The browser never creates a second class of item.
+
+**Camera/transport interaction.** Preview honours the existing camera controller (D14) and is poseable/playable without an item; if the file has animation channels, preview can loop or hold a pose locally (browser-local time, not the Reaper transport — the transport only drives item-bound assets). This is the one place where displayed animation time is *not* `playheadTime − itemStart`; it is documented here so Epic 4's invariant (D8) is understood to apply only to item-bound display.
+
+**Open sub-decisions to settle in the Epic 5 story spec (AR20):** whether the browser is a distinct panel or a mode toggle inside the viewer panel; whether preview animation auto-plays or holds frame 0; remembered last-browsed directory persistence (likely via ReaImGui state, like dock position). These are UX-grain choices that do not change the ownership/precedence model above.
+
 ### Decision Impact Analysis
 
 **Implementation sequence (decisions × phases):**
@@ -452,7 +474,8 @@ Manifest also declares: MIT license, Demute author/maintainer, "as-is / no-SLA" 
 | Phase 1 (static mesh + camera) | D1 (Asset partial: static-mesh path), D2 (RAII handles), D6 (LoadResult), D12 (render pipeline), D14 (camera fully) |
 | Phase 2 (skinned animation) | D1 (Asset fully: skinned path, animations), D13 (GPU skinning) — dominant risk per PRFAQ |
 | Phase 3 (transport sync) | D8 (PCM_source plugin), D9 (per-item SaveState), D10 (loader expansion for transport APIs) |
-| Phase 4 (reload + persistence) | D4 (reload swap), D9 (full persistence layering), partial D15 (FBX validation against Demute fixtures) |
+| Epic 5 (animation browser, post-Phase 3) | D18 (browser panel + transient preview), reuses D8 (place-on-track), D11–D14 (viewer), D1/D6 (loader) |
+| Phase 4 (reload + persistence) | D4 (reload swap), D9 (full persistence layering + cross-machine path portability FR46), partial D15 (FBX validation against Demute fixtures) |
 | Phase 5 (polish + release) | D15 (assimp CMake final), D16 (ReaPack manifest final), D17 (install validation) |
 
 **Cross-component dependencies:**

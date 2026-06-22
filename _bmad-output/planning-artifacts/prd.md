@@ -122,6 +122,13 @@ Demute is not selling this product, so business success is internal ROI + commun
 
 ## Product Scope
 
+> **Scope update (2026-06-22, post-Architecture).** Three changes were ratified after this PRD's original 2026-05-10 draft and are reflected in the epics:
+> 1. **Product rename: FBXAnimationViewer → ReaAnimViewer** (the tool's primary format is glTF/GLB, not FBX). Executed in code/manifest as Epic 1 Story 1.1; this planning artifact retains the historical name by design.
+> 2. **New MVP capability — Animation Browser** (FR42–FR45, Epic 5) plus **cross-machine path portability** (FR46, Epic 6).
+> 3. **Feasibility spike added** before Phase 0.5 — a ~2-day throwaway walking skeleton (assimp → sokol_gfx GPU skinning → FBO → ImGui panel + fps readout) to de-risk the stack before production. Owns no FRs.
+>
+> Net effect: MVP scope grew by one epic and one spike; the original "Phases 0–5, 6 weeks" framing below is now optimistic and should be re-estimated at the next phase gate.
+
 ### MVP — Minimum Viable Product (Phases 0–5, 6 weeks)
 
 **Must work to be useful, must pass all phase-gate validations.**
@@ -411,6 +418,16 @@ Anything below this line is the irreducible MVP per problem-solving philosophy �
 - **FR39**: The sound designer can install the viewer manually by copying its DLL to `%APPDATA%\REAPER\UserPlugins\` (provided ReaImGui is already installed) and have it fully functional after the next Reaper restart.
 - **FR40**: The viewer can operate fully offline: no network access, no telemetry, no remote license check, no remote asset loading.
 - **FR41**: The sound designer can receive updates to the viewer via ReaPack's standard update flow; the viewer has no in-extension update mechanism of its own.
+
+### Animation Browser / Explorer
+
+*(Added 2026-06-22, post-Architecture, per Antho. Reinforces the "stay in Reaper, zero context-switch" value proposition. Delivered as Epic 5; FR46 delivered with persistence in Epic 6.)*
+
+- **FR42**: The sound designer can open an in-Reaper animation browser panel (ReaImGui) that navigates the local filesystem and mounted disks, without leaving Reaper.
+- **FR43**: The sound designer can filter the browser to supported animation formats (`.glb`, `.gltf`, `.fbx`).
+- **FR44**: The sound designer can preview a selected animation in the viewer directly from the browser, before committing it to a track.
+- **FR45**: The sound designer can place a browsed animation onto a track as a media item, binding the chosen file path to that item, entirely from within the browser.
+- **FR46**: The sound designer can reopen a project saved on a different machine and resolve each item's animation path without forcing a full media re-import (path-portability strategy — relative path + missing-media remap; final mechanism decided in the persistence epic / Story 6.2).
 
 ## Non-Functional Requirements
 

@@ -1,5 +1,5 @@
 # generated: 2026-06-22
-# last_updated: 2026-06-22
+# last_updated: 2026-06-22 (story 0-1 created)
 # project: FBXAnimationViewer
 # project_key: NOKEY
 # tracking_system: file-system
@@ -47,8 +47,8 @@ story_location: "{project-root}/_bmad-output/implementation-artifacts"
 
 development_status:
   # --- Spike 0: Feasibility walking skeleton (THROWAWAY) ---
-  epic-0: backlog
-  0-1-render-a-skinned-animation-in-a-reaper-hosted-fbo-panel-and-measure-fps: backlog
+  epic-0: in-progress
+  0-1-render-a-skinned-animation-in-a-reaper-hosted-fbo-panel-and-measure-fps: in-progress  # code complete on branch spike/0-1-feasibility; fps/visual/verdict pending Antho on Windows
   epic-0-retrospective: optional
 
   # --- Epic 1: Viewer lives inside Reaper (dockable panel) [Phase 0.5] ---

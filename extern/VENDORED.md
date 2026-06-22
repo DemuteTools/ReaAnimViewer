@@ -70,3 +70,35 @@ cp /tmp/reaimgui/api/reaper_imgui_functions.h extern/reaimgui/include/
 git -C /tmp/reaimgui rev-parse HEAD  # record pinned commit in this file
 rm -rf /tmp/reaimgui
 ```
+
+> **Correction (found during Spike 0, 2026-06-22):** `reaper_imgui_functions.h`
+> is **generated** by ReaImGui's build — it is NOT at `api/reaper_imgui_functions.h`
+> in the source tree, so the `cp` above will not find it. Obtain it from a
+> ReaImGui **release** asset, or via the REAPER action *"[developer] Write C++ API
+> functions header"*. The `api/*.cpp` files are the source the header is generated
+> from. Update this procedure when Phase 0.5 settles the vendored copy.
+
+---
+
+## Spike 0 additions (throwaway branch `spike/0-1-feasibility`, NOT merged to main)
+
+### extern/sokol/sokol_gfx.h — vendored, pinned `85d1f1b`, currently unused
+
+zlib/libpng. Vendored per the architecture pin (AR4/D11). **Finding:** this
+commit ships sokol's *new view-based* pass/attachment API (`sg_view`;
+`sg_make_attachments` removed) — diverged from the API D11/D12 assumed. The spike
+renders with **raw GL** instead of sokol, to answer the ReaImGui-bridge question
+without absorbing a sokol-API relearn. Phase 0.5 must validate sokol's new
+offscreen-pass/view API before relying on it. See `docs/SPIKE0_FINDINGS.md`.
+
+### extern/reaimgui/include/reaper_imgui_functions.h — NOT vendored
+
+Generated header (v0.10.0.5) obtained per
+`extern/reaimgui/include/README_DROP_HEADER_HERE.md`.
+
+### assimp v6.0.5 + GLM 1.0.3 — via CMake FetchContent, NOT vendored
+
+The spike pulls these at configure time (`CMakeLists.txt`) rather than vendoring:
+committing all of assimp (~100 MB) into the drvfs-mounted tree is slow and risks
+the same chmod friction that drove the SDK-vendoring decision. Production retains
+the architecture's vendoring plan for these deps.

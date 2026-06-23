@@ -8,6 +8,7 @@
 
 #include "spike_gl.h"        // modern-GL pointers + constants + GlLoadFunctions
 #include "spike_loader.h"
+#include "spike_pcmsource.h" // CurrentAnimTime (playhead-driven)
 #include "spike_renderer.h"
 #include "reaper_api.h"      // ShowConsoleMsg
 
@@ -29,6 +30,7 @@ LARGE_INTEGER g_freq{};
 LARGE_INTEGER g_lastFpsCount{};
 int    g_frames = 0;
 double g_fps = 0.0;
+bool   g_lastDriven = false;  // true when the last frame was driven by the Reaper playhead
 
 LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -142,8 +144,14 @@ void GlWindowRenderFrame(float t)
     if (!g_hwnd || !g_dc || !g_glrc) return;  // g_hwnd nulled if the docker closed us
     wglMakeCurrent(g_dc, g_glrc);
 
+    // If a timeline item spans the playhead, REAPER drives the frame; otherwise fall
+    // back to the wall-clock loop (so it still animates with no item on the timeline).
+    double animTime = 0.0;
+    const bool driven = spike::CurrentAnimTime(animTime);
+    g_lastDriven = driven;
+
     glBindFramebuffer(GL_FRAMEBUFFER, 0);  // the window's default framebuffer
-    g_renderer.DrawScene(t, g_w, g_h);
+    g_renderer.DrawScene(driven ? static_cast<float>(animTime) : t, g_w, g_h);
     SwapBuffers(g_dc);
 
     // Present-rate fps: count SwapBuffers, report once per second to the console.
@@ -154,8 +162,9 @@ void GlWindowRenderFrame(float t)
         g_fps = g_frames / elapsed;
         g_frames = 0;
         g_lastFpsCount = now;
-        char line[96];
-        std::snprintf(line, sizeof(line), "[FBXAV-spike] (GL) %.1f fps  (%dx%d)\n", g_fps, g_w, g_h);
+        char line[128];
+        std::snprintf(line, sizeof(line), "[FBXAV-spike] (GL) %.1f fps  (%dx%d)  [%s]\n",
+                      g_fps, g_w, g_h, g_lastDriven ? "timeline-driven" : "clock-loop");
         ShowConsoleMsg(line);
     }
 }

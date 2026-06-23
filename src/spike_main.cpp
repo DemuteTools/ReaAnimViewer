@@ -29,6 +29,7 @@
 #include "spike_gl.h"
 #include "spike_glwindow.h"
 #include "spike_loader.h"
+#include "spike_pcmsource.h"
 #include "spike_renderer.h"
 
 // reaper_imgui_functions.h only forward-declares reaper_array; provide its
@@ -285,6 +286,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     if (!rec) {
         StopAll();
         if (g_register) {
+            spike::UnregisterPcmSrc(g_register);
             g_register("-hookcommand", reinterpret_cast<void*>(&OnHookCommand));
             g_register("-gaccel", &g_gl_accel);
             g_register("-gaccel", &g_accel);
@@ -319,6 +321,11 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
 
     rec->Register("hookcommand", reinterpret_cast<void*>(&OnHookCommand));
 
-    ShowConsoleMsg("[FBXAV-spike] loaded (Spike 0). Two actions: ReaImGui (~30fps) and GL docked (60fps test).\n");
+    // Transport experiment: register the PCM_source so dropping a .fbx/.glb/.gltf on
+    // a track creates a timeline item that the GL viewer renders by playhead.
+    spike::RegisterPcmSrc(g_register);
+
+    ShowConsoleMsg("[FBXAV-spike] loaded (Spike 0). Actions: ReaImGui (~30fps), GL docked (60fps). "
+                   "Drop a .fbx/.glb on a track to test timeline-driven playback.\n");
     return 1;
 }

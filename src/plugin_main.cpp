@@ -6,11 +6,11 @@
 #include "reaper_api.h"
 #include "viewer_window.h"
 
-namespace fbxav {
+namespace rav {
 namespace {
 
-constexpr const char kCommandName[] = "FBXAV_OPEN_VIEWER";
-constexpr const char kActionDesc[]  = "FBXAV: Open Viewer Window";
+constexpr const char kCommandName[] = "RAV_OPEN_VIEWER";
+constexpr const char kActionDesc[]  = "RAV: Open Viewer";
 
 int                     g_command_id      = 0;
 gaccel_register_t       g_accel           = {};
@@ -28,13 +28,13 @@ bool OnHookCommand(int command, int /*flag*/)
 }
 
 }  // namespace
-}  // namespace fbxav
+}  // namespace rav
 
 extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     REAPER_PLUGIN_HINSTANCE hInstance,
     reaper_plugin_info_t*   rec)
 {
-    using namespace fbxav;
+    using namespace rav;
 
     if (!rec) {
         // Reaper is unloading us: tear down everything we registered, in
@@ -67,6 +67,6 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     rec->Register("gaccel", &g_accel);
     rec->Register("hookcommand", (void*)&OnHookCommand);
 
-    ShowConsoleMsg("[FBXAV] extension loaded (Phase 0)\n");
+    ShowConsoleMsg("[RAV] extension loaded (Phase 0)\n");
     return 1;
 }

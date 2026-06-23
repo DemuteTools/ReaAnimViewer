@@ -10,7 +10,7 @@
 # On macOS:   lib<target>.dylib → reaper_<target>.dylib
 #
 # Usage:
-#   add_reaper_extension(fbxanimationviewer
+#   add_reaper_extension(animviewer
 #       SOURCES src/plugin_main.cpp src/viewer_window.cpp ...)
 
 function(add_reaper_extension target)

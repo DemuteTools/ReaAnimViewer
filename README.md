@@ -1,4 +1,4 @@
-# FBX Animation Viewer
+# ReaAnimViewer
 
 A Reaper extension that loads glTF and FBX animation files and renders the
 animated rig live, synced to the Reaper transport. Designed for game audio
@@ -22,13 +22,13 @@ Prerequisites:
 Steps:
 
 ```sh
-git clone <repo-url> FBXAnimationViewer
-cd FBXAnimationViewer
+git clone <repo-url> ReaAnimViewer
+cd ReaAnimViewer
 cmake -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 ```
 
-Output: `build/Release/reaper_fbxanimationviewer.dll`.
+Output: `build/Release/reaper_animviewer.dll`.
 
 ## Install
 
@@ -38,16 +38,16 @@ Output: `build/Release/reaper_fbxanimationviewer.dll`.
 2. Search `reaimgui`, install the `cfillion/reaimgui` package.
 3. Restart Reaper.
 
-Once the FBXAnimationViewer ReaPack listing is live (Phase 5), ReaImGui will be declared as an auto-install dependency — you won't need this step manually. For the current pre-release build distributed by copying the DLL, install ReaImGui first as described above.
+Once the ReaAnimViewer ReaPack listing is live (Phase 5), ReaImGui will be declared as an auto-install dependency — you won't need this step manually. For the current pre-release build distributed by copying the DLL, install ReaImGui first as described above.
 
-Then copy `reaper_fbxanimationviewer.dll` into:
+Then copy `reaper_animviewer.dll` into:
 
 ```
 %APPDATA%\REAPER\UserPlugins\
 ```
 
-Restart Reaper. Open **Actions → Show action list…** and search `FBXAV`. You
-should see `FBXAV: Open Viewer Window`.
+Restart Reaper. Open **Actions → Show action list…** and search `RAV`. You
+should see `RAV: Open Viewer`.
 
 > **Phase 0 note (2026-05-09):** the shipped Phase 0 DLL opens a standalone Win32 window (no ReaImGui dependency yet). Phase 0.5 will refactor this into a ReaImGui dockable panel; the ReaImGui prerequisite above takes effect from that build onward.
 

@@ -1,16 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  ReaPack manifest skeleton for the FBX Animation Viewer extension.
+  ReaPack manifest skeleton for the ReaAnimViewer extension.
 
   Phase 0: not yet published. The <source> URL is a placeholder; replace
   with the GitHub Releases asset URL once the project is public.
 
   Reference: https://github.com/cfillion/reapack/wiki/Index-Format
 -->
-<index version="1" name="FBXAnimationViewer">
+<index version="1" name="ReaAnimViewer">
   <metadata>
     <description><![CDATA[
-      Demute Studio's open repository for the FBX Animation Viewer
+      Demute Studio's open repository for the ReaAnimViewer
       Reaper extension. Renders animated rigs (glTF, FBX) live, synced
       to the Reaper transport. Free, MIT-licensed.
     ]]></description>
@@ -18,7 +18,7 @@
     <link rel="screenshot">https://github.com/demute/asset-animation-viewer/raw/main/docs/screenshot.png</link>
   </metadata>
   <category name="Extensions">
-    <reapack name="FBX Animation Viewer" type="extension" desc="Animation rig viewer synced to the Reaper transport">
+    <reapack name="ReaAnimViewer" type="extension" desc="Animation rig viewer synced to the Reaper transport">
       <metadata>
         <description><![CDATA[
           Loads glTF and FBX rigs and renders them live, scrubbed by the
@@ -30,13 +30,13 @@
       <version name="0.0.1-phase0" author="Demute Studio" time="2026-05-09T00:00:00Z">
         <changelog><![CDATA[
           Initial scaffolding release. Registers the action
-          "FBXAV: Open Viewer Window" which opens an empty WGL viewer.
+          "RAV: Open Viewer" which opens an empty WGL viewer.
           No mesh loading or animation playback yet.
         ]]></changelog>
         <!--
           TODO(phase-5): replace placeholder with the GitHub Releases asset URL
           once the project is published. Format:
-            <source platform="windows-x64">https://github.com/demute/asset-animation-viewer/releases/download/v0.0.1/reaper_fbxanimationviewer.dll</source>
+            <source platform="windows-x64">https://github.com/demute/asset-animation-viewer/releases/download/v0.0.1/reaper_animviewer.dll</source>
         -->
         <source platform="windows-x64">PLACEHOLDER_RELEASE_URL_REAPER_DLL</source>
       </version>

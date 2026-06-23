@@ -10,11 +10,11 @@
 #include <gl/GL.h>
 #endif
 
-namespace fbxav {
+namespace rav {
 namespace {
 
-constexpr wchar_t kWindowClassName[] = L"FBXAnimationViewer.ViewerWindow";
-constexpr wchar_t kWindowTitle[]     = L"FBX Animation Viewer";
+constexpr wchar_t kWindowClassName[] = L"ReaAnimViewer.ViewerWindow";
+constexpr wchar_t kWindowTitle[]     = L"ReaAnimViewer";
 
 constexpr int kInitialWidth  = 800;
 constexpr int kInitialHeight = 600;
@@ -88,7 +88,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     switch (msg) {
     case WM_CREATE:
         if (!CreateGLContextFor(hwnd)) {
-            ShowConsoleMsg("[FBXAV] failed to create WGL context\n");
+            ShowConsoleMsg("[RAV] failed to create WGL context\n");
             return -1;  // abort window creation
         }
         return 0;
@@ -152,7 +152,7 @@ void OpenViewerWindow(REAPER_PLUGIN_HINSTANCE hInst, HWND reaper_main)
     }
 
     if (!EnsureClassRegistered(hInst)) {
-        ShowConsoleMsg("[FBXAV] failed to register window class\n");
+        ShowConsoleMsg("[RAV] failed to register window class\n");
         return;
     }
 
@@ -165,7 +165,7 @@ void OpenViewerWindow(REAPER_PLUGIN_HINSTANCE hInst, HWND reaper_main)
         nullptr, hInst, nullptr);
 
     if (!g_hwnd) {
-        ShowConsoleMsg("[FBXAV] CreateWindowExW failed\n");
+        ShowConsoleMsg("[RAV] CreateWindowExW failed\n");
         return;
     }
 
@@ -189,4 +189,4 @@ void CloseViewerWindow()
     }
 }
 
-}  // namespace fbxav
+}  // namespace rav

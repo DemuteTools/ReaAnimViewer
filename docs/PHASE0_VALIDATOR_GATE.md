@@ -1,7 +1,7 @@
 # Phase 0 — Validator Gate
 
 This document is the step-by-step acceptance test for **Phase 0** of the
-FBXAnimationViewer build plan. It is written for Antho (the validator)
+ReaAnimViewer build plan. It is written for Antho (the validator)
 to run on Windows.
 
 **You are testing the right thing if** the extension loads in Reaper, an
@@ -28,7 +28,7 @@ Reaper exits cleanly with no crash.
 Open a Developer Command Prompt for VS 2022 (or any shell where `cmake.exe` and `cl.exe` are on PATH) and run:
 
 ```cmd
-cd \path\to\FBXAnimationViewer
+cd \path\to\ReaAnimViewer
 cmake -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Release
 ```
@@ -36,7 +36,7 @@ cmake --build build --config Release
 **Expected:** zero MSVC warnings at `/W3`, and a file at:
 
 ```
-build\Release\reaper_fbxanimationviewer.dll
+build\Release\reaper_animviewer.dll
 ```
 
 **If configure fails** with a missing-module error referencing
@@ -52,7 +52,7 @@ clone.
 Copy the DLL to your user plugins directory:
 
 ```cmd
-copy build\Release\reaper_fbxanimationviewer.dll "%APPDATA%\REAPER\UserPlugins\"
+copy build\Release\reaper_animviewer.dll "%APPDATA%\REAPER\UserPlugins\"
 ```
 
 If Reaper is already running, **close and reopen it** so it re-scans
@@ -63,9 +63,9 @@ extensions.
 | # | Check | Pass criterion |
 |---|---|---|
 | 1 | Reaper launches | No crash dialog, no error popup. The Reaper window opens normally. |
-| 2 | Console log on load | `Extensions → Show ReaScript console output` (or `View → Show console`) shows `[FBXAV] extension loaded (Phase 0)`. |
-| 3 | Action registered | `Actions → Show action list…` then type `FBXAV` in the filter. The row `FBXAV: Open Viewer Window` is present. |
-| 4 | Action opens the window | Double-click that row (or click `Run`). A 800×600 window titled `FBX Animation Viewer` appears. The client area is a uniform dark grey (≈ RGB 26,26,31). |
+| 2 | Console log on load | `Extensions → Show ReaScript console output` (or `View → Show console`) shows `[RAV] extension loaded (Phase 0)`. |
+| 3 | Action registered | `Actions → Show action list…` then type `RAV` in the filter. The row `RAV: Open Viewer` is present. |
+| 4 | Action opens the window | Double-click that row (or click `Run`). A 800×600 window titled `ReaAnimViewer` appears. The client area is a uniform dark grey (≈ RGB 26,26,31). |
 | 5 | Re-trigger raises | With the viewer window open, run the action again. **No second window.** The existing one comes to the foreground. |
 | 6 | Resize redraws | Drag the window edge. Background stays uniform dark grey across the new size — no stretched garbage, no flicker, no white flash. |
 | 7 | Close window | Click the window's `X`. The window vanishes. Reaper keeps running normally. Run the action again — a fresh window opens. |
@@ -83,7 +83,7 @@ If **any** check fails, capture:
 ## 4. Uninstall (if needed)
 
 ```cmd
-del "%APPDATA%\REAPER\UserPlugins\reaper_fbxanimationviewer.dll"
+del "%APPDATA%\REAPER\UserPlugins\reaper_animviewer.dll"
 ```
 
 Then restart Reaper. The action disappears from the Action List.

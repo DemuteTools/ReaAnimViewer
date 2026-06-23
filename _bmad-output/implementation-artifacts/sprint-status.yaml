@@ -39,11 +39,12 @@
 # Phase 0 (scaffolding) is the brownfield baseline (AR1) and is intentionally not tracked here.
 
 generated: 2026-06-22
-last_updated: 2026-06-22
+last_updated: 2026-06-23
 project: FBXAnimationViewer
 project_key: NOKEY
 tracking_system: file-system
 story_location: "{project-root}/_bmad-output/implementation-artifacts"
+# last_updated: 2026-06-23 — story 1-1 done (Windows validator gate passed)
 
 development_status:
   # --- Spike 0: Feasibility walking skeleton (THROWAWAY) ---
@@ -52,8 +53,8 @@ development_status:
   epic-0-retrospective: done  # the go/no-go findings note IS the retrospective
 
   # --- Epic 1: Viewer lives inside Reaper (dockable panel) [Phase 0.5] ---
-  epic-1: backlog
-  1-1-rename-fbxanimationviewer-to-reaanimviewer: backlog
+  epic-1: in-progress
+  1-1-rename-fbxanimationviewer-to-reaanimviewer: done
   1-2-docked-opengl-viewport-direct-render: backlog          # revised per Spike 0 (was: render-to-texture FBO bridge)
   1-3-dockable-gl-window-opened-by-a-reaper-action: backlog  # revised per Spike 0 (was: dockable ReaImGui panel)
   1-4-graceful-gl-context-init-failure-handling: backlog     # revised per Spike 0 (ReaImGui-missing handling moved to Epic 5)

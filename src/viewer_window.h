@@ -3,7 +3,7 @@
 
 #include "reaper_api.h"
 
-namespace fbxav {
+namespace rav {
 
 // Opens (or brings to front) the viewer window. Idempotent: a second call
 // while the window is already open just raises the existing one.
@@ -13,4 +13,4 @@ void OpenViewerWindow(REAPER_PLUGIN_HINSTANCE hInst, HWND reaper_main);
 // window is not open.
 void CloseViewerWindow();
 
-}  // namespace fbxav
+}  // namespace rav

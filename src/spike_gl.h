@@ -22,6 +22,12 @@ bool GlContextCreate(HINSTANCE hinst, HWND parent);
 void GlContextDestroy();
 bool GlMakeCurrent();
 
+// Resolves the modern-GL function pointers via wglGetProcAddress against the
+// currently-current context. Call after any context is made current. Returns
+// false if any required function is missing. (Used by both the hidden-host and
+// the docked-GL-window paths.)
+bool GlLoadFunctions();
+
 }  // namespace spike
 
 // ---- Types and constants missing from the GL 1.1 <gl/GL.h> ------------------

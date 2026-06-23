@@ -21,7 +21,9 @@ HGLRC g_hglrc = nullptr;
 HINSTANCE g_hinst = nullptr;
 bool  g_class_registered = false;
 
-bool LoadGlFuncs()
+}  // namespace
+
+bool GlLoadFunctions()
 {
     bool ok = true;
 #define SPIKE_GL_LOAD(ret, name, args)                                          \
@@ -31,8 +33,6 @@ bool LoadGlFuncs()
 #undef SPIKE_GL_LOAD
     return ok;
 }
-
-}  // namespace
 
 bool GlContextCreate(HINSTANCE hinst, HWND parent)
 {
@@ -90,7 +90,7 @@ bool GlContextCreate(HINSTANCE hinst, HWND parent)
         return false;
     }
 
-    if (!LoadGlFuncs()) return false;
+    if (!GlLoadFunctions()) return false;
 
     ShowConsoleMsg("[FBXAV-spike] GL context up; modern-GL funcs resolved\n");
     return true;

@@ -65,6 +65,7 @@ add_reaper_extension(fbxav_spike
     SOURCES
         src/spike_main.cpp
         src/spike_gl.cpp
+        src/spike_glwindow.cpp
         src/spike_loader.cpp
         src/spike_renderer.cpp
         src/reaper_api.cpp

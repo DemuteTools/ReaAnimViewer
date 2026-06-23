@@ -4,6 +4,7 @@
 
 #include "spike_renderer.h"
 
+#include <cmath>
 #include <cstddef>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -219,70 +220,77 @@ void Renderer::Resize(int w, int h)
     m_packed.assign(static_cast<size_t>(w) * h, 0xFF101012u);  // dark grey, opaque
 }
 
+void Renderer::DrawScene(float t, int w, int h)
+{
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    glViewport(0, 0, w, h);
+    glEnable(GL_DEPTH_TEST);
+    glClearColor(0.10f, 0.10f, 0.12f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    if (!m_hasModel) return;
+
+    // Camera auto-fit to AABB, slow orbit so deformation reads in 3D.
+    const glm::vec3 center = 0.5f * (m_model.aabbMin + m_model.aabbMax);
+    const float radius = glm::max(0.001f, 0.5f * glm::length(m_model.aabbMax - m_model.aabbMin));
+    const float dist = radius * 3.0f;
+    const float yaw = t * 0.2f;  // slow turntable so the skeletal animation, not the camera, dominates
+    const glm::vec3 eye = center + glm::vec3(std::sin(yaw), 0.35f, std::cos(yaw)) * dist;
+    const glm::mat4 view = glm::lookAt(eye, center, glm::vec3(0, 1, 0));
+    const float aspect = static_cast<float>(w) / static_cast<float>(h);
+    const glm::mat4 proj = glm::perspective(glm::radians(45.0f), aspect,
+                                            glm::max(0.001f, radius * 0.05f), radius * 20.0f);
+    const glm::mat4 mvp = proj * view * m_model.modelRoot;
+
+    glUseProgram(m_prog);
+    glUniformMatrix4fv(m_uMvp, 1, GL_FALSE, glm::value_ptr(mvp));
+    glUniformMatrix4fv(m_uModel, 1, GL_FALSE, glm::value_ptr(m_model.modelRoot));
+
+    const bool skinned = m_model.skinned();
+    glUniform1i(m_uSkinned, skinned ? 1 : 0);
+
+    if (skinned) {
+        const float dur = (m_model.clip.duration > 0.0f) ? m_model.clip.duration : 1.0f;
+        const float tt = std::fmod(t, dur);
+
+        const size_t n = m_model.bones.size();
+        std::vector<glm::mat4> local(n), global(n), palette(n);
+        for (size_t i = 0; i < n; ++i) local[i] = m_model.bones[i].localBind;
+
+        // Override locals that have animation channels with the sampled pose.
+        for (const AnimChannel& ch : m_model.clip.channels) {
+            if (ch.boneIdx < 0 || static_cast<size_t>(ch.boneIdx) >= n) continue;
+            const glm::vec3 tr = SampleVec(ch.translation, tt, glm::vec3(0.0f));
+            const glm::quat ro = SampleQuat(ch.rotation, tt);
+            const glm::vec3 sc = SampleVec(ch.scale, tt, glm::vec3(1.0f));
+            local[ch.boneIdx] = glm::translate(glm::mat4(1.0f), tr) *
+                                glm::mat4_cast(ro) *
+                                glm::scale(glm::mat4(1.0f), sc);
+        }
+
+        for (size_t i = 0; i < n; ++i) {
+            const int p = m_model.bones[i].parentIdx;
+            global[i] = (p < 0) ? local[i] : global[p] * local[i];
+            palette[i] = global[i] * m_model.bones[i].inverseBind;
+        }
+
+        const int count = static_cast<int>(glm::min<size_t>(n, kMaxBones));
+        glUniformMatrix4fv(m_uPalette, count, GL_FALSE, glm::value_ptr(palette[0]));
+    }
+
+    glBindVertexArray(m_vao);
+    glDrawElements(GL_TRIANGLES, m_indexCount, GL_UNSIGNED_INT, nullptr);
+    glBindVertexArray(0);
+}
+
 const uint32_t* Renderer::RenderToPixels(float t, int& outW, int& outH)
 {
     outW = m_w; outH = m_h;
     if (!m_fbo) return nullptr;
 
     glBindFramebuffer(GL_FRAMEBUFFER, m_fbo);
-    glViewport(0, 0, m_w, m_h);
-    glEnable(GL_DEPTH_TEST);
-    glClearColor(0.10f, 0.10f, 0.12f, 1.0f);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-    if (m_hasModel) {
-        // Camera auto-fit to AABB, slow orbit so deformation reads in 3D.
-        const glm::vec3 center = 0.5f * (m_model.aabbMin + m_model.aabbMax);
-        const float radius = glm::max(0.001f, 0.5f * glm::length(m_model.aabbMax - m_model.aabbMin));
-        const float dist = radius * 3.0f;
-        const float yaw = t * 0.2f;  // slow turntable so the skeletal animation, not the camera, dominates
-        const glm::vec3 eye = center + glm::vec3(std::sin(yaw), 0.35f, std::cos(yaw)) * dist;
-        const glm::mat4 view = glm::lookAt(eye, center, glm::vec3(0, 1, 0));
-        const float aspect = static_cast<float>(m_w) / static_cast<float>(m_h);
-        const glm::mat4 proj = glm::perspective(glm::radians(45.0f), aspect,
-                                                glm::max(0.001f, radius * 0.05f), radius * 20.0f);
-        const glm::mat4 mvp = proj * view * m_model.modelRoot;
-
-        glUseProgram(m_prog);
-        glUniformMatrix4fv(m_uMvp, 1, GL_FALSE, glm::value_ptr(mvp));
-        glUniformMatrix4fv(m_uModel, 1, GL_FALSE, glm::value_ptr(m_model.modelRoot));
-
-        const bool skinned = m_model.skinned();
-        glUniform1i(m_uSkinned, skinned ? 1 : 0);
-
-        if (skinned) {
-            const float dur = (m_model.clip.duration > 0.0f) ? m_model.clip.duration : 1.0f;
-            const float tt = std::fmod(t, dur);
-
-            const size_t n = m_model.bones.size();
-            std::vector<glm::mat4> local(n), global(n), palette(n);
-            for (size_t i = 0; i < n; ++i) local[i] = m_model.bones[i].localBind;
-
-            // Override locals that have animation channels with the sampled pose.
-            for (const AnimChannel& ch : m_model.clip.channels) {
-                if (ch.boneIdx < 0 || static_cast<size_t>(ch.boneIdx) >= n) continue;
-                const glm::vec3 tr = SampleVec(ch.translation, tt, glm::vec3(0.0f));
-                const glm::quat ro = SampleQuat(ch.rotation, tt);
-                const glm::vec3 sc = SampleVec(ch.scale, tt, glm::vec3(1.0f));
-                local[ch.boneIdx] = glm::translate(glm::mat4(1.0f), tr) *
-                                    glm::mat4_cast(ro) *
-                                    glm::scale(glm::mat4(1.0f), sc);
-            }
-
-            for (size_t i = 0; i < n; ++i) {
-                const int p = m_model.bones[i].parentIdx;
-                global[i] = (p < 0) ? local[i] : global[p] * local[i];
-                palette[i] = global[i] * m_model.bones[i].inverseBind;
-            }
-
-            const int count = static_cast<int>(glm::min<size_t>(n, kMaxBones));
-            glUniformMatrix4fv(m_uPalette, count, GL_FALSE, glm::value_ptr(palette[0]));
-        }
-
-        glBindVertexArray(m_vao);
-        glDrawElements(GL_TRIANGLES, m_indexCount, GL_UNSIGNED_INT, nullptr);
-        glBindVertexArray(0);
-    }
+    DrawScene(t, m_w, m_h);
 
     // Readback: GPU -> CPU (the bridge cost the spike measures). GL framebuffers
     // are bottom-up; we flip rows here and pack to 0xRRGGBBAA so ReaImGui's

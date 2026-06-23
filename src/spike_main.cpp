@@ -25,8 +25,9 @@
 #define REAIMGUIAPI_IMPLEMENT
 #include "reaper_imgui_functions.h"   // provides ImGui:: namespace + reaper_array
 
-#include "reaper_api.h"               // ShowConsoleMsg (REAPERAPI_MINIMAL)
+#include "reaper_api.h"               // ShowConsoleMsg + Dock* (REAPERAPI_MINIMAL)
 #include "spike_gl.h"
+#include "spike_glwindow.h"
 #include "spike_loader.h"
 #include "spike_renderer.h"
 
@@ -38,7 +39,17 @@ namespace fbxav {
 namespace {
 
 constexpr const char kCommandName[] = "FBXAV_SPIKE_OPEN";
-constexpr const char kActionDesc[]  = "FBXAV: Open Spike Viewer (Spike 0)";
+constexpr const char kActionDesc[]  = "FBXAV: Open Spike Viewer (ReaImGui, ~30fps)";
+
+constexpr const char kGlCommandName[] = "FBXAV_SPIKE_OPEN_GL";
+constexpr const char kGlActionDesc[]  = "FBXAV: Open Spike Viewer (GL docked, 60fps test)";
+
+enum class Mode { None, ImGuiPanel, GlWindow };
+Mode g_mode = Mode::None;
+HWND g_gl_hwnd = nullptr;
+
+int               g_gl_command_id = 0;
+gaccel_register_t g_gl_accel      = {};
 
 // Default fixture path (matches docs/SPIKE0_HOWTO_ANTHO.md). Override with the
 // FBXAV_SPIKE_FIXTURE env var if you keep the file elsewhere. assimp sniffs the
@@ -84,14 +95,20 @@ struct Panel {
 
 std::unique_ptr<Panel> g_panel;
 
-void StopPanel()
+void StopAll()
 {
     if (g_timer_id) { KillTimer(nullptr, g_timer_id); g_timer_id = 0; }
-    if (g_panel) {
+    if (g_panel) {                       // ReaImGui path
         g_panel->renderer.Shutdown();
         spike::GlContextDestroy();
         g_panel.reset();
     }
+    if (g_gl_hwnd) {                      // docked-GL-window path
+        DockWindowRemove(g_gl_hwnd);
+        spike::GlWindowDestroy();
+        g_gl_hwnd = nullptr;
+    }
+    g_mode = Mode::None;
 }
 
 void RecreateImage(Panel& p, int w, int h)
@@ -150,7 +167,7 @@ void Frame()  // called every Reaper timer tick
         ImGui::End(p.ctx);
     }
 
-    if (!open) StopPanel();  // user closed the window
+    if (!open) StopAll();  // user closed the window
 }
 
 void Loop()
@@ -161,14 +178,19 @@ catch (const ImGui_Error& e) {
     ShowConsoleMsg("[FBXAV-spike] ImGui error: ");
     ShowConsoleMsg(e.what());
     ShowConsoleMsg("\n");
-    StopPanel();
+    StopAll();
 }
 
-void CALLBACK SpikeTimerProc(HWND, UINT, UINT_PTR, DWORD) { Loop(); }
+void CALLBACK SpikeTimerProc(HWND, UINT, UINT_PTR, DWORD)
+{
+    if (g_mode == Mode::ImGuiPanel)      Loop();
+    else if (g_mode == Mode::GlWindow)   spike::GlWindowRenderFrame(static_cast<float>(NowSeconds()));
+}
 
 void StartPanel()
 {
-    if (g_panel) { ImGui::SetNextWindowFocus(g_panel->ctx); return; }
+    if (g_mode == Mode::ImGuiPanel && g_panel) { ImGui::SetNextWindowFocus(g_panel->ctx); return; }
+    StopAll();  // close the GL window first if it was open (one viewer at a time)
 
     auto p = std::make_unique<Panel>();
 
@@ -211,16 +233,45 @@ void StartPanel()
     // Experiment (Spike 0): drive the frame from our own ~66 Hz Win32 timer instead
     // of Reaper's ~30 Hz extension timer, to test whether ReaImGui content can exceed
     // 30 fps. Reaper's main message loop dispatches the WM_TIMER to our callback.
+    g_mode = Mode::ImGuiPanel;
     g_timer_id = SetTimer(nullptr, 0, 15, &SpikeTimerProc);
     if (!g_timer_id) ShowConsoleMsg("[FBXAV-spike] SetTimer failed\n");
-    ShowConsoleMsg("[FBXAV-spike] panel started (66 Hz timer experiment)\n");
+    ShowConsoleMsg("[FBXAV-spike] ReaImGui panel started (66 Hz timer)\n");
+}
+
+void StartGlWindow()
+{
+    if (g_mode == Mode::GlWindow && g_gl_hwnd) { DockWindowActivate(g_gl_hwnd); return; }
+    StopAll();  // close the ReaImGui panel first if it was open
+
+    const char* envPath = std::getenv("FBXAV_SPIKE_FIXTURE");
+    const std::string path = envPath ? envPath : kDefaultFixture;
+
+    std::string err;
+    HWND hwnd = spike::GlWindowCreate(g_hinstance, g_reaper_main, path, err);
+    if (!hwnd) {
+        ShowConsoleMsg(("[FBXAV-spike] GL window failed: " + err + "\n").c_str());
+        return;
+    }
+    g_gl_hwnd = hwnd;
+
+    // Hand the raw GL window to Reaper's docker (this is the docked-window route
+    // that lets us drive our own present loop, unlike a ReaImGui panel).
+    DockWindowAddEx(hwnd, "FBXAV Spike (GL)", "fbxav_spike_gl", true);
+    DockWindowActivate(hwnd);
+
+    g_mode = Mode::GlWindow;
+    g_timer_id = SetTimer(nullptr, 0, 15, &SpikeTimerProc);
+    if (!g_timer_id) ShowConsoleMsg("[FBXAV-spike] SetTimer failed\n");
+    ShowConsoleMsg("[FBXAV-spike] GL docked window started (fps logged here each second)\n");
 }
 
 bool OnHookCommand(int command, int /*flag*/)
 {
-    if (command != g_command_id || g_command_id == 0) return false;
-    StartPanel();
-    return true;
+    if (command == 0) return false;
+    if (command == g_command_id)    { StartPanel();    return true; }
+    if (command == g_gl_command_id) { StartGlWindow(); return true; }
+    return false;
 }
 
 }  // namespace
@@ -232,9 +283,10 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     using namespace fbxav;
 
     if (!rec) {
-        StopPanel();
+        StopAll();
         if (g_register) {
             g_register("-hookcommand", reinterpret_cast<void*>(&OnHookCommand));
+            g_register("-gaccel", &g_gl_accel);
             g_register("-gaccel", &g_accel);
         }
         return 0;
@@ -257,8 +309,16 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     g_accel.accel.cmd = static_cast<WORD>(g_command_id);
     g_accel.desc      = kActionDesc;
     rec->Register("gaccel", &g_accel);
+
+    g_gl_command_id = rec->Register("command_id", const_cast<char*>(kGlCommandName));
+    if (g_gl_command_id != 0) {
+        g_gl_accel.accel.cmd = static_cast<WORD>(g_gl_command_id);
+        g_gl_accel.desc      = kGlActionDesc;
+        rec->Register("gaccel", &g_gl_accel);
+    }
+
     rec->Register("hookcommand", reinterpret_cast<void*>(&OnHookCommand));
 
-    ShowConsoleMsg("[FBXAV-spike] loaded (Spike 0). Run the action to open the viewer.\n");
+    ShowConsoleMsg("[FBXAV-spike] loaded (Spike 0). Two actions: ReaImGui (~30fps) and GL docked (60fps test).\n");
     return 1;
 }

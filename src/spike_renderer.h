@@ -22,6 +22,11 @@ public:
     void SetModel(const Model& model);  // uploads geometry to GPU
     void Resize(int w, int h);          // (re)creates the FBO color+depth
 
+    // Draws the posed model into whatever framebuffer is currently bound (caller
+    // sets viewport target). Used by both the FBO path (ReaImGui) and the direct
+    // docked-GL-window path. Assumes a current GL context.
+    void DrawScene(float t, int w, int h);
+
     // Poses the model at time t (seconds, looped) and returns a top-down packed
     // RGBA buffer (0xRRGGBBAA per pixel) of size outW*outH. Returns nullptr if
     // no FBO/model is ready.

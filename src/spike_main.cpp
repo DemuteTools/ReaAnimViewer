@@ -30,6 +30,10 @@
 #include "spike_loader.h"
 #include "spike_renderer.h"
 
+// reaper_imgui_functions.h only forward-declares reaper_array; provide its
+// canonical REAPER layout so we can fill the pixel array (binary-compatible).
+struct reaper_array { unsigned int size, alloc; double data[1]; };
+
 namespace fbxav {
 namespace {
 
@@ -37,8 +41,9 @@ constexpr const char kCommandName[] = "FBXAV_SPIKE_OPEN";
 constexpr const char kActionDesc[]  = "FBXAV: Open Spike Viewer (Spike 0)";
 
 // Default fixture path (matches docs/SPIKE0_HOWTO_ANTHO.md). Override with the
-// FBXAV_SPIKE_FIXTURE env var if you keep the file elsewhere.
-constexpr const char kDefaultFixture[] = "D:/fixtures/skinned.glb";
+// FBXAV_SPIKE_FIXTURE env var if you keep the file elsewhere. assimp sniffs the
+// format from content, so .fbx (Mixamo) and .glb/.gltf all work.
+constexpr const char kDefaultFixture[] = "D:/fixtures/skinned.fbx";
 
 int                     g_command_id = 0;
 gaccel_register_t       g_accel      = {};
@@ -63,6 +68,7 @@ struct Panel {
     int   imgW = 0, imgH = 0;
     bool  ready = false;
     double fps = 0.0, lastT = 0.0;
+    double renderMs = 0.0;   // measured cost of render+readback+upload (vs tick rate)
     std::vector<unsigned char> arrayBuf;  // reaper_array storage (size + doubles)
 
     reaper_array* EnsureArray(int n)
@@ -79,9 +85,9 @@ std::unique_ptr<Panel> g_panel;
 
 void RecreateImage(Panel& p, int w, int h)
 {
-    if (p.img) { ImGui::Detach(p.ctx, p.img); p.img = nullptr; }  // GC reclaims the old one
+    // ReaImGui images stay valid while used each defer cycle, so no Attach is
+    // needed; the previous image is GC'd once we stop referencing it on resize.
     p.img = ImGui::CreateImageFromSize(w, h);
-    ImGui::Attach(p.ctx, p.img);
     p.imgW = w; p.imgH = h;
 }
 
@@ -98,9 +104,11 @@ void Frame()  // called every Reaper timer tick
 
     bool open = true;
     if (ImGui::Begin(p.ctx, "FBXAV Spike Viewer", &open)) {
-        char line[128];
-        std::snprintf(line, sizeof(line), "fps: %.1f   (target >= 60)   %s",
-                      p.fps, p.ready ? "" : "[no fixture loaded]");
+        char line[192];
+        const double cap = (p.renderMs > 0.01) ? 1000.0 / p.renderMs : 0.0;
+        std::snprintf(line, sizeof(line),
+            "tick: %.0f fps  |  render+readback: %.1f ms (capacity ~%.0f fps)  |  %dx%d  %s",
+            p.fps, p.renderMs, cap, p.imgW, p.imgH, p.ready ? "" : "[no fixture]");
         ImGui::Text(p.ctx, line);
 
         double availX = 0, availY = 0;
@@ -113,11 +121,17 @@ void Frame()  // called every Reaper timer tick
                 RecreateImage(p, w, h);
             }
             int rw = 0, rh = 0;
+            const double r0 = NowSeconds();
             const uint32_t* px = p.renderer.RenderToPixels(static_cast<float>(t), rw, rh);
             if (px && rw == w && rh == h) {
                 reaper_array* arr = p.EnsureArray(rw * rh);
                 for (int i = 0; i < rw * rh; ++i) arr->data[i] = static_cast<double>(px[i]);
-                ImGui::Image_SetPixels_Array(p.img, 0, 0, rw, rh, arr);
+                // Image_SetPixels_Array wants an ImGui_Bitmap*; CreateImageFromSize
+                // returns the same object typed as ImGui_Image* (display API).
+                ImGui::Image_SetPixels_Array(reinterpret_cast<ImGui_Bitmap*>(p.img),
+                                             0, 0, rw, rh, arr);
+                const double r1 = NowSeconds();
+                p.renderMs = p.renderMs * 0.9 + (r1 - r0) * 1000.0 * 0.1;  // EMA of true render cost
                 ImGui::Image(p.ctx, p.img, rw, rh);
             }
         }

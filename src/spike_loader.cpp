@@ -9,6 +9,7 @@
 #include <map>
 
 #include <assimp/Importer.hpp>
+#include <assimp/config.h>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 
@@ -63,6 +64,14 @@ bool LoadModel(const std::string& path, Model& out, std::string& outError)
 {
     try {
         Assimp::Importer importer;
+
+        // CRITICAL for FBX (esp. Mixamo): without this, assimp splits every bone
+        // into hidden `$AssimpFbx$` pre/post-transform nodes and keys the animation
+        // on THOSE — so a name-based channel→bone map (ours) finds nothing and the
+        // rig stays in bind pose. PreservePivots=0 bakes them and keys animation on
+        // the real bone nodes. (Convention finding for SPIKE0_FINDINGS.md.)
+        importer.SetPropertyInteger(AI_CONFIG_IMPORT_FBX_PRESERVE_PIVOTS, 0);
+
         const aiScene* scene = importer.ReadFile(
             path,
             aiProcess_Triangulate | aiProcess_GenSmoothNormals |

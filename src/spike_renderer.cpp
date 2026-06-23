@@ -235,7 +235,7 @@ const uint32_t* Renderer::RenderToPixels(float t, int& outW, int& outH)
         const glm::vec3 center = 0.5f * (m_model.aabbMin + m_model.aabbMax);
         const float radius = glm::max(0.001f, 0.5f * glm::length(m_model.aabbMax - m_model.aabbMin));
         const float dist = radius * 3.0f;
-        const float yaw = t * 0.6f;
+        const float yaw = t * 0.2f;  // slow turntable so the skeletal animation, not the camera, dominates
         const glm::vec3 eye = center + glm::vec3(std::sin(yaw), 0.35f, std::cos(yaw)) * dist;
         const glm::mat4 view = glm::lookAt(eye, center, glm::vec3(0, 1, 0));
         const float aspect = static_cast<float>(m_w) / static_cast<float>(m_h);

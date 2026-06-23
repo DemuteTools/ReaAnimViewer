@@ -68,22 +68,20 @@ Ce fichier est généré par ReaImGui, il n'est pas dans le projet. Récupère-l
 
 ## Étape 2 — Mettre un fichier d'animation de test
 
-Le viewer va charger un modèle 3D animé (un `.glb` « skinné », c.-à-d. avec un
-squelette).
+Le viewer va charger un modèle 3D animé « skinné » (avec un squelette). **Ton `.fbx`
+Mixamo convient parfaitement** (j'ai activé le FBX dans le build exprès).
 
 1. Crée le dossier **`D:\fixtures\`** (clic droit → Nouveau → Dossier dans `D:\`).
-2. Mets-y un `.glb` animé, renommé exactement **`skinned.glb`** → donc le chemin final
-   doit être **`D:\fixtures\skinned.glb`**.
+2. Copie ton fichier Mixamo dedans en le renommant exactement **`skinned.fbx`**
+   → chemin final attendu : **`D:\fixtures\skinned.fbx`**.
 
-D'où prendre un fichier de test connu pour fonctionner :
-- Un de tes propres exports Demute (glTF/GLB skinné), **ou**
-- Un échantillon gratuit Khronos : <https://github.com/KhronosGroup/glTF-Sample-Assets>
-  → dossier `Models` → par ex. **`Fox`** ou **`CesiumMan`** → sous-dossier `glTF-Binary`
-  → télécharge le `.glb`. Renomme-le `skinned.glb` et mets-le dans `D:\fixtures\`.
+⚠️ Côté Mixamo, vérifie que ton export contient bien une **animation** (pas juste la
+T-pose) et le **« With Skin »** (sinon il n'y a pas de maillage à afficher). Format
+**FBX Binary**. Si ton fichier est ailleurs ou sous un autre nom, dis-moi le chemin
+exact et je l'inscris dans le code.
 
-> Si tu préfères garder ton fichier ailleurs / sous un autre nom, dis-moi le chemin
-> exact et je l'inscris dans le code avant que tu compiles (tu m'évites de te faire
-> manipuler des variables d'environnement).
+> (Le viewer accepte aussi `.glb`/`.gltf` — par ex. un échantillon Khronos `Fox`/`CesiumMan`
+> — mais inutile, ton FBX Mixamo fait le job.)
 
 ---
 

@@ -1,0 +1,3 @@
+# Windows batch files must keep CRLF line endings or cmd.exe misparses them
+# (notably multi-line `if (...)` blocks). Spike-era safeguard.
+*.bat text eol=crlf

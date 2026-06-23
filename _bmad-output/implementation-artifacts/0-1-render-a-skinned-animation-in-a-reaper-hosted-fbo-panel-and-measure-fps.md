@@ -1,6 +1,6 @@
 # Story 0.1: Render a skinned animation in a Reaper-hosted FBO panel and measure fps
 
-Status: review — spike ran on the reference workstation; verdict GO (see docs/SPIKE0_FINDINGS.md). One open Phase 0.5 follow-up: 60 Hz redraw cadence.
+Status: done — spike complete, verdict GO. Full stack validated (render + 60fps docked GL window + timeline-item + playhead-driven playback). See docs/SPIKE0_FINDINGS.md. Branch unmerged; production resumes at Epic 1.
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -168,6 +168,12 @@ claude-opus-4-8[1m] (Opus 4.8, 1M context) — dev-story workflow, 2026-06-22.
 
 ### Completion Notes List
 
+**FINAL (2026-06-23) — verdict GO, spike closed.** Full stack validated on the reference workstation, beyond the original scope: GPU-skinned Mixamo FBX rendering inside Reaper, **~62 fps in a native docked OpenGL window**, and **timeline-item + playhead-driven playback** (PCM_source). Key production decisions captured in [docs/SPIKE0_FINDINGS.md](../../docs/SPIKE0_FINDINGS.md): (1) viewport = native docked GL window, NOT a ReaImGui panel — ReaImGui is hard-capped ~30 fps (replaces D11/AR10); (2) PCM_source mechanism confirmed (validates D8); (3) FBX loader must set `PreservePivots=0`; (4) sokol pin diverged (used raw GL) — Phase 0.5 to re-pin/validate or drop. Branch `spike/0-1-feasibility` left unmerged; production resumes at Epic 1 with these amendments.
+
+---
+
+_History below (kept as the working record):_
+
 **Spike code is complete; the story is NOT auto-completable from this (Linux) environment.** AC1 (visible deforming rig), AC2 (GL-context coexistence), AC3 (fps on the reference workstation) and AC4's runtime data require an MSVC build + a run inside Reaper on Antho's Windows machine. Those items are left unchecked rather than fabricated (no invented fps/verdict).
 
 **Headline result — the spike's core question is already answered (at source level), and it reshapes the architecture:**
@@ -182,21 +188,30 @@ claude-opus-4-8[1m] (Opus 4.8, 1M context) — dev-story workflow, 2026-06-22.
 
 | Date | Change |
 |---|---|
-| 2026-06-22 | Spike 0 implementation written on branch `spike/0-1-feasibility`: assimp glTF loader, raw-GL offscreen skinning renderer, WGL context host, ReaImGui panel with CPU-readback bridge + fps counter, CMake (FetchContent assimp/glm), findings note. Core finding (readback-only bridge) established from ReaImGui source. Runtime validation (fps/visual/verdict) pending Antho on Windows. Not merged to main. |
+| 2026-06-22 | Spike 0 implementation written on branch `spike/0-1-feasibility`: assimp glTF loader, raw-GL offscreen skinning renderer, WGL context host, ReaImGui panel with CPU-readback bridge + fps counter, CMake (FetchContent assimp/glm), findings note. Core finding (readback-only bridge) established from ReaImGui source. Not merged to main. |
+| 2026-06-23 | Ran on reference workstation. Fixed Mixamo FBX animation (`PreservePivots=0`). Added fps diagnostic; measured ReaImGui hard-capped ~32 fps even when fed at 66 Hz. Added `build_spike.bat` (one-click build/install; CRLF + goto-label robust). |
+| 2026-06-23 | Per validator decision, prototyped a **native docked OpenGL window** (`DockWindowAddEx`, direct render, no readback) → **~62 fps** confirmed. Architecture decision: viewport = docked GL window, not a ReaImGui panel (replaces D11/AR10). |
+| 2026-06-23 | Prototyped **transport integration**: PCM_source (`pcmsrc`) → drop creates a timeline item of animation length; playhead drives the frame at full rate. Validates D8/AR11. |
+| 2026-06-23 | Spike closed — verdict **GO**, findings finalized in `docs/SPIKE0_FINDINGS.md`. Branch left unmerged. |
 
 ### File List
 
 New (spike branch `spike/0-1-feasibility`, not for merge):
 - `src/spike_scene.h` — POD scene/skeleton/anim structs
-- `src/spike_loader.h` / `src/spike_loader.cpp` — assimp glTF → skinned model (boundary TU)
-- `src/spike_gl.h` / `src/spike_gl.cpp` — WGL offscreen context + modern-GL function loader
-- `src/spike_renderer.h` / `src/spike_renderer.cpp` — GL FBO, GPU-skinning shader, animation sampling, readback
-- `src/spike_main.cpp` — Reaper entry, action, ReaImGui panel, readback→Image bridge, fps
-- `extern/sokol/sokol_gfx.h` — vendored @ 85d1f1b (unused; see findings)
-- `extern/reaimgui/include/README_DROP_HEADER_HERE.md` — how to obtain the generated binding header
-- `docs/SPIKE0_FINDINGS.md` — findings note (source-level findings filled; runtime ⏳)
-- `docs/SPIKE0_HOWTO_ANTHO.md` — beginner step-by-step build/run guide for Antho (Windows)
+- `src/spike_loader.h` / `.cpp` — assimp → skinned model (FBX+glTF; `PreservePivots=0`)
+- `src/spike_gl.h` / `.cpp` — WGL context + modern-GL function loader
+- `src/spike_renderer.h` / `.cpp` — GL skinning shader, animation sampling, `DrawScene` (FBO or window)
+- `src/spike_glwindow.h` / `.cpp` — **native docked GL window** (direct render + SwapBuffers, fps) ← the chosen viewport
+- `src/spike_pcmsource.h` / `.cpp` — **PCM_source** (timeline item) + `CurrentAnimTime` (playhead → frame)
+- `src/spike_main.cpp` — Reaper entry, two actions (ReaImGui ~30fps / GL docked 60fps), pcmsrc registration, 66 Hz timer
+- `extern/sokol/sokol_gfx.h` — vendored @ 85d1f1b (unused; new view API — see findings)
+- `extern/reaimgui/include/` — `reaper_imgui_functions.h` (v0.10.0.5, fetched) + README
+- `docs/SPIKE0_FINDINGS.md` — final findings (verdict GO + architecture decisions)
+- `docs/SPIKE0_HOWTO_ANTHO.md` — beginner build/run guide
+- `build_spike.bat` — one-click build + install (CRLF)
+- `.gitattributes` — keep `*.bat` CRLF
 
 Modified:
-- `CMakeLists.txt` — spike build target (FetchContent assimp/glm; raw-GL spike sources)
-- `extern/VENDORED.md` — sokol/reaimgui/FetchContent spike notes + re-vendor-path correction
+- `CMakeLists.txt` — spike build target (FetchContent assimp+FBX/glm; all spike sources)
+- `src/reaper_api.h` — WANT list: Dock* + transport/item APIs
+- `extern/VENDORED.md` — sokol/reaimgui/FetchContent notes + re-vendor-path correction

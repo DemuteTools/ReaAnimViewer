@@ -344,6 +344,12 @@ ReaImGui binding: since each ReaImGui function is also resolved via `rec->GetFun
 
 #### D11 — sokol_gfx ↔ ReaImGui FBO bridge
 
+> **⛔ SUPERSEDED 2026-06-23 (Spike 0 — see Spec Change Log at the end of this document).**
+> The "render to an FBO and display it via `ImGui::Image()` in a ReaImGui panel" approach
+> is replaced by a **native OpenGL window docked via `DockWindowAddEx`** (direct render, no
+> FBO, no readback): a ReaImGui panel is hard-capped ~30 fps and cannot display a foreign
+> GPU texture. The original design below is retained for historical context only.
+
 Per-frame sequence inside the ReaImGui panel callback:
 
 ```
@@ -368,6 +374,12 @@ The single GL context is shared between sokol_gfx (which renders into the FBO) a
 Verification work at Phase 0.5 day 1: confirm sokol_gfx exposes the backend GL texture name for an `sg_image` (or keep our own GLuint at FBO creation time). Fallback (last resort per PRD Risk Mitigation): use `ImGui::DrawList` custom callback to issue raw GL draws. Forecast: not needed; `sg_query_image_info()` or manual handle tracking should suffice.
 
 #### D12 — Render pipeline
+
+> **⚠️ AMENDED 2026-06-23 (Spike 0 — see Spec Change Log).** Rendering targets the docked
+> GL window's default framebuffer **directly** — no offscreen FBO, no MSAA-resolve-for-
+> sampling, no CPU readback. The Forward/opaque/depth-test/back-face-cull/shader rows below
+> still apply; the "MSAA 4× in offscreen pass" row is obsolete (MSAA, if wanted, comes from
+> the window pixel format).
 
 | Property | Choice | Notes |
 |---|---|---|
@@ -1109,3 +1121,23 @@ Antho explicitly reviewed gap analysis and post-MVP scope at the validation menu
 Phase 0.5 — ReaImGui refactor. Specifically: stand up the FBO ↔ `ImGui::Image()` bridge end-to-end (D11) with the MSAA-resolve detail verified on day 1, and replace the Phase 0 Win32 viewer window with a dockable ReaImGui panel that renders a fixed clear color through the FBO bridge. Validator gate: equivalent to Phase 0's 8-row gate, adapted for panel + docking instead of top-level window.
 
 Phase 0.5 spec to be authored next (`_bmad-output/implementation-artifacts/spec-phase-05-reaimgui-refactor.md`) following the same template as `spec-phase-0-scaffolding.md`.
+
+## Spec Change Log
+
+### 2026-06-23 — Spike 0 findings: viewport is a docked OpenGL window, not a ReaImGui panel (supersedes D11/AR10; amends D12)
+
+**Trigger:** Spike 0 (throwaway feasibility prototype, branch `spike/0-1-feasibility`, verdict **GO** — see `docs/SPIKE0_FINDINGS.md`) measured on the reference workstation (Ryzen 9 9900X / RX 9070):
+- A **ReaImGui panel is hard-capped ~30 fps** for displayed content (its presentation is tied to Reaper's ~30 Hz UI loop; feeding it at ~66 Hz still showed ~32 fps), and ReaImGui **cannot display a foreign GPU texture** (its image API copies pixel data; there is no `DrawList` custom-callback in the binding).
+- A **native OpenGL window docked via `DockWindowAddEx`**, rendering directly and presenting via `SwapBuffers` on an independent ~66 Hz timer, reached **~62 fps** at 1055×604.
+
+**Amendment:**
+- **D11 / AR10 superseded.** The 3D viewport is a **native OpenGL window docked into Reaper via `DockWindowAddEx`**, rendering the scene directly into the window framebuffer (no offscreen FBO, no `ImGui::Image()` bridge, no CPU readback), driven by a frame timer independent of Reaper's UI loop.
+- **D12 amended.** Render targets the window's default framebuffer; the offscreen-FBO + MSAA-resolve + readback rows are obsolete. Forward / opaque / depth-test / back-face-cull / shader choices stand. MSAA, if wanted, comes from the window pixel format.
+- **ReaImGui dependency deferred to Epic 5.** ReaImGui is no longer needed for the viewport. It is introduced at the **animation browser (Epic 5)** — the first genuine ReaImGui panel — which is where AR3 / NFR-C2 (the `cfillion/reaimgui` ReaPack auto-dependency) and FR30 (graceful ReaImGui-missing diagnostic) now belong. **Epic 1 has no ReaImGui dependency.**
+- **sokol_gfx (AR4 / D12).** The pinned commit `85d1f1b` ships a new view-based API diverged from the assumptions above. Phase 0.5 must **re-pin/validate sokol, or drop it** in favor of the raw-GL approach the spike demonstrated for a windowed viewport. (Leaning: raw GL for the Windows MVP; revisit sokol only if a Mac/Metal backend is needed post-MVP.)
+
+**Confirmed (no change):** **D8 / AR11 (PCM_source)** validated — registering `pcmsrc_register_t` via `Register("pcmsrc", …)` makes a dropped `.fbx/.glb/.gltf` a timeline item of the animation's length, and the playhead drives the displayed frame (`animTime = playPos − itemStart`); the play position is continuous (audio clock), so playback renders at the full window frame rate.
+
+**New loader requirement (feeds Epic 3 / Epic 6):** the FBX path **must** set `importer.SetPropertyInteger(AI_CONFIG_IMPORT_FBX_PRESERVE_PIVOTS, 0)` — otherwise assimp keys animation on hidden `$AssimpFbx$` nodes and Mixamo rigs stay in bind pose.
+
+**KEEP:** cross-cutting invariants (AR15 symmetric register, AR16 console-only diagnostics, AR17 failure isolation, AR18 main-thread GL) and decisions D1–D7, D9–D10, D13–D18 are unaffected.

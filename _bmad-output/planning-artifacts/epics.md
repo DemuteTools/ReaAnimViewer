@@ -58,7 +58,7 @@ This document provides the complete epic and story breakdown for FBXAnimationVie
 
 **Panel & Docking**
 
-- **FR27**: Present the preview inside a ReaImGui-driven panel.
+- **FR27**: Present the preview inside a docked viewport panel. *(Reinterpreted 2026-06-23 per Spike 0: a native OpenGL window docked via `DockWindowAddEx`, not a ReaImGui panel — ReaImGui caps at ~30 fps. ReaImGui is used for auxiliary panels from Epic 5.)*
 - **FR28**: Dock the viewer panel into any Reaper docker (top, bottom, left, right, floating) using ReaImGui's native docking gestures.
 - **FR29**: Register a Reaper Action (`FBXAV: Open Viewer Window`) that opens the panel when triggered.
 - **FR30**: Detect, on extension load, whether ReaImGui is installed; emit a user-readable console diagnostic if missing and fail gracefully without registering the Action.
@@ -141,7 +141,7 @@ This document provides the complete epic and story breakdown for FBXAnimationVie
 - **AR7 (D1)**: Single aggregate `Asset` per file, POD-style structs, bones stored flat with `parentIdx`, skinned flag at mesh level for static-mesh fallback.
 - **AR8 (D2)**: Per-item GPU resource ownership via RAII handles; no shared cache for MVP (accept VRAM duplication).
 - **AR9 (D3)**: Coordinate convention pinned — column-major, right-handed, Y-up, CCW front-facing; single `convertAssimpMatrix()` boundary; render as-authored (no auto-remap).
-- **AR10 (D11)**: ReaImGui ↔ sokol_gfx FBO bridge (`ImGui::Image()` texture handle, MSAA resolve) — the Phase 0.5 critical deliverable; entire panel architecture hinges on it.
+- **AR10 (D11)**: ~~ReaImGui ↔ sokol_gfx FBO bridge~~ — **SUPERSEDED 2026-06-23 (Spike 0):** the 3D viewport is a **native OpenGL window docked via `DockWindowAddEx`** (direct render, no FBO/readback). A ReaImGui panel caps at ~30 fps; see architecture Spec Change Log 2026-06-23. ReaImGui itself is deferred to Epic 5.
 - **AR11 (D8)**: PCM_source plugin is the central Reaper integration surface; item state I/O via `SaveState`/`LoadState`.
 - **AR12 (D13)**: GPU vertex skinning with matrix-palette uniform; Phase 2 dominant technical risk.
 
@@ -191,10 +191,10 @@ FR23: Epic 2 — zoom (scroll)
 FR24: Epic 2 — pan (middle-click drag)
 FR25: Epic 2 — reset camera to bounding box (toolbar button)
 FR26: Epic 2 — continuous update during camera manipulation
-FR27: Epic 1 — ReaImGui-driven panel
+FR27: Epic 1 — docked GL viewport (reinterpreted from "ReaImGui-driven panel" per Spike 0, 2026-06-23)
 FR28: Epic 1 — dock into any Reaper docker
 FR29: Epic 1 — register Reaper Action to open panel
-FR30: Epic 1 — detect missing ReaImGui, console diagnostic, graceful bail
+FR30: Epic 5 — detect missing ReaImGui, console diagnostic, graceful bail (moved from Epic 1 per Spike 0: ReaImGui first appears with the browser)
 FR31: Epic 6 — serialize per-item state (path, camera, time offset/scale)
 FR32: Epic 6 — serialize panel dock position (via ReaImGui)
 FR33: Epic 6 — restore bindings + viewport state on project reopen
@@ -222,7 +222,7 @@ A timeboxed (~2 days) throwaway prototype that proves the full stack stands up i
 
 ### Epic 1: Viewer lives inside Reaper (dockable panel)
 Rename the project to ReaAnimViewer, then replace the Phase 0 standalone Win32 window with a ReaImGui dockable panel rendering through the sokol_gfx FBO bridge. After this epic, the rendered viewport docks anywhere in Reaper and opens via a Reaper Action; the extension fails gracefully (console diagnostic) when ReaImGui is absent.
-**FRs covered:** FR27, FR28, FR29, FR30 — plus AR21 (rename), AR10 (FBO bridge), AR3 (ReaImGui dependency). *(Phase 0.5)*
+**FRs covered:** FR27 (reinterpreted: docked GL viewport), FR28, FR29 — plus AR21 (rename), AR10 (revised: docked GL window). **FR30 + AR3 (ReaImGui dependency) moved to Epic 5** (per Spike 0). *(Phase 0.5)*
 
 ### Epic 2: See a textured 3D model with camera control
 Load a static glTF/GLB file, render it with diffuse-texture-mapped Blinn-Phong + per-material specular across multiple materials, and orbit / zoom / pan / reset the camera inside the panel. Renders non-canonical files (Z-up, cm, foreign bone names) as-authored. After this epic, a user can open any static glTF/GLB and inspect it visually.
@@ -238,7 +238,7 @@ The core workflow: dropping an animation file on a track creates a PCM_source-ba
 
 ### Epic 5: Browse and place animations without leaving Reaper
 A built-in ReaImGui animation browser that navigates disks, filters to `.glb/.gltf/.fbx`, previews a selection in the viewer, and places it on a track with the path bound to the item. Reinforces the "stay in Reaper, zero context-switch" value proposition. *(New MVP epic per Antho, 2026-06-22.)*
-**FRs covered:** FR42, FR43, FR44, FR45. *(New — slots after Phase 3, before reliability/release)*
+**FRs covered:** FR42, FR43, FR44, FR45 — plus **FR30 + AR3/NFR-C2 (ReaImGui dependency, moved from Epic 1 per Spike 0:** the browser is the first ReaImGui panel). *(New — slots after Phase 3, before reliability/release)*
 
 ### Epic 6: Reliable across sessions, machines, and file changes
 Manual Reload button; FBX support validated to the 60% target including embedded FBX textures; per-item and panel state persisted through project save/load and resolved across machines (relative path + missing-media remap, no forced re-import); graceful degradation (no host crash on malformed input, console diagnostics, one bad item never breaks others). After this epic, real Demute projects survive save/reopen and animator iterations.
@@ -272,7 +272,7 @@ So that we confirm the core idea is technically viable before committing to the 
 
 ## Epic 1: Viewer lives inside Reaper (dockable panel)
 
-Rename the project to ReaAnimViewer, then replace the Phase 0 standalone Win32 window with a ReaImGui dockable panel rendering through the sokol_gfx FBO bridge. After this epic, the rendered viewport docks anywhere in Reaper, opens via a Reaper Action, and fails gracefully when ReaImGui is absent. *(Phase 0.5. Honors invariants AR15 symmetric register, AR16 console-only diagnostics, AR18 main-thread GL.)*
+Rename the project to ReaAnimViewer, then replace the Phase 0 standalone Win32 window with a **native OpenGL viewport docked into Reaper via `DockWindowAddEx`**, rendering the scene directly (no FBO, no readback). After this epic, the rendered viewport docks anywhere in Reaper and opens via a Reaper Action, at 60 fps. *(Phase 0.5. **Approach revised per Spike 0 — see architecture Spec Change Log 2026-06-23: a ReaImGui panel caps at ~30 fps, so the viewport is a docked GL window; ReaImGui is deferred to Epic 5, so Epic 1 has no ReaImGui dependency.** Honors AR15 symmetric register, AR16 console-only diagnostics, AR18 main-thread GL.)*
 
 ### Story 1.1: Rename FBXAnimationViewer to ReaAnimViewer
 
@@ -288,21 +288,21 @@ So that the tool's name reflects that it handles glTF/GLB (primary) and FBX, not
 **And** the build still produces zero MSVC `/W3 /permissive-` warnings (NFR-R5) and loads in Reaper in under 2 s (NFR-P4)
 **And** no stale "FBXAnimationViewer"/"FBX-only" string remains in shipped code, the manifest, or user-facing strings (planning artifacts under `_bmad-output/` may retain historical names).
 
-### Story 1.2: Render-to-texture FBO bridge (sokol_gfx ↔ ImGui::Image)
+### Story 1.2: Docked OpenGL viewport (direct render at 60 fps)
 
 As the implementing developer,
-I want a verified sokol_gfx FBO whose color attachment is displayed via `ImGui::Image()`,
-So that the entire panel-based architecture (D11) is proven before anything else is built on it.
+I want a native OpenGL window that renders the scene directly and presents at 60 fps,
+So that the viewport architecture (revised D11 — see architecture Spec Change Log 2026-06-23) is proven before anything else is built on it.
 
 **Acceptance Criteria:**
 
-**Given** a sokol_gfx GL context bound on Reaper's main thread (AR18)
-**When** the renderer draws a fixed clear color into an offscreen framebuffer and passes its texture handle to `ImGui_Image`
-**Then** the clear color appears inside an ImGui image widget, correctly oriented (no vertical flip) and with MSAA resolve verified on day 1 (Phase 0.5 risk mitigation)
-**And** the FBO resizes with the panel without leaking GL resources (RAII handles, D2/AR8)
-**And** if the bridge proves unworkable, the fallback (ImGui DrawList custom callback) is documented as a Spec Change Log entry (AR20).
+**Given** a WGL/OpenGL context created on Reaper's main thread (AR18)
+**When** the renderer draws into the window's framebuffer directly and presents via `SwapBuffers`
+**Then** the rendered content is visible and correctly oriented, and holds **≥60 fps** on the reference workstation (NFR-P1) — the spike measured ~62 fps
+**And** the render is driven by a frame timer independent of Reaper's ~30 Hz UI loop (the spike proved a ReaImGui panel cannot exceed ~30 fps)
+**And** the viewport resizes with the window without leaking GL resources (RAII handles, D2/AR8). *(No offscreen FBO, no `ImGui::Image()` bridge, no CPU readback — those are superseded.)*
 
-### Story 1.3: Dockable ReaImGui panel opened by a Reaper Action
+### Story 1.3: Dockable GL window opened by a Reaper Action
 
 As a sound designer,
 I want the viewer to appear as a panel I can dock anywhere in Reaper, opened from an Action,
@@ -310,24 +310,25 @@ So that the preview lives where I already work, with no floating window.
 
 **Acceptance Criteria:**
 
-**Given** ReaAnimViewer is loaded and ReaImGui is installed
+**Given** ReaAnimViewer is loaded
 **When** I trigger the `RAV: Open Viewer` Action (FR29)
-**Then** a ReaImGui panel opens showing the FBO-rendered viewport (FR27) and can be docked into any Reaper docker — top, bottom, left, right, or floating (FR28)
+**Then** the OpenGL viewport docks into any Reaper docker — top, bottom, left, right, or floating (FR28) — via `DockWindowAddEx` (FR27, reinterpreted: a docked GL viewport, not a ReaImGui panel)
 **And** the Phase 0 standalone Win32 window is removed entirely
-**And** the panel's per-frame render runs on Reaper's main thread and the panel closes/reopens without leaking GL contexts or window classes (NFR-R3).
+**And** the per-frame render runs on Reaper's main thread and the window docks/undocks/closes/reopens (including via the docker's close button) without leaking GL contexts or window classes (NFR-R3).
 
-### Story 1.4: Graceful handling when ReaImGui is missing
+### Story 1.4: Graceful GL context / init failure handling
 
-As a sound designer who hasn't installed ReaImGui,
-I want a clear console message instead of a crash or silent failure,
-So that I know exactly what to install.
+As a sound designer on an unusual GPU/driver,
+I want a clear console message instead of a crash if the viewport can't initialize,
+So that I know what went wrong instead of losing Reaper.
 
 **Acceptance Criteria:**
 
-**Given** ReaAnimViewer loads in a Reaper where `cfillion/reaimgui` is absent
-**When** the extension resolves ReaImGui symbols at load via `rec->GetFunc("ImGui_*")` and finds them missing (AR3)
-**Then** it emits a user-readable `ShowConsoleMsg` line instructing the user to install `cfillion/reaimgui`, and bails cleanly without registering the `RAV: Open Viewer` Action (FR30, AR16)
-**And** every `rec->Register` performed before the bail is symmetrically reversed, leaving no dangling Reaper API pointers (NFR-R3, AR15).
+**Given** the OpenGL context or required GL functions fail to initialize
+**When** I trigger the `RAV: Open Viewer` Action
+**Then** the extension emits a user-readable `ShowConsoleMsg` diagnostic and bails cleanly — no broken window, no host crash (AR16, AR17)
+**And** every `rec->Register` performed before the bail is symmetrically reversed, leaving no dangling Reaper API pointers (NFR-R3, AR15)
+**And** *(re-scoped from the former "ReaImGui missing" story)* the ReaImGui-absent diagnostic + graceful bail (FR30) is **relocated to Epic 5**, where the animation browser introduces the first ReaImGui panel and the `cfillion/reaimgui` dependency (AR3, NFR-C2).
 
 ## Epic 2: See a textured 3D model with camera control
 

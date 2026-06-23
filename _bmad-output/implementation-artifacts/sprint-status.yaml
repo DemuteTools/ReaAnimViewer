@@ -48,7 +48,7 @@ story_location: "{project-root}/_bmad-output/implementation-artifacts"
 development_status:
   # --- Spike 0: Feasibility walking skeleton (THROWAWAY) ---
   epic-0: in-progress
-  0-1-render-a-skinned-animation-in-a-reaper-hosted-fbo-panel-and-measure-fps: in-progress  # code complete on branch spike/0-1-feasibility; fps/visual/verdict pending Antho on Windows
+  0-1-render-a-skinned-animation-in-a-reaper-hosted-fbo-panel-and-measure-fps: review  # ran 2026-06-23; verdict GO (3.5ms render, ~280fps capacity; 32fps on-screen = Reaper ~30Hz timer). 60Hz redraw = Phase 0.5 follow-up
   epic-0-retrospective: optional
 
   # --- Epic 1: Viewer lives inside Reaper (dockable panel) [Phase 0.5] ---

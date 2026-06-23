@@ -11,9 +11,14 @@ dockable ReaImGui panel, and hold ≥60 fps?
 
 ## Verdict
 
-**GO / NO-GO / CONDITIONAL:** ⏳ _(fill after running on the reference workstation)_
+**GO** — measured on Antho's reference workstation (Ryzen 9 9900X / RX 9070), 2026-06-23.
 
-One-line rationale: _______________________________________________
+One-line rationale: the full stack runs in Reaper without crashing, a real Mixamo
+rig loads and animates correctly, and render+readback costs only **3.5 ms
+(≈280 fps capacity)** — the CPU-readback bridge has ~8× headroom over the 60 fps
+target. The only thing capping the on-screen rate to **32 fps is Reaper's ~30 Hz
+extension timer**, not rendering or the bridge. That redraw-cadence question is a
+bounded Phase 0.5 follow-up, not a feasibility blocker.
 
 ---
 
@@ -83,38 +88,55 @@ window docks into a Reaper docker with `ConfigFlags_DockingEnable`.
 
 ---
 
-## Runtime results ⏳ (Antho — capture these on the reference Windows workstation)
+## Runtime results — measured 2026-06-23 (Ryzen 9 9900X / RX 9070)
 
 | Item | Result |
 |---|---|
-| Build: `cmake -B build -G "Visual Studio 17 2022" -A x64` then `cmake --build build --config Release` | ⏳ pass / errors: ______ |
-| ReaImGui header dropped at `extern/reaimgui/include/reaper_imgui_functions.h` | ⏳ |
-| DLL loads in Reaper, action `FBXAV: Open Spike Viewer` appears | ⏳ |
-| GL context coexists with Reaper — no crash/corruption (AC2) | ⏳ |
-| Deforming rig visible & animating in the docked panel (AC1) | ⏳ |
-| **Measured fps** (fixture: ____ tris / ____ bones, panel ____×____) | ⏳ ____ fps |
-| fps ≥ 60 target (NFR-P1) | ⏳ yes / no |
-| Shaders compiled (if `#version 330` failed, note it — needs a core-profile context) | ⏳ |
+| Build (`build_spike.bat` / CMake VS2022 x64) | ✅ pass (after enabling FBX importer) |
+| ReaImGui header at `extern/reaimgui/include/reaper_imgui_functions.h` | ✅ (v0.10.0.5, fetched from release) |
+| DLL loads in Reaper, action `FBXAV: Open Spike Viewer` appears | ✅ |
+| GL context coexists with Reaper — no crash/corruption (AC2) | ✅ |
+| Deforming rig visible & animating in the docked panel (AC1) | ✅ (after the Mixamo pivot fix below) |
+| **Render + readback cost** | ✅ **3.5 ms → ~280 fps capacity** |
+| **On-screen rate (tick)** | **32 fps — capped by Reaper's ~30 Hz extension timer, NOT by rendering** |
+| Render-capacity ≥ 60 fps (NFR-P1 perf headroom) | ✅ yes, ~8× margin |
+| On-screen ≥ 60 fps | ❌ not yet — blocked only by redraw cadence (Phase 0.5 follow-up) |
+| Shaders (`#version 330`) compiled | ✅ (legacy WGL context was sufficient) |
 
-Fixture used (path / source): __________________________________
+Fixture used: a rigged + animated character exported from **Mixamo (FBX, With Skin)**.
 
 ---
 
-## Coordinate / convention surprises ⏳
+## Coordinate / convention surprises (found 2026-06-23)
 
-_(handedness, up-axis, units, bind-pose correctness; glTF anim time-unit / `mTicksPerSecond`
-behavior — the loader assumes seconds = mTime / ticksPerSecond. Record anything that
-rendered tilted, mis-scaled, or mis-posed — directly de-risks Phase 2/Epic 3.)_
-
-- ______________________________________________
+- 🔑 **Mixamo / assimp FBX pivot nodes (de-risks Epic 3 + Epic 6 FBX).** By default
+  assimp's FBX importer splits each bone into hidden `$AssimpFbx$` pre/post-transform
+  nodes and keys the animation on *those*, not on the bone node. A name-based
+  channel→bone map (the natural approach) then finds nothing and the rig stays in
+  bind pose (observed: "it played something else" = only the camera moved). Fix:
+  `importer.SetPropertyInteger(AI_CONFIG_IMPORT_FBX_PRESERVE_PIVOTS, 0)` — bakes the
+  pivots and keys animation on real bones. **The production FBX loader must set this.**
+- glTF/FBX anim time-unit (`mTicksPerSecond`) handled as seconds = mTime/tps (default
+  25 if 0); Mixamo's value worked correctly with the animation playing at the right speed.
+- Orientation/scale: rendered fine via the auto-fit camera (Mixamo's cm scale absorbed).
 
 ---
 
 ## Blockers / amendments that should reshape a Phase spec (AR20)
 
-1. **D11 / Epic 1 Story 1.2 — FBO bridge is readback-only with ReaImGui.** _(decide a/b above)_
-2. **D12 — sokol pin uses new view API.** _(validate or re-pin in Phase 0.5)_
-3. ______________________________________________
+1. **D11 / Epic 1 Story 1.2 — the bridge is CPU readback (not zero-copy), and that
+   is FINE.** ReaImGui can't take a GPU texture, so we render to an FBO and push pixels
+   via `Image_SetPixels_Array`. Measured cost **3.5 ms (~280 fps)** — ample headroom.
+   Amend D11 to specify the readback bridge; drop the zero-copy assumption. The earlier
+   worry that readback would be too slow is **disproven**.
+2. **Redraw cadence (the one real follow-up) — on-screen 32 fps = Reaper's ~30 Hz
+   extension timer, not perf.** Phase 0.5 must determine how to drive the panel redraw
+   at 60 Hz (faster tick / ReaImGui refresh mechanism), or consciously accept ~30 fps
+   for the preview. Not a feasibility blocker.
+3. **D12 — sokol pin `85d1f1b` uses a new view-based API.** Spike used raw GL; Phase 0.5
+   must validate or re-pin sokol (and confirm GPU skinning carries over — it worked in
+   raw GL here).
+4. **FBX loader must set `PreservePivots=0`** (see convention surprises) — feeds Epic 3/6.
 
 ---
 

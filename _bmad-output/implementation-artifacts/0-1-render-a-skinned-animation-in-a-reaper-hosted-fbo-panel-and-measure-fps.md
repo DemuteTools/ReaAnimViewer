@@ -1,6 +1,6 @@
 # Story 0.1: Render a skinned animation in a Reaper-hosted FBO panel and measure fps
 
-Status: in-progress — code complete, awaiting Windows/Reaper validation by Antho
+Status: review — spike ran on the reference workstation; verdict GO (see docs/SPIKE0_FINDINGS.md). One open Phase 0.5 follow-up: 60 Hz redraw cadence.
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -70,13 +70,13 @@ texture-resolution completeness, multi-material rendering, camera controls (a fi
   - [x] `t` driven by a `QueryPerformanceCounter` wall-clock loop (not the transport).
   - [~] Coordinate/convention surprises section seeded in findings; ⏳ actual observations require the run.
 
-- [x] **Task 5 — Add the fps counter** (AC: 3) — *measurement ⏳ pending Antho*
-  - [x] Smoothed fps readout via `ImGui::Text` in the panel.
-  - [ ] ⏳ Record steady-state fps on the reference workstation vs the ≥60 fps target — **requires Antho on Windows**.
+- [x] **Task 5 — Add the fps counter + measure** (AC: 3) — *measured 2026-06-23*
+  - [x] Smoothed fps readout via `ImGui::Text`, plus a render-cost chrono (ms + capacity).
+  - [x] Measured on Ryzen 9 9900X / RX 9070: render+readback **3.5 ms (~280 fps capacity)**; on-screen **32 fps**, which is **Reaper's ~30 Hz extension-timer cap, not a rendering limit**. Perf headroom vs the ≥60 fps target is ~8×; on-screen 60 fps is gated only by redraw cadence (Phase 0.5 follow-up).
 
-- [x] **Task 6 — Findings note + go/no-go** (AC: 4, 5) — *verdict ⏳ pending Antho*
-  - [x] Authored [docs/SPIKE0_FINDINGS.md](../../docs/SPIKE0_FINDINGS.md): the established source-level findings (bridge, sokol pin, frame-driving) are filled; runtime fields (fps, visual confirmation, final verdict, convention surprises) are clearly marked ⏳ for the run.
-  - [ ] ⏳ Fill the go/no-go verdict after running. Branch is unmerged (AC5 satisfied); production resumes on `main` at Epic 1.
+- [x] **Task 6 — Findings note + go/no-go** (AC: 4, 5) — *verdict GO*
+  - [x] [docs/SPIKE0_FINDINGS.md](../../docs/SPIKE0_FINDINGS.md) filled with measured results, the Mixamo `PreservePivots=0` finding, and the readback-bridge confirmation (cheap → viable).
+  - [x] **Verdict: GO.** Branch unmerged (AC5 satisfied); production resumes on `main` at Epic 1, folding in the findings (readback bridge for D11, sokol re-pin for D12, FBX pivot setting, 60 Hz redraw cadence to resolve in Phase 0.5).
 
 ## Dev Notes
 

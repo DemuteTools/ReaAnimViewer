@@ -51,6 +51,7 @@ REAPER_PLUGIN_HINSTANCE g_hinstance  = nullptr;
 HWND                    g_reaper_main = nullptr;
 int (*g_register)(const char*, void*) = nullptr;
 void* (*g_plugin_getapi)(const char*) = nullptr;
+UINT_PTR g_timer_id = 0;   // Spike experiment: our own fast timer (see StartPanel)
 
 LARGE_INTEGER g_qpcFreq{}, g_qpcStart{};
 
@@ -83,6 +84,16 @@ struct Panel {
 
 std::unique_ptr<Panel> g_panel;
 
+void StopPanel()
+{
+    if (g_timer_id) { KillTimer(nullptr, g_timer_id); g_timer_id = 0; }
+    if (g_panel) {
+        g_panel->renderer.Shutdown();
+        spike::GlContextDestroy();
+        g_panel.reset();
+    }
+}
+
 void RecreateImage(Panel& p, int w, int h)
 {
     // ReaImGui images stay valid while used each defer cycle, so no Attach is
@@ -104,11 +115,12 @@ void Frame()  // called every Reaper timer tick
 
     bool open = true;
     if (ImGui::Begin(p.ctx, "FBXAV Spike Viewer", &open)) {
-        char line[192];
+        char line[224];
         const double cap = (p.renderMs > 0.01) ? 1000.0 / p.renderMs : 0.0;
+        const double imguiFps = ImGui::GetFramerate(p.ctx);  // ReaImGui's own present-rate estimate
         std::snprintf(line, sizeof(line),
-            "tick: %.0f fps  |  render+readback: %.1f ms (capacity ~%.0f fps)  |  %dx%d  %s",
-            p.fps, p.renderMs, cap, p.imgW, p.imgH, p.ready ? "" : "[no fixture]");
+            "tick: %.0f fps  |  imgui: %.0f fps  |  render+readback: %.1f ms (cap ~%.0f fps)  |  %dx%d  %s",
+            p.fps, imguiFps, p.renderMs, cap, p.imgW, p.imgH, p.ready ? "" : "[no fixture]");
         ImGui::Text(p.ctx, line);
 
         double availX = 0, availY = 0;
@@ -138,7 +150,7 @@ void Frame()  // called every Reaper timer tick
         ImGui::End(p.ctx);
     }
 
-    if (!open) g_panel.reset();  // user closed the window
+    if (!open) StopPanel();  // user closed the window
 }
 
 void Loop()
@@ -149,8 +161,10 @@ catch (const ImGui_Error& e) {
     ShowConsoleMsg("[FBXAV-spike] ImGui error: ");
     ShowConsoleMsg(e.what());
     ShowConsoleMsg("\n");
-    g_panel.reset();
+    StopPanel();
 }
+
+void CALLBACK SpikeTimerProc(HWND, UINT, UINT_PTR, DWORD) { Loop(); }
 
 void StartPanel()
 {
@@ -193,8 +207,13 @@ void StartPanel()
 
     p->lastT = NowSeconds();
     g_panel = std::move(p);
-    g_register("timer", reinterpret_cast<void*>(&Loop));
-    ShowConsoleMsg("[FBXAV-spike] panel started\n");
+
+    // Experiment (Spike 0): drive the frame from our own ~66 Hz Win32 timer instead
+    // of Reaper's ~30 Hz extension timer, to test whether ReaImGui content can exceed
+    // 30 fps. Reaper's main message loop dispatches the WM_TIMER to our callback.
+    g_timer_id = SetTimer(nullptr, 0, 15, &SpikeTimerProc);
+    if (!g_timer_id) ShowConsoleMsg("[FBXAV-spike] SetTimer failed\n");
+    ShowConsoleMsg("[FBXAV-spike] panel started (66 Hz timer experiment)\n");
 }
 
 bool OnHookCommand(int command, int /*flag*/)
@@ -213,12 +232,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     using namespace fbxav;
 
     if (!rec) {
-        if (g_panel) {
-            if (g_register) g_register("-timer", reinterpret_cast<void*>(&Loop));
-            g_panel->renderer.Shutdown();
-            spike::GlContextDestroy();
-            g_panel.reset();
-        }
+        StopPanel();
         if (g_register) {
             g_register("-hookcommand", reinterpret_cast<void*>(&OnHookCommand));
             g_register("-gaccel", &g_accel);

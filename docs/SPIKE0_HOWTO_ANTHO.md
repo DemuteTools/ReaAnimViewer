@@ -87,6 +87,19 @@ exact et je l'inscris dans le code.
 
 ## Étape 3 — Compiler (créer la DLL)
 
+### ✅ Le plus simple : double-clique `build_spike.bat`
+
+À la racine du projet (`D:\Git\Scripts\Reaper\FBXAnimationViewer`) il y a un fichier
+**`build_spike.bat`**. **Ferme Reaper**, puis **double-clique** ce fichier : il
+configure, compile, et installe la DLL dans Reaper, tout seul. Une fenêtre noire
+s'ouvre, suis les messages ; à la fin elle affiche « OK ! ». S'il affiche un
+`[ECHEC]`, copie-moi le texte d'erreur. → puis va directement à l'**Étape 5**.
+
+*(Prérequis identiques : Visual Studio + CMake installés (Étape 1), le header ReaImGui
+en place, et ton `.fbx` dans `D:\fixtures\skinned.fbx`.)*
+
+### Méthode manuelle (si tu préfères, ou pour comprendre)
+
 1. Menu Démarrer → tape **« x64 Native Tools Command Prompt for VS 2022 »** → ouvre-le.
    *(C'est une fenêtre noire de commandes, préparée pour le compilateur 64-bit.)*
 2. Copie-colle cette commande (pour aller dans le dossier du projet) et Entrée :

@@ -39,7 +39,7 @@
 # Phase 0 (scaffolding) is the brownfield baseline (AR1) and is intentionally not tracked here.
 
 generated: 2026-06-22
-last_updated: 2026-06-24  # story 1-3 → done (Antho in-game Windows validation + code-review clean, 1 low-sev patch); story 1-4 created (ready-for-dev)
+last_updated: 2026-06-24  # story 2-1 → done (code-review 2026-06-24, 9 patches applied / 8 dismissed; after Antho in-Reaper Windows validation passed). story 2-1 → review (impl complete). story 2-1 → in-progress (dev started). story 2-1 created (ready-for-dev); epic-2 → in-progress (first story). +Collada (.dae) scope (sprint-change-proposal-2026-06-24): story 6-5 key renamed fbx→fbx-and-collada. story 1-4 → done (code-review clean, 1 patch applied — AR18 WM_CREATE no-throw boundary); Epic 1 stories all done. story 1-3 → done; story 1-2 → done; story 1-1 → done
 project: FBXAnimationViewer
 project_key: NOKEY
 tracking_system: file-system
@@ -57,12 +57,12 @@ development_status:
   1-1-rename-fbxanimationviewer-to-reaanimviewer: done
   1-2-docked-opengl-viewport-direct-render: done    # impl + Windows gate + code-review (10 findings corrected)
   1-3-dockable-gl-window-opened-by-a-reaper-action: done  # Antho in-game Windows validation (docks, ≥60 fps, drag/float, close/reopen, persistence) + code-review clean (1 low-sev patch in the cold init-failure path)
-  1-4-graceful-gl-context-init-failure-handling: ready-for-dev  # story file created 2026-06-24; init-failure hardening (ReaImGui-missing moved to Epic 5)
+  1-4-graceful-gl-context-init-failure-handling: done  # code-review clean 2026-06-24 (Acceptance Auditor: AC1–AC5 met; 1 patch applied — AR18 no-throw boundary extended into WM_CREATE, closing a CreateWindowExW/USER32 host-crash hole; 1 defer pre-existing DC-leak; 3 dismissed). Impl + Antho Windows gate §5 PASSED 2026-06-24 (forced-failure diagnostic + Reaper survives + success-path regression). Epic 1 / Phase 0.5 complete.
   epic-1-retrospective: optional
 
   # --- Epic 2: See a textured 3D model with camera control [Phase 1] ---
-  epic-2: backlog
-  2-1-load-and-display-a-static-gltf-glb-mesh: backlog
+  epic-2: in-progress
+  2-1-load-and-display-a-static-gltf-glb-mesh: done  # Antho in-Reaper Windows validation PASSED 2026-06-24; code-review 2026-06-24 (BMAD 3-layer): 9 patches applied (CRITICAL materialIdx OOB clamp + NaN-AABB guard + glGetError drain + node-bounds + uniform-check relax + aspect sentinel + scene.h defaults + UTF-8 paths + doc scrub), 8 dismissed. Patches are cold-path/encoding only → don't invalidate the gate; quick happy-path + Unicode (gate row 9) re-check advised at next Windows build.
   2-2-diffuse-texture-resolution-across-glb-embedded-and-gltf-sibling-sources: backlog
   2-3-multi-material-rendering-with-per-material-specular: backlog
   2-4-camera-orbit-zoom-pan-and-reset: backlog
@@ -97,7 +97,7 @@ development_status:
   6-2-resolve-animation-paths-when-a-project-opens-on-a-different-machine: backlog
   6-3-manual-reload-picks-up-on-disk-changes: backlog
   6-4-graceful-degradation-and-per-item-failure-isolation: backlog
-  6-5-fbx-support-validated-to-the-60-demute-target: backlog
+  6-5-fbx-and-collada-support-validated: backlog
   epic-6-retrospective: optional
 
   # --- Epic 7: Install and ship via ReaPack [Phase 5] ---

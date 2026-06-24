@@ -100,7 +100,7 @@ Demute is not selling this product, so business success is internal ROI + commun
 
 - 0 host crashes during Demute internal usage from Phase 4 onward.
 - Viewer renders at ≥60 fps on Antho's reference Windows machine with the heaviest Demute fixture (target: ~20k tris, 4 materials, 50-bone skeleton).
-- Compatibility ≥80% on Demute's tested glTF/GLB fixtures, ≥60% on FBX fixtures (per Winston's Phase 2 risk assessment — FBX edge cases via assimp's parser).
+- Compatibility ≥80% on Demute's tested glTF/GLB fixtures, ≥60% on FBX fixtures (per Winston's Phase 2 risk assessment — FBX edge cases via assimp's parser); Collada `.dae` best-effort (no Demute corpus — validated against a public sample).
 
 **Reaper integration.**
 
@@ -135,10 +135,10 @@ Demute is not selling this product, so business success is internal ROI + commun
 
 - Reaper 7.x extension, Windows x64 (Phase 0 ✓ shipped — standalone Win32 viewer; replaced in Phase 0.5)
 - **Phase 0.5 (~1.5–2 days, slot in Week 2)**: refactor viewer from Win32 top-level window to **ReaImGui dockable panel**. ReaImGui declared as ReaPack dependency. Render-to-FBO via sokol_gfx, presented to ImGui via `ImGui::Image()` texture handle.
-- glTF / GLB primary format support, FBX secondary (via assimp)
+- glTF / GLB primary format support, FBX secondary, Collada `.dae` best-effort (all via assimp)
 - Static mesh rendering with diffuse texture + Blinn-Phong + per-material specular (Phase 1, Winston Option B)
 - Skinned animation playback: bone hierarchy + matrix palette + GPU vertex skinning (Phase 2)
-- Reaper transport sync via PCM_source plugin: drop .glb/.gltf/.fbx on a track → item with item-relative time mapping (Phase 3)
+- Reaper transport sync via PCM_source plugin: drop .glb/.gltf/.fbx/.dae on a track → item with item-relative time mapping (Phase 3)
 - Manual file reload via button; auto file-watcher downgraded to "P2 polish" (Phase 4)
 - Camera orbit / zoom / pan, state persistence per Reaper project (Phase 4)
 - One global viewer panel (dockable in any Reaper docker; the playhead-current animation is displayed); multi-panel deferred
@@ -228,7 +228,7 @@ The three journeys map to these capability areas in priority order:
 | Capability | Journey | Phase |
 |---|---|---|
 | ReaImGui dockable panel (replaces standalone window) | J1, J2, J3 | Phase 0.5 |
-| PCM_source plugin: drop `.glb`/`.gltf`/`.fbx` on track → item with correct length | J1 | Phase 3 |
+| PCM_source plugin: drop `.glb`/`.gltf`/`.fbx`/`.dae` on track → item with correct length | J1 | Phase 3 |
 | Item-relative playhead → animation time mapping | J1 | Phase 3 |
 | Diffuse-textured Blinn-Phong rendering (material distinction) | J1 | Phase 1 |
 | Skinned animation playback | J1 | Phase 2 |
@@ -277,7 +277,7 @@ CMake configures cleanly on non-Windows in Phase 0 (stub target). Only Windows i
 | Reaper host process | DLL loaded via `%APPDATA%\REAPER\UserPlugins\`. Entry: `REAPER_PLUGIN_ENTRYPOINT`. API resolution via `rec->GetFunc("FunctionName")`. |
 | ReaImGui extension (runtime dependency) | Function-pointer resolution via `rec->GetFunc("ImGui_*")`. If ReaImGui is missing at load, the extension emits a console message instructing the user to install `cfillion/reaimgui` and bails cleanly without registering its action. |
 | ReaPack distribution channel | Manifest at `reapack/index.xml`. Auto-install dependency declared on `cfillion/reaimgui`. One package per platform/arch from Phase 5 onward. |
-| File system | Read-only access to glTF / GLB / FBX files via assimp's `Importer::ReadFile`. No writes outside Reaper's project ext-state (Reaper-owned). |
+| File system | Read-only access to glTF / GLB / FBX / Collada (`.dae`) files via assimp's `Importer::ReadFile`. No writes outside Reaper's project ext-state (Reaper-owned). |
 | Operating system | No global hotkeys outside Reaper actions. No clipboard. No shell exec. No background process. No taskbar tray. |
 
 ### Update Strategy
@@ -359,6 +359,7 @@ Anything below this line is the irreducible MVP per problem-solving philosophy �
 - **FR1**: The sound designer can load animation files in glTF 2.0 binary container (`.glb`) format.
 - **FR2**: The sound designer can load animation files in glTF 2.0 multi-file (`.gltf` + `.bin` + textures) format.
 - **FR3**: The sound designer can load animation files in FBX format, with at least 60% of common Demute exports rendering correctly.
+- **FR47**: The sound designer can load animation files in Collada (`.dae`) format (best-effort via assimp; renders as-authored, degrades gracefully on parser failure). Collada textures (external sibling files or embedded) resolve through the same unified texture-resolution path as glTF.
 - **FR4**: The sound designer can load animation files whose internal coordinate convention differs from the glTF-canonical (Y-up vs Z-up, meters vs centimeters) without per-file pre-configuration.
 - **FR5**: The sound designer can load animation files using any bone-naming convention, including non-English names.
 - **FR6**: The viewer can render a static mesh when the loaded file contains no animation channels.
@@ -366,7 +367,7 @@ Anything below this line is the irreducible MVP per problem-solving philosophy �
 
 ### Timeline Integration
 
-- **FR8**: The sound designer can drag an animation file (`.glb`, `.gltf`, `.fbx`) from any source onto a Reaper track to create a media item bound to that animation.
+- **FR8**: The sound designer can drag an animation file (`.glb`, `.gltf`, `.fbx`, `.dae`) from any source onto a Reaper track to create a media item bound to that animation.
 - **FR9**: The viewer can create a Reaper media item whose timeline length matches the animation's duration.
 - **FR10**: The viewer can map the Reaper playhead position to the animation's playback time using item-relative offset (`animTime = playheadTime − itemStart`, clamped to `[0, itemLength]`).
 - **FR11**: The sound designer can position, move, resize, color, and rename animation items using Reaper's native item controls, identically to other Reaper media items.
@@ -424,7 +425,7 @@ Anything below this line is the irreducible MVP per problem-solving philosophy �
 *(Added 2026-06-22, post-Architecture, per Antho. Reinforces the "stay in Reaper, zero context-switch" value proposition. Delivered as Epic 5; FR46 delivered with persistence in Epic 6.)*
 
 - **FR42**: The sound designer can open an in-Reaper animation browser panel (ReaImGui) that navigates the local filesystem and mounted disks, without leaving Reaper.
-- **FR43**: The sound designer can filter the browser to supported animation formats (`.glb`, `.gltf`, `.fbx`).
+- **FR43**: The sound designer can filter the browser to supported animation formats (`.glb`, `.gltf`, `.fbx`, `.dae`).
 - **FR44**: The sound designer can preview a selected animation in the viewer directly from the browser, before committing it to a track.
 - **FR45**: The sound designer can place a browsed animation onto a track as a media item, binding the chosen file path to that item, entirely from within the browser.
 - **FR46**: The sound designer can reopen a project saved on a different machine and resolve each item's animation path without forcing a full media re-import (path-portability strategy — relative path + missing-media remap; final mechanism decided in the persistence epic / Story 6.2).
@@ -455,6 +456,7 @@ Anything below this line is the irreducible MVP per problem-solving philosophy �
 - **NFR-C3**: The Windows build targets the MSVC x64 ABI exclusively. No mingw, no clang-cl, no 32-bit. Required by the Reaper SDK's C++ ABI compatibility note (`reaper_plugin_functions.h:27`).
 - **NFR-C4**: glTF 2.0 conformance follows assimp's parser capabilities for the pinned commit recorded in `extern/VENDORED.md`. Re-vendoring assimp requires re-validation against the Demute fixture corpus.
 - **NFR-C5**: FBX support follows assimp's parser capabilities for the pinned assimp version. The 60% compatibility target in FR3 applies to a representative sample of recent Demute client FBX exports, not to all FBX files in the wild.
+- **NFR-C6**: Collada (`.dae`) support follows assimp's parser capabilities for the pinned assimp version. Validated best-effort against at least one public Collada animation sample; no Demute-percentage target applies (Demute does not export Collada). Malformed `.dae` degrades gracefully per FR34.
 
 ### Out of Scope (NFR Categories Deliberately Skipped)
 

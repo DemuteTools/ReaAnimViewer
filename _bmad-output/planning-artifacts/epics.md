@@ -23,6 +23,7 @@ This document provides the complete epic and story breakdown for FBXAnimationVie
 - **FR1**: Load animation files in glTF 2.0 binary container (`.glb`) format.
 - **FR2**: Load animation files in glTF 2.0 multi-file (`.gltf` + `.bin` + textures) format.
 - **FR3**: Load animation files in FBX format, ≥60% of common Demute exports rendering correctly.
+- **FR47**: Load animation files in Collada (`.dae`) format — best-effort via assimp, rendered as-authored, degrading gracefully on parser failure. Collada textures resolve through the same unified path as glTF.
 - **FR4**: Load files whose coordinate convention differs from glTF-canonical (Y-up vs Z-up, m vs cm) without per-file pre-configuration.
 - **FR5**: Load files using any bone-naming convention, including non-English names.
 - **FR6**: Render a static mesh when the loaded file contains no animation channels.
@@ -30,7 +31,7 @@ This document provides the complete epic and story breakdown for FBXAnimationVie
 
 **Timeline Integration**
 
-- **FR8**: Drag an animation file (`.glb`, `.gltf`, `.fbx`) onto a Reaper track to create a media item bound to that animation.
+- **FR8**: Drag an animation file (`.glb`, `.gltf`, `.fbx`, `.dae`) onto a Reaper track to create a media item bound to that animation.
 - **FR9**: Create a Reaper media item whose timeline length matches the animation's duration.
 - **FR10**: Map the Reaper playhead to animation time via item-relative offset (`animTime = playheadTime − itemStart`, clamped to `[0, itemLength]`).
 - **FR11**: Position, move, resize, color, rename animation items using Reaper's native item controls, identically to other media items.
@@ -86,7 +87,7 @@ This document provides the complete epic and story breakdown for FBXAnimationVie
 **Animation Browser / Explorer** *(new — added 2026-06-22 per Antho)*
 
 - **FR42**: Open an in-Reaper animation browser panel (ReaImGui) that navigates the local filesystem and mounted disks, without leaving Reaper.
-- **FR43**: Filter the browser to supported animation formats (`.glb`, `.gltf`, `.fbx`).
+- **FR43**: Filter the browser to supported animation formats (`.glb`, `.gltf`, `.fbx`, `.dae`).
 - **FR44**: Preview a selected animation in the viewer directly from the browser, before committing it to a track.
 - **FR45**: Place a browsed animation onto a track as a media item, binding the chosen file path to that item, entirely from within the browser.
 - **FR46**: Reopen a project saved on a different machine and resolve each item's animation path without forcing a full media re-import (path-portability strategy — relative path + missing-media remap; final mechanism decided in the persistence epic).
@@ -117,6 +118,7 @@ This document provides the complete epic and story breakdown for FBXAnimationVie
 - **NFR-C3**: Windows build targets MSVC x64 ABI exclusively (no mingw, clang-cl, or 32-bit).
 - **NFR-C4**: glTF 2.0 conformance follows assimp's parser at the pinned commit in `extern/VENDORED.md`; re-vendoring requires re-validation.
 - **NFR-C5**: FBX support follows assimp's parser at the pinned version; 60% target against representative recent Demute exports.
+- **NFR-C6**: Collada (`.dae`) support follows assimp's parser at the pinned version; best-effort, validated against ≥1 public Collada animation sample (no Demute corpus, so no percentage target); malformed `.dae` degrades gracefully per FR34.
 
 *Out of scope by design: Security, Scalability (beyond NFR-P6), Accessibility (inherits ReaImGui defaults, revisit Phase 5).*
 
@@ -133,7 +135,7 @@ This document provides the complete epic and story breakdown for FBXAnimationVie
 
 - **AR3**: ReaImGui binding header only is vendored; `ImGui_*` symbols resolved at runtime via `rec->GetFunc(...)`. `reapack/index.xml` declares runtime dep `cfillion/reaimgui >= v0.10.0.5`.
 - **AR4**: sokol_gfx (GL backend) header-only, pinned by commit SHA in `extern/VENDORED.md`; freeze until a documented reason to bump.
-- **AR5**: assimp `v6.0.5` as CMake subproject with `ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT=OFF`, only `GLTF_IMPORTER` and `FBX_IMPORTER` enabled (smaller binary, reduced attack surface).
+- **AR5**: assimp `v6.0.5` as CMake subproject with `ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT=OFF`, only `GLTF_IMPORTER`, `FBX_IMPORTER`, and `COLLADA_IMPORTER` enabled — the three animation-carrying interchange formats; static-only formats deliberately excluded (smaller binary, reduced attack surface).
 - **AR6**: GLM `1.0.3` header-only, vendored under `extern/glm/`.
 
 **Core architecture decisions to honor:**
@@ -169,11 +171,12 @@ This document provides the complete epic and story breakdown for FBXAnimationVie
 FR1: Epic 2 — load .glb (glTF binary)
 FR2: Epic 2 — load multi-file .gltf
 FR3: Epic 6 — FBX support, validated to 60% target
+FR47: Epic 2 — load Collada .dae (importer enabled); best-effort validation in Epic 6
 FR4: Epic 2 — load non-canonical coordinate conventions as-authored
 FR5: Epic 2 — load any bone-naming convention
 FR6: Epic 2 — static-mesh fallback (no animation channels)
 FR7: Epic 3 — sample TRS channels per bone incl. root motion
-FR8: Epic 4 — drag file onto track → item
+FR8: Epic 4 — drag file onto track → item (.glb/.gltf/.fbx/.dae)
 FR9: Epic 4 — item length = animation duration
 FR10: Epic 4 — playhead → animTime mapping (item-relative, clamped)
 FR11: Epic 4 — native Reaper item controls (move/resize/color/rename)
@@ -207,7 +210,7 @@ FR39: Epic 7 — manual DLL-copy install
 FR40: Epic 7 — fully offline operation
 FR41: Epic 7 — updates delegated to ReaPack
 FR42: Epic 5 — in-Reaper animation browser panel (disk navigation)
-FR43: Epic 5 — filter browser to .glb/.gltf/.fbx
+FR43: Epic 5 — filter browser to .glb/.gltf/.fbx/.dae
 FR44: Epic 5 — preview from browser before placing
 FR45: Epic 5 — place browsed animation on track, bind path to item
 FR46: Epic 6 — cross-machine path portability (relative + missing-media remap)
@@ -226,7 +229,7 @@ Rename the project to ReaAnimViewer, then replace the Phase 0 standalone Win32 w
 
 ### Epic 2: See a textured 3D model with camera control
 Load a static glTF/GLB file, render it with diffuse-texture-mapped Blinn-Phong + per-material specular across multiple materials, and orbit / zoom / pan / reset the camera inside the panel. Renders non-canonical files (Z-up, cm, foreign bone names) as-authored. After this epic, a user can open any static glTF/GLB and inspect it visually.
-**FRs covered:** FR1, FR2, FR4, FR5, FR6, FR16, FR17, FR18, FR20, FR22, FR23, FR24, FR25, FR26. *(Phase 1)*
+**FRs covered:** FR1, FR2, FR4, FR5, FR6, FR16, FR17, FR18, FR20, FR22, FR23, FR24, FR25, FR26 — plus FR47 (Collada importer enabled; static `.dae` loads as-authored). *(Phase 1)*
 
 ### Epic 3: Watch the rig animate
 Add skinned-mesh playback: bone hierarchy, matrix palette, GPU vertex skinning, and TRS channel sampling per bone including root motion. After this epic, a loaded animated rig deforms correctly frame-by-frame. *(Dominant technical risk — 7–10 days.)*
@@ -241,8 +244,8 @@ A built-in ReaImGui animation browser that navigates disks, filters to `.glb/.gl
 **FRs covered:** FR42, FR43, FR44, FR45 — plus **FR30 + AR3/NFR-C2 (ReaImGui dependency, moved from Epic 1 per Spike 0:** the browser is the first ReaImGui panel). *(New — slots after Phase 3, before reliability/release)*
 
 ### Epic 6: Reliable across sessions, machines, and file changes
-Manual Reload button; FBX support validated to the 60% target including embedded FBX textures; per-item and panel state persisted through project save/load and resolved across machines (relative path + missing-media remap, no forced re-import); graceful degradation (no host crash on malformed input, console diagnostics, one bad item never breaks others). After this epic, real Demute projects survive save/reopen and animator iterations.
-**FRs covered:** FR3, FR19, FR31, FR32, FR33, FR34, FR35, FR36, FR37, FR46. *(Phase 4)*
+Manual Reload button; FBX support validated to the 60% target including embedded FBX textures, plus best-effort Collada (`.dae`) validation; per-item and panel state persisted through project save/load and resolved across machines (relative path + missing-media remap, no forced re-import); graceful degradation (no host crash on malformed input, console diagnostics, one bad item never breaks others). After this epic, real Demute projects survive save/reopen and animator iterations.
+**FRs covered:** FR3, FR19, FR31, FR32, FR33, FR34, FR35, FR36, FR37, FR46 — plus FR47/NFR-C6 (Collada best-effort validation). *(Phase 4)*
 
 ### Epic 7: Install and ship via ReaPack
 ReaPack one-click install pulling ReaImGui as auto-dependency, manual DLL-copy path, fully offline operation, updates delegated to ReaPack, final polish, and passing the Phase 5 validator gate to release.
@@ -332,7 +335,7 @@ So that I know what went wrong instead of losing Reaper.
 
 ## Epic 2: See a textured 3D model with camera control
 
-Load a static glTF/GLB file and render it with diffuse-texture-mapped Blinn-Phong + per-material specular across multiple materials, with full camera control. Non-canonical files render as-authored. *(Phase 1. Loader funnels through assimp with narrowed importers AR5 and the single `convertAssimpMatrix` boundary AR9.)*
+Load a static glTF/GLB file and render it with diffuse-texture-mapped Blinn-Phong + per-material specular across multiple materials, with full camera control. Non-canonical files render as-authored. The Collada (`.dae`) importer is also enabled in this epic so a static `.dae` loads via the same path (full Collada validation lands in Epic 6). *(Phase 1. Loader funnels through assimp with narrowed importers AR5 and the single `convertAssimpMatrix` boundary AR9.)*
 
 ### Story 2.1: Load and display a static glTF/GLB mesh
 
@@ -347,7 +350,8 @@ So that I can confirm the file loaded and inspect its shape.
 **Then** the mesh appears correctly lit and oriented for a canonical (Y-up, meters, CCW) file (FR1, FR2, AR9)
 **And** a file containing no animation channels still renders as a static mesh via the skinned=false path (FR6)
 **And** a non-canonical file (Z-up, centimeters, or non-English bone names) loads without error and renders as-authored, tilted/scaled rather than remapped (FR4, FR5, AR13)
-**And** assimp is built with only the glTF and FBX importers enabled (AR5).
+**And** a static Collada (`.dae`) file loads through the same assimp path and renders as-authored, its `<up_axis>` handled by the camera-tolerance mechanism with no special-casing (FR47, AR13)
+**And** assimp is built with only the glTF, FBX, and Collada importers enabled (AR5).
 
 ### Story 2.2: Diffuse texture resolution across GLB-embedded and glTF-sibling sources
 
@@ -448,7 +452,7 @@ So that animations can become first-class Reaper media.
 
 **Given** ReaAnimViewer loaded
 **When** the PCM_source factory is registered at load (D8)
-**Then** Reaper can instantiate a ReaAnimViewer source bound to a given `.glb/.gltf/.fbx` path
+**Then** Reaper can instantiate a ReaAnimViewer source bound to a given `.glb/.gltf/.fbx/.dae` path
 **And** the factory and all related registrations are symmetrically deregistered on unload with no dangling pointers (NFR-R3, AR15).
 
 ### Story 4.2: Drop an animation file on a track to create a correctly-sized item
@@ -460,7 +464,7 @@ So that it sits on my timeline exactly like a video reference does today.
 **Acceptance Criteria:**
 
 **Given** a track in a Reaper project
-**When** I drag a `.glb`, `.gltf`, or `.fbx` from any source onto it (FR8)
+**When** I drag a `.glb`, `.gltf`, `.fbx`, or `.dae` from any source onto it (FR8)
 **Then** a media item is created, named after the file, whose timeline length equals the animation's duration (FR9)
 **And** loading the typical Demute fixture from drop to first rendered frame completes within 2 s (NFR-P2).
 
@@ -518,7 +522,7 @@ So that I can find an animation without leaving Reaper or opening a file dialog.
 
 **Given** the browser panel is open
 **When** I navigate folders and mounted disks within it
-**Then** I can traverse the filesystem (FR42) and only `.glb`, `.gltf`, and `.fbx` files are listed as selectable (FR43)
+**Then** I can traverse the filesystem (FR42) and only `.glb`, `.gltf`, `.fbx`, and `.dae` files are listed as selectable (FR43)
 **And** navigation and listing run on Reaper's main thread without blocking the UI for a typical folder; a folder that fails to read shows a console diagnostic rather than crashing (AR16, AR17).
 
 ### Story 5.2: Preview a selected animation before placing it
@@ -549,7 +553,7 @@ So that I get the same item-on-timeline result as drag-and-drop, from inside the
 
 ## Epic 6: Reliable across sessions, machines, and file changes
 
-Persistence through project save/load, cross-machine path resolution, manual reload, FBX support to the 60% target, and graceful degradation. *(Phase 4. Per-item state via PCM_source `SaveState`/`LoadState`, D9. From this epic onward, zero host crashes is enforced — NFR-R1.)*
+Persistence through project save/load, cross-machine path resolution, manual reload, FBX support to the 60% target plus best-effort Collada (`.dae`), and graceful degradation. *(Phase 4. Per-item state via PCM_source `SaveState`/`LoadState`, D9. From this epic onward, zero host crashes is enforced — NFR-R1.)*
 
 ### Story 6.1: Persist and restore per-item and panel state through project save/load
 
@@ -607,11 +611,11 @@ So that one broken animation never takes down Reaper or my other items.
 **And** other animation items in the same session keep working unaffected (FR37, AR17)
 **And** no GL contexts or Reaper API pointers leak from the failed load (NFR-R3).
 
-### Story 6.5: FBX support validated to the 60% Demute target
+### Story 6.5: FBX and Collada support validated
 
-As a sound designer whose clients export FBX,
-I want common Demute FBX exports to render correctly,
-So that I can use the tool on FBX-based projects, not just glTF.
+As a sound designer whose clients export FBX (and occasionally Collada),
+I want common Demute FBX exports to render correctly and Collada files to load best-effort,
+So that I can use the tool on FBX- and Collada-based projects, not just glTF.
 
 **Acceptance Criteria:**
 
@@ -619,7 +623,8 @@ So that I can use the tool on FBX-based projects, not just glTF.
 **When** they are loaded through the same assimp funnel (FBX importer, AR5)
 **Then** at least 60% render correctly, including FBX-embedded textures (FR3, FR19, NFR-C5)
 **And** FBX files that exceed assimp's parser capability degrade gracefully per Story 6.4 rather than crashing
-**And** the validated/failed fixtures are recorded for the regression corpus.
+**And** the validated/failed fixtures are recorded for the regression corpus
+**And** at least one public Collada (`.dae`) animation sample loads and renders correctly through the same funnel (FR47, NFR-C6) — Collada is best-effort with no Demute-percentage target (Demute does not export Collada); a `.dae` that exceeds assimp's parser degrades gracefully per Story 6.4.
 
 ## Epic 7: Install and ship via ReaPack
 

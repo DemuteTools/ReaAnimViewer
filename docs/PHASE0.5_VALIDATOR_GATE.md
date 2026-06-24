@@ -109,3 +109,64 @@ and report back.
 - The dock / undock / docker-X-close / reopen / unload lifecycle is **leak-free**
   on the main thread (NFR-R3 / AR15 / AR18): the engine's ≥ 60 fps, clean resize,
   and leak-free teardown all survive the move into the docker.
+
+---
+
+## 5. Story 1.4 — init-failure hardening acceptance checks
+
+Story 1.4 makes the **failure** path as disciplined as the success path: a
+user-readable console diagnostic, a fully symmetric teardown-on-bail (no leaked
+GL context / DC / timer / window class), and a no-throw boundary so a failed open
+can never crash Reaper. It changes **nothing** on the success path.
+
+These ACs **cannot** be triggered on working hardware (your reference GPU
+initializes fine), so the failure path is exercised with a **compile-time
+forced-failure switch**, `RAV_FORCE_INIT_FAILURE`. The gate is a
+build-with → test → rebuild-without loop.
+
+> **Note on the forced diagnostic:** with the switch on, the failure is injected
+> at the modern-GL load step, so the console will show the readable
+> *"OpenGL 3.3+ required but your driver reports `<X>` on `<Y>` — update your GPU
+> driver…"* line. On your real GPU the reported version (`<X>`) is your **actual**
+> driver version — that's expected and fine; the point being tested is that a
+> **clear diagnostic appears, no window docks, and Reaper survives**, not the
+> literal version number.
+
+### A — forced-failure path (build *with* the switch)
+
+```cmd
+cmake -B build-forcefail -G "Visual Studio 17 2022" -A x64 -DCMAKE_CXX_FLAGS="/D RAV_FORCE_INIT_FAILURE"
+cmake --build build-forcefail --config Release
+copy build-forcefail\Release\reaper_animviewer.dll "%APPDATA%\REAPER\UserPlugins\"
+```
+
+Close & reopen Reaper, then:
+
+| # | Check | Pass criterion | AC / NFR |
+|---|---|---|---|
+| 1 | Build is clean | **Zero `/W3 /permissive-` warnings** even with the switch on; DLL produced. | AC4 / NFR-R5 |
+| 2 | Clear diagnostic on failure | Run `RAV: Open Viewer`. The console shows a **readable** `[RAV] error:` line naming what failed and ending with **"the viewer did not open (Reaper is unaffected)"**. | AC1 / AR16 |
+| 3 | No broken window docks | **No** viewport panel/tab appears in any docker — nothing half-built is left behind. | AC1 / AC2 |
+| 4 | Reaper survives | Reaper stays **fully responsive** — no freeze, no crash dialog. Run the Action **again** → same diagnostic, still no crash (the Action stays registered and re-runnable). | AC1 / AC3 / AR17 |
+| 5 | No stray render | **No** `[RAV] info: NN.N fps` lines appear afterward (the render loop never started / was torn down). | AC2 / NFR-R3 |
+| 6 | Clean shutdown after a failed open | Close Reaper → exits with **no crash dialog**, no orphan window (the bail leaked no context / DC / timer / window class). | AC2 / NFR-R3 |
+
+### B — success-path regression (rebuild *without* the switch)
+
+Rebuild the **normal** way (no `/D`, as in §1) and re-run the **entire Story 1.3
+checklist (§4, rows 1–9)**: the panel docks, drags into each docker edge + floats,
+reads **≥ 60 fps** docked, resizes cleanly, toggles closed + reopens, the dock
+position **persists across a Reaper restart**, and Reaper exits clean. **Nothing
+about the happy path may have changed** — 1.4 only touched the failure branches.
+
+Delete the throwaway `build-forcefail\` directory when done.
+
+### What this gate proves (Story 1.4)
+
+- A failed viewer open emits a **clear, actionable console diagnostic** and
+  **never crashes or hangs Reaper** (AR16 / AR17 / AR18 — the no-throw boundary).
+- The bail path is **fully symmetric**: no leaked GL context, DC, frame timer, or
+  window class, while the plugin-entry registrations stay intact so the Action
+  remains usable (NFR-R3 / AR15).
+- The success path is **byte-for-byte unchanged** (the §4 regression), closing
+  Epic 1 / Phase 0.5.

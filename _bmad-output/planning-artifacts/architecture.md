@@ -38,7 +38,7 @@ _This document builds collaboratively through step-by-step discovery. Sections a
 
 The PRD organizes capabilities into eight architecturally meaningful clusters that map onto distinct subsystems:
 
-- **Animation Loading & Format Support (FR1–FR7):** glTF 2.0 binary (`.glb`) and multi-file (`.gltf` + siblings), FBX with 60% target compatibility, tolerance for non-standard up-axis / unit-scale / bone-name conventions, static-mesh fallback when no animation channels are present, TRS sampling including root motion. Implies a single unified loader funnel through assimp with explicit handling of three texture-packaging variants.
+- **Animation Loading & Format Support (FR1–FR7, FR47):** glTF 2.0 binary (`.glb`) and multi-file (`.gltf` + siblings), FBX with 60% target compatibility, Collada (`.dae`) best-effort, tolerance for non-standard up-axis / unit-scale / bone-name conventions, static-mesh fallback when no animation channels are present, TRS sampling including root motion. Implies a single unified loader funnel through assimp with explicit handling of the texture-packaging variants. Collada's `<up_axis>` (commonly Z-up) is handled by the existing camera-tolerance mechanism (AR13) with no new code — identical to a Z-up FBX.
 - **Timeline Integration (FR8–FR14):** Drag-to-track ingestion, item length = animation duration, item-relative time mapping (`animTime = playheadTime − itemStart`, clamped), coexistence with audio/video/MIDI, multi-item support across tracks, current-item selection by playhead+priority. Drives the PCM_source plugin design as the central Reaper integration surface.
 - **3D Rendering & Visual Fidelity (FR15–FR20):** Skinned mesh with per-frame bone deformation, diffuse-textured Blinn-Phong + per-material specular response, multi-material meshes, textures resolved from GLB-embedded / glTF siblings / FBX-embedded variants.
 - **Camera & Viewport Control (FR22–FR26):** Orbit (right-click drag), zoom (scroll), pan (middle-click drag), reset-to-bounding-box, continuous-update during interaction (no pause-on-camera).
@@ -131,12 +131,12 @@ This project is brownfield: Phase 0 (commit `7677c70`, validated 2026-05-09) has
 |---|---|---|---|---|
 | ReaImGui (`cfillion/reaimgui`) | `v0.10.0.5` | 2026-04-16 | Runtime ReaPack dep (auto-install); we vendor the binding header only | Phase 0.5 |
 | sokol_gfx (`floooh/sokol`) | commit `85d1f1b` | 2026-05-11 | Header-only, pinned by SHA in `extern/VENDORED.md` | Phase 0.5 / Phase 1 |
-| assimp | `v6.0.5` | 2025-04-30 | CMake subproject, importers narrowed to glTF + FBX | Phase 1 |
+| assimp | `v6.0.5` | 2025-04-30 | CMake subproject, importers narrowed to glTF + FBX + Collada | Phase 1 |
 | GLM | `1.0.3` | 2025-12-31 | Header-only, vendored under `extern/glm/` | Phase 1 |
 
 **ReaImGui clarification:** What we vendor is the **C/C++ binding header** declaring the `ImGui_*` symbols exported by the ReaImGui Reaper extension. Our code resolves each function at runtime via `rec->GetFunc("ImGui_Begin")` — identical to the pattern used for `ShowConsoleMsg`. The ReaImGui extension itself lives in Reaper's process and is installed via ReaPack as a declared dependency. The `reapack/index.xml` manifest must declare a runtime dep on `cfillion/reaimgui >= v0.10.0.5`.
 
-**assimp build narrowing:** Default assimp builds ~40 importers including legacy formats (MD5, MDL, X, AC, B3D…). PRD scope is **glTF + FBX only**. Top-level `CMakeLists.txt` must set `ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT=OFF` and explicitly enable `ASSIMP_BUILD_GLTF_IMPORTER=ON` and `ASSIMP_BUILD_FBX_IMPORTER=ON`. Benefits: smaller binary, reduced attack surface (assimp v6.0.x security advisories concentrated in unused parsers), faster build.
+**assimp build narrowing:** Default assimp builds ~40 importers including legacy formats (MD5, MDL, X, AC, B3D…). PRD scope is the **animation-carrying interchange formats only: glTF + FBX + Collada**. Top-level `CMakeLists.txt` must set `ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT=OFF` and explicitly enable `ASSIMP_BUILD_GLTF_IMPORTER=ON`, `ASSIMP_BUILD_FBX_IMPORTER=ON`, and `ASSIMP_BUILD_COLLADA_IMPORTER=ON`. Static-only formats (OBJ, STL, 3DS, PLY…) are deliberately excluded — this is an animation viewer and a frozen-mesh-only format would mislead users. Benefits: smaller binary, reduced attack surface (assimp v6.0.x security advisories concentrated in unused parsers), faster build.
 
 **sokol pinning rule:** Header-only repos with no release tags pin by commit SHA. The SHA chosen at Phase 0.5 freezes until a documented reason to bump (Metal backend need on Mac, observed bug, required feature). Consistent with the Reaper SDK vendoring discipline.
 
@@ -436,12 +436,13 @@ set(ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT OFF CACHE BOOL "" FORCE)
 set(ASSIMP_BUILD_ALL_EXPORTERS_BY_DEFAULT OFF CACHE BOOL "" FORCE)
 set(ASSIMP_BUILD_GLTF_IMPORTER ON CACHE BOOL "" FORCE)
 set(ASSIMP_BUILD_FBX_IMPORTER ON CACHE BOOL "" FORCE)
+set(ASSIMP_BUILD_COLLADA_IMPORTER ON CACHE BOOL "" FORCE)
 set(ASSIMP_NO_EXPORT ON CACHE BOOL "" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)  # static linked into our DLL
 add_subdirectory(extern/assimp EXCLUDE_FROM_ALL)
 ```
 
-Result: only glTF + FBX importers compiled, no exporters, no samples, no tests, statically linked into `reaper_fbxanimationviewer.dll`. Single-DLL deliverable (no extra `assimp-vc143-mt.dll` to copy alongside).
+Result: only glTF + FBX + Collada importers compiled, no exporters, no samples, no tests, statically linked into `reaper_animviewer.dll`. Single-DLL deliverable (no extra `assimp-vc143-mt.dll` to copy alongside).
 
 #### D16 — ReaPack manifest dep declaration
 

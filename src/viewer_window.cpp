@@ -21,6 +21,11 @@
 
 #include "viewer_window.h"
 
+#include <commdlg.h>   // GetOpenFileNameW — native "choose a model" dialog
+#include <exception>   // std::exception — the no-throw host boundary (AR18)
+#include <string>
+
+#include "asset_loader.h"
 #include "console_log.h"
 #include "gl_loader.h"   // LoadGlFunctions + modern-GL pointers; pulls in <gl/GL.h>
 #include "renderer.h"
@@ -60,6 +65,12 @@ bool  g_class_registered = false;
 REAPER_PLUGIN_HINSTANCE g_class_hinst = nullptr;  // remembered so unload can UnregisterClass with the correct module
 
 Renderer g_renderer;
+
+// The model chosen in the "Open Viewer" file dialog, handed to StartRendering
+// (which runs inside WM_CREATE, where a modal dialog would be unsafe). Empty =
+// the user cancelled → a live but idle viewport. No file-picker UI inside Reaper
+// beyond this minimal native dialog until the Epic 5 browser.
+std::string g_model_path;
 
 UINT_PTR g_timer_id = 0;
 int g_client_w = kInitialWidth;
@@ -189,28 +200,102 @@ void CALLBACK FrameTimerProc(HWND, UINT, UINT_PTR, DWORD)
     RenderTick();
 }
 
+// Shows the native "choose a model" dialog and returns the picked path as UTF-8.
+// UTF-8 (not the system ANSI codepage) is deliberate: assimp's Windows IOSystem
+// decodes incoming paths as UTF-8 and opens them wide, and our own FileExists uses
+// std::filesystem::u8path — so a path under a non-ASCII user folder (e.g. accented
+// or CJK characters) resolves correctly instead of being mangled to '?'. Returns
+// false on cancel or error → the caller leaves g_model_path empty and the viewport
+// opens idle. Must be called BEFORE the window is created (a modal dialog inside
+// WM_CREATE is unsafe).
+bool PromptForModelFile(HWND owner, std::string& out_path)
+{
+    wchar_t file[MAX_PATH] = {};
+
+    OPENFILENAMEW ofn = {};
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner   = owner;
+    ofn.lpstrFilter = L"3D models (*.gltf;*.glb;*.fbx;*.dae)\0*.gltf;*.glb;*.fbx;*.dae\0"
+                      L"All files (*.*)\0*.*\0";
+    ofn.lpstrFile   = file;
+    ofn.nMaxFile    = MAX_PATH;
+    ofn.lpstrTitle  = L"ReaAnimViewer — choose a 3D model";
+    // NOCHANGEDIR: the dialog must not change Reaper's working directory.
+    ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+
+    if (!GetOpenFileNameW(&ofn))
+        return false;  // user cancelled, or the dialog failed to open
+
+    // CP_UTF8: a wide path can hold characters no ANSI codepage can represent; UTF-8
+    // is lossless and is what assimp / std::filesystem::u8path expect downstream.
+    char utf8[MAX_PATH * 4] = {};
+    const int n = WideCharToMultiByte(CP_UTF8, 0, file, -1, utf8,
+                                      static_cast<int>(sizeof(utf8)), nullptr, nullptr);
+    if (n <= 0) return false;
+    out_path = utf8;
+    return true;
+}
+
 // Brings up the GL context + renderer + frame loop. Returns false (with a
 // console diagnostic) on any failure so WM_CREATE can bail without a broken
 // window. (Story 1.4 hardens this into the full symmetric teardown-on-bail path.)
 bool StartRendering(HWND hwnd)
 {
     if (!CreateGLContextFor(hwnd)) {
-        LogError("failed to create WGL context");
+        LogError("failed to create an OpenGL context — your GPU/driver may not support "
+                 "OpenGL or no display is available; the viewer did not open (Reaper is unaffected)");
         return false;
     }
     if (!wglMakeCurrent(g_hdc, g_hglrc)) {
-        LogError("wglMakeCurrent failed");
+        LogError("failed to activate the OpenGL context (wglMakeCurrent); the viewer "
+                 "did not open (Reaper is unaffected)");
         return false;
     }
 
+    // The context is current here, so the GL 1.1 query entry points (exported
+    // directly by opengl32 — no wglGetProcAddress loader needed) are callable.
+    // Probe the driver's reported version/renderer NOW so that if the modern-GL
+    // load below fails — the common "driver too old" case — we can name what the
+    // driver actually reports in a human-readable remedy instead of only the
+    // terse internal symbol name. glGetString may return null; guard it.
+    const char* gl_version  = reinterpret_cast<const char*>(glGetString(GL_VERSION));
+    const char* gl_renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
+    if (!gl_version)  gl_version  = "unknown";
+    if (!gl_renderer) gl_renderer = "unknown";
+
     std::string err;
     if (!LoadGlFunctions(err)) {
+        // Lead with the cause the user can act on (update the driver), naming the
+        // actual reported version/renderer; keep the precise symbol-level line too
+        // (it is the exact diagnostic for log-mining).
+        LogError("OpenGL 3.3+ required but your driver reports \"%s\" on \"%s\" — update "
+                 "your GPU driver; the viewer did not open (Reaper is unaffected)",
+                 gl_version, gl_renderer);
         LogError("%s", err.c_str());
         return false;
     }
     if (!g_renderer.Init(err)) {
-        LogError("renderer init failed: %s", err.c_str());
+        LogError("the 3D renderer failed to initialize: %s; the viewer did not open "
+                 "(Reaper is unaffected)", err.c_str());
         return false;
+    }
+
+    // Load the model the user picked in the dialog (g_model_path, set by
+    // OpenViewerWindow before the window was created). A bad/missing file must NEVER
+    // bail the window or crash Reaper (AR17): LoadAsset is no-throw, so we just log
+    // one line and keep a blank-but-live viewport. Empty path = the user cancelled.
+    if (!g_model_path.empty()) {
+        LoadResult result = LoadAsset(g_model_path);
+        if (result.asset) {
+            const size_t mesh_count = result.asset->meshes.size();
+            g_renderer.SetAsset(std::move(*result.asset));
+            LogInfo("loaded %s (%zu meshes)", g_model_path.c_str(), mesh_count);
+        } else {
+            LogError("load failed [%s]: %s", LoadErrorCategoryName(result.category),
+                     result.detail.c_str());
+        }
+    } else {
+        LogInfo("no file selected — viewport idle");
     }
 
     TrySetVsync(0);
@@ -228,7 +313,8 @@ bool StartRendering(HWND hwnd)
 
     g_timer_id = SetTimer(nullptr, 0, kFrameTimerMs, &FrameTimerProc);
     if (!g_timer_id) {
-        LogError("SetTimer failed");
+        LogError("failed to start the viewer's render timer (SetTimer); the viewer "
+                 "did not open (Reaper is unaffected)");
         return false;
     }
 
@@ -259,9 +345,31 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     switch (msg) {
     case WM_CREATE:
-        if (!StartRendering(hwnd)) {
-            StopRendering();   // undo whatever partially came up; no broken window
-            return -1;         // abort window creation
+        // AR18 — the no-throw boundary must hold HERE too, not only at
+        // ToggleViewerWindow: StartRendering runs synchronously inside
+        // CreateWindowExW (a USER32 callback), so an exception thrown here (e.g.
+        // std::bad_alloc from the err string or g_renderer.Init) would have to
+        // unwind across the Win32 frame — UB / std::terminate under /EHsc, i.e. a
+        // host crash the outer try/catch can NOT catch across that boundary. Catch
+        // it right here and convert to a clean -1 abort so nothing escapes USER32.
+        try {
+            if (!StartRendering(hwnd)) {
+                // Tear down whatever partially came up, explicitly: Windows does NOT
+                // send WM_DESTROY when WM_CREATE returns -1 (only WM_NCDESTROY), so we
+                // cannot rely on the WM_DESTROY teardown here. StopRendering() is
+                // idempotent, so even if a WM_DESTROY *did* arrive the second teardown
+                // is a harmless no-op — don't "simplify" this explicit call away.
+                StopRendering();   // no broken/half-initialized window is left behind
+                return -1;         // abort window creation
+            }
+        } catch (const std::exception& e) {
+            LogError("viewer init failed: %s (Reaper is unaffected)", e.what());
+            StopRendering();
+            return -1;
+        } catch (...) {
+            LogError("viewer init failed: unknown error (Reaper is unaffected)");
+            StopRendering();
+            return -1;
         }
         return 0;
 
@@ -317,6 +425,20 @@ bool EnsureClassRegistered(REAPER_PLUGIN_HINSTANCE hInst)
     return true;
 }
 
+// Reverse EnsureClassRegistered. Idempotent. Called both on the normal close/
+// unload path and on a failed-open bail (the class is registered before the
+// window is created, so a create-failure must unwind it to leave nothing behind).
+// Uses g_class_hinst so UnregisterClassW targets the module the class was
+// registered under, avoiding a stale lpfnWndProc into our image on a later load.
+void UnregisterViewerClass()
+{
+    if (g_class_registered) {
+        UnregisterClassW(kWindowClassName, g_class_hinst);
+        g_class_registered = false;
+        g_class_hinst      = nullptr;
+    }
+}
+
 }  // namespace
 
 void OpenViewerWindow(REAPER_PLUGIN_HINSTANCE hInst, HWND reaper_main)
@@ -333,6 +455,12 @@ void OpenViewerWindow(REAPER_PLUGIN_HINSTANCE hInst, HWND reaper_main)
         return;
     }
 
+    // Ask the user which model to show BEFORE creating the window — StartRendering
+    // runs inside WM_CREATE, and a modal dialog there (mid-CreateWindowExW) is
+    // unsafe. An empty path (cancel) just opens an idle viewport.
+    g_model_path.clear();
+    PromptForModelFile(reaper_main, g_model_path);
+
     // A docked GL viewport is a WS_CHILD of Reaper's main window: the docker
     // reparents it into its own host and drives its size/visibility. It is created
     // without WS_VISIBLE and NOT self-shown — DockWindowActivate (below) reveals it
@@ -346,9 +474,17 @@ void OpenViewerWindow(REAPER_PLUGIN_HINSTANCE hInst, HWND reaper_main)
         nullptr, hInst, nullptr);
 
     if (!g_hwnd) {
-        // WM_CREATE returned -1 (GL/renderer init failed) or the create failed
-        // outright; StartRendering already logged the cause.
-        LogError("CreateWindowExW failed");
+        // WM_CREATE returned -1 (GL/renderer init failed, already logged with a
+        // specific cause) or the create failed outright. Unwind the class we just
+        // registered so a failed open leaves NOTHING behind — symmetric with the
+        // success path's class register↔unregister; a retry simply re-registers it.
+        // Note: the plugin-entry registrations (command_id/gaccel/hookcommand/
+        // toggleaction) are deliberately NOT touched here — the extension stays
+        // loaded and the Action stays usable; reversing those is the unload path's
+        // job, not a window-open failure's.
+        LogError("the viewer window could not be created (CreateWindowExW); the viewer "
+                 "did not open (Reaper is unaffected)");
+        UnregisterViewerClass();
         return;
     }
 
@@ -366,13 +502,28 @@ bool ViewerWindowIsVisible()
 
 void ToggleViewerWindow(REAPER_PLUGIN_HINSTANCE hInst, HWND reaper_main)
 {
-    // A visible panel toggles off (full close); a missing or docker-hidden panel
-    // toggles on. OpenViewerWindow raises an already-created-but-hidden panel via
-    // DockWindowActivate, or creates + docks a fresh one.
-    if (ViewerWindowIsVisible()) {
+    // AR18 — no-throw boundary at the host edge. Reaper calls our hookcommand
+    // directly from its main message pump; a C++ exception crossing back into it
+    // is undefined behaviour in the host. The renderer/loader use bool+out_error
+    // (not exceptions), so nothing here *should* throw — but a stray std::bad_alloc
+    // (e.g. the err string) must never take Reaper down. This single thin guard
+    // covers BOTH the open and the close/toggle legs; on a caught throw we also
+    // tear any half-built window down via the idempotent CloseViewerWindow().
+    try {
+        // A visible panel toggles off (full close); a missing or docker-hidden panel
+        // toggles on. OpenViewerWindow raises an already-created-but-hidden panel via
+        // DockWindowActivate, or creates + docks a fresh one.
+        if (ViewerWindowIsVisible()) {
+            CloseViewerWindow();
+        } else {
+            OpenViewerWindow(hInst, reaper_main);
+        }
+    } catch (const std::exception& e) {
+        LogError("viewer open/close failed: %s (Reaper is unaffected)", e.what());
         CloseViewerWindow();
-    } else {
-        OpenViewerWindow(hInst, reaper_main);
+    } catch (...) {
+        LogError("viewer open/close failed: unknown error (Reaper is unaffected)");
+        CloseViewerWindow();
     }
 }
 
@@ -388,13 +539,9 @@ void CloseViewerWindow()
     }
     g_hwnd = nullptr;
 
-    // Unregister the window class so a future DLL load doesn't inherit a
-    // stale lpfnWndProc pointing into our unmapped image.
-    if (g_class_registered) {
-        UnregisterClassW(kWindowClassName, g_class_hinst);
-        g_class_registered = false;
-        g_class_hinst      = nullptr;
-    }
+    // Unregister the window class so a future DLL load doesn't inherit a stale
+    // lpfnWndProc pointing into our unmapped image.
+    UnregisterViewerClass();
 }
 
 }  // namespace rav

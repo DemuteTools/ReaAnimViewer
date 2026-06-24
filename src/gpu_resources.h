@@ -45,10 +45,12 @@ private:
 struct BufferDeleter      { void operator()(GLuint h) const noexcept { glDeleteBuffers(1, &h); } };
 struct VertexArrayDeleter { void operator()(GLuint h) const noexcept { glDeleteVertexArrays(1, &h); } };
 struct ProgramDeleter     { void operator()(GLuint h) const noexcept { glDeleteProgram(h); } };
+struct TextureDeleter     { void operator()(GLuint h) const noexcept { glDeleteTextures(1, &h); } };
 
 using GpuBuffer      = GpuHandle<BufferDeleter>;       // VBO / IBO
 using GpuVertexArray = GpuHandle<VertexArrayDeleter>;  // VAO
 using GpuProgram     = GpuHandle<ProgramDeleter>;      // linked shader program
+using GpuImage       = GpuHandle<TextureDeleter>;      // texture — declared for SceneMaterial; upload is Story 2.2
 
 }  // namespace rav
 

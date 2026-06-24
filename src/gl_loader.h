@@ -65,6 +65,9 @@ typedef ptrdiff_t GLintptr;
     X(GLint,  glGetUniformLocation, (GLuint, const GLchar*)) \
     X(void,   glUniformMatrix4fv, (GLint, GLsizei, GLboolean, const GLfloat*)) \
     X(void,   glUniformMatrix3fv, (GLint, GLsizei, GLboolean, const GLfloat*)) \
+    X(void,   glUniform3fv, (GLint, GLsizei, const GLfloat*)) \
+    X(void,   glUniform1f, (GLint, GLfloat)) \
+    X(void,   glUniform1i, (GLint, GLint)) \
     X(void,   glGenBuffers, (GLsizei, GLuint*)) \
     X(void,   glDeleteBuffers, (GLsizei, const GLuint*)) \
     X(void,   glBindBuffer, (GLenum, GLuint)) \
@@ -97,6 +100,9 @@ RAV_GL_FUNCS(RAV_GL_DECL)
 #define glGetUniformLocation      rav_glGetUniformLocation
 #define glUniformMatrix4fv        rav_glUniformMatrix4fv
 #define glUniformMatrix3fv        rav_glUniformMatrix3fv
+#define glUniform3fv              rav_glUniform3fv
+#define glUniform1f               rav_glUniform1f
+#define glUniform1i               rav_glUniform1i
 #define glGenBuffers              rav_glGenBuffers
 #define glDeleteBuffers           rav_glDeleteBuffers
 #define glBindBuffer              rav_glBindBuffer

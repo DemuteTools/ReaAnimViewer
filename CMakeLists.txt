@@ -24,7 +24,33 @@ if(WIN32)
         GIT_REPOSITORY https://github.com/g-truc/glm.git
         GIT_TAG 1.0.3
         GIT_SHALLOW TRUE)
-    FetchContent_MakeAvailable(glm)
+
+    # assimp 6.0.5 (Spike-0 proven pin) — the glTF/FBX/Collada loader (D5/D15).
+    # Static link (BUILD_SHARED_LIBS OFF) so the deliverable stays a single
+    # reaper_animviewer.dll with NO assimp side-DLL (D15/D17). The importer set is
+    # narrowed to glTF + FBX + Collada (AR5): ~38 other importers off, which is also
+    # an attack-surface reduction (the v6.0.x CVEs sit in parsers we don't compile).
+    # ASSIMP_WARNINGS_AS_ERRORS OFF: assimp's own tree warns under MSVC and would
+    # otherwise fail its build; our extension's /W3 /permissive- is unaffected
+    # because assimp headers are added as a SYSTEM include below.
+    set(ASSIMP_BUILD_TESTS                    OFF CACHE BOOL "" FORCE)
+    set(ASSIMP_BUILD_SAMPLES                  OFF CACHE BOOL "" FORCE)
+    set(ASSIMP_BUILD_ASSIMP_TOOLS             OFF CACHE BOOL "" FORCE)
+    set(ASSIMP_INSTALL                        OFF CACHE BOOL "" FORCE)
+    set(ASSIMP_WARNINGS_AS_ERRORS             OFF CACHE BOOL "" FORCE)
+    set(ASSIMP_NO_EXPORT                      ON  CACHE BOOL "" FORCE)
+    set(ASSIMP_BUILD_ALL_IMPORTERS_BY_DEFAULT OFF CACHE BOOL "" FORCE)
+    set(ASSIMP_BUILD_ALL_EXPORTERS_BY_DEFAULT OFF CACHE BOOL "" FORCE)
+    set(ASSIMP_BUILD_GLTF_IMPORTER            ON  CACHE BOOL "" FORCE)
+    set(ASSIMP_BUILD_FBX_IMPORTER             ON  CACHE BOOL "" FORCE)
+    set(ASSIMP_BUILD_COLLADA_IMPORTER         ON  CACHE BOOL "" FORCE)
+    set(BUILD_SHARED_LIBS                     OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(assimp
+        GIT_REPOSITORY https://github.com/assimp/assimp.git
+        GIT_TAG        v6.0.5
+        GIT_SHALLOW    TRUE)
+
+    FetchContent_MakeAvailable(glm assimp)
 
     add_reaper_extension(animviewer
         SOURCES
@@ -33,11 +59,17 @@ if(WIN32)
             src/viewer_window.cpp
             src/gl_loader.cpp
             src/renderer.cpp
+            src/asset_loader.cpp
             src/console_log.cpp
     )
-    # GLM as a SYSTEM include so its headers cannot trip /W3 /permissive- (NFR-R5).
-    target_include_directories(animviewer SYSTEM PRIVATE "${glm_SOURCE_DIR}")
-    target_link_libraries(animviewer PRIVATE opengl32 gdi32 user32)
+    # GLM + assimp as SYSTEM includes so their headers cannot trip /W3 /permissive-
+    # (NFR-R5). assimp's generated config headers live in its BINARY dir.
+    target_include_directories(animviewer SYSTEM PRIVATE
+        "${glm_SOURCE_DIR}"
+        "${assimp_SOURCE_DIR}/include"
+        "${assimp_BINARY_DIR}/include")
+    # comdlg32: GetOpenFileNameW — the native "choose a model" dialog (Story 2.1).
+    target_link_libraries(animviewer PRIVATE assimp opengl32 gdi32 user32 comdlg32)
 else()
     message(STATUS
         "animviewer: non-Windows platform detected — Phase 0 only "

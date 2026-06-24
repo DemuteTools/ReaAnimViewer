@@ -1,0 +1,15 @@
+# Team override for the bmad-code-review skill.
+# Merge rules: scalars override, arrays append, arrays-of-tables key-merge.
+
+[workflow]
+
+# Runs as the final terminal instruction of step-04, after findings are presented
+# and the story + sprint status are synced. Antho's standing rule: a review is NOT
+# finished until the work is committed. Do not skip this.
+on_complete = """
+Finalize the review by committing the work — do NOT end the turn before this is done:
+1. Confirm the story file's `Status:` line is `done` (or `in-progress` if unresolved patch action items remain) and that the matching entry in sprint-status.yaml agrees. Fix either if they drifted.
+2. Stage every change produced by this review: the patched source files, the story file, sprint-status.yaml, and any validator-gate or other docs touched. NEVER stage dev-only build scripts (build_spike.bat, build_forcefail.bat) or gitignored/local artifacts.
+3. Commit on the CURRENT branch (branch first only if HEAD is on the default branch; never push unless the user explicitly asks). Use a Conventional Commit message summarizing the story and the review outcome (N patches applied / M dismissed). End the message body with the Co-Authored-By trailer.
+4. If there is genuinely nothing to commit, say so explicitly. Otherwise report the commit SHA and subject line back to the user.
+"""

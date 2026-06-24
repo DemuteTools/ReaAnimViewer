@@ -1,6 +1,6 @@
 # Story 2.4: Camera orbit, zoom, pan, and reset
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -268,4 +268,5 @@ claude-opus-4-8[1m] (Claude Opus 4.8, 1M context) — BMAD dev-story workflow.
 |---|---|
 | 2026-06-24 | Story 2.4 drafted (ready-for-dev) — D14 orbit camera (`OrbitCamera` in new `src/camera.h`), right-drag orbit / scroll zoom / middle-drag pan wired in `WindowProc`, native Win32 child **Reset View** button (FR22–FR26). Renderer factors the static auto-fit into `cam_.Reset` and rebuilds the view each frame for continuous update. Loader/shader/scene unchanged. Gate §9 to be appended. |
 | 2026-06-24 | Gate feedback (Antho, in-Reaper): horizontal orbit was reversed — negated `dx` in `OrbitCamera::Orbit` (`yaw -= dx·kOrbitSens`) so a rightward drag rotates the model rightward. One-line sensitivity tweak; pitch unchanged. |
+| 2026-06-24 | Story 2.4 → done. Antho validated the camera ACs in-Reaper **during dev** (the horizontal-orbit fix in the prior log entry came from that in-Reaper session) — orbit/zoom/pan/Reset+Journey-2 confirmed working. Per AR19 / `feedback_trust_ingame_validation`, in-Reaper validation IS the gate. Code review (BMAD 3-layer) then applied 1 cold-path patch (Reset rejects infinite AABB diagonal) — corrupt-asset hardening that does not require re-validation. |
 | 2026-06-24 | Story 2.4 implemented (review) — new header-only `src/camera.h` `OrbitCamera` (D14 state/math, pitch+distance clamps, NaN-safe `Reset`); renderer owns `cam_`, `SetAsset`→`ResetCamera`, per-frame view rebuild in `RenderFrame` (D2 zero-alloc preserved); `viewer_window.cpp` right-drag orbit / middle-drag pan / wheel zoom / `WM_CAPTURECHANGED` / native **Reset View** child button + `WM_COMMAND`, right-up consumed so no `WM_CONTEXTMENU` (AC6). Gate §9 rows 19–26 + tuning note appended. Loader/shader/scene/gl/CMake byte-for-byte unchanged (header-only camera → no CMake change). Linux cmake configures clean; all interactive/visual ACs + `/W3` cleanliness pend Antho's Windows gate (AR19). |

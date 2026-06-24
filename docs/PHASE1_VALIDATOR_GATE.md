@@ -138,3 +138,40 @@ both variants in one pair: the `.glb` is embedded (FR17); the `glTF/` folder shi
 > be confirmed on the Linux dev box.
 
 **Result:** Story 2.2 — **PASS** (Antho, in-Reaper Windows validation, 2026-06-24).
+
+## 8. Story 2.3 — acceptance checks (multi-material + per-material specular)
+
+Story 2.3 closes the **specular-response** gap. The multi-material render path (one
+draw per (node, mesh) with its own material, the per-material `u_specularColor` /
+`u_shininess` Blinn-Phong shader) was already built by 2.1/2.2 — this story changes
+only the **values** `ConvertMaterial` derives: for plain glTF metallic-roughness
+(where assimp leaves `COLOR_SPECULAR` unset) it tints the specular toward the base
+color by `metallicFactor` (F0 0.04 dielectric → base-color metal) and clamps the
+roughness-derived shininess to `2…1000`, so a matte surface and a polished one show a
+**visibly different highlight** (FR16). An explicitly-authored specular (FBX/Collada
+Phong, glTF `KHR_materials_specular`, `pbrSpecularGlossiness`) is honored as-is. The
+draw loop and shader are **byte-for-byte unchanged**.
+
+**Suggested fixtures** — Khronos **glTF-Sample-Assets**: `MetalRoughSpheres` (a grid
+varying metallic × roughness in one frame — the ideal matte↔glossy contrast fixture)
+and a multi-material model such as `FlightHelmet`, `BoomBox`, or `DamagedHelmet`.
+
+| # | Check | Pass criterion | AC |
+|---|---|---|---|
+| 15 | Multi-material renders distinctly | Open a multi-material model (e.g. `FlightHelmet` / `BoomBox` / `DamagedHelmet`). Each sub-mesh shows its **own** diffuse/texture **and** highlight — not one uniform surface. | AC1 (FR20) |
+| 16 | Matte vs glossy distinguishable | Open `MetalRoughSpheres`. The low-roughness/metallic spheres show a **tight, bright, base-color-tinted** highlight; the high-roughness ones a **broad, dim** highlight — side by side in one frame. (A two-material custom file, one matte + one glossy, also works.) | AC2 (FR16) |
+| 17 | No-regression | Re-run the 2.1 canonical / non-canonical / `.dae` / corrupt rows (1–9) and the 2.2 texture rows (10–14). All still pass unchanged — the draw loop and shader did not change. | AC3 |
+| 18 | Single-DLL / warning-free still hold | `build\Release\` still contains only `reaper_animviewer.dll` (no new DLL); build is clean at `/W3 /permissive-`. | AC4 |
+
+> **Specular-tuning note:** the constants are a "looks-right" judgment confirmable
+> only on the Windows gate, not the Linux dev box. The starting position is the
+> principled default: dielectric **F0 = 0.04**, shininess clamp **2…1000**, and **no**
+> metal diffuse suppression. If metals read too flat/too bright or the matte↔glossy
+> contrast is too subtle, the knobs are (1) the **F0 constant** (`0.04`), (2) the
+> **shininess clamp** (`2 … 1000`), and optionally (3) a mild **metal diffuse
+> suppression** (`baseColorFactor *= (1 − k·metallic)`) — but (3) needs a metalness
+> uniform threaded into the shader to apply *post-texture* (else a textured metal,
+> whose factor is white, goes black), which is a PBR-shader change out of this story's
+> scope. Flag any tuning for a one-line follow-up rather than guessing blind.
+
+**Result:** Story 2.3 — **PASS** (Antho, in-Reaper Windows validation, 2026-06-24).

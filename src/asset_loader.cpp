@@ -16,6 +16,7 @@
 
 #ifdef _WIN32
 
+#include <algorithm>  // std::clamp for the shininess floor/ceiling
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
@@ -61,25 +62,52 @@ glm::mat4 ConvertAssimpMatrix(const aiMatrix4x4& m)
                      m.a4, m.b4, m.c4, m.d4);  // column k built from assimp row k
 }
 
-// Reads diffuse/specular/shininess factors into a SceneMaterial. Texture binding
-// is Story 2.2 — baseColor stays an unbound (0) handle and the shader uses the
-// flat baseColorFactor. Defaults match a neutral mid-grey Blinn-Phong surface.
+// Reads diffuse factor + derives a per-material Blinn-Phong specular into a
+// SceneMaterial (texture binding is ResolveAndUploadDiffuse, Story 2.2). The
+// specular derivation (Story 2.3) is what makes a matte dielectric and a polished
+// metal show a different highlight. Defaults match a neutral mid-grey surface.
 SceneMaterial ConvertMaterial(const aiMaterial* mat)
 {
     SceneMaterial out;
     out.baseColorFactor = glm::vec3(0.8f);   // mid-grey if the file carries no diffuse
-    out.specularColor   = glm::vec3(0.04f);
+    out.specularColor   = glm::vec3(0.04f);  // dielectric F0 fallback
     out.shininess       = 32.0f;
     if (!mat) return out;   // synthetic fallback material (file had none) — all defaults
 
     aiColor3D c;
     if (mat->Get(AI_MATKEY_COLOR_DIFFUSE, c) == AI_SUCCESS)
         out.baseColorFactor = glm::vec3(c.r, c.g, c.b);
-    if (mat->Get(AI_MATKEY_COLOR_SPECULAR, c) == AI_SUCCESS)
-        out.specularColor = glm::vec3(c.r, c.g, c.b);
+
+    // assimp synthesizes SHININESS for every importer we ship: glTF metallic-roughness
+    // from (1-roughness)^2*1000, glTF specular-glossiness from glossiness*1000, FBX/
+    // Collada Phong from the authored exponent. A fully-rough glTF material yields 0,
+    // so clamp to a small floor (a broad, present highlight) rather than snapping to 32.
     float s = 0.0f;
-    if (mat->Get(AI_MATKEY_SHININESS, s) == AI_SUCCESS && s >= 1.0f)
-        out.shininess = s;
+    if (mat->Get(AI_MATKEY_SHININESS, s) == AI_SUCCESS)
+        // std::clamp(NaN,…) returns NaN, which would poison pow() in the shader;
+        // gate on isfinite so a garbage exponent falls back to the safe default.
+        out.shininess = std::isfinite(s) ? std::clamp(s, 2.0f, 1000.0f) : 32.0f;
+
+    // Specular color. Honor an explicitly-authored specular first — that single key
+    // covers FBX/Collada Phong, glTF KHR_materials_specular, and pbrSpecularGlossiness.
+    // Otherwise (plain glTF metallic-roughness, where assimp leaves COLOR_SPECULAR
+    // UNSET) derive it: a dielectric reflects a dim ~4% white highlight (F0=0.04), a
+    // metal reflects its own base color — tint toward baseColor by metalness. Without
+    // this, every metallic-roughness material shares one flat specular and matte vs
+    // glossy is indistinguishable (FR16).
+    aiColor3D spec;
+    if (mat->Get(AI_MATKEY_COLOR_SPECULAR, spec) == AI_SUCCESS) {
+        out.specularColor = glm::vec3(spec.r, spec.g, spec.b);
+    } else {
+        float metallic = 0.0f;
+        mat->Get(AI_MATKEY_METALLIC_FACTOR, metallic);  // leaves 0 (dielectric) if absent
+        // metalness is defined on [0,1]; clamp (and reject NaN) so the mix stays a
+        // convex blend — an out-of-range factor would push specular past baseColor or
+        // negative, a NaN would poison the fragment.
+        metallic = std::isfinite(metallic) ? std::clamp(metallic, 0.0f, 1.0f) : 0.0f;
+        out.specularColor =
+            glm::vec3(0.04f) + (out.baseColorFactor - glm::vec3(0.04f)) * metallic;
+    }
     return out;
 }
 

@@ -3,16 +3,24 @@
 // The ONE translation unit that includes <assimp/...> (D5). Every parse-exception
 // risk is contained in the single try/catch in LoadAsset, so nothing throws across
 // the subsystem boundary (AR18). This TU is also allowed to call modern GL: it owns
-// the geometry upload, which is why LoadErrorCategory::GpuUploadFailed lives here
-// (D6 — the loader reports its own GPU failures). See Dev Notes §E.
+// the geometry AND texture upload, which is why LoadErrorCategory::GpuUploadFailed
+// lives here (D6 — the loader reports its own GPU failures). See Dev Notes §E/§F.
+//
+// Story 2.2 adds two recorded boundary extensions, both in-character for this TU:
+// it now also includes <stb_image.h> (assimp leaves embedded glTF textures as raw
+// compressed bytes and exposes no decoder — see §C) and "console_log.h" (the loader
+// is the only site that knows which texture failed, so the AR16 per-texture warning
+// belongs here, exactly as the GPU-upload diagnostics already do).
 
 #include "asset_loader.h"
 
 #ifdef _WIN32
 
 #include <cmath>
+#include <cstddef>
 #include <filesystem>
 #include <system_error>
+#include <vector>
 
 #include <assimp/Importer.hpp>
 #include <assimp/config.h>
@@ -21,6 +29,23 @@
 
 #include <glm/gtc/matrix_inverse.hpp>
 
+// stb_image: implementation compiled into THIS TU only. Narrowed to the formats
+// glTF/Collada actually ship (mirrors the AR5 importer narrowing) to trim code and
+// attack surface. We log our own reason strings, so the failure-string table is off.
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#define STBI_ONLY_JPEG
+#define STBI_ONLY_TGA
+#define STBI_ONLY_BMP
+#define STBI_NO_FAILURE_STRINGS
+// stbi_load() opens the sibling file by name; on Windows the default fopen uses the
+// system codepage and would mangle a non-ASCII path. UTF8 makes stb convert our
+// u8string() to wide + _wfopen, matching FileExists's u8path Unicode handling so a
+// texture under an accented/CJK folder (gate row 9) resolves instead of warning.
+#define STBI_WINDOWS_UTF8
+#include <stb_image.h>
+
+#include "console_log.h"  // LogWarn for the per-texture unresolved diagnostic (AR16)
 #include "gl_loader.h"  // modern-GL upload entry points (glGenBuffers/glBufferData)
 
 namespace rav {
@@ -56,6 +81,113 @@ SceneMaterial ConvertMaterial(const aiMaterial* mat)
     if (mat->Get(AI_MATKEY_SHININESS, s) == AI_SUCCESS && s >= 1.0f)
         out.shininess = s;
     return out;
+}
+
+// Uploads a 4-channel RGBA buffer to a fresh GL texture and returns its owning
+// GpuImage (empty on GL failure → flat fallback). PRECONDITION: current GL context.
+// Mirrors UploadMesh's glGetError discipline, but a texture failure is NON-fatal:
+// the geometry is still drawable, so we degrade to the flat baseColorFactor rather
+// than aborting the whole load (a buffer failure stays fatal — see UploadMesh).
+GpuImage UploadTexture(const unsigned char* rgba, int w, int h)
+{
+    GpuImage tex;
+    glGenTextures(1, tex.addr());
+    if (tex.get() == 0) return {};
+
+    // Drain stale errors so the post-upload check observes only THIS upload.
+    while (glGetError() != GL_NO_ERROR) {}
+
+    glBindTexture(GL_TEXTURE_2D, tex.get());
+    // RGBA rows are 4-byte aligned anyway, but set 1 defensively so a future RGB
+    // path (odd row stride) would still upload correctly.
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);  // glTF sampler default
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    bool gl_failed = false;
+    while (glGetError() != GL_NO_ERROR) gl_failed = true;
+    if (gl_failed) return {};  // free the partial texture (RAII) → flat fallback
+    return tex;
+}
+
+// The ONE unified diffuse-texture funnel (AR14): every packaging variant — GLB
+// embedded (FR17), glTF sibling file (FR18), and later FBX embedded (FR19, Epic 6) —
+// converges on GetEmbeddedTexture, decodes to RGBA, and uploads. Returns an owning
+// GpuImage, or an empty handle when the material declares no diffuse texture (silent
+// — the textureless flat path, AC5) or the declared texture cannot be resolved (one
+// LogWarn, then flat fallback — AC3). Always decodes 4-channel RGBA so the GL upload
+// format is uniform regardless of the source's channel count. mi is the material
+// index, used only to name the material in the diagnostic.
+GpuImage ResolveAndUploadDiffuse(const aiScene* scene, const aiMaterial* mat,
+                                 const std::filesystem::path& model_dir, unsigned mi)
+{
+    aiString tex_path;
+    if (!mat || mat->GetTexture(aiTextureType_DIFFUSE, 0, &tex_path) != AI_SUCCESS)
+        return {};   // no diffuse texture declared — flat path, silent (not a failure)
+
+    if (const aiTexture* t = scene->GetEmbeddedTexture(tex_path.C_Str())) {
+        // Embedded: GLB '*N' index reference today, FBX GetEmbeddedTexture tomorrow —
+        // the same branch absorbs both, which is the whole point of the unified seam.
+        if (t->mHeight == 0) {
+            // Compressed: pcData holds mWidth bytes of a PNG/JPG file — stb decodes it.
+            int w = 0, h = 0, n = 0;
+            unsigned char* px = stbi_load_from_memory(
+                reinterpret_cast<const unsigned char*>(t->pcData),
+                static_cast<int>(t->mWidth), &w, &h, &n, 4);   // 4 = force RGBA
+            if (!px) {
+                LogWarn("texture unresolved for material %u (embedded image undecodable)"
+                        " - using flat color", mi);
+                return {};
+            }
+            GpuImage tex = UploadTexture(px, w, h);
+            stbi_image_free(px);   // CPU pixels freed immediately after upload (AC6)
+            if (tex.get() == 0)
+                LogWarn("texture unresolved for material %u (GPU upload failed)"
+                        " - using flat color", mi);
+            return tex;
+        }
+        // Uncompressed: mWidth*mHeight aiTexel, stored B,G,R,A by assimp — read by the
+        // named members so the result is RGBA regardless of in-memory channel order.
+        const size_t count = static_cast<size_t>(t->mWidth) * t->mHeight;
+        std::vector<unsigned char> rgba(count * 4);
+        for (size_t i = 0; i < count; ++i) {
+            const aiTexel& texel = t->pcData[i];
+            rgba[i * 4 + 0] = texel.r;
+            rgba[i * 4 + 1] = texel.g;
+            rgba[i * 4 + 2] = texel.b;
+            rgba[i * 4 + 3] = texel.a;
+        }
+        GpuImage tex = UploadTexture(rgba.data(), static_cast<int>(t->mWidth),
+                                     static_cast<int>(t->mHeight));
+        if (tex.get() == 0)
+            LogWarn("texture unresolved for material %u (GPU upload failed)"
+                    " - using flat color", mi);
+        return tex;
+    }
+
+    // External sibling file — resolve relative to the model dir, decode from disk.
+    // Path carried as UTF-8 via u8path/u8string (consistent with FileExists's Unicode
+    // fix); a percent-encoded/absolute-URI edge case simply fails to stbi_load and
+    // takes the diagnostic path below, the model still rendering in flat color.
+    const std::filesystem::path file = model_dir / std::filesystem::u8path(tex_path.C_Str());
+    int w = 0, h = 0, n = 0;
+    unsigned char* px = stbi_load(file.u8string().c_str(), &w, &h, &n, 4);  // 4 = force RGBA
+    if (!px) {
+        LogWarn("texture unresolved for material %u (%s missing or undecodable)"
+                " - using flat color", mi, tex_path.C_Str());
+        return {};
+    }
+    GpuImage tex = UploadTexture(px, w, h);
+    stbi_image_free(px);
+    if (tex.get() == 0)
+        LogWarn("texture unresolved for material %u (GPU upload failed)"
+                " - using flat color", mi);
+    return tex;
 }
 
 // Appends one aiMesh, baked into model space by `world`, as a SceneMesh's CPU
@@ -255,9 +387,19 @@ LoadResult LoadAsset(const std::string& path)
         // modelRoot stays identity: canonical files render upright, non-canonical
         // render tilted/scaled as-authored (AR13), recovered later by Reset Camera.
 
+        // Resolve each material's diffuse texture beside its flat factors. model_dir
+        // (computed once) anchors the sibling-file branch; a per-texture decode/IO
+        // failure returns an empty handle and the load continues (only a catastrophic
+        // std::bad_alloc from the swizzle buffer reaches the OutOfMemory catch).
+        const std::filesystem::path model_dir =
+            std::filesystem::u8path(path).parent_path();
         asset.materials.reserve(scene->mNumMaterials);
-        for (unsigned mi = 0; mi < scene->mNumMaterials; ++mi)
-            asset.materials.push_back(ConvertMaterial(scene->mMaterials[mi]));
+        for (unsigned mi = 0; mi < scene->mNumMaterials; ++mi) {
+            SceneMaterial material = ConvertMaterial(scene->mMaterials[mi]);
+            material.baseColor =
+                ResolveAndUploadDiffuse(scene, scene->mMaterials[mi], model_dir, mi);
+            asset.materials.push_back(std::move(material));
+        }
         // assimp always emits a default material, but a mesh's materialIdx indexes
         // this list on the render hot path — guarantee at least one entry so a
         // malformed file can never drive an out-of-bounds read.

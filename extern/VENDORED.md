@@ -47,6 +47,29 @@ so its headers cannot trip `/W3 /permissive-` (NFR-R5).
 
 Introduced by Story 1.2 (the renderer is the project's first matrix consumer).
 
+## stb_image (image decoder — FetchContent pin, not in-tree)
+
+| Field | Value |
+|---|---|
+| Upstream | https://github.com/nothings/stb |
+| License | Public domain (Unlicense) / MIT — dual-licensed, see header footer |
+| Pinned commit | `31c1ad37456438565541f4919958214b6e762fb4` |
+| Delivery | CMake `FetchContent` (see root `CMakeLists.txt`), **not** committed to the tree |
+
+**Why a decoder at all:** assimp does **not** decode embedded compressed textures —
+its glTF importer leaves an embedded PNG/JPG as raw file bytes in `aiTexture`
+(`mHeight == 0`, bytes in `pcData`) and exposes no public decode API. `stb_image` is
+the de-facto standard single-header public-domain decoder (and what assimp itself
+vendors internally, though it does not export it), so an explicit pin is the clean
+choice. **Pinned by commit** because stb ships no release tags. The implementation
+(`STB_IMAGE_IMPLEMENTATION`) is compiled into **`asset_loader.cpp` only** (the one TU
+already allowed heavy third-party headers); the format set is narrowed to
+PNG/JPEG/TGA/BMP (`STBI_ONLY_*`, mirroring the AR5 importer narrowing). Header-only —
+no new link library, single-DLL invariant (D15/D17) unaffected. Included as a
+**SYSTEM** include so it cannot trip `/W3 /permissive-` (NFR-R5).
+
+Introduced by Story 2.2 (first texture decode/upload).
+
 ## Re-vendoring procedure
 
 To bump the SDK version:

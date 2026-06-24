@@ -46,6 +46,8 @@ uniform vec3  u_baseColor;
 uniform vec3  u_specularColor;
 uniform float u_shininess;
 uniform vec3  u_viewPos;
+uniform sampler2D u_baseColorTex;
+uniform int   u_hasTexture;     // 0 → flat factor only (textureless / failed-resolve)
 out vec4 frag;
 void main() {
     vec3 N = normalize(v_normal);
@@ -54,7 +56,11 @@ void main() {
     vec3 H = normalize(L + V);                        // Blinn half-vector
     float diff = max(dot(N, L), 0.0);
     float spec = pow(max(dot(N, H), 0.0), u_shininess);
-    vec3 c = u_baseColor * (0.15 + 0.85 * diff) + u_specularColor * spec;
+    // Texture modulates the flat factor; u_hasTexture==0 leaves Story-2.1 output
+    // unchanged. Sampled color is treated as linear (no sRGB decode) for MVP.
+    vec3 base = u_baseColor;
+    if (u_hasTexture != 0) base *= texture(u_baseColorTex, v_uv).rgb;
+    vec3 c = base * (0.15 + 0.85 * diff) + u_specularColor * spec;
     frag = vec4(c, 1.0);
 }
 )GLSL";
@@ -114,6 +120,8 @@ bool Renderer::Init(std::string& out_error)
     u_specular_color_ = glGetUniformLocation(program_.get(), "u_specularColor");
     u_shininess_      = glGetUniformLocation(program_.get(), "u_shininess");
     u_view_pos_       = glGetUniformLocation(program_.get(), "u_viewPos");
+    u_base_color_tex_ = glGetUniformLocation(program_.get(), "u_baseColorTex");
+    u_has_texture_    = glGetUniformLocation(program_.get(), "u_hasTexture");
     // Only u_mvp is genuinely required (no draw is possible without it). The rest may
     // legitimately come back -1 if a driver's GLSL optimizer eliminates a uniform it
     // proves dead — glUniform*(-1, ...) is a documented no-op, so a -1 here must NOT
@@ -208,6 +216,9 @@ void Renderer::RenderFrame(float /*time_seconds*/, int width, int height)
     glUniformMatrix4fv(u_model_,  1, GL_FALSE, glm::value_ptr(model));
     glUniformMatrix3fv(u_normal_, 1, GL_FALSE, glm::value_ptr(normal_mat));
     glUniform3fv(u_view_pos_, 1, glm::value_ptr(view_pos_));
+    // The diffuse sampler always reads texture unit 0; bind the name to it once per
+    // frame (a no-op if the driver optimized the sampler out → location -1).
+    glUniform1i(u_base_color_tex_, 0);
 
     const GLsizei stride = sizeof(SceneVertex);
     for (const SceneMesh& mesh : asset_.meshes) {
@@ -231,6 +242,14 @@ void Renderer::RenderFrame(float /*time_seconds*/, int width, int height)
         glUniform3fv(u_base_color_,     1, glm::value_ptr(mat.baseColorFactor));
         glUniform3fv(u_specular_color_, 1, glm::value_ptr(mat.specularColor));
         glUniform1f(u_shininess_, mat.shininess);
+
+        // Bind this material's diffuse texture to unit 0. A 0 handle (textureless or
+        // failed-resolve material) sets u_hasTexture=0 → the shader uses the flat
+        // factor. Three cheap GL calls, no heap (D2 hot-path discipline).
+        const GLuint tex = mat.baseColor.get();
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glUniform1i(u_has_texture_, tex != 0 ? 1 : 0);
 
         glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(mesh.indexCount),
                        GL_UNSIGNED_INT, nullptr);

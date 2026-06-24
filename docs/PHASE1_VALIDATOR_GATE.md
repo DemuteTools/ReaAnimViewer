@@ -106,3 +106,35 @@ warning-free build are all validator-confirmed on Windows; they are not re-litig
 on the Linux dev box (which can only confirm the CMake configure and source greps).
 
 **Result:** Story 2.1 — **PASS** (Antho, in-Reaper Windows validation, 2026-06-24).
+
+## 7. Story 2.2 — acceptance checks (diffuse textures)
+
+Story 2.2 fills the diffuse-texture seam: the loader resolves each material's base-
+color texture through **one unified path** (AR14) covering both glTF packaging styles
+— **GLB-embedded** (FR17) and **multi-file glTF with a sibling image** (FR18) —
+decodes it (stb_image), uploads a GPU texture, and the shader modulates the flat base
+color with it. An unresolvable texture **degrades to the flat color** with one console
+warning, never failing the load (AC3).
+
+**Suggested fixtures** — Khronos **glTF-Sample-Assets** `BoxTextured` and `Duck` cover
+both variants in one pair: the `.glb` is embedded (FR17); the `glTF/` folder ships the
+`.gltf` + a sibling `.png` (FR18). Both show a recognizable texture, not flat grey.
+
+| # | Check | Pass criterion | AC |
+|---|---|---|---|
+| 10 | GLB-embedded texture | Open an embedded `.glb` (e.g. `BoxTextured.glb` or `Duck.glb`). The surface shows the **texture image**, not a flat grey/colored face. | AC1 (FR17) |
+| 11 | glTF-sibling texture | Open the multi-file `BoxTextured/glTF/BoxTextured.gltf` (with its sibling `.png` next to it). The **same** texture displays. | AC2 (FR18) |
+| 12 | Missing-texture fallback | Rename/remove the sibling `.png` (or open a glTF whose image is absent), then load it. The console logs **exactly one** `[RAV] warn: texture unresolved for material … - using flat color` line, the model still renders in **flat base color**, the load does **not** fail, and Reaper survives. | AC3 |
+| 13 | No-regression (textureless) | A **textureless** static file (Story 2.1's `Box`/`Duck` without a texture) and a `.dae` still render exactly as in Story 2.1 — flat Blinn-Phong, no change. | implied AC (R5/2.1 rows 1–5) |
+| 14 | Single-DLL still holds | `build\Release\` still contains only `reaper_animviewer.dll` — **no** `assimp*.dll` and **no** image-decoder DLL (stb is header-only, compiled in). | AC4 / D15 / D17 |
+
+> **UV-orientation note:** if a textured model appears **vertically mirrored**
+> (upside-down texture), it is a single-line UV-convention flip, **not** a logic bug.
+> The starting position is **no flip** — glTF defines top-left UV origin and we upload
+> the image top-row-first, which is self-consistent. If the gate sees a mirrored
+> texture, the one-line fix is `stbi_set_flip_vertically_on_load(true)` in
+> `asset_loader.cpp` (plus the equivalent flip on the uncompressed-swizzle branch).
+> Flag it for a quick follow-up rather than guessing the convention blind — it cannot
+> be confirmed on the Linux dev box.
+
+**Result:** Story 2.2 — **PASS** (Antho, in-Reaper Windows validation, 2026-06-24).

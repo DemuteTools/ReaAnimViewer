@@ -43,6 +43,7 @@ typedef ptrdiff_t GLintptr;
 #define GL_ELEMENT_ARRAY_BUFFER   0x8893
 #define GL_STATIC_DRAW            0x88E4
 #define GL_DYNAMIC_DRAW           0x88E8
+#define GL_TEXTURE0              0x84C0   // GL 1.3 — first texture unit for glActiveTexture
 #endif
 
 // ---- Modern-GL function table (X-macro; defined in gl_loader.cpp) ------------
@@ -76,7 +77,9 @@ typedef ptrdiff_t GLintptr;
     X(void,   glDeleteVertexArrays, (GLsizei, const GLuint*)) \
     X(void,   glBindVertexArray, (GLuint)) \
     X(void,   glEnableVertexAttribArray, (GLuint)) \
-    X(void,   glVertexAttribPointer, (GLuint, GLint, GLenum, GLboolean, GLsizei, const void*))
+    X(void,   glVertexAttribPointer, (GLuint, GLint, GLenum, GLboolean, GLsizei, const void*)) \
+    X(void,   glActiveTexture, (GLenum)) \
+    X(void,   glGenerateMipmap, (GLenum))
 
 #define RAV_GL_DECL(ret, name, args) typedef ret(APIENTRY* PFN_##name) args; extern PFN_##name rav_##name;
 RAV_GL_FUNCS(RAV_GL_DECL)
@@ -112,5 +115,7 @@ RAV_GL_FUNCS(RAV_GL_DECL)
 #define glBindVertexArray         rav_glBindVertexArray
 #define glEnableVertexAttribArray rav_glEnableVertexAttribArray
 #define glVertexAttribPointer     rav_glVertexAttribPointer
+#define glActiveTexture           rav_glActiveTexture
+#define glGenerateMipmap          rav_glGenerateMipmap
 
 #endif  // _WIN32

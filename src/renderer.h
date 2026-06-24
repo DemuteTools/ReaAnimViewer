@@ -66,6 +66,8 @@ private:
     int u_specular_color_ = -1;
     int u_shininess_     = -1;
     int u_view_pos_      = -1;
+    int u_base_color_tex_ = -1;  // sampler2D bound to texture unit 0
+    int u_has_texture_   = -1;   // 0 → flat factor (textureless / failed-resolve)
 };
 
 }  // namespace rav

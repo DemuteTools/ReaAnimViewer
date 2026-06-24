@@ -50,7 +50,17 @@ if(WIN32)
         GIT_TAG        v6.0.5
         GIT_SHALLOW    TRUE)
 
-    FetchContent_MakeAvailable(glm assimp)
+    # stb_image (image decoder — header-only, public domain). assimp leaves embedded
+    # glTF textures COMPRESSED (aiTexture::mHeight==0, raw PNG/JPG bytes) and exposes
+    # no decode API, so Story 2.2 needs its own decoder. FetchContent (not in-tree)
+    # for the same drvfs/WSL reason as GLM/assimp; pinned by commit (stb is untagged).
+    # The implementation is compiled into asset_loader.cpp via STB_IMAGE_IMPLEMENTATION.
+    FetchContent_Declare(stb
+        GIT_REPOSITORY https://github.com/nothings/stb.git
+        GIT_TAG        31c1ad37456438565541f4919958214b6e762fb4  # recorded in extern/VENDORED.md
+        GIT_SHALLOW    TRUE)
+
+    FetchContent_MakeAvailable(glm assimp stb)
 
     add_reaper_extension(animviewer
         SOURCES
@@ -67,7 +77,8 @@ if(WIN32)
     target_include_directories(animviewer SYSTEM PRIVATE
         "${glm_SOURCE_DIR}"
         "${assimp_SOURCE_DIR}/include"
-        "${assimp_BINARY_DIR}/include")
+        "${assimp_BINARY_DIR}/include"
+        "${stb_SOURCE_DIR}")  # stb_image.h — SYSTEM so it can't trip /W3 /permissive-
     # comdlg32: GetOpenFileNameW — the native "choose a model" dialog (Story 2.1).
     target_link_libraries(animviewer PRIVATE assimp opengl32 gdi32 user32 comdlg32)
 else()

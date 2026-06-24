@@ -3,6 +3,7 @@
 // Reaper extension entry point. Phase 0: registers a single action that
 // opens an empty WGL viewer window. No mesh loading, no transport sync.
 
+#include "console_log.h"
 #include "reaper_api.h"
 #include "viewer_window.h"
 
@@ -23,8 +24,16 @@ int (*g_register)(const char*, void*) = nullptr;
 bool OnHookCommand(int command, int /*flag*/)
 {
     if (command != g_command_id || g_command_id == 0) return false;
-    OpenViewerWindow(g_hinstance, g_reaper_main);
+    ToggleViewerWindow(g_hinstance, g_reaper_main);
+    RefreshToolbar(g_command_id);  // reflect the new on/off state on the toolbar/menu now
     return true;
+}
+
+// Reaper polls this to draw the action's toggle checkmark / lit toolbar button.
+int OnToggleAction(int command)
+{
+    if (command != g_command_id || g_command_id == 0) return -1;  // not ours / doesn't toggle
+    return ViewerWindowIsVisible() ? 1 : 0;
 }
 
 }  // namespace
@@ -41,8 +50,9 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
         // reverse order, so no live pointers into our DLL outlive it.
         CloseViewerWindow();
         if (g_register) {
-            g_register("-hookcommand", (void*)&OnHookCommand);
-            g_register("-gaccel",      &g_accel);
+            g_register("-toggleaction", (void*)&OnToggleAction);
+            g_register("-hookcommand",  (void*)&OnHookCommand);
+            g_register("-gaccel",       &g_accel);
         }
         return 0;
     }
@@ -66,7 +76,8 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     g_accel.desc      = kActionDesc;
     rec->Register("gaccel", &g_accel);
     rec->Register("hookcommand", (void*)&OnHookCommand);
+    rec->Register("toggleaction", (void*)&OnToggleAction);
 
-    ShowConsoleMsg("[RAV] extension loaded (Phase 0)\n");
+    LogInfo("extension loaded (Phase 0)");
     return 1;
 }

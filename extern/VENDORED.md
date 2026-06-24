@@ -28,6 +28,25 @@ immediately, no `git submodule update --init` required.
 
 **Files intentionally not vendored:** `reaper_plugin_fx_embed.h`, `reaper_vst3_interfaces.h`, `video_frame.h`, `video_processor.h`, `localize-import.h`, `example_*` directories — not needed for Phase 0 (no embedded FX, no VST3, no video pipeline). Add them to this directory if a later phase requires them.
 
+## GLM 1.0.3 (matrix math — FetchContent pin, not in-tree)
+
+| Field | Value |
+|---|---|
+| Upstream | https://github.com/g-truc/glm |
+| License | MIT (and Happy Bunny) |
+| Pinned tag | `1.0.3` |
+| Delivery | CMake `FetchContent` (see root `CMakeLists.txt`), **not** committed to the tree |
+
+**Why FetchContent and not in-tree vendoring:** AR6's default is to vendor header
+trees, but GLM is a large multi-hundred-file header tree and copying it onto the
+drvfs/WSL mount by hand is impractical (the same `chmod`/path friction that drove
+the no-submodule policy). The story sanctions FetchContent pinned to the `1.0.3`
+tag as the fallback, which is also the approach Spike 0 proved. Header-only and
+column-major right-handed by default (matches D3). Included as a **SYSTEM** include
+so its headers cannot trip `/W3 /permissive-` (NFR-R5).
+
+Introduced by Story 1.2 (the renderer is the project's first matrix consumer).
+
 ## Re-vendoring procedure
 
 To bump the SDK version:

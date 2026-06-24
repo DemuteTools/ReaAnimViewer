@@ -1141,3 +1141,7 @@ Phase 0.5 spec to be authored next (`_bmad-output/implementation-artifacts/spec-
 **New loader requirement (feeds Epic 3 / Epic 6):** the FBX path **must** set `importer.SetPropertyInteger(AI_CONFIG_IMPORT_FBX_PRESERVE_PIVOTS, 0)` — otherwise assimp keys animation on hidden `$AssimpFbx$` nodes and Mixamo rigs stay in bind pose.
 
 **KEEP:** cross-cutting invariants (AR15 symmetric register, AR16 console-only diagnostics, AR17 failure isolation, AR18 main-thread GL) and decisions D1–D7, D9–D10, D13–D18 are unaffected.
+
+### 2026-06-23 — Phase 0.5 confirmed raw GL for the MVP viewport; sokol not added (Spike 0 Finding 4)
+
+Story 1.2 adopts **raw OpenGL** (modern GL resolved via `wglGetProcAddress`) for the direct-to-window viewport renderer; `extern/sokol/` is **not** added. The boundary rule "`renderer.cpp` is the only file that calls `sg_*`" becomes "`renderer.cpp` + `gl_loader.cpp` are the only files that call modern GL." Consequence: `gpu_resources.h` arrives at Phase 0.5 (not Phase 1) and wraps `GLuint` instead of `sg_*_t`. Revisit sokol only if a Mac/Metal backend is needed post-MVP.

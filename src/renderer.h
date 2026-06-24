@@ -16,6 +16,7 @@
 
 #include <glm/glm.hpp>
 
+#include "camera.h"
 #include "gpu_resources.h"
 #include "scene.h"
 
@@ -31,15 +32,24 @@ public:
     // current GL context. Returns false and fills out_error on failure.
     bool Init(std::string& out_error);
 
-    // Takes ownership of a loaded model and computes the auto-fit framing camera
-    // from its AABB (center/radius → eye distance, near/far). Requires a current
-    // GL context (it replaces the previously-held Asset, freeing its GL handles).
+    // Takes ownership of a loaded model and auto-fits the camera to its AABB
+    // (cam_.Reset → center/distance, plus near/far). Requires a current GL context
+    // (it replaces the previously-held Asset, freeing its GL handles).
     void SetAsset(Asset&& asset);
 
     // Renders one frame into the currently-bound default framebuffer. Sets the
     // viewport from width/height and recomputes projection on aspect change so a
-    // resize keeps the correct aspect ratio. No allocation on this path (D2 hot-path).
+    // resize keeps the correct aspect ratio. Rebuilds the view from cam_ EVERY frame
+    // (a drag moves the camera). No allocation on this path (D2 hot-path).
     void RenderFrame(float time_seconds, int width, int height);
+
+    // Mutable access to the orbit camera so the window proc can drive it from mouse
+    // input (g_renderer.Camera().Orbit(...) / .Zoom(...) / .Pan(...)).
+    OrbitCamera& Camera() { return cam_; }
+
+    // Re-frames the camera on the current asset's AABB and recomputes near/far — the
+    // one-call entry point for the Reset View button (FR25 / Journey 2 recovery).
+    void ResetCamera();
 
     // Releases GL resources (including the held Asset's buffers). Must run while
     // the GL context is current. Safe to call more than once.
@@ -49,10 +59,13 @@ private:
     GpuProgram     program_;
     GpuVertexArray vao_;
     Asset          asset_;
+    OrbitCamera    cam_;         // D14 orbit state; the view is derived from it each frame
 
-    // Framing camera, recomputed in SetAsset from the asset AABB. view_proj_ is
-    // rebuilt only when the aspect ratio changes (a resize), not every frame.
+    // view_/view_pos_/view_proj_ are DERIVED from cam_ each frame in RenderFrame (a
+    // drag moves the camera). Only the projection is cached across frames and rebuilt
+    // on an aspect change (a resize) — it does not depend on the camera.
     glm::mat4 view_{1.0f};
+    glm::mat4 proj_{1.0f};
     glm::mat4 view_proj_{1.0f};
     glm::vec3 view_pos_{0.0f};   // camera world position → u_viewPos (specular)
     float     near_plane_  = 0.01f;

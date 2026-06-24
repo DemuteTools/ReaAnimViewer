@@ -155,25 +155,21 @@ void Renderer::SetAsset(Asset&& asset)
 {
     asset_ = std::move(asset);
 
-    // Auto-fit the camera to the asset bounding box (D14). This guarantees AC1/AC3
-    // "visible and framed" for any scale or orientation: a tilted non-canonical
-    // file simply frames tilted (AR13), recovered later by Reset Camera (Story 2.4).
-    glm::vec3 center = 0.5f * (asset_.aabbMin + asset_.aabbMax);
-    float radius = 0.5f * glm::length(asset_.aabbMax - asset_.aabbMin);
-    // `!(radius > eps)` (not `radius < eps`) so a NaN — which compares false against
-    // everything — also falls into the fallback instead of producing a NaN camera.
-    if (!(radius > 1e-4f)) radius = 1.0f;   // degenerate/empty/NaN bounds — don't divide by ~0
-    if (!(std::isfinite(center.x) && std::isfinite(center.y) && std::isfinite(center.z)))
-        center = glm::vec3(0.0f);
+    // Auto-fit-on-load IS Reset (D14): the first frame a user sees is exactly what
+    // the Reset View button reproduces. A tilted non-canonical file simply frames
+    // tilted (AR13), recovered by Reset (Story 2.4). cam_.Reset carries the same
+    // degenerate/NaN-bounds guards the inline framing used to.
+    ResetCamera();
+}
 
-    // Three-quarter view direction (matches the Epic 1 cube angle), pulled back so
-    // the whole sphere fits inside the 50-deg FOV with headroom.
-    const glm::vec3 dir = glm::normalize(glm::vec3(0.7f, 0.6f, 0.9f));
-    const glm::vec3 eye = center + dir * radius * 3.0f;
-    view_     = glm::lookAt(eye, center, glm::vec3(0.0f, 1.0f, 0.0f));
-    view_pos_ = eye;
+void Renderer::ResetCamera()
+{
+    cam_.Reset(asset_.aabbMin, asset_.aabbMax);
 
-    // near/far scaled to the model so depth precision holds at any unit scale.
+    // near/far scaled to the model so depth precision holds at any unit scale (kept
+    // from 2.1 — strictly better than D14's fixed 0.01/1000 for mm/km-authored files).
+    // frameRadius == 0.5 * diagonal, already guarded against degenerate/NaN bounds.
+    const float radius = cam_.frameRadius;
     near_plane_ = radius * 0.01f;
     far_plane_  = radius * 100.0f;
 
@@ -194,14 +190,20 @@ void Renderer::RenderFrame(float /*time_seconds*/, int width, int height)
     if (asset_.meshes.empty())
         return;
 
-    // Rebuild the view-projection only when the aspect actually changes (a resize).
+    // The projection depends only on aspect — rebuild it just on a resize.
     const float aspect = static_cast<float>(width) / static_cast<float>(height);
     if (aspect != cached_aspect_) {
-        const glm::mat4 proj = glm::perspective(glm::radians(kFovYDegrees), aspect,
-                                                near_plane_, far_plane_);
-        view_proj_     = proj * view_;
+        proj_          = glm::perspective(glm::radians(kFovYDegrees), aspect,
+                                          near_plane_, far_plane_);
         cached_aspect_ = aspect;
     }
+
+    // The view changes every frame (a drag moves the camera), so derive it from cam_
+    // here, not in SetAsset. Two stack mat4 ops + Eye() — no heap, no GL state churn
+    // (D2 hot-path / the 1.2 zero-alloc-in-RenderFrame rule still holds).
+    view_      = cam_.ViewMatrix();
+    view_pos_  = cam_.Eye();
+    view_proj_ = proj_ * view_;
 
     glUseProgram(program_.get());
     glBindVertexArray(vao_.get());

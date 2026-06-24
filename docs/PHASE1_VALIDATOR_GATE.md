@@ -175,3 +175,41 @@ and a multi-material model such as `FlightHelmet`, `BoomBox`, or `DamagedHelmet`
 > scope. Flag any tuning for a one-line follow-up rather than guessing blind.
 
 **Result:** Story 2.3 — **PASS** (Antho, in-Reaper Windows validation, 2026-06-24).
+
+## 9. Story 2.4 — acceptance checks (camera controls)
+
+Story 2.4 turns the fixed three-quarter snapshot into an **interactive viewport**.
+The static `glm::lookAt` computed once in `SetAsset` is factored into a D14
+`OrbitCamera { target, distance, yaw, pitch }` (new `src/camera.h`) that the renderer
+owns and rebuilds the view from **every frame**, so dragging is continuous (FR26).
+Right-click-drag **orbits** (FR22), the scroll wheel **zooms** (FR23), middle-click-drag
+**pans** (FR24), and a native Win32 child **Reset View** button re-frames the model's
+bounding box (FR25) — which is also the documented recovery path (AR13) for a
+non-canonical (Z-up / cm / tilted) file that loads "wrong" (Journey 2). Auto-fit-on-load
+**is** Reset, so the initial framing a user sees is unchanged from 2.1–2.3. The loader,
+shader, materials, and GL resource code are **untouched** — this story only changes
+*what* view matrix is fed and *when* it is rebuilt, plus the input handlers.
+
+**Suggested fixtures** — any 2.1/2.2/2.3 model for orbit/zoom/pan; a **non-canonical**
+fixture (a Z-up / cm / sideways file from the 2.1 rows) for the Reset / Journey-2 row.
+
+| # | Check | Pass criterion | AC |
+|---|---|---|---|
+| 19 | Orbit (FR22) | Right-click-drag inside the panel rotates the view around the model. At the top/bottom of the arc the model does **not** flip or gimbal (pitch clamp). | AC1 |
+| 20 | Zoom (FR23) | Scroll wheel moves the camera in/out smoothly. You **cannot** zoom *through* the model to nothing, nor lose it to infinity (distance clamp). | AC1 |
+| 21 | Pan (FR24) | Middle-click-drag slides the model across the view. Pan speed feels **consistent** at any zoom level (distance-scaled). | AC1 |
+| 22 | Reset + Journey 2 recovery (FR25) | Load a **non-canonical** fixture (Z-up / cm / sideways from the 2.1 rows); confirm it frames tilted/odd. Orbit away, then click **Reset View** → the model is reframed **centered and fully in view**. | AC2 |
+| 23 | Continuous update (FR26) | During an orbit/pan drag the viewport stays responsive and holds **≥60 fps** — no freeze or stutter while dragging. *(FR26's full force — animation not pausing during camera moves — lands in Epic 3 when the rig animates; in Epic 2 the displayed frame is static, so the check is "drag stays smooth and the timer keeps presenting.")* | AC3 |
+| 24 | No right-click context menu | Right-drag inside the panel raises **no** Win32 popup menu (WM_RBUTTONUP is consumed for orbit, suppressing WM_CONTEXTMENU). | AC6 |
+| 25 | No-regression | Re-run the 2.1 rows 1–9, 2.2 rows 10–14, 2.3 rows 15–18. All still pass; the **initial on-open framing is unchanged** (auto-fit = Reset). | AC4 |
+| 26 | Single-DLL / warning-free still hold | `build\Release\` contains only `reaper_animviewer.dll` (the camera header adds no DLL, no CMake change); build is clean at `/W3 /permissive-`. | AC5 |
+
+> **Sensitivity-tuning note:** the camera "feel" is a judgment confirmable only on the
+> Windows gate, not the Linux dev box. The knobs (all one-line `constexpr` in
+> `src/camera.h`) are `kOrbitSens` (orbit speed), `kZoomSens` (zoom rate), `kPanSens`
+> (pan speed), the initial `kInitPitch` (0.3) / `kInitYaw` (0.6), and the zoom-distance
+> clamp band (`0.05 … 20 × frameRadius`). If orbit is too fast/slow, zoom too coarse,
+> or the clamp too tight/loose, these are one-line constant tweaks — flag for a quick
+> follow-up rather than guessing the feel blind on Linux.
+
+**Result:** Story 2.4 — _pending Antho's in-Reaper Windows validation._

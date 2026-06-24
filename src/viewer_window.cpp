@@ -22,6 +22,7 @@
 #include "viewer_window.h"
 
 #include <commdlg.h>   // GetOpenFileNameW — native "choose a model" dialog
+#include <windowsx.h>  // GET_X_LPARAM / GET_Y_LPARAM — unpack WM_MOUSEMOVE coords
 #include <exception>   // std::exception — the no-throw host boundary (AR18)
 #include <string>
 
@@ -85,6 +86,20 @@ int           g_frame_count = 0;
 
 // True while the panel is hidden and the render loop is parked — see FrameTimerProc.
 bool g_render_paused = false;
+
+// Mouse-drag camera state (D14). A drag is right-button=orbit / middle-button=pan;
+// SetCapture keeps reporting moves even if the cursor leaves the window, and
+// WM_CAPTURECHANGED resets DragMode so a yanked capture can't leave a phantom drag.
+enum class DragMode { None, Orbit, Pan };
+DragMode g_drag = DragMode::None;
+int g_last_x = 0;
+int g_last_y = 0;
+
+// The native "Reset View" child button overlaid on the GL surface (§C). A child of
+// g_hwnd, so DestroyWindow tears it down automatically; we only null this on
+// WM_DESTROY. kResetButtonId is its WM_COMMAND control id.
+constexpr int kResetButtonId = 1001;
+HWND g_reset_button = nullptr;
 
 double ElapsedSeconds()
 {
@@ -318,6 +333,26 @@ bool StartRendering(HWND hwnd)
         return false;
     }
 
+    // The "Reset View" toolbar button (FR25). A bare native Win32 child BUTTON
+    // overlaid on the GL surface: WS_CLIPCHILDREN on the parent excludes its rect
+    // from the GL DC clip region, so glClear/SwapBuffers never paint over it (no UI
+    // toolkit until Epic 5). A failed create is NON-fatal — a viewport without the
+    // button is still a working viewport — so we log once and carry on, never bail.
+    g_reset_button = CreateWindowExW(
+        0, L"BUTTON", L"Reset View",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        8, 8, 96, 26,
+        hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kResetButtonId)),
+        g_class_hinst, nullptr);
+    if (g_reset_button) {
+        // DEFAULT_GUI_FONT so the caption isn't the bold system default.
+        SendMessageW(g_reset_button, WM_SETFONT,
+                     reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
+    } else {
+        LogInfo("Reset View button could not be created — the viewport still works "
+                "(use it once camera controls land)");
+    }
+
     // Paint one frame now (the context is current) so the window presents real
     // content the instant the docker reveals it, instead of a ~1-tick flash of
     // the still-undefined GL framebuffer.
@@ -393,11 +428,78 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case WM_ERASEBKGND:
         return 1;  // GL owns the surface; skip GDI background fill to avoid flicker.
 
+    case WM_RBUTTONDOWN:
+        // Start an orbit drag. SetFocus so WM_MOUSEWHEEL (delivered to the focused
+        // window, not the hovered one, §D) reaches us; SetCapture so the drag keeps
+        // reporting moves even if the cursor leaves the window.
+        SetFocus(hwnd);
+        SetCapture(hwnd);
+        g_drag   = DragMode::Orbit;
+        g_last_x = GET_X_LPARAM(lp);
+        g_last_y = GET_Y_LPARAM(lp);
+        return 0;
+
+    case WM_MBUTTONDOWN:
+        SetFocus(hwnd);
+        SetCapture(hwnd);
+        g_drag   = DragMode::Pan;
+        g_last_x = GET_X_LPARAM(lp);
+        g_last_y = GET_Y_LPARAM(lp);
+        return 0;
+
+    case WM_RBUTTONUP:
+    case WM_MBUTTONUP:
+        if (g_drag != DragMode::None) {
+            ReleaseCapture();
+            g_drag = DragMode::None;
+        }
+        // Return 0 WITHOUT forwarding to DefWindowProc: a forwarded WM_RBUTTONUP
+        // would synthesize WM_CONTEXTMENU (a Win32 popup menu) inside the panel (AC6).
+        return 0;
+
+    case WM_MOUSEMOVE:
+        if (g_drag != DragMode::None) {
+            const int x = GET_X_LPARAM(lp);
+            const int y = GET_Y_LPARAM(lp);
+            const int dx = x - g_last_x;
+            const int dy = y - g_last_y;
+            // Mutate camera state only; never render synchronously here — the ~64 Hz
+            // timer redraws, which is what keeps manipulation continuous (FR26).
+            if (g_drag == DragMode::Orbit) g_renderer.Camera().Orbit(dx, dy);
+            else                           g_renderer.Camera().Pan(dx, dy);
+            g_last_x = x;
+            g_last_y = y;
+        }
+        return 0;
+
+    case WM_MOUSEWHEEL: {
+        const float delta = GET_WHEEL_DELTA_WPARAM(wp) / 120.0f;  // 120 == one notch
+        g_renderer.Camera().Zoom(delta);
+        return 0;
+    }
+
+    case WM_CAPTURECHANGED:
+        // The system can yank capture away (e.g. another window grabs it); clear the
+        // drag so a later move doesn't orbit/pan with no button held.
+        g_drag = DragMode::None;
+        return 0;
+
+    case WM_COMMAND:
+        if (LOWORD(wp) == kResetButtonId) {
+            g_renderer.ResetCamera();
+            SetFocus(hwnd);  // restore focus so the wheel keeps targeting the viewport
+            return 0;
+        }
+        break;
+
     case WM_DESTROY:
         // Reached only on the paths WE initiate (CloseViewerWindow → DestroyWindow,
         // and unload) — NOT the docker tab X, which merely hides us (see header).
         // Tear the render loop + GL down here while the context is still current.
+        // The Reset button is a child of g_hwnd → already destroyed with it; just
+        // null our handle so it can't dangle.
         StopRendering();
+        g_reset_button = nullptr;
         g_hwnd = nullptr;
         return 0;
     }

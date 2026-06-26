@@ -130,8 +130,64 @@ const char* EnumFileExtensions(int i, const char** descptr)
 // with the IDENTICAL pointer (NFR-R3, AR15) — see PcmSourceRegistration().
 pcmsrc_register_t g_reg = { &CreateFromType, &CreateFromFile, &EnumFileExtensions };
 
+// True iff s (or the inner source it wraps) is one of ours — i.e. GetType() is the
+// permanent production tag "RAV_ANIM" (kSourceType; NOT the Spike's "FBXAV_ANIM" —
+// copying that string would make this silently never match). Reaper can wrap our
+// source in a section/reverse take, so check the wrapped inner GetSource() too.
+// Null-safe on s, the inner source, and every GetType() return — a raw vtable
+// deref is SEH/UB, not catchable (D5/AR18).
+bool IsOurs(PCM_source* s)
+{
+    if (!s) return false;
+    const char* t = s->GetType();
+    if (t && !std::strcmp(t, kSourceType)) return true;
+    PCM_source* inner = s->GetSource();
+    if (!inner) return false;
+    const char* it = inner->GetType();
+    return it && !std::strcmp(it, kSourceType);
+}
+
 }  // namespace
 
 pcmsrc_register_t* PcmSourceRegistration() { return &g_reg; }
+
+// Read-only transport→current-item query (Story 4.3). Mirrors the Spike's
+// CurrentAnimTime (spike/0-1-feasibility:src/spike_pcmsource.cpp) but ALSO returns
+// the matched item's source path so the viewer can switch the displayed asset on a
+// scrub onto a different item (AC2). Main-thread only, no-throw, READ-only (no
+// Register — the boundary rule keeps that in plugin_main.cpp).
+bool GetCurrentAnimItem(std::string& out_path, double& out_anim_time)
+{
+    ReaProject* proj = nullptr;  // current project
+    // Play cursor (continuous audio clock) while playing, edit cursor while stopped —
+    // so a stopped scrub still drives the displayed frame (AC1).
+    const bool playing = (GetPlayStateEx(proj) & 1) != 0;
+    const double pos = playing ? GetPlayPosition2Ex(proj) : GetCursorPositionEx(proj);
+
+    // First RAV item spanning the playhead wins (single-item / first-match; overlap +
+    // track-priority is Story 4.5 — do NOT generalise this walk). Null-guard every
+    // handle in the chain; the std::string assign is done LAST, only after a match.
+    for (int i = 0, n = CountMediaItems(proj); i < n; ++i) {
+        MediaItem* it = GetMediaItem(proj, i);
+        if (!it) continue;
+        const double ip = GetMediaItemInfo_Value(it, "D_POSITION");
+        const double il = GetMediaItemInfo_Value(it, "D_LENGTH");
+        if (pos < ip || pos >= ip + il) continue;
+        MediaItem_Take* tk = GetActiveTake(it);
+        if (!tk) continue;
+        PCM_source* src = GetMediaItemTake_Source(tk);
+        if (!IsOurs(src)) continue;
+
+        // Matched. GetFileName() already returns m_path (no re-probe) — null-guard it.
+        const char* fn = src->GetFileName();
+        out_path = fn ? fn : "";
+        // The FR10 [0, itemLength] clamp: at the in-span edges this is ~0 / ~itemLength,
+        // so when the playhead leaves the span the held value IS the first/last frame.
+        double at = pos - ip;
+        out_anim_time = (at < 0.0) ? 0.0 : (at > il ? il : at);
+        return true;
+    }
+    return false;
+}
 
 }  // namespace rav

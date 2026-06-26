@@ -29,6 +29,7 @@
 #include "asset_loader.h"
 #include "console_log.h"
 #include "gl_loader.h"   // LoadGlFunctions + modern-GL pointers; pulls in <gl/GL.h>
+#include "pcm_source_anim.h"  // GetCurrentAnimItem — the transport→current-item query (Story 4.3)
 #include "renderer.h"
 
 namespace rav {
@@ -72,6 +73,19 @@ Renderer g_renderer;
 // the user cancelled → a live but idle viewport. No file-picker UI inside Reaper
 // beyond this minimal native dialog until the Epic 5 browser.
 std::string g_model_path;
+
+// Story 4.3 transport-drive state. The displayed pose is derived from the playhead
+// every frame, never stored (architecture.md:305): g_display_time is just the last
+// transport-driven animTime, kept so the frame FREEZES when the playhead leaves the
+// span (AC3) instead of jumping. g_current_anim_path is the source path of the asset
+// currently loaded FROM an item (empty until the first item drives the view) — the
+// cheap string-compare gate that makes us reload only on a scrub onto a DIFFERENT
+// item, never every frame. g_transport_driven latches true the first time any RAV
+// item is current and STAYS true (transport mode is sticky — it never reverts to the
+// looping fixture, which would thrash reloads and contradict AC3's "hold").
+std::string g_current_anim_path;
+double      g_display_time     = 0.0;
+bool        g_transport_driven = false;
 
 UINT_PTR g_timer_id = 0;
 int g_client_w = kInitialWidth;
@@ -173,7 +187,52 @@ void RenderTick()
     // this (single render) thread, so no per-frame wglMakeCurrent is needed.
     if (!g_hdc || !g_hglrc) return;
 
-    g_renderer.RenderFrame(static_cast<float>(ElapsedSeconds()), g_client_w, g_client_h);
+    // Story 4.3 — poll the transport for the RAV item under the playhead, SYNCHRONOUSLY
+    // right before drawing (NFR-P5: no async between the playhead read and the draw,
+    // architecture.md:1015). This runs on the main UI pump (the NULL-hwnd timer Reaper
+    // dispatches), so the Reaper item APIs GetCurrentAnimItem calls are a correct
+    // main-thread call — do NOT move this onto a worker thread.
+    std::string item_path;
+    double item_time = 0.0;
+    if (GetCurrentAnimItem(item_path, item_time)) {
+        if (item_path != g_current_anim_path) {
+            // Item changed (first item, or a scrub onto a DIFFERENT source) → (re)load
+            // its asset. This is the COLD path — gated by the cheap string compare so a
+            // per-frame LoadAsset (which would blow NFR-P5 and thrash VRAM) never happens.
+            // The full GPU load is safe HERE — unlike 4.2's GL-free file-drop — because
+            // RenderTick runs with the viewer's WGL context current on this thread, which
+            // is exactly what LoadAsset/SetAsset require (AC2).
+            LoadResult r = LoadAsset(item_path);
+            if (r.asset) {
+                g_renderer.SetAsset(std::move(*r.asset));
+                LogInfo("now showing %s", item_path.c_str());
+            } else {
+                // A malformed file logs ONCE and leaves the previous asset up (AR17) —
+                // never a per-frame retry storm. The literal "reload only on path change"
+                // alone would re-attempt every frame while this item stays under the
+                // playhead (its path never matches), so advance the gate on FAILURE too
+                // (Dev Notes "Previous-story intelligence" / cold-path hardening).
+                LogError("load failed [%s]: %s", LoadErrorCategoryName(r.category),
+                         r.detail.c_str());
+            }
+            // Advance the gate to the current item's path whether the load succeeded or
+            // failed — either way we have "handled" this path and must not retry it every
+            // frame; a later scrub onto a different path re-arms the reload.
+            g_current_anim_path = item_path;
+        }
+        g_display_time     = item_time;  // playhead-driven, already clamped to [0, itemLength]
+        g_transport_driven = true;       // sticky once any RAV item has driven the view
+    }
+    // Not found → HOLD: leave g_display_time and g_current_anim_path unchanged so the
+    // last in-span frame (already at the boundary under continuous scrubbing) freezes
+    // (AC3). Do NOT revert to the looping fixture here — reload thrash + breaks "hold".
+
+    // Before any RAV item is ever current, g_transport_driven is false → the startup
+    // dialog fixture renders free-running with the Epic-3 loop (AC5 preserved). Once an
+    // item drives the view it is sticky: transport time, clamp (no loop).
+    g_renderer.RenderFrame(
+        static_cast<float>(g_transport_driven ? g_display_time : ElapsedSeconds()),
+        /*loop=*/!g_transport_driven, g_client_w, g_client_h);
     SwapBuffers(g_hdc);
 
     ++g_frame_count;
@@ -299,6 +358,11 @@ bool StartRendering(HWND hwnd)
     // OpenViewerWindow before the window was created). A bad/missing file must NEVER
     // bail the window or crash Reaper (AR17): LoadAsset is no-throw, so we just log
     // one line and keep a blank-but-live viewport. Empty path = the user cancelled.
+    //
+    // This is the NO-ITEM FALLBACK (Story 4.3): until a RAV item is under the playhead,
+    // g_transport_driven is false and RenderTick renders this fixture free-running (the
+    // Epic-3 loop, AC5). Once an item drives the view, transport mode is sticky and this
+    // fixture is never shown again — see RenderTick.
     if (!g_model_path.empty()) {
         LoadResult result = LoadAsset(g_model_path);
         if (result.asset) {

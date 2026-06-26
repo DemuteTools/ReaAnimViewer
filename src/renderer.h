@@ -42,7 +42,13 @@ public:
     // viewport from width/height and recomputes projection on aspect change so a
     // resize keeps the correct aspect ratio. Rebuilds the view from cam_ EVERY frame
     // (a drag moves the camera). No allocation on this path (D2 hot-path).
-    void RenderFrame(float time_seconds, int width, int height);
+    //
+    // anim_time_seconds is the time to pose the rig at (seconds). loop selects how a
+    // time outside the clip is handled (Story 4.3): loop==false (transport-driven)
+    // CLAMPS to [0, duration] so the rig HOLDS the first/last frame at the item's
+    // ends (AC3); loop==true keeps the Epic-3 free-running fmod loop used by the
+    // no-item fixture fallback.
+    void RenderFrame(float anim_time_seconds, bool loop, int width, int height);
 
     // Mutable access to the orbit camera so the window proc can drive it from mouse
     // input (g_renderer.Camera().Orbit(...) / .Zoom(...) / .Pan(...)).

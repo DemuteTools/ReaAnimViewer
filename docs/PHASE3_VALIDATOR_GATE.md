@@ -160,3 +160,54 @@ real clip duration, confirmed **with the viewer closed**), named after the file;
 clip-less / static `.glb` falls back to the 1 s placeholder (no 0-length, no crash);
 `.txt`/`.wav` behave Reaper-normal. The in-Reaper pass IS the gate (AR19) — display +
 playhead → frame is Story 4.3.
+
+## 6. Story 4.3 — playhead position drives the displayed animation frame
+
+Story 4.3 wires the whole chain together: the **Reaper transport drives both which
+asset the viewer shows and which frame of it**. Open the viewer, drop an animation,
+and **press Play / scrub the cursor** — the rig moves with the transport,
+frame-accurate, and **holds at the ends**. The displayed time is `animTime =
+playheadTime − itemStart`, clamped to `[0, itemLength]`, recomputed **every frame,
+never stored** — there is no internal free-running clock once an item is driving the
+view. The displayed asset is the one **loaded from the source file of the RAV item
+spanning the playhead** (loaded on the render thread, where the GL context is
+current), so scrubbing onto a different item **switches the asset**.
+
+Still **out of scope** (do **not** fail 4.3 for these): **overlap / track-priority**
+among multiple items (first RAV item spanning the playhead wins — that is **Story
+4.5**); native **move / resize / color / rename + audio/MIDI coexistence**
+validation (**Story 4.4**, though most works for free now); per-item
+`SaveState`/`LoadState` content (**Epic 6**); any browser/preview (**Epic 5**).
+
+**Suggested fixtures:**
+- *Animated clip(s):* a Mixamo / Demute clip of known duration (e.g. a ~4 s and a
+  ~1.5 s clip) — ideally **two different** files to test the asset switch.
+- *Static:* a static `.glb` with no animation (shows its single pose, must not crash).
+- *Foreign:* a `.wav` and a `.txt` (must still behave Reaper-normal).
+
+| # | Check | Pass criterion | AC |
+|---|---|---|---|
+| 1 | Play drives the frame | Drop an animation, open the viewer, **press Play**. The rig **animates in time with the transport** as the play cursor advances, smoothly (full window frame rate, continuous audio clock), and **loops with Reaper's loop**. | AC1 |
+| 2 | Scrub drives the frame | **Stop**, then **scrub the edit cursor** back and forth across the item. The displayed pose **tracks the cursor frame-accurately** (no perceptible lag — within ~one rendered frame, ≈16 ms). | AC1, AC4 |
+| 3 | Displayed asset = item under playhead | The viewer shows the **asset of the item the playhead is over** — not the dialog-picked fixture. (The startup fixture was just the no-item placeholder.) | AC2 |
+| 4 | Scrub onto a 2nd item switches the asset | Drop a **second, different** animation on another track. Scrub the cursor from the first item **onto the second** → the **displayed asset switches** to the second file (`now showing …` in the console). | AC2 |
+| 5 | Hold past the end | Scrub / play **past the end** of the item. The rig **holds the last frame** — it does **not** disappear, flicker to garbage, jump, or crash. | AC3 |
+| 6 | Hold before the start | Move the playhead **before the item's start**. The rig **holds the first frame** (same — no disappear/flicker/crash). | AC3 |
+| 7 | Static asset still renders | A **static `.glb`** item (no animation) under the playhead shows its **single pose** (it just doesn't move with the transport). | AC5 |
+| 8 | Foreign files still not hijacked | `.txt` / `.wav` still behave **Reaper-normal** (no item hijacked, no viewer effect). | AC5 |
+| 9 | No regression / scope-clean | Viewer still opens via `RAV: Open Viewer` and docks; camera orbit/zoom/pan/Reset still work; item **length + name** from 4.2 unchanged; register/unregister still symmetric (`-pcmsrc`, same pointer — `plugin_main.cpp` untouched); unload/quit does not crash. **No new dependency**; the only new symbols are the 8 transport/item `REAPERAPI_WANT_*`. Build clean at `/W3 /permissive-`. | AC5 |
+
+> **Scope note:** 4.3 makes **one** item under the playhead drive **which asset +
+> which frame** — that is the whole proof. **Overlap / priority** among multiple
+> items is **Story 4.5** (here, first match wins); native **move/resize** validation
+> is **Story 4.4**; `SaveState`/`LoadState` content is **Epic 6**. If a single item
+> plays/scrubs/holds and a second item switches the asset, 4.3 passes — even if
+> overlapping items don't yet pick by priority.
+
+**Result:** Story 4.3 — **PASS** (Antho, in-Reaper Windows validation, 2026-06-27).
+The playhead drives both the displayed asset and the frame: play/scrub move the rig
+with the transport, the ends hold, and scrubbing onto a second item switches the
+asset. The in-Reaper pass IS the gate (AR19): transport timing, scrub feel, and the
+hold-at-ends are only observable in-Reaper on Windows. On Linux only the CMake
+configure + the source/scope audit were checkable (the DLL/GL/transport link is
+host-stubbed, as in every prior Phase-2/3 story).

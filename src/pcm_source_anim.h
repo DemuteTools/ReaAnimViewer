@@ -15,6 +15,8 @@
 
 #pragma once
 
+#include <string>
+
 #include "reaper_api.h"  // pcmsrc_register_t, PCM_source (SDK types via reaper_plugin.h)
 
 namespace rav {
@@ -22,5 +24,19 @@ namespace rav {
 // Address of the single static pcmsrc_register_t. plugin_main passes the SAME
 // pointer to Register("pcmsrc", …) at load and ("-pcmsrc", …) at unload (AC3).
 pcmsrc_register_t* PcmSourceRegistration();
+
+// Story 4.3 — the read-only transport→current-item query the viewer polls each
+// render tick. Reads the playhead (play cursor while playing, edit cursor while
+// stopped) and walks the project's items for the FIRST RAV item spanning it
+// (single-item / first-match — overlap+priority is Story 4.5). On a match: fills
+// out_path with that item's source file path and out_anim_time with the
+// item-relative time CLAMPED to [0, itemLength] (FR10), and returns true. No
+// match → returns false, leaving both outs untouched.
+//
+// NO-THROW, MAIN-THREAD ONLY: it calls Reaper item APIs, so it must run on the
+// thread Reaper drives the UI pump on (the viewer's NULL-hwnd render timer is
+// dispatched there). It only READS Reaper state — it does not register anything
+// (the boundary rule keeps rec->Register in plugin_main.cpp).
+bool GetCurrentAnimItem(std::string& out_path, double& out_anim_time);
 
 }  // namespace rav

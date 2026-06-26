@@ -222,7 +222,7 @@ void Renderer::ResetCamera()
     cached_aspect_ = -1.0f;  // impossible aspect → force a projection rebuild next frame
 }
 
-void Renderer::RenderFrame(float time_seconds, int width, int height)
+void Renderer::RenderFrame(float anim_time_seconds, bool loop, int width, int height)
 {
     if (width  < 1) width  = 1;
     if (height < 1) height = 1;
@@ -269,15 +269,24 @@ void Renderer::RenderFrame(float time_seconds, int width, int height)
     glUniform1i(u_base_color_tex_, 0);
 
     // Per-frame D13 pose: compute the skinning palette once (shared by every skinned
-    // mesh of this skeleton) and upload it before the draw loop. t loops the clip from
-    // the free-running frame clock for continuous visual validation — transport-driven
-    // t (playhead − itemStart) is Epic 4 (§F). ComputePose writes into pre-sized buffers
-    // (no alloc, D2); it no-ops on a size mismatch, leaving palette_ stale, so pose_valid
+    // mesh of this skeleton) and upload it before the draw loop. The caller selects
+    // how a time outside the clip is handled (Story 4.3): the transport path passes
+    // loop==false so t CLAMPS to [0, duration] and the rig HOLDS the last frame at the
+    // item's end — and an item resized LONGER than the clip (Story 4.4) still holds,
+    // not wraps (AC3); the no-item fixture fallback passes loop==true to keep the
+    // Epic-3 free-running fmod loop. ComputePose writes into pre-sized buffers (no
+    // alloc, D2); it no-ops on a size mismatch, leaving palette_ stale, so pose_valid
     // gates whether any mesh is allowed to draw skinned this frame (§E / AC7).
     bool pose_valid = false;
     if (!asset_.skeleton.bones.empty() && !asset_.animations.empty()) {
         const SceneAnimation& clip = asset_.animations[0];
-        const float t = (clip.duration > 0.0f) ? std::fmod(time_seconds, clip.duration) : 0.0f;
+        float t = anim_time_seconds;
+        if (clip.duration > 0.0f) {
+            t = loop ? std::fmod(anim_time_seconds, clip.duration)
+                     : std::min(std::max(anim_time_seconds, 0.0f), clip.duration);
+        } else {
+            t = 0.0f;
+        }
         ComputePose(asset_.skeleton, clip, t, palette_, pose_scratch_);
         // pose_valid must mirror ComputePose's FULL precondition, not just the palette
         // size SetAsset already guaranteed: a clip whose channels don't match the bone

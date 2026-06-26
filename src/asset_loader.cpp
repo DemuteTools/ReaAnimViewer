@@ -20,7 +20,10 @@
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
+#include <string>
 #include <system_error>
+#include <unordered_map>  // bone name -> global skeleton index (D1 skin remap)
+#include <unordered_set>
 #include <vector>
 
 #include <assimp/Importer.hpp>
@@ -60,6 +63,134 @@ glm::mat4 ConvertAssimpMatrix(const aiMatrix4x4& m)
                      m.a2, m.b2, m.c2, m.d2,
                      m.a3, m.b3, m.c3, m.d3,
                      m.a4, m.b4, m.c4, m.d4);  // column k built from assimp row k
+}
+
+// Element-wise near-equality for the shared-bone offset-divergence check (§B/§F).
+bool MatNearlyEqual(const glm::mat4& a, const glm::mat4& b)
+{
+    for (int c = 0; c < 4; ++c)
+        for (int r = 0; r < 4; ++r)
+            if (std::fabs(a[c][r] - b[c][r]) > 1e-4f) return false;
+    return true;
+}
+
+// DFS the node tree pre-order, indexing a node the first time it is seen as a skin
+// joint. Pre-order makes a node land in `bones` before any of its descendants, so
+// parentIdx < index holds for every non-root bone — the invariant D13's single
+// forward global-matrix pass relies on. `nearest_joint` is the global index of the
+// closest joint ancestor (-1 at the root); intermediate non-joint nodes pass it
+// through unchanged, so parentIdx points at the nearest *joint*, not the raw parent
+// node (the skipped nodes' transforms are 3.2's concern).
+void DfsIndexJoints(const aiNode* node, int nearest_joint,
+                    const std::unordered_set<std::string>& joint_names,
+                    std::unordered_map<std::string, int>& name_to_index,
+                    SceneSkeleton& skel)
+{
+    int parent_for_children = nearest_joint;
+    const std::string nm = node->mName.C_Str();
+    if (joint_names.count(nm) && !name_to_index.count(nm)) {
+        const int gidx = static_cast<int>(skel.bones.size());
+        name_to_index[nm] = gidx;
+        SceneBone bone;
+        bone.parentIdx = nearest_joint;
+        bone.name = nm;  // as-authored UTF-8, no transliteration (FR5/AR13)
+        skel.bones.push_back(std::move(bone));  // inverseBindMatrix filled below
+        parent_for_children = gidx;
+    }
+    for (unsigned i = 0; i < node->mNumChildren; ++i)
+        DfsIndexJoints(node->mChildren[i], parent_for_children, joint_names,
+                       name_to_index, skel);
+}
+
+// Builds the flat SceneSkeleton + a bone-name -> global-index map (Task 1 / §B).
+// The bones are the skin joints — the dedup'd union of every mesh's aiBone names —
+// ordered parent-before-child by the node-tree DFS above. The inverse-bind matrix is
+// aiBone::mOffsetMatrix passed through the ONE ConvertAssimpMatrix boundary exactly
+// once (AC2/D3/AR9). Returns an empty skeleton for a boneless (static) file (FR6).
+SceneSkeleton BuildSkeleton(const aiScene* scene,
+                            std::unordered_map<std::string, int>& name_to_index)
+{
+    SceneSkeleton skel;
+
+    // 1. Collect the skin-joint names across every mesh's bones (dedup by name).
+    std::unordered_set<std::string> joint_names;
+    for (unsigned mi = 0; mi < scene->mNumMeshes; ++mi) {
+        const aiMesh* mesh = scene->mMeshes[mi];
+        if (!mesh) continue;
+        for (unsigned bi = 0; bi < mesh->mNumBones; ++bi)
+            if (const aiBone* b = mesh->mBones[bi])  // null slot on a malformed file
+                joint_names.insert(b->mName.C_Str());
+    }
+    if (joint_names.empty()) return skel;  // static path — empty skeleton (FR6)
+
+    // 2. Assign global indices by DFS pre-order (parent-before-child, §B).
+    DfsIndexJoints(scene->mRootNode, -1, joint_names, name_to_index, skel);
+
+    // 3. Fill inverse-bind matrices from each bone's FIRST occurrence. A joint that
+    //    is in mBones but absent from the node tree (malformed file) was missed by
+    //    the DFS — append it as a root so its weights still resolve, and warn.
+    std::unordered_set<std::string> bind_set;   // names whose matrix is already set
+    std::unordered_set<std::string> diverged;   // warn-once guard (§F)
+    for (unsigned mi = 0; mi < scene->mNumMeshes; ++mi) {
+        const aiMesh* mesh = scene->mMeshes[mi];
+        if (!mesh) continue;
+        for (unsigned bi = 0; bi < mesh->mNumBones; ++bi) {
+            const aiBone* b = mesh->mBones[bi];
+            if (!b) continue;  // null bone slot: a raw deref here is an SEH access
+                               // violation (UB), NOT catchable — never cross the host
+                               // boundary on a malformed file (AR18/NFR-R1).
+            const std::string nm = b->mName.C_Str();
+            const glm::mat4 ibm = ConvertAssimpMatrix(b->mOffsetMatrix);
+            auto it = name_to_index.find(nm);
+            if (it == name_to_index.end()) {
+                const int gidx = static_cast<int>(skel.bones.size());
+                name_to_index[nm] = gidx;
+                SceneBone bone;
+                bone.parentIdx = -1;
+                bone.name = nm;
+                bone.inverseBindMatrix = ibm;
+                skel.bones.push_back(std::move(bone));
+                bind_set.insert(nm);
+                LogWarn("skeleton: bone '%s' absent from node tree - appended as root",
+                        nm.c_str());
+                continue;
+            }
+            if (!bind_set.count(nm)) {
+                skel.bones[it->second].inverseBindMatrix = ibm;
+                bind_set.insert(nm);
+            } else if (!diverged.count(nm) &&
+                       !MatNearlyEqual(skel.bones[it->second].inverseBindMatrix, ibm)) {
+                // Same bone, different offset across meshes — keep the first; a shared
+                // palette can't honor both (per-mesh palettes are a 3.3 call, §F).
+                diverged.insert(nm);
+                LogWarn("skeleton: bone '%s' has divergent bind matrices across meshes"
+                        " - keeping first", nm.c_str());
+            }
+        }
+    }
+    return skel;
+}
+
+// The validator hook (Task 3 / §E, AC4): on a skinned load, dump the parsed skeleton
+// through the [RAV] info channel so the bone count / names / parent links can be
+// diffed by eye against Blender's Outliner or FBX Review — the only way to audit
+// AC1 before 3.3 draws the rig deformed. Non-ASCII names print as their raw UTF-8
+// bytes (the FR5 check). Silent for a boneless file, keeping the Epic 2 console clean.
+void DumpSkeleton(const SceneSkeleton& skel, size_t skinned_verts)
+{
+    LogInfo("skeleton: %zu bones, %zu skinned verts", skel.bones.size(), skinned_verts);
+    for (size_t i = 0; i < skel.bones.size(); ++i) {
+        const SceneBone& b = skel.bones[i];
+        const bool has_parent =
+            b.parentIdx >= 0 && b.parentIdx < static_cast<int>(skel.bones.size());
+        // parentIdx < i must hold for every non-root bone (DFS pre-order invariant);
+        // surface a violation rather than letting 3.2's forward pass read it as valid.
+        if (has_parent && b.parentIdx >= static_cast<int>(i))
+            LogWarn("skeleton: bone [%zu] '%s' has parent %d >= index (ordering broken)",
+                    i, b.name.c_str(), b.parentIdx);
+        LogInfo("  [%2zu] %-20s parent %3d (%s)", i, b.name.c_str(), b.parentIdx,
+                has_parent ? skel.bones[b.parentIdx].name.c_str() : "root");
+    }
 }
 
 // Reads diffuse factor + derives a per-material Blinn-Phong specular into a
@@ -223,6 +354,7 @@ GpuImage ResolveAndUploadDiffuse(const aiScene* scene, const aiMaterial* mat,
 // baked positions. Normals use the inverse-transpose so non-uniform node scale
 // stays correct (matches the renderer's u_normal convention).
 void AppendMesh(const aiMesh* mesh, const glm::mat4& world,
+                const std::unordered_map<std::string, int>& bone_index,
                 std::vector<SceneVertex>& verts, std::vector<uint32_t>& indices,
                 glm::vec3& aabb_min, glm::vec3& aabb_max, bool& aabb_seeded)
 {
@@ -242,7 +374,8 @@ void AppendMesh(const aiMesh* mesh, const glm::mat4& world,
             v.uv = glm::vec2(mesh->mTextureCoords[0][vi].x,
                              mesh->mTextureCoords[0][vi].y);
         }
-        // boneIds / boneWeights stay zero-filled — static path (FR6).
+        // boneIds / boneWeights left zero (SceneVertex v{}); the skin scatter below
+        // fills them for skinned meshes, and a boneless mesh keeps the static path.
         verts.push_back(v);
 
         // Only finite positions grow the AABB: a corrupt file with a NaN/Inf vertex
@@ -252,6 +385,36 @@ void AppendMesh(const aiMesh* mesh, const glm::mat4& world,
             continue;
         if (!aabb_seeded) { aabb_min = aabb_max = wp; aabb_seeded = true; }
         else { aabb_min = glm::min(aabb_min, wp); aabb_max = glm::max(aabb_max, wp); }
+    }
+
+    // Scatter skin influences into the global bone slots (Task 2 / §C). assimp's
+    // per-mesh bone index is local; remap to the global skeleton index via the §B
+    // name map so 3.3 can address its matrix palette as palette[boneId]. With
+    // JoinIdenticalVertices active, mWeights[].mVertexId is in the same index space
+    // as mVertices, so `base + id` lands on the vertex AppendMesh just pushed.
+    for (unsigned lb = 0; lb < mesh->mNumBones; ++lb) {
+        const aiBone* b = mesh->mBones[lb];
+        if (!b) continue;                        // null bone slot on a malformed file (AR18)
+        const auto it = bone_index.find(b->mName.C_Str());
+        if (it == bone_index.end()) continue;   // skeleton built first → always found
+        const int gb = it->second;
+        for (unsigned w = 0; w < b->mNumWeights; ++w) {
+            const aiVertexWeight& vw = b->mWeights[w];
+            // Reject zero/negative AND non-finite weights: a NaN passes `<= 0`
+            // (compares false), then defeats the `== 0.0f` free-slot sentinel below
+            // and would upload as a NaN-deformed vertex in 3.3.
+            if (!std::isfinite(vw.mWeight) || vw.mWeight <= 0.0f) continue;
+            const size_t v = base + vw.mVertexId;
+            if (v >= verts.size()) continue;     // defensive against a stale vertex id
+            SceneVertex& vert = verts[v];
+            for (int s = 0; s < 4; ++s) {        // next free slot; LimitBoneWeights caps
+                if (vert.boneWeights[s] == 0.0f) {   // at 4, but never write past index 3
+                    vert.boneIds[s]     = gb;
+                    vert.boneWeights[s] = vw.mWeight;
+                    break;
+                }
+            }
+        }
     }
 
     for (unsigned fi = 0; fi < mesh->mNumFaces; ++fi) {
@@ -273,9 +436,11 @@ struct PendingMesh {
     std::vector<SceneVertex> verts;
     std::vector<uint32_t>    indices;
     uint32_t                 materialIdx;
+    bool                     skinned = false;  // mesh->mNumBones > 0 (D13/FR6 selector)
 };
 
 void WalkBake(const aiScene* scene, const aiNode* node, const glm::mat4& parent_world,
+              const std::unordered_map<std::string, int>& bone_index,
               std::vector<PendingMesh>& out,
               glm::vec3& aabb_min, glm::vec3& aabb_max, bool& aabb_seeded)
 {
@@ -291,14 +456,16 @@ void WalkBake(const aiScene* scene, const aiNode* node, const glm::mat4& parent_
         if (!mesh) continue;
         PendingMesh pm;
         pm.materialIdx = mesh->mMaterialIndex;
-        AppendMesh(mesh, world, pm.verts, pm.indices,
+        pm.skinned     = (mesh->mNumBones > 0);
+        AppendMesh(mesh, world, bone_index, pm.verts, pm.indices,
                    aabb_min, aabb_max, aabb_seeded);
         if (!pm.verts.empty() && !pm.indices.empty())
             out.push_back(std::move(pm));
     }
 
     for (unsigned i = 0; i < node->mNumChildren; ++i)
-        WalkBake(scene, node->mChildren[i], world, out, aabb_min, aabb_max, aabb_seeded);
+        WalkBake(scene, node->mChildren[i], world, bone_index, out,
+                 aabb_min, aabb_max, aabb_seeded);
 }
 
 // Uploads one CPU mesh to a fresh VBO/IBO. Returns false (handles cleaned up by
@@ -338,7 +505,7 @@ bool UploadMesh(const PendingMesh& pm, SceneMesh& out)
 
     out.indexCount  = static_cast<uint32_t>(pm.indices.size());
     out.materialIdx = pm.materialIdx;
-    out.skinned     = false;  // Story 2.1 is always the static path (FR6)
+    out.skinned     = pm.skinned;  // data for 3.3's path selection; drives nothing yet
     return true;
 }
 
@@ -398,11 +565,17 @@ LoadResult LoadAsset(const std::string& path)
             return {std::nullopt, LoadErrorCategory::UnsupportedFormat,
                     "file contains no meshes"};
 
+        // Parse the skin skeleton first: WalkBake's per-vertex weight scatter needs
+        // the bone-name -> global-index map. Empty for a boneless file (FR6 static
+        // path) — the scatter then no-ops and skinned stays false everywhere.
+        std::unordered_map<std::string, int> bone_index;
+        SceneSkeleton skeleton = BuildSkeleton(scene, bone_index);
+
         // Bake all node world transforms into model-space CPU meshes + union AABB.
         std::vector<PendingMesh> pending;
         glm::vec3 aabb_min(0.0f), aabb_max(0.0f);
         bool aabb_seeded = false;
-        WalkBake(scene, scene->mRootNode, glm::mat4(1.0f), pending,
+        WalkBake(scene, scene->mRootNode, glm::mat4(1.0f), bone_index, pending,
                  aabb_min, aabb_max, aabb_seeded);
 
         if (pending.empty())
@@ -450,6 +623,18 @@ LoadResult LoadAsset(const std::string& path)
                         "GL buffer upload failed (out of GPU memory?)"};
             asset.meshes.push_back(std::move(sm));
         }
+
+        // Audit the parsed skeleton (skinned files only — a static load stays silent).
+        if (!skeleton.bones.empty()) {
+            size_t skinned_verts = 0;
+            for (const PendingMesh& pm : pending)
+                for (const SceneVertex& v : pm.verts)
+                    if (v.boneWeights[0] != 0.0f || v.boneWeights[1] != 0.0f ||
+                        v.boneWeights[2] != 0.0f || v.boneWeights[3] != 0.0f)
+                        ++skinned_verts;
+            DumpSkeleton(skeleton, skinned_verts);
+        }
+        asset.skeleton = std::move(skeleton);
 
         return {std::move(asset), LoadErrorCategory::Ok, {}};
     }

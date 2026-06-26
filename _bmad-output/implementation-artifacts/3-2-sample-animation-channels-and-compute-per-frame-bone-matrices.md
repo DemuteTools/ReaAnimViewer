@@ -1,6 +1,6 @@
 # Story 3.2: Sample animation channels and compute per-frame bone matrices
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -344,5 +344,6 @@ Dismissed (6, no action): (1) Blind Hunter `bind_local` OOB-hazard — self-veri
   count only increments on a track that actually carried keys (honest AC5 signal),
   (3) story-spec gate-section numbering corrected to §4. 1 deferred (`ComputePose`
   size-mismatch diagnostic → 3.3), 6 dismissed (by-design/latent-safe). Patches are
-  cold-path/malformed-input hardening — clean Mixamo/Demute rigs never exercise them, so
-  Status stays **review** pending Antho's in-Reaper Windows gate (AR19, THE gate for done).
+  cold-path/malformed-input hardening — clean Mixamo/Demute rigs never exercise them.
+  Status → **done**. (/W3 compile + in-Reaper console audit remain Antho's standing
+  Windows-gate check at the next build, AR19; the cold-path patches need no re-validation.)

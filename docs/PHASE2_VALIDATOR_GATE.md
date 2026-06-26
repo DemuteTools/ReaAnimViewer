@@ -160,7 +160,47 @@ pose varies with time — the sampler is live, not frozen).
 > + slerp, clamp), and the GPU palette upload + skinning shader + transport-driven `t`
 > (all 3.3 / Epic 4).
 
-## 5. Recording the result
+## 5. Story 3.3 — GPU vertex skinning (the moving rig)
+
+Story 3.3 is the **payoff of Epic 3 and the first story whose success signal is motion
+on screen.** It consumes 3.1's skin data and 3.2's `ComputePose` unchanged: every frame
+the renderer computes the **skinning palette** (`palette[i] = globalMat[i] *
+inverseBindMatrix[i]`) into pre-sized buffers (D2 zero-alloc), uploads it as a
+`uniform mat4 u_bones[128]`, and the vertex shader **skins each vertex** by its bone
+ids/weights (D13 linear blend skinning). `t` is driven by the **free-running frame
+clock** (`fmod(time, duration)`), so the rig **loops continuously** — transport-driven
+`t` is Epic 4. The one structural change is **vertex-space reconciliation**: skinned-mesh
+vertices are now stored **un-baked** (mesh-local), so the palette — not the node bake —
+places and deforms them; the static path stays world-baked and **byte-for-byte**
+unchanged (§C / AC3).
+
+This is the **dominant-risk gate**: the Linux dev box can compile and source-audit but
+**cannot see the deformation** — the visual match to Blender / FBX Review is yours to
+judge in Reaper, and **1–2 iterations at this gate are expected** (see §C "If it's
+wrong": the `globalInverse` knob is the first thing to try for a displaced FBX rig).
+
+| # | Check | Pass criterion | AC |
+|---|---|---|---|
+| 1 | Rig deforms | Load the validated animated rig (Mixamo `Hip Hop Dancing.fbx` and/or a Demute clip). The mesh **visibly animates and loops** — limbs follow the skeleton, no frozen, exploded, or origin-collapsed geometry. | AC1 |
+| 2 | Matches the reference | The deformation **matches Blender / FBX Review** for the same fixture: correct **scale, orientation, placement**, and joint motion. **Not** mirrored, not 100× too big/small, not collapsed at the origin (AC4 — a rig that "deforms but wrong" is a FAIL). | AC1 / AC4 |
+| 3 | ≥60 fps | While animating at the ~20k-tri / 4-material / ~50-bone target, the docked viewport's `[RAV] … fps` line holds **≥60 fps** on the reference workstation. Record the actual fps + the fixture's tri/bone count. | AC2 (NFR-P1) |
+| 4 | Static unchanged | An Epic 2 static fixture (`Box`, `Duck`, `BoxTextured`) renders **exactly as before** — it takes `u_skinned=0`, the skinning shader branch is dead, baked verts unchanged. No regression. | AC3 |
+| 5 | Bone cap survivable | A >128-bone rig (if available) logs the cap warning **once** at load and renders best-effort **without crashing or garbage**. Note if no such fixture is on hand (Mixamo standard = 65, the test rig = 99 — both under the cap). | AC6 |
+| 6 | Degenerate-clip survivable | A skinned-but-**clip-less** rig renders in **bind pose** (no motion, no crash, via the static path); a malformed rig (empty/size-mismatched clip) degrades to a console line and **Reaper survives** — no NaN explosion on screen. | AC7 |
+| 7 | Single-DLL / warning-free | `build\Release\` holds only `reaper_animviewer.dll` (no new DLL); clean at `/W3 /permissive-`; **no new dependency**; the GL loader gains **exactly one** row (`glVertexAttribIPointer`) and the **CMake source list is unchanged** (no new `.cpp`). | AC8 |
+
+> **Scope note (mirrors §3/§4):** Story 3.3 **closes Epic 3** — the rig now **moves**. The
+> success signal is **correct deformation matching the reference**, not just "different".
+> `t` is a **free-running loop** here; **transport-driven `t`** (`playhead − itemStart`,
+> clamped, via a `PCM_source`) is **Epic 4** (FR10). Deliberately deferred, may surface
+> as known non-blocking notes: **multi-clip selection / looping modes / blending /
+> cubic-step interpolation** (MVP = clip 0, linear T/S + slerp R, clamp-then-loop); a
+> **>128-bone remap** (3.3 caps + warns; a UBO/SSBO partition is post-MVP);
+> **per-mesh / divergent-bind palettes** (one shared palette per skeleton is the MVP);
+> and **exact normal matrices under heavy non-uniform bone scale** (`mat3(skin)` is
+> correct for rigid/uniform-scale bones — the rigs in practice).
+
+## 6. Recording the result
 
 Per project convention (`feedback_trust_ingame_validation`): when these checks pass in
 real Reaper, **that is the gate** — note the date and the fixtures used here, and the

@@ -78,6 +78,7 @@ typedef ptrdiff_t GLintptr;
     X(void,   glBindVertexArray, (GLuint)) \
     X(void,   glEnableVertexAttribArray, (GLuint)) \
     X(void,   glVertexAttribPointer, (GLuint, GLint, GLenum, GLboolean, GLsizei, const void*)) \
+    X(void,   glVertexAttribIPointer, (GLuint, GLint, GLenum, GLsizei, const void*)) \
     X(void,   glActiveTexture, (GLenum)) \
     X(void,   glGenerateMipmap, (GLenum))
 
@@ -115,6 +116,7 @@ RAV_GL_FUNCS(RAV_GL_DECL)
 #define glBindVertexArray         rav_glBindVertexArray
 #define glEnableVertexAttribArray rav_glEnableVertexAttribArray
 #define glVertexAttribPointer     rav_glVertexAttribPointer
+#define glVertexAttribIPointer    rav_glVertexAttribIPointer
 #define glActiveTexture           rav_glActiveTexture
 #define glGenerateMipmap          rav_glGenerateMipmap
 

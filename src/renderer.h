@@ -11,6 +11,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #ifdef _WIN32
 
@@ -61,6 +62,12 @@ private:
     Asset          asset_;
     OrbitCamera    cam_;         // D14 orbit state; the view is derived from it each frame
 
+    // D13 skinning palette + its forward-pass scratch. Sized ONCE in SetAsset to the
+    // skeleton's bone count (cold load path) and reused every frame by ComputePose, so
+    // RenderFrame stays allocation-free (D2). Empty for a static asset.
+    std::vector<glm::mat4> palette_;
+    std::vector<glm::mat4> pose_scratch_;
+
     // view_/view_pos_/view_proj_ are DERIVED from cam_ each frame in RenderFrame (a
     // drag moves the camera). Only the projection is cached across frames and rebuilt
     // on an aspect change (a resize) — it does not depend on the camera.
@@ -81,6 +88,8 @@ private:
     int u_view_pos_      = -1;
     int u_base_color_tex_ = -1;  // sampler2D bound to texture unit 0
     int u_has_texture_   = -1;   // 0 → flat factor (textureless / failed-resolve)
+    int u_bones_         = -1;   // mat4[128] skinning palette (D13); -1 if driver elides
+    int u_skinned_       = -1;   // 0 → static Epic 2 path (bit-identical), 1 → skin in shader
 };
 
 }  // namespace rav

@@ -6,6 +6,13 @@ trigger condition for when it should be picked up.
 
 ---
 
+## Deferred from: code review of story-3.3 (2026-06-26)
+
+- **Palette uploaded without an `isfinite` screen** [`src/renderer.cpp` `RenderFrame`]. The per-frame `ComputePose` output is uploaded verbatim via `glUniformMatrix4fv`; inputs are guarded (3.1 weight `isfinite`, 3.2 tps-finite + quat-normalize) but a degenerate zero-scale/sheared bind bone could still compose a NaN into the palette → on-screen NaN-explosion vs AC7. **Trigger:** if a rig explodes/vanishes at the AR19 visual gate, add a cheap finite-screen (or log `palette_[0]` + AABB) as a §C diagnostic; a per-frame scan over ≤128 mat4 is the cost to weigh.
+- **Clip-less / non-canonical skinned rig misplaced via the static fallback** [`src/renderer.cpp` + `src/asset_loader.cpp` §C]. When `pose_valid` is false (no clip / no-op), a skinned mesh draws through the static path at mesh-local space, which equals bind pose ONLY for canonical (identity-bind-palette) skins. A rig with a non-identity mesh→armature bind renders displaced/mis-scaled. **Trigger:** the AR19 in-Reaper visual gate — if the validated FBX comes out displaced, walk the §C knob order (`globalInverse` premultiply first for FBX). This is the dominant-risk gate item, not a Linux-side fix.
+
+---
+
 ## Deferred from: code review of story-3.2 (2026-06-26)
 
 - **`ComputePose` size-mismatch no-op has no diagnostic** [`src/animation.h`]. On a buffer/channel size mismatch, `ComputePose` returns without writing, so a caller's pre-zeroed palette/scratch read as a *valid-looking* all-zero pose (0 is finite, root tx (0,0,0)) — silently masking a wiring bug. Harmless in 3.2 (the only caller, `DumpAnimation`, always pre-sizes to `bones.size()`). **Trigger:** Story 3.3, when a live per-frame caller (`Animator`/`PoseBuffer` sized at `SetAsset`) is wired into the render loop — add an assert/once-warn on mismatch so a mis-sized buffer is loud, not a frozen rig.

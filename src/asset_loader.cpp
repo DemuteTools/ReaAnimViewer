@@ -677,7 +677,13 @@ void WalkBake(const aiScene* scene, const aiNode* node, const glm::mat4& parent_
         PendingMesh pm;
         pm.materialIdx = mesh->mMaterialIndex;
         pm.skinned     = (mesh->mNumBones > 0);
-        AppendMesh(mesh, world, bone_index, pm.verts, pm.indices,
+        // A skinned mesh stays in mesh-local space (identity bake): the per-frame
+        // palette globalMat*inverseBindMatrix already carries each vertex from
+        // mesh-local to animated world space, so baking the node-world transform here
+        // would apply the hierarchy twice and fold/explode the rig (§C). A static mesh
+        // keeps world-baking exactly as in Epic 2 (byte-for-byte → AC3).
+        const glm::mat4 bake = pm.skinned ? glm::mat4(1.0f) : world;
+        AppendMesh(mesh, bake, bone_index, pm.verts, pm.indices,
                    aabb_min, aabb_max, aabb_seeded);
         if (!pm.verts.empty() && !pm.indices.empty())
             out.push_back(std::move(pm));

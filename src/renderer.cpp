@@ -4,6 +4,7 @@
 
 #ifdef _WIN32
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 
@@ -11,7 +12,9 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
-#include "gl_loader.h"  // modern-GL pointers routed via the #define table
+#include "animation.h"    // ComputePose — the per-frame D13 palette (header-only, glm-pure)
+#include "console_log.h"  // LogWarn for the >128-bone palette cap (AC6/§F)
+#include "gl_loader.h"    // modern-GL pointers routed via the #define table
 
 namespace rav {
 namespace {
@@ -23,17 +26,45 @@ const char* kVertexSrc = R"GLSL(
 layout(location=0) in vec3 a_pos;
 layout(location=1) in vec3 a_normal;
 layout(location=2) in vec2 a_uv;
+layout(location=3) in ivec4 a_boneIds;     // integer attribute — fed via glVertexAttribIPointer
+layout(location=4) in vec4 a_boneWeights;
 uniform mat4 u_mvp;
-uniform mat4 u_model;     // world position for the specular view vector
-uniform mat3 u_normal;    // transpose(inverse(mat3(model))) — correct under non-uniform scale
+uniform mat4 u_model;       // world position for the specular view vector
+uniform mat3 u_normal;      // transpose(inverse(mat3(model))) — correct under non-uniform scale
+uniform mat4 u_bones[128];  // D13 skinning palette (globalMat * inverseBind) per skeleton
+uniform int  u_skinned;     // 0 → static path is bit-identical to Epic 2 (AC3)
 out vec3 v_worldpos;
 out vec3 v_normal;
 out vec2 v_uv;
 void main() {
-    v_worldpos = vec3(u_model * vec4(a_pos, 1.0));
-    v_normal   = u_normal * a_normal;
+    vec3 pos = a_pos;
+    vec3 nrm = a_normal;
+    if (u_skinned != 0) {
+        // Linear blend skinning (D13): weight-blend the <=4 influencing palette
+        // matrices, then transform in mesh-local space BEFORE u_model/u_mvp (the
+        // skinned verts are stored un-baked there, §C).
+        // Clamp to [0,127] before indexing: a >128-bone rig (capped at upload, §F)
+        // can carry a global bone id >= 128, and dynamic indexing past u_bones[128]
+        // is undefined behaviour in GLSL. Clamping pins the overflow to the cap so it
+        // degrades to best-effort instead of reading garbage/crashing (AC6). For the
+        // clean <=128-bone fixtures every id is already in range — this is a no-op.
+        ivec4 ids = clamp(a_boneIds, ivec4(0), ivec4(127));
+        mat4 skin = a_boneWeights.x * u_bones[ids.x]
+                  + a_boneWeights.y * u_bones[ids.y]
+                  + a_boneWeights.z * u_bones[ids.z]
+                  + a_boneWeights.w * u_bones[ids.w];
+        // aiProcess_LimitBoneWeights trims to 4 WITHOUT renormalizing, so a trimmed
+        // vertex sums to <1 (visible shrinkage) and an unrigged vertex sums to 0
+        // (collapse to origin). Renormalize when positive; else fall back to identity.
+        float wsum = dot(a_boneWeights, vec4(1.0));
+        if (wsum > 0.0) skin /= wsum; else skin = mat4(1.0);
+        pos = vec3(skin * vec4(a_pos, 1.0));
+        nrm = mat3(skin) * a_normal;     // rigid/uniform-scale bones → mat3(skin) is exact enough (§F)
+    }
+    v_worldpos = vec3(u_model * vec4(pos, 1.0));
+    v_normal   = u_normal * nrm;
     v_uv       = a_uv;
-    gl_Position = u_mvp * vec4(a_pos, 1.0);
+    gl_Position = u_mvp * vec4(pos, 1.0);
 }
 )GLSL";
 
@@ -122,6 +153,8 @@ bool Renderer::Init(std::string& out_error)
     u_view_pos_       = glGetUniformLocation(program_.get(), "u_viewPos");
     u_base_color_tex_ = glGetUniformLocation(program_.get(), "u_baseColorTex");
     u_has_texture_    = glGetUniformLocation(program_.get(), "u_hasTexture");
+    u_bones_          = glGetUniformLocation(program_.get(), "u_bones");
+    u_skinned_        = glGetUniformLocation(program_.get(), "u_skinned");
     // Only u_mvp is genuinely required (no draw is possible without it). The rest may
     // legitimately come back -1 if a driver's GLSL optimizer eliminates a uniform it
     // proves dead — glUniform*(-1, ...) is a documented no-op, so a -1 here must NOT
@@ -160,6 +193,19 @@ void Renderer::SetAsset(Asset&& asset)
     // tilted (AR13), recovered by Reset (Story 2.4). cam_.Reset carries the same
     // degenerate/NaN-bounds guards the inline framing used to.
     ResetCamera();
+
+    // Size the skinning palette + scratch ONCE here (cold load path) so the per-frame
+    // ComputePose never allocates (D2). ComputePose only runs when out_palette.size()
+    // == bones.size(), so size to the FULL bone count; the upload count alone is capped
+    // at 128 in RenderFrame (§E). A rig over the std140 mat4[128] cap warns once here —
+    // not per frame (AC6/§F). Empty skeleton → empty buffers → the static Epic 2 path.
+    const size_t bone_count = asset_.skeleton.bones.size();
+    palette_.assign(bone_count, glm::mat4(1.0f));
+    pose_scratch_.assign(bone_count, glm::mat4(1.0f));
+    if (bone_count > 128)
+        LogWarn("skeleton has %zu bones, exceeding the 128-bone palette cap - only the "
+                "first 128 are uploaded; vertices bound to bones beyond 128 are clamped "
+                "to the cap and may render incorrectly (robust remap is post-MVP)", bone_count);
 }
 
 void Renderer::ResetCamera()
@@ -176,7 +222,7 @@ void Renderer::ResetCamera()
     cached_aspect_ = -1.0f;  // impossible aspect → force a projection rebuild next frame
 }
 
-void Renderer::RenderFrame(float /*time_seconds*/, int width, int height)
+void Renderer::RenderFrame(float time_seconds, int width, int height)
 {
     if (width  < 1) width  = 1;
     if (height < 1) height = 1;
@@ -222,14 +268,40 @@ void Renderer::RenderFrame(float /*time_seconds*/, int width, int height)
     // frame (a no-op if the driver optimized the sampler out → location -1).
     glUniform1i(u_base_color_tex_, 0);
 
+    // Per-frame D13 pose: compute the skinning palette once (shared by every skinned
+    // mesh of this skeleton) and upload it before the draw loop. t loops the clip from
+    // the free-running frame clock for continuous visual validation — transport-driven
+    // t (playhead − itemStart) is Epic 4 (§F). ComputePose writes into pre-sized buffers
+    // (no alloc, D2); it no-ops on a size mismatch, leaving palette_ stale, so pose_valid
+    // gates whether any mesh is allowed to draw skinned this frame (§E / AC7).
+    bool pose_valid = false;
+    if (!asset_.skeleton.bones.empty() && !asset_.animations.empty()) {
+        const SceneAnimation& clip = asset_.animations[0];
+        const float t = (clip.duration > 0.0f) ? std::fmod(time_seconds, clip.duration) : 0.0f;
+        ComputePose(asset_.skeleton, clip, t, palette_, pose_scratch_);
+        // pose_valid must mirror ComputePose's FULL precondition, not just the palette
+        // size SetAsset already guaranteed: a clip whose channels don't match the bone
+        // count makes ComputePose no-op (leaving the identity-filled palette), and skinning
+        // with that identity palette would place the un-baked verts wrong. Re-check the
+        // channel size too so a malformed clip falls back to the static bind-pose path
+        // (§E / AC7) instead of skinning silently. (3.2-deferred no-op-detection item.)
+        const size_t nb_bones = asset_.skeleton.bones.size();
+        pose_valid = (!palette_.empty() && palette_.size() == nb_bones &&
+                      clip.channels.size() == nb_bones);
+        if (pose_valid) {
+            const GLsizei nb = std::min<GLsizei>(static_cast<GLsizei>(palette_.size()), 128);
+            glUniformMatrix4fv(u_bones_, nb, GL_FALSE, glm::value_ptr(palette_[0]));
+        }
+    }
+
     const GLsizei stride = sizeof(SceneVertex);
     for (const SceneMesh& mesh : asset_.meshes) {
         glBindBuffer(GL_ARRAY_BUFFER, mesh.vb.get());
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh.ib.get());
 
-        // Re-specify the attribute layout against this mesh's VBO. Only 0/1/2
-        // (pos/normal/uv) are enabled — bone attribs 3/4 are left for Epic 3 so the
-        // buffer layout never churns.
+        // Re-specify the attribute layout against this mesh's VBO (pos/normal/uv +
+        // bone ids/weights below). The shared VAO holds no per-mesh state, so each
+        // mesh re-points its attributes at its own buffer, exactly as 2.1 did for 0/1/2.
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride,
                               (void*)offsetof(SceneVertex, pos));
@@ -239,6 +311,23 @@ void Renderer::RenderFrame(float /*time_seconds*/, int width, int height)
         glEnableVertexAttribArray(2);
         glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride,
                               (void*)offsetof(SceneVertex, uv));
+
+        // Bone attributes 3/4 are specified for EVERY mesh against its own VBO (every
+        // SceneVertex carries boneIds/boneWeights — zero-filled on a static mesh). The
+        // skinned/static choice rides on u_skinned alone: when 0, the shader's skinning
+        // branch is dead and a_boneIds/a_boneWeights are never read, so a static mesh is
+        // bit-identical to Epic 2 (AC3) — and the GL loader needs exactly ONE new row
+        // (glVertexAttribIPointer), not also a disable row (AC8). boneIds is an INTEGER
+        // attribute: the I-variant feeds the ids verbatim; the float glVertexAttribPointer
+        // would convert/normalize them and skin by the wrong bones (§D). Skin only when
+        // the pose computed cleanly this frame (clip-less / no-op → static, §E / AC7).
+        glEnableVertexAttribArray(3);
+        glVertexAttribIPointer(3, 4, GL_INT, stride,
+                               (void*)offsetof(SceneVertex, boneIds));
+        glEnableVertexAttribArray(4);
+        glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, stride,
+                              (void*)offsetof(SceneVertex, boneWeights));
+        glUniform1i(u_skinned_, (pose_valid && mesh.skinned) ? 1 : 0);
 
         const SceneMaterial& mat = asset_.materials[mesh.materialIdx];
         glUniform3fv(u_base_color_,     1, glm::value_ptr(mat.baseColorFactor));

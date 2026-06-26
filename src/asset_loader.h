@@ -46,6 +46,14 @@ struct LoadResult {
 // failure: result.asset is empty and category/detail describe the cause.
 LoadResult LoadAsset(const std::string& path);
 
+// CPU-only duration probe for the PCM_source (Story 4.2). Returns the first
+// animation clip's duration in SECONDS, or 0.0 for no-file / no-clip / parse
+// failure. Unlike LoadAsset this is GL-FREE — it needs NO current GL context, so
+// it is safe to call on a file drop when the viewer window (and its WGL context)
+// may not exist. It does only the minimal assimp parse needed to read mDuration /
+// mTicksPerSecond (no mesh post-processing, no GPU upload). No-throw (AR18).
+double ProbeAnimationDuration(const std::string& path);
+
 }  // namespace rav
 
 #endif  // _WIN32

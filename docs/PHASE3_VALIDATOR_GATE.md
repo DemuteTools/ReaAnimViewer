@@ -117,3 +117,46 @@ Factory registered at load (`[RAV] info: pcmsrc factory registered`); dropping a
 animation file creates a media item (~1 s placeholder length, as expected for 4.1);
 foreign files (`.txt`/`.wav`) behave Reaper-normal; unload/quit does not crash. The
 in-Reaper pass IS the gate (AR19) — correct item length is Story 4.2.
+
+## 5. Story 4.2 — correctly-sized & named item (real animation duration)
+
+Story 4.2 makes the dropped item **the length of the animation** and **named after
+the file** — the placeholder length from 4.1 is now only a *fallback*. The duration
+comes from a **CPU-only parse** (a new `ProbeAnimationDuration`, no GL, no mesh
+processing), so it is correct **whether or not the viewer window is open**. The
+click-based test is: **drop a clip whose duration you know → the item's length on the
+timeline matches that duration**, and the item is **named after the file**.
+
+Still **out of scope** (do **not** fail 4.2 for these): the viewer does **not** yet
+display the dropped asset and does **not** follow the playhead — that is **Story
+4.3**. The proof 4.2 works is purely the item's **length** and **name** on the
+timeline, visible **with the viewer closed**.
+
+**Suggested fixtures:**
+- *Known-duration clip:* a Mixamo clip (read its length in Blender / FBX Review) or a
+  Demute fixture whose duration you know — e.g. a ~4 s and a ~1.5 s clip.
+- *Clip-less / static:* a static `.glb` with **no** animation (a prop/mesh export).
+- *Foreign:* a `.wav` and a `.txt` (must still behave Reaper-normal).
+
+| # | Check | Pass criterion | AC |
+|---|---|---|---|
+| 1 | Item length == real duration | Drop a clip of known length **N** seconds. The created item is **~N s long** (within rounding) — **not** the ~1 s placeholder. A ~4.0 s clip → ~4 s item; a ~1.5 s clip → ~1.5 s item. | AC1 |
+| 2 | Correct length with viewer **closed** | Repeat row 1 **without opening the viewer**. The length is still correct — duration is a CPU parse, independent of GL / the viewer window. | AC1 |
+| 3 | Item named after the file | The created item/take is **named after the dropped file** (e.g. `Hip Hop Dancing.fbx`), so you can tell which animation it holds at a glance. | AC2 |
+| 4 | Clip-less / unparseable → 1 s fallback | Drop a **static `.glb`** (no animation) — or a file that fails to parse. An item still appears at the **1 s fallback length** (never 0-length / degenerate), and Reaper does **not** crash. | AC3 |
+| 5 | Foreign files still not hijacked | Drop a **`.wav`** and a **`.txt`**. Reaper behaves **exactly as normal** — our factory still returns `nullptr` for them (unchanged from 4.1). | AC5 |
+| 6 | Fast / well under budget | The drop-to-item is **near-instant** — the duration probe is well under the 2 s load budget (it does only the cheap CPU parse, `0` post-process flags). | AC4 |
+| 7 | No regression / no scope creep | The viewer still opens via `RAV: Open Viewer` and renders identically to Epic 3; register/unregister is still symmetric (`-pcmsrc`, same pointer); unload/quit does not crash. **No new `REAPERAPI_WANT_*`, no new dependency.** Build clean at `/W3 /permissive-`. | AC5 |
+
+> **Scope note:** 4.2 delivers a **correctly-sized + named** item — nothing more. The
+> viewer showing the asset and **playhead → displayed frame** (FR10) is **Story 4.3**;
+> per-item `SaveState`/`LoadState` content (D9) is **Epic 6**. If the item is the right
+> length and name but the viewer does not yet jump frames with the playhead, that is
+> **expected**.
+
+**Result:** Story 4.2 — **PASS** (Antho, in-Reaper Windows validation, 2026-06-26).
+Dropping a known-duration animation creates a correctly-sized item (timeline length ==
+real clip duration, confirmed **with the viewer closed**), named after the file; a
+clip-less / static `.glb` falls back to the 1 s placeholder (no 0-length, no crash);
+`.txt`/`.wav` behave Reaper-normal. The in-Reaper pass IS the gate (AR19) — display +
+playhead → frame is Story 4.3.

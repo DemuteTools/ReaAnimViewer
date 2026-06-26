@@ -11,6 +11,8 @@
 
 #include "pcm_source_anim.h"
 
+#include "asset_loader.h"  // ProbeAnimationDuration — CPU-only, GL-free (Story 4.2)
+
 #include <cctype>
 #include <cstring>
 #include <string>
@@ -46,20 +48,35 @@ bool HasAnimExt(const char* fn)
 constexpr const char kSourceType[] = "RAV_ANIM";
 
 // Minimal non-audio PCM_source: 0 channels + GetSampleRate()<1.0 mark it silent,
-// yet a dropped file still creates a real timeline item (Spike 0). Story 4.1
-// holds only the path; length is a placeholder and state/peaks are stubs.
+// yet a dropped file still creates a real timeline item (Spike 0). It holds the
+// path and a cached real duration (Story 4.2) — GetLength reports the animation's
+// length so the item is correctly sized; state/peaks remain stubs.
 class AnimSource : public PCM_source {
 public:
-    explicit AnimSource(const char* path) : m_path(path ? path : "") {}
+    // Eager CPU-only probe: Reaper calls GetLength() immediately after creating the
+    // item, so resolve the duration once at construction and cache it (no re-parse
+    // per GetLength call). GL-free, no-throw — safe with no GL context on drop.
+    explicit AnimSource(const char* path) : m_path(path ? path : "")
+    {
+        m_len = ProbeAnimationDuration(m_path);
+    }
 
     PCM_source* Duplicate() override            { return new AnimSource(m_path.c_str()); }
     bool        IsAvailable() override           { return true; }
     const char* GetType() override               { return kSourceType; }
     const char* GetFileName() override           { return m_path.c_str(); }
-    bool        SetFileName(const char* fn) override { m_path = fn ? fn : ""; return true; }
+    // A path change re-sizes the source — re-probe so GetLength stays correct.
+    bool        SetFileName(const char* fn) override
+    {
+        m_path = fn ? fn : "";
+        m_len = ProbeAnimationDuration(m_path);
+        return true;
+    }
     int         GetNumChannels() override         { return 0; }    // not audio
     double      GetSampleRate() override          { return 0.0; }  // <1.0 => silent
-    double      GetLength() override              { return 1.0; }  // PLACEHOLDER — real duration = Story 4.2
+    // Real animation duration (FR9); 1.0 is now only the FALLBACK for a clip-less /
+    // unparseable file — never return 0, which would be a degenerate item (AC3).
+    double      GetLength() override              { return m_len > 0.0 ? m_len : 1.0; }
     int         PropertiesWindow(HWND) override   { return 0; }
     void        GetSamples(PCM_source_transfer_t* block) override { if (block) block->samples_out = 0; }
     void        GetPeakInfo(PCM_source_peaktransfer_t*) override {}
@@ -72,6 +89,7 @@ public:
 
 private:
     std::string m_path;
+    double      m_len = 0.0;  // cached clip duration in seconds (0 => use fallback)
 };
 
 // --- pcmsrc_register_t callbacks (C-style entries Reaper drives → no-throw, D5/AR18) ---

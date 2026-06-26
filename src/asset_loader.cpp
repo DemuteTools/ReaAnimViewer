@@ -889,6 +889,49 @@ LoadResult LoadAsset(const std::string& path)
     }
 }
 
+double ProbeAnimationDuration(const std::string& path)
+{
+    // Same no-throw envelope as LoadAsset (AR18): assimp throws on some malformed
+    // inputs and this runs from a Reaper-driven boundary (the PCM_source ctor /
+    // SetFileName on a file drop). Any escape -> 0.0, which the source maps to the
+    // 1.0 s placeholder. Deliberately NO GL here (no UploadMesh) — there is no
+    // current GL context on drop; this is the entire reason it is separate from
+    // LoadAsset.
+    try {
+        if (!FileExists(path)) return 0.0;
+
+        Assimp::Importer importer;
+
+        // Pass 0 post-process flags: mDuration / mTicksPerSecond live on aiAnimation
+        // and need ZERO mesh processing. Skipping Triangulate/GenSmoothNormals/etc.
+        // is the NFR-P2 win (AC4) — the probe does only the cheap parse for duration.
+        const aiScene* scene = importer.ReadFile(path, 0);
+
+        if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) ||
+            scene->mNumAnimations == 0)
+            return 0.0;
+
+        const aiAnimation* a = scene->mAnimations[0];
+        if (!a) return 0.0;  // null slot guard — a raw deref is SEH/UB, not catchable
+
+        // Ticks -> seconds with the identical finite-AND-positive guard vetted in
+        // ParseAnimations (a bare != 0 lets a negative rate sign-flip the length and
+        // lets NaN through). 25 is assimp's own fallback rate.
+        double tps = a->mTicksPerSecond;
+        if (!(tps > 0.0) || !std::isfinite(tps)) tps = 25.0;
+        const double seconds = a->mDuration / tps;
+        // Guard the RESULT finite, not just tps: a corrupt clip whose mDuration is
+        // +Inf (or a value that overflows the divide) survives std::max(0.0, +Inf)
+        // as +Inf, and GetLength()'s `m_len > 0.0` test PASSES for +Inf -> Reaper
+        // gets an infinite-length item. Non-finite -> 0.0 -> the 1 s fallback (AC3).
+        if (!std::isfinite(seconds)) return 0.0;
+        return std::max(0.0, seconds);  // clamp >= 0: never a negative length
+    }
+    catch (...) {
+        return 0.0;
+    }
+}
+
 }  // namespace rav
 
 #endif  // _WIN32

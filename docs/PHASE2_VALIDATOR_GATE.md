@@ -109,7 +109,58 @@ The dump looks like:
 > intermediate non-joint node transforms (3.2 accumulates them), and multi-mesh
 > shared-bone offset divergence (3.1 keeps the first + warns).
 
-## 4. Recording the result
+## 4. Story 3.2 — animation sampling & per-frame matrices (audit)
+
+Story 3.2 fills the **motion** Story 3.3 will draw. It parses the first animation clip
+into the already-declared `SceneAnimation` (per-bone TRS keyframes, indexed by bone
+global index, **ticks→seconds** at the boundary), and adds a **pure-glm sampler**
+(`src/animation.h`) that, given a time `t`, composes the **per-frame global bone
+matrices** + skinning palette in one linear forward pass. Like 3.1 it is **purely
+additive and changes no rendered pixel** — nothing consumes `asset.animations` yet, so
+a skinned rig still draws in **baked bind pose**. The deliverable is **parsed channels +
+a deterministic sampler + a console audit**, proving the math before 3.3's shader
+touches it. **No shader, renderer, GL-resource, `scene.h`, or CMake change** (the sampler
+is header-only like `camera.h`), so every Epic 2 / Story 3.1 fixture renders identically.
+
+The audit (emitted only on an **animated** load, right after the 3.1 skeleton dump) looks
+like:
+
+```text
+[RAV] info: animation: 1 clip, dur 3.467s (tps 30.0), 65/99 bones animated, 8421 keys
+[RAV] info:   probe t=0.000  root tx (   0.00,   0.00,   0.00)  palette finite=yes
+[RAV] info:   probe t=1.733  root tx (   0.00,  12.40,   3.10)  palette finite=yes  maxDelta(t0->mid)=41.70
+[RAV] info:   probe t=3.467  root tx (   0.00,   0.05,  -0.20)  palette finite=yes
+```
+
+`root tx` is the first parentless bone's global-space translation (root-motion evidence,
+FR7); `finite` checks all 16 floats of every palette matrix (AC3 boundary validity);
+`maxDelta(t0->mid)` is the largest bone-position change from `t=0` to mid (proves the
+pose varies with time — the sampler is live, not frozen).
+
+| # | Check | Pass criterion | AC |
+|---|---|---|---|
+| 1 | Clip parsed (ticks→seconds) | Load a Demute/Mixamo animated rig. The console reports **≥1 clip** with a `dur Ns` that **matches the clip length** in Blender (Dope Sheet / NLA) or FBX Review. A wrong unit shows up as an obviously-wrong duration (e.g. 100× off). | AC1 |
+| 2 | Root motion present | For a clip **with root motion**, the probe's `root tx` **changes across `t=0 → mid → end`**; for an **in-place** clip it stays ~constant. | AC1 (FR7) |
+| 3 | Pose varies with time | `maxDelta(t0->mid)` is **clearly non-zero** for an animated rig (sampling is live). | AC1 |
+| 4 | Boundary poses valid | Every palette matrix is `finite=yes` at **`t=0` and `t=duration`** (AC3 clamp); the loader never warns of NaN/explosion. Sampling slightly past `duration` clamps (the probe at `t=duration` is the end clamp). | AC3 |
+| 5 | Rotation-only & full-TRS both pose | The full-TRS Mixamo fixture probes finite/sensible. If a **rotation-only** fixture is on hand, its probe is finite too (T & S fall back to bind-local). *(If only Mixamo is available, record rotation-only as best-effort and note it.)* | AC2 |
+| 6 | Quaternion order correct | *(Source audit, dev-box confirmable.)* rotation keys convert **w-first**: `glm::quat(q.w, q.x, q.y, q.z)`, **exactly once**, with **no** `ConvertAssimpMatrix` on any TRS value (vectors/quats are not matrices, §D). | AC2 |
+| 7 | Zero render regression | Re-run the §3 / Phase-1 rows: the **bind-pose render is unchanged**, a **static (boneless) file** still loads with **no animation dump**, and a skinned-but-**clip-less** rig prints the skeleton dump but **no animation line**. | implied AC4 |
+| 8 | Single-DLL / warning-free | `build\Release\` holds only `reaper_animviewer.dll` (no new DLL, **no CMake change** — `animation.h` is header-only); build is clean at `/W3 /permissive-`. | implied AC6 |
+
+> **Scope note (mirrors §3):** Story 3.2 delivers **sampled data + audit only** —
+> **deformed playback is validated in Story 3.3.** The success signal here is the
+> **console probe** (clip duration matches the source, root motion + pose vary with
+> time, all matrices finite at the clamps) **and the bind-pose render being unchanged** —
+> **not motion on screen.** The probe validates *sampling correctness and motion*, not
+> yet *visual alignment* (vertex-space vs. node-baking reconciliation is 3.3's call;
+> baking is left unchanged here). Deliberately deferred, may surface as known non-blocking
+> notes: intermediate non-joint *animated* nodes (warn+skip — char clips animate joints
+> directly), multi-clip selection / looping / cubic interpolation (MVP = clip 0, linear
+> + slerp, clamp), and the GPU palette upload + skinning shader + transport-driven `t`
+> (all 3.3 / Epic 4).
+
+## 5. Recording the result
 
 Per project convention (`feedback_trust_ingame_validation`): when these checks pass in
 real Reaper, **that is the gate** — note the date and the fixtures used here, and the

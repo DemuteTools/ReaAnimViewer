@@ -32,6 +32,7 @@
 #include <assimp/scene.h>
 
 #include <glm/gtc/matrix_inverse.hpp>
+#include <glm/gtc/quaternion.hpp>  // glm::quat_cast for the bind-local TRS decompose (§C)
 
 // stb_image: implementation compiled into THIS TU only. Narrowed to the formats
 // glTF/Collada actually ship (mirrors the AR5 importer narrowing) to trim code and
@@ -49,6 +50,7 @@
 #define STBI_WINDOWS_UTF8
 #include <stb_image.h>
 
+#include "animation.h"  // header-only pose sampler (ComputePose) for the §E audit probe
 #include "console_log.h"  // LogWarn for the per-texture unresolved diagnostic (AR16)
 #include "gl_loader.h"  // modern-GL upload entry points (glGenBuffers/glBufferData)
 
@@ -80,26 +82,41 @@ bool MatNearlyEqual(const glm::mat4& a, const glm::mat4& b)
 // forward global-matrix pass relies on. `nearest_joint` is the global index of the
 // closest joint ancestor (-1 at the root); intermediate non-joint nodes pass it
 // through unchanged, so parentIdx points at the nearest *joint*, not the raw parent
-// node (the skipped nodes' transforms are 3.2's concern).
-void DfsIndexJoints(const aiNode* node, int nearest_joint,
+// node.
+//
+// `acc` folds the local transforms of the intermediate non-joint nodes skipped since
+// the parent joint (§C). 3.1 handed those transforms to 3.2: a joint's bind-local =
+// (skipped non-joints' product) * this node's local, so globalMat[i] stays correct
+// without a graph walk. `acc` restarts at identity below every joint; for an all-joint
+// chain (Mixamo) it is always identity and bind-local is just the node's own local.
+// `bind_local` stays index-aligned with `skel.bones`: one entry pushed per indexed joint.
+void DfsIndexJoints(const aiNode* node, int nearest_joint, const glm::mat4& acc,
                     const std::unordered_set<std::string>& joint_names,
                     std::unordered_map<std::string, int>& name_to_index,
-                    SceneSkeleton& skel)
+                    SceneSkeleton& skel, std::vector<glm::mat4>& bind_local)
 {
-    int parent_for_children = nearest_joint;
     const std::string nm = node->mName.C_Str();
-    if (joint_names.count(nm) && !name_to_index.count(nm)) {
+    const glm::mat4 local = ConvertAssimpMatrix(node->mTransformation);
+    const bool is_joint = joint_names.count(nm) != 0;
+
+    int parent_for_children = nearest_joint;
+    // A joint is a fold boundary: its children's accumulator restarts at identity. A
+    // non-joint accumulates its local into the running product for the joints below it.
+    const glm::mat4 acc_for_children = is_joint ? glm::mat4(1.0f) : acc * local;
+
+    if (is_joint && !name_to_index.count(nm)) {
         const int gidx = static_cast<int>(skel.bones.size());
         name_to_index[nm] = gidx;
         SceneBone bone;
         bone.parentIdx = nearest_joint;
         bone.name = nm;  // as-authored UTF-8, no transliteration (FR5/AR13)
         skel.bones.push_back(std::move(bone));  // inverseBindMatrix filled below
+        bind_local.push_back(acc * local);      // §C: fold skipped non-joint ancestors
         parent_for_children = gidx;
     }
     for (unsigned i = 0; i < node->mNumChildren; ++i)
-        DfsIndexJoints(node->mChildren[i], parent_for_children, joint_names,
-                       name_to_index, skel);
+        DfsIndexJoints(node->mChildren[i], parent_for_children, acc_for_children,
+                       joint_names, name_to_index, skel, bind_local);
 }
 
 // Builds the flat SceneSkeleton + a bone-name -> global-index map (Task 1 / §B).
@@ -108,7 +125,8 @@ void DfsIndexJoints(const aiNode* node, int nearest_joint,
 // aiBone::mOffsetMatrix passed through the ONE ConvertAssimpMatrix boundary exactly
 // once (AC2/D3/AR9). Returns an empty skeleton for a boneless (static) file (FR6).
 SceneSkeleton BuildSkeleton(const aiScene* scene,
-                            std::unordered_map<std::string, int>& name_to_index)
+                            std::unordered_map<std::string, int>& name_to_index,
+                            std::vector<glm::mat4>& bind_local)
 {
     SceneSkeleton skel;
 
@@ -123,8 +141,10 @@ SceneSkeleton BuildSkeleton(const aiScene* scene,
     }
     if (joint_names.empty()) return skel;  // static path — empty skeleton (FR6)
 
-    // 2. Assign global indices by DFS pre-order (parent-before-child, §B).
-    DfsIndexJoints(scene->mRootNode, -1, joint_names, name_to_index, skel);
+    // 2. Assign global indices by DFS pre-order (parent-before-child, §B), capturing
+    //    each joint's bind-local transform (acc starts identity at the root).
+    DfsIndexJoints(scene->mRootNode, -1, glm::mat4(1.0f), joint_names, name_to_index,
+                   skel, bind_local);
 
     // 3. Fill inverse-bind matrices from each bone's FIRST occurrence. A joint that
     //    is in mBones but absent from the node tree (malformed file) was missed by
@@ -168,6 +188,10 @@ SceneSkeleton BuildSkeleton(const aiScene* scene,
             }
         }
     }
+    // Step 3 may append bones absent from the node tree (DFS never reached them, so
+    // they have no bind-local). Pad bind_local to the final count with identity so it
+    // stays index-aligned with skel.bones; those degenerate roots are already warned.
+    bind_local.resize(skel.bones.size(), glm::mat4(1.0f));
     return skel;
 }
 
@@ -190,6 +214,202 @@ void DumpSkeleton(const SceneSkeleton& skel, size_t skinned_verts)
                     i, b.name.c_str(), b.parentIdx);
         LogInfo("  [%2zu] %-20s parent %3d (%s)", i, b.name.c_str(), b.parentIdx,
                 has_parent ? skel.bones[b.parentIdx].name.c_str() : "root");
+    }
+}
+
+// Decomposes a bind-local matrix into the (T, R, S) of the single default keyframe a
+// bone gets when the clip does not animate it — or for the component a rotation-only
+// channel omits (so T/S fall back to rest, the AC2 "rotation-only poses correctly"
+// path). Lossy under shear/mirror, but rigs are translate+rotate+~uniform-scale so it
+// is exact in practice. Returns false on a degenerate basis (near-zero column or
+// negative determinant) so the caller can surface it (§C) rather than silently passing.
+bool DecomposeTRS(const glm::mat4& m, glm::vec3& t, glm::quat& r, glm::vec3& s)
+{
+    t = glm::vec3(m[3]);                      // translation column
+    const glm::vec3 c0(m[0]), c1(m[1]), c2(m[2]);
+    s = glm::vec3(glm::length(c0), glm::length(c1), glm::length(c2));  // column magnitudes
+
+    bool ok = true;
+    glm::vec3 inv(1.0f);
+    for (int k = 0; k < 3; ++k) {
+        if (s[k] > 1e-8f) inv[k] = 1.0f / s[k];  // de-scale to a pure rotation basis
+        else { inv[k] = 0.0f; ok = false; }      // collapsed axis — rotation undefined
+    }
+    const glm::mat3 basis(c0 * inv.x, c1 * inv.y, c2 * inv.z);
+    if (glm::determinant(basis) < 0.0f) ok = false;  // mirrored bind — quat_cast is lossy
+    r = glm::quat_cast(basis);
+    return ok;
+}
+
+// Parses the FIRST animation clip (MVP — scene.h:81) into one SceneAnimation whose
+// channels are sized to and indexed by bone global index (§B). Every bone is first
+// defaulted from its bind-local so the sampler never branches on a missing channel;
+// the clip's aiNodeAnim tracks then overlay the joints they name. `out_animated`
+// (per-bone) and `out_tps` feed the §E audit. Returns {} for a clip-less/boneless file.
+std::vector<SceneAnimation> ParseAnimations(
+    const aiScene* scene, const SceneSkeleton& skeleton,
+    const std::unordered_map<std::string, int>& name_to_index,
+    const std::vector<glm::mat4>& bind_local,
+    std::vector<bool>& out_animated, double& out_tps)
+{
+    out_animated.assign(skeleton.bones.size(), false);
+    out_tps = 0.0;
+    if (scene->mNumAnimations == 0 || skeleton.bones.empty()) return {};  // FR6 / static path
+    if (scene->mNumAnimations > 1)
+        LogInfo("animation: %u clips, using [0]", scene->mNumAnimations);  // MVP: clip 0
+
+    const aiAnimation* a = scene->mAnimations[0];
+    if (!a) return {};  // null slot guard — a raw deref is SEH/UB, not catchable (AR18)
+
+    // Ticks -> seconds at the boundary. assimp's FBX and glTF importers report
+    // different mTicksPerSecond, so never hard-code a rate; 25 is assimp's own fallback.
+    // Guard finite-AND-positive, not just != 0: a negative rate (broken FBX) would
+    // sign-flip every key time, leaving the stored tracks time-DESCENDING while the
+    // sampler assumes ascending -> wrong bracket, silently wrong pose; NaN poisons every
+    // time value (NaN != 0.0 is true, so the bare != 0 check let it through).
+    double tps = a->mTicksPerSecond;
+    if (!(tps > 0.0) || !std::isfinite(tps)) {
+        if (tps != 0.0)  // an actual bad value, not assimp's legitimate "unset" 0
+            LogWarn("animation: non-finite/negative ticks-per-second %.3f - using 25",
+                    tps);
+        tps = 25.0;
+    }
+    out_tps = tps;
+
+    SceneAnimation out;
+    // Clamp >= 0: a negative mDuration would make ComputePose's clamp(t, 0, duration)
+    // a degenerate range, freezing every probe at the end and silently zeroing the
+    // audit's maxDelta (a real clip would read as a frozen pose).
+    out.duration = std::max(0.0f, static_cast<float>(a->mDuration / tps));
+    out.channels.resize(skeleton.bones.size());
+
+    // 1. Default every bone's channel from its bind-local rest pose (the unanimated
+    //    fallback). A bone the clip never names keeps these single keys and poses at rest.
+    for (size_t i = 0; i < skeleton.bones.size(); ++i) {
+        glm::vec3 dt, ds;
+        glm::quat dr;
+        if (!DecomposeTRS(bind_local[i], dt, dr, ds))
+            LogWarn("animation: bone '%s' bind-local is sheared/mirrored - default key approximated",
+                    skeleton.bones[i].name.c_str());
+        out.channels[i].translation = {{0.0f, dt}};
+        out.channels[i].rotation    = {{0.0f, dr}};
+        out.channels[i].scale       = {{0.0f, ds}};
+    }
+
+    // 2. Overlay the clip's animated tracks onto the joints they target.
+    for (unsigned c = 0; c < a->mNumChannels; ++c) {
+        const aiNodeAnim* ch = a->mChannels[c];
+        if (!ch) continue;  // null channel slot guard (AR18)
+        auto it = name_to_index.find(ch->mNodeName.C_Str());
+        if (it == name_to_index.end()) {
+            // A track on a helper/mesh node, not a skin joint — folding intermediate
+            // animated nodes needs the node tree at sample time (3.3+, §F). Char clips
+            // animate joints directly, so warn once and skip.
+            LogWarn("animation: channel '%s' targets a non-joint node - skipped",
+                    ch->mNodeName.C_Str());
+            continue;
+        }
+        AnimChannel& dst = out.channels[it->second];
+        bool has_keys = false;  // a name match with all-empty key arrays drives nothing
+        // Component copy — a vec3 is not a matrix, no ConvertAssimpMatrix (§D).
+        if (ch->mNumPositionKeys > 0) {
+            std::vector<KeyframeT> keys;
+            keys.reserve(ch->mNumPositionKeys);
+            for (unsigned k = 0; k < ch->mNumPositionKeys; ++k) {
+                const aiVectorKey& vk = ch->mPositionKeys[k];
+                keys.push_back({static_cast<float>(vk.mTime / tps),
+                                glm::vec3(vk.mValue.x, vk.mValue.y, vk.mValue.z)});
+            }
+            dst.translation = std::move(keys);
+            has_keys = true;
+        }
+        // Quaternion: assimp is {w,x,y,z}; glm::quat ctor is w-first. Wrong order gives
+        // a plausible-but-wrong rotation that only shows as garbage in 3.3 — the §D
+        // AC2-analog discipline. No handedness flip (render as-authored, D3).
+        if (ch->mNumRotationKeys > 0) {
+            std::vector<KeyframeR> keys;
+            keys.reserve(ch->mNumRotationKeys);
+            for (unsigned k = 0; k < ch->mNumRotationKeys; ++k) {
+                const aiQuatKey& qk = ch->mRotationKeys[k];
+                keys.push_back({static_cast<float>(qk.mTime / tps),
+                                glm::quat(qk.mValue.w, qk.mValue.x, qk.mValue.y, qk.mValue.z)});
+            }
+            dst.rotation = std::move(keys);
+            has_keys = true;
+        }
+        if (ch->mNumScalingKeys > 0) {
+            std::vector<KeyframeS> keys;
+            keys.reserve(ch->mNumScalingKeys);
+            for (unsigned k = 0; k < ch->mNumScalingKeys; ++k) {
+                const aiVectorKey& sk = ch->mScalingKeys[k];
+                keys.push_back({static_cast<float>(sk.mTime / tps),
+                                glm::vec3(sk.mValue.x, sk.mValue.y, sk.mValue.z)});
+            }
+            dst.scale = std::move(keys);
+            has_keys = true;
+        }
+        if (has_keys) out_animated[it->second] = true;
+    }
+
+    std::vector<SceneAnimation> result;
+    result.push_back(std::move(out));
+    return result;
+}
+
+// The §E audit probe (AC5): the click-based validator hook for the sampler. On an
+// animated load it logs the clip metadata, then samples the pose at t=0, t=mid, t=end
+// and reports the root's global translation (root-motion evidence, FR7), a whole-
+// palette finite check (AC3 boundary validity), and the max bone-position delta from
+// t=0 to mid (proves the pose actually varies with time). These three lines are what
+// AC1–AC3 are eyeballed against at the gate. Load-time scratch alloc is fine (not hot).
+void DumpAnimation(const SceneSkeleton& skel, const SceneAnimation& anim,
+                   const std::vector<bool>& animated, double tps)
+{
+    size_t animated_count = 0;
+    for (bool b : animated) if (b) ++animated_count;
+    size_t total_keys = 0;
+    for (const AnimChannel& ch : anim.channels)
+        total_keys += ch.translation.size() + ch.rotation.size() + ch.scale.size();
+
+    LogInfo("animation: 1 clip, dur %.3fs (tps %.1f), %zu/%zu bones animated, %zu keys",
+            anim.duration, tps, animated_count, skel.bones.size(), total_keys);
+
+    int root = -1;  // first parentless bone — its global translation is the root motion
+    for (size_t i = 0; i < skel.bones.size(); ++i)
+        if (skel.bones[i].parentIdx < 0) { root = static_cast<int>(i); break; }
+
+    const size_t n = skel.bones.size();
+    std::vector<glm::mat4> palette(n), global(n), global0(n);
+
+    const float probes[3] = {0.0f, anim.duration * 0.5f, anim.duration};
+    for (int p = 0; p < 3; ++p) {
+        ComputePose(skel, anim, probes[p], palette, global);
+
+        bool finite = true;
+        for (const glm::mat4& m : palette) {
+            const float* f = &m[0][0];
+            for (int e = 0; e < 16 && finite; ++e)
+                if (!std::isfinite(f[e])) finite = false;
+            if (!finite) break;
+        }
+        const glm::vec3 rtx = (root >= 0) ? glm::vec3(global[root][3]) : glm::vec3(0.0f);
+
+        if (p == 0) {
+            global0 = global;  // snapshot for the t0->mid delta below
+            LogInfo("  probe t=%.3f  root tx (%7.2f,%7.2f,%7.2f)  palette finite=%s",
+                    probes[p], rtx.x, rtx.y, rtx.z, finite ? "yes" : "no");
+        } else if (p == 1) {
+            float max_delta = 0.0f;
+            for (size_t i = 0; i < n; ++i)
+                max_delta = std::max(max_delta,
+                    glm::length(glm::vec3(global[i][3]) - glm::vec3(global0[i][3])));
+            LogInfo("  probe t=%.3f  root tx (%7.2f,%7.2f,%7.2f)  palette finite=%s"
+                    "  maxDelta(t0->mid)=%.2f",
+                    probes[p], rtx.x, rtx.y, rtx.z, finite ? "yes" : "no", max_delta);
+        } else {
+            LogInfo("  probe t=%.3f  root tx (%7.2f,%7.2f,%7.2f)  palette finite=%s",
+                    probes[p], rtx.x, rtx.y, rtx.z, finite ? "yes" : "no");
+        }
     }
 }
 
@@ -569,7 +789,9 @@ LoadResult LoadAsset(const std::string& path)
         // the bone-name -> global-index map. Empty for a boneless file (FR6 static
         // path) — the scatter then no-ops and skinned stays false everywhere.
         std::unordered_map<std::string, int> bone_index;
-        SceneSkeleton skeleton = BuildSkeleton(scene, bone_index);
+        std::vector<glm::mat4> bind_local;  // rest-pose local per bone — the unanimated
+                                            // default-key source for ParseAnimations (§C)
+        SceneSkeleton skeleton = BuildSkeleton(scene, bone_index, bind_local);
 
         // Bake all node world transforms into model-space CPU meshes + union AABB.
         std::vector<PendingMesh> pending;
@@ -633,6 +855,18 @@ LoadResult LoadAsset(const std::string& path)
                         v.boneWeights[2] != 0.0f || v.boneWeights[3] != 0.0f)
                         ++skinned_verts;
             DumpSkeleton(skeleton, skinned_verts);
+        }
+
+        // Parse the animation clip into channels + audit the sampler (animated files
+        // only). Nothing consumes asset.animations yet — the renderer still draws the
+        // baked bind pose (3.3 deforms), so this stays byte-for-byte non-regressing.
+        if (scene->mNumAnimations > 0 && !skeleton.bones.empty()) {
+            std::vector<bool> animated;
+            double tps = 0.0;
+            asset.animations =
+                ParseAnimations(scene, skeleton, bone_index, bind_local, animated, tps);
+            if (!asset.animations.empty())
+                DumpAnimation(skeleton, asset.animations.front(), animated, tps);
         }
         asset.skeleton = std::move(skeleton);
 

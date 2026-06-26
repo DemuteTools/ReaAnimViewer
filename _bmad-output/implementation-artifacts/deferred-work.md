@@ -6,6 +6,12 @@ trigger condition for when it should be picked up.
 
 ---
 
+## Deferred from: code review of story-3.2 (2026-06-26)
+
+- **`ComputePose` size-mismatch no-op has no diagnostic** [`src/animation.h`]. On a buffer/channel size mismatch, `ComputePose` returns without writing, so a caller's pre-zeroed palette/scratch read as a *valid-looking* all-zero pose (0 is finite, root tx (0,0,0)) — silently masking a wiring bug. Harmless in 3.2 (the only caller, `DumpAnimation`, always pre-sizes to `bones.size()`). **Trigger:** Story 3.3, when a live per-frame caller (`Animator`/`PoseBuffer` sized at `SetAsset`) is wired into the render loop — add an assert/once-warn on mismatch so a mis-sized buffer is loud, not a frozen rig.
+
+---
+
 ## Architectural decision recorded 2026-05-10 (PRD step-04 round)
 
 **Decision: viewer is rendered inside a ReaImGui dockable panel, not a standalone Win32 window.**

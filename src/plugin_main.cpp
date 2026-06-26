@@ -4,6 +4,7 @@
 // opens an empty WGL viewer window. No mesh loading, no transport sync.
 
 #include "console_log.h"
+#include "pcm_source_anim.h"
 #include "reaper_api.h"
 #include "viewer_window.h"
 
@@ -50,6 +51,9 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
         // reverse order, so no live pointers into our DLL outlive it.
         CloseViewerWindow();
         if (g_register) {
+            // Reverse-of-load teardown. -pcmsrc uses the SAME pointer the load
+            // path registered, so no live pointer into our DLL survives (AC3).
+            g_register("-pcmsrc",       PcmSourceRegistration());
             g_register("-toggleaction", (void*)&OnToggleAction);
             g_register("-hookcommand",  (void*)&OnHookCommand);
             g_register("-gaccel",       &g_accel);
@@ -77,6 +81,11 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     rec->Register("gaccel", &g_accel);
     rec->Register("hookcommand", (void*)&OnHookCommand);
     rec->Register("toggleaction", (void*)&OnToggleAction);
+
+    // Animation files become first-class Reaper media via our PCM_source factory
+    // (Story 4.1). Same pointer is handed to -pcmsrc on unload above (AC1/AC3).
+    rec->Register("pcmsrc", PcmSourceRegistration());
+    LogInfo("pcmsrc factory registered (.glb/.gltf/.fbx/.dae)");
 
     LogInfo("extension loaded (Phase 0)");
     return 1;

@@ -71,6 +71,7 @@ if(WIN32)
             src/renderer.cpp
             src/asset_loader.cpp
             src/console_log.cpp
+            src/pcm_source_anim.cpp
     )
     # GLM + assimp as SYSTEM includes so their headers cannot trip /W3 /permissive-
     # (NFR-R5). assimp's generated config headers live in its BINARY dir.

@@ -1,6 +1,6 @@
 # Story 4.1: PCM_source plugin registers and creates a source from a file
 
-Status: ready-for-dev
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -23,29 +23,29 @@ From [epics.md Story 4.1](../planning-artifacts/epics.md) (D8 / AR11 / AR15, NFR
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — New `PCM_source` subclass + factory (AC1, AC2)** — create `src/pcm_source_anim.h` and `src/pcm_source_anim.cpp`
-  - [ ] Subclass `PCM_source` (from `reaper_plugin.h`, already vendored — see Dev Notes) as `rav::AnimSource`. Implement **every** pure virtual (the SDK has ~14; see the exact list in Dev Notes → "PCM_source contract"). Most are trivial non-audio stubs.
-  - [ ] Constructor takes the file path and stores it (`std::string m_path`). `GetFileName()` returns it; `SetFileName()` replaces it (return `true`). `Duplicate()` returns `new AnimSource(m_path)`.
-  - [ ] `GetType()` returns the **permanent** production tag `"RAV_ANIM"` (see Dev Notes → "GetType tag is permanent").
-  - [ ] Non-audio markers: `GetNumChannels()` → `0`, `GetSampleRate()` → `0.0` (`< 1.0` tells Reaper it's silent), `GetSamples()` sets `block->samples_out = 0`, `GetPeakInfo()`/`Peaks_*` are no-ops returning `0`.
-  - [ ] `GetLength()` returns a **placeholder** `1.0` (real duration = Story 4.2). Add a one-line comment pointing at 4.2.
-  - [ ] `SaveState()` / `LoadState()` are stubs for now (`LoadState` returns `0`) — real per-item state is Story 4.x / Epic 6 (D9). `PropertiesWindow()` returns `0`.
-  - [ ] Three free factory functions matching `pcmsrc_register_t`: `CreateFromType(type, prio)` (returns `new AnimSource("")` iff `type == "RAV_ANIM"`, else `nullptr`); `CreateFromFile(filename, prio)` (returns `new AnimSource(filename)` iff the extension is one of ours, else `nullptr`); `EnumFileExtensions(i, descptr)` (enumerates `glb`/`gltf`/`fbx`/`dae`).
-  - [ ] Extension matching is **case-insensitive** and on the final extension only (see spike `IExtEq`/`HasAnimExt` reference). Supported set: `.glb`, `.gltf`, `.fbx`, `.dae`.
-  - [ ] Expose the registration object to `plugin_main` per the boundary rule (see Task 2 / Dev Notes → "Who calls Register"): a header function `pcmsrc_register_t* PcmSourceRegistration()` returning the address of a single static `pcmsrc_register_t`. **Do not call `rec->Register` from this file.**
-  - [ ] Factory functions and overridden virtuals are **no-throw boundaries** (D5/AR18): wrap the `new AnimSource(...)` in `CreateFromFile`/`CreateFromType` in `try { … } catch (...) { return nullptr; }`. No exception escapes into Reaper.
-- [ ] **Task 2 — Wire registration into the lifecycle (AC1, AC3)** — edit `src/plugin_main.cpp` only
-  - [ ] At load (after the existing action/gaccel/hookcommand block, `rec != nullptr` path): `rec->Register("pcmsrc", PcmSourceRegistration());` then one `LogInfo("pcmsrc factory registered (.glb/.gltf/.fbx/.dae)");`.
-  - [ ] At unload (`rec == nullptr` path): `g_register("-pcmsrc", PcmSourceRegistration());` using the **same** pointer. Place it in the reverse-order teardown block alongside the existing `-toggleaction`/`-hookcommand`/`-gaccel` (order among unregisters is not load-critical, but keep the reverse-of-load convention).
-  - [ ] `#include "pcm_source_anim.h"`.
-- [ ] **Task 3 — Build wiring (AC4)** — edit `CMakeLists.txt`
-  - [ ] Add `src/pcm_source_anim.cpp` to the explicit `add_reaper_extension(animviewer SOURCES …)` list (no `file(GLOB)` — keep it explicit per NFR-R5). Headers are not listed (consistent with `scene.h`/`camera.h`/`console_log.h` usage). One line added.
-- [ ] **Task 4 — Validator gate doc (AC1–AC3)** — create `docs/PHASE3_VALIDATOR_GATE.md`
-  - [ ] Seed the Phase 3 gate following the **exact format** of `docs/PHASE2_VALIDATOR_GATE.md` (title, "You are testing the right thing if…", Prerequisites, §1 Build & install identical to prior phases, then a numbered, row-based audit section for Story 4.1). The click-based test: load → console shows `pcmsrc factory registered`; drag a `.glb`/`.fbx` onto a track → a media item appears (placeholder ~1 s length is expected and correct for 4.1); drag a `.txt` → no item / Reaper-normal behavior; unload/quit → no crash. Note that correct item length is Story 4.2.
-- [ ] **Task 5 — Self-verify on Linux (what the gate can't cover)**
-  - [ ] `cmake --build` configures with the new file in the list (the project's Linux configure is host-stubbed for the Reaper DLL link — same as prior stories; confirm the source list / CMake parse is clean).
-  - [ ] Grep-audit scope: only `src/pcm_source_anim.{h,cpp}` (new), `src/plugin_main.cpp`, `CMakeLists.txt`, `docs/PHASE3_VALIDATOR_GATE.md` changed. **No** change to `scene.h`, `renderer.*`, `viewer_window.*`, `asset_loader.*`, `animation.h`, `reaper_api.h`.
-  - [ ] Confirm no new `REAPERAPI_WANT_*` symbol was added (none is needed — see Dev Notes).
+- [x] **Task 1 — New `PCM_source` subclass + factory (AC1, AC2)** — create `src/pcm_source_anim.h` and `src/pcm_source_anim.cpp`
+  - [x] Subclass `PCM_source` (from `reaper_plugin.h`, already vendored — see Dev Notes) as `rav::AnimSource`. Implement **every** pure virtual (the SDK has ~14; see the exact list in Dev Notes → "PCM_source contract"). Most are trivial non-audio stubs.
+  - [x] Constructor takes the file path and stores it (`std::string m_path`). `GetFileName()` returns it; `SetFileName()` replaces it (return `true`). `Duplicate()` returns `new AnimSource(m_path)`.
+  - [x] `GetType()` returns the **permanent** production tag `"RAV_ANIM"` (see Dev Notes → "GetType tag is permanent").
+  - [x] Non-audio markers: `GetNumChannels()` → `0`, `GetSampleRate()` → `0.0` (`< 1.0` tells Reaper it's silent), `GetSamples()` sets `block->samples_out = 0`, `GetPeakInfo()`/`Peaks_*` are no-ops returning `0`.
+  - [x] `GetLength()` returns a **placeholder** `1.0` (real duration = Story 4.2). Add a one-line comment pointing at 4.2.
+  - [x] `SaveState()` / `LoadState()` are stubs for now (`LoadState` returns `0`) — real per-item state is Story 4.x / Epic 6 (D9). `PropertiesWindow()` returns `0`.
+  - [x] Three free factory functions matching `pcmsrc_register_t`: `CreateFromType(type, prio)` (returns `new AnimSource("")` iff `type == "RAV_ANIM"`, else `nullptr`); `CreateFromFile(filename, prio)` (returns `new AnimSource(filename)` iff the extension is one of ours, else `nullptr`); `EnumFileExtensions(i, descptr)` (enumerates `glb`/`gltf`/`fbx`/`dae`).
+  - [x] Extension matching is **case-insensitive** and on the final extension only (see spike `IExtEq`/`HasAnimExt` reference). Supported set: `.glb`, `.gltf`, `.fbx`, `.dae`.
+  - [x] Expose the registration object to `plugin_main` per the boundary rule (see Task 2 / Dev Notes → "Who calls Register"): a header function `pcmsrc_register_t* PcmSourceRegistration()` returning the address of a single static `pcmsrc_register_t`. **Do not call `rec->Register` from this file.**
+  - [x] Factory functions and overridden virtuals are **no-throw boundaries** (D5/AR18): wrap the `new AnimSource(...)` in `CreateFromFile`/`CreateFromType` in `try { … } catch (...) { return nullptr; }`. No exception escapes into Reaper.
+- [x] **Task 2 — Wire registration into the lifecycle (AC1, AC3)** — edit `src/plugin_main.cpp` only
+  - [x] At load (after the existing action/gaccel/hookcommand block, `rec != nullptr` path): `rec->Register("pcmsrc", PcmSourceRegistration());` then one `LogInfo("pcmsrc factory registered (.glb/.gltf/.fbx/.dae)");`.
+  - [x] At unload (`rec == nullptr` path): `g_register("-pcmsrc", PcmSourceRegistration());` using the **same** pointer. Place it in the reverse-order teardown block alongside the existing `-toggleaction`/`-hookcommand`/`-gaccel` (order among unregisters is not load-critical, but keep the reverse-of-load convention).
+  - [x] `#include "pcm_source_anim.h"`.
+- [x] **Task 3 — Build wiring (AC4)** — edit `CMakeLists.txt`
+  - [x] Add `src/pcm_source_anim.cpp` to the explicit `add_reaper_extension(animviewer SOURCES …)` list (no `file(GLOB)` — keep it explicit per NFR-R5). Headers are not listed (consistent with `scene.h`/`camera.h`/`console_log.h` usage). One line added.
+- [x] **Task 4 — Validator gate doc (AC1–AC3)** — create `docs/PHASE3_VALIDATOR_GATE.md`
+  - [x] Seed the Phase 3 gate following the **exact format** of `docs/PHASE2_VALIDATOR_GATE.md` (title, "You are testing the right thing if…", Prerequisites, §1 Build & install identical to prior phases, then a numbered, row-based audit section for Story 4.1). The click-based test: load → console shows `pcmsrc factory registered`; drag a `.glb`/`.fbx` onto a track → a media item appears (placeholder ~1 s length is expected and correct for 4.1); drag a `.txt` → no item / Reaper-normal behavior; unload/quit → no crash. Note that correct item length is Story 4.2.
+- [x] **Task 5 — Self-verify on Linux (what the gate can't cover)**
+  - [x] `cmake --build` configures with the new file in the list (the project's Linux configure is host-stubbed for the Reaper DLL link — same as prior stories; confirm the source list / CMake parse is clean).
+  - [x] Grep-audit scope: only `src/pcm_source_anim.{h,cpp}` (new), `src/plugin_main.cpp`, `CMakeLists.txt`, `docs/PHASE3_VALIDATOR_GATE.md` changed. **No** change to `scene.h`, `renderer.*`, `viewer_window.*`, `asset_loader.*`, `animation.h`, `reaper_api.h`.
+  - [x] Confirm no new `REAPERAPI_WANT_*` symbol was added (none is needed — see Dev Notes).
 
 ## Dev Notes
 
@@ -169,10 +169,35 @@ No automated test harness exists (this is a Reaper-hosted native DLL; prior stor
 
 ### Agent Model Used
 
-{{agent_model_name_version}}
+claude-opus-4-8 (1M context) — BMAD dev-story workflow
 
 ### Debug Log References
 
+- Linux CMake configure (`cmake -B /tmp/rav-build-41 -S .`): clean parse, host-stubbed target as expected (non-Windows → `add_custom_target` stub; the `add_reaper_extension` SOURCES list is inside the `if(WIN32)` branch, so the new `pcm_source_anim.cpp` line is parsed but not compiled on Linux — same as Stories 3.1/3.2).
+- Best-effort `g++ -fsyntax-only` on `pcm_source_anim.cpp` fails at `reaper_plugin.h` → `../WDL/swell/swell.h` (not vendored). Confirmed no `swell.h` / `WDL` anywhere in tree — a full Linux compile is impossible by design; the Windows in-Reaper gate (AR19) is the test, per the story's Testing standards.
+
 ### Completion Notes List
 
+- **Task 1 — PCM_source subclass + factory.** New `src/pcm_source_anim.{h,cpp}`. `rav::AnimSource : PCM_source` overrides all 16 SDK pure-virtuals (verified against `reaper_plugin.h:582`) plus the non-pure `GetFileName`; non-audio markers (`GetNumChannels()==0`, `GetSampleRate()==0.0`), `GetLength()==1.0` **placeholder** (commented → Story 4.2), `SaveState`/`LoadState` stubs (→ Epic 6). Three free factory functions in an anonymous namespace match `pcmsrc_register_t`: `CreateFromType` (matches the permanent `"RAV_ANIM"` tag), `CreateFromFile` (case-insensitive final-extension check over `.glb/.gltf/.fbx/.dae`, lifted from the spike's `IExtEq`/`HasAnimExt` + `.dae` added, null-safe), `EnumFileExtensions` (description on `i==0` only). Both `CreateFrom*` wrap `new AnimSource(...)` in `try{…}catch(...){return nullptr;}` (D5/AR18 no-throw boundary). `PcmSourceRegistration()` exposes the address of the single static `g_reg` — **no `rec->Register` call in this file** (boundary rule, architecture.md:875).
+- **Task 2 — lifecycle wiring** in `src/plugin_main.cpp` only: `#include "pcm_source_anim.h"`; at load `rec->Register("pcmsrc", PcmSourceRegistration())` + one `LogInfo("pcmsrc factory registered (.glb/.gltf/.fbx/.dae)")`; at unload `g_register("-pcmsrc", PcmSourceRegistration())` placed first in the reverse-order teardown block. **Identical pointer** on both calls (AC3 / NFR-R3 dangling-pointer guard).
+- **Task 3 — build wiring.** `CMakeLists.txt` +1 explicit source line (`src/pcm_source_anim.cpp`); header not listed (consistent with `scene.h`/`camera.h`). No `file(GLOB)`.
+- **Task 4 — gate doc.** New `docs/PHASE3_VALIDATOR_GATE.md` seeded in the exact Phase 2 format: title, "testing the right thing if…", Prerequisites, §1 Build & install, §2 what's under test, §3 Story 4.1 row-based audit (7 rows: register-at-load, item-on-drop with the ~1 s placeholder called out, foreign-file pass-through, no-crash-on-unload, same-pointer source audit, no-regression, single-DLL), §4 recording. Explicitly tells Antho the 1 s length is correct and points length→4.2, playhead→4.3.
+- **Task 5 — Linux self-verify / scope audit.** `git status` shows only the expected changes: new `src/pcm_source_anim.{h,cpp}`, `docs/PHASE3_VALIDATOR_GATE.md`; modified `src/plugin_main.cpp`, `CMakeLists.txt`, `sprint-status.yaml`. **Zero** diff on `scene.h`, `renderer.*`, `viewer_window.*`, `asset_loader.cpp`, `animation.h`, `reaper_api.h`. **No new `REAPERAPI_WANT_*` symbol** (`reaper_api.h` unchanged — `PCM_source`/`pcmsrc_register_t` are SDK types, not API functions). `Register("pcmsrc"…)`/`("-pcmsrc"…)` appear only in `plugin_main.cpp`. (The untracked `build_*.bat` files pre-date this story.)
+- **Out of scope, confirmed not done:** no asset load, no GL, no duration parse, no transport/playhead, no SaveState content — those are Stories 4.2/4.3/Epic 6. The spike's `CurrentAnimTime` transport helper was deliberately **not** lifted (it's 4.3).
+- **Testing:** no automated harness exists for this Reaper-hosted native DLL (prior-story precedent). Completion gate = Antho's in-Reaper Windows run of `docs/PHASE3_VALIDATOR_GATE.md` §3 (AR19).
+
 ### File List
+
+- `src/pcm_source_anim.h` (new) — `PcmSourceRegistration()` declaration.
+- `src/pcm_source_anim.cpp` (new) — `AnimSource : PCM_source`, the three factory functions, `g_reg`.
+- `src/plugin_main.cpp` (modified) — include + symmetric `pcmsrc`/`-pcmsrc` register/unregister + load `LogInfo`.
+- `CMakeLists.txt` (modified) — +1 source line.
+- `docs/PHASE3_VALIDATOR_GATE.md` (new) — Phase 3 gate, §1 + Story 4.1 §3.
+- `_bmad-output/implementation-artifacts/sprint-status.yaml` (modified) — story 4-1 status tracking.
+
+## Change Log
+
+| Date | Change |
+|---|---|
+| 2026-06-26 | Story 4.1 implemented — `PCM_source` factory registers + creates a source from a `.glb/.gltf/.fbx/.dae` path (placeholder length). New `pcm_source_anim.{h,cpp}`, symmetric register in `plugin_main.cpp`, CMake +1 line, new `PHASE3_VALIDATOR_GATE.md`. Status → review (pending Antho's in-Reaper Windows gate, AR19). |
+| 2026-06-26 | Antho in-Reaper Windows gate **PASSED** (PHASE3_VALIDATOR_GATE §3): factory registers at load, animation file → media item (~1 s placeholder), foreign files Reaper-normal, unload no crash. AR19 in-Reaper pass IS the gate → Status → done. |

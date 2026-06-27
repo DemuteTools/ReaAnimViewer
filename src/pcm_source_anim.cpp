@@ -42,11 +42,36 @@ bool HasAnimExt(const char* fn)
         || IExtEq(dot, ".fbx") || IExtEq(dot, ".dae");
 }
 
+// Split one project line "key=value" at the FIRST '=' into (key, value), trimming
+// a trailing CR/LF the project context may carry. Returns false — i.e. "ignore
+// this line" — for a null line, a line with NO '=', or an EMPTY key. That single
+// primitive gives LoadState its whole forward-compat contract for free (AC3):
+// Reaper's native uppercase FILE "…" line has no '=' (ignored — Reaper owns it),
+// a nested <…> block opener has no '=' (ignored), and any unknown future key
+// simply isn't matched (ignored). ASCII/byte-wise, null-safe, no <sstream>.
+bool SplitKeyValue(const char* line, std::string& key, std::string& value)
+{
+    if (!line) return false;
+    const char* eq = std::strchr(line, '=');
+    if (!eq || eq == line) return false;  // no '=' (native FILE/<…>), or empty key
+    key.assign(line, (size_t)(eq - line));
+    value.assign(eq + 1);
+    while (!value.empty() && (value.back() == '\r' || value.back() == '\n'))
+        value.pop_back();
+    return true;
+}
+
 // Permanent on-disk type tag (architecture.md#D8): CreateFromType matches on it
 // and (Epic 6) SaveState/LoadState recognize our sources by it — changing it
 // after ship breaks every saved .rpp project. RAV-prefixed per the Story 1.1
 // rename (the spike's throwaway tag was "FBXAV_ANIM").
 constexpr const char kSourceType[] = "RAV_ANIM";
+
+// Schema version for our key=value state lines (D9). SaveState writes it as
+// `rav_ver=N`; LoadState ignores it today (a harmless unknown key) — it exists so
+// the persisted format is versioned from day one and a future LoadState can branch
+// on the schema without guessing (Story 6.1, fwd-compat).
+constexpr int kStateVer = 1;
 
 // Minimal non-audio PCM_source: 0 channels + GetSampleRate()<1.0 mark it silent,
 // yet a dropped file still creates a real timeline item (Spike 0). It holds the
@@ -81,14 +106,65 @@ public:
     int         PropertiesWindow(HWND) override   { return 0; }
     void        GetSamples(PCM_source_transfer_t* block) override { if (block) block->samples_out = 0; }
     void        GetPeakInfo(PCM_source_peaktransfer_t*) override {}
-    void        SaveState(ProjectStateContext*) override {}                        // stub — D9 / Epic 6
-    int         LoadState(const char*, ProjectStateContext*) override { return 0; } // stub — D9 / Epic 6
+    // --- Per-item project persistence (D9, Story 6.1) ---
+    // The file PATH rides Reaper's native FILE "…"/GetFileName/SetFileName mechanism
+    // (the same one Story 6.3 relies on for cross-machine relink). SaveState/LoadState
+    // additionally persist a versioned key=value line set in OUR source sub-chunk; the
+    // file= line is DEFENSIVE (a load-time fallback), applied only-if-empty so the
+    // native/relinked path is always authoritative (AC4 / NFR-R2 / 6.3-safe).
+    void SaveState(ProjectStateContext* ctx) override
+    {
+        if (!ctx) return;  // no-throw null-guard (AR18); write ONLY our own lines (NFR-R2)
+        // Build each line ourselves and emit via "%s" so a '%' in a path can't be
+        // read as a format specifier (paths are data, never the AddLine format).
+        ctx->AddLine("%s", ("rav_ver=" + std::to_string(kStateVer)).c_str());  // schema marker
+        if (!m_path.empty())
+            ctx->AddLine("%s", ("file=" + m_path).c_str());  // DEFENSIVE; native FILE wins (AC4)
+        // Do NOT write the uppercase FILE line (Reaper's), nor time_offset/time_scale/
+        // cam_* (deferred — native take state / global camera; Story 6.1 Task 5).
+    }
+
+    int LoadState(const char* firstline, ProjectStateContext* ctx) override
+    {
+        // firstline may be the <SOURCE RAV_ANIM opener OR the first inner content line
+        // depending on the Reaper build — ApplyStateLine ignores anything that isn't
+        // key=value, so both orderings are handled (the opener has no '=').
+        ApplyStateLine(firstline);
+        if (ctx) {
+            char buf[4096];
+            buf[0] = '\0';  // GetLine's contract only promises -1 at eof — don't read buf[0] uninitialized
+            while (ctx->GetLine(buf, sizeof(buf)) != -1) {  // SDK: GetLine returns -1 at eof
+                if (buf[0] == '>') break;                   // defensive: end of our sub-chunk
+                ApplyStateLine(buf);
+                buf[0] = '\0';                              // re-arm so a no-write return next loop is a safe no-op
+            }
+        }
+        return 0;  // never -1 on an unknown/malformed line (AC3) — a bad line must not drop the item
+    }
     void        Peaks_Clear(bool) override {}
     int         PeaksBuild_Begin() override { return 0; }
     int         PeaksBuild_Run() override   { return 0; }
     void        PeaksBuild_Finish() override {}
 
 private:
+    // Apply one persisted state line (D9, Story 6.1). Ignores any line that isn't
+    // key=value (the native FILE line, a <…> opener, a blank line) and every key we
+    // don't recognize (incl. rav_ver and any future key) — that IS the AC3 fwd-compat
+    // contract. The ONLY honored key is file=, and ONLY when our path is still empty,
+    // so Reaper's native/relinked path always wins (AC4, 6.3-safe). Never throws,
+    // never reports failure — a parse miss is silently ignored.
+    void ApplyStateLine(const char* line)
+    {
+        std::string key, value;
+        if (!SplitKeyValue(line, key, value)) return;  // ignore non-key=value (AC3)
+        if (key == "file") {
+            // only-if-empty: a relinked project (6.3) has m_path already set by the
+            // native SetFileName → our stale file= is skipped → native path is authoritative.
+            if (m_path.empty() && !value.empty()) SetFileName(value.c_str());  // re-probes m_len
+        }
+        // every other key intentionally ignored (fwd-compat) — never return failure here.
+    }
+
     std::string m_path;
     double      m_len = 0.0;  // cached clip duration in seconds (0 => use fallback)
 };

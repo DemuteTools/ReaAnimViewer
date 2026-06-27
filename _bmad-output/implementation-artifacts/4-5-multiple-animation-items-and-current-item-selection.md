@@ -4,7 +4,7 @@ baseline_commit: 4077f59b577da78d087c04567858b97262da71a2
 
 # Story 4.5: Multiple animation items and current-item selection
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 

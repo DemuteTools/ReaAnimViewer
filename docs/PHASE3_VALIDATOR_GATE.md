@@ -340,10 +340,13 @@ project and confirm **≥60 fps** with no stutter, audio/video/MIDI still coexis
 > audio/video/MIDI, 4.5 passes — even though same-track stacks don't pick by Z-order and
 > playrate doesn't retime.
 
-**Result:** Story 4.5 — **PENDING** (awaiting Antho's in-Reaper Windows validation).
-The in-Reaper pass IS the gate (AR19): FR14 overlap-by-track-priority (and the flip on
-track reorder) and NFR-P6 ≥10-item ≥60 fps are only observable in-Reaper on Windows. On
-Linux only the CMake configure + the source/scope audit were checkable (the only code is
-`+2 WANT_` in `reaper_api.h` and the priority-selection walk + `<climits>` in
-`GetCurrentAnimItem`; the DLL/GL/transport link is host-stubbed, as in every prior
-Phase-2/3 story). Flip this line to **PASS** once Antho has run the rows above.
+**Result:** Story 4.5 — **PASS** (Antho, in-Reaper Windows validation, 2026-06-27).
+Overlapping items select by track priority (FR14) and the current item flips correctly
+when tracks are reordered; ≥10 animation items play together while the viewer holds
+≥60 fps (NFR-P6); and the timeline-only load path (launch file-picker + Epic-3 startup
+fixture removed) behaves as intended. The in-Reaper pass IS the gate (AR19): priority
+selection, the reorder flip, the ≥10-item frame rate, and the startup behavior are only
+observable in-Reaper on Windows. On Linux only the CMake configure + the source/scope
+audit were checkable (the only code is `+2 WANT_` in `reaper_api.h` and the
+priority-selection walk + `<climits>` in `GetCurrentAnimItem`; the DLL/GL/transport link
+is host-stubbed, as in every prior Phase-2/3 story).

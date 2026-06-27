@@ -14,6 +14,7 @@
 #include "asset_loader.h"  // ProbeAnimationDuration — CPU-only, GL-free (Story 4.2)
 
 #include <cctype>
+#include <climits>  // INT_MAX — the "no track yet / lowest priority" selection sentinel (Story 4.5)
 #include <cstring>
 #include <string>
 
@@ -164,37 +165,63 @@ bool GetCurrentAnimItem(std::string& out_path, double& out_anim_time)
     const bool playing = (GetPlayStateEx(proj) & 1) != 0;
     const double pos = playing ? GetPlayPosition2Ex(proj) : GetCursorPositionEx(proj);
 
-    // First RAV item spanning the playhead wins (single-item / first-match; overlap +
-    // track-priority is Story 4.5 — do NOT generalise this walk). Null-guard every
-    // handle in the chain; the std::string assign is done LAST, only after a match.
+    // Highest-priority spanning RAV item wins (Story 4.5): on overlap, the one on the
+    // TOPMOST track (smallest 1-based IP_TRACKNUMBER) — mirroring Reaper's native video
+    // compositing precedence. This is NOT an early-return: a higher-priority item may
+    // appear LATER in CountMediaItems order, so scan EVERY item, keep the best candidate,
+    // and emit the outputs for the WINNER after the loop. Ties (same track, or an
+    // unreadable track number) keep the first walk-order item via strict < (deterministic,
+    // no flicker — AC3). Null-guard every handle in the chain.
+    MediaItem*      best    = nullptr;
+    MediaItem_Take* best_tk = nullptr;
+    double          best_ip = 0.0;
+    int             best_tn = INT_MAX;  // smaller = higher priority; sentinel = none yet
+
     for (int i = 0, n = CountMediaItems(proj); i < n; ++i) {
         MediaItem* it = GetMediaItem(proj, i);
         if (!it) continue;
         const double ip = GetMediaItemInfo_Value(it, "D_POSITION");
         const double il = GetMediaItemInfo_Value(it, "D_LENGTH");
-        if (pos < ip || pos >= ip + il) continue;
+        if (pos < ip || pos >= ip + il) continue;          // not under the playhead
         MediaItem_Take* tk = GetActiveTake(it);
         if (!tk) continue;
-        PCM_source* src = GetMediaItemTake_Source(tk);
-        if (!IsOurs(src)) continue;
+        if (!IsOurs(GetMediaItemTake_Source(tk))) continue; // skip non-RAV (coexistence)
 
-        // Matched. GetFileName() already returns m_path (no re-probe) — null-guard it.
-        const char* fn = src->GetFileName();
-        out_path = fn ? fn : "";
-        // Native left-trim: D_STARTOFFS is the take's start-in-source. animTime advances
-        // from there, so trimming the left edge reveals LATER frames of the same clip
-        // (FR11 native-media behavior) rather than restarting at frame 0. Take-level value.
-        const double off = GetMediaItemTakeInfo_Value(tk, "D_STARTOFFS");
-        double at = (pos - ip) + off;
-        if (!(at >= 0.0)) at = 0.0; // low guard; the negated form also catches a non-finite
-                                  // D_STARTOFFS (NaN compares false → reset to 0, not propagated).
-                                  // RenderFrame (loop==false) clamps the HIGH end
-                                  // to the clip duration, so a deep startoffs past the clip
-                                  // end holds the last frame (AC3) — do NOT re-clamp to il here.
-        out_anim_time = at;
-        return true;
+        // Highest-priority track = topmost = smallest 1-based IP_TRACKNUMBER.
+        // GetMediaTrackInfo_Value(tr, "IP_TRACKNUMBER") returns the int DIRECTLY (not a
+        // pointer-out attribute). 0 (not found) / -1 (master) / null track => lowest
+        // priority (INT_MAX), never "wins as track 0".
+        MediaTrack* tr = GetMediaItem_Track(it);
+        int tn = tr ? (int)GetMediaTrackInfo_Value(tr, "IP_TRACKNUMBER") : 0;
+        if (tn <= 0) tn = INT_MAX;
+
+        // (!best ||) admits the FIRST spanning candidate unconditionally, so a lone item
+        // whose track is unreadable (tn remapped to INT_MAX) is still selected — otherwise
+        // INT_MAX < INT_MAX is false and a valid item under the playhead would be dropped.
+        // The strict < then keeps the first walk-order item on a same-track tie (AC3).
+        if (!best || tn < best_tn) {
+            best_tn = tn; best = it; best_tk = tk; best_ip = ip;
+        }
     }
-    return false;
+    if (!best) return false;          // no RAV item under the playhead -> viewer holds (AC1)
+
+    // Emit for the WINNER (best/best_tk/best_ip), not the first match. The per-item time
+    // math is the SAME as 4.4 — only WHICH item feeds it changed.
+    PCM_source* src = GetMediaItemTake_Source(best_tk);
+    const char* fn  = src ? src->GetFileName() : nullptr;   // re-read; null-guard
+    out_path = fn ? fn : "";                                // std::string assign LAST
+    // Native left-trim: D_STARTOFFS is the take's start-in-source. animTime advances
+    // from there, so trimming the left edge reveals LATER frames of the same clip
+    // (FR11 native-media behavior) rather than restarting at frame 0. Take-level value.
+    const double off = GetMediaItemTakeInfo_Value(best_tk, "D_STARTOFFS");
+    double at = (pos - best_ip) + off;
+    if (!(at >= 0.0)) at = 0.0; // low guard; the negated form also catches a non-finite
+                              // D_STARTOFFS (NaN compares false → reset to 0, not propagated).
+                              // RenderFrame (loop==false) clamps the HIGH end
+                              // to the clip duration, so a deep startoffs past the clip
+                              // end holds the last frame (AC3) — do NOT re-clamp to il here.
+    out_anim_time = at;
+    return true;
 }
 
 }  // namespace rav

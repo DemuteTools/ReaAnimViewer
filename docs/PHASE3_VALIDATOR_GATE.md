@@ -275,3 +275,72 @@ the source/scope audit were checkable (the only code is `+1
 WANT_GetMediaItemTakeInfo_Value` in `reaper_api.h` and the 3-line `D_STARTOFFS` block in
 `GetCurrentAnimItem`; the DLL/GL/transport link is host-stubbed, as in every prior
 Phase-2/3 story). Flip this line to **PASS** once Antho has run the rows above.
+
+## 8. Story 4.5 — multiple animation items & current-item selection by track priority
+
+Story 4.5 is the **final Epic 4 story**: several animation items across one or more
+tracks, with the viewer always showing the **one under the playhead** — and, when two
+items **overlap** on different tracks, the one on the **highest-priority (topmost)
+track**. Most of this already works from Story 4.3 (find the item under the playhead,
+switch asset on a path change, hold the last frame in the gaps); the **one** net-new
+behavior is **overlap → topmost track wins** (smallest 1-based `IP_TRACKNUMBER`,
+mirroring Reaper's native video-compositing precedence). This story also **validates
+≥10-item capacity** (NFR-P6): because the viewer loads **exactly one** asset — the
+playhead item — VRAM stays at ~one asset regardless of item count, and the per-frame
+current-item walk is `O(itemCount)` of cheap read-only Reaper calls.
+
+The click-based test is: place **several** RAV items across tracks and scrub/play across
+them (the one under the playhead shows, holds in the gaps); **overlap two** different
+clips on **two different tracks** and confirm the **topmost** track's clip shows;
+**reorder the tracks** and confirm the selection **flips**; put **≥10** items in the
+project and confirm **≥60 fps** with no stutter, audio/video/MIDI still coexisting.
+
+> **Startup behavior changed (code review 2026-06-27):** opening the viewer **no longer
+> shows a "choose a 3D model" file dialog** and **no longer plays a looping startup demo**.
+> The viewport now opens **idle / blank** and shows **only** what is on the timeline under
+> the playhead (the launch picker + Epic-3 startup fixture were removed — the timeline is
+> the only load path; an in-viewer file browser is Epic 5). So on first open, expect a
+> **blank viewport** until you move the playhead over an animation item — that is correct,
+> not a bug. (See the AR20 Spec Change Log entry "Launch file-picker + Epic-3 startup
+> fixture removed".)
+
+**Suggested fixtures:**
+- *≥10 animation clips:* they can be **copies of the same file** (e.g. one Mixamo/Demute
+  `.glb`) placed on different tracks / positions — count, not distinctness, is what
+  NFR-P6 exercises.
+- *Two distinct clips to overlap:* two **visibly different** animations (e.g. a walk and
+  a dance) placed to **overlap in time on two different tracks**, so you can tell which
+  one the viewer picks.
+- *Coexistence media:* an audio `.wav`, a video (`.mp4`/`.mov`), and a MIDI item on other
+  tracks (as in §7).
+
+| # | Check | Pass criterion | AC |
+|---|---|---|---|
+| 1 | Several items, one shows | Place 3–4 RAV items at different timeline positions across one or more tracks. Scrub/play across them → the viewer shows whichever item is **under the playhead** and **switches asset** as you cross into the next item. | AC1 |
+| 2 | Between items holds | Park the playhead in a **gap** with no RAV item under it → the rig **holds** the last shown frame (no revert to the startup fixture, no crash). | AC1 |
+| 3 | Overlap → topmost track wins | Place two RAV items (**different** clips) overlapping in time on **two different tracks**. Move the playhead into the overlap → the viewer shows the item on the **topmost** (higher-in-the-list) track. | AC2 |
+| 4 | Swap track order → selection flips | Move the lower track **above** the other (or vice-versa) so the priority flips → the viewer now shows the **other** clip in the overlap. Confirms it is **track-order**, not item-order, that drives the pick. | AC2, AC3 |
+| 5 | ≥10 items / fps | Put **at least 10** RAV items in the project (across several tracks). The docked viewer holds **≥60 fps** (watch the console fps line); play across them with **no stutter** and no host hitch. | AC4 |
+| 6 | Coexist at scale | With the 10+ animation items plus an **audio** + a **video** + a **MIDI** item, press **Play** → everything plays together, no dropout / glitch / stutter, no host crash (4.4 coexistence holds at scale). | AC4 |
+| 7 | No regression / scope-clean | 4.1–4.4 behavior intact: viewer opens via `RAV: Open Viewer` and docks; play/scrub/hold work; **left-trim offset** (`D_STARTOFFS`) + move/resize/color/rename still native; item **length + name** from 4.2 unchanged; register/unregister still symmetric (`-pcmsrc`, same pointer — `plugin_main.cpp` untouched); unload/quit does not crash. The **only** new symbols are `GetMediaItem_Track` + `GetMediaTrackInfo_Value`; **no new dependency**; build clean at `/W3 /permissive-`. | AC5 |
+
+> **Scope note:** 4.5 makes overlap resolve by **highest-priority track** and **validates
+> ≥10-item capacity**; the only code is two `WANT_` symbols + the priority-selection walk
+> in `GetCurrentAnimItem`. Deliberately **out of scope**: **same-track** overlap resolves
+> to **first-encountered** (front-most / Z-order tie-break = **deferred**,
+> `deferred-work.md`); take **`D_PLAYRATE`** still **deferred** (Story 4.4 — playrate does
+> not retime the animation); an **asset cache** to dedup VRAM for the same file on two
+> tracks = **post-MVP** (architecture.md:1101 — only one asset is ever resident, so
+> NFR-P6 holds without it); per-item `SaveState` / `LoadState` content = **Epic 6** (still
+> stubbed). If several items show the right one under the playhead, an overlap picks the
+> **topmost** track (and flips on reorder), and ≥10 items hold ≥60 fps coexisting with
+> audio/video/MIDI, 4.5 passes — even though same-track stacks don't pick by Z-order and
+> playrate doesn't retime.
+
+**Result:** Story 4.5 — **PENDING** (awaiting Antho's in-Reaper Windows validation).
+The in-Reaper pass IS the gate (AR19): FR14 overlap-by-track-priority (and the flip on
+track reorder) and NFR-P6 ≥10-item ≥60 fps are only observable in-Reaper on Windows. On
+Linux only the CMake configure + the source/scope audit were checkable (the only code is
+`+2 WANT_` in `reaper_api.h` and the priority-selection walk + `<climits>` in
+`GetCurrentAnimItem`; the DLL/GL/transport link is host-stubbed, as in every prior
+Phase-2/3 story). Flip this line to **PASS** once Antho has run the rows above.

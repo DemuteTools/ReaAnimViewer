@@ -21,7 +21,6 @@
 
 #include "viewer_window.h"
 
-#include <commdlg.h>   // GetOpenFileNameW — native "choose a model" dialog
 #include <windowsx.h>  // GET_X_LPARAM / GET_Y_LPARAM — unpack WM_MOUSEMOVE coords
 #include <exception>   // std::exception — the no-throw host boundary (AR18)
 #include <string>
@@ -67,12 +66,6 @@ bool  g_class_registered = false;
 REAPER_PLUGIN_HINSTANCE g_class_hinst = nullptr;  // remembered so unload can UnregisterClass with the correct module
 
 Renderer g_renderer;
-
-// The model chosen in the "Open Viewer" file dialog, handed to StartRendering
-// (which runs inside WM_CREATE, where a modal dialog would be unsafe). Empty =
-// the user cancelled → a live but idle viewport. No file-picker UI inside Reaper
-// beyond this minimal native dialog until the Epic 5 browser.
-std::string g_model_path;
 
 // Story 4.3 transport-drive state. The displayed pose is derived from the playhead
 // every frame, never stored (architecture.md:305): g_display_time is just the last
@@ -227,9 +220,10 @@ void RenderTick()
     // last in-span frame (already at the boundary under continuous scrubbing) freezes
     // (AC3). Do NOT revert to the looping fixture here — reload thrash + breaks "hold".
 
-    // Before any RAV item is ever current, g_transport_driven is false → the startup
-    // dialog fixture renders free-running with the Epic-3 loop (AC5 preserved). Once an
-    // item drives the view it is sticky: transport time, clamp (no loop).
+    // Before any RAV item is ever current, g_transport_driven is false → the viewport
+    // is idle (no startup fixture — the launch file-picker was removed; animations are
+    // loaded from the timeline). Once an item drives the view it is sticky: transport
+    // time, clamp (no loop).
     g_renderer.RenderFrame(
         static_cast<float>(g_transport_driven ? g_display_time : ElapsedSeconds()),
         /*loop=*/!g_transport_driven, g_client_w, g_client_h);
@@ -272,42 +266,6 @@ void CALLBACK FrameTimerProc(HWND, UINT, UINT_PTR, DWORD)
         LogInfo("panel shown — render resumed");
     }
     RenderTick();
-}
-
-// Shows the native "choose a model" dialog and returns the picked path as UTF-8.
-// UTF-8 (not the system ANSI codepage) is deliberate: assimp's Windows IOSystem
-// decodes incoming paths as UTF-8 and opens them wide, and our own FileExists uses
-// std::filesystem::u8path — so a path under a non-ASCII user folder (e.g. accented
-// or CJK characters) resolves correctly instead of being mangled to '?'. Returns
-// false on cancel or error → the caller leaves g_model_path empty and the viewport
-// opens idle. Must be called BEFORE the window is created (a modal dialog inside
-// WM_CREATE is unsafe).
-bool PromptForModelFile(HWND owner, std::string& out_path)
-{
-    wchar_t file[MAX_PATH] = {};
-
-    OPENFILENAMEW ofn = {};
-    ofn.lStructSize = sizeof(ofn);
-    ofn.hwndOwner   = owner;
-    ofn.lpstrFilter = L"3D models (*.gltf;*.glb;*.fbx;*.dae)\0*.gltf;*.glb;*.fbx;*.dae\0"
-                      L"All files (*.*)\0*.*\0";
-    ofn.lpstrFile   = file;
-    ofn.nMaxFile    = MAX_PATH;
-    ofn.lpstrTitle  = L"ReaAnimViewer — choose a 3D model";
-    // NOCHANGEDIR: the dialog must not change Reaper's working directory.
-    ofn.Flags       = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-
-    if (!GetOpenFileNameW(&ofn))
-        return false;  // user cancelled, or the dialog failed to open
-
-    // CP_UTF8: a wide path can hold characters no ANSI codepage can represent; UTF-8
-    // is lossless and is what assimp / std::filesystem::u8path expect downstream.
-    char utf8[MAX_PATH * 4] = {};
-    const int n = WideCharToMultiByte(CP_UTF8, 0, file, -1, utf8,
-                                      static_cast<int>(sizeof(utf8)), nullptr, nullptr);
-    if (n <= 0) return false;
-    out_path = utf8;
-    return true;
 }
 
 // Brings up the GL context + renderer + frame loop. Returns false (with a
@@ -354,28 +312,14 @@ bool StartRendering(HWND hwnd)
         return false;
     }
 
-    // Load the model the user picked in the dialog (g_model_path, set by
-    // OpenViewerWindow before the window was created). A bad/missing file must NEVER
-    // bail the window or crash Reaper (AR17): LoadAsset is no-throw, so we just log
-    // one line and keep a blank-but-live viewport. Empty path = the user cancelled.
-    //
-    // This is the NO-ITEM FALLBACK (Story 4.3): until a RAV item is under the playhead,
-    // g_transport_driven is false and RenderTick renders this fixture free-running (the
-    // Epic-3 loop, AC5). Once an item drives the view, transport mode is sticky and this
-    // fixture is never shown again — see RenderTick.
-    if (!g_model_path.empty()) {
-        LoadResult result = LoadAsset(g_model_path);
-        if (result.asset) {
-            const size_t mesh_count = result.asset->meshes.size();
-            g_renderer.SetAsset(std::move(*result.asset));
-            LogInfo("loaded %s (%zu meshes)", g_model_path.c_str(), mesh_count);
-        } else {
-            LogError("load failed [%s]: %s", LoadErrorCategoryName(result.category),
-                     result.detail.c_str());
-        }
-    } else {
-        LogInfo("no file selected — viewport idle");
-    }
+    // No startup asset: the viewport opens IDLE and stays blank until a RAV animation
+    // item passes under the playhead, at which point RenderTick lazily loads and shows
+    // it (Story 4.3+). The timeline is now the only load path — the legacy "choose a 3D
+    // model" launch dialog was removed (animations are placed as items; an in-Reaper
+    // file browser/preview is Epic 5). Until an item drives the view, g_transport_driven
+    // is false and RenderFrame just clears to the idle background (no asset = no draw,
+    // the same already-proven path the old "cancel" case took).
+    LogInfo("viewport idle — drop an animation on a track and move the playhead over it");
 
     TrySetVsync(0);
 
@@ -621,12 +565,10 @@ void OpenViewerWindow(REAPER_PLUGIN_HINSTANCE hInst, HWND reaper_main)
         return;
     }
 
-    // Ask the user which model to show BEFORE creating the window — StartRendering
-    // runs inside WM_CREATE, and a modal dialog there (mid-CreateWindowExW) is
-    // unsafe. An empty path (cancel) just opens an idle viewport.
-    g_model_path.clear();
-    PromptForModelFile(reaper_main, g_model_path);
-
+    // No startup file dialog: the viewer opens directly and shows whatever animation
+    // item is under the playhead (loaded lazily by RenderTick). Animations live on the
+    // timeline now — the old "choose a 3D model" launch picker was removed.
+    //
     // A docked GL viewport is a WS_CHILD of Reaper's main window: the docker
     // reparents it into its own host and drives its size/visibility. It is created
     // without WS_VISIBLE and NOT self-shown — DockWindowActivate (below) reveals it

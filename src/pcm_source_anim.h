@@ -27,11 +27,14 @@ pcmsrc_register_t* PcmSourceRegistration();
 
 // Story 4.3 — the read-only transport→current-item query the viewer polls each
 // render tick. Reads the playhead (play cursor while playing, edit cursor while
-// stopped) and walks the project's items for the FIRST RAV item spanning it
-// (single-item / first-match — overlap+priority is Story 4.5). On a match: fills
-// out_path with that item's source file path and out_anim_time with the
-// item-relative time CLAMPED to [0, itemLength] (FR10), and returns true. No
-// match → returns false, leaving both outs untouched.
+// stopped) and walks ALL the project's items, selecting the spanning RAV item on
+// the HIGHEST-PRIORITY (topmost) track — smallest 1-based IP_TRACKNUMBER — so an
+// overlap on different tracks resolves to the topmost track (Story 4.5, FR14).
+// Ties (same track, or an unreadable track number) keep the first walk-order item
+// (deterministic). On a match: fills out_path with that item's source file path and
+// out_anim_time with the item-relative time (low-guarded ≥0; RenderFrame clamps the
+// high end to [0, duration]), and returns true. No match → returns false, leaving
+// both outs untouched.
 //
 // NO-THROW, MAIN-THREAD ONLY: it calls Reaper item APIs, so it must run on the
 // thread Reaper drives the UI pump on (the viewer's NULL-hwnd render timer is

@@ -1125,6 +1125,49 @@ Phase 0.5 spec to be authored next (`_bmad-output/implementation-artifacts/spec-
 
 ## Spec Change Log
 
+### 2026-06-27 — Launch file-picker + Epic-3 startup fixture removed; the timeline is the only load path (Story 4.5 review)
+
+**Trigger:** With Epic 4 complete, an animation is loaded by **dropping it on a track and moving the playhead over it** (drop → item → `GetCurrentAnimItem` → lazy single-asset load). The interim **launch-time "choose a 3D model" file dialog** (`PromptForModelFile` / `g_model_path` in `viewer_window.cpp`) and the **Epic-3 free-running startup fixture** (the no-item fallback that looped a demo asset until a RAV item became current) are now **obsolete** — they predate the timeline-driven pipeline and the only in-viewer file-selection UI on the roadmap is the **Epic 5** browser. Surfaced during the Story 4.5 code review (the change was present in the working tree); Antho confirmed it as intentional (2026-06-27).
+
+**Amendment:** the viewer **no longer prompts for a model on open** and **no longer renders a startup fixture**. `OpenViewerWindow` opens the docked viewport directly; `StartRendering` loads **no** startup asset — the viewport stays **idle/blank** until a RAV item passes under the playhead, at which point `RenderTick` lazily loads and shows it (Story 4.3+). `PromptForModelFile`, `g_model_path`, and `#include <commdlg.h>` are removed from `viewer_window.cpp`. This **amends AC5's** "every Epic 1–3 / Story 4.1–4.4 behavior is unchanged" insofar as the Story 4.3-pinned "startup fixture free-runs the Epic-3 loop (AC5 preserved)" no longer applies — the idle viewport replaces it. **Scope note:** this touches `src/viewer_window.cpp`, which Story 4.5's own scope boundary had declared untouched; the story's File List + Dev Agent Record were corrected in review to reflect the 4th changed `src/` file.
+
+**KEEP:** the no-asset render path is the **already-proven** one (the old "cancel"/empty-path case took it) — `RenderFrame` clears to the idle background and early-returns on an empty mesh set; the `RenderFrame(loop = !g_transport_driven, …)` plumbing is retained (now vestigial on the idle path — harmless: no asset = no draw; when an item drives the view `g_transport_driven` is true → `loop=false` clamp, unchanged). The transport-drive, off-span hold (AC3 "freeze on leave"), and path-change reload (Story 4.3) are all unchanged.
+
+### 2026-06-27 — Current-item selection resolves overlap by highest-priority track (Story 4.5, FR14)
+
+**Trigger:** Story 4.5 (multiple animation items + current-item selection / FR13, FR14)
+requires that when **two or more** RAV items span the playhead **at the same time** on
+**different** tracks, the viewer display the one on the **highest-priority track**. The
+interim selection rule shipped through 4.3/4.4 was **first-match** (the first spanning RAV
+item in `CountMediaItems` order), which resolves overlap arbitrarily.
+
+**Amendment:** the pinned **"single-item / first-match"** interim rule (KEEP'd in the
+2026-06-27 Story 4.4 entry below) becomes:
+
+```
+among all RAV items spanning the playhead, the one on the LOWEST IP_TRACKNUMBER
+(topmost track in the track list) wins
+```
+
+"Highest priority" = the **topmost track** (`IP_TRACKNUMBER == 1` is highest, larger =
+lower), mirroring Reaper's native **video-compositing** precedence. The walk in
+`GetCurrentAnimItem` changes from early-return-on-first-match to a **full scan** keeping the
+best (lowest-`IP_TRACKNUMBER`) candidate, then emits `out_path` / `D_STARTOFFS` term /
+`(pos − itemStart)` for the **winner**. This is the trigger for the two new
+`REAPERAPI_WANT_GetMediaItem_Track` and `REAPERAPI_WANT_GetMediaTrackInfo_Value` symbols in
+`src/reaper_api.h`. This **realizes** the long-pinned intent at architecture.md:42
+("current-item selection by playhead **+ priority**") — convergence, not divergence; the
+first-match walk was the documented interim.
+
+**KEEP:** the clamp discipline (`[0, duration]` in `RenderFrame`, low guard `≥0` in
+`GetCurrentAnimItem`); the `D_STARTOFFS` left-trim term (Story 4.4); the path-change lazy
+**single-asset** load (Story 4.3 — only the playhead item is ever resident in VRAM, so
+NFR-P6 ≥10 items holds by construction, no asset cache). Also KEEP — still **NOT** honored
+(deferred): **same-track overlap front-most / Z-order precedence** (ties keep
+first-encountered) and take **`D_PLAYRATE`** (coupled to 4.2 item-sizing) — both in
+`deferred-work.md`. No registration is added (boundary rule intact — this is a read-only
+track query, not a `Register` call).
+
 ### 2026-06-27 — Item-relative mapping gains the take start-offset term (Story 4.4, FR11 native left-trim)
 
 **Trigger:** Story 4.4 (animation items behave like native media / FR11) requires that

@@ -37,5 +37,13 @@
 // the SAME existing REAPERAPI_LoadAPI call; read-only, no new registration.
 #define REAPERAPI_WANT_GetMediaItemTakeInfo_Value  // "D_STARTOFFS" (take start-in-source — left-trim offset)
 
+// Story 4.5 — multi-item current-item selection by track priority. When two RAV
+// items span the playhead at once (overlap on different tracks), the topmost track
+// wins (smallest 1-based IP_TRACKNUMBER). Read the spanning item's track, then its
+// number. Both resolve through the SAME existing REAPERAPI_LoadAPI call; read-only,
+// no new registration. IP_TRACKNUMBER is TRACK-level and returns the int directly.
+#define REAPERAPI_WANT_GetMediaItem_Track          // item -> MediaTrack* (the spanning item's track)
+#define REAPERAPI_WANT_GetMediaTrackInfo_Value     // "IP_TRACKNUMBER" (1-based, top=1 = highest priority; 0=not found, -1=master)
+
 #include "reaper_plugin.h"
 #include "reaper_plugin_functions.h"

@@ -1125,6 +1125,38 @@ Phase 0.5 spec to be authored next (`_bmad-output/implementation-artifacts/spec-
 
 ## Spec Change Log
 
+### 2026-06-27 — Item-relative mapping gains the take start-offset term (Story 4.4, FR11 native left-trim)
+
+**Trigger:** Story 4.4 (animation items behave like native media / FR11) requires that
+**left-edge trim** behave exactly as it does for an audio item — trimming the left edge
+sets the take's `D_STARTOFFS` (start-in-source), and the viewer must **honor it** so the
+trimmed item reveals **later frames of the same clip** rather than restarting at frame 0.
+Antho asked for this native-media offset behavior explicitly (2026-06-27).
+
+**Amendment:** the pinned item-relative mapping `animTime = playheadTime − itemStart`
+(architecture.md:42, and the "Confirmed" line of the 2026-06-23 Spike entry below, which
+states `animTime = playPos − itemStart`) becomes:
+
+```
+animTime = (playheadTime − itemStart) + take.D_STARTOFFS
+```
+
+read via the take-level `GetMediaItemTakeInfo_Value(tk, "D_STARTOFFS")` — this is the
+trigger for the new `REAPERAPI_WANT_GetMediaItemTakeInfo_Value` symbol in
+`src/reaper_api.h`. With no left-trim (`D_STARTOFFS == 0`) the mapping is byte-identical
+to the prior formula, so move and right-resize are unaffected.
+
+**KEEP:** the clamp discipline — only the **low** guard (`animTime ≥ 0`) lives in
+`GetCurrentAnimItem`; the **upper** bound stays the `[0, duration]` clamp in `RenderFrame`
+(`loop == false`, Story 4.3), so a start-offset past the clip end **holds the last frame**
+(the old upper clamp to item-length `il` is dropped — it was a no-op for the no-trim
+in-span case and would wrongly cap the legitimately-larger offset). Also KEEP:
+single-item / first-match (overlap + track-priority is **Story 4.5**, not this change);
+and take **`D_PLAYRATE` explicitly NOT yet honored** — playrate is deferred because it is
+coupled to 4.2's `GetLength` / item-sizing (a cross-story change), recorded in
+`deferred-work.md`. No registration is added (boundary rule intact — this is a read-only
+take-info query, not a `Register` call).
+
 ### 2026-06-23 — Spike 0 findings: viewport is a docked OpenGL window, not a ReaImGui panel (supersedes D11/AR10; amends D12)
 
 **Trigger:** Spike 0 (throwaway feasibility prototype, branch `spike/0-1-feasibility`, verdict **GO** — see `docs/SPIKE0_FINDINGS.md`) measured on the reference workstation (Ryzen 9 9900X / RX 9070):

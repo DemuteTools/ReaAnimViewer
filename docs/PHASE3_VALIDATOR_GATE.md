@@ -211,3 +211,67 @@ asset. The in-Reaper pass IS the gate (AR19): transport timing, scrub feel, and 
 hold-at-ends are only observable in-Reaper on Windows. On Linux only the CMake
 configure + the source/scope audit were checkable (the DLL/GL/transport link is
 host-stubbed, as in every prior Phase-2/3 story).
+
+## 7. Story 4.4 — animation items behave like native media & coexist with other tracks
+
+Story 4.4 makes an animation item a **first-class Reaper media item**: you can
+**move** it, **resize both edges**, **recolor**, and **rename** it with Reaper's
+**native** controls, and it **coexists** with audio / video / MIDI on other tracks —
+press Play and **everything plays together**, the rig in transport-sync and the other
+media untouched. Move and right-resize ride for free on Story 4.3's live per-frame
+read of `D_POSITION` / `D_LENGTH`; color and rename never reach our `PCM_source` (the
+viewer keys its asset off the source **file path**, not the item name/color);
+coexistence is structural (our source is silent / 0-channel, so Reaper's mixer never
+pulls audio from it, and the per-frame walk skips every non-`RAV_ANIM` item). The
+**one** net-new behavior is **left-edge trim**: trimming the left edge sets the take's
+`D_STARTOFFS`, and the viewer now honors it — `animTime = (playheadTime − itemStart) +
+D_STARTOFFS` — so left-trimming **reveals later frames of the same clip** instead of
+restarting at frame 0, exactly like an audio item.
+
+The click-based test is: **move / resize both edges / recolor / rename** the animation
+item, **left-trim it and confirm it reveals later frames** (not a restart), then drop
+it next to **audio + video + MIDI** items, **press Play**, and confirm everything plays
+together.
+
+**Suggested fixtures:**
+- *Known-duration clip:* a Mixamo / Demute animation of known length (e.g. ~4 s), so
+  you can see which frame the left-trim reveals.
+- *Audio:* any `.wav` on another track.
+- *Video:* any video file (`.mp4`/`.mov`) on another track.
+- *MIDI:* a MIDI item (with a virtual instrument or just on a track) on another track.
+
+| # | Check | Pass criterion | AC |
+|---|---|---|---|
+| 1 | Move the item | Drag the animation item **along** its track and **across** to another track. The rig stays in transport-sync at the new position (it re-anchors to the new start) — exactly like moving any media item. | AC1 |
+| 2 | Resize right edge LONGER than the clip | Drag the **right** edge out past the clip's duration. Past the clip end the rig **holds its last frame**; it still plays from frame 0 at the item's start. No flicker/garbage/crash. | AC1, AC3 |
+| 3 | Resize right edge SHORTER | Drag the **right** edge in. The item ends earlier, the rig plays only the trimmed span, then the playhead leaves the span — no error. | AC1, AC3 |
+| 4 | Trim LEFT edge → later frames | Drag the **left** edge inward. At the item's (new) start the rig shows a **later frame of the same clip** (it does **NOT** restart from frame 0) — native-media offset behavior (`D_STARTOFFS`). | AC2 |
+| 5 | Recolor | Change the item's color (native Reaper recolor). The item changes color; **rendering is unaffected**; no crash. | AC1 |
+| 6 | Rename | Rename the item/take. It renames; **rendering is unaffected** (the asset is still keyed to the file path, not the name); no crash. | AC1 |
+| 7 | Coexist — audio | An **audio** item on another track plays back **normally** alongside the animation item (no dropout/glitch). | AC4 |
+| 8 | Coexist — video | A **video** item plays back **normally** alongside (no stuck/missed video). | AC4 |
+| 9 | Coexist — MIDI | A **MIDI** item plays back **normally** alongside (no missed/stuck notes). | AC4 |
+| 10 | All together | Audio + video + MIDI + the animation item in **one** session. Press **Play** → **everything plays at once**: the rig follows the transport (a left-trimmed item revealing later frames) and the other media has **no dropout / glitch / stutter**, no host crash. | AC4 |
+| 11 | No regression / scope-clean | 4.1–4.3 behavior intact: viewer opens via `RAV: Open Viewer` and docks; play/scrub/hold work; item **length + name** from 4.2 unchanged; register/unregister still symmetric (`-pcmsrc`, same pointer — `plugin_main.cpp` untouched); unload/quit does not crash. The **only** new symbol is `GetMediaItemTakeInfo_Value`; **no new dependency**; build clean at `/W3 /permissive-`. | AC5 |
+
+> **Scope note:** 4.4 makes the item first-class (move / resize both edges / color /
+> rename) and **validates coexistence** with audio/video/MIDI; the only code is the
+> `D_STARTOFFS` left-trim term. Deliberately **out of scope**: **overlap /
+> track-priority among multiple items** + **≥10-item capacity** = **Story 4.5** (here,
+> first RAV item under the playhead wins); per-item `SaveState` / `LoadState` content =
+> **Epic 6** (still stubbed); and **take playrate (`D_PLAYRATE`) is deferred (AC5)** —
+> changing an item's playrate does **not** retime the animation in this MVP (it is
+> coupled to 4.2's item-length sizing — see `deferred-work.md`). If move / resize-both-
+> edges / left-trim-reveals-later-frames / color / rename all behave natively and the
+> other media plays untouched, 4.4 passes — even though overlapping items don't yet
+> pick by priority and playrate doesn't retime.
+
+**Result:** Story 4.4 — **PENDING** (awaiting Antho's in-Reaper Windows validation).
+The in-Reaper pass IS the gate (AR19): FR11 native-control feel (move / resize both
+edges / recolor / rename), the left-trim offset (`D_STARTOFFS` reveals later frames of
+the same clip — not a restart at frame 0), and FR12 simultaneous audio/video/MIDI
+playback are only observable in-Reaper on Windows. On Linux only the CMake configure +
+the source/scope audit were checkable (the only code is `+1
+WANT_GetMediaItemTakeInfo_Value` in `reaper_api.h` and the 3-line `D_STARTOFFS` block in
+`GetCurrentAnimItem`; the DLL/GL/transport link is host-stubbed, as in every prior
+Phase-2/3 story). Flip this line to **PASS** once Antho has run the rows above.

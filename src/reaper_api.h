@@ -31,5 +31,11 @@
 #define REAPERAPI_WANT_GetActiveTake
 #define REAPERAPI_WANT_GetMediaItemTake_Source // the take's PCM_source* (confirm ours + read path)
 
+// Story 4.4 — the take-level start-in-source offset (left-trim). Read via
+// GetMediaItemTakeInfo_Value(MediaItem_Take*, "D_STARTOFFS") — NOT the item-level
+// GetMediaItemInfo_Value (D_POSITION/D_LENGTH, already present). Resolves through
+// the SAME existing REAPERAPI_LoadAPI call; read-only, no new registration.
+#define REAPERAPI_WANT_GetMediaItemTakeInfo_Value  // "D_STARTOFFS" (take start-in-source — left-trim offset)
+
 #include "reaper_plugin.h"
 #include "reaper_plugin_functions.h"

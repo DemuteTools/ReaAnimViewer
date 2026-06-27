@@ -181,10 +181,17 @@ bool GetCurrentAnimItem(std::string& out_path, double& out_anim_time)
         // Matched. GetFileName() already returns m_path (no re-probe) — null-guard it.
         const char* fn = src->GetFileName();
         out_path = fn ? fn : "";
-        // The FR10 [0, itemLength] clamp: at the in-span edges this is ~0 / ~itemLength,
-        // so when the playhead leaves the span the held value IS the first/last frame.
-        double at = pos - ip;
-        out_anim_time = (at < 0.0) ? 0.0 : (at > il ? il : at);
+        // Native left-trim: D_STARTOFFS is the take's start-in-source. animTime advances
+        // from there, so trimming the left edge reveals LATER frames of the same clip
+        // (FR11 native-media behavior) rather than restarting at frame 0. Take-level value.
+        const double off = GetMediaItemTakeInfo_Value(tk, "D_STARTOFFS");
+        double at = (pos - ip) + off;
+        if (!(at >= 0.0)) at = 0.0; // low guard; the negated form also catches a non-finite
+                                  // D_STARTOFFS (NaN compares false → reset to 0, not propagated).
+                                  // RenderFrame (loop==false) clamps the HIGH end
+                                  // to the clip duration, so a deep startoffs past the clip
+                                  // end holds the last frame (AC3) — do NOT re-clamp to il here.
+        out_anim_time = at;
         return true;
     }
     return false;

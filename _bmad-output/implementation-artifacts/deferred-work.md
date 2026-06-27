@@ -6,6 +6,12 @@ trigger condition for when it should be picked up.
 
 ---
 
+## Deferred from: story 4.4 (native-media coexistence) — 2026-06-27
+
+- **Take playrate (`D_PLAYRATE`) is not honored** [`src/pcm_source_anim.cpp` `GetCurrentAnimItem`]. Story 4.4 makes an animation item behave like native media for **move / resize / color / rename** and honors the take's `D_STARTOFFS` (left-trim → `animTime = (pos − itemStart) + D_STARTOFFS`), but a change to the take's **playrate** does **not** time-stretch the animation in this MVP — the displayed time advances at 1.0× regardless of `D_PLAYRATE`. **Trigger:** if sound designers need to retime an animation item via playrate, multiply the item-relative term by `D_PLAYRATE` in `GetCurrentAnimItem` (`animTime = D_STARTOFFS + (pos − itemStart) * D_PLAYRATE`, one more `GetMediaItemTakeInfo_Value` call) **and** reconcile it with Story 4.2's `GetLength` / `ProbeAnimationDuration` item-sizing, which currently assumes playrate 1.0 — changing a take's playrate makes Reaper auto-resize the item, so the displayed-time mapping and the item-length contract must move together. That cross-story coupling (4.2 ↔ 4.4) is why playrate is deferred while `D_STARTOFFS`, which has no such coupling (a left trim leaves item length unchanged), ships in 4.4.
+
+---
+
 ## Deferred from: code review of story-3.3 (2026-06-26)
 
 - **Palette uploaded without an `isfinite` screen** [`src/renderer.cpp` `RenderFrame`]. The per-frame `ComputePose` output is uploaded verbatim via `glUniformMatrix4fv`; inputs are guarded (3.1 weight `isfinite`, 3.2 tps-finite + quat-normalize) but a degenerate zero-scale/sheared bind bone could still compose a NaN into the palette → on-screen NaN-explosion vs AC7. **Trigger:** if a rig explodes/vanishes at the AR19 visual gate, add a cheap finite-screen (or log `palette_[0]` + AABB) as a §C diagnostic; a per-frame scan over ≤128 mat4 is the cost to weigh.

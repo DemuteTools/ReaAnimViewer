@@ -43,7 +43,7 @@ The PRD organizes capabilities into eight architecturally meaningful clusters th
 - **3D Rendering & Visual Fidelity (FR15–FR20):** Skinned mesh with per-frame bone deformation, diffuse-textured Blinn-Phong + per-material specular response, multi-material meshes, textures resolved from GLB-embedded / glTF siblings / FBX-embedded variants.
 - **Camera & Viewport Control (FR22–FR26):** Orbit (right-click drag), zoom (scroll), pan (middle-click drag), reset-to-bounding-box, continuous-update during interaction (no pause-on-camera).
 - **Panel & Docking (FR27–FR30):** ReaImGui-driven panel, dockable in any Reaper docker, Action registration (`FBXAV: Open Viewer Window`), graceful console diagnostic + bail-out when ReaImGui is absent at load.
-- **Project State Persistence (FR31–FR33):** Per-item state (animation path, camera angle, optional time offset/scale) round-trips via PCM_source `SaveState`/`LoadState`; panel dock position delegates to ReaImGui's own state persistence.
+- **Project State Persistence (FR31–FR33):** Per-item state (animation path, camera angle, optional time offset/scale) round-trips via PCM_source `SaveState`/`LoadState`; panel dock position via Reaper's **native docker/screenset state** (amended 2026-06-27 — was ReaImGui; the viewport is a docked GL window, ReaImGui is post-MVP).
 - **Error Tolerance & Graceful Degradation (FR34–FR37):** No host crash on malformed input, console diagnostic with file path + error category, manual reload button per item, single-item failure isolation.
 - **Distribution & Operation (FR38–FR41):** ReaPack one-click with ReaImGui as auto-install dependency, manual DLL-copy install path, fully offline (zero network surface), updates entirely delegated to ReaPack.
 
@@ -74,7 +74,7 @@ The PRD organizes capabilities into eight architecturally meaningful clusters th
 - **Math:** GLM.
 - **UI framework:** ReaImGui (`cfillion/reaimgui`) — runtime dependency, ReaPack auto-install. Phase 0's standalone Win32 window is superseded by a ReaImGui dockable panel (PRD 2026-05-10).
 - **Distribution:** ReaPack only, MIT, no-SLA, 100% offline (no telemetry / no network surface at all).
-- **State persistence:** Per-item state via PCM_source `SaveState`/`LoadState`; panel dock position via ReaImGui's own state.
+- **State persistence:** Per-item state via PCM_source `SaveState`/`LoadState`; panel dock position via Reaper's native docker/screenset state *(amended 2026-06-27 — was ReaImGui)*.
 - **Project files:** Read-only access to glTF / GLB / FBX via assimp's `Importer::ReadFile`; no writes outside Reaper's project ext-state.
 - **Reaper version:** Reaper 7.x, SDK `caller_version == 0x20E` (SDK update 2026-05-07 for Reaper 7.72).
 
@@ -316,12 +316,14 @@ Verification work for Phase 3 design step (NOT now): exact SDK names for the reg
 
 #### D9 — Persistence layering
 
+> **⚠️ AMENDED 2026-06-27 (Correct Course — see Spec Change Log).** Le panneau n'est **pas** ReaImGui (Spike 0 : fenêtre GL dockée via `DockWindowAddEx`) → la position de dock persiste via l'état **docker/screenset natif Reaper** (ou notre ext-state), pas ReaImGui (FR32 reformulé). Réalisé par Story 6.2.
+
 Three independent persistence surfaces, each owned by a different layer:
 
 | Surface | Owner | Persistence mechanism | Format |
 |---|---|---|---|
 | Per-item state (path, camera, offset, scale) | PCM_source instance | `SaveState` / `LoadState` virtual methods, called by Reaper during project save/load | Line-based `key=value` text inside Reaper's project chunk for our PCM_source |
-| Panel dock position, panel size, dock target | ReaImGui itself | ReaImGui's internal state persistence (already handles this) | Opaque to us |
+| Panel dock position, panel size, dock target | Reaper native docker/screenset *(amended 2026-06-27 — was ReaImGui)* | Reaper's native dock/screenset state restored on project load (`DockWindowAddEx`), or our ext-state | Opaque to us / our named chunk |
 | Global viewer prefs (if any, e.g. show grid toggle) | Project-level ext-state | Reaper `ProjectExtensionConfig` hook | Single line in our extension's named chunk |
 
 Forward-compat: SaveState writes all known keys; LoadState ignores unknown keys (per PRD's "older extension reading newer project: opportunistic" clause).
@@ -488,7 +490,7 @@ Manifest also declares: MIT license, Demute author/maintainer, "as-is / no-SLA" 
 | Phase 2 (skinned animation) | D1 (Asset fully: skinned path, animations), D13 (GPU skinning) — dominant risk per PRFAQ |
 | Phase 3 (transport sync) | D8 (PCM_source plugin), D9 (per-item SaveState), D10 (loader expansion for transport APIs) |
 | Epic 5 (animation browser, post-Phase 3) | D18 (browser panel + transient preview), reuses D8 (place-on-track), D11–D14 (viewer), D1/D6 (loader) |
-| Phase 4 (reload + persistence) | D4 (reload swap), D9 (full persistence layering + cross-machine path portability FR46), partial D15 (FBX validation against Demute fixtures) |
+| Phase 4 (save/recall sessions) | D9 (per-item + panel persistence via `SaveState`/`LoadState`; dock via native Reaper docker/screenset) + FR46 cross-machine portability **via native Reaper media copy/relink** (verify-first, no custom remap). *(Amended 2026-06-27 — reload swap D4 + FBX validation D15 moved to Epic 8 post-release.)* |
 | Phase 5 (polish + release) | D15 (assimp CMake final), D16 (ReaPack manifest final), D17 (install validation) |
 
 **Cross-component dependencies:**
@@ -821,7 +823,7 @@ Mapping PRD FR groups → owning subsystem files:
 | **FR15–FR20** 3D Rendering & Visual Fidelity | `renderer.{h,cpp}`, `gpu_resources.h`, `scene.h`, `animation.{h,cpp}` (for FR15 skinning) | Phase 1 (static), Phase 2 (skinned) |
 | **FR22–FR26** Camera & Viewport Control | `camera.{h,cpp}` | Phase 1 |
 | **FR27–FR30** Panel & Docking | `viewer_panel.{h,cpp}`, `imgui_api.{h,cpp}`, `plugin_main.cpp` (action reg + ReaImGui detect) | Phase 0.5 |
-| **FR31–FR33** Project State Persistence | `pcm_source_anim.cpp` (SaveState/LoadState), `project_state.{h,cpp}` if needed, ReaImGui handles panel dock | Phase 3 (per-item) + Phase 4 (project-level) |
+| **FR31–FR33** Project State Persistence | `pcm_source_anim.cpp` (SaveState/LoadState), `project_state.{h,cpp}` if needed, panel dock via native Reaper docker/screenset *(amended 2026-06-27 — was ReaImGui)* | Phase 4 (Epic 6 — save/recall) |
 | **FR34–FR37** Error Tolerance & Graceful Degradation | `asset_loader.cpp` (try/catch boundary), `log.h` (diagnostics), per-PCM_source instance error state | All phases (cross-cutting) |
 | **FR38–FR41** Distribution & Operation | `reapack/index.xml`, `CMakeLists.txt` (single-DLL static link), `README.md` | Phase 5 |
 
@@ -1000,7 +1002,7 @@ CMake target hierarchy:
 | FR21 (recategorized to NFR-P1) | ✅ | per-phase validator gate |
 | FR22–FR26 Camera & Viewport Control | ✅ | `camera` (D14) + `viewer_panel` input routing |
 | FR27–FR30 Panel & Docking | ✅ | `viewer_panel` (D11) + ReaImGui detect in `plugin_main` (FR30) |
-| FR31–FR33 Project State Persistence | ✅ | `pcm_source_anim::SaveState/LoadState` (D9) + ReaImGui dock state native |
+| FR31–FR33 Project State Persistence | ✅ | `pcm_source_anim::SaveState/LoadState` (D9) + native Reaper docker/screenset dock state *(amended 2026-06-27 — was ReaImGui)* |
 | FR34–FR37 Error Tolerance & Graceful Degradation | ✅ | no-throw (D5) + `LoadResult` (D6) + `log.h` (D7) + per-item containment (D4) |
 | FR38–FR41 Distribution & Operation | ✅ | `reapack/index.xml` (D16) + single-DLL static link (D15) + offline-by-construction |
 
@@ -1124,6 +1126,18 @@ Phase 0.5 — ReaImGui refactor. Specifically: stand up the FBO ↔ `ImGui::Imag
 Phase 0.5 spec to be authored next (`_bmad-output/implementation-artifacts/spec-phase-05-reaimgui-refactor.md`) following the same template as `spec-phase-0-scaffolding.md`.
 
 ## Spec Change Log
+
+### 2026-06-27 — Roadmap recentrée : Epic 6 = « save/recall des sessions », browser postponé ; D9 dock + FR46 portabilité reformulés (Correct Course)
+
+**Trigger:** Avec Epic 4 (système d'items drag-drop) `done`, la valeur s'est déplacée. Antho (2026-06-27, sprint-change-proposal-2026-06-27.md) : (1) **reporter Epic 5** (browser ReaImGui) en post-release — le drag-drop d'items couvre déjà le placement ; (2) **recentrer Epic 6** sur *uniquement* « sauver/recall correctement les sessions » ; (3) **Epic 7 (ship) inchangé**. Le reste d'Epic 6 (reload, validation FBX/Collada, dégradation gracieuse) part dans un nouvel **Epic 8** post-release. Constat code : `AnimSource::SaveState`/`LoadState` sont des stubs vides ([src/pcm_source_anim.cpp:84-85](src/pcm_source_anim.cpp#L84-L85)) → rien n'est persisté aujourd'hui ; `GetFileName`/`SetFileName` sont déjà implémentés (items file-backed).
+
+**Amendment — D9 (persistance), deux corrections :**
+1. **Position de dock du panneau** : D9 et le Cross-Cutting Persistence (lignes ~46, 77, 323-327, 824, 1003) disaient « panel dock position → ReaImGui's own state persistence ». **Orphelin depuis le Spike 0** (2026-06-23 : le viewport est une fenêtre GL dockée via `DockWindowAddEx`, pas un panneau ReaImGui ; ReaImGui repoussé à Epic 5, lui-même désormais postponé). → La position/état de dock persiste via **l'état docker/screenset natif de Reaper** (ou notre ext-state), **pas ReaImGui**. (FR32 reformulé dans le PRD.) Réalisé par **Story 6.2**.
+2. **Portabilité multi-machines (FR46)** : le plan Phase 4 (ligne ~491) prévoyait « relative path + missing-media remap » (moteur maison). → Remplacé par **la copie/relink média natifs de Reaper** (copy-into-project + relink via le filename de notre PCM_source — `GetFileName`/`SetFileName` déjà en place). **Vérification d'abord** en-Reaper : si « copy media into project » embarque déjà nos items et le relink natif retrouve un média déplacé → **zéro code**, comportement documenté ; sinon, faire participer la source au mécanisme natif — **pas de moteur de remap maison**. (FR46 reformulé dans le PRD.) Réalisé par **Story 6.3** (décision AR20 actée dans la story spec).
+
+**Amendment — phasage / epics :** Phase 4 = « save/recall des sessions » (persistance round-trip via `SaveState`/`LoadState` D9 + portabilité native). Epic 6 re-storifié : 6.1 (état par-item), 6.2 (état panneau/viewport), 6.3 (portabilité native). Nouvel **Epic 8** post-release (reload FR36, dégradation FR34/FR35/FR37, validation FBX/Collada FR3/FR19/FR47). **Epic 5** (FR42–FR45, FR30/AR3 ReaImGui) postponé post-release. Nouvel **ordre d'exécution** : … Epic 6 → Epic 7 (RELEASE) → [post-release] Epic 5 + Epic 8 (le numéro d'epic ne reflète plus l'ordre).
+
+**KEEP :** la persistance par-item ride toujours sur les virtuals PCM_source `SaveState`/`LoadState` (D9 — `key=value` dans notre chunk projet, `LoadState` ignore les clés inconnues = forward-compat ; n'écrit jamais hors de notre chunk = NFR-R2). D8↔D9 (la persistance par-item ride sur le PCM_source) inchangé. Aucune capacité *produit* supprimée — le browser et le durcissement formats/robustesse sont **reportés**, pas annulés. Epics 1–4 (`done`) intouchés.
 
 ### 2026-06-27 — Launch file-picker + Epic-3 startup fixture removed; the timeline is the only load path (Story 4.5 review)
 

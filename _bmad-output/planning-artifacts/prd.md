@@ -303,7 +303,7 @@ The viewer must be fully functional on an air-gapped workstation provided the us
 - **No exceptions in plugin entry path** (`REAPER_PLUGIN_ENTRYPOINT`). Reaper is a hostile host: an exception escaping our entry point can crash the entire DAW. MSVC's default `/EHsc` is left on for now since no exception sites exist in our code; revisit if assimp or sokol_gfx expose exception-throwing APIs.
 - **Single-threaded UI, single-threaded GL.** ReaImGui callbacks run on Reaper's main thread; sokol_gfx's GL context is bound on the same thread. Worker threads (file loading, hashing) are out of scope for MVP — added later if a Demute fixture's load time exceeds 1 second.
 - **Memory model.** The extension owns its allocations. Reaper retains pointers we pass to `Register` (gaccel, hookcommand, PCM_source factory) — those are static-lifetime within our DLL. On unload (`rec == nullptr`) we deregister with the `-` prefix convention to avoid Reaper dereferencing freed function addresses (symmetric unregister already applied in Phase 0).
-- **Project state persistence.** Per-item config (animation file path, camera state, time offset/scale) round-trips through the PCM_source's `SaveState`/`LoadState` methods, which Reaper invokes during project save/load. Panel dock position is handled by ReaImGui's own state persistence.
+- **Project state persistence.** Per-item config (animation file path, camera state, time offset/scale) round-trips through the PCM_source's `SaveState`/`LoadState` methods, which Reaper invokes during project save/load. Panel dock position is handled by Reaper's native docker/screenset state *(amended 2026-06-27 — was ReaImGui; the viewport is a docked GL window, ReaImGui is post-MVP)*.
 
 ## Project Scoping & Phased Development
 
@@ -400,13 +400,13 @@ Anything below this line is the irreducible MVP per problem-solving philosophy �
 - **FR29**: The viewer can register a Reaper Action (`FBXAV: Open Viewer Window`) that opens the panel when triggered.
 - **FR30**: The viewer can detect, on extension load, whether ReaImGui is installed, and emit a user-readable console diagnostic if it is missing — failing gracefully without registering its Action.
 
-### Project State Persistence
+### Project State Persistence *(Epic 6 — « Save and recall Reaper sessions »)*
 
 - **FR31**: The viewer can serialize per-item state — animation file path, camera angle, optional time offset and scale — into the Reaper project file so it survives project save/load.
-- **FR32**: The viewer can serialize the viewer panel's dock position into the Reaper project file (delegated to ReaImGui's own state persistence).
+- **FR32**: The viewer can serialize the viewer panel's dock position into the Reaper project file via Reaper's **native docker/screenset state** (the viewport is a docked GL window via `DockWindowAddEx`; ReaImGui is post-MVP) or our own ext-state — **not** ReaImGui. *(Reformulé 2026-06-27 : le « delegated to ReaImGui's own state persistence » d'origine est orphelin depuis le Spike 0.)*
 - **FR33**: The sound designer can reopen a previously saved Reaper project and find each animation item's binding and viewport state restored without manual reconfiguration.
 
-### Error Tolerance & Graceful Degradation
+### Error Tolerance & Graceful Degradation *(Epic 8 — post-release ; FR36 = reload)*
 
 - **FR34**: The viewer can avoid crashing the Reaper host when fed a malformed, unsupported, or partially parseable animation file, instead displaying the file as best the parser allows.
 - **FR35**: The viewer can emit a user-readable console diagnostic when an animation file fails to load, including the file path and an error category.
@@ -420,15 +420,15 @@ Anything below this line is the irreducible MVP per problem-solving philosophy �
 - **FR40**: The viewer can operate fully offline: no network access, no telemetry, no remote license check, no remote asset loading.
 - **FR41**: The sound designer can receive updates to the viewer via ReaPack's standard update flow; the viewer has no in-extension update mechanism of its own.
 
-### Animation Browser / Explorer
+### Animation Browser / Explorer *(Epic 5 — POSTPONÉ post-release ; FR46 = Epic 6)*
 
-*(Added 2026-06-22, post-Architecture, per Antho. Reinforces the "stay in Reaper, zero context-switch" value proposition. Delivered as Epic 5; FR46 delivered with persistence in Epic 6.)*
+*(Added 2026-06-22, post-Architecture, per Antho. Reinforces the "stay in Reaper, zero context-switch" value proposition. FR42–FR45 delivered as Epic 5, **postponé post-release 2026-06-27** — le système d'items d'Epic 4 couvre déjà le placement. FR46 delivered with persistence in Epic 6 / Story 6.3.)*
 
 - **FR42**: The sound designer can open an in-Reaper animation browser panel (ReaImGui) that navigates the local filesystem and mounted disks, without leaving Reaper.
 - **FR43**: The sound designer can filter the browser to supported animation formats (`.glb`, `.gltf`, `.fbx`, `.dae`).
 - **FR44**: The sound designer can preview a selected animation in the viewer directly from the browser, before committing it to a track.
 - **FR45**: The sound designer can place a browsed animation onto a track as a media item, binding the chosen file path to that item, entirely from within the browser.
-- **FR46**: The sound designer can reopen a project saved on a different machine and resolve each item's animation path without forcing a full media re-import (path-portability strategy — relative path + missing-media remap; final mechanism decided in the persistence epic / Story 6.2).
+- **FR46**: The sound designer can reopen a project saved on a different machine and resolve each item's animation path without forcing a full media re-import — **via Reaper's native media handling** (copy-into-project + relink through the PCM_source filename `GetFileName`/`SetFileName`), verified in-Reaper; **no custom relative-path/remap engine**. *(Reformulé 2026-06-27 ; final mechanism = Epic 6 / Story 6.3.)*
 
 ## Non-Functional Requirements
 

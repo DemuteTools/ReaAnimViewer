@@ -67,7 +67,7 @@ This document provides the complete epic and story breakdown for FBXAnimationVie
 **Project State Persistence**
 
 - **FR31**: Serialize per-item state — animation file path, camera angle, optional time offset/scale — into the Reaper project file so it survives save/load.
-- **FR32**: Serialize the viewer panel's dock position into the project file (delegated to ReaImGui's own state persistence).
+- **FR32**: Serialize the viewer panel's dock position into the project file via Reaper's native docker/screenset state *(reformulé 2026-06-27 — was ReaImGui; the viewport is a docked GL window, ReaImGui is post-MVP)*.
 - **FR33**: Reopen a saved project and find each item's binding and viewport state restored without manual reconfiguration.
 
 **Error Tolerance & Graceful Degradation**
@@ -170,8 +170,8 @@ This document provides the complete epic and story breakdown for FBXAnimationVie
 
 FR1: Epic 2 — load .glb (glTF binary)
 FR2: Epic 2 — load multi-file .gltf
-FR3: Epic 6 — FBX support, validated to 60% target
-FR47: Epic 2 — load Collada .dae (importer enabled); best-effort validation in Epic 6
+FR3: Epic 8 — FBX support, validated to 60% target (post-release; was Epic 6)
+FR47: Epic 2 — load Collada .dae (importer enabled); best-effort validation in Epic 8 (post-release; was Epic 6)
 FR4: Epic 2 — load non-canonical coordinate conventions as-authored
 FR5: Epic 2 — load any bone-naming convention
 FR6: Epic 2 — static-mesh fallback (no animation channels)
@@ -187,7 +187,7 @@ FR15: Epic 3 — skinned mesh, per-frame bone deformation
 FR16: Epic 2 — diffuse-textured Blinn-Phong + per-material specular
 FR17: Epic 2 — textures embedded in GLB
 FR18: Epic 2 — textures as glTF sibling files
-FR19: Epic 6 — textures embedded in FBX
+FR19: Epic 8 — textures embedded in FBX (post-release; was Epic 6)
 FR20: Epic 2 — multi-material meshes
 FR22: Epic 2 — orbit camera (right-click drag)
 FR23: Epic 2 — zoom (scroll)
@@ -197,23 +197,23 @@ FR26: Epic 2 — continuous update during camera manipulation
 FR27: Epic 1 — docked GL viewport (reinterpreted from "ReaImGui-driven panel" per Spike 0, 2026-06-23)
 FR28: Epic 1 — dock into any Reaper docker
 FR29: Epic 1 — register Reaper Action to open panel
-FR30: Epic 5 — detect missing ReaImGui, console diagnostic, graceful bail (moved from Epic 1 per Spike 0: ReaImGui first appears with the browser)
+FR30: Epic 5 (postponé) — detect missing ReaImGui, console diagnostic, graceful bail (moved from Epic 1 per Spike 0: ReaImGui first appears with the browser)
 FR31: Epic 6 — serialize per-item state (path, camera, time offset/scale)
-FR32: Epic 6 — serialize panel dock position (via ReaImGui)
+FR32: Epic 6 — serialize panel dock position (via Reaper native docker/screenset; reformulé 2026-06-27 — was ReaImGui)
 FR33: Epic 6 — restore bindings + viewport state on project reopen
-FR34: Epic 6 — no host crash on malformed input
-FR35: Epic 6 — console diagnostic with path + error category on load failure
-FR36: Epic 6 — manual Reload button per item
-FR37: Epic 6 — single-item failure isolation
+FR34: Epic 8 — no host crash on malformed input (post-release; was Epic 6)
+FR35: Epic 8 — console diagnostic with path + error category on load failure (post-release; was Epic 6)
+FR36: Epic 8 — manual Reload button per item (post-release; was Epic 6)
+FR37: Epic 8 — single-item failure isolation (post-release; was Epic 6)
 FR38: Epic 7 — ReaPack one-click install + ReaImGui auto-dep
 FR39: Epic 7 — manual DLL-copy install
 FR40: Epic 7 — fully offline operation
 FR41: Epic 7 — updates delegated to ReaPack
-FR42: Epic 5 — in-Reaper animation browser panel (disk navigation)
-FR43: Epic 5 — filter browser to .glb/.gltf/.fbx/.dae
-FR44: Epic 5 — preview from browser before placing
-FR45: Epic 5 — place browsed animation on track, bind path to item
-FR46: Epic 6 — cross-machine path portability (relative + missing-media remap)
+FR42: Epic 5 (postponé) — in-Reaper animation browser panel (disk navigation)
+FR43: Epic 5 (postponé) — filter browser to .glb/.gltf/.fbx/.dae
+FR44: Epic 5 (postponé) — preview from browser before placing
+FR45: Epic 5 (postponé) — place browsed animation on track, bind path to item
+FR46: Epic 6 — cross-machine path portability via native Reaper media copy/relink (reformulé 2026-06-27 — was relative + missing-media remap)
 
 _(FR21 reclassified as NFR-P1.) Cross-cutting NFRs (R1–R5) and invariants (AR13–AR18) are honored from Epic 1 onward and re-verified at every validator gate; AR21 rename is Epic 1, Story 1._
 
@@ -239,17 +239,21 @@ Add skinned-mesh playback: bone hierarchy, matrix palette, GPU vertex skinning, 
 The core workflow: dropping an animation file on a track creates a PCM_source-backed item of matching length; the Reaper playhead drives animation time (item-relative, clamped); items behave like native media (move/resize/color/rename), coexist with audio/video/MIDI, support multiple items across tracks, and the panel shows whichever item spans the playhead. After this epic, the engine-capture replacement loop works.
 **FRs covered:** FR8, FR9, FR10, FR11, FR12, FR13, FR14. *(Phase 3)*
 
-### Epic 5: Browse and place animations without leaving Reaper
-A built-in ReaImGui animation browser that navigates disks, filters to `.glb/.gltf/.fbx`, previews a selection in the viewer, and places it on a track with the path bound to the item. Reinforces the "stay in Reaper, zero context-switch" value proposition. *(New MVP epic per Antho, 2026-06-22.)*
-**FRs covered:** FR42, FR43, FR44, FR45 — plus **FR30 + AR3/NFR-C2 (ReaImGui dependency, moved from Epic 1 per Spike 0:** the browser is the first ReaImGui panel). *(New — slots after Phase 3, before reliability/release)*
+### Epic 5: Browse and place animations without leaving Reaper *(POSTPONÉ — post-release)*
+A built-in ReaImGui animation browser that navigates disks, filters to `.glb/.gltf/.fbx`, previews a selection in the viewer, and places it on a track with the path bound to the item. Reinforces the "stay in Reaper, zero context-switch" value proposition. **POSTPONÉ post-release (après Epic 7) — Antho 2026-06-27 : le système d'items d'Epic 4 (drag-drop) couvre déjà le placement, le browser devient confort post-MVP.** *(New MVP epic per Antho, 2026-06-22.)*
+**FRs covered:** FR42, FR43, FR44, FR45 — plus **FR30 + AR3/NFR-C2 (ReaImGui dependency, moved from Epic 1 per Spike 0:** the browser is the first ReaImGui panel). *(New — postponé post-release)*
 
-### Epic 6: Reliable across sessions, machines, and file changes
-Manual Reload button; FBX support validated to the 60% target including embedded FBX textures, plus best-effort Collada (`.dae`) validation; per-item and panel state persisted through project save/load and resolved across machines (relative path + missing-media remap, no forced re-import); graceful degradation (no host crash on malformed input, console diagnostics, one bad item never breaks others). After this epic, real Demute projects survive save/reopen and animator iterations.
-**FRs covered:** FR3, FR19, FR31, FR32, FR33, FR34, FR35, FR36, FR37, FR46 — plus FR47/NFR-C6 (Collada best-effort validation). *(Phase 4)*
+### Epic 6: Save and recall Reaper sessions correctly
+Per-item and panel/viewport state persisted through project save/load via PCM_source `SaveState`/`LoadState` (D9), so a reopened project — including on another machine — restores every animation item, its file binding, and the viewport state with no manual reconfiguration and no forced re-import. Path portability rides on Reaper's **native** media handling (copy-into-project + relink via the PCM_source filename), not a custom remap engine. After this epic, real Demute projects survive save/reopen. *(Phase 4, recentrée — Antho 2026-06-27.)*
+**FRs covered:** FR31, FR32 (reformulé — dock natif Reaper), FR33, FR46 (reformulé — média natif Reaper). *(Phase 4)*
 
 ### Epic 7: Install and ship via ReaPack
 ReaPack one-click install pulling ReaImGui as auto-dependency, manual DLL-copy path, fully offline operation, updates delegated to ReaPack, final polish, and passing the Phase 5 validator gate to release.
 **FRs covered:** FR38, FR39, FR40, FR41. *(Phase 5)*
+
+### Epic 8: Robustness, reload & format-coverage *(post-release)*
+Récupère ce qui sort d'Epic 6 recentré, déféré après le ship : reload manuel, dégradation gracieuse + isolation par-item + diagnostics de chargement, et validation FBX (cible 60 % corpus Demute) + textures FBX embarquées + Collada best-effort. **POSTPONÉ post-release — Antho 2026-06-27.**
+**FRs covered:** FR3, FR19, FR34, FR35, FR36, FR37, FR47/NFR-C6. *(post-release)*
 
 ## Spike 0: Feasibility walking skeleton (THROWAWAY — not production)
 
@@ -510,6 +514,8 @@ So that I can score a sequence of animations in one session.
 
 ## Epic 5: Browse and place animations without leaving Reaper
 
+> **⛔ POSTPONÉ — post-release (après Epic 7). Antho 2026-06-27.** Le système d'items d'Epic 4 (drag-drop d'un fichier sur une piste → media item) couvre déjà « placer une animation sans quitter Reaper », donc le browser devient confort post-MVP. Scope inchangé sur le fond (FR42–FR45 + FR30/AR3 ReaImGui — première dépendance ReaImGui) ; simplement re-séquencé après le ship.
+
 A built-in ReaImGui animation browser that navigates disks, filters to supported formats, previews a selection in the viewer, and places it on a track with the path bound to the item. *(New MVP epic per Antho, 2026-06-22. Reuses the PCM_source surface from Epic 4 and the viewer from Epics 2–3.)*
 
 ### Story 5.1: Filesystem browser panel filtered to animation formats
@@ -551,80 +557,50 @@ So that I get the same item-on-timeline result as drag-and-drop, from inside the
 **Then** a PCM_source-backed item is created with the chosen file path bound to it (FR45), identical in behavior to a drag-dropped item (Epic 4)
 **And** the item length equals the animation duration and the playhead drives it exactly as in Stories 4.2–4.3.
 
-## Epic 6: Reliable across sessions, machines, and file changes
+## Epic 6: Save and recall Reaper sessions correctly
 
-Persistence through project save/load, cross-machine path resolution, manual reload, FBX support to the 60% target plus best-effort Collada (`.dae`), and graceful degradation. *(Phase 4. Per-item state via PCM_source `SaveState`/`LoadState`, D9. From this epic onward, zero host crashes is enforced — NFR-R1.)*
+Persister l'état par-item et l'état du panneau/viewport dans le fichier projet via PCM_source `SaveState`/`LoadState` (D9), de sorte qu'un projet rouvert — y compris sur une autre machine — retrouve chaque item d'animation, son binding fichier et l'état du viewport, **sans reconfiguration manuelle ni ré-import forcé**. La portabilité des chemins s'appuie sur le traitement média **natif** de Reaper, pas sur un remap maison. *(Phase 4, recentrée — Antho 2026-06-27. Aujourd'hui `SaveState`/`LoadState` sont des stubs vides ([src/pcm_source_anim.cpp:84-85](src/pcm_source_anim.cpp#L84-L85)) → rien n'est persisté ; c'est le trou que cet epic ferme. From this epic onward, zero host crashes is enforced — NFR-R1. Reload, dégradation gracieuse et validation FBX/Collada sont déplacés en Epic 8, post-release.)*
 
-### Story 6.1: Persist and restore per-item and panel state through project save/load
+### Story 6.1: Persist and restore per-item state through project save/load
 
 As a sound designer,
-I want my animation bindings, camera, and panel layout to survive saving and reopening a project,
+I want my animation bindings and per-item settings to survive saving and reopening a project,
 So that I don't reconfigure anything when I come back to a session.
 
 **Acceptance Criteria:**
 
-**Given** a project with animation items and an adjusted camera and docked panel
+**Given** a project with several animation items and adjusted per-item settings
 **When** I save and reopen the project on the same machine
-**Then** each item's animation path, camera angle, and optional time offset/scale are restored via PCM_source `SaveState`/`LoadState` (FR31, FR33)
-**And** the panel's dock position is restored via ReaImGui's own state persistence (FR32)
-**And** saving/loading never corrupts the project file, drops tracks, or invalidates item references (NFR-R2).
+**Then** each item's animation file path (and optional time offset/scale/camera angle) round-trips via PCM_source `SaveState`/`LoadState` as `key=value` lines in our source's project chunk (FR31, FR33, D9)
+**And** every reopened item rebinds to its file and plays under the playhead with no manual action — no empty or broken item
+**And** `LoadState` ignores unknown keys (forward-compat) and `SaveState` never corrupts the project file, drops tracks, or touches other Reaper state (NFR-R2).
 
-### Story 6.2: Resolve animation paths when a project opens on a different machine
+### Story 6.2: Persist and restore the panel/viewport state through project save/load
+
+As a sound designer,
+I want my viewer panel layout to come back where I left it,
+So that reopening a session doesn't make me re-dock and re-frame the viewport.
+
+**Acceptance Criteria:**
+
+**Given** the viewer panel docked at a chosen position with an adjusted camera
+**When** I save and reopen the project
+**Then** the panel's dock position/state is restored via Reaper's **native** docker/screenset state (the viewport is a docked GL window via `DockWindowAddEx`; ReaImGui is post-MVP) or our own ext-state — **not** ReaImGui (FR32, reformulé)
+**And** restoring the panel never blocks the host or leaks GL/window resources (NFR-R3).
+
+### Story 6.3: Cross-machine portability via Reaper's native media handling
 
 As a sound designer collaborating across machines,
 I want my session to find its animations on another PC without re-importing gigabytes,
-So that projects are portable without ballooning disk usage.
+So that projects are portable without a custom remap engine.
 
 **Acceptance Criteria:**
 
-**Given** a project saved on machine A referencing animation files
-**When** it is opened on machine B where the absolute paths differ
-**Then** paths resolve via the chosen portability strategy (relative-to-project path with missing-media remap) without forcing a full media re-import (FR46)
-**And** a path that cannot be resolved surfaces a missing-media diagnostic and leaves the rest of the session working (AR17)
-**And** the final mechanism (relative path vs remap vs optional re-import) is recorded as a decision in this epic's story spec before implementation (AR20).
-
-### Story 6.3: Manual reload picks up on-disk changes
-
-As a sound designer whose animator just pushed a new version,
-I want a Reload button that reloads the bound file,
-So that I see the latest animation without recreating the item.
-
-**Acceptance Criteria:**
-
-**Given** an item whose source file has been replaced on disk
-**When** I click the panel's **Reload** button (FR36)
-**Then** the item's Asset is atomically swapped to the new content with graceful fallback if the reload fails (D4), keeping the old render until the new one is ready
-**And** reload completes within 1 s from click to first updated frame for a typical fixture (NFR-P3).
-
-### Story 6.4: Graceful degradation and per-item failure isolation
-
-As a sound designer feeding the tool real, messy production files,
-I want bad files to fail safely,
-So that one broken animation never takes down Reaper or my other items.
-
-**Acceptance Criteria:**
-
-**Given** a malformed, unsupported, or partially-parseable file
-**When** it is loaded
-**Then** Reaper does not crash and the file renders as best the parser allows (FR34)
-**And** a console diagnostic reports the file path and an error category (FR35, AR16)
-**And** other animation items in the same session keep working unaffected (FR37, AR17)
-**And** no GL contexts or Reaper API pointers leak from the failed load (NFR-R3).
-
-### Story 6.5: FBX and Collada support validated
-
-As a sound designer whose clients export FBX (and occasionally Collada),
-I want common Demute FBX exports to render correctly and Collada files to load best-effort,
-So that I can use the tool on FBX- and Collada-based projects, not just glTF.
-
-**Acceptance Criteria:**
-
-**Given** a representative sample of recent Demute client FBX exports
-**When** they are loaded through the same assimp funnel (FBX importer, AR5)
-**Then** at least 60% render correctly, including FBX-embedded textures (FR3, FR19, NFR-C5)
-**And** FBX files that exceed assimp's parser capability degrade gracefully per Story 6.4 rather than crashing
-**And** the validated/failed fixtures are recorded for the regression corpus
-**And** at least one public Collada (`.dae`) animation sample loads and renders correctly through the same funnel (FR47, NFR-C6) — Collada is best-effort with no Demute-percentage target (Demute does not export Collada); a `.dae` that exceeds assimp's parser degrades gracefully per Story 6.4.
+**Given** a project referencing animation files, saved with Reaper's "copy media into project directory"
+**When** it is opened on another machine (or after the project folder is moved)
+**Then** each item's animation file resolves via Reaper's **native** media handling — copy-into-project on save and relink via the PCM_source filename (`GetFileName`/`SetFileName`, already implemented) — without forcing a full media re-import (FR46, reformulé)
+**And** **verification first**: an in-Reaper check confirms whether "copy media" already embeds our items and native relink already finds a moved file; if it does, this story is zero-code and the native behavior is documented; if it does not, our source is made to participate in the native mechanism — **no custom relative-path/remap engine** (AR20 decision recorded in the story spec)
+**And** a path that cannot be resolved surfaces a missing-media diagnostic and leaves the rest of the session working (AR17).
 
 ## Epic 7: Install and ship via ReaPack
 
@@ -677,8 +653,57 @@ So that release is gated on evidence, not optimism.
 
 **Acceptance Criteria:**
 
-**Given** Epics 1–6 complete
+**Given** Epics 1–4 and 6 complete (Epic 5 browser and Epic 8 hardening are post-release)
 **When** the Phase 5 work finishes
 **Then** a `docs/PHASE5_VALIDATOR_GATE.md` checklist exists and all rows pass (AR19)
 **And** the build is warning-free at `/W3 /permissive-` (NFR-R5), zero host crashes were observed in Demute internal usage from Phase 4 onward (NFR-R1), and the ReaPack listing is published
 **And** the engine-capture-replacement loop is demonstrated end-to-end on at least one real Demute project (Success Criteria).
+
+## Epic 8: Robustness, reload & format-coverage *(post-release)*
+
+> **⛔ POSTPONÉ — post-release. Antho 2026-06-27.** Récupère le scope sorti d'Epic 6 recentré (reload, dégradation gracieuse, validation FBX/Collada), déféré après le ship. Un filet minimal anti-crash existe déjà de fait (factories no-throw, source 0-canal silencieuse) ; ce qui est déféré est le durcissement formel et le reporting.
+
+Manual Reload button; graceful degradation with per-item failure isolation and load diagnostics; FBX support validated to the 60% target including embedded FBX textures, plus best-effort Collada (`.dae`) validation. *(post-release. From Epic 6 onward, zero host crashes is enforced — NFR-R1; this epic formalizes and reports it.)*
+
+### Story 8.1: Manual reload picks up on-disk changes
+
+As a sound designer whose animator just pushed a new version,
+I want a Reload button that reloads the bound file,
+So that I see the latest animation without recreating the item.
+
+**Acceptance Criteria:**
+
+**Given** an item whose source file has been replaced on disk
+**When** I click the panel's **Reload** button (FR36)
+**Then** the item's Asset is atomically swapped to the new content with graceful fallback if the reload fails (D4), keeping the old render until the new one is ready
+**And** reload completes within 1 s from click to first updated frame for a typical fixture (NFR-P3).
+
+### Story 8.2: Graceful degradation and per-item failure isolation
+
+As a sound designer feeding the tool real, messy production files,
+I want bad files to fail safely,
+So that one broken animation never takes down Reaper or my other items.
+
+**Acceptance Criteria:**
+
+**Given** a malformed, unsupported, or partially-parseable file
+**When** it is loaded
+**Then** Reaper does not crash and the file renders as best the parser allows (FR34)
+**And** a console diagnostic reports the file path and an error category (FR35, AR16)
+**And** other animation items in the same session keep working unaffected (FR37, AR17)
+**And** no GL contexts or Reaper API pointers leak from the failed load (NFR-R3).
+
+### Story 8.3: FBX and Collada support validated
+
+As a sound designer whose clients export FBX (and occasionally Collada),
+I want common Demute FBX exports to render correctly and Collada files to load best-effort,
+So that I can use the tool on FBX- and Collada-based projects, not just glTF.
+
+**Acceptance Criteria:**
+
+**Given** a representative sample of recent Demute client FBX exports
+**When** they are loaded through the same assimp funnel (FBX importer, AR5)
+**Then** at least 60% render correctly, including FBX-embedded textures (FR3, FR19, NFR-C5)
+**And** FBX files that exceed assimp's parser capability degrade gracefully per Story 8.2 rather than crashing
+**And** the validated/failed fixtures are recorded for the regression corpus
+**And** at least one public Collada (`.dae`) animation sample loads and renders correctly through the same funnel (FR47, NFR-C6) — Collada is best-effort with no Demute-percentage target (Demute does not export Collada); a `.dae` that exceeds assimp's parser degrades gracefully per Story 8.2.

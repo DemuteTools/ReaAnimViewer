@@ -1,5 +1,5 @@
 # generated: 2026-06-22
-# last_updated: 2026-06-27 (Story 4.5 → done + EPIC 4 → done — Antho in-Reaper gate §8 PASSED; all 5 Epic-4 stories done, Phase 3 transport sync complete)
+# last_updated: 2026-06-27 (Correct Course — roadmap recentrée post-Epic-4: Epic 5 browser POSTPONÉ post-release; Epic 6 REFACTORÉ → « Save and recall Reaper sessions » (6-1..6-3); nouvel Epic 8 post-release récupère reload/dégradation/validation FBX-Collada; Epic 7 ship inchangé. Voir sprint-change-proposal-2026-06-27.md. // Story 4.5 → done + EPIC 4 → done — Antho in-Reaper gate §8 PASSED; all 5 Epic-4 stories done, Phase 3 transport sync complete)
 # project: FBXAnimationViewer
 # project_key: NOKEY
 # tracking_system: file-system
@@ -84,26 +84,42 @@ development_status:
   4-5-multiple-animation-items-and-current-item-selection: done  # Antho in-Reaper Windows gate §8 PASSED 2026-06-27 (AR19): overlapping items select by topmost-track priority (FR14) + flip on track-reorder, ≥10 items play @≥60fps (NFR-P6), timeline-only load path behaves. FINAL Epic 4 story → epic-4 done. code-review 2026-06-27 (BMAD 3-layer): 1 patch (P1 — `if (!best || tn < best_tn)` lone-item-on-unreadable-track AC3 fix), 1 decision RESOLVED-KEEP (viewer_window.cpp launch-picker + startup-fixture removal regularized w/ AR20 entry + File List/Dev-Record correction + §8 note), 4 deferred, 2 dismissed; STAYS review pending Antho in-Reaper Windows gate §8 (AR19). // impl complete 2026-06-27 — FR13/FR14/NFR-P6. ONE code change: GetCurrentAnimItem walk generalized first-match → lowest-IP_TRACKNUMBER (topmost track) wins on overlap (full scan, emit WINNER's path/animTime, strict < keeps first on same-track tie, null/0/-1 track → INT_MAX lowest); +2 WANT_ (GetMediaItem_Track, GetMediaTrackInfo_Value); +<climits>. Per-item time math (D_STARTOFFS + [0,duration] clamp) byte-for-byte 4.4; only WHICH item feeds it changed. NFR-P6 by construction (lazy single-asset load → VRAM≈1 asset, O(itemCount) read-only walk @66Hz). AR20 Spec Change Log entry amends 4.4 first-match KEEP → realizes architecture.md:42 playhead+priority intent. Deferrals: same-track Z-order tie-break + asset cache (deferred-work.md); D_PLAYRATE already logged from 4.4. Scope-tight: only reaper_api.h + pcm_source_anim.{cpp,h} in src/ (h=comment-only); no CMake/plugin_main/renderer/viewer_window/asset_loader change; boundary rule intact (read-only track query, symmetric -pcmsrc same ptr). Linux host-stubbed configure clean + isolated -Werror walk compile (winner=lowest-track verified) + scope/grep audit; §8 gate + FR14 overlap-by-priority/track-reorder-flip + ≥10-item ≥60fps pend Antho's in-Reaper Windows gate (AR19). story created 2026-06-27 — multi-item + current-item selection by highest-priority track (FR13/FR14/NFR-P6), the FINAL Epic 4 story. Validation-heavy: most works free (4.3 already finds/switches/holds the item under the playhead); ONE real change = generalize GetCurrentAnimItem from first-match to lowest-IP_TRACKNUMBER-wins (topmost track = highest priority, mirrors Reaper video compositing; full scan, no early-return, compute path+animTime for the WINNER; strict < keeps first on same-track tie; null/0/-1 track → INT_MAX lowest). +2 WANT_ (GetMediaItem_Track, GetMediaTrackInfo_Value); +<climits>. NFR-P6 ≥10 items satisfied by construction (only the ONE playhead item is loaded/rendered — lazy single-asset, VRAM≈1 asset regardless of count; O(itemCount) cheap read-only walk @66Hz) → no asset cache (post-MVP architecture.md:1101), validated by §8 gate. AR20 Spec Change Log entry amends the 4.4 "single-item/first-match" KEEP (architecture.md:1154) → realizes the long-pinned "playhead+priority" intent (architecture.md:42). Deferrals: same-track Z-order front-most + asset cache (deferred-work.md); D_PLAYRATE already logged from 4.4. Scope-tight: only reaper_api.h + pcm_source_anim.{cpp,h} in src/ (h = comment-only); no CMake/plugin_main/renderer/viewer_window change; boundary rule intact (read-only track query). Gate §8 = Antho in-Reaper Windows (AR19): items-across-tracks one-shows, gap holds, overlap→topmost-track wins + flips on track-reorder, ≥10 items @≥60fps no stutter, coexist-at-scale.
   epic-4-retrospective: optional
 
-  # --- Epic 5: Browse and place animations without leaving Reaper [post-Phase 3] ---
+  # --- Epic 5: Browse and place animations [POSTPONÉ — post-release, après Epic 7] ---
+  # POSTPONÉ 2026-06-27 (Correct Course, sprint-change-proposal-2026-06-27.md): le système d'items
+  # d'Epic 4 (drag-drop) couvre déjà le placement → le browser ReaImGui devient confort post-MVP,
+  # re-séquencé APRÈS le ship (Epic 7). Stories inchangées sur le fond.
   epic-5: backlog
   5-1-filesystem-browser-panel-filtered-to-animation-formats: backlog
   5-2-preview-a-selected-animation-before-placing-it: backlog
   5-3-place-a-browsed-animation-on-a-track-with-the-path-bound-to-the-item: backlog
   epic-5-retrospective: optional
 
-  # --- Epic 6: Reliable across sessions, machines, and file changes [Phase 4] ---
+  # --- Epic 6: Save and recall Reaper sessions correctly [Phase 4 — recentrée] ---
+  # REFACTORÉ 2026-06-27 (Correct Course): recentré sur « sauver/recall correctement les sessions ».
+  # SaveState/LoadState sont aujourd'hui des stubs vides (src/pcm_source_anim.cpp:84-85) → rien n'est
+  # persisté ; c'est le trou que cet epic ferme. Portabilité = média NATIF Reaper (copy-into-project +
+  # relink via GetFileName/SetFileName, déjà en place), pas de remap maison. Reload/dégradation/validation
+  # FBX-Collada déplacés → Epic 8 (post-release). Stories 6-1..6-5 remplacées par 6-1..6-3.
   epic-6: backlog
-  6-1-persist-and-restore-per-item-and-panel-state-through-project-save-load: backlog
-  6-2-resolve-animation-paths-when-a-project-opens-on-a-different-machine: backlog
-  6-3-manual-reload-picks-up-on-disk-changes: backlog
-  6-4-graceful-degradation-and-per-item-failure-isolation: backlog
-  6-5-fbx-and-collada-support-validated: backlog
+  6-1-persist-and-restore-per-item-state-through-project-save-load: backlog
+  6-2-persist-and-restore-panel-viewport-state-through-project-save-load: backlog
+  6-3-cross-machine-portability-via-native-reaper-media: backlog
   epic-6-retrospective: optional
 
-  # --- Epic 7: Install and ship via ReaPack [Phase 5] ---
+  # --- Epic 7: Install and ship via ReaPack [Phase 5] --- (inchangé — gate de release)
   epic-7: backlog
   7-1-reapack-one-click-install-with-reaimgui-auto-dependency: backlog
   7-2-manual-dll-copy-install-path: backlog
   7-3-fully-offline-operation-and-reapack-delegated-updates: backlog
   7-4-final-polish-and-phase-5-validator-gate: backlog
   epic-7-retrospective: optional
+
+  # --- Epic 8: Robustness, reload & format-coverage [POSTPONÉ — post-release] ---
+  # NOUVEAU 2026-06-27 (Correct Course): récupère le scope sorti d'Epic 6 recentré (reload manuel,
+  # dégradation gracieuse + isolation par-item + diagnostics, validation FBX 60% + textures embarquées +
+  # Collada best-effort), déféré APRÈS le ship. Un filet anti-crash minimal existe déjà de fait.
+  epic-8: backlog
+  8-1-manual-reload-picks-up-on-disk-changes: backlog
+  8-2-graceful-degradation-and-per-item-failure-isolation: backlog
+  8-3-fbx-and-collada-support-validated: backlog
+  epic-8-retrospective: optional

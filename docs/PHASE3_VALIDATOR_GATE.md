@@ -266,15 +266,18 @@ together.
 > other media plays untouched, 4.4 passes — even though overlapping items don't yet
 > pick by priority and playrate doesn't retime.
 
-**Result:** Story 4.4 — **PENDING** (awaiting Antho's in-Reaper Windows validation).
-The in-Reaper pass IS the gate (AR19): FR11 native-control feel (move / resize both
-edges / recolor / rename), the left-trim offset (`D_STARTOFFS` reveals later frames of
-the same clip — not a restart at frame 0), and FR12 simultaneous audio/video/MIDI
-playback are only observable in-Reaper on Windows. On Linux only the CMake configure +
-the source/scope audit were checkable (the only code is `+1
+**Result:** Story 4.4 — **PASS** (Antho, in-Reaper Windows validation, 2026-06-27).
+The animation item behaves like native media: move / resize both edges / recolor /
+rename all respond exactly like any other media item, left-trim reveals later frames of
+the same clip (the `D_STARTOFFS` offset — not a restart at frame 0), and the item
+coexists with audio + video + MIDI — pressing Play plays everything together, the rig in
+transport-sync and the other media untouched (no dropout/glitch, no crash). The in-Reaper
+pass IS the gate (AR19): FR11 native-control feel, the left-trim offset, and FR12
+simultaneous audio/video/MIDI playback are only observable in-Reaper on Windows. On Linux
+only the CMake configure + the source/scope audit were checkable (the only code is `+1
 WANT_GetMediaItemTakeInfo_Value` in `reaper_api.h` and the 3-line `D_STARTOFFS` block in
 `GetCurrentAnimItem`; the DLL/GL/transport link is host-stubbed, as in every prior
-Phase-2/3 story). Flip this line to **PASS** once Antho has run the rows above.
+Phase-2/3 story).
 
 ## 8. Story 4.5 — multiple animation items & current-item selection by track priority
 

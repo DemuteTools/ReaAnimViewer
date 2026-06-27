@@ -4,7 +4,7 @@ baseline_commit: 4f6ad8062f4f1cd2acea8810b5a61c4f66299221
 
 # Story 4.4: Animation items behave like native media and coexist with other tracks
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 

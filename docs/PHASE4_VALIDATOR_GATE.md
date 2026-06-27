@@ -200,3 +200,107 @@ registration (the `DockWindowAddEx`↔`DockWindowRemove` + `UnregisterViewerClas
 intact); Epic 1–4 behavior unaffected. The expected-zero-code path held — **no `src/` change**,
 the global `SetExtState`/`GetExtState` fallback (Task 1) was **not** needed. AC1–AC3 confirmed
 in-Reaper — gate passed.
+
+---
+
+## 6. Story 6.3 — cross-machine portability via Reaper's native media copy/relink
+
+Story 6.3 makes a session **find its animations on another machine (or after the project
+folder is moved) without re-importing gigabytes** (FR46, reformulated 2026-06-27 **off** a
+home-grown relative-path/missing-media remap onto **native** Reaper media handling). The
+crux: **cross-machine portability is delivered by Reaper's native "copy media into project
+directory" + relink, and our `PCM_source` already participates because it is file-backed.**
+Reaper writes a native `FILE "…"` line for **any** source whose `GetFileName()` returns a
+non-empty path — ours does ([src/pcm_source_anim.cpp:93](../src/pcm_source_anim.cpp#L93)) —
+so our items are **eligible** for copy-into-project. On reopen Reaper recreates the source
+via the registered `CreateFromType("RAV_ANIM")`
+([src/pcm_source_anim.cpp:175-181](../src/pcm_source_anim.cpp#L175)) and then `SetFileName`s
+the (copied/relinked) path, which re-probes the clip
+([src/pcm_source_anim.cpp:95-100](../src/pcm_source_anim.cpp#L95)). This is the **same native
+mechanism Story 6.1 verified for the same-machine round-trip** — 6.3 just exercises it across
+a **moved folder / second machine**. The `file=` defensive fallback stays **only-if-empty**
+([src/pcm_source_anim.cpp:160-163](../src/pcm_source_anim.cpp#L160)): on a relinked project
+Reaper's native `SetFileName` sets `m_path` first, so our stale `file=` is **skipped** and the
+native/relinked path is **always authoritative** (the 6.3-safety guarantee 6.1 built in).
+
+→ This is therefore a **verify-first (AR20), expected-zero-code** story — exactly like
+6.1/6.2: we do **not** build a remap engine. The only sanctioned code path is the
+**only-if-gap** Task 2 ("make the source participate in the *native* mechanism"), never our
+own portability layer. The **missing-media diagnostic already exists** and is **not**
+rebuilt: `LoadAsset` opens with a `std::filesystem::exists` check
+([src/asset_loader.cpp:745](../src/asset_loader.cpp#L745)); the transport poll logs
+`LogError("load failed [%s]: %s", …)` on failure and **advances the path gate whether the
+load succeeded or failed** ([src/viewer_window.cpp:198-214](../src/viewer_window.cpp#L198)),
+so an unresolved file does not wedge the loop and every *other* item still loads on its own
+poll — per-item failure isolation (AR17 / FR37).
+
+> Phase 4 adds **no** new remap engine, search-path resolver, "locate missing media" dialog,
+> or portability layer of our own for Story 6.3 **in the expected (native-already-works)
+> path** — it is **docs-only**. The `GetFileName`/`SetFileName` native relink contract, the
+> `only-if-empty` `file=` guard, the `CreateFromType("RAV_ANIM")` tag, and the
+> transport-driven poll/load pipeline are all preserved **unchanged**. `pcm_source_anim.cpp`
+> is touched **only if** an in-Reaper gap is found (Task 2) — and even then only a minimal
+> native-participation fix (`GetFileName`/`IsAvailable` reporting), **never** a remap engine.
+
+**You are testing the right thing if** you can **save a project with "copy media into project
+directory"**, **move the whole project folder** (or copy it to a second PC), **reopen** it,
+and find that **every RAV item relinks and plays under the playhead with no forced
+re-import** — and that a **deliberately unresolved** path surfaces a **console diagnostic**
+while **the rest of the session keeps working**.
+
+### Check rows (click-based, in-Reaper on Windows)
+
+| # | Check | Pass criterion | AC |
+|---|---|---|---|
+| 1 | "Copy media into project directory" embeds our items | Build a project with **2–3 RAV items** (`.glb`/`.fbx`) referencing files **outside** the project folder. **Save** with **"copy media into project directory"** (Save As… → copy media, or File → Save project / clean up → copy). → our animation files are **copied into the project's media folder** and the `.rpp` references the **copied** path inside our `<SOURCE RAV_ANIM …>` chunk. | AC1, AC2 |
+| 2 | Moved-folder / second-machine reopen relinks + plays | **Move the entire project folder** to a new location (simulating another machine — or copy it to a second PC), then **reopen** the `.rpp`. → **every item relinks** to the in-project copy and **plays** under the playhead, with **no forced media re-import** and **no manual relink** prompt. The native `SetFileName` path wins; our `file=` fallback is skipped (`m_path` already set). | AC1, AC2 |
+| 3 | Unresolved path → console diagnostic + per-item isolation | On the moved project, **delete or withhold one** referenced media file, reopen, and **move the playhead over that one item**. → a **console diagnostic** names the path/category (`load failed [file-not-found]: …` via `LoadAsset`→`LogError`, AR16 — never a popup) **and every other item still rebinds, loads, and plays** (the poll advances the gate on failure, AR17 — the bad item never wedges the loop or retries every frame). | AC3 |
+| 4 | No regression / scope-clean (expected docs-only path) | Epic 1–6 behavior intact: same-machine save/reopen still rebinds (Story 6.1, §1), the docked panel still returns to its dock (Story 6.2, §5), drop→display→transport→multi-item-priority all work. In the expected native-works path, **no `src/` file changed** — `git diff` touches only docs + `sprint-status.yaml`; no new `REAPERAPI_WANT_*`, no new dependency, no `CMakeLists.txt` change; the symmetric `-pcmsrc` boundary and the `only-if-empty` `file=` guard are intact. | AC1–AC3 |
+
+> **Scope note (mirrors §3/§5):** Story 6.3 makes a session **portable across machines via
+> Reaper's native copy/relink** — nothing more. Deliberately **out of scope** (do **not**
+> fail 6.3 for these, and do **not** build them): a **custom relative-path / missing-media
+> remap engine**, a search-path resolver, or a **"locate missing media" dialog** of our own
+> (FR46 was reformulated **off** a home-grown remap onto native copy/relink — the defining
+> boundary of this story); **per-item camera framing** (the camera is **global** today,
+> reset on `SetAsset`; reaffirmed-deferred from 6.1/6.2); **`time_offset`/`time_scale`**
+> (native take `D_STARTOFFS`/`D_PLAYRATE`, which Reaper persists/relocates itself); **panel/
+> dock** state (= Story 6.2, done); **reload of changed-on-disk files, graceful-degradation
+> hardening, FBX/Collada coverage** (= Epic 8, post-release). If a project saved with "copy
+> media" relinks and plays on a moved folder, and an unresolved path logs a diagnostic while
+> the rest keeps playing, **6.3 passes** — even though no custom portability layer exists.
+
+### Recording the result (Story 6.3)
+
+Per project convention (`feedback_trust_ingame_validation`): when these checks pass in real
+Reaper, **that is the gate** — note the date, then 6.3 moves to done and **Epic 6 can close**
+(6.1/6.2/6.3 all done). Cross-machine relink, native copy-media, and the moved-folder reopen
+are only observable **in-Reaper on Windows**; the Linux dev box can only confirm the
+source/scope audit (no remap engine added, the `only-if-empty` guard intact, at most
+`pcm_source_anim.cpp` touched, no new symbol/registration, `CMakeLists` unchanged) and a
+host-stubbed CMake configure.
+
+> **If row 2 reveals a real gap** (a moved-folder reopen does **not** relink + play our
+> items), that is the trigger for **Task 2** in the story: diagnose *which* native step
+> failed — (a) "copy media" did **not** copy our files, or (b) relink did **not** call
+> `SetFileName` on the moved path — and apply the **minimal** native-participation fix for the
+> proven gap only (e.g. ensure `GetFileName`/`IsAvailable` report so Reaper treats the source
+> as copyable/relinkable), in `src/pcm_source_anim.cpp`, behind the existing AR18 no-throw
+> boundary. **Never** invent path rewriting, a search-path engine, or a remap dialog. If row 3
+> shows the diagnostic is unclear or an unresolved item disturbs the others, that becomes a
+> review follow-up scoped to the existing `LoadAsset`/`viewer_window` path — still no remap
+> engine. Re-run §6 after any fix.
+
+**Result:** Story 6.3 — **PASS** (Antho, in-Reaper Windows validation, 2026-06-27).
+
+Antho ran §6 in real Reaper on Windows: a project saved with "copy media into project
+directory" embeds our RAV items, the whole project folder is moved (second-machine
+simulation) and reopened — **every item relinks and plays under the playhead with no forced
+re-import** — and an unresolved path surfaces a console diagnostic while the rest of the
+session keeps playing. This confirms the verify-first hypothesis that cross-machine
+portability is delivered by Reaper's **native** copy-into-project + relink and our file-backed
+`PCM_source` already participates (`GetFileName`/`SetFileName`/`CreateFromType`), the
+`only-if-empty` `file=` guard keeping the native/relinked path authoritative. The
+expected-zero-code path held — **no `src/` change**; the only-if-gap native-participation fix
+(Task 2) was **not** needed. AC1–AC3 confirmed in-Reaper — gate passed. **Epic 6 closes**
+(6.1/6.2/6.3 all done).

@@ -121,3 +121,82 @@ CMake configure that is host-stubbed on non-Windows.
 **Result:** Story 6.1 — **PASS** (Antho, in-Reaper Windows validation, 2026-06-27).
 
 Antho ran §1 in real Reaper on Windows: 2–3 RAV animation items dropped across tracks/positions survive a Save → close → reopen — every item comes back bound to its file and plays under the playhead with no manual action, no empty/broken/"offline media" item. The saved `.rpp` carries the path inside our `<SOURCE RAV_ANIM …>` chunk (native `FILE` and/or our `file=` + `rav_ver=1`) with nothing outside our chunks changed; a mixed audio/video/MIDI + RAV project round-trips with no track or data loss (NFR-R2); a hand-added bogus `future_key=` line is ignored and the item still loads (AC3 forward-compat); and the Epic 1–4 behaviors plus the symmetric `-pcmsrc` boundary are intact. AC1–AC5 confirmed in-Reaper — gate passed.
+
+---
+
+## 5. Story 6.2 — panel/viewport dock state survives save / reopen + Reaper restart
+
+Story 6.2 makes the **viewer panel come back where you left it** so reopening a session
+doesn't make you re-dock and re-frame the viewport (FR32, reformulated 2026-06-27 off
+ReaImGui → **native** docker). The crux: **a docked native GL window's dock position is a
+Reaper-*global* UI concern** — Reaper stores it in `reaper.ini`, keyed by the window's
+`identstr`, **not** per-project. The viewport is already handed to the docker as
+`DockWindowAddEx(g_hwnd, kDockName, kDockIdent, true)` with a **stable**
+`kDockIdent = "ReaAnimViewer.Viewer"` ([viewer_window.cpp:599–602](../src/viewer_window.cpp#L599)),
+and the existing code comment already states *"identstr persists the dock position across
+sessions."* So this is a **verify-first (AR20), expected-zero-code** story — exactly like
+6.1/6.3: we do **not** invent serialization. Task 0 below confirms whether the native
+docker already round-trips the dock position. **If it does, 6.2 is zero-code on the dock
+position** and the native behavior is documented here as the PASS. **Only if** an in-Reaper
+gap is found (panel does *not* return to its remembered dock) is a minimal **global**
+`SetExtState`/`GetExtState` fallback added in `viewer_window.cpp` — **never** ReaImGui,
+**never** a custom screenset engine.
+
+> Phase 4 adds **no** new viewport, panel, shader, renderer, GL-resource, loader,
+> `reaper_api.h`, `plugin_main.cpp`, or `CMakeLists.txt` change for Story 6.2 **in the
+> expected (native-already-works) path** — it is **docs-only**. The existing
+> `DockWindowAddEx` ↔ `DockWindowRemove` symmetric lifecycle and `UnregisterViewerClass`
+> on close/unload are preserved **unchanged** (NFR-R3 clean unload / AR15). `pcm_source_anim.cpp`
+> is **off-limits** for this story — that is the per-*item* surface (§3, Story 6.1), not
+> the panel.
+
+**You are testing the right thing if** you can **dock the viewer at a deliberate,
+non-default spot** (e.g. the right docker, a specific tab), **Save / close / reopen** the
+project — *and then quit and relaunch Reaper* — and find the **panel returns to that same
+dock position** when you open it again, with **no GL/window leak** and Reaper unaffected.
+
+### Check rows (click-based, in-Reaper on Windows)
+
+| # | Check | Pass criterion | AC |
+|---|---|---|---|
+| 1 | Dock survives project reopen (same Reaper session) | Open the viewer (`RAV: Open Viewer`); **drag it to a deliberate, non-default dock position** (e.g. the right docker, or a specific docker tab). **Save** the project, **close** it, and **reopen** it. Open the viewer → the panel is at the **same dock position** (within one Reaper session the global docked panel typically isn't disturbed at all — that is a PASS). | AC1, AC3 |
+| 2 | Dock survives a **Reaper restart** (the `reaper.ini` path) | With the viewer docked at that position, **fully quit Reaper and relaunch it**, reopen the project, and open the viewer → the dock position is **still remembered**. This is the `kDockIdent`/`reaper.ini` path — the most likely place native persistence actually lives, since dock position is **global**, not per-project. | AC1, AC3 |
+| 3 | No host block / no resource leak | Opening and closing the viewer repeatedly (toggle action), docking/undocking, and quitting Reaper **never hang the host** and leave **no leaked GL context / window class / dock registration** — the `DockWindowAddEx`↔`DockWindowRemove` + `UnregisterViewerClass` lifecycle stays intact; unload/quit does not crash. | AC2 |
+| 4 | No regression / scope-clean (expected docs-only path) | Epic 1–4 behavior intact: viewer docks/floats, renders ≥60 fps, close/reopen via the toggle action works, docker-tab-X hide then re-open works (the window is **never destroyed on hide**, only on toggle/unload). In the expected native-works path, **no `src/` file changed** — `git diff` touches only docs + `sprint-status.yaml`; no new `REAPERAPI_WANT_*`, no new dependency, no `CMakeLists.txt` change. | AC2 |
+
+> **Scope note (mirrors §3):** Story 6.2 makes the **panel dock position** come back —
+> nothing more. Deliberately **out of scope** (do **not** fail 6.2 for these): **per-item
+> camera framing** is **not** persisted (the camera is **global** today — renderer-owned
+> `OrbitCamera`, reset on `SetAsset`; deferred, see `deferred-work.md`); **`time_offset`**
+> (take `D_STARTOFFS`) and **`time_scale`** (take `D_PLAYRATE`) are **native take state**;
+> **cross-machine relink** is **Story 6.3**; a **ReaImGui** panel is **post-MVP** (Epic 5,
+> postponed). If the docked panel returns to its remembered position after a save/reopen
+> and a Reaper restart, with no host block or resource leak, **6.2 passes** — even though
+> camera framing isn't restored and a cross-machine move isn't verified here.
+
+### Recording the result (Story 6.2)
+
+Per project convention (`feedback_trust_ingame_validation`): when these checks pass in real
+Reaper, **that is the gate** — note the date and the dock position used here, and the story
+moves to done. Dock-position persistence is only observable **in-Reaper on Windows**; the
+Linux dev box can only confirm the source/scope audit (no `src/` change in the expected
+path, the `DockWindowAddEx`↔`DockWindowRemove`/`UnregisterViewerClass` lifecycle unchanged,
+no new symbol/registration, `CMakeLists` unchanged) and a host-stubbed CMake configure.
+
+> **If row 1 or 2 reveals a real gap** (the panel does **not** return to its remembered
+> dock), that is the trigger for **Task 1** in the story: a minimal **global**
+> `SetExtState`/`GetExtState` fallback in `viewer_window.cpp` (+ the `WANT_` declarations in
+> `reaper_api.h`), behind the existing AR18 no-throw boundary — **never** ReaImGui, **never**
+> a custom screenset engine. Re-run §5 after the fix.
+
+**Result:** Story 6.2 — **PASS** (Antho, in-Reaper Windows validation, 2026-06-27).
+
+Antho ran §5 in real Reaper on Windows: the docked viewer returns to its remembered dock
+position across a project save → close → reopen **and** across a full Reaper quit/relaunch —
+confirming the verify-first hypothesis that the native docker (`DockWindowAddEx` + stable
+`kDockIdent`, Reaper-global `reaper.ini`, not per-project per D9) **already round-trips the
+dock position with zero code**. No host block and no leaked GL context / window class / dock
+registration (the `DockWindowAddEx`↔`DockWindowRemove` + `UnregisterViewerClass` lifecycle
+intact); Epic 1–4 behavior unaffected. The expected-zero-code path held — **no `src/` change**,
+the global `SetExtState`/`GetExtState` fallback (Task 1) was **not** needed. AC1–AC3 confirmed
+in-Reaper — gate passed.

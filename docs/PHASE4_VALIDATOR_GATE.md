@@ -118,4 +118,6 @@ registration, the `-pcmsrc` same-pointer boundary, `CMakeLists` unchanged), an i
 `only-if-empty` guard, the ignore-unknown / return-`0` contract — all asserted), and a
 CMake configure that is host-stubbed on non-Windows.
 
-**Result:** Story 6.1 — **PENDING** (awaiting Antho's in-Reaper Windows validation).
+**Result:** Story 6.1 — **PASS** (Antho, in-Reaper Windows validation, 2026-06-27).
+
+Antho ran §1 in real Reaper on Windows: 2–3 RAV animation items dropped across tracks/positions survive a Save → close → reopen — every item comes back bound to its file and plays under the playhead with no manual action, no empty/broken/"offline media" item. The saved `.rpp` carries the path inside our `<SOURCE RAV_ANIM …>` chunk (native `FILE` and/or our `file=` + `rav_ver=1`) with nothing outside our chunks changed; a mixed audio/video/MIDI + RAV project round-trips with no track or data loss (NFR-R2); a hand-added bogus `future_key=` line is ignored and the item still loads (AC3 forward-compat); and the Epic 1–4 behaviors plus the symmetric `-pcmsrc` boundary are intact. AC1–AC5 confirmed in-Reaper — gate passed.

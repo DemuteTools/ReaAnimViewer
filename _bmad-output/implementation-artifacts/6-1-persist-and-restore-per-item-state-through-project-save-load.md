@@ -4,7 +4,7 @@ baseline_commit: fecca3cb60fd0a393eec6140d418f7e03235a09c
 
 # Story 6.1: Persist and restore per-item state through project save/load
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 

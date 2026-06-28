@@ -79,20 +79,81 @@ uniform float u_shininess;
 uniform vec3  u_viewPos;
 uniform sampler2D u_baseColorTex;
 uniform int   u_hasTexture;     // 0 → flat factor only (textureless / failed-resolve)
+uniform vec3  u_lightColor;     // Story 6.5.1: key-light colour (set by 6.5.3 light tool later)
+uniform vec3  u_lightDir;       // key-light direction (toward the light)
+uniform float u_ambient;        // ambient/fill amount so unlit faces stay readable (AC2)
+uniform sampler2D u_normalMap;  // tangent-space normal map (linear); unit 1
+uniform int   u_hasNormalMap;   // 0 → use the geometric normal (asset has no map, AC4)
 out vec4 frag;
+
+// A non-metal must read matte in the new linear pipeline (AC3): scale the Blinn-Phong
+// specular lobe down so a dielectric (specularColor ~= 0.04) gives only a small, dim
+// highlight. A genuine metal (specularColor = baseColor) still reads visibly glossier
+// because its specularColor is far brighter/tinted — the FR16 distinction is relative
+// and survives the same scale. Tunable at Antho's visual gate.
+const float kSpecStrength = 0.35;
+
+vec3 enc(vec3 c) { return pow(clamp(c, 0.0, 1.0), vec3(1.0 / 2.2)); }  // linear → sRGB
+
 void main() {
     vec3 N = normalize(v_normal);
-    vec3 L = normalize(vec3(0.4, 0.9, 0.5));        // single hardcoded directional light
+    // Perturb the normal with the normal map via a per-FRAGMENT tangent frame derived
+    // from screen-space derivatives (Christian Schüler's cotangent frame). This replaces
+    // the per-vertex tangent attribute, which silently FAILS on mirrored UVs: a character
+    // whose left/right halves share UV space (almost every game/Mixamo body) has tangents
+    // that cancel to ~0 along the mirror seam, so a vertex-tangent TBN drops the normal
+    // map exactly where a body straddles the seam (the torso) while limbs off the seam
+    // look fine. The derivative frame is built from the actual rasterized position + UV,
+    // so it is correct for ANY mesh — mirrored, un-tangented, or skinned — no vertex
+    // tangent needed. (This is how engines do robust normal mapping.)
+    if (u_hasNormalMap != 0) {
+        vec3 dp1 = dFdx(v_worldpos);
+        vec3 dp2 = dFdy(v_worldpos);
+        vec2 duv1 = dFdx(v_uv);
+        vec2 duv2 = dFdy(v_uv);
+        vec3 dp2perp = cross(dp2, N);
+        vec3 dp1perp = cross(N, dp1);
+        vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+        vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+        // Guard the degenerate frame: a mesh with NO usable UVs (or a zero-UV-gradient
+        // triangle) leaves v_uv constant → dFdx/dFdy(v_uv)=0 → T=B=0 → inversesqrt(0)=+Inf
+        // → a NaN normal → black/garbage fragments. u_hasNormalMap gates on the MATERIAL
+        // carrying a normal map, not on the drawn mesh having UVs, so this IS reachable.
+        // When the frame is degenerate, keep the geometric normal — exactly AC4's "an asset
+        // without UVs renders unchanged". (Cold path: the gate-tested assets all have UVs.)
+        float maxlen2 = max(dot(T, T), dot(B, B));
+        if (maxlen2 > 1e-12) {
+            float invmax = inversesqrt(maxlen2);
+            mat3 TBN = mat3(T * invmax, B * invmax, N);
+            vec3 nt = texture(u_normalMap, v_uv).rgb * 2.0 - 1.0;   // [0,1] → [-1,1]
+            N = normalize(TBN * nt);
+        }
+    }
+    vec3 L = normalize(u_lightDir);
     vec3 V = normalize(u_viewPos - v_worldpos);
     vec3 H = normalize(L + V);                        // Blinn half-vector
     float diff = max(dot(N, L), 0.0);
     float spec = pow(max(dot(N, H), 0.0), u_shininess);
-    // Texture modulates the flat factor; u_hasTexture==0 leaves Story-2.1 output
-    // unchanged. Sampled color is treated as linear (no sRGB decode) for MVP.
+    // Energy-normalize the Blinn-Phong lobe: a BROAD highlight (low shininess = a rough
+    // or rough-metallic surface) must be DIM, not full-bright. Without this, a glTF metal
+    // (metallic≈1, roughness≈1 → shininess floored at ~2) gets a huge bright white lobe
+    // that WASHES the whole surface to pale grey and buries the texture detail. The
+    // (n+8)/(8π) Blinn-Phong normalization makes broad lobes dim and tight lobes bright —
+    // dielectrics (dim 0.04 specular) are visually unchanged; metals stop blowing out.
+    spec *= (u_shininess + 8.0) / (8.0 * 3.14159265);
+    // Base colour is sampled from a GL_SRGB8_ALPHA8 texture → the GPU already decoded it
+    // to LINEAR on sample (Story 6.5.1 AC1), so all lighting below is linear-correct.
     vec3 base = u_baseColor;
     if (u_hasTexture != 0) base *= texture(u_baseColorTex, v_uv).rgb;
-    vec3 c = base * (0.15 + 0.85 * diff) + u_specularColor * spec;
-    frag = vec4(c, 1.0);
+
+    // Balanced ambient/fill (AC2): a face turned from the key light keeps u_ambient of
+    // its colour instead of crushing to near-black.
+    vec3 c = base * (u_ambient + (1.0 - u_ambient) * diff) * u_lightColor;
+    c += u_specularColor * spec * kSpecStrength * u_lightColor;
+    // Encode linear → sRGB on the final write (AC1). NOT GL_FRAMEBUFFER_SRGB: the default
+    // framebuffer is a legacy non-sRGB pixel format, so the shader encode is the robust
+    // path and must be the ONLY one (enabling both would double-encode / over-brighten).
+    frag = vec4(enc(c), 1.0);
 }
 )GLSL";
 
@@ -155,6 +216,11 @@ bool Renderer::Init(std::string& out_error)
     u_has_texture_    = glGetUniformLocation(program_.get(), "u_hasTexture");
     u_bones_          = glGetUniformLocation(program_.get(), "u_bones");
     u_skinned_        = glGetUniformLocation(program_.get(), "u_skinned");
+    u_light_color_    = glGetUniformLocation(program_.get(), "u_lightColor");
+    u_light_dir_      = glGetUniformLocation(program_.get(), "u_lightDir");
+    u_ambient_        = glGetUniformLocation(program_.get(), "u_ambient");
+    u_normal_map_     = glGetUniformLocation(program_.get(), "u_normalMap");
+    u_has_normal_map_ = glGetUniformLocation(program_.get(), "u_hasNormalMap");
     // Only u_mvp is genuinely required (no draw is possible without it). The rest may
     // legitimately come back -1 if a driver's GLSL optimizer eliminates a uniform it
     // proves dead — glUniform*(-1, ...) is a documented no-op, so a -1 here must NOT
@@ -267,6 +333,13 @@ void Renderer::RenderFrame(float anim_time_seconds, bool loop, int width, int he
     // The diffuse sampler always reads texture unit 0; bind the name to it once per
     // frame (a no-op if the driver optimized the sampler out → location -1).
     glUniform1i(u_base_color_tex_, 0);
+    // Normal-map sampler reads texture unit 1 (bound per-material in the draw loop).
+    glUniform1i(u_normal_map_, 1);
+    // Lighting defaults (Story 6.5.1) — set once per frame from members so Story 6.5.3's
+    // light tool can later drive them. Handful of glUniform* calls, no heap (D2).
+    glUniform3fv(u_light_color_, 1, glm::value_ptr(light_color_));
+    glUniform3fv(u_light_dir_,   1, glm::value_ptr(light_dir_));
+    glUniform1f(u_ambient_, ambient_);
 
     // Per-frame D13 pose: compute the skinning palette once (shared by every skinned
     // mesh of this skeleton) and upload it before the draw loop. The caller selects
@@ -350,6 +423,14 @@ void Renderer::RenderFrame(float anim_time_seconds, bool loop, int width, int he
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, tex);
         glUniform1i(u_has_texture_, tex != 0 ? 1 : 0);
+
+        // Bind this material's normal map to unit 1; a 0 handle (no map) sets
+        // u_hasNormalMap=0 → the shader keeps the geometric normal (AC4). Same flat-
+        // fallback discipline as the diffuse above; three cheap GL calls, no heap (D2).
+        const GLuint nmap = mat.normalMap.get();
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, nmap);
+        glUniform1i(u_has_normal_map_, nmap != 0 ? 1 : 0);
 
         glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(mesh.indexCount),
                        GL_UNSIGNED_INT, nullptr);

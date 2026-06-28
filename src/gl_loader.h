@@ -44,6 +44,15 @@ typedef ptrdiff_t GLintptr;
 #define GL_STATIC_DRAW            0x88E4
 #define GL_DYNAMIC_DRAW           0x88E8
 #define GL_TEXTURE0              0x84C0   // GL 1.3 — first texture unit for glActiveTexture
+#define GL_TEXTURE1              0x84C1   // GL 1.3 — second texture unit (normal map, Story 6.5.1)
+#define GL_SRGB8_ALPHA8          0x8C43   // GL 2.1/3.0 — sRGB internal format: GPU sRGB→linear decode on sample
+#endif
+
+// GL_RGBA8 (0x8058) is a GL 1.1 sized internal format; Windows <gl/GL.h> already
+// defines it. Guard so we don't trip MSVC C4005 redefinition under /W3, while still
+// providing it for any toolchain whose header omits it (linear normal-map upload).
+#ifndef GL_RGBA8
+#define GL_RGBA8                 0x8058
 #endif
 
 // ---- Modern-GL function table (X-macro; defined in gl_loader.cpp) ------------

@@ -96,6 +96,20 @@ private:
     int u_has_texture_   = -1;   // 0 → flat factor (textureless / failed-resolve)
     int u_bones_         = -1;   // mat4[128] skinning palette (D13); -1 if driver elides
     int u_skinned_       = -1;   // 0 → static Epic 2 path (bit-identical), 1 → skin in shader
+
+    // Story 6.5.1 — lighting + normal-map uniforms. All non-fatal on -1 (driver may
+    // dead-strip a uniform it proves dead); only u_mvp is required.
+    int u_light_color_   = -1;
+    int u_light_dir_     = -1;
+    int u_ambient_       = -1;
+    int u_normal_map_    = -1;   // sampler2D bound to texture unit 1
+    int u_has_normal_map_ = -1;  // 0 → geometric normal (asset carries no normal map)
+
+    // Light defaults, stored so Story 6.5.3's light tool can drive them later. Set once
+    // per frame in RenderFrame; no UI is wired here (that is 6.5.3, explicitly OOS).
+    glm::vec3 light_color_{1.0f, 1.0f, 1.0f};
+    glm::vec3 light_dir_  {glm::normalize(glm::vec3(0.4f, 0.9f, 0.5f))};  // prior hardcoded dir
+    float     ambient_    = 0.35f;  // balanced fill — tuned at Antho's visual gate (AC2)
 };
 
 }  // namespace rav

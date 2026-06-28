@@ -414,7 +414,7 @@ void DumpAnimation(const SceneSkeleton& skel, const SceneAnimation& anim,
 }
 
 // Reads diffuse factor + derives a per-material Blinn-Phong specular into a
-// SceneMaterial (texture binding is ResolveAndUploadDiffuse, Story 2.2). The
+// SceneMaterial (texture binding is ResolveAndUploadTexture, Story 2.2/6.5.1). The
 // specular derivation (Story 2.3) is what makes a matte dielectric and a polished
 // metal show a different highlight. Defaults match a neutral mid-grey surface.
 SceneMaterial ConvertMaterial(const aiMaterial* mat)
@@ -439,26 +439,23 @@ SceneMaterial ConvertMaterial(const aiMaterial* mat)
         // gate on isfinite so a garbage exponent falls back to the safe default.
         out.shininess = std::isfinite(s) ? std::clamp(s, 2.0f, 1000.0f) : 32.0f;
 
-    // Specular color. Honor an explicitly-authored specular first — that single key
-    // covers FBX/Collada Phong, glTF KHR_materials_specular, and pbrSpecularGlossiness.
-    // Otherwise (plain glTF metallic-roughness, where assimp leaves COLOR_SPECULAR
-    // UNSET) derive it: a dielectric reflects a dim ~4% white highlight (F0=0.04), a
-    // metal reflects its own base color — tint toward baseColor by metalness. Without
-    // this, every metallic-roughness material shares one flat specular and matte vs
-    // glossy is indistinguishable (FR16).
-    aiColor3D spec;
-    if (mat->Get(AI_MATKEY_COLOR_SPECULAR, spec) == AI_SUCCESS) {
-        out.specularColor = glm::vec3(spec.r, spec.g, spec.b);
-    } else {
-        float metallic = 0.0f;
-        mat->Get(AI_MATKEY_METALLIC_FACTOR, metallic);  // leaves 0 (dielectric) if absent
-        // metalness is defined on [0,1]; clamp (and reject NaN) so the mix stays a
-        // convex blend — an out-of-range factor would push specular past baseColor or
-        // negative, a NaN would poison the fragment.
-        metallic = std::isfinite(metallic) ? std::clamp(metallic, 0.0f, 1.0f) : 0.0f;
-        out.specularColor =
-            glm::vec3(0.04f) + (out.baseColorFactor - glm::vec3(0.04f)) * metallic;
-    }
+    // Specular color — ALWAYS derived from metalness (Story 6.5.1 gate fix), NEVER from
+    // an authored COLOR_SPECULAR. FBX/OBJ Phong exports (notably Mixamo — the documented
+    // "Mixamo materials are too shiny" problem, and assimp's format-dependent shininess
+    // scaling) carry a gray/white Phong specular that makes skin/cloth read shiny/plastic
+    // and washes the lit faces into smeared highlight bands. AC3 wants a DIELECTRIC MATTE
+    // by default, so we ignore the authored value and reflect physics instead: a
+    // dielectric reflects a dim ~4% white highlight (F0=0.04); a metal reflects its own
+    // base color — tint toward baseColor by metalness, which keeps a genuine metal glossy
+    // and preserves the FR16 matte-vs-glossy distinction without trusting bad Phong data.
+    float metallic = 0.0f;
+    mat->Get(AI_MATKEY_METALLIC_FACTOR, metallic);  // leaves 0 (dielectric) if absent
+    // metalness is defined on [0,1]; clamp (and reject NaN) so the mix stays a convex
+    // blend — an out-of-range factor would push specular past baseColor or negative, a
+    // NaN would poison the fragment.
+    metallic = std::isfinite(metallic) ? std::clamp(metallic, 0.0f, 1.0f) : 0.0f;
+    out.specularColor =
+        glm::vec3(0.04f) + (out.baseColorFactor - glm::vec3(0.04f)) * metallic;
     return out;
 }
 
@@ -467,7 +464,13 @@ SceneMaterial ConvertMaterial(const aiMaterial* mat)
 // Mirrors UploadMesh's glGetError discipline, but a texture failure is NON-fatal:
 // the geometry is still drawable, so we degrade to the flat baseColorFactor rather
 // than aborting the whole load (a buffer failure stays fatal — see UploadMesh).
-GpuImage UploadTexture(const unsigned char* rgba, int w, int h)
+//
+// internal_format selects the GPU's interpretation of the 8-bit bytes (Story 6.5.1):
+// a COLOUR texture uploads GL_SRGB8_ALPHA8 so the GPU decodes sRGB→linear on every
+// sample (correct lighting math), while a NORMAL map uploads GL_RGBA8 (linear) — its
+// bytes are geometry, not colour, and must NOT be gamma-decoded. The pixel-transfer
+// format/type stays GL_RGBA/GL_UNSIGNED_BYTE either way (stb forces 4 channels).
+GpuImage UploadTexture(const unsigned char* rgba, int w, int h, GLint internal_format)
 {
     GpuImage tex;
     glGenTextures(1, tex.addr());
@@ -480,7 +483,7 @@ GpuImage UploadTexture(const unsigned char* rgba, int w, int h)
     // RGBA rows are 4-byte aligned anyway, but set 1 defensively so a future RGB
     // path (odd row stride) would still upload correctly.
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    glTexImage2D(GL_TEXTURE_2D, 0, internal_format, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);  // glTF sampler default
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
@@ -494,20 +497,24 @@ GpuImage UploadTexture(const unsigned char* rgba, int w, int h)
     return tex;
 }
 
-// The ONE unified diffuse-texture funnel (AR14): every packaging variant — GLB
-// embedded (FR17), glTF sibling file (FR18), and later FBX embedded (FR19, Epic 6) —
-// converges on GetEmbeddedTexture, decodes to RGBA, and uploads. Returns an owning
-// GpuImage, or an empty handle when the material declares no diffuse texture (silent
-// — the textureless flat path, AC5) or the declared texture cannot be resolved (one
-// LogWarn, then flat fallback — AC3). Always decodes 4-channel RGBA so the GL upload
-// format is uniform regardless of the source's channel count. mi is the material
-// index, used only to name the material in the diagnostic.
-GpuImage ResolveAndUploadDiffuse(const aiScene* scene, const aiMaterial* mat,
-                                 const std::filesystem::path& model_dir, unsigned mi)
+// The ONE unified texture funnel (AR14): every packaging variant — GLB embedded
+// (FR17), glTF sibling file (FR18), and later FBX embedded (FR19, Epic 6) — converges
+// on GetEmbeddedTexture, decodes to RGBA, and uploads. Returns an owning GpuImage, or
+// an empty handle when the material declares no texture of `type` (silent — the
+// textureless flat path, AC5) or the declared texture cannot be resolved (one LogWarn,
+// then flat fallback — AC3). Always decodes 4-channel RGBA so the GL upload format is
+// uniform regardless of the source's channel count. mi names the material in the
+// diagnostic; `kind` labels it ("diffuse"/"normal"). internal_format is the GPU
+// interpretation: GL_SRGB8_ALPHA8 for colour, GL_RGBA8 (linear) for a normal map
+// (Story 6.5.1) — the one parameter that differs between colour and data textures.
+GpuImage ResolveAndUploadTexture(const aiScene* scene, const aiMaterial* mat,
+                                 aiTextureType type, GLint internal_format,
+                                 const std::filesystem::path& model_dir, unsigned mi,
+                                 const char* kind)
 {
     aiString tex_path;
-    if (!mat || mat->GetTexture(aiTextureType_DIFFUSE, 0, &tex_path) != AI_SUCCESS)
-        return {};   // no diffuse texture declared — flat path, silent (not a failure)
+    if (!mat || mat->GetTexture(type, 0, &tex_path) != AI_SUCCESS)
+        return {};   // no texture of this type declared — flat path, silent (not a failure)
 
     if (const aiTexture* t = scene->GetEmbeddedTexture(tex_path.C_Str())) {
         // Embedded: GLB '*N' index reference today, FBX GetEmbeddedTexture tomorrow —
@@ -519,15 +526,15 @@ GpuImage ResolveAndUploadDiffuse(const aiScene* scene, const aiMaterial* mat,
                 reinterpret_cast<const unsigned char*>(t->pcData),
                 static_cast<int>(t->mWidth), &w, &h, &n, 4);   // 4 = force RGBA
             if (!px) {
-                LogWarn("texture unresolved for material %u (embedded image undecodable)"
-                        " - using flat color", mi);
+                LogWarn("%s texture unresolved for material %u (embedded image undecodable)"
+                        " - using flat color", kind, mi);
                 return {};
             }
-            GpuImage tex = UploadTexture(px, w, h);
+            GpuImage tex = UploadTexture(px, w, h, internal_format);
             stbi_image_free(px);   // CPU pixels freed immediately after upload (AC6)
             if (tex.get() == 0)
-                LogWarn("texture unresolved for material %u (GPU upload failed)"
-                        " - using flat color", mi);
+                LogWarn("%s texture unresolved for material %u (GPU upload failed)"
+                        " - using flat color", kind, mi);
             return tex;
         }
         // Uncompressed: mWidth*mHeight aiTexel, stored B,G,R,A by assimp — read by the
@@ -542,10 +549,10 @@ GpuImage ResolveAndUploadDiffuse(const aiScene* scene, const aiMaterial* mat,
             rgba[i * 4 + 3] = texel.a;
         }
         GpuImage tex = UploadTexture(rgba.data(), static_cast<int>(t->mWidth),
-                                     static_cast<int>(t->mHeight));
+                                     static_cast<int>(t->mHeight), internal_format);
         if (tex.get() == 0)
-            LogWarn("texture unresolved for material %u (GPU upload failed)"
-                    " - using flat color", mi);
+            LogWarn("%s texture unresolved for material %u (GPU upload failed)"
+                    " - using flat color", kind, mi);
         return tex;
     }
 
@@ -557,16 +564,39 @@ GpuImage ResolveAndUploadDiffuse(const aiScene* scene, const aiMaterial* mat,
     int w = 0, h = 0, n = 0;
     unsigned char* px = stbi_load(file.u8string().c_str(), &w, &h, &n, 4);  // 4 = force RGBA
     if (!px) {
-        LogWarn("texture unresolved for material %u (%s missing or undecodable)"
-                " - using flat color", mi, tex_path.C_Str());
+        LogWarn("%s texture unresolved for material %u (%s missing or undecodable)"
+                " - using flat color", kind, mi, tex_path.C_Str());
         return {};
     }
-    GpuImage tex = UploadTexture(px, w, h);
+    GpuImage tex = UploadTexture(px, w, h, internal_format);
     stbi_image_free(px);
     if (tex.get() == 0)
-        LogWarn("texture unresolved for material %u (GPU upload failed)"
-                " - using flat color", mi);
+        LogWarn("%s texture unresolved for material %u (GPU upload failed)"
+                " - using flat color", kind, mi);
     return tex;
+}
+
+// Normal-map resolution: same unified funnel, upload LINEAR (GL_RGBA8) because a
+// normal map is geometry, not colour, and must never be sRGB-decoded (Story 6.5.1 AC4).
+// An empty handle (no map declared) leaves u_hasNormalMap=0 → the geometric normal is
+// used unchanged.
+//
+// ONLY aiTextureType_NORMALS (a true tangent-space normal map). We deliberately do NOT
+// fall back to aiTextureType_HEIGHT: in FBX/OBJ that slot is the legacy "bump" channel,
+// which is frequently a GRAYSCALE HEIGHT map, not a tangent-space normal map. Sampling a
+// grayscale height `g` as a normal (`rgb*2-1` → ~(2g-1,2g-1,2g-1)) makes the shaded
+// normal track the height iso-lines → the "melted-wax / contour-banding" artifact seen
+// on downloaded FBX characters. A model whose only relief map is under HEIGHT simply
+// renders with its geometric normal (clean, just no micro-detail) until a post-MVP
+// height→normal (Sobel) conversion is added — far better than corrupting the shading.
+GpuImage ResolveAndUploadNormalMap(const aiScene* scene, const aiMaterial* mat,
+                                   const std::filesystem::path& model_dir, unsigned mi)
+{
+    if (!mat) return {};
+    if (mat->GetTextureCount(aiTextureType_NORMALS) > 0)
+        return ResolveAndUploadTexture(scene, mat, aiTextureType_NORMALS, GL_RGBA8,
+                                       model_dir, mi, "normal");
+    return {};   // no true normal map declared — geometric normal, silent (not a failure)
 }
 
 // Appends one aiMesh, baked into model space by `world`, as a SceneMesh's CPU
@@ -779,10 +809,20 @@ LoadResult LoadAsset(const std::string& path)
         // No MakeLeftHanded / FlipWindingOrder / PreTransformVertices — they would
         // defeat the "render as-authored" contract (D3/AR13) and PreTransform also
         // destroys the node hierarchy Epic 3 needs.
+        // UV V-flip (Story 6.5.1 gate fix): we upload textures TOP-DOWN (stb row 0 = image
+        // top), so GL samples v=0 at the image TOP. assimp delivers UVs in a BOTTOM-UP
+        // convention (v=0 = image bottom) for EVERY importer — it flips glTF's top-left
+        // origin to match FBX/OBJ/Collada's bottom-left, verified offline (assimp V =
+        // 1 − raw-glTF V). So the reconciliation is format-INDEPENDENT: always flip V, or
+        // every textured asset samples the mirrored-V location. On a UV atlas (a character,
+        // or this steampunk body) that lands geometry on the wrong/padded texture region —
+        // the "smeared / offset texture" both gates surfaced. (An earlier build flipped
+        // only non-glTF, which left glTF/GLB V-flipped — exactly the GLB offset.)
         const aiScene* scene = importer.ReadFile(
             path,
             aiProcess_Triangulate | aiProcess_GenSmoothNormals |
-            aiProcess_JoinIdenticalVertices | aiProcess_LimitBoneWeights);
+            aiProcess_JoinIdenticalVertices | aiProcess_LimitBoneWeights |
+            aiProcess_FlipUVs);
 
         if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || !scene->mRootNode)
             return {std::nullopt, LoadErrorCategory::ParseFailed, importer.GetErrorString()};
@@ -825,8 +865,14 @@ LoadResult LoadAsset(const std::string& path)
         asset.materials.reserve(scene->mNumMaterials);
         for (unsigned mi = 0; mi < scene->mNumMaterials; ++mi) {
             SceneMaterial material = ConvertMaterial(scene->mMaterials[mi]);
+            // Base colour is a COLOUR texture → sRGB-decoded on sample (GL_SRGB8_ALPHA8)
+            // so lighting math runs in linear space (Story 6.5.1 AC1). The normal map is
+            // DATA → uploaded linear (GL_RGBA8) and only sampled when present (AC4).
             material.baseColor =
-                ResolveAndUploadDiffuse(scene, scene->mMaterials[mi], model_dir, mi);
+                ResolveAndUploadTexture(scene, scene->mMaterials[mi], aiTextureType_DIFFUSE,
+                                        GL_SRGB8_ALPHA8, model_dir, mi, "diffuse");
+            material.normalMap =
+                ResolveAndUploadNormalMap(scene, scene->mMaterials[mi], model_dir, mi);
             asset.materials.push_back(std::move(material));
         }
         // assimp always emits a default material, but a mesh's materialIdx indexes

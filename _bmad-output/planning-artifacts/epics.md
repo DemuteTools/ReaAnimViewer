@@ -42,12 +42,21 @@ This document provides the complete epic and story breakdown for FBXAnimationVie
 **3D Rendering & Visual Fidelity**
 
 - **FR15**: Render skinned mesh geometry with per-frame bone deformation.
-- **FR16**: Render diffuse-texture-mapped shading with per-material specular response sufficient to distinguish material types (matte leather vs polished steel).
+- **FR16**: Render diffuse-texture-mapped shading with per-material specular response sufficient to distinguish material types (matte leather vs polished steel). *(Enhanced 2026-06-27 by FR48: sRGB-correct colour + optional normal-map detail — see Epic 6.5.)*
 - **FR17**: Resolve textures embedded in a GLB binary container.
 - **FR18**: Resolve textures referenced as external sibling files in multi-file glTF.
 - **FR19**: Resolve textures embedded in FBX containers.
 - **FR20**: Render meshes composed of multiple materials, each with its own material parameters.
 - *(FR21 recategorized as NFR-P1 — 60 fps is a quality attribute, not a capability.)*
+
+**Viewport Visual Fidelity & On-Canvas Tools** *(added 2026-06-27 — Correct Course, Epic 6.5)*
+
+- **FR48**: Render textured models at source-DCC fidelity (Mixamo parity): treat base-colour textures as sRGB with gamma-correct output, balanced lighting that does not crush unlit faces to black, dielectric-correct specular (non-metallic by default on skin/cloth), and optional normal-map detail when present in the asset. *(Promotes normal maps + sRGB shading from the PRD Growth Features into the MVP — authorised by Antho 2026-06-27.)*
+- **FR49**: Present a vertical icon strip in the top-right corner of the viewport as an extensible on-canvas tool menu (native Win32-child / GL-overlay widgets — no ReaImGui).
+- **FR50**: Provide a light tool, opened from the sidebar, that adjusts the light colour and its position around the origin, updating the render live.
+- **FR51**: Provide a floor tool, toggled from the sidebar, that shows/hides a solid ground plane with a grid.
+- **FR52**: Provide render-quality toggles, from the sidebar, that disable/enable costly render elements (e.g. normal maps, MSAA, floor) for graceful degradation on weaker hardware.
+- **FR53**: Provide an on-canvas FPS readout (top-right), toggled from the sidebar, replacing the former console FPS log.
 
 **Camera & Viewport Control**
 
@@ -214,6 +223,12 @@ FR43: Epic 5 (postponé) — filter browser to .glb/.gltf/.fbx/.dae
 FR44: Epic 5 (postponé) — preview from browser before placing
 FR45: Epic 5 (postponé) — place browsed animation on track, bind path to item
 FR46: Epic 6 — cross-machine path portability via native Reaper media copy/relink (reformulé 2026-06-27 — was relative + missing-media remap)
+FR48: Epic 6.5 — source-fidelity rendering (sRGB + balanced lighting + dielectric specular + normal maps); enhances FR16
+FR49: Epic 6.5 — top-right viewport tool sidebar
+FR50: Epic 6.5 — light tool (colour + position around origin)
+FR51: Epic 6.5 — floor tool (solid + grid show/hide)
+FR52: Epic 6.5 — render-quality toggles (graceful degradation on weak hardware)
+FR53: Epic 6.5 — on-canvas FPS readout
 
 _(FR21 reclassified as NFR-P1.) Cross-cutting NFRs (R1–R5) and invariants (AR13–AR18) are honored from Epic 1 onward and re-verified at every validator gate; AR21 rename is Epic 1, Story 1._
 
@@ -246,6 +261,10 @@ A built-in ReaImGui animation browser that navigates disks, filters to `.glb/.gl
 ### Epic 6: Save and recall Reaper sessions correctly
 Per-item and panel/viewport state persisted through project save/load via PCM_source `SaveState`/`LoadState` (D9), so a reopened project — including on another machine — restores every animation item, its file binding, and the viewport state with no manual reconfiguration and no forced re-import. Path portability rides on Reaper's **native** media handling (copy-into-project + relink via the PCM_source filename), not a custom remap engine. After this epic, real Demute projects survive save/reopen. *(Phase 4, recentrée — Antho 2026-06-27.)*
 **FRs covered:** FR31, FR32 (reformulé — dock natif Reaper), FR33, FR46 (reformulé — média natif Reaper). *(Phase 4)*
+
+### Epic 6.5: Viewport visual fidelity & on-canvas tools *(pre-ship polish — Antho 2026-06-27)*
+Bring the render up to source-DCC fidelity (Mixamo parity) and add an on-canvas tool sidebar, **before** shipping: fix the washed-out/dark/metallic render, remove console-log noise, and introduce a top-right icon strip hosting light, floor, render-quality and FPS tools. *(Phase 4.5. Inserted between Epic 6 and Epic 7 via Correct Course; amends AR16, pulls normal maps Growth→MVP per FR48.)*
+**FRs covered:** FR48, FR49, FR50, FR51, FR52, FR53 — enhances FR16, amends AR16. *(New — pre-ship)*
 
 ### Epic 7: Install and ship via ReaPack
 ReaPack one-click install pulling ReaImGui as auto-dependency, manual DLL-copy path, fully offline operation, updates delegated to ReaPack, final polish, and passing the Phase 5 validator gate to release.
@@ -601,6 +620,80 @@ So that projects are portable without a custom remap engine.
 **Then** each item's animation file resolves via Reaper's **native** media handling — copy-into-project on save and relink via the PCM_source filename (`GetFileName`/`SetFileName`, already implemented) — without forcing a full media re-import (FR46, reformulé)
 **And** **verification first**: an in-Reaper check confirms whether "copy media" already embeds our items and native relink already finds a moved file; if it does, this story is zero-code and the native behavior is documented; if it does not, our source is made to participate in the native mechanism — **no custom relative-path/remap engine** (AR20 decision recorded in the story spec)
 **And** a path that cannot be resolved surfaces a missing-media diagnostic and leaves the rest of the session working (AR17).
+
+## Epic 6.5: Viewport visual fidelity & on-canvas tools
+
+Bring the rendered output up to source-DCC fidelity (Mixamo parity) and add an on-canvas tool sidebar, **before** shipping. Fixes the washed-out/dark/metallic render (sRGB pipeline, balanced lighting, dielectric-correct specular, normal maps), removes console-log noise, and introduces a top-right vertical icon strip hosting a light tool (colour + position around origin), a floor tool (solid + grid show/hide), render-quality toggles (graceful degradation on weak hardware), and an on-canvas FPS readout. *(Phase 4.5, pre-ship polish — Antho 2026-06-27, Correct Course. Honors AR15/AR17/AR18; **amends AR16** console-only → silent-by-default + on-canvas signals; **pulls normal maps + sRGB shading from PRD Growth Features into the MVP** per FR48. No ReaImGui — the sidebar extends the existing Win32-child widget pattern from the Reset View button.)*
+
+### Story 6.5.1: Source-fidelity rendering (sRGB + lighting + dielectric specular + normal maps)
+
+As a sound designer,
+I want models to look like they do where I downloaded them,
+So that what I review in Reaper matches the source.
+
+**Acceptance Criteria:**
+
+**Given** a textured glTF/GLB (e.g. a Mixamo character)
+**When** it renders
+**Then** colours match the source DCC within a reasonable tolerance: the base-colour texture is treated as **sRGB** (`GL_SRGB8_ALPHA8`) and output is gamma-correct (`GL_FRAMEBUFFER_SRGB`) (FR48)
+**And** lighting no longer crushes unlit faces to black — a balanced ambient/fill term keeps them readable, and light colour/direction are driven by uniforms (`u_lightColor`, `u_lightDir`, `u_ambient`) consumable by the light tool (Story 6.5.3)
+**And** specular no longer reads metallic on dielectric surfaces (skin/cloth) — specular strength/shininess tuned so a non-metal material is matte by default
+**And** **normal maps**, when present in the asset, are sampled (per-vertex tangents added; `SceneMaterial` gains `normalMap`), restoring surface detail; assets without a normal map render unchanged
+**And** no regression to skinned (Epic 3) or static (Epic 2) rendering, and ≥60 fps holds at the NFR-P1 fixture.
+
+### Story 6.5.2: Silence all console logging by default
+
+As a sound designer,
+I don't want console spam from the viewer.
+
+**Acceptance Criteria:**
+
+**Given** normal operation
+**When** I load, play, and save animations
+**Then** **no** `[RAV]` console output is produced — all log call-sites are silenced via the single `Emit()` funnel ([src/console_log.cpp:14-22](../../src/console_log.cpp#L14-L22))
+**And** the funnel is **retained as a no-op by default**, re-enablable in a debug build (the diagnostic capability is not deleted) — this **amends AR16** (console-only → silent-by-default + on-canvas signals)
+**And** the FPS figure and any load-failure signal are **not** orphaned — they are rehomed on-canvas (Story 6.5.5 for FPS; a minimal on-canvas load-failure indication).
+
+### Story 6.5.3: Viewport tool sidebar + Light tool
+
+As a sound designer,
+I want a top-right tool menu, starting with a light control,
+So that I can adjust how the model is lit.
+
+**Acceptance Criteria:**
+
+**Given** the viewport
+**When** it renders
+**Then** a **vertical icon strip** appears in the **top-right** corner, built to host multiple tools (extensible), using the existing Win32-child / GL-overlay pattern — **no ReaImGui** (FR49)
+**And** clicking the **light** icon expands a flyout to choose the **light colour** (native colour picker) and the **light position around the origin** (e.g. azimuth/elevation), live-updating the `u_lightColor`/`u_lightDir` uniforms from Story 6.5.1 (FR50)
+**And** the existing "Reset View" control keeps working; sidebar interaction never blocks the host or leaks GL/window resources (AR18).
+
+### Story 6.5.4: Floor tool (solid + grid show/hide)
+
+As a sound designer,
+I want to toggle the ground,
+So that I can frame the model how I like.
+
+**Acceptance Criteria:**
+
+**Given** the sidebar
+**When** I click the **floor** icon
+**Then** a solid ground plane + grid toggles visible/hidden with immediate effect (FR51)
+**And** the toggle has no effect on model rendering or transport; session-only state (persistence is **not** required for this story).
+
+### Story 6.5.5: Render-quality toggles + on-canvas FPS readout
+
+As a sound designer on a weaker PC,
+I want to drop expensive render elements and see my FPS,
+So that playback stays smooth.
+
+**Acceptance Criteria:**
+
+**Given** the sidebar
+**When** I open the **performance** tool
+**Then** I can toggle costly render elements (e.g. normal maps, MSAA, floor) off/on with immediate effect (FR52)
+**And** an **FPS** icon toggles an on-canvas FPS readout shown **top-right**, replacing the removed console FPS log (FR53)
+**And** toggling elements never crashes the host and is purely visual/perf — no transport or data impact (NFR-R1).
 
 ## Epic 7: Install and ship via ReaPack
 

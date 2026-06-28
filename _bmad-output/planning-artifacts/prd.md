@@ -148,8 +148,8 @@ Demute is not selling this product, so business success is internal ROI + commun
 
 - Per-track / multi-window viewers (instead of 1 global)
 - Auto file-watcher (no manual reload click)
-- Normal maps and richer material rendering (toward simplified PBR)
-- Configurable lighting (HDRI, multi-light)
+- ~~Normal maps and richer material rendering (toward simplified PBR)~~ → **promoted to MVP (FR48, Epic 6.5) 2026-06-27**: sRGB-correct shading + normal-map detail (Blinn-Phong stays; not full PBR). Richer-than-Blinn PBR remains post-MVP.
+- Configurable lighting (HDRI, multi-light) — *single adjustable light colour/position now in MVP via the light tool (FR50, Epic 6.5); HDRI/multi-light stay post-MVP*
 - Alembic format support (PRFAQ Phase 2 scope item, deferred to post-MVP)
 - Mac and Linux ports (~25–30% additional effort per PRFAQ; community-demand driven)
 - Engine-side export helpers (Unity/Unreal scripts that batch-export runtime animations to glTF/GLB)
@@ -378,12 +378,21 @@ Anything below this line is the irreducible MVP per problem-solving philosophy �
 ### 3D Rendering & Visual Fidelity
 
 - **FR15**: The viewer can render skinned mesh geometry with per-frame bone deformation.
-- **FR16**: The viewer can render mesh surfaces using diffuse-texture-mapped shading with per-material specular response sufficient to distinguish material types (e.g., matte leather vs polished steel).
+- **FR16**: The viewer can render mesh surfaces using diffuse-texture-mapped shading with per-material specular response sufficient to distinguish material types (e.g., matte leather vs polished steel). *(Enhanced by FR48: sRGB-correct colour + optional normal-map detail — Epic 6.5.)*
 - **FR17**: The viewer can resolve textures embedded in a GLB binary container.
 - **FR18**: The viewer can resolve textures referenced as external sibling files in multi-file glTF.
 - **FR19**: The viewer can resolve textures embedded in FBX containers.
 - **FR20**: The viewer can render meshes composed of multiple materials, each rendered with its own material parameters.
 - **FR21**: *(recategorized as NFR-P1 — 60 fps is a quality attribute, not a capability.)*
+
+### Viewport Visual Fidelity & On-Canvas Tools *(added 2026-06-27 — Correct Course, Epic 6.5)*
+
+- **FR48**: The viewer renders textured models at source-DCC fidelity (Mixamo parity): base-colour textures treated as sRGB with gamma-correct output, balanced lighting that keeps unlit faces readable, dielectric-correct specular (non-metallic by default on skin/cloth), and optional normal-map detail when the asset provides it. *(Promotes normal maps + sRGB shading from Growth Features into the MVP — authorised by Antho 2026-06-27.)*
+- **FR49**: The viewer presents a vertical icon strip in the top-right corner of the viewport as an extensible on-canvas tool menu (native Win32-child / GL-overlay widgets — no ReaImGui).
+- **FR50**: The sound designer can open a light tool from the sidebar to adjust the light colour and its position around the origin, with live render updates.
+- **FR51**: The sound designer can toggle a solid ground plane with grid on/off from the sidebar.
+- **FR52**: The sound designer can disable/enable costly render elements (e.g. normal maps, MSAA, floor) from the sidebar for graceful degradation on weaker hardware.
+- **FR53**: The sound designer can toggle an on-canvas FPS readout (top-right), replacing the former console FPS log.
 
 ### Camera & Viewport Control
 

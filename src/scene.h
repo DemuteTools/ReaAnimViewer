@@ -30,6 +30,10 @@ struct SceneVertex {
     glm::vec2  uv;
     glm::ivec4 boneIds;
     glm::vec4  boneWeights;
+    // No per-vertex tangent: Story 6.5.1's normal mapping builds the tangent frame
+    // per-fragment from screen-space derivatives (renderer.cpp), which is robust to
+    // mirrored UVs where a per-vertex tangent cancels to zero. So no tangent attribute
+    // is uploaded and aiProcess_CalcTangentSpace is not requested.
 };
 
 struct SceneMesh {
@@ -42,6 +46,9 @@ struct SceneMesh {
 
 struct SceneMaterial {
     GpuImage  baseColor;             // texture — unbound (0) in 2.1; Story 2.2 uploads it
+    GpuImage  normalMap;             // tangent-space normal map — unbound (0) when none;
+                                     // Story 6.5.1 uploads it LINEAR (GL_RGBA8), gated on
+                                     // presence (empty handle → geometric normal, AC4)
     glm::vec3 baseColorFactor{0.8f}; // D1 refinement: flat diffuse RGB (AI_MATKEY_COLOR_DIFFUSE)
     glm::vec3 specularColor{0.04f};
     float     shininess = 32.0f;

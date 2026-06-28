@@ -58,6 +58,17 @@ public:
     // one-call entry point for the Reset View button (FR25 / Journey 2 recovery).
     void ResetCamera();
 
+    // Story 6.5.3 light-tool setters/getters. These mutate the light members that
+    // RenderFrame already pushes to u_lightColor/u_lightDir EVERY frame (6.5.1) — so
+    // the light tool only nudges these on a user action and the next ~66 Hz frame
+    // applies them (zero new per-frame work, D2 zero-alloc preserved). The getters
+    // seed the colour picker / position control to the current value. SetLightDir
+    // normalizes (u_lightDir is the direction TOWARD the light, the shader's L).
+    void SetLightColor(const glm::vec3& c) { light_color_ = c; }
+    void SetLightDir(const glm::vec3& d)   { light_dir_ = glm::normalize(d); }
+    glm::vec3 LightColor() const { return light_color_; }
+    glm::vec3 LightDir()   const { return light_dir_; }
+
     // Releases GL resources (including the held Asset's buffers). Must run while
     // the GL context is current. Safe to call more than once.
     void Shutdown();
@@ -106,7 +117,8 @@ private:
     int u_has_normal_map_ = -1;  // 0 → geometric normal (asset carries no normal map)
 
     // Light defaults, stored so Story 6.5.3's light tool can drive them later. Set once
-    // per frame in RenderFrame; no UI is wired here (that is 6.5.3, explicitly OOS).
+    // per frame in RenderFrame; the 6.5.3 Dear ImGui tool UI drives light_color_ (colour
+    // picker) and light_dir_ (azimuth/elevation sliders) on user action.
     glm::vec3 light_color_{1.0f, 1.0f, 1.0f};
     glm::vec3 light_dir_  {glm::normalize(glm::vec3(0.4f, 0.9f, 0.5f))};  // prior hardcoded dir
     float     ambient_    = 0.35f;  // balanced fill — tuned at Antho's visual gate (AC2)

@@ -197,3 +197,59 @@ legacy `[FBXAV]` logger lived only in that old binary. Deleting the stale DLL (c
 the `[RAV]` prefix and routes every log through the now-silent `Emit()`) made the console silent.
 Lesson: a project rename changes the DLL name, so old-named binaries linger in UserPlugins and
 get co-loaded — purge them after a rename.
+
+---
+
+## 6. Story 6.5.3 — viewport tool UI + light tool
+
+Story 6.5.3 adds an **in-viewport tool UI** and its **first tool, a light control**.
+
+> **Final design (Antho feedback during review):** earlier cuts (native Win32 child buttons → a
+> hand-drawn GL overlay → a plain ImGui window) flickered or looked amateur. The UI is now built with
+> **Dear ImGui** (the library behind ReaImGui) **vendored into our plugin** and rendered into our GL
+> context as a true overlay — **statically linked, NOT the ReaImGui runtime extension**, so FR49's "no
+> ReaImGui dependency" still holds (single self-contained DLL, no ReaPack install). It is a **frameless
+> hamburger menu** that **shows/hides a list of tools**, using **Antho's icons** (`Icons/icon_*.svg`,
+> rasterized to textures). The old floating **Reset View** is gone; camera recenter (FR25) is a menu
+> item.
+
+Clicking the **hamburger** (≡, top-left) opens a frameless panel with: a **Recenter camera** button;
+a **Light** section (bulb icon) with a **Colour** picker (palette icon + ImGui swatch/popup) and a
+**Position** control — a **circular pad** that is the *sphere around the model laid flat*: centre =
+light straight overhead, the mid-ring = horizon, the rim = straight below, the angle = which way
+around. **Drag the dot** to place the light in space. Colour + pad **live-update** the render via
+Story 6.5.1's `u_lightColor` / `u_lightDir` (FR50); the shader and mesh `RenderFrame` path are
+unchanged (ImGui draws after the scene).
+
+This is a **GL/Win32 UI** gate, observable **only in Reaper on Windows**: the Linux dev box does not
+compile the `_WIN32` units (or build the ImGui lib), so the integration is **self-reviewed** (ImGui
+API verified against the pinned v1.91.5 release; icons rasterized + visually checked offline) and the
+judgement is Antho's, in-Reaper (AR19).
+
+> **Scope note (do NOT fail 6.5.3 for these):** the **floor + grid** tool is **Story 6.5.4** (FR51)
+> and the **render-quality toggles + on-canvas FPS readout** are **Story 6.5.5** (FR52/FR53) — so the
+> menu has **only** the recenter + light tools for now; that is expected. **No** `u_ambient` slider and
+> **no** persistence of the light across save/reopen (session-only, like the camera) are in scope. If
+> an icon looks upside-down, that is a one-line UV flip — note it, it is not a failure.
+
+**Suggested fixtures:** any project with **1–2 animation items** (FBX + GLB) on a track, played under
+the playhead so the model is lit and visible. Resize / undock the docker.
+
+| # | Check | Pass criterion | AC |
+|---|---|---|---|
+| 1 | Hamburger appears, clean, no flicker | Open the viewer. A small **≡ hamburger** (Antho's menu icon) sits at the **top-left** over the render, **steady — no flicker** including on mouse-over. **Resize / undock / re-dock** → it stays pinned top-left. | AC1 |
+| 2 | Menu show/hides | **Click the hamburger** → a frameless panel opens listing the tools (Recenter, Light colour, Position pad), with the **bulb** and **palette** icons. Click the hamburger again → it **collapses** back to just the icon. | AC1 |
+| 3 | Recenter works; camera intact | Orbit/zoom away, click **"Recenter camera"** → the model re-frames. **Right-drag orbit / wheel zoom / middle-drag pan** still work, **and** interacting **over the menu** drives the widgets, not the camera (no fighting). | AC1/AC3 |
+| 4 | Colour picker changes the light live | Click the **Colour** swatch → ImGui's picker opens **inside the view** (no OS dialog, no freeze). Pick e.g. red → the model is lit red live and the swatch updates. | AC2 |
+| 5 | Position pad moves the light live | **Drag the dot** on the circular pad → the lit/shadowed sides sweep as the light orbits; **centre = overhead**, **rim = below**, **angle = direction**. Smooth, live, intuitive. | AC2 |
+| 6 | Clean reopen, no leak/ghost; fps | **Close** the viewer (toggle action) and **reopen** → the menu is back and working, no ghosts. Skinned/static models still render and hold **≥60 fps** with the menu open and during pad drags. No `imgui.ini` appears next to Reaper; console stays silent (6.5.2). | AC3/AC4 |
+
+**Result:** Story 6.5.3 — **PASS** (Antho, in-Reaper Windows validation, 2026-06-28: "C'est parfait").
+The vendored Dear ImGui tool UI — a frameless top-left **hamburger menu** (Antho's icons) that
+show/hides Recenter camera + light **Colour** picker + the **circular position pad** (sphere laid
+flat) — renders cleanly on top of the 3D view with **no flicker**, the colour and the draggable light
+pad update the render live, and camera orbit/zoom/pan coexist with the UI. Statically linked, single
+self-contained DLL (no ReaImGui runtime dependency). The in-Reaper visual/interaction judgement IS the
+gate (AR19) — the Linux dev box stubs the Windows target and cannot build the `_WIN32` units or the
+ImGui lib (the integration was self-reviewed against the pinned ImGui v1.91.5 and the icons verified
+offline).

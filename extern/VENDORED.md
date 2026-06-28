@@ -87,28 +87,23 @@ Update the table above and commit with message `chore(extern): bump reaper-sdk t
 
 WDL/SWELL was originally part of the project's stack (per the PRFAQ) for a future Mac/Linux port. The 2026-05-10 architectural decision to render the viewer inside a ReaImGui dockable panel removes the cross-platform window-management burden from us — ReaImGui already uses SWELL internally on Mac/Linux. WDL vendoring is therefore likely never needed; we re-evaluate at the Mac/Linux port phase, but the default position is to not vendor it.
 
-## extern/reaimgui (runtime dependency, header-only vendoring)
+## Dear ImGui 1.91.5 (in-viewport tool UI — FetchContent pin, not in-tree)
 
 | Field | Value |
 |---|---|
-| Upstream | https://github.com/cfillion/reaimgui |
-| Distribution | ReaPack: `cfillion/reaimgui` (auto-installed as our extension's dependency) |
-| License | Per-source, mixed (LGPL3+ for the extension; MIT for the underlying Dear ImGui). See upstream LICENSE. |
+| Upstream | https://github.com/ocornut/imgui |
+| License | MIT (see upstream `LICENSE.txt`) |
+| Pinned tag | `v1.91.5` |
+| Delivery | CMake `FetchContent` (see root `CMakeLists.txt`), **not** committed to the tree (same `drvfs` reason as GLM/assimp/stb) |
+| Compiled units | `imgui.cpp`, `imgui_draw.cpp`, `imgui_tables.cpp`, `imgui_widgets.cpp`, `backends/imgui_impl_win32.cpp`, `backends/imgui_impl_opengl3.cpp` |
 
-**Runtime model:** ReaImGui ships as a separate Reaper extension (DLL). Our extension calls its API via `rec->GetFunc("ImGui_*")` function-pointer resolution — same pattern as the Reaper API itself. At plugin load we verify that ReaImGui is present (e.g. `ImGui_CreateContext` resolves non-null); if not, we emit a console message instructing the user to install `cfillion/reaimgui` and bail cleanly without registering our action.
+**Decision (Story 6.5.3 review revision, 2026-06-28):** we **statically vendor Dear ImGui INTO the plugin** and render it into our own GL context (true in-viewport overlay), rather than depending on the **ReaImGui** extension. This **supersedes** the earlier plan (in prior revisions of this file) to depend on ReaImGui at runtime. The `## extern/WDL` note above also referenced that superseded ReaImGui-panel plan — the viewer is a native GL window (Spike-0), and Dear ImGui's Win32+OpenGL3 backends drop onto the context + `WndProc` we already own.
 
-**Header vendoring:** the ReaImGui project ships a generated `reaper_imgui_functions.h` header analogous to `reaper_plugin_functions.h`. We vendor that header under `extern/reaimgui/include/` to get function-pointer typedefs and the `IMGUI_*` enum/struct definitions we use. Pinned commit recorded here at the time of vendoring (TBD when Phase 0.5 lands).
+**Why static Dear ImGui, not the ReaImGui runtime dependency:**
+1. **Self-contained** — no ReaPack install step for users; our single DLL just works (the whole value of the tool is being drop-in). ReaImGui would force every user to install `cfillion/reaimgui`.
+2. **True overlay** — ReaImGui renders into its own window and cannot paint over our native GL viewport; it would be a *separate* control panel. Vendored Dear ImGui draws directly in our 3D frame (no flicker, controls sit on the viewport).
+3. **Already on a native GL context** — the OpenGL3 + Win32 backends need exactly what we have.
 
-**Why not statically link Dear ImGui directly?** Three reasons:
-1. ReaImGui already solves Reaper-specific concerns (docking integration with Reaper's docker, theming, project state hooks). Re-doing that from scratch would be weeks of work.
-2. Visual consistency with the rest of the Reaper ecosystem — users see ReaImGui's familiar look across many ReaPack tools.
-3. Updates to ImGui (security/UX) propagate via ReaPack without us shipping a new DLL.
+Built as a **separate static lib** (`add_library(imgui …)`) so our strict `/W3 /permissive-` flags do not apply to upstream code; the extension includes its headers `SYSTEM`. XInput is loaded dynamically by the Win32 backend (no link-time xinput dependency). Single-DLL invariant (D15/D17) unaffected — ImGui is statically linked into `reaper_animviewer.dll`.
 
-**Re-vendoring procedure** (when ReaImGui upgrades its API surface):
-
-```sh
-git clone --depth 1 https://github.com/cfillion/reaimgui.git /tmp/reaimgui
-cp /tmp/reaimgui/api/reaper_imgui_functions.h extern/reaimgui/include/
-git -C /tmp/reaimgui rev-parse HEAD  # record pinned commit in this file
-rm -rf /tmp/reaimgui
-```
+**Re-pinning procedure** (when bumping the ImGui version): change `GIT_TAG` in the root `CMakeLists.txt`, update the tag above, and re-verify the backend API (`ImGui_ImplWin32_Init`, `ImGui_ImplOpenGL3_Init`, `ImGui_ImplWin32_WndProcHandler`) against the new release.

@@ -60,7 +60,30 @@ if(WIN32)
         GIT_TAG        31c1ad37456438565541f4919958214b6e762fb4  # recorded in extern/VENDORED.md
         GIT_SHALLOW    TRUE)
 
-    FetchContent_MakeAvailable(glm assimp stb)
+    # Dear ImGui (the immediate-mode GUI behind ReaImGui) — vendored INTO the plugin
+    # (Story 6.5.3 review revision) so the in-viewport tool UI is real widgets (sliders,
+    # colour picker, buttons) drawn in our own GL context, with NO ReaImGui runtime
+    # dependency for users. Pinned tag; recorded in extern/VENDORED.md.
+    FetchContent_Declare(imgui
+        GIT_REPOSITORY https://github.com/ocornut/imgui.git
+        GIT_TAG        v1.91.5
+        GIT_SHALLOW    TRUE)
+
+    FetchContent_MakeAvailable(glm assimp stb imgui)
+
+    # Dear ImGui has no CMakeLists of its own; compile the core + the Win32/OpenGL3
+    # backends as a SEPARATE static lib so our strict /W3 /permissive- flags do NOT
+    # apply to upstream code (it would warn). Our target includes its headers SYSTEM.
+    add_library(imgui STATIC
+        "${imgui_SOURCE_DIR}/imgui.cpp"
+        "${imgui_SOURCE_DIR}/imgui_draw.cpp"
+        "${imgui_SOURCE_DIR}/imgui_tables.cpp"
+        "${imgui_SOURCE_DIR}/imgui_widgets.cpp"
+        "${imgui_SOURCE_DIR}/backends/imgui_impl_win32.cpp"
+        "${imgui_SOURCE_DIR}/backends/imgui_impl_opengl3.cpp")
+    target_include_directories(imgui PUBLIC
+        "${imgui_SOURCE_DIR}" "${imgui_SOURCE_DIR}/backends")
+    target_link_libraries(imgui PUBLIC opengl32 gdi32 user32 dwmapi imm32)
 
     add_reaper_extension(animviewer
         SOURCES
@@ -73,15 +96,18 @@ if(WIN32)
             src/console_log.cpp
             src/pcm_source_anim.cpp
     )
-    # GLM + assimp as SYSTEM includes so their headers cannot trip /W3 /permissive-
-    # (NFR-R5). assimp's generated config headers live in its BINARY dir.
+    # GLM + assimp + Dear ImGui as SYSTEM includes so their headers cannot trip
+    # /W3 /permissive- (NFR-R5). assimp's generated config headers live in its BINARY dir.
     target_include_directories(animviewer SYSTEM PRIVATE
         "${glm_SOURCE_DIR}"
         "${assimp_SOURCE_DIR}/include"
         "${assimp_BINARY_DIR}/include"
-        "${stb_SOURCE_DIR}")  # stb_image.h — SYSTEM so it can't trip /W3 /permissive-
+        "${stb_SOURCE_DIR}"      # stb_image.h — SYSTEM so it can't trip /W3 /permissive-
+        "${imgui_SOURCE_DIR}"
+        "${imgui_SOURCE_DIR}/backends")
     # comdlg32: GetOpenFileNameW — the native "choose a model" dialog (Story 2.1).
-    target_link_libraries(animviewer PRIVATE assimp opengl32 gdi32 user32 comdlg32)
+    # imgui: vendored in-viewport tool UI (Story 6.5.3 rev).
+    target_link_libraries(animviewer PRIVATE assimp opengl32 gdi32 user32 comdlg32 imgui)
 else()
     message(STATUS
         "animviewer: non-Windows platform detected — Phase 0 only "

@@ -22,14 +22,34 @@
 #include "viewer_window.h"
 
 #include <windowsx.h>  // GET_X_LPARAM / GET_Y_LPARAM — unpack WM_MOUSEMOVE coords
+#include <cmath>       // std::sin/cos/asin/atan2/sqrt — light azimuth/elevation ↔ direction
 #include <exception>   // std::exception — the no-throw host boundary (AR18)
 #include <string>
 
 #include "asset_loader.h"
 #include "console_log.h"
 #include "gl_loader.h"   // LoadGlFunctions + modern-GL pointers; pulls in <gl/GL.h>
+#include "overlay_icons.h"    // kIcon_menu/light/color — Antho's SVGs rasterized to RGBA (Story 6.5.3 rev)
 #include "pcm_source_anim.h"  // GetCurrentAnimItem — the transport→current-item query (Story 4.3)
 #include "renderer.h"
+
+#ifndef GL_CLAMP_TO_EDGE
+#define GL_CLAMP_TO_EDGE 0x812F   // GL 1.2; Windows <gl/GL.h> is 1.1 and may omit it
+#endif
+
+// Dear ImGui (vendored, Story 6.5.3 rev) — the in-viewport tool UI. Rendered into OUR
+// GL context after the 3D scene, so it is a true overlay (no flicker, no extra window,
+// no ReaImGui runtime dependency). Win32 backend feeds input via the WndProc handler;
+// the OpenGL3 backend draws the widget geometry.
+#include <imgui.h>
+#include <backends/imgui_impl_win32.h>
+#include <backends/imgui_impl_opengl3.h>
+
+// imgui_impl_win32.h intentionally comments out (inside an `#if 0`) the WndProc handler
+// declaration so the header doesn't drag in <windows.h>; we forward-declare it here (we
+// already have <windows.h>) so WindowProc can pass messages to the ImGui Win32 backend.
+extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg,
+                                                             WPARAM wParam, LPARAM lParam);
 
 namespace rav {
 namespace {
@@ -102,11 +122,49 @@ DragMode g_drag = DragMode::None;
 int g_last_x = 0;
 int g_last_y = 0;
 
-// The native "Reset View" child button overlaid on the GL surface (§C). A child of
-// g_hwnd, so DestroyWindow tears it down automatically; we only null this on
-// WM_DESTROY. kResetButtonId is its WM_COMMAND control id.
-constexpr int kResetButtonId = 1001;
-HWND g_reset_button = nullptr;
+// Story 6.5.3 (rev) — Dear ImGui tool UI state. A frameless hamburger MENU (Antho's
+// icons) that show/hides a list of tools, drawn as a true overlay in our GL frame. The
+// light's "position around the origin" is held here as azimuth/elevation (radians) and
+// converted to a direction with the SAME spherical form as OrbitCamera::Eye (camera.h,
+// Y-up AR9); the colour is RGB the picker edits. Both push to the renderer on change.
+bool  g_imgui_ready    = false;     // true once ImGui + its backends are initialized
+bool  g_menu_open      = false;     // the hamburger toggles the option list
+float g_light_azimuth  = 0.0f;      // seeded from the renderer's default direction
+float g_light_elevation = 0.0f;
+float g_light_color[3] = { 1.0f, 1.0f, 1.0f };
+
+// Icon textures (Antho's SVGs, uploaded once at ImGui init; freed in StopRendering).
+GLuint g_icon_menu  = 0;
+GLuint g_icon_light = 0;
+GLuint g_icon_color = 0;
+
+constexpr float kPiF    = 3.14159265f;
+constexpr float kHalfPi = 1.57079633f;
+
+ImTextureID IconTex(GLuint t) { return static_cast<ImTextureID>(t); }  // GLuint → ImU64
+
+glm::vec3 LightDirFromAngles(float azim, float elev)
+{
+    const float cp = std::cos(elev);
+    return glm::vec3(cp * std::sin(azim), std::sin(elev), cp * std::cos(azim));
+}
+
+GLuint UploadIconTexture(const unsigned char* rgba, int w, int h)
+{
+    GLuint t = 0;
+    glGenTextures(1, &t);
+    if (!t) return 0;
+    glBindTexture(GL_TEXTURE_2D, t);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    return t;
+}
+
+void DrawToolUi();  // defined below; called from RenderTick before SwapBuffers
 
 double ElapsedSeconds()
 {
@@ -227,6 +285,9 @@ void RenderTick()
     g_renderer.RenderFrame(
         static_cast<float>(g_transport_driven ? g_display_time : ElapsedSeconds()),
         /*loop=*/!g_transport_driven, g_client_w, g_client_h);
+
+    DrawToolUi();   // Dear ImGui overlay on top of the 3D scene (Story 6.5.3 rev)
+
     SwapBuffers(g_hdc);
 
     ++g_frame_count;
@@ -266,6 +327,127 @@ void CALLBACK FrameTimerProc(HWND, UINT, UINT_PTR, DWORD)
         LogInfo("panel shown — render resumed");
     }
     RenderTick();
+}
+
+// Builds + renders the Dear ImGui tool UI for this frame, drawn on top of the 3D scene
+// (called between RenderFrame and SwapBuffers). A compact, draggable "Tools" window:
+// Recenter camera (FR25), a real colour picker (FR50), and azimuth/elevation sliders
+// that orbit the light around the model (FR50). All widgets mutate state only and push
+// to the renderer's light members — no synchronous re-render (AR18). NON-fatal: if ImGui
+// failed to initialize, this is a no-op and the viewport still runs (AR17).
+// A circular "light position" pad: the disc is the sphere around the model laid flat
+// (azimuthal) — centre = light straight overhead (elevation +90°), the mid ring = the
+// horizon (0°), the rim = straight below (−90°); the angle around = azimuth. Drag the
+// dot to place the light in space. Returns true while the user is moving it.
+bool LightDirectionPad(float diameter)
+{
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##lightpad", ImVec2(diameter, diameter));
+    const bool active = ImGui::IsItemActive();
+    const ImVec2 c(p0.x + diameter * 0.5f, p0.y + diameter * 0.5f);
+    const float R = diameter * 0.5f - 4.0f;
+
+    bool changed = false;
+    if (active) {
+        const ImVec2 m = ImGui::GetIO().MousePos;
+        float dx = m.x - c.x, dy = m.y - c.y;
+        float r = std::sqrt(dx * dx + dy * dy);
+        if (r > R && r > 0.0f) { dx *= R / r; dy *= R / r; r = R; }
+        const float rho = (R > 0.0f) ? r / R : 0.0f;           // 0 centre … 1 rim
+        g_light_azimuth   = std::atan2(dx, -dy);               // 0 = up (north)
+        g_light_elevation = kHalfPi - rho * kPiF;              // +90° centre … −90° rim
+        changed = true;
+    }
+
+    // Disc + horizon ring + axes.
+    dl->AddCircleFilled(c, R, IM_COL32(26, 28, 34, 255), 48);
+    dl->AddCircle(c, R, IM_COL32(92, 98, 112, 255), 48, 1.5f);
+    dl->AddCircle(c, R * 0.5f, IM_COL32(58, 62, 72, 255), 40, 1.0f);
+    dl->AddLine(ImVec2(c.x - R, c.y), ImVec2(c.x + R, c.y), IM_COL32(52, 55, 64, 255));
+    dl->AddLine(ImVec2(c.x, c.y - R), ImVec2(c.x, c.y + R), IM_COL32(52, 55, 64, 255));
+
+    // Handle, placed from the current azimuth/elevation.
+    const float rho = (kHalfPi - g_light_elevation) / kPiF;    // 0..1
+    const ImVec2 h(c.x + std::sin(g_light_azimuth) * rho * R,
+                   c.y - std::cos(g_light_azimuth) * rho * R);
+    dl->AddCircleFilled(h, 6.0f, IM_COL32(120, 170, 255, 255), 16);
+    dl->AddCircle(h, 6.0f, IM_COL32(255, 255, 255, 255), 16, 1.5f);
+    return changed;
+}
+
+// Builds + renders the Dear ImGui tool UI for this frame, on top of the 3D scene (called
+// between RenderFrame and SwapBuffers). A FRAMELESS hamburger menu (Antho's icons) that
+// show/hides a list of tools: Recenter camera (FR25), light colour (FR50), and the light
+// position pad (FR50). Fixed top-left, non-resizable, looks part of the interface. All
+// widgets mutate state only and push to the renderer (no synchronous re-render, AR18).
+// NON-fatal: if ImGui failed to initialize this is a no-op and the viewport still runs.
+void DrawToolUi()
+{
+    if (!g_imgui_ready) return;
+
+    ImGui_ImplOpenGL3_NewFrame();
+    ImGui_ImplWin32_NewFrame();
+    ImGui::NewFrame();
+
+    ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_Always);
+    constexpr ImGuiWindowFlags kFlags =
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar |
+        ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 8.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+    ImGui::Begin("##tools", nullptr, kFlags);
+
+    // Hamburger button — frameless icon; toggles the option list.
+    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.10f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(1, 1, 1, 0.16f));
+    if (ImGui::ImageButton("##menu", IconTex(g_icon_menu), ImVec2(22.0f, 22.0f),
+                           ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0),
+                           ImVec4(0.90f, 0.90f, 0.95f, 1.0f)))
+        g_menu_open = !g_menu_open;
+    ImGui::PopStyleColor(3);
+
+    if (g_menu_open) {
+        const ImVec4 kIconTint(0.82f, 0.84f, 0.90f, 1.0f);
+        ImGui::Spacing();
+
+        if (ImGui::Button("Recenter camera", ImVec2(196.0f, 0.0f)))
+            g_renderer.ResetCamera();
+
+        ImGui::Dummy(ImVec2(0.0f, 3.0f));
+        ImGui::Image(IconTex(g_icon_light), ImVec2(17.0f, 17.0f),
+                     ImVec2(0, 0), ImVec2(1, 1), kIconTint);
+        ImGui::SameLine();
+        ImGui::TextUnformatted("Light");
+        ImGui::Separator();
+
+        // Colour: the colour icon + ImGui's swatch/popup picker.
+        ImGui::Image(IconTex(g_icon_color), ImVec2(17.0f, 17.0f),
+                     ImVec2(0, 0), ImVec2(1, 1), kIconTint);
+        ImGui::SameLine();
+        if (ImGui::ColorEdit3("##colour", g_light_color,
+                              ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoAlpha))
+            g_renderer.SetLightColor(glm::vec3(g_light_color[0], g_light_color[1], g_light_color[2]));
+        ImGui::SameLine();
+        ImGui::TextUnformatted("Colour");
+
+        // Position: the circular sphere-laid-flat pad.
+        ImGui::Dummy(ImVec2(0.0f, 3.0f));
+        ImGui::TextUnformatted("Position");
+        if (LightDirectionPad(150.0f))
+            g_renderer.SetLightDir(LightDirFromAngles(g_light_azimuth, g_light_elevation));
+    }
+
+    ImGui::End();
+    ImGui::PopStyleVar(3);
+
+    ImGui::Render();
+    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
 
 // Brings up the GL context + renderer + frame loop. Returns false (with a
@@ -341,24 +523,32 @@ bool StartRendering(HWND hwnd)
         return false;
     }
 
-    // The "Reset View" toolbar button (FR25). A bare native Win32 child BUTTON
-    // overlaid on the GL surface: WS_CLIPCHILDREN on the parent excludes its rect
-    // from the GL DC clip region, so glClear/SwapBuffers never paint over it (no UI
-    // toolkit until Epic 5). A failed create is NON-fatal — a viewport without the
-    // button is still a working viewport — so we log once and carry on, never bail.
-    g_reset_button = CreateWindowExW(
-        0, L"BUTTON", L"Reset View",
-        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-        8, 8, 96, 26,
-        hwnd, reinterpret_cast<HMENU>(static_cast<INT_PTR>(kResetButtonId)),
-        g_class_hinst, nullptr);
-    if (g_reset_button) {
-        // DEFAULT_GUI_FONT so the caption isn't the bold system default.
-        SendMessageW(g_reset_button, WM_SETFONT,
-                     reinterpret_cast<WPARAM>(GetStockObject(DEFAULT_GUI_FONT)), TRUE);
-    } else {
-        LogInfo("Reset View button could not be created — the viewport still works "
-                "(use it once camera controls land)");
+    // Story 6.5.3 (rev): bring up Dear ImGui for the in-viewport tool UI. The GL
+    // context is current here (required by ImGui_ImplOpenGL3_Init). NON-fatal: a failed
+    // ImGui init just means no tool UI — the viewport still renders (AR17). Seed the UI
+    // light state from the renderer's current direction/colour so the sliders/picker
+    // start in sync. ImGui input arrives via ImGui_ImplWin32_WndProcHandler in WindowProc.
+    IMGUI_CHECKVERSION();
+    if (ImGui::CreateContext()) {
+        ImGuiIO& io = ImGui::GetIO();
+        io.IniFilename = nullptr;   // do not write imgui.ini next to Reaper
+        io.LogFilename = nullptr;
+        ImGui::StyleColorsDark();
+        if (ImGui_ImplWin32_Init(hwnd) && ImGui_ImplOpenGL3_Init("#version 130")) {
+            g_imgui_ready = true;
+            const glm::vec3 d = glm::normalize(g_renderer.LightDir());
+            g_light_elevation = std::asin(d.y < -1.0f ? -1.0f : (d.y > 1.0f ? 1.0f : d.y));
+            g_light_azimuth   = std::atan2(d.x, d.z);
+            const glm::vec3 c = g_renderer.LightColor();
+            g_light_color[0] = c.r; g_light_color[1] = c.g; g_light_color[2] = c.b;
+            // Upload Antho's icons (context is current). A 0 handle just means no glyph.
+            g_icon_menu  = UploadIconTexture(kIcon_menu,  kIconSize, kIconSize);
+            g_icon_light = UploadIconTexture(kIcon_light, kIconSize, kIconSize);
+            g_icon_color = UploadIconTexture(kIcon_color, kIconSize, kIconSize);
+        } else {
+            LogInfo("tool UI (Dear ImGui) could not initialize — the viewport still works");
+            ImGui::DestroyContext();
+        }
     }
 
     // Paint one frame now (the context is current) so the window presents real
@@ -379,13 +569,37 @@ void StopRendering()
     }
     if (g_hglrc) {
         wglMakeCurrent(g_hdc, g_hglrc);
+        // ImGui's GL objects (and our icon textures) must be freed while the context is
+        // current, before the renderer's and before the context itself is dropped.
+        if (g_icon_menu)  { glDeleteTextures(1, &g_icon_menu);  g_icon_menu  = 0; }
+        if (g_icon_light) { glDeleteTextures(1, &g_icon_light); g_icon_light = 0; }
+        if (g_icon_color) { glDeleteTextures(1, &g_icon_color); g_icon_color = 0; }
+        if (g_imgui_ready) {
+            ImGui_ImplOpenGL3_Shutdown();
+            ImGui_ImplWin32_Shutdown();
+            ImGui::DestroyContext();
+            g_imgui_ready = false;
+        }
         g_renderer.Shutdown();
     }
     DestroyGLContext();
 }
 
+// True when the cursor is over an ImGui window/widget, so the camera must ignore the
+// drag/wheel (ImGui gets it instead). Safe before ImGui init (guarded by g_imgui_ready).
+bool ImGuiWantsMouse()
+{
+    return g_imgui_ready && ImGui::GetIO().WantCaptureMouse;
+}
+
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
+    // Feed input to Dear ImGui first (Story 6.5.3 rev). Only after it is initialized —
+    // StartRendering (which inits ImGui) runs synchronously inside WM_CREATE, so earlier
+    // messages must not reach the handler. If ImGui fully handles a message, stop here.
+    if (g_imgui_ready && ImGui_ImplWin32_WndProcHandler(hwnd, msg, wp, lp))
+        return true;
+
     switch (msg) {
     case WM_CREATE:
         // AR18 — the no-throw boundary must hold HERE too, not only at
@@ -431,15 +645,25 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         // CS_OWNDC keeps the WGL DC valid across the reparent).
         g_client_w = (LOWORD(lp) > 0) ? LOWORD(lp) : 1;
         g_client_h = (HIWORD(lp) > 0) ? HIWORD(lp) : 1;
+        // The tool menu is drawn from the renderer at the live client size every frame,
+        // so there is nothing to re-lay-out on resize (the menu is anchored top-left).
         return 0;
 
     case WM_ERASEBKGND:
         return 1;  // GL owns the surface; skip GDI background fill to avoid flicker.
 
+    case WM_LBUTTONDOWN:
+        // Left click is ImGui's (widgets). If it's NOT over the UI, just take focus so
+        // the wheel keeps targeting the viewport; the camera itself uses right/middle.
+        if (!ImGuiWantsMouse()) SetFocus(hwnd);
+        return 0;
+
     case WM_RBUTTONDOWN:
-        // Start an orbit drag. SetFocus so WM_MOUSEWHEEL (delivered to the focused
-        // window, not the hovered one, §D) reaches us; SetCapture so the drag keeps
-        // reporting moves even if the cursor leaves the window.
+        // Start an orbit drag — unless the cursor is over the ImGui UI. SetFocus so
+        // WM_MOUSEWHEEL (delivered to the focused window, not the hovered one, §D)
+        // reaches us; SetCapture so the drag keeps reporting moves even if the cursor
+        // leaves the window.
+        if (ImGuiWantsMouse()) return 0;
         SetFocus(hwnd);
         SetCapture(hwnd);
         g_drag   = DragMode::Orbit;
@@ -448,6 +672,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
 
     case WM_MBUTTONDOWN:
+        if (ImGuiWantsMouse()) return 0;
         SetFocus(hwnd);
         SetCapture(hwnd);
         g_drag   = DragMode::Pan;
@@ -481,6 +706,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
 
     case WM_MOUSEWHEEL: {
+        // Let ImGui have the wheel when the cursor is over its UI (e.g. scrolling a
+        // slider's value); otherwise it zooms the camera.
+        if (ImGuiWantsMouse()) return 0;
         const float delta = GET_WHEEL_DELTA_WPARAM(wp) / 120.0f;  // 120 == one notch
         g_renderer.Camera().Zoom(delta);
         return 0;
@@ -492,22 +720,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         g_drag = DragMode::None;
         return 0;
 
-    case WM_COMMAND:
-        if (LOWORD(wp) == kResetButtonId) {
-            g_renderer.ResetCamera();
-            SetFocus(hwnd);  // restore focus so the wheel keeps targeting the viewport
-            return 0;
-        }
-        break;
-
     case WM_DESTROY:
         // Reached only on the paths WE initiate (CloseViewerWindow → DestroyWindow,
-        // and unload) — NOT the docker tab X, which merely hides us (see header).
-        // Tear the render loop + GL down here while the context is still current.
-        // The Reset button is a child of g_hwnd → already destroyed with it; just
-        // null our handle so it can't dangle.
+        // and unload) — NOT the docker tab X, which merely hides us (see header). Tear
+        // the render loop + GL (and ImGui) down here while the context is still current.
         StopRendering();
-        g_reset_button = nullptr;
         g_hwnd = nullptr;
         return 0;
     }

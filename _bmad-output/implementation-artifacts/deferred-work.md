@@ -6,6 +6,20 @@ trigger condition for when it should be picked up.
 
 ---
 
+## Deferred from: story 6.5.3 (viewport tool sidebar + light tool) — 2026-06-28
+
+Story 6.5.3 built the top-right tool strip + the light tool (colour + azimuth/elevation). A few
+adjacent ideas were deliberately left out — recorded here so they are not silently dropped.
+
+- **Light `u_ambient` slider in the UI** [`src/renderer.h:112` `ambient_`; future flyout control]. The light tool's AC (FR50) names only `u_lightColor` and `u_lightDir`; `ambient_` keeps its 6.5.1 default `0.35`. **Trigger:** only if Antho asks for an ambient/fill control at a gate — it is a one-line setter + one flyout button mirroring the colour/position controls (a deliberate scope line, not an oversight).
+- **Light-state persistence across save/reopen** [`src/viewer_window.cpp` `g_light_azimuth`/`g_light_elevation` + the renderer light members; D9 `SaveState`/`LoadState`]. The light is **session-only**, exactly like the camera — it resets to the 6.5.1 default on reload, with no `.rpp`/SaveState wiring (D9 is the per-item surface, untouched here). **Trigger:** if light look needs to survive a project round-trip, fold it into the D9 SaveState payload (decide per-item vs global first — the camera is global today).
+- **Icon glyphs on the ImGui tool buttons** [`src/viewer_window.cpp` `DrawToolUi`; `Icons/*.svg`]. The tool UI is now **Dear ImGui** with **text labels** (clear, professional) but **no icons** yet. Antho provided `Icons/icon_menu.svg` / `icon_light.svg` / `icon_color.svg`. **Trigger:** when polishing, rasterize those SVGs to GL textures and use `ImGui::ImageButton` (or an icon font) so the buttons carry glyphs alongside the labels.
+- **Dock the ImGui panel into Reaper's docker** [`src/viewer_window.cpp`]. The "Tools" window currently floats inside the viewport (draggable). **Trigger:** if Antho wants it as a separate dockable controls panel, enable ImGui docking (docking branch) or host it differently.
+
+> _Note:_ all earlier 6.5.3 UI deferrals (native +/- buttons vs trackbars, owner-draw strip icons, a hand-rolled GL text renderer) are **obsolete** — the native-control and GL-overlay UIs were both replaced wholesale by vendored Dear ImGui (see architecture AR20 entry "Tool UI built on vendored Dear ImGui", 2026-06-28). The `u_ambient` slider and light-state persistence deferrals above still stand.
+
+---
+
 ## Deferred from: code review of story 6.5.2 (2026-06-28)
 
 - **`build_forcefail.bat:21` carries the same `>/dev/null` Unix-ism as the new `build_debuglog.bat`** [`build_forcefail.bat:21` — `where cmake >/dev/null 2>nul`]. In cmd.exe this redirects stdout to a non-existent `\dev\null` path; the canonical `build.bat` uses `>nul 2>nul`. The 6.5.2 review patches `build_debuglog.bat`; `build_forcefail.bat` is a pre-existing untracked dev-only build script (force-fail story) so it is left untouched here. **Trigger:** next time `build_forcefail.bat` is edited (or the force-fail validator path is exercised), align its `where cmake` redirect to `>nul 2>nul`.

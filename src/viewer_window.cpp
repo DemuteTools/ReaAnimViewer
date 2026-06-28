@@ -133,10 +133,16 @@ float g_light_azimuth  = 0.0f;      // seeded from the renderer's default direct
 float g_light_elevation = 0.0f;
 float g_light_color[3] = { 1.0f, 1.0f, 1.0f };
 
+// Story 6.5.4 shadow-quality selection (0=Off, 1=Low, 2=Mid, 3=High). Mid (2) matches the
+// renderer's default ShadowQuality::Mid so the UI and the render agree at startup without a
+// getter. Session-only — a fresh viewer opens at Mid (no persistence, like the light/camera).
+int g_shadow_quality = 2;
+
 // Icon textures (Antho's SVGs, uploaded once at ImGui init; freed in StopRendering).
-GLuint g_icon_menu  = 0;
-GLuint g_icon_light = 0;
-GLuint g_icon_color = 0;
+GLuint g_icon_menu   = 0;
+GLuint g_icon_light  = 0;
+GLuint g_icon_color  = 0;
+GLuint g_icon_shadow = 0;
 
 constexpr float kPiF    = 3.14159265f;
 constexpr float kHalfPi = 1.57079633f;
@@ -441,6 +447,24 @@ void DrawToolUi()
         ImGui::TextUnformatted("Position");
         if (LightDirectionPad(150.0f))
             g_renderer.SetLightDir(LightDirFromAngles(g_light_azimuth, g_light_elevation));
+
+        // Shadows (Story 6.5.4): the floor is always on (no toggle); this controls the
+        // CAST-SHADOW quality so a weak PC can dial it down/off. Off skips the depth pass
+        // entirely (the floor still draws). 4-way selector mirrors the Light section's
+        // icon+label rhythm; on change push the level to the renderer (cold realloc there).
+        ImGui::Dummy(ImVec2(0.0f, 3.0f));
+        ImGui::Image(IconTex(g_icon_shadow), ImVec2(17.0f, 17.0f),
+                     ImVec2(0, 0), ImVec2(1, 1), kIconTint);
+        ImGui::SameLine();
+        ImGui::TextUnformatted("Shadows");
+        ImGui::Separator();
+        bool shadow_changed = false;
+        shadow_changed |= ImGui::RadioButton("Off",  &g_shadow_quality, 0); ImGui::SameLine();
+        shadow_changed |= ImGui::RadioButton("Low",  &g_shadow_quality, 1); ImGui::SameLine();
+        shadow_changed |= ImGui::RadioButton("Mid",  &g_shadow_quality, 2); ImGui::SameLine();
+        shadow_changed |= ImGui::RadioButton("High", &g_shadow_quality, 3);
+        if (shadow_changed)
+            g_renderer.SetShadowQuality(static_cast<ShadowQuality>(g_shadow_quality));
     }
 
     ImGui::End();
@@ -546,9 +570,10 @@ bool StartRendering(HWND hwnd)
                 const glm::vec3 c = g_renderer.LightColor();
                 g_light_color[0] = c.r; g_light_color[1] = c.g; g_light_color[2] = c.b;
                 // Upload Antho's icons (context is current). A 0 handle just means no glyph.
-                g_icon_menu  = UploadIconTexture(kIcon_menu,  kIconSize, kIconSize);
-                g_icon_light = UploadIconTexture(kIcon_light, kIconSize, kIconSize);
-                g_icon_color = UploadIconTexture(kIcon_color, kIconSize, kIconSize);
+                g_icon_menu   = UploadIconTexture(kIcon_menu,   kIconSize, kIconSize);
+                g_icon_light  = UploadIconTexture(kIcon_light,  kIconSize, kIconSize);
+                g_icon_color  = UploadIconTexture(kIcon_color,  kIconSize, kIconSize);
+                g_icon_shadow = UploadIconTexture(kIcon_shadow, kIconSize, kIconSize);
             } else {
                 LogInfo("tool UI (Dear ImGui) could not initialize — the viewport still works");
                 ImGui_ImplWin32_Shutdown();
@@ -580,9 +605,10 @@ void StopRendering()
         wglMakeCurrent(g_hdc, g_hglrc);
         // ImGui's GL objects (and our icon textures) must be freed while the context is
         // current, before the renderer's and before the context itself is dropped.
-        if (g_icon_menu)  { glDeleteTextures(1, &g_icon_menu);  g_icon_menu  = 0; }
-        if (g_icon_light) { glDeleteTextures(1, &g_icon_light); g_icon_light = 0; }
-        if (g_icon_color) { glDeleteTextures(1, &g_icon_color); g_icon_color = 0; }
+        if (g_icon_menu)   { glDeleteTextures(1, &g_icon_menu);   g_icon_menu   = 0; }
+        if (g_icon_light)  { glDeleteTextures(1, &g_icon_light);  g_icon_light  = 0; }
+        if (g_icon_color)  { glDeleteTextures(1, &g_icon_color);  g_icon_color  = 0; }
+        if (g_icon_shadow) { glDeleteTextures(1, &g_icon_shadow); g_icon_shadow = 0; }
         if (g_imgui_ready) {
             ImGui_ImplOpenGL3_Shutdown();
             ImGui_ImplWin32_Shutdown();

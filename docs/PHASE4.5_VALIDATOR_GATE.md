@@ -253,3 +253,65 @@ self-contained DLL (no ReaImGui runtime dependency). The in-Reaper visual/intera
 gate (AR19) — the Linux dev box stubs the Windows target and cannot build the `_WIN32` units or the
 ImGui lib (the integration was self-reviewed against the pinned ImGui v1.91.5 and the icons verified
 offline).
+
+---
+
+## 7. Story 6.5.4 — always-on floor + shadow-quality tool (Off / Low / Mid / High)
+
+Story 6.5.4 puts a **ground plane + grid** under the model (always on — there is no toggle, it is
+simply part of the scene) and a real **cast shadow** from the model onto that floor, with a **4-level
+quality selector** (Off / Low / Mid / High) in the 6.5.3 tool menu so a weaker PC can dial the shadow
+down or off. The floor is a flat unlit plane that *receives* the shadow; the shadow is a real-time
+shadow-mapping pass (a depth render from the light's POV + PCF sampling on the floor), rebuilt each
+frame from the **current light direction** so the 6.5.3 light pad moves the shadow too.
+
+This is the **heaviest rendering story of Epic 6.5** — it builds a shadow-mapping pipeline and (with
+Antho's direction, logged in the AR20 Spec Change Log) it makes the renderer bind a **transient
+offscreen depth FBO** for the depth pass, a sanctioned deviation from the original "renderer never
+binds an offscreen FBO" rule (the FBO is bound only for that one pass; the visible output still goes to
+framebuffer 0). It is a **visual + perf** gate, observable **only in Reaper on Windows**: the Linux dev
+box compiles the non-`_WIN32` units but cannot build the renderer/ImGui units or see the render, so the
+GL FBO + PCF usage was **self-reviewed** (standard shadow-mapping mirrored from the proven mesh path;
+the ImGui radios mirror the proven 6.5.3 widgets) and the judgement is Antho's, in-Reaper (AR19).
+
+> **Scope note (do NOT fail 6.5.4 for these):** the **render-quality toggles** (normal maps / MSAA)
+> and the **on-canvas FPS readout** are **Story 6.5.5** (FR52/FR53) — only the **shadow** quality lever
+> lands here. **Minor aliasing** on the grid lines, or **slight shadow acne / softness** at a given
+> level, are **tuning notes** (the bias / `kShadowFloor` / floor greys / shadow-map sizes are in-code
+> constants tuned by eye at this gate), not failures. The **floor and the shadow quality are not
+> persisted** (session-only, like the camera and the 6.5.3 light) — a fresh viewer opens at the default
+> level (Mid). **Model self-shadowing is OPTIONAL** and was **deferred** to keep the gate-validated
+> mesh shaders byte-for-byte unchanged — the **required receiver is the floor**, so the model's own
+> surface not self-shadowing is **expected, not a failure**. A **lit/textured/reflective** floor is out
+> of scope (flat grey by design).
+
+**Suggested fixtures:**
+- *A skinned rig* (Epic 3 / Mixamo) that animates under the transport — to watch the shadow track the
+  pose and the moving limbs.
+- *A static `.glb`* (Epic 2) — to confirm the floor + a still shadow.
+- The **10+-item** project (NFR-P1) — to confirm **Off and Low** hold **≥60 fps** during playback.
+- Resize / undock / re-dock the panel.
+
+| # | Check | Pass criterion | AC |
+|---|---|---|---|
+| 1 | Floor is always under the model | Load any model. A **solid ground plane + grid** sits at the model's **feet**, centred under it and sized to it. The **empty idle panel** (no asset) shows **no floor** (unchanged from before). | AC1 |
+| 2 | Shadows control with 4 levels | Open the **hamburger menu** → a **Shadows** section (Antho's shadow icon) shows **Off / Low / Mid / High**. The current level is reflected; clicking another takes effect **immediately** (next frame). | AC2 |
+| 3 | Clean cast shadow at Mid | At **Mid**, the model casts a **clean soft shadow** on the floor — **no strobing, no acne stripes, no peter-panning** (shadow detached from the feet). | AC2/AC3 |
+| 4 | Light pad sweeps the shadow | Open the **light Position pad** and drag the dot → the **shadow sweeps live** as the light orbits (the shadow is cast from the current light direction). | AC3 |
+| 5 | Low harder, High softer, Off none | **Low** looks **harder/sharper**, **High** looks **softer**; **Off** removes the shadow entirely **and the floor still draws**. | AC2/AC4 |
+| 6 | Camera + tools still work | **Right-drag orbit / wheel zoom / middle-drag pan**, **Recenter**, and the **light colour/position** tools all still work with the floor + shadow present; no fighting between the menu and the camera. | AC3 |
+| 7 | Perf + clean reopen | At **Off and Low**, playback holds **≥60 fps** at the 10+-item fixture (Mid/High may cost more by design). **Close → reopen** the viewer (toggle action) → the floor + shadows are back at the **default (Mid)** level, **no ghost/leak**, console stays **silent** (6.5.2). | AC4/AC6 |
+
+> **Tuning at the gate:** the shadow **bias** (`≈0.0015`), the floor **shadow darkening** (`kShadowFloor
+> ≈ 0.45`), the floor **greys** (solid `≈0.30` / grid `≈0.42`), the floor **size** (`6× frameRadius`),
+> and the **shadow-map sizes** (512 / 1024 / 2048) are in-code constants in `renderer.cpp` /
+> `renderer.h`. If the shadow has acne, or is too dark/light, or the floor is too small/large, say which
+> way it is off — each is a one-line nudge.
+
+**Result:** Story 6.5.4 — **PASS** (Antho, in-Reaper Windows validation, 2026-06-28). The always-on
+floor + grid sits under the model and the model casts a real shadow onto it; the **Shadows** tool's
+Off / Low / Mid / High selector takes effect live, the light pad sweeps the shadow, and **Off** removes
+it while the floor stays. The in-Reaper visual + perf judgement IS the gate (AR19) — the Linux dev box
+compiled the non-`_WIN32` units and syntax-checked the renderer but could not build the `_WIN32`
+renderer/ImGui units or see the render, so the floor + shadow-mapping pipeline was self-reviewed and
+Antho judged it in-Reaper.

@@ -1,12 +1,20 @@
 // SPDX-License-Identifier: MIT
 //
-// Direct-to-window scene renderer (raw GL). Draws into the currently-bound
-// default framebuffer (framebuffer 0) and never binds an offscreen FBO — the
-// Spike-0 viewport architecture (Spec Change Log 2026-06-23). Story 2.1 swapped
-// the Epic 1 built-in test cube for a loaded `Asset`: Init compiles the Blinn-Phong
-// material shader, SetAsset stores a parsed model and frames the camera to its
-// bounding box, and RenderFrame draws the asset's meshes. With no asset set the
-// viewport just clears (a live but empty panel — never a crash).
+// Direct-to-window scene renderer (raw GL). The VISIBLE output always goes to the
+// currently-bound default framebuffer (framebuffer 0) — the Spike-0 viewport
+// architecture (Spec Change Log 2026-06-23). Story 2.1 swapped the Epic 1 built-in
+// test cube for a loaded `Asset`: Init compiles the Blinn-Phong material shader,
+// SetAsset stores a parsed model and frames the camera to its bounding box, and
+// RenderFrame draws the asset's meshes. With no asset set the viewport just clears
+// (a live but empty panel — never a crash).
+//
+// Story 6.5.4 adds an always-on ground plane + grid and a real-time cast shadow. The
+// shadow needs a depth render from the light's POV, so RenderFrame now binds a
+// TRANSIENT offscreen DEPTH FBO for that one pass — a sanctioned DEVIATION from the
+// original "never binds an offscreen FBO" rule (Antho-directed, AR20 Spec Change Log
+// 2026-06-28): the FBO is bound ONLY during the depth pass and framebuffer 0 is always
+// restored before the visible floor/mesh passes, so the visible surface is still FB0.
+// Shadow quality (Off/Low/Mid/High) is a session-only knob driven by the 6.5.3 tool menu.
 
 #pragma once
 
@@ -22,6 +30,11 @@
 #include "scene.h"
 
 namespace rav {
+
+// Story 6.5.4 shadow-quality lever (a weak PC can dial it down/off). Maps to a
+// shadow-map size + PCF tap radius: Off = no depth pass (zero added cost, the floor
+// still draws), Low = 512 / 1 tap (hard), Mid = 1024 / 3x3, High = 2048 / 5x5.
+enum class ShadowQuality { Off, Low, Mid, High };
 
 class Renderer {
 public:
@@ -70,11 +83,38 @@ public:
     glm::vec3 LightColor() const { return light_color_; }
     glm::vec3 LightDir()   const { return light_dir_; }
 
+    // Story 6.5.4 shadow-quality tool (Off/Low/Mid/High). The setter (RE)ALLOCATES the
+    // shadow map on a quality CHANGE only (cold path) — Off frees it and skips the depth
+    // pass, the other levels size the depth texture (512/1024/2048) — so the per-frame
+    // path stays allocation-free (D2). Requires a current GL context (it creates/frees a
+    // depth texture + FBO). A shadow-map allocation failure is non-fatal: it LogWarns and
+    // falls back to Off, leaving the viewport (and the floor) running (AR17). RenderFrame
+    // reads the current quality each frame. (No same-named getter: a member function named
+    // ShadowQuality() would hide the namespace-scope enum type and break the out-of-line
+    // definition; the tool seeds its 4-way selector from its own default, which matches the
+    // Mid default below.)
+    void SetShadowQuality(ShadowQuality q);
+
     // Releases GL resources (including the held Asset's buffers). Must run while
     // the GL context is current. Safe to call more than once.
     void Shutdown();
 
 private:
+    // Builds the flat-colour floor program + grid mesh (Story 6.5.4). Non-fatal: on a
+    // shader-compile failure it LogWarns and leaves floor_program_ empty so the floor
+    // draw is skipped while the rest of the viewport runs (AR17). Called once from Init.
+    void BuildFloor();
+    // Draws the always-on ground plane + grid for the current asset, receiving the cast
+    // shadow via PCF. No-op if the floor program failed to build. Switches to
+    // floor_program_/floor_vao_; the caller re-binds the mesh program after.
+    void DrawFloor();
+    // (Re)allocates the shadow-map depth texture + FBO at `size`x`size`. Returns false on
+    // any GL failure (caller falls back to Off). Cold path (SetShadowQuality / Init only).
+    bool AllocShadowMap(int size);
+    // Re-points the shared VAO's attributes (pos/normal/uv + bone ids/weights) at this
+    // mesh's VBO/IBO — the per-mesh setup shared by the depth pass and the visible pass.
+    void BindMeshAttribs(const SceneMesh& mesh);
+
     GpuProgram     program_;
     GpuVertexArray vao_;
     Asset          asset_;
@@ -123,6 +163,34 @@ private:
     glm::vec3 light_color_{1.0f, 1.0f, 1.0f};
     glm::vec3 light_dir_  {glm::normalize(glm::vec3(0.4f, 0.9f, 0.5f))};  // prior hardcoded dir
     float     ambient_    = 0.35f;  // balanced fill — tuned at Antho's visual gate (AC2)
+
+    // Story 6.5.4 — always-on floor: a flat-colour ground plane + grid in its own minimal
+    // program (NOT the lit material shader). Built ONCE in Init (cold path), scaled to the
+    // model AABB per frame, drawn opaque under the model. Receives the cast shadow via PCF.
+    GpuProgram     floor_program_;
+    GpuVertexArray floor_vao_;
+    GpuBuffer      floor_vb_;          // solid quad (4 verts) then grid lines, one buffer
+    GLsizei        gridVertCount_ = 0; // grid-line vertex count (drawn after the quad)
+    int u_floor_mvp_         = -1;
+    int u_floor_model_       = -1;
+    int u_floor_color_       = -1;
+    int u_floor_light_space_ = -1;
+    int u_floor_shadow_map_  = -1;
+    int u_floor_shadow_on_   = -1;
+    int u_floor_pcf_radius_  = -1;
+    int u_floor_shadow_texel_ = -1;
+
+    // Story 6.5.4 — real-time shadow map. shadow_fbo_ is the TRANSIENT offscreen depth FBO
+    // bound only during the depth pass (FB0 restored after — see the header comment);
+    // shadow_depth_tex_ is its GL_DEPTH_COMPONENT24 attachment the floor samples. Allocated
+    // on a quality change only (cold path); shadow_map_size_ is the current allocation
+    // (0 == none / Off). light_space_ is rebuilt each frame from light_dir_ so the 6.5.3
+    // light pad sweeps the shadow (AC3).
+    GpuFramebuffer shadow_fbo_;
+    GpuImage       shadow_depth_tex_;
+    ShadowQuality  shadow_quality_ = ShadowQuality::Mid;  // default Mid (AC2)
+    int            shadow_map_size_ = 0;
+    glm::mat4      light_space_{1.0f};
 };
 
 }  // namespace rav

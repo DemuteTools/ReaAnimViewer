@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <utility>   // std::move — shadow-map handle hand-off
+#include <vector>    // floor grid vertex scratch (cold path)
 
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -157,6 +159,81 @@ void main() {
 }
 )GLSL";
 
+// ---- Story 6.5.4 floor + shadow ---------------------------------------------
+// The floor is a flat-colour ground plane + grid in its OWN minimal program (no
+// lighting, no sRGB encode — display-space greys tuned at Antho's gate). It outputs
+// colour directly, multiplied only by the PCF shadow factor sampled from the depth map.
+const char* kFloorVertexSrc = R"GLSL(
+#version 330 core
+layout(location=0) in vec3 a_pos;
+uniform mat4 u_mvp;
+uniform mat4 u_model;
+out vec3 v_worldpos;
+void main() {
+    v_worldpos  = vec3(u_model * vec4(a_pos, 1.0));   // world pos → sample the shadow map (Task 3)
+    gl_Position = u_mvp * vec4(a_pos, 1.0);
+}
+)GLSL";
+
+const char* kFloorFragmentSrc = R"GLSL(
+#version 330 core
+in vec3 v_worldpos;
+uniform vec3  u_color;
+uniform mat4  u_lightSpace;     // world → light clip; rebuilt each frame from light_dir_
+uniform sampler2D u_shadowMap;  // depth from the light POV (unit 0)
+uniform float u_shadowOn;       // 0 → no shadow (quality Off)
+uniform int   u_pcfRadius;      // 0 = 1 tap (Low), 1 = 3x3 (Mid), 2 = 5x5 (High)
+uniform float u_shadowTexel;    // 1/shadow_map_size (square map)
+out vec4 frag;
+
+// kShadowFloor: the floor keeps this fraction of its colour where fully shadowed (it
+// darkens, not to black, so the grid stays legible). Tunable at the gate.
+const float kShadowFloor = 0.45;
+
+void main() {
+    float shadow = 1.0;   // 1 = fully lit, 0 = fully shadowed
+    if (u_shadowOn > 0.5) {
+        vec4 lp = u_lightSpace * vec4(v_worldpos, 1.0);
+        vec3 proj = lp.xyz / lp.w * 0.5 + 0.5;   // → [0,1] depth-map space
+        // Outside the light frustum → treat as lit (CLAMP_TO_EDGE + this bounds-check
+        // avoid needing a border-colour enum).
+        if (proj.x >= 0.0 && proj.x <= 1.0 && proj.y >= 0.0 && proj.y <= 1.0 && proj.z <= 1.0) {
+            const float bias = 0.0015;   // constant depth bias to kill self-shadow acne
+            float cur = proj.z - bias;
+            float lit = 0.0, taps = 0.0;
+            for (int x = -u_pcfRadius; x <= u_pcfRadius; ++x)
+                for (int y = -u_pcfRadius; y <= u_pcfRadius; ++y) {
+                    float d = texture(u_shadowMap, proj.xy + vec2(float(x), float(y)) * u_shadowTexel).r;
+                    lit  += (cur <= d) ? 1.0 : 0.0;   // lit if nothing nearer to the light
+                    taps += 1.0;
+                }
+            shadow = lit / taps;
+        }
+    }
+    frag = vec4(u_color * mix(kShadowFloor, 1.0, shadow), 1.0);
+}
+)GLSL";
+
+// Shadow-map size + PCF radius per quality level. Off = 0 (no pass). The PCF radius
+// widens the softening kernel with quality (Low 1 tap → High 5x5).
+int ShadowSizeFor(ShadowQuality q)
+{
+    switch (q) {
+        case ShadowQuality::Low:  return 512;
+        case ShadowQuality::Mid:  return 1024;
+        case ShadowQuality::High: return 2048;
+        case ShadowQuality::Off:  default: return 0;
+    }
+}
+int PcfRadiusFor(ShadowQuality q)
+{
+    switch (q) {
+        case ShadowQuality::Mid:  return 1;   // 3x3
+        case ShadowQuality::High: return 2;   // 5x5
+        case ShadowQuality::Low:  default: return 0;  // 1 tap
+    }
+}
+
 // Camera constants (D14): 50 deg vertical FOV. near/far are derived per-asset from
 // the AABB radius in SetAsset (an asset may be millimetres or kilometres across).
 constexpr float kFovYDegrees = 50.0f;
@@ -247,7 +324,208 @@ bool Renderer::Init(std::string& out_error)
                         glm::vec3(0.0f, 0.0f, 0.0f),
                         glm::vec3(0.0f, 1.0f, 0.0f));
     view_pos_ = glm::vec3(3.5f, 3.0f, 4.5f);
+
+    // Story 6.5.4 — build the always-on floor program + grid mesh (non-fatal: a floor-
+    // shader failure leaves floor_program_ empty and the floor draw is skipped, the rest
+    // of the viewport still runs, AR17). Then allocate the default-quality (Mid) shadow
+    // map so the very first asset casts a shadow without the user touching the tool — a
+    // cold path, the per-frame path stays allocation-free (D2). An allocation failure here
+    // is non-fatal too: SetShadowQuality falls back to Off and the floor still draws.
+    BuildFloor();
+    SetShadowQuality(shadow_quality_);
     return true;
+}
+
+// Re-points the shared mesh VAO's attributes at `mesh`'s VBO/IBO. Identical layout to the
+// visible draw loop (Story 3.3); factored so the shadow depth pass and the visible pass
+// specify it the same way. boneIds is an INTEGER attribute (glVertexAttribIPointer, §D).
+void Renderer::BindMeshAttribs(const SceneMesh& mesh)
+{
+    const GLsizei stride = sizeof(SceneVertex);
+    glBindBuffer(GL_ARRAY_BUFFER, mesh.vb.get());
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh.ib.get());
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)offsetof(SceneVertex, pos));
+    glEnableVertexAttribArray(1);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, (void*)offsetof(SceneVertex, normal));
+    glEnableVertexAttribArray(2);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, (void*)offsetof(SceneVertex, uv));
+    glEnableVertexAttribArray(3);
+    glVertexAttribIPointer(3, 4, GL_INT, stride, (void*)offsetof(SceneVertex, boneIds));
+    glEnableVertexAttribArray(4);
+    glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, stride, (void*)offsetof(SceneVertex, boneWeights));
+}
+
+void Renderer::BuildFloor()
+{
+    std::string err;
+    const GLuint vs = CompileShader(GL_VERTEX_SHADER, kFloorVertexSrc, err);
+    if (!vs) { LogWarn("floor vertex shader failed (%s) - no ground plane this session", err.c_str()); return; }
+    const GLuint fs = CompileShader(GL_FRAGMENT_SHADER, kFloorFragmentSrc, err);
+    if (!fs) { glDeleteShader(vs); LogWarn("floor fragment shader failed (%s) - no ground plane", err.c_str()); return; }
+
+    const GLuint prog = glCreateProgram();
+    glAttachShader(prog, vs);
+    glAttachShader(prog, fs);
+    glLinkProgram(prog);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    GLint linked = 0;
+    glGetProgramiv(prog, GL_LINK_STATUS, &linked);
+    if (!linked) { glDeleteProgram(prog); LogWarn("floor shader link failed - no ground plane"); return; }
+    floor_program_ = GpuProgram(prog);
+
+    u_floor_mvp_          = glGetUniformLocation(prog, "u_mvp");
+    u_floor_model_        = glGetUniformLocation(prog, "u_model");
+    u_floor_color_        = glGetUniformLocation(prog, "u_color");
+    u_floor_light_space_  = glGetUniformLocation(prog, "u_lightSpace");
+    u_floor_shadow_map_   = glGetUniformLocation(prog, "u_shadowMap");
+    u_floor_shadow_on_    = glGetUniformLocation(prog, "u_shadowOn");
+    u_floor_pcf_radius_   = glGetUniformLocation(prog, "u_pcfRadius");
+    u_floor_shadow_texel_ = glGetUniformLocation(prog, "u_shadowTexel");
+
+    // Build the floor geometry ONCE (cold path): a unit quad in XZ at y=0, [-0.5,0.5]²
+    // (4 verts, TRIANGLE_STRIP), followed by an NxN grid of lines packed into the SAME
+    // buffer. The model-scaled placement matrix (per frame) sizes it to the asset.
+    constexpr int kDiv = 20;          // grid divisions
+    std::vector<glm::vec3> verts;
+    verts.reserve(4 + (kDiv + 1) * 4);
+    verts.push_back(glm::vec3(-0.5f, 0.0f, -0.5f));   // quad (strip): the 4 corners
+    verts.push_back(glm::vec3(-0.5f, 0.0f,  0.5f));
+    verts.push_back(glm::vec3( 0.5f, 0.0f, -0.5f));
+    verts.push_back(glm::vec3( 0.5f, 0.0f,  0.5f));
+    for (int i = 0; i <= kDiv; ++i) {                 // grid lines (GL_LINES)
+        const float t = -0.5f + static_cast<float>(i) / kDiv;
+        verts.push_back(glm::vec3(-0.5f, 0.0f, t));   // line along X at z=t
+        verts.push_back(glm::vec3( 0.5f, 0.0f, t));
+        verts.push_back(glm::vec3(t, 0.0f, -0.5f));   // line along Z at x=t
+        verts.push_back(glm::vec3(t, 0.0f,  0.5f));
+    }
+    gridVertCount_ = static_cast<GLsizei>(verts.size() - 4);
+
+    glGenVertexArrays(1, floor_vao_.addr());
+    glGenBuffers(1, floor_vb_.addr());
+    glBindVertexArray(floor_vao_.get());
+    glBindBuffer(GL_ARRAY_BUFFER, floor_vb_.get());
+    glBufferData(GL_ARRAY_BUFFER,
+                 static_cast<GLsizeiptr>(verts.size() * sizeof(glm::vec3)),
+                 verts.data(), GL_STATIC_DRAW);
+    // The floor VBO never changes (unlike per-mesh VBOs), so the VAO can capture its one
+    // attribute pointer once here — at draw time we just bind floor_vao_.
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+bool Renderer::AllocShadowMap(int size)
+{
+    // Depth-only texture: GL_NEAREST + CLAMP_TO_EDGE, no colour. Built on locals so a
+    // failure mid-way leaves the current members untouched (the caller decides the
+    // fallback). Cold path only (SetShadowQuality / Init).
+    GpuImage tex;
+    glGenTextures(1, tex.addr());
+    if (!tex.get()) return false;
+    glBindTexture(GL_TEXTURE_2D, tex.get());
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, size, size, 0,
+                 GL_DEPTH_COMPONENT, GL_FLOAT, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    GpuFramebuffer fbo;
+    glGenFramebuffers(1, fbo.addr());
+    if (!fbo.get()) return false;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo.get());
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, tex.get(), 0);
+    glDrawBuffer(GL_NONE);   // depth-only — no colour attachment (GL 1.1, no loader row)
+    glReadBuffer(GL_NONE);
+    const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (status != GL_FRAMEBUFFER_COMPLETE) return false;
+
+    shadow_depth_tex_ = std::move(tex);
+    shadow_fbo_       = std::move(fbo);
+    shadow_map_size_  = size;
+    return true;
+}
+
+void Renderer::SetShadowQuality(ShadowQuality q)
+{
+    shadow_quality_ = q;
+    const int size = ShadowSizeFor(q);
+    if (size == 0) {
+        // Off: free the map so it adds zero per-frame AND zero memory cost; the depth
+        // pass is skipped entirely (the floor still draws). Context is current (this is
+        // called from Init or the tool handler during the render tick).
+        shadow_fbo_       = GpuFramebuffer();
+        shadow_depth_tex_ = GpuImage();
+        shadow_map_size_  = 0;
+        return;
+    }
+    if (size == shadow_map_size_ && shadow_fbo_.get() && shadow_depth_tex_.get())
+        return;  // already allocated at this size (re-select of the same level)
+
+    if (!AllocShadowMap(size)) {
+        // Non-fatal (AR17): drop to Off and keep running. Only happens on a quality change
+        // (cold path), so this LogWarn is naturally bounded — not a per-frame storm.
+        LogWarn("shadow map %dx%d could not be allocated - shadows off (the viewport still runs)",
+                size, size);
+        shadow_quality_   = ShadowQuality::Off;
+        shadow_fbo_       = GpuFramebuffer();
+        shadow_depth_tex_ = GpuImage();
+        shadow_map_size_  = 0;
+    }
+}
+
+void Renderer::DrawFloor()
+{
+    if (!floor_program_.get()) return;   // floor shader failed to build → no ground plane
+
+    // Placement (per frame, stack math): centre under the model, sit at its feet
+    // (aabbMin.y), sized generously to the framing radius so it reads as ground.
+    const glm::vec3 center = 0.5f * (asset_.aabbMin + asset_.aabbMax);
+    const float extent = cam_.frameRadius * 6.0f;
+    const glm::mat4 M =
+        glm::translate(glm::mat4(1.0f), glm::vec3(center.x, asset_.aabbMin.y, center.z)) *
+        glm::scale(glm::mat4(1.0f), glm::vec3(extent, 1.0f, extent));
+    const glm::mat4 mvp = view_proj_ * M;
+
+    glUseProgram(floor_program_.get());
+    glBindVertexArray(floor_vao_.get());
+    glUniformMatrix4fv(u_floor_mvp_,   1, GL_FALSE, glm::value_ptr(mvp));
+    glUniformMatrix4fv(u_floor_model_, 1, GL_FALSE, glm::value_ptr(M));
+
+    const bool shadows = (shadow_quality_ != ShadowQuality::Off && shadow_map_size_ > 0 &&
+                          shadow_depth_tex_.get());
+    glUniform1f(u_floor_shadow_on_, shadows ? 1.0f : 0.0f);
+    if (shadows) {
+        glUniformMatrix4fv(u_floor_light_space_, 1, GL_FALSE, glm::value_ptr(light_space_));
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, shadow_depth_tex_.get());
+        glUniform1i(u_floor_shadow_map_, 0);
+        glUniform1i(u_floor_pcf_radius_, PcfRadiusFor(shadow_quality_));
+        glUniform1f(u_floor_shadow_texel_, 1.0f / static_cast<float>(shadow_map_size_));
+    }
+
+    // Visible from below (no culling), and polygon-offset the solid plane so the grid
+    // lines drawn at the same y don't z-fight it. Depth test/write stay on (opaque).
+    glDisable(GL_CULL_FACE);
+
+    const glm::vec3 kSolid(0.30f, 0.31f, 0.34f);
+    glUniform3fv(u_floor_color_, 1, glm::value_ptr(kSolid));
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(1.0f, 1.0f);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glDisable(GL_POLYGON_OFFSET_FILL);
+
+    const glm::vec3 kGrid(0.42f, 0.44f, 0.48f);
+    glUniform3fv(u_floor_color_, 1, glm::value_ptr(kGrid));
+    glDrawArrays(GL_LINES, 4, gridVertCount_);
+
+    glEnable(GL_CULL_FACE);
 }
 
 void Renderer::SetAsset(Asset&& asset)
@@ -326,6 +604,10 @@ void Renderer::RenderFrame(float anim_time_seconds, bool loop, int width, int he
     const glm::mat3 normal_mat = glm::transpose(glm::inverse(glm::mat3(model)));
     const glm::mat4 mvp = view_proj_ * model;
 
+    // Shared mesh-program uniforms (constant across the depth + visible passes — only
+    // u_mvp and u_skinned vary per pass/mesh below). u_mvp is set here for the visible
+    // pass; the shadow depth pass overwrites it with the light-space mvp and the visible
+    // loop restores it (Story 6.5.4 RenderFrame re-order).
     glUniformMatrix4fv(u_mvp_,    1, GL_FALSE, glm::value_ptr(mvp));
     glUniformMatrix4fv(u_model_,  1, GL_FALSE, glm::value_ptr(model));
     glUniformMatrix3fv(u_normal_, 1, GL_FALSE, glm::value_ptr(normal_mat));
@@ -376,39 +658,64 @@ void Renderer::RenderFrame(float anim_time_seconds, bool loop, int width, int he
         }
     }
 
-    const GLsizei stride = sizeof(SceneVertex);
+    // ---- Shadow depth pass (Story 6.5.4) ------------------------------------
+    // Render the model's depth from the light's POV into the offscreen depth FBO, so the
+    // floor can test occlusion. Skipped entirely when quality==Off (zero added cost). The
+    // pose/palette computed above is reused (skinned models cast a posed shadow); only
+    // u_mvp changes to the light-space transform. State that this pass changes — the bound
+    // FBO, the viewport, and the cull face — is fully restored before the visible passes.
+    const bool do_shadow = (shadow_quality_ != ShadowQuality::Off && shadow_map_size_ > 0 &&
+                            shadow_fbo_.get() && shadow_depth_tex_.get());
+    if (do_shadow) {
+        // Light-space ortho fitted to the model, rebuilt every frame from light_dir_ so the
+        // 6.5.3 light pad sweeps the shadow (AC3). light_dir_ points TOWARD the light.
+        const glm::vec3 center = 0.5f * (asset_.aabbMin + asset_.aabbMax);
+        const float fr = cam_.frameRadius;
+        const glm::vec3 lightPos = center + light_dir_ * (fr * 2.0f);
+        const glm::vec3 up = (std::abs(light_dir_.y) > 0.99f) ? glm::vec3(0, 0, 1)
+                                                              : glm::vec3(0, 1, 0);
+        const glm::mat4 lightView = glm::lookAt(lightPos, center, up);
+        const float r = fr * 1.2f;
+        const glm::mat4 lightProj = glm::ortho(-r, r, -r, r, fr * 0.05f, fr * 5.0f);
+        light_space_ = lightProj * lightView;
+
+        glBindFramebuffer(GL_FRAMEBUFFER, shadow_fbo_.get());
+        glViewport(0, 0, shadow_map_size_, shadow_map_size_);
+        glClear(GL_DEPTH_BUFFER_BIT);
+        glCullFace(GL_FRONT);  // cull front faces during the depth pass to reduce acne
+        glUniformMatrix4fv(u_mvp_, 1, GL_FALSE, glm::value_ptr(light_space_ * model));
+        for (const SceneMesh& mesh : asset_.meshes) {
+            BindMeshAttribs(mesh);
+            glUniform1i(u_skinned_, (pose_valid && mesh.skinned) ? 1 : 0);
+            glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(mesh.indexCount),
+                           GL_UNSIGNED_INT, nullptr);
+        }
+        glCullFace(GL_BACK);                       // restore the fixed cull state
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);      // visible output goes back to FB0
+        glViewport(0, 0, width, height);           // restore the window viewport
+    }
+
+    // ---- Floor pass (always) ------------------------------------------------
+    // The always-on ground plane + grid, receiving the cast shadow via PCF. Switches to
+    // floor_program_/floor_vao_; the visible mesh pass re-binds the mesh program after.
+    DrawFloor();
+
+    // ---- Visible mesh pass --------------------------------------------------
+    // Re-bind the mesh program + VAO (DrawFloor switched both) and restore the visible
+    // u_mvp (the depth pass overwrote it). The other shared uniforms + the palette persist
+    // on the program object across the floor pass, so they need no re-upload.
+    glUseProgram(program_.get());
+    glBindVertexArray(vao_.get());
+    glUniformMatrix4fv(u_mvp_, 1, GL_FALSE, glm::value_ptr(mvp));
+
     for (const SceneMesh& mesh : asset_.meshes) {
-        glBindBuffer(GL_ARRAY_BUFFER, mesh.vb.get());
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, mesh.ib.get());
-
-        // Re-specify the attribute layout against this mesh's VBO (pos/normal/uv +
-        // bone ids/weights below). The shared VAO holds no per-mesh state, so each
-        // mesh re-points its attributes at its own buffer, exactly as 2.1 did for 0/1/2.
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride,
-                              (void*)offsetof(SceneVertex, pos));
-        glEnableVertexAttribArray(1);
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride,
-                              (void*)offsetof(SceneVertex, normal));
-        glEnableVertexAttribArray(2);
-        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride,
-                              (void*)offsetof(SceneVertex, uv));
-
-        // Bone attributes 3/4 are specified for EVERY mesh against its own VBO (every
-        // SceneVertex carries boneIds/boneWeights — zero-filled on a static mesh). The
-        // skinned/static choice rides on u_skinned alone: when 0, the shader's skinning
-        // branch is dead and a_boneIds/a_boneWeights are never read, so a static mesh is
-        // bit-identical to Epic 2 (AC3) — and the GL loader needs exactly ONE new row
-        // (glVertexAttribIPointer), not also a disable row (AC8). boneIds is an INTEGER
-        // attribute: the I-variant feeds the ids verbatim; the float glVertexAttribPointer
-        // would convert/normalize them and skin by the wrong bones (§D). Skin only when
+        // Re-specify the attribute layout against this mesh's VBO (pos/normal/uv + bone
+        // ids/weights). The shared VAO holds no per-mesh state, so each mesh re-points its
+        // attributes at its own buffer — the same setup the depth pass used (BindMeshAttribs).
+        BindMeshAttribs(mesh);
+        // The skinned/static choice rides on u_skinned alone: when 0, the shader's skinning
+        // branch is dead and a static mesh is bit-identical to Epic 2 (AC3). Skin only when
         // the pose computed cleanly this frame (clip-less / no-op → static, §E / AC7).
-        glEnableVertexAttribArray(3);
-        glVertexAttribIPointer(3, 4, GL_INT, stride,
-                               (void*)offsetof(SceneVertex, boneIds));
-        glEnableVertexAttribArray(4);
-        glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, stride,
-                              (void*)offsetof(SceneVertex, boneWeights));
         glUniform1i(u_skinned_, (pose_valid && mesh.skinned) ? 1 : 0);
 
         const SceneMaterial& mat = asset_.materials[mesh.materialIdx];
@@ -450,6 +757,17 @@ void Renderer::Shutdown()
     asset_   = Asset();
     program_ = GpuProgram();
     vao_     = GpuVertexArray();
+
+    // Story 6.5.4 — release the floor program/buffers and the shadow FBO + depth texture
+    // (RAII frees them while the context is current; NFR-R3 symmetric teardown). Reset the
+    // sizes so a fresh StartRendering→Init rebuilds cleanly.
+    floor_program_    = GpuProgram();
+    floor_vao_        = GpuVertexArray();
+    floor_vb_         = GpuBuffer();
+    gridVertCount_    = 0;
+    shadow_fbo_       = GpuFramebuffer();
+    shadow_depth_tex_ = GpuImage();
+    shadow_map_size_  = 0;
 }
 
 }  // namespace rav

@@ -55,6 +55,28 @@ typedef ptrdiff_t GLintptr;
 #define GL_RGBA8                 0x8058
 #endif
 
+// GL 3.0 framebuffer-object enums for the Story 6.5.4 shadow-map depth FBO (the
+// renderer now binds a transient offscreen depth FBO for the shadow pass — see the
+// renderer.h header comment + the AR20 Spec Change Log). The default Windows <gl/GL.h>
+// is 1.1 and omits these; guard each so a newer toolchain header doesn't trip C4005.
+// GL_DEPTH_COMPONENT / GL_NONE / GL_FLOAT are GL 1.1 (already in <gl/GL.h>); only the
+// FBO + clamp enums need providing here.
+#ifndef GL_FRAMEBUFFER
+#define GL_FRAMEBUFFER           0x8D40
+#endif
+#ifndef GL_DEPTH_ATTACHMENT
+#define GL_DEPTH_ATTACHMENT      0x8D00
+#endif
+#ifndef GL_FRAMEBUFFER_COMPLETE
+#define GL_FRAMEBUFFER_COMPLETE  0x8CD5
+#endif
+#ifndef GL_DEPTH_COMPONENT24
+#define GL_DEPTH_COMPONENT24     0x81A6  // sized depth internal format for the shadow map
+#endif
+#ifndef GL_CLAMP_TO_EDGE
+#define GL_CLAMP_TO_EDGE         0x812F  // GL 1.2; clamp shadow-map sampling at the border
+#endif
+
 // ---- Modern-GL function table (X-macro; defined in gl_loader.cpp) ------------
 // Epic 2/3 append rows here (textures, glVertexAttribIPointer, …) without churn.
 
@@ -89,7 +111,12 @@ typedef ptrdiff_t GLintptr;
     X(void,   glVertexAttribPointer, (GLuint, GLint, GLenum, GLboolean, GLsizei, const void*)) \
     X(void,   glVertexAttribIPointer, (GLuint, GLint, GLenum, GLsizei, const void*)) \
     X(void,   glActiveTexture, (GLenum)) \
-    X(void,   glGenerateMipmap, (GLenum))
+    X(void,   glGenerateMipmap, (GLenum)) \
+    X(void,   glGenFramebuffers, (GLsizei, GLuint*)) \
+    X(void,   glDeleteFramebuffers, (GLsizei, const GLuint*)) \
+    X(void,   glBindFramebuffer, (GLenum, GLuint)) \
+    X(void,   glFramebufferTexture2D, (GLenum, GLenum, GLenum, GLuint, GLint)) \
+    X(GLenum, glCheckFramebufferStatus, (GLenum))
 
 #define RAV_GL_DECL(ret, name, args) typedef ret(APIENTRY* PFN_##name) args; extern PFN_##name rav_##name;
 RAV_GL_FUNCS(RAV_GL_DECL)
@@ -128,5 +155,10 @@ RAV_GL_FUNCS(RAV_GL_DECL)
 #define glVertexAttribIPointer    rav_glVertexAttribIPointer
 #define glActiveTexture           rav_glActiveTexture
 #define glGenerateMipmap          rav_glGenerateMipmap
+#define glGenFramebuffers         rav_glGenFramebuffers
+#define glDeleteFramebuffers      rav_glDeleteFramebuffers
+#define glBindFramebuffer         rav_glBindFramebuffer
+#define glFramebufferTexture2D    rav_glFramebufferTexture2D
+#define glCheckFramebufferStatus  rav_glCheckFramebufferStatus
 
 #endif  // _WIN32

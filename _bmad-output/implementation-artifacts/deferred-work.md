@@ -6,6 +6,20 @@ trigger condition for when it should be picked up.
 
 ---
 
+## Deferred from: story 6.5.4 (always-on floor + shadow-quality tool) — 2026-06-28
+
+Story 6.5.4 shipped the **always-on floor + grid** (no toggle — it is part of the scene) and a real
+**cast shadow** from the model onto the floor with a 4-level **Off / Low / Mid / High** quality selector
+(realising FR51 + the **graceful-degradation** slice of FR52). A few adjacent items were deliberately
+left out — recorded here so they are not silently dropped.
+
+- **✅ Floor / grid (FR51) — DONE (shipped, always-on).** The prior 6.5.1 deferral "Floor/grid (6.5.4) … is not here" is now **realised**: a flat-colour ground plane + grid in its own minimal program (`renderer.cpp`), built once in `Init`, scaled to the model AABB per frame, drawn under the model. Kept here struck-through-equivalent for history; no longer deferred.
+- **Model self-shadowing is DEFERRED (floor-only cast shadow shipped)** [`src/renderer.cpp` main fragment shader]. The story made model self-shadow **optional** ("include if clean, else defer to the gate"). It was deferred so the **gate-validated Epic-2/3/4 mesh shaders stay byte-for-byte unchanged** (self-shadow would add a sampling block + bias-tuning risk to the main shader that cannot be judged on the Linux box). The **required receiver — the floor — works**; the model's own surface does not yet self-shadow. **Trigger:** if Antho wants the model to shadow itself, add the same PCF sampling block to the main fragment shader applied to the **diffuse term only** (keep ambient so shadowed faces aren't black), gated behind a quick visual check for acne; the depth pass + light-space matrix + shadow texture it needs **already exist** (no new infra).
+- **Remaining FR52 levers (normal-map / MSAA quality toggles) + FR53 on-canvas FPS stay Story 6.5.5** [`src/viewer_window.cpp` `DrawToolUi`; `src/renderer.*`]. 6.5.4 pulled only the **shadow** quality lever forward; it added **no** normal-map switch, **no** MSAA, **no** FPS text. **Trigger:** Story 6.5.5 — the perf tool (toggle costly elements incl. normal maps / MSAA) + the on-canvas FPS readout (replacing the silenced console FPS log), both on the 6.5.3 menu infra.
+- **Floor / shadow look not configurable + not persisted** [`src/renderer.cpp` in-code constants; D9 untouched]. The floor greys, size (`6× frameRadius`), grid divisions (20), shadow bias (`≈0.0015`), `kShadowFloor` (`≈0.45`), and shadow-map sizes (512/1024/2048) are **in-code constants tuned at the gate** — no UI sliders. Shadow quality is **session-only** (resets to Mid on reopen; `pcm_source_anim.cpp` untouched). A lit/textured/reflective floor, multiple/coloured/area shadows, and contact-hardening are out of scope. **Trigger:** only if Antho asks for a configurable/persisted floor or richer shadows at a gate — each is a localized constant→uniform/SaveState change, deliberately scoped out of the MVP viewport.
+
+---
+
 ## Deferred from: story 6.5.3 (viewport tool sidebar + light tool) — 2026-06-28
 
 Story 6.5.3 built the top-right tool strip + the light tool (colour + azimuth/elevation). A few

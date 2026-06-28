@@ -6,6 +6,28 @@ trigger condition for when it should be picked up.
 
 ---
 
+## Deferred from: code review of story 6.5.2 (2026-06-28)
+
+- **`build_forcefail.bat:21` carries the same `>/dev/null` Unix-ism as the new `build_debuglog.bat`** [`build_forcefail.bat:21` — `where cmake >/dev/null 2>nul`]. In cmd.exe this redirects stdout to a non-existent `\dev\null` path; the canonical `build.bat` uses `>nul 2>nul`. The 6.5.2 review patches `build_debuglog.bat`; `build_forcefail.bat` is a pre-existing untracked dev-only build script (force-fail story) so it is left untouched here. **Trigger:** next time `build_forcefail.bat` is edited (or the force-fail validator path is exercised), align its `where cmake` redirect to `>nul 2>nul`.
+
+---
+
+## Deferred from: story 6.5.2 (silence all console logging by default) — 2026-06-28
+
+Story 6.5.2 silenced the `[RAV]` console channel (the `Emit()` funnel body compiled out by
+default). Two genuinely user-facing signals lost their console output and are **rehomed
+on-canvas in Story 6.5.5** — recorded here so neither is silently dropped. Both depend on
+the on-canvas **text-overlay mechanism** that does not exist until the sidebar work in
+6.5.3/6.5.5; building a one-off overlay now (before that mechanism exists) would be throwaway,
+so they are co-located in 6.5.5 sharing one overlay. **Ship-safe:** Epic 6.5 is pre-ship and
+6.5.5 lands before Epic 7, so the on-canvas signals exist by ship; the only signal-less window
+is **dev-time between 6.5.2 and 6.5.5**.
+
+- **On-canvas FPS readout (FR53) — rehome target for the silenced FPS log** [`src/viewer_window.cpp:232-240` FPS *measurement* block; future on-canvas overlay in `src/renderer.*` / `src/viewer_window.cpp`]. 6.5.2 silenced the FPS `LogInfo` ([viewer_window.cpp:237](../../src/viewer_window.cpp#L237)) at the funnel but **left the measurement intact** (`QueryPerformanceCounter` + `g_frame_count` + the `elapsed >= 1.0` cadence) precisely because 6.5.5 reuses it. **Trigger:** Story 6.5.5 — drive an on-canvas FPS readout (top-right) from the existing measurement, via the 6.5.3/6.5.5 text-overlay mechanism. Do **not** re-add a console FPS log.
+- **Minimal on-canvas load-failure indication — rehome target for the silenced load-failure log** [`src/viewer_window.cpp:208` `LogError`; future on-canvas overlay]. 6.5.2 silenced the load-failure `LogError` ([viewer_window.cpp:208](../../src/viewer_window.cpp#L208)); its load-bearing **gate-advance-on-failure** logic ([viewer_window.cpp:211-214](../../src/viewer_window.cpp#L211), AR17 — stops a per-frame retry storm) is **unchanged** (silencing a log is return-path-neutral). Until 6.5.5 a load failure has **no visible signal** (dev-time only). **Trigger:** Story 6.5.5 — surface a minimal on-canvas "failed to load" indication reusing the same text-overlay the FPS readout introduces. AR16 (amended) requires this on-canvas signal; the explicit, tracked deferral honours AC3's "not orphaned".
+
+---
+
 ## Deferred from: story 6.5.1 (source-fidelity rendering — sRGB + lighting + specular + normal maps) — 2026-06-27/28
 
 - **Alpha / transparency blending is NOT implemented (its own feature/story)** [`src/renderer.cpp` draw loop; `src/scene.h` `SceneMaterial`]. Surfaced at the 6.5.1 GLB gate: the steampunk-explorer GLB has two glTF `alphaMode: "BLEND"` materials (a `Window` at opacity 0.11, a `LightBulb_a` at 0.5) which we render **fully opaque** (no `GL_BLEND`, no alpha read, depth-write on), so glass/windows show as solid panels. 6.5.1 is sRGB/lighting/specular/normal — opacity is out of scope. **Trigger:** when transparent assets matter, add a transparency pass — read material opacity (`AI_MATKEY_OPACITY`) + base-colour alpha into `SceneMaterial`, sort/draw `BLEND` materials after opaque with `glEnable(GL_BLEND)` + `glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)` and depth-write off (and decide `MASK`/cutout handling). Its own story (interacts with draw order / the §C un-baked skinned path).

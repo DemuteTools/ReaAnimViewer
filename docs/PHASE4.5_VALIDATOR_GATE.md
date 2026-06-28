@@ -151,3 +151,38 @@ tangent-space normal). See the architecture AR20 Spec Change Log entry.
 materials (a window at opacity 0.11, a bulb at 0.5); we render everything opaque, so those
 parts show as solid panels. Alpha blending is its own feature/story (recorded in
 `deferred-work.md`).
+
+---
+
+## 5. Story 6.5.2 — silence all console logging by default
+
+Story 6.5.2 makes the viewer **silent in the console by default**. Every `[RAV]` line in
+the codebase is produced by one funnel (`Emit()` in `src/console_log.cpp`); its body is now
+compiled out unless `RAV_ENABLE_CONSOLE_LOG` is defined, so a **normal build prints nothing**
+— all ~43 `Log{Info,Warn,Error}` call-sites go quiet at once, none are deleted. The
+diagnostic capability is preserved for a debug build (`build_debuglog.bat`).
+
+This is a **console** gate, observable **only in Reaper on Windows**: the Linux dev box
+compiles the unit but cannot open Reaper's console. Open Reaper's console with **Extensions ▸
+ReaScript console / `View ▸ Show console output`** (Reaper's "Show console output").
+
+> **Scope note (do NOT fail 6.5.2 for these):** the on-canvas **FPS readout** and the
+> **on-canvas load-failure indication** are **NOT built here** — they land in **Story 6.5.5**
+> (they need the on-canvas text-overlay mechanism introduced with the sidebar in 6.5.3/6.5.5,
+> which does not exist yet). 6.5.2 only **silences** the console and **records** the rehome
+> (see `deferred-work.md`). Between 6.5.2 and 6.5.5 a load failure has **no** visible signal —
+> this is a **dev-time-only** window; 6.5.5 lands before ship (Epic 7).
+
+**Suggested fixtures:** a project with **2–3 animation items** (FBX + GLB), plus **one item
+deliberately pointing at a missing/renamed file** (to exercise the silent failure path).
+
+| # | Check | Pass criterion | AC |
+|---|---|---|---|
+| 1 | Normal build is silent across load/play/save | Run **`build.bat`** (normal build). Open the viewer and Reaper's console, then **load** the items, **play** (move the playhead so the rig animates), and **save → close → reopen** the project. The console shows **no `[RAV]` lines at all** — including no FPS line and no load line. | AC1 |
+| 2 | Even the failure path is silent | Include the item with the **missing/broken file**. Loading/scrubbing onto it prints **no `[RAV]` error** in the console (the on-canvas load-failure indicator is deferred to 6.5.5 — its absence here is expected, not a failure). | AC1 |
+| 3 | *(Optional — proves AC2)* Debug build brings logs back | Run **`build_debuglog.bat`**, repeat the load/play/save run → the **`[RAV] <level>: <message>` lines reappear** in the prior format (FPS line, load lines, etc.). Then **re-run `build.bat`** to return to the shipping silent build. | AC2 |
+
+**Result:** Story 6.5.2 — **PENDING** (awaiting Antho's in-Reaper Windows validation).
+The in-Reaper console observation IS the gate (AR19) — the Linux dev box compiles
+`console_log.cpp` both ways (silent default + `-D RAV_ENABLE_CONSOLE_LOG`) but cannot open
+Reaper's console.

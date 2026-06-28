@@ -138,11 +138,15 @@ float g_light_color[3] = { 1.0f, 1.0f, 1.0f };
 // getter. Session-only — a fresh viewer opens at Mid (no persistence, like the light/camera).
 int g_shadow_quality = 2;
 
+// Story 6.5.4 (post-gate, Antho) — floor on/off. Default on, matching the renderer default.
+bool g_floor_visible = true;
+
 // Icon textures (Antho's SVGs, uploaded once at ImGui init; freed in StopRendering).
 GLuint g_icon_menu   = 0;
 GLuint g_icon_light  = 0;
 GLuint g_icon_color  = 0;
 GLuint g_icon_shadow = 0;
+GLuint g_icon_ground = 0;
 
 constexpr float kPiF    = 3.14159265f;
 constexpr float kHalfPi = 1.57079633f;
@@ -448,10 +452,19 @@ void DrawToolUi()
         if (LightDirectionPad(150.0f))
             g_renderer.SetLightDir(LightDirFromAngles(g_light_azimuth, g_light_elevation));
 
-        // Shadows (Story 6.5.4): the floor is always on (no toggle); this controls the
-        // CAST-SHADOW quality so a weak PC can dial it down/off. Off skips the depth pass
-        // entirely (the floor still draws). 4-way selector mirrors the Light section's
-        // icon+label rhythm; on change push the level to the renderer (cold realloc there).
+        // Ground (Story 6.5.4, post-gate): show/hide the floor + grid. Hiding it also drops
+        // the cast shadow (the floor is the only receiver). Mirrors the icon+label rhythm.
+        ImGui::Dummy(ImVec2(0.0f, 3.0f));
+        ImGui::Image(IconTex(g_icon_ground), ImVec2(17.0f, 17.0f),
+                     ImVec2(0, 0), ImVec2(1, 1), kIconTint);
+        ImGui::SameLine();
+        if (ImGui::Checkbox("Ground", &g_floor_visible))
+            g_renderer.SetFloorVisible(g_floor_visible);
+
+        // Shadows (Story 6.5.4): the CAST-SHADOW quality so a weak PC can dial it down/off.
+        // Off skips the depth pass entirely. The shadow needs the floor to land on, so when
+        // Ground is off there is no visible shadow regardless of this level. 4-way selector
+        // mirrors the Light section's rhythm; on change push the level to the renderer.
         ImGui::Dummy(ImVec2(0.0f, 3.0f));
         ImGui::Image(IconTex(g_icon_shadow), ImVec2(17.0f, 17.0f),
                      ImVec2(0, 0), ImVec2(1, 1), kIconTint);
@@ -574,6 +587,7 @@ bool StartRendering(HWND hwnd)
                 g_icon_light  = UploadIconTexture(kIcon_light,  kIconSize, kIconSize);
                 g_icon_color  = UploadIconTexture(kIcon_color,  kIconSize, kIconSize);
                 g_icon_shadow = UploadIconTexture(kIcon_shadow, kIconSize, kIconSize);
+                g_icon_ground = UploadIconTexture(kIcon_ground, kIconSize, kIconSize);
             } else {
                 LogInfo("tool UI (Dear ImGui) could not initialize — the viewport still works");
                 ImGui_ImplWin32_Shutdown();
@@ -609,6 +623,7 @@ void StopRendering()
         if (g_icon_light)  { glDeleteTextures(1, &g_icon_light);  g_icon_light  = 0; }
         if (g_icon_color)  { glDeleteTextures(1, &g_icon_color);  g_icon_color  = 0; }
         if (g_icon_shadow) { glDeleteTextures(1, &g_icon_shadow); g_icon_shadow = 0; }
+        if (g_icon_ground) { glDeleteTextures(1, &g_icon_ground); g_icon_ground = 0; }
         if (g_imgui_ready) {
             ImGui_ImplOpenGL3_Shutdown();
             ImGui_ImplWin32_Shutdown();

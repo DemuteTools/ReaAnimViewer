@@ -179,6 +179,8 @@ const char* kFloorFragmentSrc = R"GLSL(
 #version 330 core
 in vec3 v_worldpos;
 uniform vec3  u_color;
+uniform vec3  u_lightColor;     // key-light colour — tints the floor so coloured light reads
+                                // across the whole scene (a red light reddens the ground too)
 uniform mat4  u_lightSpace;     // world → light clip; rebuilt each frame from light_dir_
 uniform sampler2D u_shadowMap;  // depth from the light POV (unit 0)
 uniform float u_shadowOn;       // 0 → no shadow (quality Off)
@@ -210,7 +212,9 @@ void main() {
             shadow = lit / taps;
         }
     }
-    frag = vec4(u_color * mix(kShadowFloor, 1.0, shadow), 1.0);
+    // Tint by the key-light colour (no other lighting — the floor stays flat/unlit) so the
+    // 6.5.3 light-colour tool visibly affects the whole scene, not only the model.
+    frag = vec4(u_color * mix(kShadowFloor, 1.0, shadow) * u_lightColor, 1.0);
 }
 )GLSL";
 
@@ -378,6 +382,7 @@ void Renderer::BuildFloor()
     u_floor_mvp_          = glGetUniformLocation(prog, "u_mvp");
     u_floor_model_        = glGetUniformLocation(prog, "u_model");
     u_floor_color_        = glGetUniformLocation(prog, "u_color");
+    u_floor_light_color_  = glGetUniformLocation(prog, "u_lightColor");
     u_floor_light_space_  = glGetUniformLocation(prog, "u_lightSpace");
     u_floor_shadow_map_   = glGetUniformLocation(prog, "u_shadowMap");
     u_floor_shadow_on_    = glGetUniformLocation(prog, "u_shadowOn");
@@ -482,6 +487,7 @@ void Renderer::SetShadowQuality(ShadowQuality q)
 
 void Renderer::DrawFloor()
 {
+    if (!floor_visible_) return;         // ground hidden by the tool (Antho post-gate toggle)
     if (!floor_program_.get()) return;   // floor shader failed to build → no ground plane
 
     // Placement (per frame, stack math): centre under the model, sit at its feet
@@ -497,6 +503,7 @@ void Renderer::DrawFloor()
     glBindVertexArray(floor_vao_.get());
     glUniformMatrix4fv(u_floor_mvp_,   1, GL_FALSE, glm::value_ptr(mvp));
     glUniformMatrix4fv(u_floor_model_, 1, GL_FALSE, glm::value_ptr(M));
+    glUniform3fv(u_floor_light_color_, 1, glm::value_ptr(light_color_));  // tint by the key light
 
     const bool shadows = (shadow_quality_ != ShadowQuality::Off && shadow_map_size_ > 0 &&
                           shadow_depth_tex_.get());
@@ -664,7 +671,9 @@ void Renderer::RenderFrame(float anim_time_seconds, bool loop, int width, int he
     // pose/palette computed above is reused (skinned models cast a posed shadow); only
     // u_mvp changes to the light-space transform. State that this pass changes — the bound
     // FBO, the viewport, and the cull face — is fully restored before the visible passes.
-    const bool do_shadow = (shadow_quality_ != ShadowQuality::Off && shadow_map_size_ > 0 &&
+    // The floor is the only shadow receiver, so a hidden floor needs no depth pass at all.
+    const bool do_shadow = (floor_visible_ &&
+                            shadow_quality_ != ShadowQuality::Off && shadow_map_size_ > 0 &&
                             shadow_fbo_.get() && shadow_depth_tex_.get());
     if (do_shadow) {
         // Light-space ortho fitted to the model, rebuilt every frame from light_dir_ so the

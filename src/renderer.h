@@ -95,6 +95,11 @@ public:
     // Mid default below.)
     void SetShadowQuality(ShadowQuality q);
 
+    // Story 6.5.4 (post-gate, Antho): show/hide the ground plane. Default on. Hiding the
+    // floor also skips the shadow depth pass (the floor is the only shadow receiver, so
+    // there is nothing to cast onto — RenderFrame gates the pass on this too). Session-only.
+    void SetFloorVisible(bool v) { floor_visible_ = v; }
+
     // Releases GL resources (including the held Asset's buffers). Must run while
     // the GL context is current. Safe to call more than once.
     void Shutdown();
@@ -171,9 +176,11 @@ private:
     GpuVertexArray floor_vao_;
     GpuBuffer      floor_vb_;          // solid quad (4 verts) then grid lines, one buffer
     GLsizei        gridVertCount_ = 0; // grid-line vertex count (drawn after the quad)
+    bool           floor_visible_ = true;  // post-gate floor on/off toggle (Antho); default on
     int u_floor_mvp_         = -1;
     int u_floor_model_       = -1;
     int u_floor_color_       = -1;
+    int u_floor_light_color_ = -1;
     int u_floor_light_space_ = -1;
     int u_floor_shadow_map_  = -1;
     int u_floor_shadow_on_   = -1;

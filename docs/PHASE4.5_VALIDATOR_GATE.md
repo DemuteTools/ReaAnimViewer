@@ -315,3 +315,10 @@ it while the floor stays. The in-Reaper visual + perf judgement IS the gate (AR1
 compiled the non-`_WIN32` units and syntax-checked the renderer but could not build the `_WIN32`
 renderer/ImGui units or see the render, so the floor + shadow-mapping pipeline was self-reviewed and
 Antho judged it in-Reaper.
+
+_Post-gate tweaks (Antho feedback, 2026-06-28 — same-day, no re-gate needed):_ (1) the **floor now
+tints by the light colour** so the 6.5.3 light-colour tool reads across the whole scene (a red light
+reddens the ground), not only the model; (2) a **Ground** on/off checkbox (his new `icon_ground`) was
+added to the menu — hiding the floor also drops the cast shadow (the floor is the only receiver). Both
+are small `renderer.{h,cpp}` / `viewer_window.cpp` changes on the gate-validated path; the floor +
+shadow behaviour Antho validated is otherwise unchanged.

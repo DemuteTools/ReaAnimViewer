@@ -19,17 +19,26 @@ where cmake >nul 2>nul
 if errorlevel 1 goto err_cmake
 
 echo.
-echo [1/3] Configuration du projet...
+echo [1/4] Configuration du projet...
 cmake -B build -G "Visual Studio 17 2022" -A x64
 if errorlevel 1 goto err_cfg
 
 echo.
-echo [2/3] Compilation (peut prendre une minute la 1re fois)...
+echo [2/4] Compilation (peut prendre une minute la 1re fois)...
 cmake --build build --config Release
 if errorlevel 1 goto err_build
 
 echo.
-echo [3/3] Installation de la DLL dans Reaper...
+echo [3/4] Purge des anciennes DLL pre-renommage...
+rem Le projet s'appelait "fbxanimationviewer" avant le renommage (story 1.1).
+rem Une vieille reaper_fbxanimationviewer.dll (ou la DLL du spike) qui traine
+rem dans UserPlugins est chargee EN PLUS de la neuve par Reaper -> tu revois
+rem les logs [FBXAV] au demarrage. On les supprime ici (sans erreur si absentes).
+del /Q "%APPDATA%\REAPER\UserPlugins\reaper_fbxanimationviewer.dll" 2>nul
+del /Q "%APPDATA%\REAPER\UserPlugins\reaper_fbxav_spike.dll" 2>nul
+
+echo.
+echo [4/4] Installation de la DLL dans Reaper...
 copy /Y "build\Release\reaper_animviewer.dll" "%APPDATA%\REAPER\UserPlugins\"
 if errorlevel 1 goto err_copy
 

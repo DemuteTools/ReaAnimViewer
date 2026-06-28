@@ -429,55 +429,57 @@ void DrawToolUi()
         if (ImGui::Button("Recenter camera", ImVec2(196.0f, 0.0f)))
             g_renderer.ResetCamera();
 
-        ImGui::Dummy(ImVec2(0.0f, 3.0f));
-        ImGui::Image(IconTex(g_icon_light), ImVec2(17.0f, 17.0f),
-                     ImVec2(0, 0), ImVec2(1, 1), kIconTint);
-        ImGui::SameLine();
-        ImGui::TextUnformatted("Light");
-        ImGui::Separator();
+        // A collapsible section header: Antho's icon + a CollapsingHeader (the ▸ arrow
+        // collapses/expands the group). Default-open so the menu looks unchanged until the
+        // user folds a section; the open/closed state is kept for the session (in-memory).
+        auto Section = [&](GLuint icon, const char* label) -> bool {
+            ImGui::Dummy(ImVec2(0.0f, 2.0f));
+            ImGui::Image(IconTex(icon), ImVec2(16.0f, 16.0f),
+                         ImVec2(0, 0), ImVec2(1, 1), kIconTint);
+            ImGui::SameLine();
+            return ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen);
+        };
 
-        // Colour: the colour icon + ImGui's swatch/popup picker.
-        ImGui::Image(IconTex(g_icon_color), ImVec2(17.0f, 17.0f),
-                     ImVec2(0, 0), ImVec2(1, 1), kIconTint);
-        ImGui::SameLine();
-        if (ImGui::ColorEdit3("##colour", g_light_color,
-                              ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoAlpha))
-            g_renderer.SetLightColor(glm::vec3(g_light_color[0], g_light_color[1], g_light_color[2]));
-        ImGui::SameLine();
-        ImGui::TextUnformatted("Colour");
+        // --- Light: Colour + Position ---
+        if (Section(g_icon_light, "Light")) {
+            ImGui::Indent(8.0f);
+            ImGui::Image(IconTex(g_icon_color), ImVec2(17.0f, 17.0f),
+                         ImVec2(0, 0), ImVec2(1, 1), kIconTint);
+            ImGui::SameLine();
+            if (ImGui::ColorEdit3("##colour", g_light_color,
+                                  ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoAlpha))
+                g_renderer.SetLightColor(glm::vec3(g_light_color[0], g_light_color[1], g_light_color[2]));
+            ImGui::SameLine();
+            ImGui::TextUnformatted("Colour");
 
-        // Position: the circular sphere-laid-flat pad.
-        ImGui::Dummy(ImVec2(0.0f, 3.0f));
-        ImGui::TextUnformatted("Position");
-        if (LightDirectionPad(150.0f))
-            g_renderer.SetLightDir(LightDirFromAngles(g_light_azimuth, g_light_elevation));
+            ImGui::Dummy(ImVec2(0.0f, 3.0f));
+            ImGui::TextUnformatted("Position");
+            if (LightDirectionPad(150.0f))
+                g_renderer.SetLightDir(LightDirFromAngles(g_light_azimuth, g_light_elevation));
+            ImGui::Unindent(8.0f);
+        }
 
-        // Ground (Story 6.5.4, post-gate): show/hide the floor + grid. Hiding it also drops
-        // the cast shadow (the floor is the only receiver). Mirrors the icon+label rhythm.
-        ImGui::Dummy(ImVec2(0.0f, 3.0f));
-        ImGui::Image(IconTex(g_icon_ground), ImVec2(17.0f, 17.0f),
-                     ImVec2(0, 0), ImVec2(1, 1), kIconTint);
-        ImGui::SameLine();
-        if (ImGui::Checkbox("Ground", &g_floor_visible))
-            g_renderer.SetFloorVisible(g_floor_visible);
+        // --- Ground: show/hide the floor + grid (hiding it also drops the cast shadow,
+        // the floor being the only receiver) ---
+        if (Section(g_icon_ground, "Ground")) {
+            ImGui::Indent(8.0f);
+            if (ImGui::Checkbox("Enable", &g_floor_visible))
+                g_renderer.SetFloorVisible(g_floor_visible);
+            ImGui::Unindent(8.0f);
+        }
 
-        // Shadows (Story 6.5.4): the CAST-SHADOW quality so a weak PC can dial it down/off.
-        // Off skips the depth pass entirely. The shadow needs the floor to land on, so when
-        // Ground is off there is no visible shadow regardless of this level. 4-way selector
-        // mirrors the Light section's rhythm; on change push the level to the renderer.
-        ImGui::Dummy(ImVec2(0.0f, 3.0f));
-        ImGui::Image(IconTex(g_icon_shadow), ImVec2(17.0f, 17.0f),
-                     ImVec2(0, 0), ImVec2(1, 1), kIconTint);
-        ImGui::SameLine();
-        ImGui::TextUnformatted("Shadows");
-        ImGui::Separator();
-        bool shadow_changed = false;
-        shadow_changed |= ImGui::RadioButton("Off",  &g_shadow_quality, 0); ImGui::SameLine();
-        shadow_changed |= ImGui::RadioButton("Low",  &g_shadow_quality, 1); ImGui::SameLine();
-        shadow_changed |= ImGui::RadioButton("Mid",  &g_shadow_quality, 2); ImGui::SameLine();
-        shadow_changed |= ImGui::RadioButton("High", &g_shadow_quality, 3);
-        if (shadow_changed)
-            g_renderer.SetShadowQuality(static_cast<ShadowQuality>(g_shadow_quality));
+        // --- Shadow: cast-shadow quality (Off skips the depth pass; no floor → no shadow) ---
+        if (Section(g_icon_shadow, "Shadow")) {
+            ImGui::Indent(8.0f);
+            bool shadow_changed = false;
+            shadow_changed |= ImGui::RadioButton("Off",  &g_shadow_quality, 0); ImGui::SameLine();
+            shadow_changed |= ImGui::RadioButton("Low",  &g_shadow_quality, 1); ImGui::SameLine();
+            shadow_changed |= ImGui::RadioButton("Mid",  &g_shadow_quality, 2); ImGui::SameLine();
+            shadow_changed |= ImGui::RadioButton("High", &g_shadow_quality, 3);
+            if (shadow_changed)
+                g_renderer.SetShadowQuality(static_cast<ShadowQuality>(g_shadow_quality));
+            ImGui::Unindent(8.0f);
+        }
     }
 
     ImGui::End();

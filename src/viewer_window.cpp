@@ -133,6 +133,12 @@ float g_light_azimuth  = 0.0f;      // seeded from the renderer's default direct
 float g_light_elevation = 0.0f;
 float g_light_color[3] = { 1.0f, 1.0f, 1.0f };
 
+// Live lighting-quality sliders (light tool, 6.5.x polish — Antho's "flat/cheap vs Mixamo"
+// feedback). Seeded from the renderer's defaults in StartRendering; each pushes to the renderer.
+float g_ambient        = 0.20f;
+float g_spec_strength  = 0.55f;
+float g_normal_strength = 1.40f;
+
 // Story 6.5.4 shadow-quality selection (0=Off, 1=Low, 2=Mid, 3=High). Mid (2) matches the
 // renderer's default ShadowQuality::Mid so the UI and the render agree at startup without a
 // getter. Session-only — a fresh viewer opens at Mid (no persistence, like the light/camera).
@@ -456,6 +462,19 @@ void DrawToolUi()
             ImGui::TextUnformatted("Position");
             if (LightDirectionPad(150.0f))
                 g_renderer.SetLightDir(LightDirFromAngles(g_light_azimuth, g_light_elevation));
+
+            // Lighting-quality knobs to fix the "flat/cheap vs Mixamo" look in-Reaper, live:
+            // Ambient = fill (lower → more contrast), Specular = sheen, Relief = normal-map boost.
+            ImGui::Dummy(ImVec2(0.0f, 3.0f));
+            ImGui::SetNextItemWidth(140.0f);
+            if (ImGui::SliderFloat("Ambient",  &g_ambient,        0.0f, 1.0f, "%.2f"))
+                g_renderer.SetAmbient(g_ambient);
+            ImGui::SetNextItemWidth(140.0f);
+            if (ImGui::SliderFloat("Specular", &g_spec_strength,  0.0f, 2.0f, "%.2f"))
+                g_renderer.SetSpecStrength(g_spec_strength);
+            ImGui::SetNextItemWidth(140.0f);
+            if (ImGui::SliderFloat("Relief",   &g_normal_strength, 0.0f, 3.0f, "%.2f"))
+                g_renderer.SetNormalStrength(g_normal_strength);
             ImGui::Unindent(8.0f);
         }
 
@@ -584,6 +603,9 @@ bool StartRendering(HWND hwnd)
                 g_light_azimuth   = std::atan2(d.x, d.z);
                 const glm::vec3 c = g_renderer.LightColor();
                 g_light_color[0] = c.r; g_light_color[1] = c.g; g_light_color[2] = c.b;
+                g_ambient         = g_renderer.Ambient();
+                g_spec_strength   = g_renderer.SpecStrength();
+                g_normal_strength = g_renderer.NormalStrength();
                 // Upload Antho's icons (context is current). A 0 handle just means no glyph.
                 g_icon_menu   = UploadIconTexture(kIcon_menu,   kIconSize, kIconSize);
                 g_icon_light  = UploadIconTexture(kIcon_light,  kIconSize, kIconSize);

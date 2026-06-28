@@ -86,14 +86,13 @@ uniform vec3  u_lightDir;       // key-light direction (toward the light)
 uniform float u_ambient;        // ambient/fill amount so unlit faces stay readable (AC2)
 uniform sampler2D u_normalMap;  // tangent-space normal map (linear); unit 1
 uniform int   u_hasNormalMap;   // 0 → use the geometric normal (asset has no map, AC4)
+uniform float u_specStrength;   // live specular strength (light tool) — sheen that sculpts form
+uniform float u_normalStrength; // live normal-map relief boost (light tool); 1 = as-authored
 out vec4 frag;
 
-// A non-metal must read matte in the new linear pipeline (AC3): scale the Blinn-Phong
-// specular lobe down so a dielectric (specularColor ~= 0.04) gives only a small, dim
-// highlight. A genuine metal (specularColor = baseColor) still reads visibly glossier
-// because its specularColor is far brighter/tinted — the FR16 distinction is relative
-// and survives the same scale. Tunable at Antho's visual gate.
-const float kSpecStrength = 0.35;
+// Specular strength is now a live uniform (u_specStrength) driven by the light tool —
+// dielectric skin/cloth reads matte by default, but Antho can dial in more sheen to sculpt
+// the form (the FR16 metal-vs-dielectric distinction is relative and survives any scale).
 
 vec3 enc(vec3 c) { return pow(clamp(c, 0.0, 1.0), vec3(1.0 / 2.2)); }  // linear → sRGB
 
@@ -128,6 +127,7 @@ void main() {
             float invmax = inversesqrt(maxlen2);
             mat3 TBN = mat3(T * invmax, B * invmax, N);
             vec3 nt = texture(u_normalMap, v_uv).rgb * 2.0 - 1.0;   // [0,1] → [-1,1]
+            nt.xy *= u_normalStrength;   // boost the tangent-space tilt → stronger relief
             N = normalize(TBN * nt);
         }
     }
@@ -151,7 +151,7 @@ void main() {
     // Balanced ambient/fill (AC2): a face turned from the key light keeps u_ambient of
     // its colour instead of crushing to near-black.
     vec3 c = base * (u_ambient + (1.0 - u_ambient) * diff) * u_lightColor;
-    c += u_specularColor * spec * kSpecStrength * u_lightColor;
+    c += u_specularColor * spec * u_specStrength * u_lightColor;
     // Encode linear → sRGB on the final write (AC1). NOT GL_FRAMEBUFFER_SRGB: the default
     // framebuffer is a legacy non-sRGB pixel format, so the shader encode is the robust
     // path and must be the ONLY one (enabling both would double-encode / over-brighten).
@@ -302,6 +302,8 @@ bool Renderer::Init(std::string& out_error)
     u_ambient_        = glGetUniformLocation(program_.get(), "u_ambient");
     u_normal_map_     = glGetUniformLocation(program_.get(), "u_normalMap");
     u_has_normal_map_ = glGetUniformLocation(program_.get(), "u_hasNormalMap");
+    u_spec_strength_   = glGetUniformLocation(program_.get(), "u_specStrength");
+    u_normal_strength_ = glGetUniformLocation(program_.get(), "u_normalStrength");
     // Only u_mvp is genuinely required (no draw is possible without it). The rest may
     // legitimately come back -1 if a driver's GLSL optimizer eliminates a uniform it
     // proves dead — glUniform*(-1, ...) is a documented no-op, so a -1 here must NOT
@@ -629,6 +631,8 @@ void Renderer::RenderFrame(float anim_time_seconds, bool loop, int width, int he
     glUniform3fv(u_light_color_, 1, glm::value_ptr(light_color_));
     glUniform3fv(u_light_dir_,   1, glm::value_ptr(light_dir_));
     glUniform1f(u_ambient_, ambient_);
+    glUniform1f(u_spec_strength_,   spec_strength_);    // live light-tool knobs (6.5.x polish)
+    glUniform1f(u_normal_strength_, normal_strength_);
 
     // Per-frame D13 pose: compute the skinning palette once (shared by every skinned
     // mesh of this skeleton) and upload it before the draw loop. The caller selects

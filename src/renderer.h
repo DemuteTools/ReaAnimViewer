@@ -83,6 +83,18 @@ public:
     glm::vec3 LightColor() const { return light_color_; }
     glm::vec3 LightDir()   const { return light_dir_; }
 
+    // Live lighting-quality knobs (light tool, 6.5.x polish — Antho's "render looks flat/cheap
+    // vs Mixamo" feedback). ambient = fill amount (lower = more form contrast); spec strength =
+    // specular sheen that sculpts the surface; normal strength = relief boost on the normal map
+    // (1 = as-authored, higher exaggerates wrinkles/pores). All pushed to uniforms each frame;
+    // the getters seed the sliders. Clamped to sane ranges so a stray value can't break shading.
+    void  SetAmbient(float a)        { ambient_        = (a < 0.0f) ? 0.0f : (a > 1.0f ? 1.0f : a); }
+    void  SetSpecStrength(float s)   { spec_strength_  = (s < 0.0f) ? 0.0f : (s > 4.0f ? 4.0f : s); }
+    void  SetNormalStrength(float n) { normal_strength_= (n < 0.0f) ? 0.0f : (n > 4.0f ? 4.0f : n); }
+    float Ambient()        const { return ambient_; }
+    float SpecStrength()   const { return spec_strength_; }
+    float NormalStrength() const { return normal_strength_; }
+
     // Story 6.5.4 shadow-quality tool (Off/Low/Mid/High). The setter (RE)ALLOCATES the
     // shadow map on a quality CHANGE only (cold path) — Off frees it and skips the depth
     // pass, the other levels size the depth texture (512/1024/2048) — so the per-frame
@@ -161,13 +173,20 @@ private:
     int u_ambient_       = -1;
     int u_normal_map_    = -1;   // sampler2D bound to texture unit 1
     int u_has_normal_map_ = -1;  // 0 → geometric normal (asset carries no normal map)
+    int u_spec_strength_   = -1; // live specular strength (light tool)
+    int u_normal_strength_ = -1; // live normal-map relief boost (light tool)
 
     // Light defaults, stored so Story 6.5.3's light tool can drive them later. Set once
     // per frame in RenderFrame; the 6.5.3 Dear ImGui tool UI drives light_color_ (colour
     // picker) and light_dir_ (circular light-position pad) on user action.
     glm::vec3 light_color_{1.0f, 1.0f, 1.0f};
     glm::vec3 light_dir_  {glm::normalize(glm::vec3(0.4f, 0.9f, 0.5f))};  // prior hardcoded dir
-    float     ambient_    = 0.35f;  // balanced fill — tuned at Antho's visual gate (AC2)
+    // Lighting-quality defaults nudged toward more contrast/relief after Antho's "looks flat
+    // vs Mixamo" feedback (the 6.5.1 gate used ambient 0.35 / spec 0.35). All three are live-
+    // adjustable via the light tool so Antho dials the final look in-Reaper.
+    float     ambient_         = 0.20f;  // lower fill → stronger form contrast (was 0.35)
+    float     spec_strength_   = 0.55f;  // more sheen to sculpt skin/cloth (was a 0.35 const)
+    float     normal_strength_ = 1.40f;  // boost normal-map relief so wrinkles/pores read
 
     // Story 6.5.4 — always-on floor: a flat-colour ground plane + grid in its own minimal
     // program (NOT the lit material shader). Built ONCE in Init (cold path), scaled to the

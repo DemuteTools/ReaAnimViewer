@@ -135,9 +135,9 @@ float g_light_color[3] = { 1.0f, 1.0f, 1.0f };
 
 // Live lighting-quality sliders (light tool, 6.5.x polish — Antho's "flat/cheap vs Mixamo"
 // feedback). Seeded from the renderer's defaults in StartRendering; each pushes to the renderer.
-float g_ambient        = 0.20f;
-float g_spec_strength  = 0.55f;
-float g_normal_strength = 1.40f;
+float g_ambient        = 0.05f;
+float g_spec_strength  = 1.50f;
+float g_normal_strength = 1.50f;
 
 // Story 6.5.4 shadow-quality selection (0=Off, 1=Low, 2=Mid, 3=High). Mid (2) matches the
 // renderer's default ShadowQuality::Mid so the UI and the render agree at startup without a

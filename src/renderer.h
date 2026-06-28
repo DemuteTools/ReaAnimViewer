@@ -184,9 +184,12 @@ private:
     // Lighting-quality defaults nudged toward more contrast/relief after Antho's "looks flat
     // vs Mixamo" feedback (the 6.5.1 gate used ambient 0.35 / spec 0.35). All three are live-
     // adjustable via the light tool so Antho dials the final look in-Reaper.
-    float     ambient_         = 0.20f;  // lower fill → stronger form contrast (was 0.35)
-    float     spec_strength_   = 0.55f;  // more sheen to sculpt skin/cloth (was a 0.35 const)
-    float     normal_strength_ = 1.40f;  // boost normal-map relief so wrinkles/pores read
+    // Defaults Antho dialed in-Reaper against the Mixamo "Vampire" reference (2026-06-28):
+    // very low fill + strong specular + boosted relief for punchy, sculpted skin. Still
+    // live-adjustable via the light tool.
+    float     ambient_         = 0.05f;  // near-zero fill → strong form contrast
+    float     spec_strength_   = 1.50f;  // pronounced sheen sculpting skin/cloth
+    float     normal_strength_ = 1.50f;  // boosted normal-map relief (wrinkles/pores read)
 
     // Story 6.5.4 — always-on floor: a flat-colour ground plane + grid in its own minimal
     // program (NOT the lit material shader). Built ONCE in Init (cold path), scaled to the

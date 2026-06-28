@@ -47,12 +47,14 @@ struct VertexArrayDeleter { void operator()(GLuint h) const noexcept { glDeleteV
 struct ProgramDeleter     { void operator()(GLuint h) const noexcept { glDeleteProgram(h); } };
 struct TextureDeleter     { void operator()(GLuint h) const noexcept { glDeleteTextures(1, &h); } };
 struct FramebufferDeleter { void operator()(GLuint h) const noexcept { glDeleteFramebuffers(1, &h); } };  // Story 6.5.4 shadow-map FBO
+struct RenderbufferDeleter { void operator()(GLuint h) const noexcept { glDeleteRenderbuffers(1, &h); } };  // Story 6.5.6 MSAA colour/depth RB
 
 using GpuBuffer      = GpuHandle<BufferDeleter>;       // VBO / IBO
 using GpuVertexArray = GpuHandle<VertexArrayDeleter>;  // VAO
 using GpuProgram     = GpuHandle<ProgramDeleter>;      // linked shader program
 using GpuImage       = GpuHandle<TextureDeleter>;      // texture — declared for SceneMaterial; upload is Story 2.2
 using GpuFramebuffer = GpuHandle<FramebufferDeleter>;  // offscreen FBO — Story 6.5.4 shadow-map depth pass
+using GpuRenderbuffer = GpuHandle<RenderbufferDeleter>;  // offscreen renderbuffer — Story 6.5.6 MSAA colour/depth
 
 }  // namespace rav
 

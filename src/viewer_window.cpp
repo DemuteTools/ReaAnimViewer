@@ -38,15 +38,6 @@
 #define GL_CLAMP_TO_EDGE 0x812F   // GL 1.2; Windows <gl/GL.h> is 1.1 and may omit it
 #endif
 
-// Story 6.5.5 — query the default framebuffer's actual MSAA sample count (GL 1.3 enums absent
-// from the 1.1 <gl/GL.h>; glGetIntegerv itself is 1.1). Used to decide whether MSAA really took.
-#ifndef GL_SAMPLE_BUFFERS
-#define GL_SAMPLE_BUFFERS 0x80A8
-#endif
-#ifndef GL_SAMPLES
-#define GL_SAMPLES        0x80A9
-#endif
-
 // Dear ImGui (vendored, Story 6.5.3 rev) — the in-viewport tool UI. Rendered into OUR
 // GL context after the 3D scene, so it is a true overlay (no flicker, no extra window,
 // no ReaImGui runtime dependency). Win32 backend feeds input via the WndProc handler;
@@ -161,17 +152,17 @@ int g_shadow_quality = 2;
 // Story 6.5.4 (post-gate, Antho) — floor on/off. Default on, matching the renderer default.
 bool g_floor_visible = true;
 
-// Story 6.5.5 — Performance section toggles (FR52/FR53). All default ON (Antho's request) and
-// seed the renderer's matching defaults in StartRendering, like g_floor_visible. Session-only.
+// Story 6.5.5/6.5.6 — Performance section levers (FR52/FR53). Default to the quality end (Antho's
+// request) and seed the renderer's matching defaults in StartRendering, like g_floor_visible.
+// Session-only.
 bool g_normal_maps_on   = true;   // FR52 — AND-gate the per-material normal-map flag
-bool g_msaa_on          = true;   // FR52 — GL_MULTISAMPLE on/off
 bool g_fps_overlay_on   = true;   // FR53 — top-right on-canvas FPS readout (default on)
-// MSAA availability, decided at context creation from the ACTUAL default-framebuffer sample
-// count (GL_SAMPLES queried once the context is current — the ground truth, not just whether a
-// multisample pixel format was chosen). If samples <= 1 the MSAA checkbox is shown disabled so
-// the user isn't offered an inert control (AR17 — a no-MSAA context is a valid degraded state).
-bool g_msaa_available   = false;
-int  g_msaa_samples     = 0;      // the sample count the framebuffer actually got (0/1 = none)
+// Story 6.5.6 — selectable MSAA level (FR52), replacing 6.5.5's on/off. g_msaa_level is the
+// selected sample count (0 = Off / 2 / 4 / 8; default 4×, clamped to the GPU max at startup);
+// g_msaa_max is GL_MAX_SAMPLES, queried once the context is current in StartRendering so an
+// option above the GPU's max is shown disabled (AR17 — Off + any level <= max stay enabled).
+int  g_msaa_level = 4;
+int  g_msaa_max   = 0;
 
 // Story 6.5.5 — minimal on-canvas load-failure indication (AC7), rehoming the signal 6.5.2
 // silenced. Set where the load-failure LogError fires; shown as a brief transient overlay
@@ -239,119 +230,17 @@ void DestroyGLContext()
     }
 }
 
-// Story 6.5.5 — WGL multisample (MSAA) bootstrap constants + entry point. These are WGL
-// EXTENSIONS, not core GL, so they live HERE (local to viewer_window.cpp), not in gl_loader.h.
-// wglChoosePixelFormatARB can only be RESOLVED with a current GL context, so obtaining a
-// multisample pixel format needs the standard "dummy context" two-step (see below).
-#ifndef WGL_DRAW_TO_WINDOW_ARB
-#define WGL_DRAW_TO_WINDOW_ARB    0x2001
-#define WGL_SUPPORT_OPENGL_ARB    0x2010
-#define WGL_DOUBLE_BUFFER_ARB     0x2011
-#define WGL_PIXEL_TYPE_ARB        0x2013
-#define WGL_COLOR_BITS_ARB        0x2014
-#define WGL_DEPTH_BITS_ARB        0x2022
-#define WGL_STENCIL_BITS_ARB      0x2023
-#define WGL_TYPE_RGBA_ARB         0x202B
-#define WGL_SAMPLE_BUFFERS_ARB    0x2041
-#define WGL_SAMPLES_ARB           0x2042
-#endif
-
-typedef BOOL(WINAPI* PFNWGLCHOOSEPIXELFORMATARBPROC)(
-    HDC hdc, const int* piAttribIList, const FLOAT* pfAttribFList,
-    UINT nMaxFormats, int* piFormats, UINT* nNumFormats);
-
-// Resolves wglChoosePixelFormatARB through a THROWAWAY hidden window + temp GL context (the
-// function needs a current context to be resolved) and asks it for a multisample-capable
-// pixel-format index on `target_hdc`, trying `samples` then stepping down (4 → 2). Returns
-// the chosen format index, or 0 if MSAA is unavailable. Strictly self-contained and
-// best-effort: it cleans up its own dummy window/context, never touches the real context,
-// and never queries SetPixelFormat on target_hdc (it only CHOOSES). AR17 — caller falls back.
-int ChooseMultisamplePixelFormat(HDC target_hdc, int samples)
-{
-    int chosen = 0;
-
-    WNDCLASSEXW wc = {};
-    wc.cbSize        = sizeof(wc);
-    wc.lpfnWndProc   = DefWindowProcW;  // USER32 (not our image) → safe to leave registered across unload
-    wc.hInstance     = GetModuleHandleW(nullptr);
-    wc.lpszClassName = L"ReaAnimViewer.MSAAProbe";
-    RegisterClassExW(&wc);  // ERROR_CLASS_ALREADY_EXISTS on a retry is harmless — CreateWindowExW still works
-
-    HWND dummy = CreateWindowExW(0, wc.lpszClassName, L"", 0, 0, 0, 1, 1,
-                                 nullptr, nullptr, wc.hInstance, nullptr);
-    if (!dummy) return 0;
-
-    if (HDC ddc = GetDC(dummy)) {
-        PIXELFORMATDESCRIPTOR pfd = {};
-        pfd.nSize      = sizeof(pfd);
-        pfd.nVersion   = 1;
-        pfd.dwFlags    = PFD_DRAW_TO_WINDOW | PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
-        pfd.iPixelType = PFD_TYPE_RGBA;
-        pfd.cColorBits = 32;
-        const int dpf = ChoosePixelFormat(ddc, &pfd);
-        if (dpf && SetPixelFormat(ddc, dpf, &pfd)) {
-            if (HGLRC drc = wglCreateContext(ddc)) {
-                if (wglMakeCurrent(ddc, drc)) {
-                    auto choose = reinterpret_cast<PFNWGLCHOOSEPIXELFORMATARBPROC>(
-                        wglGetProcAddress("wglChoosePixelFormatARB"));
-                    for (int s = samples; choose && s >= 2 && !chosen; s /= 2) {
-                        const int attribs[] = {
-                            WGL_DRAW_TO_WINDOW_ARB, 1,
-                            WGL_SUPPORT_OPENGL_ARB, 1,
-                            WGL_DOUBLE_BUFFER_ARB,  1,
-                            WGL_PIXEL_TYPE_ARB,     WGL_TYPE_RGBA_ARB,
-                            WGL_COLOR_BITS_ARB,     32,
-                            WGL_DEPTH_BITS_ARB,     24,
-                            WGL_STENCIL_BITS_ARB,   8,
-                            WGL_SAMPLE_BUFFERS_ARB, 1,
-                            WGL_SAMPLES_ARB,        s,
-                            0
-                        };
-                        int fmt = 0; UINT n = 0;
-                        if (choose(target_hdc, attribs, nullptr, 1, &fmt, &n) && n > 0)
-                            chosen = fmt;
-                    }
-                    wglMakeCurrent(nullptr, nullptr);
-                }
-                wglDeleteContext(drc);
-            }
-        }
-        ReleaseDC(dummy, ddc);
-    }
-    DestroyWindow(dummy);
-    return chosen;
-}
-
 bool CreateGLContextFor(HWND hwnd)
 {
     g_hdc = GetDC(hwnd);
     if (!g_hdc) return false;
 
-    // Story 6.5.5 — try for a 4× multisample (MSAA) pixel format FIRST (FR52). SetPixelFormat
-    // may be called only ONCE per HDC and the window/context is deliberately never recreated
-    // (file header), so MSAA must be baked into THIS one-time format; the live toggle is then
-    // just glEnable/glDisable(GL_MULTISAMPLE). Non-fatal: on any miss we fall straight through
-    // to the legacy single-sample path — a no-MSAA context is a valid degraded state (AR17).
-    // Whether MSAA actually took is decided authoritatively in StartRendering from GL_SAMPLES
-    // once the context is current (the ground truth), not from format selection here.
-    if (const int ms_pf = ChooseMultisamplePixelFormat(g_hdc, 4)) {
-        PIXELFORMATDESCRIPTOR ms_pfd = {};
-        if (DescribePixelFormat(g_hdc, ms_pf, sizeof(ms_pfd), &ms_pfd)
-            && SetPixelFormat(g_hdc, ms_pf, &ms_pfd)) {
-            g_hglrc = wglCreateContext(g_hdc);
-            if (g_hglrc)
-                return true;
-            // The MS format was set (one-shot, can't be redone) but the context failed —
-            // a genuine context-creation failure, not an MSAA-specific one; bail cleanly.
-            ReleaseDC(hwnd, g_hdc); g_hdc = nullptr;
-            return false;
-        }
-        // Could not SET the MS format → it was never applied to g_hdc, so the legacy
-        // ChoosePixelFormat/SetPixelFormat below can still run on this same HDC.
-    }
-
-    // Legacy single-sample path (the original, verbatim) — reached when ARB multisample is
-    // absent or its format couldn't be set. MSAA is simply unavailable; everything else works.
+    // Story 6.5.6 — the window is SINGLE-SAMPLE; MSAA now lives entirely in the offscreen
+    // multisample FBO the renderer resolves to this window (the 6.5.5 wglChoosePixelFormatARB
+    // multisample bootstrap was reverted — SetPixelFormat is one-shot per HDC and the window is
+    // never recreated, so a baked-in multisample format could never change level live, and
+    // glDisable(GL_MULTISAMPLE) on the default framebuffer is driver-ignored). The legacy
+    // single-sample ChoosePixelFormat/SetPixelFormat path below is all the window needs.
     PIXELFORMATDESCRIPTOR pfd = {};
     pfd.nSize        = sizeof(pfd);
     pfd.nVersion     = 1;
@@ -661,21 +550,29 @@ void DrawToolUi()
             if (ImGui::Checkbox("Normal maps", &g_normal_maps_on))
                 g_renderer.SetNormalMapsEnabled(g_normal_maps_on);
 
-            // MSAA is meaningful only if the context actually obtained a multisample buffer with
-            // >1 sample at creation; otherwise show the checkbox disabled so the control is never
-            // inert (AR17). The label shows the ACTUAL sample count the default framebuffer got
-            // (queried via GL_SAMPLES at init) — a click-based way to confirm MSAA is really live.
-            if (!g_msaa_available) ImGui::BeginDisabled();
-            char msaa_label[24];
-            if (g_msaa_available) snprintf(msaa_label, sizeof(msaa_label), "MSAA (%dx)", g_msaa_samples);
-            else                  snprintf(msaa_label, sizeof(msaa_label), "MSAA");
-            if (ImGui::Checkbox(msaa_label, &g_msaa_on))
-                g_renderer.SetMsaaEnabled(g_msaa_on);
-            if (!g_msaa_available) {
-                ImGui::EndDisabled();
-                ImGui::SameLine();
-                ImGui::TextDisabled("(unavailable)");
+            // Story 6.5.6 — MSAA level selector (FR52), replacing 6.5.5's on/off checkbox: a row
+            // of Off / 2× / 4× / 8× radio buttons, mirroring the Shadow selector. An option whose
+            // sample count exceeds the GPU's GL_MAX_SAMPLES is shown disabled (Off + any level
+            // <= max stay enabled) — a 2015-era iGPU often caps at 8, some at 4. On a change, push
+            // the level to the renderer; it (re)allocates the offscreen MS targets on the next
+            // frame (cold path) and resolves them to the window, so the change takes effect live.
+            // ("2x"/"4x"/"8x" use an ASCII 'x', not '×': the build has no /utf-8 and a raw UTF-8
+            // literal trips MSVC C4566 under /W3 — same reason the 6.5.3 labels stay ASCII. The
+            // "Off##msaa" id-tag keeps this radio distinct from the Shadow section's "Off".)
+            ImGui::TextUnformatted("MSAA");
+            bool msaa_changed = false;
+            msaa_changed |= ImGui::RadioButton("Off##msaa", &g_msaa_level, 0); ImGui::SameLine();
+            const int   kMsaaLevels[3] = { 2, 4, 8 };
+            const char* kMsaaLabels[3] = { "2x", "4x", "8x" };
+            for (int i = 0; i < 3; ++i) {
+                const bool unavailable = (kMsaaLevels[i] > g_msaa_max);
+                if (unavailable) ImGui::BeginDisabled();
+                msaa_changed |= ImGui::RadioButton(kMsaaLabels[i], &g_msaa_level, kMsaaLevels[i]);
+                if (unavailable) ImGui::EndDisabled();
+                if (i < 2) ImGui::SameLine();
             }
+            if (msaa_changed)
+                g_renderer.SetMsaaSamples(g_msaa_level);
 
             ImGui::Checkbox("FPS", &g_fps_overlay_on);  // pure UI state — read by the overlay below
 
@@ -749,18 +646,19 @@ bool StartRendering(HWND hwnd)
     if (!gl_version)  gl_version  = "unknown";
     if (!gl_renderer) gl_renderer = "unknown";
 
-    // Story 6.5.5 — MSAA availability from the ACTUAL default framebuffer (the ground truth):
-    // glGetIntegerv is GL 1.1, callable now that the context is current. >1 sample means the
-    // multisample pixel format took and the live GL_MULTISAMPLE toggle has something to switch;
-    // otherwise the MSAA checkbox is shown disabled (AR17). The count drives the "MSAA (4x)"
-    // label so Antho can confirm at a glance whether MSAA is really live.
-    GLint sample_buffers = 0, samples = 0;
-    glGetIntegerv(GL_SAMPLE_BUFFERS, &sample_buffers);
-    glGetIntegerv(GL_SAMPLES, &samples);
-    g_msaa_samples   = samples;
-    g_msaa_available = (sample_buffers >= 1 && samples > 1);
-    LogInfo("MSAA: sample_buffers=%d samples=%d (%s)", sample_buffers, samples,
-            g_msaa_available ? "available" : "unavailable");
+    // Story 6.5.6 — query the GPU's max MSAA sample count once, now the context is current
+    // (glGetIntegerv is GL 1.1, GL_MAX_SAMPLES just an enum — no loader needed yet). It clamps
+    // both the level selector (an option above it is shown disabled) AND the requested level
+    // here, so we never pass glRenderbufferStorageMultisample a count it would reject with
+    // GL_INVALID_VALUE. Then seed+clamp g_msaa_level and push it to the renderer so UI and
+    // render agree from frame 1 (mirrors the g_floor_visible seed). A GPU reporting less than
+    // the default level drops to the largest valid level (or Off). GL 3.0 guarantees >= 4.
+    glGetIntegerv(GL_MAX_SAMPLES, &g_msaa_max);
+    if (g_msaa_max < 0) g_msaa_max = 0;
+    if (g_msaa_level > g_msaa_max)
+        g_msaa_level = (g_msaa_max >= 4) ? 4 : (g_msaa_max >= 2 ? 2 : 0);
+    g_renderer.SetMsaaSamples(g_msaa_level);
+    LogInfo("MSAA: GL_MAX_SAMPLES=%d, level=%dx", g_msaa_max, g_msaa_level);
 
     std::string err;
     if (!LoadGlFunctions(err)) {
@@ -833,12 +731,11 @@ bool StartRendering(HWND hwnd)
                 g_ambient         = g_renderer.Ambient();
                 g_spec_strength   = g_renderer.SpecStrength();
                 g_normal_strength = g_renderer.NormalStrength();
-                // Story 6.5.5 — render-quality toggles start at their UI defaults (both on,
-                // quality); push them so UI and render agree from frame 1 (mirrors the
-                // g_floor_visible default-on contract). Both sides default true → currently a
-                // no-op, but explicit so a later default change can't desync the two.
+                // Story 6.5.5 — the Normal-maps toggle starts at its UI default (on, quality);
+                // push it so UI and render agree from frame 1 (mirrors the g_floor_visible
+                // default-on contract). The MSAA level (6.5.6) is seeded+clamped earlier in
+                // StartRendering, once GL_MAX_SAMPLES is known.
                 g_renderer.SetNormalMapsEnabled(g_normal_maps_on);
-                g_renderer.SetMsaaEnabled(g_msaa_on);
                 // Upload Antho's icons (context is current). A 0 handle just means no glyph.
                 g_icon_menu   = UploadIconTexture(kIcon_menu,   kIconSize, kIconSize);
                 g_icon_light  = UploadIconTexture(kIcon_light,  kIconSize, kIconSize);

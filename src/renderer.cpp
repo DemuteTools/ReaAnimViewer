@@ -459,6 +459,51 @@ bool Renderer::AllocShadowMap(int size)
     return true;
 }
 
+bool Renderer::AllocMsaaTargets(int w, int h, int samples)
+{
+    // Story 6.5.6 — the offscreen multisample COLOUR + DEPTH renderbuffers + their FBO. Built on
+    // locals so a failure mid-way leaves the current members untouched (the caller decides the
+    // fallback — Off). Cold path only (the RenderFrame reconcile, on a level/size change). Mirrors
+    // AllocShadowMap: gen into RAII handles via .addr(), attach, glCheckFramebufferStatus, RESTORE
+    // the default binds before returning, move-assign into the members on success, false on any
+    // GL failure so the caller falls back to Off (AR17). The caller has already clamped `samples`
+    // to GL_MAX_SAMPLES (an unclamped count makes glRenderbufferStorageMultisample raise
+    // GL_INVALID_VALUE).
+    GpuRenderbuffer color;
+    glGenRenderbuffers(1, color.addr());
+    if (!color.get()) return false;
+    glBindRenderbuffer(GL_RENDERBUFFER, color.get());
+    // GL_RGBA8 (NOT sRGB): the mesh shader already encodes linear→sRGB on its final write (6.5.1)
+    // and the window is plain RGBA8, so an RGBA8→RGBA8 resolve is byte-for-byte with no colour
+    // shift. An sRGB renderbuffer here would double-encode and wash the image out.
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_RGBA8, w, h);
+
+    GpuRenderbuffer depth;
+    glGenRenderbuffers(1, depth.addr());
+    if (!depth.get()) return false;
+    glBindRenderbuffer(GL_RENDERBUFFER, depth.get());
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, samples, GL_DEPTH_COMPONENT24, w, h);
+
+    GpuFramebuffer fbo;
+    glGenFramebuffers(1, fbo.addr());
+    if (!fbo.get()) return false;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo.get());
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, color.get());
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,  GL_RENDERBUFFER, depth.get());
+    const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+    if (status != GL_FRAMEBUFFER_COMPLETE) return false;
+
+    msaa_color_rb_      = std::move(color);
+    msaa_depth_rb_      = std::move(depth);
+    msaa_fbo_           = std::move(fbo);
+    msaa_alloc_w_       = w;
+    msaa_alloc_h_       = h;
+    msaa_alloc_samples_ = samples;
+    return true;
+}
+
 void Renderer::SetShadowQuality(ShadowQuality q)
 {
     shadow_quality_ = q;
@@ -580,22 +625,58 @@ void Renderer::RenderFrame(float anim_time_seconds, bool loop, int width, int he
     if (width  < 1) width  = 1;
     if (height < 1) height = 1;
 
-    glViewport(0, 0, width, height);
+    // ---- Story 6.5.6 MSAA reconcile (cold path) -----------------------------
+    // Decide this frame's SCENE target. With a level selected (msaa_samples_ > 0) the whole
+    // scene renders into the offscreen multisample colour FBO and is blit-resolved to the
+    // window at the end; at Off it renders straight to the window (FB0). The MS targets are
+    // (re)allocated ONLY when the level or the window size changed (a resize changes
+    // width/height) — the per-frame path is otherwise a few int compares, allocation-free
+    // (D2). A failed allocation falls back to Off for this change without re-attempting the
+    // failing alloc every frame (AR17). Mirrors the 6.5.4 AllocShadowMap cold-path discipline.
+    const int want = msaa_samples_;
+    if (want > 0) {
+        if (msaa_alloc_w_ != width || msaa_alloc_h_ != height || msaa_alloc_samples_ != want) {
+            if (!AllocMsaaTargets(width, height, want)) {
+                // Non-fatal: free any partial targets and RECORD the requested config so we
+                // treat it as Off without retrying the (failing) alloc next frame — a later
+                // level change or resize changes the cache and gives it a fresh attempt.
+                msaa_fbo_      = GpuFramebuffer();
+                msaa_color_rb_ = GpuRenderbuffer();
+                msaa_depth_rb_ = GpuRenderbuffer();
+                msaa_alloc_w_ = width; msaa_alloc_h_ = height; msaa_alloc_samples_ = want;
+                LogWarn("MSAA %dx targets could not be allocated - MSAA off (the viewport still runs)",
+                        want);
+            }
+        }
+    } else if (msaa_fbo_.get() || msaa_alloc_samples_ != 0) {
+        // Off: free the targets so there is ZERO offscreen cost (AC4).
+        msaa_fbo_      = GpuFramebuffer();
+        msaa_color_rb_ = GpuRenderbuffer();
+        msaa_depth_rb_ = GpuRenderbuffer();
+        msaa_alloc_w_ = 0; msaa_alloc_h_ = 0; msaa_alloc_samples_ = 0;
+    }
+    const GLuint scene_fbo = (want > 0 && msaa_fbo_.get()) ? msaa_fbo_.get() : 0;
 
-    // Story 6.5.5 — MSAA toggle (FR52). One cheap GL-state call per frame (no allocation,
-    // D2): turns the multisample resolve on/off for the visible passes. Inert if the context
-    // owns no multisample buffer (wglChoosePixelFormatARB unavailable → legacy fallback), so
-    // it is always safe to call (AR17). The shadow depth pass binds its own FBO and is
-    // unaffected. Re-applied every frame so a hide/show or resize never leaves it stale.
-    if (msaa_on_) glEnable(GL_MULTISAMPLE);
-    else          glDisable(GL_MULTISAMPLE);
+    // Everything (clear, shadow restore, floor, mesh) targets scene_fbo; the resolve at the
+    // end of RenderFrame blits it to the window. At Off scene_fbo == 0 → straight to FB0.
+    glBindFramebuffer(GL_FRAMEBUFFER, scene_fbo);
+    glViewport(0, 0, width, height);
 
     glClearColor(0.10f, 0.10f, 0.12f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    // Nothing loaded yet (no file picked, or a load failed): a live but empty panel.
-    if (asset_.meshes.empty())
+    // Nothing loaded yet (no file picked, or a load failed): a live but empty panel. Still
+    // resolve the cleared MS buffer to the window so the empty panel isn't left stale/garbage.
+    if (asset_.meshes.empty()) {
+        if (scene_fbo != 0) {
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, msaa_fbo_.get());
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            glBlitFramebuffer(0, 0, width, height, 0, 0, width, height,
+                              GL_COLOR_BUFFER_BIT, GL_NEAREST);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        }
         return;
+    }
 
     // The projection depends only on aspect — rebuild it just on a resize.
     const float aspect = static_cast<float>(width) / static_cast<float>(height);
@@ -711,9 +792,13 @@ void Renderer::RenderFrame(float anim_time_seconds, bool loop, int width, int he
             glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(mesh.indexCount),
                            GL_UNSIGNED_INT, nullptr);
         }
-        glCullFace(GL_BACK);                       // restore the fixed cull state
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);      // visible output goes back to FB0
-        glViewport(0, 0, width, height);           // restore the window viewport
+        glCullFace(GL_BACK);                          // restore the fixed cull state
+        glBindFramebuffer(GL_FRAMEBUFFER, scene_fbo); // back to the ACTIVE scene target (Story
+                                                      // 6.5.6: the MS FBO when MSAA is on, else
+                                                      // FB0 — NOT unconditionally 0, or the floor
+                                                      // + mesh would draw to the window and the
+                                                      // resolve would then overwrite it blank)
+        glViewport(0, 0, width, height);              // restore the window viewport
     }
 
     // ---- Floor pass (always) ------------------------------------------------
@@ -770,6 +855,19 @@ void Renderer::RenderFrame(float anim_time_seconds, bool loop, int width, int he
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
     glBindVertexArray(0);
+
+    // ---- Story 6.5.6 MSAA resolve -------------------------------------------
+    // Blit-resolve the multisample colour into the window (FB0). src/dst are the same size, so
+    // GL_NEAREST does a straight multisample resolve. Leaves FB0 bound on return so ImGui
+    // (DrawToolUi, drawn after RenderFrame) and SwapBuffers land on the window over the resolved
+    // scene. At Off scene_fbo == 0 → no blit, FB0 was bound throughout (identical to pre-6.5.6).
+    if (scene_fbo != 0) {
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, msaa_fbo_.get());
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glBlitFramebuffer(0, 0, width, height, 0, 0, width, height,
+                          GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
 }
 
 void Renderer::Shutdown()
@@ -792,6 +890,16 @@ void Renderer::Shutdown()
     shadow_fbo_       = GpuFramebuffer();
     shadow_depth_tex_ = GpuImage();
     shadow_map_size_  = 0;
+
+    // Story 6.5.6 — release the offscreen MSAA targets (RAII frees them while the context is
+    // current; NFR-R3 symmetric teardown). Reset the alloc cache so a fresh StartRendering
+    // reallocates cleanly on the next level/size.
+    msaa_fbo_           = GpuFramebuffer();
+    msaa_color_rb_      = GpuRenderbuffer();
+    msaa_depth_rb_      = GpuRenderbuffer();
+    msaa_alloc_w_       = 0;
+    msaa_alloc_h_       = 0;
+    msaa_alloc_samples_ = 0;
 }
 
 }  // namespace rav

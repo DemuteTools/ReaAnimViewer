@@ -15,6 +15,14 @@
 // 2026-06-28): the FBO is bound ONLY during the depth pass and framebuffer 0 is always
 // restored before the visible floor/mesh passes, so the visible surface is still FB0.
 // Shadow quality (Off/Low/Mid/High) is a session-only knob driven by the 6.5.3 tool menu.
+//
+// Story 6.5.6 adds selectable MSAA (Off/2×/4×/8×). When a level is on, the WHOLE scene is
+// rendered into an offscreen MULTISAMPLE COLOUR FBO and blit-resolved to the window — a
+// SIBLING deviation to the 6.5.4 depth FBO (the first offscreen COLOUR pass; Antho-directed,
+// AR20 2026-06-29). RenderFrame binds that FBO as the "scene target", the shadow pass restores
+// to it (not unconditionally to FB0), and the resolve blits to FB0 before returning so ImGui
+// and SwapBuffers land on the window. At Off the scene target IS FB0 (bit-identical to before,
+// no offscreen cost). The MS targets are reallocated only on a level/resize change (cold path).
 
 #pragma once
 
@@ -112,16 +120,22 @@ public:
     // there is nothing to cast onto — RenderFrame gates the pass on this too). Session-only.
     void SetFloorVisible(bool v) { floor_visible_ = v; }
 
-    // Story 6.5.5 — render-quality toggles (FR52). Both default ON (quality); a weak PC
-    // turns them off to recover frame time. Session-only, mirror SetFloorVisible.
-    //  - Normal maps: AND-gated into the per-material u_hasNormalMap flag in RenderFrame —
-    //    NO GLSL change, the shader already keeps the geometric normal when the flag is 0
-    //    (6.5.1 AC4). Off → flatter relief on every material; on → restores it, immediately.
-    //  - MSAA: a single glEnable/glDisable(GL_MULTISAMPLE) per frame (cheap, allocation-free
-    //    D2). The multisample BUFFER is created once at context creation (viewer_window.cpp);
-    //    on a context without one, the enable is simply inert (still non-fatal, AR17).
+    // Story 6.5.5 — Normal-maps render-quality toggle (FR52). Defaults ON (quality); a weak PC
+    // turns it off to recover frame time. Session-only, mirrors SetFloorVisible. AND-gated into
+    // the per-material u_hasNormalMap flag in RenderFrame — NO GLSL change, the shader already
+    // keeps the geometric normal when the flag is 0 (6.5.1 AC4). Off → flatter relief on every
+    // material; on → restores it, immediately.
     void SetNormalMapsEnabled(bool v) { normal_maps_on_ = v; }
-    void SetMsaaEnabled(bool v)       { msaa_on_ = v; }
+
+    // Story 6.5.6 — selectable MSAA level (FR52), replacing 6.5.5's on/off. The value is the
+    // requested sample count: 0 == Off (renders straight to the window, zero offscreen cost),
+    // 2/4/8 == that many samples in the offscreen multisample colour FBO that RenderFrame
+    // resolves to the window. The (re)allocation happens lazily in RenderFrame on a level/size
+    // CHANGE only (cold path) — so this setter just stores the value (mirrors SetFloorVisible;
+    // no GL work, no current-context requirement). The caller clamps to GL_MAX_SAMPLES before
+    // setting (an unclamped count would make glRenderbufferStorageMultisample raise
+    // GL_INVALID_VALUE). A failed allocation falls back non-fatally to Off (AR17).
+    void SetMsaaSamples(int s) { msaa_samples_ = s; }
 
     // Releases GL resources (including the held Asset's buffers). Must run while
     // the GL context is current. Safe to call more than once.
@@ -139,6 +153,10 @@ private:
     // (Re)allocates the shadow-map depth texture + FBO at `size`x`size`. Returns false on
     // any GL failure (caller falls back to Off). Cold path (SetShadowQuality / Init only).
     bool AllocShadowMap(int size);
+    // (Re)allocates the offscreen MSAA colour+depth renderbuffers + FBO at width x height with
+    // `samples` samples (Story 6.5.6). Returns false on any GL failure (caller falls back to Off,
+    // AR17). Cold path only — RenderFrame calls it on a level/size change, never per frame (D2).
+    bool AllocMsaaTargets(int w, int h, int samples);
     // Re-points the shared VAO's attributes (pos/normal/uv + bone ids/weights) at this
     // mesh's VBO/IBO — the per-mesh setup shared by the depth pass and the visible pass.
     void BindMeshAttribs(const SceneMesh& mesh);
@@ -210,11 +228,12 @@ private:
     GpuBuffer      floor_vb_;          // solid quad (4 verts) then grid lines, one buffer
     GLsizei        gridVertCount_ = 0; // grid-line vertex count (drawn after the quad)
     bool           floor_visible_ = true;  // post-gate floor on/off toggle (Antho); default on
-    // Story 6.5.5 render-quality levers (FR52). Default on (quality). normal_maps_on_ AND-gates
-    // the per-material u_hasNormalMap flag (one uniform value, no GLSL); msaa_on_ flips
-    // GL_MULTISAMPLE each frame. Session-only — a fresh viewer opens at these defaults.
+    // Story 6.5.5/6.5.6 render-quality levers (FR52). normal_maps_on_ (default on) AND-gates the
+    // per-material u_hasNormalMap flag (one uniform value, no GLSL). msaa_samples_ (default 4×,
+    // clamped to GL_MAX_SAMPLES at startup) selects the offscreen multisample colour FBO's sample
+    // count: 0 == Off (draw straight to the window). Session-only — a fresh viewer opens here.
     bool           normal_maps_on_ = true;
-    bool           msaa_on_        = true;
+    int            msaa_samples_   = 4;
     int u_floor_mvp_         = -1;
     int u_floor_model_       = -1;
     int u_floor_color_       = -1;
@@ -236,6 +255,18 @@ private:
     ShadowQuality  shadow_quality_ = ShadowQuality::Mid;  // default Mid (AC2)
     int            shadow_map_size_ = 0;
     glm::mat4      light_space_{1.0f};
+
+    // Story 6.5.6 — offscreen MULTISAMPLE colour FBO that the scene renders into when MSAA is on,
+    // then blit-resolves to the window (FB0). msaa_color_rb_ is a GL_RGBA8 multisample renderbuffer
+    // (NOT sRGB — the shader already encodes sRGB on its final write, 6.5.1; an sRGB RB would
+    // double-encode); msaa_depth_rb_ is GL_DEPTH_COMPONENT24 (matches the scene depth precision).
+    // (Re)allocated on a level/resize CHANGE only (cold path, mirrors AllocShadowMap), so the
+    // per-frame path stays allocation-free (D2). The alloc cache lets RenderFrame skip realloc
+    // when nothing changed. All freed at Off (no offscreen cost, AC4). A failed alloc → Off (AR17).
+    GpuFramebuffer  msaa_fbo_;
+    GpuRenderbuffer msaa_color_rb_;
+    GpuRenderbuffer msaa_depth_rb_;
+    int             msaa_alloc_w_ = 0, msaa_alloc_h_ = 0, msaa_alloc_samples_ = 0;
 };
 
 }  // namespace rav

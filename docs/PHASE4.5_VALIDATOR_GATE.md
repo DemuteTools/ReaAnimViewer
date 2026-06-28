@@ -386,3 +386,57 @@ ImGui checkboxes mirror the proven 6.5.4 widgets, the FPS/load-failure overlays 
 `##tools` window (same `NewFrame`/`Render` pair, `NoInputs`), the normal-map change is a one-uniform
 AND-gate of the existing flag, and the MSAA path is the textbook Win32 dummy-context multisample bootstrap
 with a verbatim legacy fallback. Judged at Antho's in-Reaper Windows gate.
+
+## 9. Story 6.5.6 — selectable MSAA quality levels (Off / 2× / 4× / 8×)
+
+Story 6.5.6 **replaces** the 6.5.5 MSAA on/off checkbox with a **games-style level selector** — **Off / 2× /
+4× / 8×** — in the **Performance** section of the tool menu. It is the games-standard, robust MSAA path:
+the whole scene renders into an **offscreen multisample colour buffer** and is **blit-resolved** to the
+window, so the level changes **live** (no window/context recreation) and **truly re-samples** — fixing the
+6.5.5 report where the on/off checkbox produced **no visible difference** (a baked-in window multisample
+format can't change level live, and `glDisable(GL_MULTISAMPLE)` on the default framebuffer was ignored by
+the driver). This is the **last story of Epic 6.5** — the final pre-ship polish before Epic 7 (ReaPack release).
+
+- **Off** renders straight to the window (the cheapest, pre-6.5.6 aliased image); **2× / 4× / 8×** add that
+  many samples in the offscreen buffer — progressively smoother silhouettes, more frame time.
+- The level changes **live** — no flicker, no crash, no window recreation.
+- Options above the GPU's **`GL_MAX_SAMPLES`** are shown **disabled** (a 2015-era iGPU often caps at 8, some
+  at 4); **Off** and any level ≤ the max stay enabled. Default is **4×**, clamped down at startup if the GPU
+  offers less.
+
+> **Scope note (do NOT fail 6.5.6 for these):** this story **replaces only the MSAA control + its render
+> path** from 6.5.5 — the **Normal maps** toggle, **FPS** readout, and on-canvas **load-failure** line stay
+> exactly as 6.5.5 shipped them. The **Ground** (floor) and **Shadow** (Off/Low/Mid/High) levers from 6.5.4
+> are unchanged. The level is **session-only** (no persistence) — a fresh viewer opens at the default (the
+> clamped 4×). MSAA **only smooths polygon SILHOUETTE edges** (geometry outlines), not texture interiors or
+> shader aliasing — the effect is **best seen on the model's outline** against the background, and it is
+> **progressive** (8× is smoother than 2×). The selector reuses the existing **Performance** section icon
+> (no new icon). The radio rhythm mirrors the 6.5.4 **Shadow** selector.
+
+**Suggested fixtures:**
+- *A high-contrast-silhouette model* against the background (a character / hard-edged prop) — to see the
+  silhouette smooth progressively Off → 2× → 4× → 8×.
+- *A rig with the **cast shadow** on* (6.5.4, Shadow Mid/High + Ground on) — to confirm the shadow + floor
+  still render correctly at **every** MSAA level (the shadow-restore regression check).
+- The **10+-item** project (NFR-P1) — to confirm **≥60 fps** holds at Off / 2×.
+
+| # | Check | Pass criterion | AC |
+|---|---|---|---|
+| 1 | MSAA is a 4-level selector | Open the **hamburger menu** → **Performance** → the MSAA control is a row of **Off / 2× / 4× / 8×** (NOT a single checkbox). Options above the GPU max are **greyed/disabled**; the default is **4×**. | AC1 |
+| 2 | Live, progressive smoothing | Step **Off → 2× → 4× → 8×** → jagged silhouette edges **visibly and progressively smooth**, **live**, with **no flicker and no crash**. | AC2/AC3 |
+| 3 | Off = aliased + cheapest | **Off** looks like the pre-6.5.6 **aliased** image and is the cheapest level. | AC2/AC4 |
+| 4 | Shadow + floor survive every level | With **Ground on** + **Shadow** Mid/High, the **cast shadow + floor** render correctly at **every** MSAA level — **no black/garbage viewport** (the shadow-restore regression). | AC5 |
+| 5 | 6.5.5 deliverables unchanged | **Normal maps** toggle, **FPS** readout, and on-canvas **load-failure** line still work exactly as before. | AC6 |
+| 6 | Perf budget | **≥60 fps** holds at **Off / 2×** on the 10+-item fixture (NFR-P1); higher levels trade frame time for smoothness (the point). | AC7 |
+| 7 | Tools coexist + resize | **Right-drag orbit / wheel zoom / middle-drag pan**, **Recenter**, **Light** all still work at every level; **resize the panel** → the image stays correct at every level (cold-path realloc). | AC2 |
+| 8 | Clean reopen | **Close → reopen** → back to the **default** level, **no ghost/leak**, console **silent** (6.5.2). | AC6 |
+
+**Result:** Story 6.5.6 — **PASS** (Antho, in-Reaper Windows validation, 2026-06-29 — "parfait ça fonctionne": the
+Off/2×/4×/8× selector visibly and progressively smooths silhouettes, live, with the cast shadow + floor still
+correct at every level). The in-Reaper visual + perf
+judgement IS the gate (AR19) — the Linux dev box compiles the non-`_WIN32` units but cannot build the
+`_WIN32` viewer/renderer/ImGui units or open Reaper, so the implementation was **self-reviewed**: the
+offscreen-resolve is textbook **core GL 3.0** (`glRenderbufferStorageMultisample` + `glBlitFramebuffer`),
+the cold-path realloc mirrors the proven 6.5.4 `AllocShadowMap`, the 4-way selector mirrors the proven
+6.5.4 **Shadow** RadioButton, and the one true regression risk (the shadow pass restoring to the active
+scene target instead of FB0) is fixed and called out explicitly. Judged at Antho's in-Reaper Windows gate.

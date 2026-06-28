@@ -77,12 +77,25 @@ typedef ptrdiff_t GLintptr;
 #define GL_CLAMP_TO_EDGE         0x812F  // GL 1.2; clamp shadow-map sampling at the border
 #endif
 
-// Story 6.5.5 — GL_MULTISAMPLE enables/disables MSAA resolve on a context that already
-// owns a multisample buffer (created once via wglChoosePixelFormatARB in viewer_window.cpp).
-// glEnable/glDisable themselves are GL 1.1 (in opengl32, no loader needed); only the enum
-// is missing from the 1.1 <gl/GL.h>. Guarded so a newer toolchain header doesn't trip C4005.
-#ifndef GL_MULTISAMPLE
-#define GL_MULTISAMPLE           0x809D  // GL 1.3 / ARB_multisample — the MSAA enable bit
+// Story 6.5.6 — GL 3.0 enums for the offscreen MULTISAMPLE COLOUR FBO + blit-resolve (the
+// games-standard MSAA path: render the scene into a multisample renderbuffer FBO whose sample
+// count is reallocatable at runtime, then glBlitFramebuffer-resolve it to the window — see the
+// renderer.h header comment + the AR20 Spec Change Log). GL_COLOR_BUFFER_BIT / GL_NEAREST are
+// GL 1.1 (already in <gl/GL.h>); only these need providing. Guard each against C4005.
+#ifndef GL_RENDERBUFFER
+#define GL_RENDERBUFFER          0x8D41
+#endif
+#ifndef GL_COLOR_ATTACHMENT0
+#define GL_COLOR_ATTACHMENT0     0x8CE0
+#endif
+#ifndef GL_READ_FRAMEBUFFER
+#define GL_READ_FRAMEBUFFER      0x8CA8  // glBlitFramebuffer READ target
+#endif
+#ifndef GL_DRAW_FRAMEBUFFER
+#define GL_DRAW_FRAMEBUFFER      0x8CA9  // glBlitFramebuffer DRAW target
+#endif
+#ifndef GL_MAX_SAMPLES
+#define GL_MAX_SAMPLES           0x8D57  // queried once to clamp the MSAA level selector
 #endif
 
 // ---- Modern-GL function table (X-macro; defined in gl_loader.cpp) ------------
@@ -124,7 +137,13 @@ typedef ptrdiff_t GLintptr;
     X(void,   glDeleteFramebuffers, (GLsizei, const GLuint*)) \
     X(void,   glBindFramebuffer, (GLenum, GLuint)) \
     X(void,   glFramebufferTexture2D, (GLenum, GLenum, GLenum, GLuint, GLint)) \
-    X(GLenum, glCheckFramebufferStatus, (GLenum))
+    X(GLenum, glCheckFramebufferStatus, (GLenum)) \
+    X(void,   glGenRenderbuffers, (GLsizei, GLuint*)) \
+    X(void,   glDeleteRenderbuffers, (GLsizei, const GLuint*)) \
+    X(void,   glBindRenderbuffer, (GLenum, GLuint)) \
+    X(void,   glRenderbufferStorageMultisample, (GLenum, GLsizei, GLenum, GLsizei, GLsizei)) \
+    X(void,   glFramebufferRenderbuffer, (GLenum, GLenum, GLenum, GLuint)) \
+    X(void,   glBlitFramebuffer, (GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLint, GLbitfield, GLenum))
 
 #define RAV_GL_DECL(ret, name, args) typedef ret(APIENTRY* PFN_##name) args; extern PFN_##name rav_##name;
 RAV_GL_FUNCS(RAV_GL_DECL)
@@ -168,5 +187,11 @@ RAV_GL_FUNCS(RAV_GL_DECL)
 #define glBindFramebuffer         rav_glBindFramebuffer
 #define glFramebufferTexture2D    rav_glFramebufferTexture2D
 #define glCheckFramebufferStatus  rav_glCheckFramebufferStatus
+#define glGenRenderbuffers        rav_glGenRenderbuffers
+#define glDeleteRenderbuffers     rav_glDeleteRenderbuffers
+#define glBindRenderbuffer        rav_glBindRenderbuffer
+#define glRenderbufferStorageMultisample rav_glRenderbufferStorageMultisample
+#define glFramebufferRenderbuffer rav_glFramebufferRenderbuffer
+#define glBlitFramebuffer         rav_glBlitFramebuffer
 
 #endif  // _WIN32

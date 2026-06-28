@@ -264,7 +264,7 @@ Per-item and panel/viewport state persisted through project save/load via PCM_so
 
 ### Epic 6.5: Viewport visual fidelity & on-canvas tools *(pre-ship polish — Antho 2026-06-27)*
 Bring the render up to source-DCC fidelity (Mixamo parity) and add an on-canvas tool sidebar, **before** shipping: fix the washed-out/dark/metallic render, remove console-log noise, and introduce a top-right icon strip hosting light, floor, render-quality and FPS tools. *(Phase 4.5. Inserted between Epic 6 and Epic 7 via Correct Course; amends AR16, pulls normal maps Growth→MVP per FR48.)*
-**FRs covered:** FR48, FR49, FR50, FR51, FR52, FR53 — enhances FR16, amends AR16. *(New — pre-ship)*
+**FRs covered:** FR48, FR49, FR50, FR51, FR52, FR53 — enhances FR16, amends AR16. *(New — pre-ship; FR52 enhanced 2026-06-28 by Story 6.5.6 — selectable MSAA quality levels via offscreen resolve.)*
 
 ### Epic 7: Install and ship via ReaPack
 ReaPack one-click install pulling ReaImGui as auto-dependency, manual DLL-copy path, fully offline operation, updates delegated to ReaPack, final polish, and passing the Phase 5 validator gate to release.
@@ -694,6 +694,23 @@ So that playback stays smooth.
 **Then** I can toggle costly render elements (e.g. normal maps, MSAA, floor) off/on with immediate effect (FR52)
 **And** an **FPS** icon toggles an on-canvas FPS readout shown **top-right**, replacing the removed console FPS log (FR53)
 **And** toggling elements never crashes the host and is purely visual/perf — no transport or data impact (NFR-R1).
+
+### Story 6.5.6: Selectable MSAA quality levels (offscreen resolve) *(added 2026-06-28 — Correct Course)*
+
+As a sound designer,
+I want to choose my MSAA level like in a video game (Off / 2× / 4× / 8×),
+So that I can trade edge smoothness for frame rate to suit my machine.
+
+**Acceptance Criteria:**
+
+**Given** the **Performance** section of the sidebar
+**When** I open the **MSAA** control
+**Then** it is a **multi-level selector** (Off / 2× / 4× / 8×, clamped to the GPU's maximum sample count) — not a single on/off — and changing the level takes effect **live** (jagged ↔ smooth silhouettes) with no window/context recreation, no flicker, and no crash (FR52, enhanced)
+**And** MSAA is rendered via an **offscreen multisample colour buffer resolved (blit) to the window** — so a level change truly re-samples (it does **not** depend on `glEnable/glDisable(GL_MULTISAMPLE)` on the default framebuffer, which some drivers ignore), replacing the fixed-format on/off MSAA from Story 6.5.5
+**And** the offscreen buffer is (re)allocated only on a **level change or window resize** (cold path) — the per-frame path stays allocation-free (D2); Off renders directly to the window (no offscreen cost)
+**And** the change is purely visual/perf — no transport, persistence, or host-stability impact (NFR-R1, AR17 non-fatal: any FBO/allocation failure falls back to a working no-MSAA view). Session-only.
+
+*(Replaces the MSAA portion of Story 6.5.5; the Normal-maps toggle, FPS readout, and on-canvas load-failure indication from 6.5.5 are unchanged. Deviates from the Spike-0 direct-render "no offscreen colour pass" design — an AR20-logged, Antho-directed deviation, sibling to the 6.5.4 transient depth FBO. Validation = Antho's in-Reaper Windows gate §9, AR19.)*
 
 ## Epic 7: Install and ship via ReaPack
 

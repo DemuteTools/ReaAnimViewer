@@ -322,3 +322,67 @@ reddens the ground), not only the model; (2) a **Ground** on/off checkbox (his n
 added to the menu — hiding the floor also drops the cast shadow (the floor is the only receiver). Both
 are small `renderer.{h,cpp}` / `viewer_window.cpp` changes on the gate-validated path; the floor +
 shadow behaviour Antho validated is otherwise unchanged.
+
+---
+
+## 8. Story 6.5.5 — render-quality toggles + on-canvas FPS readout
+
+Story 6.5.5 adds a **Performance** section to the 6.5.3 tool menu with three switches — **Normal maps**,
+**MSAA**, **FPS** — and two on-canvas read-outs. It closes the two remaining **FR52** levers (normal-map
+and MSAA toggles), delivers **FR53** (on-canvas FPS), and rehomes the two signals Story 6.5.2 silenced in
+the console (the **FPS** number and a **minimal load-failure** line) onto the canvas (amended AR16). This
+is the **last story of Epic 6.5** — the final pre-ship polish before Epic 7 (ReaPack release).
+
+- **Normal maps** is a one-uniform AND-gate of the existing per-material normal-map flag (no GLSL change —
+  the shader already falls back to the geometric normal when the flag is 0), so off **flattens** surface
+  relief and on **restores** it, immediately, with no other effect on colour/lighting/transport.
+- **MSAA** turns multisample anti-aliasing on/off **live** via `glEnable/glDisable(GL_MULTISAMPLE)`. The
+  multisample buffer is created **once** at context creation through the standard `wglChoosePixelFormatARB`
+  dummy-context bootstrap (4× requested, 2× fallback), with the **legacy single-sample path** as a
+  non-fatal fallback — a no-MSAA context is a valid degraded state (AR17), and if MSAA is unavailable the
+  checkbox is shown **disabled** (`(unavailable)`) rather than offered inert.
+- **FPS** shows a live **top-right** read-out reading the still-running 6.5.2 measurement; off hides it.
+  It **replaces** the console FPS log (no console FPS is re-added).
+- A **load-failure** line appears briefly **top-centre** ("Failed to load: <category>") when an item fails
+  to load, reusing the same overlay path; the load-bearing gate-advance-on-failure logic is unchanged.
+
+> **Scope note (do NOT fail 6.5.5 for these):** the **floor** (Ground checkbox) and **shadow** (Off / Low
+> / Mid / High) levers already shipped in **6.5.4** and are **reused, not re-tested here** — together with
+> Normal maps + MSAA they form the complete FR52 set. **MSAA may be absent** on a given driver — if the
+> MSAA checkbox is **disabled `(unavailable)`** (the GPU returned no multisample format), that is the
+> documented degraded state, **not a failure**; the rest of the story still stands. When MSAA *is* live
+> the checkbox label shows the **actual sample count** the framebuffer got (e.g. **"MSAA (4x)"**) — a
+> quick way to confirm AA is genuinely active. The **Performance section has Antho's icon** (`icon_performance.svg`).
+> All toggles **default ON** (Antho's request — Normal maps, MSAA, FPS) and are **session-only** (no
+> persistence) — a fresh viewer opens at those defaults.
+>
+> **MSAA only smooths polygon SILHOUETTE edges** (geometry edges against the background / between
+> surfaces) — it does **not** touch texture interiors or shader aliasing, so the effect is **subtle and
+> best seen on the model's outline**, not on flat textured areas. If toggling **"MSAA (4x)"** shows no
+> change at all while the label confirms 4×, that points to a **driver that ignores `glDisable(GL_MULTISAMPLE)`**
+> on the default framebuffer (it stays anti-aliased) — note it; MSAA-on is still the quality default.
+
+**Suggested fixtures:**
+- *A normal-mapped rig* (e.g. the Mixamo "Vampire"/character with a normal map) — to see relief flatten/restore.
+- *A high-contrast-silhouette model* against the background — to see MSAA smooth/jag the edges.
+- The **10+-item** project (NFR-P1) — to confirm **≥60 fps** holds with the expensive elements off.
+- A **deliberately-missing / broken** animation file on a track — to trigger the on-canvas load-failure line.
+
+| # | Check | Pass criterion | AC |
+|---|---|---|---|
+| 1 | Performance section exists | Open the **hamburger menu** → a **Performance** section (Antho's icon) shows **Normal maps**, **MSAA**, **FPS** checkboxes, **all ticked by default**. | AC1 |
+| 2 | Normal maps toggle | Untick **Normal maps** → surface **relief visibly flattens** (next frame) on every material; re-tick → relief **restores**. Colour/lighting/transport unaffected. | AC2 |
+| 3 | MSAA toggle | The label reads **"MSAA (4x)"** (or 2×). Untick → **jagged** silhouette edges; re-tick → **smooth**, **live**, no flicker/crash. *(Or: disabled **`(unavailable)`** — note it; not a failure. Or: label says 4× but no visible change → driver ignores the off — note it; MSAA stays on.)* | AC3 |
+| 4 | FPS readout | Tick **FPS** → a **top-right** live FPS number appears and tracks load; untick → it hides. The **console shows no FPS** in a normal build. | AC4 |
+| 5 | Floor + shadow still work | The existing **Ground** checkbox and **Shadow** Off/Low/Mid/High selector still work (the FR52 floor/shadow levers). | AC5 |
+| 6 | On-canvas load-failure | A **deliberately-missing/broken** file shows a brief **"Failed to load: …"** near the top, and the **rest keeps playing** (per-item isolation, AR17). | AC7 |
+| 7 | Tools coexist, no mouse steal | **Right-drag orbit / wheel zoom / middle-drag pan**, **Recenter**, **Light** all still work with the read-outs visible — **no overlay steals the mouse**. | AC6 |
+| 8 | Perf + clean reopen | With the expensive elements **off**, playback holds **≥60 fps** (NFR-P1) at the 10+-item fixture. **Close → reopen** → back to defaults (Normal maps on, MSAA on, FPS off), **no ghost/leak**, console **silent** (6.5.2). | AC6 |
+
+**Result:** Story 6.5.5 — **PENDING** (Antho, in-Reaper Windows validation). The in-Reaper visual + perf
+judgement IS the gate (AR19) — the Linux dev box compiles the non-`_WIN32` units but cannot build the
+`_WIN32` viewer/renderer/ImGui units or open Reaper, so the implementation was **self-reviewed**: the
+ImGui checkboxes mirror the proven 6.5.4 widgets, the FPS/load-failure overlays mirror the existing
+`##tools` window (same `NewFrame`/`Render` pair, `NoInputs`), the normal-map change is a one-uniform
+AND-gate of the existing flag, and the MSAA path is the textbook Win32 dummy-context multisample bootstrap
+with a verbatim legacy fallback. Judged at Antho's in-Reaper Windows gate.

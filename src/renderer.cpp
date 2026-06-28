@@ -582,6 +582,14 @@ void Renderer::RenderFrame(float anim_time_seconds, bool loop, int width, int he
 
     glViewport(0, 0, width, height);
 
+    // Story 6.5.5 — MSAA toggle (FR52). One cheap GL-state call per frame (no allocation,
+    // D2): turns the multisample resolve on/off for the visible passes. Inert if the context
+    // owns no multisample buffer (wglChoosePixelFormatARB unavailable → legacy fallback), so
+    // it is always safe to call (AR17). The shadow depth pass binds its own FBO and is
+    // unaffected. Re-applied every frame so a hide/show or resize never leaves it stale.
+    if (msaa_on_) glEnable(GL_MULTISAMPLE);
+    else          glDisable(GL_MULTISAMPLE);
+
     glClearColor(0.10f, 0.10f, 0.12f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -750,7 +758,10 @@ void Renderer::RenderFrame(float anim_time_seconds, bool loop, int width, int he
         const GLuint nmap = mat.normalMap.get();
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, nmap);
-        glUniform1i(u_has_normal_map_, nmap != 0 ? 1 : 0);
+        // Story 6.5.5 — AND-gate the per-material flag with the global normal-maps toggle
+        // (FR52). Off → flag 0 → the shader falls back to the geometric normal exactly as it
+        // already does for assets that carry no map (6.5.1 AC4); no GLSL change, no new uniform.
+        glUniform1i(u_has_normal_map_, (normal_maps_on_ && nmap != 0) ? 1 : 0);
 
         glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(mesh.indexCount),
                        GL_UNSIGNED_INT, nullptr);

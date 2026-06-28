@@ -112,6 +112,17 @@ public:
     // there is nothing to cast onto — RenderFrame gates the pass on this too). Session-only.
     void SetFloorVisible(bool v) { floor_visible_ = v; }
 
+    // Story 6.5.5 — render-quality toggles (FR52). Both default ON (quality); a weak PC
+    // turns them off to recover frame time. Session-only, mirror SetFloorVisible.
+    //  - Normal maps: AND-gated into the per-material u_hasNormalMap flag in RenderFrame —
+    //    NO GLSL change, the shader already keeps the geometric normal when the flag is 0
+    //    (6.5.1 AC4). Off → flatter relief on every material; on → restores it, immediately.
+    //  - MSAA: a single glEnable/glDisable(GL_MULTISAMPLE) per frame (cheap, allocation-free
+    //    D2). The multisample BUFFER is created once at context creation (viewer_window.cpp);
+    //    on a context without one, the enable is simply inert (still non-fatal, AR17).
+    void SetNormalMapsEnabled(bool v) { normal_maps_on_ = v; }
+    void SetMsaaEnabled(bool v)       { msaa_on_ = v; }
+
     // Releases GL resources (including the held Asset's buffers). Must run while
     // the GL context is current. Safe to call more than once.
     void Shutdown();
@@ -199,6 +210,11 @@ private:
     GpuBuffer      floor_vb_;          // solid quad (4 verts) then grid lines, one buffer
     GLsizei        gridVertCount_ = 0; // grid-line vertex count (drawn after the quad)
     bool           floor_visible_ = true;  // post-gate floor on/off toggle (Antho); default on
+    // Story 6.5.5 render-quality levers (FR52). Default on (quality). normal_maps_on_ AND-gates
+    // the per-material u_hasNormalMap flag (one uniform value, no GLSL); msaa_on_ flips
+    // GL_MULTISAMPLE each frame. Session-only — a fresh viewer opens at these defaults.
+    bool           normal_maps_on_ = true;
+    bool           msaa_on_        = true;
     int u_floor_mvp_         = -1;
     int u_floor_model_       = -1;
     int u_floor_color_       = -1;

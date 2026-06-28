@@ -77,6 +77,14 @@ typedef ptrdiff_t GLintptr;
 #define GL_CLAMP_TO_EDGE         0x812F  // GL 1.2; clamp shadow-map sampling at the border
 #endif
 
+// Story 6.5.5 — GL_MULTISAMPLE enables/disables MSAA resolve on a context that already
+// owns a multisample buffer (created once via wglChoosePixelFormatARB in viewer_window.cpp).
+// glEnable/glDisable themselves are GL 1.1 (in opengl32, no loader needed); only the enum
+// is missing from the 1.1 <gl/GL.h>. Guarded so a newer toolchain header doesn't trip C4005.
+#ifndef GL_MULTISAMPLE
+#define GL_MULTISAMPLE           0x809D  // GL 1.3 / ARB_multisample — the MSAA enable bit
+#endif
+
 // ---- Modern-GL function table (X-macro; defined in gl_loader.cpp) ------------
 // Epic 2/3 append rows here (textures, glVertexAttribIPointer, …) without churn.
 

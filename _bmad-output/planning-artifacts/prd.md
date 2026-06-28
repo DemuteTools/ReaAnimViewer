@@ -391,7 +391,7 @@ Anything below this line is the irreducible MVP per problem-solving philosophy �
 - **FR49**: The viewer presents a vertical icon strip in the top-right corner of the viewport as an extensible on-canvas tool menu (native Win32-child / GL-overlay widgets — no ReaImGui).
 - **FR50**: The sound designer can open a light tool from the sidebar to adjust the light colour and its position around the origin, with live render updates.
 - **FR51**: The sound designer can toggle a solid ground plane with grid on/off from the sidebar.
-- **FR52**: The sound designer can disable/enable costly render elements (e.g. normal maps, MSAA, floor) from the sidebar for graceful degradation on weaker hardware.
+- **FR52**: The sound designer can disable/enable costly render elements (e.g. normal maps, MSAA, floor) from the sidebar for graceful degradation on weaker hardware. *(Enhanced 2026-06-28 by Story 6.5.6: MSAA becomes a multi-level quality selector — Off / 2× / 4× / 8×, clamped to the GPU's max sample count — implemented via an offscreen multisample render + resolve, replacing the fixed on/off MSAA shipped in Story 6.5.5. See Epic 6.5.)*
 - **FR53**: The sound designer can toggle an on-canvas FPS readout (top-right), replacing the former console FPS log.
 
 ### Camera & Viewport Control

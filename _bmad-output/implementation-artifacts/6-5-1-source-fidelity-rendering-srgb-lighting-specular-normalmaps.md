@@ -4,7 +4,7 @@ baseline_commit: efbda8d575fc5db6f7186ac9208e567dbbeea413
 
 # Story 6.5.1: Source-fidelity rendering (sRGB + lighting + dielectric specular + normal maps)
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 

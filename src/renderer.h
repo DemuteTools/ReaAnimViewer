@@ -63,9 +63,10 @@ public:
     // the light tool only nudges these on a user action and the next ~66 Hz frame
     // applies them (zero new per-frame work, D2 zero-alloc preserved). The getters
     // seed the colour picker / position control to the current value. SetLightDir
-    // normalizes (u_lightDir is the direction TOWARD the light, the shader's L).
+    // normalizes (u_lightDir is the direction TOWARD the light, the shader's L) and
+    // ignores a degenerate near-zero vector so normalize() never yields NaN. [Review][Patch]
     void SetLightColor(const glm::vec3& c) { light_color_ = c; }
-    void SetLightDir(const glm::vec3& d)   { light_dir_ = glm::normalize(d); }
+    void SetLightDir(const glm::vec3& d)   { if (glm::dot(d, d) > 1e-12f) light_dir_ = glm::normalize(d); }
     glm::vec3 LightColor() const { return light_color_; }
     glm::vec3 LightDir()   const { return light_dir_; }
 
@@ -118,7 +119,7 @@ private:
 
     // Light defaults, stored so Story 6.5.3's light tool can drive them later. Set once
     // per frame in RenderFrame; the 6.5.3 Dear ImGui tool UI drives light_color_ (colour
-    // picker) and light_dir_ (azimuth/elevation sliders) on user action.
+    // picker) and light_dir_ (circular light-position pad) on user action.
     glm::vec3 light_color_{1.0f, 1.0f, 1.0f};
     glm::vec3 light_dir_  {glm::normalize(glm::vec3(0.4f, 0.9f, 0.5f))};  // prior hardcoded dir
     float     ambient_    = 0.35f;  // balanced fill — tuned at Antho's visual gate (AC2)

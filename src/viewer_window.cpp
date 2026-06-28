@@ -330,9 +330,9 @@ void CALLBACK FrameTimerProc(HWND, UINT, UINT_PTR, DWORD)
 }
 
 // Builds + renders the Dear ImGui tool UI for this frame, drawn on top of the 3D scene
-// (called between RenderFrame and SwapBuffers). A compact, draggable "Tools" window:
-// Recenter camera (FR25), a real colour picker (FR50), and azimuth/elevation sliders
-// that orbit the light around the model (FR50). All widgets mutate state only and push
+// (called between RenderFrame and SwapBuffers). A frameless hamburger menu:
+// Recenter camera (FR25), a real colour picker (FR50), and a circular light-position pad
+// that orbits the light around the model (FR50). All widgets mutate state only and push
 // to the renderer's light members — no synchronous re-render (AR18). NON-fatal: if ImGui
 // failed to initialize, this is a no-op and the viewport still runs (AR17).
 // A circular "light position" pad: the disc is the sphere around the model laid flat
@@ -526,7 +526,7 @@ bool StartRendering(HWND hwnd)
     // Story 6.5.3 (rev): bring up Dear ImGui for the in-viewport tool UI. The GL
     // context is current here (required by ImGui_ImplOpenGL3_Init). NON-fatal: a failed
     // ImGui init just means no tool UI — the viewport still renders (AR17). Seed the UI
-    // light state from the renderer's current direction/colour so the sliders/picker
+    // light state from the renderer's current direction/colour so the pad/picker
     // start in sync. ImGui input arrives via ImGui_ImplWin32_WndProcHandler in WindowProc.
     IMGUI_CHECKVERSION();
     if (ImGui::CreateContext()) {
@@ -534,17 +534,26 @@ bool StartRendering(HWND hwnd)
         io.IniFilename = nullptr;   // do not write imgui.ini next to Reaper
         io.LogFilename = nullptr;
         ImGui::StyleColorsDark();
-        if (ImGui_ImplWin32_Init(hwnd) && ImGui_ImplOpenGL3_Init("#version 130")) {
-            g_imgui_ready = true;
-            const glm::vec3 d = glm::normalize(g_renderer.LightDir());
-            g_light_elevation = std::asin(d.y < -1.0f ? -1.0f : (d.y > 1.0f ? 1.0f : d.y));
-            g_light_azimuth   = std::atan2(d.x, d.z);
-            const glm::vec3 c = g_renderer.LightColor();
-            g_light_color[0] = c.r; g_light_color[1] = c.g; g_light_color[2] = c.b;
-            // Upload Antho's icons (context is current). A 0 handle just means no glyph.
-            g_icon_menu  = UploadIconTexture(kIcon_menu,  kIconSize, kIconSize);
-            g_icon_light = UploadIconTexture(kIcon_light, kIconSize, kIconSize);
-            g_icon_color = UploadIconTexture(kIcon_color, kIconSize, kIconSize);
+        // Init the two backends in nested steps so teardown stays symmetric: if the GL
+        // backend fails AFTER the Win32 backend already initialized, we must still shut the
+        // Win32 backend down (DestroyContext alone leaks its platform data). [Review][Patch]
+        if (ImGui_ImplWin32_Init(hwnd)) {
+            if (ImGui_ImplOpenGL3_Init("#version 130")) {
+                g_imgui_ready = true;
+                const glm::vec3 d = glm::normalize(g_renderer.LightDir());
+                g_light_elevation = std::asin(d.y < -1.0f ? -1.0f : (d.y > 1.0f ? 1.0f : d.y));
+                g_light_azimuth   = std::atan2(d.x, d.z);
+                const glm::vec3 c = g_renderer.LightColor();
+                g_light_color[0] = c.r; g_light_color[1] = c.g; g_light_color[2] = c.b;
+                // Upload Antho's icons (context is current). A 0 handle just means no glyph.
+                g_icon_menu  = UploadIconTexture(kIcon_menu,  kIconSize, kIconSize);
+                g_icon_light = UploadIconTexture(kIcon_light, kIconSize, kIconSize);
+                g_icon_color = UploadIconTexture(kIcon_color, kIconSize, kIconSize);
+            } else {
+                LogInfo("tool UI (Dear ImGui) could not initialize — the viewport still works");
+                ImGui_ImplWin32_Shutdown();
+                ImGui::DestroyContext();
+            }
         } else {
             LogInfo("tool UI (Dear ImGui) could not initialize — the viewport still works");
             ImGui::DestroyContext();

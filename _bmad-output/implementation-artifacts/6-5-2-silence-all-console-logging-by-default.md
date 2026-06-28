@@ -4,7 +4,7 @@ baseline_commit: dc312831e21b28e661e2137060521a3ce942ebb9
 
 # Story 6.5.2: Silence all console logging by default
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 

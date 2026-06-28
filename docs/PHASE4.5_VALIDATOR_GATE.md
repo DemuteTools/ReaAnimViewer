@@ -182,7 +182,18 @@ deliberately pointing at a missing/renamed file** (to exercise the silent failur
 | 2 | Even the failure path is silent | Include the item with the **missing/broken file**. Loading/scrubbing onto it prints **no `[RAV]` error** in the console (the on-canvas load-failure indicator is deferred to 6.5.5 — its absence here is expected, not a failure). | AC1 |
 | 3 | *(Optional — proves AC2)* Debug build brings logs back | Run **`build_debuglog.bat`**, repeat the load/play/save run → the **`[RAV] <level>: <message>` lines reappear** in the prior format (FPS line, load lines, etc.). Then **re-run `build.bat`** to return to the shipping silent build. | AC2 |
 
-**Result:** Story 6.5.2 — **PENDING** (awaiting Antho's in-Reaper Windows validation).
+**Result:** Story 6.5.2 — **PASS** (Antho, in-Reaper Windows validation, 2026-06-28).
+With only the current `reaper_animviewer.dll` loaded, Reaper's console stays clean at launch
+and across load → play → save/reopen — no `[RAV]` lines, no FPS line, no load-failure line.
 The in-Reaper console observation IS the gate (AR19) — the Linux dev box compiles
 `console_log.cpp` both ways (silent default + `-D RAV_ENABLE_CONSOLE_LOG`) but cannot open
 Reaper's console.
+
+_Gate note:_ the initial run still showed a `[FBXAV] extension loaded (Phase 0)` flash at
+launch. Root cause was **not** a 6.5.2 code defect — a **stale pre-rename DLL**
+(`reaper_fbxanimationviewer.dll`, 2026-05-09) was still present in
+`%APPDATA%\REAPER\UserPlugins\` and loaded alongside the current `reaper_animviewer.dll`; the
+legacy `[FBXAV]` logger lived only in that old binary. Deleting the stale DLL (current code uses
+the `[RAV]` prefix and routes every log through the now-silent `Emit()`) made the console silent.
+Lesson: a project rename changes the DLL name, so old-named binaries linger in UserPlugins and
+get co-loaded — purge them after a rename.

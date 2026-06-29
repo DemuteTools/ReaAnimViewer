@@ -478,8 +478,14 @@ apply automatically whenever the material carries them.
 | 6 | Perf budget | **≥60 fps** holds on the 10+-item / Catwalk fixture (NFR-P1) despite the two extra texture samples per fragment. | AC7 |
 | 7 | Clean reopen | **Close → reopen**, reload both assets → correct each time, **no ghost/leak**, console **silent** (6.5.2). | AC4 |
 
-**Result:** Story 6.5.7 — **PENDING** (Antho, in-Reaper Windows validation). The in-Reaper visual + perf
-judgement IS the gate (AR19) — the Linux dev box compiles the non-`_WIN32` units but cannot build the
+**Result:** Story 6.5.7 — **PASS** (Antho, in-Reaper Windows validation, 2026-06-29). Antho confirmed the
+gate passed in-Reaper on Windows: the artist's per-pixel specular + glossiness maps are consumed on the
+multi-material Mixamo **Catwalk** character — the head/body seam reads markedly more continuous than in
+6.5.6 — while a glTF asset stays unchanged (presence-gate dormant) and the perf budget holds. The flat
+`COLOR_SPECULAR` stays ignored (still not plastic) and the live Light knobs still apply on top. Antho noted
+full Mixamo PBR parity is not reached (expected — the microfacet BRDF stays post-MVP); the seam reduction is
+the shipped win. The in-Reaper visual + perf judgement IS the gate (AR19) — the Linux dev box compiles the
+non-`_WIN32` units but cannot build the
 `_WIN32` renderer/loader/ImGui units or open Reaper, so the implementation was **self-reviewed**: it mirrors
 the **proven 6.5.1 normal-map presence-gate + texture funnel exactly** (one extra texture-unit *pair*, units
 2/3 via the contiguous `GL_TEXTURE0 + n` offset so `gl_loader.h` is untouched), the maps upload **LINEAR**

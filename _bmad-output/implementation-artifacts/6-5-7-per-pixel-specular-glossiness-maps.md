@@ -4,7 +4,7 @@ baseline_commit: 4219bc4be58ee0980a48aad4e1500036bc92ce98
 
 # Story 6.5.7: Per-pixel specular + glossiness maps (artist material intent)
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 

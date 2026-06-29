@@ -110,6 +110,10 @@ int g_client_h = kInitialHeight;
 LARGE_INTEGER g_qpc_freq{};
 LARGE_INTEGER g_qpc_start{};
 LARGE_INTEGER g_fps_last{};
+// Story 6.5.8 — per-frame clock for the ViewCube snap tween. QuadPart==0 means "no prior
+// tick" (first frame, or just resumed from a paused panel) → that frame's dt is forced to 0
+// so a long hidden gap can't teleport the tween.
+LARGE_INTEGER g_last_tick{};
 int           g_frame_count = 0;
 // Story 6.5.5 — the FPS value the on-canvas readout shows. The measurement (QPC + frame
 // count + 1-Hz roll-up) has always run (6.5.2 silenced only the LOG, not the math); this
@@ -180,6 +184,13 @@ GLuint g_icon_performance = 0;  // Story 6.5.5 — Antho's Performance-section i
 
 constexpr float kPiF    = 3.14159265f;
 constexpr float kHalfPi = 1.57079633f;
+
+// Story 6.5.8 — navigation cube (ViewCube) feel knobs. Gate-tunable like the orbit
+// sensitivities (camera.h) — judged in-Reaper on Windows, not on the Linux dev box.
+// kNavCubeSize is the square hit/draw area edge (px); kNavCubeMargin is the gap from the
+// viewport's bottom-right corner. The 3D cube is drawn + picked inside that square.
+constexpr float kNavCubeSize   = 96.0f;
+constexpr float kNavCubeMargin = 12.0f;
 
 ImTextureID IconTex(GLuint t) { return static_cast<ImTextureID>(t); }  // GLuint → ImU64
 
@@ -331,6 +342,24 @@ void RenderTick()
     // last in-span frame (already at the boundary under continuous scrubbing) freezes
     // (AC3). Do NOT revert to the looping fixture here — reload thrash + breaks "hold".
 
+    // Story 6.5.8 — advance the ViewCube snap tween once per frame, JUST before the view is
+    // derived in RenderFrame (view_ = cam_.ViewMatrix() at renderer.cpp), so the new
+    // yaw/pitch shows THIS frame (smooth, no one-frame stutter). dt from QPC, clamped to a
+    // sane max so a paused->resumed panel (g_last_tick reseeded to 0 on resume) or a long
+    // stall can't teleport the tween a full second. No-op when no snap is in flight.
+    {
+        LARGE_INTEGER now_tick;
+        QueryPerformanceCounter(&now_tick);
+        float dt = 0.0f;
+        if (g_last_tick.QuadPart != 0 && g_qpc_freq.QuadPart != 0)
+            dt = static_cast<float>(double(now_tick.QuadPart - g_last_tick.QuadPart) /
+                                    double(g_qpc_freq.QuadPart));
+        g_last_tick = now_tick;
+        if (dt < 0.0f) dt = 0.0f;
+        if (dt > 0.1f) dt = 0.1f;  // cap a paused/stalled gap (the g_render_paused window)
+        g_renderer.AdvanceCameraAnim(dt);
+    }
+
     // Before any RAV item is ever current, g_transport_driven is false → the viewport
     // is idle (no startup fixture — the launch file-picker was removed; animations are
     // loaded from the timeline). Once an item drives the view it is sticky: transport
@@ -381,6 +410,7 @@ void CALLBACK FrameTimerProc(HWND, UINT, UINT_PTR, DWORD)
         g_render_paused = false;
         QueryPerformanceCounter(&g_fps_last);  // don't skew the first second after the pause
         g_frame_count = 0;
+        g_last_tick.QuadPart = 0;  // 6.5.8 — force dt=0 next frame so a hidden gap can't jump the tween
         LogInfo("panel shown — render resumed");
     }
     RenderTick();
@@ -431,6 +461,164 @@ bool LightDirectionPad(float diameter)
     dl->AddCircleFilled(h, 6.0f, IM_COL32(120, 170, 255, 255), 16);
     dl->AddCircle(h, 6.0f, IM_COL32(255, 255, 255, 255), 16, 1.5f);
     return changed;
+}
+
+// Story 6.5.8 — Navigation cube (ViewCube): a small axis-coloured cube in the bottom-right
+// that ROTATES in lock-step with the camera (it shows the scene's axes from the camera's
+// vantage) and SNAPS the camera when a face/edge/corner is clicked. Modelled exactly on
+// LightDirectionPad above — GetWindowDrawList + an InvisibleButton hit area + ImDrawList
+// primitives, mutate-state-only, push to the renderer on click (AR18: no synchronous
+// re-render — SnapCameraTo just arms a tween the next frames play out). The cube is a PLAIN
+// SOLID cube — smooth flat axis-coloured faces, no bevel geometry. Only the HOVER HIGHLIGHT
+// tells a face / edge / corner apart: a translucent fill on the face, a yellow BAR along the
+// edge, or a yellow DOT on the corner (Antho's review feedback — highlight + click edges and
+// corners, but don't carve faces for them). Under the hood, picking subdivides each visible
+// face into a 3x3 grid (centre = face, edge cells = the shared edge, corner cells = the
+// corner) only to CLASSIFY the hovered element and derive its snap direction — the cells are
+// never drawn. The element yields a unit DIRECTION-from-centre; the camera derives yaw/pitch
+// from it (no angle is hardcoded — face = straight-on, edge = 45, corner = ~35, all from the
+// ±1 geometry). Only FRONT-facing faces are drawn and picked (back-face cull). NON-fatal:
+// only ever called from DrawToolUi, which early-returns if ImGui is not ready (AR17). Lives
+// in its OWN frameless ImGui window in the SAME NewFrame/Render pair.
+void NavCubeWidget()
+{
+    // A plain solid cube — 6 flat axis-coloured faces on the unit cube ([-1,1]^3). The cube
+    // looks smooth; only the hover HIGHLIGHT (drawn later) distinguishes face / edge / corner.
+    // Faces: X red, Y green, Z blue, the +axis brighter than the -axis so orientation reads.
+    struct Face { glm::vec3 n, u, v; ImU32 col; };
+    static const Face kFaces[6] = {
+        { { 1, 0, 0}, {0, 1, 0}, {0, 0, 1}, IM_COL32(214,  84,  78, 255) },  // +X  red
+        { {-1, 0, 0}, {0, 1, 0}, {0, 0, 1}, IM_COL32(150,  52,  48, 255) },  // -X  dark red
+        { { 0, 1, 0}, {1, 0, 0}, {0, 0, 1}, IM_COL32(120, 190,  90, 255) },  // +Y  green
+        { { 0,-1, 0}, {1, 0, 0}, {0, 0, 1}, IM_COL32( 80, 130,  62, 255) },  // -Y  dark green
+        { { 0, 0, 1}, {1, 0, 0}, {0, 1, 0}, IM_COL32( 84, 140, 220, 255) },  // +Z  blue
+        { { 0, 0,-1}, {1, 0, 0}, {0, 1, 0}, IM_COL32( 56,  96, 156, 255) },  // -Z  dark blue
+    };
+
+    constexpr ImGuiWindowFlags kFlags =
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar |
+        ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing |
+        ImGuiWindowFlags_NoBackground;  // just the cube floats over the viewport
+
+    // Bottom-right pivot (1,1) anchored to the live client size (current in WM_SIZE) — mirrors
+    // the FPS read-out's right-edge pivot but pinned to the bottom-right corner.
+    ImGui::SetNextWindowPos(
+        ImVec2(static_cast<float>(g_client_w) - kNavCubeMargin,
+               static_cast<float>(g_client_h) - kNavCubeMargin),
+        ImGuiCond_Always, ImVec2(1.0f, 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    if (!ImGui::Begin("##navcube", nullptr, kFlags)) {
+        ImGui::End();
+        ImGui::PopStyleVar();
+        return;
+    }
+
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    // The hit area covers the whole square; IsItemHovered gates picking so the cube only
+    // grabs the mouse over its own region (the camera-vs-ImGui arbitration sees WantCaptureMouse).
+    const bool pressed = ImGui::InvisibleButton("##navcubehit", ImVec2(kNavCubeSize, kNavCubeSize));
+    const bool hovered = ImGui::IsItemHovered();
+
+    const ImVec2 c(p0.x + kNavCubeSize * 0.5f, p0.y + kNavCubeSize * 0.5f);
+    const float scale = (kNavCubeSize * 0.5f - 6.0f) / 1.85f;  // fit the sqrt(3) cube corner inside
+
+    // Camera view basis from the LIVE yaw/pitch — the cube is seen THROUGH the camera so it
+    // turns with the view (AC1). viewDir = cube->camera (== Eye()-target, camera.h spherical
+    // form). fwd = camera->cube; right/up are the screen axes. pitch is clamped to +/-1.55
+    // (Orbit/snap guard) so fwd never aligns with world-up and the cross stays well-defined.
+    const OrbitCamera& cam = g_renderer.Camera();
+    const float cp = std::cos(cam.pitch), sp = std::sin(cam.pitch);
+    const float sy = std::sin(cam.yaw),   cyw = std::cos(cam.yaw);
+    const glm::vec3 viewDir(cp * sy, sp, cp * cyw);
+    const glm::vec3 fwd   = -viewDir;
+    const glm::vec3 right = glm::normalize(glm::cross(fwd, glm::vec3(0.0f, 1.0f, 0.0f)));
+    const glm::vec3 up    = glm::cross(right, fwd);
+
+    auto project = [&](const glm::vec3& q) -> ImVec2 {
+        return ImVec2(c.x + scale * glm::dot(q, right),   // +x right
+                      c.y - scale * glm::dot(q, up));      // +y up → screen y down, so negate
+    };
+
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+
+    // Draw the visible faces (flat fill + thin dark outline) and, on the hovered face, classify
+    // the cursor into a 3x3 cell: centre = FACE, an edge cell = the shared EDGE, a corner cell =
+    // the CORNER. The cells are NEVER drawn — they only classify the pick and give the snap
+    // direction normalize(n + (i-1)u + (j-1)v). Orthographic projection of a planar quad is
+    // affine, so the (s,t) inverse is exact and linear (a parallelogram solve).
+    int       hitFace = -1, hitI = 1, hitJ = 1;
+    glm::vec3 hitDir(0.0f);
+    for (int k = 0; k < 6; ++k) {
+        const Face& f = kFaces[k];
+        if (glm::dot(f.n, viewDir) <= 0.0f) continue;  // back-face cull — visible faces only
+        const ImVec2 P00 = project(f.n - f.u - f.v), P10 = project(f.n + f.u - f.v),
+                     P11 = project(f.n + f.u + f.v), P01 = project(f.n - f.u + f.v);
+        const ImVec2 quad[4] = { P00, P10, P11, P01 };
+        dl->AddConvexPolyFilled(quad, 4, f.col);
+        dl->AddPolyline(quad, 4, IM_COL32(20, 22, 28, 220), ImDrawFlags_Closed, 1.5f);
+
+        if (hovered && hitFace < 0) {
+            const ImVec2 A(P10.x - P00.x, P10.y - P00.y);
+            const ImVec2 B(P01.x - P00.x, P01.y - P00.y);
+            const ImVec2 M(mouse.x - P00.x, mouse.y - P00.y);
+            const float det = A.x * B.y - A.y * B.x;
+            if (std::fabs(det) > 1e-5f) {
+                const float s = (M.x * B.y - M.y * B.x) / det;
+                const float t = (A.x * M.y - A.y * M.x) / det;
+                if (s >= 0.0f && s <= 1.0f && t >= 0.0f && t <= 1.0f) {
+                    int i = static_cast<int>(s * 3.0f); if (i > 2) i = 2; if (i < 0) i = 0;
+                    int j = static_cast<int>(t * 3.0f); if (j > 2) j = 2; if (j < 0) j = 0;
+                    hitFace = k; hitI = i; hitJ = j;
+                    hitDir  = glm::normalize(f.n + float(i - 1) * f.u + float(j - 1) * f.v);
+                }
+            }
+        }
+    }
+
+    // Highlight the hovered element ON the cube geometry (AC2) — a face fill, an edge BAR, or a
+    // corner DOT — so the cube itself stays smooth. Click arms the snap (AC3): mutate-state-only,
+    // RenderTick's AdvanceCameraAnim plays out the tween; no hardcoded angle.
+    if (hitFace >= 0) {
+        const Face& f = kFaces[hitFace];
+        const bool  iEdge = (hitI != 1), jEdge = (hitJ != 1);
+        const ImU32 kHi = IM_COL32(255, 213, 79, 255);   // amber highlight (matches the reference)
+
+        if (!iEdge && !jEdge) {
+            // FACE — translucent fill + outline over the whole face.
+            const ImVec2 q[4] = { project(f.n - f.u - f.v), project(f.n + f.u - f.v),
+                                  project(f.n + f.u + f.v), project(f.n - f.u + f.v) };
+            dl->AddConvexPolyFilled(q, 4, IM_COL32(255, 213, 79, 90));
+            dl->AddPolyline(q, 4, kHi, ImDrawFlags_Closed, 2.0f);
+        } else if (iEdge && jEdge) {
+            // CORNER — a dot at the cube corner.
+            const ImVec2 cc = project(f.n + float(hitI - 1) * f.u + float(hitJ - 1) * f.v);
+            dl->AddCircleFilled(cc, 7.0f, kHi, 16);
+            dl->AddCircle(cc, 7.0f, IM_COL32(40, 34, 10, 255), 16, 1.5f);
+        } else {
+            // EDGE — a thick bar along the cube edge, rounded caps.
+            glm::vec3 e0, e1;
+            if (jEdge) {  // edge runs along u at v = (hitJ-1)
+                e0 = f.n - f.u + float(hitJ - 1) * f.v;
+                e1 = f.n + f.u + float(hitJ - 1) * f.v;
+            } else {      // edge runs along v at u = (hitI-1)
+                e0 = f.n + float(hitI - 1) * f.u - f.v;
+                e1 = f.n + float(hitI - 1) * f.u + f.v;
+            }
+            const ImVec2 a = project(e0), b = project(e1);
+            dl->AddLine(a, b, kHi, 6.0f);
+            dl->AddCircleFilled(a, 3.0f, kHi, 12);
+            dl->AddCircleFilled(b, 3.0f, kHi, 12);
+        }
+
+        if (pressed)
+            g_renderer.SnapCameraTo(hitDir);
+    }
+
+    ImGui::End();
+    ImGui::PopStyleVar();
 }
 
 // Builds + renders the Dear ImGui tool UI for this frame, on top of the 3D scene (called
@@ -614,6 +802,10 @@ void DrawToolUi()
             ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f), "%s", g_load_error);
         ImGui::End();
     }
+
+    // Story 6.5.8 — navigation cube (ViewCube), bottom-right. Drawn in THIS NewFrame/Render
+    // pair (after the menu + read-outs, before Render) so it is the same single ImGui frame.
+    NavCubeWidget();
 
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());

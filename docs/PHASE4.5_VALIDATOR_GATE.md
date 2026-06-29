@@ -492,3 +492,74 @@ the **proven 6.5.1 normal-map presence-gate + texture funnel exactly** (one extr
 through the same `ResolveAndUploadTexture` funnel with the same AR17 fallback, and the shader change is a
 per-pixel modulation of the existing Blinn-Phong lobe gated on the same `u_has*Map` pattern that already
 ships. Judged at Antho's in-Reaper Windows gate.
+
+---
+
+## 11. Story 6.5.8 — navigation cube (ViewCube) for camera snap
+
+Story 6.5.8 adds a small **axis-coloured cube in the bottom-right corner** of the viewport. It does two
+things at once: it **shows** which way the camera points (it rotates in lock-step with the view — orbit the
+camera and the cube turns the same way, like the gizmo in Maya / Fusion / Blender), and it **sets** the view
+when you click it — clicking a **face / edge / corner** smoothly animates the camera (~0.2 s) to look at the
+scene centre **from that element's direction**, keeping the current zoom. A face → a clean straight-on view
+of that side; an edge → a 45° view; a corner → a three-quarter (~35°) view. It is **pure orientation polish**,
+fully session-side — the resulting view persists through save/reopen for free via Story 6.2, like any other
+camera move.
+
+The one principle, in case a result looks off: **no angle is hardcoded.** A clicked element is just a
+**direction out from the cube centre**; the camera is placed along that direction looking back at the centre,
+and the 45°/35° outcomes are the *geometry* of an edge (two axes) or a corner (three axes), not a written-down
+number. So "front is exactly straight-on", "an edge is roughly 45°", "a corner is a clean three-quarter" is
+the pass bar — not a protractor reading.
+
+This is a **visual + feel** gate, observable **only in Reaper on Windows**: the whole viewport UI is behind
+`#ifdef _WIN32`, so the Linux dev box cannot build the viewer/renderer/ImGui units or open Reaper. The
+implementation was **self-reviewed** against two shipped, gate-proven foundations — the **`OrbitCamera`
+spherical math** (`SnapToDirection` is the exact inverse of the `Eye()` map that already drives orbit) and the
+**`LightDirectionPad` ImGui pattern** (`GetWindowDrawList` + `InvisibleButton` + draw-list primitives,
+mutate-state-only). `camera.h` (the only non-`_WIN32`-gated math) syntax-checks clean under
+`-D_WIN32 -Wall -Wextra`. The **feel constants** — cube size, corner margin, tween duration (~0.2 s), and the
+edge/corner highlight sizing — are tuned here, by eye, like the orbit sensitivities; **they are not finalizable
+offline.** The cube is a **plain solid cube**; hovering an **edge** lights an amber **bar along that edge** and
+hovering a **corner** lights an amber **dot on that corner** (the faces stay smooth — no carved edge/corner
+geometry), so it's clear what a click will select.
+
+> **Scope note (do NOT fail 6.5.8 for these):** the cube has **no text labels** ("Front/Top/Right") — colours
+> + geometry are the cue (labels are deferred). The snap **only moves the camera angle** — **zoom / framing
+> are intentionally unchanged** (no "frame this element" zoom; that is deferred). The cube size / position /
+> tween duration are **in-code constants** (session-only, **not persisted** and no settings UI). The cube's
+> **96×96 px bottom-right square is its hit area** — a right-drag *started on that square* won't orbit (it
+> belongs to the cube); start an orbit just outside it. There is **no roll / ortho toggle / home button /
+> double-click-to-fit**. Exact tween duration, cube size, and colours are **tuning notes**, not failures —
+> tell me what feels off and I'll dial the constant.
+
+**Suggested fixtures:**
+- Any loaded model under the playhead (e.g. the Mixamo **Catwalk** FBX, or the steampunk **glTF**) — the cube
+  shows and snaps the same way regardless of asset; pick one with a clear front/back so "straight-on front" is
+  obvious.
+
+| # | Check | Pass criterion | AC |
+|---|---|---|---|
+| 1 | Cube present + rotates with camera | Bottom-right shows a small **axis-coloured cube**; **right-drag orbit** → the cube **turns in lock-step** with the view (it always reads which way you're looking). | AC1 |
+| 2 | Hover highlights | Hover a **face / edge / corner** → that element **highlights** (brightens/outlines); move off the cube → the highlight clears. | AC2 |
+| 3 | Face snap | Click a **face** → the camera **animates (~0.2 s)** to a clean **straight-on** view of that side, looking at the scene centre. | AC3 |
+| 4 | Edge / corner snap | Click an **edge** → a ~**45°** view; click a **corner** → a clean **three-quarter** view — both looking at centre, at the **same distance/zoom** as before. | AC3 |
+| 5 | Distance + framing preserved | After any snap, the **zoom level / framing is unchanged** (only the angle moved); **Recenter** still reframes normally. | AC4 |
+| 6 | Top/bottom + shortest path | **Top** click → a clean near-overhead view (no flip to black / no gimbal pop); snaps **never spin the long way around** to get there. | AC5 |
+| 7 | Tools coexist, drag wins | **Orbit / zoom / pan / Recenter / Light / Shadow / MSAA** all still work; grabbing **orbit mid-snap** takes over cleanly (the tween yields to your drag). | AC6 |
+| 8 | Perf + clean reopen | **≥60 fps** holds with the cube on; **close → reopen** the panel → cube is back, no ghost/leak, console stays **silent** (6.5.2). | AC7/AC6 |
+
+**Result:** Story 6.5.8 — **PASS** (Antho, in-Reaper Windows validation, 2026-06-29). Antho confirmed the gate
+passed in-Reaper on Windows: the bottom-right cube rotates in lock-step with the camera, hovering a face/edge/
+corner highlights it (amber bar on an edge, dot on a corner) and clicking smoothly snaps the camera to that
+view at the current distance — front straight-on, edge ~45°, corner three-quarter — with the top/bottom clamp
+and shortest-path tween behaving, and orbit/zoom/pan/Recenter coexisting (a drag mid-snap takes over). The
+in-Reaper visual + feel judgement IS the gate (AR19): the Linux dev box compiles the non-`_WIN32` units but
+cannot build the viewer/renderer/ImGui units or open Reaper. The implementation was **self-reviewed** against
+the proven `OrbitCamera`
+spherical math (`SnapToDirection` = the exact inverse of `Eye()`, with the same ±1.55 gimbal clamp Orbit uses
+and a `remainder`-based shortest-path yaw unwrap) and the proven `LightDirectionPad` ImGui draw-list pattern;
+the snap moves **only `{yaw, pitch}`** (target/distance/frameRadius untouched), the tween is a smoothstep over
+a gate-tunable `kSnapDuration`, and a live drag/Recenter cancels it. Scope is AR15-clean (only `camera.h` +
+`renderer.h` + `viewer_window.cpp`; no register/WANT_/CMake/gl_loader/scene.h/pcm_source change), session-only
+(persists via Story 6.2), D2 zero-alloc, AR17 non-fatal. Judged at Antho's in-Reaper Windows gate.

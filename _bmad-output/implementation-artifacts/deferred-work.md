@@ -243,3 +243,15 @@ The Phase 0 standalone Win32 viewer window (`viewer_window.cpp`) is superseded b
 ## Deferred from: code review of story-6.5.3 (2026-06-28)
 
 - **`tools/gen_icons.py` is fragile on malformed SVG input** ([tools/gen_icons.py](tools/gen_icons.py)) — the offline SVG→RGBA rasterizer that generates `src/overlay_icons.h` crashes with bare `AttributeError`s on inputs the three checked-in icons happen to avoid: an empty / non-`<path>` SVG → `re.search(r'd="([^"]+)"', svg).group(1)` on `None`; only the **first** `d="..."` is captured, so a multi-`<path>` icon rasterizes incompletely with no warning; a `d` string starting with a number (relative-first or malformed) → `cmd.islower()` on `None`; an all-collinear/zero-height path → empty edge list → silently blank (transparent) icon. Build-time tooling only — not shipped in the DLL, and `icon_menu/light/color.svg` all parse cleanly today. **Pick up if** a contributor swaps in a multi-path or non-path icon (Material-style) and gets a cryptic stack trace or a blank glyph — add a clear error + multi-path concat + a leading-command guard.
+
+---
+
+## Deferred from: story 6.5.8 — navigation cube (ViewCube) (2026-06-29)
+
+Intentionally out of scope for 6.5.8 (the MVP gizmo is colours + geometry + snap). All recorded here so none is silently dropped:
+
+- **Cube face labels / text** ("Front / Top / Right") — the GL/ImGui text path inside the cube is minimal; axis colours + geometry are the MVP orientation cue. **Pick up if** Antho wants letters on the faces after the gate (add glyphs to the `ImDrawList` draw, no architectural change).
+- **Persisted cube size / position, or a settings UI for tween duration** — `kNavCubeSize` / `kNavCubeMargin` (`viewer_window.cpp`) and `kSnapDuration` (`camera.h`) are session-only in-code constants, gate-tuned like the orbit sensitivities. **Pick up if** a real need for per-user cube placement or a configurable snap speed emerges (would need a persistence surface — none today; the camera itself persists via Story 6.2).
+- **"Frame this element" zoom on snap** — the snap moves **only `{yaw, pitch}`** (AC4: `target` / `distance` / `frameRadius` preserved). Animating `target`/`distance` to *fit* the clicked element (re-frame, not just re-orient) is a post-MVP nicety. **Pick up if** the gate surfaces a wish to also reframe on a cube click.
+- **Roll / arbitrary up-vector, orthographic-projection toggle, a "home" button, double-click-to-fit** — none requested; the cube is a pure orbit-camera orientation gizmo (world-up Y, perspective, AR9). **Pick up** only if a specific workflow asks for one.
+- **The cube's 96×96 px hit square is a small orbit dead-zone** — a right-drag *started on the bottom-right cube square* is captured by the widget (WantCaptureMouse) and won't orbit; you start an orbit just outside it. This mirrors `LightDirectionPad`'s own hit area and is standard for an on-canvas widget. **Pick up if** the gate finds the dead-zone annoying — tighten the `InvisibleButton` to the cube's projected silhouette instead of the full square (more math, deferred until shown to matter).

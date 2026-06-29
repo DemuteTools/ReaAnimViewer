@@ -79,6 +79,15 @@ public:
     // one-call entry point for the Reset View button (FR25 / Journey 2 recovery).
     void ResetCamera();
 
+    // Story 6.5.8 — thin pass-throughs for the navigation cube (ViewCube). SnapCameraTo
+    // arms a smooth tween of the camera's yaw/pitch toward `dir` (a unit direction FROM the
+    // scene centre); AdvanceCameraAnim steps that tween once per frame. Both only touch the
+    // camera's angle — target/distance/frameRadius are preserved (the snap reorients, it
+    // does not reframe). The cube widget could equally reach cam_ via Camera(); these read
+    // a touch cleaner at the call site and keep the camera math on the controller (D14).
+    void SnapCameraTo(const glm::vec3& dir) { cam_.SnapToDirection(dir); }
+    void AdvanceCameraAnim(float dt)        { cam_.AdvanceAnim(dt); }
+
     // Story 6.5.3 light-tool setters/getters. These mutate the light members that
     // RenderFrame already pushes to u_lightColor/u_lightDir EVERY frame (6.5.1) — so
     // the light tool only nudges these on a user action and the next ~66 Hz frame

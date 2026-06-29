@@ -731,6 +731,32 @@ So that skin and cloth read like the source DCC (Mixamo) and material seams don'
 
 *(Pulls the post-MVP "use glossiness/specular maps" item forward — see `deferred-work.md`. Maps uploaded **LINEAR** (`GL_RGBA8`, data not colour). The live light-tool Specular/Relief/Ambient knobs still apply on top. Validation = Antho's in-Reaper Windows gate §10, AR19.)*
 
+### Story 6.5.8: Navigation cube (ViewCube) for camera snap *(added 2026-06-29 — Correct Course)*
+
+As a sound designer orienting a character in the viewport,
+I want a small colored cube in the bottom-right that rotates with the camera and lets me click a face/edge/corner to jump to that view,
+So that I always know which way I'm looking and can reach a clean front/side/top/three-quarter view in one click.
+
+**Acceptance Criteria:**
+
+**Given** the viewport is open with a model loaded
+**When** I look at the bottom-right corner
+**Then** a small **colored cube** is drawn there (axis-colored faces, per the reference) that **rotates in lock-step with the camera** — so its orientation always reflects where the camera is pointing (FR54)
+
+**Given** I hover a **face**, an **edge**, or a **corner** of the cube
+**When** the cursor is over that element
+**Then** that element **highlights** (the hovered face/edge/corner is visually distinguished), so it's clear what a click would select
+
+**Given** I click a cube element
+**When** the click registers
+**Then** the camera **smoothly animates (~0.2 s)** to look at the scene centre **from that element's direction**, **keeping its current distance** — a face → straight-on that face, an edge → the 45° bisector of its two faces, a corner → the three-quarter view down that corner — the angle derived purely from the element's direction-to-centre (no hardcoded angle)
+
+**And** the snap **only changes the camera's yaw/pitch** — `target`, `distance`, and zoom are preserved; the resulting view persists via Story 6.2 like any other camera state
+**And** the top/bottom snap respects the existing gimbal clamp (never exactly ±90° pitch), and the yaw tween takes the **shortest path** (never spins the long way around)
+**And** the cube is **GL/ImGui-boundary-only and non-fatal**: if ImGui isn't ready it's a no-op and the viewport still runs (AR17); **session-only** (no new persisted/registered state, AR15); D2 zero-alloc per-frame; orbit/zoom/pan/reset (FR22–FR26) unchanged
+
+*(Reuses the orbit camera from Story 2.4 — `OrbitCamera{target,distance,yaw,pitch}`, view derived each frame — and the Dear ImGui overlay pattern from Story 6.5.3 / the `LightDirectionPad` widget. Recommended picking = Autodesk-style 3×3 subdivision per visible face → face/edge/corner. Feel constants tuned at the in-Reaper gate. Validation = Antho's in-Reaper Windows gate §11, AR19.)*
+
 ## Epic 7: Install and ship via ReaPack
 
 ReaPack one-click install with ReaImGui auto-dependency, manual install path, fully-offline operation, ReaPack-delegated updates, and the Phase 5 release gate. *(Phase 5. Closes the MVP.)*

@@ -4,7 +4,7 @@ baseline_commit: 83b40da73f2fcd413d98d8529fa83eaf148944e0
 
 # Story 6.5.8: Navigation cube (ViewCube) for camera snap
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 

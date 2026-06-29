@@ -873,6 +873,19 @@ LoadResult LoadAsset(const std::string& path)
                                         GL_SRGB8_ALPHA8, model_dir, mi, "diffuse");
             material.normalMap =
                 ResolveAndUploadNormalMap(scene, scene->mMaterials[mi], model_dir, mi);
+            // Story 6.5.7 — the artist's per-pixel specular + glossiness maps. Both are DATA
+            // (reflection intensity / sharpness scalar), not colour → uploaded LINEAR
+            // (GL_RGBA8), same rule as the normal map (AC6). Read directly via the existing
+            // funnel (SPECULAR/SHININESS are plain texture slots, unlike the NORMALS-only
+            // ResolveAndUploadNormalMap), which already handles embedded/external + the
+            // LogWarn-then-empty fallback (AR17). An empty handle (glTF metallic-roughness, or
+            // any mesh with no such slot) leaves the renderer on the uniform-sheen path (AC3).
+            material.specularMap =
+                ResolveAndUploadTexture(scene, scene->mMaterials[mi], aiTextureType_SPECULAR,
+                                        GL_RGBA8, model_dir, mi, "specular");
+            material.glossMap =
+                ResolveAndUploadTexture(scene, scene->mMaterials[mi], aiTextureType_SHININESS,
+                                        GL_RGBA8, model_dir, mi, "glossiness");
             asset.materials.push_back(std::move(material));
         }
         // assimp always emits a default material, but a mesh's materialIdx indexes

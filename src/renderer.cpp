@@ -86,6 +86,10 @@ uniform vec3  u_lightDir;       // key-light direction (toward the light)
 uniform float u_ambient;        // ambient/fill amount so unlit faces stay readable (AC2)
 uniform sampler2D u_normalMap;  // tangent-space normal map (linear); unit 1
 uniform int   u_hasNormalMap;   // 0 → use the geometric normal (asset has no map, AC4)
+uniform sampler2D u_specularMap;// Story 6.5.7: artist specular map (linear); unit 2
+uniform int   u_hasSpecularMap; // 0 → uniform dielectric sheen (no map, AC3)
+uniform sampler2D u_glossMap;   // Story 6.5.7: artist glossiness map (linear); unit 3
+uniform int   u_hasGlossMap;    // 0 → use the scalar u_shininess (no map, AC3)
 uniform float u_specStrength;   // live specular strength (light tool) — sheen that sculpts form
 uniform float u_normalStrength; // live normal-map relief boost (light tool); 1 = as-authored
 out vec4 frag;
@@ -135,14 +139,22 @@ void main() {
     vec3 V = normalize(u_viewPos - v_worldpos);
     vec3 H = normalize(L + V);                        // Blinn half-vector
     float diff = max(dot(N, L), 0.0);
-    float spec = pow(max(dot(N, H), 0.0), u_shininess);
+    // Story 6.5.7 — per-pixel specular exponent from the artist's glossiness map. Where the
+    // material carries the map, the Blinn exponent is driven PER-PIXEL (matte zones → low
+    // exponent → broad dim lobe; oily/shiny zones → high exponent → tight bright highlight)
+    // instead of the single scalar u_shininess. The [1, 200] range was tuned at Antho's gate
+    // (matte skin → 1, oily highlights → 200). No map → flag 0 → the scalar path (AC3,
+    // byte-for-byte as before).
+    float shin = u_shininess;
+    if (u_hasGlossMap != 0) shin = mix(1.0, 200.0, texture(u_glossMap, v_uv).r);
+    float spec = pow(max(dot(N, H), 0.0), shin);
     // Energy-normalize the Blinn-Phong lobe: a BROAD highlight (low shininess = a rough
     // or rough-metallic surface) must be DIM, not full-bright. Without this, a glTF metal
     // (metallic≈1, roughness≈1 → shininess floored at ~2) gets a huge bright white lobe
     // that WASHES the whole surface to pale grey and buries the texture detail. The
     // (n+8)/(8π) Blinn-Phong normalization makes broad lobes dim and tight lobes bright —
     // dielectrics (dim 0.04 specular) are visually unchanged; metals stop blowing out.
-    spec *= (u_shininess + 8.0) / (8.0 * 3.14159265);
+    spec *= (shin + 8.0) / (8.0 * 3.14159265);
     // Base colour is sampled from a GL_SRGB8_ALPHA8 texture → the GPU already decoded it
     // to LINEAR on sample (Story 6.5.1 AC1), so all lighting below is linear-correct.
     vec3 base = u_baseColor;
@@ -151,7 +163,15 @@ void main() {
     // Balanced ambient/fill (AC2): a face turned from the key light keeps u_ambient of
     // its colour instead of crushing to near-black.
     vec3 c = base * (u_ambient + (1.0 - u_ambient) * diff) * u_lightColor;
-    c += u_specularColor * spec * u_specStrength * u_lightColor;
+    // Story 6.5.7 — per-pixel specular intensity from the artist's specular map. specTint
+    // modulates WHERE/how strong the sheen falls: matte zones (dark map) get no sheen, oily
+    // zones (bright map) get full sheen → a multi-material head/body seam reads continuous
+    // (the trigger). The dielectric base u_specularColor STAYS (AC2 — the flat authored
+    // COLOR_SPECULAR is still ignored, the 6.5.1 "too plastic" fix); the map only modulates
+    // it. No map → specTint = 1 → identical to the pre-6.5.7 uniform sheen (AC3).
+    vec3 specTint = vec3(1.0);
+    if (u_hasSpecularMap != 0) specTint = texture(u_specularMap, v_uv).rgb;
+    c += u_specularColor * spec * u_specStrength * specTint * u_lightColor;
     // Encode linear → sRGB on the final write (AC1). NOT GL_FRAMEBUFFER_SRGB: the default
     // framebuffer is a legacy non-sRGB pixel format, so the shader encode is the robust
     // path and must be the ONLY one (enabling both would double-encode / over-brighten).
@@ -302,6 +322,10 @@ bool Renderer::Init(std::string& out_error)
     u_ambient_        = glGetUniformLocation(program_.get(), "u_ambient");
     u_normal_map_     = glGetUniformLocation(program_.get(), "u_normalMap");
     u_has_normal_map_ = glGetUniformLocation(program_.get(), "u_hasNormalMap");
+    u_specular_map_     = glGetUniformLocation(program_.get(), "u_specularMap");
+    u_has_specular_map_ = glGetUniformLocation(program_.get(), "u_hasSpecularMap");
+    u_gloss_map_        = glGetUniformLocation(program_.get(), "u_glossMap");
+    u_has_gloss_map_    = glGetUniformLocation(program_.get(), "u_hasGlossMap");
     u_spec_strength_   = glGetUniformLocation(program_.get(), "u_specStrength");
     u_normal_strength_ = glGetUniformLocation(program_.get(), "u_normalStrength");
     // Only u_mvp is genuinely required (no draw is possible without it). The rest may
@@ -715,6 +739,9 @@ void Renderer::RenderFrame(float anim_time_seconds, bool loop, int width, int he
     glUniform1i(u_base_color_tex_, 0);
     // Normal-map sampler reads texture unit 1 (bound per-material in the draw loop).
     glUniform1i(u_normal_map_, 1);
+    // Story 6.5.7 — specular/glossiness samplers read units 2/3 (bound per-material below).
+    glUniform1i(u_specular_map_, 2);
+    glUniform1i(u_gloss_map_, 3);
     // Lighting defaults (Story 6.5.1) — set once per frame from members so Story 6.5.3's
     // light tool can later drive them. Handful of glUniform* calls, no heap (D2).
     glUniform3fv(u_light_color_, 1, glm::value_ptr(light_color_));
@@ -847,6 +874,22 @@ void Renderer::RenderFrame(float anim_time_seconds, bool loop, int width, int he
         // (FR52). Off → flag 0 → the shader falls back to the geometric normal exactly as it
         // already does for assets that carry no map (6.5.1 AC4); no GLSL change, no new uniform.
         glUniform1i(u_has_normal_map_, (normal_maps_on_ && nmap != 0) ? 1 : 0);
+
+        // Story 6.5.7 — bind this material's specular + glossiness maps to units 2 and 3 via
+        // glActiveTexture(GL_TEXTURE0 + n): GL_TEXTURE0..n are guaranteed contiguous, so no
+        // GL_TEXTURE2/GL_TEXTURE3 enum is needed → gl_loader.h stays untouched. A 0 handle
+        // (glTF metallic-roughness, or any material with no such map) sets the flag to 0 → the
+        // shader keeps the uniform dielectric sheen / scalar exponent (AC3). Same flat-fallback
+        // three-call rhythm as the diffuse/normal binds above; no heap (D2 hot-path).
+        const GLuint smap = mat.specularMap.get();
+        glActiveTexture(GL_TEXTURE0 + 2);
+        glBindTexture(GL_TEXTURE_2D, smap);
+        glUniform1i(u_has_specular_map_, smap != 0 ? 1 : 0);
+
+        const GLuint gmap = mat.glossMap.get();
+        glActiveTexture(GL_TEXTURE0 + 3);
+        glBindTexture(GL_TEXTURE_2D, gmap);
+        glUniform1i(u_has_gloss_map_, gmap != 0 ? 1 : 0);
 
         glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(mesh.indexCount),
                        GL_UNSIGNED_INT, nullptr);

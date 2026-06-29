@@ -440,3 +440,49 @@ offscreen-resolve is textbook **core GL 3.0** (`glRenderbufferStorageMultisample
 the cold-path realloc mirrors the proven 6.5.4 `AllocShadowMap`, the 4-way selector mirrors the proven
 6.5.4 **Shadow** RadioButton, and the one true regression risk (the shadow pass restoring to the active
 scene target instead of FB0) is fixed and called out explicitly. Judged at Antho's in-Reaper Windows gate.
+
+## 10. Story 6.5.7 — per-pixel specular + glossiness maps (artist material intent)
+
+Story 6.5.7 makes the viewer **use the specular + glossiness maps the artist authored** on each material,
+instead of applying one uniform derived sheen to every pixel. On multi-material Mixamo FBX (the **Catwalk**
+character is two meshes — **body + head** — meeting at the neck, each carrying its own `*_Specular.png` +
+`*_Glossiness.png`) this is what makes skin read naturally and the **head/body seam stop popping** — the
+trigger for the story. The maps modulate the existing Blinn-Phong lobe **per-pixel**: the **glossiness map**
+sets the highlight **sharpness/exponent** (matte skin → soft, oily zones → tight bright), the **specular map**
+sets the highlight **intensity** (where/how strong the sheen falls). There is **no new control** — the maps
+apply automatically whenever the material carries them.
+
+> **Scope note (do NOT fail 6.5.7 for these):** this consumes **only** the artist's per-pixel
+> `SPECULAR` + `SHININESS`(glossiness) maps. The **flat authored `COLOR_SPECULAR` is STILL ignored** (the
+> 6.5.1 "Mixamo too plastic" fix stays) — the specular base stays **dielectric**; the maps only modulate it,
+> they do **not** restore the old plastic value. A model **without** these maps (any **glTF** metallic-roughness
+> asset, or any map-less mesh) must render **byte-for-byte as before 6.5.7** — the per-pixel path is
+> **presence-gated** exactly like the normal map. The maps are uploaded **LINEAR** (data, not colour). The
+> **live Light knobs** (Ambient / Specular / Relief) **still apply on top** — Antho can still dial the final
+> look. Session-only (nothing persisted). Light defaults baked at Antho's gate (2026-06-29): **Ambient 0.5 /
+> Specular 1.5 / Relief 1.5**; the glossiness→exponent range is fixed at **`mix(1, 200)`** (matte → oily) —
+> tuned in-Reaper, then hardcoded (the temporary tuning sliders were removed). Judge the *seam* and the
+> sheen, not an exact number — full Mixamo PBR parity is explicitly out of scope (post-MVP).
+
+**Suggested fixtures:**
+- The **Catwalk** Mixamo FBX ([Reaper/Media Files/Catwalk Walk Turn 180 Tight.fbx](../../Reaper/Media%20Files/Catwalk%20Walk%20Turn%20180%20Tight.fbx)) — the multi-material head/body character that carries the spec/gloss maps; **THE** seam check.
+- A **glTF** model (e.g. the 6.5.1 steampunk explorer GLB) — the **no-regression** check: it must look **identical** to before 6.5.7.
+
+| # | Check | Pass criterion | AC |
+|---|---|---|---|
+| 1 | Maps consumed per-pixel | Load the **Catwalk** Mixamo FBX → the specular highlight **varies across the surface** as the artist authored (matte vs oily zones differ), **not** one uniform sheen. | AC1 |
+| 2 | Head/body seam evens out | On the **Catwalk** character the **head/body seam at the neck** reads **markedly more continuous** than in 6.5.6 (under the same low-ambient / high-specular lighting that made it pop). | AC1/AC7 |
+| 3 | glTF / no-map = unchanged | Load a **glTF** model (steampunk) → it looks **identical to before 6.5.7** — the per-pixel path stays dormant when the material has no spec/gloss map. | AC3 |
+| 4 | Still not plastic | The Mixamo skin does **not** revert to the old flat-grey "plastic" look (the flat `COLOR_SPECULAR` stays ignored — only the maps modulate the dielectric base). | AC2 |
+| 5 | Light knobs still apply | Open **Light** → **Specular / Ambient / Relief** sliders still change the look on top of the maps (the maps shape *where* the sheen falls; Specular still scales the *amount*). | AC5 |
+| 6 | Perf budget | **≥60 fps** holds on the 10+-item / Catwalk fixture (NFR-P1) despite the two extra texture samples per fragment. | AC7 |
+| 7 | Clean reopen | **Close → reopen**, reload both assets → correct each time, **no ghost/leak**, console **silent** (6.5.2). | AC4 |
+
+**Result:** Story 6.5.7 — **PENDING** (Antho, in-Reaper Windows validation). The in-Reaper visual + perf
+judgement IS the gate (AR19) — the Linux dev box compiles the non-`_WIN32` units but cannot build the
+`_WIN32` renderer/loader/ImGui units or open Reaper, so the implementation was **self-reviewed**: it mirrors
+the **proven 6.5.1 normal-map presence-gate + texture funnel exactly** (one extra texture-unit *pair*, units
+2/3 via the contiguous `GL_TEXTURE0 + n` offset so `gl_loader.h` is untouched), the maps upload **LINEAR**
+through the same `ResolveAndUploadTexture` funnel with the same AR17 fallback, and the shader change is a
+per-pixel modulation of the existing Blinn-Phong lobe gated on the same `u_has*Map` pattern that already
+ships. Judged at Antho's in-Reaper Windows gate.

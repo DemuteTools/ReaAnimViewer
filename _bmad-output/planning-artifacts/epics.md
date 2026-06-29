@@ -57,6 +57,7 @@ This document provides the complete epic and story breakdown for FBXAnimationVie
 - **FR51**: Provide a floor tool, toggled from the sidebar, that shows/hides a solid ground plane with a grid.
 - **FR52**: Provide render-quality toggles, from the sidebar, that disable/enable costly render elements (e.g. normal maps, MSAA, floor) for graceful degradation on weaker hardware.
 - **FR53**: Provide an on-canvas FPS readout (top-right), toggled from the sidebar, replacing the former console FPS log.
+- **FR54**: Present a navigation cube ("ViewCube") in the bottom-right corner of the viewport that rotates with the camera (constant orientation cue) and, when a face / edge / corner is hovered, highlights it and — on click — snaps the camera to look at the scene centre from that element's direction (canonical views: front/side/top + clean 3/4), preserving the current distance.
 
 **Camera & Viewport Control**
 
@@ -229,6 +230,7 @@ FR50: Epic 6.5 — light tool (colour + position around origin)
 FR51: Epic 6.5 — floor tool (solid + grid show/hide)
 FR52: Epic 6.5 — render-quality toggles (graceful degradation on weak hardware)
 FR53: Epic 6.5 — on-canvas FPS readout
+FR54: Epic 6.5 — navigation cube (ViewCube) for camera snap to canonical views
 
 _(FR21 reclassified as NFR-P1.) Cross-cutting NFRs (R1–R5) and invariants (AR13–AR18) are honored from Epic 1 onward and re-verified at every validator gate; AR21 rename is Epic 1, Story 1._
 
@@ -264,7 +266,7 @@ Per-item and panel/viewport state persisted through project save/load via PCM_so
 
 ### Epic 6.5: Viewport visual fidelity & on-canvas tools *(pre-ship polish — Antho 2026-06-27)*
 Bring the render up to source-DCC fidelity (Mixamo parity) and add an on-canvas tool sidebar, **before** shipping: fix the washed-out/dark/metallic render, remove console-log noise, and introduce a top-right icon strip hosting light, floor, render-quality and FPS tools. *(Phase 4.5. Inserted between Epic 6 and Epic 7 via Correct Course; amends AR16, pulls normal maps Growth→MVP per FR48.)*
-**FRs covered:** FR48, FR49, FR50, FR51, FR52, FR53 — enhances FR16, amends AR16. *(New — pre-ship; FR52 enhanced 2026-06-28 by Story 6.5.6 — selectable MSAA quality levels via offscreen resolve.)*
+**FRs covered:** FR48, FR49, FR50, FR51, FR52, FR53, FR54 — enhances FR16, amends AR16. *(New — pre-ship; FR52 enhanced 2026-06-28 by Story 6.5.6 — selectable MSAA quality levels via offscreen resolve; FR48 enhanced 2026-06-29 by Story 6.5.7 — per-pixel specular + glossiness maps, artist material intent; FR54 added 2026-06-29 by Story 6.5.8 — navigation cube (ViewCube) for camera snap.)*
 
 ### Epic 7: Install and ship via ReaPack
 ReaPack one-click install pulling ReaImGui as auto-dependency, manual DLL-copy path, fully offline operation, updates delegated to ReaPack, final polish, and passing the Phase 5 validator gate to release.
@@ -711,6 +713,23 @@ So that I can trade edge smoothness for frame rate to suit my machine.
 **And** the change is purely visual/perf — no transport, persistence, or host-stability impact (NFR-R1, AR17 non-fatal: any FBO/allocation failure falls back to a working no-MSAA view). Session-only.
 
 *(Replaces the MSAA portion of Story 6.5.5; the Normal-maps toggle, FPS readout, and on-canvas load-failure indication from 6.5.5 are unchanged. Deviates from the Spike-0 direct-render "no offscreen colour pass" design — an AR20-logged, Antho-directed deviation, sibling to the 6.5.4 transient depth FBO. Validation = Antho's in-Reaper Windows gate §9, AR19.)*
+
+### Story 6.5.7: Per-pixel specular + glossiness maps (artist material intent) *(added 2026-06-29 — Correct Course)*
+
+As a sound designer,
+I want the viewer to use the specular/glossiness maps the artist authored,
+So that skin and cloth read like the source DCC (Mixamo) and material seams don't pop.
+
+**Acceptance Criteria:**
+
+**Given** a model whose materials carry a specular map (`aiTextureType_SPECULAR`) and/or a glossiness map (`aiTextureType_SHININESS`) — e.g. a Mixamo FBX
+**When** it renders
+**Then** the specular reflection is modulated **per-pixel** by those maps (intensity from the specular map, sharpness/exponent from the glossiness map) instead of a uniform sheen — so oily/shiny zones and matte zones differ as authored, and a multi-material seam (e.g. head/body) reads continuous (enhances FR48/FR16)
+**And** the flat authored `COLOR_SPECULAR` is **STILL ignored** (the "too plastic" 6.5.1 fix stands) — only the per-pixel maps are used; the specular base stays dielectric
+**And** a model **without** these maps (e.g. glTF metallic-roughness) renders **byte-for-byte as before** — the maps activate only when present, like the normal map (AC4 of 6.5.1)
+**And** the change is GL-boundary-only and non-fatal: a map that fails to resolve falls back to the current uniform specular (AR17); D2 zero-alloc per-frame; session-only; AR15 register-symmetry intact
+
+*(Pulls the post-MVP "use glossiness/specular maps" item forward — see `deferred-work.md`. Maps uploaded **LINEAR** (`GL_RGBA8`, data not colour). The live light-tool Specular/Relief/Ambient knobs still apply on top. Validation = Antho's in-Reaper Windows gate §10, AR19.)*
 
 ## Epic 7: Install and ship via ReaPack
 

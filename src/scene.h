@@ -49,6 +49,11 @@ struct SceneMaterial {
     GpuImage  normalMap;             // tangent-space normal map — unbound (0) when none;
                                      // Story 6.5.1 uploads it LINEAR (GL_RGBA8), gated on
                                      // presence (empty handle → geometric normal, AC4)
+    GpuImage  specularMap;           // Story 6.5.7: artist specular map (aiTextureType_SPECULAR)
+                                     // — LINEAR (GL_RGBA8, data not colour), presence-gated
+                                     // (empty handle → uniform dielectric sheen, AC3); unit 2
+    GpuImage  glossMap;              // Story 6.5.7: artist glossiness map (aiTextureType_SHININESS)
+                                     // — LINEAR (GL_RGBA8), presence-gated; per-pixel exponent; unit 3
     glm::vec3 baseColorFactor{0.8f}; // D1 refinement: flat diffuse RGB (AI_MATKEY_COLOR_DIFFUSE)
     glm::vec3 specularColor{0.04f};
     float     shininess = 32.0f;

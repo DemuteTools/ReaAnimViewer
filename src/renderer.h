@@ -202,6 +202,10 @@ private:
     int u_ambient_       = -1;
     int u_normal_map_    = -1;   // sampler2D bound to texture unit 1
     int u_has_normal_map_ = -1;  // 0 → geometric normal (asset carries no normal map)
+    int u_specular_map_  = -1;   // Story 6.5.7: sampler2D bound to texture unit 2
+    int u_has_specular_map_ = -1;// 0 → uniform dielectric sheen (material carries no spec map)
+    int u_gloss_map_     = -1;   // Story 6.5.7: sampler2D bound to texture unit 3
+    int u_has_gloss_map_ = -1;   // 0 → scalar u_shininess exponent (no gloss map)
     int u_spec_strength_   = -1; // live specular strength (light tool)
     int u_normal_strength_ = -1; // live normal-map relief boost (light tool)
 
@@ -216,7 +220,7 @@ private:
     // Defaults Antho dialed in-Reaper against the Mixamo "Vampire" reference (2026-06-28):
     // very low fill + strong specular + boosted relief for punchy, sculpted skin. Still
     // live-adjustable via the light tool.
-    float     ambient_         = 0.05f;  // near-zero fill → strong form contrast
+    float     ambient_         = 0.5f;   // Antho's gate default (2026-06-29): balanced fill
     float     spec_strength_   = 1.50f;  // pronounced sheen sculpting skin/cloth
     float     normal_strength_ = 1.50f;  // boosted normal-map relief (wrinkles/pores read)
 

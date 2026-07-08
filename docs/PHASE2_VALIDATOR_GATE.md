@@ -219,3 +219,17 @@ absent/divergent bind-matrix warnings**; load clean, no crash. Bind-pose render
 unchanged from Epic 2 (skinned data drives nothing until 3.3). Non-ASCII-name and
 `/W3`/single-DLL rows ride the same clean build; FBX even loads through the shared
 glTF path already (Mixamo `PreservePivots=0`, Spike Finding 3).
+
+**Result:** Story 3.4 — **PASS** (Antho, in-Reaper Windows validation, 2026-07-08).
+Bugfix reopening Epic 3 for UE twist-bone rigs (animated-but-unweighted joints). Fixture:
+`Lvl_TopDown.glb` (UE5 `SKM_Manny_Simple` + two clips). Full-body motion — legs, arms,
+neck/head, whole-body root motion — **no shards, no needle-spikes** on either clip.
+Console: **89 bones, 48705 skinned verts**, zero structural channels skipped, plus the new
+`gltf skin: read geometry+weights directly for 2/2 mesh(es)` line. Three root causes fixed:
+skeleton = `mBones ∪ animation-channel targets` (73→89, <128 cap, `parentIdx<index` held);
+a direct glTF skin/geometry read side-stepping assimp 6.0.5's Windows >4-influence weight +
+inverse-bind corruption; and the missing MSVC `/EHsc` (C4530). A ≤4-influence rig still
+animates (no regression); the static/FR6 path stays byte-for-byte. Code review (BMAD 3-layer)
+applied 3 defensive patches to the new direct-glTF reader on malformed/exotic/secondary paths
+only — none affect this validated render — and flagged a secondary-fixture re-check that Antho
+confirmed OK at the gate.

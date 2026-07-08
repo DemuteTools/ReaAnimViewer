@@ -4,7 +4,7 @@ baseline_commit: d5337e6f24717d459ea14f814cafef691e0e80a3
 
 # Story 3.4: Skeleton includes all animated joints, not just skin-weighted bones
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 <!-- Bugfix story. Reopens Epic 3 (animation, previously done) for a correctness defect found during real-world

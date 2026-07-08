@@ -93,6 +93,7 @@ if(WIN32)
             src/gl_loader.cpp
             src/renderer.cpp
             src/asset_loader.cpp
+            src/gltf_skin.cpp
             src/console_log.cpp
             src/pcm_source_anim.cpp
     )
@@ -102,6 +103,9 @@ if(WIN32)
         "${glm_SOURCE_DIR}"
         "${assimp_SOURCE_DIR}/include"
         "${assimp_BINARY_DIR}/include"
+        # rapidjson ships in assimp's contrib tree; gltf_skin.cpp reuses it to parse the
+        # glTF JSON directly (no new dependency). SYSTEM so it can't trip /W3 /permissive-.
+        "${assimp_SOURCE_DIR}/contrib/rapidjson/include"
         "${stb_SOURCE_DIR}"      # stb_image.h — SYSTEM so it can't trip /W3 /permissive-
         "${imgui_SOURCE_DIR}"
         "${imgui_SOURCE_DIR}/backends")

@@ -17,8 +17,10 @@
 #ifdef _WIN32
 
 #include <algorithm>  // std::clamp for the shininess floor/ceiling
+#include <cctype>     // std::tolower for the case-insensitive glTF extension check
 #include <cmath>
 #include <cstddef>
+#include <cstring>    // std::strlen for the extension check
 #include <filesystem>
 #include <string>
 #include <system_error>
@@ -53,6 +55,7 @@
 #include "animation.h"  // header-only pose sampler (ComputePose) for the §E audit probe
 #include "console_log.h"  // LogWarn for the per-texture unresolved diagnostic (AR16)
 #include "gl_loader.h"  // modern-GL upload entry points (glGenBuffers/glBufferData)
+#include "gltf_skin.h"  // direct glTF skin-weight read (assimp 6.0.5 Windows bug work-around)
 
 namespace rav {
 namespace {
@@ -120,7 +123,9 @@ void DfsIndexJoints(const aiNode* node, int nearest_joint, const glm::mat4& acc,
 }
 
 // Builds the flat SceneSkeleton + a bone-name -> global-index map (Task 1 / §B).
-// The bones are the skin joints — the dedup'd union of every mesh's aiBone names —
+// The bones are every joint that is either skin-weighted OR animated — the dedup'd
+// union of every mesh's aiBone names AND every animation channel's target node name
+// (Story 3.4: UE twist-bone rigs animate parent joints that carry no skin weights) —
 // ordered parent-before-child by the node-tree DFS above. The inverse-bind matrix is
 // aiBone::mOffsetMatrix passed through the ONE ConvertAssimpMatrix boundary exactly
 // once (AC2/D3/AR9). Returns an empty skeleton for a boneless (static) file (FR6).
@@ -138,6 +143,21 @@ SceneSkeleton BuildSkeleton(const aiScene* scene,
         for (unsigned bi = 0; bi < mesh->mNumBones; ++bi)
             if (const aiBone* b = mesh->mBones[bi])  // null slot on a malformed file
                 joint_names.insert(b->mName.C_Str());
+    }
+    // 1b. Also seed from every animation channel's target node (Story 3.4 fix). An
+    //     animation drives NODES, and on UE-style twist-bone rigs many animated parent
+    //     joints (root/thigh/upperarm/spine_05/neck) carry NO skin weights, so they
+    //     never appear in mBones. Without this they'd be static-folded into their
+    //     children (§C acc) and their channel dropped by ParseAnimations — torso-only
+    //     motion + shard spikes. Union across ALL clips so the skeleton is complete
+    //     regardless of which clip the MVP samples (clip[0]). Guard null aiAnimation*/
+    //     aiNodeAnim* slots (AR18, same discipline as ParseAnimations).
+    for (unsigned ai = 0; ai < scene->mNumAnimations; ++ai) {
+        const aiAnimation* anim = scene->mAnimations[ai];
+        if (!anim) continue;
+        for (unsigned ci = 0; ci < anim->mNumChannels; ++ci)
+            if (const aiNodeAnim* ch = anim->mChannels[ci])
+                joint_names.insert(ch->mNodeName.C_Str());
     }
     if (joint_names.empty()) return skel;  // static path — empty skeleton (FR6)
 
@@ -599,22 +619,45 @@ GpuImage ResolveAndUploadNormalMap(const aiScene* scene, const aiMaterial* mat,
     return {};   // no true normal map declared — geometric normal, silent (not a failure)
 }
 
+// Per-mesh skin weights read straight from a glTF file (src/gltf_skin.cpp), already
+// reduced to the top-4 influences and remapped to GLOBAL bone indices. Populated ONLY
+// for .glb/.gltf, to side-step an assimp 6.0.5 bug that (on the Windows build) corrupts
+// the weights of >4-influence glTF meshes. `valid` is false for FBX/Collada and for any
+// mesh we could not confidently match, in which case AppendMesh uses assimp's weights.
+struct ResolvedMeshSkin {
+    bool                    valid = false;
+    std::vector<glm::ivec4> ids;       // per local vertex — global bone ids (top-4)
+    std::vector<glm::vec4>  weights;   // per local vertex — weights (top-4, unnormalized)
+    std::vector<glm::vec3>  positions; // per local vertex — mesh-local, straight from file
+    std::vector<uint32_t>   indices;   // triangle list (empty → keep assimp faces)
+};
+
 // Appends one aiMesh, baked into model space by `world`, as a SceneMesh's CPU
 // arrays. Vertices/indices go into the out params; the AABB is grown over the
 // baked positions. Normals use the inverse-transpose so non-uniform node scale
-// stays correct (matches the renderer's u_normal convention).
+// stays correct (matches the renderer's u_normal convention). When `gltf_skin` is
+// valid its weights REPLACE assimp's for this mesh (the glTF-corruption work-around).
 void AppendMesh(const aiMesh* mesh, const glm::mat4& world,
                 const std::unordered_map<std::string, int>& bone_index,
+                const ResolvedMeshSkin* gltf_skin,
                 std::vector<SceneVertex>& verts, std::vector<uint32_t>& indices,
                 glm::vec3& aabb_min, glm::vec3& aabb_max, bool& aabb_seeded)
 {
     const glm::mat3 normal_mat = glm::inverseTranspose(glm::mat3(world));
     const uint32_t base = static_cast<uint32_t>(verts.size());
 
+    // For a matched glTF mesh, positions come straight from the file (assimp's Windows
+    // build mis-reads a few, spiking them); assimp is the source only for its (untouched)
+    // normals/UVs. A skinned mesh's `world` is identity, so file mesh-local == baked.
+    const bool use_gltf_pos =
+        gltf_skin && gltf_skin->valid && gltf_skin->positions.size() == mesh->mNumVertices;
+
     for (unsigned vi = 0; vi < mesh->mNumVertices; ++vi) {
         SceneVertex v{};
-        const aiVector3D& p = mesh->mVertices[vi];
-        const glm::vec3 wp = glm::vec3(world * glm::vec4(p.x, p.y, p.z, 1.0f));
+        const glm::vec3 lp = use_gltf_pos
+            ? gltf_skin->positions[vi]
+            : glm::vec3(mesh->mVertices[vi].x, mesh->mVertices[vi].y, mesh->mVertices[vi].z);
+        const glm::vec3 wp = glm::vec3(world * glm::vec4(lp, 1.0f));
         v.pos = wp;
         if (mesh->HasNormals()) {
             const aiVector3D& n = mesh->mNormals[vi];
@@ -637,44 +680,84 @@ void AppendMesh(const aiMesh* mesh, const glm::mat4& world,
         else { aabb_min = glm::min(aabb_min, wp); aabb_max = glm::max(aabb_max, wp); }
     }
 
-    // Scatter skin influences into the global bone slots (Task 2 / §C). assimp's
-    // per-mesh bone index is local; remap to the global skeleton index via the §B
-    // name map so 3.3 can address its matrix palette as palette[boneId]. With
-    // JoinIdenticalVertices active, mWeights[].mVertexId is in the same index space
-    // as mVertices, so `base + id` lands on the vertex AppendMesh just pushed.
-    for (unsigned lb = 0; lb < mesh->mNumBones; ++lb) {
-        const aiBone* b = mesh->mBones[lb];
-        if (!b) continue;                        // null bone slot on a malformed file (AR18)
-        const auto it = bone_index.find(b->mName.C_Str());
-        if (it == bone_index.end()) continue;   // skeleton built first → always found
-        const int gb = it->second;
-        for (unsigned w = 0; w < b->mNumWeights; ++w) {
-            const aiVertexWeight& vw = b->mWeights[w];
-            // Reject zero/negative AND non-finite weights: a NaN passes `<= 0`
-            // (compares false), then defeats the `== 0.0f` free-slot sentinel below
-            // and would upload as a NaN-deformed vertex in 3.3.
-            if (!std::isfinite(vw.mWeight) || vw.mWeight <= 0.0f) continue;
-            const size_t v = base + vw.mVertexId;
-            if (v >= verts.size()) continue;     // defensive against a stale vertex id
-            SceneVertex& vert = verts[v];
-            for (int s = 0; s < 4; ++s) {        // next free slot; LimitBoneWeights caps
-                if (vert.boneWeights[s] == 0.0f) {   // at 4, but never write past index 3
-                    vert.boneIds[s]     = gb;
-                    vert.boneWeights[s] = vw.mWeight;
-                    break;
+    // glTF work-around path: weights were read straight from the file (top-4, already
+    // global-indexed) because assimp mis-reads >4-influence glTF skins on Windows.
+    // Copy them onto the verts just pushed; assimp's own (corrupt) weights are ignored.
+    if (gltf_skin && gltf_skin->valid &&
+        gltf_skin->ids.size() == mesh->mNumVertices) {
+        for (unsigned vi = 0; vi < mesh->mNumVertices; ++vi) {
+            verts[base + vi].boneIds     = gltf_skin->ids[vi];
+            verts[base + vi].boneWeights = gltf_skin->weights[vi];
+        }
+    } else {
+        // assimp path (FBX/Collada, or a glTF we couldn't match). Scatter skin
+        // influences into the global bone slots (Task 2 / §C): assimp's per-mesh bone
+        // index is local; remap to the global skeleton index via the §B name map so 3.3
+        // can address palette[boneId]. mVertexId is in the mesh's own vertex index
+        // space, so `base + id` lands on the vertex AppendMesh just pushed. aiProcess_
+        // LimitBoneWeights has already capped each vertex to its 4 heaviest, so the
+        // free-slot fill below keeps all of them.
+        for (unsigned lb = 0; lb < mesh->mNumBones; ++lb) {
+            const aiBone* b = mesh->mBones[lb];
+            if (!b) continue;                        // null bone slot on a malformed file (AR18)
+            const auto it = bone_index.find(b->mName.C_Str());
+            if (it == bone_index.end()) continue;   // skeleton built first → always found
+            const int gb = it->second;
+            for (unsigned w = 0; w < b->mNumWeights; ++w) {
+                const aiVertexWeight& vw = b->mWeights[w];
+                // Reject zero/negative AND non-finite weights: a NaN passes `<= 0`
+                // (compares false), then defeats the `== 0.0f` free-slot sentinel below
+                // and would upload as a NaN-deformed vertex in 3.3.
+                if (!std::isfinite(vw.mWeight) || vw.mWeight <= 0.0f) continue;
+                const size_t v = base + vw.mVertexId;
+                if (v >= verts.size()) continue;     // defensive against a stale vertex id
+                SceneVertex& vert = verts[v];
+                // Fill a free slot; if full, evict the smallest so the 4 kept are the
+                // vertex's 4 heaviest (defensive if a source ever exceeds 4).
+                int slot = -1;
+                for (int s = 0; s < 4; ++s)
+                    if (vert.boneWeights[s] == 0.0f) { slot = s; break; }
+                if (slot >= 0) {
+                    vert.boneIds[slot]     = gb;
+                    vert.boneWeights[slot] = vw.mWeight;
+                    continue;
+                }
+                int smallest = 0;
+                for (int s = 1; s < 4; ++s)
+                    if (vert.boneWeights[s] < vert.boneWeights[smallest]) smallest = s;
+                if (vw.mWeight > vert.boneWeights[smallest]) {
+                    vert.boneIds[smallest]     = gb;
+                    vert.boneWeights[smallest] = vw.mWeight;
                 }
             }
         }
     }
 
-    for (unsigned fi = 0; fi < mesh->mNumFaces; ++fi) {
-        const aiFace& f = mesh->mFaces[fi];
-        // Triangulate guarantees 3 indices/face; guard anyway against degenerate
-        // points/lines assimp may keep.
-        if (f.mNumIndices != 3) continue;
-        indices.push_back(base + f.mIndices[0]);
-        indices.push_back(base + f.mIndices[1]);
-        indices.push_back(base + f.mIndices[2]);
+    // Triangle list — from the glTF file for a matched mesh (dodging any assimp index
+    // corruption), else from assimp's faces. glTF indices are 0-based into this mesh,
+    // so `base +` lands them on the verts just pushed.
+    if (gltf_skin && gltf_skin->valid && !gltf_skin->indices.empty()) {
+        // Validate per-triangle, not per-index: a lone out-of-range index must drop its
+        // whole triangle, else removing one element shifts every following 3-vertex group
+        // and scrambles the rest of the mesh. (LoadGltfSkin guarantees count % 3 == 0.)
+        const std::vector<uint32_t>& gi = gltf_skin->indices;
+        for (size_t t = 0; t + 3 <= gi.size(); t += 3) {
+            if (gi[t] >= mesh->mNumVertices || gi[t + 1] >= mesh->mNumVertices ||
+                gi[t + 2] >= mesh->mNumVertices) continue;
+            indices.push_back(base + gi[t]);
+            indices.push_back(base + gi[t + 1]);
+            indices.push_back(base + gi[t + 2]);
+        }
+    } else {
+        for (unsigned fi = 0; fi < mesh->mNumFaces; ++fi) {
+            const aiFace& f = mesh->mFaces[fi];
+            // Triangulate guarantees 3 indices/face; guard anyway against degenerate
+            // points/lines assimp may keep.
+            if (f.mNumIndices != 3) continue;
+            indices.push_back(base + f.mIndices[0]);
+            indices.push_back(base + f.mIndices[1]);
+            indices.push_back(base + f.mIndices[2]);
+        }
     }
 }
 
@@ -691,6 +774,7 @@ struct PendingMesh {
 
 void WalkBake(const aiScene* scene, const aiNode* node, const glm::mat4& parent_world,
               const std::unordered_map<std::string, int>& bone_index,
+              const std::vector<ResolvedMeshSkin>& gltf_skins,
               std::vector<PendingMesh>& out,
               glm::vec3& aabb_min, glm::vec3& aabb_max, bool& aabb_seeded)
 {
@@ -713,15 +797,121 @@ void WalkBake(const aiScene* scene, const aiNode* node, const glm::mat4& parent_
         // would apply the hierarchy twice and fold/explode the rig (§C). A static mesh
         // keeps world-baking exactly as in Epic 2 (byte-for-byte → AC3).
         const glm::mat4 bake = pm.skinned ? glm::mat4(1.0f) : world;
-        AppendMesh(mesh, bake, bone_index, pm.verts, pm.indices,
+        const ResolvedMeshSkin* gskin =
+            mesh_index < gltf_skins.size() ? &gltf_skins[mesh_index] : nullptr;
+        AppendMesh(mesh, bake, bone_index, gskin, pm.verts, pm.indices,
                    aabb_min, aabb_max, aabb_seeded);
         if (!pm.verts.empty() && !pm.indices.empty())
             out.push_back(std::move(pm));
     }
 
     for (unsigned i = 0; i < node->mNumChildren; ++i)
-        WalkBake(scene, node->mChildren[i], world, bone_index, out,
+        WalkBake(scene, node->mChildren[i], world, bone_index, gltf_skins, out,
                  aabb_min, aabb_max, aabb_seeded);
+}
+
+// Reads the skin weights of a .glb/.gltf straight from the file and maps them onto
+// assimp's meshes — the work-around for the assimp 6.0.5 Windows glTF weight bug (see
+// gltf_skin.h). Returns a per-scene-mesh table; every entry is `valid=false` (→ assimp
+// weights) for non-glTF files, an unparseable glTF, or a mesh we cannot confidently
+// pair to a file primitive. Matching is by vertex count + first vertex position, which
+// is unambiguous because assimp keeps skinned verts mesh-local and in file order.
+std::vector<ResolvedMeshSkin> ResolveGltfSkins(
+    const aiScene* scene, const std::string& path,
+    const std::unordered_map<std::string, int>& bone_index,
+    SceneSkeleton& skeleton)
+{
+    std::vector<ResolvedMeshSkin> out(scene->mNumMeshes);
+
+    auto ends_with_ci = [](const std::string& s, const char* suf) {
+        const size_t n = std::strlen(suf);
+        if (s.size() < n) return false;
+        for (size_t i = 0; i < n; ++i)
+            if (std::tolower(static_cast<unsigned char>(s[s.size() - n + i])) != suf[i])
+                return false;
+        return true;
+    };
+    if (!ends_with_ci(path, ".glb") && !ends_with_ci(path, ".gltf")) return out;
+
+    const GltfSkinData g = LoadGltfSkin(path);
+    if (!g.ok) {
+        LogWarn("gltf skin: direct read failed - falling back to assimp weights");
+        return out;
+    }
+
+    // Override each bone's inverse-bind matrix with the file's (assimp's Windows build
+    // corrupts a few, spraying that bone's verts into needle-spikes). On a correct
+    // assimp read these are identical, so this is a no-op except where it fixes damage.
+    size_t ibm_fixed = 0;
+    for (size_t local = 0; local < g.inverseBind.size() && local < g.jointNames.size(); ++local) {
+        const auto it = bone_index.find(g.jointNames[local]);
+        if (it == bone_index.end() || it->second >= static_cast<int>(skeleton.bones.size()))
+            continue;
+        glm::mat4& dst = skeleton.bones[it->second].inverseBindMatrix;
+        if (!MatNearlyEqual(dst, g.inverseBind[local])) ++ibm_fixed;
+        dst = g.inverseBind[local];
+    }
+
+    std::vector<bool> used(g.meshes.size(), false);
+    unsigned matched = 0;
+    size_t pos_fixed = 0;   // verts whose assimp position disagreed with the file
+    for (unsigned mi = 0; mi < scene->mNumMeshes; ++mi) {
+        const aiMesh* m = scene->mMeshes[mi];
+        if (!m || m->mNumBones == 0 || m->mNumVertices == 0) continue;
+        // Match by vertex count (unique here) first — assimp may have corrupted vertex 0's
+        // position, so only lean on firstPos to break ties between same-count candidates.
+        int found = -1, ncand = 0;
+        for (size_t c = 0; c < g.meshes.size(); ++c) {
+            if (used[c] || g.meshes[c].vertexCount != m->mNumVertices) continue;
+            ++ncand; if (found < 0) found = static_cast<int>(c);
+        }
+        if (ncand > 1) {
+            found = -1;
+            const glm::vec3 p0(m->mVertices[0].x, m->mVertices[0].y, m->mVertices[0].z);
+            for (size_t c = 0; c < g.meshes.size(); ++c)
+                if (!used[c] && g.meshes[c].vertexCount == m->mNumVertices &&
+                    glm::length(p0 - g.meshes[c].firstPos) < 1e-3f) { found = static_cast<int>(c); break; }
+        }
+        if (found < 0) continue;  // leave invalid → this mesh uses assimp's data
+        used[found] = true;
+        const GltfMeshSkin& ms = g.meshes[found];
+
+        ResolvedMeshSkin& r = out[mi];
+        r.ids.assign(m->mNumVertices, glm::ivec4(0));
+        r.weights.assign(m->mNumVertices, glm::vec4(0.0f));
+        r.positions = ms.positions;   // file positions replace assimp's (spike fix)
+        r.indices   = ms.indices;     // file triangle list replaces assimp's
+        for (unsigned vi = 0; vi < m->mNumVertices; ++vi) {
+            for (int k = 0; k < 4; ++k) {
+                const float w = ms.weight[vi][k];
+                if (!(w > 0.0f)) continue;
+                const int loc = ms.jointLocal[vi][k];
+                if (loc < 0 || loc >= static_cast<int>(g.jointNames.size())) continue;
+                const auto it = bone_index.find(g.jointNames[loc]);
+                if (it == bone_index.end()) continue;   // joint not in skeleton (shouldn't happen)
+                r.ids[vi][k]     = it->second;
+                r.weights[vi][k] = w;
+            }
+            // Diagnostic: how far did assimp's position drift from the file's?
+            const glm::vec3 ap(m->mVertices[vi].x, m->mVertices[vi].y, m->mVertices[vi].z);
+            if (glm::length(ap - ms.positions[vi]) > 1e-3f) ++pos_fixed;
+        }
+        r.valid = true;
+        ++matched;
+    }
+    if (matched)
+        LogInfo("gltf skin: read geometry+weights directly for %u/%u mesh(es) "
+                "(assimp glTF work-around; assimp got %zu vert positions and "
+                "%zu inverse-bind matrices wrong)", matched, scene->mNumMeshes,
+                pos_fixed, ibm_fixed);
+    else if (g.ok)
+        // We parsed skinned primitives from the file but paired none to an assimp mesh
+        // (e.g. JoinIdenticalVertices welded verts so the vertex counts differ). The mesh
+        // then silently keeps assimp's weights — the very data this path exists to replace.
+        LogWarn("gltf skin: parsed the file but matched 0/%u assimp mesh(es) - using "
+                "assimp weights (vertex-count mismatch? the assimp glTF bug may resurface)",
+                scene->mNumMeshes);
+    return out;
 }
 
 // Uploads one CPU mesh to a fresh VBO/IBO. Returns false (handles cleaned up by
@@ -839,11 +1029,17 @@ LoadResult LoadAsset(const std::string& path)
                                             // default-key source for ParseAnimations (§C)
         SceneSkeleton skeleton = BuildSkeleton(scene, bone_index, bind_local);
 
+        // For glTF, read the skin weights straight from the file (assimp mis-reads
+        // >4-influence glTF skins on Windows). Non-glTF / unmatched meshes get an
+        // invalid entry and fall back to assimp's weights inside AppendMesh.
+        const std::vector<ResolvedMeshSkin> gltf_skins =
+            ResolveGltfSkins(scene, path, bone_index, skeleton);
+
         // Bake all node world transforms into model-space CPU meshes + union AABB.
         std::vector<PendingMesh> pending;
         glm::vec3 aabb_min(0.0f), aabb_max(0.0f);
         bool aabb_seeded = false;
-        WalkBake(scene, scene->mRootNode, glm::mat4(1.0f), bone_index, pending,
+        WalkBake(scene, scene->mRootNode, glm::mat4(1.0f), bone_index, gltf_skins, pending,
                  aabb_min, aabb_max, aabb_seeded);
 
         if (pending.empty())

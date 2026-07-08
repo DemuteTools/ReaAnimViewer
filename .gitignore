@@ -43,3 +43,12 @@ Thumbs.db
 
 # Local-only
 *.local
+
+# Local test data & artifacts (not versioned)
+fixtures/
+Reaper/
+dist/
+*.rar
+
+# Scratch/debug build scripts (build.bat is tracked)
+build_*.bat

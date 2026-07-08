@@ -34,7 +34,13 @@ function(add_reaper_extension target)
     )
 
     if(MSVC)
-        target_compile_options(${target} PRIVATE /W3 /permissive-)
+        # /EHsc is REQUIRED, not optional: assimp is statically linked and uses C++
+        # exceptions internally (DeadlyImportError etc.), and LoadAsset relies on
+        # try/catch to keep a malformed file from crossing the host boundary (AR18).
+        # Without /EHsc MSVC emits C4530 and generates no unwind tables for this TU —
+        # an exception then unwinds through frames with no destructors run (UB / leaks).
+        # It is standard synchronous C++ EH; the prior build silently omitted it.
+        target_compile_options(${target} PRIVATE /W3 /permissive- /EHsc)
         target_compile_definitions(${target} PRIVATE
             _CRT_SECURE_NO_WARNINGS
             NOMINMAX

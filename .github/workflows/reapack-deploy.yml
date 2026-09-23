@@ -1,0 +1,36 @@
+# Regenerates index.xml with reapack-index after every push to main, then commits it.
+# index.xml is never edited by hand: bump the version with release.bat instead.
+# Based on https://github.com/cfillion/reapack-repository-template
+name: reapack-deploy
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+concurrency:
+  group: reapack-deploy
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Configure git
+        run: |-
+          git config user.name  'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+      - name: Install Pandoc
+        run: sudo apt-get install -yy pandoc
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: 3.2
+      - name: Install reapack-index
+        run: gem install reapack-index
+      - name: Update index.xml
+        run: reapack-index --commit
+      - name: Push changes
+        run: git push

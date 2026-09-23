@@ -7,6 +7,14 @@ project(reaanimviewer
     LANGUAGES CXX
 )
 
+# Link the MSVC runtime statically (/MT, /MTd in Debug) for EVERY target, including
+# the FetchContent dependencies (assimp, imgui, zlib...). Without this the DLL imports
+# MSVCP140.dll / VCRUNTIME140.dll and silently fails to load in REAPER on machines
+# without the VC++ Redistributable. Set before FetchContent so dependencies inherit it
+# (CMP0091 is NEW: our minimum is 3.20, assimp's is 3.22). assimp's own USE_STATIC_CRT
+# option stays OFF on purpose: it injects raw /MT flags that would duplicate this.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(ReaperPlugin)
 
@@ -58,7 +66,9 @@ if(WIN32)
     FetchContent_Declare(stb
         GIT_REPOSITORY https://github.com/nothings/stb.git
         GIT_TAG        31c1ad37456438565541f4919958214b6e762fb4  # recorded in extern/VENDORED.md
-        GIT_SHALLOW    TRUE)
+        # NOT shallow: a shallow clone only fetches the branch tip, so checking out a
+        # pinned commit hash fails ("unable to read tree") once upstream moves on.
+        GIT_SHALLOW    FALSE)
 
     # Dear ImGui (the immediate-mode GUI behind ReaImGui) — vendored INTO the plugin
     # (Story 6.5.3 review revision) so the in-viewport tool UI is real widgets (sliders,

@@ -1,79 +1,138 @@
 @echo off
-setlocal
-title ReaAnimViewer - Build et Install
+setlocal EnableExtensions
+title ReaAnimViewer - Build
 
-echo ============================================================
-echo   ReaAnimViewer Phase 0 - compilation + installation Reaper
-echo ============================================================
-echo.
-echo   IMPORTANT : ferme REAPER avant de continuer (sinon la DLL
-echo   est verrouillee et la copie echouera).
-echo.
-pause
+rem ============================================================================
+rem  ReaAnimViewer build script.
+rem
+rem  Usage:  build.bat [mode] [options]
+rem
+rem  Modes (pick one, default = release):
+rem    release     Normal build, the one we ship (silent console).
+rem    debuglog    Re-enables the [RAV] console logs (RAV_ENABLE_CONSOLE_LOG).
+rem    forcefail   Forces the GL init failure path (RAV_FORCE_INIT_FAILURE).
+rem
+rem  Options:
+rem    clean       Delete the build folder first (full rebuild).
+rem    noinstall   Do not copy the DLL into REAPER's UserPlugins folder.
+rem    nopause     Do not wait for a key press at the end (used by release.bat).
+rem
+rem  Double-click = release build + install into REAPER.
+rem  Examples:  build.bat debuglog
+rem             build.bat release clean
+rem ============================================================================
 
-rem Se placer dans le dossier du projet (la ou est ce .bat), quelle que
-rem soit la facon dont il a ete lance.
 cd /d "%~dp0"
 
+set "MODE=release"
+set "CLEAN=0"
+set "INSTALL=1"
+set "PAUSE_AT_END=1"
+
+:parse_args
+if "%~1"=="" goto args_done
+if /I "%~1"=="release"   set "MODE=release"   & shift & goto parse_args
+if /I "%~1"=="debuglog"  set "MODE=debuglog"  & shift & goto parse_args
+if /I "%~1"=="forcefail" set "MODE=forcefail" & shift & goto parse_args
+if /I "%~1"=="clean"     set "CLEAN=1"        & shift & goto parse_args
+if /I "%~1"=="noinstall" set "INSTALL=0"      & shift & goto parse_args
+if /I "%~1"=="nopause"   set "PAUSE_AT_END=0" & shift & goto parse_args
+echo [ERROR] Unknown argument: %~1
+echo Usage: build.bat [release^|debuglog^|forcefail] [clean] [noinstall] [nopause]
+set "RESULT=1"
+goto done
+:args_done
+
+if /I "%MODE%"=="release"   set "BUILD_DIR=build"           & set "DEFINE="
+if /I "%MODE%"=="debuglog"  set "BUILD_DIR=build-debuglog"  & set "DEFINE=RAV_ENABLE_CONSOLE_LOG"
+if /I "%MODE%"=="forcefail" set "BUILD_DIR=build-forcefail" & set "DEFINE=RAV_FORCE_INIT_FAILURE"
+
+set "DLL=%BUILD_DIR%\Release\reaper_animviewer.dll"
+set "USERPLUGINS=%APPDATA%\REAPER\UserPlugins"
+
+echo ============================================================
+echo   ReaAnimViewer build  -  mode: %MODE%
+if not "%DEFINE%"=="" echo   Test build with %DEFINE%. Do NOT ship this DLL.
+echo ============================================================
+echo.
+
 where cmake >nul 2>nul
-if errorlevel 1 goto err_cmake
+if errorlevel 1 (
+    echo [ERROR] CMake was not found in PATH.
+    echo Install it from https://cmake.org/download/ and tick
+    echo "Add CMake to the system PATH", then run this script again.
+    set "RESULT=1"
+    goto done
+)
+
+if "%CLEAN%"=="1" if exist "%BUILD_DIR%\" (
+    echo [clean] Deleting %BUILD_DIR%\ ...
+    rmdir /S /Q "%BUILD_DIR%"
+)
+
+echo [1/3] Configuring...
+if "%DEFINE%"=="" (
+    cmake -B "%BUILD_DIR%" -G "Visual Studio 17 2022" -A x64
+) else (
+    cmake -B "%BUILD_DIR%" -G "Visual Studio 17 2022" -A x64 -DCMAKE_CXX_FLAGS="/D %DEFINE%"
+)
+if errorlevel 1 (
+    echo.
+    echo [FAILED] CMake configuration failed. See the messages above.
+    set "RESULT=1"
+    goto done
+)
 
 echo.
-echo [1/4] Configuration du projet...
-cmake -B build -G "Visual Studio 17 2022" -A x64
-if errorlevel 1 goto err_cfg
+echo [2/3] Compiling (a few minutes on the first build)...
+cmake --build "%BUILD_DIR%" --config Release
+if errorlevel 1 (
+    echo.
+    echo [FAILED] Compilation failed. Look for the first line containing "error" above.
+    set "RESULT=1"
+    goto done
+)
+
+if not exist "%DLL%" (
+    echo [FAILED] Build finished but %DLL% is missing.
+    set "RESULT=1"
+    goto done
+)
 
 echo.
-echo [2/4] Compilation (peut prendre une minute la 1re fois)...
-cmake --build build --config Release
-if errorlevel 1 goto err_build
+if "%INSTALL%"=="0" (
+    echo [3/3] Install skipped ^(noinstall^).
+    goto success
+)
 
-echo.
-echo [3/4] Purge des anciennes DLL pre-renommage...
-rem Le projet s'appelait "fbxanimationviewer" avant le renommage (story 1.1).
-rem Une vieille reaper_fbxanimationviewer.dll (ou la DLL du spike) qui traine
-rem dans UserPlugins est chargee EN PLUS de la neuve par Reaper -> tu revois
-rem les logs [FBXAV] au demarrage. On les supprime ici (sans erreur si absentes).
-del /Q "%APPDATA%\REAPER\UserPlugins\reaper_fbxanimationviewer.dll" 2>nul
-del /Q "%APPDATA%\REAPER\UserPlugins\reaper_fbxav_spike.dll" 2>nul
+echo [3/3] Installing into REAPER...
+tasklist /FI "IMAGENAME eq reaper.exe" 2>nul | find /I "reaper.exe" >nul
+if not errorlevel 1 (
+    echo [WARNING] REAPER is running: the DLL is locked and cannot be replaced.
+    echo Close REAPER, then press a key to retry the copy.
+    pause >nul
+)
+if not exist "%USERPLUGINS%\" mkdir "%USERPLUGINS%"
+copy /Y "%DLL%" "%USERPLUGINS%\" >nul
+if errorlevel 1 (
+    echo [FAILED] Could not copy the DLL. Make sure REAPER is closed and run again.
+    set "RESULT=1"
+    goto done
+)
+echo Installed to %USERPLUGINS%
 
-echo.
-echo [4/4] Installation de la DLL dans Reaper...
-copy /Y "build\Release\reaper_animviewer.dll" "%APPDATA%\REAPER\UserPlugins\"
-if errorlevel 1 goto err_copy
-
+:success
 echo.
 echo ============================================================
-echo   OK ! DLL compilee et installee.
-echo   -^> Ouvre REAPER puis lance l'action "RAV: Open Viewer"
+echo   OK  -  %DLL%
+if "%INSTALL%"=="1" echo   Start REAPER and run the action "RAV: Open Viewer".
+if /I "%MODE%"=="debuglog"  echo   Open the REAPER console: [RAV] log lines should appear.
+if /I "%MODE%"=="forcefail" echo   Opening the viewer should show the GL init error message.
+if not "%DEFINE%"=="" echo   When done testing, run build.bat again to reinstall the normal build.
 echo ============================================================
-goto done
-
-:err_cmake
-echo.
-echo [ERREUR] CMake est introuvable dans le PATH.
-echo Reinstalle CMake en cochant "Add CMake to the system PATH
-echo for all users", puis relance ce script.
-goto done
-
-:err_cfg
-echo.
-echo [ECHEC] La configuration CMake a echoue.
-echo Copie-moi le texte d'erreur affiche ci-dessus.
-goto done
-
-:err_build
-echo.
-echo [ECHEC] La compilation a echoue.
-echo Copie-moi la PREMIERE ligne contenant "error" ci-dessus.
-goto done
-
-:err_copy
-echo.
-echo [ECHEC] Copie de la DLL impossible.
-echo Verifie que REAPER est bien ferme, puis relance ce script.
-goto done
+set "RESULT=0"
 
 :done
 echo.
-pause
+if "%PAUSE_AT_END%"=="1" pause
+exit /b %RESULT%

@@ -49,6 +49,13 @@ fixtures/
 Reaper/
 dist/
 *.rar
+*_log.txt
 
-# Scratch/debug build scripts (build.bat is tracked)
-build_*.bat
+# Private dev files: synced to a private repo by dev-sync.bat, never published here
+.devgit/
+.claude/
+_bmad/
+_bmad-output/
+CLAUDE.md
+docs/PHASE*_VALIDATOR_GATE.md
+docs/SPIKE0_FINDINGS.md

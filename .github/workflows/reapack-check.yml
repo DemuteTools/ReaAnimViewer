@@ -1,0 +1,20 @@
+# Validates the ReaPack package headers (Extensions/*.ext) on every push and pull request.
+# Based on https://github.com/cfillion/reapack-repository-template
+name: reapack-check
+on: [push, pull_request]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch repository
+        uses: actions/checkout@v4
+      - name: Install Pandoc
+        run: sudo apt-get install -yy pandoc
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: 3.2
+      - name: Install reapack-index
+        run: gem install reapack-index
+      - name: Validate packages
+        run: reapack-index --check

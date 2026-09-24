@@ -24,11 +24,6 @@ ReaAnimViewer is a native REAPER extension (a single `.dll`). It teaches REAPER 
 
 ---
 
-**Version:** 0.1.0-beta
-**Author:** Anthony Deneyer
-
----
-
 ## Table of Contents
 
 - [Installation](#installation)

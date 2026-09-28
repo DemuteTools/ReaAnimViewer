@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="ReaAnimViewer" commit="61bb8892d4e27fc7e6d36947a063adc77b33946f">
+<index version="1" name="ReaAnimViewer" commit="1f6b8bd4d5b5bfaedcabdddd0d02c8763571e06a">
   <category name="Extensions">
     <reapack name="ReaAnimViewer.ext" type="extension" desc="ReaAnimViewer">
       <metadata>
@@ -20,6 +20,27 @@
       <version name="0.1.0" author="Anthony Deneyer" time="2026-09-28T15:52:49Z">
         <changelog><![CDATA[- Big Bang]]></changelog>
         <source platform="win64" file="reaper_animviewer.dll">https://github.com/DemuteTools/ReaAnimViewer/releases/download/v0.1.0/reaper_animviewer.dll</source>
+      </version>
+    </reapack>
+  </category>
+  <category name="Scripts">
+    <reapack name="RAV_Launcher.lua" type="script" desc="ReaAnimViewer Launcher">
+      <metadata>
+        <description><![CDATA[{\rtf1\ansi\deff0{\fonttbl{\f0 \fswiss Helvetica;}{\f1 \fmodern Courier;}}
+{\colortbl;\red255\green0\blue0;\red0\green0\blue255;}
+\widowctrl\hyphauto
+
+{\pard \ql \f0 \sa180 \li0 \fi0 \outlinelevel0 \b \fs36 ReaAnimViewer Launcher\par}
+{\pard \ql \f0 \sa180 \li0 \fi0 Opens the ReaAnimViewer 3D animation viewer. Installs the ReaAnimViewer extension through ReaPack when it is missing, and updates it when this launcher is newer.\par}
+{\pard \ql \f0 \sa180 \li0 \fi0 Used by the Demute Reaper Toolkit, which can only install scripts: the extension itself (a DLL) must live in UserPlugins, so this launcher lets ReaPack handle it. Updating the launcher from the Toolkit then updates the extension too.\par}
+{\pard \ql \f0 \sa180 \li0 \fi0 Windows 64-bit only.\par}
+}
+]]></description>
+        <link rel="website" href="https://github.com/DemuteTools/ReaAnimViewer">GitHub</link>
+      </metadata>
+      <version name="0.1.0" author="Anthony Deneyer" time="2026-09-28T16:38:18Z">
+        <changelog><![CDATA[- First version of the launcher]]></changelog>
+        <source main="main">https://github.com/DemuteTools/ReaAnimViewer/raw/1f6b8bd4d5b5bfaedcabdddd0d02c8763571e06a/Scripts/RAV_Launcher.lua</source>
       </version>
     </reapack>
   </category>

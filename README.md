@@ -87,7 +87,7 @@ The [Demute Reaper Toolkit](https://www.demute.studio/documentation/reaper-toolk
 3. Paste the following URL and click **OK**:
 
    ```
-   https://github.com/DemuteStudio/ReaAnimViewer/raw/main/index.xml
+   https://github.com/DemuteTools/ReaAnimViewer/raw/main/index.xml
    ```
 
 4. Go to **Extensions > ReaPack > Browse packages...**, search for **ReaAnimViewer**.
@@ -112,7 +112,7 @@ The Demute Reaper Toolkit cannot uninstall tools. Depending on how you installed
 
 If you can't use ReaPack:
 
-1. Download `reaper_animviewer.dll` from the [latest release](https://github.com/DemuteStudio/ReaAnimViewer/releases/latest).
+1. Download `reaper_animviewer.dll` from the [latest release](https://github.com/DemuteTools/ReaAnimViewer/releases/latest).
 2. **Close REAPER.**
 3. In REAPER, **Options > Show REAPER resource path in explorer/finder** shows you the right folder. Copy the DLL into its `UserPlugins` subfolder (usually `%APPDATA%\REAPER\UserPlugins\`).
 4. Start REAPER and look for **RAV: Open Viewer** in the action list.
@@ -231,7 +231,7 @@ Only needed if you want to contribute. Users should install through ReaPack.
 **Prerequisites:** Windows x64, Visual Studio 2022 (Desktop development with C++), CMake 3.20+, Git.
 
 ```sh
-git clone https://github.com/DemuteStudio/ReaAnimViewer.git
+git clone https://github.com/DemuteTools/ReaAnimViewer.git
 cd ReaAnimViewer
 build.bat
 ```

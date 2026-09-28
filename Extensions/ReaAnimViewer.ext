@@ -1,6 +1,5 @@
 @description ReaAnimViewer
-@version 0.0.0
-@noindex
+@version 0.1.0
 @author Anthony Deneyer
 @about
   # ReaAnimViewer
@@ -14,8 +13,8 @@
 
   Windows 64-bit only. Nothing else to install. Restart REAPER after installing or updating.
 @links
-  GitHub https://github.com/OWNER/REPO
+  GitHub https://github.com/DemuteTools/ReaAnimViewer
 @changelog
-  Not released yet.
+  - Big Bang
 @provides
-  [win64] reaper_animviewer.dll https://github.com/OWNER/REPO/releases/download/v$version/$path
+  [win64] reaper_animviewer.dll https://github.com/DemuteTools/ReaAnimViewer/releases/download/v$version/$path

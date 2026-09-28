@@ -1,3 +1,5 @@
+<img width="2303" height="1000" alt="image" src="https://github.com/user-attachments/assets/93b26599-fcd0-4045-b6a4-32deb3af182a" />
+
 # DM ReaAnimViewer
 
 3D animation viewer for REAPER. Load glTF and FBX animations straight onto your timeline and watch the animated character play in sync with the REAPER playhead, from any camera angle.

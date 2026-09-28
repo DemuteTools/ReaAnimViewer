@@ -1,4 +1,4 @@
-<img width="2303" height="1000" alt="image" src="https://github.com/user-attachments/assets/93b26599-fcd0-4045-b6a4-32deb3af182a" />
+<img width="2116" height="957" alt="image" src="https://github.com/user-attachments/assets/46506343-093d-42c8-ba8e-0e8efb70d41e" />
 
 # DM ReaAnimViewer
 

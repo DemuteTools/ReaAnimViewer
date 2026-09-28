@@ -73,7 +73,7 @@ if exist "%DEVGIT%\" (
     echo Already set up on this PC ^(%DEVGIT%\ exists^).
     goto done
 )
-call "%~dp0scripts\ensure-gh.bat" || goto failed
+call "%~dp0tools\ensure-gh.bat" || goto failed
 
 rem The private repo lives on YOUR GitHub account (the one gh is logged in with),
 rem not on the public repo's owner: it stays put when the public repo moves to

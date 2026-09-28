@@ -9,13 +9,14 @@ Everything a maintainer does is a double-click on one of the `.bat` files at the
 | `src/` | Extension source code (C++) |
 | `cmake/`, `CMakeLists.txt` | Build configuration. Dependencies are fetched and statically linked. |
 | `extern/` | Vendored third-party headers (REAPER SDK) |
-| `Icons/`, `tools/gen_icons.py` | Viewer menu icons and the script that converts them to `src/overlay_icons.h` |
+| `Icons/` | Viewer menu icons (converted to `src/overlay_icons.h` by `tools/gen_icons.py`) |
 | `Extensions/ReaAnimViewer.ext` | ReaPack package definition (version, changelog, download URL) |
+| `Scripts/RAV_Launcher.lua` | Launcher script for the Demute Reaper Toolkit (see below) |
 | `index.xml` | ReaPack index, **generated** by GitHub Actions. Never edit it by hand. |
 | `.reapack-index.conf` | reapack-index settings (repository name, ignored folders) |
 | `.github/workflows/` | CI: validates the package on every push, regenerates `index.xml` on `main` |
 | `docs/` | User documentation |
-| `scripts/` | Helpers used by the `.bat` files |
+| `tools/` | Helpers used by the `.bat` files, and the icon converter |
 
 Private dev files (`.claude/`, `_bmad/`, `_bmad-output/`, `CLAUDE.md`, validation gate docs) are ignored by this repository and synced separately with `dev-sync.bat`.
 
@@ -53,7 +54,7 @@ After testing a `debuglog` or `forcefail` build, run `build.bat` again to reinst
    - asks for the new version (`0.2.0`, or `0.2.0-beta` for a pre-release),
    - opens Notepad for the changelog (one change per line),
    - makes a clean release build and checks the DLL has no VC++ runtime dependency,
-   - updates the version in `Extensions/ReaAnimViewer.ext`, `CMakeLists.txt` and `README.md`,
+   - updates the version in `Extensions/ReaAnimViewer.ext`, `Scripts/RAV_Launcher.lua`, `CMakeLists.txt` and `README.md`,
    - asks for confirmation, then commits, tags `vX.Y.Z`, creates the GitHub Release with `reaper_animviewer.dll` and pushes `main`.
 3. GitHub Actions runs `reapack-index` and commits the updated `index.xml` (about one minute). ReaPack and the Demute Reaper Toolkit then offer the update.
 4. Run `git pull` to get the `index.xml` commit made by the bot.
@@ -82,3 +83,18 @@ BMAD, Claude Code settings and validation docs live in a private companion repos
 | `dev-sync.bat status` | To see what changed locally |
 
 Double-clicking `dev-sync.bat` shows a menu. `.claude/settings.local.json` stays local to each PC.
+
+## Demute Reaper Toolkit
+
+The Toolkit can only install scripts: it copies the files of an index into `Scripts/<index>/<category>/`. A native extension must be in `UserPlugins` instead, so the Toolkit does not install the DLL directly.
+
+`Scripts/RAV_Launcher.lua` bridges the gap. It is a regular ReaPack script package in this repository:
+
+- launcher newer than the extension installed by ReaPack (the Toolkit updated the launcher): it offers to update the extension, synchronizes ReaPack, waits for the new version, then asks to restart REAPER;
+- extension loaded: it runs **RAV: Open Viewer**;
+- extension on disk but not loaded yet: it asks to restart REAPER;
+- extension missing: it adds this repository to ReaPack (auto-install on), synchronizes, waits for the DLL, then asks to restart REAPER. If ReaPack does not install it within 90 seconds, it opens the ReaPack browser on ReaAnimViewer so the user can click Install.
+
+The extension is therefore always owned and updated by ReaPack, whatever the install path.
+
+Toolkit entry for this tool: `main_script = "RAV_Launcher.lua"`. `release.bat` keeps the launcher version equal to the extension version: the Toolkit displays the launcher's version, and the launcher uses its own version to know which extension version is expected. A DLL not owned by ReaPack (a `build.bat` development build) is never touched.

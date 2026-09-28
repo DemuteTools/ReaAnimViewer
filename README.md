@@ -76,11 +76,12 @@ The [Demute Reaper Toolkit](https://www.demute.studio/documentation/reaper-toolk
    2. Go to **Extensions > ReaPack > Manage repositories**, select **Demute_Toolkit** and click **Browse packages**.
    3. Search for **DM_ReaperToolkit**, right-click it, choose **Install**, then click **Apply**.
 3. Open the Toolkit: **Actions > Show action list**, search for **DM_ReaperToolkit** and run it. It automatically scans for available tools and updates.
-4. Select the **ReaAnimViewer** card and install it:
-   - **Direct Install** downloads the extension straight into your REAPER resource folder.
-   - **ReaPack Install** opens ReaPack and copies the package link to your clipboard, if you prefer to manage it through ReaPack.
-5. **Restart REAPER.** Extensions are only loaded at startup.
-6. Check the installation: go to **Actions > Show action list**, search for **RAV**. You should see **RAV: Open Viewer**.
+4. Select the **ReaAnimViewer** card and install it. This installs the **ReaAnimViewer Launcher** script.
+5. Run the launcher (from the Toolkit, or **Actions > Show action list**, search for **RAV_Launcher**). The first time, it offers to install the ReaAnimViewer extension through ReaPack: click **Yes** and let ReaPack download it.
+6. **Restart REAPER.** Extensions are only loaded at startup.
+7. Run the launcher again: it now opens the viewer. You can also use the action **RAV: Open Viewer** directly.
+
+Why a launcher? The Toolkit installs scripts, while ReaAnimViewer is a native extension that REAPER loads from its `UserPlugins` folder. The launcher hands the extension over to ReaPack, which installs and updates it in the right place.
 
 ### Install with ReaPack
 
@@ -93,22 +94,21 @@ The [Demute Reaper Toolkit](https://www.demute.studio/documentation/reaper-toolk
    ```
 
 4. Go to **Extensions > ReaPack > Browse packages...**, search for **ReaAnimViewer**.
-5. Right-click the package, choose **Install**, then click **Apply**.
+5. Right-click **ReaAnimViewer** (the extension), choose **Install**, then click **Apply**. The **ReaAnimViewer Launcher** package is optional: it is the script used by the Demute Reaper Toolkit.
 6. **Restart REAPER.** Extensions are only loaded at startup.
 7. Check the installation: go to **Actions > Show action list**, search for **RAV**. You should see **RAV: Open Viewer**.
 
 ### Updating
 
-**With the Demute Reaper Toolkit:** open the Toolkit (**Actions > Show action list**, search for **DM_ReaperToolkit**). It automatically scans for updates when it opens. Select the **ReaAnimViewer** card, install the new version, then **restart REAPER** so it is loaded.
+**With the Demute Reaper Toolkit:** open the Toolkit and update the **ReaAnimViewer** card. Then run the launcher: it sees that a newer version is available, offers to update the extension through ReaPack, and asks you to restart REAPER.
 
 **With ReaPack:** go to **Extensions > ReaPack > Synchronize packages** (or wait for the automatic check), click **Apply**, then **restart REAPER** so the new version is loaded.
 
 ### Uninstalling
 
-The Demute Reaper Toolkit cannot uninstall tools. Depending on how you installed ReaAnimViewer:
+Go to **Extensions > ReaPack > Browse packages...**, right-click **ReaAnimViewer** (and **ReaAnimViewer Launcher** if it is listed), choose **Uninstall** on each, click **Apply** and restart REAPER.
 
-- **With ReaPack (or the Toolkit's ReaPack Install):** go to **Extensions > ReaPack > Browse packages...**, right-click **ReaAnimViewer**, choose **Uninstall**, click **Apply** and restart REAPER.
-- **With the Toolkit's Direct Install, or manually:** close REAPER, then delete `reaper_animviewer.dll` from the `UserPlugins` folder of your REAPER resource path (**Options > Show REAPER resource path in explorer/finder**, usually `%APPDATA%\REAPER\UserPlugins\`).
+If you installed the DLL manually, close REAPER and delete `reaper_animviewer.dll` from the `UserPlugins` folder of your REAPER resource path (**Options > Show REAPER resource path in explorer/finder**, usually `%APPDATA%\REAPER\UserPlugins\`).
 
 ### Manual Installation
 

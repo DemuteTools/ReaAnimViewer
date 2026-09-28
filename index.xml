@@ -1,2 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="ReaAnimViewer"/>
+<index version="1" name="ReaAnimViewer" commit="61bb8892d4e27fc7e6d36947a063adc77b33946f">
+  <category name="Extensions">
+    <reapack name="ReaAnimViewer.ext" type="extension" desc="ReaAnimViewer">
+      <metadata>
+        <description><![CDATA[{\rtf1\ansi\deff0{\fonttbl{\f0 \fswiss Helvetica;}{\f1 \fmodern Courier;}}
+{\colortbl;\red255\green0\blue0;\red0\green0\blue255;}
+\widowctrl\hyphauto
+
+{\pard \ql \f0 \sa180 \li0 \fi0 \outlinelevel0 \b \fs36 ReaAnimViewer\par}
+{\pard \ql \f0 \sa180 \li0 \fi0 3D animation viewer for REAPER. Load glTF and FBX animations onto your timeline and watch the animated character play in sync with the playhead, from any camera angle.\par}
+{\pard \ql \f0 \sa0 \li360 \fi-360 \bullet \tx360\tab Drop a {\f1 .glb}, {\f1 .gltf} or {\f1 .fbx} file on a track: it becomes an item the length of the animation.\par}
+{\pard \ql \f0 \sa0 \li360 \fi-360 \bullet \tx360\tab Run the action {\b RAV: Open Viewer} to open the dockable viewer.\par}
+{\pard \ql \f0 \sa0 \li360 \fi-360 \bullet \tx360\tab Orbit, pan and zoom freely while the animation follows the transport.\sa180\par}
+{\pard \ql \f0 \sa180 \li0 \fi0 Windows 64-bit only. Nothing else to install. Restart REAPER after installing or updating.\par}
+}
+]]></description>
+        <link rel="website" href="https://github.com/DemuteTools/ReaAnimViewer">GitHub</link>
+      </metadata>
+      <version name="0.1.0" author="Anthony Deneyer" time="2026-09-28T15:52:49Z">
+        <changelog><![CDATA[- Big Bang]]></changelog>
+        <source platform="win64" file="reaper_animviewer.dll">https://github.com/DemuteTools/ReaAnimViewer/releases/download/v0.1.0/reaper_animviewer.dll</source>
+      </version>
+    </reapack>
+  </category>
+</index>

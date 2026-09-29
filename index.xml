@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="ReaAnimViewer" commit="1f6b8bd4d5b5bfaedcabdddd0d02c8763571e06a">
+<index version="1" name="ReaAnimViewer" commit="6c63a8e654a88a217ee24296c5b747e86945a086">
   <category name="Extensions">
     <reapack name="ReaAnimViewer.ext" type="extension" desc="ReaAnimViewer">
       <metadata>
@@ -21,6 +21,10 @@
         <changelog><![CDATA[- Big Bang]]></changelog>
         <source platform="win64" file="reaper_animviewer.dll">https://github.com/DemuteTools/ReaAnimViewer/releases/download/v0.1.0/reaper_animviewer.dll</source>
       </version>
+      <version name="0.1.1" author="Anthony Deneyer" time="2026-09-29T15:20:09Z">
+        <changelog><![CDATA[- Fix an issue where close and reopen the view makes the view empty]]></changelog>
+        <source platform="win64" file="reaper_animviewer.dll">https://github.com/DemuteTools/ReaAnimViewer/releases/download/v0.1.1/reaper_animviewer.dll</source>
+      </version>
     </reapack>
   </category>
   <category name="Scripts">
@@ -41,6 +45,10 @@
       <version name="0.1.0" author="Anthony Deneyer" time="2026-09-28T16:38:18Z">
         <changelog><![CDATA[- First version of the launcher]]></changelog>
         <source main="main">https://github.com/DemuteTools/ReaAnimViewer/raw/1f6b8bd4d5b5bfaedcabdddd0d02c8763571e06a/Scripts/RAV_Launcher.lua</source>
+      </version>
+      <version name="0.1.1" author="Anthony Deneyer" time="2026-09-29T15:20:09Z">
+        <changelog><![CDATA[- Fix an issue where close and reopen the view makes the view empty]]></changelog>
+        <source main="main">https://github.com/DemuteTools/ReaAnimViewer/raw/6c63a8e654a88a217ee24296c5b747e86945a086/Scripts/RAV_Launcher.lua</source>
       </version>
     </reapack>
   </category>

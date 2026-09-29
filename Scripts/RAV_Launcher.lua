@@ -1,5 +1,5 @@
 -- @description ReaAnimViewer Launcher
--- @version 0.1.0
+-- @version 0.1.1
 -- @author Anthony Deneyer
 -- @about
 --   # ReaAnimViewer Launcher
@@ -15,7 +15,7 @@
 -- @links
 --   GitHub https://github.com/DemuteTools/ReaAnimViewer
 -- @changelog
---   - First version of the launcher
+--   - Fix an issue where close and reopen the view makes the view empty
 -- @provides [main] .
 
 ------------------------------------------------------------------------------

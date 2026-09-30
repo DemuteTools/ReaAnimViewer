@@ -4,8 +4,6 @@
 
 3D animation viewer for REAPER. Load glTF and FBX animations straight onto your timeline and watch the animated character play in sync with the REAPER playhead, from any camera angle.
 
-<!-- TODO: add a hero screenshot / GIF of the viewer docked next to the arrange view -->
-
 ## Why Use This Tool?
 
 Sound designing for game characters usually means screen-recording every animation in the engine, importing the videos into REAPER, and redoing all of it every time an animator changes a few frames. Once recorded, the camera angle is frozen: if the gesture you need to time is hidden behind the character, you're back to the engine. ReaAnimViewer removes the video step entirely.

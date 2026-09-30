@@ -60,7 +60,7 @@ Unreal has **three different things** that look alike:
 
 ## 4. Full method: mesh + animation → a single `.glb`
 
-### Step 1 — Find the right asset (the Skeletal Mesh)
+### Step 1: Find the right asset (the Skeletal Mesh)
 
 In the **Content Browser**, find the asset whose bottom label says **"Skeletal Mesh"** (often `SKM_...`).
 
@@ -70,16 +70,16 @@ Real example: `SK_Mannequin` = Skeleton (wrong), `SKM_Manny_Simple` = Skeletal M
 > Tip: if you start from an animation, double-click it to open the Animation editor; the character shown **is** that
 > Skeletal Mesh. The Skeletal Mesh usually lives in the same or a neighboring folder.
 
-### Step 2 — Create an empty level
+### Step 2: Create an empty level
 
 **File → New Level… → Empty Level** (an empty level is enough; any open level works too).
 
-### Step 3 — Place the mesh in the scene
+### Step 3: Place the mesh in the scene
 
 **Drag the Skeletal Mesh** from the Content Browser **into the 3D viewport**. This creates an **actor**
 (a "Skeletal Mesh Actor") in the level.
 
-### Step 4 — Reset the actor to the origin (important)
+### Step 4: Reset the actor to the origin (important)
 
 Select the actor, then in the **Details** panel (right) → **Transform → Location** → set **`0, 0, 0`**.
 
@@ -87,7 +87,7 @@ Select the actor, then in the **Details** panel (right) → **Transform → Loca
 > display in the viewer. Placing it at the origin guarantees a clean render.
 > *(A viewer-side fix is in progress — but keep this habit, it's safer.)*
 
-### Step 5 — Assign the animation to the actor
+### Step 5: Assign the animation to the actor
 
 With the actor still selected, open the **Details** panel (docked on the right by default — if it's missing:
 **Window → Details**). Near the top it has category tabs (**General · Actor · Animation · LOD · …**) and a search box.
@@ -103,11 +103,11 @@ settings above.
 > **UE5 note:** these are the properties of the **Skeletal Mesh Component**. If the Animation section looks empty,
 > make sure the placed actor (not a camera/light/the level) is selected in the **Outliner**.
 
-### Step 6 — Export the selection
+### Step 6: Export the selection
 
 With the actor **still selected**: menu **File → Export Selected…**
 
-### Step 7 — Choose the `.glb` format
+### Step 7: Choose the `.glb` format
 
 In the save dialog, open the **"Save as type"** dropdown and choose:
 
@@ -118,7 +118,7 @@ In the save dialog, open the **"Save as type"** dropdown and choose:
 
 Name the file, pick a location, **Save**.
 
-### Step 8 — Set the glTF options
+### Step 8: Set the glTF options
 
 A **"glTF (Binary) Export Options"** window opens. The settings that matter:
 
@@ -129,7 +129,7 @@ A **"glTF (Binary) Export Options"** window opens. The settings that matter:
 
 Click **`Export`**.
 
-### Step 9 — Ignore the lightmap warnings
+### Step 9: Ignore the lightmap warnings
 
 You may see warnings like:
 `Material ... is baked using mesh data ... lightmap UV (channel 0) are overlapping ... may produce incorrect results`
@@ -137,7 +137,7 @@ You may see warnings like:
 **This is cosmetic and harmless for you.** Unreal "bakes" its node-graph materials into flat textures for glTF; the
 warning is about lightmaps, which the viewer doesn't use. The `.glb` is created fine.
 
-### Step 10 — Load it in the viewer
+### Step 10: Load it in the viewer
 
 Open the `.glb` in the viewer. You should get: **visible texture**, **upright character**, **animation playing**.
 

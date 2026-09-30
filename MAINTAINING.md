@@ -98,14 +98,16 @@ The Toolkit can only install scripts: it copies every file of the package into `
 
 ### Launcher (first install)
 
-`Scripts/RAV_Launcher.lua` no longer talks to ReaPack. In order:
+`Scripts/RAV_Launcher.lua` no longer installs anything through ReaPack. In order:
 
 1. not Windows 64-bit: message, stop;
-2. deletes `UserPlugins/reaper_animviewer.dll.old*` leftovers (failures ignored);
-3. extension loaded (`_RAV_OPEN_VIEWER` exists): opens the viewer;
-4. DLL in `UserPlugins` (ReaPack-owned or not) but not loaded: asks to restart REAPER;
-5. DLL next to the launcher (Toolkit install): copies it into `UserPlugins`, then asks to restart REAPER;
-6. otherwise: explains how to install.
+2. deletes `UserPlugins/reaper_animviewer.dll.old*` and `.new` leftovers (failures ignored);
+3. extension loaded: opens the viewer, only if it is closed (the action toggles it). "Loaded" means `NamedCommandLookup("_RAV_OPEN_VIEWER") ~= 0` **and** `GetToggleCommandState(id) ~= -1`: REAPER also hands out an id for a named command that a toolbar, menu or shortcut refers to while the extension is not loaded, and running that id does nothing (the 0.2.0 bug);
+4. DLL owned by ReaPack and present: asks to restart REAPER;
+5. DLL owned by ReaPack but missing (deleted by hand, ReaPack's registry still lists it): opens the ReaPack browser and names the package to uninstall. Copying the DLL there would leave it tied to that package, which may be obsolete (0.1.x `Extensions/ReaAnimViewer.ext`);
+6. DLL present but not loaded: if it differs from the Toolkit copy next to the launcher, reinstalls it (it may be damaged), then asks to restart REAPER;
+7. DLL next to the launcher (Toolkit install): copies it into `UserPlugins`, then asks to restart REAPER;
+8. otherwise: explains how to install.
 
 ### Extension self-update (`src/self_update.cpp`)
 

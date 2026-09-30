@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(reaanimviewer
-    VERSION 0.2.1
+    VERSION 0.2.2
     DESCRIPTION "Reaper extension that loads glTF/FBX rigs synced to the transport"
     LANGUAGES CXX
 )

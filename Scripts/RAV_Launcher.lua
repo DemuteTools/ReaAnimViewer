@@ -1,5 +1,5 @@
 -- @description ReaAnimViewer
--- @version 0.2.1
+-- @version 0.2.2
 -- @author Anthony Deneyer
 -- @about
 --   # ReaAnimViewer
@@ -12,8 +12,7 @@
 -- @links
 --   GitHub https://github.com/DemuteTools/ReaAnimViewer
 -- @changelog
---   - Fix: clicking Run in the Demute Reaper Toolkit did nothing when a toolbar button for RAV: Open Viewer already existed
---   - Run no longer closes the viewer when it is already open
+--   - Fix: Run said "installed" without installing anything when ReaPack still listed a deleted copy of the extension. It now opens ReaPack and tells you which package to uninstall
 -- @provides
 --   [main] .
 --   [win64 extension] reaper_animviewer.dll https://github.com/DemuteTools/ReaAnimViewer/releases/download/v$version/$path

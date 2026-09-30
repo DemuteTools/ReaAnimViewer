@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="ReaAnimViewer" commit="2cb8043608662b5ca65443dcf9fd0d81a996c400">
+<index version="1" name="ReaAnimViewer" commit="25a4742d610dabb6f4733ea6e3c9134fba6d1fb3">
   <category name="Scripts">
     <reapack name="RAV_Launcher.lua" type="script" desc="ReaAnimViewer">
       <metadata>
@@ -21,6 +21,14 @@
       <version name="0.1.1" author="Anthony Deneyer" time="2026-09-29T15:20:09Z">
         <changelog><![CDATA[- Fix an issue where close and reopen the view makes the view empty]]></changelog>
         <source main="main">https://github.com/DemuteTools/ReaAnimViewer/raw/6c63a8e654a88a217ee24296c5b747e86945a086/Scripts/RAV_Launcher.lua</source>
+      </version>
+      <version name="0.2.0" author="Anthony Deneyer" time="2026-09-30T12:38:16Z">
+        <changelog><![CDATA[- Single package: ReaAnimViewer now installs as one package in ReaPack (the extension and its launcher)
+- Demute Reaper Toolkit: install the card, click Run once, restart REAPER. No ReaPack prompt or sync anymore
+- Demute Reaper Toolkit: updates install themselves. Click Update on the card, then restart REAPER once
+- Upgrading from 0.1.x: in ReaPack, uninstall the old ReaAnimViewer package from the Extensions category first, then synchronize]]></changelog>
+        <source main="main">https://github.com/DemuteTools/ReaAnimViewer/raw/25a4742d610dabb6f4733ea6e3c9134fba6d1fb3/Scripts/RAV_Launcher.lua</source>
+        <source platform="win64" type="extension" file="reaper_animviewer.dll">https://github.com/DemuteTools/ReaAnimViewer/releases/download/v0.2.0/reaper_animviewer.dll</source>
       </version>
     </reapack>
   </category>

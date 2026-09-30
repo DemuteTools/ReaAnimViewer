@@ -1,5 +1,5 @@
 -- @description ReaAnimViewer
--- @version 0.1.1
+-- @version 0.2.0
 -- @author Anthony Deneyer
 -- @about
 --   # ReaAnimViewer
@@ -12,7 +12,10 @@
 -- @links
 --   GitHub https://github.com/DemuteTools/ReaAnimViewer
 -- @changelog
---   - Fix an issue where close and reopen the view makes the view empty
+--   - Single package: ReaAnimViewer now installs as one package in ReaPack (the extension and its launcher)
+--   - Demute Reaper Toolkit: install the card, click Run once, restart REAPER. No ReaPack prompt or sync anymore
+--   - Demute Reaper Toolkit: updates install themselves. Click Update on the card, then restart REAPER once
+--   - Upgrading from 0.1.x: in ReaPack, uninstall the old ReaAnimViewer package from the Extensions category first, then synchronize
 -- @provides
 --   [main] .
 --   [win64 extension] reaper_animviewer.dll https://github.com/DemuteTools/ReaAnimViewer/releases/download/v$version/$path

@@ -78,12 +78,20 @@ local function loaded_viewer_command()
   return id
 end
 
-local function reapack_owns(path)
-  if not reaper.ReaPack_GetOwner then return false end
+-- "<category>/<package>" of the ReaPack package that owns this file, or nil.
+-- ReaPack answers from its registry, so it can own a file that no longer exists
+-- (deleted by hand).
+local function reapack_owner(path)
+  if not reaper.ReaPack_GetOwner then return nil end
   local entry = reaper.ReaPack_GetOwner(path)
-  if not entry then return false end
+  if not entry then return nil end
+  local name = "ReaAnimViewer"
+  if reaper.ReaPack_GetEntryInfo then
+    local ok, _, category, package = reaper.ReaPack_GetEntryInfo(entry)
+    if ok and category and package then name = category .. "/" .. package end
+  end
   if reaper.ReaPack_FreeEntry then reaper.ReaPack_FreeEntry(entry) end
-  return true
+  return name
 end
 
 local function read_file(path)
@@ -142,8 +150,19 @@ local function main()
   local has_sibling = sibling and reaper.file_exists(sibling)
 
   -- On disk but not loaded yet (REAPER loads extensions at startup only).
-  if reapack_owns(installed) then
+  local owner = reapack_owner(installed)
+  if owner and reaper.file_exists(installed) then
     ask_restart()
+    return
+  end
+  if owner then
+    -- ReaPack still lists the DLL as installed but the file is gone: copying it
+    -- here would leave it tied to that package, so let ReaPack release it first.
+    if reaper.ReaPack_BrowsePackages then reaper.ReaPack_BrowsePackages("ReaAnimViewer") end
+    message("ReaPack still lists ReaAnimViewer as installed (package " .. owner .. "), "
+      .. "but the extension file is missing.\n\n"
+      .. "In the ReaPack window: right-click that ReaAnimViewer package, choose Uninstall, "
+      .. "click Apply, then click Run again.")
     return
   end
   if reaper.file_exists(installed) then

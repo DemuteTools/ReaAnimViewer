@@ -18,6 +18,9 @@ rem    noinstall   Do not copy the DLL into REAPER's UserPlugins folder.
 rem    nopause     Do not wait for a key press at the end (used by release.bat).
 rem
 rem  Double-click = release build + install into REAPER.
+rem  The DLL reports version "dev": a dev build never updates itself from the
+rem  Demute Reaper Toolkit copy. Only release.bat compiles a real version in
+rem  (it sets RAV_RELEASE_BUILD=1 and RAV_VERSION for this run only).
 rem  Examples:  build.bat debuglog
 rem             build.bat release clean
 rem ============================================================================
@@ -48,6 +51,11 @@ if /I "%MODE%"=="debuglog"  set "BUILD_DIR=build-debuglog"  & set "DEFINE=RAV_EN
 if /I "%MODE%"=="forcefail" set "BUILD_DIR=build-forcefail" & set "DEFINE=RAV_FORCE_INIT_FAILURE"
 
 set "DLL=%BUILD_DIR%\Release\reaper_animviewer.dll"
+
+rem A stray RAV_VERSION in the user's environment must not turn a dev build into
+rem a "release" one (see the note at the top).
+set "VERSION_ARG="
+if "%RAV_RELEASE_BUILD%"=="1" set "VERSION_ARG=%RAV_VERSION%"
 set "USERPLUGINS=%APPDATA%\REAPER\UserPlugins"
 
 echo ============================================================
@@ -72,9 +80,9 @@ if "%CLEAN%"=="1" if exist "%BUILD_DIR%\" (
 
 echo [1/3] Configuring...
 if "%DEFINE%"=="" (
-    cmake -B "%BUILD_DIR%" -G "Visual Studio 17 2022" -A x64
+    cmake -B "%BUILD_DIR%" -G "Visual Studio 17 2022" -A x64 "-DRAV_VERSION=%VERSION_ARG%"
 ) else (
-    cmake -B "%BUILD_DIR%" -G "Visual Studio 17 2022" -A x64 -DCMAKE_CXX_FLAGS="/D %DEFINE%"
+    cmake -B "%BUILD_DIR%" -G "Visual Studio 17 2022" -A x64 "-DRAV_VERSION=%VERSION_ARG%" -DCMAKE_CXX_FLAGS="/D %DEFINE%"
 )
 if errorlevel 1 (
     echo.

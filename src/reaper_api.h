@@ -45,5 +45,10 @@
 #define REAPERAPI_WANT_GetMediaItem_Track          // item -> MediaTrack* (the spanning item's track)
 #define REAPERAPI_WANT_GetMediaTrackInfo_Value     // "IP_TRACKNUMBER" (1-based, top=1 = highest priority; 0=not found, -1=master)
 
+// Self-update from the Demute Reaper Toolkit copy (src/self_update.cpp): locate
+// UserPlugins / the Toolkit folder, and tell the user to restart after a startup swap.
+#define REAPERAPI_WANT_GetResourcePath
+#define REAPERAPI_WANT_ShowMessageBox
+
 #include "reaper_plugin.h"
 #include "reaper_plugin_functions.h"

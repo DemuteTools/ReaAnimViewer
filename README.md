@@ -22,7 +22,7 @@ ReaAnimViewer is a native REAPER extension (a single `.dll`). It teaches REAPER 
 - **Skinned meshes and textures:** Full skeletal deformation, diffuse/normal/specular maps, multi-material meshes.
 - **Several animations per project:** Put different animations on different tracks; the viewer shows the one on the topmost track under the playhead.
 - **Viewer tools:** A built-in side menu for lighting, floor, shadows and render quality.
-- **Everything bundled:** No ReaImGui, no SWS, no runtime to install. ReaPack installs one file and that's it.
+- **Everything bundled:** No ReaImGui, no SWS, no runtime to install. The whole viewer is a single extension file.
 
 ---
 
@@ -76,12 +76,12 @@ The [Demute Reaper Toolkit](https://www.demute.studio/documentation/reaper-toolk
    2. Go to **Extensions > ReaPack > Manage repositories**, select **Demute_Toolkit** and click **Browse packages**.
    3. Search for **DM_ReaperToolkit**, right-click it, choose **Install**, then click **Apply**.
 3. Open the Toolkit: **Actions > Show action list**, search for **DM_ReaperToolkit** and run it. It automatically scans for available tools and updates.
-4. Select the **ReaAnimViewer** card and install it. This installs the **ReaAnimViewer Launcher** script.
-5. Run the launcher (from the Toolkit, or **Actions > Show action list**, search for **RAV_Launcher**). The first time, it offers to install the ReaAnimViewer extension through ReaPack: click **Yes** and let ReaPack download it.
+4. Select the **ReaAnimViewer** card and install it.
+5. Click **Run** on the card, once. It copies the extension into REAPER's `UserPlugins` folder and tells you when it is done.
 6. **Restart REAPER.** Extensions are only loaded at startup.
-7. Run the launcher again: it now opens the viewer. You can also use the action **RAV: Open Viewer** directly.
+7. Use the action **RAV: Open Viewer** (or **Run** on the card, which now opens the viewer).
 
-Why a launcher? The Toolkit installs scripts, while ReaAnimViewer is a native extension that REAPER loads from its `UserPlugins` folder. The launcher hands the extension over to ReaPack, which installs and updates it in the right place.
+Why click Run once? The Toolkit installs scripts, while ReaAnimViewer is a native extension that REAPER loads from its `UserPlugins` folder. The first run puts it there. After that, the extension updates itself when the Toolkit updates the card.
 
 ### Install with ReaPack
 
@@ -94,19 +94,21 @@ Why a launcher? The Toolkit installs scripts, while ReaAnimViewer is a native ex
    ```
 
 4. Go to **Extensions > ReaPack > Browse packages...**, search for **ReaAnimViewer**.
-5. Right-click **ReaAnimViewer** (the extension), choose **Install**, then click **Apply**. The **ReaAnimViewer Launcher** package is optional: it is the script used by the Demute Reaper Toolkit.
+5. Right-click **ReaAnimViewer**, choose **Install**, then click **Apply**. ReaPack puts the extension in `UserPlugins` directly: you never need to run the launcher script that comes with it.
 6. **Restart REAPER.** Extensions are only loaded at startup.
 7. Check the installation: go to **Actions > Show action list**, search for **RAV**. You should see **RAV: Open Viewer**.
 
 ### Updating
 
-**With the Demute Reaper Toolkit:** open the Toolkit and update the **ReaAnimViewer** card. Then run the launcher: it sees that a newer version is available, offers to update the extension through ReaPack, and asks you to restart REAPER.
+**With the Demute Reaper Toolkit:** open the Toolkit, click **Update** on the **ReaAnimViewer** card, then restart REAPER. The extension replaces itself with the new version when REAPER closes, so the new version runs after the restart. Nothing else to run.
 
 **With ReaPack:** go to **Extensions > ReaPack > Synchronize packages** (or wait for the automatic check), click **Apply**, then **restart REAPER** so the new version is loaded.
 
 ### Uninstalling
 
-Go to **Extensions > ReaPack > Browse packages...**, right-click **ReaAnimViewer** (and **ReaAnimViewer Launcher** if it is listed), choose **Uninstall** on each, click **Apply** and restart REAPER.
+**With ReaPack:** go to **Extensions > ReaPack > Browse packages...**, right-click **ReaAnimViewer**, choose **Uninstall**, click **Apply** and restart REAPER.
+
+**With the Demute Reaper Toolkit:** uninstall the **ReaAnimViewer** card in the Toolkit, then close REAPER and delete `reaper_animviewer.dll` from the `UserPlugins` folder (see below).
 
 If you installed the DLL manually, close REAPER and delete `reaper_animviewer.dll` from the `UserPlugins` folder of your REAPER resource path (**Options > Show REAPER resource path in explorer/finder**, usually `%APPDATA%\REAPER\UserPlugins\`).
 
@@ -125,6 +127,7 @@ If you can't use ReaPack:
 |---------|-----|
 | **RAV: Open Viewer** does not appear in the action list | Restart REAPER after installing. Make sure you run the 64-bit Windows version of REAPER. |
 | The viewer opens but stays black / shows an error | Update your graphics driver: the viewer needs OpenGL 3.3. |
+| ReaPack reports a conflict on `reaper_animviewer.dll`, or the extension stays on 0.1.x | Version 0.1.x came as two packages, also when installed through the Toolkit. In **Extensions > ReaPack > Browse packages...**, uninstall the old **ReaAnimViewer** package whose category is **Extensions** (keep the one in **Scripts**), click **Apply**, restart REAPER, then run **Synchronize packages**. |
 | ReaPack says the file is in use when updating | Close REAPER, reopen it, and run **Synchronize packages** again before loading a project. |
 
 ---

@@ -10,8 +10,7 @@ Everything a maintainer does is a double-click on one of the `.bat` files at the
 | `cmake/`, `CMakeLists.txt` | Build configuration. Dependencies are fetched and statically linked. |
 | `extern/` | Vendored third-party headers (REAPER SDK) |
 | `Icons/` | Viewer menu icons (converted to `src/overlay_icons.h` by `tools/gen_icons.py`) |
-| `Extensions/ReaAnimViewer.ext` | ReaPack package definition (version, changelog, download URL) |
-| `Scripts/RAV_Launcher.lua` | Launcher script for the Demute Reaper Toolkit (see below) |
+| `Scripts/RAV_Launcher.lua` | The only ReaPack package: launcher script, plus the DLL (version, changelog, download URL). See [Demute Reaper Toolkit](#demute-reaper-toolkit). |
 | `index.xml` | ReaPack index, **generated** by GitHub Actions. Never edit it by hand. |
 | `.reapack-index.conf` | reapack-index settings (repository name, ignored folders) |
 | `.github/workflows/` | CI: validates the package on every push, regenerates `index.xml` on `main` |
@@ -53,15 +52,15 @@ After testing a `debuglog` or `forcefail` build, run `build.bat` again to reinst
    - installs and logs in GitHub CLI if needed,
    - asks for the new version (`0.2.0`, or `0.2.0-beta` for a pre-release),
    - opens Notepad for the changelog (one change per line),
-   - makes a clean release build and checks the DLL has no VC++ runtime dependency,
-   - updates the version in `Extensions/ReaAnimViewer.ext`, `Scripts/RAV_Launcher.lua`, `CMakeLists.txt` and `README.md`,
+   - makes a clean release build with `RAV_VERSION` set, so the DLL knows its own version (see [Demute Reaper Toolkit](#demute-reaper-toolkit)), and checks the DLL has no VC++ runtime dependency,
+   - updates the version in `Scripts/RAV_Launcher.lua`, `CMakeLists.txt` and `README.md`,
    - asks for confirmation, then commits, tags `vX.Y.Z`, creates the GitHub Release with `reaper_animviewer.dll` and pushes `main`.
 3. GitHub Actions runs `reapack-index` and commits the updated `index.xml` (about one minute). ReaPack and the Demute Reaper Toolkit then offer the update.
 4. Run `git pull` to get the `index.xml` commit made by the bot.
 
-Never change `@version` in the `.ext` file by hand: `release.bat` must create the matching GitHub Release, otherwise ReaPack would point to a download that does not exist. The `.ext` starts with `@noindex` until the first release, so nothing is published before that.
+Never change `@version` in `Scripts/RAV_Launcher.lua` by hand: `release.bat` must create the matching GitHub Release, otherwise ReaPack would point to a download that does not exist, and the self-update would compare against a wrong version.
 
-The download URL in the `.ext` is built from the `origin` remote, so it follows the repository when it moves to the Demute organization. After the move, update `origin` (`git remote set-url origin ...`) and the repository URLs in `README.md`.
+The download URL in the launcher header is built from the `origin` remote, so it follows the repository when it moves to the Demute organization. After the move, update `origin` (`git remote set-url origin ...`) and the repository URLs in `README.md`.
 
 ## ReaPack Index
 
@@ -86,15 +85,46 @@ Double-clicking `dev-sync.bat` shows a menu. `.claude/settings.local.json` stays
 
 ## Demute Reaper Toolkit
 
-The Toolkit can only install scripts: it copies the files of an index into `Scripts/<index>/<category>/`. A native extension must be in `UserPlugins` instead, so the Toolkit does not install the DLL directly.
+The Toolkit can only install scripts: it copies every file of the package into `Scripts/<index>/<category>/` and ignores the per-file `type`. A native extension must be in `UserPlugins`, so this repository has a single package, `Scripts/RAV_Launcher.lua`, whose header provides two files:
 
-`Scripts/RAV_Launcher.lua` bridges the gap. It is a regular ReaPack script package in this repository:
+```
+@provides
+  [main] .
+  [win64 extension] reaper_animviewer.dll https://github.com/.../releases/download/v$version/$path
+```
 
-- launcher newer than the extension installed by ReaPack (the Toolkit updated the launcher): it offers to update the extension, synchronizes ReaPack, waits for the new version, then asks to restart REAPER;
-- extension loaded: it runs **RAV: Open Viewer**;
-- extension on disk but not loaded yet: it asks to restart REAPER;
-- extension missing: it adds this repository to ReaPack (auto-install on), synchronizes, waits for the DLL, then asks to restart REAPER. If ReaPack does not install it within 90 seconds, it opens the ReaPack browser on ReaAnimViewer so the user can click Install.
+- **ReaPack** honours `extension`: the DLL goes straight to `UserPlugins`. The launcher is never needed.
+- **The Toolkit** puts both files in `Scripts/ReaAnimViewer/Scripts/`. Its entry for this tool is `main_script = "RAV_Launcher.lua"`, so the card's **Run** button runs the launcher.
 
-The extension is therefore always owned and updated by ReaPack, whatever the install path.
+### Launcher (first install)
 
-Toolkit entry for this tool: `main_script = "RAV_Launcher.lua"`. `release.bat` keeps the launcher version equal to the extension version: the Toolkit displays the launcher's version, and the launcher uses its own version to know which extension version is expected. A DLL not owned by ReaPack (a `build.bat` development build) is never touched.
+`Scripts/RAV_Launcher.lua` no longer talks to ReaPack. In order:
+
+1. not Windows 64-bit: message, stop;
+2. deletes `UserPlugins/reaper_animviewer.dll.old*` leftovers (failures ignored);
+3. extension loaded (`_RAV_OPEN_VIEWER` exists): opens the viewer;
+4. DLL in `UserPlugins` (ReaPack-owned or not) but not loaded: asks to restart REAPER;
+5. DLL next to the launcher (Toolkit install): copies it into `UserPlugins`, then asks to restart REAPER;
+6. otherwise: explains how to install.
+
+### Extension self-update (`src/self_update.cpp`)
+
+After a Toolkit update, the new DLL sits in `Scripts/ReaAnimViewer/Scripts/`. The extension replaces its own file with it:
+
+- **At REAPER quit** (entry point called with `rec == NULL`): if the Toolkit copy is newer, it is copied to `.new` and checked (complete PE image, embedded version equal to the launcher's `@version`), the loaded DLL is renamed to `.old` (Windows allows renaming a loaded DLL, not overwriting it) and `.new` takes its place. One restart, no message. ReaPack may already be unloaded at this point, so only the local version comparator is used.
+- **At the first timer tick after startup**: deletes `.old*` leftovers, checks whether ReaPack owns the DLL (ReaPack loads after us, so this cannot run in the entry point), and, as a fallback when the quit swap did not happen (crash), swaps and shows one "restart REAPER" message.
+
+The version of the Toolkit copy is the `@version` of the launcher next to it (`release.bat` keeps them equal), and the DLL's own embedded version must match it. The running version is `RAV_VERSION_STRING`, generated by CMake (`src/rav_version.h.in`) from `-DRAV_VERSION`, which only `release.bat` passes (through `build.bat`, with `RAV_RELEASE_BUILD=1`). CMake drops it from its cache right away, so any other configure builds `dev`.
+
+Nothing happens when:
+
+- the DLL is a **dev build** (`build.bat`, IDE or manual CMake builds): it never updates itself and is never replaced;
+- **ReaPack owns the DLL** (ReaPack handles updates);
+- the Toolkit copy is the **same or older** version, or its launcher `@version` cannot be read, or the DLL next to it is incomplete or embeds another version;
+- the DLL was not loaded from `<ResourcePath>/UserPlugins`.
+
+Any failure (locked or read-only folder) is silent and retried at the next quit or startup.
+
+### Migration from 0.1.x
+
+0.1.x shipped the DLL in a separate `Extensions/ReaAnimViewer.ext` package. The 0.1.x launcher installed it through ReaPack too, so Toolkit users own it in ReaPack as well. ReaPack refuses to let the new package install a file another package owns, and the self-update never touches a ReaPack-owned DLL, so every 0.1.x user must uninstall the old package once: in the ReaPack browser, the **ReaAnimViewer** entry in the **Extensions** category (both entries are called ReaAnimViewer; the new one is in **Scripts**). Put this in the release notes of the first release with this layout; the README troubleshooting table has the same steps.

@@ -6,6 +6,7 @@
 #include "console_log.h"
 #include "pcm_source_anim.h"
 #include "reaper_api.h"
+#include "self_update.h"
 #include "viewer_window.h"
 
 namespace rav {
@@ -47,8 +48,11 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     using namespace rav;
 
     if (!rec) {
-        // Reaper is unloading us: tear down everything we registered, in
-        // reverse order, so no live pointers into our DLL outlive it.
+        // Reaper is quitting. First swap in a newer Toolkit copy of our DLL, if
+        // any (it is still mapped: renamed, not overwritten; see self_update.h).
+        SelfUpdateOnQuit();
+        // Then tear down everything we registered, in reverse order, so no
+        // live pointers into our DLL outlive it.
         CloseViewerWindow();
         if (g_register) {
             // Reverse-of-load teardown. -pcmsrc uses the SAME pointer the load
@@ -86,6 +90,10 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     // (Story 4.1). Same pointer is handed to -pcmsrc on unload above (AC1/AC3).
     rec->Register("pcmsrc", PcmSourceRegistration());
     LogInfo("pcmsrc factory registered (.glb/.gltf/.fbx/.dae)");
+
+    // Checks the Demute Reaper Toolkit copy on the first timer tick (ReaPack's API
+    // is not loaded yet at this point). No-op for dev builds.
+    SelfUpdateInit(hInstance, rec->GetFunc, rec->Register);
 
     LogInfo("extension loaded (Phase 0)");
     return 1;

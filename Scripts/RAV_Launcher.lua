@@ -1,5 +1,5 @@
 -- @description ReaAnimViewer
--- @version 0.2.0
+-- @version 0.2.1
 -- @author Anthony Deneyer
 -- @about
 --   # ReaAnimViewer
@@ -12,10 +12,8 @@
 -- @links
 --   GitHub https://github.com/DemuteTools/ReaAnimViewer
 -- @changelog
---   - Single package: ReaAnimViewer now installs as one package in ReaPack (the extension and its launcher)
---   - Demute Reaper Toolkit: install the card, click Run once, restart REAPER. No ReaPack prompt or sync anymore
---   - Demute Reaper Toolkit: updates install themselves. Click Update on the card, then restart REAPER once
---   - Upgrading from 0.1.x: in ReaPack, uninstall the old ReaAnimViewer package from the Extensions category first, then synchronize
+--   - Fix: clicking Run in the Demute Reaper Toolkit did nothing when a toolbar button for RAV: Open Viewer already existed
+--   - Run no longer closes the viewer when it is already open
 -- @provides
 --   [main] .
 --   [win64 extension] reaper_animviewer.dll https://github.com/DemuteTools/ReaAnimViewer/releases/download/v$version/$path

@@ -69,6 +69,17 @@ local function remove_leftovers()
   end
 end
 
+-- Command id of "RAV: Open Viewer" when the extension is loaded, else nil.
+-- NamedCommandLookup alone is not enough: REAPER also reserves an id for a named
+-- command that a toolbar, menu or shortcut refers to, even when the extension is
+-- not loaded. The extension reports a toggle state (0 or 1) for its action; an id
+-- that is only reserved reports -1.
+local function loaded_viewer_command()
+  local id = reaper.NamedCommandLookup(OPEN_VIEWER_ID)
+  if id == 0 or reaper.GetToggleCommandState(id) == -1 then return nil end
+  return id
+end
+
 local function reapack_owns(path)
   if not reaper.ReaPack_GetOwner then return false end
   local entry = reaper.ReaPack_GetOwner(path)
@@ -117,12 +128,15 @@ local function main()
   remove_leftovers()
 
   local installed = userplugins_dir() .. SEP .. DLL_NAME
-  local open_viewer = reaper.NamedCommandLookup(OPEN_VIEWER_ID)
 
   -- Extension loaded: open the viewer. Updates are handled by ReaPack, or by the
   -- extension itself when it was installed through the Toolkit.
-  if open_viewer ~= 0 then
-    reaper.Main_OnCommand(open_viewer, 0)
+  local open_viewer = loaded_viewer_command()
+  if open_viewer then
+    -- The action toggles the viewer: only run it when the viewer is closed.
+    if reaper.GetToggleCommandState(open_viewer) ~= 1 then
+      reaper.Main_OnCommand(open_viewer, 0)
+    end
     return
   end
 

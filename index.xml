@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="ReaAnimViewer" commit="25a4742d610dabb6f4733ea6e3c9134fba6d1fb3">
+<index version="1" name="ReaAnimViewer" commit="a561e5c39a42058a65f56dc4c3803f7c92a18926">
   <category name="Scripts">
     <reapack name="RAV_Launcher.lua" type="script" desc="ReaAnimViewer">
       <metadata>
@@ -29,6 +29,12 @@
 - Upgrading from 0.1.x: in ReaPack, uninstall the old ReaAnimViewer package from the Extensions category first, then synchronize]]></changelog>
         <source main="main">https://github.com/DemuteTools/ReaAnimViewer/raw/25a4742d610dabb6f4733ea6e3c9134fba6d1fb3/Scripts/RAV_Launcher.lua</source>
         <source platform="win64" type="extension" file="reaper_animviewer.dll">https://github.com/DemuteTools/ReaAnimViewer/releases/download/v0.2.0/reaper_animviewer.dll</source>
+      </version>
+      <version name="0.2.1" author="Anthony Deneyer" time="2026-09-30T12:57:30Z">
+        <changelog><![CDATA[- Fix: clicking Run in the Demute Reaper Toolkit did nothing when a toolbar button for RAV: Open Viewer already existed
+- Run no longer closes the viewer when it is already open]]></changelog>
+        <source main="main">https://github.com/DemuteTools/ReaAnimViewer/raw/a561e5c39a42058a65f56dc4c3803f7c92a18926/Scripts/RAV_Launcher.lua</source>
+        <source platform="win64" type="extension" file="reaper_animviewer.dll">https://github.com/DemuteTools/ReaAnimViewer/releases/download/v0.2.1/reaper_animviewer.dll</source>
       </version>
     </reapack>
   </category>

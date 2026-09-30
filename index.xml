@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="ReaAnimViewer" commit="a561e5c39a42058a65f56dc4c3803f7c92a18926">
+<index version="1" name="ReaAnimViewer" commit="8dc50d601a6462d0585f93100b2bc9d1e1acbb89">
   <category name="Scripts">
     <reapack name="RAV_Launcher.lua" type="script" desc="ReaAnimViewer">
       <metadata>
@@ -35,6 +35,11 @@
 - Run no longer closes the viewer when it is already open]]></changelog>
         <source main="main">https://github.com/DemuteTools/ReaAnimViewer/raw/a561e5c39a42058a65f56dc4c3803f7c92a18926/Scripts/RAV_Launcher.lua</source>
         <source platform="win64" type="extension" file="reaper_animviewer.dll">https://github.com/DemuteTools/ReaAnimViewer/releases/download/v0.2.1/reaper_animviewer.dll</source>
+      </version>
+      <version name="0.2.2" author="Anthony Deneyer" time="2026-09-30T13:11:28Z">
+        <changelog><![CDATA[- Fix: Run said "installed" without installing anything when ReaPack still listed a deleted copy of the extension. It now opens ReaPack and tells you which package to uninstall]]></changelog>
+        <source main="main">https://github.com/DemuteTools/ReaAnimViewer/raw/8dc50d601a6462d0585f93100b2bc9d1e1acbb89/Scripts/RAV_Launcher.lua</source>
+        <source platform="win64" type="extension" file="reaper_animviewer.dll">https://github.com/DemuteTools/ReaAnimViewer/releases/download/v0.2.2/reaper_animviewer.dll</source>
       </version>
     </reapack>
   </category>

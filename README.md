@@ -152,6 +152,7 @@ A manual install does not update itself: repeat these steps for each new version
 | The viewer opens but stays black / shows an error | Update your graphics driver: the viewer needs OpenGL 3.3. |
 | ReaPack reports a conflict on `reaper_animviewer.dll`, or the extension stays on 0.1.x | See [Upgrading from 0.1.x](#upgrading-from-01x). |
 | ReaPack says the file is in use when updating | Close REAPER, reopen it, and run **Synchronize packages** again before loading a project. |
+| The viewer shows **Failed to load: ...** | Click **Copy details** next to the message (or **Copy error log** in the viewer menu) and paste the text into your bug report. |
 
 ---
 
@@ -194,6 +195,9 @@ Each file should contain **one skinned mesh and its animation**. Animations buil
 ## Viewer Menu
 
 Click the **menu icon** in the top-left corner of the viewer to show or hide the tool menu.
+
+- **Recenter camera**: Frame the character again.
+- **Copy error log**: Copy the recent load errors and your graphics card info to the clipboard, ready to paste into a bug report.
 
 ### Light
 

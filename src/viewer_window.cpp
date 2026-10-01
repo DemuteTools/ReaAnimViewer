@@ -171,8 +171,16 @@ int  g_msaa_max   = 0;
 // Story 6.5.5 — minimal on-canvas load-failure indication (AC7), rehoming the signal 6.5.2
 // silenced. Set where the load-failure LogError fires; shown as a brief transient overlay
 // while ElapsedSeconds() < g_load_error_until, then it just disappears. No popup (AR16).
+// Long enough to reach its "Copy details" button, and held while hovered.
+constexpr double kLoadErrorSeconds = 8.0;
 char   g_load_error[96]    = {0};
 double g_load_error_until  = 0.0;
+
+// Copyable error log — the GL strings head the clipboard text (probed in StartRendering)
+// and g_copied_until drives the brief "Copied!" button feedback.
+std::string g_gl_version;
+std::string g_gl_renderer;
+double      g_copied_until = 0.0;
 
 // Icon textures (Antho's SVGs, uploaded once at ImGui init; freed in StopRendering).
 GLuint g_icon_menu   = 0;
@@ -222,6 +230,18 @@ double ElapsedSeconds()
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
     return double(now.QuadPart - g_qpc_start.QuadPart) / double(g_qpc_freq.QuadPart);
+}
+
+// Puts a pasteable bug-report block on the clipboard: the GPU/driver the viewer runs on,
+// then the kept warn/error lines (console_log.h). Called from an ImGui button, so it runs
+// inside the frame where ImGui's Win32 clipboard hook is live.
+void CopyErrorLogToClipboard()
+{
+    std::string text = "ReaAnimViewer error log\n";
+    text += "OpenGL: " + g_gl_version + " on " + g_gl_renderer + "\n";
+    text += HasRecentLog() ? RecentLogText() : std::string("(no errors logged)\n");
+    ImGui::SetClipboardText(text.c_str());
+    g_copied_until = ElapsedSeconds() + 2.0;
 }
 
 void DestroyGLContext()
@@ -323,7 +343,11 @@ void RenderTick()
             // The full GPU load is safe HERE — unlike 4.2's GL-free file-drop — because
             // RenderTick runs with the viewer's WGL context current on this thread, which
             // is exactly what LoadAsset/SetAsset require (AC2).
+            // Tag the loader's warnings (texture / skin lines name no file) with this path in
+            // the copyable log; cleared before the load-failed line, which names it itself.
+            SetLogContext(item_path);
             LoadResult r = LoadAsset(item_path);
+            SetLogContext("");
             if (r.asset) {
                 g_renderer.SetAsset(std::move(*r.asset));
                 LogInfo("now showing %s", item_path.c_str());
@@ -333,15 +357,15 @@ void RenderTick()
                 // alone would re-attempt every frame while this item stays under the
                 // playhead (its path never matches), so advance the gate on FAILURE too
                 // (Dev Notes "Previous-story intelligence" / cold-path hardening).
-                LogError("load failed [%s]: %s", LoadErrorCategoryName(r.category),
-                         r.detail.c_str());
+                LogError("load failed [%s] %s: %s", LoadErrorCategoryName(r.category),
+                         item_path.c_str(), r.detail.c_str());
                 // Story 6.5.5 — rehome the load-failure signal on-canvas (AC7, amended AR16):
-                // a short transient line near the top, shown for ~4 s. This does NOT change the
-                // load-bearing gate-advance-on-failure logic below — it only surfaces it. The
-                // category name is enough for the user; the detail stays in the (silent) log.
+                // a short transient line near the top. This does NOT change the load-bearing
+                // gate-advance-on-failure logic below — it only surfaces it. The line shows the
+                // category; the detail is in the kept log its "Copy details" button copies.
                 snprintf(g_load_error, sizeof(g_load_error), "Failed to load: %s",
                          LoadErrorCategoryName(r.category));
-                g_load_error_until = ElapsedSeconds() + 4.0;
+                g_load_error_until = ElapsedSeconds() + kLoadErrorSeconds;
             }
             // Advance the gate to the current item's path whether the load succeeded or
             // failed — either way we have "handled" this path and must not retry it every
@@ -677,6 +701,12 @@ void DrawToolUi()
         if (ImGui::Button("Recenter camera", ImVec2(196.0f, 0.0f)))
             g_renderer.ResetCamera();
 
+        // Always enabled: even with no error kept, the GPU line helps a bug report.
+        const bool copied = ElapsedSeconds() < g_copied_until;
+        if (ImGui::Button(copied ? "Copied!##copylog" : "Copy error log##copylog",
+                          ImVec2(196.0f, 0.0f)))
+            CopyErrorLogToClipboard();
+
         // A collapsible section header: Antho's icon + a CollapsingHeader (the ▸ arrow
         // collapses/expands the group). Default-open so the menu looks unchanged until the
         // user folds a section; the open/closed state is kept for the session (in-memory).
@@ -806,13 +836,22 @@ void DrawToolUi()
     }
 
     // Minimal load-failure indication (AC7) — a brief transient line, top-centre, shown while
-    // the failure is fresh (~4 s, set at the LogError site). Rehomes the OTHER 6.5.2-silenced
-    // signal on-canvas (amended AR16); no popup, no block — it just disappears when it expires.
+    // the failure is fresh (kLoadErrorSeconds, set at the LogError site). Rehomes the OTHER
+    // 6.5.2-silenced signal on-canvas (amended AR16); no popup, no block — it just disappears
+    // when it expires. Unlike the FPS read-out it takes input, for its "Copy details" button:
+    // it only captures the mouse while hovered (its own small rect), and hovering holds it.
     if (g_load_error[0] && ElapsedSeconds() < g_load_error_until) {
         ImGui::SetNextWindowPos(ImVec2(g_client_w * 0.5f, 10.0f),
                                 ImGuiCond_Always, ImVec2(0.5f, 0.0f));
-        if (ImGui::Begin("##loaderr", nullptr, kReadoutFlags))
+        if (ImGui::Begin("##loaderr", nullptr, kReadoutFlags & ~ImGuiWindowFlags_NoInputs)) {
             ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f), "%s", g_load_error);
+            ImGui::SameLine();
+            const bool copied = ElapsedSeconds() < g_copied_until;
+            if (ImGui::SmallButton(copied ? "Copied!##copyerr" : "Copy details##copyerr"))
+                CopyErrorLogToClipboard();
+            if (ImGui::IsWindowHovered() && g_load_error_until < ElapsedSeconds() + 1.0)
+                g_load_error_until = ElapsedSeconds() + 1.0;
+        }
         ImGui::End();
     }
 
@@ -850,6 +889,8 @@ bool StartRendering(HWND hwnd)
     const char* gl_renderer = reinterpret_cast<const char*>(glGetString(GL_RENDERER));
     if (!gl_version)  gl_version  = "unknown";
     if (!gl_renderer) gl_renderer = "unknown";
+    g_gl_version  = gl_version;   // kept for the "Copy error log" header
+    g_gl_renderer = gl_renderer;
 
     // Story 6.5.6 — query the GPU's max MSAA sample count once, now the context is current
     // (glGetIntegerv is GL 1.1, GL_MAX_SAMPLES just an enum — no loader needed yet). It clamps

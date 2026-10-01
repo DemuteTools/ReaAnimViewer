@@ -7,3 +7,7 @@
 #pragma once
 
 #define RAV_VERSION_STRING "@RAV_VERSION_EFFECTIVE@"
+
+// What the user sees (viewer menu, copied error log): the release version, or
+// "<last release>-dev+<commit>[-dirty]" for a dev build. Display only, never compared.
+#define RAV_DISPLAY_VERSION "@RAV_DISPLAY_VERSION@"

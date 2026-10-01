@@ -22,6 +22,7 @@
 #include <cstddef>
 #include <cstring>    // std::strlen for the extension check
 #include <filesystem>
+#include <fstream>    // ParseFailureHint reads the file's first bytes (ASCII FBX check)
 #include <string>
 #include <system_error>
 #include <unordered_map>  // bone name -> global skeleton index (D1 skin remap)
@@ -965,6 +966,34 @@ bool FileExists(const std::string& path)
     return std::filesystem::exists(std::filesystem::u8path(path), ec);
 }
 
+// Plain-language hint for a file assimp could not read (LoadResult::hint). Recognizes
+// the common export mistakes we can tell apart from assimp's message and the file's
+// first bytes; anything else gets the generic "damaged, export again" line. No-throw.
+std::string ParseFailureHint(const std::string& path, const std::string& assimp_error)
+try {
+    if (assimp_error.find("old format version") != std::string::npos)
+        return "This FBX format is too old. Re-export it as FBX 2013 or newer.";
+    if (assimp_error.find("No suitable reader") != std::string::npos)
+        return "Not a valid 3D file: it may be damaged, or have the wrong file extension.";
+
+    // A text (ASCII) FBX starts with "; FBX ..." comments and FBXHeaderExtension, a
+    // binary one with "Kaydara FBX Binary". assimp's ASCII reader is the fragile one.
+    char head[1024] = {};
+    std::ifstream f(std::filesystem::u8path(path), std::ios::binary);
+    f.read(head, sizeof(head) - 1);
+    const std::string start(head, static_cast<size_t>(f.gcount()));
+    if (start.rfind("Kaydara FBX Binary", 0) != 0 &&
+        (start.find("; FBX") != std::string::npos ||
+         start.find("FBXHeaderExtension") != std::string::npos))
+        return "This FBX is saved as text (ASCII). Re-export it as binary FBX.";
+
+    return "This file couldn't be read. It may be damaged: try exporting it again.";
+} catch (...) {
+    // Also called from LoadAsset's catch handlers, where a throw would escape: degrade
+    // to no hint (an empty string never allocates); the viewer shows its generic line.
+    return {};
+}
+
 }  // namespace
 
 const char* LoadErrorCategoryName(LoadErrorCategory category)
@@ -988,7 +1017,8 @@ LoadResult LoadAsset(const std::string& path)
     // OutOfMemory specifically, then any other std::exception as ParseFailed.
     try {
         if (!FileExists(path))
-            return {std::nullopt, LoadErrorCategory::FileNotFound, "cannot open " + path};
+            return {std::nullopt, LoadErrorCategory::FileNotFound, "cannot open " + path,
+                    "File not found. It may have been moved, renamed or deleted."};
 
         Assimp::Importer importer;
 
@@ -1014,9 +1044,15 @@ LoadResult LoadAsset(const std::string& path)
             aiProcess_JoinIdenticalVertices | aiProcess_LimitBoneWeights |
             aiProcess_FlipUVs);
 
-        if (!scene || !scene->mRootNode)
-            return {std::nullopt, LoadErrorCategory::ParseFailed,
-                    std::string("assimp: ") + importer.GetErrorString()};
+        if (!scene || !scene->mRootNode) {
+            const std::string err = importer.GetErrorString();
+            return {std::nullopt, LoadErrorCategory::ParseFailed, "assimp: " + err,
+                    ParseFailureHint(path, err)};
+        }
+
+        static const char kNoMeshHint[] =
+            "No mesh in this file, only a skeleton or animation. "
+            "Export the character mesh together with its skeleton.";
 
         // assimp's FBX importer flags a mesh-less scene (a skeleton/animation-only export)
         // INCOMPLETE without setting an error string, so name it here — otherwise the
@@ -1024,15 +1060,17 @@ LoadResult LoadAsset(const std::string& path)
         if (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) {
             if (scene->mNumMeshes == 0)
                 return {std::nullopt, LoadErrorCategory::UnsupportedFormat,
-                        "file contains no meshes (skeleton/animation-only export?)"};
+                        "file contains no meshes (skeleton/animation-only export?)",
+                        kNoMeshHint};
+            const std::string err = importer.GetErrorString();
             return {std::nullopt, LoadErrorCategory::ParseFailed,
-                    std::string("assimp flagged the scene incomplete: ") +
-                    importer.GetErrorString()};
+                    "assimp flagged the scene incomplete: " + err,
+                    ParseFailureHint(path, err)};
         }
 
         if (scene->mNumMeshes == 0)
             return {std::nullopt, LoadErrorCategory::UnsupportedFormat,
-                    "file contains no meshes"};
+                    "file contains no meshes", kNoMeshHint};
 
         // Parse the skin skeleton first: WalkBake's per-vertex weight scatter needs
         // the bone-name -> global-index map. Empty for a boneless file (FR6 static
@@ -1057,7 +1095,8 @@ LoadResult LoadAsset(const std::string& path)
 
         if (pending.empty())
             return {std::nullopt, LoadErrorCategory::UnsupportedFormat,
-                    "file has meshes but no drawable geometry"};
+                    "file has meshes but no drawable geometry",
+                    "The mesh in this file is empty (no visible geometry)."};
 
         Asset asset;
         asset.aabbMin  = aabb_min;
@@ -1072,8 +1111,18 @@ LoadResult LoadAsset(const std::string& path)
         const std::filesystem::path model_dir =
             std::filesystem::u8path(path).parent_path();
         asset.materials.reserve(scene->mNumMaterials);
+        // Textures a material DECLARES but that came back empty (missing file, undecodable,
+        // upload failure) — counted for the user notice. A material that declares no
+        // texture is the normal flat path and is not counted.
+        int missing_textures = 0;
         for (unsigned mi = 0; mi < scene->mNumMaterials; ++mi) {
             SceneMaterial material = ConvertMaterial(scene->mMaterials[mi]);
+            auto count_if_missing = [&](const GpuImage& img, aiTextureType type) {
+                aiString declared;
+                if (img.get() == 0 && scene->mMaterials[mi] &&
+                    scene->mMaterials[mi]->GetTexture(type, 0, &declared) == AI_SUCCESS)
+                    ++missing_textures;
+            };
             // Base colour is a COLOUR texture → sRGB-decoded on sample (GL_SRGB8_ALPHA8)
             // so lighting math runs in linear space (Story 6.5.1 AC1). The normal map is
             // DATA → uploaded linear (GL_RGBA8) and only sampled when present (AC4).
@@ -1095,6 +1144,10 @@ LoadResult LoadAsset(const std::string& path)
             material.glossMap =
                 ResolveAndUploadTexture(scene, scene->mMaterials[mi], aiTextureType_SHININESS,
                                         GL_RGBA8, model_dir, mi, "glossiness");
+            count_if_missing(material.baseColor,   aiTextureType_DIFFUSE);
+            count_if_missing(material.normalMap,   aiTextureType_NORMALS);
+            count_if_missing(material.specularMap, aiTextureType_SPECULAR);
+            count_if_missing(material.glossMap,    aiTextureType_SHININESS);
             asset.materials.push_back(std::move(material));
         }
         // assimp always emits a default material, but a mesh's materialIdx indexes
@@ -1116,13 +1169,15 @@ LoadResult LoadAsset(const std::string& path)
             SceneMesh sm;
             if (!UploadMesh(pm, sm))
                 return {std::nullopt, LoadErrorCategory::GpuUploadFailed,
-                        "GL buffer upload failed (out of GPU memory?)"};
+                        "GL buffer upload failed (out of GPU memory?)",
+                        "Your graphics card ran out of memory for this model."};
             asset.meshes.push_back(std::move(sm));
         }
 
         // Audit the parsed skeleton (skinned files only — a static load stays silent).
+        // skinned_verts also feeds the "mesh not skinned" user notice below.
+        size_t skinned_verts = 0;
         if (!skeleton.bones.empty()) {
-            size_t skinned_verts = 0;
             for (const PendingMesh& pm : pending)
                 for (const SceneVertex& v : pm.verts)
                     if (v.boneWeights[0] != 0.0f || v.boneWeights[1] != 0.0f ||
@@ -1134,6 +1189,7 @@ LoadResult LoadAsset(const std::string& path)
         // Parse the animation clip into channels + audit the sampler (animated files
         // only). Nothing consumes asset.animations yet — the renderer still draws the
         // baked bind pose (3.3 deforms), so this stays byte-for-byte non-regressing.
+        bool any_bone_animated = false;  // for the "animation doesn't match" notice
         if (scene->mNumAnimations > 0 && !skeleton.bones.empty()) {
             std::vector<bool> animated;
             double tps = 0.0;
@@ -1141,19 +1197,43 @@ LoadResult LoadAsset(const std::string& path)
                 ParseAnimations(scene, skeleton, bone_index, bind_local, animated, tps);
             if (!asset.animations.empty())
                 DumpAnimation(skeleton, asset.animations.front(), animated, tps);
+            for (bool a : animated) any_bone_animated |= a;
         }
         asset.skeleton = std::move(skeleton);
 
-        return {std::move(asset), LoadErrorCategory::Ok, {}};
+        // Non-blocking problems, in the user's words (LoadResult::notices). Each is also
+        // kept in the copyable log (tagged with the file by the caller's log context).
+        // Order: what the user notices first (the character not moving) comes first.
+        std::vector<std::string> notices;
+        if (scene->mNumAnimations == 0)
+            notices.push_back("No animation in this file: the character stays in its rest pose.");
+        else if (skinned_verts == 0)
+            notices.push_back("The mesh isn't skinned to a skeleton: it won't follow the animation.");
+        else if (!any_bone_animated)
+            notices.push_back("The animation doesn't match this skeleton (different bone names): "
+                              "the character won't move.");
+        if (missing_textures > 0)
+            notices.push_back(std::to_string(missing_textures) +
+                              (missing_textures == 1 ? " texture" : " textures") +
+                              " not found: shown in plain colour. Keep the texture files next "
+                              "to the model, or embed them when exporting.");
+        for (const std::string& n : notices) LogWarn("notice: %s", n.c_str());
+
+        LoadResult ok{std::move(asset), LoadErrorCategory::Ok, {}, {}};
+        ok.notices = std::move(notices);
+        return ok;
     }
     catch (const std::bad_alloc&) {
-        return {std::nullopt, LoadErrorCategory::OutOfMemory, "out of memory while loading"};
+        return {std::nullopt, LoadErrorCategory::OutOfMemory, "out of memory while loading",
+                "Not enough memory to open this file."};
     }
     catch (const std::exception& e) {
-        return {std::nullopt, LoadErrorCategory::ParseFailed, e.what()};
+        return {std::nullopt, LoadErrorCategory::ParseFailed, e.what(),
+                ParseFailureHint(path, e.what())};
     }
     catch (...) {
-        return {std::nullopt, LoadErrorCategory::Unknown, "unknown loader failure"};
+        return {std::nullopt, LoadErrorCategory::Unknown, "unknown loader failure",
+                "Unexpected error while opening this file."};
     }
 }
 

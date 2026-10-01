@@ -28,6 +28,36 @@ else()
     set(RAV_VERSION_EFFECTIVE "dev")
 endif()
 unset(RAV_VERSION CACHE)
+
+# Version SHOWN to the user (viewer menu, copied error log). Release builds show the
+# release version; dev builds show "<last release>-dev+<commit>[-dirty]" so a report
+# from a dev build still says what it was built from. RAV_VERSION_EFFECTIVE above
+# stays "dev" for the self-update. build.bat reconfigures on every run, so the commit
+# is current; without git (or outside a checkout) it is just "<last release>-dev".
+if(RAV_VERSION_EFFECTIVE STREQUAL "dev")
+    set(RAV_DISPLAY_VERSION "${PROJECT_VERSION}-dev")
+    find_package(Git QUIET)
+    if(GIT_FOUND)
+        execute_process(COMMAND "${GIT_EXECUTABLE}" rev-parse --short=7 HEAD
+                        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                        OUTPUT_VARIABLE _rav_git_hash OUTPUT_STRIP_TRAILING_WHITESPACE
+                        RESULT_VARIABLE _rav_git_rc ERROR_QUIET)
+        if(_rav_git_rc EQUAL 0 AND NOT _rav_git_hash STREQUAL "")
+            set(RAV_DISPLAY_VERSION "${RAV_DISPLAY_VERSION}+${_rav_git_hash}")
+            # Tracked changes only: build output and untracked scratch files don't count.
+            execute_process(COMMAND "${GIT_EXECUTABLE}" status --porcelain --untracked-files=no
+                            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+                            OUTPUT_VARIABLE _rav_git_changes ERROR_QUIET)
+            if(NOT _rav_git_changes STREQUAL "")
+                set(RAV_DISPLAY_VERSION "${RAV_DISPLAY_VERSION}-dirty")
+            endif()
+        endif()
+    endif()
+else()
+    set(RAV_DISPLAY_VERSION "${RAV_VERSION_EFFECTIVE}")
+endif()
+message(STATUS "ReaAnimViewer version: ${RAV_DISPLAY_VERSION}")
+
 # configure_file only rewrites the header when the version changes, so switching
 # between release and dev builds only recompiles its includer.
 configure_file("${CMAKE_SOURCE_DIR}/src/rav_version.h.in"

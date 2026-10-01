@@ -14,6 +14,7 @@
 
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "scene.h"
 
@@ -39,6 +40,12 @@ struct LoadResult {
     std::optional<Asset> asset;
     LoadErrorCategory    category = LoadErrorCategory::Ok;
     std::string          detail;   // human-readable, goes into the console line
+    // Plain-language reason shown to the user on a failure (no jargon; says what to fix
+    // in the export when we can tell). Always set on failure.
+    std::string          hint;
+    // On SUCCESS: non-blocking problems shown to the user in the same plain language
+    // (missing textures, no animation, mesh not skinned...). Empty when all is well.
+    std::vector<std::string> notices;
 };
 
 // No-throw across this boundary (assimp throws std::exception-derived internally;

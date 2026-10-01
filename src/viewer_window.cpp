@@ -23,15 +23,18 @@
 
 #include <windowsx.h>  // GET_X_LPARAM / GET_Y_LPARAM — unpack WM_MOUSEMOVE coords
 #include <cmath>       // std::sin/cos/asin/atan2/sqrt — light azimuth/elevation ↔ direction
-#include <cstdio>      // snprintf — format the on-canvas load-failure line (Story 6.5.5)
+#include <algorithm>   // std::min/max — the load message's wrap width
 #include <exception>   // std::exception — the no-throw host boundary (AR18)
 #include <string>
+#include <unordered_set>  // g_noticed_paths
+#include <vector>
 
 #include "asset_loader.h"
 #include "console_log.h"
 #include "gl_loader.h"   // LoadGlFunctions + modern-GL pointers; pulls in <gl/GL.h>
 #include "overlay_icons.h"    // kIcon_menu/light/color — Antho's SVGs rasterized to RGBA (Story 6.5.3 rev)
 #include "pcm_source_anim.h"  // GetCurrentAnimItem — the transport→current-item query (Story 4.3)
+#include "rav_version.h"      // RAV_DISPLAY_VERSION — menu footer + copied error log header
 #include "renderer.h"
 
 #ifndef GL_CLAMP_TO_EDGE
@@ -170,11 +173,32 @@ int  g_msaa_max   = 0;
 
 // Story 6.5.5 — minimal on-canvas load-failure indication (AC7), rehoming the signal 6.5.2
 // silenced. Set where the load-failure LogError fires; shown as a brief transient overlay
-// while ElapsedSeconds() < g_load_error_until, then it just disappears. No popup (AR16).
-// Long enough to reach its "Copy details" button, and held while hovered.
-constexpr double kLoadErrorSeconds = 8.0;
-char   g_load_error[96]    = {0};
-double g_load_error_until  = 0.0;
+// while ElapsedSeconds() < g_load_msg_until, then it just disappears. No popup (AR16).
+// It speaks the user's language: on a failure, LoadResult::hint (what is wrong with the
+// file and what to fix in the export); on a successful load with problems, the loader's
+// notices (missing textures, no animation...). Technical detail stays in the copyable log.
+// Long enough to read and reach its "Copy details" button, and held while hovered.
+// The message is also the current item's STATUS: it stays set until the next load (a
+// clean load clears it), and the bottom-left status icon re-shows it on hover after the
+// transient pop-up has gone (StatusIconWidget).
+constexpr double kLoadMessageSeconds = 10.0;
+std::string              g_load_msg_title;        // "" = no status (last load was clean)
+std::vector<std::string> g_load_msg_lines;
+bool                     g_load_msg_error = false;  // red (blocking) vs amber (notices)
+double                   g_load_msg_until = 0.0;    // transient pop-up visible until then
+// Files whose notices already POPPED UP since the panel opened: a file with known
+// problems must not pop them up on every scrub back onto it (the status icon still
+// shows them). Failures always pop up. Cleared in StopRendering, so reopening the
+// panel pops them up again.
+std::unordered_set<std::string> g_noticed_paths;
+
+// Bottom-left status icon (red = the current item failed to load, amber = it loaded with
+// problems). Hovering it opens the message panel; g_status_panel_until keeps that panel
+// open for a short grace period so the mouse can travel from the icon to its button.
+constexpr float  kStatusIconSize    = 22.0f;
+constexpr float  kStatusIconMargin  = 12.0f;
+constexpr double kStatusPanelGrace  = 0.3;
+double           g_status_panel_until = 0.0;
 
 // Copyable error log — the GL strings head the clipboard text (probed in StartRendering)
 // and g_copied_until drives the brief "Copied!" button feedback.
@@ -232,12 +256,36 @@ double ElapsedSeconds()
     return double(now.QuadPart - g_qpc_start.QuadPart) / double(g_qpc_freq.QuadPart);
 }
 
+// File name for the on-canvas message (the full path is in the copyable log).
+std::string FileNameOf(const std::string& path)
+{
+    const size_t slash = path.find_last_of("\\/");
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+// Sets the current item's load status (see g_load_msg_title) and, if `pop_up`, also shows
+// it as the transient top-centre message.
+void SetLoadMessage(bool error, std::string title, std::vector<std::string> lines, bool pop_up)
+{
+    g_load_msg_error = error;
+    g_load_msg_title = std::move(title);
+    g_load_msg_lines = std::move(lines);
+    g_load_msg_until = pop_up ? ElapsedSeconds() + kLoadMessageSeconds : 0.0;
+}
+
+void ClearLoadMessage()
+{
+    g_load_msg_title.clear();
+    g_load_msg_lines.clear();
+    g_load_msg_until = 0.0;
+}
+
 // Puts a pasteable bug-report block on the clipboard: the GPU/driver the viewer runs on,
 // then the kept warn/error lines (console_log.h). Called from an ImGui button, so it runs
 // inside the frame where ImGui's Win32 clipboard hook is live.
 void CopyErrorLogToClipboard()
 {
-    std::string text = "ReaAnimViewer error log\n";
+    std::string text = "ReaAnimViewer error log (version " RAV_DISPLAY_VERSION ")\n";
     text += "OpenGL: " + g_gl_version + " on " + g_gl_renderer + "\n";
     text += HasRecentLog() ? RecentLogText() : std::string("(no errors logged)\n");
     ImGui::SetClipboardText(text.c_str());
@@ -351,6 +399,13 @@ void RenderTick()
             if (r.asset) {
                 g_renderer.SetAsset(std::move(*r.asset));
                 LogInfo("now showing %s", item_path.c_str());
+                if (r.notices.empty()) {
+                    ClearLoadMessage();
+                } else {
+                    const bool first_time = g_noticed_paths.insert(item_path).second;
+                    SetLoadMessage(false, FileNameOf(item_path) + " has problems:",
+                                   std::move(r.notices), /*pop_up=*/first_time);
+                }
             } else {
                 // A malformed file logs ONCE and leaves the previous asset up (AR17) —
                 // never a per-frame retry storm. The literal "reload only on path change"
@@ -360,12 +415,13 @@ void RenderTick()
                 LogError("load failed [%s] %s: %s", LoadErrorCategoryName(r.category),
                          item_path.c_str(), r.detail.c_str());
                 // Story 6.5.5 — rehome the load-failure signal on-canvas (AC7, amended AR16):
-                // a short transient line near the top. This does NOT change the load-bearing
-                // gate-advance-on-failure logic below — it only surfaces it. The line shows the
-                // category; the detail is in the kept log its "Copy details" button copies.
-                snprintf(g_load_error, sizeof(g_load_error), "Failed to load: %s",
-                         LoadErrorCategoryName(r.category));
-                g_load_error_until = ElapsedSeconds() + kLoadErrorSeconds;
+                // a short transient message near the top. This does NOT change the load-bearing
+                // gate-advance-on-failure logic below — it only surfaces it. It shows the
+                // plain-language hint; the detail is in the log its "Copy details" button copies.
+                SetLoadMessage(true, "Can't load " + FileNameOf(item_path),
+                               {r.hint.empty() ? std::string("This file couldn't be opened.")
+                                               : r.hint},
+                               /*pop_up=*/true);
             }
             // Advance the gate to the current item's path whether the load succeeded or
             // failed — either way we have "handled" this path and must not retry it every
@@ -498,6 +554,93 @@ bool LightDirectionPad(float diameter)
     dl->AddCircleFilled(h, 6.0f, IM_COL32(120, 170, 255, 255), 16);
     dl->AddCircle(h, 6.0f, IM_COL32(255, 255, 255, 255), 16, 1.5f);
     return changed;
+}
+
+// The load message's content — title (red/amber), one bullet per line, "Copy details" —
+// drawn into the CURRENT ImGui window. Shared by the transient top-centre message and the
+// status icon's hover panel so both always say the same thing. Text wraps so a narrow
+// docked panel still shows it.
+void DrawLoadMessageBody()
+{
+    const float wrap_w = std::max(160.0f, std::min(480.0f, g_client_w - 60.0f));
+    const ImVec4 title_col = g_load_msg_error ? ImVec4(1.0f, 0.5f, 0.4f, 1.0f)
+                                              : ImVec4(1.0f, 0.75f, 0.3f, 1.0f);
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrap_w);
+    ImGui::TextColored(title_col, "%s", g_load_msg_title.c_str());
+    for (const std::string& line : g_load_msg_lines) {
+        ImGui::Bullet();
+        ImGui::TextUnformatted(line.c_str());
+    }
+    ImGui::PopTextWrapPos();
+    const bool copied = ElapsedSeconds() < g_copied_until;
+    if (ImGui::SmallButton(copied ? "Copied!##copyerr" : "Copy details##copyerr"))
+        CopyErrorLogToClipboard();
+}
+
+// Bottom-left status icon: shown while the current item has a load status (failed, or
+// loaded with problems), so the message can be read again after its transient pop-up
+// is gone. Drawn with ImDrawList primitives (no icon asset): a red disc with "!" for an
+// error, an amber triangle with "!" for problems. Hovering it opens the message panel
+// just above it; the panel stays open while the mouse is on the icon or on the panel
+// (plus a short grace to cross the gap) so its "Copy details" button can be clicked.
+// Same pattern as NavCubeWidget: its own frameless window, InvisibleButton hit area.
+void StatusIconWidget()
+{
+    if (g_load_msg_title.empty()) return;
+
+    constexpr ImGuiWindowFlags kIconFlags =
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar |
+        ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing |
+        ImGuiWindowFlags_NoBackground;
+
+    const float icon_top = static_cast<float>(g_client_h) - kStatusIconMargin - kStatusIconSize;
+    ImGui::SetNextWindowPos(ImVec2(kStatusIconMargin, icon_top), ImGuiCond_Always);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    bool icon_hovered = false;
+    if (ImGui::Begin("##statusicon", nullptr, kIconFlags)) {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        ImGui::InvisibleButton("##statushit", ImVec2(kStatusIconSize, kStatusIconSize));
+        icon_hovered = ImGui::IsItemHovered();
+
+        const float  s  = kStatusIconSize;
+        const float  cx = p0.x + s * 0.5f;
+        if (g_load_msg_error) {
+            const ImU32 ink = IM_COL32(255, 255, 255, 255);
+            dl->AddCircleFilled(ImVec2(cx, p0.y + s * 0.5f), s * 0.5f, IM_COL32(222, 84, 70, 255), 24);
+            dl->AddRectFilled(ImVec2(cx - 1.5f, p0.y + s * 0.22f), ImVec2(cx + 1.5f, p0.y + s * 0.60f), ink, 1.0f);
+            dl->AddCircleFilled(ImVec2(cx, p0.y + s * 0.75f), 1.9f, ink, 8);
+        } else {
+            const ImU32 ink = IM_COL32(48, 34, 8, 255);
+            dl->AddTriangleFilled(ImVec2(cx, p0.y + 1.0f), ImVec2(p0.x + s - 1.0f, p0.y + s - 2.0f),
+                                  ImVec2(p0.x + 1.0f, p0.y + s - 2.0f), IM_COL32(255, 191, 77, 255));
+            dl->AddRectFilled(ImVec2(cx - 1.5f, p0.y + s * 0.34f), ImVec2(cx + 1.5f, p0.y + s * 0.64f), ink, 1.0f);
+            dl->AddCircleFilled(ImVec2(cx, p0.y + s * 0.78f), 1.9f, ink, 8);
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
+
+    const double now = ElapsedSeconds();
+    if (icon_hovered) g_status_panel_until = now + kStatusPanelGrace;
+    if (now >= g_status_panel_until) return;
+
+    // The panel's bottom edge sits just above the icon (pivot bottom-left), so the mouse
+    // crosses only a couple of pixels — covered by the grace — to reach "Copy details".
+    constexpr ImGuiWindowFlags kPanelFlags =
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar |
+        ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing;
+    ImGui::SetNextWindowPos(ImVec2(kStatusIconMargin, icon_top - 2.0f), ImGuiCond_Always,
+                            ImVec2(0.0f, 1.0f));
+    if (ImGui::Begin("##statuspanel", nullptr, kPanelFlags)) {
+        DrawLoadMessageBody();
+        if (ImGui::IsWindowHovered()) g_status_panel_until = now + kStatusPanelGrace;
+    }
+    ImGui::End();
 }
 
 // Story 6.5.8 — Navigation cube (ViewCube): a small axis-coloured cube in the bottom-right
@@ -809,6 +952,11 @@ void DrawToolUi()
 
             ImGui::Unindent(8.0f);
         }
+
+        // Build version (a dev build shows "<last release>-dev+<commit>"), so a user can tell
+        // which one they run.
+        ImGui::Dummy(ImVec2(0.0f, 4.0f));
+        ImGui::TextDisabled("Version %s", RAV_DISPLAY_VERSION);
     }
 
     ImGui::End();
@@ -835,22 +983,20 @@ void DrawToolUi()
         ImGui::End();
     }
 
-    // Minimal load-failure indication (AC7) — a brief transient line, top-centre, shown while
-    // the failure is fresh (kLoadErrorSeconds, set at the LogError site). Rehomes the OTHER
-    // 6.5.2-silenced signal on-canvas (amended AR16); no popup, no block — it just disappears
-    // when it expires. Unlike the FPS read-out it takes input, for its "Copy details" button:
-    // it only captures the mouse while hovered (its own small rect), and hovering holds it.
-    if (g_load_error[0] && ElapsedSeconds() < g_load_error_until) {
+    // Load message (AC7) — a brief transient message, top-centre, shown while fresh
+    // (kLoadMessageSeconds, armed by SetLoadMessage). Rehomes the OTHER 6.5.2-silenced
+    // signal on-canvas (amended AR16); no popup, no block — it just disappears when it
+    // expires. Red title = the file could not load; amber = loaded, with problems. Text wraps
+    // so a narrow docked panel still shows it. Unlike the FPS read-out it takes input, for its
+    // "Copy details" button: it only captures the mouse while hovered (its own rect), and
+    // hovering holds it.
+    if (!g_load_msg_title.empty() && ElapsedSeconds() < g_load_msg_until) {
         ImGui::SetNextWindowPos(ImVec2(g_client_w * 0.5f, 10.0f),
                                 ImGuiCond_Always, ImVec2(0.5f, 0.0f));
-        if (ImGui::Begin("##loaderr", nullptr, kReadoutFlags & ~ImGuiWindowFlags_NoInputs)) {
-            ImGui::TextColored(ImVec4(1.0f, 0.5f, 0.4f, 1.0f), "%s", g_load_error);
-            ImGui::SameLine();
-            const bool copied = ElapsedSeconds() < g_copied_until;
-            if (ImGui::SmallButton(copied ? "Copied!##copyerr" : "Copy details##copyerr"))
-                CopyErrorLogToClipboard();
-            if (ImGui::IsWindowHovered() && g_load_error_until < ElapsedSeconds() + 1.0)
-                g_load_error_until = ElapsedSeconds() + 1.0;
+        if (ImGui::Begin("##loadmsg", nullptr, kReadoutFlags & ~ImGuiWindowFlags_NoInputs)) {
+            DrawLoadMessageBody();
+            if (ImGui::IsWindowHovered() && g_load_msg_until < ElapsedSeconds() + 1.0)
+                g_load_msg_until = ElapsedSeconds() + 1.0;
         }
         ImGui::End();
     }
@@ -858,6 +1004,9 @@ void DrawToolUi()
     // Story 6.5.8 — navigation cube (ViewCube), bottom-right. Drawn in THIS NewFrame/Render
     // pair (after the menu + read-outs, before Render) so it is the same single ImGui frame.
     NavCubeWidget();
+
+    // Bottom-left status icon + its hover panel (re-shows the load message on demand).
+    StatusIconWidget();
 
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -1041,6 +1190,8 @@ void StopRendering()
     // loaded" (the reload gate compares against this path) and draw nothing.
     g_current_anim_path.clear();
     g_transport_driven = false;
+    g_noticed_paths.clear();   // a reopened panel pops each file's notices up again
+    ClearLoadMessage();        // the status belongs to the item, reloaded on reopen
 }
 
 // True when the cursor is over an ImGui window/widget, so the camera must ignore the

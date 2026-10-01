@@ -3,7 +3,8 @@ setlocal EnableExtensions
 title ReaAnimViewer - ReaPack check
 
 rem ============================================================================
-rem  Validates the ReaPack package (Extensions\ReaAnimViewer.ext) with
+rem  Validates the ReaPack package (Scripts\RAV_Launcher.lua, which also
+rem  provides the extension DLL) with
 rem  reapack-index --check, including uncommitted changes.
 rem  The same check also runs on GitHub Actions at every push.
 rem  First run on a PC: installs Ruby, Pandoc and reapack-index (several minutes).

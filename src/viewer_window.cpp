@@ -311,9 +311,22 @@ void TrySetVsync(int interval)
 
 void RenderTick()
 {
-    // The context was made current once in StartRendering and stays current on
-    // this (single render) thread, so no per-frame wglMakeCurrent is needed.
     if (!g_hdc || !g_hglrc) return;
+
+    // Re-assert OUR context every frame. This is Reaper's main thread, shared with other
+    // GL-rendering plugins that make THEIR context current; ours then isn't current here
+    // and every GL call silently fails — incl. LoadAsset's buffer uploads, which surfaced
+    // as a systematic "gpu-upload-failed". The previous context is handed back on exit so
+    // a plugin with the same "stays current" assumption isn't broken by us in turn.
+    // wglGetCurrentContext is a cheap TLS read; the switch only happens when stolen.
+    const HGLRC prev_rc = wglGetCurrentContext();
+    const HDC   prev_dc = wglGetCurrentDC();
+    const bool  switched = (prev_rc != g_hglrc);
+    if (switched && !wglMakeCurrent(g_hdc, g_hglrc)) return;
+    struct RestoreContext {
+        bool active; HDC dc; HGLRC rc;
+        ~RestoreContext() { if (active) wglMakeCurrent(dc, rc); }
+    } restore{switched, prev_dc, prev_rc};
 
     // Story 4.3 — poll the transport for the RAV item under the playhead, SYNCHRONOUSLY
     // right before drawing (NFR-P5: no async between the playhead read and the draw,
@@ -1022,6 +1035,12 @@ void StopRendering()
         g_renderer.Shutdown();
     }
     DestroyGLContext();
+
+    // The renderer's asset died with the context, so forget which item it showed: a
+    // reopened panel must reload the item under the playhead, not skip it as "already
+    // loaded" (the reload gate compares against this path) and draw nothing.
+    g_current_anim_path.clear();
+    g_transport_driven = false;
 }
 
 // True when the cursor is over an ImGui window/widget, so the camera must ignore the

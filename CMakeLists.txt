@@ -2,7 +2,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(reaanimviewer
-    VERSION 0.0.1
+    VERSION 0.2.2
     DESCRIPTION "Reaper extension that loads glTF/FBX rigs synced to the transport"
     LANGUAGES CXX
 )
@@ -17,6 +17,21 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(ReaperPlugin)
+
+# Version compiled into the DLL (src/self_update.cpp). Only release.bat passes it
+# (-DRAV_VERSION=X.Y.Z through build.bat). It is dropped from the cache right away,
+# so any later configure without it (build.bat, IDE, manual cmake) builds "dev",
+# and a dev build never self-updates.
+if(DEFINED RAV_VERSION AND NOT RAV_VERSION STREQUAL "")
+    set(RAV_VERSION_EFFECTIVE "${RAV_VERSION}")
+else()
+    set(RAV_VERSION_EFFECTIVE "dev")
+endif()
+unset(RAV_VERSION CACHE)
+# configure_file only rewrites the header when the version changes, so switching
+# between release and dev builds only recompiles its includer.
+configure_file("${CMAKE_SOURCE_DIR}/src/rav_version.h.in"
+               "${CMAKE_BINARY_DIR}/generated/rav_version.h" @ONLY)
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
@@ -106,7 +121,10 @@ if(WIN32)
             src/gltf_skin.cpp
             src/console_log.cpp
             src/pcm_source_anim.cpp
+            src/self_update.cpp
     )
+    # Generated rav_version.h (see RAV_VERSION above).
+    target_include_directories(animviewer PRIVATE "${CMAKE_BINARY_DIR}/generated")
     # GLM + assimp + Dear ImGui as SYSTEM includes so their headers cannot trip
     # /W3 /permissive- (NFR-R5). assimp's generated config headers live in its BINARY dir.
     target_include_directories(animviewer SYSTEM PRIVATE

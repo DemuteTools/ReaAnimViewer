@@ -4,7 +4,8 @@
 #  1. Checks the repo is clean, on main and up to date.
 #  2. Asks for the new version and the changelog (Notepad).
 #  3. Clean release build + checks the DLL has no VC++ runtime dependency.
-#  4. Bumps the version in Extensions/ReaAnimViewer.ext, CMakeLists.txt, README.md.
+#  4. Bumps the version in Scripts/RAV_Launcher.lua (the ReaPack package, which also
+#     provides the DLL), CMakeLists.txt and README.md.
 #  5. Commits, tags vX.Y.Z, pushes the tag, creates the GitHub Release with the DLL.
 #  6. Pushes main: GitHub Actions then regenerates index.xml with reapack-index.
 # ============================================================================
@@ -15,7 +16,7 @@ $ErrorActionPreference = 'Continue'
 $Root = Split-Path -Parent $PSScriptRoot
 Set-Location $Root
 
-$ExtPath    = 'Extensions/ReaAnimViewer.ext'
+$LauncherPath = 'Scripts/RAV_Launcher.lua'
 $CMakePath  = 'CMakeLists.txt'
 $ReadmePath = 'README.md'
 $DllPath    = Join-Path $Root 'build\Release\reaper_animviewer.dll'
@@ -78,8 +79,8 @@ Invoke-Git pull --ff-only origin main | Out-Null
 # --- 2. Version and changelog ----------------------------------------------
 Step 'Version'
 
-$extText = Read-RepoText $ExtPath
-$current = [regex]::Match($extText, '(?m)^@version\s+(\S+)').Groups[1].Value
+$launcherText = Read-RepoText $LauncherPath
+$current = [regex]::Match($launcherText, '(?m)^-- @version\s+(\S+)').Groups[1].Value
 Write-Host "Current version: $current"
 $version = (Read-Host 'New version (examples: 0.1.0, 0.2.0-beta)').Trim()
 if ($version -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$') {
@@ -111,8 +112,14 @@ if ($changes.Count -eq 0) { Fail 'Empty changelog, release cancelled.' }
 
 # --- 3. Build ---------------------------------------------------------------
 Step 'Clean release build'
+# RAV_VERSION is compiled into the DLL: release builds can update themselves from
+# the Demute Reaper Toolkit copy, local builds (version "dev") never do.
+$env:RAV_VERSION = $version
+$env:RAV_RELEASE_BUILD = '1'
 & (Join-Path $Root 'build.bat') release clean noinstall nopause
-if ($LASTEXITCODE -ne 0) { Fail 'Build failed, nothing was changed.' }
+$buildExit = $LASTEXITCODE
+Remove-Item Env:RAV_VERSION, Env:RAV_RELEASE_BUILD -ErrorAction SilentlyContinue
+if ($buildExit -ne 0) { Fail 'Build failed, nothing was changed.' }
 if (-not (Test-Path $DllPath)) { Fail "Build output not found: $DllPath" }
 
 # The DLL must be self-contained: no dynamic VC++ runtime (see CMakeLists.txt).
@@ -127,18 +134,20 @@ Write-Host 'DLL OK: no VC++ runtime dependency.'
 # --- 4. Bump the version in the repo files ----------------------------------
 Step 'Updating version files'
 
-# Extensions/ReaAnimViewer.ext: version, changelog, download URLs, publish flag.
-$nl = Get-NewLine $extText
-$changelogBlock = '@changelog' + $nl + (($changes | ForEach-Object { "  $_" }) -join $nl) + $nl
-$extText = [regex]::Replace($extText, '(?m)^@version[ \t]+\S+', "@version $version")
-$extText = [regex]::Replace($extText, '(?m)^@noindex[ \t]*\r?\n', '')
-$extText = [regex]::Replace($extText, '(?m)^@changelog[ \t]*\r?\n(?:[ \t]+[^\r\n]*\r?\n)*',
-    [Text.RegularExpressions.MatchEvaluator] { param($x) $changelogBlock })
-$extText = [regex]::Replace($extText, 'https://github\.com/[^/\s]+/[^/\s]+/releases/download/',
+# Scripts/RAV_Launcher.lua: the only package. Version, changelog, DLL download URL
+# and GitHub link, all built from origin. The Demute Reaper Toolkit shows this
+# version, and the extension's self-update reads it to know the version of the DLL
+# the Toolkit downloaded next to it.
+$lnl = Get-NewLine $launcherText
+$launcherChangelog = '-- @changelog' + $lnl + (($changes | ForEach-Object { "--   $_" }) -join $lnl) + $lnl
+$launcherText = [regex]::Replace($launcherText, '(?m)^-- @version[ \t]+\S+', "-- @version $version")
+$launcherText = [regex]::Replace($launcherText, '(?m)^-- @changelog[ \t]*\r?\n(?:--[ \t]+[^@\r\n][^\r\n]*\r?\n)*',
+    [Text.RegularExpressions.MatchEvaluator] { param($x) $launcherChangelog })
+$launcherText = [regex]::Replace($launcherText, 'https://github\.com/[^/\s]+/[^/\s]+/releases/download/',
     "https://github.com/$owner/$repo/releases/download/")
-$extText = [regex]::Replace($extText, '(?m)^([ \t]+GitHub[ \t]+)https://github\.com/\S+',
+$launcherText = [regex]::Replace($launcherText, '(?m)^(--[ \t]+GitHub[ \t]+)https://github\.com/\S+',
     [Text.RegularExpressions.MatchEvaluator] { param($x) $x.Groups[1].Value + "https://github.com/$owner/$repo" })
-Write-RepoText $ExtPath $extText
+Write-RepoText $LauncherPath $launcherText
 
 # CMakeLists.txt: project(... VERSION X.Y.Z). CMake only accepts numbers.
 $numericVersion = ($version -split '-')[0]
@@ -163,13 +172,13 @@ Write-Host ''
 Invoke-Git --no-pager diff --stat | ForEach-Object { Write-Host $_ }
 $answer = Read-Host "Commit, tag and publish $tag now? (y/N)"
 if ($answer -notmatch '^[yY]') {
-    & git checkout -- $ExtPath $CMakePath $ReadmePath
+    & git checkout -- $LauncherPath $CMakePath $ReadmePath
     Fail 'Release cancelled, version files restored.'
 }
 
 # --- 5. Commit, tag, GitHub Release -----------------------------------------
 Step "Committing and tagging $tag"
-Invoke-Git add -- $ExtPath $CMakePath $ReadmePath | Out-Null
+Invoke-Git add -- $LauncherPath $CMakePath $ReadmePath | Out-Null
 Invoke-Git commit -m "Release $tag" -m ($changes -join "`n") | Out-Null
 Invoke-Git tag -a $tag -m "ReaAnimViewer $tag" | Out-Null
 Invoke-Git push origin $tag | Out-Null

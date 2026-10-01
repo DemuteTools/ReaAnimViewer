@@ -1,8 +1,8 @@
+<img width="2116" height="957" alt="image" src="https://github.com/user-attachments/assets/46506343-093d-42c8-ba8e-0e8efb70d41e" />
+
 # DM ReaAnimViewer
 
 3D animation viewer for REAPER. Load glTF and FBX animations straight onto your timeline and watch the animated character play in sync with the REAPER playhead, from any camera angle.
-
-<!-- TODO: add a hero screenshot / GIF of the viewer docked next to the arrange view -->
 
 ## Why Use This Tool?
 
@@ -20,7 +20,7 @@ ReaAnimViewer is a native REAPER extension (a single `.dll`). It teaches REAPER 
 - **Skinned meshes and textures:** Full skeletal deformation, diffuse/normal/specular maps, multi-material meshes.
 - **Several animations per project:** Put different animations on different tracks; the viewer shows the one on the topmost track under the playhead.
 - **Viewer tools:** A built-in side menu for lighting, floor, shadows and render quality.
-- **Everything bundled:** No ReaImGui, no SWS, no runtime to install. ReaPack installs one file and that's it.
+- **Everything bundled:** No ReaImGui, no SWS, no runtime to install. The whole viewer is a single extension file.
 
 ---
 
@@ -30,6 +30,7 @@ ReaAnimViewer is a native REAPER extension (a single `.dll`). It teaches REAPER 
   - [Install with the Demute Reaper Toolkit (easiest)](#install-with-the-demute-reaper-toolkit-easiest)
   - [Install with ReaPack](#install-with-reapack)
   - [Updating](#updating)
+  - [Upgrading from 0.1.x](#upgrading-from-01x)
   - [Uninstalling](#uninstalling)
   - [Manual Installation](#manual-installation)
   - [Troubleshooting](#troubleshooting)
@@ -59,6 +60,8 @@ ReaAnimViewer is a native REAPER extension (a single `.dll`). It teaches REAPER 
 
 **Nothing else to install.** Everything the viewer needs (3D loader, UI, image decoders) is compiled inside the extension.
 
+Already using version 0.1.x? Read [Upgrading from 0.1.x](#upgrading-from-01x) first.
+
 ### Install with the Demute Reaper Toolkit (easiest)
 
 The [Demute Reaper Toolkit](https://www.demute.studio/documentation/reaper-toolkit) is our tool browser for REAPER: it lists every Demute tool and installs or updates them in one click. If you already use it, skip to step 3.
@@ -74,11 +77,12 @@ The [Demute Reaper Toolkit](https://www.demute.studio/documentation/reaper-toolk
    2. Go to **Extensions > ReaPack > Manage repositories**, select **Demute_Toolkit** and click **Browse packages**.
    3. Search for **DM_ReaperToolkit**, right-click it, choose **Install**, then click **Apply**.
 3. Open the Toolkit: **Actions > Show action list**, search for **DM_ReaperToolkit** and run it. It automatically scans for available tools and updates.
-4. Select the **ReaAnimViewer** card and install it:
-   - **Direct Install** downloads the extension straight into your REAPER resource folder.
-   - **ReaPack Install** opens ReaPack and copies the package link to your clipboard, if you prefer to manage it through ReaPack.
-5. **Restart REAPER.** Extensions are only loaded at startup.
-6. Check the installation: go to **Actions > Show action list**, search for **RAV**. You should see **RAV: Open Viewer**.
+4. Select the **ReaAnimViewer** card and install it.
+5. Click **Run** on the card. A message confirms that ReaAnimViewer is installed.
+6. **Restart REAPER.** Extensions are only loaded at startup.
+7. Open the viewer with the action **RAV: Open Viewer**, or with **Run** on the card.
+
+You only need step 5 once. The Toolkit downloads scripts, while ReaAnimViewer is a native extension that REAPER loads from its `UserPlugins` folder: the first **Run** copies it there. From then on, the extension updates itself.
 
 ### Install with ReaPack
 
@@ -87,42 +91,66 @@ The [Demute Reaper Toolkit](https://www.demute.studio/documentation/reaper-toolk
 3. Paste the following URL and click **OK**:
 
    ```
-   https://github.com/DemuteStudio/ReaAnimViewer/raw/main/index.xml
+   https://github.com/DemuteTools/ReaAnimViewer/raw/main/index.xml
    ```
 
 4. Go to **Extensions > ReaPack > Browse packages...**, search for **ReaAnimViewer**.
-5. Right-click the package, choose **Install**, then click **Apply**.
+5. Right-click **ReaAnimViewer**, choose **Install**, then click **Apply**.
 6. **Restart REAPER.** Extensions are only loaded at startup.
-7. Check the installation: go to **Actions > Show action list**, search for **RAV**. You should see **RAV: Open Viewer**.
+7. Open the viewer with the action **RAV: Open Viewer** (**Actions > Show action list**, search for **RAV**).
+
+The package also installs a small **RAV_Launcher** script. It is used by the Toolkit; with ReaPack you don't need it (running it just opens the viewer).
 
 ### Updating
 
-**With the Demute Reaper Toolkit:** open the Toolkit (**Actions > Show action list**, search for **DM_ReaperToolkit**). It automatically scans for updates when it opens. Select the **ReaAnimViewer** card, install the new version, then **restart REAPER** so it is loaded.
+**With the Demute Reaper Toolkit:** open the Toolkit, click **Update** on the **ReaAnimViewer** card, then restart REAPER. The extension swaps itself for the new version when REAPER closes, so the new version runs after the restart. Nothing else to run.
 
 **With ReaPack:** go to **Extensions > ReaPack > Synchronize packages** (or wait for the automatic check), click **Apply**, then **restart REAPER** so the new version is loaded.
 
+**Manual install:** download the new DLL and replace the old one, as in [Manual Installation](#manual-installation).
+
+### Upgrading from 0.1.x
+
+Version 0.1.x came as two ReaPack packages, also when you installed it through the Toolkit. Remove the old one once:
+
+1. Go to **Extensions > ReaPack > Browse packages...** and search for **ReaAnimViewer**.
+2. Two entries are listed. Right-click the one whose category is **Extensions**, choose **Uninstall**, then click **Apply**. Keep the one in **Scripts**.
+3. Restart REAPER, then run **Extensions > ReaPack > Synchronize packages** and click **Apply**.
+4. Restart REAPER again.
+
+Until you do this, ReaPack reports a conflict on `reaper_animviewer.dll` and ReaAnimViewer stays on 0.1.x.
+
 ### Uninstalling
 
-The Demute Reaper Toolkit cannot uninstall tools. Depending on how you installed ReaAnimViewer:
+**With ReaPack:** go to **Extensions > ReaPack > Browse packages...**, right-click **ReaAnimViewer**, choose **Uninstall**, click **Apply** and restart REAPER. Don't delete the DLL by hand instead: ReaPack would still consider it installed (see [Troubleshooting](#troubleshooting)).
 
-- **With ReaPack (or the Toolkit's ReaPack Install):** go to **Extensions > ReaPack > Browse packages...**, right-click **ReaAnimViewer**, choose **Uninstall**, click **Apply** and restart REAPER.
-- **With the Toolkit's Direct Install, or manually:** close REAPER, then delete `reaper_animviewer.dll` from the `UserPlugins` folder of your REAPER resource path (**Options > Show REAPER resource path in explorer/finder**, usually `%APPDATA%\REAPER\UserPlugins\`).
+**With the Demute Reaper Toolkit:** uninstall the **ReaAnimViewer** card in the Toolkit, then close REAPER and delete `reaper_animviewer.dll` from the `UserPlugins` folder.
+
+**Manual install:** close REAPER and delete `reaper_animviewer.dll` from the `UserPlugins` folder.
+
+To find the `UserPlugins` folder: in REAPER, **Options > Show REAPER resource path in explorer/finder** (usually `%APPDATA%\REAPER\UserPlugins\`). Files named `reaper_animviewer.dll.old` or `.new` next to it are leftovers of an update and can be deleted too.
 
 ### Manual Installation
 
 If you can't use ReaPack:
 
-1. Download `reaper_animviewer.dll` from the [latest release](https://github.com/DemuteStudio/ReaAnimViewer/releases/latest).
+1. Download `reaper_animviewer.dll` from the [latest release](https://github.com/DemuteTools/ReaAnimViewer/releases/latest).
 2. **Close REAPER.**
 3. In REAPER, **Options > Show REAPER resource path in explorer/finder** shows you the right folder. Copy the DLL into its `UserPlugins` subfolder (usually `%APPDATA%\REAPER\UserPlugins\`).
 4. Start REAPER and look for **RAV: Open Viewer** in the action list.
+
+A manual install does not update itself: repeat these steps for each new version.
 
 ### Troubleshooting
 
 | Problem | Fix |
 |---------|-----|
-| **RAV: Open Viewer** does not appear in the action list | Restart REAPER after installing. Make sure you run the 64-bit Windows version of REAPER. |
+| **RAV: Open Viewer** does not appear in the action list | Restart REAPER after installing. Make sure you run the 64-bit Windows version of REAPER. With the Toolkit, make sure you clicked **Run** on the card once before restarting. |
+| **Run** on the Toolkit card does nothing at all | Update the **ReaAnimViewer** card in the Toolkit (0.2.0 had this bug when a toolbar button for **RAV: Open Viewer** already existed), then click **Run** again. |
+| **Run** says "ReaPack still lists ReaAnimViewer as installed" | The extension was once installed with ReaPack and its file was deleted by hand, so ReaPack still thinks it is installed. In the ReaPack window that opens, right-click the **ReaAnimViewer** package named in the message, choose **Uninstall**, click **Apply**, then click **Run** again. |
+| **Run** says ReaAnimViewer is installed, but after a restart **RAV: Open Viewer** is still missing | Same cause as above with an older launcher: update the card first. If it persists, go to **Extensions > ReaPack > Browse packages...**, uninstall every installed **ReaAnimViewer** entry, click **Apply**, then click **Run** on the card and restart REAPER. |
 | The viewer opens but stays black / shows an error | Update your graphics driver: the viewer needs OpenGL 3.3. |
+| ReaPack reports a conflict on `reaper_animviewer.dll`, or the extension stays on 0.1.x | See [Upgrading from 0.1.x](#upgrading-from-01x). |
 | ReaPack says the file is in use when updating | Close REAPER, reopen it, and run **Synchronize packages** again before loading a project. |
 | The viewer shows **Failed to load: ...** | Click **Copy details** next to the message (or **Copy error log** in the viewer menu) and paste the text into your bug report. |
 
@@ -235,7 +263,7 @@ Only needed if you want to contribute. Users should install through ReaPack.
 **Prerequisites:** Windows x64, Visual Studio 2022 (Desktop development with C++), CMake 3.20+, Git.
 
 ```sh
-git clone https://github.com/DemuteStudio/ReaAnimViewer.git
+git clone https://github.com/DemuteTools/ReaAnimViewer.git
 cd ReaAnimViewer
 build.bat
 ```

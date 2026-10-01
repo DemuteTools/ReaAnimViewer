@@ -3,7 +3,7 @@ rem ============================================================================
 rem  Makes sure GitHub CLI (gh) is installed and logged in.
 rem  Installs it with winget when missing (works on any of your PCs).
 rem  On success, sets GH to the full path of gh.exe for the calling script.
-rem  Usage from another script:   call "%~dp0scripts\ensure-gh.bat" || exit /b 1
+rem  Usage from another script:   call "%~dp0tools\ensure-gh.bat" || exit /b 1
 rem ============================================================================
 
 set "GH="

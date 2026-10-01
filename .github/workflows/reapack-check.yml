@@ -1,4 +1,4 @@
-# Validates the ReaPack package headers (Extensions/*.ext) on every push and pull request.
+# Validates the ReaPack package header (Scripts/RAV_Launcher.lua) on every push and pull request.
 # Based on https://github.com/cfillion/reapack-repository-template
 name: reapack-check
 on: [push, pull_request]

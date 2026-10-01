@@ -1,2 +1,46 @@
 <?xml version="1.0" encoding="utf-8"?>
-<index version="1" name="ReaAnimViewer"/>
+<index version="1" name="ReaAnimViewer" commit="8dc50d601a6462d0585f93100b2bc9d1e1acbb89">
+  <category name="Scripts">
+    <reapack name="RAV_Launcher.lua" type="script" desc="ReaAnimViewer">
+      <metadata>
+        <description><![CDATA[{\rtf1\ansi\deff0{\fonttbl{\f0 \fswiss Helvetica;}{\f1 \fmodern Courier;}}
+{\colortbl;\red255\green0\blue0;\red0\green0\blue255;}
+\widowctrl\hyphauto
+
+{\pard \ql \f0 \sa180 \li0 \fi0 \outlinelevel0 \b \fs36 ReaAnimViewer\par}
+{\pard \ql \f0 \sa180 \li0 \fi0 3D animation viewer for REAPER. Load glTF and FBX animations onto your timeline and watch the animated character play in sync with the playhead, from any camera angle.\par}
+{\pard \ql \f0 \sa180 \li0 \fi0 Installs the ReaAnimViewer extension when needed and opens the viewer. Restart REAPER after installing or updating. Windows 64-bit only.\par}
+}
+]]></description>
+        <link rel="website" href="https://github.com/DemuteTools/ReaAnimViewer">GitHub</link>
+      </metadata>
+      <version name="0.1.0" author="Anthony Deneyer" time="2026-09-28T16:38:18Z">
+        <changelog><![CDATA[- First version of the launcher]]></changelog>
+        <source main="main">https://github.com/DemuteTools/ReaAnimViewer/raw/1f6b8bd4d5b5bfaedcabdddd0d02c8763571e06a/Scripts/RAV_Launcher.lua</source>
+      </version>
+      <version name="0.1.1" author="Anthony Deneyer" time="2026-09-29T15:20:09Z">
+        <changelog><![CDATA[- Fix an issue where close and reopen the view makes the view empty]]></changelog>
+        <source main="main">https://github.com/DemuteTools/ReaAnimViewer/raw/6c63a8e654a88a217ee24296c5b747e86945a086/Scripts/RAV_Launcher.lua</source>
+      </version>
+      <version name="0.2.0" author="Anthony Deneyer" time="2026-09-30T12:38:16Z">
+        <changelog><![CDATA[- Single package: ReaAnimViewer now installs as one package in ReaPack (the extension and its launcher)
+- Demute Reaper Toolkit: install the card, click Run once, restart REAPER. No ReaPack prompt or sync anymore
+- Demute Reaper Toolkit: updates install themselves. Click Update on the card, then restart REAPER once
+- Upgrading from 0.1.x: in ReaPack, uninstall the old ReaAnimViewer package from the Extensions category first, then synchronize]]></changelog>
+        <source main="main">https://github.com/DemuteTools/ReaAnimViewer/raw/25a4742d610dabb6f4733ea6e3c9134fba6d1fb3/Scripts/RAV_Launcher.lua</source>
+        <source platform="win64" type="extension" file="reaper_animviewer.dll">https://github.com/DemuteTools/ReaAnimViewer/releases/download/v0.2.0/reaper_animviewer.dll</source>
+      </version>
+      <version name="0.2.1" author="Anthony Deneyer" time="2026-09-30T12:57:30Z">
+        <changelog><![CDATA[- Fix: clicking Run in the Demute Reaper Toolkit did nothing when a toolbar button for RAV: Open Viewer already existed
+- Run no longer closes the viewer when it is already open]]></changelog>
+        <source main="main">https://github.com/DemuteTools/ReaAnimViewer/raw/a561e5c39a42058a65f56dc4c3803f7c92a18926/Scripts/RAV_Launcher.lua</source>
+        <source platform="win64" type="extension" file="reaper_animviewer.dll">https://github.com/DemuteTools/ReaAnimViewer/releases/download/v0.2.1/reaper_animviewer.dll</source>
+      </version>
+      <version name="0.2.2" author="Anthony Deneyer" time="2026-09-30T13:11:28Z">
+        <changelog><![CDATA[- Fix: Run said "installed" without installing anything when ReaPack still listed a deleted copy of the extension. It now opens ReaPack and tells you which package to uninstall]]></changelog>
+        <source main="main">https://github.com/DemuteTools/ReaAnimViewer/raw/8dc50d601a6462d0585f93100b2bc9d1e1acbb89/Scripts/RAV_Launcher.lua</source>
+        <source platform="win64" type="extension" file="reaper_animviewer.dll">https://github.com/DemuteTools/ReaAnimViewer/releases/download/v0.2.2/reaper_animviewer.dll</source>
+      </version>
+    </reapack>
+  </category>
+</index>

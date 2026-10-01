@@ -1014,8 +1014,21 @@ LoadResult LoadAsset(const std::string& path)
             aiProcess_JoinIdenticalVertices | aiProcess_LimitBoneWeights |
             aiProcess_FlipUVs);
 
-        if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || !scene->mRootNode)
-            return {std::nullopt, LoadErrorCategory::ParseFailed, importer.GetErrorString()};
+        if (!scene || !scene->mRootNode)
+            return {std::nullopt, LoadErrorCategory::ParseFailed,
+                    std::string("assimp: ") + importer.GetErrorString()};
+
+        // assimp's FBX importer flags a mesh-less scene (a skeleton/animation-only export)
+        // INCOMPLETE without setting an error string, so name it here — otherwise the
+        // copied error log would read "parse-failed" with an empty reason.
+        if (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) {
+            if (scene->mNumMeshes == 0)
+                return {std::nullopt, LoadErrorCategory::UnsupportedFormat,
+                        "file contains no meshes (skeleton/animation-only export?)"};
+            return {std::nullopt, LoadErrorCategory::ParseFailed,
+                    std::string("assimp flagged the scene incomplete: ") +
+                    importer.GetErrorString()};
+        }
 
         if (scene->mNumMeshes == 0)
             return {std::nullopt, LoadErrorCategory::UnsupportedFormat,
@@ -1162,8 +1175,13 @@ double ProbeAnimationDuration(const std::string& path)
         // is the NFR-P2 win (AC4) — the probe does only the cheap parse for duration.
         const aiScene* scene = importer.ReadFile(path, 0);
 
-        if (!scene || (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) ||
-            scene->mNumAnimations == 0)
+        // Kept for "Copy error log": a file that fails here only shows up as a 1 s item.
+        if (!scene) {
+            LogWarn("duration probe could not read %s: %s", path.c_str(),
+                    importer.GetErrorString());
+            return 0.0;
+        }
+        if ((scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) || scene->mNumAnimations == 0)
             return 0.0;
 
         const aiAnimation* a = scene->mAnimations[0];

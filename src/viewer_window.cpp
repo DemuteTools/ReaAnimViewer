@@ -158,6 +158,9 @@ int g_shadow_quality = 2;
 
 // Story 6.5.4 (post-gate, Antho) — floor on/off. Default on, matching the renderer default.
 bool g_floor_visible = true;
+// Epic 9 — floor grid cell size in metres (1 or 10). Default 1 m, matching the renderer's
+// default grid_step_m_. Session-only, like the other Ground/Shadow levers.
+int g_grid_step_m = 1;
 
 // Story 6.5.5/6.5.6 — Performance section levers (FR52/FR53). Default to the quality end (Antho's
 // request) and seed the renderer's matching defaults in StartRendering, like g_floor_visible.
@@ -899,6 +902,15 @@ void DrawToolUi()
             ImGui::Indent(8.0f);
             if (ImGui::Checkbox("Enable", &g_floor_visible))
                 g_renderer.SetFloorVisible(g_floor_visible);
+            // Epic 9 — grid cell size in real metres; the renderer converts it to the
+            // file's unit, so sizes read in cells whatever the format.
+            ImGui::TextUnformatted("Grid");
+            ImGui::SameLine();
+            bool grid_changed = false;
+            grid_changed |= ImGui::RadioButton("1 m",  &g_grid_step_m, 1);  ImGui::SameLine();
+            grid_changed |= ImGui::RadioButton("10 m", &g_grid_step_m, 10);
+            if (grid_changed)
+                g_renderer.SetGridStep(static_cast<float>(g_grid_step_m));
             ImGui::Unindent(8.0f);
         }
 

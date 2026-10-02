@@ -94,6 +94,10 @@ struct Asset {
     glm::mat4                   modelRoot{1.0f}; // identity; non-canonical stays as-authored (AR13)
     glm::vec3                   aabbMin{0.0f};   // union AABB → camera auto-fit / Reset (D14)
     glm::vec3                   aabbMax{0.0f};
+    // Real-world size of one scene unit, so the floor grid can be drawn in metres (Epic 9).
+    // assimp hands FBX back in centimetres (it folds the file's UnitScaleFactor into the
+    // root node) and glTF/Collada in metres.
+    float                       metersPerUnit = 1.0f;
 };
 
 }  // namespace rav

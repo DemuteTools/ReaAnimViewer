@@ -811,6 +811,77 @@ void WalkBake(const aiScene* scene, const aiNode* node, const glm::mat4& parent_
                  aabb_min, aabb_max, aabb_seeded);
 }
 
+// The framing bounds of what is actually DRAWN (Epic 9). A skinned mesh is stored
+// mesh-local (identity bake, §C) and only reaches world space through the bone palette,
+// so the AABB WalkBake grows from its raw verts misses every transform the palette
+// carries. Blender FBX is the canonical case: its Armature node is keyed at x100 scale +
+// -90 deg X, so the drawn rig is 100x the raw bounds and the camera, zoom clamp, clip
+// planes, floor and shadow (all sized from these bounds) framed a speck of it.
+// Re-derive the bounds by CPU-skinning exactly like the vertex shader (same id clamp,
+// same weight renormalization) over the clip the renderer plays (animations[0]), at
+// evenly spaced times so root motion stays in frame too. Static meshes are already
+// world-baked and contribute as-is. Returns false (outputs untouched) when the renderer
+// would not skin either (channel/bone mismatch → static path): the raw bounds ARE then
+// what is drawn.
+bool ComputePosedBounds(const SceneSkeleton& skel, const SceneAnimation& clip,
+                        const std::vector<PendingMesh>& meshes,
+                        glm::vec3& out_min, glm::vec3& out_max)
+{
+    const size_t nb = skel.bones.size();
+    if (nb == 0 || clip.channels.size() != nb) return false;  // == the renderer's pose_valid
+
+    size_t skinned_verts = 0;
+    for (const PendingMesh& pm : meshes)
+        if (pm.skinned) skinned_verts += pm.verts.size();
+    if (skinned_verts == 0) return false;
+
+    // Load-time cost cap (~4M vertex skins): 32 poses for a typical rig, down to the two
+    // clip ends for a multi-million-vertex mesh. A zero-length clip has a single pose.
+    constexpr size_t kSkinBudget = 4000000;
+    const int samples = (clip.duration > 0.0f)
+        ? static_cast<int>(std::clamp<size_t>(kSkinBudget / skinned_verts, 2, 32))
+        : 1;
+
+    std::vector<glm::mat4> palette(nb, glm::mat4(1.0f));
+    std::vector<glm::mat4> global(nb, glm::mat4(1.0f));
+    // The shader clamps ids to [0,127] (only the first 128 matrices are uploaded); also
+    // stay inside this palette for a rig with fewer bones.
+    const int max_id = static_cast<int>(std::min<size_t>(nb, 128)) - 1;
+
+    bool seeded = false;
+    auto grow = [&](const glm::vec3& p) {
+        // Same finite-only rule as AppendMesh: a NaN/Inf vertex must not poison the bounds.
+        if (!(std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z))) return;
+        if (!seeded) { out_min = out_max = p; seeded = true; }
+        else { out_min = glm::min(out_min, p); out_max = glm::max(out_max, p); }
+    };
+
+    for (const PendingMesh& pm : meshes)
+        if (!pm.skinned)
+            for (const SceneVertex& v : pm.verts) grow(v.pos);
+
+    for (int s = 0; s < samples; ++s) {
+        const float t = (samples > 1)
+            ? clip.duration * static_cast<float>(s) / static_cast<float>(samples - 1)
+            : 0.0f;
+        ComputePose(skel, clip, t, palette, global);
+        for (const PendingMesh& pm : meshes) {
+            if (!pm.skinned) continue;
+            for (const SceneVertex& v : pm.verts) {
+                const glm::vec4& w = v.boneWeights;
+                const float wsum = w.x + w.y + w.z + w.w;
+                if (!(wsum > 0.0f)) { grow(v.pos); continue; }  // shader: identity skin
+                const glm::vec4 p(v.pos, 1.0f);
+                glm::vec4 acc(0.0f);
+                for (int k = 0; k < 4; ++k)
+                    acc += w[k] * (palette[std::clamp(v.boneIds[k], 0, max_id)] * p);
+                grow(glm::vec3(acc) / wsum);
+            }
+        }
+    }
+    return seeded;
+}
+
 // Reads the skin weights of a .glb/.gltf straight from the file and maps them onto
 // assimp's meshes — the work-around for the assimp 6.0.5 Windows glTF weight bug (see
 // gltf_skin.h). Returns a per-scene-mesh table; every entry is `valid=false` (→ assimp
@@ -1101,6 +1172,14 @@ LoadResult LoadAsset(const std::string& path)
         Asset asset;
         asset.aabbMin  = aabb_min;
         asset.aabbMax  = aabb_max;
+        // FBX comes out of assimp in centimetres whatever the file's own unit
+        // (correctRootTransform scales the root by UnitScaleFactor); glTF and Collada
+        // (unit size applied to the root) come out in metres.
+        {
+            std::string ext = std::filesystem::u8path(path).extension().u8string();
+            for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            asset.metersPerUnit = (ext == ".fbx") ? 0.01f : 1.0f;
+        }
         // modelRoot stays identity: canonical files render upright, non-canonical
         // render tilted/scaled as-authored (AR13), recovered later by Reset Camera.
 
@@ -1198,6 +1277,17 @@ LoadResult LoadAsset(const std::string& path)
             if (!asset.animations.empty())
                 DumpAnimation(skeleton, asset.animations.front(), animated, tps);
             for (bool a : animated) any_bone_animated |= a;
+        }
+
+        // Frame what is DRAWN, not the raw mesh-local skinned verts (Epic 9 — see
+        // ComputePosedBounds). Kept as-is when the renderer won't skin either.
+        if (!asset.animations.empty()) {
+            glm::vec3 posed_min(0.0f), posed_max(0.0f);
+            if (ComputePosedBounds(skeleton, asset.animations.front(), pending,
+                                   posed_min, posed_max)) {
+                asset.aabbMin = posed_min;
+                asset.aabbMax = posed_max;
+            }
         }
         asset.skeleton = std::move(skeleton);
 

@@ -129,6 +129,12 @@ public:
     // there is nothing to cast onto — RenderFrame gates the pass on this too). Session-only.
     void SetFloorVisible(bool v) { floor_visible_ = v; }
 
+    // Epic 9 — floor grid cell size in real metres (the tool offers 1 m and 10 m). The
+    // asset's metersPerUnit turns it into scene units, so a 100 m model spans 10 cells of
+    // 10 m whatever its file format. Rebuilds the grid lines (GL work: the context must be
+    // current, as it is from the tool UI). Session-only, like SetFloorVisible.
+    void SetGridStep(float meters);
+
     // Story 6.5.5 — Normal-maps render-quality toggle (FR52). Defaults ON (quality); a weak PC
     // turns it off to recover frame time. Session-only, mirrors SetFloorVisible. AND-gated into
     // the per-material u_hasNormalMap flag in RenderFrame — NO GLSL change, the shader already
@@ -159,6 +165,11 @@ private:
     // shadow via PCF. No-op if the floor program failed to build. Switches to
     // floor_program_/floor_vao_; the caller re-binds the mesh program after.
     void DrawFloor();
+    // Epic 9 — (re)fills floor_vb_ for the current asset + grid step: the solid quad then
+    // one grid line every grid_step_m_ metres, laid out in world XZ and aligned on world
+    // multiples of the step, the floor spanning ~6x the framing radius (as before) rounded
+    // out to whole cells. Cold path: SetAsset, SetGridStep and BuildFloor only.
+    void RebuildFloorGeometry();
     // (Re)allocates the shadow-map depth texture + FBO at `size`x`size`. Returns false on
     // any GL failure (caller falls back to Off). Cold path (SetShadowQuality / Init only).
     bool AllocShadowMap(int size);
@@ -234,13 +245,15 @@ private:
     float     normal_strength_ = 1.50f;  // boosted normal-map relief (wrinkles/pores read)
 
     // Story 6.5.4 — always-on floor: a flat-colour ground plane + grid in its own minimal
-    // program (NOT the lit material shader). Built ONCE in Init (cold path), scaled to the
-    // model AABB per frame, drawn opaque under the model. Receives the cast shadow via PCF.
+    // program (NOT the lit material shader). Program built ONCE in Init; geometry rebuilt in
+    // world XZ per asset / grid step (RebuildFloorGeometry), drawn opaque under the model.
+    // Receives the cast shadow via PCF.
     GpuProgram     floor_program_;
     GpuVertexArray floor_vao_;
     GpuBuffer      floor_vb_;          // solid quad (4 verts) then grid lines, one buffer
     GLsizei        gridVertCount_ = 0; // grid-line vertex count (drawn after the quad)
     bool           floor_visible_ = true;  // post-gate floor on/off toggle (Antho); default on
+    float          grid_step_m_   = 1.0f;  // Epic 9 — grid cell size in metres (1 or 10)
     // Story 6.5.5/6.5.6 render-quality levers (FR52). normal_maps_on_ (default on) AND-gates the
     // per-material u_hasNormalMap flag (one uniform value, no GLSL). msaa_samples_ (default 4×,
     // clamped to GL_MAX_SAMPLES at startup) selects the offscreen multisample colour FBO's sample

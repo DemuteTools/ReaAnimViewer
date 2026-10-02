@@ -215,6 +215,7 @@ The installed version is shown at the bottom of the menu.
 ### Ground
 
 - **Enable**: Show or hide the floor and grid under the character.
+- **Grid: 1 m / 10 m**: Size of one grid cell in real-world metres, whatever the file format (FBX centimetres and glTF metres are converted for you). A 100 m dragon covers 10 cells at 10 m.
 
 ### Shadow
 

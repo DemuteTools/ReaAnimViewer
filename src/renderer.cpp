@@ -415,37 +415,87 @@ void Renderer::BuildFloor()
     u_floor_pcf_radius_   = glGetUniformLocation(prog, "u_pcfRadius");
     u_floor_shadow_texel_ = glGetUniformLocation(prog, "u_shadowTexel");
 
-    // Build the floor geometry ONCE (cold path): a unit quad in XZ at y=0, [-0.5,0.5]²
-    // (4 verts, TRIANGLE_STRIP), followed by an NxN grid of lines packed into the SAME
-    // buffer. The model-scaled placement matrix (per frame) sizes it to the asset.
-    constexpr int kDiv = 20;          // grid divisions
-    std::vector<glm::vec3> verts;
-    verts.reserve(4 + (kDiv + 1) * 4);
-    verts.push_back(glm::vec3(-0.5f, 0.0f, -0.5f));   // quad (strip): the 4 corners
-    verts.push_back(glm::vec3(-0.5f, 0.0f,  0.5f));
-    verts.push_back(glm::vec3( 0.5f, 0.0f, -0.5f));
-    verts.push_back(glm::vec3( 0.5f, 0.0f,  0.5f));
-    for (int i = 0; i <= kDiv; ++i) {                 // grid lines (GL_LINES)
-        const float t = -0.5f + static_cast<float>(i) / kDiv;
-        verts.push_back(glm::vec3(-0.5f, 0.0f, t));   // line along X at z=t
-        verts.push_back(glm::vec3( 0.5f, 0.0f, t));
-        verts.push_back(glm::vec3(t, 0.0f, -0.5f));   // line along Z at x=t
-        verts.push_back(glm::vec3(t, 0.0f,  0.5f));
-    }
-    gridVertCount_ = static_cast<GLsizei>(verts.size() - 4);
-
+    // The floor geometry (quad + grid lines, one buffer) depends on the asset and the grid
+    // step, so it is (re)filled by RebuildFloorGeometry. Re-specifying the buffer's data
+    // keeps the VAO's attribute pointer valid, so the VAO captures it once here and the
+    // draw just binds floor_vao_.
     glGenVertexArrays(1, floor_vao_.addr());
     glGenBuffers(1, floor_vb_.addr());
     glBindVertexArray(floor_vao_.get());
     glBindBuffer(GL_ARRAY_BUFFER, floor_vb_.get());
-    glBufferData(GL_ARRAY_BUFFER,
-                 static_cast<GLsizeiptr>(verts.size() * sizeof(glm::vec3)),
-                 verts.data(), GL_STATIC_DRAW);
-    // The floor VBO never changes (unlike per-mesh VBOs), so the VAO can capture its one
-    // attribute pointer once here — at draw time we just bind floor_vao_.
     glEnableVertexAttribArray(0);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(glm::vec3), (void*)0);
     glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    RebuildFloorGeometry();
+}
+
+void Renderer::SetGridStep(float meters)
+{
+    if (!(meters > 0.0f) || meters == grid_step_m_) return;
+    grid_step_m_ = meters;
+    RebuildFloorGeometry();
+}
+
+void Renderer::RebuildFloorGeometry()
+{
+    if (!floor_vb_.get()) return;  // floor program failed to build → nothing is drawn
+
+    // The grid step in scene units: a 1 m cell is 100 units in an FBX (centimetres) and
+    // 1 unit in a glTF (metres).
+    const float mpu  = (asset_.metersPerUnit > 0.0f) ? asset_.metersPerUnit : 1.0f;
+    const float step = grid_step_m_ / mpu;
+
+    // Same footprint as before the metric grid (6x the framing radius, centred under the
+    // model), rounded OUT to whole cells on world multiples of the step so a line always
+    // runs through the origin and the cells read as absolute metres. A model smaller than
+    // a cell still sits on at least one whole cell. Capped so a 1 m grid under a kilometre-wide
+    // scene stays a bounded buffer (the floor then shrinks around the centre).
+    constexpr int kMaxCells = 2000;
+    const glm::vec3 c = 0.5f * (asset_.aabbMin + asset_.aabbMax);
+    const float half = 3.0f * cam_.frameRadius;
+    auto span = [&](float centre, float& lo, int& cells) {
+        float l = std::floor((centre - half) / step);
+        float h = std::ceil((centre + half) / step);
+        if (!(std::isfinite(l) && std::isfinite(h)) || h <= l) {  // degenerate → one cell
+            l = std::floor(centre / step); h = l + 1.0f;
+        }
+        if (h - l > static_cast<float>(kMaxCells)) {
+            l = std::floor(centre / step) - static_cast<float>(kMaxCells / 2);
+            h = l + static_cast<float>(kMaxCells);
+        }
+        lo = l * step;
+        cells = static_cast<int>(h - l);
+    };
+    float x0 = 0.0f, z0 = 0.0f;
+    int nx = 1, nz = 1;
+    span(c.x, x0, nx);
+    span(c.z, z0, nz);
+    const float x1 = x0 + static_cast<float>(nx) * step;
+    const float z1 = z0 + static_cast<float>(nz) * step;
+
+    std::vector<glm::vec3> verts;
+    verts.reserve(4 + static_cast<size_t>(nx + 1 + nz + 1) * 2);
+    verts.push_back(glm::vec3(x0, 0.0f, z0));   // quad (strip): the 4 corners
+    verts.push_back(glm::vec3(x0, 0.0f, z1));
+    verts.push_back(glm::vec3(x1, 0.0f, z0));
+    verts.push_back(glm::vec3(x1, 0.0f, z1));
+    for (int i = 0; i <= nz; ++i) {             // grid lines (GL_LINES) along X
+        const float z = z0 + static_cast<float>(i) * step;
+        verts.push_back(glm::vec3(x0, 0.0f, z));
+        verts.push_back(glm::vec3(x1, 0.0f, z));
+    }
+    for (int i = 0; i <= nx; ++i) {             // ... and along Z
+        const float x = x0 + static_cast<float>(i) * step;
+        verts.push_back(glm::vec3(x, 0.0f, z0));
+        verts.push_back(glm::vec3(x, 0.0f, z1));
+    }
+    gridVertCount_ = static_cast<GLsizei>(verts.size() - 4);
+
+    glBindBuffer(GL_ARRAY_BUFFER, floor_vb_.get());
+    glBufferData(GL_ARRAY_BUFFER,
+                 static_cast<GLsizeiptr>(verts.size() * sizeof(glm::vec3)),
+                 verts.data(), GL_STATIC_DRAW);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
@@ -561,13 +611,11 @@ void Renderer::DrawFloor()
     if (!floor_visible_) return;         // ground hidden by the tool (Antho post-gate toggle)
     if (!floor_program_.get()) return;   // floor shader failed to build → no ground plane
 
-    // Placement (per frame, stack math): centre under the model, sit at its feet
-    // (aabbMin.y), sized generously to the framing radius so it reads as ground.
-    const glm::vec3 center = 0.5f * (asset_.aabbMin + asset_.aabbMax);
-    const float extent = cam_.frameRadius * 6.0f;
+    // Placement (per frame, stack math): the geometry is already laid out in world XZ by
+    // RebuildFloorGeometry (centred under the model, metric grid), so only lift it to the
+    // model's feet (aabbMin.y).
     const glm::mat4 M =
-        glm::translate(glm::mat4(1.0f), glm::vec3(center.x, asset_.aabbMin.y, center.z)) *
-        glm::scale(glm::mat4(1.0f), glm::vec3(extent, 1.0f, extent));
+        glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, asset_.aabbMin.y, 0.0f));
     const glm::mat4 mvp = view_proj_ * M;
 
     glUseProgram(floor_program_.get());
@@ -615,6 +663,9 @@ void Renderer::SetAsset(Asset&& asset)
     // tilted (AR13), recovered by Reset (Story 2.4). cam_.Reset carries the same
     // degenerate/NaN-bounds guards the inline framing used to.
     ResetCamera();
+    // The floor footprint follows the framing radius and the grid follows the asset's unit
+    // (Epic 9), so rebuild it now that both are known.
+    RebuildFloorGeometry();
 
     // Size the skinning palette + scratch ONCE here (cold load path) so the per-frame
     // ComputePose never allocates (D2). ComputePose only runs when out_palette.size()

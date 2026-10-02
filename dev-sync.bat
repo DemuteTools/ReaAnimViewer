@@ -5,7 +5,7 @@ title ReaAnimViewer - Dev files sync
 rem ============================================================================
 rem  Syncs the PRIVATE dev files between your PCs through a private GitHub repo
 rem  (<owner>/ReaAnimViewer-dev). These files are ignored by the public repo:
-rem    .claude\  _bmad\  _bmad-output\  CLAUDE.md
+rem    .claude\  _bmad\  _bmad-output\  CLAUDE.md  sample\ (test models)
 rem    docs\PHASE*_VALIDATOR_GATE.md  docs\SPIKE0_FINDINGS.md
 rem  (.claude\settings.local.json stays local to each PC)
 rem
@@ -163,7 +163,7 @@ rem ignores these paths on purpose.
 :stage_dev_files
 %G% add -u || exit /b 1
 set "PATHS="
-for %%P in (.claude _bmad _bmad-output CLAUDE.md) do if exist "%%P" set "PATHS=!PATHS! %%P"
+for %%P in (.claude _bmad _bmad-output CLAUDE.md sample) do if exist "%%P" set "PATHS=!PATHS! %%P"
 for %%P in (docs\PHASE*_VALIDATOR_GATE.md docs\SPIKE0_FINDINGS.md) do if exist "%%P" set "PATHS=!PATHS! %%P"
 if defined PATHS %G% add -f -- !PATHS! || exit /b 1
 %G% rm -q --cached --ignore-unmatch -- %LOCAL_ONLY% >nul

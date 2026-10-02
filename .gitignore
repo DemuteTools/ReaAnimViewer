@@ -57,5 +57,6 @@ dist/
 _bmad/
 _bmad-output/
 CLAUDE.md
+sample/
 docs/PHASE*_VALIDATOR_GATE.md
 docs/SPIKE0_FINDINGS.md

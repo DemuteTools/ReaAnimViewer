@@ -60,7 +60,7 @@ After testing a `debuglog` or `forcefail` build, run `build.bat` again to reinst
 
 Never change `@version` in `Scripts/RAV_Launcher.lua` by hand: `release.bat` must create the matching GitHub Release, otherwise ReaPack would point to a download that does not exist, and the self-update would compare against a wrong version.
 
-The download URL in the launcher header is built from the `origin` remote, so it follows the repository when it moves to the Demute organization. After the move, update `origin` (`git remote set-url origin ...`) and the repository URLs in `README.md`.
+The download URL in the launcher header is built from the `origin` remote, so it follows the repository if it ever moves. After a move, update `origin` (`git remote set-url origin ...`) and the repository URLs in `README.md`.
 
 ## ReaPack Index
 

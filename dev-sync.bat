@@ -80,8 +80,8 @@ if exist "%DEVGIT%\" (
 call "%~dp0tools\ensure-gh.bat" || goto failed
 
 rem The private repo lives on YOUR GitHub account (the one gh is logged in with),
-rem not on the public repo's owner: it stays put when the public repo moves to
-rem the Demute organization.
+rem not in the DemuteTools organization: every user who signs up for the tools
+rem becomes a member there and could read it.
 set "OWNER="
 for /f "delims=" %%O in ('call "%GH%" api user -q .login 2^>nul') do set "OWNER=%%O"
 if not defined OWNER (

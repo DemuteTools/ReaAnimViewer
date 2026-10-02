@@ -1,0 +1,4 @@
+#!/bin/sh
+# Before `git push` to the public repo: also send the private dev files. See dev-sync.sh.
+[ "$1" = origin ] || exit 0
+exec sh "$(dirname "$0")/dev-sync.sh" push

@@ -1,0 +1,3 @@
+#!/bin/sh
+# After `git pull` (or any merge): also get the private dev files. See dev-sync.sh.
+exec sh "$(dirname "$0")/dev-sync.sh" pull

@@ -35,6 +35,10 @@ if errorlevel 1 (
     goto failed
 )
 
+rem Turn on the automatic sync on this PC: from now on `git pull` also pulls the
+rem dev files and `git push` also pushes them (.githooks\dev-sync.sh).
+git config core.hooksPath .githooks
+
 set "ACTION=%~1"
 if not "%ACTION%"=="" goto dispatch
 
@@ -128,13 +132,21 @@ if errorlevel 1 (
 ) else (
     echo No local changes to commit.
 )
+rem Merge what the other PCs pushed first, so this push cannot be rejected.
+%G% pull --no-rebase --no-edit origin main
+if errorlevel 1 (
+    echo.
+    echo [FAILED] Both PCs changed the same dev file. Fix the conflicts, then run:
+    echo   dev-sync.bat push
+    goto failed
+)
 %G% push origin main || goto failed
 echo.
 echo OK: dev files pushed.
 goto done
 
 :pull
-%G% pull --no-rebase origin main
+%G% pull --no-rebase --no-edit origin main
 if errorlevel 1 (
     echo.
     echo [FAILED] Pull failed. If files conflict, fix them, then run:

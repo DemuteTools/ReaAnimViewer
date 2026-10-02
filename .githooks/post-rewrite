@@ -1,0 +1,4 @@
+#!/bin/sh
+# After `git pull --rebase`: also get the private dev files. See dev-sync.sh.
+[ "$1" = rebase ] || exit 0
+exec sh "$(dirname "$0")/dev-sync.sh" pull

@@ -1,3 +1,5 @@
 # Windows scripts must keep CRLF line endings (cmd.exe labels break with LF)
 *.bat text eol=crlf
 *.ps1 text eol=crlf
+# Git hooks run under sh, which breaks on CRLF
+.githooks/* text eol=lf

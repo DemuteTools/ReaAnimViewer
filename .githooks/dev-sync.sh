@@ -10,11 +10,16 @@
 #
 # Keep the path list in sync with :stage_dev_files in dev-sync.bat.
 
-cd "$(git rev-parse --show-toplevel)" || exit 0
+# WSL's git refuses a repo on a Windows drive ("dubious ownership") unless told to
+# trust it; Windows git doesn't need it. GIT_TERMINAL_PROMPT=0: never wait for a
+# password inside a hook.
+export GIT_TERMINAL_PROMPT=0
+sgit() { git -c 'safe.directory=*' "$@"; }
+cd "$(sgit rev-parse --show-toplevel)" || exit 0
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE  # set by git for the PUBLIC repo's hook
 
 DEVGIT=.devgit
-dg() { git --git-dir="$DEVGIT" --work-tree=. "$@"; }
+dg() { sgit --git-dir="$DEVGIT" --work-tree=. "$@"; }
 warn() { echo "[dev-sync] WARNING: $*" >&2; }
 
 if [ ! -d "$DEVGIT" ]; then
@@ -47,17 +52,21 @@ merge_remote() {
     fi
 }
 
+# Records the last successful sync: a dev file newer than this marker has not been
+# sent yet (.claude/hooks/dev-sync-reminder.sh reminds the user).
+mark_synced() { : > "$DEVGIT/last-sync"; }
+
 case "$1" in
 pull)
     echo "[dev-sync] Getting the private dev files..."
     commit_local || { warn "could not save the local dev changes: run dev-sync.bat push"; exit 0; }
-    merge_remote
+    merge_remote && mark_synced
     ;;
 push)
     echo "[dev-sync] Sending the private dev files..."
     commit_local || { warn "could not save the local dev changes: run dev-sync.bat push"; exit 0; }
     merge_remote || exit 0
-    dg push -q origin HEAD:main || warn "push failed: run dev-sync.bat push"
+    if dg push -q origin HEAD:main; then mark_synced; else warn "push failed: run dev-sync.bat push"; fi
     ;;
 esac
 exit 0

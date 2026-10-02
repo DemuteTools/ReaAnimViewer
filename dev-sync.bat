@@ -105,6 +105,7 @@ call :configure_devgit
 %G% reset --hard origin/main || goto failed
 %G% branch --set-upstream-to=origin/main main >nul
 echo.
+call :mark_synced
 echo OK: dev files downloaded from %DEVREPO%.
 goto done
 
@@ -120,6 +121,7 @@ call :stage_dev_files || goto failed
 %G% commit -q -m "Initial dev files" || goto failed
 %G% push -u origin main || goto failed
 echo.
+call :mark_synced
 echo OK: private repo created and dev files uploaded: https://github.com/%DEVREPO%
 goto done
 
@@ -142,6 +144,7 @@ if errorlevel 1 (
 )
 %G% push origin main || goto failed
 echo.
+call :mark_synced
 echo OK: dev files pushed.
 goto done
 
@@ -154,6 +157,7 @@ if errorlevel 1 (
     goto failed
 )
 echo.
+call :mark_synced
 echo OK: dev files up to date.
 goto done
 
@@ -162,6 +166,12 @@ goto done
 goto done
 
 rem ----------------------------------------------------------------------------
+rem Records the last successful sync: a dev file newer than this marker has not
+rem been sent yet (.claude\hooks\dev-sync-reminder.sh reminds the user).
+:mark_synced
+type nul > "%DEVGIT%\last-sync"
+exit /b 0
+
 rem Settings of the private repo on this PC.
 :configure_devgit
 %G% config core.bare false

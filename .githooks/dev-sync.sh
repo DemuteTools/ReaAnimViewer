@@ -30,7 +30,7 @@ fi
 commit_local() {
     dg add -u || return 1
     for p in .claude _bmad _bmad-output CLAUDE.md sample \
-             docs/PHASE*_VALIDATOR_GATE.md docs/SPIKE0_FINDINGS.md; do
+             docs/PHASE*_VALIDATOR_GATE.md docs/SPIKE0_FINDINGS.md test-*.bat; do
         [ -e "$p" ] && dg add -f -- "$p"
     done
     # Local only: the PC's own settings, and agent worktrees (git would record them as

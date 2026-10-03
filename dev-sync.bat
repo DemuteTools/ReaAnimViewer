@@ -27,7 +27,7 @@ cd /d "%~dp0"
 set "DEVGIT=.devgit"
 set "DEVREPO_NAME=ReaAnimViewer-dev"
 set "G=git --git-dir=%DEVGIT% --work-tree=."
-set "LOCAL_ONLY=.claude/settings.local.json"
+set "LOCAL_ONLY=.claude/settings.local.json .claude/worktrees"
 
 where git >nul 2>nul
 if errorlevel 1 (
@@ -188,7 +188,7 @@ set "PATHS="
 for %%P in (.claude _bmad _bmad-output CLAUDE.md sample) do if exist "%%P" set "PATHS=!PATHS! %%P"
 for %%P in (docs\PHASE*_VALIDATOR_GATE.md docs\SPIKE0_FINDINGS.md) do if exist "%%P" set "PATHS=!PATHS! %%P"
 if defined PATHS %G% add -f -- !PATHS! || exit /b 1
-%G% rm -q --cached --ignore-unmatch -- %LOCAL_ONLY% >nul
+%G% rm -r -q --cached --ignore-unmatch -- %LOCAL_ONLY% >nul
 exit /b 0
 
 rem ----------------------------------------------------------------------------

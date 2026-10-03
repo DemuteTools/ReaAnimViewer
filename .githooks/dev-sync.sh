@@ -33,7 +33,9 @@ commit_local() {
              docs/PHASE*_VALIDATOR_GATE.md docs/SPIKE0_FINDINGS.md; do
         [ -e "$p" ] && dg add -f -- "$p"
     done
-    dg rm -q --cached --ignore-unmatch -- .claude/settings.local.json >/dev/null
+    # Local only: the PC's own settings, and agent worktrees (git would record them as
+    # submodule links).
+    dg rm -r -q --cached --ignore-unmatch -- .claude/settings.local.json .claude/worktrees >/dev/null
     dg diff --cached --quiet && return 0
     dg commit -q -m "Sync dev files from ${COMPUTERNAME:-$(hostname)}"
 }

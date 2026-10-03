@@ -553,6 +553,36 @@ int main()
         CHECK(VideoRulerFirstTickFrom(1.0, 0.0, 0.0, 24.0) == 0);  // no step
     }
 
+    // ---- Spec 11-fb-14 ----
+    // Shift + wheel scroll: 10 % of the span per notch, up = earlier, never before min_v0.
+    {
+        CHECK(Near(VideoStripScroll(2.0, 4.0, 1.0, -0.3), 1.6));    // up: left
+        CHECK(Near(VideoStripScroll(2.0, 4.0, -1.0, -0.3), 2.4));   // down: right
+        CHECK(Near(VideoStripScroll(2.0, 4.0, -2.5, -0.3), 3.0));   // fractional notches
+        CHECK(Near(VideoStripScroll(0.0, 4.0, 1.0, -0.3), -0.3));   // stops at the margin before 0
+        CHECK(Near(VideoStripScroll(-0.3, 4.0, 3.0, -0.3), -0.3));
+        CHECK(Near(VideoStripScroll(-1.0, 4.0, 1.0, -0.3), -1.0));  // already further left: no jump
+        CHECK(Near(VideoStripScroll(-1.0, 4.0, -1.0, -0.3), -0.6)); // ...but can move right
+        CHECK(Near(VideoStripScroll(2.0, 4.0, std::nan(""), -0.3), 2.0));
+        CHECK(Near(VideoStripScroll(2.0, 0.0, 1.0, -0.3), 2.0));
+        CHECK(Near(VideoStripScroll(2.0, 4.0, 1.0, std::nan("")), 1.6));
+    }
+    // First shot's displayed start: the first frame of the earliest item.
+    {
+        CHECK(Near(VideoShotDisplayStart(0, 0.0, 1.4, 24.0), 34.0 / 24.0));   // off-grid clip start
+        CHECK(Near(VideoShotDisplayStart(0, 0.0, 1.5, 24.0), 1.5));
+        CHECK(Near(VideoShotDisplayStart(0, 0.0, std::nan(""), 24.0), 0.0));  // no item: 0:00
+        CHECK(Near(VideoShotDisplayStart(0, 0.0, 1.4, 0.0), 1.4));            // fps unknown
+        CHECK(Near(VideoShotDisplayStart(1, 2.5 - 0.5 / 24.0, 1.4, 24.0),
+                   VideoShotFirstFrameTime(2.5 - 0.5 / 24.0, 24.0)));         // other shots: their first frame
+        CHECK(Near(VideoShotDisplayStart(2, 3.0, 1.4, 0.0), 3.0));
+        // Shot 2 before the first clip (cut or dragged there): shot 1 never shows after it.
+        CHECK(Near(VideoShotDisplayStart(0, 0.0, 3.0, 24.0, 2.0 - 0.5 / 24.0), 2.0));
+        CHECK(Near(VideoShotDisplayStart(0, 0.0, 3.0, 24.0, 5.0 - 0.5 / 24.0), 3.0));  // shot 2 later: the clip
+        CHECK(Near(VideoShotDisplayStart(0, 0.0, 3.0, 24.0, std::nan("")), 3.0));      // no shot 2
+        CHECK(Near(VideoShotDisplayStart(0, 0.0, std::nan(""), 24.0, 2.0), 0.0));      // no item: 0:00
+    }
+
     std::printf(g_fails ? "FAILED %d\n" : "ALL PASS\n", g_fails);
     return g_fails != 0 ? 1 : 0;
 }

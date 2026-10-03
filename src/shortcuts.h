@@ -204,11 +204,14 @@ inline int RouteViewerKey(const ShortcutBindings& b, const KeyRouteInput& in, Ke
     // Spec 11-fb-12 -- Alt + wheel over the viewer's UI (the shot strip's zoom) is the viewer's,
     // never a REAPER mouse-wheel action, and Alt's release after it is the viewer's too (the
     // window swallows it: REAPER's menu bar does not open). Alt's next press starts afresh.
+    // Spec 11-fb-14: Shift + wheel over the UI (the strip's scroll) is the viewer's too (Shift's
+    // release opens no menu: nothing to swallow).
     if (in.msg == KeyMsg::Wheel) {
         if (in.alt && in.imgui_mouse) {
             st.alt_wheel_taken = true;
             return kRouteViewer;
         }
+        if (in.shift && in.imgui_mouse) return kRouteViewer;
         return (in.recording || in.text_input) ? kRouteViewer : kRouteReaper;
     }
     if (down && in.key == vk::kMenu && !in.repeat) st.alt_wheel_taken = false;

@@ -47,6 +47,22 @@ inline double VideoShotFirstFrameTime(double shot_time, double fps)
     return std::ceil(shot_time * fps - 1e-6) / fps;
 }
 
+// Spec 11-fb-14 -- the shot's displayed and seek start (strip, shot list, inspector, seek to
+// the shot, double-click): its first frame, except shot 1 (index 0), which starts at the first
+// frame of the track's earliest item (`first_item_start`; NaN: no item, its own first frame,
+// i.e. 0:00), never after shot 2's first frame (`next_shot_time`, NaN: no shot 2). The envelope
+// times and the current-shot rule are unchanged.
+inline double VideoShotDisplayStart(std::size_t index, double shot_time, double first_item_start, double fps,
+                                    double next_shot_time = std::nan(""))
+{
+    if (index == 0 && std::isfinite(first_item_start)) {
+        double d = VideoShotFirstFrameTime(first_item_start, fps);
+        if (std::isfinite(next_shot_time)) d = std::min(d, VideoShotFirstFrameTime(next_shot_time, fps));
+        return d;
+    }
+    return VideoShotFirstFrameTime(shot_time, fps);
+}
+
 // The frame a shot starting at shot_time starts on (its first frame).
 inline long long VideoShotFirstFrame(double shot_time, double fps)
 {
@@ -232,6 +248,17 @@ inline void VideoStripZoom(double v0, double span, double t_fixed, double notche
     }
     if (out_v0) *out_v0 = nv0;
     if (out_span) *out_span = ns;
+}
+
+// Spec 11-fb-14 -- Shift + wheel scrolls the view: `notches` > 0 (wheel up) moves it left
+// (earlier), < 0 right, 10 % of the span per notch, the span kept. The view never starts
+// before `min_v0` (the default margin before 0); a view already further left only moves right.
+inline double VideoStripScroll(double v0, double span, double notches, double min_v0)
+{
+    if (!std::isfinite(v0) || !(span > 0.0) || !std::isfinite(span) || !std::isfinite(notches)) return v0;
+    const double nv0 = v0 - notches * 0.1 * span;
+    if (!std::isfinite(min_v0)) return nv0;
+    return std::max(nv0, std::min(v0, min_v0));
 }
 
 // The view start after the smallest shift that brings t into [v0, v0 + span] (v0 itself

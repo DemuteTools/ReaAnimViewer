@@ -166,6 +166,11 @@ struct VideoStripRange {
     int    current = -1;                // index of the current item in `items`
 };
 const VideoStripRange& VideoViewStripRange();
+// Spec 11-fb-14 -- the start of the earliest item on the Video view's track, NaN when none.
+double VideoViewFirstItemStart();
+// Spec 11-fb-14 -- where shot `index` is shown to start (video_shot_timing.h
+// VideoShotDisplayStart): shot 1 at the first frame of the track's earliest item.
+double VideoViewShotDisplayStart(int index);
 
 // REAPER's playhead as Video view reads it (play position while playing, else the edit cursor).
 double VideoViewPlayhead();

@@ -307,7 +307,7 @@ void ShotRows(const VideoViewModel& m, float full)
         }
         right -= 26.0f;  // same column with or without the button
         char tm[32];
-        FormatTime(VideoShotFirstFrameTime(s.time, m.fps), tm, sizeof(tm));  // a cut sits half a frame early
+        FormatTime(VideoViewShotDisplayStart(i), tm, sizeof(tm));  // a cut sits half a frame early; shot 1: the first clip
         const float tm_w = ImGui::CalcTextSize(tm).x;
         dl->AddText(ImVec2(right - tm_w, cy - th * 0.5f), ui::kMuted, tm);
         right -= tm_w + 8.0f;
@@ -891,6 +891,8 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
         static double s_v0 = 0.0;
         static double s_span = 1.0;
         static bool   s_zoomed = false;           // Alt + wheel changed the span from the default
+        static bool   s_scrolled = false;         // spec 11-fb-14: Shift + wheel moved the view
+        static bool   s_was_playing = false;      // spec 11-fb-14: play start re-frames the clip
         static double s_item_start = 0.0;         // the current item the view last followed
         static double s_item_end = 0.0;
         static double s_last_playhead = 0.0;
@@ -909,18 +911,30 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                 VideoStripClampSpan(item_span + 2.0 * VideoStripDefaultMargin(item_span, m.fps), min_span, max_span);
             const double def_v0 = (r.start + r.end) * 0.5 - def_span * 0.5;
             const bool item_changed = r.start != s_item_start || r.end != s_item_end;
+            // Spec 11-fb-14: when REAPER starts playing, and on each new clip while it plays, the
+            // view drops any zoom or scroll and frames the clip under the play position.
+            const bool playing = VideoViewPlaying();
+            const bool play_started = playing && !s_was_playing;
             if (!s_view_init) {
                 s_v0 = def_v0;
                 s_span = def_span;
                 s_zoomed = false;
+                s_scrolled = false;
                 s_item_start = r.start;
                 s_item_end = r.end;
                 s_last_playhead = playhead;
                 s_view_init = true;
+                s_was_playing = playing;
             } else if (!lane_active) {  // the view never jumps during a lane drag (scrub or junction)
-                if (item_changed) {
-                    // Unzoomed: frame the new item. Zoomed: keep the span (within the new limits).
-                    if (!s_zoomed) {
+                if (play_started || (playing && item_changed)) {
+                    s_zoomed = false;
+                    s_scrolled = false;
+                }
+                s_was_playing = playing;
+                if (item_changed || play_started) {
+                    // Unzoomed and unscrolled: frame the new item. A user view (zoomed or
+                    // scrolled): keep the span (within the new limits).
+                    if (!s_zoomed && !s_scrolled) {
                         s_v0 = def_v0;
                         s_span = def_span;
                     } else {
@@ -930,7 +944,8 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                     s_item_end = r.end;
                 }
                 // The playhead stays visible: the smallest shift that brings it back in.
-                if (item_changed || playhead != s_last_playhead) s_v0 = VideoStripFollow(s_v0, s_span, playhead);
+                if (item_changed || play_started || playhead != s_last_playhead)
+                    s_v0 = VideoStripFollow(s_v0, s_span, playhead);
                 s_last_playhead = playhead;
             }
             const float mx = ImGui::GetIO().MousePos.x;
@@ -945,6 +960,13 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                     VideoStripZoom(s_v0, s_span, t_fixed, static_cast<double>(io.MouseWheel), min_span, max_span, &s_v0,
                                    &s_span);
                     s_zoomed = std::fabs(s_span - def_span) > 1.0e-6 * def_span;
+                } else if (io.KeyShift && io.MouseWheel != 0.0f && !lane_active && !playing && ImGui::IsWindowHovered()) {
+                    // (Ignored while playing: the follow rule would pull the view back every frame.)
+                    // Spec 11-fb-14: Shift + wheel scrolls (up: earlier, down: later), 10 % of the
+                    // span per notch, never before the default margin before 0. A user view.
+                    s_v0 = VideoStripScroll(s_v0, s_span, static_cast<double>(io.MouseWheel),
+                                            -VideoStripDefaultMargin(item_span, m.fps));
+                    s_scrolled = true;
                 }
             }
             const double v0 = s_v0;
@@ -1048,6 +1070,11 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
             // the release writes the move).
             const int current = VideoViewShotIndex();
             if (junction_drag) times[static_cast<size_t>(s_junction)] = first_of(s_junction_time);
+            // Spec 11-fb-14: shot 1 is shown from the first frame of the track's first clip (no
+            // shot before it), never after shot 2 as drawn; its envelope points stay where they are.
+            const double first_item = VideoViewFirstItemStart();
+            if (n > 0)
+                times[0] = VideoShotDisplayStart(0, m.shots[0].time, first_item, m.fps, n > 1 ? times[1] : std::nan(""));
 
             const float zx0 = x_of(r.start);  // the current clip's zone, at the item's exact edges
             const float zx1 = x_of(r.end);
@@ -1062,7 +1089,12 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                 const VideoShot& s = m.shots[static_cast<size_t>(i)];
                 const double s_time = times[static_cast<size_t>(i)];
                 const double s_end = (i + 1 < n) ? times[static_cast<size_t>(i) + 1] : v1;
-                const double a = std::max(i == 0 ? t_lo : s_time, t_lo);  // the first shot holds from 0
+                // The first shot holds from the first clip (from 0 when there is none).
+                const double s_from = (i == 0 && !std::isfinite(first_item)) ? 0.0 : s_time;
+                const double a = std::max(s_from, t_lo);
+                // Cut off by the view edge: that side stays open (no edge, square corners).
+                const bool left_open = s_from < t_lo;
+                const bool right_open = i + 1 >= n || s_end > v1;
                 const double b = std::min(s_end, v1);
                 if (!(b > a)) continue;
                 const float xa = x_of(a);
@@ -1074,7 +1106,51 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                                                 IM_COL32(255, 255, 255, 16), IM_COL32(255, 255, 255, 16),
                                                 IM_COL32(255, 255, 255, 0));
                 }
-                if (b < v1) dl->AddLine(ImVec2(xb, l0.y), ImVec2(xb, l1.y), ui::kStroke, 1.0f);
+                // Spec 11-fb-14: a light outline per shot, inset 0.5 px so two neighbours read as
+                // two lines. A Move shot's top and bottom edges fade out along its gradient ramp.
+                {
+                    constexpr ImU32 kOutline = ui::kStrokeStrong;
+                    constexpr ImU32 kOutlineClear = kOutline & ~IM_COL32_A_MASK;
+                    const float rr = std::max(0.0f, std::min({ui::kRadiusSm, (xb - xa) * 0.5f - 0.5f, (l1.y - l0.y) * 0.5f - 0.5f}));
+                    const float x0 = xa + 0.5f;
+                    const float x1 = xb - 0.5f;
+                    const float y0 = l0.y + 0.5f;
+                    const float y1 = l1.y - 0.5f;
+                    // The left side, from the bottom at x = to_x round to the top at x = to_x
+                    // (open: just the top and bottom edges from the view edge).
+                    auto left_side = [&](float to_x) {
+                        if (left_open) {
+                            dl->AddLine(ImVec2(xa, y0), ImVec2(to_x, y0), kOutline, 1.0f);
+                            dl->AddLine(ImVec2(xa, y1), ImVec2(to_x, y1), kOutline, 1.0f);
+                            return;
+                        }
+                        dl->PathLineTo(ImVec2(to_x, y1));
+                        dl->PathArcToFast(ImVec2(x0 + rr, y1 - rr), rr, 3, 6);  // bottom-left corner
+                        dl->PathArcToFast(ImVec2(x0 + rr, y0 + rr), rr, 6, 9);  // top-left corner
+                        dl->PathLineTo(ImVec2(to_x, y0));
+                        dl->PathStroke(kOutline, ImDrawFlags_None, 1.0f);
+                    };
+                    if (s.move_to_next && i + 1 < n) {
+                        const float xm = std::max(xa + (xb - xa) * 0.55f, x0 + rr);
+                        left_side(xm);
+                        if (xb > xm) {
+                            dl->AddRectFilledMultiColor(ImVec2(xm, y0 - 0.5f), ImVec2(xb, y0 + 0.5f), kOutline,
+                                                        kOutlineClear, kOutlineClear, kOutline);
+                            dl->AddRectFilledMultiColor(ImVec2(xm, y1 - 0.5f), ImVec2(xb, y1 + 0.5f), kOutline,
+                                                        kOutlineClear, kOutlineClear, kOutline);
+                        }
+                    } else if (!left_open && !right_open) {
+                        dl->AddRect(ImVec2(xa, l0.y), ImVec2(xb, l1.y), kOutline, rr, ImDrawFlags_None, 1.0f);
+                    } else if (right_open) {
+                        left_side(xb);  // open on the right (and on the left when cut there too)
+                    } else {  // open on the left only
+                        dl->PathLineTo(ImVec2(xa, y0));
+                        dl->PathArcToFast(ImVec2(x1 - rr, y0 + rr), rr, 9, 12);  // top-right corner
+                        dl->PathArcToFast(ImVec2(x1 - rr, y1 - rr), rr, 0, 3);   // bottom-right corner
+                        dl->PathLineTo(ImVec2(xa, y1));
+                        dl->PathStroke(kOutline, ImDrawFlags_None, 1.0f);
+                    }
+                }
                 // Label: dot + name, clipped to the segment.
                 if (xb - xa > 14.0f) {
                     dl->PushClipRect(ImVec2(xa, l0.y), ImVec2(xb - 2.0f, l1.y), true);
@@ -1195,7 +1271,7 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                 // The shot whose first frame is at or before the frame under the mouse (as drawn).
                 const int shot = VideoCurrentShotIndex(m.shots, t_mouse, m.fps);
                 if (shot >= 0) {
-                    double first = VideoShotFirstFrameTime(m.shots[static_cast<size_t>(shot)].time, m.fps);
+                    double first = VideoViewShotDisplayStart(shot);  // spec 11-fb-14: shot 1 at the first clip
                     for (const VideoStripSpan& it : r.items) {
                         if (t_mouse >= it.start && t_mouse < it.end) {  // the viewer's rule: first spanning item
                             first = std::max(first, VideoShotFirstFrameTime(it.start, m.fps));
@@ -1399,7 +1475,7 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
                     std::snprintf(s_name, sizeof(s_name), "%s", shot.name.c_str());
                 }
                 char tm[32];
-                FormatTime(VideoShotFirstFrameTime(shot.time, m.fps), tm, sizeof(tm));
+                FormatTime(VideoViewShotDisplayStart(idx), tm, sizeof(tm));  // spec 11-fb-14
                 const float tag_w = ImGui::CalcTextSize(tm).x + 18.0f;
                 ImGui::SetNextItemWidth(std::max(60.0f, ImGui::GetContentRegionAvail().x - tag_w - 8.0f));
                 if (!can_edit) ImGui::BeginDisabled();

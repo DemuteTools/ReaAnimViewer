@@ -462,6 +462,30 @@ int main()
         CHECK(st6.released_vk == 0 && !st6.alt_wheel_taken);
     }
 
+    // Spec 11-fb-14: Shift + wheel over the viewer's UI (the strip's scroll) is the viewer's.
+    {
+        const ShortcutBindings b = DefaultShortcutBindings();
+        KeyRouteState st;
+        KeyRouteInput wheel;
+        wheel.msg = KeyMsg::Wheel;
+        wheel.shift = true;
+        wheel.imgui_mouse = true;
+        CHECK(RouteViewerKey(b, wheel, st) == kRouteViewer);
+        CHECK(!st.alt_wheel_taken);  // Shift's release has nothing to swallow
+        KeyRouteInput shift_up;
+        shift_up.msg = KeyMsg::KeyUp;
+        shift_up.key = vk::kShift;
+        CHECK(RouteViewerKey(b, shift_up, st) == kRouteReaper);
+        KeyRouteInput off_ui = wheel;
+        off_ui.imgui_mouse = false;
+        CHECK(RouteViewerKey(b, off_ui, st) == kRouteReaper);
+        // Alt + Shift + wheel: Alt's rule (its release swallowed).
+        KeyRouteInput both = wheel;
+        both.alt = true;
+        CHECK(RouteViewerKey(b, both, st) == kRouteViewer);
+        CHECK(st.alt_wheel_taken);
+    }
+
     if (g_fails == 0) std::printf("shortcuts: all checks passed\n");
     return g_fails == 0 ? 0 : 1;
 }

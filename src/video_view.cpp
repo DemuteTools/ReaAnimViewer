@@ -1050,6 +1050,23 @@ const VideoStripRange& VideoViewStripRange()
     return g_range;
 }
 
+double VideoViewFirstItemStart()
+{
+    double first = std::nan("");
+    for (const VideoStripSpan& it : g_range.items) {
+        if (!(first <= it.start)) first = it.start;  // NaN compares false: the first one wins
+    }
+    return first;
+}
+
+double VideoViewShotDisplayStart(int index)
+{
+    if (index < 0 || index >= static_cast<int>(g_model.shots.size())) return 0.0;
+    const size_t i = static_cast<size_t>(index);
+    const double next = (i + 1 < g_model.shots.size()) ? g_model.shots[i + 1].time : std::nan("");
+    return VideoShotDisplayStart(i, g_model.shots[i].time, VideoViewFirstItemStart(), g_model.fps, next);
+}
+
 double VideoViewPlayhead()
 {
     return g_playhead;
@@ -1100,7 +1117,7 @@ void QueueVideoSeek(double t)
 void QueueVideoSeekToShot(int index)
 {
     if (index < 0 || index >= static_cast<int>(g_model.shots.size())) return;
-    QueueVideoSeek(VideoShotFirstFrameTime(g_model.shots[static_cast<size_t>(index)].time, g_model.fps));
+    QueueVideoSeek(VideoViewShotDisplayStart(index));  // spec 11-fb-14: shot 1 at the first clip
 }
 
 void QueueVideoCut()

@@ -11,6 +11,8 @@
 //   p 0.5955 0.5966 0.6834 0.5 0.5 0.5   the six camera values (video_camera_params.h)
 //   override 1080 1920               output size override, 0 0 = project size
 //   shot 12.5 Close-up               a shot name, keyed by the shot's time in seconds
+//   span 12.5                        spec 11-fb-15: the shot at that time runs on through the
+//                                    next back-to-back clip start (video_clip_shots.h)
 //   angle 0.5 0.6 0.68 0.5 0.5 0.5 Front   a saved angle: six values + name
 // Unknown records are skipped, so a later version can add some. Numbers are written
 // and read in the "C" locale (each binary has its own static CRT and never changes it).
@@ -56,6 +58,7 @@ struct VideoFxState {
     int override_width = 0;  // 0 x 0 = the project's video size
     int override_height = 0;
     std::vector<VideoFxShotName> shot_names;
+    std::vector<double> shot_spans;  // spec 11-fb-15: times of the shots with the span flag
     std::vector<VideoFxAngle> angles;
 
     VideoFxState()
@@ -116,6 +119,11 @@ inline std::string SerializeVideoFxState(const VideoFxState& st)
         out += line;
         out += name;
         out += '\n';
+    }
+    for (double t : st.shot_spans) {
+        if (!std::isfinite(t)) continue;
+        std::snprintf(line, sizeof(line), "span %.17g\n", t);
+        out += line;
     }
     for (const VideoFxAngle& a : st.angles) {
         const std::string name = CleanVideoFxName(a.name);
@@ -215,6 +223,10 @@ inline bool ParseVideoFxState(const char* data, size_t size, VideoFxState* out)
                 n.name = detail::RestOfLine(rest);
                 if (!n.name.empty()) st.shot_names.push_back(n);
             }
+        } else if (key == "span") {
+            double t = 0.0;
+            if (detail::ReadDoubles(rest, &t, 1) && std::isfinite(t) && st.shot_spans.size() < kVideoFxMaxNames)
+                st.shot_spans.push_back(t);
         } else if (key == "angle") {
             VideoFxAngle a;
             if (detail::ReadDoubles(rest, a.values, vcam::kParamCount) && st.angles.size() < kVideoFxMaxAngles) {
@@ -245,6 +257,7 @@ inline bool MergeVideoFxState(const VideoFxState& in, bool force_preset, VideoFx
         cur->override_width = in.override_width;
         cur->override_height = in.override_height;
         cur->shot_names = in.shot_names;
+        cur->shot_spans = in.shot_spans;
         cur->angles = in.angles;
     }
     cur->kind = VideoFxStateKind::Full;

@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -72,9 +73,15 @@ struct Cmd {
     bool        flag = false;
     std::string text;
     std::string undo;
-    double      fps = 0.0;  // Cut: the project frame rate when it was asked
-    double      item_start = std::nan("");  // Cut: start of the item under the playhead, NaN = none (spec 11-fb-12)
+    double      fps = 0.0;  // Cut, MoveShot, Transition, Rename: the project frame rate when it was asked
     double      new_time = 0.0;  // MoveShot: where the shot at shot_time goes
+    // Spec 11-fb-15 -- implicit shots (no envelope point yet) are written by the edit.
+    bool        implicit = false;       // the shot at shot_time is implicit
+    double      other_time = 0.0;       // Transition: the next shot; MoveShot: the previous shot
+    bool        other_implicit = false;
+    bool        span_prev = false;      // MoveShot: the previous shot covers the next clip start after it
+    bool        span_moved = false;     // MoveShot: the moved shot covers it
+    std::string auto_name;              // Rename: the shot's automatic name
     int         width = 0;  // OutputSize; OpenMatrix / OpenRenderDialog: the size to render at
     int         height = 0;
 };
@@ -115,6 +122,7 @@ std::vector<Cmd> g_queue;
 
 // Story 11-5
 VideoStripRange g_range;
+std::vector<VideoClip> g_clips;  // spec 11-fb-15: the model's clips, as video_clip_shots.h has them
 std::string     g_notice;
 double          g_notice_until = -1.0;
 
@@ -196,7 +204,41 @@ void Refresh()
             else if (TrackFX_GetOffline(tr, m.fx)) m.status = VideoFxStatus::Offline;
             else if (!TrackFX_GetEnabled(tr, m.fx)) m.status = VideoFxStatus::Bypassed;
             else m.status = VideoFxStatus::Active;
-            m.shots = ReadVideoShots(tr, m.fx);
+            // Spec 11-fb-15: the shots per clip (each clip opens its own shot; none in gaps).
+            const VideoTrackClipShots cs = ReadVideoClipShots(tr, m.fx, m.fps);
+            for (const VideoClip& c : cs.built.clips) {
+                VideoViewClip vc;
+                vc.start = c.start;
+                vc.end = c.end;
+                vc.first = c.first;
+                vc.name = c.anim_name;
+                m.clips.push_back(std::move(vc));
+            }
+            g_clips = cs.built.clips;
+            m.shots.reserve(cs.built.shots.size());
+            for (size_t i = 0; i < cs.built.shots.size(); ++i) {
+                const VideoClipShot& b = cs.built.shots[i];
+                VideoViewShot v;
+                if (b.raw >= 0) {
+                    static_cast<VideoShot&>(v) = cs.raw[static_cast<size_t>(b.raw)];
+                } else {
+                    // Implicit: the camera the envelopes give on the clip's first frame, and the
+                    // envelope time its point gets when an edit writes it.
+                    const VideoClip& c = cs.built.clips[static_cast<size_t>(b.clip)];
+                    v.implicit = true;
+                    v.time = VideoClipImplicitTime(c.start, m.fps);
+                    v.move_to_next = false;
+                    ReadVideoCameraAt(tr, m.fx, c.first, v.values);
+                }
+                v.clip = b.clip;
+                v.number = b.number;
+                v.start = b.start;
+                v.end = b.end;
+                v.clip_first = b.clip_first;
+                v.auto_name = VideoClipShotAutoName(cs.built, i);
+                if (!v.stored_name) v.name = v.auto_name;
+                m.shots.push_back(std::move(v));
+            }
             VideoFxEnvelopesState(tr, m.fx, &m.has_envelopes, &m.envelopes_visible);
             VideoFxState st;
             if (ReadVideoFxState(tr, m.fx, &st)) {
@@ -223,6 +265,7 @@ void Refresh()
         if (t == g_followed || t == g_pinned || FindVideoFxOnTrack(t) >= 0) m.pin_choices.push_back({t, TrackLabel(t)});
     }
 
+    if (m.fx < 0) g_clips.clear();
     g_model = std::move(m);
     g_model_key = tr;
     g_dirty = false;
@@ -242,10 +285,9 @@ void WriteShotValues(MediaTrack* tr, int fx, double time, const double values[vc
             break;
         }
     }
-    if (!found) {
-        s.name.clear();
-        s.move_to_next = false;
-    }
+    if (!found) s.move_to_next = false;
+    // Only a stored name is written back (ReadVideoShots fills the others with "Shot N").
+    if (!found || !s.stored_name) s.name.clear();
     s.time = time;
     s.implicit = false;
     for (int p = 0; p < vcam::kParamCount; ++p) s.values[p] = vcam::Sanitize(p, values[p]);
@@ -328,8 +370,28 @@ bool CurrentShot(Cmd* c)
     c->track = g_model.track;
     c->fx = g_model.fx;
     c->shot_time = g_model.shots[static_cast<size_t>(g_shot_index)].time;
+    c->implicit = g_model.shots[static_cast<size_t>(g_shot_index)].implicit;
+    c->fps = g_model.fps;
     for (int p = 0; p < vcam::kParamCount; ++p) c->values[p] = g_model.shots[static_cast<size_t>(g_shot_index)].values[p];
     return true;
+}
+
+// Spec 11-fb-15 -- a Transition command on shot `index`: Move needs the next shot's point too
+// (an implicit next shot is written with it).
+void FillTransition(Cmd* c, int index, bool move_to_next)
+{
+    const size_t i = static_cast<size_t>(index);
+    c->kind = CmdKind::Transition;
+    c->track = g_model.track;
+    c->fx = g_model.fx;
+    c->fps = g_model.fps;
+    c->shot_time = g_model.shots[i].time;
+    c->implicit = g_model.shots[i].implicit;
+    c->flag = move_to_next;
+    if (VideoViewShotTouchesNext(index)) {
+        c->other_time = g_model.shots[i + 1].time;
+        c->other_implicit = g_model.shots[i + 1].implicit;
+    }
 }
 
 // The shot strip's span (Story 11-5): the RAV item under the playhead on the model's
@@ -431,32 +493,44 @@ void ApplyOutputSizeToRender(int w, int h)
 // where its points go), one undo point. Refused when a shot already starts on that frame.
 // c.shot_time is the raw playhead here (not a shot's envelope time as for the other
 // commands): the points go at VideoCutTime of it and the camera is read at its frame time.
+// Spec 11-fb-15: a cut belongs to the clip under the playhead (refused between clips); when
+// that clip's first shot is implicit, its point is written too (same undo point).
 void RunCut(const Cmd& c)
 {
     if (!FxValid(c.track, c.fx)) return;
-    const std::vector<VideoShot> shots = ReadVideoShots(c.track, c.fx);
-    std::vector<double> times;
-    times.reserve(shots.size());
-    for (const VideoShot& s : shots) times.push_back(s.time);
-    // Spec 11-fb-12: never on a frame that begins before the item under the playhead.
-    if (VideoCutWouldDuplicateInItem(times, c.shot_time, c.fps, c.item_start, kVideoShotTimeTolerance)) {
-        SetNotice("A shot already starts on this frame");
+    const VideoTrackClipShots cs = ReadVideoClipShots(c.track, c.fx, c.fps);
+    const int clip = VideoClipIndexAtTime(cs.built.clips, c.shot_time, c.fps);
+    if (clip < 0) {
+        SetNotice("No clip at the playhead: shots belong to clips");
         return;
     }
+    // Spec 11-fb-12: never on a frame that begins before the clip under the playhead.
+    const double item_start = cs.built.clips[static_cast<size_t>(clip)].start;
+    const long long cut_frame = VideoCutFrameInItem(c.shot_time, c.fps, item_start);
     VideoShot shot;
-    shot.time = VideoCutTimeInItem(c.shot_time, c.fps, c.item_start);
+    shot.time = VideoCutTimeInItem(c.shot_time, c.fps, item_start);
+    for (const VideoClipShot& s : cs.built.shots) {
+        const bool same = c.fps > 0.0 ? VideoShotFirstFrame(s.start, c.fps) == cut_frame
+                                      : std::fabs(s.start - shot.time) <= kVideoShotTimeTolerance;
+        if (same) {
+            SetNotice("A shot already starts on this frame");
+            return;
+        }
+    }
     shot.move_to_next = false;
-    shot.name.clear();  // automatic "Shot N"
+    shot.name.clear();  // automatic "<anim name> N"
     // The camera at the cut's own first frame (spec 11-fb-12: the item rule may move it past
-    // the playhead's frame); otherwise the playhead's frame, as Video view shows it.
-    const long long cut_frame = VideoCutFrameInItem(c.shot_time, c.fps, c.item_start);
+    // the playhead's frame); otherwise the playhead's frame, as Video view shows it. Read
+    // before anything is written.
     const bool moved_forward = c.fps > 0.0 && cut_frame > VideoFrameIndexAt(c.shot_time, c.fps);
     const double camera_time =
         moved_forward ? static_cast<double>(cut_frame) / c.fps : VideoPlayheadFrameTime(c.shot_time, c.fps);
     ReadVideoCameraAt(c.track, c.fx, camera_time, shot.values);
 
     Undo_BeginBlock2(nullptr);
-    const bool ok = WriteVideoShot(c.track, c.fx, shot);
+    bool ok = MaterializeClipFirstShotForCut(c.track, c.fx, cs.built, clip, shot.time, c.fps);
+    ok = WriteVideoShot(c.track, c.fx, shot) && ok;
+    if (ok) MoveSpanToCut(c.track, c.fx, cs, clip, shot.time, c.fps);  // the cut now runs into the next clip
     Undo_EndBlock2(nullptr, "RAV: Cut at playhead", UNDO_STATE_FX);
     if (!ok) {
         LogWarn("video view: the cut at %.3f s could not be written", shot.time);
@@ -467,37 +541,61 @@ void RunCut(const Cmd& c)
     }
 }
 
+// True when an envelope point of the FX sits at `time`.
+bool HasShotPoint(const std::vector<VideoShot>& raw, double time)
+{
+    for (const VideoShot& s : raw) {
+        if (!s.implicit && std::fabs(s.time - time) <= kVideoShotTimeTolerance) return true;
+    }
+    return false;
+}
+
 // A junction dragged in the shot strip: the shot at c.shot_time moves to c.new_time, one
-// undo point. Nothing is written when the shot is gone, or when its neighbours changed
-// since the drag began so that the move would now pass one (no reordering).
+// undo point. Nothing is written when the shot is gone, or when the points changed since
+// the drag began so that the move would now pass one (no reordering). Spec 11-fb-15: an
+// implicit shot is written at c.new_time (the camera it showed); then the span flags: the
+// previous shot (written first when it is implicit and needs the flag) and the moved one
+// cover the next clip's start, or no longer do.
 void RunMoveShot(const Cmd& c)
 {
     if (!FxValid(c.track, c.fx)) return;
     const std::vector<VideoShot> shots = ReadVideoShots(c.track, c.fx);
-    int index = -1;
-    for (size_t i = 0; i < shots.size(); ++i) {
-        if (!shots[i].implicit && std::fabs(shots[i].time - c.shot_time) <= kVideoShotTimeTolerance) {
-            index = static_cast<int>(i);
-            break;
-        }
-    }
-    if (index < 0) {
+    const bool has_point = HasShotPoint(shots, c.shot_time);
+    if (!c.implicit && !has_point) {
         LogWarn("video view: no shot at %.3f s any more, the move was not written", c.shot_time);
         return;
     }
-    const size_t i = static_cast<size_t>(index);
-    const bool after_prev = index > 0 && c.new_time > shots[i - 1].time + kVideoShotTimeTolerance;
-    const bool before_next = i + 1 >= shots.size() || c.new_time < shots[i + 1].time - kVideoShotTimeTolerance;
-    if (!after_prev || !before_next) {
-        LogWarn("video view: the shots changed during the drag, the move of %.3f s to %.3f s was not written",
-                c.shot_time, c.new_time);
-        return;
+    // No other point between the old and the new time (it would reorder the shots).
+    const double lo = std::min(c.shot_time, c.new_time) - kVideoShotTimeTolerance;
+    const double hi = std::max(c.shot_time, c.new_time) + kVideoShotTimeTolerance;
+    for (const VideoShot& s : shots) {
+        if (s.implicit || std::fabs(s.time - c.shot_time) <= kVideoShotTimeTolerance) continue;
+        if (s.time >= lo && s.time <= hi) {
+            LogWarn("video view: the shots changed during the drag, the move of %.3f s to %.3f s was not written",
+                    c.shot_time, c.new_time);
+            return;
+        }
     }
 
+    // Every inherited camera is read before the first write (a point changes the curve after it).
+    const bool write_prev = c.span_prev && c.other_implicit;
+    double prev_values[vcam::kParamCount];
+    if (write_prev) ReadVideoCameraAt(c.track, c.fx, VideoShotFirstFrameTime(c.other_time, c.fps), prev_values);
+    VideoShot moved;
+    moved.time = c.new_time;
+    moved.move_to_next = false;
+    if (!has_point) ReadVideoCameraAt(c.track, c.fx, VideoShotFirstFrameTime(c.shot_time, c.fps), moved.values);
+
     Undo_BeginBlock2(nullptr);
-    const bool ok = MoveVideoShot(c.track, c.fx, c.shot_time, c.new_time);
+    if (write_prev) EnsureVideoShotPoint(c.track, c.fx, c.other_time, c.fps, prev_values);
+    const bool ok = has_point ? MoveVideoShot(c.track, c.fx, c.shot_time, c.new_time)
+                              : WriteVideoShot(c.track, c.fx, moved);
+    if (ok) {
+        if (c.span_prev || !c.other_implicit) SetVideoShotSpan(c.track, c.fx, c.other_time, c.span_prev);
+        SetVideoShotSpan(c.track, c.fx, c.new_time, c.span_moved);
+    }
     Undo_EndBlock2(nullptr, "RAV: Move video shot", UNDO_STATE_FX);
-    if (!ok) LogWarn("video view: the shot at %.3f s had no envelope point to move", c.shot_time);
+    if (!ok) LogWarn("video view: the shot at %.3f s could not be moved", c.shot_time);
 }
 
 void WriteOutputSize(MediaTrack* track, int fx, int width, int height)
@@ -566,15 +664,32 @@ void RunOne(const Cmd& c)
             if (!FxValid(c.track, c.fx)) return;
             WriteShotValues(c.track, c.fx, c.shot_time, c.values, c.undo.c_str());
             return;
-        case CmdKind::Rename:
+        case CmdKind::Rename: {
             if (!FxValid(c.track, c.fx)) return;
+            const std::string clean = CleanVideoFxName(c.text);
+            const bool automatic = clean.empty() || clean == CleanVideoFxName(c.auto_name);
+            if (c.implicit && automatic) return;  // nothing to store, nothing to write
             Undo_BeginBlock2(nullptr);
-            RenameVideoShot(c.track, c.fx, c.shot_time, c.text);
+            if (c.implicit) EnsureVideoShotPoint(c.track, c.fx, c.shot_time, c.fps);  // spec 11-fb-15
+            RenameVideoShot(c.track, c.fx, c.shot_time, c.text, c.auto_name);
             Undo_EndBlock2(nullptr, "RAV: Rename video shot", UNDO_STATE_FX);
             return;
+        }
         case CmdKind::Transition:
             if (!FxValid(c.track, c.fx)) return;
             Undo_BeginBlock2(nullptr);
+            // Spec 11-fb-15: implicit shots get their points first (the shot, and the next one
+            // a Move goes to), before a shape changes what the envelopes give there.
+            // Both cameras are read before the first write (a point changes the curve after it).
+            {
+                const bool next = c.flag && c.other_implicit;
+                double own[vcam::kParamCount];
+                double nxt[vcam::kParamCount];
+                if (c.implicit) ReadVideoCameraAt(c.track, c.fx, VideoShotFirstFrameTime(c.shot_time, c.fps), own);
+                if (next) ReadVideoCameraAt(c.track, c.fx, VideoShotFirstFrameTime(c.other_time, c.fps), nxt);
+                if (c.implicit) EnsureVideoShotPoint(c.track, c.fx, c.shot_time, c.fps, own);
+                if (next) EnsureVideoShotPoint(c.track, c.fx, c.other_time, c.fps, nxt);
+            }
             SetVideoShotTransition(c.track, c.fx, c.shot_time, c.flag);
             Undo_EndBlock2(nullptr, c.flag ? "RAV: Video shot: move to next" : "RAV: Video shot: cut to next",
                            UNDO_STATE_FX);
@@ -665,6 +780,15 @@ void RunOne(const Cmd& c)
 const VideoViewModel& GetVideoViewModel()
 {
     return g_model;
+}
+
+bool VideoViewShotTouchesNext(int index)
+{
+    if (index < 0 || index + 1 >= static_cast<int>(g_model.shots.size())) return false;
+    const VideoViewShot& a = g_model.shots[static_cast<size_t>(index)];
+    const VideoViewShot& b = g_model.shots[static_cast<size_t>(index) + 1];
+    return g_model.fps > 0.0 ? VideoShotFirstFrame(a.end, g_model.fps) == VideoShotFirstFrame(b.start, g_model.fps)
+                             : std::fabs(a.end - b.start) <= kVideoShotTimeTolerance;
 }
 
 bool VideoViewActive()
@@ -760,7 +884,8 @@ void VideoViewFrame(MediaTrack* item_track, bool has_item, bool has_model, const
     g_playrate = Master_GetPlayRate(nullptr);
     // Spec 11-fb-10: a shot starts at its first frame (where the strip draws its line and a
     // click in the shot list seeks), not at its envelope points half a frame earlier.
-    g_shot_index = VideoCurrentShotIndex(g_model.shots, g_playhead, g_model.fps);
+    // Spec 11-fb-15: the shot whose [start, end) holds the playhead's frame, -1 between clips.
+    g_shot_index = VideoClipShotAt(g_model.shots, g_playhead, g_model.fps);
     UpdateStripRange();
 
     // A wheel gesture that went quiet becomes one undo point.
@@ -884,7 +1009,8 @@ void VideoViewSliderCommit(int param)
     QueueLiveWrite(undo);
 }
 
-void QueueVideoRename(MediaTrack* track, int fx, double shot_time, const std::string& name)
+void QueueVideoRename(MediaTrack* track, int fx, double shot_time, const std::string& name,
+                      const std::string& auto_name, bool implicit)
 {
     if (!track || fx < 0) return;
     Cmd c;
@@ -893,15 +1019,22 @@ void QueueVideoRename(MediaTrack* track, int fx, double shot_time, const std::st
     c.fx = fx;
     c.shot_time = shot_time;
     c.text = name;
+    c.auto_name = auto_name;
+    c.implicit = implicit;
+    c.fps = g_model.fps;
     g_queue.push_back(std::move(c));
 }
 
 void QueueVideoTransition(bool move_to_next)
 {
+    if (!g_model.track || g_model.fx < 0) return;
+    if (g_shot_index < 0 || g_shot_index >= static_cast<int>(g_model.shots.size())) return;
+    if (move_to_next && !VideoViewShotTouchesNext(g_shot_index)) {
+        SetNotice("The last shot has no next shot to move to");
+        return;
+    }
     Cmd c;
-    if (!CurrentShot(&c)) return;
-    c.kind = CmdKind::Transition;
-    c.flag = move_to_next;
+    FillTransition(&c, g_shot_index, move_to_next);
     g_queue.push_back(std::move(c));
 }
 
@@ -915,19 +1048,14 @@ void QueueVideoTransitionAt(int index)
         return;
     }
     const VideoShot& s = g_model.shots[static_cast<size_t>(index)];
-    if (s.implicit) return;  // no envelope point to reshape
     const bool to_move = !s.move_to_next;
     // The last shot has nothing to move to (a Move one, set by hand, may still go back to Cut).
-    if (to_move && index + 1 >= static_cast<int>(g_model.shots.size())) {
+    if (to_move && !VideoViewShotTouchesNext(index)) {  // spec 11-fb-15: also before a gap
         SetNotice("The last shot has no next shot to move to");
         return;
     }
     Cmd c;
-    c.kind = CmdKind::Transition;
-    c.track = g_model.track;
-    c.fx = g_model.fx;
-    c.shot_time = s.time;
-    c.flag = to_move;
+    FillTransition(&c, index, to_move);  // spec 11-fb-15: an implicit shot is written first
     g_queue.push_back(std::move(c));
 }
 
@@ -1050,21 +1178,16 @@ const VideoStripRange& VideoViewStripRange()
     return g_range;
 }
 
-double VideoViewFirstItemStart()
+const char* VideoViewClipName(int clip)
 {
-    double first = std::nan("");
-    for (const VideoStripSpan& it : g_range.items) {
-        if (!(first <= it.start)) first = it.start;  // NaN compares false: the first one wins
-    }
-    return first;
+    if (clip < 0 || clip >= static_cast<int>(g_model.clips.size())) return "";
+    return g_model.clips[static_cast<size_t>(clip)].name.c_str();
 }
 
-double VideoViewShotDisplayStart(int index)
+double VideoViewClipStart(int clip)
 {
-    if (index < 0 || index >= static_cast<int>(g_model.shots.size())) return 0.0;
-    const size_t i = static_cast<size_t>(index);
-    const double next = (i + 1 < g_model.shots.size()) ? g_model.shots[i + 1].time : std::nan("");
-    return VideoShotDisplayStart(i, g_model.shots[i].time, VideoViewFirstItemStart(), g_model.fps, next);
+    if (clip < 0 || clip >= static_cast<int>(g_model.clips.size())) return 0.0;
+    return g_model.clips[static_cast<size_t>(clip)].start;
 }
 
 double VideoViewPlayhead()
@@ -1117,7 +1240,7 @@ void QueueVideoSeek(double t)
 void QueueVideoSeekToShot(int index)
 {
     if (index < 0 || index >= static_cast<int>(g_model.shots.size())) return;
-    QueueVideoSeek(VideoViewShotDisplayStart(index));  // spec 11-fb-14: shot 1 at the first clip
+    QueueVideoSeek(g_model.shots[static_cast<size_t>(index)].start);  // its first frame (spec 11-fb-15)
 }
 
 void QueueVideoCut()
@@ -1133,16 +1256,15 @@ void QueueVideoCut()
     c.track = g_model.track;
     c.fx = g_model.fx;
     c.shot_time = g_playhead;
-    c.fps = g_model.fps;
-    c.item_start = VideoItemStartAt(g_model.track, g_playhead);
+    c.fps = g_model.fps;  // the clip under the playhead is found when the cut runs (spec 11-fb-15)
     g_queue.push_back(std::move(c));
 }
 
 void QueueVideoDeleteShot(int index)
 {
     if (!g_model.track || g_model.fx < 0) return;
-    if (index <= 0 || index >= static_cast<int>(g_model.shots.size())) return;  // the first shot stays
-    if (g_model.shots[static_cast<size_t>(index)].implicit) return;
+    if (index < 0 || index >= static_cast<int>(g_model.shots.size())) return;
+    if (g_model.shots[static_cast<size_t>(index)].clip_first) return;  // a clip's first shot stays (spec 11-fb-15)
     Cmd c;
     c.kind = CmdKind::DeleteShot;
     c.track = g_model.track;
@@ -1174,9 +1296,9 @@ void RequestVideoDeleteCurrentShot()
     }
     const int index = g_shot_index;
     if (index < 0 || index >= static_cast<int>(g_model.shots.size())) return;
-    const VideoShot& s = g_model.shots[static_cast<size_t>(index)];
-    if (index == 0 || s.implicit) {
-        SetNotice("The first shot can't be deleted");
+    const VideoViewShot& s = g_model.shots[static_cast<size_t>(index)];
+    if (s.clip_first) {
+        SetNotice("A clip's first shot can't be deleted");
         return;
     }
     if (!VideoAskBeforeDeleteShot()) {
@@ -1218,7 +1340,7 @@ void ConfirmVideoDelete(bool dont_ask_again)
     }
     int index = -1;
     for (size_t i = 0; i < g_model.shots.size(); ++i) {
-        if (std::fabs(g_model.shots[i].time - g_delete_time) <= kVideoShotTimeTolerance) {
+        if (!g_model.shots[i].implicit && std::fabs(g_model.shots[i].time - g_delete_time) <= kVideoShotTimeTolerance) {
             index = static_cast<int>(i);
             break;
         }
@@ -1227,8 +1349,8 @@ void ConfirmVideoDelete(bool dont_ask_again)
         SetNotice("The shot is no longer there");
         return;
     }
-    if (index == 0 || g_model.shots[static_cast<size_t>(index)].implicit) {
-        SetNotice("The first shot can't be deleted");
+    if (g_model.shots[static_cast<size_t>(index)].clip_first) {
+        SetNotice("A clip's first shot can't be deleted");
         return;
     }
     Cmd c;
@@ -1253,20 +1375,37 @@ void QueueVideoMoveShot(int index, double new_time)
         return;
     }
     if (index <= 0 || index >= static_cast<int>(g_model.shots.size())) return;  // the first shot's start stays
-    const VideoShot& s = g_model.shots[static_cast<size_t>(index)];
-    if (s.implicit) return;
+    const size_t i = static_cast<size_t>(index);
+    const VideoViewShot& s = g_model.shots[i];
+    const VideoViewShot& prev = g_model.shots[i - 1];
+    // Spec 11-fb-15: a junction only between shots that touch (none across a gap).
+    if (!VideoViewShotTouchesNext(index - 1)) return;
+    // The previous shot already spans into the clip before this one (a span covers one clip
+    // start): this shot's start cannot move later, its clip would open with an implicit shot.
+    if (prev.clip < s.clip - 1 && VideoShotFirstFrameTime(new_time, g_model.fps) > s.start) return;
     // Released on the frame it started on: nothing to write.
     if (g_model.fps > 0.0) {
         if (VideoShotFirstFrame(new_time, g_model.fps) == VideoShotFirstFrame(s.time, g_model.fps)) return;
     } else if (std::fabs(new_time - s.time) <= kVideoShotTimeTolerance) {
         return;
     }
+    // The span flags after the move: does the previous shot, or the moved one, now run over the
+    // start of the next clip?
+    const double new_start = VideoShotFirstFrameTime(new_time, g_model.fps);
+    const double next_start =
+        i + 1 < g_model.shots.size() ? g_model.shots[i + 1].start : std::numeric_limits<double>::infinity();
     Cmd c;
     c.kind = CmdKind::MoveShot;
     c.track = g_model.track;
     c.fx = g_model.fx;
+    c.fps = g_model.fps;
     c.shot_time = s.time;
+    c.implicit = s.implicit;
     c.new_time = new_time;
+    c.other_time = prev.time;
+    c.other_implicit = prev.implicit;
+    c.span_prev = VideoShotCoversNextClip(prev.start, new_start, g_clips, g_model.fps);
+    c.span_moved = VideoShotCoversNextClip(new_start, next_start, g_clips, g_model.fps);
     g_queue.push_back(std::move(c));
 }
 

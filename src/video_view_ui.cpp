@@ -271,9 +271,34 @@ void ShotListHeader(const VideoViewModel& m)
     GroupHeader("Shots", count);
 }
 
+// Spec 11-fb-15 -- a clip's header row in the shot list: its animation name and start time.
+void ClipHeaderRow(int clip, float full)
+{
+    const float row_h = 22.0f;
+    ImGui::Dummy(ImVec2(full, row_h));
+    const ImVec2 a = ImGui::GetItemRectMin();
+    const ImVec2 b = ImGui::GetItemRectMax();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float th = ImGui::GetTextLineHeight();
+    const float cy = (a.y + b.y) * 0.5f;
+    char tm[32];
+    FormatTime(VideoViewClipStart(clip), tm, sizeof(tm));
+    const float tm_w = ImGui::CalcTextSize(tm).x;
+    const float right = b.x - 30.0f;  // the shot rows' time column
+    dl->AddText(ImVec2(right - tm_w, cy - th * 0.5f), ui::kFaint, tm);
+    const float name_x = a.x + 4.0f;
+    if (right - tm_w - 8.0f > name_x) {
+        dl->PushClipRect(ImVec2(name_x, a.y), ImVec2(right - tm_w - 8.0f, b.y), true);
+        dl->AddText(ImVec2(name_x, cy - th * 0.5f), ui::kMuted, VideoViewClipName(clip));
+        dl->PopClipRect();
+    }
+    dl->AddLine(ImVec2(a.x, b.y - 0.5f), ImVec2(b.x, b.y - 0.5f), ui::kStroke, 1.0f);
+}
+
 // The shot list (UX decision 5 / Story 11-5): one card per shot -- colour, name, Cut/Move,
-// start time, delete (not on the first shot). A click moves the playhead to the shot; a
-// click on the Cut/Move tag switches it (spec 11-fb-11).
+// start time, delete (not on a clip's first shot). A click moves the playhead to the shot; a
+// click on the Cut/Move tag switches it (spec 11-fb-11). Spec 11-fb-15: grouped by clip, one
+// header row per clip (timeline order), then its shots.
 void ShotRows(const VideoViewModel& m, float full)
 {
     const int current = VideoViewShotIndex();
@@ -282,8 +307,16 @@ void ShotRows(const VideoViewModel& m, float full)
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ui::Col(ui::kRaised));
     ImGui::PushStyleColor(ImGuiCol_HeaderActive, ui::Col(ui::kAccentSoft));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 2.0f));
+    int next_clip = 0;  // the next clip whose header is due
     for (int i = 0; i < static_cast<int>(m.shots.size()); ++i) {
-        const VideoShot& s = m.shots[static_cast<size_t>(i)];
+        const VideoViewShot& s = m.shots[static_cast<size_t>(i)];
+        // The headers of the clips up to this shot's (a clip spanned by an earlier shot still
+        // gets its header, with no rows of its own).
+        for (; next_clip <= s.clip; ++next_clip) {
+            ImGui::PushID(-1 - next_clip);
+            ClipHeaderRow(next_clip, full);
+            ImGui::PopID();
+        }
         ImGui::PushID(i);
         const bool sel = (i == current);
         if (ImGui::Selectable("##shotrow", sel, ImGuiSelectableFlags_AllowOverlap, ImVec2(full, row_h)))
@@ -298,7 +331,7 @@ void ShotRows(const VideoViewModel& m, float full)
         dl->AddCircleFilled(ImVec2(a.x + 11.0f, cy), 4.0f, ui::kCurvePalette[i % 8], 12);
 
         // Right side first: delete, time, Cut/Move tag; the name takes what is left.
-        const bool can_delete = (i > 0) && !s.implicit;
+        const bool can_delete = !s.clip_first;
         float right = b.x - 4.0f;
         if (can_delete) {
             ImGui::SetCursorScreenPos(ImVec2(right - 22.0f, cy - 11.0f));
@@ -307,7 +340,7 @@ void ShotRows(const VideoViewModel& m, float full)
         }
         right -= 26.0f;  // same column with or without the button
         char tm[32];
-        FormatTime(VideoViewShotDisplayStart(i), tm, sizeof(tm));  // a cut sits half a frame early; shot 1: the first clip
+        FormatTime(s.start, tm, sizeof(tm));  // its first frame (a cut sits half a frame early)
         const float tm_w = ImGui::CalcTextSize(tm).x;
         dl->AddText(ImVec2(right - tm_w, cy - th * 0.5f), ui::kMuted, tm);
         right -= tm_w + 8.0f;
@@ -315,10 +348,10 @@ void ShotRows(const VideoViewModel& m, float full)
         const float tag_w = ImGui::CalcTextSize(tag).x + 14.0f;
         const ImVec2 ta(right - tag_w, cy - th * 0.5f - 2.0f);
         const ImVec2 tb(right, cy + th * 0.5f + 2.0f);
-        // Spec 11-fb-11: a click on the tag switches this shot between Cut and Move (an
-        // implicit shot has no point to reshape: a plain tag).
+        // Spec 11-fb-11: a click on the tag switches this shot between Cut and Move (spec
+        // 11-fb-15: an implicit shot gets its point then).
         bool tag_hovered = false;
-        if (!s.implicit) {
+        {
             ImGui::SetCursorScreenPos(ta);
             if (ImGui::InvisibleButton("##tag", ImVec2(tb.x - ta.x, tb.y - ta.y))) QueueVideoTransitionAt(i);
             tag_hovered = ImGui::IsItemHovered();
@@ -337,6 +370,11 @@ void ShotRows(const VideoViewModel& m, float full)
         }
         ImGui::SetCursorScreenPos(ImVec2(a.x, b.y + 2.0f));
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
+        ImGui::PopID();
+    }
+    for (; next_clip < static_cast<int>(m.clips.size()); ++next_clip) {  // clips after the last shot's
+        ImGui::PushID(-1 - next_clip);
+        ClipHeaderRow(next_clip, full);
         ImGui::PopID();
     }
     ImGui::PopStyleVar();
@@ -654,7 +692,7 @@ void DrawVideoFrameDecor(const VideoFrameRect& fr, void (*copy_log)(), bool show
     if (m.status == VideoFxStatus::Active && idx >= 0 && idx < static_cast<int>(m.shots.size())) {
         const VideoShot& s = m.shots[static_cast<size_t>(idx)];
         right = s.name;
-        if (s.move_to_next && idx + 1 < static_cast<int>(m.shots.size())) right += "  -> move";
+        if (s.move_to_next && VideoViewShotTouchesNext(idx)) right += "  -> move";
     }
     float right_w = right.empty() ? 0.0f : ImGui::CalcTextSize(right.c_str()).x;
 
@@ -1002,14 +1040,18 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
             // Spec 11-fb-10: a shot starts at its first frame. Its line is drawn (and grabbed)
             // there, not at its envelope points half a frame earlier. fps unknown: the shot time.
             auto first_of = [&](double shot_time) { return VideoShotFirstFrameTime(shot_time, m.fps); };
-            // The junction within the grab distance of x: the start of shot i >= 1, drawn inside the view.
+            // Spec 11-fb-15: two shots touch (a junction) when the earlier one ends where the
+            // later one starts; between clips with a gap there is none.
+            auto touches = [&](int i) { return VideoViewShotTouchesNext(i - 1); };
+            // The junction within the grab distance of x: the start of shot i >= 1 touching shot
+            // i - 1, drawn inside the view.
             auto junction_at = [&](float px) {
                 int best = -1;
                 float best_d = kJunctionGrabPx;
                 for (int i = 1; i < n; ++i) {
-                    const VideoShot& s = m.shots[static_cast<size_t>(i)];
-                    const double drawn = first_of(s.time);
-                    if (s.implicit || !(drawn > v0 && drawn < v1)) continue;
+                    const VideoViewShot& s = m.shots[static_cast<size_t>(i)];
+                    const double drawn = s.start;
+                    if (!touches(i) || !(drawn > v0 && drawn < v1)) continue;
                     const float d = std::fabs(px - x_of(drawn));
                     if (d <= best_d) {
                         best_d = d;
@@ -1043,9 +1085,13 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                 if (std::fabs(mx - s_junction_press_x) >= ImGui::GetIO().MouseDragThreshold) s_junction_moved = true;
                 if (s_junction_moved) {
                     const size_t j = static_cast<size_t>(s_junction);
-                    // Spec 11-fb-12: limited only by the neighbouring shots (a shot may span two
-                    // clips); the last shot's limit is the view's end.
-                    const double next_limit = (j + 1 < m.shots.size()) ? m.shots[j + 1].time : v1;
+                    // Spec 11-fb-15: limited by the previous shot's start and the moved shot's
+                    // display end (a shot may span back-to-back clips, never a gap).
+                    double next_limit = m.shots[j].end;
+                    // The previous shot already spans into the clip before this one (a span
+                    // covers one clip start): the junction cannot move later than it is.
+                    if (m.shots[j - 1].clip < m.shots[j].clip - 1)
+                        next_limit = m.shots[j].start + (m.fps > 0.0 ? 1.0 / m.fps : 2.0e-3);
                     // The drag is a delta from the junction's own time, not the cursor's position
                     // (the grab may be 4 px off). Cuts sit half a frame early, so add half a frame
                     // to read the frame the junction is on, not the one before it.
@@ -1053,7 +1099,7 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                     double t = s_junction_orig + (t_mouse - s_junction_press_t) + half;
                     // Snap: the nearest tick's frame becomes the shot's first frame.
                     if (snap) t = VideoRulerSnap(t, 0.0, snap_step, m.fps);
-                    const double snapped = VideoJunctionDragTime(t, m.shots[j - 1].time, next_limit, m.fps);
+                    const double snapped = VideoJunctionDragTime(t, m.shots[j - 1].start, next_limit, m.fps);
                     s_junction_time = std::isfinite(snapped) ? snapped : s_junction_orig;  // no room: stays
                 }
             }
@@ -1063,18 +1109,21 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
             }
             const bool junction_drag = lane_active && s_junction >= 0;
 
-            // Shot starts as drawn: at their first frames, the dragged one at its snapped time's.
-            std::vector<double> times(static_cast<size_t>(n));
-            for (int i = 0; i < n; ++i) times[static_cast<size_t>(i)] = first_of(m.shots[static_cast<size_t>(i)].time);
+            // Spec 11-fb-15: shots as drawn, from their start to their end (no shot in gaps); the
+            // dragged junction at its snapped time's first frame (the shot before it ends there).
+            std::vector<double> starts(static_cast<size_t>(n));
+            std::vector<double> ends(static_cast<size_t>(n));
+            for (int i = 0; i < n; ++i) {
+                starts[static_cast<size_t>(i)] = m.shots[static_cast<size_t>(i)].start;
+                ends[static_cast<size_t>(i)] = m.shots[static_cast<size_t>(i)].end;
+            }
             // The highlight stays on the shot Video view shows (its camera does not change before
             // the release writes the move).
             const int current = VideoViewShotIndex();
-            if (junction_drag) times[static_cast<size_t>(s_junction)] = first_of(s_junction_time);
-            // Spec 11-fb-14: shot 1 is shown from the first frame of the track's first clip (no
-            // shot before it), never after shot 2 as drawn; its envelope points stay where they are.
-            const double first_item = VideoViewFirstItemStart();
-            if (n > 0)
-                times[0] = VideoShotDisplayStart(0, m.shots[0].time, first_item, m.fps, n > 1 ? times[1] : std::nan(""));
+            if (junction_drag) {
+                starts[static_cast<size_t>(s_junction)] = first_of(s_junction_time);
+                ends[static_cast<size_t>(s_junction) - 1] = first_of(s_junction_time);
+            }
 
             const float zx0 = x_of(r.start);  // the current clip's zone, at the item's exact edges
             const float zx1 = x_of(r.end);
@@ -1087,20 +1136,19 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
             }
             for (int i = 0; i < n; ++i) {
                 const VideoShot& s = m.shots[static_cast<size_t>(i)];
-                const double s_time = times[static_cast<size_t>(i)];
-                const double s_end = (i + 1 < n) ? times[static_cast<size_t>(i) + 1] : v1;
-                // The first shot holds from the first clip (from 0 when there is none).
-                const double s_from = (i == 0 && !std::isfinite(first_item)) ? 0.0 : s_time;
+                const double s_from = starts[static_cast<size_t>(i)];
+                const double s_end = ends[static_cast<size_t>(i)];
                 const double a = std::max(s_from, t_lo);
                 // Cut off by the view edge: that side stays open (no edge, square corners).
                 const bool left_open = s_from < t_lo;
-                const bool right_open = i + 1 >= n || s_end > v1;
+                const bool right_open = s_end > v1;
                 const double b = std::min(s_end, v1);
                 if (!(b > a)) continue;
                 const float xa = x_of(a);
                 const float xb = x_of(b);
                 if (i == current) dl->AddRectFilled(ImVec2(xa, l0.y), ImVec2(xb, l1.y), ui::kAccentSoft);
-                if (s.move_to_next && i + 1 < n) {
+                const bool move_cue = s.move_to_next && VideoViewShotTouchesNext(i);  // spec 11-fb-15
+                if (move_cue) {
                     const float xm = xa + (xb - xa) * 0.55f;
                     dl->AddRectFilledMultiColor(ImVec2(xm, l0.y), ImVec2(xb, l1.y), IM_COL32(255, 255, 255, 0),
                                                 IM_COL32(255, 255, 255, 16), IM_COL32(255, 255, 255, 16),
@@ -1130,7 +1178,7 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                         dl->PathLineTo(ImVec2(to_x, y0));
                         dl->PathStroke(kOutline, ImDrawFlags_None, 1.0f);
                     };
-                    if (s.move_to_next && i + 1 < n) {
+                    if (move_cue) {
                         const float xm = std::max(xa + (xb - xa) * 0.55f, x0 + rr);
                         left_side(xm);
                         if (xb > xm) {
@@ -1268,10 +1316,10 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
             // Spec 11-fb-12: a shot that began in an earlier clip: the first frame of the clip
             // under the mouse (no clamp when the mouse is over no clip).
             if (lane_hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && junction_at(mx) < 0) {
-                // The shot whose first frame is at or before the frame under the mouse (as drawn).
-                const int shot = VideoCurrentShotIndex(m.shots, t_mouse, m.fps);
+                // The shot under the mouse (as drawn; none between clips, spec 11-fb-15).
+                const int shot = VideoClipShotAt(m.shots, t_mouse, m.fps);
                 if (shot >= 0) {
-                    double first = VideoViewShotDisplayStart(shot);  // spec 11-fb-14: shot 1 at the first clip
+                    double first = m.shots[static_cast<size_t>(shot)].start;
                     for (const VideoStripSpan& it : r.items) {
                         if (t_mouse >= it.start && t_mouse < it.end) {  // the viewer's rule: first spanning item
                             first = std::max(first, VideoShotFirstFrameTime(it.start, m.fps));
@@ -1285,7 +1333,7 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
             // Spec 11-fb-11: a middle-click on a shot switches it between Cut and Move (the
             // clicked shot, as drawn; not the one under the playhead).
             if (lane_hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Middle)) {
-                const int shot = VideoCurrentShotIndex(m.shots, t_mouse, m.fps);
+                const int shot = VideoClipShotAt(m.shots, t_mouse, m.fps);  // none between clips
                 if (shot >= 0) QueueVideoTransitionAt(shot);
             }
             if (junction_drag) {
@@ -1422,12 +1470,14 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
 
     // Shot inspector: the shot under the playhead (UX decision 5). Spec 11-fb-11: collapsible
     // (chevron, or a double-click on its header row); collapsed, it keeps the header and the
-    // button row.
-    if (m.fx >= 0 && !m.shots.empty()) {
+    // button row. Spec 11-fb-15: between clips there is no shot: a muted line instead.
+    if (m.fx >= 0) {
         ImGui::Spacing();
-        const int idx = std::max(0, std::min(VideoViewShotIndex(), static_cast<int>(m.shots.size()) - 1));
-        const VideoShot& shot = m.shots[static_cast<size_t>(idx)];
-        const bool can_edit = VideoViewCanEdit();
+        static const VideoViewShot kNoShot;
+        const int idx = VideoViewShotIndex();
+        const bool has_shot = idx >= 0 && idx < static_cast<int>(m.shots.size());
+        const VideoViewShot& shot = has_shot ? m.shots[static_cast<size_t>(idx)] : kNoShot;
+        const bool can_edit = has_shot && VideoViewCanEdit();
         const bool collapsed = InspectorCollapsed();
 
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::Col(ui::kRaised));
@@ -1435,8 +1485,16 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
         ImGui::PushStyleColor(ImGuiCol_FrameBg, ui::Col(ui::kBg));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 10.0f));
         if (ImGui::BeginChild("##inspector", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY)) {
+            if (!has_shot) {
+                ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextUnformatted(m.clips.empty() ? "No shot here: the track has no animation item"
+                                                       : "No shot here: the playhead is between clips");
+                ImGui::PopTextWrapPos();
+                ImGui::PopStyleColor();
+            }
             // Head: chevron, colour dot, name, start time.
-            {
+            if (has_shot) {
                 ImDrawList* dl = ImGui::GetWindowDrawList();
                 const ImVec2 row0 = ImGui::GetCursorScreenPos();
                 const float fh = ImGui::GetFrameHeight();
@@ -1471,11 +1529,13 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
                 static MediaTrack* s_track = nullptr;
                 static int s_fx = -1;
                 static double s_time = 0.0;
+                static std::string s_auto;  // its automatic name (typing it back stores none)
+                static bool s_implicit = false;
                 if (!s_editing) {
                     std::snprintf(s_name, sizeof(s_name), "%s", shot.name.c_str());
                 }
                 char tm[32];
-                FormatTime(VideoViewShotDisplayStart(idx), tm, sizeof(tm));  // spec 11-fb-14
+                FormatTime(shot.start, tm, sizeof(tm));  // its first frame
                 const float tag_w = ImGui::CalcTextSize(tm).x + 18.0f;
                 ImGui::SetNextItemWidth(std::max(60.0f, ImGui::GetContentRegionAvail().x - tag_w - 8.0f));
                 if (!can_edit) ImGui::BeginDisabled();
@@ -1486,9 +1546,11 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
                     s_track = m.track;
                     s_fx = m.fx;
                     s_time = shot.time;
+                    s_auto = shot.auto_name;
+                    s_implicit = shot.implicit;
                 }
                 s_editing = ImGui::IsItemActive();
-                if (ImGui::IsItemDeactivatedAfterEdit()) QueueVideoRename(s_track, s_fx, s_time, s_name);
+                if (ImGui::IsItemDeactivatedAfterEdit()) QueueVideoRename(s_track, s_fx, s_time, s_name, s_auto, s_implicit);
                 if (ImGui::IsItemHovered() && !s_editing) ImGui::SetTooltip("Shot name (empty = automatic)");
                 const bool name_hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
                 if (!can_edit) ImGui::EndDisabled();
@@ -1505,13 +1567,13 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
                 if (chev_clicked || dbl) SetInspectorCollapsed(!collapsed);
             }
 
-            if (!collapsed) {
+            if (has_shot && !collapsed) {
                 if (!can_edit) ImGui::BeginDisabled();
                 // Cut to next / Move to next.
                 {
                     static const char* const kTransitions[2] = {"Cut to next", "Move to next"};
                     int sel = shot.move_to_next ? 1 : 0;
-                    const bool last = (idx + 1 >= static_cast<int>(m.shots.size()));
+                    const bool last = !VideoViewShotTouchesNext(idx);  // spec 11-fb-15: also before a gap
                     const float item_w = std::floor((ImGui::GetContentRegionAvail().x - 6.0f) * 0.5f);
                     if (ui::Segmented("##transition", kTransitions, 2, &sel, item_w, last && sel == 0 ? 1 : -1))
                         QueueVideoTransition(sel == 1);
@@ -1572,7 +1634,8 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
                 }
             }
 
-            if (!can_edit && m.status == VideoFxStatus::Active) ui::SubText("No item on this track at the playhead.");
+            if (has_shot && !can_edit && m.status == VideoFxStatus::Active)
+                ui::SubText("No item on this track at the playhead.");
         }
         ImGui::EndChild();
         ImGui::PopStyleVar();

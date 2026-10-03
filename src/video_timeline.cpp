@@ -165,14 +165,6 @@ bool FindVideoItemAt(const VideoTimelineSnapshot& snap, const MediaTrack* track,
     return false;
 }
 
-double VideoItemStartAt(const MediaTrack* track, double t)
-{
-    const std::shared_ptr<const VideoTimelineSnapshot> snap = CurrentVideoTimeline();
-    VideoItemHit hit;
-    if (snap && track && FindVideoItemAt(*snap, track, t, hit) && hit.item) return hit.item->start;
-    return std::nan("");
-}
-
 std::shared_ptr<const VideoTimelineSnapshot> CurrentVideoTimeline()
 {
     std::lock_guard<std::mutex> lock(g_mutex);

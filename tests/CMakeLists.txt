@@ -28,3 +28,8 @@ add_test(NAME shortcuts COMMAND shortcuts_test)
 add_executable(render_format_size_test render_format_size_test.cpp)
 target_include_directories(render_format_size_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME render_format_size COMMAND render_format_size_test)
+
+# Spec 11-fb-15 -- shots belong to clips (src/video_clip_shots.h).
+add_executable(video_clip_shots_test video_clip_shots_test.cpp)
+target_include_directories(video_clip_shots_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME video_clip_shots COMMAND video_clip_shots_test)

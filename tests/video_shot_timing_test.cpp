@@ -567,21 +567,6 @@ int main()
         CHECK(Near(VideoStripScroll(2.0, 0.0, 1.0, -0.3), 2.0));
         CHECK(Near(VideoStripScroll(2.0, 4.0, 1.0, std::nan("")), 1.6));
     }
-    // First shot's displayed start: the first frame of the earliest item.
-    {
-        CHECK(Near(VideoShotDisplayStart(0, 0.0, 1.4, 24.0), 34.0 / 24.0));   // off-grid clip start
-        CHECK(Near(VideoShotDisplayStart(0, 0.0, 1.5, 24.0), 1.5));
-        CHECK(Near(VideoShotDisplayStart(0, 0.0, std::nan(""), 24.0), 0.0));  // no item: 0:00
-        CHECK(Near(VideoShotDisplayStart(0, 0.0, 1.4, 0.0), 1.4));            // fps unknown
-        CHECK(Near(VideoShotDisplayStart(1, 2.5 - 0.5 / 24.0, 1.4, 24.0),
-                   VideoShotFirstFrameTime(2.5 - 0.5 / 24.0, 24.0)));         // other shots: their first frame
-        CHECK(Near(VideoShotDisplayStart(2, 3.0, 1.4, 0.0), 3.0));
-        // Shot 2 before the first clip (cut or dragged there): shot 1 never shows after it.
-        CHECK(Near(VideoShotDisplayStart(0, 0.0, 3.0, 24.0, 2.0 - 0.5 / 24.0), 2.0));
-        CHECK(Near(VideoShotDisplayStart(0, 0.0, 3.0, 24.0, 5.0 - 0.5 / 24.0), 3.0));  // shot 2 later: the clip
-        CHECK(Near(VideoShotDisplayStart(0, 0.0, 3.0, 24.0, std::nan("")), 3.0));      // no shot 2
-        CHECK(Near(VideoShotDisplayStart(0, 0.0, std::nan(""), 24.0, 2.0), 0.0));      // no item: 0:00
-    }
 
     std::printf(g_fails ? "FAILED %d\n" : "ALL PASS\n", g_fails);
     return g_fails != 0 ? 1 : 0;

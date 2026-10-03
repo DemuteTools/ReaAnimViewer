@@ -47,6 +47,27 @@ struct VideoPinChoice {
     std::string label;  // "3 \xC2\xB7 Name"
 };
 
+// Spec 11-fb-15 -- a shot as Video view shows it: shots belong to clips (video_clip_shots.h).
+// `time` is its envelope time (implicit: the time its point gets when an edit writes it),
+// `values` its camera (implicit: what the envelopes give on the clip's first frame), `name`
+// the stored name, else `auto_name` ("<anim name> N").
+struct VideoViewShot : VideoShot {
+    int         clip = -1;          // index into VideoViewModel::clips
+    int         number = 1;         // 1-based within its clip
+    double      start = 0.0;        // its first frame (display and seek start)
+    double      end = 0.0;          // display end (exclusive)
+    bool        clip_first = false; // opens its clip: never deleted
+    std::string auto_name;
+};
+
+// A clip of the Video view's track (the RAV items, overlaps trimmed, in time order).
+struct VideoViewClip {
+    double      start = 0.0;  // effective start
+    double      end = 0.0;
+    double      first = 0.0;  // its first frame's time
+    std::string name;         // the animation name: file name without folders and extension
+};
+
 // What the panel and the frame read. Refreshed by VideoViewFrame.
 struct VideoViewModel {
     MediaTrack* track = nullptr;   // the FX track: pinned, else the displayed item's
@@ -54,7 +75,8 @@ struct VideoViewModel {
     int         fx = -1;           // index of the RAV video FX on `track`, -1 if none
     VideoFxStatus status = VideoFxStatus::NoTrack;
     std::string track_label;
-    std::vector<VideoShot> shots;  // empty unless the FX is on the track
+    std::vector<VideoViewShot> shots;  // empty unless the FX is on the track (spec 11-fb-15: per clip)
+    std::vector<VideoViewClip> clips;  // the track's clips, in time order
     std::vector<VideoPinChoice> pin_choices;  // tracks carrying the FX (+ the followed one)
     int    out_w = 1920;           // the FX's output size (override, else project, else 1920x1080)
     int    out_h = 1080;
@@ -72,6 +94,11 @@ struct VideoViewModel {
 };
 
 const VideoViewModel& GetVideoViewModel();
+
+// Spec 11-fb-15 -- true when shot `index` + 1 starts where shot `index` ends (same frame):
+// the shot has a next shot to move to and a junction with it. False across a gap between
+// clips and for the last shot (Move to next is then refused, like for the last shot).
+bool VideoViewShotTouchesNext(int index);
 
 // ---- Session state (not saved) -----------------------------------------------------------
 bool VideoViewActive();
@@ -104,7 +131,8 @@ bool VideoViewCanEdit();
 // The camera Video view draws with this frame (the gesture's while one runs).
 bool VideoViewCamera(OrbitCamera* out);
 
-// The shot under the playhead (index into the model's shots), -1 when none.
+// The shot under the playhead (index into the model's shots), -1 when none (spec 11-fb-15:
+// also between clips).
 int VideoViewShotIndex();
 
 // ---- Gestures in the view (window procedure) ----------------------------------------------
@@ -125,8 +153,11 @@ void VideoViewSliderEdit(int param, double norm);
 // The slider was released: queue the write (one undo point).
 void VideoViewSliderCommit(int param);
 
-// Renames the shot at shot_time on that track's FX (captured when the edit began).
-void QueueVideoRename(MediaTrack* track, int fx, double shot_time, const std::string& name);
+// Renames the shot at shot_time on that track's FX (captured when the edit began). `auto_name`
+// is its automatic name (typing it back stores none); an implicit shot is written first
+// (spec 11-fb-15, same undo point) unless the name stays automatic.
+void QueueVideoRename(MediaTrack* track, int fx, double shot_time, const std::string& name,
+                      const std::string& auto_name, bool implicit);
 void QueueVideoTransition(bool move_to_next);
 // Spec 11-fb-11 -- switches shot `index` (not the current one) between Cut and Move to
 // next, one undo point (the inspector's write). The last shot cannot become Move: a notice
@@ -166,11 +197,10 @@ struct VideoStripRange {
     int    current = -1;                // index of the current item in `items`
 };
 const VideoStripRange& VideoViewStripRange();
-// Spec 11-fb-14 -- the start of the earliest item on the Video view's track, NaN when none.
-double VideoViewFirstItemStart();
-// Spec 11-fb-14 -- where shot `index` is shown to start (video_shot_timing.h
-// VideoShotDisplayStart): shot 1 at the first frame of the track's earliest item.
-double VideoViewShotDisplayStart(int index);
+// Spec 11-fb-15 -- the shot list's group headers: clip `clip`'s animation name ("" when out of
+// range) and its start time.
+const char* VideoViewClipName(int clip);
+double VideoViewClipStart(int clip);
 
 // REAPER's playhead as Video view reads it (play position while playing, else the edit cursor).
 double VideoViewPlayhead();
@@ -196,8 +226,8 @@ void QueueVideoCut();
 void QueueVideoDeleteShot(int index);
 
 // Spec 11-fb-11 -- the Delete key (Video view): deletes the shot under the playhead after a
-// confirmation, at once when the user ticked "Don't ask again". The first shot and an
-// implicit one are never deleted (a notice says so).
+// confirmation, at once when the user ticked "Don't ask again". A clip's first shot is never
+// deleted (a notice says so; spec 11-fb-15).
 void RequestVideoDeleteCurrentShot();
 // The confirmation: open, the name of the shot it asks about, confirm (with the "Don't ask
 // again" choice) or cancel (Esc, Cancel, Video view left).
@@ -210,7 +240,10 @@ bool VideoAskBeforeDeleteShot();
 void SetVideoAskBeforeDeleteShot(bool ask);
 // Moves the start of shot `index` (>= 1) to new_time (VideoJunctionDragTime places it):
 // one undo point "RAV: Move video shot". Nothing when it stays on its frame, while a
-// camera gesture is unwritten, or for the first / implicit shot.
+// camera gesture is unwritten, or when the shot does not touch the previous one (spec
+// 11-fb-15: a junction only exists between contiguous shots). An implicit shot is written at
+// new_time; a shot that now covers the next clip's start gets the span flag, the previous
+// shot loses it when it no longer does.
 void QueueVideoMoveShot(int index, double new_time);
 // Saved angle `index` into the shot under the playhead.
 void QueueVideoApplyAngle(int index);

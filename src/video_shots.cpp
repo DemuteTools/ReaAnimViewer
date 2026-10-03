@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -212,35 +213,47 @@ bool SameNames(std::vector<VideoFxShotName> a, std::vector<VideoFxShotName> b)
     return true;
 }
 
-// The automatic label of the shot at time t ("Shot N", N = its 1-based position).
-std::string AutoShotName(const std::vector<double>& times, double t)
+// Spec 11-fb-15 -- the span flags, like the names: keyed by the shot time.
+void RemoveSpansNear(VideoFxState* st, double t)
 {
-    int position = 1;
-    for (double x : times) {
-        if (std::fabs(x - t) <= kVideoShotTimeTolerance) break;
-        if (x < t) ++position;
-    }
-    char buf[32];
-    std::snprintf(buf, sizeof(buf), "Shot %d", position);
-    return buf;
+    st->shot_spans.erase(std::remove_if(st->shot_spans.begin(), st->shot_spans.end(),
+                                        [t](double x) { return std::fabs(x - t) <= kVideoShotTimeTolerance; }),
+                         st->shot_spans.end());
 }
 
-// Stores `name` for the shot at t (an empty name or the shot's automatic label stores
-// nothing, so "Shot N" stays positional), drops stale names, and sends the state only
-// when the names changed (camera gestures rewrite shots many times per second).
-void StoreShotName(MediaTrack* track, int fx, double t, const std::string& name)
+void PruneSpans(const std::vector<double>& times, VideoFxState* st)
+{
+    st->shot_spans.erase(std::remove_if(st->shot_spans.begin(), st->shot_spans.end(),
+                                        [&times](double x) { return !NearAny(times, x); }),
+                         st->shot_spans.end());
+}
+
+bool SameSpans(std::vector<double> a, std::vector<double> b)
+{
+    std::sort(a.begin(), a.end());
+    std::sort(b.begin(), b.end());
+    return a == b;
+}
+
+// Stores `name` for the shot at t (an empty name or the shot's automatic name `auto_name`
+// stores nothing, so the automatic name stays positional), drops stale names and span
+// flags, and sends the state only when it changed (camera gestures rewrite shots many
+// times per second).
+void StoreShotName(MediaTrack* track, int fx, double t, const std::string& name, const std::string& auto_name)
 {
     VideoFxState st;
     if (!ReadVideoFxState(track, fx, &st)) return;  // no readable state: the shot stays unnamed
     const std::vector<VideoFxShotName> before = st.shot_names;
+    const std::vector<double> spans_before = st.shot_spans;
     const std::vector<double> times = CurrentShotTimes(track, fx);
     RemoveNamesNear(&st, t);
     const std::string clean = CleanVideoFxName(name);
-    if (!clean.empty() && clean != AutoShotName(times, t) && st.shot_names.size() < kVideoFxMaxNames) {
+    if (!clean.empty() && clean != CleanVideoFxName(auto_name) && st.shot_names.size() < kVideoFxMaxNames) {
         st.shot_names.push_back({t, clean});
     }
     PruneNames(times, &st);
-    if (!SameNames(before, st.shot_names)) WriteVideoFxMeta(track, fx, st);
+    PruneSpans(times, &st);
+    if (!SameNames(before, st.shot_names) || !SameSpans(spans_before, st.shot_spans)) WriteVideoFxMeta(track, fx, st);
 }
 
 bool ValidFx(MediaTrack* track, int fx)
@@ -341,9 +354,11 @@ std::vector<VideoShot> ReadVideoShots(MediaTrack* track, int fx)
             for (const VideoFxShotName& n : st.shot_names) {
                 if (std::fabs(n.time - shots[i].time) <= kVideoShotTimeTolerance) {
                     shots[i].name = n.name;
+                    shots[i].stored_name = !n.name.empty();
                     break;
                 }
             }
+            if (!shots[i].implicit) shots[i].span = NearAny(st.shot_spans, shots[i].time);
         }
         if (shots[i].name.empty()) {
             char buf[32];
@@ -352,12 +367,6 @@ std::vector<VideoShot> ReadVideoShots(MediaTrack* track, int fx)
         }
     }
     return shots;
-}
-
-int VideoCurrentShotIndex(const std::vector<VideoShot>& shots, double playhead, double fps)
-{
-    return VideoCurrentShotIndexOf(
-        shots.size(), [&](size_t i) { return shots[i].time; }, playhead, fps, kVideoShotTimeTolerance);
 }
 
 void ReadVideoCameraAt(MediaTrack* track, int fx, double t, double out[vcam::kParamCount])
@@ -370,7 +379,7 @@ void ReadVideoCameraAt(MediaTrack* track, int fx, double t, double out[vcam::kPa
     }
 }
 
-bool WriteVideoShot(MediaTrack* track, int fx, const VideoShot& shot)
+bool WriteVideoShot(MediaTrack* track, int fx, const VideoShot& shot, const std::string& auto_name)
 {
     if (!ValidFx(track, fx) || !std::isfinite(shot.time)) return false;
     const double t = shot.time;
@@ -411,7 +420,7 @@ bool WriteVideoShot(MediaTrack* track, int fx, const VideoShot& shot)
         Envelope_SortPoints(env);
     }
 
-    StoreShotName(track, fx, t, shot.name);
+    StoreShotName(track, fx, t, shot.name, auto_name);
     UpdateArrange();
     return true;
 }
@@ -426,7 +435,8 @@ bool DeleteVideoShot(MediaTrack* track, int fx, double time)
         if (DeleteEnvelopePointRange(env, time - kVideoShotTimeTolerance, time + kVideoShotTimeTolerance)) any = true;
         Envelope_SortPoints(env);
     }
-    StoreShotName(track, fx, time, std::string());
+    // Its name and span flag go with it (pruned: no point is left at `time`).
+    StoreShotName(track, fx, time, std::string(), std::string());
     UpdateArrange();
     return any;
 }
@@ -435,8 +445,9 @@ bool MoveVideoShot(MediaTrack* track, int fx, double old_time, double new_time)
 {
     if (!ValidFx(track, fx) || !std::isfinite(old_time) || !std::isfinite(new_time)) return false;
 
-    // The shot's stored name (none = automatic "Shot N"), read before the points move.
+    // The shot's stored name (none = automatic) and span flag, read before the points move.
     std::string name;
+    bool span = false;
     VideoFxState st;
     if (ReadVideoFxState(track, fx, &st)) {
         for (const VideoFxShotName& n : st.shot_names) {
@@ -445,6 +456,7 @@ bool MoveVideoShot(MediaTrack* track, int fx, double old_time, double new_time)
                 break;
             }
         }
+        span = NearAny(st.shot_spans, old_time);
     }
 
     bool any = false;
@@ -473,7 +485,9 @@ bool MoveVideoShot(MediaTrack* track, int fx, double old_time, double new_time)
     if (!any) return false;
 
     // Re-key the name on the new time; the old time is no longer a shot, so its entry is pruned.
-    StoreShotName(track, fx, new_time, name);
+    // The stored name is kept as it is (an automatic name is never stored).
+    StoreShotName(track, fx, new_time, name, std::string());
+    if (span) SetVideoShotSpan(track, fx, new_time, true);
     UpdateArrange();
     return true;
 }
@@ -504,12 +518,112 @@ bool SetVideoShotTransition(MediaTrack* track, int fx, double time, bool move_to
     return any;
 }
 
-bool RenameVideoShot(MediaTrack* track, int fx, double time, const std::string& name)
+bool RenameVideoShot(MediaTrack* track, int fx, double time, const std::string& name, const std::string& auto_name)
 {
     VideoFxState probe;
     if (!ReadVideoFxState(track, fx, &probe)) return false;
-    StoreShotName(track, fx, time, name);
+    StoreShotName(track, fx, time, name, auto_name);
     return true;
+}
+
+bool SetVideoShotSpan(MediaTrack* track, int fx, double time, bool on)
+{
+    if (!ValidFx(track, fx) || !std::isfinite(time)) return false;
+    VideoFxState st;
+    if (!ReadVideoFxState(track, fx, &st)) return false;
+    const std::vector<double> before = st.shot_spans;
+    RemoveSpansNear(&st, time);
+    if (on && st.shot_spans.size() < kVideoFxMaxNames) st.shot_spans.push_back(time);
+    PruneSpans(CurrentShotTimes(track, fx), &st);
+    if (SameSpans(before, st.shot_spans)) return true;
+    return WriteVideoFxMeta(track, fx, st);
+}
+
+// ---- Shots per clip (spec 11-fb-15) -------------------------------------------------------------
+VideoTrackClipShots ReadVideoClipShots(MediaTrack* track, int fx, double fps)
+{
+    VideoTrackClipShots out;
+    if (!ValidFx(track, fx)) return out;
+    out.raw = ReadVideoShots(track, fx);
+    std::vector<VideoClipIn> clips;
+    const std::shared_ptr<const VideoTimelineSnapshot> snap = CurrentVideoTimeline();
+    if (const VideoTrackTimeline* tl = snap ? snap->Find(track) : nullptr) {
+        clips.reserve(tl->items.size());
+        for (const VideoItemSpan& it : tl->items) {
+            VideoClipIn c;
+            c.start = it.start;
+            c.end = it.end;
+            c.anim_name = VideoAnimNameFromPath(it.path);
+            clips.push_back(std::move(c));
+        }
+    }
+    std::vector<VideoRawShotIn> raws;
+    raws.reserve(out.raw.size());
+    for (const VideoShot& s : out.raw) {
+        if (s.implicit) continue;  // no point at all: every clip opens with an implicit shot
+        VideoRawShotIn r;
+        r.time = s.time;
+        r.stored_name = s.stored_name;
+        r.span = s.span;
+        raws.push_back(r);
+    }
+    out.built = BuildVideoClipShots(clips, raws, fps);
+    // `raw` indices of the built shots point into out.raw: the implicit raw entry (no point)
+    // was skipped, and it is the only entry then.
+    if (raws.empty()) out.raw.clear();
+    return out;
+}
+
+std::string VideoClipShotAutoName(const VideoClipShots& built, size_t i)
+{
+    if (i >= built.shots.size()) return std::string();
+    const VideoClipShot& s = built.shots[i];
+    if (s.clip < 0 || static_cast<size_t>(s.clip) >= built.clips.size()) return std::string();
+    return VideoAutoShotName(built.clips[static_cast<size_t>(s.clip)].anim_name, s.number);
+}
+
+bool EnsureVideoShotPoint(MediaTrack* track, int fx, double time, double fps, const double* values)
+{
+    if (!ValidFx(track, fx) || !std::isfinite(time)) return false;
+    ParamEnv envs[vcam::kParamCount];
+    LoadAllEnvs(track, fx, envs);
+    if (NearAny(ShotTimes(envs), time)) return true;  // already a real shot
+    VideoShot s;
+    s.time = time;
+    s.move_to_next = false;
+    // The camera of its first frame: what the envelopes render there (the inherited camera).
+    if (values) {
+        for (int p = 0; p < vcam::kParamCount; ++p) s.values[p] = values[p];
+    } else {
+        ReadVideoCameraAt(track, fx, VideoShotFirstFrameTime(time, fps), s.values);
+    }
+    return WriteVideoShot(track, fx, s);
+}
+
+void MoveSpanToCut(MediaTrack* track, int fx, const VideoTrackClipShots& cs, int clip, double cut_time,
+                   double fps)
+{
+    const int i = VideoClipShotAt(cs.built.shots, VideoShotFirstFrameTime(cut_time, fps), fps);
+    if (i < 0) return;
+    const VideoClipShot& s = cs.built.shots[static_cast<size_t>(i)];
+    if (s.clip != clip || s.raw < 0) return;  // in the clip it spans into: it still covers that start
+    const VideoShot& r = cs.raw[static_cast<size_t>(s.raw)];
+    if (!r.span || std::fabs(r.time - cut_time) <= kVideoShotTimeTolerance) return;
+    SetVideoShotSpan(track, fx, r.time, false);
+    SetVideoShotSpan(track, fx, cut_time, true);
+}
+
+bool MaterializeClipFirstShotForCut(MediaTrack* track, int fx, const VideoClipShots& built, int clip,
+                                    double cut_time, double fps)
+{
+    if (clip < 0) return true;
+    for (const VideoClipShot& s : built.shots) {
+        if (s.clip != clip || !s.clip_first || s.raw >= 0) continue;
+        const double t = VideoClipImplicitTime(built.clips[static_cast<size_t>(clip)].start, fps);
+        if (std::fabs(t - cut_time) <= kVideoShotTimeTolerance) return true;  // the cut is that shot
+        return EnsureVideoShotPoint(track, fx, t, fps);
+    }
+    return true;  // its first shot has a point, or a shot from the previous clip spans it
 }
 
 // ---- Envelope visibility (spec 11-fb-11) ------------------------------------------------------
@@ -673,11 +787,21 @@ void AddVideoShotAtEditCursor()
     const double t = std::max(0.0, GetCursorPositionEx(nullptr));
     const double fps = ProjectFps();
 
+    // Spec 11-fb-15: shots belong to clips. The clip holding the cursor's frame (none: refused).
+    const VideoTrackClipShots cs = ReadVideoClipShots(track, fx, fps);
+    const int clip = VideoClipIndexAtTime(cs.built.clips, t, fps);
+    if (clip < 0) {
+        ShowMessageBox("The edit cursor is between clips: there is no shot there. Put it on an animation item of "
+                       "the track.",
+                       "RAV: Add video shot", 0);
+        return;
+    }
+    const double item_start = cs.built.clips[static_cast<size_t>(clip)].start;
+
     // Like a cut in Video view (spec 11-fb-10): the shot's points go half a frame before
     // the cursor's frame, and it holds the camera of that frame (fps unknown: the cursor).
-    // Spec 11-fb-12: never on a frame that begins before the item under the cursor.
+    // Spec 11-fb-12: never on a frame that begins before the clip under the cursor.
     VideoShot shot;
-    const double item_start = VideoItemStartAt(track, t);
     shot.time = VideoCutTimeInItem(t, fps, item_start);
     shot.move_to_next = false;
     // The camera at the shot's own first frame (the item rule may move it past the cursor's).
@@ -687,31 +811,40 @@ void AddVideoShotAtEditCursor()
                                    : VideoPlayheadFrameTime(t, fps);
     ReadVideoCameraAt(track, fx, camera_time, shot.values);
 
-    // Suggested name: the shot's own name when one is already there, else "Shot N".
-    const std::vector<VideoShot> shots = ReadVideoShots(track, fx);
-    int position = 1;
+    // Suggested name: the shot's own name when one already starts on that frame, else the
+    // automatic "<anim name> N" it will get (N: its place in the clip).
+    const double cut_first = VideoShotFirstFrameTime(shot.time, fps);
+    std::string auto_name;
     std::string existing;
-    for (const VideoShot& s : shots) {
-        if (std::fabs(s.time - shot.time) <= kVideoShotTimeTolerance) {
-            existing = s.name;
-            shot.move_to_next = s.move_to_next;  // re-adding (renaming) a shot keeps its transition
+    int number = 1;
+    for (size_t i = 0; i < cs.built.shots.size(); ++i) {
+        const VideoClipShot& s = cs.built.shots[i];
+        if (s.clip != clip) continue;
+        const bool same = fps > 0.0 ? VideoShotFirstFrame(s.start, fps) == VideoShotFirstFrame(cut_first, fps)
+                                    : std::fabs(s.start - cut_first) <= kVideoShotTimeTolerance;
+        if (same) {
+            auto_name = VideoClipShotAutoName(cs.built, i);
+            if (s.raw >= 0) {
+                const VideoShot& r = cs.raw[static_cast<size_t>(s.raw)];
+                if (r.stored_name) existing = r.name;
+                shot.move_to_next = r.move_to_next;  // re-adding (renaming) a shot keeps its transition
+                shot.time = r.time;                  // and its points' time
+            }
             break;
         }
-        if (s.time < shot.time) ++position;
+        if (s.start < cut_first) number = s.number + 1;
     }
-    char suggested[160];
-    if (!existing.empty()) {
-        std::snprintf(suggested, sizeof(suggested), "%s", existing.c_str());
-    } else {
-        std::snprintf(suggested, sizeof(suggested), "Shot %d", position);
-    }
+    if (auto_name.empty()) auto_name = VideoAutoShotName(cs.built.clips[static_cast<size_t>(clip)].anim_name, number);
     char buf[512];
-    std::snprintf(buf, sizeof(buf), "%s", suggested);
+    std::snprintf(buf, sizeof(buf), "%s", existing.empty() ? auto_name.c_str() : existing.c_str());
     if (!GetUserInputs("RAV: Add video shot", 1, "Shot name:,extrawidth=160", buf, sizeof(buf))) return;
-    shot.name = buf;  // the automatic "Shot N" is not stored (StoreShotName)
+    shot.name = buf;  // the automatic name is not stored (StoreShotName)
 
+    // The clip's implicit first shot is written with it (one undo point).
     Undo_BeginBlock2(nullptr);
-    const bool ok = WriteVideoShot(track, fx, shot);
+    bool ok = MaterializeClipFirstShotForCut(track, fx, cs.built, clip, shot.time, fps);
+    ok = WriteVideoShot(track, fx, shot, auto_name) && ok;
+    if (ok) MoveSpanToCut(track, fx, cs, clip, shot.time, fps);
     Undo_EndBlock2(nullptr, "RAV: Add video shot", UNDO_STATE_FX);
     if (!ok) {
         ShowMessageBox("RAV could not write the shot (the FX envelopes could not be created).", "RAV: Add video shot", 0);

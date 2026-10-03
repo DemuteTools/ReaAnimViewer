@@ -28,6 +28,7 @@
 
 #include "reaper_api.h"
 #include "video_camera_params.h"
+#include "video_clip_shots.h"
 #include "video_fx_state.h"
 
 namespace rav {
@@ -41,6 +42,8 @@ constexpr int kVideoShapeMove = 2;  // slow start/end
 struct VideoShot {
     double time = 0.0;
     std::string name;            // stored name, else "Shot N" (1-based, positional, never stored)
+    bool stored_name = false;    // spec 11-fb-15: `name` is a stored (user) name
+    bool span = false;           // spec 11-fb-15: runs on through the next back-to-back clip start
     bool move_to_next = false;   // false = Cut to next
     bool implicit = false;       // no envelope point: the FX's current values at 0 s
     double values[vcam::kParamCount];  // defaults to the Recenter framing
@@ -62,35 +65,65 @@ bool WriteVideoFxMeta(MediaTrack* track, int fx, const VideoFxState& meta);
 // The shots in time order (at least one).
 std::vector<VideoShot> ReadVideoShots(MediaTrack* track, int fx);
 
-// The current shot at the playhead (spec 11-fb-10): the last one whose first frame is at
-// or before the playhead's frame; fps unknown (<= 0 or NaN): the last one starting within
-// kVideoShotTimeTolerance of the playhead or before. Else 0; -1 when `shots` is empty.
-// video_shot_timing.h VideoCurrentShotIndexOf has the rule.
-int VideoCurrentShotIndex(const std::vector<VideoShot>& shots, double playhead, double fps);
-
 // The six camera values the envelopes give at time t (what REAPER renders at t).
 void ReadVideoCameraAt(MediaTrack* track, int fx, double t, double out[vcam::kParamCount]);
 
 // Adds the shot, or replaces the one at shot.time: a point on each of the six
 // envelopes (created when missing). An envelope that had no point first gets the
 // parameter's current value pinned at 0 s, so the start keeps its framing. Stores the
-// name (an empty name, or the automatic "Shot N", stores none).
-bool WriteVideoShot(MediaTrack* track, int fx, const VideoShot& shot);
+// name (an empty name, or `auto_name`, the shot's automatic name, stores none).
+bool WriteVideoShot(MediaTrack* track, int fx, const VideoShot& shot, const std::string& auto_name = std::string());
 
-// Removes the shot's points and name. Removing the last point leaves the implicit shot.
+// Removes the shot's points, name and span flag. Removing the last point leaves the implicit shot.
 bool DeleteVideoShot(MediaTrack* track, int fx, double time);
 
 // Moves the shot at old_time to new_time: every existing point within the tolerance of
 // old_time on the six envelopes changes time (values and shapes kept, no point added),
-// and its name follows it. The caller keeps new_time between the neighbours. False when
-// no point sat at old_time (nothing written).
+// and its name and span flag follow it. The caller keeps new_time between the neighbours.
+// False when no point sat at old_time (nothing written).
 bool MoveVideoShot(MediaTrack* track, int fx, double old_time, double new_time);
 
 // Changes how the camera leaves the shot (point shapes).
 bool SetVideoShotTransition(MediaTrack* track, int fx, double time, bool move_to_next);
 
-// Empty name = back to "Shot N".
-bool RenameVideoShot(MediaTrack* track, int fx, double time, const std::string& name);
+// Empty name, or `auto_name` (the shot's automatic name) = back to the automatic name.
+bool RenameVideoShot(MediaTrack* track, int fx, double time, const std::string& name,
+                     const std::string& auto_name = std::string());
+
+// Spec 11-fb-15 -- sets or clears the span flag of the shot at `time` (FX state). Sends the
+// state only when it changes. False when the state is not readable.
+bool SetVideoShotSpan(MediaTrack* track, int fx, double time, bool on);
+
+// ---- Shots per clip (spec 11-fb-15) ---------------------------------------------------------
+// The FX's raw shots (ReadVideoShots, `raw`) laid over the clips of its track (the RAV items
+// in the latest timeline snapshot, video_timeline.h): video_clip_shots.h has the rules.
+struct VideoTrackClipShots {
+    std::vector<VideoShot> raw;
+    VideoClipShots         built;
+};
+VideoTrackClipShots ReadVideoClipShots(MediaTrack* track, int fx, double fps);
+
+// The automatic name of built shot `i` ("<anim name> N").
+std::string VideoClipShotAutoName(const VideoClipShots& built, size_t i);
+
+// Writes a Cut point at `time` holding the camera of its first frame (what the envelopes
+// render there) when no point is there yet: an implicit shot becomes a real one. `values`:
+// that camera read beforehand (when several points are written in one gesture, every camera
+// is read before the first write); nullptr = read it now. No undo block (the caller's gesture
+// has one). True when a point is there afterwards.
+bool EnsureVideoShotPoint(MediaTrack* track, int fx, double time, double fps,
+                          const double* values = nullptr);
+
+// Before a cut at `cut_time` (its envelope time) in clip `clip` of `built`: writes the clip's
+// implicit first shot when it has one and the cut is not on it (EnsureVideoShotPoint).
+bool MaterializeClipFirstShotForCut(MediaTrack* track, int fx, const VideoClipShots& built, int clip,
+                                    double cut_time, double fps);
+
+// After a cut at `cut_time` (written) in clip `clip`: when the cut lands in a shot of that
+// clip with the span flag (before the clip it spans into), the flag moves to the cut (the
+// shot that now runs into the next clip). `cs`: read before the cut. No undo block.
+void MoveSpanToCut(MediaTrack* track, int fx, const VideoTrackClipShots& cs, int clip, double cut_time,
+                   double fps);
 
 // ---- Envelope visibility (spec 11-fb-11) --------------------------------------------------
 // Over every existing envelope of the FX (never created here): *any = it has one,
@@ -114,7 +147,8 @@ bool SetVideoOutputOverride(MediaTrack* track, int fx, int width, int height);
 void ShowVideoShotsOfSelectedTrack();
 
 // "RAV: Video FX: add shot at edit cursor": a Cut shot holding the camera at the edit
-// cursor, name asked in a dialog, one undo point.
+// cursor, name asked in a dialog, one undo point. Spec 11-fb-15: like a cut in Video view, it
+// also writes the clip's implicit first shot (same undo point); refused between clips.
 void AddVideoShotAtEditCursor();
 
 // "RAV: Video FX: set output size / save angle of selected track": a dialog that sets

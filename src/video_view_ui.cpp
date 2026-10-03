@@ -478,9 +478,26 @@ std::string SizeLabel(int w, int h, const char* note)
     return buf;
 }
 
+// The render row (UX decision 6): REAPER's own windows render picture and sound. One line,
+// two equal buttons, the last line of Output (spec 11-fb-13), pinned with the bottom block.
+// Both first write the Output size into the project's video render format.
+void RenderRow(float full)
+{
+    constexpr float kGap = 6.0f;  // between the two buttons
+    const float half = std::floor((full - kGap) * 0.5f);
+    if (ui::SolidButton("Matrix##render", ImVec2(half, 0.0f))) QueueVideoOpenRenderMatrix();  // same style as Render (Antho)
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("REAPER's Region Render Matrix, at the Output size: tick regions, then render from "
+                          "the Render dialog (Source: Region render matrix, a video format)");
+    ImGui::SameLine(0.0f, kGap);
+    if (ui::SolidButton("Render##render", ImVec2(full - half - kGap, 0.0f))) QueueVideoOpenRenderDialog();
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("REAPER's Render dialog, at the Output size: pick a video format (e.g. MP4) and the bounds");
+}
+
 // The Output section (UX decision 6): size (project, or an override), frame rate (the
-// project's), background (the viewer's, or transparent).
-void OutputSection(const VideoViewModel& m)
+// project's), background (the viewer's, or transparent), then Matrix | Render (spec 11-fb-13).
+void OutputSection(const VideoViewModel& m, float full)
 {
     ImGui::Spacing();
     ImGui::Separator();
@@ -550,22 +567,10 @@ void OutputSection(const VideoViewModel& m)
         ImGui::SetTooltip("Transparent: where there is no model, the video shows the tracks below (if REAPER "
                           "composites the FX's transparency). Light, floor, grid, shadow and MSAA follow the "
                           "View menu.");
-}
 
-// The render row (UX decision 6): REAPER's own windows render picture and sound. One line,
-// two equal buttons, pinned at the top of the panel (outside its scrolling body).
-void RenderRow(float full)
-{
-    constexpr float kGap = 6.0f;  // between the two buttons
-    const float half = std::floor((full - kGap) * 0.5f);
-    if (ui::SolidButton("Matrix##render", ImVec2(half, 0.0f))) QueueVideoOpenRenderMatrix();  // same style as Render (Antho)
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("REAPER's Region Render Matrix: tick regions, then render from the Render dialog "
-                          "(Source: Region render matrix, a video format)");
-    ImGui::SameLine(0.0f, kGap);
-    if (ui::SolidButton("Render##render", ImVec2(full - half - kGap, 0.0f))) QueueVideoOpenRenderDialog();
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("REAPER's Render dialog: pick a video format (e.g. MP4) and the bounds");
+    // Matrix | Render, the last line (spec 11-fb-13): they render with the settings above.
+    ImGui::Spacing();
+    RenderRow(full);
 }
 
 }  // namespace
@@ -1301,11 +1306,8 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
     // Spec 11-fb-11: no header (icon, title, x): the panel button top right hides the panel.
     const float full = ImGui::GetContentRegionAvail().x;
 
-    // ---- Pinned at the top: render row, FX state, track, inspector --------------------------
-    RenderRow(full);
-    ImGui::Spacing();
-    ImGui::Separator();
-
+    // ---- Pinned at the top: FX state, track, inspector (spec 11-fb-13: the render row is
+    // the last line of Output, at the bottom) ------------------------------------------------
     // FX state on the track (UX decisions 2 and 7).
     switch (m.status) {
         case VideoFxStatus::Active:   ui::StateTag(ui::kOk, "Video FX active"); break;
@@ -1502,7 +1504,8 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
     }
 
     // ---- In the middle, the shot list (it alone scrolls); under it, "+ Cut at playhead";
-    // at the bottom, Saved angles and Output (Story 11-5, spec 11-fb-11) --------------------
+    // at the bottom, Saved angles and Output with its Matrix | Render row (Story 11-5,
+    // specs 11-fb-11 and 11-fb-13) ------------------------------------------------------------
     if (m.fx >= 0) {
         // The heights of the pinned blocks under the list, measured on the last frame (the
         // notice line and the angle chips change them). Everything but the list is pinned
@@ -1525,7 +1528,7 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
         }
         const float y1 = ImGui::GetCursorPosY();
         SavedAngles(m, full);
-        if (m.track) OutputSection(m);
+        if (m.track) OutputSection(m, full);  // ends with Matrix | Render (spec 11-fb-13)
         s_bottom_h = ImGui::GetCursorPosY() - y1;
     }
 

@@ -23,3 +23,8 @@ add_test(NAME video_preview_lag COMMAND video_preview_lag_test)
 add_executable(shortcuts_test shortcuts_test.cpp)
 target_include_directories(shortcuts_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME shortcuts COMMAND shortcuts_test)
+
+# Spec 11-fb-13 -- the Output size written into REAPER's render format (src/render_format_size.h).
+add_executable(render_format_size_test render_format_size_test.cpp)
+target_include_directories(render_format_size_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME render_format_size COMMAND render_format_size_test)

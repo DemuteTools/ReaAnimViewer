@@ -134,5 +134,11 @@
 #define REAPERAPI_WANT_GetSetEnvelopeInfo_String
 #define REAPERAPI_WANT_TrackList_AdjustWindows
 
+// Spec 11-fb-13 -- Render / Matrix first write the Output size into the project's video
+// render format (src/video_view.cpp). Present in every REAPER 7.
+#define REAPERAPI_WANT_GetSetProjectInfo_String
+#define REAPERAPI_WANT_MarkProjectDirty
+#define REAPERAPI_WANT_Undo_OnStateChangeEx
+
 #include "reaper_plugin.h"
 #include "reaper_plugin_functions.h"

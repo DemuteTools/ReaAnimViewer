@@ -12,11 +12,13 @@
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <string>
 #include <utility>
 
 #include "console_log.h"
 #include "reaper_actions.h"
 #include "reaper_api.h"
+#include "render_format_size.h"
 #include "shortcuts.h"  // spec 11-fb-11: LoadPrefBool / SavePrefBool
 #include "video_camera.h"
 #include "video_fx_host.h"
@@ -73,7 +75,7 @@ struct Cmd {
     double      fps = 0.0;  // Cut: the project frame rate when it was asked
     double      item_start = std::nan("");  // Cut: start of the item under the playhead, NaN = none (spec 11-fb-12)
     double      new_time = 0.0;  // MoveShot: where the shot at shot_time goes
-    int         width = 0;  // OutputSize
+    int         width = 0;  // OutputSize; OpenMatrix / OpenRenderDialog: the size to render at
     int         height = 0;
 };
 
@@ -375,6 +377,56 @@ void SetNotice(const char* text)
     g_notice_until = Now() + kNoticeSeconds;
 }
 
+// Spec 11-fb-13: the Output size goes into the project's video render format, so REAPER's
+// Render dialog shows and uses it. Only the known layouts are patched (render_format_size.h):
+// RENDER_FORMAT, and RENDER_FORMAT2 when it is video too (PlanRenderFormatSize decides).
+// One undo point when something is written, nothing when the size is already there; a
+// notice when no format takes a size, when a write fails, and when the size was set.
+void ApplyOutputSizeToRender(int w, int h)
+{
+    if (w <= 0 || h <= 0) return;
+    static const char* const kKeys[2] = {"RENDER_FORMAT", "RENDER_FORMAT2"};
+    std::string raw[2];
+    for (int i = 0; i < 2; ++i) {
+        // REAPER asks for a big buffer (valuestrNeedBig): the blob with its option strings is
+        // well under 1 KB.
+        std::string buf(64 * 1024, '\0');
+        if (!GetSetProjectInfo_String(nullptr, kKeys[i], &buf[0], false)) continue;
+        buf.resize(std::char_traits<char>::length(buf.c_str()));
+        raw[i] = std::move(buf);
+    }
+    RenderSizePlan plan = PlanRenderFormatSize(raw[0], raw[1], w, h);
+    if (!plan.known) {
+        LogInfo("video view: size %dx%d not applied to the render settings (format: %s)", w, h,
+                plan.tags.empty() ? "none" : plan.tags.c_str());
+        SetNotice("Size not applied: pick a video format (MP4...) in the Render dialog, then click Render again");
+        return;
+    }
+    if (!plan.write[0] && !plan.write[1]) return;  // already that size
+    bool any_ok = false;
+    bool any_failed = false;
+    for (int i = 0; i < 2; ++i) {
+        if (!plan.write[i]) continue;
+        if (GetSetProjectInfo_String(nullptr, kKeys[i], &plan.text[i][0], true)) {
+            any_ok = true;
+        } else {
+            any_failed = true;
+            LogWarn("video view: %s could not be written", kKeys[i]);
+        }
+    }
+    if (any_ok) {
+        MarkProjectDirty(nullptr);
+        Undo_OnStateChangeEx("RAV: Apply video size to render settings", UNDO_STATE_MISCCFG, -1);
+    }
+    if (any_failed) {
+        SetNotice("Size could not be written to the render settings");
+    } else {
+        char text[96];
+        std::snprintf(text, sizeof(text), "Render size set to %d x %d", plan.w, plan.h);
+        SetNotice(text);
+    }
+}
+
 // A Cut shot at the playhead holding the camera shown there (video_shot_timing.h says
 // where its points go), one undo point. Refused when a shot already starts on that frame.
 // c.shot_time is the raw playhead here (not a shot's envelope time as for the other
@@ -592,6 +644,7 @@ void RunOne(const Cmd& c)
             RefreshVideoFxPictures();  // ...then REAPER re-asks for its cached frames
             return;
         case CmdKind::OpenMatrix:
+            ApplyOutputSizeToRender(c.width, c.height);  // spec 11-fb-13
             if (!OpenRegionRenderMatrix())
                 ShowMessageBox("RAV could not find REAPER's Region Render Matrix action. Open it from REAPER's "
                                "View menu (Region Render Matrix), or with the Render Matrix button of the "
@@ -599,6 +652,7 @@ void RunOne(const Cmd& c)
                                "RAV: Render", 0);
             return;
         case CmdKind::OpenRenderDialog:
+            ApplyOutputSizeToRender(c.width, c.height);  // spec 11-fb-13
             if (!OpenRenderDialog())
                 ShowMessageBox("RAV could not find REAPER's Render action. Open it from File > Render...",
                                "RAV: Render", 0);
@@ -1272,6 +1326,8 @@ void QueueVideoOpenRenderMatrix()
 {
     Cmd c;
     c.kind = CmdKind::OpenMatrix;
+    c.width = g_model.out_w;  // spec 11-fb-13: the effective Output size, as shown
+    c.height = g_model.out_h;
     g_queue.push_back(std::move(c));
 }
 
@@ -1279,6 +1335,8 @@ void QueueVideoOpenRenderDialog()
 {
     Cmd c;
     c.kind = CmdKind::OpenRenderDialog;
+    c.width = g_model.out_w;  // spec 11-fb-13
+    c.height = g_model.out_h;
     g_queue.push_back(std::move(c));
 }
 

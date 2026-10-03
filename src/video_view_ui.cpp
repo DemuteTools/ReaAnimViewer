@@ -302,6 +302,12 @@ void ClipHeaderRow(int clip, float full)
 void ShotRows(const VideoViewModel& m, float full)
 {
     const int current = VideoViewShotIndex();
+    // Antho 2026-10-03: when the current shot changes (an item clicked in REAPER's timeline,
+    // the playhead moved, playback), the list scrolls to show its row; a list scrolled by hand
+    // stays put until the current shot changes again.
+    static int s_scrolled_to = -1;
+    const bool scroll_to_current = current >= 0 && current != s_scrolled_to;
+    s_scrolled_to = current;
     const float row_h = 28.0f;
     ImGui::PushStyleColor(ImGuiCol_Header, ui::Col(ui::kAccentSoft));
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ui::Col(ui::kRaised));
@@ -324,6 +330,13 @@ void ShotRows(const VideoViewModel& m, float full)
         if (ImGui::IsItemHovered() && !ImGui::IsAnyItemActive()) ImGui::SetTooltip("Move the playhead to this shot");
         const ImVec2 a = ImGui::GetItemRectMin();
         const ImVec2 b = ImGui::GetItemRectMax();
+        if (sel && scroll_to_current) {
+            // Only when the row is not fully in view: centred in the list (right after the row,
+            // SetScrollHereY aims at it).
+            const float top = ImGui::GetWindowPos().y;
+            const float bottom = top + ImGui::GetWindowHeight();
+            if (a.y < top || b.y > bottom) ImGui::SetScrollHereY(0.5f);
+        }
         ImDrawList* dl = ImGui::GetWindowDrawList();
         if (sel) dl->AddRect(a, b, ui::kAccentLine, ui::kRadiusMd);
         const float cy = (a.y + b.y) * 0.5f;

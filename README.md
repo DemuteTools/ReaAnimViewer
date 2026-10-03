@@ -51,7 +51,7 @@ ReaAnimViewer is a native REAPER extension (a `.dll`, plus a small video FX that
   - [Shots](#shots)
   - [Output](#output)
   - [Rendering](#rendering)
-  - [Preview lag while playing](#preview-lag-while-playing)
+  - [REAPER catch-up while playing](#reaper-catch-up-while-playing)
   - [If the video FX shows nothing](#if-the-video-fx-shows-nothing)
 - [Saving and Sharing Projects](#saving-and-sharing-projects)
 - [Exporting Animations from Your Engine](#exporting-animations-from-your-engine)
@@ -238,7 +238,7 @@ The installed version is shown at the bottom of the menu.
 | **Normal maps** | Turn surface-detail maps on or off |
 | **MSAA** | Edge smoothing: Off, 2x, 4x, 8x |
 | **FPS** | Show the frame rate in the viewer |
-| **REAPER preview lag** | Show how far REAPER's Video window runs ahead while playing (Video view, see [Preview lag while playing](#preview-lag-while-playing)) |
+| **REAPER catch-up** | Show how long REAPER's Video window takes to catch up with an output size or display change while playing (Video view, see [REAPER catch-up while playing](#reaper-catch-up-while-playing)) |
 
 If the viewer feels slow on a laptop, lower **MSAA** and **Shadow** first.
 
@@ -318,11 +318,11 @@ Shots are ordinary automation: envelope points on the FX's six parameters (Yaw, 
 
 RAV never changes your render settings.
 
-### Preview lag while playing
+### REAPER catch-up while playing
 
-While playing, REAPER prepares video frames a few seconds ahead. When you edit a shot during playback, REAPER's Video window can take a few seconds to show the change. Video view in RAV is always up to date, and renders are always exact.
+While playing, REAPER prepares video frames a few seconds ahead (its read-ahead). Camera moves and playback stay in sync in REAPER's Video window. An output size or display change (light, floor, background...) waits behind that read-ahead: it can take up to that long to reach REAPER's Video window while playing. Video view in RAV is always up to date, and rendering has no offset: every frame is drawn for its own time.
 
-While playing with REAPER's Video window open, the line above the Video view frame shows that delay, for example `REAPER preview +2.4 s` (hover it for details). Rendering has no offset: every frame is drawn for its own time. Turn it off with **REAPER preview lag** in the viewer menu's Performance section.
+While REAPER's Video window is open, the line above the Video view frame shows REAPER's current read-ahead, for example `REAPER catch-up 1.5 s` while playing, or `REAPER catch-up: live` when stopped (hover it for details). It is how long such a change can take to show there, not a measurement of a particular change. On a narrow view it shortens to `catch-up 1.5 s`, shortening the shot name if needed. Turn it off with **REAPER catch-up** in the viewer menu's Performance section.
 
 ### If the video FX shows nothing
 

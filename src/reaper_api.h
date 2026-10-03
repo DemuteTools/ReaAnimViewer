@@ -116,7 +116,7 @@
 #define REAPERAPI_WANT_Main_OnCommand
 #define REAPERAPI_WANT_GetToggleCommandState
 
-// Spec 11-fb-4 -- the REAPER preview lag readout turns project time into a delay: the
+// Spec 11-fb-4 -- the REAPER catch-up readout turns project time into a delay: the
 // loop range when the project repeats, and the playrate. Core functions, read-only.
 #define REAPERAPI_WANT_GetSetRepeat
 #define REAPERAPI_WANT_GetSet_LoopTimeRange2

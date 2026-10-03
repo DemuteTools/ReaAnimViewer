@@ -15,6 +15,7 @@
 
 #include <imgui.h>
 
+#include "reaper_actions.h"  // spec 11-fb-5: REAPER's Video window open
 #include "shortcuts.h"   // spec 11-fb-3: the current keys on the key caps
 #include "ui_theme.h"
 #include "video_preview_lag.h"
@@ -602,35 +603,78 @@ void DrawVideoFrameDecor(const VideoFrameRect& fr, void (*copy_log)(), bool show
         right = s.name;
         if (s.move_to_next && idx + 1 < static_cast<int>(m.shots.size())) right += "  -> move";
     }
-    const float right_w = right.empty() ? 0.0f : ImGui::CalcTextSize(right.c_str()).x;
+    float right_w = right.empty() ? 0.0f : ImGui::CalcTextSize(right.c_str()).x;
 
-    // After the size, how far REAPER's Video window runs ahead while playing (REAPER asks
-    // for frames only while that window is open; the FX must be Active). Skipped when it
-    // does not fit before the shot. Hover = why, and that renders have no offset.
-    double lag = 0.0;
-    bool live = false;
-    PreviewLagTransport t;
-    t.play_pos = VideoViewPlayhead();
-    t.playing = VideoViewPlaying();
-    VideoViewLoop(&t.looping, &t.loop_start, &t.loop_end);
-    t.playrate = VideoViewPlayRate();
-    if (show_preview_lag && m.status == VideoFxStatus::Active && VideoPreviewLag(m.track, t, &lag, &live)) {
-        char readout[64];
-        if (live) std::snprintf(readout, sizeof(readout), " " RAV_DOT " REAPER preview: live");
-        else std::snprintf(readout, sizeof(readout), " " RAV_DOT " REAPER preview +%.1f s", lag);
-        const ImVec2 pos(left_pos.x + ImGui::CalcTextSize(left).x, left_pos.y);
-        const ImVec2 size = ImGui::CalcTextSize(readout);
-        const float limit = right.empty() ? b.x : b.x - right_w - ImGui::CalcTextSize("  ").x;
-        if (pos.x + size.x <= limit) {
-            bg->AddText(pos, ui::kMuted, readout);
+    // After the size, how long REAPER's Video window takes to catch up with an output size or
+    // display change while playing (spec 11-fb-5). Shown while that window is open, Video
+    // view is on and the FX is Active. Never hidden for lack of room: the full form if it fits
+    // before the shot caption, else the compact one; when even that does not fit, the shot
+    // caption is shortened ("...") or, with no room left at all, dropped. Clipped to the frame
+    // width as a last resort. Hover = what it means, and that renders have no offset.
+    if (show_preview_lag && m.status == VideoFxStatus::Active) {
+        double lag = 0.0;
+        bool live = false;
+        PreviewLagTransport t;
+        t.play_pos = VideoViewPlayhead();
+        t.playing = VideoViewPlaying();
+        VideoViewLoop(&t.looping, &t.loop_start, &t.loop_end);
+        t.playrate = VideoViewPlayRate();
+        bool window_known = false;
+        const bool window_open = ReaperVideoWindowOpen(&window_known);
+        if (VideoPreviewLag(m.track, t, window_known, window_open, &lag, &live)) {
+            char value[32];
+            if (live) std::snprintf(value, sizeof(value), ": live");
+            else std::snprintf(value, sizeof(value), " %.1f s", lag);
+            char full[64];
+            char compact[64];
+            std::snprintf(full, sizeof(full), " " RAV_DOT " REAPER catch-up%s", value);
+            std::snprintf(compact, sizeof(compact), " " RAV_DOT " catch-up%s", value);
+            const ImVec2 pos(left_pos.x + ImGui::CalcTextSize(left).x, left_pos.y);
+            const float gap = ImGui::CalcTextSize("  ").x;
+            const float limit = right.empty() ? b.x : b.x - right_w - gap;
+            const char* text = full;
+            ImVec2 size = ImGui::CalcTextSize(full);
+            if (pos.x + size.x > limit) {
+                text = compact;
+                size = ImGui::CalcTextSize(compact);
+                if (!right.empty() && pos.x + size.x > limit) {
+                    // Shorten the shot caption so the compact readout fits; no room at all:
+                    // drop it.
+                    const float room = b.x - (pos.x + size.x) - gap;
+                    const char* dots = "...";
+                    const float dots_w = ImGui::CalcTextSize(dots).x;
+                    std::string cut;
+                    if (room > dots_w) {
+                        size_t n = right.size();
+                        while (n > 0) {
+                            --n;
+                            while (n > 0 && (static_cast<unsigned char>(right[n]) & 0xC0) == 0x80) --n;  // UTF-8
+                            const std::string head = right.substr(0, n);
+                            if (ImGui::CalcTextSize(head.c_str()).x + dots_w <= room) {
+                                cut = head + dots;
+                                break;
+                            }
+                        }
+                        if (cut.empty()) cut = dots;
+                    }
+                    right = cut;
+                    right_w = right.empty() ? 0.0f : ImGui::CalcTextSize(right.c_str()).x;
+                }
+            }
+            // Last resort (frame narrower than size + readout): clipped to the frame width.
+            const ImVec4 clip(a.x, pos.y, b.x, pos.y + size.y);
+            bg->AddText(nullptr, 0.0f, pos, ui::kMuted, text, nullptr, 0.0f, &clip);
             if (ImGui::IsMouseHoveringRect(pos, ImVec2(pos.x + size.x, pos.y + size.y), false) &&
                 !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow)) {
                 ImGui::BeginTooltip();
                 ImGui::PushTextWrapPos(ImGui::GetFontSize() * 24.0f);
                 ImGui::TextUnformatted(
-                    "While playing, REAPER prepares its Video window a few seconds ahead. A camera, shot or "
-                    "display change shows there after about this delay. Video view is exact. Rendering "
-                    "(Render dialog, Region Render Matrix) has no offset: every frame is drawn for its own time.");
+                    "After an output size or display change (light, floor, background...), "
+                    "REAPER's Video window catches up after about this delay while playing. Camera "
+                    "moves and playback stay in sync. Rendering has no offset: every frame is drawn for "
+                    "its own time. Stopped, 'live': REAPER's window follows at once.");
+                if (!window_known)
+                    ImGui::TextUnformatted("(Video window state unknown: shown while REAPER asks for frames)");
                 ImGui::PopTextWrapPos();
                 ImGui::EndTooltip();
             }

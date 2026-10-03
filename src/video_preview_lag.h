@@ -10,6 +10,11 @@
 // REAPER does not say which frame its window displays, but the frames it asks for are
 // the ones a change has to wait behind.
 //
+// Visibility (spec 11-fb-5) comes from the caller: whether REAPER's Video window is open
+// (its show/hide toggle action). REAPER stops asking for frames when nothing changes, so
+// the request flow cannot say it. Only when that action cannot be found does a request in
+// the last kPreviewLagFallbackWindow seconds stand in for it.
+//
 // No REAPER call and no Windows here: host-tested (tests/video_preview_lag_test.cpp).
 
 #pragma once
@@ -21,13 +26,20 @@ class MediaTrack;
 namespace rav {
 
 // ---- Pure rule (no clock, no REAPER) ---------------------------------------------------------
-constexpr double kPreviewLagWindow = 1.0;  // seconds: requests and lag samples older than this are dropped
+constexpr double kPreviewLagWindow = 1.0;  // seconds: lag samples (and requests feeding them) older than this are dropped
+constexpr double kPreviewLagFallbackWindow = 10.0;  // seconds: window state unknown -> open while a request is this recent
 
 enum class PreviewLagState {
-    Hidden,  // no request for the track in the last second (REAPER's Video window is closed)
-    Live,    // stopped, REAPER still asks for frames: its window shows the playhead
-    Lag,     // playing: lag = the largest lead of the last second, rounded to 0.1 s
+    Hidden,  // REAPER's Video window is closed, or playing with nothing measured yet
+    Live,    // stopped: its window shows the playhead
+    Lag,     // playing: REAPER's catch-up delay = the largest lead of the last second, rounded
+             // to 0.1 s; with no request in the last second, the last value measured is held
 };
+
+// Whether the readout's window counts as open. known: the Video window's toggle state was
+// read (open = that state). Not known: open while a request was noted in the last
+// kPreviewLagFallbackWindow seconds (now / request_at on one monotonic clock).
+bool PreviewWindowOpen(bool known, bool open, double now, bool has_request, double request_at);
 
 constexpr double kPreviewLagJump = 0.25;  // seconds: a play position this far off its course = a seek
 
@@ -45,22 +57,26 @@ struct PreviewLagTransport {
 // The main thread's view of one FX track's requests: the lag samples of the last second.
 class PreviewLagMeter {
 public:
-    // now / request_at: seconds on one monotonic clock. has_request: a request was noted
-    // for the track (request_at = when, requested_time = its project time).
+    // now / request_at: seconds on one monotonic clock. window_open: REAPER's Video window
+    // is open (PreviewWindowOpen); closed = Hidden. has_request: a request was noted for the
+    // track (request_at = when, requested_time = its project time). Playing with no request
+    // in the last kPreviewLagWindow: the last lag measured is held (REAPER pauses its
+    // requests). The held value is dropped on stop, seek, window close and Reset(); until a
+    // new value is measured, playing reads as Hidden (never a made-up 0.0).
     // Looping: a request behind the play position but inside the loop is ahead by
     // (loop_end - play_pos) + (requested - loop_start). The lead is divided by the playrate.
     // A seek while playing (the play position leaves its course by more than
     // kPreviewLagJump, a loop wrap excepted) clears the samples and ignores the requests
     // noted before it until a fresh one arrives.
-    PreviewLagState Update(double now, bool has_request, double request_at, double requested_time,
-                           const PreviewLagTransport& t, double* out_lag);
-    PreviewLagState Update(double now, bool has_request, double request_at, double requested_time,
-                           double play_pos, bool playing, double* out_lag)
+    PreviewLagState Update(double now, bool window_open, bool has_request, double request_at,
+                           double requested_time, const PreviewLagTransport& t, double* out_lag);
+    PreviewLagState Update(double now, bool window_open, bool has_request, double request_at,
+                           double requested_time, double play_pos, bool playing, double* out_lag)
     {
         PreviewLagTransport t;
         t.play_pos = play_pos;
         t.playing = playing;
-        return Update(now, has_request, request_at, requested_time, t, out_lag);
+        return Update(now, window_open, has_request, request_at, requested_time, t, out_lag);
     }
     void Reset();
 
@@ -75,6 +91,8 @@ private:
     double last_pos_ = 0.0;
     double stale_before_ = 0.0;  // requests noted at or before this are pre-seek (valid if has_stale_)
     bool   has_stale_ = false;
+    double held_lag_ = 0.0;    // the last lag measured (held while REAPER pauses its requests)
+    bool   has_held_ = false;  // held_lag_ was measured since the last stop / seek / close / Reset
 };
 
 // ---- Probe -------------------------------------------------------------------------------------
@@ -83,9 +101,11 @@ private:
 void NoteVideoFrameRequest(const MediaTrack* track, double project_time);
 
 // Main thread, once per frame: the readout for `track` (the Video view's FX track), with
-// the transport read on the main thread.
+// the transport and REAPER's Video window state read on the main thread (window_known =
+// the state was read; else the request fallback applies, see PreviewWindowOpen).
 // false = hidden. true: *out_live = stopped ("live"), else *out_lag = the lag in seconds
 // (>= 0, rounded to 0.1 s).
-bool VideoPreviewLag(const MediaTrack* track, const PreviewLagTransport& t, double* out_lag, bool* out_live);
+bool VideoPreviewLag(const MediaTrack* track, const PreviewLagTransport& t, bool window_known, bool window_open,
+                     double* out_lag, bool* out_live);
 
 }  // namespace rav

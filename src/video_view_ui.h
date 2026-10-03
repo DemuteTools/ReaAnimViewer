@@ -33,7 +33,8 @@ void DrawVideoPanelButton(float right_x);
 // Around and over the frame: its edge, the captions above it, and the state message
 // inside it when Video view cannot show the camera (UX decision 7). copy_log copies the
 // error log (the "out of date" state offers it). show_preview_lag: the caption line also
-// shows how far REAPER's Video window runs ahead while playing (video_preview_lag.h).
+// shows how long REAPER's Video window takes to catch up with an output size or display
+// change while playing, shown while that window is open (video_preview_lag.h, spec 11-fb-5).
 void DrawVideoFrameDecor(const VideoFrameRect& fr, void (*copy_log)(), bool show_preview_lag);
 
 // Story 11-5 -- the shot strip shows in Video view while the FX on its track is active.

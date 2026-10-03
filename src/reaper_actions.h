@@ -28,6 +28,14 @@ bool OpenRegionRenderMatrix();
 // Opens REAPER's Render to File dialog (modal: returns when the user closes it).
 bool OpenRenderDialog();
 
+// Spec 11-fb-5 -- whether REAPER's Video window is open: the toggle state of
+//   50125  Video: Show/hide video window
+// resolved like the actions above (by that exact English name, case-insensitive, when REAPER
+// does not know the id). *known = false when no such toggle action was found, or before
+// InitReaperActionLookup (retried on a later call): the caller falls back on something else
+// and the return value is false. Cheap: called every frame.
+bool ReaperVideoWindowOpen(bool* known);
+
 }  // namespace rav
 
 #endif  // _WIN32

@@ -11,15 +11,23 @@
 
 namespace rav {
 
+bool PreviewWindowOpen(bool known, bool open, double now, bool has_request, double request_at)
+{
+    if (known) return open;
+    return has_request && now - request_at <= kPreviewLagFallbackWindow && request_at <= now;
+}
+
 void PreviewLagMeter::Reset()
 {
     samples_.clear();
     has_last_ = false;
     has_stale_ = false;
+    held_lag_ = 0.0;
+    has_held_ = false;
 }
 
-PreviewLagState PreviewLagMeter::Update(double now, bool has_request, double request_at, double requested_time,
-                                        const PreviewLagTransport& t, double* out_lag)
+PreviewLagState PreviewLagMeter::Update(double now, bool window_open, bool has_request, double request_at,
+                                        double requested_time, const PreviewLagTransport& t, double* out_lag)
 {
     if (out_lag) *out_lag = 0.0;
     const double rate = (std::isfinite(t.playrate) && t.playrate > 0.0) ? t.playrate : 1.0;
@@ -36,6 +44,8 @@ PreviewLagState PreviewLagMeter::Update(double now, bool has_request, double req
             }
             if (!on_course) {
                 samples_.clear();
+                held_lag_ = 0.0;
+                has_held_ = false;
                 stale_before_ = now;
                 has_stale_ = true;
             }
@@ -46,10 +56,14 @@ PreviewLagState PreviewLagMeter::Update(double now, bool has_request, double req
     } else {
         has_last_ = false;
         has_stale_ = false;
+        held_lag_ = 0.0;  // play resumes: nothing measured yet
+        has_held_ = false;
     }
 
-    if (!has_request || now - request_at > kPreviewLagWindow) {
+    if (!window_open) {
         samples_.clear();
+        held_lag_ = 0.0;
+        has_held_ = false;
         return PreviewLagState::Hidden;
     }
     if (!t.playing) {
@@ -59,6 +73,13 @@ PreviewLagState PreviewLagMeter::Update(double now, bool has_request, double req
     samples_.erase(std::remove_if(samples_.begin(), samples_.end(),
                                   [now](const Sample& s) { return now - s.at > kPreviewLagWindow || s.at > now; }),
                    samples_.end());
+    if (!has_request || now - request_at > kPreviewLagWindow) {
+        // REAPER paused its requests (nothing changed): the last value shown holds.
+        // Nothing measured yet (window opened, play started, seek): nothing to show.
+        if (!has_held_) return PreviewLagState::Hidden;
+        if (out_lag) *out_lag = held_lag_;
+        return PreviewLagState::Lag;
+    }
     if (has_stale_ && request_at <= stale_before_) {
         // Asked for before the seek: its time says nothing about the new position.
     } else {
@@ -72,10 +93,18 @@ PreviewLagState PreviewLagMeter::Update(double now, bool has_request, double req
         const double lead = std::max(0.0, ahead) / rate;
         samples_.push_back({now, std::isfinite(lead) ? lead : 0.0});
     }
+    if (samples_.empty()) {
+        // Only pre-seek requests so far: no value measured since the seek.
+        if (!has_held_) return PreviewLagState::Hidden;
+        if (out_lag) *out_lag = held_lag_;
+        return PreviewLagState::Lag;
+    }
     double peak = 0.0;
     for (const Sample& s : samples_) peak = std::max(peak, s.lag);
     // The epsilon keeps a lead like 12.35 - 10.0 (2.3499999...) rounding to 2.4.
-    if (out_lag) *out_lag = std::round(peak * 10.0 + 1e-6) / 10.0;
+    held_lag_ = std::round(peak * 10.0 + 1e-6) / 10.0;
+    has_held_ = true;
+    if (out_lag) *out_lag = held_lag_;
     return PreviewLagState::Lag;
 }
 
@@ -109,11 +138,12 @@ void NoteVideoFrameRequest(const MediaTrack* track, double project_time)
     if (!std::isfinite(project_time)) return;
     const Clock::time_point now = Clock::now();
     std::lock_guard<std::mutex> lock(g_mutex);
-    // A track not asked for within the window (deleted, window closed) is dropped: a new
-    // track at a reused address must not inherit its request.
+    // A track not asked for within the fallback window (deleted, window closed) is dropped:
+    // a new track at a reused address must not inherit its request.
     g_requests.erase(std::remove_if(g_requests.begin(), g_requests.end(),
                                     [now](const TrackRequest& r) {
-                                        return std::chrono::duration<double>(now - r.at).count() > kPreviewLagWindow;
+                                        return std::chrono::duration<double>(now - r.at).count() >
+                                               kPreviewLagFallbackWindow;
                                     }),
                      g_requests.end());
     for (TrackRequest& r : g_requests) {
@@ -132,7 +162,8 @@ void NoteVideoFrameRequest(const MediaTrack* track, double project_time)
     g_requests.push_back({track, project_time, now});
 }
 
-bool VideoPreviewLag(const MediaTrack* track, const PreviewLagTransport& t, double* out_lag, bool* out_live)
+bool VideoPreviewLag(const MediaTrack* track, const PreviewLagTransport& t, bool window_known, bool window_open,
+                     double* out_lag, bool* out_live)
 {
     if (out_lag) *out_lag = 0.0;
     if (out_live) *out_live = false;
@@ -154,8 +185,11 @@ bool VideoPreviewLag(const MediaTrack* track, const PreviewLagTransport& t, doub
             }
         }
     }
+    if (!track) return false;
+    const double now = Seconds(Clock::now());
+    const bool open = PreviewWindowOpen(window_known, window_open, now, has, at);
     double lag = 0.0;
-    const PreviewLagState st = g_meter.Update(Seconds(Clock::now()), has, at, requested, t, &lag);
+    const PreviewLagState st = g_meter.Update(now, open, has, at, requested, t, &lag);
     if (st == PreviewLagState::Hidden) return false;
     if (st == PreviewLagState::Live) {
         if (out_live) *out_live = true;

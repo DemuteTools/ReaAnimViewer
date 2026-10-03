@@ -18,7 +18,7 @@
 namespace rav {
 
 constexpr float kVideoTopBand = 44.0f;  // the band above the frame: toggle, captions, FPS, panel button
-constexpr float kVideoStripHeight = 42.0f;  // Story 11-5: the shot strip under the viewport
+constexpr float kVideoStripHeight = 56.0f;  // Story 11-5: the shot strip under the viewport (lane + spec 11-fb-6 ruler band)
 constexpr float kVideoStripGap = 8.0f;      // its margin to the window's edges and the frame
 
 // Width the panel takes from the viewport (column + gaps), 0 when it is hidden.

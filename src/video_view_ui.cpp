@@ -695,8 +695,15 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const double playhead = VideoViewPlayhead();
         const float lane_h = 24.0f;
+        // Spec 11-fb-6: a seconds / frames ruler over the lane, in a smaller muted font.
+        ImFont* const ruler_font = ImGui::GetFont();
+        // The band is clamped so lane + ruler always fit the strip (a large font shrinks it).
+        const float ruler_h = std::max(0.0f, std::min(std::floor(ImGui::GetFontSize() * 0.85f) + 3.0f,
+                                                      ImGui::GetContentRegionAvail().y - lane_h));
+        const float ruler_fs = ruler_h - 3.0f;
         const float avail = ImGui::GetContentRegionAvail().x;
-        const float top = ImGui::GetCursorScreenPos().y + std::max(0.0f, (ImGui::GetContentRegionAvail().y - lane_h) * 0.5f);
+        const float top = ImGui::GetCursorScreenPos().y +
+                          std::max(0.0f, (ImGui::GetContentRegionAvail().y - lane_h - ruler_h) * 0.5f) + ruler_h;
 
         // Timecode of the playhead.
         char tc[32];
@@ -706,13 +713,17 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
         dl->AddText(tc_pos, ui::kMuted, tc);
         const float tc_w = std::max(64.0f, ImGui::CalcTextSize(tc).x) + 8.0f;
 
+        // Snap toggle (spec 11-fb-6), left of Cut: off by default, for the session only.
+        static bool s_snap = false;
+        const float snap_w = ImGui::CalcTextSize("Snap").x + 18.0f;
+
         // Cut button on the right (label + key cap).
         const char* cut_key = ShortcutKeyLabel(kShortcutCut);
         // A long custom key must not widen the button past the strip: it gets the room left.
         const float cut_w = std::max(20.0f, std::min(ImGui::CalcTextSize("Cut").x + ImGui::CalcTextSize(cut_key).x +
                                                          8.0f + 26.0f,
-                                                     avail - tc_w - 20.0f - 8.0f));
-        const float lane_w = std::max(20.0f, avail - tc_w - cut_w - 8.0f);
+                                                     avail - tc_w - 20.0f - 8.0f - snap_w - 6.0f));
+        const float lane_w = std::max(20.0f, avail - tc_w - cut_w - 8.0f - snap_w - 6.0f);
         const ImVec2 l0(tc_pos.x + tc_w, top);
         const ImVec2 l1(l0.x + lane_w, top + lane_h);
 
@@ -733,7 +744,9 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
         static double s_junction_press_t = 0.0;   // mouse time at the press (the drag is a delta)
         static bool   s_junction_moved = false;
         static bool   s_junction_dropped = false; // grabbed, then lost to a model change: inert until release
+        static bool   s_dblclick_hold = false;    // a double-click seeked to a shot: no scrub until release
         dl->AddRectFilled(l0, l1, ui::kBg, ui::kRadiusSm);
+        double ruler_step = 0.0;  // 0: no item, no ruler (Snap is then disabled)
         const VideoStripRange r = VideoViewStripRange();
         if (!r.valid || !(r.end > r.start)) {
             const char* line = "No animation item on this track";
@@ -747,6 +760,13 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
             const float mx = ImGui::GetIO().MousePos.x;
             const double f = std::min(1.0, std::max(0.0, static_cast<double>((mx - l0.x) / lane_w)));
             const double t_mouse = r.start + f * span;
+            // The ruler's step (labelled ticks >= ~60 px apart). Ticks count whole frames from the
+            // item's first frame (VideoRulerTickTime); fps unknown: seconds from r.start.
+            ruler_step = VideoRulerStep(span, static_cast<double>(lane_w), m.fps, 60.0);
+            // Just inside the item's end: at r.end a back-to-back next item would become the
+            // strip's item, and a drag past the edge would walk item after item.
+            const double t_max = r.end - std::min(1.0e-3, span * 0.5);
+            const bool snap = s_snap && ruler_step > 0.0;
 
             // The junction within the grab distance of x: the start of shot i >= 1, drawn inside the lane.
             auto junction_at = [&](float px) {
@@ -793,7 +813,9 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                     // (the grab may be 4 px off). Cuts sit half a frame early, so add half a frame
                     // to read the frame the junction is on, not the one before it.
                     const double half = m.fps > 0.0 ? 0.5 / m.fps : 0.0;
-                    const double t = s_junction_orig + (t_mouse - s_junction_press_t) + half;
+                    double t = s_junction_orig + (t_mouse - s_junction_press_t) + half;
+                    // Snap: the nearest tick's frame becomes the shot's first frame.
+                    if (snap) t = VideoRulerSnap(t, r.start, ruler_step, m.fps);
                     const double snapped = VideoJunctionDragTime(t, m.shots[j - 1].time, next_limit, m.fps);
                     s_junction_time = std::isfinite(snapped) ? snapped : s_junction_orig;  // no room: stays
                 }
@@ -850,13 +872,46 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
             }
             dl->PopClipRect();
 
-            if (lane_active && s_junction < 0 && !s_junction_dropped) {  // a scrub: passes over junctions
+            // The ruler (spec 11-fb-6): above the lane, in the item's time. Whole seconds read
+            // "0:02", frame ticks between them "+12f". Never over the shot names.
+            if (ruler_step > 0.0) {
+                const ImVec2 r0(l0.x, l0.y - ruler_h);
+                dl->PushClipRect(ImVec2(r0.x - 1.0f, r0.y), ImVec2(l1.x + 1.0f, l0.y), true);
+                for (long long k = 0; k <= 100000; ++k) {
+                    const double tick_t = VideoRulerTickTime(k, r.start, ruler_step, m.fps);
+                    if (tick_t > r.end + 1e-9) break;
+                    const float tick_x = x_of(tick_t);
+                    char label[32];
+                    VideoRulerTickLabel(k, ruler_step, m.fps, label, sizeof(label));
+                    const bool major = VideoRulerTickIsMajor(k, ruler_step, m.fps);
+                    dl->AddLine(ImVec2(tick_x + 0.5f, l0.y - (major ? 5.0f : 3.0f)), ImVec2(tick_x + 0.5f, l0.y),
+                                major ? ui::kMuted : ui::kFaint, 1.0f);
+                    if (ruler_fs >= 6.0f) {
+                        dl->AddText(ruler_font, ruler_fs, ImVec2(tick_x + 3.0f, r0.y), major ? ui::kMuted : ui::kFaint,
+                                    label);
+                    }
+                }
+                dl->PopClipRect();
+            }
+
+            if (lane_active && s_junction < 0 && !s_junction_dropped && !s_dblclick_hold) {  // a scrub: passes over junctions
                 static float s_last_mx = -1.0e9f;
-                // Just inside the item's end: at r.end a back-to-back next item would become the
-                // strip's item, and a drag past the edge would walk item after item.
-                const double t_max = r.end - std::min(1.0e-3, span * 0.5);
-                if (lane_pressed || mx != s_last_mx) QueueVideoSeek(std::min(t_mouse, t_max));
+                // Snap: the nearest tick's frame (the frame a snapped junction lands on).
+                const double t_seek = snap ? VideoRulerSnap(t_mouse, r.start, ruler_step, m.fps) : t_mouse;
+                if (lane_pressed || mx != s_last_mx) QueueVideoSeek(std::min(t_seek, t_max));
                 s_last_mx = mx;
+            }
+            // A double-click on a shot (not on a junction) puts the playhead on its first frame,
+            // like a click in the panel's shot list. After the scrub: the last seek queued wins.
+            // A shot that started before the item: its first frame inside the item.
+            if (lane_hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && junction_at(mx) < 0) {
+                const int shot = VideoShotIndexAt(m.shots, t_mouse);
+                if (shot >= 0) {
+                    const double first = std::max(VideoShotFirstFrameTime(m.shots[static_cast<size_t>(shot)].time, m.fps),
+                                                  VideoShotFirstFrameTime(r.start, m.fps));
+                    QueueVideoSeek(std::min(first, t_max));
+                    s_dblclick_hold = true;
+                }
             }
             if (junction_drag) {
                 ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
@@ -871,6 +926,7 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
         if (!lane_active) {  // released, or the lane lost its item mid-drag: nothing written
             s_junction = -1;
             s_junction_dropped = false;
+            s_dblclick_hold = false;
         }
         dl->AddRect(l0, l1, ui::kStroke, ui::kRadiusSm);
 
@@ -886,8 +942,27 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
             dl->PopClipRect();
         }
 
+        // Snap (spec 11-fb-6): lit while on, like the panel button. No tooltip. Disabled (and
+        // unlit) without an item or a ruler: there is nothing to snap to.
+        {
+            const bool snap_enabled = ruler_step > 0.0;
+            const bool lit = s_snap && snap_enabled;
+            const ImVec2 s0(l1.x + 8.0f, top);
+            const ImVec2 s1(s0.x + snap_w, top + lane_h);
+            ImGui::SetCursorScreenPos(s0);
+            if (!snap_enabled) ImGui::BeginDisabled();
+            if (ImGui::InvisibleButton("##stripsnap", ImVec2(snap_w, lane_h))) s_snap = !s_snap;
+            const bool hovered = snap_enabled && ImGui::IsItemHovered();
+            if (!snap_enabled) ImGui::EndDisabled();
+            dl->AddRectFilled(s0, s1, lit ? ui::kAccentSoft : (hovered ? ui::kHover : ui::kRaised), ui::kRadiusSm);
+            dl->AddRect(s0, s1, lit ? ui::kAccentLine : ui::kStroke, ui::kRadiusSm);
+            const ImVec2 ts = ImGui::CalcTextSize("Snap");
+            dl->AddText(ImVec2(s0.x + (snap_w - ts.x) * 0.5f, top + (lane_h - th) * 0.5f),
+                        lit ? ui::kText : (snap_enabled ? ui::kMuted : ui::kFaint), "Snap");
+        }
+
         // Cut (C by default).
-        ImGui::SetCursorScreenPos(ImVec2(l1.x + 8.0f, top));
+        ImGui::SetCursorScreenPos(ImVec2(l1.x + 8.0f + snap_w + 6.0f, top));
         const bool can_cut = VideoViewCanCut();
         if (!can_cut) ImGui::BeginDisabled();
         const ImVec2 b0 = ImGui::GetCursorScreenPos();

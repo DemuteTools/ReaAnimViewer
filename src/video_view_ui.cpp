@@ -1175,7 +1175,7 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
                                         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
                                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
                                         // Spec 11-fb-11: the panel never scrolls, only its shot
-                                        // list does (a fallback child when even that has no room).
+                                        // list does.
                                         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
     if (!ImGui::Begin("##videopanel", nullptr, kFlags)) {
         ImGui::End();
@@ -1389,44 +1389,28 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
     // at the bottom, Saved angles and Output (Story 11-5, spec 11-fb-11) --------------------
     if (m.fx >= 0) {
         // The heights of the pinned blocks under the list, measured on the last frame (the
-        // notice line and the angle chips change them).
+        // notice line and the angle chips change them). Everything but the list is pinned
+        // (Antho): the list takes the room left, at least one row, and alone scrolls.
         static float s_cut_h = 40.0f;
         static float s_bottom_h = 200.0f;
-        constexpr float kMinListH = 60.0f;  // about two rows: below that, the fallback below
-        auto bottom = [&](float width) {
-            const float y0 = ImGui::GetCursorPosY();
-            SavedAngles(m, width);
-            if (m.track) OutputSection(m);
-            s_bottom_h = ImGui::GetCursorPosY() - y0;
-        };
-        auto cut = [&](float width) {
-            const float y0 = ImGui::GetCursorPosY();
-            CutAtPlayhead(width);
-            s_cut_h = ImGui::GetCursorPosY() - y0;
-        };
-
+        constexpr float kMinListH = 30.0f;  // one row
         const bool has_list = !m.shots.empty();
-        if (has_list) ShotListHeader(m);
-        const float spacing = ImGui::GetStyle().ItemSpacing.y;
-        const float list_h = std::floor(ImGui::GetContentRegionAvail().y - s_cut_h - s_bottom_h - spacing);
-        if (has_list && list_h >= kMinListH) {
+        if (has_list) {
+            ShotListHeader(m);
+            const float spacing = ImGui::GetStyle().ItemSpacing.y;
+            const float list_h =
+                std::max(kMinListH, std::floor(ImGui::GetContentRegionAvail().y - s_cut_h - s_bottom_h - spacing));
             ImGui::BeginChild("##shotlist", ImVec2(0.0f, list_h), ImGuiChildFlags_None);
             ShotRows(m, ImGui::GetContentRegionAvail().x);
             ImGui::EndChild();
-            cut(full);
-            bottom(full);
-        } else {
-            // A panel too short for the list (or no list): rows, cut and the bottom sections
-            // scroll together under the pinned top (nothing is cut off).
-            ImGui::BeginChild("##videopanelrest", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None);
-            const float width = ImGui::GetContentRegionAvail().x;
-            if (has_list) {
-                ShotRows(m, width);
-                cut(width);
-            }
-            bottom(width);
-            ImGui::EndChild();
+            const float y0 = ImGui::GetCursorPosY();
+            CutAtPlayhead(full);
+            s_cut_h = ImGui::GetCursorPosY() - y0;
         }
+        const float y1 = ImGui::GetCursorPosY();
+        SavedAngles(m, full);
+        if (m.track) OutputSection(m);
+        s_bottom_h = ImGui::GetCursorPosY() - y1;
     }
 
     ImGui::End();

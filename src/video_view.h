@@ -150,14 +150,22 @@ void VideoViewRunPending();
 void VideoViewOnViewerClosed();
 
 // ---- Shot strip, shot list, saved angles, output, render (Story 11-5) -----------------------
-// The time span the shot strip shows: the RAV item under the playhead on the Video
-// view's track, else the nearest item on it. valid false = no item on the track.
+// The shot strip's current clip: the RAV item under the playhead on the Video view's track,
+// else the nearest item on it. valid false = no item on the track. Spec 11-fb-12: every item
+// of the track too (drawn greyed around the current one), `current` the index of start / end
+// in `items`.
+struct VideoStripSpan {
+    double start = 0.0;
+    double end = 0.0;
+};
 struct VideoStripRange {
     bool   valid = false;
     double start = 0.0;
     double end = 0.0;
+    std::vector<VideoStripSpan> items;  // the track's items (end > start), in track order
+    int    current = -1;                // index of the current item in `items`
 };
-VideoStripRange VideoViewStripRange();
+const VideoStripRange& VideoViewStripRange();
 
 // REAPER's playhead as Video view reads it (play position while playing, else the edit cursor).
 double VideoViewPlayhead();

@@ -169,7 +169,7 @@ inline int ShortcutOwner(const ShortcutBindings& b, const KeyBinding& key, int e
 // -20 for WM_SYSKEY* / WM_SYSCHAR, which REAPER would otherwise drop: the Alt keys).
 constexpr int kRouteReaper = 0, kRouteViewer = -1, kRouteViewerSys = -20;
 
-enum class KeyMsg { KeyDown, SysKeyDown, KeyUp, SysKeyUp, Char, SysChar, DeadChar, SysDeadChar, Other };
+enum class KeyMsg { KeyDown, SysKeyDown, KeyUp, SysKeyUp, Char, SysChar, DeadChar, SysDeadChar, Wheel, Other };
 
 inline bool IsSysKeyMsg(KeyMsg m)
 {
@@ -186,11 +186,13 @@ struct KeyRouteInput {
     bool     text_input = false;  // an ImGui text field is active: the viewer takes every key
     bool     popup_open = false;  // the Shortcuts popup (or the delete confirmation) is open: Esc closes it
     bool     confirm_open = false;  // the delete confirmation is open: Enter confirms it (spec 11-fb-11)
+    bool     imgui_mouse = false;   // the viewer's UI wants the mouse (spec 11-fb-12: Alt + wheel zooms the strip)
 };
 
 struct KeyRouteState {
     unsigned claimed_vk = 0;   // the key the viewer took: its characters and release follow it
     unsigned released_vk = 0;  // its WM_SYSKEYUP was sent to the viewer: the window swallows it
+    bool     alt_wheel_taken = false;  // spec 11-fb-12: Alt + wheel went to the UI since Alt went down
 };
 
 // Which keys reach the viewer, and how the claim follows a taken key to its release.
@@ -199,6 +201,25 @@ inline int RouteViewerKey(const ShortcutBindings& b, const KeyRouteInput& in, Ke
     const int to_viewer = IsSysKeyMsg(in.msg) ? kRouteViewerSys : kRouteViewer;
     const bool down = in.msg == KeyMsg::KeyDown || in.msg == KeyMsg::SysKeyDown;
     const bool up = in.msg == KeyMsg::KeyUp || in.msg == KeyMsg::SysKeyUp;
+    // Spec 11-fb-12 -- Alt + wheel over the viewer's UI (the shot strip's zoom) is the viewer's,
+    // never a REAPER mouse-wheel action, and Alt's release after it is the viewer's too (the
+    // window swallows it: REAPER's menu bar does not open). Alt's next press starts afresh.
+    if (in.msg == KeyMsg::Wheel) {
+        if (in.alt && in.imgui_mouse) {
+            st.alt_wheel_taken = true;
+            return kRouteViewer;
+        }
+        return (in.recording || in.text_input) ? kRouteViewer : kRouteReaper;
+    }
+    if (down && in.key == vk::kMenu && !in.repeat) st.alt_wheel_taken = false;
+    if (up && in.key == vk::kMenu && st.alt_wheel_taken && !in.recording) {
+        st.alt_wheel_taken = false;
+        if (in.msg == KeyMsg::SysKeyUp) {
+            st.released_vk = vk::kMenu;
+            return kRouteViewerSys;
+        }
+        return kRouteViewer;
+    }
     if (in.recording) {
         // The record modal takes every key; the one it records keeps its character and its
         // release once recording ends.

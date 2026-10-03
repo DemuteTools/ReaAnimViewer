@@ -1513,6 +1513,17 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     // Feed input to Dear ImGui first (Story 6.5.3 rev). Only after it is initialized —
     // StartRendering (which inits ImGui) runs synchronously inside WM_CREATE, so earlier
     // messages must not reach the handler. If ImGui fully handles a message, stop here.
+    // Spec 11-fb-12: the backend reads the modifiers only on key messages, and a modifier's own
+    // key down / up may have gone to REAPER or another window: refresh them before every mouse
+    // message so ImGui sees Alt + wheel, and a modifier released elsewhere is not left down.
+    if (g_imgui_ready && (msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL || msg == WM_MOUSEMOVE ||
+                          (msg >= WM_LBUTTONDOWN && msg <= WM_MBUTTONDBLCLK) ||
+                          msg == WM_XBUTTONDOWN || msg == WM_XBUTTONUP || msg == WM_XBUTTONDBLCLK)) {
+        ImGuiIO& io = ImGui::GetIO();
+        io.AddKeyEvent(ImGuiMod_Ctrl, GetKeyState(VK_CONTROL) < 0);
+        io.AddKeyEvent(ImGuiMod_Shift, GetKeyState(VK_SHIFT) < 0);
+        io.AddKeyEvent(ImGuiMod_Alt, GetKeyState(VK_MENU) < 0);
+    }
     if (g_imgui_ready && ImGui_ImplWin32_WndProcHandler(hwnd, msg, wp, lp))
         return true;
 
@@ -1631,8 +1642,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_MOUSEWHEEL: {
         // Let ImGui have the wheel when the cursor is over its UI (e.g. scrolling a
-        // slider's value); otherwise it zooms the camera.
-        if (ImGuiWantsMouse()) return 0;
+        // slider's value); otherwise it zooms the camera. Spec 11-fb-12: Alt + wheel there
+        // (the shot strip's zoom) also keeps Alt's release from REAPER's menu bar.
+        if (ImGuiWantsMouse()) {
+            if (GetKeyState(VK_MENU) < 0) g_key_route.alt_wheel_taken = true;
+            return 0;
+        }
         const float delta = GET_WHEEL_DELTA_WPARAM(wp) / 120.0f;  // 120 == one notch
         // Story 11-4: in Video view the wheel zooms the shot under the playhead (notches
         // close together are one gesture, one undo point).
@@ -1808,6 +1823,7 @@ int ViewerTranslateAccel(MSG* msg, accelerator_register_t* /*ctx*/)
     case WM_SYSCHAR:     in.msg = KeyMsg::SysChar; break;
     case WM_DEADCHAR:    in.msg = KeyMsg::DeadChar; break;
     case WM_SYSDEADCHAR: in.msg = KeyMsg::SysDeadChar; break;
+    case WM_MOUSEWHEEL:  in.msg = KeyMsg::Wheel; break;  // spec 11-fb-12: Alt + wheel
     default:             in.msg = KeyMsg::Other; break;
     }
     in.key        = static_cast<unsigned>(msg->wParam);
@@ -1820,6 +1836,7 @@ int ViewerTranslateAccel(MSG* msg, accelerator_register_t* /*ctx*/)
     in.text_input = g_imgui_ready && ImGui::GetIO().WantTextInput;
     in.popup_open = ShortcutsPopupOpen() || VideoDeleteConfirmOpen();  // Esc closes either
     in.confirm_open = VideoDeleteConfirmOpen();  // Enter confirms the delete
+    in.imgui_mouse = ImGuiWantsMouse();          // spec 11-fb-12: Alt + wheel over the UI
     // The decision itself is pure (src/shortcuts.h RouteViewerKey, host-tested).
     return RouteViewerKey(CurrentShortcuts(), in, g_key_route);
 }

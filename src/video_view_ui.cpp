@@ -878,30 +878,88 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
         static bool   s_dblclick_hold = false;    // a double-click seeked to a shot: no scrub until release
         dl->AddRectFilled(l0, l1, ui::kBg, ui::kRadiusSm);
         double ruler_step = 0.0;  // 0: no item, no ruler (Snap is then disabled)
-        const VideoStripRange r = VideoViewStripRange();
+        const VideoStripRange& r = VideoViewStripRange();
+        // Spec 11-fb-12: the strip shows a view window [s_v0, s_v0 + s_span] of project time
+        // around the current item (r.start .. r.end, the item under the playhead): by default
+        // the item plus a margin, zoomed with Alt + wheel. Session state.
+        static bool   s_view_init = false;
+        static double s_v0 = 0.0;
+        static double s_span = 1.0;
+        static bool   s_zoomed = false;           // Alt + wheel changed the span from the default
+        static double s_item_start = 0.0;         // the current item the view last followed
+        static double s_item_end = 0.0;
+        static double s_last_playhead = 0.0;
         if (!r.valid || !(r.end > r.start)) {
+            s_view_init = false;
             const char* line = "No animation item on this track";
             const ImVec2 ts = ImGui::CalcTextSize(line);
             dl->AddText(ImVec2(l0.x + std::max(6.0f, (lane_w - ts.x) * 0.5f), top + (lane_h - ts.y) * 0.5f), ui::kFaint,
                         line);
         } else {
-            const double span = r.end - r.start;
-            auto x_of = [&](double t) { return l0.x + static_cast<float>((t - r.start) / span) * lane_w; };
-            const int n = static_cast<int>(m.shots.size());
+            // ---- The view window (spec 11-fb-12) ----
+            const double item_span = r.end - r.start;
+            const double min_span = VideoStripMinSpan(m.fps);
+            const double max_span = VideoStripMaxSpan(item_span, m.fps);
+            const double def_span =
+                VideoStripClampSpan(item_span + 2.0 * VideoStripDefaultMargin(item_span, m.fps), min_span, max_span);
+            const double def_v0 = (r.start + r.end) * 0.5 - def_span * 0.5;
+            const bool item_changed = r.start != s_item_start || r.end != s_item_end;
+            if (!s_view_init) {
+                s_v0 = def_v0;
+                s_span = def_span;
+                s_zoomed = false;
+                s_item_start = r.start;
+                s_item_end = r.end;
+                s_last_playhead = playhead;
+                s_view_init = true;
+            } else if (!lane_active) {  // the view never jumps during a lane drag (scrub or junction)
+                if (item_changed) {
+                    // Unzoomed: frame the new item. Zoomed: keep the span (within the new limits).
+                    if (!s_zoomed) {
+                        s_v0 = def_v0;
+                        s_span = def_span;
+                    } else {
+                        s_span = VideoStripClampSpan(s_span, min_span, max_span);
+                    }
+                    s_item_start = r.start;
+                    s_item_end = r.end;
+                }
+                // The playhead stays visible: the smallest shift that brings it back in.
+                if (item_changed || playhead != s_last_playhead) s_v0 = VideoStripFollow(s_v0, s_span, playhead);
+                s_last_playhead = playhead;
+            }
             const float mx = ImGui::GetIO().MousePos.x;
             const double f = std::min(1.0, std::max(0.0, static_cast<double>((mx - l0.x) / lane_w)));
-            const double t_mouse = r.start + f * span;
-            // The ruler's step: labelled ticks at least the widest label for this span apart (the
+            // Alt + wheel anywhere over the strip window (lane, ruler, empty band): zoom about the
+            // time under the mouse (the lane's nearest edge when the mouse is beside it). The
+            // viewer window keeps it from the 3D view and REAPER (viewer_window.cpp).
+            {
+                const ImGuiIO& io = ImGui::GetIO();
+                if (io.KeyAlt && io.MouseWheel != 0.0f && !lane_active && ImGui::IsWindowHovered()) {
+                    const double t_fixed = s_v0 + f * s_span;
+                    VideoStripZoom(s_v0, s_span, t_fixed, static_cast<double>(io.MouseWheel), min_span, max_span, &s_v0,
+                                   &s_span);
+                    s_zoomed = std::fabs(s_span - def_span) > 1.0e-6 * def_span;
+                }
+            }
+            const double v0 = s_v0;
+            const double span = s_span;
+            const double v1 = v0 + span;
+            const double t_lo = std::max(v0, 0.0);  // nothing before project time 0
+            auto x_of = [&](double t) { return l0.x + static_cast<float>((t - v0) / span) * lane_w; };
+            const int n = static_cast<int>(m.shots.size());
+            const double t_mouse = v0 + f * span;
+            // The ruler's step: labelled ticks at least the widest label for this view apart (the
             // longest seconds label, or a "+Nf" frame label), so full-size labels never collide.
-            // Ticks count whole frames from the item's first frame (VideoRulerTickTime); fps
-            // unknown: seconds from r.start.
+            // Spec 11-fb-12: project time, like REAPER's ruler (origin 0); fps unknown: seconds.
             float label_w;
             {
                 const long long ifps = VideoRulerFps(m.fps);
                 char frame_label[32];
                 std::snprintf(frame_label, sizeof(frame_label), "+%lldf", ifps > 1 ? ifps - 1 : 0LL);
-                const char* sec_label = span >= 36000.0 ? "00:00:00" : span >= 3600.0 ? "0:00:00"
-                                      : span >= 600.0  ? "00:00"    : "0:00";
+                const double t_far = std::max(std::fabs(v0), std::fabs(v1));
+                const char* sec_label = t_far >= 36000.0 ? "00:00:00" : t_far >= 3600.0 ? "0:00:00"
+                                      : t_far >= 600.0  ? "00:00"    : "0:00";
                 label_w = std::max(ImGui::CalcTextSize(sec_label).x,
                                    ifps > 1 ? ImGui::CalcTextSize(frame_label).x : 0.0f);
             }
@@ -910,24 +968,21 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
             // Spec 11-fb-9: minor ticks under it, down to one per frame.
             const double ruler_minor =
                 VideoRulerMinorStep(ruler_step, span, static_cast<double>(lane_w), m.fps, kRulerMinorMinPx);
-            // Snap lands on the finest graduation drawn.
+            // Snap lands on the finest graduation drawn (project frames).
             const double snap_step = VideoRulerSnapStep(ruler_step, ruler_minor);
-            // Just inside the item's end: at r.end a back-to-back next item would become the
-            // strip's item, and a drag past the edge would walk item after item.
-            const double t_max = r.end - std::min(1.0e-3, span * 0.5);
             const bool snap = s_snap && ruler_step > 0.0;
 
             // Spec 11-fb-10: a shot starts at its first frame. Its line is drawn (and grabbed)
             // there, not at its envelope points half a frame earlier. fps unknown: the shot time.
             auto first_of = [&](double shot_time) { return VideoShotFirstFrameTime(shot_time, m.fps); };
-            // The junction within the grab distance of x: the start of shot i >= 1, drawn inside the lane.
+            // The junction within the grab distance of x: the start of shot i >= 1, drawn inside the view.
             auto junction_at = [&](float px) {
                 int best = -1;
                 float best_d = kJunctionGrabPx;
                 for (int i = 1; i < n; ++i) {
                     const VideoShot& s = m.shots[static_cast<size_t>(i)];
                     const double drawn = first_of(s.time);
-                    if (s.implicit || !(drawn > r.start && drawn < r.end)) continue;
+                    if (s.implicit || !(drawn > v0 && drawn < v1)) continue;
                     const float d = std::fabs(px - x_of(drawn));
                     if (d <= best_d) {
                         best_d = d;
@@ -961,14 +1016,16 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                 if (std::fabs(mx - s_junction_press_x) >= ImGui::GetIO().MouseDragThreshold) s_junction_moved = true;
                 if (s_junction_moved) {
                     const size_t j = static_cast<size_t>(s_junction);
-                    const double next_limit = (j + 1 < m.shots.size()) ? m.shots[j + 1].time : r.end;
+                    // Spec 11-fb-12: limited only by the neighbouring shots (a shot may span two
+                    // clips); the last shot's limit is the view's end.
+                    const double next_limit = (j + 1 < m.shots.size()) ? m.shots[j + 1].time : v1;
                     // The drag is a delta from the junction's own time, not the cursor's position
                     // (the grab may be 4 px off). Cuts sit half a frame early, so add half a frame
                     // to read the frame the junction is on, not the one before it.
                     const double half = m.fps > 0.0 ? 0.5 / m.fps : 0.0;
                     double t = s_junction_orig + (t_mouse - s_junction_press_t) + half;
                     // Snap: the nearest tick's frame becomes the shot's first frame.
-                    if (snap) t = VideoRulerSnap(t, r.start, snap_step, m.fps);
+                    if (snap) t = VideoRulerSnap(t, 0.0, snap_step, m.fps);
                     const double snapped = VideoJunctionDragTime(t, m.shots[j - 1].time, next_limit, m.fps);
                     s_junction_time = std::isfinite(snapped) ? snapped : s_junction_orig;  // no room: stays
                 }
@@ -987,13 +1044,21 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
             const int current = VideoViewShotIndex();
             if (junction_drag) times[static_cast<size_t>(s_junction)] = first_of(s_junction_time);
 
+            const float zx0 = x_of(r.start);  // the current clip's zone, at the item's exact edges
+            const float zx1 = x_of(r.end);
             dl->PushClipRect(l0, l1, true);
+            // Spec 11-fb-12: the track's items as blocks (the current one is the zone); the gaps
+            // between them stay the lane's background.
+            for (const VideoStripSpan& it : r.items) {
+                if (!(it.end > v0 && it.start < v1)) continue;
+                dl->AddRectFilled(ImVec2(x_of(it.start), l0.y), ImVec2(x_of(it.end), l1.y), ui::kRaised);
+            }
             for (int i = 0; i < n; ++i) {
                 const VideoShot& s = m.shots[static_cast<size_t>(i)];
                 const double s_time = times[static_cast<size_t>(i)];
-                const double s_end = (i + 1 < n) ? times[static_cast<size_t>(i) + 1] : r.end;
-                const double a = std::max(i == 0 ? r.start : s_time, r.start);  // the first shot holds from the start
-                const double b = std::min(s_end, r.end);
+                const double s_end = (i + 1 < n) ? times[static_cast<size_t>(i) + 1] : v1;
+                const double a = std::max(i == 0 ? t_lo : s_time, t_lo);  // the first shot holds from 0
+                const double b = std::min(s_end, v1);
                 if (!(b > a)) continue;
                 const float xa = x_of(a);
                 const float xb = x_of(b);
@@ -1004,7 +1069,7 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                                                 IM_COL32(255, 255, 255, 16), IM_COL32(255, 255, 255, 16),
                                                 IM_COL32(255, 255, 255, 0));
                 }
-                if (b < r.end) dl->AddLine(ImVec2(xb, l0.y), ImVec2(xb, l1.y), ui::kStroke, 1.0f);
+                if (b < v1) dl->AddLine(ImVec2(xb, l0.y), ImVec2(xb, l1.y), ui::kStroke, 1.0f);
                 // Label: dot + name, clipped to the segment.
                 if (xb - xa > 14.0f) {
                     dl->PushClipRect(ImVec2(xa, l0.y), ImVec2(xb - 2.0f, l1.y), true);
@@ -1015,19 +1080,60 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                     dl->PopClipRect();
                 }
             }
+            // Spec 11-fb-12: outside the current clip (neighbour items, gaps, before 0) greyed,
+            // shots included; the neighbours keep their edges, the zone gets an outline.
+            constexpr ImU32 kOutsideDim = IM_COL32(0x12, 0x13, 0x17, 0xA6);  // ui::kBg at 65 %
+            if (zx0 > l0.x) dl->AddRectFilled(l0, ImVec2(std::min(zx0, l1.x), l1.y), kOutsideDim);
+            if (zx1 < l1.x) dl->AddRectFilled(ImVec2(std::max(zx1, l0.x), l0.y), l1, kOutsideDim);
+            for (const VideoStripSpan& it : r.items) {
+                if (!(it.end >= v0 && it.start <= v1)) continue;
+                for (double e : {it.start, it.end}) {
+                    if (e == r.start || e == r.end) continue;  // the zone's own edges: its outline
+                    const float ex = std::floor(x_of(e)) + 0.5f;
+                    dl->AddLine(ImVec2(ex, l0.y), ImVec2(ex, l1.y), ui::kStrokeStrong, 1.0f);
+                }
+            }
+            dl->AddRect(ImVec2(zx0, l0.y + 0.5f), ImVec2(zx1, l1.y - 0.5f), ui::kMuted, 0.0f, 0, 1.5f);
+            // Clip time (spec 11-fb-12): small faint labels at the bottom of the lane, inside the
+            // zone only, counted from the clip's first frame ("0:00", "+Nf", the ruler's step).
+            // Only when the lane is tall enough to keep them under the shot names (mid-lane).
+            if (ruler_step > 0.0) {
+                const float clip_fs = std::max(8.0f, std::floor(ImGui::GetFontSize() * 0.8f));
+                const float name_bottom = (l0.y + l1.y) * 0.5f + th * 0.5f;
+                const float clip_y = l1.y - clip_fs - 2.0f;
+                if (clip_y >= name_bottom + 1.0f) {
+                    const float cx0 = std::max(zx0, l0.x);
+                    const float cx1 = std::min(zx1, l1.x);
+                    if (cx1 > cx0) {
+                        dl->PushClipRect(ImVec2(cx0, l0.y), ImVec2(cx1, l1.y), true);
+                        const long long k0 = VideoRulerFirstTickFrom(std::max(v0, r.start), r.start, ruler_step, m.fps);
+                        const double t_end = std::min(v1, r.end);
+                        for (long long k = k0; k <= k0 + 100000; ++k) {
+                            const double tick_t = VideoRulerTickTime(k, r.start, ruler_step, m.fps);
+                            if (tick_t > t_end + 1e-9) break;
+                            const float tick_x = std::floor(x_of(tick_t)) + 0.5f;
+                            dl->AddLine(ImVec2(tick_x, l1.y - 3.0f), ImVec2(tick_x, l1.y), ui::kFaint, 1.0f);
+                            char label[32];
+                            VideoRulerTickLabel(k, ruler_step, m.fps, label, sizeof(label));
+                            dl->AddText(ruler_font, clip_fs, ImVec2(tick_x + 2.0f, clip_y), ui::kFaint, label);
+                        }
+                        dl->PopClipRect();
+                    }
+                }
+            }
             if (junction_drag) {  // the dragged junction, over the segment edges
                 const float jx = x_of(first_of(s_junction_time));
                 dl->AddLine(ImVec2(jx, l0.y), ImVec2(jx, l1.y), ui::kAccent, 2.0f);
             }
-            if (playhead >= r.start && playhead <= r.end) {
+            if (playhead >= v0 && playhead <= v1) {
                 const float px = x_of(playhead);
                 dl->AddRectFilled(ImVec2(px - 1.0f, l0.y), ImVec2(px + 1.0f, l1.y), IM_COL32(0xDF, 0xE3, 0xEA, 0xFF));
             }
             dl->PopClipRect();
 
-            // The ruler (spec 11-fb-6 / 11-fb-9): above the lane, in the item's time. Whole seconds
-            // read "0:02", frame ticks between them "+12f", at the full font size. Never over the
-            // shot names.
+            // The ruler (spec 11-fb-6 / 11-fb-9): above the lane, in project time like REAPER's
+            // ruler (spec 11-fb-12), over the view window. Whole seconds read "0:02", frame ticks
+            // between them "+12f", at the full font size. Never over the shot names.
             if (ruler_step > 0.0) {
                 const ImVec2 r0(l0.x, l0.y - ruler_h);
                 dl->PushClipRect(ImVec2(r0.x - 1.0f, r0.y), ImVec2(l1.x + 1.0f, l0.y), true);
@@ -1036,18 +1142,20 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                 const long long per_label = VideoRulerMinorPerLabel(ruler_step, ruler_minor, m.fps);
                 if (per_label > 1) {
                     const float minor_h = std::min(kRulerMinorTickH, ruler_h);
-                    for (long long k = 0; k <= 100000; ++k) {
-                        const double tick_t = VideoRulerTickTime(k, r.start, ruler_minor, m.fps);
-                        if (tick_t > r.end + 1e-9) break;
+                    const long long k0 = VideoRulerFirstTickFrom(t_lo, 0.0, ruler_minor, m.fps);
+                    for (long long k = k0; k <= k0 + 100000; ++k) {
+                        const double tick_t = VideoRulerTickTime(k, 0.0, ruler_minor, m.fps);
+                        if (tick_t > v1 + 1e-9) break;
                         if (k % per_label == 0) continue;  // a labelled tick
                         const float tick_x = x_of(tick_t);
                         dl->AddLine(ImVec2(tick_x + 0.5f, l0.y - minor_h), ImVec2(tick_x + 0.5f, l0.y),
                                     ui::kStrokeStrong, 1.0f);
                     }
                 }
-                for (long long k = 0; k <= 100000; ++k) {
-                    const double tick_t = VideoRulerTickTime(k, r.start, ruler_step, m.fps);
-                    if (tick_t > r.end + 1e-9) break;
+                const long long k0 = VideoRulerFirstTickFrom(t_lo, 0.0, ruler_step, m.fps);
+                for (long long k = k0; k <= k0 + 100000; ++k) {
+                    const double tick_t = VideoRulerTickTime(k, 0.0, ruler_step, m.fps);
+                    if (tick_t > v1 + 1e-9) break;
                     const float tick_x = x_of(tick_t);
                     char label[32];
                     VideoRulerTickLabel(k, ruler_step, m.fps, label, sizeof(label));
@@ -1068,21 +1176,28 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
 
             if (lane_active && s_junction < 0 && !s_junction_dropped && !s_dblclick_hold) {  // a scrub: passes over junctions
                 static float s_last_mx = -1.0e9f;
-                // Snap: the nearest tick's frame (the frame a snapped junction lands on).
-                const double t_seek = snap ? VideoRulerSnap(t_mouse, r.start, snap_step, m.fps) : t_mouse;
-                if (lane_pressed || mx != s_last_mx) QueueVideoSeek(std::min(t_seek, t_max));
+                // Spec 11-fb-12: anywhere in the view (>= 0), no stop inside the item: a drag runs
+                // on into the next clip. Snap: the nearest tick's frame; off: the raw time.
+                const double t_seek = snap ? VideoRulerSnap(t_mouse, 0.0, snap_step, m.fps) : t_mouse;
+                if (lane_pressed || mx != s_last_mx) QueueVideoSeek(std::max(0.0, t_seek));
                 s_last_mx = mx;
             }
             // A double-click on a shot (not on a junction) puts the playhead on its first frame,
             // like a click in the panel's shot list. After the scrub: the last seek queued wins.
-            // A shot that started before the item: its first frame inside the item.
+            // Spec 11-fb-12: a shot that began in an earlier clip: the first frame of the clip
+            // under the mouse (no clamp when the mouse is over no clip).
             if (lane_hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && junction_at(mx) < 0) {
                 // The shot whose first frame is at or before the frame under the mouse (as drawn).
                 const int shot = VideoCurrentShotIndex(m.shots, t_mouse, m.fps);
                 if (shot >= 0) {
-                    const double first = std::max(VideoShotFirstFrameTime(m.shots[static_cast<size_t>(shot)].time, m.fps),
-                                                  VideoShotFirstFrameTime(r.start, m.fps));
-                    QueueVideoSeek(std::min(first, t_max));
+                    double first = VideoShotFirstFrameTime(m.shots[static_cast<size_t>(shot)].time, m.fps);
+                    for (const VideoStripSpan& it : r.items) {
+                        if (t_mouse >= it.start && t_mouse < it.end) {  // the viewer's rule: first spanning item
+                            first = std::max(first, VideoShotFirstFrameTime(it.start, m.fps));
+                            break;
+                        }
+                    }
+                    QueueVideoSeek(std::max(0.0, first));
                     s_dblclick_hold = true;
                 }
             }
@@ -1098,7 +1213,8 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                 if (!ImGui::IsAnyMouseDown() && VideoViewCanCut() && junction_at(mx) >= 0) {
                     ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);  // the cursor says it: no tooltip
                 } else {
-                    ImGui::SetTooltip("Click or drag to move the playhead\nMiddle-click a shot: switch Cut / Move");
+                    ImGui::SetTooltip(
+                        "Click or drag to move the playhead\nMiddle-click a shot: switch Cut / Move\nAlt+wheel: zoom");
                 }
             }
         }

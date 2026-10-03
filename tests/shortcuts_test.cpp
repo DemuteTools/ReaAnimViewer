@@ -397,6 +397,71 @@ int main()
     CHECK(FormatShortcut(Key(0xBA)) == "Key 0xBA");  // no layout here: the fallback text
     CHECK(FormatShortcut(Key(0xBA), [](unsigned) { return std::string(";"); }) == ";");
 
+    // Spec 11-fb-12: Alt + wheel over the viewer's UI (the strip's zoom) and Alt's release after it.
+    {
+        const ShortcutBindings b = DefaultShortcutBindings();
+        KeyRouteState st;
+        KeyRouteInput wheel;
+        wheel.msg = KeyMsg::Wheel;
+        wheel.alt = true;
+        wheel.imgui_mouse = true;
+        KeyRouteInput alt_down;
+        alt_down.msg = KeyMsg::SysKeyDown;
+        alt_down.key = vk::kMenu;
+        alt_down.alt = true;
+        KeyRouteInput alt_up;
+        alt_up.msg = KeyMsg::SysKeyUp;
+        alt_up.key = vk::kMenu;
+        // Plain Alt press / release without a wheel: REAPER's.
+        CHECK(RouteViewerKey(b, alt_down, st) == kRouteReaper);
+        CHECK(RouteViewerKey(b, alt_up, st) == kRouteReaper);
+        CHECK(st.released_vk == 0);
+        // Alt + wheel over the UI: the viewer's; the following Alt release too, swallowed.
+        CHECK(RouteViewerKey(b, alt_down, st) == kRouteReaper);
+        CHECK(RouteViewerKey(b, wheel, st) == kRouteViewer);
+        CHECK(st.alt_wheel_taken);
+        CHECK(RouteViewerKey(b, alt_up, st) == kRouteViewerSys);
+        CHECK(st.released_vk == vk::kMenu);
+        CHECK(!st.alt_wheel_taken);
+        // Wheel without Alt, or not over the UI: REAPER's (as before), nothing taken.
+        KeyRouteState st2;
+        KeyRouteInput plain = wheel;
+        plain.alt = false;
+        CHECK(RouteViewerKey(b, plain, st2) == kRouteReaper);
+        KeyRouteInput off_ui = wheel;
+        off_ui.imgui_mouse = false;
+        CHECK(RouteViewerKey(b, off_ui, st2) == kRouteReaper);
+        CHECK(!st2.alt_wheel_taken);
+        // A fresh Alt press clears the state: its plain release is REAPER's.
+        KeyRouteState st3;
+        CHECK(RouteViewerKey(b, wheel, st3) == kRouteViewer);
+        CHECK(RouteViewerKey(b, alt_down, st3) == kRouteReaper);
+        CHECK(!st3.alt_wheel_taken);
+        CHECK(RouteViewerKey(b, alt_up, st3) == kRouteReaper);
+        // An auto-repeat of Alt keeps it.
+        KeyRouteState st4;
+        CHECK(RouteViewerKey(b, wheel, st4) == kRouteViewer);
+        KeyRouteInput alt_rep = alt_down;
+        alt_rep.repeat = true;
+        RouteViewerKey(b, alt_rep, st4);
+        CHECK(st4.alt_wheel_taken);
+        // While recording: the release goes through the recording path.
+        KeyRouteState st5;
+        CHECK(RouteViewerKey(b, wheel, st5) == kRouteViewer);
+        KeyRouteInput rec_up = alt_up;
+        rec_up.recording = true;
+        CHECK(RouteViewerKey(b, rec_up, st5) == kRouteViewerSys);
+        CHECK(st5.released_vk == vk::kMenu);  // the recording rule
+        CHECK(st5.alt_wheel_taken);           // not consumed by the Alt + wheel rule
+        // A plain KeyUp of Alt after Alt + wheel: the viewer's, nothing to swallow.
+        KeyRouteState st6;
+        CHECK(RouteViewerKey(b, wheel, st6) == kRouteViewer);
+        KeyRouteInput alt_keyup = alt_up;
+        alt_keyup.msg = KeyMsg::KeyUp;
+        CHECK(RouteViewerKey(b, alt_keyup, st6) == kRouteViewer);
+        CHECK(st6.released_vk == 0 && !st6.alt_wheel_taken);
+    }
+
     if (g_fails == 0) std::printf("shortcuts: all checks passed\n");
     return g_fails == 0 ? 0 : 1;
 }

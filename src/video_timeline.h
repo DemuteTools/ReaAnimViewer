@@ -56,6 +56,11 @@ struct VideoItemHit {
 bool FindVideoItemAt(const VideoTimelineSnapshot& snap, const MediaTrack* track, double t,
                      VideoItemHit& out);
 
+// Spec 11-fb-12 -- the start of the item under t on `track` in the latest snapshot
+// (FindVideoItemAt's rule), NaN when there is none: where a cut at t may start at the earliest
+// (video_shot_timing.h VideoCutTimeInItem).
+double VideoItemStartAt(const MediaTrack* track, double t);
+
 // Main thread: the project's video size (Project Settings > Video), 0 x 0 when not set
 // (proj nullptr = the current project). Story 11-4: Video view frames at this size.
 void ProjectVideoSizeOf(ReaProject* proj, int* w, int* h);

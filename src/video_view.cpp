@@ -71,6 +71,7 @@ struct Cmd {
     std::string text;
     std::string undo;
     double      fps = 0.0;  // Cut: the project frame rate when it was asked
+    double      item_start = std::nan("");  // Cut: start of the item under the playhead, NaN = none (spec 11-fb-12)
     double      new_time = 0.0;  // MoveShot: where the shot at shot_time goes
     int         width = 0;  // OutputSize
     int         height = 0;
@@ -339,24 +340,33 @@ void UpdateStripRange()
     const std::shared_ptr<const VideoTimelineSnapshot> snap = CurrentVideoTimeline();
     const VideoTrackTimeline* tl = snap ? snap->Find(g_model.track) : nullptr;
     if (!tl || tl->items.empty()) return;
-    const VideoItemSpan* best = nullptr;
+    int best = -1;
     double best_gap = 0.0;
+    bool spanning = false;
     for (const VideoItemSpan& it : tl->items) {
         if (!(it.end > it.start)) continue;
+        g_range.items.push_back(VideoStripSpan{it.start, it.end});  // spec 11-fb-12: the neighbours too
+        if (spanning) continue;
+        const int idx = static_cast<int>(g_range.items.size()) - 1;
         if (g_playhead >= it.start && g_playhead < it.end) {  // the viewer's rule: first spanning item
-            best = &it;
-            break;
+            best = idx;
+            spanning = true;
+            continue;
         }
         const double gap = (g_playhead < it.start) ? it.start - g_playhead : g_playhead - it.end;
-        if (!best || gap < best_gap) {
-            best = &it;
+        if (best < 0 || gap < best_gap) {
+            best = idx;
             best_gap = gap;
         }
     }
-    if (!best) return;
+    if (best < 0) {
+        g_range.items.clear();
+        return;
+    }
     g_range.valid = true;
-    g_range.start = best->start;
-    g_range.end = best->end;
+    g_range.current = best;
+    g_range.start = g_range.items[static_cast<size_t>(best)].start;
+    g_range.end = g_range.items[static_cast<size_t>(best)].end;
 }
 
 void SetNotice(const char* text)
@@ -376,15 +386,22 @@ void RunCut(const Cmd& c)
     std::vector<double> times;
     times.reserve(shots.size());
     for (const VideoShot& s : shots) times.push_back(s.time);
-    if (VideoCutWouldDuplicate(times, c.shot_time, c.fps, kVideoShotTimeTolerance)) {
+    // Spec 11-fb-12: never on a frame that begins before the item under the playhead.
+    if (VideoCutWouldDuplicateInItem(times, c.shot_time, c.fps, c.item_start, kVideoShotTimeTolerance)) {
         SetNotice("A shot already starts on this frame");
         return;
     }
     VideoShot shot;
-    shot.time = VideoCutTime(c.shot_time, c.fps);
+    shot.time = VideoCutTimeInItem(c.shot_time, c.fps, c.item_start);
     shot.move_to_next = false;
     shot.name.clear();  // automatic "Shot N"
-    ReadVideoCameraAt(c.track, c.fx, VideoPlayheadFrameTime(c.shot_time, c.fps), shot.values);  // as Video view shows it
+    // The camera at the cut's own first frame (spec 11-fb-12: the item rule may move it past
+    // the playhead's frame); otherwise the playhead's frame, as Video view shows it.
+    const long long cut_frame = VideoCutFrameInItem(c.shot_time, c.fps, c.item_start);
+    const bool moved_forward = c.fps > 0.0 && cut_frame > VideoFrameIndexAt(c.shot_time, c.fps);
+    const double camera_time =
+        moved_forward ? static_cast<double>(cut_frame) / c.fps : VideoPlayheadFrameTime(c.shot_time, c.fps);
+    ReadVideoCameraAt(c.track, c.fx, camera_time, shot.values);
 
     Undo_BeginBlock2(nullptr);
     const bool ok = WriteVideoShot(c.track, c.fx, shot);
@@ -392,6 +409,9 @@ void RunCut(const Cmd& c)
     if (!ok) {
         LogWarn("video view: the cut at %.3f s could not be written", shot.time);
         SetNotice("The cut could not be written (see Copy error log)");
+    } else if (moved_forward) {
+        // The playhead goes on the new shot's first frame, so it is the current shot.
+        SetEditCurPos(camera_time, /*moveview=*/false, /*seekplay=*/false);
     }
 }
 
@@ -971,7 +991,7 @@ void VideoViewOnViewerClosed()
 
 // ---- Story 11-5 ----------------------------------------------------------------------------
 
-VideoStripRange VideoViewStripRange()
+const VideoStripRange& VideoViewStripRange()
 {
     return g_range;
 }
@@ -1043,6 +1063,7 @@ void QueueVideoCut()
     c.fx = g_model.fx;
     c.shot_time = g_playhead;
     c.fps = g_model.fps;
+    c.item_start = VideoItemStartAt(g_model.track, g_playhead);
     g_queue.push_back(std::move(c));
 }
 

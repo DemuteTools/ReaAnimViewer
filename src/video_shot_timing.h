@@ -146,10 +146,110 @@ inline bool VideoCutWouldDuplicate(const std::vector<double>& shot_times, double
     return false;
 }
 
+// Spec 11-fb-12 -- a cut never starts on a frame that begins before the start of the item
+// under the playhead. An item whose start is off the frame grid (1.400 s at 24 fps = frame
+// 33.6) has its first frame at the next whole frame (34); a cut with the playhead in frame 33
+// (at the item start) would start on frame 33, which REAPER renders with the previous item.
+// The cut's first frame: max(the playhead's frame, the item's first frame). `item_start`
+// non-finite (NaN): no item under the playhead, the playhead's frame. fps unknown: unused.
+inline long long VideoCutFrameInItem(double t, double fps, double item_start)
+{
+    long long k = VideoFrameIndexAt(t, fps);
+    if (fps > 0.0 && std::isfinite(item_start)) k = std::max(k, VideoShotFirstFrame(item_start, fps));
+    return k;
+}
+
+// Time of the envelope points of a cut made with the playhead at t in the item starting at
+// `item_start` (NaN: no item): half a frame before VideoCutFrameInItem, like VideoCutTime.
+// No item or fps unknown: VideoCutTime itself.
+inline double VideoCutTimeInItem(double t, double fps, double item_start)
+{
+    if (!(fps > 0.0) || !std::isfinite(item_start)) return VideoCutTime(t, fps);
+    const long long k = VideoCutFrameInItem(t, fps, item_start);
+    if (k <= 0) return 0.0;
+    return (static_cast<double>(k) - 0.5) / fps;
+}
+
+// VideoCutWouldDuplicate for a cut placed by VideoCutTimeInItem: true when a shot already
+// starts on its frame. No item or fps unknown: VideoCutWouldDuplicate itself.
+inline bool VideoCutWouldDuplicateInItem(const std::vector<double>& shot_times, double t, double fps,
+                                         double item_start, double tolerance)
+{
+    if (!(fps > 0.0) || !std::isfinite(item_start)) return VideoCutWouldDuplicate(shot_times, t, fps, tolerance);
+    const long long k = VideoCutFrameInItem(t, fps, item_start);
+    for (double s : shot_times) {
+        if (VideoShotFirstFrame(s, fps) == k) return true;
+    }
+    return false;
+}
+
+// ---- The shot strip's view window (spec 11-fb-12) ------------------------------------------
+// The strip shows [v0, v0 + span] of project time: by default the current item plus a margin.
+
+// The default margin on each side of an item `item_span` long: 15 % of it, at least 4 frames
+// (fps unknown: 15 % only).
+inline double VideoStripDefaultMargin(double item_span, double fps)
+{
+    if (!(item_span > 0.0) || !std::isfinite(item_span)) item_span = 0.0;
+    const double m = 0.15 * item_span;
+    return (fps > 0.0 && std::isfinite(fps)) ? std::max(m, 4.0 / fps) : m;
+}
+
+// The smallest visible span: 10 frames, or 0.4 s when the fps is unknown.
+inline double VideoStripMinSpan(double fps)
+{
+    return (fps > 0.0 && std::isfinite(fps)) ? 10.0 / fps : 0.4;
+}
+
+// The largest visible span: 20 times the current item, never under the smallest one.
+inline double VideoStripMaxSpan(double item_span, double fps)
+{
+    const double lo = VideoStripMinSpan(fps);
+    if (!(item_span > 0.0) || !std::isfinite(item_span)) return lo;
+    return std::max(lo, 20.0 * item_span);
+}
+
+// `span` kept within [min_span, max_span] (a bad span: min_span).
+inline double VideoStripClampSpan(double span, double min_span, double max_span)
+{
+    if (!(span > 0.0) || !std::isfinite(span)) return min_span;
+    if (max_span < min_span) max_span = min_span;
+    return std::min(std::max(span, min_span), max_span);
+}
+
+// Alt + wheel (`notches` > 0 zooms in): the visible span changes by 1.25 per notch, within
+// [min_span, max_span], and the time t_fixed (under the mouse) keeps its place on screen.
+// Writes the new view start and span.
+inline void VideoStripZoom(double v0, double span, double t_fixed, double notches, double min_span,
+                           double max_span, double* out_v0, double* out_span)
+{
+    double ns = span;
+    if (std::isfinite(notches) && span > 0.0 && std::isfinite(span)) ns = span * std::pow(1.25, -notches);
+    ns = VideoStripClampSpan(ns, min_span, max_span);
+    double nv0 = v0;
+    if (span > 0.0 && std::isfinite(span) && std::isfinite(t_fixed) && std::isfinite(v0)) {
+        nv0 = t_fixed - (t_fixed - v0) * (ns / span);
+    }
+    if (out_v0) *out_v0 = nv0;
+    if (out_span) *out_span = ns;
+}
+
+// The view start after the smallest shift that brings t into [v0, v0 + span] (v0 itself
+// when t is already visible).
+inline double VideoStripFollow(double v0, double span, double t)
+{
+    if (!std::isfinite(t) || !std::isfinite(v0) || !(span > 0.0)) return v0;
+    if (t < v0) return t;
+    if (t > v0 + span) return t - span;
+    return v0;
+}
+
 // The shot strip's ruler (spec 11-fb-6). With a known fps it counts whole project frames
 // from the item's first frame F0 = VideoShotFirstFrame(origin, fps): tick k is frame
 // F0 + k * step_frames, drawn at F / fps. A "second" is the rounded fps in frames (nominal
 // seconds, like non-drop timecode). fps unknown: whole seconds from the item start.
+// Spec 11-fb-12: the strip's top ruler passes origin 0 (project time, like REAPER's ruler);
+// the clip-time labels pass the current item's start.
 
 // The fps the ruler counts frames with: the rounded fps, 0 when unknown (NaN, inf, under
 // 0.5 or absurd, 1e6 and up).
@@ -309,6 +409,24 @@ inline long long VideoRulerNearestTick(double t, double origin, double step_s, d
         k = std::round((t - origin) / step_s);
     }
     return k > 0.0 ? static_cast<long long>(k) : 0;
+}
+
+// Spec 11-fb-12 -- the first ruler tick at or after t (k >= 0), so a ruler drawn over a
+// visible window starts at its left edge instead of at tick 0. 0 without a step.
+inline long long VideoRulerFirstTickFrom(double t, double origin, double step_s, double fps)
+{
+    if (!(step_s > 0.0) || !std::isfinite(step_s) || !std::isfinite(t)) return 0;
+    const long long sf = VideoRulerStepFrames(step_s, fps);
+    double k;
+    if (sf > 0) {
+        const double f0 = static_cast<double>(VideoShotFirstFrame(origin, fps));
+        k = std::ceil((t * fps - f0) / static_cast<double>(sf) - 1e-6);
+    } else {
+        k = std::ceil((t - origin) / step_s - 1e-9);
+    }
+    if (!(k > 0.0)) return 0;
+    if (k > 9.0e15) return 9000000000000000LL;
+    return static_cast<long long>(k);
 }
 
 // Snap (spec 11-fb-6): the time of the ruler tick nearest t. A scrub seeks to it; a

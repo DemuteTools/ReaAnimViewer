@@ -469,6 +469,90 @@ int main()
     CHECK(VideoFrameIndexAt(VideoRulerSnap(1.0, 0.51, VideoRulerSnapStep(1.0, 1.0 / 60.0), 60.0), 60.0) == 60);
     CHECK(VideoFrameIndexAt(VideoRulerSnap(1.2, 0.51, VideoRulerSnapStep(1.0, 0.0), 60.0), 60.0) == 91);
 
+    // ---- Spec 11-fb-12 ----
+    // A cut at an off-grid item start (1.400 s @ 24 fps = frame 33.6): the item's first frame 34.
+    {
+        const double fps = 24.0;
+        CHECK(VideoCutFrameInItem(1.4, fps, 1.4) == 34);
+        CHECK(Near(VideoCutTimeInItem(1.4, fps, 1.4), 33.5 / fps));
+        CHECK(VideoShotFirstFrame(VideoCutTimeInItem(1.4, fps, 1.4), fps) == 34);
+        // Before: VideoCutTime alone put it on frame 33, which starts before the item.
+        CHECK(VideoShotFirstFrame(VideoCutTime(1.4, fps), fps) == 33);
+        // On-grid start (1.5 s = frame 36): unchanged.
+        CHECK(Near(VideoCutTimeInItem(1.5, fps, 1.5), VideoCutTime(1.5, fps)));
+        // Mid-item: unchanged.
+        CHECK(Near(VideoCutTimeInItem(2.0, fps, 1.4), VideoCutTime(2.0, fps)));
+        CHECK(VideoCutFrameInItem(2.0, fps, 1.4) == 48);
+        // No item (NaN) or unknown fps: today's rule.
+        CHECK(Near(VideoCutTimeInItem(1.4, fps, std::nan("")), VideoCutTime(1.4, fps)));
+        CHECK(Near(VideoCutTimeInItem(1.4, 0.0, 1.4), 1.4));
+        CHECK(Near(VideoCutTimeInItem(0.0, fps, 0.0), 0.0));
+        // Duplicate: the same frame as the cut.
+        const std::vector<double> shots = {0.0, 33.5 / fps};
+        CHECK(VideoCutWouldDuplicateInItem(shots, 1.4, fps, 1.4, 1e-3));
+        CHECK(!VideoCutWouldDuplicate(shots, 1.4, fps, 1e-3));  // the old rule looked at frame 33
+        CHECK(!VideoCutWouldDuplicateInItem({0.0, 32.5 / fps}, 1.4, fps, 1.4, 1e-3));
+        CHECK(VideoCutWouldDuplicateInItem({0.0, 1.4}, 1.4, 0.0, std::nan(""), 1e-3));
+    }
+    // Strip view: margins, span limits, zoom about a fixed point, follow.
+    {
+        CHECK(Near(VideoStripDefaultMargin(2.0, 24.0), 0.3));
+        CHECK(Near(VideoStripDefaultMargin(0.2, 24.0), 4.0 / 24.0));  // at least 4 frames
+        CHECK(Near(VideoStripDefaultMargin(0.2, 0.0), 0.03));
+        CHECK(Near(VideoStripMinSpan(25.0), 0.4) && Near(VideoStripMinSpan(0.0), 0.4));
+        CHECK(Near(VideoStripMinSpan(50.0), 0.2));
+        CHECK(Near(VideoStripMaxSpan(2.0, 24.0), 40.0));
+        CHECK(Near(VideoStripMaxSpan(0.01, 24.0), 10.0 / 24.0));
+        CHECK(Near(VideoStripClampSpan(100.0, 0.4, 40.0), 40.0));
+        CHECK(Near(VideoStripClampSpan(0.1, 0.4, 40.0), 0.4));
+        CHECK(Near(VideoStripClampSpan(std::nan(""), 0.4, 40.0), 0.4));
+        double v0 = 0.0, span = 0.0;
+        // One notch in: span / 1.25, t = 3 keeps its place (fraction 0.25 of the view).
+        VideoStripZoom(2.0, 4.0, 3.0, 1.0, 0.4, 40.0, &v0, &span);
+        CHECK(Near(span, 3.2));
+        CHECK(Near((3.0 - v0) / span, 0.25));
+        // One notch out: span * 1.25.
+        VideoStripZoom(2.0, 4.0, 3.0, -1.0, 0.4, 40.0, &v0, &span);
+        CHECK(Near(span, 5.0) && Near((3.0 - v0) / span, 0.25));
+        // Clamped at both ends; the fixed point still holds.
+        VideoStripZoom(2.0, 4.0, 3.0, 50.0, 0.4, 40.0, &v0, &span);
+        CHECK(Near(span, 0.4) && Near((3.0 - v0) / span, 0.25));
+        VideoStripZoom(2.0, 4.0, 3.0, -50.0, 0.4, 40.0, &v0, &span);
+        CHECK(Near(span, 40.0) && Near((3.0 - v0) / span, 0.25));
+        // Follow: the smallest shift.
+        CHECK(Near(VideoStripFollow(2.0, 4.0, 3.0), 2.0));
+        CHECK(Near(VideoStripFollow(2.0, 4.0, 7.5), 3.5));
+        CHECK(Near(VideoStripFollow(2.0, 4.0, 1.0), 1.0));
+    }
+    // Ruler ticks over a window not starting at 0 (project time, origin 0).
+    {
+        const double fps = 24.0;
+        const double step = 6.0 / fps;  // 6-frame ticks
+        const long long k = VideoRulerFirstTickFrom(1.3, 0.0, step, fps);  // frame 31.2 -> tick at frame 36
+        CHECK(k == 6);
+        CHECK(Near(VideoRulerTickTime(k, 0.0, step, fps), 1.5));
+        CHECK(VideoRulerTickTime(k - 1, 0.0, step, fps) < 1.3);
+        CHECK(VideoRulerTickIsMajor(4, step, fps));   // frame 24 = 0:01
+        CHECK(!VideoRulerTickIsMajor(k, step, fps));  // frame 36 = +12f
+        char label[32];
+        VideoRulerTickLabel(k, step, fps, label, sizeof(label));
+        CHECK(std::strcmp(label, "+12f") == 0);
+        VideoRulerTickLabel(8, step, fps, label, sizeof(label));
+        CHECK(std::strcmp(label, "0:02") == 0);
+        // On a tick: that tick.
+        CHECK(VideoRulerFirstTickFrom(1.5, 0.0, step, fps) == 6);
+        CHECK(VideoRulerFirstTickFrom(1.5 - 1e-12, 0.0, step, fps) == 6);
+        // Before 0: tick 0.
+        CHECK(VideoRulerFirstTickFrom(-2.0, 0.0, step, fps) == 0);
+        // Clip origin off grid (1.4 s, first frame 34): tick 1 is frame 40.
+        CHECK(VideoRulerFirstTickFrom(1.45, 1.4, step, fps) == 1);
+        CHECK(Near(VideoRulerTickTime(1, 1.4, step, fps), 40.0 / fps));
+        // fps unknown: seconds from the origin.
+        CHECK(VideoRulerFirstTickFrom(2.5, 0.0, 1.0, 0.0) == 3);
+        CHECK(VideoRulerFirstTickFrom(3.0, 0.0, 1.0, 0.0) == 3);
+        CHECK(VideoRulerFirstTickFrom(1.0, 0.0, 0.0, 24.0) == 0);  // no step
+    }
+
     std::printf(g_fails ? "FAILED %d\n" : "ALL PASS\n", g_fails);
     return g_fails != 0 ? 1 : 0;
 }

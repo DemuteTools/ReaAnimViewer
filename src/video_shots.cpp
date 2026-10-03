@@ -15,6 +15,7 @@
 #include "console_log.h"
 #include "video_fx_track.h"
 #include "video_shot_timing.h"
+#include "video_timeline.h"
 
 namespace rav {
 namespace {
@@ -674,10 +675,17 @@ void AddVideoShotAtEditCursor()
 
     // Like a cut in Video view (spec 11-fb-10): the shot's points go half a frame before
     // the cursor's frame, and it holds the camera of that frame (fps unknown: the cursor).
+    // Spec 11-fb-12: never on a frame that begins before the item under the cursor.
     VideoShot shot;
-    shot.time = VideoCutTime(t, fps);
+    const double item_start = VideoItemStartAt(track, t);
+    shot.time = VideoCutTimeInItem(t, fps, item_start);
     shot.move_to_next = false;
-    ReadVideoCameraAt(track, fx, VideoPlayheadFrameTime(t, fps), shot.values);
+    // The camera at the shot's own first frame (the item rule may move it past the cursor's).
+    const long long cut_frame = VideoCutFrameInItem(t, fps, item_start);
+    const double camera_time = (fps > 0.0 && cut_frame > VideoFrameIndexAt(t, fps))
+                                   ? static_cast<double>(cut_frame) / fps
+                                   : VideoPlayheadFrameTime(t, fps);
+    ReadVideoCameraAt(track, fx, camera_time, shot.values);
 
     // Suggested name: the shot's own name when one is already there, else "Shot N".
     const std::vector<VideoShot> shots = ReadVideoShots(track, fx);

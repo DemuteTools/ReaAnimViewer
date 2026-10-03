@@ -208,7 +208,7 @@ std::optional<int> CompareVersions(const std::string& a, const std::string& b, b
     return CompareVersionsLocal(a, b);
 }
 
-// @version of the launcher the Toolkit installed next to the DLL copy. release.bat
+// @version of the launcher the Toolkit installed next to the DLL copy. A release
 // keeps it equal to the version of the DLL shipped with it.
 std::optional<std::string> ToolkitCopyVersion(const std::wstring& resource)
 {

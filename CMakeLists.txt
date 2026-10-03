@@ -18,7 +18,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(ReaperPlugin)
 
-# Version compiled into the DLL (src/self_update.cpp). Only release.bat passes it
+# Version compiled into the DLL (src/self_update.cpp). Only a release build passes it
 # (-DRAV_VERSION=X.Y.Z through build.bat). It is dropped from the cache right away,
 # so any later configure without it (build.bat, IDE, manual cmake) builds "dev",
 # and a dev build never self-updates.
@@ -194,7 +194,7 @@ if(WIN32)
     # registers (src/video_fx_api.h). Header-only dependencies (CLAP 1.2.7, reaper-sdk
     # video headers, both vendored in extern/); no renderer, no assimp, no GL. Built
     # into the same output folder as the DLL (build/Release/), installed by build.bat
-    # into UserPlugins\FX and published next to the DLL by release.bat.
+    # into UserPlugins\FX and published next to the DLL by a release.
     add_library(rav_video_fx SHARED src/fx/rav_video_fx_clap.cpp)
     set_target_properties(rav_video_fx PROPERTIES
         PREFIX ""

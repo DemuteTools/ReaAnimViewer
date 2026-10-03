@@ -1,5 +1,5 @@
 # Regenerates index.xml with reapack-index after every push to main, then commits it.
-# index.xml is never edited by hand: bump the version with release.bat instead.
+# index.xml is never edited by hand: bump the version with a release instead (see MAINTAINING.md).
 # Based on https://github.com/cfillion/reapack-repository-template
 name: reapack-deploy
 on:

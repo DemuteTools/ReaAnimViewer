@@ -63,3 +63,8 @@ docs/SPIKE0_FINDINGS.md
 docs/SPIKE11_FINDINGS.md
 spike/
 test-*.bat
+release.bat
+reapack-check.bat
+tools/release.ps1
+tools/ensure-gh.bat
+RELEASING.md

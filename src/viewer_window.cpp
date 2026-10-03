@@ -1508,6 +1508,10 @@ bool ImGuiWantsMouse()
     return g_imgui_ready && ImGui::GetIO().WantCaptureMouse;
 }
 
+// Spec 11-fb-17 -- the viewer's key state right now: a text field active, a key being recorded.
+bool TextInputNow() { return g_imgui_ready && ImGui::GetIO().WantTextInput; }
+bool ViewerTakesCharNow() { return ViewerTakesChar(g_key_route, ShortcutRecordingId() >= 0, TextInputNow()); }
+
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     // Feed input to Dear ImGui first (Story 6.5.3 rev). Only after it is initialized —
@@ -1725,16 +1729,43 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     }
 
-    case WM_SYSKEYUP:
+    case WM_GETDLGCODE: {
+        // Spec 11-fb-17 — the Windows beep on the viewer's keys. We are a child of REAPER's
+        // docker, a dialog, and REAPER passes each message through its IsDialogMessage. A
+        // child that answers 0 here does not want characters, so IsDialogMessage took a
+        // WM_CHAR ("c" after C cut, Ctrl+A's 0x01 in a text field) as a mnemonic, found no
+        // control for it and beeped. Characters are always claimed (no mnemonic beep for any
+        // of them). Enter / Esc / Tab / the arrows are claimed only while the viewer takes
+        // keys (a text field, recording, the Shortcuts popup or the delete confirmation, a
+        // key it took); otherwise the docker keeps its own handling of them. Keys the viewer
+        // does not take are still returned to REAPER (0) by the accelerator hook.
+        const bool takes_keys = TextInputNow() || ShortcutRecordingId() >= 0 || ShortcutsPopupOpen() ||
+                                VideoDeleteConfirmOpen() || g_key_route.claimed_vk != 0;
+        return DLGC_WANTCHARS | (takes_keys ? (DLGC_WANTALLKEYS | DLGC_WANTARROWS | DLGC_WANTTAB) : 0);
+    }
+
+    case WM_CHAR:
+    case WM_DEADCHAR:
     case WM_SYSCHAR:
+    case WM_SYSDEADCHAR:
+        // Spec 11-fb-17 — the character of a key we took, or one typed into a text field /
+        // while recording: ImGui already has it (its handler ran above), so it ends here,
+        // never in DefWindowProc (no beep, no window menu for an Alt one). Other characters
+        // keep their old path.
+        if (ViewerTakesCharNow()) return 0;
+        break;
+
+    case WM_SYSKEYUP:
         // Spec 11-fb-3 — an Alt key the viewer took (or recorded) must not reach the window
         // menu through DefWindowProc. The hook clears the claim on the release before it
         // reaches us, so the release is recognised by its own marker.
-        if (msg == WM_SYSKEYUP && g_key_route.released_vk != 0 && wp == g_key_route.released_vk) {
+        if (g_key_route.released_vk != 0 && wp == g_key_route.released_vk) {
             g_key_route.released_vk = 0;
             return 0;
         }
-        if (ShortcutRecordingId() >= 0 || g_key_route.claimed_vk != 0) return 0;
+        // Spec 11-fb-17 — Alt released in a text field (or while recording) must not open
+        // REAPER's menu bar (SC_KEYMENU), which would take the focus from the field.
+        if (ShortcutRecordingId() >= 0 || g_key_route.claimed_vk != 0 || TextInputNow()) return 0;
         break;
 
     case WM_KILLFOCUS:

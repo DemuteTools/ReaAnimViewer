@@ -486,6 +486,75 @@ int main()
         CHECK(st.alt_wheel_taken);
     }
 
+    // Spec 11-fb-17: a text field takes Ctrl and the editing keys (Ctrl+A selects all); the
+    // characters of the viewer's keys are the viewer's (no beep from the docker dialog).
+    {
+        const ShortcutBindings b = DefaultShortcutBindings();
+        auto ev = [](KeyMsg m, unsigned key, bool text, bool ctrl = false, bool shift = false) {
+            KeyRouteInput i;
+            i.msg = m;
+            i.key = key;
+            i.text_input = text;
+            i.ctrl = ctrl;
+            i.shift = shift;
+            i.video_view = true;
+            return i;
+        };
+        KeyRouteState st;
+        // Text input: Ctrl down, Ctrl+A / C / V / X / Z with their chars and releases.
+        CHECK(RouteViewerKey(b, ev(KeyMsg::KeyDown, vk::kControl, true, true), st) == kRouteViewer);
+        const unsigned ctrl_keys[] = {'A', 'C', 'V', 'X', 'Z'};
+        for (unsigned k : ctrl_keys) {
+            CHECK(RouteViewerKey(b, ev(KeyMsg::KeyDown, k, true, true), st) == kRouteViewer);
+            CHECK(RouteViewerKey(b, ev(KeyMsg::Char, k - 'A' + 1, true, true), st) == kRouteViewer);  // 0x01..
+            CHECK(RouteViewerKey(b, ev(KeyMsg::KeyUp, k, true, true), st) == kRouteViewer);
+        }
+        CHECK(RouteViewerKey(b, ev(KeyMsg::KeyUp, vk::kControl, true), st) == kRouteViewer);
+        // Home / End, Shift+Left.
+        CHECK(RouteViewerKey(b, ev(KeyMsg::KeyDown, vk::kHome, true), st) == kRouteViewer);
+        CHECK(RouteViewerKey(b, ev(KeyMsg::KeyUp, vk::kHome, true), st) == kRouteViewer);
+        CHECK(RouteViewerKey(b, ev(KeyMsg::KeyDown, vk::kEnd, true), st) == kRouteViewer);
+        CHECK(RouteViewerKey(b, ev(KeyMsg::KeyUp, vk::kEnd, true), st) == kRouteViewer);
+        CHECK(RouteViewerKey(b, ev(KeyMsg::KeyDown, vk::kShift, true, false, true), st) == kRouteViewer);
+        CHECK(RouteViewerKey(b, ev(KeyMsg::KeyDown, vk::kLeft, true, false, true), st) == kRouteViewer);
+        CHECK(RouteViewerKey(b, ev(KeyMsg::KeyUp, vk::kLeft, true, false, true), st) == kRouteViewer);
+        CHECK(RouteViewerKey(b, ev(KeyMsg::KeyUp, vk::kShift, true), st) == kRouteViewer);
+        // Text input: Space and a key the viewer has no action for are the field's.
+        CHECK(RouteViewerKey(b, ev(KeyMsg::KeyDown, vk::kSpace, true), st) == kRouteViewer);
+        CHECK(RouteViewerKey(b, ev(KeyMsg::Char, ' ', true), st) == kRouteViewer);
+        CHECK(RouteViewerKey(b, ev(KeyMsg::KeyUp, vk::kSpace, true), st) == kRouteViewer);
+        CHECK(RouteViewerKey(b, ev(KeyMsg::KeyDown, 'K', true), st) == kRouteViewer);
+        CHECK(RouteViewerKey(b, ev(KeyMsg::Char, 'k', true), st) == kRouteViewer);
+        CHECK(RouteViewerKey(b, ev(KeyMsg::KeyUp, 'K', true), st) == kRouteViewer);
+        // No text input: Ctrl+A and Space stay REAPER's.
+        st = KeyRouteState{};
+        CHECK(RouteViewerKey(b, ev(KeyMsg::KeyDown, vk::kControl, false, true), st) == kRouteReaper);
+        CHECK(RouteViewerKey(b, ev(KeyMsg::KeyDown, 'A', false, true), st) == kRouteReaper);
+        CHECK(RouteViewerKey(b, ev(KeyMsg::Char, 0x01, false, true), st) == kRouteReaper);
+        CHECK(RouteViewerKey(b, ev(KeyMsg::KeyUp, 'A', false, true), st) == kRouteReaper);
+        CHECK(RouteViewerKey(b, ev(KeyMsg::KeyDown, vk::kSpace, false), st) == kRouteReaper);
+        CHECK(RouteViewerKey(b, ev(KeyMsg::Char, ' ', false), st) == kRouteReaper);
+        CHECK(!ViewerTakesChar(st, false, false));  // Space's char keeps its old path
+        // The char of a claimed action key (C in Video view) is the viewer's, and the window
+        // takes it (ViewerTakesChar) until the key's release.
+        CHECK(RouteViewerKey(b, ev(KeyMsg::KeyDown, 'C', false), st) == kRouteViewer);
+        CHECK(ViewerTakesChar(st, false, false));
+        CHECK(RouteViewerKey(b, ev(KeyMsg::Char, 'c', false), st) == kRouteViewer);
+        CHECK(RouteViewerKey(b, ev(KeyMsg::KeyUp, 'C', false), st) == kRouteViewer);
+        CHECK(!ViewerTakesChar(st, false, false));
+        // ViewerTakesChar truth table.
+        KeyRouteState none, claimed;
+        claimed.claimed_vk = 'C';
+        CHECK(!ViewerTakesChar(none, false, false));
+        CHECK(ViewerTakesChar(none, true, false));
+        CHECK(ViewerTakesChar(none, false, true));
+        CHECK(ViewerTakesChar(none, true, true));
+        CHECK(ViewerTakesChar(claimed, false, false));
+        CHECK(ViewerTakesChar(claimed, true, false));
+        CHECK(ViewerTakesChar(claimed, false, true));
+        CHECK(ViewerTakesChar(claimed, true, true));
+    }
+
     if (g_fails == 0) std::printf("shortcuts: all checks passed\n");
     return g_fails == 0 ? 0 : 1;
 }

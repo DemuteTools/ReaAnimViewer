@@ -230,6 +230,9 @@ inline int RouteViewerKey(const ShortcutBindings& b, const KeyRouteInput& in, Ke
         if (in.msg == KeyMsg::SysKeyUp) st.released_vk = in.key;
         return to_viewer;
     }
+    // Spec 11-fb-17 -- an active text field takes every key, with its characters and release:
+    // Ctrl (and Ctrl+A / C / V / X / Z), Home / End, Shift + arrows and the rest of the editing
+    // keys, which ImGui's InputText handles itself; Space types a space instead of playing.
     if (in.text_input) return to_viewer;
     if (down) {
         st.released_vk = 0;
@@ -256,6 +259,16 @@ inline int RouteViewerKey(const ShortcutBindings& b, const KeyRouteInput& in, Ke
         in.msg == KeyMsg::SysDeadChar)
         return st.claimed_vk != 0 ? to_viewer : kRouteReaper;  // the character of the key we took
     return kRouteReaper;
+}
+
+// Spec 11-fb-17 -- whether a WM_CHAR / WM_SYSCHAR / WM_DEADCHAR reaching the viewer window is
+// the viewer's: the character of a key it took (claimed_vk, still set until that key's
+// release), any character while a new key is recorded, or while an ImGui text field is
+// active. The window then answers it itself (ImGui already has the character) and never lets
+// it reach DefWindowProc; other characters keep their old path.
+inline bool ViewerTakesChar(const KeyRouteState& st, bool recording, bool text_input)
+{
+    return recording || text_input || st.claimed_vk != 0;
 }
 
 // ---- recording -----------------------------------------------------------------------

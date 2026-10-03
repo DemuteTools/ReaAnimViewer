@@ -471,7 +471,7 @@ void RenderVideoView(float anim_time)
 {
     const VideoViewModel& m = GetVideoViewModel();
     const float area_w = static_cast<float>(g_client_w) - VideoPanelFootprint(g_client_w);
-    g_video_frame = ComputeVideoFrameRect(area_w, ViewBottom(), kVideoTopBand,
+    g_video_frame = ComputeVideoFrameRect(area_w, ViewBottom(), VideoTopBand(),
                                           kNavCubeSize + 2.0f * kNavCubeMargin, m.out_w, m.out_h);
     const int fx = static_cast<int>(g_video_frame.x);
     const int fw = static_cast<int>(g_video_frame.w);
@@ -1261,7 +1261,8 @@ void DrawToolUi()
     // hovering holds it.
     if (!g_load_msg_title.empty() && ElapsedSeconds() < g_load_msg_until) {
         // Story 11-4: under the view toggle (which owns the top centre now).
-        ImGui::SetNextWindowPos(ImVec2(area_right * 0.5f, 48.0f),
+        // Spec 11-fb-8: in Video view, below the caption band (not over the captions).
+        ImGui::SetNextWindowPos(ImVec2(area_right * 0.5f, video_view ? VideoTopBand() + 4.0f : 48.0f),
                                 ImGuiCond_Always, ImVec2(0.5f, 0.0f));
         if (ImGui::Begin("##loadmsg", nullptr, kReadoutFlags & ~ImGuiWindowFlags_NoInputs)) {
             DrawLoadMessageBody();

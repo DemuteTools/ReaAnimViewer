@@ -17,7 +17,16 @@
 
 namespace rav {
 
-constexpr float kVideoTopBand = 44.0f;  // the band above the frame: toggle, captions, FPS, panel button
+// The band above the Video view frame: the overlay row (menu button, view toggle, keyboard
+// icon, FPS, panel button; its bottom is kVideoOverlayRowBottom) and, under it, the caption
+// line (size / fps / catch-up readout, shot name), so captions never sit under an overlay
+// (spec 11-fb-8). The row's lowest overlay is the ##tools menu card: y 10 + padding 8 +
+// 22 px icon + 2 x 3 frame padding + padding 8 = 54. Change it with those values.
+constexpr float kVideoOverlayRowBottom = 54.0f;
+constexpr float kVideoCaptionGap = 5.0f;  // captions sit this far above the frame
+// Called before ImGui's frame starts (RenderVideoView): uses the font size of the last
+// frame, or 13 px when there is no context / font yet.
+float VideoTopBand();
 constexpr float kVideoStripHeight = 56.0f;  // Story 11-5: the shot strip under the viewport (lane + spec 11-fb-6 ruler band)
 constexpr float kVideoStripGap = 8.0f;      // its margin to the window's edges and the frame
 

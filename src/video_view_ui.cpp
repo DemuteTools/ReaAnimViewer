@@ -537,6 +537,14 @@ void RenderRow(float full)
 
 }  // namespace
 
+float VideoTopBand()
+{
+    // overlay row, a small gap, the caption line, the 5 px gap the captions keep above the frame
+    // (called before ImGui's frame starts: without a context or a font size yet, assume 13 px)
+    const float line = (ImGui::GetCurrentContext() && ImGui::GetFontSize() > 0.0f) ? ImGui::GetTextLineHeight() : 13.0f;
+    return kVideoOverlayRowBottom + 4.0f + line + kVideoCaptionGap;
+}
+
 float VideoPanelFootprint(int client_w)
 {
     if (!VideoPanelVisible()) return 0.0f;
@@ -592,7 +600,7 @@ void DrawVideoFrameDecor(const VideoFrameRect& fr, void (*copy_log)(), bool show
     char left[96];
     std::snprintf(left, sizeof(left), "%d " RAV_TIMES " %d " RAV_DOT " %s", m.out_w, m.out_h, fps);
     const float text_h = ImGui::GetTextLineHeight();
-    const ImVec2 left_pos(a.x, a.y - text_h - 5.0f);
+    const ImVec2 left_pos(a.x, a.y - text_h - kVideoCaptionGap);
     bg->AddText(left_pos, ui::kMuted, left);
 
     // The shot on the right, measured first: the lag readout must not run into it.
@@ -681,7 +689,7 @@ void DrawVideoFrameDecor(const VideoFrameRect& fr, void (*copy_log)(), bool show
         }
     }
 
-    if (!right.empty()) bg->AddText(ImVec2(b.x - right_w, a.y - text_h - 5.0f), ui::kMuted, right.c_str());
+    if (!right.empty()) bg->AddText(ImVec2(b.x - right_w, a.y - text_h - kVideoCaptionGap), ui::kMuted, right.c_str());
 
     if (VideoViewCanEdit()) return;  // the picture: nothing is drawn inside the frame
 

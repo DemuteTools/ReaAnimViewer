@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //
 // REAPER's own windows opened from RAV (Epic 11, Story 11-5): the Video panel's
-// "Region Render Matrix..." and "Render dialog..." buttons. They run REAPER's actions:
+// "Matrix" and "Render" buttons (one row pinned at the top of the panel). They run REAPER's actions:
 //   41888  View: Show region render matrix window
 //   40015  File: Render project to disk...
 // Each id is used whenever REAPER knows it (kbd_getTextFromCmd gives it a name, English or

@@ -312,7 +312,7 @@ Shots are ordinary automation: envelope points on the FX's six parameters (Yaw, 
 
 ### Rendering
 
-1. In the Video panel, click **Region Render Matrix...** to open REAPER's Region Render Matrix and tick the regions to render, or **Render dialog...** to open REAPER's Render to File dialog.
+1. In the Video panel, click **Matrix** (top of the panel) to open REAPER's Region Render Matrix and tick the regions to render, or **Render** to open REAPER's Render to File dialog.
 2. In the Render dialog, choose the **Source** (Region render matrix, Time selection, Entire project...) and a video **Format** (for example MP4 / H.264). Keep the video size on the project's settings, or set the size shown above the Video view frame.
 3. Render. The picture comes from the FX at each frame's exact time, so picture and sound stay in sync and each cut lands on its frame.
 

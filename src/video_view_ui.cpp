@@ -518,21 +518,20 @@ void OutputSection(const VideoViewModel& m)
                           "View menu.");
 }
 
-// The Render section (UX decision 6): REAPER's own windows render picture and sound.
-void RenderSection(float full)
+// The render row (UX decision 6): REAPER's own windows render picture and sound. One line,
+// two equal buttons, pinned at the top of the panel (outside its scrolling body).
+void RenderRow(float full)
 {
-    ImGui::Spacing();
-    ImGui::Separator();
-    GroupHeader("Render", nullptr);
-    if (ui::PrimaryButton("Region Render Matrix...", ImVec2(full, 0.0f))) QueueVideoOpenRenderMatrix();
+    constexpr float kGap = 6.0f;  // between the two buttons
+    const float half = std::floor((full - kGap) * 0.5f);
+    if (ui::PrimaryButton("Matrix##render", ImVec2(half, 0.0f))) QueueVideoOpenRenderMatrix();
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("REAPER's Region Render Matrix: tick the regions, then render them from the Render "
-                          "dialog (Source: Region render matrix, a video format).\nWhile playing, REAPER's "
-                          "Video window can lag a few seconds; Video view is exact.");
-    if (ui::SolidButton("Render dialog...", ImVec2(full, 0.0f))) QueueVideoOpenRenderDialog();
+        ImGui::SetTooltip("REAPER's Region Render Matrix: tick regions, then render from the Render dialog "
+                          "(Source: Region render matrix, a video format)");
+    ImGui::SameLine(0.0f, kGap);
+    if (ui::SolidButton("Render##render", ImVec2(full - half - kGap, 0.0f))) QueueVideoOpenRenderDialog();
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("REAPER's Render dialog: pick a video format (e.g. MP4) and the bounds (time "
-                          "selection, regions...)");
+        ImGui::SetTooltip("REAPER's Render dialog: pick a video format (e.g. MP4) and the bounds");
 }
 
 }  // namespace
@@ -920,13 +919,16 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
     ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStroke));
     constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                                         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-                                        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing;
+                                        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                                        // The panel never scrolls: only its body child below the
+                                        // title and render rows does.
+                                        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
     if (!ImGui::Begin("##videopanel", nullptr, kFlags)) {
         ImGui::End();
         ImGui::PopStyleColor(2);
         return;
     }
-    const float full = ImGui::GetContentRegionAvail().x;
+    const float panel_w = ImGui::GetContentRegionAvail().x;
 
     // ---- Header: icon, title, close -------------------------------------------------------
     {
@@ -936,12 +938,22 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
         ImGui::Dummy(ImVec2(18.0f, 16.0f));
         ImGui::SameLine();
         ImGui::TextUnformatted("Video");
-        ImGui::SameLine(std::max(0.0f, full - 18.0f));
+        ImGui::SameLine(std::max(0.0f, panel_w - 18.0f));
         if (ImGui::SmallButton("x##closepanel")) SetVideoPanelVisible(false);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("Hide the panel (%s, or Tools > Video)", ShortcutKeyLabel(kShortcutTogglePanel));
     }
     ImGui::Spacing();
+
+    // ---- Render: Matrix | Render, always visible (outside the scrolling body) --------------
+    RenderRow(panel_w);
+    ImGui::Spacing();
+    ImGui::Separator();  // the pinned row above, the scrolling body below
+
+    // ---- Scrolling body: everything below the render row ------------------------------------
+    // The child fills the rest of the panel; its width shrinks while its scrollbar shows.
+    ImGui::BeginChild("##videopanelbody", ImVec2(0.0f, 0.0f), ImGuiChildFlags_None);
+    const float full = ImGui::GetContentRegionAvail().x;
 
     // ---- FX state on the track (UX decisions 2 and 7) -------------------------------------
     switch (m.status) {
@@ -1066,11 +1078,11 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
         ImGui::PopStyleColor(3);
     }
 
-    // ---- Story 11-5: shots, saved angles, output, render ------------------------------------
+    // ---- Story 11-5: shots, saved angles, output --------------------------------------------
     if (m.fx >= 0 && !m.shots.empty()) ShotList(m, full);
     if (m.fx >= 0) SavedAngles(m, full);
     if (m.fx >= 0 && m.track) OutputSection(m);
-    RenderSection(full);
+    ImGui::EndChild();
 
     ImGui::End();
     ImGui::PopStyleColor(2);

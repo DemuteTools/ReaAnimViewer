@@ -557,7 +557,6 @@ void DrawVideoViewToggle(float center_x)
         static const char* const kViews[2] = {"RAV view", "Video view"};
         int sel = VideoViewActive() ? 1 : 0;
         if (ui::Segmented("##view", kViews, 2, &sel)) SetVideoViewActive(sel == 1);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("RAV view: free camera.  Video view: the render's camera (V)");
     }
     ImGui::End();
     ImGui::PopStyleVar();

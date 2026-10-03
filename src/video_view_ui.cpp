@@ -525,7 +525,7 @@ void RenderRow(float full)
 {
     constexpr float kGap = 6.0f;  // between the two buttons
     const float half = std::floor((full - kGap) * 0.5f);
-    if (ui::PrimaryButton("Matrix##render", ImVec2(half, 0.0f))) QueueVideoOpenRenderMatrix();
+    if (ui::SolidButton("Matrix##render", ImVec2(half, 0.0f))) QueueVideoOpenRenderMatrix();  // same style as Render (Antho)
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("REAPER's Region Render Matrix: tick regions, then render from the Render dialog "
                           "(Source: Region render matrix, a video format)");

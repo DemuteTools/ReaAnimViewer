@@ -167,4 +167,31 @@ void ShortcutRecordKey(unsigned key, bool ctrl, bool shift, bool alt)
     }
 }
 
+// ---- small persisted settings (spec 11-fb-11) ------------------------------------------
+
+bool LoadPrefBool(const char* key, bool def)
+{
+    if (!key || !GetExtState) return def;
+    return ParsePrefBool(GetExtState(kExtSection, key), def);
+}
+
+void SavePrefBool(const char* key, bool value)
+{
+    if (key && SetExtState) SetExtState(kExtSection, key, value ? "1" : "0", true);
+}
+
+float LoadPrefFloat(const char* key, float def)
+{
+    if (!key || !GetExtState) return def;
+    return ParsePrefFloat(GetExtState(kExtSection, key), def);
+}
+
+void SavePrefFloat(const char* key, float value)
+{
+    if (!key || !SetExtState) return;
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.1f", static_cast<double>(value));
+    SetExtState(kExtSection, key, buf, true);
+}
+
 }  // namespace rav

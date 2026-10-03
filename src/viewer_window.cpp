@@ -23,6 +23,7 @@
 
 #include <windowsx.h>  // GET_X_LPARAM / GET_Y_LPARAM — unpack WM_MOUSEMOVE coords
 #include <cmath>       // std::sin/cos/asin/atan2/sqrt — light azimuth/elevation ↔ direction
+#include <cfloat>      // FLT_MAX (spec 11-fb-11: the menu's height cap)
 #include <algorithm>   // std::min/max — the load message's wrap width
 #include <exception>   // std::exception — the no-throw host boundary (AR18)
 #include <string>
@@ -446,7 +447,8 @@ bool EnsureVideoTarget(int w, int h)
 // active FX), 0 otherwise. The frame, the ViewCube and the status icon stay above it.
 float VideoStripBand()
 {
-    return VideoShotStripVisible() ? kVideoStripHeight + 2.0f * kVideoStripGap : 0.0f;
+    // Spec 11-fb-11: the strip's height is the user's (its top edge drags it).
+    return VideoShotStripVisible() ? VideoStripHeight(static_cast<float>(g_client_h)) + 2.0f * kVideoStripGap : 0.0f;
 }
 
 // The bottom of the view area (client height minus the strip band).
@@ -1015,17 +1017,23 @@ void DrawToolUi()
     ImGui::NewFrame();
 
     ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_Always);
+    // Spec 11-fb-11: open, the menu stops 10 px above the window's bottom and scrolls (a short
+    // viewer with every section unfolded); closed, it is the bare button.
+    constexpr float kMenuMargin = 10.0f;  // its gap to the window's top and bottom edges
     constexpr ImGuiWindowFlags kFlags =
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
-        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar |
-        ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing;
+        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing;
+    constexpr ImGuiWindowFlags kClosedFlags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+    ImGui::SetNextWindowSizeConstraints(
+        ImVec2(0.0f, 0.0f),
+        ImVec2(FLT_MAX, std::max(48.0f, static_cast<float>(g_client_h) - 2.0f * kMenuMargin)));
 
     // Story 11-4: the theme (ui_theme.h) styles the menu; it is a raised card when open.
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 8.0f));
     ImGui::PushStyleColor(ImGuiCol_WindowBg, g_menu_open ? ui::Col(ui::kRaised) : ui::Col(IM_COL32(18, 19, 23, 184)));
     ImGui::PushStyleColor(ImGuiCol_Border, g_menu_open ? ui::Col(ui::kStrokeStrong) : ui::Col(ui::kStroke));
-    ImGui::Begin("##tools", nullptr, kFlags);
+    ImGui::Begin("##tools", nullptr, g_menu_open ? kFlags : (kFlags | kClosedFlags));
 
     // Hamburger button — frameless icon; toggles the option list.
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0, 0, 0, 0));
@@ -1170,6 +1178,15 @@ void DrawToolUi()
                 SetVideoPanelVisible(!panel);
             ImGui::SameLine(160.0f);
             ui::Caption(panel ? "open" : "closed");
+            // Spec 11-fb-11 -- the Delete key asks first unless "Don't ask again" was ticked;
+            // this gives the question back (or takes it away).
+            ImGui::Indent(8.0f);
+            bool ask = VideoAskBeforeDeleteShot();
+            if (ImGui::Checkbox("Ask before deleting a shot", &ask)) SetVideoAskBeforeDeleteShot(ask);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("The %s key in Video view deletes the current shot: ask first, or delete at once",
+                                  ShortcutKeyLabel(kShortcutDeleteShot));
+            ImGui::Unindent(8.0f);
         }
 
         ImGui::Dummy(ImVec2(0.0f, 2.0f));
@@ -1241,8 +1258,9 @@ void DrawToolUi()
         DrawVideoPanelButton(area_right - 8.0f);
         // Story 11-5 -- the shot strip under the viewport (UX decision 4).
         if (VideoStripBand() > 0.0f) {
-            DrawVideoShotStrip(kVideoStripGap, static_cast<float>(g_client_h) - kVideoStripGap - kVideoStripHeight,
-                               std::max(1.0f, area_right - 2.0f * kVideoStripGap), kVideoStripHeight);
+            const float strip_h = VideoStripHeight(static_cast<float>(g_client_h));
+            DrawVideoShotStrip(kVideoStripGap, static_cast<float>(g_client_h) - kVideoStripGap - strip_h,
+                               std::max(1.0f, area_right - 2.0f * kVideoStripGap), strip_h);
         }
     }
     if (panel_room > 0.0f) {
@@ -1251,6 +1269,8 @@ void DrawToolUi()
                        std::max(1.0f, static_cast<float>(g_client_h) - 2.0f * gap), g_renderer.Camera(),
                        &CopyErrorLogToClipboard);
     }
+    // Spec 11-fb-11 -- the Delete key's confirmation (closes itself outside Video view).
+    DrawVideoDeleteConfirm();
 
     // Load message (AC7) — a brief transient message, top-centre, shown while fresh
     // (kLoadMessageSeconds, armed by SetLoadMessage). Rehomes the OTHER 6.5.2-silenced
@@ -1652,6 +1672,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             RequestCloseShortcutsPopup();
             return 0;
         }
+        if (wp == VK_ESCAPE && VideoDeleteConfirmOpen()) {  // spec 11-fb-11: Esc cancels the delete
+            CancelVideoDelete();
+            return 0;
+        }
+        if (wp == VK_RETURN && VideoDeleteConfirmOpen()) {  // ...and Enter confirms it (the dialog's choice)
+            if (!(lp & (1 << 30))) RequestVideoDeleteConfirmByKey();
+            return 0;
+        }
         if (g_imgui_ready && ImGui::GetIO().WantTextInput) return 0;
         const int action = ShortcutActionForKey(static_cast<unsigned>(wp), ctrl, shift, alt, VideoViewActive());
         if (action < 0) {
@@ -1660,6 +1688,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             break;  // not ours (an Alt key goes on to DefWindowProc)
         }
         if (lp & (1 << 30)) return 0;  // auto-repeat of a held key: one toggle per press
+        if (VideoDeleteConfirmOpen()) return 0;  // spec 11-fb-11: no shortcut runs behind the confirmation
         if (action == kShortcutToggleView || (action == kShortcutTogglePanel && !VideoViewActive())) {
             // A running drag ends before the view changes (a Video view drag is written).
             // The panel key from RAV view opens the panel, which enters Video view: same rule.
@@ -1676,6 +1705,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (action == kShortcutTogglePanel) { SetVideoPanelVisible(!VideoPanelVisible()); return 0; }
         // Story 11-5 -- cut a new shot at the playhead (Video view only: the table's context).
         if (action == kShortcutCut) { QueueVideoCut(); return 0; }
+        // Spec 11-fb-11 -- delete the current shot (Video view only), after a confirmation.
+        if (action == kShortcutDeleteShot) { RequestVideoDeleteCurrentShot(); return 0; }
         return 0;
     }
 
@@ -1787,7 +1818,8 @@ int ViewerTranslateAccel(MSG* msg, accelerator_register_t* /*ctx*/)
     in.video_view = VideoViewActive();
     in.recording  = ShortcutRecordingId() >= 0;
     in.text_input = g_imgui_ready && ImGui::GetIO().WantTextInput;
-    in.popup_open = ShortcutsPopupOpen();
+    in.popup_open = ShortcutsPopupOpen() || VideoDeleteConfirmOpen();  // Esc closes either
+    in.confirm_open = VideoDeleteConfirmOpen();  // Enter confirms the delete
     // The decision itself is pure (src/shortcuts.h RouteViewerKey, host-tested).
     return RouteViewerKey(CurrentShortcuts(), in, g_key_route);
 }

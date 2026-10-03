@@ -511,6 +511,43 @@ bool RenameVideoShot(MediaTrack* track, int fx, double time, const std::string& 
     return true;
 }
 
+// ---- Envelope visibility (spec 11-fb-11) ------------------------------------------------------
+void VideoFxEnvelopesState(MediaTrack* track, int fx, bool* any, bool* visible)
+{
+    if (any) *any = false;
+    if (visible) *visible = false;
+    if (!ValidFx(track, fx)) return;
+    const int n = TrackFX_GetNumParams(track, fx);
+    for (int p = 0; p < n; ++p) {
+        TrackEnvelope* env = GetFXEnvelope(track, fx, p, false);
+        if (!env) continue;
+        if (any) *any = true;
+        char buf[16] = {};
+        if (GetSetEnvelopeInfo_String(env, "VISIBLE", buf, false) && buf[0] == '1') {
+            if (visible) *visible = true;
+            return;  // both known
+        }
+    }
+}
+
+bool SetVideoFxEnvelopesVisible(MediaTrack* track, int fx, bool visible)
+{
+    if (!ValidFx(track, fx)) return false;
+    bool any = false;
+    const int n = TrackFX_GetNumParams(track, fx);
+    for (int p = 0; p < n; ++p) {
+        TrackEnvelope* env = GetFXEnvelope(track, fx, p, false);
+        if (!env) continue;
+        any = true;
+        char buf[4] = {visible ? '1' : '0', '\0'};
+        GetSetEnvelopeInfo_String(env, "VISIBLE", buf, true);
+    }
+    if (!any) return false;
+    TrackList_AdjustWindows(false);  // envelope lanes change the track heights
+    UpdateArrange();
+    return true;
+}
+
 // ---- Saved angles and output -----------------------------------------------------------------
 bool SaveVideoAngle(MediaTrack* track, int fx, const std::string& name, const double values[vcam::kParamCount])
 {

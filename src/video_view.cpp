@@ -17,6 +17,7 @@
 #include "console_log.h"
 #include "reaper_actions.h"
 #include "reaper_api.h"
+#include "shortcuts.h"  // spec 11-fb-11: LoadPrefBool / SavePrefBool
 #include "video_camera.h"
 #include "video_fx_host.h"
 #include "video_fx_track.h"
@@ -56,6 +57,8 @@ enum class CmdKind {
     OpenRenderDialog,
     // Feedback 11-fb-2
     MoveShot,
+    // Spec 11-fb-11
+    EnvelopesVisible,
 };
 
 struct Cmd {
@@ -111,6 +114,15 @@ std::vector<Cmd> g_queue;
 VideoStripRange g_range;
 std::string     g_notice;
 double          g_notice_until = -1.0;
+
+// Spec 11-fb-11 -- the delete confirmation (the shot it asks about, captured on the key press).
+constexpr char kPrefSkipDeleteConfirm[] = "video.delete_shot_skip_confirm";
+bool        g_delete_open = false;
+std::string g_delete_name;
+MediaTrack* g_delete_track = nullptr;
+int         g_delete_fx = -1;
+double      g_delete_time = 0.0;
+int         g_skip_delete_confirm = -1;  // -1: not read from ExtState yet
 
 double Now()
 {
@@ -182,6 +194,7 @@ void Refresh()
             else if (!TrackFX_GetEnabled(tr, m.fx)) m.status = VideoFxStatus::Bypassed;
             else m.status = VideoFxStatus::Active;
             m.shots = ReadVideoShots(tr, m.fx);
+            VideoFxEnvelopesState(tr, m.fx, &m.has_envelopes, &m.envelopes_visible);
             VideoFxState st;
             if (ReadVideoFxState(tr, m.fx, &st)) {
                 ow = st.override_width;
@@ -494,6 +507,14 @@ void RunOne(const Cmd& c)
             Undo_EndBlock2(nullptr, c.flag ? "RAV: Video shot: move to next" : "RAV: Video shot: cut to next",
                            UNDO_STATE_FX);
             return;
+        case CmdKind::EnvelopesVisible: {
+            if (!FxValid(c.track, c.fx)) return;
+            Undo_BeginBlock2(nullptr);
+            SetVideoFxEnvelopesVisible(c.track, c.fx, c.flag);
+            Undo_EndBlock2(nullptr, c.flag ? "RAV: Show video FX envelopes" : "RAV: Hide video FX envelopes",
+                           UNDO_STATE_TRACKCFG);
+            return;
+        }
         // ---- Story 11-5 ----------------------------------------------------------------------
         case CmdKind::Seek:
             SetEditCurPos(std::max(0.0, c.shot_time), /*moveview=*/true, /*seekplay=*/true);
@@ -586,6 +607,7 @@ void SetVideoViewActive(bool on)
     if (g_active != on) {
         CommitLive(/*view_gestures=*/true);  // a drag or wheel zoom never outlives its view
         if (!on) CommitLive(/*view_gestures=*/false);  // nor a panel slider: the panel goes too
+        if (!on) g_delete_open = false;  // the delete confirmation is Video view's
         g_dirty = true;
     }
     g_active = on;
@@ -809,6 +831,43 @@ void QueueVideoTransition(bool move_to_next)
     g_queue.push_back(std::move(c));
 }
 
+void QueueVideoTransitionAt(int index)
+{
+    if (index < 0 || index >= static_cast<int>(g_model.shots.size())) return;
+    if (g_live.kind == Gesture::Zoom) QueueLiveWrite(UndoNameFor(Gesture::Zoom));  // a wheel gesture ends here
+    if (!VideoViewCanCut()) {
+        if (g_model.status != VideoFxStatus::Active) SetNotice("Needs an active video FX on this track");
+        else SetNotice("Finish the camera move first");
+        return;
+    }
+    const VideoShot& s = g_model.shots[static_cast<size_t>(index)];
+    if (s.implicit) return;  // no envelope point to reshape
+    const bool to_move = !s.move_to_next;
+    // The last shot has nothing to move to (a Move one, set by hand, may still go back to Cut).
+    if (to_move && index + 1 >= static_cast<int>(g_model.shots.size())) {
+        SetNotice("The last shot has no next shot to move to");
+        return;
+    }
+    Cmd c;
+    c.kind = CmdKind::Transition;
+    c.track = g_model.track;
+    c.fx = g_model.fx;
+    c.shot_time = s.time;
+    c.flag = to_move;
+    g_queue.push_back(std::move(c));
+}
+
+void QueueVideoToggleEnvelopes()
+{
+    if (!g_model.track || g_model.fx < 0 || !g_model.has_envelopes) return;
+    Cmd c;
+    c.kind = CmdKind::EnvelopesVisible;
+    c.track = g_model.track;
+    c.fx = g_model.fx;
+    c.flag = !g_model.envelopes_visible;  // any shows: hide them all; none shows: show them all
+    g_queue.push_back(std::move(c));
+}
+
 void QueueVideoCopyRavView(const OrbitCamera& free_camera)
 {
     Cmd c;
@@ -902,6 +961,7 @@ void VideoViewRunPending()
 void VideoViewOnViewerClosed()
 {
     g_live = Live();
+    g_delete_open = false;
     g_tweening = false;
     g_queue.clear();
     g_has_item = false;
@@ -997,6 +1057,99 @@ void QueueVideoDeleteShot(int index)
     c.fx = g_model.fx;
     c.shot_time = g_model.shots[static_cast<size_t>(index)].time;
     g_queue.push_back(std::move(c));
+}
+
+bool VideoAskBeforeDeleteShot()
+{
+    if (g_skip_delete_confirm < 0) g_skip_delete_confirm = LoadPrefBool(kPrefSkipDeleteConfirm, false) ? 1 : 0;
+    return g_skip_delete_confirm == 0;
+}
+
+void SetVideoAskBeforeDeleteShot(bool ask)
+{
+    g_skip_delete_confirm = ask ? 0 : 1;
+    SavePrefBool(kPrefSkipDeleteConfirm, !ask);
+}
+
+void RequestVideoDeleteCurrentShot()
+{
+    if (g_delete_open) return;  // already asking
+    if (g_live.kind == Gesture::Zoom) QueueLiveWrite(UndoNameFor(Gesture::Zoom));  // a wheel gesture ends here
+    if (!VideoViewCanCut()) {
+        if (g_model.status != VideoFxStatus::Active) SetNotice("Needs an active video FX on this track");
+        else SetNotice("Finish the camera move first");
+        return;
+    }
+    const int index = g_shot_index;
+    if (index < 0 || index >= static_cast<int>(g_model.shots.size())) return;
+    const VideoShot& s = g_model.shots[static_cast<size_t>(index)];
+    if (index == 0 || s.implicit) {
+        SetNotice("The first shot can't be deleted");
+        return;
+    }
+    if (!VideoAskBeforeDeleteShot()) {
+        QueueVideoDeleteShot(index);
+        return;
+    }
+    g_delete_open = true;
+    g_delete_name = s.name;
+    g_delete_track = g_model.track;
+    g_delete_fx = g_model.fx;
+    g_delete_time = s.time;
+}
+
+bool VideoDeleteConfirmOpen()
+{
+    return g_delete_open;
+}
+
+const char* VideoDeleteConfirmName()
+{
+    return g_delete_open ? g_delete_name.c_str() : "";
+}
+
+void ConfirmVideoDelete(bool dont_ask_again)
+{
+    if (!g_delete_open) return;
+    g_delete_open = false;
+    if (dont_ask_again) SetVideoAskBeforeDeleteShot(false);
+    // Re-checked against the model now (an undo, a gesture or a track change may have come
+    // while the dialog was open): the shot asked about, by its time, still a deletable one.
+    if (!VideoViewCanCut()) {
+        if (g_model.status != VideoFxStatus::Active) SetNotice("Needs an active video FX on this track");
+        else SetNotice("Finish the camera move first");
+        return;
+    }
+    if (!g_delete_track || g_delete_fx < 0 || g_delete_track != g_model.track || g_delete_fx != g_model.fx) {
+        SetNotice("The shot is no longer there");
+        return;
+    }
+    int index = -1;
+    for (size_t i = 0; i < g_model.shots.size(); ++i) {
+        if (std::fabs(g_model.shots[i].time - g_delete_time) <= kVideoShotTimeTolerance) {
+            index = static_cast<int>(i);
+            break;
+        }
+    }
+    if (index < 0) {
+        SetNotice("The shot is no longer there");
+        return;
+    }
+    if (index == 0 || g_model.shots[static_cast<size_t>(index)].implicit) {
+        SetNotice("The first shot can't be deleted");
+        return;
+    }
+    Cmd c;
+    c.kind = CmdKind::DeleteShot;
+    c.track = g_delete_track;
+    c.fx = g_delete_fx;
+    c.shot_time = g_delete_time;
+    g_queue.push_back(std::move(c));
+}
+
+void CancelVideoDelete()
+{
+    g_delete_open = false;
 }
 
 void QueueVideoMoveShot(int index, double new_time)

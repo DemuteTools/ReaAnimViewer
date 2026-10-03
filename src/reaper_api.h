@@ -128,5 +128,11 @@
 #define REAPERAPI_WANT_SetExtState
 #define REAPERAPI_WANT_DeleteExtState
 
+// Spec 11-fb-11 -- the Video panel's Envelopes button shows / hides the RAV video FX's
+// envelopes in REAPER's arrange (src/video_shots.cpp). Present in every REAPER 7.
+#define REAPERAPI_WANT_TrackFX_GetNumParams
+#define REAPERAPI_WANT_GetSetEnvelopeInfo_String
+#define REAPERAPI_WANT_TrackList_AdjustWindows
+
 #include "reaper_plugin.h"
 #include "reaper_plugin_functions.h"

@@ -66,6 +66,9 @@ struct VideoViewModel {
     int    project_h = 0;
     bool   transparent = false;    // the track's background option (video_timeline.h)
     std::vector<VideoFxAngle> angles;  // saved angles in the FX state
+    // Spec 11-fb-11 -- the Envelopes button: the FX has an envelope, one of them shows.
+    bool   has_envelopes = false;
+    bool   envelopes_visible = false;
 };
 
 const VideoViewModel& GetVideoViewModel();
@@ -125,6 +128,13 @@ void VideoViewSliderCommit(int param);
 // Renames the shot at shot_time on that track's FX (captured when the edit began).
 void QueueVideoRename(MediaTrack* track, int fx, double shot_time, const std::string& name);
 void QueueVideoTransition(bool move_to_next);
+// Spec 11-fb-11 -- switches shot `index` (not the current one) between Cut and Move to
+// next, one undo point (the inspector's write). The last shot cannot become Move: a notice
+// says so and nothing is written.
+void QueueVideoTransitionAt(int index);
+// Spec 11-fb-11 -- the Envelopes button: hides every existing envelope of the FX when one
+// shows, else shows them all (none is created). One undo point.
+void QueueVideoToggleEnvelopes();
 void QueueVideoCopyRavView(const OrbitCamera& free_camera);
 void QueueVideoFrameModel();
 void QueueVideoSnap(const glm::vec3& dir);  // the ViewCube in Video view
@@ -171,6 +181,20 @@ void QueueVideoSeekToShot(int index);
 // A new Cut shot at the playhead holding the camera shown (video_shot_timing.h places it).
 void QueueVideoCut();
 void QueueVideoDeleteShot(int index);
+
+// Spec 11-fb-11 -- the Delete key (Video view): deletes the shot under the playhead after a
+// confirmation, at once when the user ticked "Don't ask again". The first shot and an
+// implicit one are never deleted (a notice says so).
+void RequestVideoDeleteCurrentShot();
+// The confirmation: open, the name of the shot it asks about, confirm (with the "Don't ask
+// again" choice) or cancel (Esc, Cancel, Video view left).
+bool VideoDeleteConfirmOpen();
+const char* VideoDeleteConfirmName();
+void ConfirmVideoDelete(bool dont_ask_again);
+void CancelVideoDelete();
+// The global "Ask before deleting a shot" setting (ExtState, kept across sessions).
+bool VideoAskBeforeDeleteShot();
+void SetVideoAskBeforeDeleteShot(bool ask);
 // Moves the start of shot `index` (>= 1) to new_time (VideoJunctionDragTime places it):
 // one undo point "RAV: Move video shot". Nothing when it stays on its frame, while a
 // camera gesture is unwritten, or for the first / implicit shot.

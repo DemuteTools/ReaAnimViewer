@@ -30,9 +30,15 @@ float VideoTopBand();
 // Story 11-5: the shot strip under the viewport. 2 x 6 px padding + the 24 px lane + the
 // spec 11-fb-9 ruler band (full-size labels, 13 px at the default font, + 6 px tick room)
 // = 55 px, with margin for a slightly larger font. A larger one shrinks the band (clamped in
-// DrawVideoShotStrip), never the lane.
+// DrawVideoShotStrip), never the lane. Spec 11-fb-11: the strip's minimum height; its top
+// edge drags it taller (VideoStripHeight).
 constexpr float kVideoStripHeight = 64.0f;
 constexpr float kVideoStripGap = 8.0f;      // its margin to the window's edges and the frame
+
+// Spec 11-fb-11 -- the shot strip's current height: what the user dragged its top edge to
+// (kept in ExtState across sessions), between kVideoStripHeight and half the client
+// height. The extra height goes to the shot lane; the ruler keeps its own.
+float VideoStripHeight(float client_h);
 
 // Width the panel takes from the viewport (column + gaps), 0 when it is hidden.
 float VideoPanelFootprint(int client_w);
@@ -61,6 +67,14 @@ void DrawVideoShotStrip(float x, float y, float w, float h);
 // The Video panel at (x, y), size (w, h). free_camera = the RAV view camera (Copy RAV
 // view); copy_log copies the error log (the "out of date" state offers it).
 void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_camera, void (*copy_log)());
+
+// Spec 11-fb-11 -- the confirmation the Delete key opens (video_view.h
+// RequestVideoDeleteCurrentShot): Delete shot "<name>"?, Delete / Cancel, "Don't ask
+// again". Call once per frame, at the top level of the ImGui frame.
+void DrawVideoDeleteConfirm();
+// Enter pressed while it is open (window procedure): the next frame confirms it with the
+// dialog's current "Don't ask again" choice.
+void RequestVideoDeleteConfirmByKey();
 
 }  // namespace rav
 

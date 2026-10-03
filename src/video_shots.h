@@ -92,6 +92,15 @@ bool SetVideoShotTransition(MediaTrack* track, int fx, double time, bool move_to
 // Empty name = back to "Shot N".
 bool RenameVideoShot(MediaTrack* track, int fx, double time, const std::string& name);
 
+// ---- Envelope visibility (spec 11-fb-11) --------------------------------------------------
+// Over every existing envelope of the FX (never created here): *any = it has one,
+// *visible = at least one shows in the arrange.
+void VideoFxEnvelopesState(MediaTrack* track, int fx, bool* any, bool* visible);
+
+// Shows or hides every existing envelope of the FX in the arrange (none is created).
+// False when the FX has no envelope. No undo block (the caller opens one).
+bool SetVideoFxEnvelopesVisible(MediaTrack* track, int fx, bool visible);
+
 // ---- Saved angles and output ---------------------------------------------------------------
 // Replaces an angle of the same name, else adds it.
 bool SaveVideoAngle(MediaTrack* track, int fx, const std::string& name, const double values[vcam::kParamCount]);

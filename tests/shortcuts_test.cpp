@@ -54,6 +54,96 @@ int main()
         CHECK(ShortcutActionFor(b, 'V', false, false, true, false) == -1);
     }
 
+    // Spec 11-fb-11: Delete deletes the current shot, in Video view only.
+    {
+        const ShortcutBindings b = DefaultShortcutBindings();
+        CHECK(b[kShortcutDeleteShot] == Key(vk::kDelete));
+        CHECK(std::string(kShortcutTable[kShortcutDeleteShot].id) == "delete_shot");
+        CHECK(std::string(kShortcutTable[kShortcutDeleteShot].label) == "Delete current shot");
+        CHECK(kShortcutTable[kShortcutDeleteShot].context == ShortcutContext::VideoView);
+        CHECK(IsBindableKey(vk::kDelete));
+        CHECK(ShortcutActionFor(b, vk::kDelete, false, false, false, true) == kShortcutDeleteShot);
+        CHECK(ShortcutActionFor(b, vk::kDelete, false, false, false, false) == -1);  // RAV view: REAPER's
+        CHECK(ShortcutActionFor(b, vk::kDelete, true, false, false, true) == -1);    // exact modifiers
+        CHECK(FormatShortcut(b[kShortcutDeleteShot]) == "Delete");
+        CHECK(EncodeShortcut(b[kShortcutDeleteShot]) == "46");
+        KeyBinding k;
+        CHECK(DecodeShortcut("46", &k) && k == Key(vk::kDelete));
+        // Routing: the key reaches the viewer in Video view only; a text field takes it anyway.
+        KeyRouteState st;
+        KeyRouteInput del;
+        del.msg = KeyMsg::KeyDown;
+        del.key = vk::kDelete;
+        CHECK(RouteViewerKey(b, del, st) == kRouteReaper);
+        del.video_view = true;
+        CHECK(RouteViewerKey(b, del, st) == kRouteViewer);
+        KeyRouteInput up;
+        up.msg = KeyMsg::KeyUp;
+        up.key = vk::kDelete;
+        CHECK(RouteViewerKey(b, up, st) == kRouteViewer);
+        CHECK(st.claimed_vk == 0);
+        // Esc while the delete confirmation is open (popup_open): the viewer's.
+        KeyRouteInput esc;
+        esc.msg = KeyMsg::KeyDown;
+        esc.key = vk::kEscape;
+        esc.video_view = true;
+        CHECK(RouteViewerKey(b, esc, st) == kRouteReaper);
+        esc.popup_open = true;
+        CHECK(RouteViewerKey(b, esc, st) == kRouteViewer);
+        // Rebind: Delete can go to another key, and Cut cannot take Delete.
+        ShortcutBindings r = DefaultShortcutBindings();
+        int owner = -1;
+        CHECK(ShortcutRecordStep(r, kShortcutCut, vk::kDelete, false, false, false, &owner) == RecordOutcome::Conflict);
+        CHECK(owner == kShortcutDeleteShot);
+        CHECK(ShortcutRecordStep(r, kShortcutDeleteShot, vk::kBack, false, false, false) == RecordOutcome::Assigned);
+        CHECK(ShortcutActionFor(r, vk::kBack, false, false, false, true) == kShortcutDeleteShot);
+        CHECK(ShortcutActionFor(r, vk::kDelete, false, false, false, true) == -1);
+        CHECK(ResetShortcut(r, kShortcutDeleteShot).size() == 1);
+        CHECK(r == DefaultShortcutBindings());
+    }
+
+    // Spec 11-fb-11: the persisted settings' text.
+    {
+        CHECK(ParsePrefBool("1", false) == true);
+        CHECK(ParsePrefBool("0", true) == false);
+        CHECK(ParsePrefBool("", true) == true);
+        CHECK(ParsePrefBool(nullptr, false) == false);
+        CHECK(ParsePrefBool("10", false) == false);
+        CHECK(ParsePrefBool("true", false) == false);
+        CHECK(ParsePrefBool("true", true) == true);
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%.1f", 123.0);  // SavePrefFloat's format
+        CHECK(ParsePrefFloat(buf, 64.0f) == 123.0f);
+        CHECK(ParsePrefFloat("123.0", 64.0f) == 123.0f);
+        CHECK(ParsePrefFloat("", 64.0f) == 64.0f);
+        CHECK(ParsePrefFloat(nullptr, 64.0f) == 64.0f);
+        CHECK(ParsePrefFloat("abc", 64.0f) == 64.0f);
+        CHECK(ParsePrefFloat("12x", 64.0f) == 64.0f);
+        CHECK(ParsePrefFloat("nan", 64.0f) == 64.0f);
+        CHECK(ParsePrefFloat("inf", 64.0f) == 64.0f);
+        CHECK(ParsePrefFloat("1e9", 64.0f) == 64.0f);
+    }
+
+    // Enter: the viewer's only while the delete confirmation is open.
+    {
+        const ShortcutBindings b = DefaultShortcutBindings();
+        KeyRouteState st;
+        KeyRouteInput enter;
+        enter.msg = KeyMsg::KeyDown;
+        enter.key = vk::kReturn;
+        enter.video_view = true;
+        CHECK(RouteViewerKey(b, enter, st) == kRouteReaper);
+        enter.popup_open = true;  // the Shortcuts popup alone does not take Enter
+        CHECK(RouteViewerKey(b, enter, st) == kRouteReaper);
+        enter.confirm_open = true;
+        CHECK(RouteViewerKey(b, enter, st) == kRouteViewer);
+        KeyRouteInput up;
+        up.msg = KeyMsg::KeyUp;
+        up.key = vk::kReturn;
+        CHECK(RouteViewerKey(b, up, st) == kRouteViewer);
+        CHECK(st.claimed_vk == 0);
+    }
+
     // Matching rule.
     CHECK(ShortcutMatches(Key('K'), 'K', false, false, false));
     CHECK(!ShortcutMatches(Key('K'), 'J', false, false, false));

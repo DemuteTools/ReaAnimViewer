@@ -23,6 +23,19 @@
 
 namespace rav {
 
+// ---- virtual keys (the Windows VK_* values, spelled here so this half stays Windows-free)
+
+namespace vk {
+constexpr unsigned kBack = 0x08, kTab = 0x09, kReturn = 0x0D, kShift = 0x10, kControl = 0x11,
+                   kMenu = 0x12, kPause = 0x13, kCapital = 0x14, kEscape = 0x1B, kSpace = 0x20,
+                   kPrior = 0x21, kNext = 0x22, kEnd = 0x23, kHome = 0x24, kLeft = 0x25, kUp = 0x26,
+                   kRight = 0x27, kDown = 0x28, kInsert = 0x2D, kDelete = 0x2E, kLWin = 0x5B,
+                   kRWin = 0x5C, kApps = 0x5D, kNumpad0 = 0x60, kMultiply = 0x6A, kAdd = 0x6B,
+                   kSeparator = 0x6C, kSubtract = 0x6D, kDecimal = 0x6E, kDivide = 0x6F, kF1 = 0x70,
+                   kF24 = 0x87, kNumLock = 0x90, kScroll = 0x91, kLShift = 0xA0, kRMenu = 0xA5,
+                   kProcessKey = 0xE5, kPacket = 0xE7;
+}  // namespace vk
+
 // ---- the table -----------------------------------------------------------------------
 
 enum class ShortcutContext {
@@ -54,13 +67,15 @@ enum ShortcutId : int {
     kShortcutToggleView  = 0,  // RAV view / Video view
     kShortcutTogglePanel = 1,  // the Video panel (from RAV view it opens Video view with it)
     kShortcutCut         = 2,  // cut at the playhead (Video view only)
-    kShortcutCount       = 3,
+    kShortcutDeleteShot  = 3,  // delete the current shot, after a confirmation (Video view only, spec 11-fb-11)
+    kShortcutCount       = 4,
 };
 
 inline const ShortcutDef kShortcutTable[kShortcutCount] = {
     {"toggle_view",  "Toggle RAV view / Video view", {'V', false, false, false}, ShortcutContext::Anywhere},
     {"toggle_panel", "Show / hide the Video panel",  {'P', false, false, false}, ShortcutContext::Anywhere},
     {"cut",          "Cut at playhead",              {'C', false, false, false}, ShortcutContext::VideoView},
+    {"delete_shot",  "Delete current shot",          {vk::kDelete, false, false, false}, ShortcutContext::VideoView},
 };
 
 // The mouse gestures the popup lists (fixed, never rebindable), by group.
@@ -88,6 +103,8 @@ inline const MouseGestureDef kMouseGestureTable[] = {
     {0, "Menu, buttons, nav cube", "Left-click"},
     {1, "Move the playhead", "Click / drag"},
     {1, "Retime a cut", "Drag a line between shots"},
+    {1, "Switch Cut / Move", "Middle-click a shot"},
+    {1, "Resize the strip", "Drag its top edge"},
 };
 
 using ShortcutBindings = std::array<KeyBinding, kShortcutCount>;
@@ -99,18 +116,6 @@ inline ShortcutBindings DefaultShortcutBindings()
     return b;
 }
 
-// ---- virtual keys (the Windows VK_* values, spelled here so this half stays Windows-free)
-
-namespace vk {
-constexpr unsigned kBack = 0x08, kTab = 0x09, kReturn = 0x0D, kShift = 0x10, kControl = 0x11,
-                   kMenu = 0x12, kPause = 0x13, kCapital = 0x14, kEscape = 0x1B, kSpace = 0x20,
-                   kPrior = 0x21, kNext = 0x22, kEnd = 0x23, kHome = 0x24, kLeft = 0x25, kUp = 0x26,
-                   kRight = 0x27, kDown = 0x28, kInsert = 0x2D, kDelete = 0x2E, kLWin = 0x5B,
-                   kRWin = 0x5C, kApps = 0x5D, kNumpad0 = 0x60, kMultiply = 0x6A, kAdd = 0x6B,
-                   kSeparator = 0x6C, kSubtract = 0x6D, kDecimal = 0x6E, kDivide = 0x6F, kF1 = 0x70,
-                   kF24 = 0x87, kNumLock = 0x90, kScroll = 0x91, kLShift = 0xA0, kRMenu = 0xA5,
-                   kProcessKey = 0xE5, kPacket = 0xE7;
-}  // namespace vk
 
 // A key that only modifies others (or toggles a lock): never recorded on its own.
 inline bool IsModifierKey(unsigned k)
@@ -179,7 +184,8 @@ struct KeyRouteInput {
     bool     video_view = false;
     bool     recording = false;   // a new key is being recorded: the viewer takes every key
     bool     text_input = false;  // an ImGui text field is active: the viewer takes every key
-    bool     popup_open = false;  // the Shortcuts popup is open: Esc closes it
+    bool     popup_open = false;  // the Shortcuts popup (or the delete confirmation) is open: Esc closes it
+    bool     confirm_open = false;  // the delete confirmation is open: Enter confirms it (spec 11-fb-11)
 };
 
 struct KeyRouteState {
@@ -206,7 +212,7 @@ inline int RouteViewerKey(const ShortcutBindings& b, const KeyRouteInput& in, Ke
         // An auto-repeat of the key we took stays ours, even if it no longer maps to an
         // action (e.g. the key just recorded for a Video view only action, in RAV view).
         if (in.repeat && st.claimed_vk != 0 && in.key == st.claimed_vk) return to_viewer;
-        const bool ours = (in.key == vk::kEscape && in.popup_open) ||
+        const bool ours = (in.key == vk::kEscape && in.popup_open) || (in.key == vk::kReturn && in.confirm_open) ||
                           ShortcutActionFor(b, in.key, in.ctrl, in.shift, in.alt, in.video_view) >= 0;
         if (!ours) {
             st.claimed_vk = 0;  // a lost release (focus moved) must not keep claiming characters
@@ -335,6 +341,29 @@ inline bool DecodeShortcut(const char* text, KeyBinding* out)
     return true;
 }
 
+// ---- persisted settings: the ExtState text of a bool / a float (spec 11-fb-11) -----------
+
+// "1" / "0"; anything else (missing, empty, "true", "10") gives `def`.
+inline bool ParsePrefBool(const char* text, bool def)
+{
+    if (!text) return def;
+    if (text[0] == '1' && text[1] == '\0') return true;
+    if (text[0] == '0' && text[1] == '\0') return false;
+    return def;
+}
+
+// A plain decimal number ("123.0", as SavePrefFloat writes it), within +-1e6; anything else
+// (missing, empty, trailing text, nan / inf, out of range) gives `def`.
+inline float ParsePrefFloat(const char* text, float def)
+{
+    if (!text || !text[0]) return def;
+    char* end = nullptr;
+    const double d = std::strtod(text, &end);
+    if (!end || end == text || *end != '\0') return def;
+    if (!(d == d) || d > 1.0e6 || d < -1.0e6) return def;  // NaN, inf, absurd values
+    return static_cast<float>(d);
+}
+
 // ---- key names -----------------------------------------------------------------------
 
 // The name of a key: letters, digits, F1-F24, arrows, Space, Enter, Tab, Backspace,
@@ -420,5 +449,13 @@ int  ShortcutRecordingId();                // -1 when not recording
 const char* ShortcutRecordingConflict();   // the label of the action that holds the last key, or nullptr
 // A key down while recording (always consumed). Esc cancels.
 void ShortcutRecordKey(unsigned key, bool ctrl, bool shift, bool alt);
+
+// ---- small persisted settings (spec 11-fb-11) ------------------------------------------
+// One persistence path for the viewer's own settings: REAPER ExtState, the same section as
+// the keys (ReaAnimViewer), kept across sessions. A missing or unreadable value gives `def`.
+bool  LoadPrefBool(const char* key, bool def);
+void  SavePrefBool(const char* key, bool value);
+float LoadPrefFloat(const char* key, float def);
+void  SavePrefFloat(const char* key, float value);
 
 }  // namespace rav

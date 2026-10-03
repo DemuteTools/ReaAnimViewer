@@ -520,20 +520,26 @@ std::string SizeLabel(int w, int h, const char* note)
 // three equal buttons (Matrix | Render | Render Current, spec 11-fb-16), the last line of
 // Output (spec 11-fb-13), pinned with the bottom block. All first write the Output size into
 // the project's video render format.
+// Spec 11-fb-16 -- Render Current is hidden: it did not work in Antho's REAPER test
+// (2026-10-03, see deferred-work.md). Its code stays; true shows it again.
+constexpr bool kShowRenderCurrent = false;
+
 void RenderRow(float full)
 {
     constexpr float kGap = 6.0f;  // between the buttons
+    const int count = kShowRenderCurrent ? 3 : 2;
     // At least 1 px: ImGui reads a width <= 0 as relative to the right edge.
-    const float third = std::max(1.0f, std::floor((full - 2.0f * kGap) / 3.0f));
-    const float last = std::max(1.0f, full - 2.0f * (third + kGap));
+    const float third = std::max(1.0f, std::floor((full - (count - 1) * kGap) / count));
+    const float last = std::max(1.0f, full - (count - 1) * (third + kGap));
     if (ui::SolidButton("Matrix##render", ImVec2(third, 0.0f))) QueueVideoOpenRenderMatrix();  // same style as Render (Antho)
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("REAPER's Region Render Matrix, at the Output size: tick regions, then render from "
                           "the Render dialog (Source: Region render matrix, a video format)");
     ImGui::SameLine(0.0f, kGap);
-    if (ui::SolidButton("Render##render", ImVec2(third, 0.0f))) QueueVideoOpenRenderDialog();
+    if (ui::SolidButton("Render##render", ImVec2(kShowRenderCurrent ? third : last, 0.0f))) QueueVideoOpenRenderDialog();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("REAPER's Render dialog, at the Output size: pick a video format (e.g. MP4) and the bounds");
+    if (!kShowRenderCurrent) return;
     ImGui::SameLine(0.0f, kGap);
 
     // Spec 11-fb-16 -- the clip under the playhead, from the master mix.

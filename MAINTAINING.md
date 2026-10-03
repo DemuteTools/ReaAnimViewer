@@ -106,7 +106,7 @@ The Toolkit can only install scripts: it copies every file of the package into `
 
 1. not Windows 64-bit: message, stop;
 2. deletes `UserPlugins/reaper_animviewer.dll.old*` / `.new` and `UserPlugins/FX/rav_video_fx.clap.old*` / `.new` leftovers (failures ignored), and copies the Toolkit's `rav_video_fx.clap` into `UserPlugins/FX` when it is missing there and not owned by ReaPack (if the extension is already loaded, it says to restart REAPER);
-3. extension loaded: opens the viewer, only if it is closed (the action toggles it). "Loaded" means `NamedCommandLookup("_RAV_OPEN_VIEWER") ~= 0` **and** `GetToggleCommandState(id) ~= -1`: REAPER also hands out an id for a named command that a toolbar, menu or shortcut refers to while the extension is not loaded, and running that id does nothing (the 0.2.0 bug);
+3. extension loaded: if the Toolkit copy next to the launcher is newer than the installed DLL (versions embedded in both files) and neither ReaPack owns the DLL nor it is a dev build, swaps the DLL and then the video FX in, the same way as the self-update (copy to `.new`, check, rename the loaded file to `.old`, move `.new` in place), and asks to restart REAPER. This rescues 0.2.x installs, whose self-update never runs where ReaPack is installed (see below). Then opens the viewer, only if it is closed (the action toggles it). "Loaded" means `NamedCommandLookup("_RAV_OPEN_VIEWER") ~= 0` **and** `GetToggleCommandState(id) ~= -1`: REAPER also hands out an id for a named command that a toolbar, menu or shortcut refers to while the extension is not loaded, and running that id does nothing (the 0.2.0 bug);
 4. DLL owned by ReaPack and present: asks to restart REAPER;
 5. DLL owned by ReaPack but missing (deleted by hand, ReaPack's registry still lists it): opens the ReaPack browser and names the package to uninstall. Copying the DLL there would leave it tied to that package, which may be obsolete (0.1.x `Extensions/ReaAnimViewer.ext`);
 6. DLL present but not loaded: if it differs from the Toolkit copy next to the launcher, reinstalls it (it may be damaged), then asks to restart REAPER;
@@ -126,6 +126,7 @@ Nothing happens when:
 
 - the DLL is a **dev build** (`build.bat`, IDE or manual CMake builds): it never updates itself and is never replaced;
 - **ReaPack owns the DLL** (ReaPack handles updates);
+  `ReaPack_GetOwner` answers a file it does not own with an error, "the file is not owned by any package entry": that answer means "not ReaPack's". Any other error means "cannot tell", and the update waits. Up to 0.2.x every error meant "cannot tell", so those builds never update themselves where ReaPack is installed: after the Toolkit update, clicking **Run** once (the launcher) does it;
 - the Toolkit copy is the **same or older** version, or its launcher `@version` cannot be read, or the DLL next to it is incomplete or embeds another version;
 - the DLL was not loaded from `<ResourcePath>/UserPlugins`.
 

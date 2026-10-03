@@ -172,6 +172,99 @@ local function install_video_fx()
   return ok == true
 end
 
+-- Version compiled into a DLL or CLAP file (RAV_VERSION_MARKER, see
+-- src/self_update.cpp), or nil.
+local function embedded_version(path)
+  local data = read_file(path)
+  if not data then return nil end
+  local init = 1
+  while true do
+    local _, last, version = data:find("RAV_VERSION_MARKER:([^\0]+)\0", init)
+    if not last then return nil end
+    if #version <= 64 then return version end
+    init = last + 1
+  end
+end
+
+-- -1, 0 or 1; nil when a version cannot be read. Numbers compared as numbers,
+-- "0.3.0" after "0.3.0-beta" (same rule as src/self_update.cpp).
+local function compare_versions(a, b)
+  local function parse(v)
+    local core, suffix = v:match("^([%d%.]+)%-?(.*)$")
+    if not core then return nil end
+    local nums = {}
+    for n in core:gmatch("%d+") do nums[#nums + 1] = tonumber(n) end
+    return nums, suffix
+  end
+  local na, sa = parse(a)
+  local nb, sb = parse(b)
+  if not na or not nb then return nil end
+  for i = 1, math.max(#na, #nb) do
+    local x, y = na[i] or 0, nb[i] or 0
+    if x ~= y then return x < y and -1 or 1 end
+  end
+  if sa == sb then return 0 end
+  if sa == "" then return 1 end
+  if sb == "" then return -1 end
+  return sa < sb and -1 or 1
+end
+
+-- Puts `source` (version `version`) in place of `target`, which REAPER may have
+-- loaded: Windows lets a loaded DLL or CLAP be renamed, not overwritten. The
+-- .old file is deleted at the next run or startup. Returns true when done.
+local function swap_in(source, target, version)
+  local staged = target .. ".new"
+  if not copy_file(source, staged) or embedded_version(staged) ~= version then
+    os.remove(staged)
+    return false
+  end
+  local old
+  if reaper.file_exists(target) then
+    for i = 0, 9 do
+      local name = target .. ".old" .. (i == 0 and "" or tostring(i))
+      if not reaper.file_exists(name) and os.rename(target, name) then
+        old = name
+        break
+      end
+    end
+    if not old then
+      os.remove(staged)
+      return false
+    end
+  end
+  if not os.rename(staged, target) then
+    if old then os.rename(old, target) end
+    os.remove(staged)
+    return false
+  end
+  return true
+end
+
+-- Toolkit update of a loaded extension: when the Toolkit copy is newer than the
+-- installed DLL, swaps both binaries in. The extension does it itself at REAPER
+-- quit, except 0.2.x builds: they took ReaPack's answer for a file it does not
+-- own for "cannot tell" and never updated where ReaPack is installed. Never for
+-- a file ReaPack owns or a dev build. Returns the new version, or nil.
+local function update_from_toolkit(installed)
+  local sibling = sibling_dll()
+  if not (sibling and reaper.file_exists(sibling)) then return nil end
+  if reapack_owner(installed) then return nil end
+  local current, new = embedded_version(installed), embedded_version(sibling)
+  if not current or not new or current == "dev" then return nil end
+  if (compare_versions(new, current) or 0) <= 0 then return nil end
+  if not swap_in(sibling, installed, new) then return nil end
+
+  -- The video FX moves with the DLL: both share the frame API version.
+  local clap_source = sibling_clap()
+  local clap_target = fx_dir() .. SEP .. CLAP_NAME
+  if clap_source and not reapack_owner(clap_target)
+      and embedded_version(clap_source) == new and embedded_version(clap_target) ~= new then
+    reaper.RecursiveCreateDirectory(fx_dir(), 0)
+    swap_in(clap_source, clap_target, new)
+  end
+  return new
+end
+
 ------------------------------------------------------------------------------
 -- Main
 ------------------------------------------------------------------------------
@@ -188,14 +281,19 @@ local function main()
   local installed = userplugins_dir() .. SEP .. DLL_NAME
 
   -- Extension loaded: open the viewer. Updates are handled by ReaPack, or by the
-  -- extension itself when it was installed through the Toolkit.
+  -- extension itself when it was installed through the Toolkit (by this script
+  -- for 0.2.x, see update_from_toolkit).
   local open_viewer = loaded_viewer_command()
   if open_viewer then
+    local updated = update_from_toolkit(installed)
     -- The action toggles the viewer: only run it when the viewer is closed.
     if reaper.GetToggleCommandState(open_viewer) ~= 1 then
       reaper.Main_OnCommand(open_viewer, 0)
     end
-    if video_fx_new then
+    if updated then
+      message("ReaAnimViewer " .. updated .. " is installed.\n\n"
+        .. "Restart REAPER to use it.")
+    elseif video_fx_new then
       message("The RAV video FX was installed.\n\nRestart REAPER to use it.")
     end
     return

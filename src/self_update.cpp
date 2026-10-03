@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <cstring>
 #include <fstream>
 #include <iterator>
 #include <optional>
@@ -266,6 +267,10 @@ Ownership CheckOwnership(const std::wstring& dll)
         return Ownership::ReaPack;
     }
     if (error[0] != '\0') {
+        // ReaPack answers "no" with an error too ("the file is not owned by any
+        // package entry", reapack src/api_package.cpp). 0.2.x took it for "cannot
+        // tell" below and never updated wherever ReaPack is installed.
+        if (std::strstr(error, "not owned")) return Ownership::NotReaPack;
         // ReaPack could not tell (e.g. its registry is busy): assume it owns us.
         LogWarn("self-update: ReaPack_GetOwner failed: %s", error);
         return Ownership::Unknown;

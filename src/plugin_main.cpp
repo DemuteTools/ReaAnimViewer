@@ -12,6 +12,7 @@
 #include "video_fx_track.h"
 #include "video_timeline.h"
 #include "video_shots.h"
+#include "shortcuts.h"
 #include "viewer_window.h"
 
 namespace rav {
@@ -185,6 +186,8 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     // Story 11-4 -- the viewer's keys (V: RAV view / Video view, P: Video panel) and the
     // Video panel's text fields get the keyboard while the viewer has the focus.
     rec->Register("accelerator", ViewerAcceleratorRegistration());
+    // Spec 11-fb-3 -- the custom keys of those (REAPER ExtState), before the viewer opens.
+    LoadShortcuts();
 
     // Story 11-5 -- the Video panel's render buttons check REAPER's action names (optional
     // functions, resolved here so a REAPER build without them still loads the extension).

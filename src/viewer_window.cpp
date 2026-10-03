@@ -39,6 +39,8 @@
 #include "pcm_source_anim.h"  // GetCurrentAnimItem — the transport→current-item query (Story 4.3)
 #include "rav_version.h"      // RAV_DISPLAY_VERSION — menu footer + copied error log header
 #include "renderer.h"
+#include "shortcuts.h"         // spec 11-fb-3: the viewer's keys, rebindable
+#include "shortcuts_ui.h"      // spec 11-fb-3: the keyboard icon + Shortcuts popup
 #include "gpu_resources.h"    // Story 11-4: the Video view's render target
 #include "ui_theme.h"         // Story 11-4: the DM-XYZ-Pad theme over Dear ImGui
 #include "video_view.h"       // Story 11-4: Video view + Video panel model
@@ -224,6 +226,20 @@ GLuint g_icon_color  = 0;
 GLuint g_icon_shadow = 0;
 GLuint g_icon_ground = 0;
 GLuint g_icon_performance = 0;  // Story 6.5.5 — Antho's Performance-section icon
+GLuint g_icon_keyboard = 0;     // spec 11-fb-3 — the Shortcuts popup's icon (Material "keyboard")
+
+// Spec 11-fb-3 — the key the accelerator hook last claimed for the viewer (its WM_CHAR /
+// WM_KEYUP follow it to the viewer instead of REAPER), and the claimed key whose WM_SYSKEYUP
+// was handed to us (WindowProc swallows it, so F10 / Alt never reach the menu bar).
+KeyRouteState g_key_route;
+
+// Spec 11-fb-3 — focus lost or panel parked: no recording the user cannot see (its keys
+// would be swallowed), no stale claim.
+void DropKeyClaims()
+{
+    if (ShortcutRecordingId() >= 0) CancelShortcutRecording();
+    g_key_route = KeyRouteState{};
+}
 
 constexpr float kPiF    = 3.14159265f;
 constexpr float kHalfPi = 1.57079633f;
@@ -671,6 +687,7 @@ void CALLBACK FrameTimerProc(HWND, UINT, UINT_PTR, DWORD)
     if (!g_hwnd || !IsWindowVisible(g_hwnd)) {
         if (!g_render_paused) {
             g_render_paused = true;
+            DropKeyClaims();
             LogInfo("panel hidden — render paused");
         }
         return;
@@ -1194,14 +1211,25 @@ void DrawToolUi()
     // FPS readout, top-RIGHT (FR53), anchored with a right-edge pivot so it hugs the corner at
     // any client size. This REPLACES the console FPS log removed in 6.5.2 — no console output.
     // Story 11-4: at the view area's corner, left of the panel button in Video view.
+    const float corner_x = area_right - (video_view ? 46.0f : 10.0f);
     if (g_fps_overlay_on) {
-        ImGui::SetNextWindowPos(ImVec2(area_right - (video_view ? 46.0f : 10.0f), 14.0f),
-                                ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+        ImGui::SetNextWindowPos(ImVec2(corner_x, 14.0f), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
         ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
         if (ImGui::Begin("##fps", nullptr, kReadoutFlags))
             ImGui::Text("%.0f FPS", g_fps);
         ImGui::End();
         ImGui::PopStyleColor();
+    }
+
+    // Spec 11-fb-3 — the keyboard icon (Shortcuts popup), left of the FPS readout, centred on
+    // its text line; at the corner when the readout is hidden. A fixed slot ("000 FPS") so the
+    // icon does not jitter as the digits change.
+    {
+        const ImGuiStyle& st = ImGui::GetStyle();
+        const float text_mid = 14.0f + st.WindowPadding.y + ImGui::GetTextLineHeight() * 0.5f;
+        const float fps_w = g_fps_overlay_on
+            ? ImGui::CalcTextSize("000 FPS").x + 2.0f * st.WindowPadding.x + 2.0f : 0.0f;
+        DrawShortcutsButton(corner_x - fps_w, text_mid, IconTex(g_icon_keyboard));
     }
 
     // Story 11-4 — RAV view / Video view toggle (top centre of the view area, key V); in
@@ -1386,6 +1414,7 @@ bool StartRendering(HWND hwnd)
                 g_icon_shadow = UploadIconTexture(kIcon_shadow, kIconSize, kIconSize);
                 g_icon_ground = UploadIconTexture(kIcon_ground, kIconSize, kIconSize);
                 g_icon_performance = UploadIconTexture(kIcon_performance, kIconSize, kIconSize);
+                g_icon_keyboard = UploadIconTexture(kIcon_keyboard, kIconSize, kIconSize);
             } else {
                 LogInfo("tool UI (Dear ImGui) could not initialize — the viewport still works");
                 ImGui_ImplWin32_Shutdown();
@@ -1423,6 +1452,7 @@ void StopRendering()
         if (g_icon_shadow) { glDeleteTextures(1, &g_icon_shadow); g_icon_shadow = 0; }
         if (g_icon_ground) { glDeleteTextures(1, &g_icon_ground); g_icon_ground = 0; }
         if (g_icon_performance) { glDeleteTextures(1, &g_icon_performance); g_icon_performance = 0; }
+        if (g_icon_keyboard) { glDeleteTextures(1, &g_icon_keyboard); g_icon_keyboard = 0; }
         if (g_imgui_ready) {
             ImGui_ImplOpenGL3_Shutdown();
             ImGui_ImplWin32_Shutdown();
@@ -1603,29 +1633,69 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
 
     case WM_KEYDOWN:
-        // Story 11-4 — V toggles RAV view / Video view, P shows / hides the Video panel. The
-        // accelerator hook (ViewerTranslateAccel) sends us only those two keys, plus every
-        // key while an ImGui text field is active (then they are the field's, not ours).
+    case WM_SYSKEYDOWN: {
+        // Story 11-4 / spec 11-fb-3 — the viewer's keys (src/shortcuts.h: V toggles RAV view /
+        // Video view, P shows / hides the Video panel, C cuts; all rebindable, Alt ones come as
+        // WM_SYSKEYDOWN). The accelerator hook (ViewerTranslateAccel) sends us only those keys,
+        // plus Esc while the Shortcuts popup is open, plus every key while an ImGui text field
+        // is active (then they are the field's, not ours) or while a new key is recorded.
+        const bool ctrl  = GetKeyState(VK_CONTROL) < 0;
+        const bool shift = GetKeyState(VK_SHIFT) < 0;
+        const bool alt   = GetKeyState(VK_MENU) < 0;
+        if (ShortcutRecordingId() >= 0) {
+            ShortcutRecordKey(static_cast<unsigned>(wp), ctrl, shift, alt);
+            return 0;
+        }
+        if (wp == VK_ESCAPE && ShortcutsPopupOpen()) {
+            RequestCloseShortcutsPopup();
+            return 0;
+        }
         if (g_imgui_ready && ImGui::GetIO().WantTextInput) return 0;
-        if (GetKeyState(VK_CONTROL) < 0 || GetKeyState(VK_MENU) < 0 || GetKeyState(VK_SHIFT) < 0) return 0;
+        const int action = ShortcutActionForKey(static_cast<unsigned>(wp), ctrl, shift, alt, VideoViewActive());
+        if (action < 0) {
+            // The auto-repeat of a key the hook took (it may map to no action now): ours.
+            if ((lp & (1 << 30)) && g_key_route.claimed_vk != 0 && wp == g_key_route.claimed_vk) return 0;
+            break;  // not ours (an Alt key goes on to DefWindowProc)
+        }
         if (lp & (1 << 30)) return 0;  // auto-repeat of a held key: one toggle per press
-        if (wp == 'V' || (wp == 'P' && !VideoViewActive())) {
+        if (action == kShortcutToggleView || (action == kShortcutTogglePanel && !VideoViewActive())) {
             // A running drag ends before the view changes (a Video view drag is written).
-            // P from RAV view opens the panel, which enters Video view: same rule.
+            // The panel key from RAV view opens the panel, which enters Video view: same rule.
             if (g_drag != DragMode::None) {
                 if (g_drag_video) VideoViewEndDrag();
                 g_drag_video = false;
                 g_drag = DragMode::None;
                 ReleaseCapture();
             }
-            if (wp == 'V') SetVideoViewActive(!VideoViewActive());
-            else           SetVideoPanelVisible(true);
+            if (action == kShortcutToggleView) SetVideoViewActive(!VideoViewActive());
+            else                               SetVideoPanelVisible(true);
             return 0;
         }
-        if (wp == 'P') { SetVideoPanelVisible(!VideoPanelVisible()); return 0; }
-        // Story 11-5 -- C cuts a new shot at the playhead (Video view only).
-        if (wp == 'C' && VideoViewActive()) { QueueVideoCut(); return 0; }
+        if (action == kShortcutTogglePanel) { SetVideoPanelVisible(!VideoPanelVisible()); return 0; }
+        // Story 11-5 -- cut a new shot at the playhead (Video view only: the table's context).
+        if (action == kShortcutCut) { QueueVideoCut(); return 0; }
         return 0;
+    }
+
+    case WM_SYSKEYUP:
+    case WM_SYSCHAR:
+        // Spec 11-fb-3 — an Alt key the viewer took (or recorded) must not reach the window
+        // menu through DefWindowProc. The hook clears the claim on the release before it
+        // reaches us, so the release is recognised by its own marker.
+        if (msg == WM_SYSKEYUP && g_key_route.released_vk != 0 && wp == g_key_route.released_vk) {
+            g_key_route.released_vk = 0;
+            return 0;
+        }
+        if (ShortcutRecordingId() >= 0 || g_key_route.claimed_vk != 0) return 0;
+        break;
+
+    case WM_KILLFOCUS:
+        DropKeyClaims();  // spec 11-fb-3
+        break;
+
+    case WM_INPUTLANGCHANGE:
+        RefreshShortcutLabels();  // spec 11-fb-3 — the key caps follow the new layout
+        break;
 
     case kMsgRunVideoCommands:
         // Story 11-4 — the Video view's queued REAPER writes (each one undo point), run here,
@@ -1687,22 +1757,37 @@ void UnregisterViewerClass()
 }
 
 // Story 11-4 — REAPER's keyboard hook. When the viewer has the focus, REAPER would run its
-// own shortcuts for every key; this hands the viewer V and P (no modifier) and, while a
-// text field of the Video panel is active, every key. Other keys stay REAPER's (Space plays).
+// own shortcuts for every key; this hands the viewer the keys bound in src/shortcuts.h (with
+// exactly their modifiers; the cut key in Video view only, in RAV view it stays REAPER's),
+// Esc while the Shortcuts popup is open, and every key while a text field of the Video panel
+// is active or a new key is being recorded. Other keys stay REAPER's (Space plays).
 int ViewerTranslateAccel(MSG* msg, accelerator_register_t* /*ctx*/)
 {
     if (!msg || !g_hwnd || !IsWindow(g_hwnd)) return 0;
     if (msg->hwnd != g_hwnd && !IsChild(g_hwnd, msg->hwnd)) return 0;
-    if (g_imgui_ready && ImGui::GetIO().WantTextInput) return -1;  // the text field takes every key
-    if (msg->message != WM_KEYDOWN && msg->message != WM_KEYUP && msg->message != WM_CHAR) return 0;
-    if (GetKeyState(VK_CONTROL) < 0 || GetKeyState(VK_MENU) < 0 || GetKeyState(VK_SHIFT) < 0) return 0;
-    // Story 11-5 -- C (cut at the playhead) is ours in Video view only; in RAV view it stays REAPER's.
-    const bool cut_key = VideoViewActive();
-    if (msg->message == WM_CHAR) {
-        const WPARAM c = msg->wParam;
-        return (c == 'v' || c == 'V' || c == 'p' || c == 'P' || (cut_key && (c == 'c' || c == 'C'))) ? -1 : 0;
+    KeyRouteInput in;
+    switch (msg->message) {
+    case WM_KEYDOWN:     in.msg = KeyMsg::KeyDown; break;
+    case WM_SYSKEYDOWN:  in.msg = KeyMsg::SysKeyDown; break;
+    case WM_KEYUP:       in.msg = KeyMsg::KeyUp; break;
+    case WM_SYSKEYUP:    in.msg = KeyMsg::SysKeyUp; break;
+    case WM_CHAR:        in.msg = KeyMsg::Char; break;
+    case WM_SYSCHAR:     in.msg = KeyMsg::SysChar; break;
+    case WM_DEADCHAR:    in.msg = KeyMsg::DeadChar; break;
+    case WM_SYSDEADCHAR: in.msg = KeyMsg::SysDeadChar; break;
+    default:             in.msg = KeyMsg::Other; break;
     }
-    return (msg->wParam == 'V' || msg->wParam == 'P' || (cut_key && msg->wParam == 'C')) ? -1 : 0;
+    in.key        = static_cast<unsigned>(msg->wParam);
+    in.repeat     = (msg->lParam & (1 << 30)) != 0;
+    in.ctrl       = GetKeyState(VK_CONTROL) < 0;
+    in.shift      = GetKeyState(VK_SHIFT) < 0;
+    in.alt        = GetKeyState(VK_MENU) < 0;
+    in.video_view = VideoViewActive();
+    in.recording  = ShortcutRecordingId() >= 0;
+    in.text_input = g_imgui_ready && ImGui::GetIO().WantTextInput;
+    in.popup_open = ShortcutsPopupOpen();
+    // The decision itself is pure (src/shortcuts.h RouteViewerKey, host-tested).
+    return RouteViewerKey(CurrentShortcuts(), in, g_key_route);
 }
 
 accelerator_register_t g_accel_reg = { &ViewerTranslateAccel, true, nullptr };

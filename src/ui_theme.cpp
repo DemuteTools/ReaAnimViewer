@@ -195,6 +195,16 @@ void SubText(const char* text)
     ImGui::PopStyleColor();
 }
 
+float KeyCap(ImDrawList* dl, ImVec2 p, const char* key, ImU32 text)
+{
+    const ImVec2 ts = ImGui::CalcTextSize(key);
+    const ImVec2 b(p.x + ts.x + 8.0f, p.y + ts.y + 3.0f);
+    dl->AddRectFilled(p, b, kBg, 4.0f);
+    dl->AddRect(p, b, kStrokeStrong, 4.0f);
+    dl->AddText(ImVec2(p.x + 4.0f, p.y + 1.5f), text ? text : kText, key);
+    return b.x - p.x;
+}
+
 }  // namespace ui
 }  // namespace rav
 

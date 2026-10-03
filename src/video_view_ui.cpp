@@ -15,6 +15,7 @@
 
 #include <imgui.h>
 
+#include "shortcuts.h"   // spec 11-fb-3: the current keys on the key caps
 #include "ui_theme.h"
 #include "video_preview_lag.h"
 #include "video_shot_timing.h"
@@ -201,17 +202,6 @@ void DashedRect(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col)
     }
 }
 
-// A key cap ("C") drawn at p (top-left), the mock-up's <kbd>. Returns its width.
-float KeyCap(ImDrawList* dl, ImVec2 p, const char* key)
-{
-    const ImVec2 ts = ImGui::CalcTextSize(key);
-    const ImVec2 b(p.x + ts.x + 8.0f, p.y + ts.y + 3.0f);
-    dl->AddRectFilled(p, b, ui::kBg, 4.0f);
-    dl->AddRect(p, b, ui::kStrokeStrong, 4.0f);
-    dl->AddText(ImVec2(p.x + 4.0f, p.y + 1.5f), ui::kText, key);
-    return b.x - p.x;
-}
-
 // A full-width dashed button with a label and an optional key cap (the mock-up's .add).
 bool DashedButton(const char* id, const char* label, const char* key, float width, float height, bool enabled)
 {
@@ -225,10 +215,11 @@ bool DashedButton(const char* id, const char* label, const char* key, float widt
     DashedRect(dl, p0, p1, ui::kStrokeStrong);
     const ImVec2 ts = ImGui::CalcTextSize(label);
     const float key_w = key ? ImGui::CalcTextSize(key).x + 8.0f + 8.0f : 0.0f;
-    const float x = p0.x + (width - ts.x - key_w) * 0.5f;
+    // A long custom key ("Ctrl+Shift+Alt+PageDown") must not push the label off the button.
+    const float x = std::max(p0.x + 6.0f, p0.x + (width - ts.x - key_w) * 0.5f);
     const float y = p0.y + (height - ts.y) * 0.5f;
     dl->AddText(ImVec2(x, y), (hovered && !disabled) ? ui::kText : ui::kMuted, label);
-    if (key) KeyCap(dl, ImVec2(x + ts.x + 8.0f, y - 1.5f), key);
+    if (key) ui::KeyCap(dl, ImVec2(x + ts.x + 8.0f, y - 1.5f), key);
     return pressed;
 }
 
@@ -323,10 +314,12 @@ void ShotList(const VideoViewModel& m, float full)
 
     const bool can_cut = VideoViewCanCut();
     if (!can_cut) ImGui::BeginDisabled();
-    if (DashedButton("##cutpanel", "+ Cut at playhead", "C", full, 30.0f, can_cut)) QueueVideoCut();
+    const char* cut_key = ShortcutKeyLabel(kShortcutCut);
+    if (DashedButton("##cutpanel", "+ Cut at playhead", cut_key, full, 30.0f, can_cut)) QueueVideoCut();
     if (!can_cut) ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("A new shot starts on the playhead's frame, with the camera shown there (C in Video view)");
+        ImGui::SetTooltip("A new shot starts on the playhead's frame, with the camera shown there (%s in Video view)",
+                          cut_key);
     NoticeLine();
 }
 
@@ -579,7 +572,7 @@ void DrawVideoPanelButton(float right_x)
         dl->AddRectFilled(p0, p1, on ? ui::kAccentSoft : (hovered ? ui::kHover : IM_COL32(18, 19, 23, 184)), ui::kRadiusMd);
         dl->AddRect(p0, p1, on ? ui::kAccentLine : ui::kStroke, ui::kRadiusMd);
         PanelIcon(dl, ImVec2(p0.x + size.x * 0.5f, p0.y + size.y * 0.5f), IM_COL32(0xC9, 0xCE, 0xD8, 0xFF));
-        if (hovered) ImGui::SetTooltip("Show / hide the video settings (P)");
+        if (hovered) ImGui::SetTooltip("Show / hide the video settings (%s)", ShortcutKeyLabel(kShortcutTogglePanel));
     }
     ImGui::End();
     ImGui::PopStyleVar();
@@ -715,7 +708,11 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
         const float tc_w = std::max(64.0f, ImGui::CalcTextSize(tc).x) + 8.0f;
 
         // Cut button on the right (label + key cap).
-        const float cut_w = ImGui::CalcTextSize("Cut").x + ImGui::CalcTextSize("C").x + 8.0f + 26.0f;
+        const char* cut_key = ShortcutKeyLabel(kShortcutCut);
+        // A long custom key must not widen the button past the strip: it gets the room left.
+        const float cut_w = std::max(20.0f, std::min(ImGui::CalcTextSize("Cut").x + ImGui::CalcTextSize(cut_key).x +
+                                                         8.0f + 26.0f,
+                                                     avail - tc_w - 20.0f - 8.0f));
         const float lane_w = std::max(20.0f, avail - tc_w - cut_w - 8.0f);
         const ImVec2 l0(tc_pos.x + tc_w, top);
         const ImVec2 l1(l0.x + lane_w, top + lane_h);
@@ -890,7 +887,7 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
             dl->PopClipRect();
         }
 
-        // Cut (C).
+        // Cut (C by default).
         ImGui::SetCursorScreenPos(ImVec2(l1.x + 8.0f, top));
         const bool can_cut = VideoViewCanCut();
         if (!can_cut) ImGui::BeginDisabled();
@@ -898,14 +895,16 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
         if (ui::SolidButton("##stripcut", ImVec2(cut_w, lane_h))) QueueVideoCut();
         if (!can_cut) ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("New shot on the playhead's frame, with the camera shown (C)");
+            ImGui::SetTooltip("New shot on the playhead's frame, with the camera shown (%s)", cut_key);
         // The button has no label of its own: "Cut" + the key cap are drawn over it.
         const float label_w = ImGui::CalcTextSize("Cut").x;
-        const float key_w = ImGui::CalcTextSize("C").x + 8.0f;
-        const float lx = b0.x + (cut_w - label_w - 6.0f - key_w) * 0.5f;
+        const float key_w = ImGui::CalcTextSize(cut_key).x + 8.0f;
+        const float lx = std::max(b0.x + 4.0f, b0.x + (cut_w - label_w - 6.0f - key_w) * 0.5f);
         const float ly = top + (lane_h - th) * 0.5f;
+        dl->PushClipRect(b0, ImVec2(b0.x + cut_w, b0.y + lane_h), true);  // a squeezed button clips its key
         dl->AddText(ImVec2(lx, ly), can_cut ? ui::kText : ui::kFaint, "Cut");
-        KeyCap(dl, ImVec2(lx + label_w + 6.0f, ly - 1.5f), "C");
+        ui::KeyCap(dl, ImVec2(lx + label_w + 6.0f, ly - 1.5f), cut_key);
+        dl->PopClipRect();
     }
     ImGui::End();
     ImGui::PopStyleVar();
@@ -939,7 +938,8 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
         ImGui::TextUnformatted("Video");
         ImGui::SameLine(std::max(0.0f, full - 18.0f));
         if (ImGui::SmallButton("x##closepanel")) SetVideoPanelVisible(false);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hide the panel (P, or Tools > Video)");
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Hide the panel (%s, or Tools > Video)", ShortcutKeyLabel(kShortcutTogglePanel));
     }
     ImGui::Spacing();
 

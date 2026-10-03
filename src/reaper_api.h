@@ -122,5 +122,11 @@
 #define REAPERAPI_WANT_GetSet_LoopTimeRange2
 #define REAPERAPI_WANT_Master_GetPlayRate
 
+// Spec 11-fb-3 -- the viewer's custom keys (src/shortcuts.cpp), kept per machine in
+// REAPER ExtState (section ReaAnimViewer, key shortcut.<id>). Present in every REAPER 7.
+#define REAPERAPI_WANT_GetExtState
+#define REAPERAPI_WANT_SetExtState
+#define REAPERAPI_WANT_DeleteExtState
+
 #include "reaper_plugin.h"
 #include "reaper_plugin_functions.h"

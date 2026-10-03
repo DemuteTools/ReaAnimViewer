@@ -168,6 +168,8 @@ if(WIN32)
             src/video_view.cpp
             src/video_view_ui.cpp
             src/reaper_actions.cpp
+            src/shortcuts.cpp
+            src/shortcuts_ui.cpp
     )
     # Generated rav_version.h (see RAV_VERSION above).
     target_include_directories(animviewer PRIVATE "${CMAKE_BINARY_DIR}/generated")

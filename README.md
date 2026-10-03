@@ -43,6 +43,7 @@ ReaAnimViewer is a native REAPER extension (a `.dll`, plus a small video FX that
   - [Ground](#ground)
   - [Shadow](#shadow)
   - [Performance](#performance)
+- [Shortcuts](#shortcuts)
 - [Working with Animation Items](#working-with-animation-items)
 - [Rendering Video](#rendering-video)
   - [Adding the video FX](#adding-the-video-fx)
@@ -240,6 +241,21 @@ The installed version is shown at the bottom of the menu.
 | **REAPER preview lag** | Show how far REAPER's Video window runs ahead while playing (Video view, see [Preview lag while playing](#preview-lag-while-playing)) |
 
 If the viewer feels slow on a laptop, lower **MSAA** and **Shadow** first.
+
+---
+
+## Shortcuts
+
+Click the **keyboard icon** in the top-right corner of the viewer (left of the FPS readout) to see every key and mouse gesture. The default keys are **V** (RAV view / Video view), **P** (show / hide the Video panel) and **C** (cut at the playhead, in Video view). They work while the viewer has the focus; every other key stays REAPER's.
+
+- **Double-click** a key to change it, then press the new key. Ctrl, Shift and Alt can be held with it. Esc cancels. A key already used by another RAV action is refused.
+- **Right-click** a key to restore its default.
+- Mouse gestures are listed for reference and cannot be changed.
+- **Esc** (or a click outside it, or the icon again) closes the popup.
+
+A key you bind is taken from REAPER while the viewer has the focus: bind Space, for example, and Space no longer starts or stops playback from the viewer. Hold Ctrl, Shift or Alt with it to keep REAPER's own key free. The key caps and tooltips in the viewer show your keys, custom ones in the accent colour. On AZERTY and other layouts with an AltGr key, Windows treats Ctrl+Alt+key as AltGr+key, so a Ctrl+Alt binding may type a character instead.
+
+Your keys are kept on this computer, for every project.
 
 ---
 

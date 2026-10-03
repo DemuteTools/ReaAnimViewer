@@ -18,3 +18,8 @@ target_include_directories(video_preview_lag_test PRIVATE ${CMAKE_CURRENT_SOURCE
 find_package(Threads REQUIRED)
 target_link_libraries(video_preview_lag_test PRIVATE Threads::Threads)
 add_test(NAME video_preview_lag COMMAND video_preview_lag_test)
+
+# Spec 11-fb-3 -- the viewer's shortcut rules (src/shortcuts.h).
+add_executable(shortcuts_test shortcuts_test.cpp)
+target_include_directories(shortcuts_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME shortcuts COMMAND shortcuts_test)

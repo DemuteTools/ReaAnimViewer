@@ -76,6 +76,10 @@ void Caption(const char* text);
 // Muted, wrapped body text (the mock-up's .sub).
 void SubText(const char* text);
 
+// A key cap ("C") drawn at p (top-left), the mock-up's <kbd>. Returns its width.
+// `text` 0 = the theme's text colour.
+float KeyCap(ImDrawList* dl, ImVec2 p, const char* key, ImU32 text = 0);
+
 }  // namespace ui
 }  // namespace rav
 

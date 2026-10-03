@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include <imgui.h>
 
@@ -681,11 +682,23 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
         const ImVec2 l0(tc_pos.x + tc_w, top);
         const ImVec2 l1(l0.x + lane_w, top + lane_h);
 
-        // The lane: shots over the item, the playhead; click or drag = move the playhead.
+        // The lane: shots over the item, the playhead; click or drag = move the playhead. A
+        // press ON a junction between two shots (feedback 11-fb-2) drags it instead: the later
+        // shot's start follows the mouse frame by frame, written on release (one undo point).
         ImGui::SetCursorScreenPos(l0);
         ImGui::InvisibleButton("##lane", ImVec2(lane_w, lane_h));
         const bool lane_active = ImGui::IsItemActive();
         const bool lane_hovered = ImGui::IsItemHovered();
+        const bool lane_pressed = ImGui::IsItemActivated();
+        const bool lane_released = ImGui::IsItemDeactivated();
+        constexpr float kJunctionGrabPx = 4.0f;
+        static int    s_junction = -1;         // shot whose start is dragged, -1 = none (a scrub)
+        static double s_junction_orig = 0.0;   // its time when grabbed
+        static double s_junction_time = 0.0;   // the snapped time shown while dragging
+        static float  s_junction_press_x = 0.0f;
+        static double s_junction_press_t = 0.0;   // mouse time at the press (the drag is a delta)
+        static bool   s_junction_moved = false;
+        static bool   s_junction_dropped = false; // grabbed, then lost to a model change: inert until release
         dl->AddRectFilled(l0, l1, ui::kBg, ui::kRadiusSm);
         const VideoStripRange r = VideoViewStripRange();
         if (!r.valid || !(r.end > r.start)) {
@@ -696,13 +709,81 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
         } else {
             const double span = r.end - r.start;
             auto x_of = [&](double t) { return l0.x + static_cast<float>((t - r.start) / span) * lane_w; };
-            const int current = VideoViewShotIndex();
             const int n = static_cast<int>(m.shots.size());
+            const float mx = ImGui::GetIO().MousePos.x;
+            const double f = std::min(1.0, std::max(0.0, static_cast<double>((mx - l0.x) / lane_w)));
+            const double t_mouse = r.start + f * span;
+
+            // The junction within the grab distance of x: the start of shot i >= 1, drawn inside the lane.
+            auto junction_at = [&](float px) {
+                int best = -1;
+                float best_d = kJunctionGrabPx;
+                for (int i = 1; i < n; ++i) {
+                    const VideoShot& s = m.shots[static_cast<size_t>(i)];
+                    if (s.implicit || !(s.time > r.start && s.time < r.end)) continue;
+                    const float d = std::fabs(px - x_of(s.time));
+                    if (d <= best_d) {
+                        best_d = d;
+                        best = i;
+                    }
+                }
+                return best;
+            };
+
+            // The grabbed shot must still be the one at the grabbed time (the model refreshes).
+            if (s_junction >= 0 &&
+                (s_junction >= n ||
+                 std::fabs(m.shots[static_cast<size_t>(s_junction)].time - s_junction_orig) > kVideoShotTimeTolerance)) {
+                s_junction = -1;
+                s_junction_dropped = true;  // never falls back to a scrub while the button is held
+            }
+            if (lane_pressed) {
+                s_junction_dropped = false;
+                // Only a writable junction can be grabbed (an active FX, no camera gesture running).
+                s_junction = VideoViewCanCut() ? junction_at(mx) : -1;
+                if (s_junction >= 0) {
+                    s_junction_orig = m.shots[static_cast<size_t>(s_junction)].time;
+                    s_junction_time = s_junction_orig;
+                    s_junction_press_x = mx;
+                    s_junction_press_t = t_mouse;
+                    s_junction_moved = false;
+                }
+            }
+            if (lane_active && s_junction >= 0) {
+                // A click (moves under the drag threshold) is no move.
+                if (std::fabs(mx - s_junction_press_x) >= ImGui::GetIO().MouseDragThreshold) s_junction_moved = true;
+                if (s_junction_moved) {
+                    const size_t j = static_cast<size_t>(s_junction);
+                    const double next_limit = (j + 1 < m.shots.size()) ? m.shots[j + 1].time : r.end;
+                    // The drag is a delta from the junction's own time, not the cursor's position
+                    // (the grab may be 4 px off). Cuts sit half a frame early, so add half a frame
+                    // to read the frame the junction is on, not the one before it.
+                    const double half = m.fps > 0.0 ? 0.5 / m.fps : 0.0;
+                    const double t = s_junction_orig + (t_mouse - s_junction_press_t) + half;
+                    const double snapped = VideoJunctionDragTime(t, m.shots[j - 1].time, next_limit, m.fps);
+                    s_junction_time = std::isfinite(snapped) ? snapped : s_junction_orig;  // no room: stays
+                }
+            }
+            if (lane_released && s_junction >= 0) {
+                if (s_junction_moved) QueueVideoMoveShot(s_junction, s_junction_time);
+                s_junction = -1;
+            }
+            const bool junction_drag = lane_active && s_junction >= 0;
+
+            // Shot starts as drawn: the dragged one at its snapped time.
+            std::vector<double> times(static_cast<size_t>(n));
+            for (int i = 0; i < n; ++i) times[static_cast<size_t>(i)] = m.shots[static_cast<size_t>(i)].time;
+            // The highlight stays on the shot Video view shows (its camera does not change before
+            // the release writes the move).
+            const int current = VideoViewShotIndex();
+            if (junction_drag) times[static_cast<size_t>(s_junction)] = s_junction_time;
+
             dl->PushClipRect(l0, l1, true);
             for (int i = 0; i < n; ++i) {
                 const VideoShot& s = m.shots[static_cast<size_t>(i)];
-                const double s_end = (i + 1 < n) ? m.shots[static_cast<size_t>(i) + 1].time : r.end;
-                const double a = std::max(i == 0 ? r.start : s.time, r.start);  // the first shot holds from the start
+                const double s_time = times[static_cast<size_t>(i)];
+                const double s_end = (i + 1 < n) ? times[static_cast<size_t>(i) + 1] : r.end;
+                const double a = std::max(i == 0 ? r.start : s_time, r.start);  // the first shot holds from the start
                 const double b = std::min(s_end, r.end);
                 if (!(b > a)) continue;
                 const float xa = x_of(a);
@@ -725,23 +806,37 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                     dl->PopClipRect();
                 }
             }
+            if (junction_drag) {  // the dragged junction, over the segment edges
+                const float jx = x_of(s_junction_time);
+                dl->AddLine(ImVec2(jx, l0.y), ImVec2(jx, l1.y), ui::kAccent, 2.0f);
+            }
             if (playhead >= r.start && playhead <= r.end) {
                 const float px = x_of(playhead);
                 dl->AddRectFilled(ImVec2(px - 1.0f, l0.y), ImVec2(px + 1.0f, l1.y), IM_COL32(0xDF, 0xE3, 0xEA, 0xFF));
             }
             dl->PopClipRect();
 
-            if (lane_active) {
-                const float mx = ImGui::GetIO().MousePos.x;
-                const double f = std::min(1.0, std::max(0.0, static_cast<double>((mx - l0.x) / lane_w)));
+            if (lane_active && s_junction < 0 && !s_junction_dropped) {  // a scrub: passes over junctions
                 static float s_last_mx = -1.0e9f;
                 // Just inside the item's end: at r.end a back-to-back next item would become the
                 // strip's item, and a drag past the edge would walk item after item.
                 const double t_max = r.end - std::min(1.0e-3, span * 0.5);
-                if (ImGui::IsItemActivated() || mx != s_last_mx) QueueVideoSeek(std::min(r.start + f * span, t_max));
+                if (lane_pressed || mx != s_last_mx) QueueVideoSeek(std::min(t_mouse, t_max));
                 s_last_mx = mx;
             }
-            if (lane_hovered && !lane_active) ImGui::SetTooltip("Click or drag to move the playhead");
+            if (junction_drag) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+            } else if (lane_hovered && !lane_active) {
+                if (!ImGui::IsAnyMouseDown() && VideoViewCanCut() && junction_at(mx) >= 0) {
+                    ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);  // the cursor says it: no tooltip
+                } else {
+                    ImGui::SetTooltip("Click or drag to move the playhead");
+                }
+            }
+        }
+        if (!lane_active) {  // released, or the lane lost its item mid-drag: nothing written
+            s_junction = -1;
+            s_junction_dropped = false;
         }
         dl->AddRect(l0, l1, ui::kStroke, ui::kRadiusSm);
 

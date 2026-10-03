@@ -279,7 +279,7 @@ One FX shows the animation items of its own track. Where that track has no item,
 
 The video camera is a sequence of **shots**. A shot starts at a time and keeps its camera until the next shot (**Cut to next**), or moves smoothly to the next shot's camera (**Move to next**).
 
-- **Shot strip** (under the viewport, in Video view): the shots over the current item, and REAPER's playhead as a white line. Click or drag in it to move the playhead.
+- **Shot strip** (under the viewport, in Video view): the shots over the current item, and REAPER's playhead as a white line. Click or drag in it to move the playhead. Drag a line between two shots to retime that cut: it snaps to frames, each shot keeps at least one frame, the first shot's start stays put, and it is one undo step. Any camera move into or out of that cut speeds up or slows down to fit.
 - **C** (in Video view), the strip's **Cut** button or **+ Cut at playhead** in the panel: a new shot starts on the frame under the playhead, with the camera shown there. Then reframe it with the mouse. A cut inside a **Move to next** shot makes that move end at the cut: it now eases into the camera shown at the cut instead of continuing to the next shot.
 - **Shot list** (panel): click a shot to move the playhead to it; **x** deletes it (the first shot stays).
 - **Saved angles** (panel): **+ Save** keeps the camera of the shot under the playhead under a name. Click a saved angle to give it to the shot under the playhead; right-click it to delete it. Saved angles are stored in the FX, with the project.

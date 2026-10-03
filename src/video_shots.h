@@ -78,6 +78,12 @@ bool WriteVideoShot(MediaTrack* track, int fx, const VideoShot& shot);
 // Removes the shot's points and name. Removing the last point leaves the implicit shot.
 bool DeleteVideoShot(MediaTrack* track, int fx, double time);
 
+// Moves the shot at old_time to new_time: every existing point within the tolerance of
+// old_time on the six envelopes changes time (values and shapes kept, no point added),
+// and its name follows it. The caller keeps new_time between the neighbours. False when
+// no point sat at old_time (nothing written).
+bool MoveVideoShot(MediaTrack* track, int fx, double old_time, double new_time);
+
 // Changes how the camera leaves the shot (point shapes).
 bool SetVideoShotTransition(MediaTrack* track, int fx, double time, bool move_to_next);
 

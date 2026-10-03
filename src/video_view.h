@@ -166,6 +166,10 @@ void QueueVideoSeekToShot(int index);
 // A new Cut shot at the playhead holding the camera shown (video_shot_timing.h places it).
 void QueueVideoCut();
 void QueueVideoDeleteShot(int index);
+// Moves the start of shot `index` (>= 1) to new_time (VideoJunctionDragTime places it):
+// one undo point "RAV: Move video shot". Nothing when it stays on its frame, while a
+// camera gesture is unwritten, or for the first / implicit shot.
+void QueueVideoMoveShot(int index, double new_time);
 // Saved angle `index` into the shot under the playhead.
 void QueueVideoApplyAngle(int index);
 // Saves the six values of the shot under the playhead under `name` (same name replaces).

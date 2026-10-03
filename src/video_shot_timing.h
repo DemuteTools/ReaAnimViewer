@@ -51,6 +51,34 @@ inline long long VideoShotFirstFrame(double shot_time, double fps)
     return static_cast<long long>(std::ceil(shot_time * fps - 1e-6));
 }
 
+// Where a junction dragged in the shot strip puts the later shot (Epic 11, feedback 2).
+// Snapped like a cut (its first frame is the frame under the mouse), then clamped so both
+// neighbours keep at least one frame: the moved shot's first frame stays strictly after
+// the previous shot's first frame and strictly before the first frame of `next_limit`
+// (the next shot's start, or the lane end for the last shot). fps <= 0 (unknown): the
+// mouse time itself, kept 1 ms inside (prev_start, next_limit). NaN when there is no
+// frame between the neighbours (they are less than two frames apart): no move is possible.
+inline double VideoJunctionDragTime(double t_mouse, double prev_start, double next_limit, double fps)
+{
+    if (!std::isfinite(t_mouse) || t_mouse < 0.0) t_mouse = 0.0;
+    if (!(fps > 0.0)) {
+        constexpr double kMargin = 1.0e-3;
+        const double lo = prev_start + kMargin;
+        const double hi = next_limit - kMargin;
+        if (lo > hi) return std::nan("");  // no room
+        if (t_mouse > hi) t_mouse = hi;
+        if (t_mouse < lo) t_mouse = lo;
+        return t_mouse;
+    }
+    long long k = VideoFrameIndexAt(t_mouse, fps);
+    const long long k_min = VideoShotFirstFrame(prev_start, fps) + 1;
+    const long long k_max = VideoShotFirstFrame(next_limit, fps) - 1;
+    if (k_min > k_max) return std::nan("");  // no room
+    if (k > k_max) k = k_max;
+    if (k < k_min) k = k_min;
+    return (static_cast<double>(k) - 0.5) / fps;
+}
+
 // True when one of `shot_times` already starts on the frame a cut at playhead t would
 // start, or within `tolerance` seconds of t when fps is unknown.
 inline bool VideoCutWouldDuplicate(const std::vector<double>& shot_times, double t, double fps, double tolerance)

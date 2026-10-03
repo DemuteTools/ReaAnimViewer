@@ -85,6 +85,28 @@ int main()
     CHECK(VideoCutWouldDuplicate({1.0}, 1.0002, 0.0, 0.0005));   // fps unknown: within the tolerance
     CHECK(!VideoCutWouldDuplicate({1.0}, 1.01, 0.0, 0.0005));
 
+    // Junction drag (feedback 11-fb-2): shots at 0 / 2.0 / 5.0 s, 30 fps, the 2.0 junction.
+    CHECK(Near(VideoJunctionDragTime(3.01, 0.0, 5.0, 30.0), 89.5 / 30.0));   // retime right: first frame 90
+    CHECK(VideoShotFirstFrame(VideoJunctionDragTime(3.01, 0.0, 5.0, 30.0), 30.0) == 90);
+    CHECK(Near(VideoJunctionDragTime(1.0, 0.0, 5.0, 30.0), 29.5 / 30.0));    // retime left
+    CHECK(Near(VideoJunctionDragTime(6.0, 0.0, 5.0, 30.0), 148.5 / 30.0));   // clamp at next: frame 149
+    CHECK(Near(VideoJunctionDragTime(5.0, 0.0, 5.0, 30.0), 148.5 / 30.0));   // on the next shot's frame
+    CHECK(Near(VideoJunctionDragTime(-1.0, 0.0, 5.0, 30.0), 0.5 / 30.0));    // clamp at previous: frame 1
+    CHECK(Near(VideoJunctionDragTime(0.01, 0.0, 5.0, 30.0), 0.5 / 30.0));
+    CHECK(Near(VideoJunctionDragTime(0.5, 1.0, 5.0, 30.0), 30.5 / 30.0));    // previous at frame 30: frame 31
+    CHECK(Near(VideoJunctionDragTime(4.0, 0.0, 74.5 / 30.0, 30.0), 73.5 / 30.0));  // next on a cut time: frame 74
+    CHECK(VideoShotFirstFrame(VideoJunctionDragTime(2.0, 0.0, 5.0, 30.0), 30.0) == 60);  // back on its own frame
+    // fps unknown: unsnapped, 1 ms margin.
+    CHECK(Near(VideoJunctionDragTime(3.0123, 0.0, 5.0, 0.0), 3.0123));
+    CHECK(Near(VideoJunctionDragTime(9.0, 0.0, 5.0, 0.0), 4.999));
+    CHECK(Near(VideoJunctionDragTime(-2.0, 0.0, 5.0, 0.0), 0.001));
+    CHECK(Near(VideoJunctionDragTime(0.5, 1.0, 5.0, 0.0), 1.001));
+    // No frame between the neighbours: NaN (no move), never onto a neighbour's frame.
+    CHECK(std::isnan(VideoJunctionDragTime(2.0, 30.5 / 30.0, 31.5 / 30.0, 30.0)));
+    CHECK(std::isnan(VideoJunctionDragTime(2.0, 1.0, 1.0015, 0.0)));
+    // The UI feeds the junction's own time + the drag delta + half a frame: no drag = same frame.
+    CHECK(VideoShotFirstFrame(VideoJunctionDragTime(59.5 / 30.0 + 0.5 / 30.0, 0.0, 5.0, 30.0), 30.0) == 60);
+
     std::printf(g_fails ? "FAILED %d\n" : "ALL PASS\n", g_fails);
     return g_fails != 0 ? 1 : 0;
 }

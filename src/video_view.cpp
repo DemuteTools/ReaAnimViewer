@@ -54,6 +54,8 @@ enum class CmdKind {
     // Story 11-5
     Seek, Cut, DeleteShot, SaveAngle, DeleteAngle, OutputSize, CustomOutputSize, Background, OpenMatrix,
     OpenRenderDialog,
+    // Feedback 11-fb-2
+    MoveShot,
 };
 
 struct Cmd {
@@ -66,6 +68,7 @@ struct Cmd {
     std::string text;
     std::string undo;
     double      fps = 0.0;  // Cut: the project frame rate when it was asked
+    double      new_time = 0.0;  // MoveShot: where the shot at shot_time goes
     int         width = 0;  // OutputSize
     int         height = 0;
 };
@@ -371,6 +374,39 @@ void RunCut(const Cmd& c)
     }
 }
 
+// A junction dragged in the shot strip: the shot at c.shot_time moves to c.new_time, one
+// undo point. Nothing is written when the shot is gone, or when its neighbours changed
+// since the drag began so that the move would now pass one (no reordering).
+void RunMoveShot(const Cmd& c)
+{
+    if (!FxValid(c.track, c.fx)) return;
+    const std::vector<VideoShot> shots = ReadVideoShots(c.track, c.fx);
+    int index = -1;
+    for (size_t i = 0; i < shots.size(); ++i) {
+        if (!shots[i].implicit && std::fabs(shots[i].time - c.shot_time) <= kVideoShotTimeTolerance) {
+            index = static_cast<int>(i);
+            break;
+        }
+    }
+    if (index < 0) {
+        LogWarn("video view: no shot at %.3f s any more, the move was not written", c.shot_time);
+        return;
+    }
+    const size_t i = static_cast<size_t>(index);
+    const bool after_prev = index > 0 && c.new_time > shots[i - 1].time + kVideoShotTimeTolerance;
+    const bool before_next = i + 1 >= shots.size() || c.new_time < shots[i + 1].time - kVideoShotTimeTolerance;
+    if (!after_prev || !before_next) {
+        LogWarn("video view: the shots changed during the drag, the move of %.3f s to %.3f s was not written",
+                c.shot_time, c.new_time);
+        return;
+    }
+
+    Undo_BeginBlock2(nullptr);
+    const bool ok = MoveVideoShot(c.track, c.fx, c.shot_time, c.new_time);
+    Undo_EndBlock2(nullptr, "RAV: Move video shot", UNDO_STATE_FX);
+    if (!ok) LogWarn("video view: the shot at %.3f s had no envelope point to move", c.shot_time);
+}
+
 void WriteOutputSize(MediaTrack* track, int fx, int width, int height)
 {
     if (!FxValid(track, fx)) return;
@@ -456,6 +492,9 @@ void RunOne(const Cmd& c)
             return;
         case CmdKind::Cut:
             RunCut(c);
+            return;
+        case CmdKind::MoveShot:
+            RunMoveShot(c);
             return;
         case CmdKind::DeleteShot: {
             if (!FxValid(c.track, c.fx)) return;
@@ -925,6 +964,32 @@ void QueueVideoDeleteShot(int index)
     c.track = g_model.track;
     c.fx = g_model.fx;
     c.shot_time = g_model.shots[static_cast<size_t>(index)].time;
+    g_queue.push_back(std::move(c));
+}
+
+void QueueVideoMoveShot(int index, double new_time)
+{
+    if (!std::isfinite(new_time)) return;
+    if (g_live.kind == Gesture::Zoom) QueueLiveWrite(UndoNameFor(Gesture::Zoom));  // a wheel gesture ends here
+    if (!VideoViewCanCut()) {
+        if (g_model.status == VideoFxStatus::Active) SetNotice("Finish the camera move first");
+        return;
+    }
+    if (index <= 0 || index >= static_cast<int>(g_model.shots.size())) return;  // the first shot's start stays
+    const VideoShot& s = g_model.shots[static_cast<size_t>(index)];
+    if (s.implicit) return;
+    // Released on the frame it started on: nothing to write.
+    if (g_model.fps > 0.0) {
+        if (VideoShotFirstFrame(new_time, g_model.fps) == VideoShotFirstFrame(s.time, g_model.fps)) return;
+    } else if (std::fabs(new_time - s.time) <= kVideoShotTimeTolerance) {
+        return;
+    }
+    Cmd c;
+    c.kind = CmdKind::MoveShot;
+    c.track = g_model.track;
+    c.fx = g_model.fx;
+    c.shot_time = s.time;
+    c.new_time = new_time;
     g_queue.push_back(std::move(c));
 }
 

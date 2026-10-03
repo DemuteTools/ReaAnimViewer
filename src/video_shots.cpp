@@ -433,6 +433,53 @@ bool DeleteVideoShot(MediaTrack* track, int fx, double time)
     return any;
 }
 
+bool MoveVideoShot(MediaTrack* track, int fx, double old_time, double new_time)
+{
+    if (!ValidFx(track, fx) || !std::isfinite(old_time) || !std::isfinite(new_time)) return false;
+
+    // The shot's stored name (none = automatic "Shot N"), read before the points move.
+    std::string name;
+    VideoFxState st;
+    if (ReadVideoFxState(track, fx, &st)) {
+        for (const VideoFxShotName& n : st.shot_names) {
+            if (std::fabs(n.time - old_time) <= kVideoShotTimeTolerance) {
+                name = n.name;
+                break;
+            }
+        }
+    }
+
+    bool any = false;
+    for (int p = 0; p < vcam::kParamCount; ++p) {
+        TrackEnvelope* env = GetFXEnvelope(track, fx, p, false);
+        if (!env) continue;
+        const int n = CountEnvelopePoints(env);
+        bool moved = false;
+        for (int i = 0; i < n; ++i) {
+            double t = 0.0;
+            double value = 0.0;
+            int shape = 0;
+            double tension = 0.0;
+            bool selected = false;
+            if (!GetEnvelopePoint(env, i, &t, &value, &shape, &tension, &selected)) continue;
+            if (std::fabs(t - old_time) > kVideoShotTimeTolerance) continue;
+            double time = new_time;
+            bool no_sort = true;
+            if (SetEnvelopePoint(env, i, &time, nullptr, nullptr, nullptr, nullptr, &no_sort)) moved = true;
+        }
+        if (moved) {
+            Envelope_SortPoints(env);
+            any = true;
+        }
+    }
+    if (!any) return false;
+
+    // Re-key the name on the new time; the old time is no longer a shot, so its entry is pruned.
+    StoreShotName(track, fx, new_time, name);
+    UpdateArrange();
+    return true;
+}
+
 bool SetVideoShotTransition(MediaTrack* track, int fx, double time, bool move_to_next)
 {
     if (!ValidFx(track, fx)) return false;

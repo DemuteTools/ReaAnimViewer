@@ -27,6 +27,8 @@ Private dev files (`.claude/`, `_bmad/`, `_bmad-output/`, `CLAUDE.md`, validatio
 | `release.bat` | Publishes a new version (see [Releasing](#releasing-a-new-version)). |
 | `reapack-check.bat` | Validates the ReaPack package locally with `reapack-index --check`. |
 | `dev-sync.bat` | Syncs the private dev files between your PCs. |
+| `test-toolkit-update.bat` | Tests the Toolkit self-update without publishing: builds a fake newer release (0.2.99) and drops it into the Toolkit folder while REAPER runs, as a click on Update would. Also checks the result, restores, and prints a diagnosis. |
+| `test-uninstall-rav.bat` | Removes every ReaAnimViewer install from REAPER (any version, Toolkit or ReaPack leftovers, video FX, launcher action), to test an install from scratch. |
 
 ### build.bat
 

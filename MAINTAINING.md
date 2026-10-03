@@ -89,13 +89,14 @@ The Toolkit can only install scripts: it copies every file of the package into `
 
 ```
 @provides
-  [main] .
+  [nomain] .
   [win64 extension] reaper_animviewer.dll https://github.com/.../releases/download/v$version/$path
   [win64 extension] FX/rav_video_fx.clap https://github.com/.../releases/download/v$version/rav_video_fx.clap
 ```
 
 - **ReaPack** honours `extension`: the DLL goes straight to `UserPlugins` and the video FX to `UserPlugins/FX` (where REAPER scans CLAP plug-ins at startup). The launcher is never needed. The FX line names its asset explicitly: `$path` would be `FX/rav_video_fx.clap`.
 - **The Toolkit** puts the files in `Scripts/ReaAnimViewer/Scripts/` (the FX in an `FX/` sub-folder, or flat: both are handled). Its entry for this tool is `main_script = "RAV_Launcher.lua"`, so the card's **Run** button runs the launcher.
+- **Actions list**: the launcher is not an action users should see; "RAV: Open Viewer" (the extension's) is the only entry. `[nomain]` stops ReaPack and the Toolkit from registering it at install. The Toolkit's **Run** button still registers it (`AddRemoveReaScript`) right before running it, so the launcher removes its own action at the end of every run (also cleaning up 0.2.x installs, which registered it).
 
 ### Launcher (first install)
 

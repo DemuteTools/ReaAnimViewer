@@ -14,7 +14,7 @@
 -- @changelog
 --   - Fix: Run said "installed" without installing anything when ReaPack still listed a deleted copy of the extension. It now opens ReaPack and tells you which package to uninstall
 -- @provides
---   [main] .
+--   [nomain] .
 --   [win64 extension] reaper_animviewer.dll https://github.com/DemuteTools/ReaAnimViewer/releases/download/v$version/$path
 --   [win64 extension] FX/rav_video_fx.clap https://github.com/DemuteTools/ReaAnimViewer/releases/download/v$version/rav_video_fx.clap
 
@@ -142,6 +142,17 @@ local function copy_file(from, to)
   return true
 end
 
+-- Takes this script out of the Actions list, so "RAV: Open Viewer" is the only
+-- entry. The package does not register it ([nomain]), but the Toolkit's Run button
+-- registers it before running it, and 0.2.x installs registered it: removed after
+-- every run. Run keeps working since the Toolkit registers it again each time.
+local function remove_own_action()
+  local _, path = reaper.get_action_context()
+  if path and path ~= "" then
+    reaper.AddRemoveReaScript(false, 0, path, true)
+  end
+end
+
 local function ask_restart()
   message("ReaAnimViewer is installed.\n\n"
     .. "Restart REAPER, then use the action \"RAV: Open Viewer\".")
@@ -242,3 +253,4 @@ local function main()
 end
 
 main()
+remove_own_action()

@@ -29,13 +29,20 @@
 #include <unordered_set>  // g_noticed_paths
 #include <vector>
 
+#include "asset_cache.h"      // Story 11-2: share the parse with the video FX
 #include "asset_loader.h"
 #include "console_log.h"
+#include "video_fx_track.h"   // RefreshVideoFxPictures after a display change
+#include "display_settings.h" // Story 11-2: the video FX draws with the viewer's settings
 #include "gl_loader.h"   // LoadGlFunctions + modern-GL pointers; pulls in <gl/GL.h>
 #include "overlay_icons.h"    // kIcon_menu/light/color — Antho's SVGs rasterized to RGBA (Story 6.5.3 rev)
 #include "pcm_source_anim.h"  // GetCurrentAnimItem — the transport→current-item query (Story 4.3)
 #include "rav_version.h"      // RAV_DISPLAY_VERSION — menu footer + copied error log header
 #include "renderer.h"
+#include "gpu_resources.h"    // Story 11-4: the Video view's render target
+#include "ui_theme.h"         // Story 11-4: the DM-XYZ-Pad theme over Dear ImGui
+#include "video_view.h"       // Story 11-4: Video view + Video panel model
+#include "video_view_ui.h"    // Story 11-4: their ImGui widgets
 
 #ifndef GL_CLAMP_TO_EDGE
 #define GL_CLAMP_TO_EDGE 0x812F   // GL 1.2; Windows <gl/GL.h> is 1.1 and may omit it
@@ -227,6 +234,22 @@ constexpr float kHalfPi = 1.57079633f;
 constexpr float kNavCubeSize   = 96.0f;
 constexpr float kNavCubeMargin = 12.0f;
 
+// Story 11-4 — Video view. The frame is rendered into its own target at the frame's size
+// (same aspect as the FX output, so the same framing), then copied into the frame rect of
+// the window. Session state; freed with the GL context in StopRendering.
+constexpr UINT kMsgRunVideoCommands = WM_APP + 0x31;  // runs the Video view's queued writes
+GpuFramebuffer  g_video_fbo;
+GpuRenderbuffer g_video_color_rb;
+GpuRenderbuffer g_video_depth_rb;
+int             g_video_target_w = 0;
+int             g_video_target_h = 0;
+VideoFrameRect  g_video_frame;              // this frame's layout (Video view only)
+bool            g_drag_video = false;       // the current drag edits the video camera
+bool            g_video_post_pending = false;
+// True when the asset the renderer holds is the one g_current_anim_path names (a failed
+// load keeps the previous asset up, whose bounds then belong to another file).
+bool            g_current_load_ok = false;
+
 ImTextureID IconTex(GLuint t) { return static_cast<ImTextureID>(t); }  // GLuint → ImU64
 
 glm::vec3 LightDirFromAngles(float azim, float elev)
@@ -360,6 +383,112 @@ void TrySetVsync(int interval)
         swap(interval);  // absence is not a failure: it just means vsync can't be toggled
 }
 
+// Story 11-4 — (re)allocates the Video view's render target (colour + depth, single
+// sample: the renderer's own MSAA target resolves into it). Cold path: only on a size
+// change. False when the GPU refuses it (the frame then stays empty); a refused size is
+// not retried (nor logged again) until the frame size changes.
+bool EnsureVideoTarget(int w, int h)
+{
+    if (g_video_target_w == w && g_video_target_h == h) return g_video_fbo.get() != 0;
+    g_video_fbo = GpuFramebuffer();
+    g_video_color_rb = GpuRenderbuffer();
+    g_video_depth_rb = GpuRenderbuffer();
+    g_video_target_w = w;
+    g_video_target_h = h;
+
+    GpuRenderbuffer color;
+    glGenRenderbuffers(1, color.addr());
+    if (!color.get()) return false;
+    glBindRenderbuffer(GL_RENDERBUFFER, color.get());
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, 0, GL_RGBA8, w, h);
+    GpuRenderbuffer depth;
+    glGenRenderbuffers(1, depth.addr());
+    if (!depth.get()) return false;
+    glBindRenderbuffer(GL_RENDERBUFFER, depth.get());
+    glRenderbufferStorageMultisample(GL_RENDERBUFFER, 0, GL_DEPTH_COMPONENT24, w, h);
+    GpuFramebuffer fbo;
+    glGenFramebuffers(1, fbo.addr());
+    if (!fbo.get()) return false;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo.get());
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, color.get());
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depth.get());
+    const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        LogWarn("Video view: render target %dx%d refused by the GPU, the frame stays empty", w, h);
+        return false;
+    }
+    g_video_color_rb = std::move(color);
+    g_video_depth_rb = std::move(depth);
+    g_video_fbo = std::move(fbo);
+    return true;
+}
+
+// Story 11-5 -- the shot strip's band at the bottom of the view area (Video view with an
+// active FX), 0 otherwise. The frame, the ViewCube and the status icon stay above it.
+float VideoStripBand()
+{
+    return VideoShotStripVisible() ? kVideoStripHeight + 2.0f * kVideoStripGap : 0.0f;
+}
+
+// The bottom of the view area (client height minus the strip band).
+float ViewBottom()
+{
+    return std::max(1.0f, static_cast<float>(g_client_h) - VideoStripBand());
+}
+
+void ReleaseVideoTarget()
+{
+    g_video_fbo = GpuFramebuffer();
+    g_video_color_rb = GpuRenderbuffer();
+    g_video_depth_rb = GpuRenderbuffer();
+    g_video_target_w = 0;
+    g_video_target_h = 0;
+}
+
+// Story 11-4 — Video view: the window shows the FX's picture inside a frame at the output
+// aspect. Outside the frame = the theme's background. The free camera is swapped out for
+// the video camera only around the draw, so RAV view finds it exactly as it was left.
+void RenderVideoView(float anim_time)
+{
+    const VideoViewModel& m = GetVideoViewModel();
+    const float area_w = static_cast<float>(g_client_w) - VideoPanelFootprint(g_client_w);
+    g_video_frame = ComputeVideoFrameRect(area_w, ViewBottom(), kVideoTopBand,
+                                          kNavCubeSize + 2.0f * kNavCubeMargin, m.out_w, m.out_h);
+    const int fx = static_cast<int>(g_video_frame.x);
+    const int fw = static_cast<int>(g_video_frame.w);
+    const int fh = static_cast<int>(g_video_frame.h);
+    const int fy = g_client_h - (static_cast<int>(g_video_frame.y) + fh);  // GL rows count from the bottom
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, g_client_w, g_client_h);
+    const ImVec4 outside = ui::Col(ui::kBg);
+    glClearColor(outside.x, outside.y, outside.z, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    OrbitCamera video_cam;
+    if (fw >= 1 && fh >= 1 && VideoViewCamera(&video_cam) && EnsureVideoTarget(fw, fh)) {
+        const OrbitCamera free_cam = g_renderer.Camera();
+        g_renderer.Camera() = video_cam;
+        g_renderer.RenderFrame(anim_time, /*loop=*/false, fw, fh, g_video_fbo.get());
+        g_renderer.Camera() = free_cam;
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, g_video_fbo.get());
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glBlitFramebuffer(0, 0, fw, fh, fx, fy, fx + fw, fy + fh, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, g_client_w, g_client_h);
+    } else if (fw >= 1 && fh >= 1) {
+        // No picture at the playhead (no FX, no item...): the frame is an empty surface.
+        const ImVec4 empty = ui::Col(ui::kSurface);
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(fx, fy, fw, fh);
+        glClearColor(empty.x, empty.y, empty.z, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDisable(GL_SCISSOR_TEST);
+    }
+}
+
 void RenderTick()
 {
     if (!g_hdc || !g_hglrc) return;
@@ -384,9 +513,15 @@ void RenderTick()
     // architecture.md:1015). This runs on the main UI pump (the NULL-hwnd timer Reaper
     // dispatches), so the Reaper item APIs GetCurrentAnimItem calls are a correct
     // main-thread call — do NOT move this onto a worker thread.
+    //
+    // Story 11-4: a track pinned in the Video panel restricts the query to that track (in
+    // both views, so switching views never reloads the asset); the item's track feeds the
+    // panel's "follow the displayed item".
     std::string item_path;
     double item_time = 0.0;
-    if (GetCurrentAnimItem(item_path, item_time)) {
+    MediaTrack* item_track = nullptr;
+    const bool item_found = GetCurrentAnimItemOn(VideoViewPinnedTrack(), item_path, item_time, &item_track);
+    if (item_found) {
         if (item_path != g_current_anim_path) {
             // Item changed (first item, or a scrub onto a DIFFERENT source) → (re)load
             // its asset. This is the COLD path — gated by the cheap string compare so a
@@ -397,10 +532,16 @@ void RenderTick()
             // Tag the loader's warnings (texture / skin lines name no file) with this path in
             // the copyable log; cleared before the load-failed line, which names it itself.
             SetLogContext(item_path);
+            // The file's version BEFORE the parse (Story 11-2 cache, see OfferCpuAsset).
+            const AssetFileStamp item_stamp = ReadAssetFileStamp(item_path);
             LoadResult r = LoadAsset(item_path);
             SetLogContext("");
+            g_current_load_ok = r.asset.has_value();
             if (r.asset) {
                 g_renderer.SetAsset(std::move(*r.asset));
+                // Story 11-2: hand the parse to the video FX if one of its tracks uses this
+                // file (kept read-only in the shared cache; ignored otherwise).
+                OfferCpuAsset(item_path, std::move(r.cpu), item_stamp);
                 LogInfo("now showing %s", item_path.c_str());
                 if (r.notices.empty()) {
                     ClearLoadMessage();
@@ -456,17 +597,48 @@ void RenderTick()
         g_renderer.AdvanceCameraAnim(dt);
     }
 
+    // Story 11-4 — tell the Video view model what is displayed (its track, whether an item
+    // spans the playhead, the model's posed bounds), before the ImGui frame reads it.
+    {
+        const Asset& shown = g_renderer.CurrentAsset();
+        const bool has_model = item_found && g_current_load_ok && !shown.meshes.empty();
+        VideoViewFrame(item_found ? item_track : nullptr, item_found, has_model, shown.aabbMin, shown.aabbMax);
+    }
+
     // Before any RAV item is ever current, g_transport_driven is false → the viewport
     // is idle (no startup fixture — the launch file-picker was removed; animations are
     // loaded from the timeline). Once an item drives the view it is sticky: transport
     // time, clamp (no loop).
-    g_renderer.RenderFrame(
-        static_cast<float>(g_transport_driven ? g_display_time : ElapsedSeconds()),
-        /*loop=*/!g_transport_driven, g_client_w, g_client_h);
+    if (VideoViewActive()) {
+        RenderVideoView(static_cast<float>(g_display_time));
+    } else {
+        g_renderer.RenderFrame(
+            static_cast<float>(g_transport_driven ? g_display_time : ElapsedSeconds()),
+            /*loop=*/!g_transport_driven, g_client_w, g_client_h);
+    }
+
+    // Story 11-2: the video FX renders with exactly what the viewer just drew with (light,
+    // floor, grid, shadow, normal maps, MSAA, background); kept after the viewer closes.
+    // A change also refreshes REAPER's cached FX frames, once the user pauses (a light
+    // drag changes the settings every frame; each refresh re-renders REAPER's cache).
+    {
+        static double refresh_at = -1.0;
+        const double now = ElapsedSeconds();
+        if (PublishDisplaySettings(g_renderer.CurrentDisplaySettings())) refresh_at = now + 0.2;
+        if (refresh_at >= 0.0 && now >= refresh_at) {
+            refresh_at = -1.0;
+            RefreshVideoFxPictures();
+        }
+    }
 
     DrawToolUi();   // Dear ImGui overlay on top of the 3D scene (Story 6.5.3 rev)
 
     SwapBuffers(g_hdc);
+
+    // Story 11-4 — the Video view's REAPER writes run from the window procedure, never
+    // inside this tick (a message box or a plug-in load may run a modal loop).
+    if (VideoViewHasPending() && !g_video_post_pending && g_hwnd)
+        g_video_post_pending = PostMessageW(g_hwnd, kMsgRunVideoCommands, 0, 0) != FALSE;
 
     ++g_frame_count;
     LARGE_INTEGER now;
@@ -598,7 +770,7 @@ void StatusIconWidget()
         ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing |
         ImGuiWindowFlags_NoBackground;
 
-    const float icon_top = static_cast<float>(g_client_h) - kStatusIconMargin - kStatusIconSize;
+    const float icon_top = ViewBottom() - kStatusIconMargin - kStatusIconSize;  // Story 11-5: above the strip
     ImGui::SetNextWindowPos(ImVec2(kStatusIconMargin, icon_top), ImGuiCond_Always);
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
     bool icon_hovered = false;
@@ -663,7 +835,12 @@ void StatusIconWidget()
 // ±1 geometry). Only FRONT-facing faces are drawn and picked (back-face cull). NON-fatal:
 // only ever called from DrawToolUi, which early-returns if ImGui is not ready (AR17). Lives
 // in its OWN frameless ImGui window in the SAME NewFrame/Render pair.
-void NavCubeWidget()
+//
+// Story 11-4 — the cube shows `cam` (the free camera in RAV view, the video camera in Video
+// view) and sits at the bottom-right of the view area (`right_x` = its right edge). In Video
+// view a click edits the shot under the playhead (queued, one undo point) instead of the
+// free camera.
+void NavCubeWidget(const OrbitCamera& cam, bool video, float right_x)
 {
     // A plain solid cube — 6 flat axis-coloured faces on the unit cube ([-1,1]^3). The cube
     // looks smooth; only the hover HIGHLIGHT (drawn later) distinguishes face / edge / corner.
@@ -688,8 +865,8 @@ void NavCubeWidget()
     // Bottom-right pivot (1,1) anchored to the live client size (current in WM_SIZE) — mirrors
     // the FPS read-out's right-edge pivot but pinned to the bottom-right corner.
     ImGui::SetNextWindowPos(
-        ImVec2(static_cast<float>(g_client_w) - kNavCubeMargin,
-               static_cast<float>(g_client_h) - kNavCubeMargin),
+        ImVec2(right_x - kNavCubeMargin,
+               ViewBottom() - kNavCubeMargin),  // Story 11-5: above the shot strip
         ImGuiCond_Always, ImVec2(1.0f, 1.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
     if (!ImGui::Begin("##navcube", nullptr, kFlags)) {
@@ -712,7 +889,6 @@ void NavCubeWidget()
     // turns with the view (AC1). viewDir = cube->camera (== Eye()-target, camera.h spherical
     // form). fwd = camera->cube; right/up are the screen axes. pitch is clamped to +/-1.55
     // (Orbit/snap guard) so fwd never aligns with world-up and the cross stays well-defined.
-    const OrbitCamera& cam = g_renderer.Camera();
     const float cp = std::cos(cam.pitch), sp = std::sin(cam.pitch);
     const float sy = std::sin(cam.yaw),   cyw = std::cos(cam.yaw);
     const glm::vec3 viewDir(cp * sy, sp, cp * cyw);
@@ -796,8 +972,10 @@ void NavCubeWidget()
             dl->AddCircleFilled(b, 3.0f, kHi, 12);
         }
 
-        if (pressed)
-            g_renderer.SnapCameraTo(hitDir);
+        if (pressed) {
+            if (video) QueueVideoSnap(hitDir);
+            else       g_renderer.SnapCameraTo(hitDir);
+        }
     }
 
     ImGui::End();
@@ -825,9 +1003,10 @@ void DrawToolUi()
         ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar |
         ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing;
 
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f);
+    // Story 11-4: the theme (ui_theme.h) styles the menu; it is a raised card when open.
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 8.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, g_menu_open ? ui::Col(ui::kRaised) : ui::Col(IM_COL32(18, 19, 23, 184)));
+    ImGui::PushStyleColor(ImGuiCol_Border, g_menu_open ? ui::Col(ui::kStrokeStrong) : ui::Col(ui::kStroke));
     ImGui::Begin("##tools", nullptr, kFlags);
 
     // Hamburger button — frameless icon; toggles the option list.
@@ -844,14 +1023,8 @@ void DrawToolUi()
         const ImVec4 kIconTint(0.82f, 0.84f, 0.90f, 1.0f);
         ImGui::Spacing();
 
-        if (ImGui::Button("Recenter camera", ImVec2(196.0f, 0.0f)))
-            g_renderer.ResetCamera();
-
-        // Always enabled: even with no error kept, the GPU line helps a bug report.
-        const bool copied = ElapsedSeconds() < g_copied_until;
-        if (ImGui::Button(copied ? "Copied!##copylog" : "Copy error log##copylog",
-                          ImVec2(196.0f, 0.0f)))
-            CopyErrorLogToClipboard();
+        // Story 11-4 (UX decision 8): the menu is split into View and Tools groups.
+        ui::Caption("VIEW");
 
         // A collapsible section header: Antho's icon + a CollapsingHeader (the ▸ arrow
         // collapses/expands the group). Default-open so the menu looks unchanged until the
@@ -904,25 +1077,23 @@ void DrawToolUi()
                 g_renderer.SetFloorVisible(g_floor_visible);
             // Epic 9 — grid cell size in real metres; the renderer converts it to the
             // file's unit, so sizes read in cells whatever the format.
+            // Exclusive choices are segmented controls (house style): the picked one stands out.
             ImGui::TextUnformatted("Grid");
             ImGui::SameLine();
-            bool grid_changed = false;
-            grid_changed |= ImGui::RadioButton("1 m",  &g_grid_step_m, 1);  ImGui::SameLine();
-            grid_changed |= ImGui::RadioButton("10 m", &g_grid_step_m, 10);
-            if (grid_changed)
+            static const char* const kGridLabels[2] = { "1 m", "10 m" };
+            int grid_sel = (g_grid_step_m == 10) ? 1 : 0;
+            if (ui::Segmented("##grid", kGridLabels, 2, &grid_sel, 0.0f, -1)) {
+                g_grid_step_m = (grid_sel == 1) ? 10 : 1;
                 g_renderer.SetGridStep(static_cast<float>(g_grid_step_m));
+            }
             ImGui::Unindent(8.0f);
         }
 
         // --- Shadow: cast-shadow quality (Off skips the depth pass; no floor → no shadow) ---
         if (Section(g_icon_shadow, "Shadow")) {
             ImGui::Indent(8.0f);
-            bool shadow_changed = false;
-            shadow_changed |= ImGui::RadioButton("Off",  &g_shadow_quality, 0); ImGui::SameLine();
-            shadow_changed |= ImGui::RadioButton("Low",  &g_shadow_quality, 1); ImGui::SameLine();
-            shadow_changed |= ImGui::RadioButton("Mid",  &g_shadow_quality, 2); ImGui::SameLine();
-            shadow_changed |= ImGui::RadioButton("High", &g_shadow_quality, 3);
-            if (shadow_changed)
+            static const char* const kShadowLabels[4] = { "Off", "Low", "Mid", "High" };
+            if (ui::Segmented("##shadow", kShadowLabels, 4, &g_shadow_quality, 0.0f, -1))
                 g_renderer.SetShadowQuality(static_cast<ShadowQuality>(g_shadow_quality));
             ImGui::Unindent(8.0f);
         }
@@ -946,24 +1117,50 @@ void DrawToolUi()
             // literal trips MSVC C4566 under /W3 — same reason the 6.5.3 labels stay ASCII. The
             // "Off##msaa" id-tag keeps this radio distinct from the Shadow section's "Off".)
             ImGui::TextUnformatted("MSAA");
-            bool msaa_changed = false;
-            msaa_changed |= ImGui::RadioButton("Off##msaa", &g_msaa_level, 0); ImGui::SameLine();
-            const int   kMsaaLevels[3] = { 2, 4, 8 };
-            const char* kMsaaLabels[3] = { "2x", "4x", "8x" };
-            for (int i = 0; i < 3; ++i) {
-                const bool unavailable = (kMsaaLevels[i] > g_msaa_max);
-                if (unavailable) ImGui::BeginDisabled();
-                msaa_changed |= ImGui::RadioButton(kMsaaLabels[i], &g_msaa_level, kMsaaLevels[i]);
-                if (unavailable) ImGui::EndDisabled();
-                if (i < 2) ImGui::SameLine();
+            // Segmented (house style). Segmented greys out ONE option: the first level the GPU
+            // cannot do; a pick above it (possible when two levels exceed the cap) is ignored.
+            ImGui::SameLine();
+            static const int         kMsaaLevels[4] = { 0, 2, 4, 8 };
+            static const char* const kMsaaLabels[4] = { "Off", "2x", "4x", "8x" };
+            int msaa_sel = 0;
+            int msaa_first_unavailable = -1;
+            for (int i = 0; i < 4; ++i) {
+                if (kMsaaLevels[i] == g_msaa_level) msaa_sel = i;
+                if (msaa_first_unavailable < 0 && kMsaaLevels[i] > g_msaa_max) msaa_first_unavailable = i;
             }
-            if (msaa_changed)
+            if (ui::Segmented("##msaa", kMsaaLabels, 4, &msaa_sel, 0.0f, msaa_first_unavailable) &&
+                kMsaaLevels[msaa_sel] <= g_msaa_max) {
+                g_msaa_level = kMsaaLevels[msaa_sel];
                 g_renderer.SetMsaaSamples(g_msaa_level);
+            }
 
             ImGui::Checkbox("FPS", &g_fps_overlay_on);  // pure UI state — read by the overlay below
 
             ImGui::Unindent(8.0f);
         }
+
+        // --- Tools: Video shows / hides the Video panel (Story 11-4, UX decision 8) ---
+        ImGui::Dummy(ImVec2(0.0f, 2.0f));
+        ImGui::Separator();
+        ui::Caption("TOOLS");
+        {
+            const bool panel = VideoPanelVisible();
+            if (ImGui::Selectable("Video##toolsvideo", panel, 0, ImVec2(196.0f, 0.0f)))
+                SetVideoPanelVisible(!panel);
+            ImGui::SameLine(160.0f);
+            ui::Caption(panel ? "open" : "closed");
+        }
+
+        ImGui::Dummy(ImVec2(0.0f, 2.0f));
+        ImGui::Separator();
+        if (ImGui::Button("Recenter camera", ImVec2(196.0f, 0.0f)))
+            g_renderer.ResetCamera();
+
+        // Always enabled: even with no error kept, the GPU line helps a bug report.
+        const bool copied = ElapsedSeconds() < g_copied_until;
+        if (ImGui::Button(copied ? "Copied!##copylog" : "Copy error log##copylog",
+                          ImVec2(196.0f, 0.0f)))
+            CopyErrorLogToClipboard();
 
         // Build version (a dev build shows "<last release>-dev+<commit>"), so a user can tell
         // which one they run.
@@ -972,7 +1169,8 @@ void DrawToolUi()
     }
 
     ImGui::End();
-    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar();
 
     // Story 6.5.5 — extra frameless read-out overlays, drawn in the SAME NewFrame/Render pair
     // (never a second NewFrame). NoInputs so they can NEVER steal the mouse from the camera
@@ -985,14 +1183,41 @@ void DrawToolUi()
         ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing |
         ImGuiWindowFlags_NoInputs;
 
+    // Story 11-4 — the view area: the window minus the Video panel's column when it shows.
+    const bool  video_view = VideoViewActive();
+    const float panel_room = VideoPanelFootprint(g_client_w);
+    const float area_right = static_cast<float>(g_client_w) - panel_room;
+
     // FPS readout, top-RIGHT (FR53), anchored with a right-edge pivot so it hugs the corner at
     // any client size. This REPLACES the console FPS log removed in 6.5.2 — no console output.
+    // Story 11-4: at the view area's corner, left of the panel button in Video view.
     if (g_fps_overlay_on) {
-        ImGui::SetNextWindowPos(ImVec2(static_cast<float>(g_client_w) - 10.0f, 10.0f),
+        ImGui::SetNextWindowPos(ImVec2(area_right - (video_view ? 46.0f : 10.0f), 14.0f),
                                 ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
         if (ImGui::Begin("##fps", nullptr, kReadoutFlags))
             ImGui::Text("%.0f FPS", g_fps);
         ImGui::End();
+        ImGui::PopStyleColor();
+    }
+
+    // Story 11-4 — RAV view / Video view toggle (top centre of the view area, key V); in
+    // Video view the frame's edge + captions, its state message, and the panel button.
+    DrawVideoViewToggle(area_right * 0.5f);
+    if (video_view) {
+        DrawVideoFrameDecor(g_video_frame, &CopyErrorLogToClipboard);
+        DrawVideoPanelButton(area_right - 8.0f);
+        // Story 11-5 -- the shot strip under the viewport (UX decision 4).
+        if (VideoStripBand() > 0.0f) {
+            DrawVideoShotStrip(kVideoStripGap, static_cast<float>(g_client_h) - kVideoStripGap - kVideoStripHeight,
+                               std::max(1.0f, area_right - 2.0f * kVideoStripGap), kVideoStripHeight);
+        }
+    }
+    if (panel_room > 0.0f) {
+        const float gap = 8.0f;
+        DrawVideoPanel(area_right + gap, gap, panel_room - 2.0f * gap,
+                       std::max(1.0f, static_cast<float>(g_client_h) - 2.0f * gap), g_renderer.Camera(),
+                       &CopyErrorLogToClipboard);
     }
 
     // Load message (AC7) — a brief transient message, top-centre, shown while fresh
@@ -1003,7 +1228,8 @@ void DrawToolUi()
     // "Copy details" button: it only captures the mouse while hovered (its own rect), and
     // hovering holds it.
     if (!g_load_msg_title.empty() && ElapsedSeconds() < g_load_msg_until) {
-        ImGui::SetNextWindowPos(ImVec2(g_client_w * 0.5f, 10.0f),
+        // Story 11-4: under the view toggle (which owns the top centre now).
+        ImGui::SetNextWindowPos(ImVec2(area_right * 0.5f, 48.0f),
                                 ImGuiCond_Always, ImVec2(0.5f, 0.0f));
         if (ImGui::Begin("##loadmsg", nullptr, kReadoutFlags & ~ImGuiWindowFlags_NoInputs)) {
             DrawLoadMessageBody();
@@ -1015,7 +1241,14 @@ void DrawToolUi()
 
     // Story 6.5.8 — navigation cube (ViewCube), bottom-right. Drawn in THIS NewFrame/Render
     // pair (after the menu + read-outs, before Render) so it is the same single ImGui frame.
-    NavCubeWidget();
+    // Story 11-4: in Video view it shows and edits the video camera, and is hidden when there
+    // is no camera to edit (no active FX / no item).
+    if (!video_view) {
+        NavCubeWidget(g_renderer.Camera(), /*video=*/false, area_right);
+    } else {
+        OrbitCamera video_cam;
+        if (VideoViewCamera(&video_cam)) NavCubeWidget(video_cam, /*video=*/true, area_right);
+    }
 
     // Bottom-left status icon + its hover panel (re-shows the load message on demand).
     StatusIconWidget();
@@ -1123,7 +1356,7 @@ bool StartRendering(HWND hwnd)
         ImGuiIO& io = ImGui::GetIO();
         io.IniFilename = nullptr;   // do not write imgui.ini next to Reaper
         io.LogFilename = nullptr;
-        ImGui::StyleColorsDark();
+        ui::ApplyRavTheme();   // Story 11-4: the DM-XYZ-Pad theme (ui_theme.h), over StyleColorsDark
         // Init the two backends in nested steps so teardown stays symmetric: if the GL
         // backend fails AFTER the Win32 backend already initialized, we must still shut the
         // Win32 backend down (DestroyContext alone leaks its platform data). [Review][Patch]
@@ -1193,9 +1426,16 @@ void StopRendering()
             ImGui::DestroyContext();
             g_imgui_ready = false;
         }
+        ReleaseVideoTarget();  // Story 11-4: the Video view's target, while the context is current
         g_renderer.Shutdown();
     }
     DestroyGLContext();
+
+    // Story 11-4: a gesture or queued write cannot outlive the panel (nothing is written).
+    VideoViewOnViewerClosed();
+    g_drag_video = false;
+    g_video_post_pending = false;
+    g_current_load_ok = false;
 
     // The renderer's asset died with the context, so forget which item it showed: a
     // reopened panel must reload the item under the playhead, not skip it as "already
@@ -1274,38 +1514,45 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 1;  // GL owns the surface; skip GDI background fill to avoid flicker.
 
     case WM_LBUTTONDOWN:
-        // Left click is ImGui's (widgets). If it's NOT over the UI, just take focus so
-        // the wheel keeps targeting the viewport; the camera itself uses right/middle.
-        if (!ImGuiWantsMouse()) SetFocus(hwnd);
+        // Left click is ImGui's (widgets); the camera itself uses right/middle. Take focus
+        // either way, so the wheel keeps targeting the viewport and (Story 11-4) the keys V /
+        // P and a text field of the Video panel get the keyboard.
+        SetFocus(hwnd);
         return 0;
 
     case WM_RBUTTONDOWN:
-        // Start an orbit drag — unless the cursor is over the ImGui UI. SetFocus so
-        // WM_MOUSEWHEEL (delivered to the focused window, not the hovered one, §D)
-        // reaches us; SetCapture so the drag keeps reporting moves even if the cursor
-        // leaves the window.
+    case WM_MBUTTONDOWN: {
+        // Start an orbit (right) or pan (middle) drag — unless the cursor is over the ImGui
+        // UI. SetFocus so WM_MOUSEWHEEL (delivered to the focused window, not the hovered
+        // one, §D) reaches us; SetCapture so the drag keeps reporting moves even if the
+        // cursor leaves the window. Story 11-4: in Video view the drag edits the shot under
+        // the playhead (never the free camera); nothing to edit = no drag.
         if (ImGuiWantsMouse()) return 0;
+        // A second button during a Video view drag is ignored: it would end the video
+        // gesture unwritten and move the hidden free camera.
+        if (g_drag_video) return 0;
         SetFocus(hwnd);
+        const bool pan = (msg == WM_MBUTTONDOWN);
+        g_drag_video = VideoViewActive();
+        if (g_drag_video && !VideoViewBeginDrag(pan)) {
+            g_drag_video = false;
+            return 0;
+        }
         SetCapture(hwnd);
-        g_drag   = DragMode::Orbit;
+        g_drag   = pan ? DragMode::Pan : DragMode::Orbit;
         g_last_x = GET_X_LPARAM(lp);
         g_last_y = GET_Y_LPARAM(lp);
         return 0;
-
-    case WM_MBUTTONDOWN:
-        if (ImGuiWantsMouse()) return 0;
-        SetFocus(hwnd);
-        SetCapture(hwnd);
-        g_drag   = DragMode::Pan;
-        g_last_x = GET_X_LPARAM(lp);
-        g_last_y = GET_Y_LPARAM(lp);
-        return 0;
+    }
 
     case WM_RBUTTONUP:
     case WM_MBUTTONUP:
         if (g_drag != DragMode::None) {
-            ReleaseCapture();
+            // Story 11-4: the end of a Video view drag writes the shot (one undo point).
+            if (g_drag_video) VideoViewEndDrag();
+            g_drag_video = false;
             g_drag = DragMode::None;
+            ReleaseCapture();
         }
         // Return 0 WITHOUT forwarding to DefWindowProc: a forwarded WM_RBUTTONUP
         // would synthesize WM_CONTEXTMENU (a Win32 popup menu) inside the panel (AC6).
@@ -1319,8 +1566,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             const int dy = y - g_last_y;
             // Mutate camera state only; never render synchronously here — the ~64 Hz
             // timer redraws, which is what keeps manipulation continuous (FR26).
-            if (g_drag == DragMode::Orbit) g_renderer.Camera().Orbit(dx, dy);
-            else                           g_renderer.Camera().Pan(dx, dy);
+            if (g_drag_video)                   VideoViewDrag(dx, dy);  // Story 11-4
+            else if (g_drag == DragMode::Orbit) g_renderer.Camera().Orbit(dx, dy);
+            else                                g_renderer.Camera().Pan(dx, dy);
             g_last_x = x;
             g_last_y = y;
         }
@@ -1331,14 +1579,62 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         // slider's value); otherwise it zooms the camera.
         if (ImGuiWantsMouse()) return 0;
         const float delta = GET_WHEEL_DELTA_WPARAM(wp) / 120.0f;  // 120 == one notch
-        g_renderer.Camera().Zoom(delta);
+        // Story 11-4: in Video view the wheel zooms the shot under the playhead (notches
+        // close together are one gesture, one undo point).
+        if (VideoViewActive()) VideoViewWheel(delta);
+        else                   g_renderer.Camera().Zoom(delta);
         return 0;
     }
 
     case WM_CAPTURECHANGED:
         // The system can yank capture away (e.g. another window grabs it); clear the
-        // drag so a later move doesn't orbit/pan with no button held.
+        // drag so a later move doesn't orbit/pan with no button held. Story 11-4: a Video
+        // view drag still writes what it showed (its release is lost, not the gesture).
+        // Not when WE are the new owner: ImGui's backend captures on the button-down, then
+        // our SetCapture re-captures and Windows still sends this. Ending the drag there
+        // killed every Video view orbit/pan at its first instant (found 2026-10-03).
+        if (reinterpret_cast<HWND>(lp) == hwnd) return 0;
+        if (g_drag_video) VideoViewEndDrag();
+        g_drag_video = false;
         g_drag = DragMode::None;
+        return 0;
+
+    case WM_KEYDOWN:
+        // Story 11-4 — V toggles RAV view / Video view, P shows / hides the Video panel. The
+        // accelerator hook (ViewerTranslateAccel) sends us only those two keys, plus every
+        // key while an ImGui text field is active (then they are the field's, not ours).
+        if (g_imgui_ready && ImGui::GetIO().WantTextInput) return 0;
+        if (GetKeyState(VK_CONTROL) < 0 || GetKeyState(VK_MENU) < 0 || GetKeyState(VK_SHIFT) < 0) return 0;
+        if (lp & (1 << 30)) return 0;  // auto-repeat of a held key: one toggle per press
+        if (wp == 'V' || (wp == 'P' && !VideoViewActive())) {
+            // A running drag ends before the view changes (a Video view drag is written).
+            // P from RAV view opens the panel, which enters Video view: same rule.
+            if (g_drag != DragMode::None) {
+                if (g_drag_video) VideoViewEndDrag();
+                g_drag_video = false;
+                g_drag = DragMode::None;
+                ReleaseCapture();
+            }
+            if (wp == 'V') SetVideoViewActive(!VideoViewActive());
+            else           SetVideoPanelVisible(true);
+            return 0;
+        }
+        if (wp == 'P') { SetVideoPanelVisible(!VideoPanelVisible()); return 0; }
+        // Story 11-5 -- C cuts a new shot at the playhead (Video view only).
+        if (wp == 'C' && VideoViewActive()) { QueueVideoCut(); return 0; }
+        return 0;
+
+    case kMsgRunVideoCommands:
+        // Story 11-4 — the Video view's queued REAPER writes (each one undo point), run here,
+        // outside the render tick, where a message box or a plug-in load may run a modal loop.
+        g_video_post_pending = false;
+        try {
+            VideoViewRunPending();
+        } catch (const std::exception& e) {
+            LogError("Video view: a write failed: %s (Reaper is unaffected)", e.what());
+        } catch (...) {
+            LogError("Video view: a write failed (Reaper is unaffected)");
+        }
         return 0;
 
     case WM_DESTROY:
@@ -1387,7 +1683,33 @@ void UnregisterViewerClass()
     }
 }
 
+// Story 11-4 — REAPER's keyboard hook. When the viewer has the focus, REAPER would run its
+// own shortcuts for every key; this hands the viewer V and P (no modifier) and, while a
+// text field of the Video panel is active, every key. Other keys stay REAPER's (Space plays).
+int ViewerTranslateAccel(MSG* msg, accelerator_register_t* /*ctx*/)
+{
+    if (!msg || !g_hwnd || !IsWindow(g_hwnd)) return 0;
+    if (msg->hwnd != g_hwnd && !IsChild(g_hwnd, msg->hwnd)) return 0;
+    if (g_imgui_ready && ImGui::GetIO().WantTextInput) return -1;  // the text field takes every key
+    if (msg->message != WM_KEYDOWN && msg->message != WM_KEYUP && msg->message != WM_CHAR) return 0;
+    if (GetKeyState(VK_CONTROL) < 0 || GetKeyState(VK_MENU) < 0 || GetKeyState(VK_SHIFT) < 0) return 0;
+    // Story 11-5 -- C (cut at the playhead) is ours in Video view only; in RAV view it stays REAPER's.
+    const bool cut_key = VideoViewActive();
+    if (msg->message == WM_CHAR) {
+        const WPARAM c = msg->wParam;
+        return (c == 'v' || c == 'V' || c == 'p' || c == 'P' || (cut_key && (c == 'c' || c == 'C'))) ? -1 : 0;
+    }
+    return (msg->wParam == 'V' || msg->wParam == 'P' || (cut_key && msg->wParam == 'C')) ? -1 : 0;
+}
+
+accelerator_register_t g_accel_reg = { &ViewerTranslateAccel, true, nullptr };
+
 }  // namespace
+
+accelerator_register_t* ViewerAcceleratorRegistration()
+{
+    return &g_accel_reg;
+}
 
 void OpenViewerWindow(REAPER_PLUGIN_HINSTANCE hInst, HWND reaper_main)
 {

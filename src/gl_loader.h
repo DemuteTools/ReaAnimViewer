@@ -22,7 +22,24 @@ namespace rav {
 // currently-current GL context. Call once, immediately after wglMakeCurrent.
 // Returns false and sets out_error to the first missing function name on
 // failure (an old/software driver may not export everything we need).
+//
+// Epic 11: the table is process-wide and also used by the video FX renderer on
+// REAPER's video thread (its own context). Loading is mutex-guarded and the
+// pointers are only written when they are not loaded yet or differ from the
+// current context's (the viewer always wins); a change bumps GlFunctionsGeneration
+// so the video thread re-checks before drawing. On failure nothing is written.
 bool LoadGlFunctions(std::string& out_error);
+
+// Video-thread side (Story 11-2): with ANOTHER context current, makes sure the
+// process-wide table is usable from it. Loads the table when nothing is loaded yet;
+// otherwise compares this context's entry points with the loaded ones and returns
+// false (out_error set, nothing written) when they differ: drawing through the
+// table from this context would then call another driver's code. Thread-safe.
+// `out_generation` receives the generation the check was made against.
+bool CheckGlFunctionsForCurrentContext(std::string& out_error, unsigned* out_generation);
+
+// Bumped every time the table's pointers change. Thread-safe.
+unsigned GlFunctionsGeneration();
 
 }  // namespace rav
 

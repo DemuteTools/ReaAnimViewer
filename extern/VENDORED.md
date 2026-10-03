@@ -15,18 +15,31 @@ immediately, no `git submodule update --init` required.
 |---|---|
 | Upstream | https://github.com/justinfrankel/reaper-sdk |
 | License | zlib (see `extern/reaper-sdk/sdk/LICENSE`) |
-| Pinned commit | `31234f3323227c3342133d665cda6fa0cc5e9ae9` |
-| Commit date | 2026-05-07 |
-| Commit message | `update sdk for 7.72` |
-| Reaper version compat | 7.72+ |
+| Pinned commit | `490ded57668727fba21482fabc50ba9853a457bb` |
+| Archive SHA256 | `2ce09e8a40e8827303f5f1801a646013f9ad798032ac5f2515bce23d66439b48` (`archive/490ded5….zip`) |
+| Bumped by | Story 11-1 (2026-10-03), from `31234f3` — the commit spike 11-0 proved in REAPER 7.79 |
+| Reaper version compat | 7.72+ (video processor API: 6.x+) |
 
 **Vendored files (extracted from upstream `sdk/`):**
 
-- `sdk/reaper_plugin.h` — plugin entry-point macros, `reaper_plugin_info_t` struct, type aliases
+- `sdk/reaper_plugin.h` — plugin entry-point macros, `reaper_plugin_info_t` struct, type aliases; also documents `cockos.reaper_extension` + `clap_get_reaper_context` for CLAP plug-ins
 - `sdk/reaper_plugin_functions.h` — function-pointer typedefs for the Reaper API surface (loaded at runtime via `rec->GetFunc`)
+- `sdk/video_processor.h`, `sdk/video_frame.h` — `IREAPERVideoProcessor` / `IVideoFrame`, used by the video FX `rav_video_fx.clap` (Epic 11)
 - `sdk/LICENSE` — upstream license text
 
-**Files intentionally not vendored:** `reaper_plugin_fx_embed.h`, `reaper_vst3_interfaces.h`, `video_frame.h`, `video_processor.h`, `localize-import.h`, `example_*` directories — not needed for Phase 0 (no embedded FX, no VST3, no video pipeline). Add them to this directory if a later phase requires them.
+**Files intentionally not vendored:** `reaper_plugin_fx_embed.h`, `reaper_vst3_interfaces.h` (the video FX is a CLAP, not a VST3: spike 11-0 amendment 7), `localize-import.h`, `example_*` directories.
+
+## extern/clap/ (CLAP 1.2.7 headers — the video FX)
+
+| Field | Value |
+|---|---|
+| Upstream | https://github.com/free-audio/clap |
+| License | MIT (see `extern/clap/LICENSE`) |
+| Pinned tag | `1.2.7` |
+| Archive SHA256 | `7fe908e6c4244e791db43a6106938ceda96081ea4dc5f739755e68edb9e2ed42` (`archive/refs/tags/1.2.7.zip`) |
+| Delivery | In-tree copy of upstream `include/` (header-only C API, ~70 small files) + `LICENSE` |
+
+Used only by `rav_video_fx.clap` (`src/fx/rav_video_fx_clap.cpp`), included as a **SYSTEM** include so it cannot trip `/W3 /permissive-`. Header-only: no library, no runtime dependency. Introduced by Story 11-1 (Epic 11, CLAP chosen over VST3 by spike 11-0).
 
 ## GLM 1.0.3 (matrix math — FetchContent pin, not in-tree)
 
@@ -76,10 +89,14 @@ To bump the SDK version:
 
 ```sh
 git clone --depth 1 https://github.com/justinfrankel/reaper-sdk.git /tmp/reaper-sdk
-cp /tmp/reaper-sdk/sdk/{reaper_plugin.h,reaper_plugin_functions.h,LICENSE} extern/reaper-sdk/sdk/
+cp /tmp/reaper-sdk/sdk/{reaper_plugin.h,reaper_plugin_functions.h,video_processor.h,video_frame.h,LICENSE} extern/reaper-sdk/sdk/
 git -C /tmp/reaper-sdk rev-parse HEAD  # update Pinned commit in this file
 rm -rf /tmp/reaper-sdk
 ```
+
+To bump CLAP: download `https://github.com/free-audio/clap/archive/refs/tags/<tag>.zip`, replace
+`extern/clap/include/` and `extern/clap/LICENSE` with the archive's, update the table above. A new
+CLAP version must stay ABI-compatible (`clap_version_is_compatible`); REAPER checks it.
 
 Update the table above and commit with message `chore(extern): bump reaper-sdk to <short-sha>`.
 

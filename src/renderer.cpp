@@ -695,8 +695,60 @@ void Renderer::ResetCamera()
     cached_aspect_ = -1.0f;  // impossible aspect → force a projection rebuild next frame
 }
 
-void Renderer::RenderFrame(float anim_time_seconds, bool loop, int width, int height)
+DisplaySettings Renderer::CurrentDisplaySettings() const
 {
+    DisplaySettings s;
+    s.light_color     = light_color_;
+    s.light_dir       = light_dir_;
+    s.ambient         = ambient_;
+    s.spec_strength   = spec_strength_;
+    s.normal_strength = normal_strength_;
+    s.floor_visible   = floor_visible_;
+    s.grid_step_m     = grid_step_m_;
+    s.shadow_quality  = static_cast<int>(shadow_quality_);
+    s.normal_maps     = normal_maps_on_;
+    s.msaa_samples    = msaa_samples_;
+    s.background      = glm::vec3(background_);
+    return s;
+}
+
+void Renderer::ApplyDisplaySettings(const DisplaySettings& s, int max_msaa_samples)
+{
+    SetLightColor(s.light_color);
+    SetLightDir(s.light_dir);
+    SetAmbient(s.ambient);
+    SetSpecStrength(s.spec_strength);
+    SetNormalStrength(s.normal_strength);
+    SetFloorVisible(s.floor_visible);
+    SetGridStep(s.grid_step_m);   // rebuilds the grid only on a change
+    // Only on a CHANGE of the requested level: SetShadowQuality may fall back to Off on an
+    // allocation failure, which must not turn into one failing allocation per frame.
+    const int shadow = std::clamp(s.shadow_quality, 0, 3);
+    if (shadow != applied_shadow_request_) {
+        applied_shadow_request_ = shadow;
+        SetShadowQuality(static_cast<ShadowQuality>(shadow));
+    }
+    SetNormalMapsEnabled(s.normal_maps);
+    int msaa = s.msaa_samples > 0 ? s.msaa_samples : 0;
+    if (max_msaa_samples < 2) msaa = 0;
+    else if (msaa > max_msaa_samples) msaa = max_msaa_samples;
+    SetMsaaSamples(msaa);
+    background_ = glm::vec4(s.background, 1.0f);
+}
+
+Asset Renderer::TakeAsset()
+{
+    Asset out = std::move(asset_);
+    asset_ = Asset();          // a moved-from vector is valid but unspecified: make it empty
+    palette_.clear();
+    pose_scratch_.clear();
+    return out;
+}
+
+void Renderer::RenderFrame(float anim_time_seconds, bool loop, int width, int height,
+                           unsigned target_fbo)
+{
+    const GLuint target = static_cast<GLuint>(target_fbo);
     if (width  < 1) width  = 1;
     if (height < 1) height = 1;
 
@@ -730,25 +782,27 @@ void Renderer::RenderFrame(float anim_time_seconds, bool loop, int width, int he
         msaa_depth_rb_ = GpuRenderbuffer();
         msaa_alloc_w_ = 0; msaa_alloc_h_ = 0; msaa_alloc_samples_ = 0;
     }
-    const GLuint scene_fbo = (want > 0 && msaa_fbo_.get()) ? msaa_fbo_.get() : 0;
+    const bool   msaa_on   = (want > 0 && msaa_fbo_.get() != 0);
+    const GLuint scene_fbo = msaa_on ? msaa_fbo_.get() : target;
 
     // Everything (clear, shadow restore, floor, mesh) targets scene_fbo; the resolve at the
-    // end of RenderFrame blits it to the window. At Off scene_fbo == 0 → straight to FB0.
+    // end of RenderFrame blits it to the target (the window for the viewer). At Off
+    // scene_fbo == target → straight to it.
     glBindFramebuffer(GL_FRAMEBUFFER, scene_fbo);
     glViewport(0, 0, width, height);
 
-    glClearColor(0.10f, 0.10f, 0.12f, 1.0f);
+    glClearColor(background_.r, background_.g, background_.b, background_.a);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     // Nothing loaded yet (no file picked, or a load failed): a live but empty panel. Still
-    // resolve the cleared MS buffer to the window so the empty panel isn't left stale/garbage.
+    // resolve the cleared MS buffer to the target so the empty panel isn't left stale/garbage.
     if (asset_.meshes.empty()) {
-        if (scene_fbo != 0) {
+        if (msaa_on) {
             glBindFramebuffer(GL_READ_FRAMEBUFFER, msaa_fbo_.get());
-            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, target);
             glBlitFramebuffer(0, 0, width, height, 0, 0, width, height,
                               GL_COLOR_BUFFER_BIT, GL_NEAREST);
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glBindFramebuffer(GL_FRAMEBUFFER, target);
         }
         return;
     }
@@ -951,16 +1005,17 @@ void Renderer::RenderFrame(float anim_time_seconds, bool loop, int width, int he
     glBindVertexArray(0);
 
     // ---- Story 6.5.6 MSAA resolve -------------------------------------------
-    // Blit-resolve the multisample colour into the window (FB0). src/dst are the same size, so
-    // GL_NEAREST does a straight multisample resolve. Leaves FB0 bound on return so ImGui
-    // (DrawToolUi, drawn after RenderFrame) and SwapBuffers land on the window over the resolved
-    // scene. At Off scene_fbo == 0 → no blit, FB0 was bound throughout (identical to pre-6.5.6).
-    if (scene_fbo != 0) {
+    // Blit-resolve the multisample colour into the target (FB0 for the viewer). src/dst are the
+    // same size, so GL_NEAREST does a straight multisample resolve. Leaves the target bound on
+    // return so ImGui (DrawToolUi, drawn after RenderFrame) and SwapBuffers land on the window
+    // over the resolved scene. At Off scene_fbo == target → no blit, the target was bound
+    // throughout (identical to pre-6.5.6 for the viewer). Story 11-2: target, not FB0.
+    if (msaa_on) {
         glBindFramebuffer(GL_READ_FRAMEBUFFER, msaa_fbo_.get());
-        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, target);
         glBlitFramebuffer(0, 0, width, height, 0, 0, width, height,
                           GL_COLOR_BUFFER_BIT, GL_NEAREST);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, target);
     }
 }
 
@@ -984,6 +1039,7 @@ void Renderer::Shutdown()
     shadow_fbo_       = GpuFramebuffer();
     shadow_depth_tex_ = GpuImage();
     shadow_map_size_  = 0;
+    applied_shadow_request_ = -1;  // Story 11-2: re-apply the requested level after a re-Init
 
     // Story 6.5.6 — release the offscreen MSAA targets (RAII frees them while the context is
     // current; NFR-R3 symmetric teardown). Reset the alloc cache so a fresh StartRendering

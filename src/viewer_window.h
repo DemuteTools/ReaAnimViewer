@@ -21,4 +21,10 @@ void ToggleViewerWindow(REAPER_PLUGIN_HINSTANCE hInst, HWND reaper_main);
 // for the toggle action's toolbar/menu checkmark.
 bool ViewerWindowIsVisible();
 
+// Story 11-4 — the keyboard hook that gives the focused viewer its own keys (V: RAV view /
+// Video view, P: Video panel, and every key while a panel text field is active).
+// plugin_main registers it ("accelerator") at load and unregisters it at unload with this
+// same pointer.
+accelerator_register_t* ViewerAcceleratorRegistration();
+
 }  // namespace rav

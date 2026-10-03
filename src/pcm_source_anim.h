@@ -42,4 +42,23 @@ pcmsrc_register_t* PcmSourceRegistration();
 // (the boundary rule keeps rec->Register in plugin_main.cpp).
 bool GetCurrentAnimItem(std::string& out_path, double& out_anim_time);
 
+// Story 11-4 — the same query, optionally restricted to ONE track (Video view on a
+// pinned track: the first spanning RAV item in that track's item order, the video FX's
+// rule), and reporting the chosen item's track (`out_track` may be null; untouched when
+// nothing matches). only_track == nullptr = GetCurrentAnimItem. Main thread, no-throw.
+bool GetCurrentAnimItemOn(MediaTrack* only_track, std::string& out_path, double& out_anim_time,
+                          MediaTrack** out_track);
+
+// Story 11-2 — the rules above, shared with the video FX timeline (video_timeline.cpp)
+// so the rendered video maps time exactly like the viewer.
+//
+// True iff `s` (or the source it wraps: section/reverse take) is a RAV animation source.
+// Null-safe. Main thread (it calls the source's virtuals).
+bool IsRavAnimSource(PCM_source* s);
+
+// Item-relative animation time for project time `pos`, given the item position and the
+// take's start-in-source offset (D_STARTOFFS): (pos - item_pos) + start_offs, low-guarded
+// at 0 (a NaN offset also gives 0). The renderer clamps the high end to the clip. Pure.
+double ItemAnimTime(double pos, double item_pos, double start_offs);
+
 }  // namespace rav

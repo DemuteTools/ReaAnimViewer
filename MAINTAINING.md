@@ -6,16 +6,16 @@ Everything a maintainer does is a double-click on one of the `.bat` files at the
 
 | Path | Content |
 |------|---------|
-| `src/` | Extension source code (C++) |
+| `src/` | Extension source code (C++). `src/fx/` is the video FX `rav_video_fx.clap`; `src/video_fx_api.h` is the frame API both binaries share. See [Video FX](#video-fx-rav_video_fxclap). |
 | `cmake/`, `CMakeLists.txt` | Build configuration. Dependencies are fetched and statically linked. |
-| `extern/` | Vendored third-party headers (REAPER SDK) |
+| `extern/` | Vendored third-party headers (REAPER SDK, CLAP), pinned in `extern/VENDORED.md` |
 | `Icons/` | Viewer menu icons (converted to `src/overlay_icons.h` by `tools/gen_icons.py`) |
-| `Scripts/RAV_Launcher.lua` | The only ReaPack package: launcher script, plus the DLL (version, changelog, download URL). See [Demute Reaper Toolkit](#demute-reaper-toolkit). |
+| `Scripts/RAV_Launcher.lua` | The only ReaPack package: launcher script, plus the DLL and the video FX (version, changelog, download URLs). See [Demute Reaper Toolkit](#demute-reaper-toolkit). |
 | `index.xml` | ReaPack index, **generated** by GitHub Actions. Never edit it by hand. |
 | `.reapack-index.conf` | reapack-index settings (repository name, ignored folders) |
 | `.github/workflows/` | CI: validates the package on every push, regenerates `index.xml` on `main` |
 | `docs/` | User documentation |
-| `tools/` | Helpers used by the `.bat` files, and the icon converter |
+| `tools/` | Helpers used by the `.bat` files, the icon converter, and `tools/video-gate/` (video FX sync check) |
 
 Private dev files (`.claude/`, `_bmad/`, `_bmad-output/`, `CLAUDE.md`, validation gate docs) are ignored by this repository and synced separately with `dev-sync.bat`.
 
@@ -23,7 +23,7 @@ Private dev files (`.claude/`, `_bmad/`, `_bmad-output/`, `CLAUDE.md`, validatio
 
 | Script | What it does |
 |--------|--------------|
-| `build.bat` | Builds the extension and installs it into REAPER. Double-click = release build. |
+| `build.bat` | Builds the extension and the video FX and installs both into REAPER. Double-click = release build. |
 | `release.bat` | Publishes a new version (see [Releasing](#releasing-a-new-version)). |
 | `reapack-check.bat` | Validates the ReaPack package locally with `reapack-index --check`. |
 | `dev-sync.bat` | Syncs the private dev files between your PCs. |
@@ -40,7 +40,7 @@ build.bat [release|debuglog|forcefail] [clean] [noinstall] [nopause]
 | `debuglog` | Re-enables the `[RAV]` console logs (`RAV_ENABLE_CONSOLE_LOG`), built in `build-debuglog/` |
 | `forcefail` | Forces the OpenGL init failure path (`RAV_FORCE_INIT_FAILURE`), built in `build-forcefail/` |
 | `clean` | Deletes the build folder first |
-| `noinstall` | Does not copy the DLL into `%APPDATA%\REAPER\UserPlugins` |
+| `noinstall` | Does not copy the DLL into `%APPDATA%\REAPER\UserPlugins` nor `rav_video_fx.clap` into `UserPlugins\FX` |
 | `nopause` | Does not wait for a key press at the end |
 
 After testing a `debuglog` or `forcefail` build, run `build.bat` again to reinstall the normal build.
@@ -54,7 +54,7 @@ After testing a `debuglog` or `forcefail` build, run `build.bat` again to reinst
    - opens Notepad for the changelog (one change per line),
    - makes a clean release build with `RAV_VERSION` set, so the DLL knows its own version (see [Demute Reaper Toolkit](#demute-reaper-toolkit)), and checks the DLL has no VC++ runtime dependency,
    - updates the version in `Scripts/RAV_Launcher.lua`, `CMakeLists.txt` and `README.md`,
-   - asks for confirmation, then commits, tags `vX.Y.Z`, creates the GitHub Release with `reaper_animviewer.dll` and pushes `main`.
+   - asks for confirmation, then commits, tags `vX.Y.Z`, creates the GitHub Release with `reaper_animviewer.dll` and `rav_video_fx.clap` and pushes `main`.
 3. GitHub Actions runs `reapack-index` and commits the updated `index.xml` (about one minute). ReaPack and the Demute Reaper Toolkit then offer the update.
 4. Run `git pull` to get the `index.xml` commit made by the bot.
 
@@ -85,23 +85,24 @@ Double-clicking `dev-sync.bat` shows a menu. `.claude/settings.local.json` stays
 
 ## Demute Reaper Toolkit
 
-The Toolkit can only install scripts: it copies every file of the package into `Scripts/<index>/<category>/` and ignores the per-file `type`. A native extension must be in `UserPlugins`, so this repository has a single package, `Scripts/RAV_Launcher.lua`, whose header provides two files:
+The Toolkit can only install scripts: it copies every file of the package into `Scripts/<index>/<category>/` and ignores the per-file `type`. A native extension must be in `UserPlugins`, so this repository has a single package, `Scripts/RAV_Launcher.lua`, whose header provides three files:
 
 ```
 @provides
   [main] .
   [win64 extension] reaper_animviewer.dll https://github.com/.../releases/download/v$version/$path
+  [win64 extension] FX/rav_video_fx.clap https://github.com/.../releases/download/v$version/rav_video_fx.clap
 ```
 
-- **ReaPack** honours `extension`: the DLL goes straight to `UserPlugins`. The launcher is never needed.
-- **The Toolkit** puts both files in `Scripts/ReaAnimViewer/Scripts/`. Its entry for this tool is `main_script = "RAV_Launcher.lua"`, so the card's **Run** button runs the launcher.
+- **ReaPack** honours `extension`: the DLL goes straight to `UserPlugins` and the video FX to `UserPlugins/FX` (where REAPER scans CLAP plug-ins at startup). The launcher is never needed. The FX line names its asset explicitly: `$path` would be `FX/rav_video_fx.clap`.
+- **The Toolkit** puts the files in `Scripts/ReaAnimViewer/Scripts/` (the FX in an `FX/` sub-folder, or flat: both are handled). Its entry for this tool is `main_script = "RAV_Launcher.lua"`, so the card's **Run** button runs the launcher.
 
 ### Launcher (first install)
 
 `Scripts/RAV_Launcher.lua` no longer installs anything through ReaPack. In order:
 
 1. not Windows 64-bit: message, stop;
-2. deletes `UserPlugins/reaper_animviewer.dll.old*` and `.new` leftovers (failures ignored);
+2. deletes `UserPlugins/reaper_animviewer.dll.old*` / `.new` and `UserPlugins/FX/rav_video_fx.clap.old*` / `.new` leftovers (failures ignored), and copies the Toolkit's `rav_video_fx.clap` into `UserPlugins/FX` when it is missing there and not owned by ReaPack (if the extension is already loaded, it says to restart REAPER);
 3. extension loaded: opens the viewer, only if it is closed (the action toggles it). "Loaded" means `NamedCommandLookup("_RAV_OPEN_VIEWER") ~= 0` **and** `GetToggleCommandState(id) ~= -1`: REAPER also hands out an id for a named command that a toolbar, menu or shortcut refers to while the extension is not loaded, and running that id does nothing (the 0.2.0 bug);
 4. DLL owned by ReaPack and present: asks to restart REAPER;
 5. DLL owned by ReaPack but missing (deleted by hand, ReaPack's registry still lists it): opens the ReaPack browser and names the package to uninstall. Copying the DLL there would leave it tied to that package, which may be obsolete (0.1.x `Extensions/ReaAnimViewer.ext`);
@@ -113,7 +114,7 @@ The Toolkit can only install scripts: it copies every file of the package into `
 
 After a Toolkit update, the new DLL sits in `Scripts/ReaAnimViewer/Scripts/`. The extension replaces its own file with it:
 
-- **At REAPER quit** (entry point called with `rec == NULL`): if the Toolkit copy is newer, it is copied to `.new` and checked (complete PE image, embedded version equal to the launcher's `@version`), the loaded DLL is renamed to `.old` (Windows allows renaming a loaded DLL, not overwriting it) and `.new` takes its place. One restart, no message. ReaPack may already be unloaded at this point, so only the local version comparator is used.
+- **At REAPER quit** (entry point called with `rec == NULL`): if the Toolkit copy is newer, it is copied to `.new` and checked (complete PE image, embedded version equal to the launcher's `@version`), the loaded DLL is renamed to `.old` (Windows allows renaming a loaded DLL, not overwriting it) and `.new` takes its place. One restart, no message. ReaPack may already be unloaded at this point, so only the local version comparator is used. Right after a DLL swap, `UserPlugins/FX/rav_video_fx.clap` is swapped the same way to the Toolkit's copy of the same version (it embeds the same version marker): the two binaries share the frame API version and move together.
 - **At the first timer tick after startup**: deletes `.old*` leftovers, checks whether ReaPack owns the DLL (ReaPack loads after us, so this cannot run in the entry point), and, as a fallback when the quit swap did not happen (crash), swaps and shows one "restart REAPER" message.
 
 The version of the Toolkit copy is the `@version` of the launcher next to it (`release.bat` keeps them equal), and the DLL's own embedded version must match it. The running version is `RAV_VERSION_STRING`, generated by CMake (`src/rav_version.h.in`) from `-DRAV_VERSION`, which only `release.bat` passes (through `build.bat`, with `RAV_RELEASE_BUILD=1`). CMake drops it from its cache right away, so any other configure builds `dev`. The version *shown* in the viewer menu and the copied error log is `RAV_DISPLAY_VERSION`: the release version, or `<last release>-dev+<commit>[-dirty]` for a dev build (e.g. `0.2.2-dev+ac4beb0`). It is display only; the self-update keeps comparing `RAV_VERSION_STRING`.
@@ -130,3 +131,20 @@ Any failure (locked or read-only folder) is silent and retried at the next quit 
 ### Migration from 0.1.x
 
 0.1.x shipped the DLL in a separate `Extensions/ReaAnimViewer.ext` package. The 0.1.x launcher installed it through ReaPack too, so Toolkit users own it in ReaPack as well. ReaPack refuses to let the new package install a file another package owns, and the self-update never touches a ReaPack-owned DLL, so every 0.1.x user must uninstall the old package once: in the ReaPack browser, the **ReaAnimViewer** entry in the **Extensions** category (both entries are called ReaAnimViewer; the new one is in **Scripts**). Put this in the release notes of the first release with this layout; the README troubleshooting table has the same steps.
+
+## Video FX (rav_video_fx.clap)
+
+From Epic 11 the package ships two binaries. `rav_video_fx.clap` is a thin CLAP plug-in: it gets REAPER's video processor and, for every video frame REAPER asks for (playback and render), calls a frame-render API that `reaper_animviewer.dll` registers (`RAV_GetVideoFxApi`, declared in `src/video_fx_api.h`). All drawing happens in the extension, on REAPER's video thread, in its own hidden OpenGL context.
+
+- **Version rule.** `RAV_VIDEO_FX_API_VERSION` in `src/video_fx_api.h` must be bumped on any change to that header. The FX only talks to an extension of the same API version; otherwise it shows no picture and writes one line to the REAPER console. Always release both files together (release.bat does).
+- **Identity.** The CLAP id `com.demute.reaanimviewer.video-fx` and the name `RAV Video FX` are saved in users' projects: never change them.
+- **Adding it.** Action `RAV: Add video FX to selected track` (one per track; an existing one is kept).
+- **Test pattern.** Action `RAV: Video FX test pattern` (toggle, off at each start) makes the FX draw an orange frame, a bar sliding with project time and, at the top, the frame index as 16 black/white bars. Render a video with it on, then double-click `tools/video-gate/decode_stripes.bat`, pick the video and type the project frame index of its first frame (region start in seconds x frame rate). It checks every frame's code against that index + the frame number (left empty: only that the codes step by one, so a constant offset passes), checks that the background is orange (azure = red and blue swapped), and writes `<video>.stripes.csv` (it installs ffmpeg with winget the first time). Render at the project's video size: a letterboxed picture moves the code band.
+- **Updating a loaded FX.** REAPER keeps `rav_video_fx.clap` open while it runs. The plan relies on ReaPack handling the in-use file like the loaded extension DLL (old file moved aside, new one used after a restart); this is checked by the update step of the release check below, not yet proven. If a ReaPack update fails on the `.clap`, the fallback is a versioned file name (`FX/rav_video_fx-<version>.clap`, same CLAP id so projects still find it), with the launcher deleting old copies.
+- **Release check (in REAPER, before releasing a version that changes the video FX).**
+  1. Sync: pattern on, render a region that does not start at 0:00 with the Region Render Matrix, run `decode_stripes.bat` with the region's first frame index: PASS.
+  2. Add action: select a track, run `RAV: Add video FX to selected track` twice: one FX on the track after each run. With no track selected: a message box.
+  3. No GL: `build.bat forcefail`, pattern on, render: `decode_stripes.bat` PASS with an orange background (the CPU fallback). Then `build.bat` again.
+  4. Teardown: FX on a track, pattern on, playing: close the project, then quit REAPER: no crash; no console line at the next start.
+  5. ReaPack update (D6): with REAPER running, update the package through ReaPack, restart: the new `.clap` is loaded (no "do not match" console line with the pattern on), `UserPlugins/FX` holds no stale copy.
+  6. Toolkit install and update: install through the Demute Reaper Toolkit (the launcher copies the `.clap`; try the nested `FX/` and the flat layout), then update to the next version and restart: DLL and `.clap` carry the same version, no "do not match" console line, no `.old*` / `.new` leftovers.

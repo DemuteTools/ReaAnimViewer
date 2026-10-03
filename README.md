@@ -10,17 +10,18 @@ Sound designing for game characters usually means screen-recording every animati
 
 - **No more screen captures:** Drop the animation file itself on a track. The rig is rendered live, frame-accurate, with no video file, no stutter, no re-recording.
 - **Move the camera while you design:** Orbit, pan and zoom around the character at any time, and snap to front/side/top views with the navigation cube. See the foot contact or the hand swing the recorded video would have hidden.
+- **Render the video with your sound:** Frame camera shots in the viewer and render picture + audio with REAPER's own Render dialog or Region Render Matrix. No screen capture, no intermediate video file.
 - **Behaves like native REAPER media:** Animation items can be moved, trimmed, looped, saved with the project and copied into the project folder like any audio item, so your session and your sounds stay in sync.
 
 ## How It Works
 
-ReaAnimViewer is a native REAPER extension (a single `.dll`). It teaches REAPER to read `.glb`, `.gltf` and `.fbx` files as media: drop one on a track and it becomes an item whose length matches the animation. A dockable viewer window renders the animated mesh at the current playhead position: play, stop, scrub or loop and the character follows.
+ReaAnimViewer is a native REAPER extension (a `.dll`, plus a small video FX that puts the animation in your rendered videos). It teaches REAPER to read `.glb`, `.gltf` and `.fbx` files as media: drop one on a track and it becomes an item whose length matches the animation. A dockable viewer window renders the animated mesh at the current playhead position: play, stop, scrub or loop and the character follows.
 
 - **Engine agnostic:** Works with any animation exported to glTF or FBX from Unreal, Unity, Godot, Blender, Maya or a proprietary engine.
 - **Skinned meshes and textures:** Full skeletal deformation, diffuse/normal/specular maps, multi-material meshes.
 - **Several animations per project:** Put different animations on different tracks; the viewer shows the one on the topmost track under the playhead.
 - **Viewer tools:** A built-in side menu for lighting, floor, shadows and render quality.
-- **Everything bundled:** No ReaImGui, no SWS, no runtime to install. The whole viewer is a single extension file.
+- **Everything bundled:** No ReaImGui, no SWS, no runtime to install. The whole viewer is a single extension file; the video FX comes in the same package.
 
 ---
 
@@ -43,6 +44,14 @@ ReaAnimViewer is a native REAPER extension (a single `.dll`). It teaches REAPER 
   - [Shadow](#shadow)
   - [Performance](#performance)
 - [Working with Animation Items](#working-with-animation-items)
+- [Rendering Video](#rendering-video)
+  - [Adding the video FX](#adding-the-video-fx)
+  - [Video view](#video-view)
+  - [Shots](#shots)
+  - [Output](#output)
+  - [Rendering](#rendering)
+  - [Preview lag while playing](#preview-lag-while-playing)
+  - [If the video FX shows nothing](#if-the-video-fx-shows-nothing)
 - [Saving and Sharing Projects](#saving-and-sharing-projects)
 - [Exporting Animations from Your Engine](#exporting-animations-from-your-engine)
 - [Building from Source](#building-from-source)
@@ -107,7 +116,7 @@ The package also installs a small **RAV_Launcher** script. It is used by the Too
 
 **With ReaPack:** go to **Extensions > ReaPack > Synchronize packages** (or wait for the automatic check), click **Apply**, then **restart REAPER** so the new version is loaded.
 
-**Manual install:** download the new DLL and replace the old one, as in [Manual Installation](#manual-installation).
+**Manual install:** download the new DLL and video FX and replace the old ones, as in [Manual Installation](#manual-installation).
 
 ### Upgrading from 0.1.x
 
@@ -124,9 +133,9 @@ Until you do this, ReaPack reports a conflict on `reaper_animviewer.dll` and Rea
 
 **With ReaPack:** go to **Extensions > ReaPack > Browse packages...**, right-click **ReaAnimViewer**, choose **Uninstall**, click **Apply** and restart REAPER. Don't delete the DLL by hand instead: ReaPack would still consider it installed (see [Troubleshooting](#troubleshooting)).
 
-**With the Demute Reaper Toolkit:** uninstall the **ReaAnimViewer** card in the Toolkit, then close REAPER and delete `reaper_animviewer.dll` from the `UserPlugins` folder.
+**With the Demute Reaper Toolkit:** uninstall the **ReaAnimViewer** card in the Toolkit, then close REAPER and delete `reaper_animviewer.dll` from the `UserPlugins` folder and `rav_video_fx.clap` from `UserPlugins\FX`.
 
-**Manual install:** close REAPER and delete `reaper_animviewer.dll` from the `UserPlugins` folder.
+**Manual install:** close REAPER and delete `reaper_animviewer.dll` from the `UserPlugins` folder and `rav_video_fx.clap` from `UserPlugins\FX`.
 
 To find the `UserPlugins` folder: in REAPER, **Options > Show REAPER resource path in explorer/finder** (usually `%APPDATA%\REAPER\UserPlugins\`). Files named `reaper_animviewer.dll.old` or `.new` next to it are leftovers of an update and can be deleted too.
 
@@ -134,9 +143,9 @@ To find the `UserPlugins` folder: in REAPER, **Options > Show REAPER resource pa
 
 If you can't use ReaPack:
 
-1. Download `reaper_animviewer.dll` from the [latest release](https://github.com/DemuteTools/ReaAnimViewer/releases/latest).
+1. Download `reaper_animviewer.dll` and `rav_video_fx.clap` from the [latest release](https://github.com/DemuteTools/ReaAnimViewer/releases/latest).
 2. **Close REAPER.**
-3. In REAPER, **Options > Show REAPER resource path in explorer/finder** shows you the right folder. Copy the DLL into its `UserPlugins` subfolder (usually `%APPDATA%\REAPER\UserPlugins\`).
+3. In REAPER, **Options > Show REAPER resource path in explorer/finder** shows you the right folder. Copy the DLL into its `UserPlugins` subfolder (usually `%APPDATA%\REAPER\UserPlugins\`), and `rav_video_fx.clap` into `UserPlugins\FX\` (create the `FX` folder if it is missing). The `.clap` is only needed to render videos ([Rendering Video](#rendering-video)); always copy both files from the same release.
 4. Start REAPER and look for **RAV: Open Viewer** in the action list.
 
 A manual install does not update itself: repeat these steps for each new version.
@@ -197,7 +206,7 @@ Each file should contain **one skinned mesh and its animation**. Animations buil
 
 ## Viewer Menu
 
-Click the **menu icon** in the top-left corner of the viewer to show or hide the tool menu.
+Click the **menu icon** in the top-left corner of the viewer to show or hide the tool menu. It has two groups: **View** (Light, Ground, Shadow, Performance, below) and **Tools** (**Video** shows or hides the Video panel, see [Rendering Video](#rendering-video)).
 
 - **Recenter camera**: Frame the character again.
 - **Copy error log**: Copy the recent load errors, the viewer version and your graphics card info to the clipboard, ready to paste into a bug report.
@@ -246,6 +255,72 @@ Animation items produce no audio: you can place them on the same tracks as your 
 
 ---
 
+## Rendering Video
+
+ReaAnimViewer can put the animation in the videos you render from REAPER, with the session's audio, through REAPER's usual Render dialog and Region Render Matrix. Nothing is screen-recorded and RAV writes no video file: a small video FX, **RAV Video FX**, installed with the extension, hands REAPER the picture of its track's animation for every frame REAPER draws, in playback and in renders.
+
+### Adding the video FX
+
+1. Open the viewer and press **V** (or click **Video view** at the top). The **Video panel** opens on the right. **P**, the panel button at the top right, or **Tools > Video** in the viewer menu show or hide it.
+2. The panel follows the track of the animation shown in the viewer. When it says **No video FX on this track**, click **Add video FX to track**. The action **RAV: Add video FX to selected track** does the same from REAPER.
+3. That's it. You never need the FX window: RAV drives the FX for you.
+
+One FX shows the animation items of its own track. Where that track has no item, the FX shows nothing, so the video tracks below show through. Add the FX to every animation track you want in the video. REAPER's Video window (**View > Video**) shows the result too.
+
+### Video view
+
+- **RAV view** is your free camera. **Video view** is the render's camera. Switching between them never changes the free camera.
+- In Video view the frame shows exactly what the video will show, at the output's shape. The size and frame rate sit above it on the left, the current shot's name on the right. Nothing is drawn inside the frame.
+- Right-drag (orbit), middle-drag (pan), the wheel (zoom) and the navigation cube edit the shot under the playhead. Each gesture is one undo step.
+- The panel's inspector edits the shot under the playhead: its name, **Cut to next** / **Move to next**, Yaw, Pitch, Distance, Target X/Y/Z, **Copy RAV view** (the shot takes your free camera) and **Frame model** (the whole model, same angle).
+- **Track**: the panel follows the track of the item shown in the viewer, or you can pin one track.
+
+### Shots
+
+The video camera is a sequence of **shots**. A shot starts at a time and keeps its camera until the next shot (**Cut to next**), or moves smoothly to the next shot's camera (**Move to next**).
+
+- **Shot strip** (under the viewport, in Video view): the shots over the current item, and REAPER's playhead as a white line. Click or drag in it to move the playhead.
+- **C** (in Video view), the strip's **Cut** button or **+ Cut at playhead** in the panel: a new shot starts on the frame under the playhead, with the camera shown there. Then reframe it with the mouse. A cut inside a **Move to next** shot makes that move end at the cut: it now eases into the camera shown at the cut instead of continuing to the next shot.
+- **Shot list** (panel): click a shot to move the playhead to it; **x** deletes it (the first shot stays).
+- **Saved angles** (panel): **+ Save** keeps the camera of the shot under the playhead under a name. Click a saved angle to give it to the shot under the playhead; right-click it to delete it. Saved angles are stored in the FX, with the project.
+
+Shots are ordinary automation: envelope points on the FX's six parameters (Yaw, Pitch, Distance, Target X/Y/Z), square points for a cut, smooth ones for a move. You can edit them in REAPER's envelope lanes, and anything that drives FX parameters (envelopes, modulation, DM-XYZ-Pad) drives the camera. Distance and target are relative to the model's size, so a shot keeps working when the animator re-exports at another scale.
+
+### Output
+
+- **Size**: the project's video size (**File > Project settings > Video**) by default, or an override for this FX: vertical, square, 4K or a custom size.
+- **Frame rate**: always the project's.
+- **Background**: the viewer's background, or **Transparent** (where there is no model, the picture is transparent, so the video tracks below can show through when REAPER composites the FX's transparency).
+- Light, floor, grid, shadow and MSAA follow the viewer's **View** menu (with the viewer closed, its last settings). The menu, navigation cube, FPS and shot strip never appear in the video.
+
+### Rendering
+
+1. In the Video panel, click **Region Render Matrix...** to open REAPER's Region Render Matrix and tick the regions to render, or **Render dialog...** to open REAPER's Render to File dialog.
+2. In the Render dialog, choose the **Source** (Region render matrix, Time selection, Entire project...) and a video **Format** (for example MP4 / H.264). Keep the video size on the project's settings, or set the size shown above the Video view frame.
+3. Render. The picture comes from the FX at each frame's exact time, so picture and sound stay in sync and each cut lands on its frame.
+
+RAV never changes your render settings.
+
+### Preview lag while playing
+
+While playing, REAPER prepares video frames a few seconds ahead. When you edit a shot during playback, REAPER's Video window can take a few seconds to show the change. Video view in RAV is always up to date, and renders are always exact.
+
+### If the video FX shows nothing
+
+| What you see | What to do |
+|--------------|------------|
+| The panel says **No video FX on this track** | Click **Add video FX to track**. Check that the panel follows the right track (**Track** in the panel). |
+| **Video FX bypassed** or **Video FX offline** | Click **Enable FX** or **Set FX online** in the panel. |
+| **Video FX inactive** | The FX and the extension come from different releases. Update ReaAnimViewer (ReaPack: **Synchronize packages**; Toolkit: **Update**, then **Run** on the card) and restart REAPER. |
+| A message says the RAV video FX is not installed | `rav_video_fx.clap` is missing from `UserPlugins\FX`. Update or reinstall ReaAnimViewer (see [Installation](#installation)) and restart REAPER. If it is there, rescan plug-ins in **Options > Preferences > Plug-ins > CLAP**. |
+| No picture over an item | The FX shows only items of its own track. Put the playhead over a RAV item on the FX track, and check that the viewer can load that file (no red message). |
+| REAPER's Video window stays black | Open it with **View > Video**. A video item on a track above can cover the FX's picture. To check that the FX works at all, turn on the action **RAV: Video FX test pattern**: an orange frame with a moving bar means the FX and the extension talk to each other. Turn it off again. |
+| The rendered video has the wrong size | Check **Output > Size** in the panel, and the video size in the render format's settings. |
+
+To report a problem, click **Copy error log** in the viewer menu and paste it into your report.
+
+---
+
 ## Saving and Sharing Projects
 
 - The viewer state (items, docked window position) is saved with your REAPER project and restored when you reopen it.
@@ -274,7 +349,7 @@ cd ReaAnimViewer
 build.bat
 ```
 
-`build.bat` compiles the extension and installs it into REAPER (close REAPER first). Output: `build/Release/reaper_animviewer.dll`. Third-party dependencies are either vendored in `extern/` or fetched and statically linked by CMake (see [`extern/VENDORED.md`](extern/VENDORED.md)).
+`build.bat` compiles the extension and the video FX and installs them into REAPER (close REAPER first). Output: `build/Release/reaper_animviewer.dll` and `build/Release/rav_video_fx.clap`. Third-party dependencies are either vendored in `extern/` or fetched and statically linked by CMake (see [`extern/VENDORED.md`](extern/VENDORED.md)).
 
 Build options, releases and the ReaPack workflow are documented in [`MAINTAINING.md`](MAINTAINING.md).
 

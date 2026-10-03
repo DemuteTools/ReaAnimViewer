@@ -26,6 +26,8 @@ namespace {
 
 constexpr wchar_t kToolkitDir[]    = L"\\Scripts\\ReaAnimViewer\\Scripts\\";
 constexpr wchar_t kLauncherName[]  = L"RAV_Launcher.lua";
+// The video FX (Story 11-1): installed in UserPlugins\FX, shipped next to the DLL.
+constexpr wchar_t kClapName[]      = L"rav_video_fx.clap";
 
 // Embedded in every build so the version of a DLL FILE can be read without loading
 // it (ReadEmbeddedVersion). Referenced at runtime (OwnVersion) so the linker keeps it.
@@ -287,6 +289,89 @@ void DeleteLeftovers(const std::wstring& dll)
     }
 }
 
+// <ResourcePath>\UserPlugins\FX\rav_video_fx.clap, where REAPER scans CLAP plug-ins
+// and where ReaPack's "extension" type puts FX/rav_video_fx.clap.
+std::wstring ClapInstallPath(const std::wstring& resource)
+{
+    return resource + L"\\UserPlugins\\FX\\" + kClapName;
+}
+
+// The video FX next to the Toolkit's DLL copy. The Toolkit keeps the package's
+// FX/ sub-folder, or flattens it: both are accepted.
+std::wstring ToolkitClapPath(const std::wstring& resource)
+{
+    const std::wstring nested = resource + kToolkitDir + L"FX\\" + kClapName;
+    if (FileExists(nested)) return nested;
+    const std::wstring flat = resource + kToolkitDir + kClapName;
+    if (FileExists(flat)) return flat;
+    return {};
+}
+
+// Brings the installed video FX to `version` from the Toolkit copy, the same way as
+// the DLL (a loaded .clap can be renamed, not overwritten). The DLL and the CLAP
+// share the frame API version, so they must move together; on any failure the CLAP
+// stays as it is (the FX then shows a "do not match" console line) and the next
+// SyncClapWithDll call (next quit or startup) tries again. Never throws.
+void SwapClapToVersion(const std::wstring& resource, const std::string& version)
+{
+    const std::wstring candidate = ToolkitClapPath(resource);
+    if (candidate.empty()) return;
+    const std::wstring target = ClapInstallPath(resource);
+    if (FileExists(target) && ReadEmbeddedVersion(target) == version) return;  // already there
+    if (ReadEmbeddedVersion(candidate) != version) {
+        LogWarn("self-update: the Toolkit video FX is not version %s, left as is", version.c_str());
+        return;
+    }
+
+    CreateDirectoryW((resource + L"\\UserPlugins\\FX").c_str(), nullptr);  // may already exist
+    const std::wstring staged = target + L".new";
+    if (!CopyFileW(candidate.c_str(), staged.c_str(), FALSE)) {
+        LogWarn("self-update: could not stage the new video FX (error %lu)", GetLastError());
+        return;
+    }
+    if (ReadEmbeddedVersion(staged) != version || !IsCompleteImage(staged)) {
+        LogWarn("self-update: Toolkit video FX copy is incomplete");
+        DeleteFileW(staged.c_str());
+        return;
+    }
+    std::wstring old;
+    if (FileExists(target)) {
+        for (int i = 0; i < 10 && old.empty(); ++i) {
+            const std::wstring name = target + L".old" + (i == 0 ? L"" : std::to_wstring(i));
+            if (MoveFileExW(target.c_str(), name.c_str(), MOVEFILE_REPLACE_EXISTING)) old = name;
+        }
+        if (old.empty()) {
+            LogWarn("self-update: could not rename the current video FX (error %lu)", GetLastError());
+            DeleteFileW(staged.c_str());
+            return;
+        }
+    }
+    if (!MoveFileExW(staged.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+        LogWarn("self-update: could not move the new video FX in place (error %lu), restoring",
+                GetLastError());
+        if (!old.empty() && !MoveFileExW(old.c_str(), target.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+            CopyFileW(old.c_str(), target.c_str(), FALSE);
+        }
+        DeleteFileW(staged.c_str());
+        return;
+    }
+    LogInfo("self-update: video FX -> %s", version.c_str());
+}
+
+// Keeps the video FX at the version of the DLL that REAPER will load next (the file
+// in UserPlugins, which a swap may just have replaced). Only for a Toolkit install
+// (ReaPack updates both files itself) of a release build.
+void SyncClapWithDll()
+{
+    if (g_ownership != Ownership::NotReaPack) return;
+    if (ToolkitClapPath(ResourcePath()).empty()) return;  // no Toolkit copy: nothing to sync
+    const std::wstring dll = UserPluginsPath();
+    if (dll.empty()) return;
+    const auto version = ReadEmbeddedVersion(dll);
+    if (!version || *version == "dev") return;
+    SwapClapToVersion(ResourcePath(), *version);
+}
+
 // Replaces our DLL with the Toolkit copy when that copy is newer. Returns the
 // installed version, or nullopt when nothing was done.
 std::optional<std::string> SwapIfNewer(bool allow_reapack_compare)
@@ -361,8 +446,11 @@ void OnFirstTick()
         const std::wstring dll = UserPluginsPath();
         if (dll.empty()) return;
         DeleteLeftovers(dll);
+        DeleteLeftovers(ClapInstallPath(ResourcePath()));
         g_ownership = CheckOwnership(dll);
-        if (const auto version = SwapIfNewer(true)) {
+        const auto version = SwapIfNewer(true);
+        SyncClapWithDll();
+        if (version) {
             const std::string text = "ReaAnimViewer was updated to " + *version
                 + ".\n\nRestart REAPER to use the new version.";
             ShowMessageBox(text.c_str(), "ReaAnimViewer", 0);
@@ -403,6 +491,7 @@ void SelfUpdateOnQuit()
             return;
         }
         SwapIfNewer(false);
+        SyncClapWithDll();
     } catch (...) {
         LogWarn("self-update: quit swap failed");
     }

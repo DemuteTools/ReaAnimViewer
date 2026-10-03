@@ -18,11 +18,13 @@
 
 #include <algorithm>  // std::clamp for the shininess floor/ceiling
 #include <cctype>     // std::tolower for the case-insensitive glTF extension check
+#include <climits>   // INT_MAX for the encoded-texture size guard
 #include <cmath>
 #include <cstddef>
 #include <cstring>    // std::strlen for the extension check
 #include <filesystem>
 #include <fstream>    // ParseFailureHint reads the file's first bytes (ASCII FBX check)
+#include <iterator>   // istreambuf_iterator: external texture bytes (Story 11-2)
 #include <string>
 #include <system_error>
 #include <unordered_map>  // bone name -> global skeleton index (D1 skin remap)
@@ -435,7 +437,7 @@ void DumpAnimation(const SceneSkeleton& skel, const SceneAnimation& anim,
 }
 
 // Reads diffuse factor + derives a per-material Blinn-Phong specular into a
-// SceneMaterial (texture binding is ResolveAndUploadTexture, Story 2.2/6.5.1). The
+// SceneMaterial (textures: ResolveTexture + UploadCpuImage, Story 2.2/6.5.1/11-2). The
 // specular derivation (Story 2.3) is what makes a matte dielectric and a polished
 // metal show a different highlight. Defaults match a neutral mid-grey surface.
 SceneMaterial ConvertMaterial(const aiMaterial* mat)
@@ -520,86 +522,121 @@ GpuImage UploadTexture(const unsigned char* rgba, int w, int h, GLint internal_f
 
 // The ONE unified texture funnel (AR14): every packaging variant — GLB embedded
 // (FR17), glTF sibling file (FR18), and later FBX embedded (FR19, Epic 6) — converges
-// on GetEmbeddedTexture, decodes to RGBA, and uploads. Returns an owning GpuImage, or
-// an empty handle when the material declares no texture of `type` (silent — the
-// textureless flat path, AC5) or the declared texture cannot be resolved (one LogWarn,
-// then flat fallback — AC3). Always decodes 4-channel RGBA so the GL upload format is
-// uniform regardless of the source's channel count. mi names the material in the
-// diagnostic; `kind` labels it ("diffuse"/"normal"). internal_format is the GPU
-// interpretation: GL_SRGB8_ALPHA8 for colour, GL_RGBA8 (linear) for a normal map
-// (Story 6.5.1) — the one parameter that differs between colour and data textures.
-GpuImage ResolveAndUploadTexture(const aiScene* scene, const aiMaterial* mat,
-                                 aiTextureType type, GLint internal_format,
-                                 const std::filesystem::path& model_dir, unsigned mi,
-                                 const char* kind)
+// on GetEmbeddedTexture. Story 11-2: it is GL-free (the parse runs on any thread and is
+// shared): it keeps the image's encoded bytes once stb has validated their header, and
+// UploadCpuImage decodes + uploads. Returns an empty image when the material declares no
+// texture of `type` (silent — the textureless flat path, AC5) or the declared texture
+// cannot be resolved (one LogWarn, then flat fallback — AC3). The upload always decodes
+// 4-channel RGBA so the GL upload format is uniform regardless of the source's channel
+// count. mi names the material in the diagnostic; `kind` labels it ("diffuse"/"normal").
+CpuImage ResolveTexture(const aiScene* scene, const aiMaterial* mat, aiTextureType type,
+                        const std::filesystem::path& model_dir, unsigned mi, const char* kind)
 {
+    CpuImage out;
     aiString tex_path;
     if (!mat || mat->GetTexture(type, 0, &tex_path) != AI_SUCCESS)
-        return {};   // no texture of this type declared — flat path, silent (not a failure)
+        return out;   // no texture of this type declared — flat path, silent (not a failure)
+
+    // Keeps the encoded bytes when stb recognizes their header (size known, nothing
+    // decoded yet); the pixels are decoded at upload. False = not an image stb can read.
+    auto keep_encoded = [&out](std::vector<unsigned char>&& bytes) {
+        int w = 0, h = 0, n = 0;
+        if (bytes.empty() || bytes.size() > static_cast<size_t>(INT_MAX) ||
+            !stbi_info_from_memory(bytes.data(), static_cast<int>(bytes.size()), &w, &h, &n) ||
+            w <= 0 || h <= 0)
+            return false;
+        out.width   = w;
+        out.height  = h;
+        out.encoded = std::move(bytes);
+        return true;
+    };
 
     if (const aiTexture* t = scene->GetEmbeddedTexture(tex_path.C_Str())) {
         // Embedded: GLB '*N' index reference today, FBX GetEmbeddedTexture tomorrow —
         // the same branch absorbs both, which is the whole point of the unified seam.
         if (t->mHeight == 0) {
-            // Compressed: pcData holds mWidth bytes of a PNG/JPG file — stb decodes it.
-            int w = 0, h = 0, n = 0;
-            unsigned char* px = stbi_load_from_memory(
-                reinterpret_cast<const unsigned char*>(t->pcData),
-                static_cast<int>(t->mWidth), &w, &h, &n, 4);   // 4 = force RGBA
-            if (!px) {
+            // Compressed: pcData holds mWidth bytes of a PNG/JPG file — stb decodes it
+            // at upload (UploadCpuImage).
+            const unsigned char* bytes = reinterpret_cast<const unsigned char*>(t->pcData);
+            if (!keep_encoded(std::vector<unsigned char>(bytes, bytes + t->mWidth))) {
                 LogWarn("%s texture unresolved for material %u (embedded image undecodable)"
                         " - using flat color", kind, mi);
                 return {};
             }
-            GpuImage tex = UploadTexture(px, w, h, internal_format);
-            stbi_image_free(px);   // CPU pixels freed immediately after upload (AC6)
-            if (tex.get() == 0)
-                LogWarn("%s texture unresolved for material %u (GPU upload failed)"
-                        " - using flat color", kind, mi);
-            return tex;
+            return out;
         }
         // Uncompressed: mWidth*mHeight aiTexel, stored B,G,R,A by assimp — read by the
         // named members so the result is RGBA regardless of in-memory channel order.
         const size_t count = static_cast<size_t>(t->mWidth) * t->mHeight;
-        std::vector<unsigned char> rgba(count * 4);
+        out.rgba.resize(count * 4);
         for (size_t i = 0; i < count; ++i) {
             const aiTexel& texel = t->pcData[i];
-            rgba[i * 4 + 0] = texel.r;
-            rgba[i * 4 + 1] = texel.g;
-            rgba[i * 4 + 2] = texel.b;
-            rgba[i * 4 + 3] = texel.a;
+            out.rgba[i * 4 + 0] = texel.r;
+            out.rgba[i * 4 + 1] = texel.g;
+            out.rgba[i * 4 + 2] = texel.b;
+            out.rgba[i * 4 + 3] = texel.a;
         }
-        GpuImage tex = UploadTexture(rgba.data(), static_cast<int>(t->mWidth),
-                                     static_cast<int>(t->mHeight), internal_format);
-        if (tex.get() == 0)
-            LogWarn("%s texture unresolved for material %u (GPU upload failed)"
-                    " - using flat color", kind, mi);
-        return tex;
+        out.width  = static_cast<int>(t->mWidth);
+        out.height = static_cast<int>(t->mHeight);
+        return out;
     }
 
-    // External sibling file — resolve relative to the model dir, decode from disk.
-    // Path carried as UTF-8 via u8path/u8string (consistent with FileExists's Unicode
-    // fix); a percent-encoded/absolute-URI edge case simply fails to stbi_load and
-    // takes the diagnostic path below, the model still rendering in flat color.
+    // External sibling file — resolve relative to the model dir, read its bytes (decoded
+    // at upload). Path carried as UTF-8 via u8path (consistent with FileExists's Unicode
+    // fix); a percent-encoded/absolute-URI edge case simply fails to open and takes the
+    // diagnostic path below, the model still rendering in flat color.
     const std::filesystem::path file = model_dir / std::filesystem::u8path(tex_path.C_Str());
-    int w = 0, h = 0, n = 0;
-    unsigned char* px = stbi_load(file.u8string().c_str(), &w, &h, &n, 4);  // 4 = force RGBA
-    if (!px) {
+    std::vector<unsigned char> bytes;
+    {
+        std::ifstream f(file, std::ios::binary);
+        if (f) bytes.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    }
+    if (!keep_encoded(std::move(bytes))) {
         LogWarn("%s texture unresolved for material %u (%s missing or undecodable)"
                 " - using flat color", kind, mi, tex_path.C_Str());
         return {};
     }
-    GpuImage tex = UploadTexture(px, w, h, internal_format);
-    stbi_image_free(px);
-    if (tex.get() == 0)
+    return out;
+}
+
+// GL half of the texture funnel: uploads one texture to the CURRENT context, decoding it
+// first when it is still encoded (the decoded pixels are freed right after the upload —
+// Story 2.2 AC6 — so only one decoded texture exists at a time). internal_format is the
+// GPU interpretation: GL_SRGB8_ALPHA8 for colour, GL_RGBA8 (linear) for data maps (Story
+// 6.5.1). An empty image gives an empty handle (flat path). A decode or upload failure
+// warns once and counts in `failed` (flat fallback).
+GpuImage UploadCpuImage(const CpuImage& img, GLint internal_format, const char* kind,
+                        unsigned mi, int& failed)
+{
+    if (img.empty()) return {};
+    GpuImage tex;
+    if (!img.rgba.empty()) {
+        tex = UploadTexture(img.rgba.data(), img.width, img.height, internal_format);
+    } else {
+        int w = 0, h = 0, n = 0;
+        unsigned char* px = stbi_load_from_memory(img.encoded.data(),
+                                                  static_cast<int>(img.encoded.size()),
+                                                  &w, &h, &n, 4);   // 4 = force RGBA
+        if (!px) {
+            ++failed;
+            LogWarn("%s texture unresolved for material %u (image undecodable)"
+                    " - using flat color", kind, mi);
+            return {};
+        }
+        tex = UploadTexture(px, w, h, internal_format);
+        stbi_image_free(px);   // CPU pixels freed immediately after upload (AC6)
+    }
+    if (tex.get() == 0) {
+        ++failed;
         LogWarn("%s texture unresolved for material %u (GPU upload failed)"
                 " - using flat color", kind, mi);
+    }
     return tex;
 }
 
 // Normal-map resolution: same unified funnel, upload LINEAR (GL_RGBA8) because a
 // normal map is geometry, not colour, and must never be sRGB-decoded (Story 6.5.1 AC4).
-// An empty handle (no map declared) leaves u_hasNormalMap=0 → the geometric normal is
+// An empty image (no map declared) leaves u_hasNormalMap=0 → the geometric normal is
 // used unchanged.
 //
 // ONLY aiTextureType_NORMALS (a true tangent-space normal map). We deliberately do NOT
@@ -610,13 +647,12 @@ GpuImage ResolveAndUploadTexture(const aiScene* scene, const aiMaterial* mat,
 // on downloaded FBX characters. A model whose only relief map is under HEIGHT simply
 // renders with its geometric normal (clean, just no micro-detail) until a post-MVP
 // height→normal (Sobel) conversion is added — far better than corrupting the shading.
-GpuImage ResolveAndUploadNormalMap(const aiScene* scene, const aiMaterial* mat,
-                                   const std::filesystem::path& model_dir, unsigned mi)
+CpuImage ResolveNormalMap(const aiScene* scene, const aiMaterial* mat,
+                          const std::filesystem::path& model_dir, unsigned mi)
 {
     if (!mat) return {};
     if (mat->GetTextureCount(aiTextureType_NORMALS) > 0)
-        return ResolveAndUploadTexture(scene, mat, aiTextureType_NORMALS, GL_RGBA8,
-                                       model_dir, mi, "normal");
+        return ResolveTexture(scene, mat, aiTextureType_NORMALS, model_dir, mi, "normal");
     return {};   // no true normal map declared — geometric normal, silent (not a failure)
 }
 
@@ -766,12 +802,8 @@ void AppendMesh(const aiMesh* mesh, const glm::mat4& world,
 // (node, referenced-mesh) pair becomes one SceneMesh so instanced meshes keep
 // their distinct transforms and per-material grouping is preserved. The node
 // hierarchy itself is discarded here (Epic 3 keeps it for skinning instead).
-struct PendingMesh {
-    std::vector<SceneVertex> verts;
-    std::vector<uint32_t>    indices;
-    uint32_t                 materialIdx;
-    bool                     skinned = false;  // mesh->mNumBones > 0 (D13/FR6 selector)
-};
+// Story 11-2: the CPU mesh is now part of the shared CpuAsset (asset_loader.h).
+using PendingMesh = CpuMesh;
 
 void WalkBake(const aiScene* scene, const aiNode* node, const glm::mat4& parent_world,
               const std::unordered_map<std::string, int>& bone_index,
@@ -1081,14 +1113,15 @@ const char* LoadErrorCategoryName(LoadErrorCategory category)
     return "unknown";
 }
 
-LoadResult LoadAsset(const std::string& path)
+CpuLoadResult LoadCpuAsset(const std::string& path)
 {
     // assimp throws std::exception-derived on some malformed inputs; the whole body
     // is wrapped so nothing escapes this function (AR18). Catch std::bad_alloc as
     // OutOfMemory specifically, then any other std::exception as ParseFailed.
+    // Story 11-2: GL-free (the upload is UploadAsset), so it runs on any thread.
     try {
         if (!FileExists(path))
-            return {std::nullopt, LoadErrorCategory::FileNotFound, "cannot open " + path,
+            return {nullptr, LoadErrorCategory::FileNotFound, "cannot open " + path,
                     "File not found. It may have been moved, renamed or deleted."};
 
         Assimp::Importer importer;
@@ -1117,7 +1150,7 @@ LoadResult LoadAsset(const std::string& path)
 
         if (!scene || !scene->mRootNode) {
             const std::string err = importer.GetErrorString();
-            return {std::nullopt, LoadErrorCategory::ParseFailed, "assimp: " + err,
+            return {nullptr, LoadErrorCategory::ParseFailed, "assimp: " + err,
                     ParseFailureHint(path, err)};
         }
 
@@ -1130,17 +1163,17 @@ LoadResult LoadAsset(const std::string& path)
         // copied error log would read "parse-failed" with an empty reason.
         if (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) {
             if (scene->mNumMeshes == 0)
-                return {std::nullopt, LoadErrorCategory::UnsupportedFormat,
+                return {nullptr, LoadErrorCategory::UnsupportedFormat,
                         "file contains no meshes (skeleton/animation-only export?)",
                         kNoMeshHint};
             const std::string err = importer.GetErrorString();
-            return {std::nullopt, LoadErrorCategory::ParseFailed,
+            return {nullptr, LoadErrorCategory::ParseFailed,
                     "assimp flagged the scene incomplete: " + err,
                     ParseFailureHint(path, err)};
         }
 
         if (scene->mNumMeshes == 0)
-            return {std::nullopt, LoadErrorCategory::UnsupportedFormat,
+            return {nullptr, LoadErrorCategory::UnsupportedFormat,
                     "file contains no meshes", kNoMeshHint};
 
         // Parse the skin skeleton first: WalkBake's per-vertex weight scatter needs
@@ -1157,101 +1190,100 @@ LoadResult LoadAsset(const std::string& path)
         const std::vector<ResolvedMeshSkin> gltf_skins =
             ResolveGltfSkins(scene, path, bone_index, skeleton);
 
+        auto asset = std::make_shared<CpuAsset>();
+
         // Bake all node world transforms into model-space CPU meshes + union AABB.
-        std::vector<PendingMesh> pending;
+        std::vector<PendingMesh>& pending = asset->meshes;
         glm::vec3 aabb_min(0.0f), aabb_max(0.0f);
         bool aabb_seeded = false;
         WalkBake(scene, scene->mRootNode, glm::mat4(1.0f), bone_index, gltf_skins, pending,
                  aabb_min, aabb_max, aabb_seeded);
 
         if (pending.empty())
-            return {std::nullopt, LoadErrorCategory::UnsupportedFormat,
+            return {nullptr, LoadErrorCategory::UnsupportedFormat,
                     "file has meshes but no drawable geometry",
                     "The mesh in this file is empty (no visible geometry)."};
 
-        Asset asset;
-        asset.aabbMin  = aabb_min;
-        asset.aabbMax  = aabb_max;
+        asset->aabbMin = aabb_min;
+        asset->aabbMax = aabb_max;
         // FBX comes out of assimp in centimetres whatever the file's own unit
         // (correctRootTransform scales the root by UnitScaleFactor); glTF and Collada
         // (unit size applied to the root) come out in metres.
         {
             std::string ext = std::filesystem::u8path(path).extension().u8string();
             for (char& c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            asset.metersPerUnit = (ext == ".fbx") ? 0.01f : 1.0f;
+            asset->metersPerUnit = (ext == ".fbx") ? 0.01f : 1.0f;
         }
         // modelRoot stays identity: canonical files render upright, non-canonical
         // render tilted/scaled as-authored (AR13), recovered later by Reset Camera.
 
-        // Resolve each material's diffuse texture beside its flat factors. model_dir
-        // (computed once) anchors the sibling-file branch; a per-texture decode/IO
-        // failure returns an empty handle and the load continues (only a catastrophic
-        // std::bad_alloc from the swizzle buffer reaches the OutOfMemory catch).
+        // Resolve each material's textures beside its flat factors. model_dir (computed
+        // once) anchors the sibling-file branch; a per-texture decode/IO failure returns
+        // an empty image and the load continues (only a catastrophic std::bad_alloc from
+        // a pixel buffer reaches the OutOfMemory catch).
         const std::filesystem::path model_dir =
             std::filesystem::u8path(path).parent_path();
-        asset.materials.reserve(scene->mNumMaterials);
-        // Textures a material DECLARES but that came back empty (missing file, undecodable,
-        // upload failure) — counted for the user notice. A material that declares no
+        asset->materials.reserve(scene->mNumMaterials);
+        // Textures a material DECLARES but that came back empty (missing file,
+        // undecodable) — counted for the user notice. A material that declares no
         // texture is the normal flat path and is not counted.
         int missing_textures = 0;
         for (unsigned mi = 0; mi < scene->mNumMaterials; ++mi) {
-            SceneMaterial material = ConvertMaterial(scene->mMaterials[mi]);
-            auto count_if_missing = [&](const GpuImage& img, aiTextureType type) {
+            const aiMaterial* aimat = scene->mMaterials[mi];
+            const SceneMaterial factors = ConvertMaterial(aimat);
+            CpuMaterial material;
+            material.baseColorFactor = factors.baseColorFactor;
+            material.specularColor   = factors.specularColor;
+            material.shininess       = factors.shininess;
+            auto count_if_missing = [&](const CpuImage& img, aiTextureType type) {
                 aiString declared;
-                if (img.get() == 0 && scene->mMaterials[mi] &&
-                    scene->mMaterials[mi]->GetTexture(type, 0, &declared) == AI_SUCCESS)
+                if (img.empty() && aimat &&
+                    aimat->GetTexture(type, 0, &declared) == AI_SUCCESS)
                     ++missing_textures;
             };
-            // Base colour is a COLOUR texture → sRGB-decoded on sample (GL_SRGB8_ALPHA8)
-            // so lighting math runs in linear space (Story 6.5.1 AC1). The normal map is
-            // DATA → uploaded linear (GL_RGBA8) and only sampled when present (AC4).
+            // Base colour is a COLOUR texture → sRGB-decoded on sample (GL_SRGB8_ALPHA8,
+            // chosen at upload) so lighting math runs in linear space (Story 6.5.1 AC1).
+            // The normal map is DATA → uploaded linear (GL_RGBA8) and only sampled when
+            // present (AC4).
             material.baseColor =
-                ResolveAndUploadTexture(scene, scene->mMaterials[mi], aiTextureType_DIFFUSE,
-                                        GL_SRGB8_ALPHA8, model_dir, mi, "diffuse");
-            material.normalMap =
-                ResolveAndUploadNormalMap(scene, scene->mMaterials[mi], model_dir, mi);
+                ResolveTexture(scene, aimat, aiTextureType_DIFFUSE, model_dir, mi, "diffuse");
+            material.normalMap = ResolveNormalMap(scene, aimat, model_dir, mi);
             // Story 6.5.7 — the artist's per-pixel specular + glossiness maps. Both are DATA
             // (reflection intensity / sharpness scalar), not colour → uploaded LINEAR
             // (GL_RGBA8), same rule as the normal map (AC6). Read directly via the existing
             // funnel (SPECULAR/SHININESS are plain texture slots, unlike the NORMALS-only
-            // ResolveAndUploadNormalMap), which already handles embedded/external + the
-            // LogWarn-then-empty fallback (AR17). An empty handle (glTF metallic-roughness, or
+            // ResolveNormalMap), which already handles embedded/external + the
+            // LogWarn-then-empty fallback (AR17). An empty image (glTF metallic-roughness, or
             // any mesh with no such slot) leaves the renderer on the uniform-sheen path (AC3).
             material.specularMap =
-                ResolveAndUploadTexture(scene, scene->mMaterials[mi], aiTextureType_SPECULAR,
-                                        GL_RGBA8, model_dir, mi, "specular");
+                ResolveTexture(scene, aimat, aiTextureType_SPECULAR, model_dir, mi, "specular");
             material.glossMap =
-                ResolveAndUploadTexture(scene, scene->mMaterials[mi], aiTextureType_SHININESS,
-                                        GL_RGBA8, model_dir, mi, "glossiness");
+                ResolveTexture(scene, aimat, aiTextureType_SHININESS, model_dir, mi, "glossiness");
             count_if_missing(material.baseColor,   aiTextureType_DIFFUSE);
             count_if_missing(material.normalMap,   aiTextureType_NORMALS);
             count_if_missing(material.specularMap, aiTextureType_SPECULAR);
             count_if_missing(material.glossMap,    aiTextureType_SHININESS);
-            asset.materials.push_back(std::move(material));
+            asset->materials.push_back(std::move(material));
         }
         // assimp always emits a default material, but a mesh's materialIdx indexes
         // this list on the render hot path — guarantee at least one entry so a
         // malformed file can never drive an out-of-bounds read.
-        if (asset.materials.empty())
-            asset.materials.push_back(ConvertMaterial(nullptr));
+        if (asset->materials.empty()) {
+            const SceneMaterial factors = ConvertMaterial(nullptr);
+            CpuMaterial material;
+            material.baseColorFactor = factors.baseColorFactor;
+            material.specularColor   = factors.specularColor;
+            material.shininess       = factors.shininess;
+            asset->materials.push_back(std::move(material));
+        }
 
         // ...and clamp any out-of-range index (a hand-edited/corrupt file can set
         // aiMesh::mMaterialIndex past mNumMaterials) to the guaranteed [0] entry, so
         // the renderer's materials[mesh.materialIdx] is always in bounds. The
         // empty-guard above only covers the zero-material case, not this one.
-        const uint32_t material_count = static_cast<uint32_t>(asset.materials.size());
+        const uint32_t material_count = static_cast<uint32_t>(asset->materials.size());
         for (PendingMesh& pm : pending)
             if (pm.materialIdx >= material_count) pm.materialIdx = 0;
-
-        asset.meshes.reserve(pending.size());
-        for (const PendingMesh& pm : pending) {
-            SceneMesh sm;
-            if (!UploadMesh(pm, sm))
-                return {std::nullopt, LoadErrorCategory::GpuUploadFailed,
-                        "GL buffer upload failed (out of GPU memory?)",
-                        "Your graphics card ran out of memory for this model."};
-            asset.meshes.push_back(std::move(sm));
-        }
 
         // Audit the parsed skeleton (skinned files only — a static load stays silent).
         // skinned_verts also feeds the "mesh not skinned" user notice below.
@@ -1266,42 +1298,138 @@ LoadResult LoadAsset(const std::string& path)
         }
 
         // Parse the animation clip into channels + audit the sampler (animated files
-        // only). Nothing consumes asset.animations yet — the renderer still draws the
-        // baked bind pose (3.3 deforms), so this stays byte-for-byte non-regressing.
+        // only).
         bool any_bone_animated = false;  // for the "animation doesn't match" notice
         if (scene->mNumAnimations > 0 && !skeleton.bones.empty()) {
             std::vector<bool> animated;
             double tps = 0.0;
-            asset.animations =
+            asset->animations =
                 ParseAnimations(scene, skeleton, bone_index, bind_local, animated, tps);
-            if (!asset.animations.empty())
-                DumpAnimation(skeleton, asset.animations.front(), animated, tps);
+            if (!asset->animations.empty())
+                DumpAnimation(skeleton, asset->animations.front(), animated, tps);
             for (bool a : animated) any_bone_animated |= a;
         }
 
         // Frame what is DRAWN, not the raw mesh-local skinned verts (Epic 9 — see
         // ComputePosedBounds). Kept as-is when the renderer won't skin either.
-        if (!asset.animations.empty()) {
+        if (!asset->animations.empty()) {
             glm::vec3 posed_min(0.0f), posed_max(0.0f);
-            if (ComputePosedBounds(skeleton, asset.animations.front(), pending,
+            if (ComputePosedBounds(skeleton, asset->animations.front(), pending,
                                    posed_min, posed_max)) {
-                asset.aabbMin = posed_min;
-                asset.aabbMax = posed_max;
+                asset->aabbMin = posed_min;
+                asset->aabbMax = posed_max;
             }
         }
-        asset.skeleton = std::move(skeleton);
+        asset->skeleton = std::move(skeleton);
+
+        // The facts behind the user notices (built by LoadAsset, in the user's words).
+        asset->no_animation       = (scene->mNumAnimations == 0);
+        asset->mesh_not_skinned   = !asset->no_animation && skinned_verts == 0;
+        asset->animation_mismatch = !asset->no_animation && skinned_verts != 0 && !any_bone_animated;
+        asset->missing_textures   = missing_textures;
+
+        CpuLoadResult ok;
+        ok.asset    = std::move(asset);
+        ok.category = LoadErrorCategory::Ok;
+        return ok;
+    }
+    catch (const std::bad_alloc&) {
+        return {nullptr, LoadErrorCategory::OutOfMemory, "out of memory while loading",
+                "Not enough memory to open this file."};
+    }
+    catch (const std::exception& e) {
+        return {nullptr, LoadErrorCategory::ParseFailed, e.what(),
+                ParseFailureHint(path, e.what())};
+    }
+    catch (...) {
+        return {nullptr, LoadErrorCategory::Unknown, "unknown loader failure",
+                "Unexpected error while opening this file."};
+    }
+}
+
+bool UploadAsset(const CpuAsset& cpu, Asset& out, int* out_failed_textures)
+{
+    // The GPU half of the load (PRECONDITION: a current GL context). Built into a local
+    // Asset and moved out only on success, so a failure leaves `out` untouched-empty and
+    // frees the partial GL objects (RAII) while the context is still current.
+    int failed = 0;
+    try {
+        Asset asset;
+        asset.aabbMin       = cpu.aabbMin;
+        asset.aabbMax       = cpu.aabbMax;
+        asset.metersPerUnit = cpu.metersPerUnit;
+        asset.modelRoot     = cpu.modelRoot;
+
+        asset.materials.reserve(cpu.materials.size());
+        for (size_t i = 0; i < cpu.materials.size(); ++i) {
+            const CpuMaterial& cm = cpu.materials[i];
+            const unsigned mi = static_cast<unsigned>(i);
+            SceneMaterial m;
+            m.baseColorFactor = cm.baseColorFactor;
+            m.specularColor   = cm.specularColor;
+            m.shininess       = cm.shininess;
+            m.baseColor   = UploadCpuImage(cm.baseColor,   GL_SRGB8_ALPHA8, "diffuse",    mi, failed);
+            m.normalMap   = UploadCpuImage(cm.normalMap,   GL_RGBA8,        "normal",     mi, failed);
+            m.specularMap = UploadCpuImage(cm.specularMap, GL_RGBA8,        "specular",   mi, failed);
+            m.glossMap    = UploadCpuImage(cm.glossMap,    GL_RGBA8,        "glossiness", mi, failed);
+            asset.materials.push_back(std::move(m));
+        }
+        if (asset.materials.empty()) asset.materials.push_back(ConvertMaterial(nullptr));
+
+        asset.meshes.reserve(cpu.meshes.size());
+        for (const CpuMesh& pm : cpu.meshes) {
+            SceneMesh sm;
+            if (!UploadMesh(pm, sm)) {
+                if (out_failed_textures) *out_failed_textures = failed;
+                return false;
+            }
+            // The material list may differ from cpu.materials only in the empty case
+            // (one fallback entry), where every index was clamped to 0 by the parse.
+            if (sm.materialIdx >= asset.materials.size()) sm.materialIdx = 0;
+            asset.meshes.push_back(std::move(sm));
+        }
+
+        asset.skeleton   = cpu.skeleton;    // copied: the GPU copy owns its pose data
+        asset.animations = cpu.animations;
+        out = std::move(asset);
+    } catch (...) {
+        // bad_alloc copying the skeleton/animations: no GPU copy (the RAII handles
+        // already freed whatever was uploaded, with the context current).
+        if (out_failed_textures) *out_failed_textures = failed;
+        return false;
+    }
+    if (out_failed_textures) *out_failed_textures = failed;
+    return true;
+}
+
+LoadResult LoadAsset(const std::string& path)
+{
+    // Parse (GL-free) then upload into the current context. No-throw (AR18).
+    CpuLoadResult parsed = LoadCpuAsset(path);
+    if (!parsed.asset)
+        return {std::nullopt, parsed.category, std::move(parsed.detail), std::move(parsed.hint)};
+
+    const CpuAsset& cpu = *parsed.asset;
+    try {
+        Asset asset;
+        int failed_textures = 0;
+        if (!UploadAsset(cpu, asset, &failed_textures))
+            return {std::nullopt, LoadErrorCategory::GpuUploadFailed,
+                    "GL buffer upload failed (out of GPU memory?)",
+                    "Your graphics card ran out of memory for this model."};
 
         // Non-blocking problems, in the user's words (LoadResult::notices). Each is also
         // kept in the copyable log (tagged with the file by the caller's log context).
         // Order: what the user notices first (the character not moving) comes first.
         std::vector<std::string> notices;
-        if (scene->mNumAnimations == 0)
+        if (cpu.no_animation)
             notices.push_back("No animation in this file: the character stays in its rest pose.");
-        else if (skinned_verts == 0)
+        else if (cpu.mesh_not_skinned)
             notices.push_back("The mesh isn't skinned to a skeleton: it won't follow the animation.");
-        else if (!any_bone_animated)
+        else if (cpu.animation_mismatch)
             notices.push_back("The animation doesn't match this skeleton (different bone names): "
                               "the character won't move.");
+        const int missing_textures = cpu.missing_textures + failed_textures;
         if (missing_textures > 0)
             notices.push_back(std::to_string(missing_textures) +
                               (missing_textures == 1 ? " texture" : " textures") +
@@ -1311,15 +1439,12 @@ LoadResult LoadAsset(const std::string& path)
 
         LoadResult ok{std::move(asset), LoadErrorCategory::Ok, {}, {}};
         ok.notices = std::move(notices);
+        ok.cpu     = std::move(parsed.asset);
         return ok;
     }
     catch (const std::bad_alloc&) {
         return {std::nullopt, LoadErrorCategory::OutOfMemory, "out of memory while loading",
                 "Not enough memory to open this file."};
-    }
-    catch (const std::exception& e) {
-        return {std::nullopt, LoadErrorCategory::ParseFailed, e.what(),
-                ParseFailureHint(path, e.what())};
     }
     catch (...) {
         return {std::nullopt, LoadErrorCategory::Unknown, "unknown loader failure",

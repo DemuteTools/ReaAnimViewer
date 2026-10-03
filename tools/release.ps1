@@ -3,10 +3,12 @@
 #
 #  1. Checks the repo is clean, on main and up to date.
 #  2. Asks for the new version and the changelog (Notepad).
-#  3. Clean release build + checks the DLL has no VC++ runtime dependency.
+#  3. Clean release build + checks the DLL and the video FX (rav_video_fx.clap)
+#     have no VC++ runtime dependency.
 #  4. Bumps the version in Scripts/RAV_Launcher.lua (the ReaPack package, which also
 #     provides the DLL), CMakeLists.txt and README.md.
-#  5. Commits, tags vX.Y.Z, pushes the tag, creates the GitHub Release with the DLL.
+#  5. Commits, tags vX.Y.Z, pushes the tag, creates the GitHub Release with the DLL
+#     and rav_video_fx.clap (both are files of the ReaPack package).
 #  6. Pushes main: GitHub Actions then regenerates index.xml with reapack-index.
 # ============================================================================
 # Native commands (git, gh) are checked through $LASTEXITCODE, so keep 'Continue':
@@ -20,6 +22,7 @@ $LauncherPath = 'Scripts/RAV_Launcher.lua'
 $CMakePath  = 'CMakeLists.txt'
 $ReadmePath = 'README.md'
 $DllPath    = Join-Path $Root 'build\Release\reaper_animviewer.dll'
+$ClapPath   = Join-Path $Root 'build\Release\rav_video_fx.clap'
 $Utf8NoBom  = New-Object System.Text.UTF8Encoding($false)
 
 function Fail([string]$Message) {
@@ -121,15 +124,18 @@ $buildExit = $LASTEXITCODE
 Remove-Item Env:RAV_VERSION, Env:RAV_RELEASE_BUILD -ErrorAction SilentlyContinue
 if ($buildExit -ne 0) { Fail 'Build failed, nothing was changed.' }
 if (-not (Test-Path $DllPath)) { Fail "Build output not found: $DllPath" }
+if (-not (Test-Path $ClapPath)) { Fail "Build output not found: $ClapPath" }
 
-# The DLL must be self-contained: no dynamic VC++ runtime (see CMakeLists.txt).
-$dllText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($DllPath))
-foreach ($crt in @('MSVCP140.dll', 'VCRUNTIME140.dll', 'VCRUNTIME140_1.dll', 'api-ms-win-crt-')) {
-    if ($dllText.IndexOf($crt, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
-        Fail "The DLL depends on $crt (dynamic VC++ runtime). Users would need the VC++ Redistributable."
+# Both binaries must be self-contained: no dynamic VC++ runtime (see CMakeLists.txt).
+foreach ($binary in @($DllPath, $ClapPath)) {
+    $binaryText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($binary))
+    foreach ($crt in @('MSVCP140.dll', 'VCRUNTIME140.dll', 'VCRUNTIME140_1.dll', 'api-ms-win-crt-')) {
+        if ($binaryText.IndexOf($crt, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            Fail "$(Split-Path -Leaf $binary) depends on $crt (dynamic VC++ runtime). Users would need the VC++ Redistributable."
+        }
     }
 }
-Write-Host 'DLL OK: no VC++ runtime dependency.'
+Write-Host 'DLL and video FX OK: no VC++ runtime dependency.'
 
 # --- 4. Bump the version in the repo files ----------------------------------
 Step 'Updating version files'
@@ -186,7 +192,7 @@ Invoke-Git push origin $tag | Out-Null
 Step 'Creating the GitHub Release'
 $releaseNotes = Join-Path $env:TEMP "reaanimviewer-release-notes-$version.md"
 [IO.File]::WriteAllLines($releaseNotes, [string[]]$changes, $Utf8NoBom)
-$ghArgs = @('release', 'create', $tag, $DllPath,
+$ghArgs = @('release', 'create', $tag, $DllPath, $ClapPath,
     '--repo', "$owner/$repo",
     '--title', "ReaAnimViewer $tag",
     '--notes-file', $releaseNotes,
@@ -195,7 +201,7 @@ if ($isPrerelease) { $ghArgs += '--prerelease' }
 & $gh @ghArgs
 if ($LASTEXITCODE -ne 0) {
     Fail ("The tag $tag is pushed but the GitHub Release failed. Fix the problem, then run:`n" +
-        "  gh release create $tag build\Release\reaper_animviewer.dll --title `"ReaAnimViewer $tag`"`n" +
+        "  gh release create $tag build\Release\reaper_animviewer.dll build\Release\rav_video_fx.clap --title `"ReaAnimViewer $tag`"`n" +
         "and finally: git push origin main")
 }
 

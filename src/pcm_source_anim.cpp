@@ -228,6 +228,22 @@ bool IsOurs(PCM_source* s)
 
 pcmsrc_register_t* PcmSourceRegistration() { return &g_reg; }
 
+bool IsRavAnimSource(PCM_source* s) { return IsOurs(s); }
+
+double ItemAnimTime(double pos, double item_pos, double start_offs)
+{
+    // Native left-trim: D_STARTOFFS is the take's start-in-source. animTime advances
+    // from there, so trimming the left edge reveals LATER frames of the same clip
+    // (FR11 native-media behavior) rather than restarting at frame 0. Take-level value.
+    double at = (pos - item_pos) + start_offs;
+    if (!(at >= 0.0)) at = 0.0; // low guard; the negated form also catches a non-finite
+                              // D_STARTOFFS (NaN compares false → reset to 0, not propagated).
+                              // RenderFrame (loop==false) clamps the HIGH end
+                              // to the clip duration, so a deep startoffs past the clip
+                              // end holds the last frame (AC3) — do NOT re-clamp to il here.
+    return at;
+}
+
 // Read-only transport→current-item query (Story 4.3). Mirrors the Spike's
 // CurrentAnimTime (spike/0-1-feasibility:src/spike_pcmsource.cpp) but ALSO returns
 // the matched item's source path so the viewer can switch the displayed asset on a
@@ -235,11 +251,41 @@ pcmsrc_register_t* PcmSourceRegistration() { return &g_reg; }
 // Register — the boundary rule keeps that in plugin_main.cpp).
 bool GetCurrentAnimItem(std::string& out_path, double& out_anim_time)
 {
+    return GetCurrentAnimItemOn(nullptr, out_path, out_anim_time, nullptr);
+}
+
+bool GetCurrentAnimItemOn(MediaTrack* only_track, std::string& out_path, double& out_anim_time,
+                          MediaTrack** out_track)
+{
     ReaProject* proj = nullptr;  // current project
     // Play cursor (continuous audio clock) while playing, edit cursor while stopped —
     // so a stopped scrub still drives the displayed frame (AC1).
     const bool playing = (GetPlayStateEx(proj) & 1) != 0;
     const double pos = playing ? GetPlayPosition2Ex(proj) : GetCursorPositionEx(proj);
+
+    // Story 11-4 — one track only (Video view on a pinned track): the first spanning RAV
+    // item in the track's item order, the rule the video FX uses (video_timeline.h
+    // FindVideoItemAt), so Video view shows what that track's FX renders.
+    if (only_track) {
+        for (int i = 0, n = CountTrackMediaItems(only_track); i < n; ++i) {
+            MediaItem* it = GetTrackMediaItem(only_track, i);
+            if (!it) continue;
+            const double ip = GetMediaItemInfo_Value(it, "D_POSITION");
+            const double il = GetMediaItemInfo_Value(it, "D_LENGTH");
+            if (pos < ip || pos >= ip + il) continue;
+            MediaItem_Take* tk = GetActiveTake(it);
+            if (!tk) continue;
+            PCM_source* src = GetMediaItemTake_Source(tk);
+            if (!IsOurs(src)) continue;
+            const char* fn = src->GetFileName();
+            if (!fn || !fn[0]) continue;  // no file: the FX skips it too (video_timeline.cpp)
+            out_path = fn;
+            out_anim_time = ItemAnimTime(pos, ip, GetMediaItemTakeInfo_Value(tk, "D_STARTOFFS"));
+            if (out_track) *out_track = only_track;
+            return true;
+        }
+        return false;
+    }
 
     // Highest-priority spanning RAV item wins (Story 4.5): on overlap, the one on the
     // TOPMOST track (smallest 1-based IP_TRACKNUMBER) — mirroring Reaper's native video
@@ -286,17 +332,11 @@ bool GetCurrentAnimItem(std::string& out_path, double& out_anim_time)
     PCM_source* src = GetMediaItemTake_Source(best_tk);
     const char* fn  = src ? src->GetFileName() : nullptr;   // re-read; null-guard
     out_path = fn ? fn : "";                                // std::string assign LAST
-    // Native left-trim: D_STARTOFFS is the take's start-in-source. animTime advances
-    // from there, so trimming the left edge reveals LATER frames of the same clip
-    // (FR11 native-media behavior) rather than restarting at frame 0. Take-level value.
+    // Item-relative time from the take's start-in-source (left-trim) — ItemAnimTime,
+    // shared with the video FX timeline (Story 11-2).
     const double off = GetMediaItemTakeInfo_Value(best_tk, "D_STARTOFFS");
-    double at = (pos - best_ip) + off;
-    if (!(at >= 0.0)) at = 0.0; // low guard; the negated form also catches a non-finite
-                              // D_STARTOFFS (NaN compares false → reset to 0, not propagated).
-                              // RenderFrame (loop==false) clamps the HIGH end
-                              // to the clip duration, so a deep startoffs past the clip
-                              // end holds the last frame (AC3) — do NOT re-clamp to il here.
-    out_anim_time = at;
+    out_anim_time = ItemAnimTime(pos, best_ip, off);
+    if (out_track) *out_track = GetMediaItem_Track(best);
     return true;
 }
 

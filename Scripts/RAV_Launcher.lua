@@ -16,6 +16,7 @@
 -- @provides
 --   [main] .
 --   [win64 extension] reaper_animviewer.dll https://github.com/DemuteTools/ReaAnimViewer/releases/download/v$version/$path
+--   [win64 extension] FX/rav_video_fx.clap https://github.com/DemuteTools/ReaAnimViewer/releases/download/v$version/rav_video_fx.clap
 
 ------------------------------------------------------------------------------
 -- Settings
@@ -24,6 +25,7 @@
 local TITLE          = "ReaAnimViewer"
 local OPEN_VIEWER_ID = "_RAV_OPEN_VIEWER"   -- registered by the extension (see src/plugin_main.cpp)
 local DLL_NAME       = "reaper_animviewer.dll"
+local CLAP_NAME      = "rav_video_fx.clap"      -- the video FX, in UserPlugins/FX
 
 local SEP = package.config:sub(1, 1)
 
@@ -39,18 +41,38 @@ local function userplugins_dir()
   return reaper.GetResourcePath() .. SEP .. "UserPlugins"
 end
 
+local function fx_dir()
+  return userplugins_dir() .. SEP .. "FX"
+end
+
+-- Folder of this script (where the Demute Reaper Toolkit puts the package files).
+local function script_dir()
+  local path = debug.getinfo(1, "S").source:match("^@(.+)$")
+  return path and path:match("^(.*)[/\\]")
+end
+
 -- The DLL the Demute Reaper Toolkit downloads next to this script.
 local function sibling_dll()
-  local path = debug.getinfo(1, "S").source:match("^@(.+)$")
-  local dir = path and path:match("^(.*)[/\\]")
+  local dir = script_dir()
   return dir and (dir .. SEP .. DLL_NAME)
 end
 
--- Leftovers of a previous self-update (src/self_update.cpp): .old* and .new.
--- They may still be locked by the running extension: failures are ignored.
-local function remove_leftovers()
-  local dir = userplugins_dir()
-  local pattern = "^" .. (DLL_NAME:gsub("%.", "%%.")) .. "%.(%a+)%d*$"
+-- The video FX the Toolkit downloads with it: in an FX sub-folder (the package
+-- path) or next to this script.
+local function sibling_clap()
+  local dir = script_dir()
+  if not dir then return nil end
+  for _, path in ipairs({ dir .. SEP .. "FX" .. SEP .. CLAP_NAME, dir .. SEP .. CLAP_NAME }) do
+    if reaper.file_exists(path) then return path end
+  end
+  return nil
+end
+
+-- Leftovers of a previous self-update (src/self_update.cpp): <file>.old* and
+-- <file>.new in `dir`. They may still be locked by the running extension: failures
+-- are ignored.
+local function remove_leftovers_of(dir, file_name)
+  local pattern = "^" .. (file_name:gsub("%.", "%%.")) .. "%.(%a+)%d*$"
   local leftovers = {}
   reaper.EnumerateFiles(dir, -1)  -- drop REAPER's cached listing of the folder
   local i = 0
@@ -64,6 +86,11 @@ local function remove_leftovers()
   for _, name in ipairs(leftovers) do
     os.remove(dir .. SEP .. name)
   end
+end
+
+local function remove_leftovers()
+  remove_leftovers_of(userplugins_dir(), DLL_NAME)
+  remove_leftovers_of(fx_dir(), CLAP_NAME)
 end
 
 -- Command id of "RAV: Open Viewer" when the extension is loaded, else nil.
@@ -120,6 +147,20 @@ local function ask_restart()
     .. "Restart REAPER, then use the action \"RAV: Open Viewer\".")
 end
 
+-- Toolkit install: put the video FX where REAPER scans CLAP plug-ins, when it is
+-- missing there. Updates are done by the extension's self-update (same version as
+-- the DLL). ReaPack installs it itself (FX/ line of @provides). Returns true when
+-- it was copied now (REAPER only lists it after a restart).
+local function install_video_fx()
+  local installed = fx_dir() .. SEP .. CLAP_NAME
+  if reaper.file_exists(installed) or reapack_owner(installed) then return false end
+  local sibling = sibling_clap()
+  if not sibling then return false end
+  reaper.RecursiveCreateDirectory(fx_dir(), 0)
+  local ok = copy_file(sibling, installed)
+  return ok == true
+end
+
 ------------------------------------------------------------------------------
 -- Main
 ------------------------------------------------------------------------------
@@ -131,6 +172,7 @@ local function main()
   end
 
   remove_leftovers()
+  local video_fx_new = install_video_fx()
 
   local installed = userplugins_dir() .. SEP .. DLL_NAME
 
@@ -141,6 +183,9 @@ local function main()
     -- The action toggles the viewer: only run it when the viewer is closed.
     if reaper.GetToggleCommandState(open_viewer) ~= 1 then
       reaper.Main_OnCommand(open_viewer, 0)
+    end
+    if video_fx_new then
+      message("The RAV video FX was installed.\n\nRestart REAPER to use it.")
     end
     return
   end

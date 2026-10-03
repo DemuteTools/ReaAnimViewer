@@ -151,7 +151,22 @@ if(WIN32)
             src/gltf_skin.cpp
             src/console_log.cpp
             src/pcm_source_anim.cpp
+            src/asset_cache.cpp
+            src/display_settings.cpp
+            src/video_camera_seam.cpp
+            src/video_render.cpp
+            src/video_timeline.cpp
             src/self_update.cpp
+            src/video_fx_host.cpp
+            src/video_fx_track.cpp
+            src/video_gl_context.cpp
+            src/video_test_pattern.cpp
+            src/video_camera.cpp
+            src/video_shots.cpp
+            src/ui_theme.cpp
+            src/video_view.cpp
+            src/video_view_ui.cpp
+            src/reaper_actions.cpp
     )
     # Generated rav_version.h (see RAV_VERSION above).
     target_include_directories(animviewer PRIVATE "${CMAKE_BINARY_DIR}/generated")
@@ -170,6 +185,32 @@ if(WIN32)
     # comdlg32: GetOpenFileNameW — the native "choose a model" dialog (Story 2.1).
     # imgui: vendored in-viewport tool UI (Story 6.5.3 rev).
     target_link_libraries(animviewer PRIVATE assimp opengl32 gdi32 user32 comdlg32 imgui)
+
+    # The video FX (Epic 11, Story 11-1): rav_video_fx.clap, a thin CLAP shim that
+    # hands REAPER's video frames to the frame-render API reaper_animviewer.dll
+    # registers (src/video_fx_api.h). Header-only dependencies (CLAP 1.2.7, reaper-sdk
+    # video headers, both vendored in extern/); no renderer, no assimp, no GL. Built
+    # into the same output folder as the DLL (build/Release/), installed by build.bat
+    # into UserPlugins\FX and published next to the DLL by release.bat.
+    add_library(rav_video_fx SHARED src/fx/rav_video_fx_clap.cpp)
+    set_target_properties(rav_video_fx PROPERTIES
+        PREFIX ""
+        OUTPUT_NAME "rav_video_fx"
+        SUFFIX ".clap"
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+        CXX_EXTENSIONS OFF)
+    target_include_directories(rav_video_fx PRIVATE
+        "${CMAKE_SOURCE_DIR}/src"
+        "${CMAKE_SOURCE_DIR}/extern/reaper-sdk/sdk"
+        "${CMAKE_BINARY_DIR}/generated")
+    target_include_directories(rav_video_fx SYSTEM PRIVATE "${CMAKE_SOURCE_DIR}/extern/clap/include")
+    if(MSVC)
+        target_compile_options(rav_video_fx PRIVATE /W3 /permissive- /EHsc)
+        target_compile_definitions(rav_video_fx PRIVATE
+            _CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
+    endif()
+    target_link_libraries(rav_video_fx PRIVATE user32)
 else()
     message(STATUS
         "animviewer: non-Windows platform detected — Phase 0 only "

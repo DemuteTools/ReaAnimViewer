@@ -14,10 +14,12 @@ rem    forcefail   Forces the GL init failure path (RAV_FORCE_INIT_FAILURE).
 rem
 rem  Options:
 rem    clean       Delete the build folder first (full rebuild).
-rem    noinstall   Do not copy the DLL into REAPER's UserPlugins folder.
+rem    noinstall   Do not copy the DLL and the video FX into REAPER.
 rem    nopause     Do not wait for a key press at the end (used by release.bat).
 rem
-rem  Double-click = release build + install into REAPER.
+rem  Double-click = release build + install into REAPER:
+rem    reaper_animviewer.dll  -> %APPDATA%\REAPER\UserPlugins\
+rem    rav_video_fx.clap      -> %APPDATA%\REAPER\UserPlugins\FX\   (the video FX)
 rem  The DLL reports version "dev": a dev build never updates itself from the
 rem  Demute Reaper Toolkit copy. Only release.bat compiles a real version in
 rem  (it sets RAV_RELEASE_BUILD=1 and RAV_VERSION for this run only).
@@ -51,6 +53,7 @@ if /I "%MODE%"=="debuglog"  set "BUILD_DIR=build-debuglog"  & set "DEFINE=RAV_EN
 if /I "%MODE%"=="forcefail" set "BUILD_DIR=build-forcefail" & set "DEFINE=RAV_FORCE_INIT_FAILURE"
 
 set "DLL=%BUILD_DIR%\Release\reaper_animviewer.dll"
+set "CLAP=%BUILD_DIR%\Release\rav_video_fx.clap"
 
 rem A stray RAV_VERSION in the user's environment must not turn a dev build into
 rem a "release" one (see the note at the top).
@@ -106,6 +109,11 @@ if not exist "%DLL%" (
     set "RESULT=1"
     goto done
 )
+if not exist "%CLAP%" (
+    echo [FAILED] Build finished but %CLAP% is missing.
+    set "RESULT=1"
+    goto done
+)
 
 echo.
 if "%INSTALL%"=="0" (
@@ -127,12 +135,20 @@ if errorlevel 1 (
     set "RESULT=1"
     goto done
 )
-echo Installed to %USERPLUGINS%
+if not exist "%USERPLUGINS%\FX\" mkdir "%USERPLUGINS%\FX"
+copy /Y "%CLAP%" "%USERPLUGINS%\FX\" >nul
+if errorlevel 1 (
+    echo [FAILED] Could not copy the video FX. Make sure REAPER is closed and run again.
+    set "RESULT=1"
+    goto done
+)
+echo Installed to %USERPLUGINS% ^(video FX in %USERPLUGINS%\FX^)
 
 :success
 echo.
 echo ============================================================
 echo   OK  -  %DLL%
+echo          %CLAP%
 if "%INSTALL%"=="1" echo   Start REAPER and run the action "RAV: Open Viewer".
 if /I "%MODE%"=="debuglog"  echo   Open the REAPER console: [RAV] log lines should appear.
 if /I "%MODE%"=="forcefail" echo   Opening the viewer should show the GL init error message.

@@ -23,6 +23,12 @@
 // to it (not unconditionally to FB0), and the resolve blits to FB0 before returning so ImGui
 // and SwapBuffers land on the window. At Off the scene target IS FB0 (bit-identical to before,
 // no offscreen cost). The MS targets are reallocated only on a level/resize change (cold path).
+//
+// Story 11-2 (Epic 11, spike amendment 2): RenderFrame takes a TARGET framebuffer. The viewer
+// passes nothing (0 = the window, bit-identical to before); the video FX renderer, a second
+// instance living on REAPER's video thread with its own context, passes its offscreen FBO, so
+// the MSAA resolve and the MSAA-off path both land there instead of on framebuffer 0. The
+// clear colour (the viewer's background) is a member, with an alpha the video FX can set to 0.
 
 #pragma once
 
@@ -34,6 +40,7 @@
 #include <glm/glm.hpp>
 
 #include "camera.h"
+#include "display_settings.h"
 #include "gpu_resources.h"
 #include "scene.h"
 
@@ -69,7 +76,30 @@ public:
     // CLAMPS to [0, duration] so the rig HOLDS the first/last frame at the item's
     // ends (AC3); loop==true keeps the Epic-3 free-running fmod loop used by the
     // no-item fixture fallback.
-    void RenderFrame(float anim_time_seconds, bool loop, int width, int height);
+    //
+    // Story 11-2: target_fbo is the framebuffer the finished picture lands in (0 = the
+    // window). It must be complete, width x height, with a depth attachment when MSAA is off
+    // (the scene then renders straight into it). It is left bound on return.
+    void RenderFrame(float anim_time_seconds, bool loop, int width, int height,
+                     unsigned target_fbo = 0);
+
+    // Story 11-2 — the background (clear colour). alpha 1 = opaque (the viewer); the video
+    // FX's transparent option clears to alpha 0 so only the floor and the model are opaque.
+    void SetBackground(const glm::vec3& rgb, float alpha) { background_ = glm::vec4(rgb, alpha); }
+
+    // Story 11-2 — the display settings the viewer shows, published for the video FX
+    // (display_settings.h), and their application to another instance. Apply calls the
+    // setters below (cold-path GL work only on a change; context must be current) and
+    // clamps the MSAA level to max_msaa_samples (that context's GL_MAX_SAMPLES).
+    DisplaySettings CurrentDisplaySettings() const;
+    void ApplyDisplaySettings(const DisplaySettings& s, int max_msaa_samples);
+
+    // Story 11-2 — hands the held Asset back to the caller (empty afterwards), so a
+    // renderer can switch between several GPU-resident assets without re-uploading them
+    // (the video FX keeps a small cache of them). Context must be current if the caller
+    // then destroys it.
+    Asset TakeAsset();
+    const Asset& CurrentAsset() const { return asset_; }
 
     // Mutable access to the orbit camera so the window proc can drive it from mouse
     // input (g_renderer.Camera().Orbit(...) / .Zoom(...) / .Pan(...)).
@@ -293,6 +323,12 @@ private:
     GpuRenderbuffer msaa_color_rb_;
     GpuRenderbuffer msaa_depth_rb_;
     int             msaa_alloc_w_ = 0, msaa_alloc_h_ = 0, msaa_alloc_samples_ = 0;
+
+    // Story 11-2 — clear colour (the viewer's historical 0.10/0.10/0.12) + alpha, and the last
+    // shadow level ApplyDisplaySettings asked for (so a failed allocation that fell back to Off
+    // is not retried every frame; -1 = none yet).
+    glm::vec4       background_{0.10f, 0.10f, 0.12f, 1.0f};
+    int             applied_shadow_request_ = -1;
 };
 
 }  // namespace rav

@@ -246,6 +246,86 @@ int main()
         CHECK(VideoShotFirstFrame(moved, 30.0) == 46);
     }
 
+    // Spec 11-fb-10: the current shot by first frame, and the playhead's frame time.
+    {
+        const double fps = 60.0;
+        const double cut2 = VideoCutTime(2.0, fps);                       // shot 2: first frame 120, point at 119.5 / 60
+        CHECK(Near(cut2, 119.5 / 60.0));
+        const std::vector<double> times = {0.0, cut2};
+        // Shot list click: the seek lands on the first frame, which is shot 2.
+        const double seek = VideoShotFirstFrameTime(cut2, fps);
+        CHECK(Near(seek, 2.0));
+        CHECK(VideoCurrentShotIndex(times, seek, fps, 0.0005) == 1);
+        // Scrub across: changes exactly at 2.0 s (frame 120).
+        CHECK(VideoCurrentShotIndex(times, 1.99, fps, 0.0005) == 0);
+        CHECK(VideoCurrentShotIndex(times, 2.0, fps, 0.0005) == 1);
+        CHECK(VideoCurrentShotIndex(times, 2.0 - 1e-12, fps, 0.0005) == 1);  // float error on the frame start
+        // Half-frame window: past the point (1.9917), still shot 1, camera of frame 119.
+        CHECK(VideoCurrentShotIndex(times, 1.995, fps, 0.0005) == 0);
+        CHECK(VideoCurrentShotIndex(times, cut2 + 1e-6, fps, 0.0005) == 0);
+        CHECK(Near(VideoPlayheadFrameTime(1.995, fps), 119.0 / 60.0));
+        CHECK(VideoPlayheadFrameTime(1.995, fps) < cut2);                  // envelopes read before the point
+        CHECK(Near(VideoPlayheadFrameTime(2.0, fps), 2.0));
+        CHECK(Near(VideoPlayheadFrameTime(2.0 - 1e-12, fps), 2.0));
+        CHECK(Near(VideoPlayheadFrameTime(2.012, fps), 2.0));
+        CHECK(Near(VideoPlayheadFrameTime(-1.0, fps), 0.0));
+        // A negative or non-finite playhead reads frame 0, fps known or not.
+        CHECK(VideoPlayheadFrameTime(-1.0, 0.0) == 0.0);
+        CHECK(VideoPlayheadFrameTime(std::nan(""), fps) == 0.0);
+        CHECK(VideoPlayheadFrameTime(std::nan(""), 0.0) == 0.0);
+        CHECK(VideoPlayheadFrameTime(INFINITY, fps) == 0.0);
+        CHECK(VideoPlayheadFrameTime(-INFINITY, 0.0) == 0.0);
+        CHECK(Near(VideoPlayheadFrameTime(1.995, std::nan("")), 1.995));   // NaN fps: unknown
+        // fps unknown: envelope times within the tolerance, raw playhead.
+        CHECK(VideoCurrentShotIndex(times, 1.995, 0.0, 0.0005) == 1);
+        CHECK(VideoCurrentShotIndex(times, cut2 - 0.0004, 0.0, 0.0005) == 1);
+        CHECK(VideoCurrentShotIndex(times, cut2 - 0.001, 0.0, 0.0005) == 0);
+        CHECK(Near(VideoPlayheadFrameTime(1.995, 0.0), 1.995));
+        // Before every shot: the first one. None: -1.
+        CHECK(VideoCurrentShotIndex({1.0, 2.0}, 0.5, fps, 0.0005) == 0);
+        CHECK(VideoCurrentShotIndex({}, 0.5, fps, 0.0005) == -1);
+        // A shot on frame 0 is current from 0.
+        CHECK(VideoCurrentShotIndex({0.0, VideoCutTime(1.0 / fps, fps)}, 0.0, fps, 0.0005) == 0);
+        CHECK(VideoCurrentShotIndex({0.0, VideoCutTime(1.0 / fps, fps)}, 1.0 / fps, fps, 0.0005) == 1);
+    }
+
+    // Spec 11-fb-10: NTSC rates over long projects. A cut at frame k: the shot list seeks to
+    // frame k, and the shot is current there (and not one frame before).
+    {
+        const double rates[] = {30000.0 / 1001.0, 24000.0 / 1001.0};
+        for (double fps : rates) {
+            int bad = 0;
+            for (long long k = 1; k <= 1000000; k += 997) {
+                const double playhead = static_cast<double>(k) / fps;
+                const double cut = VideoCutTime(playhead, fps);
+                const double seek = VideoShotFirstFrameTime(cut, fps);
+                const std::vector<double> times = {0.0, cut};
+                if (VideoFrameIndexAt(seek, fps) != k) ++bad;
+                if (VideoCurrentShotIndex(times, seek, fps, 0.0005) != 1) ++bad;
+                if (VideoCurrentShotIndex(times, static_cast<double>(k - 1) / fps, fps, 0.0005) != 0) ++bad;
+            }
+            CHECK(bad == 0);
+        }
+    }
+
+    // Spec 11-fb-10: a junction dragged to frame k starts the moved shot on frame k, where
+    // the shot list seeks and where it becomes current.
+    {
+        const double rates[] = {60.0, 30000.0 / 1001.0, 24000.0 / 1001.0};
+        for (double fps : rates) {
+            int bad = 0;
+            for (long long k = 2; k <= 1000000; k += 1009) {
+                const double prev = 0.0;
+                const double next = static_cast<double>(k + 10) / fps;
+                const double moved = VideoJunctionDragTime(static_cast<double>(k) / fps, prev, next, fps);
+                if (!Near(VideoShotFirstFrameTime(moved, fps), static_cast<double>(k) / fps)) ++bad;
+                const std::vector<double> times = {prev, moved, next};
+                if (VideoCurrentShotIndex(times, static_cast<double>(k) / fps, fps, 0.0005) != 1) ++bad;
+            }
+            CHECK(bad == 0);
+        }
+    }
+
     std::printf(g_fails ? "FAILED %d\n" : "ALL PASS\n", g_fails);
     return g_fails != 0 ? 1 : 0;
 }

@@ -62,7 +62,7 @@ struct Cmd {
     CmdKind     kind = CmdKind::WriteShot;
     MediaTrack* track = nullptr;
     int         fx = -1;
-    double      shot_time = 0.0;
+    double      shot_time = 0.0;  // a shot's envelope time; Cut: the raw playhead
     double      values[vcam::kParamCount] = {};
     bool        flag = false;
     std::string text;
@@ -354,6 +354,8 @@ void SetNotice(const char* text)
 
 // A Cut shot at the playhead holding the camera shown there (video_shot_timing.h says
 // where its points go), one undo point. Refused when a shot already starts on that frame.
+// c.shot_time is the raw playhead here (not a shot's envelope time as for the other
+// commands): the points go at VideoCutTime of it and the camera is read at its frame time.
 void RunCut(const Cmd& c)
 {
     if (!FxValid(c.track, c.fx)) return;
@@ -369,7 +371,7 @@ void RunCut(const Cmd& c)
     shot.time = VideoCutTime(c.shot_time, c.fps);
     shot.move_to_next = false;
     shot.name.clear();  // automatic "Shot N"
-    ReadVideoCameraAt(c.track, c.fx, c.shot_time, shot.values);
+    ReadVideoCameraAt(c.track, c.fx, VideoPlayheadFrameTime(c.shot_time, c.fps), shot.values);  // as Video view shows it
 
     Undo_BeginBlock2(nullptr);
     const bool ok = WriteVideoShot(c.track, c.fx, shot);
@@ -660,7 +662,9 @@ void VideoViewFrame(MediaTrack* item_track, bool has_item, bool has_model, const
     GetSet_LoopTimeRange2(nullptr, false, true, &g_loop_start, &g_loop_end, false);
     g_looping = GetSetRepeat(-1) == 1 && g_loop_end > g_loop_start;
     g_playrate = Master_GetPlayRate(nullptr);
-    g_shot_index = VideoShotIndexAt(g_model.shots, g_playhead);
+    // Spec 11-fb-10: a shot starts at its first frame (where the strip draws its line and a
+    // click in the shot list seeks), not at its envelope points half a frame earlier.
+    g_shot_index = VideoCurrentShotIndex(g_model.shots, g_playhead, g_model.fps);
     UpdateStripRange();
 
     // A wheel gesture that went quiet becomes one undo point.
@@ -676,7 +680,8 @@ void VideoViewFrame(MediaTrack* item_track, bool has_item, bool has_model, const
 
     if (VideoViewCanEdit()) {
         double v[vcam::kParamCount];
-        ReadVideoCameraAt(g_model.track, g_model.fx, g_playhead, v);
+        // The camera of the frame the playhead is in: what REAPER renders there (fps unknown: the playhead).
+        ReadVideoCameraAt(g_model.track, g_model.fx, VideoPlayheadFrameTime(g_playhead, g_model.fps), v);
         g_frame_cam = VideoCameraFromValues(v, g_min, g_max);
         g_frame_cam_valid = true;
     } else {

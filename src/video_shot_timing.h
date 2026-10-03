@@ -7,7 +7,7 @@
 // fall one frame early or late depending on how REAPER rounds that time. So a cut made
 // at the playhead goes half a frame before the frame the playhead is in: frame k is the
 // first frame of the new shot whatever the rounding, and Video view (which evaluates the
-// envelopes at the playhead) shows the new shot at once.
+// envelopes at the playhead's frame time, VideoPlayheadFrameTime) shows the new shot at once.
 
 #pragma once
 
@@ -52,6 +52,53 @@ inline long long VideoShotFirstFrame(double shot_time, double fps)
 {
     if (!(fps > 0.0) || !std::isfinite(shot_time) || shot_time <= 0.0) return 0;
     return static_cast<long long>(std::ceil(shot_time * fps - 1e-6));
+}
+
+// Spec 11-fb-10: a shot starts at its first frame, everywhere in Video view. The current
+// shot is the one whose first frame is at or before the frame the playhead is in, so it
+// changes exactly where the strip draws the line (the first frame), not half a frame early
+// at the envelope points. When two shots share one first frame the later one is current
+// (the earlier one cannot be reached; this only happens when the project fps changed after
+// the cuts were made). fps unknown (<= 0 or NaN): the shot times themselves, within
+// `tolerance` seconds (the envelope rule); `tolerance` is only used then. `count` shots,
+// `time_of(i)` the start time of shot i, ascending. -1 when there is none; a playhead
+// before every shot is in the first one.
+template <class TimeOf>
+inline int VideoCurrentShotIndexOf(std::size_t count, TimeOf time_of, double playhead, double fps,
+                                   double tolerance)
+{
+    if (count == 0) return -1;
+    int idx = 0;
+    if (!(fps > 0.0)) {
+        for (std::size_t i = 0; i < count; ++i) {
+            if (time_of(i) <= playhead + tolerance) idx = static_cast<int>(i);
+        }
+        return idx;
+    }
+    const long long k = VideoFrameIndexAt(playhead, fps);
+    for (std::size_t i = 0; i < count; ++i) {
+        if (VideoShotFirstFrame(time_of(i), fps) <= k) idx = static_cast<int>(i);
+    }
+    return idx;
+}
+
+// VideoCurrentShotIndexOf over a list of shot start times (video_shots.h has the overload
+// taking the shots themselves).
+inline int VideoCurrentShotIndex(const std::vector<double>& shot_times, double playhead, double fps,
+                                 double tolerance)
+{
+    return VideoCurrentShotIndexOf(
+        shot_times.size(), [&](std::size_t i) { return shot_times[i]; }, playhead, fps, tolerance);
+}
+
+// The time of the frame the playhead is in (frame / fps): where Video view evaluates the
+// envelopes, so it shows the camera REAPER renders for that position (spec 11-fb-10).
+// fps unknown (<= 0 or NaN): the playhead itself. A negative or non-finite playhead: 0.
+inline double VideoPlayheadFrameTime(double playhead, double fps)
+{
+    if (!std::isfinite(playhead) || playhead <= 0.0) return 0.0;
+    if (!(fps > 0.0)) return playhead;
+    return static_cast<double>(VideoFrameIndexAt(playhead, fps)) / fps;
 }
 
 // Where a junction dragged in the shot strip puts the later shot (Epic 11, feedback 2).

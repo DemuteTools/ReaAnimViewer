@@ -820,14 +820,18 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
             const double t_max = r.end - std::min(1.0e-3, span * 0.5);
             const bool snap = s_snap && ruler_step > 0.0;
 
+            // Spec 11-fb-10: a shot starts at its first frame. Its line is drawn (and grabbed)
+            // there, not at its envelope points half a frame earlier. fps unknown: the shot time.
+            auto first_of = [&](double shot_time) { return VideoShotFirstFrameTime(shot_time, m.fps); };
             // The junction within the grab distance of x: the start of shot i >= 1, drawn inside the lane.
             auto junction_at = [&](float px) {
                 int best = -1;
                 float best_d = kJunctionGrabPx;
                 for (int i = 1; i < n; ++i) {
                     const VideoShot& s = m.shots[static_cast<size_t>(i)];
-                    if (s.implicit || !(s.time > r.start && s.time < r.end)) continue;
-                    const float d = std::fabs(px - x_of(s.time));
+                    const double drawn = first_of(s.time);
+                    if (s.implicit || !(drawn > r.start && drawn < r.end)) continue;
+                    const float d = std::fabs(px - x_of(drawn));
                     if (d <= best_d) {
                         best_d = d;
                         best = i;
@@ -878,13 +882,13 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
             }
             const bool junction_drag = lane_active && s_junction >= 0;
 
-            // Shot starts as drawn: the dragged one at its snapped time.
+            // Shot starts as drawn: at their first frames, the dragged one at its snapped time's.
             std::vector<double> times(static_cast<size_t>(n));
-            for (int i = 0; i < n; ++i) times[static_cast<size_t>(i)] = m.shots[static_cast<size_t>(i)].time;
+            for (int i = 0; i < n; ++i) times[static_cast<size_t>(i)] = first_of(m.shots[static_cast<size_t>(i)].time);
             // The highlight stays on the shot Video view shows (its camera does not change before
             // the release writes the move).
             const int current = VideoViewShotIndex();
-            if (junction_drag) times[static_cast<size_t>(s_junction)] = s_junction_time;
+            if (junction_drag) times[static_cast<size_t>(s_junction)] = first_of(s_junction_time);
 
             dl->PushClipRect(l0, l1, true);
             for (int i = 0; i < n; ++i) {
@@ -915,7 +919,7 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                 }
             }
             if (junction_drag) {  // the dragged junction, over the segment edges
-                const float jx = x_of(s_junction_time);
+                const float jx = x_of(first_of(s_junction_time));
                 dl->AddLine(ImVec2(jx, l0.y), ImVec2(jx, l1.y), ui::kAccent, 2.0f);
             }
             if (playhead >= r.start && playhead <= r.end) {
@@ -957,7 +961,8 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
             // like a click in the panel's shot list. After the scrub: the last seek queued wins.
             // A shot that started before the item: its first frame inside the item.
             if (lane_hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && junction_at(mx) < 0) {
-                const int shot = VideoShotIndexAt(m.shots, t_mouse);
+                // The shot whose first frame is at or before the frame under the mouse (as drawn).
+                const int shot = VideoCurrentShotIndex(m.shots, t_mouse, m.fps);
                 if (shot >= 0) {
                     const double first = std::max(VideoShotFirstFrameTime(m.shots[static_cast<size_t>(shot)].time, m.fps),
                                                   VideoShotFirstFrameTime(r.start, m.fps));

@@ -62,9 +62,11 @@ bool WriteVideoFxMeta(MediaTrack* track, int fx, const VideoFxState& meta);
 // The shots in time order (at least one).
 std::vector<VideoShot> ReadVideoShots(MediaTrack* track, int fx);
 
-// Index of the shot that holds time t (the last one starting at or before t, else 0;
-// -1 when `shots` is empty).
-int VideoShotIndexAt(const std::vector<VideoShot>& shots, double t);
+// The current shot at the playhead (spec 11-fb-10): the last one whose first frame is at
+// or before the playhead's frame; fps unknown (<= 0 or NaN): the last one starting within
+// kVideoShotTimeTolerance of the playhead or before. Else 0; -1 when `shots` is empty.
+// video_shot_timing.h VideoCurrentShotIndexOf has the rule.
+int VideoCurrentShotIndex(const std::vector<VideoShot>& shots, double playhead, double fps);
 
 // The six camera values the envelopes give at time t (what REAPER renders at t).
 void ReadVideoCameraAt(MediaTrack* track, int fx, double t, double out[vcam::kParamCount]);

@@ -5,7 +5,7 @@
 //
 // Video view shows what the RAV video FX renders: the FX track's item at the playhead,
 // seen through the FX's camera, which is the six camera envelopes evaluated at the
-// playhead (video_shots.h ReadVideoCameraAt), decoded on the displayed model's posed
+// playhead's frame time (video_shot_timing.h VideoPlayheadFrameTime, video_shots.h ReadVideoCameraAt), decoded on the displayed model's posed
 // bounds (video_camera.h), exactly what the FX decodes from REAPER's parmlist. The
 // viewer's free camera is never touched: Video view has its own camera.
 //

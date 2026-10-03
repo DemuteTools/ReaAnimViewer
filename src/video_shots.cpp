@@ -14,6 +14,7 @@
 
 #include "console_log.h"
 #include "video_fx_track.h"
+#include "video_shot_timing.h"
 
 namespace rav {
 namespace {
@@ -352,14 +353,10 @@ std::vector<VideoShot> ReadVideoShots(MediaTrack* track, int fx)
     return shots;
 }
 
-int VideoShotIndexAt(const std::vector<VideoShot>& shots, double t)
+int VideoCurrentShotIndex(const std::vector<VideoShot>& shots, double playhead, double fps)
 {
-    if (shots.empty()) return -1;
-    int idx = 0;
-    for (size_t i = 0; i < shots.size(); ++i) {
-        if (shots[i].time <= t + kVideoShotTimeTolerance) idx = static_cast<int>(i);
-    }
-    return idx;
+    return VideoCurrentShotIndexOf(
+        shots.size(), [&](size_t i) { return shots[i].time; }, playhead, fps, kVideoShotTimeTolerance);
 }
 
 void ReadVideoCameraAt(MediaTrack* track, int fx, double t, double out[vcam::kParamCount])
@@ -616,6 +613,16 @@ void ShowVideoShotsOfSelectedTrack()
     ShowMessageBox(text.c_str(), "RAV: Video FX shots", 0);
 }
 
+namespace {
+// The project frame rate, 0 when unknown (the same source as Video view's model fps).
+double ProjectFps()
+{
+    bool drop = false;
+    const double fps = TimeMap_curFrameRate(nullptr, &drop);
+    return (std::isfinite(fps) && fps > 0.0) ? fps : 0.0;
+}
+}  // namespace
+
 void AddVideoShotAtEditCursor()
 {
     MediaTrack* track = nullptr;
@@ -626,23 +633,26 @@ void AddVideoShotAtEditCursor()
         return;
     }
     const double t = std::max(0.0, GetCursorPositionEx(nullptr));
+    const double fps = ProjectFps();
 
+    // Like a cut in Video view (spec 11-fb-10): the shot's points go half a frame before
+    // the cursor's frame, and it holds the camera of that frame (fps unknown: the cursor).
     VideoShot shot;
-    shot.time = t;
+    shot.time = VideoCutTime(t, fps);
     shot.move_to_next = false;
-    ReadVideoCameraAt(track, fx, t, shot.values);
+    ReadVideoCameraAt(track, fx, VideoPlayheadFrameTime(t, fps), shot.values);
 
     // Suggested name: the shot's own name when one is already there, else "Shot N".
     const std::vector<VideoShot> shots = ReadVideoShots(track, fx);
     int position = 1;
     std::string existing;
     for (const VideoShot& s : shots) {
-        if (std::fabs(s.time - t) <= kVideoShotTimeTolerance) {
+        if (std::fabs(s.time - shot.time) <= kVideoShotTimeTolerance) {
             existing = s.name;
             shot.move_to_next = s.move_to_next;  // re-adding (renaming) a shot keeps its transition
             break;
         }
-        if (s.time < t) ++position;
+        if (s.time < shot.time) ++position;
     }
     char suggested[160];
     if (!existing.empty()) {
@@ -720,7 +730,8 @@ void SetVideoOutputAndAngleOfSelectedTrack()
     bool ok = SetVideoOutputOverride(track, fx, width, height);
     if (ok && !angle_name.empty()) {
         double values[vcam::kParamCount];
-        ReadVideoCameraAt(track, fx, std::max(0.0, GetCursorPositionEx(nullptr)), values);
+        // The camera of the cursor's frame, as Video view shows it (spec 11-fb-10).
+        ReadVideoCameraAt(track, fx, VideoPlayheadFrameTime(GetCursorPositionEx(nullptr), ProjectFps()), values);
         ok = SaveVideoAngle(track, fx, angle_name, values);
     }
     Undo_EndBlock2(nullptr, "RAV: Set video FX output size / save angle", UNDO_STATE_FX);

@@ -199,6 +199,94 @@ inline long long VideoRulerStepFrames(double step_s, double fps)
     return std::max(1LL, n);
 }
 
+// The ruler's minor (unlabelled) tick step, in seconds, under the labelled step `step_s`
+// (spec 11-fb-9): the finest "nice" step that divides the labelled step, is finer than it and
+// keeps ticks at least `min_px` apart (min_px <= 0 or NaN: 1 px). Known fps, under a second:
+// a frame count that divides the rounded fps (30 fps: 1, 2, 3, 5, 6, 10, 15 frames, never 4),
+// so every whole second stays a tick and the ticks share the labelled ticks' frame grid; one
+// tick per frame when zoomed in. A second and up: 1, 2, 5, 10, 15, 30 s, 1, 2, 5, 10, 15,
+// 30 min, 1, 2, 5, 10 h (whole nominal seconds). fps unknown: 0.2 s, then the same seconds.
+// 0: no minor ticks (nothing fits, no step, or an absurd span).
+inline double VideoRulerMinorStep(double step_s, double span_s, double lane_px, double fps, double min_px)
+{
+    if (!(step_s > 0.0) || !std::isfinite(step_s)) return 0.0;
+    if (!(span_s > 0.0) || !(lane_px > 0.0) || !std::isfinite(span_s) || !std::isfinite(lane_px)) return 0.0;
+    if (!(min_px > 0.0) || !std::isfinite(min_px)) min_px = 1.0;
+    const double px_per_s = lane_px / span_s;
+    if (!(px_per_s > 0.0) || !std::isfinite(px_per_s)) return 0.0;
+    static const double kNiceSeconds[] = {1.0,   2.0,    5.0,    10.0,   15.0,   30.0,    60.0,   120.0,
+                                          300.0, 600.0,  900.0,  1800.0, 3600.0, 7200.0,  18000.0, 36000.0};
+    const long long ifps = VideoRulerFps(fps);
+    if (ifps > 0) {
+        // Absurd spans (frame counts near overflow): no minor ticks.
+        if (step_s * static_cast<double>(ifps) > 1.0e15) return 0.0;
+        const long long sf = VideoRulerStepFrames(step_s, fps);
+        if (sf <= 1) return 0.0;
+        const double px_per_frame = px_per_s / fps;
+        // Under a second: the smallest divisor d of ifps (d < ifps) that divides sf, is finer
+        // than it and fits (divisors in pairs up to sqrt(ifps)).
+        long long best = 0;
+        auto consider = [&](long long d) {
+            if (d >= ifps || d >= sf || sf % d != 0) return;
+            if (static_cast<double>(d) * px_per_frame < min_px - 1e-9) return;
+            if (best == 0 || d < best) best = d;
+        };
+        for (long long i = 1; i * i <= ifps; ++i) {
+            if (ifps % i != 0) continue;
+            consider(i);
+            consider(ifps / i);
+        }
+        if (best > 0) return static_cast<double>(best) / fps;
+        for (double c : kNiceSeconds) {
+            const long long cf = static_cast<long long>(c) * ifps;
+            if (cf >= sf) break;
+            if (sf % cf == 0 && c * px_per_s >= min_px - 1e-9) return c;
+        }
+        return 0.0;
+    }
+    if (step_s > 1.0e12) return 0.0;  // absurd span
+    auto divides = [&](double c) {
+        const double q = step_s / c;
+        return std::fabs(q - std::round(q)) < 1e-6;
+    };
+    if (0.2 < step_s - 1e-9 && divides(0.2) && 0.2 * px_per_s >= min_px - 1e-9) return 0.2;
+    for (double c : kNiceSeconds) {
+        if (c >= step_s - 1e-9) break;
+        if (divides(c) && c * px_per_s >= min_px - 1e-9) return c;
+    }
+    return 0.0;
+}
+
+// The step Snap lands on (spec 11-fb-9): the finest graduation drawn, the minor step when
+// there are minor ticks, else the labelled step.
+inline double VideoRulerSnapStep(double step_s, double minor_s)
+{
+    return (minor_s > 0.0 && std::isfinite(minor_s)) ? minor_s : step_s;
+}
+
+// How many minor steps make one labelled step: minor tick k sits on a labelled tick when
+// k % count == 0 (those are not drawn twice). Known fps: whole frames; fps unknown: the
+// rounded ratio. 0 when there are no minor ticks, the minor step does not divide the
+// labelled step, or the count is absurd.
+inline long long VideoRulerMinorPerLabel(double step_s, double minor_s, double fps)
+{
+    if (!(step_s > 0.0) || !(minor_s > 0.0) || !std::isfinite(step_s) || !std::isfinite(minor_s)) return 0;
+    if (!(minor_s < step_s)) return 0;
+    const double ratio = step_s / minor_s;
+    if (!(ratio < 1.0e9)) return 0;
+    const long long ifps = VideoRulerFps(fps);
+    if (ifps > 0) {
+        if (step_s * static_cast<double>(ifps) > 1.0e15) return 0;
+        const long long sf = VideoRulerStepFrames(step_s, fps);
+        const long long mf = VideoRulerStepFrames(minor_s, fps);
+        if (mf <= 0 || sf <= mf || sf % mf != 0) return 0;
+        return sf / mf;
+    }
+    const long long n = std::llround(ratio);
+    if (n <= 1 || std::fabs(ratio - static_cast<double>(n)) > 1e-6) return 0;
+    return n;
+}
+
 // The time of ruler tick k (k >= 0) for an item starting at `origin`: frame
 // F0 + k * step_frames at F / fps, or origin + k * step when the fps is unknown.
 inline double VideoRulerTickTime(long long k, double origin, double step_s, double fps)

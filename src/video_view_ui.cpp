@@ -747,12 +747,19 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const double playhead = VideoViewPlayhead();
         const float lane_h = 24.0f;
-        // Spec 11-fb-6: a seconds / frames ruler over the lane, in a smaller muted font.
+        // Spec 11-fb-6 / 11-fb-9: a seconds / frames ruler over the lane, its labels at the full
+        // font size, over a row of tick room at the bottom of the band for the minor ticks.
         ImFont* const ruler_font = ImGui::GetFont();
+        constexpr float kRulerTickRoom = 6.0f;      // band height under the labels (minor ticks)
+        constexpr float kRulerMinorTickH = 4.0f;    // minor tick height: inside the tick room
+        constexpr float kRulerMinorMinPx = 4.0f;    // minor ticks at least this far apart
+        constexpr float kRulerLabelPad = 3.0f;      // label text starts this far right of its tick
+        constexpr float kRulerLabelGap = 12.0f;     // free space after the widest label
+        static_assert(kRulerMinorTickH <= kRulerTickRoom, "minor ticks stay under the labels");
         // The band is clamped so lane + ruler always fit the strip (a large font shrinks it).
-        const float ruler_h = std::max(0.0f, std::min(std::floor(ImGui::GetFontSize() * 0.85f) + 3.0f,
+        const float ruler_h = std::max(0.0f, std::min(std::floor(ImGui::GetFontSize()) + kRulerTickRoom,
                                                       ImGui::GetContentRegionAvail().y - lane_h));
-        const float ruler_fs = ruler_h - 3.0f;
+        const float ruler_fs = ruler_h - kRulerTickRoom;
         const float avail = ImGui::GetContentRegionAvail().x;
         const float top = ImGui::GetCursorScreenPos().y +
                           std::max(0.0f, (ImGui::GetContentRegionAvail().y - lane_h - ruler_h) * 0.5f) + ruler_h;
@@ -812,9 +819,27 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
             const float mx = ImGui::GetIO().MousePos.x;
             const double f = std::min(1.0, std::max(0.0, static_cast<double>((mx - l0.x) / lane_w)));
             const double t_mouse = r.start + f * span;
-            // The ruler's step (labelled ticks >= ~60 px apart). Ticks count whole frames from the
-            // item's first frame (VideoRulerTickTime); fps unknown: seconds from r.start.
-            ruler_step = VideoRulerStep(span, static_cast<double>(lane_w), m.fps, 60.0);
+            // The ruler's step: labelled ticks at least the widest label for this span apart (the
+            // longest seconds label, or a "+Nf" frame label), so full-size labels never collide.
+            // Ticks count whole frames from the item's first frame (VideoRulerTickTime); fps
+            // unknown: seconds from r.start.
+            float label_w;
+            {
+                const long long ifps = VideoRulerFps(m.fps);
+                char frame_label[32];
+                std::snprintf(frame_label, sizeof(frame_label), "+%lldf", ifps > 1 ? ifps - 1 : 0LL);
+                const char* sec_label = span >= 36000.0 ? "00:00:00" : span >= 3600.0 ? "0:00:00"
+                                      : span >= 600.0  ? "00:00"    : "0:00";
+                label_w = std::max(ImGui::CalcTextSize(sec_label).x,
+                                   ifps > 1 ? ImGui::CalcTextSize(frame_label).x : 0.0f);
+            }
+            ruler_step = VideoRulerStep(span, static_cast<double>(lane_w), m.fps,
+                                        static_cast<double>(kRulerLabelPad + label_w + kRulerLabelGap));
+            // Spec 11-fb-9: minor ticks under it, down to one per frame.
+            const double ruler_minor =
+                VideoRulerMinorStep(ruler_step, span, static_cast<double>(lane_w), m.fps, kRulerMinorMinPx);
+            // Snap lands on the finest graduation drawn.
+            const double snap_step = VideoRulerSnapStep(ruler_step, ruler_minor);
             // Just inside the item's end: at r.end a back-to-back next item would become the
             // strip's item, and a drag past the edge would walk item after item.
             const double t_max = r.end - std::min(1.0e-3, span * 0.5);
@@ -871,7 +896,7 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                     const double half = m.fps > 0.0 ? 0.5 / m.fps : 0.0;
                     double t = s_junction_orig + (t_mouse - s_junction_press_t) + half;
                     // Snap: the nearest tick's frame becomes the shot's first frame.
-                    if (snap) t = VideoRulerSnap(t, r.start, ruler_step, m.fps);
+                    if (snap) t = VideoRulerSnap(t, r.start, snap_step, m.fps);
                     const double snapped = VideoJunctionDragTime(t, m.shots[j - 1].time, next_limit, m.fps);
                     s_junction_time = std::isfinite(snapped) ? snapped : s_junction_orig;  // no room: stays
                 }
@@ -928,11 +953,26 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
             }
             dl->PopClipRect();
 
-            // The ruler (spec 11-fb-6): above the lane, in the item's time. Whole seconds read
-            // "0:02", frame ticks between them "+12f". Never over the shot names.
+            // The ruler (spec 11-fb-6 / 11-fb-9): above the lane, in the item's time. Whole seconds
+            // read "0:02", frame ticks between them "+12f", at the full font size. Never over the
+            // shot names.
             if (ruler_step > 0.0) {
                 const ImVec2 r0(l0.x, l0.y - ruler_h);
                 dl->PushClipRect(ImVec2(r0.x - 1.0f, r0.y), ImVec2(l1.x + 1.0f, l0.y), true);
+                // Minor ticks (spec 11-fb-9): short, in the tick room under the labels, and the
+                // faintest stroke; those on a labelled tick are skipped (same frame grid).
+                const long long per_label = VideoRulerMinorPerLabel(ruler_step, ruler_minor, m.fps);
+                if (per_label > 1) {
+                    const float minor_h = std::min(kRulerMinorTickH, ruler_h);
+                    for (long long k = 0; k <= 100000; ++k) {
+                        const double tick_t = VideoRulerTickTime(k, r.start, ruler_minor, m.fps);
+                        if (tick_t > r.end + 1e-9) break;
+                        if (k % per_label == 0) continue;  // a labelled tick
+                        const float tick_x = x_of(tick_t);
+                        dl->AddLine(ImVec2(tick_x + 0.5f, l0.y - minor_h), ImVec2(tick_x + 0.5f, l0.y),
+                                    ui::kStrokeStrong, 1.0f);
+                    }
+                }
                 for (long long k = 0; k <= 100000; ++k) {
                     const double tick_t = VideoRulerTickTime(k, r.start, ruler_step, m.fps);
                     if (tick_t > r.end + 1e-9) break;
@@ -940,10 +980,14 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                     char label[32];
                     VideoRulerTickLabel(k, ruler_step, m.fps, label, sizeof(label));
                     const bool major = VideoRulerTickIsMajor(k, ruler_step, m.fps);
-                    dl->AddLine(ImVec2(tick_x + 0.5f, l0.y - (major ? 5.0f : 3.0f)), ImVec2(tick_x + 0.5f, l0.y),
+                    // Labelled ticks rise past the minor ones and read brighter (minor kStrokeStrong <
+                    // frame kFaint < second kMuted on the dark surface): whole seconds the full band.
+                    const float tick_h = major ? ruler_h : std::max(3.0f, std::floor(ruler_h * 0.6f));
+                    dl->AddLine(ImVec2(tick_x + 0.5f, l0.y - tick_h), ImVec2(tick_x + 0.5f, l0.y),
                                 major ? ui::kMuted : ui::kFaint, 1.0f);
                     if (ruler_fs >= 6.0f) {
-                        dl->AddText(ruler_font, ruler_fs, ImVec2(tick_x + 3.0f, r0.y), major ? ui::kMuted : ui::kFaint,
+                        dl->AddText(ruler_font, ruler_fs, ImVec2(tick_x + kRulerLabelPad, r0.y),
+                                    major ? ui::kText : ui::kMuted,
                                     label);
                     }
                 }
@@ -953,7 +997,7 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
             if (lane_active && s_junction < 0 && !s_junction_dropped && !s_dblclick_hold) {  // a scrub: passes over junctions
                 static float s_last_mx = -1.0e9f;
                 // Snap: the nearest tick's frame (the frame a snapped junction lands on).
-                const double t_seek = snap ? VideoRulerSnap(t_mouse, r.start, ruler_step, m.fps) : t_mouse;
+                const double t_seek = snap ? VideoRulerSnap(t_mouse, r.start, snap_step, m.fps) : t_mouse;
                 if (lane_pressed || mx != s_last_mx) QueueVideoSeek(std::min(t_seek, t_max));
                 s_last_mx = mx;
             }

@@ -326,6 +326,149 @@ int main()
         }
     }
 
+    // Minor ticks (spec 11-fb-9): the finest frame step dividing the labelled step, >= 4 px.
+    {
+        // 60 fps, 1 s in 600 px (10 px a frame): labelled every 6 frames, a tick per frame.
+        const double step = VideoRulerStep(1.0, 600.0, 60.0, 60.0);
+        CHECK(VideoRulerStepFrames(step, 60.0) == 6);
+        CHECK(VideoRulerStepFrames(VideoRulerMinorStep(step, 1.0, 600.0, 60.0, 4.0), 60.0) == 1);
+    }
+    {
+        // 60 fps, 3 s in 600 px: a frame is 3.33 px (under 4 px), so 2 frames (6.67 px) under a
+        // 20-frame label step. With a 3 px floor it is one frame.
+        const double step = VideoRulerStep(3.0, 600.0, 60.0, 60.0);
+        CHECK(VideoRulerStepFrames(step, 60.0) == 20);
+        CHECK(VideoRulerStepFrames(VideoRulerMinorStep(step, 3.0, 600.0, 60.0, 4.0), 60.0) == 2);
+        CHECK(VideoRulerStepFrames(VideoRulerMinorStep(step, 3.0, 600.0, 60.0, 3.0), 60.0) == 1);
+    }
+    {
+        // 60 fps, 30 s in 600 px: labelled every 5 s (300 frames); 1 frame is 0.33 px, so the
+        // finest divisor of 60 that divides 300 and is >= 4 px: 12 frames (0.2 s, 4 px).
+        const double step = VideoRulerStep(30.0, 600.0, 60.0, 60.0);
+        CHECK(Near(step, 5.0));
+        const double minor = VideoRulerMinorStep(step, 30.0, 600.0, 60.0, 4.0);
+        CHECK(VideoRulerStepFrames(minor, 60.0) == 12);
+        CHECK(Near(minor, 12.0 / 60.0));
+    }
+    // 30 fps under a second: only divisors of 30 (1, 2, 3, 5, 6, 10, 15), never 4 frames.
+    // 1 s labelled in 600 px over 7.5 s: a frame is 2.67 px, 2 frames 5.3 px.
+    CHECK(VideoRulerStepFrames(VideoRulerMinorStep(1.0, 7.5, 600.0, 30.0, 4.0), 30.0) == 2);
+    // 27 s in 1000 px: a frame is 1.23 px, 3 frames 3.7 px (too close), 4 is not a divisor: 5.
+    CHECK(VideoRulerStepFrames(VideoRulerMinorStep(1.0, 27.0, 1000.0, 30.0, 4.0), 30.0) == 5);
+    // A minor step of a second or more is a nice whole-seconds step on the same frame grid:
+    // 60 fps, 1 h in 600 px is labelled every 10 min (36000 frames); 4 px = 24 s, so 30 s.
+    {
+        const double step = VideoRulerStep(3600.0, 600.0, 60.0, 60.0);
+        CHECK(Near(step, 600.0));
+        const double minor = VideoRulerMinorStep(step, 3600.0, 600.0, 60.0, 4.0);
+        CHECK(Near(minor, 30.0) && VideoRulerStepFrames(minor, 60.0) == 30 * 60);
+    }
+    // The nice divisors a minor step may take (seconds), and a brute-force reference: the
+    // smallest nice divisor of the labelled step (frames) that is finer and >= min_px.
+    auto nice_minor_ref = [](double step, double span, double lane, double fps, double min_px) -> long long {
+        const long long ifps = VideoRulerFps(fps);
+        const long long sf = VideoRulerStepFrames(step, fps);
+        const double ppf = lane / span / fps;
+        for (long long d = 1; d < ifps; ++d) {
+            if (ifps % d == 0 && d < sf && sf % d == 0 && d * ppf >= min_px - 1e-9) return d;
+        }
+        for (long long c : {1LL, 2LL, 5LL, 10LL, 15LL, 30LL, 60LL, 120LL, 300LL, 600LL, 900LL, 1800LL, 3600LL,
+                            7200LL, 18000LL, 36000LL}) {
+            const long long cf = c * ifps;
+            if (cf < sf && sf % cf == 0 && cf * ppf >= min_px - 1e-9) return cf;
+        }
+        return 0;
+    };
+    // Every minor step divides the labelled step, is finer, keeps 4 px, is nice (under a second:
+    // divides the rounded fps; else whole nice seconds), and exists wherever a nice divisor does.
+    // Minor ticks land on labelled ticks; none doubles a labelled tick between them.
+    {
+        int checked = 0;
+        int with_minor = 0;
+        for (double span : {0.2, 1.0, 3.0, 7.5, 17.0, 120.0, 900.0, 3600.0, 7200.0, 86400.0}) {
+            for (double lane : {300.0, 600.0, 1700.0}) {
+                for (double fps : {23.976, 24.0, 25.0, 29.97, 30.0, 50.0, 59.94, 60.0}) {
+                    const double step = VideoRulerStep(span, lane, fps, 60.0);
+                    const double minor = VideoRulerMinorStep(step, span, lane, fps, 4.0);
+                    const long long sf = VideoRulerStepFrames(step, fps);
+                    const long long ref = nice_minor_ref(step, span, lane, fps, 4.0);
+                    ++checked;
+                    CHECK((minor > 0.0) == (ref > 0));
+                    if (minor <= 0.0) continue;
+                    ++with_minor;
+                    const long long ifps = VideoRulerFps(fps);
+                    const long long mf = VideoRulerStepFrames(minor, fps);
+                    CHECK(mf == ref);
+                    CHECK(mf > 0 && mf < sf && sf % mf == 0);
+                    CHECK(mf < ifps ? ifps % mf == 0 : mf % ifps == 0);
+                    CHECK(static_cast<double>(mf) / fps * lane / span >= 4.0 - 1e-6);
+                    const long long per = VideoRulerMinorPerLabel(step, minor, fps);
+                    CHECK(per == sf / mf && per > 1);
+                    CHECK(Near(VideoRulerTickTime(per, 0.51, minor, fps), VideoRulerTickTime(1, 0.51, step, fps)));
+                    // Minor tick k is a labelled tick exactly when k % per == 0.
+                    for (long long k = 0; k <= 2 * per; ++k) {
+                        const double tk = VideoRulerTickTime(k, 0.51, minor, fps);
+                        const long long kl = VideoRulerNearestTick(tk, 0.51, step, fps);
+                        const bool on_label = Near(VideoRulerTickTime(kl, 0.51, step, fps), tk);
+                        CHECK(on_label == (k % per == 0));
+                    }
+                }
+            }
+        }
+        CHECK(checked == 10 * 3 * 8);
+        CHECK(with_minor >= 150);  // the loop is not vacuous
+    }
+    // fps unknown: 0.2 s, then the nice seconds, finer than and dividing the labelled step.
+    CHECK(Near(VideoRulerMinorStep(1.0, 3.0, 600.0, 0.0, 4.0), 0.2));      // 40 px
+    CHECK(Near(VideoRulerMinorStep(5.0, 30.0, 300.0, 0.0, 4.0), 1.0));      // 0.2 s = 2 px: 1 s = 10 px
+    CHECK(Near(VideoRulerMinorStep(600.0, 3600.0, 600.0, 0.0, 4.0), 30.0)); // zoomed out: still minor ticks
+    CHECK(VideoRulerMinorStep(1.0, 600.0, 600.0, 0.0, 4.0) == 0.0);         // 0.2 s = 0.2 px: none
+    CHECK(VideoRulerMinorPerLabel(1.0, 0.2, 0.0) == 5);
+    CHECK(VideoRulerMinorPerLabel(600.0, 30.0, 0.0) == 20);
+    CHECK(Near(VideoRulerSnap(1.13, 0.0, 0.2, 0.0), 1.2));
+    // Labelled step of one frame: nothing finer.
+    CHECK(VideoRulerMinorStep(1.0 / 60.0, 0.1, 1200.0, 60.0, 4.0) == 0.0);
+    CHECK(VideoRulerMinorStep(0.0, 3.0, 600.0, 60.0, 4.0) == 0.0);          // no labelled step
+    // Bad inputs: NaN / inf span or lane, no minor ticks; min_px <= 0 or NaN counts as 1 px.
+    CHECK(VideoRulerMinorStep(1.0, std::nan(""), 600.0, 60.0, 4.0) == 0.0);
+    CHECK(VideoRulerMinorStep(1.0, INFINITY, 600.0, 60.0, 4.0) == 0.0);
+    CHECK(VideoRulerMinorStep(1.0, 3.0, std::nan(""), 60.0, 4.0) == 0.0);
+    CHECK(VideoRulerMinorStep(1.0, 3.0, INFINITY, 60.0, 4.0) == 0.0);
+    CHECK(VideoRulerMinorStep(std::nan(""), 3.0, 600.0, 60.0, 4.0) == 0.0);
+    CHECK(VideoRulerMinorStep(INFINITY, 3.0, 600.0, 60.0, 4.0) == 0.0);
+    CHECK(Near(VideoRulerMinorStep(1.0, 3.0, 600.0, 60.0, 0.0), 1.0 / 60.0));
+    CHECK(Near(VideoRulerMinorStep(1.0, 3.0, 600.0, 60.0, -5.0), 1.0 / 60.0));
+    CHECK(Near(VideoRulerMinorStep(1.0, 3.0, 600.0, 60.0, std::nan("")), 1.0 / 60.0));
+    CHECK(VideoRulerMinorStep(1.0, 600.0, 600.0, 0.0, 0.0) == 0.0);           // 1 px floor: 0.2 s = 0.2 px
+    // Absurd spans: no minor ticks, no overflow.
+    CHECK(VideoRulerMinorStep(1.0e300, 1.0e300, 600.0, 60.0, 4.0) == 0.0);
+    CHECK(VideoRulerMinorStep(1.0e300, 1.0e300, 600.0, 0.0, 4.0) == 0.0);
+    CHECK(VideoRulerMinorStep(1.0e14, 1.0e15, 600.0, 60.0, 4.0) == 0.0);
+    CHECK(VideoRulerMinorPerLabel(1.0e300, 1.0, 60.0) == 0);
+    CHECK(VideoRulerMinorPerLabel(1.0, 1.0e-300, 0.0) == 0);
+    CHECK(VideoRulerMinorPerLabel(1.0, 0.0, 60.0) == 0);
+    CHECK(VideoRulerMinorPerLabel(1.0, 1.0, 60.0) == 0);                      // not finer
+    CHECK(VideoRulerMinorPerLabel(1.0, std::nan(""), 0.0) == 0);
+    CHECK(VideoRulerMinorPerLabel(1.0, 0.3, 0.0) == 0);                       // does not divide
+    // 29.97 / 23.976 at long spans: nominal-second minor steps on the labelled frame grid.
+    {
+        const double step = VideoRulerStep(7200.0, 600.0, 29.97, 60.0);
+        const double minor = VideoRulerMinorStep(step, 7200.0, 600.0, 29.97, 4.0);
+        CHECK(Near(step, 1800.0) && Near(minor, 60.0));                       // 30 min / 1 min (5 px)
+        CHECK(VideoRulerMinorPerLabel(step, minor, 29.97) == 30);
+        const double step2 = VideoRulerStep(86400.0, 600.0, 23.976, 60.0);
+        const double minor2 = VideoRulerMinorStep(step2, 86400.0, 600.0, 23.976, 4.0);
+        CHECK(VideoRulerStepFrames(step2, 23.976) % VideoRulerStepFrames(minor2, 23.976) == 0);
+        CHECK(minor2 >= 1.0 && minor2 < step2);
+    }
+    // Snap step: the minor step when there are minor ticks, else the labelled step.
+    CHECK(Near(VideoRulerSnapStep(1.0, 1.0 / 60.0), 1.0 / 60.0));
+    CHECK(Near(VideoRulerSnapStep(1.0, 0.0), 1.0));
+    CHECK(Near(VideoRulerSnapStep(1.0, std::nan("")), 1.0));
+    // Snap to the minor step lands on frames: 60 fps, item at 0.51 s (first frame 31).
+    CHECK(VideoFrameIndexAt(VideoRulerSnap(1.0, 0.51, VideoRulerSnapStep(1.0, 1.0 / 60.0), 60.0), 60.0) == 60);
+    CHECK(VideoFrameIndexAt(VideoRulerSnap(1.2, 0.51, VideoRulerSnapStep(1.0, 0.0), 60.0), 60.0) == 91);
+
     std::printf(g_fails ? "FAILED %d\n" : "ALL PASS\n", g_fails);
     return g_fails != 0 ? 1 : 0;
 }

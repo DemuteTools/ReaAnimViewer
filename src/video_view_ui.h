@@ -27,7 +27,11 @@ constexpr float kVideoCaptionGap = 5.0f;  // captions sit this far above the fra
 // Called before ImGui's frame starts (RenderVideoView): uses the font size of the last
 // frame, or 13 px when there is no context / font yet.
 float VideoTopBand();
-constexpr float kVideoStripHeight = 56.0f;  // Story 11-5: the shot strip under the viewport (lane + spec 11-fb-6 ruler band)
+// Story 11-5: the shot strip under the viewport. 2 x 6 px padding + the 24 px lane + the
+// spec 11-fb-9 ruler band (full-size labels, 13 px at the default font, + 6 px tick room)
+// = 55 px, with margin for a slightly larger font. A larger one shrinks the band (clamped in
+// DrawVideoShotStrip), never the lane.
+constexpr float kVideoStripHeight = 64.0f;
 constexpr float kVideoStripGap = 8.0f;      // its margin to the window's edges and the frame
 
 // Width the panel takes from the viewport (column + gaps), 0 when it is hidden.

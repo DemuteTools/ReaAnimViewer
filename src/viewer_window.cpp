@@ -473,8 +473,7 @@ void RenderVideoView(float anim_time)
 {
     const VideoViewModel& m = GetVideoViewModel();
     const float area_w = static_cast<float>(g_client_w) - VideoPanelFootprint(g_client_w);
-    g_video_frame = ComputeVideoFrameRect(area_w, ViewBottom(), VideoTopBand(),
-                                          kNavCubeSize + 2.0f * kNavCubeMargin, m.out_w, m.out_h);
+    g_video_frame = ComputeVideoFrameRect(area_w, ViewBottom(), VideoTopBand(), m.out_w, m.out_h);
     const int fx = static_cast<int>(g_video_frame.x);
     const int fw = static_cast<int>(g_video_frame.w);
     const int fh = static_cast<int>(g_video_frame.h);
@@ -857,10 +856,10 @@ void StatusIconWidget()
 // in its OWN frameless ImGui window in the SAME NewFrame/Render pair.
 //
 // Story 11-4 — the cube shows `cam` (the free camera in RAV view, the video camera in Video
-// view) and sits at the bottom-right of the view area (`right_x` = its right edge). In Video
-// view a click edits the shot under the playhead (queued, one undo point) instead of the
-// free camera.
-void NavCubeWidget(const OrbitCamera& cam, bool video, float right_x)
+// view) and sits at the bottom-right of the view area (`right_x`, `bottom_y` = its corner;
+// in Video view the frame's, over the picture). In Video view a click edits the shot under
+// the playhead (queued, one undo point) instead of the free camera.
+void NavCubeWidget(const OrbitCamera& cam, bool video, float right_x, float bottom_y)
 {
     // A plain solid cube — 6 flat axis-coloured faces on the unit cube ([-1,1]^3). The cube
     // looks smooth; only the hover HIGHLIGHT (drawn later) distinguishes face / edge / corner.
@@ -885,8 +884,7 @@ void NavCubeWidget(const OrbitCamera& cam, bool video, float right_x)
     // Bottom-right pivot (1,1) anchored to the live client size (current in WM_SIZE) — mirrors
     // the FPS read-out's right-edge pivot but pinned to the bottom-right corner.
     ImGui::SetNextWindowPos(
-        ImVec2(right_x - kNavCubeMargin,
-               ViewBottom() - kNavCubeMargin),  // Story 11-5: above the shot strip
+        ImVec2(right_x - kNavCubeMargin, bottom_y - kNavCubeMargin),  // Story 11-5: above the shot strip
         ImGuiCond_Always, ImVec2(1.0f, 1.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
     if (!ImGui::Begin("##navcube", nullptr, kFlags)) {
@@ -1297,10 +1295,12 @@ void DrawToolUi()
     // Story 11-4: in Video view it shows and edits the video camera, and is hidden when there
     // is no camera to edit (no active FX / no item).
     if (!video_view) {
-        NavCubeWidget(g_renderer.Camera(), /*video=*/false, area_right);
+        NavCubeWidget(g_renderer.Camera(), /*video=*/false, area_right, ViewBottom());
     } else {
+        // Over the picture's bottom-right corner: the frame keeps no room for it.
         OrbitCamera video_cam;
-        if (VideoViewCamera(&video_cam)) NavCubeWidget(video_cam, /*video=*/true, area_right);
+        if (VideoViewCamera(&video_cam))
+            NavCubeWidget(video_cam, /*video=*/true, g_video_frame.x + g_video_frame.w, g_video_frame.y + g_video_frame.h);
     }
 
     // Bottom-left status icon + its hover panel (re-shows the load message on demand).

@@ -1594,8 +1594,7 @@ void QueueVideoRenderCurrent()
     g_queue.push_back(std::move(c));
 }
 
-VideoFrameRect ComputeVideoFrameRect(float area_w, float area_h, float top_band, float cube_room, int out_w,
-                                     int out_h)
+VideoFrameRect ComputeVideoFrameRect(float area_w, float area_h, float top_band, int out_w, int out_h)
 {
     constexpr float kSide = 12.0f;
     constexpr float kBottom = 10.0f;
@@ -1612,33 +1611,12 @@ VideoFrameRect ComputeVideoFrameRect(float area_w, float area_h, float top_band,
         }
     };
 
-    // A: the ViewCube in a right column.
-    const float aw = area_w - 2.0f * kSide - cube_room;
+    const float aw = area_w - 2.0f * kSide;
     const float ah = area_h - top_band - kBottom;
-    float a_w = 0.0f;
-    float a_h = 0.0f;
-    fit(aw, ah, &a_w, &a_h);
-    // B: the ViewCube in a bottom band.
-    const float bw = area_w - 2.0f * kSide;
-    const float bh = area_h - top_band - cube_room;
-    float b_w = 0.0f;
-    float b_h = 0.0f;
-    fit(bw, bh, &b_w, &b_h);
-
     VideoFrameRect r;
-    if (a_w * a_h >= b_w * b_h) {
-        r.cube_right = true;
-        r.w = a_w;
-        r.h = a_h;
-        r.x = kSide + (std::max(aw, 1.0f) - a_w) * 0.5f;
-        r.y = top_band + (std::max(ah, 1.0f) - a_h) * 0.5f;
-    } else {
-        r.cube_right = false;
-        r.w = b_w;
-        r.h = b_h;
-        r.x = kSide + (std::max(bw, 1.0f) - b_w) * 0.5f;
-        r.y = top_band + (std::max(bh, 1.0f) - b_h) * 0.5f;
-    }
+    fit(aw, ah, &r.w, &r.h);
+    r.x = kSide + (std::max(aw, 1.0f) - r.w) * 0.5f;
+    r.y = top_band + (std::max(ah, 1.0f) - r.h) * 0.5f;
     r.x = std::floor(r.x);
     r.y = std::floor(r.y);
     r.w = std::max(1.0f, std::floor(r.w));

@@ -272,13 +272,10 @@ void QueueVideoRenderCurrent();
 // ---- Layout ---------------------------------------------------------------------------------
 struct VideoFrameRect {
     float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;  // the frame, in client pixels (top-left origin)
-    bool cube_right = true;                         // ViewCube in a right column (else a bottom band)
 };
-// The frame at the output aspect inside the area [0, area_w] x [0, area_h], below a
-// top band, leaving the ViewCube's corner free (right column or bottom band, whichever
-// gives the larger frame). Pure.
-VideoFrameRect ComputeVideoFrameRect(float area_w, float area_h, float top_band, float cube_room, int out_w,
-                                     int out_h);
+// The frame at the output aspect, as large as fits in the area [0, area_w] x [0, area_h]
+// below a top band. The ViewCube floats over its bottom-right corner (no room kept). Pure.
+VideoFrameRect ComputeVideoFrameRect(float area_w, float area_h, float top_band, int out_w, int out_h);
 
 }  // namespace rav
 

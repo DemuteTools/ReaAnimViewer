@@ -1183,7 +1183,7 @@ void DrawToolUi()
             ImGui::Indent(8.0f);
             bool ask = VideoAskBeforeDeleteShot();
             if (ImGui::Checkbox("Ask before deleting a shot", &ask)) SetVideoAskBeforeDeleteShot(ask);
-            if (ImGui::IsItemHovered())
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
                 ImGui::SetTooltip("The %s key in Video view deletes the current shot: ask first, or delete at once",
                                   ShortcutKeyLabel(kShortcutDeleteShot));
             ImGui::Unindent(8.0f);
@@ -1726,6 +1726,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (action == kShortcutCut) { QueueVideoCut(); return 0; }
         // Spec 11-fb-11 -- delete the current shot (Video view only), after a confirmation.
         if (action == kShortcutDeleteShot) { RequestVideoDeleteCurrentShot(); return 0; }
+        // The shot camera clipboard, on the current shot (Video view only).
+        if (action == kShortcutCopyCamera) { QueueVideoCopyShotCamera(-1); return 0; }
+        if (action == kShortcutPasteCamera) { QueueVideoPasteShotCamera(-1); return 0; }
         return 0;
     }
 

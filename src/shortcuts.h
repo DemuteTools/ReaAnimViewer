@@ -68,7 +68,9 @@ enum ShortcutId : int {
     kShortcutTogglePanel = 1,  // the Video panel (from RAV view it opens Video view with it)
     kShortcutCut         = 2,  // cut at the playhead (Video view only)
     kShortcutDeleteShot  = 3,  // delete the current shot, after a confirmation (Video view only, spec 11-fb-11)
-    kShortcutCount       = 4,
+    kShortcutCopyCamera  = 4,  // copy the current shot's camera (Video view only)
+    kShortcutPasteCamera = 5,  // paste it into the current shot (Video view only)
+    kShortcutCount       = 6,
 };
 
 inline const ShortcutDef kShortcutTable[kShortcutCount] = {
@@ -76,6 +78,8 @@ inline const ShortcutDef kShortcutTable[kShortcutCount] = {
     {"toggle_panel", "Show / hide the Video panel",  {'P', false, false, false}, ShortcutContext::Anywhere},
     {"cut",          "Cut at playhead",              {'C', false, false, false}, ShortcutContext::VideoView},
     {"delete_shot",  "Delete current shot",          {vk::kDelete, false, false, false}, ShortcutContext::VideoView},
+    {"copy_camera",  "Copy shot camera",             {'C', true, false, false}, ShortcutContext::VideoView},
+    {"paste_camera", "Paste shot camera",            {'V', true, false, false}, ShortcutContext::VideoView},
 };
 
 // The mouse gestures the popup lists (fixed, never rebindable), by group.

@@ -115,6 +115,9 @@ double    g_loop_end = 0.0;
 double    g_playrate = 1.0;   // project playrate
 int       g_shot_index = -1;
 
+bool   g_cam_copied = false;  // the shot camera clipboard (QueueVideoCopyShotCamera)
+double g_cam_copy[vcam::kParamCount] = {};
+
 bool        g_frame_cam_valid = false;
 OrbitCamera g_frame_cam;
 
@@ -1464,6 +1467,46 @@ void QueueVideoApplyAngle(int index)
     c.undo = "RAV: Apply saved angle";
     g_queue.push_back(std::move(c));
 }
+
+void QueueVideoCopyShotCamera(int index)
+{
+    if (index < 0) index = g_shot_index;
+    if (index < 0 || index >= static_cast<int>(g_model.shots.size())) return;
+    const VideoViewShot& s = g_model.shots[static_cast<size_t>(index)];
+    for (int p = 0; p < vcam::kParamCount; ++p) g_cam_copy[p] = s.values[p];
+    g_cam_copied = true;
+    SetNotice("Camera copied");
+}
+
+void QueueVideoPasteShotCamera(int index)
+{
+    if (!g_cam_copied) {
+        SetNotice("Copy a shot's camera first");
+        return;
+    }
+    if (index < 0) index = g_shot_index;
+    if (index < 0 || index >= static_cast<int>(g_model.shots.size())) return;
+    if (g_live.kind == Gesture::Zoom) QueueLiveWrite(UndoNameFor(Gesture::Zoom));  // a wheel gesture ends here
+    if (!VideoViewCanCut()) {
+        if (g_model.status != VideoFxStatus::Active) SetNotice("Needs an active video FX on this track");
+        else SetNotice("Finish the camera move first");
+        return;
+    }
+    const VideoViewShot& s = g_model.shots[static_cast<size_t>(index)];
+    Cmd c;
+    c.kind = CmdKind::WriteShot;
+    c.track = g_model.track;
+    c.fx = g_model.fx;
+    c.shot_time = s.time;
+    c.implicit = s.implicit;
+    c.fps = g_model.fps;
+    for (int p = 0; p < vcam::kParamCount; ++p) c.values[p] = g_cam_copy[p];
+    c.undo = "RAV: Paste camera into video shot";
+    g_queue.push_back(std::move(c));
+    SetNotice("Camera pasted");
+}
+
+bool VideoViewHasCopiedCamera() { return g_cam_copied; }
 
 void QueueVideoSaveAngle(const std::string& name)
 {

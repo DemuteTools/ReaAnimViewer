@@ -299,6 +299,14 @@ void ClipHeaderRow(int clip, float full)
 // start time, delete (not on a clip's first shot). A click moves the playhead to the shot; a
 // click on the Cut/Move tag switches it (spec 11-fb-11). Spec 11-fb-15: grouped by clip, one
 // header row per clip (timeline order), then its shots.
+// The right-click menu of a shot (shot list and strip): its camera into / from the clipboard.
+void ShotCameraMenuItems(int index)
+{
+    if (ImGui::MenuItem("Copy camera", ShortcutKeyLabel(kShortcutCopyCamera))) QueueVideoCopyShotCamera(index);
+    if (ImGui::MenuItem("Paste camera", ShortcutKeyLabel(kShortcutPasteCamera), false, VideoViewHasCopiedCamera()))
+        QueueVideoPasteShotCamera(index);
+}
+
 void ShotRows(const VideoViewModel& m, float full)
 {
     const int current = VideoViewShotIndex();
@@ -327,7 +335,13 @@ void ShotRows(const VideoViewModel& m, float full)
         const bool sel = (i == current);
         if (ImGui::Selectable("##shotrow", sel, ImGuiSelectableFlags_AllowOverlap, ImVec2(full, row_h)))
             QueueVideoSeekToShot(i);
-        if (ImGui::IsItemHovered() && !ImGui::IsAnyItemActive()) ImGui::SetTooltip("Move the playhead to this shot");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip) && !ImGui::IsAnyItemActive()) ImGui::SetTooltip("Move the playhead to this shot");
+        // Right-click: this shot's camera into / from the clipboard (Ctrl+C / Ctrl+V do the
+        // current shot).
+        if (ImGui::BeginPopupContextItem("##shotctx")) {
+            ShotCameraMenuItems(i);
+            ImGui::EndPopup();
+        }
         const ImVec2 a = ImGui::GetItemRectMin();
         const ImVec2 b = ImGui::GetItemRectMax();
         if (sel && scroll_to_current) {
@@ -349,7 +363,7 @@ void ShotRows(const VideoViewModel& m, float full)
         if (can_delete) {
             ImGui::SetCursorScreenPos(ImVec2(right - 22.0f, cy - 11.0f));
             if (ImGui::Button("x##del", ImVec2(22.0f, 22.0f))) QueueVideoDeleteShot(i);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Delete this shot");
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Delete this shot");
         }
         right -= 26.0f;  // same column with or without the button
         char tm[32];
@@ -364,12 +378,14 @@ void ShotRows(const VideoViewModel& m, float full)
         // Spec 11-fb-11: a click on the tag switches this shot between Cut and Move (spec
         // 11-fb-15: an implicit shot gets its point then).
         bool tag_hovered = false;
+        bool tag_tip = false;
         {
             ImGui::SetCursorScreenPos(ta);
             if (ImGui::InvisibleButton("##tag", ImVec2(tb.x - ta.x, tb.y - ta.y))) QueueVideoTransitionAt(i);
             tag_hovered = ImGui::IsItemHovered();
+            tag_tip = ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip);
         }
-        if (tag_hovered)
+        if (tag_tip)
             ImGui::SetTooltip("%s", s.move_to_next ? "Click: switch to Cut to next" : "Click: switch to Move to next");
         dl->AddRectFilled(ta, tb, tag_hovered ? ui::kHover : ui::kBg, (tb.y - ta.y) * 0.5f);
         dl->AddRect(ta, tb, tag_hovered ? ui::kStrokeStrong : ui::kStroke, (tb.y - ta.y) * 0.5f);
@@ -402,7 +418,7 @@ void CutAtPlayhead(float full)
     const char* cut_key = ShortcutKeyLabel(kShortcutCut);
     if (DashedButton("##cutpanel", "+ Cut at playhead", cut_key, full, 30.0f, can_cut)) QueueVideoCut();
     if (!can_cut) ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
         ImGui::SetTooltip("A new shot starts on the playhead's frame, with the camera shown there (%s in Video view)",
                           cut_key);
     NoticeLine();
@@ -442,7 +458,7 @@ void SavedAngles(const VideoViewModel& m, float full)
         if (!can_apply) ImGui::BeginDisabled();
         if (ImGui::Button(a.name.c_str(), ImVec2(w, chip_h))) QueueVideoApplyAngle(i);
         if (!can_apply) ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
             ImGui::SetTooltip("%.0f" RAV_DEG " yaw, %.0f" RAV_DEG " pitch, %.2f" RAV_TIMES "r\n"
                               "Click: apply to the shot under the playhead. Right-click: delete.",
                               vcam::DisplayFromNorm(vcam::kYaw, a.values[vcam::kYaw]),
@@ -481,6 +497,7 @@ void SavedAngles(const VideoViewModel& m, float full)
             ImGui::OpenPopup("##saveanglepop");
         }
         const bool hovered = ImGui::IsItemHovered();
+        const bool tip = ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip);
         if (!can_save) ImGui::EndDisabled();
         const ImVec2 p1(p0.x + w, p0.y + chip_h);
         if (hovered && can_save) dl->AddRectFilled(p0, p1, ui::kRaised, chip_h * 0.5f);
@@ -488,7 +505,7 @@ void SavedAngles(const VideoViewModel& m, float full)
         const ImVec2 ts = ImGui::CalcTextSize(label);
         dl->AddText(ImVec2(p0.x + (w - ts.x) * 0.5f, p0.y + (chip_h - ts.y) * 0.5f),
                     (hovered && can_save) ? ui::kText : ui::kMuted, label);
-        if (hovered) ImGui::SetTooltip("Save the camera of the shot under the playhead as an angle");
+        if (tip) ImGui::SetTooltip("Save the camera of the shot under the playhead as an angle");
     }
 
     if (ImGui::BeginPopup("##anglectx")) {
@@ -545,12 +562,12 @@ void RenderRow(float full)
     const float third = std::max(1.0f, std::floor((full - (count - 1) * kGap) / count));
     const float last = std::max(1.0f, full - (count - 1) * (third + kGap));
     if (ui::SolidButton("Matrix##render", ImVec2(third, 0.0f))) QueueVideoOpenRenderMatrix();  // same style as Render (Antho)
-    if (ImGui::IsItemHovered())
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
         ImGui::SetTooltip("REAPER's Region Render Matrix, at the Output size: tick regions, then render from "
                           "the Render dialog (Source: Region render matrix, a video format)");
     ImGui::SameLine(0.0f, kGap);
     if (ui::SolidButton("Render##render", ImVec2(kShowRenderCurrent ? third : last, 0.0f))) QueueVideoOpenRenderDialog();
-    if (ImGui::IsItemHovered())
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
         ImGui::SetTooltip("REAPER's Render dialog, at the Output size: pick a video format (e.g. MP4) and the bounds");
     if (!kShowRenderCurrent) return;
     ImGui::SameLine(0.0f, kGap);
@@ -622,7 +639,7 @@ void OutputSection(const VideoViewModel& m, float full)
         if (ImGui::Selectable("Custom...")) QueueVideoCustomOutputSize();
         ImGui::EndCombo();
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The size of the rendered picture. Project = Project Settings > Video.");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("The size of the rendered picture. Project = Project Settings > Video.");
 
     // Frame rate (read only: REAPER renders at the project's rate).
     ImGui::AlignTextToFramePadding();
@@ -648,7 +665,7 @@ void OutputSection(const VideoViewModel& m, float full)
         }
         ImGui::EndCombo();
     }
-    if (ImGui::IsItemHovered())
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
         ImGui::SetTooltip("Transparent: where there is no model, the video shows the tracks below (if REAPER "
                           "composites the FX's transparency). Light, floor, grid, shadow and MSAA follow the "
                           "View menu.");
@@ -706,11 +723,12 @@ void DrawVideoPanelButton(float right_x)
         const ImVec2 size(28.0f, 26.0f);
         if (ImGui::InvisibleButton("##panel", size)) SetVideoPanelVisible(!on);
         const bool hovered = ImGui::IsItemHovered();
+        const bool tip = ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip);
         const ImVec2 p1(p0.x + size.x, p0.y + size.y);
         dl->AddRectFilled(p0, p1, on ? ui::kAccentSoft : (hovered ? ui::kHover : IM_COL32(18, 19, 23, 184)), ui::kRadiusMd);
         dl->AddRect(p0, p1, on ? ui::kAccentLine : ui::kStroke, ui::kRadiusMd);
         PanelIcon(dl, ImVec2(p0.x + size.x * 0.5f, p0.y + size.y * 0.5f), IM_COL32(0xC9, 0xCE, 0xD8, 0xFF));
-        if (hovered) ImGui::SetTooltip("Show / hide the video settings (%s)", ShortcutKeyLabel(kShortcutTogglePanel));
+        if (tip) ImGui::SetTooltip("Show / hide the video settings (%s)", ShortcutKeyLabel(kShortcutTogglePanel));
     }
     ImGui::End();
     ImGui::PopStyleVar();
@@ -802,8 +820,12 @@ void DrawVideoFrameDecor(const VideoFrameRect& fr, void (*copy_log)(), bool show
             // Last resort (frame narrower than size + readout): clipped to the frame width.
             const ImVec4 clip(a.x, pos.y, b.x, pos.y + size.y);
             bg->AddText(nullptr, 0.0f, pos, ui::kMuted, text, nullptr, 0.0f, &clip);
-            if (ImGui::IsMouseHoveringRect(pos, ImVec2(pos.x + size.x, pos.y + size.y), false) &&
-                !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow)) {
+            // Not an ImGui item: the tooltip delay (style.HoverDelayNormal) is counted here.
+            static float s_readout_hover = 0.0f;
+            const bool readout_hovered = ImGui::IsMouseHoveringRect(pos, ImVec2(pos.x + size.x, pos.y + size.y), false) &&
+                                         !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow);
+            s_readout_hover = readout_hovered ? s_readout_hover + ImGui::GetIO().DeltaTime : 0.0f;
+            if (readout_hovered && s_readout_hover >= ImGui::GetStyle().HoverDelayNormal) {
                 ImGui::BeginTooltip();
                 ImGui::PushTextWrapPos(ImGui::GetFontSize() * 24.0f);
                 ImGui::TextUnformatted(
@@ -955,6 +977,7 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
         ImGui::InvisibleButton("##lane", ImVec2(lane_w, lane_h));
         const bool lane_active = ImGui::IsItemActive();
         const bool lane_hovered = ImGui::IsItemHovered();
+        const bool lane_tip = ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip);
         const bool lane_pressed = ImGui::IsItemActivated();
         const bool lane_released = ImGui::IsItemDeactivated();
         constexpr float kJunctionGrabPx = 4.0f;
@@ -1383,14 +1406,28 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                 const int shot = VideoClipShotAt(m.shots, t_mouse, m.fps);  // none between clips
                 if (shot >= 0) QueueVideoTransitionAt(shot);
             }
+            // A right-click on a shot: its camera menu (the clicked shot, as drawn).
+            static int s_ctx_shot = -1;
+            if (lane_hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                s_ctx_shot = VideoClipShotAt(m.shots, t_mouse, m.fps);  // none between clips
+                if (s_ctx_shot >= 0) ImGui::OpenPopup("##stripshotctx");
+            }
+            if (ImGui::BeginPopup("##stripshotctx")) {
+                if (s_ctx_shot >= 0 && s_ctx_shot < static_cast<int>(m.shots.size())) {
+                    ImGui::TextDisabled("%s", m.shots[static_cast<size_t>(s_ctx_shot)].name.c_str());
+                    ShotCameraMenuItems(s_ctx_shot);
+                }
+                ImGui::EndPopup();
+            }
             if (junction_drag) {
                 ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
             } else if (lane_hovered && !lane_active) {
                 if (!ImGui::IsAnyMouseDown() && VideoViewCanCut() && junction_at(mx) >= 0) {
                     ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);  // the cursor says it: no tooltip
-                } else {
+                } else if (lane_tip) {
                     ImGui::SetTooltip(
-                        "Click or drag to move the playhead\nMiddle-click a shot: switch Cut / Move\nAlt+wheel: zoom");
+                        "Click or drag to move the playhead\nMiddle-click a shot: switch Cut / Move\n"
+                        "Right-click a shot: copy / paste its camera\nAlt+wheel: zoom");
                 }
             }
         }
@@ -1439,7 +1476,7 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
         const ImVec2 b0 = ImGui::GetCursorScreenPos();
         if (ui::SolidButton("##stripcut", ImVec2(cut_w, kCtrlH))) QueueVideoCut();
         if (!can_cut) ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
             ImGui::SetTooltip("New shot on the playhead's frame, with the camera shown (%s)", cut_key);
         // The button has no label of its own: "Cut" + the key cap are drawn over it.
         const float label_w = ImGui::CalcTextSize("Cut").x;
@@ -1551,7 +1588,7 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
                 constexpr float kChevW = 14.0f;
                 const bool chev_clicked = ImGui::InvisibleButton("##inspchev", ImVec2(kChevW, fh));
                 const bool chev_hovered = ImGui::IsItemHovered();
-                if (chev_hovered)
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
                     ImGui::SetTooltip(collapsed ? "Show the transition and the camera values (or double-click this row)"
                                                 : "Hide the transition and the camera values (or double-click this row)");
                 {
@@ -1598,7 +1635,7 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
                 }
                 s_editing = ImGui::IsItemActive();
                 if (ImGui::IsItemDeactivatedAfterEdit()) QueueVideoRename(s_track, s_fx, s_time, s_name, s_auto, s_implicit);
-                if (ImGui::IsItemHovered() && !s_editing) ImGui::SetTooltip("Shot name (empty = automatic)");
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip) && !s_editing) ImGui::SetTooltip("Shot name (empty = automatic)");
                 const bool name_hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
                 if (!can_edit) ImGui::EndDisabled();
                 ImGui::SameLine();
@@ -1624,7 +1661,7 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
                     const float item_w = std::floor((ImGui::GetContentRegionAvail().x - 6.0f) * 0.5f);
                     if (ui::Segmented("##transition", kTransitions, 2, &sel, item_w, last && sel == 0 ? 1 : -1))
                         QueueVideoTransition(sel == 1);
-                    if (last && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                    if (last && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
                         ImGui::SetTooltip("The last shot has no next shot to move to");
                 }
 
@@ -1653,10 +1690,10 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
 
                 if (!can_edit) ImGui::BeginDisabled();
                 if (ui::SolidButton("Copy RAV view", ImVec2(bw[0], 0.0f))) QueueVideoCopyRavView(free_camera);
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("This shot takes the RAV view's camera");
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("This shot takes the RAV view's camera");
                 ImGui::SameLine(0.0f, kGap);
                 if (ui::SolidButton("Frame model", ImVec2(bw[1], 0.0f))) QueueVideoFrameModel();
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Keep the angle, frame the whole model");
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Keep the angle, frame the whole model");
                 if (!can_edit) ImGui::EndDisabled();
                 ImGui::SameLine(0.0f, kGap);
 
@@ -1674,7 +1711,7 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
                 ImGui::PopStyleVar();
                 ImGui::PopStyleColor(4);
                 if (!has_env) ImGui::EndDisabled();
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
                     ImGui::SetTooltip("%s", !has_env ? "The video FX has no envelope yet"
                                             : lit    ? "Hide the video FX's envelopes in REAPER's arrange"
                                                      : "Show the video FX's envelopes in REAPER's arrange");
@@ -1754,7 +1791,7 @@ void DrawVideoDeleteConfirm()
             ImGui::Text("Delete shot \"%s\"?", VideoDeleteConfirmName());
             ImGui::Dummy(ImVec2(0.0f, 2.0f));
             ImGui::Checkbox("Don't ask again", &s_dont_ask);
-            if (ImGui::IsItemHovered())
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
                 ImGui::SetTooltip("The Delete key then deletes at once. Ask again: menu > Tools > "
                                   "Ask before deleting a shot.");
             ImGui::Dummy(ImVec2(0.0f, 4.0f));

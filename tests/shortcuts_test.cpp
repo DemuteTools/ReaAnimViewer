@@ -54,6 +54,20 @@ int main()
         CHECK(ShortcutActionFor(b, 'V', false, false, true, false) == -1);
     }
 
+    // Ctrl+C / Ctrl+V copy and paste the current shot's camera, in Video view only.
+    {
+        const ShortcutBindings b = DefaultShortcutBindings();
+        CHECK(b[kShortcutCopyCamera] == Key('C', true));
+        CHECK(b[kShortcutPasteCamera] == Key('V', true));
+        CHECK(ShortcutActionFor(b, 'C', true, false, false, true) == kShortcutCopyCamera);
+        CHECK(ShortcutActionFor(b, 'V', true, false, false, true) == kShortcutPasteCamera);
+        CHECK(ShortcutActionFor(b, 'C', true, false, false, false) == -1);  // RAV view: REAPER's
+        CHECK(ShortcutActionFor(b, 'V', true, false, false, false) == -1);
+        CHECK(FormatShortcut(b[kShortcutCopyCamera]) == "Ctrl+C");
+        ShortcutBindings d = b;
+        CHECK(SanitizeShortcuts(d).empty());  // no default clash
+    }
+
     // Spec 11-fb-11: Delete deletes the current shot, in Video view only.
     {
         const ShortcutBindings b = DefaultShortcutBindings();

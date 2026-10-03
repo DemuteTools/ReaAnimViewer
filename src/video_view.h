@@ -248,6 +248,11 @@ void SetVideoAskBeforeDeleteShot(bool ask);
 void QueueVideoMoveShot(int index, double new_time);
 // Saved angle `index` into the shot under the playhead.
 void QueueVideoApplyAngle(int index);
+// The shot camera clipboard: copy shot `index`'s six values, paste them into shot `index`
+// (one undo point). -1 = the shot under the playhead (Ctrl+C / Ctrl+V). Kept for the session.
+void QueueVideoCopyShotCamera(int index);
+void QueueVideoPasteShotCamera(int index);
+bool VideoViewHasCopiedCamera();
 // Saves the six values of the shot under the playhead under `name` (same name replaces).
 void QueueVideoSaveAngle(const std::string& name);
 void QueueVideoDeleteAngle(const std::string& name);

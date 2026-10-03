@@ -64,6 +64,12 @@ void ApplyRavTheme()
     c[ImGuiCol_ScrollbarGrabHovered] = Col(kStrokeStrong);
     c[ImGuiCol_ScrollbarGrabActive]  = Col(kFaint);
 
+    // Tooltips wait 0.5 s on a still mouse (Antho's feedback): every tooltip is gated by
+    // IsItemHovered(ImGuiHoveredFlags_ForTooltip) / SetItemTooltip, which read these.
+    s.HoverDelayNormal          = 0.5f;
+    s.HoverFlagsForTooltipMouse = ImGuiHoveredFlags_Stationary | ImGuiHoveredFlags_DelayNormal |
+                                  ImGuiHoveredFlags_AllowWhenDisabled;
+
     // theme.lua STYLE_VARS: radii 10 / 7 / 5, padding 10.
     s.WindowRounding    = kRadiusLg;
     s.ChildRounding     = kRadiusLg;

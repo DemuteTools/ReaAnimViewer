@@ -517,24 +517,52 @@ std::string SizeLabel(int w, int h, const char* note)
 }
 
 // The render row (UX decision 6): REAPER's own windows render picture and sound. One line,
-// two equal buttons, the last line of Output (spec 11-fb-13), pinned with the bottom block.
-// Both first write the Output size into the project's video render format.
+// three equal buttons (Matrix | Render | Render Current, spec 11-fb-16), the last line of
+// Output (spec 11-fb-13), pinned with the bottom block. All first write the Output size into
+// the project's video render format.
 void RenderRow(float full)
 {
-    constexpr float kGap = 6.0f;  // between the two buttons
-    const float half = std::floor((full - kGap) * 0.5f);
-    if (ui::SolidButton("Matrix##render", ImVec2(half, 0.0f))) QueueVideoOpenRenderMatrix();  // same style as Render (Antho)
+    constexpr float kGap = 6.0f;  // between the buttons
+    // At least 1 px: ImGui reads a width <= 0 as relative to the right edge.
+    const float third = std::max(1.0f, std::floor((full - 2.0f * kGap) / 3.0f));
+    const float last = std::max(1.0f, full - 2.0f * (third + kGap));
+    if (ui::SolidButton("Matrix##render", ImVec2(third, 0.0f))) QueueVideoOpenRenderMatrix();  // same style as Render (Antho)
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("REAPER's Region Render Matrix, at the Output size: tick regions, then render from "
                           "the Render dialog (Source: Region render matrix, a video format)");
     ImGui::SameLine(0.0f, kGap);
-    if (ui::SolidButton("Render##render", ImVec2(full - half - kGap, 0.0f))) QueueVideoOpenRenderDialog();
+    if (ui::SolidButton("Render##render", ImVec2(third, 0.0f))) QueueVideoOpenRenderDialog();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("REAPER's Render dialog, at the Output size: pick a video format (e.g. MP4) and the bounds");
+    ImGui::SameLine(0.0f, kGap);
+
+    // Spec 11-fb-16 -- the clip under the playhead, from the master mix.
+    const VideoStripRange& r = VideoViewStripRange();
+    const bool can_render = r.valid && r.under_playhead && r.end > r.start;
+    const char* label = "Render Current##rendercurrent";
+    if (ImGui::CalcTextSize("Render Current").x + 2.0f * ImGui::GetStyle().FramePadding.x > last)
+        label = "Current##rendercurrent";
+    if (!can_render) ImGui::BeginDisabled();
+    if (ui::SolidButton(label, ImVec2(last, 0.0f))) QueueVideoRenderCurrent();
+    if (!can_render) ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+        if (can_render) {
+            char t0[32];
+            char t1[32];
+            FormatTime(r.start, t0, sizeof(t0));
+            FormatTime(r.end, t1, sizeof(t1));
+            ImGui::SetTooltip("REAPER's Render dialog, set to the clip shown (%s to %s, master mix), at the Output "
+                              "size; your render bounds come back after",
+                              t0, t1);
+        } else {
+            ImGui::SetTooltip("No clip under the playhead: put the playhead on an animation item of this track");
+        }
+    }
 }
 
 // The Output section (UX decision 6): size (project, or an override), frame rate (the
-// project's), background (the viewer's, or transparent), then Matrix | Render (spec 11-fb-13).
+// project's), background (the viewer's, or transparent), then Matrix | Render (spec 11-fb-13)
+// | Render Current (spec 11-fb-16).
 void OutputSection(const VideoViewModel& m, float full)
 {
     ImGui::Spacing();

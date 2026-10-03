@@ -33,3 +33,8 @@ add_test(NAME render_format_size COMMAND render_format_size_test)
 add_executable(video_clip_shots_test video_clip_shots_test.cpp)
 target_include_directories(video_clip_shots_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME video_clip_shots COMMAND video_clip_shots_test)
+
+# Spec 11-fb-16 -- Render Current's source switch (src/render_current.h).
+add_executable(render_current_test render_current_test.cpp)
+target_include_directories(render_current_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME render_current COMMAND render_current_test)

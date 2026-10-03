@@ -140,5 +140,9 @@
 #define REAPERAPI_WANT_MarkProjectDirty
 #define REAPERAPI_WANT_Undo_OnStateChangeEx
 
+// Spec 11-fb-16 -- Render Current saves, sets and restores the render bounds and source
+// (RENDER_BOUNDSFLAG / RENDER_STARTPOS / RENDER_ENDPOS / RENDER_SETTINGS).
+#define REAPERAPI_WANT_GetSetProjectInfo
+
 #include "reaper_plugin.h"
 #include "reaper_plugin_functions.h"

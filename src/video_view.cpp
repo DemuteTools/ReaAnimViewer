@@ -19,6 +19,7 @@
 #include "console_log.h"
 #include "reaper_actions.h"
 #include "reaper_api.h"
+#include "render_current.h"
 #include "render_format_size.h"
 #include "shortcuts.h"  // spec 11-fb-11: LoadPrefBool / SavePrefBool
 #include "video_camera.h"
@@ -58,6 +59,8 @@ enum class CmdKind {
     // Story 11-5
     Seek, Cut, DeleteShot, SaveAngle, DeleteAngle, OutputSize, CustomOutputSize, Background, OpenMatrix,
     OpenRenderDialog,
+    // Spec 11-fb-16
+    RenderCurrent,
     // Feedback 11-fb-2
     MoveShot,
     // Spec 11-fb-11
@@ -82,8 +85,10 @@ struct Cmd {
     bool        span_prev = false;      // MoveShot: the previous shot covers the next clip start after it
     bool        span_moved = false;     // MoveShot: the moved shot covers it
     std::string auto_name;              // Rename: the shot's automatic name
-    int         width = 0;  // OutputSize; OpenMatrix / OpenRenderDialog: the size to render at
+    int         width = 0;  // OutputSize; OpenMatrix / OpenRenderDialog / RenderCurrent: the size to render at
     int         height = 0;
+    double      range_start = 0.0;  // RenderCurrent: the clip's span
+    double      range_end = 0.0;
 };
 
 bool        g_active = false;
@@ -428,6 +433,7 @@ void UpdateStripRange()
         return;
     }
     g_range.valid = true;
+    g_range.under_playhead = spanning;
     g_range.current = best;
     g_range.start = g_range.items[static_cast<size_t>(best)].start;
     g_range.end = g_range.items[static_cast<size_t>(best)].end;
@@ -487,6 +493,40 @@ void ApplyOutputSizeToRender(int w, int h)
         std::snprintf(text, sizeof(text), "Render size set to %d x %d", plan.w, plan.h);
         SetNotice(text);
     }
+}
+
+// Spec 11-fb-16 -- Render Current: the Render dialog prefilled with the clip (custom time
+// range = its span, source = master mix), at the Output size. The dialog is modal, so the
+// project's bounds, source and tail flag are saved before and put back right after, in this one call
+// (also when the action is missing). No undo point: the project ends as it was.
+void RunRenderCurrent(const Cmd& c)
+{
+    if (!(c.range_end > c.range_start)) return;
+    ApplyOutputSizeToRender(c.width, c.height);  // spec 11-fb-13
+    SavedRenderBounds saved;
+    saved.bounds_flag = GetSetProjectInfo(nullptr, "RENDER_BOUNDSFLAG", 0.0, false);
+    saved.start = GetSetProjectInfo(nullptr, "RENDER_STARTPOS", 0.0, false);
+    saved.end = GetSetProjectInfo(nullptr, "RENDER_ENDPOS", 0.0, false);
+    saved.settings = GetSetProjectInfo(nullptr, "RENDER_SETTINGS", 0.0, false);
+    saved.tail_flag = GetSetProjectInfo(nullptr, "RENDER_TAILFLAG", 0.0, false);
+    GetSetProjectInfo(nullptr, "RENDER_BOUNDSFLAG", 0.0, true);  // custom time range
+    GetSetProjectInfo(nullptr, "RENDER_STARTPOS", c.range_start, true);
+    GetSetProjectInfo(nullptr, "RENDER_ENDPOS", c.range_end, true);
+    GetSetProjectInfo(nullptr, "RENDER_SETTINGS",
+                      static_cast<double>(RenderSettingsAsMasterMix(static_cast<int>(saved.settings))), true);
+    GetSetProjectInfo(nullptr, "RENDER_TAILFLAG",
+                      static_cast<double>(RenderTailFlagNoCustomTail(static_cast<int>(saved.tail_flag))), true);
+    const bool opened = OpenRenderDialog();
+    GetSetProjectInfo(nullptr, "RENDER_BOUNDSFLAG", saved.bounds_flag, true);
+    GetSetProjectInfo(nullptr, "RENDER_STARTPOS", saved.start, true);
+    GetSetProjectInfo(nullptr, "RENDER_ENDPOS", saved.end, true);
+    // Only the source was RAV's: the options the user changed in the dialog stay.
+    const int now = static_cast<int>(GetSetProjectInfo(nullptr, "RENDER_SETTINGS", 0.0, false));
+    GetSetProjectInfo(nullptr, "RENDER_SETTINGS",
+                      static_cast<double>(RenderSettingsRestored(now, static_cast<int>(saved.settings))), true);
+    GetSetProjectInfo(nullptr, "RENDER_TAILFLAG", saved.tail_flag, true);
+    if (!opened)
+        ShowMessageBox("RAV could not find REAPER's Render action. Open it from File > Render...", "RAV: Render", 0);
 }
 
 // A Cut shot at the playhead holding the camera shown there (video_shot_timing.h says
@@ -771,6 +811,9 @@ void RunOne(const Cmd& c)
             if (!OpenRenderDialog())
                 ShowMessageBox("RAV could not find REAPER's Render action. Open it from File > Render...",
                                "RAV: Render", 0);
+            return;
+        case CmdKind::RenderCurrent:
+            RunRenderCurrent(c);
             return;
     }
 }
@@ -1493,6 +1536,18 @@ void QueueVideoOpenRenderDialog()
     c.kind = CmdKind::OpenRenderDialog;
     c.width = g_model.out_w;  // spec 11-fb-13
     c.height = g_model.out_h;
+    g_queue.push_back(std::move(c));
+}
+
+void QueueVideoRenderCurrent()
+{
+    if (!g_range.valid || !g_range.under_playhead || !(g_range.end > g_range.start)) return;
+    Cmd c;
+    c.kind = CmdKind::RenderCurrent;
+    c.width = g_model.out_w;  // spec 11-fb-13
+    c.height = g_model.out_h;
+    c.range_start = g_range.start;
+    c.range_end = g_range.end;
     g_queue.push_back(std::move(c));
 }
 

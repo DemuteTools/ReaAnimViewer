@@ -191,6 +191,7 @@ struct VideoStripSpan {
 };
 struct VideoStripRange {
     bool   valid = false;
+    bool   under_playhead = false;      // spec 11-fb-16: the current item spans the playhead (not just the nearest)
     double start = 0.0;
     double end = 0.0;
     std::vector<VideoStripSpan> items;  // the track's items (end > start), in track order
@@ -257,6 +258,11 @@ void QueueVideoCustomOutputSize();
 void QueueVideoBackground(bool transparent);
 void QueueVideoOpenRenderMatrix();
 void QueueVideoOpenRenderDialog();
+// Spec 11-fb-16 -- REAPER's Render dialog prefilled with the clip under the playhead (custom
+// time range = its start to end, source = master mix), at the Output size; the project's
+// render bounds and source are put back once the dialog closes. Nothing without a clip
+// under the playhead.
+void QueueVideoRenderCurrent();
 
 // ---- Layout ---------------------------------------------------------------------------------
 struct VideoFrameRect {

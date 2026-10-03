@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //
 // REAPER's own windows opened from RAV (Epic 11, Story 11-5): the Video panel's
-// "Matrix" and "Render" buttons (one row pinned at the top of the panel). They run REAPER's actions:
+// "Matrix", "Render" and "Render Current" buttons (one row at the bottom of Output). They run REAPER's actions:
 //   41888  View: Show region render matrix window
 //   40015  File: Render project to disk...
 // Each id is used whenever REAPER knows it (kbd_getTextFromCmd gives it a name, English or
@@ -9,7 +9,10 @@
 // name in the Main section (kbd_enumerateActions).
 // Those lookup functions are resolved optionally through GetFunc, so a REAPER build
 // without them still loads the extension (the known id is then used as is).
-// RAV never changes the render settings: the user picks source and format in REAPER.
+// The user picks source and format in REAPER. RAV writes the Output size into the video
+// format (spec 11-fb-13), and changes the render bounds and source only for Render Current
+// (spec 11-fb-16): set to the clip shown and the master mix while the Render dialog is open,
+// then put back as they were.
 // Main thread only.
 
 #pragma once

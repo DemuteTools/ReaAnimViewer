@@ -1097,6 +1097,29 @@ try {
     return {};
 }
 
+// assimp 6.0.5's FBX importer reuses one aiBone for every skin cluster that targets the
+// same bone (seen in Unity exports), so mesh->mBones can list the same pointer twice.
+// LimitBoneWeights then writes that bone's weights twice into an array sized for one
+// copy: a heap overflow that crashed REAPER (issue #1, Skeleton_01.fbx). Drop the repeats
+// before post-processing. assimp already kept only the first cluster's weights, so no
+// weight is lost here. aiMesh's destructor de-duplicates its bones, so nothing leaks.
+void DropDuplicateBones(const aiScene* scene)
+{
+    for (unsigned mi = 0; mi < scene->mNumMeshes; ++mi) {
+        aiMesh* mesh = scene->mMeshes[mi];
+        if (!mesh || !mesh->mBones) continue;
+        std::unordered_set<const aiBone*> seen;
+        unsigned kept = 0;
+        for (unsigned b = 0; b < mesh->mNumBones; ++b)
+            if (mesh->mBones[b] && seen.insert(mesh->mBones[b]).second)
+                mesh->mBones[kept++] = mesh->mBones[b];
+        if (kept != mesh->mNumBones)
+            LogWarn("mesh '%s': %u duplicate bone(s) dropped", mesh->mName.C_Str(),
+                    mesh->mNumBones - kept);
+        mesh->mNumBones = kept;
+    }
+}
+
 }  // namespace
 
 const char* LoadErrorCategoryName(LoadErrorCategory category)
@@ -1142,11 +1165,15 @@ CpuLoadResult LoadCpuAsset(const std::string& path)
         // or this steampunk body) that lands geometry on the wrong/padded texture region —
         // the "smeared / offset texture" both gates surfaced. (An earlier build flipped
         // only non-glTF, which left glTF/GLB V-flipped — exactly the GLB offset.)
-        const aiScene* scene = importer.ReadFile(
-            path,
-            aiProcess_Triangulate | aiProcess_GenSmoothNormals |
-            aiProcess_JoinIdenticalVertices | aiProcess_LimitBoneWeights |
-            aiProcess_FlipUVs);
+        // Read raw, repair the duplicate bones, THEN post-process (DropDuplicateBones).
+        const aiScene* scene = importer.ReadFile(path, 0);
+        if (scene) {
+            DropDuplicateBones(scene);
+            scene = importer.ApplyPostProcessing(
+                aiProcess_Triangulate | aiProcess_GenSmoothNormals |
+                aiProcess_JoinIdenticalVertices | aiProcess_LimitBoneWeights |
+                aiProcess_FlipUVs);
+        }
 
         if (!scene || !scene->mRootNode) {
             const std::string err = importer.GetErrorString();

@@ -90,6 +90,11 @@ bool      g_has_model = false;
 glm::vec3 g_min{0.0f};
 glm::vec3 g_max{0.0f};
 double    g_playhead = 0.0;
+bool      g_playing = false;  // REAPER plays (read with g_playhead)
+bool      g_looping = false;  // repeat on, with a loop range (read with g_playhead)
+double    g_loop_start = 0.0;
+double    g_loop_end = 0.0;
+double    g_playrate = 1.0;   // project playrate
 int       g_shot_index = -1;
 
 bool        g_frame_cam_valid = false;
@@ -124,9 +129,10 @@ bool FxValid(MediaTrack* t, int fx)
     return TrackValid(t) && fx >= 0 && fx < TrackFX_GetCount(t) && FindVideoFxOnTrack(t) == fx;
 }
 
-double Playhead()
+double Playhead(bool* out_playing)
 {
     const bool playing = (GetPlayStateEx(nullptr) & 1) != 0;
+    if (out_playing) *out_playing = playing;
     return playing ? GetPlayPosition2Ex(nullptr) : GetCursorPositionEx(nullptr);
 }
 
@@ -649,7 +655,11 @@ void VideoViewFrame(MediaTrack* item_track, bool has_item, bool has_model, const
         g_last_refresh = now;
     }
 
-    g_playhead = Playhead();
+    g_playhead = Playhead(&g_playing);
+    g_loop_start = g_loop_end = 0.0;
+    GetSet_LoopTimeRange2(nullptr, false, true, &g_loop_start, &g_loop_end, false);
+    g_looping = GetSetRepeat(-1) == 1 && g_loop_end > g_loop_start;
+    g_playrate = Master_GetPlayRate(nullptr);
     g_shot_index = VideoShotIndexAt(g_model.shots, g_playhead);
     UpdateStripRange();
 
@@ -904,6 +914,23 @@ VideoStripRange VideoViewStripRange()
 double VideoViewPlayhead()
 {
     return g_playhead;
+}
+
+bool VideoViewPlaying()
+{
+    return g_playing;
+}
+
+void VideoViewLoop(bool* out_looping, double* out_start, double* out_end)
+{
+    if (out_looping) *out_looping = g_looping;
+    if (out_start) *out_start = g_loop_start;
+    if (out_end) *out_end = g_loop_end;
+}
+
+double VideoViewPlayRate()
+{
+    return g_playrate;
 }
 
 const char* VideoViewNotice()

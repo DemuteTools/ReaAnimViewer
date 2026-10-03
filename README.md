@@ -237,6 +237,7 @@ The installed version is shown at the bottom of the menu.
 | **Normal maps** | Turn surface-detail maps on or off |
 | **MSAA** | Edge smoothing: Off, 2x, 4x, 8x |
 | **FPS** | Show the frame rate in the viewer |
+| **REAPER preview lag** | Show how far REAPER's Video window runs ahead while playing (Video view, see [Preview lag while playing](#preview-lag-while-playing)) |
 
 If the viewer feels slow on a laptop, lower **MSAA** and **Shadow** first.
 
@@ -304,6 +305,8 @@ RAV never changes your render settings.
 ### Preview lag while playing
 
 While playing, REAPER prepares video frames a few seconds ahead. When you edit a shot during playback, REAPER's Video window can take a few seconds to show the change. Video view in RAV is always up to date, and renders are always exact.
+
+While playing with REAPER's Video window open, the line above the Video view frame shows that delay, for example `REAPER preview +2.4 s` (hover it for details). Rendering has no offset: every frame is drawn for its own time. Turn it off with **REAPER preview lag** in the viewer menu's Performance section.
 
 ### If the video FX shows nothing
 

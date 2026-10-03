@@ -158,6 +158,7 @@ if(WIN32)
             src/video_timeline.cpp
             src/self_update.cpp
             src/video_fx_host.cpp
+            src/video_preview_lag.cpp
             src/video_fx_track.cpp
             src/video_gl_context.cpp
             src/video_test_pattern.cpp

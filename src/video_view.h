@@ -151,6 +151,11 @@ VideoStripRange VideoViewStripRange();
 
 // REAPER's playhead as Video view reads it (play position while playing, else the edit cursor).
 double VideoViewPlayhead();
+// True while REAPER plays (or records): VideoViewPlayhead is then the play position.
+bool VideoViewPlaying();
+// Read with the playhead: REAPER repeats over a loop range (start < end), and the project playrate.
+void VideoViewLoop(bool* out_looping, double* out_start, double* out_end);
+double VideoViewPlayRate();
 
 // A short message after an action that did nothing (e.g. a cut on a frame that already
 // starts a shot), nullptr when none is showing.

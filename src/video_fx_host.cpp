@@ -12,6 +12,7 @@
 #include "console_log.h"
 #include "video_fx_api.h"
 #include "video_gl_context.h"
+#include "video_preview_lag.h"
 #include "video_render.h"
 #include "video_test_pattern.h"
 #include "video_timeline.h"
@@ -96,6 +97,8 @@ int ApiRenderFrame(const RavVideoFrameRequest* req)
     try {
         if (g_shutting_down.load() || !ValidRequest(req)) return 0;
         if (!req->pixels || req->width <= 0 || req->height <= 0 || req->row_bytes < req->width * 4) return 0;
+        // How far ahead REAPER asks (video_preview_lag.h): content and test pattern alike.
+        NoteVideoFrameRequest(req->track, req->project_time);
         if (g_test_pattern.load()) return TestPatternRenderFrame(req);
         return ContentRenderFrame(req);
     } catch (...) {

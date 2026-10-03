@@ -174,6 +174,7 @@ int g_grid_step_m = 1;
 // Session-only.
 bool g_normal_maps_on   = true;   // FR52 — AND-gate the per-material normal-map flag
 bool g_fps_overlay_on   = true;   // FR53 — top-right on-canvas FPS readout (default on)
+bool g_preview_lag_on   = true;   // Video view caption: REAPER preview lag (default on, session only)
 // Story 6.5.6 — selectable MSAA level (FR52), replacing 6.5.5's on/off. g_msaa_level is the
 // selected sample count (0 = Off / 2 / 4 / 8; default 4×, clamped to the GPU max at startup);
 // g_msaa_max is GL_MAX_SAMPLES, queried once the context is current in StartRendering so an
@@ -1135,6 +1136,8 @@ void DrawToolUi()
             }
 
             ImGui::Checkbox("FPS", &g_fps_overlay_on);  // pure UI state — read by the overlay below
+            // How far REAPER's Video window runs ahead while playing, on Video view's caption line.
+            ImGui::Checkbox("REAPER preview lag", &g_preview_lag_on);
 
             ImGui::Unindent(8.0f);
         }
@@ -1205,7 +1208,7 @@ void DrawToolUi()
     // Video view the frame's edge + captions, its state message, and the panel button.
     DrawVideoViewToggle(area_right * 0.5f);
     if (video_view) {
-        DrawVideoFrameDecor(g_video_frame, &CopyErrorLogToClipboard);
+        DrawVideoFrameDecor(g_video_frame, &CopyErrorLogToClipboard, g_preview_lag_on);
         DrawVideoPanelButton(area_right - 8.0f);
         // Story 11-5 -- the shot strip under the viewport (UX decision 4).
         if (VideoStripBand() > 0.0f) {

@@ -16,6 +16,7 @@
 #include <imgui.h>
 
 #include "ui_theme.h"
+#include "video_preview_lag.h"
 #include "video_shot_timing.h"
 
 namespace rav {
@@ -584,7 +585,7 @@ void DrawVideoPanelButton(float right_x)
     ImGui::PopStyleVar();
 }
 
-void DrawVideoFrameDecor(const VideoFrameRect& fr, void (*copy_log)())
+void DrawVideoFrameDecor(const VideoFrameRect& fr, void (*copy_log)(), bool show_preview_lag)
 {
     const VideoViewModel& m = GetVideoViewModel();
     ImDrawList* bg = ImGui::GetBackgroundDrawList();
@@ -598,16 +599,53 @@ void DrawVideoFrameDecor(const VideoFrameRect& fr, void (*copy_log)())
     char left[96];
     std::snprintf(left, sizeof(left), "%d " RAV_TIMES " %d " RAV_DOT " %s", m.out_w, m.out_h, fps);
     const float text_h = ImGui::GetTextLineHeight();
-    bg->AddText(ImVec2(a.x, a.y - text_h - 5.0f), ui::kMuted, left);
+    const ImVec2 left_pos(a.x, a.y - text_h - 5.0f);
+    bg->AddText(left_pos, ui::kMuted, left);
 
+    // The shot on the right, measured first: the lag readout must not run into it.
     const int idx = VideoViewShotIndex();
+    std::string right;
     if (m.status == VideoFxStatus::Active && idx >= 0 && idx < static_cast<int>(m.shots.size())) {
         const VideoShot& s = m.shots[static_cast<size_t>(idx)];
-        std::string right = s.name;
+        right = s.name;
         if (s.move_to_next && idx + 1 < static_cast<int>(m.shots.size())) right += "  -> move";
-        const float w = ImGui::CalcTextSize(right.c_str()).x;
-        bg->AddText(ImVec2(b.x - w, a.y - text_h - 5.0f), ui::kMuted, right.c_str());
     }
+    const float right_w = right.empty() ? 0.0f : ImGui::CalcTextSize(right.c_str()).x;
+
+    // After the size, how far REAPER's Video window runs ahead while playing (REAPER asks
+    // for frames only while that window is open; the FX must be Active). Skipped when it
+    // does not fit before the shot. Hover = why, and that renders have no offset.
+    double lag = 0.0;
+    bool live = false;
+    PreviewLagTransport t;
+    t.play_pos = VideoViewPlayhead();
+    t.playing = VideoViewPlaying();
+    VideoViewLoop(&t.looping, &t.loop_start, &t.loop_end);
+    t.playrate = VideoViewPlayRate();
+    if (show_preview_lag && m.status == VideoFxStatus::Active && VideoPreviewLag(m.track, t, &lag, &live)) {
+        char readout[64];
+        if (live) std::snprintf(readout, sizeof(readout), " " RAV_DOT " REAPER preview: live");
+        else std::snprintf(readout, sizeof(readout), " " RAV_DOT " REAPER preview +%.1f s", lag);
+        const ImVec2 pos(left_pos.x + ImGui::CalcTextSize(left).x, left_pos.y);
+        const ImVec2 size = ImGui::CalcTextSize(readout);
+        const float limit = right.empty() ? b.x : b.x - right_w - ImGui::CalcTextSize("  ").x;
+        if (pos.x + size.x <= limit) {
+            bg->AddText(pos, ui::kMuted, readout);
+            if (ImGui::IsMouseHoveringRect(pos, ImVec2(pos.x + size.x, pos.y + size.y), false) &&
+                !ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow)) {
+                ImGui::BeginTooltip();
+                ImGui::PushTextWrapPos(ImGui::GetFontSize() * 24.0f);
+                ImGui::TextUnformatted(
+                    "While playing, REAPER prepares its Video window a few seconds ahead. A camera, shot or "
+                    "display change shows there after about this delay. Video view is exact. Rendering "
+                    "(Render dialog, Region Render Matrix) has no offset: every frame is drawn for its own time.");
+                ImGui::PopTextWrapPos();
+                ImGui::EndTooltip();
+            }
+        }
+    }
+
+    if (!right.empty()) bg->AddText(ImVec2(b.x - right_w, a.y - text_h - 5.0f), ui::kMuted, right.c_str());
 
     if (VideoViewCanEdit()) return;  // the picture: nothing is drawn inside the frame
 

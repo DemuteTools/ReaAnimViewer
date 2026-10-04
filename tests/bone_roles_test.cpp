@@ -86,16 +86,32 @@ int main()
         CHECK(m[R(Role::RightKnee)] == 3);
     }
 
-    // The Footsteps preset: four foot roles, plus the two knees with the knee bend on.
+    // Up legs: Mixamo LeftUpLeg / RightUpLeg (any namespace), Unreal thigh_l / thigh_r.
     {
-        CHECK(RolesUsed(FootstepsPreset(false).blocks).size() == 4);
-        Preset p = FootstepsPreset();  // knee bend on by default
+        auto m = GuessRoleMapping({"mixamorig:LeftUpLeg", "mixamorig:LeftLeg", "mixamorig1_RightUpLeg"});
+        CHECK(m[R(Role::LeftUpLeg)] == 0);
+        CHECK(m[R(Role::RightUpLeg)] == 2);
+        CHECK(m[R(Role::LeftKnee)] == 1);
+        m = GuessRoleMapping({"pelvis", "THIGH_L", "calf_l", "thigh_r", "thigh_twist_01_r"});
+        CHECK(m[R(Role::LeftUpLeg)] == 1);
+        CHECK(m[R(Role::RightUpLeg)] == 3);
+    }
+
+    // The Footsteps preset (v2): heel, toe, knee and up leg per foot; conditions height /
+    // knee flexion speed / foot yaw speed; landing on the knee peak.
+    {
+        Preset p = FootstepsPreset();
         CHECK(p.blocks.size() == 2);
         CHECK(p.blocks[0].conditions.size() == 3);
-        CHECK(FootstepsPreset(false).blocks[0].conditions.size() == 2);
+        CHECK(p.blocks[0].landing == Landing::PeakOf && p.blocks[0].peak_condition == 1 && p.blocks[0].peak_max);
+        CHECK(p.blocks[0].conditions[1].signal.quantity == Quantity::JointAngle);
+        CHECK(p.blocks[0].conditions[2].signal.quantity == Quantity::Yaw);
+        CHECK(!p.blocks[0].conditions[2].auto_threshold);
+        CHECK(p.blocks[0].conditions[2].threshold == FootstepsParams{}.yaw_limit_dps);
         auto used = RolesUsed(p.blocks);
-        CHECK(used.size() == 6);
-        // Tracks in RolesUsed order: L heel, L toe, R heel, R toe, L knee, R knee.
+        CHECK(used.size() == 8);
+        // Tracks in RolesUsed (= Role) order: L heel, L toe, R heel, R toe, L knee, R knee,
+        // L up leg, R up leg.
         std::vector<int> role_to_track(static_cast<size_t>(Role::Count), -1);
         for (size_t i = 0; i < used.size(); ++i) role_to_track[R(used[i])] = static_cast<int>(i);
         std::string missing = "x";
@@ -104,17 +120,15 @@ int main()
         CHECK(missing.empty());
         CHECK(blocks[0].conditions[0].signal.bones == std::vector<int>({0, 1}));
         CHECK(blocks[1].strength_signal.bones == std::vector<int>({2, 3}));
-        CHECK(blocks[0].conditions[2].signal.bones == std::vector<int>({4}));
-        CHECK(blocks[0].conditions[2].signal.ref_bones == std::vector<int>({0}));  // relative to the heel
-        CHECK(blocks[1].conditions[2].signal.ref_bones == std::vector<int>({2}));
-        // A skeleton without knees: skipped while the knee bend is on, fine with it off.
+        CHECK(blocks[0].conditions[1].signal.bones == std::vector<int>({6, 4, 0}));  // up leg - knee - ankle
+        CHECK(blocks[1].conditions[1].signal.bones == std::vector<int>({7, 5, 2}));
+        CHECK(blocks[0].conditions[2].signal.bones == std::vector<int>({0, 1}));     // heel -> toe
+        // A skeleton without knees: skipped, roles named once each.
         std::vector<int> no_knee = role_to_track;
         no_knee[R(Role::LeftKnee)] = no_knee[R(Role::RightKnee)] = -1;
         blocks = p.blocks;
         CHECK(!BindRoles(blocks, no_knee, &missing));
         CHECK(missing == "left knee, right knee");
-        blocks = FootstepsPreset(false).blocks;
-        CHECK(BindRoles(blocks, no_knee, &missing));
         // A skeleton without a right toe.
         role_to_track[R(Role::RightToe)] = -1;
         blocks = p.blocks;

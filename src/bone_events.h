@@ -9,11 +9,22 @@
 //   reference  the floor (a level), or one or more tracks combined the same way
 //   measure    position, speed or acceleration of (bones - reference)
 //   axis       vertical (= Y), horizontal (XZ), total (3D), X, Y or Z
+// or an angle signal (degrees, scale-free; reference and axis do not apply):
+//   joint angle  the flexion at bone b from bones (a, b, c): 180 - the angle a-b-c, so 0 =
+//                straight and it rises as the joint bends
+//   yaw          the heading of the segment a -> b about the vertical axis (atan2 on X/Z),
+//                unwrapped (no jump at +-180)
+// with the same measures (position = the angle, speed, acceleration).
 // Detection runs offline over the whole clip (it may look ahead). An event fires when the
 // AND comes true and lands at the interpolated sub-frame crossing of the condition that
 // completed it, plus the block's offset. The first condition is the trigger: one entry of
 // it gives at most one event (another condition flickering while the trigger stays in
 // never re-fires). Every event keeps its values (strength, speed).
+//
+// Landing: by default the event lands at that crossing. A block can instead land at the
+// peak (max or min, sub-sample, parabolic) of one condition's signal over the span where
+// the AND holds that started the event; offset, cooldown, edge margin and strength then
+// use that time.
 //
 // Hysteresis is a margin relative to the threshold: a "below th" condition goes in under
 // th and goes out only above th + margin. Re-arming needs both: the trigger must go out
@@ -46,8 +57,13 @@ enum class Combine { Single, Average, Lowest, Highest };
 enum class Reference { Floor, Bones };
 enum class Measure { Position, Speed, Acceleration };
 enum class Axis { Vertical, Horizontal, Total, X, Y, Z };
+enum class Quantity { Point, JointAngle, Yaw };
 
 struct SignalSpec {
+    // Point: the bones' (combined) position. JointAngle: bones = {a, b, c}, degrees of
+    // flexion at b. Yaw: bones = {a, b}, degrees, unwrapped. Angles ignore combine,
+    // reference and axis.
+    Quantity         quantity = Quantity::Point;
     std::vector<int> bones;                // indices into the track list (a preset holds roles)
     Combine          combine = Combine::Single;
     Reference        reference = Reference::Floor;
@@ -59,9 +75,9 @@ struct SignalSpec {
     std::vector<double> bone_floors;
     Measure          measure = Measure::Position;
     Axis             axis = Axis::Vertical;
-    // Speed / acceleration on a single axis (vertical, X, Y, Z): keep the sign instead of
-    // the magnitude. Position components are always signed; horizontal / total are
-    // magnitudes.
+    // Speed / acceleration on a single axis (vertical, X, Y, Z) or of an angle: keep the
+    // sign instead of the magnitude. Position components and angles are always signed;
+    // horizontal / total are magnitudes.
     bool             keep_sign = false;
 };
 
@@ -72,7 +88,10 @@ struct Condition {
     Direction  dir = Direction::Below;
     double     threshold = 0.0;
     double     margin = 0.0;  // hysteresis, >= 0 (negative reads as 0)
+    bool       auto_threshold = true;  // false: Analyse keeps this threshold and margin (a fixed limit)
 };
+
+enum class Landing { Crossing, PeakOf };
 
 struct Block {
     std::string            marker;
@@ -85,6 +104,11 @@ struct Block {
     SignalSpec             strength_signal;
     double                 strength_sign = 1.0;
     double                 strength_window_ms = 100.0;
+    // Where the event lands: the AND crossing (default), or the peak of condition
+    // peak_condition's signal (its max when peak_max, else its min) while the AND holds.
+    Landing                landing = Landing::Crossing;
+    int                    peak_condition = 0;
+    bool                   peak_max = true;
 };
 
 struct DetectOptions {
@@ -94,11 +118,11 @@ struct DetectOptions {
 };
 
 struct Event {
-    double      time_s = 0.0;  // clip time: crossing + offset
+    double      time_s = 0.0;  // clip time: landing (crossing or peak) + offset
     int         block = 0;
     std::string marker;
     double      strength = 0.0;
-    double      speed = 0.0;   // total speed (m/s) of the first condition's signal at the crossing
+    double      speed = 0.0;   // total speed of the first condition's signal at the landing (m/s, or deg/s for an angle)
     // When each condition last came true (clip time, before the offset), in condition order.
     // The latest one is the crossing that completed the AND.
     std::vector<double> cond_entry_s;
@@ -123,9 +147,10 @@ struct AnalyseOptions {
 };
 
 // Proposes thresholds from the clip, per condition:
-//   any reference = floor (whatever the measure): floor_y (and bone_floors when
+//   conditions with auto_threshold = false are left as they are.
+//   any point signal with reference = floor (whatever the measure): floor_y (and bone_floors when
 //     per_bone_floor) = the floor percentile of the raw level.
-//   position (floor or bones reference): on the values, low = their floor percentile,
+//   position (point with floor or bones reference, or an angle): on the values, low = their floor percentile,
 //     high = the median of Otsu's upper cluster, gap = high - low.
 //     Below: th = low + fraction * gap. Above: th = high - fraction * gap.
 //     Margin = margin_ratio * fraction * gap.

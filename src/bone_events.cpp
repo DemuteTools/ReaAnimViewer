@@ -166,7 +166,9 @@ double InterpAt(const std::vector<double>& s, double t, double rate)
 // Sets the floor of a floor-referenced spec from the clip (AnalyseOptions).
 void EstimateFloor(SignalSpec& spec, const std::vector<BoneTrack>& tracks, const AnalyseOptions& o)
 {
-    if (spec.reference != Reference::Floor || !IndicesFit(spec.bones, tracks.size())) return;
+    if (spec.quantity != Quantity::Point || spec.reference != Reference::Floor ||
+        !IndicesFit(spec.bones, tracks.size()))
+        return;
     const size_t n = tracks[0].pos.size();
     spec.floor_y = 0.0;
     spec.bone_floors.clear();
@@ -185,11 +187,86 @@ void EstimateFloor(SignalSpec& spec, const std::vector<BoneTrack>& tracks, const
     spec.floor_y = Percentile(std::move(low), o.floor_percentile);
 }
 
+constexpr double kPi = 3.14159265358979323846;
+constexpr double kDeg = 180.0 / kPi;
+
+// The measure of a scalar series (an angle): position = itself; speed / acceleration =
+// centred differences on the smoothed series, magnitudes unless keep_sign.
+std::vector<double> ScalarMeasure(const std::vector<double>& q, Measure measure, bool keep_sign, double smooth_ms,
+                                  double rate)
+{
+    const size_t n = q.size();
+    if (measure == Measure::Position) return q;
+    std::vector<double> out(n, 0.0);
+    if (n < 2) return out;
+    std::vector<Vec3d> v(n);
+    for (size_t i = 0; i < n; ++i) v[i].x = q[i];
+    const std::vector<Vec3d> s = Smooth(v, smooth_ms / 1000.0 * rate);
+    if (measure == Measure::Speed) {
+        for (size_t i = 0; i < n; ++i) {
+            const size_t a = (i == 0) ? 0 : i - 1;
+            const size_t b = (i + 1 == n) ? i : i + 1;
+            out[i] = (s[b].x - s[a].x) * rate / static_cast<double>(b - a);
+        }
+    } else {
+        if (n < 3) return out;
+        for (size_t i = 1; i + 1 < n; ++i) out[i] = (s[i + 1].x - 2 * s[i].x + s[i - 1].x) * rate * rate;
+        out[0] = out[1];
+        out[n - 1] = out[n - 2];
+    }
+    if (!keep_sign)
+        for (double& x : out) x = std::fabs(x);
+    return out;
+}
+
+// Joint flexion (180 - angle a-b-c) or the unwrapped yaw of a -> b, in degrees, per sample.
+// A degenerate sample (zero-length segment) keeps the previous value.
+std::vector<double> AngleSeries(const SignalSpec& spec, const std::vector<BoneTrack>& tracks)
+{
+    const size_t n = tracks[0].pos.size();
+    std::vector<double> q(n, 0.0);
+    double prev = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        double v = prev;
+        if (spec.quantity == Quantity::JointAngle) {
+            const Vec3d& a = tracks[spec.bones[0]].pos[i];
+            const Vec3d& b = tracks[spec.bones[1]].pos[i];
+            const Vec3d& c = tracks[spec.bones[2]].pos[i];
+            const double ux = a.x - b.x, uy = a.y - b.y, uz = a.z - b.z;
+            const double wx = c.x - b.x, wy = c.y - b.y, wz = c.z - b.z;
+            const double lu = std::sqrt(ux * ux + uy * uy + uz * uz), lw = std::sqrt(wx * wx + wy * wy + wz * wz);
+            if (lu > 1e-12 && lw > 1e-12) {
+                const double cosv = std::min(1.0, std::max(-1.0, (ux * wx + uy * wy + uz * wz) / (lu * lw)));
+                v = 180.0 - std::acos(cosv) * kDeg;
+            }
+        } else {
+            const Vec3d& a = tracks[spec.bones[0]].pos[i];
+            const Vec3d& b = tracks[spec.bones[1]].pos[i];
+            const double dx = b.x - a.x, dz = b.z - a.z;
+            if (std::sqrt(dx * dx + dz * dz) > 1e-12) {
+                v = std::atan2(dx, dz) * kDeg;
+                if (i > 0) {  // unwrap: the nearest turn to the previous value
+                    while (v - prev > 180.0) v -= 360.0;
+                    while (v - prev < -180.0) v += 360.0;
+                }
+            }
+        }
+        q[i] = v;
+        prev = v;
+    }
+    return q;
+}
+
 }  // namespace
 
 std::vector<double> EvaluateSignal(const SignalSpec& spec, const std::vector<BoneTrack>& tracks, double smooth_ms)
 {
     if (!TracksFit(tracks) || !IndicesFit(spec.bones, tracks.size())) return {};
+    if (spec.quantity != Quantity::Point) {
+        const size_t need = (spec.quantity == Quantity::JointAngle) ? 3 : 2;
+        if (spec.bones.size() != need) return {};
+        return ScalarMeasure(AngleSeries(spec, tracks), spec.measure, spec.keep_sign, smooth_ms, tracks[0].rate_hz);
+    }
     if (spec.reference == Reference::Bones && !IndicesFit(spec.ref_bones, tracks.size())) return {};
     const bool own_floors = spec.reference == Reference::Floor && !spec.bone_floors.empty();
     if (own_floors && spec.bone_floors.size() != spec.bones.size()) return {};
@@ -333,11 +410,30 @@ std::vector<Event> Detect(const std::vector<Block>& blocks, const std::vector<Bo
         for (size_t i = 1; i < n; ++i) {
             if (!active[i] || active[i - 1]) continue;  // fire only on the way in
             const double tc = entry_at[i];
+            // Where the event lands: the crossing, or the peak of a condition's signal over
+            // the span where this AND holds (sub-sample, parabolic).
+            double tl = tc;
+            if (blk.landing == Landing::PeakOf && blk.peak_condition >= 0 &&
+                static_cast<size_t>(blk.peak_condition) < nc) {
+                const std::vector<double>& y = vals[static_cast<size_t>(blk.peak_condition)];
+                size_t end = i;
+                while (end + 1 < n && active[end + 1]) ++end;
+                size_t k = i;
+                for (size_t j = i; j <= end; ++j)
+                    if (blk.peak_max ? y[j] > y[k] : y[j] < y[k]) k = j;
+                double delta = 0.0;
+                if (k > 0 && k + 1 < n) {
+                    const double den = y[k - 1] - 2.0 * y[k] + y[k + 1];
+                    if (std::fabs(den) > 1e-300) delta = 0.5 * (y[k - 1] - y[k + 1]) / den;
+                    delta = std::min(0.5, std::max(-0.5, delta));
+                }
+                tl = (static_cast<double>(k) + delta) * dt;
+            }
             // One chance per entry of the trigger: a qualifier flickering while the trigger
             // stays in never re-fires, nor fires after an entry dropped by the cooldown or
             // the edge margin (a min-hold failure may retry).
             if (has_used && trig_at[i] <= used_trig + 1e-12) continue;
-            if (has_last && tc - last_t < cooldown - 1e-12) {  // in cooldown: wait for the next way in
+            if (has_last && tl - last_t < cooldown - 1e-12) {  // in cooldown: wait for the next way in
                 has_used = true;
                 used_trig = trig_at[i];
                 continue;
@@ -353,25 +449,25 @@ std::vector<Event> Detect(const std::vector<Block>& blocks, const std::vector<Bo
             const double edge = std::max(0.0, opts.edge_margin_ms) / 1000.0;
             has_used = true;
             used_trig = trig_at[i];
-            if (edge > 0.0 && (tc < edge - 1e-12 || tc > duration - edge + 1e-12)) continue;
+            if (edge > 0.0 && (tl < edge - 1e-12 || tl > duration - edge + 1e-12)) continue;
             has_last = true;
-            last_t = tc;
+            last_t = tl;
 
             Event e;
-            e.time_s = tc + blk.offset_ms / 1000.0;
+            e.time_s = tl + blk.offset_ms / 1000.0;
             e.block = static_cast<int>(bi);
             e.marker = blk.marker;
             e.cond_entry_s = cond_at[i];
             const double w = std::max(0.0, blk.strength_window_ms) / 1000.0;
-            double peak = sign * InterpAt(strength_series, tc, rate);
+            double peak = sign * InterpAt(strength_series, tl, rate);
             for (size_t k = 0; k < n; ++k) {
                 const double tk = static_cast<double>(k) * dt;
-                if (tk < tc - w - 1e-12) continue;
-                if (tk > tc) break;
+                if (tk < tl - w - 1e-12) continue;
+                if (tk > tl) break;
                 peak = std::max(peak, sign * strength_series[k]);
             }
             e.strength = peak;
-            e.speed = InterpAt(speed, tc, rate);
+            e.speed = InterpAt(speed, tl, rate);
             evs.push_back(std::move(e));
         }
 
@@ -398,6 +494,7 @@ std::vector<Block> Analyse(const std::vector<Block>& blocks, const std::vector<B
     if (!TracksFit(tracks)) return out;
     for (Block& blk : out) {
         for (Condition& cd : blk.conditions) {
+            if (!cd.auto_threshold) continue;
             EstimateFloor(cd.signal, tracks, opts);
             const std::vector<double> v = EvaluateSignal(cd.signal, tracks, opts.smooth_ms);
             if (v.empty()) continue;

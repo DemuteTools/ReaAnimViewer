@@ -3,17 +3,17 @@
 // Factory presets (Epic 10), written in roles (bone_roles.h): a preset's SignalSpec bones
 // hold Role values until BindRoles turns them into track indices.
 //
-// Footsteps (v1): the event is the foot's first ground contact, heel or toe, whichever
-// lands first (a design that wants it later uses the block's signed offset). Per foot,
-// one block: P = the lowest of {heel, toe}, as height above the floor, AND of
-//   P vertical position below h (hysteresis m)
-//   P vertical speed below v ("nearly still"; vertical only, so in-place clips work)
-//   optional (knee bend, Antho 2026-10-04): the knee's vertical speed relative to the
-//   heel below a small negative threshold (the knee starts dropping: the weight is taken)
-// min hold 30 ms, cooldown 250 ms, offset 0. Strength = the peak downward vertical speed
-// in the 100 ms before the event. h, m, v, the knee threshold and the floor come from
-// Analyse. The event lands at the crossing that completes the AND: with the knee
-// condition, the knee onset when it comes after the contact.
+// Footsteps (v2, Antho 2026-10-04 after the first real-data run): per foot, one block, AND of
+//   [0] height: P = the lowest of {heel, toe}, height above the floor, below h (the trigger)
+//   [1] knee:   knee flexion speed (joint angle up leg - knee - ankle, signed, rising as the
+//               knee bends) above the onset threshold (the weight is being taken)
+//   [2] yaw:    foot yaw speed (heel -> toe about the vertical, magnitude) below a fixed
+//               limit (a pivot on a turn is not a step)
+// and the event lands at the peak of the knee flexion speed while the AND holds.
+// Strength = the peak downward vertical speed of P in the 100 ms before the event.
+// h, the knee onset and the floor come from Analyse; the yaw limit is fixed (deg/s).
+// Every default lives in FootstepsParams (current guesses, to be tuned offline on Antho's
+// tagged clips with tests/detection_eval).
 //
 // Pure C++17, header-only.
 
@@ -27,7 +27,25 @@
 
 namespace rav {
 
-inline Block FootstepBlock(Role heel, Role toe, Role knee, bool knee_bend, const char* marker)
+struct FootstepsParams {
+    double height_fraction = 0.40;   // h = floor + this share of the floor-to-swing gap
+    double knee_fraction = 0.30;     // knee onset = this share of the p95 of knee flexion speed
+    double yaw_limit_dps = 800.0;    // foot yaw speed limit (deg/s)
+    double yaw_margin_dps = 0.0;     // its hysteresis
+    double min_hold_ms = 0.0;
+    double cooldown_ms = 250.0;
+    double offset_ms = 0.0;
+    bool   per_bone_floor = true;    // heel and toe each measured above their own floor
+    double floor_percentile = 2.0;
+    double margin_ratio = 0.5;       // hysteresis of the analysed thresholds
+    double smooth_ms = 8.0;          // before derivatives
+    double sensitivity = 0.0;        // 0 = off
+    double edge_margin_ms = 0.0;
+    double strength_window_ms = 100.0;
+};
+
+inline Block FootstepBlock(Role heel, Role toe, Role knee, Role up_leg, const FootstepsParams& prm,
+                           const char* marker)
 {
     SignalSpec p;
     p.bones = {static_cast<int>(heel), static_cast<int>(toe)};
@@ -42,38 +60,38 @@ inline Block FootstepBlock(Role heel, Role toe, Role knee, bool knee_bend, const
     low.threshold = 0.05;  // replaced by Analyse
     low.margin = 0.025;
 
-    Condition still;
-    still.signal = p;
-    still.signal.measure = Measure::Speed;
-    still.dir = Direction::Below;
-    still.threshold = 0.2;  // replaced by Analyse
-    still.margin = 0.1;
+    Condition bend;
+    bend.signal.quantity = Quantity::JointAngle;
+    bend.signal.bones = {static_cast<int>(up_leg), static_cast<int>(knee), static_cast<int>(heel)};
+    bend.signal.measure = Measure::Speed;
+    bend.signal.keep_sign = true;
+    bend.dir = Direction::Above;
+    bend.threshold = 50.0;  // replaced by Analyse (deg/s)
+    bend.margin = 25.0;
+
+    Condition yaw;
+    yaw.signal.quantity = Quantity::Yaw;
+    yaw.signal.bones = {static_cast<int>(heel), static_cast<int>(toe)};
+    yaw.signal.measure = Measure::Speed;
+    yaw.dir = Direction::Below;
+    yaw.threshold = prm.yaw_limit_dps;
+    yaw.margin = prm.yaw_margin_dps;
+    yaw.auto_threshold = false;
 
     Block b;
     b.marker = marker;
-    b.conditions = {low, still};
-    if (knee_bend) {
-        Condition bend;
-        bend.signal.bones = {static_cast<int>(knee)};
-        bend.signal.reference = Reference::Bones;
-        bend.signal.ref_bones = {static_cast<int>(heel)};
-        bend.signal.ref_combine = Combine::Single;
-        bend.signal.measure = Measure::Speed;
-        bend.signal.axis = Axis::Vertical;
-        bend.signal.keep_sign = true;
-        bend.dir = Direction::Below;
-        bend.threshold = -0.05;  // replaced by Analyse
-        bend.margin = 0.025;
-        b.conditions.push_back(bend);
-    }
-    b.min_hold_ms = 30.0;
-    b.cooldown_ms = 250.0;
-    b.offset_ms = 0.0;
+    b.conditions = {low, bend, yaw};
+    b.min_hold_ms = prm.min_hold_ms;
+    b.cooldown_ms = prm.cooldown_ms;
+    b.offset_ms = prm.offset_ms;
     b.strength_signal = p;
     b.strength_signal.measure = Measure::Speed;
     b.strength_signal.keep_sign = true;
     b.strength_sign = -1.0;  // downward
-    b.strength_window_ms = 100.0;
+    b.strength_window_ms = prm.strength_window_ms;
+    b.landing = Landing::PeakOf;
+    b.peak_condition = 1;
+    b.peak_max = true;
     return b;
 }
 
@@ -82,14 +100,35 @@ struct Preset {
     std::vector<Block> blocks;  // bones = Role values
 };
 
-// knee_bend: add the knee condition (default on; the measure dialog can switch it off).
-inline Preset FootstepsPreset(bool knee_bend = true)
+inline Preset FootstepsPreset(const FootstepsParams& prm = {})
 {
     Preset p;
     p.name = "Footsteps";
-    p.blocks = {FootstepBlock(Role::LeftHeel, Role::LeftToe, Role::LeftKnee, knee_bend, "Footstep L"),
-                FootstepBlock(Role::RightHeel, Role::RightToe, Role::RightKnee, knee_bend, "Footstep R")};
+    p.blocks = {FootstepBlock(Role::LeftHeel, Role::LeftToe, Role::LeftKnee, Role::LeftUpLeg, prm, "Footstep L"),
+                FootstepBlock(Role::RightHeel, Role::RightToe, Role::RightKnee, Role::RightUpLeg, prm, "Footstep R")};
     return p;
+}
+
+// The Analyse / Detect options that go with the params.
+inline AnalyseOptions FootstepsAnalyseOptions(const FootstepsParams& prm)
+{
+    AnalyseOptions o;
+    o.floor_percentile = prm.floor_percentile;
+    o.position_fraction = prm.height_fraction;
+    o.margin_ratio = prm.margin_ratio;
+    o.onset_fraction = prm.knee_fraction;
+    o.per_bone_floor = prm.per_bone_floor;
+    o.smooth_ms = prm.smooth_ms;
+    return o;
+}
+
+inline DetectOptions FootstepsDetectOptions(const FootstepsParams& prm)
+{
+    DetectOptions o;
+    o.sensitivity = prm.sensitivity;
+    o.edge_margin_ms = prm.edge_margin_ms;
+    o.smooth_ms = prm.smooth_ms;
+    return o;
 }
 
 }  // namespace rav

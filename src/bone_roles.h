@@ -21,7 +21,7 @@
 
 namespace rav {
 
-enum class Role : int { LeftHeel = 0, LeftToe, RightHeel, RightToe, LeftKnee, RightKnee, Hips, Count };
+enum class Role : int { LeftHeel = 0, LeftToe, RightHeel, RightToe, LeftKnee, RightKnee, LeftUpLeg, RightUpLeg, Hips, Count };
 
 inline const char* RoleName(Role r)
 {
@@ -32,6 +32,8 @@ inline const char* RoleName(Role r)
     case Role::RightToe: return "right toe";
     case Role::LeftKnee: return "left knee";
     case Role::RightKnee: return "right knee";
+    case Role::LeftUpLeg: return "left hip (up leg)";
+    case Role::RightUpLeg: return "right hip (up leg)";
     case Role::Hips: return "hips";
     default: return "?";
     }
@@ -63,6 +65,8 @@ inline std::vector<int> GuessRoleMapping(const std::vector<std::string>& bone_na
         {"righttoebase", "righttoe_end", "ball_r"},  // RightToe
         {"leftleg", "calf_l"},                       // LeftKnee (the shin joint sits at the knee)
         {"rightleg", "calf_r"},                      // RightKnee
+        {"leftupleg", "thigh_l"},                    // LeftUpLeg (the thigh joint sits at the hip)
+        {"rightupleg", "thigh_r"},                   // RightUpLeg
         {"hips", "pelvis"},                          // Hips
     };
     std::vector<std::string> norm;

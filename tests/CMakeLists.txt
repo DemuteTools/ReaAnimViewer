@@ -45,10 +45,16 @@ target_include_directories(texture_locate_test PRIVATE ${CMAKE_CURRENT_SOURCE_DI
 add_test(NAME texture_locate COMMAND texture_locate_test)
 
 # Spec 10-0 -- the bone-event rule engine and role mapping (src/bone_events.h, bone_roles.h).
-add_executable(bone_events_test bone_events_test.cpp ../src/bone_events.cpp)
+add_executable(bone_events_test bone_events_test.cpp ../src/bone_events.cpp ../src/footstep_measure.cpp)
 target_include_directories(bone_events_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME bone_events COMMAND bone_events_test)
 
 add_executable(bone_roles_test bone_roles_test.cpp ../src/bone_events.cpp)
 target_include_directories(bone_roles_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME bone_roles COMMAND bone_roles_test)
+
+# Spec 10-0 -- the offline evaluator: runs the footstep detection on RAV_detection_dump CSV
+# files and prints the measure action's report (a tool, not a test):
+#   detection_eval [--param=value ...] [--json] file.csv...
+add_executable(detection_eval detection_eval.cpp ../src/bone_events.cpp ../src/footstep_measure.cpp)
+target_include_directories(detection_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

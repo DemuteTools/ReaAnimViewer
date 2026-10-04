@@ -24,6 +24,7 @@
 #include "bone_presets.h"
 #include "bone_roles.h"
 #include "bone_sampling.h"
+#include "footstep_measure.h"
 #include "pcm_source_anim.h"
 #include "reaper_api.h"
 
@@ -33,8 +34,7 @@ namespace {
 constexpr const char kTitle[] = "RAV: Measure detection against reference markers";
 constexpr const char kRefName[] = "REF";
 constexpr const char kDetName[] = "RAV?";
-constexpr double kRateHz = 240.0;
-constexpr double kMatchWindowS = 0.150;
+constexpr double kRateHz = kDetectRateHz;
 
 // Optional take-marker functions (REAPER 5.981+), resolved through GetFunc so a missing
 // one never refuses the whole plugin.
@@ -47,18 +47,8 @@ GetTakeMarkerFn     g_get_take_marker = nullptr;
 SetTakeMarkerFn     g_set_take_marker = nullptr;
 DeleteTakeMarkerFn  g_delete_take_marker = nullptr;
 
-// The dialog's knobs, remembered for the session.
-struct Knobs {
-    double height_pct = 25.0;     // h = floor + this % of the floor-to-swing gap
-    double stillness_pct = 30.0;  // v = this percentile of |vertical speed|
-    double sensitivity = 0.0;     // 0..1
-    double min_hold_ms = 30.0;
-    double cooldown_ms = 250.0;
-    double offset_ms = 0.0;
-    int    per_bone_floor = 1;    // 1: heel and toe each above their own floor (see Implementation Notes)
-    int    knee_bend = 1;         // 1: the Footsteps knee-bend condition is on
-};
-Knobs g_knobs;
+// The dialog's knobs (FootstepsParams defaults), remembered for the session.
+FootstepsParams g_params;
 
 std::string Format(const char* fmt, ...)
 {
@@ -95,56 +85,42 @@ std::string BaseName(const std::string& path)
     return p == std::string::npos ? path : path.substr(p + 1);
 }
 
-std::string KnobsText(const Knobs& k)
-{
-    return Format("height threshold %g%% of gap, stillness p%g, sensitivity %g, min hold %g ms, cooldown %g ms, offset %+g ms, "
-                  "floor %s, knee bend %s",
-                  k.height_pct, k.stillness_pct, k.sensitivity, k.min_hold_ms, k.cooldown_ms, k.offset_ms,
-                  k.per_bone_floor ? "per bone" : "per foot", k.knee_bend ? "on" : "off");
-}
-
 // The knobs dialog. False on Cancel or a bad value (the user was told).
-bool AskKnobs(Knobs& k)
+bool AskKnobs(FootstepsParams& k)
 {
     char buf[1024];
-    std::snprintf(buf, sizeof(buf), "%g,%g,%g,%g,%g,%g,%d,%d", k.height_pct, k.stillness_pct, k.sensitivity,
-                  k.min_hold_ms, k.cooldown_ms, k.offset_ms, k.per_bone_floor, k.knee_bend);
-    if (!GetUserInputs(kTitle, 8,
-                       "Height threshold (% of gap),Stillness (speed percentile),Sensitivity (0-1),Min hold (ms),"
-                       "Cooldown (ms),Offset (ms),Floor per bone (1) / foot (0),Knee bend on (1) / off (0),"
-                       "extrawidth=80",
+    std::snprintf(buf, sizeof(buf), "%g,%g,%g,%g,%g", k.height_fraction * 100.0, k.knee_fraction, k.yaw_limit_dps,
+                  k.cooldown_ms, k.offset_ms);
+    if (!GetUserInputs(kTitle, 5,
+                       "Height threshold (% of gap),Knee onset (x p95 of flexion speed),Foot yaw limit (deg/s),"
+                       "Cooldown (ms),Offset (ms),extrawidth=80",
                        buf, sizeof(buf)))
         return false;
 
-    double v[8] = {};
+    double v[5] = {};
     const char* p = buf;
-    for (int i = 0; i < 8; ++i) {
+    for (int i = 0; i < 5; ++i) {
         char* end = nullptr;
         v[i] = std::strtod(p, &end);
         while (end && *end == ' ') ++end;
-        const bool last = (i == 7);
+        const bool last = (i == 4);
         if (end == p || !std::isfinite(v[i]) || (last ? (*end != '\0') : (*end != ','))) {
             ShowMessageBox("Each field must be a number.", kTitle, 0);
             return false;
         }
         p = end + (last ? 0 : 1);
     }
-    if (!(v[0] > 0.0 && v[0] <= 100.0) || !(v[1] >= 0.0 && v[1] <= 100.0) || !(v[2] >= 0.0 && v[2] <= 1.0) ||
-        v[3] < 0.0 || v[4] < 0.0 || !(v[6] == 0.0 || v[6] == 1.0) || !(v[7] == 0.0 || v[7] == 1.0)) {
-        ShowMessageBox("Height threshold: above 0, up to 100. Stillness: 0 to 100. Sensitivity: 0 to 1.\n"
-                       "Min hold and cooldown: 0 or more. Floor: 1 (per bone) or 0 (per foot).\n"
-                       "Knee bend: 1 (on) or 0 (off).",
+    if (!(v[0] > 0.0 && v[0] <= 100.0) || !(v[1] >= 0.0 && v[1] <= 1.0) || !(v[2] > 0.0) || v[3] < 0.0) {
+        ShowMessageBox("Height threshold: above 0, up to 100. Knee onset: 0 to 1.\n"
+                       "Foot yaw limit: above 0. Cooldown: 0 or more.",
                        kTitle, 0);
         return false;
     }
-    k.height_pct = v[0];
-    k.stillness_pct = v[1];
-    k.sensitivity = v[2];
-    k.min_hold_ms = v[3];
-    k.cooldown_ms = v[4];
-    k.offset_ms = v[5];
-    k.per_bone_floor = static_cast<int>(v[6]);
-    k.knee_bend = static_cast<int>(v[7]);
+    k.height_fraction = v[0] / 100.0;
+    k.knee_fraction = v[1];
+    k.yaw_limit_dps = v[2];
+    k.cooldown_ms = v[3];
+    k.offset_ms = v[4];
     return true;
 }
 
@@ -152,31 +128,12 @@ struct ItemRun {
     std::string         label;
     std::string         skipped;  // non-empty = left out of the total, with the reason
     MediaItem_Take*     take = nullptr;
-    MatchResult         match;
-    std::vector<Block>  blocks;   // as analysed
-    std::vector<double> det;      // every detection (clip time)
+    ItemMeasure         m;        // the shared measure (footstep_measure.h)
     bool                ref_from_project = false;  // REF read from project markers over the item
     std::vector<double> refs;     // REF times (clip time), for the per-step diagnostic
-    std::vector<Event>  events;   // every detection with its condition entry times
     std::string         dump;     // the bone-track dump written for offline tuning ("" = none)
 };
 
-std::string TimesText(const std::vector<double>& t)
-{
-    if (t.empty()) return "-";
-    std::string s;
-    const size_t cap = 24;
-    for (size_t i = 0; i < t.size() && i < cap; ++i) s += Format(i ? " %.3f" : "%.3f", t[i]);
-    if (t.size() > cap) s += Format(" ... (+%zu)", t.size() - cap);
-    return s;
-}
-
-std::string MatchText(const MatchResult& m)
-{
-    return Format("REF %d  det %d  match %d  R %.1f%%  P %.1f%%  err mean %.1f ms max %.1f ms (lag %+.1f ms)", m.n_ref,
-                  m.n_det, m.n_match, m.recall * 100.0, m.precision * 100.0, m.mean_abs_err_s * 1000.0,
-                  m.max_abs_err_s * 1000.0, m.mean_signed_err_s * 1000.0);
-}
 
 // Dev harness: writes every bone's track (240 Hz, metres, model Y up) and the REF times to
 // <project folder>/RAV_detection_dump/<file>.csv, so detection can be tuned offline on
@@ -219,7 +176,7 @@ std::string DumpTracks(const CpuAsset& asset, const std::string& label, const st
     }
 }
 
-void MeasureItem(MediaItem* item, const Knobs& k, ItemRun& run)
+void MeasureItem(MediaItem* item, const FootstepsParams& k, ItemRun& run)
 {
     MediaItem_Take* take = item ? GetActiveTake(item) : nullptr;
     if (!take) {
@@ -296,49 +253,14 @@ void MeasureItem(MediaItem* item, const Knobs& k, ItemRun& run)
     }
     run.dump = DumpTracks(asset, run.label, refs, lo, hi);
 
-    // Roles -> bones -> tracks.
+    // Roles -> bones -> tracks -> Analyse + Detect -> match (shared with tests/detection_eval).
     std::vector<std::string> names;
     for (const SceneBone& b : asset.skeleton.bones) names.push_back(b.name);
-    const std::vector<int> role_bone = GuessRoleMapping(names);
-    Preset preset = FootstepsPreset(k.knee_bend != 0);
-    const std::vector<Role> used = RolesUsed(preset.blocks);
-    std::vector<int> role_to_track(static_cast<size_t>(Role::Count), -1);
-    std::vector<int> bone_indices;
-    for (Role r : used) {
-        const int b = role_bone[static_cast<size_t>(r)];
-        if (b < 0) continue;
-        role_to_track[static_cast<size_t>(r)] = static_cast<int>(bone_indices.size());
-        bone_indices.push_back(b);
-    }
-    std::string missing;
-    std::vector<Block> blocks = preset.blocks;
-    if (!BindRoles(blocks, role_to_track, &missing)) {
-        run.skipped = "roles not found: " + missing;
-        return;
-    }
-    for (Block& b : blocks) {
-        b.min_hold_ms = k.min_hold_ms;
-        b.cooldown_ms = k.cooldown_ms;
-        b.offset_ms = k.offset_ms;
-    }
-
-    const std::vector<BoneTrack> tracks = SampleBoneTracks(asset, bone_indices, kRateHz);
-    if (tracks.empty()) {
-        run.skipped = "could not sample the animation";
-        return;
-    }
-
-    AnalyseOptions ao;
-    ao.position_fraction = k.height_pct / 100.0;
-    ao.speed_percentile = k.stillness_pct;
-    ao.per_bone_floor = k.per_bone_floor != 0;
-    run.blocks = Analyse(blocks, tracks, ao);
-    DetectOptions dop;
-    dop.sensitivity = k.sensitivity;
-    run.events = Detect(run.blocks, tracks, dop);
-    for (const Event& e : run.events) run.det.push_back(e.time_s);
     run.refs = refs;
-    run.match = MatchEvents(refs, run.det, kMatchWindowS, lo, hi);
+    run.m = MeasureFootsteps(
+        names, [&](const std::vector<int>& bones) { return SampleBoneTracks(asset, bones, kRateHz); }, refs, lo, hi,
+        k);
+    if (!run.m.skipped.empty()) run.skipped = run.m.skipped;
 }
 
 // Clears the RAV? take markers of every RAV take in the run (skipped ones too, so no
@@ -360,7 +282,7 @@ void WriteDetectionMarkers(const std::vector<ItemRun>& runs)
             if (std::strcmp(name, kDetName) == 0) g_delete_take_marker(r.take, i);
         }
         if (!r.skipped.empty()) continue;
-        for (double t : r.det) {
+        for (double t : r.m.det) {
             if (t < 0.0) continue;
             double pos = t;
             g_set_take_marker(r.take, -1, kDetName, &pos, nullptr);
@@ -370,30 +292,7 @@ void WriteDetectionMarkers(const std::vector<ItemRun>& runs)
     UpdateArrange();
 }
 
-// Per detection: the nearest REF and when each Footsteps condition came true, relative to
-// that REF (which condition makes the event late or early).
-std::string StepsText(const ItemRun& r)
-{
-    static const char* const kCond[] = {"height", "still", "knee"};
-    std::string s;
-    for (const Event& e : r.events) {
-        s += Format("    det %.3f %s", e.time_s, e.marker.c_str());
-        double best = -1.0;
-        for (double t : r.refs)
-            if (best < 0.0 || std::fabs(t - e.time_s) < std::fabs(best - e.time_s)) best = t;
-        if (best < 0.0) {
-            s += "\n";
-            continue;
-        }
-        s += Format("  nearest REF %.3f (%+.0f ms):", best, (e.time_s - best) * 1000.0);
-        for (size_t c = 0; c < e.cond_entry_s.size(); ++c)
-            s += Format(" %s %+.0f", c < 3 ? kCond[c] : "cond", (e.cond_entry_s[c] - best) * 1000.0);
-        s += " ms\n";
-    }
-    return s;
-}
-
-void Report(const std::vector<ItemRun>& runs, const Knobs& k)
+void Report(const std::vector<ItemRun>& runs, const FootstepsParams& k)
 {
     std::string out = Format("\n=== %s ===\nFootsteps preset + Analyse, %g Hz, match window +-%g ms, source time\n", kTitle,
                              kRateHz, kMatchWindowS * 1000.0);
@@ -402,41 +301,15 @@ void Report(const std::vector<ItemRun>& runs, const Knobs& k)
         const ItemRun& r = runs[i];
         const std::string label = Format("#%zu %s", i + 1, r.label.empty() ? "(item)" : r.label.c_str());
         if (!r.skipped.empty()) {
-            out += label + "  skipped: " + r.skipped + "\n";
+            out += SkippedReport(label, r.skipped);
+            if (!r.dump.empty()) out += "  bone tracks: " + r.dump + "\n";
             continue;
         }
-        measured.push_back(r.match);
-        out += label + "  " + MatchText(r.match) + (r.ref_from_project ? "  (REF: project markers)" : "") + "\n";
-        std::string th = " ";
-        for (const Block& b : r.blocks) {
-            if (b.conditions.size() < 2) continue;
-            const Condition& h = b.conditions[0];
-            const Condition& v = b.conditions[1];
-            std::string floor;
-            if (h.signal.bone_floors.empty()) {
-                floor = Format("%.3f", h.signal.floor_y);
-            } else {  // heel / toe floors (+ the floor of their combined height, about 0)
-                for (size_t f = 0; f < h.signal.bone_floors.size(); ++f)
-                    floor += Format(f ? "/%.3f" : "%.3f", h.signal.bone_floors[f]);
-                floor += Format(" (+%.3f)", h.signal.floor_y);
-            }
-            th += Format(" %s: h=%.3f m (m=%.3f)  v=%.3f m/s  floor=%s m", b.marker.c_str(), h.threshold, h.margin,
-                         v.threshold, floor.c_str());
-            if (b.conditions.size() >= 3) th += Format("  knee<%.3f m/s", b.conditions[2].threshold);
-            th += ";";
-        }
-        out += th + "\n";
-        out += "  unmatched REF: " + TimesText(r.match.unmatched_ref) +
-               "  unmatched det: " + TimesText(r.match.unmatched_det) + "\n";
-        out += StepsText(r);
+        measured.push_back(r.m.match);
+        out += ItemReport(label, r.m, r.refs, r.ref_from_project ? "  (REF: project markers)" : "");
         if (!r.dump.empty()) out += "  bone tracks: " + r.dump + "\n";
     }
-    const MatchResult total = SumMatches(measured);
-    const bool go = !measured.empty() && PassesAccuracyGate(total);
-    out += Format("TOTAL (%zu item%s)  ", measured.size(), measured.size() == 1 ? "" : "s");
-    out += measured.empty() ? std::string("nothing measured") : MatchText(total);
-    out += Format(" -> %s (NFR-AT1: R>=98%% P>=98%% max |err|<=16 ms)  [knobs used: %s]\n", go ? "GO" : "NO-GO",
-                  KnobsText(k).c_str());
+    out += TotalReport(measured, k);
     ShowConsoleMsg(out.c_str());
 }
 
@@ -463,9 +336,9 @@ void MeasureDetectionOnSelectedItems()
             ShowMessageBox("Select animation items with REF markers (take markers, or project markers over the items)", kTitle, 0);
             return;
         }
-        Knobs k = g_knobs;
+        FootstepsParams k = g_params;
         if (!AskKnobs(k)) return;
-        g_knobs = k;
+        g_params = k;
 
         std::vector<MediaItem*> items;
         for (int i = 0; i < n; ++i) items.push_back(GetSelectedMediaItem(nullptr, i));

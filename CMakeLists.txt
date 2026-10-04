@@ -173,6 +173,7 @@ if(WIN32)
             src/texture_locate.cpp
             src/bone_events.cpp
             src/bone_sampling.cpp
+            src/footstep_measure.cpp
             src/detection_measure.cpp
     )
     # Generated rav_version.h (see RAV_VERSION above).

@@ -6,11 +6,13 @@
 
 #include "bone_events.h"
 #include "bone_presets.h"
+#include "footstep_measure.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <functional>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -413,91 +415,212 @@ int main()
         CHECK(Near(a[0].conditions[0].signal.bone_floors[0] + a[0].conditions[0].signal.floor_y, 1.03, 1e-3));
     }
 
-    // ---- Footsteps preset on a synthetic gait (two feet, heel then toe) ------------------
+    // ---- Angle signals: joint flexion and unwrapped yaw ----------------------------------
     {
-        // Left foot lands at 0.5 + k, right foot at 1.0 + k. Heel lands first, toe 60 ms
-        // later; each slows down into the ground (zero speed at contact).
-        auto foot = [](double land) {
+        // Flexion at b: a straight up, c swinging away from straight down by phi = 30 t deg.
+        const double d2r = 3.14159265358979323846 / 180.0;
+        auto c_of = [d2r](double t) { return Vec3d{std::sin(30.0 * t * d2r), -std::cos(30.0 * t * d2r), 0.0}; };
+        std::vector<BoneTrack> tr = {Track(2.0, 240.0, [](double) { return 1.0; }),
+                                     Track(2.0, 240.0, [](double) { return 0.0; }),
+                                     Track(2.0, 240.0, [&](double t) { return c_of(t).y; },
+                                           [&](double t) { return c_of(t).x; })};
+        SignalSpec s;
+        s.quantity = Quantity::JointAngle;
+        s.bones = {0, 1, 2};
+        CHECK(Near(EvaluateSignal(s, tr).at(240), 30.0, 1e-6));  // t = 1 s
+        CHECK(Near(EvaluateSignal(s, tr).at(0), 0.0, 1e-6));     // straight
+        s.measure = Measure::Speed;
+        s.keep_sign = true;
+        CHECK(Near(EvaluateSignal(s, tr).at(240), 30.0, 1e-3));
+        s.bones = {0, 1};  // a joint angle needs three bones
+        CHECK(EvaluateSignal(s, tr).empty());
+        // Scale-free: the same pose ten times bigger gives the same angle.
+        std::vector<BoneTrack> big = tr;
+        for (BoneTrack& b : big)
+            for (Vec3d& q : b.pos) q = Vec3d{q.x * 10, q.y * 10, q.z * 10};
+        s.bones = {0, 1, 2};
+        s.measure = Measure::Position;
+        CHECK(Near(EvaluateSignal(s, big).at(120), EvaluateSignal(s, tr).at(120), 1e-9));
+
+        // Yaw of a -> b: heading psi = 150 + 200 t deg (atan2 on X/Z), across +-180.
+        auto yaw_tracks = [d2r](double rate_dps) {
+            auto bx = [=](double t) { return std::sin((150.0 + rate_dps * t) * d2r); };
+            auto bz = [=](double t) { return std::cos((150.0 + rate_dps * t) * d2r); };
+            return std::vector<BoneTrack>{Track(2.0, 240.0, [](double) { return 0.0; }),
+                                          Track(2.0, 240.0, [](double) { return 0.0; }, bx, bz)};
+        };
+        SignalSpec y;
+        y.quantity = Quantity::Yaw;
+        y.bones = {0, 1};
+        auto yt = yaw_tracks(200.0);
+        auto v = EvaluateSignal(y, yt);
+        CHECK(Near(v.at(0), 150.0, 1e-6));
+        CHECK(Near(v.at(120), 250.0, 1e-6));  // past 180: unwrapped, no jump to -110
+        CHECK(Near(v.at(480), 550.0, 1e-6));
+        y.measure = Measure::Speed;
+        v = EvaluateSignal(y, yt);
+        CHECK(Near(v.at(60), 200.0, 1e-3));  // 0.25 s: the wrap is at 0.15 s
+        CHECK(Near(v.at(36), 200.0, 1e-3));  // right at the wrap
+        yt = yaw_tracks(-200.0);
+        CHECK(Near(EvaluateSignal(y, yt).at(240), 200.0, 1e-3));  // magnitude
+        y.keep_sign = true;
+        CHECK(Near(EvaluateSignal(y, yt).at(240), -200.0, 1e-3));
+        // Analyse: a signed angle speed "above" -> + onset_fraction * p95; a fixed limit stays.
+        Block b;
+        Condition c;
+        c.signal = y;
+        c.dir = Direction::Above;
+        b.conditions = {c};
+        c.auto_threshold = false;
+        c.threshold = 800.0;
+        b.conditions.push_back(c);
+        auto a = Analyse({b}, yaw_tracks(200.0));
+        CHECK(Near(a[0].conditions[0].threshold, 0.1 * 200.0, 1e-3));
+        CHECK(Near(a[0].conditions[0].margin, 0.5 * 0.1 * 200.0, 1e-3));
+        CHECK(a[0].conditions[1].threshold == 800.0);
+    }
+
+    // ---- Landing on a peak (sub-sample, parabolic) ---------------------------------------
+    {
+        // y = 1 - (t - 0.5137)^2 * 40: above 0.5 from about 0.40 to 0.63, peak at 0.5137.
+        std::vector<BoneTrack> tr = {
+            Track(1.0, 240.0, [](double t) { return 1.0 - 40.0 * (t - 0.5137) * (t - 0.5137); })};
+        Block b = HeightBlock(Direction::Above, 0.5);
+        auto ev = Detect({b}, tr);
+        CHECK(ev.size() == 1);
+        const double crossing = ev.empty() ? 0.0 : ev[0].time_s;
+        CHECK(crossing < 0.45);  // the default lands at the crossing
+        b.landing = Landing::PeakOf;
+        b.peak_condition = 0;
+        b.peak_max = true;
+        ev = Detect({b}, tr);
+        CHECK(ev.size() == 1);
+        if (ev.size() == 1) {
+            CHECK(Near(ev[0].time_s, 0.5137, kMs));
+            CHECK(Near(ev[0].cond_entry_s.at(0), crossing, 1e-12));  // entries stay the crossings
+        }
+        b.offset_ms = 10.0;
+        ev = Detect({b}, tr);
+        CHECK(ev.size() == 1 && Near(ev[0].time_s, 0.5237, kMs));
+        // Min: the trough of a "below" span.
+        std::vector<BoneTrack> tr2 = {
+            Track(1.0, 240.0, [](double t) { return 40.0 * (t - 0.3021) * (t - 0.3021); })};
+        Block lo = HeightBlock(Direction::Below, 0.5);
+        lo.landing = Landing::PeakOf;
+        lo.peak_max = false;
+        ev = Detect({lo}, tr2);
+        CHECK(ev.size() == 1 && Near(ev[0].time_s, 0.3021, kMs));
+        // The cooldown keeps the first event; the edge margin applies to the landing.
+        std::vector<BoneTrack> tr3 = {Track(1.0, 240.0, [](double t) {
+            const double a = 1.0 - 400.0 * (t - 0.3) * (t - 0.3), c = 1.0 - 400.0 * (t - 0.45) * (t - 0.45);
+            return std::max(a, c);
+        })};
+        Block two = HeightBlock(Direction::Above, 0.5, 0.2);
+        two.landing = Landing::PeakOf;
+        CHECK(Detect({two}, tr3).size() == 2);
+        two.cooldown_ms = 200.0;
+        ev = Detect({two}, tr3);
+        CHECK(ev.size() == 1 && Near(ev[0].time_s, 0.3, kMs));
+        DetectOptions o;
+        o.edge_margin_ms = 520.0;  // a crossing at ~0.4 would pass; its landing at 0.5137 does not
+        CHECK(Detect({b}, tr, o).empty());
+    }
+
+    // ---- The shared measure (footstep_measure.h) on a synthetic gait -----------------------
+    {
+        // Mixamo legs, in place. Left foot lands at 0.5 + k, right at 1.0 + k (heel first, toe
+        // 60 ms later). The knee bends after contact: its flexion speed peaks kLag after the
+        // contact. The event must land at that peak.
+        const double kLag = 0.04;
+        auto foot_h = [](double land) {
             return [land](double t) {
-                const double ph = std::fmod(t - land + 10.0, 1.0);  // 0 at the landing
-                if (ph < 0.55) return 0.0;                           // stance
-                if (ph < 0.75) return 0.15 * (ph - 0.55) / 0.2;      // lift
-                const double u = (1.0 - ph) / 0.25;                  // swing down, easing in
+                const double ph = std::fmod(t - land + 10.0, 1.0);
+                if (ph < 0.55) return 0.0;
+                if (ph < 0.75) return 0.15 * (ph - 0.55) / 0.2;
+                const double u = (1.0 - ph) / 0.25;
                 return 0.15 * u * u;
             };
         };
-        auto heel = [&](double land) {
-            auto f = foot(land);
-            return [f](double t) { return 0.08 + f(t); };
-        };
-        auto toe = [&](double land) {
-            auto f = foot(land + 0.06);
-            return [f](double t) { return 0.03 + f(t); };
-        };
-        // The knee rides on the heel, then starts dropping kKneeLag after the contact
-        // (accelerating at 20 m/s^2 for 50 ms, slowing for 50 ms: 5 cm), and comes back
-        // up late in the stance.
-        const double kKneeLag = 0.05;
-        auto knee = [&](double land) {
-            auto h = heel(land);
-            return [h, land, kKneeLag](double t) {
-                const double ph = std::fmod(t - land + 10.0, 1.0);
-                const double a = 20.0, T = 0.05, drop = a * T * T;
-                const double u = ph - kKneeLag;
-                double d = 0.0;
-                if (u >= 0.0 && u < T) d = -0.5 * a * u * u;
-                else if (u >= T && u < 2 * T) d = -0.5 * a * T * T - a * T * (u - T) + 0.5 * a * (u - T) * (u - T);
-                else if (u >= 2 * T && ph < 0.4) d = -drop;
-                else if (ph >= 0.4 && ph < 0.55) d = -drop * (1.0 + std::cos(3.14159265358979 * (ph - 0.4) / 0.15)) / 2.0;
-                return h(t) + 0.45 + d;
+        // The knee's forward push (m): a bend centred kLag after contact (raised-cosine speed,
+        // 100 ms), straightening in late stance, and a swing bend while the foot is up.
+        auto push = [kLag](double land) {
+            return [land, kLag](double t) {
+                const double ph = std::fmod(t - land + 10.05, 1.0) - 0.05;  // -0.05 .. 0.95, 0 at contact
+                const double pi = 3.14159265358979323846;
+                auto step = [pi](double x) { return x <= 0 ? 0.0 : x >= 1 ? 1.0 : 0.5 - 0.5 * std::cos(pi * x); };
+                double k = 0.02 + 0.06 * step((ph - (kLag - 0.05)) / 0.1);  // weight acceptance bend
+                k -= 0.06 * step((ph - 0.3) / 0.25);                         // straighten in stance
+                k += 0.10 * step((ph - 0.72) / 0.1) - 0.10 * step((ph - 0.82) / 0.1);  // swing (foot up)
+                return k;
             };
         };
-        // Tracks in RolesUsed order: L heel, L toe, R heel, R toe, L knee, R knee.
-        std::vector<BoneTrack> tr = {Track(4.2, 240.0, heel(0.5)), Track(4.2, 240.0, toe(0.5)),
-                                     Track(4.2, 240.0, heel(0.0)), Track(4.2, 240.0, toe(0.0)),
-                                     Track(4.2, 240.0, knee(0.5)), Track(4.2, 240.0, knee(0.0))};
-        std::vector<double> contacts = {0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0};
-        auto run = [&](bool knee_bend) {
-            Preset p = FootstepsPreset(knee_bend);
-            std::string missing;
-            std::vector<int> role_to_track(static_cast<size_t>(Role::Count), -1);
-            const auto used = RolesUsed(p.blocks);
-            for (size_t i = 0; i < used.size(); ++i) role_to_track[static_cast<size_t>(used[i])] = static_cast<int>(i);
-            CHECK(BindRoles(p.blocks, role_to_track, &missing));
-            AnalyseOptions ao;
-            ao.per_bone_floor = true;
-            std::vector<double> det;
-            for (const Event& e : Detect(Analyse(p.blocks, tr, ao), tr)) det.push_back(e.time_s);
-            return det;
+        struct Leg {
+            std::function<double(double)> h, k;
+            double x;
         };
-        // Knee bend off: the event is the contact.
-        MatchResult m = MatchEvents(contacts, run(false), 0.15, 0.1, 4.2);
-        CHECK(m.recall == 1.0);
-        CHECK(m.precision == 1.0);
-        CHECK(m.max_abs_err_s <= 0.016);
-        // Knee bend on: the event is the knee onset, kKneeLag after the contact (+- 6 ms).
-        std::vector<double> onsets;
-        for (double c : contacts) onsets.push_back(c + kKneeLag);
-        m = MatchEvents(onsets, run(true), 0.15, 0.1, 4.2);
-        CHECK(m.recall == 1.0);
-        CHECK(m.precision == 1.0);
-        CHECK(m.max_abs_err_s <= 0.006);
-        // Analyse's knee threshold is a small negative speed.
-        {
-            Preset p = FootstepsPreset(true);
-            std::vector<int> rt = {0, 1, 2, 3, 4, 5, -1};
-            CHECK(BindRoles(p.blocks, rt, nullptr));
-            auto blocks = Analyse(p.blocks, tr);
-            CHECK(blocks[0].conditions.size() == 3);
-            CHECK(blocks[0].conditions[2].threshold < 0.0 && blocks[0].conditions[2].threshold > -0.5);
-            CHECK(Near(blocks[0].conditions[2].margin, 0.5 * std::fabs(blocks[0].conditions[2].threshold), 1e-12));
-            // Scale-free: the same clip twice as big gives twice the threshold.
-            std::vector<BoneTrack> big = tr;
-            for (BoneTrack& b : big)
-                for (Vec3d& q : b.pos) q = Vec3d{q.x * 2, q.y * 2, q.z * 2};
-            auto blocks2 = Analyse(p.blocks, big);
-            CHECK(Near(blocks2[0].conditions[2].threshold, 2.0 * blocks[0].conditions[2].threshold, 1e-6));
+        auto leg_tracks = [&](const Leg& L, std::vector<BoneTrack>& out) {
+            auto hip = Track(4.2, 240.0, [](double) { return 0.95; }, [&](double) { return L.x; });
+            auto knee = Track(4.2, 240.0, [&](double t) { return 0.5 * (0.95 + 0.08 + L.h(t)); },
+                              [&](double) { return L.x; }, [&](double t) { return L.k(t); });
+            auto ankle = Track(4.2, 240.0, [&](double t) { return 0.08 + L.h(t); }, [&](double) { return L.x; });
+            auto toe = Track(4.2, 240.0, [&](double t) { return 0.03 + L.h(std::max(0.0, t - 0.06)); },
+                             [&](double) { return L.x; }, [](double) { return 0.15; });
+            out.push_back(hip);
+            out.push_back(knee);
+            out.push_back(ankle);
+            out.push_back(toe);
+        };
+        const std::vector<std::string> names = {"mixamorig:LeftUpLeg",  "mixamorig:LeftLeg",  "mixamorig:LeftFoot",
+                                                "mixamorig:LeftToeBase", "mixamorig:RightUpLeg", "mixamorig:RightLeg",
+                                                "mixamorig:RightFoot",  "mixamorig:RightToeBase"};
+        std::vector<BoneTrack> all;
+        Leg left{foot_h(0.5), push(0.5), 0.1}, right{foot_h(0.0), push(0.0), -0.1};
+        leg_tracks(left, all);
+        leg_tracks(right, all);
+        TrackSampler sampler = [&](const std::vector<int>& idx) {
+            std::vector<BoneTrack> t;
+            for (int i : idx) t.push_back(all.at(static_cast<size_t>(i)));
+            return t;
+        };
+        // The truth: the knee flexion speed peak near each contact, from the exact geometry.
+        auto flex = [&](const Leg& L, double t) {
+            const double ky = 0.5 * (0.95 + 0.08 + L.h(t)), kz = L.k(t), ay = 0.08 + L.h(t);
+            const double ux = 0.95 - ky, uz = -kz, wx = ay - ky, wz = -kz;
+            const double c = (ux * wx + uz * wz) / (std::sqrt(ux * ux + uz * uz) * std::sqrt(wx * wx + wz * wz));
+            return 180.0 - std::acos(c) * 180.0 / 3.14159265358979323846;
+        };
+        std::vector<double> truth;
+        for (double c : {0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0}) {
+            const Leg& L = (std::fmod(c, 1.0) > 0.25) ? left : right;
+            double best = c, best_v = -1e9;
+            for (double t = c - 0.05; t <= c + 0.15; t += 0.0001) {
+                const double v = (flex(L, t + 0.00005) - flex(L, t - 0.00005)) / 0.0001;
+                if (v > best_v) {
+                    best_v = v;
+                    best = t;
+                }
+            }
+            truth.push_back(best);
+            CHECK(std::fabs(best - (c + kLag)) < 0.010);
         }
+        FootstepsParams prm;
+        ItemMeasure m = MeasureFootsteps(names, sampler, truth, 0.1, 4.2, prm);
+        CHECK(m.skipped.empty());
+        CHECK(m.match.recall == 1.0);
+        CHECK(m.match.precision == 1.0);
+        CHECK(m.match.max_abs_err_s <= 0.003);
+        CHECK(!ItemReport("gait", m, truth, "").empty());
+        CHECK(ItemJson("gait", m).find("\"n_match\":8") != std::string::npos);
+        CHECK(TotalReport({m.match}, prm).find("-> GO") != std::string::npos);
+        // The yaw limit gates: a limit below the (zero) yaw speed of a planted foot -> nothing.
+        prm.yaw_limit_dps = -1.0;
+        CHECK(MeasureFootsteps(names, sampler, truth, 0.1, 4.2, prm).det.empty());
+        // A skeleton without knees is skipped with the roles named.
+        std::vector<std::string> no_knee = names;
+        no_knee[1] = "LeftShin";
+        no_knee[5] = "RightShin";
+        m = MeasureFootsteps(no_knee, sampler, truth, 0.1, 4.2, FootstepsParams{});
+        CHECK(m.skipped == "roles not found: left knee, right knee");
     }
 
     // ---- MatchEvents ------------------------------------------------------------------------

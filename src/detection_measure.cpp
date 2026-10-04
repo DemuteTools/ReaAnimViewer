@@ -153,6 +153,7 @@ struct ItemRun {
     MatchResult         match;
     std::vector<Block>  blocks;   // as analysed
     std::vector<double> det;      // every detection (clip time)
+    bool                ref_from_project = false;  // REF read from project markers over the item
 };
 
 std::string TimesText(const std::vector<double>& t)
@@ -196,7 +197,16 @@ void MeasureItem(MediaItem* item, const Knobs& k, ItemRun& run)
     }
     run.take = take;  // a RAV take: its old RAV? markers are cleared even if it is skipped below
 
-    // REF take markers (source time).
+    // The visible part of the clip, in source time.
+    const double lo = GetMediaItemTakeInfo_Value(take, "D_STARTOFFS");
+    double rate = GetMediaItemTakeInfo_Value(take, "D_PLAYRATE");
+    if (!(rate > 0.0) || !std::isfinite(rate)) rate = 1.0;
+    const double item_pos = GetMediaItemInfo_Value(item, "D_POSITION");
+    const double item_len = GetMediaItemInfo_Value(item, "D_LENGTH");
+    const double hi = lo + item_len * rate;
+
+    // REF take markers (source time). Without any, the REF project markers over the item
+    // (not regions), mapped to source time. Never both: the same step would count twice.
     std::vector<double> refs;
     const int nm = g_num_take_markers(take);
     for (int i = 0; i < nm; ++i) {
@@ -205,19 +215,26 @@ void MeasureItem(MediaItem* item, const Knobs& k, ItemRun& run)
         if (pos >= 0.0 && SameName(name, kRefName)) refs.push_back(pos);
     }
     if (refs.empty()) {
-        run.skipped = "no REF take marker";
+        bool is_rgn = false;
+        double pos = 0.0, rgn_end = 0.0;
+        const char* name = nullptr;
+        int number = 0;
+        for (int i = 0; EnumProjectMarkers2(nullptr, i, &is_rgn, &pos, &rgn_end, &name, &number) > 0; ++i) {
+            if (is_rgn || !SameName(name, kRefName)) continue;
+            if (pos < item_pos - 1e-9 || pos > item_pos + item_len + 1e-9) continue;
+            refs.push_back(lo + (pos - item_pos) * rate);
+        }
+        if (!refs.empty()) run.ref_from_project = true;
+    }
+    if (refs.empty()) {
+        run.skipped = "no REF marker (take marker, or project marker over the item)";
         return;
     }
-    // The visible part of the clip, in source time.
-    const double lo = GetMediaItemTakeInfo_Value(take, "D_STARTOFFS");
-    double rate = GetMediaItemTakeInfo_Value(take, "D_PLAYRATE");
-    if (!(rate > 0.0) || !std::isfinite(rate)) rate = 1.0;
-    const double hi = lo + GetMediaItemInfo_Value(item, "D_LENGTH") * rate;
     int refs_inside = 0;
     for (double r : refs)
         if (r >= lo && r <= hi) ++refs_inside;
     if (refs_inside == 0) {
-        run.skipped = "no REF take marker inside the visible part of the item";
+        run.skipped = "no REF marker inside the visible part of the item";
         return;
     }
 
@@ -317,7 +334,7 @@ void Report(const std::vector<ItemRun>& runs, const Knobs& k)
             continue;
         }
         measured.push_back(r.match);
-        out += label + "  " + MatchText(r.match) + "\n";
+        out += label + "  " + MatchText(r.match) + (r.ref_from_project ? "  (REF: project markers)" : "") + "\n";
         std::string th = " ";
         for (const Block& b : r.blocks) {
             if (b.conditions.size() < 2) continue;
@@ -369,7 +386,7 @@ void MeasureDetectionOnSelectedItems()
         }
         const int n = CountSelectedMediaItems(nullptr);
         if (n <= 0) {
-            ShowMessageBox("Select animation items with REF take markers", kTitle, 0);
+            ShowMessageBox("Select animation items with REF markers (take markers, or project markers over the items)", kTitle, 0);
             return;
         }
         Knobs k = g_knobs;

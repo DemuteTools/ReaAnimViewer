@@ -153,6 +153,8 @@
 #define REAPERAPI_WANT_GetSelectedMediaItem
 #define REAPERAPI_WANT_Undo_BeginBlock
 #define REAPERAPI_WANT_Undo_EndBlock
+// REF may also be project markers over the item (old, safe).
+#define REAPERAPI_WANT_EnumProjectMarkers2
 
 #include "reaper_plugin.h"
 #include "reaper_plugin_functions.h"

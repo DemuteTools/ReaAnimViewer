@@ -99,6 +99,9 @@ struct Event {
     std::string marker;
     double      strength = 0.0;
     double      speed = 0.0;   // total speed (m/s) of the first condition's signal at the crossing
+    // When each condition last came true (clip time, before the offset), in condition order.
+    // The latest one is the crossing that completed the AND.
+    std::vector<double> cond_entry_s;
 };
 
 // The signal, one value per sample. Empty when the spec does not fit the tracks.

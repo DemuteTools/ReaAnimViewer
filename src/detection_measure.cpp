@@ -154,6 +154,8 @@ struct ItemRun {
     std::vector<Block>  blocks;   // as analysed
     std::vector<double> det;      // every detection (clip time)
     bool                ref_from_project = false;  // REF read from project markers over the item
+    std::vector<double> refs;     // REF times (clip time), for the per-step diagnostic
+    std::vector<Event>  events;   // every detection with its condition entry times
 };
 
 std::string TimesText(const std::vector<double>& t)
@@ -288,7 +290,9 @@ void MeasureItem(MediaItem* item, const Knobs& k, ItemRun& run)
     run.blocks = Analyse(blocks, tracks, ao);
     DetectOptions dop;
     dop.sensitivity = k.sensitivity;
-    for (const Event& e : Detect(run.blocks, tracks, dop)) run.det.push_back(e.time_s);
+    run.events = Detect(run.blocks, tracks, dop);
+    for (const Event& e : run.events) run.det.push_back(e.time_s);
+    run.refs = refs;
     run.match = MatchEvents(refs, run.det, kMatchWindowS, lo, hi);
 }
 
@@ -319,6 +323,29 @@ void WriteDetectionMarkers(const std::vector<ItemRun>& runs)
     }
     Undo_EndBlock("RAV: Measure detection (RAV? take markers)", UNDO_STATE_ITEMS);
     UpdateArrange();
+}
+
+// Per detection: the nearest REF and when each Footsteps condition came true, relative to
+// that REF (which condition makes the event late or early).
+std::string StepsText(const ItemRun& r)
+{
+    static const char* const kCond[] = {"height", "still", "knee"};
+    std::string s;
+    for (const Event& e : r.events) {
+        s += Format("    det %.3f %s", e.time_s, e.marker.c_str());
+        double best = -1.0;
+        for (double t : r.refs)
+            if (best < 0.0 || std::fabs(t - e.time_s) < std::fabs(best - e.time_s)) best = t;
+        if (best < 0.0) {
+            s += "\n";
+            continue;
+        }
+        s += Format("  nearest REF %.3f (%+.0f ms):", best, (e.time_s - best) * 1000.0);
+        for (size_t c = 0; c < e.cond_entry_s.size(); ++c)
+            s += Format(" %s %+.0f", c < 3 ? kCond[c] : "cond", (e.cond_entry_s[c] - best) * 1000.0);
+        s += " ms\n";
+    }
+    return s;
 }
 
 void Report(const std::vector<ItemRun>& runs, const Knobs& k)
@@ -356,6 +383,7 @@ void Report(const std::vector<ItemRun>& runs, const Knobs& k)
         out += th + "\n";
         out += "  unmatched REF: " + TimesText(r.match.unmatched_ref) +
                "  unmatched det: " + TimesText(r.match.unmatched_det) + "\n";
+        out += StepsText(r);
     }
     const MatchResult total = SumMatches(measured);
     const bool go = !measured.empty() && PassesAccuracyGate(total);

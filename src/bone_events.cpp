@@ -267,6 +267,7 @@ std::vector<Event> Detect(const std::vector<Block>& blocks, const std::vector<Bo
         std::vector<char> active(n, 0);
         std::vector<double> entry_at(n, 0.0);  // while in: the crossing that completed the AND
         std::vector<double> trig_at(n, 0.0);   // while in: the trigger's (condition 0's) crossing
+        std::vector<std::vector<double>> cond_at(n);  // while in: every condition's entry
         std::vector<char> inside(nc, 0);
         std::vector<double> last_entry(nc, 0.0);
         for (size_t i = 0; i < n; ++i) {
@@ -302,6 +303,7 @@ std::vector<Event> Detect(const std::vector<Block>& blocks, const std::vector<Bo
                 for (size_t c = 0; c < nc; ++c) t = std::max(t, last_entry[c]);
                 entry_at[i] = t;
                 trig_at[i] = last_entry[0];
+                cond_at[i] = last_entry;
             }
         }
 
@@ -359,6 +361,7 @@ std::vector<Event> Detect(const std::vector<Block>& blocks, const std::vector<Bo
             e.time_s = tc + blk.offset_ms / 1000.0;
             e.block = static_cast<int>(bi);
             e.marker = blk.marker;
+            e.cond_entry_s = cond_at[i];
             const double w = std::max(0.0, blk.strength_window_ms) / 1000.0;
             double peak = sign * InterpAt(strength_series, tc, rate);
             for (size_t k = 0; k < n; ++k) {

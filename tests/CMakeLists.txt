@@ -43,3 +43,12 @@ add_test(NAME render_current COMMAND render_current_test)
 add_executable(texture_locate_test texture_locate_test.cpp ../src/texture_locate.cpp)
 target_include_directories(texture_locate_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME texture_locate COMMAND texture_locate_test)
+
+# Spec 10-0 -- the bone-event rule engine and role mapping (src/bone_events.h, bone_roles.h).
+add_executable(bone_events_test bone_events_test.cpp ../src/bone_events.cpp)
+target_include_directories(bone_events_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME bone_events COMMAND bone_events_test)
+
+add_executable(bone_roles_test bone_roles_test.cpp ../src/bone_events.cpp)
+target_include_directories(bone_roles_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME bone_roles COMMAND bone_roles_test)

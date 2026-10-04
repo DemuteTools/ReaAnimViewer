@@ -4,6 +4,7 @@
 // opens an empty WGL viewer window. No mesh loading, no transport sync.
 
 #include "console_log.h"
+#include "detection_measure.h"
 #include "pcm_source_anim.h"
 #include "reaper_actions.h"
 #include "reaper_api.h"
@@ -40,6 +41,12 @@ constexpr const char kShowShotsName[] = "RAV_VIDEOFX_SHOW_SHOTS";
 constexpr const char kShowShotsDesc[] = "RAV: Video FX: show shots of selected track";
 constexpr const char kOutputAngleName[] = "RAV_VIDEOFX_SET_OUTPUT_ANGLE";
 constexpr const char kOutputAngleDesc[] = "RAV: Video FX: set output size / save angle of selected track";
+
+// Story 10-0 -- the detection-accuracy measurement (click-based dev hook).
+constexpr const char kMeasureDetectionName[] = "RAV_MEASURE_DETECTION";
+constexpr const char kMeasureDetectionDesc[] = "RAV: Measure detection against reference markers";
+int                  g_measure_detection_id    = 0;
+gaccel_register_t    g_measure_detection_accel = {};
 
 int                     g_command_id      = 0;
 gaccel_register_t       g_accel           = {};
@@ -93,6 +100,10 @@ bool OnHookCommand(int command, int /*flag*/)
         SetVideoOutputAndAngleOfSelectedTrack();
         return true;
     }
+    if (command == g_measure_detection_id) {
+        MeasureDetectionOnSelectedItems();
+        return true;
+    }
     return false;
 }
 
@@ -143,6 +154,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
             g_register("-pcmsrc",       PcmSourceRegistration());
             g_register("-toggleaction", (void*)&OnToggleAction);
             g_register("-hookcommand",  (void*)&OnHookCommand);
+            if (g_measure_detection_id) g_register("-gaccel", &g_measure_detection_accel);
             if (g_video_bg_id) g_register("-gaccel", &g_video_bg_accel);
             if (g_output_angle_id) g_register("-gaccel", &g_output_angle_accel);
             if (g_show_shots_id) g_register("-gaccel", &g_show_shots_accel);
@@ -179,6 +191,10 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     g_add_shot_id = RegisterAction(rec, kAddShotName, kAddShotDesc, &g_add_shot_accel);
     g_show_shots_id = RegisterAction(rec, kShowShotsName, kShowShotsDesc, &g_show_shots_accel);
     g_output_angle_id = RegisterAction(rec, kOutputAngleName, kOutputAngleDesc, &g_output_angle_accel);
+    // Story 10-0 -- the detection measurement (take-marker functions resolved optionally).
+    InitDetectionMeasure(rec->GetFunc);
+    g_measure_detection_id =
+        RegisterAction(rec, kMeasureDetectionName, kMeasureDetectionDesc, &g_measure_detection_accel);
 
     rec->Register("hookcommand", (void*)&OnHookCommand);
     rec->Register("toggleaction", (void*)&OnToggleAction);

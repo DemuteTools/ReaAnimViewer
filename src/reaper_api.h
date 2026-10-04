@@ -144,5 +144,15 @@
 // (RENDER_BOUNDSFLAG / RENDER_STARTPOS / RENDER_ENDPOS / RENDER_SETTINGS).
 #define REAPERAPI_WANT_GetSetProjectInfo
 
+// Story 10-0 -- "RAV: Measure detection against reference markers" (src/detection_measure.cpp):
+// the selected items, and one undo point for its RAV? take markers. Old, safe functions
+// (GetUserInputs and UpdateArrange are wanted above). The take-marker functions
+// (GetNumTakeMarkers, GetTakeMarker, SetTakeMarker, DeleteTakeMarker, REAPER 5.981+) are
+// NOT wanted here: detection_measure.cpp resolves them optionally through GetFunc.
+#define REAPERAPI_WANT_CountSelectedMediaItems
+#define REAPERAPI_WANT_GetSelectedMediaItem
+#define REAPERAPI_WANT_Undo_BeginBlock
+#define REAPERAPI_WANT_Undo_EndBlock
+
 #include "reaper_plugin.h"
 #include "reaper_plugin_functions.h"

@@ -171,6 +171,9 @@ if(WIN32)
             src/shortcuts.cpp
             src/shortcuts_ui.cpp
             src/texture_locate.cpp
+            src/bone_events.cpp
+            src/bone_sampling.cpp
+            src/detection_measure.cpp
     )
     # Generated rav_version.h (see RAV_VERSION above).
     target_include_directories(animviewer PRIVATE "${CMAKE_BINARY_DIR}/generated")

@@ -13,6 +13,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -156,6 +158,7 @@ struct ItemRun {
     bool                ref_from_project = false;  // REF read from project markers over the item
     std::vector<double> refs;     // REF times (clip time), for the per-step diagnostic
     std::vector<Event>  events;   // every detection with its condition entry times
+    std::string         dump;     // the bone-track dump written for offline tuning ("" = none)
 };
 
 std::string TimesText(const std::vector<double>& t)
@@ -173,6 +176,47 @@ std::string MatchText(const MatchResult& m)
     return Format("REF %d  det %d  match %d  R %.1f%%  P %.1f%%  err mean %.1f ms max %.1f ms (lag %+.1f ms)", m.n_ref,
                   m.n_det, m.n_match, m.recall * 100.0, m.precision * 100.0, m.mean_abs_err_s * 1000.0,
                   m.max_abs_err_s * 1000.0, m.mean_signed_err_s * 1000.0);
+}
+
+// Dev harness: writes every bone's track (240 Hz, metres, model Y up) and the REF times to
+// <project folder>/RAV_detection_dump/<file>.csv, so detection can be tuned offline on
+// the exact data REAPER measured. Returns the file path, "" on failure. No-throw.
+std::string DumpTracks(const CpuAsset& asset, const std::string& label, const std::vector<double>& refs,
+                       double lo, double hi)
+{
+    try {
+        std::vector<int> all;
+        for (size_t b = 0; b < asset.skeleton.bones.size(); ++b) all.push_back(static_cast<int>(b));
+        const std::vector<BoneTrack> tr = SampleBoneTracks(asset, all, kRateHz);
+        if (tr.empty()) return "";
+        char proj[4096] = {};
+        EnumProjects(-1, proj, sizeof(proj));
+        std::filesystem::path dir = proj[0] ? std::filesystem::u8path(proj).parent_path()
+                                            : std::filesystem::u8path(GetResourcePath());
+        dir /= "RAV_detection_dump";
+        std::error_code ec;
+        std::filesystem::create_directories(dir, ec);
+        const std::filesystem::path file = dir / std::filesystem::u8path(label + ".csv");
+        std::ofstream out(file, std::ios::binary);
+        if (!out) return "";
+        out << "# item=" << label << "\n# rate_hz=" << kRateHz << "\n# visible=" << Format("%.6f,%.6f", lo, hi)
+            << "\n# ref=";
+        for (size_t i = 0; i < refs.size(); ++i) out << (i ? "," : "") << Format("%.6f", refs[i]);
+        out << "\n# parent=";
+        for (size_t b = 0; b < asset.skeleton.bones.size(); ++b) out << (b ? "," : "") << asset.skeleton.bones[b].parentIdx;
+        out << "\nt";
+        for (const SceneBone& b : asset.skeleton.bones) out << "," << b.name << ".x," << b.name << ".y," << b.name << ".z";
+        out << "\n";
+        const size_t n = tr[0].pos.size();
+        for (size_t i = 0; i < n; ++i) {
+            out << Format("%.6f", static_cast<double>(i) / kRateHz);
+            for (const BoneTrack& t : tr) out << Format(",%.6f,%.6f,%.6f", t.pos[i].x, t.pos[i].y, t.pos[i].z);
+            out << "\n";
+        }
+        return out ? file.u8string() : "";
+    } catch (...) {
+        return "";
+    }
 }
 
 void MeasureItem(MediaItem* item, const Knobs& k, ItemRun& run)
@@ -250,6 +294,7 @@ void MeasureItem(MediaItem* item, const Knobs& k, ItemRun& run)
         run.skipped = "the file has no animation";
         return;
     }
+    run.dump = DumpTracks(asset, run.label, refs, lo, hi);
 
     // Roles -> bones -> tracks.
     std::vector<std::string> names;
@@ -384,6 +429,7 @@ void Report(const std::vector<ItemRun>& runs, const Knobs& k)
         out += "  unmatched REF: " + TimesText(r.match.unmatched_ref) +
                "  unmatched det: " + TimesText(r.match.unmatched_det) + "\n";
         out += StepsText(r);
+        if (!r.dump.empty()) out += "  bone tracks: " + r.dump + "\n";
     }
     const MatchResult total = SumMatches(measured);
     const bool go = !measured.empty() && PassesAccuracyGate(total);

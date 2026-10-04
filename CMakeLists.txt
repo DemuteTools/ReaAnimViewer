@@ -170,6 +170,7 @@ if(WIN32)
             src/reaper_actions.cpp
             src/shortcuts.cpp
             src/shortcuts_ui.cpp
+            src/texture_locate.cpp
     )
     # Generated rav_version.h (see RAV_VERSION above).
     target_include_directories(animviewer PRIVATE "${CMAKE_BINARY_DIR}/generated")
@@ -187,7 +188,8 @@ if(WIN32)
         "${imgui_SOURCE_DIR}/backends")
     # comdlg32: GetOpenFileNameW — the native "choose a model" dialog (Story 2.1).
     # imgui: vendored in-viewport tool UI (Story 6.5.3 rev).
-    target_link_libraries(animviewer PRIVATE assimp opengl32 gdi32 user32 comdlg32 imgui)
+    # ole32 + uuid: IFileOpenDialog, the "Locate textures..." folder picker (issue #1).
+    target_link_libraries(animviewer PRIVATE assimp opengl32 gdi32 user32 comdlg32 ole32 uuid imgui)
 
     # The video FX (Epic 11, Story 11-1): rav_video_fx.clap, a thin CLAP shim that
     # hands REAPER's video frames to the frame-render API reaper_animviewer.dll

@@ -38,3 +38,8 @@ add_test(NAME video_clip_shots COMMAND video_clip_shots_test)
 add_executable(render_current_test render_current_test.cpp)
 target_include_directories(render_current_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME render_current COMMAND render_current_test)
+
+# Issue #1 -- "Locate textures...": file-name extraction + search/copy (src/texture_locate.h).
+add_executable(texture_locate_test texture_locate_test.cpp ../src/texture_locate.cpp)
+target_include_directories(texture_locate_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME texture_locate COMMAND texture_locate_test)

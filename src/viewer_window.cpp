@@ -26,6 +26,7 @@
 #include <cfloat>      // FLT_MAX (spec 11-fb-11: the menu's height cap)
 #include <algorithm>   // std::min/max — the load message's wrap width
 #include <exception>   // std::exception — the no-throw host boundary (AR18)
+#include <filesystem>  // issue #1: the item folder for "Locate textures..."
 #include <string>
 #include <unordered_set>  // g_noticed_paths
 #include <vector>
@@ -42,6 +43,7 @@
 #include "renderer.h"
 #include "shortcuts.h"         // spec 11-fb-3: the viewer's keys, rebindable
 #include "shortcuts_ui.h"      // spec 11-fb-3: the keyboard icon + Shortcuts popup
+#include "texture_locate.h"    // issue #1: "Locate textures..." (folder picker + copy)
 #include "gpu_resources.h"    // Story 11-4: the Video view's render target
 #include "ui_theme.h"         // Story 11-4: the DM-XYZ-Pad theme over Dear ImGui
 #include "video_view.h"       // Story 11-4: Video view + Video panel model
@@ -200,6 +202,24 @@ std::string              g_load_msg_title;        // "" = no status (last load w
 std::vector<std::string> g_load_msg_lines;
 bool                     g_load_msg_error = false;  // red (blocking) vs amber (notices)
 double                   g_load_msg_until = 0.0;    // transient pop-up visible until then
+// Issue #1: a "Locate textures..." outcome, shown above the notices (green). With no
+// notices left (all textures found) the message is only this report: g_load_msg_info,
+// green title, transient pop-up only (no status icon: the item has no problem).
+std::vector<std::string> g_load_msg_report;
+bool                     g_load_msg_info = false;
+// Issue #1: the current item's texture files not found (LoadResult::missing_texture_files)
+// and its path: the "Locate textures..." button shows while the list is non-empty, and
+// copies into that path's folder. Set with the load status, cleared with it.
+std::string              g_missing_tex_item;
+std::vector<std::string> g_missing_tex_files;
+// The button posts kMsgLocateTextures (the folder picker runs a modal loop: window
+// procedure only, never inside the ImGui frame); this flag stops a second post meanwhile.
+constexpr UINT kMsgLocateTextures = WM_APP + 0x32;
+bool                     g_locate_pending = false;
+// A copy reloads the item (next tick); its report waits here to be shown with the
+// reloaded item's status. Dropped if another item loads first.
+std::string              g_locate_report_item;
+std::vector<std::string> g_locate_report_lines;
 // Files whose notices already POPPED UP since the panel opened: a file with known
 // problems must not pop them up on every scrub back onto it (the status icon still
 // shows them). Failures always pop up. Cleared in StopRendering, so reopening the
@@ -312,8 +332,10 @@ std::string FileNameOf(const std::string& path)
 void SetLoadMessage(bool error, std::string title, std::vector<std::string> lines, bool pop_up)
 {
     g_load_msg_error = error;
+    g_load_msg_info  = false;
     g_load_msg_title = std::move(title);
     g_load_msg_lines = std::move(lines);
+    g_load_msg_report.clear();
     g_load_msg_until = pop_up ? ElapsedSeconds() + kLoadMessageSeconds : 0.0;
 }
 
@@ -321,6 +343,8 @@ void ClearLoadMessage()
 {
     g_load_msg_title.clear();
     g_load_msg_lines.clear();
+    g_load_msg_report.clear();
+    g_load_msg_info  = false;
     g_load_msg_until = 0.0;
 }
 
@@ -334,6 +358,78 @@ void CopyErrorLogToClipboard()
     text += HasRecentLog() ? RecentLogText() : std::string("(no errors logged)\n");
     ImGui::SetClipboardText(text.c_str());
     g_copied_until = ElapsedSeconds() + 2.0;
+}
+
+// "a, b, c" for a result line.
+std::string JoinNames(const std::vector<std::string>& names)
+{
+    std::string out;
+    for (size_t i = 0; i < names.size(); ++i) out += (i ? ", " : "") + names[i];
+    return out;
+}
+
+// Issue #1 — the "Locate textures..." button (kMsgLocateTextures, window procedure: the
+// folder picker runs a modal loop). The user picks a folder; the current item's missing
+// texture files found there by name are copied next to the item's file (never
+// overwriting), then the viewer and the video FX read the file again. Cancel = nothing.
+void RunLocateTextures()
+{
+    if (g_missing_tex_files.empty() || g_missing_tex_item.empty()) return;
+    // Copies: the modal picker lets the render tick run (it may load another item).
+    const std::string              item  = g_missing_tex_item;
+    const std::vector<std::string> names = g_missing_tex_files;
+
+    std::string folder;
+    // Owned by the top-level window: the viewer may be a docked child of REAPER's docker.
+    HWND owner = g_hwnd ? GetAncestor(g_hwnd, GA_ROOT) : nullptr;
+    if (!owner) owner = g_hwnd;
+    if (!PickFolder(owner, folder)) return;   // cancelled
+
+    std::string dest_dir;
+    try {
+        dest_dir = std::filesystem::u8path(item).parent_path().u8string();
+    } catch (...) {
+        return;
+    }
+    const LocateResult res = LocateTextures(dest_dir, names, folder);
+    LogInfo("locate textures in %s -> %s: %zu copied, %zu already there, %zu failed, %zu not found",
+            folder.c_str(), dest_dir.c_str(), res.copied.size(), res.already_present.size(),
+            res.failed.size(), res.still_missing.size());
+
+    std::vector<std::string> lines;
+    if (!res.copied.empty())
+        lines.push_back(std::to_string(res.copied.size()) +
+                        (res.copied.size() == 1 ? " texture copied" : " textures copied") +
+                        " next to the model: " + JoinNames(res.copied));
+    if (!res.already_present.empty())
+        lines.push_back("Already next to the model (not replaced): " +
+                        JoinNames(res.already_present));
+    for (const std::string& f : res.failed) {
+        lines.push_back("Could not copy " + f + " to " + dest_dir);
+        LogWarn("locate textures: could not copy %s to %s", f.c_str(), dest_dir.c_str());
+    }
+    if (res.copied.empty() && res.already_present.empty() && res.failed.empty())
+        lines.push_back("No missing texture found in " + folder);
+    else if (!res.still_missing.empty())
+        lines.push_back("Not found in " + folder + ": " + JoinNames(res.still_missing));
+
+    if (!res.copied.empty() || !res.already_present.empty()) {
+        // Read the file again with its new textures (copied now, or put there by hand
+        // since the load): the video FX's cached parse is dropped (its date and size did
+        // not change), and the viewer's reload gate re-arms (next tick). The report is
+        // shown with the reloaded item's status.
+        EvictCpuAsset(item);
+        RefreshVideoFxPictures();
+        g_locate_report_item  = item;
+        g_locate_report_lines = std::move(lines);
+        if (g_current_anim_path == item) g_current_anim_path.clear();
+        return;
+    }
+    // Nothing copied or present: no reload; the outcome shows above the item's notices.
+    if (g_missing_tex_item == item && !g_load_msg_title.empty()) {
+        g_load_msg_report = std::move(lines);
+        g_load_msg_until  = ElapsedSeconds() + kLoadMessageSeconds;
+    }
 }
 
 void DestroyGLContext()
@@ -568,6 +664,18 @@ void RenderTick()
                     SetLoadMessage(false, FileNameOf(item_path) + " has problems:",
                                    std::move(r.notices), /*pop_up=*/first_time);
                 }
+                g_missing_tex_item  = item_path;
+                g_missing_tex_files = std::move(r.missing_texture_files);
+                // Issue #1: this reload follows a "Locate textures..." copy: show its report.
+                if (g_locate_report_item == item_path && !g_locate_report_lines.empty()) {
+                    if (g_load_msg_title.empty()) {
+                        SetLoadMessage(false, FileNameOf(item_path) + ": textures found", {},
+                                       /*pop_up=*/true);
+                        g_load_msg_info = true;
+                    }
+                    g_load_msg_report = std::move(g_locate_report_lines);
+                    g_load_msg_until  = ElapsedSeconds() + kLoadMessageSeconds;
+                }
             } else {
                 // A malformed file logs ONCE and leaves the previous asset up (AR17) —
                 // never a per-frame retry storm. The literal "reload only on path change"
@@ -584,7 +692,11 @@ void RenderTick()
                                {r.hint.empty() ? std::string("This file couldn't be opened.")
                                                : r.hint},
                                /*pop_up=*/true);
+                g_missing_tex_item.clear();
+                g_missing_tex_files.clear();
             }
+            g_locate_report_item.clear();
+            g_locate_report_lines.clear();
             // Advance the gate to the current item's path whether the load succeeded or
             // failed — either way we have "handled" this path and must not retry it every
             // frame; a later scrub onto a different path re-arms the reload.
@@ -758,14 +870,27 @@ void DrawLoadMessageBody()
 {
     const float wrap_w = std::max(160.0f, std::min(480.0f, g_client_w - 60.0f));
     const ImVec4 title_col = g_load_msg_error ? ImVec4(1.0f, 0.5f, 0.4f, 1.0f)
+                           : g_load_msg_info  ? ui::Col(ui::kOk)
                                               : ImVec4(1.0f, 0.75f, 0.3f, 1.0f);
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrap_w);
     ImGui::TextColored(title_col, "%s", g_load_msg_title.c_str());
+    for (const std::string& line : g_load_msg_report) {   // issue #1: the locate outcome
+        ImGui::Bullet();
+        ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kOk));
+        ImGui::TextUnformatted(line.c_str());
+        ImGui::PopStyleColor();
+    }
     for (const std::string& line : g_load_msg_lines) {
         ImGui::Bullet();
         ImGui::TextUnformatted(line.c_str());
     }
     ImGui::PopTextWrapPos();
+    // Issue #1: the current item has texture files not found → offer to find them. The
+    // picker opens from the window procedure (kMsgLocateTextures), after this frame.
+    if (!g_load_msg_error && !g_missing_tex_files.empty()) {
+        if (ui::PrimaryButton("Locate textures...##locatetex") && !g_locate_pending && g_hwnd)
+            g_locate_pending = PostMessageW(g_hwnd, kMsgLocateTextures, 0, 0) != FALSE;
+    }
     const bool copied = ElapsedSeconds() < g_copied_until;
     if (ImGui::SmallButton(copied ? "Copied!##copyerr" : "Copy details##copyerr"))
         CopyErrorLogToClipboard();
@@ -780,7 +905,7 @@ void DrawLoadMessageBody()
 // Same pattern as NavCubeWidget: its own frameless window, InvisibleButton hit area.
 void StatusIconWidget()
 {
-    if (g_load_msg_title.empty()) return;
+    if (g_load_msg_title.empty() || g_load_msg_info) return;  // info = no problem to show
 
     constexpr ImGuiWindowFlags kIconFlags =
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
@@ -1499,6 +1624,11 @@ void StopRendering()
     g_transport_driven = false;
     g_noticed_paths.clear();   // a reopened panel pops each file's notices up again
     ClearLoadMessage();        // the status belongs to the item, reloaded on reopen
+    g_missing_tex_item.clear();
+    g_missing_tex_files.clear();
+    g_locate_report_item.clear();
+    g_locate_report_lines.clear();
+    g_locate_pending = false;  // a post not yet dispatched must not disable the button
 }
 
 // True when the cursor is over an ImGui window/widget, so the camera must ignore the
@@ -1789,6 +1919,17 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             LogError("Video view: a write failed: %s (Reaper is unaffected)", e.what());
         } catch (...) {
             LogError("Video view: a write failed (Reaper is unaffected)");
+        }
+        return 0;
+
+    case kMsgLocateTextures:
+        g_locate_pending = false;
+        try {
+            RunLocateTextures();
+        } catch (const std::exception& e) {
+            LogError("Locate textures failed: %s", e.what());
+        } catch (...) {
+            LogError("Locate textures failed");
         }
         return 0;
 

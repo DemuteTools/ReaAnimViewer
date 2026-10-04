@@ -94,7 +94,10 @@ struct CpuAsset {
     bool no_animation       = false;  // the file has no animation
     bool mesh_not_skinned   = false;  // animated, but no vertex is skinned
     bool animation_mismatch = false;  // animated + skinned, but no bone is animated
-    int  missing_textures   = 0;      // declared but not found / undecodable
+    int  missing_textures   = 0;      // declared, found but undecodable
+    // Declared external texture files not found (at their stored path nor by name beside
+    // the model): their FILE NAMES, distinct (case-insensitive), in first-seen order.
+    std::vector<std::string> missing_texture_files;
 };
 
 struct CpuLoadResult {
@@ -123,6 +126,9 @@ struct LoadResult {
     // On SUCCESS: non-blocking problems shown to the user in the same plain language
     // (missing textures, no animation, mesh not skinned...). Empty when all is well.
     std::vector<std::string> notices;
+    // On SUCCESS: the texture file names not found (CpuAsset::missing_texture_files), for
+    // the viewer's "Locate textures..." button (issue #1). Empty when none is missing.
+    std::vector<std::string> missing_texture_files;
     // On SUCCESS: the parse the GPU copy was made from, to share with the video thread
     // (Story 11-2). Null on failure.
     std::shared_ptr<const CpuAsset> cpu;

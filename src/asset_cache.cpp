@@ -107,6 +107,15 @@ void OfferCpuAsset(const std::string& path, std::shared_ptr<const CpuAsset> asse
     }
 }
 
+void EvictCpuAsset(const std::string& path)
+{
+    try {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_entries.erase(path);
+    } catch (...) {
+    }
+}
+
 void TrimCpuAssetCache(const std::vector<std::string>& wanted, bool check_files)
 {
     try {

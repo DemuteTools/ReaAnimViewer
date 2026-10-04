@@ -45,6 +45,11 @@ AssetFileStamp ReadAssetFileStamp(const std::string& path);
 void OfferCpuAsset(const std::string& path, std::shared_ptr<const CpuAsset> asset,
                    const AssetFileStamp& stamp);
 
+// Drops the parse of `path` (if any), so the next AcquireCpuAsset reads the file again.
+// For a change the file's date and size do not show, e.g. texture files copied next to
+// it by "Locate textures..." (issue #1). Threads that hold the old parse keep it.
+void EvictCpuAsset(const std::string& path);
+
 // Main thread: `wanted` = every file the video FX tracks use now. Other entries are
 // dropped; with check_files, entries whose file changed on disk are dropped too.
 void TrimCpuAssetCache(const std::vector<std::string>& wanted, bool check_files);

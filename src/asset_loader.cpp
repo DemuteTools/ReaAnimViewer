@@ -59,6 +59,7 @@
 #include "console_log.h"  // LogWarn for the per-texture unresolved diagnostic (AR16)
 #include "gl_loader.h"  // modern-GL upload entry points (glGenBuffers/glBufferData)
 #include "gltf_skin.h"  // direct glTF skin-weight read (assimp 6.0.5 Windows bug work-around)
+#include "texture_locate.h"  // TextureFileName: the by-name lookup beside the model (issue #1)
 
 namespace rav {
 namespace {
@@ -529,8 +530,12 @@ GpuImage UploadTexture(const unsigned char* rgba, int w, int h, GLint internal_f
 // cannot be resolved (one LogWarn, then flat fallback — AC3). The upload always decodes
 // 4-channel RGBA so the GL upload format is uniform regardless of the source's channel
 // count. mi names the material in the diagnostic; `kind` labels it ("diffuse"/"normal").
+// not_found (optional): set to the texture's FILE NAME when it is an external file that
+// could not be opened at all (neither at its stored path nor by name beside the model);
+// left untouched otherwise (found, embedded, undecodable, or not declared).
 CpuImage ResolveTexture(const aiScene* scene, const aiMaterial* mat, aiTextureType type,
-                        const std::filesystem::path& model_dir, unsigned mi, const char* kind)
+                        const std::filesystem::path& model_dir, unsigned mi, const char* kind,
+                        std::string* not_found = nullptr)
 {
     CpuImage out;
     aiString tex_path;
@@ -585,18 +590,31 @@ CpuImage ResolveTexture(const aiScene* scene, const aiMaterial* mat, aiTextureTy
     // at upload). Path carried as UTF-8 via u8path (consistent with FileExists's Unicode
     // fix); a percent-encoded/absolute-URI edge case simply fails to open and takes the
     // diagnostic path below, the model still rendering in flat color.
-    const std::filesystem::path file = model_dir / std::filesystem::u8path(tex_path.C_Str());
-    std::vector<unsigned char> bytes;
-    {
-        std::ifstream f(file, std::ios::binary);
-        if (f) bytes.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
-    }
-    if (!keep_encoded(std::move(bytes))) {
-        LogWarn("%s texture unresolved for material %u (%s missing or undecodable)"
-                " - using flat color", kind, mi, tex_path.C_Str());
-        return {};
-    }
-    return out;
+    //
+    // Issue #1: then by FILE NAME beside the model. Exporters store paths from their own
+    // folder tree ("..\..\sourceimages\T.png"), still outside the model folder after
+    // REAPER copied the .fbx into the project: with this second try, putting the texture
+    // files next to the .fbx is enough, whatever the exporter.
+    const std::string stored = tex_path.C_Str();
+    bool opened = false;
+    auto try_file = [&](const std::filesystem::path& file) {
+        std::vector<unsigned char> bytes;
+        {
+            std::ifstream f(file, std::ios::binary);
+            if (!f) return false;
+            opened = true;
+            bytes.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+        }
+        return keep_encoded(std::move(bytes));
+    };
+    for (const std::string& candidate : TextureCandidates(stored))
+        if (try_file(model_dir / std::filesystem::u8path(candidate))) return out;
+    LogWarn("%s texture unresolved for material %u (%s %s) - using flat color", kind, mi,
+            stored.c_str(), opened ? "undecodable" : "missing");
+    // Only a real file name can be located; a path without one counts as unreadable.
+    const std::string name = TextureFileName(stored);
+    if (!opened && not_found && !name.empty()) *not_found = name;
+    return {};
 }
 
 // GL half of the texture funnel: uploads one texture to the CURRENT context, decoding it
@@ -648,11 +666,13 @@ GpuImage UploadCpuImage(const CpuImage& img, GLint internal_format, const char* 
 // renders with its geometric normal (clean, just no micro-detail) until a post-MVP
 // height→normal (Sobel) conversion is added — far better than corrupting the shading.
 CpuImage ResolveNormalMap(const aiScene* scene, const aiMaterial* mat,
-                          const std::filesystem::path& model_dir, unsigned mi)
+                          const std::filesystem::path& model_dir, unsigned mi,
+                          std::string* not_found)
 {
     if (!mat) return {};
     if (mat->GetTextureCount(aiTextureType_NORMALS) > 0)
-        return ResolveTexture(scene, mat, aiTextureType_NORMALS, model_dir, mi, "normal");
+        return ResolveTexture(scene, mat, aiTextureType_NORMALS, model_dir, mi, "normal",
+                              not_found);
     return {};   // no true normal map declared — geometric normal, silent (not a failure)
 }
 
@@ -1251,10 +1271,12 @@ CpuLoadResult LoadCpuAsset(const std::string& path)
         const std::filesystem::path model_dir =
             std::filesystem::u8path(path).parent_path();
         asset->materials.reserve(scene->mNumMaterials);
-        // Textures a material DECLARES but that came back empty (missing file,
-        // undecodable) — counted for the user notice. A material that declares no
-        // texture is the normal flat path and is not counted.
+        // Textures a material DECLARES but that came back empty — for the user notices:
+        // external files not found are listed by name (distinct, case-insensitive: the
+        // "Locate textures..." button looks for them, issue #1), the rest (undecodable)
+        // counted. A material that declares no texture is the normal flat path.
         int missing_textures = 0;
+        std::vector<std::string> missing_texture_files;
         for (unsigned mi = 0; mi < scene->mNumMaterials; ++mi) {
             const aiMaterial* aimat = scene->mMaterials[mi];
             const SceneMaterial factors = ConvertMaterial(aimat);
@@ -1262,19 +1284,30 @@ CpuLoadResult LoadCpuAsset(const std::string& path)
             material.baseColorFactor = factors.baseColorFactor;
             material.specularColor   = factors.specularColor;
             material.shininess       = factors.shininess;
-            auto count_if_missing = [&](const CpuImage& img, aiTextureType type) {
+            // One not-found name per slot (empty = found, or not an external file).
+            std::string nf_base, nf_normal, nf_spec, nf_gloss;
+            auto count_if_missing = [&](const CpuImage& img, aiTextureType type,
+                                        const std::string& not_found) {
                 aiString declared;
-                if (img.empty() && aimat &&
-                    aimat->GetTexture(type, 0, &declared) == AI_SUCCESS)
+                if (!img.empty() || !aimat ||
+                    aimat->GetTexture(type, 0, &declared) != AI_SUCCESS)
+                    return;
+                if (not_found.empty()) {
                     ++missing_textures;
+                    return;
+                }
+                for (const std::string& n : missing_texture_files)
+                    if (SameFileNameNoCase(n, not_found)) return;
+                missing_texture_files.push_back(not_found);
             };
             // Base colour is a COLOUR texture → sRGB-decoded on sample (GL_SRGB8_ALPHA8,
             // chosen at upload) so lighting math runs in linear space (Story 6.5.1 AC1).
             // The normal map is DATA → uploaded linear (GL_RGBA8) and only sampled when
             // present (AC4).
             material.baseColor =
-                ResolveTexture(scene, aimat, aiTextureType_DIFFUSE, model_dir, mi, "diffuse");
-            material.normalMap = ResolveNormalMap(scene, aimat, model_dir, mi);
+                ResolveTexture(scene, aimat, aiTextureType_DIFFUSE, model_dir, mi, "diffuse",
+                               &nf_base);
+            material.normalMap = ResolveNormalMap(scene, aimat, model_dir, mi, &nf_normal);
             // Story 6.5.7 — the artist's per-pixel specular + glossiness maps. Both are DATA
             // (reflection intensity / sharpness scalar), not colour → uploaded LINEAR
             // (GL_RGBA8), same rule as the normal map (AC6). Read directly via the existing
@@ -1283,13 +1316,15 @@ CpuLoadResult LoadCpuAsset(const std::string& path)
             // LogWarn-then-empty fallback (AR17). An empty image (glTF metallic-roughness, or
             // any mesh with no such slot) leaves the renderer on the uniform-sheen path (AC3).
             material.specularMap =
-                ResolveTexture(scene, aimat, aiTextureType_SPECULAR, model_dir, mi, "specular");
+                ResolveTexture(scene, aimat, aiTextureType_SPECULAR, model_dir, mi, "specular",
+                               &nf_spec);
             material.glossMap =
-                ResolveTexture(scene, aimat, aiTextureType_SHININESS, model_dir, mi, "glossiness");
-            count_if_missing(material.baseColor,   aiTextureType_DIFFUSE);
-            count_if_missing(material.normalMap,   aiTextureType_NORMALS);
-            count_if_missing(material.specularMap, aiTextureType_SPECULAR);
-            count_if_missing(material.glossMap,    aiTextureType_SHININESS);
+                ResolveTexture(scene, aimat, aiTextureType_SHININESS, model_dir, mi, "glossiness",
+                               &nf_gloss);
+            count_if_missing(material.baseColor,   aiTextureType_DIFFUSE,   nf_base);
+            count_if_missing(material.normalMap,   aiTextureType_NORMALS,   nf_normal);
+            count_if_missing(material.specularMap, aiTextureType_SPECULAR,  nf_spec);
+            count_if_missing(material.glossMap,    aiTextureType_SHININESS, nf_gloss);
             asset->materials.push_back(std::move(material));
         }
         // assimp always emits a default material, but a mesh's materialIdx indexes
@@ -1354,6 +1389,7 @@ CpuLoadResult LoadCpuAsset(const std::string& path)
         asset->mesh_not_skinned   = !asset->no_animation && skinned_verts == 0;
         asset->animation_mismatch = !asset->no_animation && skinned_verts != 0 && !any_bone_animated;
         asset->missing_textures   = missing_textures;
+        asset->missing_texture_files = std::move(missing_texture_files);
 
         CpuLoadResult ok;
         ok.asset    = std::move(asset);
@@ -1456,16 +1492,31 @@ LoadResult LoadAsset(const std::string& path)
         else if (cpu.animation_mismatch)
             notices.push_back("The animation doesn't match this skeleton (different bone names): "
                               "the character won't move.");
-        const int missing_textures = cpu.missing_textures + failed_textures;
-        if (missing_textures > 0)
-            notices.push_back(std::to_string(missing_textures) +
-                              (missing_textures == 1 ? " texture" : " textures") +
-                              " not found: shown in plain colour. Keep the texture files next "
-                              "to the model, or embed them when exporting.");
+        // Issue #1: texture files not found — the usual cause is REAPER copying only the
+        // .fbx into the project. The viewer offers "Locate textures..." under this notice.
+        const size_t not_found = cpu.missing_texture_files.size();
+        if (not_found > 0) {
+            notices.push_back(std::to_string(not_found) +
+                              (not_found == 1 ? " texture file" : " texture files") +
+                              " not found next to the model: shown in plain colour. If REAPER "
+                              "copies imported media into your project folder, the texture "
+                              "files must be copied there too.");
+            std::string names = "Missing: ";
+            for (size_t i = 0; i < not_found; ++i)
+                names += (i ? ", " : "") + cpu.missing_texture_files[i];
+            notices.push_back(std::move(names));
+        }
+        const int unreadable = cpu.missing_textures + failed_textures;
+        if (unreadable > 0)
+            notices.push_back(std::to_string(unreadable) +
+                              (unreadable == 1 ? " texture" : " textures") +
+                              " could not be read (unsupported or damaged image): shown in "
+                              "plain colour.");
         for (const std::string& n : notices) LogWarn("notice: %s", n.c_str());
 
         LoadResult ok{std::move(asset), LoadErrorCategory::Ok, {}, {}};
         ok.notices = std::move(notices);
+        ok.missing_texture_files = cpu.missing_texture_files;
         ok.cpu     = std::move(parsed.asset);
         return ok;
     }

@@ -156,5 +156,9 @@
 // REF may also be project markers over the item (old, safe).
 #define REAPERAPI_WANT_EnumProjectMarkers2
 
+// Story 10-2 -- an item's auto-tagging rules live in its active take's P_EXT:RAV_RULES
+// (src/item_rules.cpp). Old, safe (REAPER 5+).
+#define REAPERAPI_WANT_GetSetMediaItemTakeInfo_String
+
 #include "reaper_plugin.h"
 #include "reaper_plugin_functions.h"

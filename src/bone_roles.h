@@ -39,6 +39,70 @@ inline const char* RoleName(Role r)
     }
 }
 
+// The stable key a record writes for a role (snake_case, never an index): "left_heel"...
+// Written as "role:<key>". New roles get new keys; a key never changes meaning.
+inline const char* RoleKey(Role r)
+{
+    switch (r) {
+    case Role::LeftHeel: return "left_heel";
+    case Role::LeftToe: return "left_toe";
+    case Role::RightHeel: return "right_heel";
+    case Role::RightToe: return "right_toe";
+    case Role::LeftKnee: return "left_knee";
+    case Role::RightKnee: return "right_knee";
+    case Role::LeftUpLeg: return "left_up_leg";
+    case Role::RightUpLeg: return "right_up_leg";
+    case Role::Hips: return "hips";
+    default: return "";
+    }
+}
+
+// The role of a key (without the "role:" prefix). False when the key is not a known role.
+inline bool RoleFromKey(const std::string& key, Role* out)
+{
+    for (int r = 0; r < static_cast<int>(Role::Count); ++r)
+        if (key == RoleKey(static_cast<Role>(r))) {
+            if (out) *out = static_cast<Role>(r);
+            return true;
+        }
+    return false;
+}
+
+// The side of a role: 'L', 'R', or 0 (none, e.g. hips).
+inline char RoleSide(Role r)
+{
+    switch (r) {
+    case Role::LeftHeel: case Role::LeftToe: case Role::LeftKnee: case Role::LeftUpLeg: return 'L';
+    case Role::RightHeel: case Role::RightToe: case Role::RightKnee: case Role::RightUpLeg: return 'R';
+    default: return 0;
+    }
+}
+
+// The role without its side, for signal names: "heel", "toe", "knee", "hip", "hips".
+inline const char* RolePart(Role r)
+{
+    switch (r) {
+    case Role::LeftHeel: case Role::RightHeel: return "heel";
+    case Role::LeftToe: case Role::RightToe: return "toe";
+    case Role::LeftKnee: case Role::RightKnee: return "knee";
+    case Role::LeftUpLeg: case Role::RightUpLeg: return "hip";
+    case Role::Hips: return "hips";
+    default: return "?";
+    }
+}
+
+// The short label of a role for signal names: "L heel", "R knee", "hips".
+inline std::string RoleShortLabel(Role r)
+{
+    const char side = RoleSide(r);
+    std::string s;
+    if (side) {
+        s += side;
+        s += ' ';
+    }
+    return s + RolePart(r);
+}
+
 // The bone name without its namespace, lower-cased (ASCII).
 inline std::string NormalizeBoneName(const std::string& name)
 {

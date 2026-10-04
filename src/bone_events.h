@@ -35,6 +35,7 @@
 
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -51,6 +52,27 @@ struct Vec3d {
 struct BoneTrack {
     double             rate_hz = 240.0;
     std::vector<Vec3d> pos;
+};
+
+// Text a newer RAV wrote on an object's record line that this version does not read (story
+// 10-2, rule_record.h). The object carries it, so it moves with the object and is dropped
+// with it. Detection and the equality checks ignore it.
+struct KeptField {
+    std::string key;                 // "" = a bare token
+    std::string raw;                 // the value as written
+    bool        known = false;       // a key this version reads...
+    bool        read = false;        // ...and its value read
+    // A known key whose value did not read: the model's value for it right after the read
+    // (as written, `parsed_present` = the field was written at all). Its raw text is kept
+    // only while the model still holds that value: an edit wins.
+    bool        parsed_present = false;
+    std::string parsed;
+};
+
+struct KeptText {
+    std::vector<KeptField>   fields;  // the line's fields in order, when one was not understood
+    std::vector<std::string> lines;   // unknown lines read right after this object's line
+    bool empty() const { return fields.empty() && lines.empty(); }
 };
 
 enum class Combine { Single, Average, Lowest, Highest };
@@ -89,12 +111,17 @@ struct Condition {
     double     threshold = 0.0;
     double     margin = 0.0;  // hysteresis, >= 0 (negative reads as 0)
     bool       auto_threshold = true;  // false: Analyse keeps this threshold and margin (a fixed limit)
+    KeptText   kept;                   // its `cond` line (rule_record.h)
 };
 
 enum class Landing { Crossing, PeakOf };
 
 struct Block {
     std::string            marker;
+    // The rule's colour (notify row, project markers): 0 = none (neutral), else
+    // 0x1000000 | 0xRRGGBB (REAPER's "custom colour" flag, so black stays a colour).
+    // Detection ignores it.
+    uint32_t               color = 0;
     std::vector<Condition> conditions;  // AND; an empty block never fires
     double                 min_hold_ms = 0.0;
     double                 cooldown_ms = 0.0;
@@ -109,12 +136,15 @@ struct Block {
     Landing                landing = Landing::Crossing;
     int                    peak_condition = 0;
     bool                   peak_max = true;
+    KeptText               kept;           // its `block` line (rule_record.h)
+    KeptText               kept_strength;  // its `strength` line
 };
 
 struct DetectOptions {
     double sensitivity = 0.0;     // 0..1: drop events weaker than this share of the block's strongest
     double edge_margin_ms = 0.0;  // drop crossings this close to the clip start / end
     double smooth_ms = 8.0;       // zero-phase Gaussian sigma on positions before derivatives (0 = none)
+    KeptText kept;                // its `options` line (rule_record.h)
 };
 
 struct Event {
@@ -144,6 +174,7 @@ struct AnalyseOptions {
     double onset_fraction = 0.1;      // signed speed / acceleration: threshold = this share of its 95th percentile
     bool   per_bone_floor = false;    // Reference::Floor: one floor per bone (bone_floors)
     double smooth_ms = 8.0;
+    KeptText kept;                    // its `analyse` line (rule_record.h)
 };
 
 // Proposes thresholds from the clip, per condition:

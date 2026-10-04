@@ -63,6 +63,13 @@ message(STATUS "ReaAnimViewer version: ${RAV_DISPLAY_VERSION}")
 configure_file("${CMAKE_SOURCE_DIR}/src/rav_version.h.in"
                "${CMAKE_BINARY_DIR}/generated/rav_version.h" @ONLY)
 
+# Story 10-2 -- the factory presets (presets/factory/*.ravpreset) compiled into the DLL
+# as generated/factory_presets.h (src/preset_store.cpp). Editing one reconfigures.
+include(FactoryPresets)
+rav_generate_factory_presets("${CMAKE_SOURCE_DIR}/presets/factory"
+                             "${CMAKE_SOURCE_DIR}/src/factory_presets.h.in"
+                             "${CMAKE_BINARY_DIR}/generated/factory_presets.h")
+
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "" FORCE)
 endif()
@@ -175,6 +182,10 @@ if(WIN32)
             src/bone_sampling.cpp
             src/footstep_measure.cpp
             src/detection_measure.cpp
+            src/rule_record.cpp
+            src/preset_store.cpp
+            src/role_map_store.cpp
+            src/item_rules.cpp
     )
     # Generated rav_version.h (see RAV_VERSION above).
     target_include_directories(animviewer PRIVATE "${CMAKE_BINARY_DIR}/generated")

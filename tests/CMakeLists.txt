@@ -58,3 +58,26 @@ add_test(NAME bone_roles COMMAND bone_roles_test)
 #   detection_eval [--param=value ...] [--json] file.csv...
 add_executable(detection_eval detection_eval.cpp ../src/bone_events.cpp ../src/footstep_measure.cpp)
 target_include_directories(detection_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+
+# Story 10-2 -- the rules record, presets and the role mapping (src/rule_record.h,
+# preset_store.h, role_map_store.h). The factory presets are embedded as in the DLL.
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../cmake")
+include(FactoryPresets)
+rav_generate_factory_presets("${CMAKE_CURRENT_SOURCE_DIR}/../presets/factory"
+                             "${CMAKE_CURRENT_SOURCE_DIR}/../src/factory_presets.h.in"
+                             "${CMAKE_CURRENT_BINARY_DIR}/generated/factory_presets.h")
+
+add_executable(rule_record_test rule_record_test.cpp ../src/rule_record.cpp)
+target_include_directories(rule_record_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_definitions(rule_record_test PRIVATE RAV_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
+add_test(NAME rule_record COMMAND rule_record_test)
+
+add_executable(preset_store_test preset_store_test.cpp ../src/rule_record.cpp ../src/preset_store.cpp)
+target_include_directories(preset_store_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src
+                           ${CMAKE_CURRENT_BINARY_DIR}/generated)
+target_compile_definitions(preset_store_test PRIVATE RAV_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
+add_test(NAME preset_store COMMAND preset_store_test)
+
+add_executable(role_map_store_test role_map_store_test.cpp ../src/role_map_store.cpp ../src/rule_record.cpp)
+target_include_directories(role_map_store_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME role_map_store COMMAND role_map_store_test)

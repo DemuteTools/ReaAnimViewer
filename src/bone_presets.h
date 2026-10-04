@@ -15,6 +15,9 @@
 // Every default lives in FootstepsParams (current guesses, to be tuned offline on Antho's
 // tagged clips with tests/detection_eval).
 //
+// The shipped preset is presets/factory/footsteps.ravpreset (compiled into the DLL, 10-2);
+// tests/preset_store_test.cpp checks that it parses to FootstepsPreset(FootstepsParams{}).
+//
 // Pure C++17, header-only.
 
 #pragma once
@@ -45,7 +48,7 @@ struct FootstepsParams {
 };
 
 inline Block FootstepBlock(Role heel, Role toe, Role knee, Role up_leg, const FootstepsParams& prm,
-                           const char* marker)
+                           const char* marker, uint32_t color = 0)
 {
     SignalSpec p;
     p.bones = {static_cast<int>(heel), static_cast<int>(toe)};
@@ -80,6 +83,7 @@ inline Block FootstepBlock(Role heel, Role toe, Role knee, Role up_leg, const Fo
 
     Block b;
     b.marker = marker;
+    b.color = color;
     b.conditions = {low, bend, yaw};
     b.min_hold_ms = prm.min_hold_ms;
     b.cooldown_ms = prm.cooldown_ms;
@@ -104,8 +108,10 @@ inline Preset FootstepsPreset(const FootstepsParams& prm = {})
 {
     Preset p;
     p.name = "Footsteps";
-    p.blocks = {FootstepBlock(Role::LeftHeel, Role::LeftToe, Role::LeftKnee, Role::LeftUpLeg, prm, "Footstep L"),
-                FootstepBlock(Role::RightHeel, Role::RightToe, Role::RightKnee, Role::RightUpLeg, prm, "Footstep R")};
+    p.blocks = {FootstepBlock(Role::LeftHeel, Role::LeftToe, Role::LeftKnee, Role::LeftUpLeg, prm, "Footstep L",
+                              0x1000000u | 0x5F9EDDu),
+                FootstepBlock(Role::RightHeel, Role::RightToe, Role::RightKnee, Role::RightUpLeg, prm, "Footstep R",
+                              0x1000000u | 0xDD9E5Fu)};
     return p;
 }
 

@@ -100,10 +100,12 @@ const TaggingModel& GetTaggingModel();
 const ItemRules& TaggingShownRules();
 
 // A drag previews its value: the strip and the markers follow at once, nothing is written.
-void TaggingPreview(const ItemRules& rules);
+// `event_edit`: the preview is an event's time (its commit auto-applies), not a rule edit.
+void TaggingPreview(const ItemRules& rules, bool event_edit = false);
 // The drag was cancelled (Esc): back to the saved rules.
 void TaggingCancelPreview();
 // The drag ended: the preview is written as shown (one undo point). False without a preview.
+// A preview of an event's time is written as an event correction (TaggingEditEvent).
 bool TaggingCommitPreview(const char* undo_desc);
 
 // One edit of the current item's rules: one REAPER undo point named `undo_desc`. `edit`
@@ -112,6 +114,18 @@ bool TaggingCommitPreview(const char* undo_desc);
 // the item the edit was made on; when it is no longer the current item, nothing is written.
 bool TaggingEdit(const char* undo_desc, const std::function<bool(ItemRules&)>& edit,
                  MediaItem* for_item = nullptr);
+
+// Story 10-4 follow-up -- a manual event correction (move, add, suppress / restore / delete,
+// typed time). On an item whose markers were up to date BEFORE the edit (its saved record's
+// last Apply equals what Apply would write now with the current option), the edit and the
+// rewrite of that item's markers (ApplyItemMarkersNoUndo, current option) are ONE undo
+// point named `undo_desc` (Undo_BeginBlock2 / Undo_EndBlock2, UNDO_STATE_ALL). On an item
+// never applied, or with a rule edit / option change pending since its last Apply, it is
+// exactly TaggingEdit (no marker touched: "markers not written yet"). Only this item's
+// markers change. When the markers cannot be written the event is still saved and the
+// footer's last result says why. Rule edits never come here.
+bool TaggingEditEvent(const char* undo_desc, const std::function<bool(ItemRules&)>& edit,
+                      MediaItem* for_item = nullptr);
 
 // Analyse: proposes the thresholds from the clip (Fixed conditions keep theirs). One undo
 // point. False when the item cannot be analysed (missing roles, no tracks).

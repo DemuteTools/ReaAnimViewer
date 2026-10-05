@@ -283,6 +283,16 @@ void Edit(const std::string& desc, std::function<bool(ItemRules&)> fn, MediaItem
     });
 }
 
+// Story 10-4 follow-up: a manual event correction (move, add, suppress / restore / delete,
+// typed time). As Edit, and on an item whose markers RAV already wrote, its markers are
+// rewritten in the same undo point (TaggingEditEvent). Rule edits keep Edit: they never
+// auto-apply.
+void EventEdit(const std::string& desc, std::function<bool(ItemRules&)> fn, MediaItem* item = nullptr)
+{
+    if (!item) item = GetTaggingModel().item;
+    Later([desc, fn, item]() { TaggingEditEvent(desc.c_str(), fn, item); });
+}
+
 // ---- Story 10-4: the event list ------------------------------------------------------------------
 
 EvGroup GroupOf(ShownKind k)
@@ -364,7 +374,7 @@ void AddUserEvent(int block, double t)
 {
     const ItemRules& shown = TaggingShownRules();
     if (block < 0 || block >= static_cast<int>(shown.blocks.size()) || !std::isfinite(t)) return;
-    Edit("RAV: Add event (" + RuleNameAt(shown, block) + ")", [block, t](ItemRules& r) {
+    EventEdit("RAV: Add event (" + RuleNameAt(shown, block) + ")", [block, t](ItemRules& r) {
         if (!BlockAt(r, block)) return false;
         double s = 0.0, v = 0.0;
         TaggingMeasureEvent(r, block, t, &s, &v);
@@ -382,7 +392,7 @@ void ToggleEvent(const ShownEvent& e)
     const int block = e.block;
     if (e.kind == ShownKind::Detected) {
         const double t = e.t;
-        Edit("RAV: Suppress event (" + rule + ")", [block, t](ItemRules& r) {
+        EventEdit("RAV: Suppress event (" + rule + ")", [block, t](ItemRules& r) {
             if (!BlockAt(r, block)) return false;
             r.events.push_back(MakeSuppression(block, t));
             return true;
@@ -390,7 +400,7 @@ void ToggleEvent(const ShownEvent& e)
     } else if (e.kind == ShownKind::Suppressed || e.kind == ShownKind::Orphan) {
         const double t0 = EntryTime(e);
         if (!std::isfinite(t0)) return;
-        Edit("RAV: Restore event (" + rule + ")", [block, t0](ItemRules& r) {
+        EventEdit("RAV: Restore event (" + rule + ")", [block, t0](ItemRules& r) {
             const int i = FindEntry(r, EventKind::Suppress, block, t0);
             if (i < 0) return false;
             r.events.erase(r.events.begin() + i);
@@ -399,7 +409,7 @@ void ToggleEvent(const ShownEvent& e)
     } else if (e.kind == ShownKind::User) {
         const double t0 = EntryTime(e);
         if (!std::isfinite(t0)) return;
-        Edit("RAV: Delete event (" + rule + ")", [block, t0](ItemRules& r) {
+        EventEdit("RAV: Delete event (" + rule + ")", [block, t0](ItemRules& r) {
             const int i = FindEntry(r, EventKind::User, block, t0);
             if (i < 0) return false;
             r.events.erase(r.events.begin() + i);
@@ -418,7 +428,7 @@ void MoveEvent(const ShownEvent& e, double entry_t, double to)
     const int block = e.block;
     if (e.kind == ShownKind::Detected) {
         const double det_t = e.t;
-        Edit("RAV: Move event (" + rule + ")", [block, det_t, to](ItemRules& r) {
+        EventEdit("RAV: Move event (" + rule + ")", [block, det_t, to](ItemRules& r) {
             if (!BlockAt(r, block)) return false;
             double s = 0.0, v = 0.0;
             TaggingMeasureEvent(r, block, to, &s, &v);
@@ -428,7 +438,7 @@ void MoveEvent(const ShownEvent& e, double entry_t, double to)
         });
     } else if (e.kind == ShownKind::User) {
         if (!std::isfinite(entry_t)) return;
-        Edit("RAV: Move event (" + rule + ")", [block, entry_t, to](ItemRules& r) {
+        EventEdit("RAV: Move event (" + rule + ")", [block, entry_t, to](ItemRules& r) {
             const int i = FindEntry(r, EventKind::User, block, entry_t);
             if (i < 0) return false;
             EventEntry& x = r.events[static_cast<size_t>(i)];
@@ -1057,6 +1067,50 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                 } else if (sel_blk && !sel_blk->enabled) {
                     CenterLines(dl, ImVec2(lane_x, lanes_top), area1, "This rule is off: switch it on to see its signals.",
                                 ui::kFaint);
+                }
+
+                // ---- Story 10-4 follow-up: the selected rule's events through its lanes ----
+                // Each event draws a thin line in the rule's colour from its notify row down
+                // through every condition lane to the strip's bottom, so the user sees where it
+                // crosses each curve: suppressed faint, orphan dashed, the selected one brighter.
+                // A dragged event's line follows the drop time (Esc: back where it was).
+                if (sel_blk && !lanes.empty() && g_sel >= 0 && g_sel < nb) {
+                    const ImU32 rc = RuleColor(*sel_blk);
+                    const float ly0 = row_y[static_cast<size_t>(g_sel)] + row_h;
+                    const float ly1 = area1.y;
+                    const bool dragging = g_drag == StripDrag::Event && g_drag_moved && g_drag_ev.block == g_sel;
+                    auto vline = [&](float x, ImU32 col, float thick, bool dashed) {
+                        if (dashed) {
+                            for (float y = ly0; y < ly1; y += 5.0f)
+                                dl->AddLine(ImVec2(x, y), ImVec2(x, std::min(y + 2.5f, ly1)), col, thick);
+                        } else {
+                            dl->AddLine(ImVec2(x, ly0), ImVec2(x, ly1), col, thick);
+                        }
+                    };
+                    dl->PushClipRect(ImVec2(lane_x, ly0), ImVec2(lane_x + lane_w, ly1), true);
+                    for (const ShownEvent& e : m.events) {
+                        if (e.block != g_sel) continue;
+                        double pt = 0.0;
+                        if (!FirstPassProjectTime(m.map, e.t, &pt) || pt < win.v0 || pt > win.v1) continue;
+                        const bool is_sel = sel_ev && sel_ev->block == e.block && sel_ev->t == e.t && sel_ev->kind == e.kind;
+                        const bool moving = dragging && e.kind == g_drag_ev.kind && e.t == g_drag_ev.t;
+                        const float ex = std::floor(x_of(pt)) + 0.5f;
+                        if (moving) {
+                            vline(ex, WithAlpha(rc, 0x30), 1.0f, true);  // where it was
+                        } else if (e.kind == ShownKind::Orphan) {
+                            vline(ex, WithAlpha(rc, is_sel ? 0xC0 : 0x66), 1.0f, true);
+                        } else if (e.kind == ShownKind::Suppressed) {
+                            vline(ex, WithAlpha(rc, is_sel ? 0x99 : 0x38), 1.0f, false);
+                        } else {
+                            vline(ex, WithAlpha(rc, is_sel ? 0xF0 : 0x80), is_sel ? 1.5f : 1.0f, false);
+                        }
+                    }
+                    if (dragging) {
+                        double pt = 0.0;
+                        if (FirstPassProjectTime(m.map, g_drag_ev_to, &pt) && pt >= win.v0 && pt <= win.v1)
+                            vline(std::floor(x_of(pt)) + 0.5f, WithAlpha(rc, 0xF0), 1.5f, false);
+                    }
+                    dl->PopClipRect();
                 }
 
                 // ---- Mouse: the lines, the rows, the scrub ----
@@ -1749,7 +1803,7 @@ void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const Sho
                 EventEntry& x = p.events[static_cast<size_t>(entry)];
                 if (x.kind != EventKind::User || x.block != block) return;
                 x.t = t;
-                TaggingPreview(p);
+                TaggingPreview(p, true);  // an event's time: its commit auto-applies
             });
             g_sel_ev.t = t;
             break;
@@ -1757,7 +1811,7 @@ void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const Sho
         case ui::DragNumberEvent::Commit: {
             const double t = std::min(std::max(0.0, ms / 1000.0), clip_len);
             if (t != saved_t) {
-                Edit("RAV: Set event time (" + rule + ")", [block, saved_t, t](ItemRules& r) {
+                EventEdit("RAV: Set event time (" + rule + ")", [block, saved_t, t](ItemRules& r) {
                     const int i = FindEntry(r, EventKind::User, block, saved_t);
                     if (i < 0) return false;
                     EventEntry& x = r.events[static_cast<size_t>(i)];

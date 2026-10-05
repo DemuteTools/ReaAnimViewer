@@ -191,6 +191,110 @@ void DropOwn(std::vector<ExistingMarker>& existing, const std::vector<ExistingMa
     }
 }
 
+// Why the marker functions the option needs are missing ("" = they are all there).
+const char* MissingApiReason(MarkerMode mode)
+{
+    const bool want_take = mode != MarkerMode::Project;
+    const bool want_project = mode != MarkerMode::Take;
+    if (want_project && !ProjectApiReady()) return "Project markers need REAPER 7 or newer";
+    if (want_take && !TakeApiReady()) return "Take markers need REAPER 5.981 or newer";
+    return "";
+}
+
+// Deletes the markers RAV recorded as its own on this item (both kinds: an option change
+// removes the other kind).
+void DeleteItemOwnMarkers(MediaItem* item, const ItemRules& rules)
+{
+    MediaItem_Take* take = RavTakeOf(item);
+    if (!take) return;
+    if (TakeApiReady()) DeleteOwnTakeMarkers(take, rules.tmarkers);
+    if (ProjectApiReady()) DeleteOwnProjectMarkers(rules.pmarkers);
+}
+
+// Writes one item's markers from its detection (its own RAV markers already deleted), then
+// records them as RAV's with the applied snapshot (no undo point: the caller's block holds
+// it). `written_project`: the project markers this run already wrote (RAV's, never foreign),
+// grown here. Counts go to `res`.
+void WriteItemMarkers(MediaItem* item, const ItemDetection& det, MarkerMode mode,
+                      std::vector<ExistingMarker>& written_project, ApplyResult& res)
+{
+    try {
+        const bool      want_take = mode != MarkerMode::Project;
+        const bool      want_project = mode != MarkerMode::Take;
+        MediaItem_Take* take = RavTakeOf(item);
+        if (!take) {
+            ++res.failed;
+            return;
+        }
+        const ItemRules&                 rules = det.rules;
+        const std::vector<ShownEvent>    list = BuildEventList(det.events, rules.events, rules.blocks.size());
+        const std::vector<PlannedMarker> plan = PlanMarkers(list, rules.blocks, det.map);
+
+        std::vector<TakeMarkerRef>    own_take;
+        std::vector<ProjectMarkerRef> own_project;
+        if (want_take) {
+            std::vector<ExistingMarker> foreign = TakeMarkers(take);
+            std::vector<ExistingMarker> mine;  // this run's take markers on this take
+            for (const PlannedMarker& m : plan) {
+                if (FindTwinMarker(mine, m.clip_t, m.name) >= 0) continue;  // already written now: no duplicate
+                if (FindTwinMarker(foreign, m.clip_t, m.name) >= 0) {
+                    ++res.already_present;
+                    continue;
+                }
+                double pos = m.clip_t;
+                int    col = NativeColor(m.color);
+                if (f_set_take_marker(take, -1, m.name.c_str(), &pos, col ? &col : nullptr) < 0) continue;
+                TakeMarkerRef ref;
+                ref.t = m.clip_t;
+                ref.name = m.name;
+                own_take.push_back(ref);
+                mine.push_back({m.clip_t, m.name});
+                ++res.markers;
+            }
+        }
+        if (want_project) {
+            std::vector<ExistingMarker> foreign = ProjectMarkers();
+            DropOwn(foreign, written_project);
+            for (const PlannedMarker& m : plan) {
+                if (FindTwinMarker(written_project, m.project_t, m.name) >= 0) continue;  // already written now
+                if (FindTwinMarker(foreign, m.project_t, m.name) >= 0) {
+                    ++res.already_present;
+                    continue;
+                }
+                const std::string guid = AddProjectMarker(m.project_t, m.name, NativeColor(m.color));
+                if (guid.empty()) continue;
+                ProjectMarkerRef ref;
+                ref.guid = guid;
+                ref.t = m.project_t;
+                own_project.push_back(ref);
+                written_project.push_back({m.project_t, m.name});
+                ++res.markers;
+            }
+        }
+
+        // The record: the markers RAV now owns, the snapshot and the applied state.
+        const bool keep_project_refs = !ProjectApiReady();  // could not delete them: still RAV's
+        std::string err;
+        const bool ok = ModifyItemRulesNoUndo(
+            item,
+            [&](ItemRules& rec) {
+                rec.tmarkers = own_take;
+                if (keep_project_refs) {
+                    for (const ProjectMarkerRef& p : own_project) rec.pmarkers.push_back(p);
+                } else {
+                    rec.pmarkers = own_project;
+                }
+                RecordApplied(rec, plan, mode);
+                return true;
+            },
+            &err);
+        if (ok) ++res.items;
+        else ++res.failed;
+    } catch (...) {
+        ++res.failed;
+    }
+}
+
 }  // namespace
 
 void InitTagMarkers(void* (*get_func)(const char* name))
@@ -242,12 +346,8 @@ ApplyResult ApplyTaggingMarkers()
     ApplyResult res;
     try {
         const MarkerMode mode = GetTaggingMarkerMode();
-        const bool       want_take = mode != MarkerMode::Project;
-        const bool       want_project = mode != MarkerMode::Take;
-        if ((want_take && !TakeApiReady()) || (want_project && !ProjectApiReady())) {
-            res.error = want_project && !ProjectApiReady()
-                            ? "Project markers need REAPER 7 or newer: nothing was written."
-                            : "Take markers need REAPER 5.981 or newer: nothing was written.";
+        if (const char* why = MissingApiReason(mode); why[0]) {
+            res.error = std::string(why) + ": nothing was written.";
             g_last = res;
             return res;
         }
@@ -279,93 +379,16 @@ ApplyResult ApplyTaggingMarkers()
         }
 
         Undo_BeginBlock2(nullptr);
-        // First every item's previous RAV markers go (both kinds: an option change removes the
-        // other kind), so no item takes another's old RAV marker for a foreign one.
+        // First every item's previous RAV markers go, so no item takes another's old RAV
+        // marker for a foreign one.
         for (Run& r : runs) {
             try {
-                MediaItem_Take* take = RavTakeOf(r.item);
-                if (!take) continue;
-                if (TakeApiReady()) DeleteOwnTakeMarkers(take, r.det.rules.tmarkers);
-                if (ProjectApiReady()) DeleteOwnProjectMarkers(r.det.rules.pmarkers);
+                DeleteItemOwnMarkers(r.item, r.det.rules);
             } catch (...) {
             }
         }
         std::vector<ExistingMarker> written_project;  // this Apply's project markers (RAV's, never foreign)
-        for (Run& r : runs) {
-            try {
-                MediaItem_Take* take = RavTakeOf(r.item);
-                if (!take) {
-                    ++res.failed;
-                    continue;
-                }
-                const ItemRules&                 rules = r.det.rules;
-                const std::vector<ShownEvent>    list = BuildEventList(r.det.events, rules.events, rules.blocks.size());
-                const std::vector<PlannedMarker> plan = PlanMarkers(list, rules.blocks, r.det.map);
-
-                std::vector<TakeMarkerRef>    own_take;
-                std::vector<ProjectMarkerRef> own_project;
-                if (want_take) {
-                    std::vector<ExistingMarker> foreign = TakeMarkers(take);
-                    std::vector<ExistingMarker> mine;  // this Apply's take markers on this take
-                    for (const PlannedMarker& m : plan) {
-                        if (FindTwinMarker(mine, m.clip_t, m.name) >= 0) continue;  // already written now: no duplicate
-                        if (FindTwinMarker(foreign, m.clip_t, m.name) >= 0) {
-                            ++res.already_present;
-                            continue;
-                        }
-                        double pos = m.clip_t;
-                        int    col = NativeColor(m.color);
-                        if (f_set_take_marker(take, -1, m.name.c_str(), &pos, col ? &col : nullptr) < 0) continue;
-                        TakeMarkerRef ref;
-                        ref.t = m.clip_t;
-                        ref.name = m.name;
-                        own_take.push_back(ref);
-                        mine.push_back({m.clip_t, m.name});
-                        ++res.markers;
-                    }
-                }
-                if (want_project) {
-                    std::vector<ExistingMarker> foreign = ProjectMarkers();
-                    DropOwn(foreign, written_project);
-                    for (const PlannedMarker& m : plan) {
-                        if (FindTwinMarker(written_project, m.project_t, m.name) >= 0) continue;  // already written now
-                        if (FindTwinMarker(foreign, m.project_t, m.name) >= 0) {
-                            ++res.already_present;
-                            continue;
-                        }
-                        const std::string guid = AddProjectMarker(m.project_t, m.name, NativeColor(m.color));
-                        if (guid.empty()) continue;
-                        ProjectMarkerRef ref;
-                        ref.guid = guid;
-                        ref.t = m.project_t;
-                        own_project.push_back(ref);
-                        written_project.push_back({m.project_t, m.name});
-                        ++res.markers;
-                    }
-                }
-
-                // The record: the markers RAV now owns, the snapshot and the applied state.
-                const bool keep_project_refs = !ProjectApiReady();  // could not delete them: still RAV's
-                std::string err;
-                const bool ok = ModifyItemRulesNoUndo(
-                    r.item,
-                    [&](ItemRules& rec) {
-                        rec.tmarkers = own_take;
-                        if (keep_project_refs) {
-                            for (const ProjectMarkerRef& p : own_project) rec.pmarkers.push_back(p);
-                        } else {
-                            rec.pmarkers = own_project;
-                        }
-                        RecordApplied(rec, plan, mode);
-                        return true;
-                    },
-                    &err);
-                if (ok) ++res.items;
-                else ++res.failed;
-            } catch (...) {
-                ++res.failed;
-            }
-        }
+        for (Run& r : runs) WriteItemMarkers(r.item, r.det, mode, written_project, res);
         Undo_EndBlock2(nullptr, kUndoApply, UNDO_STATE_ALL);
         UpdateArrange();
         res.ran = res.items > 0;
@@ -379,6 +402,36 @@ ApplyResult ApplyTaggingMarkers()
     return res;
 }
 
+ApplyResult ApplyItemMarkersNoUndo(MediaItem* item)
+{
+    ApplyResult res;
+    try {
+        const MarkerMode mode = GetTaggingMarkerMode();
+        if (const char* why = MissingApiReason(mode); why[0]) {
+            res.error = why;
+            return res;
+        }
+        const ItemDetection det = DetectItem(item);
+        switch (det.status) {
+        case ItemDetection::Status::Ok: break;
+        case ItemDetection::Status::NotRav:
+        case ItemDetection::Status::NoRules: ++res.without_rules; return res;
+        case ItemDetection::Status::NoFile:
+        case ItemDetection::Status::RolesMissing: ++res.roles_skipped; return res;
+        case ItemDetection::Status::Failed: ++res.failed; return res;
+        }
+        DeleteItemOwnMarkers(item, det.rules);
+        std::vector<ExistingMarker> written_project;
+        WriteItemMarkers(item, det, mode, written_project, res);
+        res.ran = res.items > 0;
+    } catch (const std::exception& e) {
+        res.error = e.what();
+    } catch (...) {
+        res.error = "unexpected error";
+    }
+    return res;
+}
+
 const ApplyResult& LastApplyResult()
 {
     return g_last;
@@ -387,6 +440,11 @@ const ApplyResult& LastApplyResult()
 void ClearLastApplyResult()
 {
     g_last = ApplyResult{};
+}
+
+void SetLastApplyResult(const ApplyResult& r)
+{
+    g_last = r;
 }
 
 }  // namespace rav

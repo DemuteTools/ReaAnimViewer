@@ -27,6 +27,7 @@
 
 #include <string>
 
+#include "reaper_api.h"
 #include "rule_record.h"  // MarkerMode
 
 namespace rav {
@@ -54,6 +55,15 @@ struct ApplyResult {
 ApplyResult ApplyTaggingMarkers();
 const ApplyResult& LastApplyResult();
 void ClearLastApplyResult();
+void SetLastApplyResult(const ApplyResult& r);
+
+// Story 10-4 follow-up (auto-apply on event edits): Apply's work on ONE item, without an undo
+// point of its own (the caller's Undo_BeginBlock2 / Undo_EndBlock2 holds it), with the current
+// option and the same rules (only RAV's markers replaced, no foreign twin duplicated, first
+// pass only, rule colour). Reads the item's record as it is now. Does not touch the footer's
+// last result, nor refresh the arrange or the Tagging view (the caller does). `error` set when
+// a marker function the option needs is missing (nothing written); a skipped item is counted.
+ApplyResult ApplyItemMarkersNoUndo(MediaItem* item);
 
 }  // namespace rav
 

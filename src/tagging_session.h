@@ -10,8 +10,9 @@
 //     detection rate (240 Hz), from the parsed file (bone_sampling.h).
 //   - Detection (DetectTrace, bone_events.h) reruns when the rules shown change: the saved
 //     rules, or a live preview while a drag runs (the preview is never written).
-//   - Every edit goes through ModifyItemRules (one REAPER undo point, named after the edit).
-//     Analyse is one edit too; nothing runs it on its own.
+//   - Every edit goes through ModifyItemRules (one REAPER undo point, named after the edit,
+//     that also rewrites the item's preview markers: tag_markers.h). Analyse is one edit too;
+//     nothing runs it on its own.
 //
 // Main thread only (REAPER item APIs). No ImGui, no GL. No-throw.
 
@@ -68,10 +69,12 @@ struct TaggingModel {
     std::vector<ShownEvent>    events;
     std::vector<PlannedMarker> planned;
     bool                       markers_up_to_date = false;
+    bool                       has_previews = false;  // 10-4 fb-4: the saved record has preview markers
     // The selection (the footer).
     int sel_count = 0;
     int sel_without_rules = 0;
     int sel_roles_skipped = 0;
+    int sel_cancellable = 0;  // 10-4 fb-4: selected items Cancel acts on (rules, a snapshot or previews)
 };
 
 // Story 10-4 -- one item's detection, for Apply on any selected item (not only the one shown).
@@ -94,7 +97,7 @@ ItemClipMap ItemClipMapOf(MediaItem* item, double clip_len);
 // `block`'s strength and speed, as detection measures them). False (0, 0) when they cannot be.
 bool TaggingMeasureEvent(const ItemRules& rules, int block, double t, double* strength, double* speed);
 
-// Reads the current item's record again and reruns detection (after Apply).
+// Reads the current item's record again and reruns detection (after Commit / Cancel).
 void TaggingReread();
 
 // Each frame in Tagging view (before the UI draws): `item` / `path` = the item the 3D view
@@ -123,14 +126,9 @@ bool TaggingEdit(const char* undo_desc, const std::function<bool(ItemRules&)>& e
                  MediaItem* for_item = nullptr);
 
 // Story 10-4 follow-up -- a manual event correction (move, add, suppress / restore / delete,
-// typed time). On an item whose markers were up to date BEFORE the edit (its saved record's
-// last Apply equals what Apply would write now with the current option), the edit and the
-// rewrite of that item's markers (ApplyItemMarkersNoUndo, current option) are ONE undo
-// point named `undo_desc` (Undo_BeginBlock2 / Undo_EndBlock2, UNDO_STATE_ALL). On an item
-// never applied, or with a rule edit / option change pending since its last Apply, it is
-// exactly TaggingEdit (no marker touched: "markers not written yet"). Only this item's
-// markers change. When the markers cannot be written the event is still saved and the
-// footer's last result says why. Rule edits never come here.
+// typed time). 10-4 fb-4: exactly TaggingEdit, like every other gesture: the record and the
+// item's preview markers in one undo point; the committed markers wait for Commit (fb-1's
+// immediate rewrite of the committed markers is replaced).
 bool TaggingEditEvent(const char* undo_desc, const std::function<bool(ItemRules&)>& edit,
                       MediaItem* for_item = nullptr);
 

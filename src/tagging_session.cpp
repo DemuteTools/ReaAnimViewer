@@ -203,11 +203,13 @@ void BuildEvents()
     m.events.clear();
     m.planned.clear();
     m.markers_up_to_date = false;
+    m.has_previews = HasPreviews(m.rules);
     if (!m.detected) return;
     const ItemRules& shown = TaggingShownRules();
     m.events = BuildEventList(m.trace.events, shown.events, shown.blocks.size());
     m.planned = PlanMarkers(m.events, shown.blocks, m.map);
     m.markers_up_to_date = MarkersUpToDate(m.rules, m.planned, GetTaggingMarkerMode());
+    m.has_previews = HasPreviews(m.rules);
 }
 
 // Binds `rules` on the skeleton and turns them into track indices; samples the bones when
@@ -242,6 +244,7 @@ void RunDetection()
     m.events.clear();
     m.planned.clear();
     m.markers_up_to_date = false;
+    m.has_previews = HasPreviews(m.rules);
     if (m.missing_count > 0) return;  // no detection run (the strip says so)
     const ItemRules& shown = TaggingShownRules();
     std::vector<Block> bound;
@@ -255,13 +258,17 @@ void RunDetection()
 void RefreshSelection()
 {
     TaggingModel& m = g.model;
-    m.sel_count = m.sel_without_rules = m.sel_roles_skipped = 0;
+    m.sel_count = m.sel_without_rules = m.sel_roles_skipped = m.sel_cancellable = 0;
     const int n = CountSelectedMediaItems(nullptr);
     m.sel_count = n;
     for (int i = 0; i < n; ++i) {
         MediaItem* it = GetSelectedMediaItem(nullptr, i);
         ItemRulesRead rd;
-        if (!it || !ReadItemRules(it, &rd) || !rd.present || !rd.valid || rd.rules.blocks.empty()) {
+        const bool    readable = it && ReadItemRules(it, &rd) && rd.present && rd.valid;
+        // 10-4 fb-4: Cancel acts on an item with rules, a Cancel snapshot or previews.
+        if (readable && (!rd.rules.blocks.empty() || HasPreviews(rd.rules) || ReadCommittedSnapshot(it, nullptr)))
+            ++m.sel_cancellable;
+        if (!readable || rd.rules.blocks.empty()) {
             ++m.sel_without_rules;
             continue;
         }
@@ -406,88 +413,9 @@ bool TaggingEdit(const char* undo_desc, const std::function<bool(ItemRules&)>& e
 
 bool TaggingEditEvent(const char* undo_desc, const std::function<bool(ItemRules&)>& edit, MediaItem* for_item)
 {
-    if (for_item && for_item != g.model.item) return false;
-    MediaItem* item = g.model.item;
-    ItemRulesRead cur;
-    // Never applied, markers not up to date (or no item, or a record that does not read):
-    // exactly as before.
-    // Auto-apply only when the markers were up to date BEFORE the edit (from the SAVED record,
-    // not the preview): a rule edit or option change pending since the last Apply never
-    // reaches the timeline through an event correction.
-    auto up_to_date_before = [&]() {
-        const ItemDetection det = DetectItem(item);
-        if (det.status != ItemDetection::Status::Ok) return false;
-        const std::vector<ShownEvent>    list = BuildEventList(det.events, det.rules.events, det.rules.blocks.size());
-        const std::vector<PlannedMarker> plan = PlanMarkers(list, det.rules.blocks, det.map);
-        return MarkersUpToDate(det.rules, plan, GetTaggingMarkerMode());
-    };
-    if (!item || !ReadItemRules(item, &cur) || !cur.present || !cur.valid || !cur.rules.has_applied ||
-        !up_to_date_before()) {
-        const bool ok = TaggingEdit(undo_desc, edit, for_item);
-        if (ok) ClearLastApplyResult();  // the footer's Apply line is stale now
-        return ok;
-    }
-
-    g.last_error.clear();
-    g.previewing = false;
-    g.model.previewing = false;
-    std::string err;
-    bool ok = false;
-    bool block_open = false;  // an undo block is open: it is always closed, even on a throw
-    const char* desc = undo_desc ? undo_desc : "RAV: Edit auto-tagging event";
-    try {
-        // The edit runs once, on the record as saved; nothing is written (and no undo point
-        // made) when it cancels or changes nothing.
-        ItemRules next = cur.rules;
-        if (!edit || !edit(next)) {
-            ok = true;
-        } else if (const std::string text = SerializeItemRules(next);
-                   text == cur.raw || text == SerializeItemRules(cur.rules)) {
-            ok = true;
-        } else {
-            Undo_BeginBlock2(nullptr);
-            block_open = true;
-            ok = ModifyItemRulesNoUndo(
-                item,
-                [&](ItemRules& r) {
-                    r = next;
-                    return true;
-                },
-                &err);
-            ApplyResult ar;
-            if (ok) ar = ApplyItemMarkersNoUndo(item);
-            block_open = false;
-            Undo_EndBlock2(nullptr, desc, UNDO_STATE_ALL);
-            UpdateArrange();
-            if (ok) {
-                // The footer: "markers up to date" comes from the record; only a failure is told.
-                if (!ar.error.empty()) {
-                    ApplyResult shown;
-                    shown.error = "Event saved, but its markers could not be written: " + ar.error + ".";
-                    SetLastApplyResult(shown);
-                } else if (ar.items == 0) {
-                    ApplyResult shown;
-                    shown.error = ar.roles_skipped > 0
-                                      ? "Event saved, but its markers could not be written: a role has no bone."
-                                      : "Event saved, but its markers could not be written.";
-                    SetLastApplyResult(shown);
-                } else {
-                    ClearLastApplyResult();
-                }
-            }
-        }
-    } catch (...) {
-        if (block_open) {
-            Undo_EndBlock2(nullptr, desc, UNDO_STATE_ALL);
-            UpdateArrange();
-        }
-        ok = false;
-        err = "The item's rules could not be saved.";
-    }
-    if (!ok) g.last_error = err.empty() ? "The item's rules could not be saved." : err;
-    ReadItem();
-    RunDetection();
-    return ok;
+    // 10-4 fb-4: an event correction is a gesture like any other: the record and the item's
+    // preview markers in one undo point (ModifyItemRules' hook); committed markers wait for Commit.
+    return TaggingEdit(undo_desc, edit, for_item);
 }
 
 bool TaggingAnalyse()

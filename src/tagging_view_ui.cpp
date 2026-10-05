@@ -280,15 +280,14 @@ void RunLater()
 void Edit(const std::string& desc, std::function<bool(ItemRules&)> fn, MediaItem* item = nullptr)
 {
     if (!item) item = GetTaggingModel().item;
-    Later([desc, fn, item]() {
-        if (TaggingEdit(desc.c_str(), fn, item)) ClearLastApplyResult();  // the footer's Apply line is stale now
-    });
+    // The footer's last Commit / Cancel line goes stale with the write (ModifyItemRules' hook,
+    // which also tells a preview-marker failure there).
+    Later([desc, fn, item]() { TaggingEdit(desc.c_str(), fn, item); });
 }
 
 // Story 10-4 follow-up: a manual event correction (move, add, suppress / restore / delete,
-// typed time). As Edit, and on an item whose markers RAV already wrote, its markers are
-// rewritten in the same undo point (TaggingEditEvent). Rule edits keep Edit: they never
-// auto-apply.
+// typed time). 10-4 fb-4: written as every other gesture (the record + the item's preview
+// markers, one undo point); the committed markers wait for Commit.
 void EventEdit(const std::string& desc, std::function<bool(ItemRules&)> fn, MediaItem* item = nullptr)
 {
     if (!item) item = GetTaggingModel().item;
@@ -870,7 +869,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                           m.missing_count, m.missing_count == 1 ? " has" : "s have");
             msg1 = miss_line;
             msg_col = kBadText;
-            miss_names = "Missing: " + m.missing + ". Apply skips this item until they have a bone.";
+            miss_names = "Missing: " + m.missing + ". Commit skips this item until they have a bone.";
             msg2 = miss_names.c_str();
         } else if (!m.sample_error.empty()) {
             msg1 = m.sample_error.c_str();
@@ -1988,9 +1987,7 @@ void DrawPresetField(const TaggingModel& m)
             ImGui::SetCursorScreenPos(ImVec2(std::max(b0.x + 8.0f, bx), ImGui::GetCursorScreenPos().y));
         }
         if (AmberButton("Update##lgup")) {
-            Later([]() {
-                if (TaggingUpdatePreset()) ClearLastApplyResult();  // the rules changed: the footer's Apply line is stale
-            });
+            Later([]() { TaggingUpdatePreset(); });  // the footer's last Commit line goes stale with the write
         }
         ImGui::SameLine();
         if (ui::SolidButton((keep + "##lgkeep").c_str())) Later([]() { TaggingKeepPreset(); });
@@ -2111,7 +2108,7 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
                 IconCheck(dl, ImVec2(rp.x + rw - 12.0f, rp.y + fh * 0.5f), 4.0f, ui::kOk);
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
                 if (m.missing_count > 0)
-                    ImGui::SetTooltip("No bone plays: %s.\nDetection and Apply skip this item until they are mapped.",
+                    ImGui::SetTooltip("No bone plays: %s.\nDetection and Commit skip this item until they are mapped.",
                                       m.missing.c_str());
                 else
                     ImGui::SetTooltip("Every role these rules read has a bone on this skeleton.");
@@ -2838,18 +2835,32 @@ void DrawFooter(const TaggingModel& m)
             ImGui::SetTooltip("Take, project or both: a global option in the menu (Auto-Tagging options).\n"
                               "Project markers take the rule's colour.");
     }
-    // Apply: every selected item that has rules, one undo point.
+    // Commit (Apply renamed, 10-4 fb-4): every selected item that has rules, one undo point.
+    // Cancel beside it: the same items' previews deleted, their rules back to the last Commit.
     const int run = std::max(0, m.sel_count - m.sel_without_rules - m.sel_roles_skipped);
+    const int with_rules = m.sel_cancellable;
     {
+        const float cancel_w = ImGui::CalcTextSize("Cancel").x + ImGui::GetStyle().FramePadding.x * 2.0f + 8.0f;
+        const float commit_w =
+            std::max(60.0f, ImGui::GetContentRegionAvail().x - cancel_w - ImGui::GetStyle().ItemSpacing.x);
         char label[64];
-        std::snprintf(label, sizeof(label), "Apply to %d item%s##tagapply", run, run == 1 ? "" : "s");
+        std::snprintf(label, sizeof(label), "Commit to %d item%s##tagapply", run, run == 1 ? "" : "s");
         if (run == 0) ImGui::BeginDisabled();
-        if (ui::PrimaryButton(label, ImVec2(-1.0f, 0.0f))) Later([]() { ApplyTaggingMarkers(); });
+        if (ui::PrimaryButton(label, ImVec2(commit_w, 0.0f))) Later([]() { CommitTaggingMarkers(); });
         if (run == 0) ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip(run == 0 ? "Select the items to tag (items with rules) in REAPER."
                                        : "Writes the markers of every selected item that has rules, each with its own "
-                                         "rules.\nReplaces only RAV's markers. One undo point.");
+                                         "rules,\nand removes their previews. Replaces only RAV's markers. One undo point.");
+        ImGui::SameLine();
+        if (with_rules == 0) ImGui::BeginDisabled();
+        if (ui::SolidButton("Cancel##tagcancel", ImVec2(-1.0f, 0.0f))) Later([]() { CancelTaggingChanges(); });
+        if (with_rules == 0) ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip(with_rules == 0 ? "Select the items to tag (items with rules) in REAPER."
+                                              : "Deletes the preview markers of every selected item that has rules and "
+                                                "puts\ntheir rules, thresholds and events back as they were at the last "
+                                                "Commit. One undo point.");
     }
     // The selection, and whether this item's markers are written.
     {
@@ -2870,17 +2881,20 @@ void DrawFooter(const TaggingModel& m)
         if (m.detected) {
             ImGui::SameLine(0.0f, 4.0f);
             ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(m.markers_up_to_date ? ui::kMuted : ui::kWarn));
-            ImGui::TextUnformatted(m.markers_up_to_date ? RAV_DOT " markers up to date" : RAV_DOT " markers not written yet");
+            ImGui::TextUnformatted(m.markers_up_to_date ? RAV_DOT " markers up to date"
+                                   : m.has_previews     ? RAV_DOT " preview not committed"
+                                                        : RAV_DOT " markers not written yet");
             ImGui::PopStyleColor();
         }
-        // The last Apply's outcome.
+        // The last Commit or Cancel outcome.
         const ApplyResult& ar = LastApplyResult();
         if (!ar.error.empty()) {
             ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(kBadText));
             ImGui::TextUnformatted(ar.error.c_str());
             ImGui::PopStyleColor();
         } else if (ar.ran) {
-            std::string out = "Markers written on " + std::to_string(ar.items) + " item" + (ar.items == 1 ? "" : "s");
+            std::string out = std::string(ar.cancel ? "Changes cancelled on " : "Markers committed on ") +
+                              std::to_string(ar.items) + " item" + (ar.items == 1 ? "" : "s");
             if (ar.already_present > 0)
                 out += " " RAV_DOT " " + std::to_string(ar.already_present) + " already present, left as is";
             if (ar.failed > 0) out += " " RAV_DOT " " + std::to_string(ar.failed) + " could not be written";
@@ -2979,7 +2993,7 @@ void DrawTaggingPanel(float x, float y, float w, float h)
             }
             ImGui::Separator();
             // The inspector scrolls; the footer stays.
-            // Story 10-4: the markers line, Apply, the selection and the last Apply's outcome.
+            // Story 10-4: the markers line, Commit / Cancel, the selection and the last outcome.
             const float footer_h = ImGui::GetFrameHeightWithSpacing() * 2.0f + ImGui::GetTextLineHeightWithSpacing() * 3.0f + 10.0f;
             const float body_h = std::max(40.0f, ImGui::GetContentRegionAvail().y - footer_h);
             ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::Col(ui::kSurface));

@@ -77,7 +77,7 @@ bool FirstPassProjectTime(const ItemClipMap& m, double clip_t, double* project_t
 // Project time -> clip time on the first pass. False outside it.
 bool FirstPassClipTime(const ItemClipMap& m, double project_t, double* clip_t);
 
-// ---- Apply ------------------------------------------------------------------------------------
+// ---- Apply (Commit since 10-4 fb-4) ------------------------------------------------------------
 
 struct PlannedMarker {
     double      clip_t = 0.0;     // = the take marker's source position
@@ -114,6 +114,56 @@ struct ExistingMarker {
 // The index of a marker with exactly this name within +-tol of t, or -1.
 int FindTwinMarker(const std::vector<ExistingMarker>& existing, double t, const std::string& name,
                    double tol = kMarkerTwinTolS);
+
+// ---- 10-4 fb-4: preview markers, Commit and Cancel ----------------------------------------------
+//
+// Preview markers show the tool's current result on the REAPER timeline next to the committed
+// ones (the `applied` / `tmarker` / `pmarker` of the record): the planned markers, named
+// "<marker name> - Preview", in the rule's colour darkened ~50 % toward black (REAPER markers
+// have no alpha). There is none while the current result equals the committed one.
+
+constexpr char kPreviewSuffix[] = " - Preview";
+
+// "<name> - Preview".
+std::string PreviewMarkerName(const std::string& name);
+// Block::color darkened ~50 % toward black (0x1000000 | 0xRRGGBB). A rule without colour (0)
+// gets a dark grey, so its previews still stand apart from REAPER's default colour.
+uint32_t PreviewColor(uint32_t color);
+// The planned markers as previews (names and colours above, times unchanged).
+std::vector<PlannedMarker> PreviewPlan(const std::vector<PlannedMarker>& planned);
+// True when previews must show: the current result is not the committed one (no Commit yet,
+// another option, other markers). An empty result never committed needs none.
+bool PreviewNeeded(const ItemRules& rules, const std::vector<PlannedMarker>& planned, MarkerMode mode);
+// The record of previews written for `planned` (the owned-marker lists are the caller's).
+void RecordPreviewed(ItemRules& rules, const std::vector<PlannedMarker>& planned, MarkerMode mode);
+// No preview any more: the preview state and the preview-marker lists are cleared.
+void ClearPreviewed(ItemRules& rules);
+// True when the record has preview markers (or their state).
+bool HasPreviews(const ItemRules& rules);
+
+// An item "has rules" for the Cancel snapshot: a rule or a preset.
+bool HasRulesForSnapshot(const ItemRules& rules);
+// Cancel: the record as of the last Commit (`snapshot`), with the committed markers RAV owns NOW
+// (`current`'s tmarkers / pmarkers: the timeline's truth) and no preview.
+ItemRules RestoreCommitted(const ItemRules& snapshot, const ItemRules& current);
+
+// Cancel's target for one item: the snapshot (when it parses) restored with RestoreCommitted,
+// else the current record without its previews. False (`next` untouched) when Cancel would
+// change nothing (no previews and the same record text as `cur_raw`).
+bool CancelTarget(const ItemRules& cur, const std::string& cur_raw, const std::string* snapshot_text, ItemRules* next);
+
+// The first Cancel snapshot to store after a gesture ("" = write nothing): never over an
+// existing one; the record before the gesture when it already had rules, else the record
+// after it when it has rules now.
+std::string FirstCommittedSnapshot(bool has_snapshot, bool before_valid, const ItemRules& before,
+                                   const std::string& before_raw, const ItemRules& after);
+
+// Commit's record on one item: the committed markers RAV now owns (`own_take` / `own_project`;
+// appended to the old lists when that kind could not be deleted), the applied state of
+// `planned`, no preview state; the preview refs of a kind that could not be deleted stay RAV's.
+void ComposeCommittedRecord(ItemRules& rec, const std::vector<TakeMarkerRef>& own_take,
+                            const std::vector<ProjectMarkerRef>& own_project, bool keep_take_refs,
+                            bool keep_project_refs, const std::vector<PlannedMarker>& planned, MarkerMode mode);
 
 // ---- Preset loaded --------------------------------------------------------------------------------
 

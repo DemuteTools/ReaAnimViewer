@@ -1367,7 +1367,7 @@ void DrawToolUi()
             ImGui::Unindent(8.0f);
         }
 
-        // --- Story 10-4: Auto-Tagging options -- which markers Apply writes (a global option,
+        // --- Story 10-4: Auto-Tagging options -- which markers Commit writes (a global option,
         // kept across sessions; project markers take the rule's colour) ---
         ImGui::Dummy(ImVec2(0.0f, 2.0f));
         ImGui::Separator();
@@ -1381,7 +1381,7 @@ void DrawToolUi()
             if (ui::Segmented("##tagmarkers", kMarkLabels, 3, &mark_sel, 0.0f, -1))
                 SetTaggingMarkerMode(mark_sel == 0 ? MarkerMode::Take : mark_sel == 1 ? MarkerMode::Project : MarkerMode::Both);
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-                ImGui::SetTooltip("%s on Apply.\nProject markers take the rule's colour.",
+                ImGui::SetTooltip("%s on Commit (previews too).\nProject markers take the rule's colour.",
                                   MarkerModeLine(GetTaggingMarkerMode()));
             ImGui::Unindent(8.0f);
         }

@@ -673,6 +673,49 @@ int main()
         CHECK(MarkerModeFromWord("take", &mm) && mm == MarkerMode::Take && !MarkerModeFromWord("all", &mm));
     }
 
+    // 10-4 fb-4: the preview lines.
+    {
+        const std::string text =
+            "RAVRULES 1\n"
+            "options sensitivity=0 edge_ms=0 smooth_ms=8\n"
+            "analyse floor_pct=2 pos_frac=0.25 speed_pct=30 margin_ratio=0.5 onset_frac=0.1 per_bone_floor=0\n"
+            "block color=#5F9EDD hold_ms=0 cooldown_ms=250 offset_ms=0 land=cross marker=Step\n"
+            "event t=1.25 kind=detected block=0 strength=0.8 speed=1.9\n"
+            "applied markers=both sig=0123456789ABCDEF\n"
+            "tmarker t=1.25 name=Step\n"
+            "pmarker guid={A} t=12.25\n"
+            "preview markers=take sig=FEDCBA9876543210\n"
+            "ptmarker t=1.5 name=Step - Preview\n"
+            "ppmarker guid={B} t=12.5\n";
+        ItemRules r;
+        CHECK(ParseItemRules(text, &r));
+        CHECK(!HasKeptText(r));
+        CHECK(r.has_previewed && r.previewed.mode == MarkerMode::Take && r.previewed.sig == "FEDCBA9876543210");
+        CHECK(r.ptmarkers.size() == 1 && r.ptmarkers[0].t == 1.5 && r.ptmarkers[0].name == "Step - Preview");
+        CHECK(r.ppmarkers.size() == 1 && r.ppmarkers[0].guid == "{B}" && r.ppmarkers[0].t == 12.5);
+        CHECK(r.tmarkers.size() == 1 && r.pmarkers.size() == 1);  // the committed ones apart
+        CHECK(SerializeItemRules(r) == text);  // byte-identical
+
+        // Unknown fields and an unknown line after a preview line stay with it.
+        const std::string fut = text.substr(0, text.size() - std::string("ppmarker guid={B} t=12.5\n").size()) +
+                                "ppmarker guid={B} t=12.5 lane=3\n"
+                                "pnote x\n";
+        ItemRules f;
+        CHECK(ParseItemRules(fut, &f) && HasKeptText(f) && SerializeItemRules(f) == fut);
+
+        // An old record (no preview line) writes none.
+        ItemRules o = r;
+        o.has_previewed = false;
+        o.previewed = AppliedInfo{};
+        o.ptmarkers.clear();
+        o.ppmarkers.clear();
+        const std::string ot = SerializeItemRules(o);
+        CHECK(ot.find("preview") == std::string::npos && ot.find("ptmarker") == std::string::npos &&
+              ot.find("ppmarker") == std::string::npos);
+        ItemRules ob;
+        CHECK(ParseItemRules(ot, &ob) && SerializeItemRules(ob) == ot && !ob.has_previewed);
+    }
+
     // 10-4 follow-up: joint-angle and rotation conditions.
     {
         // New words round-trip; the record holds the joint alone.

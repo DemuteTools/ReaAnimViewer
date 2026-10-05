@@ -24,6 +24,9 @@
 //   applied markers=both sig=<hex>                   (what the last Apply wrote: mode + signature)
 //   tmarker t=1.25 name=Footstep L                   (a take marker RAV wrote: source time, name)
 //   pmarker guid={...} t=12.375                      (a project marker RAV wrote: GUID, project time)
+//   preview markers=both sig=<hex>                   (10-4 fb-4: the previews written: mode + signature)
+//   ptmarker t=1.5 name=Footstep L - Preview         (a preview take marker RAV wrote)
+//   ppmarker guid={...} t=12.625                     (a preview project marker RAV wrote)
 //
 // A preset file (.ravpreset) is the same grammar under "RAVPRESET 1": a `preset` line
 // (no `kept`), optional `options` / `analyse`, then its blocks (no copy/end/event).
@@ -59,6 +62,10 @@
 //     An event of an unknown kind is kept and ignored. The event list belongs to the take,
 //     like its P_EXT: it never depends on the source file's path (relink, move, replace). An unknown line after an event stays
 //     after the same number of events (RecordTailLine).
+//   - 10-4 fb-4: `preview`, `ptmarker`, `ppmarker` = the preview markers RAV wrote (written
+//     only while previews exist). The committed markers are the `applied` / `tmarker` /
+//     `pmarker` ones, as before. The record as of the last Commit lives in another key
+//     (item_rules.h, P_EXT:RAV_RULES_COMMITTED), in this same grammar.
 //
 // In a parsed record, SignalSpec bones / ref_bones hold bone-reference ids (see
 // BoneRefId), not track indices: BindBoneRefs turns them into skeleton bone indices.
@@ -202,6 +209,11 @@ struct ItemRules {
     AppliedInfo                   applied;
     std::vector<TakeMarkerRef>    tmarkers;  // the take markers RAV owns
     std::vector<ProjectMarkerRef> pmarkers;  // the project markers RAV owns
+    // 10-4 fb-4: the preview markers RAV wrote (owned like the committed ones) and what they show.
+    bool                          has_previewed = false;
+    AppliedInfo                   previewed;  // the option and signature the previews were written with
+    std::vector<TakeMarkerRef>    ptmarkers;  // the preview take markers RAV owns
+    std::vector<ProjectMarkerRef> ppmarkers;  // the preview project markers RAV owns
     KeptText                    head;    // unknown lines right after the header line
     std::vector<RecordTailLine> tail;
 };

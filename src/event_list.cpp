@@ -285,6 +285,115 @@ int FindTwinMarker(const std::vector<ExistingMarker>& existing, double t, const 
     return -1;
 }
 
+std::string PreviewMarkerName(const std::string& name)
+{
+    return name + kPreviewSuffix;
+}
+
+uint32_t PreviewColor(uint32_t color)
+{
+    if (!(color & 0x1000000u)) return 0x1000000u | 0x505050u;
+    auto half = [](uint32_t c) { return (c + 1u) / 2u; };  // ~50 % toward black, rounded
+    const uint32_t r = half((color >> 16) & 0xFFu), g = half((color >> 8) & 0xFFu), b = half(color & 0xFFu);
+    return 0x1000000u | (r << 16) | (g << 8) | b;
+}
+
+std::vector<PlannedMarker> PreviewPlan(const std::vector<PlannedMarker>& planned)
+{
+    std::vector<PlannedMarker> out = planned;
+    for (PlannedMarker& m : out) {
+        m.name = PreviewMarkerName(m.name);
+        m.color = PreviewColor(m.color);
+    }
+    return out;
+}
+
+bool PreviewNeeded(const ItemRules& rules, const std::vector<PlannedMarker>& planned, MarkerMode mode)
+{
+    if (!rules.has_applied) return !planned.empty();
+    return !MarkersUpToDate(rules, planned, mode);
+}
+
+void RecordPreviewed(ItemRules& rules, const std::vector<PlannedMarker>& planned, MarkerMode mode)
+{
+    rules.has_previewed = true;
+    rules.previewed.mode = mode;
+    rules.previewed.sig = MarkerSignature(planned, mode);
+}
+
+void ClearPreviewed(ItemRules& rules)
+{
+    rules.has_previewed = false;
+    rules.previewed = AppliedInfo{};
+    rules.ptmarkers.clear();
+    rules.ppmarkers.clear();
+}
+
+bool HasPreviews(const ItemRules& rules)
+{
+    return rules.has_previewed || !rules.ptmarkers.empty() || !rules.ppmarkers.empty();
+}
+
+bool HasRulesForSnapshot(const ItemRules& rules)
+{
+    return !rules.blocks.empty() || rules.has_preset;
+}
+
+ItemRules RestoreCommitted(const ItemRules& snapshot, const ItemRules& current)
+{
+    ItemRules out = snapshot;
+    out.tmarkers = current.tmarkers;
+    out.pmarkers = current.pmarkers;
+    ClearPreviewed(out);
+    return out;
+}
+
+bool CancelTarget(const ItemRules& cur, const std::string& cur_raw, const std::string* snapshot_text, ItemRules* next)
+{
+    ItemRules out;
+    ItemRules snap;
+    if (snapshot_text && !snapshot_text->empty() && ParseItemRules(*snapshot_text, &snap)) {
+        out = RestoreCommitted(snap, cur);
+    } else {
+        out = cur;  // no snapshot: only the previews go
+        ClearPreviewed(out);
+    }
+    if (!HasPreviews(cur) && SerializeItemRules(out) == cur_raw) return false;
+    if (next) *next = std::move(out);
+    return true;
+}
+
+std::string FirstCommittedSnapshot(bool has_snapshot, bool before_valid, const ItemRules& before,
+                                   const std::string& before_raw, const ItemRules& after)
+{
+    if (has_snapshot) return "";
+    if (before_valid && HasRulesForSnapshot(before)) return before_raw;
+    if (HasRulesForSnapshot(after)) return SerializeItemRules(after);
+    return "";
+}
+
+void ComposeCommittedRecord(ItemRules& rec, const std::vector<TakeMarkerRef>& own_take,
+                            const std::vector<ProjectMarkerRef>& own_project, bool keep_take_refs,
+                            bool keep_project_refs, const std::vector<PlannedMarker>& planned, MarkerMode mode)
+{
+    const std::vector<ProjectMarkerRef> pkeep = keep_project_refs ? rec.ppmarkers : std::vector<ProjectMarkerRef>{};
+    const std::vector<TakeMarkerRef>    tkeep = keep_take_refs ? rec.ptmarkers : std::vector<TakeMarkerRef>{};
+    if (keep_take_refs) {
+        for (const TakeMarkerRef& t : own_take) rec.tmarkers.push_back(t);
+    } else {
+        rec.tmarkers = own_take;
+    }
+    if (keep_project_refs) {
+        for (const ProjectMarkerRef& p : own_project) rec.pmarkers.push_back(p);
+    } else {
+        rec.pmarkers = own_project;
+    }
+    RecordApplied(rec, planned, mode);
+    ClearPreviewed(rec);
+    rec.ptmarkers = tkeep;  // previews that could not be deleted stay RAV's
+    rec.ppmarkers = pkeep;
+}
+
 void ClearCorrections(ItemRules& rules)
 {
     rules.events.erase(std::remove_if(rules.events.begin(), rules.events.end(),

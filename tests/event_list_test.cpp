@@ -263,6 +263,182 @@ int main()
         CHECK(r.tmarkers.size() == 1 && r.pmarkers.size() == 1 && r.blocks.size() == 1);
     }
 
+    // ---- 10-4 fb-4: preview markers, Commit and Cancel -------------------------------------------
+    {
+        CHECK(PreviewMarkerName("Footstep L") == "Footstep L - Preview");
+        // ~50 % toward black, rounded; no colour = a dark grey (still a colour).
+        CHECK(PreviewColor(0x1000000u | 0x5F9EDDu) == (0x1000000u | 0x304F6Fu));
+        CHECK(PreviewColor(0x1000000u | 0xFFFFFFu) == (0x1000000u | 0x808080u));
+        CHECK(PreviewColor(0x1000000u | 0x000000u) == 0x1000000u);
+        CHECK(PreviewColor(0) == (0x1000000u | 0x505050u));
+
+        std::vector<Block> blocks = {Rule("Footstep L")};
+        ItemClipMap m;
+        m.item_pos = 10.0;
+        m.item_len = 3.0;
+        m.clip_len = 2.0;
+        const std::vector<Event> det = {Det(0, 0.5), Det(0, 1.0)};
+        const std::vector<PlannedMarker> plan = PlanMarkers(BuildEventList(det, {}, 1), blocks, m);
+        CHECK(plan.size() == 2);
+        const std::vector<PlannedMarker> pv = PreviewPlan(plan);
+        CHECK(pv.size() == 2 && pv[0].name == "Footstep L - Preview" && pv[0].color == PreviewColor(plan[0].color) &&
+              Near(pv[0].clip_t, plan[0].clip_t) && Near(pv[1].project_t, plan[1].project_t));
+
+        // Never committed: previews as soon as there is a result; none for an empty one.
+        ItemRules r;
+        r.blocks = blocks;
+        CHECK(PreviewNeeded(r, plan, MarkerMode::Both));
+        CHECK(!PreviewNeeded(r, {}, MarkerMode::Both));
+        // Committed: none while the result equals the committed one (same option).
+        RecordApplied(r, plan, MarkerMode::Both);
+        CHECK(!PreviewNeeded(r, plan, MarkerMode::Both));
+        // A threshold change moved an event: previews.
+        std::vector<PlannedMarker> moved = plan;
+        moved[1].clip_t = 1.1;
+        CHECK(PreviewNeeded(r, moved, MarkerMode::Both));
+        CHECK(PreviewNeeded(r, {}, MarkerMode::Both));       // everything gone: the committed ones differ
+        CHECK(PreviewNeeded(r, plan, MarkerMode::Take));     // another option
+        // Back to the committed result: none again.
+        CHECK(!PreviewNeeded(r, plan, MarkerMode::Both));
+
+        // The preview state on the record.
+        CHECK(!HasPreviews(r));
+        RecordPreviewed(r, moved, MarkerMode::Both);
+        TakeMarkerRef pt;
+        pt.t = 1.1;
+        pt.name = "Footstep L - Preview";
+        r.ptmarkers = {pt};
+        ProjectMarkerRef pp;
+        pp.guid = "{P}";
+        r.ppmarkers = {pp};
+        CHECK(HasPreviews(r) && r.has_previewed && r.previewed.sig == MarkerSignature(moved, MarkerMode::Both));
+        ItemRules back;
+        CHECK(ParseItemRules(SerializeItemRules(r), &back) && back.ptmarkers.size() == 1 && back.ppmarkers.size() == 1 &&
+              back.previewed.sig == r.previewed.sig && back.ptmarkers[0].name == "Footstep L - Preview");
+        ItemRules cleared = r;
+        ClearPreviewed(cleared);
+        CHECK(!HasPreviews(cleared) && cleared.has_applied && cleared.tmarkers.size() == r.tmarkers.size());
+
+        // Cancel: the snapshot's rules and events, the committed markers owned now, no preview.
+        ItemRules snap;
+        snap.blocks = blocks;
+        snap.blocks[0].conditions.resize(1);
+        snap.blocks[0].conditions[0].threshold = 0.05;
+        snap.events = {MakeUserEvent(0, 0.7, 0, 0)};
+        snap.has_applied = true;
+        snap.applied.sig = "S";
+        TakeMarkerRef old_tm;
+        old_tm.name = "stale";
+        snap.tmarkers = {old_tm};
+        ItemRules cur = r;
+        cur.blocks[0].conditions.resize(1);
+        cur.blocks[0].conditions[0].threshold = 0.2;
+        TakeMarkerRef tm;
+        tm.t = 0.5;
+        tm.name = "Footstep L";
+        cur.tmarkers = {tm};
+        ProjectMarkerRef snap_pm;
+        snap_pm.guid = "{OLD}";
+        snap.pmarkers = {snap_pm};
+        ProjectMarkerRef cur_pm;
+        cur_pm.guid = "{NOW}";
+        cur_pm.t = 10.5;
+        cur.pmarkers = {cur_pm};
+        const ItemRules restored = RestoreCommitted(snap, cur);
+        CHECK(restored.pmarkers.size() == 1 && restored.pmarkers[0].guid == "{NOW}" && restored.pmarkers[0].t == 10.5);
+        CHECK(restored.blocks[0].conditions[0].threshold == 0.05);
+        CHECK(restored.events.size() == 1 && restored.events[0].kind == EventKind::User);
+        CHECK(restored.has_applied && restored.applied.sig == "S");
+        CHECK(restored.tmarkers.size() == 1 && restored.tmarkers[0].name == "Footstep L");
+        CHECK(!HasPreviews(restored));
+
+        // The first snapshot: an item with a rule or a preset has rules.
+        ItemRules none;
+        CHECK(!HasRulesForSnapshot(none));
+        none.has_preset = true;
+        CHECK(HasRulesForSnapshot(none));
+        CHECK(HasRulesForSnapshot(snap));
+
+        // ---- CancelTarget ----
+        const std::string snap_text = SerializeItemRules(snap);
+        // 1. A snapshot: restored (the current committed markers kept, no preview).
+        {
+            ItemRules next;
+            CHECK(CancelTarget(cur, SerializeItemRules(cur), &snap_text, &next));
+            CHECK(next.blocks.size() == 1 && next.blocks[0].conditions[0].threshold == 0.05);
+            CHECK(next.tmarkers.size() == 1 && next.tmarkers[0].name == "Footstep L" && !HasPreviews(next));
+            CHECK(next.pmarkers.size() == 1 && next.pmarkers[0].guid == "{NOW}");
+        }
+        // 1b. Every rule deleted after a commit: the snapshot brings them back.
+        {
+            ItemRules empty = cur;
+            empty.blocks.clear();
+            ClearPreviewed(empty);
+            ItemRules next;
+            CHECK(CancelTarget(empty, SerializeItemRules(empty), &snap_text, &next));
+            CHECK(next.blocks.size() == 1 && next.blocks[0].conditions[0].threshold == 0.05);
+        }
+        // 2. No snapshot (or one that does not read): only the previews go.
+        {
+            ItemRules next;
+            CHECK(CancelTarget(cur, SerializeItemRules(cur), nullptr, &next));
+            CHECK(!HasPreviews(next) && next.blocks[0].conditions[0].threshold == 0.2);
+            const std::string bad = "not a record";
+            ItemRules next2;
+            CHECK(CancelTarget(cur, SerializeItemRules(cur), &bad, &next2) && !HasPreviews(next2) &&
+                  next2.blocks[0].conditions[0].threshold == 0.2);
+        }
+        // 3. Nothing to cancel: no previews and the record already is the target.
+        {
+            ItemRules same = RestoreCommitted(snap, cur);
+            ItemRules next;
+            next.format_version = 99;
+            CHECK(!CancelTarget(same, SerializeItemRules(same), &snap_text, &next));
+            CHECK(next.format_version == 99);  // untouched
+            ItemRules plain = cur;
+            ClearPreviewed(plain);
+            CHECK(!CancelTarget(plain, SerializeItemRules(plain), nullptr, &next));
+        }
+
+        // ---- FirstCommittedSnapshot ----
+        {
+            ItemRules empty_rec;
+            const std::string braw = "RAVRULES 1\nbefore\n";
+            CHECK(FirstCommittedSnapshot(true, true, snap, braw, cur).empty());   // one already there
+            CHECK(FirstCommittedSnapshot(false, true, snap, braw, cur) == braw);  // had rules: before
+            CHECK(FirstCommittedSnapshot(false, false, snap, braw, cur) == SerializeItemRules(cur));  // unreadable
+            CHECK(FirstCommittedSnapshot(false, true, empty_rec, braw, cur) == SerializeItemRules(cur));  // first rules
+            CHECK(FirstCommittedSnapshot(false, true, empty_rec, braw, empty_rec).empty());  // still no rules
+        }
+
+        // ---- ComposeCommittedRecord ----
+        {
+            ItemRules rec = cur;  // committed markers + previews (take + project)
+            CHECK(HasPreviews(rec));
+            TakeMarkerRef nt;
+            nt.t = 1.1;
+            nt.name = "Footstep L";
+            ProjectMarkerRef np;
+            np.guid = "{NEW}";
+            ItemRules a = rec;
+            ComposeCommittedRecord(a, {nt}, {np}, false, false, moved, MarkerMode::Both);
+            CHECK(!HasPreviews(a) && a.ptmarkers.empty() && a.ppmarkers.empty());
+            CHECK(a.tmarkers.size() == 1 && a.tmarkers[0].t == 1.1 && a.pmarkers.size() == 1 && a.pmarkers[0].guid == "{NEW}");
+            CHECK(a.has_applied && a.applied.mode == MarkerMode::Both && a.applied.sig == MarkerSignature(moved, MarkerMode::Both));
+            CHECK(MarkersUpToDate(a, moved, MarkerMode::Both));
+            // A kind that could not be deleted (its API missing): its committed and preview refs stay RAV's.
+            ItemRules b = rec;
+            ComposeCommittedRecord(b, {nt}, {}, false, true, moved, MarkerMode::Take);
+            CHECK(!b.has_previewed && b.ptmarkers.empty());
+            CHECK(b.ppmarkers.size() == rec.ppmarkers.size() && b.ppmarkers[0].guid == "{P}");
+            CHECK(b.pmarkers.size() == 1 && b.pmarkers[0].guid == "{NOW}");  // kept, nothing appended
+            CHECK(b.applied.mode == MarkerMode::Take && b.applied.sig == MarkerSignature(moved, MarkerMode::Take));
+            ItemRules c = rec;
+            ComposeCommittedRecord(c, {nt}, {np}, true, false, moved, MarkerMode::Both);
+            CHECK(c.ptmarkers.size() == 1 && c.ppmarkers.empty() && c.tmarkers.size() == 2);
+        }
+    }
+
     if (g_fails) {
         std::printf("event_list_test: %d failure(s)\n", g_fails);
         return 1;

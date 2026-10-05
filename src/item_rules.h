@@ -6,7 +6,9 @@
 //
 // Every write is one REAPER undo point named after the gesture: the record is set first,
 // then Undo_OnStateChangeEx(desc, UNDO_STATE_ITEMS, -1) records it, only when REAPER
-// accepted the set (a refused write leaves no undo point). A write that changes nothing writes nothing: an absent or
+// accepted the set (a refused write leaves no undo point). 10-4 fb-4: with the written-hook
+// set (always, in the plugin), the write and the hook's preview markers are one undo block
+// (UNDO_STATE_ALL) instead. A write that changes nothing writes nothing: an absent or
 // unreadable record left at "no rules" stays as it is.
 // A record that does not read is left as it is until the user writes (it then starts
 // from no rules).
@@ -65,6 +67,27 @@ bool ModifyItemRulesNoUndo(MediaItem* item, const std::function<bool(ItemRules&)
 
 // Writes the whole record (one undo point).
 bool WriteItemRules(MediaItem* item, const ItemRules& rules, const char* undo_desc, std::string* err);
+
+// ---- 10-4 fb-4: preview markers, Commit and Cancel ---------------------------------------------
+
+// The record as of the last Commit (Cancel restores it), in a second take key so the main
+// record's grammar stays flat and an older RAV ignores it.
+constexpr const char kItemRulesCommittedKey[] = "P_EXT:RAV_RULES_COMMITTED";
+
+// The snapshot's text. False when the item has no RAV take or no snapshot (empty key).
+bool ReadCommittedSnapshot(MediaItem* item, std::string* text);
+// Writes the snapshot, without an undo point (inside the caller's undo block).
+bool WriteCommittedSnapshotNoUndo(MediaItem* item, const std::string& text, std::string* err);
+
+// Called by ModifyItemRules after it wrote the record, INSIDE the gesture's undo block
+// (Undo_BeginBlock2 / Undo_EndBlock2(desc, UNDO_STATE_ALL)): the record as it was before
+// (`before_valid` false = absent or unreadable, `before_raw` its text) and after. The hook
+// (tag_markers.cpp) stores the first Cancel snapshot and rewrites the item's preview markers,
+// so the gesture, its snapshot and its previews are ONE undo point. Without a hook,
+// ModifyItemRules makes its undo point as before (Undo_OnStateChangeEx, UNDO_STATE_ITEMS).
+using ItemRulesWrittenHook = void (*)(MediaItem* item, bool before_valid, const ItemRules& before,
+                                      const std::string& before_raw, const ItemRules& after);
+void SetItemRulesWrittenHook(ItemRulesWrittenHook hook);
 
 // A skeleton's bone names and parents (one per bone, -1 = root), what binding reads
 // (BindBoneRefs: a joint angle needs the parents).

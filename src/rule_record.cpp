@@ -765,7 +765,7 @@ size_t FieldKeyLength(const std::string& tok)
 bool IsFreeTextKey(const std::string& kind_word, const std::string& key)
 {
     return (kind_word == "block" && key == "marker") || (kind_word == "preset" && key == "name") ||
-           (kind_word == "tmarker" && key == "name");
+           ((kind_word == "tmarker" || kind_word == "ptmarker") && key == "name");
 }
 
 // The fields after the kind word. A token that is not "key=value" joins the previous
@@ -974,13 +974,14 @@ bool ParseCore(const std::string& text_in, const char* magic, Target t)
     // Where an unknown line goes: the object whose line it followed. Resolved when used
     // (the vectors grow).
     enum class At { Head, Options, Analyse, Preset, Copy, CopyOptions, CopyAnalyse, End, Block, Cond, Strength, Tail,
-                    Applied, TMarker, PMarker };
+                    Applied, TMarker, PMarker, Previewed, PTMarker, PPMarker };
     At   at = At::Head;
     bool cur_in_copy = false;  // the current block's list
     int  cur_block = -1;
     int  cur_cond = -1;
     bool cur_strength = false;
     bool seen_applied = false;
+    bool seen_previewed = false;
 
     auto blocks_of = [&](bool in_c) -> std::vector<Block>& { return in_c ? copy->blocks : own_blocks; };
     auto anchor = [&]() -> KeptText* {
@@ -1000,6 +1001,9 @@ bool ParseCore(const std::string& text_in, const char* magic, Target t)
         case At::Applied: return &t.item->applied.kept;
         case At::TMarker: return &t.item->tmarkers.back().kept;
         case At::PMarker: return &t.item->pmarkers.back().kept;
+        case At::Previewed: return &t.item->previewed.kept;
+        case At::PTMarker: return &t.item->ptmarkers.back().kept;
+        case At::PPMarker: return &t.item->ppmarkers.back().kept;
         }
         return &head;
     };
@@ -1106,6 +1110,31 @@ bool ParseCore(const std::string& text_in, const char* magic, Target t)
             ReadFields(word, rest, has_rest, m.kept,
                        [&](const std::string& k, const std::string& v) { return SetProjectMarkerRef(m, k, v); },
                        [&] { return ProjectMarkerFields(m); });
+        } else if (item && word == "preview" && !in_copy && !seen_previewed) {
+            seen_previewed = true;
+            leave_block();
+            at = At::Previewed;
+            t.item->has_previewed = true;
+            AppliedInfo& a = t.item->previewed;
+            ReadFields(word, rest, has_rest, a.kept,
+                       [&](const std::string& k, const std::string& v) { return SetApplied(a, k, v); },
+                       [&] { return AppliedFields(a); });
+        } else if (item && word == "ptmarker" && !in_copy) {
+            leave_block();
+            at = At::PTMarker;
+            t.item->ptmarkers.emplace_back();
+            TakeMarkerRef& m = t.item->ptmarkers.back();
+            ReadFields(word, rest, has_rest, m.kept,
+                       [&](const std::string& k, const std::string& v) { return SetTakeMarkerRef(m, k, v); },
+                       [&] { return TakeMarkerFields(m); });
+        } else if (item && word == "ppmarker" && !in_copy) {
+            leave_block();
+            at = At::PPMarker;
+            t.item->ppmarkers.emplace_back();
+            ProjectMarkerRef& m = t.item->ppmarkers.back();
+            ReadFields(word, rest, has_rest, m.kept,
+                       [&](const std::string& k, const std::string& v) { return SetProjectMarkerRef(m, k, v); },
+                       [&] { return ProjectMarkerFields(m); });
         } else if (KeptText* k = anchor()) {
             k->lines.push_back(line);
         } else {
@@ -1190,6 +1219,9 @@ std::string SerializeItemRules(const ItemRules& r)
     if (r.has_applied) WriteLine(out, "applied", AppliedFields(r.applied), &r.applied.kept);
     for (const TakeMarkerRef& m : r.tmarkers) WriteLine(out, "tmarker", TakeMarkerFields(m), &m.kept);
     for (const ProjectMarkerRef& m : r.pmarkers) WriteLine(out, "pmarker", ProjectMarkerFields(m), &m.kept);
+    if (r.has_previewed) WriteLine(out, "preview", AppliedFields(r.previewed), &r.previewed.kept);
+    for (const TakeMarkerRef& m : r.ptmarkers) WriteLine(out, "ptmarker", TakeMarkerFields(m), &m.kept);
+    for (const ProjectMarkerRef& m : r.ppmarkers) WriteLine(out, "ppmarker", ProjectMarkerFields(m), &m.kept);
     return out;
 }
 
@@ -1232,6 +1264,11 @@ bool HasKeptText(const ItemRules& r)
     for (const TakeMarkerRef& m : r.tmarkers)
         if (!m.kept.empty()) story4 = true;
     for (const ProjectMarkerRef& m : r.pmarkers)
+        if (!m.kept.empty()) story4 = true;
+    if (!r.previewed.kept.empty()) story4 = true;
+    for (const TakeMarkerRef& m : r.ptmarkers)
+        if (!m.kept.empty()) story4 = true;
+    for (const ProjectMarkerRef& m : r.ppmarkers)
         if (!m.kept.empty()) story4 = true;
     return story4 || !r.header_rest.empty() || !r.head.empty() || !r.tail.empty() || !r.options.kept.empty() || !r.analyse.kept.empty() ||
            BlocksKeep(r.blocks) ||

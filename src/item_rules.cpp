@@ -46,6 +46,8 @@ bool WriteRaw(MediaItem_Take* take, const std::string& text, const char* undo_de
     return true;
 }
 
+ItemRulesWrittenHook g_written_hook = nullptr;
+
 bool ModifyCore(MediaItem* item, const char* undo_desc, bool with_undo, const std::function<bool(ItemRules&)>& edit,
                 std::string* err)
 {
@@ -61,7 +63,22 @@ bool ModifyCore(MediaItem* item, const char* undo_desc, bool with_undo, const st
         const std::string text = SerializeItemRules(rules);
         // No change, no undo point (and an absent or unreadable record stays as it is).
         if (text == before || (cur.valid && text == cur.raw)) return true;
-        return WriteRaw(take, text, undo_desc, with_undo, err);
+        if (!with_undo || !g_written_hook) return WriteRaw(take, text, undo_desc, with_undo, err);
+        // 10-4 fb-4: the record, the first Cancel snapshot and the preview markers in ONE undo
+        // point. What would refuse the write is checked first, so no empty undo point is made.
+        if (text.size() >= kItemRulesMaxBytes) return Fail(err, "The item's rules are too large to save.");
+        if (!ValidatePtr2(nullptr, take, "MediaItem_Take*")) return Fail(err, "The item's take is gone.");
+        const char* desc = undo_desc ? undo_desc : "RAV: Edit auto-tagging rules";
+        Undo_BeginBlock2(nullptr);
+        bool ok = false;
+        try {
+            ok = WriteRaw(take, text, desc, false, err);
+            if (ok) g_written_hook(item, cur.valid, cur.valid ? cur.rules : ItemRules{}, cur.raw, rules);
+        } catch (...) {
+            // The block is always closed; the record write's own result stands.
+        }
+        Undo_EndBlock2(nullptr, desc, UNDO_STATE_ALL);
+        return ok;
     } catch (const std::exception& e) {
         return Fail(err, std::string("The item's rules could not be saved: ") + e.what());
     } catch (...) {
@@ -133,6 +150,44 @@ bool WriteItemRules(MediaItem* item, const ItemRules& rules, const char* undo_de
             return true;
         },
         err);
+}
+
+bool ReadCommittedSnapshot(MediaItem* item, std::string* text)
+{
+    if (text) text->clear();
+    try {
+        MediaItem_Take* take = RavTakeOf(item);
+        if (!take) return false;
+        static std::vector<char> buf;
+        buf.assign(kItemRulesMaxBytes + 1, '\0');
+        if (!GetSetMediaItemTakeInfo_String(take, kItemRulesCommittedKey, buf.data(), false)) return false;
+        buf[kItemRulesMaxBytes] = '\0';
+        if (!buf[0]) return false;
+        if (text) *text = buf.data();
+        return true;
+    } catch (...) {
+        if (text) text->clear();
+        return false;
+    }
+}
+
+bool WriteCommittedSnapshotNoUndo(MediaItem* item, const std::string& text, std::string* err)
+{
+    try {
+        if (text.size() >= kItemRulesMaxBytes) return Fail(err, "The item's rules are too large to save.");
+        MediaItem_Take* take = RavTakeOf(item);
+        if (!take || !ValidatePtr2(nullptr, take, "MediaItem_Take*")) return Fail(err, "The item's take is gone.");
+        if (!GetSetMediaItemTakeInfo_String(take, kItemRulesCommittedKey, const_cast<char*>(text.c_str()), true))
+            return Fail(err, "REAPER refused to save the item's committed rules.");
+        return true;
+    } catch (...) {
+        return Fail(err, "The item's committed rules could not be saved.");
+    }
+}
+
+void SetItemRulesWrittenHook(ItemRulesWrittenHook hook)
+{
+    g_written_hook = hook;
 }
 
 std::string RulesResourceRoot()

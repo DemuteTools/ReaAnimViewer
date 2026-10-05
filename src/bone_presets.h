@@ -3,7 +3,8 @@
 // Factory presets (Epic 10), written in roles (bone_roles.h): a preset's SignalSpec bones
 // hold Role values until BindRoles turns them into track indices.
 //
-// Footsteps (v2, Antho 2026-10-04 after the first real-data run): per foot, one block, AND of
+// FootstepsPreset, the offline reference (the knee / yaw design of 2026-10-04, not the shipped
+// factory preset): per foot, one block, AND of
 //   [0] height: P = the lowest of {heel, toe}, height above the floor, below h (the trigger)
 //   [1] knee:   knee flexion speed (joint angle up leg - knee - ankle, signed, rising as the
 //               knee bends) above the onset threshold (the weight is being taken)
@@ -15,8 +16,10 @@
 // Every default lives in FootstepsParams (current guesses, to be tuned offline on Antho's
 // tagged clips with tests/detection_eval).
 //
-// The shipped preset is presets/factory/footsteps.ravpreset (compiled into the DLL, 10-2);
-// tests/preset_store_test.cpp checks that it parses to FootstepsPreset(FootstepsParams{}).
+// This preset is the offline measuring tools' (footstep_measure, tests/detection_eval); it no
+// longer ships. The factory presets (presets/factory/*.ravpreset, compiled into the DLL) are
+// Footsteps Heel and Footsteps Toe since the 10-4 follow-up (Antho 2026-10-05): one rule per
+// foot, the heel's (toe's) height below a threshold, the marker at the start of the match.
 //
 // Pure C++17, header-only.
 

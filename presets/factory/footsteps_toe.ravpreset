@@ -1,0 +1,10 @@
+RAVPRESET 1
+preset id=factory/footsteps_toe version=1 name=Footsteps Toe
+options sensitivity=0 edge_ms=0 smooth_ms=8
+analyse floor_pct=2 pos_frac=0.4 speed_pct=30 margin_ratio=0.5 onset_frac=0.3 per_bone_floor=1
+block color=#5F9EDD hold_ms=0 cooldown_ms=250 offset_ms=0 land=cross marker=Footstep L
+cond q=point bones=role:left_toe comb=single ref=floor meas=position axis=vertical dir=below thr=0.05 margin=0.025 fixed=0
+strength q=point bones=role:left_toe comb=single ref=floor meas=speed axis=vertical signed=1 sign=-1 window_ms=100
+block color=#DD9E5F hold_ms=0 cooldown_ms=250 offset_ms=0 land=cross marker=Footstep R
+cond q=point bones=role:right_toe comb=single ref=floor meas=position axis=vertical dir=below thr=0.05 margin=0.025 fixed=0
+strength q=point bones=role:right_toe comb=single ref=floor meas=speed axis=vertical signed=1 sign=-1 window_ms=100

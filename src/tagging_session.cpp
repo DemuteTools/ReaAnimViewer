@@ -72,24 +72,24 @@ struct Session {
     // The selection's footer.
     double sel_at = -1.0;
     int    sel_state_count = -1;
-    // Bone names per file, for the selection's role check (parsed once per session).
-    std::map<std::string, std::vector<std::string>> names_by_path;
+    // Bone names and parents per file, for the selection's role check (parsed once per session).
+    std::map<std::string, SkeletonBones> names_by_path;
 };
 
 Session g;
 
-const std::vector<std::string>& BoneNamesOf(const std::string& path)
+const SkeletonBones& BoneNamesOf(const std::string& path)
 {
     auto it = g.names_by_path.find(path);
     if (it != g.names_by_path.end()) return it->second;
-    std::vector<std::string> names;
+    SkeletonBones sk;
     if (path == g.asset_path && g.asset) {
-        for (const SceneBone& b : g.asset->skeleton.bones) names.push_back(b.name);
+        sk = SkeletonBonesOf(g.asset->skeleton);
     } else if (const std::shared_ptr<const CpuAsset> a = AcquireCpuAsset(path)) {
-        for (const SceneBone& b : a->skeleton.bones) names.push_back(b.name);
+        sk = SkeletonBonesOf(a->skeleton);
     }
     if (g.names_by_path.size() > 64) g.names_by_path.erase(g.names_by_path.begin());  // one out, not all
-    return g.names_by_path[path] = std::move(names);
+    return g.names_by_path[path] = std::move(sk);
 }
 
 // The blocks as detection and the binding see them: an off rule reads no bone (its
@@ -111,25 +111,15 @@ std::vector<Block> EnabledOnly(const std::vector<Block>& blocks)
 }
 
 // How many bone references the blocks read that have no bone on this skeleton, and their names.
+// A joint angle whose joint has no parent or child counts too ("<name> (not a joint)").
 int CountMissing(const std::vector<Block>& blocks, const std::vector<int>& role_to_bone,
-                 const std::vector<std::string>& names, std::string* missing)
+                 const std::vector<std::string>& names, const std::vector<int>& parents, std::string* missing)
 {
-    int n = 0;
+    const std::vector<std::string> list = MissingBoneRefs(blocks, role_to_bone, names, parents);
     std::string all;
-    for (int id : BoneRefsUsed(blocks)) {
-        Block one;
-        Condition c;
-        c.signal.bones = {id};
-        one.conditions.push_back(c);
-        std::vector<Block> probe = {one};
-        std::string why;
-        if (!BindBoneRefs(probe, role_to_bone, names, &why)) {
-            ++n;
-            all += (all.empty() ? "" : ", ") + why;
-        }
-    }
+    for (const std::string& nm : list) all += (all.empty() ? "" : ", ") + nm;
     if (missing) *missing = all;
-    return n;
+    return static_cast<int>(list.size());
 }
 
 // The item's record, preset state and skeleton binding.
@@ -150,7 +140,7 @@ void ReadItem()
     m.preset_state = m.has_preset ? GetPresetState(RulesResourceRoot(), m.rules) : PresetState::Unknown;
     m.role_to_bone = m.bone_names.empty() ? std::vector<int>{} : GetRoleMapping(RulesResourceRoot(), m.bone_names);
     m.missing.clear();
-    m.missing_count = m.file_loaded ? CountMissing(EnabledOnly(m.rules.blocks), m.role_to_bone, m.bone_names, &m.missing) : 0;
+    m.missing_count = m.file_loaded ? CountMissing(EnabledOnly(m.rules.blocks), m.role_to_bone, m.bone_names, m.bone_parents, &m.missing) : 0;
     g.detect_dirty = true;
 }
 
@@ -169,8 +159,12 @@ void LoadFile(double now)
     g.have_tracks = false;
     g.names_by_path.erase(m.path);
     m.bone_names.clear();
-    if (g.asset)
-        for (const SceneBone& b : g.asset->skeleton.bones) m.bone_names.push_back(b.name);
+    m.bone_parents.clear();
+    if (g.asset) {
+        SkeletonBones sk = SkeletonBonesOf(g.asset->skeleton);
+        m.bone_names = std::move(sk.names);
+        m.bone_parents = std::move(sk.parents);
+    }
     m.file_loaded = g.asset && !g.asset->animations.empty() && !m.bone_names.empty();
     m.map.clip_len = (g.asset && !g.asset->animations.empty()) ? g.asset->animations[0].duration : 0.0;
     g.read_done = false;  // the binding depends on the bones: read again
@@ -208,7 +202,7 @@ bool BindAndSample(const ItemRules& rules, std::vector<Block>* bound_out)
     if (!m.file_loaded || !g.asset) return false;
     std::vector<Block> bound = EnabledOnly(rules.blocks);
     std::string why;
-    if (!BindBoneRefs(bound, m.role_to_bone, m.bone_names, &why)) return false;
+    if (!BindBoneRefs(bound, m.role_to_bone, m.bone_names, m.bone_parents, &why)) return false;
     std::vector<int> bones;
     RemapToTracks(bound, &bones);
     SampleKey key{g.asset_path, g.asset_stamp, bones};
@@ -256,9 +250,11 @@ void RefreshSelection()
             continue;
         }
         const std::string path = AnimPathOf(RavTakeOf(it));
-        const std::vector<std::string>& names = BoneNamesOf(path);
+        const SkeletonBones& sk = BoneNamesOf(path);
+        const std::vector<std::string>& names = sk.names;
         std::vector<Block> probe = EnabledOnly(rd.rules.blocks);
-        if (names.empty() || !BindBoneRefs(probe, GetRoleMapping(RulesResourceRoot(), names), names, nullptr))
+        if (names.empty() ||
+            !BindBoneRefs(probe, GetRoleMapping(RulesResourceRoot(), names), names, sk.parents, nullptr))
             ++m.sel_roles_skipped;
     }
 }
@@ -558,10 +554,10 @@ ItemDetection DetectItem(MediaItem* item)
             return out;
         }
         out.map = ItemClipMapOf(item, asset->animations[0].duration);
-        std::vector<std::string> names;
-        for (const SceneBone& b : asset->skeleton.bones) names.push_back(b.name);
+        const SkeletonBones sk = SkeletonBonesOf(asset->skeleton);
+        const std::vector<std::string>& names = sk.names;
         std::vector<Block> bound = EnabledOnly(out.rules.blocks);
-        if (!BindBoneRefs(bound, GetRoleMapping(RulesResourceRoot(), names), names, &out.missing)) {
+        if (!BindBoneRefs(bound, GetRoleMapping(RulesResourceRoot(), names), names, sk.parents, &out.missing)) {
             out.status = ItemDetection::Status::RolesMissing;
             return out;
         }

@@ -120,14 +120,17 @@ std::vector<int> BoneRefsUsed(const std::vector<Block>& blocks)
     return out;
 }
 
-bool BindBoneRefs(std::vector<Block>& blocks, const std::vector<int>& role_to_bone,
-                  const std::vector<std::string>& bone_names, std::string* missing)
+namespace {
+
+// The binding (BindBoneRefs); `names` gets what does not bind, each once.
+bool BindCore(std::vector<Block>& blocks, const std::vector<int>& role_to_bone,
+              const std::vector<std::string>& bone_names, const std::vector<int>& bone_parents,
+              std::vector<std::string>& names)
 {
     std::vector<std::string> norm;
     norm.reserve(bone_names.size());
     for (const std::string& n : bone_names) norm.push_back(NormalizeBoneName(n));
 
-    std::vector<std::string> names;  // missing, each once
     auto resolve = [&](int id) -> int {
         if (id >= 0 && id < static_cast<int>(Role::Count)) {
             const int b = id < static_cast<int>(role_to_bone.size()) ? role_to_bone[id] : -1;
@@ -144,16 +147,74 @@ bool BindBoneRefs(std::vector<Block>& blocks, const std::vector<int>& role_to_bo
         }
         return -1;
     };
-    ForEachBoneList(blocks, [&](std::vector<int>& ids) {
+    auto add = [&](const std::string& nm) {
+        if (std::find(names.begin(), names.end(), nm) == names.end()) names.push_back(nm);
+    };
+    auto list = [&](std::vector<int>& ids) {
         for (int& id : ids) {
             const int b = resolve(id);
-            if (b < 0) {
-                const std::string nm = BoneRefName(id);
-                if (std::find(names.begin(), names.end(), nm) == names.end()) names.push_back(nm);
-            }
+            if (b < 0) add(BoneRefName(id));
             id = b;
         }
-    });
+    };
+    // 10-4 follow-up: an interior angle's record names the joint only; it binds to {its
+    // parent, the joint, its first child in skeleton order}. A root or a leaf is no joint.
+    auto joint = [&](std::vector<int>& ids) {
+        const int id = ids[0];
+        const int b = resolve(id);
+        if (b < 0) {
+            add(BoneRefName(id));
+            ids = {-1};
+            return;
+        }
+        const int parent = b < static_cast<int>(bone_parents.size()) ? bone_parents[static_cast<size_t>(b)] : -1;
+        int child = -1;
+        for (size_t i = 0; i < bone_parents.size() && child < 0; ++i)
+            if (bone_parents[i] == b) child = static_cast<int>(i);
+        if (parent < 0 || parent >= static_cast<int>(bone_names.size()) || child < 0 ||
+            child >= static_cast<int>(bone_names.size())) {
+            add(BoneRefName(id) + " (not a joint)");
+            ids = {-1};
+            return;
+        }
+        ids = {parent, b, child};
+    };
+    auto signal = [&](SignalSpec& s) {
+        if (s.quantity == Quantity::InteriorAngle && s.bones.size() == 1) joint(s.bones);
+        else list(s.bones);
+        if (s.reference == Reference::Bones) list(s.ref_bones);
+    };
+    for (Block& b : blocks) {
+        for (Condition& c : b.conditions) signal(c.signal);
+        signal(b.strength_signal);
+    }
+    return names.empty();
+}
+
+}  // namespace
+
+std::vector<std::string> MissingBoneRefs(const std::vector<Block>& blocks, const std::vector<int>& role_to_bone,
+                                         const std::vector<std::string>& bone_names,
+                                         const std::vector<int>& bone_parents)
+{
+    std::vector<Block>       copy = blocks;
+    std::vector<std::string> names;
+    BindCore(copy, role_to_bone, bone_names, bone_parents, names);
+    return names;
+}
+
+bool BindBoneRefs(std::vector<Block>& blocks, const std::vector<int>& role_to_bone,
+                  const std::vector<std::string>& bone_names, std::string* missing)
+{
+    return BindBoneRefs(blocks, role_to_bone, bone_names, std::vector<int>{}, missing);
+}
+
+bool BindBoneRefs(std::vector<Block>& blocks, const std::vector<int>& role_to_bone,
+                  const std::vector<std::string>& bone_names, const std::vector<int>& bone_parents,
+                  std::string* missing)
+{
+    std::vector<std::string> names;  // missing, each once
+    BindCore(blocks, role_to_bone, bone_names, bone_parents, names);
     std::string miss;
     for (const std::string& nm : names) miss += (miss.empty() ? "" : ", ") + nm;
     if (missing) *missing = miss;
@@ -369,10 +430,13 @@ struct Word {
     const char* word;
 };
 
-const Word<Quantity>  kQuantity[] = {{Quantity::Point, "point"}, {Quantity::JointAngle, "joint"}, {Quantity::Yaw, "yaw"}};
+const Word<Quantity>  kQuantity[] = {{Quantity::Point, "point"},          {Quantity::JointAngle, "joint"},
+                                     {Quantity::Yaw, "yaw"},              {Quantity::InteriorAngle, "angle"},
+                                     {Quantity::Rotation, "rot"}};
 const Word<Combine>   kCombine[] = {{Combine::Single, "single"}, {Combine::Average, "average"},
                                     {Combine::Lowest, "lowest"}, {Combine::Highest, "highest"}};
-const Word<Reference> kReference[] = {{Reference::Floor, "floor"}, {Reference::Bones, "bones"}};
+const Word<Reference> kReference[] = {{Reference::Floor, "floor"}, {Reference::Bones, "bones"},
+                                     {Reference::Parent, "parent"}};
 const Word<Measure>   kMeasure[] = {{Measure::Position, "position"}, {Measure::Speed, "speed"},
                                     {Measure::Acceleration, "accel"}};
 const Word<Axis>      kAxis[] = {{Axis::Vertical, "vertical"}, {Axis::Horizontal, "horizontal"}, {Axis::Total, "total"},
@@ -1256,7 +1320,9 @@ std::string SignalBoneLabel(const SignalSpec& spec)
         return (id >= 0 && id < static_cast<int>(Role::Count)) ? RoleSide(static_cast<Role>(id)) : 0;
     };
     auto is_role = [](int id, Role a, Role c) { return id == static_cast<int>(a) || id == static_cast<int>(c); };
-    if (spec.quantity == Quantity::JointAngle) return BoneRefLabel(b.size() >= 2 ? b[1] : b[0]);
+    if (spec.quantity == Quantity::JointAngle || spec.quantity == Quantity::InteriorAngle)
+        return BoneRefLabel(b.size() >= 2 ? b[1] : b[0]);
+    if (spec.quantity == Quantity::Rotation) return BoneRefLabel(b[0]);
     if (spec.quantity == Quantity::Yaw) {
         if (b.size() >= 2 && side_of(b[0]) && side_of(b[0]) == side_of(b[1]) &&
             is_role(b[0], Role::LeftHeel, Role::RightHeel) && is_role(b[1], Role::LeftToe, Role::RightToe))
@@ -1285,6 +1351,19 @@ std::string SignalName(const SignalSpec& spec, const std::string& bone_label)
     std::string word;
     if (spec.quantity == Quantity::JointAngle || spec.quantity == Quantity::Yaw) {
         word = spec.quantity == Quantity::JointAngle ? "bend" : "turn";
+        if (*measure) word += std::string(" ") + measure;
+    } else if (spec.quantity == Quantity::InteriorAngle) {
+        word = "angle";
+        if (*measure) word += std::string(" ") + measure;
+    } else if (spec.quantity == Quantity::Rotation) {
+        // "rotation X", "rotation X speed", "rotation speed" (total).
+        word = "rotation";
+        const bool total = spec.measure != Measure::Position &&
+                           (spec.axis == Axis::Total || spec.axis == Axis::Horizontal);
+        if (!total) {
+            const Axis a = spec.axis;
+            word += (a == Axis::Y || a == Axis::Vertical) ? " Y" : a == Axis::Z ? " Z" : " X";
+        }
         if (*measure) word += std::string(" ") + measure;
     } else {
         std::string axis;

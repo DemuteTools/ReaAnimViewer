@@ -14,6 +14,16 @@
 //                straight and it rises as the joint bends
 //   yaw          the heading of the segment a -> b about the vertical axis (atan2 on X/Z),
 //                unwrapped (no jump at +-180)
+//   interior     (10-4 follow-up) the interior angle at bone b from bones (a, b, c): the
+//                angle a-b-c itself, 180 = straight, smaller = more bent. A record holds
+//                the joint b only; binding adds its parent a and its first child c.
+//   rotation     (10-4 follow-up) one bone's orientation (BoneTrack::rot_world /
+//                rot_parent), reference = Parent (its parent) or Floor (the world). Value
+//                = the XYZ Euler angle on axis X / Y / Z (rotate order XYZ, R = Rz Ry Rx,
+//                like a 3D tool's rotate channels), unwrapped. Speed / acceleration on
+//                X / Y / Z = the derivatives of those; on total = the magnitude of the
+//                angular velocity (its derivative for acceleration). Position on total
+//                (or horizontal) reads as X; vertical reads as Y.
 // with the same measures (position = the angle, speed, acceleration).
 // Detection runs offline over the whole clip (it may look ahead). An event fires when the
 // AND comes true and lands at the interpolated sub-frame crossing of the condition that
@@ -47,11 +57,22 @@ struct Vec3d {
     double z = 0.0;
 };
 
+// A rotation as a unit quaternion (w, x, y, z).
+struct Quatd {
+    double w = 1.0;
+    double x = 0.0;
+    double y = 0.0;
+    double z = 0.0;
+};
+
 // One bone's position per sample, in metres, at a fixed rate. Every track handed to one
-// call has the same rate and length.
+// call has the same rate and length. Orientations (10-4 follow-up) are optional: empty
+// when not sampled (an offline CSV dump holds positions only), else one per sample.
 struct BoneTrack {
     double             rate_hz = 240.0;
     std::vector<Vec3d> pos;
+    std::vector<Quatd> rot_world;   // the bone's orientation in model space
+    std::vector<Quatd> rot_parent;  // relative to its parent: its local rotation (a root's own)
 };
 
 // Text a newer RAV wrote on an object's record line that this version does not read (story
@@ -76,15 +97,19 @@ struct KeptText {
 };
 
 enum class Combine { Single, Average, Lowest, Highest };
-enum class Reference { Floor, Bones };
+// Parent (10-4 follow-up): a rotation read relative to the bone's parent. Floor on a
+// rotation = the world.
+enum class Reference { Floor, Bones, Parent };
 enum class Measure { Position, Speed, Acceleration };
 enum class Axis { Vertical, Horizontal, Total, X, Y, Z };
-enum class Quantity { Point, JointAngle, Yaw };
+enum class Quantity { Point, JointAngle, Yaw, InteriorAngle, Rotation };
 
 struct SignalSpec {
     // Point: the bones' (combined) position. JointAngle: bones = {a, b, c}, degrees of
-    // flexion at b. Yaw: bones = {a, b}, degrees, unwrapped. Angles ignore combine,
-    // reference and axis.
+    // flexion at b. Yaw: bones = {a, b}, degrees, unwrapped. InteriorAngle: bones = {a, b,
+    // c} once bound ({b} in a record), the angle a-b-c in degrees. Rotation: bones = {b},
+    // degrees, reference Parent or Floor (world), axis X / Y / Z / total. The angles
+    // ignore combine; all but Rotation ignore reference and axis.
     Quantity         quantity = Quantity::Point;
     std::vector<int> bones;                // indices into the track list (a preset holds roles)
     Combine          combine = Combine::Single;

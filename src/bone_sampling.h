@@ -4,7 +4,8 @@
 // loaded animation and the pure rule engine (bone_events.h). ComputePose is sampled over
 // the whole clip [0, duration] at a fixed rate; each bone's model-space position
 // (modelRoot * its global matrix, column 3) is turned into metres (metersPerUnit), with
-// vertical = model Y.
+// vertical = model Y. Each bone's orientation is kept too (10-4 follow-up): in model space
+// (modelRoot * global) and relative to its parent (its local rotation), scale dropped.
 //
 // Offline, any thread (no REAPER, no GL). No-throw beyond std::bad_alloc.
 

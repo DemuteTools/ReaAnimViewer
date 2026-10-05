@@ -4,6 +4,8 @@
 
 #include "tagging_signal.h"
 
+#include "bone_roles.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -126,7 +128,111 @@ const char* DirectionLabel(Direction d)
 
 bool IsAngleSignal(const SignalSpec& spec)
 {
-    return spec.quantity == Quantity::JointAngle || spec.quantity == Quantity::Yaw;
+    return spec.quantity == Quantity::JointAngle || spec.quantity == Quantity::Yaw ||
+           spec.quantity == Quantity::InteriorAngle || spec.quantity == Quantity::Rotation;
+}
+
+ConditionKind ConditionKindOf(const SignalSpec& spec)
+{
+    switch (spec.quantity) {
+    case Quantity::Point: return ConditionKind::Bone;
+    case Quantity::InteriorAngle: return ConditionKind::JointAngle;
+    case Quantity::Rotation: return ConditionKind::Rotation;
+    case Quantity::JointAngle: return ConditionKind::Bend;
+    case Quantity::Yaw: return ConditionKind::Turn;
+    }
+    return ConditionKind::Bone;
+}
+
+const char* ConditionKindLabel(ConditionKind k)
+{
+    switch (k) {
+    case ConditionKind::Bone: return "Bone";
+    case ConditionKind::JointAngle: return "Joint angle";
+    case ConditionKind::Rotation: return "Rotation";
+    case ConditionKind::Bend: return "Bend";
+    case ConditionKind::Turn: return "Turn";
+    }
+    return "?";
+}
+
+void SetConditionKind(Condition& c, ConditionKind k)
+{
+    // The bone to keep: a joint (bend) keeps its middle bone, others their first.
+    int keep = -1;
+    const std::vector<int>& b = c.signal.bones;
+    if (!b.empty()) keep = (c.signal.quantity == Quantity::JointAngle && b.size() >= 2) ? b[1] : b[0];
+    KeptText kept = std::move(c.kept);
+    switch (k) {
+    case ConditionKind::JointAngle: {
+        Condition n;
+        n.signal.quantity = Quantity::InteriorAngle;
+        n.signal.bones = {keep >= 0 ? keep : static_cast<int>(Role::LeftKnee)};
+        n.signal.measure = Measure::Position;
+        n.dir = Direction::Below;
+        n.threshold = 90.0;
+        n.margin = 5.0;
+        c = n;
+        break;
+    }
+    case ConditionKind::Rotation: {
+        Condition n;
+        n.signal.quantity = Quantity::Rotation;
+        n.signal.bones = {keep >= 0 ? keep : static_cast<int>(Role::LeftToe)};
+        n.signal.reference = Reference::Parent;
+        n.signal.measure = Measure::Speed;
+        n.signal.axis = Axis::Total;
+        n.dir = Direction::Above;
+        n.threshold = 300.0;
+        n.margin = 50.0;
+        c = n;
+        break;
+    }
+    default: {
+        Condition n = DefaultCondition();
+        if (keep >= 0) n.signal.bones = {keep};
+        c = n;
+        break;
+    }
+    }
+    c.kept = std::move(kept);
+}
+
+const char* MeasureLabelFor(const SignalSpec& spec, Measure m)
+{
+    if (spec.quantity == Quantity::InteriorAngle) {
+        switch (m) {
+        case Measure::Position: return "angle";
+        case Measure::Speed: return "angle speed";
+        case Measure::Acceleration: return "angle acceleration";
+        }
+    }
+    if (spec.quantity == Quantity::Rotation && m == Measure::Position) return "Angle";
+    return MeasureLabel(m);
+}
+
+bool RotationAxisOffered(Measure m, Axis a)
+{
+    if (a == Axis::Total) return m != Measure::Position;
+    return a == Axis::X || a == Axis::Y || a == Axis::Z;
+}
+
+Axis RotationAxisOf(const SignalSpec& spec)
+{
+    switch (spec.axis) {
+    case Axis::X: return Axis::X;
+    case Axis::Y:
+    case Axis::Vertical: return Axis::Y;
+    case Axis::Z: return Axis::Z;
+    case Axis::Total:
+    case Axis::Horizontal: return spec.measure == Measure::Position ? Axis::X : Axis::Total;
+    }
+    return Axis::X;
+}
+
+const char* RotationReferenceLabel(Reference r)
+{
+    return r == Reference::Parent ? "its parent" : "the world";
 }
 
 const char* PlacementLabel(Placement p)

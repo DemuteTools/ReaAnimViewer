@@ -673,6 +673,126 @@ int main()
         CHECK(MarkerModeFromWord("take", &mm) && mm == MarkerMode::Take && !MarkerModeFromWord("all", &mm));
     }
 
+    // 10-4 follow-up: joint-angle and rotation conditions.
+    {
+        // New words round-trip; the record holds the joint alone.
+        const std::string rec =
+            "RAVRULES 1\n"
+            "options sensitivity=0 edge_ms=0 smooth_ms=8\n"
+            "analyse floor_pct=2 pos_frac=0.25 speed_pct=30 margin_ratio=0.5 onset_frac=0.1 per_bone_floor=0\n"
+            "block color=none hold_ms=0 cooldown_ms=250 offset_ms=0 land=cross marker=Knee\n"
+            "cond q=angle bones=role:left_knee comb=single ref=floor meas=position axis=vertical dir=below thr=35 "
+            "margin=5 fixed=0\n"
+            "cond q=rot bones=role:left_toe comb=single ref=parent meas=speed axis=total dir=above thr=300 margin=50 "
+            "fixed=0\n"
+            "cond q=rot bones=bone:LeftFoot comb=single ref=floor meas=position axis=y dir=above thr=10 margin=1 "
+            "fixed=1\n";
+        ItemRules r;
+        CHECK(ParseItemRules(rec, &r));
+        CHECK(!HasKeptText(r));
+        CHECK(SerializeItemRules(r) == rec);
+        CHECK(r.blocks.size() == 1 && r.blocks[0].conditions.size() == 3);
+        if (r.blocks.size() == 1 && r.blocks[0].conditions.size() == 3) {
+            const SignalSpec& a = r.blocks[0].conditions[0].signal;
+            const SignalSpec& t = r.blocks[0].conditions[1].signal;
+            const SignalSpec& w = r.blocks[0].conditions[2].signal;
+            CHECK(a.quantity == Quantity::InteriorAngle && a.bones == std::vector<int>{R(Role::LeftKnee)});
+            CHECK(t.quantity == Quantity::Rotation && t.reference == Reference::Parent && t.axis == Axis::Total &&
+                  t.measure == Measure::Speed);
+            CHECK(w.quantity == Quantity::Rotation && w.reference == Reference::Floor && w.axis == Axis::Y);
+            // Names.
+            CHECK(SignalName(a, SignalBoneLabel(a)) == "L knee angle");
+            SignalSpec as = a;
+            as.measure = Measure::Speed;
+            CHECK(SignalName(as, SignalBoneLabel(as)) == "L knee angle speed");
+            CHECK(SignalName(t, SignalBoneLabel(t)) == "L toe rotation speed");
+            SignalSpec tx = t;
+            tx.axis = Axis::X;
+            CHECK(SignalName(tx, SignalBoneLabel(tx)) == "L toe rotation X speed");
+            tx.measure = Measure::Acceleration;
+            tx.axis = Axis::Z;
+            CHECK(SignalName(tx, SignalBoneLabel(tx)) == "L toe rotation Z acceleration");
+            CHECK(SignalName(w, SignalBoneLabel(w)) == "LeftFoot rotation Y");
+            SignalSpec wt = w;
+            wt.axis = Axis::Total;  // an old record's angle on total reads as X
+            CHECK(SignalName(wt, SignalBoneLabel(wt)) == "LeftFoot rotation X");
+            // A bound joint angle ({parent, joint, child}) names its joint.
+            SignalSpec ab = a;
+            ab.bones = {R(Role::LeftUpLeg), R(Role::LeftKnee), R(Role::LeftHeel)};
+            CHECK(SignalBoneLabel(ab) == "L knee");
+        }
+
+        // An old record (Footsteps v1 copies: q=joint, q=yaw) writes back byte-identical and reads as before.
+        const std::string old =
+            "RAVRULES 1\n"
+            "options sensitivity=0 edge_ms=0 smooth_ms=8\n"
+            "analyse floor_pct=2 pos_frac=0.25 speed_pct=30 margin_ratio=0.5 onset_frac=0.1 per_bone_floor=0\n"
+            "block color=#5F9EDD hold_ms=0 cooldown_ms=250 offset_ms=0 land=peak:1:max marker=Footstep L\n"
+            "cond q=point bones=role:left_heel,role:left_toe comb=lowest ref=floor meas=position axis=vertical "
+            "dir=below thr=0.05 margin=0.025 fixed=0\n"
+            "cond q=joint bones=role:left_up_leg,role:left_knee,role:left_heel comb=single ref=floor meas=speed "
+            "axis=vertical signed=1 dir=above thr=30 margin=15 fixed=0\n"
+            "cond q=yaw bones=role:left_heel,role:left_toe comb=single ref=floor meas=speed axis=vertical "
+            "dir=below thr=95 margin=0 fixed=0\n";
+        ItemRules o;
+        CHECK(ParseItemRules(old, &o));
+        CHECK(SerializeItemRules(o) == old);
+        CHECK(o.blocks.size() == 1 && o.blocks[0].conditions.size() == 3 &&
+              o.blocks[0].conditions[1].signal.quantity == Quantity::JointAngle &&
+              o.blocks[0].conditions[2].signal.quantity == Quantity::Yaw);
+        if (o.blocks.size() == 1 && o.blocks[0].conditions.size() == 3)
+            CHECK(SignalName(o.blocks[0].conditions[1].signal, SignalBoneLabel(o.blocks[0].conditions[1].signal)) ==
+                  "L knee bend speed");
+
+        // Binding: a joint (role or raw bone) expands to {parent, joint, first child}; a root or
+        // a leaf is no joint; the old 3-bone flexion binds as before.
+        const std::vector<std::string> names = {"Hips", "LeftUpLeg", "LeftLeg", "LeftFoot", "LeftToeBase",
+                                                "LeftLegTwist"};
+        const std::vector<int> parents = {-1, 0, 1, 2, 3, 2};
+        std::vector<int> map(static_cast<size_t>(Role::Count), -1);
+        map[R(Role::LeftKnee)] = 2;
+        map[R(Role::LeftToe)] = 4;
+        map[R(Role::LeftHeel)] = 3;
+        map[R(Role::LeftUpLeg)] = 1;
+        map[R(Role::Hips)] = 0;
+        auto joint_block = [](int id) {
+            Block b;
+            Condition c;
+            c.signal.quantity = Quantity::InteriorAngle;
+            c.signal.bones = {id};
+            b.conditions = {c};
+            return b;
+        };
+        std::string missing;
+        std::vector<Block> bl = {joint_block(R(Role::LeftKnee))};  // LeftLeg has two children: the first wins
+        CHECK(BindBoneRefs(bl, map, names, parents, &missing) && missing.empty());
+        CHECK(bl[0].conditions[0].signal.bones == (std::vector<int>{1, 2, 3}));
+        bl = {joint_block(BoneRefForBone("LeftUpLeg"))};
+        CHECK(BindBoneRefs(bl, map, names, parents, &missing));
+        CHECK(bl[0].conditions[0].signal.bones == (std::vector<int>{0, 1, 2}));
+        bl = {joint_block(BoneRefForBone("Hips"))};  // the root
+        CHECK(!BindBoneRefs(bl, map, names, parents, &missing) && missing == "Hips (not a joint)");
+        bl = {joint_block(R(Role::LeftToe))};  // a leaf
+        CHECK(!BindBoneRefs(bl, map, names, parents, &missing) && missing == "left toe (not a joint)");
+        CHECK(MissingBoneRefs({joint_block(R(Role::LeftToe)), joint_block(R(Role::RightKnee))}, map, names, parents) ==
+              (std::vector<std::string>{"left toe (not a joint)", "right knee"}));
+        bl = {joint_block(R(Role::LeftKnee))};  // no parents given: no joint angle binds
+        CHECK(!BindBoneRefs(bl, map, names, &missing) && missing == "left knee (not a joint)");
+        CHECK(BoneRefsUsed({joint_block(R(Role::LeftKnee))}) == std::vector<int>{R(Role::LeftKnee)});
+        bl = o.blocks;
+        CHECK(BindBoneRefs(bl, map, names, parents, &missing));
+        CHECK(bl[0].conditions[1].signal.bones == (std::vector<int>{1, 2, 3}));
+        // A rotation reads one bone and no reference bones.
+        Block rb;
+        Condition rc;
+        rc.signal.quantity = Quantity::Rotation;
+        rc.signal.reference = Reference::Parent;
+        rc.signal.bones = {R(Role::LeftToe)};
+        rb.conditions = {rc};
+        bl = {rb};
+        CHECK(BindBoneRefs(bl, map, names, parents, &missing) && bl[0].conditions[0].signal.bones == std::vector<int>{4});
+    }
+
     if (g_fails) {
         std::printf("rule_record_test: %d failure(s)\n", g_fails);
         return 1;

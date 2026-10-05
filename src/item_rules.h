@@ -29,6 +29,8 @@
 
 namespace rav {
 
+struct SceneSkeleton;
+
 constexpr const char kItemRulesKey[] = "P_EXT:RAV_RULES";
 // The largest record read or written (the P_EXT read needs a buffer that big).
 constexpr size_t kItemRulesMaxBytes = 1u << 20;
@@ -64,8 +66,15 @@ bool ModifyItemRulesNoUndo(MediaItem* item, const std::function<bool(ItemRules&)
 // Writes the whole record (one undo point).
 bool WriteItemRules(MediaItem* item, const ItemRules& rules, const char* undo_desc, std::string* err);
 
-// The bone names of the item's animation file (empty when it does not load).
-std::vector<std::string> ItemBoneNames(MediaItem* item);
+// A skeleton's bone names and parents (one per bone, -1 = root), what binding reads
+// (BindBoneRefs: a joint angle needs the parents).
+struct SkeletonBones {
+    std::vector<std::string> names;
+    std::vector<int>         parents;
+};
+SkeletonBones SkeletonBonesOf(const SceneSkeleton& skel);
+// The item's animation file's (empty when it does not load).
+SkeletonBones ItemSkeletonBones(MediaItem* item);
 
 // Binds `blocks` on the item's skeleton with the remembered role mapping (role_map_store.h).
 // False when a role or bone is missing (`missing` names them), or the file or its bones do

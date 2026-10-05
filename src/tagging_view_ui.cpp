@@ -539,23 +539,57 @@ std::string RefLabel(const std::vector<int>& ids)
     return s.empty() ? std::string("?") : s;
 }
 
+// 10-4 follow-up: a bone of this skeleton with a parent and a child (a joint angle can be
+// read there).
+bool IsJointBone(const TaggingModel& m, int bone)
+{
+    if (bone < 0 || bone >= static_cast<int>(m.bone_parents.size())) return false;
+    if (m.bone_parents[static_cast<size_t>(bone)] < 0) return false;
+    for (int p : m.bone_parents)
+        if (p == bone) return true;
+    return false;
+}
+
+// A bone reference's bone on the loaded skeleton: a role through its mapping, a raw bone by
+// its name. -1 when it does not resolve (unmapped, unknown).
+int ResolveOnSkeleton(const TaggingModel& m, int id)
+{
+    if (id >= 0 && id < static_cast<int>(Role::Count)) {
+        const int b = id < static_cast<int>(m.role_to_bone.size()) ? m.role_to_bone[static_cast<size_t>(id)] : -1;
+        return (b >= 0 && b < static_cast<int>(m.bone_names.size())) ? b : -1;
+    }
+    for (size_t i = 0; i < m.bone_names.size(); ++i)
+        if (BoneRefForBone(m.bone_names[i]) == id) return static_cast<int>(i);
+    return -1;
+}
+
 // The Bone menu's list: the roles, then the raw bones. Returns the picked id, or -1.
-int BoneMenuItems(int current_single)
+// joints_only (a joint angle): a role or bone without a parent or a child is greyed out
+// (a role is checked through its bone on this skeleton; an unmapped role stays offered).
+int BoneMenuItems(int current_single, bool joints_only = false)
 {
     int picked = -1;
+    const TaggingModel& m = GetTaggingModel();
+    const bool know_skeleton = joints_only && !m.bone_parents.empty();
     ImGui::TextDisabled("Roles");
     for (int r = 0; r < static_cast<int>(Role::Count); ++r) {
         const bool sel = current_single == r;
-        if (ImGui::Selectable(RoleShortLabel(static_cast<Role>(r)).c_str(), sel)) picked = r;
+        const int bone = r < static_cast<int>(m.role_to_bone.size()) ? m.role_to_bone[static_cast<size_t>(r)] : -1;
+        const bool off = know_skeleton && bone >= 0 && !IsJointBone(m, bone);
+        if (ImGui::Selectable(RoleShortLabel(static_cast<Role>(r)).c_str(), sel,
+                              off ? ImGuiSelectableFlags_Disabled : ImGuiSelectableFlags_None))
+            picked = r;
     }
-    const TaggingModel& m = GetTaggingModel();
     if (!m.bone_names.empty()) {
         ImGui::Separator();
         ImGui::TextDisabled("Bones");
         for (size_t i = 0; i < m.bone_names.size(); ++i) {
             ImGui::PushID(static_cast<int>(i));
             const int id = BoneRefForBone(m.bone_names[i]);
-            if (ImGui::Selectable(m.bone_names[i].c_str(), current_single == id)) picked = id;
+            const bool off = know_skeleton && !IsJointBone(m, static_cast<int>(i));
+            if (ImGui::Selectable(m.bone_names[i].c_str(), current_single == id,
+                                  off ? ImGuiSelectableFlags_Disabled : ImGuiSelectableFlags_None))
+                picked = id;
             ImGui::PopID();
         }
     }
@@ -1561,11 +1595,14 @@ void ConditionEditor(const Block& blk, int b, int c)
 {
     const Condition& cd = blk.conditions[static_cast<size_t>(c)];
     const std::string rule = RuleTitle(blk);
-    const bool angle = IsAngleSignal(cd.signal);
+    // 10-4 follow-up: the kind (Bone / Joint angle / Rotation). Bend / Turn are older
+    // flexion / yaw conditions, shown as they are (their bones are not picked here).
+    const ConditionKind kind = ConditionKindOf(cd.signal);
+    const bool legacy = kind == ConditionKind::Bend || kind == ConditionKind::Turn;
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float fh = ImGui::GetFrameHeight();
     ImGui::PushID(c);
-    // IF / AND, Bone, lock, delete.
+    // IF / AND, kind, Bone, lock, delete.
     {
         const ImVec2 p = ImGui::GetCursorScreenPos();
         const char* tag = c ? "AND" : "IF";
@@ -1576,16 +1613,41 @@ void ConditionEditor(const Block& blk, int b, int c)
         dl->AddRect(ImVec2(p.x, p.y + 3.0f), ImVec2(p.x + tw, p.y + fh - 3.0f), ui::kStroke, 4.0f);
         dl->AddText(ImVec2(p.x + 4.0f, p.y + (fh - ts.y) * 0.5f), ui::kMuted, tag);
         ImGui::SameLine();
+        if (BeginChip("##kind", ConditionKindLabel(kind), 50.0f)) {
+            for (ConditionKind k : kConditionKindChoices)
+                if (ImGui::Selectable(ConditionKindLabel(k), k == kind) && k != kind)
+                    Edit("RAV: Condition kind (" + rule + ")", [b, c, k](ItemRules& r) {
+                        Condition* x = CondAt(r, b, c);
+                        if (!x) return false;
+                        SetConditionKind(*x, k);
+                        // The kept bone applies only when it is a joint here: else the left knee.
+                        if (k == ConditionKind::JointAngle && x->signal.bones.size() == 1) {
+                            const TaggingModel& tm = GetTaggingModel();
+                            const int bone = ResolveOnSkeleton(tm, x->signal.bones[0]);
+                            if (bone >= 0 && !IsJointBone(tm, bone))
+                                x->signal.bones = {static_cast<int>(Role::LeftKnee)};
+                        }
+                        return true;
+                    });
+            ImGui::EndCombo();
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+            ImGui::SetTooltip(legacy ? "An older condition: changing its kind starts it over"
+                                     : "What this condition reads: a bone's position, the angle at a joint, or a "
+                                       "bone's rotation (changing it starts the condition over)");
+        ImGui::SameLine();
         const std::string bone = SignalBoneLabel(cd.signal);
-        if (angle) ImGui::BeginDisabled();
+        if (legacy) ImGui::BeginDisabled();
         const int single = cd.signal.bones.size() == 1 ? cd.signal.bones[0] : -1;
-        if (BeginChip("##bone", bone.empty() ? "?" : bone.c_str(), 60.0f, angle)) {
-            const int id = BoneMenuItems(single);
+        if (BeginChip("##bone", bone.empty() ? "?" : bone.c_str(), 60.0f, legacy)) {
+            const int id = BoneMenuItems(single, kind == ConditionKind::JointAngle);
             ImGui::EndCombo();
             if (id >= 0) {
                 Edit("RAV: Condition bone (" + rule + ")", [b, c, id](ItemRules& r) {
                     Condition* x = CondAt(r, b, c);
-                    if (!x || IsAngleSignal(x->signal)) return false;
+                    if (!x) return false;
+                    const ConditionKind k = ConditionKindOf(x->signal);
+                    if (k == ConditionKind::Bend || k == ConditionKind::Turn) return false;
                     x->signal.bones = {id};
                     x->signal.combine = Combine::Single;
                     x->signal.bone_floors.clear();
@@ -1593,10 +1655,13 @@ void ConditionEditor(const Block& blk, int b, int c)
                 });
             }
         }
-        if (angle) ImGui::EndDisabled();
+        if (legacy) ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip(angle ? "An angle reads several bones (picking them comes with the skeleton view)"
-                                    : "The bone this condition reads: a role, or a bone of this skeleton");
+            ImGui::SetTooltip(legacy ? "An older angle reads several bones (picking them comes with the skeleton view)"
+                              : kind == ConditionKind::JointAngle
+                                  ? "The joint: RAV reads the angle between its parent and its child (180 = straight)"
+                              : kind == ConditionKind::Rotation ? "The bone whose rotation this condition reads"
+                                                                : "The bone this condition reads: a role, or a bone of this skeleton");
         // Lock and delete, right-aligned.
         const int nconds = static_cast<int>(blk.conditions.size());
         const float right = (nconds > 1 ? 2.0f : 1.0f) * (fh + 2.0f);
@@ -1630,22 +1695,70 @@ void ConditionEditor(const Block& blk, int b, int c)
     // [Measure] [axis] from [reference]   /   [Measure] (angle)
     {
         ImGui::Indent(8.0f);
-        if (BeginChip("##measure", MeasureLabel(cd.signal.measure), 70.0f)) {
+        if (BeginChip("##measure", MeasureLabelFor(cd.signal, cd.signal.measure), 70.0f)) {
             for (Measure ms : kMeasureChoices)
-                if (ImGui::Selectable(MeasureLabel(ms), ms == cd.signal.measure) && ms != cd.signal.measure)
+                if (ImGui::Selectable(MeasureLabelFor(cd.signal, ms), ms == cd.signal.measure) && ms != cd.signal.measure)
                     Edit("RAV: Condition measure (" + rule + ")", [b, c, ms](ItemRules& r) {
                         Condition* x = CondAt(r, b, c);
                         if (!x) return false;
+                        // A rotation's angle has no total: it reads as X (the axis chip shows it).
+                        if (x->signal.quantity == Quantity::Rotation)
+                            x->signal.axis = RotationAxisOf(x->signal);
                         x->signal.measure = ms;
+                        if (x->signal.quantity == Quantity::Rotation && !RotationAxisOffered(ms, x->signal.axis))
+                            x->signal.axis = Axis::X;
                         return true;
                     });
             ImGui::EndCombo();
         }
-        ImGui::SameLine();
-        if (angle) {
+        if (legacy) {
+            ImGui::SameLine();
             ImGui::AlignTextToFramePadding();
-            ImGui::TextDisabled("(angle)");
+            ImGui::TextDisabled(kind == ConditionKind::Bend ? "(bend)" : "(turn)");
+        } else if (kind == ConditionKind::JointAngle) {
+            // The angle at the joint: no axis, no reference.
+        } else if (kind == ConditionKind::Rotation) {
+            ImGui::SameLine();
+            const Axis cur = RotationAxisOf(cd.signal);
+            if (BeginChip("##raxis", AxisLabel(cur), 50.0f)) {
+                for (Axis a : kRotationAxisChoices) {
+                    if (!RotationAxisOffered(cd.signal.measure, a)) continue;
+                    if (ImGui::Selectable(AxisLabel(a), a == cur) && a != cur)
+                        Edit("RAV: Condition axis (" + rule + ")", [b, c, a](ItemRules& r) {
+                            Condition* x = CondAt(r, b, c);
+                            if (!x) return false;
+                            x->signal.axis = a;
+                            return true;
+                        });
+                }
+                ImGui::EndCombo();
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("The rotation axis (rotate order XYZ, like a 3D tool's rotate channels); total = "
+                                  "the overall turning rate");
+            const char* ref = RotationReferenceLabel(cd.signal.reference);
+            const float from_w = ImGui::CalcTextSize("from").x + ImGui::GetStyle().ItemSpacing.x * 2.0f +
+                                 ChipWidth(ref, 70.0f);
+            ImGui::SameLine();
+            if (ImGui::GetContentRegionAvail().x < from_w) ImGui::NewLine();
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextUnformatted("from");
+            ImGui::SameLine();
+            if (BeginChip("##rref", ref, 70.0f)) {
+                for (Reference rf : {Reference::Parent, Reference::Floor})
+                    if (ImGui::Selectable(RotationReferenceLabel(rf), rf == cd.signal.reference) &&
+                        rf != cd.signal.reference)
+                        Edit("RAV: Condition reference (" + rule + ")", [b, c, rf](ItemRules& r) {
+                            Condition* x = CondAt(r, b, c);
+                            if (!x) return false;
+                            x->signal.reference = rf;
+                            x->signal.ref_bones.clear();
+                            return true;
+                        });
+                ImGui::EndCombo();
+            }
         } else {
+            ImGui::SameLine();
             if (BeginChip("##axis", AxisLabel(cd.signal.axis), 60.0f)) {
                 for (Axis a : kAxisChoices)
                     if (ImGui::Selectable(AxisLabel(a), a == cd.signal.axis) && a != cd.signal.axis)

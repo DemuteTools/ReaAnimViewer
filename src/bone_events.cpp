@@ -219,16 +219,18 @@ std::vector<double> ScalarMeasure(const std::vector<double>& q, Measure measure,
     return out;
 }
 
-// Joint flexion (180 - angle a-b-c) or the unwrapped yaw of a -> b, in degrees, per sample.
-// A degenerate sample (zero-length segment) keeps the previous value.
+// Joint flexion (180 - angle a-b-c), the interior angle a-b-c, or the unwrapped yaw of
+// a -> b, in degrees, per sample. A degenerate sample (zero-length segment) keeps the
+// previous value.
 std::vector<double> AngleSeries(const SignalSpec& spec, const std::vector<BoneTrack>& tracks)
 {
     const size_t n = tracks[0].pos.size();
     std::vector<double> q(n, 0.0);
-    double prev = 0.0;
+    // A degenerate start reads as straight: 0 flexion, or an interior angle of 180.
+    double prev = spec.quantity == Quantity::InteriorAngle ? 180.0 : 0.0;
     for (size_t i = 0; i < n; ++i) {
         double v = prev;
-        if (spec.quantity == Quantity::JointAngle) {
+        if (spec.quantity == Quantity::JointAngle || spec.quantity == Quantity::InteriorAngle) {
             const Vec3d& a = tracks[spec.bones[0]].pos[i];
             const Vec3d& b = tracks[spec.bones[1]].pos[i];
             const Vec3d& c = tracks[spec.bones[2]].pos[i];
@@ -237,7 +239,8 @@ std::vector<double> AngleSeries(const SignalSpec& spec, const std::vector<BoneTr
             const double lu = std::sqrt(ux * ux + uy * uy + uz * uz), lw = std::sqrt(wx * wx + wy * wy + wz * wz);
             if (lu > 1e-12 && lw > 1e-12) {
                 const double cosv = std::min(1.0, std::max(-1.0, (ux * wx + uy * wy + uz * wz) / (lu * lw)));
-                v = 180.0 - std::acos(cosv) * kDeg;
+                const double interior = std::acos(cosv) * kDeg;
+                v = spec.quantity == Quantity::JointAngle ? 180.0 - interior : interior;
             }
         } else {
             const Vec3d& a = tracks[spec.bones[0]].pos[i];
@@ -255,6 +258,148 @@ std::vector<double> AngleSeries(const SignalSpec& spec, const std::vector<BoneTr
         prev = v;
     }
     return q;
+}
+
+// ---- Rotation (10-4 follow-up) ---------------------------------------------------------------
+
+// The orientations a rotation signal reads: the parent-relative ones (Reference::Parent) or
+// the world ones (Reference::Floor). Null when the reference does not apply or the track was
+// not sampled with orientations (an offline dump).
+const std::vector<Quatd>* RotationsOf(const SignalSpec& spec, const std::vector<BoneTrack>& tracks)
+{
+    if (spec.bones.size() != 1) return nullptr;
+    const BoneTrack& t = tracks[static_cast<size_t>(spec.bones[0])];
+    const std::vector<Quatd>* r = nullptr;
+    if (spec.reference == Reference::Parent) r = &t.rot_parent;
+    else if (spec.reference == Reference::Floor) r = &t.rot_world;
+    if (!r || r->size() != t.pos.size()) return nullptr;
+    for (const Quatd& q : *r)
+        if (!std::isfinite(q.w) || !std::isfinite(q.x) || !std::isfinite(q.y) || !std::isfinite(q.z)) return nullptr;
+    return r;
+}
+
+Quatd Normalized(const Quatd& q)
+{
+    const double l = std::sqrt(q.w * q.w + q.x * q.x + q.y * q.y + q.z * q.z);
+    if (!(l > 1e-12)) return Quatd{};
+    return Quatd{q.w / l, q.x / l, q.y / l, q.z / l};
+}
+
+// a * conj(b): the rotation that takes b to a (in the reference frame).
+Quatd MulConj(const Quatd& a, const Quatd& b)
+{
+    const double bw = b.w, bx = -b.x, by = -b.y, bz = -b.z;
+    return Quatd{a.w * bw - a.x * bx - a.y * by - a.z * bz, a.w * bx + a.x * bw + a.y * bz - a.z * by,
+                 a.w * by - a.x * bz + a.y * bw + a.z * bx, a.w * bz + a.x * by - a.y * bx + a.z * bw};
+}
+
+// The XYZ Euler angles (rotate order XYZ: R = Rz(z) * Ry(y) * Rx(x)), in degrees.
+Vec3d EulerXYZ(const Quatd& in)
+{
+    const Quatd q = Normalized(in);
+    const double r00 = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
+    const double r10 = 2.0 * (q.x * q.y + q.w * q.z);
+    const double r20 = 2.0 * (q.x * q.z - q.w * q.y);
+    const double r21 = 2.0 * (q.y * q.z + q.w * q.x);
+    const double r22 = 1.0 - 2.0 * (q.x * q.x + q.y * q.y);
+    const double r11 = 1.0 - 2.0 * (q.x * q.x + q.z * q.z);
+    const double r12 = 2.0 * (q.y * q.z - q.w * q.x);
+    const double sy = std::min(1.0, std::max(-1.0, -r20));
+    Vec3d e;
+    e.y = std::asin(sy);
+    if (std::sqrt(r21 * r21 + r22 * r22) > 1e-9) {
+        e.x = std::atan2(r21, r22);
+        e.z = std::atan2(r10, r00);
+    } else {  // gimbal lock: Y at +-90, the X / Z split is free (all on X)
+        e.x = std::atan2(-r12, r11);
+        e.z = 0.0;
+    }
+    return Vec3d{e.x * kDeg, e.y * kDeg, e.z * kDeg};
+}
+
+// Which Euler axis a rotation signal reads: 0 = X, 1 = Y, 2 = Z, -1 = total (the turning rate).
+int RotationAxis(const SignalSpec& spec)
+{
+    switch (spec.axis) {
+    case Axis::X: return 0;
+    case Axis::Y:
+    case Axis::Vertical: return 1;
+    case Axis::Z: return 2;
+    case Axis::Total:
+    case Axis::Horizontal: return spec.measure == Measure::Position ? 0 : -1;
+    }
+    return 0;
+}
+
+// The rotation signal: the unwrapped Euler angle on one axis (then ScalarMeasure), or the
+// magnitude of the angular velocity / acceleration for total. Empty when it does not fit.
+std::vector<double> RotationSignal(const SignalSpec& spec, const std::vector<BoneTrack>& tracks, double smooth_ms)
+{
+    const std::vector<Quatd>* rots = RotationsOf(spec, tracks);
+    if (!rots) return {};
+    const std::vector<Quatd>& r = *rots;
+    const size_t n = r.size();
+    const double rate = tracks[0].rate_hz;
+    const int axis = RotationAxis(spec);
+    if (axis >= 0) {
+        // XYZ Euler angles have two equivalent triples, (x, y, z) and (x+180, 180-y, z+180):
+        // y alone stays within +-90. Per sample, each component of both is unwrapped to the
+        // nearest turn of the previous sample's, and the triple closest to the previous one
+        // is kept, so a turn past 90 about Y stays continuous instead of folding back.
+        auto near_turn = [](double v, double ref) {
+            while (v - ref > 180.0) v -= 360.0;
+            while (v - ref < -180.0) v += 360.0;
+            return v;
+        };
+        std::vector<double> q(n, 0.0);
+        Vec3d prev;
+        for (size_t i = 0; i < n; ++i) {
+            Vec3d e = EulerXYZ(r[i]);
+            if (i > 0) {
+                const Vec3d a{near_turn(e.x, prev.x), near_turn(e.y, prev.y), near_turn(e.z, prev.z)};
+                const Vec3d b{near_turn(e.x + 180.0, prev.x), near_turn(180.0 - e.y, prev.y),
+                              near_turn(e.z + 180.0, prev.z)};
+                auto dist = [&](const Vec3d& t) {
+                    return (t.x - prev.x) * (t.x - prev.x) + (t.y - prev.y) * (t.y - prev.y) +
+                           (t.z - prev.z) * (t.z - prev.z);
+                };
+                e = dist(b) < dist(a) ? b : a;
+            }
+            q[i] = axis == 0 ? e.x : axis == 1 ? e.y : e.z;
+            prev = e;
+        }
+        return ScalarMeasure(q, spec.measure, spec.keep_sign, smooth_ms, rate);
+    }
+    // Total: the angular velocity (deg/s, a vector in the reference frame) by centred
+    // differences of the orientation, smoothed; speed = its length, acceleration = the
+    // length of its derivative.
+    std::vector<double> out(n, 0.0);
+    if (n < 2) return out;
+    std::vector<Vec3d> w(n);
+    for (size_t i = 0; i < n; ++i) {
+        const size_t a = (i == 0) ? 0 : i - 1;
+        const size_t b = (i + 1 == n) ? i : i + 1;
+        Quatd d = MulConj(Normalized(r[b]), Normalized(r[a]));
+        if (d.w < 0.0) d = Quatd{-d.w, -d.x, -d.y, -d.z};  // the short way round
+        const double s = std::sqrt(d.x * d.x + d.y * d.y + d.z * d.z);
+        if (s > 1e-15) {
+            const double ang = 2.0 * std::atan2(s, d.w) * kDeg * rate / static_cast<double>(b - a);
+            w[i] = Vec3d{d.x / s * ang, d.y / s * ang, d.z / s * ang};
+        }
+    }
+    const std::vector<Vec3d> ws = Smooth(w, smooth_ms / 1000.0 * rate);
+    if (spec.measure == Measure::Speed) {
+        for (size_t i = 0; i < n; ++i) out[i] = std::sqrt(ws[i].x * ws[i].x + ws[i].y * ws[i].y + ws[i].z * ws[i].z);
+        return out;
+    }
+    for (size_t i = 0; i < n; ++i) {
+        const size_t a = (i == 0) ? 0 : i - 1;
+        const size_t b = (i + 1 == n) ? i : i + 1;
+        const double inv = rate / static_cast<double>(b - a);
+        const double dx = (ws[b].x - ws[a].x) * inv, dy = (ws[b].y - ws[a].y) * inv, dz = (ws[b].z - ws[a].z) * inv;
+        out[i] = std::sqrt(dx * dx + dy * dy + dz * dz);
+    }
+    return out;
 }
 
 // The series an event's values are read from (DetectTrace and EventValuesAt share them).
@@ -324,11 +469,13 @@ bool EventValuesAt(const Block& blk, const std::vector<BoneTrack>& tracks, const
 std::vector<double> EvaluateSignal(const SignalSpec& spec, const std::vector<BoneTrack>& tracks, double smooth_ms)
 {
     if (!TracksFit(tracks) || !IndicesFit(spec.bones, tracks.size())) return {};
+    if (spec.quantity == Quantity::Rotation) return RotationSignal(spec, tracks, smooth_ms);
     if (spec.quantity != Quantity::Point) {
-        const size_t need = (spec.quantity == Quantity::JointAngle) ? 3 : 2;
+        const size_t need = (spec.quantity == Quantity::Yaw) ? 2 : 3;
         if (spec.bones.size() != need) return {};
         return ScalarMeasure(AngleSeries(spec, tracks), spec.measure, spec.keep_sign, smooth_ms, tracks[0].rate_hz);
     }
+    if (spec.reference == Reference::Parent) return {};  // a point has no parent reference
     if (spec.reference == Reference::Bones && !IndicesFit(spec.ref_bones, tracks.size())) return {};
     const bool own_floors = spec.reference == Reference::Floor && !spec.bone_floors.empty();
     if (own_floors && spec.bone_floors.size() != spec.bones.size()) return {};

@@ -15,6 +15,10 @@
 // The CSV: '# item=<label>', '# rate_hz=<hz>', '# visible=<lo>,<hi>', '# ref=<t>,<t>...',
 // '# parent=...' (ignored), then the header 't,<bone>.x,<bone>.y,<bone>.z,...' and one row
 // per sample (metres, model Y up).
+// Positions only: a rotation condition (q=rot, 10-4 follow-up) cannot be evaluated from a
+// dump. This tool only runs the built-in Footsteps preset, which has no rotation condition;
+// MeasureFootsteps keeps a defensive skip for one, and any rotation signal on position-only
+// tracks evaluates empty and never runs.
 
 #include <cstdio>
 #include <cstdlib>

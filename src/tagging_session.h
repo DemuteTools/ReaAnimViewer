@@ -47,6 +47,7 @@ struct TaggingModel {
     // The skeleton.
     bool                     file_loaded = false;
     std::vector<std::string> bone_names;
+    std::vector<int>         bone_parents;  // per bone: its parent (-1 = root), for joint angles
     std::vector<int>         role_to_bone;  // indexed by Role (-1 = no bone)
     int                      missing_count = 0;  // bone references the rules read with no bone
     std::string              missing;            // their names

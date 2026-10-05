@@ -8,7 +8,7 @@
 //   position of a point   cm     (the engine works in metres)
 //   speed                 m/s
 //   acceleration          m/s2
-//   angle                 deg    (bend / turn)
+//   angle                 deg    (bend / turn / joint angle / rotation)
 //   angle speed           deg/s
 //   angle acceleration    deg/s2
 //
@@ -48,7 +48,35 @@ constexpr Direction kDirectionChoices[2] = {Direction::Below, Direction::Above};
 const char* MeasureLabel(Measure m);      // "Position", "Speed", "Acceleration"
 const char* AxisLabel(Axis a);            // "vertical", "horizontal", "total", "X", "Y", "Z"
 const char* DirectionLabel(Direction d);  // "below", "above"
-bool IsAngleSignal(const SignalSpec& spec);
+bool IsAngleSignal(const SignalSpec& spec);  // in degrees: bend, turn, joint angle, rotation
+
+// ---- Condition kinds (10-4 follow-up) ------------------------------------------------------
+// The kind chip at the head of a condition's sentence: Bone (a point: position, speed,
+// acceleration), Joint angle (the interior angle at a joint, 180 = straight), Rotation (a
+// bone's rotation on an axis, from its parent or the world). Bend / Turn are the older
+// flexion (q=joint) and yaw (q=yaw) conditions: shown as they are, never offered.
+enum class ConditionKind { Bone, JointAngle, Rotation, Bend, Turn };
+constexpr ConditionKind kConditionKindChoices[3] = {ConditionKind::Bone, ConditionKind::JointAngle,
+                                                    ConditionKind::Rotation};
+ConditionKind ConditionKindOf(const SignalSpec& spec);
+const char* ConditionKindLabel(ConditionKind k);  // "Bone", "Joint angle", "Rotation", "Bend", "Turn"
+// Resets `c` to the kind's defaults (one gesture). The bone is kept when there is one to
+// keep (the condition's first bone; a joint or yaw keeps its middle / first bone), else the
+// kind's default bone. Bone: as DefaultCondition. Joint angle: angle below 90 deg, margin
+// 5 deg (default joint: the left knee). Rotation: total speed from its parent above 300
+// deg/s, margin 50 deg/s (default bone: the left toe). Bend / Turn read as Bone.
+void SetConditionKind(Condition& c, ConditionKind k);
+// The Measure chip's label for this signal: a joint angle reads "angle", "angle speed",
+// "angle acceleration"; a rotation "Angle", "Speed", "Acceleration"; else MeasureLabel.
+const char* MeasureLabelFor(const SignalSpec& spec, Measure m);
+// A rotation's axis choices: X, Y, Z, and total (speed / acceleration only).
+constexpr Axis kRotationAxisChoices[4] = {Axis::X, Axis::Y, Axis::Z, Axis::Total};
+bool RotationAxisOffered(Measure m, Axis a);
+// The axis a rotation reads (an older or odd value mapped: total / horizontal on a position
+// = X, vertical = Y), as the engine reads it (bone_events.h).
+Axis RotationAxisOf(const SignalSpec& spec);
+// The Reference chip of a rotation: "its parent" / "the world".
+const char* RotationReferenceLabel(Reference r);
 
 // Where the marker lands ("Place the marker at [the start | the highest point | the lowest
 // point] of [signal]").

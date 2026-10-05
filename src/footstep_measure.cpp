@@ -67,6 +67,20 @@ ItemMeasure MeasureFootsteps(const std::vector<std::string>& bone_names, const T
         r.skipped = "could not sample the animation";
         return r;
     }
+    // 10-4 follow-up, defensive: a rotation condition needs the bones' orientations, which an
+    // offline CSV dump (tests/detection_eval) does not hold. This path only runs the built-in
+    // Footsteps preset, which has no rotation condition, so this never fires today; and any
+    // rotation signal on position-only tracks evaluates empty and never runs anyway.
+    for (const Block& b : blocks)
+        for (const Condition& c : b.conditions)
+            if (c.signal.quantity == Quantity::Rotation)
+                for (int t : c.signal.bones) {
+                    const size_t k = static_cast<size_t>(t);
+                    if (t >= 0 && k < tracks.size() && tracks[k].rot_world.empty()) {
+                        r.skipped = "rotation conditions are not supported here (the tracks hold positions only)";
+                        return r;
+                    }
+                }
     r.blocks = Analyse(blocks, tracks, FootstepsAnalyseOptions(prm));
     r.events = Detect(r.blocks, tracks, FootstepsDetectOptions(prm));
     for (const Event& e : r.events) r.det.push_back(e.time_s);

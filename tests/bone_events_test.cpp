@@ -804,6 +804,205 @@ int main()
         CHECK(!EventValuesAt(b, {}, {}, 0.45, &s, &v));
     }
 
+    // ---- 10-4 follow-up: the interior angle at a joint ---------------------------------------
+    {
+        // a straight up, b at the origin, c swinging from straight down by phi = 90 t deg.
+        const double d2r = 3.14159265358979323846 / 180.0;
+        auto c_of = [d2r](double t) { return Vec3d{std::sin(90.0 * t * d2r), -std::cos(90.0 * t * d2r), 0.0}; };
+        std::vector<BoneTrack> tr = {Track(1.0, 240.0, [](double) { return 1.0; }),
+                                     Track(1.0, 240.0, [](double) { return 0.0; }),
+                                     Track(1.0, 240.0, [&](double t) { return c_of(t).y; },
+                                           [&](double t) { return c_of(t).x; })};
+        SignalSpec s;
+        s.quantity = Quantity::InteriorAngle;
+        s.bones = {0, 1, 2};
+        const std::vector<double> v = EvaluateSignal(s, tr);
+        CHECK(Near(v.at(0), 180.0, 1e-6));    // straight
+        CHECK(Near(v.at(240), 90.0, 1e-6));   // a right angle
+        CHECK(Near(v.at(120), 135.0, 1e-6));
+        s.measure = Measure::Speed;
+        s.keep_sign = true;
+        CHECK(Near(EvaluateSignal(s, tr).at(120), -90.0, 1e-3));  // closing at 90 deg/s
+        s.bones = {1};  // unbound (the record's joint alone): does not fit
+        CHECK(EvaluateSignal(s, tr).empty());
+        // Below 135 deg: one event when it crosses, at t = 0.5 s.
+        Block b;
+        Condition c;
+        c.signal.quantity = Quantity::InteriorAngle;
+        c.signal.bones = {0, 1, 2};
+        c.dir = Direction::Below;
+        c.threshold = 135.0;
+        b.conditions = {c};
+        auto ev = TracedDetect({b}, tr);
+        CHECK(ev.size() == 1 && Near(ev[0].time_s, 0.5, 1e-6));
+        CHECK(ev.size() == 1 && Near(ev[0].speed, 90.0, 1e-2));  // the angle speed
+
+        // The child on the joint for the first 0.1 s (zero-length segment): reads straight
+        // (180), not folded (0), so "below 90" does not fire there.
+        std::vector<BoneTrack> co = tr;
+        for (size_t i = 0; i <= 24; ++i) co[2].pos[i] = co[1].pos[i];
+        s.measure = Measure::Position;
+        s.keep_sign = false;
+        s.bones = {0, 1, 2};
+        CHECK(Near(EvaluateSignal(s, co).at(0), 180.0, 1e-9));
+        CHECK(Near(EvaluateSignal(s, co).at(24), 180.0, 1e-9));
+        c.threshold = 90.0;
+        b.conditions = {c};
+        CHECK(TracedDetect({b}, co).empty());  // 90 is reached only at the last sample
+    }
+
+    // ---- 10-4 follow-up: a bone's rotation -----------------------------------------------------
+    {
+        const double d2r = 3.14159265358979323846 / 180.0;
+        auto axis_q = [d2r](double deg, double ax, double ay, double az) {
+            const double h = 0.5 * deg * d2r;
+            return Quatd{std::cos(h), ax * std::sin(h), ay * std::sin(h), az * std::sin(h)};
+        };
+        auto mul = [](const Quatd& a, const Quatd& b) {
+            return Quatd{a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z, a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+                         a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x, a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w};
+        };
+        // A track with orientations q(t) (world) and p(t) (parent-relative), 2 s at 240 Hz.
+        auto rot_track = [](const std::function<Quatd(double)>& qw, const std::function<Quatd(double)>& qp) {
+            BoneTrack t = Track(2.0, 240.0, [](double) { return 0.0; });
+            for (size_t i = 0; i < t.pos.size(); ++i) {
+                const double s = static_cast<double>(i) / 240.0;
+                t.rot_world.push_back(qw(s));
+                t.rot_parent.push_back(qp(s));
+            }
+            return t;
+        };
+        SignalSpec r;
+        r.quantity = Quantity::Rotation;
+        r.bones = {0};
+        r.reference = Reference::Parent;
+        r.axis = Axis::X;
+
+        // XYZ order: q = Rz(40) * Ry(30) * Rx(20) reads 20 / 30 / 40 on X / Y / Z.
+        {
+            const Quatd q = mul(axis_q(40, 0, 0, 1), mul(axis_q(30, 0, 1, 0), axis_q(20, 1, 0, 0)));
+            std::vector<BoneTrack> tr = {rot_track([&](double) { return q; }, [&](double) { return q; })};
+            r.measure = Measure::Position;
+            r.axis = Axis::X;
+            CHECK(Near(EvaluateSignal(r, tr).at(10), 20.0, 1e-9));
+            r.axis = Axis::Y;
+            CHECK(Near(EvaluateSignal(r, tr).at(10), 30.0, 1e-9));
+            r.axis = Axis::Z;
+            CHECK(Near(EvaluateSignal(r, tr).at(10), 40.0, 1e-9));
+            r.axis = Axis::Total;  // no total for the angle: reads as X
+            CHECK(Near(EvaluateSignal(r, tr).at(10), 20.0, 1e-9));
+            r.axis = Axis::Vertical;  // reads as Y
+            CHECK(Near(EvaluateSignal(r, tr).at(10), 30.0, 1e-9));
+        }
+
+        // A spin about X at 200 deg/s from 150 deg: unwrapped past 180; its speed per axis and total.
+        {
+            std::vector<BoneTrack> tr = {rot_track([&](double) { return Quatd{}; },
+                                                   [&](double t) { return axis_q(150.0 + 200.0 * t, 1, 0, 0); })};
+            r.measure = Measure::Position;
+            r.axis = Axis::X;
+            std::vector<double> v = EvaluateSignal(r, tr);
+            CHECK(Near(v.at(0), 150.0, 1e-6));
+            CHECK(Near(v.at(120), 250.0, 1e-6));  // no jump to -110
+            CHECK(Near(v.at(480), 550.0, 1e-6));
+            r.axis = Axis::Y;
+            CHECK(Near(EvaluateSignal(r, tr).at(120), 0.0, 1e-6));
+            r.measure = Measure::Speed;
+            r.axis = Axis::X;
+            CHECK(Near(EvaluateSignal(r, tr).at(240), 200.0, 1e-3));
+            r.axis = Axis::Total;
+            CHECK(Near(EvaluateSignal(r, tr).at(240), 200.0, 1e-3));
+            CHECK(Near(EvaluateSignal(r, tr).at(36), 200.0, 1e-3));  // right at the wrap
+            r.reference = Reference::Floor;  // the world: this bone does not turn there
+            CHECK(Near(EvaluateSignal(r, tr).at(240), 0.0, 1e-9));
+            r.reference = Reference::Parent;
+            r.measure = Measure::Acceleration;
+            CHECK(Near(EvaluateSignal(r, tr).at(240), 0.0, 1e-3));
+        }
+
+        // Total speed about a tilted axis (every Euler axis moves): 300 deg/s; spinning up
+        // (angle = 100 t^2): acceleration 200 deg/s2, speed 200 t.
+        {
+            const double k = 1.0 / std::sqrt(3.0);
+            std::vector<BoneTrack> tr = {rot_track([&](double t) { return axis_q(300.0 * t, k, k, k); },
+                                                   [&](double t) { return axis_q(100.0 * t * t, 0, 0, 1); })};
+            r.reference = Reference::Floor;
+            r.measure = Measure::Speed;
+            r.axis = Axis::Total;
+            CHECK(Near(EvaluateSignal(r, tr).at(240), 300.0, 1e-3));
+            r.reference = Reference::Parent;
+            CHECK(Near(EvaluateSignal(r, tr).at(240), 200.0, 1e-2));  // t = 1 s
+            r.measure = Measure::Acceleration;
+            CHECK(Near(EvaluateSignal(r, tr).at(240), 200.0, 1e-1));
+            r.axis = Axis::Z;
+            r.keep_sign = true;
+            CHECK(Near(EvaluateSignal(r, tr).at(240), 200.0, 1e-1));
+            r.keep_sign = false;
+        }
+
+        // A world spin about Y (a character turning around) at 200 deg/s from 0 past 180: Y
+        // stays continuous (no fold at 90), X and Z stay still.
+        {
+            std::vector<BoneTrack> tr = {rot_track([&](double t) { return axis_q(200.0 * t, 0, 1, 0); },
+                                                   [&](double) { return Quatd{}; })};
+            r.reference = Reference::Floor;
+            r.measure = Measure::Position;
+            r.axis = Axis::Y;
+            const std::vector<double> v = EvaluateSignal(r, tr);
+            bool cont = true;
+            for (size_t i = 0; i < v.size(); ++i)
+                if (!Near(v[i], 200.0 * static_cast<double>(i) / 240.0, 1e-6)) cont = false;
+            CHECK(cont);
+            CHECK(Near(v.at(240), 200.0, 1e-6));
+            r.measure = Measure::Speed;
+            r.keep_sign = true;
+            CHECK(Near(EvaluateSignal(r, tr).at(120), 200.0, 1e-3));  // right at 100 deg
+            CHECK(Near(EvaluateSignal(r, tr).at(108), 200.0, 1e-3));  // 90 deg
+            double mx = 0.0;
+            for (Axis a : {Axis::X, Axis::Z}) {
+                r.axis = a;
+                for (double x : EvaluateSignal(r, tr)) mx = std::max(mx, std::fabs(x));
+            }
+            CHECK(mx < 1e-3);
+            r.keep_sign = false;
+            r.reference = Reference::Parent;
+        }
+
+        // A toe flick (a bump on X, 60 deg peak over 0.2 s): total speed above 300 deg/s fires once.
+        {
+            auto ang = [](double t) { return 60.0 * std::exp(-0.5 * (t - 1.0) * (t - 1.0) / (0.05 * 0.05)); };
+            std::vector<BoneTrack> tr = {rot_track([&](double) { return Quatd{}; },
+                                                   [&](double t) { return axis_q(ang(t), 1, 0, 0); })};
+            Block b;
+            Condition c;
+            c.signal.quantity = Quantity::Rotation;
+            c.signal.bones = {0};
+            c.signal.reference = Reference::Parent;
+            c.signal.measure = Measure::Speed;
+            c.signal.axis = Axis::Total;
+            c.dir = Direction::Above;
+            c.threshold = 300.0;
+            b.conditions = {c};
+            b.cooldown_ms = 250.0;
+            auto ev = TracedDetect({b}, tr);
+            CHECK(ev.size() == 1 && ev[0].time_s > 0.85 && ev[0].time_s < 0.95);  // on the way up
+            CHECK(ev.size() == 1 && Near(ev[0].speed, 300.0, 1e-6));  // the turning rate at the crossing
+            // Without orientations (an offline dump): the signal does not fit, nothing fires.
+            std::vector<BoneTrack> bare = {Track(2.0, 240.0, [](double) { return 0.0; })};
+            CHECK(EvaluateSignal(c.signal, bare).empty());
+            const DetectionTrace t = DetectTrace({b}, bare);
+            CHECK(!t.blocks.at(0).ran && t.events.empty());
+            // A rotation reads one bone, and a reference of its parent or the world only.
+            c.signal.reference = Reference::Bones;
+            CHECK(EvaluateSignal(c.signal, tr).empty());
+            // A point has no parent reference.
+            SignalSpec p;
+            p.bones = {0};
+            p.reference = Reference::Parent;
+            CHECK(EvaluateSignal(p, tr).empty());
+        }
+    }
+
     if (g_fails == 0) std::printf("bone_events: all tests passed\n");
     return g_fails == 0 ? 0 : 1;
 }

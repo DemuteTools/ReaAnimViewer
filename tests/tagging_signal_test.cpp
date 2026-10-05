@@ -86,6 +86,66 @@ int main()
         CHECK(IsAngleSignal(Spec(Quantity::Yaw, Measure::Position)));
         CHECK(!IsAngleSignal(Spec(Quantity::Point, Measure::Position)));
 
+        // 10-4 follow-up: joint angle and rotation are in degrees.
+        CHECK(IsAngleSignal(Spec(Quantity::InteriorAngle, Measure::Position)));
+        CHECK(IsAngleSignal(Spec(Quantity::Rotation, Measure::Speed)));
+        CHECK(UnitOf(Spec(Quantity::InteriorAngle, Measure::Position)) == SignalUnit::Degree);
+        CHECK(UnitOf(Spec(Quantity::InteriorAngle, Measure::Acceleration)) == SignalUnit::DegreePerSecond2);
+        CHECK(UnitOf(Spec(Quantity::Rotation, Measure::Speed)) == SignalUnit::DegreePerSecond);
+        CHECK(UnitOf(Spec(Quantity::Rotation, Measure::Position)) == SignalUnit::Degree);
+        CHECK(FormatDisplay(Spec(Quantity::Rotation, Measure::Speed), 300.0) == "300 \xC2\xB0/s");
+
+        // The kind chip: Bone / Joint angle / Rotation; older flexion and yaw show as Bend / Turn.
+        CHECK(ConditionKindOf(Spec(Quantity::Point, Measure::Position)) == ConditionKind::Bone);
+        CHECK(ConditionKindOf(Spec(Quantity::InteriorAngle, Measure::Position)) == ConditionKind::JointAngle);
+        CHECK(ConditionKindOf(Spec(Quantity::Rotation, Measure::Position)) == ConditionKind::Rotation);
+        CHECK(ConditionKindOf(Spec(Quantity::JointAngle, Measure::Position)) == ConditionKind::Bend);
+        CHECK(ConditionKindOf(Spec(Quantity::Yaw, Measure::Position)) == ConditionKind::Turn);
+        CHECK(std::string(ConditionKindLabel(ConditionKind::JointAngle)) == "Joint angle");
+        CHECK(std::string(MeasureLabelFor(Spec(Quantity::InteriorAngle, Measure::Position), Measure::Position)) ==
+              "angle");
+        CHECK(std::string(MeasureLabelFor(Spec(Quantity::InteriorAngle, Measure::Speed), Measure::Speed)) ==
+              "angle speed");
+        CHECK(std::string(MeasureLabelFor(Spec(Quantity::Point, Measure::Position), Measure::Position)) == "Position");
+        {
+            Condition c = DefaultCondition();
+            c.signal.bones = {4};  // the left knee role
+            c.threshold = 0.07;
+            SetConditionKind(c, ConditionKind::JointAngle);  // the bone stays, the rest resets
+            CHECK(c.signal.quantity == Quantity::InteriorAngle && c.signal.bones == std::vector<int>{4});
+            CHECK(c.signal.measure == Measure::Position && c.dir == Direction::Below && Near(c.threshold, 90.0));
+            SetConditionKind(c, ConditionKind::Rotation);
+            CHECK(c.signal.quantity == Quantity::Rotation && c.signal.bones == std::vector<int>{4});
+            CHECK(c.signal.reference == Reference::Parent && c.signal.measure == Measure::Speed &&
+                  c.signal.axis == Axis::Total && c.dir == Direction::Above && Near(c.threshold, 300.0));
+            SetConditionKind(c, ConditionKind::Bone);
+            CHECK(c.signal.quantity == Quantity::Point && c.signal.bones == std::vector<int>{4} &&
+                  c.signal.reference == Reference::Floor && Near(c.threshold, DefaultCondition().threshold));
+            Condition bend;
+            bend.signal.quantity = Quantity::JointAngle;
+            bend.signal.bones = {6, 4, 0};
+            SetConditionKind(bend, ConditionKind::JointAngle);  // a bend keeps its middle bone
+            CHECK(bend.signal.quantity == Quantity::InteriorAngle && bend.signal.bones == std::vector<int>{4});
+            Condition empty;
+            empty.signal.bones.clear();
+            SetConditionKind(empty, ConditionKind::Rotation);  // no bone: the default one
+            CHECK(empty.signal.bones.size() == 1);
+        }
+        // A rotation's axis: total only for speed / acceleration; an old angle on total reads as X.
+        CHECK(!RotationAxisOffered(Measure::Position, Axis::Total) && RotationAxisOffered(Measure::Speed, Axis::Total));
+        CHECK(RotationAxisOffered(Measure::Position, Axis::Z) && !RotationAxisOffered(Measure::Speed, Axis::Vertical));
+        {
+            SignalSpec r = Spec(Quantity::Rotation, Measure::Position);
+            r.axis = Axis::Total;
+            CHECK(RotationAxisOf(r) == Axis::X);
+            r.measure = Measure::Speed;
+            CHECK(RotationAxisOf(r) == Axis::Total);
+            r.axis = Axis::Vertical;
+            CHECK(RotationAxisOf(r) == Axis::Y);
+        }
+        CHECK(std::string(RotationReferenceLabel(Reference::Parent)) == "its parent" &&
+              std::string(RotationReferenceLabel(Reference::Floor)) == "the world");
+
         Block b = DefaultBlock("Step", 0x1000000u | 0x5F9EDDu);
         CHECK(b.enabled && b.marker == "Step" && b.conditions.size() == 1 && b.landing == Landing::Crossing);
         CHECK(b.conditions[0].signal.bones == std::vector<int>{kDefaultConditionBone});

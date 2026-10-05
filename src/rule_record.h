@@ -49,6 +49,9 @@
 //     still holds the value it had after the read: an edit wins.
 //   - `color` is "none" or "#RRGGBB" (Block::color = 0x1000000 | 0xRRGGBB).
 //   - `land` is "cross" or "peak:<condition>:max|min".
+//   - 10-4 follow-up: `q=angle` (the interior angle at a joint: `bones` = the joint alone,
+//     its parent and child found at binding) and `q=rot` (a bone's rotation: `ref=parent`
+//     or `ref=floor` = the world, `axis=x|y|z|total`). `q=joint` and `q=yaw` read as before.
 //   - `on=0` on a `block` line = the rule is switched off (absent = on, story 10-3).
 //   - story 10-4: an `event` line writes `block`, `strength` and `speed` only when it was read
 //     with them (or made by this version), so a record written without them comes back as
@@ -101,8 +104,21 @@ std::vector<int> BoneRefsUsed(const std::vector<Block>& blocks);
 // -1 = unmapped), a bone key by its raw name in bone_names (exact, else the same
 // NormalizeBoneName). False when one cannot be bound; `missing` then lists their names,
 // each once, ", "-separated (an unknown role key is reported, never dropped).
+//
+// 10-4 follow-up: an interior-angle signal (Quantity::InteriorAngle) whose record names one
+// bone (the joint) binds to three: {its parent, the joint, its first child in skeleton
+// order}, from bone_parents (one per bone, -1 = root, SceneBone::parentIdx). A joint with
+// no parent or no child (a root, a leaf) does not bind: it is listed as "<name> (not a
+// joint)". Without bone_parents (the 4-argument form) no interior angle binds.
+bool BindBoneRefs(std::vector<Block>& blocks, const std::vector<int>& role_to_bone,
+                  const std::vector<std::string>& bone_names, const std::vector<int>& bone_parents,
+                  std::string* missing);
 bool BindBoneRefs(std::vector<Block>& blocks, const std::vector<int>& role_to_bone,
                   const std::vector<std::string>& bone_names, std::string* missing);
+// What BindBoneRefs would list as missing, each once, in order (the blocks are not changed).
+std::vector<std::string> MissingBoneRefs(const std::vector<Block>& blocks, const std::vector<int>& role_to_bone,
+                                         const std::vector<std::string>& bone_names,
+                                         const std::vector<int>& bone_parents);
 
 // ---- The record ------------------------------------------------------------------------
 
@@ -233,14 +249,16 @@ bool AnalyseEqual(const AnalyseOptions& a, const AnalyseOptions& b);
 // ---- Names -----------------------------------------------------------------------------
 
 // The bone part of a signal's name, from its bone references: "L heel+toe" (a point on
-// several bones of one side), "L knee" (a joint angle: its middle bone), "L foot" (yaw
-// heel -> toe of one side), else the first bone's label.
+// several bones of one side), "L knee" (a joint or interior angle: its middle bone, or the
+// joint alone in a record), "L foot" (yaw heel -> toe of one side), else the first bone's label.
 std::string SignalBoneLabel(const SignalSpec& spec);
 
 // The signal's name: bone label + the quantity word from its menus. Position, vertical,
 // from the floor = "height"; speed = "speed" / "vertical speed" / "horizontal speed" /
-// "X speed"; joint angle = "bend" (+ " speed"); yaw = "turn" (+ " speed").
-// E.g. "L heel+toe height", "L knee bend speed", "hips turn speed".
+// "X speed"; joint angle = "bend" (+ " speed"); yaw = "turn" (+ " speed"); interior angle =
+// "angle" (+ " speed"); rotation = "rotation X|Y|Z" (+ " speed"), "rotation speed" on total.
+// E.g. "L heel+toe height", "L knee bend speed", "hips turn speed", "L knee angle",
+// "L toe rotation X speed".
 std::string SignalName(const SignalSpec& spec, const std::string& bone_label);
 
 // "C"-locale number text: the shortest form that reads back exactly (non-finite = "0").

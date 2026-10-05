@@ -133,32 +133,45 @@ std::string RulesResourceRoot()
     return p ? p : "";
 }
 
-std::vector<std::string> ItemBoneNames(MediaItem* item)
+SkeletonBones SkeletonBonesOf(const SceneSkeleton& skel)
 {
-    std::vector<std::string> names;
+    SkeletonBones sk;
+    sk.names.reserve(skel.bones.size());
+    sk.parents.reserve(skel.bones.size());
+    for (const SceneBone& b : skel.bones) {
+        sk.names.push_back(b.name);
+        sk.parents.push_back(b.parentIdx);
+    }
+    return sk;
+}
+
+SkeletonBones ItemSkeletonBones(MediaItem* item)
+{
+    SkeletonBones sk;
     try {
         const std::string path = AnimPathOf(RavTakeOf(item));
-        if (path.empty()) return names;
+        if (path.empty()) return sk;
         const std::shared_ptr<const CpuAsset> asset = AcquireCpuAsset(path);
-        if (!asset) return names;
-        for (const SceneBone& b : asset->skeleton.bones) names.push_back(b.name);
+        if (!asset) return sk;
+        sk = SkeletonBonesOf(asset->skeleton);
     } catch (...) {
-        names.clear();
+        sk = SkeletonBones{};
     }
-    return names;
+    return sk;
 }
 
 bool CheckItemBinding(MediaItem* item, const std::vector<Block>& blocks, std::string* missing)
 {
     if (missing) missing->clear();
     try {
-        const std::vector<std::string> names = ItemBoneNames(item);
+        const SkeletonBones sk = ItemSkeletonBones(item);
+        const std::vector<std::string>& names = sk.names;
         if (names.empty()) {
             if (missing) *missing = "the animation file did not load";
             return false;
         }
         std::vector<Block> bound = blocks;
-        return BindBoneRefs(bound, GetRoleMapping(RulesResourceRoot(), names), names, missing);
+        return BindBoneRefs(bound, GetRoleMapping(RulesResourceRoot(), names), names, sk.parents, missing);
     } catch (...) {
         if (missing) *missing = "the item's bones could not be read";
         return false;

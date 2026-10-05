@@ -137,7 +137,8 @@ struct ItemRun {
 
 // Dev harness: writes every bone's track (240 Hz, metres, model Y up) and the REF times to
 // <project folder>/RAV_detection_dump/<file>.csv, so detection can be tuned offline on
-// the exact data REAPER measured. Returns the file path, "" on failure. No-throw.
+// the exact data REAPER measured. Positions only (no orientations): rotation conditions
+// cannot be tuned offline. Returns the file path, "" on failure. No-throw.
 std::string DumpTracks(const CpuAsset& asset, const std::string& label, const std::vector<double>& refs,
                        double lo, double hi)
 {

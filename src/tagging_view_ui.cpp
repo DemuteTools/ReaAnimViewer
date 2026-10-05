@@ -1359,6 +1359,7 @@ bool g_pm_focus_search = false;  // the search box takes the keyboard on the nex
 bool g_pm_focus_name = false;    // ...the name field
 bool g_pm_search_active = false; // the search box had the keyboard last frame (Del edits its text)
 bool g_pm_close = false;         // close the popup on the next frame (after a Load)
+bool g_pm_arrowed = false;       // Up / Down this frame: the walked folder's submenu opens
 int  g_pm_drawn_frame = -10;     // the last frame the field (and so the popup) was drawn
 // The item a Save / Save as confirm or name field began on: confirmed on another item (the
 // playhead moved meanwhile), nothing is saved.
@@ -1562,7 +1563,6 @@ void PmSubmitName()
         std::string saved, err;
         if (TaggingSavePreset("", name, &saved, &err)) {
             PmStatus((saved.empty() ? name : saved) + " saved to User.");
-            g_pm.cascade = PresetCascade::User;
             g_pm.sel = GetTaggingModel().preset_id;
         } else {
             PmStatus(err.empty() ? "The preset could not be saved." : err);
@@ -1596,14 +1596,15 @@ void ClippedText(ImDrawList* dl, float x0, float x1, float y, ImU32 col, const c
 }
 
 // One preset row: the tick (the item's preset), the name, the padlock (Factory), the source tag
-// while searching. Click selects, double-click loads, right-click opens its menu.
-void PresetRow(const TaggingModel& m, const PresetInfo& p, bool with_source, float indent)
+// while searching. Click selects, double-click loads, right-click opens its menu. `row_w` > 0
+// fixes the width (a submenu sizes itself to its rows), else the row fills the window.
+void PresetRow(const TaggingModel& m, const PresetInfo& p, bool with_source, float indent, float row_w = 0.0f)
 {
     ImGui::PushID(p.id.c_str());
     const bool sel = g_pm.sel == p.id;
     const float rh = ImGui::GetFrameHeight();
     const ImVec2 r0 = ImGui::GetCursorScreenPos();
-    const float rw = ImGui::GetContentRegionAvail().x;
+    const float rw = row_w > 0.0f ? row_w : ImGui::GetContentRegionAvail().x;
     if (ImGui::Selectable("##prow", sel, ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_NoAutoClosePopups,
                           ImVec2(rw, rh))) {
         g_pm.sel = p.id;
@@ -1637,26 +1638,41 @@ void PresetRow(const TaggingModel& m, const PresetInfo& p, bool with_source, flo
     ImGui::PopID();
 }
 
-// A cascade row: "Factory (n)" with its chevron (right when closed, down when open).
-void CascadeRow(bool factory, int count)
+// A row's width in a cascade submenu (DM-XYZ-Pad's ROW_W).
+constexpr float kPresetRowW = 260.0f;
+
+// One cascade entry, as DM-XYZ-Pad: "Factory (n) >" opens a submenu on hover with its rows (or
+// the empty text), then the folder they come from. True while its submenu is open.
+bool PresetCascadeMenu(const TaggingModel& m, const std::vector<PresetInfo>& presets, bool factory)
 {
-    const PresetCascade me = factory ? PresetCascade::Factory : PresetCascade::User;
-    const bool open = g_pm.cascade == me;
-    const float rh = ImGui::GetFrameHeight();
-    const ImVec2 r0 = ImGui::GetCursorScreenPos();
-    const float rw = ImGui::GetContentRegionAvail().x;
-    if (ImGui::Selectable(factory ? "##cascf" : "##cascu", open, ImGuiSelectableFlags_NoAutoClosePopups, ImVec2(rw, rh)))
-        g_pm.cascade = open ? PresetCascade::None : me;
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const float ty = r0.y + (rh - ImGui::GetTextLineHeight()) * 0.5f;
-    dl->AddText(ImVec2(r0.x + 6.0f, ty), ui::kText, CascadeLabel(factory, count).c_str());
-    const ImVec2 c(r0.x + rw - 10.0f, r0.y + rh * 0.5f);
-    if (open)
-        dl->AddTriangleFilled(ImVec2(c.x - 3.5f, c.y - 2.0f), ImVec2(c.x + 3.5f, c.y - 2.0f), ImVec2(c.x, c.y + 2.5f),
-                              ui::kMuted);
-    else
-        dl->AddTriangleFilled(ImVec2(c.x - 2.0f, c.y - 3.5f), ImVec2(c.x - 2.0f, c.y + 3.5f), ImVec2(c.x + 2.5f, c.y),
-                              ui::kMuted);
+    const std::string label = CascadeLabel(factory, CountPresets(presets, factory)) + (factory ? "##pcf" : "##pcu");
+    if (!ImGui::BeginMenu(label.c_str())) return false;
+    const std::vector<int> list = PresetMenuRows(presets, "", factory ? PresetCascade::Factory : PresetCascade::User);
+    if (list.empty()) {
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + kPresetRowW);
+        ImGui::TextDisabled("%s", EmptyCascadeText(factory));
+        ImGui::PopTextWrapPos();
+    }
+    for (int i : list) PresetRow(m, presets[static_cast<size_t>(i)], /*with_source=*/false, 4.0f, kPresetRowW);
+    ImGui::Separator();
+    if (factory) {
+        ImGui::TextDisabled("Built into ReaAnimViewer");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+            ImGui::SetTooltip("Factory presets ship with the extension and update with it (read-only)");
+    } else {
+        // The folder, shortened from the start (its end is what tells folders apart).
+        const std::string dir = UserPresetDir(RulesResourceRoot());
+        std::string shown = dir;
+        while (shown.size() > 4 && ImGui::CalcTextSize(shown.c_str()).x > kPresetRowW) {
+            shown.erase(0, 4);
+            while (!shown.empty() && (static_cast<unsigned char>(shown[0]) & 0xC0) == 0x80) shown.erase(0, 1);
+        }
+        if (shown != dir) shown = "..." + shown;
+        ImGui::TextDisabled("%s", shown.c_str());
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("%s", dir.c_str());
+    }
+    ImGui::EndMenu();
+    return true;
 }
 
 bool AmberButton(const char* label)
@@ -1701,11 +1717,9 @@ void PresetMenuKeys(const std::vector<std::string>& visible)
     }
     const bool down = ImGui::IsKeyPressed(ImGuiKey_DownArrow, true), up = ImGui::IsKeyPressed(ImGuiKey_UpArrow, true);
     if (down || up) {
-        if (visible.empty()) {
-            if (g_pm_query[0] == '\0' && g_pm.cascade == PresetCascade::None) g_pm.cascade = PresetCascade::Factory;
-            return;
-        }
+        if (visible.empty()) return;
         g_pm.sel = StepPresetSelection(visible, g_pm.sel, down ? 1 : -1);
+        g_pm_arrowed = true;
         return;
     }
     // Only a row the list shows (not one filtered out, or under a closed cascade).
@@ -1724,8 +1738,14 @@ void DrawPresetMenu(const TaggingModel& m, float menu_w)
     const float inner_w = menu_w - ImGui::GetStyle().WindowPadding.x * 2.0f;
     const bool busy = g_pm.mode == PresetMenuMode::Confirm;
 
-    // The rows shown, as the keys see them (last frame's query and cascade).
-    const std::vector<int> rows = PresetMenuRows(presets, g_pm_query, g_pm.cascade);
+    // The rows the keys walk (last frame's query and submenu): the search hits, else the open
+    // submenu, else the selection's folder, else Factory (DM-XYZ-Pad).
+    PresetCascade walk = g_pm.cascade;
+    if (walk == PresetCascade::None) {
+        const PresetInfo* s0 = g_pm.sel.empty() ? nullptr : PresetById(g_pm.sel);
+        walk = (s0 && !s0->factory) ? PresetCascade::User : PresetCascade::Factory;
+    }
+    const std::vector<int> rows = PresetMenuRows(presets, g_pm_query, walk);
     std::vector<std::string> visible;
     for (int i : rows) visible.push_back(presets[static_cast<size_t>(i)].id);
     if (!g_pm.sel.empty() && !PresetById(g_pm.sel)) g_pm.sel.clear();  // deleted meanwhile
@@ -1750,18 +1770,17 @@ void DrawPresetMenu(const TaggingModel& m, float menu_w)
         if (hits.empty()) ImGui::TextDisabled("%s", kNoPresetMatches);
         for (int i : hits) PresetRow(m, presets[static_cast<size_t>(i)], /*with_source=*/true, 4.0f);
     } else {
-        for (int src = 0; src < 2; ++src) {
-            const bool factory = src == 0;
-            CascadeRow(factory, CountPresets(presets, factory));
-            if (g_pm.cascade != (factory ? PresetCascade::Factory : PresetCascade::User)) continue;
-            const std::vector<int> list = PresetMenuRows(presets, "", g_pm.cascade);
-            if (list.empty()) {
-                ImGui::Indent(16.0f);
-                WrappedText(ui::kFaint, EmptyCascadeText(factory), inner_w - 16.0f);
-                ImGui::Unindent(16.0f);
-            }
-            for (int i : list) PresetRow(m, presets[static_cast<size_t>(i)], /*with_source=*/false, 14.0f);
+        // Factory (n) > / User (n) >: submenus that open on hover.
+        // Up / Down with no submenu open: open the walked folder's, so the selection shows.
+        if (g_pm_arrowed && g_pm.cascade == PresetCascade::None) {
+            const bool f = walk == PresetCascade::Factory;
+            ImGui::OpenPopup((CascadeLabel(f, CountPresets(presets, f)) + (f ? "##pcf" : "##pcu")).c_str());
         }
+        g_pm_arrowed = false;
+        PresetCascade open = PresetCascade::None;
+        if (PresetCascadeMenu(m, presets, /*factory=*/true)) open = PresetCascade::Factory;
+        if (PresetCascadeMenu(m, presets, /*factory=*/false)) open = PresetCascade::User;
+        g_pm.cascade = open;
     }
     ImGui::EndDisabled();
     ImGui::Separator();
@@ -2013,7 +2032,6 @@ void TaggingRunPendingDialog(HWND__* owner)
             PresetInfo info;
             const std::string name = FindPreset(root, id, &info) ? info.name : id;
             PmStatus(name + " imported.");
-            g_pm.cascade = PresetCascade::User;
             g_pm.sel = id;
         } else {
             PmStatus(err.empty() ? "The file could not be imported." : err);

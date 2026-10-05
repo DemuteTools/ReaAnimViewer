@@ -2844,13 +2844,16 @@ void DrawFooter(const TaggingModel& m)
         const float commit_w =
             std::max(60.0f, ImGui::GetContentRegionAvail().x - cancel_w - ImGui::GetStyle().ItemSpacing.x);
         char label[64];
-        std::snprintf(label, sizeof(label), "Commit to %d item%s##tagapply", run, run == 1 ? "" : "s");
-        if (run == 0) ImGui::BeginDisabled();
+        const bool nothing = run > 0 && m.sel_to_commit == 0;  // every item's markers are up to date
+        if (nothing) std::snprintf(label, sizeof(label), "Nothing to commit##tagapply");
+        else std::snprintf(label, sizeof(label), "Commit to %d item%s##tagapply", run, run == 1 ? "" : "s");
+        if (run == 0 || nothing) ImGui::BeginDisabled();
         if (ui::PrimaryButton(label, ImVec2(commit_w, 0.0f))) Later([]() { CommitTaggingMarkers(); });
-        if (run == 0) ImGui::EndDisabled();
+        if (run == 0 || nothing) ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip(run == 0 ? "Select the items to tag (items with rules) in REAPER."
-                                       : "Writes the markers of every selected item that has rules, each with its own "
+            ImGui::SetTooltip(run == 0  ? "Select the items to tag (items with rules) in REAPER."
+                              : nothing ? "The selected items' markers are up to date: no preview to commit."
+                                        : "Writes the markers of every selected item that has rules, each with its own "
                                          "rules,\nand removes their previews. Replaces only RAV's markers. One undo point.");
         ImGui::SameLine();
         if (with_rules == 0) ImGui::BeginDisabled();

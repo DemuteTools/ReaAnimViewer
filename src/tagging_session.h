@@ -74,6 +74,7 @@ struct TaggingModel {
     int sel_count = 0;
     int sel_without_rules = 0;
     int sel_roles_skipped = 0;
+    int sel_to_commit = 0;    // selected items Commit would change (never committed, previews, other option)
     int sel_cancellable = 0;  // 10-4 fb-4: selected items Cancel acts on (rules, a snapshot or previews)
 };
 

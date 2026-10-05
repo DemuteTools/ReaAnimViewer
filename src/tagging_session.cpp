@@ -258,7 +258,7 @@ void RunDetection()
 void RefreshSelection()
 {
     TaggingModel& m = g.model;
-    m.sel_count = m.sel_without_rules = m.sel_roles_skipped = m.sel_cancellable = 0;
+    m.sel_count = m.sel_without_rules = m.sel_roles_skipped = m.sel_cancellable = m.sel_to_commit = 0;
     const int n = CountSelectedMediaItems(nullptr);
     m.sel_count = n;
     for (int i = 0; i < n; ++i) {
@@ -277,8 +277,15 @@ void RefreshSelection()
         const std::vector<std::string>& names = sk.names;
         std::vector<Block> probe = EnabledOnly(rd.rules.blocks);
         if (names.empty() ||
-            !BindBoneRefs(probe, GetRoleMapping(RulesResourceRoot(), names), names, sk.parents, nullptr))
+            !BindBoneRefs(probe, GetRoleMapping(RulesResourceRoot(), names), names, sk.parents, nullptr)) {
             ++m.sel_roles_skipped;
+            continue;
+        }
+        // Something to commit: never committed, previews pending, or committed under another
+        // option (every gesture and option change rewrites the previews, so no preview on a
+        // committed item means its result is the committed one).
+        if (!rd.rules.has_applied || HasPreviews(rd.rules) || rd.rules.applied.mode != GetTaggingMarkerMode())
+            ++m.sel_to_commit;
     }
 }
 
@@ -306,10 +313,13 @@ void TaggingSessionFrame(MediaItem* item, const std::string& path)
                 g.have_tracks = false;
                 g.stamp_checked_at = -1.0;
                 const int sc = m.sel_count, snr = m.sel_without_rules, srs = m.sel_roles_skipped;
+                const int stc = m.sel_to_commit, sca = m.sel_cancellable;
                 m = TaggingModel{};
                 m.sel_count = sc;
                 m.sel_without_rules = snr;
                 m.sel_roles_skipped = srs;
+                m.sel_to_commit = stc;
+                m.sel_cancellable = sca;
             }
         }
         const int count = GetProjectStateChangeCount(nullptr);

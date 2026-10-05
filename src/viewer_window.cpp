@@ -279,6 +279,10 @@ constexpr float kNavCubeMargin = 12.0f;
 // (same aspect as the FX output, so the same framing), then copied into the frame rect of
 // the window. Session state; freed with the GL context in StopRendering.
 constexpr UINT kMsgRunVideoCommands = WM_APP + 0x31;  // runs the Video view's queued writes
+// Story 10-3b -- the Tagging view's preset Import / Export pickers (a modal loop: window
+// procedure only); the flag stops a second post meanwhile.
+constexpr UINT kMsgTaggingDialog = WM_APP + 0x33;
+bool            g_tagging_dialog_pending = false;
 GpuFramebuffer  g_video_fbo;
 GpuRenderbuffer g_video_color_rb;
 GpuRenderbuffer g_video_depth_rb;
@@ -815,6 +819,8 @@ void RenderTick()
     // inside this tick (a message box or a plug-in load may run a modal loop).
     if (VideoViewHasPending() && !g_video_post_pending && g_hwnd)
         g_video_post_pending = PostMessageW(g_hwnd, kMsgRunVideoCommands, 0, 0) != FALSE;
+    if (TaggingHasPendingDialog() && !g_tagging_dialog_pending && g_hwnd)
+        g_tagging_dialog_pending = PostMessageW(g_hwnd, kMsgTaggingDialog, 0, 0) != FALSE;
 
     ++g_frame_count;
     LARGE_INTEGER now;
@@ -1696,6 +1702,7 @@ void StopRendering()
     TaggingSessionReset();
     g_drag_video = false;
     g_video_post_pending = false;
+    g_tagging_dialog_pending = false;  // story 10-3b: a post lost with the window
     g_current_load_ok = false;
 
     // The renderer's asset died with the context, so forget which item it showed: a
@@ -1720,7 +1727,11 @@ bool ImGuiWantsMouse()
 }
 
 // Spec 11-fb-17 -- the viewer's key state right now: a text field active, a key being recorded.
-bool TextInputNow() { return g_imgui_ready && ImGui::GetIO().WantTextInput; }
+// Story 10-3b: the Tagging view's preset menu open counts as a text field (it takes every key).
+bool TextInputNow()
+{
+    return (g_imgui_ready && ImGui::GetIO().WantTextInput) || (TaggingViewActive() && TaggingPresetMenuOpen());
+}
 bool ViewerTakesCharNow() { return ViewerTakesChar(g_key_route, ShortcutRecordingId() >= 0, TextInputNow()); }
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
@@ -1912,7 +1923,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         // Story 10-3: Esc during a Tagging view drag cancels it (ImGui has the key already).
         if (wp == VK_ESCAPE && TaggingViewActive() && TaggingGestureActive()) return 0;
-        if (g_imgui_ready && ImGui::GetIO().WantTextInput) return 0;
+        // A text field, or the Tagging view's preset menu (story 10-3b), takes every key.
+        if (TextInputNow()) return 0;
         const int action =
             ShortcutActionForKey(static_cast<unsigned>(wp), ctrl, shift, alt, VideoViewActive(), TaggingViewActive());
         if (action < 0) {
@@ -2012,6 +2024,22 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         return 0;
 
+    case kMsgTaggingDialog: {
+        // Story 10-3b -- the preset Import / Export picker, owned by the top-level window (the
+        // viewer may be a docked child of REAPER's docker).
+        g_tagging_dialog_pending = false;
+        HWND owner = g_hwnd ? GetAncestor(g_hwnd, GA_ROOT) : nullptr;
+        if (!owner) owner = g_hwnd;
+        try {
+            TaggingRunPendingDialog(owner);
+        } catch (const std::exception& e) {
+            LogError("Preset import / export failed: %s", e.what());
+        } catch (...) {
+            LogError("Preset import / export failed");
+        }
+        return 0;
+    }
+
     case kMsgLocateTextures:
         g_locate_pending = false;
         try {
@@ -2099,7 +2127,7 @@ int ViewerTranslateAccel(MSG* msg, accelerator_register_t* /*ctx*/)
     in.video_view = VideoViewActive();
     in.tagging_view = TaggingViewActive();  // Story 10-4: E / Del
     in.recording  = ShortcutRecordingId() >= 0;
-    in.text_input = g_imgui_ready && ImGui::GetIO().WantTextInput;
+    in.text_input = TextInputNow();  // story 10-3b: the preset menu open counts
     // Esc closes either; Story 10-3: Esc also cancels a Tagging view drag.
     in.popup_open = ShortcutsPopupOpen() || VideoDeleteConfirmOpen() || (TaggingViewActive() && TaggingGestureActive());
     in.confirm_open = VideoDeleteConfirmOpen();  // Enter confirms the delete

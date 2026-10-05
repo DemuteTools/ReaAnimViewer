@@ -91,3 +91,8 @@ add_test(NAME tagging_signal COMMAND tagging_signal_test)
 add_executable(event_list_test event_list_test.cpp ../src/event_list.cpp ../src/rule_record.cpp ../src/tagging_signal.cpp)
 target_include_directories(event_list_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME event_list COMMAND event_list_test)
+
+# Story 10-3b -- the Tagging view's preset menu logic (src/preset_menu_model.h).
+add_executable(preset_menu_model_test preset_menu_model_test.cpp ../src/preset_menu_model.cpp)
+target_include_directories(preset_menu_model_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME preset_menu_model COMMAND preset_menu_model_test)

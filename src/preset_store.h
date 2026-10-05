@@ -61,15 +61,16 @@ bool LoadPreset(const std::string& root, const std::string& id, PresetData* out,
 bool SavePreset(const std::string& root, const std::string& id, const PresetData& content, int* new_version,
                 std::string* err);
 // A new user preset named `name`, version 1. Refused on an empty name or a name already
-// used by a preset.
+// used by a user preset (any case). A factory preset's name is free: the user's version.
 bool SavePresetAs(const std::string& root, const std::string& name, const PresetData& content, std::string* new_id,
                   std::string* err);
-// Changes a user preset's name (its id stays). Refused on a factory preset.
+// Changes a user preset's name (its id stays). Refused on a factory preset, or on a name
+// another user preset has (any case).
 bool RenamePreset(const std::string& root, const std::string& id, const std::string& new_name, std::string* err);
 // Refused on a factory preset.
 bool DeletePreset(const std::string& root, const std::string& id, std::string* err);
-// Copies a .ravpreset file into the user folder (a new id; the name gets " (2)"... when
-// taken). Refused when the file is not a preset.
+// Copies a .ravpreset file into the user folder (a new id; the name gets " (2)"... when a
+// user preset has it). Refused when the file is not a preset.
 bool ImportPreset(const std::string& root, const std::string& src_path, std::string* new_id, std::string* err);
 // Copies a preset (factory or user) out to `dest_path`, as written.
 bool ExportPreset(const std::string& root, const std::string& id, const std::string& dest_path, std::string* err);
@@ -94,5 +95,12 @@ bool KeepCurrent(const std::string& root, ItemRules& rules, std::string* err);
 // item's blocks, options and analyse settings, so it is no longer edited. The item's
 // rules do not change.
 void AdoptSavedPreset(ItemRules& rules, const PresetData& saved);
+// Story 10-3b -- Save / Save as from an item: `rules`' options, analyse settings and blocks are
+// written to a user preset (`preset_id` non-empty: SavePreset over it; empty: SavePresetAs
+// `name`), read back, and `rules` adopts it (AdoptSavedPreset with the id, version and name
+// as written). `saved_id` / `saved_name` get them. False with `err` (and `rules` untouched)
+// when the file could not be written or read back.
+bool SaveRulesAsPreset(const std::string& root, ItemRules& rules, const std::string& preset_id, const std::string& name,
+                       std::string* saved_id, std::string* saved_name, std::string* err);
 
 }  // namespace rav

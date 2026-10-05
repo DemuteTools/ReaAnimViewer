@@ -86,6 +86,16 @@ bool CheckItemBinding(MediaItem* item, const std::vector<Block>& blocks, std::st
 // `missing` then names them (the caller says so; Apply skips the item).
 bool SetUpPresetOnItem(MediaItem* item, const std::string& preset_id, std::string* missing, std::string* err);
 
+// Story 10-3b -- Save / Save as: the item's options, analyse settings and blocks are written
+// to a user preset (`preset_id` non-empty: that preset is overwritten and its version goes
+// up; empty: a new preset named `name`), then the item adopts it (AdoptSavedPreset: it is no
+// longer edited), one undo point "RAV: Save preset <name>". Writing the file is no undo
+// point: Ctrl+Z restores the item's previous copy, never the file. `saved_id` / `saved_name`
+// get the preset as written. False with `err` when the file or the item could not be written
+// (the file stays written when only the item write failed).
+bool SaveItemAsPreset(MediaItem* item, const std::string& preset_id, const std::string& name, std::string* saved_id,
+                      std::string* saved_name, std::string* err);
+
 // Legacy band: Update (the preset as it is now replaces the item's rules) or Keep current.
 bool UpdateItemFromPreset(MediaItem* item, std::string* err);
 bool KeepItemCurrent(MediaItem* item, std::string* err);

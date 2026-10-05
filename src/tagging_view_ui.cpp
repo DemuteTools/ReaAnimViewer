@@ -18,7 +18,9 @@
 
 #include "bone_roles.h"
 #include "event_list.h"
+#include "file_dialogs.h"
 #include "item_rules.h"
+#include "preset_menu_model.h"
 #include "preset_store.h"
 #include "reaper_api.h"
 #include "rule_record.h"
@@ -1342,32 +1344,693 @@ namespace {
 
 // ---- Panel: header -----------------------------------------------------------------------------
 
-void PresetMenuItems()
+// ---- Panel: the preset field and its menu (story 10-3b) ---------------------------------------
+// DM-XYZ-Pad's preset menu (lib/ui/preset_menu.lua) as an ImGui popup: search, Factory / User
+// cascade, rows (click selects, double-click / Enter loads, right-click menu, F2 / Del / Esc),
+// Save / Save as, the amber in-place confirm, the status line, the User folder with Copy, and
+// Import / Export. Its logic is pure (preset_menu_model.h); disk actions run through Later and
+// then read the files again. Only Load, Save / Save as, Update and Keep write the item (one undo
+// point each); the files are never undo state.
+
+PresetMenuState g_pm;
+char g_pm_query[128] = {};
+char g_pm_name[256] = {};
+bool g_pm_focus_search = false;  // the search box takes the keyboard on the next frame
+bool g_pm_focus_name = false;    // ...the name field
+bool g_pm_search_active = false; // the search box had the keyboard last frame (Del edits its text)
+bool g_pm_close = false;         // close the popup on the next frame (after a Load)
+int  g_pm_drawn_frame = -10;     // the last frame the field (and so the popup) was drawn
+// The item a Save / Save as confirm or name field began on: confirmed on another item (the
+// playhead moved meanwhile), nothing is saved.
+MediaItem* g_pm_item = nullptr;
+
+// Import / Export: the native pickers run a modal loop, so they run from the window procedure
+// (TaggingRunPendingDialog), never inside the frame.
+struct PendingDialog {
+    enum class Kind { None, Import, Export };
+    Kind        kind = Kind::None;
+    std::string id;
+    std::string name;
+};
+PendingDialog g_dialog;
+
+const FileDialogFilter kPresetFilter = {L"ReaAnimViewer preset (*.ravpreset)", L"*.ravpreset", L"ravpreset"};
+
+void ResetPresetMenu()
 {
-    const std::vector<PresetInfo>& presets = CachedPresets();
-    if (presets.empty()) {
-        ImGui::TextDisabled("No preset found");
+    g_pm = PresetMenuState{};
+    g_pm_query[0] = '\0';
+    g_pm_name[0] = '\0';
+    g_pm_focus_search = false;
+    g_pm_focus_name = false;
+    g_pm_search_active = false;
+    g_pm_close = false;
+    g_pm_item = nullptr;
+}
+
+constexpr char kItemChanged[] = "The item under the playhead changed. Nothing has been saved.";
+
+// False (and the menu back to its list, saying so) when the item is no longer the one the
+// Save / Save as began on.
+bool PmSameItem()
+{
+    if (GetTaggingModel().item == g_pm_item) return true;
+    g_pm.mode = PresetMenuMode::List;
+    g_pm.confirm = PresetConfirm::None;
+    g_pm.confirm_clash = false;
+    g_pm.target_id.clear();
+    g_pm.target_name.clear();
+    g_pm.status = kItemChanged;
+    return false;
+}
+
+const PresetInfo* PresetById(const std::string& id)
+{
+    for (const PresetInfo& p : CachedPresets())
+        if (p.id == id) return &p;
+    return nullptr;
+}
+
+// After a disk action: the list and the field read the files again.
+void PresetFilesChanged()
+{
+    CachedPresets(/*refresh=*/true);
+    TaggingPresetFilesChanged();
+}
+
+void PmStatus(const std::string& s)
+{
+    g_pm.status = s;
+}
+
+void PmStartNaming()
+{
+    g_pm_item = GetTaggingModel().item;
+    g_pm.mode = PresetMenuMode::Naming;
+    g_pm.target_id.clear();
+    g_pm.target_name.clear();
+    g_pm.status.clear();
+    g_pm_name[0] = '\0';
+    g_pm_focus_name = true;
+}
+
+void PmStartRenaming(const PresetInfo& p)
+{
+    if (p.factory) {
+        PmStatus(kFactoryReadOnly);
         return;
     }
-    bool factory_caption = false, user_caption = false;
-    for (const PresetInfo& p : presets) {
-        if (p.factory && !factory_caption) {
-            ImGui::TextDisabled("Factory");
-            factory_caption = true;
-        }
-        if (!p.factory && !user_caption) {
-            if (factory_caption) ImGui::Separator();
-            ImGui::TextDisabled("User");
-            user_caption = true;
-        }
-        ImGui::PushID(p.id.c_str());
-        if (ImGui::Selectable(p.name.c_str())) {
-            const std::string id = p.id;
-            Later([id]() { TaggingLoadPreset(id); });
-        }
-        ImGui::PopID();
+    g_pm.mode = PresetMenuMode::Renaming;
+    g_pm.target_id = p.id;
+    g_pm.target_name = p.name;
+    g_pm.status.clear();
+    std::snprintf(g_pm_name, sizeof(g_pm_name), "%s", p.name.c_str());
+    g_pm_focus_name = true;
+}
+
+void PmConfirm(PresetConfirm kind, const std::string& id, const std::string& name, bool clash)
+{
+    if (kind == PresetConfirm::Overwrite && g_pm.mode != PresetMenuMode::Naming) g_pm_item = GetTaggingModel().item;
+    g_pm.mode = PresetMenuMode::Confirm;
+    g_pm.confirm = kind;
+    g_pm.confirm_clash = clash;
+    g_pm.target_id = id;
+    g_pm.target_name = name;
+    g_pm.status.clear();
+}
+
+void PmStartDelete(const PresetInfo& p)
+{
+    if (p.factory) {
+        PmStatus(kFactoryReadOnly);
+        return;
+    }
+    PmConfirm(PresetConfirm::Delete, p.id, p.name, false);
+}
+
+void PmCancel()
+{
+    g_pm.status = CancelStatus(g_pm.mode, g_pm.confirm);
+    g_pm.mode = PresetMenuMode::List;
+    g_pm.confirm = PresetConfirm::None;
+    g_pm.confirm_clash = false;
+    g_pm.target_id.clear();
+    g_pm.target_name.clear();
+}
+
+void PmLoad(const std::string& id)
+{
+    Later([id]() { TaggingLoadPreset(id); });
+    g_pm_close = true;
+}
+
+// Writes the item's rules to `id` (Save, or a Save as clash), then the item adopts it.
+void PmOverwrite(const std::string& id, const std::string& name)
+{
+    Later([id, name]() {
+        std::string saved, err;
+        if (TaggingSavePreset(id, "", &saved, &err))
+            PmStatus((saved.empty() ? name : saved) + " saved.");
+        else
+            PmStatus(err.empty() ? "The preset could not be saved." : err);
+        PresetFilesChanged();
+        g_pm.sel = id;
+    });
+}
+
+void PmConfirmed()
+{
+    if (g_pm.confirm == PresetConfirm::Overwrite && !PmSameItem()) return;
+    const PresetConfirm kind = g_pm.confirm;
+    const std::string id = g_pm.target_id, name = g_pm.target_name;
+    g_pm.mode = PresetMenuMode::List;
+    g_pm.confirm = PresetConfirm::None;
+    g_pm.confirm_clash = false;
+    if (kind == PresetConfirm::Delete) {
+        Later([id, name]() {
+            std::string err;
+            if (DeletePreset(RulesResourceRoot(), id, &err)) {
+                PmStatus(name + " deleted.");
+                if (g_pm.sel == id) g_pm.sel.clear();
+            } else {
+                PmStatus(err.empty() ? "The preset could not be deleted." : err);
+            }
+            PresetFilesChanged();
+        });
+    } else if (kind == PresetConfirm::Overwrite) {
+        PmOverwrite(id, name);
     }
 }
+
+// Enter in the name field.
+void PmSubmitName()
+{
+    const std::string name = TrimPresetName(g_pm_name);
+    if (g_pm.mode == PresetMenuMode::Renaming) {
+        const std::string id = g_pm.target_id, was = g_pm.target_name;
+        g_pm.mode = PresetMenuMode::List;
+        if (CheckRenameName(name) == NameCheck::Empty) {
+            PmStatus(EmptyNameStatus(true));
+            return;
+        }
+        Later([id, was, name]() {
+            std::string err;
+            if (RenamePreset(RulesResourceRoot(), id, name, &err))
+                PmStatus(was + " renamed " + name + ".");
+            else
+                PmStatus(err.empty() ? "The preset could not be renamed." : err);
+            PresetFilesChanged();
+        });
+        return;
+    }
+    // Save as.
+    if (!PmSameItem()) return;
+    PresetInfo clash;
+    switch (CheckSaveAsName(CachedPresets(), name, &clash)) {
+    case NameCheck::Empty:
+        g_pm.mode = PresetMenuMode::List;
+        PmStatus(EmptyNameStatus(false));
+        return;
+    case NameCheck::UserClash:
+        PmConfirm(PresetConfirm::Overwrite, clash.id, clash.name, true);
+        return;
+    case NameCheck::Ok:
+        break;
+    }
+    g_pm.mode = PresetMenuMode::List;
+    Later([name]() {
+        std::string saved, err;
+        if (TaggingSavePreset("", name, &saved, &err)) {
+            PmStatus((saved.empty() ? name : saved) + " saved to User.");
+            g_pm.cascade = PresetCascade::User;
+            g_pm.sel = GetTaggingModel().preset_id;
+        } else {
+            PmStatus(err.empty() ? "The preset could not be saved." : err);
+        }
+        PresetFilesChanged();
+    });
+}
+
+void PmExport(const std::string& id, const std::string& name)
+{
+    g_dialog.kind = PendingDialog::Kind::Export;
+    g_dialog.id = id;
+    g_dialog.name = name;
+    g_pm.status.clear();
+}
+
+void PmImport()
+{
+    g_dialog = PendingDialog{};
+    g_dialog.kind = PendingDialog::Kind::Import;
+    g_pm.status.clear();
+}
+
+// Text clipped to [x0, x1].
+void ClippedText(ImDrawList* dl, float x0, float x1, float y, ImU32 col, const char* text)
+{
+    const ImVec2 lo(x0, y - 2.0f), hi(std::max(x0, x1), y + ImGui::GetTextLineHeight() + 2.0f);
+    dl->PushClipRect(lo, hi, true);
+    dl->AddText(ImVec2(x0, y), col, text);
+    dl->PopClipRect();
+}
+
+// One preset row: the tick (the item's preset), the name, the padlock (Factory), the source tag
+// while searching. Click selects, double-click loads, right-click opens its menu.
+void PresetRow(const TaggingModel& m, const PresetInfo& p, bool with_source, float indent)
+{
+    ImGui::PushID(p.id.c_str());
+    const bool sel = g_pm.sel == p.id;
+    const float rh = ImGui::GetFrameHeight();
+    const ImVec2 r0 = ImGui::GetCursorScreenPos();
+    const float rw = ImGui::GetContentRegionAvail().x;
+    if (ImGui::Selectable("##prow", sel, ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_NoAutoClosePopups,
+                          ImVec2(rw, rh))) {
+        g_pm.sel = p.id;
+        if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) PmLoad(p.id);
+    }
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float ty = r0.y + (rh - ImGui::GetTextLineHeight()) * 0.5f;
+    float x = r0.x + indent;
+    if (m.has_preset && m.preset_id == p.id) IconCheck(dl, ImVec2(x + 5.0f, r0.y + rh * 0.5f), 4.0f, ui::kAccent);
+    x += 16.0f;
+    const char* src = p.factory ? "Factory" : "User";
+    const float src_w = with_source ? ImGui::CalcTextSize(src).x + 8.0f : 0.0f;
+    const float lock_w = p.factory ? 14.0f : 0.0f;
+    const float name_w =
+        std::max(0.0f, std::min(ImGui::CalcTextSize(p.name.c_str()).x, r0.x + rw - src_w - lock_w - 6.0f - x));
+    ClippedText(dl, x, x + name_w, ty, ui::kText, p.name.c_str());
+    if (p.factory) IconLock(dl, ImVec2(x + name_w + 9.0f, r0.y + rh * 0.5f + 1.0f), 3.5f, ui::kMuted, true);
+    if (with_source) dl->AddText(ImVec2(r0.x + rw - src_w + 2.0f, ty), ui::kFaint, src);
+    if (ImGui::BeginPopupContextItem("##pctx")) {
+        g_pm.sel = p.id;
+        if (ImGui::MenuItem("Load")) PmLoad(p.id);
+        if (p.factory) {
+            ImGui::Separator();
+            ImGui::TextDisabled("%s", kFactoryReadOnly);
+        }
+        if (ImGui::MenuItem("Rename...", "F2", false, !p.factory)) PmStartRenaming(p);
+        if (ImGui::MenuItem("Delete", "Del", false, !p.factory)) PmStartDelete(p);
+        if (ImGui::MenuItem("Export...")) PmExport(p.id, p.name);
+        ImGui::EndPopup();
+    }
+    ImGui::PopID();
+}
+
+// A cascade row: "Factory (n)" with its chevron (right when closed, down when open).
+void CascadeRow(bool factory, int count)
+{
+    const PresetCascade me = factory ? PresetCascade::Factory : PresetCascade::User;
+    const bool open = g_pm.cascade == me;
+    const float rh = ImGui::GetFrameHeight();
+    const ImVec2 r0 = ImGui::GetCursorScreenPos();
+    const float rw = ImGui::GetContentRegionAvail().x;
+    if (ImGui::Selectable(factory ? "##cascf" : "##cascu", open, ImGuiSelectableFlags_NoAutoClosePopups, ImVec2(rw, rh)))
+        g_pm.cascade = open ? PresetCascade::None : me;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float ty = r0.y + (rh - ImGui::GetTextLineHeight()) * 0.5f;
+    dl->AddText(ImVec2(r0.x + 6.0f, ty), ui::kText, CascadeLabel(factory, count).c_str());
+    const ImVec2 c(r0.x + rw - 10.0f, r0.y + rh * 0.5f);
+    if (open)
+        dl->AddTriangleFilled(ImVec2(c.x - 3.5f, c.y - 2.0f), ImVec2(c.x + 3.5f, c.y - 2.0f), ImVec2(c.x, c.y + 2.5f),
+                              ui::kMuted);
+    else
+        dl->AddTriangleFilled(ImVec2(c.x - 2.0f, c.y - 3.5f), ImVec2(c.x - 2.0f, c.y + 3.5f), ImVec2(c.x + 2.5f, c.y),
+                              ui::kMuted);
+}
+
+bool AmberButton(const char* label)
+{
+    ImGui::PushStyleColor(ImGuiCol_Button, ui::Col(ui::kConfirmAct));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ui::Col(ui::kConfirmActHover));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ui::Col(ui::kConfirmAct));
+    ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kConfirmActText));
+    const bool pressed = ImGui::Button(label);
+    ImGui::PopStyleColor(4);
+    return pressed;
+}
+
+void WrappedText(ImU32 col, const std::string& text, float wrap_w)
+{
+    ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(col));
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrap_w);
+    ImGui::TextUnformatted(text.c_str());
+    ImGui::PopTextWrapPos();
+    ImGui::PopStyleColor();
+}
+
+// The keys, read before the widgets (a mode change takes effect on the next frame's widgets).
+void PresetMenuKeys(const std::vector<std::string>& visible)
+{
+    auto pressed = [](ImGuiKey k) { return ImGui::IsKeyPressed(k, false); };
+    switch (g_pm.mode) {
+    case PresetMenuMode::Confirm:
+        if (pressed(ImGuiKey_Enter) || pressed(ImGuiKey_KeypadEnter)) PmConfirmed();
+        else if (pressed(ImGuiKey_Escape)) PmCancel();
+        return;
+    case PresetMenuMode::Naming:
+    case PresetMenuMode::Renaming:
+        if (pressed(ImGuiKey_Escape)) PmCancel();
+        return;  // Enter: the name field's own
+    case PresetMenuMode::List:
+        break;
+    }
+    if (pressed(ImGuiKey_Escape)) {
+        g_pm_close = true;
+        return;
+    }
+    const bool down = ImGui::IsKeyPressed(ImGuiKey_DownArrow, true), up = ImGui::IsKeyPressed(ImGuiKey_UpArrow, true);
+    if (down || up) {
+        if (visible.empty()) {
+            if (g_pm_query[0] == '\0' && g_pm.cascade == PresetCascade::None) g_pm.cascade = PresetCascade::Factory;
+            return;
+        }
+        g_pm.sel = StepPresetSelection(visible, g_pm.sel, down ? 1 : -1);
+        return;
+    }
+    // Only a row the list shows (not one filtered out, or under a closed cascade).
+    if (std::find(visible.begin(), visible.end(), g_pm.sel) == visible.end()) return;
+    const PresetInfo* sel = PresetById(g_pm.sel);
+    if (!sel) return;
+    if (pressed(ImGuiKey_Enter) || pressed(ImGuiKey_KeypadEnter)) PmLoad(sel->id);
+    else if (pressed(ImGuiKey_F2)) PmStartRenaming(*sel);
+    // Del edits the search text while there is some; an empty (even focused) search lets it delete.
+    else if (pressed(ImGuiKey_Delete) && (!g_pm_search_active || g_pm_query[0] == '\0')) PmStartDelete(*sel);
+}
+
+void DrawPresetMenu(const TaggingModel& m, float menu_w)
+{
+    const std::vector<PresetInfo>& presets = CachedPresets();
+    const float inner_w = menu_w - ImGui::GetStyle().WindowPadding.x * 2.0f;
+    const bool busy = g_pm.mode == PresetMenuMode::Confirm;
+
+    // The rows shown, as the keys see them (last frame's query and cascade).
+    const std::vector<int> rows = PresetMenuRows(presets, g_pm_query, g_pm.cascade);
+    std::vector<std::string> visible;
+    for (int i : rows) visible.push_back(presets[static_cast<size_t>(i)].id);
+    if (!g_pm.sel.empty() && !PresetById(g_pm.sel)) g_pm.sel.clear();  // deleted meanwhile
+    PresetMenuKeys(visible);
+    if (g_pm_close) return;
+
+    // Search.
+    ImGui::BeginDisabled(busy);
+    ImGui::SetNextItemWidth(-1.0f);
+    if (g_pm_focus_search) {
+        ImGui::SetKeyboardFocusHere();
+        g_pm_focus_search = false;
+    }
+    const std::string ph = SearchPlaceholder(static_cast<int>(presets.size()));
+    ImGui::InputTextWithHint("##pq", ph.c_str(), g_pm_query, sizeof(g_pm_query));
+    g_pm_search_active = ImGui::IsItemActive();
+    ImGui::Separator();
+
+    // The list: the cascade, or one flat list while searching.
+    if (g_pm_query[0] != '\0') {
+        const std::vector<int> hits = PresetMenuRows(presets, g_pm_query, PresetCascade::None);
+        if (hits.empty()) ImGui::TextDisabled("%s", kNoPresetMatches);
+        for (int i : hits) PresetRow(m, presets[static_cast<size_t>(i)], /*with_source=*/true, 4.0f);
+    } else {
+        for (int src = 0; src < 2; ++src) {
+            const bool factory = src == 0;
+            CascadeRow(factory, CountPresets(presets, factory));
+            if (g_pm.cascade != (factory ? PresetCascade::Factory : PresetCascade::User)) continue;
+            const std::vector<int> list = PresetMenuRows(presets, "", g_pm.cascade);
+            if (list.empty()) {
+                ImGui::Indent(16.0f);
+                WrappedText(ui::kFaint, EmptyCascadeText(factory), inner_w - 16.0f);
+                ImGui::Unindent(16.0f);
+            }
+            for (int i : list) PresetRow(m, presets[static_cast<size_t>(i)], /*with_source=*/false, 14.0f);
+        }
+    }
+    ImGui::EndDisabled();
+    ImGui::Separator();
+
+    // The Save row, the name field, or the amber confirm.
+    if (g_pm.mode == PresetMenuMode::Confirm) {
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->ChannelsSplit(2);
+        dl->ChannelsSetCurrent(1);
+        const ImVec2 b0 = ImGui::GetCursorScreenPos();
+        ImGui::Indent(6.0f);
+        ImGui::Dummy(ImVec2(0.0f, 2.0f));
+        ImGui::TextUnformatted(ConfirmQuestion(g_pm.confirm, g_pm.target_name).c_str());
+        WrappedText(ui::kMuted, ConfirmDetail(g_pm.confirm, g_pm.confirm_clash), inner_w - 12.0f);
+        if (ui::SolidButton("Cancel##pccancel")) PmCancel();
+        ImGui::SameLine();
+        if (AmberButton(ConfirmAction(g_pm.confirm))) PmConfirmed();
+        ImGui::TextDisabled("%s", ConfirmHint(g_pm.confirm));
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
+        ImGui::Unindent(6.0f);
+        const ImVec2 b1(b0.x + inner_w, ImGui::GetCursorScreenPos().y - ImGui::GetStyle().ItemSpacing.y * 0.5f);
+        dl->ChannelsSetCurrent(0);
+        dl->AddRectFilled(b0, b1, WithAlpha(ui::kConfirmLine, 0x14), ui::kRadiusMd);
+        dl->AddRect(b0, b1, ui::kConfirmLine, ui::kRadiusMd);
+        dl->ChannelsMerge();
+    } else if (g_pm.mode == PresetMenuMode::Naming || g_pm.mode == PresetMenuMode::Renaming) {
+        if (g_pm.mode == PresetMenuMode::Renaming)
+            ImGui::TextDisabled("Rename %s", g_pm.target_name.c_str());
+        ImGui::SetNextItemWidth(-1.0f);
+        if (g_pm_focus_name) {
+            ImGui::SetKeyboardFocusHere();
+            g_pm_focus_name = false;
+        }
+        if (ImGui::InputTextWithHint("##pname", "Preset name", g_pm_name, sizeof(g_pm_name),
+                                     ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll))
+            PmSubmitName();
+    } else {
+        const bool can_write = m.has_rules;
+        const bool factory = m.has_preset && m.preset_factory;
+        const std::string save_label =
+            std::string("Save") + (m.has_preset && !factory ? " " + m.preset_name : std::string()) + "##psave";
+        const float as_w = ImGui::CalcTextSize("+ Save as...").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        const bool gone = m.has_preset && m.preset_gone;
+        const bool unchanged = m.has_preset && !gone && m.preset_state == PresetState::UpToDate;
+        ImGui::BeginDisabled(!can_write || factory || gone || unchanged);
+        if (ui::SolidButton(save_label.c_str(), ImVec2(std::max(40.0f, inner_w - as_w - ImGui::GetStyle().ItemSpacing.x), 0.0f))) {
+            if (!m.has_preset) PmStatus(kNothingLoadedToSave);
+            else PmConfirm(PresetConfirm::Overwrite, m.preset_id, m.preset_name, false);
+        }
+        ImGui::EndDisabled();
+        if (m.has_preset && !factory && can_write &&
+            ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled)) {
+            if (gone)
+                ImGui::SetTooltip("%s: Save as writes it again", kPresetGoneTip);
+            else if (unchanged)
+                ImGui::SetTooltip("No change to save: this item's rules are %s as it is", m.preset_name.c_str());
+            else
+                ImGui::SetTooltip("Overwrite %s with this item's rules", m.preset_name.c_str());
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!can_write);
+        if (ui::SolidButton("+ Save as...##psaveas")) PmStartNaming();
+        ImGui::EndDisabled();
+        if (factory) WrappedText(ui::kFaint, FactorySaveNote(m.preset_name), inner_w);
+        if (!can_write) WrappedText(ui::kFaint, "Load a preset first: this item has no rules to save.", inner_w);
+    }
+
+    // The status line (or the mode's hint).
+    const std::string status = g_pm.status.empty() ? std::string(PresetMenuHint(g_pm.mode)) : g_pm.status;
+    if (!status.empty()) WrappedText(ui::kMuted, status, inner_w);
+
+    // The User folder, with Copy.
+    ImGui::BeginDisabled(busy);
+    {
+        const std::string dir = UserPresetDir(RulesResourceRoot());
+        const float fh = ImGui::GetFrameHeight();
+        const ImVec2 r0 = ImGui::GetCursorScreenPos();
+        const float path_w = std::max(20.0f, inner_w - fh - 6.0f);
+        ImGui::Dummy(ImVec2(path_w, fh));
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("%s\nYour User presets", dir.c_str());
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        ClippedText(dl, r0.x, r0.x + path_w, r0.y + (fh - ImGui::GetTextLineHeight()) * 0.5f, ui::kFaint, dir.c_str());
+        ImGui::SameLine();
+        if (IconButton("##pcopy", fh, [](ImDrawList* d, ImVec2 c, ImU32 col) { IconDuplicate(d, c, 4.5f, col); }, !busy)) {
+            ImGui::SetClipboardText(dir.c_str());
+            PmStatus(kFolderCopied);
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Copy the folder path");
+    }
+    // Import / Export.
+    if (ImGui::SmallButton("Import...##pimport")) PmImport();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Copies a .ravpreset file into your User folder");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Export...##pexport")) {
+        const PresetInfo* p = !g_pm.sel.empty() ? PresetById(g_pm.sel) : nullptr;
+        if (!p && m.has_preset && !m.preset_gone) p = PresetById(m.preset_id);
+        if (p) PmExport(p->id, p->name);
+        else PmStatus("Select a preset to export.");
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        ImGui::SetTooltip("Writes the selected (or loaded) preset to a file you can send");
+    ImGui::EndDisabled();
+}
+
+// The preset field: Preset: [padlock] Footsteps  edited / Legacy / kept v2, and its menu.
+// Under it, the Legacy band (Update / Keep) when the preset on disk has another version.
+void DrawPresetField(const TaggingModel& m)
+{
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float fh = ImGui::GetFrameHeight();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float w = ImGui::GetContentRegionAvail().x;
+    if (ImGui::InvisibleButton("##presetfield", ImVec2(w, fh))) {
+        CachedPresets(/*refresh=*/true);  // the menu opens on the files as they are now
+        ResetPresetMenu();
+        g_pm.open = true;
+        g_pm_focus_search = true;
+        ImGui::OpenPopup("##tagpresets");
+    }
+    const bool hov = ImGui::IsItemHovered();
+    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + fh), hov ? ui::kHover : ui::kRaised, ui::kRadiusSm);
+    dl->AddRect(p, ImVec2(p.x + w, p.y + fh), g_pm.open ? ui::kAccentLine : ui::kStroke, ui::kRadiusSm);
+    const float ty = p.y + (fh - ImGui::GetTextLineHeight()) * 0.5f;
+    float x = p.x + 8.0f;
+    dl->AddText(ImVec2(x, ty), ui::kMuted, "Preset:");
+    x += ImGui::CalcTextSize("Preset:").x + 6.0f;
+    if (m.has_preset && m.preset_factory) {
+        IconLock(dl, ImVec2(x + 4.0f, p.y + fh * 0.5f + 1.0f), 4.0f, ui::kMuted, true);
+        x += 12.0f;
+    }
+    const char* name = m.has_preset ? m.preset_name.c_str() : "none";
+    const bool legacy = m.has_preset && m.preset_state == PresetState::Legacy;
+    const bool kept = ShowKeptTag(m.has_preset, m.preset_gone, m.kept_version, m.disk_version);
+    std::string tag;
+    if (legacy) {
+        tag = "Legacy";
+    } else if (m.has_preset) {
+        if (m.preset_state == PresetState::Edited) tag = "edited";
+        if (kept) tag += (tag.empty() ? "" : "  ") + KeptTag(m.preset_version);
+    }
+    const float tag_w = !tag.empty() ? ImGui::CalcTextSize(tag.c_str()).x + 12.0f : 0.0f;
+    ClippedText(dl, x, p.x + w - tag_w - 18.0f, ty, m.preset_gone ? ui::kMuted : ui::kText, name);
+    if (!tag.empty()) dl->AddText(ImVec2(p.x + w - tag_w - 14.0f, ty), legacy ? ui::kWarn : ui::kFaint, tag.c_str());
+    // The chevron.
+    const ImVec2 cc(p.x + w - 10.0f, p.y + fh * 0.5f);
+    dl->AddTriangleFilled(ImVec2(cc.x - 3.5f, cc.y - 2.0f), ImVec2(cc.x + 3.5f, cc.y - 2.0f), ImVec2(cc.x, cc.y + 2.5f),
+                          ui::kMuted);
+    if (hov && !g_pm.open && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
+        if (m.preset_gone)
+            ImGui::SetTooltip("%s", kPresetGoneTip);
+        else
+            ImGui::SetTooltip(m.preset_factory ? "A factory preset (read-only). Click for the preset menu."
+                                               : "Click for the preset menu: load, save, rename, import, export");
+    }
+
+    // The menu.
+    ImGui::SetNextWindowPos(ImVec2(p.x, p.y + fh + 2.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(w, 0.0f), ImVec2(w, 560.0f));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, ui::Col(ui::kRaised));
+    ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStrokeStrong));
+    g_pm_drawn_frame = ImGui::GetFrameCount();
+    const bool open = ImGui::BeginPopup("##tagpresets");
+    ImGui::PopStyleColor(2);
+    if (open) {
+        if (!g_pm.open) {  // opened another way (never): start clean
+            ResetPresetMenu();
+            g_pm.open = true;
+        }
+        DrawPresetMenu(m, w);
+        if (g_pm_close) {
+            ImGui::CloseCurrentPopup();
+            ResetPresetMenu();
+        }
+        ImGui::EndPopup();
+    } else if (g_pm.open) {
+        ResetPresetMenu();  // closed (a click outside, Esc): a pending confirm or name counts as Cancel
+    }
+
+    // The Legacy band: "Legacy - v3 is installed  [Update] [Keep v2]" (the buttons wrap under
+    // the text when the panel is narrow).
+    if (m.has_rules && m.has_preset && !m.preset_gone && m.preset_state == PresetState::Legacy) {
+        ImGui::Dummy(ImVec2(0.0f, 1.0f));
+        const ImGuiStyle& st = ImGui::GetStyle();
+        const std::string text = LegacyText(m.disk_version);
+        const std::string keep = KeepLabel(m.preset_version);
+        const float keep_w = ImGui::CalcTextSize(keep.c_str()).x + st.FramePadding.x * 2.0f;
+        const float up_w = ImGui::CalcTextSize("Update").x + st.FramePadding.x * 2.0f;
+        const float text_w = ImGui::CalcTextSize(text.c_str()).x;
+        const bool one_line = 8.0f + text_w + 12.0f + up_w + st.ItemSpacing.x + keep_w + 6.0f <= w;
+        dl->ChannelsSplit(2);
+        dl->ChannelsSetCurrent(1);
+        const ImVec2 b0 = ImGui::GetCursorScreenPos();
+        ImGui::SetCursorScreenPos(ImVec2(b0.x + 8.0f, b0.y + 3.0f));
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextColored(ui::Col(ui::kWarn), "%s", text.c_str());
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+            ImGui::SetTooltip("This item uses v%d of %s. Update takes the installed version; Keep stays on v%d.",
+                              m.preset_version, m.preset_name.c_str(), m.preset_version);
+        const float bx = b0.x + w - 6.0f - keep_w - up_w - st.ItemSpacing.x;
+        if (one_line) {
+            ImGui::SameLine();
+            ImGui::SetCursorScreenPos(ImVec2(std::max(ImGui::GetCursorScreenPos().x, bx), ImGui::GetCursorScreenPos().y));
+        } else {
+            ImGui::SetCursorScreenPos(ImVec2(std::max(b0.x + 8.0f, bx), ImGui::GetCursorScreenPos().y));
+        }
+        if (AmberButton("Update##lgup")) {
+            Later([]() {
+                if (TaggingUpdatePreset()) ClearLastApplyResult();  // the rules changed: the footer's Apply line is stale
+            });
+        }
+        ImGui::SameLine();
+        if (ui::SolidButton((keep + "##lgkeep").c_str())) Later([]() { TaggingKeepPreset(); });
+        const float y1 = ImGui::GetItemRectMax().y + 3.0f;
+        dl->ChannelsSetCurrent(0);
+        dl->AddRectFilled(b0, ImVec2(b0.x + w, y1), WithAlpha(ui::kWarn, 0x14), ui::kRadiusSm);
+        dl->AddRect(b0, ImVec2(b0.x + w, y1), ui::kConfirmLine, ui::kRadiusSm);
+        dl->ChannelsMerge();
+        ImGui::SetCursorScreenPos(ImVec2(b0.x, y1));
+        ImGui::Dummy(ImVec2(w, 0.0f));
+    }
+}
+
+}  // namespace
+
+bool TaggingPresetMenuOpen()
+{
+    // Only while it is drawn: the field goes when the item does (the popup is then gone too).
+    if (!g_pm.open || !ImGui::GetCurrentContext()) return false;
+    const int age = ImGui::GetFrameCount() - g_pm_drawn_frame;  // negative: another ImGui context since
+    return age >= 0 && age <= 1;
+}
+
+bool TaggingHasPendingDialog()
+{
+    return g_dialog.kind != PendingDialog::Kind::None;
+}
+
+void TaggingRunPendingDialog(HWND__* owner)
+{
+    const PendingDialog d = g_dialog;  // taken first: the picker's modal loop runs frames
+    g_dialog = PendingDialog{};
+    const std::string root = RulesResourceRoot();
+    if (d.kind == PendingDialog::Kind::Import) {
+        std::string path;
+        if (!PickOpenFile(owner, L"Import a preset", kPresetFilter, path)) return;  // cancelled
+        std::string id, err;
+        if (ImportPreset(root, path, &id, &err)) {
+            PresetInfo info;
+            const std::string name = FindPreset(root, id, &info) ? info.name : id;
+            PmStatus(name + " imported.");
+            g_pm.cascade = PresetCascade::User;
+            g_pm.sel = id;
+        } else {
+            PmStatus(err.empty() ? "The file could not be imported." : err);
+        }
+        PresetFilesChanged();
+    } else if (d.kind == PendingDialog::Kind::Export) {
+        std::string path;
+        if (!PickSaveFile(owner, L"Export a preset", kPresetFilter, ExportFileName(d.name), path)) return;
+        std::string err;
+        if (ExportPreset(root, d.id, path, &err))
+            PmStatus(d.name + " exported.");
+        else
+            PmStatus(err.empty() ? "The preset could not be exported." : err);
+    }
+}
+
+namespace {
 
 void ItemOptionsPopup(const ItemRules& rules)
 {
@@ -1443,50 +2106,8 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
         }
     }
 
-    // The preset field: Preset: [padlock] Footsteps  edited / Legacy. Load only (10-3b: the menu).
-    {
-        const ImVec2 p = ImGui::GetCursorScreenPos();
-        const float w = ImGui::GetContentRegionAvail().x;
-        if (ImGui::InvisibleButton("##presetfield", ImVec2(w, fh))) {
-            CachedPresets(/*refresh=*/true);  // the menu opens on the files as they are now
-            ImGui::OpenPopup("##tagpresets");
-        }
-        const bool hov = ImGui::IsItemHovered();
-        dl->AddRectFilled(p, ImVec2(p.x + w, p.y + fh), hov ? ui::kHover : ui::kRaised, ui::kRadiusSm);
-        dl->AddRect(p, ImVec2(p.x + w, p.y + fh), ui::kStroke, ui::kRadiusSm);
-        const float ty = p.y + (fh - ImGui::GetTextLineHeight()) * 0.5f;
-        float x = p.x + 8.0f;
-        dl->AddText(ImVec2(x, ty), ui::kMuted, "Preset:");
-        x += ImGui::CalcTextSize("Preset:").x + 6.0f;
-        if (m.has_preset && m.preset_factory) {
-            IconLock(dl, ImVec2(x + 4.0f, p.y + fh * 0.5f + 1.0f), 4.0f, ui::kMuted, true);
-            x += 12.0f;
-        }
-        const char* name = m.has_preset ? m.preset_name.c_str() : "none";
-        const char* tag = !m.has_preset                               ? ""
-                          : m.preset_state == PresetState::Legacy     ? "Legacy"
-                          : m.preset_state == PresetState::Edited     ? "edited"
-                                                                      : "";
-        const float tag_w = tag[0] ? ImGui::CalcTextSize(tag).x + 12.0f : 0.0f;
-        dl->PushClipRect(ImVec2(x, p.y), ImVec2(p.x + w - tag_w - 18.0f, p.y + fh), true);
-        dl->AddText(ImVec2(x, ty), ui::kText, name);
-        dl->PopClipRect();
-        if (tag[0])
-            dl->AddText(ImVec2(p.x + w - tag_w - 14.0f, ty), m.preset_state == PresetState::Legacy ? ui::kWarn : ui::kFaint,
-                        tag);
-        // The chevron.
-        const ImVec2 cc(p.x + w - 10.0f, p.y + fh * 0.5f);
-        dl->AddTriangleFilled(ImVec2(cc.x - 3.5f, cc.y - 2.0f), ImVec2(cc.x + 3.5f, cc.y - 2.0f), ImVec2(cc.x, cc.y + 2.5f),
-                              ui::kMuted);
-        if (hov && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-            ImGui::SetTooltip(m.preset_factory ? "A factory preset (read-only). Click to load another."
-                                               : "Click to load a preset on this item");
-        ImGui::SetNextWindowSizeConstraints(ImVec2(w, 0.0f), ImVec2(std::max(w, 200.0f), 360.0f));
-        if (ImGui::BeginPopup("##tagpresets")) {
-            PresetMenuItems();
-            ImGui::EndPopup();
-        }
-    }
+    // The preset field and its menu, the Legacy band (story 10-3b).
+    DrawPresetField(m);
 
     // The rules.
     ImGui::Dummy(ImVec2(0.0f, 2.0f));
@@ -2299,6 +2920,8 @@ void DrawTaggingPanel(float x, float y, float w, float h)
             ui::SubText("No animation item under the playhead");
         } else if (!m.has_rules) {
             ImGui::TextUnformatted(m.item_name.c_str());
+            ImGui::Dummy(ImVec2(0.0f, 2.0f));
+            DrawPresetField(m);  // story 10-3b: the menu loads, imports, exports (Save needs rules)
             ImGui::Dummy(ImVec2(0.0f, 4.0f));
             ImGui::TextUnformatted("No rules");
             ui::SubText(m.unreadable ? "This item's rules could not be read. They are kept as they are until you load "

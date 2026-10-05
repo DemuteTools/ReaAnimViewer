@@ -19,6 +19,8 @@
 
 #ifdef _WIN32
 
+struct HWND__;  // HWND under <windows.h> STRICT (the default), without pulling it in here
+
 namespace rav {
 
 constexpr float kTaggingStripMinHeight = 150.0f;
@@ -44,6 +46,14 @@ void TaggingAddEventAtPlayhead();
 void TaggingDeleteSelectedEvent();
 // The footer's "Change" asked for the menu (its Auto-Tagging options): true once.
 bool TaggingConsumeMenuRequest();
+// Story 10-3b -- the preset menu is open: the viewer takes every key (its search, F2, Del,
+// Enter, Esc and the arrows are the menu's, never a shortcut's or REAPER's).
+bool TaggingPresetMenuOpen();
+// Import / Export asked for a native file picker. It runs a modal loop, so the viewer runs it
+// from its window procedure (TaggingRunPendingDialog, `owner` = the top-level window), never
+// inside the frame.
+bool TaggingHasPendingDialog();
+void TaggingRunPendingDialog(HWND__* owner);
 // The view changes or the viewer closes: a running drag is written as shown (one undo point).
 void TaggingEndGestures();
 

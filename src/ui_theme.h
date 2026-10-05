@@ -35,6 +35,12 @@ constexpr ImU32 kAccentLine   = IM_COL32(0x5B, 0x8C, 0xFF, 0x8C);
 constexpr ImU32 kPrimaryHover = IM_COL32(0x6D, 0x99, 0xFF, 0xFF);
 constexpr ImU32 kOk           = IM_COL32(0x5F, 0xDD, 0x9E, 0xFF);
 constexpr ImU32 kWarn         = IM_COL32(0xFF, 0xD1, 0x66, 0xFF);
+// Story 10-3b -- the amber in-place confirm (overwrite / delete) and the Legacy band: its
+// outline (kWarn at .45), its action button and that button's text.
+constexpr ImU32 kConfirmLine      = (kWarn & ~IM_COL32_A_MASK) | (0x73u << IM_COL32_A_SHIFT);
+constexpr ImU32 kConfirmAct       = IM_COL32(0xD9, 0xA1, 0x2B, 0xFF);
+constexpr ImU32 kConfirmActHover  = IM_COL32(0xE6, 0xB0, 0x3E, 0xFF);
+constexpr ImU32 kConfirmActText   = IM_COL32(0x1A, 0x1A, 0x1A, 0xFF);
 constexpr ImU32 kWhite        = IM_COL32(0xFF, 0xFF, 0xFF, 0xFF);
 constexpr ImU32 kFrameStroke  = IM_COL32(0xE7, 0xE9, 0xEE, 0x47);  // the Video view frame's edge (text at .28)
 

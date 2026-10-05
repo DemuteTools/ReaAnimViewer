@@ -25,6 +25,14 @@ bool Fail(std::string* err, const std::string& why)
     return false;
 }
 
+// A name as SavePresetAs stores it (trimmed), for an undo point's name.
+std::string TrimPresetNameForUndo(const std::string& s)
+{
+    const size_t a = s.find_first_not_of(" \t\r\n");
+    if (a == std::string::npos) return std::string();
+    return s.substr(a, s.find_last_not_of(" \t\r\n") - a + 1);
+}
+
 // Writes the record text, then records one undo point (UNDO_STATE_ITEMS) only when REAPER
 // accepted it: a refused write leaves no empty undo point. `with_undo` false: no undo point
 // (the caller's undo block records it).
@@ -194,6 +202,43 @@ bool SetUpPresetOnItem(MediaItem* item, const std::string& preset_id, std::strin
             err))
         return false;
     CheckItemBinding(item, preset.blocks, missing);
+    return true;
+}
+
+bool SaveItemAsPreset(MediaItem* item, const std::string& preset_id, const std::string& name, std::string* saved_id,
+                      std::string* saved_name, std::string* err)
+{
+    ItemRulesRead rd;
+    if (!ReadItemRules(item, &rd)) return Fail(err, "The item is not a RAV animation.");
+    if (!rd.present || !rd.valid) return Fail(err, "The item has no rules to save.");
+    // The file is written (no undo point: a file is not project state) inside the edit, before
+    // the item is; the item then adopts it in one undo point. The undo name needs the preset's
+    // name, known only once written: Save keeps the preset's name, Save as uses `name`.
+    std::string desc_name = TrimPresetNameForUndo(name);
+    if (!preset_id.empty()) {
+        PresetInfo info;
+        if (FindPreset(RulesResourceRoot(), preset_id, &info)) desc_name = info.name;
+    }
+    const std::string desc = "RAV: Save preset " + desc_name;
+    std::string why, id, nm;
+    bool        file_written = false;
+    const bool  ok = ModifyItemRules(
+        item, desc.c_str(),
+        [&](ItemRules& r) {
+            file_written = SaveRulesAsPreset(RulesResourceRoot(), r, preset_id, name, &id, &nm, &why);
+            return file_written;
+        },
+        err);
+    if (!file_written) {
+        if (why.empty() && err && !err->empty()) return false;  // the item could not be read
+        return Fail(err, why.empty() ? "The preset could not be saved." : why);
+    }
+    if (saved_id) *saved_id = id;
+    if (saved_name) *saved_name = nm;
+    if (!ok) {
+        const std::string reason = err ? *err : std::string();
+        return Fail(err, "The preset " + nm + " was written, but the item could not take it: " + reason);
+    }
     return true;
 }
 

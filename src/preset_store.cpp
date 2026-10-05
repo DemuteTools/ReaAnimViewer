@@ -222,11 +222,13 @@ bool ReadUser(const std::string& root, const std::string& id, PresetData* data, 
     return true;
 }
 
+// Names are unique among the user presets only: a user preset may take a factory preset's
+// name (story 10-3b, as DM-XYZ-Pad: "Save as writes your version to User").
 bool NameTaken(const std::string& root, const std::string& name, const std::string& except_id)
 {
     const std::string n = Lower(name);
     for (const PresetInfo& p : ListPresets(root))
-        if (p.id != except_id && Lower(p.name) == n) return true;
+        if (!p.factory && p.id != except_id && Lower(p.name) == n) return true;
     return false;
 }
 
@@ -504,6 +506,31 @@ bool KeepCurrent(const std::string& root, ItemRules& rules, std::string* err)
     PresetInfo info;
     if (!FindPreset(root, rules.preset_copy.id, &info)) return Refuse(err, "The preset is gone or cannot be read.");
     rules.preset_copy.kept_version = info.version;
+    return true;
+}
+
+bool SaveRulesAsPreset(const std::string& root, ItemRules& rules, const std::string& preset_id, const std::string& name,
+                       std::string* saved_id, std::string* saved_name, std::string* err)
+{
+    PresetData content;
+    content.options = rules.options;
+    content.analyse = rules.analyse;
+    content.blocks = rules.blocks;
+    std::string id = preset_id;
+    if (!id.empty()) {
+        if (!SavePreset(root, id, content, nullptr, err)) return false;
+    } else if (!SavePresetAs(root, name, content, &id, err)) {
+        return false;
+    }
+    PresetInfo info;
+    if (!FindPreset(root, id, &info)) return Refuse(err, "The preset was written but cannot be read back.");
+    PresetData saved;
+    saved.id = info.id;
+    saved.version = info.version;
+    saved.name = info.name;
+    AdoptSavedPreset(rules, saved);
+    if (saved_id) *saved_id = info.id;
+    if (saved_name) *saved_name = info.name;
     return true;
 }
 

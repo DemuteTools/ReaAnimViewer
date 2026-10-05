@@ -122,6 +122,25 @@ int CountMissing(const std::vector<Block>& blocks, const std::vector<int>& role_
     return static_cast<int>(list.size());
 }
 
+// The preset field: the copy's id and versions, the preset as it is on disk now (its
+// current name, version and the state derived from it).
+void ReadPresetFields()
+{
+    TaggingModel& m = g.model;
+    m.has_preset = m.has_rules && m.rules.has_preset;
+    const PresetCopy& c = m.rules.preset_copy;
+    m.preset_id = m.has_preset ? c.id : "";
+    m.preset_version = m.has_preset ? c.version : 0;
+    m.kept_version = m.has_preset ? c.kept_version : 0;
+    m.preset_factory = m.has_preset && IsFactoryPresetId(c.id);
+    PresetInfo info;
+    const bool found = m.has_preset && FindPreset(RulesResourceRoot(), c.id, &info);
+    m.preset_gone = m.has_preset && !found;
+    m.disk_version = found ? info.version : 0;
+    m.preset_name = !m.has_preset ? "" : (found && !info.name.empty()) ? info.name : c.name;
+    m.preset_state = m.has_preset ? PresetStateOf(m.rules, found ? &info : nullptr) : PresetState::Unknown;
+}
+
 // The item's record, preset state and skeleton binding.
 void ReadItem()
 {
@@ -134,10 +153,7 @@ void ReadItem()
     m.unreadable = rd.present && !rd.valid;
     m.has_rules = rd.present && rd.valid;
     m.rules = m.has_rules ? rd.rules : ItemRules{};
-    m.has_preset = m.has_rules && m.rules.has_preset;
-    m.preset_name = m.has_preset ? m.rules.preset_copy.name : "";
-    m.preset_factory = m.has_preset && IsFactoryPresetId(m.rules.preset_copy.id);
-    m.preset_state = m.has_preset ? GetPresetState(RulesResourceRoot(), m.rules) : PresetState::Unknown;
+    ReadPresetFields();
     m.role_to_bone = m.bone_names.empty() ? std::vector<int>{} : GetRoleMapping(RulesResourceRoot(), m.bone_names);
     m.missing.clear();
     m.missing_count = m.file_loaded ? CountMissing(EnabledOnly(m.rules.blocks), m.role_to_bone, m.bone_names, m.bone_parents, &m.missing) : 0;
@@ -299,6 +315,7 @@ void TaggingSessionFrame(MediaItem* item, const std::string& path)
                 // Read again (and re-bind) only when the record changed: a new item, an
                 // undo, another script, or the file's bones.
                 if (!g.read_done || peek.raw != g.raw || peek.present != g.raw_present) ReadItem();
+                else ReadPresetFields();  // story 10-3b: the preset file may have changed on disk
                 g.reread_at = now + kRereadSeconds;
             }
         }
@@ -513,6 +530,53 @@ bool TaggingLoadPreset(const std::string& preset_id)
     ReadItem();
     RunDetection();
     return ok;
+}
+
+bool TaggingSavePreset(const std::string& preset_id, const std::string& name, std::string* saved_name,
+                       std::string* err)
+{
+    g.last_error.clear();
+    g.previewing = false;
+    g.model.previewing = false;
+    if (!g.model.item) {
+        if (err) *err = "No animation item under the playhead.";
+        return false;
+    }
+    const bool ok = SaveItemAsPreset(g.model.item, preset_id, name, nullptr, saved_name, err);
+    ReadItem();
+    RunDetection();
+    return ok;
+}
+
+bool TaggingUpdatePreset()
+{
+    g.last_error.clear();
+    g.previewing = false;
+    g.model.previewing = false;
+    if (!g.model.item) return false;
+    std::string err;
+    const bool ok = UpdateItemFromPreset(g.model.item, &err);
+    if (!ok) g.last_error = err.empty() ? "The rules could not be updated from the preset." : err;
+    ReadItem();
+    RunDetection();
+    return ok;
+}
+
+bool TaggingKeepPreset()
+{
+    g.last_error.clear();
+    if (!g.model.item) return false;
+    std::string err;
+    const bool ok = KeepItemCurrent(g.model.item, &err);
+    if (!ok) g.last_error = err.empty() ? "The current rules could not be kept." : err;
+    ReadItem();
+    RunDetection();
+    return ok;
+}
+
+void TaggingPresetFilesChanged()
+{
+    if (g.model.item) ReadPresetFields();
 }
 
 ItemClipMap ItemClipMapOf(MediaItem* item, double clip_len)

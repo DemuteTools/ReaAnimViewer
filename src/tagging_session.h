@@ -41,9 +41,15 @@ struct TaggingModel {
     ItemRules   rules;                // the saved record (no rules = default)
     // The preset field.
     bool        has_preset = false;
-    std::string preset_name;
+    std::string preset_name;      // its name on disk, the copy's name when it is gone
     bool        preset_factory = false;
     PresetState preset_state = PresetState::Unknown;
+    // Story 10-3b: the preset menu and the Legacy band.
+    std::string preset_id;        // the copy's id
+    int         preset_version = 0;  // the copy's version
+    int         kept_version = 0;    // the version Keep dismissed (0 = none)
+    int         disk_version = 0;    // the preset's version on disk (0 = gone)
+    bool        preset_gone = false; // the item has a preset that is no longer on disk
     // The skeleton.
     bool                     file_loaded = false;
     std::vector<std::string> bone_names;
@@ -134,6 +140,20 @@ bool TaggingAnalyse();
 
 // Loads a preset on the item (SetUpPresetOnItem): one undo point.
 bool TaggingLoadPreset(const std::string& preset_id);
+
+// Story 10-3b -- the preset menu. Save (`preset_id` = the preset overwritten) / Save as
+// (`preset_id` empty, a new preset named `name`): the file is written, then the item adopts it
+// (SaveItemAsPreset, one undo point). `saved_name` gets the preset's name, `err` the reason
+// it failed (the menu's status line shows it; TaggingLastError is left alone).
+bool TaggingSavePreset(const std::string& preset_id, const std::string& name, std::string* saved_name,
+                       std::string* err);
+// The Legacy band: Update ("RAV: Update rules from preset") and Keep ("RAV: Keep current
+// rules"), one undo point each. Errors go to TaggingLastError.
+bool TaggingUpdatePreset();
+bool TaggingKeepPreset();
+// The preset files changed on disk (rename, delete, import, a save): the preset field's name,
+// state and versions are read again (no detection).
+void TaggingPresetFilesChanged();
 
 // The last write's error ("" when it went through), shown inline.
 const std::string& TaggingLastError();

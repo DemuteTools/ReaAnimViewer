@@ -184,6 +184,8 @@ if(WIN32)
             src/detection_measure.cpp
             src/rule_record.cpp
             src/preset_store.cpp
+            src/preset_menu_model.cpp
+            src/file_dialogs.cpp
             src/role_map_store.cpp
             src/item_rules.cpp
             src/strip_view.cpp

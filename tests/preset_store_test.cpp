@@ -183,7 +183,12 @@ int main()
         CHECK(LoadPreset(R, "factory/footsteps", &fs_, &err));
         fs_.blocks[0].cooldown_ms = 300;
         CHECK(!SavePresetAs(R, "  ", fs_, &id, &err) && !err.empty());
-        CHECK(!SavePresetAs(R, "footsteps heel", fs_, &id, &err) && !err.empty());  // the name is taken (any case)
+        // Story 10-3b: a factory name is free (the user's version), names are unique among user presets.
+        std::string fid;
+        CHECK(SavePresetAs(R, "footsteps heel", fs_, &fid, &err));
+        CHECK(fid.rfind("user/", 0) == 0);
+        CHECK(!SavePresetAs(R, "FOOTSTEPS HEEL", fs_, &id, &err) && !err.empty());  // taken by that user preset (any case)
+        CHECK(DeletePreset(R, fid, &err));
         CHECK(SavePresetAs(R, "My Steps!", fs_, &id, &err));
         CHECK(id == "user/my-steps");
         CHECK(fs::exists(user_dir / "my-steps.ravpreset"));
@@ -199,7 +204,15 @@ int main()
         CHECK(RenamePreset(R, id, "Soft steps", &err));
         PresetInfo info;
         CHECK(FindPreset(R, id, &info) && info.name == "Soft steps" && info.version == 2 && !info.factory);
-        CHECK(!RenamePreset(R, id, "FOOTSTEPS HEEL", &err) && !err.empty());
+        // Story 10-3b: a factory name is free on rename too; another user name is not.
+        CHECK(RenamePreset(R, id, "FOOTSTEPS HEEL", &err));
+        CHECK(RenamePreset(R, id, "Soft steps", &err));
+        {
+            std::string other;
+            CHECK(SavePresetAs(R, "Other", fs_, &other, &err));
+            CHECK(!RenamePreset(R, id, "OTHER", &err) && !err.empty());
+            CHECK(DeletePreset(R, other, &err));
+        }
 
         const std::vector<PresetInfo> list = ListPresets(R);
         CHECK(list.size() == 3 && list[2].id == id);
@@ -217,7 +230,7 @@ int main()
         CHECK(ExportPreset(R, "factory/footsteps", fout.u8string(), &err));
         std::string id3;
         CHECK(ImportPreset(R, fout.u8string(), &id3, &err));
-        CHECK(id3.compare(0, 5, "user/") == 0 && FindPreset(R, id3, &info) && info.name == "Footsteps Heel (2)");
+        CHECK(id3.compare(0, 5, "user/") == 0 && FindPreset(R, id3, &info) && info.name == "Footsteps Heel");  // a factory name is free (story 10-3b)
 
         const fs::path junk = root / "junk.ravpreset";
         std::ofstream(junk) << "not a preset";
@@ -394,6 +407,34 @@ int main()
         AdoptSavedPreset(mine, saved);
         CHECK(GetPresetState(R, mine) == PresetState::UpToDate);
         CHECK(saved.options.edge_margin_ms == 20 && mine.preset_copy.options.edge_margin_ms == 20);
+
+        // Story 10-3b -- SaveRulesAsPreset: Save over the item's preset (same id, version + 1,
+        // UpToDate), then Save as a new user preset (a new id, version 1, UpToDate).
+        {
+            mine.blocks[0].cooldown_ms = 222;
+            CHECK(GetPresetState(R, mine) == PresetState::Edited);
+            const int before = mine.preset_copy.version;
+            std::string sid, sname;
+            CHECK(SaveRulesAsPreset(R, mine, id, "", &sid, &sname, &err));
+            CHECK(sid == id && sname == mine.preset_copy.name);
+            CHECK(mine.preset_copy.id == id && mine.preset_copy.version == before + 1);
+            CHECK(GetPresetState(R, mine) == PresetState::UpToDate);
+            PresetData back;
+            CHECK(LoadPreset(R, id, &back, &err) && back.version == before + 1 && back.blocks[0].cooldown_ms == 222);
+
+            ItemRules other = mine;
+            other.blocks[0].cooldown_ms = 333;
+            std::string nid, nname;
+            CHECK(SaveRulesAsPreset(R, other, "", "  Saved as  ", &nid, &nname, &err));
+            CHECK(nid != id && nid.rfind(kUserPrefix, 0) == 0 && nname == "Saved as");
+            CHECK(other.preset_copy.id == nid && other.preset_copy.version == 1 && other.preset_copy.name == "Saved as");
+            CHECK(GetPresetState(R, other) == PresetState::UpToDate);
+            // A taken User name is refused and the rules are left as they were.
+            ItemRules third = mine;
+            CHECK(!SaveRulesAsPreset(R, third, "", "saved AS", nullptr, nullptr, &err) && !err.empty());
+            CHECK(third.preset_copy.id == id);
+            CHECK(DeletePreset(R, nid, &err));
+        }
 
         // The preset is gone: Unknown, Update refused.
         const int copied = mine.preset_copy.version;

@@ -18,7 +18,12 @@
 //   end
 //   block ...            (the item's own blocks, the ones detection runs)
 //   cond ...
-//   event ...            (reserved for 10-4, kept as written)
+//   event t=1.25 kind=detected block=0 strength=0.8 speed=1.9   (the detections as last applied)
+//   event t=2.5 kind=user block=1 strength=0.7 speed=1.2        (the user's own event)
+//   event t=3.1 kind=suppress block=0                           (masks detections within 30 ms)
+//   applied markers=both sig=<hex>                   (what the last Apply wrote: mode + signature)
+//   tmarker t=1.25 name=Footstep L                   (a take marker RAV wrote: source time, name)
+//   pmarker guid={...} t=12.375                      (a project marker RAV wrote: GUID, project time)
 //
 // A preset file (.ravpreset) is the same grammar under "RAVPRESET 1": a `preset` line
 // (no `kept`), optional `options` / `analyse`, then its blocks (no copy/end/event).
@@ -45,6 +50,12 @@
 //   - `color` is "none" or "#RRGGBB" (Block::color = 0x1000000 | 0xRRGGBB).
 //   - `land` is "cross" or "peak:<condition>:max|min".
 //   - `on=0` on a `block` line = the rule is switched off (absent = on, story 10-3).
+//   - story 10-4: an `event` line writes `block`, `strength` and `speed` only when it was read
+//     with them (or made by this version), so a record written without them comes back as
+//     written. Event times are clip seconds; `block` is the rule's index in the item's blocks.
+//     An event of an unknown kind is kept and ignored. The event list belongs to the take,
+//     like its P_EXT: it never depends on the source file's path (relink, move, replace). An unknown line after an event stays
+//     after the same number of events (RecordTailLine).
 //
 // In a parsed record, SignalSpec bones / ref_bones hold bone-reference ids (see
 // BoneRefId), not track indices: BindBoneRefs turns them into skeleton bone indices.
@@ -109,10 +120,56 @@ struct PresetCopy {
 };
 
 // An unknown line read after an `event` line: written back after the same number of
-// events (events are opaque until 10-4), after the last one when there are fewer now.
+// events, after the last one when there are fewer now.
 struct RecordTailLine {
     size_t      after_events = 0;
     std::string text;
+};
+
+// ---- Story 10-4: the item's event list and the markers RAV owns -------------------------
+
+// Detected: a detection as last applied (Apply's snapshot). User: the user's own event, at a
+// fixed time (detection never moves it). Suppress: masks the detections of its rule within
+// +-30 ms. Other: a kind this version does not know (kept, ignored).
+enum class EventKind { Detected, User, Suppress, Other };
+
+struct EventEntry {
+    double    t = 0.0;  // clip seconds
+    EventKind kind = EventKind::User;
+    int       block = 0;  // the rule (index into ItemRules::blocks)
+    double    strength = 0.0;
+    double    speed = 0.0;
+    // Which optional fields the line writes (set when read with them, or by the code that makes it).
+    bool      has_block = true;
+    bool      has_strength = false;
+    bool      has_speed = false;
+    KeptText  kept;  // its `event` line
+};
+
+// A take marker RAV wrote at Apply: its position in source time and its name. RAV deletes
+// only a take marker with exactly that name at that time (one the user dragged is theirs).
+struct TakeMarkerRef {
+    double      t = 0.0;
+    std::string name;
+    KeptText    kept;
+};
+
+// A project marker RAV wrote at Apply: its GUID (REAPER's) and the project time it was put at.
+struct ProjectMarkerRef {
+    std::string guid;
+    double      t = 0.0;
+    KeptText    kept;
+};
+
+// Which markers an Apply writes (the global option).
+enum class MarkerMode { Take, Project, Both };
+
+// The last Apply: the option it ran with and the signature of what it wrote (event_list.h),
+// to tell "markers up to date" from "markers not written yet".
+struct AppliedInfo {
+    MarkerMode  mode = MarkerMode::Both;
+    std::string sig;
+    KeptText    kept;
 };
 
 struct ItemRules {
@@ -123,10 +180,18 @@ struct ItemRules {
     bool                        has_preset = false;
     PresetCopy                  preset_copy;
     std::vector<Block>          blocks;  // the item's rules (roles / bone keys)
-    std::vector<std::string>    events;  // raw `event` lines (10-4), kept as written
+    // Story 10-4.
+    std::vector<EventEntry>       events;    // detections as applied, user events, suppressions
+    bool                          has_applied = false;
+    AppliedInfo                   applied;
+    std::vector<TakeMarkerRef>    tmarkers;  // the take markers RAV owns
+    std::vector<ProjectMarkerRef> pmarkers;  // the project markers RAV owns
     KeptText                    head;    // unknown lines right after the header line
     std::vector<RecordTailLine> tail;
 };
+
+const char* MarkerModeWord(MarkerMode m);  // "take", "project", "both"
+bool MarkerModeFromWord(const std::string& s, MarkerMode* out);
 
 struct PresetData {
     int                format_version = 1;

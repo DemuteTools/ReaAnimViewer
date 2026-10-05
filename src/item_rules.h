@@ -44,6 +44,10 @@ struct ItemRulesRead {
 // (also through a section / reversed wrapper). Null otherwise.
 MediaItem_Take* RavTakeOf(MediaItem* item);
 
+// The animation file under a take (through a section / reversed wrapper). "" when the take
+// is not a RAV animation.
+std::string AnimPathOf(MediaItem_Take* take);
+
 // Reads the active take's record. False when the item has no RAV take.
 bool ReadItemRules(MediaItem* item, ItemRulesRead* out);
 
@@ -52,6 +56,10 @@ bool ReadItemRules(MediaItem* item, ItemRulesRead* out);
 // (nothing written). False when nothing was written because of an error (`err` says why).
 bool ModifyItemRules(MediaItem* item, const char* undo_desc, const std::function<bool(ItemRules&)>& edit,
                      std::string* err);
+
+// The same without an undo point of its own: for a write inside a caller's
+// Undo_BeginBlock2 / Undo_EndBlock2 (Apply). A null `undo_desc` there = no undo point.
+bool ModifyItemRulesNoUndo(MediaItem* item, const std::function<bool(ItemRules&)>& edit, std::string* err);
 
 // Writes the whole record (one undo point).
 bool WriteItemRules(MediaItem* item, const ItemRules& rules, const char* undo_desc, std::string* err);

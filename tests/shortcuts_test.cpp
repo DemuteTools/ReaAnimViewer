@@ -569,6 +569,49 @@ int main()
         CHECK(ViewerTakesChar(claimed, true, true));
     }
 
+    // ---- Story 10-4: Tagging view's E and Del ---------------------------------------------
+    {
+        const ShortcutBindings b = DefaultShortcutBindings();
+        CHECK(b[kShortcutTagAddEvent] == Key('E'));
+        CHECK(b[kShortcutTagDelEvent] == Key(vk::kDelete));
+        CHECK(kShortcutTable[kShortcutTagDelEvent].context == ShortcutContext::TaggingView);
+        // Del: the shot in Video view (unchanged), the event in Tagging view, REAPER's in RAV view.
+        CHECK(ShortcutActionFor(b, vk::kDelete, false, false, false, true, false) == kShortcutDeleteShot);
+        CHECK(ShortcutActionFor(b, vk::kDelete, false, false, false, false, true) == kShortcutTagDelEvent);
+        CHECK(ShortcutActionFor(b, vk::kDelete, false, false, false, false, false) == -1);
+        CHECK(ShortcutActionFor(b, 'E', false, false, false, false, true) == kShortcutTagAddEvent);
+        CHECK(ShortcutActionFor(b, 'E', false, false, false, true, false) == -1);   // Video view: REAPER's
+        CHECK(ShortcutActionFor(b, 'E', false, false, false, false, false) == -1);  // RAV view: REAPER's
+        // The shared default is no clash (the two views are never on together).
+        ShortcutBindings d = DefaultShortcutBindings();
+        CHECK(SanitizeShortcuts(d).empty());
+        CHECK(ShortcutOwner(d, Key(vk::kDelete), kShortcutDeleteShot) == -1);
+        CHECK(ShortcutOwner(d, Key(vk::kDelete), kShortcutTagDelEvent) == -1);
+        // ...but an Anywhere action cannot take E, and a Tagging action cannot take V.
+        int owner = -1;
+        CHECK(ShortcutRecordStep(d, kShortcutToggleView, 'E', false, false, false, &owner) == RecordOutcome::Conflict);
+        CHECK(owner == kShortcutTagAddEvent);
+        CHECK(ShortcutRecordStep(d, kShortcutTagAddEvent, 'V', false, false, false, &owner) == RecordOutcome::Conflict);
+        CHECK(owner == kShortcutToggleView);
+        // Cut (Video view) may take E: they are never on together.
+        CHECK(ShortcutRecordStep(d, kShortcutCut, 'E', false, false, false) == RecordOutcome::Assigned);
+        CHECK(SanitizeShortcuts(d).empty());
+        // Resetting Delete shot leaves Tagging view's Delete alone.
+        ShortcutBindings r = DefaultShortcutBindings();
+        r[kShortcutDeleteShot] = Key(vk::kBack);
+        const std::vector<int> ch = ResetShortcut(r, kShortcutDeleteShot);
+        CHECK(ch.size() == 1 && r[kShortcutTagDelEvent] == Key(vk::kDelete));
+        // Routing: Del reaches the viewer in Tagging view.
+        KeyRouteState st;
+        KeyRouteInput del;
+        del.msg = KeyMsg::KeyDown;
+        del.key = vk::kDelete;
+        CHECK(RouteViewerKey(b, del, st) == kRouteReaper);
+        del.tagging_view = true;
+        CHECK(RouteViewerKey(b, del, st) == kRouteViewer);
+        CHECK(FormatShortcut(b[kShortcutTagAddEvent]) == "E");
+    }
+
     if (g_fails == 0) std::printf("shortcuts: all checks passed\n");
     return g_fails == 0 ? 0 : 1;
 }

@@ -190,6 +190,8 @@ if(WIN32)
             src/tagging_signal.cpp
             src/tagging_session.cpp
             src/tagging_view_ui.cpp
+            src/event_list.cpp
+            src/tag_markers.cpp
     )
     # Generated rav_version.h (see RAV_VERSION above).
     target_include_directories(animviewer PRIVATE "${CMAKE_BINARY_DIR}/generated")

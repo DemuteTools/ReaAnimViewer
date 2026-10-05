@@ -97,9 +97,9 @@ const ShortcutBindings& CurrentShortcuts()
     return g_bindings;
 }
 
-int ShortcutActionForKey(unsigned key, bool ctrl, bool shift, bool alt, bool video_view)
+int ShortcutActionForKey(unsigned key, bool ctrl, bool shift, bool alt, bool video_view, bool tagging_view)
 {
-    return ShortcutActionFor(g_bindings, key, ctrl, shift, alt, video_view);
+    return ShortcutActionFor(g_bindings, key, ctrl, shift, alt, video_view, tagging_view);
 }
 
 void RefreshShortcutLabels()

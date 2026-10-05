@@ -7,7 +7,11 @@
 //     lane each: the curve (bright where its condition holds), the rule-colour shading where
 //     the whole rule holds, the threshold line and the dashed re-arm line (both draggable);
 //   - the panel on the right: a fixed header (item, preset, roles, item options, the rules),
-//     the inspector of the selected rule (scrolls), a fixed footer (Apply, the selection).
+//     the inspector of the selected rule or event (scrolls), a fixed footer (which markers
+//     Apply writes, Apply, the selection).
+// Story 10-4: the notify rows show the item's event list (event_list.h): click selects an
+// event, drag makes it the user's own at the drop time, right-click / Del suppresses,
+// restores or deletes it, double-click on a row (or E) adds one.
 // Every edit is written at once (tagging_session.h): one REAPER undo point per gesture; a
 // drag previews live and writes once on release, Esc cancels it.
 
@@ -32,6 +36,14 @@ void DrawTaggingPanel(float x, float y, float w, float h);
 
 // True while a drag or a typed value runs in the strip or the panel (Esc goes to it).
 bool TaggingGestureActive();
+
+// Story 10-4 -- the keys of Tagging view (shortcuts.h): E adds a user event at the playhead on
+// the selected rule; Del suppresses the selected detection, restores a suppressed one, deletes
+// a user event. One undo point each (written at the end of the next frame).
+void TaggingAddEventAtPlayhead();
+void TaggingDeleteSelectedEvent();
+// The footer's "Change" asked for the menu (its Auto-Tagging options): true once.
+bool TaggingConsumeMenuRequest();
 // The view changes or the viewer closes: a running drag is written as shown (one undo point).
 void TaggingEndGestures();
 

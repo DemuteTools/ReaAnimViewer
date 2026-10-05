@@ -17,12 +17,14 @@
 #include <imgui.h>
 
 #include "bone_roles.h"
+#include "event_list.h"
 #include "item_rules.h"
 #include "preset_store.h"
 #include "reaper_api.h"
 #include "rule_record.h"
 #include "shortcuts.h"  // LoadPrefFloat / SavePrefFloat
 #include "strip_view.h"
+#include "tag_markers.h"
 #include "tagging_session.h"
 #include "tagging_signal.h"
 #include "ui_theme.h"
@@ -59,12 +61,30 @@ float g_panel_start_w = 0.0f;
 int        g_sel = 0;             // the selected rule
 MediaItem* g_sel_item = nullptr;  // the item g_sel belongs to
 
-// A drag in the strip's lanes: a threshold or re-arm line, or a scrub.
-enum class StripDrag { None, Scrub, Threshold, Margin };
+// A drag in the strip's lanes: a threshold or re-arm line, a scrub, or (story 10-4) an event.
+enum class StripDrag { None, Scrub, Threshold, Margin, Event };
 StripDrag g_drag = StripDrag::None;
 int       g_drag_block = -1;
 int       g_drag_cond = -1;
 bool      g_drag_moved = false;
+
+// Story 10-4 -- the selected event: its rule, its time and which kind of event it is (a
+// detection, shown or suppressed; a user event; an orphan suppression). Found again each
+// frame in the model's event list (a detection a threshold change moved a little is followed).
+enum class EvGroup { Detection, User, Orphan };
+struct SelEvent {
+    bool    on = false;
+    int     block = -1;
+    double  t = 0.0;
+    EvGroup group = EvGroup::Detection;
+};
+SelEvent g_sel_ev;
+// The event being dragged: as it was at the press, and where it is now (clip time).
+ShownEvent g_drag_ev;
+double     g_drag_ev_entry_t = 0.0;  // its record entry's time (a user event)
+double     g_drag_ev_to = 0.0;
+float      g_drag_press_x = 0.0f;
+bool       g_menu_request = false;  // the footer's "Change"
 
 // The marker name being typed (kept while its field is active).
 char       g_name_buf[256] = {};
@@ -231,6 +251,11 @@ Condition* CondAt(ItemRules& r, int b, int c)
                                                                           : nullptr;
 }
 
+std::string RuleTitle(const Block& b)
+{
+    return b.marker.empty() ? std::string("(unnamed rule)") : b.marker;
+}
+
 // Writes run after the widgets are drawn (end of the strip / the panel): an edit replaces the
 // rules the widgets still read this frame. Each one is still one undo point, at once.
 std::vector<std::function<void()>> g_after;
@@ -253,12 +278,208 @@ void RunLater()
 void Edit(const std::string& desc, std::function<bool(ItemRules&)> fn, MediaItem* item = nullptr)
 {
     if (!item) item = GetTaggingModel().item;
-    Later([desc, fn, item]() { TaggingEdit(desc.c_str(), fn, item); });
+    Later([desc, fn, item]() {
+        if (TaggingEdit(desc.c_str(), fn, item)) ClearLastApplyResult();  // the footer's Apply line is stale now
+    });
 }
 
-std::string RuleTitle(const Block& b)
+// ---- Story 10-4: the event list ------------------------------------------------------------------
+
+EvGroup GroupOf(ShownKind k)
 {
-    return b.marker.empty() ? std::string("(unnamed rule)") : b.marker;
+    return k == ShownKind::User ? EvGroup::User : k == ShownKind::Orphan ? EvGroup::Orphan : EvGroup::Detection;
+}
+
+void SelectEvent(const ShownEvent& e)
+{
+    g_sel_ev.on = true;
+    g_sel_ev.block = e.block;
+    g_sel_ev.t = e.t;
+    g_sel_ev.group = GroupOf(e.kind);
+    g_sel = e.block;
+}
+
+void SelectEventAt(int block, double t, EvGroup group)
+{
+    g_sel_ev.on = true;
+    g_sel_ev.block = block;
+    g_sel_ev.t = t;
+    g_sel_ev.group = group;
+    g_sel = block;
+}
+
+void ClearEventSelection()
+{
+    g_sel_ev.on = false;
+}
+
+// The selected event in the model's list (null when it is gone; the selection then clears).
+const ShownEvent* SelectedEvent(const TaggingModel& m)
+{
+    if (!g_sel_ev.on) return nullptr;
+    const ShownEvent* best = nullptr;
+    double best_d = 1e300;
+    for (const ShownEvent& e : m.events) {
+        if (e.block != g_sel_ev.block || GroupOf(e.kind) != g_sel_ev.group) continue;
+        const double d = std::fabs(e.t - g_sel_ev.t);
+        // A user event or an orphan stays where it is; a detection may move a little.
+        const double tol = g_sel_ev.group == EvGroup::Detection ? 0.06 : 1e-6;
+        if (d <= tol && d < best_d) {
+            best = &e;
+            best_d = d;
+        }
+    }
+    if (best) g_sel_ev.t = best->t;
+    else if (m.detected && g_after.empty()) g_sel_ev.on = false;  // gone (not an edit still queued)
+    return best;
+}
+
+// The time of the record entry behind a shown event (a suppression's own time for a
+// suppressed detection), in the rules shown; NAN when there is none.
+double EntryTime(const ShownEvent& e)
+{
+    const ItemRules& r = TaggingShownRules();
+    if (e.entry < 0 || e.entry >= static_cast<int>(r.events.size())) return std::nan("");
+    return r.events[static_cast<size_t>(e.entry)].t;
+}
+
+// The entry of `kind` on rule `block` at exactly time t, or -1.
+int FindEntry(const ItemRules& r, EventKind kind, int block, double t)
+{
+    for (size_t i = 0; i < r.events.size(); ++i) {
+        const EventEntry& x = r.events[i];
+        if (x.kind == kind && x.block == block && x.t == t) return static_cast<int>(i);
+    }
+    return -1;
+}
+
+std::string RuleNameAt(const ItemRules& r, int b)
+{
+    return (b >= 0 && b < static_cast<int>(r.blocks.size())) ? RuleTitle(r.blocks[static_cast<size_t>(b)])
+                                                              : std::string("rule");
+}
+
+// A user event on rule `block` at clip time t: its values measured there.
+void AddUserEvent(int block, double t)
+{
+    const ItemRules& shown = TaggingShownRules();
+    if (block < 0 || block >= static_cast<int>(shown.blocks.size()) || !std::isfinite(t)) return;
+    Edit("RAV: Add event (" + RuleNameAt(shown, block) + ")", [block, t](ItemRules& r) {
+        if (!BlockAt(r, block)) return false;
+        double s = 0.0, v = 0.0;
+        TaggingMeasureEvent(r, block, t, &s, &v);
+        r.events.push_back(MakeUserEvent(block, t, s, v));
+        return true;
+    });
+    SelectEventAt(block, t, EvGroup::User);
+}
+
+// Right-click / Del: a detection is suppressed, a suppression restored, a user event deleted.
+void ToggleEvent(const ShownEvent& e)
+{
+    const ItemRules& shown = TaggingShownRules();
+    const std::string rule = RuleNameAt(shown, e.block);
+    const int block = e.block;
+    if (e.kind == ShownKind::Detected) {
+        const double t = e.t;
+        Edit("RAV: Suppress event (" + rule + ")", [block, t](ItemRules& r) {
+            if (!BlockAt(r, block)) return false;
+            r.events.push_back(MakeSuppression(block, t));
+            return true;
+        });
+    } else if (e.kind == ShownKind::Suppressed || e.kind == ShownKind::Orphan) {
+        const double t0 = EntryTime(e);
+        if (!std::isfinite(t0)) return;
+        Edit("RAV: Restore event (" + rule + ")", [block, t0](ItemRules& r) {
+            const int i = FindEntry(r, EventKind::Suppress, block, t0);
+            if (i < 0) return false;
+            r.events.erase(r.events.begin() + i);
+            return true;
+        });
+    } else if (e.kind == ShownKind::User) {
+        const double t0 = EntryTime(e);
+        if (!std::isfinite(t0)) return;
+        Edit("RAV: Delete event (" + rule + ")", [block, t0](ItemRules& r) {
+            const int i = FindEntry(r, EventKind::User, block, t0);
+            if (i < 0) return false;
+            r.events.erase(r.events.begin() + i);
+            return true;
+        });
+        ClearEventSelection();
+    }
+}
+
+// A drag of a detection makes it the user's own at `to` (the detection is suppressed); a user
+// event moves there. Its values are measured at its new time. One undo point.
+void MoveEvent(const ShownEvent& e, double entry_t, double to)
+{
+    const ItemRules& shown = TaggingShownRules();
+    const std::string rule = RuleNameAt(shown, e.block);
+    const int block = e.block;
+    if (e.kind == ShownKind::Detected) {
+        const double det_t = e.t;
+        Edit("RAV: Move event (" + rule + ")", [block, det_t, to](ItemRules& r) {
+            if (!BlockAt(r, block)) return false;
+            double s = 0.0, v = 0.0;
+            TaggingMeasureEvent(r, block, to, &s, &v);
+            r.events.push_back(MakeSuppression(block, det_t));
+            r.events.push_back(MakeUserEvent(block, to, s, v));
+            return true;
+        });
+    } else if (e.kind == ShownKind::User) {
+        if (!std::isfinite(entry_t)) return;
+        Edit("RAV: Move event (" + rule + ")", [block, entry_t, to](ItemRules& r) {
+            const int i = FindEntry(r, EventKind::User, block, entry_t);
+            if (i < 0) return false;
+            EventEntry& x = r.events[static_cast<size_t>(i)];
+            x.t = to;
+            TaggingMeasureEvent(r, block, to, &x.strength, &x.speed);
+            x.has_strength = x.has_speed = true;
+            return true;
+        });
+    } else {
+        return;
+    }
+    SelectEventAt(block, to, EvGroup::User);
+}
+
+// Clip time for project time p on the item's first pass, held inside it (a drop past its end
+// lands on its last instant).
+bool ClipTimeForDrop(const ItemClipMap& map, double p, double* clip_t)
+{
+    ClipPass pass;
+    if (!FirstClipPass(map, &pass)) return false;
+    p = std::min(std::max(p, pass.p0), pass.p1);
+    return FirstPassClipTime(map, p, clip_t);
+}
+
+// Whether events can be edited now (rules shown and detection ran).
+bool EventsEditable(const TaggingModel& m)
+{
+    return m.item && m.has_rules && m.detected && m.missing_count == 0;
+}
+
+// The marker kinds a shown event draws, in a notify row from ry to ry + rh at x.
+void DrawEventMark(ImDrawList* dl, const ShownEvent& e, float x, float ry, float rh, ImU32 col, bool selected)
+{
+    const float y0 = ry + 2.0f, y1 = ry + rh - 2.0f;
+    if (e.kind == ShownKind::Orphan) {
+        for (float y = y0; y < y1; y += 4.0f)
+            dl->AddLine(ImVec2(x, y), ImVec2(x, std::min(y + 2.0f, y1)), WithAlpha(col, 0x73), 1.0f);
+    } else {
+        const ImU32 c = e.kind == ShownKind::Suppressed ? WithAlpha(col, 0x59) : col;
+        dl->AddLine(ImVec2(x, y0), ImVec2(x, y1), c, selected ? 2.5f : 1.5f);
+        const ImVec2 a(x - 4.5f, y0), b(x + 4.5f, y0), d(x, y0 + 6.0f);
+        if (e.kind == ShownKind::User) dl->AddTriangle(a, b, d, c, 1.5f);
+        else dl->AddTriangleFilled(a, b, d, c);
+    }
+    if (e.kind == ShownKind::Suppressed || e.kind == ShownKind::Orphan)
+        dl->AddLine(ImVec2(x - 4.0f, y1 - 2.0f), ImVec2(x + 5.0f, y0 + 4.0f), ui::kText, 1.3f);
+    if (e.kind == ShownKind::User) {
+        const float fs = ImGui::GetFontSize() * 0.85f;
+        dl->AddText(ImGui::GetFont(), fs, ImVec2(x + 4.0f, y1 - fs), col, "you");
+    }
+    if (selected) dl->AddRect(ImVec2(x - 7.0f, ry + 1.0f), ImVec2(x + 8.0f, ry + rh - 1.0f), kPlayhead, 3.0f);
 }
 
 // A number field bound to one value of the rules (display units): drag previews, release /
@@ -395,6 +616,8 @@ void OnItemChanged(MediaItem* item)
     g_sel_item = item;
     g_sel = 0;
     g_drag = StripDrag::None;
+    ClearEventSelection();
+    ClearLastApplyResult();
     ui::DragNumberReset();
     TaggingCancelPreview();
 }
@@ -450,7 +673,33 @@ float TaggingPanelFootprint(int client_w)
 
 bool TaggingGestureActive()
 {
-    return g_drag == StripDrag::Threshold || g_drag == StripDrag::Margin || ui::DragNumberActive();
+    return g_drag == StripDrag::Threshold || g_drag == StripDrag::Margin || g_drag == StripDrag::Event ||
+           ui::DragNumberActive();
+}
+
+void TaggingAddEventAtPlayhead()
+{
+    const TaggingModel& m = GetTaggingModel();
+    if (!EventsEditable(m)) return;
+    const ItemRules& rules = TaggingShownRules();
+    if (g_sel < 0 || g_sel >= static_cast<int>(rules.blocks.size())) return;
+    double clip_t = 0.0;
+    if (!FirstPassClipTime(m.map, Playhead(nullptr), &clip_t)) return;  // the playhead is off the clip's first pass
+    AddUserEvent(g_sel, clip_t);
+}
+
+void TaggingDeleteSelectedEvent()
+{
+    const TaggingModel& m = GetTaggingModel();
+    if (!EventsEditable(m)) return;
+    if (const ShownEvent* e = SelectedEvent(m)) ToggleEvent(*e);
+}
+
+bool TaggingConsumeMenuRequest()
+{
+    const bool r = g_menu_request;
+    g_menu_request = false;
+    return r;
 }
 
 void TaggingEndGestures()
@@ -511,6 +760,24 @@ void DrawTaggingStrip(float x, float y, float w, float h)
         {
             const char* label = "Analyse";
             const float bw = ImGui::CalcTextSize(label).x + 20.0f;
+            // Story 10-4: "+ Event [E]" adds a user event at the playhead on the selected rule.
+            {
+                const char* key = ShortcutKeyLabel(kShortcutTagAddEvent);
+                const float ew = ImGui::CalcTextSize("+ Event").x + ImGui::CalcTextSize(key).x + 30.0f;
+                const ImVec2 ep(c0.x + avail_w - bw - 8.0f - ew, c0.y);
+                ImGui::SetCursorScreenPos(ep);
+                const bool can_add = EventsEditable(m) && g_sel < static_cast<int>(rules.blocks.size());
+                if (!can_add) ImGui::BeginDisabled();
+                if (ui::SolidButton("##tagaddev", ImVec2(ew, 0.0f))) Later([]() { TaggingAddEventAtPlayhead(); });
+                if (!can_add) ImGui::EndDisabled();
+                const float ty = ep.y + (head_h - th) * 0.5f;
+                dl->AddText(ImVec2(ep.x + 8.0f, ty), can_add ? ui::kText : ui::kFaint, "+ Event");
+                ui::KeyCap(dl, ImVec2(ep.x + 14.0f + ImGui::CalcTextSize("+ Event").x, ty - 1.5f), key,
+                           can_add ? ui::kText : ui::kFaint);
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip("Adds your own event at the playhead on the selected rule.\n"
+                                      "Double-click a rule's row to add one there.");
+            }
             ImGui::SetCursorScreenPos(ImVec2(c0.x + avail_w - bw, c0.y));
             const bool can = m.item && m.has_rules && m.missing_count == 0 && m.file_loaded && !rules.blocks.empty();
             if (!can) ImGui::BeginDisabled();
@@ -580,7 +847,13 @@ void DrawTaggingStrip(float x, float y, float w, float h)
             const double t_mouse = StripTimeAt(win, lane_x, lane_w, mouse.x);
             const StripRuler ruler = StripRulerFor(win, lane_w, fps);
             DrawStripRuler(dl, win, ruler, lane_x, lane_w, rows_top, ruler_h, fps);
-            const std::vector<ClipPass> passes = ClipPasses(m.map);
+            // Story 10-4: RAV plays the clip once then holds its last frame: the strip shows the
+            // clip's first pass only (as Apply writes its markers).
+            std::vector<ClipPass> passes;
+            {
+                ClipPass fp;
+                if (FirstClipPass(m.map, &fp)) passes.push_back(fp);
+            }
             const float zx0 = x_of(item_start), zx1 = x_of(item_end);
 
             // The item's zone in the lanes area (outside it: dimmed).
@@ -600,6 +873,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
             } else {
                 // ---- Notify rows: one per rule, its markers ----
                 const int nb = static_cast<int>(rules.blocks.size());
+                const ShownEvent* sel_ev = SelectedEvent(m);
                 const float row_h = std::max(16.0f, th + 6.0f);
                 std::vector<float> row_y(static_cast<size_t>(nb));
                 for (int b = 0; b < nb; ++b) {
@@ -618,15 +892,26 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                                 blk.enabled ? (sel ? ui::kText : ui::kMuted) : ui::kFaint, title.c_str());
                     dl->PopClipRect();
                     dl->PushClipRect(ImVec2(lane_x, ry), ImVec2(lane_x + lane_w, ry + row_h), true);
-                    if (blk.enabled && b < static_cast<int>(m.trace.blocks.size())) {
+                    // Story 10-4: the rule's events (detected, suppressed, orphan suppressions,
+                    // the user's own), on the clip's first pass.
+                    {
                         const ImU32 col = RuleColor(blk);
-                        for (const Event& e : m.trace.blocks[static_cast<size_t>(b)].events) {
-                            for (double pt : ClipToProjectTimes(m.map, e.time_s)) {
-                                if (pt < win.v0 || pt > win.v1) continue;
-                                const float ex = std::floor(x_of(pt)) + 0.5f;
-                                dl->AddLine(ImVec2(ex, ry + 2.0f), ImVec2(ex, ry + row_h - 2.0f), col, 1.5f);
-                                dl->AddTriangleFilled(ImVec2(ex - 4.5f, ry + 2.0f), ImVec2(ex + 4.5f, ry + 2.0f),
-                                                      ImVec2(ex, ry + 8.0f), col);
+                        const bool dragging = g_drag == StripDrag::Event && g_drag_moved && g_drag_ev.block == b;
+                        for (const ShownEvent& e : m.events) {
+                            if (e.block != b) continue;
+                            double pt = 0.0;
+                            if (!FirstPassProjectTime(m.map, e.t, &pt) || pt < win.v0 || pt > win.v1) continue;
+                            const bool is_sel = sel_ev && sel_ev->block == e.block && sel_ev->t == e.t && sel_ev->kind == e.kind;
+                            const bool moving = dragging && e.kind == g_drag_ev.kind && e.t == g_drag_ev.t;
+                            const float ex = std::floor(x_of(pt)) + 0.5f;
+                            DrawEventMark(dl, e, ex, ry, row_h, moving ? WithAlpha(col, 0x40) : col, is_sel && !moving);
+                        }
+                        if (dragging) {  // where it lands: the user's own event
+                            double pt = 0.0;
+                            if (FirstPassProjectTime(m.map, g_drag_ev_to, &pt)) {
+                                ShownEvent ghost = g_drag_ev;
+                                ghost.kind = ShownKind::User;
+                                DrawEventMark(dl, ghost, std::floor(x_of(pt)) + 0.5f, ry, row_h, col, true);
                             }
                         }
                     }
@@ -652,7 +937,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                     const double rate_hz = m.trace.rate_hz > 0.0 ? m.trace.rate_hz : 240.0;
                     const double item_rate = m.map.rate > 0.0 ? m.map.rate : 1.0;
                     double clip_now = 0.0;
-                    const bool now_in = ProjectToClipTime(m.map, playhead, &clip_now);
+                    const bool now_in = FirstPassClipTime(m.map, playhead, &clip_now);
                     for (int c = 0; c < nc; ++c) {
                         LaneGeom L;
                         L.cond = c;
@@ -796,24 +1081,90 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                     }
                     return false;
                 };
+                // Story 10-4: the notify row under the mouse (-1 = none) and its nearest event within 7 px.
+                auto row_at = [&](float my) {
+                    for (int b = 0; b < nb; ++b) {
+                        const float ry = row_y[static_cast<size_t>(b)];
+                        if (my >= ry && my <= ry + row_h) return b;
+                    }
+                    return -1;
+                };
+                auto event_at = [&](float mx, float my) -> const ShownEvent* {
+                    const int b = row_at(my);
+                    if (b < 0 || mx < lane_x || mx > lane_x + lane_w) return nullptr;
+                    const ShownEvent* best = nullptr;
+                    float best_d = 7.0f;
+                    for (const ShownEvent& e : m.events) {
+                        double pt = 0.0;
+                        if (e.block != b || !FirstPassProjectTime(m.map, e.t, &pt)) continue;
+                        const float d = std::fabs(x_of(pt) - mx);
+                        if (d <= best_d) {
+                            best_d = d;
+                            best = &e;
+                        }
+                    }
+                    return best;
+                };
+                const bool events_ok = EventsEditable(m) && !m.previewing;
                 if (area_pressed) {
                     g_drag = StripDrag::Scrub;
                     g_drag_moved = false;
                     int cond = -1;
                     bool margin = false;
-                    if (line_at(mouse.x, mouse.y, &cond, &margin)) {
+                    const ShownEvent* hit = events_ok ? event_at(mouse.x, mouse.y) : nullptr;
+                    if (hit) {
+                        // An event: select it; a detection or a user event can be dragged.
+                        SelectEvent(*hit);
+                        g_drag = (hit->kind == ShownKind::Detected || hit->kind == ShownKind::User) ? StripDrag::Event
+                                                                                                     : StripDrag::None;
+                        g_drag_ev = *hit;
+                        g_drag_ev_entry_t = EntryTime(*hit);
+                        g_drag_ev_to = hit->t;
+                        g_drag_press_x = mouse.x;
+                    } else if (line_at(mouse.x, mouse.y, &cond, &margin)) {
                         g_drag = margin ? StripDrag::Margin : StripDrag::Threshold;
                         g_drag_block = g_sel;
                         g_drag_cond = cond;
                     } else {
-                        for (int b = 0; b < nb; ++b) {
-                            const float ry = row_y[static_cast<size_t>(b)];
-                            if (mouse.y >= ry && mouse.y <= ry + row_h) {
-                                g_sel = b;
-                                if (mouse.x < lane_x) g_drag = StripDrag::None;  // the row's label: select only
-                                break;
-                            }
+                        ClearEventSelection();  // a click elsewhere: back to the rule
+                        const int b = row_at(mouse.y);
+                        if (b >= 0) {
+                            g_sel = b;
+                            if (mouse.x < lane_x) g_drag = StripDrag::None;  // the row's label: select only
                         }
+                    }
+                }
+                // Story 10-4: dragging an event (past 2 px) moves it; Esc cancels; release writes.
+                if (area_active && g_drag == StripDrag::Event) {
+                    if (!g_drag_moved && std::fabs(mouse.x - g_drag_press_x) > 2.0f) g_drag_moved = true;
+                    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+                        g_drag = StripDrag::None;  // inert until the release
+                        g_drag_moved = false;
+                    } else if (g_drag_moved) {
+                        double to = 0.0;
+                        if (ClipTimeForDrop(m.map, t_mouse, &to)) g_drag_ev_to = to;
+                        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+                    }
+                }
+                if (area_released && g_drag == StripDrag::Event) {
+                    if (g_drag_moved && events_ok) MoveEvent(g_drag_ev, g_drag_ev_entry_t, g_drag_ev_to);
+                    g_drag = StripDrag::None;
+                    g_drag_moved = false;
+                }
+                // Right-click: suppress / restore / delete. Double-click on a row: a user event there.
+                if (area_hovered && events_ok && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+                    if (const ShownEvent* hit = event_at(mouse.x, mouse.y)) {
+                        SelectEvent(*hit);
+                        ToggleEvent(*hit);
+                    }
+                }
+                if (area_hovered && events_ok && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && mouse.x >= lane_x &&
+                    !event_at(mouse.x, mouse.y)) {
+                    const int b = row_at(mouse.y);
+                    double clip_t = 0.0;
+                    if (b >= 0 && FirstPassClipTime(m.map, t_mouse, &clip_t)) {
+                        g_sel = b;
+                        AddUserEvent(b, clip_t);
                     }
                 }
                 if (area_active && (g_drag == StripDrag::Threshold || g_drag == StripDrag::Margin)) {
@@ -857,11 +1208,17 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                 if (area_hovered && !area_active) {
                     int cond = -1;
                     bool margin = false;
-                    if (line_at(mouse.x, mouse.y, &cond, &margin)) {
+                    if (events_ok && event_at(mouse.x, mouse.y)) {
+                        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+                        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                            ImGui::SetTooltip("Click: select  " RAV_DOT "  Drag: make it yours at a new time\n"
+                                              "Right-click / Del: suppress, restore or delete");
+                    } else if (line_at(mouse.x, mouse.y, &cond, &margin)) {
                         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
                     } else if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip) && mouse.x >= lane_x) {
                         ImGui::SetTooltip("Click or drag to move the playhead\nDrag a threshold line (dashed: the re-arm "
-                                          "level) to tune it\nAlt+wheel: zoom  " RAV_DOT "  Shift+wheel: scroll");
+                                          "level) to tune it\nDouble-click a rule's row: add an event there\n"
+                                          "Alt+wheel: zoom  " RAV_DOT "  Shift+wheel: scroll");
                     }
                 }
             }
@@ -876,6 +1233,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                        t_mouse, &QueueVideoSeek);
         }
         if (!area_active && g_drag == StripDrag::Scrub) g_drag = StripDrag::None;
+        if (!area_active && g_drag == StripDrag::Event) g_drag = StripDrag::None;  // the press was lost: nothing written
         if (!area_active && (g_drag == StripDrag::Threshold || g_drag == StripDrag::Margin)) {
             Later([]() { TaggingCancelPreview(); });  // the press was lost (the item went away): nothing written
             g_drag = StripDrag::None;
@@ -1062,7 +1420,10 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
         const bool sel = b == g_sel;
         // The card: the whole row selects; the switch and the buttons sit on it.
         ImGui::SetNextItemAllowOverlap();
-        if (ImGui::InvisibleButton("##card", ImVec2(w, rh))) g_sel = b;
+        if (ImGui::InvisibleButton("##card", ImVec2(w, rh))) {
+            g_sel = b;
+            ClearEventSelection();  // the inspector shows the rule
+        }
         const bool hov = ImGui::IsItemHovered();
         dl->AddRectFilled(p, ImVec2(p.x + w, p.y + rh), sel ? ui::kAccentSoft : (hov ? ui::kRaised : 0), ui::kRadiusMd);
         if (sel) dl->AddRect(p, ImVec2(p.x + w, p.y + rh), ui::kAccentLine, ui::kRadiusMd);
@@ -1075,8 +1436,13 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
         char count[16];
         if (!blk.enabled)
             std::snprintf(count, sizeof(count), "0");
-        else if (b < static_cast<int>(m.trace.blocks.size()) && m.detected)
-            std::snprintf(count, sizeof(count), "%d", static_cast<int>(m.trace.blocks[static_cast<size_t>(b)].events.size()));
+        else if (m.detected) {
+            // Story 10-4: the events Apply writes for this rule (detections kept + the user's own).
+            int k = 0;
+            for (const PlannedMarker& pm : m.planned)
+                if (pm.block == b) ++k;
+            std::snprintf(count, sizeof(count), "%d", k);
+        }
         else
             std::snprintf(count, sizeof(count), "-");
         const float bx = p.x + w - 2.0f * (fh + 2.0f) - 4.0f;
@@ -1114,17 +1480,23 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
             if (!x) return false;
             Block copy = *x;
             copy.color = ToRecordColor(col);
+            // Story 10-4: the rules after it move down one; their events follow.
+            RemapEventBlocks(r.events, BlockMapForInsert(r.blocks.size(), b + 1));
             r.blocks.insert(r.blocks.begin() + b + 1, copy);
             return true;
         });
+        ClearEventSelection();
         g_sel = b + 1;
     } else if (do_del >= 0) {
         const int b = do_del;
         Edit("RAV: Delete rule (" + RuleTitle(rules.blocks[static_cast<size_t>(b)]) + ")", [b](ItemRules& r) {
             if (!BlockAt(r, b)) return false;
+            // Story 10-4: its user events and suppressions go with it; the next rules' move up.
+            RemapEventBlocks(r.events, BlockMapForDelete(r.blocks.size(), b));
             r.blocks.erase(r.blocks.begin() + b);
             return true;
         });
+        ClearEventSelection();
         if (g_sel >= b && g_sel > 0) --g_sel;
     }
 }
@@ -1311,12 +1683,161 @@ void ConditionEditor(const Block& blk, int b, int c)
     ImGui::PopID();
 }
 
+// Story 10-4 -- the selected event: its state, time, values and rule; Suppress / Restore /
+// Delete; Go to event. A user event's time is typed here (ms in the clip): it moves there.
+void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const ShownEvent& e)
+{
+    const Block& blk = rules.blocks[static_cast<size_t>(e.block)];
+    const std::string rule = RuleTitle(blk);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    // Crumb: < rule  >  (dot) Event rule
+    {
+        const std::string back = "< " + rule + "##evback";
+        if (ImGui::SmallButton(back.c_str())) ClearEventSelection();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Back to the rule");
+        ImGui::SameLine();
+        ImGui::TextDisabled(">");
+        ImGui::SameLine();
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float  lh = ImGui::GetTextLineHeight();
+        dl->AddCircleFilled(ImVec2(p.x + 4.0f, p.y + lh * 0.5f), 4.0f, RuleColor(blk), 12);
+        ImGui::Dummy(ImVec2(10.0f, lh));
+        ImGui::SameLine();
+        ImGui::TextUnformatted(("Event " + rule).c_str());
+    }
+    ImGui::Dummy(ImVec2(0.0f, 4.0f));
+
+    const char* state = e.kind == ShownKind::Detected     ? "Detected"
+                        : e.kind == ShownKind::User       ? "Yours (fixed time)"
+                        : e.kind == ShownKind::Suppressed ? "Suppressed"
+                                                          : "Suppression (nothing detected here now)";
+    // Values: a detection's own; a user event's measured at its time, as detection measures them.
+    double strength = e.strength, speed = e.speed;
+    if (e.kind == ShownKind::User) TaggingMeasureEvent(rules, e.block, e.t, &strength, &speed);
+    SignalSpec speed_spec = blk.conditions.empty() ? SignalSpec{} : blk.conditions[0].signal;
+    speed_spec.measure = Measure::Speed;
+    SignalSpec strength_spec = blk.strength_signal.bones.empty() ? speed_spec : blk.strength_signal;
+
+    constexpr float kKeyW = 78.0f;
+    auto key = [&](const char* k) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextDisabled("%s", k);
+        ImGui::SameLine(kKeyW);
+    };
+    key("State");
+    ImGui::TextUnformatted(state);
+
+    key("Time");
+    double project_t = 0.0;
+    const bool on_timeline = FirstPassProjectTime(m.map, e.t, &project_t);
+    if (e.kind == ShownKind::User && e.entry >= 0) {
+        // Typed (or dragged sideways): previews live, Enter / release writes one undo point.
+        const int    entry = e.entry, block = e.block;
+        const double clip_len = m.map.clip_len > 0.0 ? m.map.clip_len : 1e9;
+        double ms = e.t * 1000.0;
+        const double saved_t = (entry < static_cast<int>(m.rules.events.size()) &&
+                                m.rules.events[static_cast<size_t>(entry)].kind == EventKind::User)
+                                   ? m.rules.events[static_cast<size_t>(entry)].t
+                                   : e.t;
+        switch (ui::DragNumber("##evtime", &ms, 1.0, 1, "ms", 90.0f)) {
+        case ui::DragNumberEvent::Live: {
+            const double t = std::min(std::max(0.0, ms / 1000.0), clip_len);
+            Later([entry, block, t, item = m.item]() {
+                if (GetTaggingModel().item != item) return;
+                ItemRules p = TaggingShownRules();
+                if (entry >= static_cast<int>(p.events.size())) return;
+                EventEntry& x = p.events[static_cast<size_t>(entry)];
+                if (x.kind != EventKind::User || x.block != block) return;
+                x.t = t;
+                TaggingPreview(p);
+            });
+            g_sel_ev.t = t;
+            break;
+        }
+        case ui::DragNumberEvent::Commit: {
+            const double t = std::min(std::max(0.0, ms / 1000.0), clip_len);
+            if (t != saved_t) {
+                Edit("RAV: Set event time (" + rule + ")", [block, saved_t, t](ItemRules& r) {
+                    const int i = FindEntry(r, EventKind::User, block, saved_t);
+                    if (i < 0) return false;
+                    EventEntry& x = r.events[static_cast<size_t>(i)];
+                    x.t = t;
+                    TaggingMeasureEvent(r, block, t, &x.strength, &x.speed);
+                    x.has_strength = x.has_speed = true;
+                    return true;
+                });
+            } else {
+                Later([]() { TaggingCancelPreview(); });
+            }
+            SelectEventAt(block, t, EvGroup::User);
+            break;
+        }
+        case ui::DragNumberEvent::Cancel:
+            Later([]() { TaggingCancelPreview(); });
+            g_sel_ev.t = saved_t;
+            break;
+        default:
+            break;
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+            ImGui::SetTooltip("Its time in the clip: drag sideways, or click to type (Enter)");
+    } else {
+        ImGui::Text("%.1f ms", e.t * 1000.0);
+    }
+    {
+        char tl[48];
+        if (on_timeline) FormatTime(project_t, tl, sizeof(tl));
+        ImGui::SetCursorPosX(kKeyW);
+        if (on_timeline) ImGui::TextDisabled("at %s on the timeline", tl);
+        else ImGui::TextDisabled("outside the item: not written");
+    }
+
+    if (e.kind != ShownKind::Orphan) {
+        key("Strength");
+        ImGui::TextUnformatted(FormatDisplay(strength_spec, strength).c_str());
+        key("Speed");
+        ImGui::TextUnformatted(FormatDisplay(speed_spec, speed).c_str());
+    }
+    key("Rule");
+    ImGui::TextUnformatted(rule.c_str());
+
+    ImGui::Dummy(ImVec2(0.0f, 2.0f));
+    ui::SubText(e.kind == ShownKind::User       ? "Detection never moves your events. Their values are measured at their time."
+                : e.kind == ShownKind::Detected ? "Drag it in the strip to make it yours, or suppress it."
+                                                : "Masks any detection of this rule within 30 ms of this time.");
+    ImGui::Dummy(ImVec2(0.0f, 4.0f));
+
+    const char* dk = ShortcutKeyLabel(kShortcutTagDelEvent);
+    const std::string act = std::string(e.kind == ShownKind::Detected ? "Suppress" : e.kind == ShownKind::User ? "Delete" : "Restore") +
+                            "  (" + dk + ")##evact";
+    if (ui::SolidButton(act.c_str())) {
+        const ShownEvent copy = e;
+        ToggleEvent(copy);
+    }
+    ImGui::SameLine();
+    if (!on_timeline) ImGui::BeginDisabled();
+    if (ImGui::Button("Go to event##evgo")) {
+        const double t = project_t;
+        QueueVideoSeek(t);
+    }
+    if (!on_timeline) ImGui::EndDisabled();
+}
+
 void DrawInspector(const ItemRules& rules)
 {
     const int nb = static_cast<int>(rules.blocks.size());
     if (g_sel < 0 || g_sel >= nb) {
         ui::SubText("No rule. Add one (+ Rule), or pick a preset.");
         return;
+    }
+    // Story 10-4: the inspector shows the selected event, when there is one.
+    {
+        const TaggingModel& m = GetTaggingModel();
+        const ShownEvent* ev = SelectedEvent(m);
+        if (ev && ev->block >= 0 && ev->block < nb) {
+            DrawEventInspector(m, rules, *ev);
+            return;
+        }
     }
     const int b = g_sel;
     const Block& blk = rules.blocks[static_cast<size_t>(b)];
@@ -1492,24 +2013,72 @@ void DrawInspector(const ItemRules& rules)
 void DrawFooter(const TaggingModel& m)
 {
     ImGui::Separator();
-    // Apply is shown, disabled until story 10-4 (the mock-up's disabled primary: raised, faint).
-    ImGui::PushStyleColor(ImGuiCol_Button, ui::Col(ui::kRaised));
-    ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kFaint));
-    ImGui::BeginDisabled();
-    ImGui::Button("Apply##tagapply", ImVec2(-1.0f, 0.0f));
-    ImGui::EndDisabled();
-    ImGui::PopStyleColor(2);
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("Writing the markers comes with story 10-4");
-    ui::Caption("Markers: story 10-4");
-    char sel[160];
-    std::snprintf(sel, sizeof(sel), "%d selected " RAV_DOT " %d without rules skipped " RAV_DOT " %d skipped: roles",
-                  m.sel_count, m.sel_without_rules, m.sel_roles_skipped);
-    ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
-    ImGui::PushTextWrapPos(0.0f);
-    ImGui::TextUnformatted(sel);
-    ImGui::PopTextWrapPos();
-    ImGui::PopStyleColor();
+    // Which markers Apply writes (the global option) and its "Change" (opens the menu on it).
+    {
+        const MarkerMode mode = GetTaggingMarkerMode();
+        ImGui::AlignTextToFramePadding();
+        ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
+        ImGui::TextUnformatted(MarkerModeLine(mode));
+        ImGui::PopStyleColor();
+        ImGui::SameLine(std::max(ImGui::GetCursorPosX() + 6.0f,
+                                 ImGui::GetContentRegionMax().x - ImGui::CalcTextSize("Change").x - 12.0f));
+        if (ImGui::SmallButton("Change##tagmarkmode")) g_menu_request = true;
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+            ImGui::SetTooltip("Take, project or both: a global option in the menu (Auto-Tagging options).\n"
+                              "Project markers take the rule's colour.");
+    }
+    // Apply: every selected item that has rules, one undo point.
+    const int run = std::max(0, m.sel_count - m.sel_without_rules - m.sel_roles_skipped);
+    {
+        char label[64];
+        std::snprintf(label, sizeof(label), "Apply to %d item%s##tagapply", run, run == 1 ? "" : "s");
+        if (run == 0) ImGui::BeginDisabled();
+        if (ui::PrimaryButton(label, ImVec2(-1.0f, 0.0f))) Later([]() { ApplyTaggingMarkers(); });
+        if (run == 0) ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip(run == 0 ? "Select the items to tag (items with rules) in REAPER."
+                                       : "Writes the markers of every selected item that has rules, each with its own "
+                                         "rules.\nReplaces only RAV's markers. One undo point.");
+    }
+    // The selection, and whether this item's markers are written.
+    {
+        std::string line = std::to_string(m.sel_count) + " selected";
+        if (m.sel_without_rules > 0) line += " " RAV_DOT " " + std::to_string(m.sel_without_rules) + " without rules skipped";
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
+        ImGui::TextUnformatted(line.c_str());
+        ImGui::PopStyleColor();
+        if (m.sel_roles_skipped > 0) {
+            ImGui::SameLine(0.0f, 4.0f);
+            char roles[64];
+            std::snprintf(roles, sizeof(roles), RAV_DOT " %d skipped: roles", m.sel_roles_skipped);
+            ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(kBadText));
+            ImGui::TextUnformatted(roles);
+            ImGui::PopStyleColor();
+        }
+        if (m.detected) {
+            ImGui::SameLine(0.0f, 4.0f);
+            ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(m.markers_up_to_date ? ui::kMuted : ui::kWarn));
+            ImGui::TextUnformatted(m.markers_up_to_date ? RAV_DOT " markers up to date" : RAV_DOT " markers not written yet");
+            ImGui::PopStyleColor();
+        }
+        // The last Apply's outcome.
+        const ApplyResult& ar = LastApplyResult();
+        if (!ar.error.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(kBadText));
+            ImGui::TextUnformatted(ar.error.c_str());
+            ImGui::PopStyleColor();
+        } else if (ar.ran) {
+            std::string out = "Markers written on " + std::to_string(ar.items) + " item" + (ar.items == 1 ? "" : "s");
+            if (ar.already_present > 0)
+                out += " " RAV_DOT " " + std::to_string(ar.already_present) + " already present, left as is";
+            if (ar.failed > 0) out += " " RAV_DOT " " + std::to_string(ar.failed) + " could not be written";
+            ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
+            ImGui::TextUnformatted(out.c_str());
+            ImGui::PopStyleColor();
+        }
+        ImGui::PopTextWrapPos();
+    }
 }
 
 }  // namespace
@@ -1597,7 +2166,8 @@ void DrawTaggingPanel(float x, float y, float w, float h)
             }
             ImGui::Separator();
             // The inspector scrolls; the footer stays.
-            const float footer_h = ImGui::GetFrameHeightWithSpacing() + ImGui::GetTextLineHeightWithSpacing() * 3.0f + 8.0f;
+            // Story 10-4: the markers line, Apply, the selection and the last Apply's outcome.
+            const float footer_h = ImGui::GetFrameHeightWithSpacing() * 2.0f + ImGui::GetTextLineHeightWithSpacing() * 3.0f + 10.0f;
             const float body_h = std::max(40.0f, ImGui::GetContentRegionAvail().y - footer_h);
             ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::Col(ui::kSurface));
             if (ImGui::BeginChild("##taginspector", ImVec2(0.0f, body_h), ImGuiChildFlags_None)) {

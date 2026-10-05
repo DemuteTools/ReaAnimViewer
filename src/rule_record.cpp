@@ -608,6 +608,74 @@ Set SetStrength(Block& b, const std::string& k, const std::string& v)
     return SetSignal(b.strength_signal, k, v);
 }
 
+// ---- Story 10-4 lines ------------------------------------------------------------------------
+
+const Word<EventKind>  kEventKind[] = {{EventKind::Detected, "detected"}, {EventKind::User, "user"},
+                                       {EventKind::Suppress, "suppress"}};
+const Word<MarkerMode> kMarkerMode[] = {{MarkerMode::Take, "take"}, {MarkerMode::Project, "project"},
+                                        {MarkerMode::Both, "both"}};
+
+// `t`, then `kind` (absent for a kind this version does not know: its raw text is kept),
+// then the optional fields the entry carries.
+Fields EventFields(const EventEntry& e)
+{
+    Fields f = {{"t", FormatNumber(e.t)}};
+    if (e.kind != EventKind::Other) f.push_back({"kind", ToWord(kEventKind, e.kind)});
+    if (e.has_block) f.push_back({"block", FormatInt(e.block)});
+    if (e.has_strength) f.push_back({"strength", FormatNumber(e.strength)});
+    if (e.has_speed) f.push_back({"speed", FormatNumber(e.speed)});
+    return f;
+}
+
+Set SetEvent(EventEntry& e, const std::string& k, const std::string& v)
+{
+    if (k == "t") return R(ReadNumber(v, &e.t));
+    if (k == "kind") return R(FromWord(kEventKind, v, &e.kind));
+    if (k == "block") return R(e.has_block = ReadInt(v, &e.block));
+    if (k == "strength") return R(e.has_strength = ReadNumber(v, &e.strength));
+    if (k == "speed") return R(e.has_speed = ReadNumber(v, &e.speed));
+    return Set::Unknown;
+}
+
+Fields AppliedFields(const AppliedInfo& a)
+{
+    return {{"markers", ToWord(kMarkerMode, a.mode)}, {"sig", EncodeKey(a.sig)}};
+}
+
+Set SetApplied(AppliedInfo& a, const std::string& k, const std::string& v)
+{
+    if (k == "markers") return R(FromWord(kMarkerMode, v, &a.mode));
+    if (k == "sig") return R(DecodeKey(v, &a.sig));
+    return Set::Unknown;
+}
+
+Fields TakeMarkerFields(const TakeMarkerRef& m)
+{
+    return {{"t", FormatNumber(m.t)}, {"name", CleanFreeText(m.name)}};
+}
+
+Set SetTakeMarkerRef(TakeMarkerRef& m, const std::string& k, const std::string& v)
+{
+    if (k == "t") return R(ReadNumber(v, &m.t));
+    if (k == "name") {
+        m.name = v;
+        return Set::Ok;
+    }
+    return Set::Unknown;
+}
+
+Fields ProjectMarkerFields(const ProjectMarkerRef& m)
+{
+    return {{"guid", EncodeKey(m.guid)}, {"t", FormatNumber(m.t)}};
+}
+
+Set SetProjectMarkerRef(ProjectMarkerRef& m, const std::string& k, const std::string& v)
+{
+    if (k == "guid") return R(DecodeKey(v, &m.guid));
+    if (k == "t") return R(ReadNumber(v, &m.t));
+    return Set::Unknown;
+}
+
 Set SetNothing(const std::string&, const std::string&)
 {
     return Set::Unknown;
@@ -632,7 +700,8 @@ size_t FieldKeyLength(const std::string& tok)
 
 bool IsFreeTextKey(const std::string& kind_word, const std::string& key)
 {
-    return (kind_word == "block" && key == "marker") || (kind_word == "preset" && key == "name");
+    return (kind_word == "block" && key == "marker") || (kind_word == "preset" && key == "name") ||
+           (kind_word == "tmarker" && key == "name");
 }
 
 // The fields after the kind word. A token that is not "key=value" joins the previous
@@ -840,12 +909,14 @@ bool ParseCore(const std::string& text_in, const char* magic, Target t)
 
     // Where an unknown line goes: the object whose line it followed. Resolved when used
     // (the vectors grow).
-    enum class At { Head, Options, Analyse, Preset, Copy, CopyOptions, CopyAnalyse, End, Block, Cond, Strength, Tail };
+    enum class At { Head, Options, Analyse, Preset, Copy, CopyOptions, CopyAnalyse, End, Block, Cond, Strength, Tail,
+                    Applied, TMarker, PMarker };
     At   at = At::Head;
     bool cur_in_copy = false;  // the current block's list
     int  cur_block = -1;
     int  cur_cond = -1;
     bool cur_strength = false;
+    bool seen_applied = false;
 
     auto blocks_of = [&](bool in_c) -> std::vector<Block>& { return in_c ? copy->blocks : own_blocks; };
     auto anchor = [&]() -> KeptText* {
@@ -862,6 +933,9 @@ bool ParseCore(const std::string& text_in, const char* magic, Target t)
         case At::Cond: return &blocks_of(cur_in_copy)[cur_block].conditions[cur_cond].kept;
         case At::Strength: return &blocks_of(cur_in_copy)[cur_block].kept_strength;
         case At::Tail: return nullptr;
+        case At::Applied: return &t.item->applied.kept;
+        case At::TMarker: return &t.item->tmarkers.back().kept;
+        case At::PMarker: return &t.item->pmarkers.back().kept;
         }
         return &head;
     };
@@ -935,7 +1009,39 @@ bool ParseCore(const std::string& text_in, const char* magic, Target t)
         } else if (item && word == "event" && !in_copy) {
             leave_block();
             at = At::Tail;
-            t.item->events.push_back(line);
+            EventEntry e;
+            e.kind = EventKind::Other;  // until its `kind` reads
+            e.has_block = e.has_strength = e.has_speed = false;
+            t.item->events.push_back(e);
+            EventEntry& ev = t.item->events.back();
+            ReadFields(word, rest, has_rest, ev.kept,
+                       [&](const std::string& k, const std::string& v) { return SetEvent(ev, k, v); },
+                       [&] { return EventFields(ev); });
+        } else if (item && word == "applied" && !in_copy && !seen_applied) {
+            seen_applied = true;
+            leave_block();
+            at = At::Applied;
+            t.item->has_applied = true;
+            AppliedInfo& a = t.item->applied;
+            ReadFields(word, rest, has_rest, a.kept,
+                       [&](const std::string& k, const std::string& v) { return SetApplied(a, k, v); },
+                       [&] { return AppliedFields(a); });
+        } else if (item && word == "tmarker" && !in_copy) {
+            leave_block();
+            at = At::TMarker;
+            t.item->tmarkers.emplace_back();
+            TakeMarkerRef& m = t.item->tmarkers.back();
+            ReadFields(word, rest, has_rest, m.kept,
+                       [&](const std::string& k, const std::string& v) { return SetTakeMarkerRef(m, k, v); },
+                       [&] { return TakeMarkerFields(m); });
+        } else if (item && word == "pmarker" && !in_copy) {
+            leave_block();
+            at = At::PMarker;
+            t.item->pmarkers.emplace_back();
+            ProjectMarkerRef& m = t.item->pmarkers.back();
+            ReadFields(word, rest, has_rest, m.kept,
+                       [&](const std::string& k, const std::string& v) { return SetProjectMarkerRef(m, k, v); },
+                       [&] { return ProjectMarkerFields(m); });
         } else if (KeptText* k = anchor()) {
             k->lines.push_back(line);
         } else {
@@ -1011,12 +1117,15 @@ std::string SerializeItemRules(const ItemRules& r)
     WriteBlocks(out, r.blocks);
     const size_t n = r.events.size();
     for (size_t i = 0; i < n; ++i) {
-        out += r.events[i] + '\n';
+        WriteLine(out, "event", EventFields(r.events[i]), &r.events[i].kept);
         for (const RecordTailLine& l : r.tail)
             if (l.after_events == i + 1) out += l.text + '\n';
     }
     for (const RecordTailLine& l : r.tail)
         if (l.after_events > n || l.after_events == 0) out += l.text + '\n';
+    if (r.has_applied) WriteLine(out, "applied", AppliedFields(r.applied), &r.applied.kept);
+    for (const TakeMarkerRef& m : r.tmarkers) WriteLine(out, "tmarker", TakeMarkerFields(m), &m.kept);
+    for (const ProjectMarkerRef& m : r.pmarkers) WriteLine(out, "pmarker", ProjectMarkerFields(m), &m.kept);
     return out;
 }
 
@@ -1053,7 +1162,14 @@ std::string SerializePreset(const PresetData& d)
 bool HasKeptText(const ItemRules& r)
 {
     const PresetCopy& c = r.preset_copy;
-    return !r.header_rest.empty() || !r.head.empty() || !r.tail.empty() || !r.options.kept.empty() || !r.analyse.kept.empty() ||
+    bool story4 = !r.applied.kept.empty();
+    for (const EventEntry& e : r.events)
+        if (!e.kept.empty()) story4 = true;
+    for (const TakeMarkerRef& m : r.tmarkers)
+        if (!m.kept.empty()) story4 = true;
+    for (const ProjectMarkerRef& m : r.pmarkers)
+        if (!m.kept.empty()) story4 = true;
+    return story4 || !r.header_rest.empty() || !r.head.empty() || !r.tail.empty() || !r.options.kept.empty() || !r.analyse.kept.empty() ||
            BlocksKeep(r.blocks) ||
            (r.has_preset && (!c.kept.empty() || !c.copy_kept.empty() || !c.end_kept.empty() ||
                              !c.options.kept.empty() || !c.analyse.kept.empty() || BlocksKeep(c.blocks)));
@@ -1063,6 +1179,19 @@ bool HasKeptText(const PresetData& d)
 {
     return !d.header_rest.empty() || !d.head.empty() || !d.kept.empty() || !d.options.kept.empty() || !d.analyse.kept.empty() ||
            BlocksKeep(d.blocks);
+}
+
+const char* MarkerModeWord(MarkerMode m)
+{
+    return ToWord(kMarkerMode, m);
+}
+
+bool MarkerModeFromWord(const std::string& s, MarkerMode* out)
+{
+    MarkerMode m;
+    if (!FromWord(kMarkerMode, s, &m)) return false;
+    if (out) *out = m;
+    return true;
 }
 
 // ---- Equality --------------------------------------------------------------------------

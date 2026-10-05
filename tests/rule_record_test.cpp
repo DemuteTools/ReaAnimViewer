@@ -109,7 +109,11 @@ ItemRules FullRecord()
     r.preset_copy.options.smooth_ms = 4;
     r.preset_copy.analyse.speed_percentile = 12;
     r.preset_copy.analyse.smooth_ms = 4;
-    r.events = {"event t=1 kind=detected"};
+    EventEntry ev;
+    ev.t = 1;
+    ev.kind = EventKind::Detected;
+    ev.has_block = false;
+    r.events = {ev};
     return r;
 }
 
@@ -136,7 +140,8 @@ int main()
         CHECK(p.analyse.per_bone_floor && p.analyse.onset_fraction == 0.2 && p.analyse.smooth_ms == 6);
         CHECK(p.has_preset && p.preset_copy.id == "user/my steps" && p.preset_copy.version == 3 &&
               p.preset_copy.kept_version == 4 && p.preset_copy.name == "My steps = v3");
-        CHECK(p.events.size() == 1 && p.events[0] == "event t=1 kind=detected");
+        CHECK(p.events.size() == 1 && p.events[0].kind == EventKind::Detected && p.events[0].t == 1);
+        CHECK(s.find("\nevent t=1 kind=detected\n") != std::string::npos);
         CHECK(OptionsEqual(p.preset_copy.options, r.preset_copy.options) &&
               AnalyseEqual(p.preset_copy.analyse, r.preset_copy.analyse) && p.preset_copy.analyse.smooth_ms == 4);
         CHECK(p.format_version == 1);
@@ -573,6 +578,99 @@ int main()
         t2.replace(t2.find("block "), 6, "block on=maybe ");
         CHECK(ParseItemRules(t2, &bad) && bad.blocks[0].enabled);
         CHECK(SerializeItemRules(bad) == t2);
+    }
+
+    // ---- Story 10-4: the event list, the applied state, the owned markers ----
+    {
+        const std::string text =
+            "RAVRULES 1\n"
+            "options sensitivity=0 edge_ms=0 smooth_ms=8\n"
+            "analyse floor_pct=2 pos_frac=0.25 speed_pct=30 margin_ratio=0.5 onset_frac=0.1 per_bone_floor=0\n"
+            "block color=#5F9EDD hold_ms=0 cooldown_ms=250 offset_ms=0 land=cross marker=Step\n"
+            "cond q=point bones=role:left_heel comb=single ref=floor meas=position axis=vertical "
+            "dir=below thr=0.05 margin=0.02 fixed=0\n"
+            "anim path=C:\\anims\\walk%20cycle.glb\n"
+            "event t=1.25 kind=detected block=0 strength=0.8 speed=1.9\n"
+            "event t=2.5 kind=user block=0 strength=0.7 speed=1.2\n"
+            "event t=3.1 kind=suppress block=0\n"
+            "applied markers=project sig=0123456789ABCDEF\n"
+            "tmarker t=1.25 name=Step  (soft)\n"
+            "pmarker guid={4A1B2C3D-0000-1111-2222-333344445555} t=12.375\n";
+        ItemRules r;
+        CHECK(ParseItemRules(text, &r));
+        // An `anim` line (written by an early 10-4 build) is unknown now: kept as written, in place.
+        CHECK(r.blocks[0].conditions[0].kept.lines == std::vector<std::string>{"anim path=C:\\anims\\walk%20cycle.glb"});
+        CHECK(r.events.size() == 3);
+        if (r.events.size() == 3) {
+            CHECK(r.events[0].kind == EventKind::Detected && r.events[0].t == 1.25 && r.events[0].block == 0 &&
+                  r.events[0].strength == 0.8 && r.events[0].speed == 1.9);
+            CHECK(r.events[1].kind == EventKind::User && r.events[1].strength == 0.7 && r.events[1].has_speed);
+            CHECK(r.events[2].kind == EventKind::Suppress && r.events[2].t == 3.1 && !r.events[2].has_strength);
+        }
+        CHECK(r.has_applied && r.applied.mode == MarkerMode::Project && r.applied.sig == "0123456789ABCDEF");
+        CHECK(r.tmarkers.size() == 1 && r.tmarkers[0].t == 1.25 && r.tmarkers[0].name == "Step  (soft)");
+        CHECK(r.pmarkers.size() == 1 && r.pmarkers[0].guid == "{4A1B2C3D-0000-1111-2222-333344445555}" &&
+              r.pmarkers[0].t == 12.375);
+        CHECK(HasKeptText(r));  // the `anim` line
+        CHECK(SerializeItemRules(r) == text);  // round trip, byte-identical
+
+        // Built in code: every kind writes back as it reads.
+        ItemRules c = r;
+        c.events.clear();
+        EventEntry u;
+        u.t = 0.5;
+        u.kind = EventKind::User;
+        u.block = 1;
+        u.has_strength = u.has_speed = true;
+        u.strength = 2;
+        u.speed = 3;
+        c.events.push_back(u);
+        ProjectMarkerRef pm;
+        pm.guid = "{X}";
+        pm.t = 1;
+        c.pmarkers.push_back(pm);
+        const std::string ct = SerializeItemRules(c);
+        CHECK(ct.find("\nevent t=0.5 kind=user block=1 strength=2 speed=3\napplied ") != std::string::npos);
+        CHECK(ct.find("pmarker guid={X} t=1\n") != std::string::npos);
+        ItemRules cb;
+        CHECK(ParseItemRules(ct, &cb) && SerializeItemRules(cb) == ct && cb.pmarkers.size() == 2);
+
+        // Unknown fields on event lines (and an unknown kind) are kept, in place; an unknown
+        // line after a pmarker stays with it.
+        const std::string fut = "RAVRULES 3\n"
+                                "options sensitivity=0 edge_ms=0 smooth_ms=8\n"
+                                "analyse floor_pct=2 pos_frac=0.25 speed_pct=30 margin_ratio=0.5 onset_frac=0.1 "
+                                "per_bone_floor=0\n"
+                                "event t=1 kind=detected block=0 strength=0.5 foot=left speed=2\n"
+                                "event t=2 kind=swing block=0 arc=90\n"
+                                "event t=3 kind=user block=x\n"
+                                "pmarker guid={A} t=1 lane=2\n"
+                                "pmeta 7\n";
+        ItemRules f;
+        CHECK(ParseItemRules(fut, &f));
+        CHECK(f.events.size() == 3 && f.events[0].kind == EventKind::Detected && f.events[0].speed == 2);
+        CHECK(f.events[1].kind == EventKind::Other && f.events[2].kind == EventKind::User && !f.events[2].has_block);
+        CHECK(HasKeptText(f));
+        CHECK(SerializeItemRules(f) == fut);
+        if (SerializeItemRules(f) != fut) std::printf("--- got ---\n%s--- want ---\n%s", SerializeItemRules(f).c_str(), fut.c_str());
+        // An edit of a known field keeps the unknown one where it was.
+        f.events[0].t = 1.5;
+        CHECK(SerializeItemRules(f).find("event t=1.5 kind=detected block=0 strength=0.5 foot=left speed=2\n") !=
+              std::string::npos);
+        // Erasing an event takes its unknown fields along.
+        f.events.erase(f.events.begin() + 1);
+        CHECK(SerializeItemRules(f).find("arc=90") == std::string::npos);
+
+        // A record from before 10-4 (no event) writes none of these lines.
+        ItemRules old;
+        old.blocks.push_back(Block{});
+        const std::string ot = SerializeItemRules(old);
+        CHECK(ot.find("anim") == std::string::npos && ot.find("applied") == std::string::npos &&
+              ot.find("marker t=") == std::string::npos);
+
+        CHECK(std::string(MarkerModeWord(MarkerMode::Both)) == "both");
+        MarkerMode mm = MarkerMode::Both;
+        CHECK(MarkerModeFromWord("take", &mm) && mm == MarkerMode::Take && !MarkerModeFromWord("all", &mm));
     }
 
     if (g_fails) {

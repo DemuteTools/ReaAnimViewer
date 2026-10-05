@@ -44,6 +44,7 @@
 #include "shortcuts.h"         // spec 11-fb-3: the viewer's keys, rebindable
 #include "shortcuts_ui.h"      // spec 11-fb-3: the keyboard icon + Shortcuts popup
 #include "tagging_session.h"   // Story 10-3: the Tagging view's model (item, rules, detection)
+#include "tag_markers.h"       // Story 10-4: the markers option (Take / Project / Both)
 #include "tagging_view_ui.h"   // Story 10-3: its curve strip and panel
 #include "texture_locate.h"    // issue #1: "Locate textures..." (folder picker + copy)
 #include "gpu_resources.h"    // Story 11-4: the Video view's render target
@@ -1184,6 +1185,9 @@ void DrawToolUi()
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
+    // Story 10-4: the Tagging panel's "Change" (markers written) opens the menu on its option.
+    if (TaggingConsumeMenuRequest()) g_menu_open = true;
+
     ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_Always);
     // Spec 11-fb-11: open, the menu stops 10 px above the window's bottom and scrolls (a short
     // viewer with every section unfolded); closed, it is the bare button.
@@ -1354,6 +1358,25 @@ void DrawToolUi()
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
                 ImGui::SetTooltip("The %s key in Video view deletes the current shot: ask first, or delete at once",
                                   ShortcutKeyLabel(kShortcutDeleteShot));
+            ImGui::Unindent(8.0f);
+        }
+
+        // --- Story 10-4: Auto-Tagging options -- which markers Apply writes (a global option,
+        // kept across sessions; project markers take the rule's colour) ---
+        ImGui::Dummy(ImVec2(0.0f, 2.0f));
+        ImGui::Separator();
+        ui::Caption("AUTO-TAGGING OPTIONS");
+        {
+            ImGui::Indent(8.0f);
+            ImGui::TextDisabled("Markers written");
+            static const char* const kMarkLabels[3] = { "Take", "Project", "Both" };
+            const MarkerMode mode = GetTaggingMarkerMode();
+            int mark_sel = mode == MarkerMode::Take ? 0 : mode == MarkerMode::Project ? 1 : 2;
+            if (ui::Segmented("##tagmarkers", kMarkLabels, 3, &mark_sel, 0.0f, -1))
+                SetTaggingMarkerMode(mark_sel == 0 ? MarkerMode::Take : mark_sel == 1 ? MarkerMode::Project : MarkerMode::Both);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("%s on Apply.\nProject markers take the rule's colour.",
+                                  MarkerModeLine(GetTaggingMarkerMode()));
             ImGui::Unindent(8.0f);
         }
 
@@ -1890,7 +1913,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         // Story 10-3: Esc during a Tagging view drag cancels it (ImGui has the key already).
         if (wp == VK_ESCAPE && TaggingViewActive() && TaggingGestureActive()) return 0;
         if (g_imgui_ready && ImGui::GetIO().WantTextInput) return 0;
-        const int action = ShortcutActionForKey(static_cast<unsigned>(wp), ctrl, shift, alt, VideoViewActive());
+        const int action =
+            ShortcutActionForKey(static_cast<unsigned>(wp), ctrl, shift, alt, VideoViewActive(), TaggingViewActive());
         if (action < 0) {
             // The auto-repeat of a key the hook took (it may map to no action now): ours.
             if ((lp & (1 << 30)) && g_key_route.claimed_vk != 0 && wp == g_key_route.claimed_vk) return 0;
@@ -1921,6 +1945,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         // The shot camera clipboard, on the current shot (Video view only).
         if (action == kShortcutCopyCamera) { QueueVideoCopyShotCamera(-1); return 0; }
         if (action == kShortcutPasteCamera) { QueueVideoPasteShotCamera(-1); return 0; }
+        // Story 10-4 -- Tagging view: E adds an event at the playhead on the selected rule, Del
+        // suppresses / restores / deletes the selected event (one undo point each).
+        if (action == kShortcutTagAddEvent) { TaggingAddEventAtPlayhead(); return 0; }
+        if (action == kShortcutTagDelEvent) { TaggingDeleteSelectedEvent(); return 0; }
         return 0;
     }
 
@@ -2069,6 +2097,7 @@ int ViewerTranslateAccel(MSG* msg, accelerator_register_t* /*ctx*/)
     in.shift      = GetKeyState(VK_SHIFT) < 0;
     in.alt        = GetKeyState(VK_MENU) < 0;
     in.video_view = VideoViewActive();
+    in.tagging_view = TaggingViewActive();  // Story 10-4: E / Del
     in.recording  = ShortcutRecordingId() >= 0;
     in.text_input = g_imgui_ready && ImGui::GetIO().WantTextInput;
     // Esc closes either; Story 10-3: Esc also cancels a Tagging view drag.

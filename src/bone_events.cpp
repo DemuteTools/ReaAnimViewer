@@ -257,7 +257,69 @@ std::vector<double> AngleSeries(const SignalSpec& spec, const std::vector<BoneTr
     return q;
 }
 
+// The series an event's values are read from (DetectTrace and EventValuesAt share them).
+struct ValueSeries {
+    std::vector<double> speed;     // total speed of the first condition's signal
+    std::vector<double> strength;  // the strength signal (the speed when it has no bones)
+    double              sign = 1.0;
+};
+
+ValueSeries MakeValueSeries(const Block& blk, const std::vector<BoneTrack>& tracks, double smooth_ms, size_t n)
+{
+    ValueSeries vs;
+    if (!blk.conditions.empty()) {
+        SignalSpec speed_spec = blk.conditions[0].signal;
+        speed_spec.measure = Measure::Speed;
+        speed_spec.axis = Axis::Total;
+        speed_spec.keep_sign = false;
+        vs.speed = EvaluateSignal(speed_spec, tracks, smooth_ms);
+    }
+    vs.sign = blk.strength_sign;
+    if (blk.strength_signal.bones.empty()) {
+        vs.strength = vs.speed;
+        vs.sign = 1.0;
+    } else {
+        vs.strength = EvaluateSignal(blk.strength_signal, tracks, smooth_ms);
+    }
+    if (vs.strength.size() != n) vs.strength.assign(n, 0.0);
+    return vs;
+}
+
+// Strength (the peak of sign * strength over the window before tl) and speed at landing tl.
+void ValuesAt(const ValueSeries& vs, const Block& blk, double rate, size_t n, double tl, double* strength,
+              double* speed)
+{
+    const double dt = 1.0 / rate;
+    const double w = std::max(0.0, blk.strength_window_ms) / 1000.0;
+    double peak = vs.sign * InterpAt(vs.strength, tl, rate);
+    for (size_t k = 0; k < n; ++k) {
+        const double tk = static_cast<double>(k) * dt;
+        if (tk < tl - w - 1e-12) continue;
+        if (tk > tl) break;
+        peak = std::max(peak, vs.sign * vs.strength[k]);
+    }
+    *strength = peak;
+    *speed = InterpAt(vs.speed, tl, rate);
+}
+
 }  // namespace
+
+bool EventValuesAt(const Block& blk, const std::vector<BoneTrack>& tracks, const DetectOptions& opts, double t,
+                   double* strength, double* speed)
+{
+    double s = 0.0, v = 0.0;
+    if (strength) *strength = 0.0;
+    if (speed) *speed = 0.0;
+    if (!TracksFit(tracks) || blk.conditions.empty() || !std::isfinite(t)) return false;
+    const size_t n = tracks[0].pos.size();
+    const double rate = tracks[0].rate_hz;
+    const ValueSeries vs = MakeValueSeries(blk, tracks, opts.smooth_ms, n);
+    if (vs.speed.size() != n) return false;
+    ValuesAt(vs, blk, rate, n, t - blk.offset_ms / 1000.0, &s, &v);
+    if (strength) *strength = s;
+    if (speed) *speed = v;
+    return true;
+}
 
 std::vector<double> EvaluateSignal(const SignalSpec& spec, const std::vector<BoneTrack>& tracks, double smooth_ms)
 {
@@ -391,21 +453,8 @@ DetectionTrace DetectTrace(const std::vector<Block>& blocks, const std::vector<B
             }
         }
 
-        // Strength and speed series.
-        SignalSpec speed_spec = blk.conditions[0].signal;
-        speed_spec.measure = Measure::Speed;
-        speed_spec.axis = Axis::Total;
-        speed_spec.keep_sign = false;
-        const std::vector<double> speed = EvaluateSignal(speed_spec, tracks, opts.smooth_ms);
-        std::vector<double> strength_series;
-        double sign = blk.strength_sign;
-        if (blk.strength_signal.bones.empty()) {
-            strength_series = speed;
-            sign = 1.0;
-        } else {
-            strength_series = EvaluateSignal(blk.strength_signal, tracks, opts.smooth_ms);
-        }
-        if (strength_series.size() != n) strength_series.assign(n, 0.0);
+        // Strength and speed series (shared with EventValuesAt).
+        const ValueSeries series = MakeValueSeries(blk, tracks, opts.smooth_ms, n);
 
         std::vector<Event> evs;
         bool has_last = false;
@@ -465,16 +514,7 @@ DetectionTrace DetectTrace(const std::vector<Block>& blocks, const std::vector<B
             e.block = static_cast<int>(bi);
             e.marker = blk.marker;
             e.cond_entry_s = cond_at[i];
-            const double w = std::max(0.0, blk.strength_window_ms) / 1000.0;
-            double peak = sign * InterpAt(strength_series, tl, rate);
-            for (size_t k = 0; k < n; ++k) {
-                const double tk = static_cast<double>(k) * dt;
-                if (tk < tl - w - 1e-12) continue;
-                if (tk > tl) break;
-                peak = std::max(peak, sign * strength_series[k]);
-            }
-            e.strength = peak;
-            e.speed = InterpAt(speed, tl, rate);
+            ValuesAt(series, blk, rate, n, tl, &e.strength, &e.speed);
             evs.push_back(std::move(e));
         }
 

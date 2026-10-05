@@ -5,6 +5,7 @@
 
 #include "console_log.h"
 #include "detection_measure.h"
+#include "tag_markers.h"  // Story 10-4: Apply's marker functions
 #include "pcm_source_anim.h"
 #include "reaper_actions.h"
 #include "reaper_api.h"
@@ -193,6 +194,8 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     g_output_angle_id = RegisterAction(rec, kOutputAngleName, kOutputAngleDesc, &g_output_angle_accel);
     // Story 10-0 -- the detection measurement (take-marker functions resolved optionally).
     InitDetectionMeasure(rec->GetFunc);
+    // Story 10-4 -- Apply's take / project marker functions (resolved optionally).
+    InitTagMarkers(rec->GetFunc);
     g_measure_detection_id =
         RegisterAction(rec, kMeasureDetectionName, kMeasureDetectionDesc, &g_measure_detection_accel);
 

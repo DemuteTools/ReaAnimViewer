@@ -21,6 +21,7 @@
 #include "item_rules.h"
 #include "pcm_source_anim.h"
 #include "role_map_store.h"
+#include "tag_markers.h"  // the marker option (markers up to date)
 
 namespace rav {
 namespace {
@@ -33,20 +34,6 @@ double Now()
     using clock = std::chrono::steady_clock;
     static const clock::time_point t0 = clock::now();
     return std::chrono::duration<double>(clock::now() - t0).count();
-}
-
-// The animation file under a take (through a section / reversed wrapper).
-std::string AnimPathOfTake(MediaItem_Take* take)
-{
-    PCM_source* src = take ? GetMediaItemTake_Source(take) : nullptr;
-    if (!src || !IsRavAnimSource(src)) return "";
-    for (int depth = 0; src && depth < 4; ++depth) {
-        const char* type = src->GetType();
-        if (type && std::strcmp(type, "RAV_ANIM") == 0) break;
-        src = src->GetSource();
-    }
-    const char* fn = src ? src->GetFileName() : nullptr;
-    return fn ? fn : "";
 }
 
 struct SampleKey {
@@ -193,14 +180,23 @@ void ReadItemTiming()
 {
     TaggingModel& m = g.model;
     MediaItem_Take* take = RavTakeOf(m.item);
-    m.map.item_pos = GetMediaItemInfo_Value(m.item, "D_POSITION");
-    m.map.item_len = GetMediaItemInfo_Value(m.item, "D_LENGTH");
-    m.map.loop = GetMediaItemInfo_Value(m.item, "B_LOOPSRC") != 0.0;
-    m.map.start_offs = take ? GetMediaItemTakeInfo_Value(take, "D_STARTOFFS") : 0.0;
-    const double rate = take ? GetMediaItemTakeInfo_Value(take, "D_PLAYRATE") : 1.0;
-    m.map.rate = (rate > 0.0 && std::isfinite(rate)) ? rate : 1.0;
+    m.map = ItemClipMapOf(m.item, m.map.clip_len);
     const char* nm = take ? GetTakeName(take) : nullptr;
     m.item_name = (nm && nm[0]) ? nm : "(unnamed item)";
+}
+
+// The event list over the trace, what Apply would write, and whether it is written.
+void BuildEvents()
+{
+    TaggingModel& m = g.model;
+    m.events.clear();
+    m.planned.clear();
+    m.markers_up_to_date = false;
+    if (!m.detected) return;
+    const ItemRules& shown = TaggingShownRules();
+    m.events = BuildEventList(m.trace.events, shown.events, shown.blocks.size());
+    m.planned = PlanMarkers(m.events, shown.blocks, m.map);
+    m.markers_up_to_date = MarkersUpToDate(m.rules, m.planned, GetTaggingMarkerMode());
 }
 
 // Binds `rules` on the skeleton and turns them into track indices; samples the bones when
@@ -232,12 +228,16 @@ void RunDetection()
     g.detect_dirty = false;
     m.detected = false;
     m.trace = DetectionTrace{};
+    m.events.clear();
+    m.planned.clear();
+    m.markers_up_to_date = false;
     if (m.missing_count > 0) return;  // no detection run (the strip says so)
     const ItemRules& shown = TaggingShownRules();
     std::vector<Block> bound;
     if (!BindAndSample(shown, &bound)) return;
     m.trace = DetectTrace(bound, g.tracks, shown.options);
     m.detected = true;
+    BuildEvents();
 }
 
 // The footer's counts: the selected items, those without rules, those whose roles miss.
@@ -254,7 +254,7 @@ void RefreshSelection()
             ++m.sel_without_rules;
             continue;
         }
-        const std::string path = AnimPathOfTake(RavTakeOf(it));
+        const std::string path = AnimPathOf(RavTakeOf(it));
         const std::vector<std::string>& names = BoneNamesOf(path);
         std::vector<Block> probe = EnabledOnly(rd.rules.blocks);
         if (names.empty() || !BindBoneRefs(probe, GetRoleMapping(RulesResourceRoot(), names), names, nullptr))
@@ -307,6 +307,8 @@ void TaggingSessionFrame(MediaItem* item, const std::string& path)
         }
         m.previewing = g.previewing;
         if (m.item && g.detect_dirty) RunDetection();
+        // The item moved or was trimmed, or the option changed: the plan follows (no new detection).
+        else if (m.item && m.detected) BuildEvents();
         if (count != g.sel_state_count || g.sel_at < 0.0 || now >= g.sel_at) {
             RefreshSelection();
             g.sel_state_count = count;
@@ -423,6 +425,92 @@ bool TaggingLoadPreset(const std::string& preset_id)
     ReadItem();
     RunDetection();
     return ok;
+}
+
+ItemClipMap ItemClipMapOf(MediaItem* item, double clip_len)
+{
+    ItemClipMap map;
+    map.clip_len = clip_len;
+    if (!item) return map;
+    MediaItem_Take* take = RavTakeOf(item);
+    map.item_pos = GetMediaItemInfo_Value(item, "D_POSITION");
+    map.item_len = GetMediaItemInfo_Value(item, "D_LENGTH");
+    map.loop = GetMediaItemInfo_Value(item, "B_LOOPSRC") != 0.0;
+    map.start_offs = take ? GetMediaItemTakeInfo_Value(take, "D_STARTOFFS") : 0.0;
+    const double rate = take ? GetMediaItemTakeInfo_Value(take, "D_PLAYRATE") : 1.0;
+    map.rate = (rate > 0.0 && std::isfinite(rate)) ? rate : 1.0;
+    return map;
+}
+
+ItemDetection DetectItem(MediaItem* item)
+{
+    ItemDetection out;
+    try {
+        if (!item || !ValidatePtr2(nullptr, item, "MediaItem*")) return out;
+        MediaItem_Take* take = RavTakeOf(item);
+        if (!take) {
+            out.status = ItemDetection::Status::NotRav;
+            return out;
+        }
+        ItemRulesRead rd;
+        if (!ReadItemRules(item, &rd) || !rd.present || !rd.valid || rd.rules.blocks.empty()) {
+            out.status = ItemDetection::Status::NoRules;
+            return out;
+        }
+        out.rules = rd.rules;
+        const std::string path = AnimPathOf(take);
+        // The file: the session's parse when it is the same one, else the cache's.
+        std::shared_ptr<const CpuAsset> asset = (path == g.asset_path && g.asset) ? g.asset : AcquireCpuAsset(path);
+        if (!asset || asset->animations.empty() || asset->skeleton.bones.empty()) {
+            out.status = ItemDetection::Status::NoFile;
+            return out;
+        }
+        out.map = ItemClipMapOf(item, asset->animations[0].duration);
+        std::vector<std::string> names;
+        for (const SceneBone& b : asset->skeleton.bones) names.push_back(b.name);
+        std::vector<Block> bound = EnabledOnly(out.rules.blocks);
+        if (!BindBoneRefs(bound, GetRoleMapping(RulesResourceRoot(), names), names, &out.missing)) {
+            out.status = ItemDetection::Status::RolesMissing;
+            return out;
+        }
+        std::vector<int> bones;
+        RemapToTracks(bound, &bones);
+        const AssetFileStamp stamp = (path == g.asset_path) ? g.asset_stamp : ReadAssetFileStamp(path);
+        SampleKey key{path, stamp, bones};
+        std::vector<BoneTrack> tracks;
+        if (g.have_tracks && key == g.sample_key) tracks = g.tracks;
+        else if (!bones.empty()) tracks = SampleBoneTracks(*asset, bones, kDetectRateHz);
+        if (!bones.empty() && tracks.size() != bones.size()) {
+            out.status = ItemDetection::Status::Failed;
+            return out;
+        }
+        out.events = Detect(bound, tracks, out.rules.options);
+        out.status = ItemDetection::Status::Ok;
+    } catch (...) {
+        out.status = ItemDetection::Status::Failed;
+    }
+    return out;
+}
+
+bool TaggingMeasureEvent(const ItemRules& rules, int block, double t, double* strength, double* speed)
+{
+    if (strength) *strength = 0.0;
+    if (speed) *speed = 0.0;
+    try {
+        if (!g.model.item || block < 0 || block >= static_cast<int>(rules.blocks.size())) return false;
+        std::vector<Block> bound;
+        if (!BindAndSample(rules, &bound)) return false;
+        return EventValuesAt(bound[static_cast<size_t>(block)], g.tracks, rules.options, t, strength, speed);
+    } catch (...) {
+        return false;
+    }
+}
+
+void TaggingReread()
+{
+    if (!g.model.item) return;
+    ReadItem();
+    RunDetection();
 }
 
 const std::string& TaggingLastError()

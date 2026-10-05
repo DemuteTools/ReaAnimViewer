@@ -11,6 +11,7 @@
 #include <memory>
 
 #include "asset_cache.h"
+#include "event_list.h"
 #include "pcm_source_anim.h"
 #include "preset_store.h"
 #include "role_map_store.h"
@@ -24,7 +25,44 @@ bool Fail(std::string* err, const std::string& why)
     return false;
 }
 
-// The animation file under the take (through a section / reversed wrapper).
+// Writes the record text, then records one undo point (UNDO_STATE_ITEMS) only when REAPER
+// accepted it: a refused write leaves no empty undo point. `with_undo` false: no undo point
+// (the caller's undo block records it).
+bool WriteRaw(MediaItem_Take* take, const std::string& text, const char* undo_desc, bool with_undo, std::string* err)
+{
+    if (text.size() >= kItemRulesMaxBytes) return Fail(err, "The item's rules are too large to save.");
+    if (!take || !ValidatePtr2(nullptr, take, "MediaItem_Take*")) return Fail(err, "The item's take is gone.");
+    if (!GetSetMediaItemTakeInfo_String(take, kItemRulesKey, const_cast<char*>(text.c_str()), true))
+        return Fail(err, "REAPER refused to save the item's rules.");
+    if (with_undo) Undo_OnStateChangeEx(undo_desc ? undo_desc : "RAV: Edit auto-tagging rules", UNDO_STATE_ITEMS, -1);
+    return true;
+}
+
+bool ModifyCore(MediaItem* item, const char* undo_desc, bool with_undo, const std::function<bool(ItemRules&)>& edit,
+                std::string* err)
+{
+    try {
+        MediaItem_Take* take = RavTakeOf(item);
+        if (!take) return Fail(err, "Not a RAV animation item.");
+        ItemRulesRead cur;
+        if (!ReadItemRules(item, &cur)) return Fail(err, "The item's rules could not be read.");
+        ItemRules rules = cur.valid ? cur.rules : ItemRules{};
+        // What the record says before the edit: an absent or unreadable record = no rules.
+        const std::string before = SerializeItemRules(rules);
+        if (!edit || !edit(rules)) return true;  // cancelled: nothing written
+        const std::string text = SerializeItemRules(rules);
+        // No change, no undo point (and an absent or unreadable record stays as it is).
+        if (text == before || (cur.valid && text == cur.raw)) return true;
+        return WriteRaw(take, text, undo_desc, with_undo, err);
+    } catch (const std::exception& e) {
+        return Fail(err, std::string("The item's rules could not be saved: ") + e.what());
+    } catch (...) {
+        return Fail(err, "The item's rules could not be saved.");
+    }
+}
+
+}  // namespace
+
 std::string AnimPathOf(MediaItem_Take* take)
 {
     PCM_source* src = take ? GetMediaItemTake_Source(take) : nullptr;
@@ -37,20 +75,6 @@ std::string AnimPathOf(MediaItem_Take* take)
     const char* fn = src ? src->GetFileName() : nullptr;
     return fn ? fn : "";
 }
-
-// Writes the record text, then records one undo point (UNDO_STATE_ITEMS) only when REAPER
-// accepted it: a refused write leaves no empty undo point.
-bool WriteRaw(MediaItem_Take* take, const std::string& text, const char* undo_desc, std::string* err)
-{
-    if (text.size() >= kItemRulesMaxBytes) return Fail(err, "The item's rules are too large to save.");
-    if (!take || !ValidatePtr2(nullptr, take, "MediaItem_Take*")) return Fail(err, "The item's take is gone.");
-    if (!GetSetMediaItemTakeInfo_String(take, kItemRulesKey, const_cast<char*>(text.c_str()), true))
-        return Fail(err, "REAPER refused to save the item's rules.");
-    Undo_OnStateChangeEx(undo_desc ? undo_desc : "RAV: Edit auto-tagging rules", UNDO_STATE_ITEMS, -1);
-    return true;
-}
-
-}  // namespace
 
 MediaItem_Take* RavTakeOf(MediaItem* item)
 {
@@ -84,24 +108,12 @@ bool ReadItemRules(MediaItem* item, ItemRulesRead* out)
 bool ModifyItemRules(MediaItem* item, const char* undo_desc, const std::function<bool(ItemRules&)>& edit,
                      std::string* err)
 {
-    try {
-        MediaItem_Take* take = RavTakeOf(item);
-        if (!take) return Fail(err, "Not a RAV animation item.");
-        ItemRulesRead cur;
-        if (!ReadItemRules(item, &cur)) return Fail(err, "The item's rules could not be read.");
-        ItemRules rules = cur.valid ? cur.rules : ItemRules{};
-        // What the record says before the edit: an absent or unreadable record = no rules.
-        const std::string before = SerializeItemRules(rules);
-        if (!edit || !edit(rules)) return true;  // cancelled: nothing written
-        const std::string text = SerializeItemRules(rules);
-        // No change, no undo point (and an absent or unreadable record stays as it is).
-        if (text == before || (cur.valid && text == cur.raw)) return true;
-        return WriteRaw(take, text, undo_desc, err);
-    } catch (const std::exception& e) {
-        return Fail(err, std::string("The item's rules could not be saved: ") + e.what());
-    } catch (...) {
-        return Fail(err, "The item's rules could not be saved.");
-    }
+    return ModifyCore(item, undo_desc, true, edit, err);
+}
+
+bool ModifyItemRulesNoUndo(MediaItem* item, const std::function<bool(ItemRules&)>& edit, std::string* err)
+{
+    return ModifyCore(item, nullptr, false, edit, err);
 }
 
 bool WriteItemRules(MediaItem* item, const ItemRules& rules, const char* undo_desc, std::string* err)
@@ -163,6 +175,7 @@ bool SetUpPresetOnItem(MediaItem* item, const std::string& preset_id, std::strin
             item, desc.c_str(),
             [&](ItemRules& r) {
                 ApplyPreset(r, preset);
+                ClearCorrections(r);  // Story 10-4: a preset starts the item's event list afresh
                 return true;
             },
             err))

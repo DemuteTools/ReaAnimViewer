@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "bone_events.h"
+#include "event_list.h"
 #include "preset_store.h"
 #include "reaper_api.h"
 #include "rule_record.h"
@@ -55,11 +56,39 @@ struct TaggingModel {
     bool           detected = false;  // the trace below is for the rules shown
     DetectionTrace trace;
     ItemClipMap    map;               // clip time -> project time
+    // Story 10-4: the event list over the rules shown (empty until detection ran), what Apply
+    // would write for it, and whether the last Apply wrote exactly that (with this option).
+    std::vector<ShownEvent>    events;
+    std::vector<PlannedMarker> planned;
+    bool                       markers_up_to_date = false;
     // The selection (the footer).
     int sel_count = 0;
     int sel_without_rules = 0;
     int sel_roles_skipped = 0;
 };
+
+// Story 10-4 -- one item's detection, for Apply on any selected item (not only the one shown).
+struct ItemDetection {
+    enum class Status { Ok, NotRav, NoRules, NoFile, RolesMissing, Failed };
+    Status             status = Status::Failed;
+    ItemRules          rules;   // the record as read
+    ItemClipMap        map;
+    std::vector<Event> events;  // the live detections
+    std::string        missing; // RolesMissing: their names
+};
+// Reads the item's record, binds its rules on its skeleton, samples its bones (the session's
+// tracks when they fit) and runs detection. Never writes.
+ItemDetection DetectItem(MediaItem* item);
+
+// The clip map of an item (its take's start offset and rate), for a clip of `clip_len` seconds.
+ItemClipMap ItemClipMapOf(MediaItem* item, double clip_len);
+
+// A user event's values at clip time t, measured on the current item with `rules` (the rule
+// `block`'s strength and speed, as detection measures them). False (0, 0) when they cannot be.
+bool TaggingMeasureEvent(const ItemRules& rules, int block, double t, double* strength, double* speed);
+
+// Reads the current item's record again and reruns detection (after Apply).
+void TaggingReread();
 
 // Each frame in Tagging view (before the UI draws): `item` / `path` = the item the 3D view
 // shows (null / "" = none).

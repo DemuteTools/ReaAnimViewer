@@ -187,6 +187,13 @@ struct DetectionTrace {
 DetectionTrace DetectTrace(const std::vector<Block>& blocks, const std::vector<BoneTrack>& tracks,
                            const DetectOptions& opts = {});
 
+// Story 10-4 -- an event's values (strength, speed) at event time t (clip seconds, the
+// block's offset included), read from the same series detection uses: for a detected event,
+// EventValuesAt(its block, ..., e.time_s) gives e.strength and e.speed. A user event's values
+// are measured this way at its time. False (values 0) when the block or the tracks do not fit.
+bool EventValuesAt(const Block& blk, const std::vector<BoneTrack>& tracks, const DetectOptions& opts, double t,
+                   double* strength, double* speed);
+
 // Every block over the whole clip, sorted by time. No-throw on bad input (no events).
 // = DetectTrace(...).events.
 std::vector<Event> Detect(const std::vector<Block>& blocks, const std::vector<BoneTrack>& tracks,

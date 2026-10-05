@@ -39,9 +39,17 @@ constexpr unsigned kBack = 0x08, kTab = 0x09, kReturn = 0x0D, kShift = 0x10, kCo
 // ---- the table -----------------------------------------------------------------------
 
 enum class ShortcutContext {
-    Anywhere,   // the viewer has the focus
-    VideoView,  // ...and Video view is on (in RAV view the key stays REAPER's)
+    Anywhere,     // the viewer has the focus
+    VideoView,    // ...and Video view is on (in RAV view the key stays REAPER's)
+    TaggingView,  // ...and Tagging view is on (story 10-4)
 };
+
+// Two contexts can be on at once (then their actions cannot share a key): Anywhere overlaps
+// every context; Video view and Tagging view never are on together.
+inline bool ShortcutContextsOverlap(ShortcutContext a, ShortcutContext b)
+{
+    return a == ShortcutContext::Anywhere || b == ShortcutContext::Anywhere || a == b;
+}
 
 struct KeyBinding {
     unsigned vk = 0;  // Windows virtual-key code (0 = none)
@@ -70,7 +78,9 @@ enum ShortcutId : int {
     kShortcutDeleteShot  = 3,  // delete the current shot, after a confirmation (Video view only, spec 11-fb-11)
     kShortcutCopyCamera  = 4,  // copy the current shot's camera (Video view only)
     kShortcutPasteCamera = 5,  // paste it into the current shot (Video view only)
-    kShortcutCount       = 6,
+    kShortcutTagAddEvent = 6,  // story 10-4: add an event at the playhead on the selected rule (Tagging view only)
+    kShortcutTagDelEvent = 7,  // story 10-4: suppress / restore / delete the selected event (Tagging view only)
+    kShortcutCount       = 8,
 };
 
 inline const ShortcutDef kShortcutTable[kShortcutCount] = {
@@ -80,6 +90,8 @@ inline const ShortcutDef kShortcutTable[kShortcutCount] = {
     {"delete_shot",  "Delete current shot",          {vk::kDelete, false, false, false}, ShortcutContext::VideoView},
     {"copy_camera",  "Copy shot camera",             {'C', true, false, false}, ShortcutContext::VideoView},
     {"paste_camera", "Paste shot camera",            {'V', true, false, false}, ShortcutContext::VideoView},
+    {"tag_add_event", "Add event at playhead",       {'E', false, false, false}, ShortcutContext::TaggingView},
+    {"tag_del_event", "Suppress / delete event",     {vk::kDelete, false, false, false}, ShortcutContext::TaggingView},
 };
 
 // The mouse gestures the popup lists (fixed, never rebindable), by group.
@@ -148,22 +160,30 @@ inline bool ShortcutMatches(const KeyBinding& b, unsigned key, bool ctrl, bool s
 }
 
 // The action this key press runs, or -1. An action whose context is Video view only
-// matches in Video view.
+// matches in Video view; Tagging view only, in Tagging view.
 inline int ShortcutActionFor(const ShortcutBindings& b, unsigned key, bool ctrl, bool shift, bool alt,
-                             bool video_view)
+                             bool video_view, bool tagging_view = false)
 {
     for (int i = 0; i < kShortcutCount; ++i) {
         if (kShortcutTable[i].context == ShortcutContext::VideoView && !video_view) continue;
+        if (kShortcutTable[i].context == ShortcutContext::TaggingView && !tagging_view) continue;
         if (ShortcutMatches(b[static_cast<size_t>(i)], key, ctrl, shift, alt)) return i;
     }
     return -1;
 }
 
-// The action other than `except` bound to this key (whatever its context), or -1.
+// The action other than `except` bound to this key whose context can be on together with
+// `except`'s (any context when `except` < 0), or -1. Video view's Delete and Tagging view's
+// Delete never clash.
 inline int ShortcutOwner(const ShortcutBindings& b, const KeyBinding& key, int except)
 {
-    for (int i = 0; i < kShortcutCount; ++i)
-        if (i != except && b[static_cast<size_t>(i)] == key) return i;
+    for (int i = 0; i < kShortcutCount; ++i) {
+        if (i == except || !(b[static_cast<size_t>(i)] == key)) continue;
+        if (except >= 0 && except < kShortcutCount &&
+            !ShortcutContextsOverlap(kShortcutTable[i].context, kShortcutTable[except].context))
+            continue;
+        return i;
+    }
     return -1;
 }
 
@@ -186,6 +206,7 @@ struct KeyRouteInput {
     bool     repeat = false;  // key down auto-repeat (lParam bit 30)
     bool     ctrl = false, shift = false, alt = false;
     bool     video_view = false;
+    bool     tagging_view = false;    // story 10-4: E / Del in Tagging view
     bool     recording = false;   // a new key is being recorded: the viewer takes every key
     bool     text_input = false;  // an ImGui text field is active: the viewer takes every key
     bool     popup_open = false;  // the Shortcuts popup (or the delete confirmation) is open: Esc closes it
@@ -244,7 +265,7 @@ inline int RouteViewerKey(const ShortcutBindings& b, const KeyRouteInput& in, Ke
         // action (e.g. the key just recorded for a Video view only action, in RAV view).
         if (in.repeat && st.claimed_vk != 0 && in.key == st.claimed_vk) return to_viewer;
         const bool ours = (in.key == vk::kEscape && in.popup_open) || (in.key == vk::kReturn && in.confirm_open) ||
-                          ShortcutActionFor(b, in.key, in.ctrl, in.shift, in.alt, in.video_view) >= 0;
+                          ShortcutActionFor(b, in.key, in.ctrl, in.shift, in.alt, in.video_view, in.tagging_view) >= 0;
         if (!ours) {
             st.claimed_vk = 0;  // a lost release (focus moved) must not keep claiming characters
             return kRouteReaper;
@@ -317,7 +338,9 @@ inline std::vector<int> ResetShortcut(ShortcutBindings& b, int id)
             changed.push_back(k);
         }
         for (int j = 0; j < kShortcutCount; ++j)
-            if (j != k && b[static_cast<size_t>(j)] == d) todo.push_back(j);
+            if (j != k && b[static_cast<size_t>(j)] == d &&
+                ShortcutContextsOverlap(kShortcutTable[j].context, kShortcutTable[k].context))
+                todo.push_back(j);
     }
     return changed;
 }
@@ -471,7 +494,7 @@ void LoadShortcuts();
 const ShortcutBindings& CurrentShortcuts();
 
 // The action a key press runs in the viewer (Ctrl / Shift / Alt held as given), or -1.
-int ShortcutActionForKey(unsigned key, bool ctrl, bool shift, bool alt, bool video_view);
+int ShortcutActionForKey(unsigned key, bool ctrl, bool shift, bool alt, bool video_view, bool tagging_view = false);
 
 // The current key of an action as text ("C", "Shift+V"), for key caps and the popup.
 const char* ShortcutKeyLabel(int id);

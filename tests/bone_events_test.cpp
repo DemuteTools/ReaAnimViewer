@@ -769,6 +769,41 @@ int main()
         CHECK(bad.samples == 0 && bad.blocks.size() == 1 && !bad.blocks[0].ran && bad.events.empty());
     }
 
+    // ---- Story 10-4: EventValuesAt equals detection's values at a detected time ----------
+    {
+        auto y = Pw({{0, 1}, {0.4, 1}, {0.5, 0}, {0.8, 0}, {0.9, 0.2}, {1.0, 0.2}, {1.1, 0}, {1.5, 0}});
+        std::vector<BoneTrack> tr = {Track(1.5, 240.0, y)};
+        for (int variant = 0; variant < 3; ++variant) {
+            Block b = HeightBlock(Direction::Below, 0.05, 0.02);
+            if (variant >= 1) {  // a strength signal of its own
+                b.strength_signal.bones = {0};
+                b.strength_signal.measure = Measure::Speed;
+                b.strength_signal.keep_sign = true;
+                b.strength_sign = -1.0;
+            }
+            if (variant == 2) {  // an offset and a peak landing
+                b.offset_ms = 23.0;
+                b.landing = Landing::PeakOf;
+                b.peak_condition = 0;
+                b.peak_max = false;
+            }
+            DetectOptions o;
+            const std::vector<Event> ev = Detect({b}, tr, o);
+            CHECK(ev.size() == 2);
+            for (const Event& e : ev) {
+                double s = -1.0, v = -1.0;
+                CHECK(EventValuesAt(b, tr, o, e.time_s, &s, &v));
+                CHECK(Near(s, e.strength, 1e-9) && Near(v, e.speed, 1e-9));
+            }
+        }
+        // Any time reads (a user event); a block without conditions or no tracks does not.
+        Block b = HeightBlock(Direction::Below, 0.05);
+        double s = 0.0, v = 0.0;
+        CHECK(EventValuesAt(b, tr, {}, 0.45, &s, &v) && v > 5.0);
+        CHECK(!EventValuesAt(Block{}, tr, {}, 0.45, &s, &v) && s == 0.0 && v == 0.0);
+        CHECK(!EventValuesAt(b, {}, {}, 0.45, &s, &v));
+    }
+
     if (g_fails == 0) std::printf("bone_events: all tests passed\n");
     return g_fails == 0 ? 0 : 1;
 }

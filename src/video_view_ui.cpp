@@ -17,6 +17,7 @@
 
 #include "reaper_actions.h"  // spec 11-fb-5: REAPER's Video window open
 #include "shortcuts.h"   // spec 11-fb-3: the current keys on the key caps; 11-fb-11: LoadPref*
+#include "strip_view.h"  // Story 10-3: the shared strip (grip, view window, ruler, seek)
 #include "ui_theme.h"
 #include "video_preview_lag.h"
 #include "video_shot_timing.h"
@@ -704,9 +705,12 @@ void DrawVideoViewToggle(float center_x)
     ImGui::SetNextWindowPos(ImVec2(center_x, 8.0f), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
     if (ImGui::Begin("##viewtoggle", nullptr, kOverlayFlags)) {
-        static const char* const kViews[2] = {"RAV view", "Video view"};
-        int sel = VideoViewActive() ? 1 : 0;
-        if (ui::Segmented("##view", kViews, 2, &sel)) SetVideoViewActive(sel == 1);
+        // Story 10-3: RAV view / Tagging view / Video view, in V's cycle order.
+        static const char* const kViews[3] = {"RAV view", "Tagging view", "Video view"};
+        const ViewMode mode = GetViewMode();
+        int sel = mode == ViewMode::Video ? 2 : mode == ViewMode::Tagging ? 1 : 0;
+        if (ui::Segmented("##view", kViews, 3, &sel))
+            SetViewMode(sel == 2 ? ViewMode::Video : sel == 1 ? ViewMode::Tagging : ViewMode::Rav);
     }
     ImGui::End();
     ImGui::PopStyleVar();
@@ -901,48 +905,20 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
 
         // Spec 11-fb-11: the strip's top edge (about 4 px) drags its height, from
         // kVideoStripHeight to half the client height; kept in ExtState on release.
-        {
-            constexpr float kGripH = 4.0f;
-            static float s_grip_start_h = 0.0f;
-            static float s_grip_press_y = 0.0f;
-            static bool  s_grip_moved = false;  // a click without a move changes nothing
-            const ImVec2 content = ImGui::GetCursorScreenPos();
-            const ImVec2 wpos = ImGui::GetWindowPos();
-            ImGui::SetCursorScreenPos(wpos);
-            ImGui::InvisibleButton("##stripgrip", ImVec2(ImGui::GetWindowSize().x, kGripH));
-            const float my = ImGui::GetIO().MousePos.y;
-            if (ImGui::IsItemActivated()) {
-                s_grip_start_h = h;
-                s_grip_press_y = my;
-                s_grip_moved = false;
-            }
-            if (ImGui::IsItemActive() && my != s_grip_press_y) s_grip_moved = true;
-            if (ImGui::IsItemActive() && s_grip_moved) {
-                const float client_h = ImGui::GetIO().DisplaySize.y;
-                const float nh = s_grip_start_h - (my - s_grip_press_y);
-                g_strip_h = std::floor(std::min(std::max(nh, kVideoStripHeight), StripMaxHeight(client_h)));
-            }
-            if (ImGui::IsItemDeactivated() && s_grip_moved) SavePrefFloat(kPrefStripHeight, g_strip_h);
-            if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-            ImGui::SetCursorScreenPos(content);
-        }
+        static StripGripState s_grip;
+        StripHeightGrip(s_grip, "##stripgrip", &g_strip_h, h, kVideoStripHeight,
+                        StripMaxHeight(ImGui::GetIO().DisplaySize.y), kPrefStripHeight);
 
         // The extra height above the minimum goes to the lane; the ruler keeps its own.
         const float lane_h = 24.0f + std::max(0.0f, h - kVideoStripHeight);
         constexpr float kCtrlH = 24.0f;  // Snap and Cut keep their size, centred on the lane
         // Spec 11-fb-6 / 11-fb-9: a seconds / frames ruler over the lane, its labels at the full
         // font size, over a row of tick room at the bottom of the band for the minor ticks.
+        // (strip_view.h: the shared ruler's layout.)
         ImFont* const ruler_font = ImGui::GetFont();
-        constexpr float kRulerTickRoom = 6.0f;      // band height under the labels (minor ticks)
-        constexpr float kRulerMinorTickH = 4.0f;    // minor tick height: inside the tick room
-        constexpr float kRulerMinorMinPx = 4.0f;    // minor ticks at least this far apart
-        constexpr float kRulerLabelPad = 3.0f;      // label text starts this far right of its tick
-        constexpr float kRulerLabelGap = 12.0f;     // free space after the widest label
-        static_assert(kRulerMinorTickH <= kRulerTickRoom, "minor ticks stay under the labels");
         // The band is clamped so lane + ruler always fit the strip (a large font shrinks it).
-        const float ruler_h = std::max(0.0f, std::min(std::floor(ImGui::GetFontSize()) + kRulerTickRoom,
+        const float ruler_h = std::max(0.0f, std::min(std::floor(ImGui::GetFontSize()) + kStripRulerTickRoom,
                                                       ImGui::GetContentRegionAvail().y - lane_h));
-        const float ruler_fs = ruler_h - kRulerTickRoom;
         const float avail = ImGui::GetContentRegionAvail().x;
         const float top = ImGui::GetCursorScreenPos().y +
                           std::max(0.0f, (ImGui::GetContentRegionAvail().y - lane_h - ruler_h) * 0.5f) + ruler_h;
@@ -992,119 +968,30 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
         dl->AddRectFilled(l0, l1, ui::kBg, ui::kRadiusSm);
         double ruler_step = 0.0;  // 0: no item, no ruler (Snap is then disabled)
         const VideoStripRange& r = VideoViewStripRange();
-        // Spec 11-fb-12: the strip shows a view window [s_v0, s_v0 + s_span] of project time
-        // around the current item (r.start .. r.end, the item under the playhead): by default
-        // the item plus a margin, zoomed with Alt + wheel. Session state.
-        static bool   s_view_init = false;
-        static double s_v0 = 0.0;
-        static double s_span = 1.0;
-        static bool   s_zoomed = false;           // Alt + wheel changed the span from the default
-        static bool   s_scrolled = false;         // spec 11-fb-14: Shift + wheel moved the view
-        static bool   s_was_playing = false;      // spec 11-fb-14: play start re-frames the clip
-        static double s_item_start = 0.0;         // the current item the view last followed
-        static double s_item_end = 0.0;
-        static double s_last_playhead = 0.0;
+        // Spec 11-fb-12: the strip shows a view window of project time around the current
+        // item (r.start .. r.end, the item under the playhead): by default the item plus a
+        // margin, zoomed with Alt + wheel. Session state (strip_view.h, Story 10-3).
+        static StripViewState s_view;
         if (!r.valid || !(r.end > r.start)) {
-            s_view_init = false;
+            StripViewReset(s_view);
             const char* line = "No animation item on this track";
             const ImVec2 ts = ImGui::CalcTextSize(line);
             dl->AddText(ImVec2(l0.x + std::max(6.0f, (lane_w - ts.x) * 0.5f), top + (lane_h - ts.y) * 0.5f), ui::kFaint,
                         line);
         } else {
-            // ---- The view window (spec 11-fb-12) ----
-            const double item_span = r.end - r.start;
-            const double min_span = VideoStripMinSpan(m.fps);
-            const double max_span = VideoStripMaxSpan(item_span, m.fps);
-            const double def_span =
-                VideoStripClampSpan(item_span + 2.0 * VideoStripDefaultMargin(item_span, m.fps), min_span, max_span);
-            const double def_v0 = (r.start + r.end) * 0.5 - def_span * 0.5;
-            const bool item_changed = r.start != s_item_start || r.end != s_item_end;
-            // Spec 11-fb-14: when REAPER starts playing, and on each new clip while it plays, the
-            // view drops any zoom or scroll and frames the clip under the play position.
-            const bool playing = VideoViewPlaying();
-            const bool play_started = playing && !s_was_playing;
-            if (!s_view_init) {
-                s_v0 = def_v0;
-                s_span = def_span;
-                s_zoomed = false;
-                s_scrolled = false;
-                s_item_start = r.start;
-                s_item_end = r.end;
-                s_last_playhead = playhead;
-                s_view_init = true;
-                s_was_playing = playing;
-            } else if (!lane_active) {  // the view never jumps during a lane drag (scrub or junction)
-                if (play_started || (playing && item_changed)) {
-                    s_zoomed = false;
-                    s_scrolled = false;
-                }
-                s_was_playing = playing;
-                if (item_changed || play_started) {
-                    // Unzoomed and unscrolled: frame the new item. A user view (zoomed or
-                    // scrolled): keep the span (within the new limits).
-                    if (!s_zoomed && !s_scrolled) {
-                        s_v0 = def_v0;
-                        s_span = def_span;
-                    } else {
-                        s_span = VideoStripClampSpan(s_span, min_span, max_span);
-                    }
-                    s_item_start = r.start;
-                    s_item_end = r.end;
-                }
-                // The playhead stays visible: the smallest shift that brings it back in.
-                if (item_changed || play_started || playhead != s_last_playhead)
-                    s_v0 = VideoStripFollow(s_v0, s_span, playhead);
-                s_last_playhead = playhead;
-            }
+            // ---- The view window (spec 11-fb-12 / 11-fb-14) ----
             const float mx = ImGui::GetIO().MousePos.x;
-            const double f = std::min(1.0, std::max(0.0, static_cast<double>((mx - l0.x) / lane_w)));
-            // Alt + wheel anywhere over the strip window (lane, ruler, empty band): zoom about the
-            // time under the mouse (the lane's nearest edge when the mouse is beside it). The
-            // viewer window keeps it from the 3D view and REAPER (viewer_window.cpp).
-            {
-                const ImGuiIO& io = ImGui::GetIO();
-                if (io.KeyAlt && io.MouseWheel != 0.0f && !lane_active && ImGui::IsWindowHovered()) {
-                    const double t_fixed = s_v0 + f * s_span;
-                    VideoStripZoom(s_v0, s_span, t_fixed, static_cast<double>(io.MouseWheel), min_span, max_span, &s_v0,
-                                   &s_span);
-                    s_zoomed = std::fabs(s_span - def_span) > 1.0e-6 * def_span;
-                } else if (io.KeyShift && io.MouseWheel != 0.0f && !lane_active && !playing && ImGui::IsWindowHovered()) {
-                    // (Ignored while playing: the follow rule would pull the view back every frame.)
-                    // Spec 11-fb-14: Shift + wheel scrolls (up: earlier, down: later), 10 % of the
-                    // span per notch, never before the default margin before 0. A user view.
-                    s_v0 = VideoStripScroll(s_v0, s_span, static_cast<double>(io.MouseWheel),
-                                            -VideoStripDefaultMargin(item_span, m.fps));
-                    s_scrolled = true;
-                }
-            }
-            const double v0 = s_v0;
-            const double span = s_span;
-            const double v1 = v0 + span;
+            const StripWindow win = StripViewUpdate(s_view, r.start, r.end, playhead, VideoViewPlaying(), m.fps,
+                                                    lane_active, ImGui::IsWindowHovered(), mx, l0.x, lane_w);
+            const double v0 = win.v0;
+            const double v1 = win.v1;
             const double t_lo = std::max(v0, 0.0);  // nothing before project time 0
-            auto x_of = [&](double t) { return l0.x + static_cast<float>((t - v0) / span) * lane_w; };
+            auto x_of = [&](double t) { return StripX(win, l0.x, lane_w, t); };
             const int n = static_cast<int>(m.shots.size());
-            const double t_mouse = v0 + f * span;
-            // The ruler's step: labelled ticks at least the widest label for this view apart (the
-            // longest seconds label, or a "+Nf" frame label), so full-size labels never collide.
-            // Spec 11-fb-12: project time, like REAPER's ruler (origin 0); fps unknown: seconds.
-            float label_w;
-            {
-                const long long ifps = VideoRulerFps(m.fps);
-                char frame_label[32];
-                std::snprintf(frame_label, sizeof(frame_label), "+%lldf", ifps > 1 ? ifps - 1 : 0LL);
-                const double t_far = std::max(std::fabs(v0), std::fabs(v1));
-                const char* sec_label = t_far >= 36000.0 ? "00:00:00" : t_far >= 3600.0 ? "0:00:00"
-                                      : t_far >= 600.0  ? "00:00"    : "0:00";
-                label_w = std::max(ImGui::CalcTextSize(sec_label).x,
-                                   ifps > 1 ? ImGui::CalcTextSize(frame_label).x : 0.0f);
-            }
-            ruler_step = VideoRulerStep(span, static_cast<double>(lane_w), m.fps,
-                                        static_cast<double>(kRulerLabelPad + label_w + kRulerLabelGap));
-            // Spec 11-fb-9: minor ticks under it, down to one per frame.
-            const double ruler_minor =
-                VideoRulerMinorStep(ruler_step, span, static_cast<double>(lane_w), m.fps, kRulerMinorMinPx);
-            // Snap lands on the finest graduation drawn (project frames).
-            const double snap_step = VideoRulerSnapStep(ruler_step, ruler_minor);
+            const double t_mouse = StripTimeAt(win, l0.x, lane_w, mx);
+            const StripRuler ruler = StripRulerFor(win, lane_w, m.fps);
+            ruler_step = ruler.step;
+            const double snap_step = ruler.snap;
             const bool snap = s_snap && ruler_step > 0.0;
 
             // Spec 11-fb-10: a shot starts at its first frame. Its line is drawn (and grabbed)
@@ -1331,56 +1218,12 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
             dl->PopClipRect();
 
             // The ruler (spec 11-fb-6 / 11-fb-9): above the lane, in project time like REAPER's
-            // ruler (spec 11-fb-12), over the view window. Whole seconds read "0:02", frame ticks
-            // between them "+12f", at the full font size. Never over the shot names.
-            if (ruler_step > 0.0) {
-                const ImVec2 r0(l0.x, l0.y - ruler_h);
-                dl->PushClipRect(ImVec2(r0.x - 1.0f, r0.y), ImVec2(l1.x + 1.0f, l0.y), true);
-                // Minor ticks (spec 11-fb-9): short, in the tick room under the labels, and the
-                // faintest stroke; those on a labelled tick are skipped (same frame grid).
-                const long long per_label = VideoRulerMinorPerLabel(ruler_step, ruler_minor, m.fps);
-                if (per_label > 1) {
-                    const float minor_h = std::min(kRulerMinorTickH, ruler_h);
-                    const long long k0 = VideoRulerFirstTickFrom(t_lo, 0.0, ruler_minor, m.fps);
-                    for (long long k = k0; k <= k0 + 100000; ++k) {
-                        const double tick_t = VideoRulerTickTime(k, 0.0, ruler_minor, m.fps);
-                        if (tick_t > v1 + 1e-9) break;
-                        if (k % per_label == 0) continue;  // a labelled tick
-                        const float tick_x = x_of(tick_t);
-                        dl->AddLine(ImVec2(tick_x + 0.5f, l0.y - minor_h), ImVec2(tick_x + 0.5f, l0.y),
-                                    ui::kStrokeStrong, 1.0f);
-                    }
-                }
-                const long long k0 = VideoRulerFirstTickFrom(t_lo, 0.0, ruler_step, m.fps);
-                for (long long k = k0; k <= k0 + 100000; ++k) {
-                    const double tick_t = VideoRulerTickTime(k, 0.0, ruler_step, m.fps);
-                    if (tick_t > v1 + 1e-9) break;
-                    const float tick_x = x_of(tick_t);
-                    char label[32];
-                    VideoRulerTickLabel(k, ruler_step, m.fps, label, sizeof(label));
-                    const bool major = VideoRulerTickIsMajor(k, ruler_step, m.fps);
-                    // Labelled ticks rise past the minor ones and read brighter (minor kStrokeStrong <
-                    // frame kFaint < second kMuted on the dark surface): whole seconds the full band.
-                    const float tick_h = major ? ruler_h : std::max(3.0f, std::floor(ruler_h * 0.6f));
-                    dl->AddLine(ImVec2(tick_x + 0.5f, l0.y - tick_h), ImVec2(tick_x + 0.5f, l0.y),
-                                major ? ui::kMuted : ui::kFaint, 1.0f);
-                    if (ruler_fs >= 6.0f) {
-                        dl->AddText(ruler_font, ruler_fs, ImVec2(tick_x + kRulerLabelPad, r0.y),
-                                    major ? ui::kText : ui::kMuted,
-                                    label);
-                    }
-                }
-                dl->PopClipRect();
-            }
+            // ruler (spec 11-fb-12), over the view window. Never over the shot names.
+            DrawStripRuler(dl, win, ruler, l0.x, lane_w, l0.y, ruler_h, m.fps);
 
-            if (lane_active && s_junction < 0 && !s_junction_dropped && !s_dblclick_hold) {  // a scrub: passes over junctions
-                static float s_last_mx = -1.0e9f;
-                // Spec 11-fb-12: anywhere in the view (>= 0), no stop inside the item: a drag runs
-                // on into the next clip. Snap: the nearest tick's frame; off: the raw time.
-                const double t_seek = snap ? VideoRulerSnap(t_mouse, 0.0, snap_step, m.fps) : t_mouse;
-                if (lane_pressed || mx != s_last_mx) QueueVideoSeek(std::max(0.0, t_seek));
-                s_last_mx = mx;
-            }
+            // A scrub: passes over junctions. Snap: the nearest tick's frame; off: the raw time.
+            StripScrub(s_view, lane_active && s_junction < 0 && !s_junction_dropped && !s_dblclick_hold, lane_pressed, mx,
+                       snap ? VideoRulerSnap(t_mouse, 0.0, snap_step, m.fps) : t_mouse, &QueueVideoSeek);
             // A double-click on a shot (not on a junction) puts the playhead on its first frame,
             // like a click in the panel's shot list. After the scrub: the last seek queued wins.
             // Spec 11-fb-12: a shot that began in an earlier clip: the first frame of the clip

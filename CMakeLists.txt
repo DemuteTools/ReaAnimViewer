@@ -186,6 +186,10 @@ if(WIN32)
             src/preset_store.cpp
             src/role_map_store.cpp
             src/item_rules.cpp
+            src/strip_view.cpp
+            src/tagging_signal.cpp
+            src/tagging_session.cpp
+            src/tagging_view_ui.cpp
     )
     # Generated rav_version.h (see RAV_VERSION above).
     target_include_directories(animviewer PRIVATE "${CMAKE_BINARY_DIR}/generated")

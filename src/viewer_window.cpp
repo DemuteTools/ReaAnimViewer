@@ -43,6 +43,8 @@
 #include "renderer.h"
 #include "shortcuts.h"         // spec 11-fb-3: the viewer's keys, rebindable
 #include "shortcuts_ui.h"      // spec 11-fb-3: the keyboard icon + Shortcuts popup
+#include "tagging_session.h"   // Story 10-3: the Tagging view's model (item, rules, detection)
+#include "tagging_view_ui.h"   // Story 10-3: its curve strip and panel
 #include "texture_locate.h"    // issue #1: "Locate textures..." (folder picker + copy)
 #include "gpu_resources.h"    // Story 11-4: the Video view's render target
 #include "ui_theme.h"         // Story 11-4: the DM-XYZ-Pad theme over Dear ImGui
@@ -543,6 +545,8 @@ bool EnsureVideoTarget(int w, int h)
 // active FX), 0 otherwise. The frame, the ViewCube and the status icon stay above it.
 float VideoStripBand()
 {
+    // Story 10-3: Tagging view's curve strip takes the bottom band the same way.
+    if (TaggingViewActive()) return TaggingStripHeight(static_cast<float>(g_client_h)) + 2.0f * kTaggingGap;
     // Spec 11-fb-11: the strip's height is the user's (its top edge drags it).
     return VideoShotStripVisible() ? VideoStripHeight(static_cast<float>(g_client_h)) + 2.0f * kVideoStripGap : 0.0f;
 }
@@ -603,6 +607,33 @@ void RenderVideoView(float anim_time)
     }
 }
 
+// Story 10-3 -- Tagging view: RAV view's free camera and render, in the area left of the
+// panel and above the strip (rendered into the view target, then blitted there). No second
+// camera, no second render. Outside the area = the theme's background (the strip and the
+// panel are drawn over it).
+void RenderTaggingView(float anim_time, bool loop)
+{
+    const int aw = std::max(1, static_cast<int>(static_cast<float>(g_client_w) - TaggingPanelFootprint(g_client_w)));
+    const int ah = std::max(1, static_cast<int>(ViewBottom()));
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, g_client_w, g_client_h);
+    const ImVec4 outside = ui::Col(ui::kBg);
+    glClearColor(outside.x, outside.y, outside.z, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    if (EnsureVideoTarget(aw, ah)) {
+        g_renderer.RenderFrame(anim_time, loop, aw, ah, g_video_fbo.get());
+        const int dy = g_client_h - ah;  // GL rows count from the bottom: the area's top is the window's
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, g_video_fbo.get());
+        glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+        glBlitFramebuffer(0, 0, aw, ah, 0, dy, aw, dy + ah, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glViewport(0, 0, g_client_w, g_client_h);
+    } else {
+        // No target (the GPU refused it): the whole window, as RAV view.
+        g_renderer.RenderFrame(anim_time, loop, g_client_w, g_client_h);
+    }
+}
+
 void RenderTick()
 {
     if (!g_hdc || !g_hglrc) return;
@@ -634,7 +665,9 @@ void RenderTick()
     std::string item_path;
     double item_time = 0.0;
     MediaTrack* item_track = nullptr;
-    const bool item_found = GetCurrentAnimItemOn(VideoViewPinnedTrack(), item_path, item_time, &item_track);
+    MediaItem*  item_media = nullptr;  // Story 10-3: the Tagging view reads its rules
+    const bool item_found =
+        GetCurrentAnimItemOn(VideoViewPinnedTrack(), item_path, item_time, &item_track, &item_media);
     if (item_found) {
         if (item_path != g_current_anim_path) {
             // Item changed (first item, or a scrub onto a DIFFERENT source) → (re)load
@@ -739,8 +772,20 @@ void RenderTick()
     // is idle (no startup fixture — the launch file-picker was removed; animations are
     // loaded from the timeline). Once an item drives the view it is sticky: transport
     // time, clamp (no loop).
+    // Story 10-3: leaving Tagging view (V, the toggle, P) ends its running gesture (a drag is
+    // written as shown, one undo point); in it, its model follows the item shown.
+    {
+        static bool s_was_tagging = false;
+        const bool tagging = TaggingViewActive();
+        if (s_was_tagging && !tagging) TaggingEndGestures();
+        s_was_tagging = tagging;
+        if (tagging) TaggingSessionFrame(item_found ? item_media : nullptr, item_found ? item_path : std::string());
+    }
+
     if (VideoViewActive()) {
         RenderVideoView(static_cast<float>(g_display_time));
+    } else if (TaggingViewActive()) {
+        RenderTaggingView(static_cast<float>(g_transport_driven ? g_display_time : ElapsedSeconds()), !g_transport_driven);
     } else {
         g_renderer.RenderFrame(
             static_cast<float>(g_transport_driven ? g_display_time : ElapsedSeconds()),
@@ -1345,8 +1390,10 @@ void DrawToolUi()
         ImGuiWindowFlags_NoInputs;
 
     // Story 11-4 — the view area: the window minus the Video panel's column when it shows.
+    // Story 10-3: or the Tagging panel's, in Tagging view (each is 0 outside its view).
     const bool  video_view = VideoViewActive();
-    const float panel_room = VideoPanelFootprint(g_client_w);
+    const bool  tagging_view = TaggingViewActive();
+    const float panel_room = VideoPanelFootprint(g_client_w) + TaggingPanelFootprint(g_client_w);
     const float area_right = static_cast<float>(g_client_w) - panel_room;
 
     // FPS readout, top-RIGHT (FR53), anchored with a right-edge pivot so it hugs the corner at
@@ -1386,7 +1433,15 @@ void DrawToolUi()
                                std::max(1.0f, area_right - 2.0f * kVideoStripGap), strip_h);
         }
     }
-    if (panel_room > 0.0f) {
+    // Story 10-3 -- Tagging view: the curve strip under the 3D view, the panel on the right.
+    if (tagging_view) {
+        const float strip_h = TaggingStripHeight(static_cast<float>(g_client_h));
+        DrawTaggingStrip(kTaggingGap, static_cast<float>(g_client_h) - kTaggingGap - strip_h,
+                         std::max(1.0f, area_right - 2.0f * kTaggingGap), strip_h);
+        DrawTaggingPanel(area_right + kTaggingGap, kTaggingGap, panel_room - 2.0f * kTaggingGap,
+                         std::max(1.0f, static_cast<float>(g_client_h) - 2.0f * kTaggingGap));
+    }
+    if (video_view && panel_room > 0.0f) {
         const float gap = 8.0f;
         DrawVideoPanel(area_right + gap, gap, panel_room - 2.0f * gap,
                        std::max(1.0f, static_cast<float>(g_client_h) - 2.0f * gap), g_renderer.Camera(),
@@ -1613,6 +1668,9 @@ void StopRendering()
 
     // Story 11-4: a gesture or queued write cannot outlive the panel (nothing is written).
     VideoViewOnViewerClosed();
+    // Story 10-3: nor a Tagging view drag (its preview is dropped); its model is read afresh.
+    ui::DragNumberReset();
+    TaggingSessionReset();
     g_drag_video = false;
     g_video_post_pending = false;
     g_current_load_ok = false;
@@ -1829,6 +1887,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (!(lp & (1 << 30))) RequestVideoDeleteConfirmByKey();
             return 0;
         }
+        // Story 10-3: Esc during a Tagging view drag cancels it (ImGui has the key already).
+        if (wp == VK_ESCAPE && TaggingViewActive() && TaggingGestureActive()) return 0;
         if (g_imgui_ready && ImGui::GetIO().WantTextInput) return 0;
         const int action = ShortcutActionForKey(static_cast<unsigned>(wp), ctrl, shift, alt, VideoViewActive());
         if (action < 0) {
@@ -1847,7 +1907,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 g_drag = DragMode::None;
                 ReleaseCapture();
             }
-            if (action == kShortcutToggleView) SetVideoViewActive(!VideoViewActive());
+            // Story 10-3: V cycles RAV view -> Tagging view -> Video view -> RAV view. A Tagging
+            // view drag ends as shown (RenderTick sees the view change).
+            if (action == kShortcutToggleView) SetViewMode(NextViewMode(GetViewMode()));
             else                               SetVideoPanelVisible(true);
             return 0;
         }
@@ -2009,7 +2071,8 @@ int ViewerTranslateAccel(MSG* msg, accelerator_register_t* /*ctx*/)
     in.video_view = VideoViewActive();
     in.recording  = ShortcutRecordingId() >= 0;
     in.text_input = g_imgui_ready && ImGui::GetIO().WantTextInput;
-    in.popup_open = ShortcutsPopupOpen() || VideoDeleteConfirmOpen();  // Esc closes either
+    // Esc closes either; Story 10-3: Esc also cancels a Tagging view drag.
+    in.popup_open = ShortcutsPopupOpen() || VideoDeleteConfirmOpen() || (TaggingViewActive() && TaggingGestureActive());
     in.confirm_open = VideoDeleteConfirmOpen();  // Enter confirms the delete
     in.imgui_mouse = ImGuiWantsMouse();          // spec 11-fb-12: Alt + wheel over the UI
     // The decision itself is pure (src/shortcuts.h RouteViewerKey, host-tested).

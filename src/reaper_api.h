@@ -160,5 +160,8 @@
 // (src/item_rules.cpp). Old, safe (REAPER 5+).
 #define REAPERAPI_WANT_GetSetMediaItemTakeInfo_String
 
+// Story 10-3 -- the Tagging view names the item under the playhead (its take's name). Old, safe.
+#define REAPERAPI_WANT_GetTakeName
+
 #include "reaper_plugin.h"
 #include "reaper_plugin_functions.h"

@@ -498,16 +498,23 @@ bool ReadLanding(const std::string& s, Block& b)
 
 Fields BlockFields(const Block& b)
 {
-    return {{"color", FormatColor(b.color)},
+    // `on` is written only when the rule is off (story 10-3), so a record of rules that are
+    // all on writes back byte-identical.
+    Fields f;
+    if (!b.enabled) f.push_back({"on", "0"});
+    Fields rest = {{"color", FormatColor(b.color)},
             {"hold_ms", FormatNumber(b.min_hold_ms)},
             {"cooldown_ms", FormatNumber(b.cooldown_ms)},
             {"offset_ms", FormatNumber(b.offset_ms)},
             {"land", FormatLanding(b)},
             {"marker", CleanFreeText(b.marker)}};
+    f.insert(f.end(), rest.begin(), rest.end());
+    return f;
 }
 
 Set SetBlock(Block& b, const std::string& k, const std::string& v)
 {
+    if (k == "on") return R(ReadBool(v, &b.enabled));
     if (k == "color") return R(ReadColor(v, &b.color));
     if (k == "hold_ms") return R(ReadNumber(v, &b.min_hold_ms));
     if (k == "cooldown_ms") return R(ReadNumber(v, &b.cooldown_ms));
@@ -1089,7 +1096,7 @@ bool ConditionsEqual(const Condition& a, const Condition& b)
 
 bool BlockEqual(const Block& a, const Block& b)
 {
-    if (a.marker != b.marker || a.color != b.color || a.min_hold_ms != b.min_hold_ms || a.cooldown_ms != b.cooldown_ms ||
+    if (a.enabled != b.enabled || a.marker != b.marker || a.color != b.color || a.min_hold_ms != b.min_hold_ms || a.cooldown_ms != b.cooldown_ms ||
         a.offset_ms != b.offset_ms || !SignalsEqual(a.strength_signal, b.strength_signal) ||
         a.strength_sign != b.strength_sign || a.strength_window_ms != b.strength_window_ms || a.landing != b.landing ||
         a.conditions.size() != b.conditions.size())

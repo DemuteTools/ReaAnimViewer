@@ -7,7 +7,12 @@
 #ifdef _WIN32
 
 #include <algorithm>
+#include <charconv>
+#include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <string>
+#include <system_error>
 
 namespace rav {
 namespace ui {
@@ -199,6 +204,170 @@ void SubText(const char* text)
     ImGui::TextUnformatted(text);
     ImGui::PopTextWrapPos();
     ImGui::PopStyleColor();
+}
+
+namespace {
+
+// One DragNumber at a time is dragged or typed into.
+struct DragNumberState {
+    ImGuiID drag = 0;          // the field being dragged
+    double  start = 0.0;       // its value when the press began
+    double  acc = 0.0;         // the drag's change so far
+    float   press_x = 0.0f;
+    bool    moved = false;     // past the drag threshold: a drag, not a click
+    bool    cancelled = false; // Esc during the drag: inert until the release
+    ImGuiID typing = 0;        // the field being typed into
+    int     focus_frames = 0;  // frames left for the text field to take the focus
+    char    buf[64] = {};
+    int     seen_frame = -1;   // the frame the dragged / typed field was last drawn
+};
+DragNumberState g_dn;
+
+double RoundTo(double v, int decimals)
+{
+    const double k = std::pow(10.0, decimals < 0 ? 0 : (decimals > 9 ? 9 : decimals));
+    const double r = std::round(v * k) / k;
+    return r == 0.0 ? 0.0 : r;  // never -0
+}
+
+bool ParseTyped(const char* text, double* out)
+{
+    std::string s;
+    for (const char* p = text; *p; ++p) {
+        if (*p == ' ') continue;
+        s += (*p == ',') ? '.' : *p;  // a decimal comma reads as a point
+    }
+    if (!s.empty() && s[0] == '+') s.erase(0, 1);
+    if (s.empty()) return false;
+    double v = 0.0;
+    const std::from_chars_result r = std::from_chars(s.data(), s.data() + s.size(), v);
+    if (r.ec != std::errc() || r.ptr != s.data() + s.size() || !std::isfinite(v)) return false;
+    *out = v;
+    return true;
+}
+
+}  // namespace
+
+bool DragNumberActive()
+{
+    // A field no longer drawn (its rule went away) holds nothing.
+    if (g_dn.seen_frame < ImGui::GetFrameCount() - 1) {
+        g_dn.drag = 0;
+        g_dn.typing = 0;
+    }
+    return g_dn.drag != 0 || g_dn.typing != 0;
+}
+
+void DragNumberReset()
+{
+    g_dn.drag = 0;
+    g_dn.typing = 0;
+    g_dn.cancelled = false;
+}
+
+DragNumberEvent DragNumber(const char* id, double* value, double step, int decimals, const char* unit, float width)
+{
+    DragNumberEvent ev = DragNumberEvent::None;
+    if (!value) return ev;
+    ImGui::PushID(id);
+    const ImGuiID gid = ImGui::GetID("##dragnum");
+    const ImGuiIO& io = ImGui::GetIO();
+    const float h = ImGui::GetFrameHeight();
+    const float w = width > 0.0f ? width : ImGui::CalcTextSize("-0000.00").x + 12.0f;
+    char text[64];
+    std::snprintf(text, sizeof(text), "%.*f", decimals < 0 ? 0 : decimals, RoundTo(*value, decimals));
+
+    if (g_dn.typing == gid || g_dn.drag == gid) g_dn.seen_frame = ImGui::GetFrameCount();
+    if (g_dn.typing == gid) {
+        ImGui::SetNextItemWidth(w);
+        if (g_dn.focus_frames > 0) ImGui::SetKeyboardFocusHere();
+        const bool enter = ImGui::InputText("##type", g_dn.buf, sizeof(g_dn.buf),
+                                            ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+        const bool active = ImGui::IsItemActive();
+        if (g_dn.focus_frames > 0) {
+            g_dn.focus_frames = active ? 0 : g_dn.focus_frames - 1;
+            if (g_dn.focus_frames == 0 && !active) g_dn.typing = 0;  // never got the focus
+        } else if (enter || !active) {
+            g_dn.typing = 0;
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+                ev = DragNumberEvent::Cancel;
+            } else {
+                double v = 0.0;
+                if (ParseTyped(g_dn.buf, &v)) {
+                    *value = RoundTo(v, decimals);
+                    ev = DragNumberEvent::Commit;
+                }
+            }
+        }
+    } else {
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        ImGui::InvisibleButton("##drag", ImVec2(w, h));
+        const bool hovered = ImGui::IsItemHovered();
+        const bool active = ImGui::IsItemActive();
+        if (ImGui::IsItemActivated()) {
+            g_dn.drag = gid;
+            g_dn.start = *value;
+            g_dn.acc = 0.0;
+            g_dn.press_x = io.MousePos.x;
+            g_dn.moved = false;
+            g_dn.cancelled = false;
+            g_dn.seen_frame = ImGui::GetFrameCount();
+        }
+        if (active && g_dn.drag == gid && !g_dn.cancelled) {
+            const double k = step * (io.KeyShift ? 0.1 : 1.0);
+            if (!g_dn.moved && std::fabs(io.MousePos.x - g_dn.press_x) >= io.MouseDragThreshold) {
+                g_dn.moved = true;
+                g_dn.acc = static_cast<double>(io.MousePos.x - g_dn.press_x) * k;
+            } else if (g_dn.moved) {
+                g_dn.acc += static_cast<double>(io.MouseDelta.x) * k;
+            }
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+                g_dn.cancelled = true;
+                if (*value != g_dn.start) {
+                    *value = g_dn.start;
+                }
+                ev = DragNumberEvent::Cancel;
+            } else if (g_dn.moved) {
+                const double nv = RoundTo(g_dn.start + g_dn.acc, decimals);
+                if (nv != *value) {
+                    *value = nv;
+                    ev = DragNumberEvent::Live;
+                }
+            }
+        }
+        if (ImGui::IsItemDeactivated() && g_dn.drag == gid) {
+            if (!g_dn.cancelled) {
+                if (g_dn.moved) {
+                    ev = DragNumberEvent::Commit;
+                } else {  // a click: type a value
+                    g_dn.typing = gid;
+                    g_dn.focus_frames = 3;
+                    g_dn.seen_frame = ImGui::GetFrameCount();
+                    std::snprintf(g_dn.buf, sizeof(g_dn.buf), "%s", text);
+                }
+            }
+            g_dn.drag = 0;
+        }
+        if (hovered || active) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const ImVec2 p1(p0.x + w, p0.y + h);
+        dl->AddRectFilled(p0, p1, kBg, kRadiusSm);
+        dl->AddRect(p0, p1, (hovered || active) ? kStrokeStrong : kStroke, kRadiusSm);
+        std::snprintf(text, sizeof(text), "%.*f", decimals < 0 ? 0 : decimals, RoundTo(*value, decimals));
+        const ImVec2 ts = ImGui::CalcTextSize(text);
+        dl->PushClipRect(p0, p1, true);
+        dl->AddText(ImVec2(p0.x + 6.0f, p0.y + (h - ts.y) * 0.5f), kText, text);
+        dl->PopClipRect();
+    }
+    if (unit && unit[0]) {
+        ImGui::SameLine(0.0f, 4.0f);
+        ImGui::AlignTextToFramePadding();
+        ImGui::PushStyleColor(ImGuiCol_Text, Col(kMuted));
+        ImGui::TextUnformatted(unit);
+        ImGui::PopStyleColor();
+    }
+    ImGui::PopID();
+    return ev;
 }
 
 float KeyCap(ImDrawList* dl, ImVec2 p, const char* key, ImU32 text)

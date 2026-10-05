@@ -76,6 +76,24 @@ void Caption(const char* text);
 // Muted, wrapped body text (the mock-up's .sub).
 void SubText(const char* text);
 
+// Story 10-3 -- a number field (the mock-up's input.nin), never a slider. Dragging it
+// sideways changes the value by `step` per pixel (Shift held: a tenth of it); a click
+// without a drag types a value (Enter or a click elsewhere enters it, Esc cancels).
+// `*value` is in the field's own (display) units, rounded to `decimals`; `unit` is drawn
+// after the number ("" = none). `width` 0 = sized to a typical value.
+enum class DragNumberEvent {
+    None,
+    Live,    // dragging: *value changed this frame (preview it, write nothing)
+    Commit,  // released after a drag, or a typed value entered: write *value (one undo point)
+    Cancel,  // Esc: *value is back to its value before the gesture
+};
+DragNumberEvent DragNumber(const char* id, double* value, double step, int decimals, const char* unit,
+                           float width = 0.0f);
+// True while a DragNumber is dragged or typed into (the viewer routes Esc to it).
+bool DragNumberActive();
+// Forgets a running drag / typed value (its view went away; the caller ends the gesture).
+void DragNumberReset();
+
 // A key cap ("C") drawn at p (top-left), the mock-up's <kbd>. Returns its width.
 // `text` 0 = the theme's text colour.
 float KeyCap(ImDrawList* dl, ImVec2 p, const char* key, ImU32 text = 0);

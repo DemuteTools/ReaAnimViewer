@@ -44,6 +44,7 @@
 //     still holds the value it had after the read: an edit wins.
 //   - `color` is "none" or "#RRGGBB" (Block::color = 0x1000000 | 0xRRGGBB).
 //   - `land` is "cross" or "peak:<condition>:max|min".
+//   - `on=0` on a `block` line = the rule is switched off (absent = on, story 10-3).
 //
 // In a parsed record, SignalSpec bones / ref_bones hold bone-reference ids (see
 // BoneRefId), not track indices: BindBoneRefs turns them into skeleton bone indices.
@@ -157,7 +158,7 @@ std::string SerializeItemRules(const ItemRules& rules);
 bool ParsePreset(const std::string& text, PresetData* out);
 std::string SerializePreset(const PresetData& preset);
 
-// Exact equality of everything detection reads, plus marker and colour (kept text ignored).
+// Exact equality of everything detection reads, plus on/off, marker and colour (kept text ignored).
 bool SignalsEqual(const SignalSpec& a, const SignalSpec& b);
 bool BlocksEqual(const std::vector<Block>& a, const std::vector<Block>& b);
 // The fields the record writes (kept text and the derived AnalyseOptions::smooth_ms ignored).

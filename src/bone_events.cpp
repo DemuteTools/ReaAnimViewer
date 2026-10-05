@@ -317,19 +317,24 @@ std::vector<double> EvaluateSignal(const SignalSpec& spec, const std::vector<Bon
     return out;
 }
 
-std::vector<Event> Detect(const std::vector<Block>& blocks, const std::vector<BoneTrack>& tracks,
-                          const DetectOptions& opts)
+DetectionTrace DetectTrace(const std::vector<Block>& blocks, const std::vector<BoneTrack>& tracks,
+                           const DetectOptions& opts)
 {
-    std::vector<Event> all;
-    if (!TracksFit(tracks)) return all;
+    DetectionTrace trace;
+    trace.blocks.resize(blocks.size());
+    std::vector<Event>& all = trace.events;
+    if (!TracksFit(tracks)) return trace;
     const size_t n = tracks[0].pos.size();
     const double rate = tracks[0].rate_hz;
     const double dt = 1.0 / rate;
     const double duration = static_cast<double>(n - 1) * dt;
+    trace.rate_hz = rate;
+    trace.samples = n;
 
     for (size_t bi = 0; bi < blocks.size(); ++bi) {
         const Block& blk = blocks[bi];
-        if (blk.conditions.empty()) continue;
+        BlockTrace&  bt = trace.blocks[bi];
+        if (!blk.enabled || blk.conditions.empty()) continue;
         const size_t nc = blk.conditions.size();
 
         // Each condition's in/out state (with hysteresis) and its latest entry time.
@@ -347,6 +352,7 @@ std::vector<Event> Detect(const std::vector<Block>& blocks, const std::vector<Bo
         std::vector<std::vector<double>> cond_at(n);  // while in: every condition's entry
         std::vector<char> inside(nc, 0);
         std::vector<double> last_entry(nc, 0.0);
+        std::vector<std::vector<char>> holds(nc, std::vector<char>(n, 0));
         for (size_t i = 0; i < n; ++i) {
             bool all_in = true;
             for (size_t c = 0; c < nc; ++c) {
@@ -372,6 +378,7 @@ std::vector<Event> Detect(const std::vector<Block>& blocks, const std::vector<Bo
                     last_entry[c] = t;
                 }
                 inside[c] = now ? 1 : 0;
+                holds[c][i] = inside[c];
                 if (!now) all_in = false;
             }
             active[i] = all_in ? 1 : 0;
@@ -481,10 +488,27 @@ std::vector<Event> Detect(const std::vector<Block>& blocks, const std::vector<Bo
                           evs.end());
             }
         }
-        for (Event& e : evs) all.push_back(std::move(e));
+        for (const Event& e : evs) all.push_back(e);
+        bt.ran = true;
+        bt.rearm.resize(nc);
+        for (size_t c = 0; c < nc; ++c) {
+            const Condition& cd = blk.conditions[c];
+            const double     m = std::max(0.0, cd.margin);
+            bt.rearm[c] = cd.dir == Direction::Below ? cd.threshold + m : cd.threshold - m;
+        }
+        bt.curves = std::move(vals);
+        bt.holds = std::move(holds);
+        bt.active = std::move(active);
+        bt.events = std::move(evs);
     }
     std::stable_sort(all.begin(), all.end(), [](const Event& a, const Event& b) { return a.time_s < b.time_s; });
-    return all;
+    return trace;
+}
+
+std::vector<Event> Detect(const std::vector<Block>& blocks, const std::vector<BoneTrack>& tracks,
+                          const DetectOptions& opts)
+{
+    return DetectTrace(blocks, tracks, opts).events;
 }
 
 std::vector<Block> Analyse(const std::vector<Block>& blocks, const std::vector<BoneTrack>& tracks,

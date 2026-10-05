@@ -46,8 +46,9 @@ bool GetCurrentAnimItem(std::string& out_path, double& out_anim_time);
 // pinned track: the first spanning RAV item in that track's item order, the video FX's
 // rule), and reporting the chosen item's track (`out_track` may be null; untouched when
 // nothing matches). only_track == nullptr = GetCurrentAnimItem. Main thread, no-throw.
+// Story 10-3: `out_item` (optional) gets the chosen item, untouched when nothing matches.
 bool GetCurrentAnimItemOn(MediaTrack* only_track, std::string& out_path, double& out_anim_time,
-                          MediaTrack** out_track);
+                          MediaTrack** out_track, MediaItem** out_item = nullptr);
 
 // Story 11-2 — the rules above, shared with the video FX timeline (video_timeline.cpp)
 // so the rendered video maps time exactly like the viewer.

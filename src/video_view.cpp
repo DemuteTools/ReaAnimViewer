@@ -91,7 +91,8 @@ struct Cmd {
     double      range_end = 0.0;
 };
 
-bool        g_active = false;
+// Story 10-3: the viewer's view (was a Video view bool). Session-only, as before.
+ViewMode    g_mode = ViewMode::Rav;
 bool        g_panel = false;
 bool        g_panel_opened_once = false;
 MediaTrack* g_pinned = nullptr;
@@ -839,7 +840,34 @@ bool VideoViewShotTouchesNext(int index)
 
 bool VideoViewActive()
 {
-    return g_active;
+    return g_mode == ViewMode::Video;
+}
+
+bool TaggingViewActive()
+{
+    return g_mode == ViewMode::Tagging;
+}
+
+ViewMode GetViewMode()
+{
+    return g_mode;
+}
+
+void SetViewMode(ViewMode mode)
+{
+    // Entering or leaving Video view keeps its rules (first entry opens the panel, a running
+    // gesture is written as shown); RAV view <-> Tagging view only switches the mode.
+    SetVideoViewActive(mode == ViewMode::Video);
+    g_mode = mode;
+}
+
+ViewMode NextViewMode(ViewMode mode)
+{
+    switch (mode) {
+    case ViewMode::Rav: return ViewMode::Tagging;
+    case ViewMode::Tagging: return ViewMode::Video;
+    default: return ViewMode::Rav;
+    }
 }
 
 void SetVideoViewActive(bool on)
@@ -848,26 +876,28 @@ void SetVideoViewActive(bool on)
         g_panel_opened_once = true;
         g_panel = true;
     }
-    if (g_active != on) {
+    const bool active = g_mode == ViewMode::Video;
+    if (active != on) {
         CommitLive(/*view_gestures=*/true);  // a drag or wheel zoom never outlives its view
         if (!on) CommitLive(/*view_gestures=*/false);  // nor a panel slider: the panel goes too
         if (!on) g_delete_open = false;  // the delete confirmation is Video view's
         g_dirty = true;
     }
-    g_active = on;
+    if (on) g_mode = ViewMode::Video;
+    else if (active) g_mode = ViewMode::Rav;
 }
 
 // The panel belongs to Video view: g_panel is only its open/closed choice, kept while
 // RAV view shows (Antho 2026-10-03).
 bool VideoPanelVisible()
 {
-    return g_active && g_panel;
+    return g_mode == ViewMode::Video && g_panel;
 }
 
 void SetVideoPanelVisible(bool visible)
 {
     // Opening it from RAV view (P, Tools > Video) enters Video view, where it lives.
-    if (visible && !g_active) SetVideoViewActive(true);
+    if (visible && g_mode != ViewMode::Video) SetVideoViewActive(true);
     g_panel_opened_once = true;  // the user chose: never force it open again
     if (!visible) CommitLive(/*view_gestures=*/false);  // a slider never outlives the panel
     if (g_panel != visible) g_dirty = true;
@@ -909,8 +939,8 @@ void VideoViewFrame(MediaTrack* item_track, bool has_item, bool has_model, const
     if (dt < 0.0f) dt = 0.0f;
     if (dt > kMaxTweenStep) dt = kMaxTweenStep;
 
-    if (!g_active) {
-        // RAV view (the panel is Video view's): nothing reads the model, keep it cheap. Drop a tween; a wheel gesture cannot run.
+    if (g_mode != ViewMode::Video) {
+        // RAV view or Tagging view (the panel is Video view's): nothing reads the model, keep it cheap. Drop a tween; a wheel gesture cannot run.
         g_tweening = false;
         return;
     }

@@ -101,9 +101,21 @@ const VideoViewModel& GetVideoViewModel();
 bool VideoViewShotTouchesNext(int index);
 
 // ---- Session state (not saved) -----------------------------------------------------------
+// Story 10-3 -- the viewer's three views, in the toggle's (and V's) order.
+enum class ViewMode { Rav, Tagging, Video };
+ViewMode GetViewMode();
+// Entering Video view = SetVideoViewActive(true); leaving it = SetVideoViewActive(false), then
+// the new mode.
+void SetViewMode(ViewMode mode);
+// The next view in the cycle: RAV -> Tagging -> Video -> RAV.
+ViewMode NextViewMode(ViewMode mode);
+// True in Tagging view (RAV view's camera and render, the Auto-Tagging strip and panel).
+bool TaggingViewActive();
+// True only in Video view.
 bool VideoViewActive();
 // The first entry of the session also opens the panel. A switch ends a running drag or
-// wheel gesture as shown (one undo point).
+// wheel gesture as shown (one undo point). Off leaves Video view for RAV view (nothing
+// changes outside Video view).
 void SetVideoViewActive(bool on);
 bool VideoPanelVisible();
 void SetVideoPanelVisible(bool visible);  // hiding it ends a running slider gesture as shown

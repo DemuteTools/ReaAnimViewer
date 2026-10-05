@@ -535,6 +535,46 @@ int main()
         CHECK(RoleShortLabel(Role::LeftHeel) == "L heel" && RoleShortLabel(Role::Hips) == "hips");
     }
 
+    // ---- Story 10-3: the rule's on/off switch (`on=0`, written only when off) -------------
+    {
+        const std::string on_text = "RAVRULES 1\n"
+                                    "options sensitivity=0 edge_ms=0 smooth_ms=8\n"
+                                    "analyse floor_pct=2 pos_frac=0.25 speed_pct=30 margin_ratio=0.5 onset_frac=0.1 "
+                                    "per_bone_floor=0\n"
+                                    "block color=#5F9EDD hold_ms=0 cooldown_ms=250 offset_ms=0 land=cross marker=Step\n"
+                                    "cond q=point bones=role:left_heel comb=single ref=floor meas=position axis=vertical "
+                                    "dir=below thr=0.05 margin=0.02 fixed=0\n";
+        ItemRules r;
+        CHECK(ParseItemRules(on_text, &r));
+        CHECK(r.blocks.size() == 1 && r.blocks[0].enabled);
+        CHECK(SerializeItemRules(r) == on_text);  // an on rule writes no `on`: byte-identical
+        CHECK(on_text.find("on=") == std::string::npos);
+
+        ItemRules off = r;
+        off.blocks[0].enabled = false;
+        CHECK(!BlocksEqual(off.blocks, r.blocks));
+        const std::string off_text = SerializeItemRules(off);
+        CHECK(off_text.find("block on=0 color=#5F9EDD") != std::string::npos);
+        ItemRules back;
+        CHECK(ParseItemRules(off_text, &back));
+        CHECK(back.blocks.size() == 1 && !back.blocks[0].enabled);
+        CHECK(BlocksEqual(back.blocks, off.blocks));
+        CHECK(SerializeItemRules(back) == off_text);  // round trip
+        // Switched back on: the field goes away again.
+        back.blocks[0].enabled = true;
+        CHECK(SerializeItemRules(back) == on_text);
+        // `on=1` reads as on; an unreadable value is kept as written (the rule stays on).
+        ItemRules one;
+        std::string t1 = on_text;
+        t1.replace(t1.find("block "), 6, "block on=1 ");
+        CHECK(ParseItemRules(t1, &one) && one.blocks[0].enabled);
+        ItemRules bad;
+        std::string t2 = on_text;
+        t2.replace(t2.find("block "), 6, "block on=maybe ");
+        CHECK(ParseItemRules(t2, &bad) && bad.blocks[0].enabled);
+        CHECK(SerializeItemRules(bad) == t2);
+    }
+
     if (g_fails) {
         std::printf("rule_record_test: %d failure(s)\n", g_fails);
         return 1;

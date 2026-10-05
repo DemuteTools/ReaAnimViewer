@@ -63,6 +63,75 @@ std::function<double(double)> Pw(std::vector<std::pair<double, double>> k)
     };
 }
 
+bool SameEvents(const std::vector<Event>& a, const std::vector<Event>& b)
+{
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (a[i].time_s != b[i].time_s || a[i].block != b[i].block || a[i].marker != b[i].marker ||
+            a[i].strength != b[i].strength || a[i].speed != b[i].speed || a[i].cond_entry_s != b[i].cond_entry_s)
+            return false;
+    return true;
+}
+
+// Story 10-3: every detection in this file also runs through DetectTrace, and the trace must
+// match the engine's own state: Detect's events, each condition's signal, its in/out state
+// replayed with the threshold and the re-arm level, the AND, and the per-block events.
+std::vector<Event> TracedDetect(const std::vector<Block>& blocks, const std::vector<BoneTrack>& tracks,
+                                const DetectOptions& opts = {})
+{
+    const DetectionTrace tr = DetectTrace(blocks, tracks, opts);
+    const std::vector<Event> ev = Detect(blocks, tracks, opts);
+    CHECK(SameEvents(tr.events, ev));
+    CHECK(tr.blocks.size() == blocks.size());
+    std::vector<Event> merged;
+    for (size_t b = 0; b < blocks.size() && b < tr.blocks.size(); ++b) {
+        const BlockTrace& bt = tr.blocks[b];
+        const Block& blk = blocks[b];
+        if (!bt.ran) {
+            CHECK(bt.events.empty() && bt.curves.empty() && bt.active.empty());
+            continue;
+        }
+        CHECK(blk.enabled && !blk.conditions.empty());
+        const size_t nc = blk.conditions.size();
+        CHECK(bt.curves.size() == nc && bt.holds.size() == nc && bt.rearm.size() == nc);
+        CHECK(bt.active.size() == tr.samples);
+        if (bt.curves.size() != nc || bt.holds.size() != nc || bt.rearm.size() != nc || bt.active.size() != tr.samples)
+            continue;
+        for (size_t c = 0; c < nc; ++c) {
+            const Condition& cd = blk.conditions[c];
+            CHECK(bt.curves[c] == EvaluateSignal(cd.signal, tracks, opts.smooth_ms));
+            const double m = std::max(0.0, cd.margin);
+            const bool below = cd.dir == Direction::Below;
+            CHECK(bt.rearm[c] == (below ? cd.threshold + m : cd.threshold - m));
+            bool inside = false;
+            bool same = bt.holds[c].size() == tr.samples && bt.curves[c].size() == tr.samples;
+            for (size_t i = 0; same && i < tr.samples; ++i) {
+                const double v = bt.curves[c][i];
+                const bool now = inside ? (below ? !(v > bt.rearm[c]) : !(v < bt.rearm[c]))
+                                        : (below ? v < cd.threshold : v > cd.threshold);
+                if ((bt.holds[c][i] != 0) != now) same = false;
+                inside = now;
+            }
+            CHECK(same);
+        }
+        bool and_ok = true;
+        for (size_t i = 0; i < tr.samples; ++i) {
+            bool all = true;
+            for (size_t c = 0; c < nc; ++c)
+                if (!bt.holds[c][i]) all = false;
+            if ((bt.active[i] != 0) != all) and_ok = false;
+        }
+        CHECK(and_ok);
+        for (const Event& e : bt.events) {
+            CHECK(e.block == static_cast<int>(b));
+            merged.push_back(e);
+        }
+    }
+    std::stable_sort(merged.begin(), merged.end(), [](const Event& a, const Event& b) { return a.time_s < b.time_s; });
+    CHECK(SameEvents(merged, tr.events));
+    return tr.events;
+}
+
 // One block, one condition on track 0's height above floor 0.
 Block HeightBlock(Direction dir, double th, double margin = 0.0)
 {
@@ -87,21 +156,21 @@ int main()
     {
         // Below: y = 1 - t crosses 0.4987 at t = 0.5013 (between 240 Hz samples).
         std::vector<BoneTrack> tr = {Track(1.0, 240.0, [](double t) { return 1.0 - t; })};
-        auto ev = Detect({HeightBlock(Direction::Below, 0.4987)}, tr);
+        auto ev = TracedDetect({HeightBlock(Direction::Below, 0.4987)}, tr);
         CHECK(ev.size() == 1);
         if (ev.size() == 1) CHECK(Near(ev[0].time_s, 0.5013, kMs));
         // Above: y = t crosses 0.3013.
         tr = {Track(1.0, 240.0, [](double t) { return t; })};
-        ev = Detect({HeightBlock(Direction::Above, 0.3013)}, tr);
+        ev = TracedDetect({HeightBlock(Direction::Above, 0.3013)}, tr);
         CHECK(ev.size() == 1);
         if (ev.size() == 1) CHECK(Near(ev[0].time_s, 0.3013, kMs));
         // Neither fires on the other direction's crossing.
-        CHECK(Detect({HeightBlock(Direction::Below, 0.3013)}, tr).empty());
+        CHECK(TracedDetect({HeightBlock(Direction::Below, 0.3013)}, tr).empty());
     }
     {
         // Sub-frame at 30 Hz: crossing at t = 0.517 lands within 1 ms (frames are 33 ms apart).
         std::vector<BoneTrack> tr = {Track(1.0, 30.0, [](double t) { return 2.0 - 2.0 * t; })};
-        auto ev = Detect({HeightBlock(Direction::Below, 2.0 - 2.0 * 0.517)}, tr);
+        auto ev = TracedDetect({HeightBlock(Direction::Below, 2.0 - 2.0 * 0.517)}, tr);
         CHECK(ev.size() == 1);
         if (ev.size() == 1) CHECK(Near(ev[0].time_s, 0.517, kMs));
     }
@@ -111,8 +180,8 @@ int main()
         // Down under 0.5, bounce to 0.55 (< 0.5 + 0.1), down again.
         auto y = Pw({{0, 1}, {0.2, 0}, {0.6, 0}, {0.7, 0.55}, {0.8, 0}, {1.5, 0}});
         std::vector<BoneTrack> tr = {Track(1.5, 240.0, y)};
-        CHECK(Detect({HeightBlock(Direction::Below, 0.5, 0.1)}, tr).size() == 1);
-        CHECK(Detect({HeightBlock(Direction::Below, 0.5, 0.0)}, tr).size() == 2);  // no margin: re-fires
+        CHECK(TracedDetect({HeightBlock(Direction::Below, 0.5, 0.1)}, tr).size() == 1);
+        CHECK(TracedDetect({HeightBlock(Direction::Below, 0.5, 0.0)}, tr).size() == 2);  // no margin: re-fires
     }
 
     // ---- Re-arm needs the level AND the cooldown -----------------------------------------
@@ -123,14 +192,14 @@ int main()
         std::vector<BoneTrack> tr = {Track(2.5, 240.0, y)};
         Block b = HeightBlock(Direction::Below, 0.5, 0.1);
         b.cooldown_ms = 500.0;
-        auto ev = Detect({b}, tr);
+        auto ev = TracedDetect({b}, tr);
         CHECK(ev.size() == 2);
         if (ev.size() == 2) {
             CHECK(Near(ev[0].time_s, 0.1, kMs));
             CHECK(Near(ev[1].time_s, 1.9, kMs));
         }
         b.cooldown_ms = 0.0;
-        CHECK(Detect({b}, tr).size() == 3);
+        CHECK(TracedDetect({b}, tr).size() == 3);
     }
 
     {
@@ -146,7 +215,7 @@ int main()
         c2.margin = 0.0;
         b.conditions.push_back(c2);
         b.cooldown_ms = 500.0;
-        auto ev = Detect({b}, tr);
+        auto ev = TracedDetect({b}, tr);
         CHECK(ev.size() == 1);
         if (ev.size() == 1) CHECK(Near(ev[0].time_s, 0.1, kMs));
         // Same with the edge margin dropping the first entry: no event at the flicker.
@@ -154,7 +223,7 @@ int main()
         std::vector<BoneTrack> tr2 = {Track(3.0, 240.0, Pw({{0, 1}, {0.02, 0}, {3.0, 0}})), tr[1]};
         DetectOptions o;
         o.edge_margin_ms = 50.0;
-        CHECK(Detect({b}, tr2, o).empty());
+        CHECK(TracedDetect({b}, tr2, o).empty());
     }
 
     // ---- Min hold ---------------------------------------------------------------------------
@@ -165,11 +234,11 @@ int main()
         std::vector<BoneTrack> tr = {Track(1.0, 1000.0, y)};
         Block b = HeightBlock(Direction::Below, 0.5);
         b.min_hold_ms = 30.0;
-        auto ev = Detect({b}, tr);
+        auto ev = TracedDetect({b}, tr);
         CHECK(ev.size() == 1);
         if (ev.size() == 1) CHECK(Near(ev[0].time_s, 0.60025, kMs));
         b.min_hold_ms = 0.0;
-        CHECK(Detect({b}, tr).size() == 2);
+        CHECK(TracedDetect({b}, tr).size() == 2);
     }
 
     // ---- Signed offset -----------------------------------------------------------------------
@@ -177,10 +246,10 @@ int main()
         std::vector<BoneTrack> tr = {Track(1.0, 240.0, [](double t) { return 1.0 - t; })};
         Block b = HeightBlock(Direction::Below, 0.5);
         b.offset_ms = 30.0;
-        auto ev = Detect({b}, tr);
+        auto ev = TracedDetect({b}, tr);
         CHECK(ev.size() == 1 && Near(ev[0].time_s, 0.53, kMs));
         b.offset_ms = -20.0;
-        ev = Detect({b}, tr);
+        ev = TracedDetect({b}, tr);
         CHECK(ev.size() == 1 && Near(ev[0].time_s, 0.48, kMs));
     }
 
@@ -294,12 +363,12 @@ int main()
         s.bones = {0};
         CHECK(EvaluateSignal(s, tr).empty());
         Block b = HeightBlock(Direction::Below, 0.5);
-        CHECK(Detect({b}, tr).empty());
+        CHECK(TracedDetect({b}, tr).empty());
         auto a = Analyse({b}, tr);
         CHECK(a.size() == 1 && Near(a[0].conditions[0].threshold, 0.5));
         tr[0].pos[100].y = 0.5;
         tr[0].pos[200].x = HUGE_VAL;
-        CHECK(Detect({b}, tr).empty());
+        CHECK(TracedDetect({b}, tr).empty());
     }
 
     // ---- AND: fires when all hold, lands at the crossing that completed it -------------
@@ -310,17 +379,17 @@ int main()
         Condition c2 = b.conditions[0];
         c2.signal.bones = {1};
         b.conditions.push_back(c2);
-        auto ev = Detect({b}, tr);
+        auto ev = TracedDetect({b}, tr);
         CHECK(ev.size() == 1);
         if (ev.size() == 1) CHECK(Near(ev[0].time_s, 0.625, kMs));  // the second condition came later
         std::swap(b.conditions[0], b.conditions[1]);
-        ev = Detect({b}, tr);
+        ev = TracedDetect({b}, tr);
         CHECK(ev.size() == 1);
         if (ev.size() == 1) CHECK(Near(ev[0].time_s, 0.625, kMs));  // the trigger came later
         std::swap(b.conditions[0], b.conditions[1]);
         // A condition that never holds blocks the AND (bone 1 never goes under 0.2).
         b.conditions[1].threshold = 0.1;
-        CHECK(Detect({b}, tr).empty());
+        CHECK(TracedDetect({b}, tr).empty());
     }
     {
         // Condition 1 flickering while the trigger stays in: one event (no cooldown set).
@@ -330,7 +399,7 @@ int main()
         Condition c2 = b.conditions[0];
         c2.signal.bones = {1};
         b.conditions.push_back(c2);
-        auto ev = Detect({b}, tr);
+        auto ev = TracedDetect({b}, tr);
         CHECK(ev.size() == 1);
         if (ev.size() == 1) CHECK(Near(ev[0].time_s, 0.25, kMs));
     }
@@ -346,7 +415,7 @@ int main()
         b.strength_signal.keep_sign = true;
         b.strength_sign = -1.0;
         DetectOptions o;
-        auto ev = Detect({b}, tr, o);
+        auto ev = TracedDetect({b}, tr, o);
         CHECK(ev.size() == 2);
         if (ev.size() == 2) {
             CHECK(Near(ev[0].strength, 10.0, 0.5));
@@ -354,7 +423,7 @@ int main()
             CHECK(ev[0].speed >= 0.0);
         }
         o.sensitivity = 0.5;
-        ev = Detect({b}, tr, o);
+        ev = TracedDetect({b}, tr, o);
         CHECK(ev.size() == 1);
         if (ev.size() == 1) CHECK(ev[0].time_s < 0.6);
     }
@@ -366,10 +435,10 @@ int main()
                      {1.0, 0}});
         std::vector<BoneTrack> tr = {Track(1.0, 1000.0, y)};
         Block b = HeightBlock(Direction::Below, 0.5, 0.1);
-        CHECK(Detect({b}, tr).size() == 3);
+        CHECK(TracedDetect({b}, tr).size() == 3);
         DetectOptions o;
         o.edge_margin_ms = 50.0;
-        auto ev = Detect({b}, tr, o);
+        auto ev = TracedDetect({b}, tr, o);
         CHECK(ev.size() == 1);
         if (ev.size() == 1) CHECK(Near(ev[0].time_s, 0.5, kMs));
     }
@@ -403,7 +472,7 @@ int main()
             CHECK(a[0].conditions[1].threshold < 0.5);  // still at least 30 % of the time
             CHECK(Near(a[0].conditions[1].margin, 0.5 * a[0].conditions[1].threshold, 1e-12));
             // Detect with the proposal: one event per landing (t = 1, 2, 3, 4 -> 3 inside).
-            auto ev = Detect(a, tr);
+            auto ev = TracedDetect(a, tr);
             CHECK(ev.size() == 3);
             for (const Event& e : ev) CHECK(std::fabs(e.time_s - std::round(e.time_s)) < 0.016);
         }
@@ -486,21 +555,21 @@ int main()
         std::vector<BoneTrack> tr = {
             Track(1.0, 240.0, [](double t) { return 1.0 - 40.0 * (t - 0.5137) * (t - 0.5137); })};
         Block b = HeightBlock(Direction::Above, 0.5);
-        auto ev = Detect({b}, tr);
+        auto ev = TracedDetect({b}, tr);
         CHECK(ev.size() == 1);
         const double crossing = ev.empty() ? 0.0 : ev[0].time_s;
         CHECK(crossing < 0.45);  // the default lands at the crossing
         b.landing = Landing::PeakOf;
         b.peak_condition = 0;
         b.peak_max = true;
-        ev = Detect({b}, tr);
+        ev = TracedDetect({b}, tr);
         CHECK(ev.size() == 1);
         if (ev.size() == 1) {
             CHECK(Near(ev[0].time_s, 0.5137, kMs));
             CHECK(Near(ev[0].cond_entry_s.at(0), crossing, 1e-12));  // entries stay the crossings
         }
         b.offset_ms = 10.0;
-        ev = Detect({b}, tr);
+        ev = TracedDetect({b}, tr);
         CHECK(ev.size() == 1 && Near(ev[0].time_s, 0.5237, kMs));
         // Min: the trough of a "below" span.
         std::vector<BoneTrack> tr2 = {
@@ -508,7 +577,7 @@ int main()
         Block lo = HeightBlock(Direction::Below, 0.5);
         lo.landing = Landing::PeakOf;
         lo.peak_max = false;
-        ev = Detect({lo}, tr2);
+        ev = TracedDetect({lo}, tr2);
         CHECK(ev.size() == 1 && Near(ev[0].time_s, 0.3021, kMs));
         // The cooldown keeps the first event; the edge margin applies to the landing.
         std::vector<BoneTrack> tr3 = {Track(1.0, 240.0, [](double t) {
@@ -517,13 +586,13 @@ int main()
         })};
         Block two = HeightBlock(Direction::Above, 0.5, 0.2);
         two.landing = Landing::PeakOf;
-        CHECK(Detect({two}, tr3).size() == 2);
+        CHECK(TracedDetect({two}, tr3).size() == 2);
         two.cooldown_ms = 200.0;
-        ev = Detect({two}, tr3);
+        ev = TracedDetect({two}, tr3);
         CHECK(ev.size() == 1 && Near(ev[0].time_s, 0.3, kMs));
         DetectOptions o;
         o.edge_margin_ms = 520.0;  // a crossing at ~0.4 would pass; its landing at 0.5137 does not
-        CHECK(Detect({b}, tr, o).empty());
+        CHECK(TracedDetect({b}, tr, o).empty());
     }
 
     // ---- The shared measure (footstep_measure.h) on a synthetic gait -----------------------
@@ -668,12 +737,36 @@ int main()
 
     // ---- Bad input never throws ------------------------------------------------------------
     {
-        CHECK(Detect({HeightBlock(Direction::Below, 0.5)}, {}).empty());
+        CHECK(TracedDetect({HeightBlock(Direction::Below, 0.5)}, {}).empty());
         std::vector<BoneTrack> tr = {Track(1.0, 240.0, [](double) { return 0.0; }),
                                      Track(0.5, 240.0, [](double) { return 0.0; })};
-        CHECK(Detect({HeightBlock(Direction::Below, 0.5)}, tr).empty());  // lengths differ
+        CHECK(TracedDetect({HeightBlock(Direction::Below, 0.5)}, tr).empty());  // lengths differ
         Block empty;
-        CHECK(Detect({empty}, {Track(1.0, 240.0, [](double) { return 0.0; })}).empty());
+        CHECK(TracedDetect({empty}, {Track(1.0, 240.0, [](double) { return 0.0; })}).empty());
+    }
+
+    // ---- Story 10-3: an off rule never fires; the trace keeps the other blocks' state ------
+    {
+        std::vector<BoneTrack> tr = {Track(1.0, 240.0, [](double t) { return 1.0 - t; })};
+        Block on = HeightBlock(Direction::Below, 0.4987);
+        Block off = on;
+        off.enabled = false;
+        CHECK(TracedDetect({off}, tr).empty());
+        const DetectionTrace t = DetectTrace({off, on}, tr);
+        CHECK(t.blocks.size() == 2 && !t.blocks[0].ran && t.blocks[0].events.empty());
+        CHECK(t.blocks[1].ran && t.blocks[1].events.size() == 1);
+        CHECK(t.events.size() == 1 && t.events[0].block == 1);  // block indices stay the record's
+        CHECK(t.samples == tr[0].pos.size() && t.rate_hz == 240.0);
+        // The re-arm level, and the AND shading where the curve is under the threshold.
+        Block hm = HeightBlock(Direction::Below, 0.5, 0.1);
+        const DetectionTrace h = DetectTrace({hm}, tr);
+        CHECK(h.blocks[0].ran && Near(h.blocks[0].rearm[0], 0.6));
+        CHECK(h.blocks[0].active.front() == 0 && h.blocks[0].active.back() == 1);
+        Block above = HeightBlock(Direction::Above, 0.5, 0.1);
+        CHECK(Near(DetectTrace({above}, tr).blocks[0].rearm[0], 0.4));
+        // Tracks that do not fit: no samples, every block not run.
+        const DetectionTrace bad = DetectTrace({on}, {});
+        CHECK(bad.samples == 0 && bad.blocks.size() == 1 && !bad.blocks[0].ran && bad.events.empty());
     }
 
     if (g_fails == 0) std::printf("bone_events: all tests passed\n");

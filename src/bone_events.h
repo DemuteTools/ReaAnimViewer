@@ -117,6 +117,8 @@ struct Condition {
 enum class Landing { Crossing, PeakOf };
 
 struct Block {
+    // The rule's on/off switch (story 10-3): an off rule never fires (Detect skips it).
+    bool                   enabled = true;
     std::string            marker;
     // The rule's colour (notify row, project markers): 0 = none (neutral), else
     // 0x1000000 | 0xRRGGBB (REAPER's "custom colour" flag, so black stays a colour).
@@ -162,7 +164,31 @@ struct Event {
 std::vector<double> EvaluateSignal(const SignalSpec& spec, const std::vector<BoneTrack>& tracks,
                                    double smooth_ms = 8.0);
 
+// One block's detection state, sample by sample (story 10-3: what the Tagging view draws).
+struct BlockTrace {
+    // False: the block is off, has no condition, or a signal does not fit the tracks. The
+    // vectors are then empty and it has no events.
+    bool                              ran = false;
+    std::vector<std::vector<double>>  curves;  // per condition: its signal, one value per sample
+    std::vector<std::vector<char>>    holds;   // per condition: in (1) / out (0), with hysteresis
+    std::vector<char>                 active;  // the whole rule (the AND) holds
+    std::vector<double>               rearm;   // per condition: the re-arm level (threshold -/+ margin)
+    std::vector<Event>                events;  // this block's events (after sensitivity), by time
+};
+
+struct DetectionTrace {
+    double                  rate_hz = 0.0;
+    size_t                  samples = 0;    // 0 when the tracks do not fit
+    std::vector<BlockTrace> blocks;         // one per block, in block order
+    std::vector<Event>      events;         // every block's events, sorted by time (= Detect)
+};
+
+// Detect, keeping the per-sample state. No-throw on bad input.
+DetectionTrace DetectTrace(const std::vector<Block>& blocks, const std::vector<BoneTrack>& tracks,
+                           const DetectOptions& opts = {});
+
 // Every block over the whole clip, sorted by time. No-throw on bad input (no events).
+// = DetectTrace(...).events.
 std::vector<Event> Detect(const std::vector<Block>& blocks, const std::vector<BoneTrack>& tracks,
                           const DetectOptions& opts = {});
 

@@ -43,7 +43,7 @@ float VideoStripHeight(float client_h);
 // Width the panel takes from the viewport (column + gaps), 0 when it is hidden.
 float VideoPanelFootprint(int client_w);
 
-// The RAV view / Video view segmented toggle, centred on center_x at the top.
+// The RAV view / Tagging view / Video view segmented toggle, centred on center_x at the top.
 void DrawVideoViewToggle(float center_x);
 
 // The panel button (shows / hides the Video panel), its right edge at right_x. Video view only.

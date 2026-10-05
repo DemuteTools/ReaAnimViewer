@@ -74,7 +74,7 @@ enum ShortcutId : int {
 };
 
 inline const ShortcutDef kShortcutTable[kShortcutCount] = {
-    {"toggle_view",  "Toggle RAV view / Video view", {'V', false, false, false}, ShortcutContext::Anywhere},
+    {"toggle_view",  "Next view: RAV / Tagging / Video", {'V', false, false, false}, ShortcutContext::Anywhere},
     {"toggle_panel", "Show / hide the Video panel",  {'P', false, false, false}, ShortcutContext::Anywhere},
     {"cut",          "Cut at playhead",              {'C', false, false, false}, ShortcutContext::VideoView},
     {"delete_shot",  "Delete current shot",          {vk::kDelete, false, false, false}, ShortcutContext::VideoView},

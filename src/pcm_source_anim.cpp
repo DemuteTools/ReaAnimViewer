@@ -255,7 +255,7 @@ bool GetCurrentAnimItem(std::string& out_path, double& out_anim_time)
 }
 
 bool GetCurrentAnimItemOn(MediaTrack* only_track, std::string& out_path, double& out_anim_time,
-                          MediaTrack** out_track)
+                          MediaTrack** out_track, MediaItem** out_item)
 {
     ReaProject* proj = nullptr;  // current project
     // Play cursor (continuous audio clock) while playing, edit cursor while stopped —
@@ -282,6 +282,7 @@ bool GetCurrentAnimItemOn(MediaTrack* only_track, std::string& out_path, double&
             out_path = fn;
             out_anim_time = ItemAnimTime(pos, ip, GetMediaItemTakeInfo_Value(tk, "D_STARTOFFS"));
             if (out_track) *out_track = only_track;
+            if (out_item) *out_item = it;
             return true;
         }
         return false;
@@ -337,6 +338,7 @@ bool GetCurrentAnimItemOn(MediaTrack* only_track, std::string& out_path, double&
     const double off = GetMediaItemTakeInfo_Value(best_tk, "D_STARTOFFS");
     out_anim_time = ItemAnimTime(pos, best_ip, off);
     if (out_track) *out_track = GetMediaItem_Track(best);
+    if (out_item) *out_item = best;
     return true;
 }
 

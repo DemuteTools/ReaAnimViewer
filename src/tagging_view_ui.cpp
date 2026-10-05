@@ -478,7 +478,7 @@ void DrawEventMark(ImDrawList* dl, const ShownEvent& e, float x, float ry, float
             dl->AddLine(ImVec2(x, y), ImVec2(x, std::min(y + 2.0f, y1)), WithAlpha(col, 0x73), 1.0f);
     } else {
         const ImU32 c = e.kind == ShownKind::Suppressed ? WithAlpha(col, 0x59) : col;
-        dl->AddLine(ImVec2(x, y0), ImVec2(x, y1), c, selected ? 2.5f : 1.5f);
+        dl->AddLine(ImVec2(x, y0), ImVec2(x, y1), c, selected ? 1.5f : 1.0f);
         const ImVec2 a(x - 4.5f, y0), b(x + 4.5f, y0), d(x, y0 + 6.0f);
         if (e.kind == ShownKind::User) dl->AddTriangle(a, b, d, c, 1.5f);
         else dl->AddTriangleFilled(a, b, d, c);
@@ -1136,13 +1136,13 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                         } else if (e.kind == ShownKind::Suppressed) {
                             vline(ex, WithAlpha(rc, is_sel ? 0x99 : 0x38), 1.0f, false);
                         } else {
-                            vline(ex, WithAlpha(rc, is_sel ? 0xF0 : 0x80), is_sel ? 1.5f : 1.0f, false);
+                            vline(ex, WithAlpha(rc, is_sel ? 0xF0 : 0x80), 1.0f, false);
                         }
                     }
                     if (dragging) {
                         double pt = 0.0;
                         if (FirstPassProjectTime(m.map, g_drag_ev_to, &pt) && pt >= win.v0 && pt <= win.v1)
-                            vline(std::floor(x_of(pt)) + 0.5f, WithAlpha(rc, 0xF0), 1.5f, false);
+                            vline(std::floor(x_of(pt)) + 0.5f, WithAlpha(rc, 0xF0), 1.0f, false);
                     }
                     dl->PopClipRect();
                 }
@@ -1230,7 +1230,12 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                         g_drag_moved = false;
                     } else if (g_drag_moved) {
                         double to = 0.0;
-                        if (ClipTimeForDrop(m.map, t_mouse, &to)) g_drag_ev_to = to;
+                        if (ClipTimeForDrop(m.map, t_mouse, &to) && to != g_drag_ev_to) {
+                            g_drag_ev_to = to;
+                            // The animation follows the dragged event (the playhead goes to where it lands).
+                            double pt = 0.0;
+                            if (FirstPassProjectTime(m.map, to, &pt)) QueueVideoSeek(pt);
+                        }
                         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
                     }
                 }

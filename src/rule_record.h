@@ -27,6 +27,8 @@
 //   preview markers=both sig=<hex>                   (10-4 fb-4: the previews written: mode + signature)
 //   ptmarker t=1.5 name=Footstep L - Preview         (a preview take marker RAV wrote)
 //   ppmarker guid={...} t=12.625                     (a preview project marker RAV wrote)
+//   (10-4b: applied/preview gain `item={GUID}` = the owner item; pmarker/ppmarker gain
+//    `c=<clip s> color=#RRGGBB name=<free text>`; `guid=` empty = hidden by the mirror)
 //
 // A preset file (.ravpreset) is the same grammar under "RAVPRESET 1": a `preset` line
 // (no `kept`), optional `options` / `analyse`, then its blocks (no copy/end/event).
@@ -178,9 +180,19 @@ struct TakeMarkerRef {
 };
 
 // A project marker RAV wrote at Apply: its GUID (REAPER's) and the project time it was put at.
+// 10-4b (marker mirror): also its event's clip time (`c`), colour and name, so the mirror can
+// place it again when its item moves, and recreate it when it was hidden. An empty `guid` =
+// hidden (its event lies outside the item now). A ref read without `c` (older record) is never
+// moved by the mirror.
 struct ProjectMarkerRef {
     std::string guid;
     double      t = 0.0;
+    double      c = 0.0;      // the event's clip time (has_c)
+    uint32_t    color = 0;    // Block::color form (has_color)
+    std::string name;         // the marker's name as written (has_name)
+    bool        has_c = false;
+    bool        has_color = false;
+    bool        has_name = false;
     KeptText    kept;
 };
 
@@ -189,9 +201,13 @@ enum class MarkerMode { Take, Project, Both };
 
 // The last Apply: the option it ran with and the signature of what it wrote (event_list.h),
 // to tell "markers up to date" from "markers not written yet".
+// 10-4b: `item` = the GUID of the item whose markers these are (the owner). A record whose
+// owner is another item is a copy (duplicate, paste, right part of a split). Empty = no owner
+// (older record), not written.
 struct AppliedInfo {
     MarkerMode  mode = MarkerMode::Both;
     std::string sig;
+    std::string item;
     KeptText    kept;
 };
 

@@ -716,6 +716,73 @@ int main()
         CHECK(ParseItemRules(ot, &ob) && SerializeItemRules(ob) == ot && !ob.has_previewed);
     }
 
+    // 10-4b: the marker mirror's fields (owner, clip time, colour, name; empty GUID = hidden).
+    {
+        const std::string text =
+            "RAVRULES 1\n"
+            "options sensitivity=0 edge_ms=0 smooth_ms=8\n"
+            "analyse floor_pct=2 pos_frac=0.25 speed_pct=30 margin_ratio=0.5 onset_frac=0.1 per_bone_floor=0\n"
+            "block color=#5F9EDD hold_ms=0 cooldown_ms=250 offset_ms=0 land=cross marker=Step\n"
+            "applied markers=both sig=0123456789ABCDEF item={1111-AAAA}\n"
+            "pmarker guid={A} t=12.25 c=0.25 color=#5F9EDD name=Step  (soft)\n"
+            "pmarker guid= t=14 c=2 color=none name=Step\n"
+            "preview markers=project sig=FEDCBA9876543210 item={1111-AAAA}\n"
+            "ppmarker guid={B} t=12.5 c=0.5 color=#304F6F name=Step - Preview\n";
+        ItemRules r;
+        CHECK(ParseItemRules(text, &r) && !HasKeptText(r));
+        CHECK(r.applied.item == "{1111-AAAA}" && r.previewed.item == "{1111-AAAA}");
+        CHECK(r.pmarkers.size() == 2 && r.ppmarkers.size() == 1);
+        if (r.pmarkers.size() == 2 && r.ppmarkers.size() == 1) {
+            CHECK(r.pmarkers[0].has_c && r.pmarkers[0].c == 0.25 && r.pmarkers[0].has_color &&
+                  r.pmarkers[0].color == (0x1000000u | 0x5F9EDDu) && r.pmarkers[0].name == "Step  (soft)");
+            CHECK(r.pmarkers[1].guid.empty() && r.pmarkers[1].c == 2 && r.pmarkers[1].color == 0);  // hidden
+            CHECK(r.ppmarkers[0].name == "Step - Preview" && r.ppmarkers[0].c == 0.5);
+        }
+        CHECK(SerializeItemRules(r) == text);  // byte-identical
+
+        // Built in code: written in that order, read back the same.
+        ItemRules c;
+        c.has_applied = true;
+        c.applied.item = "{X}";
+        ProjectMarkerRef pm;
+        pm.guid = "{G}";
+        pm.t = 1;
+        pm.c = 0.5;
+        pm.color = 0x1000000u | 0x00FF00u;
+        pm.name = "Foot";
+        pm.has_c = pm.has_color = pm.has_name = true;
+        c.pmarkers.push_back(pm);
+        const std::string ct = SerializeItemRules(c);
+        CHECK(ct.find("item={X}\n") != std::string::npos);
+        CHECK(ct.find("pmarker guid={G} t=1 c=0.5 color=#00FF00 name=Foot\n") != std::string::npos);
+        ItemRules cb;
+        CHECK(ParseItemRules(ct, &cb) && SerializeItemRules(cb) == ct);
+
+        // An older record (no owner, refs without clip time) writes none of the new fields.
+        const std::string old_text =
+            "RAVRULES 1\n"
+            "options sensitivity=0 edge_ms=0 smooth_ms=8\n"
+            "analyse floor_pct=2 pos_frac=0.25 speed_pct=30 margin_ratio=0.5 onset_frac=0.1 per_bone_floor=0\n"
+            "applied markers=both sig=0123456789ABCDEF\n"
+            "pmarker guid={A} t=12.25\n";
+        ItemRules o;
+        CHECK(ParseItemRules(old_text, &o) && o.applied.item.empty() && !o.pmarkers[0].has_c &&
+              !o.pmarkers[0].has_name && !o.pmarkers[0].has_color);
+        CHECK(SerializeItemRules(o) == old_text);
+
+        // Unknown fields on the new lines still round-trip, in place.
+        const std::string fut =
+            "RAVRULES 2\n"
+            "options sensitivity=0 edge_ms=0 smooth_ms=8\n"
+            "analyse floor_pct=2 pos_frac=0.25 speed_pct=30 margin_ratio=0.5 onset_frac=0.1 per_bone_floor=0\n"
+            "applied markers=both sig=0123456789ABCDEF item={I} lane=2\n"
+            "pmarker guid={A} t=12.25 c=0.25 lane=1 color=#5F9EDD name=Step\n"
+            "pnote 1\n";
+        ItemRules f;
+        CHECK(ParseItemRules(fut, &f) && HasKeptText(f) && SerializeItemRules(f) == fut);
+        if (SerializeItemRules(f) != fut) std::printf("--- got ---\n%s--- want ---\n%s", SerializeItemRules(f).c_str(), fut.c_str());
+    }
+
     // 10-4 follow-up: joint-angle and rotation conditions.
     {
         // New words round-trip; the record holds the joint alone.

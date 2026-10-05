@@ -69,6 +69,26 @@ ApplyResult CancelTaggingChanges();
 const ApplyResult& LastApplyResult();
 void ClearLastApplyResult();
 
+// ---- 10-4b: the marker mirror ----------------------------------------------------------------------
+//
+// RAV's project markers (committed and previews) follow their item, with the RAV window open or
+// closed, on every open project tab: a REAPER timer that does nothing unless a project's
+// state-change count moved. Then, for each item whose RAV record lists project markers with a
+// clip time, it places them from that clip time and the item's position, start offset, rate and
+// length (Commit's rule, event_list.h MirrorPlan): moved with the item, hidden (the marker deleted,
+// the ref kept without GUID) when the event falls outside the item, shown again when it comes
+// back. A copy of an item (duplicate, paste, right part of a split) gets markers of its own (a
+// copy hides a ref without deleting: that marker is the original's); the markers
+// of a deleted item are deleted. It makes no undo point (an undo restores the project, and the
+// next tick converges again), never touches markers RAV does not own, and never restores a RAV
+// marker the user dragged or deleted while its item stayed put (story 10-4c).
+
+// The timer callback (main thread). No-throw.
+void MarkerMirrorTick();
+// Registers / unregisters the timer (plugin load / unload).
+bool StartMarkerMirror(int (*register_fn)(const char*, void*));
+void StopMarkerMirror();
+
 }  // namespace rav
 
 #endif  // _WIN32

@@ -16,14 +16,17 @@
 //     source path (relinked, moved, replaced, re-exported) never clears it. Loading a preset
 //     does (ClearCorrections).
 //   - "Markers up to date" = the last Apply ran with the same option and wrote the same
-//     markers (a signature of the planned markers).
+//     markers (a signature of the planned markers; 10-4b: independent of where the item sits).
+//   - 10-4b: the project markers follow their item (MirrorPlan, driven by tag_markers.h).
 //
 // Pure C++17: no REAPER, no ImGui, no Windows. Host-tested (tests/event_list_test.cpp).
 
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "bone_events.h"
@@ -81,22 +84,28 @@ bool FirstPassClipTime(const ItemClipMap& m, double project_t, double* clip_t);
 
 struct PlannedMarker {
     double      clip_t = 0.0;     // = the take marker's source position
-    double      project_t = 0.0;  // the project marker's position
+    double      project_t = 0.0;  // the project marker's position (meaningful only when in_item)
     int         block = 0;
     std::string name;             // the rule's marker name, on one line, trimmed
     uint32_t    color = 0;        // the rule's colour (Block::color: 0 = none)
     bool        user = false;     // a user event (else a detection)
     double      strength = 0.0;
     double      speed = 0.0;
+    bool        in_item = true;   // 10-4b: the event shows on the item's first pass (else no project marker is written)
 };
 
 // What Apply writes for this list: its Detected and User events whose rule exists and is on,
-// on the first pass, sorted by time.
+// sorted by time. 10-4b: an event outside the item's first pass is kept with `in_item` false
+// (it gets a take marker, in source time, and a hidden project ref the mirror shows again when
+// the item is extended).
 std::vector<PlannedMarker> PlanMarkers(const std::vector<ShownEvent>& list, const std::vector<Block>& blocks,
                                        const ItemClipMap& map);
 
-// A stable signature of the planned markers for a mode (the project times count only when
-// project markers are written). 16 hex digits.
+// A stable signature of the planned markers for a mode: every planned marker (inside the item
+// or not), by rule, colour, clip time and name. 10-4b: it no longer depends on where the item
+// sits (in any mode), so a moved or trimmed item stays "markers up to date": the mirror hides and
+// shows the project markers, and take markers (written for every planned marker, in source
+// time) show again by themselves when the item is extended. 16 hex digits.
 std::string MarkerSignature(const std::vector<PlannedMarker>& planned, MarkerMode mode);
 
 // True when the last Apply wrote these markers with this option.
@@ -105,6 +114,23 @@ bool MarkersUpToDate(const ItemRules& rules, const std::vector<PlannedMarker>& p
 // Apply's record: the Detected entries are replaced by the detections written (their values
 // kept), `applied` set. The owned-marker lists are the caller's.
 void RecordApplied(ItemRules& rules, const std::vector<PlannedMarker>& planned, MarkerMode mode);
+
+// 10-4b: what Commit / a preview rewrite does for one planned marker (the REAPER calls are the
+// writer's: tag_markers.cpp WritePlan).
+struct MarkerWrite {
+    size_t           planned = 0;     // index into the plan
+    bool             take = false;    // write a take marker at clip_t (inside the item or not: source time)
+    bool             project = false; // write a project marker at project_t (inside the item only)
+    bool             hidden = false;  // record `ref` as a hidden project ref (no marker, no GUID)
+    ProjectMarkerRef ref;             // the project ref's fields (c, colour, name; guid filled by the writer).
+                                      // For a hidden ref, `t` is the clip time extrapolated onto the
+                                      // timeline outside the item: informative only, never placed.
+};
+// One entry per planned marker that writes or records something. Every planned marker gets a
+// take marker when they are wanted (REAPER hides one outside the item). An event outside the
+// item writes no project marker; with project markers wanted it is recorded hidden, once per
+// (clip time, name) like the written ones.
+std::vector<MarkerWrite> PlanMarkerWrites(const std::vector<PlannedMarker>& plan, bool want_take, bool want_project);
 
 // A marker already there (not RAV's): its position and name.
 struct ExistingMarker {
@@ -164,6 +190,112 @@ std::string FirstCommittedSnapshot(bool has_snapshot, bool before_valid, const I
 void ComposeCommittedRecord(ItemRules& rec, const std::vector<TakeMarkerRef>& own_take,
                             const std::vector<ProjectMarkerRef>& own_project, bool keep_take_refs,
                             bool keep_project_refs, const std::vector<PlannedMarker>& planned, MarkerMode mode);
+
+// ---- 10-4b: the marker mirror ----------------------------------------------------------------------
+//
+// RAV's project markers (committed and previews) follow their item: a main-thread timer
+// (tag_markers.h) places each one from its event's clip time (ProjectMarkerRef::c) and the
+// item's current position, start offset, rate and length (FirstPassProjectTime, Commit's rule).
+// Until story 10-4c the mirror never fights the user: a marker missing (deleted by the user) or
+// dragged while its item stayed put is left alone.
+
+enum class MirrorAction {
+    Keep,  // nothing to do
+    Move,  // move the marker to new_t
+    Hide,  // its event is outside the item: the ref's GUID cleared (the marker deleted when delete_old)
+    Show,  // a new marker at new_t (the ref takes its GUID): a hidden event back inside the item, a
+           // marker the mirror itself deleted, or a copy's own marker
+};
+
+struct MirrorStep {
+    size_t       ref = 0;  // index into the refs given
+    MirrorAction action = MirrorAction::Keep;
+    double       new_t = 0.0;        // Move / Show: the project time
+    bool         delete_old = false;  // Hide: delete the marker under the ref's GUID
+};
+
+// What the timeline holds for one ref.
+struct MirrorRefState {
+    bool   exists = false;   // a project marker with the ref's GUID is there
+    double now_t = 0.0;      // its position, when it exists
+    bool   restore = false;  // its GUID is missing because the mirror deleted it: bring it back
+};
+
+// One step per ref (same order). `map_changed`: the item's clip map differs from the one the
+// mirror saw on its last tick (a move, trim, rate or offset change). `copy`: the record is a
+// copy of another item's (duplicate, paste, right part of a split): every ref with a clip time
+// gets a fresh marker of its own (Show), or is hidden without touching the original's (Hide,
+// delete_old false; a ref without a clip time on a copy too: the marker is the original's).
+// Otherwise a ref without a clip time (older record) is always kept.
+std::vector<MirrorStep> MirrorPlan(const std::vector<ProjectMarkerRef>& refs, const std::vector<MirrorRefState>& state,
+                                   const ItemClipMap& map, bool map_changed, bool copy);
+
+// True when the mirror manages this record: a project marker ref with a clip time (an older
+// record behaves as before until its next Commit).
+bool MirrorManaged(const ItemRules& rules);
+
+// The item that owns the record's markers ("" = none): the `applied` line's, else the `preview`
+// line's.
+std::string RecordOwner(const ItemRules& rules);
+// Sets the owner on the record's `applied` and `preview` lines (those it has). False when it
+// has neither (nowhere to keep it).
+bool SetRecordOwner(ItemRules& rules, const std::string& item_guid);
+
+enum class MirrorOwnership {
+    Own,    // the record's owner is this item
+    Adopt,  // no owner, and no other item claims its markers: the item becomes the owner
+    Copy,   // another item's record: fresh markers, the item becomes the owner
+};
+// `claimed_elsewhere`: another item already owns one of the record's marker GUIDs.
+MirrorOwnership DecideMirrorOwnership(const std::string& owner, const std::string& item_guid, bool claimed_elsewhere);
+
+// One RAV item as the mirror reads it on a scan.
+struct MirrorOwnerInput {
+    std::string              item;     // its GUID
+    std::string              owner;    // its record's owner ("" = none)
+    bool                     managed = false;
+    std::vector<std::string> guids;    // the project-marker GUIDs its record lists
+};
+struct MirrorOwnerResult {
+    std::vector<MirrorOwnership>       own;      // per input (an unmanaged item: Own, ignored)
+    std::map<std::string, std::string> claimed;  // marker GUID -> the item that keeps it
+};
+// The scan's ownership, in input order. A self-owner keeps its markers unless one of them was
+// held on the last scan (`prev_owners`, marker GUID -> item GUID) by another self-owner read
+// now, or was already claimed by an earlier self-owner of this scan (a gesture on a copy before
+// the mirror saw it): then it is a copy. A record of another owner is a copy. A record without
+// owner adopts its item unless one of its markers is claimed now or was held on the last scan
+// by another item still present (`present`), else it is a copy.
+MirrorOwnerResult ArbitrateMirrorOwnership(const std::vector<MirrorOwnerInput>& items,
+                                           const std::map<std::string, std::string>& prev_owners,
+                                           const std::vector<std::string>& present);
+
+// After a scan: one item, its markers' GUIDs now, and whether it holds them (Own / Adopt, or a
+// copy whose fresh markers were recorded). A copy that could not refresh still lists the
+// original's GUIDs: it holds none.
+struct MirrorHeld {
+    std::string              item;
+    bool                     managed = false;
+    bool                     holds = false;
+    std::vector<std::string> guids;
+};
+// The next scan's marker GUID -> item map: the markers held now, plus the last scan's entries of
+// an item present but not read now (another active take). `read_items` = the items read now.
+std::map<std::string, std::string> NextMirrorOwners(const std::vector<MirrorHeld>& held,
+                                                    const std::map<std::string, std::string>& prev_owners,
+                                                    const std::vector<std::string>& present,
+                                                    const std::vector<std::string>& read_items);
+// The GUIDs claimed now (for MirrorOrphans): those of the items that hold them.
+std::vector<std::string> MirrorClaimedNow(const std::vector<MirrorHeld>& held);
+
+// The marker GUIDs whose item is gone (or no longer lists them): in `prev` (marker GUID -> item
+// GUID, the last tick's), claimed by no item now (`claimed`), and whose item is no longer in the
+// project or is read now (`read_items`; an item present but not read, e.g. another active take,
+// keeps its markers). Sorted.
+std::vector<std::string> MirrorOrphans(const std::vector<std::pair<std::string, std::string>>& prev,
+                                       const std::vector<std::string>& claimed,
+                                       const std::vector<std::string>& present_items,
+                                       const std::vector<std::string>& read_items);
 
 // ---- Preset loaded --------------------------------------------------------------------------------
 

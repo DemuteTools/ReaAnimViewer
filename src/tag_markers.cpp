@@ -7,8 +7,14 @@
 #ifdef _WIN32
 
 #include <cmath>
+#include <algorithm>
+#include <cstring>
 #include <exception>
+#include <functional>
+#include <map>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "event_list.h"
@@ -41,6 +47,8 @@ using GetRegionOrMarkerInfo_ValueFn = double (*)(ReaProject*, ProjectMarker*, co
 using GetSetRegionOrMarkerInfo_StringFn = bool (*)(ReaProject*, ProjectMarker*, const char*, char*, bool);
 using GetNumRegionsOrMarkersFn = int (*)(ReaProject*);
 using ColorToNativeFn = int (*)(int, int, int);
+using SetRegionOrMarkerInfo_ValueFn = double (*)(ReaProject*, ProjectMarker*, const char*, double);
+using SetProjectMarkerByIndex2Fn = bool (*)(ReaProject*, int, bool, double, double, int, const char*, int, int);
 
 GetNumTakeMarkersFn               f_num_take_markers = nullptr;
 GetTakeMarkerFn                   f_get_take_marker = nullptr;
@@ -55,6 +63,8 @@ GetRegionOrMarkerInfo_ValueFn     f_marker_value = nullptr;
 GetSetRegionOrMarkerInfo_StringFn f_marker_string = nullptr;
 GetNumRegionsOrMarkersFn          f_num_regions_or_markers = nullptr;
 ColorToNativeFn                   f_color_to_native = nullptr;
+SetRegionOrMarkerInfo_ValueFn     f_set_marker_value = nullptr;  // 10-4b: the mirror's moves
+SetProjectMarkerByIndex2Fn        f_set_marker_by_index2 = nullptr;  // ... fallback
 
 int        g_mode = -1;  // -1 = not read yet
 ApplyResult g_last;
@@ -80,38 +90,38 @@ int NativeColor(uint32_t c)
     return native | 0x1000000;
 }
 
-std::string MarkerGuid(ProjectMarker* m)
+std::string MarkerGuid(ProjectMarker* m, ReaProject* proj = nullptr)
 {
     if (!m) return "";
     char buf[256] = {};
-    if (!f_marker_string(nullptr, m, "GUID", buf, false)) return "";
+    if (!f_marker_string(proj, m, "GUID", buf, false)) return "";
     buf[sizeof(buf) - 1] = '\0';
     return buf;
 }
 
 // The enumeration index (EnumProjectMarkers3 / DeleteProjectMarkerByIndex) of a project marker
 // (not a region), or -1.
-int EnumIndexOf(ProjectMarker* m)
+int EnumIndexOf(ProjectMarker* m, ReaProject* proj = nullptr)
 {
-    if (!m || f_marker_value(nullptr, m, "B_ISREGION") != 0.0) return -1;
-    const double pos = f_marker_value(nullptr, m, "D_STARTPOS");
-    const int    num = static_cast<int>(f_marker_value(nullptr, m, "I_NUMBER"));
+    if (!m || f_marker_value(proj, m, "B_ISREGION") != 0.0) return -1;
+    const double pos = f_marker_value(proj, m, "D_STARTPOS");
+    const int    num = static_cast<int>(f_marker_value(proj, m, "I_NUMBER"));
     auto is_it = [&](int idx) {
         bool        rgn = false;
         double      p = 0.0, e = 0.0;
         const char* nm = nullptr;
         int         n = -1, col = 0;
-        if (!f_enum_project_markers3(nullptr, idx, &rgn, &p, &e, &nm, &n, &col)) return false;
+        if (!f_enum_project_markers3(proj, idx, &rgn, &p, &e, &nm, &n, &col)) return false;
         return !rgn && n == num && std::fabs(p - pos) < 1e-9;
     };
-    const int hint = static_cast<int>(f_marker_value(nullptr, m, "I_INDEX"));
+    const int hint = static_cast<int>(f_marker_value(proj, m, "I_INDEX"));
     if (hint >= 0 && is_it(hint)) return hint;
     for (int i = 0; i < 100000; ++i) {
         bool        rgn = false;
         double      p = 0.0, e = 0.0;
         const char* nm = nullptr;
         int         n = -1, col = 0;
-        if (!f_enum_project_markers3(nullptr, i, &rgn, &p, &e, &nm, &n, &col)) break;
+        if (!f_enum_project_markers3(proj, i, &rgn, &p, &e, &nm, &n, &col)) break;
         if (!rgn && n == num && std::fabs(p - pos) < 1e-9) return i;
     }
     return -1;
@@ -155,33 +165,56 @@ void DeleteOwnTakeMarkers(MediaItem_Take* take, const std::vector<TakeMarkerRef>
     }
 }
 
+// The project marker (not a region) with this GUID, or null.
+ProjectMarker* FindProjectMarker(const std::string& guid, ReaProject* proj = nullptr)
+{
+    if (guid.empty()) return nullptr;
+    ProjectMarker* m = f_get_region_or_marker(proj, -1, guid.c_str());
+    if (!m || MarkerGuid(m, proj) != guid) return nullptr;
+    return m;
+}
+
+// Deletes one project marker by GUID; true when it was there and went.
+bool DeleteProjectMarkerByGuid(const std::string& guid, ReaProject* proj = nullptr)
+{
+    ProjectMarker* m = FindProjectMarker(guid, proj);
+    if (!m) return false;
+    const int idx = EnumIndexOf(m, proj);
+    return idx >= 0 && f_delete_project_marker(proj, idx);
+}
+
 // Deletes the project markers RAV recorded, by GUID (a GUID no longer there is ignored).
 void DeleteOwnProjectMarkers(const std::vector<ProjectMarkerRef>& own)
 {
-    for (const ProjectMarkerRef& ref : own) {
-        if (ref.guid.empty()) continue;
-        ProjectMarker* m = f_get_region_or_marker(nullptr, -1, ref.guid.c_str());
-        if (!m || MarkerGuid(m) != ref.guid) continue;
-        const int idx = EnumIndexOf(m);
-        if (idx >= 0) f_delete_project_marker(nullptr, idx);
-    }
+    for (const ProjectMarkerRef& ref : own) DeleteProjectMarkerByGuid(ref.guid);
 }
 
 // Adds a project marker; its GUID ("" when it could not be added or found).
-std::string AddProjectMarker(double pos, const std::string& name, int color)
+std::string AddProjectMarker(double pos, const std::string& name, int color, ReaProject* proj = nullptr)
 {
-    if (f_add_region_or_marker) return MarkerGuid(f_add_region_or_marker(nullptr, false, pos, pos, name.c_str(), -1, color));
-    const int num = f_add_project_marker2(nullptr, false, pos, pos, name.c_str(), -1, color);
+    if (f_add_region_or_marker)
+        return MarkerGuid(f_add_region_or_marker(proj, false, pos, pos, name.c_str(), -1, color), proj);
+    const int num = f_add_project_marker2(proj, false, pos, pos, name.c_str(), -1, color);
     if (num < 0) return "";
-    const int count = f_num_regions_or_markers ? f_num_regions_or_markers(nullptr) : 100000;
+    const int count = f_num_regions_or_markers ? f_num_regions_or_markers(proj) : 100000;
     for (int i = 0; i < count; ++i) {
-        ProjectMarker* m = f_get_region_or_marker(nullptr, i, nullptr);
+        ProjectMarker* m = f_get_region_or_marker(proj, i, nullptr);
         if (!m) break;
-        if (f_marker_value(nullptr, m, "B_ISREGION") == 0.0 && static_cast<int>(f_marker_value(nullptr, m, "I_NUMBER")) == num &&
-            std::fabs(f_marker_value(nullptr, m, "D_STARTPOS") - pos) < 1e-9)
-            return MarkerGuid(m);
+        if (f_marker_value(proj, m, "B_ISREGION") == 0.0 && static_cast<int>(f_marker_value(proj, m, "I_NUMBER")) == num &&
+            std::fabs(f_marker_value(proj, m, "D_STARTPOS") - pos) < 1e-9)
+            return MarkerGuid(m, proj);
     }
     return "";
+}
+
+// The item's GUID ("" when it cannot be read).
+std::string ItemGuidOf(MediaItem* item)
+{
+    if (!item) return "";
+    char buf[128] = {};
+    if (!GetSetMediaItemInfo_String(item, "GUID", buf, false)) return "";
+    buf[sizeof(buf) - 1] = '\0';
+    return buf;
 }
 
 // Removes from `existing` the markers this run wrote (they are RAV's, not foreign).
@@ -236,12 +269,16 @@ void WritePlan(MediaItem_Take* take, const std::vector<PlannedMarker>& plan, Mar
                std::vector<ExistingMarker>& written_project, std::vector<TakeMarkerRef>& own_take,
                std::vector<ProjectMarkerRef>& own_project, ApplyResult& res)
 {
-    const bool want_take = mode != MarkerMode::Project;
-    const bool want_project = mode != MarkerMode::Take;
-    if (want_take && TakeApiReady()) {
+    const bool want_take = mode != MarkerMode::Project && TakeApiReady();
+    const bool want_project = mode != MarkerMode::Take && ProjectApiReady();
+    // What each planned marker writes or records (event_list.h, pure); here only REAPER's side.
+    const std::vector<MarkerWrite> writes = PlanMarkerWrites(plan, want_take, want_project);
+    if (want_take) {
         std::vector<ExistingMarker> foreign = TakeMarkers(take);
         std::vector<ExistingMarker> mine;  // this run's take markers on this take
-        for (const PlannedMarker& m : plan) {
+        for (const MarkerWrite& w : writes) {
+            if (!w.take) continue;
+            const PlannedMarker& m = plan[w.planned];
             if (FindTwinMarker(mine, m.clip_t, m.name) >= 0) continue;  // already written now: no duplicate
             if (FindTwinMarker(foreign, m.clip_t, m.name) >= 0) {
                 ++res.already_present;
@@ -258,10 +295,18 @@ void WritePlan(MediaItem_Take* take, const std::vector<PlannedMarker>& plan, Mar
             ++res.markers;
         }
     }
-    if (want_project && ProjectApiReady()) {
+    if (want_project) {
         std::vector<ExistingMarker> foreign = ProjectMarkers();
         DropOwn(foreign, written_project);
-        for (const PlannedMarker& m : plan) {
+        for (const MarkerWrite& w : writes) {
+            if (w.hidden) {
+                // 10-4b: outside the item: recorded hidden (no GUID; its `t` an extrapolation),
+                // the mirror shows it when the item is extended over it.
+                own_project.push_back(w.ref);
+                continue;
+            }
+            if (!w.project) continue;
+            const PlannedMarker& m = plan[w.planned];
             if (FindTwinMarker(written_project, m.project_t, m.name) >= 0) continue;  // already written now
             if (FindTwinMarker(foreign, m.project_t, m.name) >= 0) {
                 ++res.already_present;
@@ -269,9 +314,8 @@ void WritePlan(MediaItem_Take* take, const std::vector<PlannedMarker>& plan, Mar
             }
             const std::string guid = AddProjectMarker(m.project_t, m.name, NativeColor(m.color));
             if (guid.empty()) continue;
-            ProjectMarkerRef ref;
+            ProjectMarkerRef ref = w.ref;
             ref.guid = guid;
-            ref.t = m.project_t;
             own_project.push_back(ref);
             written_project.push_back({m.project_t, m.name});
             ++res.markers;
@@ -308,6 +352,9 @@ void CommitItemMarkers(MediaItem* item, const ItemDetection& det, MarkerMode mod
             item,
             [&](ItemRules& rec) {
                 ComposeCommittedRecord(rec, own_take, own_project, keep_take_refs, keep_project_refs, plan, mode);
+                // 10-4b: the markers just written are this item's (a copy becomes their owner).
+                const std::string owner = ItemGuidOf(item);
+                if (!owner.empty()) SetRecordOwner(rec, owner);
                 snapshot = SerializeItemRules(rec);
                 return true;
             },
@@ -365,12 +412,18 @@ std::string RewriteItemPreviewsNoUndo(MediaItem* item)
             [&](ItemRules& rec) {
                 std::vector<ProjectMarkerRef> pkeep = keep_project_refs ? rec.ppmarkers : std::vector<ProjectMarkerRef>{};
                 std::vector<TakeMarkerRef>    tkeep = keep_take_refs ? rec.ptmarkers : std::vector<TakeMarkerRef>{};
+                // 10-4b: the previews keep the record's owner (a copy not mirrored yet stays a copy).
+                const std::string owner = RecordOwner(rec);
                 ClearPreviewed(rec);
                 rec.ptmarkers = tkeep;
                 rec.ppmarkers = pkeep;
                 for (const TakeMarkerRef& t : own_take) rec.ptmarkers.push_back(t);
                 for (const ProjectMarkerRef& p : own_project) rec.ppmarkers.push_back(p);
-                if (want && why.empty()) RecordPreviewed(rec, plan, mode);
+                if (want && why.empty()) {
+                    RecordPreviewed(rec, plan, mode);
+                    // No owner yet: the previews are this item's.
+                    rec.previewed.item = owner.empty() ? ItemGuidOf(item) : owner;
+                }
                 return true;
             },
             &err);
@@ -401,6 +454,290 @@ void OnItemRulesWritten(MediaItem* item, bool before_valid, const ItemRules& bef
     }
 }
 
+
+// ---- 10-4b: the marker mirror ----------------------------------------------------------------------
+
+// What the mirror saw of one item on its last scan.
+struct MirrorItemSeen {
+    size_t                   raw_hash = 0;
+    ItemClipMap              map;
+    bool                     map_ok = false;
+    bool                     managed = false;
+    std::string              owner;   // the record's owner
+    std::vector<std::string> guids;   // the project-marker GUIDs its record lists
+};
+
+// One open project's mirror state.
+struct MirrorProject {
+    int                                      count = -1;  // its state-change count when last mirrored
+    std::string                              file;        // the tab's project file (File > Open reuses the tab)
+    std::map<std::string, MirrorItemSeen>    items;       // by item GUID
+    std::map<std::string, std::string>       owners;      // marker GUID -> item GUID (last scan)
+    std::set<std::string>                    deleted;     // marker GUIDs the mirror itself deleted
+};
+
+std::map<ReaProject*, MirrorProject> g_mirror;
+int (*g_mirror_register)(const char*, void*) = nullptr;
+bool g_mirror_on = false;
+
+bool MirrorApiReady()
+{
+    return ProjectApiReady() && (f_set_marker_value || f_set_marker_by_index2);
+}
+
+bool SameMap(const ItemClipMap& a, const ItemClipMap& b)
+{
+    return a.item_pos == b.item_pos && a.item_len == b.item_len && a.start_offs == b.start_offs && a.rate == b.rate &&
+           a.clip_len == b.clip_len && a.loop == b.loop;
+}
+
+// The take's record text, without the 1 MB zero-fill ReadItemRules does (the mirror reads every
+// RAV item of a changed project). "" when there is none.
+std::string ReadRecordRaw(MediaItem_Take* take)
+{
+    static std::vector<char> buf;
+    if (buf.size() != kItemRulesMaxBytes + 1) buf.assign(kItemRulesMaxBytes + 1, '\0');
+    buf[0] = '\0';
+    if (!GetSetMediaItemTakeInfo_String(take, kItemRulesKey, buf.data(), false)) return "";
+    buf[kItemRulesMaxBytes] = '\0';
+    return buf.data();
+}
+
+// The item's clip map from REAPER alone (no asset loaded): the twin of tagging_session's
+// ItemClipMapOf, with the clip length from the RAV source (GetMediaSourceLength).
+bool MirrorClipMap(MediaItem* item, MediaItem_Take* take, ItemClipMap* out)
+{
+    PCM_source* src = GetMediaItemTake_Source(take);
+    for (int depth = 0; src && depth < 4; ++depth) {
+        const char* type = src->GetType();
+        if (type && std::strcmp(type, "RAV_ANIM") == 0) break;
+        src = src->GetSource();
+    }
+    if (!src) return false;
+    bool         qn = false;
+    const double len = GetMediaSourceLength(src, &qn);
+    if (qn || !(len > 0.0) || !std::isfinite(len)) return false;
+    ItemClipMap map;
+    map.clip_len = len;
+    map.item_pos = GetMediaItemInfo_Value(item, "D_POSITION");
+    map.item_len = GetMediaItemInfo_Value(item, "D_LENGTH");
+    map.loop = GetMediaItemInfo_Value(item, "B_LOOPSRC") != 0.0;
+    map.start_offs = GetMediaItemTakeInfo_Value(take, "D_STARTOFFS");
+    const double rate = GetMediaItemTakeInfo_Value(take, "D_PLAYRATE");
+    map.rate = (rate > 0.0 && std::isfinite(rate)) ? rate : 1.0;
+    *out = map;
+    return true;
+}
+
+// Moves the project marker with this GUID; true when it moved (read back by GUID: REAPER may
+// re-sort its markers on a move).
+bool MoveProjectMarker(const std::string& guid, double t, ReaProject* proj)
+{
+    ProjectMarker* m = FindProjectMarker(guid, proj);
+    if (!m) return false;
+    if (f_set_marker_value) {
+        f_set_marker_value(proj, m, "D_STARTPOS", t);
+    } else {
+        const int idx = EnumIndexOf(m, proj);
+        if (idx < 0) return false;
+        bool        rgn = false;
+        double      p = 0.0, e = 0.0;
+        const char* nm = nullptr;
+        int         n = -1, col = 0;
+        if (!f_enum_project_markers3(proj, idx, &rgn, &p, &e, &nm, &n, &col)) return false;
+        // An empty name leaves the name as it is.
+        f_set_marker_by_index2(proj, idx, false, t, t, n, "", col, 0);
+    }
+    ProjectMarker* after = FindProjectMarker(guid, proj);
+    return after && std::fabs(f_marker_value(proj, after, "D_STARTPOS") - t) < 1e-6;
+}
+
+std::vector<std::string> RefGuids(const ItemRules& r)
+{
+    std::vector<std::string> out;
+    for (const ProjectMarkerRef& m : r.pmarkers)
+        if (!m.guid.empty()) out.push_back(m.guid);
+    for (const ProjectMarkerRef& m : r.ppmarkers)
+        if (!m.guid.empty()) out.push_back(m.guid);
+    return out;
+}
+
+// One RAV item read on this scan.
+struct MirrorItem {
+    MediaItem*      item = nullptr;
+    std::string     guid;
+    bool            fresh = false;  // read now (else unchanged since the last scan: `seen` holds it)
+    bool            first = false;  // not seen on the last scan
+    bool            map_changed = false;
+    ItemRules       rules;
+    MirrorItemSeen  seen;
+    MirrorOwnership own = MirrorOwnership::Own;
+    bool            holds = true;  // holds its markers' GUIDs after this scan (a copy: once refreshed)
+};
+
+// Applies the plan to one list of refs; true when the record changed.
+bool MirrorRefs(std::vector<ProjectMarkerRef>& refs, const ItemClipMap& map, bool map_changed, bool copy,
+                MirrorProject& mp, ReaProject* proj, bool* timeline_changed, std::vector<std::string>& created)
+{
+    std::vector<MirrorRefState> state(refs.size());
+    for (size_t i = 0; i < refs.size(); ++i) {
+        if (refs[i].guid.empty()) continue;
+        ProjectMarker* m = FindProjectMarker(refs[i].guid, proj);
+        state[i].exists = m != nullptr;
+        if (m) state[i].now_t = f_marker_value(proj, m, "D_STARTPOS");
+        state[i].restore = mp.deleted.count(refs[i].guid) > 0;
+    }
+    bool changed = false;
+    for (const MirrorStep& st : MirrorPlan(refs, state, map, map_changed, copy)) {
+        ProjectMarkerRef& r = refs[st.ref];
+        switch (st.action) {
+        case MirrorAction::Keep: break;
+        case MirrorAction::Move:
+            if (MoveProjectMarker(r.guid, st.new_t, proj)) {
+                r.t = st.new_t;
+                changed = *timeline_changed = true;
+            }
+            break;
+        case MirrorAction::Hide:
+            if (st.delete_old && DeleteProjectMarkerByGuid(r.guid, proj)) {
+                mp.deleted.insert(r.guid);
+                *timeline_changed = true;
+            }
+            r.guid.clear();
+            changed = true;
+            break;
+        case MirrorAction::Show: {
+            const std::string g = AddProjectMarker(st.new_t, r.has_name ? r.name : "", NativeColor(r.color), proj);
+            if (copy && g.empty()) {
+                r.guid.clear();  // never keep the original's GUID on a copy
+                changed = true;
+                break;
+            }
+            if (g.empty()) break;
+            created.push_back(g);
+            r.guid = g;
+            r.t = st.new_t;
+            changed = *timeline_changed = true;
+            break;
+        }
+        }
+    }
+    return changed;
+}
+
+// Mirrors one project (its state-change count moved).
+void MirrorOneProject(ReaProject* proj, MirrorProject& mp, bool* timeline_changed)
+{
+    std::vector<MirrorItem>  items;
+    std::vector<std::string> present;  // every item GUID in the project
+    const int                n = CountMediaItems(proj);
+    for (int i = 0; i < n; ++i) {
+        MediaItem* it = GetMediaItem(proj, i);
+        if (!it) continue;
+        const std::string guid = ItemGuidOf(it);
+        if (guid.empty()) continue;
+        present.push_back(guid);
+        MediaItem_Take* take = RavTakeOf(it);
+        if (!take) continue;
+        const std::string raw = ReadRecordRaw(take);
+        if (raw.empty()) continue;
+        MirrorItem mi;
+        mi.item = it;
+        mi.guid = guid;
+        mi.seen.raw_hash = std::hash<std::string>{}(raw);
+        mi.seen.map_ok = MirrorClipMap(it, take, &mi.seen.map);
+        const auto prev = mp.items.find(guid);
+        mi.first = prev == mp.items.end();
+        mi.map_changed = !mi.first && mi.seen.map_ok &&
+                         (!prev->second.map_ok || !SameMap(prev->second.map, mi.seen.map));
+        if (!mi.first && !mi.map_changed && prev->second.raw_hash == mi.seen.raw_hash &&
+            prev->second.map_ok == mi.seen.map_ok) {
+            mi.seen = prev->second;  // nothing changed on this item: nothing to parse
+        } else {
+            mi.fresh = true;
+            if (!ParseItemRules(raw, &mi.rules)) continue;
+            mi.seen.managed = MirrorManaged(mi.rules);
+            mi.seen.owner = RecordOwner(mi.rules);
+            mi.seen.guids = RefGuids(mi.rules);
+        }
+        items.push_back(std::move(mi));
+    }
+
+    // Ownership (event_list.h ArbitrateMirrorOwnership): an item that owns its record keeps its
+    // markers; a copy gets fresh ones; a record without owner adopts its item unless another
+    // item holds its markers.
+    {
+        std::vector<MirrorOwnerInput> in;
+        in.reserve(items.size());
+        for (const MirrorItem& mi : items) in.push_back({mi.guid, mi.seen.owner, mi.seen.managed, mi.seen.guids});
+        const MirrorOwnerResult res = ArbitrateMirrorOwnership(in, mp.owners, present);
+        for (size_t i = 0; i < items.size(); ++i) items[i].own = res.own[i];
+    }
+
+    // Each item: its markers placed, hidden, shown; a copy's made fresh; the record written
+    // (no undo point) when it changed.
+    for (MirrorItem& mi : items) {
+        if (!mi.seen.managed) continue;
+        const bool copy = mi.own == MirrorOwnership::Copy;
+        mi.holds = !copy;  // a copy holds markers only once its fresh ones are recorded
+        if (!mi.fresh && !copy) continue;  // unchanged since the last scan
+        MediaItem_Take* take = RavTakeOf(mi.item);
+        if (!take) continue;
+        if (!mi.fresh && !ParseItemRules(ReadRecordRaw(take), &mi.rules)) continue;  // a copy decided from the cache
+        if (!mi.seen.map_ok) continue;
+        bool                     changed = false;
+        std::vector<std::string> created;
+        // First sight (project opened, item restored by an undo): nothing is moved or hidden; only
+        // the markers the mirror itself deleted come back, and hidden refs whose event lies
+        // inside the item are shown.
+        const bool moved = mi.map_changed;
+        changed |= MirrorRefs(mi.rules.pmarkers, mi.seen.map, moved, copy, mp, proj, timeline_changed, created);
+        changed |= MirrorRefs(mi.rules.ppmarkers, mi.seen.map, moved, copy, mp, proj, timeline_changed, created);
+        if (mi.own != MirrorOwnership::Own && RecordOwner(mi.rules) != mi.guid) changed |= SetRecordOwner(mi.rules, mi.guid);
+        if (changed) {
+            // Written straight to the take, no undo point (ModifyItemRulesNoUndo checks the take
+            // against the CURRENT project only, and the mirror works on every tab).
+            const std::string text = SerializeItemRules(mi.rules);
+            const bool ok = text.size() < kItemRulesMaxBytes &&
+                            GetSetMediaItemTakeInfo_String(take, kItemRulesKey, const_cast<char*>(text.c_str()), true);
+            if (!ok) {
+                // Not recorded: the markers made now would be made again on every scan.
+                for (const std::string& g : created) DeleteProjectMarkerByGuid(g, proj);
+                mi.seen.raw_hash = 0;  // tried again on the next scan
+                if (copy) mi.seen.guids.clear();  // the original's markers stay the original's
+                continue;
+            }
+            mi.seen.raw_hash = std::hash<std::string>{}(ReadRecordRaw(take));
+        }
+        if (copy) mi.holds = changed;  // recorded with its own markers and owner
+        mi.seen.owner = RecordOwner(mi.rules);
+        mi.seen.guids = RefGuids(mi.rules);
+    }
+
+    // The markers of a deleted item (or that its record no longer lists) go. Only items holding
+    // their markers claim them (a copy that could not refresh still lists the original's).
+    std::vector<MirrorHeld>  held;
+    std::vector<std::string> read_items;
+    for (const MirrorItem& mi : items) {
+        read_items.push_back(mi.guid);
+        held.push_back({mi.guid, mi.seen.managed, mi.holds, mi.seen.guids});
+    }
+    std::vector<std::pair<std::string, std::string>> prev(mp.owners.begin(), mp.owners.end());
+    for (const std::string& g : MirrorOrphans(prev, MirrorClaimedNow(held), present, read_items)) {
+        if (DeleteProjectMarkerByGuid(g, proj)) {
+            mp.deleted.insert(g);
+            *timeline_changed = true;
+        }
+    }
+
+    // What the next scan compares with.
+    std::map<std::string, MirrorItemSeen> seen;
+    for (const MirrorItem& mi : items) seen[mi.guid] = mi.seen;
+    mp.owners = NextMirrorOwners(held, mp.owners, present, read_items);
+    mp.items = std::move(seen);
+    if (mp.deleted.size() > 100000) mp.deleted.clear();  // bounded
+}
+
 }  // namespace
 
 void InitTagMarkers(void* (*get_func)(const char* name))
@@ -420,6 +757,8 @@ void InitTagMarkers(void* (*get_func)(const char* name))
     f_marker_string = reinterpret_cast<GetSetRegionOrMarkerInfo_StringFn>(get_func("GetSetRegionOrMarkerInfo_String"));
     f_num_regions_or_markers = reinterpret_cast<GetNumRegionsOrMarkersFn>(get_func("GetNumRegionsOrMarkers"));
     f_color_to_native = reinterpret_cast<ColorToNativeFn>(get_func("ColorToNative"));
+    f_set_marker_value = reinterpret_cast<SetRegionOrMarkerInfo_ValueFn>(get_func("SetRegionOrMarkerInfo_Value"));
+    f_set_marker_by_index2 = reinterpret_cast<SetProjectMarkerByIndex2Fn>(get_func("SetProjectMarkerByIndex2"));
 }
 
 MarkerMode GetTaggingMarkerMode()
@@ -615,6 +954,61 @@ ApplyResult CancelTaggingChanges()
     }
     g_last = res;
     return res;
+}
+
+void MarkerMirrorTick()
+{
+    try {
+        if (!MirrorApiReady()) return;
+        // Which projects are open, and which of them changed since the mirror last ran.
+        std::vector<std::pair<ReaProject*, int>> counts;
+        for (int p = 0;; ++p) {
+            char        file[4096] = {};
+            ReaProject* proj = EnumProjects(p, file, sizeof(file));
+            if (!proj) break;
+            file[sizeof(file) - 1] = '\0';
+            counts.emplace_back(proj, GetProjectStateChangeCount(proj));
+            // File > Open in the same tab reuses the ReaProject*: what the mirror knew is stale.
+            const auto it = g_mirror.find(proj);
+            if (it != g_mirror.end() && it->second.file != file) g_mirror.erase(it);
+            g_mirror[proj].file = file;
+        }
+        // Closed tabs: forgotten.
+        for (auto it = g_mirror.begin(); it != g_mirror.end();) {
+            bool open = false;
+            for (const auto& c : counts)
+                if (c.first == it->first) open = true;
+            it = open ? std::next(it) : g_mirror.erase(it);
+        }
+        bool timeline_changed = false;
+        for (const auto& c : counts) {
+            MirrorProject& mp = g_mirror[c.first];
+            if (mp.count == c.second) continue;  // nothing moved in this project: no work
+            try {
+                MirrorOneProject(c.first, mp, &timeline_changed);
+            } catch (...) {
+            }
+            // The mirror's own writes moved the count: the next tick has nothing to do.
+            mp.count = GetProjectStateChangeCount(c.first);
+        }
+        if (timeline_changed) UpdateTimeline();
+    } catch (...) {
+    }
+}
+
+bool StartMarkerMirror(int (*register_fn)(const char*, void*))
+{
+    if (g_mirror_on || !register_fn) return g_mirror_on;
+    g_mirror_register = register_fn;
+    g_mirror_on = register_fn("timer", reinterpret_cast<void*>(&MarkerMirrorTick)) != 0;
+    return g_mirror_on;
+}
+
+void StopMarkerMirror()
+{
+    if (g_mirror_on && g_mirror_register) g_mirror_register("-timer", reinterpret_cast<void*>(&MarkerMirrorTick));
+    g_mirror_on = false;
+    g_mirror.clear();
 }
 
 const ApplyResult& LastApplyResult()

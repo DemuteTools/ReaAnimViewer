@@ -163,5 +163,13 @@
 // Story 10-3 -- the Tagging view names the item under the playhead (its take's name). Old, safe.
 #define REAPERAPI_WANT_GetTakeName
 
+// Story 10-4b -- the marker mirror (src/tag_markers.cpp): an item's GUID (its markers' owner),
+// the RAV source's length (no asset loaded), one timeline redraw. Old, safe (REAPER 5+). The
+// marker move (SetRegionOrMarkerInfo_Value, REAPER 7, fallback SetProjectMarkerByIndex2) is
+// resolved optionally through GetFunc.
+#define REAPERAPI_WANT_GetSetMediaItemInfo_String
+#define REAPERAPI_WANT_GetMediaSourceLength
+#define REAPERAPI_WANT_UpdateTimeline
+
 #include "reaper_plugin.h"
 #include "reaper_plugin_functions.h"

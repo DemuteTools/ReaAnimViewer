@@ -179,27 +179,79 @@ int main()
         const std::vector<Event> det = {Det(0, 0.5), Det(0, 1.0), Det(1, 1.2), Det(0, 2.5)};
         const std::vector<ShownEvent> l = BuildEventList(det, entries, blocks.size());
         std::vector<PlannedMarker> plan = PlanMarkers(l, blocks, m);
-        // 0.5 suppressed; 2.5 is beyond the first pass; 3 detections/user events remain + 1.9 user.
-        CHECK(plan.size() == 4);
-        if (plan.size() == 4) {
+        // 0.5 suppressed; 3 detections/user events remain + 1.9 user; 2.5 is beyond the first
+        // pass: kept, outside the item (10-4b).
+        CHECK(plan.size() == 5);
+        if (plan.size() == 5) {
             CHECK(Near(plan[0].clip_t, 0.8) && plan[0].user && plan[0].name == "Footstep R" && plan[0].color == 0);
             CHECK(Near(plan[1].clip_t, 1.0) && !plan[1].user && Near(plan[1].project_t, 11.0) && plan[1].name == "Footstep L");
             CHECK(plan[1].color == (0x1000000u | 0x5F9EDDu));
+            CHECK(plan[0].in_item && plan[1].in_item && plan[3].in_item);
+            CHECK(Near(plan[4].clip_t, 2.5) && !plan[4].in_item);
         }
         // A rule switched off writes nothing.
         blocks[1].enabled = false;
-        CHECK(PlanMarkers(l, blocks, m).size() == 2);
+        CHECK(PlanMarkers(l, blocks, m).size() == 3);
         blocks[1].enabled = true;
 
-        // Signature: stable, changes with the option, the events, the names; project times count
-        // only when project markers are written.
+        // Signature: stable, changes with the option, the events, the names; 10-4b: never with
+        // where the item sits (a move or a trim keeps "markers up to date").
         const std::string sb = MarkerSignature(plan, MarkerMode::Both);
         CHECK(sb.size() == 16 && sb == MarkerSignature(plan, MarkerMode::Both));
         CHECK(sb != MarkerSignature(plan, MarkerMode::Take));
         std::vector<PlannedMarker> moved = plan;
         for (PlannedMarker& p : moved) p.project_t += 1.0;  // the item moved
         CHECK(MarkerSignature(moved, MarkerMode::Take) == MarkerSignature(plan, MarkerMode::Take));
-        CHECK(MarkerSignature(moved, MarkerMode::Both) != sb);
+        CHECK(MarkerSignature(moved, MarkerMode::Both) == sb);
+        {
+            // Planned again after a real move, and after a trim that leaves an event outside.
+            ItemClipMap mv = m;
+            mv.item_pos = 12.0;
+            CHECK(MarkerSignature(PlanMarkers(l, blocks, mv), MarkerMode::Both) == sb);
+            ItemClipMap tr = m;
+            tr.item_len = 0.9;
+            const std::vector<PlannedMarker> trimmed = PlanMarkers(l, blocks, tr);
+            CHECK(trimmed.size() == plan.size());
+            int inside = 0;
+            for (const PlannedMarker& p : trimmed) inside += p.in_item ? 1 : 0;
+            CHECK(inside == 1);  // only 0.8 is before 10.9
+            // Placement-free in every mode: a trim / extension keeps "up to date" (the mirror
+            // hides and shows the project markers; take markers, written for every event, show
+            // again by themselves).
+            for (MarkerMode md : {MarkerMode::Take, MarkerMode::Project, MarkerMode::Both}) {
+                CHECK(MarkerSignature(trimmed, md) == MarkerSignature(plan, md));
+                ItemRules tc;
+                RecordApplied(tc, trimmed, md);  // committed trimmed
+                CHECK(MarkersUpToDate(tc, plan, md));  // then extended
+            }
+        }
+        {
+            // A record committed before 10-4b (signature with project times, inside the item
+            // only) still reads "up to date" while its item stays put.
+            std::string text = MarkerModeWord(MarkerMode::Both);
+            char        buf[160];
+            for (const PlannedMarker& p : plan) {
+                if (!p.in_item) continue;
+                std::snprintf(buf, sizeof(buf), "\n%d|%08X|%.6f|%.6f|", p.block, static_cast<unsigned>(p.color), p.clip_t,
+                              p.project_t);
+                text += buf;
+                text += p.name;
+            }
+            uint64_t h = 1469598103934665603ull;
+            for (unsigned char ch : text) {
+                h ^= ch;
+                h *= 1099511628211ull;
+            }
+            std::snprintf(buf, sizeof(buf), "%016llX", static_cast<unsigned long long>(h));
+            ItemRules legacy;
+            legacy.has_applied = true;
+            legacy.applied.mode = MarkerMode::Both;
+            legacy.applied.sig = buf;
+            CHECK(MarkersUpToDate(legacy, plan, MarkerMode::Both));
+            ItemClipMap mv = m;
+            mv.item_pos = 12.0;
+            CHECK(!MarkersUpToDate(legacy, PlanMarkers(l, blocks, mv), MarkerMode::Both));  // as before 10-4b
+        }
         std::vector<PlannedMarker> renamed = plan;
         renamed[0].name = "X";
         CHECK(MarkerSignature(renamed, MarkerMode::Both) != sb);
@@ -215,7 +267,7 @@ int main()
         int snap = 0;
         for (const EventEntry& e : r.events)
             if (e.kind == EventKind::Detected) ++snap;
-        CHECK(snap == 2 && r.events.size() == 5 && r.events[0].kind == EventKind::Detected);
+        CHECK(snap == 3 && r.events.size() == 6 && r.events[0].kind == EventKind::Detected);  // 2.5 included
         // A second Apply replaces the snapshot.
         RecordApplied(r, {plan[1]}, MarkerMode::Take);
         snap = 0;
@@ -437,6 +489,242 @@ int main()
             ComposeCommittedRecord(c, {nt}, {np}, true, false, moved, MarkerMode::Both);
             CHECK(c.ptmarkers.size() == 1 && c.ppmarkers.empty() && c.tmarkers.size() == 2);
         }
+    }
+
+
+    // ---- 10-4b: the marker mirror ---------------------------------------------------------------
+    {
+        auto ref = [](const char* guid, double c, double t) {
+            ProjectMarkerRef r;
+            r.guid = guid;
+            r.c = c;
+            r.t = t;
+            r.name = "Step";
+            r.color = 0x1000000u | 0x5F9EDDu;
+            r.has_c = r.has_color = r.has_name = true;
+            return r;
+        };
+        auto at = [](double t) {
+            MirrorRefState s;
+            s.exists = true;
+            s.now_t = t;
+            return s;
+        };
+        ItemClipMap m;
+        m.item_pos = 10.0;
+        m.item_len = 3.0;
+        m.clip_len = 2.0;
+        ProjectMarkerRef old_ref;  // an older record's ref: no clip time
+        old_ref.guid = "{O}";
+        old_ref.t = 10.9;
+        const std::vector<ProjectMarkerRef> refs = {ref("{A}", 0.5, 10.5), ref("{B}", 1.5, 11.5), old_ref};
+        const std::vector<MirrorRefState>   placed = {at(10.5), at(11.5), at(10.9)};
+
+        // Move: 2 s right, its markers follow; the older ref stays.
+        ItemClipMap mv = m;
+        mv.item_pos = 12.0;
+        std::vector<MirrorStep> st = MirrorPlan(refs, placed, mv, true, false);
+        CHECK(st.size() == 3 && st[0].action == MirrorAction::Move && Near(st[0].new_t, 12.5));
+        CHECK(st[1].action == MirrorAction::Move && Near(st[1].new_t, 13.5) && st[2].action == MirrorAction::Keep);
+        // Nothing changed: nothing to do.
+        for (const MirrorStep& x : MirrorPlan(refs, placed, m, false, false)) CHECK(x.action == MirrorAction::Keep);
+        // Already in place after a change (e.g. an undo restored both): nothing to do.
+        for (const MirrorStep& x : MirrorPlan(refs, placed, m, true, false)) CHECK(x.action == MirrorAction::Keep);
+        // Rate 2x: pos + (c - offs) / rate.
+        ItemClipMap rt = m;
+        rt.rate = 2.0;
+        st = MirrorPlan(refs, placed, rt, true, false);
+        CHECK(st[0].action == MirrorAction::Move && Near(st[0].new_t, 10.25) && Near(st[1].new_t, 10.75));
+        // Start offset (left trim) 0.25 s, rate 2x: 10 + (1.5 - 0.25) / 2.
+        rt.start_offs = 0.25;
+        st = MirrorPlan(refs, placed, rt, true, false);
+        CHECK(st[0].action == MirrorAction::Move && Near(st[0].new_t, 10.125) && Near(st[1].new_t, 10.625));
+
+        // Trim the end before B: B is hidden (its marker deleted), A stays.
+        ItemClipMap tr = m;
+        tr.item_len = 1.0;
+        st = MirrorPlan(refs, placed, tr, true, false);
+        CHECK(st[0].action == MirrorAction::Keep && st[1].action == MirrorAction::Hide && st[1].delete_old);
+        // Extend again: the hidden B comes back at the right time.
+        std::vector<ProjectMarkerRef> hidden = refs;
+        hidden[1].guid.clear();
+        std::vector<MirrorRefState> hs = placed;
+        hs[1] = MirrorRefState{};
+        st = MirrorPlan(hidden, hs, m, true, false);
+        CHECK(st[1].action == MirrorAction::Show && Near(st[1].new_t, 11.5) && st[0].action == MirrorAction::Keep);
+        // Still trimmed: it stays hidden.
+        CHECK(MirrorPlan(hidden, hs, tr, true, false)[1].action == MirrorAction::Keep);
+
+        // A marker the user dragged while the item stayed put: left where it is.
+        std::vector<MirrorRefState> dragged = placed;
+        dragged[0].now_t = 10.8;
+        CHECK(MirrorPlan(refs, dragged, m, false, false)[0].action == MirrorAction::Keep);
+        // ... placed again from its clip time when the item moves.
+        st = MirrorPlan(refs, dragged, mv, true, false);
+        CHECK(st[0].action == MirrorAction::Move && Near(st[0].new_t, 12.5));
+        // A marker the user deleted stays deleted, even when the item moves.
+        std::vector<MirrorRefState> gone = placed;
+        gone[0] = MirrorRefState{};
+        CHECK(MirrorPlan(refs, gone, mv, true, false)[0].action == MirrorAction::Keep);
+        CHECK(MirrorPlan(refs, gone, m, false, false)[0].action == MirrorAction::Keep);
+        // One the mirror deleted (its item deleted, then restored by Ctrl+Z): back.
+        gone[0].restore = true;
+        st = MirrorPlan(refs, gone, m, false, false);
+        CHECK(st[0].action == MirrorAction::Show && Near(st[0].new_t, 10.5));
+        st = MirrorPlan(refs, gone, tr, false, false);
+        CHECK(st[0].action == MirrorAction::Show);  // A is inside the trimmed item too
+        gone[1] = MirrorRefState{};
+        gone[1].restore = true;
+        st = MirrorPlan(refs, gone, tr, false, false);
+        CHECK(st[1].action == MirrorAction::Hide && !st[1].delete_old);  // outside: kept hidden
+
+        // Split at 11.0: the left part (the original item) keeps A, hides B; the right part (a
+        // copy) gets its own B and never touches the original's A. No marker twice.
+        ItemClipMap left = m, right = m;
+        left.item_len = 1.0;
+        right.item_pos = 11.0;
+        right.item_len = 2.0;
+        right.start_offs = 1.0;
+        const std::vector<MirrorStep> ls = MirrorPlan(refs, placed, left, true, false);
+        const std::vector<MirrorStep> rs = MirrorPlan(refs, placed, right, true, true);
+        CHECK(ls[0].action == MirrorAction::Keep && ls[1].action == MirrorAction::Hide && ls[1].delete_old);
+        CHECK(rs[0].action == MirrorAction::Hide && !rs[0].delete_old);
+        CHECK(rs[1].action == MirrorAction::Show && Near(rs[1].new_t, 11.5));
+        CHECK(rs[2].action == MirrorAction::Hide && !rs[2].delete_old);  // an older ref's marker is the original's
+        int shown_b = 0;
+        shown_b += (ls[1].action == MirrorAction::Keep || ls[1].action == MirrorAction::Move) ? 1 : 0;
+        shown_b += (rs[1].action == MirrorAction::Show) ? 1 : 0;
+        CHECK(shown_b == 1);
+
+        // Duplicate at 20 s: the copy gets its own markers; the original's stay.
+        ItemClipMap dup = m;
+        dup.item_pos = 20.0;
+        st = MirrorPlan(refs, placed, dup, false, true);
+        CHECK(st[0].action == MirrorAction::Show && Near(st[0].new_t, 20.5));
+        CHECK(st[1].action == MirrorAction::Show && Near(st[1].new_t, 21.5));
+        CHECK(st[2].action == MirrorAction::Hide && !st[2].delete_old);  // the copy does not share the older marker
+        CHECK(MirrorPlan(refs, placed, m, false, false)[0].action == MirrorAction::Keep);  // the original
+
+        // What Commit writes / records per planned marker, on a trimmed item.
+        {
+            std::vector<Block> wb = {Rule("Step")};
+            ItemClipMap        wm;
+            wm.item_pos = 10.0;
+            wm.item_len = 1.0;  // trimmed: clip 1.0 .. 2.0 is outside
+            wm.clip_len = 2.0;
+            const std::vector<PlannedMarker> wp =
+                PlanMarkers(BuildEventList({Det(0, 0.5), Det(0, 1.5), Det(0, 1.5)}, {}, 1), wb, wm);
+            CHECK(wp.size() == 3);
+            const std::vector<MarkerWrite> both = PlanMarkerWrites(wp, true, true);
+            CHECK(both.size() == 3);
+            if (both.size() == 3) {
+                CHECK(both[0].take && both[0].project && !both[0].hidden && both[0].ref.guid.empty());
+                CHECK(both[0].ref.has_c && Near(both[0].ref.c, 0.5) && both[0].ref.has_color &&
+                      both[0].ref.color == (0x1000000u | 0x5F9EDDu) && both[0].ref.has_name && both[0].ref.name == "Step");
+                // Outside: a take marker (source time) + a hidden project ref, the ref once per twin.
+                CHECK(both[1].take && !both[1].project && both[1].hidden && Near(both[1].ref.c, 1.5) &&
+                      both[1].ref.guid.empty() && both[1].ref.name == "Step");
+                CHECK(both[2].take && !both[2].project && !both[2].hidden);
+            }
+            const std::vector<MarkerWrite> tk = PlanMarkerWrites(wp, true, false);
+            CHECK(tk.size() == 3 && tk[0].take && tk[1].take && !tk[1].project && !tk[1].hidden);
+            const std::vector<MarkerWrite> pj = PlanMarkerWrites(wp, false, true);
+            CHECK(pj.size() == 2 && !pj[0].take && pj[0].project && pj[1].hidden && !pj[1].take);
+
+            // Never committed, every event outside the item: previews are still needed (Commit
+            // records the hidden refs).
+            ItemClipMap out = wm;
+            out.item_len = 0.25;
+            const std::vector<PlannedMarker> op = PlanMarkers(BuildEventList({Det(0, 0.5)}, {}, 1), wb, out);
+            CHECK(op.size() == 1 && !op[0].in_item);
+            ItemRules nc;
+            nc.blocks = wb;
+            CHECK(PreviewNeeded(nc, op, MarkerMode::Project));
+        }
+
+        // Ownership arbitration.
+        {
+            auto in = [](const char* item, const char* owner, std::vector<std::string> g) {
+                MirrorOwnerInput i;
+                i.item = item;
+                i.owner = owner;
+                i.managed = true;
+                i.guids = std::move(g);
+                return i;
+            };
+            // Original + duplicate (the copy's record names the original): the copy loses.
+            MirrorOwnerResult r1 = ArbitrateMirrorOwnership({in("{I1}", "{I1}", {"{A}"}), in("{I2}", "{I1}", {"{A}"})},
+                                                            {{"{A}", "{I1}"}}, {"{I1}", "{I2}"});
+            CHECK(r1.own[0] == MirrorOwnership::Own && r1.own[1] == MirrorOwnership::Copy && r1.claimed["{A}"] == "{I1}");
+            // Two self-owners of one marker, the last scan had it at I1: I2 is the copy (in any order).
+            MirrorOwnerResult r2 = ArbitrateMirrorOwnership({in("{I2}", "{I2}", {"{A}"}), in("{I1}", "{I1}", {"{A}"})},
+                                                            {{"{A}", "{I1}"}}, {"{I1}", "{I2}"});
+            CHECK(r2.own[0] == MirrorOwnership::Copy && r2.own[1] == MirrorOwnership::Own && r2.claimed["{A}"] == "{I1}");
+            // ... on a first scan (no last scan): the first claimant keeps it.
+            MirrorOwnerResult r3 = ArbitrateMirrorOwnership({in("{I2}", "{I2}", {"{A}"}), in("{I1}", "{I1}", {"{A}"})},
+                                                            {}, {"{I1}", "{I2}"});
+            CHECK(r3.own[0] == MirrorOwnership::Own && r3.own[1] == MirrorOwnership::Copy && r3.claimed["{A}"] == "{I2}");
+            // A record without owner whose marker the last scan gave to an item still present: a copy.
+            MirrorOwnerResult r4 = ArbitrateMirrorOwnership({in("{I2}", "", {"{A}"})}, {{"{A}", "{I1}"}}, {"{I1}", "{I2}"});
+            CHECK(r4.own[0] == MirrorOwnership::Copy && r4.claimed.empty());
+            // ... its holder deleted: it adopts.
+            MirrorOwnerResult r5 = ArbitrateMirrorOwnership({in("{I2}", "", {"{A}"})}, {{"{A}", "{I1}"}}, {"{I2}"});
+            CHECK(r5.own[0] == MirrorOwnership::Adopt && r5.claimed["{A}"] == "{I2}");
+            // Unmanaged items are left out.
+            MirrorOwnerInput um = in("{I3}", "", {"{A}"});
+            um.managed = false;
+            MirrorOwnerResult r6 = ArbitrateMirrorOwnership({um}, {}, {"{I3}"});
+            CHECK(r6.own[0] == MirrorOwnership::Own && r6.claimed.empty());
+
+            // After the scan: a copy that could not refresh holds nothing (still the original's GUIDs).
+            const std::vector<MirrorHeld> held = {{"{I1}", true, true, {"{A}"}}, {"{I2}", true, false, {"{A}"}},
+                                                  {"{I4}", true, true, {"{N}"}}};
+            const std::map<std::string, std::string> nx =
+                NextMirrorOwners(held, {{"{A}", "{I1}"}, {"{K}", "{I5}"}, {"{Z}", "{I9}"}}, {"{I1}", "{I2}", "{I4}", "{I5}"},
+                                 {"{I1}", "{I2}", "{I4}"});
+            CHECK(nx.size() == 3 && nx.at("{A}") == "{I1}" && nx.at("{N}") == "{I4}" && nx.at("{K}") == "{I5}");
+            CHECK(MirrorClaimedNow(held) == (std::vector<std::string>{"{A}", "{N}"}));
+        }
+
+        // Ownership.
+        CHECK(DecideMirrorOwnership("{I1}", "{I1}", false) == MirrorOwnership::Own);
+        CHECK(DecideMirrorOwnership("{I1}", "{I2}", false) == MirrorOwnership::Copy);  // duplicate / paste / split
+        CHECK(DecideMirrorOwnership("", "{I1}", false) == MirrorOwnership::Adopt);
+        CHECK(DecideMirrorOwnership("", "{I2}", true) == MirrorOwnership::Copy);
+        ItemRules rec;
+        CHECK(RecordOwner(rec).empty() && !SetRecordOwner(rec, "{I1}"));  // nowhere to keep it
+        rec.has_previewed = true;
+        CHECK(SetRecordOwner(rec, "{I1}") && RecordOwner(rec) == "{I1}");
+        rec.has_applied = true;
+        rec.applied.item = "{I0}";
+        CHECK(RecordOwner(rec) == "{I0}");  // the applied line wins
+        CHECK(SetRecordOwner(rec, "{I2}") && rec.applied.item == "{I2}" && rec.previewed.item == "{I2}");
+
+        // Old record: refs without clip time are not the mirror's; with one they are.
+        ItemRules o;
+        o.pmarkers = {old_ref};
+        CHECK(!MirrorManaged(o));
+        o.ppmarkers = {refs[0]};
+        CHECK(MirrorManaged(o));
+
+        // Deleted item: its markers go; an item present but not read keeps them; a marker still
+        // listed stays.
+        const std::vector<std::pair<std::string, std::string>> prev = {
+            {"{A}", "{I1}"}, {"{B}", "{I1}"}, {"{C}", "{I2}"}, {"{D}", "{I3}"}, {"{E}", "{I4}"}};
+        const std::vector<std::string> orph =
+            MirrorOrphans(prev, {"{A}"}, {"{I1}", "{I3}", "{I4}"}, {"{I1}", "{I4}"});
+        // B: I1 read, no longer lists it; C: I2 deleted; D: I3 present, not read (kept);
+        // E: I4 read, no longer lists it.
+        CHECK(orph == (std::vector<std::string>{"{B}", "{C}", "{E}"}));
+        CHECK(MirrorOrphans({}, {}, {}, {}).empty());
+
+        // Cancel keeps the current item as owner (a copy's snapshot names the original).
+        ItemRules snapr;
+        snapr.has_applied = true;
+        snapr.applied.item = "{ORIG}";
+        ItemRules curr = snapr;
+        curr.applied.item = "{COPY}";
+        CHECK(RestoreCommitted(snapr, curr).applied.item == "{COPY}");
     }
 
     if (g_fails) {

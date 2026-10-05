@@ -146,6 +146,8 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
         // live pointers into our DLL outlive it. The video FX API goes first: from
         // here on a late frame request from REAPER's video thread draws nothing.
         UnregisterVideoFxApi(g_register);
+        // Story 10-4b -- the marker mirror's timer.
+        StopMarkerMirror();
         CloseViewerWindow();
         if (g_register) {
             // Story 11-4 -- the viewer's keyboard hook (same pointer as at load).
@@ -196,6 +198,8 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     InitDetectionMeasure(rec->GetFunc);
     // Story 10-4 -- Apply's take / project marker functions (resolved optionally).
     InitTagMarkers(rec->GetFunc);
+    // Story 10-4b -- RAV's project markers follow their item (a timer, independent of the window).
+    StartMarkerMirror(rec->Register);
     g_measure_detection_id =
         RegisterAction(rec, kMeasureDetectionName, kMeasureDetectionDesc, &g_measure_detection_accel);
 

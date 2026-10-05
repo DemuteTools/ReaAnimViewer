@@ -701,15 +701,19 @@ Set SetEvent(EventEntry& e, const std::string& k, const std::string& v)
     return Set::Unknown;
 }
 
+// 10-4b: `item` (the owner) only when there is one, so an older record writes back as read.
 Fields AppliedFields(const AppliedInfo& a)
 {
-    return {{"markers", ToWord(kMarkerMode, a.mode)}, {"sig", EncodeKey(a.sig)}};
+    Fields f = {{"markers", ToWord(kMarkerMode, a.mode)}, {"sig", EncodeKey(a.sig)}};
+    if (!a.item.empty()) f.push_back({"item", EncodeKey(a.item)});
+    return f;
 }
 
 Set SetApplied(AppliedInfo& a, const std::string& k, const std::string& v)
 {
     if (k == "markers") return R(FromWord(kMarkerMode, v, &a.mode));
     if (k == "sig") return R(DecodeKey(v, &a.sig));
+    if (k == "item") return R(DecodeKey(v, &a.item));
     return Set::Unknown;
 }
 
@@ -728,15 +732,27 @@ Set SetTakeMarkerRef(TakeMarkerRef& m, const std::string& k, const std::string& 
     return Set::Unknown;
 }
 
+// 10-4b: `c`, `color`, `name` (free text, last) only when the ref carries them.
 Fields ProjectMarkerFields(const ProjectMarkerRef& m)
 {
-    return {{"guid", EncodeKey(m.guid)}, {"t", FormatNumber(m.t)}};
+    Fields f = {{"guid", EncodeKey(m.guid)}, {"t", FormatNumber(m.t)}};
+    if (m.has_c) f.push_back({"c", FormatNumber(m.c)});
+    if (m.has_color) f.push_back({"color", FormatColor(m.color)});
+    if (m.has_name) f.push_back({"name", CleanFreeText(m.name)});
+    return f;
 }
 
 Set SetProjectMarkerRef(ProjectMarkerRef& m, const std::string& k, const std::string& v)
 {
     if (k == "guid") return R(DecodeKey(v, &m.guid));
     if (k == "t") return R(ReadNumber(v, &m.t));
+    if (k == "c") return R(m.has_c = ReadNumber(v, &m.c));
+    if (k == "color") return R(m.has_color = ReadColor(v, &m.color));
+    if (k == "name") {
+        m.name = v;
+        m.has_name = true;
+        return Set::Ok;
+    }
     return Set::Unknown;
 }
 
@@ -765,7 +781,8 @@ size_t FieldKeyLength(const std::string& tok)
 bool IsFreeTextKey(const std::string& kind_word, const std::string& key)
 {
     return (kind_word == "block" && key == "marker") || (kind_word == "preset" && key == "name") ||
-           ((kind_word == "tmarker" || kind_word == "ptmarker") && key == "name");
+           ((kind_word == "tmarker" || kind_word == "ptmarker" || kind_word == "pmarker" || kind_word == "ppmarker") &&
+            key == "name");
 }
 
 // The fields after the kind word. A token that is not "key=value" joins the previous

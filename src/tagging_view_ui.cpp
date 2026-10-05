@@ -2169,7 +2169,7 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
             // Story 10-4: the events Apply writes for this rule (detections kept + the user's own).
             int k = 0;
             for (const PlannedMarker& pm : m.planned)
-                if (pm.block == b) ++k;
+                if (pm.block == b && pm.in_item) ++k;
             std::snprintf(count, sizeof(count), "%d", k);
         }
         else

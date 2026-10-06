@@ -192,4 +192,70 @@ bool DeleteCustomRole(const std::string& root, const std::string& role_key, std:
 bool RestoreCustomRole(const std::string& root, const std::string& role_key, const std::string& name, int index,
                        std::string* err);
 
+// ---- Story 10-3f: role config Import / Export (CSV) -----------------------------------------
+//
+// A role file: CSV (UTF-8, a BOM accepted on read, RFC 4180 quoting), a header row naming the
+// columns: `role` (the key), `name` (the display name), `bone`. Columns are found by header
+// name, in any order; unknown ones are ignored. The separator (',' ';' or tab) is read from
+// the header line. In `bone`: a bone name, `(none)` (no bone), or empty (auto, the guess).
+// One file = all the user's roles plus the choices of ONE skeleton (no skeleton column):
+// import applies them to the skeleton it is opened on, matching bones by name.
+
+// One exported row: the key, its display name and its stored entry on the skeleton.
+struct RoleCsvRow {
+    std::string     key;
+    std::string     name;
+    StoredRoleEntry entry;
+};
+
+// The rows of an export: the 9 built-in roles, the user's roles, then the extra keys (the keys
+// the item's rules read; built-in and listed ones skipped), each with its stored entry.
+std::vector<RoleCsvRow> RoleCsvRowsFromFile(const RoleMapFile& file, const std::vector<std::string>& bone_names,
+                                            const std::vector<std::string>& extra_keys);
+// The CSV text (BOM, header `role,name,bone`, CRLF lines), `sep` = ',' or ';'.
+// RoleExportFileName: the export's default file name, "roles - <animation file stem>.csv"
+// (characters Windows refuses replaced by '_'; "roles.csv" when there is no stem).
+std::string RoleExportFileName(const std::string& anim_path);
+std::string ExportRolesCsv(const std::vector<RoleCsvRow>& rows, char sep = ',');
+
+// What an import did. `skipped` rows were not applied; `first_skip` says why the first one was.
+struct RoleImportReport {
+    int         added = 0;    // roles created
+    int         set = 0;      // choices changed on this skeleton
+    int         skipped = 0;
+    std::string first_skip;
+    bool changed() const { return added > 0 || set > 0; }
+};
+// The one-line result: "Imported: 2 roles added, 5 choices set, 1 row skipped (row 4: ...)."
+std::string RoleImportSummary(const RoleImportReport& report);
+
+// Merges a role CSV into `file` for this skeleton: roles the file lists that the user lacks are
+// added (a role the user has keeps its name); each listed role's choice replaces the stored one;
+// everything else stays. A row is skipped (and counted) when its role is empty, its name holds
+// ',' or ';' or is taken by another role, or its bone is not in this skeleton. False with
+// "This is not a role file." (and `file` untouched) when there is no header with `role` and
+// `name` columns.
+bool ImportRolesCsv(RoleMapFile& file, const std::string& csv, const std::vector<std::string>& bone_names,
+                    RoleImportReport* report, std::string* err);
+
+// The same, on <root>/ReaAnimViewer/roles.txt. Export reads roles.txt (an unreadable one reads
+// as no entries and lists the 9 built-in roles only) and writes `dest_path`.
+bool ExportRoleConfig(const std::string& root, const std::vector<std::string>& bone_names,
+                      const std::vector<std::string>& extra_keys, char sep, const std::string& dest_path,
+                      std::string* err);
+
+// roles.txt exactly as it was before a write (for the window's undo).
+struct RoleMapSnapshot {
+    bool        existed = false;
+    std::string text;
+};
+// Import reads `src_path`, merges it (ImportRolesCsv) and writes roles.txt when anything
+// changed. `prev` gets roles.txt as it was (byte-exact). Refused (false, `err`, nothing written)
+// when the file cannot be read, is not a role file, or roles.txt cannot be written.
+bool ImportRoleConfig(const std::string& root, const std::vector<std::string>& bone_names,
+                      const std::string& src_path, RoleImportReport* report, RoleMapSnapshot* prev, std::string* err);
+// The undo of an import: roles.txt put back byte-identical (removed when it did not exist).
+// Refused when roles.txt exists but cannot be read.
+bool RestoreRoleMapText(const std::string& root, const RoleMapSnapshot& snapshot, std::string* err);
+
 }  // namespace rav

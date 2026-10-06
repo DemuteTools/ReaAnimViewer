@@ -1418,12 +1418,18 @@ MediaItem* g_pm_item = nullptr;
 // Import / Export: the native pickers run a modal loop, so they run from the window procedure
 // (TaggingRunPendingDialog), never inside the frame.
 struct PendingDialog {
-    enum class Kind { None, Import, Export };
+    enum class Kind { None, Import, Export, RolesImport, RolesExport };  // Roles*: story 10-3f
     Kind        kind = Kind::None;
     std::string id;
     std::string name;
+    std::vector<std::string> bones;  // Roles*: the skeleton the Skeleton & roles window is open on
+    std::vector<std::string> keys;   // RolesExport: the role keys the item's rules read
+    std::string file_name;           // RolesExport: the proposed file name (one file per skeleton)
 };
 PendingDialog g_dialog;
+
+// Story 10-3f -- the Skeleton & roles window's Import / Export (defined with the window).
+void RolesRunDialog(HWND__* owner, const PendingDialog& d);
 
 const FileDialogFilter kPresetFilter = {L"ReaAnimViewer preset (*.ravpreset)", L"*.ravpreset", L"ravpreset"};
 
@@ -2093,6 +2099,8 @@ void TaggingRunPendingDialog(HWND__* owner)
             PmStatus(d.name + " exported.");
         else
             PmStatus(err.empty() ? "The preset could not be exported." : err);
+    } else if (d.kind == PendingDialog::Kind::RolesImport || d.kind == PendingDialog::Kind::RolesExport) {
+        RolesRunDialog(owner, d);
     }
 }
 
@@ -2120,13 +2128,14 @@ struct RoleRow {
     std::string name;  // the display name ("left heel", "sword tip", "tail end")
 };
 
-enum class RoleUndoKind { Bone, Created, Renamed, Deleted };
+enum class RoleUndoKind { Bone, Created, Renamed, Deleted, Imported };
 struct RoleUndoStep {
     RoleUndoKind    kind = RoleUndoKind::Bone;
     std::string     key;
     StoredRoleEntry prev;       // Bone: the entry the change replaced, exactly as stored
     std::string     name;       // Renamed: the old name; Deleted: its name
     int             index = -1; // Deleted: its place in the list
+    RoleMapSnapshot text;       // Imported: roles.txt as it was before the import
 };
 
 bool                                   g_roles_request = false;  // the Roles button asked for the window
@@ -2140,6 +2149,7 @@ std::map<std::string, StoredRoleEntry> g_roles_entries;          // roles.txt's 
 std::map<std::string, int>             g_roles_guess;            // the guess per key (the "Auto (...)" entry)
 std::vector<RoleUndoStep>              g_roles_undo;
 std::string                            g_roles_err;              // the last write's refusal
+std::string                            g_roles_status;           // 10-3f: the last Import / Export result
 char                                   g_roles_query[64] = {};
 bool                                   g_roles_menu_appearing = false;  // a bone menu opened this frame
 char                                   g_roles_new[64] = {};     // the + Role field
@@ -2191,6 +2201,7 @@ void RolesReadEntries(const std::vector<std::string>& keys)
 // After a write: the model (bone column, rows, count, strip) first, then the entries of its rows.
 void RolesRefresh()
 {
+    g_roles_status.clear();  // an Import / Export result sets it again after its refresh
     TaggingReread();
     if (g_roles_open) RolesReadEntries(RowKeys(RolesRows(GetTaggingModel())));
 }
@@ -2206,6 +2217,7 @@ void RolesForget()
     g_roles_guess.clear();
     g_roles_undo.clear();  // the window's undo history goes with it
     g_roles_err.clear();
+    g_roles_status.clear();
     g_roles_new[0] = '\0';
     g_roles_rename_key.clear();
     g_roles_confirm_key.clear();
@@ -2241,6 +2253,7 @@ void RolesOpen(const TaggingModel& m)
 void RolesFailed(const std::string& err, const char* fallback)
 {
     g_roles_err = err.empty() ? std::string(fallback) : err;
+    g_roles_status.clear();
 }
 
 // One role change, written after the frame (ApplyRoleChange). The entry it replaced goes on the
@@ -2255,7 +2268,7 @@ void RolesChange(const std::string& key, RoleChangeKind kind, const std::string&
         const bool ok = ApplyRoleChange(RulesResourceRoot(), names, key, kind, bone, &prev, &changed, &err);
         if (RolesSameSkeleton(names)) {
             if (ok) {
-                if (changed) g_roles_undo.push_back({RoleUndoKind::Bone, key, prev, "", -1});
+                if (changed) g_roles_undo.push_back({RoleUndoKind::Bone, key, prev, "", -1, RoleMapSnapshot{}});
                 g_roles_err.clear();
             } else {
                 RolesFailed(err, "The role mapping could not be saved.");
@@ -2274,7 +2287,7 @@ void RolesCreate(const std::string& name)
         const bool  ok = AddCustomRole(RulesResourceRoot(), name, &key, &err);
         if (RolesSameSkeleton(names)) {
             if (ok) {
-                g_roles_undo.push_back({RoleUndoKind::Created, key, StoredRoleEntry{}, "", -1});
+                g_roles_undo.push_back({RoleUndoKind::Created, key, StoredRoleEntry{}, "", -1, RoleMapSnapshot{}});
                 g_roles_err.clear();
                 g_roles_new[0] = '\0';
                 g_roles_last_custom = key;
@@ -2298,7 +2311,8 @@ void RolesRename(const std::string& key, const std::string& name)
                 bool same = false;
                 for (const CustomRole& c : GetCustomRoles(RulesResourceRoot()))
                     if (c.key == key) same = c.name == old_name;
-                if (!same) g_roles_undo.push_back({RoleUndoKind::Renamed, key, StoredRoleEntry{}, old_name, -1});
+                if (!same)
+                    g_roles_undo.push_back({RoleUndoKind::Renamed, key, StoredRoleEntry{}, old_name, -1, RoleMapSnapshot{}});
                 g_roles_err.clear();
             } else {
                 RolesFailed(err, "The role could not be renamed.");
@@ -2317,7 +2331,8 @@ void RolesDelete(const std::string& key)
         const bool  ok = DeleteCustomRole(RulesResourceRoot(), key, &name, &index, &err);
         if (RolesSameSkeleton(names)) {
             if (ok) {
-                if (index >= 0) g_roles_undo.push_back({RoleUndoKind::Deleted, key, StoredRoleEntry{}, name, index});
+                if (index >= 0)
+                    g_roles_undo.push_back({RoleUndoKind::Deleted, key, StoredRoleEntry{}, name, index, RoleMapSnapshot{}});
                 g_roles_err.clear();
                 if (g_roles_last_custom == key) g_roles_last_custom.clear();
             } else {
@@ -2345,6 +2360,7 @@ void RolesUndo()
         case RoleUndoKind::Created: ok = DeleteCustomRole(root, s.key, nullptr, nullptr, &err); break;
         case RoleUndoKind::Renamed: ok = RestoreCustomRole(root, s.key, s.name, -1, &err); break;
         case RoleUndoKind::Deleted: ok = RestoreCustomRole(root, s.key, s.name, s.index, &err); break;
+        case RoleUndoKind::Imported: ok = RestoreRoleMapText(root, s.text, &err); break;
         }
         if (ok) {
             g_roles_undo.pop_back();
@@ -2354,6 +2370,66 @@ void RolesUndo()
         }
         RolesRefresh();
     });
+}
+
+// ---- Story 10-3f: Import / Export of the role config (a .csv file) ----------------------------
+//
+// The pickers run from the window procedure (TaggingRunPendingDialog), never inside the frame.
+// Export writes every role and this skeleton's choices; Import merges a file into roles.txt as
+// one step of the window's undo (roles.txt put back byte-identical).
+
+const FileDialogFilter kRolesCsvFilter = {L"CSV (*.csv)", L"*.csv", L"csv"};
+constexpr char         kPrefRolesCsvSemicolon[] = "roles_csv_semicolon";  // the last export's separator
+
+void RolesRequestDialog(PendingDialog::Kind kind, const TaggingModel& m)
+{
+    g_dialog = PendingDialog{};
+    g_dialog.kind = kind;
+    g_dialog.bones = g_roles_names;
+    g_dialog.keys = m.rule_role_keys;
+    g_dialog.file_name = RoleExportFileName(m.path);
+    g_roles_status.clear();
+}
+
+void RolesRunDialog(HWND__* owner, const PendingDialog& d)
+{
+    if (!RolesSameSkeleton(d.bones)) return;  // the window closed (or moved to another rig) meanwhile
+    const std::string root = RulesResourceRoot();
+    std::string       path, err;
+    if (d.kind == PendingDialog::Kind::RolesExport) {
+        const FileDialogFilter filters[] = {
+            {L"CSV, comma separated (*.csv)", L"*.csv", L"csv"},
+            {L"CSV, semicolon separated (Excel in French and other regions) (*.csv)", L"*.csv", L"csv"},
+        };
+        int type = LoadPrefBool(kPrefRolesCsvSemicolon, false) ? 1 : 0;
+        if (!PickSaveFile(owner, L"Export roles", filters, 2, &type, d.file_name, path)) return;  // cancelled
+        SavePrefBool(kPrefRolesCsvSemicolon, type == 1);
+        const bool ok = ExportRoleConfig(root, d.bones, d.keys, type == 1 ? ';' : ',', path, &err);
+        if (!RolesSameSkeleton(d.bones)) return;
+        if (ok) {
+            g_roles_err.clear();
+            std::string file = path;
+            const size_t slash = file.find_last_of("\\/");
+            if (slash != std::string::npos) file.erase(0, slash + 1);
+            g_roles_status = "Roles exported to " + file + ".";
+        } else {
+            RolesFailed(err, "The roles could not be exported.");
+        }
+        return;
+    }
+    if (!PickOpenFile(owner, L"Import roles", kRolesCsvFilter, path)) return;  // cancelled
+    if (!RolesSameSkeleton(d.bones)) return;
+    RoleImportReport rep;
+    RoleMapSnapshot  prev;
+    const bool       ok = ImportRoleConfig(root, d.bones, path, &rep, &prev, &err);
+    if (ok && rep.changed()) g_roles_undo.push_back({RoleUndoKind::Imported, "", StoredRoleEntry{}, "", -1, prev});
+    if (ok) g_roles_err.clear();
+    RolesRefresh();  // the strip, Roles and the footer follow at once
+    if (!RolesSameSkeleton(d.bones)) return;
+    if (ok)
+        g_roles_status = RoleImportSummary(rep);
+    else
+        RolesFailed(err, "The file could not be imported.");
 }
 
 void RolesStartRename(const std::string& key, const std::string& name)
@@ -2592,6 +2668,8 @@ void RolesWindow(const TaggingModel& m)
                                    "their names and remembers your choice for every item with this skeleton.");
             ImGui::TextUnformatted("+ Role adds your own roles, for every project. Right-click or F2 renames one.");
             ImGui::TextUnformatted("Role changes are saved at once. Ctrl+Z here undoes them while this window is open.");
+            ImGui::TextUnformatted("Export... writes your roles and this skeleton's bones to a .csv file (a spreadsheet "
+                                   "or a text editor opens it); Import... reads one into your roles for this skeleton.");
             ImGui::PopTextWrapPos();
             ImGui::EndTooltip();
         }
@@ -2757,7 +2835,10 @@ void RolesWindow(const TaggingModel& m)
         {
             if (!writable) ImGui::BeginDisabled();
             const float btn_w = ImGui::CalcTextSize("+ Role").x + ImGui::GetStyle().FramePadding.x * 2.0f;
-            ImGui::SetNextItemWidth(std::max(60.0f, inner_w - btn_w - 6.0f));
+            // 10-3f: Import... / Export... (small buttons) share the row.
+            const float io_w = ImGui::CalcTextSize("Import...").x + ImGui::CalcTextSize("Export...").x +
+                               ImGui::GetStyle().FramePadding.x * 4.0f + 10.0f;
+            ImGui::SetNextItemWidth(std::max(60.0f, inner_w - btn_w - io_w - 6.0f));
             const bool enter = ImGui::InputTextWithHint("##newrole", "New role name, e.g. sword tip", g_roles_new,
                                                         sizeof(g_roles_new), ImGuiInputTextFlags_EnterReturnsTrue);
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
@@ -2766,7 +2847,19 @@ void RolesWindow(const TaggingModel& m)
             ImGui::SameLine(0.0f, 6.0f);
             const bool click = ui::SolidButton("+ Role");
             if ((enter || click) && writable) RolesCreate(g_roles_new);  // refused (red line) when empty or taken
+            // 10-3f: Import (a write: refused like the others when roles.txt cannot be read).
+            ImGui::SameLine(0.0f, 6.0f);
+            if (ImGui::SmallButton("Import...##rimport") && writable && !TaggingHasPendingDialog())
+                RolesRequestDialog(PendingDialog::Kind::RolesImport, m);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("Reads a role .csv file into your roles and this skeleton's bones (Ctrl+Z undoes it)");
             if (!writable) ImGui::EndDisabled();
+            // Export works from what is shown, even when roles.txt cannot be read.
+            ImGui::SameLine(0.0f, 4.0f);
+            if (ImGui::SmallButton("Export...##rexport") && !TaggingHasPendingDialog())
+                RolesRequestDialog(PendingDialog::Kind::RolesExport, m);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("Writes your roles and this skeleton's bones to a .csv file you can send");
         }
 
         // roles.txt that RAV cannot read, a refused write: in red, never silent.
@@ -2778,6 +2871,11 @@ void RolesWindow(const TaggingModel& m)
             ImGui::TextUnformatted("roles.txt is not a roles file: your next choice moves it aside and starts a new one.");
         if (!g_roles_err.empty()) ImGui::TextUnformatted(g_roles_err.c_str());
         ImGui::PopStyleColor();
+        if (!g_roles_status.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
+            ImGui::TextUnformatted(g_roles_status.c_str());
+            ImGui::PopStyleColor();
+        }
         ImGui::PopTextWrapPos();
 
 

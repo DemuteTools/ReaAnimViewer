@@ -29,6 +29,11 @@ bool PickOpenFile(HWND__* owner, const wchar_t* title, const FileDialogFilter& f
 bool PickSaveFile(HWND__* owner, const wchar_t* title, const FileDialogFilter& filter,
                   const std::string& default_name_utf8, std::string& out_utf8);
 
+// The same with several file types (story 10-3f): `type_index` (0-based) is the one
+// preselected on entry and the one the user left selected on return (when true).
+bool PickSaveFile(HWND__* owner, const wchar_t* title, const FileDialogFilter* filters, int filter_count,
+                  int* type_index, const std::string& default_name_utf8, std::string& out_utf8);
+
 }  // namespace rav
 
 #endif  // _WIN32

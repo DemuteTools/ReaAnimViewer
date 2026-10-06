@@ -96,6 +96,33 @@ FileState ReadText(const fs::path& p, std::string* out)
     return FileState::Ok;
 }
 
+// Writes `text` to `p` through a .tmp file renamed over it.
+bool WriteTextAtomic(const fs::path& p, const std::string& text, std::string* err)
+{
+    std::error_code ec;
+    fs::path        tmp = p;
+    tmp += ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (out) out << text;
+        if (out) out.flush();
+        const bool written = static_cast<bool>(out);
+        out.close();
+        if (!written || out.fail()) {
+            fs::remove(tmp, ec);
+            if (err) *err = "Cannot write " + p.u8string() + ".";
+            return false;
+        }
+    }
+    fs::rename(tmp, p, ec);
+    if (ec) {
+        fs::remove(tmp, ec);
+        if (err) *err = "Cannot write " + p.u8string() + ".";
+        return false;
+    }
+    return true;
+}
+
 RoleMapFile LoadFile(const std::string& root, FileState* state)
 {
     RoleMapFile f;
@@ -131,25 +158,7 @@ bool SaveFile(const std::string& root, const RoleMapFile& f, FileState state, st
         fs::rename(p, bad, ec);
         if (ec) return fail("Cannot keep " + p.u8string() + " aside: the role mapping was not changed.");
     }
-    fs::path tmp = p;
-    tmp += ".tmp";
-    {
-        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
-        if (out) out << SerializeRoleMap(f);
-        if (out) out.flush();
-        const bool written = static_cast<bool>(out);
-        out.close();
-        if (!written || out.fail()) {
-            fs::remove(tmp, ec);
-            return fail("Cannot write " + p.u8string() + ".");
-        }
-    }
-    fs::rename(tmp, p, ec);
-    if (ec) {
-        fs::remove(tmp, ec);
-        return fail("Cannot write " + p.u8string() + ".");
-    }
-    return true;
+    return WriteTextAtomic(p, SerializeRoleMap(f), err);
 }
 
 }  // namespace
@@ -393,6 +402,8 @@ bool CheckRoleName(const RoleMapFile& f, const std::string& typed, const std::st
     };
     const std::string name = CleanRoleName(typed);
     if (name.empty()) return fail("Type a name for the role.");
+    // 10-3f: a role file is CSV (',' or ';' separated): a name never holds either.
+    if (name.find_first_of(",;") != std::string::npos) return fail("A role name cannot contain , or ;");
     const std::string key = RoleKeyFromName(name);
     if (key.empty()) return fail("\"" + name + "\": a role name needs a letter or a digit (a-z, 0-9).");
     const std::string low = LowerAscii(name);
@@ -781,6 +792,388 @@ bool RestoreCustomRole(const std::string& root, const std::string& role_key, con
         return SaveFile(root, f, st, err);
     } catch (...) {
         if (err) *err = "The role could not be saved.";
+        return false;
+    }
+}
+
+// ---- Story 10-3f: role config Import / Export (CSV) -----------------------------------------
+
+namespace {
+
+constexpr const char kNoneBone[] = "(none)";
+constexpr const char kNotRoleFile[] = "This is not a role file.";
+
+std::string TrimSpaces(const std::string& s)
+{
+    const size_t b = s.find_first_not_of(" \t");
+    if (b == std::string::npos) return "";
+    const size_t e = s.find_last_not_of(" \t");
+    return s.substr(b, e - b + 1);
+}
+
+std::string CsvField(const std::string& v, char sep)
+{
+    bool quote = !v.empty() && (v.front() == ' ' || v.back() == ' ');
+    for (char c : v)
+        if (c == sep || c == ',' || c == ';' || c == '\t' || c == '"' || c == '\r' || c == '\n') quote = true;
+    if (!quote) return v;
+    std::string out = "\"";
+    for (char c : v) {
+        if (c == '"') out += '"';
+        out += c;
+    }
+    return out + '"';
+}
+
+// The separator of a CSV text: the most frequent of ',' ';' tab outside quotes on the header
+// line, the first non-blank one (ties: ',' then ';'); ',' when none. A '"' opens a quoted field
+// only at the start of a field (as ParseCsv reads it).
+char DetectSeparator(const std::string& text)
+{
+    int    comma = 0, semi = 0, tab = 0;
+    bool   q = false, field_start = true;
+    size_t i = text.find_first_not_of(" \t\r\n");
+    if (i == std::string::npos) return ',';
+    i = text.find_last_of("\r\n", i);  // the header line starts after the last line break before it
+    i = i == std::string::npos ? 0 : i + 1;
+    for (; i < text.size(); ++i) {
+        const char c = text[i];
+        if (q) {
+            if (c == '"') {
+                if (i + 1 < text.size() && text[i + 1] == '"') ++i;
+                else q = false;
+            }
+            continue;
+        }
+        if (c == '"' && field_start) {
+            q = true;
+            field_start = false;
+            continue;
+        }
+        if (c == '\n' || c == '\r') break;
+        field_start = c == ',' || c == ';' || c == '\t';
+        if (c == ',') ++comma;
+        else if (c == ';') ++semi;
+        else if (c == '\t') ++tab;
+    }
+    if (tab > comma && tab > semi) return '\t';
+    if (semi > comma) return ';';
+    return ',';
+}
+
+// RFC 4180 records: quoted fields may hold the separator, "" and line breaks; CRLF, LF or CR
+// end a record. A '"' opens a quoted field only at the start of a field; elsewhere it is a
+// literal character (a hand edit like weapon"r). Blank records (every field empty: a blank line, ",,") are dropped.
+std::vector<std::vector<std::string>> ParseCsv(const std::string& text, char sep)
+{
+    std::vector<std::vector<std::string>> recs;
+    std::vector<std::string>              rec;
+    std::string                           field;
+    bool                                  quoted = false, any = false, field_started = false;
+    auto end_field = [&]() {
+        rec.push_back(field);
+        field.clear();
+        field_started = false;
+    };
+    auto end_record = [&]() {
+        end_field();
+        bool blank = true;
+        for (const std::string& v : rec) blank = blank && TrimSpaces(v).empty();
+        if (!blank) recs.push_back(rec);
+        rec.clear();
+        any = false;
+    };
+    for (size_t i = 0; i < text.size(); ++i) {
+        const char c = text[i];
+        if (quoted) {
+            if (c == '"') {
+                if (i + 1 < text.size() && text[i + 1] == '"') {
+                    field += '"';
+                    ++i;
+                } else {
+                    quoted = false;
+                }
+            } else {
+                field += c;
+            }
+            continue;
+        }
+        any = true;
+        if (c == '"' && field.empty() && !field_started) {
+            quoted = true;
+            field_started = true;
+        } else if (c == sep) {
+            end_field();
+        } else if (c == '\r' || c == '\n') {
+            if (c == '\r' && i + 1 < text.size() && text[i + 1] == '\n') ++i;
+            end_record();
+        } else {
+            field += c;
+            field_started = true;
+        }
+    }
+    if (any) end_record();
+    return recs;
+}
+
+}  // namespace
+
+std::vector<RoleCsvRow> RoleCsvRowsFromFile(const RoleMapFile& file, const std::vector<std::string>& bone_names,
+                                            const std::vector<std::string>& extra_keys)
+{
+    std::vector<RoleCsvRow> rows;
+    for (int r = 0; r < static_cast<int>(Role::Count); ++r)
+        rows.push_back({RoleKey(static_cast<Role>(r)), RoleName(static_cast<Role>(r)), StoredRoleEntry{}});
+    const std::vector<CustomRole> list = CustomRolesInFile(file);
+    for (const CustomRole& c : list) rows.push_back({c.key, c.name, StoredRoleEntry{}});
+    for (const std::string& k : extra_keys) {
+        if (k.empty() || IsBuiltinKey(k)) continue;
+        bool seen = false;
+        for (const RoleCsvRow& row : rows) seen = seen || row.key == k;
+        if (!seen) rows.push_back({k, RoleNameFromKey(k), StoredRoleEntry{}});
+    }
+    const std::string skel = SkeletonKey(bone_names);
+    for (RoleCsvRow& row : rows) {
+        const RoleMapLine* l = FindLine(file, skel, row.key);
+        if (!l) continue;
+        row.entry.stored = true;
+        row.entry.bone = l->Get("bone");
+    }
+    return rows;
+}
+
+std::string ExportRolesCsv(const std::vector<RoleCsvRow>& rows, char sep)
+{
+    if (sep != ';') sep = ',';
+    std::string out = "\xEF\xBB\xBF";  // UTF-8 BOM: spreadsheets then read the names right
+    out += std::string("role") + sep + "name" + sep + "bone\r\n";
+    for (const RoleCsvRow& r : rows) {
+        const std::string bone = !r.entry.stored ? std::string() : r.entry.bone.empty() ? std::string(kNoneBone)
+                                                                                       : r.entry.bone;
+        out += CsvField(r.key, sep) + sep + CsvField(r.name, sep) + sep + CsvField(bone, sep) + "\r\n";
+    }
+    return out;
+}
+
+std::string RoleExportFileName(const std::string& anim_path)
+{
+    std::string stem = anim_path;
+    const size_t slash = stem.find_last_of("\\/");
+    if (slash != std::string::npos) stem.erase(0, slash + 1);
+    const size_t dot = stem.find_last_of('.');
+    if (dot != std::string::npos && dot > 0) stem.erase(dot);
+    for (char& c : stem) {
+        const unsigned char u = static_cast<unsigned char>(c);
+        if (u < 0x20 || c == '<' || c == '>' || c == ':' || c == '"' || c == '/' || c == '\\' || c == '|' ||
+            c == '?' || c == '*')
+            c = '_';
+    }
+    stem = TrimSpaces(stem);
+    while (!stem.empty() && (stem.back() == '.' || stem.back() == ' ')) stem.pop_back();
+    return stem.empty() ? std::string("roles.csv") : "roles - " + stem + ".csv";
+}
+
+std::string RoleImportSummary(const RoleImportReport& rep)
+{
+    auto n = [](int v, const char* one, const char* many) { return std::to_string(v) + ' ' + (v == 1 ? one : many); };
+    std::string s = "Imported: " + n(rep.added, "role added", "roles added") + ", " +
+                    n(rep.set, "choice set", "choices set");
+    if (rep.skipped > 0) {
+        s += ", " + n(rep.skipped, "row skipped", "rows skipped");
+        if (!rep.first_skip.empty()) s += " (" + rep.first_skip + ")";
+    }
+    return s + ".";
+}
+
+bool ImportRolesCsv(RoleMapFile& file, const std::string& csv_in, const std::vector<std::string>& bone_names,
+                    RoleImportReport* report, std::string* err)
+{
+    RoleImportReport rep;
+    try {
+        std::string csv = csv_in.substr(0, csv_in.find('\0'));
+        if (csv.compare(0, 3, "\xEF\xBB\xBF") == 0) csv.erase(0, 3);
+        const char                                  sep = DetectSeparator(csv);
+        const std::vector<std::vector<std::string>> recs = ParseCsv(csv, sep);
+        int col_role = -1, col_name = -1, col_bone = -1;
+        if (!recs.empty()) {
+            const std::vector<std::string>& h = recs[0];
+            for (size_t i = 0; i < h.size(); ++i) {
+                const std::string c = LowerAscii(TrimSpaces(h[i]));
+                const int         ci = static_cast<int>(i);
+                if (c == "role" && col_role < 0) col_role = ci;
+                else if (c == "name" && col_name < 0) col_name = ci;
+                else if (c == "bone" && col_bone < 0) col_bone = ci;
+            }
+        }
+        if (col_role < 0 || col_name < 0) {
+            if (err) *err = kNotRoleFile;
+            return false;
+        }
+        RoleMapFile       f = file;
+        const std::string skel = SkeletonKey(bone_names);
+        auto cell = [](const std::vector<std::string>& r, int c) {
+            return c >= 0 && c < static_cast<int>(r.size()) ? r[static_cast<size_t>(c)] : std::string();
+        };
+        for (size_t ri = 1; ri < recs.size(); ++ri) {
+            const std::vector<std::string>& r = recs[ri];
+            const std::string row_tag = "row " + std::to_string(ri + 1) + ": ";
+            auto skip = [&](const std::string& why) {
+                if (rep.skipped++ == 0) rep.first_skip = row_tag + why;
+            };
+            std::string       role = TrimSpaces(cell(r, col_role));
+            const std::string name = TrimSpaces(cell(r, col_name));
+            if (role.compare(0, 5, "role:") == 0) role.erase(0, 5);  // as rules and tooltips write it
+            std::string key;
+            if (role.empty()) {
+                // No key: the name of one of the user's roles names it (a renamed role keeps its
+                // key), else the key comes from the name.
+                const std::string low = LowerAscii(CleanRoleName(name));
+                for (const CustomRole& c : CustomRolesInFile(f))
+                    if (!low.empty() && LowerAscii(c.name) == low) key = c.key;
+                if (key.empty()) key = RoleKeyFromName(name);
+            } else {
+                key = RoleKeyFromName(role) == role ? role : RoleKeyFromName(role);
+            }
+            if (key.empty()) {
+                skip(role.empty() && name.empty() ? std::string("no role") : "\"" + (role.empty() ? name : role) +
+                                                                                 "\" is not a role name");
+                continue;
+            }
+            const bool builtin = IsBuiltinKey(key);
+            // A built-in role's name is ignored; any other row's name never holds ',' or ';'.
+            if (!builtin && name.find_first_of(",;") != std::string::npos) {
+                skip("A role name cannot contain , or ;");
+                continue;
+            }
+            // The bone first: a row whose bone this skeleton lacks is skipped whole.
+            enum class Choice { Keep, Auto, Set } choice = Choice::Keep;  // Keep: no bone column
+            std::string bone;  // Set: as stored ("" = no bone)
+            if (col_bone >= 0) {
+                const std::string b = TrimSpaces(cell(r, col_bone));
+                if (b.empty()) {
+                    choice = Choice::Auto;
+                } else if (LowerAscii(b) == kNoneBone) {
+                    choice = Choice::Set;
+                } else {
+                    const int idx = FindBoneIndex(bone_names, b);
+                    if (idx < 0) {
+                        skip("the bone \"" + b + "\" is not in this skeleton");
+                        continue;
+                    }
+                    choice = Choice::Set;
+                    bone = bone_names[static_cast<size_t>(idx)];
+                }
+            }
+            // A role the user lacks is added with the file's name (checked like + Role).
+            bool        add = false;
+            std::string clean;
+            if (!builtin) {
+                const std::vector<CustomRole> list = CustomRolesInFile(f);
+                bool                          have = false;
+                for (const CustomRole& c : list) have = have || c.key == key;
+                if (!have) {
+                    std::string why;
+                    const std::string typed = name.empty() ? RoleNameFromKey(key) : name;
+                    if (!CheckRoleName(f, typed, key, nullptr, &clean, &why)) {
+                        skip(why);
+                        continue;
+                    }
+                    add = true;
+                }
+            }
+            if (add) {
+                SetRoleDefinition(f, key, clean);
+                ++rep.added;
+            }
+            if (choice == Choice::Keep) continue;
+            const RoleMapLine* l = FindLine(f, skel, key);
+            if (choice == Choice::Auto) {
+                if (l && ClearRoleInFile(f, skel, key)) ++rep.set;
+            } else if (!l || l->Get("bone") != bone) {
+                SetRoleInFile(f, skel, key, bone);
+                ++rep.set;
+            }
+        }
+        file = std::move(f);
+        if (report) *report = rep;
+        return true;
+    } catch (...) {
+        if (err) *err = "The file could not be imported.";
+        return false;
+    }
+}
+
+bool ExportRoleConfig(const std::string& root, const std::vector<std::string>& bone_names,
+                      const std::vector<std::string>& extra_keys, char sep, const std::string& dest_path,
+                      std::string* err)
+{
+    try {
+        FileState         st;
+        const RoleMapFile f = LoadFile(root, &st);
+        // An unreadable roles.txt: the window shows the 9 built-in roles only (all on the guess).
+        const std::vector<std::string> extra = st == FileState::Unreadable ? std::vector<std::string>{} : extra_keys;
+        return WriteTextAtomic(fs::u8path(dest_path), ExportRolesCsv(RoleCsvRowsFromFile(f, bone_names, extra), sep),
+                               err);
+    } catch (...) {
+        if (err) *err = "The roles could not be exported.";
+        return false;
+    }
+}
+
+bool ImportRoleConfig(const std::string& root, const std::vector<std::string>& bone_names,
+                      const std::string& src_path, RoleImportReport* report, RoleMapSnapshot* prev, std::string* err)
+{
+    try {
+        if (report) *report = RoleImportReport{};
+        std::string csv;
+        const fs::path src = fs::u8path(src_path);
+        if (ReadText(src, &csv) != FileState::Ok) {
+            if (err) *err = "Cannot read " + src.u8string() + ".";
+            return false;
+        }
+        RoleMapSnapshot snap;
+        const FileState pst = ReadText(fs::u8path(RoleMapPath(root)), &snap.text);
+        if (pst == FileState::Unreadable) return SaveFile(root, RoleMapFile{}, FileState::Unreadable, err);  // refused
+        snap.existed = pst == FileState::Ok;
+        if (!snap.existed) snap.text.clear();
+        FileState   st;
+        RoleMapFile f = LoadFile(root, &st);
+        if (st == FileState::Unreadable) return SaveFile(root, f, st, err);
+        RoleImportReport rep;
+        if (!ImportRolesCsv(f, csv, bone_names, &rep, err)) return false;
+        if (rep.changed() && !SaveFile(root, f, st, err)) return false;
+        if (report) *report = rep;
+        if (prev) *prev = snap;
+        return true;
+    } catch (...) {
+        if (err) *err = "The file could not be imported.";
+        return false;
+    }
+}
+
+bool RestoreRoleMapText(const std::string& root, const RoleMapSnapshot& snapshot, std::string* err)
+{
+    try {
+        const fs::path  p = fs::u8path(RoleMapPath(root));
+        std::string     cur;
+        const FileState st = ReadText(p, &cur);
+        if (st == FileState::Unreadable) return SaveFile(root, RoleMapFile{}, st, err);  // refused, with the reason
+        if (!snapshot.existed) {
+            std::error_code ec;
+            if (st == FileState::Absent) return true;
+            fs::remove(p, ec);
+            if (ec) {
+                if (err) *err = "Cannot write " + p.u8string() + ".";
+                return false;
+            }
+            return true;
+        }
+        if (st == FileState::Ok && cur == snapshot.text) return true;
+        std::error_code ec;
+        fs::create_directories(p.parent_path(), ec);
+        return WriteTextAtomic(p, snapshot.text, err);
+    } catch (...) {
+        if (err) *err = "The role mapping could not be saved.";
         return false;
     }
 }

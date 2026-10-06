@@ -551,6 +551,242 @@ int main()
         CHECK(GetCustomRoles(R2) == (std::vector<CustomRole>{{"two", "two"}, {"three", "three"}, {"one", "one"}}));
     }
 
+    // ---- Story 10-3f: role config Import / Export (CSV) ----
+    {
+        const std::vector<std::string> rig = {"mixamorig:Hips", "mixamorig:LeftFoot", "mixamorig:LeftToeBase",
+                                              "mixamorig:RightFoot", "tail_01", "tail_03", "weapon_r"};
+        const std::string              C = (root / "csv_a").u8string();
+        const std::string              rp = RoleMapPath(C);
+        std::string                    key, err;
+        CHECK(AddCustomRole(C, "Sword Tip", &key, &err));
+        CHECK(SetRoleBone(C, rig, "sword_tip", "weapon_r", &err));
+        CHECK(SetRoleBone(C, rig, Role::LeftHeel, "mixamorig:LeftFoot", &err));
+        CHECK(SetRoleBone(C, rig, Role::RightToe, "", &err));  // no bone
+
+        // Export: 9 built-in rows, the user's roles, the rules' extra keys; BOM, CRLF, entries.
+        const RoleMapFile             fa = ReadRoleMapFile(C);
+        const std::vector<RoleCsvRow> rows = RoleCsvRowsFromFile(fa, rig, {"left_heel", "fin_tip", "sword_tip"});
+        CHECK(rows.size() == static_cast<size_t>(Role::Count) + 2);
+        CHECK(rows.size() >= 11 && rows[0].key == "left_heel" && rows[9].key == "sword_tip" &&
+              rows[10].key == "fin_tip" && rows[10].name == "fin tip");
+        const std::string csv = ExportRolesCsv(rows, ',');
+        CHECK(csv.compare(0, 3, "\xEF\xBB\xBF") == 0);
+        CHECK(csv.find("role,name,bone\r\n") == 3);
+        CHECK(csv.find("left_heel,left heel,mixamorig:LeftFoot\r\n") != std::string::npos);
+        CHECK(csv.find("right_toe,right toe,(none)\r\n") != std::string::npos);
+        CHECK(csv.find("left_toe,left toe,\r\n") != std::string::npos);  // auto
+        CHECK(csv.find("sword_tip,sword tip,weapon_r\r\n") != std::string::npos);
+        CHECK(csv.find("left_up_leg,left hip (up leg),\r\n") != std::string::npos);
+        const std::string semi = ExportRolesCsv(RoleCsvRowsFromFile(fa, rig, {}), ';');
+        CHECK(semi.find("role;name;bone\r\n") == 3 && semi.find("sword_tip;sword tip;weapon_r\r\n") != std::string::npos);
+
+        // Export to a file through the root wrapper.
+        const std::string out_path = (root / "export.csv").u8string();
+        CHECK(ExportRoleConfig(C, rig, {"fin_tip"}, ',', out_path, &err));
+        CHECK(ReadAll(fs::u8path(out_path)) == ExportRolesCsv(RoleCsvRowsFromFile(fa, rig, {"fin_tip"}), ','));
+
+        // Round trip: imported on an untouched copy (a fresh user folder), roles and choices identical.
+        const std::string D = (root / "csv_b").u8string();
+        RoleImportReport  rep;
+        RoleMapSnapshot   snap;
+        CHECK(ImportRoleConfig(D, rig, out_path, &rep, &snap, &err));
+        CHECK(!snap.existed);
+        // fin_tip (an extra key, no entry) is added as a role: the exporter listed it.
+        CHECK(GetCustomRoles(D) == (std::vector<CustomRole>{{"sword_tip", "sword tip"}, {"fin_tip", "fin tip"}}));
+        CHECK(GetStoredRoles(D, rig) == GetStoredRoles(C, rig));
+        CHECK(GetStoredRole(D, rig, "sword_tip") == GetStoredRole(C, rig, "sword_tip"));
+        CHECK(rep.added == 2 && rep.set == 3 && rep.skipped == 0);
+        // Re-importing the same file changes nothing and writes nothing.
+        const std::string before = ReadAll(fs::u8path(RoleMapPath(D)));
+        CHECK(ImportRoleConfig(D, rig, out_path, &rep, &snap, &err) && !rep.changed());
+        CHECK(ReadAll(fs::u8path(RoleMapPath(D))) == before);
+        // The same file, semicolon separated, imported on the source: no change at all.
+        {
+            const std::string sp = (root / "semi.csv").u8string();
+            std::ofstream(fs::u8path(sp), std::ios::binary) << semi;
+            const std::string src_before = ReadAll(fs::u8path(rp));
+            CHECK(ImportRoleConfig(C, rig, sp, &rep, &snap, &err) && !rep.changed() && rep.skipped == 0);
+            CHECK(ReadAll(fs::u8path(rp)) == src_before);
+        }
+
+        // Hand-added role row (empty role), built-in row with another name, a semicolon header.
+        {
+            RoleMapFile f = ReadRoleMapFile(C);
+            CHECK(ImportRolesCsv(f, "role;name;bone\n;tail end;tail_03\nleft_heel;whatever;mixamorig:LeftToeBase\n",
+                                 rig, &rep, &err));
+            CHECK(rep.added == 1 && rep.set == 2 && rep.skipped == 0);
+            const std::vector<CustomRole> roles = CustomRolesInFile(f);
+            CHECK(roles.size() == 2 && roles[1].key == "tail_end" && roles[1].name == "tail end");
+            CHECK(ResolveRoleKey(f, rig, "tail_end") == 5);
+            CHECK(ResolveRoleKey(f, rig, "left_heel") == 2);
+            for (const CustomRole& c : roles) CHECK(c.name != "whatever");
+        }
+        // Name taken by another key: skipped, counted; other rows apply.
+        {
+            RoleMapFile f = ReadRoleMapFile(C);
+            CHECK(ImportRolesCsv(f, "role,name,bone\nblade,sword tip,weapon_r\nhips,,mixamorig:Hips\n", rig, &rep, &err));
+            CHECK(rep.added == 0 && rep.set == 1 && rep.skipped == 1 && rep.first_skip.find("row 2") == 0);
+            CHECK(CustomRolesInFile(f).size() == 1);
+            CHECK(RoleImportSummary(rep).find("1 row skipped (row 2: ") != std::string::npos);
+        }
+        // A role the user has keeps its name; the file's choice replaces the user's.
+        {
+            RoleMapFile f = ReadRoleMapFile(C);
+            CHECK(ImportRolesCsv(f, "role,name,bone\nsword_tip,Blade,tail_01\nleft_heel,,\n", rig, &rep, &err));
+            CHECK(CustomRolesInFile(f) == (std::vector<CustomRole>{{"sword_tip", "sword tip"}}));
+            CHECK(ResolveRoleKey(f, rig, "sword_tip") == 4);
+            bool stored = true;
+            ResolveRoleKey(f, rig, "left_heel", &stored);
+            CHECK(!stored && rep.set == 2);  // left heel back to auto
+        }
+        // A `role:` prefix is stripped: the existing role is mapped, none added.
+        {
+            RoleMapFile f = ReadRoleMapFile(C);
+            CHECK(ImportRolesCsv(f, "role,name,bone\nrole:sword_tip,,tail_01\n", rig, &rep, &err));
+            CHECK(rep.added == 0 && rep.skipped == 0 && CustomRolesInFile(f).size() == 1);
+            CHECK(ResolveRoleKey(f, rig, "sword_tip") == 4);
+        }
+        // No `bone` column: roles are added, choices untouched.
+        {
+            RoleMapFile f = ReadRoleMapFile(C);
+            const int   heel = ResolveRoleKey(f, rig, "left_heel");
+            CHECK(ImportRolesCsv(f, "role,name\n,tail end\nleft_heel,\n", rig, &rep, &err));
+            CHECK(rep.added == 1 && rep.set == 0 && rep.skipped == 0);
+            bool stored = false;
+            CHECK(ResolveRoleKey(f, rig, "left_heel", &stored) == heel && stored && heel == 1);
+        }
+        // A '"' inside a field is a literal character (it does not swallow the rest of the file).
+        {
+            const std::vector<std::string> q = {"Hips", "weapon\"r"};
+            RoleMapFile                    f;
+            CHECK(ImportRolesCsv(f, "role;name;bone\n;grip;weapon\"r\nhips;;Hips\n", q, &rep, &err));
+            CHECK(rep.skipped == 0 && rep.added == 1 && rep.set == 2);
+            CHECK(ResolveRoleKey(f, q, "grip") == 1 && ResolveRoleKey(f, q, "hips") == 0);
+        }
+        // Blank lines before the header: the separator is still read from the header.
+        {
+            RoleMapFile f;
+            CHECK(ImportRolesCsv(f, "\r\n  \n\trole;name;bone\nhips;;mixamorig:Hips\n", rig, &rep, &err));
+            CHECK(rep.set == 1 && ResolveRoleKey(f, rig, "hips") == 0);
+        }
+        // An empty role cell naming one of the user's roles (renamed) maps that role.
+        {
+            RoleMapFile f = ReadRoleMapFile(C);
+            CHECK(ImportRolesCsv(f, "role,name\n,blade\n", rig, &rep, &err) && rep.added == 1);  // key blade
+            RoleMapFile g = ReadRoleMapFile(C);
+            RoleMapFile h;
+            CHECK(ParseRoleMap(SerializeRoleMap(g) + "role key=sword_tip name=blade\n", &h));
+            CHECK(ImportRolesCsv(h, "role,name,bone\n,Blade,tail_01\n", rig, &rep, &err));
+            CHECK(rep.added == 0 && rep.skipped == 0 && rep.set == 1 && ResolveRoleKey(h, rig, "sword_tip") == 4);
+            CHECK(CustomRolesInFile(h).size() == 1);
+        }
+        // A role cell that is not a key RoleKeyFromName would make goes through it.
+        {
+            RoleMapFile f;
+            CHECK(ImportRolesCsv(f, "role,name,bone\n_x,,\na__b,,\n", rig, &rep, &err));
+            CHECK(CustomRolesInFile(f) == (std::vector<CustomRole>{{"x", "x"}, {"a_b", "a b"}}));
+        }
+        // The export's default file name: one file per skeleton.
+        CHECK(RoleExportFileName("C:\\anims\\Sword Attack.fbx") == "roles - Sword Attack.csv");
+        CHECK(RoleExportFileName("/a/b:c?.glb") == "roles - b_c_.csv");
+        CHECK(RoleExportFileName("") == "roles.csv");
+        // Not a role CSV: nothing written, "This is not a role file."
+        {
+            const std::string bad = (root / "bad.csv").u8string();
+            const std::string src_before = ReadAll(fs::u8path(rp));
+            for (const char* t : {"", "\xEF\xBB\xBF", "a,b,c\n1,2,3\n", "role,bone\nhips,mixamorig:Hips\n",
+                                  "RAVROLES 1\n"}) {
+                std::ofstream(fs::u8path(bad), std::ios::binary | std::ios::trunc) << t;
+                err.clear();
+                CHECK(!ImportRoleConfig(C, rig, bad, &rep, &snap, &err) && err == "This is not a role file.");
+            }
+            CHECK(ReadAll(fs::u8path(rp)) == src_before);
+            err.clear();
+            CHECK(!ImportRoleConfig(C, rig, (root / "missing.csv").u8string(), &rep, &snap, &err) && !err.empty());
+        }
+        // Bad bone: skipped, counted; other rows apply.
+        {
+            RoleMapFile f = ReadRoleMapFile(C);
+            CHECK(ImportRolesCsv(f, "role,name,bone\n,fin tip,fin_02\nhips,,mixamorig:Hips\n", rig, &rep, &err));
+            CHECK(rep.skipped == 1 && rep.added == 0 && rep.set == 1 && rep.first_skip.find("fin_02") != std::string::npos);
+            CHECK(CustomRolesInFile(f).size() == 1);
+        }
+        // Name with ',' or ';': refused on create / rename, skipped on import.
+        {
+            err.clear();
+            CHECK(!AddCustomRole(C, "tail, end", &key, &err) && err == "A role name cannot contain , or ;");
+            err.clear();
+            CHECK(!RenameCustomRole(C, "sword_tip", "a;b", nullptr, &err) && err == "A role name cannot contain , or ;");
+            RoleMapFile f = ReadRoleMapFile(C);
+            CHECK(ImportRolesCsv(f, "role,name,bone\n,\"tail, end\",tail_03\n,\"a;b\",\n", rig, &rep, &err));
+            CHECK(rep.skipped == 2 && rep.added == 0 && CustomRolesInFile(f).size() == 1);
+        }
+        // Quoted fields (separator, quotes, line breaks), an unknown column, columns in any order,
+        // CRLF lines, a tab-separated file, a key that is not a valid key.
+        {
+            const std::vector<std::string> odd = {"Hips", "Bone, \"A\"", "Bone; B", "R Foot"};
+            RoleMapFile                    f;
+            const std::string text = "\xEF\xBB\xBF" "extra,bone,name,role\r\n"
+                                      "x,\"Bone, \"\"A\"\"\",,Grip Point\r\n"
+                                      "\"y\r\nz\",\"Bone; B\",tail tip,\r\n"
+                                      ",(none),,hips\r\n"
+                                      ",,,\r\n"
+                                      "\r\n";
+            CHECK(ImportRolesCsv(f, text, odd, &rep, &err));
+            CHECK(rep.skipped == 0 && rep.added == 2 && rep.set == 3);
+            CHECK(CustomRolesInFile(f) == (std::vector<CustomRole>{{"grip_point", "grip point"}, {"tail_tip", "tail tip"}}));
+            CHECK(ResolveRoleKey(f, odd, "grip_point") == 1);
+            CHECK(ResolveRoleKey(f, odd, "tail_tip") == 2);
+            bool stored = false;
+            CHECK(ResolveRoleKey(f, odd, "hips", &stored) == -1 && stored);
+            // Export quotes them back; a re-import reads the same.
+            const std::string back = ExportRolesCsv(RoleCsvRowsFromFile(f, odd, {}), ',');
+            CHECK(back.find("grip_point,grip point,\"Bone, \"\"A\"\"\"\r\n") != std::string::npos);
+            RoleMapFile g;
+            CHECK(ImportRolesCsv(g, back, odd, &rep, &err));
+            CHECK(CustomRolesInFile(g) == CustomRolesInFile(f));
+            CHECK(ResolveRoleKey(g, odd, "tail_tip") == 2 && ResolveRoleKey(g, odd, "grip_point") == 1);
+            RoleMapFile t;
+            CHECK(ImportRolesCsv(t, "role\tname\tbone\nHips\t\tHips\n", odd, &rep, &err));
+            CHECK(rep.set == 1 && ResolveRoleKey(t, odd, "hips") == 0 && CustomRolesInFile(t).empty());
+        }
+        // Undo: import, then restore: roles.txt byte-identical; absent before = removed.
+        {
+            const std::string src_before = ReadAll(fs::u8path(rp));
+            const std::string ip = (root / "undo.csv").u8string();
+            std::ofstream(fs::u8path(ip), std::ios::binary) << "role,name,bone\n,tail end,tail_03\nhips,,(none)\n";
+            CHECK(ImportRoleConfig(C, rig, ip, &rep, &snap, &err) && rep.changed());
+            CHECK(snap.existed && snap.text == src_before && ReadAll(fs::u8path(rp)) != src_before);
+            CHECK(RestoreRoleMapText(C, snap, &err));
+            CHECK(ReadAll(fs::u8path(rp)) == src_before);
+            const std::string E = (root / "csv_e").u8string();
+            CHECK(ImportRoleConfig(E, rig, ip, &rep, &snap, &err) && !snap.existed && fs::exists(fs::u8path(RoleMapPath(E))));
+            CHECK(RestoreRoleMapText(E, snap, &err) && !fs::exists(fs::u8path(RoleMapPath(E))));
+            // A roles.txt that is not a roles file: imported (moved aside), undo puts it back as it was.
+            const std::string N = (root / "csv_n").u8string();
+            fs::create_directories(fs::u8path(RoleMapPath(N)).parent_path());
+            std::ofstream(fs::u8path(RoleMapPath(N)), std::ios::binary) << "garbage\n";
+            CHECK(ImportRoleConfig(N, rig, ip, &rep, &snap, &err) && snap.existed && snap.text == "garbage\n");
+            CHECK(RestoreRoleMapText(N, snap, &err) && ReadAll(fs::u8path(RoleMapPath(N))) == "garbage\n");
+        }
+        // Unreadable roles.txt: import refused (nothing written), export still works (9 rows).
+        {
+            const std::string U = (root / "csv_u").u8string();
+            fs::create_directories(fs::u8path(RoleMapPath(U)));  // a folder where the file goes
+            err.clear();
+            CHECK(!ImportRoleConfig(U, rig, out_path, &rep, &snap, &err) && !err.empty());
+            const std::string up = (root / "unreadable_export.csv").u8string();
+            CHECK(ExportRoleConfig(U, rig, {"fin_tip"}, ',', up, &err));
+            const std::string t = ReadAll(fs::u8path(up));
+            int lines = 0;
+            for (char c : t) lines += c == '\n';
+            CHECK(lines == 1 + static_cast<int>(Role::Count));
+            err.clear();
+            CHECK(!RestoreRoleMapText(U, RoleMapSnapshot{true, "RAVROLES 1\n"}, &err) && !err.empty());
+            CHECK(fs::is_directory(fs::u8path(RoleMapPath(U))));
+        }
+    }
+
     std::error_code ec;
     fs::remove_all(root, ec);
     // ---- 10-5 frozen fixtures ----

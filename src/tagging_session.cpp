@@ -127,7 +127,7 @@ int CountMissing(const std::vector<Block>& blocks, const std::vector<int>& role_
 void ReadPresetFields()
 {
     TaggingModel& m = g.model;
-    m.has_preset = m.has_rules && m.rules.has_preset;
+    m.has_preset = m.has_record && m.rules.has_preset;
     const PresetCopy& c = m.rules.preset_copy;
     m.preset_id = m.has_preset ? c.id : "";
     m.preset_version = m.has_preset ? c.version : 0;
@@ -151,8 +151,8 @@ void ReadItem()
     g.raw_present = rd.present;
     g.read_done = true;
     m.unreadable = rd.present && !rd.valid;
-    m.has_rules = rd.present && rd.valid;
-    m.rules = m.has_rules ? rd.rules : ItemRules{};
+    m.has_record = rd.present && rd.valid;
+    m.rules = m.has_record ? rd.rules : ItemRules{};
     ReadPresetFields();
     m.role_to_bone = m.bone_names.empty() ? std::vector<int>{} : GetRoleMapping(RulesResourceRoot(), m.bone_names);
     m.missing.clear();

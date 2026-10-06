@@ -37,7 +37,7 @@ struct TaggingModel {
     MediaItem*  item = nullptr;  // the item under the playhead (null = none)
     std::string item_name;       // its take's name
     std::string path;            // its animation file
-    bool        has_rules = false;    // a readable record with at least one rule or a preset
+    bool        has_record = false;   // a readable record exists (none yet = the view edits an empty one)
     bool        unreadable = false;   // a record that does not read (shown as no rules)
     ItemRules   rules;                // the saved record (no rules = default)
     // The preset field.

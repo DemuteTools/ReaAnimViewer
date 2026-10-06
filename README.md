@@ -374,7 +374,7 @@ Each animation item keeps its own rules, thresholds and corrections, saved in th
 ### Quick start: footsteps
 
 1. Open the viewer, then click **Tagging view** at the top (or press **V** until it shows). A strip appears under the character and a panel on the right.
-2. Put the playhead over an animation item. The panel says **No rules** and lists the presets: click **Footsteps Heel (factory)** (or **Footsteps Toe**, see [Presets](#presets)).
+2. Put the playhead over an animation item. The panel shows an empty rule list (**No rule**) with **+ Rule** and the presets under it: click **Footsteps Heel (factory)** (or **Footsteps Toe**, see [Presets](#presets)).
 3. The strip shows one row per rule (`Footstep L`, `Footstep R`) with a tick for each step found. Play or scrub to check them against the character.
 4. Not quite right? Click **Analyse** (top of the strip): RAV proposes thresholds from this clip. Then fine-tune by dragging the threshold lines (see [The Tagging view](#the-tagging-view)), or correct single steps (see [Correcting events](#correcting-events)).
 5. As soon as you change something, RAV shows the result on the timeline as **preview markers** (`Footstep L - Preview`, in a darker colour). Nothing is final yet.

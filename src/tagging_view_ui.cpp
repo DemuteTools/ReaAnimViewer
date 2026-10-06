@@ -467,7 +467,7 @@ bool ClipTimeForDrop(const ItemClipMap& map, double p, double* clip_t)
 // Whether events can be edited now (rules shown and detection ran).
 bool EventsEditable(const TaggingModel& m)
 {
-    return m.item && m.has_rules && m.detected && m.missing_count == 0;
+    return m.item && m.has_record && m.detected && m.missing_count == 0;
 }
 
 // The marker kinds a shown event draws, in a notify row from ry to ry + rh at x.
@@ -790,7 +790,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
         FormatTime(playhead, tc, sizeof(tc));
         dl->AddText(ImVec2(c0.x, c0.y + (head_h - th) * 0.5f), ui::kMuted, tc);
         float hx = c0.x + std::max(64.0f, ImGui::CalcTextSize(tc).x) + 12.0f;
-        const bool has_sel = m.item && m.has_rules && g_sel < static_cast<int>(rules.blocks.size());
+        const bool has_sel = m.item && m.has_record && g_sel < static_cast<int>(rules.blocks.size());
         if (has_sel) {
             const Block& b = rules.blocks[static_cast<size_t>(g_sel)];
             dl->AddCircleFilled(ImVec2(hx + 4.0f, c0.y + head_h * 0.5f), 4.0f, RuleColor(b), 12);
@@ -824,7 +824,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                                       "Double-click a rule's row to add one there.");
             }
             ImGui::SetCursorScreenPos(ImVec2(c0.x + avail_w - bw, c0.y));
-            const bool can = m.item && m.has_rules && m.missing_count == 0 && m.file_loaded && !rules.blocks.empty();
+            const bool can = m.item && m.has_record && m.missing_count == 0 && m.file_loaded && !rules.blocks.empty();
             if (!can) ImGui::BeginDisabled();
             if (ui::SolidButton("Analyse##taganalyse", ImVec2(bw, 0.0f))) Later([]() { TaggingAnalyse(); });
             if (!can) ImGui::EndDisabled();
@@ -861,9 +861,9 @@ void DrawTaggingStrip(float x, float y, float w, float h)
             msg1 = "No animation item under the playhead";
         } else if (!m.file_loaded) {
             msg1 = "The animation file did not load: no signal to draw.";
-        } else if (!m.has_rules) {
-            msg1 = m.unreadable ? "This item's rules could not be read." : "No rules on this item.";
-            msg2 = "Pick a preset in the panel.";
+        } else if (m.unreadable) {
+            msg1 = "This item's rules could not be read.";
+            msg2 = "Pick a preset in the panel to replace them.";
         } else if (m.missing_count > 0) {
             std::snprintf(miss_line, sizeof(miss_line), "%d role%s no bone on this skeleton: no signal to draw.",
                           m.missing_count, m.missing_count == 1 ? " has" : "s have");
@@ -1817,7 +1817,7 @@ void DrawPresetMenu(const TaggingModel& m, float menu_w)
                                      ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll))
             PmSubmitName();
     } else {
-        const bool can_write = m.has_rules;
+        const bool can_write = m.has_record && !m.rules.blocks.empty();
         const bool factory = m.has_preset && m.preset_factory;
         const std::string save_label =
             std::string("Save") + (m.has_preset && !factory ? " " + m.preset_name : std::string()) + "##psave";
@@ -1844,7 +1844,7 @@ void DrawPresetMenu(const TaggingModel& m, float menu_w)
         if (ui::SolidButton("+ Save as...##psaveas")) PmStartNaming();
         ImGui::EndDisabled();
         if (factory) WrappedText(ui::kFaint, FactorySaveNote(m.preset_name), inner_w);
-        if (!can_write) WrappedText(ui::kFaint, "Load a preset first: this item has no rules to save.", inner_w);
+        if (!can_write) WrappedText(ui::kFaint, "Nothing to save yet: add a rule (+ Rule) or load a preset.", inner_w);
     }
 
     // The status line (or the mode's hint).
@@ -1961,7 +1961,7 @@ void DrawPresetField(const TaggingModel& m)
 
     // The Legacy band: "Legacy - v3 is installed  [Update] [Keep v2]" (the buttons wrap under
     // the text when the panel is narrow).
-    if (m.has_rules && m.has_preset && !m.preset_gone && m.preset_state == PresetState::Legacy) {
+    if (m.has_record && m.has_preset && !m.preset_gone && m.preset_state == PresetState::Legacy) {
         ImGui::Dummy(ImVec2(0.0f, 1.0f));
         const ImGuiStyle& st = ImGui::GetStyle();
         const std::string text = LegacyText(m.disk_version);
@@ -2080,8 +2080,8 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
     const float fh = ImGui::GetFrameHeight();
     // Item name, Roles, options.
     {
-        const float right_w = (m.has_rules ? fh + 4.0f : 0.0f) + 8.0f +
-                              (m.has_rules ? ImGui::CalcTextSize("Roles " RAV_DOT " 00 missing").x + 16.0f : 0.0f);
+        // 10-3 fb-1: Roles and options show on an item without a record too (a gesture creates it).
+        const float right_w = fh + 4.0f + 8.0f + ImGui::CalcTextSize("Roles " RAV_DOT " 00 missing").x + 16.0f;
         const float name_w = std::max(40.0f, ImGui::GetContentRegionAvail().x - right_w);
         const ImVec2 p = ImGui::GetCursorScreenPos();
         ImGui::Dummy(ImVec2(name_w, fh));
@@ -2090,7 +2090,7 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
         dl->PopClipRect();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
             ImGui::SetTooltip("%s\nThe item under the playhead", m.path.c_str());
-        if (m.has_rules) {
+        {
             ImGui::SameLine();
             char label[64];
             if (m.missing_count > 0)
@@ -2104,12 +2104,15 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
             dl->AddRect(rp, ImVec2(rp.x + rw, rp.y + fh), edge, ui::kRadiusSm);
             dl->AddText(ImVec2(rp.x + 8.0f, rp.y + (fh - ImGui::GetTextLineHeight()) * 0.5f),
                         m.missing_count > 0 ? kBadText : ui::kMuted, label);
-            if (m.missing_count == 0)
+            const bool no_rule = rules.blocks.empty();  // 10-3 fb-1: nothing to check yet
+            if (m.missing_count == 0 && !no_rule)
                 IconCheck(dl, ImVec2(rp.x + rw - 12.0f, rp.y + fh * 0.5f), 4.0f, ui::kOk);
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
                 if (m.missing_count > 0)
                     ImGui::SetTooltip("No bone plays: %s.\nDetection and Commit skip this item until they are mapped.",
                                       m.missing.c_str());
+                else if (no_rule)
+                    ImGui::SetTooltip("No rule reads a role yet.");
                 else
                     ImGui::SetTooltip("Every role these rules read has a bone on this skeleton.");
             }
@@ -2631,11 +2634,30 @@ void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const Sho
     if (!on_timeline) ImGui::EndDisabled();
 }
 
+// One button per preset, each loading it on the current item (a shortcut: rules can also be
+// built by hand with + Rule).
+void DrawPresetButtons()
+{
+    const std::vector<PresetInfo>& presets = CachedPresets();
+    if (presets.empty()) ui::SubText("No preset found.");
+    for (const PresetInfo& p : presets) {
+        ImGui::PushID(p.id.c_str());
+        const std::string label = p.name + (p.factory ? "  (factory)" : "");
+        if (ui::SolidButton(label.c_str(), ImVec2(-1.0f, 0.0f))) {
+            const std::string id = p.id;
+            Later([id]() { TaggingLoadPreset(id); });
+        }
+        ImGui::PopID();
+    }
+}
+
 void DrawInspector(const ItemRules& rules)
 {
     const int nb = static_cast<int>(rules.blocks.size());
     if (g_sel < 0 || g_sel >= nb) {
-        ui::SubText("No rule. Add one (+ Rule), or pick a preset.");
+        ui::SubText("No rule. Add one (+ Rule) and pick its bone and signal, or start from a preset:");
+        ImGui::Dummy(ImVec2(0.0f, 2.0f));
+        DrawPresetButtons();
         return;
     }
     // Story 10-4: the inspector shows the selected event, when there is one.
@@ -2881,7 +2903,7 @@ void DrawFooter(const TaggingModel& m)
             ImGui::TextUnformatted(roles);
             ImGui::PopStyleColor();
         }
-        if (m.detected) {
+        if (m.detected && !m.rules.blocks.empty()) {  // 10-3 fb-1: no rule = nothing to write, no warning
             ImGui::SameLine(0.0f, 4.0f);
             ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(m.markers_up_to_date ? ui::kMuted : ui::kWarn));
             ImGui::TextUnformatted(m.markers_up_to_date ? RAV_DOT " markers up to date"
@@ -2953,27 +2975,17 @@ void DrawTaggingPanel(float x, float y, float w, float h)
 
         if (!m.item) {
             ui::SubText("No animation item under the playhead");
-        } else if (!m.has_rules) {
+        } else if (m.unreadable) {
+            // 10-3 fb-1: only a record RAV cannot read stays behind a preset load (a hand edit
+            // would write over data RAV does not understand). No record = the editor, empty.
             ImGui::TextUnformatted(m.item_name.c_str());
             ImGui::Dummy(ImVec2(0.0f, 2.0f));
             DrawPresetField(m);  // story 10-3b: the menu loads, imports, exports (Save needs rules)
             ImGui::Dummy(ImVec2(0.0f, 4.0f));
             ImGui::TextUnformatted("No rules");
-            ui::SubText(m.unreadable ? "This item's rules could not be read. They are kept as they are until you load "
-                                       "a preset."
-                                     : "Load a preset to tag this item:");
+            ui::SubText("This item's rules could not be read. They are kept as they are until you load a preset.");
             ImGui::Dummy(ImVec2(0.0f, 2.0f));
-            const std::vector<PresetInfo>& presets = CachedPresets();
-            if (presets.empty()) ui::SubText("No preset found.");
-            for (const PresetInfo& p : presets) {
-                ImGui::PushID(p.id.c_str());
-                const std::string label = p.name + (p.factory ? "  (factory)" : "");
-                if (ui::SolidButton(label.c_str(), ImVec2(-1.0f, 0.0f))) {
-            const std::string id = p.id;
-            Later([id]() { TaggingLoadPreset(id); });
-        }
-                ImGui::PopID();
-            }
+            DrawPresetButtons();
             if (!TaggingLastError().empty()) {
                 ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(kBadText));
                 ImGui::PushTextWrapPos(0.0f);

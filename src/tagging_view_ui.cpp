@@ -1207,26 +1207,14 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                 const BlockTrace* bt = (sel_blk && g_sel < static_cast<int>(m.trace.blocks.size()))
                                            ? &m.trace.blocks[static_cast<size_t>(g_sel)]
                                            : nullptr;
-                // 10-3 fb-2: a labelled gap sets the conditions apart from the rule rows.
-                const float cap_fs = std::floor(ImGui::GetFontSize() * 0.85f);
-                // Too little room for the caption: the lanes keep it (no caption, the old spacing).
-                const bool show_cap = rows_bottom + cap_fs + 7.0f < area1.y - 20.0f;
-                const float lanes_top = show_cap ? rows_bottom + cap_fs + 7.0f : rows_bottom + 4.0f;
+                // 10-3 fb-2: a divider line sets the conditions apart from the rule rows (dropped
+                // when the lanes would not fit with it: the old spacing).
+                const bool show_div = rows_bottom + 9.0f < area1.y - 20.0f;
+                const float lanes_top = show_div ? rows_bottom + 9.0f : rows_bottom + 4.0f;
                 if (sel_blk && bt && bt->ran && lanes_top < area1.y - 20.0f) {
-                    if (show_cap) {
-                        const float cy = rows_bottom + 3.0f;
-                        // The rule's dot and its signal count ("2 signals"), then a divider line.
-                        const size_t ncap = sel_blk->conditions.size();
-                        const std::string cap = std::to_string(ncap) + (ncap == 1 ? " signal" : " signals");
-                        const float cap_w = ImGui::GetFont()->CalcTextSizeA(cap_fs, FLT_MAX, 0.0f, cap.c_str()).x;
-                        const float ly = std::floor(cy + cap_fs * 0.5f) + 0.5f;
-                        const float tx = c0.x + 14.0f;
-                        dl->PushClipRect(ImVec2(c0.x, cy - 1.0f), ImVec2(lane_x + lane_w, cy + cap_fs + 2.0f), true);
-                        dl->AddCircleFilled(ImVec2(c0.x + 6.0f, ly), 3.5f, RuleColor(*sel_blk), 12);
-                        dl->AddText(ImGui::GetFont(), cap_fs, ImVec2(tx, cy), ui::kMuted, cap.c_str());
-                        dl->PopClipRect();
-                        if (tx + cap_w + 8.0f < lane_x + lane_w)
-                            dl->AddLine(ImVec2(tx + cap_w + 8.0f, ly), ImVec2(lane_x + lane_w, ly), ui::kStroke, 1.0f);
+                    if (show_div) {
+                        const float ly = std::floor(rows_bottom + 4.0f) + 0.5f;
+                        dl->AddLine(ImVec2(c0.x, ly), ImVec2(lane_x + lane_w, ly), ui::kStroke, 1.0f);
                     }
                     const int nc = static_cast<int>(sel_blk->conditions.size());
                     const float gap = kTrackGap;

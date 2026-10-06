@@ -19,6 +19,8 @@
 
 #ifdef _WIN32
 
+#include <vector>
+
 struct HWND__;  // HWND under <windows.h> STRICT (the default), without pulling it in here
 
 namespace rav {
@@ -59,6 +61,12 @@ bool TaggingHasPendingDialog();
 void TaggingRunPendingDialog(HWND__* owner);
 // The view changes or the viewer closes: a running drag is written as shown (one undo point).
 void TaggingEndGestures();
+
+// Spec 10-3c -- the bones the selected rule reads on the loaded skeleton (indices into its bone
+// list, each once: its conditions' bones, Reference bones, strength signal; a joint angle's
+// parent, joint and child), bound as detection binds them, and the rule's colour (ImU32, faint
+// when the rule is off). False outside Tagging view, with no rule or no skeleton.
+bool TaggingSelectedRuleBones(std::vector<int>* bones, unsigned int* colour);
 
 }  // namespace rav
 

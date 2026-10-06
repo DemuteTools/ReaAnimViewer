@@ -39,6 +39,11 @@ add_executable(render_current_test render_current_test.cpp)
 target_include_directories(render_current_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME render_current COMMAND render_current_test)
 
+# Spec 10-3c -- the skeleton overlay's projection, pick and segments (src/skeleton_overlay.h).
+add_executable(skeleton_overlay_test skeleton_overlay_test.cpp)
+target_include_directories(skeleton_overlay_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME skeleton_overlay COMMAND skeleton_overlay_test)
+
 # Issue #1 -- "Locate textures...": file-name extraction + search/copy (src/texture_locate.h).
 add_executable(texture_locate_test texture_locate_test.cpp ../src/texture_locate.cpp)
 target_include_directories(texture_locate_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

@@ -182,6 +182,22 @@ public:
     // GL_INVALID_VALUE). A failed allocation falls back non-fatally to Off (AR17).
     void SetMsaaSamples(int s) { msaa_samples_ = s; }
 
+    // Spec 10-3c -- the 3D view's Skeleton mode fades the model so the skeleton overlay reads
+    // over it. 1 (the default, Model mode) renders exactly as before: no blending, alpha 1.
+    // Below 1 the meshes get a depth-only prepass, then one blended colour pass (only the
+    // nearest surface shows, faded). Session state, never in the display settings.
+    void  SetModelAlpha(float a) { model_alpha_ = (a < 0.0f) ? 0.0f : (a > 1.0f ? 1.0f : a); }
+    float ModelAlpha() const { return model_alpha_; }
+
+    // Spec 10-3c -- what the last RenderFrame drew with, for the skeleton overlay (projected by
+    // the CPU, no second ComputePose): its view-projection, its size, and the pose's global
+    // bone matrices (skeleton order; a joint = asset modelRoot * global[i][3]). Null when that
+    // frame posed nothing (no mesh, no clip, a malformed clip).
+    const glm::mat4& LastViewProj() const { return view_proj_; }
+    int LastFrameWidth() const { return last_w_; }
+    int LastFrameHeight() const { return last_h_; }
+    const std::vector<glm::mat4>* LastPoseGlobals() const { return last_pose_valid_ ? &pose_scratch_ : nullptr; }
+
     // Releases GL resources (including the held Asset's buffers). Must run while
     // the GL context is current. Safe to call more than once.
     void Shutdown();
@@ -258,6 +274,7 @@ private:
     int u_has_gloss_map_ = -1;   // 0 → scalar u_shininess exponent (no gloss map)
     int u_spec_strength_   = -1; // live specular strength (light tool)
     int u_normal_strength_ = -1; // live normal-map relief boost (light tool)
+    int u_model_alpha_     = -1; // spec 10-3c: the model's alpha (1 = opaque, Model mode)
 
     // Light defaults, stored so Story 6.5.3's light tool can drive them later. Set once
     // per frame in RenderFrame; the 6.5.3 Dear ImGui tool UI drives light_color_ (colour
@@ -329,6 +346,11 @@ private:
     // is not retried every frame; -1 = none yet).
     glm::vec4       background_{0.10f, 0.10f, 0.12f, 1.0f};
     int             applied_shadow_request_ = -1;
+
+    // Spec 10-3c -- Skeleton mode's model fade, and what the last frame drew (the overlay).
+    float           model_alpha_ = 1.0f;
+    bool            last_pose_valid_ = false;
+    int             last_w_ = 0, last_h_ = 0;
 };
 
 }  // namespace rav

@@ -43,6 +43,7 @@
 #include "renderer.h"
 #include "shortcuts.h"         // spec 11-fb-3: the viewer's keys, rebindable
 #include "shortcuts_ui.h"      // spec 11-fb-3: the keyboard icon + Shortcuts popup
+#include "skeleton_view.h"     // spec 10-3c: the Model / Skeleton switch and its overlay
 #include "tagging_session.h"   // Story 10-3: the Tagging view's model (item, rules, detection)
 #include "tag_markers.h"       // Story 10-4: the markers option (Take / Project / Both)
 #include "tagging_view_ui.h"   // Story 10-3: its curve strip and panel
@@ -787,6 +788,10 @@ void RenderTick()
         if (tagging) TaggingSessionFrame(item_found ? item_media : nullptr, item_found ? item_path : std::string());
     }
 
+    // Spec 10-3c: Skeleton mode fades the model in RAV view and Tagging view (never Video view,
+    // which renders the picture as the video FX does). Model mode = alpha 1, unchanged pixels.
+    g_renderer.SetModelAlpha((!VideoViewActive() && SkeletonModeOn()) ? kSkeletonModelAlpha : 1.0f);
+
     if (VideoViewActive()) {
         RenderVideoView(static_cast<float>(g_display_time));
     } else if (TaggingViewActive()) {
@@ -1478,6 +1483,19 @@ void DrawToolUi()
     }
     // Spec 11-fb-11 -- the Delete key's confirmation (closes itself outside Video view).
     DrawVideoDeleteConfirm();
+
+    // Spec 10-3c -- the Model / Skeleton switch (bottom left, above the status icon's slot) and
+    // the skeleton overlay over the 3D image, in RAV view (the whole window) and Tagging view
+    // (the area left of the panel, above the strip); hidden in Video view. After the panel, so
+    // the overlay colours the rule selected this frame.
+    SkeletonViewFrame(g_renderer);
+    if (!video_view) {
+        const float view_w = tagging_view ? area_right : static_cast<float>(g_client_w);
+        const float view_h = tagging_view ? ViewBottom() : static_cast<float>(g_client_h);
+        DrawSkeletonOverlay(g_renderer, view_w, view_h, area_right - kNavCubeMargin - kNavCubeSize - 8.0f,
+                            ViewBottom() - kNavCubeMargin);
+        DrawSkeletonSwitch(kStatusIconMargin, ViewBottom() - kStatusIconMargin - kStatusIconSize - 6.0f);
+    }
 
     // Load message (AC7) — a brief transient message, top-centre, shown while fresh
     // (kLoadMessageSeconds, armed by SetLoadMessage). Rehomes the OTHER 6.5.2-silenced

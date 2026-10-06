@@ -108,6 +108,12 @@ std::string BoneRefName(int id);
 // bone's raw name.
 std::string BoneRefLabel(int id);
 
+// Spec 10-3c -- the id "+" puts in a condition for the bone `bone` (raw_name) picked in the 3D
+// view: its role when it plays exactly one on this skeleton (role_to_bone indexed by Role,
+// custom_role_to_bone key -> bone index), so rules stay portable; else the raw bone.
+int BoneRefForPickedBone(int bone, const std::string& raw_name, const std::vector<int>& role_to_bone,
+                         const std::map<std::string, int>& custom_role_to_bone);
+
 // Every id the blocks read (conditions, references, strength), each once, in first-use order.
 std::vector<int> BoneRefsUsed(const std::vector<Block>& blocks);
 
@@ -142,6 +148,13 @@ bool BindBoneRefs(std::vector<Block>& blocks, const std::vector<int>& role_to_bo
 bool BindBoneRefs(std::vector<Block>& blocks, const std::vector<int>& role_to_bone,
                   const std::map<std::string, int>& custom_role_to_bone, const std::vector<std::string>& bone_names,
                   const std::vector<int>& bone_parents, std::string* missing);
+// Spec 10-3c -- the bones one rule reads on a skeleton (indices into bone_names, each once, in
+// first-use order): its conditions' bones, its Reference bones (only when the reference is
+// Bones), its strength signal's bones; a joint angle's {parent, joint, child}. Bound exactly as
+// BindBoneRefs binds them; what does not bind is left out.
+std::vector<int> RuleBonesOnSkeleton(const Block& block, const std::vector<int>& role_to_bone,
+                                     const std::map<std::string, int>& custom_role_to_bone,
+                                     const std::vector<std::string>& bone_names, const std::vector<int>& bone_parents);
 // What BindBoneRefs would list as missing, each once, in order (the blocks are not changed).
 std::vector<std::string> MissingBoneRefs(const std::vector<Block>& blocks, const std::vector<int>& role_to_bone,
                                          const std::vector<std::string>& bone_names,

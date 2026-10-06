@@ -28,6 +28,7 @@
 #include "reaper_api.h"
 #include "rule_record.h"
 #include "shortcuts.h"  // LoadPrefFloat / SavePrefFloat
+#include "skeleton_view.h"  // spec 10-3c: the bone selected in the 3D view ("+")
 #include "strip_view.h"
 #include "tag_markers.h"
 #include "tagging_session.h"
@@ -200,6 +201,12 @@ void IconLock(ImDrawList* dl, ImVec2 c, float r, ImU32 col, bool closed)
         dl->PathArcTo(ImVec2(sc.x - r * 0.0f, sc.y - r * 0.25f), sr, 3.14159265f, 1.75f * 3.14159265f, 10);
     }
     dl->PathStroke(col, ImDrawFlags_None, 1.5f);
+}
+
+void IconPlus(ImDrawList* dl, ImVec2 c, float r, ImU32 col)
+{
+    dl->AddLine(ImVec2(c.x - r, c.y), ImVec2(c.x + r, c.y), col, 1.6f);
+    dl->AddLine(ImVec2(c.x, c.y - r), ImVec2(c.x, c.y + r), col, 1.6f);
 }
 
 void IconGear(ImDrawList* dl, ImVec2 c, float r, ImU32 col)
@@ -804,6 +811,21 @@ void TaggingEndGestures()
     g_drag = StripDrag::None;
     g_panel_drag = false;
     ui::DragNumberReset();
+}
+
+bool TaggingSelectedRuleBones(std::vector<int>* bones, unsigned int* colour)
+{
+    if (bones) bones->clear();
+    if (!TaggingViewActive()) return false;
+    const TaggingModel& m = GetTaggingModel();
+    if (!m.file_loaded || m.bone_names.empty() || m.item != g_sel_item) return false;
+    const ItemRules& rules = TaggingShownRules();
+    if (g_sel < 0 || g_sel >= static_cast<int>(rules.blocks.size())) return false;
+    const Block& blk = rules.blocks[static_cast<size_t>(g_sel)];
+    if (bones)
+        *bones = RuleBonesOnSkeleton(blk, m.role_to_bone, m.custom_role_to_bone, m.bone_names, m.bone_parents);
+    if (colour) *colour = RuleColor(rules.blocks[static_cast<size_t>(g_sel)]);
+    return true;
 }
 
 void DrawTaggingStrip(float x, float y, float w, float h)
@@ -3157,11 +3179,64 @@ void ConditionEditor(const Block& blk, int b, int c)
         }
         if (legacy) ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip(legacy ? "An older angle reads several bones (picking them comes with the skeleton view)"
+            ImGui::SetTooltip(legacy ? "An older angle reads several bones: they are not picked here (another kind starts over)"
                               : kind == ConditionKind::JointAngle
                                   ? "The joint: RAV reads the angle between its parent and its child (180 = straight)"
                               : kind == ConditionKind::Rotation ? "The bone whose rotation this condition reads"
                                                                 : "The bone this condition reads: a role, or a bone of this skeleton");
+        // Spec 10-3c -- "+" puts the bone selected in the 3D view (Skeleton mode): its role when
+        // it plays exactly one on this skeleton (rules stay portable), else the raw bone. With
+        // none selected, it switches the view to Skeleton (nothing written).
+        {
+            const TaggingModel& tm = GetTaggingModel();
+            const std::string&  sel_bone = SkeletonSelectedBone();
+            int         put = -1;
+            std::string what;
+            std::string why;  // non-empty: refused
+            if (!sel_bone.empty()) {
+                int sel_idx = -1;
+                for (size_t i = 0; i < tm.bone_names.size() && sel_idx < 0; ++i)
+                    if (tm.bone_names[i] == sel_bone) sel_idx = static_cast<int>(i);
+                put = BoneRefForPickedBone(sel_idx, sel_bone, tm.role_to_bone, tm.custom_role_to_bone);
+                what = put == BoneRefForBone(sel_bone) ? sel_bone : BoneRefLabel(put) + " (" + sel_bone + ")";
+                if (sel_idx < 0)
+                    why = sel_bone + " is not on this item's skeleton";
+                else if (kind == ConditionKind::JointAngle && !IsJointBone(tm, sel_idx))
+                    why = sel_bone + " has no parent or no child: no joint angle there";
+            }
+            const bool enabled = !legacy && why.empty();
+            ImGui::SameLine(0.0f, 2.0f);
+            if (IconButton("##usebone", fh, [](ImDrawList* d, ImVec2 cc, ImU32 col) { IconPlus(d, cc, 4.0f, col); },
+                           enabled)) {
+                if (sel_bone.empty()) {
+                    SetSkeletonModeOn(true);
+                } else {
+                    Edit("RAV: Condition bone (" + rule + ")", [b, c, put](ItemRules& r) {
+                        Condition* x = CondAt(r, b, c);
+                        if (!x) return false;
+                        const ConditionKind k = ConditionKindOf(x->signal);
+                        if (k == ConditionKind::Bend || k == ConditionKind::Turn) return false;
+                        if (x->signal.bones.size() == 1 && x->signal.bones[0] == put &&
+                            x->signal.combine == Combine::Single && x->signal.bone_floors.empty())
+                            return false;  // already this bone: nothing to write
+                        x->signal.bones = {put};
+                        x->signal.combine = Combine::Single;
+                        x->signal.bone_floors.clear();
+                        return true;
+                    });
+                }
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled)) {
+                if (legacy)
+                    ImGui::SetTooltip("An older angle: its bones are not picked here");
+                else if (sel_bone.empty())
+                    ImGui::SetTooltip("Select a bone in the 3D view (this switches it to Skeleton), then + uses it");
+                else if (!why.empty())
+                    ImGui::SetTooltip("%s", why.c_str());
+                else
+                    ImGui::SetTooltip("Use %s", what.c_str());
+            }
+        }
         // Lock and delete, right-aligned.
         const int nconds = static_cast<int>(blk.conditions.size());
         const float right = (nconds > 1 ? 2.0f : 1.0f) * (fh + 2.0f);

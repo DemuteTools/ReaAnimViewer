@@ -61,6 +61,26 @@ int BoneRefForBone(const std::string& raw_name)
     return BoneRefId(kBonePrefix + raw_name);
 }
 
+int BoneRefForPickedBone(int bone, const std::string& raw_name, const std::vector<int>& role_to_bone,
+                         const std::map<std::string, int>& custom_role_to_bone)
+{
+    int roles = 0;
+    int role_id = -1;
+    if (bone >= 0) {
+        for (size_t r = 0; r < role_to_bone.size() && r < static_cast<size_t>(Role::Count); ++r)
+            if (role_to_bone[r] == bone) {
+                ++roles;
+                role_id = static_cast<int>(r);
+            }
+        for (const auto& kv : custom_role_to_bone)
+            if (kv.second == bone) {
+                ++roles;
+                role_id = BoneRefId("role:" + kv.first);
+            }
+    }
+    return (roles == 1 && role_id >= 0) ? role_id : BoneRefForBone(raw_name);
+}
+
 std::string BoneRefKey(int id)
 {
     if (id >= 0 && id < static_cast<int>(Role::Count)) return std::string(kRolePrefix) + RoleKey(static_cast<Role>(id));
@@ -290,6 +310,27 @@ bool BindBoneRefs(std::vector<Block>& blocks, const std::vector<int>& role_to_bo
     for (const std::string& nm : names) miss += (miss.empty() ? "" : ", ") + nm;
     if (missing) *missing = miss;
     return names.empty();
+}
+
+std::vector<int> RuleBonesOnSkeleton(const Block& block, const std::vector<int>& role_to_bone,
+                                     const std::map<std::string, int>& custom_role_to_bone,
+                                     const std::vector<std::string>& bone_names, const std::vector<int>& bone_parents)
+{
+    std::vector<Block> one{block};
+    BindBoneRefs(one, role_to_bone, custom_role_to_bone, bone_names, bone_parents, nullptr);
+    const int        n = static_cast<int>(bone_names.size());
+    std::vector<int> out;
+    auto add = [&](const std::vector<int>& ids) {
+        for (int id : ids)
+            if (id >= 0 && id < n && std::find(out.begin(), out.end(), id) == out.end()) out.push_back(id);
+    };
+    auto signal = [&](const SignalSpec& sp) {
+        add(sp.bones);
+        if (sp.reference == Reference::Bones) add(sp.ref_bones);  // else ref_bones were not bound
+    };
+    for (const Condition& c : one[0].conditions) signal(c.signal);
+    signal(one[0].strength_signal);
+    return out;
 }
 
 // ---- Numbers ---------------------------------------------------------------------------

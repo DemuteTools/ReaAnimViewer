@@ -92,6 +92,7 @@ uniform sampler2D u_glossMap;   // Story 6.5.7: artist glossiness map (linear); 
 uniform int   u_hasGlossMap;    // 0 → use the scalar u_shininess (no map, AC3)
 uniform float u_specStrength;   // live specular strength (light tool) — sheen that sculpts form
 uniform float u_normalStrength; // live normal-map relief boost (light tool); 1 = as-authored
+uniform float u_modelAlpha;     // spec 10-3c: 1 = opaque (Model mode); Skeleton mode fades the model
 out vec4 frag;
 
 // Specular strength is now a live uniform (u_specStrength) driven by the light tool —
@@ -175,7 +176,8 @@ void main() {
     // Encode linear → sRGB on the final write (AC1). NOT GL_FRAMEBUFFER_SRGB: the default
     // framebuffer is a legacy non-sRGB pixel format, so the shader encode is the robust
     // path and must be the ONLY one (enabling both would double-encode / over-brighten).
-    frag = vec4(enc(c), 1.0);
+    // Spec 10-3c: u_modelAlpha is 1 in Model mode (blending off: the same pixels as before).
+    frag = vec4(enc(c), u_modelAlpha);
 }
 )GLSL";
 
@@ -328,6 +330,7 @@ bool Renderer::Init(std::string& out_error)
     u_has_gloss_map_    = glGetUniformLocation(program_.get(), "u_hasGlossMap");
     u_spec_strength_   = glGetUniformLocation(program_.get(), "u_specStrength");
     u_normal_strength_ = glGetUniformLocation(program_.get(), "u_normalStrength");
+    u_model_alpha_     = glGetUniformLocation(program_.get(), "u_modelAlpha");
     // Only u_mvp is genuinely required (no draw is possible without it). The rest may
     // legitimately come back -1 if a driver's GLSL optimizer eliminates a uniform it
     // proves dead — glUniform*(-1, ...) is a documented no-op, so a -1 here must NOT
@@ -751,6 +754,10 @@ void Renderer::RenderFrame(float anim_time_seconds, bool loop, int width, int he
     const GLuint target = static_cast<GLuint>(target_fbo);
     if (width  < 1) width  = 1;
     if (height < 1) height = 1;
+    // Spec 10-3c: what this frame draws, for the skeleton overlay (posed below, or nothing).
+    last_w_ = width;
+    last_h_ = height;
+    last_pose_valid_ = false;
 
     // ---- Story 6.5.6 MSAA reconcile (cold path) -----------------------------
     // Decide this frame's SCENE target. With a level selected (msaa_samples_ > 0) the whole
@@ -854,6 +861,7 @@ void Renderer::RenderFrame(float anim_time_seconds, bool loop, int width, int he
     glUniform1f(u_ambient_, ambient_);
     glUniform1f(u_spec_strength_,   spec_strength_);    // live light-tool knobs (6.5.x polish)
     glUniform1f(u_normal_strength_, normal_strength_);
+    glUniform1f(u_model_alpha_, model_alpha_);           // spec 10-3c (1 = Model mode)
 
     // Per-frame D13 pose: compute the skinning palette once (shared by every skinned
     // mesh of this skeleton) and upload it before the draw loop. The caller selects
@@ -888,6 +896,7 @@ void Renderer::RenderFrame(float anim_time_seconds, bool loop, int width, int he
             const GLsizei nb = std::min<GLsizei>(static_cast<GLsizei>(palette_.size()), 128);
             glUniformMatrix4fv(u_bones_, nb, GL_FALSE, glm::value_ptr(palette_[0]));
         }
+        last_pose_valid_ = pose_valid && pose_scratch_.size() == nb_bones;  // spec 10-3c
     }
 
     // ---- Shadow depth pass (Story 6.5.4) ------------------------------------
@@ -946,6 +955,27 @@ void Renderer::RenderFrame(float anim_time_seconds, bool loop, int width, int he
     glBindVertexArray(vao_.get());
     glUniformMatrix4fv(u_mvp_, 1, GL_FALSE, glm::value_ptr(mvp));
 
+    // Spec 10-3c -- Skeleton mode (model alpha < 1): a depth-only prepass of the meshes, then
+    // the colour pass blended at that alpha, keeping only the nearest surface (GL_LEQUAL, depth
+    // writes off), so the faded model never shows its own inside. Model mode skips all of it
+    // (alpha 1, no blending: the pixels are the same as before). State restored after the loop.
+    const bool faded = model_alpha_ < 1.0f;
+    if (faded) {
+        glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+        for (const SceneMesh& mesh : asset_.meshes) {
+            BindMeshAttribs(mesh);
+            glUniform1i(u_skinned_, (pose_valid && mesh.skinned) ? 1 : 0);
+            glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(mesh.indexCount),
+                           GL_UNSIGNED_INT, nullptr);
+        }
+        // Destination alpha untouched by the blend (a target's alpha stays as the floor left it).
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_FALSE);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDepthFunc(GL_LEQUAL);
+        glDepthMask(GL_FALSE);
+    }
+
     for (const SceneMesh& mesh : asset_.meshes) {
         // Re-specify the attribute layout against this mesh's VBO (pos/normal/uv + bone
         // ids/weights). The shared VAO holds no per-mesh state, so each mesh re-points its
@@ -998,6 +1028,13 @@ void Renderer::RenderFrame(float anim_time_seconds, bool loop, int width, int he
 
         glDrawElements(GL_TRIANGLES, static_cast<GLsizei>(mesh.indexCount),
                        GL_UNSIGNED_INT, nullptr);
+    }
+
+    if (faded) {  // spec 10-3c: back to the fixed pipeline state (Init)
+        glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glDepthMask(GL_TRUE);
+        glDepthFunc(GL_LESS);
+        glDisable(GL_BLEND);
     }
 
     glBindBuffer(GL_ARRAY_BUFFER, 0);

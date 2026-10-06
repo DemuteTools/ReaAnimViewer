@@ -588,6 +588,62 @@ int main()
         CHECK(BoneRefName(BoneRefId("role:sword_tip")) == "blade tip");
         CHECK(BoneRefLabel(BoneRefId("role:sword_tip")) == "blade tip");
         CHECK(BoneRefName(BoneRefId("role:tail_end")) == "tail end");
+        // Spec 10-3c: "+" on a picked bone puts its role when it plays exactly one, else the bone.
+        {
+            std::vector<int> r2b(static_cast<size_t>(Role::Count), -1);
+            r2b[static_cast<size_t>(Role::LeftHeel)] = 3;
+            r2b[static_cast<size_t>(Role::LeftToe)] = 5;
+            r2b[static_cast<size_t>(Role::RightToe)] = 5;  // bone 5 plays two roles
+            const std::map<std::string, int> cust = {{"sword_tip", 7}, {"grip", 8}, {"also_heel", 9}};
+            CHECK(BoneRefForPickedBone(3, "LeftFoot", r2b, cust) == R(Role::LeftHeel));
+            CHECK(BoneRefForPickedBone(7, "weapon_r", r2b, cust) == BoneRefId("role:sword_tip"));
+            CHECK(BoneRefForPickedBone(5, "LeftToeBase", r2b, cust) == BoneRefForBone("LeftToeBase"));
+            CHECK(BoneRefForPickedBone(4, "RightHand", r2b, cust) == BoneRefForBone("RightHand"));  // no role
+            CHECK(BoneRefForPickedBone(-1, "Gone", r2b, cust) == BoneRefForBone("Gone"));  // not on this skeleton
+            r2b[static_cast<size_t>(Role::Hips)] = 7;  // built-in + custom on one bone: two roles
+            CHECK(BoneRefForPickedBone(7, "weapon_r", r2b, cust) == BoneRefForBone("weapon_r"));
+            // Two custom roles on one bone (no built-in): two roles, the raw bone.
+            const std::map<std::string, int> cust2 = {{"sword_tip", 10}, {"blade", 10}};
+            CHECK(BoneRefForPickedBone(10, "weapon_l", r2b, cust2) == BoneRefForBone("weapon_l"));
+        }
+        // Spec 10-3c: the bones one rule reads on a skeleton (the 3D view colours them).
+        {
+            // 0 Hips <- 1 LeftUpLeg <- 2 LeftLeg <- 3 LeftFoot <- 4 LeftToeBase; 0 <- 5 Spine <- 6 RightHand
+            const std::vector<std::string> nm = {"Hips", "LeftUpLeg", "LeftLeg", "LeftFoot", "LeftToeBase", "Spine",
+                                                 "RightHand"};
+            const std::vector<int>         par = {-1, 0, 1, 2, 3, 0, 5};
+            std::vector<int>               r2b(static_cast<size_t>(Role::Count), -1);
+            r2b[static_cast<size_t>(Role::LeftHeel)] = 3;
+            r2b[static_cast<size_t>(Role::Hips)] = 0;
+            const std::map<std::string, int> cust = {{"sword_tip", 6}};
+            // A joint angle binds to {parent, joint, child}.
+            Block ja;
+            ja.conditions.resize(1);
+            ja.conditions[0].signal.quantity = Quantity::InteriorAngle;
+            ja.conditions[0].signal.bones = {BoneRefForBone("LeftLeg")};
+            CHECK(RuleBonesOnSkeleton(ja, r2b, cust, nm, par) == (std::vector<int>{1, 2, 3}));
+            // Reference::Bones bones are included; a role and a custom role bind through the maps.
+            Block rb;
+            rb.conditions.resize(2);
+            rb.conditions[0].signal.bones = {R(Role::LeftHeel)};
+            rb.conditions[0].signal.reference = Reference::Bones;
+            rb.conditions[0].signal.ref_bones = {R(Role::Hips)};
+            rb.conditions[1].signal.bones = {BoneRefId("role:sword_tip"), R(Role::LeftHeel)};  // duplicate once
+            CHECK(RuleBonesOnSkeleton(rb, r2b, cust, nm, par) == (std::vector<int>{3, 0, 6}));
+            // ref_bones ignored when the reference is Floor.
+            rb.conditions[0].signal.reference = Reference::Floor;
+            CHECK(RuleBonesOnSkeleton(rb, r2b, cust, nm, par) == (std::vector<int>{3, 6}));
+            // The strength signal's bones count; unbound refs (unmapped role, unknown bone, a
+            // joint angle on a leaf) are left out.
+            Block st;
+            st.conditions.resize(2);
+            st.conditions[0].signal.bones = {R(Role::RightHeel), BoneRefForBone("NoSuchBone")};
+            st.conditions[1].signal.quantity = Quantity::InteriorAngle;
+            st.conditions[1].signal.bones = {BoneRefForBone("LeftToeBase")};
+            st.strength_signal.bones = {BoneRefForBone("Spine")};
+            CHECK(RuleBonesOnSkeleton(st, r2b, cust, nm, par) == (std::vector<int>{5}));
+            CHECK(RuleBonesOnSkeleton(Block{}, r2b, cust, nm, par).empty());
+        }
         SignalSpec sp;
         sp.bones = {BoneRefId("role:sword_tip")};
         sp.measure = Measure::Speed;

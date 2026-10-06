@@ -385,7 +385,7 @@ To tag several walk cycles at once, set them up one by one (steps 2 to 4), selec
 ### Tagging your own events
 
 1. In the Tagging view, put the playhead over the item and click **+ Rule**. Give the rule the name you want on the markers (for example `Whoosh R`) and a colour.
-2. Set its condition: pick the **bone** to watch, **what** to measure (position, speed, acceleration), in **which direction** (vertical, horizontal, total...), and **from** what (the floor or another bone). The bone menu lists the roles first, then every bone of the skeleton, including a weapon or prop bone if it is part of the rig.
+2. Set its condition: pick the **bone** to watch, **what** to measure (position, speed, acceleration), in **which direction** (vertical, horizontal, total...), and **from** what (the floor or another bone). The bone menu lists the roles first, then every bone of the skeleton, including a weapon or prop bone if it is part of the rig. Not sure which bone is which? Switch the 3D view to **Skeleton** (bottom left), click the bone on the character, then click **+** next to the condition's bone menu: it uses that bone (or its role, when the bone plays exactly one).
 3. Watch the signal in the strip while you scrub, and drag the threshold line to where the event happens. Add more conditions with **+ AND condition** if one is not enough.
 4. Choose where the marker lands: **at the start** (the moment the threshold is crossed) or **at the highest / lowest point** of a signal (for example the fastest moment of a swing).
 5. Happy with it? **+ Save as...** in the preset menu, and load it on your other clips.
@@ -468,6 +468,8 @@ Presets don't name bones: they name **roles** (left heel, left toe, right heel, 
 - **Click or drag** to move the playhead. **Alt+wheel** zooms, **Shift+wheel** scrolls. Drag the strip's top edge to make it taller (more room for the signal lanes).
 - **Analyse** proposes this item's thresholds from the clip. It only runs when you click it, and it leaves locked conditions alone.
 - **+ Event** (key **E**) adds your own event at the playhead on the selected rule.
+
+**The 3D view** has a **Model | Skeleton** switch at the bottom left (in RAV view too). **Skeleton** fades the character and draws its bones on top: hover a joint to see its name and the roles it plays, click it to select it (click again to deselect). The bones the selected rule reads are drawn in the rule's colour, and **+** next to a condition's bone menu puts the selected bone in it (with no bone selected, **+** switches the view to Skeleton). The switch and the selection are not saved: the viewer opens in **Model**.
 
 **The panel** (on the right, drag its edge to resize it): the item's name, **Roles**, the item options, the **Preset:** field, the **Rules** list, then the inspector for the selected rule or event. The footer has **Commit**, **Cancel**, which markers are written, and a summary of the selection.
 

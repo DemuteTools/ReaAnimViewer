@@ -192,6 +192,7 @@ if(WIN32)
             src/tagging_signal.cpp
             src/tagging_session.cpp
             src/tagging_view_ui.cpp
+            src/skeleton_view.cpp
             src/event_list.cpp
             src/tag_markers.cpp
     )

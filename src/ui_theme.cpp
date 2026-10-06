@@ -449,6 +449,68 @@ void EndCard(Card& k, ImU32 fill, ImU32 edge)
     ImGui::Dummy(ImVec2(k.w, std::max(0.0f, kCardGap - ImGui::GetStyle().ItemSpacing.y)));
 }
 
+bool BeginSection(Section& s, const char* title, ImTextureID icon, bool foldable)
+{
+    ImGui::PushID(title);
+    ImGuiStorage* store = ImGui::GetStateStorage();
+    const ImGuiID open_id = ImGui::GetID("##open");
+    bool open = !foldable || store->GetBool(open_id, true);
+
+    BeginCard(s.card);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float  fh = ImGui::GetFrameHeight();
+    const float  w = std::max(1.0f, s.card.w - 2.0f * kCardPad);
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+
+    // The header: a button over the whole row when the section folds.
+    bool hovered = false;
+    if (foldable) {
+        if (ImGui::InvisibleButton("##head", ImVec2(w, fh))) {
+            open = !open;
+            store->SetBool(open_id, open);
+        }
+        hovered = ImGui::IsItemHovered();
+    } else {
+        ImGui::Dummy(ImVec2(w, fh));
+    }
+    if (hovered)
+        dl->AddRectFilled(ImVec2(p.x - 4.0f, p.y), ImVec2(p.x + w + 4.0f, p.y + fh), kHover, kRadiusSm);
+    float tx = p.x;
+    if (icon) {
+        const float is = 16.0f;
+        dl->AddImage(icon, ImVec2(p.x, p.y + (fh - is) * 0.5f), ImVec2(p.x + is, p.y + (fh + is) * 0.5f),
+                     ImVec2(0, 0), ImVec2(1, 1), IM_COL32(0xD1, 0xD6, 0xE5, 0xFF));
+        tx += is + 8.0f;
+    }
+    const ImVec2 ts = ImGui::CalcTextSize(title, nullptr, true);
+    dl->AddText(ImVec2(tx, p.y + (fh - ts.y) * 0.5f), kText, title, std::strstr(title, "##"));
+    if (foldable) {
+        // The chevron: down when open, right when folded.
+        const ImVec2 c(p.x + w - 6.0f, p.y + fh * 0.5f);
+        const float  r = 4.0f;
+        const ImU32  col = hovered ? kText : kMuted;
+        if (open)
+            dl->AddTriangleFilled(ImVec2(c.x - r, c.y - r * 0.5f), ImVec2(c.x + r, c.y - r * 0.5f),
+                                  ImVec2(c.x, c.y + r * 0.6f), col);
+        else
+            dl->AddTriangleFilled(ImVec2(c.x - r * 0.5f, c.y - r), ImVec2(c.x - r * 0.5f, c.y + r),
+                                  ImVec2(c.x + r * 0.6f, c.y), col);
+    }
+    if (open) {
+        // The divider between the header and the settings, across the card.
+        const float y = p.y + fh + 5.0f;
+        dl->AddLine(ImVec2(s.card.p0.x + 1.0f, y), ImVec2(s.card.p0.x + s.card.w - 1.0f, y), kStroke, 1.0f);
+        ImGui::Dummy(ImVec2(0.0f, 4.0f));
+    }
+    return open;
+}
+
+void EndSection(Section& s)
+{
+    EndCard(s.card, kSurface, kStroke);
+    ImGui::PopID();
+}
+
 namespace {
 float SentenceGap() { return ImGui::GetStyle().ItemSpacing.x; }
 }  // namespace

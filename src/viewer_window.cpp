@@ -1259,9 +1259,10 @@ void DrawToolUi()
     constexpr ImGuiWindowFlags kClosedFlags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
     ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, menu_max_h));
 
-    // Story 11-4: the theme (ui_theme.h) styles the menu; it is a raised card when open.
+    // Story 11-4: the theme (ui_theme.h) styles the menu. Open, it is a window on the theme's
+    // darkest grey, its settings in ui::Section cards a step lighter.
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 8.0f));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, g_menu_open ? ui::Col(ui::kRaised) : ui::Col(IM_COL32(18, 19, 23, 184)));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, g_menu_open ? ui::Col(ui::kBg) : ui::Col(IM_COL32(18, 19, 23, 184)));
     ImGui::PushStyleColor(ImGuiCol_Border, g_menu_open ? ui::Col(ui::kStrokeStrong) : ui::Col(ui::kStroke));
     ImGui::Begin("##tools", nullptr, g_menu_open ? kFlags : (kFlags | kClosedFlags));
     ImGuiWindow* const menu_window = ImGui::GetCurrentWindow();
@@ -1287,11 +1288,12 @@ void DrawToolUi()
         const float tabs_top = ImGui::GetCursorScreenPos().y;
         ui::VerticalTabs("##menutabs", kTabLabels, kMenuTabCount, &g_menu_tab);
         const float tabs_bottom = ImGui::GetItemRectMax().y;
-        ImGui::SameLine(0.0f, 10.0f);
+        const float divider_x = ImGui::GetItemRectMax().x + 7.0f;  // between the tabs and the content
+        ImGui::SameLine(0.0f, 14.0f);
 
         // The content scrolls within what the window's height leaves after the header and the
         // footer (separator, one button row, the version line, the bottom padding).
-        constexpr float kContentW = 236.0f;
+        constexpr float kContentW = 256.0f;
         const float footer_h = 2.0f * st.ItemSpacing.y + 1.0f + ImGui::GetFrameHeightWithSpacing() +
                                4.0f + st.ItemSpacing.y + ImGui::GetTextLineHeight() + st.WindowPadding.y;
         const float content_max_h =
@@ -1300,24 +1302,16 @@ void DrawToolUi()
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
         ImGui::BeginChild("##menutab", ImVec2(kContentW, 0.0f), ImGuiChildFlags_AutoResizeY);
 
-        // A collapsible section header: Antho's icon + a CollapsingHeader (the ▸ arrow
-        // collapses/expands the group), used by the Global tab's sections. Default-open; the
-        // open/closed state is kept for the session (in-memory).
-        auto Section = [&](GLuint icon, const char* label) -> bool {
-            ImGui::Dummy(ImVec2(0.0f, 2.0f));
-            ImGui::Image(IconTex(icon), ImVec2(16.0f, 16.0f),
-                         ImVec2(0, 0), ImVec2(1, 1), kIconTint);
-            ImGui::SameLine();
-            return ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen);
-        };
+        // Every group of settings is a ui::Section (the theme's card with its header), so each
+        // tab reads the same way and a new setting needs no styling of its own.
+        ui::Section sec;
 
         switch (g_menu_tab) {
         case kMenuTabGlobal: {
         ui::SubText("Shared by the three views.");
 
         // --- Light: Colour + Position ---
-        if (Section(g_icon_light, "Light")) {
-            ImGui::Indent(8.0f);
+        if (ui::BeginSection(sec, "Light", IconTex(g_icon_light))) {
             ImGui::Image(IconTex(g_icon_color), ImVec2(17.0f, 17.0f),
                          ImVec2(0, 0), ImVec2(1, 1), kIconTint);
             ImGui::SameLine();
@@ -1344,13 +1338,12 @@ void DrawToolUi()
             ImGui::SetNextItemWidth(140.0f);
             if (ImGui::SliderFloat("Relief",   &g_normal_strength, 0.0f, 3.0f, "%.2f"))
                 g_renderer.SetNormalStrength(g_normal_strength);
-            ImGui::Unindent(8.0f);
         }
+        ui::EndSection(sec);
 
         // --- Ground: show/hide the floor + grid (hiding it also drops the cast shadow,
         // the floor being the only receiver) ---
-        if (Section(g_icon_ground, "Ground")) {
-            ImGui::Indent(8.0f);
+        if (ui::BeginSection(sec, "Ground", IconTex(g_icon_ground))) {
             if (ImGui::Checkbox("Enable", &g_floor_visible))
                 g_renderer.SetFloorVisible(g_floor_visible);
             // Epic 9 — grid cell size in real metres; the renderer converts it to the
@@ -1364,23 +1357,21 @@ void DrawToolUi()
                 g_grid_step_m = (grid_sel == 1) ? 10 : 1;
                 g_renderer.SetGridStep(static_cast<float>(g_grid_step_m));
             }
-            ImGui::Unindent(8.0f);
         }
+        ui::EndSection(sec);
 
         // --- Shadow: cast-shadow quality (Off skips the depth pass; no floor → no shadow) ---
-        if (Section(g_icon_shadow, "Shadow")) {
-            ImGui::Indent(8.0f);
+        if (ui::BeginSection(sec, "Shadow", IconTex(g_icon_shadow))) {
             static const char* const kShadowLabels[4] = { "Off", "Low", "Mid", "High" };
             if (ui::Segmented("##shadow", kShadowLabels, 4, &g_shadow_quality, 0.0f, -1))
                 g_renderer.SetShadowQuality(static_cast<ShadowQuality>(g_shadow_quality));
-            ImGui::Unindent(8.0f);
         }
+        ui::EndSection(sec);
 
         // --- Performance: render-quality levers (FR52) + on-canvas FPS (FR53). Antho's
         // Performance icon. The Ground (floor) + Shadow levers live in their own sections above
         // and TOGETHER with these complete the FR52 set — not duplicated here. ---
-        if (Section(g_icon_performance, "Performance")) {
-            ImGui::Indent(8.0f);
+        if (ui::BeginSection(sec, "Performance", IconTex(g_icon_performance))) {
 
             if (ImGui::Checkbox("Normal maps", &g_normal_maps_on))
                 g_renderer.SetNormalMapsEnabled(g_normal_maps_on);
@@ -1413,68 +1404,82 @@ void DrawToolUi()
             }
 
             ImGui::Checkbox("FPS", &g_fps_overlay_on);  // pure UI state — read by the overlay below
-
-            ImGui::Unindent(8.0f);
         }
+        ui::EndSection(sec);
         break;
         }
 
         // --- RAV view: the camera, and the Model / Skeleton switch's state (the same as the
         // switch at the bottom left: either one changes both) ---
         case kMenuTabRav: {
-            if (ImGui::Button("Recenter camera", ImVec2(196.0f, 0.0f)))
-                g_renderer.ResetCamera();
-            ImGui::Dummy(ImVec2(0.0f, 2.0f));
-            ImGui::TextDisabled("Model / Skeleton");
-            static const char* const kModes[2] = { "Model", "Skeleton" };
-            int skel_sel = SkeletonModeOn() ? 1 : 0;
-            if (ui::Segmented("##menuskelmode", kModes, 2, &skel_sel)) SetSkeletonModeOn(skel_sel == 1);
+            if (ui::BeginSection(sec, "Camera")) {
+                if (ui::SolidButton("Recenter camera", ImVec2(ImGui::GetContentRegionAvail().x - ui::kCardPad, 0.0f)))
+                    g_renderer.ResetCamera();
+            }
+            ui::EndSection(sec);
+            if (ui::BeginSection(sec, "Model / Skeleton")) {
+                static const char* const kModes[2] = { "Model", "Skeleton" };
+                int skel_sel = SkeletonModeOn() ? 1 : 0;
+                if (ui::Segmented("##menuskelmode", kModes, 2, &skel_sel)) SetSkeletonModeOn(skel_sel == 1);
+            }
+            ui::EndSection(sec);
             break;
         }
 
         // --- Story 10-4: Tagging view -- which markers Commit writes (a global option, kept
         // across sessions; project markers take the rule's colour) ---
         case kMenuTabTagging: {
-            ImGui::TextDisabled("Markers written");
-            static const char* const kMarkLabels[3] = { "Take", "Project", "Both" };
-            const MarkerMode mode = GetTaggingMarkerMode();
-            int mark_sel = mode == MarkerMode::Take ? 0 : mode == MarkerMode::Project ? 1 : 2;
-            if (ui::Segmented("##tagmarkers", kMarkLabels, 3, &mark_sel, 0.0f, -1))
-                SetTaggingMarkerMode(mark_sel == 0 ? MarkerMode::Take : mark_sel == 1 ? MarkerMode::Project : MarkerMode::Both);
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-                ImGui::SetTooltip("%s on Commit (previews too).\nProject markers take the rule's colour.",
-                                  MarkerModeLine(GetTaggingMarkerMode()));
+            if (ui::BeginSection(sec, "Markers written")) {
+                static const char* const kMarkLabels[3] = { "Take", "Project", "Both" };
+                const MarkerMode mode = GetTaggingMarkerMode();
+                int mark_sel = mode == MarkerMode::Take ? 0 : mode == MarkerMode::Project ? 1 : 2;
+                if (ui::Segmented("##tagmarkers", kMarkLabels, 3, &mark_sel, 0.0f, -1))
+                    SetTaggingMarkerMode(mark_sel == 0 ? MarkerMode::Take : mark_sel == 1 ? MarkerMode::Project : MarkerMode::Both);
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                    ImGui::SetTooltip("%s on Commit (previews too).\nProject markers take the rule's colour.",
+                                      MarkerModeLine(GetTaggingMarkerMode()));
+            }
+            ui::EndSection(sec);
             break;
         }
 
         // --- Video view: the Video panel (Story 11-4), the Delete key's question (spec
         // 11-fb-11), REAPER catch-up (spec 11-fb-5) ---
         default: {
-            bool panel = VideoPanelVisible();
-            if (ImGui::Checkbox("Video panel", &panel)) SetVideoPanelVisible(panel);
-            // Spec 11-fb-11 -- the Delete key asks first unless "Don't ask again" was ticked;
-            // this gives the question back (or takes it away).
-            bool ask = VideoAskBeforeDeleteShot();
-            if (ImGui::Checkbox("Ask before deleting a shot", &ask)) SetVideoAskBeforeDeleteShot(ask);
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-                ImGui::SetTooltip("The %s key in Video view deletes the current shot: ask first, or delete at once",
-                                  ShortcutKeyLabel(kShortcutDeleteShot));
-            // How long REAPER's Video window takes to catch up with an output size or display
-            // change while playing, on Video view's caption line (spec 11-fb-5).
-            ImGui::Checkbox("REAPER catch-up", &g_preview_lag_on);
+            if (ui::BeginSection(sec, "Panel")) {
+                bool panel = VideoPanelVisible();
+                if (ImGui::Checkbox("Video panel", &panel)) SetVideoPanelVisible(panel);
+                // Spec 11-fb-11 -- the Delete key asks first unless "Don't ask again" was ticked;
+                // this gives the question back (or takes it away).
+                bool ask = VideoAskBeforeDeleteShot();
+                if (ImGui::Checkbox("Ask before deleting a shot", &ask)) SetVideoAskBeforeDeleteShot(ask);
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                    ImGui::SetTooltip("The %s key in Video view deletes the current shot: ask first, or delete at once",
+                                      ShortcutKeyLabel(kShortcutDeleteShot));
+            }
+            ui::EndSection(sec);
+            if (ui::BeginSection(sec, "REAPER's Video window")) {
+                // How long REAPER's Video window takes to catch up with an output size or display
+                // change while playing, on Video view's caption line (spec 11-fb-5).
+                ImGui::Checkbox("REAPER catch-up", &g_preview_lag_on);
+            }
+            ui::EndSection(sec);
             break;
         }
         }
 
         ImGui::EndChild();
         ImGui::PopStyleColor();
+        // The line between the tab column and the content.
+        ImGui::GetWindowDrawList()->AddLine(ImVec2(divider_x, tabs_top),
+                                            ImVec2(divider_x, std::max(tabs_bottom, ImGui::GetItemRectMax().y)),
+                                            ui::kStroke, 1.0f);
 
         // The footer, under the tabs and the content.
         ImGui::Separator();
         // Always enabled: even with no error kept, the GPU line helps a bug report.
         const bool copied = ElapsedSeconds() < g_copied_until;
-        if (ImGui::Button(copied ? "Copied!##copylog" : "Copy error log##copylog",
-                          ImVec2(196.0f, 0.0f)))
+        if (ui::SolidButton(copied ? "Copied!##copylog" : "Copy error log##copylog", ImVec2(196.0f, 0.0f)))
             CopyErrorLogToClipboard();
 
         // Build version (a dev build shows "<last release>-dev+<commit>"), so a user can tell

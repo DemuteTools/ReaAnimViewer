@@ -133,6 +133,20 @@ struct Card {
 void BeginCard(Card& k);
 void EndCard(Card& k, ImU32 fill, ImU32 edge);
 
+// THE SECTION: how every group of settings is shown, in any panel or menu -- a card
+// (kSurface on the window's kBg, kStroke edge) headed by its icon and title, a divider under
+// the header. Its header folds it (a chevron on the right; the state is kept for the
+// session). Always pair with EndSection, open or not:
+//     ui::Section s;
+//     if (ui::BeginSection(s, "Light", icon)) { ...settings... }
+//     ui::EndSection(s);
+// A new setting goes inside a section: it then looks like the others with no styling of its own.
+struct Section {
+    Card card;
+};
+bool BeginSection(Section& s, const char* title, ImTextureID icon = ImTextureID(), bool foldable = true);
+void EndSection(Section& s);
+
 // The "aligned sentence": one phrase per row, its connector word right-aligned in a fixed
 // column, every row's chips from one shared edge. A chip that does not fit beside the
 // previous one wraps under the row's first chip (a row wraps as a whole, never a lone word).

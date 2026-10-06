@@ -1424,7 +1424,6 @@ struct PendingDialog {
     std::string name;
     std::vector<std::string> bones;  // Roles*: the skeleton the Skeleton & roles window is open on
     std::vector<std::string> keys;   // RolesExport: the role keys the item's rules read
-    std::string file_name;           // RolesExport: the proposed file name (one file per skeleton)
 };
 PendingDialog g_dialog;
 
@@ -2379,6 +2378,9 @@ void RolesUndo()
 // one step of the window's undo (roles.txt put back byte-identical).
 
 const FileDialogFilter kRolesCsvFilter = {L"CSV (*.csv)", L"*.csv", L"csv"};
+// The proposed name: RAV knows no rig name (a skeleton is its bone list), so the user types it
+// after the prefix (Antho, 2026-10-06); the picker adds .csv.
+constexpr char         kRolesExportName[] = "RAV_Roles_";
 constexpr char         kPrefRolesCsvSemicolon[] = "roles_csv_semicolon";  // the last export's separator
 
 void RolesRequestDialog(PendingDialog::Kind kind, const TaggingModel& m)
@@ -2387,7 +2389,6 @@ void RolesRequestDialog(PendingDialog::Kind kind, const TaggingModel& m)
     g_dialog.kind = kind;
     g_dialog.bones = g_roles_names;
     g_dialog.keys = m.rule_role_keys;
-    g_dialog.file_name = RoleExportFileName(m.path);
     g_roles_status.clear();
 }
 
@@ -2402,7 +2403,7 @@ void RolesRunDialog(HWND__* owner, const PendingDialog& d)
             {L"CSV, semicolon separated (Excel in French and other regions) (*.csv)", L"*.csv", L"csv"},
         };
         int type = LoadPrefBool(kPrefRolesCsvSemicolon, false) ? 1 : 0;
-        if (!PickSaveFile(owner, L"Export roles", filters, 2, &type, d.file_name, path)) return;  // cancelled
+        if (!PickSaveFile(owner, L"Export roles", filters, 2, &type, kRolesExportName, path)) return;  // cancelled
         SavePrefBool(kPrefRolesCsvSemicolon, type == 1);
         const bool ok = ExportRoleConfig(root, d.bones, d.keys, type == 1 ? ';' : ',', path, &err);
         if (!RolesSameSkeleton(d.bones)) return;

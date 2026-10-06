@@ -686,10 +686,6 @@ int main()
             CHECK(ImportRolesCsv(f, "role,name,bone\n_x,,\na__b,,\n", rig, &rep, &err));
             CHECK(CustomRolesInFile(f) == (std::vector<CustomRole>{{"x", "x"}, {"a_b", "a b"}}));
         }
-        // The export's default file name: one file per skeleton.
-        CHECK(RoleExportFileName("C:\\anims\\Sword Attack.fbx") == "roles - Sword Attack.csv");
-        CHECK(RoleExportFileName("/a/b:c?.glb") == "roles - b_c_.csv");
-        CHECK(RoleExportFileName("") == "roles.csv");
         // Not a role CSV: nothing written, "This is not a role file."
         {
             const std::string bad = (root / "bad.csv").u8string();

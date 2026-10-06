@@ -213,9 +213,6 @@ struct RoleCsvRow {
 std::vector<RoleCsvRow> RoleCsvRowsFromFile(const RoleMapFile& file, const std::vector<std::string>& bone_names,
                                             const std::vector<std::string>& extra_keys);
 // The CSV text (BOM, header `role,name,bone`, CRLF lines), `sep` = ',' or ';'.
-// RoleExportFileName: the export's default file name, "roles - <animation file stem>.csv"
-// (characters Windows refuses replaced by '_'; "roles.csv" when there is no stem).
-std::string RoleExportFileName(const std::string& anim_path);
 std::string ExportRolesCsv(const std::vector<RoleCsvRow>& rows, char sep = ',');
 
 // What an import did. `skipped` rows were not applied; `first_skip` says why the first one was.

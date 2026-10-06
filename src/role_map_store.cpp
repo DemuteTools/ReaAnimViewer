@@ -955,24 +955,6 @@ std::string ExportRolesCsv(const std::vector<RoleCsvRow>& rows, char sep)
     return out;
 }
 
-std::string RoleExportFileName(const std::string& anim_path)
-{
-    std::string stem = anim_path;
-    const size_t slash = stem.find_last_of("\\/");
-    if (slash != std::string::npos) stem.erase(0, slash + 1);
-    const size_t dot = stem.find_last_of('.');
-    if (dot != std::string::npos && dot > 0) stem.erase(dot);
-    for (char& c : stem) {
-        const unsigned char u = static_cast<unsigned char>(c);
-        if (u < 0x20 || c == '<' || c == '>' || c == ':' || c == '"' || c == '/' || c == '\\' || c == '|' ||
-            c == '?' || c == '*')
-            c = '_';
-    }
-    stem = TrimSpaces(stem);
-    while (!stem.empty() && (stem.back() == '.' || stem.back() == ' ')) stem.pop_back();
-    return stem.empty() ? std::string("roles.csv") : "roles - " + stem + ".csv";
-}
-
 std::string RoleImportSummary(const RoleImportReport& rep)
 {
     auto n = [](int v, const char* one, const char* many) { return std::to_string(v) + ' ' + (v == 1 ? one : many); };

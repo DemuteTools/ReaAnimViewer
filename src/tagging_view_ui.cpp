@@ -1207,15 +1207,8 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                 const BlockTrace* bt = (sel_blk && g_sel < static_cast<int>(m.trace.blocks.size()))
                                            ? &m.trace.blocks[static_cast<size_t>(g_sel)]
                                            : nullptr;
-                // 10-3 fb-2: a divider line sets the conditions apart from the rule rows (dropped
-                // when the lanes would not fit with it: the old spacing).
-                const bool show_div = rows_bottom + 9.0f < area1.y - 20.0f;
-                const float lanes_top = show_div ? rows_bottom + 9.0f : rows_bottom + 4.0f;
+                const float lanes_top = rows_bottom + 4.0f;
                 if (sel_blk && bt && bt->ran && lanes_top < area1.y - 20.0f) {
-                    if (show_div) {
-                        const float ly = std::floor(rows_bottom + 4.0f) + 0.5f;
-                        dl->AddLine(ImVec2(c0.x, ly), ImVec2(lane_x + lane_w, ly), ui::kStroke, 1.0f);
-                    }
                     const int nc = static_cast<int>(sel_blk->conditions.size());
                     const float gap = kTrackGap;
                     const float lh = std::max(28.0f, (area1.y - lanes_top - gap * static_cast<float>(nc - 1)) / nc);

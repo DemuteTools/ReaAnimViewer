@@ -18,6 +18,8 @@
 //   - "Markers up to date" = the last Apply ran with the same option and wrote the same
 //     markers (a signature of the planned markers; 10-4b: independent of where the item sits).
 //   - 10-4b: the project markers follow their item (MirrorPlan, driven by tag_markers.h).
+//   - 10-4c: a REAPER-side drag, delete or rename of RAV's markers changes the event list
+//     (MirrorPlan's user steps, ApplyMarkerEdits, MatchTakeRefs).
 //
 // Pure C++17: no REAPER, no ImGui, no Windows. Host-tested (tests/event_list_test.cpp).
 
@@ -196,39 +198,111 @@ void ComposeCommittedRecord(ItemRules& rec, const std::vector<TakeMarkerRef>& ow
 // RAV's project markers (committed and previews) follow their item: a main-thread timer
 // (tag_markers.h) places each one from its event's clip time (ProjectMarkerRef::c) and the
 // item's current position, start offset, rate and length (FirstPassProjectTime, Commit's rule).
-// Until story 10-4c the mirror never fights the user: a marker missing (deleted by the user) or
-// dragged while its item stayed put is left alone.
+//
+// 10-4c: two-way. State-based, not cache-based: each ref says where RAV last put its marker
+// (`t`) and where its event belongs (`c`). A marker at its expected place is in place (a ripple:
+// only `t` is updated); one still where RAV put it while the expected place moved = its item
+// changed (Move / Hide); one at neither = the user dragged it. A missing marker the mirror did
+// not delete = the user deleted it; another name = the user renamed it (the marker becomes theirs).
+
+constexpr double kMirrorPosTolS = 1e-5;  // a marker this close to a time is at it
 
 enum class MirrorAction {
-    Keep,  // nothing to do
-    Move,  // move the marker to new_t
-    Hide,  // its event is outside the item: the ref's GUID cleared (the marker deleted when delete_old)
-    Show,  // a new marker at new_t (the ref takes its GUID): a hidden event back inside the item, a
-           // marker the mirror itself deleted, or a copy's own marker
+    Keep,    // nothing to do
+    Move,    // move the marker to new_t
+    Hide,    // its event is outside the item: the ref's GUID cleared (the marker deleted when delete_old)
+    Show,    // a new marker at new_t (the ref takes its GUID): a hidden event back inside the item, a
+             // marker the mirror itself deleted, or a copy's own marker
+    Retime,  // 10-4c: the marker is at its expected place but not where RAV last put it (ripple):
+             // the ref's `t` becomes new_t, the marker is not touched
+    UserDrag,    // 10-4c: the user dragged it inside the item: its event moves to new_c (marker at new_t)
+    UserDelete,  // 10-4c: the user deleted it
+    UserDisown,  // 10-4c: the user renamed it, or dragged it outside the item: it is theirs now
 };
 
 struct MirrorStep {
     size_t       ref = 0;  // index into the refs given
     MirrorAction action = MirrorAction::Keep;
-    double       new_t = 0.0;        // Move / Show: the project time
+    double       new_t = 0.0;        // Move / Show / Retime / UserDrag: the project time
+    double       new_c = 0.0;        // UserDrag: the clip time it was dropped at
     bool         delete_old = false;  // Hide: delete the marker under the ref's GUID
 };
 
 // What the timeline holds for one ref.
 struct MirrorRefState {
-    bool   exists = false;   // a project marker with the ref's GUID is there
-    double now_t = 0.0;      // its position, when it exists
-    bool   restore = false;  // its GUID is missing because the mirror deleted it: bring it back
+    bool        exists = false;    // a project marker with the ref's GUID is there
+    double      now_t = 0.0;       // its position, when it exists
+    bool        restore = false;   // its GUID is missing because the mirror deleted it: bring it back
+    std::string name;              // 10-4c: its name, when it exists (has_name)
+    bool        has_name = false;
 };
 
 // One step per ref (same order). `map_changed`: the item's clip map differs from the one the
-// mirror saw on its last tick (a move, trim, rate or offset change). `copy`: the record is a
-// copy of another item's (duplicate, paste, right part of a split): every ref with a clip time
-// gets a fresh marker of its own (Show), or is hidden without touching the original's (Hide,
-// delete_old false; a ref without a clip time on a copy too: the marker is the original's).
-// Otherwise a ref without a clip time (older record) is always kept.
+// mirror saw on its last scan (false on first sight): a marker at neither its expected place nor
+// where RAV put it is then placed from the item (the item wins), never read as a user drag. A
+// missing marker whose event is outside the item is hidden, not read as a delete. `copy`: the record is a copy of another item's (duplicate,
+// paste, right part of a split): every ref with a clip time gets a fresh marker of its own (Show),
+// or is hidden without touching the original's (Hide, delete_old false; a ref without a clip time
+// on a copy too: the marker is the original's); a copy never reads user edits. Otherwise a ref
+// without a clip time (older record) is always kept, and one without a name is never read as a
+// user edit (a missing or dragged marker is then kept as it is).
 std::vector<MirrorStep> MirrorPlan(const std::vector<ProjectMarkerRef>& refs, const std::vector<MirrorRefState>& state,
                                    const ItemClipMap& map, bool map_changed, bool copy);
+
+// ---- 10-4c: REAPER-side edits of RAV's markers -> the event list ---------------------------------
+
+enum class MarkerEditKind {
+    Drag,    // moved to new_c: a detection becomes a user event there (suppressed where it was), a
+             // user event moves
+    Delete,  // a detection is suppressed, a user event removed
+    Disown,  // renamed (or dragged outside the item): as Delete for the event list; the marker is
+             // the user's from now on (the caller drops its ref)
+};
+
+struct MarkerEdit {
+    MarkerEditKind kind = MarkerEditKind::Drag;
+    double         c = 0.0;      // the event's clip time (the ref's)
+    double         new_c = 0.0;  // Drag: the clip time it was dropped at
+    std::string    name;         // the marker's name as RAV wrote it
+    uint32_t       color = 0;    // ... its colour (has_color)
+    bool           has_color = false;
+    bool           preview = false;  // a preview marker ("<marker> - Preview", colour darkened)
+};
+
+// The rule a marker belongs to (by its name, then its colour; a rule with an event at its clip
+// time first), or -1.
+int MarkerEditBlock(const ItemRules& rules, const MarkerEdit& e);
+
+// The record's event list with the edits applied, with the Tagging view's Move / Delete
+// semantics (a detection: suppressed, plus a user event on a drag; a user event: moved or
+// removed) but the values are KEPT, never re-measured (spec decision): a dragged detection keeps
+// its strength / speed (the applied snapshot's, else the nearest live detection's within 1 ms from
+// `detections`, else 0); a dragged user event keeps its values. An
+// edit whose rule is not found, or a second edit of the same event, changes nothing. `blocks`
+// (optional) gets each edit's rule (-1 = ignored). Only `events` changes.
+ItemRules ApplyMarkerEdits(const ItemRules& rules, const std::vector<MarkerEdit>& edits,
+                           const std::vector<Event>* detections = nullptr, std::vector<int>* blocks = nullptr);
+
+// Both: the other marker of one event. The committed take ref at clip time c (+-tol) with this
+// name, or the project ref with a clip time at c (+-tol) and this name; -1 when none. A ref whose
+// `skip` entry is non-zero (already handled or dropped this scan) is passed over; `skip` may be
+// shorter than the refs (missing entries = not skipped).
+int FindTakeTwin(const std::vector<TakeMarkerRef>& tmarkers, double c, const std::string& name, double tol,
+                 const std::vector<char>& skip);
+int FindProjectTwin(const std::vector<ProjectMarkerRef>& pmarkers, double c, const std::string& name, double tol,
+                    const std::vector<char>& skip);
+
+// Take markers have no GUID: RAV's are recognised by time and name (kOwnTakeTolS in
+// tag_markers.cpp). A ref whose marker is not there is matched by elimination among the take's
+// markers no ref matches: one at the same time with another name -> Rename; else the nearest one
+// with the same name elsewhere -> Drag; else -> Delete.
+enum class TakeRefFate { InPlace, Drag, Rename, Delete };
+struct TakeRefMatch {
+    TakeRefFate fate = TakeRefFate::InPlace;
+    int         marker = -1;  // InPlace / Drag / Rename: the index into the markers given
+};
+std::vector<TakeRefMatch> MatchTakeRefs(const std::vector<TakeMarkerRef>& refs,
+                                        const std::vector<ExistingMarker>& markers, double tol);
 
 // True when the mirror manages this record: a project marker ref with a clip time (an older
 // record behaves as before until its next Commit).

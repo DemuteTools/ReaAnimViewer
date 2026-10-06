@@ -80,8 +80,17 @@ void ClearLastApplyResult();
 // back. A copy of an item (duplicate, paste, right part of a split) gets markers of its own (a
 // copy hides a ref without deleting: that marker is the original's); the markers
 // of a deleted item are deleted. It makes no undo point (an undo restores the project, and the
-// next tick converges again), never touches markers RAV does not own, and never restores a RAV
-// marker the user dragged or deleted while its item stayed put (story 10-4c).
+// next tick converges again) and never touches markers RAV does not own.
+//
+// 10-4c: two-way. On every moved tick it also reads the user's REAPER-side edits of the markers
+// RAV owns (project and take, committed and previews, RAV window open or closed): a drag becomes a
+// user event at the new time (a detection dragged: suppressed where it was), a delete suppresses
+// the event (a user event is removed), a rename or a drag outside the item gives the marker to the
+// user (its event suppressed, its ref dropped). Both: the other marker of the event follows. For a
+// committed marker the record, the commit's signature (when the item was up to date) and the Cancel
+// snapshot take the edit, so the item stays "markers up to date"; for a preview only the events
+// change and the previews are rewritten. Written without an undo point: it rides the edit's own
+// (state-based, so Ctrl+Z / Ctrl+Y converge again). One console_log info line per edit.
 
 // The timer callback (main thread). No-throw.
 void MarkerMirrorTick();

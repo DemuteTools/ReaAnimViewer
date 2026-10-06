@@ -491,23 +491,235 @@ std::vector<MirrorStep> MirrorPlan(const std::vector<ProjectMarkerRef>& refs, co
         }
         if (!st.exists) {
             // Deleted by the mirror (hidden, or its item was deleted then restored): back.
-            // Deleted by the user: left deleted (10-4c will make that a suppression).
-            if (!st.restore) continue;
-            if (in) {
-                step.action = MirrorAction::Show;
-                step.new_t = pt;
-            } else {
-                step.action = MirrorAction::Hide;
+            if (st.restore) {
+                if (in) {
+                    step.action = MirrorAction::Show;
+                    step.new_t = pt;
+                } else {
+                    step.action = MirrorAction::Hide;
+                }
+            } else if (r.has_name) {
+                // 10-4c: deleted by the user. Its event now outside the item: hidden (nothing to
+                // delete), not read as a delete.
+                step.action = in ? MirrorAction::UserDelete : MirrorAction::Hide;
             }
             continue;
         }
-        if (!map_changed) continue;  // the item stayed put: a dragged marker is the user's
-        if (!in) {
-            step.action = MirrorAction::Hide;
-            step.delete_old = true;
-        } else if (std::fabs(st.now_t - pt) > 1e-9) {
-            step.action = MirrorAction::Move;
-            step.new_t = pt;
+        // 10-4c: renamed by the user: the marker is theirs.
+        if (r.has_name && st.has_name && st.name != r.name) {
+            step.action = MirrorAction::UserDisown;
+            continue;
+        }
+        if (in && std::fabs(st.now_t - pt) <= kMirrorPosTolS) {
+            // In place (an undo, a ripple that moved it with its item): only `t` follows.
+            if (std::fabs(st.now_t - r.t) > kMirrorPosTolS) {
+                step.action = MirrorAction::Retime;
+                step.new_t = st.now_t;
+            }
+            continue;
+        }
+        if (std::fabs(st.now_t - r.t) <= kMirrorPosTolS) {
+            // Still where RAV put it: its item changed (move, trim, rate, offset).
+            if (!in) {
+                step.action = MirrorAction::Hide;
+                step.delete_old = true;
+            } else {
+                step.action = MirrorAction::Move;
+                step.new_t = pt;
+            }
+            continue;
+        }
+        // At neither place. The item changed too (a tempo / timebase change, a ripple that moved
+        // the marker by another amount): the item wins, the marker is placed from it.
+        if (map_changed) {
+            if (!in) {
+                step.action = MirrorAction::Hide;
+                step.delete_old = true;
+            } else {
+                step.action = MirrorAction::Move;
+                step.new_t = pt;
+            }
+            continue;
+        }
+        // The item unchanged: the user dragged it (10-4c). Outside the item: theirs.
+        if (!r.has_name) continue;
+        double nc = 0.0;
+        if (FirstPassClipTime(map, st.now_t, &nc)) {
+            step.action = MirrorAction::UserDrag;
+            step.new_t = st.now_t;
+            step.new_c = nc;
+        } else {
+            step.action = MirrorAction::UserDisown;
+        }
+    }
+    return out;
+}
+
+namespace {
+
+constexpr double kEditMatchTolS = 1e-5;  // an entry this close to a marker's clip time is its event
+
+// The marker name a rule writes, committed or preview.
+std::string EditNameOf(const Block& b, bool preview)
+{
+    const std::string n = OneLine(b.marker);
+    return preview ? PreviewMarkerName(n) : n;
+}
+
+int FindEntryNear(const std::vector<EventEntry>& entries, EventKind kind, int block, double t, double tol)
+{
+    int    best = -1;
+    double bd = 1e300;
+    for (size_t i = 0; i < entries.size(); ++i) {
+        const EventEntry& x = entries[i];
+        if (x.kind != kind || x.block != block) continue;
+        const double d = std::fabs(x.t - t);
+        if (d <= tol + 1e-12 && d < bd) {
+            bd = d;
+            best = static_cast<int>(i);
+        }
+    }
+    return best;
+}
+
+}  // namespace
+
+int MarkerEditBlock(const ItemRules& rules, const MarkerEdit& e)
+{
+    std::vector<int> cand;
+    for (size_t i = 0; i < rules.blocks.size(); ++i)
+        if (EditNameOf(rules.blocks[i], e.preview) == e.name) cand.push_back(static_cast<int>(i));
+    if (e.has_color && cand.size() > 1) {
+        std::vector<int> col;
+        for (int b : cand) {
+            const uint32_t c = rules.blocks[static_cast<size_t>(b)].color;
+            if ((e.preview ? PreviewColor(c) : c) == e.color) col.push_back(b);
+        }
+        if (!col.empty()) cand = col;
+    }
+    if (cand.empty()) return -1;
+    if (cand.size() > 1) {
+        for (int b : cand)
+            if (FindEntryNear(rules.events, EventKind::User, b, e.c, kEditMatchTolS) >= 0) return b;
+        for (int b : cand)
+            if (FindEntryNear(rules.events, EventKind::Detected, b, e.c, kEditMatchTolS) >= 0) return b;
+    }
+    return cand.front();
+}
+
+ItemRules ApplyMarkerEdits(const ItemRules& rules, const std::vector<MarkerEdit>& edits,
+                           const std::vector<Event>* detections, std::vector<int>* blocks)
+{
+    ItemRules out = rules;
+    if (blocks) blocks->assign(edits.size(), -1);
+    std::vector<std::pair<int, double>> done;  // (rule, clip time) of the events edited
+    for (size_t k = 0; k < edits.size(); ++k) {
+        const MarkerEdit& e = edits[k];
+        if (!std::isfinite(e.c) || (e.kind == MarkerEditKind::Drag && !std::isfinite(e.new_c))) continue;
+        const int b = MarkerEditBlock(out, e);
+        if (b < 0) continue;
+        bool again = false;
+        for (const auto& d : done)
+            if (d.first == b && std::fabs(d.second - e.c) <= kEditMatchTolS) again = true;
+        if (again) continue;
+        done.push_back({b, e.c});
+        if (blocks) (*blocks)[k] = b;
+        std::vector<EventEntry>& ev = out.events;
+        const int user = FindEntryNear(ev, EventKind::User, b, e.c, kEditMatchTolS);
+        if (user >= 0) {
+            // A user event: it moves, or goes.
+            if (e.kind == MarkerEditKind::Drag) ev[static_cast<size_t>(user)].t = e.new_c;
+            else ev.erase(ev.begin() + user);
+            continue;
+        }
+        // A detection: suppressed where it was (once), and on a drag the user's own event at new_c
+        // with the detection's values.
+        if (FindEntryNear(ev, EventKind::Suppress, b, e.c, kEditMatchTolS) < 0) ev.push_back(MakeSuppression(b, e.c));
+        if (e.kind != MarkerEditKind::Drag) continue;
+        double     s = 0.0, v = 0.0;
+        const int  snap = FindEntryNear(ev, EventKind::Detected, b, e.c, kEditMatchTolS);
+        if (snap >= 0) {
+            s = ev[static_cast<size_t>(snap)].strength;
+            v = ev[static_cast<size_t>(snap)].speed;
+        } else if (detections) {
+            double bd = 1e300;
+            for (const Event& d : *detections) {
+                const double dist = std::fabs(d.time_s - e.c);
+                if (d.block == b && dist <= 0.001 + 1e-12 && dist < bd) {
+                    bd = dist;
+                    s = d.strength;
+                    v = d.speed;
+                }
+            }
+        }
+        ev.push_back(MakeUserEvent(b, e.new_c, s, v));
+    }
+    return out;
+}
+
+int FindTakeTwin(const std::vector<TakeMarkerRef>& tmarkers, double c, const std::string& name, double tol,
+                 const std::vector<char>& skip)
+{
+    for (size_t i = 0; i < tmarkers.size(); ++i)
+        if (!(i < skip.size() && skip[i]) && tmarkers[i].name == name && std::fabs(tmarkers[i].t - c) <= tol)
+            return static_cast<int>(i);
+    return -1;
+}
+
+int FindProjectTwin(const std::vector<ProjectMarkerRef>& pmarkers, double c, const std::string& name, double tol,
+                    const std::vector<char>& skip)
+{
+    for (size_t i = 0; i < pmarkers.size(); ++i) {
+        const ProjectMarkerRef& p = pmarkers[i];
+        if (!(i < skip.size() && skip[i]) && p.has_c && p.name == name && std::fabs(p.c - c) <= tol)
+            return static_cast<int>(i);
+    }
+    return -1;
+}
+
+std::vector<TakeRefMatch> MatchTakeRefs(const std::vector<TakeMarkerRef>& refs,
+                                        const std::vector<ExistingMarker>& markers, double tol)
+{
+    std::vector<TakeRefMatch> out(refs.size());
+    std::vector<char>         used(markers.size(), 0);
+    std::vector<char>         placed(refs.size(), 0);
+    auto at = [&](double a, double b) { return std::fabs(a - b) <= tol + 1e-12; };
+    // In place: its name at its time.
+    for (size_t r = 0; r < refs.size(); ++r)
+        for (size_t m = 0; m < markers.size(); ++m)
+            if (!used[m] && markers[m].name == refs[r].name && at(markers[m].t, refs[r].t)) {
+                used[m] = placed[r] = 1;
+                out[r] = {TakeRefFate::InPlace, static_cast<int>(m)};
+                break;
+            }
+    // Renamed: a marker no ref matches at its time, with another name.
+    for (size_t r = 0; r < refs.size(); ++r) {
+        if (placed[r]) continue;
+        for (size_t m = 0; m < markers.size(); ++m)
+            if (!used[m] && markers[m].name != refs[r].name && at(markers[m].t, refs[r].t)) {
+                used[m] = placed[r] = 1;
+                out[r] = {TakeRefFate::Rename, static_cast<int>(m)};
+                break;
+            }
+    }
+    // Dragged: the nearest marker no ref matches with its name.
+    for (size_t r = 0; r < refs.size(); ++r) {
+        if (placed[r]) continue;
+        int    best = -1;
+        double bd = 1e300;
+        for (size_t m = 0; m < markers.size(); ++m) {
+            if (used[m] || markers[m].name != refs[r].name) continue;
+            const double d = std::fabs(markers[m].t - refs[r].t);
+            if (d < bd) {
+                bd = d;
+                best = static_cast<int>(m);
+            }
+        }
+        if (best >= 0) {
+            used[static_cast<size_t>(best)] = placed[r] = 1;
+            out[r] = {TakeRefFate::Drag, best};
+        } else {
+            out[r] = {TakeRefFate::Delete, -1};
         }
     }
     return out;

@@ -523,50 +523,44 @@ int main()
         // Move: 2 s right, its markers follow; the older ref stays.
         ItemClipMap mv = m;
         mv.item_pos = 12.0;
-        std::vector<MirrorStep> st = MirrorPlan(refs, placed, mv, true, false);
+        std::vector<MirrorStep> st = MirrorPlan(refs, placed, mv, false, false);
         CHECK(st.size() == 3 && st[0].action == MirrorAction::Move && Near(st[0].new_t, 12.5));
         CHECK(st[1].action == MirrorAction::Move && Near(st[1].new_t, 13.5) && st[2].action == MirrorAction::Keep);
         // Nothing changed: nothing to do.
         for (const MirrorStep& x : MirrorPlan(refs, placed, m, false, false)) CHECK(x.action == MirrorAction::Keep);
         // Already in place after a change (e.g. an undo restored both): nothing to do.
-        for (const MirrorStep& x : MirrorPlan(refs, placed, m, true, false)) CHECK(x.action == MirrorAction::Keep);
+        for (const MirrorStep& x : MirrorPlan(refs, placed, m, false, false)) CHECK(x.action == MirrorAction::Keep);
         // Rate 2x: pos + (c - offs) / rate.
         ItemClipMap rt = m;
         rt.rate = 2.0;
-        st = MirrorPlan(refs, placed, rt, true, false);
+        st = MirrorPlan(refs, placed, rt, false, false);
         CHECK(st[0].action == MirrorAction::Move && Near(st[0].new_t, 10.25) && Near(st[1].new_t, 10.75));
         // Start offset (left trim) 0.25 s, rate 2x: 10 + (1.5 - 0.25) / 2.
         rt.start_offs = 0.25;
-        st = MirrorPlan(refs, placed, rt, true, false);
+        st = MirrorPlan(refs, placed, rt, false, false);
         CHECK(st[0].action == MirrorAction::Move && Near(st[0].new_t, 10.125) && Near(st[1].new_t, 10.625));
 
         // Trim the end before B: B is hidden (its marker deleted), A stays.
         ItemClipMap tr = m;
         tr.item_len = 1.0;
-        st = MirrorPlan(refs, placed, tr, true, false);
+        st = MirrorPlan(refs, placed, tr, false, false);
         CHECK(st[0].action == MirrorAction::Keep && st[1].action == MirrorAction::Hide && st[1].delete_old);
         // Extend again: the hidden B comes back at the right time.
         std::vector<ProjectMarkerRef> hidden = refs;
         hidden[1].guid.clear();
         std::vector<MirrorRefState> hs = placed;
         hs[1] = MirrorRefState{};
-        st = MirrorPlan(hidden, hs, m, true, false);
+        st = MirrorPlan(hidden, hs, m, false, false);
         CHECK(st[1].action == MirrorAction::Show && Near(st[1].new_t, 11.5) && st[0].action == MirrorAction::Keep);
         // Still trimmed: it stays hidden.
-        CHECK(MirrorPlan(hidden, hs, tr, true, false)[1].action == MirrorAction::Keep);
+        CHECK(MirrorPlan(hidden, hs, tr, false, false)[1].action == MirrorAction::Keep);
 
-        // A marker the user dragged while the item stayed put: left where it is.
-        std::vector<MirrorRefState> dragged = placed;
-        dragged[0].now_t = 10.8;
-        CHECK(MirrorPlan(refs, dragged, m, false, false)[0].action == MirrorAction::Keep);
-        // ... placed again from its clip time when the item moves.
-        st = MirrorPlan(refs, dragged, mv, true, false);
-        CHECK(st[0].action == MirrorAction::Move && Near(st[0].new_t, 12.5));
-        // A marker the user deleted stays deleted, even when the item moves.
+        // 10-4c replaces 10-4b's interim rule (a dragged / deleted marker left alone): see the
+        // 10-4c section below. A deleted one is a user delete.
         std::vector<MirrorRefState> gone = placed;
         gone[0] = MirrorRefState{};
-        CHECK(MirrorPlan(refs, gone, mv, true, false)[0].action == MirrorAction::Keep);
-        CHECK(MirrorPlan(refs, gone, m, false, false)[0].action == MirrorAction::Keep);
+        CHECK(MirrorPlan(refs, gone, m, false, false)[0].action == MirrorAction::UserDelete);
+        CHECK(MirrorPlan(refs, gone, m, false, false)[2].action == MirrorAction::Keep);  // older ref
         // One the mirror deleted (its item deleted, then restored by Ctrl+Z): back.
         gone[0].restore = true;
         st = MirrorPlan(refs, gone, m, false, false);
@@ -585,8 +579,8 @@ int main()
         right.item_pos = 11.0;
         right.item_len = 2.0;
         right.start_offs = 1.0;
-        const std::vector<MirrorStep> ls = MirrorPlan(refs, placed, left, true, false);
-        const std::vector<MirrorStep> rs = MirrorPlan(refs, placed, right, true, true);
+        const std::vector<MirrorStep> ls = MirrorPlan(refs, placed, left, false, false);
+        const std::vector<MirrorStep> rs = MirrorPlan(refs, placed, right, false, true);
         CHECK(ls[0].action == MirrorAction::Keep && ls[1].action == MirrorAction::Hide && ls[1].delete_old);
         CHECK(rs[0].action == MirrorAction::Hide && !rs[0].delete_old);
         CHECK(rs[1].action == MirrorAction::Show && Near(rs[1].new_t, 11.5));
@@ -725,6 +719,323 @@ int main()
         ItemRules curr = snapr;
         curr.applied.item = "{COPY}";
         CHECK(RestoreCommitted(snapr, curr).applied.item == "{COPY}");
+    }
+
+    // ---- 10-4c ----
+    // REAPER-side edits of RAV's markers -> the event list (MirrorPlan's user steps,
+    // ApplyMarkerEdits, MatchTakeRefs).
+    {
+        const uint32_t kCol = 0x1000000u | 0x5F9EDDu;
+        auto ref = [&](const char* guid, double c, double t) {
+            ProjectMarkerRef r;
+            r.guid = guid;
+            r.c = c;
+            r.t = t;
+            r.name = "Step";
+            r.color = kCol;
+            r.has_c = r.has_color = r.has_name = true;
+            return r;
+        };
+        auto at = [](double t, const char* name = "Step") {
+            MirrorRefState s;
+            s.exists = true;
+            s.now_t = t;
+            s.name = name;
+            s.has_name = true;
+            return s;
+        };
+        auto edit = [&](MarkerEditKind k, double c, double new_c = 0.0, bool preview = false) {
+            MarkerEdit e;
+            e.kind = k;
+            e.c = c;
+            e.new_c = new_c;
+            e.name = preview ? PreviewMarkerName("Step") : "Step";
+            e.color = preview ? PreviewColor(kCol) : kCol;
+            e.has_color = true;
+            e.preview = preview;
+            return e;
+        };
+        ItemClipMap m;
+        m.item_pos = 10.0;
+        m.item_len = 3.0;
+        m.clip_len = 2.0;
+        const std::vector<ProjectMarkerRef> refs = {ref("{A}", 0.5, 10.5), ref("{B}", 1.5, 11.5)};
+        const std::vector<MirrorRefState>   placed = {at(10.5), at(11.5)};
+
+        // A committed item, up to date: detections at 0.5 and 1.5 (the applied snapshot keeps
+        // their values), a Commit in Project mode.
+        const std::vector<Event> det = {Det(0, 0.5, 0.8), Det(0, 1.5, 0.9)};
+        ItemRules rec;
+        rec.blocks = {Rule("Step", kCol)};
+        rec.pmarkers = refs;
+        auto plan_of = [&](const ItemRules& r) {
+            return PlanMarkers(BuildEventList(det, r.events, r.blocks.size()), r.blocks, m);
+        };
+        RecordApplied(rec, plan_of(rec), MarkerMode::Project);
+        rec.applied.item = "{I1}";
+        CHECK(MarkersUpToDate(rec, plan_of(rec), MarkerMode::Project));
+        CHECK(rec.events.size() == 2 && Near(rec.events[0].strength, 0.8));
+
+        // Drag detected: A dragged 100 ms right, item untouched -> a user drag to clip 0.6.
+        std::vector<MirrorRefState> dragged = placed;
+        dragged[0].now_t = 10.6;
+        std::vector<MirrorStep> st = MirrorPlan(refs, dragged, m, false, false);
+        CHECK(st[0].action == MirrorAction::UserDrag && Near(st[0].new_c, 0.6, 1e-9) && Near(st[0].new_t, 10.6));
+        CHECK(st[1].action == MirrorAction::Keep);
+        {
+            std::vector<int> bl;
+            ItemRules after = ApplyMarkerEdits(rec, {edit(MarkerEditKind::Drag, 0.5, st[0].new_c)}, &det, &bl);
+            CHECK(bl.size() == 1 && bl[0] == 0);
+            // Suppression at the old time + user event at the new one, the detection's values kept.
+            const std::vector<ShownEvent> l = BuildEventList(det, after.events, 1);
+            CHECK(Count(l, ShownKind::Suppressed) == 1 && Count(l, ShownKind::User) == 1 && Count(l, ShownKind::Detected) == 1);
+            for (const ShownEvent& e : l)
+                if (e.kind == ShownKind::User) CHECK(Near(e.t, 0.6, 1e-9) && Near(e.strength, 0.8) && Near(e.speed, 2.0));
+            // The commit's signature follows (the item was up to date): "markers up to date".
+            after.applied.sig = MarkerSignature(plan_of(after), MarkerMode::Project);
+            CHECK(MarkersUpToDate(after, plan_of(after), MarkerMode::Project));
+            CHECK(!PreviewNeeded(after, plan_of(after), MarkerMode::Project));
+            // The ref now says where the marker is: the next tick finds it in place.
+            std::vector<ProjectMarkerRef> r2 = refs;
+            r2[0].c = st[0].new_c;
+            r2[0].t = st[0].new_t;
+            for (const MirrorStep& x : MirrorPlan(r2, dragged, m, false, false)) CHECK(x.action == MirrorAction::Keep);
+            // Undo: marker and record back together -> nothing to do; redo (marker dragged,
+            // record not yet) -> the same edit again.
+            for (const MirrorStep& x : MirrorPlan(refs, placed, m, false, false)) CHECK(x.action == MirrorAction::Keep);
+            CHECK(MirrorPlan(refs, dragged, m, false, false)[0].action == MirrorAction::UserDrag);
+        }
+        // Drag user event: that user event moves, its values kept, nothing suppressed.
+        {
+            ItemRules u = rec;
+            u.events.push_back(MakeUserEvent(0, 1.2, 0.3, 0.4));
+            ItemRules after = ApplyMarkerEdits(u, {edit(MarkerEditKind::Drag, 1.2, 1.25)}, &det);
+            CHECK(after.events.size() == u.events.size());
+            CHECK(Near(after.events.back().t, 1.25) && Near(after.events.back().strength, 0.3) &&
+                  after.events.back().kind == EventKind::User);
+            // Delete user event: removed.
+            ItemRules del = ApplyMarkerEdits(u, {edit(MarkerEditKind::Delete, 1.2)});
+            CHECK(del.events.size() == rec.events.size());
+            CHECK(Count(BuildEventList(det, del.events, 1), ShownKind::User) == 0);
+        }
+        // Delete detected: suppressed (restorable in the view), once.
+        {
+            ItemRules after = ApplyMarkerEdits(rec, {edit(MarkerEditKind::Delete, 1.5)});
+            const std::vector<ShownEvent> l = BuildEventList(det, after.events, 1);
+            CHECK(Count(l, ShownKind::Suppressed) == 1 && Count(l, ShownKind::Detected) == 1);
+            ItemRules twice = ApplyMarkerEdits(after, {edit(MarkerEditKind::Delete, 1.5)});
+            CHECK(twice.events.size() == after.events.size());  // no second suppression
+            // The marker missing on the timeline (not deleted by the mirror) = a user delete.
+            std::vector<MirrorRefState> gone = placed;
+            gone[1] = MirrorRefState{};
+            CHECK(MirrorPlan(refs, gone, m, false, false)[1].action == MirrorAction::UserDelete);
+        }
+        // Rename: the marker becomes the user's, the event is suppressed.
+        {
+            std::vector<MirrorRefState> ren = placed;
+            ren[0].name = "Step (mine)";
+            st = MirrorPlan(refs, ren, m, false, false);
+            CHECK(st[0].action == MirrorAction::UserDisown && st[1].action == MirrorAction::Keep);
+            ItemRules after = ApplyMarkerEdits(rec, {edit(MarkerEditKind::Disown, 0.5)});
+            CHECK(Count(BuildEventList(det, after.events, 1), ShownKind::Suppressed) == 1);
+            // A name that cannot be read is never a rename.
+            ren[0].has_name = false;
+            CHECK(MirrorPlan(refs, ren, m, false, false)[0].action == MirrorAction::Keep);
+        }
+        // Outside item: dragged past the item's end -> the user's, event suppressed.
+        {
+            std::vector<MirrorRefState> out = placed;
+            out[1].now_t = 13.5;
+            CHECK(MirrorPlan(refs, out, m, false, false)[1].action == MirrorAction::UserDisown);
+        }
+        // Preview: the event list changes like a committed marker's; the commit is untouched.
+        {
+            ItemRules pv = rec;
+            ItemRules after = ApplyMarkerEdits(pv, {edit(MarkerEditKind::Drag, 0.5, 0.7, true)}, &det);
+            CHECK(Count(BuildEventList(det, after.events, 1), ShownKind::User) == 1);
+            // ApplyMarkerEdits changes the events only: the record's other fields (signature, refs,
+            // owner) are left alone (the commit staying untouched is tag_markers.cpp's job).
+            CHECK(after.applied.sig == rec.applied.sig && after.pmarkers.size() == rec.pmarkers.size() &&
+                  after.applied.item == "{I1}");
+            // A preview edit resolves its rule by the preview name and darkened colour.
+            CHECK(MarkerEditBlock(pv, edit(MarkerEditKind::Delete, 0.5, 0.0, true)) == 0);
+            CHECK(MarkerEditBlock(pv, edit(MarkerEditKind::Delete, 0.5, 0.0, false)) == 0);
+        }
+        // Rule resolution: same name, the colour decides; an unknown name changes nothing;
+        // the same event twice is edited once.
+        {
+            ItemRules two = rec;
+            two.blocks = {Rule("Step", 0x1000000u | 0xFF0000u), Rule("Step", kCol)};
+            CHECK(MarkerEditBlock(two, edit(MarkerEditKind::Delete, 0.5)) == 1);
+            MarkerEdit unk = edit(MarkerEditKind::Delete, 0.5);
+            unk.name = "Other";
+            std::vector<int> bl;
+            ItemRules same = ApplyMarkerEdits(rec, {unk}, nullptr, &bl);
+            CHECK(bl.size() == 1 && bl[0] == -1 && same.events.size() == rec.events.size());
+            ItemRules once = ApplyMarkerEdits(rec, {edit(MarkerEditKind::Drag, 0.5, 0.6), edit(MarkerEditKind::Drag, 0.5, 0.7)},
+                                              nullptr, &bl);
+            CHECK(bl[0] == 0 && bl[1] == -1 && once.events.size() == rec.events.size() + 2);
+            // No snapshot entry: the live detection's values (within 1 ms).
+            ItemRules nos = rec;
+            nos.events.clear();
+            ItemRules d2 = ApplyMarkerEdits(nos, {edit(MarkerEditKind::Drag, 1.5, 1.6)}, &det);
+            CHECK(d2.events.size() == 2 && Near(d2.events[1].strength, 0.9));
+        }
+        // Tie-break: two rules with the same name and colour -> the one with an event at the clip time.
+        {
+            ItemRules tie;
+            tie.blocks = {Rule("Step", kCol), Rule("Step", kCol)};
+            EventEntry snap1;  // only rule 1 has a Detected snapshot entry at 1.5
+            snap1.t = 1.5;
+            snap1.kind = EventKind::Detected;
+            snap1.block = 1;
+            snap1.strength = 0.6;
+            snap1.speed = 0.7;
+            snap1.has_strength = snap1.has_speed = true;
+            tie.events = {snap1};
+            CHECK(MarkerEditBlock(tie, edit(MarkerEditKind::Delete, 1.5)) == 1);
+            ItemRules sup = ApplyMarkerEdits(tie, {edit(MarkerEditKind::Delete, 1.5)});
+            CHECK(sup.events.size() == 2 && sup.events[1].kind == EventKind::Suppress && sup.events[1].block == 1);
+            ItemRules mvd = ApplyMarkerEdits(tie, {edit(MarkerEditKind::Drag, 1.5, 1.6)});
+            CHECK(mvd.events.size() == 3 && mvd.events[2].kind == EventKind::User && mvd.events[2].block == 1 &&
+                  Near(mvd.events[2].strength, 0.6));
+            // User-entry variant: only rule 1 has a user event at 0.9 -> it moves, on rule 1.
+            ItemRules tu;
+            tu.blocks = tie.blocks;
+            tu.events = {MakeUserEvent(1, 0.9, 0.2, 0.3)};
+            CHECK(MarkerEditBlock(tu, edit(MarkerEditKind::Drag, 0.9, 1.0)) == 1);
+            ItemRules um = ApplyMarkerEdits(tu, {edit(MarkerEditKind::Drag, 0.9, 1.0)});
+            CHECK(um.events.size() == 1 && um.events[0].block == 1 && Near(um.events[0].t, 1.0) &&
+                  um.events[0].kind == EventKind::User);
+            // Neither has an event there: the first.
+            CHECK(MarkerEditBlock(tu, edit(MarkerEditKind::Delete, 0.4)) == 0);
+        }
+        // The item changed too (tempo / timebase change, a ripple moving the marker by another
+        // amount): the item wins, never a user drag.
+        {
+            ItemClipMap mv = m;
+            mv.item_pos = 12.0;
+            std::vector<MirrorRefState> odd = {at(12.7), at(11.9)};  // at neither place
+            st = MirrorPlan(refs, odd, mv, true, false);
+            CHECK(st[0].action == MirrorAction::Move && Near(st[0].new_t, 12.5));
+            CHECK(st[1].action == MirrorAction::Move && Near(st[1].new_t, 13.5));
+            CHECK(MirrorPlan(refs, odd, mv, false, false)[0].action == MirrorAction::UserDrag);  // item unchanged: a user drag
+            ItemClipMap tr = m;
+            tr.item_len = 1.0;  // B now outside, its marker at neither place
+            std::vector<MirrorRefState> odd2 = {at(10.5), at(11.7)};
+            st = MirrorPlan(refs, odd2, tr, true, false);
+            CHECK(st[1].action == MirrorAction::Hide && st[1].delete_old);
+            // A rename still reads as a rename.
+            odd[0].name = "mine";
+            CHECK(MirrorPlan(refs, odd, mv, true, false)[0].action == MirrorAction::UserDisown);
+        }
+        // A missing marker whose event is now outside the item: hidden, not a user delete.
+        {
+            ItemClipMap tr = m;
+            tr.item_len = 1.0;
+            std::vector<MirrorRefState> gone = placed;
+            gone[1] = MirrorRefState{};
+            st = MirrorPlan(refs, gone, tr, false, false);
+            CHECK(st[1].action == MirrorAction::Hide && !st[1].delete_old);
+            CHECK(MirrorPlan(refs, gone, m, false, false)[1].action == MirrorAction::UserDelete);  // inside: a delete
+        }
+        // Item moved vs drag vs ripple.
+        {
+            ItemClipMap mv = m;
+            mv.item_pos = 12.0;
+            st = MirrorPlan(refs, placed, mv, false, false);  // item moved, markers untouched: they follow
+            CHECK(st[0].action == MirrorAction::Move && Near(st[0].new_t, 12.5));
+            std::vector<MirrorRefState> rip = {at(12.5), at(13.5)};  // ripple: moved with the item
+            st = MirrorPlan(refs, rip, mv, false, false);
+            CHECK(st[0].action == MirrorAction::Retime && Near(st[0].new_t, 12.5) && st[1].action == MirrorAction::Retime);
+            std::vector<MirrorRefState> drag = placed;  // item untouched, marker dragged
+            drag[0].now_t = 10.4;
+            CHECK(MirrorPlan(refs, drag, m, false, false)[0].action == MirrorAction::UserDrag);
+        }
+        // First sight after reopen: markers where the record says -> nothing moves, nothing changes.
+        for (const MirrorStep& x : MirrorPlan(refs, placed, m, false, false)) CHECK(x.action == MirrorAction::Keep);
+        // Old record: refs without clip time (or without name) -> edits ignored, as 10-4b.
+        {
+            ProjectMarkerRef o;
+            o.guid = "{O}";
+            o.t = 10.9;
+            ProjectMarkerRef nn = ref("{N}", 1.0, 11.0);
+            nn.has_name = false;
+            std::vector<MirrorRefState> ds = {at(10.7), at(11.3)};
+            st = MirrorPlan({o, nn}, ds, m, false, false);
+            CHECK(st[0].action == MirrorAction::Keep && st[1].action == MirrorAction::Keep);
+            st = MirrorPlan({o, nn}, {MirrorRefState{}, MirrorRefState{}}, m, false, false);
+            CHECK(st[0].action == MirrorAction::Keep && st[1].action == MirrorAction::Keep);
+        }
+        // A copy never reads edits.
+        {
+            std::vector<MirrorRefState> dragged2 = placed;
+            dragged2[0].now_t = 10.6;
+            CHECK(MirrorPlan(refs, dragged2, m, false, true)[0].action == MirrorAction::Show);
+        }
+        // Take markers: matched by time and name, then by elimination.
+        {
+            TakeMarkerRef a, b, c, d;
+            a.t = 0.5;
+            b.t = 1.5;
+            c.t = 1.0;
+            d.t = 1.8;
+            a.name = b.name = c.name = d.name = "Step";
+            const std::vector<ExistingMarker> mk = {
+                {0.5, "Step"},       // a in place
+                {1.5, "Mine"},       // b renamed
+                {0.7, "Step"},       // c dragged here (nearest unowned same name)
+                {0.5000001, "Step"}, // a foreign twin of a: used as a candidate for c? farther than 0.7
+            };
+            const std::vector<TakeRefMatch> tm = MatchTakeRefs({a, b, c, d}, mk, 1e-5);
+            CHECK(tm.size() == 4);
+            CHECK(tm[0].fate == TakeRefFate::InPlace && tm[0].marker == 0);
+            CHECK(tm[1].fate == TakeRefFate::Rename && tm[1].marker == 1);
+            CHECK(tm[2].fate == TakeRefFate::Drag && tm[2].marker == 2);
+            // d: the only unowned same-name marker left is the far one at 0.5000001: a drag there.
+            CHECK(tm[3].fate == TakeRefFate::Drag && tm[3].marker == 3);
+            const std::vector<TakeRefMatch> none = MatchTakeRefs({a, c}, {{0.5, "Step"}}, 1e-5);
+            CHECK(none[0].fate == TakeRefFate::InPlace && none[1].fate == TakeRefFate::Delete && none[1].marker == -1);
+            // Every marker in place: nothing to do.
+            for (const TakeRefMatch& x : MatchTakeRefs({a, b}, {{1.5, "Step"}, {0.5, "Step"}}, 1e-5))
+                CHECK(x.fate == TakeRefFate::InPlace);
+            // A take marker's edit uses its source time as the event's clip time.
+            ItemRules after = ApplyMarkerEdits(rec, {edit(MarkerEditKind::Drag, a.t, 0.7)}, &det);
+            CHECK(Count(BuildEventList(det, after.events, 1), ShownKind::User) == 1);
+        }
+        // Both: the twin of an edited marker (same name, same clip time), either way.
+        {
+            TakeMarkerRef t0, t1, t2;
+            t0.t = 0.5;
+            t0.name = "Other";  // another rule's name at the same time: not a twin
+            t1.t = 0.5;
+            t1.name = "Step";
+            t2.t = 1.5;
+            t2.name = "Step";
+            const std::vector<TakeMarkerRef> tk = {t0, t1, t2};
+            // A project-marker edit finds the committed take ref of its event.
+            CHECK(FindTakeTwin(tk, refs[0].c, refs[0].name, 1e-5, {}) == 1);
+            CHECK(FindTakeTwin(tk, refs[1].c, refs[1].name, 1e-5, {}) == 2);
+            CHECK(FindTakeTwin(tk, 1.0, "Step", 1e-5, {}) == -1);   // another time
+            CHECK(FindTakeTwin(tk, 0.5, "Steps", 1e-5, {}) == -1);  // another name
+            CHECK(FindTakeTwin(tk, 0.50002, "Step", 1e-5, {}) == -1);  // outside the tolerance
+            CHECK(FindTakeTwin(tk, 0.500005, "Step", 1e-5, {}) == 1);  // inside it
+            // Already handled (or dropped) this scan: skipped.
+            CHECK(FindTakeTwin(tk, 0.5, "Step", 1e-5, {0, 1, 0}) == -1);
+            CHECK(FindTakeTwin(tk, 1.5, "Step", 1e-5, {0, 1}) == 2);  // a short skip list
+            // A take-marker edit finds the project ref of its event.
+            std::vector<ProjectMarkerRef> pr = refs;
+            CHECK(FindProjectTwin(pr, t1.t, t1.name, 1e-5, {}) == 0);
+            CHECK(FindProjectTwin(pr, t2.t, t2.name, 1e-5, {}) == 1);
+            CHECK(FindProjectTwin(pr, t0.t, t0.name, 1e-5, {}) == -1);  // another name
+            CHECK(FindProjectTwin(pr, 1.0, "Step", 1e-5, {}) == -1);    // another time
+            CHECK(FindProjectTwin(pr, 0.5, "Step", 1e-5, {1, 0}) == -1);  // skipped
+            // A hidden ref (no GUID) is still a twin; an older ref (no clip time) never is.
+            pr[0].guid.clear();
+            CHECK(FindProjectTwin(pr, 0.5, "Step", 1e-5, {}) == 0);
+            pr[1].has_c = false;
+            CHECK(FindProjectTwin(pr, 1.5, "Step", 1e-5, {}) == -1);
+        }
     }
 
     if (g_fails) {

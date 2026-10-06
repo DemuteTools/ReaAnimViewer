@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -561,9 +562,34 @@ int ResolveOnSkeleton(const TaggingModel& m, int id)
         const int b = id < static_cast<int>(m.role_to_bone.size()) ? m.role_to_bone[static_cast<size_t>(id)] : -1;
         return (b >= 0 && b < static_cast<int>(m.bone_names.size())) ? b : -1;
     }
+    // Story 10-3e: a custom role (or a colleague's) through its mapping by key.
+    const std::string role_key = RoleKeyOfRef(id);
+    if (!role_key.empty()) {
+        const auto it = m.custom_role_to_bone.find(role_key);
+        const int  b = it != m.custom_role_to_bone.end() ? it->second : -1;
+        return (b >= 0 && b < static_cast<int>(m.bone_names.size())) ? b : -1;
+    }
     for (size_t i = 0; i < m.bone_names.size(); ++i)
         if (BoneRefForBone(m.bone_names[i]) == id) return static_cast<int>(i);
     return -1;
+}
+
+// A role read by the rules but in no list ("tail end · not in your roles").
+constexpr char kNotInRoles[] = " \xC2\xB7 not in your roles";
+
+// Story 10-3e: the non-built-in role keys the Bone menu and the roles window list: the
+// user's roles (in their order), then the keys the item's rules read that are in no list.
+std::vector<std::string> CustomRoleRowKeys(const TaggingModel& m, std::vector<char>* foreign = nullptr)
+{
+    std::vector<std::string> keys;
+    for (const CustomRole& c : m.custom_roles) keys.push_back(c.key);
+    if (foreign) foreign->assign(keys.size(), 0);
+    for (const std::string& k : m.rule_role_keys)
+        if (std::find(keys.begin(), keys.end(), k) == keys.end()) {
+            keys.push_back(k);
+            if (foreign) foreign->push_back(1);
+        }
+    return keys;
 }
 
 // The Bone menu's list: the roles, then the raw bones. Returns the picked id, or -1.
@@ -582,6 +608,29 @@ int BoneMenuItems(int current_single, bool joints_only = false)
         if (ImGui::Selectable(RoleShortLabel(static_cast<Role>(r)).c_str(), sel,
                               off ? ImGuiSelectableFlags_Disabled : ImGuiSelectableFlags_None))
             picked = r;
+    }
+    // Story 10-3e: the user's roles, then a colleague's the item reads, with the same greying.
+    {
+        std::vector<char>              foreign;
+        const std::vector<std::string> keys = CustomRoleRowKeys(m, &foreign);
+        if (!keys.empty()) {
+            ImGui::Separator();
+            ImGui::TextDisabled("Your roles");
+        }
+        for (size_t k = 0; k < keys.size(); ++k) {
+            const int  id = BoneRefId(std::string("role:") + keys[k]);
+            const auto it = m.custom_role_to_bone.find(keys[k]);
+            const int  bone = it != m.custom_role_to_bone.end() ? it->second : -1;
+            const bool off = know_skeleton && bone >= 0 && !IsJointBone(m, bone);
+            ImGui::PushID(keys[k].c_str());
+            const std::string label = BoneRefLabel(id) + (foreign[k] ? kNotInRoles : "");
+            if (ImGui::Selectable(label.c_str(), current_single == id,
+                                  off ? ImGuiSelectableFlags_Disabled : ImGuiSelectableFlags_None))
+                picked = id;
+            if (foreign[k] && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("Not in your roles (from these rules)");
+            ImGui::PopID();
+        }
     }
     if (!m.bone_names.empty()) {
         ImGui::Separator();
@@ -2051,35 +2100,99 @@ namespace {
 
 // ---- Story 10-3d: the Skeleton & roles window -------------------------------------------------
 //
-// Opened from Roles: one row per role (all 9), the bone that plays it, and where it comes from
+// Opened from Roles: one row per role, the bone that plays it, and where it comes from
 // (auto = the guess, you = roles.txt, none). A choice is written at once to roles.txt (per
 // skeleton, for every project: role_map_store.h), never to the project, so it is no REAPER
 // undo point: the window keeps its own undo (Ctrl+Z, the undo button) while it is open.
+//
+// Story 10-3e: the rows are role keys: the 9 built-in roles, then the user's own roles (created
+// with + Role, renamed in place, deleted with an amber confirm), then the role keys the item's
+// rules read that are in no list ("not in your roles", still mappable). Create, rename and
+// delete are steps of the same undo.
 
 constexpr char  kRolesId[] = "##rolesdlg";
-constexpr float kRolesW = 420.0f;
+constexpr float kRolesW = 440.0f;
 
-struct RoleUndoStep {
-    Role            role = Role::LeftHeel;
-    StoredRoleEntry prev;  // the entry the change replaced, exactly as stored
+enum class RoleRowKind { Builtin, Custom, Foreign };
+struct RoleRow {
+    std::string key;
+    RoleRowKind kind = RoleRowKind::Builtin;
+    std::string name;  // the display name ("left heel", "sword tip", "tail end")
 };
 
-bool                         g_roles_request = false;  // the Roles button asked for the window
-bool                         g_roles_open = false;
-int                          g_roles_drawn_frame = -10;
-MediaItem*                   g_roles_item = nullptr;   // the item it was opened on
-std::vector<std::string>     g_roles_names;            // ...its skeleton: the writes' key
-std::vector<int>             g_roles_guess;            // the guess on it (the "Auto (...)" entry)
-std::vector<int>             g_roles_depth;            // per bone: its depth (the menu's indent)
-std::vector<StoredRoleEntry> g_roles_entries;          // roles.txt's entries, read after each change
-std::vector<RoleUndoStep>    g_roles_undo;
-std::string                  g_roles_err;              // the last write's refusal
-char                         g_roles_query[64] = {};
-bool                         g_roles_menu_appearing = false;  // a bone menu opened this frame
+enum class RoleUndoKind { Bone, Created, Renamed, Deleted };
+struct RoleUndoStep {
+    RoleUndoKind    kind = RoleUndoKind::Bone;
+    std::string     key;
+    StoredRoleEntry prev;       // Bone: the entry the change replaced, exactly as stored
+    std::string     name;       // Renamed: the old name; Deleted: its name
+    int             index = -1; // Deleted: its place in the list
+};
 
-void RolesReadEntries()
+bool                                   g_roles_request = false;  // the Roles button asked for the window
+bool                                   g_roles_open = false;
+int                                    g_roles_drawn_frame = -10;
+MediaItem*                             g_roles_item = nullptr;   // the item it was opened on
+std::vector<std::string>               g_roles_names;            // ...its skeleton: the writes' key
+std::vector<int>                       g_roles_depth;            // per bone: its depth (the menu's indent)
+std::vector<std::string>               g_roles_read_keys;        // the row keys the entries below were read for
+std::map<std::string, StoredRoleEntry> g_roles_entries;          // roles.txt's entries, read after each change
+std::map<std::string, int>             g_roles_guess;            // the guess per key (the "Auto (...)" entry)
+std::vector<RoleUndoStep>              g_roles_undo;
+std::string                            g_roles_err;              // the last write's refusal
+char                                   g_roles_query[64] = {};
+bool                                   g_roles_menu_appearing = false;  // a bone menu opened this frame
+char                                   g_roles_new[64] = {};     // the + Role field
+std::string                            g_roles_rename_key;       // the row renamed in place ("" = none)
+char                                   g_roles_rename_buf[64] = {};
+bool                                   g_roles_rename_focus = false;
+std::string                            g_roles_confirm_key;      // the row whose delete is being confirmed
+std::string                            g_roles_hovered_key;      // the custom row hovered last frame (F2)
+std::string                            g_roles_last_custom;      // the custom row clicked last (F2)
+
+// The rows: built-in, the user's roles, then the keys the rules read that are in no list.
+std::vector<RoleRow> RolesRows(const TaggingModel& m)
 {
-    g_roles_entries = GetStoredRoles(RulesResourceRoot(), g_roles_names);
+    std::vector<RoleRow> rows;
+    for (int r = 0; r < static_cast<int>(Role::Count); ++r)
+        rows.push_back({RoleKey(static_cast<Role>(r)), RoleRowKind::Builtin, RoleName(static_cast<Role>(r))});
+    if (m.roles_status == RoleMapStatus::Unreadable) return rows;  // no write can go through: the 9 only
+    for (const CustomRole& c : m.custom_roles) rows.push_back({c.key, RoleRowKind::Custom, c.name});
+    for (const std::string& k : m.rule_role_keys) {
+        bool listed = false;
+        for (const CustomRole& c : m.custom_roles) listed = listed || c.key == k;
+        if (!listed) rows.push_back({k, RoleRowKind::Foreign, RoleNameFromKey(k)});
+    }
+    return rows;
+}
+
+std::vector<std::string> RowKeys(const std::vector<RoleRow>& rows)
+{
+    std::vector<std::string> keys;
+    for (const RoleRow& r : rows) keys.push_back(r.key);
+    return keys;
+}
+
+// The entries and guesses of these keys, as roles.txt is now.
+void RolesReadEntries(const std::vector<std::string>& keys)
+{
+    const std::string                  root = RulesResourceRoot();
+    const std::vector<StoredRoleEntry> e = GetStoredRoles(root, g_roles_names, keys);
+    const RoleMapFile                  f = ReadRoleMapFile(root);
+    g_roles_entries.clear();
+    g_roles_guess.clear();
+    for (size_t i = 0; i < keys.size(); ++i) {
+        g_roles_entries[keys[i]] = i < e.size() ? e[i] : StoredRoleEntry{};
+        g_roles_guess[keys[i]] = GuessRoleKey(f, g_roles_names, keys[i]);
+    }
+    g_roles_read_keys = keys;
+}
+
+// After a write: the model (bone column, rows, count, strip) first, then the entries of its rows.
+void RolesRefresh()
+{
+    TaggingReread();
+    if (g_roles_open) RolesReadEntries(RowKeys(RolesRows(GetTaggingModel())));
 }
 
 void RolesForget()
@@ -2087,11 +2200,17 @@ void RolesForget()
     g_roles_open = false;
     g_roles_item = nullptr;
     g_roles_names.clear();
-    g_roles_guess.clear();
     g_roles_depth.clear();
+    g_roles_read_keys.clear();
     g_roles_entries.clear();
+    g_roles_guess.clear();
     g_roles_undo.clear();  // the window's undo history goes with it
     g_roles_err.clear();
+    g_roles_new[0] = '\0';
+    g_roles_rename_key.clear();
+    g_roles_confirm_key.clear();
+    g_roles_hovered_key.clear();
+    g_roles_last_custom.clear();
 }
 
 bool RolesSameSkeleton(const std::vector<std::string>& names)
@@ -2104,7 +2223,6 @@ void RolesOpen(const TaggingModel& m)
     RolesForget();
     g_roles_item = m.item;
     g_roles_names = m.bone_names;
-    g_roles_guess = GuessRoleMapping(m.bone_names);
     const int n = static_cast<int>(m.bone_names.size());
     g_roles_depth.assign(static_cast<size_t>(n), 0);
     for (int i = 0; i < n && i < static_cast<int>(m.bone_parents.size()); ++i) {
@@ -2113,37 +2231,105 @@ void RolesOpen(const TaggingModel& m)
             p = p < static_cast<int>(m.bone_parents.size()) ? m.bone_parents[static_cast<size_t>(p)] : -1;
         g_roles_depth[static_cast<size_t>(i)] = d;
     }
-    RolesReadEntries();
-    Later([]() { TaggingReread(); });  // the bone column and the count follow roles.txt as it is now
     g_roles_open = true;
+    RolesReadEntries(RowKeys(RolesRows(m)));
+    Later([]() { RolesRefresh(); });  // the bone column and the count follow roles.txt as it is now
     g_roles_drawn_frame = ImGui::GetFrameCount();
     ImGui::OpenPopup(kRolesId);
 }
 
+void RolesFailed(const std::string& err, const char* fallback)
+{
+    g_roles_err = err.empty() ? std::string(fallback) : err;
+}
+
 // One role change, written after the frame (ApplyRoleChange). The entry it replaced goes on the
 // window's undo stack when the entry changed; a refusal shows in red.
-void RolesChange(Role role, RoleChangeKind kind, const std::string& bone)
+void RolesChange(const std::string& key, RoleChangeKind kind, const std::string& bone)
 {
     const std::vector<std::string> names = g_roles_names;
-    Later([role, kind, bone, names]() {
+    Later([key, kind, bone, names]() {
         StoredRoleEntry prev;
         bool            changed = false;
         std::string     err;
-        const bool ok = ApplyRoleChange(RulesResourceRoot(), names, role, kind, bone, &prev, &changed, &err);
+        const bool ok = ApplyRoleChange(RulesResourceRoot(), names, key, kind, bone, &prev, &changed, &err);
         if (RolesSameSkeleton(names)) {
             if (ok) {
-                if (changed) g_roles_undo.push_back({role, prev});
+                if (changed) g_roles_undo.push_back({RoleUndoKind::Bone, key, prev, "", -1});
                 g_roles_err.clear();
             } else {
-                g_roles_err = err.empty() ? "The role mapping could not be saved." : err;
+                RolesFailed(err, "The role mapping could not be saved.");
             }
-            RolesReadEntries();
         }
-        TaggingReread();  // the strip, Roles and the footer follow at once
+        RolesRefresh();  // the strip, Roles and the footer follow at once
     });
 }
 
-// The window's undo: the last change's entry put back as it was stored. Refused: the step stays.
+// Story 10-3e -- + Role: a new role from the typed name.
+void RolesCreate(const std::string& name)
+{
+    const std::vector<std::string> names = g_roles_names;
+    Later([name, names]() {
+        std::string key, err;
+        const bool  ok = AddCustomRole(RulesResourceRoot(), name, &key, &err);
+        if (RolesSameSkeleton(names)) {
+            if (ok) {
+                g_roles_undo.push_back({RoleUndoKind::Created, key, StoredRoleEntry{}, "", -1});
+                g_roles_err.clear();
+                g_roles_new[0] = '\0';
+                g_roles_last_custom = key;
+            } else {
+                RolesFailed(err, "The role could not be saved.");
+            }
+        }
+        RolesRefresh();
+    });
+}
+
+void RolesRename(const std::string& key, const std::string& name)
+{
+    const std::vector<std::string> names = g_roles_names;
+    Later([key, name, names]() {
+        std::string old_name, err;
+        const bool  ok = RenameCustomRole(RulesResourceRoot(), key, name, &old_name, &err);
+        if (RolesSameSkeleton(names)) {
+            if (ok) {
+                // A rename to the same name writes nothing: no undo step.
+                bool same = false;
+                for (const CustomRole& c : GetCustomRoles(RulesResourceRoot()))
+                    if (c.key == key) same = c.name == old_name;
+                if (!same) g_roles_undo.push_back({RoleUndoKind::Renamed, key, StoredRoleEntry{}, old_name, -1});
+                g_roles_err.clear();
+            } else {
+                RolesFailed(err, "The role could not be renamed.");
+            }
+        }
+        RolesRefresh();
+    });
+}
+
+void RolesDelete(const std::string& key)
+{
+    const std::vector<std::string> names = g_roles_names;
+    Later([key, names]() {
+        std::string name, err;
+        int         index = -1;
+        const bool  ok = DeleteCustomRole(RulesResourceRoot(), key, &name, &index, &err);
+        if (RolesSameSkeleton(names)) {
+            if (ok) {
+                if (index >= 0) g_roles_undo.push_back({RoleUndoKind::Deleted, key, StoredRoleEntry{}, name, index});
+                g_roles_err.clear();
+                if (g_roles_last_custom == key) g_roles_last_custom.clear();
+            } else {
+                RolesFailed(err, "The role could not be deleted.");
+            }
+        }
+        RolesRefresh();
+    });
+}
+
+// The window's undo: the last step put back (an entry as it was stored, a role's name, a
+// deleted role, a created one removed). Refused: the step stays.
 void RolesUndo()
 {
     if (g_roles_undo.empty()) return;
@@ -2151,16 +2337,32 @@ void RolesUndo()
     Later([names]() {
         if (!RolesSameSkeleton(names) || g_roles_undo.empty()) return;
         const RoleUndoStep s = g_roles_undo.back();
+        const std::string  root = RulesResourceRoot();
         std::string        err;
-        if (RestoreRole(RulesResourceRoot(), names, s.role, s.prev, &err)) {
+        bool               ok = false;
+        switch (s.kind) {
+        case RoleUndoKind::Bone: ok = RestoreRole(root, names, s.key, s.prev, &err); break;
+        case RoleUndoKind::Created: ok = DeleteCustomRole(root, s.key, nullptr, nullptr, &err); break;
+        case RoleUndoKind::Renamed: ok = RestoreCustomRole(root, s.key, s.name, -1, &err); break;
+        case RoleUndoKind::Deleted: ok = RestoreCustomRole(root, s.key, s.name, s.index, &err); break;
+        }
+        if (ok) {
             g_roles_undo.pop_back();
             g_roles_err.clear();
         } else {
-            g_roles_err = err.empty() ? "The role mapping could not be saved." : err;
+            RolesFailed(err, "The role mapping could not be saved.");
         }
-        RolesReadEntries();
-        TaggingReread();
+        RolesRefresh();
     });
+}
+
+void RolesStartRename(const std::string& key, const std::string& name)
+{
+    g_roles_confirm_key.clear();
+    g_roles_rename_key = key;
+    std::snprintf(g_roles_rename_buf, sizeof(g_roles_rename_buf), "%s", name.c_str());
+    g_roles_rename_focus = true;
+    g_roles_last_custom = key;
 }
 
 void IconUndo(ImDrawList* dl, ImVec2 c, float r, ImU32 col)
@@ -2201,24 +2403,27 @@ bool ContainsNoCase(const std::string& hay, const char* needle)
 }
 
 // A row's menu: Auto (the guess), no bone, then the bones (searchable, indented by depth).
-void RolesMenu(Role role, const StoredRoleEntry& e)
+void RolesMenu(const std::string& key, const StoredRoleEntry& e)
 {
-    const int r = static_cast<int>(role);
     if (ImGui::IsWindowAppearing()) {
         g_roles_query[0] = '\0';
         g_roles_menu_appearing = true;
     }
-    const int guess = r < static_cast<int>(g_roles_guess.size()) ? g_roles_guess[static_cast<size_t>(r)] : -1;
+    const auto        git = g_roles_guess.find(key);
+    const int         guess = git != g_roles_guess.end() ? git->second : -1;
     const std::string auto_label =
         std::string("Auto (") +
         ((guess >= 0 && guess < static_cast<int>(g_roles_names.size())) ? g_roles_names[static_cast<size_t>(guess)]
                                                                         : std::string("no guess")) +
         ")";
-    if (ImGui::Selectable(auto_label.c_str(), !e.stored) && e.stored) RolesChange(role, RoleChangeKind::Auto, "");
+    const bool builtin = RoleFromKey(key, nullptr);
+    if (ImGui::Selectable(auto_label.c_str(), !e.stored) && e.stored) RolesChange(key, RoleChangeKind::Auto, "");
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-        ImGui::SetTooltip("Back to RAV's guess from the bone names");
+        ImGui::SetTooltip(builtin ? "Back to RAV's guess from the bone names"
+                                  : "Back to RAV's guess: a bone named like the one you picked for this role on "
+                                    "another skeleton");
     const bool is_none = e.stored && e.bone.empty();
-    if (ImGui::Selectable("\xE2\x80\x94 none \xE2\x80\x94", is_none) && !is_none) RolesChange(role, RoleChangeKind::None, "");
+    if (ImGui::Selectable("\xE2\x80\x94 none \xE2\x80\x94", is_none) && !is_none) RolesChange(key, RoleChangeKind::None, "");
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("No bone plays this role");
     ImGui::Separator();
     ImGui::SetNextItemWidth(-1.0f);
@@ -2240,7 +2445,7 @@ void RolesMenu(Role role, const StoredRoleEntry& e)
             const bool sel = e.stored && !e.bone.empty() &&
                              (nm == e.bone || NormalizeBoneName(nm) == NormalizeBoneName(e.bone));
             if (ImGui::Selectable(nm.c_str(), sel)) {
-                if (!sel) RolesChange(role, RoleChangeKind::Bone, nm);
+                if (!sel) RolesChange(key, RoleChangeKind::Bone, nm);
                 ImGui::CloseCurrentPopup();  // the list is a child: Selectable alone keeps the menu open
             }
             if (sel && g_roles_menu_appearing) ImGui::SetScrollHereY(0.5f);
@@ -2252,12 +2457,42 @@ void RolesMenu(Role role, const StoredRoleEntry& e)
     g_roles_menu_appearing = false;
 }
 
-// The role's name as a row label: "Left heel".
-std::string RoleRowLabel(Role r)
+// The role's name as a row label: "Left heel", "Sword tip".
+std::string RoleRowLabel(const std::string& name)
 {
-    std::string s = RoleName(r);
+    std::string s = name;
     if (!s.empty()) s[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(s[0])));
     return s;
+}
+
+// The amber in-place confirm of a role's delete (the preset menu's pattern).
+void RolesDeleteConfirm(const RoleRow& row, bool used, float inner_w)
+{
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->ChannelsSplit(2);
+    dl->ChannelsSetCurrent(1);
+    const ImVec2 b0 = ImGui::GetCursorScreenPos();
+    ImGui::Indent(6.0f);
+    ImGui::Dummy(ImVec2(0.0f, 2.0f));
+    ImGui::TextUnformatted(("Delete the role \"" + row.name + "\"?").c_str());
+    WrappedText(ui::kMuted,
+                std::string(used ? "These rules use it. " : "") +
+                    "Rules and presets that use it, in any item or project, keep it and then show it as not in "
+                    "your roles. Its bones stay remembered: create it again to get them back.",
+                inner_w - 12.0f);
+    if (ui::SolidButton("Cancel##rdcancel")) g_roles_confirm_key.clear();
+    ImGui::SameLine();
+    if (AmberButton("Delete##rdok")) {
+        RolesDelete(row.key);
+        g_roles_confirm_key.clear();
+    }
+    ImGui::Dummy(ImVec2(0.0f, 1.0f));
+    ImGui::Unindent(6.0f);
+    const ImVec2 b1(b0.x + inner_w, ImGui::GetCursorScreenPos().y - ImGui::GetStyle().ItemSpacing.y * 0.5f);
+    dl->ChannelsSetCurrent(0);
+    dl->AddRectFilled(b0, b1, WithAlpha(ui::kConfirmLine, 0x14), ui::kRadiusMd);
+    dl->AddRect(b0, b1, ui::kConfirmLine, ui::kRadiusMd);
+    dl->ChannelsMerge();
 }
 
 void RolesWindow(const TaggingModel& m)
@@ -2271,6 +2506,21 @@ void RolesWindow(const TaggingModel& m)
     const int age = frame - g_roles_drawn_frame;
     // The item (or its skeleton) changed, or the window was not drawn (another view): it closes.
     bool close = age < 0 || age > 1 || m.item != g_roles_item || m.bone_names != g_roles_names;
+
+    // The rows as the model has them now; their entries are read again when the set changed
+    // (a role created, deleted, or read by the rules).
+    const std::vector<RoleRow> rows = RolesRows(m);
+    if (!close && RowKeys(rows) != g_roles_read_keys) RolesReadEntries(RowKeys(rows));
+    if (!g_roles_rename_key.empty() || !g_roles_confirm_key.empty()) {
+        bool rename_ok = g_roles_rename_key.empty(), confirm_ok = g_roles_confirm_key.empty();
+        for (const RoleRow& r : rows) {
+            if (r.kind != RoleRowKind::Custom) continue;
+            rename_ok = rename_ok || r.key == g_roles_rename_key;
+            confirm_ok = confirm_ok || r.key == g_roles_confirm_key;
+        }
+        if (!rename_ok) g_roles_rename_key.clear();
+        if (!confirm_ok) g_roles_confirm_key.clear();
+    }
 
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
@@ -2286,20 +2536,41 @@ void RolesWindow(const TaggingModel& m)
         g_roles_drawn_frame = frame;
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const float fh = ImGui::GetFrameHeight();
-        // Esc closes; Ctrl+Z undoes the last role change (the viewer routes every key here
-        // while the window is open: TaggingRolesWindowOpen). A bone menu open has them first.
+        const bool  writable = m.roles_status != RoleMapStatus::Unreadable;
+        // Esc cancels a rename or a delete confirm, else closes; Ctrl+Z undoes the last step;
+        // F2 renames the hovered (else the last clicked) custom role (the viewer routes every key
+        // here while the window is open: TaggingRolesWindowOpen). A bone menu open has them first.
         if (!close && ImGui::IsWindowFocused()) {
             const ImGuiIO& io = ImGui::GetIO();
-            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) close = true;
-            else if (ImGui::IsKeyPressed(ImGuiKey_Z, false) && io.KeyCtrl && !io.KeyShift && !io.KeyAlt &&
-                     !io.WantTextInput)
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+                if (!g_roles_rename_key.empty()) g_roles_rename_key.clear();
+                else if (!g_roles_confirm_key.empty()) g_roles_confirm_key.clear();
+                else if (!io.WantTextInput) close = true;  // in the + Role field, Esc only leaves it
+            } else if (ImGui::IsKeyPressed(ImGuiKey_Z, false) && io.KeyCtrl && !io.KeyShift && !io.KeyAlt &&
+                       !io.WantTextInput) {
                 RolesUndo();
+            } else if (ImGui::IsKeyPressed(ImGuiKey_F2, false) && !io.WantTextInput && writable) {
+                const std::string& target = !g_roles_hovered_key.empty() ? g_roles_hovered_key : g_roles_last_custom;
+                for (const RoleRow& r : rows)
+                    if (r.kind == RoleRowKind::Custom && r.key == target) RolesStartRename(r.key, r.name);
+            }
         }
+        g_roles_hovered_key.clear();
 
-        // Title: the name, found / not found, undo, close.
+        // Title: the name, found / not found (every row), undo, close.
         int not_found = 0;
-        for (int r = 0; r < static_cast<int>(Role::Count); ++r)
-            if (r >= static_cast<int>(m.role_to_bone.size()) || m.role_to_bone[static_cast<size_t>(r)] < 0) ++not_found;
+        for (const RoleRow& r : rows) {
+            Role role;
+            int  b = -1;
+            if (RoleFromKey(r.key, &role)) {
+                const size_t i = static_cast<size_t>(role);
+                b = i < m.role_to_bone.size() ? m.role_to_bone[i] : -1;
+            } else {
+                const auto it = m.custom_role_to_bone.find(r.key);
+                b = it != m.custom_role_to_bone.end() ? it->second : -1;
+            }
+            if (b < 0 || b >= static_cast<int>(m.bone_names.size())) ++not_found;
+        }
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted("Skeleton & roles");
         ImGui::SameLine(0.0f, 8.0f);
@@ -2315,7 +2586,7 @@ void RolesWindow(const TaggingModel& m)
                        !g_roles_undo.empty()))
             RolesUndo();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("Undo the last role change (Ctrl+Z)");
+            ImGui::SetTooltip("Undo the last change (Ctrl+Z)");
         ImGui::SameLine(0.0f, 4.0f);
         if (IconButton("##rclose", fh, [](ImDrawList* d, ImVec2 c, ImU32 col) { IconCross(d, c, 4.0f, col); }))
             close = true;
@@ -2326,43 +2597,109 @@ void RolesWindow(const TaggingModel& m)
         ui::SubText(sub);
         ImGui::Dummy(ImVec2(0.0f, 2.0f));
 
-        // One row per role: the role, its bone menu, where the bone comes from.
+        // One row per role: the role, its bone menu, where the bone comes from, ✕ (custom roles).
+        const float inner_w = ImGui::GetContentRegionAvail().x;
         float label_w = 0.0f;
-        for (int r = 0; r < static_cast<int>(Role::Count); ++r)
-            label_w = std::max(label_w, ImGui::CalcTextSize(RoleRowLabel(static_cast<Role>(r)).c_str()).x);
-        label_w += 12.0f;
+        for (const RoleRow& r : rows) {
+            std::string l = RoleRowLabel(r.name);
+            if (r.kind == RoleRowKind::Foreign) l += kNotInRoles;
+            label_w = std::max(label_w, ImGui::CalcTextSize(l.c_str()).x);
+        }
+        label_w = std::min(label_w + 12.0f, std::max(80.0f, inner_w * 0.45f));
         const float src_w = ImGui::CalcTextSize("auto").x + 10.0f;
-        for (int r = 0; r < static_cast<int>(Role::Count); ++r) {
-            const Role role = static_cast<Role>(r);
-            ImGui::PushID(r);
-            const int bone = r < static_cast<int>(m.role_to_bone.size()) ? m.role_to_bone[static_cast<size_t>(r)] : -1;
+        const float x_w = fh;  // the ✕ column (empty on built-in and foreign rows)
+        for (const RoleRow& row : rows) {
+            ImGui::PushID(row.key.c_str());
+            Role      role;
+            const bool builtin = RoleFromKey(row.key, &role);
+            int        bone = -1;
+            if (builtin) {
+                const size_t i = static_cast<size_t>(role);
+                bone = i < m.role_to_bone.size() ? m.role_to_bone[i] : -1;
+            } else {
+                const auto it = m.custom_role_to_bone.find(row.key);
+                bone = it != m.custom_role_to_bone.end() ? it->second : -1;
+            }
             const bool has_bone = bone >= 0 && bone < static_cast<int>(m.bone_names.size());
-            const StoredRoleEntry e =
-                r < static_cast<int>(g_roles_entries.size()) ? g_roles_entries[static_cast<size_t>(r)] : StoredRoleEntry{};
+            const auto eit = g_roles_entries.find(row.key);
+            const StoredRoleEntry e = eit != g_roles_entries.end() ? eit->second : StoredRoleEntry{};
             // A stored bone this rig lacks is still the user's choice ("you"), shown as not found.
             const char* src = has_bone ? (e.stored ? "you" : "auto") : (e.stored && !e.bone.empty() ? "you" : "none");
             const ImU32 src_col = !has_bone ? kBad : e.stored ? ui::kAccent : ui::kMuted;
             const std::string preview = has_bone ? m.bone_names[static_cast<size_t>(bone)]
                                         : (e.stored && e.bone.empty()) ? std::string("\xE2\x80\x94 none \xE2\x80\x94")
                                                                        : std::string("\xE2\x80\x94 not found \xE2\x80\x94");
-            const std::string label = RoleRowLabel(role);
-            ImGui::AlignTextToFramePadding();
-            ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
-            ImGui::TextUnformatted(label.c_str());
-            ImGui::PopStyleColor();
-            ImGui::SameLine(label_w);
-            const float combo_w = std::max(60.0f, ImGui::GetContentRegionAvail().x - src_w - 6.0f);
-            const ImVec2 c0 = ImGui::GetCursorScreenPos();
-            ImGui::SetNextItemWidth(combo_w);
-            if (!has_bone) ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(kBadText));
-            const bool open = ImGui::BeginCombo("##bone", preview.c_str(), ImGuiComboFlags_HeightLargest);
-            if (!has_bone) ImGui::PopStyleColor();
-            if (open) {
-                RolesMenu(role, e);
-                ImGui::EndCombo();
+            const bool renaming = row.kind == RoleRowKind::Custom && row.key == g_roles_rename_key;
+            const float x0 = ImGui::GetCursorPosX();
+            if (renaming) {
+                // In place: Enter applies, Esc (or a click elsewhere) cancels.
+                ImGui::SetNextItemWidth(std::max(60.0f, inner_w - src_w - x_w - 12.0f));
+                if (g_roles_rename_focus) {
+                    ImGui::SetKeyboardFocusHere();
+                    g_roles_rename_focus = false;
+                }
+                const bool enter = ImGui::InputTextWithHint("##rename", "Role name", g_roles_rename_buf,
+                                                            sizeof(g_roles_rename_buf),
+                                                            ImGuiInputTextFlags_EnterReturnsTrue |
+                                                                ImGuiInputTextFlags_AutoSelectAll);
+                if (enter) {
+                    RolesRename(row.key, g_roles_rename_buf);
+                    g_roles_rename_key.clear();
+                } else if (ImGui::IsItemDeactivated()) {
+                    g_roles_rename_key.clear();
+                }
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                    ImGui::SetTooltip("Enter renames (its rules and bones keep working), Esc cancels");
+            } else {
+                // The label: a custom role's is clickable (F2 / right-click renames it).
+                std::string label = RoleRowLabel(row.name);
+                const ImVec2 lp = ImGui::GetCursorScreenPos();
+                ImGui::InvisibleButton("##label", ImVec2(std::max(1.0f, label_w - 8.0f), fh));
+                const bool hovered = ImGui::IsItemHovered();
+                const ImU32 label_col = row.kind == RoleRowKind::Builtin ? ui::kMuted : ui::kText;
+                const float ty = lp.y + (fh - ImGui::GetTextLineHeight()) * 0.5f;
+                dl->PushClipRect(lp, ImVec2(lp.x + label_w - 8.0f, lp.y + fh), true);
+                dl->AddText(ImVec2(lp.x, ty), label_col, label.c_str());
+                if (row.kind == RoleRowKind::Foreign)
+                    dl->AddText(ImVec2(lp.x + ImGui::CalcTextSize(label.c_str()).x, ty), ui::kFaint, kNotInRoles);
+                dl->PopClipRect();
+                if (row.kind == RoleRowKind::Custom) {
+                    if (hovered) g_roles_hovered_key = row.key;
+                    if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) g_roles_last_custom = row.key;
+                    if (ImGui::BeginPopupContextItem("##rowctx")) {
+                        g_roles_last_custom = row.key;
+                        if (ImGui::MenuItem("Rename", "F2", false, writable)) RolesStartRename(row.key, row.name);
+                        if (ImGui::MenuItem("Delete\xE2\x80\xA6", nullptr, false, writable)) {
+                            g_roles_rename_key.clear();
+                            g_roles_confirm_key = row.key;
+                        }
+                        ImGui::EndPopup();
+                    }
+                }
+                if (hovered && !ImGui::IsPopupOpen("##rowctx")) {
+                    if (row.kind == RoleRowKind::Custom)
+                        ImGui::SetTooltip("%s (role:%s)\nYour role, for every project. Right-click or F2 renames it.",
+                                          row.name.c_str(), row.key.c_str());
+                    else if (row.kind == RoleRowKind::Foreign)
+                        ImGui::SetTooltip("%s (role:%s)\nRead by these rules but not in your roles (a colleague's "
+                                          "preset?). Map it here, or create it with + Role to name it.",
+                                          row.name.c_str(), row.key.c_str());
+                }
+                ImGui::SameLine(x0 + label_w);
+                const float combo_w = std::max(60.0f, ImGui::GetContentRegionAvail().x - src_w - x_w - 12.0f);
+                const ImVec2 c0 = ImGui::GetCursorScreenPos();
+                ImGui::SetNextItemWidth(combo_w);
+                if (!has_bone) ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(kBadText));
+                const bool open = ImGui::BeginCombo("##bone", preview.c_str(), ImGuiComboFlags_HeightLargest);
+                if (!has_bone) ImGui::PopStyleColor();
+                if (open) {
+                    RolesMenu(row.key, e);
+                    ImGui::EndCombo();
+                }
+                if (!has_bone)
+                    dl->AddRect(c0, ImVec2(c0.x + combo_w, c0.y + fh), WithAlpha(kBad, 0x99),
+                                ImGui::GetStyle().FrameRounding);
             }
-            if (!has_bone)
-                dl->AddRect(c0, ImVec2(c0.x + combo_w, c0.y + fh), WithAlpha(kBad, 0x99), ImGui::GetStyle().FrameRounding);
             ImGui::SameLine(0.0f, 6.0f);
             const ImVec2 sp = ImGui::GetCursorScreenPos();
             ImGui::Dummy(ImVec2(src_w, fh));
@@ -2375,12 +2712,47 @@ void RolesWindow(const TaggingModel& m)
                 else if (e.stored && has_bone)
                     tip = "Your choice, remembered for every item with this skeleton.";
                 else if (has_bone)
-                    tip = "RAV's guess from the bone names.";
+                    tip = builtin ? "RAV's guess from the bone names."
+                                  : "RAV's guess: named like the bone you picked for this role on another skeleton.";
                 else
                     tip = "No bone plays this role.";
                 ImGui::SetTooltip("%s", tip.c_str());
             }
+            ImGui::SameLine(0.0f, 4.0f);
+            if (row.kind == RoleRowKind::Custom) {
+                if (IconButton("##rdel", fh, [](ImDrawList* d, ImVec2 c, ImU32 col) { IconCross(d, c, 3.5f, col); },
+                               writable)) {
+                    g_roles_rename_key.clear();
+                    g_roles_confirm_key = row.key;
+                }
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip("Delete this role (its bones stay remembered)");
+            } else {
+                ImGui::Dummy(ImVec2(x_w, fh));
+            }
+            if (row.kind == RoleRowKind::Custom && row.key == g_roles_confirm_key) {
+                bool used = false;
+                for (const std::string& k : m.rule_role_keys) used = used || k == row.key;
+                RolesDeleteConfirm(row, used, inner_w);
+            }
             ImGui::PopID();
+        }
+
+        // + Role: a new role, for every project.
+        ImGui::Dummy(ImVec2(0.0f, 2.0f));
+        {
+            if (!writable) ImGui::BeginDisabled();
+            const float btn_w = ImGui::CalcTextSize("+ Role").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+            ImGui::SetNextItemWidth(std::max(60.0f, inner_w - btn_w - 6.0f));
+            const bool enter = ImGui::InputTextWithHint("##newrole", "New role name, e.g. sword tip", g_roles_new,
+                                                        sizeof(g_roles_new), ImGuiInputTextFlags_EnterReturnsTrue);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("A role of your own (a weapon tip, a hand, a tail...): rules and presets can then "
+                                  "name it, and it is mapped per skeleton like the others");
+            ImGui::SameLine(0.0f, 6.0f);
+            const bool click = ui::SolidButton("+ Role");
+            if ((enter || click) && writable) RolesCreate(g_roles_new);  // refused (red line) when empty or taken
+            if (!writable) ImGui::EndDisabled();
         }
 
         // roles.txt that RAV cannot read, a refused write: in red, never silent.
@@ -2396,7 +2768,8 @@ void RolesWindow(const TaggingModel& m)
 
         ImGui::Dummy(ImVec2(0.0f, 2.0f));
         ui::SubText("Presets speak in roles (heel, toe, knee\xE2\x80\xA6). RAV guesses the bones from their names and "
-                    "remembers your choice for every item with this skeleton.");
+                    "remembers your choice for every item with this skeleton. + Role adds your own roles, for every "
+                    "project.");
         ui::SubText("Role changes are saved at once. Ctrl+Z here undoes them while this window is open.");
 
         if (close) {

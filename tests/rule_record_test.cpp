@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <fstream>
 #include <sstream>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -538,6 +539,73 @@ int main()
         CHECK(BoneRefId("role:left_hand") == BoneRefId("role:left_hand"));
         CHECK(BoneRefName(BoneRefId("role:left_hand")) == "left hand");
         CHECK(RoleShortLabel(Role::LeftHeel) == "L heel" && RoleShortLabel(Role::Hips) == "hips");
+    }
+
+    // ---- Story 10-3e: custom roles bind through their mapping by key ----------------------
+    {
+        Block     b;
+        Condition c;
+        c.signal.bones = {BoneRefId("role:sword_tip")};
+        c.signal.reference = Reference::Bones;
+        c.signal.ref_bones = {R(Role::Hips)};
+        b.conditions = {c};
+        const std::vector<std::string> names = {"Hips", "weapon_r"};
+        std::vector<int>               map(static_cast<size_t>(Role::Count), -1);
+        map[R(Role::Hips)] = 0;
+        std::map<std::string, int> custom;
+        std::string                missing;
+        // Unmapped (absent, then -1): missing, by its key-derived name.
+        std::vector<Block> blocks = {b};
+        CHECK(!BindBoneRefs(blocks, map, custom, names, {}, &missing) && missing == "sword tip");
+        CHECK(MissingBoneRefs({b}, map, custom, names, {}) == std::vector<std::string>{"sword tip"});
+        custom["sword_tip"] = -1;
+        blocks = {b};
+        CHECK(!BindBoneRefs(blocks, map, custom, names, {}, &missing) && missing == "sword tip");
+        // Without the custom map (the older forms): never binds.
+        blocks = {b};
+        CHECK(!BindBoneRefs(blocks, map, names, &missing));
+        // Mapped: binds to that bone.
+        custom["sword_tip"] = 1;
+        blocks = {b};
+        CHECK(BindBoneRefs(blocks, map, custom, names, {}, &missing) && missing.empty());
+        CHECK(blocks[0].conditions[0].signal.bones == std::vector<int>{1});
+        CHECK(blocks[0].conditions[0].signal.ref_bones == std::vector<int>{0});
+        CHECK(MissingBoneRefs({b}, map, custom, names, {}).empty());
+        // A mapping past the skeleton does not bind.
+        custom["sword_tip"] = 7;
+        blocks = {b};
+        CHECK(!BindBoneRefs(blocks, map, custom, names, {}, &missing));
+        // The keys the blocks read: custom ones only, each once, in first-use order.
+        Block b2 = b;
+        b2.strength_signal.bones = {BoneRefId("role:tail_end"), BoneRefId("role:sword_tip"), R(Role::LeftHeel),
+                                    BoneRefForBone("weapon_r")};
+        CHECK(CustomRoleKeysUsed({b2}) == (std::vector<std::string>{"sword_tip", "tail_end"}));
+        CHECK(RoleKeyOfRef(BoneRefId("role:sword_tip")) == "sword_tip");
+        CHECK(RoleKeyOfRef(R(Role::Hips)) == "hips");
+        CHECK(RoleKeyOfRef(BoneRefForBone("weapon_r")).empty());
+        // Display names: the one set (rename), else the key-derived one; labels follow.
+        SetCustomRoleNames({{"sword_tip", "blade tip"}});
+        CHECK(BoneRefName(BoneRefId("role:sword_tip")) == "blade tip");
+        CHECK(BoneRefLabel(BoneRefId("role:sword_tip")) == "blade tip");
+        CHECK(BoneRefName(BoneRefId("role:tail_end")) == "tail end");
+        SignalSpec sp;
+        sp.bones = {BoneRefId("role:sword_tip")};
+        sp.measure = Measure::Speed;
+        sp.axis = Axis::Total;
+        CHECK(SignalBoneLabel(sp) == "blade tip");
+        custom.erase("sword_tip");
+        blocks = {b};
+        CHECK(!BindBoneRefs(blocks, map, custom, names, {}, &missing) && missing == "blade tip");
+        SetCustomRoleNames({});
+        CHECK(BoneRefName(BoneRefId("role:sword_tip")) == "sword tip");
+        // The record keeps the key whatever the name: role:sword_tip round-trips.
+        ItemRules rr;
+        rr.blocks = {b};
+        ItemRules back;
+        CHECK(ParseItemRules(SerializeItemRules(rr), &back) && back.blocks.size() == 1 &&
+              back.blocks[0].conditions.size() == 1 &&
+              back.blocks[0].conditions[0].signal.bones == std::vector<int>{BoneRefId("role:sword_tip")});
+        CHECK(SerializeItemRules(rr).find("bones=role:sword_tip") != std::string::npos);
     }
 
     // ---- Story 10-3: the rule's on/off switch (`on=0`, written only when off) -------------

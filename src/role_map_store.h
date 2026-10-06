@@ -10,9 +10,15 @@
 //
 // File <root>/ReaAnimViewer/roles.txt (root = REAPER's resource path; the user folder):
 //   RAVROLES 1
+//   role key=sword_tip name=sword tip
 //   map skeleton=<16 hex> role=left_heel bone=mixamorig:LeftFoot
+//   map skeleton=<16 hex> role=sword_tip bone=weapon_r
 // `bone` is free text, last; empty = "no bone plays this role". Bones are stored by name,
 // never by index. Unknown lines, unknown fields and unknown role keys are kept in place.
+// Story 10-3e: a `role` line defines one of the user's own roles (for every project): its key
+// (RoleKeyFromName of the name it was created with, fixed for life) and its display name
+// (`name`, free text, last; a rename changes only it). A key is mapped like a built-in role.
+// Deleting a role removes its `role` line only: its map lines stay.
 // A file that is not a roles file is moved aside to roles.txt.bad (.bad2, .bad3... when
 // taken) before the first write; when that fails, or when the file exists but cannot be
 // read, the write is refused with a reason and the file is left as it is.
@@ -22,11 +28,13 @@
 
 #pragma once
 
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "bone_roles.h"
+#include "rule_record.h"
 
 namespace rav {
 
@@ -37,6 +45,7 @@ std::string RoleMapPath(const std::string& root);
 
 struct RoleMapLine {
     bool                                             is_map = false;
+    bool                                             is_role = false;  // 10-3e: a `role` line (fields)
     std::string                                      raw;     // an unknown line, as written
     std::vector<std::pair<std::string, std::string>> fields;  // a map line, in order
     std::string Get(const char* key) const;
@@ -48,6 +57,13 @@ struct RoleMapFile {
     std::vector<RoleMapLine> lines;
 };
 
+// Story 10-3e -- one of the user's own roles: its key (no "role:") and display name.
+struct CustomRole {
+    std::string key;
+    std::string name;
+    bool operator==(const CustomRole& o) const { return key == o.key && name == o.name; }
+};
+
 // False when the text has no "RAVROLES" header.
 bool ParseRoleMap(const std::string& text, RoleMapFile* out);
 std::string SerializeRoleMap(const RoleMapFile& file);
@@ -57,6 +73,7 @@ std::string SerializeRoleMap(const RoleMapFile& file);
 std::vector<int> ResolveRoleMapping(const RoleMapFile& file, const std::vector<std::string>& bone_names,
                                     std::vector<char>* stored = nullptr);
 // Sets (bone_name "" = none) or clears (back to the guess) one role of a skeleton.
+// A set edits the role's line (its fields kept) and moves it last: the file lists picks oldest first.
 void SetRoleInFile(RoleMapFile& file, const std::string& skeleton, const std::string& role_key,
                    const std::string& bone_name);
 bool ClearRoleInFile(RoleMapFile& file, const std::string& skeleton, const std::string& role_key);
@@ -96,5 +113,83 @@ enum class RoleChangeKind { Bone, None, Auto };
 bool ApplyRoleChange(const std::string& root, const std::vector<std::string>& bone_names, Role role,
                      RoleChangeKind kind, const std::string& bone, StoredRoleEntry* prev_out, bool* changed,
                      std::string* err);
+
+// ---- Story 10-3e: custom roles -------------------------------------------------------------
+//
+// Every role key (built-in or custom) maps per skeleton with the same semantics: the key-based
+// SetRoleBone / ClearRole / GetStoredRole(s) / RestoreRole / ApplyRoleChange below (the Role
+// forms forward to them). A custom role with no entry for a skeleton is guessed from what the
+// user picked for it on other skeletons: the most recent pick (last in the file) first, the
+// first bone of this rig with the same NormalizeBoneName. A built-in role keeps its guess table.
+
+// The user's roles in the file, in the order of their first line (the last line's name wins;
+// an empty name reads as the key with '_' as ' '). A `role` line with a built-in key is ignored.
+std::vector<CustomRole> CustomRolesInFile(const RoleMapFile& file);
+// The learned guess of a custom role on this rig (-1 = none, or a built-in key).
+int LearnedRoleGuess(const RoleMapFile& file, const std::vector<std::string>& bone_names, const std::string& role_key);
+// The guess of any role key: the built-in table, or the learned guess.
+int GuessRoleKey(const RoleMapFile& file, const std::vector<std::string>& bone_names, const std::string& role_key);
+// The bone of any role key: the stored entry for this skeleton (`stored` = true), else the guess.
+int ResolveRoleKey(const RoleMapFile& file, const std::vector<std::string>& bone_names, const std::string& role_key,
+                   bool* stored = nullptr);
+
+// roles.txt as read (empty when absent or not readable).
+RoleMapFile ReadRoleMapFile(const std::string& root);
+std::vector<CustomRole> GetCustomRoles(const std::string& root);
+
+// The whole mapping on one skeleton, from one read: the built-in roles (indexed by Role), the
+// bone of each custom role in the list AND of each extra key (the keys rules read; built-in
+// keys skipped), and the list with its display names.
+struct RoleMapping {
+    std::vector<int>                   builtin;
+    std::map<std::string, int>         custom;  // key -> bone (-1 = none)
+    std::vector<CustomRole>            roles;   // the user's roles (the list)
+    std::map<std::string, std::string> names;   // key -> display name, for the list's roles
+};
+RoleMapping GetFullRoleMapping(const std::string& root, const std::vector<std::string>& bone_names,
+                               const std::vector<std::string>& extra_keys);
+
+// The mapping for these blocks: GetFullRoleMapping with the custom role keys they read
+// (CustomRoleKeysUsed) as extra keys. Also publishes the list's display names
+// (SetCustomRoleNames) for signal names and missing lists.
+RoleMapping RoleMappingForBlocks(const std::string& root, const std::vector<std::string>& bone_names,
+                                 const std::vector<Block>& blocks);
+// Binds blocks with RoleMappingForBlocks (built-in and custom roles). False + `missing` like BindBoneRefs.
+bool BindBlocksWithRoleMapping(const std::string& root, std::vector<Block>& blocks,
+                               const std::vector<std::string>& bone_names, const std::vector<int>& bone_parents,
+                               std::string* missing);
+
+bool SetRoleBone(const std::string& root, const std::vector<std::string>& bone_names, const std::string& role_key,
+                 const std::string& bone_name, std::string* err);
+bool ClearRole(const std::string& root, const std::vector<std::string>& bone_names, const std::string& role_key,
+               std::string* err);
+std::vector<StoredRoleEntry> GetStoredRoles(const std::string& root, const std::vector<std::string>& bone_names,
+                                            const std::vector<std::string>& role_keys);
+StoredRoleEntry GetStoredRole(const std::string& root, const std::vector<std::string>& bone_names,
+                              const std::string& role_key);
+bool RestoreRole(const std::string& root, const std::vector<std::string>& bone_names, const std::string& role_key,
+                 const StoredRoleEntry& entry, std::string* err);
+bool ApplyRoleChange(const std::string& root, const std::vector<std::string>& bone_names, const std::string& role_key,
+                     RoleChangeKind kind, const std::string& bone, StoredRoleEntry* prev_out, bool* changed,
+                     std::string* err);
+
+// Creates a role from a typed name: key = RoleKeyFromName, name = the typed text cleaned (one
+// line, spaces collapsed, trimmed, ASCII lower-cased). Refused (false, `err`, nothing written)
+// when the key is empty, is already a role's key (built-in or custom), or the name is already
+// a role's name (case-insensitive; a built-in's name or short label too), or roles.txt cannot
+// be written.
+bool AddCustomRole(const std::string& root, const std::string& name, std::string* key_out, std::string* err);
+// Renames a role of the list (its key never changes). `old_name` gets the name it replaced.
+// Refused like AddCustomRole (the role's own name excepted), or when the key is not in the list.
+bool RenameCustomRole(const std::string& root, const std::string& role_key, const std::string& name,
+                      std::string* old_name, std::string* err);
+// Removes a role's definition (its `role` lines) and keeps its map lines. `name_out` /
+// `index_out` get its name and place in the list (for the undo). True when it was not defined.
+bool DeleteCustomRole(const std::string& root, const std::string& role_key, std::string* name_out, int* index_out,
+                      std::string* err);
+// The window's undo: puts a definition back as `name` (sets the name when it exists; else
+// inserts it at `index` in the list, -1 = at the end). No name check (it was valid).
+bool RestoreCustomRole(const std::string& root, const std::string& role_key, const std::string& name, int index,
+                       std::string* err);
 
 }  // namespace rav

@@ -136,6 +136,20 @@ int main()
         CHECK(missing == "right toe");
     }
 
+    // Story 10-3e -- a custom role's key from its name.
+    {
+        CHECK(RoleKeyFromName("Sword Tip") == "sword_tip");
+        CHECK(RoleKeyFromName("  sword   tip  ") == "sword_tip");
+        CHECK(RoleKeyFromName("R-Hand (IK) 2") == "r_hand_ik_2");
+        CHECK(RoleKeyFromName("__tail__end__") == "tail_end");
+        CHECK(RoleKeyFromName("\xC3\xA9p\xC3\xA9\x65 droite") == "p_e_droite");  // accents: a run of other bytes
+        CHECK(RoleKeyFromName("").empty());
+        CHECK(RoleKeyFromName(" -- ").empty());
+        CHECK(RoleKeyFromName("\xC3\xA9\xC3\xA8").empty());
+        CHECK(RoleKeyFromName("Left Heel") == RoleKey(Role::LeftHeel));  // the store refuses it (built-in clash)
+        CHECK(RoleNameFromKey("tail_end") == "tail end");
+    }
+
     if (g_fails == 0) std::printf("bone_roles: all tests passed\n");
     return g_fails == 0 ? 0 : 1;
 }

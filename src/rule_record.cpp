@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <system_error>
 
@@ -70,17 +71,51 @@ std::string BoneRefKey(int id)
     return i < t.size() ? t[i] : std::string();
 }
 
+namespace {
+
+std::mutex& RoleNamesMutex()
+{
+    static std::mutex m;
+    return m;
+}
+std::map<std::string, std::string>& RoleNamesTable()
+{
+    static std::map<std::string, std::string> t;
+    return t;
+}
+
+}  // namespace
+
+void SetCustomRoleNames(const std::map<std::string, std::string>& key_to_name)
+{
+    std::lock_guard<std::mutex> lock(RoleNamesMutex());
+    RoleNamesTable() = key_to_name;
+}
+
+std::string CustomRoleName(const std::string& role_key)
+{
+    {
+        std::lock_guard<std::mutex> lock(RoleNamesMutex());
+        const std::map<std::string, std::string>& t = RoleNamesTable();
+        const auto                                it = t.find(role_key);
+        if (it != t.end() && !it->second.empty()) return it->second;
+    }
+    return RoleNameFromKey(role_key);
+}
+
+std::string RoleKeyOfRef(int id)
+{
+    if (id >= 0 && id < static_cast<int>(Role::Count)) return RoleKey(static_cast<Role>(id));
+    const std::string key = BoneRefKey(id);
+    return StartsWith(key, kRolePrefix) ? key.substr(sizeof(kRolePrefix) - 1) : std::string();
+}
+
 std::string BoneRefName(int id)
 {
     if (id >= 0 && id < static_cast<int>(Role::Count)) return RoleName(static_cast<Role>(id));
     const std::string key = BoneRefKey(id);
     if (StartsWith(key, kBonePrefix)) return key.substr(sizeof(kBonePrefix) - 1);
-    if (StartsWith(key, kRolePrefix)) {
-        std::string s = key.substr(sizeof(kRolePrefix) - 1);
-        for (char& c : s)
-            if (c == '_') c = ' ';
-        return s;
-    }
+    if (StartsWith(key, kRolePrefix)) return CustomRoleName(key.substr(sizeof(kRolePrefix) - 1));
     return key.empty() ? std::string("?") : key;
 }
 
@@ -109,6 +144,17 @@ void ForEachBoneList(std::vector<Block>& blocks, F f)
 
 }  // namespace
 
+std::vector<std::string> CustomRoleKeysUsed(const std::vector<Block>& blocks)
+{
+    std::vector<std::string> out;
+    for (int id : BoneRefsUsed(blocks)) {
+        if (id < kBoneRefExtra) continue;
+        const std::string key = RoleKeyOfRef(id);
+        if (!key.empty() && std::find(out.begin(), out.end(), key) == out.end()) out.push_back(key);
+    }
+    return out;
+}
+
 std::vector<int> BoneRefsUsed(const std::vector<Block>& blocks)
 {
     std::vector<int>   out;
@@ -124,8 +170,8 @@ namespace {
 
 // The binding (BindBoneRefs); `names` gets what does not bind, each once.
 bool BindCore(std::vector<Block>& blocks, const std::vector<int>& role_to_bone,
-              const std::vector<std::string>& bone_names, const std::vector<int>& bone_parents,
-              std::vector<std::string>& names)
+              const std::map<std::string, int>* custom_role_to_bone, const std::vector<std::string>& bone_names,
+              const std::vector<int>& bone_parents, std::vector<std::string>& names)
 {
     std::vector<std::string> norm;
     norm.reserve(bone_names.size());
@@ -144,6 +190,13 @@ bool BindCore(std::vector<Block>& blocks, const std::vector<int>& role_to_bone,
             const std::string n = NormalizeBoneName(raw);
             for (size_t i = 0; i < norm.size(); ++i)
                 if (norm[i] == n) return static_cast<int>(i);
+        }
+        // Story 10-3e: a custom role (or a colleague's) binds through its mapping by key.
+        if (StartsWith(key, kRolePrefix) && custom_role_to_bone) {
+            const auto it = custom_role_to_bone->find(key.substr(sizeof(kRolePrefix) - 1));
+            if (it != custom_role_to_bone->end() && it->second >= 0 &&
+                it->second < static_cast<int>(bone_names.size()))
+                return it->second;
         }
         return -1;
     };
@@ -199,7 +252,18 @@ std::vector<std::string> MissingBoneRefs(const std::vector<Block>& blocks, const
 {
     std::vector<Block>       copy = blocks;
     std::vector<std::string> names;
-    BindCore(copy, role_to_bone, bone_names, bone_parents, names);
+    BindCore(copy, role_to_bone, nullptr, bone_names, bone_parents, names);
+    return names;
+}
+
+std::vector<std::string> MissingBoneRefs(const std::vector<Block>& blocks, const std::vector<int>& role_to_bone,
+                                         const std::map<std::string, int>& custom_role_to_bone,
+                                         const std::vector<std::string>& bone_names,
+                                         const std::vector<int>& bone_parents)
+{
+    std::vector<Block>       copy = blocks;
+    std::vector<std::string> names;
+    BindCore(copy, role_to_bone, &custom_role_to_bone, bone_names, bone_parents, names);
     return names;
 }
 
@@ -213,8 +277,15 @@ bool BindBoneRefs(std::vector<Block>& blocks, const std::vector<int>& role_to_bo
                   const std::vector<std::string>& bone_names, const std::vector<int>& bone_parents,
                   std::string* missing)
 {
+    return BindBoneRefs(blocks, role_to_bone, std::map<std::string, int>{}, bone_names, bone_parents, missing);
+}
+
+bool BindBoneRefs(std::vector<Block>& blocks, const std::vector<int>& role_to_bone,
+                  const std::map<std::string, int>& custom_role_to_bone, const std::vector<std::string>& bone_names,
+                  const std::vector<int>& bone_parents, std::string* missing)
+{
     std::vector<std::string> names;  // missing, each once
-    BindCore(blocks, role_to_bone, bone_names, bone_parents, names);
+    BindCore(blocks, role_to_bone, &custom_role_to_bone, bone_names, bone_parents, names);
     std::string miss;
     for (const std::string& nm : names) miss += (miss.empty() ? "" : ", ") + nm;
     if (missing) *missing = miss;

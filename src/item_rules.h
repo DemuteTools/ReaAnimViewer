@@ -27,6 +27,7 @@
 #include <vector>
 
 #include "reaper_api.h"
+#include "role_map_store.h"
 #include "rule_record.h"
 
 namespace rav {
@@ -98,6 +99,15 @@ struct SkeletonBones {
 SkeletonBones SkeletonBonesOf(const SceneSkeleton& skel);
 // The item's animation file's (empty when it does not load).
 SkeletonBones ItemSkeletonBones(MediaItem* item);
+
+// Story 10-3e: the role mapping on a skeleton for these blocks, from one read of roles.txt:
+// the built-in roles, the user's roles and the role keys the blocks read (a colleague's). It
+// also refreshes the custom roles' display names (SetCustomRoleNames) for signal names and
+// missing lists.
+RoleMapping ItemRoleMapping(const std::vector<std::string>& bone_names, const std::vector<Block>& blocks);
+// Binds blocks with ItemRoleMapping (built-in and custom roles). False + `missing` like BindBoneRefs.
+bool BindWithRoleMapping(std::vector<Block>& blocks, const std::vector<std::string>& bone_names,
+                         const std::vector<int>& bone_parents, std::string* missing);
 
 // Binds `blocks` on the item's skeleton with the remembered role mapping (role_map_store.h).
 // False when a role or bone is missing (`missing` names them), or the file or its bones do

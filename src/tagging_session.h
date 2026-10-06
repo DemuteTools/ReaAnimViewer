@@ -21,6 +21,7 @@
 #ifdef _WIN32
 
 #include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -57,6 +58,12 @@ struct TaggingModel {
     std::vector<std::string> bone_names;
     std::vector<int>         bone_parents;  // per bone: its parent (-1 = root), for joint angles
     std::vector<int>         role_to_bone;  // indexed by Role (-1 = no bone)
+    // Story 10-3e: the user's roles (roles.txt, for every project), the non-built-in role keys
+    // the item's rules read (in first-use order; a colleague's role may be in no list), and
+    // the bone of each (key -> bone, -1 = none) on this skeleton: list keys and rule keys.
+    std::vector<CustomRole>    custom_roles;
+    std::vector<std::string>   rule_role_keys;
+    std::map<std::string, int> custom_role_to_bone;
     // Story 10-3d: whether roles.txt can be read (the Skeleton & roles window says when it cannot).
     RoleMapStatus            roles_status = RoleMapStatus::Absent;
     int                      missing_count = 0;  // bone references the rules read with no bone

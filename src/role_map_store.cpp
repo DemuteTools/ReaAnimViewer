@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <system_error>
 
@@ -25,8 +26,9 @@ bool IsKeyChar(char c)
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
 }
 
-// "key=value" fields; a bare token joins the previous value; `bone` runs to the end.
-std::vector<std::pair<std::string, std::string>> Tokenize(const std::string& rest)
+// "key=value" fields; a bare token joins the previous value; the free-text field (`bone`
+// on a map line, `name` on a role line) runs to the end.
+std::vector<std::pair<std::string, std::string>> Tokenize(const std::string& rest, const char* free_key)
 {
     std::vector<std::pair<std::string, std::string>> f;
     size_t                                           pos = 0;
@@ -39,7 +41,7 @@ std::vector<std::pair<std::string, std::string>> Tokenize(const std::string& res
         for (size_t i = 0; key_ok && i < eq; ++i) key_ok = IsKeyChar(tok[i]);
         if (key_ok) {
             const std::string key = tok.substr(0, eq);
-            if (key == "bone") {
+            if (key == free_key) {
                 f.push_back({key, rest.substr(pos + eq + 1)});
                 break;
             }
@@ -221,8 +223,15 @@ bool ParseRoleMap(const std::string& text_in, RoleMapFile* out)
             RoleMapLine l;
             if (lines[i].compare(0, 4, "map ") == 0) {
                 l.is_map = true;
-                l.fields = Tokenize(lines[i].substr(4));
+                l.fields = Tokenize(lines[i].substr(4), "bone");
                 if (l.Get("skeleton").empty() || l.Get("role").empty()) {
+                    l = RoleMapLine{};
+                    l.raw = lines[i];
+                }
+            } else if (lines[i].compare(0, 5, "role ") == 0) {
+                l.is_role = true;
+                l.fields = Tokenize(lines[i].substr(5), "name");
+                if (l.Get("key").empty()) {
                     l = RoleMapLine{};
                     l.raw = lines[i];
                 }
@@ -242,10 +251,10 @@ std::string SerializeRoleMap(const RoleMapFile& file)
 {
     std::string out = std::string(kMagic) + ' ' + std::to_string(file.version < 1 ? 1 : file.version) + file.header_rest + '\n';
     for (const RoleMapLine& l : file.lines) {
-        if (!l.is_map) {
+        if (!l.is_map && !l.is_role) {
             out += l.raw;
         } else {
-            out += "map";
+            out += l.is_map ? "map" : "role";
             for (const auto& kv : l.fields) {
                 out += ' ';
                 if (!kv.first.empty()) out += kv.first + '=';
@@ -284,15 +293,20 @@ std::vector<int> ResolveRoleMapping(const RoleMapFile& file, const std::vector<s
 void SetRoleInFile(RoleMapFile& file, const std::string& skeleton, const std::string& role_key,
                    const std::string& bone_name)
 {
+    // An existing line is edited (its fields kept) and moved to the end: the file's order is the
+    // order of the picks, newest last (the learned guess reads it backwards).
     for (auto it = file.lines.rbegin(); it != file.lines.rend(); ++it) {
         if (!it->is_map || it->Get("skeleton") != skeleton || it->Get("role") != role_key) continue;
+        RoleMapLine l = std::move(*it);
+        file.lines.erase(std::next(it).base());
         bool set = false;
-        for (auto& kv : it->fields)
+        for (auto& kv : l.fields)
             if (kv.first == "bone") {
                 kv.second = CleanName(bone_name);
                 set = true;
             }
-        if (!set) it->fields.push_back({"bone", CleanName(bone_name)});
+        if (!set) l.fields.push_back({"bone", CleanName(bone_name)});
+        file.lines.push_back(std::move(l));
         return;
     }
     RoleMapLine l;
@@ -324,13 +338,261 @@ std::vector<int> GetRoleMapping(const std::string& root, const std::vector<std::
     }
 }
 
-bool SetRoleBone(const std::string& root, const std::vector<std::string>& bone_names, Role role,
+namespace {
+
+bool IsBuiltinKey(const std::string& key)
+{
+    return RoleFromKey(key, nullptr);
+}
+
+// The bone of this rig a stored bone text names: exact, else the same NormalizeBoneName. -1 = none.
+int FindBoneIndex(const std::vector<std::string>& bone_names, const std::string& bone)
+{
+    if (bone.empty()) return -1;
+    for (size_t b = 0; b < bone_names.size(); ++b)
+        if (bone_names[b] == bone) return static_cast<int>(b);
+    const std::string n = NormalizeBoneName(bone);
+    for (size_t b = 0; b < bone_names.size(); ++b)
+        if (NormalizeBoneName(bone_names[b]) == n) return static_cast<int>(b);
+    return -1;
+}
+
+std::string LowerAscii(std::string s)
+{
+    for (char& c : s)
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+    return s;
+}
+
+// A typed role name as stored: line breaks read as spaces, runs of spaces as one, trimmed,
+// ASCII lower-cased (like the built-in roles: "Sword Tip" -> "sword tip").
+std::string CleanRoleName(const std::string& typed)
+{
+    std::string out;
+    bool        space = false;
+    for (char c : typed) {
+        if (c == '\r' || c == '\n' || c == '\t' || c == ' ') {
+            space = true;
+            continue;
+        }
+        if (space && !out.empty()) out += ' ';
+        space = false;
+        out += c;
+    }
+    return LowerAscii(out);
+}
+
+// Checks a name for a role (`self_key` = the role renamed, "" for a new one). The key and the
+// cleaned name on success, else the reason.
+bool CheckRoleName(const RoleMapFile& f, const std::string& typed, const std::string& self_key, std::string* key_out,
+                   std::string* name_out, std::string* err)
+{
+    auto fail = [&](const std::string& why) {
+        if (err) *err = why;
+        return false;
+    };
+    const std::string name = CleanRoleName(typed);
+    if (name.empty()) return fail("Type a name for the role.");
+    const std::string key = RoleKeyFromName(name);
+    if (key.empty()) return fail("\"" + name + "\": a role name needs a letter or a digit (a-z, 0-9).");
+    const std::string low = LowerAscii(name);
+    for (int r = 0; r < static_cast<int>(Role::Count); ++r) {
+        const Role role = static_cast<Role>(r);
+        if (key == RoleKey(role) || low == LowerAscii(RoleName(role)) || low == LowerAscii(RoleShortLabel(role)))
+            return fail("\"" + name + "\" is already a role (" + RoleName(role) + ").");
+    }
+    for (const CustomRole& c : CustomRolesInFile(f)) {
+        if (c.key == self_key) continue;
+        if (low == LowerAscii(c.name) || key == RoleKeyFromName(c.name))
+            return fail("\"" + name + "\" is already a role (" + c.name + ").");
+        if (key == c.key)  // the role was renamed since: its key keeps its first name
+            return fail("\"" + name + "\" is taken: it was the first name of \"" + c.name + "\".");
+    }
+    if (key_out) *key_out = self_key.empty() ? key : self_key;
+    if (name_out) *name_out = name;
+    return true;
+}
+
+// Sets the name of a role's definition (the last line wins), adding one when there is none:
+// before the custom role at `at_index` in the list order (-1 / past the end = at the end).
+void SetRoleDefinition(RoleMapFile& f, const std::string& key, const std::string& name, int at_index = -1)
+{
+    for (auto it = f.lines.rbegin(); it != f.lines.rend(); ++it) {
+        if (!it->is_role || it->Get("key") != key) continue;
+        bool set = false;
+        for (auto& kv : it->fields)
+            if (kv.first == "name") {
+                kv.second = name;
+                set = true;
+            }
+        if (!set) it->fields.push_back({"name", name});
+        return;
+    }
+    RoleMapLine l;
+    l.is_role = true;
+    l.fields = {{"key", key}, {"name", name}};
+    if (at_index >= 0) {
+        const std::vector<CustomRole> list = CustomRolesInFile(f);
+        if (at_index < static_cast<int>(list.size())) {
+            const std::string& before = list[static_cast<size_t>(at_index)].key;
+            for (auto it = f.lines.begin(); it != f.lines.end(); ++it)
+                if (it->is_role && it->Get("key") == before) {
+                    f.lines.insert(it, std::move(l));
+                    return;
+                }
+        }
+    }
+    f.lines.push_back(std::move(l));
+}
+
+std::vector<std::string> RoleKeysOf(const std::vector<CustomRole>& roles)
+{
+    std::vector<std::string> keys;
+    for (const CustomRole& c : roles) keys.push_back(c.key);
+    return keys;
+}
+
+}  // namespace
+
+std::vector<CustomRole> CustomRolesInFile(const RoleMapFile& file)
+{
+    std::vector<CustomRole> out;
+    for (const RoleMapLine& l : file.lines) {
+        if (!l.is_role) continue;
+        const std::string key = l.Get("key");
+        if (key.empty() || IsBuiltinKey(key)) continue;  // a built-in key is never redefined
+        bool found = false;
+        for (CustomRole& c : out)
+            if (c.key == key) {
+                c.name = l.Get("name");  // the last line wins
+                found = true;
+            }
+        if (!found) out.push_back({key, l.Get("name")});
+    }
+    for (CustomRole& c : out)
+        if (c.name.empty()) c.name = RoleNameFromKey(c.key);
+    return out;
+}
+
+int LearnedRoleGuess(const RoleMapFile& file, const std::vector<std::string>& bone_names, const std::string& role_key)
+{
+    if (bone_names.empty() || IsBuiltinKey(role_key)) return -1;
+    const std::string skel = SkeletonKey(bone_names);
+    for (auto it = file.lines.rbegin(); it != file.lines.rend(); ++it) {
+        if (!it->is_map || it->Get("role") != role_key || it->Get("skeleton") == skel) continue;
+        const std::string bone = it->Get("bone");
+        if (bone.empty()) continue;
+        const std::string n = NormalizeBoneName(bone);
+        for (size_t b = 0; b < bone_names.size(); ++b)
+            if (NormalizeBoneName(bone_names[b]) == n) return static_cast<int>(b);
+    }
+    return -1;
+}
+
+int ResolveRoleKey(const RoleMapFile& file, const std::vector<std::string>& bone_names, const std::string& role_key,
+                   bool* stored)
+{
+    if (stored) *stored = false;
+    const RoleMapLine* l = FindLine(file, SkeletonKey(bone_names), role_key);
+    if (l) {
+        if (stored) *stored = true;
+        return FindBoneIndex(bone_names, l->Get("bone"));
+    }
+    Role r;
+    if (RoleFromKey(role_key, &r)) return GuessRoleMapping(bone_names)[static_cast<size_t>(r)];
+    return LearnedRoleGuess(file, bone_names, role_key);
+}
+
+int GuessRoleKey(const RoleMapFile& file, const std::vector<std::string>& bone_names, const std::string& role_key)
+{
+    Role r;
+    if (RoleFromKey(role_key, &r)) return GuessRoleMapping(bone_names)[static_cast<size_t>(r)];
+    return LearnedRoleGuess(file, bone_names, role_key);
+}
+
+RoleMapFile ReadRoleMapFile(const std::string& root)
+{
+    try {
+        FileState st;
+        return LoadFile(root, &st);
+    } catch (...) {
+        return RoleMapFile{};
+    }
+}
+
+std::vector<CustomRole> GetCustomRoles(const std::string& root)
+{
+    try {
+        return CustomRolesInFile(ReadRoleMapFile(root));
+    } catch (...) {
+        return {};
+    }
+}
+
+RoleMapping GetFullRoleMapping(const std::string& root, const std::vector<std::string>& bone_names,
+                               const std::vector<std::string>& extra_keys)
+{
+    RoleMapping out;
+    try {
+        const RoleMapFile f = ReadRoleMapFile(root);
+        out.builtin = ResolveRoleMapping(f, bone_names);
+        out.roles = CustomRolesInFile(f);
+        for (const CustomRole& c : out.roles) out.names[c.key] = c.name;
+        std::vector<std::string> keys = RoleKeysOf(out.roles);
+        for (const std::string& k : extra_keys)
+            if (!k.empty() && !IsBuiltinKey(k) && std::find(keys.begin(), keys.end(), k) == keys.end()) keys.push_back(k);
+        for (const std::string& k : keys) out.custom[k] = bone_names.empty() ? -1 : ResolveRoleKey(f, bone_names, k);
+    } catch (...) {
+        out = RoleMapping{};
+        out.builtin = GuessRoleMapping(bone_names);
+    }
+    return out;
+}
+
+RoleMapping RoleMappingForBlocks(const std::string& root, const std::vector<std::string>& bone_names,
+                                 const std::vector<Block>& blocks)
+{
+    RoleMapping rm = GetFullRoleMapping(root, bone_names, CustomRoleKeysUsed(blocks));
+    SetCustomRoleNames(rm.names);
+    return rm;
+}
+
+bool BindBlocksWithRoleMapping(const std::string& root, std::vector<Block>& blocks,
+                               const std::vector<std::string>& bone_names, const std::vector<int>& bone_parents,
+                               std::string* missing)
+{
+    const RoleMapping rm = RoleMappingForBlocks(root, bone_names, blocks);
+    return BindBoneRefs(blocks, rm.builtin, rm.custom, bone_names, bone_parents, missing);
+}
+
+bool SetRoleBone(const std::string& root, const std::vector<std::string>& bone_names, const std::string& role_key,
                  const std::string& bone_name, std::string* err)
 {
     try {
         FileState   st;
         RoleMapFile f = LoadFile(root, &st);
-        SetRoleInFile(f, SkeletonKey(bone_names), RoleKey(role), bone_name);
+        SetRoleInFile(f, SkeletonKey(bone_names), role_key, bone_name);
+        return SaveFile(root, f, st, err);
+    } catch (...) {
+        if (err) *err = "The role mapping could not be saved.";
+        return false;
+    }
+}
+
+bool SetRoleBone(const std::string& root, const std::vector<std::string>& bone_names, Role role,
+                 const std::string& bone_name, std::string* err)
+{
+    return SetRoleBone(root, bone_names, std::string(RoleKey(role)), bone_name, err);
+}
+
+bool ClearRole(const std::string& root, const std::vector<std::string>& bone_names, const std::string& role_key,
+               std::string* err)
+{
+    try {
+        FileState   st;
+        RoleMapFile f = LoadFile(root, &st);
+        if (st == FileState::Unreadable) return SaveFile(root, f, st, err);  // refused, with the reason
+        if (!ClearRoleInFile(f, SkeletonKey(bone_names), role_key) && st != FileState::NotRoles) return true;
         return SaveFile(root, f, st, err);
     } catch (...) {
         if (err) *err = "The role mapping could not be saved.";
@@ -340,16 +602,7 @@ bool SetRoleBone(const std::string& root, const std::vector<std::string>& bone_n
 
 bool ClearRole(const std::string& root, const std::vector<std::string>& bone_names, Role role, std::string* err)
 {
-    try {
-        FileState   st;
-        RoleMapFile f = LoadFile(root, &st);
-        if (st == FileState::Unreadable) return SaveFile(root, f, st, err);  // refused, with the reason
-        if (!ClearRoleInFile(f, SkeletonKey(bone_names), RoleKey(role)) && st != FileState::NotRoles) return true;
-        return SaveFile(root, f, st, err);
-    } catch (...) {
-        if (err) *err = "The role mapping could not be saved.";
-        return false;
-    }
+    return ClearRole(root, bone_names, std::string(RoleKey(role)), err);
 }
 
 RoleMapStatus GetRoleMapStatus(const std::string& root)
@@ -368,51 +621,168 @@ RoleMapStatus GetRoleMapStatus(const std::string& root)
     }
 }
 
-std::vector<StoredRoleEntry> GetStoredRoles(const std::string& root, const std::vector<std::string>& bone_names)
+std::vector<StoredRoleEntry> GetStoredRoles(const std::string& root, const std::vector<std::string>& bone_names,
+                                            const std::vector<std::string>& role_keys)
 {
-    std::vector<StoredRoleEntry> out(static_cast<size_t>(Role::Count));
+    std::vector<StoredRoleEntry> out(role_keys.size());
     try {
         FileState         st;
         const RoleMapFile f = LoadFile(root, &st);
         const std::string skel = SkeletonKey(bone_names);
-        for (int r = 0; r < static_cast<int>(Role::Count); ++r) {
-            const RoleMapLine* l = FindLine(f, skel, RoleKey(static_cast<Role>(r)));
+        for (size_t i = 0; i < role_keys.size(); ++i) {
+            const RoleMapLine* l = FindLine(f, skel, role_keys[i]);
             if (!l) continue;
-            out[static_cast<size_t>(r)].stored = true;
-            out[static_cast<size_t>(r)].bone = l->Get("bone");
+            out[i].stored = true;
+            out[i].bone = l->Get("bone");
         }
     } catch (...) {
-        out.assign(static_cast<size_t>(Role::Count), StoredRoleEntry{});
+        out.assign(role_keys.size(), StoredRoleEntry{});
     }
     return out;
+}
+
+std::vector<StoredRoleEntry> GetStoredRoles(const std::string& root, const std::vector<std::string>& bone_names)
+{
+    std::vector<std::string> keys;
+    for (int r = 0; r < static_cast<int>(Role::Count); ++r) keys.push_back(RoleKey(static_cast<Role>(r)));
+    return GetStoredRoles(root, bone_names, keys);
+}
+
+StoredRoleEntry GetStoredRole(const std::string& root, const std::vector<std::string>& bone_names,
+                              const std::string& role_key)
+{
+    return GetStoredRoles(root, bone_names, std::vector<std::string>{role_key})[0];
 }
 
 StoredRoleEntry GetStoredRole(const std::string& root, const std::vector<std::string>& bone_names, Role role)
 {
     const int r = static_cast<int>(role);
     if (r < 0 || r >= static_cast<int>(Role::Count)) return StoredRoleEntry{};
-    return GetStoredRoles(root, bone_names)[static_cast<size_t>(r)];
+    return GetStoredRole(root, bone_names, std::string(RoleKey(role)));
+}
+
+bool RestoreRole(const std::string& root, const std::vector<std::string>& bone_names, const std::string& role_key,
+                 const StoredRoleEntry& entry, std::string* err)
+{
+    return entry.stored ? SetRoleBone(root, bone_names, role_key, entry.bone, err)
+                        : ClearRole(root, bone_names, role_key, err);
 }
 
 bool RestoreRole(const std::string& root, const std::vector<std::string>& bone_names, Role role,
                  const StoredRoleEntry& entry, std::string* err)
 {
-    return entry.stored ? SetRoleBone(root, bone_names, role, entry.bone, err)
-                        : ClearRole(root, bone_names, role, err);
+    return RestoreRole(root, bone_names, std::string(RoleKey(role)), entry, err);
+}
+
+bool ApplyRoleChange(const std::string& root, const std::vector<std::string>& bone_names, const std::string& role_key,
+                     RoleChangeKind kind, const std::string& bone, StoredRoleEntry* prev_out, bool* changed,
+                     std::string* err)
+{
+    if (changed) *changed = false;
+    const StoredRoleEntry prev = GetStoredRole(root, bone_names, role_key);
+    if (prev_out) *prev_out = prev;
+    const bool ok = kind == RoleChangeKind::Auto
+                        ? ClearRole(root, bone_names, role_key, err)
+                        : SetRoleBone(root, bone_names, role_key,
+                                      kind == RoleChangeKind::None ? std::string() : bone, err);
+    if (ok && changed) *changed = !(GetStoredRole(root, bone_names, role_key) == prev);
+    return ok;
 }
 
 bool ApplyRoleChange(const std::string& root, const std::vector<std::string>& bone_names, Role role,
                      RoleChangeKind kind, const std::string& bone, StoredRoleEntry* prev_out, bool* changed,
                      std::string* err)
 {
-    if (changed) *changed = false;
-    const StoredRoleEntry prev = GetStoredRole(root, bone_names, role);
-    if (prev_out) *prev_out = prev;
-    const bool ok = kind == RoleChangeKind::Auto
-                        ? ClearRole(root, bone_names, role, err)
-                        : SetRoleBone(root, bone_names, role, kind == RoleChangeKind::None ? std::string() : bone, err);
-    if (ok && changed) *changed = !(GetStoredRole(root, bone_names, role) == prev);
-    return ok;
+    return ApplyRoleChange(root, bone_names, std::string(RoleKey(role)), kind, bone, prev_out, changed, err);
+}
+
+// ---- Story 10-3e: custom roles ---------------------------------------------------------------
+
+bool AddCustomRole(const std::string& root, const std::string& name, std::string* key_out, std::string* err)
+{
+    try {
+        FileState   st;
+        RoleMapFile f = LoadFile(root, &st);
+        if (st == FileState::Unreadable) return SaveFile(root, f, st, err);  // refused, with the reason
+        std::string key, clean;
+        if (!CheckRoleName(f, name, "", &key, &clean, err)) return false;
+        SetRoleDefinition(f, key, clean);
+        if (!SaveFile(root, f, st, err)) return false;
+        if (key_out) *key_out = key;
+        return true;
+    } catch (...) {
+        if (err) *err = "The role could not be saved.";
+        return false;
+    }
+}
+
+bool RenameCustomRole(const std::string& root, const std::string& role_key, const std::string& name,
+                      std::string* old_name, std::string* err)
+{
+    try {
+        FileState   st;
+        RoleMapFile f = LoadFile(root, &st);
+        if (st == FileState::Unreadable) return SaveFile(root, f, st, err);
+        const std::vector<CustomRole> list = CustomRolesInFile(f);
+        auto it = std::find_if(list.begin(), list.end(), [&](const CustomRole& c) { return c.key == role_key; });
+        if (it == list.end()) {
+            if (err) *err = "This role is not in your roles: create it first.";
+            return false;
+        }
+        std::string clean;
+        if (!CheckRoleName(f, name, role_key, nullptr, &clean, err)) return false;
+        if (old_name) *old_name = it->name;
+        if (clean == it->name) return true;  // nothing to write
+        SetRoleDefinition(f, role_key, clean);
+        return SaveFile(root, f, st, err);
+    } catch (...) {
+        if (err) *err = "The role could not be saved.";
+        return false;
+    }
+}
+
+bool DeleteCustomRole(const std::string& root, const std::string& role_key, std::string* name_out, int* index_out,
+                      std::string* err)
+{
+    try {
+        FileState   st;
+        RoleMapFile f = LoadFile(root, &st);
+        if (st == FileState::Unreadable) return SaveFile(root, f, st, err);
+        const std::vector<CustomRole> list = CustomRolesInFile(f);
+        for (size_t i = 0; i < list.size(); ++i)
+            if (list[i].key == role_key) {
+                if (name_out) *name_out = list[i].name;
+                if (index_out) *index_out = static_cast<int>(i);
+            }
+        const size_t before = f.lines.size();
+        f.lines.erase(std::remove_if(f.lines.begin(), f.lines.end(),
+                                     [&](const RoleMapLine& l) { return l.is_role && l.Get("key") == role_key; }),
+                      f.lines.end());
+        if (f.lines.size() == before && st != FileState::NotRoles) return true;  // not defined: nothing to do
+        return SaveFile(root, f, st, err);
+    } catch (...) {
+        if (err) *err = "The role could not be saved.";
+        return false;
+    }
+}
+
+bool RestoreCustomRole(const std::string& root, const std::string& role_key, const std::string& name, int index,
+                       std::string* err)
+{
+    try {
+        if (role_key.empty() || IsBuiltinKey(role_key)) {
+            if (err) *err = "The role could not be saved.";
+            return false;
+        }
+        FileState   st;
+        RoleMapFile f = LoadFile(root, &st);
+        if (st == FileState::Unreadable) return SaveFile(root, f, st, err);
+        SetRoleDefinition(f, role_key, CleanName(name), index);
+        return SaveFile(root, f, st, err);
+    } catch (...) {
+        if (err) *err = "The role could not be saved.";
+        return false;
+    }
 }
 
 }  // namespace rav

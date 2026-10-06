@@ -68,6 +68,38 @@ inline bool RoleFromKey(const std::string& key, Role* out)
     return false;
 }
 
+// Story 10-3e -- custom roles. The key of a role the user creates from its name: lower-case
+// ASCII snake_case ([a-z0-9_]): letters and digits kept (lower-cased), every run of other
+// bytes (spaces, punctuation, accents) becomes one '_', trimmed at both ends. "Sword Tip"
+// -> "sword_tip". "" when nothing is left (the name is refused).
+inline std::string RoleKeyFromName(const std::string& name)
+{
+    std::string key;
+    bool        pending = false;  // a run of other bytes since the last kept one
+    for (char ch : name) {
+        const unsigned char c = static_cast<unsigned char>(ch);
+        const bool          alnum = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+        if (!alnum) {
+            pending = true;
+            continue;
+        }
+        if (pending && !key.empty()) key += '_';
+        pending = false;
+        key += static_cast<char>(std::tolower(c));
+    }
+    return key;
+}
+
+// A role key read as a name when no definition gives one (a colleague's role): '_' read as
+// a space. "tail_end" -> "tail end".
+inline std::string RoleNameFromKey(const std::string& key)
+{
+    std::string s = key;
+    for (char& c : s)
+        if (c == '_') c = ' ';
+    return s;
+}
+
 // The side of a role: 'L', 'R', or 0 (none, e.g. hips).
 inline char RoleSide(Role r)
 {

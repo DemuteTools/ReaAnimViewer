@@ -113,9 +113,10 @@ std::vector<Block> EnabledOnly(const std::vector<Block>& blocks)
 // How many bone references the blocks read that have no bone on this skeleton, and their names.
 // A joint angle whose joint has no parent or child counts too ("<name> (not a joint)").
 int CountMissing(const std::vector<Block>& blocks, const std::vector<int>& role_to_bone,
-                 const std::vector<std::string>& names, const std::vector<int>& parents, std::string* missing)
+                 const std::map<std::string, int>& custom_role_to_bone, const std::vector<std::string>& names,
+                 const std::vector<int>& parents, std::string* missing)
 {
-    const std::vector<std::string> list = MissingBoneRefs(blocks, role_to_bone, names, parents);
+    const std::vector<std::string> list = MissingBoneRefs(blocks, role_to_bone, custom_role_to_bone, names, parents);
     std::string all;
     for (const std::string& nm : list) all += (all.empty() ? "" : ", ") + nm;
     if (missing) *missing = all;
@@ -154,10 +155,23 @@ void ReadItem()
     m.has_record = rd.present && rd.valid;
     m.rules = m.has_record ? rd.rules : ItemRules{};
     ReadPresetFields();
-    m.role_to_bone = m.bone_names.empty() ? std::vector<int>{} : GetRoleMapping(RulesResourceRoot(), m.bone_names);
+    // Story 10-3e: the user's roles and the role keys the rules read (all of them, off rules
+    // too: the window lists them), mapped on this skeleton; the display names follow roles.txt.
+    RoleMapping rm = ItemRoleMapping(m.bone_names, m.rules.blocks);
+    m.custom_roles = std::move(rm.roles);
+    m.rule_role_keys = CustomRoleKeysUsed(m.rules.blocks);
+    if (m.bone_names.empty()) {
+        m.role_to_bone.clear();
+        m.custom_role_to_bone.clear();
+    } else {
+        m.role_to_bone = std::move(rm.builtin);
+        m.custom_role_to_bone = std::move(rm.custom);
+    }
     m.roles_status = GetRoleMapStatus(RulesResourceRoot());
     m.missing.clear();
-    m.missing_count = m.file_loaded ? CountMissing(EnabledOnly(m.rules.blocks), m.role_to_bone, m.bone_names, m.bone_parents, &m.missing) : 0;
+    m.missing_count = m.file_loaded ? CountMissing(EnabledOnly(m.rules.blocks), m.role_to_bone, m.custom_role_to_bone,
+                                                   m.bone_names, m.bone_parents, &m.missing)
+                                    : 0;
     g.detect_dirty = true;
 }
 
@@ -221,7 +235,7 @@ bool BindAndSample(const ItemRules& rules, std::vector<Block>* bound_out)
     if (!m.file_loaded || !g.asset) return false;
     std::vector<Block> bound = EnabledOnly(rules.blocks);
     std::string why;
-    if (!BindBoneRefs(bound, m.role_to_bone, m.bone_names, m.bone_parents, &why)) return false;
+    if (!BindBoneRefs(bound, m.role_to_bone, m.custom_role_to_bone, m.bone_names, m.bone_parents, &why)) return false;
     std::vector<int> bones;
     RemapToTracks(bound, &bones);
     SampleKey key{g.asset_path, g.asset_stamp, bones};
@@ -278,7 +292,7 @@ void RefreshSelection()
         const std::vector<std::string>& names = sk.names;
         std::vector<Block> probe = EnabledOnly(rd.rules.blocks);
         if (names.empty() ||
-            !BindBoneRefs(probe, GetRoleMapping(RulesResourceRoot(), names), names, sk.parents, nullptr)) {
+            !BindWithRoleMapping(probe, names, sk.parents, nullptr)) {
             ++m.sel_roles_skipped;
             continue;
         }
@@ -560,7 +574,7 @@ ItemDetection DetectItem(MediaItem* item)
         const SkeletonBones sk = SkeletonBonesOf(asset->skeleton);
         const std::vector<std::string>& names = sk.names;
         std::vector<Block> bound = EnabledOnly(out.rules.blocks);
-        if (!BindBoneRefs(bound, GetRoleMapping(RulesResourceRoot(), names), names, sk.parents, &out.missing)) {
+        if (!BindWithRoleMapping(bound, names, sk.parents, &out.missing)) {
             out.status = ItemDetection::Status::RolesMissing;
             return out;
         }

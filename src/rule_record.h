@@ -77,6 +77,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <utility>
 #include <vector>
@@ -99,8 +100,9 @@ int BoneRefId(const std::string& key);
 int BoneRefForBone(const std::string& raw_name);
 // The decoded key of an id ("" when the id is neither a role nor interned).
 std::string BoneRefKey(int id);
-// Human name, for a missing list: "left toe" (RoleName), "left hand" (an unknown role key,
-// '_' read as ' '), or the bone's raw name.
+// Human name, for a missing list: "left toe" (RoleName), a custom role's display name
+// (SetCustomRoleNames; a key without one reads with '_' as ' ': "left hand"), or the bone's
+// raw name.
 std::string BoneRefName(int id);
 // Short label, for signal names: "L heel", "hips", an unknown role as BoneRefName, the
 // bone's raw name.
@@ -108,6 +110,16 @@ std::string BoneRefLabel(int id);
 
 // Every id the blocks read (conditions, references, strength), each once, in first-use order.
 std::vector<int> BoneRefsUsed(const std::vector<Block>& blocks);
+
+// Story 10-3e -- custom roles. The display names of the user's roles (key without "role:" ->
+// name), process-wide and thread-safe; set from roles.txt each time it is read for a binding.
+void SetCustomRoleNames(const std::map<std::string, std::string>& key_to_name);
+// A role key's display name: the one set, else the key with '_' read as ' '.
+std::string CustomRoleName(const std::string& role_key);
+// The role key of a reference ("left_heel", "sword_tip"), "" when it is a bone.
+std::string RoleKeyOfRef(int id);
+// The keys of the non-built-in roles the blocks read, each once, in first-use order.
+std::vector<std::string> CustomRoleKeysUsed(const std::vector<Block>& blocks);
 
 // Binds the ids to skeleton bone indices: a role through role_to_bone (indexed by Role,
 // -1 = unmapped), a bone key by its raw name in bone_names (exact, else the same
@@ -124,8 +136,18 @@ bool BindBoneRefs(std::vector<Block>& blocks, const std::vector<int>& role_to_bo
                   std::string* missing);
 bool BindBoneRefs(std::vector<Block>& blocks, const std::vector<int>& role_to_bone,
                   const std::vector<std::string>& bone_names, std::string* missing);
+// Story 10-3e: the same, with a custom role (any "role:<key>" that is not a built-in) bound
+// through custom_role_to_bone (key without "role:" -> bone index; absent or -1 = unmapped).
+// Without it (the forms above) a custom role never binds.
+bool BindBoneRefs(std::vector<Block>& blocks, const std::vector<int>& role_to_bone,
+                  const std::map<std::string, int>& custom_role_to_bone, const std::vector<std::string>& bone_names,
+                  const std::vector<int>& bone_parents, std::string* missing);
 // What BindBoneRefs would list as missing, each once, in order (the blocks are not changed).
 std::vector<std::string> MissingBoneRefs(const std::vector<Block>& blocks, const std::vector<int>& role_to_bone,
+                                         const std::vector<std::string>& bone_names,
+                                         const std::vector<int>& bone_parents);
+std::vector<std::string> MissingBoneRefs(const std::vector<Block>& blocks, const std::vector<int>& role_to_bone,
+                                         const std::map<std::string, int>& custom_role_to_bone,
                                          const std::vector<std::string>& bone_names,
                                          const std::vector<int>& bone_parents);
 

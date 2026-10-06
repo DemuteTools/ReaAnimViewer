@@ -223,6 +223,17 @@ SkeletonBones ItemSkeletonBones(MediaItem* item)
     return sk;
 }
 
+RoleMapping ItemRoleMapping(const std::vector<std::string>& bone_names, const std::vector<Block>& blocks)
+{
+    return RoleMappingForBlocks(RulesResourceRoot(), bone_names, blocks);
+}
+
+bool BindWithRoleMapping(std::vector<Block>& blocks, const std::vector<std::string>& bone_names,
+                         const std::vector<int>& bone_parents, std::string* missing)
+{
+    return BindBlocksWithRoleMapping(RulesResourceRoot(), blocks, bone_names, bone_parents, missing);
+}
+
 bool CheckItemBinding(MediaItem* item, const std::vector<Block>& blocks, std::string* missing)
 {
     if (missing) missing->clear();
@@ -234,7 +245,7 @@ bool CheckItemBinding(MediaItem* item, const std::vector<Block>& blocks, std::st
             return false;
         }
         std::vector<Block> bound = blocks;
-        return BindBoneRefs(bound, GetRoleMapping(RulesResourceRoot(), names), names, sk.parents, missing);
+        return BindWithRoleMapping(bound, names, sk.parents, missing);
     } catch (...) {
         if (missing) *missing = "the item's bones could not be read";
         return false;

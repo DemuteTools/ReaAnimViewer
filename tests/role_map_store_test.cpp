@@ -129,11 +129,12 @@ int main()
         SetRoleInFile(f, skel, "left_heel", "mixamorig:LeftFoot");
         const std::string out = SerializeRoleMap(f);
         CHECK(f.header_rest == " flags=x");
+        // 10-3e: the edited line keeps its fields and moves last (the newest pick).
         CHECK(out == "RAVROLES 3 flags=x\n"
                      "# written by a later RAV\n"
                      "map skeleton=" + skel + " role=left_hand side=L bone=mixamorig:LeftHand\n"
-                     "map skeleton=" + skel + " role=left_heel weight=1 bone=mixamorig:LeftFoot\n"
-                     "alias LeftFoot=heel\n");
+                     "alias LeftFoot=heel\n"
+                     "map skeleton=" + skel + " role=left_heel weight=1 bone=mixamorig:LeftFoot\n");
 
         // On disk: a set keeps the other lines.
         const fs::path p = fs::u8path(RoleMapPath(R0));
@@ -302,6 +303,252 @@ int main()
         CHECK(!RestoreRole(R0, a, Role::LeftToe, StoredRoleEntry{}, &err) && !err.empty());
         CHECK(fs::is_directory(p));
         fs::remove(p);
+    }
+
+    // ---- Story 10-3e: custom roles ----
+    {
+        const fs::path    croot = root / "custom";
+        const std::string C = croot.u8string();
+        const fs::path    p = fs::u8path(RoleMapPath(C));
+        std::string       key, err, old_name, name;
+        int               index = -1;
+
+        // Create: key from the name, name cleaned and lower-cased; listed.
+        CHECK(GetCustomRoles(C).empty());
+        CHECK(AddCustomRole(C, "  Sword   Tip ", &key, &err) && key == "sword_tip");
+        CHECK(GetCustomRoles(C) == (std::vector<CustomRole>{{"sword_tip", "sword tip"}}));
+        CHECK(ReadAll(p).find("role key=sword_tip name=sword tip\n") != std::string::npos);
+
+        // Refused: empty key, a built-in key / name / short label, a custom key or name taken.
+        const std::string before = ReadAll(p);
+        err.clear();
+        CHECK(!AddCustomRole(C, "", &key, &err) && !err.empty());
+        err.clear();
+        CHECK(!AddCustomRole(C, " -- ", &key, &err) && !err.empty());
+        err.clear();
+        CHECK(!AddCustomRole(C, "\xC3\xA9\xC3\xA8", &key, &err) && !err.empty());
+        err.clear();
+        CHECK(!AddCustomRole(C, "Left Heel", &key, &err) && !err.empty());
+        err.clear();
+        CHECK(!AddCustomRole(C, "L heel", &key, &err) && !err.empty());
+        err.clear();
+        CHECK(!AddCustomRole(C, "left-heel", &key, &err) && !err.empty());  // key left_heel
+        err.clear();
+        CHECK(!AddCustomRole(C, "sword-tip", &key, &err) && !err.empty());  // key sword_tip taken
+        err.clear();
+        CHECK(!AddCustomRole(C, "SWORD TIP", &key, &err) && !err.empty());
+        CHECK(ReadAll(p) == before);
+
+        // Map it per skeleton, by key, like a built-in role.
+        const std::vector<std::string> rigA = {"Hips", "Spine", "weapon_r"};
+        const std::vector<std::string> rigB = {"mixamorig:Hips", "mixamorig:Weapon_R", "mixamorig:Hand_R"};
+        const std::vector<std::string> rigC = {"pelvis", "hand_r"};
+        CHECK(AddCustomRole(C, "Blade Root", &key, &err) && key == "blade_root");
+        RoleMapping rm = GetFullRoleMapping(C, rigA, {});
+        CHECK(rm.roles.size() == 2 && rm.custom.size() == 2 && rm.custom["sword_tip"] == -1);
+        CHECK(rm.names["sword_tip"] == "sword tip" && rm.builtin.size() == static_cast<size_t>(Role::Count));
+        StoredRoleEntry prev;
+        bool            changed = false;
+        CHECK(ApplyRoleChange(C, rigA, "sword_tip", RoleChangeKind::Bone, "weapon_r", &prev, &changed, &err));
+        CHECK(changed && !prev.stored);
+        CHECK(GetFullRoleMapping(C, rigA, {}).custom["sword_tip"] == 2);
+        CHECK(GetStoredRole(C, rigA, std::string("sword_tip")) == (StoredRoleEntry{true, "weapon_r"}));
+
+        // Learned guess: rig B has no entry; its Weapon_R matches by normalised name -> auto.
+        RoleMapFile f = ReadRoleMapFile(C);
+        bool        stored = true;
+        CHECK(ResolveRoleKey(f, rigB, "sword_tip", &stored) == 1 && !stored);
+        CHECK(GuessRoleKey(f, rigB, "sword_tip") == 1);
+        CHECK(GetFullRoleMapping(C, rigB, {}).custom["sword_tip"] == 1);
+        CHECK(!GetStoredRole(C, rigB, std::string("sword_tip")).stored);
+        // No similar bone: no guess.
+        CHECK(GetFullRoleMapping(C, rigC, {}).custom["sword_tip"] == -1);
+        // Newest pick first: a later pick of hand_r on another rig wins on a rig that has both.
+        const std::vector<std::string> rigD = {"Hand_R", "Spine2"};
+        CHECK(SetRoleBone(C, rigD, std::string("sword_tip"), "Hand_R", &err));
+        f = ReadRoleMapFile(C);
+        CHECK(ResolveRoleKey(f, rigB, "sword_tip") == 2);  // hand_r (the newest pick) before weapon_r
+        CHECK(ResolveRoleKey(f, rigC, "sword_tip") == 1);
+        // A "no bone" pick is never learned; a stored entry wins over the guess.
+        CHECK(SetRoleBone(C, rigC, std::string("sword_tip"), "", &err));
+        f = ReadRoleMapFile(C);
+        CHECK(ResolveRoleKey(f, rigC, "sword_tip", &stored) == -1 && stored);
+        CHECK(ResolveRoleKey(f, rigB, "sword_tip") == 2);
+        CHECK(SetRoleBone(C, rigB, std::string("sword_tip"), "mixamorig:Weapon_R", &err));
+        f = ReadRoleMapFile(C);
+        CHECK(ResolveRoleKey(f, rigB, "sword_tip", &stored) == 1 && stored);
+        CHECK(ClearRole(C, rigB, std::string("sword_tip"), &err));
+        CHECK(ClearRole(C, rigC, std::string("sword_tip"), &err));
+        // A built-in role keeps its table guess (never learned).
+        f = ReadRoleMapFile(C);
+        CHECK(LearnedRoleGuess(f, rigB, "hips") == -1);
+        CHECK(ResolveRoleKey(f, rigB, "hips") == 0);
+
+        // A colleague's key (rules read it, not in the list): mapped when asked for.
+        rm = GetFullRoleMapping(C, rigA, {"tail_end", "hips", "sword_tip"});
+        CHECK(rm.custom.count("tail_end") == 1 && rm.custom["tail_end"] == -1 && rm.custom.count("hips") == 0);
+        CHECK(rm.names.count("tail_end") == 0);
+        CHECK(ApplyRoleChange(C, rigA, "tail_end", RoleChangeKind::Bone, "Spine", &prev, &changed, &err) && changed);
+        CHECK(GetFullRoleMapping(C, rigA, {"tail_end"}).custom["tail_end"] == 1);
+        CHECK(GetCustomRoles(C).size() == 2);  // mapping a key does not define it
+
+        // Rename: the key stays, the map lines stay, the name changes; a taken name is refused.
+        CHECK(RenameCustomRole(C, "sword_tip", "Blade Tip", &old_name, &err) && old_name == "sword tip");
+        CHECK(GetCustomRoles(C)[0] == (CustomRole{"sword_tip", "blade tip"}));
+        CHECK(GetFullRoleMapping(C, rigA, {}).custom["sword_tip"] == 2);
+        err.clear();
+        CHECK(!RenameCustomRole(C, "sword_tip", "blade root", &old_name, &err) && !err.empty());
+        err.clear();
+        CHECK(!RenameCustomRole(C, "sword_tip", "hips", &old_name, &err) && !err.empty());
+        err.clear();
+        CHECK(!RenameCustomRole(C, "sword_tip", "--", &old_name, &err) && !err.empty());
+        err.clear();
+        CHECK(!RenameCustomRole(C, "tail_end", "tail", &old_name, &err) && !err.empty());  // not in the list
+        CHECK(RenameCustomRole(C, "sword_tip", "Blade Tip", &old_name, &err));             // its own name: allowed
+        CHECK(GetCustomRoles(C)[0].name == "blade tip");
+        // A name whose key would be another role's key is fine on a rename (the key never changes).
+        CHECK(RenameCustomRole(C, "sword_tip", "blade-root x", &old_name, &err));
+        CHECK(RestoreCustomRole(C, "sword_tip", "blade tip", -1, &err));
+
+        // Delete: the definition goes, its map lines stay; re-creating brings the bone back.
+        CHECK(DeleteCustomRole(C, "sword_tip", &name, &index, &err) && name == "blade tip" && index == 0);
+        CHECK(GetCustomRoles(C) == (std::vector<CustomRole>{{"blade_root", "blade root"}}));
+        CHECK(ReadAll(p).find("role=sword_tip bone=weapon_r") != std::string::npos);
+        CHECK(GetFullRoleMapping(C, rigA, {"sword_tip"}).custom["sword_tip"] == 2);  // still mappable by key
+        CHECK(DeleteCustomRole(C, "nothing_here", nullptr, nullptr, &err));         // not defined: nothing to do
+        // Undo of the delete: back in its place, with its name.
+        CHECK(RestoreCustomRole(C, "sword_tip", "blade tip", index, &err));
+        CHECK(GetCustomRoles(C) ==
+              (std::vector<CustomRole>{{"sword_tip", "blade tip"}, {"blade_root", "blade root"}}));
+        CHECK(!RestoreCustomRole(C, "hips", "x", -1, &err));  // a built-in key is never defined
+        // Re-create after a delete: the bones come back.
+        CHECK(DeleteCustomRole(C, "sword_tip", nullptr, nullptr, &err));
+        CHECK(AddCustomRole(C, "Sword Tip", &key, &err) && key == "sword_tip");
+        CHECK(GetFullRoleMapping(C, rigA, {}).custom["sword_tip"] == 2);
+
+        // Undo round trip: create, map, rename, then undo x3 = the file as it was.
+        const std::string start = ReadAll(p);
+        CHECK(AddCustomRole(C, "Tail Tip", &key, &err) && key == "tail_tip");
+        CHECK(ApplyRoleChange(C, rigA, key, RoleChangeKind::Bone, "Spine", &prev, &changed, &err) && changed);
+        CHECK(RenameCustomRole(C, key, "Tail End Tip", &old_name, &err) && old_name == "tail tip");
+        CHECK(RestoreCustomRole(C, key, old_name, -1, &err));  // undo the rename
+        CHECK(GetCustomRoles(C).back() == (CustomRole{"tail_tip", "tail tip"}));
+        CHECK(RestoreRole(C, rigA, key, prev, &err));          // undo the mapping
+        CHECK(!GetStoredRole(C, rigA, key).stored);
+        CHECK(DeleteCustomRole(C, key, nullptr, nullptr, &err));  // undo the create
+        CHECK(ReadAll(p) == start);
+
+        // Unknown fields and lines round-trip; `name` runs to the end; the last line's name wins;
+        // a `role` line without a key, or with a built-in key, is not a custom role.
+        const std::string text = "RAVROLES 1\n"
+                                 "role key=fx_a future=1 name=FX  a = b\n"
+                                 "role name=orphan\n"
+                                 "role key=hips name=my hips\n"
+                                 "role key=fx_a name=fx renamed\n"
+                                 "map skeleton=0123456789abcdef role=fx_a bone=Bone 1 tag=x\n";
+        RoleMapFile rf;
+        CHECK(ParseRoleMap(text, &rf) && SerializeRoleMap(rf) == text);
+        CHECK(rf.lines.size() == 5 && rf.lines[0].is_role && rf.lines[0].Get("future") == "1" &&
+              rf.lines[0].Get("name") == "FX  a = b" && !rf.lines[1].is_role && rf.lines[2].is_role);
+        CHECK(CustomRolesInFile(rf) == (std::vector<CustomRole>{{"fx_a", "fx renamed"}}));
+        // A rename keeps the unknown field of the line it edits.
+        fs::remove(p);
+        {
+            std::ofstream o(p, std::ios::binary);
+            o << "RAVROLES 1\nrole key=fx_b future=1 name=fx b\n";
+        }
+        CHECK(RenameCustomRole(C, "fx_b", "FX Bee", &old_name, &err));
+        CHECK(ReadAll(p) == "RAVROLES 1\nrole key=fx_b future=1 name=fx bee\n");
+
+        // Unreadable roles.txt: writes refused with a reason, the list reads empty.
+        fs::remove(p);
+        fs::create_directories(p);
+        err.clear();
+        CHECK(!AddCustomRole(C, "New One", &key, &err) && !err.empty());
+        err.clear();
+        CHECK(!RenameCustomRole(C, "fx_b", "x", &old_name, &err) && !err.empty());
+        err.clear();
+        CHECK(!DeleteCustomRole(C, "fx_b", nullptr, nullptr, &err) && !err.empty());
+        CHECK(GetCustomRoles(C).empty());
+        CHECK(GetFullRoleMapping(C, rigA, {}).builtin.size() == static_cast<size_t>(Role::Count));
+        CHECK(fs::is_directory(p));
+    }
+
+    // ---- Story 10-3e review: composition, pick order, rename keys, restore order ----
+    {
+        const std::string C = (root / "custom2").u8string();
+        std::string       key, err, old_name, name, missing;
+        int               index = -1;
+        StoredRoleEntry   prev;
+        bool              changed = false;
+        const std::vector<std::string> rigA = {"Hips", "Spine", "weapon_r"};
+        const std::vector<int>         parA = {-1, 0, 1};
+
+        // A colleague's key (not in the list) mapped on rig A binds through the composition.
+        Block     b;
+        Condition c;
+        c.signal.bones = {BoneRefId("role:tail_end")};
+        b.conditions = {c};
+        std::vector<Block> blocks = {b};
+        CHECK(!BindBlocksWithRoleMapping(C, blocks, rigA, parA, &missing) && missing == "tail end");
+        CHECK(ApplyRoleChange(C, rigA, "tail_end", RoleChangeKind::Bone, "Spine", &prev, &changed, &err) && changed);
+        blocks = {b};
+        CHECK(BindBlocksWithRoleMapping(C, blocks, rigA, parA, &missing) && missing.empty());
+        CHECK(blocks[0].conditions[0].signal.bones == std::vector<int>{1});
+        // An unmapped custom role: `missing` uses its name, then its new name after a rename.
+        CHECK(AddCustomRole(C, "Fin Tip", &key, &err) && key == "fin_tip");
+        Block b2 = b;
+        b2.conditions[0].signal.bones = {BoneRefId("role:fin_tip")};
+        blocks = {b2};
+        CHECK(!BindBlocksWithRoleMapping(C, blocks, rigA, parA, &missing) && missing == "fin tip");
+        CHECK(RenameCustomRole(C, "fin_tip", "Dorsal Tip", &old_name, &err));
+        blocks = {b2};
+        CHECK(!BindBlocksWithRoleMapping(C, blocks, rigA, parA, &missing) && missing == "dorsal tip");
+        const RoleMapping rm = RoleMappingForBlocks(C, rigA, {b, b2});
+        CHECK(rm.custom.count("tail_end") == 1 && rm.custom.at("tail_end") == 1 && rm.custom.at("fin_tip") == -1);
+        CHECK(BoneRefName(BoneRefId("role:fin_tip")) == "dorsal tip");
+
+        // A re-pick moves the pick last: pick on A, pick on D, re-pick on A -> A's bone first.
+        const std::vector<std::string> rigD = {"Hand_R", "Spine2"};
+        const std::vector<std::string> rigBoth = {"hand_r", "Weapon_R"};
+        CHECK(SetRoleBone(C, rigA, std::string("fin_tip"), "Spine", &err));
+        CHECK(SetRoleBone(C, rigD, std::string("fin_tip"), "Hand_R", &err));
+        CHECK(ResolveRoleKey(ReadRoleMapFile(C), rigBoth, "fin_tip") == 0);
+        CHECK(SetRoleBone(C, rigA, std::string("fin_tip"), "weapon_r", &err));
+        CHECK(ResolveRoleKey(ReadRoleMapFile(C), rigBoth, "fin_tip") == 1);
+        {
+            const std::string t = ReadAll(fs::u8path(RoleMapPath(C)));
+            CHECK(t.rfind("bone=weapon_r") > t.rfind("bone=Hand_R"));
+        }
+
+        // A rename is refused when its key would be a built-in's or another role's.
+        CHECK(AddCustomRole(C, "Sword Tip", &key, &err));
+        err.clear();
+        CHECK(!RenameCustomRole(C, "fin_tip", "left-heel", &old_name, &err) && !err.empty());
+        err.clear();
+        CHECK(!RenameCustomRole(C, "fin_tip", "sword-tip", &old_name, &err) && !err.empty());
+        err.clear();
+        CHECK(RenameCustomRole(C, "fin_tip", "Fin-Tip x", &old_name, &err));  // a fresh key: fine
+        CHECK(RenameCustomRole(C, "fin_tip", "dorsal tip", &old_name, &err));
+        // A new name whose key is a renamed role's first name: says so.
+        CHECK(RenameCustomRole(C, "sword_tip", "Blade Tip", &old_name, &err));
+        err.clear();
+        CHECK(!AddCustomRole(C, "Sword Tip", &key, &err));
+        CHECK(err == "\"sword tip\" is taken: it was the first name of \"blade tip\".");
+
+        // Restore keeps the order: delete the middle of 3 and restore it at its index.
+        const std::string R2 = (root / "custom3").u8string();
+        CHECK(AddCustomRole(R2, "one", &key, &err) && AddCustomRole(R2, "two", &key, &err) &&
+              AddCustomRole(R2, "three", &key, &err));
+        const std::vector<CustomRole> three = GetCustomRoles(R2);
+        CHECK(DeleteCustomRole(R2, "two", &name, &index, &err) && index == 1 && name == "two");
+        CHECK(GetCustomRoles(R2) == (std::vector<CustomRole>{{"one", "one"}, {"three", "three"}}));
+        CHECK(RestoreCustomRole(R2, "two", name, index, &err));
+        CHECK(GetCustomRoles(R2) == three);
+        // An index past the end appends.
+        CHECK(DeleteCustomRole(R2, "one", &name, &index, &err) && index == 0);
+        CHECK(RestoreCustomRole(R2, "one", name, 7, &err));
+        CHECK(GetCustomRoles(R2) == (std::vector<CustomRole>{{"two", "two"}, {"three", "three"}, {"one", "one"}}));
     }
 
     std::error_code ec;

@@ -133,8 +133,14 @@ struct Card {
 void BeginCard(Card& k);
 void EndCard(Card& k, ImU32 fill, ImU32 edge);
 
+// THE PANEL: the look of every panel and strip docked in the viewer, and of the open
+// options menu -- the panel grey (kSurface) with a kStroke edge. Pushes 2 colours: call
+// before Begin, PopStyleColor(2) after End. A window that is a panel uses this, never its
+// own colours, so every panel matches.
+void PushPanelStyle();
+
 // THE SECTION: how every group of settings is shown, in any panel or menu -- a card
-// (kSurface on the window's kBg, kStroke edge) headed by its icon and title, a divider under
+// (kSurface with a kStroke edge, as the Tagging panel's condition cards) headed by its icon and title, a divider under
 // the header. Its header folds it (a chevron on the right; the state is kept for the
 // session). Always pair with EndSection, open or not:
 //     ui::Section s;

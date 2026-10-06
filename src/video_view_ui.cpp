@@ -892,8 +892,7 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
     const VideoViewModel& m = GetVideoViewModel();
     ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(std::max(w, 120.0f), h), ImGuiCond_Always);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ui::Col(ui::kSurface));
-    ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStroke));
+    ui::PushPanelStyle();
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
     constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                                         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
@@ -1341,8 +1340,7 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
     const VideoViewModel& m = GetVideoViewModel();
     ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ui::Col(ui::kSurface));
-    ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStroke));
+    ui::PushPanelStyle();
     constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                                         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
                                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |

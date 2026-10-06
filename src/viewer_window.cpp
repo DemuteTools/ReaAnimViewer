@@ -1259,11 +1259,15 @@ void DrawToolUi()
     constexpr ImGuiWindowFlags kClosedFlags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
     ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, menu_max_h));
 
-    // Story 11-4: the theme (ui_theme.h) styles the menu. Open, it is a window on the theme's
-    // darkest grey, its settings in ui::Section cards a step lighter.
+    // Story 11-4: the theme (ui_theme.h) styles the menu. Open, it is a panel like the
+    // Tagging and Video panels (ui::PushPanelStyle), its settings in ui::Section cards.
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 8.0f));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, g_menu_open ? ui::Col(ui::kBg) : ui::Col(IM_COL32(18, 19, 23, 184)));
-    ImGui::PushStyleColor(ImGuiCol_Border, g_menu_open ? ui::Col(ui::kStrokeStrong) : ui::Col(ui::kStroke));
+    if (g_menu_open) {
+        ui::PushPanelStyle();
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ui::Col(IM_COL32(18, 19, 23, 184)));
+        ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStroke));
+    }
     ImGui::Begin("##tools", nullptr, g_menu_open ? kFlags : (kFlags | kClosedFlags));
     ImGuiWindow* const menu_window = ImGui::GetCurrentWindow();
 

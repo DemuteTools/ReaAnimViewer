@@ -449,6 +449,12 @@ void EndCard(Card& k, ImU32 fill, ImU32 edge)
     ImGui::Dummy(ImVec2(k.w, std::max(0.0f, kCardGap - ImGui::GetStyle().ItemSpacing.y)));
 }
 
+void PushPanelStyle()
+{
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, Col(kSurface));
+    ImGui::PushStyleColor(ImGuiCol_Border, Col(kStroke));
+}
+
 bool BeginSection(Section& s, const char* title, ImTextureID icon, bool foldable)
 {
     ImGui::PushID(title);

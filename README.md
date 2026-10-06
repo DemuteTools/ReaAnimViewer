@@ -38,6 +38,7 @@ ReaAnimViewer is a native REAPER extension (a `.dll`, plus a small video FX that
 - [Getting Started](#getting-started)
 - [Supported Files](#supported-files)
 - [Camera Controls](#camera-controls)
+- [Model / Skeleton](#model--skeleton)
 - [Viewer Menu](#viewer-menu)
   - [Light](#light)
   - [Ground](#ground)
@@ -214,6 +215,19 @@ Each file should contain **one skinned mesh and its animation**. Animations buil
 | **Mouse wheel** | Zoom in / out |
 | **Navigation cube** (corner of the viewer) | Click a face, edge or corner to snap to that view |
 | **Recenter camera** (viewer menu) | Frame the character again |
+
+---
+
+## Model / Skeleton
+
+The **Model | Skeleton** switch at the bottom left of the viewer (RAV view and Tagging view) shows the character's bones.
+
+- **Skeleton** fades the character and draws its bones and joints on top.
+- **Hover** a joint to see its name and the [roles](#roles) it plays. **Click** it to select it, click again to deselect. The bottom right of the view names the selected bone.
+- In the Tagging view, the bones the selected rule reads take the rule's colour, and **+** next to a condition's bone menu uses the selected bone (see [Tagging your own events](#tagging-your-own-events)).
+- A file with no animated skeleton (a static mesh) shows **No animated skeleton in this file** instead.
+
+The switch and the selection are not saved: the viewer opens in **Model**.
 
 ---
 
@@ -449,13 +463,13 @@ Presets don't name bones: they name **roles** (left heel, left toe, right heel, 
 
 - **Roles ✓** (top of the panel) means every role the rules need was found on this skeleton.
 - **Roles · 2 missing** (in red) means some roles have no bone on this skeleton. Hover it to see which ones. The strip shows a message instead of the signals, and **Commit** skips this item.
-- Click **Roles** to open the **Skeleton & roles** window. It lists every role, the bone that plays each one, and where that bone comes from: `auto` (RAV's guess from the names), `you` (your choice) or `none`. The title says "all found" or how many roles have no bone.
+- Click **Roles** to open the **Skeleton & roles** window. It lists every role, the bone that plays each one, and where that bone comes from: `auto` (RAV's guess from the names), `you` (your choice) or `none`. The title says "all found" or how many roles have no bone. The **?** next to the undo arrow sums up the window; **Esc** or the cross closes it.
 - To fix a role, open its menu and pick a bone (type in the search field to find it), **— none —** for no bone, or **Auto (...)** to go back to RAV's guess. The strip, **Roles** and **Commit** follow at once.
 - Your choice is remembered for every item with the same skeleton, in every project (it is saved in REAPER's resource folder, `ReaAnimViewer/roles.txt`, not in the project). Role changes are saved at once and are not REAPER undo points: while the window is open, **Ctrl+Z** (or the undo arrow next to the close button) undoes them one by one. After you close it, pick **Auto (...)** to go back to the guess.
 - You can also pick a raw bone in a condition's bone menu: the **Bones** list under the roles has every bone of the skeleton.
 - **Your own roles.** The 9 roles cover legs. For anything else (a weapon tip, a hand, a tail), type a name in the **Skeleton & roles** window and click **+ Role** (or press Enter): "Sword Tip" becomes the role **sword tip**, listed for every project. Map it per skeleton like the others, then pick it in a condition's bone menu (it is listed after the 9 roles). A preset that uses it works on any rig where the role is mapped: on a new rig, RAV guesses its bone from the bones you picked for it on other rigs (same name, any namespace), shown as `auto`.
 - Right-click a role of yours (or hover it and press F2) to rename it: its rules, presets and bones keep working. Its **✕** deletes it (confirmed in place): its bones stay remembered, so creating it again brings them back, and rules that use it keep it. A role read by a rule but not in your list (from a colleague's preset) shows as "not in your roles" and can still be mapped. Creating, renaming and deleting are undone with **Ctrl+Z** like a bone change while the window is open.
-- **Share your roles.** **Export...** in the **Skeleton & roles** window writes your roles and this skeleton's bones to a `.csv` file (comma or semicolon separated, as you pick) that opens in a spreadsheet or a text editor. **Import...** reads such a file, yours or one edited by hand, into your roles for the skeleton of the item it is opened on: missing roles are added, the file's bones replace yours, and rows whose bone this skeleton lacks are skipped and counted. **Ctrl+Z** undoes an import. Role names cannot contain `,` or `;`.
+- **Share your roles.** **Export...** in the **Skeleton & roles** window writes your roles and this skeleton's bones to a `.csv` file that opens in a spreadsheet or a text editor. Pick comma or semicolon separated in the save dialog (semicolon suits Excel in French and other regions). The proposed name is `RAV_Roles_`: add the rig's name after it, since roles belong to a rig, not to one animation. **Import...** reads such a file, yours or one edited by hand, into your roles for the skeleton of the item it is opened on: missing roles are added, the file's bones replace yours, and rows whose bone this skeleton lacks are skipped and counted. **Ctrl+Z** undoes an import. Role names cannot contain `,` or `;`.
 
 ### The Tagging view
 
@@ -469,7 +483,7 @@ Presets don't name bones: they name **roles** (left heel, left toe, right heel, 
 - **Analyse** proposes this item's thresholds from the clip. It only runs when you click it, and it leaves locked conditions alone.
 - **+ Event** (key **E**) adds your own event at the playhead on the selected rule.
 
-**The 3D view** has a **Model | Skeleton** switch at the bottom left (in RAV view too). **Skeleton** fades the character and draws its bones on top: hover a joint to see its name and the roles it plays, click it to select it (click again to deselect). The bones the selected rule reads are drawn in the rule's colour, and **+** next to a condition's bone menu puts the selected bone in it (with no bone selected, **+** switches the view to Skeleton). The switch and the selection are not saved: the viewer opens in **Model**.
+**The 3D view** has the **Model | Skeleton** switch at the bottom left (see [Model / Skeleton](#model--skeleton)). In **Skeleton**, the bones the selected rule reads are drawn in the rule's colour, and **+** next to a condition's bone menu puts the selected bone in it (with no bone selected, **+** switches the view to Skeleton).
 
 **The panel** (on the right, drag its edge to resize it): the item's name, **Roles**, the item options, the **Preset:** field, the **Rules** list, then the inspector for the selected rule or event. The footer has **Commit**, **Cancel**, which markers are written, and a summary of the selection.
 
@@ -527,6 +541,7 @@ You can also correct events right on REAPER's timeline, with the RAV window open
 
 - Footsteps are the only factory presets today. Every other event is tagged with your own rules (see [Tagging your own events](#tagging-your-own-events)), which you can save and share as presets.
 - Roles are guessed from the bone names only (Mixamo and Unreal-style names). For another naming, set them once per skeleton in the **Skeleton & roles** window (click **Roles**).
+- In RAV view, hovering a joint in **Skeleton** shows its roles only once the Tagging view has been opened on an item with this skeleton.
 - The 3D view does not follow a take's play rate or a looped item, while the strip and the take markers do: on such items the pose and the markers can disagree.
 - Commit skips an item that has no rules left, and leaves the markers it wrote earlier: delete them in REAPER if you remove all of an item's rules.
 - Two items that would write the same project marker at the same time (for example a character and its weapon on two tracks) share one marker.

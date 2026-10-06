@@ -53,8 +53,9 @@ ReaAnimViewer is a native REAPER extension (a `.dll`, plus a small video FX that
   - [Rendering](#rendering)
   - [REAPER catch-up while playing](#reaper-catch-up-while-playing)
   - [If the video FX shows nothing](#if-the-video-fx-shows-nothing)
-- [Auto-Tagging (Footstep Markers)](#auto-tagging-footstep-markers)
-  - [To tag footsteps on your walk cycles](#to-tag-footsteps-on-your-walk-cycles)
+- [Auto-Tagging (Event Markers)](#auto-tagging-event-markers)
+  - [Quick start: footsteps](#quick-start-footsteps)
+  - [Tagging your own events](#tagging-your-own-events)
   - [Rules](#rules)
   - [Presets](#presets)
   - [Roles](#roles)
@@ -362,13 +363,15 @@ To report a problem, click **Copy error log** in the viewer menu and paste it in
 
 ---
 
-## Auto-Tagging (Footstep Markers)
+## Auto-Tagging (Event Markers)
 
-ReaAnimViewer can find events in an animation from the way its bones move, and mark them on your timeline. Footsteps come first: apply the **Footsteps Heel** preset to your walk and run cycles, check the result in the **Tagging view**, and commit. Every step becomes a marker named after its foot (`Footstep L`, `Footstep R`), on the item (take marker), on the timeline (project marker), or both. Then place your footstep sounds on the markers instead of hunting for each contact frame by eye.
+ReaAnimViewer can find events in an animation from the way its bones move, and mark them on your timeline: footsteps, a hand hitting something, a sword swing, a body falling, a head turn, a clap... Anything you can describe as "this bone goes above or below this value" can become a marker. You write **rules** (or load a preset), check the result in the **Tagging view**, and commit. Each event becomes a marker named after its rule, on the item (take marker), on the timeline (project marker), or both. Then place your sounds on the markers instead of hunting for each frame by eye.
+
+Footsteps are the ready-made starting point: the **Footsteps Heel** and **Footsteps Toe** presets ship with ReaAnimViewer. For everything else, you build your own rules, then save them as presets to reuse them.
 
 Each animation item keeps its own rules, thresholds and corrections, saved in the project. Nothing is written to the animation file.
 
-### To tag footsteps on your walk cycles
+### Quick start: footsteps
 
 1. Open the viewer, then click **Tagging view** at the top (or press **V** until it shows). A strip appears under the character and a panel on the right.
 2. Put the playhead over an animation item. The panel says **No rules** and lists the presets: click **Footsteps Heel (factory)** (or **Footsteps Toe**, see [Presets](#presets)).
@@ -378,6 +381,25 @@ Each animation item keeps its own rules, thresholds and corrections, saved in th
 6. Select the items to tag in REAPER (the panel footer says how many), then click **Commit to N items**. The previews are replaced by the real markers. **Cancel** instead puts the items back as they were at their last Commit.
 
 To tag several walk cycles at once, set them up one by one (steps 2 to 4), select them all and click **Commit** once: each item is tagged with its own rules.
+
+### Tagging your own events
+
+1. In the Tagging view, put the playhead over the item and click **+ Rule**. Give the rule the name you want on the markers (for example `Whoosh R`) and a colour.
+2. Set its condition: pick the **bone** to watch, **what** to measure (position, speed, acceleration), in **which direction** (vertical, horizontal, total...), and **from** what (the floor or another bone). The bone menu lists the roles first, then every bone of the skeleton, including a weapon or prop bone if it is part of the rig.
+3. Watch the signal in the strip while you scrub, and drag the threshold line to where the event happens. Add more conditions with **+ AND condition** if one is not enough.
+4. Choose where the marker lands: **at the start** (the moment the threshold is crossed) or **at the highest / lowest point** of a signal (for example the fastest moment of a swing).
+5. Happy with it? **+ Save as...** in the preset menu, and load it on your other clips.
+
+A few ideas to start from (thresholds depend on your character and animation, use **Analyse** or drag the lines):
+
+| Event | Condition | Marker at |
+|-------|-----------|-----------|
+| Whoosh of a swing or punch | Bone: right hand (or the weapon bone), **Speed**, total, **above** a fast value | the highest point |
+| Clap | Bone: right hand, **Position**, total, **from** the left hand, **below** a few cm | the start |
+| Body fall | Bone: hips, **Position**, vertical, **from** the floor, **below** a low height | the start |
+| Crouch, cloth rustle | **Joint angle** at a knee **below** a bent angle | the start |
+| Head turn | **Rotation** of the head, **Speed**, **above** a fast value | the highest point |
+| Hand on a table | Bone: hand, **Position**, vertical, **from** the floor, **below** the table's height, AND its **Speed** **below** a slow value | the start |
 
 ### Rules
 
@@ -391,7 +413,7 @@ A rule produces one kind of marker. It says **when** an event happens (its condi
   - **Rotation:** how much a bone turns, relative to its parent or to the world.
   - **Threshold and margin:** the event fires when the signal crosses the threshold. It can only fire again after the signal has come back past the threshold by more than the margin (like a gate's hysteresis), so a shaky foot does not give a burst of steps.
   - **The lock icon:** a locked (fixed) threshold is never changed by **Analyse**.
-- **Place the marker:** **at the start** of the match, or **at the highest point** / **at the lowest point** of one of the rule's signals. The match is the stretch where all the conditions hold. The Footsteps presets place it at the start: the moment the heel (or toe) reaches the floor.
+- **Place the marker:** **at the start** of the match, or **at the highest point** / **at the lowest point** of one of the rule's signals. The match is the stretch where all the conditions hold. The Footsteps presets place it at the start (the moment the heel reaches the floor); a swing is best marked at the highest point of its speed.
 - **Offset**, **Min length**, **Cooldown** (in ms):
   - **Offset** moves every marker of the rule, for example +30 ms if your sound should land after the contact.
   - **Min length**: the match must last at least this long to count.
@@ -495,7 +517,7 @@ You can also correct events right on REAPER's timeline, with the RAV window open
 
 ### Known limits
 
-- Footsteps is the only preset family today. Other events (sword swings, foley cues, scuffs) are possible with your own rules, but no preset ships for them yet.
+- Footsteps are the only factory presets today. Every other event is tagged with your own rules (see [Tagging your own events](#tagging-your-own-events)), which you can save and share as presets.
 - Roles are found from the bone names only (Mixamo and Unreal-style names). There is no role editor yet: for another naming, pick the bones in each condition's bone menu.
 - The 3D view does not follow a take's play rate or a looped item, while the strip and the take markers do: on such items the pose and the markers can disagree.
 - Commit skips an item that has no rules left, and leaves the markers it wrote earlier: delete them in REAPER if you remove all of an item's rules.

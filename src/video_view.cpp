@@ -896,7 +896,7 @@ bool VideoPanelVisible()
 
 void SetVideoPanelVisible(bool visible)
 {
-    // Opening it from RAV view (P, Tools > Video) enters Video view, where it lives.
+    // Opening it from RAV view (P, the menu's Video panel) enters Video view, where it lives.
     if (visible && g_mode != ViewMode::Video) SetVideoViewActive(true);
     g_panel_opened_once = true;  // the user chose: never force it open again
     if (!visible) CommitLive(/*view_gestures=*/false);  // a slider never outlives the panel

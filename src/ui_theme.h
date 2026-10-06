@@ -15,6 +15,8 @@
 
 #include <imgui.h>
 
+#include <string>
+
 namespace rav {
 namespace ui {
 
@@ -103,6 +105,63 @@ void DragNumberReset();
 // A key cap ("C") drawn at p (top-left), the mock-up's <kbd>. Returns its width.
 // `text` 0 = the theme's text colour.
 float KeyCap(ImDrawList* dl, ImVec2 p, const char* key, ImU32 text = 0);
+
+// ---- compartments and aligned sentences (spec 10-3-fb-2, made systemic by the
+// viewer-options-menu-tabs spec) ------------------------------------------------------------
+
+// Text from p, shortened with "..." (whole glyphs) so it ends before max_x. True when shortened.
+bool EllipsisText(ImDrawList* dl, ImVec2 p, float max_x, ImU32 col, const std::string& text);
+
+// A boxed track: its header cell (x0..lx, kRaised) and its lane (lx..x1, lane_fill), filled.
+void TrackFill(ImDrawList* dl, float x0, float lx, float x1, float y0, float y1, ImU32 lane_fill);
+// A boxed track's edges: the divider between header and lane, one edge around both.
+void TrackEdge(ImDrawList* dl, float x0, float lx, float x1, float y0, float y1, ImU32 edge);
+
+// A 3 px colour stripe on the left of a rounded box (p0..p1): the box's own rounded rect
+// clipped to the stripe, so it follows the box's corners.
+void RuleStripe(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col, float radius);
+
+// A card: its fill and edge are drawn behind its content once its height is known.
+// BeginCard / EndCard around the content; the cursor ends under it, a kCardGap below.
+constexpr float kCardPad = 8.0f;
+constexpr float kCardGap = 6.0f;
+struct Card {
+    ImDrawListSplitter split;
+    ImVec2             p0;
+    float              w = 0.0f;
+};
+void BeginCard(Card& k);
+void EndCard(Card& k, ImU32 fill, ImU32 edge);
+
+// The "aligned sentence": one phrase per row, its connector word right-aligned in a fixed
+// column, every row's chips from one shared edge. A chip that does not fit beside the
+// previous one wraps under the row's first chip (a row wraps as a whole, never a lone word).
+struct Sentence {
+    float x0 = 0.0f;       // the label column's left
+    float chips_x = 0.0f;  // the chips' shared left edge
+    float right = 0.0f;    // the right edge chips stay within
+    bool  first = true;    // no chip on this row yet
+};
+// The label column's width: as wide as the widest of `labels`, and of `badge` drawn as a
+// badge (its pad included; nullptr = none). Each caller passes its own labels.
+float SentenceColumnWidth(const char* const* labels, int count, const char* badge = nullptr);
+// A sentence whose label column starts at x0, `column_w` wide (SentenceColumnWidth), its
+// chips within `right`.
+Sentence MakeSentence(float x0, float right, float column_w);
+// Starts a row on the cursor's line: its label right-aligned in the column (an item, so it
+// can be hovered). `badge`: drawn as a tag (the IF / AND badge).
+void SentenceRow(Sentence& s, const char* label, bool badge = false);
+// Puts the cursor where the row's next chip (w wide) goes: beside the previous one when it
+// fits (`spacing` < 0 = the item spacing), else under the row's first chip.
+void SentenceChip(Sentence& s, float w, float spacing = -1.0f);
+
+// The width a DragNumber field_w wide takes with its unit.
+float NumberFieldWidth(float field_w, const char* unit);
+
+// Vertical tabs (REAPER's preferences column): `count` labels stacked, `width` wide (0 =
+// sized to the labels). The selected row: kAccentSoft fill and an accent bar on its left,
+// text kText; the others muted, kHover under the mouse. Returns true when *selected changed.
+bool VerticalTabs(const char* id, const char* const* labels, int count, int* selected, float width = 0.0f);
 
 }  // namespace ui
 }  // namespace rav

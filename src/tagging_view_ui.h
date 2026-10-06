@@ -46,7 +46,7 @@ bool TaggingGestureActive();
 // a user event. One undo point each (written at the end of the next frame).
 void TaggingAddEventAtPlayhead();
 void TaggingDeleteSelectedEvent();
-// The footer's "Change" asked for the menu (its Auto-Tagging options): true once.
+// The footer's "Change" asked for the menu (its Tagging view tab): true once.
 bool TaggingConsumeMenuRequest();
 // Story 10-3b -- the preset menu is open: the viewer takes every key (its search, F2, Del,
 // Enter, Esc and the arrows are the menu's, never a shortcut's or REAPER's).

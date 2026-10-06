@@ -1635,7 +1635,7 @@ void DrawVideoDeleteConfirm()
             ImGui::Dummy(ImVec2(0.0f, 2.0f));
             ImGui::Checkbox("Don't ask again", &s_dont_ask);
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-                ImGui::SetTooltip("The Delete key then deletes at once. Ask again: menu > Tools > "
+                ImGui::SetTooltip("The Delete key then deletes at once. Ask again: menu > Video view > "
                                   "Ask before deleting a shot.");
             ImGui::Dummy(ImVec2(0.0f, 4.0f));
             if (ui::PrimaryButton("Delete##confirmdelete", ImVec2(100.0f, 0.0f)) || by_key) {

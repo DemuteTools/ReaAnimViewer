@@ -62,6 +62,7 @@
 // no ReaImGui runtime dependency). Win32 backend feeds input via the WndProc handler;
 // the OpenGL3 backend draws the widget geometry.
 #include <imgui.h>
+#include <imgui_internal.h>  // spec viewer-options-menu-tabs: the menu's place in the window order
 #include <backends/imgui_impl_win32.h>
 #include <backends/imgui_impl_opengl3.h>
 
@@ -157,6 +158,11 @@ int g_last_y = 0;
 // Y-up AR9); the colour is RGB the picker edits. Both push to the renderer on change.
 bool  g_imgui_ready    = false;     // true once ImGui + its backends are initialized
 bool  g_menu_open      = false;     // the hamburger toggles the option list
+// Spec viewer-options-menu-tabs -- the menu's tabs, top to bottom (session state). The tab
+// follows the view when the view changes; otherwise the picked tab stays.
+enum MenuTab { kMenuTabGlobal = 0, kMenuTabRav, kMenuTabTagging, kMenuTabVideo, kMenuTabCount };
+int   g_menu_tab       = kMenuTabRav;
+int   g_menu_tab_view  = -1;        // the view the tab last followed (-1 = none yet)
 float g_light_azimuth  = 0.0f;      // seeded from the renderer's default direction
 float g_light_elevation = 0.0f;
 float g_light_color[3] = { 1.0f, 1.0f, 1.0f };
@@ -872,6 +878,34 @@ void CALLBACK FrameTimerProc(HWND, UINT, UINT_PTR, DWORD)
     RenderTick();
 }
 
+// Spec viewer-options-menu-tabs -- puts the menu in front of every viewer window, then every
+// open popup / modal / tooltip back in front of it (their order kept). ImGui draws and hovers
+// windows in g.Windows order (the last on top); a click brings its window to the end. Each
+// root is followed by its active child windows (the menu's scrolling tab content), else the
+// hover test would find the root above its own children.
+void BringRootAndChildrenToFront(ImGuiWindow* root)
+{
+    ImGuiContext& g = *ImGui::GetCurrentContext();
+    ImVector<ImGuiWindow*> children;
+    for (ImGuiWindow* w : g.Windows)
+        if (w != root && w->Active && w->RootWindow == root) children.push_back(w);
+    ImGui::BringWindowToDisplayFront(root);
+    for (ImGuiWindow* w : children) ImGui::BringWindowToDisplayFront(w);
+}
+
+void KeepMenuInFront(ImGuiWindow* menu)
+{
+    if (!menu) return;
+    ImGuiContext& g = *ImGui::GetCurrentContext();
+    ImVector<ImGuiWindow*> above;
+    for (ImGuiWindow* w : g.Windows) {
+        if (w == menu || !w->Active || (w->Flags & ImGuiWindowFlags_ChildWindow)) continue;
+        if (w->Flags & (ImGuiWindowFlags_Popup | ImGuiWindowFlags_Tooltip)) above.push_back(w);
+    }
+    BringRootAndChildrenToFront(menu);
+    for (ImGuiWindow* w : above) BringRootAndChildrenToFront(w);
+}
+
 // Builds + renders the Dear ImGui tool UI for this frame, drawn on top of the 3D scene
 // (called between RenderFrame and SwapBuffers). A frameless hamburger menu:
 // Recenter camera (FR25), a real colour picker (FR50), and a circular light-position pad
@@ -1184,8 +1218,9 @@ void NavCubeWidget(const OrbitCamera& cam, bool video, float right_x, float bott
 
 // Builds + renders the Dear ImGui tool UI for this frame, on top of the 3D scene (called
 // between RenderFrame and SwapBuffers). A FRAMELESS hamburger menu (Antho's icons) that
-// show/hides a list of tools: Recenter camera (FR25), light colour (FR50), and the light
-// position pad (FR50). Fixed top-left, non-resizable, looks part of the interface. All
+// shows / hides the options panel: REAPER-style vertical tabs (Global, RAV view, Tagging
+// view, Video view), the picked tab's settings beside them, a footer (Copy error log,
+// version). Fixed top-left, non-resizable, drawn above every other viewer window. All
 // widgets mutate state only and push to the renderer (no synchronous re-render, AR18).
 // NON-fatal: if ImGui failed to initialize this is a no-op and the viewport still runs.
 void DrawToolUi()
@@ -1196,27 +1231,40 @@ void DrawToolUi()
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
-    // Story 10-4: the Tagging panel's "Change" (markers written) opens the menu on its option.
-    if (TaggingConsumeMenuRequest()) g_menu_open = true;
+    // Spec viewer-options-menu-tabs: the menu's tab follows the view when it changes (toggle
+    // or V); otherwise the picked tab stays.
+    {
+        const ViewMode vm = GetViewMode();
+        if (g_menu_tab_view != static_cast<int>(vm)) {
+            g_menu_tab_view = static_cast<int>(vm);
+            g_menu_tab = vm == ViewMode::Tagging ? kMenuTabTagging : vm == ViewMode::Video ? kMenuTabVideo : kMenuTabRav;
+        }
+    }
+    // Story 10-4: the Tagging panel's "Change" (markers written) opens the menu on its tab.
+    if (TaggingConsumeMenuRequest()) {
+        g_menu_open = true;
+        g_menu_tab = kMenuTabTagging;
+    }
 
     ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_Always);
-    // Spec 11-fb-11: open, the menu stops 10 px above the window's bottom and scrolls (a short
-    // viewer with every section unfolded); closed, it is the bare button.
+    // Spec 11-fb-11: open, the menu stops 10 px above the window's bottom (its tab content
+    // scrolls, the tab column stays); closed, it is the bare button.
     constexpr float kMenuMargin = 10.0f;  // its gap to the window's top and bottom edges
+    const float menu_max_h = std::max(48.0f, static_cast<float>(g_client_h) - 2.0f * kMenuMargin);
     constexpr ImGuiWindowFlags kFlags =
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
         ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing;
+    // Open, the whole menu can still scroll on a viewer too short for its tabs and footer.
     constexpr ImGuiWindowFlags kClosedFlags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
-    ImGui::SetNextWindowSizeConstraints(
-        ImVec2(0.0f, 0.0f),
-        ImVec2(FLT_MAX, std::max(48.0f, static_cast<float>(g_client_h) - 2.0f * kMenuMargin)));
+    ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, menu_max_h));
 
     // Story 11-4: the theme (ui_theme.h) styles the menu; it is a raised card when open.
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 8.0f));
     ImGui::PushStyleColor(ImGuiCol_WindowBg, g_menu_open ? ui::Col(ui::kRaised) : ui::Col(IM_COL32(18, 19, 23, 184)));
     ImGui::PushStyleColor(ImGuiCol_Border, g_menu_open ? ui::Col(ui::kStrokeStrong) : ui::Col(ui::kStroke));
     ImGui::Begin("##tools", nullptr, g_menu_open ? kFlags : (kFlags | kClosedFlags));
+    ImGuiWindow* const menu_window = ImGui::GetCurrentWindow();
 
     // Hamburger button — frameless icon; toggles the option list.
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0, 0, 0, 0));
@@ -1230,14 +1278,31 @@ void DrawToolUi()
 
     if (g_menu_open) {
         const ImVec4 kIconTint(0.82f, 0.84f, 0.90f, 1.0f);
+        const ImGuiStyle& st = ImGui::GetStyle();
         ImGui::Spacing();
 
-        // Story 11-4 (UX decision 8): the menu is split into View and Tools groups.
-        ui::Caption("VIEW");
+        // Spec viewer-options-menu-tabs: REAPER-style vertical tabs on the left (Global, then one
+        // per view), the selected tab's settings on the right, a fixed footer under both.
+        static const char* const kTabLabels[kMenuTabCount] = { "Global", "RAV view", "Tagging view", "Video view" };
+        const float tabs_top = ImGui::GetCursorScreenPos().y;
+        ui::VerticalTabs("##menutabs", kTabLabels, kMenuTabCount, &g_menu_tab);
+        const float tabs_bottom = ImGui::GetItemRectMax().y;
+        ImGui::SameLine(0.0f, 10.0f);
+
+        // The content scrolls within what the window's height leaves after the header and the
+        // footer (separator, one button row, the version line, the bottom padding).
+        constexpr float kContentW = 236.0f;
+        const float footer_h = 2.0f * st.ItemSpacing.y + 1.0f + ImGui::GetFrameHeightWithSpacing() +
+                               4.0f + st.ItemSpacing.y + ImGui::GetTextLineHeight() + st.WindowPadding.y;
+        const float content_max_h =
+            std::max(tabs_bottom - tabs_top, kMenuMargin + menu_max_h - tabs_top - footer_h);
+        ImGui::SetNextWindowSizeConstraints(ImVec2(kContentW, 0.0f), ImVec2(kContentW, content_max_h));
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
+        ImGui::BeginChild("##menutab", ImVec2(kContentW, 0.0f), ImGuiChildFlags_AutoResizeY);
 
         // A collapsible section header: Antho's icon + a CollapsingHeader (the ▸ arrow
-        // collapses/expands the group). Default-open so the menu looks unchanged until the
-        // user folds a section; the open/closed state is kept for the session (in-memory).
+        // collapses/expands the group), used by the Global tab's sections. Default-open; the
+        // open/closed state is kept for the session (in-memory).
         auto Section = [&](GLuint icon, const char* label) -> bool {
             ImGui::Dummy(ImVec2(0.0f, 2.0f));
             ImGui::Image(IconTex(icon), ImVec2(16.0f, 16.0f),
@@ -1245,6 +1310,10 @@ void DrawToolUi()
             ImGui::SameLine();
             return ImGui::CollapsingHeader(label, ImGuiTreeNodeFlags_DefaultOpen);
         };
+
+        switch (g_menu_tab) {
+        case kMenuTabGlobal: {
+        ui::SubText("Shared by the three views.");
 
         // --- Light: Colour + Position ---
         if (Section(g_icon_light, "Light")) {
@@ -1344,41 +1413,28 @@ void DrawToolUi()
             }
 
             ImGui::Checkbox("FPS", &g_fps_overlay_on);  // pure UI state — read by the overlay below
-            // How long REAPER's Video window takes to catch up with an output size or display
-            // change while playing, on Video view's caption line (spec 11-fb-5).
-            ImGui::Checkbox("REAPER catch-up", &g_preview_lag_on);
 
             ImGui::Unindent(8.0f);
         }
-
-        // --- Tools: Video shows / hides the Video panel (Story 11-4, UX decision 8) ---
-        ImGui::Dummy(ImVec2(0.0f, 2.0f));
-        ImGui::Separator();
-        ui::Caption("TOOLS");
-        {
-            const bool panel = VideoPanelVisible();
-            if (ImGui::Selectable("Video##toolsvideo", panel, 0, ImVec2(196.0f, 0.0f)))
-                SetVideoPanelVisible(!panel);
-            ImGui::SameLine(160.0f);
-            ui::Caption(panel ? "open" : "closed");
-            // Spec 11-fb-11 -- the Delete key asks first unless "Don't ask again" was ticked;
-            // this gives the question back (or takes it away).
-            ImGui::Indent(8.0f);
-            bool ask = VideoAskBeforeDeleteShot();
-            if (ImGui::Checkbox("Ask before deleting a shot", &ask)) SetVideoAskBeforeDeleteShot(ask);
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-                ImGui::SetTooltip("The %s key in Video view deletes the current shot: ask first, or delete at once",
-                                  ShortcutKeyLabel(kShortcutDeleteShot));
-            ImGui::Unindent(8.0f);
+        break;
         }
 
-        // --- Story 10-4: Auto-Tagging options -- which markers Commit writes (a global option,
-        // kept across sessions; project markers take the rule's colour) ---
-        ImGui::Dummy(ImVec2(0.0f, 2.0f));
-        ImGui::Separator();
-        ui::Caption("AUTO-TAGGING OPTIONS");
-        {
-            ImGui::Indent(8.0f);
+        // --- RAV view: the camera, and the Model / Skeleton switch's state (the same as the
+        // switch at the bottom left: either one changes both) ---
+        case kMenuTabRav: {
+            if (ImGui::Button("Recenter camera", ImVec2(196.0f, 0.0f)))
+                g_renderer.ResetCamera();
+            ImGui::Dummy(ImVec2(0.0f, 2.0f));
+            ImGui::TextDisabled("Model / Skeleton");
+            static const char* const kModes[2] = { "Model", "Skeleton" };
+            int skel_sel = SkeletonModeOn() ? 1 : 0;
+            if (ui::Segmented("##menuskelmode", kModes, 2, &skel_sel)) SetSkeletonModeOn(skel_sel == 1);
+            break;
+        }
+
+        // --- Story 10-4: Tagging view -- which markers Commit writes (a global option, kept
+        // across sessions; project markers take the rule's colour) ---
+        case kMenuTabTagging: {
             ImGui::TextDisabled("Markers written");
             static const char* const kMarkLabels[3] = { "Take", "Project", "Both" };
             const MarkerMode mode = GetTaggingMarkerMode();
@@ -1388,14 +1444,33 @@ void DrawToolUi()
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
                 ImGui::SetTooltip("%s on Commit (previews too).\nProject markers take the rule's colour.",
                                   MarkerModeLine(GetTaggingMarkerMode()));
-            ImGui::Unindent(8.0f);
+            break;
         }
 
-        ImGui::Dummy(ImVec2(0.0f, 2.0f));
-        ImGui::Separator();
-        if (ImGui::Button("Recenter camera", ImVec2(196.0f, 0.0f)))
-            g_renderer.ResetCamera();
+        // --- Video view: the Video panel (Story 11-4), the Delete key's question (spec
+        // 11-fb-11), REAPER catch-up (spec 11-fb-5) ---
+        default: {
+            bool panel = VideoPanelVisible();
+            if (ImGui::Checkbox("Video panel", &panel)) SetVideoPanelVisible(panel);
+            // Spec 11-fb-11 -- the Delete key asks first unless "Don't ask again" was ticked;
+            // this gives the question back (or takes it away).
+            bool ask = VideoAskBeforeDeleteShot();
+            if (ImGui::Checkbox("Ask before deleting a shot", &ask)) SetVideoAskBeforeDeleteShot(ask);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("The %s key in Video view deletes the current shot: ask first, or delete at once",
+                                  ShortcutKeyLabel(kShortcutDeleteShot));
+            // How long REAPER's Video window takes to catch up with an output size or display
+            // change while playing, on Video view's caption line (spec 11-fb-5).
+            ImGui::Checkbox("REAPER catch-up", &g_preview_lag_on);
+            break;
+        }
+        }
 
+        ImGui::EndChild();
+        ImGui::PopStyleColor();
+
+        // The footer, under the tabs and the content.
+        ImGui::Separator();
         // Always enabled: even with no error kept, the GPU line helps a bug report.
         const bool copied = ElapsedSeconds() < g_copied_until;
         if (ImGui::Button(copied ? "Copied!##copylog" : "Copy error log##copylog",
@@ -1532,6 +1607,12 @@ void DrawToolUi()
 
     // Bottom-left status icon + its hover panel (re-shows the load message on demand).
     StatusIconWidget();
+
+    // Spec viewer-options-menu-tabs: open, the menu is drawn above every other viewer window
+    // (strip, panels, switches, nav cube), even one clicked this frame; popups, modals and
+    // tooltips stay above it. EndFrame first: a click focuses (brings to front) its window there.
+    ImGui::EndFrame();
+    if (g_menu_open) KeepMenuInFront(menu_window);
 
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());

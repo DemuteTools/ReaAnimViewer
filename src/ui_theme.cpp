@@ -380,6 +380,182 @@ float KeyCap(ImDrawList* dl, ImVec2 p, const char* key, ImU32 text)
     return b.x - p.x;
 }
 
+// ---- compartments and aligned sentences ------------------------------------------------------
+
+bool EllipsisText(ImDrawList* dl, ImVec2 p, float max_x, ImU32 col, const std::string& text)
+{
+    const float avail = max_x - p.x;
+    if (ImGui::CalcTextSize(text.c_str()).x <= avail) {
+        dl->AddText(p, col, text.c_str());
+        return false;
+    }
+    const float dots = ImGui::CalcTextSize("...").x;
+    size_t n = text.size();
+    while (n > 0) {
+        do {
+            --n;
+        } while (n > 0 && (static_cast<unsigned char>(text[n]) & 0xC0) == 0x80);  // a whole UTF-8 glyph
+        if (ImGui::CalcTextSize(text.c_str(), text.c_str() + n).x + dots <= avail) break;
+    }
+    std::string s = text.substr(0, n);
+    while (!s.empty() && s.back() == ' ') s.pop_back();
+    s += "...";
+    dl->PushClipRect(ImVec2(p.x, p.y - 1.0f), ImVec2(std::max(p.x, max_x), p.y + ImGui::GetFontSize() + 1.0f), true);
+    dl->AddText(p, col, s.c_str());
+    dl->PopClipRect();
+    return true;
+}
+
+void TrackFill(ImDrawList* dl, float x0, float lx, float x1, float y0, float y1, ImU32 lane_fill)
+{
+    dl->AddRectFilled(ImVec2(x0, y0), ImVec2(lx, y1), kRaised, kRadiusSm, ImDrawFlags_RoundCornersLeft);
+    dl->AddRectFilled(ImVec2(lx, y0), ImVec2(x1, y1), lane_fill, kRadiusSm, ImDrawFlags_RoundCornersRight);
+}
+
+void TrackEdge(ImDrawList* dl, float x0, float lx, float x1, float y0, float y1, ImU32 edge)
+{
+    dl->AddLine(ImVec2(lx + 0.5f, y0 + 1.0f), ImVec2(lx + 0.5f, y1 - 1.0f), kStrokeStrong, 1.0f);
+    dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), edge, kRadiusSm);
+}
+
+void RuleStripe(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col, float radius)
+{
+    dl->PushClipRect(p0, ImVec2(p0.x + 3.0f, p1.y), true);
+    dl->AddRectFilled(p0, p1, col, radius);
+    dl->PopClipRect();
+}
+
+void BeginCard(Card& k)
+{
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    k.p0 = ImGui::GetCursorScreenPos();
+    k.w = ImGui::GetContentRegionAvail().x;
+    k.split.Split(dl, 2);
+    k.split.SetCurrentChannel(dl, 1);
+    ImGui::SetCursorScreenPos(ImVec2(k.p0.x + kCardPad, k.p0.y + kCardPad));
+    ImGui::BeginGroup();
+}
+
+void EndCard(Card& k, ImU32 fill, ImU32 edge)
+{
+    ImGui::EndGroup();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float bottom = ImGui::GetItemRectMax().y + kCardPad;
+    k.split.SetCurrentChannel(dl, 0);
+    dl->AddRectFilled(k.p0, ImVec2(k.p0.x + k.w, bottom), fill, kRadiusMd);
+    dl->AddRect(k.p0, ImVec2(k.p0.x + k.w, bottom), edge, kRadiusMd);
+    k.split.Merge(dl);
+    ImGui::SetCursorScreenPos(ImVec2(k.p0.x, bottom));
+    ImGui::Dummy(ImVec2(k.w, std::max(0.0f, kCardGap - ImGui::GetStyle().ItemSpacing.y)));
+}
+
+namespace {
+float SentenceGap() { return ImGui::GetStyle().ItemSpacing.x; }
+}  // namespace
+
+float SentenceColumnWidth(const char* const* labels, int count, const char* badge)
+{
+    float w = badge ? ImGui::CalcTextSize(badge).x + 8.0f : 0.0f;
+    for (int i = 0; labels && i < count; ++i)
+        if (labels[i]) w = std::max(w, ImGui::CalcTextSize(labels[i]).x);
+    return w;
+}
+
+Sentence MakeSentence(float x0, float right, float column_w)
+{
+    Sentence s;
+    s.x0 = x0;
+    s.chips_x = x0 + column_w + SentenceGap();
+    s.right = std::max(s.chips_x + 20.0f, right);
+    return s;
+}
+
+void SentenceRow(Sentence& s, const char* label, bool badge)
+{
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float fh = ImGui::GetFrameHeight();
+    const float y = ImGui::GetCursorScreenPos().y;
+    ImGui::SetCursorScreenPos(ImVec2(s.x0, y));
+    ImGui::Dummy(ImVec2(s.chips_x - SentenceGap() - s.x0, fh));
+    const ImVec2 ts = ImGui::CalcTextSize(label);
+    const float  xr = s.chips_x - SentenceGap();
+    if (badge) {
+        const float bx = xr - ts.x - 8.0f;
+        dl->AddRectFilled(ImVec2(bx, y + 3.0f), ImVec2(xr, y + fh - 3.0f), kBg, 4.0f);
+        dl->AddRect(ImVec2(bx, y + 3.0f), ImVec2(xr, y + fh - 3.0f), kStroke, 4.0f);
+        dl->AddText(ImVec2(bx + 4.0f, y + (fh - ts.y) * 0.5f), kMuted, label);
+    } else {
+        dl->AddText(ImVec2(xr - ts.x, y + (fh - ts.y) * 0.5f), kMuted, label);
+    }
+    s.first = true;
+}
+
+void SentenceChip(Sentence& s, float w, float spacing)
+{
+    const float sp = spacing < 0.0f ? SentenceGap() : spacing;
+    if (s.first) {
+        ImGui::SameLine(0.0f, SentenceGap());
+        s.first = false;
+    } else if (ImGui::GetItemRectMax().x + sp + w <= s.right) {
+        ImGui::SameLine(0.0f, sp);
+    } else {
+        ImGui::SetCursorScreenPos(ImVec2(s.chips_x, ImGui::GetCursorScreenPos().y));
+    }
+}
+
+float NumberFieldWidth(float field_w, const char* unit)
+{
+    return field_w + ((unit && unit[0]) ? 4.0f + ImGui::CalcTextSize(unit).x : 0.0f);
+}
+
+bool VerticalTabs(const char* id, const char* const* labels, int count, int* selected, float width)
+{
+    if (!labels || count <= 0 || !selected) return false;
+    ImGui::PushID(id);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float h = ImGui::GetTextLineHeight() + 10.0f;
+    const float pad_x = 12.0f;  // the text's inset (the accent bar sits in it)
+    float w = width;
+    if (w <= 0.0f) {
+        for (int i = 0; i < count; ++i)
+            w = std::max(w, ImGui::CalcTextSize(labels[i], nullptr, true).x + 2.0f * pad_x);
+    }
+
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    bool changed = false;
+    for (int i = 0; i < count; ++i) {
+        const ImVec2 a(p0.x, p0.y + static_cast<float>(i) * (h + 2.0f));
+        const ImVec2 b(a.x + w, a.y + h);
+        ImGui::SetCursorScreenPos(a);
+        ImGui::PushID(i);
+        const bool clicked = ImGui::InvisibleButton("##vtab", ImVec2(w, h));
+        const bool hovered = ImGui::IsItemHovered();
+        ImGui::PopID();
+        if (clicked && *selected != i) {
+            *selected = i;
+            changed = true;
+        }
+        const bool on = (*selected == i);
+        if (on) {
+            dl->AddRectFilled(a, b, kAccentSoft, kRadiusSm);
+            dl->AddRectFilled(ImVec2(a.x, a.y + 4.0f), ImVec2(a.x + 3.0f, b.y - 4.0f), kAccent, 1.5f);
+        } else if (hovered) {
+            dl->AddRectFilled(a, b, kHover, kRadiusSm);
+        }
+        const ImVec2 ts = ImGui::CalcTextSize(labels[i], nullptr, true);
+        const char* end = std::strstr(labels[i], "##");  // the visible part of the label
+        dl->PushClipRect(a, b, true);
+        dl->AddText(ImVec2(a.x + pad_x, a.y + (h - ts.y) * 0.5f), on ? kText : kMuted, labels[i], end);
+        dl->PopClipRect();
+    }
+
+    // One item for the whole column, so the layout continues after it.
+    ImGui::SetCursorScreenPos(p0);
+    ImGui::Dummy(ImVec2(w, static_cast<float>(count) * (h + 2.0f) - 2.0f));
+    ImGui::PopID();
+    return changed;
+}
+
 }  // namespace ui
 }  // namespace rav
 

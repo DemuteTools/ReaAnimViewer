@@ -214,7 +214,7 @@ Each file should contain **one skinned mesh and its animation**. Animations buil
 | **Middle-click + drag** | Pan |
 | **Mouse wheel** | Zoom in / out |
 | **Navigation cube** (corner of the viewer) | Click a face, edge or corner to snap to that view |
-| **Recenter camera** (viewer menu) | Frame the character again |
+| **Recenter camera** (viewer menu, **RAV view** tab) | Frame the character again |
 
 ---
 
@@ -233,12 +233,23 @@ The switch and the selection are not saved: the viewer opens in **Model**.
 
 ## Viewer Menu
 
-Click the **menu icon** in the top-left corner of the viewer to show or hide the tool menu. It has three groups: **View** (Light, Ground, Shadow, Performance, below), **Tools** (**Video** shows or hides the Video panel, see [Rendering Video](#rendering-video)) and **Auto-Tagging options** (which markers Commit writes, see [Markers](#markers)).
+Click the **menu icon** in the top-left corner of the viewer to show or hide the options menu. It opens as a panel in that corner, in front of everything else in the viewer, and stays open while you tune: the render changes as you go.
 
-- **Recenter camera**: Frame the character again.
+On its left, a column of tabs picks which settings show:
+
+| Tab | Settings |
+|-----|----------|
+| **Global** | Shared by the three views: [Light](#light), [Ground](#ground), [Shadow](#shadow), [Performance](#performance) |
+| **RAV view** | **Recenter camera** (frame the character again) and **Model / Skeleton** (the same switch as the bottom left, see [Model / Skeleton](#model--skeleton)) |
+| **Tagging view** | **Markers written**: which markers Commit writes, Take, Project or Both (see [Markers](#markers)) |
+| **Video view** | **Video panel** (show or hide it), **Ask before deleting a shot**, **REAPER catch-up** (see [Rendering Video](#rendering-video)) |
+
+The tab follows the view when you change view (toggle or **V**); otherwise the tab you picked stays. The **Change** button in the Tagging view's panel opens it on the **Tagging view** tab. On a short viewer the settings scroll; the tabs stay in place.
+
+Under the tabs:
+
 - **Copy error log**: Copy the recent load errors, the viewer version and your graphics card info to the clipboard, ready to paste into a bug report.
-
-The installed version is shown at the bottom of the menu.
+- The installed version.
 
 ### Light
 
@@ -264,7 +275,8 @@ The installed version is shown at the bottom of the menu.
 | **Normal maps** | Turn surface-detail maps on or off |
 | **MSAA** | Edge smoothing: Off, 2x, 4x, 8x |
 | **FPS** | Show the frame rate in the viewer |
-| **REAPER catch-up** | Show how long REAPER's Video window takes to catch up with an output size or display change while playing (Video view, see [REAPER catch-up while playing](#reaper-catch-up-while-playing)) |
+
+**REAPER catch-up** (in the **Video view** tab) shows how long REAPER's Video window takes to catch up with an output size or display change while playing (see [REAPER catch-up while playing](#reaper-catch-up-while-playing)).
 
 If the viewer feels slow on a laptop, lower **MSAA** and **Shadow** first.
 
@@ -315,7 +327,7 @@ ReaAnimViewer can put the animation in the videos you render from REAPER, with t
 
 ### Adding the video FX
 
-1. Open the viewer and click **Video view** at the top (or press **V** until it shows). The **Video panel** opens on the right. **P**, the panel button at the top right, or **Tools > Video** in the viewer menu show or hide it.
+1. Open the viewer and click **Video view** at the top (or press **V** until it shows). The **Video panel** opens on the right. **P**, the panel button at the top right, or **Video panel** in the viewer menu's **Video view** tab show or hide it.
 2. The panel follows the track of the animation shown in the viewer. When it says **No video FX on this track**, click **Add video FX to track**. The action **RAV: Add video FX to selected track** does the same from REAPER.
 3. That's it. You never need the FX window: RAV drives the FX for you.
 
@@ -359,7 +371,7 @@ RAV never changes your render settings.
 
 While playing, REAPER prepares video frames a few seconds ahead (its read-ahead). Camera moves and playback stay in sync in REAPER's Video window. An output size or display change (light, floor, background...) waits behind that read-ahead: it can take up to that long to reach REAPER's Video window while playing. Video view in RAV is always up to date, and rendering has no offset: every frame is drawn for its own time.
 
-While REAPER's Video window is open, the line above the Video view frame shows REAPER's current read-ahead, for example `REAPER catch-up 1.5 s` while playing, or `REAPER catch-up: live` when stopped (hover it for details). It is how long such a change can take to show there, not a measurement of a particular change. On a narrow view it shortens to `catch-up 1.5 s`, shortening the shot name if needed. Turn it off with **REAPER catch-up** in the viewer menu's Performance section.
+While REAPER's Video window is open, the line above the Video view frame shows REAPER's current read-ahead, for example `REAPER catch-up 1.5 s` while playing, or `REAPER catch-up: live` when stopped (hover it for details). It is how long such a change can take to show there, not a measurement of a particular change. On a narrow view it shortens to `catch-up 1.5 s`, shortening the shot name if needed. Turn it off with **REAPER catch-up** in the viewer menu's **Video view** tab.
 
 ### If the video FX shows nothing
 
@@ -505,7 +517,7 @@ When the animator delivers a new animation on the same item, RAV detects it agai
 
 ### Markers
 
-**Which markers:** in the viewer menu, **Auto-Tagging options > Markers written**: **Take** (markers on the item), **Project** (markers on the timeline, in the rule's colour) or **Both** (the default). The panel footer shows the current choice; **Change** opens the menu. It applies to every project.
+**Which markers:** in the viewer menu's **Tagging view** tab, **Markers written**: **Take** (markers on the item), **Project** (markers on the timeline, in the rule's colour) or **Both** (the default). The panel footer shows the current choice; **Change** opens the menu on that tab. It applies to every project.
 
 **Preview, Commit and Cancel:**
 

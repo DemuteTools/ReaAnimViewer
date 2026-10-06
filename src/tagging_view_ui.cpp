@@ -661,7 +661,7 @@ float ChipWidth(const char* preview, float min_w = 40.0f)
     return std::max(min_w, ImGui::CalcTextSize(preview).x + 30.0f);
 }
 
-// 10-3 fb-2: the right edge the next chip stays within (set by SentenceChip; 0 = the window's).
+// 10-3 fb-2: the right edge the next chip stays within (set by PlaceChip; 0 = the window's).
 float g_chip_right = 0.0f;
 
 // A small combo ("chip", the mock-up's select.chip) sized to its preview text, a small
@@ -683,162 +683,39 @@ bool BeginChip(const char* id, const char* preview, float min_w = 40.0f, bool di
     return open;
 }
 
-// ---- 10-3 fb-2: compartments (strip tracks, panel cards) and aligned sentences --------------
+// ---- 10-3 fb-2: compartments and aligned sentences ------------------------------------------
+// The components live in ui_theme (ui::Card, ui::Sentence, ui::TrackFill, ...); the chips stay here.
 
-// Text from p, shortened with "..." (whole glyphs) so it ends before max_x. True when shortened.
-bool EllipsisText(ImDrawList* dl, ImVec2 p, float max_x, ImU32 col, const std::string& text)
+using ui::Card;
+using ui::EllipsisText;
+using ui::kCardPad;
+using ui::MakeSentence;
+using ui::NumberFieldWidth;
+using ui::RuleStripe;
+using ui::Sentence;
+using ui::SentenceRow;
+using ui::TrackEdge;
+using ui::TrackFill;
+
+// The label column of the inspector's sentences: as wide as its widest label (the IF / AND
+// badge included).
+float InspectorColumnWidth()
 {
-    const float avail = max_x - p.x;
-    if (ImGui::CalcTextSize(text.c_str()).x <= avail) {
-        dl->AddText(p, col, text.c_str());
-        return false;
-    }
-    const float dots = ImGui::CalcTextSize("...").x;
-    size_t n = text.size();
-    while (n > 0) {
-        do {
-            --n;
-        } while (n > 0 && (static_cast<unsigned char>(text[n]) & 0xC0) == 0x80);  // a whole UTF-8 glyph
-        if (ImGui::CalcTextSize(text.c_str(), text.c_str() + n).x + dots <= avail) break;
-    }
-    std::string s = text.substr(0, n);
-    while (!s.empty() && s.back() == ' ') s.pop_back();
-    s += "...";
-    dl->PushClipRect(ImVec2(p.x, p.y - 1.0f), ImVec2(std::max(p.x, max_x), p.y + ImGui::GetFontSize() + 1.0f), true);
-    dl->AddText(p, col, s.c_str());
-    dl->PopClipRect();
-    return true;
+    static const char* const kLabels[] = {"reads", "from", "goes", "margin", "at", "of",
+                                          "Offset", "Min length", "Cooldown"};
+    return ui::SentenceColumnWidth(kLabels, static_cast<int>(sizeof(kLabels) / sizeof(kLabels[0])), "AND");
 }
 
-// A strip track: its header cell (the gutter, x0..lx) and its lane (lx..x1), filled.
-void TrackFill(ImDrawList* dl, float x0, float lx, float x1, float y0, float y1, ImU32 lane_fill)
+Sentence InspectorSentence(float x0, float right)
 {
-    dl->AddRectFilled(ImVec2(x0, y0), ImVec2(lx, y1), ui::kRaised, ui::kRadiusSm, ImDrawFlags_RoundCornersLeft);
-    dl->AddRectFilled(ImVec2(lx, y0), ImVec2(x1, y1), lane_fill, ui::kRadiusSm, ImDrawFlags_RoundCornersRight);
+    return MakeSentence(x0, right, InspectorColumnWidth());
 }
 
-// A 3 px stripe on the left of a rounded box (p0..p1): the box's own rounded rect clipped to
-// the stripe, so it follows the box's corners.
-void RuleStripe(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col, float radius)
+// ui::SentenceChip, and the next chip (BeginChip) stays within the sentence's right edge.
+void PlaceChip(Sentence& s, float w, float spacing = -1.0f)
 {
-    dl->PushClipRect(p0, ImVec2(p0.x + 3.0f, p1.y), true);
-    dl->AddRectFilled(p0, p1, col, radius);
-    dl->PopClipRect();
-}
-
-// A strip track's edges: the divider between header and lane, one edge around both.
-void TrackEdge(ImDrawList* dl, float x0, float lx, float x1, float y0, float y1, ImU32 edge)
-{
-    dl->AddLine(ImVec2(lx + 0.5f, y0 + 1.0f), ImVec2(lx + 0.5f, y1 - 1.0f), ui::kStrokeStrong, 1.0f);
-    dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), edge, ui::kRadiusSm);
-}
-
-// A card in the panel (a condition): its fill and edge are drawn behind its content once
-// its height is known. Begin / End around the content; the cursor ends under it.
-constexpr float kCardPad = 8.0f;
-constexpr float kCardGap = 6.0f;
-struct Card {
-    ImDrawListSplitter split;
-    ImVec2             p0;
-    float              w = 0.0f;
-};
-
-void BeginCard(Card& k)
-{
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    k.p0 = ImGui::GetCursorScreenPos();
-    k.w = ImGui::GetContentRegionAvail().x;
-    k.split.Split(dl, 2);
-    k.split.SetCurrentChannel(dl, 1);
-    ImGui::SetCursorScreenPos(ImVec2(k.p0.x + kCardPad, k.p0.y + kCardPad));
-    ImGui::BeginGroup();
-}
-
-void EndCard(Card& k, ImU32 fill, ImU32 edge)
-{
-    ImGui::EndGroup();
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const float bottom = ImGui::GetItemRectMax().y + kCardPad;
-    k.split.SetCurrentChannel(dl, 0);
-    dl->AddRectFilled(k.p0, ImVec2(k.p0.x + k.w, bottom), fill, ui::kRadiusMd);
-    dl->AddRect(k.p0, ImVec2(k.p0.x + k.w, bottom), edge, ui::kRadiusMd);
-    k.split.Merge(dl);
-    ImGui::SetCursorScreenPos(ImVec2(k.p0.x, bottom));
-    ImGui::Dummy(ImVec2(k.w, std::max(0.0f, kCardGap - ImGui::GetStyle().ItemSpacing.y)));
-}
-
-// Decision A, "aligned sentence": one phrase per row, its connector word right-aligned in a
-// fixed column, every row's chips from one shared edge. A chip that does not fit beside the
-// previous one wraps under the row's first chip (a row wraps as a whole, never a lone word).
-struct Sentence {
-    float x0 = 0.0f;       // the label column's left
-    float chips_x = 0.0f;  // the chips' shared left edge
-    float right = 0.0f;    // the right edge chips stay within
-    bool  first = true;    // no chip on this row yet
-};
-
-float SentenceGap() { return ImGui::GetStyle().ItemSpacing.x; }
-
-// The label column: as wide as the widest label of the inspector (the IF / AND tag's pad included).
-float SentenceColumnWidth()
-{
-    float w = ImGui::CalcTextSize("AND").x + 8.0f;
-    for (const char* s : {"reads", "from", "goes", "margin", "at", "of", "Offset", "Min length", "Cooldown"})
-        w = std::max(w, ImGui::CalcTextSize(s).x);
-    return w;
-}
-
-Sentence MakeSentence(float x0, float right)
-{
-    Sentence s;
-    s.x0 = x0;
-    s.chips_x = x0 + SentenceColumnWidth() + SentenceGap();
-    s.right = std::max(s.chips_x + 20.0f, right);
-    return s;
-}
-
-// Starts a row on the cursor's line: its label right-aligned in the column (an item, so it
-// can be hovered). `badge`: drawn as the IF / AND tag.
-void SentenceRow(Sentence& s, const char* label, bool badge = false)
-{
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const float fh = ImGui::GetFrameHeight();
-    const float y = ImGui::GetCursorScreenPos().y;
-    ImGui::SetCursorScreenPos(ImVec2(s.x0, y));
-    ImGui::Dummy(ImVec2(s.chips_x - SentenceGap() - s.x0, fh));
-    const ImVec2 ts = ImGui::CalcTextSize(label);
-    const float  xr = s.chips_x - SentenceGap();
-    if (badge) {
-        const float bx = xr - ts.x - 8.0f;
-        dl->AddRectFilled(ImVec2(bx, y + 3.0f), ImVec2(xr, y + fh - 3.0f), ui::kBg, 4.0f);
-        dl->AddRect(ImVec2(bx, y + 3.0f), ImVec2(xr, y + fh - 3.0f), ui::kStroke, 4.0f);
-        dl->AddText(ImVec2(bx + 4.0f, y + (fh - ts.y) * 0.5f), ui::kMuted, label);
-    } else {
-        dl->AddText(ImVec2(xr - ts.x, y + (fh - ts.y) * 0.5f), ui::kMuted, label);
-    }
-    s.first = true;
-}
-
-// Puts the cursor where the row's next chip (w wide) goes: beside the previous one when it
-// fits (`spacing` < 0 = the item spacing), else under the row's first chip.
-void SentenceChip(Sentence& s, float w, float spacing = -1.0f)
-{
-    const float sp = spacing < 0.0f ? SentenceGap() : spacing;
     g_chip_right = s.right;
-    if (s.first) {
-        ImGui::SameLine(0.0f, SentenceGap());
-        s.first = false;
-    } else if (ImGui::GetItemRectMax().x + sp + w <= s.right) {
-        ImGui::SameLine(0.0f, sp);
-    } else {
-        ImGui::SetCursorScreenPos(ImVec2(s.chips_x, ImGui::GetCursorScreenPos().y));
-    }
-}
-
-// The width a number field takes with its unit.
-float NumberFieldWidth(float field_w, const char* unit)
-{
-    return field_w + ((unit && unit[0]) ? 4.0f + ImGui::CalcTextSize(unit).x : 0.0f);
+    ui::SentenceChip(s, w, spacing);
 }
 
 // ---- Strip -----------------------------------------------------------------------------------
@@ -3314,12 +3191,12 @@ void ConditionEditor(const Block& blk, int b, int c)
     //    IF [kind] [bone] +      lock x  /  reads [measure] [axis]  /  from [reference]
     //    goes [direction] [threshold]  /  margin [margin]  -- rows a kind lacks are omitted.
     Card card;
-    BeginCard(card);
-    Sentence s = MakeSentence(card.p0.x + kCardPad, card.p0.x + card.w - kCardPad);
+    ui::BeginCard(card);
+    Sentence s = InspectorSentence(card.p0.x + kCardPad, card.p0.x + card.w - kCardPad);
     // IF / AND, kind, Bone, lock, delete.
     {
         SentenceRow(s, c ? "AND" : "IF", true);
-        SentenceChip(s, ChipWidth(ConditionKindLabel(kind), 50.0f));
+        PlaceChip(s, ChipWidth(ConditionKindLabel(kind), 50.0f));
         if (BeginChip("##kind", ConditionKindLabel(kind), 50.0f)) {
             for (ConditionKind k : kConditionKindChoices)
                 if (ImGui::Selectable(ConditionKindLabel(k), k == kind) && k != kind)
@@ -3343,7 +3220,7 @@ void ConditionEditor(const Block& blk, int b, int c)
                                      : "What this condition reads: a bone's position, the angle at a joint, or a "
                                        "bone's rotation (changing it starts the condition over)");
         const std::string bone = SignalBoneLabel(cd.signal);
-        SentenceChip(s, ChipWidth(bone.empty() ? "?" : bone.c_str(), 60.0f));
+        PlaceChip(s, ChipWidth(bone.empty() ? "?" : bone.c_str(), 60.0f));
         if (legacy) ImGui::BeginDisabled();
         const int single = cd.signal.bones.size() == 1 ? cd.signal.bones[0] : -1;
         if (BeginChip("##bone", bone.empty() ? "?" : bone.c_str(), 60.0f, legacy)) {
@@ -3390,7 +3267,7 @@ void ConditionEditor(const Block& blk, int b, int c)
                     why = sel_bone + " has no parent or no child: no joint angle there";
             }
             const bool enabled = !legacy && why.empty();
-            SentenceChip(s, fh, 2.0f);
+            PlaceChip(s, fh, 2.0f);
             if (IconButton("##usebone", fh, [](ImDrawList* d, ImVec2 cc, ImU32 col) { IconPlus(d, cc, 4.0f, col); },
                            enabled)) {
                 if (sel_bone.empty()) {
@@ -3427,7 +3304,7 @@ void ConditionEditor(const Block& blk, int b, int c)
         const float right = (nconds > 1 ? 2.0f : 1.0f) * (fh + 2.0f) - 2.0f;
         {
             const float rx = std::max(s.chips_x, s.right - right);
-            if (ImGui::GetItemRectMax().x + SentenceGap() <= rx) ImGui::SameLine();
+            if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x <= rx) ImGui::SameLine();
             ImGui::SetCursorScreenPos(ImVec2(rx, ImGui::GetCursorScreenPos().y));
         }
         const bool fixed = !cd.auto_threshold;
@@ -3459,7 +3336,7 @@ void ConditionEditor(const Block& blk, int b, int c)
     // reads [Measure] [axis]  /  from [reference]   --   reads [Measure] (angle: no from)
     {
         SentenceRow(s, "reads");
-        SentenceChip(s, ChipWidth(MeasureLabelFor(cd.signal, cd.signal.measure), 70.0f));
+        PlaceChip(s, ChipWidth(MeasureLabelFor(cd.signal, cd.signal.measure), 70.0f));
         if (BeginChip("##measure", MeasureLabelFor(cd.signal, cd.signal.measure), 70.0f)) {
             for (Measure ms : kMeasureChoices)
                 if (ImGui::Selectable(MeasureLabelFor(cd.signal, ms), ms == cd.signal.measure) && ms != cd.signal.measure)
@@ -3478,14 +3355,14 @@ void ConditionEditor(const Block& blk, int b, int c)
         }
         if (legacy) {
             const char* what = kind == ConditionKind::Bend ? "(bend)" : "(turn)";
-            SentenceChip(s, ImGui::CalcTextSize(what).x);
+            PlaceChip(s, ImGui::CalcTextSize(what).x);
             ImGui::AlignTextToFramePadding();
             ImGui::TextDisabled("%s", what);
         } else if (kind == ConditionKind::JointAngle) {
             // The angle at the joint: no axis, no reference.
         } else if (kind == ConditionKind::Rotation) {
             const Axis cur = RotationAxisOf(cd.signal);
-            SentenceChip(s, ChipWidth(AxisLabel(cur), 50.0f));
+            PlaceChip(s, ChipWidth(AxisLabel(cur), 50.0f));
             if (BeginChip("##raxis", AxisLabel(cur), 50.0f)) {
                 for (Axis a : kRotationAxisChoices) {
                     if (!RotationAxisOffered(cd.signal.measure, a)) continue;
@@ -3504,7 +3381,7 @@ void ConditionEditor(const Block& blk, int b, int c)
                                   "the overall turning rate");
             const char* ref = RotationReferenceLabel(cd.signal.reference);
             SentenceRow(s, "from");
-            SentenceChip(s, ChipWidth(ref, 70.0f));
+            PlaceChip(s, ChipWidth(ref, 70.0f));
             if (BeginChip("##rref", ref, 70.0f)) {
                 for (Reference rf : {Reference::Parent, Reference::Floor})
                     if (ImGui::Selectable(RotationReferenceLabel(rf), rf == cd.signal.reference) &&
@@ -3519,7 +3396,7 @@ void ConditionEditor(const Block& blk, int b, int c)
                 ImGui::EndCombo();
             }
         } else {
-            SentenceChip(s, ChipWidth(AxisLabel(cd.signal.axis), 60.0f));
+            PlaceChip(s, ChipWidth(AxisLabel(cd.signal.axis), 60.0f));
             if (BeginChip("##axis", AxisLabel(cd.signal.axis), 60.0f)) {
                 for (Axis a : kAxisChoices)
                     if (ImGui::Selectable(AxisLabel(a), a == cd.signal.axis) && a != cd.signal.axis)
@@ -3534,7 +3411,7 @@ void ConditionEditor(const Block& blk, int b, int c)
             const std::string ref = cd.signal.reference == Reference::Floor ? std::string("the floor")
                                                                             : RefLabel(cd.signal.ref_bones);
             SentenceRow(s, "from");
-            SentenceChip(s, ChipWidth(ref.c_str(), 70.0f));
+            PlaceChip(s, ChipWidth(ref.c_str(), 70.0f));
             if (BeginChip("##ref", ref.c_str(), 70.0f)) {
                 int picked = -2;
                 if (ImGui::Selectable("the floor", cd.signal.reference == Reference::Floor)) picked = -1;
@@ -3564,7 +3441,7 @@ void ConditionEditor(const Block& blk, int b, int c)
         }
         // goes [below|above] N unit  /  margin N unit
         SentenceRow(s, "goes");
-        SentenceChip(s, ChipWidth(DirectionLabel(cd.dir), 56.0f));
+        PlaceChip(s, ChipWidth(DirectionLabel(cd.dir), 56.0f));
         if (BeginChip("##dir", DirectionLabel(cd.dir), 56.0f)) {
             for (Direction d : kDirectionChoices)
                 if (ImGui::Selectable(DirectionLabel(d), d == cd.dir) && d != cd.dir)
@@ -3577,7 +3454,7 @@ void ConditionEditor(const Block& blk, int b, int c)
             ImGui::EndCombo();
         }
         const SignalUnit u = UnitOf(cd.signal);
-        SentenceChip(s, NumberFieldWidth(64.0f, UnitLabel(u)));
+        PlaceChip(s, NumberFieldWidth(64.0f, UnitLabel(u)));
         NumberField("##thr", ToDisplay(cd.signal, cd.threshold), UnitDragStep(u), UnitDecimals(u), UnitLabel(u), 64.0f,
                     "RAV: Set threshold (" + rule + ")", [b, c](ItemRules& r, double v) {
                         Condition* x = CondAt(r, b, c);
@@ -3587,7 +3464,7 @@ void ConditionEditor(const Block& blk, int b, int c)
                     });
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Threshold: drag sideways (Shift: fine), click to type");
         SentenceRow(s, "margin");
-        SentenceChip(s, NumberFieldWidth(64.0f, UnitLabel(u)));
+        PlaceChip(s, NumberFieldWidth(64.0f, UnitLabel(u)));
         NumberField("##margin", ToDisplay(cd.signal, std::max(0.0, cd.margin)), UnitDragStep(u), UnitDecimals(u),
                     UnitLabel(u), 64.0f, "RAV: Set margin (" + rule + ")", [b, c](ItemRules& r, double v) {
                         Condition* x = CondAt(r, b, c);
@@ -3598,7 +3475,7 @@ void ConditionEditor(const Block& blk, int b, int c)
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
             ImGui::SetTooltip("Hysteresis: how far back past the threshold before it can fire again");
     }
-    EndCard(card, ui::kSurface, ui::kStroke);
+    ui::EndCard(card, ui::kSurface, ui::kStroke);
     ImGui::PopID();
 }
 
@@ -3862,9 +3739,9 @@ void DrawInspector(const ItemRules& rules)
     const float sx1 = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x - kCardPad;
     {
         const Placement pl = PlacementOf(blk);
-        Sentence sen = MakeSentence(sx0, sx1);
+        Sentence sen = InspectorSentence(sx0, sx1);
         SentenceRow(sen, "at");
-        SentenceChip(sen, ChipWidth(PlacementLabel(pl), 80.0f));
+        PlaceChip(sen, ChipWidth(PlacementLabel(pl), 80.0f));
         if (BeginChip("##place", PlacementLabel(pl), 80.0f)) {
             for (Placement q : kPlacementChoices)
                 if (ImGui::Selectable(PlacementLabel(q), q == pl) && q != pl) {
@@ -3880,7 +3757,7 @@ void DrawInspector(const ItemRules& rules)
         }
         SentenceRow(sen, "of");
         if (pl == Placement::Start) {
-            SentenceChip(sen, ImGui::CalcTextSize("the match").x);
+            PlaceChip(sen, ImGui::CalcTextSize("the match").x);
             ImGui::AlignTextToFramePadding();
             ImGui::TextUnformatted("the match");
         } else {
@@ -3889,7 +3766,7 @@ void DrawInspector(const ItemRules& rules)
                 of >= 0 ? SignalName(blk.conditions[static_cast<size_t>(of)].signal,
                                      SignalBoneLabel(blk.conditions[static_cast<size_t>(of)].signal))
                         : std::string("?");
-            SentenceChip(sen, ChipWidth(cur.c_str(), 80.0f));
+            PlaceChip(sen, ChipWidth(cur.c_str(), 80.0f));
             if (BeginChip("##placeof", cur.c_str(), 80.0f)) {
                 for (int c = 0; c < static_cast<int>(blk.conditions.size()); ++c) {
                     const SignalSpec& s = blk.conditions[static_cast<size_t>(c)].signal;
@@ -3924,11 +3801,11 @@ void DrawInspector(const ItemRules& rules)
             {"Min length", "##hold", "The match must last at least this long to count", blk.min_hold_ms, 1},
             {"Cooldown", "##cool", "No new marker from this rule until this time has passed", blk.cooldown_ms, 2},
         };
-        Sentence sen = MakeSentence(sx0, sx1);
+        Sentence sen = InspectorSentence(sx0, sx1);
         for (const Timing& t : rows) {
             SentenceRow(sen, t.label);
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("%s", t.tip);
-            SentenceChip(sen, NumberFieldWidth(70.0f, "ms"));
+            PlaceChip(sen, NumberFieldWidth(70.0f, "ms"));
             const int which = t.which;
             NumberField(t.id, t.value, 1.0, 0, "ms", 70.0f, std::string("RAV: Set ") + (which == 0 ? "offset" : which == 1 ? "min length" : "cooldown") + " (" + rule + ")",
                         [b, which](ItemRules& r, double v) {
@@ -3960,7 +3837,7 @@ void DrawFooter(const TaggingModel& m)
                                  ImGui::GetContentRegionMax().x - ImGui::CalcTextSize("Change").x - 12.0f));
         if (ImGui::SmallButton("Change##tagmarkmode")) g_menu_request = true;
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-            ImGui::SetTooltip("Take, project or both: a global option in the menu (Auto-Tagging options).\n"
+            ImGui::SetTooltip("Take, project or both: applies to every project; set in the menu's Tagging view tab.\n"
                               "Project markers take the rule's colour.");
     }
     // Commit (Apply renamed, 10-4 fb-4): every selected item that has rules, one undo point.

@@ -2476,9 +2476,7 @@ void RolesDeleteConfirm(const RoleRow& row, bool used, float inner_w)
     ImGui::Dummy(ImVec2(0.0f, 2.0f));
     ImGui::TextUnformatted(("Delete the role \"" + row.name + "\"?").c_str());
     WrappedText(ui::kMuted,
-                std::string(used ? "These rules use it. " : "") +
-                    "Rules and presets that use it, in any item or project, keep it and then show it as not in "
-                    "your roles. Its bones stay remembered: create it again to get them back.",
+                std::string(used ? "These rules use it. " : "") + "Rules and presets keep it; its bones stay remembered.",
                 inner_w - 12.0f);
     if (ui::SolidButton("Cancel##rdcancel")) g_roles_confirm_key.clear();
     ImGui::SameLine();
@@ -2581,7 +2579,23 @@ void RolesWindow(const TaggingModel& m)
         } else {
             TagPill("all found", ui::kMuted, ui::kStroke);
         }
-        ImGui::SameLine(ImGui::GetContentRegionMax().x - 2.0f * fh - 4.0f);
+        // The explanation sits behind "?" (the window stays short; the README has the rest).
+        ImGui::SameLine(ImGui::GetContentRegionMax().x - 3.0f * fh - 8.0f);
+        IconButton("##rhelp", fh, [](ImDrawList* d, ImVec2 c, ImU32 col) {
+            const ImVec2 ts = ImGui::CalcTextSize("?");
+            d->AddText(ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), col, "?");
+        });
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
+            ImGui::BeginTooltip();
+            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 24.0f);
+            ImGui::TextUnformatted("Presets speak in roles (heel, toe, knee\xE2\x80\xA6). RAV guesses the bones from "
+                                   "their names and remembers your choice for every item with this skeleton.");
+            ImGui::TextUnformatted("+ Role adds your own roles, for every project. Right-click or F2 renames one.");
+            ImGui::TextUnformatted("Role changes are saved at once. Ctrl+Z here undoes them while this window is open.");
+            ImGui::PopTextWrapPos();
+            ImGui::EndTooltip();
+        }
+        ImGui::SameLine(0.0f, 4.0f);
         if (IconButton("##rundo", fh, [](ImDrawList* d, ImVec2 c, ImU32 col) { IconUndo(d, c, 5.0f, col); },
                        !g_roles_undo.empty()))
             RolesUndo();
@@ -2766,11 +2780,6 @@ void RolesWindow(const TaggingModel& m)
         ImGui::PopStyleColor();
         ImGui::PopTextWrapPos();
 
-        ImGui::Dummy(ImVec2(0.0f, 2.0f));
-        ui::SubText("Presets speak in roles (heel, toe, knee\xE2\x80\xA6). RAV guesses the bones from their names and "
-                    "remembers your choice for every item with this skeleton. + Role adds your own roles, for every "
-                    "project.");
-        ui::SubText("Role changes are saved at once. Ctrl+Z here undoes them while this window is open.");
 
         if (close) {
             ImGui::CloseCurrentPopup();

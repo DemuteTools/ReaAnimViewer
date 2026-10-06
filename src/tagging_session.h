@@ -28,6 +28,7 @@
 #include "event_list.h"
 #include "preset_store.h"
 #include "reaper_api.h"
+#include "role_map_store.h"
 #include "rule_record.h"
 #include "tagging_signal.h"
 
@@ -56,6 +57,8 @@ struct TaggingModel {
     std::vector<std::string> bone_names;
     std::vector<int>         bone_parents;  // per bone: its parent (-1 = root), for joint angles
     std::vector<int>         role_to_bone;  // indexed by Role (-1 = no bone)
+    // Story 10-3d: whether roles.txt can be read (the Skeleton & roles window says when it cannot).
+    RoleMapStatus            roles_status = RoleMapStatus::Absent;
     int                      missing_count = 0;  // bone references the rules read with no bone
     std::string              missing;            // their names
     std::string              sample_error;       // non-empty: the bones could not be sampled
@@ -98,7 +101,8 @@ ItemClipMap ItemClipMapOf(MediaItem* item, double clip_len);
 // `block`'s strength and speed, as detection measures them). False (0, 0) when they cannot be.
 bool TaggingMeasureEvent(const ItemRules& rules, int block, double t, double* strength, double* speed);
 
-// Reads the current item's record again and reruns detection (after Commit / Cancel).
+// Reads the current item's record again and reruns detection (after Commit / Cancel, a role
+// change), and the selection's counts (the footer).
 void TaggingReread();
 
 // Each frame in Tagging view (before the UI draws): `item` / `path` = the item the 3D view

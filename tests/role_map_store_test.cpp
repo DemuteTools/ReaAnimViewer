@@ -210,6 +210,100 @@ int main()
 #endif
     }
 
+    // ---- 10-3d: the Skeleton & roles window ----
+    {
+        const fs::path p = fs::u8path(RoleMapPath(R0));
+        std::error_code rec;
+        fs::remove_all(p, rec);
+        std::string err;
+
+        // The file's status.
+        CHECK(GetRoleMapStatus(R0) == RoleMapStatus::Absent);
+        CHECK(SetRoleBone(R0, a, Role::LeftToe, "mixamorig:LeftToe_End", &err));
+        CHECK(GetRoleMapStatus(R0) == RoleMapStatus::Ok);
+        std::ofstream(p, std::ios::binary | std::ios::trunc) << "garbage";
+        CHECK(GetRoleMapStatus(R0) == RoleMapStatus::NotRolesFile);
+        fs::remove(p);
+        fs::create_directories(p);  // exists, cannot be read
+        CHECK(GetRoleMapStatus(R0) == RoleMapStatus::Unreadable);
+        {
+            std::vector<char> st;
+            CHECK(GetRoleMapping(R0, a, &st) == GuessRoleMapping(a));
+            for (char s : st) CHECK(!s);
+            const std::vector<StoredRoleEntry> e = GetStoredRoles(R0, a);
+            CHECK(e.size() == static_cast<size_t>(Role::Count));
+            for (const StoredRoleEntry& x : e) CHECK(!x.stored);
+        }
+        fs::remove(p);
+
+        // A stored bone this rig does not have: no bone, but stored.
+        CHECK(SetRoleBone(R0, a, Role::LeftHeel, "Bip01 L Foot", &err));
+        {
+            std::vector<char> st;
+            const std::vector<int> m = GetRoleMapping(R0, a, &st);
+            CHECK(m[R(Role::LeftHeel)] == -1 && st[R(Role::LeftHeel)]);
+            CHECK(m[R(Role::LeftToe)] == 4 && !st[R(Role::LeftToe)]);
+        }
+
+        // The stored entry, exactly: none, "" (no bone), a bone absent from the rig.
+        CHECK(SetRoleBone(R0, a, Role::RightToe, "", &err));
+        {
+            const StoredRoleEntry none = GetStoredRole(R0, a, Role::LeftToe);
+            CHECK(!none.stored && none.bone.empty());
+            const StoredRoleEntry empty = GetStoredRole(R0, a, Role::RightToe);
+            CHECK(empty.stored && empty.bone.empty());
+            const StoredRoleEntry absent = GetStoredRole(R0, a, Role::LeftHeel);
+            CHECK(absent.stored && absent.bone == "Bip01 L Foot");
+            CHECK(GetStoredRole(R0, b, Role::LeftHeel) == absent);  // the same skeleton
+            CHECK(!GetStoredRole(R0, other, Role::LeftHeel).stored);
+        }
+
+        // The window's undo: each change records the entry it replaces; restoring them in
+        // reverse gives the original mapping back (a cleared line comes back at the end).
+        const std::vector<StoredRoleEntry> original = GetStoredRoles(R0, a);
+        const std::vector<int> orig_map = GetRoleMapping(R0, a);
+        struct Step { Role role; StoredRoleEntry prev; };
+        std::vector<Step> undo;
+        // The window's rule (ApplyRoleChange): a step only when the write went through and the
+        // stored entry changed.
+        auto change = [&](Role r, RoleChangeKind kind, const std::string& bone, bool want_step) {
+            StoredRoleEntry prev;
+            bool            changed = true;
+            const bool      ok = ApplyRoleChange(R0, a, r, kind, bone, &prev, &changed, &err);
+            CHECK(ok);
+            CHECK(changed == want_step);
+            if (ok && changed) undo.push_back({r, prev});
+        };
+        change(Role::LeftToe, RoleChangeKind::Auto, "", false);                      // auto on an unstored role: no step
+        change(Role::LeftToe, RoleChangeKind::Bone, "mixamorig:LeftFoot", true);     // auto -> a bone
+        change(Role::LeftToe, RoleChangeKind::Bone, "mixamorig:LeftFoot", false);    // the same bone again: no step
+        change(Role::LeftToe, RoleChangeKind::Bone, "mixamorig:LeftToe_End", true);  // a bone -> another
+        change(Role::LeftHeel, RoleChangeKind::Auto, "", true);                      // an absent bone -> auto
+        change(Role::RightToe, RoleChangeKind::Bone, "mixamorig:Hips", true);        // none -> a bone
+        change(Role::Hips, RoleChangeKind::None, "", true);                          // auto -> none
+        change(Role::Hips, RoleChangeKind::None, "", false);                         // none again: no step
+        CHECK(undo.size() == 5);
+        CHECK(GetRoleMapping(R0, a)[R(Role::Hips)] == -1);
+        CHECK(GetRoleMapping(R0, a)[R(Role::LeftToe)] == 5);
+        while (!undo.empty()) {
+            CHECK(RestoreRole(R0, a, undo.back().role, undo.back().prev, &err));
+            undo.pop_back();
+        }
+        CHECK(GetStoredRoles(R0, a) == original);
+        CHECK(GetRoleMapping(R0, a) == orig_map);
+        CHECK(GetStoredRole(R0, a, Role::LeftHeel).bone == "Bip01 L Foot");
+
+        // A refused restore leaves the file alone and says why.
+        fs::remove(p);
+        fs::create_directories(p);
+        err.clear();
+        CHECK(!RestoreRole(R0, a, Role::LeftToe, StoredRoleEntry{true, "x"}, &err) && !err.empty());
+        err.clear();
+        CHECK(!RestoreRole(R0, a, Role::LeftToe, StoredRoleEntry{}, &err) && !err.empty());
+        CHECK(fs::is_directory(p));
+        fs::remove(p);
+    }
+
     std::error_code ec;
     fs::remove_all(root, ec);
     // ---- 10-5 frozen fixtures ----

@@ -352,4 +352,67 @@ bool ClearRole(const std::string& root, const std::vector<std::string>& bone_nam
     }
 }
 
+RoleMapStatus GetRoleMapStatus(const std::string& root)
+{
+    try {
+        FileState st;
+        LoadFile(root, &st);
+        switch (st) {
+        case FileState::Absent: return RoleMapStatus::Absent;
+        case FileState::Ok: return RoleMapStatus::Ok;
+        case FileState::NotRoles: return RoleMapStatus::NotRolesFile;
+        default: return RoleMapStatus::Unreadable;
+        }
+    } catch (...) {
+        return RoleMapStatus::Unreadable;
+    }
+}
+
+std::vector<StoredRoleEntry> GetStoredRoles(const std::string& root, const std::vector<std::string>& bone_names)
+{
+    std::vector<StoredRoleEntry> out(static_cast<size_t>(Role::Count));
+    try {
+        FileState         st;
+        const RoleMapFile f = LoadFile(root, &st);
+        const std::string skel = SkeletonKey(bone_names);
+        for (int r = 0; r < static_cast<int>(Role::Count); ++r) {
+            const RoleMapLine* l = FindLine(f, skel, RoleKey(static_cast<Role>(r)));
+            if (!l) continue;
+            out[static_cast<size_t>(r)].stored = true;
+            out[static_cast<size_t>(r)].bone = l->Get("bone");
+        }
+    } catch (...) {
+        out.assign(static_cast<size_t>(Role::Count), StoredRoleEntry{});
+    }
+    return out;
+}
+
+StoredRoleEntry GetStoredRole(const std::string& root, const std::vector<std::string>& bone_names, Role role)
+{
+    const int r = static_cast<int>(role);
+    if (r < 0 || r >= static_cast<int>(Role::Count)) return StoredRoleEntry{};
+    return GetStoredRoles(root, bone_names)[static_cast<size_t>(r)];
+}
+
+bool RestoreRole(const std::string& root, const std::vector<std::string>& bone_names, Role role,
+                 const StoredRoleEntry& entry, std::string* err)
+{
+    return entry.stored ? SetRoleBone(root, bone_names, role, entry.bone, err)
+                        : ClearRole(root, bone_names, role, err);
+}
+
+bool ApplyRoleChange(const std::string& root, const std::vector<std::string>& bone_names, Role role,
+                     RoleChangeKind kind, const std::string& bone, StoredRoleEntry* prev_out, bool* changed,
+                     std::string* err)
+{
+    if (changed) *changed = false;
+    const StoredRoleEntry prev = GetStoredRole(root, bone_names, role);
+    if (prev_out) *prev_out = prev;
+    const bool ok = kind == RoleChangeKind::Auto
+                        ? ClearRole(root, bone_names, role, err)
+                        : SetRoleBone(root, bone_names, role, kind == RoleChangeKind::None ? std::string() : bone, err);
+    if (ok && changed) *changed = !(GetStoredRole(root, bone_names, role) == prev);
+    return ok;
+}
+
 }  // namespace rav

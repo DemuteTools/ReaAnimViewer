@@ -1728,9 +1728,11 @@ bool ImGuiWantsMouse()
 
 // Spec 11-fb-17 -- the viewer's key state right now: a text field active, a key being recorded.
 // Story 10-3b: the Tagging view's preset menu open counts as a text field (it takes every key).
+// Story 10-3d: so does the Skeleton & roles window (its Ctrl+Z is its own undo, not REAPER's).
 bool TextInputNow()
 {
-    return (g_imgui_ready && ImGui::GetIO().WantTextInput) || (TaggingViewActive() && TaggingPresetMenuOpen());
+    return (g_imgui_ready && ImGui::GetIO().WantTextInput) ||
+           (TaggingViewActive() && (TaggingPresetMenuOpen() || TaggingRolesWindowOpen()));
 }
 bool ViewerTakesCharNow() { return ViewerTakesChar(g_key_route, ShortcutRecordingId() >= 0, TextInputNow()); }
 

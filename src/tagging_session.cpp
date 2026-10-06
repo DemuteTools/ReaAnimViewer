@@ -155,6 +155,7 @@ void ReadItem()
     m.rules = m.has_record ? rd.rules : ItemRules{};
     ReadPresetFields();
     m.role_to_bone = m.bone_names.empty() ? std::vector<int>{} : GetRoleMapping(RulesResourceRoot(), m.bone_names);
+    m.roles_status = GetRoleMapStatus(RulesResourceRoot());
     m.missing.clear();
     m.missing_count = m.file_loaded ? CountMissing(EnabledOnly(m.rules.blocks), m.role_to_bone, m.bone_names, m.bone_parents, &m.missing) : 0;
     g.detect_dirty = true;
@@ -601,6 +602,7 @@ void TaggingReread()
     if (!g.model.item) return;
     ReadItem();
     RunDetection();
+    RefreshSelection();
 }
 
 const std::string& TaggingLastError()

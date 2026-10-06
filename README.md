@@ -449,7 +449,10 @@ Presets don't name bones: they name **roles** (left heel, left toe, right heel, 
 
 - **Roles ✓** (top of the panel) means every role the rules need was found on this skeleton.
 - **Roles · 2 missing** (in red) means some roles have no bone on this skeleton. Hover it to see which ones. The strip shows a message instead of the signals, and **Commit** skips this item.
-- When the names are not recognised, pick the bone yourself in the condition's bone menu: the **Bones** list under the roles has every bone of the skeleton.
+- Click **Roles** to open the **Skeleton & roles** window. It lists every role, the bone that plays each one, and where that bone comes from: `auto` (RAV's guess from the names), `you` (your choice) or `none`. The title says "all found" or how many roles have no bone.
+- To fix a role, open its menu and pick a bone (type in the search field to find it), **— none —** for no bone, or **Auto (...)** to go back to RAV's guess. The strip, **Roles** and **Commit** follow at once.
+- Your choice is remembered for every item with the same skeleton, in every project (it is saved in REAPER's resource folder, `ReaAnimViewer/roles.txt`, not in the project). Role changes are saved at once and are not REAPER undo points: while the window is open, **Ctrl+Z** (or the undo arrow next to the close button) undoes them one by one. After you close it, pick **Auto (...)** to go back to the guess.
+- You can also pick a raw bone in a condition's bone menu: the **Bones** list under the roles has every bone of the skeleton.
 
 ### The Tagging view
 
@@ -518,7 +521,7 @@ You can also correct events right on REAPER's timeline, with the RAV window open
 ### Known limits
 
 - Footsteps are the only factory presets today. Every other event is tagged with your own rules (see [Tagging your own events](#tagging-your-own-events)), which you can save and share as presets.
-- Roles are found from the bone names only (Mixamo and Unreal-style names). There is no role editor yet: for another naming, pick the bones in each condition's bone menu.
+- Roles are guessed from the bone names only (Mixamo and Unreal-style names). For another naming, set them once per skeleton in the **Skeleton & roles** window (click **Roles**).
 - The 3D view does not follow a take's play rate or a looped item, while the strip and the take markers do: on such items the pose and the markers can disagree.
 - Commit skips an item that has no rules left, and leaves the markers it wrote earlier: delete them in REAPER if you remove all of an item's rules.
 - Two items that would write the same project marker at the same time (for example a character and its weapon on two tracks) share one marker.

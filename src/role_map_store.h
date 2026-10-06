@@ -68,4 +68,33 @@ bool SetRoleBone(const std::string& root, const std::vector<std::string>& bone_n
                  const std::string& bone_name, std::string* err);
 bool ClearRole(const std::string& root, const std::vector<std::string>& bone_names, Role role, std::string* err);
 
+// Story 10-3d -- the Skeleton & roles window.
+// The state of roles.txt: none yet, read, not a roles file (moved aside at the first write),
+// or there but unreadable (every write is refused; the mapping is the guess).
+enum class RoleMapStatus { Absent, Ok, NotRolesFile, Unreadable };
+RoleMapStatus GetRoleMapStatus(const std::string& root);
+
+// One role's entry in the file for a skeleton, exactly as stored: none (the guess plays it),
+// or a bone text ("" = no bone; possibly a bone this rig does not have).
+struct StoredRoleEntry {
+    bool        stored = false;
+    std::string bone;
+    bool operator==(const StoredRoleEntry& o) const { return stored == o.stored && bone == o.bone; }
+};
+// Every role's entry (indexed by Role). An unreadable or foreign file reads as no entry.
+std::vector<StoredRoleEntry> GetStoredRoles(const std::string& root, const std::vector<std::string>& bone_names);
+StoredRoleEntry GetStoredRole(const std::string& root, const std::vector<std::string>& bone_names, Role role);
+// Puts an entry back as it was read (the window's undo): SetRoleBone(bone) or ClearRole.
+bool RestoreRole(const std::string& root, const std::vector<std::string>& bone_names, Role role,
+                 const StoredRoleEntry& entry, std::string* err);
+
+// One role change from the window: this bone, no bone, or back to the guess. `prev_out` gets
+// the entry it replaced (read before the write); `changed` is true only when the write went
+// through and the stored entry differs from it (the window then pushes an undo step). False
+// (and `err`) when the write was refused.
+enum class RoleChangeKind { Bone, None, Auto };
+bool ApplyRoleChange(const std::string& root, const std::vector<std::string>& bone_names, Role role,
+                     RoleChangeKind kind, const std::string& bone, StoredRoleEntry* prev_out, bool* changed,
+                     std::string* err);
+
 }  // namespace rav

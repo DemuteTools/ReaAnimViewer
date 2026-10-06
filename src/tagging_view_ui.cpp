@@ -7,6 +7,8 @@
 #ifdef _WIN32
 
 #include <algorithm>
+#include <cctype>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -2047,6 +2049,368 @@ void TaggingRunPendingDialog(HWND__* owner)
 
 namespace {
 
+// ---- Story 10-3d: the Skeleton & roles window -------------------------------------------------
+//
+// Opened from Roles: one row per role (all 9), the bone that plays it, and where it comes from
+// (auto = the guess, you = roles.txt, none). A choice is written at once to roles.txt (per
+// skeleton, for every project: role_map_store.h), never to the project, so it is no REAPER
+// undo point: the window keeps its own undo (Ctrl+Z, the undo button) while it is open.
+
+constexpr char  kRolesId[] = "##rolesdlg";
+constexpr float kRolesW = 420.0f;
+
+struct RoleUndoStep {
+    Role            role = Role::LeftHeel;
+    StoredRoleEntry prev;  // the entry the change replaced, exactly as stored
+};
+
+bool                         g_roles_request = false;  // the Roles button asked for the window
+bool                         g_roles_open = false;
+int                          g_roles_drawn_frame = -10;
+MediaItem*                   g_roles_item = nullptr;   // the item it was opened on
+std::vector<std::string>     g_roles_names;            // ...its skeleton: the writes' key
+std::vector<int>             g_roles_guess;            // the guess on it (the "Auto (...)" entry)
+std::vector<int>             g_roles_depth;            // per bone: its depth (the menu's indent)
+std::vector<StoredRoleEntry> g_roles_entries;          // roles.txt's entries, read after each change
+std::vector<RoleUndoStep>    g_roles_undo;
+std::string                  g_roles_err;              // the last write's refusal
+char                         g_roles_query[64] = {};
+bool                         g_roles_menu_appearing = false;  // a bone menu opened this frame
+
+void RolesReadEntries()
+{
+    g_roles_entries = GetStoredRoles(RulesResourceRoot(), g_roles_names);
+}
+
+void RolesForget()
+{
+    g_roles_open = false;
+    g_roles_item = nullptr;
+    g_roles_names.clear();
+    g_roles_guess.clear();
+    g_roles_depth.clear();
+    g_roles_entries.clear();
+    g_roles_undo.clear();  // the window's undo history goes with it
+    g_roles_err.clear();
+}
+
+bool RolesSameSkeleton(const std::vector<std::string>& names)
+{
+    return g_roles_open && names == g_roles_names;
+}
+
+void RolesOpen(const TaggingModel& m)
+{
+    RolesForget();
+    g_roles_item = m.item;
+    g_roles_names = m.bone_names;
+    g_roles_guess = GuessRoleMapping(m.bone_names);
+    const int n = static_cast<int>(m.bone_names.size());
+    g_roles_depth.assign(static_cast<size_t>(n), 0);
+    for (int i = 0; i < n && i < static_cast<int>(m.bone_parents.size()); ++i) {
+        int d = 0;
+        for (int p = m.bone_parents[static_cast<size_t>(i)]; p >= 0 && p < n && d < n; ++d)
+            p = p < static_cast<int>(m.bone_parents.size()) ? m.bone_parents[static_cast<size_t>(p)] : -1;
+        g_roles_depth[static_cast<size_t>(i)] = d;
+    }
+    RolesReadEntries();
+    Later([]() { TaggingReread(); });  // the bone column and the count follow roles.txt as it is now
+    g_roles_open = true;
+    g_roles_drawn_frame = ImGui::GetFrameCount();
+    ImGui::OpenPopup(kRolesId);
+}
+
+// One role change, written after the frame (ApplyRoleChange). The entry it replaced goes on the
+// window's undo stack when the entry changed; a refusal shows in red.
+void RolesChange(Role role, RoleChangeKind kind, const std::string& bone)
+{
+    const std::vector<std::string> names = g_roles_names;
+    Later([role, kind, bone, names]() {
+        StoredRoleEntry prev;
+        bool            changed = false;
+        std::string     err;
+        const bool ok = ApplyRoleChange(RulesResourceRoot(), names, role, kind, bone, &prev, &changed, &err);
+        if (RolesSameSkeleton(names)) {
+            if (ok) {
+                if (changed) g_roles_undo.push_back({role, prev});
+                g_roles_err.clear();
+            } else {
+                g_roles_err = err.empty() ? "The role mapping could not be saved." : err;
+            }
+            RolesReadEntries();
+        }
+        TaggingReread();  // the strip, Roles and the footer follow at once
+    });
+}
+
+// The window's undo: the last change's entry put back as it was stored. Refused: the step stays.
+void RolesUndo()
+{
+    if (g_roles_undo.empty()) return;
+    const std::vector<std::string> names = g_roles_names;
+    Later([names]() {
+        if (!RolesSameSkeleton(names) || g_roles_undo.empty()) return;
+        const RoleUndoStep s = g_roles_undo.back();
+        std::string        err;
+        if (RestoreRole(RulesResourceRoot(), names, s.role, s.prev, &err)) {
+            g_roles_undo.pop_back();
+            g_roles_err.clear();
+        } else {
+            g_roles_err = err.empty() ? "The role mapping could not be saved." : err;
+        }
+        RolesReadEntries();
+        TaggingReread();
+    });
+}
+
+void IconUndo(ImDrawList* dl, ImVec2 c, float r, ImU32 col)
+{
+    const float pi = 3.14159265f;
+    dl->PathArcTo(ImVec2(c.x, c.y + 1.5f), r, pi, pi * 2.45f, 14);
+    dl->PathStroke(col, ImDrawFlags_None, 1.5f);
+    const ImVec2 s(c.x - r, c.y + 1.5f);
+    dl->AddTriangleFilled(ImVec2(s.x - 3.2f, s.y - 1.0f), ImVec2(s.x + 3.2f, s.y - 1.0f), ImVec2(s.x, s.y + 3.5f), col);
+}
+
+// The mock-up's .tag pill, vertically centred on a frame-high line.
+void TagPill(const char* text, ImU32 text_col, ImU32 edge)
+{
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const float  fh = ImGui::GetFrameHeight();
+    const ImVec2 ts = ImGui::CalcTextSize(text);
+    const float  h = ts.y + 4.0f, w = ts.x + 18.0f;
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(ImVec2(w, fh));
+    const float y = p.y + (fh - h) * 0.5f;
+    dl->AddRectFilled(ImVec2(p.x, y), ImVec2(p.x + w, y + h), ui::kBg, h * 0.5f);
+    dl->AddRect(ImVec2(p.x, y), ImVec2(p.x + w, y + h), edge, h * 0.5f);
+    dl->AddText(ImVec2(p.x + 9.0f, y + 2.0f), text_col, text);
+}
+
+bool ContainsNoCase(const std::string& hay, const char* needle)
+{
+    const size_t n = std::strlen(needle);
+    if (n == 0) return true;
+    auto low = [](char ch) { return static_cast<char>(std::tolower(static_cast<unsigned char>(ch))); };
+    for (size_t i = 0; i + n <= hay.size(); ++i) {
+        size_t k = 0;
+        while (k < n && low(hay[i + k]) == low(needle[k])) ++k;
+        if (k == n) return true;
+    }
+    return false;
+}
+
+// A row's menu: Auto (the guess), no bone, then the bones (searchable, indented by depth).
+void RolesMenu(Role role, const StoredRoleEntry& e)
+{
+    const int r = static_cast<int>(role);
+    if (ImGui::IsWindowAppearing()) {
+        g_roles_query[0] = '\0';
+        g_roles_menu_appearing = true;
+    }
+    const int guess = r < static_cast<int>(g_roles_guess.size()) ? g_roles_guess[static_cast<size_t>(r)] : -1;
+    const std::string auto_label =
+        std::string("Auto (") +
+        ((guess >= 0 && guess < static_cast<int>(g_roles_names.size())) ? g_roles_names[static_cast<size_t>(guess)]
+                                                                        : std::string("no guess")) +
+        ")";
+    if (ImGui::Selectable(auto_label.c_str(), !e.stored) && e.stored) RolesChange(role, RoleChangeKind::Auto, "");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        ImGui::SetTooltip("Back to RAV's guess from the bone names");
+    const bool is_none = e.stored && e.bone.empty();
+    if (ImGui::Selectable("\xE2\x80\x94 none \xE2\x80\x94", is_none) && !is_none) RolesChange(role, RoleChangeKind::None, "");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("No bone plays this role");
+    ImGui::Separator();
+    ImGui::SetNextItemWidth(-1.0f);
+    if (g_roles_menu_appearing) ImGui::SetKeyboardFocusHere();
+    ImGui::InputTextWithHint("##rq", "Search bones", g_roles_query, sizeof(g_roles_query));
+    const float lh = ImGui::GetTextLineHeightWithSpacing();
+    const float list_h = std::min(300.0f, lh * static_cast<float>(std::max<size_t>(1, g_roles_names.size())) + 8.0f);
+    if (ImGui::BeginChild("##rbones", ImVec2(0.0f, list_h), ImGuiChildFlags_None)) {
+        const bool searching = g_roles_query[0] != '\0';
+        int shown = 0;
+        for (size_t i = 0; i < g_roles_names.size(); ++i) {
+            const std::string& nm = g_roles_names[i];
+            if (searching && !ContainsNoCase(nm, g_roles_query)) continue;
+            ++shown;
+            ImGui::PushID(static_cast<int>(i));
+            if (!searching && i < g_roles_depth.size())
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 10.0f * static_cast<float>(std::min(g_roles_depth[i], 20)));
+            // The store also matches a stored bone by its normalized name (another namespace).
+            const bool sel = e.stored && !e.bone.empty() &&
+                             (nm == e.bone || NormalizeBoneName(nm) == NormalizeBoneName(e.bone));
+            if (ImGui::Selectable(nm.c_str(), sel)) {
+                if (!sel) RolesChange(role, RoleChangeKind::Bone, nm);
+                ImGui::CloseCurrentPopup();  // the list is a child: Selectable alone keeps the menu open
+            }
+            if (sel && g_roles_menu_appearing) ImGui::SetScrollHereY(0.5f);
+            ImGui::PopID();
+        }
+        if (shown == 0) ImGui::TextDisabled("No bone matches");
+    }
+    ImGui::EndChild();
+    g_roles_menu_appearing = false;
+}
+
+// The role's name as a row label: "Left heel".
+std::string RoleRowLabel(Role r)
+{
+    std::string s = RoleName(r);
+    if (!s.empty()) s[0] = static_cast<char>(std::toupper(static_cast<unsigned char>(s[0])));
+    return s;
+}
+
+void RolesWindow(const TaggingModel& m)
+{
+    if (g_roles_request) {
+        g_roles_request = false;
+        if (m.item && m.file_loaded && !m.bone_names.empty()) RolesOpen(m);
+    }
+    if (!g_roles_open) return;
+    const int frame = ImGui::GetFrameCount();
+    const int age = frame - g_roles_drawn_frame;
+    // The item (or its skeleton) changed, or the window was not drawn (another view): it closes.
+    bool close = age < 0 || age > 1 || m.item != g_roles_item || m.bone_names != g_roles_names;
+
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(std::max(260.0f, std::min(kRolesW, vp->Size.x - 32.0f)), 0.0f), ImGuiCond_Always);
+    // A short docked panel: the body scrolls instead of running off-screen.
+    ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, std::max(120.0f, vp->Size.y - 32.0f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f, 14.0f));
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, ui::Col(ui::kRaised));
+    ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStrokeStrong));
+    constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                                        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings;
+    if (ImGui::BeginPopupModal(kRolesId, nullptr, kFlags)) {
+        g_roles_drawn_frame = frame;
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        const float fh = ImGui::GetFrameHeight();
+        // Esc closes; Ctrl+Z undoes the last role change (the viewer routes every key here
+        // while the window is open: TaggingRolesWindowOpen). A bone menu open has them first.
+        if (!close && ImGui::IsWindowFocused()) {
+            const ImGuiIO& io = ImGui::GetIO();
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) close = true;
+            else if (ImGui::IsKeyPressed(ImGuiKey_Z, false) && io.KeyCtrl && !io.KeyShift && !io.KeyAlt &&
+                     !io.WantTextInput)
+                RolesUndo();
+        }
+
+        // Title: the name, found / not found, undo, close.
+        int not_found = 0;
+        for (int r = 0; r < static_cast<int>(Role::Count); ++r)
+            if (r >= static_cast<int>(m.role_to_bone.size()) || m.role_to_bone[static_cast<size_t>(r)] < 0) ++not_found;
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted("Skeleton & roles");
+        ImGui::SameLine(0.0f, 8.0f);
+        char count[32];
+        if (not_found > 0) {
+            std::snprintf(count, sizeof(count), "%d not found", not_found);
+            TagPill(count, kBadText, WithAlpha(kBad, 0x80));
+        } else {
+            TagPill("all found", ui::kMuted, ui::kStroke);
+        }
+        ImGui::SameLine(ImGui::GetContentRegionMax().x - 2.0f * fh - 4.0f);
+        if (IconButton("##rundo", fh, [](ImDrawList* d, ImVec2 c, ImU32 col) { IconUndo(d, c, 5.0f, col); },
+                       !g_roles_undo.empty()))
+            RolesUndo();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("Undo the last role change (Ctrl+Z)");
+        ImGui::SameLine(0.0f, 4.0f);
+        if (IconButton("##rclose", fh, [](ImDrawList* d, ImVec2 c, ImU32 col) { IconCross(d, c, 4.0f, col); }))
+            close = true;
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Close (Esc)");
+
+        char sub[64];
+        std::snprintf(sub, sizeof(sub), "Skeleton: %d bones", static_cast<int>(g_roles_names.size()));
+        ui::SubText(sub);
+        ImGui::Dummy(ImVec2(0.0f, 2.0f));
+
+        // One row per role: the role, its bone menu, where the bone comes from.
+        float label_w = 0.0f;
+        for (int r = 0; r < static_cast<int>(Role::Count); ++r)
+            label_w = std::max(label_w, ImGui::CalcTextSize(RoleRowLabel(static_cast<Role>(r)).c_str()).x);
+        label_w += 12.0f;
+        const float src_w = ImGui::CalcTextSize("auto").x + 10.0f;
+        for (int r = 0; r < static_cast<int>(Role::Count); ++r) {
+            const Role role = static_cast<Role>(r);
+            ImGui::PushID(r);
+            const int bone = r < static_cast<int>(m.role_to_bone.size()) ? m.role_to_bone[static_cast<size_t>(r)] : -1;
+            const bool has_bone = bone >= 0 && bone < static_cast<int>(m.bone_names.size());
+            const StoredRoleEntry e =
+                r < static_cast<int>(g_roles_entries.size()) ? g_roles_entries[static_cast<size_t>(r)] : StoredRoleEntry{};
+            // A stored bone this rig lacks is still the user's choice ("you"), shown as not found.
+            const char* src = has_bone ? (e.stored ? "you" : "auto") : (e.stored && !e.bone.empty() ? "you" : "none");
+            const ImU32 src_col = !has_bone ? kBad : e.stored ? ui::kAccent : ui::kMuted;
+            const std::string preview = has_bone ? m.bone_names[static_cast<size_t>(bone)]
+                                        : (e.stored && e.bone.empty()) ? std::string("\xE2\x80\x94 none \xE2\x80\x94")
+                                                                       : std::string("\xE2\x80\x94 not found \xE2\x80\x94");
+            const std::string label = RoleRowLabel(role);
+            ImGui::AlignTextToFramePadding();
+            ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
+            ImGui::TextUnformatted(label.c_str());
+            ImGui::PopStyleColor();
+            ImGui::SameLine(label_w);
+            const float combo_w = std::max(60.0f, ImGui::GetContentRegionAvail().x - src_w - 6.0f);
+            const ImVec2 c0 = ImGui::GetCursorScreenPos();
+            ImGui::SetNextItemWidth(combo_w);
+            if (!has_bone) ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(kBadText));
+            const bool open = ImGui::BeginCombo("##bone", preview.c_str(), ImGuiComboFlags_HeightLargest);
+            if (!has_bone) ImGui::PopStyleColor();
+            if (open) {
+                RolesMenu(role, e);
+                ImGui::EndCombo();
+            }
+            if (!has_bone)
+                dl->AddRect(c0, ImVec2(c0.x + combo_w, c0.y + fh), WithAlpha(kBad, 0x99), ImGui::GetStyle().FrameRounding);
+            ImGui::SameLine(0.0f, 6.0f);
+            const ImVec2 sp = ImGui::GetCursorScreenPos();
+            ImGui::Dummy(ImVec2(src_w, fh));
+            const float sw = ImGui::CalcTextSize(src).x;
+            dl->AddText(ImVec2(sp.x + src_w - sw, sp.y + (fh - ImGui::GetTextLineHeight()) * 0.5f), src_col, src);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
+                std::string tip;
+                if (!has_bone && e.stored && !e.bone.empty())
+                    tip = "Your choice, " + e.bone + ", is not a bone of this skeleton.";
+                else if (e.stored && has_bone)
+                    tip = "Your choice, remembered for every item with this skeleton.";
+                else if (has_bone)
+                    tip = "RAV's guess from the bone names.";
+                else
+                    tip = "No bone plays this role.";
+                ImGui::SetTooltip("%s", tip.c_str());
+            }
+            ImGui::PopID();
+        }
+
+        // roles.txt that RAV cannot read, a refused write: in red, never silent.
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(kBadText));
+        if (m.roles_status == RoleMapStatus::Unreadable)
+            ImGui::TextUnformatted("roles.txt could not be read: choices are not saved.");
+        else if (m.roles_status == RoleMapStatus::NotRolesFile)
+            ImGui::TextUnformatted("roles.txt is not a roles file: your next choice moves it aside and starts a new one.");
+        if (!g_roles_err.empty()) ImGui::TextUnformatted(g_roles_err.c_str());
+        ImGui::PopStyleColor();
+        ImGui::PopTextWrapPos();
+
+        ImGui::Dummy(ImVec2(0.0f, 2.0f));
+        ui::SubText("Presets speak in roles (heel, toe, knee\xE2\x80\xA6). RAV guesses the bones from their names and "
+                    "remembers your choice for every item with this skeleton.");
+        ui::SubText("Role changes are saved at once. Ctrl+Z here undoes them while this window is open.");
+
+        if (close) {
+            ImGui::CloseCurrentPopup();
+            RolesForget();
+        }
+        ImGui::EndPopup();
+    } else {
+        RolesForget();
+    }
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar();
+}
+
 void ItemOptionsPopup(const ItemRules& rules)
 {
     if (!ImGui::BeginPopup("##tagoptions")) return;
@@ -2099,7 +2463,13 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
                 std::snprintf(label, sizeof(label), "Roles");
             const ImVec2 rp = ImGui::GetCursorScreenPos();
             const float rw = ImGui::CalcTextSize(label).x + (m.missing_count > 0 ? 16.0f : 30.0f);
-            ImGui::InvisibleButton("##roles", ImVec2(rw, fh));
+            // Story 10-3d: it opens the Skeleton & roles window (disabled without a skeleton).
+            const bool no_skeleton = !m.file_loaded || m.bone_names.empty();
+            if (no_skeleton) ImGui::BeginDisabled();
+            if (ImGui::InvisibleButton("##roles", ImVec2(rw, fh))) g_roles_request = true;
+            if (no_skeleton) ImGui::EndDisabled();
+            if (ImGui::IsItemHovered() && !no_skeleton)
+                dl->AddRectFilled(rp, ImVec2(rp.x + rw, rp.y + fh), ui::kHover, ui::kRadiusSm);
             const ImU32 edge = m.missing_count > 0 ? WithAlpha(kBad, 0x99) : ui::kStroke;
             dl->AddRect(rp, ImVec2(rp.x + rw, rp.y + fh), edge, ui::kRadiusSm);
             dl->AddText(ImVec2(rp.x + 8.0f, rp.y + (fh - ImGui::GetTextLineHeight()) * 0.5f),
@@ -2107,14 +2477,19 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
             const bool no_rule = rules.blocks.empty();  // 10-3 fb-1: nothing to check yet
             if (m.missing_count == 0 && !no_rule)
                 IconCheck(dl, ImVec2(rp.x + rw - 12.0f, rp.y + fh * 0.5f), 4.0f, ui::kOk);
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
-                if (m.missing_count > 0)
-                    ImGui::SetTooltip("No bone plays: %s.\nDetection and Commit skip this item until they are mapped.",
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled)) {
+                if (no_skeleton)
+                    ImGui::SetTooltip("%s", m.file_loaded ? "This file has no skeleton: no bone to map roles on."
+                                                          : "The animation file is not loaded: no skeleton to map roles on.");
+                else if (m.missing_count > 0)
+                    ImGui::SetTooltip("No bone plays: %s.\nDetection and Commit skip this item until they are mapped."
+                                      "\nClick to pick their bones.",
                                       m.missing.c_str());
                 else if (no_rule)
-                    ImGui::SetTooltip("No rule reads a role yet.");
+                    ImGui::SetTooltip("No rule reads a role yet.\nClick to see which bone plays each role.");
                 else
-                    ImGui::SetTooltip("Every role these rules read has a bone on this skeleton.");
+                    ImGui::SetTooltip("Every role these rules read has a bone on this skeleton.\nClick to see or "
+                                      "change which bone plays each role.");
             }
             ImGui::SameLine();
             if (IconButton("##opts", fh, [](ImDrawList* d, ImVec2 c, ImU32 col) { IconGear(d, c, 6.0f, col); }))
@@ -2933,6 +3308,14 @@ void DrawFooter(const TaggingModel& m)
 
 }  // namespace
 
+bool TaggingRolesWindowOpen()
+{
+    // Only while it is drawn (another view or the viewer closing drops it).
+    if (!g_roles_open || !ImGui::GetCurrentContext()) return false;
+    const int age = ImGui::GetFrameCount() - g_roles_drawn_frame;
+    return age >= 0 && age <= 1;
+}
+
 void DrawTaggingPanel(float x, float y, float w, float h)
 {
     const TaggingModel& m = GetTaggingModel();
@@ -3027,6 +3410,7 @@ void DrawTaggingPanel(float x, float y, float w, float h)
             ImGui::PopStyleColor();
             DrawFooter(m);
         }
+        RolesWindow(m);  // story 10-3d (closes itself when the item changes)
     }
     ImGui::End();
     ImGui::PopStyleColor(2);

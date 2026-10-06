@@ -49,6 +49,9 @@ bool TaggingConsumeMenuRequest();
 // Story 10-3b -- the preset menu is open: the viewer takes every key (its search, F2, Del,
 // Enter, Esc and the arrows are the menu's, never a shortcut's or REAPER's).
 bool TaggingPresetMenuOpen();
+// Story 10-3d -- the Skeleton & roles window is open: the viewer takes every key too (Esc
+// closes it, Ctrl+Z undoes its last role change, never REAPER's undo).
+bool TaggingRolesWindowOpen();
 // Import / Export asked for a native file picker. It runs a modal loop, so the viewer runs it
 // from its window procedure (TaggingRunPendingDialog, `owner` = the top-level window), never
 // inside the frame.

@@ -661,13 +661,19 @@ float ChipWidth(const char* preview, float min_w = 40.0f)
     return std::max(min_w, ImGui::CalcTextSize(preview).x + 30.0f);
 }
 
+// 10-3 fb-2: the right edge the next chip stays within (set by SentenceChip; 0 = the window's).
+float g_chip_right = 0.0f;
+
 // A small combo ("chip", the mock-up's select.chip) sized to its preview text, a small
 // chevron on its right.
 bool BeginChip(const char* id, const char* preview, float min_w = 40.0f, bool disabled = false)
 {
-    const float w = std::min(ChipWidth(preview, min_w), std::max(min_w, ImGui::GetContentRegionAvail().x));
-    ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    float avail = ImGui::GetContentRegionAvail().x;
+    if (g_chip_right > 0.0f) avail = std::min(avail, g_chip_right - p0.x);
+    g_chip_right = 0.0f;
+    const float w = std::min(ChipWidth(preview, min_w), std::max(min_w, avail));
+    ImDrawList* dl = ImGui::GetWindowDrawList();
     const float h = ImGui::GetFrameHeight();
     ImGui::SetNextItemWidth(w);
     const bool open = ImGui::BeginCombo(id, preview, ImGuiComboFlags_HeightLarge | ImGuiComboFlags_NoArrowButton);
@@ -675,6 +681,164 @@ bool BeginChip(const char* id, const char* preview, float min_w = 40.0f, bool di
     dl->AddTriangleFilled(ImVec2(c.x - 3.5f, c.y - 1.5f), ImVec2(c.x + 3.5f, c.y - 1.5f), ImVec2(c.x, c.y + 2.5f),
                           disabled ? ui::kFaint : ui::kMuted);
     return open;
+}
+
+// ---- 10-3 fb-2: compartments (strip tracks, panel cards) and aligned sentences --------------
+
+// Text from p, shortened with "..." (whole glyphs) so it ends before max_x. True when shortened.
+bool EllipsisText(ImDrawList* dl, ImVec2 p, float max_x, ImU32 col, const std::string& text)
+{
+    const float avail = max_x - p.x;
+    if (ImGui::CalcTextSize(text.c_str()).x <= avail) {
+        dl->AddText(p, col, text.c_str());
+        return false;
+    }
+    const float dots = ImGui::CalcTextSize("...").x;
+    size_t n = text.size();
+    while (n > 0) {
+        do {
+            --n;
+        } while (n > 0 && (static_cast<unsigned char>(text[n]) & 0xC0) == 0x80);  // a whole UTF-8 glyph
+        if (ImGui::CalcTextSize(text.c_str(), text.c_str() + n).x + dots <= avail) break;
+    }
+    std::string s = text.substr(0, n);
+    while (!s.empty() && s.back() == ' ') s.pop_back();
+    s += "...";
+    dl->PushClipRect(ImVec2(p.x, p.y - 1.0f), ImVec2(std::max(p.x, max_x), p.y + ImGui::GetFontSize() + 1.0f), true);
+    dl->AddText(p, col, s.c_str());
+    dl->PopClipRect();
+    return true;
+}
+
+// A strip track: its header cell (the gutter, x0..lx) and its lane (lx..x1), filled.
+void TrackFill(ImDrawList* dl, float x0, float lx, float x1, float y0, float y1, ImU32 lane_fill)
+{
+    dl->AddRectFilled(ImVec2(x0, y0), ImVec2(lx, y1), ui::kRaised, ui::kRadiusSm, ImDrawFlags_RoundCornersLeft);
+    dl->AddRectFilled(ImVec2(lx, y0), ImVec2(x1, y1), lane_fill, ui::kRadiusSm, ImDrawFlags_RoundCornersRight);
+}
+
+// A 3 px stripe on the left of a rounded box (p0..p1): the box's own rounded rect clipped to
+// the stripe, so it follows the box's corners.
+void RuleStripe(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col, float radius)
+{
+    dl->PushClipRect(p0, ImVec2(p0.x + 3.0f, p1.y), true);
+    dl->AddRectFilled(p0, p1, col, radius);
+    dl->PopClipRect();
+}
+
+// A strip track's edges: the divider between header and lane, one edge around both.
+void TrackEdge(ImDrawList* dl, float x0, float lx, float x1, float y0, float y1, ImU32 edge)
+{
+    dl->AddLine(ImVec2(lx + 0.5f, y0 + 1.0f), ImVec2(lx + 0.5f, y1 - 1.0f), ui::kStrokeStrong, 1.0f);
+    dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), edge, ui::kRadiusSm);
+}
+
+// A card in the panel (a condition): its fill and edge are drawn behind its content once
+// its height is known. Begin / End around the content; the cursor ends under it.
+constexpr float kCardPad = 8.0f;
+constexpr float kCardGap = 6.0f;
+struct Card {
+    ImDrawListSplitter split;
+    ImVec2             p0;
+    float              w = 0.0f;
+};
+
+void BeginCard(Card& k)
+{
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    k.p0 = ImGui::GetCursorScreenPos();
+    k.w = ImGui::GetContentRegionAvail().x;
+    k.split.Split(dl, 2);
+    k.split.SetCurrentChannel(dl, 1);
+    ImGui::SetCursorScreenPos(ImVec2(k.p0.x + kCardPad, k.p0.y + kCardPad));
+    ImGui::BeginGroup();
+}
+
+void EndCard(Card& k, ImU32 fill, ImU32 edge)
+{
+    ImGui::EndGroup();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float bottom = ImGui::GetItemRectMax().y + kCardPad;
+    k.split.SetCurrentChannel(dl, 0);
+    dl->AddRectFilled(k.p0, ImVec2(k.p0.x + k.w, bottom), fill, ui::kRadiusMd);
+    dl->AddRect(k.p0, ImVec2(k.p0.x + k.w, bottom), edge, ui::kRadiusMd);
+    k.split.Merge(dl);
+    ImGui::SetCursorScreenPos(ImVec2(k.p0.x, bottom));
+    ImGui::Dummy(ImVec2(k.w, std::max(0.0f, kCardGap - ImGui::GetStyle().ItemSpacing.y)));
+}
+
+// Decision A, "aligned sentence": one phrase per row, its connector word right-aligned in a
+// fixed column, every row's chips from one shared edge. A chip that does not fit beside the
+// previous one wraps under the row's first chip (a row wraps as a whole, never a lone word).
+struct Sentence {
+    float x0 = 0.0f;       // the label column's left
+    float chips_x = 0.0f;  // the chips' shared left edge
+    float right = 0.0f;    // the right edge chips stay within
+    bool  first = true;    // no chip on this row yet
+};
+
+float SentenceGap() { return ImGui::GetStyle().ItemSpacing.x; }
+
+// The label column: as wide as the widest label of the inspector (the IF / AND tag's pad included).
+float SentenceColumnWidth()
+{
+    float w = ImGui::CalcTextSize("AND").x + 8.0f;
+    for (const char* s : {"reads", "from", "goes", "margin", "at", "of", "Offset", "Min length", "Cooldown"})
+        w = std::max(w, ImGui::CalcTextSize(s).x);
+    return w;
+}
+
+Sentence MakeSentence(float x0, float right)
+{
+    Sentence s;
+    s.x0 = x0;
+    s.chips_x = x0 + SentenceColumnWidth() + SentenceGap();
+    s.right = std::max(s.chips_x + 20.0f, right);
+    return s;
+}
+
+// Starts a row on the cursor's line: its label right-aligned in the column (an item, so it
+// can be hovered). `badge`: drawn as the IF / AND tag.
+void SentenceRow(Sentence& s, const char* label, bool badge = false)
+{
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float fh = ImGui::GetFrameHeight();
+    const float y = ImGui::GetCursorScreenPos().y;
+    ImGui::SetCursorScreenPos(ImVec2(s.x0, y));
+    ImGui::Dummy(ImVec2(s.chips_x - SentenceGap() - s.x0, fh));
+    const ImVec2 ts = ImGui::CalcTextSize(label);
+    const float  xr = s.chips_x - SentenceGap();
+    if (badge) {
+        const float bx = xr - ts.x - 8.0f;
+        dl->AddRectFilled(ImVec2(bx, y + 3.0f), ImVec2(xr, y + fh - 3.0f), ui::kBg, 4.0f);
+        dl->AddRect(ImVec2(bx, y + 3.0f), ImVec2(xr, y + fh - 3.0f), ui::kStroke, 4.0f);
+        dl->AddText(ImVec2(bx + 4.0f, y + (fh - ts.y) * 0.5f), ui::kMuted, label);
+    } else {
+        dl->AddText(ImVec2(xr - ts.x, y + (fh - ts.y) * 0.5f), ui::kMuted, label);
+    }
+    s.first = true;
+}
+
+// Puts the cursor where the row's next chip (w wide) goes: beside the previous one when it
+// fits (`spacing` < 0 = the item spacing), else under the row's first chip.
+void SentenceChip(Sentence& s, float w, float spacing = -1.0f)
+{
+    const float sp = spacing < 0.0f ? SentenceGap() : spacing;
+    g_chip_right = s.right;
+    if (s.first) {
+        ImGui::SameLine(0.0f, SentenceGap());
+        s.first = false;
+    } else if (ImGui::GetItemRectMax().x + sp + w <= s.right) {
+        ImGui::SameLine(0.0f, sp);
+    } else {
+        ImGui::SetCursorScreenPos(ImVec2(s.chips_x, ImGui::GetCursorScreenPos().y));
+    }
+}
+
+// The width a number field takes with its unit.
+float NumberFieldWidth(float field_w, const char* unit)
+{
+    return field_w + ((unit && unit[0]) ? 4.0f + ImGui::CalcTextSize(unit).x : 0.0f);
 }
 
 // ---- Strip -----------------------------------------------------------------------------------
@@ -862,19 +1026,6 @@ void DrawTaggingStrip(float x, float y, float w, float h)
         char tc[32];
         FormatTime(playhead, tc, sizeof(tc));
         dl->AddText(ImVec2(c0.x, c0.y + (head_h - th) * 0.5f), ui::kMuted, tc);
-        float hx = c0.x + std::max(64.0f, ImGui::CalcTextSize(tc).x) + 12.0f;
-        const bool has_sel = m.item && m.has_record && g_sel < static_cast<int>(rules.blocks.size());
-        if (has_sel) {
-            const Block& b = rules.blocks[static_cast<size_t>(g_sel)];
-            dl->AddCircleFilled(ImVec2(hx + 4.0f, c0.y + head_h * 0.5f), 4.0f, RuleColor(b), 12);
-            const std::string title = RuleTitle(b);
-            dl->AddText(ImVec2(hx + 14.0f, c0.y + (head_h - th) * 0.5f), ui::kText, title.c_str());
-            char sub[64];
-            std::snprintf(sub, sizeof(sub), " " RAV_DOT " %d signal%s", static_cast<int>(b.conditions.size()),
-                          b.conditions.size() == 1 ? "" : "s");
-            dl->AddText(ImVec2(hx + 14.0f + ImGui::CalcTextSize(title.c_str()).x, c0.y + (head_h - th) * 0.5f),
-                        ui::kMuted, sub);
-        }
         {
             const char* label = "Analyse";
             const float bw = ImGui::CalcTextSize(label).x + 20.0f;
@@ -993,22 +1144,25 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                 const int nb = static_cast<int>(rules.blocks.size());
                 const ShownEvent* sel_ev = SelectedEvent(m);
                 const float row_h = std::max(16.0f, th + 6.0f);
+                // 10-3 fb-2: every notify row and condition lane is one boxed track (a header
+                // cell in the gutter, its lane), kTrackGap apart. A shortened header keeps its
+                // full text for the tooltip.
+                constexpr float kTrackGap = 3.0f;
+                struct GutterTip {
+                    float       y0, y1;
+                    std::string text;
+                };
+                std::vector<GutterTip> gutter_tips;
                 std::vector<float> row_y(static_cast<size_t>(nb));
                 for (int b = 0; b < nb; ++b) {
                     const Block& blk = rules.blocks[static_cast<size_t>(b)];
-                    const float ry = rows_top + 2.0f + static_cast<float>(b) * (row_h + 2.0f);
+                    const float ry = rows_top + kTrackGap + static_cast<float>(b) * (row_h + kTrackGap);
                     row_y[static_cast<size_t>(b)] = ry;
                     const bool sel = b == g_sel;
-                    dl->AddRectFilled(ImVec2(c0.x, ry), ImVec2(lane_x + lane_w, ry + row_h),
-                                      sel ? IM_COL32(0x5B, 0x8C, 0xFF, 0x1A) : ui::kBg, ui::kRadiusSm);
-                    dl->AddRect(ImVec2(c0.x, ry), ImVec2(lane_x + lane_w, ry + row_h), sel ? ui::kAccentLine : ui::kStroke,
-                                ui::kRadiusSm);
-                    dl->AddCircleFilled(ImVec2(c0.x + 9.0f, ry + row_h * 0.5f), 3.5f, RuleColor(blk), 12);
-                    const std::string title = RuleTitle(blk);
-                    dl->PushClipRect(ImVec2(c0.x, ry), ImVec2(lane_x - 4.0f, ry + row_h), true);
-                    dl->AddText(ImVec2(c0.x + 18.0f, ry + (row_h - th) * 0.5f),
-                                blk.enabled ? (sel ? ui::kText : ui::kMuted) : ui::kFaint, title.c_str());
-                    dl->PopClipRect();
+                    TrackFill(dl, c0.x, lane_x, lane_x + lane_w, ry, ry + row_h, ui::kBg);
+                    if (sel)
+                        dl->AddRectFilled(ImVec2(lane_x, ry), ImVec2(lane_x + lane_w, ry + row_h), IM_COL32(0x5B, 0x8C, 0xFF, 0x1A),
+                                          ui::kRadiusSm, ImDrawFlags_RoundCornersRight);
                     dl->PushClipRect(ImVec2(lane_x, ry), ImVec2(lane_x + lane_w, ry + row_h), true);
                     // Story 10-4: the rule's events (detected, suppressed, orphan suppressions,
                     // the user's own), on the clip's first pass.
@@ -1034,9 +1188,18 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                         }
                     }
                     dl->PopClipRect();
+                    dim_outside(ry, ry + row_h);  // over the marks too (outside the item: dimmed)
+                    TrackEdge(dl, c0.x, lane_x, lane_x + lane_w, ry, ry + row_h, sel ? ui::kAccentLine : ui::kStroke);
+                    if (sel)  // the selected rule: a stripe in its colour on its header's left
+                        RuleStripe(dl, ImVec2(c0.x, ry), ImVec2(lane_x + lane_w, ry + row_h), RuleColor(blk), ui::kRadiusSm);
+                    dl->AddCircleFilled(ImVec2(c0.x + 11.0f, ry + row_h * 0.5f), 3.5f,
+                                        blk.enabled ? RuleColor(blk) : WithAlpha(RuleColor(blk), 0x66), 12);
+                    const std::string title = RuleTitle(blk);
+                    if (EllipsisText(dl, ImVec2(c0.x + 20.0f, ry + (row_h - th) * 0.5f), lane_x - 5.0f,
+                                     blk.enabled ? (sel ? ui::kText : ui::kMuted) : ui::kFaint, title))
+                        gutter_tips.push_back({ry, ry + row_h, title});
                 }
-                const float rows_bottom = rows_top + 2.0f + static_cast<float>(nb) * (row_h + 2.0f);
-                dim_outside(rows_top, rows_bottom);
+                const float rows_bottom = rows_top + kTrackGap + static_cast<float>(nb) * (row_h + kTrackGap);
 
                 // ---- The selected rule's lanes ----
                 std::vector<LaneGeom> lanes;
@@ -1044,10 +1207,29 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                 const BlockTrace* bt = (sel_blk && g_sel < static_cast<int>(m.trace.blocks.size()))
                                            ? &m.trace.blocks[static_cast<size_t>(g_sel)]
                                            : nullptr;
-                const float lanes_top = rows_bottom + 4.0f;
+                // 10-3 fb-2: a labelled gap sets the conditions apart from the rule rows.
+                const float cap_fs = std::floor(ImGui::GetFontSize() * 0.85f);
+                // Too little room for the caption: the lanes keep it (no caption, the old spacing).
+                const bool show_cap = rows_bottom + cap_fs + 7.0f < area1.y - 20.0f;
+                const float lanes_top = show_cap ? rows_bottom + cap_fs + 7.0f : rows_bottom + 4.0f;
                 if (sel_blk && bt && bt->ran && lanes_top < area1.y - 20.0f) {
+                    if (show_cap) {
+                        const float cy = rows_bottom + 3.0f;
+                        // The rule's dot and its signal count ("2 signals"), then a divider line.
+                        const size_t ncap = sel_blk->conditions.size();
+                        const std::string cap = std::to_string(ncap) + (ncap == 1 ? " signal" : " signals");
+                        const float cap_w = ImGui::GetFont()->CalcTextSizeA(cap_fs, FLT_MAX, 0.0f, cap.c_str()).x;
+                        const float ly = std::floor(cy + cap_fs * 0.5f) + 0.5f;
+                        const float tx = c0.x + 14.0f;
+                        dl->PushClipRect(ImVec2(c0.x, cy - 1.0f), ImVec2(lane_x + lane_w, cy + cap_fs + 2.0f), true);
+                        dl->AddCircleFilled(ImVec2(c0.x + 6.0f, ly), 3.5f, RuleColor(*sel_blk), 12);
+                        dl->AddText(ImGui::GetFont(), cap_fs, ImVec2(tx, cy), ui::kMuted, cap.c_str());
+                        dl->PopClipRect();
+                        if (tx + cap_w + 8.0f < lane_x + lane_w)
+                            dl->AddLine(ImVec2(tx + cap_w + 8.0f, ly), ImVec2(lane_x + lane_w, ly), ui::kStroke, 1.0f);
+                    }
                     const int nc = static_cast<int>(sel_blk->conditions.size());
-                    const float gap = 4.0f;
+                    const float gap = kTrackGap;
                     const float lh = std::max(28.0f, (area1.y - lanes_top - gap * static_cast<float>(nc - 1)) / nc);
                     const Block* saved_blk =
                         g_sel < static_cast<int>(m.rules.blocks.size()) ? &m.rules.blocks[static_cast<size_t>(g_sel)] : nullptr;
@@ -1071,7 +1253,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                         LaneRange(curve, saved, &L.lo, &L.hi);
                         lanes.push_back(L);
 
-                        dl->AddRectFilled(ImVec2(lane_x, L.y0), ImVec2(lane_x + lane_w, L.y1), ui::kBg, ui::kRadiusSm);
+                        TrackFill(dl, c0.x, lane_x, lane_x + lane_w, L.y0, L.y1, ui::kBg);
                         dl->PushClipRect(ImVec2(lane_x, L.y0), ImVec2(lane_x + lane_w, L.y1), true);
                         // Column by column over each pass of the clip: the whole-rule shading,
                         // then the curve (its min / max in the column), bright where it holds.
@@ -1140,21 +1322,28 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                                     hot && g_drag == StripDrag::Threshold ? 2.5f : 1.5f);
                         dl->PopClipRect();
                         dim_outside(L.y0, L.y1);
-                        dl->AddRect(ImVec2(lane_x, L.y0), ImVec2(lane_x + lane_w, L.y1), ui::kStroke, ui::kRadiusSm);
+                        TrackEdge(dl, c0.x, lane_x, lane_x + lane_w, L.y0, L.y1, ui::kStroke);
                         dl->AddRectFilled(ImVec2(lane_x - 2.0f, yt - 4.0f), ImVec2(lane_x + 6.0f, yt + 4.0f), rc, 2.0f);
 
-                        // The gutter: the signal's name, its condition, its value now.
+                        // The gutter (the track's header cell): the signal's name, its
+                        // condition, its value now; shortened with "..." to the cell.
                         dl->PushClipRect(ImVec2(c0.x, L.y0), ImVec2(lane_x - 4.0f, L.y1), true);
+                        const float gx = c0.x + 6.0f, gx1 = lane_x - 5.0f;
                         const std::string name = std::string(c ? "AND " : "IF ") +
                                                  SignalName(cd.signal, SignalBoneLabel(cd.signal)) +
                                                  ((sel_blk->landing == Landing::PeakOf && sel_blk->peak_condition == c)
                                                       ? (sel_blk->peak_max ? "  (peak)" : "  (low)")
                                                       : "");
-                        dl->AddText(ImVec2(c0.x + 4.0f, L.y0 + 2.0f), ui::kText, name.c_str());
+                        bool cut = EllipsisText(dl, ImVec2(gx, L.y0 + 2.0f), gx1, ui::kText, name);
                         std::string cond_text = std::string(cd.dir == Direction::Below ? "< " : "> ") +
                                                 FormatDisplay(cd.signal, cd.threshold);
                         if (m_ > 0.0) cond_text += "  margin " + FormatDisplay(cd.signal, m_);
-                        if (L.y1 - L.y0 > th * 2.0f + 4.0f) dl->AddText(ImVec2(c0.x + 4.0f, L.y0 + 3.0f + th), rc, cond_text.c_str());
+                        if (L.y1 - L.y0 > th * 2.0f + 4.0f) {
+                            if (EllipsisText(dl, ImVec2(gx, L.y0 + 3.0f + th), gx1, rc, cond_text)) cut = true;
+                        } else {
+                            cut = true;  // the condition line has no room: the tooltip shows it
+                        }
+                        std::string tip = name + "\n" + cond_text;
                         if (now_in && L.y1 - L.y0 > th * 3.0f + 6.0f && !curve.empty()) {
                             const double pos = clip_now * rate_hz;
                             const double v_now = InterpSample(curve, pos);
@@ -1162,9 +1351,12 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                                                                                     std::max(0.0, std::round(pos))));
                             const bool in_now = hi_ < hold.size() && hold[hi_];
                             const std::string now_text = "now " + FormatDisplay(cd.signal, v_now);
-                            dl->AddText(ImVec2(c0.x + 4.0f, L.y0 + 4.0f + 2.0f * th), in_now ? ui::kText : ui::kFaint,
-                                        now_text.c_str());
+                            if (EllipsisText(dl, ImVec2(gx, L.y0 + 4.0f + 2.0f * th), gx1, in_now ? ui::kText : ui::kFaint,
+                                             now_text))
+                                cut = true;
+                            tip += "\n" + now_text;
                         }
+                        if (cut) gutter_tips.push_back({L.y0, L.y1, tip});
                         dl->PopClipRect();
                     }
                 } else if (sel_blk && lanes_top >= area1.y - 20.0f) {
@@ -1382,7 +1574,15 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                                               "Right-click / Del: suppress, restore or delete");
                     } else if (line_at(mouse.x, mouse.y, &cond, &margin)) {
                         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-                    } else if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip) && mouse.x >= lane_x) {
+                    } else if (mouse.x < lane_x) {
+                        // 10-3 fb-2: a shortened header cell shows its full text.
+                        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                            for (const GutterTip& g : gutter_tips)
+                                if (mouse.y >= g.y0 && mouse.y <= g.y1) {
+                                    ImGui::SetTooltip("%s", g.text.c_str());
+                                    break;
+                                }
+                    } else if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
                         ImGui::SetTooltip("Click or drag to move the playhead\nDrag a threshold line (dashed: the re-arm "
                                           "level) to tune it\nDouble-click a rule's row: add an event there\n"
                                           "Alt+wheel: zoom  " RAV_DOT "  Shift+wheel: scroll");
@@ -3035,13 +3235,18 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
             ClearEventSelection();  // the inspector shows the rule
         }
         const bool hov = ImGui::IsItemHovered();
-        dl->AddRectFilled(p, ImVec2(p.x + w, p.y + rh), sel ? ui::kAccentSoft : (hov ? ui::kRaised : 0), ui::kRadiusMd);
-        if (sel) dl->AddRect(p, ImVec2(p.x + w, p.y + rh), ui::kAccentLine, ui::kRadiusMd);
-        ImGui::SetCursorScreenPos(ImVec2(p.x + 6.0f, p.y + 2.0f));
+        // 10-3 fb-2: every rule is its own card (filled, edged), a stripe in its colour on its left.
+        dl->AddRectFilled(p, ImVec2(p.x + w, p.y + rh), hov && !sel ? ui::kHover : ui::kRaised, ui::kRadiusMd);
+        if (sel) dl->AddRectFilled(p, ImVec2(p.x + w, p.y + rh), ui::kAccentSoft, ui::kRadiusMd);
+        RuleStripe(dl, p, ImVec2(p.x + w, p.y + rh), blk.enabled ? RuleColor(blk) : WithAlpha(RuleColor(blk), 0x66),
+                   ui::kRadiusMd);
+        dl->AddRect(p, ImVec2(p.x + w, p.y + rh), sel ? ui::kAccentLine : ui::kStroke, ui::kRadiusMd);
+        ImGui::SetCursorScreenPos(ImVec2(p.x + 9.0f, p.y + 2.0f));
         if (Switch("##on", blk.enabled)) do_toggle = b;
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip(blk.enabled ? "Switch this rule off" : "Switch this rule on");
         const float ty = p.y + (rh - ImGui::GetTextLineHeight()) * 0.5f;
-        dl->AddCircleFilled(ImVec2(p.x + 44.0f, p.y + rh * 0.5f), 4.0f, RuleColor(blk), 12);
+        dl->AddCircleFilled(ImVec2(p.x + 46.0f, p.y + rh * 0.5f), 4.0f,
+                            blk.enabled ? RuleColor(blk) : WithAlpha(RuleColor(blk), 0x66), 12);
         // Count (an off rule: 0, faint), duplicate, delete on the right.
         char count[16];
         if (!blk.enabled)
@@ -3057,9 +3262,7 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
             std::snprintf(count, sizeof(count), "-");
         const float bx = p.x + w - 2.0f * (fh + 2.0f) - 4.0f;
         const float cw = ImGui::CalcTextSize(count).x;
-        dl->PushClipRect(ImVec2(p.x + 52.0f, p.y), ImVec2(bx - cw - 10.0f, p.y + rh), true);
-        dl->AddText(ImVec2(p.x + 52.0f, ty), blk.enabled ? ui::kText : ui::kFaint, RuleTitle(blk).c_str());
-        dl->PopClipRect();
+        EllipsisText(dl, ImVec2(p.x + 55.0f, ty), bx - cw - 10.0f, blk.enabled ? ui::kText : ui::kFaint, RuleTitle(blk));
         dl->AddText(ImVec2(bx - cw - 6.0f, ty), blk.enabled ? ui::kMuted : ui::kFaint, count);
         ImGui::SetCursorScreenPos(ImVec2(bx, p.y + 2.0f));
         if (IconButton("##dup", fh, [](ImDrawList* d, ImVec2 c, ImU32 col) { IconDuplicate(d, c, 4.5f, col); })) do_dup = b;
@@ -3067,7 +3270,7 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
         ImGui::SameLine(0.0f, 2.0f);
         if (IconButton("##del", fh, [](ImDrawList* d, ImVec2 c, ImU32 col) { IconCross(d, c, 4.0f, col); })) do_del = b;
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Delete");
-        ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh + 2.0f));
+        ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh + 4.0f));
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
         ImGui::PopID();
     }
@@ -3121,20 +3324,18 @@ void ConditionEditor(const Block& blk, int b, int c)
     // flexion / yaw conditions, shown as they are (their bones are not picked here).
     const ConditionKind kind = ConditionKindOf(cd.signal);
     const bool legacy = kind == ConditionKind::Bend || kind == ConditionKind::Turn;
-    ImDrawList* dl = ImGui::GetWindowDrawList();
     const float fh = ImGui::GetFrameHeight();
     ImGui::PushID(c);
+    // 10-3 fb-2: the condition is a card read top-down as a sentence (decision A):
+    //    IF [kind] [bone] +      lock x  /  reads [measure] [axis]  /  from [reference]
+    //    goes [direction] [threshold]  /  margin [margin]  -- rows a kind lacks are omitted.
+    Card card;
+    BeginCard(card);
+    Sentence s = MakeSentence(card.p0.x + kCardPad, card.p0.x + card.w - kCardPad);
     // IF / AND, kind, Bone, lock, delete.
     {
-        const ImVec2 p = ImGui::GetCursorScreenPos();
-        const char* tag = c ? "AND" : "IF";
-        const ImVec2 ts = ImGui::CalcTextSize(tag);
-        const float tw = ts.x + 8.0f;
-        ImGui::Dummy(ImVec2(tw, fh));
-        dl->AddRectFilled(ImVec2(p.x, p.y + 3.0f), ImVec2(p.x + tw, p.y + fh - 3.0f), ui::kBg, 4.0f);
-        dl->AddRect(ImVec2(p.x, p.y + 3.0f), ImVec2(p.x + tw, p.y + fh - 3.0f), ui::kStroke, 4.0f);
-        dl->AddText(ImVec2(p.x + 4.0f, p.y + (fh - ts.y) * 0.5f), ui::kMuted, tag);
-        ImGui::SameLine();
+        SentenceRow(s, c ? "AND" : "IF", true);
+        SentenceChip(s, ChipWidth(ConditionKindLabel(kind), 50.0f));
         if (BeginChip("##kind", ConditionKindLabel(kind), 50.0f)) {
             for (ConditionKind k : kConditionKindChoices)
                 if (ImGui::Selectable(ConditionKindLabel(k), k == kind) && k != kind)
@@ -3157,8 +3358,8 @@ void ConditionEditor(const Block& blk, int b, int c)
             ImGui::SetTooltip(legacy ? "An older condition: changing its kind starts it over"
                                      : "What this condition reads: a bone's position, the angle at a joint, or a "
                                        "bone's rotation (changing it starts the condition over)");
-        ImGui::SameLine();
         const std::string bone = SignalBoneLabel(cd.signal);
+        SentenceChip(s, ChipWidth(bone.empty() ? "?" : bone.c_str(), 60.0f));
         if (legacy) ImGui::BeginDisabled();
         const int single = cd.signal.bones.size() == 1 ? cd.signal.bones[0] : -1;
         if (BeginChip("##bone", bone.empty() ? "?" : bone.c_str(), 60.0f, legacy)) {
@@ -3205,7 +3406,7 @@ void ConditionEditor(const Block& blk, int b, int c)
                     why = sel_bone + " has no parent or no child: no joint angle there";
             }
             const bool enabled = !legacy && why.empty();
-            ImGui::SameLine(0.0f, 2.0f);
+            SentenceChip(s, fh, 2.0f);
             if (IconButton("##usebone", fh, [](ImDrawList* d, ImVec2 cc, ImU32 col) { IconPlus(d, cc, 4.0f, col); },
                            enabled)) {
                 if (sel_bone.empty()) {
@@ -3237,10 +3438,14 @@ void ConditionEditor(const Block& blk, int b, int c)
                     ImGui::SetTooltip("Use %s", what.c_str());
             }
         }
-        // Lock and delete, right-aligned.
+        // Lock and delete, right-aligned in the card (under the chips when they do not fit).
         const int nconds = static_cast<int>(blk.conditions.size());
-        const float right = (nconds > 1 ? 2.0f : 1.0f) * (fh + 2.0f);
-        ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetContentRegionMax().x - right));
+        const float right = (nconds > 1 ? 2.0f : 1.0f) * (fh + 2.0f) - 2.0f;
+        {
+            const float rx = std::max(s.chips_x, s.right - right);
+            if (ImGui::GetItemRectMax().x + SentenceGap() <= rx) ImGui::SameLine();
+            ImGui::SetCursorScreenPos(ImVec2(rx, ImGui::GetCursorScreenPos().y));
+        }
         const bool fixed = !cd.auto_threshold;
         if (IconButton("##lock", fh, [fixed](ImDrawList* d, ImVec2 cc, ImU32 col) {
                 IconLock(d, cc, 4.5f, fixed ? ui::kAccent : col, fixed);
@@ -3267,9 +3472,10 @@ void ConditionEditor(const Block& blk, int b, int c)
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Remove this condition");
         }
     }
-    // [Measure] [axis] from [reference]   /   [Measure] (angle)
+    // reads [Measure] [axis]  /  from [reference]   --   reads [Measure] (angle: no from)
     {
-        ImGui::Indent(8.0f);
+        SentenceRow(s, "reads");
+        SentenceChip(s, ChipWidth(MeasureLabelFor(cd.signal, cd.signal.measure), 70.0f));
         if (BeginChip("##measure", MeasureLabelFor(cd.signal, cd.signal.measure), 70.0f)) {
             for (Measure ms : kMeasureChoices)
                 if (ImGui::Selectable(MeasureLabelFor(cd.signal, ms), ms == cd.signal.measure) && ms != cd.signal.measure)
@@ -3287,14 +3493,15 @@ void ConditionEditor(const Block& blk, int b, int c)
             ImGui::EndCombo();
         }
         if (legacy) {
-            ImGui::SameLine();
+            const char* what = kind == ConditionKind::Bend ? "(bend)" : "(turn)";
+            SentenceChip(s, ImGui::CalcTextSize(what).x);
             ImGui::AlignTextToFramePadding();
-            ImGui::TextDisabled(kind == ConditionKind::Bend ? "(bend)" : "(turn)");
+            ImGui::TextDisabled("%s", what);
         } else if (kind == ConditionKind::JointAngle) {
             // The angle at the joint: no axis, no reference.
         } else if (kind == ConditionKind::Rotation) {
-            ImGui::SameLine();
             const Axis cur = RotationAxisOf(cd.signal);
+            SentenceChip(s, ChipWidth(AxisLabel(cur), 50.0f));
             if (BeginChip("##raxis", AxisLabel(cur), 50.0f)) {
                 for (Axis a : kRotationAxisChoices) {
                     if (!RotationAxisOffered(cd.signal.measure, a)) continue;
@@ -3312,13 +3519,8 @@ void ConditionEditor(const Block& blk, int b, int c)
                 ImGui::SetTooltip("The rotation axis (rotate order XYZ, like a 3D tool's rotate channels); total = "
                                   "the overall turning rate");
             const char* ref = RotationReferenceLabel(cd.signal.reference);
-            const float from_w = ImGui::CalcTextSize("from").x + ImGui::GetStyle().ItemSpacing.x * 2.0f +
-                                 ChipWidth(ref, 70.0f);
-            ImGui::SameLine();
-            if (ImGui::GetContentRegionAvail().x < from_w) ImGui::NewLine();
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted("from");
-            ImGui::SameLine();
+            SentenceRow(s, "from");
+            SentenceChip(s, ChipWidth(ref, 70.0f));
             if (BeginChip("##rref", ref, 70.0f)) {
                 for (Reference rf : {Reference::Parent, Reference::Floor})
                     if (ImGui::Selectable(RotationReferenceLabel(rf), rf == cd.signal.reference) &&
@@ -3333,7 +3535,7 @@ void ConditionEditor(const Block& blk, int b, int c)
                 ImGui::EndCombo();
             }
         } else {
-            ImGui::SameLine();
+            SentenceChip(s, ChipWidth(AxisLabel(cd.signal.axis), 60.0f));
             if (BeginChip("##axis", AxisLabel(cd.signal.axis), 60.0f)) {
                 for (Axis a : kAxisChoices)
                     if (ImGui::Selectable(AxisLabel(a), a == cd.signal.axis) && a != cd.signal.axis)
@@ -3347,14 +3549,8 @@ void ConditionEditor(const Block& blk, int b, int c)
             }
             const std::string ref = cd.signal.reference == Reference::Floor ? std::string("the floor")
                                                                             : RefLabel(cd.signal.ref_bones);
-            // "from [reference]" stays on the line when it fits, else it wraps.
-            const float from_w = ImGui::CalcTextSize("from").x + ImGui::GetStyle().ItemSpacing.x * 2.0f +
-                                 ChipWidth(ref.c_str(), 70.0f);
-            ImGui::SameLine();
-            if (ImGui::GetContentRegionAvail().x < from_w) ImGui::NewLine();
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted("from");
-            ImGui::SameLine();
+            SentenceRow(s, "from");
+            SentenceChip(s, ChipWidth(ref.c_str(), 70.0f));
             if (BeginChip("##ref", ref.c_str(), 70.0f)) {
                 int picked = -2;
                 if (ImGui::Selectable("the floor", cd.signal.reference == Reference::Floor)) picked = -1;
@@ -3382,10 +3578,9 @@ void ConditionEditor(const Block& blk, int b, int c)
                     });
             }
         }
-        // goes [below|above] N unit . margin N unit
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("goes");
-        ImGui::SameLine();
+        // goes [below|above] N unit  /  margin N unit
+        SentenceRow(s, "goes");
+        SentenceChip(s, ChipWidth(DirectionLabel(cd.dir), 56.0f));
         if (BeginChip("##dir", DirectionLabel(cd.dir), 56.0f)) {
             for (Direction d : kDirectionChoices)
                 if (ImGui::Selectable(DirectionLabel(d), d == cd.dir) && d != cd.dir)
@@ -3398,7 +3593,7 @@ void ConditionEditor(const Block& blk, int b, int c)
             ImGui::EndCombo();
         }
         const SignalUnit u = UnitOf(cd.signal);
-        ImGui::SameLine();
+        SentenceChip(s, NumberFieldWidth(64.0f, UnitLabel(u)));
         NumberField("##thr", ToDisplay(cd.signal, cd.threshold), UnitDragStep(u), UnitDecimals(u), UnitLabel(u), 64.0f,
                     "RAV: Set threshold (" + rule + ")", [b, c](ItemRules& r, double v) {
                         Condition* x = CondAt(r, b, c);
@@ -3407,9 +3602,8 @@ void ConditionEditor(const Block& blk, int b, int c)
                         return true;
                     });
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Threshold: drag sideways (Shift: fine), click to type");
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(RAV_DOT " margin");
-        ImGui::SameLine();
+        SentenceRow(s, "margin");
+        SentenceChip(s, NumberFieldWidth(64.0f, UnitLabel(u)));
         NumberField("##margin", ToDisplay(cd.signal, std::max(0.0, cd.margin)), UnitDragStep(u), UnitDecimals(u),
                     UnitLabel(u), 64.0f, "RAV: Set margin (" + rule + ")", [b, c](ItemRules& r, double v) {
                         Condition* x = CondAt(r, b, c);
@@ -3419,9 +3613,8 @@ void ConditionEditor(const Block& blk, int b, int c)
                     });
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
             ImGui::SetTooltip("Hysteresis: how far back past the threshold before it can fire again");
-        ImGui::Unindent(8.0f);
     }
-    ImGui::Dummy(ImVec2(0.0f, 4.0f));
+    EndCard(card, ui::kSurface, ui::kStroke);
     ImGui::PopID();
 }
 
@@ -3680,11 +3873,14 @@ void DrawInspector(const ItemRules& rules)
     // Place the marker at [the start | the highest point | the lowest point] of [signal].
     ImGui::Dummy(ImVec2(0.0f, 6.0f));
     ui::Caption("Place the marker");
+    // 10-3 fb-2: the same label column and chip edge as the condition cards (decision A).
+    const float sx0 = ImGui::GetCursorScreenPos().x + kCardPad;
+    const float sx1 = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x - kCardPad;
     {
         const Placement pl = PlacementOf(blk);
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("at");
-        ImGui::SameLine();
+        Sentence sen = MakeSentence(sx0, sx1);
+        SentenceRow(sen, "at");
+        SentenceChip(sen, ChipWidth(PlacementLabel(pl), 80.0f));
         if (BeginChip("##place", PlacementLabel(pl), 80.0f)) {
             for (Placement q : kPlacementChoices)
                 if (ImGui::Selectable(PlacementLabel(q), q == pl) && q != pl) {
@@ -3698,23 +3894,18 @@ void DrawInspector(const ItemRules& rules)
                 }
             ImGui::EndCombo();
         }
-        ImGui::SameLine();
+        SentenceRow(sen, "of");
         if (pl == Placement::Start) {
+            SentenceChip(sen, ImGui::CalcTextSize("the match").x);
             ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted("of the match");
+            ImGui::TextUnformatted("the match");
         } else {
             const int of = std::min(std::max(0, blk.peak_condition), static_cast<int>(blk.conditions.size()) - 1);
             const std::string cur =
                 of >= 0 ? SignalName(blk.conditions[static_cast<size_t>(of)].signal,
                                      SignalBoneLabel(blk.conditions[static_cast<size_t>(of)].signal))
                         : std::string("?");
-            // "of [signal]" wraps when it does not fit on the line.
-            if (ImGui::GetContentRegionAvail().x <
-                ImGui::CalcTextSize("of").x + ImGui::GetStyle().ItemSpacing.x * 2.0f + ChipWidth(cur.c_str(), 80.0f))
-                ImGui::NewLine();
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted("of");
-            ImGui::SameLine();
+            SentenceChip(sen, ChipWidth(cur.c_str(), 80.0f));
             if (BeginChip("##placeof", cur.c_str(), 80.0f)) {
                 for (int c = 0; c < static_cast<int>(blk.conditions.size()); ++c) {
                     const SignalSpec& s = blk.conditions[static_cast<size_t>(c)].signal;
@@ -3749,11 +3940,11 @@ void DrawInspector(const ItemRules& rules)
             {"Min length", "##hold", "The match must last at least this long to count", blk.min_hold_ms, 1},
             {"Cooldown", "##cool", "No new marker from this rule until this time has passed", blk.cooldown_ms, 2},
         };
+        Sentence sen = MakeSentence(sx0, sx1);
         for (const Timing& t : rows) {
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted(t.label);
+            SentenceRow(sen, t.label);
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("%s", t.tip);
-            ImGui::SameLine(90.0f);
+            SentenceChip(sen, NumberFieldWidth(70.0f, "ms"));
             const int which = t.which;
             NumberField(t.id, t.value, 1.0, 0, "ms", 70.0f, std::string("RAV: Set ") + (which == 0 ? "offset" : which == 1 ? "min length" : "cooldown") + " (" + rule + ")",
                         [b, which](ItemRules& r, double v) {

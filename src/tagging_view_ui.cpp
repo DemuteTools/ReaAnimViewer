@@ -1596,8 +1596,11 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                 dl->AddRectFilled(ImVec2(px - 1.0f, rows_top), ImVec2(px + 1.0f, area1.y), kPlayhead);
             }
             // Scrub: click / drag anywhere in the lanes (not on a line, not on a row's label).
+            // The playhead stays on this item (its end is exclusive: just before it), so a click
+            // beside the clip never switches the view to another item or to none.
+            const double t_scrub = std::min(std::max(t_mouse, item_start), std::max(item_start, item_end - 1.0e-6));
             StripScrub(g_view, area_active && g_drag == StripDrag::Scrub && mouse.x >= lane_x, area_pressed, mouse.x,
-                       t_mouse, &QueueVideoSeek);
+                       t_scrub, &QueueVideoSeek);
         }
         if (!area_active && g_drag == StripDrag::Scrub) g_drag = StripDrag::None;
         if (!area_active && g_drag == StripDrag::Event) g_drag = StripDrag::None;  // the press was lost: nothing written

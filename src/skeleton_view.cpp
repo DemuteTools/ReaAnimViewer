@@ -116,10 +116,6 @@ void DrawSkeletonSwitch(float left_x, float bottom_y)
         static const char* const kModes[2] = {"Model", "Skeleton"};
         int sel = g_skeleton ? 1 : 0;
         if (ui::Segmented("##skelmode", kModes, 2, &sel)) g_skeleton = sel == 1;
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-            ImGui::SetTooltip(TaggingViewActive()
-                                  ? "Skeleton: see the bones, click one to select it (+ in a condition uses it)"
-                                  : "Skeleton: see the bones, click one to select it");
     }
     ImGui::End();
     ImGui::PopStyleVar();

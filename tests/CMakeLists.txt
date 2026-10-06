@@ -80,6 +80,7 @@ add_test(NAME preset_store COMMAND preset_store_test)
 
 add_executable(role_map_store_test role_map_store_test.cpp ../src/role_map_store.cpp ../src/rule_record.cpp)
 target_include_directories(role_map_store_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_definitions(role_map_store_test PRIVATE RAV_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
 add_test(NAME role_map_store COMMAND role_map_store_test)
 
 # Story 10-3 -- the Tagging view's units, menus and clip mapping (src/tagging_signal.h).

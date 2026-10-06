@@ -252,6 +252,35 @@ int main()
             mv.item_pos = 12.0;
             CHECK(!MarkersUpToDate(legacy, PlanMarkers(l, blocks, mv), MarkerMode::Both));  // as before 10-4b
         }
+        // ---- 10-5 frozen signature ----
+        // Captured from the 10-5 build; NEVER regenerate. Items committed by 10-5 store this
+        // signature: a change to its input (format, fields, order) would show every one of
+        // them as "out of date".
+        {
+            std::vector<PlannedMarker> fz(3);
+            fz[0].clip_t = 0.4625;
+            fz[0].project_t = 12.4625;
+            fz[0].block = 0;
+            fz[0].name = "Footstep L";
+            fz[0].color = 0x1000000u | 0x5F9EDDu;
+            fz[0].strength = 0.82;
+            fz[0].speed = 1.91;
+            fz[1].clip_t = 0.9875;
+            fz[1].project_t = 12.9875;
+            fz[1].block = 1;
+            fz[1].name = "Footstep R";
+            fz[1].color = 0x1000000u | 0xDD9E5Fu;
+            fz[1].strength = 0.77;
+            fz[1].speed = 1.64;
+            fz[2].clip_t = 1.5125;
+            fz[2].project_t = 13.5125;
+            fz[2].block = 0;
+            fz[2].name = "Footstep L";
+            fz[2].color = 0x1000000u | 0x5F9EDDu;
+            fz[2].user = true;
+            CHECK(MarkerSignature(fz, MarkerMode::Both) == "9DAEAB29B5B1F277");
+            CHECK(MarkerSignature(fz, MarkerMode::Take) == "A39AB38CBF9E787F");
+        }
         std::vector<PlannedMarker> renamed = plan;
         renamed[0].name = "X";
         CHECK(MarkerSignature(renamed, MarkerMode::Both) != sb);

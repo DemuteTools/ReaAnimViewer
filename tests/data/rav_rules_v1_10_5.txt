@@ -1,0 +1,40 @@
+RAVRULES 1
+options sensitivity=0.15 edge_ms=20 smooth_ms=8
+analyse floor_pct=2 pos_frac=0.4 speed_pct=30 margin_ratio=0.5 onset_frac=0.3 per_bone_floor=1
+preset id=factory/footsteps version=1 kept=2 name=Footsteps
+copy
+options sensitivity=0 edge_ms=0 smooth_ms=8
+analyse floor_pct=2 pos_frac=0.4 speed_pct=30 margin_ratio=0.5 onset_frac=0.3 per_bone_floor=1
+block color=#5F9EDD hold_ms=0 cooldown_ms=250 offset_ms=0 land=cross marker=Footstep L
+cond q=point bones=role:left_heel comb=single ref=floor meas=position axis=vertical dir=below thr=0.05 margin=0.025 fixed=0
+strength q=point bones=role:left_heel comb=single ref=floor meas=speed axis=vertical signed=1 sign=-1 window_ms=100
+block color=#DD9E5F hold_ms=0 cooldown_ms=250 offset_ms=0 land=cross marker=Footstep R
+cond q=point bones=role:right_heel comb=single ref=floor meas=position axis=vertical dir=below thr=0.05 margin=0.025 fixed=0
+strength q=point bones=role:right_heel comb=single ref=floor meas=speed axis=vertical signed=1 sign=-1 window_ms=100
+end
+block color=#5F9EDD hold_ms=12 cooldown_ms=250 offset_ms=-4.5 land=cross marker=Footstep L
+cond q=point bones=role:left_heel comb=single ref=floor meas=position axis=vertical dir=below thr=0.0437 margin=0.025 fixed=1
+strength q=point bones=role:left_heel comb=single ref=floor meas=speed axis=vertical signed=1 sign=-1 window_ms=100
+block color=#DD9E5F hold_ms=0 cooldown_ms=250 offset_ms=0 land=peak:1:min marker=Footstep R
+cond q=point bones=role:right_heel comb=single ref=floor meas=position axis=vertical dir=below thr=0.0412 margin=0.025 fixed=0
+cond q=angle bones=role:right_knee comb=single ref=floor meas=speed axis=vertical dir=above thr=120 margin=30 fixed=0
+strength q=point bones=role:right_heel comb=single ref=floor meas=speed axis=vertical signed=1 sign=-1 window_ms=100
+block on=0 color=#7FC97F hold_ms=0 cooldown_ms=300 offset_ms=0 land=cross marker=Toe Off L
+cond q=rot bones=role:left_toe comb=single ref=parent meas=speed axis=x dir=above thr=250 margin=50 fixed=0
+cond q=yaw bones=role:left_heel,role:left_toe comb=single ref=floor meas=position axis=vertical dir=above thr=10 margin=0 fixed=0
+cond q=point bones=bone:mixamorig:Left%20Toe_End comb=single ref=bones ref_bones=role:hips ref_comb=lowest meas=position axis=horizontal dir=above thr=0.3 margin=0.05 fixed=0
+event t=0.4625 kind=detected block=0 strength=0.82 speed=1.91
+event t=0.9875 kind=detected block=1 strength=0.77 speed=1.64
+event t=1.5125 kind=user block=0 strength=0.5 speed=1.2
+event t=2.0375 kind=suppress block=1
+event t=2.5 kind=user block=1
+applied markers=both sig=9a3f0c21d4e5b687 item={6B1E2F3A-4C5D-4E6F-8A9B-0C1D2E3F4A5B}
+tmarker t=0.4625 name=Footstep L
+tmarker t=0.9875 name=Footstep R
+tmarker t=1.5125 name=Footstep L
+pmarker guid={0F1E2D3C-4B5A-4978-8695-A4B3C2D1E0F9} t=12.4625 c=0.4625 color=#5F9EDD name=Footstep L
+pmarker guid={1A2B3C4D-5E6F-4071-8293-A4B5C6D7E8F9} t=12.9875 c=0.9875 color=#DD9E5F name=Footstep R
+pmarker guid= t=13.5125 c=1.5125 color=#5F9EDD name=Footstep L
+preview markers=both sig=5c7e19ab02f4d836 item={6B1E2F3A-4C5D-4E6F-8A9B-0C1D2E3F4A5B}
+ptmarker t=2.5 name=Footstep R - Preview
+ppmarker guid={2B3C4D5E-6F70-4182-93A4-B5C6D7E8F901} t=14.5 c=2.5 color=#6F4F30 name=Footstep R - Preview

@@ -1,0 +1,6 @@
+RAVROLES 1
+map skeleton=0123456789abcdef role=left_heel bone=mixamorig:LeftFoot
+map skeleton=0123456789abcdef role=left_toe bone=mixamorig:LeftToeBase
+map skeleton=0123456789abcdef role=right_toe bone=
+map skeleton=fedcba9876543210 role=hips bone=Root Hips
+map skeleton=fedcba9876543210 role=right_heel bone=R_Ankle

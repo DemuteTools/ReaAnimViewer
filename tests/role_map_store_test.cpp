@@ -44,6 +44,15 @@ std::string ReadAll(const fs::path& p)
     return ss.str();
 }
 
+// A committed fixture (tests/data), CR dropped (a CRLF checkout reads the same).
+std::string ReadFixture(const char* name)
+{
+    std::string s = ReadAll(fs::u8path(std::string(RAV_TEST_DATA) + "/" + name)), out;
+    for (char c : s)
+        if (c != '\r') out += c;
+    return out;
+}
+
 }  // namespace
 
 int main()
@@ -203,6 +212,34 @@ int main()
 
     std::error_code ec;
     fs::remove_all(root, ec);
+    // ---- 10-5 frozen fixtures ----
+    // A roles file written by the 10-5 build (two skeletons, one role set to "no bone"),
+    // committed as text and NEVER regenerated: it must read and write back byte-identical.
+    {
+        const std::string fx = ReadFixture("roles_v1_10_5.txt");
+        CHECK(!fx.empty());
+        RoleMapFile f;
+        CHECK(ParseRoleMap(fx, &f));
+        const std::string back = SerializeRoleMap(f);
+        CHECK(back == fx);
+        if (back != fx) std::printf("--- got ---\n%s--- want ---\n%s", back.c_str(), fx.c_str());
+        CHECK(f.version == 1 && f.header_rest.empty() && f.lines.size() == 5);
+        bool all_map = true;
+        for (const RoleMapLine& l : f.lines) all_map = all_map && l.is_map;
+        CHECK(all_map);
+        if (f.lines.size() == 5) {
+            CHECK(f.lines[0].Get("skeleton") == "0123456789abcdef" && f.lines[0].Get("role") == "left_heel" &&
+                  f.lines[0].Get("bone") == "mixamorig:LeftFoot");
+            CHECK(f.lines[1].Get("skeleton") == "0123456789abcdef" && f.lines[1].Get("role") == "left_toe" &&
+                  f.lines[1].Get("bone") == "mixamorig:LeftToeBase");
+            CHECK(f.lines[2].Get("role") == "right_toe" && f.lines[2].Get("bone").empty());
+            CHECK(f.lines[3].Get("skeleton") == "fedcba9876543210" && f.lines[3].Get("role") == "hips" &&
+                  f.lines[3].Get("bone") == "Root Hips");
+            CHECK(f.lines[4].Get("skeleton") == "fedcba9876543210" && f.lines[4].Get("role") == "right_heel" &&
+                  f.lines[4].Get("bone") == "R_Ankle");
+        }
+    }
+
     if (g_fails) {
         std::printf("role_map_store_test: %d failure(s)\n", g_fails);
         return 1;

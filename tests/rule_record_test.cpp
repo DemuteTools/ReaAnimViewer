@@ -903,6 +903,82 @@ int main()
         CHECK(BindBoneRefs(bl, map, names, parents, &missing) && bl[0].conditions[0].signal.bones == std::vector<int>{4});
     }
 
+    // ---- 10-5 frozen fixtures ----
+    // Written by the 10-5 build (the shipped v1 grammar) and committed as text. NEVER
+    // regenerate them: a later format change must keep reading these and writing them back
+    // byte-identical, so a project saved with this build opens unchanged in any later one.
+    {
+        // The item record: preset copy, tuned rules (a fixed threshold, a peak landing, an
+        // interior angle, a switched-off rule with a rotation, a yaw and a bone key), every
+        // event kind, the committed markers (one hidden) and pending preview markers.
+        const std::string fx = ReadFixture("rav_rules_v1_10_5.txt");
+        CHECK(!fx.empty());
+        ItemRules p;
+        CHECK(ParseItemRules(fx, &p));
+        CHECK(!HasKeptText(p));
+        const std::string back = SerializeItemRules(p);
+        CHECK(back == fx);
+        if (back != fx) std::printf("--- got ---\n%s--- want ---\n%s", back.c_str(), fx.c_str());
+        CHECK(p.format_version == 1);
+        CHECK(p.options.sensitivity == 0.15 && p.options.edge_margin_ms == 20);
+        // Keep current: the item copied v1 and dismissed the installed v2.
+        CHECK(p.has_preset && p.preset_copy.id == "factory/footsteps" && p.preset_copy.version == 1 &&
+              p.preset_copy.kept_version == 2 && p.preset_copy.name == "Footsteps" &&
+              p.preset_copy.blocks.size() == 2);
+        CHECK(p.blocks.size() == 3);
+        if (p.blocks.size() == 3) {
+            CHECK(p.blocks[0].conditions.size() == 1);
+            if (p.blocks[0].conditions.size() == 1)
+                CHECK(p.blocks[0].conditions[0].threshold == 0.0437 && !p.blocks[0].conditions[0].auto_threshold);
+            CHECK(p.blocks[0].offset_ms == -4.5 && p.blocks[0].min_hold_ms == 12);
+            CHECK(p.blocks[1].landing == Landing::PeakOf && p.blocks[1].peak_condition == 1 && !p.blocks[1].peak_max);
+            CHECK(p.blocks[1].conditions.size() == 2);
+            if (p.blocks[1].conditions.size() == 2)
+                CHECK(p.blocks[1].conditions[1].signal.quantity == Quantity::InteriorAngle);
+            CHECK(!p.blocks[2].enabled && p.blocks[2].marker == "Toe Off L" && p.blocks[2].conditions.size() == 3);
+            if (p.blocks[2].conditions.size() == 3) {
+                CHECK(p.blocks[2].conditions[0].signal.quantity == Quantity::Rotation &&
+                      p.blocks[2].conditions[0].signal.reference == Reference::Parent);
+                CHECK(p.blocks[2].conditions[1].signal.quantity == Quantity::Yaw);
+                const std::vector<int>& bn = p.blocks[2].conditions[2].signal.bones;
+                CHECK(bn.size() == 1);
+                if (bn.size() == 1) CHECK(BoneRefKey(bn[0]) == "bone:mixamorig:Left Toe_End");
+            }
+        }
+        CHECK(p.events.size() == 5);
+        if (p.events.size() == 5) {
+            CHECK(p.events[0].t == 0.4625 && p.events[0].kind == EventKind::Detected && p.events[0].block == 0 &&
+                  p.events[0].strength == 0.82 && p.events[0].speed == 1.91);
+            CHECK(p.events[2].kind == EventKind::User && p.events[2].t == 1.5125);
+            CHECK(p.events[3].kind == EventKind::Suppress && p.events[3].block == 1 && !p.events[3].has_strength);
+            CHECK(p.events[4].kind == EventKind::User && p.events[4].t == 2.5 && !p.events[4].has_speed);
+        }
+        CHECK(p.has_applied && p.applied.mode == MarkerMode::Both && p.applied.sig == "9a3f0c21d4e5b687" &&
+              p.applied.item == "{6B1E2F3A-4C5D-4E6F-8A9B-0C1D2E3F4A5B}");
+        CHECK(p.tmarkers.size() == 3 && p.tmarkers[1].t == 0.9875 && p.tmarkers[1].name == "Footstep R");
+        CHECK(p.pmarkers.size() == 3);
+        if (p.pmarkers.size() == 3) {
+            CHECK(p.pmarkers[0].guid == "{0F1E2D3C-4B5A-4978-8695-A4B3C2D1E0F9}" && p.pmarkers[0].t == 12.4625 &&
+                  p.pmarkers[0].has_c && p.pmarkers[0].c == 0.4625 && p.pmarkers[0].color == (0x1000000u | 0x5F9EDDu) &&
+                  p.pmarkers[0].name == "Footstep L");
+            CHECK(p.pmarkers[2].guid.empty() && p.pmarkers[2].c == 1.5125);  // hidden by the mirror
+        }
+        CHECK(p.has_previewed && p.previewed.sig == "5c7e19ab02f4d836");
+        CHECK(p.ptmarkers.size() == 1 && p.ptmarkers[0].name == "Footstep R - Preview");
+        CHECK(p.ppmarkers.size() == 1 && p.ppmarkers[0].c == 2.5 && p.ppmarkers[0].color == (0x1000000u | 0x6F4F30u));
+    }
+    {
+        // The Cancel snapshot (the record as of the last Commit, its own take key, same grammar).
+        const std::string fx = ReadFixture("rav_rules_committed_v1_10_5.txt");
+        CHECK(!fx.empty());
+        ItemRules p;
+        CHECK(ParseItemRules(fx, &p));
+        CHECK(!HasKeptText(p));
+        CHECK(SerializeItemRules(p) == fx);
+        CHECK(p.events.size() == 4 && p.has_applied && p.pmarkers.size() == 3);
+        CHECK(!p.has_previewed && p.ptmarkers.empty() && p.ppmarkers.empty());
+    }
+
     if (g_fails) {
         std::printf("rule_record_test: %d failure(s)\n", g_fails);
         return 1;

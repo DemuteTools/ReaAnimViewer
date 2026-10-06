@@ -65,6 +65,15 @@ std::string ReadAll(const fs::path& p)
     return ss.str();
 }
 
+// A committed fixture (tests/data), CR dropped (a CRLF checkout reads the same).
+std::string ReadFixture(const char* name)
+{
+    std::string s = ReadAll(fs::u8path(std::string(RAV_TEST_DATA) + "/" + name)), out;
+    for (char c : s)
+        if (c != '\r') out += c;
+    return out;
+}
+
 }  // namespace
 
 int main()
@@ -454,6 +463,33 @@ int main()
         CHECK(ParseItemRules(SerializeItemRules(item), &p));
         CHECK(SerializeItemRules(p) == SerializeItemRules(item));
         CHECK(BlocksEqual(p.preset_copy.blocks, item.preset_copy.blocks) && p.preset_copy.kept_version == 3);
+    }
+
+    // ---- 10-5 frozen fixtures ----
+    // A user preset written by the 10-5 build, committed as text and NEVER regenerated: a
+    // later format change must keep reading it and writing it back byte-identical.
+    {
+        const std::string fx = ReadFixture("preset_v1_10_5.ravpreset");
+        CHECK(!fx.empty());
+        PresetData p;
+        CHECK(ParsePreset(fx, &p));
+        CHECK(!HasKeptText(p));
+        const std::string back = SerializePreset(p);
+        CHECK(back == fx);
+        if (back != fx) std::printf("--- got ---\n%s--- want ---\n%s", back.c_str(), fx.c_str());
+        CHECK(p.format_version == 1 && p.id == "user/stairs-heavy" && p.version == 3 &&
+              p.name == "Stairs (heavy boots)");
+        CHECK(p.options.sensitivity == 0.2 && p.options.smooth_ms == 6 && p.analyse.speed_percentile == 25);
+        CHECK(p.blocks.size() == 3 && !p.blocks[2].enabled && p.blocks[1].conditions.size() == 2);
+
+        // Dropped into the user folder, it lists and loads as it was written.
+        fs::create_directories(user_dir);
+        std::ofstream(user_dir / "stairs-heavy.ravpreset", std::ios::binary | std::ios::trunc) << fx;
+        PresetData  d;
+        std::string err;
+        CHECK(LoadPreset(R, "user/stairs-heavy", &d, &err) && d.name == "Stairs (heavy boots)" && d.version == 3);
+        CHECK(SerializePreset(d) == fx);
+        CHECK(DeletePreset(R, "user/stairs-heavy", &err));
     }
 
     std::error_code ec;

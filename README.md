@@ -53,6 +53,17 @@ ReaAnimViewer is a native REAPER extension (a `.dll`, plus a small video FX that
   - [Rendering](#rendering)
   - [REAPER catch-up while playing](#reaper-catch-up-while-playing)
   - [If the video FX shows nothing](#if-the-video-fx-shows-nothing)
+- [Auto-Tagging (Footstep Markers)](#auto-tagging-footstep-markers)
+  - [To tag footsteps on your walk cycles](#to-tag-footsteps-on-your-walk-cycles)
+  - [Rules](#rules)
+  - [Presets](#presets)
+  - [Roles](#roles)
+  - [The Tagging view](#the-tagging-view)
+  - [Correcting events](#correcting-events)
+  - [Markers](#markers)
+  - [Markers follow their item](#markers-follow-their-item)
+  - [Editing the markers in REAPER](#editing-the-markers-in-reaper)
+  - [Known limits](#known-limits)
 - [Saving and Sharing Projects](#saving-and-sharing-projects)
 - [Exporting Animations from Your Engine](#exporting-animations-from-your-engine)
 - [Building from Source](#building-from-source)
@@ -207,7 +218,7 @@ Each file should contain **one skinned mesh and its animation**. Animations buil
 
 ## Viewer Menu
 
-Click the **menu icon** in the top-left corner of the viewer to show or hide the tool menu. It has two groups: **View** (Light, Ground, Shadow, Performance, below) and **Tools** (**Video** shows or hides the Video panel, see [Rendering Video](#rendering-video)).
+Click the **menu icon** in the top-left corner of the viewer to show or hide the tool menu. It has three groups: **View** (Light, Ground, Shadow, Performance, below), **Tools** (**Video** shows or hides the Video panel, see [Rendering Video](#rendering-video)) and **Auto-Tagging options** (which markers Commit writes, see [Markers](#markers)).
 
 - **Recenter camera**: Frame the character again.
 - **Copy error log**: Copy the recent load errors, the viewer version and your graphics card info to the clipboard, ready to paste into a bug report.
@@ -246,7 +257,18 @@ If the viewer feels slow on a laptop, lower **MSAA** and **Shadow** first.
 
 ## Shortcuts
 
-Click the **keyboard icon** in the top-right corner of the viewer (left of the FPS readout) to see every key and mouse gesture. The default keys are **V** (RAV view / Video view), **P** (show / hide the Video panel) and **C** (cut at the playhead, in Video view). They work while the viewer has the focus; every other key stays REAPER's.
+Click the **keyboard icon** in the top-right corner of the viewer (left of the FPS readout) to see every key and mouse gesture. They work while the viewer has the focus; every other key stays REAPER's. The default keys:
+
+| Key | Action | Where |
+|-----|--------|-------|
+| **V** | Next view: RAV / Tagging / Video | Anywhere |
+| **P** | Show / hide the Video panel (from RAV view or Tagging view it also switches to Video view) | Anywhere |
+| **C** | Cut at playhead | Video view |
+| **Delete** | Delete current shot | Video view |
+| **Ctrl+C** | Copy shot camera | Video view |
+| **Ctrl+V** | Paste shot camera | Video view |
+| **E** | Add event at playhead | Tagging view |
+| **Delete** | Suppress / delete event | Tagging view |
 
 - **Double-click** a key to change it, then press the new key. Ctrl, Shift and Alt can be held with it. Esc cancels. A key already used by another RAV action is refused.
 - **Right-click** a key to restore its default.
@@ -278,7 +300,7 @@ ReaAnimViewer can put the animation in the videos you render from REAPER, with t
 
 ### Adding the video FX
 
-1. Open the viewer and press **V** (or click **Video view** at the top). The **Video panel** opens on the right. **P**, the panel button at the top right, or **Tools > Video** in the viewer menu show or hide it.
+1. Open the viewer and click **Video view** at the top (or press **V** until it shows). The **Video panel** opens on the right. **P**, the panel button at the top right, or **Tools > Video** in the viewer menu show or hide it.
 2. The panel follows the track of the animation shown in the viewer. When it says **No video FX on this track**, click **Add video FX to track**. The action **RAV: Add video FX to selected track** does the same from REAPER.
 3. That's it. You never need the FX window: RAV drives the FX for you.
 
@@ -337,6 +359,148 @@ While REAPER's Video window is open, the line above the Video view frame shows R
 | The rendered video has the wrong size | Check **Output > Size** in the panel, and the video size in the render format's settings. |
 
 To report a problem, click **Copy error log** in the viewer menu and paste it into your report.
+
+---
+
+## Auto-Tagging (Footstep Markers)
+
+ReaAnimViewer can find events in an animation from the way its bones move, and mark them on your timeline. Footsteps come first: apply the **Footsteps Heel** preset to your walk and run cycles, check the result in the **Tagging view**, and commit. Every step becomes a marker named after its foot (`Footstep L`, `Footstep R`), on the item (take marker), on the timeline (project marker), or both. Then place your footstep sounds on the markers instead of hunting for each contact frame by eye.
+
+Each animation item keeps its own rules, thresholds and corrections, saved in the project. Nothing is written to the animation file.
+
+### To tag footsteps on your walk cycles
+
+1. Open the viewer, then click **Tagging view** at the top (or press **V** until it shows). A strip appears under the character and a panel on the right.
+2. Put the playhead over an animation item. The panel says **No rules** and lists the presets: click **Footsteps Heel (factory)** (or **Footsteps Toe**, see [Presets](#presets)).
+3. The strip shows one row per rule (`Footstep L`, `Footstep R`) with a tick for each step found. Play or scrub to check them against the character.
+4. Not quite right? Click **Analyse** (top of the strip): RAV proposes thresholds from this clip. Then fine-tune by dragging the threshold lines (see [The Tagging view](#the-tagging-view)), or correct single steps (see [Correcting events](#correcting-events)).
+5. As soon as you change something, RAV shows the result on the timeline as **preview markers** (`Footstep L - Preview`, in a darker colour). Nothing is final yet.
+6. Select the items to tag in REAPER (the panel footer says how many), then click **Commit to N items**. The previews are replaced by the real markers. **Cancel** instead puts the items back as they were at their last Commit.
+
+To tag several walk cycles at once, set them up one by one (steps 2 to 4), select them all and click **Commit** once: each item is tagged with its own rules.
+
+### Rules
+
+A rule produces one kind of marker. It says **when** an event happens (its conditions), **where** the marker lands, and **how often** it may fire. Click a rule in the panel's **Rules** list to see it in the inspector below.
+
+- **Rules list:** the switch turns a rule on or off, the number is how many markers it makes on this item, and the two icons **Duplicate** and **Delete** it. **+ Rule** adds an empty one.
+- **Name and colour:** the name is the marker's name on the timeline; the colour dot sets the marker's colour (project markers) and the rule's colour in the strip.
+- **When all of these hold:** the rule's conditions. They all have to be true at the same time. Each condition reads like a sentence of small menus: **IF** [**Bone** / **Joint angle** / **Rotation**] [which bone] [**Position** / **Speed** / **Acceleration**] [vertical, horizontal, total, X, Y, Z] **from** [the floor, or another bone] **goes** [**below** / **above**] a threshold, with a **margin**. **+ AND condition** adds one; the cross removes one.
+  - **Bone:** a point on the character, for example the left heel's height above the floor.
+  - **Joint angle:** the angle at a joint, such as the knee (180 = straight leg).
+  - **Rotation:** how much a bone turns, relative to its parent or to the world.
+  - **Threshold and margin:** the event fires when the signal crosses the threshold. It can only fire again after the signal has come back past the threshold by more than the margin (like a gate's hysteresis), so a shaky foot does not give a burst of steps.
+  - **The lock icon:** a locked (fixed) threshold is never changed by **Analyse**.
+- **Place the marker:** **at the start** of the match, or **at the highest point** / **at the lowest point** of one of the rule's signals. The match is the stretch where all the conditions hold. The Footsteps presets place it at the start: the moment the heel (or toe) reaches the floor.
+- **Offset**, **Min length**, **Cooldown** (in ms):
+  - **Offset** moves every marker of the rule, for example +30 ms if your sound should land after the contact.
+  - **Min length**: the match must last at least this long to count.
+  - **Cooldown**: no new marker from this rule until this time has passed.
+- **Item options** (the gear icon next to **Roles**):
+  - **Sensitivity** drops events weaker than this share of the clip's strongest (0 = off).
+  - **Edge margin** ignores events this close to the clip's start and end (handy for T-pose frames).
+
+Number fields have no sliders: drag sideways to change them (hold Shift for fine steps), or click and type a value.
+
+### Presets
+
+A preset is a set of rules you can load on any item. The **Preset:** field at the top of the panel shows the item's preset; click it to open the preset menu.
+
+- **Factory** presets come with ReaAnimViewer and update with it. They are read-only. Two ship today:
+  - **Footsteps Heel**: a `Footstep L` / `Footstep R` marker each time a heel reaches the floor.
+  - **Footsteps Toe**: the same from the toes, for a character that lands on the ball of the foot, or for a second layer of markers.
+- **User** presets are yours. They live in your own folder, which updates never touch, so you keep them when ReaAnimViewer updates. The bottom of the menu shows that folder, with a button to copy its path.
+- **Using the menu:** type in the search field, or hover **Factory** or **User** to see the list. Double-click a preset (or select it and press Enter) to load it on the item under the playhead. Right-click a preset for **Load**, **Rename...** (F2), **Delete** (Del) and **Export...**.
+- **Save** (it shows the preset's name) writes the item's current rules over its user preset. **+ Save as...** writes them to a new user preset: type a name and press Enter. A factory preset can't be overwritten: use **Save as**. Overwriting or deleting a preset asks first, inside the menu (in amber): click **Overwrite** or **Delete** (or press Enter) to confirm, **Cancel** (or Esc) to keep it. A deleted or overwritten preset can't be brought back with Ctrl+Z.
+- **Import...** copies a `.ravpreset` file into your User presets. **Export...** writes the selected (or loaded) preset to a file you can send to a colleague.
+
+**What an item keeps.** An item keeps its own copy of the preset it was set up with. Changing a preset never changes your items behind your back:
+
+- **edited** next to the preset name means you changed this item's rules or thresholds since loading the preset. That is normal: your thresholds belong to the item. **Save** or **+ Save as...** to turn your changes into a preset.
+- **Legacy · v3 is installed** (an amber band) means the preset was updated since this item copied it, for example by a ReaAnimViewer update. Click **Update** to take the new version (it replaces the item's rules), or **Keep v2** to stay on the version you have. After **Keep**, the preset name shows **kept v2** and the band does not come back for that version.
+
+Loading another preset on an item replaces its rules and starts its event list over (your corrections on that item are dropped).
+
+### Roles
+
+Presets don't name bones: they name **roles** (left heel, left toe, right heel, right toe, left and right knee, left and right hip, hips). When you load a preset, RAV finds the bone for each role from the bone names. It knows Mixamo names (`mixamorig:LeftFoot`, `LeftToeBase`...) and Unreal-style names (`foot_l`, `ball_l`, `calf_l`...). The mapping is per skeleton: every animation of the same rig gets the same bones.
+
+- **Roles ✓** (top of the panel) means every role the rules need was found on this skeleton.
+- **Roles · 2 missing** (in red) means some roles have no bone on this skeleton. Hover it to see which ones. The strip shows a message instead of the signals, and **Commit** skips this item.
+- When the names are not recognised, pick the bone yourself in the condition's bone menu: the **Bones** list under the roles has every bone of the skeleton.
+
+### The Tagging view
+
+**V** cycles through **RAV view**, **Tagging view** and **Video view**, or click one at the top of the viewer. The Tagging view uses the same camera as RAV view.
+
+**The strip** (under the character) shows the item under the playhead:
+
+- **One row per rule**, in its colour, with a tick for each event. Your own events are labelled **you**; suppressed ones are faded.
+- **Below the rows**, the selected rule's signals, one lane per condition, with the threshold as a line and the margin's re-arm level as a dashed line. **Drag either line** to tune it: the markers follow live.
+- **Click or drag** to move the playhead. **Alt+wheel** zooms, **Shift+wheel** scrolls. Drag the strip's top edge to make it taller (more room for the signal lanes).
+- **Analyse** proposes this item's thresholds from the clip. It only runs when you click it, and it leaves locked conditions alone.
+- **+ Event** (key **E**) adds your own event at the playhead on the selected rule.
+
+**The panel** (on the right, drag its edge to resize it): the item's name, **Roles**, the item options, the **Preset:** field, the **Rules** list, then the inspector for the selected rule or event. The footer has **Commit**, **Cancel**, which markers are written, and a summary of the selection.
+
+### Correcting events
+
+Detection is never perfect. Fix single events directly in the strip; the rules stay as they are.
+
+- **Click** an event to select it. The inspector shows its time, strength and speed.
+- **Drag** an event to a new time: it becomes **yours** (your own event, at a fixed time). Detection never moves your events, even when you change the thresholds later.
+- **Double-click** a rule's row to add your own event there, or press **E** to add one at the playhead.
+- **Right-click** an event, or select it and press **Delete**:
+  - a detected event is **suppressed**: it is masked and gets no marker (any detection of that rule within 30 ms of that time stays masked);
+  - a suppressed event is **restored**;
+  - your own event is **deleted**.
+
+  The inspector's button does the same (**Suppress**, **Restore** or **Delete**). **Go to event** moves the playhead to it.
+
+When the animator delivers a new animation on the same item, RAV detects it again from scratch and your corrections on that item are dropped.
+
+### Markers
+
+**Which markers:** in the viewer menu, **Auto-Tagging options > Markers written**: **Take** (markers on the item), **Project** (markers on the timeline, in the rule's colour) or **Both** (the default). The panel footer shows the current choice; **Change** opens the menu. It applies to every project.
+
+**Preview, Commit and Cancel:**
+
+- Every change you make (a threshold, a rule, a preset, a correction) is shown at once as **preview markers**, named `<marker> - Preview`, in a darker colour, next to the markers you committed. They disappear when the result is the same as the committed one.
+- **Commit to N items** writes the real markers of every **selected** item that has rules, each with its own rules, and removes their previews. It replaces only the markers RAV wrote: your own markers are never touched. If one of your markers already has the same name at the same time, RAV leaves it and writes no duplicate. Items without rules are skipped and the footer says so.
+- **Cancel** removes the previews of the selected items and puts their rules, thresholds and events back as they were at their last Commit.
+- The button reads **Nothing to commit** when the selected items' markers are up to date. The footer line says **markers up to date**, **preview not committed** or **markers not written yet**.
+
+Every change, Commit and Cancel included, is saved in the project at once and is one step in REAPER's undo history. There is no separate "save" step.
+
+### Markers follow their item
+
+RAV's project markers stay attached to their item, even with the RAV window closed:
+
+- **Move** or **trim** the item: its markers move with it. A marker whose event falls outside the trimmed item disappears, and comes back when you extend the item again.
+- **Split** an item: each part gets the markers of its own part.
+- **Duplicate** or copy-paste an item: the copy gets its own markers.
+- **Delete** the item: its markers are deleted too.
+
+Take markers always follow their item, as in any REAPER item.
+
+### Editing the markers in REAPER
+
+You can also correct events right on REAPER's timeline, with the RAV window open or closed. The item's event list follows your edit:
+
+- **Drag** a RAV marker (take or project): it becomes your own event at the new time, as if you had dragged it in the strip.
+- **Delete** a RAV marker: its event is suppressed (or removed, if it was your own event).
+- **Rename** a RAV marker, or drag it outside its item: the marker becomes yours. RAV leaves it where it is, never moves or deletes it, and suppresses its event.
+- With **Both**, the other marker of the same event follows (drag one, the other moves; delete one, the other goes).
+- After editing a committed marker, the item still reads **markers up to date**: no preview appears. Ctrl+Z undoes the marker edit and the event change together.
+
+### Known limits
+
+- Footsteps is the only preset family today. Other events (sword swings, foley cues, scuffs) are possible with your own rules, but no preset ships for them yet.
+- Roles are found from the bone names only (Mixamo and Unreal-style names). There is no role editor yet: for another naming, pick the bones in each condition's bone menu.
+- The 3D view does not follow a take's play rate or a looped item, while the strip and the take markers do: on such items the pose and the markers can disagree.
+- Commit skips an item that has no rules left, and leaves the markers it wrote earlier: delete them in REAPER if you remove all of an item's rules.
+- Two items that would write the same project marker at the same time (for example a character and its weapon on two tracks) share one marker.
+- Detection reads the bones' motion only: an animation built at runtime in the engine (IK, blend trees) must be baked into the exported file, as for viewing.
 
 ---
 

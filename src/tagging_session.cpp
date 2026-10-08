@@ -6,6 +6,7 @@
 
 #ifdef _WIN32
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -154,6 +155,9 @@ void ReadItem()
     m.unreadable = rd.present && !rd.valid;
     m.has_record = rd.present && rd.valid;
     m.rules = m.has_record ? rd.rules : ItemRules{};
+    // 10-6: a linked item with no record holds its pool's tagging: shown as its rules (read
+    // through; nothing is written until a gesture, which writes it with them).
+    if (!rd.present && ItemPoolContent(m.item, &m.rules)) m.has_record = true;
     ReadPresetFields();
     // Story 10-3e: the user's roles and the role keys the rules read (all of them, off rules
     // too: the window lists them), mapped on this skeleton; the display names follow roles.txt.
@@ -269,20 +273,38 @@ void RunDetection()
     BuildEvents();
 }
 
-// The footer's counts: the selected items, those without rules, those whose roles miss.
+// 10-6: the current item's pool: how many other items share its tagging, and whether it was made
+// unique. At the selection's cadence (a pool scan reads the records of the file's items).
+void RefreshPool()
+{
+    TaggingModel& m = g.model;
+    m.pool_others = 0;
+    m.pool_unique = false;
+    if (!m.item || m.unreadable) return;
+    m.pool_others = static_cast<int>(PoolMembersOf(m.item).size());
+    m.pool_unique = m.has_record && !m.rules.pool_id.empty();
+}
+
+// The footer's counts: the selected items, those without rules, those whose roles miss. 10-6:
+// over the selected items and the other copies of their pools (Commit and Cancel act on those).
 void RefreshSelection()
 {
     TaggingModel& m = g.model;
-    m.sel_count = m.sel_without_rules = m.sel_roles_skipped = m.sel_cancellable = m.sel_to_commit = 0;
+    m.sel_count = m.sel_linked = m.sel_without_rules = m.sel_roles_skipped = m.sel_cancellable = m.sel_to_commit = 0;
     const int n = CountSelectedMediaItems(nullptr);
     m.sel_count = n;
-    for (int i = 0; i < n; ++i) {
-        MediaItem* it = GetSelectedMediaItem(nullptr, i);
+    std::vector<MediaItem*> selected;
+    for (int i = 0; i < n; ++i) selected.push_back(GetSelectedMediaItem(nullptr, i));
+    const std::vector<MediaItem*> all = WithPoolMembers(selected);
+    m.sel_linked = std::max(0, static_cast<int>(all.size()) - n);
+    for (MediaItem* it : all) {
         ItemRulesRead rd;
-        const bool    readable = it && ReadItemRules(it, &rd) && rd.present && rd.valid;
+        bool          readable = it && ReadItemRules(it, &rd) && rd.present && rd.valid;
         // 10-4 fb-4: Cancel acts on an item with rules, a Cancel snapshot or previews.
         if (readable && (!rd.rules.blocks.empty() || HasPreviews(rd.rules) || ReadCommittedSnapshot(it, nullptr)))
             ++m.sel_cancellable;
+        // 10-6: a linked item with no record holds its pool's tagging (Commit gives it that first).
+        if (it && !rd.present && ItemPoolContent(it, &rd.rules)) readable = true;
         if (!readable || rd.rules.blocks.empty()) {
             ++m.sel_without_rules;
             continue;
@@ -328,9 +350,10 @@ void TaggingSessionFrame(MediaItem* item, const std::string& path)
                 g.have_tracks = false;
                 g.stamp_checked_at = -1.0;
                 const int sc = m.sel_count, snr = m.sel_without_rules, srs = m.sel_roles_skipped;
-                const int stc = m.sel_to_commit, sca = m.sel_cancellable;
+                const int stc = m.sel_to_commit, sca = m.sel_cancellable, sln = m.sel_linked;
                 m = TaggingModel{};
                 m.sel_count = sc;
+                m.sel_linked = sln;
                 m.sel_without_rules = snr;
                 m.sel_roles_skipped = srs;
                 m.sel_to_commit = stc;
@@ -355,10 +378,14 @@ void TaggingSessionFrame(MediaItem* item, const std::string& path)
         if (m.item && g.detect_dirty) RunDetection();
         // The item moved or was trimmed, or the option changed: the plan follows (no new detection).
         else if (m.item && m.detected) BuildEvents();
+        // 10-6: the item's pool at the same cadence, and at once on another item.
         if (count != g.sel_state_count || g.sel_at < 0.0 || now >= g.sel_at) {
             RefreshSelection();
+            RefreshPool();
             g.sel_state_count = count;
             g.sel_at = now + kRereadSeconds;
+        } else if (item_changed) {
+            RefreshPool();
         }
         g.state_count = count;
     } catch (const std::exception& e) {
@@ -532,6 +559,23 @@ void TaggingPresetFilesChanged()
     if (g.model.item) ReadPresetFields();
 }
 
+bool TaggingMakeUnique(MediaItem* for_item)
+{
+    // Queued for another item (the playhead moved on): nothing is written.
+    if (for_item && for_item != g.model.item) return false;
+    g.last_error.clear();
+    if (!g.model.item) return false;
+    std::string err;
+    bool        done = false;
+    const bool  ok = MakeItemUnique(g.model.item, &done, &err);
+    if (!ok) g.last_error = err.empty() ? "The item could not be made unique." : err;
+    ReadItem();
+    RunDetection();
+    RefreshSelection();
+    RefreshPool();
+    return ok && done;
+}
+
 ItemClipMap ItemClipMapOf(MediaItem* item, double clip_len)
 {
     ItemClipMap map;
@@ -617,6 +661,7 @@ void TaggingReread()
     ReadItem();
     RunDetection();
     RefreshSelection();
+    RefreshPool();
 }
 
 const std::string& TaggingLastError()

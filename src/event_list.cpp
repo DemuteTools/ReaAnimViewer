@@ -404,6 +404,11 @@ ItemRules RestoreCommitted(const ItemRules& snapshot, const ItemRules& current)
     // 10-4b: the markers are the current item's (a copy's snapshot names the original).
     const std::string owner = RecordOwner(current);
     if (!owner.empty()) SetRecordOwner(out, owner);
+    // 10-6: the pool is the item's as it is now (a snapshot taken before Make unique never links
+    // the item back).
+    out.has_pool = current.has_pool;
+    out.pool_id = current.pool_id;
+    out.pool_kept = current.pool_kept;
     return out;
 }
 
@@ -850,6 +855,95 @@ std::vector<std::string> MirrorOrphans(const std::vector<std::pair<std::string, 
     }
     std::sort(out.begin(), out.end());
     out.erase(std::unique(out.begin(), out.end()), out.end());
+    return out;
+}
+
+// ---- 10-6: pooled copies ------------------------------------------------------------------------
+
+bool CancelCopyCancellable(const CancelCopy& c)
+{
+    return c.readable && (!c.rules.blocks.empty() || c.has_snap || HasPreviews(c.rules));
+}
+
+PoolCancelPlan PlanPoolCancel(const std::vector<CancelCopy>& copies)
+{
+    PoolCancelPlan plan;
+    int            from = -1;
+    for (size_t i = 0; i < copies.size() && from < 0; ++i)
+        if (copies[i].shown && CancelCopyCancellable(copies[i])) from = static_cast<int>(i);
+    for (size_t i = 0; i < copies.size() && from < 0; ++i)
+        if (copies[i].selected && CancelCopyCancellable(copies[i])) from = static_cast<int>(i);
+    for (size_t i = 0; i < copies.size() && from < 0; ++i)
+        if (CancelCopyCancellable(copies[i])) from = static_cast<int>(i);
+    plan.from = from;
+    if (from < 0) {
+        for (const CancelCopy& c : copies)
+            if (c.selected) ++plan.without_rules;
+        return plan;
+    }
+    // The copy it runs from: its last Commit; nothing to cancel there = its content as it is.
+    const CancelCopy& f = copies[static_cast<size_t>(from)];
+    ItemRules         target;
+    if (CancelTarget(f.rules, f.raw, f.has_snap ? &f.snap_text : nullptr, &target))
+        plan.writes.push_back({static_cast<size_t>(from), target});
+    else
+        target = f.rules;
+    // Every other copy: the same content, no preview, its own bookkeeping.
+    for (size_t i = 0; i < copies.size(); ++i) {
+        const CancelCopy& c = copies[i];
+        if (static_cast<int>(i) == from) continue;
+        if (!c.readable) {
+            if (c.selected) ++plan.without_rules;  // no record (nothing to cancel), or unreadable
+            continue;
+        }
+        ItemRules next = c.rules;
+        CopyPoolContent(target, next);
+        ClearPreviewed(next);
+        if (!HasPreviews(c.rules) && SerializeItemRules(next) == c.raw) continue;  // nothing to cancel
+        plan.writes.push_back({i, std::move(next)});
+    }
+    return plan;
+}
+
+ItemRules MergePoolEdits(const ItemRules& first, const std::vector<CopyEdits>& others)
+{
+    ItemRules content = first;
+    for (const CopyEdits& o : others)
+        content.events = ApplyMarkerEdits(content, o.all, o.det_ok ? &o.detections : nullptr).events;
+    return content;
+}
+
+std::vector<MarkerEdit> SnapshotEditsFor(const std::vector<CopyEdits>& edited, int own)
+{
+    std::vector<MarkerEdit> out;
+    for (size_t i = 0; i < edited.size(); ++i)
+        if (static_cast<int>(i) != own) out.insert(out.end(), edited[i].committed.begin(), edited[i].committed.end());
+    return out;
+}
+
+ItemRules FollowerRecord(const ItemRules& cur, const ItemRules& content, bool replaced,
+                         const std::vector<TakeMarkerRef>& own_take, const std::vector<ProjectMarkerRef>& own_project,
+                         bool keep_take_refs, bool keep_project_refs, const std::vector<PlannedMarker>& plan,
+                         MarkerMode mode, const std::string& self_guid)
+{
+    ItemRules next = cur;
+    CopyPoolContent(content, next);
+    if (replaced) {
+        ComposeCommittedRecord(next, own_take, own_project, keep_take_refs, keep_project_refs, plan, mode);
+        next.events = content.events;  // the pool's, as they are
+    }
+    if (!self_guid.empty()) SetRecordOwner(next, self_guid);
+    return next;
+}
+
+ItemRules FollowerSnapshot(const ItemRules& snap, const std::vector<MarkerEdit>& edits,
+                           const std::vector<Event>* detections, const ItemRules& rec, const std::string& new_sig)
+{
+    ItemRules out = snap;
+    out.events = ApplyMarkerEdits(snap, edits, detections).events;
+    out.pmarkers = rec.pmarkers;
+    out.tmarkers = rec.tmarkers;
+    if (!new_sig.empty() && out.has_applied) out.applied.sig = new_sig;
     return out;
 }
 

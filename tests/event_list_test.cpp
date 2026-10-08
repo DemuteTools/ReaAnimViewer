@@ -2,7 +2,8 @@
 //
 // Host test of the item's event list (src/event_list.h, story 10-4): merge and +-30 ms
 // masking, orphans, rule-index remap, the first pass only, Apply's plan and signature, the
-// foreign-marker twin check, a preset load clearing the corrections. No REAPER, no Windows: any C++17 compiler.
+// foreign-marker twin check, a preset load clearing the corrections; 10-6: Cancel and the mirror on
+// a pool's copies. No REAPER, no Windows: any C++17 compiler.
 
 #include "event_list.h"
 
@@ -1064,6 +1065,249 @@ int main()
             CHECK(FindProjectTwin(pr, 0.5, "Step", 1e-5, {}) == 0);
             pr[1].has_c = false;
             CHECK(FindProjectTwin(pr, 1.5, "Step", 1e-5, {}) == -1);
+        }
+    }
+
+    // ---- 10-6: pooled copies ----
+    // Cancel and the mirror on a pool's copies: the pure parts tag_markers.cpp calls
+    // (PlanPoolCancel, MergePoolEdits, SnapshotEditsFor, FollowerRecord, FollowerSnapshot).
+    {
+        std::vector<Block> blocks = {Rule("Footstep L"), Rule("Footstep R", 0x1000000u | 0xDD9E5Fu)};
+        blocks[0].conditions.resize(1);
+        blocks[0].conditions[0].threshold = 0.05;
+
+        // Cancel never links a unique item back: the snapshot (taken before Make unique) has no
+        // pool line, the item has one now; and the reverse.
+        ItemRules snap;
+        snap.blocks = blocks;
+        snap.has_applied = true;
+        snap.applied.sig = "S";
+        ItemRules cur = snap;
+        cur.has_pool = true;
+        cur.pool_id = "{U}";
+        cur.blocks[0].conditions[0].threshold = 0.2;
+        ItemRules restored = RestoreCommitted(snap, cur);
+        CHECK(restored.has_pool && restored.pool_id == "{U}" && restored.blocks[0].conditions[0].threshold == 0.05);
+        ItemRules linked = cur;
+        linked.has_pool = false;
+        linked.pool_id.clear();
+        ItemRules snap_u = snap;
+        snap_u.has_pool = true;
+        snap_u.pool_id = "{OLD}";
+        restored = RestoreCommitted(snap_u, linked);
+        CHECK(!restored.has_pool && restored.pool_id.empty());
+        // Make unique alone is nothing Cancel undoes.
+        ItemRules made_unique = snap;
+        made_unique.has_pool = true;
+        made_unique.pool_id = "{U}";
+        const std::string snap_text = SerializeItemRules(snap);
+        ItemRules next;
+        CHECK(!CancelTarget(made_unique, SerializeItemRules(made_unique), &snap_text, &next));
+        // ... and a Cancel after a tweak keeps the pool.
+        CHECK(CancelTarget(cur, SerializeItemRules(cur), &snap_text, &next) && next.pool_id == "{U}" &&
+              next.blocks[0].conditions[0].threshold == 0.05);
+
+        // ---- PlanPoolCancel ----
+        // A copy as Cancel reads it: its record (threshold `now`), its snapshot (threshold `committed`).
+        auto copy_of = [&](double now, double committed, bool previews, const char* owner) {
+            CancelCopy c;
+            c.readable = true;
+            c.rules.blocks = blocks;
+            c.rules.blocks[0].conditions[0].threshold = now;
+            c.rules.has_applied = true;
+            c.rules.applied.sig = "S";
+            c.rules.applied.item = owner;
+            ProjectMarkerRef pm;
+            pm.guid = std::string("{P") + owner;
+            pm.c = 0.5;
+            pm.has_c = true;
+            c.rules.pmarkers = {pm};
+            if (previews) {
+                c.rules.has_previewed = true;
+                c.rules.ppmarkers = {pm};
+            }
+            c.raw = SerializeItemRules(c.rules);
+            ItemRules s = c.rules;
+            s.blocks[0].conditions[0].threshold = committed;
+            ClearPreviewed(s);
+            c.has_snap = true;
+            c.snap_text = SerializeItemRules(s);
+            return c;
+        };
+        auto threshold_of = [](const ItemRules& r) { return r.blocks[0].conditions[0].threshold; };
+        {
+            // Run-from: the copy the Tagging view shows first, whatever the selection.
+            std::vector<CancelCopy> p = {copy_of(0.2, 0.05, true, "{A}"), copy_of(0.2, 0.07, true, "{B}"),
+                                         copy_of(0.2, 0.09, true, "{C}")};
+            p[0].selected = true;
+            p[1].shown = true;
+            PoolCancelPlan plan = PlanPoolCancel(p);
+            CHECK(plan.from == 1 && plan.without_rules == 0 && plan.writes.size() == 3);
+            if (plan.writes.size() == 3) {
+                CHECK(plan.writes[0].copy == 1);  // the run-from copy first
+                for (const CancelWrite& w : plan.writes) {
+                    CHECK(threshold_of(w.next) == 0.07);  // B's last Commit, on every copy
+                    CHECK(!HasPreviews(w.next));          // no preview left anywhere
+                }
+                // Each copy keeps its own bookkeeping: owner, committed markers.
+                CHECK(RecordOwner(plan.writes[1].next) == "{A}" && plan.writes[1].next.pmarkers[0].guid == "{P{A}");
+                CHECK(RecordOwner(plan.writes[2].next) == "{C}");
+            }
+            // Not shown: the first selected copy that can; then the first that can.
+            p[1].shown = false;
+            p[2].selected = true;
+            plan = PlanPoolCancel(p);
+            CHECK(plan.from == 0 && !plan.writes.empty() && threshold_of(plan.writes[0].next) == 0.05);
+            p[0].selected = p[2].selected = false;
+            p[0].readable = false;  // no record: it cannot run it
+            plan = PlanPoolCancel(p);
+            CHECK(plan.from == 1 && plan.writes.size() == 2);  // B runs it, C follows, A (no record) is left
+            // The shown copy is chosen only when it can cancel.
+            p[0].shown = true;
+            CHECK(PlanPoolCancel(p).from == 1);
+        }
+        {
+            // A copy with previews but already the target's content: written, previews cleared.
+            CancelCopy f = copy_of(0.05, 0.05, false, "{F}");
+            f.selected = true;
+            CancelCopy m = copy_of(0.05, 0.05, true, "{M}");
+            const PoolCancelPlan plan = PlanPoolCancel({f, m});
+            CHECK(plan.from == 0 && plan.writes.size() == 1);  // f: nothing to cancel; m: its previews go
+            if (plan.writes.size() == 1) CHECK(plan.writes[0].copy == 1 && !HasPreviews(plan.writes[0].next));
+            // ... and with no preview and the same record: nothing written at all.
+            CancelCopy m2 = copy_of(0.05, 0.05, false, "{M}");
+            CHECK(PlanPoolCancel({f, m2}).writes.empty());
+        }
+        {
+            // Nobody can cancel: every selected copy counts without rules; an unreadable selected one too.
+            CancelCopy a;
+            a.selected = true;
+            CancelCopy b;
+            b.selected = true;
+            b.readable = true;  // a record with no rule, no snapshot, no preview
+            CancelCopy c;  // not selected
+            PoolCancelPlan plan = PlanPoolCancel({a, b, c});
+            CHECK(plan.from < 0 && plan.writes.empty() && plan.without_rules == 2);
+            CancelCopy f = copy_of(0.2, 0.05, true, "{F}");
+            f.selected = true;
+            plan = PlanPoolCancel({f, a});
+            CHECK(plan.from == 0 && plan.without_rules == 1 && plan.writes.size() == 1);
+        }
+
+        // ---- The mirror: the follower's record and snapshot, edits on several copies ----
+        const std::vector<Event> det = {Det(0, 0.5), Det(1, 1.0), Det(0, 1.5)};
+        ItemClipMap a_map, b_map;
+        a_map.item_pos = 10.0;
+        a_map.item_len = 2.0;
+        a_map.clip_len = 2.0;
+        b_map = a_map;
+        b_map.item_pos = 30.0;
+        b_map.start_offs = 1.0;  // the second step only
+        b_map.item_len = 1.0;
+        const MarkerMode md = MarkerMode::Both;
+        auto plan_of = [&](const ItemRules& r, const ItemClipMap& m) {
+            return PlanMarkers(BuildEventList(det, r.events, r.blocks.size()), r.blocks, m);
+        };
+        auto count = [](const ItemRules& r, EventKind k) {
+            int n = 0;
+            for (const EventEntry& x : r.events) n += x.kind == k ? 1 : 0;
+            return n;
+        };
+        ItemRules a;
+        a.blocks = blocks;
+        a.has_pool = true;
+        a.pool_id = "{P}";
+        ItemRules b = a;
+        RecordApplied(a, plan_of(a, a_map), md);
+        RecordApplied(b, plan_of(b, b_map), md);
+        a.applied.item = "{A}";
+        b.applied.item = "{OLD}";
+        CHECK(PoolContentEqual(a, b));  // committed together: one content
+        // The trimmed copy shows only the events inside its range (matrix "Trimmed copy").
+        int inside = 0;
+        for (const PlannedMarker& p : plan_of(b, b_map)) inside += p.in_item ? 1 : 0;
+        CHECK(inside == 2);  // 1.0 and 1.5 (clip time from 1.0 on)
+        {
+            // Matrix "REAPER drag": a's detection at 0.5 dragged to 0.6; b, up to date, is re-placed.
+            MarkerEdit e;
+            e.kind = MarkerEditKind::Drag;
+            e.c = 0.5;
+            e.new_c = 0.6;
+            e.name = "Footstep L";
+            ItemRules an = a;
+            an.events = ApplyMarkerEdits(a, {e}, &det).events;
+            const std::vector<PlannedMarker> bplan = plan_of(an, b_map);
+            ProjectMarkerRef own;
+            own.guid = "{NEW}";
+            own.c = 1.0;
+            own.has_c = true;
+            ItemRules bp = b;
+            bp.has_previewed = true;  // a stale preview state goes with a re-place
+            const ItemRules bn = FollowerRecord(bp, an, true, {}, {own}, false, false, bplan, md, "{B}");
+            // The pool's events as they are: RecordApplied would have dropped the snapshot of the
+            // suppressed detection at 0.5 (it is not planned any more).
+            CHECK(SerializeItemRules(bn).find("event t=0.5 kind=detected") != std::string::npos);
+            CHECK(PoolContentEqual(bn, an));
+            CHECK(bn.has_applied && bn.applied.sig == MarkerSignature(bplan, md));
+            CHECK(MarkersUpToDate(bn, plan_of(bn, b_map), md));  // still up to date
+            CHECK(bn.applied.sig == MarkerSignature(plan_of(an, a_map), md));  // the same markers, by clip time
+            CHECK(!HasPreviews(bn) && bn.pmarkers.size() == 1 && bn.pmarkers[0].guid == "{NEW}");
+            CHECK(RecordOwner(bn) == "{B}" && bn.pool_id == "{P}");
+            // Not re-placed (not up to date, or another tab): the content only, its bookkeeping kept.
+            const ItemRules bk = FollowerRecord(bp, an, false, {}, {}, false, false, {}, md, "");
+            CHECK(PoolContentEqual(bk, an) && bk.applied.sig == b.applied.sig && HasPreviews(bk) &&
+                  RecordOwner(bk) == "{OLD}");
+            // A copy of its own (Take mode: no project-marker GUID) takes itself as owner.
+            CHECK(RecordOwner(FollowerRecord(bp, an, false, {}, {}, false, false, {}, md, "{B}")) == "{B}");
+        }
+        {
+            // Two copies edited in one scan: a drags step 0.5 to 0.6, b drags 1.0 to 1.1.
+            MarkerEdit ea;
+            ea.kind = MarkerEditKind::Drag;
+            ea.c = 0.5;
+            ea.new_c = 0.6;
+            ea.name = "Footstep L";
+            MarkerEdit eb = ea;
+            eb.c = 1.0;
+            eb.new_c = 1.1;
+            eb.name = "Footstep R";
+            CopyEdits ca, cb;
+            ca.all = ca.committed = {ea};
+            cb.all = cb.committed = {eb};
+            ca.det_ok = cb.det_ok = true;
+            ca.detections = cb.detections = det;
+            // Each record and snapshot took its own edit already (MirrorOwnItem).
+            ItemRules ar = a, br = b;
+            ar.events = ApplyMarkerEdits(a, {ea}, &det).events;
+            br.events = ApplyMarkerEdits(b, {eb}, &det).events;
+            const ItemRules a_snap = ar, b_snap = br;
+            // The pool's content: both edits.
+            const ItemRules content = MergePoolEdits(ar, {cb});
+            CHECK(count(content, EventKind::User) == 2 && count(content, EventKind::Suppress) == 2);
+            // Each snapshot takes the other copy's edit only: no edit twice (a Drag applied again
+            // would add a second user event).
+            const std::vector<CopyEdits> both = {ca, cb};
+            CHECK(SnapshotEditsFor(both, 0).size() == 1 && SnapshotEditsFor(both, 0)[0].name == "Footstep R");
+            CHECK(SnapshotEditsFor(both, 1).size() == 1 && SnapshotEditsFor(both, 1)[0].name == "Footstep L");
+            CHECK(SnapshotEditsFor(both, -1).size() == 2);
+            const ItemRules as = FollowerSnapshot(a_snap, SnapshotEditsFor(both, 0), &det, ar, "");
+            const ItemRules bs = FollowerSnapshot(b_snap, SnapshotEditsFor(both, 1), &det, br, "");
+            CHECK(count(as, EventKind::User) == 2 && count(as, EventKind::Suppress) == 2);
+            CHECK(count(bs, EventKind::User) == 2 && count(bs, EventKind::Suppress) == 2);
+            // A copy edited nowhere takes both, once.
+            const ItemRules cs = FollowerSnapshot(a, SnapshotEditsFor(both, -1), &det, a, "");
+            CHECK(count(cs, EventKind::User) == 2 && count(cs, EventKind::Suppress) == 2);
+            // Its marker refs as the record holds them now; the commit's signature when it has one.
+            ItemRules rec = ar;
+            ProjectMarkerRef now;
+            now.guid = "{NOW}";
+            rec.pmarkers = {now};
+            ItemRules s2 = FollowerSnapshot(a_snap, {}, &det, rec, "SIG2");
+            CHECK(s2.pmarkers.size() == 1 && s2.pmarkers[0].guid == "{NOW}" && s2.applied.sig == "SIG2");
+            ItemRules never = a_snap;
+            never.has_applied = false;
+            CHECK(FollowerSnapshot(never, {}, &det, rec, "SIG2").applied.sig != "SIG2");
+            CHECK(FollowerSnapshot(a_snap, {}, &det, rec, "").applied.sig == a_snap.applied.sig);
         }
     }
 

@@ -171,5 +171,10 @@
 #define REAPERAPI_WANT_GetMediaSourceLength
 #define REAPERAPI_WANT_UpdateTimeline
 
+// Story 10-6 -- pooled copies: "Make unique" gives an item a fresh pool id (a new GUID's text,
+// src/item_rules.cpp). Old, safe (REAPER 4+).
+#define REAPERAPI_WANT_genGuid
+#define REAPERAPI_WANT_guidToString
+
 #include "reaper_plugin.h"
 #include "reaper_plugin_functions.h"

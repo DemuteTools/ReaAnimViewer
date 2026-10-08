@@ -59,11 +59,21 @@ bool ReadItemRules(MediaItem* item, ItemRulesRead* out);
 // Reads the record (an unreadable or absent one = no rules), lets `edit` change it, and
 // writes it back in one undo point named `undo_desc`. `edit` returns false to cancel
 // (nothing written). False when nothing was written because of an error (`err` says why).
+//
+// 10-6 (pooled copies): the gesture reaches every other member of the item's pool (see below)
+// in the SAME undo block: each member gets the item's content (CopyPoolContent) and keeps its
+// own bookkeeping, and the written-hook runs for it too (its previews). A member already holding
+// that content is not written; a record that does not read is never in a pool, never written. An
+// item with no record joins its pool: the edit starts from the content of the first member that
+// has some, and the item is written with it (even when the edit changed nothing). The item's own
+// write is checked first: when it fails, no member is written. The decisions are rule_record.h's
+// PoolGestureStart / PlanPoolGesture.
 bool ModifyItemRules(MediaItem* item, const char* undo_desc, const std::function<bool(ItemRules&)>& edit,
                      std::string* err);
 
 // The same without an undo point of its own: for a write inside a caller's
 // Undo_BeginBlock2 / Undo_EndBlock2 (Apply). A null `undo_desc` there = no undo point.
+// Never pooled: the bookkeeping writers (Commit, previews, Cancel) write one item each.
 bool ModifyItemRulesNoUndo(MediaItem* item, const std::function<bool(ItemRules&)>& edit, std::string* err);
 
 // Writes the whole record (one undo point).
@@ -135,6 +145,38 @@ bool KeepItemCurrent(MediaItem* item, std::string* err);
 
 // REAPER's resource path (presets, roles.txt live under <it>/ReaAnimViewer).
 std::string RulesResourceRoot();
+
+// ---- 10-6: pooled copies --------------------------------------------------------------------------
+//
+// Like REAPER's pooled MIDI items: the items of one project whose RAV take plays the same
+// animation file (SamePoolPath: case and slashes ignored) and whose records carry the same pool
+// id (no `pool` line, or no record at all = the file's default pool) form a pool and share one
+// tagging (rule_record.h CopyPoolContent). Never across project tabs. A record that does not
+// read belongs to no pool: it is never read into one, never written by one.
+
+// The item's pool: its animation file and its record's pool id. False when the item has no RAV
+// take or its record does not read.
+bool ItemPoolKey(MediaItem* item, std::string* path, std::string* pool_id);
+// The other items of the item's pool in `proj` (null = the current project), in project order.
+std::vector<MediaItem*> PoolMembersOf(MediaItem* item, ReaProject* proj = nullptr);
+// The tagging a linked item with NO record holds: its pool's content (the first copy that has
+// some, in the current project). Nothing is written. False when the item has a record (its own),
+// is no RAV item, or no copy has content.
+bool ItemPoolContent(MediaItem* item, ItemRules* out);
+// `items` and every other member of their pools in `proj`, each once: `items` first (in their
+// order, kept even when they belong to no pool), then the other members, pool by pool, in
+// project order. `pool_of` (optional) gets, per item returned, the index of its pool (an item of
+// no pool gets one of its own).
+std::vector<MediaItem*> WithPoolMembers(const std::vector<MediaItem*>& items, ReaProject* proj = nullptr,
+                                        std::vector<int>* pool_of = nullptr);
+
+// Make unique: the item gets a fresh pool id and keeps its content (one undo point "RAV: Make
+// tagging unique"). Nothing is written (true, `done` false) when no other item shares its pool,
+// or its record does not read. False with `err` when the write failed. Ctrl+Z links it back.
+bool MakeItemUnique(MediaItem* item, bool* done, std::string* err);
+// The action "RAV: Make tagging unique (selected items)": every selected RAV item that shares
+// its pool gets a fresh pool id of its own, all in ONE undo point. How many were made unique.
+int MakeTaggingUniqueOnSelectedItems();
 
 }  // namespace rav
 

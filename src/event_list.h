@@ -172,7 +172,8 @@ bool HasPreviews(const ItemRules& rules);
 // An item "has rules" for the Cancel snapshot: a rule or a preset.
 bool HasRulesForSnapshot(const ItemRules& rules);
 // Cancel: the record as of the last Commit (`snapshot`), with the committed markers RAV owns NOW
-// (`current`'s tmarkers / pmarkers: the timeline's truth) and no preview.
+// (`current`'s tmarkers / pmarkers: the timeline's truth), `current`'s owner and pool (10-6), and
+// no preview.
 ItemRules RestoreCommitted(const ItemRules& snapshot, const ItemRules& current);
 
 // Cancel's target for one item: the snapshot (when it parses) restored with RestoreCommitted,
@@ -370,6 +371,67 @@ std::vector<std::string> MirrorOrphans(const std::vector<std::pair<std::string, 
                                        const std::vector<std::string>& claimed,
                                        const std::vector<std::string>& present_items,
                                        const std::vector<std::string>& read_items);
+
+// ---- 10-6: pooled copies (Cancel and the mirror on a pool's copies) -------------------------------
+
+// Cancel on one pool: one copy as Cancel reads it.
+struct CancelCopy {
+    bool        shown = false;     // the copy the Tagging view shows
+    bool        selected = false;
+    bool        readable = false;  // it has a record that reads (`rules`, `raw`)
+    ItemRules   rules;
+    std::string raw;
+    bool        has_snap = false;  // it has a Cancel snapshot (`snap_text`)
+    std::string snap_text;
+};
+// True when Cancel can act on the copy: a record that reads, with rules, a snapshot or previews.
+bool CancelCopyCancellable(const CancelCopy& c);
+struct CancelWrite {
+    size_t    copy = 0;  // index into the copies
+    ItemRules next;
+};
+struct PoolCancelPlan {
+    int                      from = -1;          // the copy it runs from (-1: none can, nothing is written)
+    std::vector<CancelWrite> writes;             // the run-from copy first (when it changes), then the others
+    int                      without_rules = 0;  // selected copies counted "without rules"
+};
+// One pool's Cancel (`copies`: the pool's items, the selected ones first). It runs from the copy
+// the Tagging view shows, else the first selected one, else the first one, that can
+// (CancelCopyCancellable): its CancelTarget (its record as it is when it has nothing to cancel) is
+// the target. Every other copy with a readable record gets the target's content (CopyPoolContent)
+// and no preview (ClearPreviewed; its own bookkeeping kept), unless that changes nothing (no
+// preview and the same text as `raw`). Selected copies without a readable record, or every
+// selected copy when none can cancel, count as without rules.
+PoolCancelPlan PlanPoolCancel(const std::vector<CancelCopy>& copies);
+
+// The REAPER-side edits the mirror read on one copy in one scan (MirrorOwnItem: its record and its
+// Cancel snapshot already took them).
+struct CopyEdits {
+    std::vector<MarkerEdit> all;        // the committed markers' edits, then the previews'
+    std::vector<MarkerEdit> committed;  // the committed markers' edits
+    bool                    det_ok = false;
+    std::vector<Event>      detections;  // its live detections (det_ok): the pool's, same file and rules
+};
+// The pool's content after edits read on several of its copies in one scan: `first` (the record of
+// the first copy, written with its own edits), each of `others` applied to its events in turn.
+ItemRules MergePoolEdits(const ItemRules& first, const std::vector<CopyEdits>& others);
+// The committed edits a copy's Cancel snapshot still has to take: those read on the OTHER copies
+// of `edited` (`own`: the index of its own edits there, -1 when none were read on it: all of them).
+std::vector<MarkerEdit> SnapshotEditsFor(const std::vector<CopyEdits>& edited, int own);
+// A copy's record following its pool's content (the mirror): `cur` with `content`'s content.
+// `replaced`: its committed markers were re-placed for `plan` (`own_take` / `own_project` written,
+// `keep_*` as ComposeCommittedRecord): the committed record of them, no preview, and the events
+// the pool's as they are (a Commit's record of the detections is not redone). `self_guid`
+// non-empty: the record's owner becomes it.
+ItemRules FollowerRecord(const ItemRules& cur, const ItemRules& content, bool replaced,
+                         const std::vector<TakeMarkerRef>& own_take, const std::vector<ProjectMarkerRef>& own_project,
+                         bool keep_take_refs, bool keep_project_refs, const std::vector<PlannedMarker>& plan,
+                         MarkerMode mode, const std::string& self_guid);
+// A copy's Cancel snapshot taking marker edits (so Cancel does not undo them): `edits` applied to
+// its events (ApplyMarkerEdits, `detections` for the values), its committed marker refs as `rec`
+// holds them now, and `new_sig` (non-empty) as the commit's signature when the snapshot has one.
+ItemRules FollowerSnapshot(const ItemRules& snap, const std::vector<MarkerEdit>& edits,
+                           const std::vector<Event>* detections, const ItemRules& rec, const std::string& new_sig);
 
 // ---- Preset loaded --------------------------------------------------------------------------------
 

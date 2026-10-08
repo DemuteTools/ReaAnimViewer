@@ -29,6 +29,7 @@
 //   ppmarker guid={...} t=12.625                     (a preview project marker RAV wrote)
 //   (10-4b: applied/preview gain `item={GUID}` = the owner item; pmarker/ppmarker gain
 //    `c=<clip s> color=#RRGGBB name=<free text>`; `guid=` empty = hidden by the mirror)
+//   pool id={...}                                    (10-6: right after the header, only once set)
 //
 // A preset file (.ravpreset) is the same grammar under "RAVPRESET 1": a `preset` line
 // (no `kept`), optional `options` / `analyse`, then its blocks (no copy/end/event).
@@ -68,6 +69,12 @@
 //     only while previews exist). The committed markers are the `applied` / `tmarker` /
 //     `pmarker` ones, as before. The record as of the last Commit lives in another key
 //     (item_rules.h, P_EXT:RAV_RULES_COMMITTED), in this same grammar.
+//   - 10-6 (pooled copies): `pool id=<token>` = the item's pool (Make unique). Written only when
+//     the record has one, right after the header line (and its kept lines), so a record without
+//     it writes back byte-identical and an older RAV keeps it as an unknown header line. The
+//     items of a project that play the same file with the same pool id (absent = the file's
+//     default pool) share one tagging: the content (CopyPoolContent). The rest of the record is
+//     each item's own bookkeeping.
 //
 // In a parsed record, SignalSpec bones / ref_bones hold bone-reference ids (see
 // BoneRefId), not track indices: BindBoneRefs turns them into skeleton bone indices.
@@ -265,6 +272,11 @@ struct ItemRules {
     AppliedInfo                   previewed;  // the option and signature the previews were written with
     std::vector<TakeMarkerRef>    ptmarkers;  // the preview take markers RAV owns
     std::vector<ProjectMarkerRef> ppmarkers;  // the preview project markers RAV owns
+    // 10-6: the item's pool. `has_pool` = the record has a `pool` line (read, or set by Make
+    // unique); `pool_id` "" = the default pool of the item's file. Bookkeeping, never shared.
+    bool                        has_pool = false;
+    std::string                 pool_id;
+    KeptText                    pool_kept;  // the `pool` line
     KeptText                    head;    // unknown lines right after the header line
     std::vector<RecordTailLine> tail;
 };
@@ -308,6 +320,72 @@ bool BlocksEqual(const std::vector<Block>& a, const std::vector<Block>& b);
 // The fields the record writes (kept text and the derived AnalyseOptions::smooth_ms ignored).
 bool OptionsEqual(const DetectOptions& a, const DetectOptions& b);
 bool AnalyseEqual(const AnalyseOptions& a, const AnalyseOptions& b);
+
+// ---- 10-6: pooled copies ---------------------------------------------------------------
+//
+// The content a pool shares: `options`, `analyse`, `has_preset` + `preset_copy`, `blocks`,
+// `events` (clip seconds), each with the text kept on its lines. Everything else is the item's
+// own: the format version and header, the pool line, `applied` / `previewed`, the marker refs
+// (and so the owner), the kept head and tail lines.
+
+// Copies the shared content of `from` onto `to` (the rest of `to` is left as it is).
+void CopyPoolContent(const ItemRules& from, ItemRules& to);
+// True when both records hold the same content, as written (kept text included).
+bool PoolContentEqual(const ItemRules& a, const ItemRules& b);
+// True when two animation file paths name the same file for a pool: compared ignoring ASCII
+// case, with '/' and '\' the same. An empty path matches nothing.
+bool SamePoolPath(const std::string& a, const std::string& b);
+
+// Pool membership and grouping, as item_rules.cpp's project scans decide them (the REAPER side
+// only reads each item's path and record text into a PoolCandidate).
+//
+// One item of a project as a pool scan sees it: its RAV take's animation file ("" = not a RAV
+// item) and its record text ("" = no record; the caller may leave it empty for an item whose path
+// matches no pool asked about). `in_project`: false for an item asked about that is not one of the
+// project's (never drawn in as another item's member).
+struct PoolCandidate {
+    std::string path;
+    std::string record;
+    bool        in_project = true;
+};
+// An item's pool key: its file and its record's pool id ("" = the file's default pool, also for
+// no record). False when it is in no pool: no path, or a record that does not read. `parsed`
+// (optional) gets the record as read (no record: no rules).
+bool PoolKeyOf(const std::string& path, const std::string& record, std::string* pool_id, ItemRules* parsed = nullptr);
+// True when the candidate is in the pool (`path`, `id`): the same file (SamePoolPath), a record
+// that reads (or none), the same pool id. `parsed` as above (filled when true).
+bool InPool(const PoolCandidate& c, const std::string& path, const std::string& id, ItemRules* parsed = nullptr);
+// Commit / Cancel's set: the selected candidates and every other member of their pools, each once.
+struct PoolGrouping {
+    std::vector<size_t> order;    // indices into the candidates
+    std::vector<int>    pool_of;  // per entry of `order`: its pool (a candidate of no pool: one of its own)
+};
+// `selected` (indices into `candidates`, in selection order; a repeat or an index out of range is
+// skipped) first, in their order; then, pool by pool (in the order their first selected item
+// came), the other members in candidate (project) order.
+PoolGrouping GroupPools(const std::vector<PoolCandidate>& candidates, const std::vector<size_t>& selected);
+
+// A gesture on one item of a pool (item_rules.cpp ModifyItemRules), planned. One other copy of the
+// pool as read (never one whose record does not read).
+struct PoolRecord {
+    bool      present = false;  // it has a record (else: no rules)
+    ItemRules rules;
+};
+// The record an item holds for its pool, and the gesture's edit starts from: its own (`present` /
+// `valid` as read; an unreadable one = no rules). An item with NO record joins its pool: it holds
+// the content of the first copy that has some (`adopted` true), nothing being written for that.
+ItemRules PoolGestureStart(bool present, bool valid, const ItemRules& rules, const std::vector<PoolRecord>& members,
+                           bool* adopted);
+struct PoolGesturePlan {
+    bool                write_self = false;  // the item's own record is written
+    std::vector<size_t> members;             // the copies written (indices into the members)
+};
+// After the edit (`after`): the item is written when its record changed (`before`: the start
+// record's text; `raw`: its record as read, when `valid`) or when it adopted its pool's content
+// (a no-record item then gets its record, even when the edit changed nothing); every copy whose
+// content differs from `after`'s gets it.
+PoolGesturePlan PlanPoolGesture(bool valid, const std::string& raw, const std::string& before, bool adopted,
+                                const ItemRules& after, const std::vector<PoolRecord>& members);
 
 // ---- Names -----------------------------------------------------------------------------
 

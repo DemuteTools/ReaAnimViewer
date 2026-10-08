@@ -5,6 +5,7 @@
 
 #include "console_log.h"
 #include "detection_measure.h"
+#include "item_rules.h"  // Story 10-6: Make tagging unique
 #include "tag_markers.h"  // Story 10-4: Apply's marker functions
 #include "pcm_source_anim.h"
 #include "reaper_actions.h"
@@ -48,6 +49,13 @@ constexpr const char kMeasureDetectionName[] = "RAV_MEASURE_DETECTION";
 constexpr const char kMeasureDetectionDesc[] = "RAV: Measure detection against reference markers";
 int                  g_measure_detection_id    = 0;
 gaccel_register_t    g_measure_detection_accel = {};
+
+// Story 10-6 -- pooled copies: the selected items stop sharing their tagging with the other
+// items of their animation file (click-based hook too).
+constexpr const char kMakeUniqueName[] = "RAV_TAGGING_MAKE_UNIQUE";
+constexpr const char kMakeUniqueDesc[] = "RAV: Make tagging unique (selected items)";
+int                  g_make_unique_id    = 0;
+gaccel_register_t    g_make_unique_accel = {};
 
 int                     g_command_id      = 0;
 gaccel_register_t       g_accel           = {};
@@ -105,6 +113,10 @@ bool OnHookCommand(int command, int /*flag*/)
         MeasureDetectionOnSelectedItems();
         return true;
     }
+    if (command == g_make_unique_id) {
+        MakeTaggingUniqueOnSelectedItems();
+        return true;
+    }
     return false;
 }
 
@@ -157,6 +169,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
             g_register("-pcmsrc",       PcmSourceRegistration());
             g_register("-toggleaction", (void*)&OnToggleAction);
             g_register("-hookcommand",  (void*)&OnHookCommand);
+            if (g_make_unique_id) g_register("-gaccel", &g_make_unique_accel);
             if (g_measure_detection_id) g_register("-gaccel", &g_measure_detection_accel);
             if (g_video_bg_id) g_register("-gaccel", &g_video_bg_accel);
             if (g_output_angle_id) g_register("-gaccel", &g_output_angle_accel);
@@ -202,6 +215,8 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     StartMarkerMirror(rec->Register);
     g_measure_detection_id =
         RegisterAction(rec, kMeasureDetectionName, kMeasureDetectionDesc, &g_measure_detection_accel);
+    // Story 10-6 -- Make tagging unique (selected items). A failure only loses that action.
+    g_make_unique_id = RegisterAction(rec, kMakeUniqueName, kMakeUniqueDesc, &g_make_unique_accel);
 
     rec->Register("hookcommand", (void*)&OnHookCommand);
     rec->Register("toggleaction", (void*)&OnToggleAction);

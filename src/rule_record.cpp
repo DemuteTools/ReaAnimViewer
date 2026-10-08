@@ -868,6 +868,18 @@ Set SetProjectMarkerRef(ProjectMarkerRef& m, const std::string& k, const std::st
     return Set::Unknown;
 }
 
+// 10-6: the item's pool.
+Fields PoolFields(const std::string& id)
+{
+    return {{"id", EncodeKey(id)}};
+}
+
+Set SetPool(std::string& id, const std::string& k, const std::string& v)
+{
+    if (k == "id") return R(DecodeKey(v, &id));
+    return Set::Unknown;
+}
+
 Set SetNothing(const std::string&, const std::string&)
 {
     return Set::Unknown;
@@ -1103,7 +1115,7 @@ bool ParseCore(const std::string& text_in, const char* magic, Target t)
     // Where an unknown line goes: the object whose line it followed. Resolved when used
     // (the vectors grow).
     enum class At { Head, Options, Analyse, Preset, Copy, CopyOptions, CopyAnalyse, End, Block, Cond, Strength, Tail,
-                    Applied, TMarker, PMarker, Previewed, PTMarker, PPMarker };
+                    Applied, TMarker, PMarker, Previewed, PTMarker, PPMarker, Pool };
     At   at = At::Head;
     bool cur_in_copy = false;  // the current block's list
     int  cur_block = -1;
@@ -1111,6 +1123,7 @@ bool ParseCore(const std::string& text_in, const char* magic, Target t)
     bool cur_strength = false;
     bool seen_applied = false;
     bool seen_previewed = false;
+    bool seen_pool = false;
 
     auto blocks_of = [&](bool in_c) -> std::vector<Block>& { return in_c ? copy->blocks : own_blocks; };
     auto anchor = [&]() -> KeptText* {
@@ -1133,6 +1146,7 @@ bool ParseCore(const std::string& text_in, const char* magic, Target t)
         case At::Previewed: return &t.item->previewed.kept;
         case At::PTMarker: return &t.item->ptmarkers.back().kept;
         case At::PPMarker: return &t.item->ppmarkers.back().kept;
+        case At::Pool: return &t.item->pool_kept;
         }
         return &head;
     };
@@ -1264,6 +1278,16 @@ bool ParseCore(const std::string& text_in, const char* magic, Target t)
             ReadFields(word, rest, has_rest, m.kept,
                        [&](const std::string& k, const std::string& v) { return SetProjectMarkerRef(m, k, v); },
                        [&] { return ProjectMarkerFields(m); });
+        } else if (item && word == "pool" && !in_copy && !seen_pool) {
+            // 10-6: the item's pool (its first `pool` line; a second one is kept as unknown text).
+            seen_pool = true;
+            leave_block();
+            at = At::Pool;
+            t.item->has_pool = true;
+            std::string& id = t.item->pool_id;
+            ReadFields(word, rest, has_rest, t.item->pool_kept,
+                       [&](const std::string& k, const std::string& v) { return SetPool(id, k, v); },
+                       [&] { return PoolFields(id); });
         } else if (KeptText* k = anchor()) {
             k->lines.push_back(line);
         } else {
@@ -1320,6 +1344,8 @@ std::string SerializeItemRules(const ItemRules& r)
 {
     std::string out;
     WriteHeader(out, kRulesMagic, r.format_version, r.header_rest, r.head);
+    // 10-6: only when the record has one, so a record without it writes back as read.
+    if (r.has_pool) WriteLine(out, "pool", PoolFields(r.pool_id), &r.pool_kept);
     WriteLine(out, "options", OptionsFields(r.options), &r.options.kept);
     WriteLine(out, "analyse", AnalyseFields(r.analyse), &r.analyse.kept);
     if (r.has_preset) {
@@ -1399,6 +1425,7 @@ bool HasKeptText(const ItemRules& r)
         if (!m.kept.empty()) story4 = true;
     for (const ProjectMarkerRef& m : r.ppmarkers)
         if (!m.kept.empty()) story4 = true;
+    if (!r.pool_kept.empty()) story4 = true;  // 10-6
     return story4 || !r.header_rest.empty() || !r.head.empty() || !r.tail.empty() || !r.options.kept.empty() || !r.analyse.kept.empty() ||
            BlocksKeep(r.blocks) ||
            (r.has_preset && (!c.kept.empty() || !c.copy_kept.empty() || !c.end_kept.empty() ||
@@ -1474,6 +1501,131 @@ bool BlocksEqual(const std::vector<Block>& a, const std::vector<Block>& b)
     for (size_t i = 0; i < a.size(); ++i)
         if (!BlockEqual(a[i], b[i])) return false;
     return true;
+}
+
+// ---- 10-6: pooled copies ---------------------------------------------------------------
+
+void CopyPoolContent(const ItemRules& from, ItemRules& to)
+{
+    if (&from == &to) return;
+    to.options = from.options;
+    to.analyse = from.analyse;
+    to.has_preset = from.has_preset;
+    to.preset_copy = from.preset_copy;
+    to.blocks = from.blocks;
+    to.events = from.events;
+}
+
+bool PoolContentEqual(const ItemRules& a, const ItemRules& b)
+{
+    // The content alone, as the record writes it: two records of nothing but their content.
+    ItemRules ca, cb;
+    CopyPoolContent(a, ca);
+    CopyPoolContent(b, cb);
+    return SerializeItemRules(ca) == SerializeItemRules(cb);
+}
+
+bool SamePoolPath(const std::string& a, const std::string& b)
+{
+    if (a.empty() || a.size() != b.size()) return false;
+    auto norm = [](char c) -> char {
+        if (c == '/') return '\\';
+        if (c >= 'A' && c <= 'Z') return static_cast<char>(c - 'A' + 'a');
+        return c;
+    };
+    for (size_t i = 0; i < a.size(); ++i)
+        if (norm(a[i]) != norm(b[i])) return false;
+    return true;
+}
+
+bool PoolKeyOf(const std::string& path, const std::string& record, std::string* pool_id, ItemRules* parsed)
+{
+    if (path.empty()) return false;
+    ItemRules r;
+    if (!record.empty() && !ParseItemRules(record, &r)) return false;  // does not read: in no pool
+    if (pool_id) *pool_id = r.pool_id;
+    if (parsed) *parsed = std::move(r);
+    return true;
+}
+
+bool InPool(const PoolCandidate& c, const std::string& path, const std::string& id, ItemRules* parsed)
+{
+    if (!SamePoolPath(c.path, path)) return false;
+    std::string cid;
+    ItemRules   r;
+    if (!PoolKeyOf(c.path, c.record, &cid, &r) || cid != id) return false;
+    if (parsed) *parsed = std::move(r);
+    return true;
+}
+
+ItemRules PoolGestureStart(bool present, bool valid, const ItemRules& rules, const std::vector<PoolRecord>& members,
+                           bool* adopted)
+{
+    if (adopted) *adopted = false;
+    ItemRules start = (present && valid) ? rules : ItemRules{};
+    if (present) return start;  // its own record (an unreadable one: no rules, as before)
+    const ItemRules none;
+    for (const PoolRecord& m : members)
+        if (m.present && !PoolContentEqual(m.rules, none)) {
+            CopyPoolContent(m.rules, start);
+            if (adopted) *adopted = true;
+            break;
+        }
+    return start;
+}
+
+PoolGesturePlan PlanPoolGesture(bool valid, const std::string& raw, const std::string& before, bool adopted,
+                                const ItemRules& after, const std::vector<PoolRecord>& members)
+{
+    PoolGesturePlan   plan;
+    const std::string text = SerializeItemRules(after);
+    const bool        changed = !(text == before || (valid && text == raw));
+    plan.write_self = changed || adopted;
+    for (size_t i = 0; i < members.size(); ++i)
+        if (!PoolContentEqual(members[i].rules, after)) plan.members.push_back(i);
+    return plan;
+}
+
+PoolGrouping GroupPools(const std::vector<PoolCandidate>& candidates, const std::vector<size_t>& selected)
+{
+    PoolGrouping out;
+    struct Key {
+        std::string path, id;
+    };
+    std::vector<Key>  keys;
+    std::vector<char> seen(candidates.size(), 0);
+    for (size_t s : selected) {
+        if (s >= candidates.size() || seen[s]) continue;
+        seen[s] = 1;
+        const PoolCandidate& c = candidates[s];
+        std::string          id;
+        std::string          path;
+        int                  g = -1;
+        if (PoolKeyOf(c.path, c.record, &id)) {
+            path = c.path;
+            for (size_t k = 0; k < keys.size() && g < 0; ++k)
+                if (keys[k].id == id && SamePoolPath(keys[k].path, path)) g = static_cast<int>(k);
+        } else {
+            id.clear();  // no pool: one of its own (an empty path matches no candidate)
+        }
+        if (g < 0) {
+            keys.push_back({path, id});
+            g = static_cast<int>(keys.size()) - 1;
+        }
+        out.order.push_back(s);
+        out.pool_of.push_back(g);
+    }
+    for (size_t k = 0; k < keys.size(); ++k) {
+        if (keys[k].path.empty()) continue;
+        for (size_t j = 0; j < candidates.size(); ++j) {
+            if (seen[j] || !candidates[j].in_project) continue;
+            if (!InPool(candidates[j], keys[k].path, keys[k].id)) continue;
+            seen[j] = 1;
+            out.order.push_back(j);
+            out.pool_of.push_back(static_cast<int>(k));
+        }
+    }
+    return out;
 }
 
 // ---- Names -----------------------------------------------------------------------------

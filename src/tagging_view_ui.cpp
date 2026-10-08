@@ -3001,6 +3001,47 @@ void ItemOptionsPopup(const ItemRules& rules)
     ImGui::EndPopup();
 }
 
+// ---- 10-6: pooled copies ---------------------------------------------------------------------------
+
+// The line under the item's name: "Linked · N other copies" and Make unique, or "Not linked" and a
+// greyed "Unique" once the item was made unique. Nothing for an item no other item shares a
+// tagging with. Styled like the Legacy band's text and buttons.
+void DrawPoolLine(const TaggingModel& m)
+{
+    if (m.pool_others <= 0 && !m.pool_unique) return;
+    const bool linked = m.pool_others > 0;
+    char       text[64];
+    if (linked)
+        std::snprintf(text, sizeof(text), "Linked " RAV_DOT " %d other %s", m.pool_others,
+                      m.pool_others == 1 ? "copy" : "copies");
+    else
+        std::snprintf(text, sizeof(text), "Not linked");
+    const char* label = linked ? "Make unique" : "Unique";
+    const float bw = ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextColored(ui::Col(ui::kMuted), "%s", text);
+    // The button right-aligned, never over the text on a narrow panel (from the text's right edge).
+    const float after_text = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + 6.0f;
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        ImGui::SetTooltip(linked ? "Linked items play the same animation file and share one tagging: rules, thresholds,\n"
+                                   "item options, preset and events. A change on one reaches every linked item, markers\n"
+                                   "included, in one undo step. Each item places the events on its own position, trim\n"
+                                   "and rate. Commit and Cancel act on every linked item of the selected ones."
+                                 : "This item's tagging is its own: a change on it reaches no other item.\n"
+                                   "A duplicate of it is linked to it.");
+    ImGui::SameLine(std::max(after_text, ImGui::GetContentRegionMax().x - bw));
+    if (!linked) ImGui::BeginDisabled();
+    MediaItem* item = m.item;
+    if (ui::SolidButton(linked ? "Make unique##pool" : "Unique##pool")) Later([item]() { TaggingMakeUnique(item); });
+    if (!linked) ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip(linked ? "Gives this item a tagging of its own, as it is now: from then on a change on it no\n"
+                                   "longer reaches the linked items, nor theirs this one. One undo step (Ctrl+Z links it\n"
+                                   "back). A duplicate of it is linked to it. Also: action \"RAV: Make tagging unique\n"
+                                   "(selected items)\"."
+                                 : "Made unique: Ctrl+Z right after Make unique links it back.");
+}
+
 void DrawHeader(const TaggingModel& m, const ItemRules& rules)
 {
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -3061,6 +3102,10 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
             ItemOptionsPopup(rules);
         }
     }
+
+    // 10-6: pooled copies. "Linked · N other copies" with Make unique, or "Not linked" with a
+    // greyed "Unique" once detached. Nothing for an item alone with its file.
+    DrawPoolLine(m);
 
     // The preset field and its menu, the Legacy band (story 10-3b).
     DrawPresetField(m);
@@ -3841,7 +3886,8 @@ void DrawFooter(const TaggingModel& m)
     }
     // Commit (Apply renamed, 10-4 fb-4): every selected item that has rules, one undo point.
     // Cancel beside it: the same items' previews deleted, their rules back to the last Commit.
-    const int run = std::max(0, m.sel_count - m.sel_without_rules - m.sel_roles_skipped);
+    // 10-6: both also act on the other copies of the selected items' pools (sel_linked).
+    const int run = std::max(0, m.sel_count + m.sel_linked - m.sel_without_rules - m.sel_roles_skipped);
     const int with_rules = m.sel_cancellable;
     {
         const float cancel_w = ImGui::CalcTextSize("Cancel").x + ImGui::GetStyle().FramePadding.x * 2.0f + 8.0f;
@@ -3858,7 +3904,8 @@ void DrawFooter(const TaggingModel& m)
             ImGui::SetTooltip(run == 0  ? "Select the items to tag (items with rules) in REAPER."
                               : nothing ? "The selected items' markers are up to date: no preview to commit."
                                         : "Writes the markers of every selected item that has rules, each with its own "
-                                         "rules,\nand removes their previews. Replaces only RAV's markers. One undo point.");
+                                         "rules,\nand removes their previews. Replaces only RAV's markers. One undo point.\n"
+                                         "Items linked to a selected one (same animation file) are committed too.");
         ImGui::SameLine();
         if (with_rules == 0) ImGui::BeginDisabled();
         if (ui::SolidButton("Cancel##tagcancel", ImVec2(-1.0f, 0.0f))) Later([]() { CancelTaggingChanges(); });
@@ -3867,11 +3914,14 @@ void DrawFooter(const TaggingModel& m)
             ImGui::SetTooltip(with_rules == 0 ? "Select the items to tag (items with rules) in REAPER."
                                               : "Deletes the preview markers of every selected item that has rules and "
                                                 "puts\ntheir rules, thresholds and events back as they were at the last "
-                                                "Commit. One undo point.");
+                                                "Commit. One undo point.\nItems linked to a selected one get the same "
+                                                "rules, thresholds and events back.");
     }
     // The selection, and whether this item's markers are written.
     {
         std::string line = std::to_string(m.sel_count) + " selected";
+        // 10-6: the copies Commit and Cancel also act on (linked to a selected item).
+        if (m.sel_linked > 0) line += " " RAV_DOT " " + std::to_string(m.sel_linked) + " linked";
         if (m.sel_without_rules > 0) line += " " RAV_DOT " " + std::to_string(m.sel_without_rules) + " without rules skipped";
         ImGui::PushTextWrapPos(0.0f);
         ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));

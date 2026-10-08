@@ -395,7 +395,17 @@ std::string RewriteItemPreviewsNoUndo(MediaItem* item)
 
         std::string why;
         if (want) why = MissingApiReason(mode);
-        DeleteItemPreviewMarkers(item, cur);
+        // 10-6: a pooled gesture reaches every copy, maybe a copy the mirror has not seen yet: its
+        // record lists the original's project previews (another owner). Those are never deleted
+        // here (the ref is dropped); its take previews are on its own take.
+        const std::string rec_owner = RecordOwner(cur);
+        if (!rec_owner.empty() && rec_owner != ItemGuidOf(item)) {
+            ItemRules own = cur;
+            own.ppmarkers.clear();
+            DeleteItemPreviewMarkers(item, own);
+        } else {
+            DeleteItemPreviewMarkers(item, cur);
+        }
         std::vector<TakeMarkerRef>    own_take;
         std::vector<ProjectMarkerRef> own_project;
         if (want && why.empty()) {
@@ -751,11 +761,20 @@ bool MirrorCopyItem(MirrorItem& mi, MediaItem_Take* take, const std::map<std::st
     return true;
 }
 
+// 10-6: the user's REAPER-side edits read on one item this scan (its event list changed), for the
+// other copies of its pool.
+struct MirrorEdit {
+    MediaItem*                       item = nullptr;
+    std::shared_ptr<const ItemRules> rules;  // its record as written with the edits
+    CopyEdits                        edits;  // the edits read (event_list.h), its snapshot already took them
+};
+
 // An item that is not a copy: its markers placed, hidden, shown (10-4b), and the user's edits of
 // them read into its event list (10-4c): the record, the last Commit (signature, Cancel snapshot)
-// and the previews updated, no undo point (it rides the edit's own).
+// and the previews updated, no undo point (it rides the edit's own). 10-6: an event-list change is
+// reported in `edit_out` (its pool follows, PropagateMirrorEdits).
 void MirrorOwnItem(MirrorItem& mi, MediaItem_Take* take, const std::map<std::string, MarkerNow>& now, MirrorProject& mp,
-                   ReaProject* proj, bool* timeline_changed)
+                   ReaProject* proj, bool* timeline_changed, MirrorEdit* edit_out)
 {
     const ItemRules&   base = *mi.seen.rules;
     const ItemClipMap& map = mi.seen.map;
@@ -1029,6 +1048,16 @@ void MirrorOwnItem(MirrorItem& mi, MediaItem_Take* take, const std::map<std::str
     // The previews show the event list as it is now (on the current tab: the preview writer works
     // there only).
     if (edits && EnumProjects(-1, nullptr, 0) == proj) RewriteItemPreviewsNoUndo(mi.item);
+    // 10-6: the event list changed: the other copies of its pool follow (after the scan).
+    if (edits && edit_out) {
+        edit_out->item = mi.item;
+        edit_out->rules = std::make_shared<const ItemRules>(rules);
+        edit_out->edits.all = committed;
+        edit_out->edits.all.insert(edit_out->edits.all.end(), previews.begin(), previews.end());
+        edit_out->edits.committed = committed;
+        edit_out->edits.det_ok = det.status == ItemDetection::Status::Ok;
+        if (edit_out->edits.det_ok) edit_out->edits.detections = det.events;
+    }
     for (size_t k = 0; k < committed.size() + previews.size(); ++k) {
         const bool        pv = k >= committed.size();
         const MarkerEdit& e = pv ? previews[k - committed.size()] : committed[k];
@@ -1044,6 +1073,153 @@ void MirrorOwnItem(MirrorItem& mi, MediaItem_Take* take, const std::map<std::str
     RefreshSeen(mi, take);
     mi.seen.owner = RecordOwner(rules);
     mi.seen.guids = RefGuids(rules);
+}
+
+// ---- 10-6: the copies of a pool follow a REAPER-side edit -----------------------------------------
+
+// One copy of an edited item's pool takes the pool's content now (`content`: the edited record's),
+// written without an undo point (it rides the edit's own, as the edit itself). A copy whose
+// markers were up to date has its committed markers re-placed from the new events (like a Commit,
+// on its own position, trim and rate) and stays up to date; any other has its previews rewritten.
+// Its Cancel snapshot takes the committed edits (Cancel does not undo a marker edit). Only on the
+// current tab the markers are touched (the marker writers work there); another tab gets the
+// content only. `snap_edits`: the committed edits its Cancel snapshot has not taken yet (never
+// the ones read on itself: MirrorOwnItem applied those). The record and the snapshot are
+// event_list.h's FollowerRecord / FollowerSnapshot (host-tested). False when nothing was written.
+bool FollowPoolEdit(MediaItem* item, const ItemRules& content, const std::vector<MarkerEdit>& snap_edits,
+                    const std::vector<Event>* detections, ReaProject* proj, MirrorProject& mp, bool* timeline_changed)
+{
+    MediaItem_Take* take = RavTakeOf(item);
+    if (!take) return false;
+    const std::string raw = ReadRecordRaw(take);
+    ItemRules         cur;
+    if (!raw.empty() && !ParseItemRules(raw, &cur)) return false;  // a record that does not read: left as written
+    if (PoolContentEqual(cur, content)) return false;              // already the pool's (the edited item itself)
+    const bool       current = EnumProjects(-1, nullptr, 0) == proj;
+    const MarkerMode mode = GetTaggingMarkerMode();
+    // Whose markers its record lists: its own (re-placed when up to date), none yet (an older
+    // record: previews only), or another item's project markers (a copy the mirror has not given
+    // markers of its own yet: none of them is touched, the next scan does that). A copy listing no
+    // project-marker GUID (Take mode: its take markers are on its own take) is its own.
+    const std::string owner = RecordOwner(cur);
+    const std::string self_guid = ItemGuidOf(item);
+    const bool        lists_guids = !RefGuids(cur).empty();
+    const bool        mine = !owner.empty() && (owner == self_guid || !lists_guids);
+    const bool        foreign = !owner.empty() && owner != self_guid && lists_guids;
+
+    // Up to date before the edit: its own result is what its last Commit wrote.
+    ItemDetection det;
+    bool          up_to_date = false;
+    if (current && mine && cur.has_applied) {
+        det = DetectItem(item);
+        if (det.status == ItemDetection::Status::Ok) {
+            const std::vector<ShownEvent> list = BuildEventList(det.events, det.rules.events, det.rules.blocks.size());
+            up_to_date = MarkersUpToDate(det.rules, PlanMarkers(list, det.rules.blocks, det.map), mode);
+        }
+    }
+    const bool replace = up_to_date && detections && !MissingApiReason(mode)[0];
+    std::vector<TakeMarkerRef>    own_take;
+    std::vector<ProjectMarkerRef> own_project;
+    std::vector<PlannedMarker>    plan;
+    std::string                   new_sig;
+    if (replace) {
+        // Its committed markers (and any preview) go, the new events' are written: the events stay
+        // the pool's as they are (a Commit's record of the detections is not redone).
+        for (const std::vector<ProjectMarkerRef>* refs : {&cur.pmarkers, &cur.ppmarkers})
+            for (const ProjectMarkerRef& r : *refs)
+                if (!r.guid.empty()) mp.deleted.insert(r.guid);  // the mirror's own deletes, never the user's
+        DeleteItemOwnMarkers(item, cur);
+        const std::vector<ShownEvent> list = BuildEventList(*detections, content.events, content.blocks.size());
+        plan = PlanMarkers(list, content.blocks, det.map);
+        std::vector<ExistingMarker> written;
+        ApplyResult                 counts;
+        WritePlan(take, plan, mode, written, own_take, own_project, counts);
+        *timeline_changed = true;
+    }
+    const ItemRules next = FollowerRecord(cur, content, replace, own_take, own_project, !TakeApiReady(),
+                                          !ProjectApiReady(), plan, mode, mine ? self_guid : std::string());
+    if (replace) new_sig = next.applied.sig;
+    if (!WriteTakeKeyRaw(take, kItemRulesKey, SerializeItemRules(next))) {
+        // Not recorded: the markers just made are nobody's; they go again.
+        if (replace) {
+            if (TakeApiReady()) DeleteOwnTakeMarkers(take, own_take);
+            for (const ProjectMarkerRef& p : own_project)
+                if (!p.guid.empty()) DeleteProjectMarkerByGuid(p.guid, proj);
+        }
+        LogWarn("Auto-tagging: a linked item could not take a marker edit (its rules could not be saved)");
+        return false;
+    }
+    // The last Commit takes the committed edits it has not taken yet, so Cancel does not undo them.
+    if (!snap_edits.empty()) {
+        ItemRules         snap;
+        const std::string snap_raw = ReadTakeKeyRaw(take, kItemRulesCommittedKey);
+        if (!snap_raw.empty() && ParseItemRules(snap_raw, &snap)) {
+            const ItemRules out = FollowerSnapshot(snap, snap_edits, detections, next, new_sig);
+            if (!WriteTakeKeyRaw(take, kItemRulesCommittedKey, SerializeItemRules(out)))
+                LogWarn("Auto-tagging: a marker edit could not be saved to a linked item's last Commit");
+        }
+    }
+    const bool previews = !replace && current && !foreign;
+    if (previews) RewriteItemPreviewsNoUndo(item);
+    const char* nm = GetTakeName(take);
+    LogInfo("Auto-tagging: linked item \"%s\" follows the marker edit (%s)", nm ? nm : "",
+            replace ? "markers re-placed, still up to date" : previews ? "previews rewritten" : "event list only");
+    return true;
+}
+
+// After a scan: each pool with an item whose event list a REAPER-side edit changed shares the new
+// list (and the rest of the content) with its other copies. Edits read on several copies of one
+// pool in the same scan are all kept (applied in turn). The mirror's view of each copy written is
+// refreshed, so this scan's bookkeeping and the next scan see its new markers as in place.
+void PropagateMirrorEdits(ReaProject* proj, MirrorProject& mp, std::vector<MirrorItem>& items,
+                          const std::vector<MirrorEdit>& edited, bool* timeline_changed)
+{
+    std::set<MediaItem*> done;
+    for (size_t e = 0; e < edited.size(); ++e) {
+        const MirrorEdit& src = edited[e];
+        if (!src.rules || done.count(src.item)) continue;
+        done.insert(src.item);
+        std::vector<MediaItem*> pool = PoolMembersOf(src.item, proj);
+        if (pool.empty()) continue;
+        // The copies of this pool edited in this scan (src first), and the pool's content then.
+        std::vector<MediaItem*> edited_items = {src.item};
+        std::vector<CopyEdits>  pool_edits = {src.edits};
+        for (size_t o = e + 1; o < edited.size(); ++o) {
+            const MirrorEdit& other = edited[o];
+            if (std::find(pool.begin(), pool.end(), other.item) == pool.end()) continue;
+            edited_items.push_back(other.item);
+            pool_edits.push_back(other.edits);
+            done.insert(other.item);
+        }
+        const ItemRules content =
+            MergePoolEdits(*src.rules, std::vector<CopyEdits>(pool_edits.begin() + 1, pool_edits.end()));
+        pool.insert(pool.begin(), src.item);  // itself too, when another copy's edit was merged in
+        const std::vector<Event>* det = src.edits.det_ok ? &src.edits.detections : nullptr;
+        for (MediaItem* m : pool) {
+            // Its snapshot takes the edits read on the other copies only (its own are in it already).
+            const auto own = std::find(edited_items.begin(), edited_items.end(), m);
+            const int  own_index = own == edited_items.end() ? -1 : static_cast<int>(own - edited_items.begin());
+            try {
+                if (!FollowPoolEdit(m, content, SnapshotEditsFor(pool_edits, own_index), det, proj, mp, timeline_changed))
+                    continue;
+            } catch (...) {
+                continue;
+            }
+            for (MirrorItem& mi : items) {
+                if (mi.item != m) continue;
+                MediaItem_Take* take = RavTakeOf(m);
+                if (!take) break;
+                RefreshSeen(mi, take);
+                if (mi.seen.rules) {
+                    mi.seen.owner = RecordOwner(*mi.seen.rules);
+                    mi.seen.guids = RefGuids(*mi.seen.rules);
+                }
+                // It holds the markers its record lists only when that record is its own.
+                if (mi.seen.owner == mi.guid) mi.holds = true;
+                break;
+            }
+        }
+    }
 }
 
 // Mirrors one project (its state-change count moved).
@@ -1105,6 +1281,7 @@ void MirrorOneProject(ReaProject* proj, MirrorProject& mp, bool* timeline_change
     // markers checked against where they belong; a copy's made fresh. One marker enumeration.
     std::map<std::string, MarkerNow> now;
     bool                             enumerated = false;
+    std::vector<MirrorEdit>          edited;  // 10-6: items whose event list an edit changed
     for (MirrorItem& mi : items) {
         const bool copy = mi.seen.managed && mi.own == MirrorOwnership::Copy;
         mi.holds = !copy;  // a copy holds markers only once its fresh ones are recorded
@@ -1116,9 +1293,16 @@ void MirrorOneProject(ReaProject* proj, MirrorProject& mp, bool* timeline_change
             now = ProjectMarkersByGuid(proj);
             enumerated = true;
         }
-        if (copy) mi.holds = MirrorCopyItem(mi, take, now, mp, proj, timeline_changed);
-        else MirrorOwnItem(mi, take, now, mp, proj, timeline_changed);
+        if (copy) {
+            mi.holds = MirrorCopyItem(mi, take, now, mp, proj, timeline_changed);
+        } else {
+            MirrorEdit edit;
+            MirrorOwnItem(mi, take, now, mp, proj, timeline_changed, &edit);
+            if (edit.rules) edited.push_back(std::move(edit));
+        }
     }
+    // 10-6: the other copies of an edited item's pool follow, once every item read its own edits.
+    if (!edited.empty()) PropagateMirrorEdits(proj, mp, items, edited, timeline_changed);
 
     // The markers of a deleted item (or that its record no longer lists) go. Only items holding
     // their markers claim them (a copy that could not refresh still lists the original's).
@@ -1230,33 +1414,69 @@ ApplyResult CommitTaggingMarkers()
             return res;
         }
 
-        // Each selected item: its detection, or why it is skipped.
+        // Each selected item and (10-6) every other copy of its pool, each once: its detection, or
+        // why it is skipped.
         struct Run {
             MediaItem*    item = nullptr;
             ItemDetection det;
         };
-        std::vector<Run> runs;
-        const int        n = CountSelectedMediaItems(nullptr);
-        for (int i = 0; i < n; ++i) {
-            MediaItem* it = GetSelectedMediaItem(nullptr, i);
-            Run        r;
-            r.item = it;
-            r.det = DetectItem(it);
-            switch (r.det.status) {
-            case ItemDetection::Status::Ok: runs.push_back(std::move(r)); break;
-            case ItemDetection::Status::NotRav:
-            case ItemDetection::Status::NoRules: ++res.without_rules; break;
-            case ItemDetection::Status::NoFile:
-            case ItemDetection::Status::RolesMissing: ++res.roles_skipped; break;
-            case ItemDetection::Status::Failed: ++res.failed; break;
+        std::vector<Run>        runs;
+        std::vector<MediaItem*> selected;
+        const int               n = CountSelectedMediaItems(nullptr);
+        for (int i = 0; i < n; ++i) selected.push_back(GetSelectedMediaItem(nullptr, i));
+        const std::vector<MediaItem*> targets = WithPoolMembers(selected);
+        // 10-6: a linked item with no record holds its pool's tagging: it gets it first, in this
+        // Commit's undo point (opened here only when there is such an item), then is committed.
+        std::vector<std::pair<MediaItem*, ItemRules>> adopt;
+        for (MediaItem* it : targets) {
+            ItemRules held;
+            if (ItemPoolContent(it, &held)) adopt.push_back({it, std::move(held)});
+        }
+        bool in_block = false;
+        if (!adopt.empty()) {
+            Undo_BeginBlock2(nullptr);
+            in_block = true;
+            for (const auto& a : adopt) {
+                try {
+                    ModifyItemRulesNoUndo(
+                        a.first,
+                        [&](ItemRules& rec) {
+                            CopyPoolContent(a.second, rec);
+                            return true;
+                        },
+                        nullptr);
+                } catch (...) {
+                }
             }
         }
+        try {
+            for (MediaItem* it : targets) {
+                Run r;
+                r.item = it;
+                r.det = DetectItem(it);
+                switch (r.det.status) {
+                case ItemDetection::Status::Ok: runs.push_back(std::move(r)); break;
+                case ItemDetection::Status::NotRav:
+                case ItemDetection::Status::NoRules: ++res.without_rules; break;
+                case ItemDetection::Status::NoFile:
+                case ItemDetection::Status::RolesMissing: ++res.roles_skipped; break;
+                case ItemDetection::Status::Failed: ++res.failed; break;
+                }
+            }
+        } catch (...) {
+            if (in_block) Undo_EndBlock2(nullptr, kUndoCommit, UNDO_STATE_ALL);  // the block is always closed
+            throw;
+        }
         if (runs.empty()) {
+            if (in_block) {
+                Undo_EndBlock2(nullptr, kUndoCommit, UNDO_STATE_ALL);
+                TaggingReread();
+            }
             g_last = res;
             return res;
         }
 
-        Undo_BeginBlock2(nullptr);
+        if (!in_block) Undo_BeginBlock2(nullptr);
         try {
             // First every item's previous RAV markers (committed and previews) go, so no item
             // takes another's old RAV marker for a foreign one.
@@ -1290,33 +1510,44 @@ ApplyResult CancelTaggingChanges()
     ApplyResult res;
     res.cancel = true;
     try {
-        // Each selected item with rules: what Cancel writes back, when anything changes.
+        // Each selected item with rules: what Cancel writes back, when anything changes. 10-6: per
+        // pool, one copy runs it and its result's content goes to every other copy of the pool
+        // (event_list.h PlanPoolCancel, host-tested).
         struct Run {
             MediaItem* item = nullptr;
             ItemRules  cur;
             ItemRules  next;
         };
-        std::vector<Run> runs;
-        const int        n = CountSelectedMediaItems(nullptr);
-        for (int i = 0; i < n; ++i) {
-            MediaItem*    it = GetSelectedMediaItem(nullptr, i);
-            ItemRulesRead rd;
-            if (!it || !ReadItemRules(it, &rd) || !rd.present || !rd.valid) {
-                ++res.without_rules;
-                continue;
+        std::vector<Run>        runs;
+        std::vector<MediaItem*> selected;
+        const int               n = CountSelectedMediaItems(nullptr);
+        for (int i = 0; i < n; ++i) selected.push_back(GetSelectedMediaItem(nullptr, i));
+        std::vector<int>              pool_of;
+        const std::vector<MediaItem*> all = WithPoolMembers(selected, nullptr, &pool_of);
+        MediaItem* const              shown = GetTaggingModel().item;
+        int                           pools = 0;
+        for (int p : pool_of) pools = std::max(pools, p + 1);
+        for (int p = 0; p < pools; ++p) {
+            std::vector<MediaItem*> items;  // this pool's items: the selected ones first
+            std::vector<CancelCopy> copies;
+            for (size_t i = 0; i < all.size(); ++i) {
+                if (pool_of[i] != p) continue;
+                CancelCopy    c;
+                ItemRulesRead rd;
+                c.shown = all[i] == shown;
+                c.selected = std::find(selected.begin(), selected.end(), all[i]) != selected.end();
+                c.readable = ReadItemRules(all[i], &rd) && rd.present && rd.valid;
+                if (c.readable) {
+                    c.rules = std::move(rd.rules);
+                    c.raw = std::move(rd.raw);
+                    c.has_snap = ReadCommittedSnapshot(all[i], &c.snap_text);
+                }
+                items.push_back(all[i]);
+                copies.push_back(std::move(c));
             }
-            // Cancellable: rules, a snapshot or previews (a commit then every rule deleted too).
-            std::string snap_text;
-            const bool  has_snap = ReadCommittedSnapshot(it, &snap_text);
-            if (rd.rules.blocks.empty() && !has_snap && !HasPreviews(rd.rules)) {
-                ++res.without_rules;
-                continue;
-            }
-            Run r;
-            r.item = it;
-            r.cur = rd.rules;
-            if (!CancelTarget(rd.rules, rd.raw, has_snap ? &snap_text : nullptr, &r.next)) continue;  // nothing to cancel
-            runs.push_back(std::move(r));
+            PoolCancelPlan plan = PlanPoolCancel(copies);
+            res.without_rules += plan.without_rules;
+            for (CancelWrite& w : plan.writes) runs.push_back({items[w.copy], copies[w.copy].rules, std::move(w.next)});
         }
         if (runs.empty()) {
             g_last = res;

@@ -6,11 +6,14 @@
 
 #ifdef _WIN32
 
+#include <algorithm>
 #include <cstring>
 #include <exception>
+#include <map>
 #include <memory>
 
 #include "asset_cache.h"
+#include "console_log.h"
 #include "event_list.h"
 #include "pcm_source_anim.h"
 #include "preset_store.h"
@@ -48,6 +51,132 @@ bool WriteRaw(MediaItem_Take* take, const std::string& text, const char* undo_de
 
 ItemRulesWrittenHook g_written_hook = nullptr;
 
+constexpr char kUndoMakeUnique[] = "RAV: Make tagging unique";
+
+// ---- 10-6: pools ---------------------------------------------------------------------------------
+
+// A take's record text, without ReadItemRules' 1 MB zero-fill (a pool scan reads every item of
+// the file). "" when there is none.
+std::string ReadRecordText(MediaItem_Take* take)
+{
+    static std::vector<char> buf;
+    if (buf.size() != kItemRulesMaxBytes + 1) buf.assign(kItemRulesMaxBytes + 1, '\0');
+    buf[0] = '\0';
+    if (!GetSetMediaItemTakeInfo_String(take, kItemRulesKey, buf.data(), false)) return "";
+    buf[kItemRulesMaxBytes] = '\0';
+    return buf.data();
+}
+
+// One member of a pool, its record as read.
+struct PoolMember {
+    MediaItem*      item = nullptr;
+    MediaItem_Take* take = nullptr;
+    bool            present = false;  // it has a record (it reads: an unreadable one is never a member)
+    ItemRules       rules;            // the record (none: no rules)
+    std::string     raw;
+};
+
+// The RAV items of `proj` that play `path` with pool id `id`, in project order, `skip` left out.
+// Membership is rule_record.h's InPool (host-tested); only the reads are REAPER's.
+std::vector<PoolMember> ScanPool(ReaProject* proj, const std::string& path, const std::string& id, MediaItem* skip)
+{
+    std::vector<PoolMember> out;
+    if (path.empty()) return out;
+    const int n = CountMediaItems(proj);
+    for (int i = 0; i < n; ++i) {
+        MediaItem* it = GetMediaItem(proj, i);
+        if (!it || it == skip) continue;
+        MediaItem_Take* take = RavTakeOf(it);
+        if (!take) continue;
+        PoolCandidate c;
+        c.path = AnimPathOf(take);
+        if (!SamePoolPath(c.path, path)) continue;  // another file: its record is not read
+        c.record = ReadRecordText(take);
+        PoolMember m;
+        if (!InPool(c, path, id, &m.rules)) continue;  // another pool, or a record that does not read
+        m.item = it;
+        m.take = take;
+        m.present = !c.record.empty();
+        m.raw = std::move(c.record);
+        out.push_back(std::move(m));
+    }
+    return out;
+}
+
+// One other member of a gesture's pool, as it is written.
+struct MemberWrite {
+    MediaItem*      item = nullptr;
+    MediaItem_Take* take = nullptr;
+    bool            before_valid = false;
+    ItemRules       before;
+    std::string     before_raw;
+    ItemRules       after;
+    std::string     text;
+};
+
+// The pool's records, for rule_record.h's PoolGestureStart / PlanPoolGesture.
+std::vector<PoolRecord> RecordsOf(const std::vector<PoolMember>& members)
+{
+    std::vector<PoolRecord> out;
+    out.reserve(members.size());
+    for (const PoolMember& m : members) {
+        PoolRecord r;
+        r.present = m.present;
+        r.rules = m.rules;
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+// The members the plan writes (`which`: indices into `members`): each with its own bookkeeping and
+// `content`'s content.
+std::vector<MemberWrite> MemberWrites(std::vector<PoolMember>& members, const std::vector<size_t>& which,
+                                      const ItemRules& content)
+{
+    std::vector<MemberWrite> out;
+    for (size_t i : which) {
+        if (i >= members.size()) continue;
+        PoolMember& m = members[i];
+        MemberWrite w;
+        w.after = m.rules;
+        CopyPoolContent(content, w.after);
+        w.text = SerializeItemRules(w.after);
+        w.item = m.item;
+        w.take = m.take;
+        w.before_valid = m.present;
+        w.before = m.rules;
+        w.before_raw = m.raw;
+        out.push_back(std::move(w));
+    }
+    return out;
+}
+
+// Writes the members (inside the gesture's undo block), each followed by its written-hook.
+void WritePoolMembers(const std::vector<MemberWrite>& pool, const char* desc)
+{
+    for (const MemberWrite& w : pool) {
+        try {
+            std::string why;
+            if (!WriteRaw(w.take, w.text, desc, false, &why)) {
+                LogWarn("Auto-tagging: a linked item's rules could not be saved: %s", why.c_str());
+                continue;
+            }
+            if (g_written_hook) g_written_hook(w.item, w.before_valid, w.before, w.before_raw, w.after);
+        } catch (...) {
+        }
+    }
+}
+
+std::string FreshPoolId()
+{
+    GUID g{};
+    genGuid(&g);
+    char buf[64] = {};
+    guidToString(&g, buf);
+    buf[sizeof(buf) - 1] = '\0';
+    return buf;
+}
+
 bool ModifyCore(MediaItem* item, const char* undo_desc, bool with_undo, const std::function<bool(ItemRules&)>& edit,
                 std::string* err)
 {
@@ -56,24 +185,44 @@ bool ModifyCore(MediaItem* item, const char* undo_desc, bool with_undo, const st
         if (!take) return Fail(err, "Not a RAV animation item.");
         ItemRulesRead cur;
         if (!ReadItemRules(item, &cur)) return Fail(err, "The item's rules could not be read.");
-        ItemRules rules = cur.valid ? cur.rules : ItemRules{};
+        // 10-6: a gesture reaches the other copies of its pool (a member tagged differently takes
+        // this item's tagging too); the bookkeeping writers (no undo) stay on their item. An item
+        // with no record joins its pool: the edit starts from the pool's tagging, and the item is
+        // written with it. The decisions are rule_record.h's PoolGestureStart / PlanPoolGesture.
+        const std::string       path = AnimPathOf(take);
+        const std::string       start_id = cur.valid ? cur.rules.pool_id : std::string();
+        std::vector<PoolMember> members;
+        if (with_undo) members = ScanPool(nullptr, path, start_id, item);
+        bool      adopted = false;
+        ItemRules rules = PoolGestureStart(cur.present, cur.valid, cur.rules, RecordsOf(members), &adopted);
         // What the record says before the edit: an absent or unreadable record = no rules.
         const std::string before = SerializeItemRules(rules);
         if (!edit || !edit(rules)) return true;  // cancelled: nothing written
-        const std::string text = SerializeItemRules(rules);
+        if (with_undo && rules.pool_id != start_id) members = ScanPool(nullptr, path, rules.pool_id, item);
+        const PoolGesturePlan plan = PlanPoolGesture(cur.valid, cur.raw, before, adopted, rules, RecordsOf(members));
+        const std::string     text = SerializeItemRules(rules);
         // No change, no undo point (and an absent or unreadable record stays as it is).
-        if (text == before || (cur.valid && text == cur.raw)) return true;
-        if (!with_undo || !g_written_hook) return WriteRaw(take, text, undo_desc, with_undo, err);
+        const bool               self = plan.write_self;
+        std::vector<MemberWrite> pool = MemberWrites(members, plan.members, rules);
+        if (!self && pool.empty()) return true;
+        if (!with_undo) return WriteRaw(take, text, undo_desc, false, err);
+        if (!g_written_hook && pool.empty()) return WriteRaw(take, text, undo_desc, true, err);
         // 10-4 fb-4: the record, the first Cancel snapshot and the preview markers in ONE undo
-        // point. What would refuse the write is checked first, so no empty undo point is made.
-        if (text.size() >= kItemRulesMaxBytes) return Fail(err, "The item's rules are too large to save.");
-        if (!ValidatePtr2(nullptr, take, "MediaItem_Take*")) return Fail(err, "The item's take is gone.");
+        // point (10-6: the pool's too). What would refuse the write is checked first, so no empty
+        // undo point is made.
+        if (self) {
+            if (text.size() >= kItemRulesMaxBytes) return Fail(err, "The item's rules are too large to save.");
+            if (!ValidatePtr2(nullptr, take, "MediaItem_Take*")) return Fail(err, "The item's take is gone.");
+        }
         const char* desc = undo_desc ? undo_desc : "RAV: Edit auto-tagging rules";
         Undo_BeginBlock2(nullptr);
-        bool ok = false;
+        bool ok = !self;
         try {
-            ok = WriteRaw(take, text, desc, false, err);
-            if (ok) g_written_hook(item, cur.valid, cur.valid ? cur.rules : ItemRules{}, cur.raw, rules);
+            if (self) {
+                ok = WriteRaw(take, text, desc, false, err);
+                if (ok && g_written_hook) g_written_hook(item, cur.valid, cur.valid ? cur.rules : ItemRules{}, cur.raw, rules);
+            }
+            if (ok) WritePoolMembers(pool, desc);  // the item's own write failed: no member either
         } catch (...) {
             // The block is always closed; the record write's own result stands.
         }
@@ -276,7 +425,9 @@ bool SaveItemAsPreset(MediaItem* item, const std::string& preset_id, const std::
 {
     ItemRulesRead rd;
     if (!ReadItemRules(item, &rd)) return Fail(err, "The item is not a RAV animation.");
-    if (!rd.present || !rd.valid) return Fail(err, "The item has no rules to save.");
+    // 10-6: a linked item with no record holds its pool's tagging (ModifyItemRules writes it with it).
+    if ((!rd.present || !rd.valid) && (rd.present || !ItemPoolContent(item, nullptr)))
+        return Fail(err, "The item has no rules to save.");
     // The file is written (no undo point: a file is not project state) inside the edit, before
     // the item is; the item then adopts it in one undo point. The undo name needs the preset's
     // name, known only once written: Save keeps the preset's name, Save as uses `name`.
@@ -326,6 +477,203 @@ bool KeepItemCurrent(MediaItem* item, std::string* err)
         [&](ItemRules& r) { return KeepCurrent(RulesResourceRoot(), r, &why); }, err);
     if (ok && !why.empty()) return Fail(err, why);
     return ok;
+}
+
+// ---- 10-6: pooled copies --------------------------------------------------------------------------
+
+bool ItemPoolContent(MediaItem* item, ItemRules* out)
+{
+    try {
+        MediaItem_Take* take = RavTakeOf(item);
+        if (!take || !ReadRecordText(take).empty()) return false;  // not RAV, or a record of its own
+        bool            adopted = false;
+        const ItemRules held =
+            PoolGestureStart(false, false, ItemRules{}, RecordsOf(ScanPool(nullptr, AnimPathOf(take), "", item)), &adopted);
+        if (!adopted) return false;
+        if (out) *out = held;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+bool ItemPoolKey(MediaItem* item, std::string* path, std::string* pool_id)
+{
+    try {
+        MediaItem_Take* take = RavTakeOf(item);
+        if (!take) return false;
+        const std::string p = AnimPathOf(take);
+        std::string       id;
+        if (!PoolKeyOf(p, p.empty() ? std::string() : ReadRecordText(take), &id)) return false;  // in no pool
+        if (path) *path = p;
+        if (pool_id) *pool_id = id;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+std::vector<MediaItem*> PoolMembersOf(MediaItem* item, ReaProject* proj)
+{
+    std::vector<MediaItem*> out;
+    try {
+        std::string path, id;
+        if (!ItemPoolKey(item, &path, &id)) return out;
+        for (const PoolMember& m : ScanPool(proj, path, id, item)) out.push_back(m.item);
+    } catch (...) {
+        out.clear();
+    }
+    return out;
+}
+
+std::vector<MediaItem*> WithPoolMembers(const std::vector<MediaItem*>& items, ReaProject* proj, std::vector<int>* pool_of)
+{
+    std::vector<MediaItem*> out;
+    std::vector<int>        group;
+    try {
+        // The project's items as candidates (paths only), then the items asked about that are not
+        // among them. The grouping itself is rule_record.h's GroupPools (host-tested).
+        std::vector<MediaItem*>       handles;
+        std::vector<PoolCandidate>    cands;
+        std::map<MediaItem*, size_t>  index;
+        auto path_of = [](MediaItem* it) {
+            MediaItem_Take* take = RavTakeOf(it);
+            return take ? AnimPathOf(take) : std::string();
+        };
+        const int n = CountMediaItems(proj);
+        for (int i = 0; i < n; ++i) {
+            MediaItem* it = GetMediaItem(proj, i);
+            if (!it || index.count(it)) continue;
+            index[it] = handles.size();
+            handles.push_back(it);
+            PoolCandidate c;
+            c.path = path_of(it);
+            cands.push_back(std::move(c));
+        }
+        std::vector<size_t> sel;
+        for (MediaItem* it : items) {
+            if (!it) continue;
+            const auto f = index.find(it);
+            if (f != index.end()) {
+                sel.push_back(f->second);
+                continue;
+            }
+            index[it] = handles.size();
+            sel.push_back(handles.size());
+            handles.push_back(it);
+            PoolCandidate c;
+            c.path = path_of(it);
+            c.in_project = false;
+            cands.push_back(std::move(c));
+        }
+        // Records are read only where a pool asked about could be: the files of the items asked about.
+        for (size_t j = 0; j < cands.size(); ++j)
+            for (size_t s : sel)
+                if (SamePoolPath(cands[j].path, cands[s].path)) {
+                    if (MediaItem_Take* take = RavTakeOf(handles[j])) cands[j].record = ReadRecordText(take);
+                    break;
+                }
+        const PoolGrouping g = GroupPools(cands, sel);
+        for (size_t k = 0; k < g.order.size(); ++k) {
+            out.push_back(handles[g.order[k]]);
+            group.push_back(g.pool_of[k]);
+        }
+    } catch (...) {
+        // The items asked about stand, each in a pool of its own.
+        out.clear();
+        group.clear();
+        for (MediaItem* it : items)
+            if (it && std::find(out.begin(), out.end(), it) == out.end()) {
+                out.push_back(it);
+                group.push_back(static_cast<int>(group.size()));
+            }
+    }
+    if (pool_of) *pool_of = group;
+    return out;
+}
+
+namespace {
+
+// Gives each item that shares its pool a fresh pool id of its own, in one undo point. How many.
+int MakeUniqueCore(const std::vector<MediaItem*>& items, std::string* err)
+{
+    struct Write {
+        MediaItem_Take* take = nullptr;
+        std::string     text;
+    };
+    std::vector<Write> writes;
+    for (MediaItem* it : items) {
+        try {
+            MediaItem_Take* take = RavTakeOf(it);
+            if (!take) continue;
+            ItemRulesRead rd;
+            if (!ReadItemRules(it, &rd) || (rd.present && !rd.valid)) continue;  // never overwritten
+            std::string path, id;
+            if (!ItemPoolKey(it, &path, &id)) continue;
+            const std::vector<PoolMember> members = ScanPool(nullptr, path, id, it);
+            if (members.empty()) continue;  // nothing shares its tagging: already unique
+            // A linked item with no record holds its pool's tagging: it keeps that.
+            bool      adopted = false;
+            ItemRules r = PoolGestureStart(rd.present, rd.valid, rd.rules, RecordsOf(members), &adopted);
+            r.has_pool = true;
+            r.pool_id = FreshPoolId();
+            Write w;
+            w.take = take;
+            w.text = SerializeItemRules(r);
+            if (w.text.size() >= kItemRulesMaxBytes) continue;
+            writes.push_back(std::move(w));
+        } catch (...) {
+        }
+    }
+    if (writes.empty()) return 0;
+    int done = 0;
+    Undo_BeginBlock2(nullptr);
+    for (const Write& w : writes) {
+        try {
+            if (WriteRaw(w.take, w.text, kUndoMakeUnique, false, err)) ++done;
+        } catch (...) {
+        }
+    }
+    Undo_EndBlock2(nullptr, kUndoMakeUnique, UNDO_STATE_ITEMS);
+    return done;
+}
+
+}  // namespace
+
+bool MakeItemUnique(MediaItem* item, bool* done, std::string* err)
+{
+    if (done) *done = false;
+    try {
+        if (!item || !ValidatePtr2(nullptr, item, "MediaItem*")) return Fail(err, "The item is gone.");
+        if (!RavTakeOf(item)) return Fail(err, "Not a RAV animation item.");
+        std::string path, id;
+        if (!ItemPoolKey(item, &path, &id)) return true;  // its record does not read: left as it is
+        if (PoolMembersOf(item).empty()) return true;     // already unique
+        std::string why;
+        const int   n = MakeUniqueCore({item}, &why);
+        if (n == 0) return Fail(err, why.empty() ? std::string("The item's rules could not be saved.") : why);
+        if (done) *done = true;
+        return true;
+    } catch (...) {
+        return Fail(err, "The item's rules could not be saved.");
+    }
+}
+
+int MakeTaggingUniqueOnSelectedItems()
+{
+    try {
+        std::vector<MediaItem*> items;
+        const int               n = CountSelectedMediaItems(nullptr);
+        for (int i = 0; i < n; ++i)
+            if (MediaItem* it = GetSelectedMediaItem(nullptr, i)) items.push_back(it);
+        std::string err;
+        const int   done = MakeUniqueCore(items, &err);
+        if (done > 0) LogInfo("Auto-tagging: %d item%s made unique", done, done == 1 ? "" : "s");
+        else if (!err.empty()) LogWarn("Auto-tagging: Make unique: %s", err.c_str());
+        return done;
+    } catch (...) {
+        return 0;
+    }
 }
 
 }  // namespace rav

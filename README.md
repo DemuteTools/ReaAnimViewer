@@ -65,6 +65,7 @@ ReaAnimViewer is a native REAPER extension (a `.dll`, plus a small video FX that
   - [Markers](#markers)
   - [Markers follow their item](#markers-follow-their-item)
   - [Editing the markers in REAPER](#editing-the-markers-in-reaper)
+  - [Copies of one animation share their tagging](#copies-of-one-animation-share-their-tagging)
   - [Known limits](#known-limits)
 - [Saving and Sharing Projects](#saving-and-sharing-projects)
 - [Exporting Animations from Your Engine](#exporting-animations-from-your-engine)
@@ -395,7 +396,7 @@ ReaAnimViewer can find events in an animation from the way its bones move, and m
 
 Footsteps are the ready-made starting point: the **Footsteps Heel** and **Footsteps Toe** presets ship with ReaAnimViewer. For everything else, you build your own rules, then save them as presets to reuse them.
 
-Each animation item keeps its own rules, thresholds and corrections, saved in the project. Nothing is written to the animation file.
+Each animation item keeps its rules, thresholds and corrections, saved in the project. Items that play the same animation file share them, like REAPER's pooled MIDI items (see [Copies of one animation share their tagging](#copies-of-one-animation-share-their-tagging)). Nothing is written to the animation file.
 
 ### Quick start: footsteps
 
@@ -406,7 +407,7 @@ Each animation item keeps its own rules, thresholds and corrections, saved in th
 5. As soon as you change something, RAV shows the result on the timeline as **preview markers** (`Footstep L - Preview`, in a darker colour). Nothing is final yet.
 6. Select the items to tag in REAPER (the panel footer says how many), then click **Commit to N items**. The previews are replaced by the real markers. **Cancel** instead puts the items back as they were at their last Commit.
 
-To tag several walk cycles at once, set them up one by one (steps 2 to 4), select them all and click **Commit** once: each item is tagged with its own rules.
+To tag several walk cycles at once, set them up one by one (steps 2 to 4), select them all and click **Commit** once: each item is tagged with its own rules. Copies of one cycle (the same file duplicated to build a longer walk) are set up once: they share their tagging.
 
 ### Tagging your own events
 
@@ -522,8 +523,8 @@ When the animator delivers a new animation on the same item, RAV detects it agai
 **Preview, Commit and Cancel:**
 
 - Every change you make (a threshold, a rule, a preset, a correction) is shown at once as **preview markers**, named `<marker> - Preview`, in a darker colour, next to the markers you committed. They disappear when the result is the same as the committed one.
-- **Commit to N items** writes the real markers of every **selected** item that has rules, each with its own rules, and removes their previews. It replaces only the markers RAV wrote: your own markers are never touched. If one of your markers already has the same name at the same time, RAV leaves it and writes no duplicate. Items without rules are skipped and the footer says so.
-- **Cancel** removes the previews of the selected items and puts their rules, thresholds and events back as they were at their last Commit.
+- **Commit to N items** writes the real markers of every **selected** item that has rules, each with its own rules, and removes their previews. Items linked to a selected one (see [Copies of one animation share their tagging](#copies-of-one-animation-share-their-tagging)) are committed too: the footer counts them as "linked". It replaces only the markers RAV wrote: your own markers are never touched. If one of your markers already has the same name at the same time, RAV leaves it and writes no duplicate. Items without rules are skipped and the footer says so.
+- **Cancel** removes the previews of the selected items (and of the items linked to them) and puts their rules, thresholds and events back as they were at their last Commit.
 - The button reads **Nothing to commit** when the selected items' markers are up to date. The footer line says **markers up to date**, **preview not committed** or **markers not written yet**.
 
 Every change, Commit and Cancel included, is saved in the project at once and is one step in REAPER's undo history. There is no separate "save" step.
@@ -534,7 +535,7 @@ RAV's project markers stay attached to their item, even with the RAV window clos
 
 - **Move** or **trim** the item: its markers move with it. A marker whose event falls outside the trimmed item disappears, and comes back when you extend the item again.
 - **Split** an item: each part gets the markers of its own part.
-- **Duplicate** or copy-paste an item: the copy gets its own markers.
+- **Duplicate** or copy-paste an item: the copy gets its own markers (and shares the original's tagging, see below).
 - **Delete** the item: its markers are deleted too.
 
 Take markers always follow their item, as in any REAPER item.
@@ -548,6 +549,21 @@ You can also correct events right on REAPER's timeline, with the RAV window open
 - **Rename** a RAV marker, or drag it outside its item: the marker becomes yours. RAV leaves it where it is, never moves or deletes it, and suppresses its event.
 - With **Both**, the other marker of the same event follows (drag one, the other moves; delete one, the other goes).
 - After editing a committed marker, the item still reads **markers up to date**: no preview appears. Ctrl+Z undoes the marker edit and the event change together.
+- The items linked to it follow too (see the next section).
+
+### Copies of one animation share their tagging
+
+Sound designers often duplicate one animation to build a longer take: a two-step walk copied five times makes ten steps. You tag it once. Like REAPER's pooled MIDI items, the items of a project that play the same animation file are **linked**: they share one tagging (rules, thresholds, item options, preset, events and corrections).
+
+- **One change, every copy.** A threshold drag, a rule change, **Analyse**, loading, saving or updating a preset, an event correction: every linked item takes it at once, with its preview markers, in ONE undo step. Ctrl+Z puts every copy back together.
+- **Each copy on its own place.** The events are kept in animation time; each item places them on its own position, trim and play rate. A copy trimmed to the second step shows only the events of that step.
+- **Commit and Cancel** act on every linked item of the selected ones, even those not selected.
+- **Edits in REAPER** reach the copies too: drag, delete or rename a RAV marker of one copy, and the event changes on every copy; their markers follow at once and stay **markers up to date**.
+- **The panel** shows the link under the item's name: **Linked · 4 other copies**. Hover it for what is shared.
+- **Make unique** (the button on that line, or the action **RAV: Make tagging unique (selected items)**) gives an item a tagging of its own, as it is now: from then on, a change on it no longer reaches the other copies, nor theirs this one. The line then reads **Not linked**, with a greyed **Unique**. Use it for a deliberate variation (a limp on one step). Duplicate a unique item and the duplicate is linked to it. To link an item back, undo the Make unique (Ctrl+Z): there is no "link again" button yet.
+- What makes copies: the same animation file (the same path, whatever its case or slashes), in the same project. Two different files never link, even with the same motion, and items in different project tabs never link. An item relinked to another file leaves its old copies and joins the new file's.
+- An item added later from the same file (no tagging of its own yet) is linked too: its panel shows the shared tagging at once, a change made on it changes the shared tagging, **Commit** writes its markers like the others', and **Make unique** keeps the shared tagging as its own.
+- Copies tagged differently by an earlier build are linked as well: the next change on one of them gives its tagging to every copy (Ctrl+Z undoes it).
 
 ### Known limits
 
@@ -556,6 +572,7 @@ You can also correct events right on REAPER's timeline, with the RAV window open
 - In RAV view, hovering a joint in **Skeleton** shows its roles only once the Tagging view has been opened on an item with this skeleton.
 - The 3D view does not follow a take's play rate or a looped item, while the strip and the take markers do: on such items the pose and the markers can disagree.
 - Commit skips an item that has no rules left, and leaves the markers it wrote earlier: delete them in REAPER if you remove all of an item's rules.
+- A unique item can only be linked back to its copies by undoing its **Make unique**.
 - Two items that would write the same project marker at the same time (for example a character and its weapon on two tracks) share one marker.
 - Detection reads the bones' motion only: an animation built at runtime in the engine (IK, blend trees) must be baked into the exported file, as for viewing.
 

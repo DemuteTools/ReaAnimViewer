@@ -2,10 +2,12 @@
 //
 // Host test of the per-item rules record (src/rule_record.h, story 10-2): round trip,
 // a record written by a future version, neutral defaults, a corrupt record, signal
-// names, missing roles. No REAPER, no Windows: any C++17 compiler.
+// names, missing roles; 10-6: the pool line and the pooled-copies helpers. No REAPER, no
+// Windows: any C++17 compiler.
 
 #include "rule_record.h"
 
+#include <algorithm>
 #include <clocale>
 #include <cstdio>
 #include <fstream>
@@ -1027,6 +1029,412 @@ int main()
         CHECK(BindBoneRefs(bl, map, names, parents, &missing) && bl[0].conditions[0].signal.bones == std::vector<int>{4});
     }
 
+    // ---- 10-6: pooled copies ----
+    // The pool line: right after the header, only when the record has one.
+    {
+        const std::string pid = "{0A1B2C3D-4E5F-4A6B-8C7D-9E0F1A2B3C4D}";
+        ItemRules         r = FullRecord();
+        const std::string without = SerializeItemRules(r);
+        CHECK(without.find("pool") == std::string::npos);
+        r.has_pool = true;
+        r.pool_id = pid;
+        const std::string with = SerializeItemRules(r);
+        const std::string top = "RAVRULES 1\npool id=" + pid + "\noptions ";
+        CHECK(with.compare(0, top.size(), top) == 0);
+        CHECK(with.substr(top.size() - 8) == without.substr(11));  // the rest as without it
+        ItemRules p;
+        CHECK(ParseItemRules(with, &p));
+        CHECK(p.has_pool && p.pool_id == pid && !HasKeptText(p));
+        CHECK(SerializeItemRules(p) == with);
+        CHECK(PoolContentEqual(p, r));
+        // Absent line: no pool (the file's default one), written back as read.
+        ItemRules q;
+        CHECK(ParseItemRules(without, &q) && !q.has_pool && q.pool_id.empty() && SerializeItemRules(q) == without);
+        // An id with a space, ',', '=' or '%' reads back (encoded as a key).
+        r.pool_id = "my pool,=%";
+        const std::string odd = SerializeItemRules(r);
+        CHECK(odd.find("\npool id=my%20pool%2C%3D%25\n") != std::string::npos);
+        CHECK(ParseItemRules(odd, &p) && p.pool_id == "my pool,=%" && SerializeItemRules(p) == odd);
+        // A pool line only at the top level: inside the preset copy it is kept as text.
+        const std::string in_copy =
+            "RAVRULES 1\npreset id=user/a version=1 kept=0 name=A\ncopy\npool id=x\nend\n";
+        CHECK(ParseItemRules(in_copy, &p) && !p.has_pool && p.preset_copy.copy_kept.lines ==
+                                                                std::vector<std::string>{"pool id=x"});
+    }
+    // Unknown-version keep: a later version's pool line, its unknown field and lines, come back in
+    // place; an edit of the id keeps them.
+    {
+        const std::string s = "RAVRULES 3 extra\n"
+                              "note before\n"
+                              "pool id=abc mode=link\n"
+                              "pool lane 2\n"
+                              "after pool\n"
+                              "options sensitivity=0 edge_ms=0 smooth_ms=8\n"
+                              "analyse floor_pct=2 pos_frac=0.25 speed_pct=30 margin_ratio=0.5 onset_frac=0.1 "
+                              "per_bone_floor=0\n";
+        ItemRules p;
+        CHECK(ParseItemRules(s, &p));
+        CHECK(p.format_version == 3 && p.has_pool && p.pool_id == "abc");
+        CHECK(p.head.lines == std::vector<std::string>{"note before"});
+        CHECK(p.pool_kept.fields.size() == 2 && p.pool_kept.fields[1].key == "mode");
+        CHECK(p.pool_kept.lines == (std::vector<std::string>{"pool lane 2", "after pool"}));  // a second one: text
+        CHECK(HasKeptText(p));
+        const std::string back = SerializeItemRules(p);
+        CHECK(back == s);
+        if (back != s) std::printf("--- got ---\n%s--- want ---\n%s", back.c_str(), s.c_str());
+        p.pool_id = "def";  // Make unique on it
+        CHECK(SerializeItemRules(p).find("note before\npool id=def mode=link\npool lane 2\nafter pool\noptions ") !=
+              std::string::npos);
+        // A record that never had a pool line keeps having none after an edit.
+        ItemRules o;
+        CHECK(ParseItemRules("RAVRULES 1\nblock marker=Step\n", &o) && !o.has_pool);
+        o.blocks[0].marker = "Step 2";
+        CHECK(SerializeItemRules(o).find("pool") == std::string::npos);
+    }
+    // An older RAV (no `pool` line kind) reads the line as an unknown header line and writes it back
+    // in place: the same path as any unknown line right after the header.
+    {
+        const std::string s = "RAVRULES 1\npoolx id={P}\noptions sensitivity=0 edge_ms=0 smooth_ms=8\n"
+                              "analyse floor_pct=2 pos_frac=0.25 speed_pct=30 margin_ratio=0.5 onset_frac=0.1 "
+                              "per_bone_floor=0\n";
+        ItemRules p;
+        CHECK(ParseItemRules(s, &p) && p.head.lines == std::vector<std::string>{"poolx id={P}"} && !p.has_pool);
+        CHECK(SerializeItemRules(p) == s);
+    }
+    // The shared content: CopyPoolContent / PoolContentEqual.
+    {
+        ItemRules a = FullRecord();
+        a.has_pool = true;
+        a.pool_id = "A";
+        a.has_applied = true;
+        a.applied.sig = "SIGA";
+        a.applied.item = "{IA}";
+        TakeMarkerRef tm;
+        tm.t = 1;
+        tm.name = "Foot L";
+        a.tmarkers = {tm};
+        a.head.lines = {"head a"};
+        a.tail = {{1, "tail a"}};
+        ItemRules b;
+        b.has_pool = true;
+        b.pool_id = "B";
+        b.has_previewed = true;
+        b.previewed.sig = "SIGB";
+        b.head.lines = {"head b"};
+        CHECK(!PoolContentEqual(a, b));
+        CopyPoolContent(a, b);
+        CHECK(PoolContentEqual(a, b) && PoolContentEqual(b, a));
+        // The content came: options, analyse, the preset and its copy, the blocks, the events.
+        CHECK(OptionsEqual(b.options, a.options) && AnalyseEqual(b.analyse, a.analyse) && BlocksEqual(b.blocks, a.blocks));
+        CHECK(b.has_preset && b.preset_copy.id == a.preset_copy.id && b.preset_copy.kept_version == 4 &&
+              BlocksEqual(b.preset_copy.blocks, a.preset_copy.blocks));
+        CHECK(b.events.size() == 1 && b.events[0].t == 1 && b.events[0].kind == EventKind::Detected);
+        // b's own bookkeeping stayed: pool, applied / previewed, marker refs, head and tail.
+        CHECK(b.has_pool && b.pool_id == "B" && !b.has_applied && b.has_previewed && b.previewed.sig == "SIGB" &&
+              b.tmarkers.empty());
+        CHECK(b.head.lines == std::vector<std::string>{"head b"} && b.tail.empty());
+        ItemRules pb;
+        CHECK(ParseItemRules(SerializeItemRules(b), &pb) && PoolContentEqual(pb, a) && pb.pool_id == "B");
+        // Bookkeeping never makes two contents differ.
+        ItemRules c = a;
+        c.applied.sig = "other";
+        c.pool_id = "C";
+        c.has_previewed = true;
+        c.head.lines.clear();
+        c.tail.clear();
+        c.tmarkers.clear();
+        c.format_version = 2;
+        CHECK(PoolContentEqual(a, c));
+        // Each content field does.
+        c = a;
+        c.options.sensitivity = 0.3;
+        CHECK(!PoolContentEqual(a, c));
+        c = a;
+        c.analyse.margin_ratio = 0.9;
+        CHECK(!PoolContentEqual(a, c));
+        c = a;
+        c.has_preset = false;
+        CHECK(!PoolContentEqual(a, c));
+        c = a;
+        c.preset_copy.kept_version = 9;
+        CHECK(!PoolContentEqual(a, c));
+        c = a;
+        c.blocks[0].conditions[0].threshold = 2;
+        CHECK(!PoolContentEqual(a, c));
+        c = a;
+        c.blocks[1].enabled = false;
+        CHECK(!PoolContentEqual(a, c));
+        c = a;
+        EventEntry ue;
+        ue.t = 2.5;
+        ue.kind = EventKind::User;
+        c.events.push_back(ue);
+        CHECK(!PoolContentEqual(a, c));
+        c = a;
+        c.blocks[0].kept.lines.push_back("lane 9");  // kept text on a content line is written: content
+        CHECK(!PoolContentEqual(a, c));
+        // No rules at all (no record) is a content too: the empty one.
+        CHECK(PoolContentEqual(ItemRules{}, ItemRules{}) && !PoolContentEqual(ItemRules{}, a));
+        // A copy onto itself changes nothing.
+        ItemRules d = a;
+        CopyPoolContent(d, d);
+        CHECK(SerializeItemRules(d) == SerializeItemRules(a));
+    }
+    // SamePoolPath: ASCII case and slashes ignored, nothing else.
+    {
+        CHECK(SamePoolPath("C:\\Anims\\Walk.fbx", "c:/anims/WALK.FBX"));
+        CHECK(SamePoolPath("/home/a/walk.glb", "\\home\\a\\walk.glb"));
+        CHECK(SamePoolPath("D:\\x\\Pas \xC3\xA9.fbx", "d:/X/pas \xC3\xA9.FBX"));  // other bytes compared as they are
+        CHECK(!SamePoolPath("D:\\x\\\xC3\x89.fbx", "D:\\x\\\xC3\xA9.fbx"));      // only ASCII letters fold
+        CHECK(!SamePoolPath("C:\\Anims\\Walk.fbx", "C:\\Anims\\Walk2.fbx"));
+        CHECK(!SamePoolPath("C:\\Anims\\Walk.fbx", "C:\\Anims\\Walk.glb"));
+        CHECK(!SamePoolPath("C:\\Anims\\Walk.fbx", "C:\\Anims\\Walk.fbx "));
+        CHECK(!SamePoolPath("", ""));
+        CHECK(!SamePoolPath("a", ""));
+        CHECK(!SamePoolPath("", "a"));
+    }
+
+    // ---- 10-6: pool membership and Commit / Cancel's grouping (spec I/O matrix) ----
+    // item_rules.cpp's scans (ScanPool, ItemPoolKey, WithPoolMembers) only read each item's path
+    // and record into a PoolCandidate; these decide.
+    {
+        const std::string walk = "C:\\Anims\\Walk.fbx";
+        const std::string run = "C:\\Anims\\Run.fbx";
+        ItemRules         tagged = FullRecord();
+        const std::string rec = SerializeItemRules(tagged);  // a tagged copy, default pool
+        ItemRules         uniq = tagged;
+        uniq.has_pool = true;
+        uniq.pool_id = "{U}";
+        const std::string rec_u = SerializeItemRules(uniq);  // made unique
+        auto cand = [](const std::string& path, const std::string& record) {
+            PoolCandidate c;
+            c.path = path;
+            c.record = record;
+            return c;
+        };
+        std::string id;
+        ItemRules   parsed;
+
+        // Matrix "Copies before tagging": 5 copies, no records: one pool (the file's default one).
+        {
+            const std::vector<PoolCandidate> p(5, cand(walk, ""));
+            CHECK(PoolKeyOf(walk, "", &id, &parsed) && id.empty() && parsed.blocks.empty());
+            for (const PoolCandidate& c : p) CHECK(InPool(c, walk, ""));
+            const PoolGrouping g = GroupPools(p, {0});  // Load preset on copy 1
+            CHECK(g.order == (std::vector<size_t>{0, 1, 2, 3, 4}));
+            CHECK(g.pool_of == (std::vector<int>{0, 0, 0, 0, 0}));
+            // A tagged copy and an untagged one (no record) are one pool.
+            CHECK(InPool(cand(walk, rec), walk, "") && InPool(cand(walk, ""), walk, ""));
+            CHECK(InPool(cand(walk, rec), walk, "", &parsed) && PoolContentEqual(parsed, tagged));
+        }
+        // Matrix "Unique": Make unique on copy 4, then a tweak on copy 1: copy 4 is not in copy 1's pool.
+        {
+            const std::vector<PoolCandidate> p = {cand(walk, rec), cand(walk, rec), cand(walk, rec), cand(walk, rec_u),
+                                                  cand(walk, rec)};
+            CHECK(PoolKeyOf(walk, rec_u, &id) && id == "{U}");
+            CHECK(!InPool(p[3], walk, ""));   // another pool id: out of the default pool
+            CHECK(InPool(p[3], walk, "{U}"));  // its own
+            PoolGrouping g = GroupPools(p, {0});
+            CHECK(g.order == (std::vector<size_t>{0, 1, 2, 4}));
+            g = GroupPools(p, {3});  // a tweak on copy 4 reaches no other copy
+            CHECK(g.order == std::vector<size_t>{3} && g.pool_of == std::vector<int>{0});
+        }
+        // Matrix "Duplicate a unique": the duplicate carries the same pool id: linked with copy 4 only.
+        {
+            const std::vector<PoolCandidate> p = {cand(walk, rec), cand(walk, rec), cand(walk, rec), cand(walk, rec_u),
+                                                  cand(walk, rec), cand(walk, rec_u)};
+            PoolGrouping g = GroupPools(p, {3});
+            CHECK(g.order == (std::vector<size_t>{3, 5}) && g.pool_of == (std::vector<int>{0, 0}));
+            g = GroupPools(p, {5});
+            CHECK(g.order == (std::vector<size_t>{5, 3}));
+            g = GroupPools(p, {0});
+            CHECK(g.order == (std::vector<size_t>{0, 1, 2, 4}));  // the other copies never reach them
+        }
+        // Matrix "Unreadable member": a record that does not parse is in no pool, never written.
+        {
+            const std::string bad = "garbage";
+            const std::vector<PoolCandidate> p = {cand(walk, rec), cand(walk, bad), cand(walk, rec)};
+            CHECK(!PoolKeyOf(walk, bad, &id));
+            CHECK(!InPool(p[1], walk, "") && !InPool(p[1], walk, "{U}"));
+            PoolGrouping g = GroupPools(p, {0});
+            CHECK(g.order == (std::vector<size_t>{0, 2}));
+            g = GroupPools(p, {1});  // selected itself: kept, a pool of its own, no member
+            CHECK(g.order == std::vector<size_t>{1} && g.pool_of == std::vector<int>{0});
+        }
+        // Matrix "Relinked file": an item relinked to another file leaves the old pool, joins the new
+        // file's. Case and slashes are no other file.
+        {
+            const std::vector<PoolCandidate> p = {cand(walk, rec), cand(run, rec), cand("c:/anims/WALK.fbx", rec),
+                                                  cand(run, "")};
+            CHECK(!InPool(p[1], walk, ""));
+            CHECK(InPool(p[2], walk, ""));
+            PoolGrouping g = GroupPools(p, {0});
+            CHECK(g.order == (std::vector<size_t>{0, 2}));
+            g = GroupPools(p, {1});
+            CHECK(g.order == (std::vector<size_t>{1, 3}));
+            // Not a RAV item (no path): in no pool, whatever its record.
+            CHECK(!PoolKeyOf("", rec, &id) && !InPool(cand("", rec), "", ""));
+        }
+        // Commit / Cancel: the selected items first (selection order, each once), then, pool by pool
+        // in the order of their first selected item, the other members in project order.
+        {
+            const std::vector<PoolCandidate> p = {
+                cand(walk, rec),     // 0  walk, default pool
+                cand(run, ""),       // 1  run, default pool
+                cand(walk, rec_u),   // 2  walk, {U}
+                cand(walk, ""),      // 3  walk, default pool (no record)
+                cand("", ""),        // 4  not a RAV item
+                cand(run, rec),      // 5  run, default pool
+                cand(walk, rec),     // 6  walk, default pool
+                cand(walk, rec_u),   // 7  walk, {U}
+                cand(walk, "x"),     // 8  walk, unreadable
+            };
+            const PoolGrouping g = GroupPools(p, {6, 4, 5, 0, 6, 99, 2});
+            // Selected: 6, 4, 5, 0 (6's pool again), 2; the repeat of 6 and 99 skipped. Then pool 0
+            // (walk default): 3; pool 1 (no pool): none; pool 2 (run): 1; pool 3 ({U}): 7.
+            CHECK(g.order == (std::vector<size_t>{6, 4, 5, 0, 2, 3, 1, 7}));
+            CHECK(g.pool_of == (std::vector<int>{0, 1, 2, 0, 3, 0, 2, 3}));
+            // Every candidate at most once; the unreadable one never drawn in.
+            std::vector<size_t> sorted = g.order;
+            std::sort(sorted.begin(), sorted.end());
+            CHECK(std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end());
+            CHECK(std::find(g.order.begin(), g.order.end(), size_t{8}) == g.order.end());
+            // An item asked about that is not one of the project's: it stands and draws its pool's
+            // members in, but is never drawn in as another item's member.
+            std::vector<PoolCandidate> q = p;
+            q.push_back(cand(walk, rec));
+            q.back().in_project = false;  // 9
+            PoolGrouping h = GroupPools(q, {0});
+            CHECK(h.order == (std::vector<size_t>{0, 3, 6}));
+            h = GroupPools(q, {9});
+            CHECK(h.order == (std::vector<size_t>{9, 0, 3, 6}));
+            CHECK(GroupPools(q, {}).order.empty());
+        }
+    }
+
+    // ---- 10-6: a gesture on a pool (item_rules.cpp ModifyItemRules: PoolGestureStart / PlanPoolGesture) ----
+    {
+        const std::string walk = "C:\\Anims\\Walk.fbx";
+        const ItemRules   tagged = FullRecord();
+        ItemRules         uniq = tagged;
+        uniq.has_pool = true;
+        uniq.pool_id = "{U}";
+        uniq.blocks[0].conditions[0].threshold = 9;  // tuned on its own
+        auto rec = [](bool present, const ItemRules& r) {
+            PoolRecord p;
+            p.present = present;
+            p.rules = present ? r : ItemRules{};
+            return p;
+        };
+        // The pool's other copies as a scan reads them: the candidates InPool keeps for (path, id).
+        auto members_of = [&](const std::vector<PoolCandidate>& cands, size_t self, const std::string& id) {
+            std::vector<PoolRecord> out;
+            for (size_t i = 0; i < cands.size(); ++i) {
+                ItemRules parsed;
+                if (i != self && InPool(cands[i], walk, id, &parsed)) out.push_back(rec(!cands[i].record.empty(), parsed));
+            }
+            return out;
+        };
+        auto load_preset = [&](ItemRules& r) {  // a gesture that sets the content
+            r.options = tagged.options;
+            r.analyse = tagged.analyse;
+            r.blocks = tagged.blocks;
+            r.has_preset = true;
+            r.preset_copy = tagged.preset_copy;
+        };
+        bool adopted = true;
+
+        // Matrix "Copies before tagging": 5 copies, no records; Load preset on copy 1: copy 1 and the
+        // 4 others are written.
+        {
+            const std::vector<PoolRecord> m(4, rec(false, ItemRules{}));
+            ItemRules r = PoolGestureStart(false, false, ItemRules{}, m, &adopted);
+            CHECK(!adopted && r.blocks.empty());
+            const std::string before = SerializeItemRules(r);
+            load_preset(r);
+            const PoolGesturePlan plan = PlanPoolGesture(false, "", before, adopted, r, m);
+            CHECK(plan.write_self && plan.members == (std::vector<size_t>{0, 1, 2, 3}));
+            // A gesture that changes nothing there writes nothing.
+            const ItemRules none = PoolGestureStart(false, false, ItemRules{}, m, &adopted);
+            const PoolGesturePlan idle = PlanPoolGesture(false, "", SerializeItemRules(none), adopted, none, m);
+            CHECK(!idle.write_self && idle.members.empty());
+        }
+        // Matrix "Unique": copy 4 made unique, then a tweak on copy 1: copy 4 is no member, so never
+        // written; a tweak on copy 4 writes it alone.
+        {
+            PoolCandidate t, u;
+            t.path = u.path = walk;
+            t.record = SerializeItemRules(tagged);
+            u.record = SerializeItemRules(uniq);
+            const std::vector<PoolCandidate> cands = {t, t, t, u, t};
+            const std::vector<PoolRecord>    m = members_of(cands, 0, "");
+            CHECK(m.size() == 3);  // copies 2, 3, 5
+            ItemRules r = PoolGestureStart(true, true, tagged, m, &adopted);
+            CHECK(!adopted);
+            const std::string before = SerializeItemRules(r);
+            r.blocks[0].conditions[0].threshold = 0.5;  // the tweak
+            PoolGesturePlan plan = PlanPoolGesture(true, before, before, adopted, r, m);
+            CHECK(plan.write_self && plan.members == (std::vector<size_t>{0, 1, 2}));
+            for (const PoolRecord& x : m) CHECK(x.rules.pool_id.empty());  // never the unique one
+            const std::vector<PoolRecord> mu = members_of(cands, 3, "{U}");
+            CHECK(mu.empty());
+            ItemRules ru = PoolGestureStart(true, true, uniq, mu, &adopted);
+            const std::string ub = SerializeItemRules(ru);
+            ru.blocks[0].conditions[0].threshold = 0.6;
+            plan = PlanPoolGesture(true, ub, ub, adopted, ru, mu);
+            CHECK(plan.write_self && plan.members.empty());
+        }
+        // An item added later (no record) joins its pool: it holds the pool's tagging; a gesture on it
+        // starts from that, and writes it AND the copies that differ.
+        {
+            ItemRules other = tagged;
+            other.blocks.pop_back();  // a copy tagged differently (an earlier build)
+            const std::vector<PoolRecord> m = {rec(false, ItemRules{}), rec(true, tagged), rec(true, other)};
+            ItemRules r = PoolGestureStart(false, false, ItemRules{}, m, &adopted);
+            CHECK(adopted && PoolContentEqual(r, tagged));  // the first copy that has content
+            CHECK(!r.has_pool && !r.has_applied);           // content only, no bookkeeping
+            const std::string before = SerializeItemRules(r);
+            Block nb;
+            nb.marker = "Added";
+            r.blocks.push_back(nb);  // "+ Rule" on it: added to the shared rules
+            PoolGesturePlan plan = PlanPoolGesture(false, "", before, adopted, r, m);
+            CHECK(plan.write_self && plan.members == (std::vector<size_t>{0, 1, 2}));
+            CHECK(r.blocks.size() == tagged.blocks.size() + 1);
+            // The no-op case: an edit that changes nothing still writes the item (it takes the pool's
+            // tagging as its record); the copies that hold it already are not written.
+            ItemRules same = PoolGestureStart(false, false, ItemRules{}, m, &adopted);
+            const std::string sb = SerializeItemRules(same);
+            plan = PlanPoolGesture(false, "", sb, adopted, same, m);
+            CHECK(plan.write_self && plan.members == (std::vector<size_t>{0, 2}));
+            const std::vector<PoolRecord> agreeing = {rec(true, tagged), rec(true, tagged)};
+            same = PoolGestureStart(false, false, ItemRules{}, agreeing, &adopted);
+            plan = PlanPoolGesture(false, "", SerializeItemRules(same), adopted, same, agreeing);
+            CHECK(adopted && plan.write_self && plan.members.empty());
+        }
+        // An item with a record of its own never adopts (even an empty one, or one that does not read);
+        // a no-op gesture on it writes only the copies tagged differently.
+        {
+            ItemRules other = tagged;
+            other.options.sensitivity = 0.9;
+            const std::vector<PoolRecord> m = {rec(true, tagged), rec(true, other)};
+            ItemRules r = PoolGestureStart(true, true, tagged, m, &adopted);
+            CHECK(!adopted);
+            const std::string raw = SerializeItemRules(tagged);
+            PoolGesturePlan plan = PlanPoolGesture(true, raw, SerializeItemRules(r), adopted, r, m);
+            CHECK(!plan.write_self && plan.members == std::vector<size_t>{1});
+            ItemRules empty_own;
+            r = PoolGestureStart(true, true, empty_own, m, &adopted);
+            CHECK(!adopted && r.blocks.empty());
+            r = PoolGestureStart(true, false, tagged, m, &adopted);  // unreadable: no rules, no adoption
+            CHECK(!adopted && r.blocks.empty());
+            // Nothing in the pool changes: nothing is written.
+            const std::vector<PoolRecord> eq = {rec(true, tagged)};
+            r = PoolGestureStart(true, true, tagged, eq, &adopted);
+            plan = PlanPoolGesture(true, raw, SerializeItemRules(r), adopted, r, eq);
+            CHECK(!plan.write_self && plan.members.empty());
+        }
+    }
+
     // ---- 10-5 frozen fixtures ----
     // Written by the 10-5 build (the shipped v1 grammar) and committed as text. NEVER
     // regenerate them: a later format change must keep reading these and writing them back
@@ -1090,6 +1498,15 @@ int main()
         CHECK(p.has_previewed && p.previewed.sig == "5c7e19ab02f4d836");
         CHECK(p.ptmarkers.size() == 1 && p.ptmarkers[0].name == "Footstep R - Preview");
         CHECK(p.ppmarkers.size() == 1 && p.ppmarkers[0].c == 2.5 && p.ppmarkers[0].color == (0x1000000u | 0x6F4F30u));
+        // 10-6: no pool line: the file's default pool. A copy of its content onto a record of
+        // another pool leaves that record's pool, and the fixture's own text, as they are.
+        CHECK(!p.has_pool && p.pool_id.empty());
+        ItemRules other;
+        other.has_pool = true;
+        other.pool_id = "{U}";
+        CopyPoolContent(p, other);
+        CHECK(PoolContentEqual(other, p) && other.pool_id == "{U}" && !other.has_applied);
+        CHECK(SerializeItemRules(p) == fx);
     }
     {
         // The Cancel snapshot (the record as of the last Commit, its own take key, same grammar).
@@ -1101,6 +1518,7 @@ int main()
         CHECK(SerializeItemRules(p) == fx);
         CHECK(p.events.size() == 4 && p.has_applied && p.pmarkers.size() == 3);
         CHECK(!p.has_previewed && p.ptmarkers.empty() && p.ppmarkers.empty());
+        CHECK(!p.has_pool);  // 10-6
     }
 
     if (g_fails) {

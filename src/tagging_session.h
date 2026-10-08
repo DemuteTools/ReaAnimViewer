@@ -12,7 +12,8 @@
 //     rules, or a live preview while a drag runs (the preview is never written).
 //   - Every edit goes through ModifyItemRules (one REAPER undo point, named after the edit,
 //     that also rewrites the item's preview markers: tag_markers.h). Analyse is one edit too;
-//     nothing runs it on its own.
+//     nothing runs it on its own. 10-6: the edit reaches the other copies of the item's pool
+//     in that same undo point (item_rules.h).
 //
 // Main thread only (REAPER item APIs). No ImGui, no GL. No-throw.
 
@@ -39,7 +40,8 @@ struct TaggingModel {
     MediaItem*  item = nullptr;  // the item under the playhead (null = none)
     std::string item_name;       // its take's name
     std::string path;            // its animation file
-    bool        has_record = false;   // a readable record exists (none yet = the view edits an empty one)
+    bool        has_record = false;   // a readable record exists (none yet = the view edits an empty one;
+                                      // 10-6: a linked item with none shows its pool's tagging, read through)
     bool        unreadable = false;   // a record that does not read (shown as no rules)
     ItemRules   rules;                // the saved record (no rules = default)
     // The preset field.
@@ -80,12 +82,18 @@ struct TaggingModel {
     std::vector<PlannedMarker> planned;
     bool                       markers_up_to_date = false;
     bool                       has_previews = false;  // 10-4 fb-4: the saved record has preview markers
-    // The selection (the footer).
-    int sel_count = 0;
+    // 10-6: the item's pool (read at the selection's cadence, not per frame): how many other items
+    // share its tagging, and whether it was made unique (its record has a pool id of its own).
+    int  pool_others = 0;
+    bool pool_unique = false;
+    // The selection (the footer). 10-6: Commit and Cancel also act on every other copy of the
+    // selected items' pools: the counts below are over the selected items AND those copies.
+    int sel_count = 0;          // selected items
+    int sel_linked = 0;         // 10-6: copies of their pools that are not selected
     int sel_without_rules = 0;
     int sel_roles_skipped = 0;
-    int sel_to_commit = 0;    // selected items Commit would change (never committed, previews, other option)
-    int sel_cancellable = 0;  // 10-4 fb-4: selected items Cancel acts on (rules, a snapshot or previews)
+    int sel_to_commit = 0;    // items Commit would change (never committed, previews, other option)
+    int sel_cancellable = 0;  // 10-4 fb-4: items Cancel acts on (rules, a snapshot or previews)
 };
 
 // Story 10-4 -- one item's detection, for Apply on any selected item (not only the one shown).
@@ -164,6 +172,11 @@ bool TaggingKeepPreset();
 // The preset files changed on disk (rename, delete, import, a save): the preset field's name,
 // state and versions are read again (no detection).
 void TaggingPresetFilesChanged();
+
+// 10-6 -- "Make unique" on the item (MakeItemUnique, one undo point): it no longer shares its
+// tagging with the other copies of its file. `for_item`: the item it was clicked on (nothing
+// is written when it is no longer the current item). Errors go to TaggingLastError.
+bool TaggingMakeUnique(MediaItem* for_item);
 
 // The last write's error ("" when it went through), shown inline.
 const std::string& TaggingLastError();

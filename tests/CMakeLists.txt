@@ -58,6 +58,12 @@ add_executable(bone_roles_test bone_roles_test.cpp ../src/bone_events.cpp)
 target_include_directories(bone_roles_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME bone_roles COMMAND bone_roles_test)
 
+# Spec 10-7a -- "REF <label>" reference markers and their CSV lines (src/ref_labels.h).
+add_executable(ref_labels_test ref_labels_test.cpp ../src/bone_events.cpp ../src/role_map_store.cpp
+               ../src/rule_record.cpp)
+target_include_directories(ref_labels_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME ref_labels COMMAND ref_labels_test)
+
 # Spec 10-0 -- the offline evaluator: runs the footstep detection on RAV_detection_dump CSV
 # files and prints the measure action's report (a tool, not a test):
 #   detection_eval [--param=value ...] [--json] file.csv...

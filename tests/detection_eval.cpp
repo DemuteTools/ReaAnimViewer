@@ -13,8 +13,10 @@
 // --json: one JSON line per item, then one for the TOTAL (for scripted parameter search).
 //
 // The CSV: '# item=<label>', '# rate_hz=<hz>', '# visible=<lo>,<hi>', '# ref=<t>,<t>...',
-// '# parent=...' (ignored), then the header 't,<bone>.x,<bone>.y,<bone>.z,...' and one row
-// per sample (metres, model Y up).
+// from spike 10-7a '# ref.<label>=<t>,<t>...' and '# ref_bone.<label>=<bone>' per labelled
+// bone (ref_labels.h; absent from older dumps), '# parent=...' (ignored), then the header
+// 't,<bone>.x,<bone>.y,<bone>.z,...' and one row per sample (metres, model Y up).
+// The Footsteps measure uses every REF time; each item's report adds its "REF by bone" line.
 // Positions only: a rotation condition (q=rot, 10-4 follow-up) cannot be evaluated from a
 // dump. This tool only runs the built-in Footsteps preset, which has no rotation condition;
 // MeasureFootsteps keeps a defensive skip for one, and any rotation signal on position-only
@@ -28,6 +30,7 @@
 #include <vector>
 
 #include "footstep_measure.h"
+#include "ref_labels.h"
 
 using namespace rav;
 
@@ -59,7 +62,7 @@ struct Clip {
     double                 rate = 240.0;
     bool                   has_visible = false;
     double                 lo = 0.0, hi = 0.0;
-    std::vector<double>    refs;
+    RefTimes               refs;
     std::vector<std::string> names;
     std::vector<BoneTrack> tracks;
 };
@@ -95,11 +98,8 @@ bool ReadClip(const std::string& path, Clip& c, std::string* err)
             } else if (k == "visible") {
                 const auto p = Split(v, ',');
                 c.has_visible = p.size() == 2 && ToDouble(p[0], &c.lo) && ToDouble(p[1], &c.hi);
-            } else if (k == "ref") {
-                for (const std::string& t : Split(v, ',')) {
-                    double x;
-                    if (ToDouble(t, &x)) c.refs.push_back(x);
-                }
+            } else {
+                ReadRefHeader(k, v, &c.refs);  // ref, ref.<label>, ref_bone.<label>; others ignored
             }
             continue;
         }
@@ -208,7 +208,7 @@ int main(int argc, char** argv)
         ItemMeasure m;
         if (!ReadClip(files[f], c, &err)) {
             m.skipped = "could not read " + files[f] + ": " + err;
-        } else if (c.refs.empty()) {
+        } else if (c.refs.all.empty()) {
             m.skipped = "no REF times in the file";
         } else {
             m = MeasureFootsteps(
@@ -218,16 +218,16 @@ int main(int argc, char** argv)
                     for (int i : idx) t.push_back(c.tracks.at(static_cast<size_t>(i)));
                     return t;
                 },
-                c.refs, c.lo, c.hi, prm);
+                c.refs.all, c.lo, c.hi, prm);
         }
         const std::string name = c.label.empty() ? files[f] : c.label;
         if (m.skipped.empty()) measured.push_back(m.match);
         if (json) {
             std::printf("%s\n", ItemJson(name, m).c_str());
         } else if (!m.skipped.empty()) {
-            std::printf("%s", SkippedReport(label + name, m.skipped).c_str());
+            std::printf("%s%s", SkippedReport(label + name, m.skipped).c_str(), RefLabelsText(c.refs).c_str());
         } else {
-            std::printf("%s", ItemReport(label + name, m, c.refs, "").c_str());
+            std::printf("%s%s", ItemReport(label + name, m, c.refs.all, "").c_str(), RefLabelsText(c.refs).c_str());
         }
     }
     if (json) {

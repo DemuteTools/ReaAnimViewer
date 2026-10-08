@@ -6,7 +6,6 @@
 
 #ifdef _WIN32
 
-#include <cctype>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -25,14 +24,16 @@
 #include "bone_roles.h"
 #include "bone_sampling.h"
 #include "footstep_measure.h"
+#include "item_rules.h"
 #include "pcm_source_anim.h"
 #include "reaper_api.h"
+#include "ref_labels.h"
+#include "role_map_store.h"
 
 namespace rav {
 namespace {
 
 constexpr const char kTitle[] = "RAV: Measure detection against reference markers";
-constexpr const char kRefName[] = "REF";
 constexpr const char kDetName[] = "RAV?";
 constexpr double kRateHz = kDetectRateHz;
 
@@ -58,25 +59,6 @@ std::string Format(const char* fmt, ...)
     std::vsnprintf(buf, sizeof(buf), fmt, ap);
     va_end(ap);
     return buf;
-}
-
-std::string Trimmed(const char* s)
-{
-    std::string t = s ? s : "";
-    while (!t.empty() && std::isspace(static_cast<unsigned char>(t.back()))) t.pop_back();
-    size_t i = 0;
-    while (i < t.size() && std::isspace(static_cast<unsigned char>(t[i]))) ++i;
-    return t.substr(i);
-}
-
-bool SameName(const char* name, const char* want)
-{
-    const std::string t = Trimmed(name);
-    if (t.size() != std::strlen(want)) return false;
-    for (size_t i = 0; i < t.size(); ++i)
-        if (std::tolower(static_cast<unsigned char>(t[i])) != std::tolower(static_cast<unsigned char>(want[i])))
-            return false;
-    return true;
 }
 
 std::string BaseName(const std::string& path)
@@ -130,17 +112,17 @@ struct ItemRun {
     MediaItem_Take*     take = nullptr;
     ItemMeasure         m;        // the shared measure (footstep_measure.h)
     bool                ref_from_project = false;  // REF read from project markers over the item
-    std::vector<double> refs;     // REF times (clip time), for the per-step diagnostic
+    RefTimes            refs;     // REF times (clip time), all and per label (ref_labels.h)
     std::string         dump;     // the bone-track dump written for offline tuning ("" = none)
 };
 
 
-// Dev harness: writes every bone's track (240 Hz, metres, model Y up) and the REF times to
-// <project folder>/RAV_detection_dump/<file>.csv, so detection can be tuned offline on
-// the exact data REAPER measured. Positions only (no orientations): rotation conditions
-// cannot be tuned offline. Returns the file path, "" on failure. No-throw.
-std::string DumpTracks(const CpuAsset& asset, const std::string& label, const std::vector<double>& refs,
-                       double lo, double hi)
+// Dev harness: writes every bone's track (240 Hz, metres, model Y up) and the REF times, all
+// and per label with each label's bone, to <project folder>/RAV_detection_dump/<file>.csv, so
+// detection can be tuned offline on the exact data REAPER measured. Positions only (no
+// orientations): rotation conditions cannot be tuned offline. Returns the file path, "" on
+// failure. No-throw.
+std::string DumpTracks(const CpuAsset& asset, const std::string& label, const RefTimes& refs, double lo, double hi)
 {
     try {
         std::vector<int> all;
@@ -159,8 +141,8 @@ std::string DumpTracks(const CpuAsset& asset, const std::string& label, const st
         if (!out) return "";
         out << "# item=" << label << "\n# rate_hz=" << kRateHz << "\n# visible=" << Format("%.6f,%.6f", lo, hi)
             << "\n# ref=";
-        for (size_t i = 0; i < refs.size(); ++i) out << (i ? "," : "") << Format("%.6f", refs[i]);
-        out << "\n# parent=";
+        for (size_t i = 0; i < refs.all.size(); ++i) out << (i ? "," : "") << Format("%.6f", refs.all[i]);
+        out << "\n" << RefLabelLines(refs) << "# parent=";
         for (size_t b = 0; b < asset.skeleton.bones.size(); ++b) out << (b ? "," : "") << asset.skeleton.bones[b].parentIdx;
         out << "\nt";
         for (const SceneBone& b : asset.skeleton.bones) out << "," << b.name << ".x," << b.name << ".y," << b.name << ".z";
@@ -209,33 +191,36 @@ void MeasureItem(MediaItem* item, const FootstepsParams& k, ItemRun& run)
     const double item_len = GetMediaItemInfo_Value(item, "D_LENGTH");
     const double hi = lo + item_len * rate;
 
-    // REF take markers (source time). Without any, the REF project markers over the item
-    // (not regions), mapped to source time. Never both: the same step would count twice.
-    std::vector<double> refs;
+    // REF and "REF <label>" take markers (source time). Without any, the REF project markers
+    // over the item (not regions), mapped to source time. Never both: the same step would
+    // count twice.
+    RefTimes refs;
+    std::string ref_label;
     const int nm = g_num_take_markers(take);
     for (int i = 0; i < nm; ++i) {
         char name[256] = {};
         const double pos = g_get_take_marker(take, i, name, sizeof(name), nullptr);
-        if (pos >= 0.0 && SameName(name, kRefName)) refs.push_back(pos);
+        if (pos >= 0.0 && ParseRefMarkerName(name, &ref_label)) refs.Add(ref_label, pos);
     }
-    if (refs.empty()) {
+    if (refs.all.empty()) {
         bool is_rgn = false;
         double pos = 0.0, rgn_end = 0.0;
         const char* name = nullptr;
         int number = 0;
         for (int i = 0; EnumProjectMarkers2(nullptr, i, &is_rgn, &pos, &rgn_end, &name, &number) > 0; ++i) {
-            if (is_rgn || !SameName(name, kRefName)) continue;
+            if (is_rgn || !ParseRefMarkerName(name, &ref_label)) continue;
             if (pos < item_pos - 1e-9 || pos > item_pos + item_len + 1e-9) continue;
-            refs.push_back(lo + (pos - item_pos) * rate);
+            refs.Add(ref_label, lo + (pos - item_pos) * rate);
         }
-        if (!refs.empty()) run.ref_from_project = true;
+        if (!refs.all.empty()) run.ref_from_project = true;
     }
-    if (refs.empty()) {
+    if (refs.all.empty()) {
         run.skipped = "no REF marker (take marker, or project marker over the item)";
         return;
     }
+    run.refs = refs;  // the report shows the labels even if the item is skipped below
     int refs_inside = 0;
-    for (double r : refs)
+    for (double r : refs.all)
         if (r >= lo && r <= hi) ++refs_inside;
     if (refs_inside == 0) {
         run.skipped = "no REF marker inside the visible part of the item";
@@ -252,15 +237,18 @@ void MeasureItem(MediaItem* item, const FootstepsParams& k, ItemRun& run)
         run.skipped = "the file has no animation";
         return;
     }
-    run.dump = DumpTracks(asset, run.label, refs, lo, hi);
-
-    // Roles -> bones -> tracks -> Analyse + Detect -> match (shared with tests/detection_eval).
     std::vector<std::string> names;
     for (const SceneBone& b : asset.skeleton.bones) names.push_back(b.name);
-    run.refs = refs;
+    // Each label is a role key: its bone on this skeleton, from the user's roles.txt (stored,
+    // else guessed), as the Tagging view maps it.
+    if (!run.refs.by_label.empty()) ResolveRefBones(ReadRoleMapFile(RulesResourceRoot()), names, &run.refs);
+    run.dump = DumpTracks(asset, run.label, run.refs, lo, hi);
+
+    // Roles -> bones -> tracks -> Analyse + Detect -> match (shared with tests/detection_eval).
+    // Every REF counts, labelled or not.
     run.m = MeasureFootsteps(
-        names, [&](const std::vector<int>& bones) { return SampleBoneTracks(asset, bones, kRateHz); }, refs, lo, hi,
-        k);
+        names, [&](const std::vector<int>& bones) { return SampleBoneTracks(asset, bones, kRateHz); }, run.refs.all,
+        lo, hi, k);
     if (!run.m.skipped.empty()) run.skipped = run.m.skipped;
 }
 
@@ -303,11 +291,13 @@ void Report(const std::vector<ItemRun>& runs, const FootstepsParams& k)
         const std::string label = Format("#%zu %s", i + 1, r.label.empty() ? "(item)" : r.label.c_str());
         if (!r.skipped.empty()) {
             out += SkippedReport(label, r.skipped);
+            out += RefLabelsText(r.refs);
             if (!r.dump.empty()) out += "  bone tracks: " + r.dump + "\n";
             continue;
         }
         measured.push_back(r.m.match);
-        out += ItemReport(label, r.m, r.refs, r.ref_from_project ? "  (REF: project markers)" : "");
+        out += ItemReport(label, r.m, r.refs.all, r.ref_from_project ? "  (REF: project markers)" : "");
+        out += RefLabelsText(r.refs);
         if (!r.dump.empty()) out += "  bone tracks: " + r.dump + "\n";
     }
     out += TotalReport(measured, k);

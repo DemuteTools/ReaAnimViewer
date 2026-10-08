@@ -4,10 +4,10 @@
 // 10-7a): "REF" marks a contact of any bone, "REF <label>" a contact of the bone that plays
 // role <label> (bone_roles.h: a built-in or a custom role key), or else of the bone named
 // <label> ("REF LeftToe_End", "REF mixamorig:LeftHand": no role needed). The label is
-// normalized with RoleKeyFromName, so "REF left_hand" and "REF Left hand" (the name the role
-// was created with) both read "left_hand". Role keys, not shown names: a built-in role's shown
-// name can differ from its key ("left hip (up leg)" is left_up_leg), and a renamed custom role
-// keeps its first key.
+// normalized with RoleKeyFromName, so "REF left_hand" and "REF Left hand" both read
+// "left_hand", and "REF Sword Tip" (the name a custom role was created with) "sword_tip". Role
+// keys, not shown names: a built-in role's shown name can differ from its key ("left hip (up
+// leg)" is left_up_leg), and a renamed custom role keeps its first key.
 //
 // The action dumps them to its CSV (detection_measure.cpp) and tests/detection_eval.cpp reads
 // them back. After '# ref=<t>,<t>...' (every REF time, labelled or not), one pair per label,

@@ -96,10 +96,11 @@ namespace rav {
 
 // ---- Bone references -------------------------------------------------------------------
 
-// Ids 0 .. Role::Count-1 are the roles. Any other key (an unknown role "role:left_hand",
+// Ids 0 .. Role::Count-1 are the roles. Any other key (an unknown role "role:tail_end",
 // a bone "bone:mixamorig:LeftFoot") gets an id >= kBoneRefExtra, interned for the life of
 // the process (thread-safe), so equal keys always have equal ids.
 constexpr int kBoneRefExtra = 1000;
+static_assert(static_cast<int>(Role::Count) < kBoneRefExtra, "role ids must stay below the interned ones");
 
 // The id of a decoded key ("role:left_heel", "bone:<raw name>"). -1 for an empty key.
 int BoneRefId(const std::string& key);
@@ -108,7 +109,7 @@ int BoneRefForBone(const std::string& raw_name);
 // The decoded key of an id ("" when the id is neither a role nor interned).
 std::string BoneRefKey(int id);
 // Human name, for a missing list: "left toe" (RoleName), a custom role's display name
-// (SetCustomRoleNames; a key without one reads with '_' as ' ': "left hand"), or the bone's
+// (SetCustomRoleNames; a key without one reads with '_' as ' ': "tail end"), or the bone's
 // raw name.
 std::string BoneRefName(int id);
 // Short label, for signal names: "L heel", "hips", an unknown role as BoneRefName, the
@@ -117,7 +118,9 @@ std::string BoneRefLabel(int id);
 
 // Spec 10-3c -- the id "+" puts in a condition for the bone `bone` (raw_name) picked in the 3D
 // view: its role when it plays exactly one on this skeleton (role_to_bone indexed by Role,
-// custom_role_to_bone key -> bone index), so rules stay portable; else the raw bone.
+// custom_role_to_bone key -> bone index), so rules stay portable. When it plays several, the one
+// built-in role it is named for (IsOwnBoneOfRole: ball_l is the toe, and only stands in for the
+// toe end); else (none or several such) the raw bone.
 int BoneRefForPickedBone(int bone, const std::string& raw_name, const std::vector<int>& role_to_bone,
                          const std::map<std::string, int>& custom_role_to_bone);
 

@@ -1092,7 +1092,7 @@ bool ExportRoleConfig(const std::string& root, const std::vector<std::string>& b
     try {
         FileState         st;
         const RoleMapFile f = LoadFile(root, &st);
-        // An unreadable roles.txt: the window shows the 9 built-in roles only (all on the guess).
+        // An unreadable roles.txt: the window shows the built-in roles only (all on the guess).
         const std::vector<std::string> extra = st == FileState::Unreadable ? std::vector<std::string>{} : extra_keys;
         return WriteTextAtomic(fs::u8path(dest_path), ExportRolesCsv(RoleCsvRowsFromFile(f, bone_names, extra), sep),
                                err);

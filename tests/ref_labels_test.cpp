@@ -164,7 +164,7 @@ int main()
         RefTimes t;
         t.Add("left_heel", 1.0);   // built-in, stored for this skeleton
         t.Add("right_heel", 1.5);  // built-in, guessed (Mixamo heel = Foot)
-        t.Add("left_hand", 2.0);   // custom, stored
+        t.Add("left_hand", 2.0);   // once custom, built-in since: its stored line still plays it
         t.Add("left_knee", 2.5);   // built-in, no bone on this rig
         t.Add("tail", 3.0);        // custom, no bone on this rig
         t.Add("lft_heel", 3.5);    // a typo: no role and no bone has this name
@@ -189,6 +189,26 @@ int main()
               "bone plays this role)\n");
         // Its bones are what the dump writes.
         CHECK(RefLabelLines(t).find("# ref_bone.left_hand=mixamorig:LeftHand\n") != std::string::npos);
+    }
+
+    // The toe tip, arm and body roles are role keys with no roles.txt: guessed on Mixamo names.
+    // A role no bone plays is still a role (never "no role or bone has this name").
+    {
+        const std::vector<std::string> names = {"mixamorig:Hips", "mixamorig1_LeftToe_End", "mixamorig:RightHand",
+                                                "mixamorig:Spine2"};
+        RefTimes    t;
+        std::string label;
+        CHECK(ParseRefMarkerName("REF Left Toe End", &label) && label == "left_toe_end");
+        t.Add(label, 1.0);
+        CHECK(ParseRefMarkerName("ref RIGHT-HAND", &label) && label == "right_hand");
+        t.Add(label, 2.0);
+        t.Add("chest", 3.0);
+        t.Add("head", 4.0);
+        ResolveRefBones(RoleMapFile{}, names, &t);
+        CHECK(t.bone["left_toe_end"] == "mixamorig1_LeftToe_End");
+        CHECK(t.bone["right_hand"] == "mixamorig:RightHand");
+        CHECK(t.bone["chest"] == "mixamorig:Spine2");
+        CHECK(t.bone["head"].empty() && t.unknown.empty());
     }
 
     if (g_fails) {

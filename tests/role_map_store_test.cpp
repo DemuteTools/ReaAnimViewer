@@ -563,12 +563,13 @@ int main()
         CHECK(SetRoleBone(C, rig, Role::LeftHeel, "mixamorig:LeftFoot", &err));
         CHECK(SetRoleBone(C, rig, Role::RightToe, "", &err));  // no bone
 
-        // Export: 9 built-in rows, the user's roles, the rules' extra keys; BOM, CRLF, entries.
+        // Export: the built-in rows, the user's roles, the rules' extra keys; BOM, CRLF, entries.
         const RoleMapFile             fa = ReadRoleMapFile(C);
         const std::vector<RoleCsvRow> rows = RoleCsvRowsFromFile(fa, rig, {"left_heel", "fin_tip", "sword_tip"});
-        CHECK(rows.size() == static_cast<size_t>(Role::Count) + 2);
-        CHECK(rows.size() >= 11 && rows[0].key == "left_heel" && rows[9].key == "sword_tip" &&
-              rows[10].key == "fin_tip" && rows[10].name == "fin tip");
+        const size_t                  nb = static_cast<size_t>(Role::Count);
+        CHECK(rows.size() == nb + 2);
+        CHECK(rows.size() >= nb + 2 && rows[0].key == "left_heel" && rows[nb].key == "sword_tip" &&
+              rows[nb + 1].key == "fin_tip" && rows[nb + 1].name == "fin tip");
         const std::string csv = ExportRolesCsv(rows, ',');
         CHECK(csv.compare(0, 3, "\xEF\xBB\xBF") == 0);
         CHECK(csv.find("role,name,bone\r\n") == 3);
@@ -765,7 +766,7 @@ int main()
             CHECK(ImportRoleConfig(N, rig, ip, &rep, &snap, &err) && snap.existed && snap.text == "garbage\n");
             CHECK(RestoreRoleMapText(N, snap, &err) && ReadAll(fs::u8path(RoleMapPath(N))) == "garbage\n");
         }
-        // Unreadable roles.txt: import refused (nothing written), export still works (9 rows).
+        // Unreadable roles.txt: import refused (nothing written), export still works (built-in rows).
         {
             const std::string U = (root / "csv_u").u8string();
             fs::create_directories(fs::u8path(RoleMapPath(U)));  // a folder where the file goes
@@ -781,6 +782,73 @@ int main()
             CHECK(!RestoreRoleMapText(U, RoleMapSnapshot{true, "RAVROLES 1\n"}, &err) && !err.empty());
             CHECK(fs::is_directory(fs::u8path(RoleMapPath(U))));
         }
+    }
+
+    // ---- A user's role whose key became built-in (left_hand, head: the arm and body roles) ----
+    // Its map lines are read for the built-in role: rules on role:left_hand keep their bone. The
+    // role leaves the user's list (its `role` line stays in roles.txt, untouched), and its name
+    // gives way to the built-in one. A key that stayed custom is unchanged.
+    {
+        const std::string C = (root / "now_builtin").u8string();
+        const std::vector<std::string> rig = {"Bip01", "Bip01 L Hand", "Bip01 Head", "Bip01 Tail"};
+        const std::vector<int>         par = {-1, 0, 0, 0};
+        const std::vector<std::string> mixamo = {"mixamorig:Hips", "mixamorig:LeftHand", "mixamorig:Head"};
+        const std::string              skel = SkeletonKey(rig);
+        const std::string              text = "RAVROLES 1\n"
+                                 "role key=left_hand name=main gauche\n"
+                                 "role key=head name=head\n"
+                                 "role key=tail_tip name=tail tip\n"
+                                 "map skeleton=" + skel + " role=left_hand bone=Bip01 L Hand\n"
+                                 "map skeleton=" + skel + " role=head bone=\n"
+                                 "map skeleton=" + skel + " role=tail_tip bone=Bip01 Tail\n";
+        const fs::path p = fs::u8path(RoleMapPath(C));
+        fs::create_directories(p.parent_path());
+        std::ofstream(p, std::ios::binary) << text;
+
+        // The mapping: stored bone (left hand), stored "no bone" (head), the custom role as before.
+        const RoleMapping rm = GetFullRoleMapping(C, rig, {"left_hand", "tail_tip"});
+        CHECK(rm.builtin[R(Role::LeftHand)] == 1);
+        CHECK(rm.builtin[R(Role::Head)] == -1);
+        CHECK(rm.roles == (std::vector<CustomRole>{{"tail_tip", "tail tip"}}));
+        CHECK(rm.custom.size() == 1 && rm.custom.at("tail_tip") == 3);
+        std::vector<char> stored;
+        CHECK(GetRoleMapping(C, rig, &stored)[R(Role::LeftHand)] == 1 && stored[R(Role::LeftHand)]);
+        CHECK(GetStoredRole(C, rig, Role::LeftHand) == (StoredRoleEntry{true, "Bip01 L Hand"}));
+        CHECK(GetStoredRole(C, rig, Role::Head) == (StoredRoleEntry{true, ""}));
+        // Another rig, no entry: the built-in guess.
+        CHECK(GetFullRoleMapping(C, mixamo, {}).builtin[R(Role::LeftHand)] == 1);
+
+        // A rule written with the key binds to the stored bone, as before; the role is named as
+        // a built-in in a missing list.
+        Block     b;
+        Condition c;
+        c.signal.bones = {BoneRefId("role:left_hand"), BoneRefId("role:tail_tip")};
+        b.conditions = {c};
+        std::vector<Block> blocks = {b};
+        std::string        missing, err;
+        CHECK(BindBlocksWithRoleMapping(C, blocks, rig, par, &missing) && missing.empty());
+        CHECK(blocks[0].conditions[0].signal.bones == (std::vector<int>{1, 3}));
+        b.conditions[0].signal.bones = {BoneRefId("role:head")};
+        blocks = {b};
+        CHECK(!BindBlocksWithRoleMapping(C, blocks, rig, par, &missing) && missing == "head");
+
+        // Export lists it once, as a built-in; the window's + Role refuses its name and key.
+        const std::vector<RoleCsvRow> rows = RoleCsvRowsFromFile(ReadRoleMapFile(C), rig, {"left_hand"});
+        int hands = 0;
+        for (const RoleCsvRow& row : rows) hands += row.key == "left_hand";
+        CHECK(hands == 1 && rows.size() == static_cast<size_t>(Role::Count) + 1);
+        CHECK(ExportRolesCsv(rows).find("left_hand,left hand,Bip01 L Hand\r\n") != std::string::npos);
+        std::string key;
+        CHECK(!AddCustomRole(C, "Left Hand", &key, &err) && !err.empty());
+        CHECK(!RenameCustomRole(C, "left_hand", "paw", nullptr, &err));  // no longer one of the user's roles
+        CHECK(ReadAll(p) == text);
+
+        // A change through the built-in role edits the same line; the `role` lines stay as written.
+        CHECK(SetRoleBone(C, rig, Role::LeftHand, "Bip01 Tail", &err));
+        const std::string after = ReadAll(p);
+        CHECK(after.find("role key=left_hand name=main gauche\nrole key=head name=head\n") != std::string::npos);
+        CHECK(after.find("role=left_hand bone=Bip01 L Hand") == std::string::npos);
+        CHECK(after.find("role=left_hand bone=Bip01 Tail\n") != std::string::npos);
     }
 
     std::error_code ec;

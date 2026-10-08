@@ -4,6 +4,12 @@
 // to a bone of the loaded skeleton by its name, guessed here (Mixamo, Unreal; editable and
 // remembered per skeleton from 10-2 on).
 //
+// A role is a point: the origin of its bone, where the skeleton view draws the joint. So a
+// role is named for that joint: the knee is the shin bone (LeftLeg, calf_l), the hip the thigh
+// (LeftUpLeg, thigh_l), the shoulder the upper arm (LeftArm, upperarm_l), the elbow the forearm
+// (LeftForeArm, lowerarm_l). Mixamo's LeftShoulder (Unreal clavicle_l) starts at the base of
+// the neck: it is the clavicle.
+//
 // Names are compared ASCII case-insensitively after the namespace is stripped: anything up
 // to the last ':' ("mixamorig:LeftFoot"), or a "mixamorig<N>_" prefix
 // ("mixamorig1_LeftFoot").
@@ -21,7 +27,15 @@
 
 namespace rav {
 
-enum class Role : int { LeftHeel = 0, LeftToe, RightHeel, RightToe, LeftKnee, RightKnee, LeftUpLeg, RightUpLeg, Hips, Count };
+// Role values are ids within one run (BoneRefId), never written: records, presets and
+// roles.txt write keys. New roles are appended; the lists show them in RolesInListOrder.
+enum class Role : int {
+    LeftHeel = 0, LeftToe, RightHeel, RightToe, LeftKnee, RightKnee, LeftUpLeg, RightUpLeg, Hips,
+    // The toe tips, the arms, the spine and the head.
+    LeftToeEnd, RightToeEnd, LeftClavicle, RightClavicle, LeftShoulder, RightShoulder, LeftElbow, RightElbow,
+    LeftHand, RightHand, Spine, Chest, Neck, Head,
+    Count
+};
 
 inline const char* RoleName(Role r)
 {
@@ -35,12 +49,27 @@ inline const char* RoleName(Role r)
     case Role::LeftUpLeg: return "left hip (up leg)";
     case Role::RightUpLeg: return "right hip (up leg)";
     case Role::Hips: return "hips";
+    case Role::LeftToeEnd: return "left toe end";
+    case Role::RightToeEnd: return "right toe end";
+    case Role::LeftClavicle: return "left clavicle";
+    case Role::RightClavicle: return "right clavicle";
+    case Role::LeftShoulder: return "left shoulder (upper arm)";
+    case Role::RightShoulder: return "right shoulder (upper arm)";
+    case Role::LeftElbow: return "left elbow";
+    case Role::RightElbow: return "right elbow";
+    case Role::LeftHand: return "left hand";
+    case Role::RightHand: return "right hand";
+    case Role::Spine: return "spine";
+    case Role::Chest: return "chest";
+    case Role::Neck: return "neck";
+    case Role::Head: return "head";
     default: return "?";
     }
 }
 
 // The stable key a record writes for a role (snake_case, never an index): "left_heel"...
-// Written as "role:<key>". New roles get new keys; a key never changes meaning.
+// Written as "role:<key>". New roles get new keys; a key never changes meaning. A user's own
+// role (10-3e) whose key became built-in keeps its map lines: they are read for the built-in.
 inline const char* RoleKey(Role r)
 {
     switch (r) {
@@ -53,6 +82,20 @@ inline const char* RoleKey(Role r)
     case Role::LeftUpLeg: return "left_up_leg";
     case Role::RightUpLeg: return "right_up_leg";
     case Role::Hips: return "hips";
+    case Role::LeftToeEnd: return "left_toe_end";
+    case Role::RightToeEnd: return "right_toe_end";
+    case Role::LeftClavicle: return "left_clavicle";
+    case Role::RightClavicle: return "right_clavicle";
+    case Role::LeftShoulder: return "left_shoulder";
+    case Role::RightShoulder: return "right_shoulder";
+    case Role::LeftElbow: return "left_elbow";
+    case Role::RightElbow: return "right_elbow";
+    case Role::LeftHand: return "left_hand";
+    case Role::RightHand: return "right_hand";
+    case Role::Spine: return "spine";
+    case Role::Chest: return "chest";
+    case Role::Neck: return "neck";
+    case Role::Head: return "head";
     default: return "";
     }
 }
@@ -104,13 +147,15 @@ inline std::string RoleNameFromKey(const std::string& key)
 inline char RoleSide(Role r)
 {
     switch (r) {
-    case Role::LeftHeel: case Role::LeftToe: case Role::LeftKnee: case Role::LeftUpLeg: return 'L';
-    case Role::RightHeel: case Role::RightToe: case Role::RightKnee: case Role::RightUpLeg: return 'R';
+    case Role::LeftHeel: case Role::LeftToe: case Role::LeftKnee: case Role::LeftUpLeg: case Role::LeftToeEnd:
+    case Role::LeftClavicle: case Role::LeftShoulder: case Role::LeftElbow: case Role::LeftHand: return 'L';
+    case Role::RightHeel: case Role::RightToe: case Role::RightKnee: case Role::RightUpLeg: case Role::RightToeEnd:
+    case Role::RightClavicle: case Role::RightShoulder: case Role::RightElbow: case Role::RightHand: return 'R';
     default: return 0;
     }
 }
 
-// The role without its side, for signal names: "heel", "toe", "knee", "hip", "hips".
+// The role without its side, for signal names: "heel", "toe", "knee", "hip", "hips", "hand"...
 inline const char* RolePart(Role r)
 {
     switch (r) {
@@ -119,8 +164,54 @@ inline const char* RolePart(Role r)
     case Role::LeftKnee: case Role::RightKnee: return "knee";
     case Role::LeftUpLeg: case Role::RightUpLeg: return "hip";
     case Role::Hips: return "hips";
+    case Role::LeftToeEnd: case Role::RightToeEnd: return "toe end";
+    case Role::LeftClavicle: case Role::RightClavicle: return "clavicle";
+    case Role::LeftShoulder: case Role::RightShoulder: return "shoulder";
+    case Role::LeftElbow: case Role::RightElbow: return "elbow";
+    case Role::LeftHand: case Role::RightHand: return "hand";
+    case Role::Spine: return "spine";
+    case Role::Chest: return "chest";
+    case Role::Neck: return "neck";
+    case Role::Head: return "head";
     default: return "?";
     }
+}
+
+// The group a role is listed under in the roles window and the Bone menu.
+enum class RoleGroup { Legs, Arms, Body };
+
+inline RoleGroup RoleGroupOf(Role r)
+{
+    switch (r) {
+    case Role::LeftClavicle: case Role::RightClavicle: case Role::LeftShoulder: case Role::RightShoulder:
+    case Role::LeftElbow: case Role::RightElbow: case Role::LeftHand: case Role::RightHand: return RoleGroup::Arms;
+    case Role::Hips: case Role::Spine: case Role::Chest: case Role::Neck: case Role::Head: return RoleGroup::Body;
+    default: return RoleGroup::Legs;
+    }
+}
+
+// The group's caption: "Legs", "Arms", "Body".
+inline const char* RoleGroupName(RoleGroup g)
+{
+    switch (g) {
+    case RoleGroup::Legs: return "Legs";
+    case RoleGroup::Arms: return "Arms";
+    default: return "Body";
+    }
+}
+
+// Every built-in role once, in the order the lists show them: by group (legs, arms, body),
+// from the end of a limb inwards, left before right; the body from the hips up.
+inline const std::vector<Role>& RolesInListOrder()
+{
+    static const std::vector<Role> kOrder = {
+        Role::LeftHeel, Role::LeftToe, Role::LeftToeEnd, Role::RightHeel, Role::RightToe, Role::RightToeEnd,
+        Role::LeftKnee, Role::RightKnee, Role::LeftUpLeg, Role::RightUpLeg,
+        Role::LeftHand, Role::RightHand, Role::LeftElbow, Role::RightElbow, Role::LeftShoulder, Role::RightShoulder,
+        Role::LeftClavicle, Role::RightClavicle,
+        Role::Hips, Role::Spine, Role::Chest, Role::Neck, Role::Head,
+    };
+    return kOrder;
 }
 
 // The short label of a role for signal names: "L heel", "R knee", "hips".
@@ -151,32 +242,82 @@ inline std::string NormalizeBoneName(const std::string& name)
     return s;
 }
 
-// Bone index per role (-1 = not found), indexed by Role. Candidates in order of preference.
+// One guess candidate: a bone name (normalized) and whether it is the role's own bone. A
+// stand-in (own = false) is the nearest bone of the same chain, taken when the rig lacks the
+// role's own: the tool still finds a bone on a rig that has fewer.
+struct RoleCandidate {
+    const char* name;
+    bool        own;
+};
+
+// The candidates of each role (indexed by Role), in order of preference: Mixamo, then Unreal
+// (the UE4 and UE5 mannequins), then the stand-ins. The toe keeps its 10-2 order (its tip before
+// ball_l). A stand-in never leaves the role's limb or the spine.
+inline const std::vector<std::vector<RoleCandidate>>& RoleCandidates()
+{
+    constexpr bool kOwn = true, kNear = false;
+    static const std::vector<std::vector<RoleCandidate>> kTable = {
+        {{"leftfoot", kOwn}, {"foot_l", kOwn}},                              // LeftHeel
+        {{"lefttoebase", kOwn}, {"lefttoe_end", kNear}, {"ball_l", kOwn}},    // LeftToe (its tip without a base)
+        {{"rightfoot", kOwn}, {"foot_r", kOwn}},                             // RightHeel
+        {{"righttoebase", kOwn}, {"righttoe_end", kNear}, {"ball_r", kOwn}},  // RightToe
+        {{"leftleg", kOwn}, {"calf_l", kOwn}},        // LeftKnee (the shin joint sits at the knee)
+        {{"rightleg", kOwn}, {"calf_r", kOwn}},       // RightKnee
+        {{"leftupleg", kOwn}, {"thigh_l", kOwn}},     // LeftUpLeg (the thigh joint sits at the hip)
+        {{"rightupleg", kOwn}, {"thigh_r", kOwn}},    // RightUpLeg
+        {{"hips", kOwn}, {"pelvis", kOwn}},           // Hips
+        // LeftToeEnd: Unreal has no toe tip, its toe (ball_l) stands in.
+        {{"lefttoe_end", kOwn}, {"lefttoebase", kNear}, {"ball_l", kNear}},
+        {{"righttoe_end", kOwn}, {"righttoebase", kNear}, {"ball_r", kNear}},  // RightToeEnd
+        {{"leftshoulder", kOwn}, {"clavicle_l", kOwn}},   // LeftClavicle
+        {{"rightshoulder", kOwn}, {"clavicle_r", kOwn}},  // RightClavicle
+        {{"leftarm", kOwn}, {"upperarm_l", kOwn}},        // LeftShoulder (the upper arm joint sits at the shoulder)
+        {{"rightarm", kOwn}, {"upperarm_r", kOwn}},       // RightShoulder
+        {{"leftforearm", kOwn}, {"lowerarm_l", kOwn}},    // LeftElbow (the forearm joint sits at the elbow)
+        {{"rightforearm", kOwn}, {"lowerarm_r", kOwn}},   // RightElbow
+        {{"lefthand", kOwn}, {"hand_l", kOwn}},           // LeftHand (the wrist)
+        {{"righthand", kOwn}, {"hand_r", kOwn}},          // RightHand
+        {{"spine", kOwn}, {"spine_01", kOwn}},            // Spine (the first bone above the hips)
+        // Chest: the bone the clavicles and the neck hang from (Mixamo, UE5, UE4); else the
+        // highest spine bone the rig has.
+        {{"spine2", kOwn}, {"spine_05", kOwn}, {"spine_03", kOwn}, {"spine1", kNear}, {"spine", kNear},
+         {"spine_04", kNear}, {"spine_02", kNear}, {"spine_01", kNear}},
+        {{"neck", kOwn}, {"neck_01", kOwn}},              // Neck
+        {{"head", kOwn}},                                 // Head
+    };
+    return kTable;
+}
+
+// Bone index per role (-1 = not found), indexed by Role: the first candidate the rig has.
 inline std::vector<int> GuessRoleMapping(const std::vector<std::string>& bone_names)
 {
-    static const std::vector<std::vector<const char*>> kCandidates = {
-        {"leftfoot", "foot_l"},                      // LeftHeel
-        {"lefttoebase", "lefttoe_end", "ball_l"},    // LeftToe
-        {"rightfoot", "foot_r"},                     // RightHeel
-        {"righttoebase", "righttoe_end", "ball_r"},  // RightToe
-        {"leftleg", "calf_l"},                       // LeftKnee (the shin joint sits at the knee)
-        {"rightleg", "calf_r"},                      // RightKnee
-        {"leftupleg", "thigh_l"},                    // LeftUpLeg (the thigh joint sits at the hip)
-        {"rightupleg", "thigh_r"},                   // RightUpLeg
-        {"hips", "pelvis"},                          // Hips
-    };
+    const std::vector<std::vector<RoleCandidate>>& table = RoleCandidates();
     std::vector<std::string> norm;
     norm.reserve(bone_names.size());
     for (const std::string& n : bone_names) norm.push_back(NormalizeBoneName(n));
 
     std::vector<int> map(static_cast<size_t>(Role::Count), -1);
-    for (size_t r = 0; r < kCandidates.size(); ++r)
-        for (const char* cand : kCandidates[r]) {
+    for (size_t r = 0; r < table.size() && r < map.size(); ++r)
+        for (const RoleCandidate& cand : table[r]) {
             for (size_t b = 0; b < norm.size() && map[r] < 0; ++b)
-                if (norm[b] == cand) map[r] = static_cast<int>(b);
+                if (norm[b] == cand.name) map[r] = static_cast<int>(b);
             if (map[r] >= 0) break;
         }
     return map;
+}
+
+// True when `bone_name` (any namespace) is one of the role's own bones, not a stand-in: a bone
+// picked in the 3D view that plays several roles gives the one it is named for (ball_l: the
+// toe, not the toe end it stands in for).
+inline bool IsOwnBoneOfRole(Role r, const std::string& bone_name)
+{
+    const std::vector<std::vector<RoleCandidate>>& table = RoleCandidates();
+    const size_t                                   i = static_cast<size_t>(r);
+    if (i >= table.size()) return false;
+    const std::string n = NormalizeBoneName(bone_name);
+    for (const RoleCandidate& cand : table[i])
+        if (cand.own && n == cand.name) return true;
+    return false;
 }
 
 // The roles a preset's blocks use (conditions, references, strength), each once, in Role order.

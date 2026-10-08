@@ -66,11 +66,17 @@ int BoneRefForPickedBone(int bone, const std::string& raw_name, const std::vecto
 {
     int roles = 0;
     int role_id = -1;
+    int own = 0;  // the roles it plays that it is named for (IsOwnBoneOfRole)
+    int own_id = -1;
     if (bone >= 0) {
         for (size_t r = 0; r < role_to_bone.size() && r < static_cast<size_t>(Role::Count); ++r)
             if (role_to_bone[r] == bone) {
                 ++roles;
                 role_id = static_cast<int>(r);
+                if (IsOwnBoneOfRole(static_cast<Role>(r), raw_name)) {
+                    ++own;
+                    own_id = role_id;
+                }
             }
         for (const auto& kv : custom_role_to_bone)
             if (kv.second == bone) {
@@ -78,7 +84,9 @@ int BoneRefForPickedBone(int bone, const std::string& raw_name, const std::vecto
                 role_id = BoneRefId("role:" + kv.first);
             }
     }
-    return (roles == 1 && role_id >= 0) ? role_id : BoneRefForBone(raw_name);
+    if (roles == 1 && role_id >= 0) return role_id;
+    if (roles > 1 && own == 1) return own_id;  // ball_l: the toe, not the toe end it stands in for
+    return BoneRefForBone(raw_name);
 }
 
 std::string BoneRefKey(int id)

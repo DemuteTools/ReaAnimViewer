@@ -208,8 +208,8 @@ struct RoleCsvRow {
     StoredRoleEntry entry;
 };
 
-// The rows of an export: the 9 built-in roles, the user's roles, then the extra keys (the keys
-// the item's rules read; built-in and listed ones skipped), each with its stored entry.
+// The rows of an export: the built-in roles (in Role order), the user's roles, then the extra keys
+// (the keys the item's rules read; built-in and listed ones skipped), each with its stored entry.
 std::vector<RoleCsvRow> RoleCsvRowsFromFile(const RoleMapFile& file, const std::vector<std::string>& bone_names,
                                             const std::vector<std::string>& extra_keys);
 // The CSV text (BOM, header `role,name,bone`, CRLF lines), `sep` = ',' or ';'.
@@ -236,7 +236,7 @@ bool ImportRolesCsv(RoleMapFile& file, const std::string& csv, const std::vector
                     RoleImportReport* report, std::string* err);
 
 // The same, on <root>/ReaAnimViewer/roles.txt. Export reads roles.txt (an unreadable one reads
-// as no entries and lists the 9 built-in roles only) and writes `dest_path`.
+// as no entries and lists the built-in roles only) and writes `dest_path`.
 bool ExportRoleConfig(const std::string& root, const std::vector<std::string>& bone_names,
                       const std::vector<std::string>& extra_keys, char sep, const std::string& dest_path,
                       std::string* err);

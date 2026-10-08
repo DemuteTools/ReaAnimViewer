@@ -193,7 +193,8 @@ int main()
         CHECK(p.blocks[0].conditions[1].kept.lines == std::vector<std::string>{"note free text from the future"});
         CHECK(p.blocks[1].kept.lines == std::vector<std::string>{"lane 2"});
         CHECK(p.tail.size() == 2 && p.tail[0].after_events == 1 && p.tail[1].after_events == 2);
-        // An unknown role key is kept (and reported missing when bound), never dropped.
+        // A role key this version's record did not know is kept (and reported missing when
+        // bound), never dropped. left_hand has been built-in since: it reads and binds the same.
         const std::vector<int>& bones = p.blocks[0].conditions[0].signal.bones;
         CHECK(bones.size() == 3 && BoneRefKey(bones[2]) == "role:left_hand");
         CHECK(BoneRefKey(p.blocks[0].conditions[1].signal.bones[1]) == "bone:my knee");
@@ -302,7 +303,7 @@ int main()
             CHECK(out.find("weight=2") != std::string::npos && out.find("jitter_ms=3") != std::string::npos);
         }
 
-        // Binding: the unknown role is reported missing.
+        // Binding: the unmapped role is reported missing.
         std::vector<Block> blocks = p.blocks;
         std::vector<int>   map(static_cast<size_t>(Role::Count), -1);
         map[R(Role::LeftHeel)] = 0;
@@ -536,11 +537,26 @@ int main()
             CHECK(RoleFromKey(RoleKey(static_cast<Role>(r)), &back) && back == static_cast<Role>(r));
             CHECK(BoneRefId(std::string("role:") + RoleKey(static_cast<Role>(r))) == r);
         }
-        CHECK(!RoleFromKey("left_hand", nullptr));
-        CHECK(BoneRefId("role:left_hand") >= kBoneRefExtra);
-        CHECK(BoneRefId("role:left_hand") == BoneRefId("role:left_hand"));
-        CHECK(BoneRefName(BoneRefId("role:left_hand")) == "left hand");
+        CHECK(!RoleFromKey("left_wing", nullptr));
+        CHECK(BoneRefId("role:left_wing") >= kBoneRefExtra);
+        CHECK(BoneRefId("role:left_wing") == BoneRefId("role:left_wing"));
+        CHECK(BoneRefName(BoneRefId("role:left_wing")) == "left wing");
         CHECK(RoleShortLabel(Role::LeftHeel) == "L heel" && RoleShortLabel(Role::Hips) == "hips");
+        // The arm and body roles: built-in ids, keys written back as read, names and labels.
+        CHECK(BoneRefId("role:left_hand") == R(Role::LeftHand) && BoneRefKey(R(Role::LeftHand)) == "role:left_hand");
+        CHECK(BoneRefName(R(Role::LeftHand)) == "left hand" && BoneRefLabel(R(Role::LeftHand)) == "L hand");
+        CHECK(BoneRefId("role:head") == R(Role::Head) && BoneRefLabel(R(Role::Head)) == "head");
+        CHECK(RoleKeyOfRef(R(Role::RightToeEnd)) == "right_toe_end");
+        CHECK(CustomRoleKeysUsed({}).empty());
+        SignalSpec s;
+        s.bones = {R(Role::LeftHand), R(Role::LeftElbow)};
+        s.measure = Measure::Speed;
+        s.axis = Axis::Total;
+        CHECK(SignalName(s, SignalBoneLabel(s)) == "L hand+elbow speed");
+        s.quantity = Quantity::InteriorAngle;
+        s.bones = {R(Role::RightElbow)};
+        s.measure = Measure::Position;
+        CHECK(SignalName(s, SignalBoneLabel(s)) == "R elbow angle");
     }
 
     // ---- Story 10-3e: custom roles bind through their mapping by key ----------------------
@@ -590,7 +606,8 @@ int main()
         CHECK(BoneRefName(BoneRefId("role:sword_tip")) == "blade tip");
         CHECK(BoneRefLabel(BoneRefId("role:sword_tip")) == "blade tip");
         CHECK(BoneRefName(BoneRefId("role:tail_end")) == "tail end");
-        // Spec 10-3c: "+" on a picked bone puts its role when it plays exactly one, else the bone.
+        // Spec 10-3c: "+" on a picked bone puts its role when it plays exactly one; when it plays
+        // several, the one built-in role it is named for; else the bone.
         {
             std::vector<int> r2b(static_cast<size_t>(Role::Count), -1);
             r2b[static_cast<size_t>(Role::LeftHeel)] = 3;
@@ -599,7 +616,8 @@ int main()
             const std::map<std::string, int> cust = {{"sword_tip", 7}, {"grip", 8}, {"also_heel", 9}};
             CHECK(BoneRefForPickedBone(3, "LeftFoot", r2b, cust) == R(Role::LeftHeel));
             CHECK(BoneRefForPickedBone(7, "weapon_r", r2b, cust) == BoneRefId("role:sword_tip"));
-            CHECK(BoneRefForPickedBone(5, "LeftToeBase", r2b, cust) == BoneRefForBone("LeftToeBase"));
+            CHECK(BoneRefForPickedBone(5, "Toe", r2b, cust) == BoneRefForBone("Toe"));  // named for neither
+            CHECK(BoneRefForPickedBone(5, "LeftToeBase", r2b, cust) == R(Role::LeftToe));  // named for one
             CHECK(BoneRefForPickedBone(4, "RightHand", r2b, cust) == BoneRefForBone("RightHand"));  // no role
             CHECK(BoneRefForPickedBone(-1, "Gone", r2b, cust) == BoneRefForBone("Gone"));  // not on this skeleton
             r2b[static_cast<size_t>(Role::Hips)] = 7;  // built-in + custom on one bone: two roles
@@ -607,6 +625,29 @@ int main()
             // Two custom roles on one bone (no built-in): two roles, the raw bone.
             const std::map<std::string, int> cust2 = {{"sword_tip", 10}, {"blade", 10}};
             CHECK(BoneRefForPickedBone(10, "weapon_l", r2b, cust2) == BoneRefForBone("weapon_l"));
+            // Unreal: ball_l is the toe and stands in for the toe end -> the toe. Mixamo without
+            // ToeBase: Toe_End is the toe end and stands in for the toe -> the toe end.
+            const std::vector<std::string> ue = {"foot_l", "ball_l"};
+            const std::vector<int>         gu = GuessRoleMapping(ue);
+            CHECK(gu[R(Role::LeftToe)] == 1 && gu[R(Role::LeftToeEnd)] == 1);
+            CHECK(BoneRefForPickedBone(1, "ball_l", gu, {}) == R(Role::LeftToe));
+            const std::vector<int> gm = GuessRoleMapping({"mixamorig:LeftFoot", "mixamorig:LeftToe_End"});
+            CHECK(BoneRefForPickedBone(1, "mixamorig:LeftToe_End", gm, {}) == R(Role::LeftToeEnd));
+            // A rig with Spine only: the spine (the chest's stand-in) -> the spine.
+            const std::vector<int> gs = GuessRoleMapping({"Hips", "Spine"});
+            CHECK(BoneRefForPickedBone(1, "Spine", gs, {}) == R(Role::Spine));
+            // A custom role on the bone a built-in is named for: the built-in.
+            CHECK(BoneRefForPickedBone(1, "ball_l", gu, {{"paw", 1}}) == R(Role::LeftToe));
+            // Hand-made mappings on Foot_L: the heel and the hand -> the heel (named for it); both
+            // toes -> named for neither: the raw bone.
+            std::vector<int> two(static_cast<size_t>(Role::Count), -1);
+            two[static_cast<size_t>(Role::LeftHand)] = 4;
+            two[static_cast<size_t>(Role::LeftHeel)] = 4;
+            CHECK(BoneRefForPickedBone(4, "Foot_L", two, {}) == R(Role::LeftHeel));
+            two.assign(static_cast<size_t>(Role::Count), -1);
+            two[static_cast<size_t>(Role::LeftToe)] = 4;
+            two[static_cast<size_t>(Role::RightToe)] = 4;
+            CHECK(BoneRefForPickedBone(4, "Foot_L", two, {}) == BoneRefForBone("Foot_L"));
         }
         // Spec 10-3c: the bones one rule reads on a skeleton (the 3D view colours them).
         {

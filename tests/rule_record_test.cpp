@@ -82,6 +82,7 @@ ItemRules FullRecord()
     c.signal.measure = Measure::Acceleration;
     c.signal.axis = Axis::Z;
     c.signal.keep_sign = true;
+    c.signal.window_ms = 220;  // spike 10-7a (a window on any measure is kept)
     c.dir = Direction::Above;
     c.threshold = 1e-7;
     c.margin = 123456789.125;
@@ -475,6 +476,89 @@ int main()
         s.measure = Measure::Acceleration;
         s.axis = Axis::X;
         CHECK(SignalName(s, SignalBoneLabel(s)) == "Spine2 X acceleration");
+    }
+
+    // ---- Spike 10-7a: Stillness and Relative drop, and their window ----
+    {
+        ItemRules r;
+        Block     b;
+        b.marker = "Contact";
+        Condition still;
+        still.signal.bones = {R(Role::LeftToe)};
+        still.signal.measure = Measure::Stillness;
+        still.threshold = 0.01;
+        still.margin = 0.005;
+        Condition drop = still;
+        drop.signal.measure = Measure::RelativeDrop;
+        drop.signal.axis = Axis::Total;
+        drop.signal.window_ms = 250;
+        drop.threshold = 0.2;
+        drop.margin = 0.1;
+        b.conditions = {still, drop};
+        r.blocks = {b};
+        const std::string text = SerializeItemRules(r);
+        // Their own words; `win` right after `meas`, only when set.
+        CHECK(text.find("cond q=point bones=role:left_toe comb=single ref=floor meas=still axis=vertical dir=below "
+                        "thr=0.01 margin=0.005 fixed=0\n") != std::string::npos);
+        CHECK(text.find("cond q=point bones=role:left_toe comb=single ref=floor meas=drop win=250 axis=total "
+                        "dir=below thr=0.2 margin=0.1 fixed=0\n") != std::string::npos);
+        ItemRules p;
+        CHECK(ParseItemRules(text, &p) && !HasKeptText(p));
+        CHECK(BlocksEqual(p.blocks, r.blocks) && SerializeItemRules(p) == text);
+        if (p.blocks.size() == 1 && p.blocks[0].conditions.size() == 2) {
+            CHECK(p.blocks[0].conditions[0].signal.measure == Measure::Stillness &&
+                  p.blocks[0].conditions[0].signal.window_ms == 0.0);
+            CHECK(p.blocks[0].conditions[1].signal.measure == Measure::RelativeDrop &&
+                  p.blocks[0].conditions[1].signal.window_ms == 250.0);
+        }
+        // The window is part of the signal (an edit shows as one).
+        SignalSpec other = drop.signal;
+        other.window_ms = 300;
+        CHECK(!SignalsEqual(other, drop.signal));
+        other.window_ms = 250;
+        CHECK(SignalsEqual(other, drop.signal));
+        // A strength line takes them too (its own `window_ms` is another field).
+        b.strength_signal = drop.signal;
+        b.strength_window_ms = 80;
+        r.blocks = {b};
+        const std::string st = SerializeItemRules(r);
+        CHECK(st.find("meas=drop win=250 axis=total sign=1 window_ms=80\n") != std::string::npos);
+        CHECK(ParseItemRules(st, &p) && !HasKeptText(p) && BlocksEqual(p.blocks, r.blocks) &&
+              SerializeItemRules(p) == st);
+        // A window that does not read is kept as written while the model is untouched.
+        const std::string bad = "RAVRULES 1\n"
+                                "block color=none hold_ms=0 cooldown_ms=250 offset_ms=0 land=cross marker=C\n"
+                                "cond q=point bones=role:left_toe comb=single ref=floor meas=still win=soon "
+                                "axis=vertical dir=below thr=0.01 margin=0 fixed=0\n";
+        ItemRules k;
+        CHECK(ParseItemRules(bad, &k) && HasKeptText(k));
+        CHECK(k.blocks.size() == 1 && k.blocks[0].conditions.size() == 1 &&
+              k.blocks[0].conditions[0].signal.measure == Measure::Stillness &&
+              k.blocks[0].conditions[0].signal.window_ms == 0.0);
+        const std::string kept = SerializeItemRules(k);
+        CHECK(kept.find("meas=still win=soon axis=vertical") != std::string::npos);
+        // Names: the measure's own words.
+        SignalSpec n;
+        n.bones = {R(Role::LeftHeel)};
+        n.measure = Measure::Stillness;
+        CHECK(SignalName(n, SignalBoneLabel(n)) == "L heel vertical stillness");
+        n.axis = Axis::Total;
+        CHECK(SignalName(n, SignalBoneLabel(n)) == "L heel stillness");
+        n.measure = Measure::RelativeDrop;
+        CHECK(SignalName(n, SignalBoneLabel(n)) == "L heel relative drop");
+        n.axis = Axis::X;
+        CHECK(SignalName(n, SignalBoneLabel(n)) == "L heel X relative drop");
+        n.quantity = Quantity::InteriorAngle;
+        n.bones = {R(Role::LeftKnee)};
+        CHECK(SignalName(n, SignalBoneLabel(n)) == "L knee angle relative drop");
+        n.measure = Measure::Stillness;
+        CHECK(SignalName(n, SignalBoneLabel(n)) == "L knee angle stillness");
+        n.quantity = Quantity::Rotation;
+        n.bones = {R(Role::LeftToe)};
+        n.reference = Reference::Parent;
+        CHECK(SignalName(n, SignalBoneLabel(n)) == "L toe rotation X stillness");
+        n.axis = Axis::Total;  // reads total, which it does not fit
+        CHECK(SignalName(n, SignalBoneLabel(n)) == "L toe rotation stillness");
     }
 
     // Missing role: the list names it; bone keys bind by name.

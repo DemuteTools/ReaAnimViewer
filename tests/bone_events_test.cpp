@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <functional>
 #include <string>
@@ -130,6 +131,70 @@ std::vector<Event> TracedDetect(const std::vector<Block>& blocks, const std::vec
     std::stable_sort(merged.begin(), merged.end(), [](const Event& a, const Event& b) { return a.time_s < b.time_s; });
     CHECK(SameEvents(merged, tr.events));
     return tr.events;
+}
+
+// Spike 10-7a: one block, one condition on track 0 (a point, floor reference): `measure` on
+// `axis`, cooldown 250 ms (a new rule's).
+Block MeasureBlock(Measure measure, Axis axis, Direction dir, double th, double margin)
+{
+    Condition c;
+    c.signal.bones = {0};
+    c.signal.measure = measure;
+    c.signal.axis = axis;
+    c.dir = dir;
+    c.threshold = th;
+    c.margin = margin;
+    Block b;
+    b.marker = "E";
+    b.conditions = {c};
+    b.cooldown_ms = 250.0;
+    return b;
+}
+
+// A track from a position function, at 240 Hz over [0, dur].
+BoneTrack TrackOf(double dur, const std::function<Vec3d(double)>& f)
+{
+    BoneTrack t;
+    t.rate_hz = 240.0;
+    const int n = static_cast<int>(std::floor(dur * 240.0 + 1e-9)) + 1;
+    for (int i = 0; i < n; ++i) t.pos.push_back(f(i / 240.0));
+    return t;
+}
+
+// Deterministic noise in [-a, a] (a small LCG), one value per call.
+struct Noise {
+    uint32_t state = 12345u;
+    double   operator()(double a)
+    {
+        state = state * 1664525u + 1013904223u;
+        return a * (2.0 * (static_cast<double>(state >> 8) / 16777216.0) - 1.0);
+    }
+};
+
+// A foot stepping (spike 10-7a): contacts start at kContact[k] and last 0.5 s (the last one
+// runs to the clip end, 3.5 s), swings of 0.35 s in between (and before the first), in which
+// the foot moves 0.5 m forward on X (eased, still at both ends) and lifts up to 10 cm. During
+// a contact it slides on X at `slide` m/s (an in-place clip's planted foot).
+constexpr double kContact[4] = {0.35, 1.20, 2.05, 2.90};
+constexpr double kStepsDur = 3.5;
+
+Vec3d StepAt(double t, double slide)
+{
+    const double kSwing = 0.35, kTwoPi = 2.0 * 3.14159265358979323846;
+    double x = 0.0;
+    double start = 0.0;  // the swing before contact k starts at kContact[k] - kSwing
+    for (int k = 0; k < 4; ++k) {
+        start = kContact[k] - kSwing;
+        if (t < kContact[k]) {
+            const double u = std::max(0.0, (t - start) / kSwing);
+            return Vec3d{x + 0.5 * (u - std::sin(kTwoPi * u) / kTwoPi), 0.1 * std::sin(0.5 * kTwoPi * u), 0.0};
+        }
+        x += 0.5;
+        const double end = k < 3 ? kContact[k + 1] - kSwing : kStepsDur;
+        if (t <= end) return Vec3d{x - slide * (t - kContact[k]), 0.0, 0.0};
+        x -= slide * (end - kContact[k]);
+    }
+    return Vec3d{x, 0.0, 0.0};
 }
 
 // One block, one condition on track 0's height above floor 0.
@@ -1001,6 +1066,326 @@ int main()
             p.reference = Reference::Parent;
             CHECK(EvaluateSignal(p, tr).empty());
         }
+    }
+
+    // ---- Spike 10-7a step 1: Stillness and Relative drop ---------------------------------------
+    {
+        // The windows: 150 / 300 ms by default, window_ms when set; none for the others.
+        SignalSpec w;
+        w.measure = Measure::Stillness;
+        CHECK(MeasureWindowMs(w) == kStillnessWindowMs && kStillnessWindowMs == 150.0);
+        w.window_ms = 220.0;
+        CHECK(MeasureWindowMs(w) == 220.0);
+        w.measure = Measure::RelativeDrop;
+        CHECK(MeasureWindowMs(w) == 220.0);
+        w.window_ms = 0.0;
+        CHECK(MeasureWindowMs(w) == kRelativeDropWindowMs && kRelativeDropWindowMs == 300.0);
+        w.window_ms = -5.0;  // not a window: the default
+        CHECK(MeasureWindowMs(w) == kRelativeDropWindowMs);
+        for (Measure m : {Measure::Position, Measure::Speed, Measure::Acceleration}) {
+            w.measure = m;
+            w.window_ms = 220.0;
+            CHECK(MeasureWindowMs(w) == 0.0);
+        }
+    }
+    {
+        // A slide at 1 m/s on X over the whole clip: stillness = half the 150 ms travel; the
+        // window is clamped to the clip at full length (the last samples read the last full
+        // window); window_ms = 300 doubles it.
+        std::vector<BoneTrack> tr = {TrackOf(1.0, [](double t) { return Vec3d{t, 0.3, 0.0}; })};
+        SignalSpec s;
+        s.bones = {0};
+        s.measure = Measure::Stillness;
+        s.axis = Axis::Total;
+        std::vector<double> v = EvaluateSignal(s, tr);
+        CHECK(v.size() == 241);
+        CHECK(Near(v.at(100), 0.075, 1e-9) && Near(v.at(0), 0.075, 1e-9));
+        CHECK(Near(v.back(), 0.075, 1e-9) && Near(v.at(240 - 6), 0.075, 1e-9));  // 6 samples left
+        bool finite = true;
+        for (double x : v) finite = finite && std::isfinite(x);
+        CHECK(finite);
+        s.axis = Axis::Vertical;  // still on Y
+        v = EvaluateSignal(s, tr);
+        CHECK(*std::max_element(v.begin(), v.end()) == 0.0);
+        s.axis = Axis::Horizontal;
+        CHECK(Near(EvaluateSignal(s, tr).at(100), 0.075, 1e-9));
+        s.axis = Axis::Z;  // still on Z
+        v = EvaluateSignal(s, tr);
+        CHECK(*std::max_element(v.begin(), v.end()) == 0.0);
+        s.axis = Axis::X;
+        s.window_ms = 300.0;
+        CHECK(Near(EvaluateSignal(s, tr).at(100), 0.150, 1e-9));
+        // A window shorter than one sample (2 ms at 240 Hz) still reads one sample ahead.
+        s.window_ms = 2.0;
+        CHECK(Near(EvaluateSignal(s, tr).at(100), 0.5 / 240.0, 1e-9));
+        s.window_ms = 0.0;
+        // A magnitude: keep_sign does not apply.
+        const std::vector<double> plain = EvaluateSignal(s, tr);
+        s.keep_sign = true;
+        CHECK(EvaluateSignal(s, tr) == plain);
+        // Relative drop of a steady motion: 1 (its speed is its own peak).
+        s.measure = Measure::RelativeDrop;
+        const std::vector<double> d = EvaluateSignal(s, tr);
+        s.keep_sign = false;
+        CHECK(d == EvaluateSignal(s, tr));
+        CHECK(d.size() == 241 && Near(d.at(120), 1.0, 1e-9));
+
+        // Clip end: a bone still moving at the end never reads still there, so "stillness
+        // below 1 cm" does not fire, with or without an edge margin.
+        const Block b = MeasureBlock(Measure::Stillness, Axis::Total, Direction::Below, 0.01, 0.005);
+        CHECK(TracedDetect({b}, tr).empty());
+        DetectOptions edge;
+        edge.edge_margin_ms = 50.0;
+        CHECK(TracedDetect({b}, tr, edge).empty());
+        // One that stops 0.5 s before the end still reads still from its stop.
+        std::vector<BoneTrack> stop = {TrackOf(1.0, [](double t) { return Vec3d{std::min(t, 0.5), 0.3, 0.0}; })};
+        const std::vector<Event> se = TracedDetect({b}, stop);
+        CHECK(se.size() == 1 && se[0].time_s > 0.5 - 0.03 && se[0].time_s <= 0.5 + 1e-9);
+    }
+    {
+        // The axes keep their own components: a lift on Y alone is still horizontally and on
+        // Z; a slide on Z alone at 1 m/s reads half the 150 ms travel on Z, 0 on X.
+        std::vector<BoneTrack> lift = {TrackOf(1.0, [](double t) { return Vec3d{0.2, t, -0.1}; })};
+        SignalSpec s;
+        s.bones = {0};
+        s.measure = Measure::Stillness;
+        s.axis = Axis::Horizontal;
+        std::vector<double> v = EvaluateSignal(s, lift);
+        CHECK(*std::max_element(v.begin(), v.end()) == 0.0);
+        s.axis = Axis::Vertical;
+        CHECK(Near(EvaluateSignal(s, lift).at(100), 0.075, 1e-9));
+        std::vector<BoneTrack> zs = {TrackOf(1.0, [](double t) { return Vec3d{0.2, 0.1, t}; })};
+        s.axis = Axis::Z;
+        CHECK(Near(EvaluateSignal(s, zs).at(100), 0.075, 1e-9));
+        s.axis = Axis::X;
+        v = EvaluateSignal(s, zs);
+        CHECK(*std::max_element(v.begin(), v.end()) == 0.0);
+        s.axis = Axis::Horizontal;
+        CHECK(Near(EvaluateSignal(s, zs).at(100), 0.075, 1e-9));
+    }
+    {
+        // Jitter: a foot stepping, with +-2 mm noise on every axis. Stillness while planted
+        // stays within the noise, far below its level in the swings, and Analyse + Detect
+        // gives one event per contact. Never late; ahead by the time the landing takes to
+        // cover twice the analysed radius (about 80 ms here: the window looks ahead).
+        Noise noise;
+        std::vector<BoneTrack> tr = {TrackOf(kStepsDur, [&](double t) {
+            const Vec3d p = StepAt(t, 0.0);
+            return Vec3d{p.x + noise(0.002), p.y + noise(0.002), p.z + noise(0.002)};
+        })};
+        const Block b = MeasureBlock(Measure::Stillness, Axis::Total, Direction::Below, 0.0, 0.0);
+        const std::vector<double> v = EvaluateSignal(b.conditions[0].signal, tr);
+        double planted = 0.0, moving = 1e9;
+        for (int k = 0; k < 4; ++k) {
+            const double end = k < 3 ? kContact[k + 1] - 0.35 : kStepsDur;
+            for (double t = kContact[k]; t <= end - 0.15; t += 1.0 / 240.0)
+                planted = std::max(planted, v.at(static_cast<size_t>(std::lround(t * 240.0))));
+            moving = std::min(moving, v.at(static_cast<size_t>(std::lround((kContact[k] - 0.2) * 240.0))));
+        }
+        CHECK(planted < 0.0035);          // the noise: at most sqrt(3) * 2 mm
+        CHECK(moving > 20.0 * planted);   // mid-swing
+        const std::vector<Block> an = Analyse({b}, tr);
+        const double th = an[0].conditions[0].threshold;
+        CHECK(th > 2.0 * planted && th < moving);
+        auto ev = TracedDetect(an, tr);
+        CHECK(ev.size() == 4);
+        for (size_t k = 0; k < ev.size() && k < 4; ++k)
+            CHECK(ev[k].time_s > kContact[k] - 0.1 && ev[k].time_s < kContact[k] + 0.016);
+    }
+    {
+        // Slow slide (an in-place clip): planted, the foot slides back at 0.3 m/s on X and is
+        // still on Y. Vertical stillness finds each contact; total stillness (2.25 cm while
+        // planted) never goes below a 1 cm "still". Edge margin 100 ms: the clip ends planted.
+        std::vector<BoneTrack> tr = {TrackOf(kStepsDur, [](double t) { return StepAt(t, 0.3); })};
+        DetectOptions o;
+        o.edge_margin_ms = 100.0;
+        const Block vert = MeasureBlock(Measure::Stillness, Axis::Vertical, Direction::Below, 0.01, 0.005);
+        const Block total = MeasureBlock(Measure::Stillness, Axis::Total, Direction::Below, 0.01, 0.005);
+        const size_t mid = static_cast<size_t>(std::lround((kContact[1] + 0.1) * 240.0));
+        CHECK(EvaluateSignal(vert.conditions[0].signal, tr).at(mid) == 0.0);
+        CHECK(Near(EvaluateSignal(total.conditions[0].signal, tr).at(mid), 0.3 * 0.075, 1e-9));
+        auto ev = TracedDetect({vert}, tr, o);
+        CHECK(ev.size() == 4);
+        for (size_t k = 0; k < ev.size() && k < 4; ++k)
+            CHECK(ev[k].time_s > kContact[k] - 0.05 && ev[k].time_s <= kContact[k] + 1e-9);
+        CHECK(TracedDetect({total}, tr, o).empty());
+        // Analysed, vertical stillness still finds the four contacts.
+        CHECK(TracedDetect(Analyse({vert}, tr), tr, o).size() == 4);
+    }
+    {
+        // Fast vs slow approach: the same stop at t = 1 s reached at 3 m/s and at 0.5 m/s.
+        // "Relative drop below 0.2" fires within 16 ms of the stop in both (scale-free), with
+        // the threshold as given and as Analysed (the level rule: 0..1 -> 0.25, margin 0.125).
+        double at[2] = {0.0, 0.0};
+        int    k = 0;
+        for (double v : {3.0, 0.5}) {
+            std::vector<BoneTrack> tr = {
+                TrackOf(2.0, [v](double t) { return Vec3d{v * std::min(0.8, std::max(0.0, t - 0.2)), 0.1, 0.0}; })};
+            const Block b = MeasureBlock(Measure::RelativeDrop, Axis::Total, Direction::Below, 0.2, 0.1);
+            const std::vector<double> d = EvaluateSignal(b.conditions[0].signal, tr);
+            bool in01 = true;
+            for (double x : d) in01 = in01 && x >= 0.0 && x <= 1.0 + 1e-12;
+            CHECK(in01);
+            auto ev = TracedDetect({b}, tr);
+            CHECK(ev.size() == 1 && std::fabs(ev[0].time_s - 1.0) <= 0.016);
+            if (ev.size() == 1) at[k] = ev[0].time_s;
+            const std::vector<Block> an = Analyse({b}, tr);
+            CHECK(Near(an[0].conditions[0].threshold, 0.25, 1e-9) && Near(an[0].conditions[0].margin, 0.125, 1e-9));
+            ev = TracedDetect(an, tr);
+            CHECK(ev.size() == 1 && std::fabs(ev[0].time_s - 1.0) <= 0.016);
+            // Above: the level rule's other side (high - 0.25 * gap).
+            Block up = b;
+            up.conditions[0].dir = Direction::Above;
+            CHECK(Near(Analyse({up}, tr)[0].conditions[0].threshold, 0.75, 1e-9));
+            // keep_sign does not turn it into a signed-speed onset.
+            Block sg = b;
+            sg.conditions[0].signal.keep_sign = true;
+            CHECK(Near(Analyse({sg}, tr)[0].conditions[0].threshold, 0.25, 1e-9));
+            ++k;
+        }
+        CHECK(std::fabs(at[0] - at[1]) < 0.001);
+        // Stillness takes the level rule too: still 0, moving 0.075 * 3 m/s.
+        std::vector<BoneTrack> tr = {
+            TrackOf(2.0, [](double t) { return Vec3d{3.0 * std::min(0.8, std::max(0.0, t - 0.2)), 0.1, 0.0}; })};
+        const std::vector<Block> an =
+            Analyse({MeasureBlock(Measure::Stillness, Axis::X, Direction::Below, 0.0, 0.0)}, tr);
+        CHECK(Near(an[0].conditions[0].threshold, 0.25 * 0.225, 1e-9) &&
+              Near(an[0].conditions[0].margin, 0.5 * 0.25 * 0.225, 1e-9));
+    }
+    {
+        // Idle: a bone that never moves reads 0 (0 / 0 is not a division by noise), and fires
+        // nothing. One that stops and then idles with +-0.1 mm noise: the approach peak is
+        // floored at 10 % of the clip's 95th-percentile speed, so the idle stays near 0 and
+        // only the stop fires.
+        std::vector<BoneTrack> still = {TrackOf(2.0, [](double) { return Vec3d{0.2, 0.1, -0.3}; })};
+        for (Measure m : {Measure::Stillness, Measure::RelativeDrop}) {
+            const Block b = MeasureBlock(m, Axis::Total, Direction::Below, 0.2, 0.1);
+            const std::vector<double> v = EvaluateSignal(b.conditions[0].signal, still);
+            CHECK(v.size() == 481 && *std::max_element(v.begin(), v.end()) == 0.0 &&
+                  *std::min_element(v.begin(), v.end()) == 0.0);
+            CHECK(TracedDetect({b}, still).empty());
+            const std::vector<Block> an = Analyse({b}, still);
+            CHECK(std::isfinite(an[0].conditions[0].threshold) && std::isfinite(an[0].conditions[0].margin));
+            CHECK(TracedDetect(an, still).empty());
+        }
+        Noise noise;
+        std::vector<BoneTrack> tr = {TrackOf(3.0, [&](double t) {
+            const double x = std::min(0.8, std::max(0.0, t - 0.2));
+            const double j = t > 1.0 ? 0.0001 : 0.0;
+            return Vec3d{x + noise(j), 0.1 + noise(j), noise(j)};
+        })};
+        const Block b = MeasureBlock(Measure::RelativeDrop, Axis::Total, Direction::Below, 0.2, 0.1);
+        const std::vector<double> d = EvaluateSignal(b.conditions[0].signal, tr);
+        double idle = 0.0;
+        for (size_t i = static_cast<size_t>(1.3 * 240.0); i < d.size(); ++i) idle = std::max(idle, d[i]);
+        CHECK(idle < 0.2);
+        auto ev = TracedDetect({b}, tr);
+        CHECK(ev.size() == 1 && std::fabs(ev[0].time_s - 1.0) <= 0.016);
+    }
+    {
+        // Angles: stillness = half the angle's range over the window ahead (a joint closing at
+        // 90 deg/s: 6.75 deg); relative drop of a steady turn = 1.
+        const double d2r = 3.14159265358979323846 / 180.0;
+        auto c_of = [d2r](double t) { return Vec3d{std::sin(90.0 * t * d2r), -std::cos(90.0 * t * d2r), 0.0}; };
+        std::vector<BoneTrack> tr = {Track(1.0, 240.0, [](double) { return 1.0; }),
+                                     Track(1.0, 240.0, [](double) { return 0.0; }),
+                                     Track(1.0, 240.0, [&](double t) { return c_of(t).y; },
+                                           [&](double t) { return c_of(t).x; })};
+        SignalSpec s;
+        s.quantity = Quantity::InteriorAngle;
+        s.bones = {0, 1, 2};
+        s.measure = Measure::Stillness;
+        CHECK(Near(EvaluateSignal(s, tr).at(120), 6.75, 1e-6));
+        s.measure = Measure::RelativeDrop;
+        CHECK(Near(EvaluateSignal(s, tr).at(120), 1.0, 1e-6));
+        // The joint closes, so its signed speed is negative: keep_sign does not apply.
+        SignalSpec sg = s;
+        sg.keep_sign = true;
+        CHECK(EvaluateSignal(sg, tr) == EvaluateSignal(s, tr));
+        // The same joint stops closing at t = 1 s (2 s clip): near 1 before the stop, and
+        // "relative drop below 0.2" fires within 16 ms of it (the approach window counts).
+        auto stop_of = [d2r](double t) {
+            const double a = 90.0 * std::min(t, 1.0) * d2r;
+            return Vec3d{std::sin(a), -std::cos(a), 0.0};
+        };
+        std::vector<BoneTrack> st = {Track(2.0, 240.0, [](double) { return 1.0; }),
+                                     Track(2.0, 240.0, [](double) { return 0.0; }),
+                                     Track(2.0, 240.0, [&](double t) { return stop_of(t).y; },
+                                           [&](double t) { return stop_of(t).x; })};
+        const std::vector<double> sd = EvaluateSignal(s, st);
+        CHECK(sd.size() == 481 && Near(sd.at(static_cast<size_t>(0.8 * 240.0)), 1.0, 1e-6));
+        Block ab;
+        Condition ac;
+        ac.signal = s;
+        ac.dir = Direction::Below;
+        ac.threshold = 0.2;
+        ac.margin = 0.1;
+        ab.conditions = {ac};
+        ab.cooldown_ms = 250.0;
+        const std::vector<Event> ae = TracedDetect({ab}, st);
+        CHECK(ae.size() == 1 && std::fabs(ae[0].time_s - 1.0) <= 0.016);
+        // The approach window is what the speed is compared with: at the stop (the smoothed
+        // speed is half the approach), 300 ms back reads 0.5; one sample back reads 0.72.
+        SignalSpec one = s;
+        one.window_ms = 2.0;
+        const double at_stop = EvaluateSignal(s, st).at(240), one_back = EvaluateSignal(one, st).at(240);
+        CHECK(Near(at_stop, 0.5, 0.01) && one_back > 0.65);
+
+        // A rotation: on X / Y / Z like an angle; on total (or horizontal) neither fits, and
+        // the rule does not run.
+        BoneTrack spin = Track(2.0, 240.0, [](double) { return 0.0; });
+        for (size_t i = 0; i < spin.pos.size(); ++i) {
+            const double h = 0.5 * (150.0 + 200.0 * static_cast<double>(i) / 240.0) * d2r;
+            spin.rot_parent.push_back(Quatd{std::cos(h), std::sin(h), 0.0, 0.0});
+            spin.rot_world.push_back(Quatd{});
+        }
+        std::vector<BoneTrack> rt = {spin};
+        SignalSpec r;
+        r.quantity = Quantity::Rotation;
+        r.bones = {0};
+        r.reference = Reference::Parent;
+        r.axis = Axis::X;
+        r.measure = Measure::Stillness;
+        CHECK(Near(EvaluateSignal(r, rt).at(240), 15.0, 1e-6));  // 200 deg/s over 150 ms, halved
+        r.measure = Measure::RelativeDrop;
+        CHECK(Near(EvaluateSignal(r, rt).at(240), 1.0, 1e-6));
+        for (Axis a : {Axis::Total, Axis::Horizontal})
+            for (Measure m : {Measure::Stillness, Measure::RelativeDrop}) {
+                r.axis = a;
+                r.measure = m;
+                CHECK(EvaluateSignal(r, rt).empty());
+                Block b;
+                Condition c;
+                c.signal = r;
+                b.conditions = {c};
+                const DetectionTrace t = DetectTrace({b}, rt);
+                CHECK(!t.blocks.at(0).ran && t.events.empty());
+                const std::vector<Block> an = Analyse({b}, rt);  // left as it was
+                CHECK(an[0].conditions[0].threshold == 0.0 && an[0].conditions[0].margin == 0.0);
+            }
+        r.measure = Measure::Speed;  // the turning rate still reads on total
+        r.axis = Axis::Total;
+        CHECK(Near(EvaluateSignal(r, rt).at(240), 200.0, 1e-3));
+    }
+    {
+        // Per-match signed errors (det - ref), in reference order; SumMatches chains them.
+        const MatchResult m = MatchEvents({1.0, 2.0, 3.0}, {1.010, 2.5, 2.98}, 0.15, 0.0, 10.0);
+        CHECK(m.n_match == 2 && m.match_err_s.size() == 2);
+        if (m.match_err_s.size() == 2) CHECK(Near(m.match_err_s[0], 0.010) && Near(m.match_err_s[1], -0.020));
+        CHECK(m.unmatched_ref == std::vector<double>{2.0} && m.unmatched_det == std::vector<double>{2.5});
+        const MatchResult m2 = MatchEvents({5.0}, {5.03}, 0.15, 0.0, 10.0);
+        const MatchResult t = SumMatches({m, m2});
+        CHECK(t.match_err_s.size() == 3 && Near(t.match_err_s[2], 0.03));
+        CHECK(MatchEvents({}, {1.0}, 0.15, 0.0, 10.0).match_err_s.empty());
+
+        // The spike's edits (EditsOf): a match off by more than 16 ms either way is an edit,
+        // exactly 16 ms is not; plus each missed REF and each extra detection.
+        const MatchResult e = MatchEvents({1.0, 2.0, 3.0, 4.0}, {0.980, 2.020, 3.016, 5.5}, 0.15, 0.0, 10.0);
+        const Edits ed = EditsOf(e);
+        CHECK(ed.off == 2 && ed.missed == 1 && ed.extra == 1 && ed.total() == 4);
+        CHECK(!WithinEditGate(ed));
+        CHECK(WithinEditGate(EditsOf(MatchEvents({1.0, 2.0}, {1.0, 2.3}, 0.15, 0.0, 10.0))));  // 2 edits
+        CHECK(EditsOf(MatchEvents({}, {}, 0.15, 0.0, 10.0)).total() == 0);
     }
 
     if (g_fails == 0) std::printf("bone_events: all tests passed\n");

@@ -58,6 +58,9 @@
 //   - 10-4 follow-up: `q=angle` (the interior angle at a joint: `bones` = the joint alone,
 //     its parent and child found at binding) and `q=rot` (a bone's rotation: `ref=parent`
 //     or `ref=floor` = the world, `axis=x|y|z|total`). `q=joint` and `q=yaw` read as before.
+//   - spike 10-7a: `meas=still` (stillness) and `meas=drop` (relative drop), and `win=<ms>`
+//     right after `meas` = SignalSpec::window_ms, written only when it is not 0 (the
+//     measure's default window), so a record without them writes back byte-identical.
 //   - `on=0` on a `block` line = the rule is switched off (absent = on, story 10-3).
 //   - story 10-4: an `event` line writes `block`, `strength` and `speed` only when it was read
 //     with them (or made by this version), so a record written without them comes back as

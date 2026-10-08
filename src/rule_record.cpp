@@ -557,8 +557,9 @@ const Word<Combine>   kCombine[] = {{Combine::Single, "single"}, {Combine::Avera
                                     {Combine::Lowest, "lowest"}, {Combine::Highest, "highest"}};
 const Word<Reference> kReference[] = {{Reference::Floor, "floor"}, {Reference::Bones, "bones"},
                                      {Reference::Parent, "parent"}};
-const Word<Measure>   kMeasure[] = {{Measure::Position, "position"}, {Measure::Speed, "speed"},
-                                    {Measure::Acceleration, "accel"}};
+const Word<Measure>   kMeasure[] = {{Measure::Position, "position"},   {Measure::Speed, "speed"},
+                                    {Measure::Acceleration, "accel"},    {Measure::Stillness, "still"},
+                                    {Measure::RelativeDrop, "drop"}};
 const Word<Axis>      kAxis[] = {{Axis::Vertical, "vertical"}, {Axis::Horizontal, "horizontal"}, {Axis::Total, "total"},
                                  {Axis::X, "x"},               {Axis::Y, "y"},                   {Axis::Z, "z"}};
 const Word<Direction> kDirection[] = {{Direction::Below, "below"}, {Direction::Above, "above"}};
@@ -723,6 +724,7 @@ void AppendSignalFields(Fields& f, const SignalSpec& s)
     if (s.floor_y != 0.0) f.push_back({"floor", FormatNumber(s.floor_y)});
     if (!s.bone_floors.empty()) f.push_back({"floors", FormatDoubles(s.bone_floors)});
     f.push_back({"meas", ToWord(kMeasure, s.measure)});
+    if (s.window_ms != 0.0) f.push_back({"win", FormatNumber(s.window_ms)});  // spike 10-7a
     f.push_back({"axis", ToWord(kAxis, s.axis)});
     if (s.keep_sign) f.push_back({"signed", "1"});
 }
@@ -738,6 +740,7 @@ Set SetSignal(SignalSpec& s, const std::string& k, const std::string& v)
     if (k == "floor") return R(ReadNumber(v, &s.floor_y));
     if (k == "floors") return R(ReadDoubleList(v, &s.bone_floors));
     if (k == "meas") return R(FromWord(kMeasure, v, &s.measure));
+    if (k == "win") return R(ReadNumber(v, &s.window_ms));
     if (k == "axis") return R(FromWord(kAxis, v, &s.axis));
     if (k == "signed") return R(ReadBool(v, &s.keep_sign));
     return Set::Unknown;
@@ -1477,7 +1480,8 @@ bool SignalsEqual(const SignalSpec& a, const SignalSpec& b)
 {
     return a.quantity == b.quantity && a.bones == b.bones && a.combine == b.combine && a.reference == b.reference &&
            a.ref_bones == b.ref_bones && a.ref_combine == b.ref_combine && a.floor_y == b.floor_y &&
-           a.bone_floors == b.bone_floors && a.measure == b.measure && a.axis == b.axis && a.keep_sign == b.keep_sign;
+           a.bone_floors == b.bone_floors && a.measure == b.measure && a.axis == b.axis && a.keep_sign == b.keep_sign &&
+           a.window_ms == b.window_ms;
 }
 
 namespace {
@@ -1673,7 +1677,14 @@ std::string SignalBoneLabel(const SignalSpec& spec)
 
 std::string SignalName(const SignalSpec& spec, const std::string& bone_label)
 {
-    const char* measure = spec.measure == Measure::Speed ? "speed" : spec.measure == Measure::Acceleration ? "acceleration" : "";
+    const char* measure = "";
+    switch (spec.measure) {
+    case Measure::Position: measure = ""; break;
+    case Measure::Speed: measure = "speed"; break;
+    case Measure::Acceleration: measure = "acceleration"; break;
+    case Measure::Stillness: measure = "stillness"; break;
+    case Measure::RelativeDrop: measure = "relative drop"; break;
+    }
     std::string word;
     if (spec.quantity == Quantity::JointAngle || spec.quantity == Quantity::Yaw) {
         word = spec.quantity == Quantity::JointAngle ? "bend" : "turn";
@@ -1682,10 +1693,17 @@ std::string SignalName(const SignalSpec& spec, const std::string& bone_label)
         word = "angle";
         if (*measure) word += std::string(" ") + measure;
     } else if (spec.quantity == Quantity::Rotation) {
-        // "rotation X", "rotation X speed", "rotation speed" (total).
+        // "rotation X", "rotation X speed", "rotation speed" (total). An angle on total reads
+        // X; the other measures read total (stillness / relative drop there do not fit).
         word = "rotation";
-        const bool total = spec.measure != Measure::Position &&
-                           (spec.axis == Axis::Total || spec.axis == Axis::Horizontal);
+        bool total = false;
+        switch (spec.measure) {
+        case Measure::Position: total = false; break;
+        case Measure::Speed:
+        case Measure::Acceleration:
+        case Measure::Stillness:
+        case Measure::RelativeDrop: total = spec.axis == Axis::Total || spec.axis == Axis::Horizontal; break;
+        }
         if (!total) {
             const Axis a = spec.axis;
             word += (a == Axis::Y || a == Axis::Vertical) ? " Y" : a == Axis::Z ? " Z" : " X";

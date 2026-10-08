@@ -7,7 +7,27 @@
 // above), a threshold and a hysteresis margin. A signal is Bone x Reference x Measure x Axis:
 //   bones      one or more tracks, combined (single / average / lowest / highest)
 //   reference  the floor (a level), or one or more tracks combined the same way
-//   measure    position, speed or acceleration of (bones - reference)
+//   measure    position, speed or acceleration of (bones - reference), or (spike 10-7a)
+//              stillness or relative drop:
+//                stillness      at each sample, the radius the point stays within over the
+//                               window that starts there (SignalSpec::window_ms, default 150
+//                               ms, at least one sample; near the clip end, the last full
+//                               window), on the axis: the largest distance from the window's
+//                               mid-range point (one component: half its range). Raw
+//                               positions, no smoothing. Metres. "Below th" comes true as a
+//                               still stretch starts (sub-frame), ahead of it by the time the
+//                               approach takes to cover 2 th.
+//                relative drop  the speed on the axis (a magnitude, smoothed as speed) over
+//                               its peak in the approach window that ends at this sample
+//                               (window_ms, default 300 ms, clamped to the clip). The peak is
+//                               floored at 10 % of the clip's 95th-percentile speed, so a bone
+//                               resting after a move reads near 0 (a peak under 1e-9 per
+//                               second, an exact hold's rounding, reads 0); a bone that only
+//                               jitters for the whole clip still compares noise with noise.
+//                               0..1: "below 0.2" = the speed fell to 20 % of the approach.
+//                               On one component (vertical...) the speed also drops where the
+//                               motion turns back (the top of a lift).
+//              Both are magnitudes (keep_sign does not apply).
 //   axis       vertical (= Y), horizontal (XZ), total (3D), X, Y or Z
 // or an angle signal (degrees, scale-free; reference and axis do not apply):
 //   joint angle  the flexion at bone b from bones (a, b, c): 180 - the angle a-b-c, so 0 =
@@ -23,8 +43,10 @@
 //                like a 3D tool's rotate channels), unwrapped. Speed / acceleration on
 //                X / Y / Z = the derivatives of those; on total = the magnitude of the
 //                angular velocity (its derivative for acceleration). Position on total
-//                (or horizontal) reads as X; vertical reads as Y.
-// with the same measures (position = the angle, speed, acceleration).
+//                (or horizontal) reads as X; vertical reads as Y. Stillness and relative
+//                drop have no total: on total (or horizontal) the signal does not fit.
+// with the same measures (position = the angle, speed, acceleration, stillness = half the
+// angle's range over the window, relative drop of the angle speed).
 // Detection runs offline over the whole clip (it may look ahead). An event fires when the
 // AND comes true and lands at the interpolated sub-frame crossing of the condition that
 // completed it, plus the block's offset. The first condition is the trigger: one entry of
@@ -100,9 +122,16 @@ enum class Combine { Single, Average, Lowest, Highest };
 // Parent (10-4 follow-up): a rotation read relative to the bone's parent. Floor on a
 // rotation = the world.
 enum class Reference { Floor, Bones, Parent };
-enum class Measure { Position, Speed, Acceleration };
+// Stillness and RelativeDrop: spike 10-7a, step 1 (see the header comment).
+enum class Measure { Position, Speed, Acceleration, Stillness, RelativeDrop };
 enum class Axis { Vertical, Horizontal, Total, X, Y, Z };
 enum class Quantity { Point, JointAngle, Yaw, InteriorAngle, Rotation };
+
+// The windows of the 10-7a measures when SignalSpec::window_ms is 0, and the relative drop's
+// peak floor (a share of the clip's 95th-percentile speed).
+constexpr double kStillnessWindowMs = 150.0;
+constexpr double kRelativeDropWindowMs = 300.0;
+constexpr double kRelativeDropPeakFloor = 0.10;
 
 struct SignalSpec {
     // Point: the bones' (combined) position. JointAngle: bones = {a, b, c}, degrees of
@@ -126,7 +155,14 @@ struct SignalSpec {
     // sign instead of the magnitude. Position components and angles are always signed;
     // horizontal / total are magnitudes.
     bool             keep_sign = false;
+    // Stillness / relative drop: the window in ms, 0 = the measure's default
+    // (kStillnessWindowMs / kRelativeDropWindowMs). The other measures ignore it.
+    double           window_ms = 0.0;
 };
+
+// The window a signal's measure uses (ms): window_ms when > 0, else the measure's default;
+// 0 for a measure without a window (position, speed, acceleration).
+double MeasureWindowMs(const SignalSpec& spec);
 
 enum class Direction { Below, Above };
 
@@ -239,7 +275,8 @@ struct AnalyseOptions {
 //   conditions with auto_threshold = false are left as they are.
 //   any point signal with reference = floor (whatever the measure): floor_y (and bone_floors when
 //     per_bone_floor) = the floor percentile of the raw level.
-//   position (point with floor or bones reference, or an angle): on the values, low = their floor percentile,
+//   position (point with floor or bones reference, or an angle), stillness and relative drop
+//     (the same level rule, spike 10-7a): on the values, low = their floor percentile,
 //     high = the median of Otsu's upper cluster, gap = high - low.
 //     Below: th = low + fraction * gap. Above: th = high - fraction * gap.
 //     Margin = margin_ratio * fraction * gap.
@@ -264,6 +301,9 @@ struct MatchResult {
     double mean_abs_err_s = 0.0;
     double max_abs_err_s = 0.0;
     double mean_signed_err_s = 0.0;  // det - ref: a steady lead / lag (what an offset fixes)
+    // Spike 10-7a: det - ref of each match (s), in reference time order (SumMatches: the
+    // items' lists one after the other).
+    std::vector<double> match_err_s;
     std::vector<double> unmatched_ref;
     std::vector<double> unmatched_det;
 };

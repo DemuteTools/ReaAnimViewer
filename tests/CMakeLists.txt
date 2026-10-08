@@ -67,7 +67,9 @@ add_test(NAME ref_labels COMMAND ref_labels_test)
 # Spec 10-0 -- the offline evaluator: runs the footstep detection on RAV_detection_dump CSV
 # files and prints the measure action's report (a tool, not a test):
 #   detection_eval [--param=value ...] [--json] file.csv...
-add_executable(detection_eval detection_eval.cpp ../src/bone_events.cpp ../src/footstep_measure.cpp)
+# Spike 10-7a step 1: --single measures Speed, Stillness and Relative drop alone per labelled bone.
+add_executable(detection_eval detection_eval.cpp ../src/bone_events.cpp ../src/footstep_measure.cpp
+               ../src/tagging_signal.cpp)
 target_include_directories(detection_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 
 # Story 10-2 -- the rules record, presets and the role mapping (src/rule_record.h,

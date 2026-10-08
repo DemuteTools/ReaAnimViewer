@@ -143,6 +143,47 @@ int main()
             r.axis = Axis::Vertical;
             CHECK(RotationAxisOf(r) == Axis::Y);
         }
+        // Spike 10-7a: Stillness (cm, deg on an angle) and Relative drop (%) are offered.
+        {
+            bool has_still = false, has_drop = false;
+            for (Measure m : kMeasureChoices) {
+                has_still = has_still || m == Measure::Stillness;
+                has_drop = has_drop || m == Measure::RelativeDrop;
+            }
+            CHECK(has_still && has_drop);
+            CHECK(std::string(MeasureLabel(Measure::Stillness)) == "Stillness" &&
+                  std::string(MeasureLabel(Measure::RelativeDrop)) == "Relative drop");
+            CHECK(!MeasureHint(Measure::Stillness).empty() && !MeasureHint(Measure::RelativeDrop).empty() &&
+                  MeasureHint(Measure::Speed).empty());
+            CHECK(MeasureHint(Measure::Stillness).find("150 ms") != std::string::npos &&
+                  MeasureHint(Measure::RelativeDrop).find("300 ms") != std::string::npos);
+            const SignalSpec still = Spec(Quantity::Point, Measure::Stillness);
+            const SignalSpec drop = Spec(Quantity::Point, Measure::RelativeDrop);
+            const SignalSpec astill = Spec(Quantity::InteriorAngle, Measure::Stillness);
+            const SignalSpec adrop = Spec(Quantity::Rotation, Measure::RelativeDrop);
+            CHECK(UnitOf(still) == SignalUnit::Centimetre && UnitOf(astill) == SignalUnit::Degree);
+            CHECK(UnitOf(drop) == SignalUnit::Percent && UnitOf(adrop) == SignalUnit::Percent);
+            CHECK(std::string(UnitLabel(SignalUnit::Percent)) == "%");
+            CHECK(Near(ToDisplay(drop, 0.2), 20.0) && Near(FromDisplay(drop, 20.0), 0.2));
+            CHECK(Near(ToDisplay(still, 0.012), 1.2) && Near(FromDisplay(astill, 4.0), 4.0));
+            CHECK(FormatDisplay(drop, 0.2) == "20 %" && FormatDisplay(still, 0.012) == "1.2 cm" &&
+                  FormatDisplay(astill, 6.75) == "6.8\xC2\xB0");
+            CHECK(UnitDecimals(SignalUnit::Percent) == 0 && UnitDragStep(SignalUnit::Percent) > 0.0);
+            CHECK(std::string(MeasureLabelFor(astill, Measure::Stillness)) == "angle stillness" &&
+                  std::string(MeasureLabelFor(astill, Measure::RelativeDrop)) == "angle relative drop");
+            CHECK(std::string(MeasureLabelFor(adrop, Measure::RelativeDrop)) == "Relative drop" &&
+                  std::string(MeasureLabelFor(still, Measure::Stillness)) == "Stillness");
+            // A rotation's stillness / relative drop has no total: not offered; an odd record on
+            // total reads total (as the engine does: it does not fit).
+            CHECK(!RotationAxisOffered(Measure::Stillness, Axis::Total) &&
+                  !RotationAxisOffered(Measure::RelativeDrop, Axis::Total));
+            CHECK(RotationAxisOffered(Measure::Stillness, Axis::X) && RotationAxisOffered(Measure::RelativeDrop, Axis::Z));
+            SignalSpec r = adrop;
+            r.axis = Axis::Total;
+            CHECK(RotationAxisOf(r) == Axis::Total);
+            r.axis = Axis::Vertical;
+            CHECK(RotationAxisOf(r) == Axis::Y);
+        }
         CHECK(std::string(RotationReferenceLabel(Reference::Parent)) == "its parent" &&
               std::string(RotationReferenceLabel(Reference::Floor)) == "the world");
 

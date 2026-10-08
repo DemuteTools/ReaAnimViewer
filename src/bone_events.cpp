@@ -190,13 +190,112 @@ void EstimateFloor(SignalSpec& spec, const std::vector<BoneTrack>& tracks, const
 constexpr double kPi = 3.14159265358979323846;
 constexpr double kDeg = 180.0 / kPi;
 
+// ---- Spike 10-7a: stillness and relative drop ------------------------------------------------
+
+// A measure's window in samples (MeasureWindowMs), at most the clip and at least one sample
+// (a window shorter than a sample would read no motion at all).
+size_t WindowSamples(const SignalSpec& spec, double rate, size_t n)
+{
+    const double k = MeasureWindowMs(spec) / 1000.0 * rate;
+    if (!(k > 0.0)) return 0;
+    const size_t w = static_cast<size_t>(std::floor(std::min(k, static_cast<double>(n)) + 1e-9));
+    return (w == 0 && n > 1) ? 1 : w;
+}
+
+// The components of v that an axis reads (the others zeroed): one for vertical / X / Y / Z,
+// X and Z for horizontal, all three for total.
+Vec3d OnAxis(const Vec3d& v, Axis axis)
+{
+    switch (axis) {
+    case Axis::Vertical:
+    case Axis::Y: return Vec3d{0.0, v.y, 0.0};
+    case Axis::X: return Vec3d{v.x, 0.0, 0.0};
+    case Axis::Z: return Vec3d{0.0, 0.0, v.z};
+    case Axis::Horizontal: return Vec3d{v.x, 0.0, v.z};
+    case Axis::Total: return v;
+    }
+    return v;
+}
+
+// Stillness: at each sample i, over samples i..i+w, the largest distance from the window's
+// mid-range point (per component). On one component, half the range; for a slide along a
+// line, half its length. The window is clamped to the clip at full length: the last w
+// samples read the last full window, so a bone still moving at the clip end does not read
+// still there.
+std::vector<double> StillnessSeries(const std::vector<Vec3d>& p, size_t w)
+{
+    const size_t n = p.size();
+    std::vector<double> out(n, 0.0);
+    if (n == 0) return out;
+    const size_t len = std::min(w, n - 1);
+    for (size_t i = 0; i < n; ++i) {
+        const size_t s = std::min(i, n - 1 - len);
+        const size_t e = s + len;
+        Vec3d lo = p[s], hi = p[s];
+        for (size_t j = s + 1; j <= e; ++j) {
+            lo.x = std::min(lo.x, p[j].x);
+            lo.y = std::min(lo.y, p[j].y);
+            lo.z = std::min(lo.z, p[j].z);
+            hi.x = std::max(hi.x, p[j].x);
+            hi.y = std::max(hi.y, p[j].y);
+            hi.z = std::max(hi.z, p[j].z);
+        }
+        const Vec3d c{0.5 * (lo.x + hi.x), 0.5 * (lo.y + hi.y), 0.5 * (lo.z + hi.z)};
+        double r2 = 0.0;
+        for (size_t j = s; j <= e; ++j) {
+            const double dx = p[j].x - c.x, dy = p[j].y - c.y, dz = p[j].z - c.z;
+            r2 = std::max(r2, dx * dx + dy * dy + dz * dz);
+        }
+        out[i] = std::sqrt(r2);
+    }
+    return out;
+}
+
+// Relative drop: speed[i] over the peak of speed[i-w..i] (clamped to the clip), the peak
+// floored at kRelativeDropPeakFloor of the clip's 95th-percentile speed, so the noise of a
+// bone resting after a move reads near 0. A peak under 1e-9 per second is no motion (the
+// rounding left by smoothing an exact hold): it reads 0. The floor follows the clip: a bone
+// that only jitters for the whole clip still compares its noise with its noise. `speed`
+// holds magnitudes, so the result is in [0, 1].
+std::vector<double> RelativeDropSeries(const std::vector<double>& speed, size_t w)
+{
+    constexpr double kNoMotion = 1e-9;
+    const size_t n = speed.size();
+    std::vector<double> out(n, 0.0);
+    if (n == 0) return out;
+    const double floor = kRelativeDropPeakFloor * Percentile(speed, 95.0);
+    for (size_t i = 0; i < n; ++i) {
+        double peak = floor;
+        for (size_t j = i > w ? i - w : 0; j <= i; ++j) peak = std::max(peak, speed[j]);
+        out[i] = peak > kNoMotion ? speed[i] / peak : 0.0;
+    }
+    return out;
+}
+
 // The measure of a scalar series (an angle): position = itself; speed / acceleration =
-// centred differences on the smoothed series, magnitudes unless keep_sign.
-std::vector<double> ScalarMeasure(const std::vector<double>& q, Measure measure, bool keep_sign, double smooth_ms,
-                                  double rate)
+// centred differences on the smoothed series, magnitudes unless keep_sign; stillness = half
+// the range over the window ahead; relative drop = of the speed magnitude.
+std::vector<double> ScalarMeasure(const std::vector<double>& q, const SignalSpec& spec, double smooth_ms, double rate)
 {
     const size_t n = q.size();
-    if (measure == Measure::Position) return q;
+    switch (spec.measure) {
+    case Measure::Position: return q;
+    case Measure::Stillness: {
+        std::vector<Vec3d> v(n);
+        for (size_t i = 0; i < n; ++i) v[i].x = q[i];
+        return StillnessSeries(v, WindowSamples(spec, rate, n));
+    }
+    case Measure::RelativeDrop: {
+        SignalSpec speed = spec;
+        speed.measure = Measure::Speed;
+        speed.keep_sign = false;
+        return RelativeDropSeries(ScalarMeasure(q, speed, smooth_ms, rate), WindowSamples(spec, rate, n));
+    }
+    case Measure::Speed:
+    case Measure::Acceleration: break;
+    }
+    const Measure measure = spec.measure;
+    const bool keep_sign = spec.keep_sign;
     std::vector<double> out(n, 0.0);
     if (n < 2) return out;
     std::vector<Vec3d> v(n);
@@ -326,7 +425,15 @@ int RotationAxis(const SignalSpec& spec)
     case Axis::Vertical: return 1;
     case Axis::Z: return 2;
     case Axis::Total:
-    case Axis::Horizontal: return spec.measure == Measure::Position ? 0 : -1;
+    case Axis::Horizontal:
+        switch (spec.measure) {
+        case Measure::Position: return 0;  // an angle has no total: X
+        case Measure::Speed:
+        case Measure::Acceleration: return -1;  // the turning rate
+        case Measure::Stillness:
+        case Measure::RelativeDrop: return -1;  // total too, which they do not fit (RotationSignal)
+        }
+        return -1;
     }
     return 0;
 }
@@ -368,11 +475,18 @@ std::vector<double> RotationSignal(const SignalSpec& spec, const std::vector<Bon
             q[i] = axis == 0 ? e.x : axis == 1 ? e.y : e.z;
             prev = e;
         }
-        return ScalarMeasure(q, spec.measure, spec.keep_sign, smooth_ms, rate);
+        return ScalarMeasure(q, spec, smooth_ms, rate);
     }
     // Total: the angular velocity (deg/s, a vector in the reference frame) by centred
     // differences of the orientation, smoothed; speed = its length, acceleration = the
-    // length of its derivative.
+    // length of its derivative. Stillness and relative drop have no total: they do not fit.
+    switch (spec.measure) {
+    case Measure::Speed:
+    case Measure::Acceleration: break;
+    case Measure::Position:  // reads as X (RotationAxis): never here
+    case Measure::Stillness:
+    case Measure::RelativeDrop: return {};
+    }
     std::vector<double> out(n, 0.0);
     if (n < 2) return out;
     std::vector<Vec3d> w(n);
@@ -399,6 +513,37 @@ std::vector<double> RotationSignal(const SignalSpec& spec, const std::vector<Bon
         const double dx = (ws[b].x - ws[a].x) * inv, dy = (ws[b].y - ws[a].y) * inv, dz = (ws[b].z - ws[a].z) * inv;
         out[i] = std::sqrt(dx * dx + dy * dy + dz * dz);
     }
+    return out;
+}
+
+// Speed or acceleration (`measure`, only these two: EvaluateSignal's switch) of the relative
+// point on the axis: centred differences on the smoothed positions, magnitudes unless keep_sign.
+std::vector<double> PointDerivative(const std::vector<Vec3d>& rel, Measure measure, Axis axis, bool keep_sign,
+                                    double smooth_ms, double rate)
+{
+    const size_t n = rel.size();
+    std::vector<double> out(n, 0.0);
+    const std::vector<Vec3d> s = Smooth(rel, smooth_ms / 1000.0 * rate);
+    const bool mag = !keep_sign;
+    if (n < 2) return out;
+    std::vector<Vec3d> d(n);
+    if (measure == Measure::Speed) {
+        for (size_t i = 0; i < n; ++i) {
+            const size_t a = (i == 0) ? 0 : i - 1;
+            const size_t b = (i + 1 == n) ? i : i + 1;
+            const double inv = rate / static_cast<double>(b - a);
+            d[i] = Vec3d{(s[b].x - s[a].x) * inv, (s[b].y - s[a].y) * inv, (s[b].z - s[a].z) * inv};
+        }
+    } else {
+        if (n < 3) return out;
+        const double r2 = rate * rate;
+        for (size_t i = 1; i + 1 < n; ++i)
+            d[i] = Vec3d{(s[i + 1].x - 2 * s[i].x + s[i - 1].x) * r2, (s[i + 1].y - 2 * s[i].y + s[i - 1].y) * r2,
+                         (s[i + 1].z - 2 * s[i].z + s[i - 1].z) * r2};
+        d[0] = d[1];
+        d[n - 1] = d[n - 2];
+    }
+    for (size_t i = 0; i < n; ++i) out[i] = AxisValue(d[i], axis, mag);
     return out;
 }
 
@@ -449,6 +594,19 @@ void ValuesAt(const ValueSeries& vs, const Block& blk, double rate, size_t n, do
 
 }  // namespace
 
+double MeasureWindowMs(const SignalSpec& spec)
+{
+    const bool own = spec.window_ms > 0.0 && std::isfinite(spec.window_ms);
+    switch (spec.measure) {
+    case Measure::Stillness: return own ? spec.window_ms : kStillnessWindowMs;
+    case Measure::RelativeDrop: return own ? spec.window_ms : kRelativeDropWindowMs;
+    case Measure::Position:
+    case Measure::Speed:
+    case Measure::Acceleration: return 0.0;
+    }
+    return 0.0;
+}
+
 bool EventValuesAt(const Block& blk, const std::vector<BoneTrack>& tracks, const DetectOptions& opts, double t,
                    double* strength, double* speed)
 {
@@ -473,7 +631,7 @@ std::vector<double> EvaluateSignal(const SignalSpec& spec, const std::vector<Bon
     if (spec.quantity != Quantity::Point) {
         const size_t need = (spec.quantity == Quantity::Yaw) ? 2 : 3;
         if (spec.bones.size() != need) return {};
-        return ScalarMeasure(AngleSeries(spec, tracks), spec.measure, spec.keep_sign, smooth_ms, tracks[0].rate_hz);
+        return ScalarMeasure(AngleSeries(spec, tracks), spec, smooth_ms, tracks[0].rate_hz);
     }
     if (spec.reference == Reference::Parent) return {};  // a point has no parent reference
     if (spec.reference == Reference::Bones && !IndicesFit(spec.ref_bones, tracks.size())) return {};
@@ -496,34 +654,22 @@ std::vector<double> EvaluateSignal(const SignalSpec& spec, const std::vector<Bon
         rel[i] = p;
     }
 
-    std::vector<double> out(n, 0.0);
-    if (spec.measure == Measure::Position) {
+    switch (spec.measure) {
+    case Measure::Position: {
+        std::vector<double> out(n, 0.0);
         for (size_t i = 0; i < n; ++i) out[i] = AxisValue(rel[i], spec.axis, false);
         return out;
     }
-
-    const std::vector<Vec3d> s = Smooth(rel, smooth_ms / 1000.0 * rate);
-    const bool mag = !spec.keep_sign;
-    if (n < 2) return out;
-    std::vector<Vec3d> d(n);
-    if (spec.measure == Measure::Speed) {
-        for (size_t i = 0; i < n; ++i) {
-            const size_t a = (i == 0) ? 0 : i - 1;
-            const size_t b = (i + 1 == n) ? i : i + 1;
-            const double inv = rate / static_cast<double>(b - a);
-            d[i] = Vec3d{(s[b].x - s[a].x) * inv, (s[b].y - s[a].y) * inv, (s[b].z - s[a].z) * inv};
-        }
-    } else {
-        if (n < 3) return out;
-        const double r2 = rate * rate;
-        for (size_t i = 1; i + 1 < n; ++i)
-            d[i] = Vec3d{(s[i + 1].x - 2 * s[i].x + s[i - 1].x) * r2, (s[i + 1].y - 2 * s[i].y + s[i - 1].y) * r2,
-                         (s[i + 1].z - 2 * s[i].z + s[i - 1].z) * r2};
-        d[0] = d[1];
-        d[n - 1] = d[n - 2];
+    case Measure::Stillness:
+        for (Vec3d& p : rel) p = OnAxis(p, spec.axis);
+        return StillnessSeries(rel, WindowSamples(spec, rate, n));
+    case Measure::RelativeDrop:
+        return RelativeDropSeries(PointDerivative(rel, Measure::Speed, spec.axis, false, smooth_ms, rate),
+                                  WindowSamples(spec, rate, n));
+    case Measure::Speed:
+    case Measure::Acceleration: break;
     }
-    for (size_t i = 0; i < n; ++i) out[i] = AxisValue(d[i], spec.axis, mag);
-    return out;
+    return PointDerivative(rel, spec.measure, spec.axis, spec.keep_sign, smooth_ms, rate);
 }
 
 DetectionTrace DetectTrace(const std::vector<Block>& blocks, const std::vector<BoneTrack>& tracks,
@@ -709,7 +855,17 @@ std::vector<Block> Analyse(const std::vector<Block>& blocks, const std::vector<B
             EstimateFloor(cd.signal, tracks, opts);
             const std::vector<double> v = EvaluateSignal(cd.signal, tracks, opts.smooth_ms);
             if (v.empty()) continue;
-            if (cd.signal.measure == Measure::Position) {
+            // Position, stillness and relative drop are levels (spike 10-7a: the new
+            // measures take the position rule); speed and acceleration take percentiles.
+            bool level = true;
+            switch (cd.signal.measure) {
+            case Measure::Position:
+            case Measure::Stillness:
+            case Measure::RelativeDrop: level = true; break;
+            case Measure::Speed:
+            case Measure::Acceleration: level = false; break;
+            }
+            if (level) {
                 const double low = Percentile(v, opts.floor_percentile);
                 const double split = OtsuSplit(v);
                 std::vector<double> upper;
@@ -770,17 +926,21 @@ MatchResult MatchEvents(const std::vector<double>& ref, const std::vector<double
         }
     std::stable_sort(pairs.begin(), pairs.end(), [](const Pair& x, const Pair& y) { return x.d < y.d; });
     std::vector<char> ra(rf.size(), 0), db(dt.size(), 0);
+    std::vector<size_t> det_of(rf.size(), 0);  // a matched reference's detection
     double sum_abs = 0.0, sum_signed = 0.0;
     for (const Pair& p : pairs) {
         if (ra[p.a] || db[p.b]) continue;
         ra[p.a] = db[p.b] = 1;
+        det_of[p.a] = p.b;
         ++r.n_match;
         sum_abs += p.d;
         sum_signed += dt[p.b] - rf[p.a];
         r.max_abs_err_s = std::max(r.max_abs_err_s, p.d);
     }
-    for (size_t a = 0; a < rf.size(); ++a)
-        if (!ra[a]) r.unmatched_ref.push_back(rf[a]);
+    for (size_t a = 0; a < rf.size(); ++a) {
+        if (ra[a]) r.match_err_s.push_back(dt[det_of[a]] - rf[a]);
+        else r.unmatched_ref.push_back(rf[a]);
+    }
     for (size_t b = 0; b < dt.size(); ++b)
         if (!db[b]) r.unmatched_det.push_back(dt[b]);
     if (r.n_match > 0) {
@@ -803,6 +963,7 @@ MatchResult SumMatches(const std::vector<MatchResult>& items)
         sum_abs += m.mean_abs_err_s * m.n_match;
         sum_signed += m.mean_signed_err_s * m.n_match;
         t.max_abs_err_s = std::max(t.max_abs_err_s, m.max_abs_err_s);
+        t.match_err_s.insert(t.match_err_s.end(), m.match_err_s.begin(), m.match_err_s.end());
     }
     if (t.n_match > 0) {
         t.mean_abs_err_s = sum_abs / t.n_match;

@@ -3402,19 +3402,27 @@ void ConditionEditor(const Block& blk, int b, int c)
         SentenceRow(s, "reads");
         PlaceChip(s, ChipWidth(MeasureLabelFor(cd.signal, cd.signal.measure), 70.0f));
         if (BeginChip("##measure", MeasureLabelFor(cd.signal, cd.signal.measure), 70.0f)) {
-            for (Measure ms : kMeasureChoices)
-                if (ImGui::Selectable(MeasureLabelFor(cd.signal, ms), ms == cd.signal.measure) && ms != cd.signal.measure)
+            for (Measure ms : kMeasureChoices) {
+                const bool picked = ImGui::Selectable(MeasureLabelFor(cd.signal, ms), ms == cd.signal.measure);
+                // Spike 10-7a: what Stillness and Relative drop read (their windows are the defaults).
+                const std::string hint = MeasureHint(ms);
+                if (!hint.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                    ImGui::SetTooltip("%s", hint.c_str());
+                if (picked && ms != cd.signal.measure)
                     Edit("RAV: Condition measure (" + rule + ")", [b, c, ms](ItemRules& r) {
                         Condition* x = CondAt(r, b, c);
                         if (!x) return false;
-                        // A rotation's angle has no total: it reads as X (the axis chip shows it).
+                        // A rotation's angle, stillness and relative drop have no total: they
+                        // read X (the axis chip shows it).
                         if (x->signal.quantity == Quantity::Rotation)
                             x->signal.axis = RotationAxisOf(x->signal);
                         x->signal.measure = ms;
+                        x->signal.window_ms = 0.0;  // the new measure's default window (spike 10-7a)
                         if (x->signal.quantity == Quantity::Rotation && !RotationAxisOffered(ms, x->signal.axis))
                             x->signal.axis = Axis::X;
                         return true;
                     });
+            }
             ImGui::EndCombo();
         }
         if (legacy) {

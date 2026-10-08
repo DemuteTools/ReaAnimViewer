@@ -32,6 +32,19 @@ struct ItemMeasure {
     MatchResult         match;
 };
 
+// Spike 10-7a -- the edits a user makes to fix a detection pass: each missed REF, each extra
+// detection, each match off by more than 16 ms (kGateMaxErrS, early or late). The spike's gate
+// allows at most kGateEdits per bone per clip.
+constexpr int kGateEdits = 3;
+struct Edits {
+    int missed = 0;
+    int extra = 0;
+    int off = 0;
+    int total() const { return missed + extra + off; }
+};
+Edits EditsOf(const MatchResult& m);
+inline bool WithinEditGate(const Edits& e) { return e.total() <= kGateEdits; }
+
 // Returns one track per bone index, in that order (empty = could not sample).
 using TrackSampler = std::function<std::vector<BoneTrack>(const std::vector<int>& bone_indices)>;
 

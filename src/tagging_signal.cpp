@@ -19,6 +19,8 @@ SignalUnit UnitOf(const SignalSpec& spec)
     case Measure::Position: return angle ? SignalUnit::Degree : SignalUnit::Centimetre;
     case Measure::Speed: return angle ? SignalUnit::DegreePerSecond : SignalUnit::MetrePerSecond;
     case Measure::Acceleration: return angle ? SignalUnit::DegreePerSecond2 : SignalUnit::MetrePerSecond2;
+    case Measure::Stillness: return angle ? SignalUnit::Degree : SignalUnit::Centimetre;
+    case Measure::RelativeDrop: return SignalUnit::Percent;
     }
     return SignalUnit::Centimetre;
 }
@@ -32,13 +34,14 @@ const char* UnitLabel(SignalUnit u)
     case SignalUnit::Degree: return "\xC2\xB0";
     case SignalUnit::DegreePerSecond: return "\xC2\xB0/s";
     case SignalUnit::DegreePerSecond2: return "\xC2\xB0/s\xC2\xB2";
+    case SignalUnit::Percent: return "%";
     }
     return "";
 }
 
 double UnitScale(SignalUnit u)
 {
-    return u == SignalUnit::Centimetre ? 100.0 : 1.0;
+    return (u == SignalUnit::Centimetre || u == SignalUnit::Percent) ? 100.0 : 1.0;
 }
 
 int UnitDecimals(SignalUnit u)
@@ -50,6 +53,7 @@ int UnitDecimals(SignalUnit u)
     case SignalUnit::Degree: return 1;
     case SignalUnit::DegreePerSecond: return 0;
     case SignalUnit::DegreePerSecond2: return 0;
+    case SignalUnit::Percent: return 0;
     }
     return 1;
 }
@@ -63,6 +67,7 @@ double UnitDragStep(SignalUnit u)
     case SignalUnit::Degree: return 0.5;
     case SignalUnit::DegreePerSecond: return 5.0;
     case SignalUnit::DegreePerSecond2: return 50.0;
+    case SignalUnit::Percent: return 0.5;
     }
     return 0.1;
 }
@@ -104,8 +109,29 @@ const char* MeasureLabel(Measure m)
     case Measure::Position: return "Position";
     case Measure::Speed: return "Speed";
     case Measure::Acceleration: return "Acceleration";
+    case Measure::Stillness: return "Stillness";
+    case Measure::RelativeDrop: return "Relative drop";
     }
     return "?";
+}
+
+std::string MeasureHint(Measure m)
+{
+    char buf[160];
+    switch (m) {
+    case Measure::Position:
+    case Measure::Speed:
+    case Measure::Acceleration: return "";
+    case Measure::Stillness:
+        std::snprintf(buf, sizeof(buf), "How far it moves over the next %.0f ms (the radius it stays within)",
+                      kStillnessWindowMs);
+        return buf;
+    case Measure::RelativeDrop:
+        std::snprintf(buf, sizeof(buf), "Its speed as a share of its peak over the %.0f ms before (100 %% = no drop)",
+                      kRelativeDropWindowMs);
+        return buf;
+    }
+    return "";
 }
 
 const char* AxisLabel(Axis a)
@@ -205,6 +231,8 @@ const char* MeasureLabelFor(const SignalSpec& spec, Measure m)
         case Measure::Position: return "angle";
         case Measure::Speed: return "angle speed";
         case Measure::Acceleration: return "angle acceleration";
+        case Measure::Stillness: return "angle stillness";
+        case Measure::RelativeDrop: return "angle relative drop";
         }
     }
     if (spec.quantity == Quantity::Rotation && m == Measure::Position) return "Angle";
@@ -213,7 +241,16 @@ const char* MeasureLabelFor(const SignalSpec& spec, Measure m)
 
 bool RotationAxisOffered(Measure m, Axis a)
 {
-    if (a == Axis::Total) return m != Measure::Position;
+    if (a == Axis::Total) {
+        switch (m) {
+        case Measure::Speed:
+        case Measure::Acceleration: return true;
+        case Measure::Position:
+        case Measure::Stillness:
+        case Measure::RelativeDrop: return false;
+        }
+        return false;
+    }
     return a == Axis::X || a == Axis::Y || a == Axis::Z;
 }
 
@@ -225,7 +262,15 @@ Axis RotationAxisOf(const SignalSpec& spec)
     case Axis::Vertical: return Axis::Y;
     case Axis::Z: return Axis::Z;
     case Axis::Total:
-    case Axis::Horizontal: return spec.measure == Measure::Position ? Axis::X : Axis::Total;
+    case Axis::Horizontal:
+        switch (spec.measure) {
+        case Measure::Position: return Axis::X;
+        case Measure::Speed:
+        case Measure::Acceleration:
+        case Measure::Stillness:
+        case Measure::RelativeDrop: return Axis::Total;
+        }
+        return Axis::Total;
     }
     return Axis::X;
 }

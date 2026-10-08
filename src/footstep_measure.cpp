@@ -162,6 +162,16 @@ std::string SkippedReport(const std::string& label, const std::string& reason)
     return label + "  skipped: " + reason + "\n";
 }
 
+Edits EditsOf(const MatchResult& m)
+{
+    Edits e;
+    e.missed = static_cast<int>(m.unmatched_ref.size());
+    e.extra = static_cast<int>(m.unmatched_det.size());
+    for (double d : m.match_err_s)
+        if (std::fabs(d) > kGateMaxErrS + 1e-9) ++e.off;
+    return e;
+}
+
 std::string TotalReport(const std::vector<MatchResult>& measured, const FootstepsParams& prm)
 {
     const MatchResult total = SumMatches(measured);

@@ -11,6 +11,8 @@
 //   angle                 deg    (bend / turn / joint angle / rotation)
 //   angle speed           deg/s
 //   angle acceleration    deg/s2
+//   stillness             cm     (deg on an angle; spike 10-7a)
+//   relative drop         %      (the engine works in 0..1)
 //
 // Pure C++17: no REAPER, no ImGui, no Windows. Host-tested (tests/tagging_signal_test.cpp).
 
@@ -25,10 +27,18 @@
 namespace rav {
 
 // ---- Units -------------------------------------------------------------------------------
-enum class SignalUnit { Centimetre, MetrePerSecond, MetrePerSecond2, Degree, DegreePerSecond, DegreePerSecond2 };
+enum class SignalUnit {
+    Centimetre,
+    MetrePerSecond,
+    MetrePerSecond2,
+    Degree,
+    DegreePerSecond,
+    DegreePerSecond2,
+    Percent,  // spike 10-7a: relative drop
+};
 
 SignalUnit UnitOf(const SignalSpec& spec);
-const char* UnitLabel(SignalUnit u);  // UTF-8: "cm", "m/s", "m/s\xC2\xB2", "\xC2\xB0"...
+const char* UnitLabel(SignalUnit u);  // UTF-8: "cm", "m/s", "m/s\xC2\xB2", "\xC2\xB0", "%"...
 double UnitScale(SignalUnit u);       // display = engine value * scale
 int UnitDecimals(SignalUnit u);       // how many decimals a value shows
 double UnitDragStep(SignalUnit u);    // display units per pixel of a sideways drag
@@ -41,11 +51,16 @@ std::string FormatDisplayNumber(const SignalSpec& spec, double engine_value);
 std::string FormatDisplay(const SignalSpec& spec, double engine_value);
 
 // ---- Sentence menus ----------------------------------------------------------------------
-constexpr Measure kMeasureChoices[3] = {Measure::Position, Measure::Speed, Measure::Acceleration};
+// Stillness and Relative drop (spike 10-7a) are offered too, with their default windows.
+constexpr Measure kMeasureChoices[5] = {Measure::Position, Measure::Speed, Measure::Acceleration, Measure::Stillness,
+                                        Measure::RelativeDrop};
 constexpr Axis kAxisChoices[6] = {Axis::Vertical, Axis::Horizontal, Axis::Total, Axis::X, Axis::Y, Axis::Z};
 constexpr Direction kDirectionChoices[2] = {Direction::Below, Direction::Above};
 
-const char* MeasureLabel(Measure m);      // "Position", "Speed", "Acceleration"
+const char* MeasureLabel(Measure m);      // "Position", "Speed", "Acceleration", "Stillness", "Relative drop"
+// What a measure reads, for the menu's tooltip, with its default window ("" for position,
+// speed, acceleration).
+std::string MeasureHint(Measure m);
 const char* AxisLabel(Axis a);            // "vertical", "horizontal", "total", "X", "Y", "Z"
 const char* DirectionLabel(Direction d);  // "below", "above"
 bool IsAngleSignal(const SignalSpec& spec);  // in degrees: bend, turn, joint angle, rotation
@@ -67,13 +82,16 @@ const char* ConditionKindLabel(ConditionKind k);  // "Bone", "Joint angle", "Rot
 // deg/s, margin 50 deg/s (default bone: the left toe). Bend / Turn read as Bone.
 void SetConditionKind(Condition& c, ConditionKind k);
 // The Measure chip's label for this signal: a joint angle reads "angle", "angle speed",
-// "angle acceleration"; a rotation "Angle", "Speed", "Acceleration"; else MeasureLabel.
+// "angle acceleration", "angle stillness", "angle relative drop"; a rotation "Angle",
+// "Speed", "Acceleration", "Stillness", "Relative drop"; else MeasureLabel.
 const char* MeasureLabelFor(const SignalSpec& spec, Measure m);
-// A rotation's axis choices: X, Y, Z, and total (speed / acceleration only).
+// A rotation's axis choices: X, Y, Z, and total (speed / acceleration only: an angle,
+// stillness and relative drop have no total).
 constexpr Axis kRotationAxisChoices[4] = {Axis::X, Axis::Y, Axis::Z, Axis::Total};
 bool RotationAxisOffered(Measure m, Axis a);
 // The axis a rotation reads (an older or odd value mapped: total / horizontal on a position
-// = X, vertical = Y), as the engine reads it (bone_events.h).
+// = X, vertical = Y), as the engine reads it (bone_events.h): stillness or relative drop on
+// total / horizontal reads total, which does not fit.
 Axis RotationAxisOf(const SignalSpec& spec);
 // The Reference chip of a rotation: "its parent" / "the world".
 const char* RotationReferenceLabel(Reference r);

@@ -2,10 +2,12 @@
 //
 // Reference markers for "RAV: Measure detection against reference markers" (Epic 10, spike
 // 10-7a): "REF" marks a contact of any bone, "REF <label>" a contact of the bone that plays
-// role <label> (bone_roles.h: a built-in or a custom role key). The label is normalized with
-// RoleKeyFromName, so "REF left_hand" and "REF Left hand" (the name the role was created
-// with) both read "left_hand". Keys only: a built-in role's shown name can differ from its
-// key ("left hip (up leg)" is left_up_leg), and a renamed custom role keeps its first key.
+// role <label> (bone_roles.h: a built-in or a custom role key), or else of the bone named
+// <label> ("REF LeftToe_End", "REF mixamorig:LeftHand": no role needed). The label is
+// normalized with RoleKeyFromName, so "REF left_hand" and "REF Left hand" (the name the role
+// was created with) both read "left_hand". Role keys, not shown names: a built-in role's shown
+// name can differ from its key ("left hip (up leg)" is left_up_leg), and a renamed custom role
+// keeps its first key.
 //
 // The action dumps them to its CSV (detection_measure.cpp) and tests/detection_eval.cpp reads
 // them back. After '# ref=<t>,<t>...' (every REF time, labelled or not), one pair per label,
@@ -55,7 +57,7 @@ struct RefTimes {
     std::vector<double>                        all;       // every REF time, labelled or not
     std::map<std::string, std::vector<double>> by_label;  // the labelled ones, per label
     std::map<std::string, std::string>         bone;      // label -> its bone ("" = none plays it)
-    std::set<std::string>                      not_role;  // labels no role has as its key
+    std::set<std::string>                      unknown;   // labels that name no role and no bone
 
     void Add(const std::string& label, double t)
     {
@@ -64,20 +66,28 @@ struct RefTimes {
     }
 };
 
-// The bone of each label on this skeleton, as the Tagging view maps roles: the stored entry in
-// roles.txt, else the guess. A label with no bone that is neither a built-in role key nor one
-// of the user's roles goes to `not_role`.
+// The bone of each label on this skeleton. A role key (built-in, or one of the user's roles)
+// maps as the Tagging view maps roles: the stored entry in roles.txt, else the guess. Any other
+// label names a bone: the first whose name, without or with its namespace, gives that key
+// ("lefttoe_end" = mixamorig:LeftToe_End). A label that names neither goes to `unknown`.
 inline void ResolveRefBones(const RoleMapFile& roles, const std::vector<std::string>& bone_names, RefTimes* r)
 {
     std::set<std::string> custom;
     for (const CustomRole& c : CustomRolesInFile(roles)) custom.insert(c.key);
     r->bone.clear();
-    r->not_role.clear();
+    r->unknown.clear();
     for (const auto& kv : r->by_label) {
-        const int  b = ResolveRoleKey(roles, bone_names, kv.first);
-        const bool found = b >= 0 && b < static_cast<int>(bone_names.size());
+        const bool is_role = RoleFromKey(kv.first, nullptr) || custom.count(kv.first) > 0;
+        int        b = ResolveRoleKey(roles, bone_names, kv.first);
+        bool       found = b >= 0 && b < static_cast<int>(bone_names.size());
+        for (size_t i = 0; !found && !is_role && i < bone_names.size(); ++i)
+            if (RoleKeyFromName(NormalizeBoneName(bone_names[i])) == kv.first ||
+                RoleKeyFromName(bone_names[i]) == kv.first) {
+                b = static_cast<int>(i);
+                found = true;
+            }
         r->bone[kv.first] = found ? bone_names[static_cast<size_t>(b)] : std::string();
-        if (!found && !RoleFromKey(kv.first, nullptr) && !custom.count(kv.first)) r->not_role.insert(kv.first);
+        if (!found && !is_role) r->unknown.insert(kv.first);
     }
 }
 
@@ -136,7 +146,8 @@ inline bool ReadRefHeader(const std::string& key, const std::string& value, RefT
 }
 
 // The reports' line: "  REF by bone: left_hand 12 (mixamorig:LeftHand), right_foot 8 (no bone
-// plays this role), lft_heel 1 (not a role key), unlabelled 3\n". "" when no REF has a label.
+// plays this role), lft_heel 1 (no role or bone has this name), unlabelled 3\n". "" when no
+// REF has a label.
 inline std::string RefLabelsText(const RefTimes& r)
 {
     if (r.by_label.empty()) return "";
@@ -147,7 +158,7 @@ inline std::string RefLabelsText(const RefTimes& r)
         labelled += kv.second.size();
         const auto        b = r.bone.find(kv.first);
         const std::string bone = b == r.bone.end() ? std::string() : b->second;
-        const char* none = r.not_role.count(kv.first) ? "not a role key" : "no bone plays this role";
+        const char* none = r.unknown.count(kv.first) ? "no role or bone has this name" : "no bone plays this role";
         out += (first ? " " : ", ") + kv.first + " " + std::to_string(kv.second.size()) + " (" +
                (bone.empty() ? std::string(none) : bone) + ")";
         first = false;

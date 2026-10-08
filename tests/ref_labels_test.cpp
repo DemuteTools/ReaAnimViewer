@@ -68,6 +68,9 @@ int main()
     CHECK(Is("ref\tLEFT-HAND ", "left_hand"));
     CHECK(Is("REF  right_heel", "right_heel"));
     CHECK(Is("REF sword tip 2", "sword_tip_2"));
+    // A bone name reads the same way (ResolveRefBones matches it to the bone).
+    CHECK(Is("REF LeftToe_End", "lefttoe_end"));
+    CHECK(Is("REF mixamorig:LeftHand", "mixamorig_lefthand"));
     // A label a key keeps nothing of reads as a bare REF.
     CHECK(Is("REF ?", ""));
     // Not a reference marker.
@@ -147,8 +150,9 @@ int main()
 
     // ResolveRefBones: each label's bone as the Tagging view maps roles (stored, else guessed).
     {
-        const std::vector<std::string> names = {"mixamorig:Hips",     "mixamorig:LeftFoot", "mixamorig:RightFoot",
-                                                "mixamorig:LeftHand", "mixamorig:RightHand"};
+        const std::vector<std::string> names = {"mixamorig:Hips",        "mixamorig:LeftFoot",  "mixamorig:RightFoot",
+                                                "mixamorig:LeftHand",    "mixamorig:RightHand", "mixamorig:LeftToe_End",
+                                                "mixamorig:RightToe_End"};
         const std::string              skel = SkeletonKey(names);
         RoleMapFile                    roles;
         CHECK(ParseRoleMap("RAVROLES 1\n"
@@ -163,21 +167,26 @@ int main()
         t.Add("left_hand", 2.0);   // custom, stored
         t.Add("left_knee", 2.5);   // built-in, no bone on this rig
         t.Add("tail", 3.0);        // custom, no bone on this rig
-        t.Add("lft_heel", 3.5);    // a typo: no role has this key
+        t.Add("lft_heel", 3.5);    // a typo: no role and no bone has this name
+        t.Add("lefttoe_end", 4.0);          // "REF LeftToe_End": a bone, no role needed
+        t.Add("mixamorig_righthand", 4.5);  // "REF mixamorig:RightHand": a bone with its namespace
         t.bone["stale"] = "x";     // cleared
         ResolveRefBones(roles, names, &t);
-        CHECK(t.bone.size() == 6);
+        CHECK(t.bone.size() == 8);
         CHECK(t.bone["left_heel"] == "mixamorig:RightFoot");
         CHECK(t.bone["right_heel"] == "mixamorig:RightFoot");
         CHECK(t.bone["left_hand"] == "mixamorig:LeftHand");
         CHECK(t.bone["left_knee"].empty());
         CHECK(t.bone["tail"].empty());
         CHECK(t.bone["lft_heel"].empty());
-        CHECK(t.not_role.size() == 1 && t.not_role.count("lft_heel"));
+        CHECK(t.bone["lefttoe_end"] == "mixamorig:LeftToe_End");
+        CHECK(t.bone["mixamorig_righthand"] == "mixamorig:RightHand");
+        CHECK(t.unknown.size() == 1 && t.unknown.count("lft_heel"));
         CHECK(RefLabelsText(t) ==
               "  REF by bone: left_hand 1 (mixamorig:LeftHand), left_heel 1 (mixamorig:RightFoot), left_knee 1 (no "
-              "bone plays this role), lft_heel 1 (not a role key), right_heel 1 (mixamorig:RightFoot), tail 1 (no bone "
-              "plays this role)\n");
+              "bone plays this role), lefttoe_end 1 (mixamorig:LeftToe_End), lft_heel 1 (no role or bone has this "
+              "name), mixamorig_righthand 1 (mixamorig:RightHand), right_heel 1 (mixamorig:RightFoot), tail 1 (no "
+              "bone plays this role)\n");
         // Its bones are what the dump writes.
         CHECK(RefLabelLines(t).find("# ref_bone.left_hand=mixamorig:LeftHand\n") != std::string::npos);
     }

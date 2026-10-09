@@ -3692,7 +3692,8 @@ void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const Sho
     if (e.kind != ShownKind::Orphan && IsAutoBlock(blk)) {
         // Story 10-8b: the physics' values: leg lengths per second (degrees for a pivot), m/s.
         AutoKind   k = AutoKind::Step;
-        const bool pivot = AutoBlockKind(blk, &k, nullptr) && k == AutoKind::Pivot;
+        const bool pivot = AutoBlockKind(blk, &k, nullptr) &&
+                           (k == AutoKind::Pivot || k == AutoKind::HandPivot || k == AutoKind::HandPivotAny);
         char       buf[64];
         // A user event on an auto row has no measured values (EventValuesAt: none for auto blocks).
         const bool user = e.kind == ShownKind::User;
@@ -3767,6 +3768,10 @@ void SyncAutoSettings(const TaggingModel& m)
     const int step = static_cast<int>(AutoType::Step);
     if (cur.type[step].on && (!g_auto_seen.type[step].on || cur.separate_steps != g_auto_seen.separate_steps))
         g_auto_ui.separate_steps = cur.separate_steps;
+    // Story 10-8e: hand pivots after a grab only, or any resting hand, as the steps' mode.
+    const int hp = static_cast<int>(AutoType::HandPivot);
+    if (cur.type[hp].on && (!g_auto_seen.type[hp].on || cur.hand_pivot_any != g_auto_seen.hand_pivot_any))
+        g_auto_ui.hand_pivot_any = cur.hand_pivot_any;
     g_auto_seen = cur;
 }
 
@@ -3793,8 +3798,10 @@ void AutoValueField(const char* id, AutoType t, bool sens, bool detected, double
     const char*  unit = sens ? "%" : "ms";
     auto clamp_v = [sens](double v) { return sens ? std::min(100.0, std::max(0.0, v)) : std::min(1000.0, std::max(-1000.0, v)); };
     if (detected) {
-        const std::string undo =
-            std::string(sens ? "RAV: Set auto sensitivity (" : "RAV: Set auto offset (") + AutoTypeLabel(t) + ")";
+        // Story 10-8e: the hand's Pivot scuff is named with its category ("Hands Pivot scuff").
+        const std::string label = t == AutoType::HandPivot ? std::string(AutoCategoryLabel(AutoCategoryOf(t))) + " " + AutoTypeLabel(t)
+                                                           : std::string(AutoTypeLabel(t));
+        const std::string undo = std::string(sens ? "RAV: Set auto sensitivity (" : "RAV: Set auto offset (") + label + ")";
         NumberField(id, shown, step, 0, unit, w, undo,
                     [t, sens, clamp_v](ItemRules& r, double v) { return SetAutoValue(r, t, sens, clamp_v(v)); });
     } else {
@@ -3814,6 +3821,7 @@ const char* AutoTypeHint(AutoType t)
     case AutoType::Pivot: return "A marker where a planted foot turns on its ball or heel: Pivot L / Pivot R.";
     case AutoType::Grab: return "A marker where the hand lands on something: Grab L / Grab R.";
     case AutoType::Release: return "A marker where the hand leaves its support: Release L / Release R.";
+    case AutoType::HandPivot: return "A marker where a planted hand turns: Hand Pivot L / Hand Pivot R.";
     }
     return "";
 }
@@ -3950,6 +3958,12 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
                     ImGui::SetTooltip("Combined: one marker per landing (FS L / FS R).\nSeparate: the heel and the toe "
                                       "each get theirs (Heel L, Toe L...).");
             }
+            if (t == AutoType::HandPivot) {
+                // Story 10-8e: on, only a hand that came to rest with a grab pivots.
+                ImGui::SetCursorPosX(x0 + ImGui::GetFrameHeight() + 4.0f);
+                bool after_grab = !g_auto_ui.hand_pivot_any;
+                if (ImGui::Checkbox("Only after a Grab##handpivotgrab", &after_grab)) g_auto_ui.hand_pivot_any = !after_grab;
+            }
             if (!on) ImGui::EndDisabled();
             ImGui::PopID();
         }
@@ -3980,7 +3994,7 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip("%s", pending ? "Adds the ticked types to this item and removes the unticked ones (one undo "
                                               "point).\nYour corrections stay, except on a type you untick."
-                                            : "Tick or untick a type, or switch Combined / Separate, then Detect.\n"
+                                            : "Tick or untick a type, or switch Combined / Separate or Only after a Grab, then Detect.\n"
                                               "Sensitivity and offset of a detected type apply at once.");
         if (clicked) {
             const AutoSettings s = g_auto_ui;

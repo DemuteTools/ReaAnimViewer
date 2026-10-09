@@ -3,7 +3,7 @@
 // Host test of auto detection (src/auto_detect.h, Epic 10, story 10-8b; hands and categories:
 // 10-8c): the specs' matrix rows that are pure (blocks, settings, Detect's remap, sensitivity,
 // offset, the toe without a ball bone, missing roles, rules next to auto blocks, pooled copies,
-// the record, categories, hand blocks). No REAPER.
+// the record, categories, hand blocks; hand pivots: 10-8e). No REAPER.
 //   cmake -S tests -B build-tests && cmake --build build-tests && ctest --test-dir build-tests
 
 #include "auto_detect.h"
@@ -64,7 +64,27 @@ struct Options {
     bool   heel = true;  // false: no heel bone
     double rate = 240.0;
     HandFn hand[2];      // L, R; empty = no bone for that hand
+    std::function<double(double)> hand_yaw[2];  // L, R: the hand's heading (rad about +Y); empty = no rotation
 };
+
+Quatd Mul(const Quatd& a, const Quatd& b)
+{
+    return Quatd{a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z, a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+                 a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x, a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w};
+}
+
+Quatd AxisAngle(double x, double y, double z, double angle)
+{
+    const double s = std::sin(0.5 * angle);
+    return Quatd{std::cos(0.5 * angle), x * s, y * s, z * s};
+}
+
+// The hand bone's world rotation: the heading about +Y, then a fixed bone-space frame.
+Quatd HandRotationOf(double yaw)
+{
+    static const Quatd kBoneFrame = Mul(AxisAngle(0.0, 0.0, 1.0, 0.9), AxisAngle(0.8, 0.0, 0.6, 0.5));
+    return Mul(AxisAngle(0.0, 1.0, 0.0, yaw), kBoneFrame);
+}
 
 std::vector<BoneTrack> Rig(const FootFn& left, const FootFn& right, const Options& o)
 {
@@ -93,7 +113,12 @@ std::vector<BoneTrack> Rig(const FootFn& left, const FootFn& right, const Option
         put(Role::Hips, Vec3d{0.5 * (up_legs[0].x + up_legs[1].x), 0.5 * (up_legs[0].y + up_legs[1].y) + 0.05,
                               0.5 * (up_legs[0].z + up_legs[1].z)});
         for (int s = 0; s < 2; ++s)
-            if (o.hand[s]) put(s ? Role::RightHand : Role::LeftHand, o.hand[s](time));
+            if (o.hand[s]) {
+                put(s ? Role::RightHand : Role::LeftHand, o.hand[s](time));
+                if (o.hand_yaw[s])
+                    t[static_cast<size_t>(s ? Role::RightHand : Role::LeftHand)].rot_world.push_back(
+                        HandRotationOf(o.hand_yaw[s](time)));
+            }
     }
     return t;
 }
@@ -615,7 +640,8 @@ int main()
         CHECK(std::string(AutoTypeLabel(AutoType::Grab)) == "Grab" && std::string(AutoTypeLabel(AutoType::Release)) == "Release");
         CHECK(AutoTypeOfKind(AutoKind::Grab) == AutoType::Grab && AutoTypeOfKind(AutoKind::Release) == AutoType::Release);
         for (int t = 0; t < kAutoTypeCount; ++t) {
-            const bool hand = t == static_cast<int>(AutoType::Grab) || t == static_cast<int>(AutoType::Release);
+            const bool hand = t == static_cast<int>(AutoType::Grab) || t == static_cast<int>(AutoType::Release) ||
+                              t == static_cast<int>(AutoType::HandPivot);
             CHECK(AutoCategoryOf(static_cast<AutoType>(t)) == (hand ? AutoCategory::Hands : AutoCategory::Feet));
         }
         CHECK(std::string(AutoCategoryLabel(AutoCategory::Feet)) == "Feet" &&
@@ -624,6 +650,8 @@ int main()
         for (int k = 0; k < kAutoKindCount; ++k)
             for (int j = k + 1; j < kAutoKindCount; ++j) {
                 if (static_cast<AutoKind>(k) == AutoKind::Step && static_cast<AutoKind>(j) == AutoKind::Heel) continue;  // FS = Heel's
+                if (static_cast<AutoKind>(k) == AutoKind::HandPivot && static_cast<AutoKind>(j) == AutoKind::HandPivotAny)
+                    continue;  // one marker name, one colour
                 CHECK(AutoDefaultColor(static_cast<AutoKind>(k), 'L') != AutoDefaultColor(static_cast<AutoKind>(j), 'L'));
             }
     }
@@ -802,6 +830,172 @@ int main()
         e.color = r.blocks[2].color;
         e.has_color = true;
         CHECK(MarkerEditBlock(back, e) == 2);
+    }
+
+    // ---- Story 10-8e: hand pivots -------------------------------------------------------------
+
+    // The type, its two kinds (after a grab, any resting hand), names, category.
+    {
+        const int hp = static_cast<int>(AutoType::HandPivot);
+        CHECK(std::string(AutoTypeLabel(AutoType::HandPivot)) == "Pivot scuff");
+        CHECK(AutoCategoryOf(AutoType::HandPivot) == AutoCategory::Hands);
+        CHECK(std::string(AutoKindWord(AutoKind::HandPivot)) == "hand_pivot" &&
+              std::string(AutoKindWord(AutoKind::HandPivotAny)) == "hand_pivot_any");
+        CHECK(AutoTypeOfKind(AutoKind::HandPivot) == AutoType::HandPivot &&
+              AutoTypeOfKind(AutoKind::HandPivotAny) == AutoType::HandPivot);
+        CHECK(AutoMarkerName(AutoKind::HandPivot, 'L') == "Hand Pivot L" && AutoMarkerName(AutoKind::HandPivotAny, 'R') == "Hand Pivot R");
+        // After a grab by default: hand_pivot blocks; any resting hand: hand_pivot_any.
+        AutoSettings s;
+        CHECK(!s.hand_pivot_any);
+        s.type[hp].on = true;
+        std::vector<Block> blocks = AutoBlocks(s);
+        CHECK(blocks.size() == 2 && blocks[0].auto_type == "hand_pivot" && blocks[1].auto_type == "hand_pivot" &&
+              blocks[0].auto_side == 'L' && blocks[1].auto_side == 'R');
+        CHECK(ReadAutoSettings(blocks) == s && AutoCategoryOnCount(s, AutoCategory::Hands) == 1 &&
+              AutoCategoryOnCount(s, AutoCategory::Feet) == 0 && AutoCategoryInBlocks(blocks, AutoCategory::Hands));
+        // Switching to any resting hand waits for Detect, and keeps the user's edits on each hand.
+        std::vector<EventEntry> ev = {MakeUserEvent(0, 0.5, 0, 0), MakeSuppression(1, 1.0)};
+        AutoSettings            any = s;
+        any.hand_pivot_any = true;
+        CHECK(AutoPending(any, ReadAutoSettings(blocks)));
+        std::vector<int> map = ApplyAutoSettings(blocks, any);
+        CHECK(blocks.size() == 2 && blocks[0].auto_type == "hand_pivot_any" && blocks[1].auto_type == "hand_pivot_any");
+        CHECK(blocks[0].marker == "Hand Pivot L" && blocks[1].auto_side == 'R');
+        CHECK(map == (std::vector<int>{0, 1}));
+        RemapEventBlocks(ev, map);
+        CHECK(ev.size() == 2 && ev[0].block == 0 && ev[1].block == 1);
+        CHECK(ReadAutoSettings(blocks) == any && !AutoPending(any, ReadAutoSettings(blocks)));
+        // The switch alone, the type unticked, waits for nothing.
+        AutoSettings off = ReadAutoSettings({}), off_any = off;
+        off_any.hand_pivot_any = true;
+        CHECK(!AutoPending(off_any, off));
+        // Back to after a grab.
+        map = ApplyAutoSettings(blocks, s);
+        CHECK(blocks.size() == 2 && blocks[0].auto_type == "hand_pivot" && map == (std::vector<int>{0, 1}));
+        // Both kinds on one item (an edited record): after a grab wins, as combined steps do.
+        std::vector<Block> mixed = {MakeAutoBlock(AutoKind::HandPivot, 'L', 50, 0), MakeAutoBlock(AutoKind::HandPivotAny, 'R', 50, 0)};
+        CHECK(!ReadAutoSettings(mixed).hand_pivot_any);
+        // The category's x unticks it.
+        AutoSettings u = s;
+        UntickAutoCategory(u, AutoCategory::Hands);
+        CHECK(!u.type[hp].on && AutoCategoryOnCount(u, AutoCategory::Hands) == 0);
+        // Missing parts: the hand only.
+        std::vector<int> roles(static_cast<size_t>(Role::Count), -1);
+        for (int r = 0; r < static_cast<int>(Role::Count); ++r) roles[static_cast<size_t>(r)] = r;
+        roles[static_cast<size_t>(Role::LeftHand)] = -1;
+        roles[static_cast<size_t>(Role::LeftToe)] = roles[static_cast<size_t>(Role::LeftToeEnd)] = -1;
+        CHECK(AutoMissingParts(AutoType::HandPivot, false, roles) == std::vector<std::string>{"left hand"});
+    }
+
+    // Switching Only after a Grab keeps each hand pivot block where it is, with the user's marker,
+    // colour and on/off; only its kind changes. Other blocks are untouched.
+    {
+        AutoSettings s = Ticked(false, false, false, false, false, true);  // Grab L, Grab R
+        s.type[static_cast<int>(AutoType::HandPivot)].on = true;
+        std::vector<Block> blocks = {HeelRule("Rule")};
+        ApplyAutoSettings(blocks, s);  // Rule, Grab L, Grab R, Hand Pivot L, Hand Pivot R
+        CHECK(Markers(blocks) == (std::vector<std::string>{"Rule", "Grab L", "Grab R", "Hand Pivot L", "Hand Pivot R"}));
+        blocks.push_back(HeelRule("Last"));  // a rule after the hand pivots
+        blocks[3].marker = "Palm Twist L";
+        blocks[3].color = 0x1123456u;
+        blocks[3].enabled = false;
+        const Block before = blocks[3];
+        AutoSettings any = s;
+        any.hand_pivot_any = true;
+        bool                   changed = false;
+        const std::vector<int> map = ApplyAutoSettings(blocks, any, &changed);
+        CHECK(changed && map == (std::vector<int>{0, 1, 2, 3, 4, 5}));
+        CHECK(Markers(blocks) == (std::vector<std::string>{"Rule", "Grab L", "Grab R", "Palm Twist L", "Hand Pivot R", "Last"}));
+        CHECK(blocks[3].auto_type == "hand_pivot_any" && blocks[4].auto_type == "hand_pivot_any");
+        CHECK(blocks[3].color == before.color && !blocks[3].enabled && blocks[3].auto_side == 'L');
+        CHECK(ReadAutoSettings(blocks).hand_pivot_any);
+        // And back.
+        ApplyAutoSettings(blocks, s);
+        CHECK(blocks[3].auto_type == "hand_pivot" && blocks[3].marker == "Palm Twist L" && blocks[3].color == before.color &&
+              !blocks[3].enabled && blocks.size() == 6 && blocks[5].marker == "Last");
+    }
+
+    // Sensitivity: the hand pivot's angle and rate thresholds only.
+    {
+        const PhysicsParams d;
+        const PhysicsParams hi = AutoPhysicsParams(AutoType::HandPivot, 100.0), lo = AutoPhysicsParams(AutoType::HandPivot, 0.0);
+        CHECK(hi.hand_pivot_min_deg == 0.5 * d.hand_pivot_min_deg && hi.hand_pivot_rate_dps == 0.5 * d.hand_pivot_rate_dps);
+        CHECK(lo.hand_pivot_min_deg == 2.0 * d.hand_pivot_min_deg && lo.hand_pivot_rate_dps == 2.0 * d.hand_pivot_rate_dps);
+        CHECK(hi.pivot_min_deg == d.pivot_min_deg && hi.pivot_rate_dps == d.pivot_rate_dps &&
+              hi.hand_contact_speed == d.hand_contact_speed && hi.contact_speed == d.contact_speed);
+        CHECK(AutoPhysicsParams(AutoType::Pivot, 100.0).hand_pivot_min_deg == d.hand_pivot_min_deg);
+        CHECK(SameAutoAnalysis(AutoPhysicsParams(AutoType::HandPivot, 50.0), d) && !SameAutoAnalysis(hi, d));
+        PhysicsParams rate_only = d;
+        rate_only.hand_pivot_rate_dps = 45.0;
+        CHECK(!SameAutoAnalysis(rate_only, d));
+    }
+
+    // End to end: the right hand rests 1.0 to 1.6 s and turns 90 deg in 250 ms from 1.175 s.
+    // Landed with a grab: one Hand Pivot R with either kind; placed gently (0.7 leg/s): none after
+    // a grab, one with any resting hand. Speed 0, strength in degrees, the offset added.
+    {
+        for (double speed : {1.5, 0.7}) {
+            Options o;
+            o.dur = 2.5;
+            o.hand[1] = HandGrab(0.3, speed * 0.87, 1.0, 1.6);
+            o.hand_yaw[1] = [](double t) { return 0.5 * kPi * Ease((t - 1.175) / 0.25); };
+            const std::vector<BoneTrack> rig = Rig(Planted(-0.1, 0.0), Planted(0.1, 0.2), o);
+            AutoSettings                 s;
+            s.type[static_cast<int>(AutoType::HandPivot)].on = true;
+            AutoSettings any = s;
+            any.hand_pivot_any = true;
+            const std::vector<Event> strict = DetectAutoEvents(AutoBlocks(s), rig);
+            const std::vector<Event> lax = DetectAutoEvents(AutoBlocks(any), rig);
+            CHECK(OfBlock(strict, 0).empty() && OfBlock(lax, 0).empty());  // no left hand bone
+            CHECK(strict.size() == (speed > 1.0 ? 1u : 0u) && lax.size() == 1);
+            for (const Event& e : lax) {
+                CHECK(e.block == 1 && e.marker == "Hand Pivot R" && e.speed == 0.0);
+                CHECK(e.strength > 80.0 && e.strength < 95.0 && e.time_s > 1.1 && e.time_s < 1.2);
+            }
+            any.type[static_cast<int>(AutoType::HandPivot)].offset_ms = 30.0;
+            const std::vector<Event> later = DetectAutoEvents(AutoBlocks(any), rig);
+            CHECK(later.size() == 1 && lax.size() == 1);
+            if (later.size() == 1 && lax.size() == 1) CHECK(std::fabs(later[0].time_s - (lax[0].time_s + 0.03)) < 1e-12);
+            // Next to Grab blocks: the grab events are the same with or without hand pivots.
+            AutoSettings g = Ticked(false, false, false, false, false, true), gp = g;
+            gp.type[static_cast<int>(AutoType::HandPivot)].on = true;
+            std::vector<Event> eg = DetectAutoEvents(AutoBlocks(g), rig), egp = DetectAutoEvents(AutoBlocks(gp), rig);
+            egp.erase(std::remove_if(egp.begin(), egp.end(), [](const Event& e) { return e.block >= 2; }), egp.end());
+            CHECK(SameEvents(eg, egp));
+        }
+    }
+
+    // Hand pivot blocks round-trip in the record unchanged, with an unknown auto word beside them.
+    {
+        ItemRules    r;
+        AutoSettings s;
+        s.type[static_cast<int>(AutoType::HandPivot)].on = true;
+        s.type[static_cast<int>(AutoType::HandPivot)].sens = 70.0;
+        r.blocks = {HeelRule("Rule")};
+        ApplyAutoSettings(r.blocks, s);
+        AutoSettings any = s;
+        any.hand_pivot_any = true;
+        std::vector<Block> lax_blocks = AutoBlocks(any);
+        r.blocks.push_back(lax_blocks[0]);
+        Block future;
+        future.auto_type = "hand_slide";  // a newer RAV's
+        future.auto_side = 'L';
+        future.marker = "Hand Slide L";
+        r.blocks.push_back(future);
+        const std::string text = SerializeItemRules(r);
+        CHECK(text.find("block auto=hand_pivot side=L sens=70 ") != std::string::npos);
+        CHECK(text.find("block auto=hand_pivot_any side=L ") != std::string::npos);
+        CHECK(text.find("block auto=hand_slide side=L ") != std::string::npos);
+        ItemRules back;
+        CHECK(ParseItemRules(text, &back) && !HasKeptText(back));
+        CHECK(BlocksEqual(back.blocks, r.blocks) && SerializeItemRules(back) == text);
+        CHECK(!AutoBlockKind(back.blocks.back(), nullptr, nullptr) && IsAutoBlock(back.blocks.back()));
+        // Detect keeps the unknown block.
+        ApplyAutoSettings(back.blocks, s);
+        CHECK(back.blocks.size() == 4 && back.blocks.back().auto_type == "hand_slide");
+        ItemRules copy;
+        CopyPoolContent(back, copy);
+        CHECK(BlocksEqual(copy.blocks, back.blocks));
     }
 
     if (g_fails) std::printf("%d check(s) failed\n", g_fails);

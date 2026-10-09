@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //
-// Auto detection (Epic 10, story 10-8b; hands: 10-8c): foot and hand events from the motion
+// Auto detection (Epic 10, story 10-8b; hands: 10-8c, 10-8e): foot and hand events from the motion
 // physics (motion_physics.h), as blocks of the item next to its rules. The model only: no ImGui,
 // no REAPER.
 //
@@ -16,6 +16,9 @@
 //   Hands
 //   grab       the hand lands on something (Grab L / R).
 //   release    the hand leaves its support (Release L / R).
+//   pivot      the planted hand turns (Hand Pivot L / R): only after a grab (a hand that came to
+//              rest with a grab's approach, or at rest from the clip start; kind hand_pivot, the
+//              default), or any resting hand (kind hand_pivot_any).
 // Each ticked type x side is one block of the item (Block::auto_type, auto_side, sens), with no
 // condition: the rule engine never fires it. Its marker, colour, offset_ms and on/off are the
 // block's own, so a preset, pooled copies, the Commit snapshot and Legacy carry it as any block,
@@ -24,11 +27,12 @@
 // Sensitivity: 0..100 %, 50 = the spike's constants (PhysicsParams defaults). It moves one
 // constant per type by f = 2^((s - 50) / 50): step and lift-off contact_speed x f (more
 // sensitive = more contacts), slide slide_speed / f, pivot pivot_min_deg and pivot_rate_dps / f,
-// grab and release hand_contact_speed x f.
+// grab and release hand_contact_speed x f, hand pivot hand_pivot_min_deg and hand_pivot_rate_dps / f.
 // The block's offset (ms) is added on top of the physics' own per-part step offsets.
 //
 // Values: strength is the physics strength (leg/s for steps, lift-offs, slides, grabs and
-// releases, degrees for pivots); speed is strength x the leg length (m/s), 0 for pivots.
+// releases, degrees for pivots and hand pivots); speed is strength x the leg length (m/s), 0 for
+// pivots and hand pivots.
 //
 // Pure C++17, deterministic. Host-tested (tests/auto_detect_test.cpp).
 
@@ -46,27 +50,27 @@ namespace rav {
 // ---- Types and block kinds ---------------------------------------------------------------------
 
 // The types the section ticks.
-enum class AutoType : int { Step = 0, LiftOff, Slide, Pivot, Grab, Release };
-constexpr int kAutoTypeCount = 6;
-// "Step", "Lift-off", "Slide scuff", "Pivot scuff", "Grab", "Release"
+enum class AutoType : int { Step = 0, LiftOff, Slide, Pivot, Grab, Release, HandPivot };
+constexpr int kAutoTypeCount = 7;
+// "Step", "Lift-off", "Slide scuff", "Pivot scuff", "Grab", "Release", "Pivot scuff" (the hand's)
 const char* AutoTypeLabel(AutoType t);
 
 // The section's categories (foldable groups), each holding some types.
 enum class AutoCategory : int { Feet = 0, Hands };
 constexpr int kAutoCategoryCount = 2;
-AutoCategory AutoCategoryOf(AutoType t);              // step, lift-off, slide, pivot: Feet; grab, release: Hands
+AutoCategory AutoCategoryOf(AutoType t);              // step, lift-off, slide, pivot: Feet; grab, release, hand pivot: Hands
 const char*  AutoCategoryLabel(AutoCategory c);       // "Feet", "Hands"
 
 // The block kinds (Block::auto_type words): a combined step, a separate heel or toe step, a
-// lift-off, a slide, a pivot, a grab, a release.
-enum class AutoKind : int { Step = 0, Heel, Toe, Lift, Slide, Pivot, Grab, Release };
-constexpr int kAutoKindCount = 8;
-// "step", "heel", "toe", "lift", "slide", "pivot", "grab", "release"
+// lift-off, a slide, a pivot, a grab, a release, a hand pivot after a grab or of any resting hand.
+enum class AutoKind : int { Step = 0, Heel, Toe, Lift, Slide, Pivot, Grab, Release, HandPivot, HandPivotAny };
+constexpr int kAutoKindCount = 10;
+// "step", "heel", "toe", "lift", "slide", "pivot", "grab", "release", "hand_pivot", "hand_pivot_any"
 const char* AutoKindWord(AutoKind k);
 bool AutoKindFromWord(const std::string& w, AutoKind* out);
 AutoType AutoTypeOfKind(AutoKind k);
-// The marker name: "FS L", "Heel L", "Toe L", "Lift L", "Slide L", "Pivot L", "Grab L", "Release L"
-// (and R).
+// The marker name: "FS L", "Heel L", "Toe L", "Lift L", "Slide L", "Pivot L", "Grab L", "Release L",
+// "Hand Pivot L" (both hand pivot kinds) (and R).
 std::string AutoMarkerName(AutoKind k, char side);
 // The default colour (Block::color form: 0x1000000 | 0xRRGGBB), one per kind and side.
 uint32_t AutoDefaultColor(AutoKind k, char side);
@@ -90,6 +94,7 @@ struct AutoTypeSettings {
 struct AutoSettings {
     AutoTypeSettings type[kAutoTypeCount];
     bool             separate_steps = false;  // steps: heel and toe separate, else combined
+    bool             hand_pivot_any = false;  // hand pivots: any resting hand, else only after a grab
 };
 bool operator==(const AutoTypeSettings& a, const AutoTypeSettings& b);
 bool operator==(const AutoSettings& a, const AutoSettings& b);
@@ -104,16 +109,18 @@ bool AutoCategoryInBlocks(const std::vector<Block>& blocks, AutoCategory c);
 int  AutoCategoryOnCount(const AutoSettings& s, AutoCategory c);  // its ticked types
 void UntickAutoCategory(AutoSettings& s, AutoCategory c);
 
-// What Detect would change: a type ticked or unticked, or steps switched between separate and
-// combined (sensitivity and offset never wait for Detect on a detected type).
+// What Detect would change: a type ticked or unticked, steps switched between separate and
+// combined, or hand pivots between after a grab and any (sensitivity and offset never wait for
+// Detect on a detected type).
 bool AutoPending(const AutoSettings& ui, const AutoSettings& item);
 
 // The blocks of these settings, per ticked type x side, in type order (steps: combined FS, or heel
-// then toe), left then right.
+// then toe; hand pivots: hand_pivot, or hand_pivot_any), left then right.
 std::vector<Block> AutoBlocks(const AutoSettings& s);
 // The settings the item's known auto blocks say: a type is on when one of its blocks is there,
 // its sensitivity and offset are its first block's; steps are separate when heel or toe blocks
-// are there and no combined one.
+// are there and no combined one; hand pivots are any when hand_pivot_any blocks are there and no
+// hand_pivot one.
 AutoSettings ReadAutoSettings(const std::vector<Block>& blocks);
 
 // Detect: the blocks after these settings. A wanted kind x side already there keeps its block
@@ -121,7 +128,8 @@ AutoSettings ReadAutoSettings(const std::vector<Block>& blocks);
 // new ones are added at the end (AutoBlocks order). Rules and auto blocks of unknown types stay.
 // Returns the old -> new block map (-1 = gone) for RemapEventBlocks: switching steps between
 // separate and combined keeps the user's edits on that foot (combined -> the heel, heel and toe ->
-// combined); an unticked type's go with its blocks. `changed` (optional): the blocks changed.
+// combined), and a hand pivot switched between after a grab and any keeps its block (place,
+// marker, colour, on/off, edits; only its kind changes); an unticked type's go with its blocks. `changed` (optional): the blocks changed.
 std::vector<int> ApplyAutoSettings(std::vector<Block>& blocks, const AutoSettings& s, bool* changed = nullptr);
 
 // ---- Physics parameters ------------------------------------------------------------------------
@@ -167,7 +175,7 @@ bool HasActiveAutoBlocks(const std::vector<Block>& blocks);
 //   step combined, lift-off, slide   the heel, toe or toe end (all listed when none has a bone)
 //   step separate                    the heel; the toe (or the toe end)
 //   pivot                            the heel and the toe (or the toe end)
-//   grab, release                    the hand
+//   grab, release, hand pivot        the hand
 std::vector<std::string> AutoMissingParts(AutoType t, bool separate, const std::vector<int>& role_to_bone);
 
 }  // namespace rav

@@ -283,19 +283,52 @@ bool StepsNear(const std::vector<PhysicsEvent>& steps, const std::vector<double>
 }
 
 // Story 10-8c: a hand's position over time, and the rig's tracks with both hands added (an empty
-// function: no bone for that hand). Same length and rate as Rig's.
+// function: no bone for that hand). Same length and rate as Rig's. Story 10-8e: a hand's heading
+// over time (radians about +Y; an empty function: no rotation on that hand's track), as the
+// hand bone's world rotation HandRotationOf.
 using HandFn = std::function<Vec3d(double)>;
+using YawFn = std::function<double(double)>;
 
-void AddHands(std::vector<BoneTrack>& t, const HandFn& left, const HandFn& right, const Options& o)
+// The hand bone's world rotation: the heading about +Y, then a fixed bone-space frame (a rig's
+// hand axes are not the world's, and the palm is not flat in bone space).
+Quatd HandBoneFrame()
+{
+    return Mul(AxisAngle(0.0, 0.0, 1.0, 0.9), AxisAngle(0.8, 0.0, 0.6, 0.5));
+}
+
+Quatd HandRotationOf(double yaw)
+{
+    return Mul(AxisAngle(0.0, 1.0, 0.0, yaw), HandBoneFrame());
+}
+
+// v rotated by the unit quaternion q.
+Vec3d RotateBy(const Quatd& q, const Vec3d& v)
+{
+    const Quatd r = Mul(Mul(q, Quatd{0.0, v.x, v.y, v.z}), Quatd{q.w, -q.x, -q.y, -q.z});
+    return Vec3d{r.x, r.y, r.z};
+}
+
+void AddHands(std::vector<BoneTrack>& t, const HandFn& left, const HandFn& right, const Options& o,
+              const YawFn& left_yaw = nullptr, const YawFn& right_yaw = nullptr)
 {
     const int n = static_cast<int>(std::floor(o.dur * o.rate + 1e-9)) + 1;
     for (int s = 0; s < 2; ++s) {
         const HandFn& fn = s ? right : left;
+        const YawFn&  yaw = s ? right_yaw : left_yaw;
         if (!fn) continue;
         BoneTrack& b = t[static_cast<size_t>(s ? Role::RightHand : Role::LeftHand)];
         b.rate_hz = o.rate;
-        for (int i = 0; i < n; ++i) b.pos.push_back(fn(i / o.rate));
+        for (int i = 0; i < n; ++i) {
+            b.pos.push_back(fn(i / o.rate));
+            if (yaw) b.rot_world.push_back(HandRotationOf(yaw(i / o.rate)));
+        }
     }
+}
+
+// A heading that turns by `deg` degrees over [a, a + len) (eased), still before and after.
+YawFn TurnYaw(double a, double len, double deg)
+{
+    return [=](double t) { return deg * kDeg * Ease((t - a) / len); };
 }
 
 // A hand that moves along `dir` (unit) at `speed` m/s, except while at rest over the [a, b)
@@ -871,7 +904,7 @@ int main()
         CHECK(StepsNear(Of(ev, PhysicsKind::Release, 'R'), {1.5}, 0.02));
         CHECK(ev.size() == 2);
         for (const PhysicsEvent& e : ev) CHECK(e.part == -1 && e.strength > 1.3 && e.strength < 1.7);  // leg/s
-        CHECK(HandSummary(a, ev) == "hands: grabs 1, releases 1");
+        CHECK(HandSummary(a, ev) == "hands: grabs 1, releases 1, pivots 0");
         // Foot events never include hand events, and the reverse.
         for (const PhysicsEvent& e : FootEvents(a)) CHECK(e.kind != PhysicsKind::Grab && e.kind != PhysicsKind::Release);
         // The timing and the offset: Speed by default, the offset added.
@@ -918,7 +951,7 @@ int main()
         CHECK(StepsNear(Of(ev, PhysicsKind::Release, 'L'), {1.0}, 0.02));
         // No bone for the right hand: said, and the left hand's events stay.
         CHECK(a.hand_missing == std::vector<std::string>{"R hand: no bone for right hand"});
-        CHECK(HandSummary(a, ev) == "hands: grabs 0, releases 1; missing: R hand: no bone for right hand");
+        CHECK(HandSummary(a, ev) == "hands: grabs 0, releases 1, pivots 0; missing: R hand: no bone for right hand");
     }
     {
         // Brief stop: the hand stops 60 ms (1.0 to 1.06 s) between two fast moves: no Grab, no
@@ -1002,7 +1035,7 @@ int main()
             CHECK(PhysicsEventLines(fa, "  ") == PhysicsEventLines(fb, "  "));
         }
         CHECK(HandEvents(a).empty() && HandSummary(a, {}) ==
-                                           "hands: grabs 0, releases 0; missing: L hand: no bone for left hand, R hand: "
+                                           "hands: grabs 0, releases 0, pivots 0; missing: L hand: no bone for left hand, R hand: "
                                            "no bone for right hand");
         CHECK(!HandEvents(b).empty());
     }
@@ -1021,6 +1054,197 @@ int main()
         e.side = 'R';
         e.strength = 0.92;
         CHECK(PhysicsMarkerName(e) == "PHY R release 0.9" && IsPhysicsMarkerName(PhysicsMarkerName(e).c_str()));
+    }
+
+    // ---- Hand pivots (story 10-8e) --------------------------------------------------------------
+    {
+        // Planted turn: the right hand lands with a grab (1.5 leg/s) at 1.0 s, rests 0.6 s, and its
+        // heading turns 90 deg in 250 ms mid-rest (1.175 s): one Hand Pivot of about 90 deg, with
+        // the hand after a grab or not. The left hand hangs still, never turning.
+        Options o;
+        o.dur = 2.5;
+        std::vector<BoneTrack> t = Rig(walk_l, walk_r, o);
+        AddHands(t, HandStill(-0.3), HandMove(0.3, 1.5 * kLeg, {{1.0, 1.6}}), o, [](double) { return 0.4; },
+                 TurnYaw(1.175, 0.25, 90.0));
+        const PhysicsAnalysis a = AnalyseMotion(t);
+        CHECK(a.ok && a.hand[0].has_heading && a.hand[1].has_heading);
+        CHECK(a.hand[0].pivots.empty() && a.hand[1].pivots.size() == 1);
+        PhysicsParams lax;
+        lax.hand_pivot_after_grab = false;
+        for (const PhysicsParams& p : {PhysicsParams{}, lax}) {
+            const std::vector<PhysicsEvent> ev = HandEvents(a, p);
+            const std::vector<PhysicsEvent> pv = Of(ev, PhysicsKind::HandPivot);
+            CHECK(pv.size() == 1);
+            if (pv.size() == 1) {
+                CHECK(pv[0].side == 'R' && pv[0].part == -1);
+                CHECK(pv[0].strength > 80.0 && pv[0].strength < 95.0);
+                CHECK(pv[0].start_s == pv[0].time_s && pv[0].time_s > 1.1 && pv[0].time_s < 1.2);
+                CHECK(pv[0].end_s > 1.4 && pv[0].end_s < 1.5);
+            }
+            CHECK(StepsNear(Of(ev, PhysicsKind::Grab, 'R'), {1.0}, 0.02));
+            CHECK(StepsNear(Of(ev, PhysicsKind::Release, 'R'), {1.6}, 0.02));
+            CHECK(HandSummary(a, ev) == "hands: grabs 1, releases 1, pivots 1");
+        }
+        // No heading source: the same hands without rotations: no hand pivot, the same grab and
+        // release.
+        std::vector<BoneTrack> u = Rig(walk_l, walk_r, o);
+        AddHands(u, HandStill(-0.3), HandMove(0.3, 1.5 * kLeg, {{1.0, 1.6}}), o);
+        const PhysicsAnalysis b = AnalyseMotion(u);
+        CHECK(b.ok && !b.hand[1].has_heading && b.hand[1].pivots.empty());
+        const std::vector<PhysicsEvent> eb = HandEvents(b, lax);
+        CHECK(Of(eb, PhysicsKind::HandPivot).empty());
+        std::vector<PhysicsEvent> ea = HandEvents(a);
+        ea.erase(std::remove_if(ea.begin(), ea.end(), [](const PhysicsEvent& e) { return e.kind == PhysicsKind::HandPivot; }),
+                 ea.end());
+        CHECK(PhysicsEventLines(ea, "") == PhysicsEventLines(eb, ""));
+        // Feet untouched: the same foot events with turning hands, still hands and no hands.
+        const PhysicsAnalysis f = AnalyseMotion(Rig(walk_l, walk_r, o));
+        for (const PhysicsParams& p : {PhysicsParams{}, SpeedTiming()}) {
+            const std::vector<PhysicsEvent> fa = FootEvents(a, p), fb = FootEvents(b, p), ff = FootEvents(f, p);
+            CHECK(PhysicsEventLines(fa, "") == PhysicsEventLines(ff, "") && PhysicsEventLines(fb, "") == PhysicsEventLines(ff, ""));
+            CHECK(PhysicsSummary(a, fa) == PhysicsSummary(f, ff));
+            for (const PhysicsEvent& e : fa) CHECK(e.kind != PhysicsKind::HandPivot);
+        }
+    }
+    {
+        // Gentle placement: the same turn, the hand placed at 0.7 leg/s (under the grab's
+        // approach): none after a grab only; one with any resting hand.
+        Options o;
+        o.dur = 2.5;
+        std::vector<BoneTrack> t = Rig(walk_l, walk_r, o);
+        AddHands(t, HandStill(-0.3), HandMove(0.3, 0.7 * kLeg, {{1.0, 1.6}}), o, nullptr, TurnYaw(1.175, 0.25, 90.0));
+        const PhysicsAnalysis a = AnalyseMotion(t);
+        PhysicsParams         lax;
+        lax.hand_pivot_after_grab = false;
+        CHECK(Of(HandEvents(a), PhysicsKind::Grab).empty() && Of(HandEvents(a), PhysicsKind::HandPivot).empty());
+        const std::vector<PhysicsEvent> pv = Of(HandEvents(a, lax), PhysicsKind::HandPivot, 'R');
+        CHECK(pv.size() == 1 && pv[0].strength > 80.0);
+    }
+    {
+        // A hand at rest from the clip start pivots after a grab or not (it never landed).
+        Options o;
+        o.dur = 2.0;
+        std::vector<BoneTrack> t = Rig(walk_l, walk_r, o);
+        AddHands(t, HandMove(-0.3, 1.5 * kLeg, {{0.0, 1.0}}), nullptr, o, TurnYaw(0.4, 0.25, -90.0));
+        const std::vector<PhysicsEvent> pv = Of(HandEvents(AnalyseMotion(t)), PhysicsKind::HandPivot, 'L');
+        CHECK(pv.size() == 1 && pv[0].strength > 80.0 && pv[0].strength < 95.0);
+    }
+    {
+        // Small turn: 10 deg, none; one at sensitivity 100 (the angle and rate thresholds halved).
+        Options o;
+        o.dur = 2.5;
+        std::vector<BoneTrack> t = Rig(walk_l, walk_r, o);
+        AddHands(t, HandStill(-0.3), HandMove(0.3, 1.5 * kLeg, {{1.0, 1.6}}), o, nullptr, TurnYaw(1.175, 0.25, 10.0));
+        CHECK(Of(HandEvents(AnalyseMotion(t)), PhysicsKind::HandPivot).empty());
+        PhysicsParams sens;
+        sens.hand_pivot_min_deg /= 2.0;
+        sens.hand_pivot_rate_dps /= 2.0;
+        const std::vector<PhysicsEvent> pv = Of(HandEvents(AnalyseMotion(t, sens), sens), PhysicsKind::HandPivot, 'R');
+        CHECK(pv.size() == 1 && pv[0].strength > 8.0 && pv[0].strength < 11.0);
+        // The foot pivot's thresholds never move the hand's.
+        PhysicsParams foot;
+        foot.pivot_min_deg /= 2.0;
+        foot.pivot_rate_dps /= 2.0;
+        CHECK(Of(HandEvents(AnalyseMotion(t, foot), foot), PhysicsKind::HandPivot).empty());
+    }
+    {
+        // Turn while moving, lands turning, leaves at once: none.
+        Options o;
+        o.dur = 2.5;
+        PhysicsParams lax;
+        lax.hand_pivot_after_grab = false;
+        for (double turn_at : {0.5, 1.05, 1.30}) {
+            // 0.5: the hand moves (it rests 1.0 to 1.6); 1.05: the turn starts 50 ms into the
+            // rest; 1.30: it ends 50 ms before the hand leaves.
+            std::vector<BoneTrack> t = Rig(walk_l, walk_r, o);
+            AddHands(t, HandStill(-0.3), HandMove(0.3, 1.5 * kLeg, {{1.0, 1.6}}), o, nullptr, TurnYaw(turn_at, 0.25, 90.0));
+            const PhysicsAnalysis a = AnalyseMotion(t);
+            CHECK(a.ok && a.hand[1].has_heading && a.hand[1].pivots.empty());
+            CHECK(Of(HandEvents(a, lax), PhysicsKind::HandPivot).empty());
+            CHECK(StepsNear(Of(HandEvents(a), PhysicsKind::Grab, 'R'), {1.0}, 0.02));
+        }
+        // A hand that never rests: no heading source (nothing to calibrate on).
+        std::vector<BoneTrack> t = Rig(walk_l, walk_r, o);
+        AddHands(t, HandStill(-0.3), HandMove(0.3, 1.5 * kLeg, {}), o, nullptr, TurnYaw(1.0, 0.25, 90.0));
+        const PhysicsAnalysis a = AnalyseMotion(t);
+        CHECK(a.ok && a.hand[1].part.contacts.empty() && !a.hand[1].has_heading && a.hand[1].pivots.empty());
+    }
+    {
+        // The level check and the heading after the turn: the planted right hand (resting 1.0 to
+        // 2.6 s) rolls 80 deg about a horizontal axis (1.4 to 1.55 s), stays rolled to 1.75 s and
+        // rolls back by 1.9 s. The roll axis is across the hand's heading axis (the module's: the
+        // bone axis least along the hand's up, made perpendicular to it), so that axis tilts
+        // 70 deg or more: no heading over the rolled span. Rolled alone, or while the heading
+        // also turns 90 deg (1.4 to 1.75 s): no Hand Pivot, even with any resting hand (the part
+        // of the turn before the tilt has no heading after it).
+        const Vec3d m = RotateBy(Quatd{HandBoneFrame().w, -HandBoneFrame().x, -HandBoneFrame().y, -HandBoneFrame().z},
+                                 Vec3d{0.0, 1.0, 0.0});
+        Vec3d       e{1.0, 0.0, 0.0};
+        if (std::fabs(m.y) < std::fabs(m.x) && std::fabs(m.y) <= std::fabs(m.z)) e = Vec3d{0.0, 1.0, 0.0};
+        else if (std::fabs(m.z) < std::fabs(m.x) && std::fabs(m.z) < std::fabs(m.y)) e = Vec3d{0.0, 0.0, 1.0};
+        const double d = e.x * m.x + e.y * m.y + e.z * m.z;
+        const Vec3d  v = RotateBy(HandBoneFrame(), Vec3d{e.x - d * m.x, e.y - d * m.y, e.z - d * m.z});  // horizontal
+        const double vl = std::sqrt(v.x * v.x + v.z * v.z);
+        CHECK(std::fabs(v.y) < 1e-9 && vl > 0.1);
+        const Vec3d  across{-v.z / vl, 0.0, v.x / vl};  // up x v, horizontal
+        auto roll = [](double t) {
+            return 80.0 * kDeg * (t < 1.75 ? Ease((t - 1.4) / 0.15) : 1.0 - Ease((t - 1.75) / 0.15));
+        };
+        PhysicsParams lax;
+        lax.hand_pivot_after_grab = false;
+        for (bool turn : {false, true}) {
+            Options o;
+            o.dur = 3.2;
+            std::vector<BoneTrack> t = Rig(walk_l, walk_r, o);
+            AddHands(t, HandStill(-0.3), HandMove(0.3, 1.5 * kLeg, {{1.0, 2.6}}), o);
+            BoneTrack& h = t[static_cast<size_t>(Role::RightHand)];
+            for (size_t i = 0; i < h.pos.size(); ++i) {
+                const double time = i / o.rate;
+                const double yaw = turn ? 90.0 * kDeg * Ease((time - 1.4) / 0.35) : 0.0;
+                h.rot_world.push_back(Mul(AxisAngle(0.0, 1.0, 0.0, yaw),
+                                          Mul(AxisAngle(across.x, 0.0, across.z, roll(time)), HandBoneFrame())));
+            }
+            const PhysicsAnalysis a = AnalyseMotion(t);
+            CHECK(a.ok && a.hand[1].has_heading && a.hand[1].pivots.empty());
+            CHECK(Of(HandEvents(a, lax), PhysicsKind::HandPivot).empty());
+            bool tilted = a.hand[1].heading_valid.size() == h.pos.size();
+            for (double time = 1.55; tilted && time < 1.75; time += 1.0 / o.rate)
+                tilted = a.hand[1].heading_valid[static_cast<size_t>(std::lround(time * o.rate))] == 0;
+            CHECK(tilted);
+            CHECK(a.hand[1].heading_valid[static_cast<size_t>(std::lround(1.2 * o.rate))] &&
+                  a.hand[1].heading_valid[static_cast<size_t>(std::lround(2.2 * o.rate))]);
+            // The same turn with no roll pivots (the roll is what stops it).
+            if (turn) {
+                std::vector<BoneTrack> flat = Rig(walk_l, walk_r, o);
+                AddHands(flat, HandStill(-0.3), HandMove(0.3, 1.5 * kLeg, {{1.0, 2.6}}), o, nullptr,
+                         [](double time) { return 90.0 * kDeg * Ease((time - 1.4) / 0.35); });
+                CHECK(Of(HandEvents(AnalyseMotion(flat), lax), PhysicsKind::HandPivot).size() == 1);
+            }
+        }
+    }
+    {
+        // No hand bone: no hand pivot on that side; the other hand's is found.
+        Options o;
+        o.dur = 2.5;
+        std::vector<BoneTrack> t = Rig(walk_l, walk_r, o);
+        AddHands(t, nullptr, HandMove(0.3, 1.5 * kLeg, {{1.0, 1.6}}), o, nullptr, TurnYaw(1.175, 0.25, 90.0));
+        const PhysicsAnalysis a = AnalyseMotion(t);
+        CHECK(a.ok && !a.hand[0].part.present && !a.hand[0].has_heading);
+        const std::vector<PhysicsEvent> ev = HandEvents(a);
+        CHECK(Of(ev, PhysicsKind::HandPivot, 'L').empty() && Of(ev, PhysicsKind::HandPivot, 'R').size() == 1);
+        // Hand pivot marker names and event lines.
+        PhysicsEvent e;
+        e.kind = PhysicsKind::HandPivot;
+        e.side = 'L';
+        e.part = -1;
+        e.strength = 87.4;
+        e.time_s = e.start_s = 1.0;
+        e.end_s = 1.25;
+        CHECK(PhysicsMarkerName(e) == "PHY L hand pivot 87deg 250ms" && IsPhysicsMarkerName(PhysicsMarkerName(e).c_str()));
+        CHECK(PhysicsEventLines({e}, "  ") == "     1.000 s  PHY L hand pivot 87deg 250ms  (to 1.250 s)\n");
+        CHECK(PhysicsSummary(a, {e}) == PhysicsSummary(a, {}));
+        CHECK(PhysicsParams{}.hand_pivot_rate_dps == PhysicsParams{}.pivot_rate_dps &&
+              PhysicsParams{}.hand_pivot_min_deg == PhysicsParams{}.pivot_min_deg && PhysicsParams{}.hand_pivot_after_grab);
     }
 
     if (g_fails == 0) std::printf("motion_physics: all tests passed\n");

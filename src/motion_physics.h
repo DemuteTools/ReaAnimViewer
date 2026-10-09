@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 //
-// Motion physics (Epic 10, spike 10-8a; hands: story 10-8c): foot and hand events read from
+// Motion physics (Epic 10, spike 10-8a; hands: stories 10-8c, 10-8e): foot and hand events read from
 // bone motion as physics, in body units, so one setting works on every clip. No clip
 // statistics, no examples, no Analyse.
 //
 // Roles in, events out. The analysis reads, per side, the heel (the foot bone), the ball (the
 // toe base), the toe tip (the toe end), the knee, the up leg and the hand, plus the hips
-// (bone_roles.h). Positions, and the ball's rotation when the track has one:
+// (bone_roles.h). Positions, and the ball's and the hands' rotations when the track has them:
 //   body scale    the leg length: up leg -> knee -> heel (the median over the clip, the mean of
 //                 the sides; the hips stand in for a missing up leg). When no side gives it (no
 //                 heel), 2 x (up leg -> knee), noted "thigh x2". Speeds are in leg lengths
@@ -89,6 +89,20 @@
 //                 Timed by hand_timing + hand_offset_s. Strength = the approach speed (leg/s).
 //   release       a counted contact's end (its lift-off time), never at the clip end, left at
 //                 hand_min_approach at least. Strength = the departure speed (leg/s).
+//   hand pivot    (story 10-8e) the planted hand turns: the foot pivot's rules with the hand's
+//                 own thresholds: the heading turns at >= hand_pivot_rate_dps for >= pivot_min_s
+//                 and sweeps >= hand_pivot_min_deg (the unwrapped heading's difference), the hand
+//                 is in contact from pivot_planted_s before the turn to pivot_planted_s after it,
+//                 and its heading holds over pivot_planted_s after the turn. So a hand that lands
+//                 turning, or leaves at once, makes none. Strength = the angle swept (degrees).
+//                 The heading comes from the hand bone's own rotation (BoneTrack::rot_world of
+//                 the hand; no finger role, no elbow -> hand vector: a vault where the palm stays
+//                 put turns nothing): a bone-space axis perpendicular to the hand's mean up (the
+//                 mean of R^-1 . up over the hand's contact samples; none: no source), seen from
+//                 above. It holds while that axis is within pivot_level_deg of level. By default
+//                 (PhysicsParams::hand_pivot_after_grab) only a hand that came to rest with a
+//                 grab's approach (>= hand_min_approach), or was at rest from the clip start,
+//                 pivots; off, any resting hand does.
 //
 // A missing role drops only that part's events (PhysicsAnalysis::missing says why for the feet,
 // hand_missing for the hands). Two parts on the same bone (an Unreal toe end standing in on
@@ -191,6 +205,13 @@ struct PhysicsParams {
     double     hand_min_contact_s = 0.150;   // a shorter contact is a stop between two moves
     StepTiming hand_timing = StepTiming::Speed;
     double     hand_offset_s = 0.0;
+    // Hand pivots (story 10-8e): the foot's rate and angle (no hand pivot REF exists to choose
+    // others); pivot_min_s, pivot_planted_s, pivot_smooth_ms and pivot_level_deg are shared.
+    double     hand_pivot_rate_dps = 90.0;
+    double     hand_pivot_min_deg = 15.0;
+    // HandEvents only: a pivot needs the hand's contact to start with a grab's approach (or at the
+    // clip start). Off: any resting hand pivots. The analysis does not read it.
+    bool       hand_pivot_after_grab = true;
 };
 
 // One contact of a part, in samples [start, end).
@@ -241,10 +262,15 @@ struct FootTrack {
     std::vector<Scuff>  pivots;
 };
 
-// A hand: its contacts as a part (PartTrack, segmented with the hand constants).
+// A hand: its contacts as a part (PartTrack, segmented with the hand constants), and its
+// heading for the pivots (story 10-8e; none without a usable rotation).
 struct HandTrack {
-    char      side = 'L';
-    PartTrack part;
+    char                side = 'L';
+    PartTrack           part;
+    bool                has_heading = false;  // the hand's rotation gives a heading
+    std::vector<double> heading_rate_dps;     // 0 where it does not hold
+    std::vector<char>   heading_valid;        // the heading holds (whatever the contact)
+    std::vector<Scuff>  pivots;               // part -1; every resting hand's (HandEvents filters)
 };
 
 struct PhysicsAnalysis {
@@ -271,11 +297,11 @@ std::vector<BoneTrack> PhysicsRoleTracks(const std::vector<int>& bone_of_role,
                                          const std::function<std::vector<BoneTrack>(const std::vector<int>&)>& sample);
 
 // The analysis. role_tracks: indexed by Role, an empty track = the role has no bone; every
-// non-empty track has the same rate and length. Rotations are optional: only the ball's
-// rot_world is read (one per sample, else ignored).
+// non-empty track has the same rate and length. Rotations are optional: only the ball's and the
+// hands' rot_world are read (one per sample, else ignored).
 PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& role_tracks, const PhysicsParams& p = {});
 
-enum class PhysicsKind { Step, FootStep, LiftOff, Slide, Pivot, Grab, Release };
+enum class PhysicsKind { Step, FootStep, LiftOff, Slide, Pivot, Grab, Release, HandPivot };
 
 struct PhysicsEvent {
     PhysicsKind kind = PhysicsKind::Step;
@@ -284,21 +310,22 @@ struct PhysicsEvent {
     double      time_s = 0.0;    // clip time (a scuff: its start)
     double      start_s = 0.0;   // a scuff's span (= time_s for the others)
     double      end_s = 0.0;
-    double      strength = 0.0;  // leg/s (steps, lift-offs, slides) or degrees (pivots)
+    double      strength = 0.0;  // leg/s (steps, lift-offs, slides, grabs, releases) or degrees (pivots, hand pivots)
 };
 
 // Every event, by time (then side, kind, part). Steps use p.step_timing / p.step_offset_s.
 std::vector<PhysicsEvent> FootEvents(const PhysicsAnalysis& a, const PhysicsParams& p = {});
 
-// Every hand event (grabs and releases), by time (then side, kind). Uses p.hand_*.
+// Every hand event (grabs, releases and pivots), by time (then side, kind). Uses p.hand_*
+// (p.hand_pivot_after_grab picks the pivots; their thresholds are the analysis').
 std::vector<PhysicsEvent> HandEvents(const PhysicsAnalysis& a, const PhysicsParams& p = {});
 
 // The separate step times of one part (side 'L' / 'R'), by `timing` plus `offset_s`.
 std::vector<double> PartStepTimes(const PhysicsAnalysis& a, char side, int part, StepTiming timing, double offset_s);
 
 // "PHY L heel 1.8", "PHY R step toe 2.1", "PHY L lift tip 1.2", "PHY L slide toe 0.6 210ms",
-// "PHY R pivot ball 87deg 250ms", "PHY L grab 1.4", "PHY R release 0.9" (strengths in leg/s or
-// degrees).
+// "PHY R pivot ball 87deg 250ms", "PHY L grab 1.4", "PHY R release 0.9",
+// "PHY L hand pivot 87deg 250ms" (strengths in leg/s or degrees).
 std::string PhysicsMarkerName(const PhysicsEvent& e);
 // True for a marker name this module writes ("PHY " prefix).
 bool IsPhysicsMarkerName(const char* name);
@@ -306,10 +333,10 @@ bool IsPhysicsMarkerName(const char* name);
 // The report: "leg 0.93 m, ground (+0.00, -0.41) m/s; steps heel 2, toe 2, tip 2; foot steps 2,
 // lift-offs 1, slides 0, pivots 0" plus "; missing: ..." when a part is dropped.
 std::string PhysicsSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev);
-// The hands' report: "hands: grabs 2, releases 1" plus "; missing: ..." when a hand is dropped
-// ("hands: skipped: <error>" when the analysis failed). Counts the Grab / Release events of ev.
+// The hands' report: "hands: grabs 2, releases 1, pivots 0" plus "; missing: ..." when a hand is
+// dropped ("hands: skipped: <error>" when the analysis failed). Counts the hand events of ev.
 std::string HandSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev);
-// One line per event ("   1.234 s  PHY L heel 1.8", a scuff "... (to 1.456 s)"), each with
+// One line per event ("   1.234 s  PHY L heel 1.8", a scuff or hand pivot "... (to 1.456 s)"), each with
 // `indent` in front and '\n' after.
 std::string PhysicsEventLines(const std::vector<PhysicsEvent>& ev, const std::string& indent);
 // "heel speed +0 ms, toe height -12 ms, tip speed +0 ms"

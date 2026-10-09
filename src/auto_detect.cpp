@@ -14,8 +14,9 @@
 namespace rav {
 namespace {
 
-constexpr AutoKind kKinds[kAutoKindCount] = {AutoKind::Step,  AutoKind::Heel,  AutoKind::Toe,  AutoKind::Lift,
-                                             AutoKind::Slide, AutoKind::Pivot, AutoKind::Grab, AutoKind::Release};
+constexpr AutoKind kKinds[kAutoKindCount] = {AutoKind::Step,  AutoKind::Heel,  AutoKind::Toe,     AutoKind::Lift,
+                                             AutoKind::Slide, AutoKind::Pivot, AutoKind::Grab,    AutoKind::Release,
+                                             AutoKind::HandPivot, AutoKind::HandPivotAny};
 constexpr char     kSides[2] = {'L', 'R'};
 // The analyses a session keeps for one set of role tracks (a few sensitivities tried in a row).
 constexpr size_t kMaxCachedAnalyses = 8;
@@ -26,15 +27,17 @@ int SideIndex(char side)
 }
 
 // The kinds a ticked type makes, in block order.
-std::vector<AutoKind> KindsOf(AutoType t, bool separate)
+std::vector<AutoKind> KindsOf(AutoType t, const AutoSettings& s)
 {
     switch (t) {
-    case AutoType::Step: return separate ? std::vector<AutoKind>{AutoKind::Heel, AutoKind::Toe} : std::vector<AutoKind>{AutoKind::Step};
+    case AutoType::Step:
+        return s.separate_steps ? std::vector<AutoKind>{AutoKind::Heel, AutoKind::Toe} : std::vector<AutoKind>{AutoKind::Step};
     case AutoType::LiftOff: return {AutoKind::Lift};
     case AutoType::Slide: return {AutoKind::Slide};
     case AutoType::Pivot: return {AutoKind::Pivot};
     case AutoType::Grab: return {AutoKind::Grab};
     case AutoType::Release: return {AutoKind::Release};
+    case AutoType::HandPivot: return {s.hand_pivot_any ? AutoKind::HandPivotAny : AutoKind::HandPivot};
     }
     return {};
 }
@@ -61,6 +64,7 @@ const char* AutoTypeLabel(AutoType t)
     case AutoType::Pivot: return "Pivot scuff";
     case AutoType::Grab: return "Grab";
     case AutoType::Release: return "Release";
+    case AutoType::HandPivot: return "Pivot scuff";
     }
     return "?";
 }
@@ -73,7 +77,8 @@ AutoCategory AutoCategoryOf(AutoType t)
     case AutoType::Slide:
     case AutoType::Pivot: return AutoCategory::Feet;
     case AutoType::Grab:
-    case AutoType::Release: return AutoCategory::Hands;
+    case AutoType::Release:
+    case AutoType::HandPivot: return AutoCategory::Hands;
     }
     return AutoCategory::Feet;
 }
@@ -98,6 +103,8 @@ const char* AutoKindWord(AutoKind k)
     case AutoKind::Pivot: return "pivot";
     case AutoKind::Grab: return "grab";
     case AutoKind::Release: return "release";
+    case AutoKind::HandPivot: return "hand_pivot";
+    case AutoKind::HandPivotAny: return "hand_pivot_any";
     }
     return "?";
 }
@@ -123,6 +130,8 @@ AutoType AutoTypeOfKind(AutoKind k)
     case AutoKind::Pivot: return AutoType::Pivot;
     case AutoKind::Grab: return AutoType::Grab;
     case AutoKind::Release: return AutoType::Release;
+    case AutoKind::HandPivot:
+    case AutoKind::HandPivotAny: return AutoType::HandPivot;
     }
     return AutoType::Step;
 }
@@ -139,6 +148,8 @@ std::string AutoMarkerName(AutoKind k, char side)
     case AutoKind::Pivot: word = "Pivot"; break;
     case AutoKind::Grab: word = "Grab"; break;
     case AutoKind::Release: word = "Release"; break;
+    case AutoKind::HandPivot:
+    case AutoKind::HandPivotAny: word = "Hand Pivot"; break;
     }
     return std::string(word) + ' ' + (side == 'R' ? 'R' : 'L');
 }
@@ -155,6 +166,8 @@ uint32_t AutoDefaultColor(AutoKind k, char side)
         {0x9E5FDD, 0xDD5F9E},  // Pivot
         {0x5FDD9E, 0xDDB45F},  // Grab
         {0x9EB4DD, 0xDD9E9E},  // Release
+        {0xA8DD3C, 0xB4643C},  // Hand Pivot
+        {0xA8DD3C, 0xB4643C},  // Hand Pivot (any resting hand)
     };
     const int ki = std::clamp(static_cast<int>(k), 0, kAutoKindCount - 1);
     return 0x1000000u | kRgb[ki][SideIndex(side)];
@@ -193,7 +206,7 @@ bool operator==(const AutoSettings& a, const AutoSettings& b)
 {
     for (int t = 0; t < kAutoTypeCount; ++t)
         if (!(a.type[t] == b.type[t])) return false;
-    return a.separate_steps == b.separate_steps;
+    return a.separate_steps == b.separate_steps && a.hand_pivot_any == b.hand_pivot_any;
 }
 
 bool AutoCategoryInBlocks(const std::vector<Block>& blocks, AutoCategory c)
@@ -223,8 +236,9 @@ bool AutoPending(const AutoSettings& ui, const AutoSettings& item)
 {
     for (int t = 0; t < kAutoTypeCount; ++t)
         if (ui.type[t].on != item.type[t].on) return true;
-    const int step = static_cast<int>(AutoType::Step);
-    return ui.type[step].on && item.type[step].on && ui.separate_steps != item.separate_steps;
+    const int step = static_cast<int>(AutoType::Step), hp = static_cast<int>(AutoType::HandPivot);
+    return (ui.type[step].on && item.type[step].on && ui.separate_steps != item.separate_steps) ||
+           (ui.type[hp].on && item.type[hp].on && ui.hand_pivot_any != item.hand_pivot_any);
 }
 
 std::vector<Block> AutoBlocks(const AutoSettings& s)
@@ -233,7 +247,7 @@ std::vector<Block> AutoBlocks(const AutoSettings& s)
     for (int t = 0; t < kAutoTypeCount; ++t) {
         const AutoTypeSettings& ts = s.type[t];
         if (!ts.on) continue;
-        for (AutoKind k : KindsOf(static_cast<AutoType>(t), s.separate_steps))
+        for (AutoKind k : KindsOf(static_cast<AutoType>(t), s))
             for (char side : kSides) out.push_back(MakeAutoBlock(k, side, ts.sens, ts.offset_ms));
     }
     return out;
@@ -242,7 +256,7 @@ std::vector<Block> AutoBlocks(const AutoSettings& s)
 AutoSettings ReadAutoSettings(const std::vector<Block>& blocks)
 {
     AutoSettings s;
-    bool combined = false, separate = false;
+    bool combined = false, separate = false, strict = false, any = false;
     for (const Block& b : blocks) {
         AutoKind k;
         if (!AutoBlockKind(b, &k, nullptr)) continue;
@@ -254,8 +268,11 @@ AutoSettings ReadAutoSettings(const std::vector<Block>& blocks)
         }
         if (k == AutoKind::Step) combined = true;
         if (k == AutoKind::Heel || k == AutoKind::Toe) separate = true;
+        if (k == AutoKind::HandPivot) strict = true;
+        if (k == AutoKind::HandPivotAny) any = true;
     }
     s.separate_steps = separate && !combined;
+    s.hand_pivot_any = any && !strict;
     return s;
 }
 
@@ -285,6 +302,25 @@ std::vector<int> ApplyAutoSettings(std::vector<Block>& blocks, const AutoSetting
             }
         }
     }
+    // Story 10-8e: a hand pivot block switched between after a grab and any keeps its place,
+    // marker, colour and on/off; only its kind changes.
+    auto hand_pivot = [](AutoKind k) { return k == AutoKind::HandPivot || k == AutoKind::HandPivotAny; };
+    for (size_t i = 0; i < old.size(); ++i) {
+        AutoKind k;
+        char     side;
+        if (keep[i] || !AutoBlockKind(old[i], &k, &side) || !hand_pivot(k)) continue;
+        for (size_t j = 0; j < want.size(); ++j) {
+            AutoKind wk;
+            char     ws;
+            AutoBlockKind(want[j], &wk, &ws);
+            if (match_of_want[j] < 0 && hand_pivot(wk) && ws == side) {
+                match_of_want[j] = static_cast<int>(i);
+                want_of_old[i] = static_cast<int>(j);
+                keep[i] = 1;
+                break;
+            }
+        }
+    }
     std::vector<Block> out;
     std::vector<int>   map(old.size(), -1);
     for (size_t i = 0; i < old.size(); ++i) {
@@ -292,6 +328,7 @@ std::vector<int> ApplyAutoSettings(std::vector<Block>& blocks, const AutoSetting
         Block b = old[i];
         if (want_of_old[i] >= 0) {
             const Block& w = want[static_cast<size_t>(want_of_old[i])];
+            b.auto_type = w.auto_type;
             b.sens = w.sens;
             b.offset_ms = w.offset_ms;
         }
@@ -301,7 +338,8 @@ std::vector<int> ApplyAutoSettings(std::vector<Block>& blocks, const AutoSetting
     for (size_t j = 0; j < want.size(); ++j)
         if (match_of_want[j] < 0) out.push_back(want[j]);
     // Steps switched between separate and combined: the dropped step blocks' edits go to the new
-    // step block of the same foot (combined -> heel, heel and toe -> combined).
+    // step block of the same foot (combined -> heel, heel and toe -> combined). (A switched hand
+    // pivot keeps its block, above; these two lines cover a hand left with both kinds.)
     auto find_new = [&](AutoKind k, char side) {
         for (size_t n = 0; n < out.size(); ++n) {
             AutoKind nk;
@@ -316,6 +354,8 @@ std::vector<int> ApplyAutoSettings(std::vector<Block>& blocks, const AutoSetting
         if (keep[i] || !AutoBlockKind(old[i], &k, &side)) continue;
         if (k == AutoKind::Step) map[i] = find_new(AutoKind::Heel, side);
         else if (k == AutoKind::Heel || k == AutoKind::Toe) map[i] = find_new(AutoKind::Step, side);
+        else if (k == AutoKind::HandPivot) map[i] = find_new(AutoKind::HandPivotAny, side);
+        else if (k == AutoKind::HandPivotAny) map[i] = find_new(AutoKind::HandPivot, side);
     }
     if (changed) *changed = !BlocksEqual(old, out);
     blocks = std::move(out);
@@ -345,6 +385,10 @@ PhysicsParams AutoPhysicsParams(AutoType t, double sens)
         break;
     case AutoType::Grab:
     case AutoType::Release: p.hand_contact_speed *= f; break;
+    case AutoType::HandPivot:
+        p.hand_pivot_min_deg /= f;
+        p.hand_pivot_rate_dps /= f;
+        break;
     }
     return p;
 }
@@ -353,7 +397,8 @@ bool SameAutoAnalysis(const PhysicsParams& a, const PhysicsParams& b)
 {
     return a.contact_speed == b.contact_speed && a.slide_speed == b.slide_speed && a.pivot_min_deg == b.pivot_min_deg &&
            a.pivot_rate_dps == b.pivot_rate_dps && a.hand_contact_speed == b.hand_contact_speed &&
-           a.hand_switch_cost == b.hand_switch_cost;
+           a.hand_switch_cost == b.hand_switch_cost && a.hand_pivot_min_deg == b.hand_pivot_min_deg &&
+           a.hand_pivot_rate_dps == b.hand_pivot_rate_dps;
 }
 
 // ---- Detection ---------------------------------------------------------------------------------
@@ -382,8 +427,9 @@ std::vector<PhysicsParams> AutoParamSets(const std::vector<Block>& blocks)
 std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const std::vector<Block>& blocks)
 {
     std::vector<Event> out;
-    // Each analysis' foot and hand events, computed once.
-    std::vector<std::vector<PhysicsEvent>> foot(analyses.size()), hand(analyses.size());
+    // Each analysis' foot and hand events, computed once (the hand's twice: pivots after a grab
+    // only, and of any resting hand).
+    std::vector<std::vector<PhysicsEvent>> foot(analyses.size()), hand(analyses.size()), hand_any(analyses.size());
     std::vector<char>                      done(analyses.size(), 0);
     for (size_t bi = 0; bi < blocks.size(); ++bi) {
         const Block& b = blocks[bi];
@@ -400,6 +446,9 @@ std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const s
         if (!done[ai]) {
             foot[ai] = FootEvents(a, analyses[ai].params);
             hand[ai] = HandEvents(a, analyses[ai].params);
+            PhysicsParams any = analyses[ai].params;
+            any.hand_pivot_after_grab = false;
+            hand_any[ai] = HandEvents(a, any);
             done[ai] = 1;
         }
         const bool                       is_hand = AutoCategoryOf(AutoTypeOfKind(k)) == AutoCategory::Hands;
@@ -407,7 +456,8 @@ std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const s
         const FootTrack& ft = a.foot[SideIndex(side)];
         const int        toe = ft.part[static_cast<int>(FootPart::Ball)].present ? static_cast<int>(FootPart::Ball)
                                                                                   : static_cast<int>(FootPart::Tip);
-        for (const PhysicsEvent& e : is_hand ? hand[ai] : foot[ai]) {
+        const bool pivot = k == AutoKind::Pivot || k == AutoKind::HandPivot || k == AutoKind::HandPivotAny;
+        for (const PhysicsEvent& e : !is_hand ? foot[ai] : k == AutoKind::HandPivotAny ? hand_any[ai] : hand[ai]) {
             if (e.side != side) continue;
             bool want = false;
             switch (k) {
@@ -419,6 +469,8 @@ std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const s
             case AutoKind::Pivot: want = e.kind == PhysicsKind::Pivot; break;
             case AutoKind::Grab: want = e.kind == PhysicsKind::Grab; break;
             case AutoKind::Release: want = e.kind == PhysicsKind::Release; break;
+            case AutoKind::HandPivot:
+            case AutoKind::HandPivotAny: want = e.kind == PhysicsKind::HandPivot; break;
             }
             if (!want) continue;
             Event ev;
@@ -426,7 +478,7 @@ std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const s
             ev.block = static_cast<int>(bi);
             ev.marker = b.marker;
             ev.strength = e.strength;
-            ev.speed = k == AutoKind::Pivot ? 0.0 : e.strength * a.leg_length;
+            ev.speed = pivot ? 0.0 : e.strength * a.leg_length;
             out.push_back(std::move(ev));
         }
     }

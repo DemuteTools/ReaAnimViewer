@@ -434,6 +434,41 @@ std::vector<Scuff> FindSlides(const FootTrack& f, double leg, double rate, const
     return out;
 }
 
+// A turn: samples [start, end) whose rate keeps one sign, its core (the samples at the
+// threshold) and the extension around it (at a third of it).
+struct PivotRun {
+    int start, end, sign, core;
+};
+
+// The turns of a heading rate r (deg/s) at >= thr while in contact (in), same-sign runs that
+// touch joined.
+std::vector<PivotRun> PivotRuns(const std::vector<char>& in, const std::vector<double>& r, int n, double thr)
+{
+    const double          ext = thr / 3.0;
+    std::vector<PivotRun> runs;
+    for (int i = 0; i < n;) {
+        if (!(in[static_cast<size_t>(i)] && std::fabs(r[static_cast<size_t>(i)]) >= thr)) {
+            ++i;
+            continue;
+        }
+        const int sign = r[static_cast<size_t>(i)] > 0.0 ? 1 : -1;
+        const int a = i;
+        while (i < n && in[static_cast<size_t>(i)] && r[static_cast<size_t>(i)] * sign >= thr) ++i;
+        const int core = i - a;
+        int       s = a, e = i;
+        while (s > 0 && in[static_cast<size_t>(s - 1)] && r[static_cast<size_t>(s - 1)] * sign >= ext) --s;
+        while (e < n && in[static_cast<size_t>(e)] && r[static_cast<size_t>(e)] * sign >= ext) ++e;
+        if (!runs.empty() && runs.back().sign == sign && s <= runs.back().end) {
+            runs.back().end = std::max(runs.back().end, e);
+            runs.back().core += core;
+        } else {
+            runs.push_back(PivotRun{s, e, sign, core});
+        }
+        i = std::max(i, e);
+    }
+    return runs;
+}
+
 // Pivot scuffs of one foot (needs the yaw).
 std::vector<Scuff> FindPivots(const FootTrack& f, int n, double rate, const PhysicsParams& p)
 {
@@ -462,31 +497,7 @@ std::vector<Scuff> FindPivots(const FootTrack& f, int n, double rate, const Phys
                 r[u] = f.heading_rate_dps[u];
             }
         }
-    const double thr = p.pivot_rate_dps, ext = p.pivot_rate_dps / 3.0;
-    struct Run {
-        int start, end, sign, core;
-    };
-    std::vector<Run> runs;
-    for (int i = 0; i < n;) {
-        if (!(in[static_cast<size_t>(i)] && std::fabs(r[static_cast<size_t>(i)]) >= thr)) {
-            ++i;
-            continue;
-        }
-        const int sign = r[static_cast<size_t>(i)] > 0.0 ? 1 : -1;
-        const int a = i;
-        while (i < n && in[static_cast<size_t>(i)] && r[static_cast<size_t>(i)] * sign >= thr) ++i;
-        const int core = i - a;
-        int       s = a, e = i;
-        while (s > 0 && in[static_cast<size_t>(s - 1)] && r[static_cast<size_t>(s - 1)] * sign >= ext) --s;
-        while (e < n && in[static_cast<size_t>(e)] && r[static_cast<size_t>(e)] * sign >= ext) ++e;
-        if (!runs.empty() && runs.back().sign == sign && s <= runs.back().end) {
-            runs.back().end = std::max(runs.back().end, e);
-            runs.back().core += core;
-        } else {
-            runs.push_back(Run{s, e, sign, core});
-        }
-        i = std::max(i, e);
-    }
+    const std::vector<PivotRun> runs = PivotRuns(in, r, n, p.pivot_rate_dps);
     const int        min_core = std::max(1, SamplesOf(p.pivot_min_s, rate));
     const PartTrack& heel = f.part[static_cast<int>(FootPart::Heel)];
     const int        toe_q = f.part[static_cast<int>(FootPart::Ball)].present ? static_cast<int>(FootPart::Ball)
@@ -501,7 +512,7 @@ std::vector<Scuff> FindPivots(const FootTrack& f, int n, double rate, const Phys
             if (f.part[t].present && f.part[t].contact[u]) return true;
         return false;
     };
-    for (const Run& run : runs) {
+    for (const PivotRun& run : runs) {
         // A run with a fallback sample sweeps the integral of the rate used.
         bool   steep = false;
         double integral = 0.0;
@@ -542,6 +553,33 @@ std::vector<Scuff> FindPivots(const FootTrack& f, int n, double rate, const Phys
         for (int i = std::max(0, run.start - margin); planted && i < std::min(n, run.end + margin); ++i)
             planted = in_part(s.part, i);
         if (planted) out.push_back(s);
+    }
+    return out;
+}
+
+// Pivot scuffs of one hand (story 10-8e): its heading (unwrapped deg, rate, valid) turns while
+// the hand is in contact from pivot_planted_s before to pivot_planted_s after, and holds after.
+std::vector<Scuff> FindHandPivots(const PartTrack& pt, const std::vector<double>& deg, const std::vector<double>& dps,
+                                  const std::vector<char>& valid, int n, double rate, const PhysicsParams& p)
+{
+    std::vector<Scuff> out;
+    const std::vector<PivotRun> runs = PivotRuns(pt.contact, dps, n, p.hand_pivot_rate_dps);
+    const int                   min_core = std::max(1, SamplesOf(p.pivot_min_s, rate));
+    const int                   margin = SamplesOf(p.pivot_planted_s, rate);
+    for (const PivotRun& run : runs) {
+        const double swept = deg[static_cast<size_t>(run.end - 1)] - deg[static_cast<size_t>(run.start)];
+        if (run.core < min_core || std::fabs(swept) < p.hand_pivot_min_deg) continue;
+        bool ok = true;  // the heading holds after the turn
+        for (int i = run.end; ok && i < std::min(n, run.end + margin); ++i) ok = valid[static_cast<size_t>(i)] != 0;
+        for (int i = std::max(0, run.start - margin); ok && i < std::min(n, run.end + margin); ++i)
+            ok = pt.contact[static_cast<size_t>(i)] != 0;
+        if (!ok) continue;
+        Scuff s;
+        s.start = run.start;
+        s.end = run.end;
+        s.part = -1;
+        s.strength = std::fabs(swept);
+        out.push_back(s);
     }
     return out;
 }
@@ -889,6 +927,46 @@ PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& rt, const PhysicsPar
             pt.vy[i] = dy / leg;
         }
         SegmentPart(pt, leg, rate, hp);
+
+        // The heading (story 10-8e): a bone-space axis perpendicular to the hand's mean up (the
+        // mean of R^-1 . up over its contact samples), seen from above.
+        HandTrack&       h = a.hand[s];
+        const BoneTrack* t = track(kHandRole[s]);
+        if (t->rot_world.size() != n) continue;
+        const std::vector<Quatd>& rot = t->rot_world;
+        Vec3d                     up{0.0, 0.0, 0.0};
+        for (size_t i = 0; i < n; ++i) {
+            if (!pt.contact[i]) continue;
+            const Vec3d u = Rotate(Conj(rot[i]), Vec3d{0.0, 1.0, 0.0});
+            up.x += u.x;
+            up.y += u.y;
+            up.z += u.z;
+        }
+        const double ul = std::sqrt(up.x * up.x + up.y * up.y + up.z * up.z);
+        if (!(ul > 1e-9) || !std::isfinite(ul)) continue;
+        const Vec3d m{up.x / ul, up.y / ul, up.z / ul};
+        // The bone axis least along m, minus its part along m.
+        Vec3d e{1.0, 0.0, 0.0};
+        if (std::fabs(m.y) < std::fabs(m.x) && std::fabs(m.y) <= std::fabs(m.z)) e = Vec3d{0.0, 1.0, 0.0};
+        else if (std::fabs(m.z) < std::fabs(m.x) && std::fabs(m.z) < std::fabs(m.y)) e = Vec3d{0.0, 0.0, 1.0};
+        const double d = e.x * m.x + e.y * m.y + e.z * m.z;
+        Vec3d        axis{e.x - d * m.x, e.y - d * m.y, e.z - d * m.z};
+        const double al = std::sqrt(axis.x * axis.x + axis.y * axis.y + axis.z * axis.z);
+        axis = Vec3d{axis.x / al, axis.y / al, axis.z / al};
+        std::vector<Vec3d> w(n);
+        for (size_t i = 0; i < n; ++i) w[i] = Rotate(rot[i], axis);
+        w = Smooth(w, p.pivot_smooth_ms / 1000.0, rate);
+        const double        level = std::cos(p.pivot_level_deg * kPi / 180.0);
+        std::vector<double> raw(n), deg;
+        h.heading_valid.assign(n, 0);
+        for (size_t i = 0; i < n; ++i) {
+            const double hl = std::sqrt(w[i].x * w[i].x + w[i].z * w[i].z), l = std::sqrt(hl * hl + w[i].y * w[i].y);
+            raw[i] = std::atan2(-w[i].z, w[i].x) * 180.0 / kPi;
+            h.heading_valid[i] = l > 1e-9 && hl >= level * l;
+        }
+        YawOf(raw, h.heading_valid, rate, deg, h.heading_rate_dps);
+        h.has_heading = true;
+        h.pivots = FindHandPivots(pt, deg, h.heading_rate_dps, h.heading_valid, static_cast<int>(n), rate, p);
     }
     a.ok = true;
     return a;
@@ -1013,6 +1091,22 @@ std::vector<PhysicsEvent> HandEvents(const PhysicsAnalysis& a, const PhysicsPara
                 ev.push_back(e);
             }
         }
+        // Pivots (story 10-8e): after a grab's approach (or a rest from the clip start) unless
+        // p.hand_pivot_after_grab is off.
+        for (const Scuff& sc : h.pivots) {
+            bool grabbed = !p.hand_pivot_after_grab;
+            for (const PartContact& c : h.part.contacts)
+                if (c.start <= sc.start && sc.start < c.end) grabbed = grabbed || c.start <= 0 || c.approach >= p.hand_min_approach;
+            if (!grabbed) continue;
+            PhysicsEvent e;
+            e.kind = PhysicsKind::HandPivot;
+            e.side = h.side;
+            e.part = -1;
+            e.time_s = e.start_s = sc.start / rate;
+            e.end_s = sc.end / rate;
+            e.strength = sc.strength;
+            ev.push_back(e);
+        }
     }
     std::stable_sort(ev.begin(), ev.end(), [](const PhysicsEvent& x, const PhysicsEvent& y) {
         return std::make_tuple(std::llround(x.time_s * 1e6), x.side, static_cast<int>(x.kind)) <
@@ -1050,6 +1144,7 @@ std::string PhysicsMarkerName(const PhysicsEvent& e)
                       e.strength, ms);
     case PhysicsKind::Grab: return Format("PHY %c grab %.1f", e.side, e.strength);
     case PhysicsKind::Release: return Format("PHY %c release %.1f", e.side, e.strength);
+    case PhysicsKind::HandPivot: return Format("PHY %c hand pivot %.0fdeg %dms", e.side, e.strength, ms);
     }
     return "PHY ?";
 }
@@ -1073,7 +1168,8 @@ std::string PhysicsSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEv
         case PhysicsKind::Slide: ++slide; break;
         case PhysicsKind::Pivot: ++pivot; break;
         case PhysicsKind::Grab:
-        case PhysicsKind::Release: break;  // HandSummary's
+        case PhysicsKind::Release:
+        case PhysicsKind::HandPivot: break;  // HandSummary's
         }
     }
     std::string out = Format("leg %.2f m%s, ground (%+.2f, %+.2f) m/s; steps heel %d, toe %d, tip %d; foot steps %d, "
@@ -1091,12 +1187,13 @@ std::string PhysicsSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEv
 std::string HandSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev)
 {
     if (!a.ok) return "hands: skipped: " + a.error;
-    int grabs = 0, releases = 0;
+    int grabs = 0, releases = 0, pivots = 0;
     for (const PhysicsEvent& e : ev) {
         if (e.kind == PhysicsKind::Grab) ++grabs;
         if (e.kind == PhysicsKind::Release) ++releases;
+        if (e.kind == PhysicsKind::HandPivot) ++pivots;
     }
-    std::string out = Format("hands: grabs %d, releases %d", grabs, releases);
+    std::string out = Format("hands: grabs %d, releases %d, pivots %d", grabs, releases, pivots);
     if (!a.hand_missing.empty()) {
         out += "; missing: ";
         for (size_t i = 0; i < a.hand_missing.size(); ++i) out += (i ? ", " : "") + a.hand_missing[i];
@@ -1109,7 +1206,7 @@ std::string PhysicsEventLines(const std::vector<PhysicsEvent>& ev, const std::st
     std::string out;
     for (const PhysicsEvent& e : ev) {
         out += indent + Format("%8.3f s  %s", e.time_s, PhysicsMarkerName(e).c_str());
-        if (e.kind == PhysicsKind::Slide || e.kind == PhysicsKind::Pivot) out += Format("  (to %.3f s)", e.end_s);
+        if (e.kind == PhysicsKind::Slide || e.kind == PhysicsKind::Pivot || e.kind == PhysicsKind::HandPivot) out += Format("  (to %.3f s)", e.end_s);
         out += "\n";
     }
     return out;

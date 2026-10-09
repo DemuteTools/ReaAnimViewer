@@ -3905,19 +3905,6 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
     ui::EndSection(sec);
 }
 
-// The inspector of an auto block (its name and colour above): where it is set.
-void DrawAutoBlockNote(const Block& blk)
-{
-    ImGui::Dummy(ImVec2(0.0f, 4.0f));
-    if (!AutoBlockKind(blk, nullptr, nullptr)) {
-        ui::SubText("An auto-detection type this version of ReaAnimViewer does not know: it finds nothing here, and "
-                    "is kept as it is.");
-        return;
-    }
-    ui::SubText("Found by Auto detection (above): tick or untick its type there, and set its sensitivity and offset. "
-                "Click one of its events in the strip to move or suppress it, or press E to add one at the playhead.");
-}
-
 // One button per preset, each loading it on the current item (a shortcut: rules can also be
 // built by hand with + Rule).
 void DrawPresetButtons()
@@ -4018,10 +4005,7 @@ void DrawInspector(const ItemRules& rules)
     }
 
     // Story 10-8b: an auto block has no condition to edit.
-    if (IsAutoBlock(blk)) {
-        DrawAutoBlockNote(blk);
-        return;
-    }
+    if (IsAutoBlock(blk)) return;
 
     // When all of these hold.
     ImGui::Dummy(ImVec2(0.0f, 4.0f));

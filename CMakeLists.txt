@@ -181,6 +181,7 @@ if(WIN32)
             src/bone_events.cpp
             src/bone_sampling.cpp
             src/footstep_measure.cpp
+            src/motion_physics.cpp
             src/detection_measure.cpp
             src/rule_record.cpp
             src/preset_store.cpp

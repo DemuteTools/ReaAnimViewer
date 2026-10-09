@@ -1,0 +1,228 @@
+// SPDX-License-Identifier: MIT
+//
+// Motion physics (Epic 10, spike 10-8a): foot events read from bone motion as physics, in
+// body units, so one setting works on every clip. No clip statistics, no examples, no Analyse.
+//
+// Roles in, events out. The analysis reads, per side, the heel (the foot bone), the ball (the
+// toe base), the toe tip (the toe end), the knee and the up leg, plus the hips (bone_roles.h):
+//   body scale    the leg length: up leg -> knee -> heel (the median over the clip, the mean of
+//                 the sides; the hips stand in for a missing up leg). Speeds are in leg lengths
+//                 per second (leg/s), heights in leg lengths.
+//   ground frame  the median horizontal velocity of the lowest foot part. An in-place clip
+//                 (a treadmill walk) slides; a normal clip reads about 0. Every speed is
+//                 measured in this frame.
+//   contact       per foot part: a two-state segmentation (free / contact), the most probable
+//                 sequence (Viterbi) on the ground-frame speed, with a cost per switch. The
+//                 evidence for contact at a sample is (contact_speed - speed) / contact_speed,
+//                 clamped to [free_evidence_floor, 1]; free costs 0. One sample of clear rest
+//                 is worth 1, so a switch costs switch_cost samples of evidence: no hysteresis,
+//                 immune to jitter.
+//                 Two contacts of a part whose gap stays at the first one's support height
+//                 (within slide_height) are one contact that slid (no step in between).
+//   support       per contact, where the part comes to rest: the median height over 100 ms
+//                 from the first sample, in the contact's first 500 ms, whose speed is below
+//                 settle_speed (from the contact start when it never rests). Local, so stairs,
+//                 holds and ledges work; a heel lowered slowly after the toe lands rests at the
+//                 bottom, not where the slow lowering started.
+// Events (FootEvents), each with a time, a side, a part and a strength:
+//   step          (separate) a contact start of one part, never at the clip start. Strength =
+//                 its approach speed (the peak speed over the 100 ms before, leg/s).
+//   foot step     (combined) a start of the foot's contact (any part down): the earliest
+//                 step of the parts that touch during that contact (the foot's first part to
+//                 touch, by the step timing). Strength = that part's approach speed.
+//   lift-off      an end of the foot's contact (the last part leaves), never at the clip end.
+//                 Strength = the departure speed (the peak speed over the 100 ms after).
+//   slide scuff   a planted part moves horizontally in the ground frame (>= slide_speed for >=
+//                 slide_min_s, over >= slide_min_dist) while it stays at its support height.
+//                 One per foot for overlapping parts (its part = the fastest). Strength = the
+//                 peak horizontal speed (leg/s). A slide during a pivot of that foot is the
+//                 pivot's.
+//   pivot scuff   the planted foot turns: the yaw of the heel -> toe vector seen from above, at
+//                 >= pivot_rate_dps for >= pivot_min_s and >= pivot_min_deg swept, while a
+//                 part of the foot is in contact. Its part is the one it turns on: the part
+//                 still in contact (the slower one when both are), or none (-1, the whole foot
+//                 turns). Strength = the angle swept (degrees). Planted means planted: that
+//                 part (the foot for none) is in contact from pivot_planted_s before the turn
+//                 to pivot_planted_s after it, and the foot stays flat enough for a yaw
+//                 over pivot_planted_s after the turn. So a foot that lands turning, or twists as it rolls off
+//                 the toes (a heel whip at toe-off), makes no pivot.
+//   A scuff also has a start and an end; its time is its start.
+// Step timing: each contact carries the times of several definitions (StepTiming). FootEvents
+// places each part's steps by the definition and offset PhysicsParams gives that part (see
+// PhysicsParams::step_timing for how the defaults were chosen and their limits).
+//
+// A missing role drops only that part's events (PhysicsAnalysis::missing says why). Two parts
+// on the same bone (an Unreal toe end standing in on ball_l) keep the first.
+//
+// Pure C++17, deterministic: no REAPER, no GL. Host-tested (tests/motion_physics_test.cpp).
+
+#pragma once
+
+#include <functional>
+#include <string>
+#include <vector>
+
+#include "bone_events.h"
+#include "bone_roles.h"
+
+namespace rav {
+
+// The parts of a foot. Marker words: "heel", "toe" (the ball), "tip".
+enum class FootPart : int { Heel = 0, Ball, Tip };
+constexpr int kFootPartCount = 3;
+const char* FootPartWord(int part);
+// The role of a foot part: side 'L' / 'R', part in FootPart order (LeftHeel, LeftToe, LeftToeEnd...).
+Role FootPartRole(char side, int part);
+
+// Where a step marker lands, per definition (searched from search_back_s before the contact
+// start, never before the previous contact of that part ends):
+//   Speed    the speed falls through the contact speed (the segmentation's own edge, sub-sample).
+//   Height   the height falls through the support + height_eps: the first crossing after
+//            the part was last height_drop above that, else the last crossing before it rests.
+//   Descent  the main descent ends: after the fastest descent of the approach, the downward
+//            speed falls below descent_speed and stays below for descent_hold_s.
+//   Settle   the speed falls below settle_speed: the part has come to rest.
+// Speed searches up to search_fwd_s after the contact start; the others up to where the part
+// comes to rest (a heel lowered slowly can rest 300 ms after its speed contact starts).
+// A definition that finds no crossing falls back to Speed.
+enum class StepTiming : int { Speed = 0, Height, Descent, Settle };
+constexpr int kStepTimingCount = 4;
+const char* StepTimingName(StepTiming t);  // "speed", "height", "descent", "settle"
+const char* StepTimingHint(StepTiming t);  // one line
+
+// The constants: body units (leg lengths L), seconds, degrees. Nothing comes from the clip.
+struct PhysicsParams {
+    double smooth_ms = 8.0;              // zero-phase Gaussian sigma on positions before velocities
+    double contact_speed = 0.4;          // leg/s: contact evidence 0 (below = contact)
+    double switch_cost = 10.0;           // per switch, in samples of clear evidence (240 Hz)
+    double free_evidence_floor = -3.0;   // the clamp of the evidence for free
+    double support_window_s = 0.100;     // support = the median height over 100 ms from where the part rests...
+    double rest_search_s = 0.500;        // ...the first sample this far into the contact below settle_speed
+    double height_eps = 0.01;            // leg: Height's level above the support
+    double height_drop = 0.05;           // leg: Height starts from the last time the part was this much higher
+    double descent_speed = 0.1;          // leg/s: Descent ends below this downward speed...
+    double descent_hold_s = 0.050;       // ...for this long
+    double settle_speed = 0.1;           // leg/s: Settle
+    double search_back_s = 0.300;        // timing searches this far before the contact start...
+    double search_fwd_s = 0.150;         // ...and this far after
+    double approach_window_s = 0.100;    // step / lift-off strength window
+    double slide_speed = 0.25;           // leg/s horizontal
+    double slide_max_speed = 2.0;        // leg/s: faster is a swing, not a slide
+    double slide_height = 0.015;         // leg: a slide stays this close to the support height
+    double slide_min_s = 0.05;
+    double slide_min_dist = 0.05;        // leg
+    double slide_gap_max_s = 1.0;        // two contacts further apart are never one slid contact
+    double pivot_smooth_ms = 20.0;       // Gaussian sigma on positions for the yaw
+    double pivot_rate_dps = 90.0;
+    double pivot_min_s = 0.05;
+    double pivot_min_deg = 15.0;
+    double pivot_planted_s = 0.100;      // the pivot part is in contact this long before and after
+    // The step timing of each part (FootPart order) and its offset (s, added). Chosen by the
+    // spike on its 6 tagged reference clips (19 foot contacts; one clip's left / right tags
+    // swapped back): the definition with the fewest edits per part, each offset minus that
+    // part's median signed error over all of them. Fitted on those clips only; the tip's comes
+    // from one clip (4 contacts).
+    StepTiming step_timing[kFootPartCount] = {StepTiming::Descent, StepTiming::Descent, StepTiming::Descent};
+    double     step_offset_s[kFootPartCount] = {0.007, -0.031, 0.020};
+};
+
+// One contact of a part, in samples [start, end).
+struct PartContact {
+    int    start = 0;
+    int    end = 0;
+    double support_y = 0.0;                  // m
+    double step_s[kStepTimingCount] = {};    // each definition's step time (clip s, no offset); start > 0 only
+    double approach = 0.0;                   // leg/s
+    double lift_s = 0.0;                     // the speed rises through the contact speed; end < samples only
+    double departure = 0.0;                  // leg/s
+};
+
+struct PartTrack {
+    bool                     present = false;
+    std::string              missing;   // why not present ("no bone for left toe end"...)
+    std::vector<double>      y;         // height (m, smoothed)
+    std::vector<double>      speed;     // ground-frame speed (leg/s)
+    std::vector<double>      hspeed;    // ground-frame horizontal speed (leg/s)
+    std::vector<double>      vy;        // vertical velocity (leg/s, up > 0)
+    std::vector<char>        contact;   // 1 = contact (after slid gaps are joined)
+    std::vector<PartContact> contacts;
+};
+
+// A slide or pivot: samples [start, end), its part (-1 = none), its strength (leg/s or deg).
+struct Scuff {
+    int    start = 0;
+    int    end = 0;
+    int    part = -1;
+    double strength = 0.0;
+};
+
+struct FootTrack {
+    char                side = 'L';
+    PartTrack           part[kFootPartCount];
+    bool                has_yaw = false;  // heel and toe (ball or tip) present
+    std::vector<double> yaw_deg;          // unwrapped
+    std::vector<double> yaw_rate_dps;     // 0 where the vector is too short from above
+    std::vector<char>   yaw_valid;        // seen from above, the vector is at least half the foot's length
+    std::vector<Scuff>  slides;
+    std::vector<Scuff>  pivots;
+};
+
+struct PhysicsAnalysis {
+    bool                     ok = false;
+    std::string              error;          // !ok: why
+    double                   rate_hz = 0.0;
+    size_t                   samples = 0;
+    double                   leg_length = 0.0;  // m
+    std::string              scale_note;        // "" or how the scale was found when not both legs
+    Vec3d                    ground_velocity;   // m/s, y = 0
+    FootTrack                foot[2];           // L, R
+    std::vector<std::string> missing;           // one line per dropped part / event type
+};
+
+// The roles the analysis reads (Role order).
+const std::vector<Role>& PhysicsRoles();
+
+// One track per Role (indexed by Role; empty = no bone) from a role -> bone mapping (indexed by
+// Role, -1 = none) and a sampler of bone indices (one track per index, in order). Only
+// PhysicsRoles() are sampled. Empty when the sampler fails.
+std::vector<BoneTrack> PhysicsRoleTracks(const std::vector<int>& bone_of_role,
+                                         const std::function<std::vector<BoneTrack>(const std::vector<int>&)>& sample);
+
+// The analysis. role_tracks: indexed by Role, an empty track = the role has no bone; every
+// non-empty track has the same rate and length.
+PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& role_tracks, const PhysicsParams& p = {});
+
+enum class PhysicsKind { Step, FootStep, LiftOff, Slide, Pivot };
+
+struct PhysicsEvent {
+    PhysicsKind kind = PhysicsKind::Step;
+    char        side = 'L';
+    int         part = 0;        // FootPart; -1 = none (a pivot on neither)
+    double      time_s = 0.0;    // clip time (a scuff: its start)
+    double      start_s = 0.0;   // a scuff's span (= time_s for the others)
+    double      end_s = 0.0;
+    double      strength = 0.0;  // leg/s (steps, lift-offs, slides) or degrees (pivots)
+};
+
+// Every event, by time (then side, kind, part). Steps use p.step_timing / p.step_offset_s.
+std::vector<PhysicsEvent> FootEvents(const PhysicsAnalysis& a, const PhysicsParams& p = {});
+
+// The separate step times of one part (side 'L' / 'R'), by `timing` plus `offset_s`.
+std::vector<double> PartStepTimes(const PhysicsAnalysis& a, char side, int part, StepTiming timing, double offset_s);
+
+// "PHY L heel 1.8", "PHY R step toe 2.1", "PHY L lift tip 1.2", "PHY L slide toe 0.6 210ms",
+// "PHY R pivot ball 87deg 250ms" (strengths in leg/s or degrees).
+std::string PhysicsMarkerName(const PhysicsEvent& e);
+// True for a marker name this module writes ("PHY " prefix).
+bool IsPhysicsMarkerName(const char* name);
+
+// The report: "leg 0.93 m, ground (+0.00, -0.41) m/s; steps heel 2, toe 2, tip 2; foot steps 2,
+// lift-offs 1, slides 0, pivots 0" plus "; missing: ..." when a part is dropped.
+std::string PhysicsSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev);
+// One line per event ("   1.234 s  PHY L heel 1.8", a scuff "... (to 1.456 s)"), each with
+// `indent` in front and '\n' after.
+std::string PhysicsEventLines(const std::vector<PhysicsEvent>& ev, const std::string& indent);
+// "heel speed +0 ms, toe height -12 ms, tip speed +0 ms"
+std::string StepTimingText(const PhysicsParams& p);
+
+}  // namespace rav

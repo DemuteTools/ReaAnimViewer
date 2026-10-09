@@ -14,6 +14,11 @@
 // REF counts in the Footsteps match; the bone dump (RAV_detection_dump/*.csv) also lists the
 // times per label with the label's bone (roles.txt read as the Tagging view maps roles), and
 // the report adds a "REF by bone" line.
+// Spike 10-8a: every selected RAV item is loaded and dumped, REF or not ("no REF: physics only"
+// skips the Footsteps measure alone), and gets the physics foot events (motion_physics.h, the
+// user's role mapping) as `PHY <L|R> <heel|toe|tip|step|lift|slide|pivot> ...` take markers,
+// replacing only earlier `PHY ` markers, in the same undo point as the RAV? markers. The report
+// adds one physics line per item, then its events.
 //
 // The take-marker functions are resolved optionally (GetFunc), so an older REAPER still
 // loads the extension (this action then says it needs REAPER 5.981 or newer).

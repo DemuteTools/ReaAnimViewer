@@ -25,6 +25,7 @@
 #include "bone_sampling.h"
 #include "footstep_measure.h"
 #include "item_rules.h"
+#include "motion_physics.h"
 #include "pcm_source_anim.h"
 #include "reaper_api.h"
 #include "ref_labels.h"
@@ -114,6 +115,10 @@ struct ItemRun {
     bool                ref_from_project = false;  // REF read from project markers over the item
     RefTimes            refs;     // REF times (clip time), all and per label (ref_labels.h)
     std::string         dump;     // the bone-track dump written for offline tuning ("" = none)
+    // Spike 10-8a: the physics foot events of every loaded item, REF or not (PHY take markers).
+    bool                      phys_ran = false;
+    std::string               phys_summary;
+    std::vector<PhysicsEvent> phys_events;
 };
 
 
@@ -157,6 +162,19 @@ std::string DumpTracks(const CpuAsset& asset, const std::string& label, const Re
     } catch (...) {
         return "";
     }
+}
+
+// Spike 10-8a: the physics foot events (motion_physics.h, default constants and timing) on the
+// user's role mapping (roles.txt, else the guess), as the Tagging view maps roles.
+void MeasurePhysics(const CpuAsset& asset, const std::vector<std::string>& names, const RoleMapFile& roles,
+                    ItemRun& run)
+{
+    const std::vector<int> role_bone = ResolveRoleMapping(roles, names);
+    const PhysicsAnalysis  a = AnalyseMotion(PhysicsRoleTracks(
+        role_bone, [&](const std::vector<int>& bones) { return SampleBoneTracks(asset, bones, kRateHz); }));
+    run.phys_events = FootEvents(a);
+    run.phys_summary = PhysicsSummary(a, run.phys_events);
+    run.phys_ran = true;  // last: a failure above leaves no bare "physics:" line
 }
 
 void MeasureItem(MediaItem* item, const FootstepsParams& k, ItemRun& run)
@@ -214,18 +232,15 @@ void MeasureItem(MediaItem* item, const FootstepsParams& k, ItemRun& run)
         }
         if (!refs.all.empty()) run.ref_from_project = true;
     }
-    if (refs.all.empty()) {
-        run.skipped = "no REF marker (take marker, or project marker over the item)";
-        return;
-    }
+    // Without a REF (inside the visible part), the item is still loaded, dumped and measured
+    // by physics (spike 10-8a); only the Footsteps measure is skipped.
+    std::string foot_skip;
+    if (refs.all.empty()) foot_skip = "no REF: physics only";
     run.refs = refs;  // the report shows the labels even if the item is skipped below
     int refs_inside = 0;
     for (double r : refs.all)
         if (r >= lo && r <= hi) ++refs_inside;
-    if (refs_inside == 0) {
-        run.skipped = "no REF marker inside the visible part of the item";
-        return;
-    }
+    if (foot_skip.empty() && refs_inside == 0) foot_skip = "no REF marker inside the visible part of the item";
 
     const CpuLoadResult loaded = LoadCpuAsset(path);
     if (!loaded.asset) {
@@ -241,8 +256,14 @@ void MeasureItem(MediaItem* item, const FootstepsParams& k, ItemRun& run)
     for (const SceneBone& b : asset.skeleton.bones) names.push_back(b.name);
     // Each label is a role key: its bone on this skeleton, from the user's roles.txt (stored,
     // else guessed), as the Tagging view maps it.
-    if (!run.refs.by_label.empty()) ResolveRefBones(ReadRoleMapFile(RulesResourceRoot()), names, &run.refs);
+    const RoleMapFile roles = ReadRoleMapFile(RulesResourceRoot());
+    if (!run.refs.by_label.empty()) ResolveRefBones(roles, names, &run.refs);
     run.dump = DumpTracks(asset, run.label, run.refs, lo, hi);
+    MeasurePhysics(asset, names, roles, run);
+    if (!foot_skip.empty()) {
+        run.skipped = foot_skip;
+        return;
+    }
 
     // Roles -> bones -> tracks -> Analyse + Detect -> match (shared with tests/detection_eval).
     // Every REF counts, labelled or not.
@@ -252,9 +273,9 @@ void MeasureItem(MediaItem* item, const FootstepsParams& k, ItemRun& run)
     if (!run.m.skipped.empty()) run.skipped = run.m.skipped;
 }
 
-// Clears the RAV? take markers of every RAV take in the run (skipped ones too, so no
-// stale detections stay behind) and writes the new ones on the measured items, in one
-// undo point.
+// Clears the RAV? and PHY take markers of every RAV take in the run (skipped ones too, so no
+// stale detections stay behind) and writes the new ones: RAV? on the measured items, PHY on
+// every item physics ran on. One undo point.
 void WriteDetectionMarkers(const std::vector<ItemRun>& runs)
 {
     bool any = false;
@@ -268,7 +289,12 @@ void WriteDetectionMarkers(const std::vector<ItemRun>& runs)
         for (int i = g_num_take_markers(r.take) - 1; i >= 0; --i) {
             char name[256] = {};
             g_get_take_marker(r.take, i, name, sizeof(name), nullptr);
-            if (std::strcmp(name, kDetName) == 0) g_delete_take_marker(r.take, i);
+            if (std::strcmp(name, kDetName) == 0 || IsPhysicsMarkerName(name)) g_delete_take_marker(r.take, i);
+        }
+        for (const PhysicsEvent& e : r.phys_events) {
+            if (e.time_s < 0.0) continue;
+            double pos = e.time_s;
+            g_set_take_marker(r.take, -1, PhysicsMarkerName(e).c_str(), &pos, nullptr);
         }
         if (!r.skipped.empty()) continue;
         for (double t : r.m.det) {
@@ -277,7 +303,7 @@ void WriteDetectionMarkers(const std::vector<ItemRun>& runs)
             g_set_take_marker(r.take, -1, kDetName, &pos, nullptr);
         }
     }
-    Undo_EndBlock("RAV: Measure detection (RAV? take markers)", UNDO_STATE_ITEMS);
+    Undo_EndBlock("RAV: Measure detection (RAV? and PHY take markers)", UNDO_STATE_ITEMS);
     UpdateArrange();
 }
 
@@ -289,18 +315,25 @@ void Report(const std::vector<ItemRun>& runs, const FootstepsParams& k)
     for (size_t i = 0; i < runs.size(); ++i) {
         const ItemRun& r = runs[i];
         const std::string label = Format("#%zu %s", i + 1, r.label.empty() ? "(item)" : r.label.c_str());
+        // Spike 10-8a: one physics line per loaded item, then its events (its PHY markers).
+        const std::string phys =
+            r.phys_ran ? "  physics: " + r.phys_summary + "\n" + PhysicsEventLines(r.phys_events, "    ") : "";
         if (!r.skipped.empty()) {
             out += SkippedReport(label, r.skipped);
             out += RefLabelsText(r.refs);
             if (!r.dump.empty()) out += "  bone tracks: " + r.dump + "\n";
+            out += phys;
             continue;
         }
         measured.push_back(r.m.match);
         out += ItemReport(label, r.m, r.refs.all, r.ref_from_project ? "  (REF: project markers)" : "");
         out += RefLabelsText(r.refs);
         if (!r.dump.empty()) out += "  bone tracks: " + r.dump + "\n";
+        out += phys;
     }
     out += TotalReport(measured, k);
+    out += "Physics (spike 10-8a, PHY take markers): step timing " + StepTimingText(PhysicsParams{}) +
+           "; strengths in leg lengths per second, pivots in degrees\n";
     ShowConsoleMsg(out.c_str());
 }
 
@@ -324,7 +357,9 @@ void MeasureDetectionOnSelectedItems()
         }
         const int n = CountSelectedMediaItems(nullptr);
         if (n <= 0) {
-            ShowMessageBox("Select animation items with REF markers (take markers, or project markers over the items)", kTitle, 0);
+            ShowMessageBox("Select animation items. REF markers (take markers, or project markers over the items) "
+                           "measure the Footsteps preset; every item gets PHY markers.",
+                           kTitle, 0);
             return;
         }
         FootstepsParams k = g_params;

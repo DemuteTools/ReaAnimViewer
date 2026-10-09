@@ -54,6 +54,11 @@ add_executable(bone_events_test bone_events_test.cpp ../src/bone_events.cpp ../s
 target_include_directories(bone_events_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME bone_events COMMAND bone_events_test)
 
+# Spike 10-8a -- foot events from body physics (src/motion_physics.h).
+add_executable(motion_physics_test motion_physics_test.cpp ../src/motion_physics.cpp ../src/bone_events.cpp)
+target_include_directories(motion_physics_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME motion_physics COMMAND motion_physics_test)
+
 add_executable(bone_roles_test bone_roles_test.cpp ../src/bone_events.cpp)
 target_include_directories(bone_roles_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME bone_roles COMMAND bone_roles_test)
@@ -68,8 +73,9 @@ add_test(NAME ref_labels COMMAND ref_labels_test)
 # files and prints the measure action's report (a tool, not a test):
 #   detection_eval [--param=value ...] [--json] file.csv...
 # Spike 10-7a step 1: --single measures Speed, Stillness and Relative drop alone per labelled bone.
+# Spike 10-8a: --physics scores the foot events of motion_physics.h against the labelled REFs.
 add_executable(detection_eval detection_eval.cpp ../src/bone_events.cpp ../src/footstep_measure.cpp
-               ../src/tagging_signal.cpp)
+               ../src/tagging_signal.cpp ../src/motion_physics.cpp)
 target_include_directories(detection_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 
 # Story 10-2 -- the rules record, presets and the role mapping (src/rule_record.h,

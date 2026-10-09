@@ -7,6 +7,7 @@
 //
 //   detection_eval [--param=value ...] [--json] file.csv...
 //   detection_eval --single [--axis=<axis>] [--window=<ms>] [--approach=<ms>] [--param=value ...] file.csv...
+//   detection_eval --physics [--contact=<leg/s>] [--switch=<cost>] file.csv...
 //
 // Params (FootstepsParams): --height=<% of gap> --knee=<x p95> --yaw=<deg/s>
 //   --yaw-margin=<deg/s> --hold=<ms> --cooldown=<ms> --offset=<ms> --floor=bone|foot
@@ -29,6 +30,26 @@
 //   --cooldown, --hold, --offset, --sensitivity, --edge. Speed's "below" threshold is
 //   Analyse's speed percentile (30). --json does not apply.
 //
+// --physics (spike 10-8a): the foot events of motion_physics.h, with no Analyse. Roles are
+// guessed from the bone names (GuessRoleMapping). Per clip: the leg length and the ground
+// velocity; per labelled foot part (a label whose bone plays the heel, toe or toe end of a
+// side; any other label is listed as skipped), one line per step timing definition: the steps
+// of that part, matched against the label's REFs, with the edits and the signed errors. Each
+// definition gets one offset per part, chosen leave-one-clip-out: a clip is scored with minus
+// the median signed error of that part on the OTHER clips (errors from a +-300 ms match). Per
+// part, the definition with the fewest edits (then the lowest median |error|) is chosen. Then
+// one combined-step line per foot (the foot's first part to touch, chosen timing), scored
+// against that foot's visible REFs merged within 150 ms (the earliest kept). TOTAL lines per part x
+// definition (with the offsets), the chosen definitions, the combined total and the GO line
+// (missed + extra <= 3 and median |error| <= 16 ms over every labelled foot part: the timing
+// chosen on all clips, the offsets leave-one-clip-out; a foot label whose part is missing on the
+// rig, or whose clip's physics failed, counts its REFs as missed). An offset no error could
+// estimate (a part labelled in one clip only) prints n/a and is 0. Last, every clip's events
+// (untagged dumps too) with the module's default timing, as the measure action writes them (PHY
+// take markers).
+//   --contact=<leg/s>  the contact speed (default 0.4), --switch=<cost> the switch cost (10).
+//   --json, --single and the Footsteps knobs do not apply.
+//
 // The CSV: '# item=<label>', '# rate_hz=<hz>', '# visible=<lo>,<hi>', '# ref=<t>,<t>...',
 // from spike 10-7a '# ref.<label>=<t>,<t>...' and '# ref_bone.<label>=<bone>' per labelled
 // bone (ref_labels.h; absent from older dumps), '# parent=...' (ignored), then the header
@@ -48,7 +69,9 @@
 #include <string>
 #include <vector>
 
+#include "bone_roles.h"
 #include "footstep_measure.h"
+#include "motion_physics.h"
 #include "ref_labels.h"
 #include "tagging_signal.h"
 
@@ -376,6 +399,368 @@ int RunSingle(const std::vector<std::string>& files, const SingleOptions& so, co
     return 0;
 }
 
+
+// ---- --physics (spike 10-8a) ---------------------------------------------------------------
+
+// The +-window used to estimate a definition's steady lead or lag (wider than the match window,
+// so a large lag is still measured).
+constexpr double kOffsetWindowS = 0.300;
+constexpr double kGateMedianErrS = 0.016;
+constexpr int    kGateMissedExtra = 3;
+
+// One labelled REF list of one clip, read as a foot part.
+struct PhysLabel {
+    std::string         label;
+    std::string         bone;
+    char                side = 'L';
+    bool                foot = false;  // the bone plays a foot part of `side`
+    int                 part = -1;     // -1 = skipped (not a foot part, or the part is missing)
+    std::string         skip;
+    std::vector<double> refs;
+};
+
+struct PhysClip {
+    std::string            head;  // "#k <name>"
+    bool                   read = false;
+    std::string            err;
+    double                 lo = 0.0, hi = 0.0;
+    PhysicsAnalysis        a;
+    std::vector<PhysLabel> labels;
+    bool                   tagged = false;  // some label is a foot part
+};
+
+std::string ErrText(const std::vector<double>& e)
+{
+    std::string out;
+    char        buf[32];
+    for (double x : e) {
+        std::snprintf(buf, sizeof(buf), "%s%+.0f", out.empty() ? "" : " ", x * 1000.0);
+        out += buf;
+    }
+    return out.empty() ? "-" : out;
+}
+
+std::string EditsText(const Edits& e)
+{
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), "edits %d (missed %d, extra %d, off %d)", e.total(), e.missed, e.extra, e.off);
+    return buf;
+}
+
+void AddEdits(Edits& to, const Edits& e)
+{
+    to.missed += e.missed;
+    to.extra += e.extra;
+    to.off += e.off;
+}
+
+// An offset in ms, or "n/a" when no error was there to estimate it (0 is used).
+std::string OffsetText(double s, bool estimated)
+{
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%+.0f", s * 1000.0);
+    return estimated ? buf : "n/a";
+}
+
+// The median, +infinity when empty (no matched step never wins a tie).
+double MedianOrInf(const std::vector<double>& v)
+{
+    return v.empty() ? HUGE_VAL : Median(v);
+}
+
+std::vector<double> AbsMs(const std::vector<double>& e)
+{
+    std::vector<double> out;
+    for (double x : e) out.push_back(std::fabs(x) * 1000.0);
+    return out;
+}
+
+// That foot's REFs inside the visible part (every label read as a part of this side), merged
+// within the match window: a REF within 150 ms of the last one kept is dropped (the earliest stays).
+std::vector<double> MergedFootRefs(const PhysClip& c, char side)
+{
+    std::vector<double> all;
+    for (const PhysLabel& l : c.labels)
+        if (l.foot && l.side == side)
+            for (double t : l.refs)
+                if (t >= c.lo && t <= c.hi) all.push_back(t);  // a hidden REF never merges a visible one away
+    std::sort(all.begin(), all.end());
+    std::vector<double> out;
+    for (double t : all)
+        if (out.empty() || t - out.back() > kMatchWindowS) out.push_back(t);
+    return out;
+}
+
+int RunPhysics(const std::vector<std::string>& files, const PhysicsParams& base)
+{
+    std::printf("=== detection_eval --physics ===\nFoot events from body physics (motion_physics.h): contact %g leg/s, "
+                "switch cost %g, smoothing %g ms, no Analyse; match window +-%g ms, an edit = missed, extra or off by "
+                "> %g ms\n",
+                base.contact_speed, base.switch_cost, base.smooth_ms, kMatchWindowS * 1000.0, kGateMaxErrS * 1000.0);
+    std::printf("Step timing definitions (one offset per part, leave-one-clip-out):\n");
+    for (int d = 0; d < kStepTimingCount; ++d)
+        std::printf("  %-8s %s\n", StepTimingName(static_cast<StepTiming>(d)), StepTimingHint(static_cast<StepTiming>(d)));
+
+    // Read and analyse every clip.
+    std::vector<PhysClip> clips(files.size());
+    for (size_t f = 0; f < files.size(); ++f) {
+        PhysClip& pc = clips[f];
+        Clip      c;
+        pc.read = ReadClip(files[f], c, &pc.err);
+        pc.head = "#" + std::to_string(f + 1) + " " + (c.label.empty() ? files[f] : c.label);
+        if (!pc.read) continue;
+        pc.lo = c.lo;
+        pc.hi = c.hi;
+        const std::vector<int> role_bone = GuessRoleMapping(c.names);
+        pc.a = AnalyseMotion(PhysicsRoleTracks(role_bone,
+                                               [&](const std::vector<int>& idx) {
+                                                   std::vector<BoneTrack> t;
+                                                   for (int i : idx) t.push_back(c.tracks.at(static_cast<size_t>(i)));
+                                                   return t;
+                                               }),
+                             base);
+        for (const auto& kv : c.refs.by_label) {
+            PhysLabel l;
+            l.label = kv.first;
+            l.refs = kv.second;
+            const auto bi = c.refs.bone.find(kv.first);
+            l.bone = bi == c.refs.bone.end() ? std::string() : bi->second;
+            int bone = -1;
+            for (size_t i = 0; i < c.names.size() && bone < 0; ++i)
+                if (!l.bone.empty() && c.names[i] == l.bone) bone = static_cast<int>(i);
+            for (int s = 0; s < 2 && l.part < 0; ++s)
+                for (int q = 0; q < kFootPartCount && l.part < 0; ++q) {
+                    const Role r = FootPartRole(s ? 'R' : 'L', q);
+                    if (bone >= 0 && role_bone[static_cast<size_t>(r)] == bone) {
+                        l.side = s ? 'R' : 'L';
+                        l.part = q;
+                    }
+                }
+            Role r;
+            if (l.part < 0 && l.bone.empty() && RoleFromKey(kv.first, &r))
+                for (int s = 0; s < 2 && l.part < 0; ++s)
+                    for (int q = 0; q < kFootPartCount && l.part < 0; ++q)
+                        if (FootPartRole(s ? 'R' : 'L', q) == r) {
+                            l.side = s ? 'R' : 'L';
+                            l.part = q;
+                        }
+            l.foot = l.part >= 0;
+            if (l.part < 0) {
+                l.skip = "not a foot part (heel, toe or toe end)";
+            } else if (!pc.a.ok) {
+                l.skip = "physics skipped: " + pc.a.error;
+                l.part = -1;
+            } else if (!pc.a.foot[l.side == 'R' ? 1 : 0].part[l.part].present) {
+                l.skip = std::string(1, l.side) + " " + FootPartWord(l.part) + ": " +
+                         pc.a.foot[l.side == 'R' ? 1 : 0].part[l.part].missing;
+                l.part = -1;
+            }
+            if (l.part >= 0) pc.tagged = true;
+            pc.labels.push_back(l);
+        }
+    }
+
+    // Per part x definition: the signed errors per clip (offset 0, +-300 ms), then each clip's
+    // leave-one-clip-out offset, and the all-clip offset.
+    const size_t        nc = clips.size();
+    std::vector<double> loo[kFootPartCount][kStepTimingCount];      // per clip (s)
+    std::vector<char>   loo_est[kFootPartCount][kStepTimingCount];  // per clip: estimated from an error
+    double              all_off[kFootPartCount][kStepTimingCount] = {};
+    bool                all_est[kFootPartCount][kStepTimingCount] = {};
+    bool                has_part[kFootPartCount] = {};
+    for (int q = 0; q < kFootPartCount; ++q)
+        for (int d = 0; d < kStepTimingCount; ++d) {
+            std::vector<std::vector<double>> errs(nc);
+            std::vector<double>              pooled;
+            for (size_t ci = 0; ci < nc; ++ci)
+                for (const PhysLabel& l : clips[ci].labels) {
+                    if (l.part != q) continue;
+                    has_part[q] = true;
+                    const MatchResult m = MatchEvents(
+                        l.refs, PartStepTimes(clips[ci].a, l.side, q, static_cast<StepTiming>(d), 0.0), kOffsetWindowS,
+                        clips[ci].lo, clips[ci].hi);
+                    errs[ci].insert(errs[ci].end(), m.match_err_s.begin(), m.match_err_s.end());
+                    pooled.insert(pooled.end(), m.match_err_s.begin(), m.match_err_s.end());
+                }
+            all_off[q][d] = 0.0 - Median(pooled);  // (never -0: it prints)
+            all_est[q][d] = !pooled.empty();
+            loo[q][d].assign(nc, 0.0);
+            loo_est[q][d].assign(nc, 0);
+            for (size_t ci = 0; ci < nc; ++ci) {
+                std::vector<double> others;
+                for (size_t cj = 0; cj < nc; ++cj)
+                    if (cj != ci) others.insert(others.end(), errs[cj].begin(), errs[cj].end());
+                loo[q][d][ci] = 0.0 - Median(others);  // 0 when no other clip matched
+                loo_est[q][d][ci] = !others.empty();
+            }
+        }
+
+    // Each label scored by each definition with its clip's offset; the totals; the choice.
+    auto score = [&](size_t ci, const PhysLabel& l, int d) {
+        return MatchEvents(l.refs,
+                           PartStepTimes(clips[ci].a, l.side, l.part, static_cast<StepTiming>(d), loo[l.part][d][ci]),
+                           kMatchWindowS, clips[ci].lo, clips[ci].hi);
+    };
+    Edits               tot[kFootPartCount][kStepTimingCount];
+    std::vector<double> abs_err[kFootPartCount][kStepTimingCount];
+    for (size_t ci = 0; ci < nc; ++ci)
+        for (const PhysLabel& l : clips[ci].labels) {
+            if (l.part < 0) continue;
+            for (int d = 0; d < kStepTimingCount; ++d) {
+                const MatchResult m = score(ci, l, d);
+                AddEdits(tot[l.part][d], EditsOf(m));
+                const std::vector<double> ae = AbsMs(m.match_err_s);
+                abs_err[l.part][d].insert(abs_err[l.part][d].end(), ae.begin(), ae.end());
+            }
+        }
+    int chosen[kFootPartCount];
+    for (int q = 0; q < kFootPartCount; ++q) {
+        chosen[q] = static_cast<int>(base.step_timing[q]);
+        if (!has_part[q]) continue;
+        chosen[q] = 0;
+        for (int d = 1; d < kStepTimingCount; ++d) {
+            const int a = tot[q][d].total(), b = tot[q][chosen[q]].total();
+            if (a < b || (a == b && MedianOrInf(abs_err[q][d]) < MedianOrInf(abs_err[q][chosen[q]]))) chosen[q] = d;
+        }
+    }
+    // The params a clip is scored with: the chosen definitions and its leave-one-clip-out offsets.
+    auto clip_params = [&](size_t ci) {
+        PhysicsParams pp = base;
+        for (int q = 0; q < kFootPartCount; ++q) {
+            pp.step_timing[q] = static_cast<StepTiming>(chosen[q]);
+            pp.step_offset_s[q] = has_part[q] ? loo[q][chosen[q]][ci] : base.step_offset_s[q];
+        }
+        return pp;
+    };
+
+    // Per clip.
+    Edits               gate, foot_tot;
+    std::vector<double> gate_err, foot_err;
+    int                 gate_refs = 0, foot_refs = 0, skipped = 0;
+    // A skipped label is listed; a foot part's REFs (inside the visible part) count as missed in
+    // the gate: its part is missing on the rig, or the clip's physics failed.
+    auto skip_label = [&](const PhysClip& pc, const PhysLabel& l) {
+        ++skipped;
+        std::printf("  %s  REF %zu  skipped: %s\n", l.label.c_str(), l.refs.size(), l.skip.c_str());
+        if (!l.foot) return;
+        for (double t : l.refs)
+            if (t >= pc.lo && t <= pc.hi) {
+                ++gate.missed;
+                ++gate_refs;
+            }
+    };
+    for (size_t ci = 0; ci < nc; ++ci) {
+        const PhysClip& pc = clips[ci];
+        if (!pc.read) {
+            std::printf("%s  skipped: could not read %s: %s\n", pc.head.c_str(), files[ci].c_str(), pc.err.c_str());
+            continue;
+        }
+        if (!pc.a.ok) {
+            std::printf("%s  physics skipped: %s\n", pc.head.c_str(), pc.a.error.c_str());
+            for (const PhysLabel& l : pc.labels) skip_label(pc, l);
+            continue;
+        }
+        std::printf("%s  leg %.3f m%s, ground (%+.2f, %+.2f) m/s%s\n", pc.head.c_str(), pc.a.leg_length,
+                    pc.a.scale_note.empty() ? "" : (" (" + pc.a.scale_note + ")").c_str(), pc.a.ground_velocity.x,
+                    pc.a.ground_velocity.z, pc.tagged ? "" : "  (no labelled foot REF: events only)");
+        for (const std::string& m : pc.a.missing) std::printf("  missing: %s\n", m.c_str());
+        for (const PhysLabel& l : pc.labels) {
+            if (l.part < 0) {
+                skip_label(pc, l);
+                continue;
+            }
+            std::printf("  %s (%c %s, %s)  REF %zu: %s\n", l.label.c_str(), l.side, FootPartWord(l.part), l.bone.c_str(),
+                        l.refs.size(), TimesText(l.refs).c_str());
+            for (int d = 0; d < kStepTimingCount; ++d) {
+                const MatchResult m = score(ci, l, d);
+                const Edits       e = EditsOf(m);
+                std::printf("    %s%-8s offset %4s ms  steps %d  %s  err %s ms\n", d == chosen[l.part] ? "*" : " ",
+                            StepTimingName(static_cast<StepTiming>(d)),
+                            OffsetText(loo[l.part][d][ci], loo_est[l.part][d][ci] != 0).c_str(), m.n_det,
+                            EditsText(e).c_str(), ErrText(m.match_err_s).c_str());
+                if (d == chosen[l.part]) {
+                    AddEdits(gate, e);
+                    gate_refs += m.n_ref;
+                    gate_err.insert(gate_err.end(), m.match_err_s.begin(), m.match_err_s.end());
+                }
+            }
+        }
+        if (!pc.tagged) continue;
+        const std::vector<PhysicsEvent> ev = FootEvents(pc.a, clip_params(ci));
+        for (char side : {'L', 'R'}) {
+            const std::vector<double> refs = MergedFootRefs(pc, side);
+            if (refs.empty()) continue;
+            std::vector<double> det;
+            for (const PhysicsEvent& e : ev)
+                if (e.kind == PhysicsKind::FootStep && e.side == side) det.push_back(e.time_s);
+            const MatchResult m = MatchEvents(refs, det, kMatchWindowS, pc.lo, pc.hi);
+            const Edits       e = EditsOf(m);
+            AddEdits(foot_tot, e);
+            foot_refs += m.n_ref;
+            foot_err.insert(foot_err.end(), m.match_err_s.begin(), m.match_err_s.end());
+            std::printf("  %c foot step (combined)  REF %d (merged): %s  steps %d  %s  err %s ms\n", side, m.n_ref,
+                        TimesText(refs).c_str(), m.n_det, EditsText(e).c_str(), ErrText(m.match_err_s).c_str());
+        }
+    }
+
+    // Totals.
+    for (int q = 0; q < kFootPartCount; ++q) {
+        if (!has_part[q]) {
+            std::printf("TOTAL %-4s no labelled REF\n", FootPartWord(q));
+            continue;
+        }
+        for (int d = 0; d < kStepTimingCount; ++d) {
+            std::string offs;
+            for (size_t ci = 0; ci < nc; ++ci) {
+                bool here = false;
+                for (const PhysLabel& l : clips[ci].labels)
+                    if (l.part == q) here = true;
+                if (!here) continue;
+                char buf[32];
+                std::snprintf(buf, sizeof(buf), "%s#%zu %s", offs.empty() ? "" : ", ", ci + 1,
+                              OffsetText(loo[q][d][ci], loo_est[q][d][ci] != 0).c_str());
+                offs += buf;
+            }
+            std::printf("TOTAL %-4s %s%-8s %s  |err| median %.1f ms  leave-one-clip-out offsets (ms): %s; all clips %s ms\n",
+                        FootPartWord(q), d == chosen[q] ? "*" : " ", StepTimingName(static_cast<StepTiming>(d)),
+                        EditsText(tot[q][d]).c_str(), Median(abs_err[q][d]), offs.c_str(),
+                        OffsetText(all_off[q][d], all_est[q][d]).c_str());
+        }
+    }
+    std::string ch;
+    for (int q = 0; q < kFootPartCount; ++q) {
+        char buf[96];
+        if (has_part[q])
+            std::snprintf(buf, sizeof(buf), "%s%s %s (all clips %s ms)", ch.empty() ? "" : ", ", FootPartWord(q),
+                          StepTimingName(static_cast<StepTiming>(chosen[q])),
+                          OffsetText(all_off[q][chosen[q]], all_est[q][chosen[q]]).c_str());
+        else
+            std::snprintf(buf, sizeof(buf), "%s%s no REF", ch.empty() ? "" : ", ", FootPartWord(q));
+        ch += buf;
+    }
+    std::printf("CHOSEN %s\n", ch.c_str());
+    std::printf("TOTAL foot step (combined)  REF %d  %s  |err| median %.1f ms\n", foot_refs, EditsText(foot_tot).c_str(),
+                Median(AbsMs(foot_err)));
+    const double med = Median(AbsMs(gate_err));
+    const bool   go = gate_refs > 0 && !gate_err.empty() && gate.missed + gate.extra <= kGateMissedExtra &&
+                    med <= kGateMedianErrS * 1000.0;
+    char med_text[32];
+    std::snprintf(med_text, sizeof(med_text), gate_err.empty() ? "n/a" : "%.1f ms", med);
+    std::printf("GO gate (separate steps, timing chosen on all clips, offsets leave-one-clip-out): REF %d, missed + "
+                "extra %d (<= %d), off %d, median |err| %s (<= %.0f ms): %s%s\n",
+                gate_refs, gate.missed + gate.extra, kGateMissedExtra, gate.off, med_text, kGateMedianErrS * 1000.0,
+                go ? "GO" : "NO-GO", go ? " (the dance clip still has to be judged)" : "");
+    if (skipped) std::printf("(%d label%s skipped)\n", skipped, skipped == 1 ? "" : "s");
+
+    // Every clip's events, as the measure action writes them.
+    std::printf("EVENTS (default timing: %s; strengths in leg/s, pivots in degrees)\n", StepTimingText(base).c_str());
+    for (const PhysClip& pc : clips) {
+        if (!pc.read || !pc.a.ok) continue;
+        const std::vector<PhysicsEvent> ev = FootEvents(pc.a, base);
+        std::printf("%s  %s\n%s", pc.head.c_str(), PhysicsSummary(pc.a, ev).c_str(), PhysicsEventLines(ev, "  ").c_str());
+    }
+    return 0;
+}
 }  // namespace
 
 int main(int argc, char** argv)
@@ -384,6 +769,10 @@ int main(int argc, char** argv)
     bool json = false;
     bool single = false;
     bool single_only = false;  // --axis / --window / --approach given
+    bool physics = false;
+    bool physics_only = false;  // --contact / --switch given
+    bool footsteps_knob = false;
+    PhysicsParams pp;
     SingleOptions so;
     std::vector<std::string> files;
     for (int i = 1; i < argc; ++i) {
@@ -396,6 +785,16 @@ int main(int argc, char** argv)
             json = true;
         } else if (a == "--single") {
             single = true;
+        } else if (a == "--physics") {
+            physics = true;
+        } else if (key == "--contact" || key == "--switch") {
+            if (!ToDouble(val, &ms) || !std::isfinite(ms) || !(ms > 0.0)) {
+                std::fprintf(stderr, "detection_eval: bad option %s\n", a.c_str());
+                return 2;
+            }
+            if (key == "--contact") pp.contact_speed = ms;
+            else pp.switch_cost = ms;
+            physics_only = true;
         } else if (key == "--axis" || key == "--window" || key == "--approach") {
             const bool good = key == "--axis" ? ReadAxis(val, &so.axis)
                                               : (ToDouble(val, &ms) && std::isfinite(ms) && ms > 0.0);
@@ -411,6 +810,7 @@ int main(int argc, char** argv)
                 std::fprintf(stderr, "detection_eval: bad option %s\n", a.c_str());
                 return 2;
             }
+            footsteps_knob = true;
         } else {
             files.push_back(a);
         }
@@ -418,7 +818,8 @@ int main(int argc, char** argv)
     if (files.empty()) {
         std::fprintf(stderr, "usage: detection_eval [--param=value ...] [--json] file.csv...\n"
                              "       detection_eval --single [--axis=<axis>] [--window=<ms>] [--approach=<ms>] "
-                             "[--param=value ...] file.csv...\n");
+                             "[--param=value ...] file.csv...\n"
+                             "       detection_eval --physics [--contact=<leg/s>] [--switch=<cost>] file.csv...\n");
         return 2;
     }
     if (single_only && !single) {
@@ -429,6 +830,15 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "detection_eval: --json does not apply to --single\n");
         return 2;
     }
+    if (physics_only && !physics) {
+        std::fprintf(stderr, "detection_eval: --contact and --switch need --physics\n");
+        return 2;
+    }
+    if (physics && (json || single || footsteps_knob)) {
+        std::fprintf(stderr, "detection_eval: --json, --single and the Footsteps knobs do not apply to --physics\n");
+        return 2;
+    }
+    if (physics) return RunPhysics(files, pp);
     if (single) return RunSingle(files, so, prm);
 
     if (!json)

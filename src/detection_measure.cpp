@@ -126,9 +126,9 @@ struct ItemRun {
 
 // Dev harness: writes every bone's track (240 Hz, metres, model Y up) and the REF times, all
 // and per label with each label's bone, to <project folder>/RAV_detection_dump/<file>.csv, so
-// detection can be tuned offline on the exact data REAPER measured. Positions only (no
-// orientations): rotation conditions cannot be tuned offline. Returns the file path, "" on
-// failure. No-throw.
+// detection can be tuned offline on the exact data REAPER measured. Each bone has its position
+// and, from story 10-8d, its model-space rotation (rot_world: .qw,.qx,.qy,.qz after .z), which
+// the physics reads for a steep foot's heading. Returns the file path, "" on failure. No-throw.
 std::string DumpTracks(const CpuAsset& asset, const std::string& label, const RefTimes& refs, double lo, double hi)
 {
     try {
@@ -152,12 +152,18 @@ std::string DumpTracks(const CpuAsset& asset, const std::string& label, const Re
         out << "\n" << RefLabelLines(refs) << "# parent=";
         for (size_t b = 0; b < asset.skeleton.bones.size(); ++b) out << (b ? "," : "") << asset.skeleton.bones[b].parentIdx;
         out << "\nt";
-        for (const SceneBone& b : asset.skeleton.bones) out << "," << b.name << ".x," << b.name << ".y," << b.name << ".z";
+        for (const SceneBone& b : asset.skeleton.bones)
+            out << "," << b.name << ".x," << b.name << ".y," << b.name << ".z," << b.name << ".qw," << b.name << ".qx,"
+                << b.name << ".qy," << b.name << ".qz";
         out << "\n";
         const size_t n = tr[0].pos.size();
         for (size_t i = 0; i < n; ++i) {
             out << Format("%.6f", static_cast<double>(i) / kRateHz);
-            for (const BoneTrack& t : tr) out << Format(",%.6f,%.6f,%.6f", t.pos[i].x, t.pos[i].y, t.pos[i].z);
+            for (const BoneTrack& t : tr) {
+                out << Format(",%.6f,%.6f,%.6f", t.pos[i].x, t.pos[i].y, t.pos[i].z);
+                const Quatd q = i < t.rot_world.size() ? t.rot_world[i] : Quatd{};
+                out << Format(",%.6f,%.6f,%.6f,%.6f", q.w, q.x, q.y, q.z);
+            }
             out << "\n";
         }
         return out ? file.u8string() : "";

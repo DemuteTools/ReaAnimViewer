@@ -12,6 +12,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <tuple>
+#include <utility>
 
 namespace rav {
 namespace {
@@ -100,6 +101,48 @@ std::vector<Vec3d> Smooth(const std::vector<Vec3d>& p, double sigma_s, double ra
         out[static_cast<size_t>(i)] = a;
     }
     return out;
+}
+
+// v rotated by q (normalised first; a zero quaternion is the identity).
+Vec3d Rotate(const Quatd& in, const Vec3d& v)
+{
+    const double l = std::sqrt(in.w * in.w + in.x * in.x + in.y * in.y + in.z * in.z);
+    if (!(l > 1e-12) || !std::isfinite(l)) return v;
+    const double w = in.w / l, x = in.x / l, y = in.y / l, z = in.z / l;
+    // v + 2 w (u x v) + 2 u x (u x v), u = (x, y, z)
+    const double cx = y * v.z - z * v.y, cy = z * v.x - x * v.z, cz = x * v.y - y * v.x;
+    return Vec3d{v.x + 2.0 * (w * cx + y * cz - z * cy), v.y + 2.0 * (w * cy + z * cx - x * cz),
+                 v.z + 2.0 * (w * cz + x * cy - y * cx)};
+}
+
+Quatd Conj(const Quatd& q)
+{
+    return Quatd{q.w, -q.x, -q.y, -q.z};
+}
+
+// The unwrapped yaw (deg) of a heading whose raw yaw (deg, in (-180, 180]) is given per sample,
+// and its rate (deg/s, central) where the sample and its neighbours are valid (0 elsewhere).
+void YawOf(const std::vector<double>& raw, const std::vector<char>& valid, double rate, std::vector<double>& deg,
+           std::vector<double>& dps)
+{
+    const size_t n = raw.size();
+    deg.resize(n);
+    dps.assign(n, 0.0);
+    if (!n) return;
+    double acc = raw[0];
+    for (size_t i = 0; i < n; ++i) {
+        if (i) {
+            double d = raw[i] - raw[i - 1];
+            while (d > 180.0) d -= 360.0;
+            while (d < -180.0) d += 360.0;
+            acc += d;
+        }
+        deg[i] = acc;
+    }
+    for (size_t i = 0; i < n; ++i) {
+        const size_t lo = i ? i - 1 : 0, hi = std::min(n - 1, i + 1);
+        if (valid[lo] && valid[i] && valid[hi] && hi > lo) dps[i] = (deg[hi] - deg[lo]) * rate / static_cast<double>(hi - lo);
+    }
 }
 
 // Central differences (one-sided at the ends), per second.
@@ -396,8 +439,25 @@ std::vector<Scuff> FindPivots(const FootTrack& f, int n, double rate, const Phys
         if (f.part[q].present)
             for (int i = 0; i < n; ++i)
                 if (f.part[q].contact[static_cast<size_t>(i)]) in[static_cast<size_t>(i)] = 1;
-    const std::vector<double>& r = f.yaw_rate_dps;
-    const double               thr = p.pivot_rate_dps, ext = p.pivot_rate_dps / 3.0;
+    // A steep foot (story 10-8d): where the heel -> toe yaw gives no rate (the sample or a
+    // neighbour does not hold, so a turn that crosses into the steep part is not cut in two),
+    // the fallback heading holds and the part it turns on is in contact, its rate stands in.
+    std::vector<double> r = f.yaw_rate_dps;
+    std::vector<char>   fb(static_cast<size_t>(n), 0);
+    if (f.heading_source != HeadingSource::None)
+        for (int i = 0; i < n; ++i) {
+            const size_t u = static_cast<size_t>(i);
+            const size_t lo = i ? u - 1 : 0, hi = std::min(static_cast<size_t>(n - 1), u + 1);
+            const bool   yaw_rate = f.yaw_valid[lo] && f.yaw_valid[u] && f.yaw_valid[hi] && hi > lo;
+            if (yaw_rate || !f.heading_valid[u]) continue;
+            const bool on_ball = f.part[static_cast<int>(FootPart::Ball)].contact[u] != 0;
+            const bool on_heel = f.part[static_cast<int>(FootPart::Heel)].contact[u] != 0;
+            if (on_ball || (f.heading_source == HeadingSource::Rotation && on_heel)) {
+                fb[u] = 1;
+                r[u] = f.heading_rate_dps[u];
+            }
+        }
+    const double thr = p.pivot_rate_dps, ext = p.pivot_rate_dps / 3.0;
     struct Run {
         int start, end, sign, core;
     };
@@ -437,10 +497,19 @@ std::vector<Scuff> FindPivots(const FootTrack& f, int n, double rate, const Phys
         return false;
     };
     for (const Run& run : runs) {
-        const double swept = f.yaw_deg[static_cast<size_t>(run.end - 1)] - f.yaw_deg[static_cast<size_t>(run.start)];
+        // A run with a fallback sample sweeps the integral of the rate used.
+        bool   steep = false;
+        double integral = 0.0;
+        for (int i = run.start; i < run.end; ++i) {
+            steep = steep || fb[static_cast<size_t>(i)];
+            integral += r[static_cast<size_t>(i)] / rate;
+        }
+        const double swept =
+            steep ? integral : f.yaw_deg[static_cast<size_t>(run.end - 1)] - f.yaw_deg[static_cast<size_t>(run.start)];
         if (run.core < min_core || std::fabs(swept) < p.pivot_min_deg) continue;
-        bool flat = true;  // a turn that ends with the foot pitched up is a roll-off
-        for (int i = run.end; flat && i < std::min(n, run.end + margin); ++i) flat = f.yaw_valid[static_cast<size_t>(i)] != 0;
+        bool flat = true;  // a turn that ends with the foot pitched up, with no fallback heading, is a roll-off
+        for (int i = run.end; flat && i < std::min(n, run.end + margin); ++i)
+            flat = f.yaw_valid[static_cast<size_t>(i)] != 0 || fb[static_cast<size_t>(i)] != 0;
         if (!flat) continue;
         double heel_in = 0.0, toe_in = 0.0, heel_v = 0.0, toe_v = 0.0;
         for (int i = run.start; i < run.end; ++i) {
@@ -723,25 +792,66 @@ PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& rt, const PhysicsPar
             // The yaw holds while the vector seen from above is at least half the foot's length
             // (heel -> toe, a bone length: the median over the clip).
             const double med = Median(foot);
-            f.yaw_deg.resize(n);
-            f.yaw_rate_dps.assign(n, 0.0);
             std::vector<char>& valid = f.yaw_valid;
             valid.assign(n, 0);
-            double acc = raw[0];
-            for (size_t i = 0; i < n; ++i) {
-                if (i) {
-                    double d = raw[i] - raw[i - 1];
-                    while (d > 180.0) d -= 360.0;
-                    while (d < -180.0) d += 360.0;
-                    acc += d;
+            for (size_t i = 0; i < n; ++i) valid[i] = med > 0.0 && len[i] >= 0.5 * med;
+            YawOf(raw, valid, rate, f.yaw_deg, f.yaw_rate_dps);
+
+            // The heading of a steep foot (story 10-8d): the ball -> toe end vector, else the
+            // toe bone's rotation.
+            const int           ball = static_cast<int>(FootPart::Ball), tip = static_cast<int>(FootPart::Tip);
+            std::vector<double> hraw(n, 0.0);
+            std::vector<char>   hvalid(n, 0);
+            if (f.part[ball].present && f.part[tip].present) {
+                const std::vector<Vec3d> b = Smooth(track(kPartRole[s][ball])->pos, p.pivot_smooth_ms / 1000.0, rate);
+                const std::vector<Vec3d> e = Smooth(track(kPartRole[s][tip])->pos, p.pivot_smooth_ms / 1000.0, rate);
+                std::vector<double>      hlen(n), seg(n);
+                for (size_t i = 0; i < n; ++i) {
+                    const double dx = e[i].x - b[i].x, dz = e[i].z - b[i].z;
+                    hlen[i] = std::sqrt(dx * dx + dz * dz);
+                    seg[i] = Dist(e[i], b[i]);
+                    hraw[i] = std::atan2(dx, dz) * 180.0 / kPi;
                 }
-                f.yaw_deg[i] = acc;
-                valid[i] = med > 0.0 && len[i] >= 0.5 * med;
+                const double hmed = Median(seg);
+                for (size_t i = 0; i < n; ++i) hvalid[i] = hmed > 0.0 && hlen[i] >= 0.5 * hmed;
+                f.heading_source = HeadingSource::ToeEnd;
+            } else if (f.part[ball].present && track(kPartRole[s][ball])->rot_world.size() == n) {
+                // toe == ball here: t is the ball, h the heel. The across axis in bone space:
+                // the mean of R^-1 . (up x heel -> ball from above), where the yaw holds and the
+                // ball is in contact.
+                const std::vector<Quatd>& rot = track(kPartRole[s][ball])->rot_world;
+                const PartTrack&          bp = f.part[ball];
+                Vec3d                     sum{0.0, 0.0, 0.0};
+                for (size_t i = 0; i < n; ++i) {
+                    if (!valid[i] || !bp.contact[i]) continue;
+                    const double dx = t[i].x - h[i].x, dz = t[i].z - h[i].z, l = std::sqrt(dx * dx + dz * dz);
+                    if (!(l > 0.0)) continue;
+                    const Vec3d ax = Rotate(Conj(rot[i]), Vec3d{dz / l, 0.0, -dx / l});
+                    sum.x += ax.x;
+                    sum.y += ax.y;
+                    sum.z += ax.z;
+                }
+                const double sl = std::sqrt(sum.x * sum.x + sum.y * sum.y + sum.z * sum.z);
+                if (sl > 1e-9 && std::isfinite(sl)) {
+                    const Vec3d        axis{sum.x / sl, sum.y / sl, sum.z / sl};
+                    std::vector<Vec3d> across(n);
+                    for (size_t i = 0; i < n; ++i) across[i] = Rotate(rot[i], axis);
+                    across = Smooth(across, p.pivot_smooth_ms / 1000.0, rate);
+                    const double level = std::cos(p.pivot_level_deg * kPi / 180.0);
+                    for (size_t i = 0; i < n; ++i) {
+                        const Vec3d& acr = across[i];
+                        const double hl = std::sqrt(acr.x * acr.x + acr.z * acr.z), al = std::sqrt(hl * hl + acr.y * acr.y);
+                        // forward = across x up: the same heading as heel -> ball.
+                        hraw[i] = std::atan2(-acr.z, acr.x) * 180.0 / kPi;
+                        hvalid[i] = al > 1e-9 && hl >= level * al;
+                    }
+                    f.heading_source = HeadingSource::Rotation;
+                }
             }
-            for (size_t i = 0; i < n; ++i) {
-                const size_t lo = i ? i - 1 : 0, hi = std::min(n - 1, i + 1);
-                if (valid[lo] && valid[i] && valid[hi] && hi > lo)
-                    f.yaw_rate_dps[i] = (f.yaw_deg[hi] - f.yaw_deg[lo]) * rate / static_cast<double>(hi - lo);
+            if (f.heading_source != HeadingSource::None) {
+                std::vector<double> hdeg;
+                YawOf(hraw, hvalid, rate, hdeg, f.heading_rate_dps);
+                f.heading_valid = std::move(hvalid);
             }
         }
         f.pivots = FindPivots(f, static_cast<int>(n), rate, p);

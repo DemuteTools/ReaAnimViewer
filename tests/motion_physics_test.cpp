@@ -43,13 +43,15 @@ struct Noise {
     }
 };
 
-// One foot at one instant: the ball (toe base) position, the heading (yaw, radians, 0 = +Z)
-// and the pitch (radians, the heel raised about the ball). Flat, the heel (the foot bone, the
-// ankle) is 14 cm behind the ball and 6 cm above it, the tip 7 cm ahead and 2 cm below.
+// One foot at one instant: the ball (toe base) position, the heading (yaw, radians, 0 = +Z),
+// the pitch (radians, the heel raised about the ball) and the toe pitch (radians, the toes
+// raised about the ball). Flat, the heel (the foot bone, the ankle) is 14 cm behind the ball
+// and 6 cm above it, the tip 7 cm ahead and 2 cm below.
 struct FootPose {
     Vec3d  ball;
     double yaw = 0.0;
     double pitch = 0.0;
+    double toe_pitch = 0.0;
 };
 
 Vec3d Yawed(double yaw, double x, double y, double z)
@@ -71,7 +73,30 @@ Vec3d HeelOf(const FootPose& f)
 
 Vec3d TipOf(const FootPose& f)
 {
-    return Add(f.ball, Yawed(f.yaw, 0.0, -0.02, 0.07));
+    const double c = std::cos(f.toe_pitch), s = std::sin(f.toe_pitch);
+    return Add(f.ball, Yawed(f.yaw, 0.0, -0.02 * c + 0.07 * s, 0.02 * s + 0.07 * c));
+}
+
+Quatd Mul(const Quatd& a, const Quatd& b)
+{
+    return Quatd{a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z, a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
+                 a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x, a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w};
+}
+
+// A rotation of `angle` radians about the unit axis (x, y, z).
+Quatd AxisAngle(double x, double y, double z, double angle)
+{
+    const double s = std::sin(0.5 * angle);
+    return Quatd{std::cos(0.5 * angle), x * s, y * s, z * s};
+}
+
+// The toe bone's world rotation: the heading, then the toes raised (+Z towards +Y), then a
+// fixed bone-space frame (a rig's bone axes are not the foot's), so the across-the-foot axis
+// in bone space is not a bone axis.
+Quatd ToeRotationOf(const FootPose& f)
+{
+    static const Quatd kBoneFrame = Mul(AxisAngle(0.0, 0.0, 1.0, 1.1), AxisAngle(0.6, 0.0, 0.8, -0.7));
+    return Mul(Mul(AxisAngle(0.0, 1.0, 0.0, f.yaw), AxisAngle(1.0, 0.0, 0.0, -f.toe_pitch)), kBoneFrame);
 }
 
 using FootFn = std::function<FootPose(double)>;
@@ -83,6 +108,8 @@ struct Options {
     double noise = 0.0;       // +- m on every axis of the foot parts
     bool   toes = true;       // false: no toe and no toe end bones
     bool   same_tip = false;  // the toe end plays on the toe's bone
+    bool   tip = true;        // false: no toe end bone (the toe stays)
+    bool   rot = false;       // the toe bones carry their world rotation (ToeRotationOf)
     double rate = 240.0;      // samples per second
 };
 
@@ -115,7 +142,8 @@ std::vector<BoneTrack> Rig(const FootFn& left, const FootFn& right, const Option
             put(FootPartRole(side, 0), heel, o.noise > 0.0);
             if (o.toes) {
                 put(FootPartRole(side, 1), ball, o.noise > 0.0);
-                if (!o.same_tip) put(FootPartRole(side, 2), tip, o.noise > 0.0);
+                if (o.rot) t[static_cast<size_t>(FootPartRole(side, 1))].rot_world.push_back(ToeRotationOf(f));
+                if (!o.same_tip && o.tip) put(FootPartRole(side, 2), tip, o.noise > 0.0);
             }
             put(s ? Role::RightKnee : Role::LeftKnee, Add(heel, Vec3d{0.0, 0.42, 0.0}), false);
             up_legs[s] = Add(heel, Vec3d{0.0, 0.87, 0.0});
@@ -529,20 +557,106 @@ int main()
         CHECK(Of(small, PhysicsKind::Pivot).empty());
     }
     {
-        // A heel whip at toe-off is no pivot: the foot rolls onto its toes (pitched 80 deg by
-        // 1.25 s) and turns 40 deg on the ball as it rolls, then stays on its toes. The turn
-        // ends with the foot too steep for a yaw: a roll-off.
+        // A steep foot (story 10-8d). Tiptoe: the left heel rises (pitched 60 deg about the
+        // ball from 0.5 to 0.75 s) and holds, the ball planted; the foot turns 90 deg on the
+        // ball in 250 ms (from 1.0 s) and stays 750 ms. The heel -> toe yaw does not hold from
+        // above; the heading comes from the ball -> toe end vector (the toes stay flat), else
+        // from the toe bone's rotation: one pivot on the ball, about 90 deg, either way.
         Options o;
         o.dur = 2.0;
-        const FootFn whip = [](double t) {
+        const FootFn tiptoe = [](double t) {
             FootPose f;
             f.ball = Vec3d{-0.1, 0.02, 0.0};
-            f.pitch = 80.0 * kDeg * std::clamp((t - 1.0) / 0.25, 0.0, 1.0);
-            f.yaw = 40.0 * kDeg * Ease((t - 1.0) / 0.2);
+            f.pitch = 60.0 * kDeg * Ease((t - 0.5) / 0.25);
+            f.yaw = 90.0 * kDeg * Ease((t - 1.0) / 0.25);
             return f;
         };
-        const PhysicsAnalysis a = AnalyseMotion(Rig(whip, Planted(0.1, 0.2), o));
-        CHECK(a.ok && Of(FootEvents(a), PhysicsKind::Pivot).empty());
+        auto one_pivot = [](const PhysicsAnalysis& a, int part) {
+            const std::vector<PhysicsEvent> pv = Of(FootEvents(a, SpeedTiming()), PhysicsKind::Pivot);
+            return pv.size() == 1 && pv[0].side == 'L' && pv[0].part == part && pv[0].strength > 80.0 &&
+                   pv[0].strength < 95.0 && pv[0].start_s > 0.95 && pv[0].start_s < 1.05 && pv[0].end_s > 1.2 &&
+                   pv[0].end_s < 1.3;
+        };
+        const int             ball = static_cast<int>(FootPart::Ball), heel = static_cast<int>(FootPart::Heel);
+        const PhysicsAnalysis te = AnalyseMotion(Rig(tiptoe, Planted(0.1, 0.2), o));
+        CHECK(te.ok && te.foot[0].heading_source == HeadingSource::ToeEnd);
+        CHECK(one_pivot(te, ball));
+        Options ro = o;
+        ro.tip = false;
+        ro.rot = true;
+        const PhysicsAnalysis tr = AnalyseMotion(Rig(tiptoe, Planted(0.1, 0.2), ro));
+        CHECK(tr.ok && !tr.foot[0].part[2].present && tr.foot[0].heading_source == HeadingSource::Rotation);
+        CHECK(one_pivot(tr, ball));
+        // With a toe end the toe end is the source, rotations or not.
+        Options both = o;
+        both.rot = true;
+        CHECK(AnalyseMotion(Rig(tiptoe, Planted(0.1, 0.2), both)).foot[0].heading_source == HeadingSource::ToeEnd);
+
+        // Neither source (no toe end, no rotations): as before 10-8d, the turn is lost.
+        Options no = o;
+        no.tip = false;
+        const PhysicsAnalysis nn = AnalyseMotion(Rig(tiptoe, Planted(0.1, 0.2), no));
+        CHECK(nn.ok && nn.foot[0].heading_source == HeadingSource::None);
+        CHECK(Of(FootEvents(nn), PhysicsKind::Pivot).empty());
+
+        // Heel, toes up: the left foot turns its toes up about the heel (heel -> ball 70 deg
+        // above level, from 0.5 to 0.75 s), turns 90 deg on the heel in 250 ms (from 1.0 s) and
+        // stays. The toe bone's across axis stays level: one pivot on the heel, about 90 deg.
+        const FootFn toes_up = [](double t) {
+            FootPose     f;
+            const Vec3d  heel_at{-0.1, 0.08, -0.14};
+            const double flat = std::atan2(0.06, 0.14);  // heel -> ball, flat: below level
+            const double up = (70.0 * kDeg + flat) * Ease((t - 0.5) / 0.25);
+            f.yaw = 90.0 * kDeg * Ease((t - 1.0) / 0.25);
+            f.pitch = -up;
+            f.toe_pitch = up;
+            f.ball = Add(heel_at, Yawed(f.yaw, 0.0, -0.06 * std::cos(up) + 0.14 * std::sin(up),
+                                        0.06 * std::sin(up) + 0.14 * std::cos(up)));
+            return f;
+        };
+        const PhysicsAnalysis hr = AnalyseMotion(Rig(toes_up, Planted(0.1, 0.2), ro));
+        CHECK(hr.ok && hr.foot[0].heading_source == HeadingSource::Rotation);
+        CHECK(one_pivot(hr, heel));
+        // Without rotations the heel turn is lost, as before.
+        CHECK(Of(FootEvents(AnalyseMotion(Rig(toes_up, Planted(0.1, 0.2), no))), PhysicsKind::Pivot).empty());
+
+        // A flat pivot is unchanged by a fallback source: the same events with rotations.
+        const FootFn flat_turn = Planted(-0.1, 0.0, [](double t) { return 90.0 * kDeg * Ease((t - 1.0) / 0.25); });
+        const std::vector<PhysicsEvent> fa = FootEvents(AnalyseMotion(Rig(flat_turn, Planted(0.1, 0.2), no)));
+        const std::vector<PhysicsEvent> fr = FootEvents(AnalyseMotion(Rig(flat_turn, Planted(0.1, 0.2), ro)));
+        CHECK(fa.size() == fr.size() && Of(fr, PhysicsKind::Pivot).size() == 1);
+        for (size_t i = 0; i < std::min(fa.size(), fr.size()); ++i)
+            CHECK(fa[i].kind == fr[i].kind && fa[i].part == fr[i].part && fa[i].start_s == fr[i].start_s &&
+                  fa[i].end_s == fr[i].end_s && fa[i].strength == fr[i].strength);
+    }
+    {
+        // A heel whip at toe-off is no pivot: the foot rolls onto its toes (pitched 80 deg by
+        // 1.25 s) and turns 40 deg on the ball as it rolls, then the ball leaves 80 ms after
+        // the turn (from 1.28 s, up and forward at 1 m/s).
+        Options o;
+        o.dur = 2.0;
+        auto roll = [](double leave) {
+            return [leave](double t) {
+                FootPose     f;
+                const double up = std::max(0.0, t - leave);
+                f.ball = Vec3d{-0.1, 0.02 + up, up};
+                f.pitch = 80.0 * kDeg * std::clamp((t - 1.0) / 0.25, 0.0, 1.0);
+                f.yaw = 40.0 * kDeg * Ease((t - 1.0) / 0.2);
+                return f;
+            };
+        };
+        for (bool rot : {false, true}) {
+            Options v = o;
+            v.tip = !rot;
+            v.rot = rot;
+            const PhysicsAnalysis a = AnalyseMotion(Rig(roll(1.28), Planted(0.1, 0.2), v));
+            CHECK(a.ok && Of(FootEvents(a), PhysicsKind::Pivot).empty());
+            // Swivel: the same roll with the ball staying (on its toes to the clip end) is a
+            // pivot on the ball, about 40 deg.
+            const std::vector<PhysicsEvent> sw = Of(FootEvents(AnalyseMotion(Rig(roll(10.0), Planted(0.1, 0.2), v))), PhysicsKind::Pivot);
+            CHECK(sw.size() == 1);
+            if (sw.size() == 1) CHECK(sw[0].part == static_cast<int>(FootPart::Ball) && sw[0].strength > 33.0 && sw[0].strength < 45.0);
+        }
         // The same turn with the foot flat is a pivot.
         const FootFn flat = [](double t) {
             FootPose f;

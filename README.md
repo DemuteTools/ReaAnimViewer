@@ -420,7 +420,7 @@ Auto detection reads the body as physics: it measures the legs to know the chara
     - **Step**: where the foot lands. **Combined** gives one marker per landing (`FS L`, `FS R`), at the first part of the foot to touch. **Separate** gives the heel and the toe their own markers (`Heel L`, `Toe L`, `Heel R`, `Toe R`). The toe is the ball of the foot (the toe bone), or the toe tip on a rig without a toe bone.
     - **Lift-off**: where the foot leaves the ground (`Lift L`, `Lift R`).
     - **Slide scuff**: where a planted foot slides on the ground (`Slide L`, `Slide R`).
-    - **Pivot scuff**: where a planted foot turns on its ball or its heel (`Pivot L`, `Pivot R`).
+    - **Pivot scuff**: where a planted foot turns on its ball or its heel (`Pivot L`, `Pivot R`): flat, on tiptoe with the heel up, or on its heel with the toes up. A foot that turns as it rolls onto its toes and stays there (a swivel) pivots; one that leaves the ground at once (a heel whip at toe-off) does not.
   - **Hands**
     - **Grab**: where the hand lands on something and stays: a hold, a ledge, a table, the floor (`Grab L`, `Grab R`). A hand that only slows down, or stops for an instant between two moves, is no grab.
     - **Release**: where the hand leaves what it held (`Release L`, `Release R`).
@@ -602,6 +602,7 @@ Sound designers often duplicate one animation to build a longer take: a two-step
 
 - Auto detection covers the feet (steps, lift-offs, slides and pivots) and the hands' grabs and releases today. Every other event (a hand swing, a clap, a punch, the body) is tagged with your own rules (see [Tagging your own events](#tagging-your-own-events)), which you can save and share as presets.
 - Auto detection: a touch shorter than about a tenth of a second is not a contact, a foot held still in the air reads as planted, and an animation exported in place is read right only when a foot is planted for more than half of the clip. A slide or pivot gets one marker, at its start.
+- Auto detection of pivots on a steep foot: on tiptoe, RAV reads the turn from the toe end, or, on a rig without one, from the toe bone's rotation (as long as the foot stands flat on its ball somewhere in the clip). On a rig with a toe end, a turn on the heel with the toes raised almost vertical (about 80°) is lost; with the toes lower, the heel and the toe still read it.
 - Auto detection of the hands was set on a single tagged grab (a climb), so check its markers by ear. A hand that freezes in the air after a fast move (a long dance hit) reads as a grab.
 - Roles are guessed from the bone names only (Mixamo and Unreal-style names). For another naming, set them once per skeleton in the **Skeleton & roles** window (click **Roles**).
 - In RAV view, hovering a joint in **Skeleton** shows its roles only once the Tagging view has been opened on an item with this skeleton.

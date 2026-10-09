@@ -6,7 +6,7 @@
 //
 // Roles in, events out. The analysis reads, per side, the heel (the foot bone), the ball (the
 // toe base), the toe tip (the toe end), the knee, the up leg and the hand, plus the hips
-// (bone_roles.h):
+// (bone_roles.h). Positions, and the ball's rotation when the track has one:
 //   body scale    the leg length: up leg -> knee -> heel (the median over the clip, the mean of
 //                 the sides; the hips stand in for a missing up leg). When no side gives it (no
 //                 heel), 2 x (up leg -> knee), noted "thigh x2". Speeds are in leg lengths
@@ -46,9 +46,33 @@
 //                 still in contact (the slower one when both are), or none (-1, the whole foot
 //                 turns). Strength = the angle swept (degrees). Planted means planted: that
 //                 part (the foot for none) is in contact from pivot_planted_s before the turn
-//                 to pivot_planted_s after it, and the foot stays flat enough for a yaw
-//                 over pivot_planted_s after the turn. So a foot that lands turning, or twists as it rolls off
-//                 the toes (a heel whip at toe-off), makes no pivot.
+//                 to pivot_planted_s after it, and the foot stays flat enough for a heading
+//                 over pivot_planted_s after the turn. So a foot that lands turning, or twists
+//                 as it rolls off the toes and leaves (a heel whip at toe-off), makes no pivot.
+//                 A steep foot (story 10-8d): where the heel -> toe yaw does not hold (a foot
+//                 on its ball with the heel up, or on its heel with the toes up), the heading
+//                 comes from a second source (FootTrack::heading_source):
+//                   toe end    the ball -> toe tip vector seen from above, when the rig has a
+//                              toe end (on tiptoe the toes stay flat). It holds while that
+//                              vector is at least half its length (the median over the clip),
+//                              and turns on the ball: a fallback sample needs the ball in
+//                              contact.
+//                   rotation   else the toe bone's own rotation (BoneTrack::rot_world of the
+//                              ball): its across-the-foot axis stays level whether the foot
+//                              stands on its ball or its heel. That axis, in bone space, is
+//                              calibrated as the mean of R^-1 . (up x heel -> ball from above)
+//                              over the samples where the heel -> toe yaw holds and the ball is
+//                              in contact (none: no source). It holds while the axis is within
+//                              pivot_level_deg (60) of level, and a fallback sample needs the
+//                              ball or the heel in contact.
+//                 A fallback sample is one where the heel -> toe yaw gives no rate (the sample
+//                 or a neighbour does not hold, so a turn that crosses into the steep part is
+//                 one turn), the source holds and its part is in contact: there, the rate is
+//                 the source's. A turn with a fallback sample sweeps the integral of the rate
+//                 used; one without keeps the heel -> toe yaw's difference. After the turn,
+//                 flat = the heel -> toe yaw holds or a fallback sample. So a foot that rolls
+//                 onto its toes as it turns and stays there (a dance swivel) pivots on the
+//                 ball.
 //   A scuff also has a start and an end; its time is its start.
 // Step timing: each contact carries the times of several definitions (StepTiming). FootEvents
 // places each part's steps by the definition and offset PhysicsParams gives that part (see
@@ -133,6 +157,7 @@ struct PhysicsParams {
     double pivot_min_s = 0.05;
     double pivot_min_deg = 15.0;
     double pivot_planted_s = 0.100;      // the pivot part is in contact this long before and after
+    double pivot_level_deg = 60.0;       // the toe rotation's across axis holds within this of level
     // The step timing of each part (FootPart order) and its offset (s, added). Chosen by the
     // spike on its 6 tagged reference clips (19 foot contacts; one clip's left / right tags
     // swapped back): the definition with the fewest edits per part, each offset minus that
@@ -193,6 +218,9 @@ struct Scuff {
     double strength = 0.0;
 };
 
+// Where a steep foot's heading comes from (story 10-8d, see the pivot scuff above).
+enum class HeadingSource : int { None = 0, ToeEnd, Rotation };
+
 struct FootTrack {
     char                side = 'L';
     PartTrack           part[kFootPartCount];
@@ -200,6 +228,10 @@ struct FootTrack {
     std::vector<double> yaw_deg;          // unwrapped
     std::vector<double> yaw_rate_dps;     // 0 where the vector is too short from above
     std::vector<char>   yaw_valid;        // seen from above, the vector is at least half the foot's length
+    // The fallback heading of a steep foot (None: no toe end, and no usable toe rotation).
+    HeadingSource       heading_source = HeadingSource::None;
+    std::vector<double> heading_rate_dps;   // the source's yaw rate; 0 where it does not hold
+    std::vector<char>   heading_valid;      // the source holds (whatever the contact)
     std::vector<Scuff>  slides;
     std::vector<Scuff>  pivots;
 };
@@ -234,7 +266,8 @@ std::vector<BoneTrack> PhysicsRoleTracks(const std::vector<int>& bone_of_role,
                                          const std::function<std::vector<BoneTrack>(const std::vector<int>&)>& sample);
 
 // The analysis. role_tracks: indexed by Role, an empty track = the role has no bone; every
-// non-empty track has the same rate and length.
+// non-empty track has the same rate and length. Rotations are optional: only the ball's
+// rot_world is read (one per sample, else ignored).
 PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& role_tracks, const PhysicsParams& p = {});
 
 enum class PhysicsKind { Step, FootStep, LiftOff, Slide, Pivot, Grab, Release };

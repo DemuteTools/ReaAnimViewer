@@ -55,12 +55,16 @@
 // The CSV: '# item=<label>', '# rate_hz=<hz>', '# visible=<lo>,<hi>', '# ref=<t>,<t>...',
 // from spike 10-7a '# ref.<label>=<t>,<t>...' and '# ref_bone.<label>=<bone>' per labelled
 // bone (ref_labels.h; absent from older dumps), '# parent=...' (ignored), then the header
-// 't,<bone>.x,<bone>.y,<bone>.z,...' and one row per sample (metres, model Y up).
+// 't,<bone>.x,<bone>.y,<bone>.z,...' and one row per sample (metres, model Y up). From story
+// 10-8d each bone's .z is followed by '<bone>.qw,<bone>.qx,<bone>.qy,<bone>.qz' (its
+// model-space rotation); both forms are read, from the header.
 // The Footsteps measure uses every REF time; each item's report adds its "REF by bone" line.
-// Positions only: a rotation condition (q=rot, 10-4 follow-up) cannot be evaluated from a
-// dump. This tool only runs the built-in Footsteps preset, which has no rotation condition;
-// MeasureFootsteps keeps a defensive skip for one, and any rotation signal on position-only
-// tracks evaluates empty and never runs.
+// A dump from story 10-8d on also holds each bone's model-space rotation (rot_world), which the
+// physics reads for a steep foot's heading; older dumps hold positions only. No dump holds the
+// rotation relative to the parent, so a rotation condition on the parent (q=rot, 10-4
+// follow-up) cannot be evaluated from a dump. This tool only runs the built-in Footsteps
+// preset, which has no rotation condition; MeasureFootsteps keeps a defensive skip for one,
+// and any rotation signal on tracks without that rotation evaluates empty and never runs.
 
 #include <algorithm>
 #include <cmath>
@@ -123,7 +127,7 @@ bool ReadClip(const std::string& path, Clip& c, std::string* err)
     c.label = slash == std::string::npos ? path : path.substr(slash + 1);
     std::string line;
     bool header = false;
-    size_t row = 0;
+    size_t row = 0, stride = 3;
     while (std::getline(in, line)) {
         if (!line.empty() && line.back() == '\r') line.pop_back();
         if (line.empty()) continue;
@@ -150,11 +154,17 @@ bool ReadClip(const std::string& path, Clip& c, std::string* err)
         }
         const auto cols = Split(line, ',');
         if (!header) {
-            if (cols.empty() || cols[0] != "t" || (cols.size() - 1) % 3 != 0) {
-                *err = "bad header (expected t,<bone>.x,<bone>.y,<bone>.z,...)";
+            // 3 columns per bone, or 7 with its rotation (.qw,.qx,.qy,.qz after .z, story 10-8d).
+            auto ends = [](const std::string& n, const char* tail) {
+                const size_t k = std::strlen(tail);
+                return n.size() >= k && n.compare(n.size() - k, k, tail) == 0;
+            };
+            stride = cols.size() > 4 && ends(cols[4], ".qw") ? 7 : 3;
+            if (cols.empty() || cols[0] != "t" || (cols.size() - 1) % stride != 0) {
+                *err = "bad header (expected t,<bone>.x,<bone>.y,<bone>.z[,<bone>.qw,.qx,.qy,.qz],...)";
                 return false;
             }
-            for (size_t i = 1; i < cols.size(); i += 3) {
+            for (size_t i = 1; i < cols.size(); i += stride) {
                 const std::string& n = cols[i];
                 c.names.push_back(n.size() > 2 && n.compare(n.size() - 2, 2, ".x") == 0 ? n.substr(0, n.size() - 2) : n);
             }
@@ -164,18 +174,27 @@ bool ReadClip(const std::string& path, Clip& c, std::string* err)
             continue;
         }
         ++row;
-        if (cols.size() != 1 + 3 * c.names.size()) {
+        if (cols.size() != 1 + stride * c.names.size()) {
             *err = "row " + std::to_string(row) + ": wrong column count";
             return false;
         }
         for (size_t b = 0; b < c.names.size(); ++b) {
-            Vec3d p;
-            if (!ToDouble(cols[1 + 3 * b], &p.x) || !ToDouble(cols[2 + 3 * b], &p.y) ||
-                !ToDouble(cols[3 + 3 * b], &p.z)) {
+            const size_t k = 1 + stride * b;
+            Vec3d        p;
+            if (!ToDouble(cols[k], &p.x) || !ToDouble(cols[k + 1], &p.y) || !ToDouble(cols[k + 2], &p.z)) {
                 *err = "row " + std::to_string(row) + ": not a number";
                 return false;
             }
             c.tracks[b].pos.push_back(p);
+            if (stride == 7) {
+                Quatd q;
+                if (!ToDouble(cols[k + 3], &q.w) || !ToDouble(cols[k + 4], &q.x) || !ToDouble(cols[k + 5], &q.y) ||
+                    !ToDouble(cols[k + 6], &q.z)) {
+                    *err = "row " + std::to_string(row) + ": not a number";
+                    return false;
+                }
+                c.tracks[b].rot_world.push_back(q);
+            }
         }
     }
     if (!header || c.tracks.empty() || c.tracks[0].pos.empty()) {

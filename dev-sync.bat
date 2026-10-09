@@ -135,7 +135,8 @@ if errorlevel 1 (
     echo No local changes to commit.
 )
 rem Merge what the other PCs pushed first, so this push cannot be rejected.
-%G% pull --no-rebase --no-edit origin main
+call :fetch_remote || goto failed
+%G% merge --no-edit origin/main
 if errorlevel 1 (
     echo.
     echo [FAILED] Both PCs changed the same dev file. Fix the conflicts, then run:
@@ -149,10 +150,11 @@ echo OK: dev files pushed.
 goto done
 
 :pull
-%G% pull --no-rebase --no-edit origin main
+call :fetch_remote || goto failed
+%G% merge --no-edit origin/main
 if errorlevel 1 (
     echo.
-    echo [FAILED] Pull failed. If files conflict, fix them, then run:
+    echo [FAILED] Both PCs changed the same dev file. Fix the conflicts, then run:
     echo   dev-sync.bat push
     goto failed
 )
@@ -170,6 +172,18 @@ rem Records the last successful sync: a dev file newer than this marker has not
 rem been sent yet (.claude\hooks\dev-sync-reminder.sh reminds the user).
 :mark_synced
 type nul > "%DEVGIT%\last-sync"
+exit /b 0
+
+rem Downloads the private repo. Kept apart from the merge so that an access or
+rem network error is not reported as a conflict.
+:fetch_remote
+%G% fetch origin
+if errorlevel 1 (
+    echo.
+    echo [FAILED] Could not reach the private repo. Check that git on Windows
+    echo can sign in to GitHub ^(remote: https://github.com/^<you^>/%DEVREPO_NAME%.git^).
+    exit /b 1
+)
 exit /b 0
 
 rem Settings of the private repo on this PC.

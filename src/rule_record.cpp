@@ -341,6 +341,56 @@ std::vector<int> RuleBonesOnSkeleton(const Block& block, const std::vector<int>&
     return out;
 }
 
+BlockSkips SkippedBlocks(const std::vector<Block>& blocks, const std::vector<int>& role_to_bone,
+                         const std::map<std::string, int>& custom_role_to_bone,
+                         const std::vector<std::string>& bone_names, const std::vector<int>& bone_parents,
+                         bool (*auto_runs)(const Block&))
+{
+    BlockSkips out;
+    out.skipped.assign(blocks.size(), 0);
+    out.missing.assign(blocks.size(), std::string());
+    bool runs = false;
+    for (size_t i = 0; i < blocks.size(); ++i) {
+        const Block& b = blocks[i];
+        if (!b.enabled) continue;
+        if (IsAutoBlock(b)) {
+            // Only an auto block that can run counts (a known type with a side: `auto_runs`).
+            if (auto_runs && auto_runs(b)) runs = true;
+            continue;
+        }
+        const std::vector<std::string> names =
+            MissingBoneRefs(std::vector<Block>{b}, role_to_bone, custom_role_to_bone, bone_names, bone_parents);
+        if (names.empty()) {
+            runs = true;
+            continue;
+        }
+        std::string all;
+        for (const std::string& nm : names) all += (all.empty() ? "" : ", ") + nm;
+        out.skipped[i] = 1;
+        out.missing[i] = all;
+        ++out.count;
+    }
+    out.nothing_runs = !runs;
+    return out;
+}
+
+std::vector<Block> RunnableBlocks(const std::vector<Block>& blocks, const std::vector<char>& skipped)
+{
+    std::vector<Block> out = blocks;
+    for (size_t i = 0; i < out.size(); ++i) {
+        Block& b = out[i];
+        if (i < skipped.size() && skipped[i]) b.enabled = false;
+        if (b.enabled) continue;
+        for (Condition& c : b.conditions) {
+            c.signal.bones.clear();
+            c.signal.ref_bones.clear();
+        }
+        b.strength_signal.bones.clear();
+        b.strength_signal.ref_bones.clear();
+    }
+    return out;
+}
+
 // ---- Numbers ---------------------------------------------------------------------------
 
 std::string FormatNumber(double v)

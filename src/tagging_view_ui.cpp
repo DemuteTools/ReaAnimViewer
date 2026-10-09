@@ -475,10 +475,24 @@ bool ClipTimeForDrop(const ItemClipMap& map, double p, double* clip_t)
     return FirstPassClipTime(map, p, clip_t);
 }
 
-// Whether events can be edited now (rules shown and detection ran).
+// Whether events can be edited now (rules shown and detection ran). 10-8b fb-1: a rule with an
+// unmapped role no longer blocks the others' events (only its own row: RowSkipped).
 bool EventsEditable(const TaggingModel& m)
 {
-    return m.item && m.has_record && m.detected && m.missing_count == 0;
+    return m.item && m.has_record && m.detected && !m.nothing_runs;
+}
+
+// 10-8b fb-1: rule b is skipped (a role it reads has no bone): its row keeps its last Commit's
+// markers and its events cannot be edited.
+bool RowSkipped(const TaggingModel& m, int b)
+{
+    return b >= 0 && b < static_cast<int>(m.skipped.size()) && m.skipped[static_cast<size_t>(b)] != 0;
+}
+
+// Whether rule b's events can be edited now.
+bool EventsEditableOn(const TaggingModel& m, int b)
+{
+    return EventsEditable(m) && !RowSkipped(m, b);
 }
 
 // The marker kinds a shown event draws, in a notify row from ry to ry + rh at x.
@@ -840,7 +854,7 @@ bool TaggingGestureActive()
 void TaggingAddEventAtPlayhead()
 {
     const TaggingModel& m = GetTaggingModel();
-    if (!EventsEditable(m)) return;
+    if (!EventsEditableOn(m, g_sel)) return;
     const ItemRules& rules = TaggingShownRules();
     if (g_sel < 0 || g_sel >= static_cast<int>(rules.blocks.size())) return;
     double clip_t = 0.0;
@@ -852,7 +866,8 @@ void TaggingDeleteSelectedEvent()
 {
     const TaggingModel& m = GetTaggingModel();
     if (!EventsEditable(m)) return;
-    if (const ShownEvent* e = SelectedEvent(m)) ToggleEvent(*e);
+    if (const ShownEvent* e = SelectedEvent(m))
+        if (!RowSkipped(m, e->block)) ToggleEvent(*e);
 }
 
 bool TaggingConsumeMenuRequest()
@@ -942,7 +957,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                 const float ew = ImGui::CalcTextSize("+ Event").x + ImGui::CalcTextSize(key).x + 30.0f;
                 const ImVec2 ep(c0.x + avail_w - bw - 8.0f - ew, c0.y);
                 ImGui::SetCursorScreenPos(ep);
-                const bool can_add = EventsEditable(m) && g_sel < static_cast<int>(rules.blocks.size());
+                const bool can_add = EventsEditableOn(m, g_sel) && g_sel < static_cast<int>(rules.blocks.size());
                 if (!can_add) ImGui::BeginDisabled();
                 if (ui::SolidButton("##tagaddev", ImVec2(ew, 0.0f))) Later([]() { TaggingAddEventAtPlayhead(); });
                 if (!can_add) ImGui::EndDisabled();
@@ -997,7 +1012,8 @@ void DrawTaggingStrip(float x, float y, float w, float h)
         } else if (m.unreadable) {
             msg1 = "This item's rules could not be read.";
             msg2 = "Pick a preset in the panel to replace them.";
-        } else if (m.missing_count > 0) {
+        } else if (m.nothing_runs) {
+            // 10-8b fb-1: only when no rule is left to run and no auto block is on.
             std::snprintf(miss_line, sizeof(miss_line), "%d role%s no bone on this skeleton: no signal to draw.",
                           m.missing_count, m.missing_count == 1 ? " has" : "s have");
             msg1 = miss_line;
@@ -1046,7 +1062,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
             const bool can_draw = msg1 == nullptr && m.detected;
             if (!can_draw) {
                 dl->AddRectFilled(ImVec2(lane_x, rows_top), area1, ui::kBg, ui::kRadiusSm);
-                if (m.missing_count > 0) dl->AddRect(ImVec2(lane_x, rows_top), area1, WithAlpha(kBad, 0x99), ui::kRadiusSm);
+                if (m.nothing_runs) dl->AddRect(ImVec2(lane_x, rows_top), area1, WithAlpha(kBad, 0x99), ui::kRadiusSm);
                 CenterLines(dl, ImVec2(lane_x, rows_top), area1, msg1 ? msg1 : "Detecting...", msg_col, msg2);
                 if (area_pressed) g_drag = StripDrag::Scrub;
             } else {
@@ -1096,6 +1112,17 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                                 DrawEventMark(dl, ghost, std::floor(x_of(pt)) + 0.5f, ry, row_h, col, true);
                             }
                         }
+                    }
+                    // 10-8b fb-1: a rule skipped for a missing role names it (its marks are the
+                    // last Commit's, kept until the role has a bone).
+                    if (RowSkipped(m, b) && static_cast<size_t>(b) < m.skipped_missing.size()) {
+                        const std::string note = "No bone for: " + m.skipped_missing[static_cast<size_t>(b)];
+                        const ImVec2      tp(lane_x + 6.0f, ry + (row_h - th) * 0.5f);
+                        const ImVec2      ts = ImGui::CalcTextSize(note.c_str());
+                        dl->AddRectFilled(ImVec2(tp.x - 3.0f, ry + 1.0f),
+                                          ImVec2(std::min(tp.x + ts.x + 3.0f, lane_x + lane_w), ry + row_h - 1.0f),
+                                          WithAlpha(ui::kBg, 0x59), ui::kRadiusSm);  // light: the kept marks show through
+                        dl->AddText(tp, kBadText, note.c_str());
                     }
                     dl->PopClipRect();
                     dim_outside(ry, ry + row_h);  // over the marks too (outside the item: dimmed)
@@ -1336,7 +1363,8 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                 };
                 auto event_at = [&](float mx, float my) -> const ShownEvent* {
                     const int b = row_at(my);
-                    if (b < 0 || mx < lane_x || mx > lane_x + lane_w) return nullptr;
+                    // 10-8b fb-1: a skipped rule's events cannot be picked (nor edited).
+                    if (b < 0 || RowSkipped(m, b) || mx < lane_x || mx > lane_x + lane_w) return nullptr;
                     const ShownEvent* best = nullptr;
                     float best_d = 7.0f;
                     for (const ShownEvent& e : m.events) {
@@ -1412,7 +1440,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                     !event_at(mouse.x, mouse.y)) {
                     const int b = row_at(mouse.y);
                     double clip_t = 0.0;
-                    if (b >= 0 && FirstPassClipTime(m.map, t_mouse, &clip_t)) {
+                    if (b >= 0 && !RowSkipped(m, b) && FirstPassClipTime(m.map, t_mouse, &clip_t)) {
                         g_sel = b;
                         AddUserEvent(b, clip_t);
                     }
@@ -3131,9 +3159,14 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
                 if (no_skeleton)
                     ImGui::SetTooltip("%s", m.file_loaded ? "This file has no skeleton: no bone to map roles on."
                                                           : "The animation file is not loaded: no skeleton to map roles on.");
-                else if (m.missing_count > 0)
+                else if (m.missing_count > 0 && m.nothing_runs)
                     ImGui::SetTooltip("No bone plays: %s.\nDetection and Commit skip this item until they are mapped."
                                       "\nClick to pick their bones.",
+                                      m.missing.c_str());
+                else if (m.missing_count > 0)  // 10-8b fb-1
+                    ImGui::SetTooltip("No bone plays: %s.\nOnly the rules that read them are skipped: their markers "
+                                      "stay as last committed.\nThe other rules and Auto detection still run.\n"
+                                      "Click to pick their bones.",
                                       m.missing.c_str());
                 else if (no_rule)
                     ImGui::SetTooltip("No rule reads a role yet.\nClick to see which bone plays each role.");
@@ -3610,7 +3643,8 @@ void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const Sho
                                                           : "Suppression (nothing detected here now)";
     // Values: a detection's own; a user event's measured at its time, as detection measures them.
     double strength = e.strength, speed = e.speed;
-    if (e.kind == ShownKind::User) TaggingMeasureEvent(rules, e.block, e.t, &strength, &speed);
+    // 10-8b fb-1: a skipped rule cannot measure (its role has no bone): its stored values show.
+    if (e.kind == ShownKind::User && !RowSkipped(m, e.block)) TaggingMeasureEvent(rules, e.block, e.t, &strength, &speed);
     SignalSpec speed_spec = blk.conditions.empty() ? SignalSpec{} : blk.conditions[0].signal;
     speed_spec.measure = Measure::Speed;
     SignalSpec strength_spec = blk.strength_signal.bones.empty() ? speed_spec : blk.strength_signal;
@@ -3627,7 +3661,8 @@ void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const Sho
     key("Time");
     double project_t = 0.0;
     const bool on_timeline = FirstPassProjectTime(m.map, e.t, &project_t);
-    if (e.kind == ShownKind::User && e.entry >= 0) {
+    const bool editable = !RowSkipped(m, e.block);  // 10-8b fb-1: a skipped rule's events stay as committed
+    if (e.kind == ShownKind::User && e.entry >= 0 && editable) {
         // Typed (or dragged sideways): previews live, Enter / release writes one undo point.
         const int    entry = e.entry, block = e.block;
         const double clip_len = m.map.clip_len > 0.0 ? m.map.clip_len : 1e9;
@@ -3723,10 +3758,17 @@ void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const Sho
     const char* dk = ShortcutKeyLabel(kShortcutTagDelEvent);
     const std::string act = std::string(e.kind == ShownKind::Detected ? "Suppress" : e.kind == ShownKind::User ? "Delete" : "Restore") +
                             "  (" + dk + ")##evact";
+    if (!editable) ImGui::BeginDisabled();
     if (ui::SolidButton(act.c_str())) {
         const ShownEvent copy = e;
         ToggleEvent(copy);
     }
+    if (!editable) ImGui::EndDisabled();
+    if (!editable && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("No bone for: %s.\nThis rule is skipped: its events stay as last committed.",
+                          static_cast<size_t>(e.block) < m.skipped_missing.size()
+                              ? m.skipped_missing[static_cast<size_t>(e.block)].c_str()
+                              : "");
     ImGui::SameLine();
     if (!on_timeline) ImGui::BeginDisabled();
     if (ImGui::Button("Go to event##evgo")) {
@@ -4293,6 +4335,10 @@ void DrawFooter(const TaggingModel& m)
             ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(kBadText));
             ImGui::TextUnformatted(roles);
             ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))  // 10-8b fb-1
+                ImGui::SetTooltip("Items where nothing can run: every rule that is on reads a role with no bone\n"
+                                  "and no Auto detection type is ticked, or the animation file did not load or has no skeleton.\n"
+                                  "Their markers stay as they are.");
         }
         if (m.detected && !m.rules.blocks.empty()) {  // 10-3 fb-1: no rule = nothing to write, no warning
             ImGui::SameLine(0.0f, 4.0f);
@@ -4413,10 +4459,19 @@ void DrawTaggingPanel(float x, float y, float w, float h)
             if (ImGui::BeginChild("##taginspector", ImVec2(0.0f, body_h), ImGuiChildFlags_None)) {
                 DrawAutoSection(m, rules);  // story 10-8b
                 if (m.missing_count > 0) {
-                    char line[200];
-                    std::snprintf(line, sizeof(line),
-                                  "This skeleton is missing %d role%s (%s). The rules come back as soon as they are mapped.",
-                                  m.missing_count, m.missing_count == 1 ? "" : "s", m.missing.c_str());
+                    // 10-8b fb-1: only the rules reading them are skipped, unless nothing else can run.
+                    char line[320];
+                    if (m.nothing_runs)
+                        std::snprintf(line, sizeof(line),
+                                      "This skeleton is missing %d role%s (%s). The rules come back as soon as they are mapped.",
+                                      m.missing_count, m.missing_count == 1 ? "" : "s", m.missing.c_str());
+                    else
+                        std::snprintf(line, sizeof(line),
+                                      "This skeleton is missing %d role%s (%s). Only the %d rule%s reading them %s skipped "
+                                      "(their markers stay as last committed) until they are mapped.",
+                                      m.missing_count, m.missing_count == 1 ? "" : "s", m.missing.c_str(),
+                                      m.skipped_count, m.skipped_count == 1 ? "" : "s",
+                                      m.skipped_count == 1 ? "is" : "are");
                     ui::SubText(line);
                     ImGui::Dummy(ImVec2(0.0f, 4.0f));
                 }

@@ -62,6 +62,21 @@ std::vector<ShownEvent> BuildEventList(const std::vector<Event>& detections, con
 EventEntry MakeUserEvent(int block, double t, double strength, double speed);
 EventEntry MakeSuppression(int block, double t);
 
+// ---- 10-8b fb-1: a block that cannot run keeps its last Commit ---------------------------------
+//
+// A rule skipped for a missing role (SkippedBlocks, rule_record.h), or an auto block whose own
+// part has no bone (AutoBlockPartMissing, auto_detect.h), keeps the markers the last Commit wrote
+// for it until the bone is there: the record's Detected entries of that block (Commit's record of
+// the detections it wrote: RecordApplied) stand in for its detections, with their stored values;
+// its user events stay in the record as they are. A block never committed has none. So the event
+// list, PlanMarkers, previews and Commit (which records them again) keep its markers as they were.
+
+// `detections` with every event of a kept block (`keep`, per block; shorter = not kept) replaced
+// by the record's Detected entries of that block (Event::marker = the block's marker). Sorted by
+// time (then block). Nothing kept: unchanged.
+void KeepBlockEvents(std::vector<Event>& detections, const std::vector<EventEntry>& entries,
+                     const std::vector<Block>& blocks, const std::vector<char>& keep);
+
 // ---- Rule delete / duplicate ------------------------------------------------------------------
 
 // old index -> new index (-1 = gone) when rule `deleted` of n is deleted.

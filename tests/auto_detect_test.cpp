@@ -761,6 +761,110 @@ int main()
         if (at50.size() == 1 && at25.size() == 1) CHECK(at25[0].time_s >= at50[0].time_s);
     }
 
+    // 10-8b fb-1: an auto block whose own part has no bone (its earlier markers are kept).
+    {
+        std::vector<int> map(static_cast<size_t>(Role::Count), -1);
+        for (int r = 0; r < static_cast<int>(Role::Count); ++r) map[static_cast<size_t>(r)] = r;
+        auto blk = [](AutoKind k, char side) { return MakeAutoBlock(k, side, kAutoDefaultSens, 0.0); };
+        for (int k = 0; k < kAutoKindCount; ++k)
+            for (char side : {'L', 'R'}) CHECK(!AutoBlockPartMissing(blk(static_cast<AutoKind>(k), side), map));
+        map[static_cast<size_t>(Role::LeftHand)] = -1;
+        CHECK(AutoBlockPartMissing(blk(AutoKind::Grab, 'L'), map) && AutoBlockPartMissing(blk(AutoKind::Release, 'L'), map));
+        CHECK(!AutoBlockPartMissing(blk(AutoKind::Grab, 'R'), map));
+        // No right toe nor toe end: the toe and the pivot miss it, the heel and a combined step do not.
+        map[static_cast<size_t>(Role::RightToe)] = map[static_cast<size_t>(Role::RightToeEnd)] = -1;
+        CHECK(AutoBlockPartMissing(blk(AutoKind::Toe, 'R'), map) && AutoBlockPartMissing(blk(AutoKind::Pivot, 'R'), map));
+        CHECK(!AutoBlockPartMissing(blk(AutoKind::Heel, 'R'), map) && !AutoBlockPartMissing(blk(AutoKind::Step, 'R'), map));
+        CHECK(!AutoBlockPartMissing(blk(AutoKind::Toe, 'L'), map));
+        // No right heel either: every right foot kind misses its part.
+        map[static_cast<size_t>(Role::RightHeel)] = -1;
+        for (AutoKind k : {AutoKind::Step, AutoKind::Heel, AutoKind::Lift, AutoKind::Slide})
+            CHECK(AutoBlockPartMissing(blk(k, 'R'), map));
+        // An off block, a rule, an unknown type: never.
+        Block off = blk(AutoKind::Step, 'R');
+        off.enabled = false;
+        Block unknown = blk(AutoKind::Step, 'R');
+        unknown.auto_type = "kick";
+        CHECK(!AutoBlockPartMissing(off, map) && !AutoBlockPartMissing(Block{}, map) && !AutoBlockPartMissing(unknown, map));
+        CHECK((AutoBlocksPartMissing({Block{}, blk(AutoKind::Step, 'R'), blk(AutoKind::Step, 'L')}, map) ==
+               std::vector<char>{0, 1, 0}));
+        // No body scale: every kind misses.
+        std::vector<int> none(static_cast<size_t>(Role::Count), -1);
+        none[static_cast<size_t>(Role::LeftHand)] = 5;
+        CHECK(AutoBlockPartMissing(blk(AutoKind::Grab, 'L'), none));
+    }
+
+    // fb-1: only the right heel unmapped (toe mapped): the heel and the pivot miss it, a combined
+    // step, a lift-off and a slide do not (the toe stands in).
+    {
+        std::vector<int> map(static_cast<size_t>(Role::Count), -1);
+        for (int r = 0; r < static_cast<int>(Role::Count); ++r) map[static_cast<size_t>(r)] = r;
+        map[static_cast<size_t>(Role::RightHeel)] = -1;
+        auto blk = [](AutoKind k, char side) { return MakeAutoBlock(k, side, kAutoDefaultSens, 0.0); };
+        CHECK(AutoBlockPartMissing(blk(AutoKind::Heel, 'R'), map) && AutoBlockPartMissing(blk(AutoKind::Pivot, 'R'), map));
+        for (AutoKind k : {AutoKind::Step, AutoKind::Lift, AutoKind::Slide, AutoKind::Toe})
+            CHECK(!AutoBlockPartMissing(blk(k, 'R'), map));
+        CHECK(!AutoBlockPartMissing(blk(AutoKind::Heel, 'L'), map));
+    }
+
+    // fb-1: AutoBlockPartMissing agrees with AutoMissingParts, every kind x side x several maps: a
+    // block misses when there is no body scale, or when the section lists one of its side's parts.
+    {
+        auto full = [] {
+            std::vector<int> m(static_cast<size_t>(Role::Count), -1);
+            for (int r = 0; r < static_cast<int>(Role::Count); ++r) m[static_cast<size_t>(r)] = r;
+            return m;
+        };
+        auto without = [&](std::initializer_list<Role> gone) {
+            std::vector<int> m = full();
+            for (Role r : gone) m[static_cast<size_t>(r)] = -1;
+            return m;
+        };
+        std::vector<std::vector<int>> maps = {
+            full(),
+            without({Role::RightHeel}),
+            without({Role::LeftToe, Role::LeftToeEnd}),
+            without({Role::RightHeel, Role::RightToe, Role::RightToeEnd}),
+            without({Role::LeftToe}),
+            without({Role::LeftHand}),
+            without({Role::RightHand, Role::LeftHeel}),
+            without({Role::LeftHeel, Role::RightHeel, Role::LeftToe, Role::RightToe, Role::LeftToeEnd, Role::RightToeEnd}),
+            without({Role::LeftKnee, Role::RightKnee}),  // no body scale
+            std::vector<int>(static_cast<size_t>(Role::Count), -1),
+        };
+        for (const std::vector<int>& map : maps) {
+            // No body scale <=> the hand types miss something with both hands mapped.
+            std::vector<int> hands = map;
+            hands[static_cast<size_t>(Role::LeftHand)] = static_cast<int>(Role::LeftHand);
+            hands[static_cast<size_t>(Role::RightHand)] = static_cast<int>(Role::RightHand);
+            const bool no_scale = !AutoMissingParts(AutoType::Grab, false, hands).empty();
+            for (int ki = 0; ki < kAutoKindCount; ++ki) {
+                const AutoKind k = static_cast<AutoKind>(ki);
+                const bool     sep = k == AutoKind::Heel || k == AutoKind::Toe;
+                const std::vector<std::string> listed = AutoMissingParts(AutoTypeOfKind(k), sep, map);
+                for (char side : {'L', 'R'}) {
+                    std::vector<Role> parts;
+                    const Role heel = FootPartRole(side, 0), toe = FootPartRole(side, 1), tip = FootPartRole(side, 2);
+                    switch (k) {
+                    case AutoKind::Heel: parts = {heel}; break;
+                    case AutoKind::Toe: parts = {toe}; break;
+                    case AutoKind::Pivot: parts = {heel, toe}; break;
+                    case AutoKind::Step:
+                    case AutoKind::Lift:
+                    case AutoKind::Slide: parts = {heel, toe, tip}; break;
+                    default: parts = {side == 'R' ? Role::RightHand : Role::LeftHand}; break;
+                    }
+                    bool expect = no_scale;
+                    for (Role r : parts)
+                        if (std::find(listed.begin(), listed.end(), RoleName(r)) != listed.end()) expect = true;
+                    const bool got = AutoBlockPartMissing(MakeAutoBlock(k, side, kAutoDefaultSens, 0.0), map);
+                    if (got != expect) std::printf("  kind %d side %c: %d, expected %d\n", ki, side, got, expect);
+                    CHECK(got == expect);
+                }
+            }
+        }
+    }
+
     // No hand bone: no Grab / Release L, and the section names "left hand" (the right hand's
     // events stay). A rig without feet but with legs still finds them.
     {

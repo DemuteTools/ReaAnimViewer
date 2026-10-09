@@ -114,7 +114,9 @@ target_include_directories(tagging_signal_test PRIVATE ${CMAKE_CURRENT_SOURCE_DI
 add_test(NAME tagging_signal COMMAND tagging_signal_test)
 
 # Story 10-4 -- the item's event list, Apply's plan, the first pass (src/event_list.h).
-add_executable(event_list_test event_list_test.cpp ../src/event_list.cpp ../src/rule_record.cpp ../src/tagging_signal.cpp)
+# fb-1 (10-8b): the keep step lives in auto_detect (KeepUnrunnableEvents), with the physics it needs.
+add_executable(event_list_test event_list_test.cpp ../src/event_list.cpp ../src/rule_record.cpp ../src/tagging_signal.cpp
+               ../src/auto_detect.cpp ../src/motion_physics.cpp ../src/bone_events.cpp)
 target_include_directories(event_list_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME event_list COMMAND event_list_test)
 

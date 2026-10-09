@@ -7,8 +7,12 @@
 
 #include "event_list.h"
 
+#include "auto_detect.h"  // fb-1: KeepUnrunnableEvents
+
 #include <cmath>
 #include <cstdio>
+#include <map>
+#include <utility>
 #include <string>
 #include <vector>
 
@@ -61,6 +65,135 @@ int Count(const std::vector<ShownEvent>& l, ShownKind k)
 
 int main()
 {
+    // ---- 10-8b fb-1: a block that cannot run keeps its last Commit -------------------------
+    {
+        Block fs = Rule("FS L", 0x1000000u | 0x112233u);
+        fs.auto_type = "step";
+        const std::vector<Block> blocks = {fs, Rule("Sword"), Rule("Jump")};
+        ItemClipMap map;
+        map.item_pos = 10.0;
+        map.item_len = 5.0;
+        map.clip_len = 5.0;
+        auto plan_of = [&](const std::vector<Event>& det, const ItemRules& r) {
+            return PlanMarkers(BuildEventList(det, r.events, blocks.size()), blocks, map);
+        };
+        auto of_block = [](const std::vector<PlannedMarker>& p, int b) {
+            std::vector<double> t;
+            for (const PlannedMarker& m : p)
+                if (m.block == b) t.push_back(m.clip_t);
+            return t;
+        };
+        // Everything bound: Commit (a user event on Sword too).
+        const std::vector<Event> all = {Det(0, 0.5), Det(1, 1.0, 0.8), Det(0, 1.5), Det(2, 2.0)};
+        ItemRules r;
+        r.events.push_back(MakeUserEvent(1, 3.0, 0.4, 0.9));
+        const std::vector<PlannedMarker> committed = plan_of(all, r);
+        CHECK(committed.size() == 5);
+        RecordApplied(r, committed, MarkerMode::Both);
+
+        // Sword's role loses its bone: it is skipped (no detection of its own), the others run.
+        std::vector<Event> live = {Det(0, 0.5), Det(0, 1.5), Det(2, 2.0)};
+        const std::vector<char> skip_sword = {0, 1, 0};
+        KeepBlockEvents(live, r.events, blocks, skip_sword);
+        const std::vector<PlannedMarker> kept = plan_of(live, r);
+        // Its markers stay as the last Commit wrote them (detection and user event, values kept):
+        // the plan is the committed one, so no preview and Commit writes them again.
+        CHECK(kept.size() == committed.size());
+        for (size_t i = 0; i < kept.size() && i < committed.size(); ++i)
+            CHECK(kept[i].block == committed[i].block && kept[i].clip_t == committed[i].clip_t &&
+                  kept[i].name == committed[i].name && kept[i].user == committed[i].user &&
+                  kept[i].strength == committed[i].strength);
+        CHECK(MarkersUpToDate(r, kept, MarkerMode::Both));
+        CHECK((of_block(kept, 1) == std::vector<double>{1.0, 3.0}));
+        // A second Commit records them again: still kept on the next one.
+        RecordApplied(r, kept, MarkerMode::Both);
+        std::vector<Event> live2 = {Det(0, 0.5), Det(0, 1.5), Det(2, 2.0)};
+        KeepBlockEvents(live2, r.events, blocks, skip_sword);
+        CHECK((of_block(plan_of(live2, r), 1) == std::vector<double>{1.0, 3.0}));
+
+        // The auto block plans the same markers with or without a skipped rule beside it.
+        const std::vector<Block> auto_only = {fs};
+        const std::vector<PlannedMarker> alone =
+            PlanMarkers(BuildEventList({Det(0, 0.5), Det(0, 1.5)}, {}, 1), auto_only, map);
+        CHECK(of_block(alone, 0) == of_block(kept, 0) && of_block(alone, 0).size() == 2);
+        CHECK((of_block(kept, 2) == std::vector<double>{2.0}));
+
+        // A rule never committed keeps nothing (a stray event of it is dropped too).
+        ItemRules fresh;
+        std::vector<Event> live3 = {Det(0, 0.5), Det(1, 1.0), Det(2, 2.0)};
+        KeepBlockEvents(live3, fresh.events, blocks, skip_sword);
+        CHECK(live3.size() == 2 && of_block(plan_of(live3, fresh), 1).empty());
+
+        // An auto part with no bone (Q3): its earlier markers are kept, not removed.
+        std::vector<Event> live4 = {Det(2, 2.0)};
+        KeepBlockEvents(live4, r.events, blocks, {1, 0, 0});
+        CHECK(live4.size() == 3 && live4[0].block == 0 && live4[0].time_s == 0.5 && live4[0].marker == "FS L" &&
+              live4[1].time_s == 1.5 && live4[2].block == 2);
+
+        // The mask from a real role map (KeepUnrunnableEvents, as the session and DetectItem run it):
+        // Grab L with no left hand bone, a rule on the unmapped custom role "sword tip", a bound rule
+        // and a foot block that runs. A kept event and live ones share one time on other blocks.
+        {
+            std::vector<std::string> names;
+            std::vector<int>         rmap(static_cast<size_t>(Role::Count), -1);
+            for (int i = 0; i < static_cast<int>(Role::Count); ++i) {
+                names.push_back("b" + std::to_string(i));
+                rmap[static_cast<size_t>(i)] = i;
+            }
+            rmap[static_cast<size_t>(Role::LeftHand)] = -1;
+            const std::map<std::string, int> custom;  // sword_tip: no bone
+            Block     sword = Rule("Sword");
+            Condition cs;
+            cs.signal.bones = {BoneRefId("role:sword_tip")};
+            sword.conditions = {cs};
+            Block     jump = Rule("Jump");
+            Condition cj;
+            cj.signal.bones = {static_cast<int>(Role::Hips)};
+            jump.conditions = {cj};
+            const std::vector<Block> bl = {MakeAutoBlock(AutoKind::Grab, 'L', 50.0, 0.0), sword, jump,
+                                           MakeAutoBlock(AutoKind::Step, 'R', 50.0, 0.0)};
+            const BlockSkips sk = SkippedBlocks(bl, rmap, custom, names, {}, IsActiveAutoBlock);
+            CHECK((sk.skipped == std::vector<char>{0, 1, 0, 0}) && !sk.nothing_runs);
+            // The last Commit's record.
+            std::vector<EventEntry> rec;
+            for (const auto& [b, t] : std::vector<std::pair<int, double>>{{0, 1.0}, {1, 2.0}, {2, 3.0}, {3, 2.5}}) {
+                EventEntry e;
+                e.kind = EventKind::Detected;
+                e.block = b;
+                e.t = t;
+                rec.push_back(e);
+            }
+            std::vector<Event> det = {Det(3, 2.0), Det(2, 2.0)};
+            const std::vector<char> keep = KeepUnrunnableEvents(det, rec, bl, sk.skipped, rmap);
+            CHECK((keep == std::vector<char>{1, 1, 0, 0}));
+            CHECK(det.size() == 4);
+            if (det.size() == 4) {
+                CHECK(det[0].block == 0 && det[0].time_s == 1.0 && det[0].marker == "Grab L");
+                CHECK(det[1].block == 1 && det[1].time_s == 2.0 && det[1].marker == "Sword");  // kept
+                CHECK(det[2].block == 2 && det[2].time_s == 2.0);                            // live
+                CHECK(det[3].block == 3 && det[3].time_s == 2.0);                            // live
+            }
+            // The left hand mapped and the role given a bone: everything runs live, nothing kept.
+            std::vector<int> all = rmap;
+            all[static_cast<size_t>(Role::LeftHand)] = static_cast<int>(Role::LeftHand);
+            const std::map<std::string, int> mapped = {{"sword_tip", 0}};
+            const BlockSkips sk2 = SkippedBlocks(bl, all, mapped, names, {}, IsActiveAutoBlock);
+            std::vector<Event> det2 = {Det(2, 2.0)};
+            CHECK((KeepUnrunnableEvents(det2, rec, bl, sk2.skipped, all) == std::vector<char>{0, 0, 0, 0}));
+            CHECK(det2.size() == 1);
+        }
+
+        // Nothing kept: the detections as they are.
+        std::vector<Event> live5 = {Det(2, 2.0), Det(0, 0.5)};
+        KeepBlockEvents(live5, r.events, blocks, {});
+        KeepBlockEvents(live5, r.events, blocks, {0, 0, 0});
+        CHECK(live5.size() == 2 && live5[0].block == 2);
+        // A keep flag past the blocks is ignored.
+        std::vector<Event> live6 = {Det(0, 0.5)};
+        KeepBlockEvents(live6, r.events, {fs}, {0, 1, 1});
+        CHECK(live6.size() == 1);
+    }
+
     // ---- Merge: detections, suppressions (+-30 ms, inclusive), orphans, user events --------
     {
         const std::vector<Event> det = {Det(0, 1.0), Det(0, 2.0), Det(1, 1.0), Det(0, 3.0)};

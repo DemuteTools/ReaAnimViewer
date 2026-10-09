@@ -9,6 +9,7 @@
 #include <tuple>
 
 #include "bone_roles.h"
+#include "event_list.h"   // KeepBlockEvents
 #include "rule_record.h"  // BlocksEqual
 
 namespace rav {
@@ -403,10 +404,15 @@ bool SameAutoAnalysis(const PhysicsParams& a, const PhysicsParams& b)
 
 // ---- Detection ---------------------------------------------------------------------------------
 
+bool IsActiveAutoBlock(const Block& b)
+{
+    return b.enabled && AutoBlockKind(b, nullptr, nullptr);
+}
+
 bool HasActiveAutoBlocks(const std::vector<Block>& blocks)
 {
     for (const Block& b : blocks)
-        if (b.enabled && AutoBlockKind(b, nullptr, nullptr)) return true;
+        if (IsActiveAutoBlock(b)) return true;
     return false;
 }
 
@@ -555,6 +561,53 @@ std::vector<std::string> AutoMissingParts(AutoType t, bool separate, const std::
         }
     }
     return out;
+}
+
+bool AutoBlockPartMissing(const Block& b, const std::vector<int>& role_to_bone)
+{
+    AutoKind kind;
+    char     side = 'L';
+    if (!b.enabled || !AutoBlockKind(b, &kind, &side)) return false;
+    auto       has = [&](Role r) { return HasRole(role_to_bone, r); };
+    const Role knee[2] = {Role::LeftKnee, Role::RightKnee};
+    const Role up_leg[2] = {Role::LeftUpLeg, Role::RightUpLeg};
+    bool       scale = false;  // as AutoMissingParts
+    for (int s = 0; s < 2; ++s)
+        scale = scale || (has(FootPartRole(kSides[s], 0)) && has(knee[s]) && (has(up_leg[s]) || has(Role::Hips))) ||
+                (has(knee[s]) && has(up_leg[s]));
+    if (!scale) return true;
+    const Role heel = FootPartRole(side, 0), ball = FootPartRole(side, 1), tip = FootPartRole(side, 2);
+    const bool toe = has(ball) || has(tip);
+    switch (kind) {
+    case AutoKind::Grab:
+    case AutoKind::Release:
+    case AutoKind::HandPivot:
+    case AutoKind::HandPivotAny: return !has(side == 'R' ? Role::RightHand : Role::LeftHand);
+    case AutoKind::Heel: return !has(heel);
+    case AutoKind::Toe: return !toe;
+    case AutoKind::Pivot: return !has(heel) || !toe;
+    case AutoKind::Step:
+    case AutoKind::Lift:
+    case AutoKind::Slide: return !has(heel) && !toe;
+    }
+    return false;
+}
+
+std::vector<char> AutoBlocksPartMissing(const std::vector<Block>& blocks, const std::vector<int>& role_to_bone)
+{
+    std::vector<char> out(blocks.size(), 0);
+    for (size_t i = 0; i < blocks.size(); ++i) out[i] = AutoBlockPartMissing(blocks[i], role_to_bone) ? 1 : 0;
+    return out;
+}
+
+std::vector<char> KeepUnrunnableEvents(std::vector<Event>& detections, const std::vector<EventEntry>& entries,
+                                       const std::vector<Block>& blocks, const std::vector<char>& skipped,
+                                       const std::vector<int>& role_to_bone)
+{
+    std::vector<char> keep = AutoBlocksPartMissing(blocks, role_to_bone);
+    for (size_t i = 0; i < keep.size() && i < skipped.size(); ++i) keep[i] = (keep[i] || skipped[i]) ? 1 : 0;
+    KeepBlockEvents(detections, entries, blocks, keep);
+    return keep;
 }
 
 }  // namespace rav

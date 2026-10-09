@@ -44,6 +44,7 @@
 
 #include "bone_events.h"
 #include "motion_physics.h"
+#include "rule_record.h"  // EventEntry
 
 namespace rav {
 
@@ -162,6 +163,8 @@ std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const s
 std::vector<Event> DetectAutoEvents(const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
                                     std::vector<AutoAnalysis>* cache = nullptr);
 
+// An auto block of a known type and side that is on (it runs; SkippedBlocks' `auto_runs`).
+bool IsActiveAutoBlock(const Block& b);
 // True when the blocks hold an auto block of a known type that is on (detection needs the
 // physics role tracks).
 bool HasActiveAutoBlocks(const std::vector<Block>& blocks);
@@ -177,5 +180,20 @@ bool HasActiveAutoBlocks(const std::vector<Block>& blocks);
 //   pivot                            the heel and the toe (or the toe end)
 //   grab, release, hand pivot        the hand
 std::vector<std::string> AutoMissingParts(AutoType t, bool separate, const std::vector<int>& role_to_bone);
+
+// 10-8b fb-1 -- true when a known auto block that is on cannot find its events on this mapping:
+// no body scale, or its own part on its side has no bone (combined step, lift-off, slide: no heel,
+// toe nor toe end; heel: no heel; toe: no toe nor toe end; pivot: no heel, or no toe nor toe end;
+// grab, release, hand pivot: no hand). Its earlier markers are then kept (KeepBlockEvents, event_list.h).
+bool AutoBlockPartMissing(const Block& b, const std::vector<int>& role_to_bone);
+// Per block: AutoBlockPartMissing (rules: 0).
+std::vector<char> AutoBlocksPartMissing(const std::vector<Block>& blocks, const std::vector<int>& role_to_bone);
+// The keep step on one item's detections (live view and Commit alike): the blocks that cannot run
+// here, the rules `skips` skips (SkippedBlocks, rule_record.h) and the auto blocks whose part has
+// no bone on `role_to_bone`, get their last Commit's events back from `entries` (KeepBlockEvents,
+// event_list.h). Returns the kept mask (per block).
+std::vector<char> KeepUnrunnableEvents(std::vector<Event>& detections, const std::vector<EventEntry>& entries,
+                                       const std::vector<Block>& blocks, const std::vector<char>& skipped,
+                                       const std::vector<int>& role_to_bone);
 
 }  // namespace rav

@@ -100,24 +100,6 @@ const SkeletonBones& BoneNamesOf(const std::string& path)
     return g.names_by_path[path] = std::move(sk);
 }
 
-// The blocks as detection and the binding see them: an off rule reads no bone (its
-// conditions' and strength's bone lists are emptied), so a role it alone needs is never
-// missing. Block indices stay, so the trace lines up with the record.
-std::vector<Block> EnabledOnly(const std::vector<Block>& blocks)
-{
-    std::vector<Block> out = blocks;
-    for (Block& b : out) {
-        if (b.enabled) continue;
-        for (Condition& c : b.conditions) {
-            c.signal.bones.clear();
-            c.signal.ref_bones.clear();
-        }
-        b.strength_signal.bones.clear();
-        b.strength_signal.ref_bones.clear();
-    }
-    return out;
-}
-
 // How many bone references the blocks read that have no bone on this skeleton, and their names.
 // A joint angle whose joint has no parent or child counts too ("<name> (not a joint)").
 int CountMissing(const std::vector<Block>& blocks, const std::vector<int>& role_to_bone,
@@ -150,6 +132,30 @@ void ReadPresetFields()
     m.preset_state = m.has_preset ? PresetStateOf(m.rules, found ? &info : nullptr) : PresetState::Unknown;
 }
 
+// 10-8b fb-1: the rules a missing role skips on the current item's skeleton (none when the file
+// did not load: nothing binds then, as before).
+BlockSkips SessionSkips(const std::vector<Block>& blocks)
+{
+    const TaggingModel& m = g.model;
+    if (!m.file_loaded) {
+        BlockSkips none;
+        none.skipped.assign(blocks.size(), 0);
+        none.missing.assign(blocks.size(), std::string());
+        return none;
+    }
+    return SkippedBlocks(blocks, m.role_to_bone, m.custom_role_to_bone, m.bone_names, m.bone_parents, IsActiveAutoBlock);
+}
+
+// The model's copy of the skips (the rules shown).
+void StoreSkips(const BlockSkips& k)
+{
+    TaggingModel& m = g.model;
+    m.skipped = k.skipped;
+    m.skipped_missing = k.missing;
+    m.skipped_count = k.count;
+    m.nothing_runs = k.count > 0 && k.nothing_runs;
+}
+
 // The item's record, preset state and skeleton binding.
 void ReadItem()
 {
@@ -180,9 +186,10 @@ void ReadItem()
     }
     m.roles_status = GetRoleMapStatus(RulesResourceRoot());
     m.missing.clear();
-    m.missing_count = m.file_loaded ? CountMissing(EnabledOnly(m.rules.blocks), m.role_to_bone, m.custom_role_to_bone,
+    m.missing_count = m.file_loaded ? CountMissing(RunnableBlocks(m.rules.blocks), m.role_to_bone, m.custom_role_to_bone,
                                                    m.bone_names, m.bone_parents, &m.missing)
                                     : 0;
+    StoreSkips(SessionSkips(m.rules.blocks));
     g.detect_dirty = true;
 }
 
@@ -242,11 +249,12 @@ void BuildEvents()
 
 // Binds `rules` on the skeleton and turns them into track indices; samples the bones when
 // the bone set (or the file) changed. False when they do not bind or cannot be sampled.
+// 10-8b fb-1: a rule a missing role skips is bound as an off rule (no bone, never fires).
 bool BindAndSample(const ItemRules& rules, std::vector<Block>* bound_out)
 {
     TaggingModel& m = g.model;
     if (!m.file_loaded || !g.asset) return false;
-    std::vector<Block> bound = EnabledOnly(rules.blocks);
+    std::vector<Block> bound = RunnableBlocks(rules.blocks, SessionSkips(rules.blocks).skipped);
     std::string why;
     if (!BindBoneRefs(bound, m.role_to_bone, m.custom_role_to_bone, m.bone_names, m.bone_parents, &why)) return false;
     std::vector<int> bones;
@@ -323,17 +331,30 @@ void RunDetection()
     m.markers_up_to_date = false;
     m.has_previews = HasPreviews(m.rules);
     m.auto_error.clear();
-    if (m.missing_count > 0) return;  // no detection run (the strip says so)
     const ItemRules& shown = TaggingShownRules();
+    // 10-8b fb-1: a rule a missing role skips does not run; the others and the auto blocks do.
+    // Nothing left to run: no detection (the strip says so), as before.
+    const BlockSkips skips = SessionSkips(shown.blocks);
+    StoreSkips(skips);
+    if (m.nothing_runs) return;
     std::vector<Block> bound;
     if (!BindAndSample(shown, &bound)) return;
     m.trace = DetectTrace(bound, g.tracks, shown.options);
     // Story 10-8b: the auto blocks' events (their trace rows did not run: no curve, events only).
-    std::vector<Event> autos = SessionAutoEvents(shown.blocks);
-    for (const Event& e : autos)
-        if (e.block >= 0 && e.block < static_cast<int>(m.trace.blocks.size()))
-            m.trace.blocks[static_cast<size_t>(e.block)].events.push_back(e);
-    MergeEvents(m.trace.events, std::move(autos));
+    MergeEvents(m.trace.events, SessionAutoEvents(shown.blocks));
+    // 10-8b fb-1: the skipped rules and the auto blocks whose part has no bone keep their last
+    // Commit's markers (the record's Detected entries stand in for their detections).
+    const std::vector<char> keep =
+        KeepUnrunnableEvents(m.trace.events, shown.events, shown.blocks, skips.skipped, m.role_to_bone);
+    // Each row's events (a rule's from DetectTrace already; the auto and kept rows' from the list).
+    for (size_t b = 0; b < m.trace.blocks.size(); ++b) {
+        const bool from_list = (b < shown.blocks.size() && IsAutoBlock(shown.blocks[b])) || (b < keep.size() && keep[b]);
+        if (!from_list) continue;
+        std::vector<Event>& row = m.trace.blocks[b].events;
+        row.clear();
+        for (const Event& e : m.trace.events)
+            if (e.block == static_cast<int>(b)) row.push_back(e);
+    }
     m.detected = true;
     BuildEvents();
 }
@@ -377,9 +398,15 @@ void RefreshSelection()
         const std::string path = AnimPathOf(RavTakeOf(it));
         const SkeletonBones& sk = BoneNamesOf(path);
         const std::vector<std::string>& names = sk.names;
-        std::vector<Block> probe = EnabledOnly(rd.rules.blocks);
-        if (names.empty() ||
-            !BindWithRoleMapping(probe, names, sk.parents, nullptr)) {
+        // 10-8b fb-1: skipped for roles only when nothing can run (a rule with an unmapped role is
+        // skipped alone; the item's other rules and auto blocks are committed).
+        if (names.empty()) {
+            ++m.sel_roles_skipped;
+            continue;
+        }
+        const RoleMapping rm = ItemRoleMapping(names, rd.rules.blocks);
+        const BlockSkips  skips = SkippedBlocks(rd.rules.blocks, rm.builtin, rm.custom, names, sk.parents, IsActiveAutoBlock);
+        if (skips.count > 0 && skips.nothing_runs) {
             ++m.sel_roles_skipped;
             continue;
         }
@@ -696,8 +723,23 @@ ItemDetection DetectItem(MediaItem* item)
         out.map = ItemClipMapOf(item, asset->animations[0].duration);
         const SkeletonBones sk = SkeletonBonesOf(asset->skeleton);
         const std::vector<std::string>& names = sk.names;
-        std::vector<Block> bound = EnabledOnly(out.rules.blocks);
-        if (!BindWithRoleMapping(bound, names, sk.parents, &out.missing)) {
+        // 10-8b fb-1: a rule a missing role skips is bound as an off rule; the item is skipped as
+        // a whole only when nothing else can run.
+        const RoleMapping rm = ItemRoleMapping(names, out.rules.blocks);
+        const BlockSkips  skips = SkippedBlocks(out.rules.blocks, rm.builtin, rm.custom, names, sk.parents, IsActiveAutoBlock);
+        out.skipped = skips.skipped;
+        std::vector<Block> bound = RunnableBlocks(out.rules.blocks, skips.skipped);
+        if (skips.count > 0 && skips.nothing_runs) {
+            // Each name once (two rules may miss the same role).
+            std::vector<std::string> names_once;
+            for (const std::string& nm : MissingBoneRefs(RunnableBlocks(out.rules.blocks), rm.builtin, rm.custom, names,
+                                                         sk.parents))
+                if (std::find(names_once.begin(), names_once.end(), nm) == names_once.end()) names_once.push_back(nm);
+            for (const std::string& nm : names_once) out.missing += (out.missing.empty() ? "" : ", ") + nm;
+            out.status = ItemDetection::Status::RolesMissing;
+            return out;
+        }
+        if (!BindBoneRefs(bound, rm.builtin, rm.custom, names, sk.parents, &out.missing)) {
             out.status = ItemDetection::Status::RolesMissing;
             return out;
         }
@@ -715,15 +757,18 @@ ItemDetection DetectItem(MediaItem* item)
         out.events = Detect(bound, tracks, out.rules.options);
         // Story 10-8b: the auto blocks' events, on the item's role mapping (the session's role
         // tracks and analyses when they are this file's with the same bones).
+        const std::vector<int>& role_to_bone = rm.builtin;
         if (HasActiveAutoBlocks(out.rules.blocks)) {
-            const std::vector<int> role_to_bone = ItemRoleMapping(names, out.rules.blocks).builtin;
-            const SampleKey        rkey = RoleTrackKey(path, stamp, role_to_bone);
+            const SampleKey rkey = RoleTrackKey(path, stamp, role_to_bone);
             if (g.have_role_tracks && rkey == g.role_key) {
                 MergeEvents(out.events, DetectAutoEvents(out.rules.blocks, g.role_tracks, &g.auto_cache));
             } else {
                 MergeEvents(out.events, DetectAutoEvents(out.rules.blocks, SampleRoleTracks(*asset, role_to_bone)));
             }
         }
+        // 10-8b fb-1: the skipped rules and the auto blocks whose part has no bone keep their last
+        // Commit's markers (Commit plans them from here, so it writes and records them again).
+        KeepUnrunnableEvents(out.events, out.rules.events, out.rules.blocks, skips.skipped, role_to_bone);
         out.status = ItemDetection::Status::Ok;
     } catch (...) {
         out.status = ItemDetection::Status::Failed;

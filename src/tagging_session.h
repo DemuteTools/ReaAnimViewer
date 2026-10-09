@@ -74,6 +74,14 @@ struct TaggingModel {
     RoleMapStatus            roles_status = RoleMapStatus::Absent;
     int                      missing_count = 0;  // bone references the rules read with no bone
     std::string              missing;            // their names
+    // 10-8b fb-1: a rule with a bone reference that has no bone is skipped alone (SkippedBlocks,
+    // rule_record.h): the others and the auto blocks still run, live and at Commit, and its last
+    // Commit's markers are kept. Per block of the rules shown: skipped, and what it misses.
+    std::vector<char>        skipped;
+    std::vector<std::string> skipped_missing;
+    int                      skipped_count = 0;
+    bool                     nothing_runs = false;  // a rule is skipped and nothing else can run:
+                                                    // the item is skipped as a whole (as before fb-1)
     std::string              sample_error;       // non-empty: the bones could not be sampled
     // Detection over the rules shown (the preview while one runs, else the saved rules).
     bool           previewing = false;
@@ -109,12 +117,18 @@ struct ItemDetection {
     Status             status = Status::Failed;
     ItemRules          rules;   // the record as read
     ItemClipMap        map;
-    std::vector<Event> events;  // the live detections
+    std::vector<Event> events;  // the live detections (fb-1: and the kept ones of the blocks that cannot run)
     std::string        missing; // RolesMissing: their names
+    // 10-8b fb-1: the rules a missing role skips (per block; Ok with some skipped = the others ran).
+    std::vector<char>  skipped;
 };
 // Reads the item's record, binds its rules on its skeleton, samples its bones (the session's
 // tracks when they fit) and runs detection, its auto blocks' too (story 10-8b: their events
 // join the rules', on the item's role mapping). Never writes.
+// 10-8b fb-1: a rule with an unmapped role is skipped alone (as if it were off) and an auto block
+// whose part has no bone finds nothing: both keep their last Commit's markers (KeepBlockEvents,
+// event_list.h), so Commit, previews, the mirror and pool follow keep them. RolesMissing only when
+// a rule is skipped and nothing else can run (no rule left, no auto block on).
 ItemDetection DetectItem(MediaItem* item);
 
 // The clip map of an item (its take's start offset and rate), for a clip of `clip_len` seconds.

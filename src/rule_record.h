@@ -180,6 +180,28 @@ std::vector<std::string> MissingBoneRefs(const std::vector<Block>& blocks, const
                                          const std::vector<std::string>& bone_names,
                                          const std::vector<int>& bone_parents);
 
+// 10-8b fb-1 -- the rules a missing role skips. A rule that is on and reads a bone reference with
+// no bone on this skeleton (MissingBoneRefs on that block alone) is skipped: detection runs as if
+// that rule alone were off, and its row names what it misses. An off rule or an auto block is
+// never skipped. `nothing_runs`: no rule is left to run and no auto block runs (the item is then
+// skipped as a whole, as before); an auto block that is on runs when `auto_runs` says so
+// (IsActiveAutoBlock, auto_detect.h: a known type with a side; null = none runs). The record is
+// never changed.
+struct BlockSkips {
+    std::vector<char>        skipped;  // per block: 1 = skipped
+    std::vector<std::string> missing;  // per block: its missing names, ", "-separated ("" = not skipped)
+    int                      count = 0;          // skipped rules
+    bool                     nothing_runs = false;
+};
+BlockSkips SkippedBlocks(const std::vector<Block>& blocks, const std::vector<int>& role_to_bone,
+                         const std::map<std::string, int>& custom_role_to_bone,
+                         const std::vector<std::string>& bone_names, const std::vector<int>& bone_parents,
+                         bool (*auto_runs)(const Block&));
+// The blocks as detection and the binding see them: an off rule, and a skipped one (`skipped`, per
+// block; shorter = not skipped), reads no bone (its conditions' and strength's bone lists emptied)
+// and is off, so it never fires and a role it alone needs is never missing. Block indices stay.
+std::vector<Block> RunnableBlocks(const std::vector<Block>& blocks, const std::vector<char>& skipped = {});
+
 // ---- The record ------------------------------------------------------------------------
 
 struct PresetCopy {

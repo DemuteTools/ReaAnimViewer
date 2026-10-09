@@ -105,6 +105,31 @@ std::vector<ShownEvent> BuildEventList(const std::vector<Event>& detections, con
     return out;
 }
 
+void KeepBlockEvents(std::vector<Event>& detections, const std::vector<EventEntry>& entries,
+                     const std::vector<Block>& blocks, const std::vector<char>& keep)
+{
+    auto kept = [&](int b) {
+        return b >= 0 && b < static_cast<int>(blocks.size()) && static_cast<size_t>(b) < keep.size() &&
+               keep[static_cast<size_t>(b)] != 0;
+    };
+    if (std::none_of(keep.begin(), keep.end(), [](char k) { return k != 0; })) return;
+    detections.erase(std::remove_if(detections.begin(), detections.end(), [&](const Event& e) { return kept(e.block); }),
+                     detections.end());
+    for (const EventEntry& x : entries) {
+        if (x.kind != EventKind::Detected || !kept(x.block)) continue;
+        Event e;
+        e.time_s = x.t;
+        e.block = x.block;
+        e.marker = blocks[static_cast<size_t>(x.block)].marker;
+        e.strength = x.strength;
+        e.speed = x.speed;
+        detections.push_back(e);
+    }
+    std::stable_sort(detections.begin(), detections.end(), [](const Event& a, const Event& b) {
+        return a.time_s < b.time_s || (a.time_s == b.time_s && a.block < b.block);
+    });
+}
+
 EventEntry MakeUserEvent(int block, double t, double strength, double speed)
 {
     EventEntry e;

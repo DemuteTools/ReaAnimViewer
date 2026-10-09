@@ -30,6 +30,13 @@ int g_fails = 0;
         }                                                           \
     } while (0)
 
+// fb-1: SkippedBlocks' `auto_runs` (the DLL passes IsActiveAutoBlock, auto_detect.h): on, a type
+// this test knows, a side.
+bool KnownAutoRuns(const Block& b)
+{
+    return b.enabled && (b.auto_type == "step" || b.auto_type == "grab") && (b.auto_side == 'L' || b.auto_side == 'R');
+}
+
 int R(Role r)
 {
     return static_cast<int>(r);
@@ -641,6 +648,74 @@ int main()
         s.bones = {R(Role::RightElbow)};
         s.measure = Measure::Position;
         CHECK(SignalName(s, SignalBoneLabel(s)) == "R elbow angle");
+    }
+
+    // ---- 10-8b fb-1: a rule with an unmapped role is skipped alone --------------------------
+    {
+        const std::vector<std::string> names = {"Hips", "weapon_r"};
+        std::vector<int>               map(static_cast<size_t>(Role::Count), -1);
+        map[R(Role::Hips)] = 0;
+        const std::map<std::string, int> custom;  // sword_tip unmapped
+        Block auto_step;
+        auto_step.auto_type = "step";
+        auto_step.marker = "FS L";
+        Block     sword;
+        Condition cs;
+        cs.signal.bones = {BoneRefId("role:sword_tip")};
+        sword.conditions = {cs};
+        sword.marker = "Sword";
+        Block     jump;
+        Condition cj;
+        cj.signal.bones = {R(Role::Hips)};
+        jump.conditions = {cj};
+        jump.marker = "Jump";
+        Block off = sword;
+        off.enabled = false;
+        off.marker = "Off";
+
+        // Auto + unmapped rule (+ a bound rule, + an off rule on the same unmapped role).
+        const std::vector<Block> blocks = {auto_step, sword, jump, off};
+        const BlockSkips         k = SkippedBlocks(blocks, map, custom, names, {}, KnownAutoRuns);
+        CHECK((k.skipped == std::vector<char>{0, 1, 0, 0}));
+        CHECK(k.missing.size() == 4 && k.missing[1] == "sword tip" && k.missing[0].empty() && k.missing[3].empty());
+        CHECK(k.count == 1 && !k.nothing_runs);
+        // Only the skipped rule beside the auto block: the auto block still runs.
+        CHECK(!SkippedBlocks({auto_step, sword}, map, custom, names, {}, KnownAutoRuns).nothing_runs);
+        // An auto block that is off does not run.
+        Block auto_off = auto_step;
+        auto_off.enabled = false;
+        CHECK(SkippedBlocks({auto_off, sword}, map, custom, names, {}, KnownAutoRuns).nothing_runs);
+        // An unknown or side-less auto block does not run either.
+        Block unknown = auto_step;
+        unknown.auto_type = "kick";
+        Block sideless = auto_step;
+        sideless.auto_side = '?';
+        CHECK(SkippedBlocks({unknown, sword}, map, custom, names, {}, KnownAutoRuns).nothing_runs);
+        CHECK(SkippedBlocks({sideless, sword}, map, custom, names, {}, KnownAutoRuns).nothing_runs);
+        CHECK(SkippedBlocks({auto_step, sword}, map, custom, names, {}, nullptr).nothing_runs);
+        // Nothing can run: only rules, all unmapped (an off rule is never skipped, never runs).
+        const BlockSkips none = SkippedBlocks({sword, off}, map, custom, names, {}, KnownAutoRuns);
+        CHECK(none.nothing_runs && none.count == 1 && (none.skipped == std::vector<char>{1, 0}));
+        const BlockSkips only_off = SkippedBlocks({off}, map, custom, names, {}, KnownAutoRuns);
+        CHECK(only_off.nothing_runs && only_off.count == 0);
+        // Mapped: nothing is skipped.
+        std::map<std::string, int> mapped = {{"sword_tip", 1}};
+        const BlockSkips           all = SkippedBlocks(blocks, map, mapped, names, {}, KnownAutoRuns);
+        CHECK(all.count == 0 && !all.nothing_runs && (all.skipped == std::vector<char>{0, 0, 0, 0}));
+
+        // RunnableBlocks: the skipped and off rules read no bone and are off; the others as they are.
+        const std::vector<Block> run = RunnableBlocks(blocks, k.skipped);
+        CHECK(run.size() == 4 && run[0].enabled && run[0].auto_type == "step");
+        CHECK(!run[1].enabled && run[1].conditions[0].signal.bones.empty());
+        CHECK(run[2].enabled && run[2].conditions[0].signal.bones == std::vector<int>{R(Role::Hips)});
+        CHECK(!run[3].enabled && run[3].conditions[0].signal.bones.empty());
+        // Every block now binds (the skipped rule's role is no longer read).
+        std::vector<Block> bound = run;
+        std::string        missing;
+        CHECK(BindBoneRefs(bound, map, custom, names, {}, &missing) && missing.empty());
+        // Without a skip list: the off rule only.
+        const std::vector<Block> run2 = RunnableBlocks(blocks);
+        CHECK(run2[1].enabled && !run2[1].conditions[0].signal.bones.empty() && !run2[3].enabled);
     }
 
     // ---- Story 10-3e: custom roles bind through their mapping by key ----------------------

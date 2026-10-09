@@ -329,6 +329,10 @@ void WritePlan(MediaItem_Take* take, const std::vector<PlannedMarker>& plan, Mar
 // and previews, already deleted), then records them as RAV's with the applied snapshot, no
 // preview left, and stores the record as the Cancel snapshot (no undo point: the caller's
 // block holds it). Counts go to `res`.
+// 10-8b fb-1: every own marker is deleted first, so a rule skipped for a missing role (and an auto
+// block whose part has no bone) keeps its markers only through the plan: DetectItem gives its last
+// Commit's detections back (KeepBlockEvents) and its user events are in the record, so they are
+// written again as the last Commit wrote them, and recorded again for the next Commit.
 void CommitItemMarkers(MediaItem* item, const ItemDetection& det, MarkerMode mode,
                        std::vector<ExistingMarker>& written_project, ApplyResult& res)
 {

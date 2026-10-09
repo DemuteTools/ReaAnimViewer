@@ -55,7 +55,8 @@ struct ApplyResult {
     int         items = 0;         // items whose markers were written (Cancel: items restored)
     int         markers = 0;       // markers written
     int         without_rules = 0; // selected items without rules (or not RAV items)
-    int         roles_skipped = 0; // skipped: a role has no bone, or the file did not load
+    int         roles_skipped = 0; // skipped: nothing can run (every rule on reads a role with no bone, no
+                                   // auto block on: 10-8b fb-1), or the file did not load
     int         failed = 0;        // skipped: the item could not be read or written
     int         already_present = 0;  // slots left to a marker RAV does not own
     std::string error;             // non-empty: nothing was written, why (or a gesture's preview failure)

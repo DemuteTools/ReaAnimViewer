@@ -20,6 +20,7 @@
 #include "console_log.h"
 #include "footstep_measure.h"  // kDetectRateHz
 #include "item_rules.h"
+#include "motion_physics.h"
 #include "pcm_source_anim.h"
 #include "role_map_store.h"
 #include "tag_markers.h"  // the marker option (markers up to date)
@@ -64,6 +65,12 @@ struct Session {
     bool                   have_tracks = false;
     SampleKey              sample_key;
     std::vector<BoneTrack> tracks;
+    // Story 10-8b: the physics role tracks (indexed by Role) for the auto blocks, sampled once per
+    // (file, version, the physics roles' bones), and the analyses run on them (one per sensitivity set).
+    bool                      have_role_tracks = false;
+    SampleKey                 role_key;
+    std::vector<BoneTrack>    role_tracks;
+    std::vector<AutoAnalysis> auto_cache;
     // The rules shown: the preview while a drag runs.
     bool      previewing = false;
     ItemRules preview;
@@ -192,6 +199,8 @@ void LoadFile(double now)
     g.asset_stamp = stamp;
     g.asset = m.path.empty() ? nullptr : AcquireCpuAsset(m.path);
     g.have_tracks = false;
+    g.have_role_tracks = false;
+    g.auto_cache.clear();
     g.names_by_path.erase(m.path);
     m.bone_names.clear();
     m.bone_parents.clear();
@@ -254,6 +263,55 @@ bool BindAndSample(const ItemRules& rules, std::vector<Block>* bound_out)
     return true;
 }
 
+// Story 10-8b: the key of the physics role tracks: the file and the bone of each physics role
+// (-1 = none), in PhysicsRoles() order.
+SampleKey RoleTrackKey(const std::string& path, const AssetFileStamp& stamp, const std::vector<int>& role_to_bone)
+{
+    SampleKey key{path, stamp, {}};
+    for (Role r : PhysicsRoles()) {
+        const size_t i = static_cast<size_t>(r);
+        key.bones.push_back(i < role_to_bone.size() ? role_to_bone[i] : -1);
+    }
+    return key;
+}
+
+std::vector<BoneTrack> SampleRoleTracks(const CpuAsset& asset, const std::vector<int>& role_to_bone)
+{
+    return PhysicsRoleTracks(role_to_bone,
+                             [&](const std::vector<int>& bones) { return SampleBoneTracks(asset, bones, kDetectRateHz); });
+}
+
+// The current item's auto events for `blocks` (the session's role tracks, sampled when the file
+// or the mapping changed); m.auto_error says why they found nothing.
+std::vector<Event> SessionAutoEvents(const std::vector<Block>& blocks)
+{
+    TaggingModel& m = g.model;
+    m.auto_error.clear();
+    if (!HasActiveAutoBlocks(blocks) || !g.asset) return {};
+    SampleKey key = RoleTrackKey(g.asset_path, g.asset_stamp, m.role_to_bone);
+    if (!g.have_role_tracks || !(key == g.role_key)) {
+        g.role_tracks = SampleRoleTracks(*g.asset, m.role_to_bone);
+        g.role_key = std::move(key);
+        g.have_role_tracks = true;
+        g.auto_cache.clear();
+    }
+    std::vector<Event> ev = DetectAutoEvents(blocks, g.role_tracks, &g.auto_cache);
+    for (const PhysicsParams& p : AutoParamSets(blocks))
+        for (const AutoAnalysis& a : g.auto_cache)
+            if (SameAutoAnalysis(a.params, p) && !a.analysis.ok && m.auto_error.empty()) m.auto_error = a.analysis.error;
+    return ev;
+}
+
+// The rules' detections and the auto blocks' events in one list, by time (then block).
+void MergeEvents(std::vector<Event>& into, std::vector<Event> more)
+{
+    if (more.empty()) return;
+    into.insert(into.end(), std::make_move_iterator(more.begin()), std::make_move_iterator(more.end()));
+    std::stable_sort(into.begin(), into.end(), [](const Event& a, const Event& b) {
+        return a.time_s < b.time_s || (a.time_s == b.time_s && a.block < b.block);
+    });
+}
+
 void RunDetection()
 {
     TaggingModel& m = g.model;
@@ -264,11 +322,18 @@ void RunDetection()
     m.planned.clear();
     m.markers_up_to_date = false;
     m.has_previews = HasPreviews(m.rules);
+    m.auto_error.clear();
     if (m.missing_count > 0) return;  // no detection run (the strip says so)
     const ItemRules& shown = TaggingShownRules();
     std::vector<Block> bound;
     if (!BindAndSample(shown, &bound)) return;
     m.trace = DetectTrace(bound, g.tracks, shown.options);
+    // Story 10-8b: the auto blocks' events (their trace rows did not run: no curve, events only).
+    std::vector<Event> autos = SessionAutoEvents(shown.blocks);
+    for (const Event& e : autos)
+        if (e.block >= 0 && e.block < static_cast<int>(m.trace.blocks.size()))
+            m.trace.blocks[static_cast<size_t>(e.block)].events.push_back(e);
+    MergeEvents(m.trace.events, std::move(autos));
     m.detected = true;
     BuildEvents();
 }
@@ -348,6 +413,8 @@ void TaggingSessionFrame(MediaItem* item, const std::string& path)
                 g.asset.reset();
                 g.asset_stamp = AssetFileStamp{};
                 g.have_tracks = false;
+                g.have_role_tracks = false;
+                g.auto_cache.clear();
                 g.stamp_checked_at = -1.0;
                 const int sc = m.sel_count, snr = m.sel_without_rules, srs = m.sel_roles_skipped;
                 const int stc = m.sel_to_commit, sca = m.sel_cancellable, sln = m.sel_linked;
@@ -498,6 +565,18 @@ bool TaggingAnalyse()
     return ok;
 }
 
+bool TaggingDetectAuto(const AutoSettings& settings)
+{
+    if (!g.model.item) return false;
+    return TaggingEdit("RAV: Detect auto events", [settings](ItemRules& r) {
+        bool                   changed = false;
+        const std::vector<int> map = ApplyAutoSettings(r.blocks, settings, &changed);
+        if (!changed) return false;
+        RemapEventBlocks(r.events, map);
+        return true;
+    });
+}
+
 bool TaggingLoadPreset(const std::string& preset_id)
 {
     g.last_error.clear();
@@ -634,6 +713,17 @@ ItemDetection DetectItem(MediaItem* item)
             return out;
         }
         out.events = Detect(bound, tracks, out.rules.options);
+        // Story 10-8b: the auto blocks' events, on the item's role mapping (the session's role
+        // tracks and analyses when they are this file's with the same bones).
+        if (HasActiveAutoBlocks(out.rules.blocks)) {
+            const std::vector<int> role_to_bone = ItemRoleMapping(names, out.rules.blocks).builtin;
+            const SampleKey        rkey = RoleTrackKey(path, stamp, role_to_bone);
+            if (g.have_role_tracks && rkey == g.role_key) {
+                MergeEvents(out.events, DetectAutoEvents(out.rules.blocks, g.role_tracks, &g.auto_cache));
+            } else {
+                MergeEvents(out.events, DetectAutoEvents(out.rules.blocks, SampleRoleTracks(*asset, role_to_bone)));
+            }
+        }
         out.status = ItemDetection::Status::Ok;
     } catch (...) {
         out.status = ItemDetection::Status::Failed;

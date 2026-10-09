@@ -1560,6 +1560,76 @@ int main()
         }
     }
 
+    // ---- Story 10-8b: auto-detection blocks ----
+    {
+        // `auto`, `side`, `sens` right after `on`, only on an auto block; no cond line. A rule's
+        // line is unchanged. The item, its preset copy and a preset file round-trip.
+        const std::string s =
+            "RAVRULES 1\n"
+            "options sensitivity=0 edge_ms=0 smooth_ms=8\n"
+            "analyse floor_pct=2 pos_frac=0.25 speed_pct=30 margin_ratio=0.5 onset_frac=0.1 per_bone_floor=0\n"
+            "preset id=factory/footsteps version=3 kept=0 name=Footsteps\n"
+            "copy\n"
+            "options sensitivity=0 edge_ms=0 smooth_ms=8\n"
+            "analyse floor_pct=2 pos_frac=0.25 speed_pct=30 margin_ratio=0.5 onset_frac=0.1 per_bone_floor=0\n"
+            "block auto=step side=L sens=50 color=#5F9EDD hold_ms=0 cooldown_ms=0 offset_ms=0 land=cross marker=FS L\n"
+            "block auto=step side=R sens=50 color=#DD9E5F hold_ms=0 cooldown_ms=0 offset_ms=0 land=cross marker=FS R\n"
+            "end\n"
+            "block color=#3FA7FF hold_ms=0 cooldown_ms=180 offset_ms=0 land=cross marker=Rule\n"
+            "cond q=point bones=role:left_heel comb=single ref=floor meas=position axis=vertical dir=below thr=0.05 "
+            "margin=0.02 fixed=0\n"
+            "block on=0 auto=heel side=R sens=72.5 color=#DD9E5F hold_ms=0 cooldown_ms=0 offset_ms=-12 land=cross "
+            "marker=Heel R\n"
+            "event t=1.5 kind=user block=1 strength=0 speed=0\n";
+        ItemRules p;
+        CHECK(ParseItemRules(s, &p));
+        CHECK(!HasKeptText(p));
+        CHECK(SerializeItemRules(p) == s);
+        CHECK(p.blocks.size() == 2 && p.preset_copy.blocks.size() == 2);
+        if (p.blocks.size() == 2) {
+            CHECK(!IsAutoBlock(p.blocks[0]) && p.blocks[0].conditions.size() == 1);
+            const Block& h = p.blocks[1];
+            CHECK(IsAutoBlock(h) && h.auto_type == "heel" && h.auto_side == 'R' && h.sens == 72.5 && !h.enabled &&
+                  h.offset_ms == -12 && h.conditions.empty() && h.marker == "Heel R");
+        }
+        if (p.preset_copy.blocks.size() == 2)
+            CHECK(p.preset_copy.blocks[1].auto_type == "step" && p.preset_copy.blocks[1].auto_side == 'R');
+        // An edit wins: the sensitivity written is the model's.
+        p.blocks[1].sens = 30;
+        CHECK(SerializeItemRules(p).find("auto=heel side=R sens=30 ") != std::string::npos);
+        // `side` and `sens` on a rule's line (no `auto`) are not the rule's: kept, written back as read.
+        {
+            const std::string rl = "RAVRULES 1\noptions sensitivity=0 edge_ms=0 smooth_ms=8\nanalyse floor_pct=2 "
+                                   "pos_frac=0.25 speed_pct=30 margin_ratio=0.5 onset_frac=0.1 per_bone_floor=0\n"
+                                   "block side=R sens=70 color=none hold_ms=0 cooldown_ms=0 offset_ms=0 land=cross "
+                                   "marker=Rule\n";
+            ItemRules rr;
+            CHECK(ParseItemRules(rl, &rr) && rr.blocks.size() == 1 && !IsAutoBlock(rr.blocks[0]));
+            CHECK(HasKeptText(rr) && SerializeItemRules(rr) == rl);
+        }
+        // A rule made an auto block (and back) writes the fields only while it is one.
+        Block b = p.blocks[0];
+        b.auto_type = "lift";
+        b.conditions.clear();
+        ItemRules q;
+        q.blocks = {b};
+        CHECK(SerializeItemRules(q).find("block auto=lift side=L sens=50 color=#3FA7FF") != std::string::npos);
+        q.blocks[0].auto_type.clear();
+        CHECK(SerializeItemRules(q).find("auto=") == std::string::npos && SerializeItemRules(q).find("sens=") == std::string::npos);
+        // A preset file with auto blocks.
+        PresetData pd;
+        pd.id = "user/feet";
+        pd.name = "Feet";
+        pd.blocks = p.preset_copy.blocks;
+        const std::string ps = SerializePreset(pd);
+        PresetData pb;
+        CHECK(ParsePreset(ps, &pb) && !HasKeptText(pb) && BlocksEqual(pb.blocks, pd.blocks) && SerializePreset(pb) == ps);
+        // A pooled copy gets the auto blocks with the rest of the content.
+        ItemRules copy;
+        CopyPoolContent(p, copy);
+        CHECK(BlocksEqual(copy.blocks, p.blocks) && PoolContentEqual(copy, p));
+    }
+
     // ---- 10-5 frozen fixtures ----
     // Written by the 10-5 build (the shipped v1 grammar) and committed as text. NEVER
     // regenerate them: a later format change must keep reading these and writing them back

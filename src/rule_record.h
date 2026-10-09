@@ -62,6 +62,9 @@
 //     right after `meas` = SignalSpec::window_ms, written only when it is not 0 (the
 //     measure's default window), so a record without them writes back byte-identical.
 //   - `on=0` on a `block` line = the rule is switched off (absent = on, story 10-3).
+//   - story 10-8b: `auto=<type> side=<L|R> sens=<0..100>` on a `block` line = an auto-detection
+//     block (Block::auto_type, auto_detect.h), written only on those, right after `on`. It has no
+//     `cond` line. An older RAV keeps the three as unknown fields of a block that never fires.
 //   - story 10-4: an `event` line writes `block`, `strength` and `speed` only when it was read
 //     with them (or made by this version), so a record written without them comes back as
 //     written. Event times are clip seconds; `block` is the rule's index in the item's blocks.
@@ -320,7 +323,8 @@ std::string SerializeItemRules(const ItemRules& rules);
 bool ParsePreset(const std::string& text, PresetData* out);
 std::string SerializePreset(const PresetData& preset);
 
-// Exact equality of everything detection reads, plus on/off, marker and colour (kept text ignored).
+// Exact equality of everything detection reads, plus on/off, marker and colour (kept text ignored;
+// story 10-8b: an auto block's type, side and sensitivity included).
 bool SignalsEqual(const SignalSpec& a, const SignalSpec& b);
 bool BlocksEqual(const std::vector<Block>& a, const std::vector<Block>& b);
 // The fields the record writes (kept text and the derived AnalyseOptions::smooth_ms ignored).

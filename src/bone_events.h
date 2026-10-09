@@ -201,7 +201,21 @@ struct Block {
     bool                   peak_max = true;
     KeptText               kept;           // its `block` line (rule_record.h)
     KeptText               kept_strength;  // its `strength` line
+    // Story 10-8b -- an auto-detection block (auto_detect.h): `auto_type` names its event type
+    // ("step", "heel", "toe", "lift", "slide", "pivot"; "" = a rule), `auto_side` its foot
+    // ('L' / 'R') and `sens` its sensitivity (0..100 %, 50 = the physics defaults). It has no
+    // condition and the rule engine never fires it (DetectTrace skips it): its events come from
+    // the motion physics (motion_physics.h). Marker, colour, offset_ms and enabled are its own.
+    std::string            auto_type;
+    char                   auto_side = 'L';
+    double                 sens = 50.0;
 };
+
+// True for an auto-detection block (Block::auto_type set).
+inline bool IsAutoBlock(const Block& b)
+{
+    return !b.auto_type.empty();
+}
 
 struct DetectOptions {
     double sensitivity = 0.0;     // 0..1: drop events weaker than this share of the block's strongest
@@ -227,8 +241,8 @@ std::vector<double> EvaluateSignal(const SignalSpec& spec, const std::vector<Bon
 
 // One block's detection state, sample by sample (story 10-3: what the Tagging view draws).
 struct BlockTrace {
-    // False: the block is off, has no condition, or a signal does not fit the tracks. The
-    // vectors are then empty and it has no events.
+    // False: the block is off, has no condition, is an auto block (story 10-8b), or a signal
+    // does not fit the tracks. The vectors are then empty and it has no events.
     bool                              ran = false;
     std::vector<std::vector<double>>  curves;  // per condition: its signal, one value per sample
     std::vector<std::vector<char>>    holds;   // per condition: in (1) / out (0), with hysteresis
@@ -251,7 +265,8 @@ DetectionTrace DetectTrace(const std::vector<Block>& blocks, const std::vector<B
 // Story 10-4 -- an event's values (strength, speed) at event time t (clip seconds, the
 // block's offset included), read from the same series detection uses: for a detected event,
 // EventValuesAt(its block, ..., e.time_s) gives e.strength and e.speed. A user event's values
-// are measured this way at its time. False (values 0) when the block or the tracks do not fit.
+// are measured this way at its time. False (values 0) when the block or the tracks do not fit,
+// and for an auto block (story 10-8b: a user event on its row has values 0).
 bool EventValuesAt(const Block& blk, const std::vector<BoneTrack>& tracks, const DetectOptions& opts, double t,
                    double* strength, double* speed);
 

@@ -10,6 +10,9 @@
 //     detection rate (240 Hz), from the parsed file (bone_sampling.h).
 //   - Detection (DetectTrace, bone_events.h) reruns when the rules shown change: the saved
 //     rules, or a live preview while a drag runs (the preview is never written).
+//   - Story 10-8b: the item's auto blocks (auto_detect.h) add their events from the motion
+//     physics, on the item's role mapping: the physics roles are sampled once per (file, file
+//     version, their bones), and one analysis runs per sensitivity set (kept for a few sets).
 //   - Every edit goes through ModifyItemRules (one REAPER undo point, named after the edit,
 //     that also rewrites the item's preview markers: tag_markers.h). Analyse is one edit too;
 //     nothing runs it on its own. 10-6: the edit reaches the other copies of the item's pool
@@ -26,6 +29,7 @@
 #include <string>
 #include <vector>
 
+#include "auto_detect.h"
 #include "bone_events.h"
 #include "event_list.h"
 #include "preset_store.h"
@@ -80,6 +84,9 @@ struct TaggingModel {
     // would write for it, and whether the last Apply wrote exactly that (with this option).
     std::vector<ShownEvent>    events;
     std::vector<PlannedMarker> planned;
+    // Story 10-8b: why the auto blocks found nothing ("" = they ran): the physics analysis' reason
+    // (no body scale, the clip too short, the bones not sampled...).
+    std::string                auto_error;
     bool                       markers_up_to_date = false;
     bool                       has_previews = false;  // 10-4 fb-4: the saved record has preview markers
     // 10-6: the item's pool (read at the selection's cadence, not per frame): how many other items
@@ -106,7 +113,8 @@ struct ItemDetection {
     std::string        missing; // RolesMissing: their names
 };
 // Reads the item's record, binds its rules on its skeleton, samples its bones (the session's
-// tracks when they fit) and runs detection. Never writes.
+// tracks when they fit) and runs detection, its auto blocks' too (story 10-8b: their events
+// join the rules', on the item's role mapping). Never writes.
 ItemDetection DetectItem(MediaItem* item);
 
 // The clip map of an item (its take's start offset and rate), for a clip of `clip_len` seconds.
@@ -155,6 +163,12 @@ bool TaggingEditEvent(const char* undo_desc, const std::function<bool(ItemRules&
 // Analyse: proposes the thresholds from the clip (Fixed conditions keep theirs). One undo
 // point. False when the item cannot be analysed (missing roles, no tracks).
 bool TaggingAnalyse();
+
+// Story 10-8b -- Detect in the Auto detection section: the item's auto blocks become these
+// settings (ApplyAutoSettings: ticked types added, unticked ones removed with their events, steps
+// switched between separate and combined), the event list remapped. One undo point ("RAV: Detect
+// auto events"); nothing is written when the blocks would not change.
+bool TaggingDetectAuto(const AutoSettings& settings);
 
 // Loads a preset on the item (SetUpPresetOnItem): one undo point.
 bool TaggingLoadPreset(const std::string& preset_id);

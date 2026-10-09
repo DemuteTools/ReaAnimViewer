@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //
 // Host test of the preset store (src/preset_store.h, story 10-2): the embedded Footsteps
-// presets are Footsteps Heel and Footsteps Toe, factory presets are read-only, user
+// preset (auto detection since story 10-8b), factory presets are read-only, user
 // presets on disk (save bumps the version, save as, rename, delete, import, export), and
 // the item states Legacy / Edited / UpToDate / Unknown. Works in a temp folder.
 
@@ -53,8 +53,7 @@ struct FactoryPin {
     unsigned long long hash;
 };
 const FactoryPin kFactoryPins[] = {
-    {"footsteps", 2, 0x18d5e6abc3bc225cull},
-    {"footsteps_toe", 1, 0xa26f7eff3fa43fe8ull},
+    {"footsteps", 3, 0x300e415a9df20e67ull},
 };
 
 std::string ReadAll(const fs::path& p)
@@ -84,43 +83,27 @@ int main()
     const std::string R = root.u8string();
     const fs::path    user_dir = fs::u8path(UserPresetDir(R));
 
-    // The factory footstep presets (10-4 follow-up, Antho 2026-10-05): Footsteps Heel (v2,
-    // replaces Footsteps v1, same id) and Footsteps Toe. One rule per foot, one condition (the
-    // bone's height above the floor goes below the threshold), the marker at the start of the
-    // match, strength = the bone's downward vertical speed.
+    // The factory Footsteps preset (story 10-8b, Antho 2026-10-09): v3 replaces Footsteps Heel v2
+    // (same id) with auto detection: steps combined, one block per foot (FS L / FS R), no
+    // condition, the default sensitivity and no offset. Footsteps Toe is gone.
     {
-        struct Want {
-            const char* id;
-            int         version;
-            const char* name;
-            const char* left;
-            const char* right;
-        };
-        const Want wants[] = {{"factory/footsteps", 2, "Footsteps Heel", "role:left_heel", "role:right_heel"},
-                              {"factory/footsteps_toe", 1, "Footsteps Toe", "role:left_toe", "role:right_toe"}};
-        for (const Want& w : wants) {
-            PresetData  d;
-            std::string err;
-            CHECK(LoadPreset(R, w.id, &d, &err));
-            CHECK(d.id == w.id && d.version == w.version && d.name == w.name);
-            CHECK(d.blocks.size() == 2);
-            if (d.blocks.size() != 2) continue;
-            const char* markers[2] = {"Footstep L", "Footstep R"};
-            const char* bones[2] = {w.left, w.right};
-            for (int k = 0; k < 2; ++k) {
-                const Block& blk = d.blocks[static_cast<size_t>(k)];
-                CHECK(blk.marker == markers[k] && blk.enabled && blk.landing == Landing::Crossing);
-                CHECK(blk.conditions.size() == 1);
-                if (blk.conditions.size() != 1) continue;
-                const SignalSpec& sg = blk.conditions[0].signal;
-                CHECK(sg.quantity == Quantity::Point && sg.measure == Measure::Position && sg.axis == Axis::Vertical &&
-                      sg.reference == Reference::Floor && blk.conditions[0].dir == Direction::Below);
-                CHECK(sg.bones.size() == 1 && sg.bones[0] == BoneRefId(bones[k]));
-                CHECK(blk.strength_signal.bones.size() == 1 && blk.strength_signal.bones[0] == BoneRefId(bones[k]) &&
-                      blk.strength_signal.measure == Measure::Speed && blk.strength_sign == -1.0);
-            }
-            CHECK(!HasKeptText(d));
+        PresetData  d;
+        std::string err;
+        CHECK(LoadPreset(R, "factory/footsteps", &d, &err));
+        CHECK(d.id == "factory/footsteps" && d.version == 3 && d.name == "Footsteps");
+        CHECK(d.blocks.size() == 2);
+        const char* markers[2] = {"FS L", "FS R"};
+        const char  sides[2] = {'L', 'R'};
+        for (size_t k = 0; k < d.blocks.size() && k < 2; ++k) {
+            const Block& blk = d.blocks[k];
+            CHECK(IsAutoBlock(blk) && blk.auto_type == "step" && blk.auto_side == sides[k] && blk.sens == 50.0);
+            CHECK(blk.marker == markers[k] && blk.enabled && blk.conditions.empty() && blk.offset_ms == 0.0);
+            CHECK(blk.color != 0);
         }
+        CHECK(!HasKeptText(d));
+        PresetInfo info;
+        CHECK(!FindPreset(R, "factory/footsteps_toe", &info));
+        CHECK(!LoadPreset(R, "factory/footsteps_toe", &d, &err));
     }
 
     {
@@ -163,7 +146,7 @@ int main()
     // List: factory first, built-in.
     {
         const std::vector<PresetInfo> list = ListPresets(R);
-        CHECK(!list.empty() && list[0].id == "factory/footsteps" && list[0].factory && list[0].name == "Footsteps Heel" &&
+        CHECK(!list.empty() && list[0].id == "factory/footsteps" && list[0].factory && list[0].name == "Footsteps" &&
               list[0].path.empty());
     }
 
@@ -181,7 +164,7 @@ int main()
         CHECK(!RenamePreset(R, "factory/footsteps", "Mine", &err) && !err.empty());
         CHECK(!fs::exists(user_dir));
         PresetInfo info;
-        CHECK(FindPreset(R, "factory/footsteps", &info) && info.version == 2);
+        CHECK(FindPreset(R, "factory/footsteps", &info) && info.version == 3);
     }
 
     // User presets: save as, save (version + 1), rename, list, export, import, delete.
@@ -194,9 +177,9 @@ int main()
         CHECK(!SavePresetAs(R, "  ", fs_, &id, &err) && !err.empty());
         // Story 10-3b: a factory name is free (the user's version), names are unique among user presets.
         std::string fid;
-        CHECK(SavePresetAs(R, "footsteps heel", fs_, &fid, &err));
+        CHECK(SavePresetAs(R, "footsteps", fs_, &fid, &err));
         CHECK(fid.rfind("user/", 0) == 0);
-        CHECK(!SavePresetAs(R, "FOOTSTEPS HEEL", fs_, &id, &err) && !err.empty());  // taken by that user preset (any case)
+        CHECK(!SavePresetAs(R, "FOOTSTEPS", fs_, &id, &err) && !err.empty());  // taken by that user preset (any case)
         CHECK(DeletePreset(R, fid, &err));
         CHECK(SavePresetAs(R, "My Steps!", fs_, &id, &err));
         CHECK(id == "user/my-steps");
@@ -214,7 +197,7 @@ int main()
         PresetInfo info;
         CHECK(FindPreset(R, id, &info) && info.name == "Soft steps" && info.version == 2 && !info.factory);
         // Story 10-3b: a factory name is free on rename too; another user name is not.
-        CHECK(RenamePreset(R, id, "FOOTSTEPS HEEL", &err));
+        CHECK(RenamePreset(R, id, "FOOTSTEPS", &err));
         CHECK(RenamePreset(R, id, "Soft steps", &err));
         {
             std::string other;
@@ -224,7 +207,7 @@ int main()
         }
 
         const std::vector<PresetInfo> list = ListPresets(R);
-        CHECK(list.size() == 3 && list[2].id == id);
+        CHECK(list.size() == 2 && list[1].id == id);  // story 10-8b: one factory preset (Footsteps)
 
         const fs::path out = root / "export" / "soft.ravpreset";
         CHECK(ExportPreset(R, id, out.u8string(), &err));
@@ -239,7 +222,7 @@ int main()
         CHECK(ExportPreset(R, "factory/footsteps", fout.u8string(), &err));
         std::string id3;
         CHECK(ImportPreset(R, fout.u8string(), &id3, &err));
-        CHECK(id3.compare(0, 5, "user/") == 0 && FindPreset(R, id3, &info) && info.name == "Footsteps Heel");  // a factory name is free (story 10-3b)
+        CHECK(id3.compare(0, 5, "user/") == 0 && FindPreset(R, id3, &info) && info.name == "Footsteps");  // a factory name is free (story 10-3b)
 
         const fs::path junk = root / "junk.ravpreset";
         std::ofstream(junk) << "not a preset";
@@ -340,12 +323,12 @@ int main()
 
         ItemRules item;
         ApplyPreset(item, fact);
-        CHECK(item.has_preset && item.preset_copy.id == "factory/footsteps" && item.preset_copy.version == 2);
+        CHECK(item.has_preset && item.preset_copy.id == "factory/footsteps" && item.preset_copy.version == 3);
         CHECK(BlocksEqual(item.blocks, fact.blocks));
         CHECK(GetPresetState(R, item) == PresetState::UpToDate);
 
         // Edited: a project tweak; reloading the preset clears it.
-        item.blocks[0].conditions[0].threshold = 0.07;
+        item.blocks[0].sens = 70.0;  // story 10-8b: an auto block's sensitivity is a tweak too
         CHECK(GetPresetState(R, item) == PresetState::Edited);
         CHECK(UpdateFromPreset(R, item, &err));
         CHECK(GetPresetState(R, item) == PresetState::UpToDate);
@@ -362,25 +345,25 @@ int main()
         CHECK(GetPresetState(R, item) == PresetState::UpToDate);
         item.blocks[0].kept.lines.clear();
 
-        // Legacy: the item's copy is footsteps v2, the factory is now v3. Rules unchanged until Update.
+        // Legacy: the item's copy is footsteps v3, the factory is now v4. Rules unchanged until Update.
         PresetInfo v2;
         v2.id = "factory/footsteps";
-        v2.version = 3;
+        v2.version = 4;
         v2.factory = true;
         const std::vector<Block> before = item.blocks;
         CHECK(PresetStateOf(item, &v2) == PresetState::Legacy);
         CHECK(BlocksEqual(item.blocks, before));
         CHECK(PresetStateOf(item, nullptr) == PresetState::Unknown);
-        item.preset_copy.kept_version = 3;  // Keep current dismissed v3
+        item.preset_copy.kept_version = 4;  // Keep current dismissed v4
         CHECK(PresetStateOf(item, &v2) == PresetState::UpToDate);
-        v2.version = 4;
+        v2.version = 5;
         CHECK(PresetStateOf(item, &v2) == PresetState::Legacy);
         // An older version (a downgrade, or the id re-created) is not the copied one either.
         item.preset_copy.kept_version = 0;
-        item.preset_copy.version = 5;
+        item.preset_copy.version = 6;
         CHECK(PresetStateOf(item, &v2) == PresetState::Legacy);
-        item.preset_copy.version = 2;
-        item.preset_copy.kept_version = 3;
+        item.preset_copy.version = 3;
+        item.preset_copy.kept_version = 4;
 
         // The same on disk, with a user preset.
         ItemRules mine;
@@ -462,7 +445,7 @@ int main()
         ItemRules p;
         CHECK(ParseItemRules(SerializeItemRules(item), &p));
         CHECK(SerializeItemRules(p) == SerializeItemRules(item));
-        CHECK(BlocksEqual(p.preset_copy.blocks, item.preset_copy.blocks) && p.preset_copy.kept_version == 3);
+        CHECK(BlocksEqual(p.preset_copy.blocks, item.preset_copy.blocks) && p.preset_copy.kept_version == 4);
     }
 
     // ---- 10-5 frozen fixtures ----

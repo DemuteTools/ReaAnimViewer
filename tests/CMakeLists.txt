@@ -59,6 +59,12 @@ add_executable(motion_physics_test motion_physics_test.cpp ../src/motion_physics
 target_include_directories(motion_physics_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME motion_physics COMMAND motion_physics_test)
 
+# Story 10-8b -- auto detection: foot events from the physics as blocks of the item (src/auto_detect.h).
+add_executable(auto_detect_test auto_detect_test.cpp ../src/auto_detect.cpp ../src/motion_physics.cpp ../src/bone_events.cpp
+               ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
+target_include_directories(auto_detect_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME auto_detect COMMAND auto_detect_test)
+
 add_executable(bone_roles_test bone_roles_test.cpp ../src/bone_events.cpp)
 target_include_directories(bone_roles_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME bone_roles COMMAND bone_roles_test)

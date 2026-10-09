@@ -613,7 +613,7 @@ bool EventValuesAt(const Block& blk, const std::vector<BoneTrack>& tracks, const
     double s = 0.0, v = 0.0;
     if (strength) *strength = 0.0;
     if (speed) *speed = 0.0;
-    if (!TracksFit(tracks) || blk.conditions.empty() || !std::isfinite(t)) return false;
+    if (!TracksFit(tracks) || blk.conditions.empty() || IsAutoBlock(blk) || !std::isfinite(t)) return false;
     const size_t n = tracks[0].pos.size();
     const double rate = tracks[0].rate_hz;
     const ValueSeries vs = MakeValueSeries(blk, tracks, opts.smooth_ms, n);
@@ -689,7 +689,7 @@ DetectionTrace DetectTrace(const std::vector<Block>& blocks, const std::vector<B
     for (size_t bi = 0; bi < blocks.size(); ++bi) {
         const Block& blk = blocks[bi];
         BlockTrace&  bt = trace.blocks[bi];
-        if (!blk.enabled || blk.conditions.empty()) continue;
+        if (!blk.enabled || blk.conditions.empty() || IsAutoBlock(blk)) continue;
         const size_t nc = blk.conditions.size();
 
         // Each condition's in/out state (with hysteresis) and its latest entry time.

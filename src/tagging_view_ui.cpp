@@ -19,6 +19,7 @@
 
 #include <imgui.h>
 
+#include "auto_detect.h"
 #include "bone_roles.h"
 #include "event_list.h"
 #include "file_dialogs.h"
@@ -767,6 +768,13 @@ void OnItemChanged(MediaItem* item)
 {
     g_sel_item = item;
     g_sel = 0;
+    // Story 10-8b: the first rule (auto blocks are set in their own section), else the first row.
+    const ItemRules& shown = TaggingShownRules();
+    for (size_t i = 0; i < shown.blocks.size(); ++i)
+        if (!IsAutoBlock(shown.blocks[i])) {
+            g_sel = static_cast<int>(i);
+            break;
+        }
     g_drag = StripDrag::None;
     ClearEventSelection();
     ClearLastApplyResult();
@@ -871,7 +879,16 @@ bool TaggingSelectedRuleBones(std::vector<int>* bones, unsigned int* colour)
     const ItemRules& rules = TaggingShownRules();
     if (g_sel < 0 || g_sel >= static_cast<int>(rules.blocks.size())) return false;
     const Block& blk = rules.blocks[static_cast<size_t>(g_sel)];
-    if (bones)
+    AutoKind     auto_kind;
+    char         auto_side = 'L';
+    if (bones && AutoBlockKind(blk, &auto_kind, &auto_side)) {
+        // Story 10-8b: an auto block shows its foot's parts (heel, toe, toe end), each bone once.
+        for (int q = 0; q < kFootPartCount; ++q) {
+            const size_t r = static_cast<size_t>(FootPartRole(auto_side, q));
+            const int    bone = r < m.role_to_bone.size() ? m.role_to_bone[r] : -1;
+            if (bone >= 0 && std::find(bones->begin(), bones->end(), bone) == bones->end()) bones->push_back(bone);
+        }
+    } else if (bones)
         *bones = RuleBonesOnSkeleton(blk, m.role_to_bone, m.custom_role_to_bone, m.bone_names, m.bone_parents);
     if (colour) *colour = RuleColor(rules.blocks[static_cast<size_t>(g_sel)]);
     return true;
@@ -932,7 +949,9 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                                       "Double-click a rule's row to add one there.");
             }
             ImGui::SetCursorScreenPos(ImVec2(c0.x + avail_w - bw, c0.y));
-            const bool can = m.item && m.has_record && m.missing_count == 0 && m.file_loaded && !rules.blocks.empty();
+            // Story 10-8b: auto blocks have no threshold: Analyse needs a rule.
+            const bool can = m.item && m.has_record && m.missing_count == 0 && m.file_loaded &&
+                             std::any_of(rules.blocks.begin(), rules.blocks.end(), [](const Block& b) { return !IsAutoBlock(b); });
             if (!can) ImGui::BeginDisabled();
             if (ui::SolidButton("Analyse##taganalyse", ImVec2(bw, 0.0f))) Later([]() { TaggingAnalyse(); });
             if (!can) ImGui::EndDisabled();
@@ -982,7 +1001,8 @@ void DrawTaggingStrip(float x, float y, float w, float h)
         } else if (!m.sample_error.empty()) {
             msg1 = m.sample_error.c_str();
         } else if (rules.blocks.empty()) {
-            msg1 = "No rule. Add one in the panel (+ Rule), or pick a preset.";
+            msg1 = "Nothing to detect yet. Tick event types under Auto detection and press Detect,";
+            msg2 = "or add a rule (+ Rule), or pick a preset.";
         }
 
         if (!m.item || !(m.map.item_len > 0.0)) {
@@ -3138,7 +3158,9 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
         const ImU32 col = NextRuleColor(rules.blocks);
         Edit("RAV: Add rule", [col](ItemRules& r) {
             char name[32];
-            std::snprintf(name, sizeof(name), "Rule %d", static_cast<int>(r.blocks.size()) + 1);
+            // Story 10-8b: numbered among the rules only (auto blocks are not rules).
+            const auto rules_n = std::count_if(r.blocks.begin(), r.blocks.end(), [](const Block& x) { return !IsAutoBlock(x); });
+            std::snprintf(name, sizeof(name), "Rule %d", static_cast<int>(rules_n) + 1);
             r.blocks.push_back(DefaultBlock(name, ToRecordColor(col)));
             return true;
         });
@@ -3148,6 +3170,7 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
     int do_toggle = -1, do_dup = -1, do_del = -1;
     for (int b = 0; b < nb; ++b) {
         const Block& blk = rules.blocks[static_cast<size_t>(b)];
+        if (IsAutoBlock(blk)) continue;  // story 10-8b: the Auto detection section's
         ImGui::PushID(b);
         const ImVec2 p = ImGui::GetCursorScreenPos();
         const float w = ImGui::GetContentRegionAvail().x;
@@ -3660,7 +3683,22 @@ void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const Sho
         else ImGui::TextDisabled("outside the item: not written");
     }
 
-    if (e.kind != ShownKind::Orphan) {
+    if (e.kind != ShownKind::Orphan && IsAutoBlock(blk)) {
+        // Story 10-8b: the physics' values: leg lengths per second (degrees for a pivot), m/s.
+        AutoKind   k = AutoKind::Step;
+        const bool pivot = AutoBlockKind(blk, &k, nullptr) && k == AutoKind::Pivot;
+        char       buf[64];
+        // A user event on an auto row has no measured values (EventValuesAt: none for auto blocks).
+        const bool user = e.kind == ShownKind::User;
+        key("Strength");
+        if (user) std::snprintf(buf, sizeof(buf), "-");
+        else std::snprintf(buf, sizeof(buf), pivot ? "%.0f deg" : "%.2f leg/s", strength);
+        ImGui::TextUnformatted(buf);
+        key("Speed");
+        if (pivot || user) std::snprintf(buf, sizeof(buf), "-");
+        else std::snprintf(buf, sizeof(buf), "%.2f m/s", speed);
+        ImGui::TextUnformatted(buf);
+    } else if (e.kind != ShownKind::Orphan) {
         key("Strength");
         ImGui::TextUnformatted(FormatDisplay(strength_spec, strength).c_str());
         key("Speed");
@@ -3689,6 +3727,195 @@ void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const Sho
         QueueVideoSeek(t);
     }
     if (!on_timeline) ImGui::EndDisabled();
+}
+
+// ---- Story 10-8b: the Auto detection section -------------------------------------------------------
+
+// What Detect will write: the ticks, Separate / Combined, and the values of the types not detected
+// yet. The types the item has (its auto blocks) are read again when they change (Detect, an undo,
+// a value written); a pending tick of another type is kept.
+AutoSettings g_auto_ui;
+AutoSettings g_auto_seen;  // the item's own, as last read
+MediaItem*   g_auto_item = nullptr;
+bool         g_auto_init = false;
+
+void SyncAutoSettings(const TaggingModel& m)
+{
+    const AutoSettings cur = ReadAutoSettings(m.rules.blocks);
+    if (!g_auto_init || g_auto_item != m.item) {
+        g_auto_ui = g_auto_seen = cur;
+        g_auto_item = m.item;
+        g_auto_init = true;
+        return;
+    }
+    if (cur == g_auto_seen) return;
+    for (int t = 0; t < kAutoTypeCount; ++t) {
+        if (cur.type[t] == g_auto_seen.type[t]) continue;
+        if (cur.type[t].on) g_auto_ui.type[t] = cur.type[t];
+        else g_auto_ui.type[t].on = false;
+    }
+    const int step = static_cast<int>(AutoType::Step);
+    if (cur.type[step].on && (!g_auto_seen.type[step].on || cur.separate_steps != g_auto_seen.separate_steps))
+        g_auto_ui.separate_steps = cur.separate_steps;
+    g_auto_seen = cur;
+}
+
+// One value (sensitivity or offset) of every block of type t.
+bool SetAutoValue(ItemRules& r, AutoType t, bool sens, double v)
+{
+    bool any = false;
+    for (Block& b : r.blocks) {
+        AutoKind k;
+        if (!AutoBlockKind(b, &k, nullptr) || AutoTypeOfKind(k) != t) continue;
+        (sens ? b.sens : b.offset_ms) = v;
+        any = true;
+    }
+    return any;
+}
+
+// A type's sensitivity (%) or offset (ms). On a detected type it edits the item's blocks as a
+// rule field does (a preview while dragging, one undo point on release); else the section's own
+// value, written by Detect.
+void AutoValueField(const char* id, AutoType t, bool sens, bool detected, double shown, float w)
+{
+    const int    ti = static_cast<int>(t);
+    const double step = 1.0;  // whole % and ms (the fields show no decimals)
+    const char*  unit = sens ? "%" : "ms";
+    auto clamp_v = [sens](double v) { return sens ? std::min(100.0, std::max(0.0, v)) : std::min(1000.0, std::max(-1000.0, v)); };
+    if (detected) {
+        const std::string undo =
+            std::string(sens ? "RAV: Set auto sensitivity (" : "RAV: Set auto offset (") + AutoTypeLabel(t) + ")";
+        NumberField(id, shown, step, 0, unit, w, undo,
+                    [t, sens, clamp_v](ItemRules& r, double v) { return SetAutoValue(r, t, sens, clamp_v(v)); });
+    } else {
+        double& slot = sens ? g_auto_ui.type[ti].sens : g_auto_ui.type[ti].offset_ms;
+        double  v = slot;
+        if (ui::DragNumber(id, &v, step, 0, unit, w) != ui::DragNumberEvent::None) slot = clamp_v(v);
+    }
+}
+
+const char* AutoTypeHint(AutoType t)
+{
+    switch (t) {
+    case AutoType::Step: return "A marker where the foot lands: FS L / FS R (combined: the first part to touch),\n"
+                                "or Heel and Toe separately (one marker per part).";
+    case AutoType::LiftOff: return "A marker where the foot leaves the ground: Lift L / Lift R.";
+    case AutoType::Slide: return "A marker where a planted foot slides: Slide L / Slide R.";
+    case AutoType::Pivot: return "A marker where a planted foot turns on its ball or heel: Pivot L / Pivot R.";
+    }
+    return "";
+}
+
+void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
+{
+    SyncAutoSettings(m);
+    const AutoSettings  shown = ReadAutoSettings(rules.blocks);  // the values a drag previews
+    const AutoSettings& item = g_auto_seen;
+    ui::Section sec;
+    if (ui::BeginSection(sec, "Auto detection")) {
+        // Two number columns on the right, under their captions; the type's tick on the left.
+        const float fw = 48.0f;
+        const float w_sens = NumberFieldWidth(fw, "%"), w_off = NumberFieldWidth(fw, "ms");
+        const float x0 = ImGui::GetCursorPosX();
+        const float avail = ImGui::GetContentRegionAvail().x;
+        const float x_off = x0 + std::max(170.0f, avail - w_off);
+        const float x_sens = x_off - 10.0f - std::max(w_sens, ImGui::CalcTextSize("Sensitivity").x);
+        // Column captions.
+        ImGui::SetCursorPosX(x_sens);
+        ImGui::TextDisabled("Sensitivity");
+        ImGui::SameLine(x_off);
+        ImGui::TextDisabled("Offset");
+        for (int ti = 0; ti < kAutoTypeCount; ++ti) {
+            const AutoType t = static_cast<AutoType>(ti);
+            ImGui::PushID(ti);
+            bool on = g_auto_ui.type[ti].on;
+            if (ImGui::Checkbox(AutoTypeLabel(t), &on)) g_auto_ui.type[ti].on = on;
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("%s", AutoTypeHint(t));
+            const bool detected = item.type[ti].on;
+            if (!on) ImGui::BeginDisabled();
+            ImGui::SameLine(x_sens);
+            AutoValueField("##sens", t, true, detected, detected ? shown.type[ti].sens : g_auto_ui.type[ti].sens, fw);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("Sensitivity: higher finds more events, lower fewer (50 %% = the default).");
+            ImGui::SameLine(x_off);
+            AutoValueField("##offset", t, false, detected, detected ? shown.type[ti].offset_ms : g_auto_ui.type[ti].offset_ms, fw);
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("Moves every marker of this type, in ms (+ = later).");
+            if (t == AutoType::Step) {
+                static const char* const kStepModes[] = {"Combined", "Separate"};
+                ImGui::SetCursorPosX(x0 + ImGui::GetFrameHeight() + 4.0f);
+                int sel = g_auto_ui.separate_steps ? 1 : 0;
+                if (ui::Segmented("##stepmode", kStepModes, 2, &sel)) g_auto_ui.separate_steps = sel == 1;
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip("Combined: one marker per landing (FS L / FS R).\nSeparate: the heel and the toe "
+                                      "each get theirs (Heel L, Toe L...).");
+            }
+            if (!on) ImGui::EndDisabled();
+            ImGui::PopID();
+        }
+        // The parts a ticked type misses on this skeleton (its events on that foot are skipped).
+        if (m.file_loaded && !m.bone_names.empty()) {
+            std::vector<std::string> miss;
+            for (int ti = 0; ti < kAutoTypeCount; ++ti) {
+                if (!g_auto_ui.type[ti].on) continue;
+                for (const std::string& r : AutoMissingParts(static_cast<AutoType>(ti), g_auto_ui.separate_steps, m.role_to_bone))
+                    if (std::find(miss.begin(), miss.end(), r) == miss.end()) miss.push_back(r);
+            }
+            if (!miss.empty()) {
+                std::string line = "No bone for: ";
+                for (size_t i = 0; i < miss.size(); ++i) line += (i ? ", " : "") + miss[i];
+                line += ". Their events are skipped: map them in Roles.";
+                WrappedText(kBadText, line, ImGui::GetContentRegionAvail().x);
+            }
+        }
+        if (!m.auto_error.empty()) WrappedText(ui::kMuted, "Nothing detected: " + m.auto_error + ".", ImGui::GetContentRegionAvail().x);
+        // Detect: lit while a tick or Separate / Combined waits for it.
+        ImGui::Dummy(ImVec2(0.0f, 2.0f));
+        const bool pending = AutoPending(g_auto_ui, item);
+        const bool can = pending && m.item && m.file_loaded;
+        if (!can) ImGui::BeginDisabled();
+        const bool clicked = pending ? ui::PrimaryButton("Detect##autodetect", ImVec2(-1.0f, 0.0f))
+                                     : ui::SolidButton("Detect##autodetect", ImVec2(-1.0f, 0.0f));
+        if (!can) ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip("%s", pending ? "Adds the ticked types to this item and removes the unticked ones (one undo "
+                                              "point).\nYour corrections stay, except on a type you untick."
+                                            : "Tick or untick a type, or switch Combined / Separate, then Detect.\n"
+                                              "Sensitivity and offset of a detected type apply at once.");
+        if (clicked) {
+            const AutoSettings s = g_auto_ui;
+            ClearEventSelection();
+            // The selection follows its block (Detect removes and adds blocks); a removed one falls
+            // back to the first rule, else the first row.
+            std::vector<Block>     after = rules.blocks;
+            const std::vector<int> map = ApplyAutoSettings(after, s);
+            const int              old_sel = g_sel;
+            g_sel = (old_sel >= 0 && old_sel < static_cast<int>(map.size())) ? map[static_cast<size_t>(old_sel)] : -1;
+            if (g_sel < 0) {
+                g_sel = 0;
+                for (size_t i = 0; i < after.size(); ++i)
+                    if (!IsAutoBlock(after[i])) {
+                        g_sel = static_cast<int>(i);
+                        break;
+                    }
+            }
+            Later([s]() { TaggingDetectAuto(s); });
+        }
+    }
+    ui::EndSection(sec);
+}
+
+// The inspector of an auto block (its name and colour above): where it is set.
+void DrawAutoBlockNote(const Block& blk)
+{
+    ImGui::Dummy(ImVec2(0.0f, 4.0f));
+    if (!AutoBlockKind(blk, nullptr, nullptr)) {
+        ui::SubText("An auto-detection type this version of ReaAnimViewer does not know: it finds nothing here, and "
+                    "is kept as it is.");
+        return;
+    }
+    ui::SubText("Found by Auto detection (above): tick or untick its type there, and set its sensitivity and offset. "
+                "Click one of its events in the strip to move or suppress it, or press E to add one at the playhead.");
 }
 
 // One button per preset, each loading it on the current item (a shortcut: rules can also be
@@ -3788,6 +4015,12 @@ void DrawInspector(const ItemRules& rules)
                      },
                      g_name_item);
         }
+    }
+
+    // Story 10-8b: an auto block has no condition to edit.
+    if (IsAutoBlock(blk)) {
+        DrawAutoBlockNote(blk);
+        return;
     }
 
     // When all of these hold.
@@ -4080,6 +4313,7 @@ void DrawTaggingPanel(float x, float y, float w, float h)
             const float body_h = std::max(40.0f, ImGui::GetContentRegionAvail().y - footer_h);
             ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::Col(ui::kSurface));
             if (ImGui::BeginChild("##taginspector", ImVec2(0.0f, body_h), ImGuiChildFlags_None)) {
+                DrawAutoSection(m, rules);  // story 10-8b
                 if (m.missing_count > 0) {
                     char line[200];
                     std::snprintf(line, sizeof(line),

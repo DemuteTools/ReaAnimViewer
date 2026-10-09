@@ -681,12 +681,30 @@ bool ReadLanding(const std::string& s, Block& b)
     return true;
 }
 
+// Story 10-8b: an auto block's type, one lower-case word ([a-z0-9_]); a type this version does
+// not know still reads (the block stays an auto block that detects nothing).
+bool ReadAutoType(const std::string& v, std::string* out)
+{
+    if (v.empty()) return false;
+    for (char c : v)
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) return false;
+    *out = v;
+    return true;
+}
+
 Fields BlockFields(const Block& b)
 {
     // `on` is written only when the rule is off (story 10-3), so a record of rules that are
     // all on writes back byte-identical.
     Fields f;
     if (!b.enabled) f.push_back({"on", "0"});
+    // Story 10-8b: `auto`, `side` and `sens` only on an auto block, so a rule's line writes back
+    // byte-identical (and an older RAV keeps them as unknown fields of a block that never fires).
+    if (IsAutoBlock(b)) {
+        f.push_back({"auto", b.auto_type});
+        f.push_back({"side", std::string(1, b.auto_side)});
+        f.push_back({"sens", FormatNumber(b.sens)});
+    }
     Fields rest = {{"color", FormatColor(b.color)},
             {"hold_ms", FormatNumber(b.min_hold_ms)},
             {"cooldown_ms", FormatNumber(b.cooldown_ms)},
@@ -700,6 +718,16 @@ Fields BlockFields(const Block& b)
 Set SetBlock(Block& b, const std::string& k, const std::string& v)
 {
     if (k == "on") return R(ReadBool(v, &b.enabled));
+    if (k == "auto") return R(ReadAutoType(v, &b.auto_type));
+    // `side` and `sens` belong to an auto block (its `auto` comes first): on a rule they are kept
+    // as unknown fields, so they write back as read.
+    if (k == "side") {
+        if (b.auto_type.empty()) return Set::Unknown;
+        if (v != "L" && v != "R") return Set::Bad;
+        b.auto_side = v[0];
+        return Set::Ok;
+    }
+    if (k == "sens") return b.auto_type.empty() ? Set::Unknown : R(ReadNumber(v, &b.sens));
     if (k == "color") return R(ReadColor(v, &b.color));
     if (k == "hold_ms") return R(ReadNumber(v, &b.min_hold_ms));
     if (k == "cooldown_ms") return R(ReadNumber(v, &b.cooldown_ms));
@@ -1494,6 +1522,7 @@ bool ConditionsEqual(const Condition& a, const Condition& b)
 
 bool BlockEqual(const Block& a, const Block& b)
 {
+    if (a.auto_type != b.auto_type || (IsAutoBlock(a) && (a.auto_side != b.auto_side || a.sens != b.sens))) return false;
     if (a.enabled != b.enabled || a.marker != b.marker || a.color != b.color || a.min_hold_ms != b.min_hold_ms || a.cooldown_ms != b.cooldown_ms ||
         a.offset_ms != b.offset_ms || !SignalsEqual(a.strength_signal, b.strength_signal) ||
         a.strength_sign != b.strength_sign || a.strength_window_ms != b.strength_window_ms || a.landing != b.landing ||

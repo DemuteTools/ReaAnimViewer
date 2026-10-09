@@ -56,6 +56,7 @@ ReaAnimViewer is a native REAPER extension (a `.dll`, plus a small video FX that
   - [If the video FX shows nothing](#if-the-video-fx-shows-nothing)
 - [Auto-Tagging (Event Markers)](#auto-tagging-event-markers)
   - [Quick start: footsteps](#quick-start-footsteps)
+  - [Auto detection](#auto-detection)
   - [Tagging your own events](#tagging-your-own-events)
   - [Rules](#rules)
   - [Presets](#presets)
@@ -392,22 +393,38 @@ To report a problem, click **Copy error log** in the viewer menu and paste it in
 
 ## Auto-Tagging (Event Markers)
 
-ReaAnimViewer can find events in an animation from the way its bones move, and mark them on your timeline: footsteps, a hand hitting something, a sword swing, a body falling, a head turn, a clap... Anything you can describe as "this bone goes above or below this value" can become a marker. You write **rules** (or load a preset), check the result in the **Tagging view**, and commit. Each event becomes a marker named after its rule, on the item (take marker), on the timeline (project marker), or both. Then place your sounds on the markers instead of hunting for each frame by eye.
+ReaAnimViewer can find events in an animation from the way its bones move, and mark them on your timeline: footsteps, a hand hitting something, a sword swing, a body falling, a head turn, a clap... Feet are found for you by **Auto detection**. For anything else you can describe as "this bone goes above or below this value", you write **rules** (or load a preset). You check the result in the **Tagging view**, and commit. Each event becomes a marker named after its rule, on the item (take marker), on the timeline (project marker), or both. Then place your sounds on the markers instead of hunting for each frame by eye.
 
-Footsteps are the ready-made starting point: the **Footsteps Heel** and **Footsteps Toe** presets ship with ReaAnimViewer. For everything else, you build your own rules, then save them as presets to reuse them.
+Footsteps are the ready-made starting point: tick **Step** under **Auto detection** and press **Detect** (or load the **Footsteps** preset, which does the same). Lift-offs, slides and pivots of the feet work the same way. For everything else, you build your own rules, then save them as presets to reuse them.
 
 Each animation item keeps its rules, thresholds and corrections, saved in the project. Items that play the same animation file share them, like REAPER's pooled MIDI items (see [Copies of one animation share their tagging](#copies-of-one-animation-share-their-tagging)). Nothing is written to the animation file.
 
 ### Quick start: footsteps
 
 1. Open the viewer, then click **Tagging view** at the top (or press **V** until it shows). A strip appears under the character and a panel on the right.
-2. Put the playhead over an animation item. The panel shows an empty rule list (**No rule**) with **+ Rule** and the presets under it: click **Footsteps Heel (factory)** (or **Footsteps Toe**, see [Presets](#presets)).
-3. The strip shows one row per rule (`Footstep L`, `Footstep R`) with a tick for each step found. Play or scrub to check them against the character.
-4. Not quite right? Click **Analyse** (top of the strip): RAV proposes thresholds from this clip. Then fine-tune by dragging the threshold lines (see [The Tagging view](#the-tagging-view)), or correct single steps (see [Correcting events](#correcting-events)).
-5. As soon as you change something, RAV shows the result on the timeline as **preview markers** (`Footstep L - Preview`, in a darker colour). Nothing is final yet.
+2. Put the playhead over an animation item. At the top of the panel, under **Auto detection**, tick **Step** and press **Detect**.
+3. The strip shows one row per foot (`FS L`, `FS R`) with a tick for each step found. Play or scrub to check them against the character.
+4. Too many or too few? Drag the step's **Sensitivity** (higher finds more). Always a little early or late for your sounds? Drag its **Offset**. The markers follow as you drag. Then correct single steps if needed (see [Correcting events](#correcting-events)).
+5. As soon as you change something, RAV shows the result on the timeline as **preview markers** (`FS L - Preview`, in a darker colour). Nothing is final yet.
 6. Select the items to tag in REAPER (the panel footer says how many), then click **Commit to N items**. The previews are replaced by the real markers. **Cancel** instead puts the items back as they were at their last Commit.
 
 To tag several walk cycles at once, set them up one by one (steps 2 to 4), select them all and click **Commit** once: each item is tagged with its own rules. Copies of one cycle (the same file duplicated to build a longer walk) are set up once: they share their tagging.
+
+### Auto detection
+
+Auto detection reads the feet as physics: it measures the legs to know the character's size, finds where each part of the foot comes to rest on the ground (a floor, a stair, a ledge), and places the markers from that. One setting works on every clip: there are no thresholds to tune, and no **Analyse**.
+
+- **Tick** the event types you want, then press **Detect**:
+  - **Step**: where the foot lands. **Combined** gives one marker per landing (`FS L`, `FS R`), at the first part of the foot to touch. **Separate** gives the heel and the toe their own markers (`Heel L`, `Toe L`, `Heel R`, `Toe R`). The toe is the ball of the foot (the toe bone), or the toe tip on a rig without a toe bone.
+  - **Lift-off**: where the foot leaves the ground (`Lift L`, `Lift R`).
+  - **Slide scuff**: where a planted foot slides on the ground (`Slide L`, `Slide R`).
+  - **Pivot scuff**: where a planted foot turns on its ball or its heel (`Pivot L`, `Pivot R`).
+- **Detect** lights up while a change waits for it: a type ticked or unticked, or steps switched between **Combined** and **Separate**. It writes them in one undo step. Each ticked type adds one row per foot to the strip, next to the rules' rows.
+- **Sensitivity** (%, one per type): higher finds more events, lower fewer; 50 % is the default. **Offset** (ms, one per type) moves every marker of that type, for example +20 ms if your sound should land after the contact. On a type already detected, both apply at once: the markers follow while you drag, and releasing is one undo step.
+- Correct single events as on any row (see [Correcting events](#correcting-events)): your corrections survive a new **Detect** and a sensitivity change. After an offset change, check them: a suppressed event stays masked only while the detection is within 30 ms of where it was, and your own events stay where you put them. Unticking a type removes its rows and the corrections on them.
+- Click a row's name in the strip to select it: the inspector shows its marker name and colour, which you can change there. Its type is set in the **Auto detection** section.
+- **Roles:** auto detection needs, for at least one leg, the heel, the knee and the hip (up leg; the hips will do), and per foot the heel and the toe (or the toe end). When a ticked type misses one, the section names it in red and that foot gets no events of that type: map the bone in **Roles**.
+- Auto detection and rules work together on one item: the rules list shows only the rules, and both make markers. A preset saves both.
 
 ### Tagging your own events
 
@@ -443,7 +460,7 @@ A rule produces one kind of marker. It says **when** an event happens (its condi
   - **Rotation:** how much a bone turns, relative to its parent or to the world.
   - **Threshold and margin:** the event fires when the signal crosses the threshold. It can only fire again after the signal has come back past the threshold by more than the margin (like a gate's hysteresis), so a shaky foot does not give a burst of steps.
   - **The lock icon:** a locked (fixed) threshold is never changed by **Analyse**.
-- **Place the marker:** **at the start** of the match, or **at the highest point** / **at the lowest point** of one of the rule's signals. The match is the stretch where all the conditions hold. The Footsteps presets place it at the start (the moment the heel reaches the floor); a swing is best marked at the highest point of its speed.
+- **Place the marker:** **at the start** of the match, or **at the highest point** / **at the lowest point** of one of the rule's signals. The match is the stretch where all the conditions hold. A contact is best marked at the start (the moment a hand reaches the table); a swing is best marked at the highest point of its speed.
 - **Offset**, **Min length**, **Cooldown** (in ms):
   - **Offset** moves every marker of the rule, for example +30 ms if your sound should land after the contact.
   - **Min length**: the match must last at least this long to count.
@@ -458,9 +475,10 @@ Number fields have no sliders: drag sideways to change them (hold Shift for fine
 
 A preset is a set of rules you can load on any item. The **Preset:** field at the top of the panel shows the item's preset; click it to open the preset menu.
 
-- **Factory** presets come with ReaAnimViewer and update with it. They are read-only. Two ship today:
-  - **Footsteps Heel**: a `Footstep L` / `Footstep R` marker each time a heel reaches the floor.
-  - **Footsteps Toe**: the same from the toes, for a character that lands on the ball of the foot, or for a second layer of markers.
+- **Factory** presets come with ReaAnimViewer and update with it. They are read-only. One ships today:
+  - **Footsteps**: auto detection of steps, combined: an `FS L` / `FS R` marker each time a foot lands.
+
+  Items set up with an earlier **Footsteps Heel** show **Legacy · v3 is installed**: **Update** switches them to auto detection (their corrections stay; those made on the old heel rules may show as orphan suppressions or your own events to delete), **Keep v2** keeps their rules. **Footsteps Toe** is gone: items set up with it keep their rules, and the preset field says the preset is gone.
 - **User** presets are yours. They live in your own folder, which updates never touch, so you keep them when ReaAnimViewer updates. The bottom of the menu shows that folder, with a button to copy its path.
 - **Using the menu:** type in the search field, or hover **Factory** or **User** to see the list. Double-click a preset (or select it and press Enter) to load it on the item under the playhead. Right-click a preset for **Load**, **Rename...** (F2), **Delete** (Del) and **Export...**.
 - **Save** (it shows the preset's name) writes the item's current rules over its user preset. **+ Save as...** writes them to a new user preset: type a name and press Enter. A factory preset can't be overwritten: use **Save as**. Overwriting or deleting a preset asks first, inside the menu (in amber): click **Overwrite** or **Delete** (or press Enter) to confirm, **Cancel** (or Esc) to keep it. A deleted or overwritten preset can't be brought back with Ctrl+Z.
@@ -577,7 +595,8 @@ Sound designers often duplicate one animation to build a longer take: a two-step
 
 ### Known limits
 
-- Footsteps are the only factory presets today. Every other event is tagged with your own rules (see [Tagging your own events](#tagging-your-own-events)), which you can save and share as presets.
+- Auto detection covers the feet today (steps, lift-offs, slides and pivots). Every other event is tagged with your own rules (see [Tagging your own events](#tagging-your-own-events)), which you can save and share as presets.
+- Auto detection: a touch shorter than about a tenth of a second is not a contact, a foot held still in the air reads as planted, and an animation exported in place is read right only when a foot is planted for more than half of the clip. A slide or pivot gets one marker, at its start.
 - Roles are guessed from the bone names only (Mixamo and Unreal-style names). For another naming, set them once per skeleton in the **Skeleton & roles** window (click **Roles**).
 - In RAV view, hovering a joint in **Skeleton** shows its roles only once the Tagging view has been opened on an item with this skeleton.
 - The 3D view does not follow a take's play rate or a looped item, while the strip and the take markers do: on such items the pose and the markers can disagree.

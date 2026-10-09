@@ -780,8 +780,10 @@ PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& rt, const PhysicsPar
     }
 
     // Ground frame: the median horizontal velocity of the lowest part (0 without a foot part).
+    // Its vertical one too when it passes ground_vertical_min: an in-place climb, whose root
+    // motion was removed, slides every planted part down at the climbing speed (story 10-8g).
     if (any) {
-        std::vector<double> vx(n), vz(n);
+        std::vector<double> vx(n), vy(n), vz(n);
         for (size_t i = 0; i < n; ++i) {
             int bs = -1, bq = -1;
             for (int s = 0; s < 2; ++s)
@@ -791,10 +793,14 @@ PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& rt, const PhysicsPar
                         bq = q;
                     }
             vx[i] = vel[bs][bq][i].x;
+            vy[i] = vel[bs][bq][i].y;
             vz[i] = vel[bs][bq][i].z;
         }
-        a.ground_velocity = Vec3d{Median(vx), 0.0, Median(vz)};
+        const double gy = Median(vy);
+        a.ground_velocity = Vec3d{Median(vx), std::fabs(gy) > p.ground_vertical_min * leg ? gy : 0.0, Median(vz)};
     }
+    // A height in the ground frame: minus the ground's climb since the clip start.
+    auto ground_y = [&](double y, size_t i) { return y - a.ground_velocity.y * static_cast<double>(i) / rate; };
 
     for (int s = 0; s < 2; ++s) {
         FootTrack& f = a.foot[s];
@@ -807,8 +813,8 @@ PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& rt, const PhysicsPar
             pt.vy.resize(n);
             for (size_t i = 0; i < n; ++i) {
                 const double dx = vel[s][q][i].x - a.ground_velocity.x, dz = vel[s][q][i].z - a.ground_velocity.z;
-                const double dy = vel[s][q][i].y;
-                pt.y[i] = sm[s][q][i].y;
+                const double dy = vel[s][q][i].y - a.ground_velocity.y;
+                pt.y[i] = ground_y(sm[s][q][i].y, i);
                 pt.speed[i] = std::sqrt(dx * dx + dy * dy + dz * dz) / leg;
                 pt.hspeed[i] = std::sqrt(dx * dx + dz * dz) / leg;
                 pt.vy[i] = dy / leg;
@@ -920,8 +926,8 @@ PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& rt, const PhysicsPar
         pt.vy.resize(n);
         for (size_t i = 0; i < n; ++i) {
             const double dx = hvel[s][i].x - a.ground_velocity.x, dz = hvel[s][i].z - a.ground_velocity.z;
-            const double dy = hvel[s][i].y;
-            pt.y[i] = hsm[s][i].y;
+            const double dy = hvel[s][i].y - a.ground_velocity.y;
+            pt.y[i] = ground_y(hsm[s][i].y, i);
             pt.speed[i] = std::sqrt(dx * dx + dy * dy + dz * dz) / leg;
             pt.hspeed[i] = std::sqrt(dx * dx + dz * dz) / leg;
             pt.vy[i] = dy / leg;
@@ -1172,10 +1178,11 @@ std::string PhysicsSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEv
         case PhysicsKind::HandPivot: break;  // HandSummary's
         }
     }
-    std::string out = Format("leg %.2f m%s, ground (%+.2f, %+.2f) m/s; steps heel %d, toe %d, tip %d; foot steps %d, "
+    const std::string vertical = a.ground_velocity.y != 0.0 ? Format(", vertical %+.2f m/s", a.ground_velocity.y) : "";
+    std::string out = Format("leg %.2f m%s, ground (%+.2f, %+.2f) m/s%s; steps heel %d, toe %d, tip %d; foot steps %d, "
                              "lift-offs %d, slides %d, pivots %d",
                              a.leg_length, a.scale_note.empty() ? "" : (" (" + a.scale_note + ")").c_str(),
-                             a.ground_velocity.x, a.ground_velocity.z, steps[0], steps[1], steps[2], foot, lift, slide,
+                             a.ground_velocity.x, a.ground_velocity.z, vertical.c_str(), steps[0], steps[1], steps[2], foot, lift, slide,
                              pivot);
     if (!a.missing.empty()) {
         out += "; missing: ";

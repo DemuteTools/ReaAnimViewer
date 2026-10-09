@@ -105,6 +105,7 @@ struct Options {
     double dur = 4.0;
     double scale = 1.0;       // every position times this (a bigger character)
     double ground = 0.0;      // m/s: an in-place clip, everything moves back on Z
+    double climb = 0.0;       // m/s: an in-place climb, everything moves down on Y
     double noise = 0.0;       // +- m on every axis of the foot parts
     bool   toes = true;       // false: no toe and no toe end bones
     bool   same_tip = false;  // the toe end plays on the toe's bone
@@ -133,7 +134,7 @@ std::vector<BoneTrack> Rig(const FootFn& left, const FootFn& right, const Option
     };
     for (int i = 0; i < n; ++i) {
         const double time = i / o.rate;
-        const Vec3d  back{0.0, 0.0, -o.ground * time};
+        const Vec3d  back{0.0, -o.climb * time, -o.ground * time};
         Vec3d        up_legs[2];
         for (int s = 0; s < 2; ++s) {
             const FootPose f = s ? right(time) : left(time);
@@ -494,6 +495,25 @@ int main()
                     CHECK(x.size() == y.size());
                     for (size_t i = 0; i < x.size() && i < y.size(); ++i) CHECK(std::fabs(x[i].time_s - y[i].time_s) < 0.002);
                 }
+    }
+    {
+        // In-place climb (story 10-8g): the walk with a 0.5 m/s climb taken off (every planted
+        // part slides down at 0.57 leg/s, past the contact speed). The ground frame reads it, and
+        // the events are the moving walk's, at the default timing too.
+        Options o;
+        o.climb = 0.5;
+        const PhysicsAnalysis a = AnalyseMotion(Rig(walk_l, walk_r, o));
+        CHECK(a.ok && std::fabs(a.ground_velocity.y + 0.5) < 1e-3 && std::fabs(a.ground_velocity.z) < 1e-3);
+        const PhysicsAnalysis moving = AnalyseMotion(Rig(walk_l, walk_r, Options{}));
+        for (const PhysicsParams& tp : {SpeedTiming(), PhysicsParams{}}) {
+            const std::vector<PhysicsEvent> x = FootEvents(a, tp), y = FootEvents(moving, tp);
+            CHECK(x.size() == y.size());
+            for (size_t i = 0; i < x.size() && i < y.size(); ++i)
+                CHECK(PhysicsMarkerName(x[i]) == PhysicsMarkerName(y[i]) && std::fabs(x[i].time_s - y[i].time_s) < 0.002);
+        }
+        // A slower drift (0.2 m/s, 0.23 leg/s, under ground_vertical_min) stays in the frame.
+        o.climb = 0.2;
+        CHECK(AnalyseMotion(Rig(walk_l, walk_r, o)).ground_velocity.y == 0.0);
     }
     {
         // Raised support: the left foot steps up onto a 0.4 m block at t = 0.9 (a swing of 0.4 s

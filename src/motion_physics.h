@@ -169,6 +169,10 @@ struct PhysicsParams {
     double slide_min_s = 0.05;
     double slide_min_dist = 0.05;        // leg
     double slide_gap_max_s = 1.0;        // two contacts further apart are never one slid contact
+    // leg/s: the ground frame also removes the lowest part's median vertical speed past this (an
+    // in-place climb, story 10-8g: -0.65 leg/s on Climbing Up Wall_InPlace; at most 0.09 on the
+    // other fixtures, a real climb's included, where the planted parts hold still).
+    double ground_vertical_min = 0.3;
     double pivot_smooth_ms = 20.0;       // Gaussian sigma on positions for the yaw
     double pivot_rate_dps = 90.0;
     double pivot_min_s = 0.05;
@@ -280,7 +284,7 @@ struct PhysicsAnalysis {
     size_t                   samples = 0;
     double                   leg_length = 0.0;  // m
     std::string              scale_note;        // "" or how the scale was found when not both legs
-    Vec3d                    ground_velocity;   // m/s, y = 0
+    Vec3d                    ground_velocity;   // m/s, y = 0 unless past ground_vertical_min
     FootTrack                foot[2];           // L, R
     std::vector<std::string> missing;           // one line per dropped foot part / event type
     HandTrack                hand[2];           // L, R

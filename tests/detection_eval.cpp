@@ -688,9 +688,12 @@ int RunPhysics(const std::vector<std::string>& files, const PhysicsParams& base)
             for (const PhysLabel& l : pc.labels) skip_label(pc, l);
             continue;
         }
-        std::printf("%s  leg %.3f m%s, ground (%+.2f, %+.2f) m/s%s\n", pc.head.c_str(), pc.a.leg_length,
+        char vertical[48] = "";
+        if (pc.a.ground_velocity.y != 0.0)
+            std::snprintf(vertical, sizeof vertical, ", vertical %+.2f m/s", pc.a.ground_velocity.y);
+        std::printf("%s  leg %.3f m%s, ground (%+.2f, %+.2f) m/s%s%s\n", pc.head.c_str(), pc.a.leg_length,
                     pc.a.scale_note.empty() ? "" : (" (" + pc.a.scale_note + ")").c_str(), pc.a.ground_velocity.x,
-                    pc.a.ground_velocity.z, pc.tagged ? "" : "  (no labelled foot REF: events only)");
+                    pc.a.ground_velocity.z, vertical, pc.tagged ? "" : "  (no labelled foot REF: events only)");
         for (const std::string& m : pc.a.missing) std::printf("  missing: %s\n", m.c_str());
         for (const PhysLabel& l : pc.labels) {
             if (l.part < 0) {

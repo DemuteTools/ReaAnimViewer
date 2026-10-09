@@ -780,10 +780,15 @@ PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& rt, const PhysicsPar
     }
 
     // Ground frame: the median horizontal velocity of the lowest part (0 without a foot part).
-    // Its vertical one too when it passes ground_vertical_min: an in-place climb, whose root
-    // motion was removed, slides every planted part down at the climbing speed (story 10-8g).
+    // An in-place climb (story 10-8g), whose root motion was removed, slides every planted hand
+    // and foot down at the climbing speed, and its lowest part is often the foot about to step
+    // up: there the frame is the velocity two limbs share (per sample, the closest pair among
+    // the hands and the feet, the foot's toe else heel else toe end, closer than 0.4 leg/s (the
+    // default contact speed); the median over the samples that have one; at least three limbs,
+    // so that two can hold while one moves), taken on every axis once its vertical one passes
+    // ground_vertical_min.
     if (any) {
-        std::vector<double> vx(n), vy(n), vz(n);
+        std::vector<double> vx(n), vz(n);
         for (size_t i = 0; i < n; ++i) {
             int bs = -1, bq = -1;
             for (int s = 0; s < 2; ++s)
@@ -793,11 +798,42 @@ PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& rt, const PhysicsPar
                         bq = q;
                     }
             vx[i] = vel[bs][bq][i].x;
-            vy[i] = vel[bs][bq][i].y;
             vz[i] = vel[bs][bq][i].z;
         }
-        const double gy = Median(vy);
-        a.ground_velocity = Vec3d{Median(vx), std::fabs(gy) > p.ground_vertical_min * leg ? gy : 0.0, Median(vz)};
+        a.ground_velocity = Vec3d{Median(vx), 0.0, Median(vz)};
+    }
+    {
+        std::vector<const std::vector<Vec3d>*> limb;
+        for (int s = 0; s < 2; ++s) {
+            const FootTrack& f = a.foot[s];
+            const int        q = f.part[1].present ? 1 : (f.part[0].present ? 0 : (f.part[2].present ? 2 : -1));
+            if (q >= 0) limb.push_back(&vel[s][q]);
+            if (a.hand[s].part.present) limb.push_back(&hvel[s]);
+        }
+        if (limb.size() >= 3) {
+            std::vector<double> cx, cy, cz;
+            for (size_t i = 0; i < n; ++i) {
+                double best = 0.4 * leg;  // leg/s, the default contact speed: further apart is not together
+                Vec3d  c{0.0, 0.0, 0.0};
+                bool   found = false;
+                for (size_t u = 0; u < limb.size(); ++u)
+                    for (size_t w = u + 1; w < limb.size(); ++w) {
+                        const Vec3d& A = (*limb[u])[i];
+                        const Vec3d& B = (*limb[w])[i];
+                        const double d = Dist(A, B);
+                        if (d >= best) continue;
+                        best = d;
+                        c = Vec3d{0.5 * (A.x + B.x), 0.5 * (A.y + B.y), 0.5 * (A.z + B.z)};
+                        found = true;
+                    }
+                if (!found) continue;
+                cx.push_back(c.x);
+                cy.push_back(c.y);
+                cz.push_back(c.z);
+            }
+            const double gy = cy.empty() ? 0.0 : Median(cy);
+            if (std::fabs(gy) > p.ground_vertical_min * leg) a.ground_velocity = Vec3d{Median(cx), gy, Median(cz)};
+        }
     }
     // A height in the ground frame: minus the ground's climb since the clip start.
     auto ground_y = [&](double y, size_t i) { return y - a.ground_velocity.y * static_cast<double>(i) / rate; };

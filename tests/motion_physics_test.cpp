@@ -497,14 +497,21 @@ int main()
                 }
     }
     {
-        // In-place climb (story 10-8g): the walk with a 0.5 m/s climb taken off (every planted
-        // part slides down at 0.57 leg/s, past the contact speed). The ground frame reads it, and
-        // the events are the moving walk's, at the default timing too.
-        Options o;
-        o.climb = 0.5;
-        const PhysicsAnalysis a = AnalyseMotion(Rig(walk_l, walk_r, o));
+        // In-place climb (story 10-8g): the walk, both hands on a rung, with a 0.5 m/s climb
+        // taken off (every planted part slides down at 0.57 leg/s, past the contact speed; the
+        // lowest part is often the swinging foot). The ground frame reads it from the limbs that
+        // move together, and the foot events are the moving walk's, at the default timing too.
+        auto climbing = [&](double v) {
+            Options o;
+            o.climb = v;
+            std::vector<BoneTrack> t = Rig(walk_l, walk_r, o);
+            auto rung = [v](double x) { return [v, x](double tm) { return Vec3d{x, 1.6 - v * tm, 0.3}; }; };
+            AddHands(t, rung(-0.3), rung(0.3), o);
+            return AnalyseMotion(t);
+        };
+        const PhysicsAnalysis a = climbing(0.5);
         CHECK(a.ok && std::fabs(a.ground_velocity.y + 0.5) < 1e-3 && std::fabs(a.ground_velocity.z) < 1e-3);
-        const PhysicsAnalysis moving = AnalyseMotion(Rig(walk_l, walk_r, Options{}));
+        const PhysicsAnalysis moving = climbing(0.0);
         for (const PhysicsParams& tp : {SpeedTiming(), PhysicsParams{}}) {
             const std::vector<PhysicsEvent> x = FootEvents(a, tp), y = FootEvents(moving, tp);
             CHECK(x.size() == y.size());
@@ -512,7 +519,10 @@ int main()
                 CHECK(PhysicsMarkerName(x[i]) == PhysicsMarkerName(y[i]) && std::fabs(x[i].time_s - y[i].time_s) < 0.002);
         }
         // A slower drift (0.2 m/s, 0.23 leg/s, under ground_vertical_min) stays in the frame.
-        o.climb = 0.2;
+        CHECK(climbing(0.2).ground_velocity.y == 0.0);
+        // Feet only (two limbs): no climb frame, the walk's horizontal one as before.
+        Options o;
+        o.climb = 0.5;
         CHECK(AnalyseMotion(Rig(walk_l, walk_r, o)).ground_velocity.y == 0.0);
     }
     {

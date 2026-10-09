@@ -232,6 +232,10 @@ void StepCandidates(const PartTrack& pt, const PartContact& c, int lo, int rest,
     const std::vector<double>& sp = pt.speed;
     const std::vector<double>& y = pt.y;
     const std::vector<double>& vy = pt.vy;
+    const std::vector<double>& hs = pt.hspeed;
+    // A crossing where the part still moves horizontally faster than a swing (slide_max_speed)
+    // is no landing: the foot glides into place, so that definition keeps the Speed time.
+    auto landed = [&](int j) { return hs[static_cast<size_t>(j)] <= p.slide_max_speed; };
     lo = std::max(1, lo);
     const int hi_fwd = std::max(s, std::min(c.end - 1, s + SamplesOf(p.search_fwd_s, rate)));
     const int hi = std::max(hi_fwd, std::min(c.end - 1, rest));
@@ -259,7 +263,8 @@ void StepCandidates(const PartTrack& pt, const PartContact& c, int lo, int rest,
             if (y[j - 1] >= h && y[j] < h) found = j;
         for (int j = hi; found < 0 && j >= lo; --j)
             if (y[j - 1] >= h && y[j] < h) found = j;
-        if (found > 0) out[static_cast<int>(StepTiming::Height)] = CrossTime(found, y[found - 1], y[found], h, rate);
+        if (found > 0 && landed(found))
+            out[static_cast<int>(StepTiming::Height)] = CrossTime(found, y[found - 1], y[found], h, rate);
     }
     // Descent: after the fastest descent of the approach, the downward speed falls below
     // descent_speed.
@@ -276,7 +281,7 @@ void StepCandidates(const PartTrack& pt, const PartContact& c, int lo, int rest,
                 bool held = true;  // the descent stays ended for descent_hold_s
                 for (int i = j; held && i < std::min(n, j + hold); ++i) held = -vy[i] < d;
                 if (!held) continue;
-                out[static_cast<int>(StepTiming::Descent)] = CrossTime(j, -vy[j - 1], -vy[j], d, rate);
+                if (landed(j)) out[static_cast<int>(StepTiming::Descent)] = CrossTime(j, -vy[j - 1], -vy[j], d, rate);
                 break;
             }
     }

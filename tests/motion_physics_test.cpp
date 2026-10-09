@@ -222,6 +222,33 @@ PhysicsParams SpeedTiming()
     return p;
 }
 
+// A foot that swings from 1.0 s and reaches the floor at 1.4 s (the walk's 10 cm arc, landing
+// at about 0.8 m/s down), moving forward on Z all along: its horizontal speed ramps up to
+// `speed` (leg/s, a 0.87 m leg) over 50 ms, stays there until `glide_s` after the landing, then
+// falls to 0 over 40 ms (it stops at 1.44 + glide_s).
+FootFn GlideFoot(double glide_s, double speed)
+{
+    return [glide_s, speed](double t) {
+        const double a = 1.0, r = 0.05, land = 1.4, dcl = 0.04;
+        const double v = speed * 0.87, tg = land + glide_s;
+        const double zg = v * r / 2.0 + v * (tg - a - r);
+        FootPose     f;
+        f.ball.y = 0.02;
+        if (t < a)
+            f.ball.z = 0.0;
+        else if (t < a + r)
+            f.ball.z = v * (t - a) * (t - a) / (2.0 * r);
+        else if (t < tg)
+            f.ball.z = v * r / 2.0 + v * (t - a - r);
+        else if (t < tg + dcl)
+            f.ball.z = zg + v * (t - tg) - v * (t - tg) * (t - tg) / (2.0 * dcl);
+        else
+            f.ball.z = zg + v * dcl / 2.0;
+        if (t >= a && t < land) f.ball.y = 0.02 + 0.10 * std::sin(kPi * (t - a) / (land - a));
+        return f;
+    };
+}
+
 // Each combined step is the earliest separate step of its landing (that side's steps within
 // `span` of it).
 bool CombinedIsEarliest(const std::vector<PhysicsEvent>& ev, double span)
@@ -352,6 +379,56 @@ int main()
         const std::vector<PhysicsEvent> bev = FootEvents(b, SpeedTiming());
         CHECK(Of(bev, PhysicsKind::Step).size() == Of(ev, PhysicsKind::Step).size());
         for (size_t i = 0; i < bev.size() && i < ev.size(); ++i) CHECK(std::fabs(bev[i].time_s - ev[i].time_s) < 1e-3);
+    }
+    {
+        // Step timing on a gliding landing (story 10-8f): a Height or Descent crossing where the
+        // part still moves faster than a swing (slide_max_speed) keeps the Speed time.
+        Options o;
+        o.dur = 3.0;
+        const FootFn still = Planted(-0.2, 0.0);
+        auto times = [](const PhysicsAnalysis& a, int q, StepTiming t) { return PartStepTimes(a, 'L', q, t, 0.0); };
+        // Gliding: lands at 1.4 s, glides 200 ms at 3 leg/s, stops at 1.64 s: the step is where it
+        // stops, not where its descent ends.
+        {
+            const PhysicsAnalysis a = AnalyseMotion(Rig(GlideFoot(0.2, 3.0), still, o));
+            CHECK(a.ok);
+            for (int q = 0; q < kFootPartCount; ++q) {
+                const std::vector<double> sp = times(a, q, StepTiming::Speed);
+                const std::vector<double> d = times(a, q, StepTiming::Descent);
+                CHECK(sp.size() == 1 && d.size() == 1);
+                if (sp.size() != 1 || d.size() != 1) continue;
+                CHECK(sp[0] > 1.6 && sp[0] < 1.66);
+                CHECK(d == sp);
+                CHECK(times(a, q, StepTiming::Height) == sp);
+            }
+            // The default timing follows (each part's Descent plus its offset).
+            CHECK(StepsNear(Of(FootEvents(a), PhysicsKind::FootStep, 'L'), {1.61}, 0.02));
+        }
+        // Slow slide-in: lands at 1.4 s, slides 150 ms at 1 leg/s (a slide, not a swing): the
+        // step stays at the end of the descent.
+        {
+            const PhysicsAnalysis a = AnalyseMotion(Rig(GlideFoot(0.15, 1.0), still, o));
+            CHECK(a.ok);
+            for (int q = 0; q < kFootPartCount; ++q) {
+                const std::vector<double> sp = times(a, q, StepTiming::Speed);
+                const std::vector<double> d = times(a, q, StepTiming::Descent);
+                CHECK(sp.size() == 1 && d.size() == 1);
+                if (sp.size() != 1 || d.size() != 1) continue;
+                CHECK(sp[0] > 1.55);
+                CHECK(d[0] - 1.4 >= 0.0 && d[0] - 1.4 <= 0.025);
+            }
+        }
+        // Glide past the search window: the descent ends 440 ms before the stop (search_back_s
+        // is 300 ms), so Descent finds no crossing and keeps the Speed time, as before.
+        {
+            const PhysicsAnalysis a = AnalyseMotion(Rig(GlideFoot(0.4, 3.0), still, o));
+            CHECK(a.ok);
+            for (int q = 0; q < kFootPartCount; ++q) {
+                const std::vector<double> sp = times(a, q, StepTiming::Speed);
+                CHECK(sp.size() == 1 && sp[0] > 1.8);
+                CHECK(times(a, q, StepTiming::Descent) == sp);
+            }
+        }
     }
     {
         // Jitter: +-2 mm on every axis of every foot part: 4 steps per part and foot, no extra.

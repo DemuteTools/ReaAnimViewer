@@ -124,7 +124,10 @@ Role FootPartRole(char side, int part);
 //   Settle   the speed falls below settle_speed: the part has come to rest.
 // Speed searches up to search_fwd_s after the contact start; the others up to where the part
 // comes to rest (a heel lowered slowly can rest 300 ms after its speed contact starts).
-// A definition that finds no crossing falls back to Speed.
+// A definition that finds no crossing falls back to Speed, and so does Height or Descent when
+// the part still moves horizontally faster than a swing (slide_max_speed, the ground frame's
+// hspeed) at its crossing: a foot that ends its descent long before it stops and glides into
+// place lands where it stops. Settle crossings are already slow, so the rule never touches them.
 enum class StepTiming : int { Speed = 0, Height, Descent, Settle };
 constexpr int kStepTimingCount = 4;
 const char* StepTimingName(StepTiming t);  // "speed", "height", "descent", "settle"
@@ -162,7 +165,9 @@ struct PhysicsParams {
     // spike on its 6 tagged reference clips (19 foot contacts; one clip's left / right tags
     // swapped back): the definition with the fewest edits per part, each offset minus that
     // part's median signed error over all of them. Fitted on those clips only; the tip's comes
-    // from one clip (4 contacts).
+    // from one clip (4 contacts). Limits: a foot that glides into place (Catwalk, high heels,
+    // 3-4 leg/s after its descent ends) is timed by Speed, where it stops (story 10-8f); the
+    // offsets were not refitted for it.
     StepTiming step_timing[kFootPartCount] = {StepTiming::Descent, StepTiming::Descent, StepTiming::Descent};
     double     step_offset_s[kFootPartCount] = {0.007, -0.031, 0.020};
     // Hands (story 10-8c), segmented as a foot part with these instead of contact_speed and

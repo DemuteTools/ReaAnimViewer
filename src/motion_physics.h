@@ -1,16 +1,19 @@
 // SPDX-License-Identifier: MIT
 //
-// Motion physics (Epic 10, spike 10-8a): foot events read from bone motion as physics, in
-// body units, so one setting works on every clip. No clip statistics, no examples, no Analyse.
+// Motion physics (Epic 10, spike 10-8a; hands: story 10-8c): foot and hand events read from
+// bone motion as physics, in body units, so one setting works on every clip. No clip
+// statistics, no examples, no Analyse.
 //
 // Roles in, events out. The analysis reads, per side, the heel (the foot bone), the ball (the
-// toe base), the toe tip (the toe end), the knee and the up leg, plus the hips (bone_roles.h):
+// toe base), the toe tip (the toe end), the knee, the up leg and the hand, plus the hips
+// (bone_roles.h):
 //   body scale    the leg length: up leg -> knee -> heel (the median over the clip, the mean of
-//                 the sides; the hips stand in for a missing up leg). Speeds are in leg lengths
+//                 the sides; the hips stand in for a missing up leg). When no side gives it (no
+//                 heel), 2 x (up leg -> knee), noted "thigh x2". Speeds are in leg lengths
 //                 per second (leg/s), heights in leg lengths.
-//   ground frame  the median horizontal velocity of the lowest foot part. An in-place clip
-//                 (a treadmill walk) slides; a normal clip reads about 0. Every speed is
-//                 measured in this frame.
+//   ground frame  the median horizontal velocity of the lowest foot part (0 without a foot
+//                 part). An in-place clip (a treadmill walk) slides; a normal clip reads about
+//                 0. Every speed is measured in this frame.
 //   contact       per foot part: a two-state segmentation (free / contact), the most probable
 //                 sequence (Viterbi) on the ground-frame speed, with a cost per switch. The
 //                 evidence for contact at a sample is (contact_speed - speed) / contact_speed,
@@ -51,8 +54,21 @@
 // places each part's steps by the definition and offset PhysicsParams gives that part (see
 // PhysicsParams::step_timing for how the defaults were chosen and their limits).
 //
-// A missing role drops only that part's events (PhysicsAnalysis::missing says why). Two parts
-// on the same bone (an Unreal toe end standing in on ball_l) keep the first.
+// Hands (HandEvents): a hand contact is the hand coming to rest in the ground frame, segmented
+// as a foot part with its own contact speed and switch cost (PhysicsParams::hand_*), its slid
+// gaps joined with the feet's slide constants (slide_gap_max_s, slide_height, slide_max_speed:
+// a hand that re-grabs at the same height within 1 s without lifting is one contact). A contact
+// counts when it lasts hand_min_contact_s at least, so a hand stopping briefly between two
+// moves is no contact; one the clip start or end cuts short counts. Its part is -1.
+//   grab          a counted contact's start, never at the clip start, approached at
+//                 hand_min_approach at least (a still hand drifting to rest is no grab).
+//                 Timed by hand_timing + hand_offset_s. Strength = the approach speed (leg/s).
+//   release       a counted contact's end (its lift-off time), never at the clip end, left at
+//                 hand_min_approach at least. Strength = the departure speed (leg/s).
+//
+// A missing role drops only that part's events (PhysicsAnalysis::missing says why for the feet,
+// hand_missing for the hands). Two parts on the same bone (an Unreal toe end standing in on
+// ball_l) keep the first.
 //
 // Pure C++17, deterministic: no REAPER, no GL. Host-tested (tests/motion_physics_test.cpp).
 
@@ -124,6 +140,27 @@ struct PhysicsParams {
     // from one clip (4 contacts).
     StepTiming step_timing[kFootPartCount] = {StepTiming::Descent, StepTiming::Descent, StepTiming::Descent};
     double     step_offset_s[kFootPartCount] = {0.007, -0.031, 0.020};
+    // Hands (story 10-8c), segmented as a foot part with these instead of contact_speed and
+    // switch_cost. Chosen with detection_eval --physics on the 11 fixture clips, which hold one
+    // hand REF (Climbing, right hand, 3.65 s):
+    //   contact speed and switch cost: the feet's. Contact 0.3-0.5 finds the REF grab; 0.4 with
+    //     a cost of 10 adds no other hand event on the clips without hand contact (0.5 adds 4,
+    //     a cost of 5 adds 1, 20 drops Climbing's left release).
+    //   min approach: the hands that come to rest in the air (the back of an arm swing, the
+    //     end of a jump) approach at 0.81 leg/s at most; the REF grab at 1.54. 1.0 sits between
+    //     (0.8 adds 3 events, 1.4 still keeps the grab).
+    //   min contact: 150 ms, for a stop inside the clip; a contact the clip start or end cuts
+    //     short always counts (the REF grab's lasts 175 ms, to the clip end).
+    //   timing: each definition on the REF: speed +8 ms, descent -55, height -93, settle +81.
+    //     Speed is chosen. The offset stays 0: one REF cannot fit an offset.
+    // Limits: one hand REF; a hand frozen in the air after a fast move (a long dance hit) reads
+    // as a grab.
+    double     hand_contact_speed = 0.4;     // leg/s
+    double     hand_switch_cost = 10.0;      // samples of clear evidence (240 Hz)
+    double     hand_min_approach = 1.0;      // leg/s: a grab's approach, a release's departure
+    double     hand_min_contact_s = 0.150;   // a shorter contact is a stop between two moves
+    StepTiming hand_timing = StepTiming::Speed;
+    double     hand_offset_s = 0.0;
 };
 
 // One contact of a part, in samples [start, end).
@@ -167,6 +204,12 @@ struct FootTrack {
     std::vector<Scuff>  pivots;
 };
 
+// A hand: its contacts as a part (PartTrack, segmented with the hand constants).
+struct HandTrack {
+    char      side = 'L';
+    PartTrack part;
+};
+
 struct PhysicsAnalysis {
     bool                     ok = false;
     std::string              error;          // !ok: why
@@ -176,7 +219,9 @@ struct PhysicsAnalysis {
     std::string              scale_note;        // "" or how the scale was found when not both legs
     Vec3d                    ground_velocity;   // m/s, y = 0
     FootTrack                foot[2];           // L, R
-    std::vector<std::string> missing;           // one line per dropped part / event type
+    std::vector<std::string> missing;           // one line per dropped foot part / event type
+    HandTrack                hand[2];           // L, R
+    std::vector<std::string> hand_missing;      // one line per dropped hand ("L hand: no bone for left hand")
 };
 
 // The roles the analysis reads (Role order).
@@ -192,12 +237,12 @@ std::vector<BoneTrack> PhysicsRoleTracks(const std::vector<int>& bone_of_role,
 // non-empty track has the same rate and length.
 PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& role_tracks, const PhysicsParams& p = {});
 
-enum class PhysicsKind { Step, FootStep, LiftOff, Slide, Pivot };
+enum class PhysicsKind { Step, FootStep, LiftOff, Slide, Pivot, Grab, Release };
 
 struct PhysicsEvent {
     PhysicsKind kind = PhysicsKind::Step;
     char        side = 'L';
-    int         part = 0;        // FootPart; -1 = none (a pivot on neither)
+    int         part = 0;        // FootPart; -1 = none (a pivot on neither, a hand event)
     double      time_s = 0.0;    // clip time (a scuff: its start)
     double      start_s = 0.0;   // a scuff's span (= time_s for the others)
     double      end_s = 0.0;
@@ -207,11 +252,15 @@ struct PhysicsEvent {
 // Every event, by time (then side, kind, part). Steps use p.step_timing / p.step_offset_s.
 std::vector<PhysicsEvent> FootEvents(const PhysicsAnalysis& a, const PhysicsParams& p = {});
 
+// Every hand event (grabs and releases), by time (then side, kind). Uses p.hand_*.
+std::vector<PhysicsEvent> HandEvents(const PhysicsAnalysis& a, const PhysicsParams& p = {});
+
 // The separate step times of one part (side 'L' / 'R'), by `timing` plus `offset_s`.
 std::vector<double> PartStepTimes(const PhysicsAnalysis& a, char side, int part, StepTiming timing, double offset_s);
 
 // "PHY L heel 1.8", "PHY R step toe 2.1", "PHY L lift tip 1.2", "PHY L slide toe 0.6 210ms",
-// "PHY R pivot ball 87deg 250ms" (strengths in leg/s or degrees).
+// "PHY R pivot ball 87deg 250ms", "PHY L grab 1.4", "PHY R release 0.9" (strengths in leg/s or
+// degrees).
 std::string PhysicsMarkerName(const PhysicsEvent& e);
 // True for a marker name this module writes ("PHY " prefix).
 bool IsPhysicsMarkerName(const char* name);
@@ -219,6 +268,9 @@ bool IsPhysicsMarkerName(const char* name);
 // The report: "leg 0.93 m, ground (+0.00, -0.41) m/s; steps heel 2, toe 2, tip 2; foot steps 2,
 // lift-offs 1, slides 0, pivots 0" plus "; missing: ..." when a part is dropped.
 std::string PhysicsSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev);
+// The hands' report: "hands: grabs 2, releases 1" plus "; missing: ..." when a hand is dropped
+// ("hands: skipped: <error>" when the analysis failed). Counts the Grab / Release events of ev.
+std::string HandSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev);
 // One line per event ("   1.234 s  PHY L heel 1.8", a scuff "... (to 1.456 s)"), each with
 // `indent` in front and '\n' after.
 std::string PhysicsEventLines(const std::vector<PhysicsEvent>& ev, const std::string& indent);

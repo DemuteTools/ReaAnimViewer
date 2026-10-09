@@ -119,6 +119,8 @@ struct ItemRun {
     bool                      phys_ran = false;
     std::string               phys_summary;
     std::vector<PhysicsEvent> phys_events;
+    std::string               hand_summary;  // story 10-8c
+    std::vector<PhysicsEvent> hand_events;
 };
 
 
@@ -165,7 +167,8 @@ std::string DumpTracks(const CpuAsset& asset, const std::string& label, const Re
 }
 
 // Spike 10-8a: the physics foot events (motion_physics.h, default constants and timing) on the
-// user's role mapping (roles.txt, else the guess), as the Tagging view maps roles.
+// user's role mapping (roles.txt, else the guess), as the Tagging view maps roles. Story 10-8c:
+// the hand events too.
 void MeasurePhysics(const CpuAsset& asset, const std::vector<std::string>& names, const RoleMapFile& roles,
                     ItemRun& run)
 {
@@ -174,6 +177,8 @@ void MeasurePhysics(const CpuAsset& asset, const std::vector<std::string>& names
         role_bone, [&](const std::vector<int>& bones) { return SampleBoneTracks(asset, bones, kRateHz); }));
     run.phys_events = FootEvents(a);
     run.phys_summary = PhysicsSummary(a, run.phys_events);
+    run.hand_events = HandEvents(a);
+    run.hand_summary = HandSummary(a, run.hand_events);
     run.phys_ran = true;  // last: a failure above leaves no bare "physics:" line
 }
 
@@ -291,11 +296,12 @@ void WriteDetectionMarkers(const std::vector<ItemRun>& runs)
             g_get_take_marker(r.take, i, name, sizeof(name), nullptr);
             if (std::strcmp(name, kDetName) == 0 || IsPhysicsMarkerName(name)) g_delete_take_marker(r.take, i);
         }
-        for (const PhysicsEvent& e : r.phys_events) {
-            if (e.time_s < 0.0) continue;
-            double pos = e.time_s;
-            g_set_take_marker(r.take, -1, PhysicsMarkerName(e).c_str(), &pos, nullptr);
-        }
+        for (const std::vector<PhysicsEvent>* evs : {&r.phys_events, &r.hand_events})
+            for (const PhysicsEvent& e : *evs) {
+                if (e.time_s < 0.0) continue;
+                double pos = e.time_s;
+                g_set_take_marker(r.take, -1, PhysicsMarkerName(e).c_str(), &pos, nullptr);
+            }
         if (!r.skipped.empty()) continue;
         for (double t : r.m.det) {
             if (t < 0.0) continue;
@@ -315,9 +321,12 @@ void Report(const std::vector<ItemRun>& runs, const FootstepsParams& k)
     for (size_t i = 0; i < runs.size(); ++i) {
         const ItemRun& r = runs[i];
         const std::string label = Format("#%zu %s", i + 1, r.label.empty() ? "(item)" : r.label.c_str());
-        // Spike 10-8a: one physics line per loaded item, then its events (its PHY markers).
-        const std::string phys =
-            r.phys_ran ? "  physics: " + r.phys_summary + "\n" + PhysicsEventLines(r.phys_events, "    ") : "";
+        // Spike 10-8a: one physics line per loaded item, then its events (its PHY markers); story
+        // 10-8c: the hands' line after it, then the foot events and the hand events.
+        const std::string phys = r.phys_ran ? "  physics: " + r.phys_summary + "\n  " + r.hand_summary + "\n" +
+                                                  PhysicsEventLines(r.phys_events, "    ") +
+                                                  PhysicsEventLines(r.hand_events, "    ")
+                                            : "";
         if (!r.skipped.empty()) {
             out += SkippedReport(label, r.skipped);
             out += RefLabelsText(r.refs);

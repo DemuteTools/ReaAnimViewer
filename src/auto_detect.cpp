@@ -14,8 +14,8 @@
 namespace rav {
 namespace {
 
-constexpr AutoKind kKinds[kAutoKindCount] = {AutoKind::Step,  AutoKind::Heel,  AutoKind::Toe,
-                                             AutoKind::Lift, AutoKind::Slide, AutoKind::Pivot};
+constexpr AutoKind kKinds[kAutoKindCount] = {AutoKind::Step,  AutoKind::Heel,  AutoKind::Toe,  AutoKind::Lift,
+                                             AutoKind::Slide, AutoKind::Pivot, AutoKind::Grab, AutoKind::Release};
 constexpr char     kSides[2] = {'L', 'R'};
 // The analyses a session keeps for one set of role tracks (a few sensitivities tried in a row).
 constexpr size_t kMaxCachedAnalyses = 8;
@@ -33,6 +33,8 @@ std::vector<AutoKind> KindsOf(AutoType t, bool separate)
     case AutoType::LiftOff: return {AutoKind::Lift};
     case AutoType::Slide: return {AutoKind::Slide};
     case AutoType::Pivot: return {AutoKind::Pivot};
+    case AutoType::Grab: return {AutoKind::Grab};
+    case AutoType::Release: return {AutoKind::Release};
     }
     return {};
 }
@@ -57,6 +59,30 @@ const char* AutoTypeLabel(AutoType t)
     case AutoType::LiftOff: return "Lift-off";
     case AutoType::Slide: return "Slide scuff";
     case AutoType::Pivot: return "Pivot scuff";
+    case AutoType::Grab: return "Grab";
+    case AutoType::Release: return "Release";
+    }
+    return "?";
+}
+
+AutoCategory AutoCategoryOf(AutoType t)
+{
+    switch (t) {
+    case AutoType::Step:
+    case AutoType::LiftOff:
+    case AutoType::Slide:
+    case AutoType::Pivot: return AutoCategory::Feet;
+    case AutoType::Grab:
+    case AutoType::Release: return AutoCategory::Hands;
+    }
+    return AutoCategory::Feet;
+}
+
+const char* AutoCategoryLabel(AutoCategory c)
+{
+    switch (c) {
+    case AutoCategory::Feet: return "Feet";
+    case AutoCategory::Hands: return "Hands";
     }
     return "?";
 }
@@ -70,6 +96,8 @@ const char* AutoKindWord(AutoKind k)
     case AutoKind::Lift: return "lift";
     case AutoKind::Slide: return "slide";
     case AutoKind::Pivot: return "pivot";
+    case AutoKind::Grab: return "grab";
+    case AutoKind::Release: return "release";
     }
     return "?";
 }
@@ -93,6 +121,8 @@ AutoType AutoTypeOfKind(AutoKind k)
     case AutoKind::Lift: return AutoType::LiftOff;
     case AutoKind::Slide: return AutoType::Slide;
     case AutoKind::Pivot: return AutoType::Pivot;
+    case AutoKind::Grab: return AutoType::Grab;
+    case AutoKind::Release: return AutoType::Release;
     }
     return AutoType::Step;
 }
@@ -107,6 +137,8 @@ std::string AutoMarkerName(AutoKind k, char side)
     case AutoKind::Lift: word = "Lift"; break;
     case AutoKind::Slide: word = "Slide"; break;
     case AutoKind::Pivot: word = "Pivot"; break;
+    case AutoKind::Grab: word = "Grab"; break;
+    case AutoKind::Release: word = "Release"; break;
     }
     return std::string(word) + ' ' + (side == 'R' ? 'R' : 'L');
 }
@@ -121,6 +153,8 @@ uint32_t AutoDefaultColor(AutoKind k, char side)
         {0x5F5FDD, 0xDD5F5F},  // Lift
         {0x5FDD5F, 0xDD5FDD},  // Slide
         {0x9E5FDD, 0xDD5F9E},  // Pivot
+        {0x5FDD9E, 0xDDB45F},  // Grab
+        {0x9EB4DD, 0xDD9E9E},  // Release
     };
     const int ki = std::clamp(static_cast<int>(k), 0, kAutoKindCount - 1);
     return 0x1000000u | kRgb[ki][SideIndex(side)];
@@ -160,6 +194,29 @@ bool operator==(const AutoSettings& a, const AutoSettings& b)
     for (int t = 0; t < kAutoTypeCount; ++t)
         if (!(a.type[t] == b.type[t])) return false;
     return a.separate_steps == b.separate_steps;
+}
+
+bool AutoCategoryInBlocks(const std::vector<Block>& blocks, AutoCategory c)
+{
+    for (const Block& b : blocks) {
+        AutoKind k;
+        if (AutoBlockKind(b, &k, nullptr) && AutoCategoryOf(AutoTypeOfKind(k)) == c) return true;
+    }
+    return false;
+}
+
+int AutoCategoryOnCount(const AutoSettings& s, AutoCategory c)
+{
+    int n = 0;
+    for (int t = 0; t < kAutoTypeCount; ++t)
+        if (s.type[t].on && AutoCategoryOf(static_cast<AutoType>(t)) == c) ++n;
+    return n;
+}
+
+void UntickAutoCategory(AutoSettings& s, AutoCategory c)
+{
+    for (int t = 0; t < kAutoTypeCount; ++t)
+        if (AutoCategoryOf(static_cast<AutoType>(t)) == c) s.type[t].on = false;
 }
 
 bool AutoPending(const AutoSettings& ui, const AutoSettings& item)
@@ -286,6 +343,8 @@ PhysicsParams AutoPhysicsParams(AutoType t, double sens)
         p.pivot_min_deg /= f;
         p.pivot_rate_dps /= f;
         break;
+    case AutoType::Grab:
+    case AutoType::Release: p.hand_contact_speed *= f; break;
     }
     return p;
 }
@@ -293,7 +352,8 @@ PhysicsParams AutoPhysicsParams(AutoType t, double sens)
 bool SameAutoAnalysis(const PhysicsParams& a, const PhysicsParams& b)
 {
     return a.contact_speed == b.contact_speed && a.slide_speed == b.slide_speed && a.pivot_min_deg == b.pivot_min_deg &&
-           a.pivot_rate_dps == b.pivot_rate_dps;
+           a.pivot_rate_dps == b.pivot_rate_dps && a.hand_contact_speed == b.hand_contact_speed &&
+           a.hand_switch_cost == b.hand_switch_cost;
 }
 
 // ---- Detection ---------------------------------------------------------------------------------
@@ -322,8 +382,8 @@ std::vector<PhysicsParams> AutoParamSets(const std::vector<Block>& blocks)
 std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const std::vector<Block>& blocks)
 {
     std::vector<Event> out;
-    // Each analysis' events, computed once.
-    std::vector<std::vector<PhysicsEvent>> foot(analyses.size());
+    // Each analysis' foot and hand events, computed once.
+    std::vector<std::vector<PhysicsEvent>> foot(analyses.size()), hand(analyses.size());
     std::vector<char>                      done(analyses.size(), 0);
     for (size_t bi = 0; bi < blocks.size(); ++bi) {
         const Block& b = blocks[bi];
@@ -339,13 +399,15 @@ std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const s
         if (!a.ok) continue;
         if (!done[ai]) {
             foot[ai] = FootEvents(a, analyses[ai].params);
+            hand[ai] = HandEvents(a, analyses[ai].params);
             done[ai] = 1;
         }
+        const bool                       is_hand = AutoCategoryOf(AutoTypeOfKind(k)) == AutoCategory::Hands;
         // Separate toe steps: the ball, or the tip on a rig without a ball bone.
         const FootTrack& ft = a.foot[SideIndex(side)];
         const int        toe = ft.part[static_cast<int>(FootPart::Ball)].present ? static_cast<int>(FootPart::Ball)
                                                                                   : static_cast<int>(FootPart::Tip);
-        for (const PhysicsEvent& e : foot[ai]) {
+        for (const PhysicsEvent& e : is_hand ? hand[ai] : foot[ai]) {
             if (e.side != side) continue;
             bool want = false;
             switch (k) {
@@ -355,6 +417,8 @@ std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const s
             case AutoKind::Lift: want = e.kind == PhysicsKind::LiftOff; break;
             case AutoKind::Slide: want = e.kind == PhysicsKind::Slide; break;
             case AutoKind::Pivot: want = e.kind == PhysicsKind::Pivot; break;
+            case AutoKind::Grab: want = e.kind == PhysicsKind::Grab; break;
+            case AutoKind::Release: want = e.kind == PhysicsKind::Release; break;
             }
             if (!want) continue;
             Event ev;
@@ -408,16 +472,23 @@ std::vector<std::string> AutoMissingParts(AutoType t, bool separate, const std::
     auto has = [&](Role r) { return HasRole(role_to_bone, r); };
     const Role knee[2] = {Role::LeftKnee, Role::RightKnee};
     const Role up_leg[2] = {Role::LeftUpLeg, Role::RightUpLeg};
-    // Body scale: heel, knee and up leg (or the hips) of one side.
+    // Body scale: heel, knee and up leg (or the hips) of one side; else knee and up leg of one
+    // side (twice the thigh).
     bool scale = false;
     for (int s = 0; s < 2; ++s)
-        scale = scale || (has(FootPartRole(kSides[s], 0)) && has(knee[s]) && (has(up_leg[s]) || has(Role::Hips)));
+        scale = scale || (has(FootPartRole(kSides[s], 0)) && has(knee[s]) && (has(up_leg[s]) || has(Role::Hips))) ||
+                (has(knee[s]) && has(up_leg[s]));
     if (!scale)
         for (int s = 0; s < 2; ++s) {
             if (!has(FootPartRole(kSides[s], 0))) PushOnce(out, RoleName(FootPartRole(kSides[s], 0)));
             if (!has(knee[s])) PushOnce(out, RoleName(knee[s]));
             if (!has(up_leg[s]) && !has(Role::Hips)) PushOnce(out, RoleName(up_leg[s]));
         }
+    if (AutoCategoryOf(t) == AutoCategory::Hands) {
+        for (Role hand : {Role::LeftHand, Role::RightHand})
+            if (!has(hand)) PushOnce(out, RoleName(hand));
+        return out;
+    }
     for (char side : kSides) {
         const Role heel = FootPartRole(side, 0), ball = FootPartRole(side, 1), tip = FootPartRole(side, 2);
         const bool any = has(heel) || has(ball) || has(tip);

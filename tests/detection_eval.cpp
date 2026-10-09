@@ -46,7 +46,9 @@
 // rig, or whose clip's physics failed, counts its REFs as missed). An offset no error could
 // estimate (a part labelled in one clip only) prints n/a and is 0. Last, every clip's events
 // (untagged dumps too) with the module's default timing, as the measure action writes them (PHY
-// take markers).
+// take markers), each followed by its "  hands: ..." line and hand events (story 10-8c). Then
+// one "HAND REF" line per REF of a label whose bone plays a hand role: the nearest Grab of that
+// side (default constants) and its signed error.
 //   --contact=<leg/s>  the contact speed (default 0.4), --switch=<cost> the switch cost (10).
 //   --json, --single and the Footsteps knobs do not apply.
 //
@@ -414,6 +416,7 @@ struct PhysLabel {
     std::string         bone;
     char                side = 'L';
     bool                foot = false;  // the bone plays a foot part of `side`
+    char                hand = 0;      // 'L' / 'R': the bone plays that hand (story 10-8c)
     int                 part = -1;     // -1 = skipped (not a foot part, or the part is missing)
     std::string         skip;
     std::vector<double> refs;
@@ -545,6 +548,12 @@ int RunPhysics(const std::vector<std::string>& files, const PhysicsParams& base)
                             l.part = q;
                         }
             l.foot = l.part >= 0;
+            for (int s = 0; s < 2 && !l.hand; ++s) {
+                const Role hr = s ? Role::RightHand : Role::LeftHand;
+                if ((bone >= 0 && role_bone[static_cast<size_t>(hr)] == bone) ||
+                    (bone < 0 && l.bone.empty() && RoleFromKey(kv.first, &r) && r == hr))
+                    l.hand = s ? 'R' : 'L';
+            }
             if (l.part < 0) {
                 l.skip = "not a foot part (heel, toe or toe end)";
             } else if (!pc.a.ok) {
@@ -758,7 +767,30 @@ int RunPhysics(const std::vector<std::string>& files, const PhysicsParams& base)
         if (!pc.read || !pc.a.ok) continue;
         const std::vector<PhysicsEvent> ev = FootEvents(pc.a, base);
         std::printf("%s  %s\n%s", pc.head.c_str(), PhysicsSummary(pc.a, ev).c_str(), PhysicsEventLines(ev, "  ").c_str());
+        const std::vector<PhysicsEvent> hev = HandEvents(pc.a, base);
+        std::printf("  %s\n%s", HandSummary(pc.a, hev).c_str(), PhysicsEventLines(hev, "  ").c_str());
     }
+
+    // Story 10-8c: each labelled hand REF and the nearest Grab of that side.
+    for (const PhysClip& pc : clips)
+        for (const PhysLabel& l : pc.labels) {
+            if (!l.hand) continue;
+            const std::vector<PhysicsEvent> hev = HandEvents(pc.a, base);
+            for (double t : l.refs) {
+                std::printf("HAND REF %s  %s (%c hand)  %.3f s: ", pc.head.c_str(), l.label.c_str(), l.hand, t);
+                if (!pc.a.ok) {
+                    std::printf("physics skipped: %s\n", pc.a.error.c_str());
+                    continue;
+                }
+                const PhysicsEvent* best = nullptr;
+                for (const PhysicsEvent& e : hev)
+                    if (e.kind == PhysicsKind::Grab && e.side == l.hand &&
+                        (!best || std::fabs(e.time_s - t) < std::fabs(best->time_s - t)))
+                        best = &e;
+                if (best) std::printf("grab %.3f s, err %+.0f ms\n", best->time_s, (best->time_s - t) * 1000.0);
+                else std::printf("no grab\n");
+            }
+        }
     return 0;
 }
 }  // namespace

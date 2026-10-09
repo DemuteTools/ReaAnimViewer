@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 //
-// Host test of auto detection (src/auto_detect.h, Epic 10, story 10-8b): the spec's matrix rows
-// that are pure (blocks, settings, Detect's remap, sensitivity, offset, the toe without a ball
-// bone, missing roles, rules next to auto blocks, pooled copies, the record). No REAPER.
+// Host test of auto detection (src/auto_detect.h, Epic 10, story 10-8b; hands and categories:
+// 10-8c): the specs' matrix rows that are pure (blocks, settings, Detect's remap, sensitivity,
+// offset, the toe without a ball bone, missing roles, rules next to auto blocks, pooled copies,
+// the record, categories, hand blocks). No REAPER.
 //   cmake -S tests -B build-tests && cmake --build build-tests && ctest --test-dir build-tests
 
 #include "auto_detect.h"
@@ -36,7 +37,8 @@ constexpr double kPi = 3.14159265358979323846;
 
 // A synthetic rig, as tests/motion_physics_test.cpp builds it: one foot = its ball, heading and
 // pitch; the heel 14 cm behind and 6 cm above the ball, the tip 7 cm ahead and 2 cm below; the
-// knee 42 cm and the up leg 87 cm above the heel; the hips between the up legs.
+// knee 42 cm and the up leg 87 cm above the heel; the hips between the up legs; the hands, when
+// given, where their functions say.
 struct FootPose {
     Vec3d  ball;
     double yaw = 0.0;
@@ -54,11 +56,14 @@ Vec3d Yawed(double yaw, double x, double y, double z)
 
 using FootFn = std::function<FootPose(double)>;
 
+using HandFn = std::function<Vec3d(double)>;
+
 struct Options {
     double dur = 4.0;
     bool   ball = true;  // false: no toe base bone (the toe end alone)
     bool   heel = true;  // false: no heel bone
     double rate = 240.0;
+    HandFn hand[2];      // L, R; empty = no bone for that hand
 };
 
 std::vector<BoneTrack> Rig(const FootFn& left, const FootFn& right, const Options& o)
@@ -87,8 +92,20 @@ std::vector<BoneTrack> Rig(const FootFn& left, const FootFn& right, const Option
         }
         put(Role::Hips, Vec3d{0.5 * (up_legs[0].x + up_legs[1].x), 0.5 * (up_legs[0].y + up_legs[1].y) + 0.05,
                               0.5 * (up_legs[0].z + up_legs[1].z)});
+        for (int s = 0; s < 2; ++s)
+            if (o.hand[s]) put(s ? Role::RightHand : Role::LeftHand, o.hand[s](time));
     }
     return t;
+}
+
+// A hand that moves forward and down at `speed` m/s, at rest over [a, b) (a grab at a, a release
+// at b), at height 1.4 m at t = 0.
+HandFn HandGrab(double x, double speed, double a, double b)
+{
+    return [=](double t) {
+        const double d = speed * (t - (std::clamp(t, a, b) - a));
+        return Vec3d{x, 1.4 - 0.6 * d, 0.8 * d};
+    };
 }
 
 double Ease(double u)
@@ -160,9 +177,12 @@ std::vector<PhysicsEvent> Of(const std::vector<PhysicsEvent>& ev, PhysicsKind ki
     return out;
 }
 
-AutoSettings Ticked(bool step, bool lift, bool slide, bool pivot, bool separate = false)
+AutoSettings Ticked(bool step, bool lift, bool slide, bool pivot, bool separate = false, bool grab = false,
+                    bool release = false)
 {
     AutoSettings s;
+    s.type[static_cast<int>(AutoType::Grab)].on = grab;
+    s.type[static_cast<int>(AutoType::Release)].on = release;
     s.type[static_cast<int>(AutoType::Step)].on = step;
     s.type[static_cast<int>(AutoType::LiftOff)].on = lift;
     s.type[static_cast<int>(AutoType::Slide)].on = slide;
@@ -488,7 +508,7 @@ int main()
         CHECK(std::find(all.begin(), all.end(), "left knee") != all.end());
         CHECK(std::find(all.begin(), all.end(), "right toe end") != all.end());
         // A full Mixamo-like mapping: nothing missing for any type.
-        for (int r = 0; r <= static_cast<int>(Role::RightToeEnd); ++r) map[static_cast<size_t>(r)] = r;
+        for (int r = 0; r < static_cast<int>(Role::Count); ++r) map[static_cast<size_t>(r)] = r;
         for (int t = 0; t < kAutoTypeCount; ++t)
             for (bool sep : {false, true}) CHECK(AutoMissingParts(static_cast<AutoType>(t), sep, map).empty());
         // No toe nor toe end on the right: separate steps and pivots need it, combined steps do not.
@@ -584,6 +604,204 @@ int main()
             ItemRules oddr;
             CHECK(ParseItemRules(odd, &oddr) && HasKeptText(oddr) && SerializeItemRules(oddr) == odd);
         }
+    }
+
+    // ---- Story 10-8c: hands and categories ---------------------------------------------------
+
+    // Types, kinds and categories of the hands.
+    {
+        CHECK(AutoMarkerName(AutoKind::Grab, 'L') == "Grab L" && AutoMarkerName(AutoKind::Release, 'R') == "Release R");
+        CHECK(std::string(AutoKindWord(AutoKind::Grab)) == "grab" && std::string(AutoKindWord(AutoKind::Release)) == "release");
+        CHECK(std::string(AutoTypeLabel(AutoType::Grab)) == "Grab" && std::string(AutoTypeLabel(AutoType::Release)) == "Release");
+        CHECK(AutoTypeOfKind(AutoKind::Grab) == AutoType::Grab && AutoTypeOfKind(AutoKind::Release) == AutoType::Release);
+        for (int t = 0; t < kAutoTypeCount; ++t) {
+            const bool hand = t == static_cast<int>(AutoType::Grab) || t == static_cast<int>(AutoType::Release);
+            CHECK(AutoCategoryOf(static_cast<AutoType>(t)) == (hand ? AutoCategory::Hands : AutoCategory::Feet));
+        }
+        CHECK(std::string(AutoCategoryLabel(AutoCategory::Feet)) == "Feet" &&
+              std::string(AutoCategoryLabel(AutoCategory::Hands)) == "Hands");
+        // Every kind's default colour pair differs from the others'.
+        for (int k = 0; k < kAutoKindCount; ++k)
+            for (int j = k + 1; j < kAutoKindCount; ++j) {
+                if (static_cast<AutoKind>(k) == AutoKind::Step && static_cast<AutoKind>(j) == AutoKind::Heel) continue;  // FS = Heel's
+                CHECK(AutoDefaultColor(static_cast<AutoKind>(k), 'L') != AutoDefaultColor(static_cast<AutoKind>(j), 'L'));
+            }
+    }
+
+    // Categories: a new item, + -> Hands, tick Grab, Detect: Hands shown, Feet absent; Grab L / R.
+    {
+        std::vector<Block> blocks;
+        CHECK(!AutoCategoryInBlocks(blocks, AutoCategory::Feet) && !AutoCategoryInBlocks(blocks, AutoCategory::Hands));
+        AutoSettings ui = ReadAutoSettings(blocks);
+        ui.type[static_cast<int>(AutoType::Grab)].on = true;
+        CHECK(AutoCategoryOnCount(ui, AutoCategory::Hands) == 1 && AutoCategoryOnCount(ui, AutoCategory::Feet) == 0);
+        CHECK(AutoPending(ui, ReadAutoSettings(blocks)));
+        bool changed = false;
+        ApplyAutoSettings(blocks, ui, &changed);
+        CHECK(changed && Markers(blocks) == (std::vector<std::string>{"Grab L", "Grab R"}));
+        CHECK(AutoCategoryInBlocks(blocks, AutoCategory::Hands) && !AutoCategoryInBlocks(blocks, AutoCategory::Feet));
+        CHECK(ReadAutoSettings(blocks) == ui && !AutoPending(ui, ReadAutoSettings(blocks)));
+        // An auto block of an unknown type belongs to no category.
+        Block future;
+        future.auto_type = "clap";
+        CHECK(!AutoCategoryInBlocks({future}, AutoCategory::Hands) && !AutoCategoryInBlocks({future}, AutoCategory::Feet));
+    }
+
+    // Remove category: x on Feet with Step on (and Grab on), Detect: the step blocks go with their
+    // edits; the Grab blocks and theirs stay.
+    {
+        std::vector<Block> blocks;
+        ApplyAutoSettings(blocks, Ticked(true, false, false, false, false, true));  // FS L, FS R, Grab L, Grab R
+        CHECK(Markers(blocks) == (std::vector<std::string>{"FS L", "FS R", "Grab L", "Grab R"}));
+        std::vector<EventEntry> ev = {MakeUserEvent(0, 0.5, 0, 0), MakeSuppression(1, 1.0), MakeUserEvent(2, 1.5, 0, 0),
+                                      MakeSuppression(3, 2.0)};
+        AutoSettings ui = ReadAutoSettings(blocks);
+        CHECK(AutoCategoryOnCount(ui, AutoCategory::Feet) == 1);
+        UntickAutoCategory(ui, AutoCategory::Feet);
+        CHECK(AutoCategoryOnCount(ui, AutoCategory::Feet) == 0 && AutoCategoryOnCount(ui, AutoCategory::Hands) == 1);
+        // Until Detect, the item still has its step blocks: Feet stays shown ("0 on").
+        CHECK(AutoCategoryInBlocks(blocks, AutoCategory::Feet) && AutoPending(ui, ReadAutoSettings(blocks)));
+        const std::vector<int> map = ApplyAutoSettings(blocks, ui);
+        CHECK(map == (std::vector<int>{-1, -1, 0, 1}));
+        CHECK(Markers(blocks) == (std::vector<std::string>{"Grab L", "Grab R"}));
+        CHECK(!AutoCategoryInBlocks(blocks, AutoCategory::Feet) && AutoCategoryInBlocks(blocks, AutoCategory::Hands));
+        RemapEventBlocks(ev, map);
+        CHECK(ev.size() == 2);
+        if (ev.size() == 2) CHECK(ev[0].block == 0 && ev[0].t == 1.5 && ev[1].block == 1 && ev[1].t == 2.0);
+    }
+
+    // Grab and release end to end: the right hand moves at 1.5 leg/s, rests from 1.0 to 1.5 s.
+    // Grab R at 1.0, Release R at 1.5, on their blocks; speed = strength x leg; offset added.
+    {
+        Options o;
+        o.dur = 2.5;
+        o.hand[1] = HandGrab(0.3, 1.5 * 0.87, 1.0, 1.5);
+        const std::vector<BoneTrack> rig = Rig(Planted(-0.1, 0.0), Planted(0.1, 0.2), o);
+        std::vector<Block>           blocks = AutoBlocks(Ticked(false, false, false, false, false, true, true));
+        CHECK(Markers(blocks) == (std::vector<std::string>{"Grab L", "Grab R", "Release L", "Release R"}));
+        const std::vector<Event> ev = DetectAutoEvents(blocks, rig);
+        CHECK(ev.size() == 2);
+        CHECK(OfBlock(ev, 0).empty() && OfBlock(ev, 2).empty());  // no left hand bone
+        const std::vector<Event> grab = OfBlock(ev, 1), rel = OfBlock(ev, 3);
+        CHECK(grab.size() == 1 && rel.size() == 1);
+        if (grab.size() == 1 && rel.size() == 1) {
+            CHECK(std::fabs(grab[0].time_s - 1.0) < 0.02 && grab[0].marker == "Grab R");
+            CHECK(std::fabs(rel[0].time_s - 1.5) < 0.02 && rel[0].marker == "Release R");
+            CHECK(grab[0].strength > 1.3 && std::fabs(grab[0].speed - grab[0].strength * 0.87) < 1e-9);
+        }
+        std::vector<Block> later = blocks;
+        AutoSettings       s = ReadAutoSettings(later);
+        s.type[static_cast<int>(AutoType::Grab)].offset_ms = 25.0;
+        ApplyAutoSettings(later, s);
+        const std::vector<Event> grab25 = OfBlock(DetectAutoEvents(later, rig), 1);
+        CHECK(grab25.size() == 1 && grab.size() == 1);
+        if (grab25.size() == 1 && grab.size() == 1) CHECK(std::fabs(grab25[0].time_s - (grab[0].time_s + 0.025)) < 1e-12);
+        // Hand blocks next to foot blocks: the feet's events are unchanged by the hand ones.
+        std::vector<Block> both = AutoBlocks(Ticked(true, true, false, false, false, true, true));
+        std::vector<Block> feet = AutoBlocks(Ticked(true, true, false, false));
+        const std::vector<Event> eb = DetectAutoEvents(both, rig), ef = DetectAutoEvents(feet, rig);
+        std::vector<Event>       eb_feet;
+        for (const Event& e : eb)
+            if (e.block < 4) eb_feet.push_back(e);
+        CHECK(SameEvents(eb_feet, ef));
+    }
+
+    // Sensitivity: grab and release move the hand contact speed only; one analysis per set.
+    {
+        const PhysicsParams d;
+        const PhysicsParams g = AutoPhysicsParams(AutoType::Grab, 100.0), r = AutoPhysicsParams(AutoType::Release, 0.0);
+        CHECK(g.hand_contact_speed == 2.0 * d.hand_contact_speed && r.hand_contact_speed == 0.5 * d.hand_contact_speed);
+        CHECK(g.contact_speed == d.contact_speed && g.slide_speed == d.slide_speed && g.pivot_min_deg == d.pivot_min_deg);
+        CHECK(AutoPhysicsParams(AutoType::Step, 100.0).hand_contact_speed == d.hand_contact_speed);
+        CHECK(SameAutoAnalysis(AutoPhysicsParams(AutoType::Grab, 50.0), d) && !SameAutoAnalysis(g, d));
+        std::vector<Block> blocks = AutoBlocks(Ticked(true, false, false, false, false, true, true));
+        CHECK(AutoParamSets(blocks).size() == 1);
+        for (Block& b : blocks)
+            if (b.auto_type == "grab") b.sens = 70.0;
+        CHECK(AutoParamSets(blocks).size() == 2);
+        // A less sensitive grab (a slower contact speed) still finds the 1.5 leg/s landing, at or
+        // after the default's time; the strength stays above the min approach.
+        Options o;
+        o.dur = 2.5;
+        o.hand[1] = HandGrab(0.3, 1.5 * 0.87, 1.0, 1.5);
+        const std::vector<BoneTrack> rig = Rig(Planted(-0.1, 0.0), Planted(0.1, 0.2), o);
+        std::vector<Block>           gb = AutoBlocks(Ticked(false, false, false, false, false, true));  // Grab L, Grab R
+        const std::vector<Event>     at50 = OfBlock(DetectAutoEvents(gb, rig), 1);
+        for (Block& b : gb) b.sens = 25.0;
+        const std::vector<Event> at25 = OfBlock(DetectAutoEvents(gb, rig), 1);
+        CHECK(at50.size() == 1 && at25.size() == 1);
+        if (at50.size() == 1 && at25.size() == 1) CHECK(at25[0].time_s >= at50[0].time_s);
+    }
+
+    // No hand bone: no Grab / Release L, and the section names "left hand" (the right hand's
+    // events stay). A rig without feet but with legs still finds them.
+    {
+        std::vector<int> map(static_cast<size_t>(Role::Count), -1);
+        for (int r = 0; r < static_cast<int>(Role::Count); ++r) map[static_cast<size_t>(r)] = r;
+        map[static_cast<size_t>(Role::LeftHand)] = -1;
+        CHECK(AutoMissingParts(AutoType::Grab, false, map) == std::vector<std::string>{"left hand"});
+        CHECK(AutoMissingParts(AutoType::Release, false, map) == std::vector<std::string>{"left hand"});
+        CHECK(AutoMissingParts(AutoType::Step, false, map).empty());
+        // No foot bone: the thigh gives the body scale, so the hands need no foot.
+        for (Role r : {Role::LeftHeel, Role::RightHeel, Role::LeftToe, Role::RightToe, Role::LeftToeEnd, Role::RightToeEnd})
+            map[static_cast<size_t>(r)] = -1;
+        CHECK(AutoMissingParts(AutoType::Grab, false, map) == std::vector<std::string>{"left hand"});
+        CHECK(!AutoMissingParts(AutoType::Step, false, map).empty());
+        // Heels gone but toes, knees and up legs mapped: combined steps miss nothing (the thigh
+        // gives the scale).
+        {
+            std::vector<int> toes(static_cast<size_t>(Role::Count), -1);
+            for (int r = 0; r < static_cast<int>(Role::Count); ++r) toes[static_cast<size_t>(r)] = r;
+            toes[static_cast<size_t>(Role::LeftHeel)] = toes[static_cast<size_t>(Role::RightHeel)] = -1;
+            toes[static_cast<size_t>(Role::Hips)] = -1;
+            CHECK(AutoMissingParts(AutoType::Step, false, toes).empty());
+        }
+        // Neither the heel route nor the thigh: the body scale's roles, then the hand.
+        map[static_cast<size_t>(Role::LeftKnee)] = map[static_cast<size_t>(Role::RightKnee)] = -1;
+        const std::vector<std::string> all = AutoMissingParts(AutoType::Grab, false, map);
+        CHECK(!all.empty() && all.back() == "left hand" &&
+              std::find(all.begin(), all.end(), "left knee") != all.end());
+
+        Options o;
+        o.dur = 2.5;
+        o.heel = false;
+        o.ball = false;
+        o.hand[1] = HandGrab(0.3, 1.5 * 0.87, 1.0, 1.5);
+        std::vector<BoneTrack> rig = Rig(Planted(-0.1, 0.0), Planted(0.1, 0.2), o);
+        for (Role r : {Role::LeftToeEnd, Role::RightToeEnd}) rig[static_cast<size_t>(r)] = BoneTrack{};
+        const std::vector<Block> blocks = AutoBlocks(Ticked(true, false, false, false, false, true));  // FS L/R, Grab L/R
+        const std::vector<Event> ev = DetectAutoEvents(blocks, rig);
+        CHECK(OfBlock(ev, 0).empty() && OfBlock(ev, 1).empty() && OfBlock(ev, 2).empty());
+        CHECK(OfBlock(ev, 3).size() == 1);
+    }
+
+    // Grab / Release blocks round-trip in the record, reach a pooled copy, and a REAPER-side edit
+    // of their marker finds its block.
+    {
+        ItemRules r;
+        r.blocks = {HeelRule("Rule")};
+        ApplyAutoSettings(r.blocks, Ticked(false, false, false, false, false, true, true));
+        r.blocks[1].sens = 70;
+        r.blocks[4].offset_ms = 12;
+        r.events = {MakeUserEvent(2, 1.25, 0, 0)};
+        const std::string text = SerializeItemRules(r);
+        CHECK(text.find("block auto=grab side=L sens=70 ") != std::string::npos);
+        CHECK(text.find("block auto=release side=R sens=50 ") != std::string::npos);
+        CHECK(text.find("marker=Release R") != std::string::npos);
+        ItemRules back;
+        CHECK(ParseItemRules(text, &back) && !HasKeptText(back));
+        CHECK(BlocksEqual(back.blocks, r.blocks) && SerializeItemRules(back) == text);
+        CHECK(ReadAutoSettings(back.blocks) == ReadAutoSettings(r.blocks));
+        ItemRules copy;
+        CopyPoolContent(back, copy);
+        CHECK(BlocksEqual(copy.blocks, r.blocks));
+        MarkerEdit e;
+        e.kind = MarkerEditKind::Delete;
+        e.c = 1.25;
+        e.name = "Grab R";
+        e.color = r.blocks[2].color;
+        e.has_color = true;
+        CHECK(MarkerEditBlock(back, e) == 2);
     }
 
     if (g_fails) std::printf("%d check(s) failed\n", g_fails);

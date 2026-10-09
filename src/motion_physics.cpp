@@ -28,6 +28,7 @@ const Role kPartRole[2][kFootPartCount] = {{Role::LeftHeel, Role::LeftToe, Role:
                                            {Role::RightHeel, Role::RightToe, Role::RightToeEnd}};
 const Role kKneeRole[2] = {Role::LeftKnee, Role::RightKnee};
 const Role kUpLegRole[2] = {Role::LeftUpLeg, Role::RightUpLeg};
+const Role kHandRole[2] = {Role::LeftHand, Role::RightHand};
 const char kSide[2] = {'L', 'R'};
 
 std::string Format(const char* fmt, ...)
@@ -514,7 +515,8 @@ const std::vector<Role>& PhysicsRoles()
 {
     static const std::vector<Role> kRoles = {Role::LeftHeel,  Role::LeftToe,    Role::RightHeel,  Role::RightToe,
                                              Role::LeftKnee,  Role::RightKnee,  Role::LeftUpLeg,  Role::RightUpLeg,
-                                             Role::Hips,      Role::LeftToeEnd, Role::RightToeEnd};
+                                             Role::Hips,      Role::LeftToeEnd, Role::RightToeEnd, Role::LeftHand,
+                                             Role::RightHand};
     return kRoles;
 }
 
@@ -592,14 +594,30 @@ PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& rt, const PhysicsPar
         ++sides;
         if (!u) hips = true;
     }
+    // No side gives it (no heel): twice the thigh, up leg -> knee.
+    bool thigh = false;
+    if (!sides)
+        for (int s = 0; s < 2; ++s) {
+            const BoneTrack* k = track(kKneeRole[s]);
+            const BoneTrack* u = track(kUpLegRole[s]);
+            if (!k || !u) continue;
+            std::vector<double> len(n);
+            for (size_t i = 0; i < n; ++i) len[i] = 2.0 * Dist(u->pos[i], k->pos[i]);
+            const double m = Median(len);
+            if (!(m > 1e-6) || !std::isfinite(m)) continue;
+            sum += m;
+            ++sides;
+            thigh = true;
+        }
     if (!sides) {
-        a.error = "no body scale: needs the heel, the knee and the up leg (or the hips) of one side";
+        a.error = "no body scale: needs the heel, the knee and the up leg (or the hips) of one side, or its knee and up leg";
         return a;
     }
     const double leg = sum / sides;
     a.leg_length = leg;
     if (sides == 1) a.scale_note = "one leg";
     if (hips) a.scale_note += std::string(a.scale_note.empty() ? "" : ", ") + "hips for the up leg";
+    if (thigh) a.scale_note += std::string(a.scale_note.empty() ? "" : ", ") + "thigh x2";
 
     // Parts present, smoothed, their velocities.
     std::vector<Vec3d> sm[2][kFootPartCount], vel[2][kFootPartCount];
@@ -627,13 +645,30 @@ PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& rt, const PhysicsPar
             vel[s][q] = Velocity(sm[s][q], rate);
         }
     }
-    if (!any) {
-        a.error = "no foot part (heel, toe or toe end)";
+    // Hands present, smoothed, their velocities.
+    std::vector<Vec3d> hsm[2], hvel[2];
+    bool               hands = false;
+    for (int s = 0; s < 2; ++s) {
+        HandTrack&       h = a.hand[s];
+        const BoneTrack* t = track(kHandRole[s]);
+        h.side = kSide[s];
+        if (!t) {
+            h.part.missing = std::string("no bone for ") + RoleName(kHandRole[s]);
+            a.hand_missing.push_back(Format("%c hand: %s", h.side, h.part.missing.c_str()));
+            continue;
+        }
+        h.part.present = true;
+        hands = true;
+        hsm[s] = Smooth(t->pos, p.smooth_ms / 1000.0, rate);
+        hvel[s] = Velocity(hsm[s], rate);
+    }
+    if (!any && !hands) {
+        a.error = "no foot part (heel, toe or toe end) and no hand";
         return a;
     }
 
-    // Ground frame: the median horizontal velocity of the lowest part.
-    {
+    // Ground frame: the median horizontal velocity of the lowest part (0 without a foot part).
+    if (any) {
         std::vector<double> vx(n), vz(n);
         for (size_t i = 0; i < n; ++i) {
             int bs = -1, bq = -1;
@@ -717,6 +752,28 @@ PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& rt, const PhysicsPar
                 if (sl.start < pv.end && pv.start < sl.end) in_pivot = true;
             if (!in_pivot) f.slides.push_back(sl);
         }
+    }
+
+    // Hands: segmented as a foot part, with the hand contact speed and switch cost.
+    PhysicsParams hp = p;
+    hp.contact_speed = p.hand_contact_speed;
+    hp.switch_cost = p.hand_switch_cost;
+    for (int s = 0; s < 2; ++s) {
+        PartTrack& pt = a.hand[s].part;
+        if (!pt.present) continue;
+        pt.y.resize(n);
+        pt.speed.resize(n);
+        pt.hspeed.resize(n);
+        pt.vy.resize(n);
+        for (size_t i = 0; i < n; ++i) {
+            const double dx = hvel[s][i].x - a.ground_velocity.x, dz = hvel[s][i].z - a.ground_velocity.z;
+            const double dy = hvel[s][i].y;
+            pt.y[i] = hsm[s][i].y;
+            pt.speed[i] = std::sqrt(dx * dx + dy * dy + dz * dz) / leg;
+            pt.hspeed[i] = std::sqrt(dx * dx + dz * dz) / leg;
+            pt.vy[i] = dy / leg;
+        }
+        SegmentPart(pt, leg, rate, hp);
     }
     a.ok = true;
     return a;
@@ -811,6 +868,44 @@ std::vector<PhysicsEvent> FootEvents(const PhysicsAnalysis& a, const PhysicsPara
     return ev;
 }
 
+std::vector<PhysicsEvent> HandEvents(const PhysicsAnalysis& a, const PhysicsParams& p)
+{
+    std::vector<PhysicsEvent> ev;
+    if (!a.ok) return ev;
+    const int    n = static_cast<int>(a.samples);
+    const double rate = a.rate_hz;
+    const int    min_len = std::max(1, SamplesOf(p.hand_min_contact_s, rate));
+    const int    k = std::clamp(static_cast<int>(p.hand_timing), 0, kStepTimingCount - 1);
+    for (int s = 0; s < 2; ++s) {
+        const HandTrack& h = a.hand[s];
+        if (!h.part.present) continue;
+        for (const PartContact& c : h.part.contacts) {
+            // A stop between two moves; a contact the clip start or end cuts short counts.
+            if (c.end - c.start < min_len && c.start > 0 && c.end < n) continue;
+            PhysicsEvent e;
+            e.side = h.side;
+            e.part = -1;
+            if (c.start > 0 && c.approach >= p.hand_min_approach) {
+                e.kind = PhysicsKind::Grab;
+                e.time_s = e.start_s = e.end_s = c.step_s[k] + p.hand_offset_s;
+                e.strength = c.approach;
+                ev.push_back(e);
+            }
+            if (c.end < n && c.departure >= p.hand_min_approach) {
+                e.kind = PhysicsKind::Release;
+                e.time_s = e.start_s = e.end_s = c.lift_s;
+                e.strength = c.departure;
+                ev.push_back(e);
+            }
+        }
+    }
+    std::stable_sort(ev.begin(), ev.end(), [](const PhysicsEvent& x, const PhysicsEvent& y) {
+        return std::make_tuple(std::llround(x.time_s * 1e6), x.side, static_cast<int>(x.kind)) <
+               std::make_tuple(std::llround(y.time_s * 1e6), y.side, static_cast<int>(y.kind));
+    });
+    return ev;
+}
+
 std::vector<double> PartStepTimes(const PhysicsAnalysis& a, char side, int part, StepTiming timing, double offset_s)
 {
     std::vector<double> t;
@@ -838,6 +933,8 @@ std::string PhysicsMarkerName(const PhysicsEvent& e)
                       : e.part == static_cast<int>(FootPart::Tip)   ? "tip"
                                                                      : "ball",
                       e.strength, ms);
+    case PhysicsKind::Grab: return Format("PHY %c grab %.1f", e.side, e.strength);
+    case PhysicsKind::Release: return Format("PHY %c release %.1f", e.side, e.strength);
     }
     return "PHY ?";
 }
@@ -860,6 +957,8 @@ std::string PhysicsSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEv
         case PhysicsKind::LiftOff: ++lift; break;
         case PhysicsKind::Slide: ++slide; break;
         case PhysicsKind::Pivot: ++pivot; break;
+        case PhysicsKind::Grab:
+        case PhysicsKind::Release: break;  // HandSummary's
         }
     }
     std::string out = Format("leg %.2f m%s, ground (%+.2f, %+.2f) m/s; steps heel %d, toe %d, tip %d; foot steps %d, "
@@ -870,6 +969,22 @@ std::string PhysicsSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEv
     if (!a.missing.empty()) {
         out += "; missing: ";
         for (size_t i = 0; i < a.missing.size(); ++i) out += (i ? ", " : "") + a.missing[i];
+    }
+    return out;
+}
+
+std::string HandSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev)
+{
+    if (!a.ok) return "hands: skipped: " + a.error;
+    int grabs = 0, releases = 0;
+    for (const PhysicsEvent& e : ev) {
+        if (e.kind == PhysicsKind::Grab) ++grabs;
+        if (e.kind == PhysicsKind::Release) ++releases;
+    }
+    std::string out = Format("hands: grabs %d, releases %d", grabs, releases);
+    if (!a.hand_missing.empty()) {
+        out += "; missing: ";
+        for (size_t i = 0; i < a.hand_missing.size(); ++i) out += (i ? ", " : "") + a.hand_missing[i];
     }
     return out;
 }

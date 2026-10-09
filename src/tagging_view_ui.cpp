@@ -881,7 +881,13 @@ bool TaggingSelectedRuleBones(std::vector<int>* bones, unsigned int* colour)
     const Block& blk = rules.blocks[static_cast<size_t>(g_sel)];
     AutoKind     auto_kind;
     char         auto_side = 'L';
-    if (bones && AutoBlockKind(blk, &auto_kind, &auto_side)) {
+    if (bones && AutoBlockKind(blk, &auto_kind, &auto_side) &&
+        AutoCategoryOf(AutoTypeOfKind(auto_kind)) == AutoCategory::Hands) {
+        // Story 10-8c: a hand block shows its hand.
+        const size_t r = static_cast<size_t>(auto_side == 'R' ? Role::RightHand : Role::LeftHand);
+        const int    bone = r < m.role_to_bone.size() ? m.role_to_bone[r] : -1;
+        if (bone >= 0) bones->push_back(bone);
+    } else if (bones && AutoBlockKind(blk, &auto_kind, &auto_side)) {
         // Story 10-8b: an auto block shows its foot's parts (heel, toe, toe end), each bone once.
         for (int q = 0; q < kFootPartCount; ++q) {
             const size_t r = static_cast<size_t>(FootPartRole(auto_side, q));
@@ -3738,6 +3744,9 @@ AutoSettings g_auto_ui;
 AutoSettings g_auto_seen;  // the item's own, as last read
 MediaItem*   g_auto_item = nullptr;
 bool         g_auto_init = false;
+// Story 10-8c: the categories the user added (+) on this item in this session. A category is
+// shown when added, or when the item has one of its auto blocks.
+bool g_auto_added[kAutoCategoryCount] = {};
 
 void SyncAutoSettings(const TaggingModel& m)
 {
@@ -3746,6 +3755,7 @@ void SyncAutoSettings(const TaggingModel& m)
         g_auto_ui = g_auto_seen = cur;
         g_auto_item = m.item;
         g_auto_init = true;
+        for (bool& a : g_auto_added) a = false;
         return;
     }
     if (cur == g_auto_seen) return;
@@ -3802,8 +3812,49 @@ const char* AutoTypeHint(AutoType t)
     case AutoType::LiftOff: return "A marker where the foot leaves the ground: Lift L / Lift R.";
     case AutoType::Slide: return "A marker where a planted foot slides: Slide L / Slide R.";
     case AutoType::Pivot: return "A marker where a planted foot turns on its ball or heel: Pivot L / Pivot R.";
+    case AutoType::Grab: return "A marker where the hand lands on something: Grab L / Grab R.";
+    case AutoType::Release: return "A marker where the hand leaves its support: Release L / Release R.";
     }
     return "";
+}
+
+// Story 10-8c: a category's fold row, flat (not a card): its chevron and label, how many of its
+// types are ticked, and an x on the right. Returns whether it is open (kept in the window's
+// storage under open_id, open by default); *remove: the x was clicked.
+bool AutoCategoryRow(AutoCategory c, ImGuiID open_id, bool* remove)
+{
+    ImGuiStorage* st = ImGui::GetStateStorage();
+    bool          open = st->GetBool(open_id, true);
+    const float   fh = ImGui::GetFrameHeight();
+    const ImVec2  p = ImGui::GetCursorScreenPos();
+    const float   w = ImGui::GetContentRegionAvail().x;
+    if (ImGui::InvisibleButton("##fold", ImVec2(std::max(1.0f, w - fh - 4.0f), fh))) {
+        open = !open;
+        st->SetBool(open_id, open);
+    }
+    const bool  hovered = ImGui::IsItemHovered();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    if (hovered) dl->AddRectFilled(ImVec2(p.x - 4.0f, p.y), ImVec2(p.x + w - fh - 4.0f, p.y + fh), ui::kHover, ui::kRadiusSm);
+    // The chevron: down when open, right when folded.
+    const ImVec2 cc(p.x + 5.0f, p.y + fh * 0.5f);
+    const float  r = 4.0f;
+    const ImU32  col = hovered ? ui::kText : ui::kMuted;
+    if (open)
+        dl->AddTriangleFilled(ImVec2(cc.x - r, cc.y - r * 0.5f), ImVec2(cc.x + r, cc.y - r * 0.5f), ImVec2(cc.x, cc.y + r * 0.6f),
+                              col);
+    else
+        dl->AddTriangleFilled(ImVec2(cc.x - r * 0.5f, cc.y - r), ImVec2(cc.x - r * 0.5f, cc.y + r), ImVec2(cc.x + r * 0.6f, cc.y),
+                              col);
+    const char*  label = AutoCategoryLabel(c);
+    const ImVec2 ts = ImGui::CalcTextSize(label);
+    const float  ty = p.y + (fh - ts.y) * 0.5f;
+    dl->AddText(ImVec2(p.x + 16.0f, ty), ui::kText, label);
+    char count[32];
+    std::snprintf(count, sizeof(count), "%d on", AutoCategoryOnCount(g_auto_ui, c));
+    dl->AddText(ImVec2(p.x + 16.0f + ts.x + 8.0f, ty), ui::kFaint, count);
+    ImGui::SameLine(0.0f, 4.0f);
+    *remove = IconButton("##remove", fh, [](ImDrawList* d, ImVec2 x, ImU32 xc) { IconCross(d, x, 3.5f, xc); });
+    return open;
 }
 
 void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
@@ -3820,13 +3871,62 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
         const float avail = ImGui::GetContentRegionAvail().x;
         const float x_off = x0 + std::max(170.0f, avail - w_off);
         const float x_sens = x_off - 10.0f - std::max(w_sens, ImGui::CalcTextSize("Sensitivity").x);
-        // Column captions.
-        ImGui::SetCursorPosX(x_sens);
-        ImGui::TextDisabled("Sensitivity");
-        ImGui::SameLine(x_off);
-        ImGui::TextDisabled("Offset");
+        // Story 10-8c: the categories shown (added with +, or with a block on the item), and the
+        // fold state of each (the window's storage).
+        bool    cat_shown[kAutoCategoryCount];
+        bool    any_shown = false, any_hidden = false;
+        ImGuiID cat_open_id[kAutoCategoryCount];
+        bool    cat_open[kAutoCategoryCount] = {};
+        for (int c = 0; c < kAutoCategoryCount; ++c) {
+            cat_shown[c] = g_auto_added[c] || AutoCategoryInBlocks(rules.blocks, static_cast<AutoCategory>(c));
+            (cat_shown[c] ? any_shown : any_hidden) = true;
+            ImGui::PushID(c);
+            cat_open_id[c] = ImGui::GetID("##autocatopen");
+            ImGui::PopID();
+        }
+        ImGuiStorage* storage = ImGui::GetStateStorage();
+        // + (the categories not shown) on the left, the column captions on the right.
+        if (any_hidden) {
+            if (IconButton("##autoaddcat", ImGui::GetFrameHeight(),
+                           [](ImDrawList* d, ImVec2 c, ImU32 col) { IconPlus(d, c, 4.0f, col); }))
+                ImGui::OpenPopup("##autocats");
+            if (ImGui::BeginPopup("##autocats")) {
+                for (int c = 0; c < kAutoCategoryCount; ++c)
+                    if (!cat_shown[c] && ImGui::Selectable(AutoCategoryLabel(static_cast<AutoCategory>(c)))) {
+                        g_auto_added[c] = true;
+                        storage->SetBool(cat_open_id[c], true);
+                    }
+                ImGui::EndPopup();
+            }
+            if (any_shown) ImGui::SameLine();
+        }
+        if (any_shown) {
+            ImGui::SetCursorPosX(x_sens);
+            ImGui::AlignTextToFramePadding();
+            ImGui::TextDisabled("Sensitivity");
+            ImGui::SameLine(x_off);
+            ImGui::TextDisabled("Offset");
+        }
         for (int ti = 0; ti < kAutoTypeCount; ++ti) {
             const AutoType t = static_cast<AutoType>(ti);
+            const int      c = static_cast<int>(AutoCategoryOf(t));
+            if (!cat_shown[c]) continue;
+            // The category's fold row before its first type.
+            bool first = true;
+            for (int tj = 0; tj < ti && first; ++tj)
+                if (static_cast<int>(AutoCategoryOf(static_cast<AutoType>(tj))) == c) first = false;
+            if (first) {
+                ImGui::PushID(1000 + c);
+                bool       remove = false;
+                const bool open = AutoCategoryRow(static_cast<AutoCategory>(c), cat_open_id[c], &remove);
+                ImGui::PopID();
+                if (remove) {
+                    UntickAutoCategory(g_auto_ui, static_cast<AutoCategory>(c));
+                    g_auto_added[c] = false;
+                }
+                cat_open[c] = open;
+            }
+            if (!cat_open[c]) continue;
             ImGui::PushID(ti);
             bool on = g_auto_ui.type[ti].on;
             if (ImGui::Checkbox(AutoTypeLabel(t), &on)) g_auto_ui.type[ti].on = on;

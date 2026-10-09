@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 //
-// Host test of the motion physics (src/motion_physics.h, Epic 10, spike 10-8a): the spec's
-// matrix rows on synthetic feet. No REAPER, no Windows: any C++17 compiler.
+// Host test of the motion physics (src/motion_physics.h, Epic 10, spike 10-8a; hands: story
+// 10-8c): the specs' matrix rows on synthetic feet and hands. No REAPER, no Windows: any C++17
+// compiler.
 //   cmake -S tests -B build-tests && cmake --build build-tests && ctest --test-dir build-tests
 
 #include "bone_roles.h"
@@ -224,6 +225,40 @@ bool StepsNear(const std::vector<PhysicsEvent>& steps, const std::vector<double>
     for (size_t k = 0; k < steps.size(); ++k)
         if (std::fabs(steps[k].time_s - truth[k]) > tol) return false;
     return true;
+}
+
+// Story 10-8c: a hand's position over time, and the rig's tracks with both hands added (an empty
+// function: no bone for that hand). Same length and rate as Rig's.
+using HandFn = std::function<Vec3d(double)>;
+
+void AddHands(std::vector<BoneTrack>& t, const HandFn& left, const HandFn& right, const Options& o)
+{
+    const int n = static_cast<int>(std::floor(o.dur * o.rate + 1e-9)) + 1;
+    for (int s = 0; s < 2; ++s) {
+        const HandFn& fn = s ? right : left;
+        if (!fn) continue;
+        BoneTrack& b = t[static_cast<size_t>(s ? Role::RightHand : Role::LeftHand)];
+        b.rate_hz = o.rate;
+        for (int i = 0; i < n; ++i) b.pos.push_back(fn(i / o.rate));
+    }
+}
+
+// A hand that moves along `dir` (unit) at `speed` m/s, except while at rest over the [a, b)
+// spans: at rest it holds where it stopped. `x` sets it apart from the other hand.
+HandFn HandMove(double x, double speed, std::vector<std::pair<double, double>> rests)
+{
+    return [=](double t) {
+        double moving = t;  // time spent moving up to t
+        for (const auto& r : rests) moving -= std::clamp(t, r.first, r.second) - r.first;
+        const double d = speed * moving;
+        return Vec3d{x, 1.4 - 0.6 * d, 0.8 * d};  // forward and down
+    };
+}
+
+// A still hand, hanging by the hip.
+HandFn HandStill(double x)
+{
+    return [x](double) { return Vec3d{x, 0.8, 0.0}; };
 }
 
 }  // namespace
@@ -627,6 +662,174 @@ int main()
         CHECK(IsPhysicsMarkerName("PHY L heel 1.8") && !IsPhysicsMarkerName("PHYSICS") && !IsPhysicsMarkerName("RAV?") &&
               !IsPhysicsMarkerName(nullptr));
         CHECK(PhysicsEventLines({e}, "  ") == "     1.000 s  PHY R pivot neither 87deg 210ms  (to 1.210 s)\n");
+    }
+
+    // ---- Hands (story 10-8c) -------------------------------------------------------------------
+    constexpr double kLeg = 0.87;  // the rig's leg (m): hand speeds below in leg/s x kLeg
+    {
+        // Grab: the right hand moves at 1.5 leg/s, lands at 1.0 s and rests 500 ms: one Grab at
+        // 1.0, one Release at the end of its rest (1.5). The left hand hangs still: nothing.
+        Options o;
+        o.dur = 2.5;
+        std::vector<BoneTrack> t = Rig(walk_l, walk_r, o);
+        AddHands(t, HandStill(-0.3), HandMove(0.3, 1.5 * kLeg, {{1.0, 1.5}}), o);
+        const PhysicsAnalysis a = AnalyseMotion(t);
+        CHECK(a.ok && a.hand[1].part.present && a.hand_missing.empty());
+        const std::vector<PhysicsEvent> ev = HandEvents(a);
+        CHECK(StepsNear(Of(ev, PhysicsKind::Grab, 'R'), {1.0}, 0.02));
+        CHECK(StepsNear(Of(ev, PhysicsKind::Release, 'R'), {1.5}, 0.02));
+        CHECK(ev.size() == 2);
+        for (const PhysicsEvent& e : ev) CHECK(e.part == -1 && e.strength > 1.3 && e.strength < 1.7);  // leg/s
+        CHECK(HandSummary(a, ev) == "hands: grabs 1, releases 1");
+        // Foot events never include hand events, and the reverse.
+        for (const PhysicsEvent& e : FootEvents(a)) CHECK(e.kind != PhysicsKind::Grab && e.kind != PhysicsKind::Release);
+        // The timing and the offset: Speed by default, the offset added.
+        PhysicsParams later;
+        later.hand_offset_s = 0.02;
+        const std::vector<PhysicsEvent> ev2 = HandEvents(a, later);
+        CHECK(ev2.size() == 2 && ev.size() == 2);
+        if (ev2.size() == 2 && ev.size() == 2) {
+            CHECK(std::fabs(ev2[0].time_s - (ev[0].time_s + 0.02)) < 1e-9);
+            CHECK(ev2[1].time_s == ev[1].time_s);  // a release has no offset of its own here
+        }
+        CHECK(PhysicsParams{}.hand_timing == StepTiming::Speed);
+        // A more sensitive contact speed (x2) still finds the same grab.
+        PhysicsParams sens;
+        sens.hand_contact_speed *= 2.0;
+        CHECK(StepsNear(Of(HandEvents(AnalyseMotion(t, sens), sens), PhysicsKind::Grab, 'R'), {1.0}, 0.03));
+    }
+    {
+        // Still in the air: the right hand approaches at 0.7 leg/s (under the min approach), then
+        // drifts at 0.2 leg/s (under the contact speed) to the end: no Grab, no Release.
+        Options o;
+        o.dur = 2.5;
+        std::vector<BoneTrack> t = Rig(walk_l, walk_r, o);
+        const HandFn drift = [](double time) {
+            const double d = 0.7 * kLeg * std::min(time, 1.0) + 0.2 * kLeg * std::max(0.0, time - 1.0);
+            return Vec3d{0.3, 1.4 - 0.6 * d, 0.8 * d};
+        };
+        AddHands(t, HandStill(-0.3), drift, o);
+        const PhysicsAnalysis a = AnalyseMotion(t);
+        CHECK(a.ok && !a.hand[1].part.contacts.empty());  // at rest, but no grab
+        CHECK(HandEvents(a).empty());
+    }
+    {
+        // Hand at rest at clip start: still until 1.0 s, then it leaves at 1.5 leg/s. No Grab at
+        // 0; one Release at 1.0.
+        Options o;
+        o.dur = 2.0;
+        std::vector<BoneTrack> t = Rig(walk_l, walk_r, o);
+        AddHands(t, HandMove(-0.3, 1.5 * kLeg, {{0.0, 1.0}}), nullptr, o);
+        const PhysicsAnalysis a = AnalyseMotion(t);
+        CHECK(a.ok && !a.hand[1].part.present);
+        const std::vector<PhysicsEvent> ev = HandEvents(a);
+        CHECK(Of(ev, PhysicsKind::Grab).empty());
+        CHECK(StepsNear(Of(ev, PhysicsKind::Release, 'L'), {1.0}, 0.02));
+        // No bone for the right hand: said, and the left hand's events stay.
+        CHECK(a.hand_missing == std::vector<std::string>{"R hand: no bone for right hand"});
+        CHECK(HandSummary(a, ev) == "hands: grabs 0, releases 1; missing: R hand: no bone for right hand");
+    }
+    {
+        // Brief stop: the hand stops 60 ms (1.0 to 1.06 s) between two fast moves: no Grab, no
+        // Release.
+        Options o;
+        o.dur = 2.0;
+        std::vector<BoneTrack> t = Rig(walk_l, walk_r, o);
+        AddHands(t, HandMove(-0.3, 1.5 * kLeg, {{1.0, 1.06}}), HandStill(0.3), o);
+        CHECK(HandEvents(AnalyseMotion(t)).empty());
+        // A longer stop (150 ms) is a grab and a release.
+        std::vector<BoneTrack> u = Rig(walk_l, walk_r, o);
+        AddHands(u, HandMove(-0.3, 1.5 * kLeg, {{1.0, 1.2}}), HandStill(0.3), o);
+        const std::vector<PhysicsEvent> ev = HandEvents(AnalyseMotion(u));
+        CHECK(Of(ev, PhysicsKind::Grab).size() == 1 && Of(ev, PhysicsKind::Release).size() == 1);
+    }
+    {
+        // No foot bones: legs (knees, up legs, hips) and hands, no heel, toe or toe end. The body
+        // scale is twice the thigh (0.45 m here), and the hand events are still found.
+        Options o;
+        o.dur = 2.5;
+        o.toes = false;
+        std::vector<BoneTrack> t = Rig(walk_l, walk_r, o);
+        t[static_cast<size_t>(Role::LeftHeel)].pos.clear();
+        t[static_cast<size_t>(Role::RightHeel)].pos.clear();
+        AddHands(t, HandStill(-0.3), HandMove(0.3, 1.5 * kLeg, {{1.0, 1.5}}), o);
+        const PhysicsAnalysis a = AnalyseMotion(t);
+        CHECK(a.ok && a.scale_note == "thigh x2" && std::fabs(a.leg_length - 0.90) < 1e-6);
+        CHECK(a.ground_velocity.x == 0.0 && a.ground_velocity.z == 0.0);
+        CHECK(FootEvents(a).empty());
+        const std::vector<PhysicsEvent> ev = HandEvents(a);
+        CHECK(StepsNear(Of(ev, PhysicsKind::Grab, 'R'), {1.0}, 0.02));
+        CHECK(StepsNear(Of(ev, PhysicsKind::Release, 'R'), {1.5}, 0.02));
+        // Neither foot part nor hand: no analysis, as before.
+        std::vector<BoneTrack> bare = Rig(walk_l, walk_r, o);
+        bare[static_cast<size_t>(Role::LeftHeel)].pos.clear();
+        bare[static_cast<size_t>(Role::RightHeel)].pos.clear();
+        const PhysicsAnalysis b = AnalyseMotion(bare);
+        CHECK(!b.ok && b.error == "no foot part (heel, toe or toe end) and no hand" && HandEvents(b).empty());
+        CHECK(HandSummary(b, {}) == "hands: skipped: " + b.error);
+        // The heels give the scale when they are there: the thigh never replaces them.
+        o.toes = true;
+        CHECK(AnalyseMotion(Rig(walk_l, walk_r, o)).scale_note.empty());
+        // Toes but no heel: the thigh gives the scale, and the toes still give the steps.
+        Options w;
+        std::vector<BoneTrack> toes = Rig(walk_l, walk_r, w);
+        toes[static_cast<size_t>(Role::LeftHeel)].pos.clear();
+        toes[static_cast<size_t>(Role::RightHeel)].pos.clear();
+        const PhysicsAnalysis tc = AnalyseMotion(toes);
+        CHECK(tc.ok && tc.scale_note == "thigh x2" && std::fabs(tc.leg_length - 0.90) < 1e-6);
+        const std::vector<PhysicsEvent> tev = FootEvents(tc, SpeedTiming());
+        CHECK(StepsNear(Of(tev, PhysicsKind::FootStep, 'L'), kLeft, 0.025));
+        CHECK(StepsNear(Of(tev, PhysicsKind::FootStep, 'R'), kRight, 0.025));
+        CHECK(Of(tev, PhysicsKind::Step, 'L', static_cast<int>(FootPart::Heel)).empty());
+    }
+    {
+        // A grab cut short by the clip end: the hand lands 80 ms before it (under the min
+        // contact) and is still found. A stop of 80 ms inside the clip is not.
+        Options o;
+        o.dur = 2.08;
+        std::vector<BoneTrack> t = Rig(walk_l, walk_r, o);
+        AddHands(t, HandStill(-0.3), HandMove(0.3, 1.5 * kLeg, {{2.0, 3.0}}), o);
+        CHECK(StepsNear(Of(HandEvents(AnalyseMotion(t)), PhysicsKind::Grab, 'R'), {2.0}, 0.02));
+        o.dur = 2.5;
+        std::vector<BoneTrack> u = Rig(walk_l, walk_r, o);
+        AddHands(u, HandStill(-0.3), HandMove(0.3, 1.5 * kLeg, {{1.0, 1.08}}), o);
+        CHECK(HandEvents(AnalyseMotion(u)).empty());
+    }
+    {
+        // Feet untouched: the walk with and without hands gives the same foot analysis and events.
+        Options o;
+        const std::vector<BoneTrack> feet = Rig(walk_l, walk_r, o);
+        std::vector<BoneTrack>       both = feet;
+        AddHands(both, HandMove(-0.3, 1.5 * kLeg, {{1.0, 1.5}}), HandStill(0.3), o);
+        const PhysicsAnalysis a = AnalyseMotion(feet), b = AnalyseMotion(both);
+        CHECK(a.ok && b.ok && a.leg_length == b.leg_length && a.scale_note == b.scale_note);
+        CHECK(a.ground_velocity.x == b.ground_velocity.x && a.ground_velocity.z == b.ground_velocity.z);
+        CHECK(a.missing == b.missing);
+        for (const PhysicsParams& p : {PhysicsParams{}, SpeedTiming()}) {
+            const std::vector<PhysicsEvent> fa = FootEvents(a, p), fb = FootEvents(b, p);
+            CHECK(fa.size() == fb.size() && PhysicsSummary(a, fa) == PhysicsSummary(b, fb));
+            CHECK(PhysicsEventLines(fa, "  ") == PhysicsEventLines(fb, "  "));
+        }
+        CHECK(HandEvents(a).empty() && HandSummary(a, {}) ==
+                                           "hands: grabs 0, releases 0; missing: L hand: no bone for left hand, R hand: "
+                                           "no bone for right hand");
+        CHECK(!HandEvents(b).empty());
+    }
+    {
+        // The hand roles are physics roles; hand marker names.
+        const std::vector<Role>& roles = PhysicsRoles();
+        CHECK(std::find(roles.begin(), roles.end(), Role::LeftHand) != roles.end() &&
+              std::find(roles.begin(), roles.end(), Role::RightHand) != roles.end());
+        PhysicsEvent e;
+        e.kind = PhysicsKind::Grab;
+        e.side = 'L';
+        e.part = -1;
+        e.strength = 1.44;
+        CHECK(PhysicsMarkerName(e) == "PHY L grab 1.4");
+        e.kind = PhysicsKind::Release;
+        e.side = 'R';
+        e.strength = 0.92;
+        CHECK(PhysicsMarkerName(e) == "PHY R release 0.9" && IsPhysicsMarkerName(PhysicsMarkerName(e).c_str()));
     }
 
     if (g_fails == 0) std::printf("motion_physics: all tests passed\n");

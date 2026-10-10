@@ -1217,6 +1217,36 @@ std::vector<PhysicsEvent> FootEvents(const PhysicsAnalysis& a, const PhysicsPara
                 if (found) ev.push_back(best);
             }
         }
+        // Story 10-8k: a part that lands while the foot is already down, within pivot_planted_s
+        // of the end of a pivot on the other end of the foot (heel <-> ball / tip), is a foot
+        // step too (the slap that ends a turn). The earliest such landing, one per pivot.
+        for (const Scuff& sc : f.pivots) {
+            if (sc.part < 0) continue;
+            const double pend = sc.end / rate;
+            PhysicsEvent best;
+            bool         found = false;
+            for (int q = 0; q < kFootPartCount; ++q) {
+                if (!f.part[q].present || (q == static_cast<int>(FootPart::Heel)) == (sc.part == static_cast<int>(FootPart::Heel)))
+                    continue;
+                for (const PartContact& c : f.part[q].contacts) {
+                    if (c.start <= 0 || !any[static_cast<size_t>(c.start - 1)]) continue;
+                    const double t = timed(c, q);
+                    if (std::abs(t - pend) > p.pivot_planted_s + kTieS) continue;
+                    if (found && t >= best.time_s - kTieS) continue;
+                    best.kind = PhysicsKind::FootStep;
+                    best.side = f.side;
+                    best.part = q;
+                    best.time_s = best.start_s = best.end_s = t;
+                    best.strength = c.approach;
+                    found = true;
+                }
+            }
+            if (!found) continue;
+            bool tie = false;
+            for (const PhysicsEvent& e : ev)
+                if (e.kind == PhysicsKind::FootStep && e.side == f.side && std::abs(e.time_s - best.time_s) <= kTieS) tie = true;
+            if (!tie) ev.push_back(best);
+        }
         for (int kind = 0; kind < 2; ++kind)
             for (const Scuff& sc : kind ? f.pivots : f.slides) {
                 PhysicsEvent e;

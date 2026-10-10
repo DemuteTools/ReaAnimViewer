@@ -800,6 +800,56 @@ int main()
                   fa[i].end_s == fr[i].end_s && fa[i].strength == fr[i].strength);
     }
     {
+        // Story 10-8k: a step after a pivot. The left foot stands on its heel, toes up (heel ->
+        // ball 45 deg above level), turns 90 deg on the heel in 250 ms (from 1.0 s), then slaps
+        // its toes down in 50 ms from `slap`: a foot step on the toe (the earliest landing, not
+        // the tip too) when the toes land within pivot_planted_s of the pivot's end; none later.
+        Options o;
+        o.dur = 2.0;
+        o.rot = true;
+        auto slap_foot = [](double slap) {
+            return [slap](double t) {
+                FootPose     f;
+                const Vec3d  heel_at{-0.1, 0.08, -0.14};
+                const double flat = std::atan2(0.06, 0.14);
+                const double up = (45.0 * kDeg + flat) * (Ease((t - 0.2) / 0.25) - std::clamp((t - slap) / 0.05, 0.0, 1.0));
+                f.yaw = 90.0 * kDeg * Ease((t - 1.0) / 0.25);
+                f.pitch = -up;
+                f.ball = Add(heel_at, Yawed(f.yaw, 0.0, -0.06 * std::cos(up) + 0.14 * std::sin(up),
+                                            0.06 * std::sin(up) + 0.14 * std::cos(up)));
+                return f;
+            };
+        };
+        const int             heel = static_cast<int>(FootPart::Heel);
+        const PhysicsAnalysis a = AnalyseMotion(Rig(slap_foot(1.26), Planted(0.1, 0.2), o));
+        CHECK(a.ok);
+        const std::vector<PhysicsEvent> ev = FootEvents(a, SpeedTiming());
+        const std::vector<PhysicsEvent> pv = Of(ev, PhysicsKind::Pivot, 'L');
+        CHECK(pv.size() == 1 && pv[0].part == heel);
+        const std::vector<PhysicsEvent> fs = Of(ev, PhysicsKind::FootStep, 'L');
+        CHECK(fs.size() == 1);
+        if (fs.size() == 1 && pv.size() == 1) {
+            CHECK(fs[0].part != heel && std::abs(fs[0].time_s - pv[0].end_s) <= 0.1);
+            CHECK(PhysicsMarkerName(fs[0]).compare(0, 10, "PHY L step") == 0);
+        }
+        // Its separate steps are the per-part landings, unchanged by the rule.
+        const std::vector<PhysicsEvent> st = Of(ev, PhysicsKind::Step, 'L');
+        CHECK(!st.empty() && Of(st, PhysicsKind::Step, 'L', heel).empty());
+        if (fs.size() == 1) {
+            bool same = false;
+            for (const PhysicsEvent& e : st) same = same || (e.part == fs[0].part && e.time_s == fs[0].time_s);
+            CHECK(same);
+        }
+        // Toes down 0.15 s after the pivot ends: no foot step (the separate steps stay).
+        const std::vector<PhysicsEvent> late = FootEvents(AnalyseMotion(Rig(slap_foot(1.42), Planted(0.1, 0.2), o)), SpeedTiming());
+        CHECK(Of(late, PhysicsKind::Pivot, 'L').size() == 1 && Of(late, PhysicsKind::FootStep, 'L').empty());
+        CHECK(!Of(late, PhysicsKind::Step, 'L').empty());
+        // A landing that starts the foot's contact (the walk) has one foot step, as before.
+        const std::vector<PhysicsEvent> walk =
+            FootEvents(AnalyseMotion(Rig(WalkFoot(0.4, -0.1), WalkFoot(0.0, 0.1), Options{})), SpeedTiming());
+        CHECK(Of(walk, PhysicsKind::FootStep, 'L').size() == 4);
+    }
+    {
         // A heel whip at toe-off is no pivot: the foot rolls onto its toes (pitched 80 deg by
         // 1.25 s) and turns 40 deg on the ball as it rolls, then the ball leaves 80 ms after
         // the turn (from 1.28 s, up and forward at 1 m/s).

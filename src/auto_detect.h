@@ -8,7 +8,8 @@
 // Each type belongs to one category (AutoCategory), a foldable group of the section.
 //   Feet
 //   step       heel and toe separate (one marker per part contact: Heel L, Toe L...) or combined
-//              (one per landing, at the foot's first part to touch: FS L / FS R). The toe is the
+//              (one per landing, at the foot's first part to touch: FS L / FS R; also the part
+//              that slaps down at the end of a pivot on the foot's other end). The toe is the
 //              ball, or the toe tip on a rig without a ball bone.
 //   lift-off   the foot leaves the ground (Lift L / R).
 //   slide      a planted part slides (Slide L / R).

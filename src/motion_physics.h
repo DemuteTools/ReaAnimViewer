@@ -33,6 +33,12 @@
 //   foot step     (combined) a start of the foot's contact (any part down): the earliest
 //                 step of the parts that touch during that contact (the foot's first part to
 //                 touch, by the step timing). Strength = that part's approach speed.
+//                 Also (story 10-8k) a part that lands while the foot is already down,
+//                 within pivot_planted_s of the end of a pivot on the other end of the foot
+//                 (a heel pivot takes a ball / tip landing, a ball / tip pivot a heel one):
+//                 the earliest such landing per pivot, named by its part (the slap that
+//                 ends a turn). Never at the time of another foot step of that foot; a
+//                 whole-foot pivot (no part) adds none.
 //   lift-off      an end of the foot's contact (the last part leaves), never at the clip end.
 //                 Strength = the departure speed (the peak speed over the 100 ms after).
 //   slide scuff   a planted part moves horizontally in the ground frame (>= slide_speed for >=

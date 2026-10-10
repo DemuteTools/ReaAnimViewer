@@ -1272,14 +1272,19 @@ std::vector<PhysicsEvent> FootEvents(const PhysicsAnalysis& a, const PhysicsPara
             const double pend = sc.end / rate;
             PhysicsEvent best;
             bool         found = false;
+            double       best_land = 0.0;
             for (int q = 0; q < kFootPartCount; ++q) {
                 if (!f.part[q].present || (q == static_cast<int>(FootPart::Heel)) == (sc.part == static_cast<int>(FootPart::Heel)))
                     continue;
                 for (const PartContact& c : f.part[q].contacts) {
                     if (c.start <= 0 || !any[static_cast<size_t>(c.start - 1)]) continue;
+                    // The window reads the raw landing, so a part's timing or offset moves the
+                    // event but never creates or removes it.
+                    const double land = c.start / rate;
+                    if (std::abs(land - pend) > p.pivot_planted_s + kTieS) continue;
+                    if (found && land >= best_land - kTieS) continue;
                     const double t = timed(c, q);
-                    if (std::abs(t - pend) > p.pivot_planted_s + kTieS) continue;
-                    if (found && t >= best.time_s - kTieS) continue;
+                    best_land = land;
                     best.kind = PhysicsKind::FootStep;
                     best.side = f.side;
                     best.part = q;

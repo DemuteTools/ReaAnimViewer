@@ -36,8 +36,9 @@
 //                 Also (story 10-8k) a part that lands while the foot is already down,
 //                 within pivot_planted_s of the end of a pivot on the other end of the foot
 //                 (a heel pivot takes a ball / tip landing, a ball / tip pivot a heel one):
-//                 the earliest such landing per pivot, named by its part (the slap that
-//                 ends a turn). Never at the time of another foot step of that foot; a
+//                 the earliest such landing per pivot (its raw landing, so the part's
+//                 timing and offset move the step but never add or remove it), named by
+//                 its part (the slap that ends a turn). Never at the time of another foot step of that foot; a
 //                 whole-foot pivot (no part) adds none.
 //   lift-off      an end of the foot's contact (the last part leaves), never at the clip end.
 //                 Strength = the departure speed (the peak speed over the 100 ms after).

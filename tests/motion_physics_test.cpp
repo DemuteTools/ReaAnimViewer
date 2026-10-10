@@ -860,6 +860,15 @@ int main()
         const std::vector<PhysicsEvent> late = FootEvents(AnalyseMotion(Rig(slap_foot(1.42), Planted(0.1, 0.2), o)), SpeedTiming());
         CHECK(Of(late, PhysicsKind::Pivot, 'L').size() == 1 && Of(late, PhysicsKind::FootStep, 'L').empty());
         CHECK(!Of(late, PhysicsKind::Step, 'L').empty());
+        // A part's offset moves the step but never creates or removes it: the window reads the
+        // raw landing (+0.2 s keeps the 1.26 slap's step, 0.2 s later; -0.2 s adds none at 1.42).
+        PhysicsParams shifted = SpeedTiming();
+        for (int q = 0; q < kFootPartCount; ++q) shifted.step_offset_s[q] = 0.2;
+        const std::vector<PhysicsEvent> moved = Of(FootEvents(a, shifted), PhysicsKind::FootStep, 'L');
+        CHECK(moved.size() == 1);
+        if (moved.size() == 1 && fs.size() == 1) CHECK(std::abs(moved[0].time_s - fs[0].time_s - 0.2) < 1e-9);
+        for (int q = 0; q < kFootPartCount; ++q) shifted.step_offset_s[q] = -0.2;
+        CHECK(Of(FootEvents(AnalyseMotion(Rig(slap_foot(1.42), Planted(0.1, 0.2), o)), shifted), PhysicsKind::FootStep, 'L').empty());
         // A landing that starts the foot's contact (the walk) has one foot step, as before.
         const std::vector<PhysicsEvent> walk =
             FootEvents(AnalyseMotion(Rig(WalkFoot(0.4, -0.1), WalkFoot(0.0, 0.1), Options{})), SpeedTiming());

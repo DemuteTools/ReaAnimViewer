@@ -628,6 +628,40 @@ int main()
         CHECK(!ApplyAutoSensSearch(applied, rig, map));
     }
 
+    // Story 10-8h: per-row values before Detect: a new block takes its row's value (others the
+    // type's); rows never make Detect pending nor change ==; a new block replacing a dropped one
+    // of the same type and side still takes that block's start value.
+    {
+        AutoSettings s = Ticked(false, false, true, false);  // Slide
+        AutoTypeSettings& sl = s.type[static_cast<int>(AutoType::Slide)];
+        sl.sens = 55.0;
+        SetAutoRowValue(sl, "slide", 'R', true, 83.0);
+        SetAutoRowValue(sl, "slide", 'R', false, -7.0);
+        CHECK(sl.rows.size() == 1 && FindAutoRow(sl, "slide", 'R') && !FindAutoRow(sl, "slide", 'L'));
+        CHECK(FindAutoRow(sl, "slide", 'R')->sens == 83.0 && FindAutoRow(sl, "slide", 'R')->offset_ms == -7.0);
+        AutoSettings no_rows = s;
+        no_rows.type[static_cast<int>(AutoType::Slide)].rows.clear();
+        CHECK(s == no_rows && !AutoPending(s, no_rows));
+        std::vector<Block> blocks;
+        ApplyAutoSettings(blocks, s);
+        CHECK(Markers(blocks) == (std::vector<std::string>{"Slide L", "Slide R"}));
+        if (blocks.size() == 2) {
+            CHECK(blocks[0].sens == 55.0 && blocks[0].offset_ms == 0.0);
+            CHECK(blocks[1].sens == 83.0 && blocks[1].offset_ms == -7.0 && blocks[1].sens_from < 0.0);
+        }
+        // Steps: a separate Toe R row reaches its block; switched from combined, the dropped
+        // block's start value wins.
+        AutoSettings st = Ticked(true, false, false, false, true);
+        SetAutoRowValue(st.type[static_cast<int>(AutoType::Step)], "toe", 'R', true, 66.0);
+        std::vector<Block> sep;
+        ApplyAutoSettings(sep, st);
+        for (const Block& b : sep) CHECK(b.sens == (b.auto_type == "toe" && b.auto_side == 'R' ? 66.0 : 50.0));
+        std::vector<Block> comb = AutoBlocks(Ticked(true, false, false, false));  // FS L, FS R
+        comb[1].sens = 40.0;
+        ApplyAutoSettings(comb, st);
+        for (const Block& b : comb) CHECK(b.sens == (b.auto_side == 'R' ? 40.0 : 50.0));
+    }
+
     // Story 10-8h: steps switched combined -> separate with FS L raised to 73 from 50 and FS R at
     // 60: Heel L / Toe L start again at 50, Heel R / Toe R at 60, none raised; the offsets follow.
     {

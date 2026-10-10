@@ -86,11 +86,27 @@ Block MakeAutoBlock(AutoKind k, char side, double sens, double offset_ms);
 
 constexpr double kAutoDefaultSens = 50.0;
 
+// Story 10-8h: one row's own values before Detect (a block not on the item yet), by its kind
+// word (Block::auto_type) and side.
+struct AutoRowValue {
+    std::string kind;
+    char        side = 'L';
+    double      sens = kAutoDefaultSens;
+    double      offset_ms = 0.0;
+};
+
 struct AutoTypeSettings {
     bool   on = false;
     double sens = kAutoDefaultSens;  // %
     double offset_ms = 0.0;
+    // Story 10-8h: per-row values set in the section's per-row view (a row not listed takes
+    // sens / offset_ms). AutoBlocks gives them to new blocks. Not compared by == (never pending).
+    std::vector<AutoRowValue> rows;
 };
+// Story 10-8h: the row of that kind word and side (null = none).
+const AutoRowValue* FindAutoRow(const AutoTypeSettings& t, const std::string& kind, char side);
+// Sets one row's sensitivity or offset (the row added, from the type's values, when absent).
+void SetAutoRowValue(AutoTypeSettings& t, const std::string& kind, char side, bool sens, double v);
 
 struct AutoSettings {
     AutoTypeSettings type[kAutoTypeCount];
@@ -115,7 +131,8 @@ void UntickAutoCategory(AutoSettings& s, AutoCategory c);
 // Detect on a detected type).
 bool AutoPending(const AutoSettings& ui, const AutoSettings& item);
 
-// The blocks of these settings, per ticked type x side, in type order (steps: combined FS, or heel
+// The blocks of these settings, per ticked type x side (story 10-8h: a row's own values when the
+// type has one for that kind and side), in type order (steps: combined FS, or heel
 // then toe; hand pivots: hand_pivot, or hand_pivot_any), left then right.
 std::vector<Block> AutoBlocks(const AutoSettings& s);
 // The settings the item's known auto blocks say: a type is on when one of its blocks is there,

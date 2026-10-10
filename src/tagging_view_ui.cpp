@@ -3886,8 +3886,12 @@ void AutoValueField(const char* id, AutoType t, bool sens, bool detected, double
         PopRaised(raised_from);
     } else {
         double& slot = sens ? g_auto_ui.type[ti].sens : g_auto_ui.type[ti].offset_ms;
-        double  v = slot;
-        if (ui::DragNumber(id, &v, step, 0, unit, w) != ui::DragNumberEvent::None) slot = ClampAutoValue(sens, v);
+        double  v = shown;
+        if (ui::DragNumber(id, &v, step, 0, unit, w) != ui::DragNumberEvent::None) {
+            // Story 10-8h: the type's one field sets every row.
+            slot = ClampAutoValue(sens, v);
+            for (AutoRowValue& r : g_auto_ui.type[ti].rows) (sens ? r.sens : r.offset_ms) = slot;
+        }
     }
 }
 
@@ -3986,12 +3990,18 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
     ui::Section sec;
     if (ui::BeginSection(sec, "Auto detection")) {
         // Two number columns on the right, under their captions; the type's tick on the left.
-        const float fw = 48.0f;
-        const float w_sens = NumberFieldWidth(fw, "%"), w_off = NumberFieldWidth(fw, "ms");
+        // Story 10-8h: the columns from the width inside the card (its right padding too), the
+        // fields narrowed on a narrow panel, so the last field and its unit always fit.
         const float x0 = ImGui::GetCursorPosX();
-        const float avail = ImGui::GetContentRegionAvail().x;
-        const float x_off = x0 + std::max(170.0f, avail - w_off);
-        const float x_sens = x_off - 10.0f - std::max(w_sens, ImGui::CalcTextSize("Sensitivity").x);
+        const float avail = std::max(1.0f, ImGui::GetContentRegionAvail().x - ui::kCardPad);
+        const float cap_w = ImGui::CalcTextSize("Sensitivity").x;
+        const float min_label = 90.0f + ImGui::GetFrameHeight() * 2.0f;  // tick, label, row icon
+        float       fw = 48.0f;
+        while (fw > 24.0f && min_label + std::max(NumberFieldWidth(fw, "%"), cap_w) + 10.0f + NumberFieldWidth(fw, "ms") > avail)
+            fw -= 2.0f;
+        const float w_sens = NumberFieldWidth(fw, "%"), w_off = NumberFieldWidth(fw, "ms");
+        const float x_off = x0 + std::max(0.0f, avail - w_off);
+        const float x_sens = std::max(x0, x_off - 10.0f - std::max(w_sens, cap_w));
         // Story 10-8c: the categories shown (added with +, or with a block on the item), and the
         // fold state of each (the window's storage).
         bool    cat_shown[kAutoCategoryCount];
@@ -4070,45 +4080,84 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
                     none_parts += (none_parts.empty() ? "" : ", ") + b.marker;
                 tblocks.push_back(&b);
             }
-            const bool   can_split = detected && tblocks.size() > 1;
+            // The rows: the item's blocks of the type, or the blocks Detect would create (the
+            // section's settings, with their per-row values).
+            std::vector<Block> rows;
+            if (detected) {
+                for (const Block* b : tblocks) rows.push_back(*b);
+            } else {
+                AutoSettings one = g_auto_ui;
+                for (AutoTypeSettings& o : one.type) o.on = false;
+                one.type[ti] = g_auto_ui.type[ti];
+                one.type[ti].on = true;
+                rows = AutoBlocks(one);
+                for (size_t i = 1; i < rows.size(); ++i)
+                    if (rows[i].sens != rows[0].sens || rows[i].offset_ms != rows[0].offset_ms) differ = true;
+            }
+            const bool    can_split = rows.size() > 1;
             const ImGuiID split_id = ImGui::GetID("##autosplit");
-            const bool   split = can_split && (differ || storage->GetBool(split_id, false));
-            if (!on) ImGui::BeginDisabled();
+            const int     split_state = storage->GetInt(split_id, -1);  // -1: default (open when rows differ)
+            const bool    split = can_split && (split_state < 0 ? differ : split_state == 1);
+            // Collapsed while the rows differ: the tooltip lists them.
+            auto row_list = [&rows](bool sens) {
+                std::string out;
+                char        buf[64];
+                for (const Block& b : rows) {
+                    std::snprintf(buf, sizeof(buf), sens ? " %.0f %%" : " %.0f ms", sens ? b.sens : b.offset_ms);
+                    out += (out.empty() ? "" : ", ") + b.marker + buf;
+                }
+                return out;
+            };
             if (can_split) {
                 const float fh = ImGui::GetFrameHeight();
                 ImGui::SameLine(x_sens - fh - 4.0f);
-                if (IconButton("##autosplitbtn", fh, [](ImDrawList* d, ImVec2 c, ImU32 col) { IconSplit(d, c, 4.5f, col); },
-                               !differ))
-                    storage->SetBool(split_id, !split);
+                if (IconButton("##autosplitbtn", fh, [](ImDrawList* d, ImVec2 c, ImU32 col) { IconSplit(d, c, 4.5f, col); }))
+                    storage->SetInt(split_id, split ? 0 : 1);
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-                    ImGui::SetTooltip("%s", differ ? "Its rows have different values: one row each."
-                                         : split ? "One sensitivity and offset for the whole type."
-                                                 : "Sensitivity and offset per row.");
+                    ImGui::SetTooltip("%s", split ? "One sensitivity and offset for the whole type (an edit sets every row)."
+                                                  : "Sensitivity and offset per row.");
             }
+            if (!on) ImGui::BeginDisabled();
             if (!split) {
+                const double sens_v = rows.empty() ? g_auto_ui.type[ti].sens : rows[0].sens;
+                const double off_v = rows.empty() ? g_auto_ui.type[ti].offset_ms : rows[0].offset_ms;
                 ImGui::SameLine(x_sens);
-                AutoValueField("##sens", t, true, detected, detected ? shown.type[ti].sens : g_auto_ui.type[ti].sens, fw,
-                               detected ? raised_from : -1.0);
-                AutoSensTooltip(detected ? raised_from : -1.0);
+                AutoValueField("##sens", t, true, detected, sens_v, fw, detected ? raised_from : -1.0);
+                if (differ && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip("%s\n%s", row_list(true).c_str(),
+                                      raised_from >= 0.0 ? "Raised by Detect on a row. An edit sets every row."
+                                                         : "An edit sets every row.");
+                else
+                    AutoSensTooltip(detected ? raised_from : -1.0);
                 ImGui::SameLine(x_off);
-                AutoValueField("##offset", t, false, detected, detected ? shown.type[ti].offset_ms : g_auto_ui.type[ti].offset_ms, fw);
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-                    ImGui::SetTooltip("Moves every marker of this type, in ms (+ = later).");
+                AutoValueField("##offset", t, false, detected, off_v, fw);
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled)) {
+                    if (differ) ImGui::SetTooltip("%s\nAn edit sets every row.", row_list(false).c_str());
+                    else ImGui::SetTooltip("Moves every marker of this type, in ms (+ = later).");
+                }
             } else {
                 // One row per block, labelled by its marker.
-                for (size_t bi = 0; bi < tblocks.size(); ++bi) {
-                    const Block& b = *tblocks[bi];
+                for (size_t bi = 0; bi < rows.size(); ++bi) {
+                    const Block& b = rows[bi];
                     ImGui::PushID(static_cast<int>(bi));
                     ImGui::SetCursorPosX(x0 + ImGui::GetFrameHeight() + 4.0f);
                     ImGui::AlignTextToFramePadding();
                     ImGui::TextDisabled("%s", b.marker.c_str());
-                    ImGui::SameLine(x_sens);
-                    AutoBlockField("##bsens", t, b, true, fw);
-                    AutoSensTooltip(b.sens_from);
-                    ImGui::SameLine(x_off);
-                    AutoBlockField("##boffset", t, b, false, fw);
-                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-                        ImGui::SetTooltip("Moves this row's markers, in ms (+ = later).");
+                    for (int f = 0; f < 2; ++f) {
+                        const bool sens = f == 0;
+                        ImGui::SameLine(sens ? x_sens : x_off);
+                        if (detected) {
+                            AutoBlockField(sens ? "##bsens" : "##boffset", t, b, sens, fw);
+                        } else {
+                            double v = sens ? b.sens : b.offset_ms;
+                            if (ui::DragNumber(sens ? "##bsens" : "##boffset", &v, 1.0, 0, sens ? "%" : "ms", fw) !=
+                                ui::DragNumberEvent::None)
+                                SetAutoRowValue(g_auto_ui.type[ti], b.auto_type, b.auto_side, sens, ClampAutoValue(sens, v));
+                        }
+                        if (sens) AutoSensTooltip(b.sens_from);
+                        else if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+                            ImGui::SetTooltip("Moves this row's markers, in ms (+ = later).");
+                    }
                     ImGui::PopID();
                 }
             }

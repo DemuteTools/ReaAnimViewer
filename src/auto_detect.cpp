@@ -198,6 +198,25 @@ Block MakeAutoBlock(AutoKind k, char side, double sens, double offset_ms)
 
 // ---- Settings ----------------------------------------------------------------------------------
 
+const AutoRowValue* FindAutoRow(const AutoTypeSettings& t, const std::string& kind, char side)
+{
+    for (const AutoRowValue& r : t.rows)
+        if (r.kind == kind && r.side == side) return &r;
+    return nullptr;
+}
+
+void SetAutoRowValue(AutoTypeSettings& t, const std::string& kind, char side, bool sens, double v)
+{
+    AutoRowValue* row = nullptr;
+    for (AutoRowValue& r : t.rows)
+        if (r.kind == kind && r.side == side) row = &r;
+    if (!row) {
+        t.rows.push_back(AutoRowValue{kind, side, t.sens, t.offset_ms});
+        row = &t.rows.back();
+    }
+    (sens ? row->sens : row->offset_ms) = v;
+}
+
 bool operator==(const AutoTypeSettings& a, const AutoTypeSettings& b)
 {
     return a.on == b.on && a.sens == b.sens && a.offset_ms == b.offset_ms;
@@ -249,7 +268,10 @@ std::vector<Block> AutoBlocks(const AutoSettings& s)
         const AutoTypeSettings& ts = s.type[t];
         if (!ts.on) continue;
         for (AutoKind k : KindsOf(static_cast<AutoType>(t), s))
-            for (char side : kSides) out.push_back(MakeAutoBlock(k, side, ts.sens, ts.offset_ms));
+            for (char side : kSides) {
+                const AutoRowValue* row = FindAutoRow(ts, AutoKindWord(k), side);
+                out.push_back(MakeAutoBlock(k, side, row ? row->sens : ts.sens, row ? row->offset_ms : ts.offset_ms));
+            }
     }
     return out;
 }

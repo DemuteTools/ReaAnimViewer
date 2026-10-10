@@ -3919,13 +3919,13 @@ void AutoSensTooltip(double raised_from)
         ImGui::SetTooltip("Sensitivity: higher finds more events, lower fewer (50 %% = the default).");
 }
 
-// Story 10-8h: the per-block icon (two short rows).
-void IconSplit(ImDrawList* dl, ImVec2 c, float r, ImU32 col)
+// Story 10-8h: the per-row fold arrow (pointing right folded, down open), as a category's.
+void IconFold(ImDrawList* dl, ImVec2 c, float r, ImU32 col, bool open)
 {
-    dl->AddLine(ImVec2(c.x - r, c.y - r * 0.5f), ImVec2(c.x + r, c.y - r * 0.5f), col, 1.6f);
-    dl->AddLine(ImVec2(c.x - r, c.y + r * 0.5f), ImVec2(c.x + r, c.y + r * 0.5f), col, 1.6f);
-    dl->AddCircleFilled(ImVec2(c.x - r * 0.35f, c.y - r * 0.5f), 2.0f, col);
-    dl->AddCircleFilled(ImVec2(c.x + r * 0.35f, c.y + r * 0.5f), 2.0f, col);
+    if (open)
+        dl->AddTriangleFilled(ImVec2(c.x - r, c.y - r * 0.5f), ImVec2(c.x + r, c.y - r * 0.5f), ImVec2(c.x, c.y + r * 0.6f), col);
+    else
+        dl->AddTriangleFilled(ImVec2(c.x - r * 0.5f, c.y - r), ImVec2(c.x - r * 0.5f, c.y + r), ImVec2(c.x + r * 0.6f, c.y), col);
 }
 
 const char* AutoTypeHint(AutoType t)
@@ -4111,11 +4111,11 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
             if (can_split) {
                 const float fh = ImGui::GetFrameHeight();
                 ImGui::SameLine(x_sens - fh - 4.0f);
-                if (IconButton("##autosplitbtn", fh, [](ImDrawList* d, ImVec2 c, ImU32 col) { IconSplit(d, c, 4.5f, col); }))
+                if (IconButton("##autosplitbtn", fh, [split](ImDrawList* d, ImVec2 c, ImU32 col) { IconFold(d, c, 4.0f, col, split); }))
                     storage->SetInt(split_id, split ? 0 : 1);
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-                    ImGui::SetTooltip("%s", split ? "One sensitivity and offset for the whole type (an edit sets every row)."
-                                                  : "Sensitivity and offset per row.");
+                    ImGui::SetTooltip("%s", split ? "Fold the rows: one sensitivity and offset for the whole type (an edit sets every row)."
+                                                  : "Unfold: sensitivity and offset per row.");
             }
             if (!on) ImGui::BeginDisabled();
             if (!split) {

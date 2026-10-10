@@ -104,6 +104,22 @@
 //                 grab's approach (>= hand_min_approach), or was at rest from the clip start,
 //                 pivots; off, any resting hand does.
 //
+// Looping clips (story 10-8i, PhysicsParams::looping, a user setting): the motion is read as a
+// cycle, the end continuing into the start, so a contact, step, lift-off, grab, release, slide or
+// pivot that crosses the loop seam is read whole. The clip is unrolled into three cycles of period
+// n - 1 samples (the last sample is the seam, the next cycle's first) and analysed as one track;
+// the middle cycle is the clip (PhysicsAnalysis::window_first, window_samples). Each bone's
+// positions repeat shifted by its own end - start offset per cycle (an in-place climb ends one
+// rung higher; 0 on a closed loop), its rotations unshifted, so velocities wrap and no height
+// assumes the end pose equals the start pose. Events are mapped back to clip time and kept in
+// [0, T) (T = the seam): an event exactly on the seam is counted once, at 0. A contact in the
+// middle cycle is never cut by the clip start or end, so the "cut short still counts" waiver never
+// applies there, and a part in contact the whole cycle gives no event. Clip-wide statistics
+// (medians) over three identical cycles are the clip's. Limits: a clip without the duplicate end
+// frame loses one source frame of motion at the seam; a turning loop (a net yaw per cycle, a
+// circle walk) is unrolled without rotating the next cycle, so the seam can show a heading jump
+// (a possible extra pivot there). Off: the analysis is the clip as it is.
+//
 // A missing role drops only that part's events (PhysicsAnalysis::missing says why for the feet,
 // hand_missing for the hands). Two parts on the same bone (an Unreal toe end standing in on
 // ball_l) keep the first.
@@ -216,6 +232,9 @@ struct PhysicsParams {
     // HandEvents only: a pivot needs the hand's contact to start with a grab's approach (or at the
     // clip start). Off: any resting hand pivots. The analysis does not read it.
     bool       hand_pivot_after_grab = true;
+    // Story 10-8i: read the clip as a loop (see "Looping clips" above). A user setting, off by
+    // default; no constant changes with it.
+    bool       looping = false;
 };
 
 // One contact of a part, in samples [start, end).
@@ -289,6 +308,13 @@ struct PhysicsAnalysis {
     std::vector<std::string> missing;           // one line per dropped foot part / event type
     HandTrack                hand[2];           // L, R
     std::vector<std::string> hand_missing;      // one line per dropped hand ("L hand: no bone for left hand")
+    // The clip inside the analysed track (story 10-8i): looping, the track is three cycles and
+    // the clip is its samples [window_first, window_first + window_samples); otherwise 0 and
+    // `samples`. Per-sample data (PartTrack...) is indexed in the analysed track; the event
+    // functions return clip times.
+    bool                     looping = false;
+    size_t                   window_first = 0;
+    size_t                   window_samples = 0;
 };
 
 // The roles the analysis reads (Role order).
@@ -300,7 +326,7 @@ const std::vector<Role>& PhysicsRoles();
 std::vector<BoneTrack> PhysicsRoleTracks(const std::vector<int>& bone_of_role,
                                          const std::function<std::vector<BoneTrack>(const std::vector<int>&)>& sample);
 
-// The analysis. role_tracks: indexed by Role, an empty track = the role has no bone; every
+// The analysis (p.looping: of the unrolled cycle, see above). role_tracks: indexed by Role, an empty track = the role has no bone; every
 // non-empty track has the same rate and length. Rotations are optional: only the ball's and the
 // hands' rot_world are read (one per sample, else ignored).
 PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& role_tracks, const PhysicsParams& p = {});

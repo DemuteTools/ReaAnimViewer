@@ -156,9 +156,11 @@ std::vector<int> ApplyAutoSettings(std::vector<Block>& blocks, const AutoSetting
 
 // 2^((s - 50) / 50), s clamped to 0..100 (a non-finite s reads 50).
 double SensitivityFactor(double sens);
-// The physics constants of one type at a sensitivity (the defaults otherwise).
-PhysicsParams AutoPhysicsParams(AutoType t, double sens);
-// True when two parameter sets give the same analysis (the constants sensitivity moves).
+// The physics constants of one type at a sensitivity (the defaults otherwise). `looping`: the
+// item's "Is looping" (story 10-8i, PhysicsParams::looping).
+PhysicsParams AutoPhysicsParams(AutoType t, double sens, bool looping);
+// True when two parameter sets give the same analysis (the constants sensitivity moves, and
+// looping).
 bool SameAutoAnalysis(const PhysicsParams& a, const PhysicsParams& b);
 
 // ---- Detection ---------------------------------------------------------------------------------
@@ -169,18 +171,22 @@ struct AutoAnalysis {
 };
 
 // The parameter sets the item's auto blocks need (known types, on), each once, in block order.
-std::vector<PhysicsParams> AutoParamSets(const std::vector<Block>& blocks);
+// `looping` (story 10-8i, the item's ClipSettings::loop) goes into every set; the functions below
+// take it the same way (required: a caller cannot leave the item's setting out). Looping, a
+// block's offset wraps round the cycle: its events stay in [0, T).
+std::vector<PhysicsParams> AutoParamSets(const std::vector<Block>& blocks, bool looping);
 
 // The events of the auto blocks (Event::block = the block's index, marker = its marker), from the
 // analysis of each block's parameter set (a block whose set is not in `analyses`, or whose
 // analysis failed, has none). Sorted by time (then block).
-std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const std::vector<Block>& blocks);
+std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const std::vector<Block>& blocks,
+                              bool looping);
 
 // The whole run on role tracks (indexed by Role, as AnalyseMotion): one analysis per parameter
 // set. `cache` (optional, the same role tracks): analyses already run are reused, new ones added.
 // No auto block: no analysis, no event.
 std::vector<Event> DetectAutoEvents(const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
-                                    std::vector<AutoAnalysis>* cache = nullptr);
+                                    std::vector<AutoAnalysis>* cache, bool looping);
 
 // ---- Sensitivity search (story 10-8h) ---------------------------------------------------------
 
@@ -201,14 +207,15 @@ struct AutoSensResult {
 // with events, off or unknown blocks, a missing part or a failed analysis: not searched. Uses a
 // local analysis cache. One result per block.
 std::vector<AutoSensResult> SearchAutoSensitivity(const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
-                                                  const std::vector<int>& event_counts, const std::vector<int>& role_to_bone);
+                                                  const std::vector<int>& event_counts, const std::vector<int>& role_to_bone,
+                                                  bool looping);
 
 // Detect's apply step: each block's detected events counted (before Suppress edits; `cache`
 // optional, as DetectAutoEvents), SearchAutoSensitivity run, and each raised block's sens and
 // sens_from written. Returns whether a block changed; `results` (optional) gets the search's.
 bool ApplyAutoSensSearch(std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
-                         const std::vector<int>& role_to_bone, std::vector<AutoSensResult>* results = nullptr,
-                         std::vector<AutoAnalysis>* cache = nullptr);
+                         const std::vector<int>& role_to_bone, std::vector<AutoSensResult>* results,
+                         std::vector<AutoAnalysis>* cache, bool looping);
 
 // An auto block of a known type and side that is on (it runs; SkippedBlocks' `auto_runs`).
 bool IsActiveAutoBlock(const Block& b);

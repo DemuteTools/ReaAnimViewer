@@ -419,9 +419,10 @@ double SensitivityFactor(double sens)
     return std::pow(2.0, (sens - 50.0) / 50.0);
 }
 
-PhysicsParams AutoPhysicsParams(AutoType t, double sens)
+PhysicsParams AutoPhysicsParams(AutoType t, double sens, bool looping)
 {
     PhysicsParams p;
+    p.looping = looping;
     const double  f = SensitivityFactor(sens);
     switch (t) {
     case AutoType::Step:
@@ -446,7 +447,7 @@ bool SameAutoAnalysis(const PhysicsParams& a, const PhysicsParams& b)
     return a.contact_speed == b.contact_speed && a.slide_speed == b.slide_speed && a.pivot_min_deg == b.pivot_min_deg &&
            a.pivot_rate_dps == b.pivot_rate_dps && a.hand_contact_speed == b.hand_contact_speed &&
            a.hand_switch_cost == b.hand_switch_cost && a.hand_pivot_min_deg == b.hand_pivot_min_deg &&
-           a.hand_pivot_rate_dps == b.hand_pivot_rate_dps;
+           a.hand_pivot_rate_dps == b.hand_pivot_rate_dps && a.looping == b.looping;
 }
 
 // ---- Detection ---------------------------------------------------------------------------------
@@ -463,13 +464,13 @@ bool HasActiveAutoBlocks(const std::vector<Block>& blocks)
     return false;
 }
 
-std::vector<PhysicsParams> AutoParamSets(const std::vector<Block>& blocks)
+std::vector<PhysicsParams> AutoParamSets(const std::vector<Block>& blocks, bool looping)
 {
     std::vector<PhysicsParams> out;
     for (const Block& b : blocks) {
         AutoKind k;
         if (!b.enabled || !AutoBlockKind(b, &k, nullptr)) continue;
-        const PhysicsParams p = AutoPhysicsParams(AutoTypeOfKind(k), b.sens);
+        const PhysicsParams p = AutoPhysicsParams(AutoTypeOfKind(k), b.sens, looping);
         bool                seen = false;
         for (const PhysicsParams& q : out) seen = seen || SameAutoAnalysis(p, q);
         if (!seen) out.push_back(p);
@@ -477,7 +478,7 @@ std::vector<PhysicsParams> AutoParamSets(const std::vector<Block>& blocks)
     return out;
 }
 
-std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const std::vector<Block>& blocks)
+std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const std::vector<Block>& blocks, bool looping)
 {
     std::vector<Event> out;
     // Each analysis' foot and hand events, computed once (the hand's twice: pivots after a grab
@@ -489,7 +490,7 @@ std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const s
         AutoKind     k;
         char         side;
         if (!b.enabled || !AutoBlockKind(b, &k, &side)) continue;
-        const PhysicsParams p = AutoPhysicsParams(AutoTypeOfKind(k), b.sens);
+        const PhysicsParams p = AutoPhysicsParams(AutoTypeOfKind(k), b.sens, looping);
         size_t              ai = analyses.size();
         for (size_t j = 0; j < analyses.size() && ai == analyses.size(); ++j)
             if (SameAutoAnalysis(analyses[j].params, p)) ai = j;
@@ -528,6 +529,15 @@ std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const s
             if (!want) continue;
             Event ev;
             ev.time_s = e.time_s + b.offset_ms / 1000.0;
+            // Story 10-8i: on a loop the offset wraps round the cycle (period T = the seam), as the
+            // events themselves do: kept in [0, T).
+            if (looping && a.looping && a.window_samples > 1) {
+                const double T = static_cast<double>(a.window_samples - 1) / a.rate_hz;
+                double       t = std::fmod(ev.time_s, T);
+                if (t < 0.0) t += T;
+                if (t >= T - 1e-9 || t < 1e-9) t = 0.0;
+                ev.time_s = t;
+            }
             ev.block = static_cast<int>(bi);
             ev.marker = b.marker;
             ev.strength = e.strength;
@@ -542,12 +552,12 @@ std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const s
 }
 
 std::vector<Event> DetectAutoEvents(const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
-                                    std::vector<AutoAnalysis>* cache)
+                                    std::vector<AutoAnalysis>* cache, bool looping)
 {
     if (!HasActiveAutoBlocks(blocks)) return {};
     std::vector<AutoAnalysis>  local;
     std::vector<AutoAnalysis>& runs = cache ? *cache : local;
-    const std::vector<PhysicsParams> sets = AutoParamSets(blocks);
+    const std::vector<PhysicsParams> sets = AutoParamSets(blocks, looping);
     for (const PhysicsParams& p : sets) {
         bool have = false;
         for (const AutoAnalysis& r : runs) have = have || SameAutoAnalysis(r.params, p);
@@ -566,7 +576,7 @@ std::vector<Event> DetectAutoEvents(const std::vector<Block>& blocks, const std:
             else runs.erase(runs.begin() + static_cast<std::ptrdiff_t>(i));
         }
     }
-    return AutoEvents(runs, blocks);
+    return AutoEvents(runs, blocks, looping);
 }
 
 // ---- Sensitivity search (story 10-8h) ---------------------------------------------------------
@@ -574,15 +584,16 @@ std::vector<Event> DetectAutoEvents(const std::vector<Block>& blocks, const std:
 namespace {
 
 // Block `b`'s detected events at sensitivity `sens` (-1 = its analysis failed), on `runs`.
-int CountAt(const Block& b, double sens, const std::vector<BoneTrack>& role_tracks, std::vector<AutoAnalysis>& runs)
+int CountAt(const Block& b, double sens, const std::vector<BoneTrack>& role_tracks, std::vector<AutoAnalysis>& runs,
+            bool looping)
 {
     Block one = b;
     one.sens = sens;
     const std::vector<Block> blocks = {one};
-    const std::vector<Event> ev = DetectAutoEvents(blocks, role_tracks, &runs);
+    const std::vector<Event> ev = DetectAutoEvents(blocks, role_tracks, &runs, looping);
     AutoKind k;
     AutoBlockKind(one, &k, nullptr);
-    const PhysicsParams p = AutoPhysicsParams(AutoTypeOfKind(k), sens);
+    const PhysicsParams p = AutoPhysicsParams(AutoTypeOfKind(k), sens, looping);
     for (const AutoAnalysis& r : runs)
         if (SameAutoAnalysis(r.params, p) && !r.analysis.ok) return -1;
     return static_cast<int>(ev.size());
@@ -591,7 +602,8 @@ int CountAt(const Block& b, double sens, const std::vector<BoneTrack>& role_trac
 }  // namespace
 
 std::vector<AutoSensResult> SearchAutoSensitivity(const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
-                                                  const std::vector<int>& event_counts, const std::vector<int>& role_to_bone)
+                                                  const std::vector<int>& event_counts, const std::vector<int>& role_to_bone,
+                                                  bool looping)
 {
     std::vector<AutoSensResult> out(blocks.size());
     // A local cache (every analysis of the search; the session's 8-entry one is left alone). The
@@ -604,8 +616,8 @@ std::vector<AutoSensResult> SearchAutoSensitivity(const std::vector<Block>& bloc
         if (!IsActiveAutoBlock(b) || AutoBlockPartMissing(b, role_to_bone)) continue;
         if (i >= event_counts.size() || event_counts[i] != 0) continue;  // has events (or unknown): untouched
         const double start = std::isfinite(b.sens) ? std::clamp(b.sens, 0.0, 100.0) : kAutoDefaultSens;
-        if (CountAt(b, start, role_tracks, runs) != 0) continue;  // a failed analysis, or events after all
-        const int at100 = CountAt(b, 100.0, role_tracks, runs);
+        if (CountAt(b, start, role_tracks, runs, looping) != 0) continue;  // a failed analysis, or events after all
+        const int at100 = CountAt(b, 100.0, role_tracks, runs, looping);
         if (at100 < 0) continue;
         r.searched = true;
         if (at100 == 0) {
@@ -617,7 +629,7 @@ std::vector<AutoSensResult> SearchAutoSensitivity(const std::vector<Block>& bloc
         while (hi - lo > 1.0) {
             const double mid = std::floor((lo + hi) * 0.5 + 0.5);
             if (mid <= lo || mid >= hi) break;
-            const int n = CountAt(b, mid, role_tracks, runs);
+            const int n = CountAt(b, mid, role_tracks, runs, looping);
             if (n > 0) hi = mid;
             else lo = mid;  // none, or a failed analysis there: search higher
         }
@@ -630,15 +642,15 @@ std::vector<AutoSensResult> SearchAutoSensitivity(const std::vector<Block>& bloc
 
 bool ApplyAutoSensSearch(std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
                          const std::vector<int>& role_to_bone, std::vector<AutoSensResult>* results,
-                         std::vector<AutoAnalysis>* cache)
+                         std::vector<AutoAnalysis>* cache, bool looping)
 {
     std::vector<AutoSensResult> res;
     bool                        changed = false;
     if (HasActiveAutoBlocks(blocks)) {
         std::vector<int> counts(blocks.size(), 0);
-        for (const Event& e : DetectAutoEvents(blocks, role_tracks, cache))
+        for (const Event& e : DetectAutoEvents(blocks, role_tracks, cache, looping))
             if (e.block >= 0 && e.block < static_cast<int>(counts.size())) ++counts[static_cast<size_t>(e.block)];
-        res = SearchAutoSensitivity(blocks, role_tracks, counts, role_to_bone);
+        res = SearchAutoSensitivity(blocks, role_tracks, counts, role_to_bone, looping);
         for (size_t i = 0; i < res.size() && i < blocks.size(); ++i) {
             Block& b = blocks[i];
             if (res[i].raised && (res[i].sens != b.sens || res[i].sens_from != b.sens_from)) {

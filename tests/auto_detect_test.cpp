@@ -372,22 +372,22 @@ int main()
         CHECK(SensitivityFactor(50.0) == 1.0 && SensitivityFactor(100.0) == 2.0 && SensitivityFactor(0.0) == 0.5);
         CHECK(SensitivityFactor(150.0) == 2.0 && SensitivityFactor(std::nan("")) == 1.0);
         const PhysicsParams d;
-        CHECK(SameAutoAnalysis(AutoPhysicsParams(AutoType::Step, 50.0), d));
-        CHECK(SameAutoAnalysis(AutoPhysicsParams(AutoType::Slide, 50.0), d));
-        CHECK(AutoPhysicsParams(AutoType::Step, 100.0).contact_speed == 2.0 * d.contact_speed);
-        CHECK(AutoPhysicsParams(AutoType::LiftOff, 0.0).contact_speed == 0.5 * d.contact_speed);
-        CHECK(AutoPhysicsParams(AutoType::Slide, 100.0).slide_speed == 0.5 * d.slide_speed);
-        const PhysicsParams pv = AutoPhysicsParams(AutoType::Pivot, 100.0);
+        CHECK(SameAutoAnalysis(AutoPhysicsParams(AutoType::Step, 50.0, false), d));
+        CHECK(SameAutoAnalysis(AutoPhysicsParams(AutoType::Slide, 50.0, false), d));
+        CHECK(AutoPhysicsParams(AutoType::Step, 100.0, false).contact_speed == 2.0 * d.contact_speed);
+        CHECK(AutoPhysicsParams(AutoType::LiftOff, 0.0, false).contact_speed == 0.5 * d.contact_speed);
+        CHECK(AutoPhysicsParams(AutoType::Slide, 100.0, false).slide_speed == 0.5 * d.slide_speed);
+        const PhysicsParams pv = AutoPhysicsParams(AutoType::Pivot, 100.0, false);
         CHECK(pv.pivot_min_deg == 0.5 * d.pivot_min_deg && pv.pivot_rate_dps == 0.5 * d.pivot_rate_dps &&
               pv.contact_speed == d.contact_speed);
         // One analysis per distinct parameter set.
         std::vector<Block> blocks = AutoBlocks(Ticked(true, true, true, true));
-        CHECK(AutoParamSets(blocks).size() == 1);
+        CHECK(AutoParamSets(blocks, false).size() == 1);
         for (Block& b : blocks)
             if (b.auto_type == "slide") b.sens = 80.0;
-        CHECK(AutoParamSets(blocks).size() == 2);
+        CHECK(AutoParamSets(blocks, false).size() == 2);
         blocks[0].sens = 60.0;  // FS L only
-        CHECK(AutoParamSets(blocks).size() == 3);
+        CHECK(AutoParamSets(blocks, false).size() == 3);
     }
 
     // The walk: combined steps = the physics' foot steps, separate = its heel and toe steps,
@@ -400,7 +400,7 @@ int main()
         std::vector<Block>              blocks = {HeelRule("Rule")};
         ApplyAutoSettings(blocks, Ticked(true, true, false, false));  // Rule, FS L, FS R, Lift L, Lift R
         std::vector<AutoAnalysis> cache;
-        const std::vector<Event>  ev = DetectAutoEvents(blocks, rig, &cache);
+        const std::vector<Event>  ev = DetectAutoEvents(blocks, rig, &cache, false);
         CHECK(cache.size() == 1);
         CHECK(OfBlock(ev, 0).empty());
         const std::vector<Event>        fsl = OfBlock(ev, 1);
@@ -415,16 +415,16 @@ int main()
         CHECK(OfBlock(ev, 4).size() == Of(phys, PhysicsKind::LiftOff, 'R').size());
         CHECK(std::is_sorted(ev.begin(), ev.end(), [](const Event& x, const Event& y) { return x.time_s < y.time_s; }));
         // The same events without a cache; the cache reused (no new analysis).
-        const std::vector<Event> ev2 = DetectAutoEvents(blocks, rig);
+        const std::vector<Event> ev2 = DetectAutoEvents(blocks, rig, nullptr, false);
         CHECK(ev2.size() == ev.size());
-        DetectAutoEvents(blocks, rig, &cache);
+        DetectAutoEvents(blocks, rig, &cache, false);
         CHECK(cache.size() == 1);
 
         // Offset: step +20 ms -> every step 20 ms later.
         std::vector<Block> later = blocks;
         for (Block& b : later)
             if (b.auto_type == "step") b.offset_ms = 20.0;  // as the section's field writes it
-        const std::vector<Event> fsl20 = OfBlock(DetectAutoEvents(later, rig), 1);
+        const std::vector<Event> fsl20 = OfBlock(DetectAutoEvents(later, rig, nullptr, false), 1);
         CHECK(fsl20.size() == fsl.size());
         for (size_t i = 0; i < fsl20.size() && i < fsl.size(); ++i)
             CHECK(std::fabs(fsl20[i].time_s - (fsl[i].time_s + 0.020)) < 1e-12);
@@ -432,11 +432,11 @@ int main()
         // An off auto block has no event and needs no analysis.
         std::vector<Block> off = blocks;
         for (Block& b : off) b.enabled = !IsAutoBlock(b);
-        CHECK(DetectAutoEvents(off, rig).empty() && !HasActiveAutoBlocks(off));
+        CHECK(DetectAutoEvents(off, rig, nullptr, false).empty() && !HasActiveAutoBlocks(off));
 
         // Separate: one marker per part contact (heel on the heel, toe on the ball).
         std::vector<Block> sep = AutoBlocks(Ticked(true, false, false, false, true));  // Heel L, Heel R, Toe L, Toe R
-        const std::vector<Event> se = DetectAutoEvents(sep, rig);
+        const std::vector<Event> se = DetectAutoEvents(sep, rig, nullptr, false);
         CHECK(OfBlock(se, 0).size() == Of(phys, PhysicsKind::Step, 'L', 0).size() && !OfBlock(se, 0).empty());
         CHECK(OfBlock(se, 2).size() == Of(phys, PhysicsKind::Step, 'L', 1).size() && !OfBlock(se, 2).empty());
         const std::vector<PhysicsEvent> toe_l = Of(phys, PhysicsKind::Step, 'L', 1);
@@ -449,7 +449,7 @@ int main()
         nb.ball = false;
         const std::vector<BoneTrack>    tip_rig = Walk(nb);
         const std::vector<PhysicsEvent> tip_phys = FootEvents(AnalyseMotion(tip_rig));
-        const std::vector<Event>        tip_ev = OfBlock(DetectAutoEvents(sep, tip_rig), 2);
+        const std::vector<Event>        tip_ev = OfBlock(DetectAutoEvents(sep, tip_rig, nullptr, false), 2);
         const std::vector<PhysicsEvent> tip_l = Of(tip_phys, PhysicsKind::Step, 'L', 2);
         CHECK(!tip_ev.empty() && tip_ev.size() == tip_l.size());
         for (size_t i = 0; i < tip_ev.size() && i < tip_l.size(); ++i) CHECK(tip_ev[i].time_s == tip_l[i].time_s);
@@ -463,17 +463,17 @@ int main()
         std::vector<AutoAnalysis>    cache;
         for (int s = 0; s <= 100; s += 8) {  // 13 distinct sets
             for (Block& b : blocks) b.sens = s;
-            const std::vector<Event> cached = DetectAutoEvents(blocks, rig, &cache);
+            const std::vector<Event> cached = DetectAutoEvents(blocks, rig, &cache, false);
             CHECK(cache.size() <= 8);
-            CHECK(SameEvents(cached, DetectAutoEvents(blocks, rig)));
+            CHECK(SameEvents(cached, DetectAutoEvents(blocks, rig, nullptr, false)));
             CHECK(!cached.empty());
         }
         CHECK(cache.size() == 8);
         // Two sets in use at once (steps and lift-offs at other sensitivities) stay cached.
         std::vector<Block> two = AutoBlocks(Ticked(true, true, false, false));
         for (Block& b : two) b.sens = b.auto_type == "lift" ? 3.0 : 97.0;
-        CHECK(SameEvents(DetectAutoEvents(two, rig, &cache), DetectAutoEvents(two, rig)) && cache.size() <= 8);
-        CHECK(SameEvents(DetectAutoEvents(two, rig, &cache), DetectAutoEvents(two, rig)));
+        CHECK(SameEvents(DetectAutoEvents(two, rig, &cache, false), DetectAutoEvents(two, rig, nullptr, false)) && cache.size() <= 8);
+        CHECK(SameEvents(DetectAutoEvents(two, rig, &cache, false), DetectAutoEvents(two, rig, nullptr, false)));
     }
 
     // Pivot end to end: the planted left foot turns 90 deg on the ball in 250 ms (from 1.0 s): one
@@ -484,7 +484,7 @@ int main()
         const std::vector<BoneTrack> rig =
             Rig(Planted(-0.1, 0.0, [](double t) { return 0.5 * kPi * Ease((t - 1.0) / 0.25); }), Planted(0.1, 0.2), o);
         const std::vector<Block> blocks = AutoBlocks(Ticked(false, false, false, true));  // Pivot L, Pivot R
-        const std::vector<Event> ev = DetectAutoEvents(blocks, rig);
+        const std::vector<Event> ev = DetectAutoEvents(blocks, rig, nullptr, false);
         CHECK(ev.size() == 1);
         if (ev.size() == 1) {
             CHECK(ev[0].block == 0 && ev[0].marker == "Pivot L" && ev[0].speed == 0.0);
@@ -505,9 +505,9 @@ int main()
         o.dur = 3.0;
         const std::vector<BoneTrack> rig = Rig(slide, Planted(0.1, 0.2), o);
         std::vector<Block>           blocks = AutoBlocks(Ticked(false, false, true, false));  // Slide L, Slide R
-        const size_t                 at50 = OfBlock(DetectAutoEvents(blocks, rig), 0).size();
+        const size_t                 at50 = OfBlock(DetectAutoEvents(blocks, rig, nullptr, false), 0).size();
         for (Block& b : blocks) b.sens = 80.0;
-        const std::vector<Event> sl80 = OfBlock(DetectAutoEvents(blocks, rig), 0);
+        const std::vector<Event> sl80 = OfBlock(DetectAutoEvents(blocks, rig, nullptr, false), 0);
         CHECK(at50 == 0 && sl80.size() == 1);
         if (sl80.size() == 1) {
             CHECK(std::fabs(sl80[0].time_s - 1.0) < 0.05 && sl80[0].marker == "Slide L");
@@ -515,9 +515,9 @@ int main()
         }
         for (int s = 0; s <= 100; s += 10) {
             for (Block& b : blocks) b.sens = s;
-            const size_t lo = OfBlock(DetectAutoEvents(blocks, rig), 0).size();
+            const size_t lo = OfBlock(DetectAutoEvents(blocks, rig, nullptr, false), 0).size();
             for (Block& b : blocks) b.sens = s + 10;
-            CHECK(OfBlock(DetectAutoEvents(blocks, rig), 0).size() >= lo);
+            CHECK(OfBlock(DetectAutoEvents(blocks, rig, nullptr, false), 0).size() >= lo);
         }
     }
 
@@ -537,11 +537,11 @@ int main()
             if (!rig[static_cast<size_t>(r)].pos.empty()) map[static_cast<size_t>(r)] = r;
         auto count = [&](std::vector<Block> blocks, int bi, double sens) {
             blocks[static_cast<size_t>(bi)].sens = sens;
-            return static_cast<int>(OfBlock(DetectAutoEvents(blocks, rig), bi).size());
+            return static_cast<int>(OfBlock(DetectAutoEvents(blocks, rig, nullptr, false), bi).size());
         };
         auto counts_of = [&](const std::vector<Block>& blocks) {
             std::vector<int> c(blocks.size(), 0);
-            for (const Event& e : DetectAutoEvents(blocks, rig)) ++c[static_cast<size_t>(e.block)];
+            for (const Event& e : DetectAutoEvents(blocks, rig, nullptr, false)) ++c[static_cast<size_t>(e.block)];
             return c;
         };
         std::vector<Block> blocks = {HeelRule("Rule")};
@@ -550,7 +550,7 @@ int main()
 
         // Raise: Slide L gets the lowest whole % with an event (sens_from = 50); Nothing: Slide R
         // has no event up to 100 % (unchanged). The rule is never searched.
-        std::vector<AutoSensResult> res = SearchAutoSensitivity(blocks, rig, counts_of(blocks), map);
+        std::vector<AutoSensResult> res = SearchAutoSensitivity(blocks, rig, counts_of(blocks), map, false);
         CHECK(res.size() == 3 && !res[0].searched);
         double raised = 0.0;
         if (res.size() == 3) {
@@ -565,50 +565,50 @@ int main()
         std::vector<Block> after = blocks;
         after[1].sens = raised;
         after[1].sens_from = 50.0;
-        CHECK(OfBlock(DetectAutoEvents(after, rig), 1).size() >= 1);
-        CHECK(SameEvents(OfBlock(DetectAutoEvents(after, rig), 2), OfBlock(DetectAutoEvents(blocks, rig), 2)));
+        CHECK(OfBlock(DetectAutoEvents(after, rig, nullptr, false), 1).size() >= 1);
+        CHECK(SameEvents(OfBlock(DetectAutoEvents(after, rig, nullptr, false), 2), OfBlock(DetectAutoEvents(blocks, rig, nullptr, false), 2)));
         // Searched again: the raised side has its event now, untouched.
-        res = SearchAutoSensitivity(after, rig, counts_of(after), map);
+        res = SearchAutoSensitivity(after, rig, counts_of(after), map, false);
         CHECK(res.size() == 3 && !res[1].searched && res[1].sens == raised);
 
         // Has events: a block whose count is not 0 is never searched (its value stays).
         std::vector<int> c = counts_of(blocks);
         c[1] = 3;
-        res = SearchAutoSensitivity(blocks, rig, c, map);
+        res = SearchAutoSensitivity(blocks, rig, c, map, false);
         CHECK(res.size() == 3 && !res[1].searched && !res[1].raised && res[1].sens == 50.0);
 
         // Already 100: no event, no raise; "none".
         std::vector<Block> full = blocks;
         full[2].sens = 100.0;
-        res = SearchAutoSensitivity(full, rig, counts_of(full), map);
+        res = SearchAutoSensitivity(full, rig, counts_of(full), map, false);
         CHECK(res.size() == 3 && res[2].searched && res[2].none && res[2].sens == 100.0 && res[2].sens_from < 0.0);
 
         // User lowered to 30: bisection from 30, sens_from = 30, the same lowest value.
         std::vector<Block> low = blocks;
         low[1].sens = 30.0;
-        res = SearchAutoSensitivity(low, rig, counts_of(low), map);
+        res = SearchAutoSensitivity(low, rig, counts_of(low), map, false);
         CHECK(res.size() == 3 && res[1].raised && res[1].sens_from == 30.0 && res[1].sens == raised);
 
         // Missing bone: the left foot's parts unmapped -> Slide L not searched; Slide R still is.
         std::vector<int> nomap = map;
         for (Role r : {Role::LeftHeel, Role::LeftToe, Role::LeftToeEnd}) nomap[static_cast<size_t>(r)] = -1;
         CHECK(AutoBlockPartMissing(blocks[1], nomap) && !AutoBlockPartMissing(blocks[2], nomap));
-        res = SearchAutoSensitivity(blocks, rig, counts_of(blocks), nomap);
+        res = SearchAutoSensitivity(blocks, rig, counts_of(blocks), nomap, false);
         CHECK(res.size() == 3 && !res[1].searched && res[1].sens == 50.0 && res[2].searched);
 
         // An off block, and a failed analysis (no role track): not searched.
         std::vector<Block> off = blocks;
         off[1].enabled = false;
-        res = SearchAutoSensitivity(off, rig, std::vector<int>(off.size(), 0), map);
+        res = SearchAutoSensitivity(off, rig, std::vector<int>(off.size(), 0), map, false);
         CHECK(res.size() == 3 && !res[1].searched && res[2].searched);
-        res = SearchAutoSensitivity(blocks, std::vector<BoneTrack>(rig.size()), std::vector<int>(blocks.size(), 0), map);
+        res = SearchAutoSensitivity(blocks, std::vector<BoneTrack>(rig.size()), std::vector<int>(blocks.size(), 0), map, false);
         CHECK(res.size() == 3 && !res[1].searched && !res[2].searched);
 
         // A raised block keeps its first start value when searched again (it lost its events).
         std::vector<Block> again = blocks;
         again[1].sens = 40.0;
         again[1].sens_from = 25.0;
-        res = SearchAutoSensitivity(again, rig, counts_of(again), map);
+        res = SearchAutoSensitivity(again, rig, counts_of(again), map, false);
         CHECK(res.size() == 3 && res[1].raised && res[1].sens_from == 25.0);
 
         // Detect keeps a block's own (raised) sensitivity: ApplyAutoSettings leaves it.
@@ -620,12 +620,12 @@ int main()
         std::vector<Block>          applied = blocks;
         std::vector<AutoSensResult> ar;
         std::vector<AutoAnalysis>   cache;
-        CHECK(ApplyAutoSensSearch(applied, rig, map, &ar, &cache));
+        CHECK(ApplyAutoSensSearch(applied, rig, map, &ar, &cache, false));
         CHECK(applied[1].sens == raised && applied[1].sens_from == 50.0);
         CHECK(applied[2].sens == 50.0 && applied[2].sens_from < 0.0 && ar.size() == 3 && ar[2].none);
         CHECK(applied[0].sens == blocks[0].sens && applied[0].marker == "Rule");
         // Again: nothing left to raise.
-        CHECK(!ApplyAutoSensSearch(applied, rig, map));
+        CHECK(!ApplyAutoSensSearch(applied, rig, map, nullptr, nullptr, false));
     }
 
     // Story 10-8h: per-row values before Detect: a new block takes its row's value (others the
@@ -701,7 +701,7 @@ int main()
         o.ball = false;
         std::vector<BoneTrack> rig = Walk(o);
         for (Role r : {Role::LeftToeEnd, Role::RightToeEnd}) rig[static_cast<size_t>(r)] = BoneTrack{};
-        CHECK(DetectAutoEvents(AutoBlocks(Ticked(true, true, true, true)), rig).empty());
+        CHECK(DetectAutoEvents(AutoBlocks(Ticked(true, true, true, true)), rig, nullptr, false).empty());
 
         std::vector<int> map(static_cast<size_t>(Role::Count), -1);
         const std::vector<std::string> all = AutoMissingParts(AutoType::Step, false, map);
@@ -741,7 +741,7 @@ int main()
         CHECK(tr.blocks.size() == 3 && tr.blocks[0].ran && !tr.blocks[1].ran && !tr.blocks[2].ran);
         CHECK(!tr.events.empty());
         for (const Event& e : tr.events) CHECK(e.block == 0);
-        CHECK(!OfBlock(DetectAutoEvents(blocks, rig), 1).empty());
+        CHECK(!OfBlock(DetectAutoEvents(blocks, rig, nullptr, false), 1).empty());
         // An auto block with a condition (a hand edit) still never fires as a rule.
         std::vector<Block> odd = blocks;
         odd[1].conditions = blocks[0].conditions;
@@ -883,7 +883,7 @@ int main()
         const std::vector<BoneTrack> rig = Rig(Planted(-0.1, 0.0), Planted(0.1, 0.2), o);
         std::vector<Block>           blocks = AutoBlocks(Ticked(false, false, false, false, false, true, true));
         CHECK(Markers(blocks) == (std::vector<std::string>{"Grab L", "Grab R", "Release L", "Release R"}));
-        const std::vector<Event> ev = DetectAutoEvents(blocks, rig);
+        const std::vector<Event> ev = DetectAutoEvents(blocks, rig, nullptr, false);
         CHECK(ev.size() == 2);
         CHECK(OfBlock(ev, 0).empty() && OfBlock(ev, 2).empty());  // no left hand bone
         const std::vector<Event> grab = OfBlock(ev, 1), rel = OfBlock(ev, 3);
@@ -896,13 +896,13 @@ int main()
         std::vector<Block> later = blocks;
         for (Block& b : later)
             if (b.auto_type == "grab") b.offset_ms = 25.0;  // as the section's field writes it
-        const std::vector<Event> grab25 = OfBlock(DetectAutoEvents(later, rig), 1);
+        const std::vector<Event> grab25 = OfBlock(DetectAutoEvents(later, rig, nullptr, false), 1);
         CHECK(grab25.size() == 1 && grab.size() == 1);
         if (grab25.size() == 1 && grab.size() == 1) CHECK(std::fabs(grab25[0].time_s - (grab[0].time_s + 0.025)) < 1e-12);
         // Hand blocks next to foot blocks: the feet's events are unchanged by the hand ones.
         std::vector<Block> both = AutoBlocks(Ticked(true, true, false, false, false, true, true));
         std::vector<Block> feet = AutoBlocks(Ticked(true, true, false, false));
-        const std::vector<Event> eb = DetectAutoEvents(both, rig), ef = DetectAutoEvents(feet, rig);
+        const std::vector<Event> eb = DetectAutoEvents(both, rig, nullptr, false), ef = DetectAutoEvents(feet, rig, nullptr, false);
         std::vector<Event>       eb_feet;
         for (const Event& e : eb)
             if (e.block < 4) eb_feet.push_back(e);
@@ -912,16 +912,16 @@ int main()
     // Sensitivity: grab and release move the hand contact speed only; one analysis per set.
     {
         const PhysicsParams d;
-        const PhysicsParams g = AutoPhysicsParams(AutoType::Grab, 100.0), r = AutoPhysicsParams(AutoType::Release, 0.0);
+        const PhysicsParams g = AutoPhysicsParams(AutoType::Grab, 100.0, false), r = AutoPhysicsParams(AutoType::Release, 0.0, false);
         CHECK(g.hand_contact_speed == 2.0 * d.hand_contact_speed && r.hand_contact_speed == 0.5 * d.hand_contact_speed);
         CHECK(g.contact_speed == d.contact_speed && g.slide_speed == d.slide_speed && g.pivot_min_deg == d.pivot_min_deg);
-        CHECK(AutoPhysicsParams(AutoType::Step, 100.0).hand_contact_speed == d.hand_contact_speed);
-        CHECK(SameAutoAnalysis(AutoPhysicsParams(AutoType::Grab, 50.0), d) && !SameAutoAnalysis(g, d));
+        CHECK(AutoPhysicsParams(AutoType::Step, 100.0, false).hand_contact_speed == d.hand_contact_speed);
+        CHECK(SameAutoAnalysis(AutoPhysicsParams(AutoType::Grab, 50.0, false), d) && !SameAutoAnalysis(g, d));
         std::vector<Block> blocks = AutoBlocks(Ticked(true, false, false, false, false, true, true));
-        CHECK(AutoParamSets(blocks).size() == 1);
+        CHECK(AutoParamSets(blocks, false).size() == 1);
         for (Block& b : blocks)
             if (b.auto_type == "grab") b.sens = 70.0;
-        CHECK(AutoParamSets(blocks).size() == 2);
+        CHECK(AutoParamSets(blocks, false).size() == 2);
         // A less sensitive grab (a slower contact speed) still finds the 1.5 leg/s landing, at or
         // after the default's time; the strength stays above the min approach.
         Options o;
@@ -929,9 +929,9 @@ int main()
         o.hand[1] = HandGrab(0.3, 1.5 * 0.87, 1.0, 1.5);
         const std::vector<BoneTrack> rig = Rig(Planted(-0.1, 0.0), Planted(0.1, 0.2), o);
         std::vector<Block>           gb = AutoBlocks(Ticked(false, false, false, false, false, true));  // Grab L, Grab R
-        const std::vector<Event>     at50 = OfBlock(DetectAutoEvents(gb, rig), 1);
+        const std::vector<Event>     at50 = OfBlock(DetectAutoEvents(gb, rig, nullptr, false), 1);
         for (Block& b : gb) b.sens = 25.0;
-        const std::vector<Event> at25 = OfBlock(DetectAutoEvents(gb, rig), 1);
+        const std::vector<Event> at25 = OfBlock(DetectAutoEvents(gb, rig, nullptr, false), 1);
         CHECK(at50.size() == 1 && at25.size() == 1);
         if (at50.size() == 1 && at25.size() == 1) CHECK(at25[0].time_s >= at50[0].time_s);
     }
@@ -1077,7 +1077,7 @@ int main()
         std::vector<BoneTrack> rig = Rig(Planted(-0.1, 0.0), Planted(0.1, 0.2), o);
         for (Role r : {Role::LeftToeEnd, Role::RightToeEnd}) rig[static_cast<size_t>(r)] = BoneTrack{};
         const std::vector<Block> blocks = AutoBlocks(Ticked(true, false, false, false, false, true));  // FS L/R, Grab L/R
-        const std::vector<Event> ev = DetectAutoEvents(blocks, rig);
+        const std::vector<Event> ev = DetectAutoEvents(blocks, rig, nullptr, false);
         CHECK(OfBlock(ev, 0).empty() && OfBlock(ev, 1).empty() && OfBlock(ev, 2).empty());
         CHECK(OfBlock(ev, 3).size() == 1);
     }
@@ -1197,13 +1197,13 @@ int main()
     // Sensitivity: the hand pivot's angle and rate thresholds only.
     {
         const PhysicsParams d;
-        const PhysicsParams hi = AutoPhysicsParams(AutoType::HandPivot, 100.0), lo = AutoPhysicsParams(AutoType::HandPivot, 0.0);
+        const PhysicsParams hi = AutoPhysicsParams(AutoType::HandPivot, 100.0, false), lo = AutoPhysicsParams(AutoType::HandPivot, 0.0, false);
         CHECK(hi.hand_pivot_min_deg == 0.5 * d.hand_pivot_min_deg && hi.hand_pivot_rate_dps == 0.5 * d.hand_pivot_rate_dps);
         CHECK(lo.hand_pivot_min_deg == 2.0 * d.hand_pivot_min_deg && lo.hand_pivot_rate_dps == 2.0 * d.hand_pivot_rate_dps);
         CHECK(hi.pivot_min_deg == d.pivot_min_deg && hi.pivot_rate_dps == d.pivot_rate_dps &&
               hi.hand_contact_speed == d.hand_contact_speed && hi.contact_speed == d.contact_speed);
-        CHECK(AutoPhysicsParams(AutoType::Pivot, 100.0).hand_pivot_min_deg == d.hand_pivot_min_deg);
-        CHECK(SameAutoAnalysis(AutoPhysicsParams(AutoType::HandPivot, 50.0), d) && !SameAutoAnalysis(hi, d));
+        CHECK(AutoPhysicsParams(AutoType::Pivot, 100.0, false).hand_pivot_min_deg == d.hand_pivot_min_deg);
+        CHECK(SameAutoAnalysis(AutoPhysicsParams(AutoType::HandPivot, 50.0, false), d) && !SameAutoAnalysis(hi, d));
         PhysicsParams rate_only = d;
         rate_only.hand_pivot_rate_dps = 45.0;
         CHECK(!SameAutoAnalysis(rate_only, d));
@@ -1223,8 +1223,8 @@ int main()
             s.type[static_cast<int>(AutoType::HandPivot)].on = true;
             AutoSettings any = s;
             any.hand_pivot_any = true;
-            const std::vector<Event> strict = DetectAutoEvents(AutoBlocks(s), rig);
-            const std::vector<Event> lax = DetectAutoEvents(AutoBlocks(any), rig);
+            const std::vector<Event> strict = DetectAutoEvents(AutoBlocks(s), rig, nullptr, false);
+            const std::vector<Event> lax = DetectAutoEvents(AutoBlocks(any), rig, nullptr, false);
             CHECK(OfBlock(strict, 0).empty() && OfBlock(lax, 0).empty());  // no left hand bone
             CHECK(strict.size() == (speed > 1.0 ? 1u : 0u) && lax.size() == 1);
             for (const Event& e : lax) {
@@ -1232,13 +1232,13 @@ int main()
                 CHECK(e.strength > 80.0 && e.strength < 95.0 && e.time_s > 1.1 && e.time_s < 1.2);
             }
             any.type[static_cast<int>(AutoType::HandPivot)].offset_ms = 30.0;
-            const std::vector<Event> later = DetectAutoEvents(AutoBlocks(any), rig);
+            const std::vector<Event> later = DetectAutoEvents(AutoBlocks(any), rig, nullptr, false);
             CHECK(later.size() == 1 && lax.size() == 1);
             if (later.size() == 1 && lax.size() == 1) CHECK(std::fabs(later[0].time_s - (lax[0].time_s + 0.03)) < 1e-12);
             // Next to Grab blocks: the grab events are the same with or without hand pivots.
             AutoSettings g = Ticked(false, false, false, false, false, true), gp = g;
             gp.type[static_cast<int>(AutoType::HandPivot)].on = true;
-            std::vector<Event> eg = DetectAutoEvents(AutoBlocks(g), rig), egp = DetectAutoEvents(AutoBlocks(gp), rig);
+            std::vector<Event> eg = DetectAutoEvents(AutoBlocks(g), rig, nullptr, false), egp = DetectAutoEvents(AutoBlocks(gp), rig, nullptr, false);
             egp.erase(std::remove_if(egp.begin(), egp.end(), [](const Event& e) { return e.block >= 2; }), egp.end());
             CHECK(SameEvents(eg, egp));
         }
@@ -1275,6 +1275,87 @@ int main()
         ItemRules copy;
         CopyPoolContent(back, copy);
         CHECK(BlocksEqual(copy.blocks, back.blocks));
+    }
+
+    // Story 10-8i: "Is looping" goes into every parameter set (its own analysis, cached apart);
+    // the walk read as a loop gets its left lift-off at the seam (the foot leaves at t = 0 = 4 s),
+    // once, every event in [0, T).
+    {
+        const PhysicsParams d;
+        const PhysicsParams l = AutoPhysicsParams(AutoType::LiftOff, 50.0, true);
+        CHECK(l.looping && !AutoPhysicsParams(AutoType::LiftOff, 50.0, false).looping && !SameAutoAnalysis(l, d));
+        CHECK(SameAutoAnalysis(l, AutoPhysicsParams(AutoType::Step, 50.0, true)));
+        std::vector<Block> blocks = AutoBlocks(Ticked(false, true, false, false));
+        CHECK(Markers(blocks) == (std::vector<std::string>{"Lift L", "Lift R"}));
+        for (const PhysicsParams& p : AutoParamSets(blocks, true)) CHECK(p.looping);
+        for (const PhysicsParams& p : AutoParamSets(blocks, false)) CHECK(!p.looping);
+        const std::vector<BoneTrack> rig = Walk();
+        std::vector<AutoAnalysis>    cache;
+        const std::vector<Event>     off = DetectAutoEvents(blocks, rig, &cache, false);
+        const std::vector<Event>     on = DetectAutoEvents(blocks, rig, &cache, true);
+        CHECK(cache.size() == 2);
+        CHECK(SameEvents(off, DetectAutoEvents(blocks, rig, nullptr, false)) && SameEvents(on, DetectAutoEvents(blocks, rig, nullptr, true)));
+        CHECK(OfBlock(off, 0).size() == 3 && OfBlock(on, 0).size() == 4);
+        CHECK(OfBlock(off, 1).size() == OfBlock(on, 1).size());
+        for (const Event& e : on) CHECK(e.time_s >= 0.0 && e.time_s < 4.0);
+        // The search runs on the item's analysis: Lift L finds its events at loop on as off.
+        std::vector<int> map(static_cast<size_t>(Role::Count), -1);
+        for (int r = 0; r < static_cast<int>(Role::Count); ++r)
+            if (!rig[static_cast<size_t>(r)].pos.empty()) map[static_cast<size_t>(r)] = r;
+        const std::vector<AutoSensResult> res = SearchAutoSensitivity(blocks, rig, {0, 0}, map, true);
+        CHECK(res.size() == 2 && !res[0].searched && !res[1].searched);
+    }
+    // Story 10-8i: a block offset wraps round the loop: the seam lift-off (just before 4 s) with
+    // +20 ms lands near 0.02 s, every event in [0, T); off, it is pushed past the end.
+    {
+        const std::vector<BoneTrack> rig = Walk();
+        std::vector<Block>           blocks = AutoBlocks(Ticked(false, true, false, false));  // Lift L, Lift R
+        for (Block& b : blocks) b.offset_ms = 20.0;
+        const std::vector<Event> on = OfBlock(DetectAutoEvents(blocks, rig, nullptr, true), 0);
+        CHECK(on.size() == 4);
+        for (const Event& e : on) CHECK(e.time_s >= 0.0 && e.time_s < 4.0);
+        if (on.size() == 4) CHECK(on[0].time_s > 0.01 && on[0].time_s < 0.03);
+        const std::vector<Event> off = OfBlock(DetectAutoEvents(blocks, rig, nullptr, false), 0);
+        CHECK(off.size() == 3);
+    }
+    // Story 10-8i: the search runs on the item's analysis. Grab R's only grab crosses the seam
+    // (the hand comes to rest 30 ms before the end, still at rest 210 ms from the start): none
+    // off (searched), one on (not searched); Detect's apply step alike.
+    {
+        const HandFn loop_hand = [](double t) {
+            Vec3d        p{0.3, 1.0, 0.3};
+            const double a = 0.21, b = 1.97, v = 1.5 * 0.87;
+            if (t <= a || t >= b) return p;
+            const double side = (b - a) / 4.0, len = v * side, u = t - a;
+            const int    k = std::min(3, static_cast<int>(u / side));
+            const double d = (u - k * side) * v;
+            const double corner[4][2] = {{0.0, 0.0}, {0.0, len}, {len, len}, {len, 0.0}};
+            const double dir[4][2] = {{0.0, 1.0}, {1.0, 0.0}, {0.0, -1.0}, {-1.0, 0.0}};
+            p.y += corner[k][0] + d * dir[k][0];
+            p.z += corner[k][1] + d * dir[k][1];
+            return p;
+        };
+        Options o;
+        o.dur = 2.0;
+        o.hand[1] = loop_hand;
+        const std::vector<BoneTrack> rig = Rig(Planted(-0.1, 0.0), Planted(0.1, 0.2), o);
+        std::vector<int>             map(static_cast<size_t>(Role::Count), -1);
+        for (int r = 0; r < static_cast<int>(Role::Count); ++r)
+            if (!rig[static_cast<size_t>(r)].pos.empty()) map[static_cast<size_t>(r)] = r;
+        std::vector<Block> blocks = AutoBlocks(Ticked(false, false, false, false, false, true));  // Grab L, Grab R
+        CHECK(Markers(blocks) == (std::vector<std::string>{"Grab L", "Grab R"}));
+        CHECK(OfBlock(DetectAutoEvents(blocks, rig, nullptr, false), 1).empty());
+        CHECK(OfBlock(DetectAutoEvents(blocks, rig, nullptr, true), 1).size() == 1);
+        const std::vector<AutoSensResult> off = SearchAutoSensitivity(blocks, rig, {0, 0}, map, false);
+        const std::vector<AutoSensResult> on = SearchAutoSensitivity(blocks, rig, {0, 0}, map, true);
+        CHECK(off.size() == 2 && on.size() == 2);
+        if (off.size() == 2 && on.size() == 2) CHECK(off[1].searched && !on[1].searched);
+        std::vector<Block>          a = blocks;
+        std::vector<AutoSensResult> ar;
+        CHECK(!ApplyAutoSensSearch(a, rig, map, &ar, nullptr, true) && BlocksEqual(a, blocks));
+        CHECK(ar.size() == 2 && !ar[1].searched);
+        ApplyAutoSensSearch(a, rig, map, &ar, nullptr, false);
+        CHECK(ar.size() == 2 && ar[1].searched);
     }
 
     if (g_fails) std::printf("%d check(s) failed\n", g_fails);

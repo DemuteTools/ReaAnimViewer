@@ -30,6 +30,7 @@
 //   (10-4b: applied/preview gain `item={GUID}` = the owner item; pmarker/ppmarker gain
 //    `c=<clip s> color=#RRGGBB name=<free text>`; `guid=` empty = hidden by the mirror)
 //   pool id={...}                                    (10-6: right after the header, only once set)
+//   clip loop=1                                      (10-8i: the clip's settings, after `analyse`)
 //
 // A preset file (.ravpreset) is the same grammar under "RAVPRESET 1": a `preset` line
 // (no `kept`), optional `options` / `analyse`, then its blocks (no copy/end/event).
@@ -84,6 +85,11 @@
 //     items of a project that play the same file with the same pool id (absent = the file's
 //     default pool) share one tagging: the content (CopyPoolContent). The rest of the record is
 //     each item's own bookkeeping.
+//   - story 10-8i: `clip loop=1` right after the `analyse` line = the item's clip settings
+//     (ClipSettings): "Is looping" on. Written only while looping is on or the line carries kept
+//     text (unknown fields or lines; absent = off), so older records write back byte-identical,
+//     an unticked loop leaves no line behind, and an older RAV keeps it as an unknown line. Pool content (pooled copies
+//     share it: it describes the animation); presets never carry it.
 //
 // In a parsed record, SignalSpec bones / ref_bones hold bone-reference ids (see
 // BoneRefId), not track indices: BindBoneRefs turns them into skeleton bone indices.
@@ -287,11 +293,19 @@ struct AppliedInfo {
     KeptText    kept;
 };
 
+// Story 10-8i: what the item's clip is (its `clip` line).
+struct ClipSettings {
+    bool     has_line = false;  // the record had a `clip` line (read; the write does not use it)
+    bool     loop = false;      // "Is looping": auto detection reads the motion as a cycle
+    KeptText kept;              // its `clip` line
+};
+
 struct ItemRules {
     int                         format_version = 1;  // the version read (kept on write), at least 1
     std::string                 header_rest;         // the header line after the version, as written
     DetectOptions               options;
     AnalyseOptions              analyse;
+    ClipSettings                clip;  // 10-8i
     bool                        has_preset = false;
     PresetCopy                  preset_copy;
     std::vector<Block>          blocks;  // the item's rules (roles / bone keys)
@@ -358,7 +372,7 @@ bool AnalyseEqual(const AnalyseOptions& a, const AnalyseOptions& b);
 
 // ---- 10-6: pooled copies ---------------------------------------------------------------
 //
-// The content a pool shares: `options`, `analyse`, `has_preset` + `preset_copy`, `blocks`,
+// The content a pool shares: `options`, `analyse`, `clip` (10-8i), `has_preset` + `preset_copy`, `blocks`,
 // `events` (clip seconds), each with the text kept on its lines. Everything else is the item's
 // own: the format version and header, the pool line, `applied` / `previewed`, the marker refs
 // (and so the owner), the kept head and tail lines.

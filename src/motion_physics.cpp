@@ -652,7 +652,10 @@ std::vector<BoneTrack> PhysicsRoleTracks(const std::vector<int>& bone_of_role,
     return out;
 }
 
-PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& rt, const PhysicsParams& p)
+namespace {
+
+// The analysis of one track as it is (AnalyseMotion without p.looping).
+PhysicsAnalysis AnalyseTrack(const std::vector<BoneTrack>& rt, const PhysicsParams& p)
 {
     PhysicsAnalysis a;
     auto track = [&](Role r) -> const BoneTrack* {
@@ -1011,6 +1014,97 @@ PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& rt, const PhysicsPar
         h.pivots = FindHandPivots(pt, deg, h.heading_rate_dps, h.heading_valid, static_cast<int>(n), rate, p);
     }
     a.ok = true;
+    a.window_samples = a.samples;
+    return a;
+}
+
+// A looping clip unrolled (story 10-8i): three cycles of period m = n - 1 samples (the last sample
+// is the seam, the next cycle's first). Per bone, D = pos[n - 1] - pos[0] (a rigid shift per
+// cycle, 0 on a closed loop): sample k * m + j (k = -1, 0, 1; j in [0, m)) = pos[j] + k * D, then
+// pos[n - 1] + D. Rotations repeat unshifted. Empty tracks stay empty; false when the tracks
+// cannot be unrolled (left to AnalyseTrack's own checks).
+bool UnrollCycle(const std::vector<BoneTrack>& rt, std::vector<BoneTrack>& out, size_t& n_out)
+{
+    size_t n = 0;
+    for (const BoneTrack& t : rt)
+        if (!t.pos.empty()) {
+            if (n && t.pos.size() != n) return false;
+            n = t.pos.size();
+        }
+    if (n < 3) return false;
+    const size_t m = n - 1;
+    out.assign(rt.size(), BoneTrack{});
+    for (size_t r = 0; r < rt.size(); ++r) {
+        const BoneTrack& t = rt[r];
+        BoneTrack&       u = out[r];
+        u.rate_hz = t.rate_hz;
+        if (t.pos.empty()) continue;
+        const Vec3d d{t.pos[n - 1].x - t.pos[0].x, t.pos[n - 1].y - t.pos[0].y, t.pos[n - 1].z - t.pos[0].z};
+        u.pos.reserve(3 * m + 1);
+        for (int k = -1; k <= 1; ++k)
+            for (size_t j = 0; j < m; ++j)
+                u.pos.push_back(Vec3d{t.pos[j].x + k * d.x, t.pos[j].y + k * d.y, t.pos[j].z + k * d.z});
+        u.pos.push_back(Vec3d{t.pos[n - 1].x + d.x, t.pos[n - 1].y + d.y, t.pos[n - 1].z + d.z});
+        auto unroll_rot = [&](const std::vector<Quatd>& q, std::vector<Quatd>& o) {
+            if (q.size() != n) return;  // ignored by the analysis anyway
+            o.reserve(3 * m + 1);
+            for (int k = 0; k < 3; ++k) o.insert(o.end(), q.begin(), q.begin() + static_cast<std::ptrdiff_t>(m));
+            o.push_back(q[n - 1]);
+        };
+        unroll_rot(t.rot_world, u.rot_world);
+        unroll_rot(t.rot_parent, u.rot_parent);
+    }
+    n_out = n;
+    return true;
+}
+
+// An analysed time (s) as a clip time: false when it is outside the clip's window. Looping: the
+// middle cycle, mapped to [0, T) (T = the seam; an event at T is its copy at 0, kept there).
+bool ClipTime(const PhysicsAnalysis& a, double t, double* out)
+{
+    if (!a.looping) {
+        *out = t;
+        return true;
+    }
+    constexpr double kEps = 1e-9;
+    const double     c = t - static_cast<double>(a.window_first) / a.rate_hz;
+    const double     T = static_cast<double>(a.window_samples - 1) / a.rate_hz;
+    if (c < -kEps || c >= T - kEps) return false;
+    *out = std::max(0.0, c);
+    return true;
+}
+
+// Maps a list of events (time_s, start_s, end_s) to clip time, dropping those outside the window.
+void ToClipTime(const PhysicsAnalysis& a, std::vector<PhysicsEvent>& ev)
+{
+    if (!a.looping) return;
+    std::vector<PhysicsEvent> out;
+    out.reserve(ev.size());
+    for (PhysicsEvent e : ev) {
+        double t;
+        if (!ClipTime(a, e.time_s, &t)) continue;
+        const double shift = e.time_s - t;
+        e.time_s = t;
+        e.start_s -= shift;
+        e.end_s -= shift;
+        out.push_back(e);
+    }
+    ev = std::move(out);
+}
+
+}  // namespace
+
+PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& rt, const PhysicsParams& p)
+{
+    if (!p.looping) return AnalyseTrack(rt, p);
+    std::vector<BoneTrack> cyc;
+    size_t                 n = 0;
+    if (!UnrollCycle(rt, cyc, n)) return AnalyseTrack(rt, p);
+    PhysicsAnalysis a = AnalyseTrack(cyc, p);
+    if (!a.ok) return a;
+    a.looping = true;
+    a.window_first = n - 1;
+    a.window_samples = n;
     return a;
 }
 
@@ -1096,6 +1190,7 @@ std::vector<PhysicsEvent> FootEvents(const PhysicsAnalysis& a, const PhysicsPara
                 ev.push_back(e);
             }
     }
+    ToClipTime(a, ev);
     std::stable_sort(ev.begin(), ev.end(), [](const PhysicsEvent& x, const PhysicsEvent& y) {
         return std::make_tuple(std::llround(x.time_s * 1e6), x.side, static_cast<int>(x.kind), x.part) <
                std::make_tuple(std::llround(y.time_s * 1e6), y.side, static_cast<int>(y.kind), y.part);
@@ -1150,6 +1245,7 @@ std::vector<PhysicsEvent> HandEvents(const PhysicsAnalysis& a, const PhysicsPara
             ev.push_back(e);
         }
     }
+    ToClipTime(a, ev);
     std::stable_sort(ev.begin(), ev.end(), [](const PhysicsEvent& x, const PhysicsEvent& y) {
         return std::make_tuple(std::llround(x.time_s * 1e6), x.side, static_cast<int>(x.kind)) <
                std::make_tuple(std::llround(y.time_s * 1e6), y.side, static_cast<int>(y.kind));
@@ -1164,7 +1260,10 @@ std::vector<double> PartStepTimes(const PhysicsAnalysis& a, char side, int part,
     const FootTrack& f = a.foot[side == 'R' ? 1 : 0];
     if (!f.part[part].present) return t;
     for (const PartContact& c : f.part[part].contacts)
-        if (c.start > 0) t.push_back(c.step_s[static_cast<int>(timing)] + offset_s);
+        if (c.start > 0) {
+            double ct;
+            if (ClipTime(a, c.step_s[static_cast<int>(timing)] + offset_s, &ct)) t.push_back(ct);
+        }
     std::sort(t.begin(), t.end());
     return t;
 }

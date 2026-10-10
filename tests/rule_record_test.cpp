@@ -201,6 +201,9 @@ int main()
         CHECK(p.blocks[0].conditions[1].kept.lines == std::vector<std::string>{"note free text from the future"});
         CHECK(p.blocks[1].kept.lines == std::vector<std::string>{"lane 2"});
         CHECK(p.tail.size() == 2 && p.tail[0].after_events == 1 && p.tail[1].after_events == 2);
+        // 10-8i: the clip line, its unknown field and the unknown line after it.
+        CHECK(p.clip.has_line && p.clip.loop && p.clip.kept.fields.size() == 2 && p.clip.kept.fields[1].key == "seam");
+        CHECK(p.clip.kept.lines == std::vector<std::string>{"clip note from the future"});
         // A role key this version's record did not know is kept (and reported missing when
         // bound), never dropped. left_hand has been built-in since: it reads and binds the same.
         const std::vector<int>& bones = p.blocks[0].conditions[0].signal.bones;
@@ -1837,6 +1840,50 @@ int main()
         CHECK(p.events.size() == 4 && p.has_applied && p.pmarkers.size() == 3);
         CHECK(!p.has_previewed && p.ptmarkers.empty() && p.ppmarkers.empty());
         CHECK(!p.has_pool);  // 10-6
+    }
+
+
+    // Story 10-8i: the clip line (`clip loop=1`).
+    {
+        const std::string base = SerializeItemRules(FullRecord());
+        ItemRules         a;
+        CHECK(ParseItemRules(base, &a) && !a.clip.has_line && !a.clip.loop);
+        CHECK(base.find("\nclip") == std::string::npos);  // absent: off, never written
+        CHECK(SerializeItemRules(a) == base);
+        // On: written right after `analyse`, read back on.
+        a.clip.loop = true;
+        const std::string on = SerializeItemRules(a);
+        const size_t      an = on.find("\nanalyse ");
+        CHECK(an != std::string::npos && on.compare(on.find('\n', an + 1), 13, "\nclip loop=1\n") == 0);
+        ItemRules b;
+        CHECK(ParseItemRules(on, &b) && b.clip.has_line && b.clip.loop && SerializeItemRules(b) == on);
+        // Off again: no line left, the record as before; a record of nothing but an unticked loop
+        // is an empty pool content.
+        b.clip.loop = false;
+        const std::string off = SerializeItemRules(b);
+        CHECK(off.find("\nclip") == std::string::npos && off == base);
+        ItemRules c;
+        CHECK(ParseItemRules(off, &c) && !c.clip.loop && SerializeItemRules(c) == off);
+        ItemRules only;
+        CHECK(ParseItemRules("RAVRULES 1\nclip loop=1\n", &only) && only.clip.loop);
+        CHECK(!PoolContentEqual(only, ItemRules{}));
+        only.clip.loop = false;
+        CHECK(SerializeItemRules(only).find("clip") == std::string::npos && PoolContentEqual(only, ItemRules{}));
+        // A value that does not read is kept as written (off); a second clip line is kept text.
+        const std::string odd = "RAVRULES 1\nclip loop=yes lane=2\nclip again\n";
+        ItemRules         d;
+        CHECK(ParseItemRules(odd, &d) && !d.clip.loop && d.clip.has_line && SerializeItemRules(d).find("\nclip loop=yes lane=2\nclip again\n") != std::string::npos);
+        d.clip.loop = true;  // an edit wins
+        CHECK(SerializeItemRules(d).find("\nclip loop=1 lane=2\nclip again\n") != std::string::npos);
+        CHECK(HasKeptText(d));
+        // Pool content: a pooled copy shares it.
+        ItemRules from = FullRecord(), to = FullRecord();
+        from.clip.loop = true;
+        CHECK(!PoolContentEqual(from, to));
+        CopyPoolContent(from, to);
+        CHECK(to.clip.loop && PoolContentEqual(from, to));
+        ItemRules back;
+        CHECK(ParseItemRules(SerializeItemRules(to), &back) && back.clip.loop);
     }
 
     if (g_fails) {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //
 // Host test of the motion physics (src/motion_physics.h, Epic 10, spike 10-8a; hands: story
-// 10-8c): the specs' matrix rows on synthetic feet and hands. No REAPER, no Windows: any C++17
+// 10-8c; looping: 10-8i): the specs' matrix rows on synthetic feet and hands. No REAPER, no Windows: any C++17
 // compiler.
 //   cmake -S tests -B build-tests && cmake --build build-tests && ctest --test-dir build-tests
 
@@ -348,6 +348,36 @@ HandFn HandMove(double x, double speed, std::vector<std::pair<double, double>> r
 HandFn HandStill(double x)
 {
     return [x](double) { return Vec3d{x, 0.8, 0.0}; };
+}
+
+// Story 10-8i: a looping hand. At rest at (x, 1.0, 0.3) over [0, rest_a) and [rest_b, period],
+// in between it runs once round a square (four sides of equal time, in the vertical plane
+// facing it) at `speed` m/s, back where it started: the clip is one closed cycle.
+HandFn HandLoop(double x, double speed, double rest_a, double rest_b)
+{
+    return [=](double t) {
+        Vec3d p{x, 1.0, 0.3};
+        if (t <= rest_a || t >= rest_b) return p;
+        const double side = (rest_b - rest_a) / 4.0, len = speed * side;
+        const double u = t - rest_a;
+        const int    k = std::min(3, static_cast<int>(u / side));
+        const double d = (u - k * side) * speed;
+        const double corner[4][2] = {{0.0, 0.0}, {0.0, len}, {len, len}, {len, 0.0}};  // (up, forward)
+        const double dir[4][2] = {{0.0, 1.0}, {1.0, 0.0}, {0.0, -1.0}, {-1.0, 0.0}};
+        p.y += corner[k][0] + d * dir[k][0];
+        p.z += corner[k][1] + d * dir[k][1];
+        return p;
+    };
+}
+
+// Every track shifted by `d` times t / dur (a slow rigid drift: the end pose = the start pose + d).
+void Drift(std::vector<BoneTrack>& t, const Vec3d& d, double dur)
+{
+    for (BoneTrack& b : t)
+        for (size_t i = 0; i < b.pos.size(); ++i) {
+            const double f = (i / b.rate_hz) / dur;
+            b.pos[i] = Add(b.pos[i], Vec3d{d.x * f, d.y * f, d.z * f});
+        }
 }
 
 }  // namespace
@@ -1275,6 +1305,136 @@ int main()
         CHECK(PhysicsSummary(a, {e}) == PhysicsSummary(a, {}));
         CHECK(PhysicsParams{}.hand_pivot_rate_dps == PhysicsParams{}.pivot_rate_dps &&
               PhysicsParams{}.hand_pivot_min_deg == PhysicsParams{}.pivot_min_deg && PhysicsParams{}.hand_pivot_after_grab);
+    }
+
+    // ---- Looping clips (story 10-8i) ---------------------------------------------------------
+    {
+        PhysicsParams loop;
+        loop.looping = true;
+        // Seam grab: the right hand comes to rest 30 ms before the end (too short to pay the
+        // switch cost) and is still at rest for 210 ms from the start. Off: the end rest is no
+        // contact (no grab); the start's, cut by the clip start, gives its release. On: one
+        // contact across the seam, read whole: its grab near 1.97 s and its release near 0.21 s.
+        // The feet are planted the whole cycle: no foot event (no start / end waiver).
+        Options o;
+        o.dur = 2.0;
+        std::vector<BoneTrack> t = Rig(Planted(-0.1, 0.0), Planted(0.1, 0.0), o);
+        AddHands(t, HandStill(-0.3), HandLoop(0.3, 1.5 * kLeg, 0.21, 1.97), o);
+        const PhysicsAnalysis off = AnalyseMotion(t);
+        CHECK(off.ok && !off.looping && off.window_first == 0 && off.window_samples == off.samples);
+        const std::vector<PhysicsEvent> eoff = HandEvents(off);
+        CHECK(Of(eoff, PhysicsKind::Grab, 'R').empty());
+        CHECK(StepsNear(Of(eoff, PhysicsKind::Release, 'R'), {0.21}, 0.02));
+        const PhysicsAnalysis on = AnalyseMotion(t, loop);
+        const size_t          n = t[static_cast<size_t>(Role::RightHand)].pos.size();
+        CHECK(on.ok && on.looping && on.window_first == n - 1 && on.window_samples == n && on.samples == 3 * (n - 1) + 1);
+        CHECK(std::fabs(on.leg_length - off.leg_length) < 1e-9);
+        const std::vector<PhysicsEvent> eon = HandEvents(on, loop);
+        CHECK(StepsNear(Of(eon, PhysicsKind::Grab, 'R'), {1.97}, 0.02));
+        CHECK(StepsNear(Of(eon, PhysicsKind::Release, 'R'), {0.21}, 0.02));
+        CHECK(eon.size() == 2);
+        CHECK(FootEvents(on, loop).empty() && FootEvents(off).empty());
+        const double T = (n - 1) / o.rate;
+        for (const PhysicsEvent& e : eon) CHECK(e.time_s >= 0.0 && e.time_s < T);
+
+        // Rigid end-pose shift: the same cycle drifting 2.6 cm up and 3 cm forward (the end pose =
+        // the start pose shifted, an in-place climb's rung): no step, lift-off or contact artefact
+        // at the seam, the same hand events.
+        std::vector<BoneTrack> dr = t;
+        Drift(dr, Vec3d{0.0, 0.026, 0.03}, o.dur);
+        const PhysicsAnalysis shifted = AnalyseMotion(dr, loop);
+        CHECK(shifted.ok);
+        CHECK(FootEvents(shifted, loop).empty());
+        const std::vector<PhysicsEvent> esh = HandEvents(shifted, loop);
+        CHECK(esh.size() == eon.size());
+        for (size_t i = 0; i < esh.size() && i < eon.size(); ++i)
+            CHECK(esh[i].kind == eon[i].kind && std::fabs(esh[i].time_s - eon[i].time_s) < 0.005);
+        for (int s = 0; s < 2; ++s)
+            for (int q = 0; q < kFootPartCount; ++q) CHECK(shifted.foot[s].part[q].contacts.size() == 1);  // whole track
+    }
+    {
+        // The walk read as a loop (4 cycles of 1 s, the end pose 2.4 m ahead): the same steps; the
+        // left foot's lift-off at the seam (it leaves at t = 0) is found once; every event in
+        // [0, T).
+        PhysicsParams loop = SpeedTiming();
+        loop.looping = true;
+        const std::vector<BoneTrack>    t = Rig(walk_l, walk_r, Options{});
+        const PhysicsAnalysis           a = AnalyseMotion(t, loop);
+        const std::vector<PhysicsEvent> ev = FootEvents(a, loop);
+        CHECK(a.ok);
+        for (int q = 0; q < kFootPartCount; ++q) {
+            CHECK(StepsNear(Of(ev, PhysicsKind::Step, 'L', q), kLeft, 0.025));
+            CHECK(StepsNear(Of(ev, PhysicsKind::Step, 'R', q), kRight, 0.025));
+            std::vector<double> pt;
+            for (const PhysicsEvent& e : Of(ev, PhysicsKind::Step, 'L', q)) pt.push_back(e.time_s);
+            CHECK(pt == PartStepTimes(a, 'L', q, StepTiming::Speed, 0.0));
+        }
+        // The seam lift-off (its speed crosses just before the seam here): once, at the seam.
+        const std::vector<PhysicsEvent> lifts = Of(ev, PhysicsKind::LiftOff, 'L');
+        CHECK(lifts.size() == 4);
+        if (lifts.size() == 4) {
+            CHECK(StepsNear({lifts[0], lifts[1], lifts[2]}, {1.0, 2.0, 3.0}, 0.025));
+            CHECK(lifts[3].time_s > 3.975);
+        }
+        CHECK(StepsNear(Of(ev, PhysicsKind::LiftOff, 'R'), {0.5, 1.5, 2.5, 3.5}, 0.025));
+        for (const PhysicsEvent& e : ev) CHECK(e.time_s >= 0.0 && e.time_s < 4.0);
+        // Off: as before (no lift-off at the clip start).
+        CHECK(StepsNear(Of(FootEvents(AnalyseMotion(t), loop), PhysicsKind::LiftOff, 'L'), {1.0, 2.0, 3.0}, 0.025));
+    }
+    {
+        // Rotations unrolled with the positions: a hand pivot in the middle of the clip (the hand's
+        // rotation track) is the same with and without looping, and a toe rig without a toe end
+        // keeps its rotation heading source.
+        PhysicsParams loop;
+        loop.looping = true;
+        Options o;
+        o.dur = 2.5;
+        std::vector<BoneTrack> t = Rig(walk_l, walk_r, o);
+        AddHands(t, nullptr, HandMove(0.3, 1.5 * kLeg, {{1.0, 1.6}}), o, nullptr, TurnYaw(1.175, 0.25, 90.0));
+        const PhysicsAnalysis off = AnalyseMotion(t), on = AnalyseMotion(t, loop);
+        CHECK(off.hand[1].has_heading && on.hand[1].has_heading && on.hand[1].heading_valid.size() == on.samples);
+        const std::vector<PhysicsEvent> poff = Of(HandEvents(off), PhysicsKind::HandPivot, 'R');
+        const std::vector<PhysicsEvent> pon = Of(HandEvents(on, loop), PhysicsKind::HandPivot, 'R');
+        CHECK(poff.size() == 1 && pon.size() == 1);
+        if (poff.size() == 1 && pon.size() == 1)
+            CHECK(std::fabs(pon[0].time_s - poff[0].time_s) < 0.005 && std::fabs(pon[0].strength - poff[0].strength) < 1.0);
+        Options r;
+        r.rot = true;
+        r.tip = false;
+        const std::vector<BoneTrack> toes = Rig(walk_l, walk_r, r);
+        const PhysicsAnalysis        roff = AnalyseMotion(toes), ron = AnalyseMotion(toes, loop);
+        for (int s = 0; s < 2; ++s) {
+            CHECK(roff.foot[s].heading_source == HeadingSource::Rotation);
+            CHECK(ron.foot[s].heading_source == HeadingSource::Rotation && ron.foot[s].heading_valid.size() == ron.samples);
+        }
+    }
+    {
+        // Seam event: a grab exactly on the seam (its copies at the middle cycle's start and the
+        // third cycle's start) is one event, at 0.
+        PhysicsAnalysis a;
+        a.ok = true;
+        a.looping = true;
+        a.rate_hz = 240.0;
+        a.window_first = 240;
+        a.window_samples = 241;
+        a.samples = 721;
+        a.leg_length = 0.87;
+        PartTrack& pt = a.hand[1].part;
+        a.hand[1].side = 'R';
+        pt.present = true;
+        for (int k = 1; k <= 2; ++k) {
+            PartContact c;
+            c.start = 240 * k;
+            c.end = 240 * k + 60;
+            c.approach = c.departure = 2.0;
+            for (double& s : c.step_s) s = c.start / 240.0;
+            c.lift_s = c.end / 240.0;
+            pt.contacts.push_back(c);
+        }
+        const std::vector<PhysicsEvent> ev = HandEvents(a);
+        CHECK(Of(ev, PhysicsKind::Grab).size() == 1 && Of(ev, PhysicsKind::Release).size() == 1);
+        if (!Of(ev, PhysicsKind::Grab).empty()) CHECK(Of(ev, PhysicsKind::Grab)[0].time_s == 0.0);
+        CHECK(StepsNear(Of(ev, PhysicsKind::Release), {0.25}, 1e-9));
     }
 
     if (g_fails == 0) std::printf("motion_physics: all tests passed\n");

@@ -4023,7 +4023,17 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
             if (any_shown) ImGui::SameLine();
         }
         if (any_shown) {
-            ImGui::SetCursorPosX(x_sens);
+            // Story 10-8i: "Is looping" on the left of the captions (after the +): one undo point,
+            // the events read again at once.
+            bool loop = rules.clip.loop;
+            if (ImGui::Checkbox("Is looping##autoloop", &loop))
+                Later([loop, item = m.item]() { TaggingSetLooping(loop, item); });
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                ImGui::SetTooltip("The animation loops: its end continues into its start.\nAuto detection reads the "
+                                  "motion as a cycle, so a contact, step, grab or release\nthat crosses the loop point "
+                                  "is found whole. Saved on the item.");
+            ImGui::SameLine();
+            ImGui::SetCursorPosX(std::max(x_sens, ImGui::GetCursorPosX()));
             ImGui::AlignTextToFramePadding();
             ImGui::TextDisabled("Sensitivity");
             ImGui::SameLine(x_off);

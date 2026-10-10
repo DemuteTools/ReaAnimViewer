@@ -194,6 +194,12 @@ bool TaggingAnalyse();
 // set), and the model's auto_searched / auto_none are updated. Written also when only a
 // sensitivity was raised.
 bool TaggingDetectAuto(const AutoSettings& settings);
+// Story 10-8i -- "Is looping" in the Auto detection section: the item's ClipSettings::loop
+// (rule_record.h) set to `on`, one undo point ("RAV: Set looping"); the auto events are read
+// again at once (no Detect needed). Nothing is written when it already is `on`, or when
+// `for_item` is no longer the current item. A change clears
+// the model's auto_searched / auto_none (they were read on the other analysis).
+bool TaggingSetLooping(bool on, MediaItem* for_item = nullptr);
 // Story 10-8h: an auto block's key in TaggingModel::auto_searched / auto_none, and whether the
 // block is in that map at its current sensitivity.
 std::string AutoSearchKey(const Block& b);

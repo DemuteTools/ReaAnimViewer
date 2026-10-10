@@ -978,6 +978,25 @@ Set SetPool(std::string& id, const std::string& k, const std::string& v)
     return Set::Unknown;
 }
 
+// 10-8i: the clip settings (`loop=1` only while on).
+Fields ClipFields(const ClipSettings& c)
+{
+    Fields f;
+    if (c.loop) f.push_back({"loop", "1"});
+    return f;
+}
+
+Set SetClip(ClipSettings& c, const std::string& k, const std::string& v)
+{
+    if (k == "loop") {
+        if (v == "1") c.loop = true;
+        else if (v == "0") c.loop = false;
+        else return Set::Bad;
+        return Set::Ok;
+    }
+    return Set::Unknown;
+}
+
 Set SetNothing(const std::string&, const std::string&)
 {
     return Set::Unknown;
@@ -1213,7 +1232,7 @@ bool ParseCore(const std::string& text_in, const char* magic, Target t)
     // Where an unknown line goes: the object whose line it followed. Resolved when used
     // (the vectors grow).
     enum class At { Head, Options, Analyse, Preset, Copy, CopyOptions, CopyAnalyse, End, Block, Cond, Strength, Tail,
-                    Applied, TMarker, PMarker, Previewed, PTMarker, PPMarker, Pool };
+                    Applied, TMarker, PMarker, Previewed, PTMarker, PPMarker, Pool, Clip };
     At   at = At::Head;
     bool cur_in_copy = false;  // the current block's list
     int  cur_block = -1;
@@ -1222,6 +1241,7 @@ bool ParseCore(const std::string& text_in, const char* magic, Target t)
     bool seen_applied = false;
     bool seen_previewed = false;
     bool seen_pool = false;
+    bool seen_clip = false;
 
     auto blocks_of = [&](bool in_c) -> std::vector<Block>& { return in_c ? copy->blocks : own_blocks; };
     auto anchor = [&]() -> KeptText* {
@@ -1245,6 +1265,7 @@ bool ParseCore(const std::string& text_in, const char* magic, Target t)
         case At::PTMarker: return &t.item->ptmarkers.back().kept;
         case At::PPMarker: return &t.item->ppmarkers.back().kept;
         case At::Pool: return &t.item->pool_kept;
+        case At::Clip: return &t.item->clip.kept;
         }
         return &head;
     };
@@ -1386,6 +1407,16 @@ bool ParseCore(const std::string& text_in, const char* magic, Target t)
             ReadFields(word, rest, has_rest, t.item->pool_kept,
                        [&](const std::string& k, const std::string& v) { return SetPool(id, k, v); },
                        [&] { return PoolFields(id); });
+        } else if (item && word == "clip" && !in_copy && !seen_clip) {
+            // 10-8i: the clip settings (the first `clip` line; a second one is kept as unknown text).
+            seen_clip = true;
+            leave_block();
+            at = At::Clip;
+            ClipSettings& c = t.item->clip;
+            c.has_line = true;
+            ReadFields(word, rest, has_rest, c.kept,
+                       [&](const std::string& k, const std::string& v) { return SetClip(c, k, v); },
+                       [&] { return ClipFields(c); });
         } else if (KeptText* k = anchor()) {
             k->lines.push_back(line);
         } else {
@@ -1446,6 +1477,9 @@ std::string SerializeItemRules(const ItemRules& r)
     if (r.has_pool) WriteLine(out, "pool", PoolFields(r.pool_id), &r.pool_kept);
     WriteLine(out, "options", OptionsFields(r.options), &r.options.kept);
     WriteLine(out, "analyse", AnalyseFields(r.analyse), &r.analyse.kept);
+    // 10-8i: only while looping is on or the line carries kept text (unknown fields or lines), so
+    // a record without it writes back as read and an unticked loop leaves no content behind.
+    if (r.clip.loop || !r.clip.kept.empty()) WriteLine(out, "clip", ClipFields(r.clip), &r.clip.kept);
     if (r.has_preset) {
         const PresetCopy& c = r.preset_copy;
         PresetHeader      h;
@@ -1524,6 +1558,7 @@ bool HasKeptText(const ItemRules& r)
     for (const ProjectMarkerRef& m : r.ppmarkers)
         if (!m.kept.empty()) story4 = true;
     if (!r.pool_kept.empty()) story4 = true;  // 10-6
+    if (!r.clip.kept.empty()) story4 = true;  // 10-8i
     return story4 || !r.header_rest.empty() || !r.head.empty() || !r.tail.empty() || !r.options.kept.empty() || !r.analyse.kept.empty() ||
            BlocksKeep(r.blocks) ||
            (r.has_preset && (!c.kept.empty() || !c.copy_kept.empty() || !c.end_kept.empty() ||
@@ -1611,6 +1646,7 @@ void CopyPoolContent(const ItemRules& from, ItemRules& to)
     if (&from == &to) return;
     to.options = from.options;
     to.analyse = from.analyse;
+    to.clip = from.clip;  // 10-8i: it describes the animation
     to.has_preset = from.has_preset;
     to.preset_copy = from.preset_copy;
     to.blocks = from.blocks;

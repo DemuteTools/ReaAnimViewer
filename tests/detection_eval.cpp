@@ -519,6 +519,7 @@ int RunPhysics(const std::vector<std::string>& files, const PhysicsParams& base)
                 "switch cost %g, smoothing %g ms, no Analyse; match window +-%g ms, an edit = missed, extra or off by "
                 "> %g ms\n",
                 base.contact_speed, base.switch_cost, base.smooth_ms, kMatchWindowS * 1000.0, kGateMaxErrS * 1000.0);
+    if (base.looping) std::printf("Looping (--loop): every clip read as a cycle (story 10-8i)\n");
     std::printf("Step timing definitions (one offset per part, leave-one-clip-out):\n");
     for (int d = 0; d < kStepTimingCount; ++d)
         std::printf("  %-8s %s\n", StepTimingName(static_cast<StepTiming>(d)), StepTimingHint(static_cast<StepTiming>(d)));
@@ -841,6 +842,9 @@ int main(int argc, char** argv)
             single = true;
         } else if (a == "--physics") {
             physics = true;
+        } else if (a == "--loop") {
+            pp.looping = true;  // story 10-8i: every file read as a looping clip
+            physics_only = true;
         } else if (key == "--contact" || key == "--switch") {
             if (!ToDouble(val, &ms) || !std::isfinite(ms) || !(ms > 0.0)) {
                 std::fprintf(stderr, "detection_eval: bad option %s\n", a.c_str());
@@ -873,7 +877,7 @@ int main(int argc, char** argv)
         std::fprintf(stderr, "usage: detection_eval [--param=value ...] [--json] file.csv...\n"
                              "       detection_eval --single [--axis=<axis>] [--window=<ms>] [--approach=<ms>] "
                              "[--param=value ...] file.csv...\n"
-                             "       detection_eval --physics [--contact=<leg/s>] [--switch=<cost>] file.csv...\n");
+                             "       detection_eval --physics [--contact=<leg/s>] [--switch=<cost>] [--loop] file.csv...\n");
         return 2;
     }
     if (single_only && !single) {
@@ -885,7 +889,7 @@ int main(int argc, char** argv)
         return 2;
     }
     if (physics_only && !physics) {
-        std::fprintf(stderr, "detection_eval: --contact and --switch need --physics\n");
+        std::fprintf(stderr, "detection_eval: --contact, --switch and --loop need --physics\n");
         return 2;
     }
     if (physics && (json || single || footsteps_knob)) {

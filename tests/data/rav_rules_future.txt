@@ -1,6 +1,8 @@
 RAVRULES 2
 options sensitivity=0.1 edge_ms=5 smooth_ms=8 jitter_ms=3
 analyse floor_pct=2 pos_frac=0.4 speed_pct=30 margin_ratio=0.5 onset_frac=0.3 per_bone_floor=1
+clip loop=1 seam=hold
+clip note from the future
 preset id=factory/footsteps version=1 kept=0 name=Footsteps
 copy
 options sensitivity=0 edge_ms=0 smooth_ms=8

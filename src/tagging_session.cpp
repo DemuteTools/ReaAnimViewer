@@ -308,14 +308,15 @@ bool EnsureRoleTracks()
 }
 
 // The current item's auto events for `blocks` (the session's role tracks, sampled when the file
-// or the mapping changed); m.auto_error says why they found nothing.
-std::vector<Event> SessionAutoEvents(const std::vector<Block>& blocks)
+// or the mapping changed); m.auto_error says why they found nothing. `looping`: the item's "Is
+// looping" (story 10-8i).
+std::vector<Event> SessionAutoEvents(const std::vector<Block>& blocks, bool looping)
 {
     TaggingModel& m = g.model;
     m.auto_error.clear();
     if (!HasActiveAutoBlocks(blocks) || !EnsureRoleTracks()) return {};
-    std::vector<Event> ev = DetectAutoEvents(blocks, g.role_tracks, &g.auto_cache);
-    for (const PhysicsParams& p : AutoParamSets(blocks))
+    std::vector<Event> ev = DetectAutoEvents(blocks, g.role_tracks, &g.auto_cache, looping);
+    for (const PhysicsParams& p : AutoParamSets(blocks, looping))
         for (const AutoAnalysis& a : g.auto_cache)
             if (SameAutoAnalysis(a.params, p) && !a.analysis.ok && m.auto_error.empty()) m.auto_error = a.analysis.error;
     return ev;
@@ -352,7 +353,7 @@ void RunDetection()
     if (!BindAndSample(shown, &bound)) return;
     m.trace = DetectTrace(bound, g.tracks, shown.options);
     // Story 10-8b: the auto blocks' events (their trace rows did not run: no curve, events only).
-    MergeEvents(m.trace.events, SessionAutoEvents(shown.blocks));
+    MergeEvents(m.trace.events, SessionAutoEvents(shown.blocks, shown.clip.loop));
     // 10-8b fb-1: the skipped rules and the auto blocks whose part has no bone keep their last
     // Commit's markers (the record's Detected entries stand in for their detections).
     const std::vector<char> keep =
@@ -617,7 +618,7 @@ bool TaggingDetectAuto(const AutoSettings& settings)
         TaggingModel& m = g.model;
         if (HasActiveAutoBlocks(r.blocks) && EnsureRoleTracks()) {
             std::vector<AutoSensResult> res;
-            if (ApplyAutoSensSearch(r.blocks, g.role_tracks, m.role_to_bone, &res, &g.auto_cache)) changed = true;
+            if (ApplyAutoSensSearch(r.blocks, g.role_tracks, m.role_to_bone, &res, &g.auto_cache, r.clip.loop)) changed = true;
             for (size_t i = 0; i < res.size() && i < r.blocks.size(); ++i) {
                 if (!res[i].searched) continue;
                 const std::string key = AutoSearchKey(r.blocks[i]);
@@ -628,6 +629,24 @@ bool TaggingDetectAuto(const AutoSettings& settings)
         }
         return changed;
     });
+}
+
+bool TaggingSetLooping(bool on, MediaItem* for_item)
+{
+    if (!g.model.item) return false;
+    bool changed = false;
+    const bool ok = TaggingEdit("RAV: Set looping", [on, &changed](ItemRules& r) {
+        if (r.clip.loop == on) return false;
+        r.clip.loop = on;
+        changed = true;
+        return true;
+    }, for_item);
+    // Story 10-8h's search results were read on the other analysis.
+    if (changed) {
+        g.model.auto_searched.clear();
+        g.model.auto_none.clear();
+    }
+    return ok;
 }
 
 std::string AutoSearchKey(const Block& b)
@@ -798,9 +817,10 @@ ItemDetection DetectItem(MediaItem* item)
         if (HasActiveAutoBlocks(out.rules.blocks)) {
             const SampleKey rkey = RoleTrackKey(path, stamp, role_to_bone);
             if (g.have_role_tracks && rkey == g.role_key) {
-                MergeEvents(out.events, DetectAutoEvents(out.rules.blocks, g.role_tracks, &g.auto_cache));
+                MergeEvents(out.events, DetectAutoEvents(out.rules.blocks, g.role_tracks, &g.auto_cache, out.rules.clip.loop));
             } else {
-                MergeEvents(out.events, DetectAutoEvents(out.rules.blocks, SampleRoleTracks(*asset, role_to_bone)));
+                MergeEvents(out.events, DetectAutoEvents(out.rules.blocks, SampleRoleTracks(*asset, role_to_bone), nullptr,
+                                                         out.rules.clip.loop));
             }
         }
         // 10-8b fb-1: the skipped rules and the auto blocks whose part has no bone keep their last

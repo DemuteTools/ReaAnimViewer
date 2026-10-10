@@ -788,19 +788,22 @@ void LaneRange(const std::vector<double>& curve, const Condition* saved, double*
     *hi = b + pad;
 }
 
+// The first rule (not an auto block), or -1 when the item has none.
+int FirstRuleIndex(const std::vector<Block>& blocks)
+{
+    for (size_t i = 0; i < blocks.size(); ++i)
+        if (!IsAutoBlock(blocks[i])) return static_cast<int>(i);
+    return -1;
+}
+
 // The item under the playhead changed: a running number drag or typed value, a preview
 // and a line drag belonged to the previous one (nothing of them is written).
 void OnItemChanged(MediaItem* item)
 {
     g_sel_item = item;
-    g_sel = 0;
-    // Story 10-8b: the first rule (auto blocks are set in their own section), else the first row.
-    const ItemRules& shown = TaggingShownRules();
-    for (size_t i = 0; i < shown.blocks.size(); ++i)
-        if (!IsAutoBlock(shown.blocks[i])) {
-            g_sel = static_cast<int>(i);
-            break;
-        }
+    // Story 10-8b: the first rule (auto blocks are set in their own section), else nothing: an
+    // auto row is selected only by clicking it on the strip.
+    g_sel = FirstRuleIndex(TaggingShownRules().blocks);
     g_drag = StripDrag::None;
     ClearEventSelection();
     ClearLastApplyResult();
@@ -932,8 +935,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
     const TaggingModel& m = GetTaggingModel();
     if (m.item != g_sel_item) OnItemChanged(m.item);
     const ItemRules& rules = TaggingShownRules();
-    if (g_sel >= static_cast<int>(rules.blocks.size())) g_sel = static_cast<int>(rules.blocks.size()) - 1;
-    if (g_sel < 0) g_sel = 0;
+    if (g_sel >= static_cast<int>(rules.blocks.size()) || g_sel < -1) g_sel = FirstRuleIndex(rules.blocks);
 
     ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(std::max(w, 160.0f), h), ImGuiCond_Always);
@@ -969,7 +971,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                 const float ew = ImGui::CalcTextSize("+ Event").x + ImGui::CalcTextSize(key).x + 30.0f;
                 const ImVec2 ep(c0.x + avail_w - bw - 8.0f - ew, c0.y);
                 ImGui::SetCursorScreenPos(ep);
-                const bool can_add = EventsEditableOn(m, g_sel) && g_sel < static_cast<int>(rules.blocks.size());
+                const bool can_add = EventsEditableOn(m, g_sel) && g_sel >= 0 && g_sel < static_cast<int>(rules.blocks.size());
                 if (!can_add) ImGui::BeginDisabled();
                 if (ui::SolidButton("##tagaddev", ImVec2(ew, 0.0f))) Later([]() { TaggingAddEventAtPlayhead(); });
                 if (!can_add) ImGui::EndDisabled();
@@ -1169,7 +1171,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
 
                 // ---- The selected rule's lanes ----
                 std::vector<LaneGeom> lanes;
-                const Block* sel_blk = (g_sel < nb) ? &rules.blocks[static_cast<size_t>(g_sel)] : nullptr;
+                const Block* sel_blk = (g_sel >= 0 && g_sel < nb) ? &rules.blocks[static_cast<size_t>(g_sel)] : nullptr;
                 const BlockTrace* bt = (sel_blk && g_sel < static_cast<int>(m.trace.blocks.size()))
                                            ? &m.trace.blocks[static_cast<size_t>(g_sel)]
                                            : nullptr;
@@ -3438,7 +3440,15 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
             return true;
         });
         ClearEventSelection();
-        if (g_sel >= b && g_sel > 0) --g_sel;
+        if (g_sel > b)
+            --g_sel;
+        else if (g_sel == b) {
+            // The rule before it, else the next one (indices after the deletion), else nothing.
+            g_sel = -1;
+            for (int i = 0; i < nb; ++i)
+                if (i != b && !IsAutoBlock(rules.blocks[static_cast<size_t>(i)]) && (g_sel < 0 || i < b))
+                    g_sel = i > b ? i - 1 : i;
+        }
     }
 }
 
@@ -4371,56 +4381,54 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
             }
         }
         if (!m.auto_error.empty()) WrappedText(ui::kMuted, "Nothing detected: " + m.auto_error + ".", ImGui::GetContentRegionAvail().x);
-        // Detect: lit while a tick or Separate / Combined waits for it.
-        ImGui::Dummy(ImVec2(0.0f, 2.0f));
-        const bool pending = AutoPending(g_auto_ui, item);
-        // Story 10-8h: also lit when a ticked block that can run found no event and was not
-        // searched in this session (Detect raises its sensitivity).
-        bool search_waiting = false;
-        if (m.detected && m.auto_error.empty())
-            for (size_t i = 0; i < rules.blocks.size() && i < m.trace.blocks.size() && !search_waiting; ++i) {
-                const Block& b = rules.blocks[i];
-                if (!IsActiveAutoBlock(b) || AutoBlockPartMissing(b, m.role_to_bone) || !m.trace.blocks[i].events.empty())
-                    continue;
-                if (!AutoSearchedAt(m.auto_searched, b))
-                    search_waiting = true;
-            }
-        const bool lit = pending || search_waiting;
-        const bool can = lit && m.item && m.file_loaded;
-        if (!can) ImGui::BeginDisabled();
-        const bool clicked = lit ? ui::PrimaryButton("Detect##autodetect", ImVec2(-1.0f, 0.0f))
-                                 : ui::SolidButton("Detect##autodetect", ImVec2(-1.0f, 0.0f));
-        if (!can) ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("%s", pending ? "Adds the ticked types to this item and removes the unticked ones (one undo "
-                                              "point).\nYour corrections stay, except on a type you untick.\n"
-                                              "A side or part that finds no event gets the lowest sensitivity that finds one."
-                                    : search_waiting
-                                        ? "A ticked type finds no event on a side or part: Detect raises its sensitivity\n"
-                                          "to the lowest that finds one, up to 100 % (one undo point)."
-                                        : "Tick or untick a type, or switch Combined / Separate or Only after a Grab, then Detect.\n"
-                                          "Sensitivity and offset of a detected type apply at once.");
-        if (clicked) {
-            const AutoSettings s = g_auto_ui;
-            ClearEventSelection();
-            // The selection follows its block (Detect removes and adds blocks); a removed one falls
-            // back to the first rule, else the first row.
-            std::vector<Block>     after = rules.blocks;
-            const std::vector<int> map = ApplyAutoSettings(after, s);
-            const int              old_sel = g_sel;
-            g_sel = (old_sel >= 0 && old_sel < static_cast<int>(map.size())) ? map[static_cast<size_t>(old_sel)] : -1;
-            if (g_sel < 0) {
-                g_sel = 0;
-                for (size_t i = 0; i < after.size(); ++i)
-                    if (!IsAutoBlock(after[i])) {
-                        g_sel = static_cast<int>(i);
-                        break;
-                    }
-            }
-            Later([s]() { TaggingDetectAuto(s); });
-        }
     }
     ui::EndSection(sec);
+}
+
+// Detect, under the inspector's scroll area so it stays in reach (only the settings scroll).
+void DrawAutoDetect(const TaggingModel& m, const ItemRules& rules)
+{
+    const AutoSettings& item = g_auto_seen;
+    // Detect: lit while a tick or Separate / Combined waits for it.
+    const bool pending = AutoPending(g_auto_ui, item);
+    // Story 10-8h: also lit when a ticked block that can run found no event and was not
+    // searched in this session (Detect raises its sensitivity).
+    bool search_waiting = false;
+    if (m.detected && m.auto_error.empty())
+        for (size_t i = 0; i < rules.blocks.size() && i < m.trace.blocks.size() && !search_waiting; ++i) {
+            const Block& b = rules.blocks[i];
+            if (!IsActiveAutoBlock(b) || AutoBlockPartMissing(b, m.role_to_bone) || !m.trace.blocks[i].events.empty())
+                continue;
+            if (!AutoSearchedAt(m.auto_searched, b))
+                search_waiting = true;
+        }
+    const bool lit = pending || search_waiting;
+    const bool can = lit && m.item && m.file_loaded;
+    if (!can) ImGui::BeginDisabled();
+    const bool clicked = lit ? ui::PrimaryButton("Detect##autodetect", ImVec2(-1.0f, 0.0f))
+                             : ui::SolidButton("Detect##autodetect", ImVec2(-1.0f, 0.0f));
+    if (!can) ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("%s", pending ? "Adds the ticked types to this item and removes the unticked ones (one undo "
+                                          "point).\nYour corrections stay, except on a type you untick.\n"
+                                          "A side or part that finds no event gets the lowest sensitivity that finds one."
+                                : search_waiting
+                                    ? "A ticked type finds no event on a side or part: Detect raises its sensitivity\n"
+                                      "to the lowest that finds one, up to 100 % (one undo point)."
+                                    : "Tick or untick a type, or switch Combined / Separate or Only after a Grab, then Detect.\n"
+                                      "Sensitivity and offset of a detected type apply at once.");
+    if (clicked) {
+        const AutoSettings s = g_auto_ui;
+        ClearEventSelection();
+        // The selection follows its block (Detect removes and adds blocks); a removed one falls
+        // back to the first rule, else nothing.
+        std::vector<Block>     after = rules.blocks;
+        const std::vector<int> map = ApplyAutoSettings(after, s);
+        const int              old_sel = g_sel;
+        g_sel = (old_sel >= 0 && old_sel < static_cast<int>(map.size())) ? map[static_cast<size_t>(old_sel)] : -1;
+        if (g_sel < 0) g_sel = FirstRuleIndex(after);
+        Later([s]() { TaggingDetectAuto(s); });
+    }
 }
 
 // One button per preset, each loading it on the current item (a shortcut: rules can also be
@@ -4444,6 +4452,7 @@ void DrawInspector(const ItemRules& rules)
 {
     const int nb = static_cast<int>(rules.blocks.size());
     if (g_sel < 0 || g_sel >= nb) {
+        if (std::any_of(rules.blocks.begin(), rules.blocks.end(), [](const Block& x) { return IsAutoBlock(x); })) return;
         ui::SubText("No rule. Add one (+ Rule) and pick its bone and signal, or start from a preset:");
         ImGui::Dummy(ImVec2(0.0f, 2.0f));
         DrawPresetButtons();
@@ -4800,8 +4809,7 @@ void DrawTaggingPanel(float x, float y, float w, float h)
                 ImGui::PopStyleColor();
             }
         } else {
-            if (g_sel >= static_cast<int>(rules.blocks.size())) g_sel = static_cast<int>(rules.blocks.size()) - 1;
-            if (g_sel < 0) g_sel = 0;
+            if (g_sel >= static_cast<int>(rules.blocks.size()) || g_sel < -1) g_sel = FirstRuleIndex(rules.blocks);
             DrawHeader(m, rules);
             if (!TaggingLastError().empty()) {
                 ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(kBadText));
@@ -4815,7 +4823,8 @@ void DrawTaggingPanel(float x, float y, float w, float h)
             ImGui::Separator();
             // The inspector scrolls; the footer stays.
             // Story 10-4: the markers line, Commit / Cancel, the selection and the last outcome.
-            const float footer_h = ImGui::GetFrameHeightWithSpacing() * 2.0f + ImGui::GetTextLineHeightWithSpacing() * 3.0f + 10.0f;
+            // Detect sits between the two (story 10-8 follow-up: always in reach).
+            const float footer_h = ImGui::GetFrameHeightWithSpacing() * 3.0f + ImGui::GetTextLineHeightWithSpacing() * 3.0f + 12.0f;
             const float body_h = std::max(40.0f, ImGui::GetContentRegionAvail().y - footer_h);
             ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::Col(ui::kSurface));
             if (ImGui::BeginChild("##taginspector", ImVec2(0.0f, body_h), ImGuiChildFlags_None)) {
@@ -4841,6 +4850,8 @@ void DrawTaggingPanel(float x, float y, float w, float h)
             }
             ImGui::EndChild();
             ImGui::PopStyleColor();
+            ImGui::Dummy(ImVec2(0.0f, 2.0f));
+            DrawAutoDetect(m, rules);
             DrawFooter(m);
         }
         RolesWindow(m);  // story 10-3d (closes itself when the item changes)

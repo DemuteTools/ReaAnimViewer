@@ -1319,12 +1319,13 @@ int main()
         CHECK(off.size() == 3);
     }
     // Story 10-8i: the search runs on the item's analysis. Grab R's only grab crosses the seam
-    // (the hand comes to rest 30 ms before the end, still at rest 210 ms from the start): none
+    // (the hand comes to rest 10 ms before the end, within the smoothing's held end so no arrival
+    // at the clip end, story 10-8j; still at rest 210 ms from the start): none
     // off (searched), one on (not searched); Detect's apply step alike.
     {
         const HandFn loop_hand = [](double t) {
             Vec3d        p{0.3, 1.0, 0.3};
-            const double a = 0.21, b = 1.97, v = 1.5 * 0.87;
+            const double a = 0.21, b = 1.99, v = 1.5 * 0.87;
             if (t <= a || t >= b) return p;
             const double side = (b - a) / 4.0, len = v * side, u = t - a;
             const int    k = std::min(3, static_cast<int>(u / side));
@@ -1356,6 +1357,28 @@ int main()
         CHECK(ar.size() == 2 && !ar[1].searched);
         ApplyAutoSensSearch(a, rig, map, &ar, nullptr, false);
         CHECK(ar.size() == 2 && ar[1].searched);
+    }
+    // Story 10-8j: the same hand coming to rest 30 ms before the end (7 samples, before the
+    // smoothing's held end): off, an arrival at the clip end gives Grab R near 1.97 s and the
+    // search has nothing to raise.
+    {
+        const HandFn arrive = [](double t) {
+            const double v = 1.5 * 0.87, d = v * (std::min(t, 1.97) - 0.21);
+            return t <= 0.21 ? Vec3d{0.3, 1.0, 0.3} : Vec3d{0.3, 1.0 - 0.6 * d, 0.3 + 0.8 * d};
+        };
+        Options o;
+        o.dur = 2.0;
+        o.hand[1] = arrive;
+        const std::vector<BoneTrack> rig = Rig(Planted(-0.1, 0.0), Planted(0.1, 0.2), o);
+        std::vector<int>             map(static_cast<size_t>(Role::Count), -1);
+        for (int r = 0; r < static_cast<int>(Role::Count); ++r)
+            if (!rig[static_cast<size_t>(r)].pos.empty()) map[static_cast<size_t>(r)] = r;
+        const std::vector<Block> blocks = AutoBlocks(Ticked(false, false, false, false, false, true));
+        const std::vector<Event> off = OfBlock(DetectAutoEvents(blocks, rig, nullptr, false), 1);
+        CHECK(off.size() == 1);
+        if (off.size() == 1) CHECK(std::fabs(off[0].time_s - 1.97) < 0.015);
+        const std::vector<AutoSensResult> res = SearchAutoSensitivity(blocks, rig, {0, 0}, map, false);
+        CHECK(res.size() == 2 && !res[1].searched);
     }
 
     if (g_fails) std::printf("%d check(s) failed\n", g_fails);

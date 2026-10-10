@@ -120,6 +120,18 @@
 // circle walk) is unrolled without rotating the next cycle, so the seam can show a heading jump
 // (a possible extra pivot there). Off: the analysis is the clip as it is.
 //
+// Arrival at the clip end (story 10-8j, not looping): a part that brakes onto a support in the clip's
+// last moments has too few slow samples to pay the switch cost, so it would get no contact. A foot
+// part or hand free at the last sample, whose speed falls through the arrival speed
+// (arrival_speed_factor x its contact speed) within arrival_window_s of the end, approached at the
+// type's min approach at least (arrival_min_approach for the feet, hand_min_approach for the
+// hands), and stays below it to the end, gets a contact from that crossing (the braking point) to
+// the end: a step / foot step / grab there (each part's step offset still applies), no lift-off or
+// release, no scuff. The smoothing holds the ends, which lowers the last ~3 sigma of speeds, so the
+// crossing must lie before them (ceil(3 sigma x rate) samples: a brake within the last 25 ms at
+// 240 Hz, 33 ms at 30 Hz, is not seen). Limit: a hand that
+// stops in the air at the end after a fast move (a dance's last pose) reads as a grab.
+//
 // A missing role drops only that part's events (PhysicsAnalysis::missing says why for the feet,
 // hand_missing for the hands). Two parts on the same bone (an Unreal toe end standing in on
 // ball_l) keep the first.
@@ -232,6 +244,16 @@ struct PhysicsParams {
     // HandEvents only: a pivot needs the hand's contact to start with a grab's approach (or at the
     // clip start). Off: any resting hand pivots. The analysis does not read it.
     bool       hand_pivot_after_grab = true;
+    // Story 10-8j: arrival at the clip end (see "Arrival at the clip end" above). The arrival
+    // speed is this factor x the part's contact speed (feet 0.8, hands 0.8 leg/s at the default
+    // sensitivity, which moves it with the contact speed): Climbing Ladder's
+    // left hand brakes from 2.8 to 0.6-0.78 leg/s 70 ms before the end. Half the approach peak was
+    // rejected (Ascending Stairs' left heel "brakes" from 4.2 to 2 leg/s, still swinging). The
+    // feet's min approach has nothing to fit: the fixture feet arriving at the end approach at
+    // 2.7 leg/s at least; the hands use hand_min_approach.
+    double     arrival_window_s = 0.150;
+    double     arrival_speed_factor = 2.0;
+    double     arrival_min_approach = 1.0;   // leg/s, feet
     // Story 10-8i: read the clip as a loop (see "Looping clips" above). A user setting, off by
     // default; no constant changes with it.
     bool       looping = false;

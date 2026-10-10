@@ -1307,13 +1307,68 @@ int main()
               PhysicsParams{}.hand_pivot_min_deg == PhysicsParams{}.pivot_min_deg && PhysicsParams{}.hand_pivot_after_grab);
     }
 
+    // ---- Arrival at the clip end (story 10-8j) ----------------------------------------------
+    {
+        // The right hand comes to rest 30 ms before the end (7 samples: too few to pay the switch
+        // cost) after moving at 1.5 leg/s: a grab where it brakes, no release.
+        Options o;
+        o.dur = 2.0;
+        const FootFn lf = Planted(-0.1, 0.0), rf = Planted(0.1, 0.0);
+        auto grabs = [&](const HandFn& hand, const PhysicsParams& p) {
+            std::vector<BoneTrack> t = Rig(lf, rf, o);
+            AddHands(t, nullptr, hand, o);
+            return HandEvents(AnalyseMotion(t, p), p);
+        };
+        const std::vector<PhysicsEvent> ev = grabs(HandMove(0.3, 1.5 * kLeg, {{1.97, 3.0}}), PhysicsParams{});
+        CHECK(StepsNear(Of(ev, PhysicsKind::Grab, 'R'), {1.97}, 0.015) && Of(ev, PhysicsKind::Release, 'R').empty());
+        // Approached under the min approach (0.6 leg/s): none.
+        CHECK(Of(grabs(HandMove(0.3, 0.6 * kLeg, {{1.97, 3.0}}), PhysicsParams{}), PhysicsKind::Grab).empty());
+        // Speeds up again before the end (rests 40 ms, leaves 40 ms before the end): none.
+        CHECK(Of(grabs(HandMove(0.3, 1.5 * kLeg, {{1.92, 1.96}}), PhysicsParams{}), PhysicsKind::Grab).empty());
+        // Brakes within the last ~25 ms, where the held end of the smoothing lowers every speed: none.
+        CHECK(Of(grabs(HandMove(0.3, 1.5 * kLeg, {{1.99, 3.0}}), PhysicsParams{}), PhysicsKind::Grab).empty());
+        // Brakes earlier than the window (200 ms before the end): a contact the Viterbi finds, the
+        // same grab as before the story.
+        CHECK(StepsNear(Of(grabs(HandMove(0.3, 1.5 * kLeg, {{1.8, 3.0}}), PhysicsParams{}), PhysicsKind::Grab, 'R'),
+                        {1.8}, 0.015));
+        // Looping: no arrival (the unrolled track's end is the next cycle, the hand moves at t = 0).
+        PhysicsParams loop;
+        loop.looping = true;
+        std::vector<BoneTrack> t = Rig(lf, rf, o);
+        AddHands(t, nullptr, HandMove(0.3, 1.5 * kLeg, {{1.97, 3.0}}), o);
+        const PhysicsAnalysis on = AnalyseMotion(t, loop);
+        CHECK(on.ok && !on.hand[1].part.contact.empty() && !on.hand[1].part.contact.back());
+        CHECK(Of(HandEvents(on, loop), PhysicsKind::Grab).empty());
+        // The planted feet get nothing at the end.
+        CHECK(FootEvents(AnalyseMotion(t)).empty());
+    }
+    {
+        // A foot that lands 30 ms before the end (the walk's left foot, contacts at 0.97 and
+        // 1.97 s): a step of each part near its landing, a foot step, no lift-off at the end;
+        // looping, no arrival.
+        Options o;
+        o.dur = 2.0;
+        const PhysicsParams             p = SpeedTiming();
+        const PhysicsAnalysis           a = AnalyseMotion(Rig(WalkFoot(0.97 - 1.0, -0.1), Planted(0.1, 0.0), o), p);
+        const std::vector<PhysicsEvent> ev = FootEvents(a, p);
+        CHECK(a.ok);
+        for (int q = 0; q < kFootPartCount; ++q) {
+            CHECK(StepsNear(Of(ev, PhysicsKind::Step, 'L', q), {0.97, 1.97}, 0.03));
+            CHECK(a.foot[0].part[q].contacts.size() == 3 && a.foot[0].part[q].contacts.back().end == static_cast<int>(a.samples));
+        }
+        CHECK(StepsNear(Of(ev, PhysicsKind::FootStep, 'L'), {0.97, 1.97}, 0.03));
+        CHECK(StepsNear(Of(ev, PhysicsKind::LiftOff, 'L'), {0.57, 1.57}, 0.03));
+        CHECK(Of(ev, PhysicsKind::Slide).empty() && Of(ev, PhysicsKind::Pivot).empty());
+    }
+
     // ---- Looping clips (story 10-8i) ---------------------------------------------------------
     {
         PhysicsParams loop;
         loop.looping = true;
         // Seam grab: the right hand comes to rest 30 ms before the end (too short to pay the
-        // switch cost) and is still at rest for 210 ms from the start. Off: the end rest is no
-        // contact (no grab); the start's, cut by the clip start, gives its release. On: one
+        // switch cost) and is still at rest for 210 ms from the start. Off: the end rest is an
+        // arrival at the clip end (story 10-8j: its grab near 1.97 s); the start's, cut by the
+        // clip start, gives its release. On: one
         // contact across the seam, read whole: its grab near 1.97 s and its release near 0.21 s.
         // The feet are planted the whole cycle: no foot event (no start / end waiver).
         Options o;
@@ -1323,7 +1378,7 @@ int main()
         const PhysicsAnalysis off = AnalyseMotion(t);
         CHECK(off.ok && !off.looping && off.window_first == 0 && off.window_samples == off.samples);
         const std::vector<PhysicsEvent> eoff = HandEvents(off);
-        CHECK(Of(eoff, PhysicsKind::Grab, 'R').empty());
+        CHECK(StepsNear(Of(eoff, PhysicsKind::Grab, 'R'), {1.97}, 0.02));
         CHECK(StepsNear(Of(eoff, PhysicsKind::Release, 'R'), {0.21}, 0.02));
         const PhysicsAnalysis on = AnalyseMotion(t, loop);
         const size_t          n = t[static_cast<size_t>(Role::RightHand)].pos.size();

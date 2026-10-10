@@ -28,6 +28,8 @@
 // constant per type by f = 2^((s - 50) / 50): step and lift-off contact_speed x f (more
 // sensitive = more contacts), slide slide_speed / f, pivot pivot_min_deg and pivot_rate_dps / f,
 // grab and release hand_contact_speed x f, hand pivot hand_pivot_min_deg and hand_pivot_rate_dps / f.
+// The arrival speed at the clip end (story 10-8j, 2 x the contact speed) follows contact_speed
+// and hand_contact_speed; the min approaches do not move.
 // The block's offset (ms) is added on top of the physics' own per-part step offsets.
 //
 // Values: strength is the physics strength (leg/s for steps, lift-offs, slides, grabs and

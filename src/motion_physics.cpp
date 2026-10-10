@@ -382,6 +382,39 @@ void SegmentPart(PartTrack& pt, double leg, double rate, const PhysicsParams& p)
     pt.contacts = cs;
 }
 
+// Arrival at the clip end (story 10-8j): a part free at the last sample that brakes through the
+// arrival speed (arrival_speed_factor x contact_speed) in the last arrival_window_s, approached at
+// min_approach at least, and stays below it to the end gets a contact from the braking point: its
+// step times are the crossing, it has no lift-off. The smoothing holds the ends, which lowers the
+// last ~3 sigma of speeds, so the crossing must lie before them; they still count for "stays
+// below" (held ends only lower a speed). Scuffs and headings are read before, without it.
+void AddArrival(PartTrack& pt, double rate, const PhysicsParams& p, double min_approach)
+{
+    const int n = static_cast<int>(pt.speed.size());
+    if (!pt.present || n < 2 || pt.contact[static_cast<size_t>(n - 1)]) return;
+    const std::vector<double>& sp = pt.speed;
+    const double th = p.arrival_speed_factor * p.contact_speed;
+    const int    edge = static_cast<int>(std::ceil(3.0 * p.smooth_ms / 1000.0 * rate));
+    const int    prev_end = pt.contacts.empty() ? 0 : pt.contacts.back().end;
+    const int    lo = std::max({1, prev_end, n - 1 - SamplesOf(p.arrival_window_s, rate)});
+    int          b = -1;
+    for (int j = n - 1; j >= 1 && sp[static_cast<size_t>(j)] < th; --j)
+        if (sp[static_cast<size_t>(j - 1)] >= th) b = j;
+    if (b < lo || b > n - 1 - edge) return;
+    const int aw = SamplesOf(p.approach_window_s, rate);
+    PartContact c;
+    c.start = b;
+    c.end = n;
+    c.approach = PeakSpeed(sp, b - aw, b);
+    if (c.approach < min_approach) return;
+    const double t = CrossTime(b, sp[static_cast<size_t>(b - 1)], sp[static_cast<size_t>(b)], th, rate);
+    for (double& s : c.step_s) s = t;
+    c.support_y = SupportOf(pt, c, RestStart(pt, c, SamplesOf(p.rest_search_s, rate), p),
+                            SamplesOf(p.support_window_s, rate));
+    for (int i = b; i < n; ++i) pt.contact[static_cast<size_t>(i)] = 1;
+    pt.contacts.push_back(c);
+}
+
 // Slide scuffs of one foot: per part within its contacts, then overlapping parts merged.
 std::vector<Scuff> FindSlides(const FootTrack& f, double leg, double rate, const PhysicsParams& p)
 {
@@ -1012,6 +1045,12 @@ PhysicsAnalysis AnalyseTrack(const std::vector<BoneTrack>& rt, const PhysicsPara
         YawOf(raw, h.heading_valid, rate, deg, h.heading_rate_dps);
         h.has_heading = true;
         h.pivots = FindHandPivots(pt, deg, h.heading_rate_dps, h.heading_valid, static_cast<int>(n), rate, p);
+    }
+    // Story 10-8j: a part arriving at the clip end; a loop has no end (its track is unrolled).
+    if (!p.looping) {
+        for (FootTrack& f : a.foot)
+            for (PartTrack& pt : f.part) AddArrival(pt, rate, p, p.arrival_min_approach);
+        for (HandTrack& h : a.hand) AddArrival(h.part, rate, hp, p.hand_min_approach);
     }
     a.ok = true;
     a.window_samples = a.samples;

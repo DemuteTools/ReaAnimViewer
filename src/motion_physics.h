@@ -55,6 +55,9 @@
 //                 to pivot_planted_s after it, and the foot stays flat enough for a heading
 //                 over pivot_planted_s after the turn. So a foot that lands turning, or twists
 //                 as it rolls off the toes and leaves (a heel whip at toe-off), makes no pivot.
+//                 Except a spin turn (story 10-8l): a turn of >= pivot_spin_factor x
+//                 pivot_min_deg whose foot leaves (not at the clip end) within pivot_planted_s
+//                 after it; its flat and planted checks after the turn stop at the lift-off.
 //                 A steep foot (story 10-8d): where the heel -> toe yaw does not hold (a foot
 //                 on its ball with the heel up, or on its heel with the toes up), the heading
 //                 comes from a second source (FootTrack::heading_source):
@@ -212,6 +215,7 @@ struct PhysicsParams {
     double pivot_min_s = 0.05;
     double pivot_min_deg = 15.0;
     double pivot_planted_s = 0.100;      // the pivot part is in contact this long before and after
+    double pivot_spin_factor = 2.0;      // a turn of this x pivot_min_deg may end at lift-off (spin turn); > 1
     double pivot_level_deg = 60.0;       // the toe rotation's across axis holds within this of level
     // The step timing of each part (FootPart order) and its offset (s, added). Chosen by the
     // spike on its 6 tagged reference clips (19 foot contacts; one clip's left / right tags

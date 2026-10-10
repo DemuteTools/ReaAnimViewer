@@ -850,33 +850,77 @@ int main()
         CHECK(Of(walk, PhysicsKind::FootStep, 'L').size() == 4);
     }
     {
-        // A heel whip at toe-off is no pivot: the foot rolls onto its toes (pitched 80 deg by
-        // 1.25 s) and turns 40 deg on the ball as it rolls, then the ball leaves 80 ms after
-        // the turn (from 1.28 s, up and forward at 1 m/s).
+        // A heel whip at toe-off (story 10-8d, narrowed by 10-8l): the foot rolls onto its toes
+        // (pitched 80 deg by 1.25 s) and turns on the ball as it rolls, then the ball leaves
+        // 80 ms after the turn (from 1.28 s, up and forward at 1 m/s). A small whip (25 deg,
+        // under 2 x pivot_min_deg) is no pivot; a 40 deg spin turn is one Pivot on the ball.
         Options o;
         o.dur = 2.0;
-        auto roll = [](double leave) {
-            return [leave](double t) {
+        auto roll = [](double leave, double deg) {
+            return [leave, deg](double t) {
                 FootPose     f;
                 const double up = std::max(0.0, t - leave);
                 f.ball = Vec3d{-0.1, 0.02 + up, up};
                 f.pitch = 80.0 * kDeg * std::clamp((t - 1.0) / 0.25, 0.0, 1.0);
-                f.yaw = 40.0 * kDeg * Ease((t - 1.0) / 0.2);
+                f.yaw = deg * kDeg * Ease((t - 1.0) / 0.2);
                 return f;
             };
         };
+        PhysicsParams sens;
+        sens.pivot_min_deg = 7.5;  // pivot sensitivity x2
         for (bool rot : {false, true}) {
             Options v = o;
             v.tip = !rot;
             v.rot = rot;
-            const PhysicsAnalysis a = AnalyseMotion(Rig(roll(1.28), Planted(0.1, 0.2), v));
+            const PhysicsAnalysis a = AnalyseMotion(Rig(roll(1.28, 25.0), Planted(0.1, 0.2), v));
             CHECK(a.ok && Of(FootEvents(a), PhysicsKind::Pivot).empty());
+            // Spin turn: 40 deg with the same roll-off is a pivot on the ball, about 40 deg.
+            const std::vector<PhysicsEvent> sp = Of(FootEvents(AnalyseMotion(Rig(roll(1.28, 40.0), Planted(0.1, 0.2), v))), PhysicsKind::Pivot);
+            CHECK(sp.size() == 1);
+            if (sp.size() == 1) CHECK(sp[0].part == static_cast<int>(FootPart::Ball) && sp[0].strength > 33.0 && sp[0].strength < 45.0);
+            // Sensitive: the 25 deg whip clears 2 x 7.5 deg.
+            CHECK(Of(FootEvents(AnalyseMotion(Rig(roll(1.28, 25.0), Planted(0.1, 0.2), v), sens)), PhysicsKind::Pivot).size() == 1);
             // Swivel: the same roll with the ball staying (on its toes to the clip end) is a
             // pivot on the ball, about 40 deg.
-            const std::vector<PhysicsEvent> sw = Of(FootEvents(AnalyseMotion(Rig(roll(10.0), Planted(0.1, 0.2), v))), PhysicsKind::Pivot);
+            const std::vector<PhysicsEvent> sw = Of(FootEvents(AnalyseMotion(Rig(roll(10.0, 40.0), Planted(0.1, 0.2), v))), PhysicsKind::Pivot);
             CHECK(sw.size() == 1);
             if (sw.size() == 1) CHECK(sw[0].part == static_cast<int>(FootPart::Ball) && sw[0].strength > 33.0 && sw[0].strength < 45.0);
         }
+        // Late leave: a flat 40 deg turn whose foot leaves 200 ms after is a pivot (planted rule).
+        const FootFn late = [](double t) {
+            FootPose     f;
+            const double up = std::max(0.0, t - 1.4);
+            f.ball = Vec3d{-0.1, 0.02 + up, up};
+            f.yaw = 40.0 * kDeg * Ease((t - 1.0) / 0.2);
+            return f;
+        };
+        CHECK(Of(FootEvents(AnalyseMotion(Rig(late, Planted(0.1, 0.2), o))), PhysicsKind::Pivot).size() == 1);
+        // Late roll-off: the same flat turn, then the foot pitches up (80 deg from 1.3 to 1.45 s,
+        // no toe end nor toe rotation: no fallback heading) and the ball leaves at 1.5 s. Out of
+        // the spin window, so the planted rule holds: one pivot.
+        const FootFn late_roll = [](double t) {
+            FootPose     f;
+            const double up = std::max(0.0, t - 1.5);
+            f.ball = Vec3d{-0.1, 0.02 + up, up};
+            f.pitch = 80.0 * kDeg * std::clamp((t - 1.3) / 0.15, 0.0, 1.0);
+            f.yaw = 40.0 * kDeg * Ease((t - 1.0) / 0.2);
+            return f;
+        };
+        Options nt = o;
+        nt.tip = false;
+        CHECK(Of(FootEvents(AnalyseMotion(Rig(late_roll, Planted(0.1, 0.2), nt))), PhysicsKind::Pivot).size() == 1);
+        // A flat turn whose foot leaves as it ends: 40 deg is a spin turn, 25 deg is not.
+        auto leave = [](double deg) {
+            return [deg](double t) {
+                FootPose     f;
+                const double up = std::max(0.0, t - 1.2);
+                f.ball = Vec3d{-0.1, 0.02 + up, up};
+                f.yaw = deg * kDeg * Ease((t - 1.0) / 0.2);
+                return f;
+            };
+        };
+        CHECK(Of(FootEvents(AnalyseMotion(Rig(leave(40.0), Planted(0.1, 0.2), o))), PhysicsKind::Pivot).size() == 1);
+        CHECK(Of(FootEvents(AnalyseMotion(Rig(leave(25.0), Planted(0.1, 0.2), o))), PhysicsKind::Pivot).empty());
         // The same turn with the foot flat is a pivot.
         const FootFn flat = [](double t) {
             FootPose f;

@@ -556,8 +556,16 @@ std::vector<Scuff> FindPivots(const FootTrack& f, int n, double rate, const Phys
         const double swept =
             steep ? integral : f.yaw_deg[static_cast<size_t>(run.end - 1)] - f.yaw_deg[static_cast<size_t>(run.start)];
         if (run.core < min_core || std::fabs(swept) < p.pivot_min_deg) continue;
+        // A spin turn (story 10-8l): the foot leaves (no part in contact, not at the clip end)
+        // within pivot_planted_s after a turn of at least pivot_spin_factor x pivot_min_deg; its
+        // checks after the turn stop at that lift-off.
+        int lift = run.end;
+        while (lift < n && in[static_cast<size_t>(lift)] != 0) ++lift;
+        const bool spin = lift < n && lift - run.end < margin &&
+                          std::fabs(swept) >= p.pivot_spin_factor * p.pivot_min_deg;
+        const int  after = spin ? lift : std::min(n, run.end + margin);
         bool flat = true;  // a turn that ends with the foot pitched up, with no fallback heading, is a roll-off
-        for (int i = run.end; flat && i < std::min(n, run.end + margin); ++i)
+        for (int i = run.end; flat && i < after; ++i)
             flat = f.yaw_valid[static_cast<size_t>(i)] != 0 || fb[static_cast<size_t>(i)] != 0;
         if (!flat) continue;
         double heel_in = 0.0, toe_in = 0.0, heel_v = 0.0, toe_v = 0.0;
@@ -583,7 +591,7 @@ std::vector<Scuff> FindPivots(const FootTrack& f, int n, double rate, const Phys
         else if (h_in && t_in && heel_v < 0.5 * toe_v) s.part = static_cast<int>(FootPart::Heel);
         else s.part = -1;
         bool planted = true;
-        for (int i = std::max(0, run.start - margin); planted && i < std::min(n, run.end + margin); ++i)
+        for (int i = std::max(0, run.start - margin); planted && i < after; ++i)
             planted = in_part(s.part, i);
         if (planted) out.push_back(s);
     }

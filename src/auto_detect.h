@@ -125,7 +125,9 @@ std::vector<Block> AutoBlocks(const AutoSettings& s);
 AutoSettings ReadAutoSettings(const std::vector<Block>& blocks);
 
 // Detect: the blocks after these settings. A wanted kind x side already there keeps its block
-// (marker, colour, on; sensitivity and offset set from the settings), the others' blocks go,
+// (marker, colour, on, and its own sensitivity and offset: story 10-8h, a side keeps its value,
+// perhaps raised by Detect; a kind switched drops the raise), the others' blocks go; a new block
+// replacing a dropped one of the same type and side takes its start value and offset, not raised,
 // new ones are added at the end (AutoBlocks order). Rules and auto blocks of unknown types stay.
 // Returns the old -> new block map (-1 = gone) for RemapEventBlocks: switching steps between
 // separate and combined keeps the user's edits on that foot (combined -> the heel, heel and toe ->
@@ -162,6 +164,34 @@ std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const s
 // No auto block: no analysis, no event.
 std::vector<Event> DetectAutoEvents(const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
                                     std::vector<AutoAnalysis>* cache = nullptr);
+
+// ---- Sensitivity search (story 10-8h) ---------------------------------------------------------
+
+// One block's search result.
+struct AutoSensResult {
+    bool   searched = false;  // the block was searched (on, known, its part has a bone, 0 events, analysis ok)
+    bool   none = false;      // searched, and no event up to 100 % (sens unchanged)
+    bool   raised = false;    // searched, and an event found at `sens`
+    double sens = 0.0;        // the block's sensitivity after the search (its own when not raised)
+    double sens_from = -1.0;  // raised: the value it was raised from (the block's own sens_from if it had one)
+};
+
+// Detect's search, per block: an auto block that is on, of a known type, whose part has a bone
+// (AutoBlockPartMissing) and with no detected event (event_counts[i] == 0, the block's detections
+// before the user's Suppress edits) is tested at 100 %. Nothing there: `none`, its value
+// unchanged. Else a bisection between its value and 100 % finds the lowest whole % with at least
+// one event (non-monotonic counts may give a higher boundary: the goal is >= 1). Rules, blocks
+// with events, off or unknown blocks, a missing part or a failed analysis: not searched. Uses a
+// local analysis cache. One result per block.
+std::vector<AutoSensResult> SearchAutoSensitivity(const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
+                                                  const std::vector<int>& event_counts, const std::vector<int>& role_to_bone);
+
+// Detect's apply step: each block's detected events counted (before Suppress edits; `cache`
+// optional, as DetectAutoEvents), SearchAutoSensitivity run, and each raised block's sens and
+// sens_from written. Returns whether a block changed; `results` (optional) gets the search's.
+bool ApplyAutoSensSearch(std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
+                         const std::vector<int>& role_to_bone, std::vector<AutoSensResult>* results = nullptr,
+                         std::vector<AutoAnalysis>* cache = nullptr);
 
 // An auto block of a known type and side that is on (it runs; SkippedBlocks' `auto_runs`).
 bool IsActiveAutoBlock(const Block& b);

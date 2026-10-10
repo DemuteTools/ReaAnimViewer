@@ -754,6 +754,8 @@ Fields BlockFields(const Block& b)
         f.push_back({"auto", b.auto_type});
         f.push_back({"side", std::string(1, b.auto_side)});
         f.push_back({"sens", FormatNumber(b.sens)});
+        // Story 10-8h: written only when Detect raised the sensitivity (absent = not raised).
+        if (b.sens_from >= 0.0) f.push_back({"sens_from", FormatNumber(b.sens_from)});
     }
     Fields rest = {{"color", FormatColor(b.color)},
             {"hold_ms", FormatNumber(b.min_hold_ms)},
@@ -778,6 +780,13 @@ Set SetBlock(Block& b, const std::string& k, const std::string& v)
         return Set::Ok;
     }
     if (k == "sens") return b.auto_type.empty() ? Set::Unknown : R(ReadNumber(v, &b.sens));
+    if (k == "sens_from") {
+        if (b.auto_type.empty()) return Set::Unknown;
+        double x = 0.0;
+        if (!ReadNumber(v, &x) || x < 0.0 || x > 100.0) return Set::Bad;
+        b.sens_from = x;
+        return Set::Ok;
+    }
     if (k == "color") return R(ReadColor(v, &b.color));
     if (k == "hold_ms") return R(ReadNumber(v, &b.min_hold_ms));
     if (k == "cooldown_ms") return R(ReadNumber(v, &b.cooldown_ms));
@@ -1572,7 +1581,8 @@ bool ConditionsEqual(const Condition& a, const Condition& b)
 
 bool BlockEqual(const Block& a, const Block& b)
 {
-    if (a.auto_type != b.auto_type || (IsAutoBlock(a) && (a.auto_side != b.auto_side || a.sens != b.sens))) return false;
+    if (a.auto_type != b.auto_type || (IsAutoBlock(a) && (a.auto_side != b.auto_side || a.sens != b.sens || a.sens_from != b.sens_from)))
+        return false;
     if (a.enabled != b.enabled || a.marker != b.marker || a.color != b.color || a.min_hold_ms != b.min_hold_ms || a.cooldown_ms != b.cooldown_ms ||
         a.offset_ms != b.offset_ms || !SignalsEqual(a.strength_signal, b.strength_signal) ||
         a.strength_sign != b.strength_sign || a.strength_window_ms != b.strength_window_ms || a.landing != b.landing ||

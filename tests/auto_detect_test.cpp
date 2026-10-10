@@ -319,7 +319,10 @@ int main()
         CHECK(Markers(blocks) == (std::vector<std::string>{"Rule A", "FS L", "FS R", "Lift L", "Lift R", "Rule B"}));
         std::vector<EventEntry> ev = {MakeUserEvent(0, 0.5, 1, 1), MakeUserEvent(1, 1.0, 0, 0), MakeSuppression(2, 1.5),
                                       MakeUserEvent(3, 2.0, 0, 0), MakeSuppression(4, 2.5), MakeUserEvent(5, 3.0, 1, 1)};
-        // Keep the step blocks' own settings while unticking: a new sensitivity reaches them.
+        // Story 10-8h: the kept step blocks keep their own sensitivity and offset (a side's value,
+        // perhaps raised by Detect), whatever the settings say.
+        blocks[1].sens = 73.0;
+        blocks[1].sens_from = 50.0;
         AutoSettings s = Ticked(true, false, false, false);
         s.type[static_cast<int>(AutoType::Step)].sens = 70.0;
         s.type[static_cast<int>(AutoType::Step)].offset_ms = 12.0;
@@ -329,7 +332,8 @@ int main()
         CHECK(changed);
         CHECK(map == (std::vector<int>{0, 1, 2, -1, -1, 3}));
         CHECK(Markers(blocks) == (std::vector<std::string>{"Rule A", "FS L", "FS R", "Rule B"}));
-        CHECK(blocks[1].color == 0x1123456 && blocks[1].sens == 70.0 && blocks[2].offset_ms == 12.0);
+        CHECK(blocks[1].color == 0x1123456 && blocks[1].sens == 73.0 && blocks[1].sens_from == 50.0);
+        CHECK(blocks[2].sens == 50.0 && blocks[2].offset_ms == 0.0 && blocks[2].sens_from < 0.0);
         RemapEventBlocks(ev, map);
         CHECK(ev.size() == 4);
         if (ev.size() == 4) {
@@ -418,9 +422,8 @@ int main()
 
         // Offset: step +20 ms -> every step 20 ms later.
         std::vector<Block> later = blocks;
-        AutoSettings       s = ReadAutoSettings(later);
-        s.type[static_cast<int>(AutoType::Step)].offset_ms = 20.0;
-        ApplyAutoSettings(later, s);
+        for (Block& b : later)
+            if (b.auto_type == "step") b.offset_ms = 20.0;  // as the section's field writes it
         const std::vector<Event> fsl20 = OfBlock(DetectAutoEvents(later, rig), 1);
         CHECK(fsl20.size() == fsl.size());
         for (size_t i = 0; i < fsl20.size() && i < fsl.size(); ++i)
@@ -515,6 +518,145 @@ int main()
             const size_t lo = OfBlock(DetectAutoEvents(blocks, rig), 0).size();
             for (Block& b : blocks) b.sens = s + 10;
             CHECK(OfBlock(DetectAutoEvents(blocks, rig), 0).size() >= lo);
+        }
+    }
+
+    // Story 10-8h: Detect's sensitivity search, on the slow slide (Slide L: none at 50 %, one at
+    // 80 %; the right foot stays planted: no slide up to 100 %).
+    {
+        const FootFn slide = [](double t) {
+            FootPose f;
+            f.ball = Vec3d{-0.1, 0.02, 0.18 * std::clamp(t - 1.0, 0.0, 0.4)};
+            return f;
+        };
+        Options o;
+        o.dur = 3.0;
+        const std::vector<BoneTrack> rig = Rig(slide, Planted(0.1, 0.2), o);
+        std::vector<int>             map(static_cast<size_t>(Role::Count), -1);
+        for (int r = 0; r < static_cast<int>(Role::Count); ++r)
+            if (!rig[static_cast<size_t>(r)].pos.empty()) map[static_cast<size_t>(r)] = r;
+        auto count = [&](std::vector<Block> blocks, int bi, double sens) {
+            blocks[static_cast<size_t>(bi)].sens = sens;
+            return static_cast<int>(OfBlock(DetectAutoEvents(blocks, rig), bi).size());
+        };
+        auto counts_of = [&](const std::vector<Block>& blocks) {
+            std::vector<int> c(blocks.size(), 0);
+            for (const Event& e : DetectAutoEvents(blocks, rig)) ++c[static_cast<size_t>(e.block)];
+            return c;
+        };
+        std::vector<Block> blocks = {HeelRule("Rule")};
+        ApplyAutoSettings(blocks, Ticked(false, false, true, false));  // Rule, Slide L, Slide R
+        CHECK(count(blocks, 1, 50.0) == 0 && count(blocks, 1, 80.0) >= 1 && count(blocks, 2, 100.0) == 0);
+
+        // Raise: Slide L gets the lowest whole % with an event (sens_from = 50); Nothing: Slide R
+        // has no event up to 100 % (unchanged). The rule is never searched.
+        std::vector<AutoSensResult> res = SearchAutoSensitivity(blocks, rig, counts_of(blocks), map);
+        CHECK(res.size() == 3 && !res[0].searched);
+        double raised = 0.0;
+        if (res.size() == 3) {
+            CHECK(res[1].searched && res[1].raised && !res[1].none && res[1].sens_from == 50.0);
+            raised = res[1].sens;
+            CHECK(raised > 50.0 && raised <= 80.0 && raised == std::floor(raised));
+            CHECK(count(blocks, 1, raised) >= 1 && count(blocks, 1, raised - 1.0) == 0);
+            CHECK(res[2].searched && res[2].none && !res[2].raised && res[2].sens == 50.0);
+        }
+        // Applied as Detect does: the raised side detects; events at an unchanged sensitivity are
+        // the same.
+        std::vector<Block> after = blocks;
+        after[1].sens = raised;
+        after[1].sens_from = 50.0;
+        CHECK(OfBlock(DetectAutoEvents(after, rig), 1).size() >= 1);
+        CHECK(SameEvents(OfBlock(DetectAutoEvents(after, rig), 2), OfBlock(DetectAutoEvents(blocks, rig), 2)));
+        // Searched again: the raised side has its event now, untouched.
+        res = SearchAutoSensitivity(after, rig, counts_of(after), map);
+        CHECK(res.size() == 3 && !res[1].searched && res[1].sens == raised);
+
+        // Has events: a block whose count is not 0 is never searched (its value stays).
+        std::vector<int> c = counts_of(blocks);
+        c[1] = 3;
+        res = SearchAutoSensitivity(blocks, rig, c, map);
+        CHECK(res.size() == 3 && !res[1].searched && !res[1].raised && res[1].sens == 50.0);
+
+        // Already 100: no event, no raise; "none".
+        std::vector<Block> full = blocks;
+        full[2].sens = 100.0;
+        res = SearchAutoSensitivity(full, rig, counts_of(full), map);
+        CHECK(res.size() == 3 && res[2].searched && res[2].none && res[2].sens == 100.0 && res[2].sens_from < 0.0);
+
+        // User lowered to 30: bisection from 30, sens_from = 30, the same lowest value.
+        std::vector<Block> low = blocks;
+        low[1].sens = 30.0;
+        res = SearchAutoSensitivity(low, rig, counts_of(low), map);
+        CHECK(res.size() == 3 && res[1].raised && res[1].sens_from == 30.0 && res[1].sens == raised);
+
+        // Missing bone: the left foot's parts unmapped -> Slide L not searched; Slide R still is.
+        std::vector<int> nomap = map;
+        for (Role r : {Role::LeftHeel, Role::LeftToe, Role::LeftToeEnd}) nomap[static_cast<size_t>(r)] = -1;
+        CHECK(AutoBlockPartMissing(blocks[1], nomap) && !AutoBlockPartMissing(blocks[2], nomap));
+        res = SearchAutoSensitivity(blocks, rig, counts_of(blocks), nomap);
+        CHECK(res.size() == 3 && !res[1].searched && res[1].sens == 50.0 && res[2].searched);
+
+        // An off block, and a failed analysis (no role track): not searched.
+        std::vector<Block> off = blocks;
+        off[1].enabled = false;
+        res = SearchAutoSensitivity(off, rig, std::vector<int>(off.size(), 0), map);
+        CHECK(res.size() == 3 && !res[1].searched && res[2].searched);
+        res = SearchAutoSensitivity(blocks, std::vector<BoneTrack>(rig.size()), std::vector<int>(blocks.size(), 0), map);
+        CHECK(res.size() == 3 && !res[1].searched && !res[2].searched);
+
+        // A raised block keeps its first start value when searched again (it lost its events).
+        std::vector<Block> again = blocks;
+        again[1].sens = 40.0;
+        again[1].sens_from = 25.0;
+        res = SearchAutoSensitivity(again, rig, counts_of(again), map);
+        CHECK(res.size() == 3 && res[1].raised && res[1].sens_from == 25.0);
+
+        // Detect keeps a block's own (raised) sensitivity: ApplyAutoSettings leaves it.
+        bool changed = true;
+        ApplyAutoSettings(after, ReadAutoSettings(after), &changed);
+        CHECK(!changed && after[1].sens == raised && after[1].sens_from == 50.0 && after[2].sens == 50.0);
+        // Detect's apply step on the unchanged settings: Slide L raised (sens_from 50), Slide R
+        // (none up to 100 %) and the rule unchanged.
+        std::vector<Block>          applied = blocks;
+        std::vector<AutoSensResult> ar;
+        std::vector<AutoAnalysis>   cache;
+        CHECK(ApplyAutoSensSearch(applied, rig, map, &ar, &cache));
+        CHECK(applied[1].sens == raised && applied[1].sens_from == 50.0);
+        CHECK(applied[2].sens == 50.0 && applied[2].sens_from < 0.0 && ar.size() == 3 && ar[2].none);
+        CHECK(applied[0].sens == blocks[0].sens && applied[0].marker == "Rule");
+        // Again: nothing left to raise.
+        CHECK(!ApplyAutoSensSearch(applied, rig, map));
+    }
+
+    // Story 10-8h: steps switched combined -> separate with FS L raised to 73 from 50 and FS R at
+    // 60: Heel L / Toe L start again at 50, Heel R / Toe R at 60, none raised; the offsets follow.
+    {
+        std::vector<Block> blocks = AutoBlocks(Ticked(true, false, false, false));  // FS L, FS R
+        blocks[0].sens = 73.0;
+        blocks[0].sens_from = 50.0;
+        blocks[0].offset_ms = 5.0;
+        blocks[1].sens = 60.0;
+        AutoSettings s = ReadAutoSettings(blocks);
+        s.separate_steps = true;
+        ApplyAutoSettings(blocks, s);
+        CHECK(Markers(blocks) == (std::vector<std::string>{"Heel L", "Heel R", "Toe L", "Toe R"}));
+        for (const Block& b : blocks) {
+            CHECK(b.sens_from < 0.0);
+            CHECK(b.sens == (b.auto_side == 'L' ? 50.0 : 60.0));
+            CHECK(b.offset_ms == (b.auto_side == 'L' ? 5.0 : 0.0));
+        }
+        // A hand pivot switched to any resting hand drops a raise found for the other kind.
+        AutoSettings hs;
+        hs.type[static_cast<int>(AutoType::HandPivot)].on = true;
+        std::vector<Block> hp = AutoBlocks(hs);
+        CHECK(hp.size() == 2);
+        if (hp.size() == 2) {
+            hp[0].sens = 80.0;
+            hp[0].sens_from = 50.0;
+            AutoSettings any = ReadAutoSettings(hp);
+            any.hand_pivot_any = true;
+            ApplyAutoSettings(hp, any);
+            CHECK(hp[0].auto_type == "hand_pivot_any" && hp[0].sens == 50.0 && hp[0].sens_from < 0.0);
         }
     }
 
@@ -718,9 +860,8 @@ int main()
             CHECK(grab[0].strength > 1.3 && std::fabs(grab[0].speed - grab[0].strength * 0.87) < 1e-9);
         }
         std::vector<Block> later = blocks;
-        AutoSettings       s = ReadAutoSettings(later);
-        s.type[static_cast<int>(AutoType::Grab)].offset_ms = 25.0;
-        ApplyAutoSettings(later, s);
+        for (Block& b : later)
+            if (b.auto_type == "grab") b.offset_ms = 25.0;  // as the section's field writes it
         const std::vector<Event> grab25 = OfBlock(DetectAutoEvents(later, rig), 1);
         CHECK(grab25.size() == 1 && grab.size() == 1);
         if (grab25.size() == 1 && grab.size() == 1) CHECK(std::fabs(grab25[0].time_s - (grab[0].time_s + 0.025)) < 1e-12);

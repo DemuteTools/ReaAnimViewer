@@ -1705,6 +1705,54 @@ int main()
         CHECK(BlocksEqual(copy.blocks, p.blocks) && PoolContentEqual(copy, p));
     }
 
+    // Story 10-8h: `sens_from` right after `sens`, only when Detect raised the block; absent = not
+    // raised (an older record writes back byte-identical); on a rule it is kept as read; a pooled
+    // copy and a preset carry it; it takes part in BlocksEqual (undo, Commit snapshot).
+    {
+        const std::string head = "RAVRULES 1\noptions sensitivity=0 edge_ms=0 smooth_ms=8\nanalyse floor_pct=2 "
+                                 "pos_frac=0.25 speed_pct=30 margin_ratio=0.5 onset_frac=0.1 per_bone_floor=0\n";
+        const std::string s = head +
+                              "block auto=slide side=L sens=50 color=#5F9EDD hold_ms=0 cooldown_ms=0 offset_ms=0 land=cross "
+                              "marker=Slide L\n"
+                              "block auto=slide side=R sens=73 sens_from=50 color=#DD9E5F hold_ms=0 cooldown_ms=0 offset_ms=0 "
+                              "land=cross marker=Slide R\n";
+        ItemRules p;
+        CHECK(ParseItemRules(s, &p) && !HasKeptText(p) && SerializeItemRules(p) == s);
+        CHECK(p.blocks.size() == 2);
+        if (p.blocks.size() == 2) {
+            CHECK(p.blocks[0].sens_from < 0.0 && p.blocks[1].sens == 73.0 && p.blocks[1].sens_from == 50.0);
+            // Cleared (the user edited the value): no `sens_from` written, and the blocks differ.
+            ItemRules q = p;
+            q.blocks[1].sens_from = -1.0;
+            CHECK(!BlocksEqual(q.blocks, p.blocks));
+            CHECK(SerializeItemRules(q).find("sens_from") == std::string::npos);
+            CHECK(SerializeItemRules(q).find("sens=73 color=#DD9E5F") != std::string::npos);
+            // A pooled copy and a preset file carry it.
+            ItemRules copy;
+            CopyPoolContent(p, copy);
+            CHECK(BlocksEqual(copy.blocks, p.blocks) && copy.blocks[1].sens_from == 50.0);
+            PresetData pd;
+            pd.id = "user/slides";
+            pd.name = "Slides";
+            pd.blocks = p.blocks;
+            PresetData pb;
+            CHECK(ParsePreset(SerializePreset(pd), &pb) && BlocksEqual(pb.blocks, pd.blocks) && pb.blocks[1].sens_from == 50.0);
+        }
+        // On a rule's line (no `auto`), or unreadable: kept, written back as read.
+        for (const char* line : {"block sens_from=50 color=none hold_ms=0 cooldown_ms=0 offset_ms=0 land=cross marker=Rule\n",
+                                 "block auto=slide side=L sens=60 sens_from=x color=none hold_ms=0 cooldown_ms=0 offset_ms=0 "
+                                 "land=cross marker=Slide L\n",
+                                 "block auto=slide side=L sens=60 sens_from=101 color=none hold_ms=0 cooldown_ms=0 offset_ms=0 "
+                                 "land=cross marker=Slide L\n",
+                                 "block auto=slide side=L sens=60 sens_from=-1 color=none hold_ms=0 cooldown_ms=0 offset_ms=0 "
+                                 "land=cross marker=Slide L\n"}) {
+            const std::string rl = head + line;
+            ItemRules rr;
+            CHECK(ParseItemRules(rl, &rr) && rr.blocks.size() == 1 && rr.blocks[0].sens_from < 0.0);
+            CHECK(HasKeptText(rr) && SerializeItemRules(rr) == rl);
+        }
+    }
+
     // ---- 10-5 frozen fixtures ----
     // Written by the 10-5 build (the shipped v1 grammar) and committed as text. NEVER
     // regenerate them: a later format change must keep reading these and writing them back

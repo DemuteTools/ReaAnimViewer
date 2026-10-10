@@ -329,15 +329,40 @@ std::vector<int> ApplyAutoSettings(std::vector<Block>& blocks, const AutoSetting
         Block b = old[i];
         if (want_of_old[i] >= 0) {
             const Block& w = want[static_cast<size_t>(want_of_old[i])];
+            // Story 10-8h: a kept block keeps its own sensitivity and offset (per side or part,
+            // perhaps raised by Detect). Its kind switched (hand pivot): a raise found for the
+            // other kind goes; it starts again from the value it was raised from.
+            if (b.auto_type != w.auto_type && b.sens_from >= 0.0) {
+                b.sens = b.sens_from;
+                b.sens_from = -1.0;
+            }
             b.auto_type = w.auto_type;
-            b.sens = w.sens;
-            b.offset_ms = w.offset_ms;
         }
         map[i] = static_cast<int>(out.size());
         out.push_back(std::move(b));
     }
-    for (size_t j = 0; j < want.size(); ++j)
-        if (match_of_want[j] < 0) out.push_back(want[j]);
+    for (size_t j = 0; j < want.size(); ++j) {
+        if (match_of_want[j] >= 0) continue;
+        Block nb = want[j];
+        // Story 10-8h: a new block replacing a dropped block of the same type and side (steps
+        // switched between combined and separate) takes that block's start value (the value it
+        // was raised from, else its own) and offset, not raised; Detect's search raises it again
+        // if needed. Else the type's value.
+        AutoKind wk;
+        char     ws;
+        AutoBlockKind(nb, &wk, &ws);
+        for (size_t i = 0; i < old.size(); ++i) {
+            AutoKind k;
+            char     side;
+            if (keep[i] || !AutoBlockKind(old[i], &k, &side) || side != ws || AutoTypeOfKind(k) != AutoTypeOfKind(wk))
+                continue;
+            nb.sens = old[i].sens_from >= 0.0 ? old[i].sens_from : old[i].sens;
+            nb.offset_ms = old[i].offset_ms;
+            nb.sens_from = -1.0;
+            break;
+        }
+        out.push_back(std::move(nb));
+    }
     // Steps switched between separate and combined: the dropped step blocks' edits go to the new
     // step block of the same foot (combined -> heel, heel and toe -> combined). (A switched hand
     // pivot keeps its block, above; these two lines cover a hand left with both kinds.)
@@ -520,6 +545,89 @@ std::vector<Event> DetectAutoEvents(const std::vector<Block>& blocks, const std:
         }
     }
     return AutoEvents(runs, blocks);
+}
+
+// ---- Sensitivity search (story 10-8h) ---------------------------------------------------------
+
+namespace {
+
+// Block `b`'s detected events at sensitivity `sens` (-1 = its analysis failed), on `runs`.
+int CountAt(const Block& b, double sens, const std::vector<BoneTrack>& role_tracks, std::vector<AutoAnalysis>& runs)
+{
+    Block one = b;
+    one.sens = sens;
+    const std::vector<Block> blocks = {one};
+    const std::vector<Event> ev = DetectAutoEvents(blocks, role_tracks, &runs);
+    AutoKind k;
+    AutoBlockKind(one, &k, nullptr);
+    const PhysicsParams p = AutoPhysicsParams(AutoTypeOfKind(k), sens);
+    for (const AutoAnalysis& r : runs)
+        if (SameAutoAnalysis(r.params, p) && !r.analysis.ok) return -1;
+    return static_cast<int>(ev.size());
+}
+
+}  // namespace
+
+std::vector<AutoSensResult> SearchAutoSensitivity(const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
+                                                  const std::vector<int>& event_counts, const std::vector<int>& role_to_bone)
+{
+    std::vector<AutoSensResult> out(blocks.size());
+    // A local cache (every analysis of the search; the session's 8-entry one is left alone). The
+    // two sides of one type share theirs.
+    std::vector<AutoAnalysis> runs;
+    for (size_t i = 0; i < blocks.size(); ++i) {
+        const Block& b = blocks[i];
+        AutoSensResult& r = out[i];
+        r.sens = b.sens;
+        if (!IsActiveAutoBlock(b) || AutoBlockPartMissing(b, role_to_bone)) continue;
+        if (i >= event_counts.size() || event_counts[i] != 0) continue;  // has events (or unknown): untouched
+        const double start = std::isfinite(b.sens) ? std::clamp(b.sens, 0.0, 100.0) : kAutoDefaultSens;
+        if (CountAt(b, start, role_tracks, runs) != 0) continue;  // a failed analysis, or events after all
+        const int at100 = CountAt(b, 100.0, role_tracks, runs);
+        if (at100 < 0) continue;
+        r.searched = true;
+        if (at100 == 0) {
+            r.none = true;
+            continue;
+        }
+        // Bisection: lo has no event, hi has some; down to the lowest whole % (about 7 analyses).
+        double lo = start, hi = 100.0;
+        while (hi - lo > 1.0) {
+            const double mid = std::floor((lo + hi) * 0.5 + 0.5);
+            if (mid <= lo || mid >= hi) break;
+            const int n = CountAt(b, mid, role_tracks, runs);
+            if (n > 0) hi = mid;
+            else lo = mid;  // none, or a failed analysis there: search higher
+        }
+        r.sens = hi;
+        r.raised = true;
+        r.sens_from = b.sens_from >= 0.0 ? b.sens_from : start;
+    }
+    return out;
+}
+
+bool ApplyAutoSensSearch(std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
+                         const std::vector<int>& role_to_bone, std::vector<AutoSensResult>* results,
+                         std::vector<AutoAnalysis>* cache)
+{
+    std::vector<AutoSensResult> res;
+    bool                        changed = false;
+    if (HasActiveAutoBlocks(blocks)) {
+        std::vector<int> counts(blocks.size(), 0);
+        for (const Event& e : DetectAutoEvents(blocks, role_tracks, cache))
+            if (e.block >= 0 && e.block < static_cast<int>(counts.size())) ++counts[static_cast<size_t>(e.block)];
+        res = SearchAutoSensitivity(blocks, role_tracks, counts, role_to_bone);
+        for (size_t i = 0; i < res.size() && i < blocks.size(); ++i) {
+            Block& b = blocks[i];
+            if (res[i].raised && (res[i].sens != b.sens || res[i].sens_from != b.sens_from)) {
+                b.sens = res[i].sens;
+                b.sens_from = res[i].sens_from;
+                changed = true;
+            }
+        }
+    }
+    if (results) *results = std::move(res);
+    return changed;
 }
 
 // ---- Missing parts -----------------------------------------------------------------------------

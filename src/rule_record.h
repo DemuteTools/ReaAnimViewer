@@ -65,6 +65,9 @@
 //   - story 10-8b: `auto=<type> side=<L|R> sens=<0..100>` on a `block` line = an auto-detection
 //     block (Block::auto_type, auto_detect.h), written only on those, right after `on`. It has no
 //     `cond` line. An older RAV keeps the three as unknown fields of a block that never fires.
+//   - story 10-8h: `sens_from=<0..100>` right after `sens` = the sensitivity Detect raised the
+//     block from (Block::sens_from), written only when raised (absent = not raised), so older
+//     records write back byte-identical and an older RAV keeps it as an unknown field.
 //   - story 10-4: an `event` line writes `block`, `strength` and `speed` only when it was read
 //     with them (or made by this version), so a record written without them comes back as
 //     written. Event times are clip seconds; `block` is the rule's index in the item's blocks.

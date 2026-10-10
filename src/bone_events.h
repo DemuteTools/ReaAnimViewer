@@ -209,6 +209,9 @@ struct Block {
     std::string            auto_type;
     char                   auto_side = 'L';
     double                 sens = 50.0;
+    // Story 10-8h -- the sensitivity Detect raised this block from (it found no event there):
+    // < 0 = not raised. Cleared when the user edits the sensitivity.
+    double                 sens_from = -1.0;
 };
 
 // True for an auto-detection block (Block::auto_type set).

@@ -3817,7 +3817,8 @@ void SyncAutoSettings(const TaggingModel& m)
     g_auto_seen = cur;
 }
 
-// One value (sensitivity or offset) of every block of type t.
+// One value (sensitivity or offset) of every block of type t. Story 10-8h: a sensitivity edit
+// clears Detect's raise (sens_from).
 bool SetAutoValue(ItemRules& r, AutoType t, bool sens, double v)
 {
     bool any = false;
@@ -3825,32 +3826,102 @@ bool SetAutoValue(ItemRules& r, AutoType t, bool sens, double v)
         AutoKind k;
         if (!AutoBlockKind(b, &k, nullptr) || AutoTypeOfKind(k) != t) continue;
         (sens ? b.sens : b.offset_ms) = v;
+        if (sens) b.sens_from = -1.0;
         any = true;
     }
     return any;
 }
 
+// Story 10-8h: one value of one auto block (its kind word and side), as SetAutoValue.
+bool SetAutoBlockValue(ItemRules& r, const std::string& auto_type, char side, bool sens, double v)
+{
+    bool any = false;
+    for (Block& b : r.blocks) {
+        if (b.auto_type != auto_type || b.auto_side != side || !AutoBlockKind(b, nullptr, nullptr)) continue;
+        (sens ? b.sens : b.offset_ms) = v;
+        if (sens) b.sens_from = -1.0;
+        any = true;
+    }
+    return any;
+}
+
+double ClampAutoValue(bool sens, double v)
+{
+    return sens ? std::min(100.0, std::max(0.0, v)) : std::min(1000.0, std::max(-1000.0, v));
+}
+
+// The undo name of a type's value ("RAV: Set auto sensitivity (Slide scuff)"); `part` (a block's
+// marker) names one block.
+std::string AutoValueUndo(AutoType t, bool sens, const std::string& part = std::string())
+{
+    // Story 10-8e: the hand's Pivot scuff is named with its category ("Hands Pivot scuff").
+    std::string label = t == AutoType::HandPivot ? std::string(AutoCategoryLabel(AutoCategoryOf(t))) + " " + AutoTypeLabel(t)
+                                                 : std::string(AutoTypeLabel(t));
+    if (!part.empty()) label += ", " + part;
+    return std::string(sens ? "RAV: Set auto sensitivity (" : "RAV: Set auto offset (") + label + ")";
+}
+
+// Story 10-8h: a sensitivity Detect raised (raised_from >= 0) is drawn in amber.
+void PushRaised(double raised_from)
+{
+    if (raised_from >= 0.0) ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kWarn));
+}
+void PopRaised(double raised_from)
+{
+    if (raised_from >= 0.0) ImGui::PopStyleColor();
+}
+
 // A type's sensitivity (%) or offset (ms). On a detected type it edits the item's blocks as a
 // rule field does (a preview while dragging, one undo point on release); else the section's own
-// value, written by Detect.
-void AutoValueField(const char* id, AutoType t, bool sens, bool detected, double shown, float w)
+// value, written by Detect. `raised_from` (story 10-8h, >= 0): Detect raised it (amber).
+void AutoValueField(const char* id, AutoType t, bool sens, bool detected, double shown, float w, double raised_from = -1.0)
 {
     const int    ti = static_cast<int>(t);
     const double step = 1.0;  // whole % and ms (the fields show no decimals)
     const char*  unit = sens ? "%" : "ms";
-    auto clamp_v = [sens](double v) { return sens ? std::min(100.0, std::max(0.0, v)) : std::min(1000.0, std::max(-1000.0, v)); };
     if (detected) {
-        // Story 10-8e: the hand's Pivot scuff is named with its category ("Hands Pivot scuff").
-        const std::string label = t == AutoType::HandPivot ? std::string(AutoCategoryLabel(AutoCategoryOf(t))) + " " + AutoTypeLabel(t)
-                                                           : std::string(AutoTypeLabel(t));
-        const std::string undo = std::string(sens ? "RAV: Set auto sensitivity (" : "RAV: Set auto offset (") + label + ")";
-        NumberField(id, shown, step, 0, unit, w, undo,
-                    [t, sens, clamp_v](ItemRules& r, double v) { return SetAutoValue(r, t, sens, clamp_v(v)); });
+        PushRaised(raised_from);
+        NumberField(id, shown, step, 0, unit, w, AutoValueUndo(t, sens),
+                    [t, sens](ItemRules& r, double v) { return SetAutoValue(r, t, sens, ClampAutoValue(sens, v)); });
+        PopRaised(raised_from);
     } else {
         double& slot = sens ? g_auto_ui.type[ti].sens : g_auto_ui.type[ti].offset_ms;
         double  v = slot;
-        if (ui::DragNumber(id, &v, step, 0, unit, w) != ui::DragNumberEvent::None) slot = clamp_v(v);
+        if (ui::DragNumber(id, &v, step, 0, unit, w) != ui::DragNumberEvent::None) slot = ClampAutoValue(sens, v);
     }
+}
+
+// Story 10-8h: one block's sensitivity or offset (the type's per-block rows).
+void AutoBlockField(const char* id, AutoType t, const Block& b, bool sens, float w)
+{
+    const double      raised_from = sens ? b.sens_from : -1.0;
+    const std::string type = b.auto_type;
+    const char        side = b.auto_side;
+    PushRaised(raised_from);
+    NumberField(id, sens ? b.sens : b.offset_ms, 1.0, 0, sens ? "%" : "ms", w, AutoValueUndo(t, sens, b.marker),
+                [type, side, sens](ItemRules& r, double v) { return SetAutoBlockValue(r, type, side, sens, ClampAutoValue(sens, v)); });
+    PopRaised(raised_from);
+}
+
+// The sensitivity field's tooltip (story 10-8h: and where Detect raised it from).
+void AutoSensTooltip(double raised_from)
+{
+    if (!ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled)) return;
+    if (raised_from >= 0.0)
+        ImGui::SetTooltip("Raised by Detect from %.0f %%: it found no event there.\n"
+                          "Sensitivity: higher finds more events, lower fewer (50 %% = the default).",
+                          raised_from);
+    else
+        ImGui::SetTooltip("Sensitivity: higher finds more events, lower fewer (50 %% = the default).");
+}
+
+// Story 10-8h: the per-block icon (two short rows).
+void IconSplit(ImDrawList* dl, ImVec2 c, float r, ImU32 col)
+{
+    dl->AddLine(ImVec2(c.x - r, c.y - r * 0.5f), ImVec2(c.x + r, c.y - r * 0.5f), col, 1.6f);
+    dl->AddLine(ImVec2(c.x - r, c.y + r * 0.5f), ImVec2(c.x + r, c.y + r * 0.5f), col, 1.6f);
+    dl->AddCircleFilled(ImVec2(c.x - r * 0.35f, c.y - r * 0.5f), 2.0f, col);
+    dl->AddCircleFilled(ImVec2(c.x + r * 0.35f, c.y + r * 0.5f), 2.0f, col);
 }
 
 const char* AutoTypeHint(AutoType t)
@@ -3982,15 +4053,71 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
             if (ImGui::Checkbox(AutoTypeLabel(t), &on)) g_auto_ui.type[ti].on = on;
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("%s", AutoTypeHint(t));
             const bool detected = item.type[ti].on;
+            // Story 10-8h: the type's blocks (one per side or part) on the item, whether their
+            // values differ, Detect's raise, and the blocks that found no event up to 100 %.
+            std::vector<const Block*> tblocks;
+            bool                      differ = false;
+            double                    raised_from = -1.0;
+            std::string               none_parts;
+            for (const Block& b : rules.blocks) {
+                AutoKind k;
+                if (!AutoBlockKind(b, &k, nullptr) || AutoTypeOfKind(k) != t) continue;
+                if (!tblocks.empty() && (b.sens != tblocks[0]->sens || b.offset_ms != tblocks[0]->offset_ms ||
+                                         b.sens_from != tblocks[0]->sens_from))
+                    differ = true;
+                if (raised_from < 0.0 && b.sens_from >= 0.0) raised_from = b.sens_from;
+                if (AutoSearchedAt(m.auto_none, b))
+                    none_parts += (none_parts.empty() ? "" : ", ") + b.marker;
+                tblocks.push_back(&b);
+            }
+            const bool   can_split = detected && tblocks.size() > 1;
+            const ImGuiID split_id = ImGui::GetID("##autosplit");
+            const bool   split = can_split && (differ || storage->GetBool(split_id, false));
             if (!on) ImGui::BeginDisabled();
-            ImGui::SameLine(x_sens);
-            AutoValueField("##sens", t, true, detected, detected ? shown.type[ti].sens : g_auto_ui.type[ti].sens, fw);
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("Sensitivity: higher finds more events, lower fewer (50 %% = the default).");
-            ImGui::SameLine(x_off);
-            AutoValueField("##offset", t, false, detected, detected ? shown.type[ti].offset_ms : g_auto_ui.type[ti].offset_ms, fw);
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("Moves every marker of this type, in ms (+ = later).");
+            if (can_split) {
+                const float fh = ImGui::GetFrameHeight();
+                ImGui::SameLine(x_sens - fh - 4.0f);
+                if (IconButton("##autosplitbtn", fh, [](ImDrawList* d, ImVec2 c, ImU32 col) { IconSplit(d, c, 4.5f, col); },
+                               !differ))
+                    storage->SetBool(split_id, !split);
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip("%s", differ ? "Its rows have different values: one row each."
+                                         : split ? "One sensitivity and offset for the whole type."
+                                                 : "Sensitivity and offset per row.");
+            }
+            if (!split) {
+                ImGui::SameLine(x_sens);
+                AutoValueField("##sens", t, true, detected, detected ? shown.type[ti].sens : g_auto_ui.type[ti].sens, fw,
+                               detected ? raised_from : -1.0);
+                AutoSensTooltip(detected ? raised_from : -1.0);
+                ImGui::SameLine(x_off);
+                AutoValueField("##offset", t, false, detected, detected ? shown.type[ti].offset_ms : g_auto_ui.type[ti].offset_ms, fw);
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip("Moves every marker of this type, in ms (+ = later).");
+            } else {
+                // One row per block, labelled by its marker.
+                for (size_t bi = 0; bi < tblocks.size(); ++bi) {
+                    const Block& b = *tblocks[bi];
+                    ImGui::PushID(static_cast<int>(bi));
+                    ImGui::SetCursorPosX(x0 + ImGui::GetFrameHeight() + 4.0f);
+                    ImGui::AlignTextToFramePadding();
+                    ImGui::TextDisabled("%s", b.marker.c_str());
+                    ImGui::SameLine(x_sens);
+                    AutoBlockField("##bsens", t, b, true, fw);
+                    AutoSensTooltip(b.sens_from);
+                    ImGui::SameLine(x_off);
+                    AutoBlockField("##boffset", t, b, false, fw);
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+                        ImGui::SetTooltip("Moves this row's markers, in ms (+ = later).");
+                    ImGui::PopID();
+                }
+            }
+            if (detected && !none_parts.empty()) {
+                ImGui::SetCursorPosX(x0 + ImGui::GetFrameHeight() + 4.0f);
+                ImGui::TextColored(ui::Col(ui::kWarn), "No event up to 100 %% (%s)", none_parts.c_str());
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip("Detect tried up to 100 %% and found nothing there: the value is unchanged.");
+            }
             if (t == AutoType::Step) {
                 static const char* const kStepModes[] = {"Combined", "Separate"};
                 ImGui::SetCursorPosX(x0 + ImGui::GetFrameHeight() + 4.0f);
@@ -4028,16 +4155,32 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
         // Detect: lit while a tick or Separate / Combined waits for it.
         ImGui::Dummy(ImVec2(0.0f, 2.0f));
         const bool pending = AutoPending(g_auto_ui, item);
-        const bool can = pending && m.item && m.file_loaded;
+        // Story 10-8h: also lit when a ticked block that can run found no event and was not
+        // searched in this session (Detect raises its sensitivity).
+        bool search_waiting = false;
+        if (m.detected && m.auto_error.empty())
+            for (size_t i = 0; i < rules.blocks.size() && i < m.trace.blocks.size() && !search_waiting; ++i) {
+                const Block& b = rules.blocks[i];
+                if (!IsActiveAutoBlock(b) || AutoBlockPartMissing(b, m.role_to_bone) || !m.trace.blocks[i].events.empty())
+                    continue;
+                if (!AutoSearchedAt(m.auto_searched, b))
+                    search_waiting = true;
+            }
+        const bool lit = pending || search_waiting;
+        const bool can = lit && m.item && m.file_loaded;
         if (!can) ImGui::BeginDisabled();
-        const bool clicked = pending ? ui::PrimaryButton("Detect##autodetect", ImVec2(-1.0f, 0.0f))
-                                     : ui::SolidButton("Detect##autodetect", ImVec2(-1.0f, 0.0f));
+        const bool clicked = lit ? ui::PrimaryButton("Detect##autodetect", ImVec2(-1.0f, 0.0f))
+                                 : ui::SolidButton("Detect##autodetect", ImVec2(-1.0f, 0.0f));
         if (!can) ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip("%s", pending ? "Adds the ticked types to this item and removes the unticked ones (one undo "
-                                              "point).\nYour corrections stay, except on a type you untick."
-                                            : "Tick or untick a type, or switch Combined / Separate or Only after a Grab, then Detect.\n"
-                                              "Sensitivity and offset of a detected type apply at once.");
+                                              "point).\nYour corrections stay, except on a type you untick.\n"
+                                              "A side or part that finds no event gets the lowest sensitivity that finds one."
+                                    : search_waiting
+                                        ? "A ticked type finds no event on a side or part: Detect raises its sensitivity\n"
+                                          "to the lowest that finds one, up to 100 % (one undo point)."
+                                        : "Tick or untick a type, or switch Combined / Separate or Only after a Grab, then Detect.\n"
+                                          "Sensitivity and offset of a detected type apply at once.");
         if (clicked) {
             const AutoSettings s = g_auto_ui;
             ClearEventSelection();

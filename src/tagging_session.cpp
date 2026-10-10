@@ -289,20 +289,31 @@ std::vector<BoneTrack> SampleRoleTracks(const CpuAsset& asset, const std::vector
                              [&](const std::vector<int>& bones) { return SampleBoneTracks(asset, bones, kDetectRateHz); });
 }
 
-// The current item's auto events for `blocks` (the session's role tracks, sampled when the file
-// or the mapping changed); m.auto_error says why they found nothing.
-std::vector<Event> SessionAutoEvents(const std::vector<Block>& blocks)
+// The session's role tracks for the current file and mapping (sampled when either changed; the
+// analyses and story 10-8h's search results go with the old ones). False: no file.
+bool EnsureRoleTracks()
 {
     TaggingModel& m = g.model;
-    m.auto_error.clear();
-    if (!HasActiveAutoBlocks(blocks) || !g.asset) return {};
+    if (!g.asset) return false;
     SampleKey key = RoleTrackKey(g.asset_path, g.asset_stamp, m.role_to_bone);
     if (!g.have_role_tracks || !(key == g.role_key)) {
         g.role_tracks = SampleRoleTracks(*g.asset, m.role_to_bone);
         g.role_key = std::move(key);
         g.have_role_tracks = true;
         g.auto_cache.clear();
+        m.auto_searched.clear();
+        m.auto_none.clear();
     }
+    return true;
+}
+
+// The current item's auto events for `blocks` (the session's role tracks, sampled when the file
+// or the mapping changed); m.auto_error says why they found nothing.
+std::vector<Event> SessionAutoEvents(const std::vector<Block>& blocks)
+{
+    TaggingModel& m = g.model;
+    m.auto_error.clear();
+    if (!HasActiveAutoBlocks(blocks) || !EnsureRoleTracks()) return {};
     std::vector<Event> ev = DetectAutoEvents(blocks, g.role_tracks, &g.auto_cache);
     for (const PhysicsParams& p : AutoParamSets(blocks))
         for (const AutoAnalysis& a : g.auto_cache)
@@ -434,6 +445,8 @@ void TaggingSessionFrame(MediaItem* item, const std::string& path)
             g.read_done = false;
             g.reread_at = -1.0;
             g.detect_dirty = true;
+            m.auto_searched.clear();  // story 10-8h: the search results belong to the item
+            m.auto_none.clear();
             if (!item) {
                 // The file goes too: the next item (even of the same file) loads it again.
                 g.asset_path.clear();
@@ -598,10 +611,34 @@ bool TaggingDetectAuto(const AutoSettings& settings)
     return TaggingEdit("RAV: Detect auto events", [settings](ItemRules& r) {
         bool                   changed = false;
         const std::vector<int> map = ApplyAutoSettings(r.blocks, settings, &changed);
-        if (!changed) return false;
-        RemapEventBlocks(r.events, map);
-        return true;
+        if (changed) RemapEventBlocks(r.events, map);
+        // Story 10-8h: a block with no detected event (before the user's Suppress edits) gets the
+        // lowest sensitivity that finds one, in this undo point.
+        TaggingModel& m = g.model;
+        if (HasActiveAutoBlocks(r.blocks) && EnsureRoleTracks()) {
+            std::vector<AutoSensResult> res;
+            if (ApplyAutoSensSearch(r.blocks, g.role_tracks, m.role_to_bone, &res, &g.auto_cache)) changed = true;
+            for (size_t i = 0; i < res.size() && i < r.blocks.size(); ++i) {
+                if (!res[i].searched) continue;
+                const std::string key = AutoSearchKey(r.blocks[i]);
+                m.auto_searched[key] = r.blocks[i].sens;
+                if (res[i].none) m.auto_none[key] = r.blocks[i].sens;
+                else m.auto_none.erase(key);
+            }
+        }
+        return changed;
     });
+}
+
+std::string AutoSearchKey(const Block& b)
+{
+    return b.auto_type + ":" + std::string(1, b.auto_side);
+}
+
+bool AutoSearchedAt(const std::map<std::string, double>& in, const Block& b)
+{
+    const auto it = in.find(AutoSearchKey(b));
+    return it != in.end() && it->second == b.sens;
 }
 
 bool TaggingLoadPreset(const std::string& preset_id)

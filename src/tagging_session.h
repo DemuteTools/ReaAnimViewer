@@ -95,6 +95,13 @@ struct TaggingModel {
     // Story 10-8b: why the auto blocks found nothing ("" = they ran): the physics analysis' reason
     // (no body scale, the clip too short, the bones not sampled...).
     std::string                auto_error;
+    // Story 10-8h: Detect's sensitivity search in this session (cleared on another item, file or
+    // mapping), by block key ("<auto_type>:<side>", AutoSearchKey): the blocks searched, and those
+    // that found no event up to 100 % (the type row says so; the note is not saved).
+    // Each key maps to the sensitivity the block had after its search: a block counts as searched
+    // (or "none") only while its sensitivity is still that value (an undo or an edit undoes it).
+    std::map<std::string, double> auto_searched;
+    std::map<std::string, double> auto_none;
     bool                       markers_up_to_date = false;
     bool                       has_previews = false;  // 10-4 fb-4: the saved record has preview markers
     // 10-6: the item's pool (read at the selection's cadence, not per frame): how many other items
@@ -182,7 +189,15 @@ bool TaggingAnalyse();
 // settings (ApplyAutoSettings: ticked types added, unticked ones removed with their events, steps
 // switched between separate and combined), the event list remapped. One undo point ("RAV: Detect
 // auto events"); nothing is written when the blocks would not change.
+// Story 10-8h: in the same undo point, every searchable block with no detected event gets the
+// lowest sensitivity that finds one (SearchAutoSensitivity, auto_detect.h; raised: sens_from
+// set), and the model's auto_searched / auto_none are updated. Written also when only a
+// sensitivity was raised.
 bool TaggingDetectAuto(const AutoSettings& settings);
+// Story 10-8h: an auto block's key in TaggingModel::auto_searched / auto_none, and whether the
+// block is in that map at its current sensitivity.
+std::string AutoSearchKey(const Block& b);
+bool        AutoSearchedAt(const std::map<std::string, double>& in, const Block& b);
 
 // Loads a preset on the item (SetUpPresetOnItem): one undo point.
 bool TaggingLoadPreset(const std::string& preset_id);

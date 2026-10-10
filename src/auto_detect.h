@@ -14,6 +14,19 @@
 //   lift-off   the foot leaves the ground (Lift L / R).
 //   slide      a planted part slides (Slide L / R).
 //   pivot      the planted foot turns (Pivot L / R).
+//   Story 10-8m: slide and pivot each have a "Heel / toe separate" mode (AutoSettings::slide_parts,
+//   pivot_parts). Combined (the default): one block per side, as above. Separate: a heel block and
+//   a toe block per side (Slide Heel L, Slide Toe L, Pivot Heel R, Pivot Toe R...; the toe is the
+//   forefoot: the ball, or the toe tip), and either
+//     Each part     every part that scuffs gets its own event (kinds slide_heel, slide_toe,
+//                   pivot_heel, pivot_toe): the heel's slides and the forefoot's are found
+//                   separately (a slide during a pivot of that foot is still the pivot's); a pivot
+//                   on one part gives that part's event, a whole-foot pivot both.
+//     Longest part  one event per scuff (the combined ones), on the block of the part that holds
+//                   longest (PhysicsEvent::longest; kinds slide_heel_longest, slide_toe_longest,
+//                   pivot_heel_longest, pivot_toe_longest). A tie goes to the toe.
+//   The heel block takes the type's colour, the toe block a shade lighter. Sensitivity and offset
+//   work as for the combined type (same AutoType, same constants).
 //   Hands
 //   grab       the hand lands on something (Grab L / R).
 //   release    the hand leaves its support (Release L / R).
@@ -67,14 +80,21 @@ const char*  AutoCategoryLabel(AutoCategory c);       // "Feet", "Hands"
 
 // The block kinds (Block::auto_type words): a combined step, a separate heel or toe step, a
 // lift-off, a slide, a pivot, a grab, a release, a hand pivot after a grab or of any resting hand.
-enum class AutoKind : int { Step = 0, Heel, Toe, Lift, Slide, Pivot, Grab, Release, HandPivot, HandPivotAny };
-constexpr int kAutoKindCount = 10;
-// "step", "heel", "toe", "lift", "slide", "pivot", "grab", "release", "hand_pivot", "hand_pivot_any"
+// Story 10-8m appends the slides and pivots by part (Each part, then Longest part).
+enum class AutoKind : int {
+    Step = 0, Heel, Toe, Lift, Slide, Pivot, Grab, Release, HandPivot, HandPivotAny,
+    SlideHeel, SlideToe, PivotHeel, PivotToe, SlideHeelLongest, SlideToeLongest, PivotHeelLongest, PivotToeLongest
+};
+constexpr int kAutoKindCount = 18;
+// "step", "heel", "toe", "lift", "slide", "pivot", "grab", "release", "hand_pivot", "hand_pivot_any",
+// "slide_heel", "slide_toe", "pivot_heel", "pivot_toe", "slide_heel_longest", "slide_toe_longest",
+// "pivot_heel_longest", "pivot_toe_longest"
 const char* AutoKindWord(AutoKind k);
 bool AutoKindFromWord(const std::string& w, AutoKind* out);
 AutoType AutoTypeOfKind(AutoKind k);
 // The marker name: "FS L", "Heel L", "Toe L", "Lift L", "Slide L", "Pivot L", "Grab L", "Release L",
-// "Hand Pivot L" (both hand pivot kinds) (and R).
+// "Hand Pivot L" (both hand pivot kinds), "Slide Heel L", "Slide Toe L", "Pivot Heel L", "Pivot Toe L"
+// (both part modes) (and R).
 std::string AutoMarkerName(AutoKind k, char side);
 // The default colour (Block::color form: 0x1000000 | 0xRRGGBB), one per kind and side.
 uint32_t AutoDefaultColor(AutoKind k, char side);
@@ -111,10 +131,15 @@ const AutoRowValue* FindAutoRow(const AutoTypeSettings& t, const std::string& ki
 // Sets one row's sensitivity or offset (the row added, from the type's values, when absent).
 void SetAutoRowValue(AutoTypeSettings& t, const std::string& kind, char side, bool sens, double v);
 
+// Story 10-8m: a foot scuff type's mode (see the header).
+enum class ScuffParts : int { Combined = 0, EachPart, Longest };
+
 struct AutoSettings {
     AutoTypeSettings type[kAutoTypeCount];
     bool             separate_steps = false;  // steps: heel and toe separate, else combined
     bool             hand_pivot_any = false;  // hand pivots: any resting hand, else only after a grab
+    ScuffParts       slide_parts = ScuffParts::Combined;
+    ScuffParts       pivot_parts = ScuffParts::Combined;
 };
 bool operator==(const AutoTypeSettings& a, const AutoTypeSettings& b);
 bool operator==(const AutoSettings& a, const AutoSettings& b);
@@ -130,8 +155,8 @@ int  AutoCategoryOnCount(const AutoSettings& s, AutoCategory c);  // its ticked 
 void UntickAutoCategory(AutoSettings& s, AutoCategory c);
 
 // What Detect would change: a type ticked or unticked, steps switched between separate and
-// combined, or hand pivots between after a grab and any (sensitivity and offset never wait for
-// Detect on a detected type).
+// combined, slides or pivots between their part modes, or hand pivots between after a grab and
+// any (sensitivity and offset never wait for Detect on a detected type).
 bool AutoPending(const AutoSettings& ui, const AutoSettings& item);
 
 // The blocks of these settings, per ticked type x side (story 10-8h: a row's own values when the
@@ -141,7 +166,8 @@ std::vector<Block> AutoBlocks(const AutoSettings& s);
 // The settings the item's known auto blocks say: a type is on when one of its blocks is there,
 // its sensitivity and offset are its first block's; steps are separate when heel or toe blocks
 // are there and no combined one; hand pivots are any when hand_pivot_any blocks are there and no
-// hand_pivot one.
+// hand_pivot one; a slide's / pivot's mode is Each part or Longest part when only blocks of that
+// mode are there (else combined).
 AutoSettings ReadAutoSettings(const std::vector<Block>& blocks);
 
 // Detect: the blocks after these settings. A wanted kind x side already there keeps its block
@@ -152,7 +178,10 @@ AutoSettings ReadAutoSettings(const std::vector<Block>& blocks);
 // Returns the old -> new block map (-1 = gone) for RemapEventBlocks: switching steps between
 // separate and combined keeps the user's edits on that foot (combined -> the heel, heel and toe ->
 // combined), and a hand pivot switched between after a grab and any keeps its block (place,
-// marker, colour, on/off, edits; only its kind changes); an unticked type's go with its blocks. `changed` (optional): the blocks changed.
+// marker, colour, on/off, edits; only its kind changes), and so does a slide / pivot part block
+// switched between Each part and Longest part (story 10-8m); a slide / pivot switched between
+// combined and separate maps the edits as steps do (combined -> heel, heel and toe -> combined);
+// an unticked type's go with its blocks. `changed` (optional): the blocks changed.
 std::vector<int> ApplyAutoSettings(std::vector<Block>& blocks, const AutoSettings& s, bool* changed = nullptr);
 
 // ---- Physics parameters ------------------------------------------------------------------------
@@ -235,12 +264,15 @@ bool HasActiveAutoBlocks(const std::vector<Block>& blocks);
 //   step combined, lift-off, slide   the heel, toe or toe end (all listed when none has a bone)
 //   step separate                    the heel; the toe (or the toe end)
 //   pivot                            the heel and the toe (or the toe end)
+//   slide separate (story 10-8m)     the heel; the toe (or the toe end)
+// (`separate` is the type's own mode: separate_steps for steps, slide_parts != Combined for slides.)
 //   grab, release, hand pivot        the hand
 std::vector<std::string> AutoMissingParts(AutoType t, bool separate, const std::vector<int>& role_to_bone);
 
 // 10-8b fb-1 -- true when a known auto block that is on cannot find its events on this mapping:
 // no body scale, or its own part on its side has no bone (combined step, lift-off, slide: no heel,
-// toe nor toe end; heel: no heel; toe: no toe nor toe end; pivot: no heel, or no toe nor toe end;
+// toe nor toe end; heel, slide heel: no heel; toe, slide toe: no toe nor toe end; every pivot kind:
+// no heel, or no toe nor toe end;
 // grab, release, hand pivot: no hand). Its earlier markers are then kept (KeepBlockEvents, event_list.h).
 bool AutoBlockPartMissing(const Block& b, const std::vector<int>& role_to_bone);
 // Per block: AutoBlockPartMissing (rules: 0).

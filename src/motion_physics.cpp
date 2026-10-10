@@ -415,8 +415,30 @@ void AddArrival(PartTrack& pt, double rate, const PhysicsParams& p, double min_a
     pt.contacts.push_back(c);
 }
 
+// Overlapping scuffs (sorted by start) merged: the fastest names the part.
+std::vector<Scuff> MergeScuffs(const std::vector<Scuff>& raw)
+{
+    std::vector<Scuff> out;
+    for (const Scuff& s : raw) {
+        if (!out.empty() && s.start <= out.back().end) {
+            Scuff& m = out.back();
+            m.end = std::max(m.end, s.end);
+            if (s.strength > m.strength) {
+                m.strength = s.strength;
+                m.part = s.part;
+            }
+            continue;
+        }
+        out.push_back(s);
+    }
+    return out;
+}
+
 // Slide scuffs of one foot: per part within its contacts, then overlapping parts merged.
-std::vector<Scuff> FindSlides(const FootTrack& f, double leg, double rate, const PhysicsParams& p)
+// Story 10-8m: each merged scuff's `longest` (sliding samples per part), and `by_part` (optional)
+// gets the heel-only and forefoot-only merges, by start.
+std::vector<Scuff> FindSlides(const FootTrack& f, double leg, double rate, const PhysicsParams& p,
+                              std::vector<Scuff>* by_part = nullptr)
 {
     std::vector<Scuff> raw;
     const double       tol = p.slide_height * leg;
@@ -451,18 +473,29 @@ std::vector<Scuff> FindSlides(const FootTrack& f, double leg, double rate, const
     }
     std::sort(raw.begin(), raw.end(),
               [](const Scuff& a, const Scuff& b) { return std::tie(a.start, a.part) < std::tie(b.start, b.part); });
-    std::vector<Scuff> out;
-    for (const Scuff& s : raw) {
-        if (!out.empty() && s.start <= out.back().end) {
-            Scuff& m = out.back();
-            m.end = std::max(m.end, s.end);
-            if (s.strength > m.strength) {
-                m.strength = s.strength;
-                m.part = s.part;
+    std::vector<Scuff> out = MergeScuffs(raw);
+    const int          heel = static_cast<int>(FootPart::Heel);
+    for (Scuff& m : out) {
+        int n[kFootPartCount] = {};
+        for (const Scuff& s : raw)
+            if (s.start >= m.start && s.start < m.end) n[s.part] += s.end - s.start;
+        const int fq = n[static_cast<int>(FootPart::Tip)] > n[static_cast<int>(FootPart::Ball)] ? static_cast<int>(FootPart::Tip)
+                                                                                              : static_cast<int>(FootPart::Ball);
+        m.longest = n[heel] > n[fq] ? heel : fq;
+    }
+    if (by_part) {
+        by_part->clear();
+        for (int side = 0; side < 2; ++side) {
+            std::vector<Scuff> sub;
+            for (const Scuff& s : raw)
+                if ((s.part == heel) == (side == 0)) sub.push_back(s);
+            for (Scuff m : MergeScuffs(sub)) {
+                m.longest = side == 0 ? heel : m.part;
+                by_part->push_back(m);
             }
-            continue;
         }
-        out.push_back(s);
+        std::sort(by_part->begin(), by_part->end(),
+                  [](const Scuff& a, const Scuff& b) { return std::tie(a.start, a.part) < std::tie(b.start, b.part); });
     }
     return out;
 }
@@ -590,6 +623,8 @@ std::vector<Scuff> FindPivots(const FootTrack& f, int n, double rate, const Phys
         else if (h_in && t_in && toe_v < 0.5 * heel_v) s.part = toe_q;
         else if (h_in && t_in && heel_v < 0.5 * toe_v) s.part = static_cast<int>(FootPart::Heel);
         else s.part = -1;
+        // Story 10-8m: the part that holds longest (a tie: the forefoot, spin turns are on the ball).
+        s.longest = s.part >= 0 ? s.part : heel_in > toe_in ? static_cast<int>(FootPart::Heel) : toe_q;
         bool planted = true;
         for (int i = std::max(0, run.start - margin); planted && i < after; ++i)
             planted = in_part(s.part, i);
@@ -984,13 +1019,17 @@ PhysicsAnalysis AnalyseTrack(const std::vector<BoneTrack>& rt, const PhysicsPara
             }
         }
         f.pivots = FindPivots(f, static_cast<int>(n), rate, p);
-        std::vector<Scuff> slides = FindSlides(f, leg, rate, p);
-        for (const Scuff& sl : slides) {
-            bool in_pivot = false;
+        std::vector<Scuff> by_part;
+        std::vector<Scuff> slides = FindSlides(f, leg, rate, p, &by_part);
+        auto in_pivot = [&](const Scuff& sl) {
             for (const Scuff& pv : f.pivots)
-                if (sl.start < pv.end && pv.start < sl.end) in_pivot = true;
-            if (!in_pivot) f.slides.push_back(sl);
-        }
+                if (sl.start < pv.end && pv.start < sl.end) return true;
+            return false;
+        };
+        for (const Scuff& sl : slides)
+            if (!in_pivot(sl)) f.slides.push_back(sl);
+        for (const Scuff& sl : by_part)
+            if (!in_pivot(sl)) f.part_slides.push_back(sl);
     }
 
     // Hands: segmented as a foot part, with the hand contact speed and switch cost.
@@ -1264,8 +1303,47 @@ std::vector<PhysicsEvent> FootEvents(const PhysicsAnalysis& a, const PhysicsPara
                 e.time_s = e.start_s = sc.start / rate;
                 e.end_s = sc.end / rate;
                 e.strength = sc.strength;
+                e.longest = sc.longest;
                 ev.push_back(e);
             }
+    }
+    ToClipTime(a, ev);
+    std::stable_sort(ev.begin(), ev.end(), [](const PhysicsEvent& x, const PhysicsEvent& y) {
+        return std::make_tuple(std::llround(x.time_s * 1e6), x.side, static_cast<int>(x.kind), x.part) <
+               std::make_tuple(std::llround(y.time_s * 1e6), y.side, static_cast<int>(y.kind), y.part);
+    });
+    return ev;
+}
+
+std::vector<PhysicsEvent> FootPartScuffEvents(const PhysicsAnalysis& a)
+{
+    std::vector<PhysicsEvent> ev;
+    if (!a.ok) return ev;
+    const double rate = a.rate_hz;
+    for (int s = 0; s < 2; ++s) {
+        const FootTrack& f = a.foot[s];
+        const int        toe_q = f.part[static_cast<int>(FootPart::Ball)].present ? static_cast<int>(FootPart::Ball)
+                                                                                  : static_cast<int>(FootPart::Tip);
+        auto push = [&](PhysicsKind kind, const Scuff& sc, int part) {
+            PhysicsEvent e;
+            e.kind = kind;
+            e.side = f.side;
+            e.part = part;
+            e.time_s = e.start_s = sc.start / rate;
+            e.end_s = sc.end / rate;
+            e.strength = sc.strength;
+            e.longest = sc.longest;
+            ev.push_back(e);
+        };
+        for (const Scuff& sc : f.part_slides) push(PhysicsKind::Slide, sc, sc.part);
+        for (const Scuff& sc : f.pivots) {
+            if (sc.part >= 0) {
+                push(PhysicsKind::Pivot, sc, sc.part);
+                continue;
+            }
+            push(PhysicsKind::Pivot, sc, static_cast<int>(FootPart::Heel));
+            push(PhysicsKind::Pivot, sc, toe_q);
+        }
     }
     ToClipTime(a, ev);
     std::stable_sort(ev.begin(), ev.end(), [](const PhysicsEvent& x, const PhysicsEvent& y) {

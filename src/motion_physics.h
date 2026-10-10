@@ -297,6 +297,11 @@ struct Scuff {
     int    end = 0;
     int    part = -1;
     double strength = 0.0;
+    // Story 10-8m: the part that holds longest, Heel or the forefoot's part (ball, or tip), -1 =
+    // none. A slide: the most sliding samples in the merged scuff (heel against the forefoot's
+    // busier part); a pivot: its part, else the part with more contact samples over the turn. A
+    // tie goes to the forefoot.
+    int    longest = -1;
 };
 
 // Where a steep foot's heading comes from (story 10-8d, see the pivot scuff above).
@@ -315,6 +320,9 @@ struct FootTrack {
     std::vector<char>   heading_valid;      // the source holds (whatever the contact)
     std::vector<Scuff>  slides;
     std::vector<Scuff>  pivots;
+    // Story 10-8m: the heel's slides and the forefoot's slides (ball and tip merged), found
+    // separately, pivot-filtered as `slides`; each part = Heel or the forefoot's fastest part.
+    std::vector<Scuff>  part_slides;
 };
 
 // A hand: its contacts as a part (PartTrack, segmented with the hand constants), and its
@@ -373,10 +381,16 @@ struct PhysicsEvent {
     double      start_s = 0.0;   // a scuff's span (= time_s for the others)
     double      end_s = 0.0;
     double      strength = 0.0;  // leg/s (steps, lift-offs, slides, grabs, releases) or degrees (pivots, hand pivots)
+    int         longest = -1;    // a scuff's Scuff::longest (story 10-8m); never printed
 };
 
 // Every event, by time (then side, kind, part). Steps use p.step_timing / p.step_offset_s.
 std::vector<PhysicsEvent> FootEvents(const PhysicsAnalysis& a, const PhysicsParams& p = {});
+
+// Story 10-8m: the slide and pivot events by part (Kind Slide / Pivot, part Heel or the forefoot's
+// part): FootTrack::part_slides, and each pivot on its part (a whole-foot pivot gives a heel event
+// and a forefoot event). Clip time, sorted as FootEvents.
+std::vector<PhysicsEvent> FootPartScuffEvents(const PhysicsAnalysis& a);
 
 // Every hand event (grabs, releases and pivots), by time (then side, kind). Uses p.hand_*
 // (p.hand_pivot_after_grab picks the pivots; their thresholds are the analysis').

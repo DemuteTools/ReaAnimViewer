@@ -3737,7 +3737,7 @@ void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const Sho
         // Story 10-8b: the physics' values: leg lengths per second (degrees for a pivot), m/s.
         AutoKind   k = AutoKind::Step;
         const bool pivot = AutoBlockKind(blk, &k, nullptr) &&
-                           (k == AutoKind::Pivot || k == AutoKind::HandPivot || k == AutoKind::HandPivotAny);
+                           (AutoTypeOfKind(k) == AutoType::Pivot || k == AutoKind::HandPivot || k == AutoKind::HandPivotAny);
         char       buf[64];
         // A user event on an auto row has no measured values (EventValuesAt: none for auto blocks).
         const bool user = e.kind == ShownKind::User;
@@ -3823,6 +3823,12 @@ void SyncAutoSettings(const TaggingModel& m)
     const int hp = static_cast<int>(AutoType::HandPivot);
     if (cur.type[hp].on && (!g_auto_seen.type[hp].on || cur.hand_pivot_any != g_auto_seen.hand_pivot_any))
         g_auto_ui.hand_pivot_any = cur.hand_pivot_any;
+    // Story 10-8m: the slide and pivot part modes, as the steps' mode.
+    const int sl = static_cast<int>(AutoType::Slide), pv = static_cast<int>(AutoType::Pivot);
+    if (cur.type[sl].on && (!g_auto_seen.type[sl].on || cur.slide_parts != g_auto_seen.slide_parts))
+        g_auto_ui.slide_parts = cur.slide_parts;
+    if (cur.type[pv].on && (!g_auto_seen.type[pv].on || cur.pivot_parts != g_auto_seen.pivot_parts))
+        g_auto_ui.pivot_parts = cur.pivot_parts;
     g_auto_seen = cur;
 }
 
@@ -3934,8 +3940,10 @@ const char* AutoTypeHint(AutoType t)
     case AutoType::Step: return "A marker where the foot lands: FS L / FS R (combined: the first part to touch),\n"
                                 "or Heel and Toe separately (one marker per part).";
     case AutoType::LiftOff: return "A marker where the foot leaves the ground: Lift L / Lift R.";
-    case AutoType::Slide: return "A marker where a planted foot slides: Slide L / Slide R.";
-    case AutoType::Pivot: return "A marker where a planted foot turns on its ball or heel: Pivot L / Pivot R.";
+    case AutoType::Slide: return "A marker where a planted foot slides: Slide L / Slide R (combined),\n"
+                                 "or Slide Heel L / Slide Toe L... (separate).";
+    case AutoType::Pivot: return "A marker where a planted foot turns on its ball or heel: Pivot L / Pivot R (combined),\n"
+                                 "or Pivot Heel L / Pivot Toe L... (separate).";
     case AutoType::Grab: return "A marker where the hand lands on something: Grab L / Grab R.";
     case AutoType::Release: return "A marker where the hand leaves its support: Release L / Release R.";
     case AutoType::HandPivot: return "A marker where a planted hand turns: Hand Pivot L / Hand Pivot R.";
@@ -4177,6 +4185,32 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
                     ImGui::SetTooltip("Combined: one marker per landing (FS L / FS R).\nSeparate: the heel and the toe "
                                       "each get theirs (Heel L, Toe L...).");
             }
+            if (t == AutoType::Slide || t == AutoType::Pivot) {
+                // Story 10-8m: heel / toe separate scuffs, and Each part or Longest part while
+                // Separate. Both wait for Detect, as the step mode.
+                static const char* const kScuffModes[] = {"Combined", "Separate"};
+                static const char* const kScuffParts[] = {"Each part", "Longest part"};
+                ScuffParts& mode = t == AutoType::Slide ? g_auto_ui.slide_parts : g_auto_ui.pivot_parts;
+                const char* word = t == AutoType::Slide ? "Slide" : "Pivot";
+                ImGui::SetCursorPosX(x0 + ImGui::GetFrameHeight() + 4.0f);
+                int sel = mode == ScuffParts::Combined ? 0 : 1;
+                if (ui::Segmented(t == AutoType::Slide ? "##slidemode" : "##pivotmode", kScuffModes, 2, &sel))
+                    mode = sel == 0 ? ScuffParts::Combined : ScuffParts::EachPart;
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip("Combined: one marker per scuff (%s L / %s R).\nSeparate: the heel and the toe "
+                                      "each get their block (%s Heel L, %s Toe L...).",
+                                      word, word, word, word);
+                if (mode != ScuffParts::Combined) {
+                    ImGui::SetCursorPosX(x0 + ImGui::GetFrameHeight() + 4.0f);
+                    int part = mode == ScuffParts::Longest ? 1 : 0;
+                    if (ui::Segmented(t == AutoType::Slide ? "##slideparts" : "##pivotparts", kScuffParts, 2, &part))
+                        mode = part == 1 ? ScuffParts::Longest : ScuffParts::EachPart;
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+                        ImGui::SetTooltip("Each part: every part that scuffs gets its event (a whole-foot scuff gives a "
+                                          "heel and a toe one).\nLongest part: one event per scuff, on the part that "
+                                          "holds longest.");
+                }
+            }
             if (t == AutoType::HandPivot) {
                 // Story 10-8e: on, only a hand that came to rest with a grab pivots.
                 ImGui::SetCursorPosX(x0 + ImGui::GetFrameHeight() + 4.0f);
@@ -4191,7 +4225,10 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
             std::vector<std::string> miss;
             for (int ti = 0; ti < kAutoTypeCount; ++ti) {
                 if (!g_auto_ui.type[ti].on) continue;
-                for (const std::string& r : AutoMissingParts(static_cast<AutoType>(ti), g_auto_ui.separate_steps, m.role_to_bone))
+                // Story 10-8m: `separate` is the type's own mode.
+                const bool separate = ti == static_cast<int>(AutoType::Slide) ? g_auto_ui.slide_parts != ScuffParts::Combined
+                                                                               : g_auto_ui.separate_steps;
+                for (const std::string& r : AutoMissingParts(static_cast<AutoType>(ti), separate, m.role_to_bone))
                     if (std::find(miss.begin(), miss.end(), r) == miss.end()) miss.push_back(r);
             }
             if (!miss.empty()) {

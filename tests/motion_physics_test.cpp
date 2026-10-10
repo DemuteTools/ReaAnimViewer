@@ -689,6 +689,17 @@ int main()
         }
         CHECK(Of(ev, PhysicsKind::Step).empty() && Of(ev, PhysicsKind::FootStep).empty());
         CHECK(Of(ev, PhysicsKind::LiftOff).empty() && Of(ev, PhysicsKind::Pivot).empty());
+        // Story 10-8m: the whole foot slides, heel and forefoot at once: one heel and one forefoot
+        // part slide; the combined slide's longest part is a tie, so the forefoot.
+        const int heel = static_cast<int>(FootPart::Heel);
+        CHECK(a.foot[0].part_slides.size() == 2);
+        if (a.foot[0].part_slides.size() == 2) {
+            const int nh = (a.foot[0].part_slides[0].part == heel) + (a.foot[0].part_slides[1].part == heel);
+            CHECK(nh == 1);
+        }
+        if (sl.size() == 1) CHECK(sl[0].longest >= 0 && sl[0].longest != heel);
+        const std::vector<PhysicsEvent> parts = Of(FootPartScuffEvents(a), PhysicsKind::Slide, 'L');
+        CHECK(parts.size() == 2 && Of(parts, PhysicsKind::Slide, 'L', heel).size() == 1);
     }
     {
         // Pivot: the planted left foot turns 90 deg on the ball in 250 ms (from 1.0 s): one
@@ -720,6 +731,11 @@ int main()
         };
         const std::vector<PhysicsEvent> hv = Of(FootEvents(AnalyseMotion(Rig(on_heel, Planted(0.1, 0.2), o))), PhysicsKind::Pivot);
         CHECK(hv.size() == 1 && hv[0].part == static_cast<int>(FootPart::Heel));
+        // Story 10-8m: a pivot on one part holds longest on that part; the sweeping part's slide
+        // during the pivot is the pivot's, never a part slide.
+        if (pv.size() == 1) CHECK(pv[0].longest == static_cast<int>(FootPart::Ball));
+        if (hv.size() == 1) CHECK(hv[0].longest == static_cast<int>(FootPart::Heel));
+        CHECK(a.foot[0].part_slides.empty() && Of(FootPartScuffEvents(a), PhysicsKind::Slide).empty());
         // A foot that turns 10 deg is no pivot (under 15 deg swept).
         const std::vector<PhysicsEvent> small = FootEvents(
             AnalyseMotion(Rig(Planted(-0.1, 0.0, [](double t) { return 10.0 * kDeg * Ease((t - 1.0) / 0.05); }),

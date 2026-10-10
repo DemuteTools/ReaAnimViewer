@@ -828,6 +828,13 @@ int main()
                 if (static_cast<AutoKind>(k) == AutoKind::Step && static_cast<AutoKind>(j) == AutoKind::Heel) continue;  // FS = Heel's
                 if (static_cast<AutoKind>(k) == AutoKind::HandPivot && static_cast<AutoKind>(j) == AutoKind::HandPivotAny)
                     continue;  // one marker name, one colour
+                // Story 10-8m: a heel scuff block takes its type's colour; a Longest part block its
+                // Each part counterpart's.
+                const AutoKind kk = static_cast<AutoKind>(k), jk = static_cast<AutoKind>(j);
+                if ((kk == AutoKind::Slide && (jk == AutoKind::SlideHeel || jk == AutoKind::SlideHeelLongest)) ||
+                    (kk == AutoKind::Pivot && (jk == AutoKind::PivotHeel || jk == AutoKind::PivotHeelLongest)) ||
+                    (kk >= AutoKind::SlideHeel && kk <= AutoKind::PivotToe && j == k + 4))
+                    continue;
                 CHECK(AutoDefaultColor(static_cast<AutoKind>(k), 'L') != AutoDefaultColor(static_cast<AutoKind>(j), 'L'));
             }
     }
@@ -1015,15 +1022,24 @@ int main()
             const bool no_scale = !AutoMissingParts(AutoType::Grab, false, hands).empty();
             for (int ki = 0; ki < kAutoKindCount; ++ki) {
                 const AutoKind k = static_cast<AutoKind>(ki);
-                const bool     sep = k == AutoKind::Heel || k == AutoKind::Toe;
+                const bool     sep = k == AutoKind::Heel || k == AutoKind::Toe || k == AutoKind::SlideHeel ||
+                               k == AutoKind::SlideToe || k == AutoKind::SlideHeelLongest || k == AutoKind::SlideToeLongest;
                 const std::vector<std::string> listed = AutoMissingParts(AutoTypeOfKind(k), sep, map);
                 for (char side : {'L', 'R'}) {
                     std::vector<Role> parts;
                     const Role heel = FootPartRole(side, 0), toe = FootPartRole(side, 1), tip = FootPartRole(side, 2);
                     switch (k) {
-                    case AutoKind::Heel: parts = {heel}; break;
-                    case AutoKind::Toe: parts = {toe}; break;
-                    case AutoKind::Pivot: parts = {heel, toe}; break;
+                    case AutoKind::Heel:
+                    case AutoKind::SlideHeel:
+                    case AutoKind::SlideHeelLongest: parts = {heel}; break;
+                    case AutoKind::Toe:
+                    case AutoKind::SlideToe:
+                    case AutoKind::SlideToeLongest: parts = {toe}; break;
+                    case AutoKind::Pivot:
+                    case AutoKind::PivotHeel:
+                    case AutoKind::PivotToe:
+                    case AutoKind::PivotHeelLongest:
+                    case AutoKind::PivotToeLongest: parts = {heel, toe}; break;
                     case AutoKind::Step:
                     case AutoKind::Lift:
                     case AutoKind::Slide: parts = {heel, toe, tip}; break;
@@ -1379,6 +1395,169 @@ int main()
         if (off.size() == 1) CHECK(std::fabs(off[0].time_s - 1.97) < 0.015);
         const std::vector<AutoSensResult> res = SearchAutoSensitivity(blocks, rig, {0, 0}, map, false);
         CHECK(res.size() == 2 && !res[1].searched);
+    }
+
+    // ---- Story 10-8m: scuffs by part ----------------------------------------------------------
+
+    // Kinds, words, markers, colours.
+    {
+        CHECK(std::string(AutoKindWord(AutoKind::SlideHeel)) == "slide_heel" &&
+              std::string(AutoKindWord(AutoKind::PivotToeLongest)) == "pivot_toe_longest");
+        CHECK(AutoMarkerName(AutoKind::SlideHeel, 'L') == "Slide Heel L" && AutoMarkerName(AutoKind::PivotToe, 'R') == "Pivot Toe R");
+        CHECK(AutoMarkerName(AutoKind::SlideToeLongest, 'L') == "Slide Toe L" &&
+              AutoMarkerName(AutoKind::PivotHeelLongest, 'R') == "Pivot Heel R");
+        CHECK(AutoTypeOfKind(AutoKind::SlideToeLongest) == AutoType::Slide && AutoTypeOfKind(AutoKind::PivotHeel) == AutoType::Pivot);
+        CHECK(AutoDefaultColor(AutoKind::SlideHeel, 'L') == AutoDefaultColor(AutoKind::Slide, 'L'));
+        CHECK(AutoDefaultColor(AutoKind::PivotToe, 'R') != AutoDefaultColor(AutoKind::Pivot, 'R'));
+        CHECK(AutoDefaultColor(AutoKind::PivotToeLongest, 'R') == AutoDefaultColor(AutoKind::PivotToe, 'R'));
+    }
+
+    // Blocks, Read round trip and pending, per mode.
+    {
+        for (int sm = 0; sm < 3; ++sm)
+            for (int pm = 0; pm < 3; ++pm) {
+                AutoSettings s = Ticked(false, false, true, true);
+                s.slide_parts = static_cast<ScuffParts>(sm);
+                s.pivot_parts = static_cast<ScuffParts>(pm);
+                const std::vector<Block> blocks = AutoBlocks(s);
+                CHECK(blocks.size() == static_cast<size_t>(2 * ((sm ? 2 : 1) + (pm ? 2 : 1))));
+                CHECK(ReadAutoSettings(blocks) == s);
+                std::vector<Block> fresh;
+                ApplyAutoSettings(fresh, s);
+                CHECK(BlocksEqual(fresh, blocks));
+            }
+        AutoSettings s = Ticked(false, false, true, true);
+        CHECK(Markers(AutoBlocks(s)) == (std::vector<std::string>{"Slide L", "Slide R", "Pivot L", "Pivot R"}));
+        AutoSettings each = s;
+        each.pivot_parts = ScuffParts::EachPart;
+        CHECK(Markers(AutoBlocks(each)) ==
+              (std::vector<std::string>{"Slide L", "Slide R", "Pivot Heel L", "Pivot Heel R", "Pivot Toe L", "Pivot Toe R"}));
+        CHECK(AutoPending(each, s));
+        AutoSettings off = Ticked(false, false, true, false);
+        AutoSettings off_each = off;
+        off_each.pivot_parts = ScuffParts::EachPart;
+        CHECK(!AutoPending(off_each, off));  // a mode of an unticked type waits for nothing
+    }
+
+    // Combined -> Each part: edits go to the heel block; Each <-> Longest keeps each part's block
+    // (marker, colour, on/off; only its kind changes); Separate -> Combined back to the combined.
+    {
+        AutoSettings       s = Ticked(false, true, true, false);  // Lift L, Lift R, Slide L, Slide R
+        std::vector<Block> blocks = AutoBlocks(s);
+        AutoSettings       each = s;
+        each.slide_parts = ScuffParts::EachPart;
+        std::vector<int> map = ApplyAutoSettings(blocks, each);
+        CHECK(Markers(blocks) ==
+              (std::vector<std::string>{"Lift L", "Lift R", "Slide Heel L", "Slide Heel R", "Slide Toe L", "Slide Toe R"}));
+        CHECK(map == (std::vector<int>{0, 1, 2, 3}));
+        blocks[4].marker = "Squeak L";
+        blocks[4].color = 0x1123456u;
+        blocks[4].enabled = false;
+        AutoSettings longest = s;
+        longest.slide_parts = ScuffParts::Longest;
+        bool changed = false;
+        map = ApplyAutoSettings(blocks, longest, &changed);
+        CHECK(changed && map == (std::vector<int>{0, 1, 2, 3, 4, 5}));
+        CHECK(blocks[4].marker == "Squeak L" && blocks[4].color == 0x1123456u && !blocks[4].enabled &&
+              blocks[4].auto_type == "slide_toe_longest" && blocks[2].auto_type == "slide_heel_longest");
+        CHECK(ReadAutoSettings(blocks).slide_parts == ScuffParts::Longest);
+        map = ApplyAutoSettings(blocks, s);
+        CHECK(Markers(blocks) == (std::vector<std::string>{"Lift L", "Lift R", "Slide L", "Slide R"}));
+        CHECK(map == (std::vector<int>{0, 1, 2, 3, 2, 3}));
+        // Combined -> Longest part in one go: the edits go to the Longest heel block.
+        map = ApplyAutoSettings(blocks, longest);
+        CHECK(blocks.size() == 6 && blocks[2].auto_type == "slide_heel_longest" && blocks[3].auto_type == "slide_heel_longest");
+        CHECK(map == (std::vector<int>{0, 1, 2, 3}));
+    }
+
+    // FootPartScuffEvents: a whole-foot pivot gives a heel and a toe event at one time; a pivot on
+    // the ball its toe event; part slides as they are. No ball bone: the toe is the tip.
+    {
+        PhysicsAnalysis a;
+        a.ok = true;
+        a.rate_hz = 100.0;
+        a.samples = 0;  // no per-sample data: only the scuffs below
+        a.foot[0].side = 'L';
+        a.foot[1].side = 'R';
+        for (int s = 0; s < 2; ++s)
+            for (int q = 0; q < kFootPartCount; ++q) a.foot[s].part[q].present = true;
+        Scuff whole;
+        whole.start = 100;
+        whole.end = 130;
+        whole.part = -1;
+        whole.strength = 40.0;
+        whole.longest = 0;
+        Scuff on_ball = whole;
+        on_ball.start = 200;
+        on_ball.end = 220;
+        on_ball.part = static_cast<int>(FootPart::Ball);
+        on_ball.longest = on_ball.part;
+        a.foot[0].pivots = {whole, on_ball};
+        Scuff heel_slide = whole;
+        heel_slide.start = 50;
+        heel_slide.end = 70;
+        heel_slide.part = 0;
+        Scuff toe_slide = heel_slide;
+        toe_slide.part = static_cast<int>(FootPart::Tip);
+        a.foot[1].part_slides = {heel_slide, toe_slide};
+        a.foot[1].part[static_cast<int>(FootPart::Ball)].present = false;
+        a.foot[1].pivots = {whole};
+        const std::vector<PhysicsEvent> ev = FootPartScuffEvents(a);
+        CHECK(Of(ev, PhysicsKind::Pivot, 'L').size() == 3);
+        CHECK(Of(ev, PhysicsKind::Pivot, 'L', 0).size() == 1 && Of(ev, PhysicsKind::Pivot, 'L', 1).size() == 2);
+        CHECK(Of(ev, PhysicsKind::Pivot, 'R', 0).size() == 1 && Of(ev, PhysicsKind::Pivot, 'R', 2).size() == 1);
+        CHECK(Of(ev, PhysicsKind::Slide, 'R', 0).size() == 1 && Of(ev, PhysicsKind::Slide, 'R', 2).size() == 1);
+        // The blocks: Each part, whole-foot pivot -> Pivot Heel L and Pivot Toe L at 1.0 s; Longest,
+        // one Pivot Heel L there (its longest is the heel) and Pivot Toe L at 2.0 s.
+        AutoAnalysis aa;
+        aa.params = AutoPhysicsParams(AutoType::Pivot, kAutoDefaultSens, false);
+        aa.analysis = a;
+        AutoSettings s = Ticked(false, false, false, true);
+        s.pivot_parts = ScuffParts::EachPart;
+        std::vector<Block> blocks = AutoBlocks(s);  // Pivot Heel L, R, Pivot Toe L, R
+        std::vector<Event> got = AutoEvents({aa}, blocks, false);
+        CHECK(OfBlock(got, 0).size() == 1 && OfBlock(got, 2).size() == 2);
+        if (OfBlock(got, 0).size() == 1 && OfBlock(got, 2).size() == 2)
+            CHECK(OfBlock(got, 0)[0].time_s == OfBlock(got, 2)[0].time_s && OfBlock(got, 0)[0].marker == "Pivot Heel L");
+        s.pivot_parts = ScuffParts::Longest;
+        blocks = AutoBlocks(s);
+        got = AutoEvents({aa}, blocks, false);
+        CHECK(OfBlock(got, 0).size() == 1 && OfBlock(got, 2).size() == 1);
+        if (OfBlock(got, 2).size() == 1) CHECK(std::fabs(OfBlock(got, 2)[0].time_s - 2.0) < 1e-9);
+    }
+
+    // End to end: the planted left foot turns 90 deg in 250 ms from 1.0 s. Combined: Pivot L
+    // (unchanged); Each part: every pivot appears on the heel or toe block (both for a whole-foot
+    // one), at the same time; Longest part: exactly one event, at that time.
+    {
+        Options o;
+        o.dur = 3.0;
+        const std::vector<BoneTrack> rig =
+            Rig(Planted(-0.1, 0.0, [](double t) { return 0.5 * kPi * Ease((t - 1.0) / 0.25); }), Planted(0.1, 0.2), o);
+        AutoSettings             s = Ticked(false, false, false, true);
+        const std::vector<Event> comb = DetectAutoEvents(AutoBlocks(s), rig, nullptr, false);
+        CHECK(comb.size() == 1);
+        // The turn is on the ball (motion_physics_test): one Pivot Toe L in both modes.
+        for (ScuffParts m : {ScuffParts::EachPart, ScuffParts::Longest}) {
+            s.pivot_parts = m;
+            const std::vector<Event> ev = DetectAutoEvents(AutoBlocks(s), rig, nullptr, false);
+            CHECK(ev.size() == 1);
+            for (const Event& e : ev) CHECK(!comb.empty() && e.time_s == comb[0].time_s && e.marker == "Pivot Toe L");
+        }
+    }
+
+    // Missing heel, Separate slide: the heel block misses its part (its markers kept), the toe runs;
+    // the section names the heel.
+    {
+        std::vector<int> map(static_cast<size_t>(Role::Count), -1);
+        for (int r = 0; r < static_cast<int>(Role::Count); ++r) map[static_cast<size_t>(r)] = r;
+        map[static_cast<size_t>(Role::LeftHeel)] = -1;
+        CHECK(AutoBlockPartMissing(MakeAutoBlock(AutoKind::SlideHeel, 'L', kAutoDefaultSens, 0.0), map));
+        CHECK(!AutoBlockPartMissing(MakeAutoBlock(AutoKind::SlideToe, 'L', kAutoDefaultSens, 0.0), map));
+        CHECK(!AutoBlockPartMissing(MakeAutoBlock(AutoKind::Slide, 'L', kAutoDefaultSens, 0.0), map));
+        const std::vector<std::string> sep = AutoMissingParts(AutoType::Slide, true, map);
+        CHECK(std::find(sep.begin(), sep.end(), RoleName(Role::LeftHeel)) != sep.end());
+        CHECK(AutoMissingParts(AutoType::Slide, false, map).empty());
     }
 
     if (g_fails) std::printf("%d check(s) failed\n", g_fails);

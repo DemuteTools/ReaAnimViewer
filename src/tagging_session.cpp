@@ -322,6 +322,8 @@ std::vector<Event> SessionAutoEvents(const std::vector<Block>& blocks, bool loop
     return ev;
 }
 
+}  // namespace
+
 // Story 10-8s -- the "Signals" lanes of the shown rules' auto block `block`, from the analysis the
 // session already cached for its parameter set (no new run). False with `why` when there is none.
 bool TaggingAutoLanes(int block, std::vector<AutoLane>* out, std::string* why)
@@ -343,6 +345,8 @@ bool TaggingAutoLanes(int block, std::vector<AutoLane>* out, std::string* why)
     *why = "no analysis yet";
     return false;
 }
+
+namespace {
 
 // The rules' detections and the auto blocks' events in one list, by time (then block).
 void MergeEvents(std::vector<Event>& into, std::vector<Event> more)

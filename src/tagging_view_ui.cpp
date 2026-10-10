@@ -210,6 +210,15 @@ void IconPlus(ImDrawList* dl, ImVec2 c, float r, ImU32 col)
     dl->AddLine(ImVec2(c.x, c.y - r), ImVec2(c.x, c.y + r), col, 1.6f);
 }
 
+// A fold chevron: down when open, right when folded (a category's row, a type's rows).
+void IconFold(ImDrawList* dl, ImVec2 c, float r, ImU32 col, bool open)
+{
+    if (open)
+        dl->AddTriangleFilled(ImVec2(c.x - r, c.y - r * 0.5f), ImVec2(c.x + r, c.y - r * 0.5f), ImVec2(c.x, c.y + r * 0.6f), col);
+    else
+        dl->AddTriangleFilled(ImVec2(c.x - r * 0.5f, c.y - r), ImVec2(c.x - r * 0.5f, c.y + r), ImVec2(c.x + r * 0.6f, c.y), col);
+}
+
 void IconGear(ImDrawList* dl, ImVec2 c, float r, ImU32 col)
 {
     for (int i = 0; i < 8; ++i) {
@@ -3919,15 +3928,6 @@ void AutoSensTooltip(double raised_from)
         ImGui::SetTooltip("Sensitivity: higher finds more events, lower fewer (50 %% = the default).");
 }
 
-// Story 10-8h: the per-row fold arrow (pointing right folded, down open), as a category's.
-void IconFold(ImDrawList* dl, ImVec2 c, float r, ImU32 col, bool open)
-{
-    if (open)
-        dl->AddTriangleFilled(ImVec2(c.x - r, c.y - r * 0.5f), ImVec2(c.x + r, c.y - r * 0.5f), ImVec2(c.x, c.y + r * 0.6f), col);
-    else
-        dl->AddTriangleFilled(ImVec2(c.x - r * 0.5f, c.y - r), ImVec2(c.x - r * 0.5f, c.y + r), ImVec2(c.x + r * 0.6f, c.y), col);
-}
-
 const char* AutoTypeHint(AutoType t)
 {
     switch (t) {
@@ -3960,16 +3960,7 @@ bool AutoCategoryRow(AutoCategory c, ImGuiID open_id, bool* remove)
     const bool  hovered = ImGui::IsItemHovered();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     if (hovered) dl->AddRectFilled(ImVec2(p.x - 4.0f, p.y), ImVec2(p.x + w - fh - 4.0f, p.y + fh), ui::kHover, ui::kRadiusSm);
-    // The chevron: down when open, right when folded.
-    const ImVec2 cc(p.x + 5.0f, p.y + fh * 0.5f);
-    const float  r = 4.0f;
-    const ImU32  col = hovered ? ui::kText : ui::kMuted;
-    if (open)
-        dl->AddTriangleFilled(ImVec2(cc.x - r, cc.y - r * 0.5f), ImVec2(cc.x + r, cc.y - r * 0.5f), ImVec2(cc.x, cc.y + r * 0.6f),
-                              col);
-    else
-        dl->AddTriangleFilled(ImVec2(cc.x - r * 0.5f, cc.y - r), ImVec2(cc.x - r * 0.5f, cc.y + r), ImVec2(cc.x + r * 0.6f, cc.y),
-                              col);
+    IconFold(dl, ImVec2(p.x + 5.0f, p.y + fh * 0.5f), 4.0f, hovered ? ui::kText : ui::kMuted, open);
     const char*  label = AutoCategoryLabel(c);
     const ImVec2 ts = ImGui::CalcTextSize(label);
     const float  ty = p.y + (fh - ts.y) * 0.5f;

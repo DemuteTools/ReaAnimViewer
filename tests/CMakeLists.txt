@@ -75,6 +75,11 @@ add_executable(ref_labels_test ref_labels_test.cpp ../src/bone_events.cpp ../src
 target_include_directories(ref_labels_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME ref_labels COMMAND ref_labels_test)
 
+# Story 10-8n -- detection_eval's BIAS block pieces (tests/event_bias.h).
+add_executable(event_bias_test event_bias_test.cpp)
+target_include_directories(event_bias_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME event_bias COMMAND event_bias_test)
+
 # Spec 10-0 -- the offline evaluator: runs the footstep detection on RAV_detection_dump CSV
 # files and prints the measure action's report (a tool, not a test):
 #   detection_eval [--param=value ...] [--json] file.csv...

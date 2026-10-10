@@ -15,6 +15,12 @@
 //   # ref.<label>=<t>,<t>...         clip time
 //   # ref_bone.<label>=<bone name>   the bone that plays the role on this skeleton ("" = none)
 //
+// Story 10-8n: event labels. "REF <kind> <side>" marks the moment a non-step sound starts:
+// <kind> = lift (also "liftoff", "lift off"), slide, pivot, grab or release; <side> = L, R,
+// left or right. Case, spaces, '_' and '-' between the words do not matter ("REF lift L",
+// "REF Slide right", "REF grab_l"). An event label is no contact: it is kept in by_label only
+// (never in `all`, so the Footsteps measure never counts it), has no bone and is never unknown.
+//
 // Pure C++17, header-only (ResolveRefBones needs role_map_store.cpp). Host-tested
 // (tests/ref_labels_test.cpp).
 
@@ -53,15 +59,42 @@ inline bool ParseRefMarkerName(const char* name, std::string* label)
     return true;
 }
 
+enum class RefEventKind { Lift, Slide, Pivot, Grab, Release };
+
+// True when `key` (a label normalized by RoleKeyFromName) is an event label:
+// "<kind>_<l|r|left|right>", plus "lift_off_<side>" and "liftoff_<side>". `side` gets 'L' / 'R'.
+inline bool ParseEventRefLabel(const std::string& key, RefEventKind* kind, char* side)
+{
+    const size_t u = key.rfind('_');
+    if (u == std::string::npos || u == 0) return false;
+    const std::string k = key.substr(0, u), sd = key.substr(u + 1);
+    char              c = 0;
+    if (sd == "l" || sd == "left") c = 'L';
+    else if (sd == "r" || sd == "right") c = 'R';
+    else return false;
+    RefEventKind e;
+    if (k == "lift" || k == "liftoff" || k == "lift_off") e = RefEventKind::Lift;
+    else if (k == "slide") e = RefEventKind::Slide;
+    else if (k == "pivot") e = RefEventKind::Pivot;
+    else if (k == "grab") e = RefEventKind::Grab;
+    else if (k == "release") e = RefEventKind::Release;
+    else return false;
+    if (kind) *kind = e;
+    if (side) *side = c;
+    return true;
+}
+
+inline bool IsEventRefLabel(const std::string& key) { return ParseEventRefLabel(key, nullptr, nullptr); }
+
 struct RefTimes {
-    std::vector<double>                        all;       // every REF time, labelled or not
+    std::vector<double>                        all;       // every contact REF time, labelled or not (no event label)
     std::map<std::string, std::vector<double>> by_label;  // the labelled ones, per label
     std::map<std::string, std::string>         bone;      // label -> its bone ("" = none plays it)
     std::set<std::string>                      unknown;   // labels that name no role and no bone
 
     void Add(const std::string& label, double t)
     {
-        all.push_back(t);
+        if (!IsEventRefLabel(label)) all.push_back(t);
         if (!label.empty()) by_label[label].push_back(t);
     }
 };
@@ -77,6 +110,10 @@ inline void ResolveRefBones(const RoleMapFile& roles, const std::vector<std::str
     r->bone.clear();
     r->unknown.clear();
     for (const auto& kv : r->by_label) {
+        if (IsEventRefLabel(kv.first)) {  // an event: no bone, never unknown
+            r->bone[kv.first] = std::string();
+            continue;
+        }
         const bool is_role = RoleFromKey(kv.first, nullptr) || custom.count(kv.first) > 0;
         int        b = ResolveRoleKey(roles, bone_names, kv.first);
         bool       found = b >= 0 && b < static_cast<int>(bone_names.size());
@@ -146,8 +183,8 @@ inline bool ReadRefHeader(const std::string& key, const std::string& value, RefT
 }
 
 // The reports' line: "  REF by bone: left_hand 12 (mixamorig:LeftHand), right_foot 8 (no bone
-// plays this role), lft_heel 1 (no role or bone has this name), unlabelled 3\n". "" when no
-// REF has a label.
+// plays this role), lft_heel 1 (no role or bone has this name), grab_l 2 (event), unlabelled 3\n".
+// "" when no REF has a label. Event labels are not in `all`, so they never count as unlabelled.
 inline std::string RefLabelsText(const RefTimes& r)
 {
     if (r.by_label.empty()) return "";
@@ -155,6 +192,11 @@ inline std::string RefLabelsText(const RefTimes& r)
     size_t      labelled = 0;
     bool        first = true;
     for (const auto& kv : r.by_label) {
+        if (IsEventRefLabel(kv.first)) {
+            out += (first ? " " : ", ") + kv.first + " " + std::to_string(kv.second.size()) + " (event)";
+            first = false;
+            continue;
+        }
         labelled += kv.second.size();
         const auto        b = r.bone.find(kv.first);
         const std::string bone = b == r.bone.end() ? std::string() : b->second;

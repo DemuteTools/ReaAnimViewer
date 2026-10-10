@@ -231,7 +231,7 @@ void MeasureItem(MediaItem* item, const FootstepsParams& k, ItemRun& run)
         const double pos = g_get_take_marker(take, i, name, sizeof(name), nullptr);
         if (pos >= 0.0 && ParseRefMarkerName(name, &ref_label)) refs.Add(ref_label, pos);
     }
-    if (refs.all.empty()) {
+    if (refs.all.empty() && refs.by_label.empty()) {
         bool is_rgn = false;
         double pos = 0.0, rgn_end = 0.0;
         const char* name = nullptr;
@@ -241,7 +241,7 @@ void MeasureItem(MediaItem* item, const FootstepsParams& k, ItemRun& run)
             if (pos < item_pos - 1e-9 || pos > item_pos + item_len + 1e-9) continue;
             refs.Add(ref_label, lo + (pos - item_pos) * rate);
         }
-        if (!refs.all.empty()) run.ref_from_project = true;
+        if (!refs.all.empty() || !refs.by_label.empty()) run.ref_from_project = true;
     }
     // Without a REF (inside the visible part), the item is still loaded, dumped and measured
     // by physics (spike 10-8a); only the Footsteps measure is skipped.

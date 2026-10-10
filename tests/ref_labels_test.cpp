@@ -211,6 +211,52 @@ int main()
         CHECK(t.bone["head"].empty() && t.unknown.empty());
     }
 
+    // Story 10-8n: event labels "REF <kind> <side>".
+    {
+        const auto ev = [](const char* name, RefEventKind want_kind, char want_side) {
+            std::string  label;
+            RefEventKind k = RefEventKind::Release;
+            char         sd = 0;
+            return ParseRefMarkerName(name, &label) && ParseEventRefLabel(label, &k, &sd) && k == want_kind &&
+                   sd == want_side;
+        };
+        CHECK(ev("REF lift L", RefEventKind::Lift, 'L'));
+        CHECK(ev("REF liftoff right", RefEventKind::Lift, 'R'));
+        CHECK(ev("REF Lift Off left", RefEventKind::Lift, 'L'));
+        CHECK(ev("REF lift-off_R", RefEventKind::Lift, 'R'));
+        CHECK(ev("REF Slide right", RefEventKind::Slide, 'R'));
+        CHECK(ev("REF PIVOT l", RefEventKind::Pivot, 'L'));
+        CHECK(ev("REF grab_l", RefEventKind::Grab, 'L'));
+        CHECK(ev("ref release-R", RefEventKind::Release, 'R'));
+        CHECK(!IsEventRefLabel("lift_x"));
+        CHECK(!IsEventRefLabel("lift"));
+        CHECK(!IsEventRefLabel("left_heel"));
+        CHECK(!IsEventRefLabel("grab"));
+        CHECK(!IsEventRefLabel("_l"));
+        CHECK(!IsEventRefLabel(""));
+
+        RefTimes t;
+        t.Add("lift_l", 1.2);
+        t.Add("left_heel", 1.5);
+        t.Add("", 2.0);
+        t.Add("lift_x", 2.5);  // not an event: a contact label (unknown)
+        CHECK(t.all.size() == 3 && t.all[0] == 1.5 && t.all[1] == 2.0 && t.all[2] == 2.5);
+        CHECK(t.by_label["lift_l"].size() == 1);
+        ResolveRefBones(RoleMapFile{}, {"mixamorig:Hips", "mixamorig:LeftFoot"}, &t);
+        CHECK(t.bone.count("lift_l") && t.bone["lift_l"].empty());
+        CHECK(t.unknown.count("lift_l") == 0 && t.unknown.count("lift_x") == 1);
+        const std::string txt = RefLabelsText(t);
+        CHECK(txt.find("lift_l 1 (event)") != std::string::npos);
+        CHECK(txt.find("unlabelled 1") != std::string::npos);
+
+        // Dump and read back: the event label's line reads back into by_label, with no bone.
+        const RefTimes back = ReadLines("# ref=1.5,2.0,2.5\n" + RefLabelLines(t));
+        CHECK(back.all.size() == 3);
+        CHECK(back.by_label.count("lift_l") && back.by_label.at("lift_l").size() == 1 &&
+              back.by_label.at("lift_l")[0] == 1.2);
+        CHECK(back.bone.count("lift_l") && back.bone.at("lift_l").empty());
+    }
+
     if (g_fails) {
         std::printf("%d check(s) failed\n", g_fails);
         return 1;

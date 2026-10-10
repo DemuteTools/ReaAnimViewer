@@ -49,6 +49,16 @@
 // take markers), each followed by its "  hands: ..." line and hand events (story 10-8c). Then
 // one "HAND REF" line per REF of a label whose bone plays a hand role: the nearest Grab of that
 // side (default constants) and its signed error.
+// Story 10-8n: right after the GO line (and the "(N labels skipped)" line), a BIAS block, one
+// row per event type: count, matched, missed, extra, precision, recall, signed mean, SD and
+// median |err| (err = detected - REF), so a steady lead or lag (an offset fixes it) reads apart
+// from false or missed events. Steps: one row per labelled foot part (its chosen timing, the
+// leave-one-clip-out offsets: the gate's data) and the combined step. Events: event labels
+// ('# ref.<kind>_<side>=', kind lift, slide, pivot, grab or release; ref_labels.h) match the
+// events of their side (lift, grab, release: +-150 ms; slide, pivot: the REF within [start -
+// 150 ms, end], err = start - REF). A clip counts for a kind only when it holds a REF of that
+// kind, and then every detection of that kind, on both sides, counts (an untagged side shows
+// as extra). Event labels are kept out of every other line (--single ignores them too).
 //   --contact=<leg/s>  the contact speed (default 0.4), --switch=<cost> the switch cost (10).
 //   --json, --single and the Footsteps knobs do not apply.
 //
@@ -76,6 +86,7 @@
 #include <vector>
 
 #include "bone_roles.h"
+#include "event_bias.h"
 #include "footstep_measure.h"
 #include "motion_physics.h"
 #include "ref_labels.h"
@@ -351,13 +362,17 @@ int RunSingle(const std::vector<std::string>& files, const SingleOptions& so, co
             std::printf("%s  skipped: could not read %s: %s\n", head.c_str(), files[f].c_str(), err.c_str());
             continue;
         }
-        if (c.refs.by_label.empty()) {
+        bool contact_label = false;  // story 10-8n: event labels are not measured here
+        for (const auto& kv : c.refs.by_label)
+            if (!IsEventRefLabel(kv.first)) contact_label = true;
+        if (!contact_label) {
             std::printf("%s  skipped: no labelled REF ('# ref.<label>=') in the file\n", head.c_str());
             continue;
         }
         std::printf("%s\n", head.c_str());
         for (const auto& kv : c.refs.by_label) {
             const std::string& label = kv.first;
+            if (IsEventRefLabel(label)) continue;
             const auto         bi = c.refs.bone.find(label);
             const std::string  bone = bi == c.refs.bone.end() ? std::string() : bi->second;
             size_t             track = c.names.size();
@@ -437,6 +452,7 @@ struct PhysLabel {
     bool                foot = false;  // the bone plays a foot part of `side`
     char                hand = 0;      // 'L' / 'R': the bone plays that hand (story 10-8c)
     int                 part = -1;     // -1 = skipped (not a foot part, or the part is missing)
+    int                 want_part = -1;  // the foot part the label reads, even when skipped
     std::string         skip;
     std::vector<double> refs;
 };
@@ -449,6 +465,8 @@ struct PhysClip {
     PhysicsAnalysis        a;
     std::vector<PhysLabel> labels;
     bool                   tagged = false;  // some label is a foot part
+    // Story 10-8n: the event labels' REFs, per kind (RefEventKind) and side (0 = L, 1 = R).
+    std::vector<double>    event_refs[kRefEventKinds][2];
 };
 
 std::string ErrText(const std::vector<double>& e)
@@ -543,6 +561,13 @@ int RunPhysics(const std::vector<std::string>& files, const PhysicsParams& base)
                                                }),
                              base);
         for (const auto& kv : c.refs.by_label) {
+            RefEventKind ek;
+            char         es = 'L';
+            if (ParseEventRefLabel(kv.first, &ek, &es)) {  // story 10-8n: only in the BIAS block
+                std::vector<double>& dst = pc.event_refs[static_cast<int>(ek)][es == 'R' ? 1 : 0];
+                dst.insert(dst.end(), kv.second.begin(), kv.second.end());
+                continue;
+            }
             PhysLabel l;
             l.label = kv.first;
             l.refs = kv.second;
@@ -568,6 +593,7 @@ int RunPhysics(const std::vector<std::string>& files, const PhysicsParams& base)
                             l.part = q;
                         }
             l.foot = l.part >= 0;
+            l.want_part = l.part;
             for (int s = 0; s < 2 && !l.hand; ++s) {
                 const Role hr = s ? Role::RightHand : Role::LeftHand;
                 if ((bone >= 0 && role_bone[static_cast<size_t>(hr)] == bone) ||
@@ -666,6 +692,7 @@ int RunPhysics(const std::vector<std::string>& files, const PhysicsParams& base)
     Edits               gate, foot_tot;
     std::vector<double> gate_err, foot_err;
     int                 gate_refs = 0, foot_refs = 0, skipped = 0;
+    Bias                part_bias[kFootPartCount];  // story 10-8n: the gate's data, per part
     // A skipped label is listed; a foot part's REFs (inside the visible part) count as missed in
     // the gate: its part is missing on the rig, or the clip's physics failed.
     auto skip_label = [&](const PhysClip& pc, const PhysLabel& l) {
@@ -676,6 +703,10 @@ int RunPhysics(const std::vector<std::string>& files, const PhysicsParams& base)
             if (t >= pc.lo && t <= pc.hi) {
                 ++gate.missed;
                 ++gate_refs;
+                if (l.want_part >= 0) {
+                    ++part_bias[l.want_part].ref;
+                    ++part_bias[l.want_part].missed;
+                }
             }
     };
     for (size_t ci = 0; ci < nc; ++ci) {
@@ -714,6 +745,7 @@ int RunPhysics(const std::vector<std::string>& files, const PhysicsParams& base)
                     AddEdits(gate, e);
                     gate_refs += m.n_ref;
                     gate_err.insert(gate_err.end(), m.match_err_s.begin(), m.match_err_s.end());
+                    part_bias[l.part].Add(m);
                 }
             }
         }
@@ -783,6 +815,48 @@ int RunPhysics(const std::vector<std::string>& files, const PhysicsParams& base)
                 gate_refs, gate.missed + gate.extra, kGateMissedExtra, gate.off, med_text, kGateMedianErrS * 1000.0,
                 go ? "GO" : "NO-GO", go ? " (the dance clip still has to be judged)" : "");
     if (skipped) std::printf("(%d label%s skipped)\n", skipped, skipped == 1 ? "" : "s");
+
+    // Story 10-8n: bias, false and missed events, per event type.
+    std::printf("BIAS (per event type; err = detected - REF; steps: chosen timing, leave-one-clip-out offsets)\n");
+    for (int q = 0; q < kFootPartCount; ++q)
+        if (part_bias[q].ref > 0) std::printf("%s", BiasRow(FootPartWord(q), part_bias[q]).c_str());
+    {
+        // The merged per-side match of the "TOTAL foot step (combined)" line: unlike the part
+        // rows (the gate's data), a skipped label's REFs are not in it.
+        Bias fb;
+        fb.ref = foot_refs;
+        fb.matched = static_cast<int>(foot_err.size());
+        fb.missed = foot_tot.missed;
+        fb.extra = foot_tot.extra;
+        fb.err = foot_err;
+        if (fb.ref > 0) std::printf("%s", BiasRow("foot step (combined)", fb).c_str());
+    }
+    for (int k = 0; k < kRefEventKinds; ++k) {
+        const RefEventKind kind = static_cast<RefEventKind>(k);
+        Bias b;
+        bool labelled = false;
+        for (size_t ci = 0; ci < nc; ++ci) {
+            const PhysClip& pc = clips[ci];
+            if (!pc.read || (pc.event_refs[k][0].empty() && pc.event_refs[k][1].empty())) continue;
+            labelled = true;
+            std::vector<PhysicsEvent> ev;  // physics failed: every REF of the kind is missed
+            if (pc.a.ok) ev = RefEventIsFoot(kind) ? FootEvents(pc.a, clip_params(ci)) : HandEvents(pc.a, base);
+            for (int s = 0; s < 2; ++s) {
+                std::vector<PhysicsEvent> det;
+                for (const PhysicsEvent& e : ev)
+                    if (e.kind == RefEventPhysicsKind(kind) && e.side == (s ? 'R' : 'L')) det.push_back(e);
+                if (RefEventIsSpan(kind)) {
+                    b.Add(MatchSpans(pc.event_refs[k][s], det, kMatchWindowS, pc.lo, pc.hi));
+                } else {
+                    std::vector<double> dt;
+                    for (const PhysicsEvent& e : det) dt.push_back(e.time_s);
+                    b.Add(MatchEvents(pc.event_refs[k][s], dt, kMatchWindowS, pc.lo, pc.hi));
+                }
+            }
+        }
+        if (labelled) std::printf("%s", BiasRow(RefEventName(kind), b).c_str());
+        else std::printf("  %-20s no labelled REF\n", RefEventName(kind));
+    }
 
     // Every clip's events, as the measure action writes them.
     std::printf("EVENTS (default timing: %s; strengths in leg/s, pivots in degrees)\n", StepTimingText(base).c_str());

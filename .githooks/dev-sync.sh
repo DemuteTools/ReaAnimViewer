@@ -35,8 +35,9 @@ commit_local() {
         [ -e "$p" ] && dg add -f -- "$p"
     done
     # Local only: the PC's own settings, and agent worktrees (git would record them as
-    # submodule links).
-    dg rm -r -q --cached --ignore-unmatch -- .claude/settings.local.json .claude/worktrees >/dev/null
+    # submodule links). -f: unstage them even while a worktree is mid-change (index only, the
+    # files stay on disk); if that still fails, commit nothing rather than commit them.
+    dg rm -r -q -f --cached --ignore-unmatch -- .claude/settings.local.json .claude/worktrees >/dev/null || return 1
     dg diff --cached --quiet && return 0
     dg commit -q -m "Sync dev files from ${COMPUTERNAME:-$(hostname)}"
 }

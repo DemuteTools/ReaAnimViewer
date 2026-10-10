@@ -876,4 +876,139 @@ std::vector<char> KeepUnrunnableEvents(std::vector<Event>& detections, const std
     return keep;
 }
 
+// ---- Signal lanes (story 10-8s) ---------------------------------------------------------------
+
+namespace {
+
+const char* const kLanePartName[kFootPartCount] = {"Heel", "Ball", "Tip"};
+
+std::vector<double> LaneWindow(const std::vector<double>& v, size_t first, size_t n, bool absval)
+{
+    std::vector<double> out(n, 0.0);
+    for (size_t i = 0; i < n && first + i < v.size(); ++i) out[i] = absval ? std::fabs(v[first + i]) : v[first + i];
+    return out;
+}
+
+std::vector<char> LaneWindowMask(const std::vector<char>& v, size_t first, size_t n)
+{
+    std::vector<char> out(n, 0);
+    for (size_t i = 0; i < n && first + i < v.size(); ++i) out[i] = v[first + i];
+    return out;
+}
+
+}  // namespace
+
+std::vector<AutoLane> AutoBlockLanes(const AutoAnalysis& aa, const Block& b, std::string* why)
+{
+    std::vector<AutoLane> out;
+    std::string           reason;
+    AutoKind              k;
+    char                  side;
+    if (why) why->clear();
+    if (!AutoBlockKind(b, &k, &side)) return out;
+    const PhysicsAnalysis& a = aa.analysis;
+    const PhysicsParams&   p = aa.params;
+    if (!a.ok) {
+        if (why) *why = a.error.empty() ? std::string("analysis failed") : a.error;
+        return out;
+    }
+    const size_t      first = a.window_first;
+    const size_t      n = a.window_samples;
+    const std::string sd(1, side);
+    const FootTrack&  ft = a.foot[SideIndex(side)];
+    const HandTrack&  ht = a.hand[SideIndex(side)];
+    auto part_lane = [&](const PartTrack& pt, const char* name, bool horizontal, double thr) {
+        AutoLane l;
+        l.label = std::string(name) + " " + sd + "  " + (horizontal ? "hspeed" : "speed");
+        l.unit = "leg/s";
+        l.curve = LaneWindow(horizontal ? pt.hspeed : pt.speed, first, n, false);
+        l.contact = LaneWindowMask(pt.contact, first, n);
+        l.threshold = thr;
+        l.above = horizontal;  // a slide fires above slide_speed, a contact below contact_speed
+        out.push_back(std::move(l));
+    };
+    auto foot_parts = [&](bool horizontal, double thr) {
+        for (int i = 0; i < kFootPartCount; ++i)
+            if (ft.part[i].present) part_lane(ft.part[i], kLanePartName[i], horizontal, thr);
+        if (out.empty()) reason = ft.part[0].missing;
+    };
+    const PartTrack& heel = ft.part[static_cast<int>(FootPart::Heel)];
+    const PartTrack& ball = ft.part[static_cast<int>(FootPart::Ball)];
+    const PartTrack& tip = ft.part[static_cast<int>(FootPart::Tip)];
+    switch (k) {
+    case AutoKind::Step:
+    case AutoKind::Lift: foot_parts(false, p.contact_speed); break;
+    case AutoKind::Slide: foot_parts(true, p.slide_speed); break;
+    case AutoKind::SlideHeel:
+    case AutoKind::SlideHeelLongest:  // 10-8m: the heel part of a slide
+        if (heel.present) part_lane(heel, "Heel", true, p.slide_speed);
+        else reason = heel.missing;
+        break;
+    case AutoKind::SlideToe:
+    case AutoKind::SlideToeLongest:  // 10-8m: the toe part of a slide (ball and tip)
+        if (ball.present) part_lane(ball, "Ball", true, p.slide_speed);
+        if (tip.present) part_lane(tip, "Tip", true, p.slide_speed);
+        if (out.empty()) reason = ball.missing;
+        break;
+    case AutoKind::Heel:
+        if (heel.present) part_lane(heel, "Heel", false, p.contact_speed);
+        else reason = heel.missing;
+        break;
+    case AutoKind::Toe:
+        if (ball.present) part_lane(ball, "Ball", false, p.contact_speed);
+        else if (tip.present) part_lane(tip, "Tip", false, p.contact_speed);
+        else reason = ball.missing;
+        break;
+    case AutoKind::Pivot:
+    case AutoKind::PivotHeel:  // 10-8m: a pivot part reads the same yaw rate
+    case AutoKind::PivotToe:
+    case AutoKind::PivotHeelLongest:
+    case AutoKind::PivotToeLongest: {
+        if (!ft.has_yaw) {  // FindPivots needs the heel -> toe yaw
+            reason = "pivot needs the heel and the toe";
+            break;
+        }
+        AutoLane l;
+        l.label = "Pivot " + sd + "  yaw rate";
+        l.unit = "deg/s";
+        l.curve.assign(n, 0.0);
+        for (size_t i = 0; i < n; ++i) {
+            const size_t j = first + i;
+            if (j < ft.yaw_valid.size() && ft.yaw_valid[j] && j < ft.yaw_rate_dps.size())
+                l.curve[i] = std::fabs(ft.yaw_rate_dps[j]);
+            else if (j < ft.heading_valid.size() && ft.heading_valid[j] && j < ft.heading_rate_dps.size())
+                l.curve[i] = std::fabs(ft.heading_rate_dps[j]);
+        }
+        l.threshold = p.pivot_rate_dps;
+        l.above = true;
+        out.push_back(std::move(l));
+        break;
+    }
+    case AutoKind::Grab:
+    case AutoKind::Release:
+        if (ht.part.present) part_lane(ht.part, "Hand", false, p.hand_contact_speed);
+        else reason = ht.part.missing;
+        break;
+    case AutoKind::HandPivot:
+    case AutoKind::HandPivotAny:
+        if (ht.part.present && !ht.has_heading) {
+            reason = "no usable hand rotation";
+        } else if (ht.part.present) {
+            AutoLane l;
+            l.label = "Hand " + sd + "  heading rate";
+            l.unit = "deg/s";
+            l.curve = LaneWindow(ht.heading_rate_dps, first, n, true);
+            l.threshold = p.hand_pivot_rate_dps;
+            l.above = true;
+            out.push_back(std::move(l));
+        } else {
+            reason = ht.part.missing;
+        }
+        break;
+    }
+    for (AutoLane& l : out) l.rate_hz = a.rate_hz;
+    if (out.empty() && why) *why = reason.empty() ? std::string("part missing") : reason;
+    return out;
+}
+
 }  // namespace rav

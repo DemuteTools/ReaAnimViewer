@@ -145,6 +145,12 @@ ItemClipMap ItemClipMapOf(MediaItem* item, double clip_len);
 // `block`'s strength and speed, as detection measures them). False (0, 0) when they cannot be.
 bool TaggingMeasureEvent(const ItemRules& rules, int block, double t, double* strength, double* speed);
 
+// Story 10-8s -- the "Signals" view: the lanes of the shown rules' auto block `block`
+// (AutoBlockLanes, auto_detect.h) from the analysis the session already cached for it (nothing is
+// run nor written). False (no lane) for a rule, no cached analysis, a failed analysis or a missing
+// part; `why` then says why ("" for a rule).
+bool TaggingAutoLanes(int block, std::vector<AutoLane>* out, std::string* why);
+
 // Reads the current item's record again and reruns detection (after Commit / Cancel, a role
 // change), and the selection's counts (the footer).
 void TaggingReread();

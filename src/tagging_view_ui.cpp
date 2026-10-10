@@ -45,6 +45,9 @@ namespace {
 
 constexpr char kPrefStripHeight[] = "tagging.strip_height";
 constexpr char kPrefPanelWidth[] = "tagging.panel_width";
+// Story 10-8s: the strip's "Signals" toggle (a viewer pref, not project data).
+constexpr char kPrefAutoSignals[] = "tagging.auto_signals";
+int g_auto_signals = -1;  // -1 = not read yet, else 0 / 1
 constexpr float kStripDefaultHeight = 230.0f;
 constexpr float kPanelMinW = 280.0f;
 constexpr float kPanelMaxW = 600.0f;
@@ -977,6 +980,23 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
                     ImGui::SetTooltip("Adds your own event at the playhead on the selected rule.\n"
                                       "Double-click a rule's row to add one there.");
+                // Story 10-8s: "Signals" shows what a selected auto row reads (a viewer pref).
+                if (g_auto_signals < 0) g_auto_signals = LoadPrefBool(kPrefAutoSignals, false) ? 1 : 0;
+                const char* sl = "Signals";
+                const float sw = ImGui::CalcTextSize(sl).x + 20.0f;
+                const ImVec2 sp(ep.x - 8.0f - sw, c0.y);
+                ImGui::SetCursorScreenPos(sp);
+                if (ui::SolidButton("##tagautosig", ImVec2(sw, 0.0f))) {
+                    g_auto_signals = g_auto_signals ? 0 : 1;
+                    SavePrefBool(kPrefAutoSignals, g_auto_signals != 0);
+                }
+                if (g_auto_signals)
+                    dl->AddRect(sp, ImVec2(sp.x + sw, sp.y + head_h), ui::kAccentLine, ui::kRadiusSm);
+                dl->AddText(ImVec2(sp.x + 10.0f, ty), g_auto_signals ? ui::kAccent : ui::kMuted, sl);
+                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                    ImGui::SetTooltip("Signals: with an auto row selected, shows each part it reads and\n"
+                                      "its sensitivity's line, to see why it found nothing.\n"
+                                      "A view setting only: nothing is written to the project.");
             }
             ImGui::SetCursorScreenPos(ImVec2(c0.x + avail_w - bw, c0.y));
             // Story 10-8b: auto blocks have no threshold: Analyse needs a rule.
@@ -1285,6 +1305,118 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                         }
                         if (cut) gutter_tips.push_back({L.y0, L.y1, tip});
                         dl->PopClipRect();
+                    }
+                } else if (sel_blk && sel_blk->enabled && g_auto_signals > 0 && IsAutoBlock(*sel_blk) && lanes_top < area1.y - 20.0f) {
+                    // ---- Story 10-8s: the selected auto block's signals (read-only) ----
+                    // One lane per part it reads: its signal vs its sensitivity's threshold, shaded
+                    // where the part is in contact. Not in `lanes`: no drag takes them.
+                    std::vector<AutoLane> al;
+                    std::string why;
+                    TaggingAutoLanes(g_sel, &al, &why);
+                    if (al.empty()) {
+                        if (!why.empty()) CenterLines(dl, ImVec2(lane_x, lanes_top), area1, why.c_str(), ui::kFaint);
+                    } else {
+                        const int na = static_cast<int>(al.size());
+                        const float gap = kTrackGap;
+                        const float lh = std::max(28.0f, (area1.y - lanes_top - gap * static_cast<float>(na - 1)) / na);
+                        const ImU32 rc = RuleColor(*sel_blk);
+                        const double item_rate = m.map.rate > 0.0 ? m.map.rate : 1.0;
+                        double clip_now = 0.0;
+                        const bool now_in = FirstPassClipTime(m.map, playhead, &clip_now);
+                        for (int c = 0; c < na; ++c) {
+                            const AutoLane& A = al[static_cast<size_t>(c)];
+                            LaneGeom L;
+                            L.y0 = lanes_top + static_cast<float>(c) * (lh + gap);
+                            L.y1 = std::min(L.y0 + lh, area1.y);
+                            if (L.y1 - L.y0 < 12.0f) break;
+                            double vmax = A.threshold;
+                            for (double v : A.curve)
+                                if (std::isfinite(v)) vmax = std::max(vmax, v);
+                            L.lo = 0.0;
+                            L.hi = std::max(1e-6, std::min(vmax, A.threshold * 4.0)) * 1.05;
+                            const double rate_hz = A.rate_hz > 0.0 ? A.rate_hz : 240.0;
+                            const std::vector<double>& curve = A.curve;
+                            const int n = static_cast<int>(curve.size());
+                            TrackFill(dl, c0.x, lane_x, lane_x + lane_w, L.y0, L.y1, ui::kBg);
+                            dl->PushClipRect(ImVec2(lane_x, L.y0), ImVec2(lane_x + lane_w, L.y1), true);
+                            for (const ClipPass& p : passes) {
+                                const double pa = std::max(p.p0, win.v0), pb = std::min(p.p1, win.v1);
+                                if (!(pb > pa) || n < 1) continue;
+                                const int xa = static_cast<int>(std::floor(x_of(pa)));
+                                const int xb = static_cast<int>(std::ceil(x_of(pb)));
+                                float shade_from = -1.0f;
+                                bool have_prev = false;
+                                float prev_y = 0.0f;
+                                for (int px = xa; px < xb; ++px) {
+                                    const double ta = std::max(pa, StripTimeAt(win, lane_x, lane_w, static_cast<float>(px)));
+                                    const double tb = std::min(pb, StripTimeAt(win, lane_x, lane_w, static_cast<float>(px + 1)));
+                                    if (!(tb > ta)) continue;
+                                    const double sa = SamplePosInPass(p, ta, item_rate, rate_hz);
+                                    const double sb = SamplePosInPass(p, tb, item_rate, rate_hz);
+                                    const double va = InterpSample(curve, sa), vb = InterpSample(curve, sb);
+                                    double lo = std::min(va, vb), hi = std::max(va, vb);
+                                    const int i_lo = std::max(0, static_cast<int>(std::ceil(sa)));
+                                    const int i_hi = std::min(n - 1, static_cast<int>(std::floor(sb)));
+                                    for (int i = i_lo; i <= i_hi; ++i) {
+                                        lo = std::min(lo, curve[static_cast<size_t>(i)]);
+                                        hi = std::max(hi, curve[static_cast<size_t>(i)]);
+                                    }
+                                    const int h_lo = std::max(0, std::min(n - 1, static_cast<int>(std::floor(sa))));
+                                    const int h_hi = std::max(0, std::min(n - 1, static_cast<int>(std::ceil(sb))));
+                                    bool any_contact = false;
+                                    for (int i = h_lo; i <= h_hi; ++i)
+                                        if (static_cast<size_t>(i) < A.contact.size() && A.contact[static_cast<size_t>(i)])
+                                            any_contact = true;
+                                    const float fx = static_cast<float>(px);
+                                    if (any_contact && shade_from < 0.0f) shade_from = fx;
+                                    if (!any_contact && shade_from >= 0.0f) {
+                                        dl->AddRectFilled(ImVec2(shade_from, L.y0), ImVec2(fx, L.y1), WithAlpha(rc, 0x24));
+                                        shade_from = -1.0f;
+                                    }
+                                    const bool hit = A.above ? hi > A.threshold : lo < A.threshold;  // slides, pivots fire above
+                                    const ImU32 ink = hit ? ui::kText : ui::kFaint;
+                                    const float ya = L.Y(va), yb = L.Y(vb);
+                                    if (have_prev) dl->AddLine(ImVec2(fx, prev_y), ImVec2(fx + 0.5f, ya), ink, 1.3f);
+                                    dl->AddLine(ImVec2(fx + 0.5f, L.Y(hi)), ImVec2(fx + 0.5f, L.Y(lo) + 0.01f), ink, 1.3f);
+                                    dl->AddLine(ImVec2(fx + 0.5f, ya), ImVec2(fx + 1.0f, yb), ink, 1.3f);
+                                    prev_y = yb;
+                                    have_prev = true;
+                                }
+                                if (shade_from >= 0.0f)
+                                    dl->AddRectFilled(ImVec2(shade_from, L.y0), ImVec2(static_cast<float>(xb), L.y1),
+                                                      WithAlpha(rc, 0x24));
+                            }
+                            const float yt = L.Y(A.threshold);
+                            dl->AddLine(ImVec2(lane_x, yt), ImVec2(lane_x + lane_w, yt), rc, 1.5f);
+                            dl->PopClipRect();
+                            dim_outside(L.y0, L.y1);
+                            TrackEdge(dl, c0.x, lane_x, lane_x + lane_w, L.y0, L.y1, ui::kStroke);
+
+                            // The gutter: the part and signal, the threshold, its value now.
+                            dl->PushClipRect(ImVec2(c0.x, L.y0), ImVec2(lane_x - 4.0f, L.y1), true);
+                            const float gx = c0.x + 6.0f, gx1 = lane_x - 5.0f;
+                            char buf[96];
+                            std::snprintf(buf, sizeof(buf), "  %.2f %s", A.threshold, A.unit.c_str());
+                            const std::string head = A.label + buf;  // "Heel L  speed  0.32 leg/s"
+                            EllipsisText(dl, ImVec2(gx, L.y0 + 2.0f), gx1, ui::kText, head);
+                            std::string tip = head + "\nThe line is the threshold this sensitivity gives.";
+                            if (now_in && !curve.empty()) {
+                                const double v_now = InterpSample(curve, clip_now * rate_hz);
+                                std::snprintf(buf, sizeof(buf), "now %.2f %s", v_now, A.unit.c_str());
+                                if (L.y1 - L.y0 > th * 2.0f + 4.0f)
+                                    EllipsisText(dl, ImVec2(gx, L.y0 + 3.0f + th), gx1,
+                                                 (A.above ? v_now > A.threshold : v_now < A.threshold) ? ui::kText : ui::kFaint, buf);
+                                tip += std::string("\n") + buf;
+                            }
+                            if (!A.contact.empty())
+                                tip += A.above ? "\nShaded: the part is in contact. A slide is read where a part in contact\n"
+                                                 "moves horizontally faster than the line (and slower than a swing)."
+                                               : "\nShaded: the part is in contact. Contact is not a pure crossing of the\n"
+                                                 "line (it weighs the evidence and a switch cost); the line is the\n"
+                                                 "contact speed this sensitivity gives.";
+                            gutter_tips.push_back({L.y0, L.y1, tip});
+                            dl->PopClipRect();
+                        }
                     }
                 } else if (sel_blk && lanes_top >= area1.y - 20.0f) {
                     // The notify rows leave no room for the lanes.

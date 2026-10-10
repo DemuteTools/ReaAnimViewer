@@ -285,4 +285,27 @@ std::vector<char> KeepUnrunnableEvents(std::vector<Event>& detections, const std
                                        const std::vector<Block>& blocks, const std::vector<char>& skipped,
                                        const std::vector<int>& role_to_bone);
 
+// ---- Signal lanes (story 10-8s) ---------------------------------------------------------------
+
+// One read-only lane of the Tagging strip's "Signals" view: a signal the block reads and its
+// threshold (the analysis params' value, so the block's sensitivity), over the clip window
+// (window_first .. + window_samples, at the analysis' rate_hz).
+struct AutoLane {
+    std::string         label;     // "Heel L  speed"
+    std::string         unit;      // "leg/s" or "deg/s"
+    std::vector<double> curve;     // per window sample
+    std::vector<char>   contact;   // per window sample (empty for pivot lanes)
+    double              threshold = 0.0;
+    bool                above = false;  // the block fires above the line (slide, pivots), else below
+    double              rate_hz = 0.0;  // the analysis' sample rate
+};
+
+// The lanes of one auto block from its analysis: combined step and lift-off, each present foot
+// part's speed vs contact_speed; heel, the heel; toe, the ball (else the tip); slide, each present
+// part's hspeed vs slide_speed; pivot, |yaw rate| (yaw where valid, else heading where valid, else
+// 0) vs pivot_rate_dps; grab and release, the hand's speed vs hand_contact_speed; hand pivot (both
+// kinds), |heading rate| vs hand_pivot_rate_dps. Empty for a rule, an unknown kind, a failed
+// analysis or an absent part; `why` (optional) then gets the reason ("" for a rule or unknown kind).
+std::vector<AutoLane> AutoBlockLanes(const AutoAnalysis& aa, const Block& b, std::string* why = nullptr);
+
 }  // namespace rav

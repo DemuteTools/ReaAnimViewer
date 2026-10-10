@@ -322,6 +322,28 @@ std::vector<Event> SessionAutoEvents(const std::vector<Block>& blocks, bool loop
     return ev;
 }
 
+// Story 10-8s -- the "Signals" lanes of the shown rules' auto block `block`, from the analysis the
+// session already cached for its parameter set (no new run). False with `why` when there is none.
+bool TaggingAutoLanes(int block, std::vector<AutoLane>* out, std::string* why)
+{
+    out->clear();
+    why->clear();
+    const ItemRules& shown = TaggingShownRules();
+    if (block < 0 || block >= static_cast<int>(shown.blocks.size())) return false;
+    const Block& b = shown.blocks[static_cast<size_t>(block)];
+    AutoKind     k;
+    char         side;
+    if (!AutoBlockKind(b, &k, &side)) return false;
+    const PhysicsParams p = AutoPhysicsParams(AutoTypeOfKind(k), b.sens, shown.clip.loop);
+    for (const AutoAnalysis& a : g.auto_cache)
+        if (SameAutoAnalysis(a.params, p)) {
+            *out = AutoBlockLanes(a, b, why);
+            return !out->empty();
+        }
+    *why = "no analysis yet";
+    return false;
+}
+
 // The rules' detections and the auto blocks' events in one list, by time (then block).
 void MergeEvents(std::vector<Event>& into, std::vector<Event> more)
 {

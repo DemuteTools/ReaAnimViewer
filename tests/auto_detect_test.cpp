@@ -1560,6 +1560,108 @@ int main()
         CHECK(AutoMissingParts(AutoType::Slide, false, map).empty());
     }
 
+    // Story 10-8s: AutoBlockLanes on a synthetic analysis.
+    {
+        AutoAnalysis aa;
+        aa.params = AutoPhysicsParams(AutoType::Step, 50.0, false);
+        PhysicsAnalysis& a = aa.analysis;
+        a.ok = true;
+        a.rate_hz = 240.0;
+        a.samples = 30;
+        a.window_first = 10;  // a looping item: the clip is samples 10..19 of the unrolled run
+        a.window_samples = 10;
+        for (int pi = 0; pi < kFootPartCount; ++pi) {
+            PartTrack& pt = a.foot[0].part[pi];
+            pt.present = pi != static_cast<int>(FootPart::Ball);  // no ball bone
+            if (!pt.present) { pt.missing = "no bone for left toe"; continue; }
+            for (int i = 0; i < 30; ++i) {
+                pt.speed.push_back(i);
+                pt.hspeed.push_back(100 + i);
+                pt.contact.push_back(i % 2);
+            }
+        }
+        a.foot[0].yaw_rate_dps.assign(30, -50.0);
+        a.foot[0].yaw_valid.assign(30, 0);
+        a.foot[0].heading_rate_dps.assign(30, -20.0);
+        a.foot[0].heading_valid.assign(30, 1);
+        a.foot[0].has_yaw = true;  // heel + tip
+        a.foot[0].yaw_valid[11] = 1;        // yaw before heading
+        a.foot[0].heading_valid[12] = 0;    // neither: 0
+        HandTrack& hl = a.hand[0];
+        hl.part.present = true;
+        hl.has_heading = true;
+        for (int i = 0; i < 30; ++i) {
+            hl.part.speed.push_back(200 + i);
+            hl.part.hspeed.push_back(0.0);
+            hl.part.contact.push_back(i >= 15);
+            hl.heading_rate_dps.push_back(-(300.0 + i));
+        }
+        a.hand[1].part.missing = "no bone for right hand";
+        std::string why;
+        const std::vector<AutoLane> step = AutoBlockLanes(aa, MakeAutoBlock(AutoKind::Step, 'L', 50.0, 0.0), &why);
+        CHECK(step.size() == 2 && why.empty());
+        if (step.size() == 2) {
+            CHECK(step[0].label == "Heel L  speed" && step[1].label == "Tip L  speed" && step[0].unit == "leg/s");
+            CHECK(step[0].curve.size() == 10 && step[0].curve[0] == 10.0 && step[0].curve[9] == 19.0);
+            CHECK(step[0].contact.size() == 10 && step[0].contact[0] == 0 && step[0].contact[1] == 1);
+            CHECK(step[0].threshold == aa.params.contact_speed && step[0].rate_hz == 240.0);
+        }
+        const std::vector<AutoLane> toe = AutoBlockLanes(aa, MakeAutoBlock(AutoKind::Toe, 'L', 50.0, 0.0));
+        CHECK(toe.size() == 1 && toe[0].label == "Tip L  speed");
+        const std::vector<AutoLane> slide = AutoBlockLanes(aa, MakeAutoBlock(AutoKind::Slide, 'L', 50.0, 0.0));
+        CHECK(slide.size() == 2 && slide[0].label == "Heel L  hspeed" && slide[0].curve[0] == 110.0 &&
+              slide[0].threshold == aa.params.slide_speed);
+        const std::vector<AutoLane> piv = AutoBlockLanes(aa, MakeAutoBlock(AutoKind::Pivot, 'L', 50.0, 0.0));
+        CHECK(piv.size() == 1 && piv[0].unit == "deg/s" && piv[0].contact.empty() && piv[0].curve[0] == 20.0);
+        if (piv.size() == 1)
+            CHECK(piv[0].curve[1] == 50.0 && piv[0].curve[2] == 0.0 && piv[0].threshold == aa.params.pivot_rate_dps &&
+                  piv[0].above);
+        CHECK(!step.empty() && !step[0].above && !slide.empty() && slide[0].above);
+        {  // 10-8m part kinds: a slide part reads that part's hspeed, a pivot part the foot's yaw rate
+            const std::vector<AutoLane> sh = AutoBlockLanes(aa, MakeAutoBlock(AutoKind::SlideHeel, 'L', 50.0, 0.0));
+            CHECK(sh.size() == 1 && sh[0].label == "Heel L  hspeed" && sh[0].above);
+            const std::vector<AutoLane> st = AutoBlockLanes(aa, MakeAutoBlock(AutoKind::SlideToeLongest, 'L', 50.0, 0.0));
+            CHECK(st.size() == 1 && st[0].label == "Tip L  hspeed" && st[0].threshold == aa.params.slide_speed);
+            const std::vector<AutoLane> pt = AutoBlockLanes(aa, MakeAutoBlock(AutoKind::PivotToe, 'L', 50.0, 0.0));
+            CHECK(pt.size() == 1 && pt[0].unit == "deg/s" && pt[0].curve[0] == 20.0);
+            CHECK(AutoBlockLanes(aa, MakeAutoBlock(AutoKind::PivotHeelLongest, 'L', 50.0, 0.0)).size() == 1);
+        }
+        const std::vector<AutoLane> grab = AutoBlockLanes(aa, MakeAutoBlock(AutoKind::Grab, 'L', 50.0, 0.0));
+        CHECK(grab.size() == 1);
+        if (grab.size() == 1)
+            CHECK(grab[0].label == "Hand L  speed" && grab[0].curve.size() == 10 && grab[0].curve[0] == 210.0 &&
+                  grab[0].contact[4] == 0 && grab[0].contact[5] == 1 && grab[0].threshold == aa.params.hand_contact_speed &&
+                  !grab[0].above);
+        const std::vector<AutoLane> hpiv = AutoBlockLanes(aa, MakeAutoBlock(AutoKind::HandPivot, 'L', 50.0, 0.0));
+        CHECK(hpiv.size() == 1);
+        if (hpiv.size() == 1)
+            CHECK(hpiv[0].label == "Hand L  heading rate" && hpiv[0].curve.size() == 10 && hpiv[0].curve[0] == 310.0 &&
+                  hpiv[0].contact.empty() && hpiv[0].threshold == aa.params.hand_pivot_rate_dps && hpiv[0].above);
+        {  // no heel -> toe yaw, or no hand rotation: no lane, and why
+            AutoAnalysis ny = aa;
+            ny.analysis.foot[0].has_yaw = false;
+            CHECK(AutoBlockLanes(ny, MakeAutoBlock(AutoKind::Pivot, 'L', 50.0, 0.0), &why).empty() &&
+                  why == "pivot needs the heel and the toe");
+            ny.analysis.hand[0].has_heading = false;
+            CHECK(AutoBlockLanes(ny, MakeAutoBlock(AutoKind::HandPivotAny, 'L', 50.0, 0.0), &why).empty() &&
+                  why == "no usable hand rotation");
+        }
+        CHECK(AutoBlockLanes(aa, MakeAutoBlock(AutoKind::Grab, 'R', 50.0, 0.0), &why).empty() &&
+              why == "no bone for right hand");
+        CHECK(AutoBlockLanes(aa, MakeAutoBlock(AutoKind::HandPivot, 'R', 50.0, 0.0)).empty());
+        Block rule;
+        CHECK(AutoBlockLanes(aa, rule, &why).empty() && why.empty());
+        // The threshold follows the sensitivity (the params the block's set was analysed with).
+        AutoAnalysis hi = aa;
+        hi.params = AutoPhysicsParams(AutoType::Step, 80.0, false);
+        const std::vector<AutoLane> s80 = AutoBlockLanes(hi, MakeAutoBlock(AutoKind::Step, 'L', 80.0, 0.0));
+        CHECK(!s80.empty() && std::fabs(s80[0].threshold - 0.4 * std::pow(2.0, 0.6)) < 1e-12);
+        AutoAnalysis bad = aa;
+        bad.analysis.ok = false;
+        bad.analysis.error = "no leg";
+        CHECK(AutoBlockLanes(bad, MakeAutoBlock(AutoKind::Step, 'L', 50.0, 0.0), &why).empty() && why == "no leg");
+    }
+
     if (g_fails) std::printf("%d check(s) failed\n", g_fails);
     else std::printf("auto_detect: all checks passed\n");
     return g_fails ? 1 : 0;

@@ -62,6 +62,7 @@ docs/PHASE*_VALIDATOR_GATE.md
 docs/SPIKE0_FINDINGS.md
 docs/SPIKE11_FINDINGS.md
 docs/SPIKE10_8A_FINDINGS.md
+docs/SPIKE13_FINDINGS.md
 spike/
 test-*.bat
 release.bat

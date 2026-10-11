@@ -1,0 +1,7 @@
+PATH "E:\Bank"
+FILE "E:/Bank/FS/a.wav" 2000 0 1700001000 0
+DATA "l:0.5" "d:Wood step"
+FILE "E:/Bank/Copy/a.wav" 2000 0 1700001001 0
+DATA "l:0.5" "d:Wood step copy"
+FILE "E:/Bank/Whoosh/sword_swing.wav" 96044 0 1700001002 0
+DATA "l:0:01.000" "d:Sword whoosh metal" "b:Weapons"

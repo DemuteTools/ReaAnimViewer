@@ -1,0 +1,19 @@
+DATA "l:9.0"
+PATH "C:\Sounds\Foley"
+PATH C:\Sounds\Copy
+USER "IXML:USER:Category" "Category" 0
+FILE C:\Sounds\Foley\step_a.wav 48044 0 1700000000 1
+DATA "t:Step A" "a:Demute" "l:0.25" "n:2" "s:48000"
+DATA "c:a comment with spaces" "i:24" "d:Gravel footstep, heel first" "b:Foley Lib"
+FILE "C:\Sounds\Foley\FS Dirt 01.wav" 1059884 0 1700000100 1
+DATA "l:5.5" "s:48000" "n:2" "d:Dirt footstep crunchy"
+FILE `C:\Sounds\Foley\it's quoted.wav` 12000 0 1700000200 1
+DATA "l:0.0625" 't:say "hi"' notakey
+WEIRD line the probe does not know
+FILE C:\Sounds\Foley\dup.wav 4000 0 1700000300 1
+DATA "l:1.0"
+FILE C:\Sounds\Copy\dup.wav 4000 0 1700000400 1
+DATA "l:1.0005"
+DATA "d:unterminated
+FILE "C:\Sounds\Big\huge.w64" 705032704 1 1700000500 1
+DATA l:6:37:05.088 s:96000 n:8 i:32

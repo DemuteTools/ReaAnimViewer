@@ -28,6 +28,8 @@ struct ItemFacts {
     double          position = 0.0;
     double          length = 0.0;
     double          snap_offset = 0.0;
+    double          volume = 1.0;    // item D_VOL
+    double          playrate = 1.0;  // active take D_PLAYRATE
     int             takes = 0;
     int             cur_take = 0;
     FolderItemFacts folder;
@@ -38,7 +40,8 @@ bool IsFolderItem(MediaItem* item);
 // One placement: the entry (a pile of items, by its top item's GUID, or a file) copied to the
 // event's position.
 struct PlaceRequest {
-    MediaItem*  owner = nullptr;  // the animation item
+    MediaItem*  owner = nullptr;  // the animation item (null: dev action only; the tag's owner =
+                                  // the source GUID, or the kept tag's owner on replace)
     std::string rid;
     double      event_t = 0.0;    // clip seconds
     double      project_t = 0.0;  // the event's project time

@@ -1,53 +1,681 @@
 // SPDX-License-Identifier: MIT
 //
-// See sound_place.h. Stub bodies (13-2): each returns a neutral value and is replaced by 13-6.
+// See sound_place.h (13-6). The engine copies items through their state chunk, never runs a
+// REAPER action, never touches a folder item, never writes RAV_SOUNDS and records no undo.
 
 #include "sound_place.h"
 
 #ifdef _WIN32
 
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <string>
+#include <vector>
+
+#include "sound_project.h"
+#include "sound_record.h"
 
 namespace rav {
+namespace {
 
-void InitSoundPlace(void* (*)(const char*))
+using PluginRegisterFn = int (*)(const char* name, void* infostruct);
+using AddMediaItemToTrackFn = MediaItem* (*)(MediaTrack* tr);
+using DeleteTrackMediaItemFn = bool (*)(MediaTrack* tr, MediaItem* it);
+using GetItemStateChunkFn = bool (*)(MediaItem* item, char* strNeedBig, int strNeedBig_sz, bool isundo);
+using SetItemStateChunkFn = bool (*)(MediaItem* item, const char* str, bool isundo);
+using SetMediaItemInfo_ValueFn = bool (*)(MediaItem* item, const char* parmname, double newvalue);
+using SetMediaItemTakeInfo_ValueFn = bool (*)(MediaItem_Take* take, const char* parmname, double newvalue);
+using GetMediaItemTakeFn = MediaItem_Take* (*)(MediaItem* item, int tk);
+using CountTakesFn = int (*)(MediaItem* item);
+using SetActiveTakeFn = void (*)(MediaItem_Take* take);
+using GetMediaSourceTypeFn = void (*)(PCM_source* source, char* typebuf, int typebuf_sz);
+using MoveMediaItemToTrackFn = bool (*)(MediaItem* item, MediaTrack* desttr);
+using GetConfigVarStringFn = bool (*)(const char* name, char* bufOut, int bufOut_sz);
+using GetNumTakeMarkersFn = int (*)(MediaItem_Take* take);
+using GetTakeMarkerFn = double (*)(MediaItem_Take* take, int idx, char* nameOut, int nameOut_sz, int* colorOutOptional);
+using GetItemProjectContextFn = ReaProject* (*)(MediaItem* item);
+
+PluginRegisterFn             f_plugin_register = nullptr;
+AddMediaItemToTrackFn        f_add_item = nullptr;
+DeleteTrackMediaItemFn       f_delete_item = nullptr;
+GetItemStateChunkFn          f_get_chunk = nullptr;
+SetItemStateChunkFn          f_set_chunk = nullptr;
+SetMediaItemInfo_ValueFn     f_set_item = nullptr;
+SetMediaItemTakeInfo_ValueFn f_set_take = nullptr;
+GetMediaItemTakeFn           f_get_take = nullptr;
+CountTakesFn                 f_count_takes = nullptr;
+SetActiveTakeFn              f_set_active_take = nullptr;
+GetMediaSourceTypeFn         f_source_type = nullptr;
+MoveMediaItemToTrackFn       f_move_to_track = nullptr;
+GetConfigVarStringFn         f_config_string = nullptr;
+GetNumTakeMarkersFn          f_num_take_markers = nullptr;
+GetTakeMarkerFn              f_get_take_marker = nullptr;
+GetItemProjectContextFn      f_item_project = nullptr;
+
+constexpr const char kMissingFns[] = "a REAPER function is missing";
+
+bool EngineReady()
 {
-    // STUB (13-6)
+    return f_add_item && f_delete_item && f_get_chunk && f_set_chunk && f_set_item && f_set_take
+        && f_get_take && f_count_takes && f_set_active_take && f_source_type && f_move_to_track;
 }
 
-bool ReadItemFacts(MediaItem*, ItemFacts* out)
+std::string ItemGuid(MediaItem* item)
 {
-    if (out) *out = ItemFacts{};
-    return false;  // STUB (13-6)
+    char buf[64] = {};
+    if (!item || !GetSetMediaItemInfo_String(item, "GUID", buf, false)) return {};
+    return buf;
 }
 
-bool IsFolderItem(MediaItem*)
+std::string TrackGuid(MediaTrack* track)
 {
-    return false;  // STUB (13-6)
+    char buf[64] = {};
+    if (!track || !GetSetMediaTrackInfo_String(track, "GUID", buf, false)) return {};
+    return buf;
 }
 
-PlaceResult PlaceSounds(ReaProject*, const PlaceRequest&)
+bool SameGuid(const std::string& a, const std::string& b)
 {
-    return {};  // STUB (13-6)
+    if (a.size() != b.size() || a.empty()) return false;
+    for (size_t i = 0; i < a.size(); ++i) {
+        char x = a[i], y = b[i];
+        if (x >= 'a' && x <= 'z') x = static_cast<char>(x - 32);
+        if (y >= 'a' && y <= 'z') y = static_cast<char>(y - 32);
+        if (x != y) return false;
+    }
+    return true;
 }
 
-bool MovePlacement(ReaProject*, const std::string&, double)
+std::string NewGuidString()
 {
-    return false;  // STUB (13-6)
+    GUID g;
+    genGuid(&g);
+    char buf[64] = {};
+    guidToString(&g, buf);
+    return buf;
 }
 
-PlaceResult ReplacePlacement(ReaProject*, const std::string&, const PlaceRequest&)
+// E11b: scan the project's items.
+MediaItem* FindItem(ReaProject* proj, const std::string& guid)
 {
-    return {};  // STUB (13-6)
+    if (guid.empty()) return nullptr;
+    const int n = CountMediaItems(proj);
+    for (int i = 0; i < n; ++i) {
+        MediaItem* it = GetMediaItem(proj, i);
+        if (it && SameGuid(ItemGuid(it), guid)) return it;
+    }
+    return nullptr;
 }
 
-bool RemovePlacement(ReaProject*, const std::string&)
+// The item's state chunk: a doubled buffer from 64 KB to 64 MB while the text fills it.
+std::string ReadChunk(MediaItem* item)
 {
-    return false;  // STUB (13-6)
+    if (!f_get_chunk || !item) return {};
+    for (int size = 64 * 1024; size <= 64 * 1024 * 1024; size *= 2) {
+        std::vector<char> buf(static_cast<size_t>(size), '\0');
+        if (!f_get_chunk(item, buf.data(), size, false)) return {};
+        const size_t len = std::strlen(buf.data());
+        if (len + 1 < static_cast<size_t>(size)) return std::string(buf.data(), len);
+    }
+    return {};
+}
+
+// The child tracks of a folder track (until its folder closes).
+std::vector<MediaTrack*> ChildTracks(ReaProject* proj, MediaTrack* folder)
+{
+    std::vector<MediaTrack*> out;
+    if (!folder) return out;
+    const int idx = static_cast<int>(GetMediaTrackInfo_Value(folder, "IP_TRACKNUMBER")) - 1;
+    if (idx < 0) return out;
+    int       depth = 1;
+    const int n = CountTracks(proj);
+    for (int j = idx + 1; j < n && depth > 0; ++j) {
+        MediaTrack* t = GetTrack(proj, j);
+        if (!t) break;
+        out.push_back(t);
+        depth += static_cast<int>(GetMediaTrackInfo_Value(t, "I_FOLDERDEPTH"));
+    }
+    return out;
+}
+
+bool EmptySource(MediaItem* item)
+{
+    MediaItem_Take* take = GetActiveTake(item);
+    if (!take) return true;
+    PCM_source* src = GetMediaItemTake_Source(take);
+    if (!src) return true;
+    if (!f_source_type) return false;
+    char type[64] = {};
+    f_source_type(src, type, sizeof(type));
+    return type[0] == '\0' || std::strcmp(type, "EMPTY") == 0;
+}
+
+FolderItemFacts ReadFolderFacts(MediaItem* item)
+{
+    FolderItemFacts f;
+    MediaTrack* track = GetMediaItem_Track(item);
+    if (!track) return f;
+    f.on_folder_track = GetMediaTrackInfo_Value(track, "I_FOLDERDEPTH") == 1.0;
+    if (!f.on_folder_track) return f;
+    f.empty_source = EmptySource(item);
+    if (!f.empty_source) return f;
+    const double pos = GetMediaItemInfo_Value(item, "D_POSITION");
+    const double len = GetMediaItemInfo_Value(item, "D_LENGTH");
+    // The item's own project (the active tab only when REAPER cannot tell).
+    ReaProject*  proj = f_item_project ? f_item_project(item) : nullptr;
+    if (!proj) proj = EnumProjects(-1, nullptr, 0);
+    for (MediaTrack* t : ChildTracks(proj, track)) {
+        const int n = CountTrackMediaItems(t);
+        for (int i = 0; i < n && !f.children_inside; ++i) {
+            MediaItem* c = GetTrackMediaItem(t, i);
+            if (c && SpanInside(pos, len, GetMediaItemInfo_Value(c, "D_POSITION"), GetMediaItemInfo_Value(c, "D_LENGTH")))
+                f.children_inside = true;
+        }
+        if (f.children_inside) break;
+    }
+    f.nvk_item_type = NvkItemTypeFromChunk(ReadChunk(item));
+    return f;
+}
+
+// One item to copy and where.
+struct Member {
+    MediaItem*  src = nullptr;
+    MediaTrack* track = nullptr;
+};
+
+// E1: the items an entry places (the source, or a folder item's children inside its span).
+bool CollectMembers(ReaProject* proj, const PlaceRequest& req, MediaItem** anchor_out, bool* folder_out,
+                    std::vector<Member>* out, std::string* error)
+{
+    if (req.source.kind != SoundSourceKind::Item) {
+        *error = "materialise first (file source)";
+        return false;
+    }
+    MediaItem* src = FindItem(proj, req.source.item_guid);
+    if (!src) {
+        *error = "source missing";
+        return false;
+    }
+    *anchor_out = src;
+    *folder_out = IsFolderItem(src);
+    if (!*folder_out) {
+        out->push_back({src, req.track ? req.track : GetMediaItem_Track(src)});
+        return true;
+    }
+    const double pos = GetMediaItemInfo_Value(src, "D_POSITION");
+    const double len = GetMediaItemInfo_Value(src, "D_LENGTH");
+    for (MediaTrack* t : ChildTracks(proj, GetMediaItem_Track(src))) {
+        const int n = CountTrackMediaItems(t);
+        for (int i = 0; i < n; ++i) {
+            MediaItem* c = GetTrackMediaItem(t, i);
+            if (!c || IsFolderItem(c)) continue;  // nested folder items skipped
+            PlacedTag placed_tag;
+            if (ReadPlacedTag(c, &placed_tag)) continue;  // an earlier placement, not part of the source
+            if (!SpanInside(pos, len, GetMediaItemInfo_Value(c, "D_POSITION"), GetMediaItemInfo_Value(c, "D_LENGTH")))
+                continue;
+            out->push_back({c, req.track ? req.track : t});
+        }
+    }
+    if (out->empty()) {
+        *error = "folder item has no child items";
+        return false;
+    }
+    return true;
+}
+
+// E3: the variation on a copied plain item.
+void ApplyVariation(MediaItem* item, const PlaceRequest& req)
+{
+    if (req.slice.set) {
+        MediaItem_Take* take = GetActiveTake(item);
+        if (take) {
+            double rate = GetMediaItemTakeInfo_Value(take, "D_PLAYRATE");
+            if (!(rate > 0.0)) rate = 1.0;
+            f_set_take(take, "D_STARTOFFS", req.slice.start_offs);
+            f_set_item(item, "D_LENGTH", req.slice.length / rate);
+        }
+        f_set_item(item, "D_SNAPOFFSET", req.slice.snap_offset);
+        return;
+    }
+    if (req.variation >= 0 && req.variation < f_count_takes(item)) {
+        MediaItem_Take* take = f_get_take(item, req.variation);
+        if (take) f_set_active_take(take);
+    }
+}
+
+// Writes `src`'s chunk into `dst` with the given IGUID.
+bool WriteCopy(MediaItem* src, MediaItem* dst, const std::string& guid)
+{
+    const std::string chunk = ReadChunk(src);
+    if (chunk.empty()) return false;
+    const std::string copy = PrepareCopyChunk(chunk, guid, &NewGuidString);
+    return f_set_chunk(dst, copy.c_str(), false);
+}
+
+std::string OwnerGuid(const PlaceRequest& req, const std::string& fallback)
+{
+    if (req.owner) return ItemGuid(req.owner);
+    return fallback;
+}
+
+// The shared place/replace body. `kept` non-null = rewrite it as the first member.
+PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept, const std::string& kept_owner)
+{
+    PlaceResult r;
+    if (!EngineReady()) {
+        r.error = kMissingFns;
+        return r;
+    }
+    MediaItem*          anchor_src = nullptr;
+    bool                folder = false;
+    std::vector<Member> members;
+    if (!CollectMembers(proj, req, &anchor_src, &folder, &members, &r.error)) return r;
+
+    const double src_anchor_pos = GetMediaItemInfo_Value(anchor_src, "D_POSITION");
+    const std::string owner = kept_owner.empty() ? OwnerGuid(req, req.source.item_guid) : OwnerGuid(req, kept_owner);
+    const double gain = ItemGainFor(req.gain_db);
+
+    // Copy every member first, apply the variation, then position from the anchor's snap.
+    std::vector<MediaItem*> placed;
+    for (size_t i = 0; i < members.size(); ++i) {
+        const Member& m = members[i];
+        MediaItem*    item = nullptr;
+        std::string   guid;
+        if (i == 0 && kept) {
+            item = kept;
+            guid = ItemGuid(kept);
+            if (GetMediaItem_Track(kept) != m.track && !f_move_to_track(kept, m.track)) {
+                r.error = "could not move the kept item to the source track";
+                return r;
+            }
+        } else {
+            item = f_add_item(m.track);
+            guid = NewGuidString();
+        }
+        if (!item) {
+            r.error = "could not add an item";
+            return r;
+        }
+        if (!WriteCopy(m.src, item, guid)) {
+            if (!(i == 0 && kept)) f_delete_item(m.track, item);
+            r.error = "could not copy the source item";
+            return r;
+        }
+        if (!folder) ApplyVariation(item, req);
+        f_set_item(item, "D_VOL", GetMediaItemInfo_Value(m.src, "D_VOL") * gain);
+        placed.push_back(item);
+        r.item_guids.push_back(ItemGuid(item));
+    }
+
+    // E2: sync = the source (topmost) item's snap, read after the variation.
+    const double sync = folder ? GetMediaItemInfo_Value(anchor_src, "D_SNAPOFFSET")
+                               : GetMediaItemInfo_Value(placed.front(), "D_SNAPOFFSET");
+    const double anchor = PlacementPosition(req.project_t, sync, req.blend_ms, req.offset_s);
+    for (size_t i = 0; i < placed.size(); ++i) {
+        const double src_pos = GetMediaItemInfo_Value(members[i].src, "D_POSITION");
+        f_set_item(placed[i], "D_POSITION", folder ? std::max(0.0, PileMemberPosition(anchor, src_anchor_pos, src_pos)) : anchor);
+        PlacedTag tag;
+        tag.owner = owner;
+        tag.rid = req.rid;
+        tag.t = req.event_t;
+        tag.node = req.node;
+        tag.own = req.own;
+        WritePlacedTag(placed[i], tag);
+    }
+    r.ok = true;
+    return r;
+}
+
+// E7: a placed item we may change. `edit` = replace/remove (attached refused).
+MediaItem* PlacedItemFor(ReaProject* proj, const std::string& guid, bool edit, PlacedTag* tag_out, std::string* error)
+{
+    MediaItem* item = FindItem(proj, guid);
+    if (!item) {
+        *error = "item missing";
+        return nullptr;
+    }
+    PlacedTag tag;
+    if (!ReadPlacedTag(item, &tag)) {
+        *error = "not a placed item (no RAV_SND tag)";
+        return nullptr;
+    }
+    if (IsFolderItem(item)) {
+        *error = "folder item";
+        return nullptr;
+    }
+    if (edit && tag.own == Ownership::Attached) {
+        *error = "attached by the user";
+        return nullptr;
+    }
+    if (tag_out) *tag_out = tag;
+    return item;
+}
+
+// ---- Dev action "RAV: Placement engine test" ------------------------------------------------
+
+int               g_test_cmd = 0;
+gaccel_register_t g_test_accel = {};
+std::string       g_last_inputs = "place,0,0,0,0";
+
+std::string Fmt(const char* fmt, double v)
+{
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), fmt, v);
+    return buf;
+}
+
+std::string DescribeItem(ReaProject* proj, const std::string& guid, const char* note)
+{
+    MediaItem* item = FindItem(proj, guid);
+    if (!item) return guid + ": gone\n";
+    std::string s = guid;
+    if (note && *note) s += std::string(" (") + note + ")";
+    MediaTrack* tr = GetMediaItem_Track(item);
+    s += "  track " + std::to_string(tr ? static_cast<int>(GetMediaTrackInfo_Value(tr, "IP_TRACKNUMBER")) : 0);
+    s += "  pos " + Fmt("%.3f", GetMediaItemInfo_Value(item, "D_POSITION"));
+    s += "  take " + std::to_string(static_cast<int>(GetMediaItemInfo_Value(item, "I_CURTAKE")) + 1);
+    MediaItem_Take* take = GetActiveTake(item);
+    s += "  startoffs " + Fmt("%.3f", take ? GetMediaItemTakeInfo_Value(take, "D_STARTOFFS") : 0.0);
+    s += "  len " + Fmt("%.3f", GetMediaItemInfo_Value(item, "D_LENGTH"));
+    const double vol = GetMediaItemInfo_Value(item, "D_VOL");
+    s += "  vol " + (vol > 0.0 ? Fmt("%.2f dB", 20.0 * std::log10(vol)) : std::string("-inf dB"));
+    char tag[1024] = {};
+    if (GetSetMediaItemInfo_String(item, kPlacedTagKey, tag, false) && tag[0]) s += std::string("\n   tag: ") + tag;
+    return s + "\n";
+}
+
+std::vector<std::string> SplitCsv(const std::string& s)
+{
+    std::vector<std::string> out;
+    size_t                   start = 0;
+    for (;;) {
+        const size_t c = s.find(',', start);
+        out.push_back(s.substr(start, c == std::string::npos ? std::string::npos : c - start));
+        if (c == std::string::npos) break;
+        start = c + 1;
+    }
+    while (out.size() < 5) out.push_back("0");
+    for (std::string& v : out) {
+        while (!v.empty() && v.front() == ' ') v.erase(v.begin());
+        while (!v.empty() && v.back() == ' ') v.pop_back();
+    }
+    return out;
+}
+
+// [take marker n, marker n+1 or source end) of the item's active take.
+SliceApply SliceForMarker(MediaItem* item, int n)
+{
+    SliceApply none;
+    if (n <= 0 || !f_num_take_markers || !f_get_take_marker) return none;
+    MediaItem_Take* take = GetActiveTake(item);
+    if (!take) return none;
+    const int count = f_num_take_markers(take);
+    if (n > count) return none;
+    char         name[256];
+    const double start = f_get_take_marker(take, n - 1, name, sizeof(name), nullptr);
+    double       end = 0.0;
+    if (n < count) {
+        end = f_get_take_marker(take, n, name, sizeof(name), nullptr);
+    } else {
+        PCM_source* src = GetMediaItemTake_Source(take);
+        bool        qn = false;
+        end = src ? GetMediaSourceLength(src, &qn) : 0.0;
+    }
+    SoundFrame f;
+    f.start = start;
+    f.length = end - start;
+    return SliceApplyFor(f);
+}
+
+void RunPlacementTest()
+{
+    ReaProject* proj = EnumProjects(-1, nullptr, 0);
+    char        values[1024];
+    std::snprintf(values, sizeof(values), "%s", g_last_inputs.c_str());
+    if (!GetUserInputs("RAV placement engine test", 5,
+                       "Step (place/move/replace/remove),Take # (1..n; 0 = keep),Take-marker slice # (0 = none),"
+                       "Gain dB,Blend offset ms",
+                       values, sizeof(values)))
+        return;
+    g_last_inputs = values;
+    const std::vector<std::string> in = SplitCsv(values);
+    const std::string step = in[0];
+    const int    take_no = std::atoi(in[1].c_str());
+    const int    slice_no = std::atoi(in[2].c_str());
+    const double gain_db = std::atof(in[3].c_str());
+    const double blend_ms = std::atof(in[4].c_str());
+
+    std::vector<MediaItem*> placed, sources;
+    const int               nsel = CountSelectedMediaItems(proj);
+    for (int i = 0; i < nsel; ++i) {
+        MediaItem* it = GetSelectedMediaItem(proj, i);
+        if (!it) continue;
+        PlacedTag tag;
+        (ReadPlacedTag(it, &tag) ? placed : sources).push_back(it);
+    }
+
+    std::string report = std::string("copyimpmedia ") + (ReadCopyImportedMedia() ? "on" : "off") + "\n";
+    report += "step: " + step + "\n\n";
+    {
+        const std::string undo = "RAV: Placement engine test (" + step + ")";
+        SoundUndoScope    scope(proj, undo.c_str());
+        if (step == "place") {
+            if (sources.empty()) {
+                report += "select a source item (one without a RAV_SND tag)\n";
+            } else {
+                PlaceRequest req;
+                req.rid = "test";
+                req.node = "TEST";
+                req.own = Ownership::Populated;
+                req.event_t = req.project_t = GetCursorPositionEx(proj);
+                req.source.kind = SoundSourceKind::Item;
+                req.source.item_guid = ItemGuid(sources.front());
+                req.variation = take_no - 1;
+                req.slice = SliceForMarker(sources.front(), slice_no);
+                req.gain_db = gain_db;
+                req.blend_ms = blend_ms;
+                const PlaceResult r = PlaceSounds(proj, req);
+                if (!r.ok) report += "refused: " + r.error + "\n";
+                for (const std::string& g : r.item_guids) report += DescribeItem(proj, g, "new");
+            }
+        } else if (step == "move") {
+            if (placed.empty()) {
+                report += "select a placed item\n";
+            } else {
+                const double delta = GetCursorPositionEx(proj) - GetMediaItemInfo_Value(placed.front(), "D_POSITION");
+                for (MediaItem* it : placed) {
+                    const std::string g = ItemGuid(it);
+                    const bool ok = MovePlacement(proj, g, GetMediaItemInfo_Value(it, "D_POSITION") + delta);
+                    report += ok ? DescribeItem(proj, g, "same GUID") : g + ": refused\n";
+                }
+            }
+        } else if (step == "replace") {
+            if (placed.empty() || sources.empty()) {
+                report += "select a placed item and a source item\n";
+            } else {
+                MediaItem*        old = placed.front();
+                const std::string g = ItemGuid(old);
+                PlacedTag         tag;
+                ReadPlacedTag(old, &tag);
+                PlaceRequest req;
+                req.rid = tag.rid;
+                req.node = tag.node;
+                req.own = tag.own;
+                req.event_t = req.project_t = tag.t;
+                req.source.kind = SoundSourceKind::Item;
+                req.source.item_guid = ItemGuid(sources.front());
+                req.variation = take_no - 1;
+                req.slice = SliceForMarker(sources.front(), slice_no);
+                req.gain_db = gain_db;
+                req.blend_ms = blend_ms;
+                req.offset_s = (GetMediaItemInfo_Value(old, "D_POSITION") + GetMediaItemInfo_Value(old, "D_SNAPOFFSET"))
+                             - (tag.t + blend_ms / 1000.0);
+                const PlaceResult r = ReplacePlacement(proj, g, req);
+                if (!r.ok) report += g + ": refused: " + r.error + "\n";
+                for (size_t i = 0; i < r.item_guids.size(); ++i)
+                    report += DescribeItem(proj, r.item_guids[i], i == 0 && SameGuid(r.item_guids[i], g) ? "same GUID" : "new");
+            }
+        } else if (step == "remove") {
+            std::vector<std::string> guids;
+            for (int i = 0; i < nsel; ++i) guids.push_back(ItemGuid(GetSelectedMediaItem(proj, i)));
+            for (const std::string& g : guids) {
+                PlacedTag   tag;
+                std::string why;
+                if (!PlacedItemFor(proj, g, true, &tag, &why)) {
+                    report += g + ": refused: " + why + "\n";
+                    continue;
+                }
+                report += RemovePlacement(proj, g) ? g + ": removed\n" : g + ": refused\n";
+            }
+        } else {
+            report += "unknown step (place / move / replace / remove)\n";
+        }
+    }
+    UpdateArrange();
+    ShowMessageBox(report.c_str(), "RAV placement engine test", 0);
+}
+
+bool OnPlaceTestCommand(int command, int /*flag*/)
+{
+    if (command == 0 || command != g_test_cmd) return false;
+    try {
+        RunPlacementTest();
+    } catch (...) {
+    }
+    return true;
+}
+
+}  // namespace
+
+void InitSoundPlace(void* (*get_func)(const char* name))
+{
+    if (!get_func) return;
+    f_plugin_register = reinterpret_cast<PluginRegisterFn>(get_func("plugin_register"));
+    f_add_item = reinterpret_cast<AddMediaItemToTrackFn>(get_func("AddMediaItemToTrack"));
+    f_delete_item = reinterpret_cast<DeleteTrackMediaItemFn>(get_func("DeleteTrackMediaItem"));
+    f_get_chunk = reinterpret_cast<GetItemStateChunkFn>(get_func("GetItemStateChunk"));
+    f_set_chunk = reinterpret_cast<SetItemStateChunkFn>(get_func("SetItemStateChunk"));
+    f_set_item = reinterpret_cast<SetMediaItemInfo_ValueFn>(get_func("SetMediaItemInfo_Value"));
+    f_set_take = reinterpret_cast<SetMediaItemTakeInfo_ValueFn>(get_func("SetMediaItemTakeInfo_Value"));
+    f_get_take = reinterpret_cast<GetMediaItemTakeFn>(get_func("GetMediaItemTake"));
+    f_count_takes = reinterpret_cast<CountTakesFn>(get_func("CountTakes"));
+    f_set_active_take = reinterpret_cast<SetActiveTakeFn>(get_func("SetActiveTake"));
+    f_source_type = reinterpret_cast<GetMediaSourceTypeFn>(get_func("GetMediaSourceType"));
+    f_move_to_track = reinterpret_cast<MoveMediaItemToTrackFn>(get_func("MoveMediaItemToTrack"));
+    f_config_string = reinterpret_cast<GetConfigVarStringFn>(get_func("get_config_var_string"));
+    f_num_take_markers = reinterpret_cast<GetNumTakeMarkersFn>(get_func("GetNumTakeMarkers"));
+    f_get_take_marker = reinterpret_cast<GetTakeMarkerFn>(get_func("GetTakeMarker"));
+    f_item_project = reinterpret_cast<GetItemProjectContextFn>(get_func("GetItemProjectContext"));
+
+    // E11: the dev action, registered here (no frozen file changes).
+    if (f_plugin_register && g_test_cmd == 0) {
+        g_test_cmd = f_plugin_register("command_id", const_cast<char*>("RAV_SOUND_PLACE_TEST"));
+        if (g_test_cmd) {
+            g_test_accel.accel.cmd = static_cast<WORD>(g_test_cmd);
+            g_test_accel.desc = "RAV: Placement engine test";
+            f_plugin_register("gaccel", &g_test_accel);
+            f_plugin_register("hookcommand", reinterpret_cast<void*>(&OnPlaceTestCommand));
+        }
+    }
+}
+
+bool ReadItemFacts(MediaItem* item, ItemFacts* out)
+{
+    if (!out) return false;
+    *out = ItemFacts{};
+    if (!item) return false;
+    try {
+        out->guid = ItemGuid(item);
+        out->track_guid = TrackGuid(GetMediaItem_Track(item));
+        out->position = GetMediaItemInfo_Value(item, "D_POSITION");
+        out->length = GetMediaItemInfo_Value(item, "D_LENGTH");
+        out->snap_offset = GetMediaItemInfo_Value(item, "D_SNAPOFFSET");
+        out->volume = GetMediaItemInfo_Value(item, "D_VOL");
+        MediaItem_Take* take = GetActiveTake(item);
+        out->playrate = take ? GetMediaItemTakeInfo_Value(take, "D_PLAYRATE") : 1.0;
+        out->takes = f_count_takes ? f_count_takes(item) : 0;
+        out->cur_take = static_cast<int>(GetMediaItemInfo_Value(item, "I_CURTAKE"));
+        out->folder = ReadFolderFacts(item);
+        return !out->guid.empty();
+    } catch (...) {
+        return false;
+    }
+}
+
+bool IsFolderItem(MediaItem* item)
+{
+    if (!item) return false;
+    try {
+        return IsFolderItemRule(ReadFolderFacts(item));
+    } catch (...) {
+        return false;
+    }
+}
+
+PlaceResult PlaceSounds(ReaProject* proj, const PlaceRequest& req)
+{
+    try {
+        return PlaceImpl(proj, req, nullptr, {});
+    } catch (...) {
+        PlaceResult r;
+        r.error = "placement failed";
+        return r;
+    }
+}
+
+bool MovePlacement(ReaProject* proj, const std::string& item_guid, double project_t)
+{
+    try {
+        if (!f_set_item) return false;
+        std::string why;
+        MediaItem*  item = PlacedItemFor(proj, item_guid, false, nullptr, &why);
+        if (!item) return false;
+        return f_set_item(item, "D_POSITION", project_t);
+    } catch (...) {
+        return false;
+    }
+}
+
+PlaceResult ReplacePlacement(ReaProject* proj, const std::string& item_guid, const PlaceRequest& req)
+{
+    PlaceResult r;
+    try {
+        if (!EngineReady()) {
+            r.error = kMissingFns;
+            return r;
+        }
+        PlacedTag  tag;
+        MediaItem* item = PlacedItemFor(proj, item_guid, true, &tag, &r.error);
+        if (!item) return r;
+        return PlaceImpl(proj, req, item, tag.owner);
+    } catch (...) {
+        r.error = "replace failed";
+        return r;
+    }
+}
+
+bool RemovePlacement(ReaProject* proj, const std::string& item_guid)
+{
+    try {
+        if (!f_delete_item) return false;
+        std::string why;
+        MediaItem*  item = PlacedItemFor(proj, item_guid, true, nullptr, &why);
+        if (!item) return false;
+        return f_delete_item(GetMediaItem_Track(item), item);
+    } catch (...) {
+        return false;
+    }
 }
 
 bool ReadCopyImportedMedia()
 {
-    return false;  // STUB (13-6)
+    if (!f_config_string) return true;
+    char buf[64] = {};
+    if (!f_config_string("copyimpmedia", buf, sizeof(buf)) || !buf[0]) return true;
+    return (std::atoi(buf) & 1) != 0;
 }
 
 }  // namespace rav

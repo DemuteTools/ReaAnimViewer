@@ -3,17 +3,58 @@
 // Library view (13-7a): the Libraries and Switch Groups lists (column 1) and the library tree (column 2).
 // Epic 13 (D20). Created by 13-2 with declared interfaces and neutral stub bodies; story 13-7a
 // owns this file: it fills the stubs and may ADD declarations. Shared types: sound_model.h.
+//
+// Seams for 13-7b (node panel, audition), 13-7c (Media Explorer drops) and 13-11 (missing
+// files): the selection getters below and LibraryTreeHooks.
 
 #pragma once
 
 #ifdef _WIN32
 
+#include <functional>
+#include <string>
+#include <vector>
+
+#include <imgui.h>
+
+#include "library_tree_edit.h"
+#include "sound_model.h"
+#include "ui_theme.h"
 
 namespace rav {
+
+// Red "missing" and orange Unassigned (DECISIONS section 2).
+constexpr ImU32 kLibMissing = ui::kCurvePalette[0];
+constexpr ImU32 kLibUnassigned = ui::kCurvePalette[6];
 
 void DrawLibrariesSection();
 void DrawSwitchGroupsSection();
 void DrawLibraryTree();
+// Column 3 when several rows are selected: Type, Switch on, Put into, Make them default.
+void DrawLibraryBatchPanel();
+
+// The library shown in the tree ("" = none).
+const std::string& SelectedLibraryUid();
+// The selected rows of that library (pruned each frame against the visible rows).
+const std::vector<LibraryRow>& SelectedLibraryRows();
+// Selects one row of a library (and shows that library).
+void SelectLibraryRow(const std::string& lib_uid, const LibraryRow& row);
+// The node of the single selected row ("" = none, an empty value, or several rows).
+std::string LibraryRowNode();
+
+// What other stories plug into the tree. Every member is optional.
+struct LibraryTreeHooks {
+    std::function<void(const std::string& lib, const std::string& node)> play;  // ▶ / Space
+    std::function<void()>                                               stop;  // Esc / ▶ again
+    std::function<bool(const std::string& node)>                        is_lit;  // sounding now
+    // A Sound whose media is missing (13-11 / 13-7c: File sources). Item sources are checked
+    // here (GUID not in the project) before this hook is asked.
+    std::function<bool(const SoundNode& sound)> is_missing;
+    // A drag payload type the tree accepts (13-7c: Media Explorer files), and what a drop does.
+    std::string                                                                          media_payload_type;
+    std::function<void(const std::string& lib, const LibraryRow& row, const void* data, int size)> media_drop;
+};
+void SetLibraryTreeHooks(const LibraryTreeHooks& hooks);
 
 }  // namespace rav
 

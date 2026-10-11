@@ -1,0 +1,1160 @@
+// SPDX-License-Identifier: MIT
+//
+// See library_tree_edit.h.
+
+#include "library_tree_edit.h"
+
+#include <algorithm>
+
+#include "rule_record.h"
+#include "sound_record.h"
+#include "sound_switch.h"
+
+namespace rav {
+namespace {
+
+constexpr const char kUnassignedKey[] = "#unassigned";
+constexpr const char kAddValueKey[] = "#addvalue";
+constexpr const char kHintKey[] = "#hint";
+
+bool IsContainer(const SoundNode& n) { return n.type != SoundNodeType::Sound; }
+
+const char* TypeName(SoundNodeType t)
+{
+    switch (t) {
+    case SoundNodeType::Sound:  return "New Sound";
+    case SoundNodeType::Random: return "Random";
+    case SoundNodeType::Blend:  return "Blend";
+    default:                    return "Switch";
+    }
+}
+
+int IndexOf(const SoundLibrary& lib, const std::string& uid)
+{
+    for (size_t i = 0; i < lib.nodes.size(); ++i)
+        if (lib.nodes[i].uid == uid) return static_cast<int>(i);
+    return -1;
+}
+
+SoundNode* ParentOf(SoundLibrary& lib, const std::string& uid)
+{
+    const SoundNode* n = FindNode(lib, uid);
+    if (!n || n->parent.empty() || n->parent == uid) return nullptr;
+    return FindNode(lib, n->parent);
+}
+
+// uid and every node under it (cycle-safe).
+std::set<std::string> Subtree(const SoundLibrary& lib, const std::string& uid)
+{
+    std::set<std::string> out;
+    if (!FindNode(lib, uid)) return out;
+    out.insert(uid);
+    bool grew = true;
+    while (grew) {
+        grew = false;
+        for (const SoundNode& n : lib.nodes)
+            if (!out.count(n.uid) && out.count(n.parent)) {
+                out.insert(n.uid);
+                grew = true;
+            }
+    }
+    return out;
+}
+
+// Where a node sits under its parent, to put another node there.
+struct Slot {
+    std::string parent;       // "" = the root
+    std::string value;        // a Switch case's value
+    bool        unassigned = false;
+    int         unassigned_idx = -1;
+    std::string next_sibling; // the sibling after it (vector order), "" = last
+};
+
+Slot SlotOf(SoundLibrary& lib, const std::string& uid)
+{
+    Slot s;
+    const SoundNode* n = FindNode(lib, uid);
+    if (!n) return s;
+    if (uid == lib.root) return s;
+    s.parent = n->parent;
+    SoundNode* p = ParentOf(lib, uid);
+    if (p && p->type == SoundNodeType::Switch) {
+        for (const SwitchCase& c : p->cases)
+            if (c.child_uid == uid) s.value = c.value_uid;
+        if (s.value.empty()) {
+            for (size_t i = 0; i < p->unassigned.size(); ++i)
+                if (p->unassigned[i] == uid) s.unassigned_idx = static_cast<int>(i);
+            s.unassigned = true;
+        }
+    } else {
+        bool seen = false;
+        for (const SoundNode& k : lib.nodes) {
+            if (k.parent != n->parent || k.uid == n->parent) continue;
+            if (seen) {
+                s.next_sibling = k.uid;
+                break;
+            }
+            if (k.uid == uid) seen = true;
+        }
+    }
+    return s;
+}
+
+// Takes the node off its parent Switch's case / Unassigned list (its `parent` is left as is).
+void Detach(SoundLibrary& lib, const std::string& uid)
+{
+    for (SoundNode& p : lib.nodes) {
+        if (p.type != SoundNodeType::Switch) continue;
+        p.cases.erase(std::remove_if(p.cases.begin(), p.cases.end(),
+                                     [&](const SwitchCase& c) { return c.child_uid == uid; }),
+                      p.cases.end());
+        p.unassigned.erase(std::remove(p.unassigned.begin(), p.unassigned.end(), uid), p.unassigned.end());
+    }
+}
+
+// Moves the node's line just before `before` ("" = to the end).
+void MoveLineBefore(SoundLibrary& lib, const std::string& uid, const std::string& before)
+{
+    int i = IndexOf(lib, uid);
+    if (i < 0 || uid == before) return;
+    SoundNode n = std::move(lib.nodes[static_cast<size_t>(i)]);
+    lib.nodes.erase(lib.nodes.begin() + i);
+    int j = before.empty() ? -1 : IndexOf(lib, before);
+    if (j < 0) lib.nodes.push_back(std::move(n));
+    else lib.nodes.insert(lib.nodes.begin() + j, std::move(n));
+}
+
+void MoveLineAfter(SoundLibrary& lib, const std::string& uid, const std::string& after)
+{
+    int i = IndexOf(lib, uid);
+    if (i < 0 || uid == after) return;
+    SoundNode n = std::move(lib.nodes[static_cast<size_t>(i)]);
+    lib.nodes.erase(lib.nodes.begin() + i);
+    int j = IndexOf(lib, after);
+    if (j < 0) lib.nodes.push_back(std::move(n));
+    else lib.nodes.insert(lib.nodes.begin() + j + 1, std::move(n));
+}
+
+// Puts a detached node in a slot.
+void Attach(SoundLibrary& lib, const std::string& uid, const Slot& s)
+{
+    SoundNode* n = FindNode(lib, uid);
+    if (!n) return;
+    if (s.parent.empty()) {
+        n->parent.clear();
+        lib.root = uid;
+        return;
+    }
+    n->parent = s.parent;
+    SoundNode* p = FindNode(lib, s.parent);
+    if (p && p->type == SoundNodeType::Switch) {
+        if (!s.value.empty()) {
+            bool set = false;
+            for (SwitchCase& c : p->cases)
+                if (c.value_uid == s.value) {
+                    c.child_uid = uid;
+                    set = true;
+                }
+            if (!set) {
+                SwitchCase c;
+                c.value_uid = s.value;
+                c.child_uid = uid;
+                p->cases.push_back(c);
+            }
+        } else {
+            size_t at = s.unassigned_idx < 0 ? p->unassigned.size()
+                                             : std::min(p->unassigned.size(), static_cast<size_t>(s.unassigned_idx));
+            p->unassigned.insert(p->unassigned.begin() + static_cast<long>(at), uid);
+        }
+        return;
+    }
+    MoveLineBefore(lib, uid, s.next_sibling);
+}
+
+void EraseSubtree(SoundLibrary& lib, const std::string& uid)
+{
+    std::set<std::string> sub = Subtree(lib, uid);
+    for (const std::string& u : sub) Detach(lib, u);
+    lib.nodes.erase(std::remove_if(lib.nodes.begin(), lib.nodes.end(),
+                                   [&](const SoundNode& n) { return sub.count(n.uid) != 0; }),
+                    lib.nodes.end());
+}
+
+// Copies the subtree into `dst` (new uids); the copy's top keeps the original's parent (the
+// caller places it). Returns the copy's uid.
+std::string CopySubtree(const SoundLibrary& src, const std::string& uid, SoundLibrary& dst)
+{
+    std::set<std::string> sub = Subtree(src, uid);
+    std::vector<SoundNode> copies;
+    std::vector<std::pair<std::string, std::string>> map;
+    for (const SoundNode& n : src.nodes)
+        if (sub.count(n.uid)) map.emplace_back(n.uid, NewSoundUid());
+    auto remap = [&](const std::string& u) {
+        for (const auto& m : map)
+            if (m.first == u) return m.second;
+        return u;
+    };
+    for (const SoundNode& n : src.nodes) {
+        if (!sub.count(n.uid)) continue;
+        SoundNode c = n;
+        c.uid = remap(n.uid);
+        if (n.uid != uid) c.parent = remap(n.parent);
+        for (SwitchCase& sc : c.cases) sc.child_uid = remap(sc.child_uid);
+        for (std::string& u : c.unassigned) u = remap(u);
+        copies.push_back(std::move(c));
+    }
+    std::string top = remap(uid);
+    for (SoundNode& c : copies) dst.nodes.push_back(std::move(c));
+    return top;
+}
+
+// The rows' nodes, once each, none under another of them; the root only when `allow_root`.
+std::vector<std::string> RowNodes(const SoundLibrary& lib, const std::vector<LibraryRow>& rows, bool allow_root)
+{
+    std::vector<std::string> out;
+    for (const LibraryRow& r : rows) {
+        std::string n = RowNode(lib, r);
+        if (n.empty() || (!allow_root && n == lib.root)) continue;
+        if (std::find(out.begin(), out.end(), n) == out.end()) out.push_back(n);
+    }
+    std::vector<std::string> top;
+    for (const std::string& n : out) {
+        bool under = false;
+        for (const std::string& m : out)
+            if (m != n && IsInSubtree(lib, n, m)) under = true;
+        if (!under) top.push_back(n);
+    }
+    return top;
+}
+
+SoundNode MakeNode(const NewNodeSpec& spec, const std::string& parent)
+{
+    SoundNode n;
+    n.uid = NewSoundUid();
+    n.parent = parent;
+    n.type = spec.type;
+    n.name = spec.name.empty() ? TypeName(spec.type) : spec.name;
+    if (spec.type == SoundNodeType::Sound) n.sound = spec.sound;
+    if (spec.type == SoundNodeType::Switch) n.group_uid = spec.group_uid;
+    return n;
+}
+
+const SwitchValue* FindValue(const SoundStore& store, const std::string& group_uid, const std::string& value_uid)
+{
+    if (const SwitchGroup* g = FindGroup(store, group_uid))
+        for (const SwitchValue& v : g->values)
+            if (v.uid == value_uid) return &v;
+    return nullptr;
+}
+
+std::string CaseChild(const SoundNode& sw, const std::string& value)
+{
+    for (const SwitchCase& c : sw.cases)
+        if (c.value_uid == value) return c.child_uid;
+    return {};
+}
+
+// Runs an edit; restores the store and returns false when it failed or changed nothing.
+bool Transact(SoundStore& store, const std::function<bool(SoundStore&)>& edit)
+{
+    const SoundStore before = store;
+    if (!edit(store) || SerializeSoundStore(store) == SerializeSoundStore(before)) {
+        store = before;
+        return false;
+    }
+    return true;
+}
+
+struct InsertPoint {
+    enum Mode { Into, After, ValueSlot } mode = Into;
+    bool        ok = false;
+    std::string cid;     // Into: the container; After: the sound's parent; ValueSlot: the Switch
+    std::string after;   // After: the sound
+    std::string value;   // ValueSlot
+    std::string wrap;    // ValueSlot: its content
+    std::string why;
+};
+
+InsertPoint ResolveInsert(const SoundLibrary& lib, const LibraryRow* row, SoundNodeType type)
+{
+    InsertPoint ip;
+    LibraryRow r;
+    if (row) r = *row;
+    if (r.key.empty()) r = {"", lib.root};
+    if (r.key == kHintKey) r = RowOfNode(lib, r.parent);
+    if (r.key == kUnassignedKey || r.key == kAddValueKey) {
+        ip.why = "Select a value or a container";
+        return ip;
+    }
+    // A value playing a container: adds go inside it, as on the container's own row (mockup
+    // insertPointFor); a value playing a Sound or nothing: its slot.
+    const SoundNode* vc = RowIsValue(lib, r) ? FindNode(lib, RowNode(lib, r)) : nullptr;
+    if (RowIsValue(lib, r) && !(vc && IsContainer(*vc))) {
+        std::string content = RowNode(lib, r);
+        if (!content.empty() && type == SoundNodeType::Sound) {
+            ip.why = "This value already plays a sound. + Random / + Blend wraps it";
+            return ip;
+        }
+        ip.ok = true;
+        ip.mode = InsertPoint::ValueSlot;
+        ip.cid = r.parent;
+        ip.value = r.key;
+        ip.wrap = content;
+        return ip;
+    }
+    const SoundNode* n = FindNode(lib, RowNode(lib, r));
+    if (!n) {
+        ip.why = "The library has no root";
+        return ip;
+    }
+    if (IsContainer(*n)) {
+        if (n->type == SoundNodeType::Switch) {
+            ip.why = n->uid == lib.root ? "Select a row first: the library is a Switch, its children are its values"
+                                        : "A Switch holds values: select one of its value rows";
+            return ip;
+        }
+        ip.ok = true;
+        ip.mode = InsertPoint::Into;
+        ip.cid = n->uid;
+        return ip;
+    }
+    const SoundNode* p = n->parent.empty() ? nullptr : FindNode(lib, n->parent);
+    if (p && p->type != SoundNodeType::Switch) {
+        ip.ok = true;
+        ip.mode = InsertPoint::After;
+        ip.cid = p->uid;
+        ip.after = n->uid;
+        return ip;
+    }
+    ip.why = "Drag it onto a value first, or select a Random / Blend";
+    return ip;
+}
+
+}  // namespace
+
+// ---- Rows ---------------------------------------------------------------------------------------
+
+std::string RowNode(const SoundLibrary& lib, const LibraryRow& row)
+{
+    if (row.parent.empty()) return (row.key == lib.root && FindNode(lib, row.key)) ? row.key : std::string();
+    const SoundNode* p = FindNode(lib, row.parent);
+    if (!p) return {};
+    if (p->type == SoundNodeType::Switch) {
+        if (std::find(p->unassigned.begin(), p->unassigned.end(), row.key) != p->unassigned.end())
+            return FindNode(lib, row.key) ? row.key : std::string();
+        std::string c = CaseChild(*p, row.key);
+        return FindNode(lib, c) ? c : std::string();
+    }
+    const SoundNode* n = FindNode(lib, row.key);
+    return (n && n->parent == row.parent) ? row.key : std::string();
+}
+
+bool RowIsValue(const SoundLibrary& lib, const LibraryRow& row)
+{
+    if (row.parent.empty() || row.key.empty() || row.key[0] == '#') return false;
+    const SoundNode* p = FindNode(lib, row.parent);
+    if (!p || p->type != SoundNodeType::Switch) return false;
+    return std::find(p->unassigned.begin(), p->unassigned.end(), row.key) == p->unassigned.end();
+}
+
+LibraryRow RowOfNode(const SoundLibrary& lib, const std::string& uid)
+{
+    const SoundNode* n = FindNode(lib, uid);
+    if (!n || uid == lib.root) return {"", uid};
+    const SoundNode* p = n->parent.empty() ? nullptr : FindNode(lib, n->parent);
+    if (p && p->type == SoundNodeType::Switch)
+        for (const SwitchCase& c : p->cases)
+            if (c.child_uid == uid) return {p->uid, c.value_uid};
+    return {n->parent, uid};
+}
+
+bool IsInSubtree(const SoundLibrary& lib, const std::string& uid, const std::string& anc)
+{
+    std::string cur = uid;
+    for (size_t guard = 0; guard <= lib.nodes.size() && !cur.empty(); ++guard) {
+        if (cur == anc) return true;
+        const SoundNode* n = FindNode(lib, cur);
+        if (!n || n->parent == cur) return false;
+        cur = n->parent;
+    }
+    return false;
+}
+
+namespace {
+
+void EmitChildren(std::vector<TreeRow>& rows, const SoundStore& store, const SoundLibrary& lib,
+                  const std::set<std::string>& open, const std::string& cid, int depth, std::set<std::string>& seen);
+
+void EmitNode(std::vector<TreeRow>& rows, const SoundStore& store, const SoundLibrary& lib,
+              const std::set<std::string>& open, TreeRow r, std::set<std::string>& seen)
+{
+    const SoundNode* n = r.node.empty() ? nullptr : FindNode(lib, r.node);
+    if (n) {
+        r.container = IsContainer(*n);
+        if (r.label.empty()) r.label = n->name.empty() ? (r.container ? TypeName(n->type) : "Empty sound") : n->name;
+        r.open = r.container && (n->uid == lib.root ? !open.count("!root") : open.count(n->uid) != 0);
+    }
+    rows.push_back(r);
+    if (n && r.open && !seen.count(n->uid)) {
+        seen.insert(n->uid);
+        EmitChildren(rows, store, lib, open, n->uid, r.depth + 1, seen);
+    }
+}
+
+void EmitChildren(std::vector<TreeRow>& rows, const SoundStore& store, const SoundLibrary& lib,
+                  const std::set<std::string>& open, const std::string& cid, int depth, std::set<std::string>& seen)
+{
+    const SoundNode* c = FindNode(lib, cid);
+    if (!c) return;
+    if (c->type == SoundNodeType::Switch) {
+        const SwitchGroup* g = FindGroup(store, c->group_uid);
+        const std::string dv = DefaultValue(store, *c);
+        std::vector<std::string> shown;
+        if (g)
+            for (const SwitchValue& v : g->values) {
+                TreeRow r;
+                r.row = {cid, v.uid};
+                r.kind = TreeRowKind::Value;
+                r.depth = depth;
+                r.node = CaseChild(*c, v.uid);
+                if (!FindNode(lib, r.node)) r.node.clear();
+                r.label = v.name.empty() ? "(unnamed)" : v.name;
+                r.is_default = v.uid == dv;
+                shown.push_back(v.uid);
+                EmitNode(rows, store, lib, open, r, seen);
+            }
+        for (const SwitchCase& sc : c->cases) {  // a case on a value the group no longer has
+            if (std::find(shown.begin(), shown.end(), sc.value_uid) != shown.end()) continue;
+            TreeRow r;
+            r.row = {cid, sc.value_uid};
+            r.kind = TreeRowKind::Value;
+            r.depth = depth;
+            r.node = FindNode(lib, sc.child_uid) ? sc.child_uid : std::string();
+            r.label = "(deleted value)";
+            EmitNode(rows, store, lib, open, r, seen);
+        }
+        if (!c->unassigned.empty()) {
+            TreeRow h;
+            h.row = {cid, kUnassignedKey};
+            h.kind = TreeRowKind::UnassignedHeader;
+            h.depth = depth;
+            h.count = static_cast<int>(std::count_if(c->unassigned.begin(), c->unassigned.end(),
+                                                     [&](const std::string& u) { return FindNode(lib, u) != nullptr; }));
+            h.label = "Unassigned (" + std::to_string(h.count) + ") · drag them onto a value";
+            rows.push_back(h);
+            for (const std::string& u : c->unassigned) {
+                if (!FindNode(lib, u)) continue;
+                TreeRow r;
+                r.row = {cid, u};
+                r.depth = depth;
+                r.node = u;
+                r.unassigned = true;
+                EmitNode(rows, store, lib, open, r, seen);
+            }
+        }
+        if (g) {
+            TreeRow a;
+            a.row = {cid, kAddValueKey};
+            a.kind = TreeRowKind::AddValue;
+            a.depth = depth;
+            a.label = "+ value";
+            rows.push_back(a);
+        }
+        return;
+    }
+    std::vector<const SoundNode*> kids = ChildrenOf(lib, cid);
+    for (const SoundNode* k : kids) {
+        TreeRow r;
+        r.row = {cid, k->uid};
+        r.depth = depth;
+        r.node = k->uid;
+        EmitNode(rows, store, lib, open, r, seen);
+    }
+    if (kids.empty() && cid != lib.root) {
+        TreeRow h;
+        h.row = {cid, kHintKey};
+        h.kind = TreeRowKind::Hint;
+        h.depth = depth;
+        h.label = "Drop sounds here or use + Sound";
+        rows.push_back(h);
+    }
+}
+
+}  // namespace
+
+std::vector<TreeRow> BuildTreeRows(const SoundStore& store, const SoundLibrary& lib, const std::set<std::string>& open)
+{
+    std::vector<TreeRow> rows;
+    if (!FindNode(lib, lib.root)) return rows;
+    std::set<std::string> seen;
+    TreeRow r;
+    r.row = {"", lib.root};
+    r.node = lib.root;
+    EmitNode(rows, store, lib, open, r, seen);
+    return rows;
+}
+
+std::vector<LibraryRow> RangeSelectByLevel(const std::vector<TreeRow>& rows, const LibraryRow& anchor,
+                                           const LibraryRow& target)
+{
+    std::vector<LibraryRow> out;
+    int ia = -1, it = -1;
+    for (size_t i = 0; i < rows.size(); ++i) {
+        if (rows[i].row == anchor) ia = static_cast<int>(i);
+        if (rows[i].row == target) it = static_cast<int>(i);
+    }
+    if (ia < 0 || it < 0) return out;
+    const int d = rows[static_cast<size_t>(ia)].depth;
+    auto selectable = [&](int i) {
+        const TreeRow& r = rows[static_cast<size_t>(i)];
+        return r.depth == d && (r.kind == TreeRowKind::Node || r.kind == TreeRowKind::Value);
+    };
+    const int step = it >= ia ? 1 : -1;
+    while (it != ia && !selectable(it)) it -= step;  // the target's row at the anchor's depth
+    const int lo = std::min(ia, it), hi = std::max(ia, it);
+    for (int i = lo; i <= hi; ++i)
+        if (selectable(i)) out.push_back(rows[static_cast<size_t>(i)].row);
+    return out;
+}
+
+// ---- Add ----------------------------------------------------------------------------------------
+
+bool CanAddAt(const SoundStore& store, const SoundLibrary& lib, const LibraryRow* row, SoundNodeType type,
+              std::string* why)
+{
+    (void)store;
+    InsertPoint ip = ResolveInsert(lib, row, type);
+    if (why) *why = ip.why;
+    return ip.ok;
+}
+
+bool AddNodes(SoundStore& store, const std::string& lib_uid, const LibraryRow* row, const std::vector<NewNodeSpec>& specs,
+              std::vector<std::string>* created, std::string* why)
+{
+    if (specs.empty()) return false;
+    std::vector<std::string> made;
+    bool ok = Transact(store, [&](SoundStore& s) {
+        SoundLibrary* lib = FindLibrary(s, lib_uid);
+        if (!lib) return false;
+        for (const NewNodeSpec& sp : specs)
+            if (sp.type == SoundNodeType::Switch && !FindGroup(s, sp.group_uid)) {
+                if (why) *why = "Pick a Switch Group";
+                return false;
+            }
+        InsertPoint ip = ResolveInsert(*lib, row, specs.front().type);
+        if (why) *why = ip.why;
+        if (!ip.ok) return false;
+        auto add_switch_group = [&](const std::string& uid, const NewNodeSpec& sp) {
+            if (sp.type == SoundNodeType::Switch) {
+                SoundNode* n = FindNode(*lib, uid);
+                n->type = SoundNodeType::Random;
+                n->group_uid.clear();
+                ConvertNodeType(*lib, uid, SoundNodeType::Switch, sp.group_uid, s);
+            }
+        };
+        if (ip.mode == InsertPoint::Into) {
+            for (const NewNodeSpec& sp : specs) {
+                lib->nodes.push_back(MakeNode(sp, ip.cid));
+                made.push_back(lib->nodes.back().uid);
+            }
+            return true;
+        }
+        if (ip.mode == InsertPoint::After) {
+            std::string after = ip.after;
+            for (const NewNodeSpec& sp : specs) {
+                SoundNode n = MakeNode(sp, ip.cid);
+                std::string uid = n.uid;
+                lib->nodes.push_back(std::move(n));
+                MoveLineAfter(*lib, uid, after);
+                after = uid;
+                made.push_back(uid);
+            }
+            return true;
+        }
+        // A Switch value.
+        Slot slot;
+        slot.parent = ip.cid;
+        slot.value = ip.value;
+        const SoundNode* sw = FindNode(*lib, ip.cid);
+        const SwitchValue* v = sw ? FindValue(s, sw->group_uid, ip.value) : nullptr;
+        if (!ip.wrap.empty()) {  // a container wraps what the value played
+            const NewNodeSpec& sp = specs.front();
+            NewNodeSpec as_random = sp;
+            if (as_random.type == SoundNodeType::Switch) as_random.type = SoundNodeType::Random;
+            SoundNode w = MakeNode(as_random, ip.cid);
+            std::string wu = w.uid;
+            lib->nodes.push_back(std::move(w));
+            Detach(*lib, ip.wrap);
+            Attach(*lib, wu, slot);
+            FindNode(*lib, ip.wrap)->parent = wu;
+            if (sp.type == SoundNodeType::Switch) ConvertNodeType(*lib, wu, SoundNodeType::Switch, sp.group_uid, s);
+            made.push_back(wu);
+            return true;
+        }
+        if (specs.size() == 1) {
+            SoundNode n = MakeNode(specs.front(), ip.cid);
+            std::string uid = n.uid;
+            lib->nodes.push_back(std::move(n));
+            Attach(*lib, uid, slot);
+            add_switch_group(uid, specs.front());
+            made.push_back(uid);
+            return true;
+        }
+        NewNodeSpec rs;
+        rs.type = SoundNodeType::Random;
+        rs.name = v ? v->name : std::string();
+        SoundNode holder = MakeNode(rs, ip.cid);
+        std::string hu = holder.uid;
+        lib->nodes.push_back(std::move(holder));
+        Attach(*lib, hu, slot);
+        made.push_back(hu);
+        for (const NewNodeSpec& sp : specs) {
+            lib->nodes.push_back(MakeNode(sp, hu));
+            made.push_back(lib->nodes.back().uid);
+        }
+        return true;
+    });
+    if (ok && created) *created = made;
+    return ok;
+}
+
+// ---- Remove / move ------------------------------------------------------------------------------
+
+bool RemoveRows(SoundStore& store, const std::string& lib_uid, const std::vector<LibraryRow>& rows)
+{
+    return Transact(store, [&](SoundStore& s) {
+        SoundLibrary* lib = FindLibrary(s, lib_uid);
+        if (!lib) return false;
+        for (const std::string& n : RowNodes(*lib, rows, false)) EraseSubtree(*lib, n);
+        return true;
+    });
+}
+
+namespace {
+
+struct ResolvedDrop {
+    bool        ok = false;
+    std::string container;  // Into: the container; OntoValue: the Switch; Before / After: the parent
+    std::string sibling;    // Before / After
+    bool        sibling_unassigned = false;
+};
+
+ResolvedDrop ResolveDrop(const SoundLibrary& dst, const DropTarget& to)
+{
+    ResolvedDrop d;
+    LibraryRow row = to.row;
+    DropMode mode = to.mode;
+    if (row.key == kHintKey) {
+        row = RowOfNode(dst, row.parent);
+        mode = DropMode::Into;
+    }
+    if (mode == DropMode::OntoValue) {
+        if (!RowIsValue(dst, row)) return d;
+        d.container = row.parent;
+        d.ok = true;
+        return d;
+    }
+    if (mode == DropMode::Into) {
+        const SoundNode* c = FindNode(dst, RowNode(dst, row));
+        if (!c || c->type == SoundNodeType::Sound || c->type == SoundNodeType::Switch) return d;
+        d.container = c->uid;
+        d.ok = true;
+        return d;
+    }
+    if (RowIsValue(dst, row)) return d;
+    const SoundNode* sib = FindNode(dst, RowNode(dst, row));
+    if (!sib || sib->uid == dst.root) return d;
+    const SoundNode* p = FindNode(dst, sib->parent);
+    if (!p) return d;
+    d.container = p->uid;
+    d.sibling = sib->uid;
+    d.sibling_unassigned = p->type == SoundNodeType::Switch;
+    d.ok = true;
+    return d;
+}
+
+bool DropAllowed(const SoundLibrary& src, const std::vector<std::string>& nodes, const SoundLibrary& dst,
+                 const DropTarget& to, const ResolvedDrop& d)
+{
+    if (!d.ok || nodes.empty()) return false;
+    if (&src != &dst) return true;
+    if (to.mode == DropMode::OntoValue && nodes.size() == 1)  // a value's content onto its own value
+        if (const SoundNode* sw = FindNode(dst, d.container))
+            if (CaseChild(*sw, to.row.key) == nodes.front()) return false;
+    for (const std::string& n : nodes) {
+        if (IsInSubtree(dst, d.container, n)) return false;  // into itself or a descendant
+        if (n == d.sibling) return false;
+    }
+    return true;
+}
+
+}  // namespace
+
+bool CanDrop(const SoundStore& store, const std::string& src_lib, const std::vector<LibraryRow>& rows,
+             const DropTarget& to)
+{
+    const SoundLibrary* src = FindLibrary(store, src_lib);
+    const SoundLibrary* dst = FindLibrary(store, to.lib);
+    if (!src || !dst) return false;
+    std::vector<std::string> nodes = RowNodes(*src, rows, false);
+    return DropAllowed(*src, nodes, *dst, to, ResolveDrop(*dst, to));
+}
+
+bool MoveRows(SoundStore& store, const std::string& src_lib, const std::vector<LibraryRow>& rows, const DropTarget& to,
+              std::vector<std::string>* moved)
+{
+    std::vector<std::string> out;
+    bool ok = Transact(store, [&](SoundStore& s) {
+        SoundLibrary* src = FindLibrary(s, src_lib);
+        SoundLibrary* dst = FindLibrary(s, to.lib);
+        if (!src || !dst) return false;
+        std::vector<std::string> nodes = RowNodes(*src, rows, false);
+        ResolvedDrop d = ResolveDrop(*dst, to);
+        if (!DropAllowed(*src, nodes, *dst, to, d)) return false;
+        const bool same = src == dst;
+
+        // Onto a value: what it held before (unless it is one of the moved rows).
+        std::string old;
+        if (to.mode == DropMode::OntoValue) {
+            const SoundNode* sw = FindNode(*dst, d.container);
+            old = sw ? CaseChild(*sw, to.row.key) : std::string();
+            if (same && std::find(nodes.begin(), nodes.end(), old) != nodes.end()) old.clear();
+        }
+        Slot from;
+        if (same && nodes.size() == 1) from = SlotOf(*src, nodes.front());
+
+        // Take the moved nodes out (or copy them over).
+        std::vector<std::string> placed;
+        for (const std::string& n : nodes) {
+            if (same) {
+                Detach(*src, n);
+                placed.push_back(n);
+            } else {
+                placed.push_back(CopySubtree(*src, n, *dst));
+                EraseSubtree(*src, n);
+            }
+        }
+
+        if (to.mode == DropMode::OntoValue) {
+            Slot vs;
+            vs.parent = d.container;
+            vs.value = to.row.key;
+            if (!old.empty()) Detach(*dst, old);
+            if (placed.size() == 1) {
+                Attach(*dst, placed.front(), vs);
+            } else {
+                const SoundNode* sw = FindNode(*dst, d.container);
+                const SwitchValue* v = sw ? FindValue(s, sw->group_uid, to.row.key) : nullptr;
+                NewNodeSpec rs;
+                rs.type = SoundNodeType::Random;
+                rs.name = v ? v->name : std::string();
+                SoundNode holder = MakeNode(rs, d.container);
+                std::string hu = holder.uid;
+                dst->nodes.push_back(std::move(holder));
+                Attach(*dst, hu, vs);
+                for (const std::string& p : placed) {
+                    FindNode(*dst, p)->parent = hu;
+                    MoveLineBefore(*dst, p, "");
+                }
+            }
+            if (!old.empty()) {
+                Slot back;
+                back.parent = d.container;
+                back.unassigned = true;
+                const bool can_swap = same && placed.size() == 1 && !from.parent.empty() &&
+                                      !IsInSubtree(*dst, from.parent, old) && FindNode(*dst, from.parent);
+                if (can_swap) back = from;
+                Attach(*dst, old, back);
+            }
+        } else if (to.mode == DropMode::Into || to.row.key == kHintKey) {  // a hint row = into its container
+            for (const std::string& p : placed) {
+                FindNode(*dst, p)->parent = d.container;
+                MoveLineBefore(*dst, p, "");
+            }
+        } else {
+            const bool after = to.mode == DropMode::After;
+            if (d.sibling_unassigned) {
+                for (size_t i = 0; i < placed.size(); ++i) {
+                    const SoundNode* sw = FindNode(*dst, d.container);
+                    auto it = std::find(sw->unassigned.begin(), sw->unassigned.end(), d.sibling);
+                    const long base = it - sw->unassigned.begin();
+                    Slot us;
+                    us.parent = d.container;
+                    us.unassigned = true;
+                    us.unassigned_idx = static_cast<int>(after ? base + 1 + static_cast<long>(i) : base);
+                    Attach(*dst, placed[i], us);
+                }
+            } else {
+                std::string ref = d.sibling;
+                for (const std::string& p : placed) {
+                    FindNode(*dst, p)->parent = d.container;
+                    if (after) {
+                        MoveLineAfter(*dst, p, ref);
+                        ref = p;
+                    } else {
+                        MoveLineBefore(*dst, p, ref);
+                    }
+                }
+            }
+        }
+        out = placed;
+        return true;
+    });
+    if (ok && moved) *moved = out;
+    return ok;
+}
+
+// ---- Wrap / group / duplicate -------------------------------------------------------------------
+
+namespace {
+
+// A new container `w` takes node `n`'s place; `n` goes inside it.
+std::string WrapOne(SoundStore& s, SoundLibrary& lib, const std::string& n, SoundNodeType type,
+                    const std::string& group_uid)
+{
+    Slot slot = SlotOf(lib, n);
+    if (n != lib.root && slot.parent.empty()) return {};
+    NewNodeSpec sp;
+    sp.type = SoundNodeType::Random;
+    sp.name = TypeName(type);
+    SoundNode w = MakeNode(sp, slot.parent);
+    std::string wu = w.uid;
+    lib.nodes.push_back(std::move(w));
+    if (n == lib.root) {
+        MoveLineBefore(lib, wu, n);
+        lib.root = wu;
+    } else {
+        // Its place: just before n in line order, in n's Switch slot.
+        if (!slot.value.empty() || slot.unassigned) {
+            Detach(lib, n);
+            Attach(lib, wu, slot);
+        }
+        MoveLineBefore(lib, wu, n);
+    }
+    FindNode(lib, n)->parent = wu;
+    if (type == SoundNodeType::Blend) FindNode(lib, wu)->type = SoundNodeType::Blend;
+    if (type == SoundNodeType::Switch) ConvertNodeType(lib, wu, SoundNodeType::Switch, group_uid, s);
+    return wu;
+}
+
+}  // namespace
+
+bool WrapRows(SoundStore& store, const std::string& lib_uid, const std::vector<LibraryRow>& rows, SoundNodeType type,
+              const std::string& group_uid, std::vector<std::string>* created)
+{
+    if (type == SoundNodeType::Sound) return false;
+    std::vector<std::string> made;
+    bool ok = Transact(store, [&](SoundStore& s) {
+        SoundLibrary* lib = FindLibrary(s, lib_uid);
+        if (!lib) return false;
+        if (type == SoundNodeType::Switch && !FindGroup(s, group_uid)) return false;
+        for (const LibraryRow& r : rows) {
+            std::string n = RowNode(*lib, r);
+            if (n.empty()) continue;
+            std::string w = WrapOne(s, *lib, n, type, group_uid);
+            if (!w.empty()) made.push_back(w);
+        }
+        return !made.empty();
+    });
+    if (ok && created) *created = made;
+    return ok;
+}
+
+bool GroupRows(SoundStore& store, const std::string& lib_uid, const std::vector<LibraryRow>& rows, SoundNodeType type,
+               const std::string& group_uid, std::string* created)
+{
+    if (type == SoundNodeType::Sound) return false;
+    std::string made;
+    bool ok = Transact(store, [&](SoundStore& s) {
+        SoundLibrary* lib = FindLibrary(s, lib_uid);
+        if (!lib) return false;
+        if (type == SoundNodeType::Switch && !FindGroup(s, group_uid)) return false;
+        std::vector<std::string> nodes = RowNodes(*lib, rows, true);
+        if (nodes.empty()) return false;
+        if (std::find(nodes.begin(), nodes.end(), lib->root) != nodes.end() && nodes.size() > 1) return false;
+        // As a Random first; turned into a Switch once it holds them all.
+        made = WrapOne(s, *lib, nodes.front(), SoundNodeType::Random, std::string());
+        if (made.empty()) return false;
+        for (size_t i = 1; i < nodes.size(); ++i) {
+            Detach(*lib, nodes[i]);
+            FindNode(*lib, nodes[i])->parent = made;
+            MoveLineBefore(*lib, nodes[i], "");
+        }
+        if (type == SoundNodeType::Blend) FindNode(*lib, made)->type = SoundNodeType::Blend;
+        if (type == SoundNodeType::Switch) ConvertNodeType(*lib, made, SoundNodeType::Switch, group_uid, s);
+        FindNode(*lib, made)->name = TypeName(type);
+        return true;
+    });
+    if (ok && created) *created = made;
+    return ok;
+}
+
+bool DuplicateRows(SoundStore& store, const std::string& lib_uid, const std::vector<LibraryRow>& rows,
+                   std::vector<std::string>* created)
+{
+    std::vector<std::string> made;
+    bool ok = Transact(store, [&](SoundStore& s) {
+        SoundLibrary* lib = FindLibrary(s, lib_uid);
+        if (!lib) return false;
+        for (const std::string& n : RowNodes(*lib, rows, false)) {
+            Slot slot = SlotOf(*lib, n);
+            std::string c = CopySubtree(*lib, n, *lib);
+            if (!slot.value.empty()) {
+                Slot us;
+                us.parent = slot.parent;
+                us.unassigned = true;
+                Attach(*lib, c, us);
+            } else if (slot.unassigned) {
+                slot.unassigned_idx += 1;
+                Attach(*lib, c, slot);
+            }
+            MoveLineAfter(*lib, c, n);
+            made.push_back(c);
+        }
+        return !made.empty();
+    });
+    if (ok && created) *created = made;
+    return ok;
+}
+
+bool RenameRow(SoundStore& store, const std::string& lib_uid, const LibraryRow& row, const std::string& name)
+{
+    if (name.empty()) return false;
+    // A value row shows the value's name: renaming it renames the value (in every library, as
+    // the mockup's commitRename does).
+    if (const SoundLibrary* vl = FindLibrary(store, lib_uid))
+        if (RowIsValue(*vl, row))
+            if (const SoundNode* sw = FindNode(*vl, row.parent))
+                if (FindValue(store, sw->group_uid, row.key)) {
+                    const std::string gid = sw->group_uid;
+                    return RenameValue(store, gid, row.key, name);
+                }
+    return Transact(store, [&](SoundStore& s) {
+        SoundLibrary* lib = FindLibrary(s, lib_uid);
+        SoundNode* n = lib ? FindNode(*lib, RowNode(*lib, row)) : nullptr;
+        if (!n) return false;
+        n->name = name;
+        return true;
+    });
+}
+
+bool SetRowsType(SoundStore& store, const std::string& lib_uid, const std::vector<LibraryRow>& rows, SoundNodeType type,
+                 const std::string& group_uid)
+{
+    return Transact(store, [&](SoundStore& s) {
+        SoundLibrary* lib = FindLibrary(s, lib_uid);
+        if (!lib) return false;
+        bool any = false;
+        for (const LibraryRow& r : rows) {
+            std::string n = RowNode(*lib, r);
+            if (!n.empty() && ConvertNodeType(*lib, n, type, group_uid, s)) any = true;
+        }
+        return any;
+    });
+}
+
+bool MakeDefault(SoundStore& store, const std::string& lib_uid, const std::vector<LibraryRow>& rows)
+{
+    return Transact(store, [&](SoundStore& s) {
+        SoundLibrary* lib = FindLibrary(s, lib_uid);
+        if (!lib) return false;
+        for (const LibraryRow& r : rows) {
+            if (!RowIsValue(*lib, r)) continue;
+            if (SoundNode* sw = FindNode(*lib, r.parent))
+                if (FindValue(s, sw->group_uid, r.key)) sw->default_value = r.key;  // never a "(deleted value)"
+        }
+        return true;
+    });
+}
+
+bool ClearValue(SoundStore& store, const std::string& lib_uid, const LibraryRow& row)
+{
+    return Transact(store, [&](SoundStore& s) {
+        SoundLibrary* lib = FindLibrary(s, lib_uid);
+        if (!lib || !RowIsValue(*lib, row)) return false;
+        std::string c = RowNode(*lib, row);
+        if (c.empty()) return false;
+        Detach(*lib, c);
+        Slot us;
+        us.parent = row.parent;
+        us.unassigned = true;
+        Attach(*lib, c, us);
+        return true;
+    });
+}
+
+// ---- Switch Groups ------------------------------------------------------------------------------
+
+std::string UniqueName(const std::string& base, const std::vector<std::string>& taken)
+{
+    auto used = [&](const std::string& n) {
+        for (const std::string& t : taken)
+            if (SwitchNameKey(t) == SwitchNameKey(n)) return true;
+        return false;
+    };
+    if (!used(base)) return base;
+    for (int i = 2;; ++i) {
+        std::string n = base + " " + std::to_string(i);
+        if (!used(n)) return n;
+    }
+}
+
+bool AddGroup(SoundStore& store, const std::string& name, std::string* uid)
+{
+    std::vector<std::string> names;
+    for (const SwitchGroup& g : store.groups) names.push_back(g.name);
+    SwitchGroup g;
+    g.uid = NewSoundUid();
+    g.name = UniqueName(name.empty() ? "Group" : name, names);
+    store.groups.push_back(g);
+    if (uid) *uid = g.uid;
+    return true;
+}
+
+bool RenameGroup(SoundStore& store, const std::string& group_uid, const std::string& name)
+{
+    SwitchGroup* g = FindGroup(store, group_uid);
+    if (!g || name.empty() || g->name == name) return false;
+    std::vector<std::string> names;
+    for (const SwitchGroup& o : store.groups)
+        if (o.uid != group_uid) names.push_back(o.name);
+    const std::string unique = UniqueName(name, names);  // never two groups with one name (SwitchNameKey)
+    if (g->name == unique) return false;
+    g->name = unique;
+    return true;
+}
+
+bool DeleteGroup(SoundStore& store, const std::string& group_uid)
+{
+    if (!FindGroup(store, group_uid)) return false;
+    for (SoundLibrary& lib : store.libraries)
+        for (size_t i = 0; i < lib.nodes.size(); ++i)
+            if (lib.nodes[i].type == SoundNodeType::Switch && lib.nodes[i].group_uid == group_uid) {
+                std::string uid = lib.nodes[i].uid;
+                ConvertNodeType(lib, uid, SoundNodeType::Random, std::string(), store);
+            }
+    store.groups.erase(std::remove_if(store.groups.begin(), store.groups.end(),
+                                      [&](const SwitchGroup& g) { return g.uid == group_uid; }),
+                       store.groups.end());
+    return true;
+}
+
+bool AddValue(SoundStore& store, const std::string& group_uid, const std::string& name, std::string* uid)
+{
+    SwitchGroup* g = FindGroup(store, group_uid);
+    if (!g) return false;
+    std::vector<std::string> names;
+    for (const SwitchValue& v : g->values) names.push_back(v.name);
+    SwitchValue v;
+    v.uid = NewSoundUid();
+    v.name = UniqueName(name.empty() ? "Value" : name, names);
+    g->values.push_back(v);
+    if (uid) *uid = v.uid;
+    return true;
+}
+
+bool RenameValue(SoundStore& store, const std::string& group_uid, const std::string& value_uid, const std::string& name)
+{
+    SwitchGroup* g = FindGroup(store, group_uid);
+    if (!g || name.empty()) return false;
+    std::vector<std::string> names;
+    for (const SwitchValue& o : g->values)
+        if (o.uid != value_uid) names.push_back(o.name);
+    const std::string unique = UniqueName(name, names);  // name matching (ConvertNodeType) stays unambiguous
+    for (SwitchValue& v : g->values)
+        if (v.uid == value_uid && v.name != unique) {
+            v.name = unique;
+            return true;
+        }
+    return false;
+}
+
+bool DeleteValue(SoundStore& store, const std::string& group_uid, const std::string& value_uid)
+{
+    SwitchGroup* g = FindGroup(store, group_uid);
+    if (!g) return false;
+    auto vit = std::find_if(g->values.begin(), g->values.end(), [&](const SwitchValue& v) { return v.uid == value_uid; });
+    if (vit == g->values.end()) return false;
+    g->values.erase(vit);
+    for (SoundLibrary& lib : store.libraries)
+        for (SoundNode& sw : lib.nodes) {
+            if (sw.type != SoundNodeType::Switch || sw.group_uid != group_uid) continue;
+            for (auto it = sw.cases.begin(); it != sw.cases.end();) {
+                if (it->value_uid == value_uid) {
+                    if (!it->child_uid.empty()) sw.unassigned.push_back(it->child_uid);
+                    it = sw.cases.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+            if (sw.default_value == value_uid) {
+                sw.default_value.clear();
+                for (const SwitchValue& v : g->values)
+                    if (!CaseChild(sw, v.uid).empty()) {
+                        sw.default_value = v.uid;
+                        break;
+                    }
+            }
+            if (sw.preview_value == value_uid) sw.preview_value.clear();
+        }
+    return true;
+}
+
+// ---- Libraries ----------------------------------------------------------------------------------
+
+bool NewLibrary(SoundStore& store, std::string* uid)
+{
+    std::string name;
+    for (int i = 1;; ++i) {
+        name = "Library " + std::to_string(i);
+        bool used = false;
+        for (const SoundLibrary& l : store.libraries)
+            if (SwitchNameKey(l.name) == SwitchNameKey(name)) used = true;
+        if (!used) break;
+    }
+    SoundLibrary lib;
+    lib.uid = NewSoundUid();
+    lib.name = name;
+    SoundNode root;
+    root.uid = NewSoundUid();
+    root.type = SoundNodeType::Random;
+    root.name = name;
+    lib.root = root.uid;
+    lib.nodes.push_back(root);
+    store.libraries.push_back(lib);
+    if (uid) *uid = lib.uid;
+    return true;
+}
+
+bool RenameLibrary(SoundStore& store, const std::string& lib_uid, const std::string& name)
+{
+    SoundLibrary* lib = FindLibrary(store, lib_uid);
+    if (!lib || name.empty() || lib->name == name) return false;
+    std::vector<std::string> names;
+    for (const SoundLibrary& o : store.libraries)
+        if (o.uid != lib_uid) names.push_back(o.name);
+    const std::string unique = UniqueName(name, names);
+    if (lib->name == unique) return false;
+    lib->name = unique;
+    return true;
+}
+
+bool DeleteLibrary(SoundStore& store, const std::string& lib_uid)
+{
+    const size_t n = store.libraries.size();
+    store.libraries.erase(std::remove_if(store.libraries.begin(), store.libraries.end(),
+                                         [&](const SoundLibrary& l) { return l.uid == lib_uid; }),
+                          store.libraries.end());
+    return store.libraries.size() != n;
+}
+
+int CountMissing(const SoundLibrary& lib, const std::function<bool(const SoundNode&)>& is_missing)
+{
+    if (!is_missing) return 0;
+    int n = 0;
+    for (const SoundNode& s : lib.nodes)
+        if (s.type == SoundNodeType::Sound && is_missing(s)) ++n;
+    return n;
+}
+
+}  // namespace rav

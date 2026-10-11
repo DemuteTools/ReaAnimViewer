@@ -2255,6 +2255,12 @@ int ViewerTranslateAccel(MSG* msg, accelerator_register_t* /*ctx*/)
     in.popup_open = ShortcutsPopupOpen() || VideoDeleteConfirmOpen() || (TaggingViewActive() && TaggingGestureActive());
     in.confirm_open = VideoDeleteConfirmOpen();  // Enter confirms the delete
     in.imgui_mouse = ImGuiWantsMouse();          // spec 11-fb-12: Alt + wheel over the UI
+    // Story 13-7a (decision 7): the Library view's keys (Delete, F2, Space, Esc, Ctrl+B / D / X / V)
+    // reach the viewer while its window has the focus; the key's character and release follow it.
+    if (in.msg == KeyMsg::KeyDown && LibraryViewActive() && LibraryViewTakesKey(in.key, in.ctrl, in.shift, in.alt)) {
+        in.text_input = true;
+        g_key_route.claimed_vk = in.key;
+    }
     // The decision itself is pure (src/shortcuts.h RouteViewerKey, host-tested).
     return RouteViewerKey(CurrentShortcuts(), in, g_key_route);
 }

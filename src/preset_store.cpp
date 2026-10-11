@@ -476,11 +476,32 @@ PresetState GetPresetState(const std::string& root, const ItemRules& rules)
     return PresetStateOf(rules, FindPreset(root, rules.preset_copy.id, &info) ? &info : nullptr);
 }
 
+// Decision 2026-10-12 (13-2 option A): a rule replaced by an equivalent one (same name, type
+// and side) keeps its rid, so its sounds and placements survive. Each old rid is used once.
+static void CarryRuleIds(const std::vector<Block>& old_blocks, std::vector<Block>& blocks)
+{
+    std::vector<bool> used(old_blocks.size(), false);
+    for (Block& b : blocks) {
+        for (size_t i = 0; i < old_blocks.size(); ++i) {
+            const Block& o = old_blocks[i];
+            if (used[i] || o.rid.empty() || o.marker != b.marker || o.auto_type != b.auto_type ||
+                o.auto_side != b.auto_side)
+                continue;
+            used[i] = true;
+            b.rid = o.rid;
+            break;
+        }
+    }
+}
+
 void ApplyPreset(ItemRules& rules, const PresetData& preset)
 {
     rules.options = preset.options;
     rules.analyse = preset.analyse;
+    std::vector<Block> old_blocks = std::move(rules.blocks);
     rules.blocks = preset.blocks;
+    for (Block& b : rules.blocks) b.rid.clear();  // presets never carry rid
+    CarryRuleIds(old_blocks, rules.blocks);
     rules.has_preset = true;
     rules.preset_copy.id = preset.id;
     rules.preset_copy.version = preset.version;

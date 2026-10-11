@@ -327,6 +327,23 @@ int main()
         CHECK(BlocksEqual(item.blocks, fact.blocks));
         CHECK(GetPresetState(R, item) == PresetState::UpToDate);
 
+        // Decision 2026-10-12 (13-2 A): reloading the preset keeps each equivalent rule's rid
+        // (same name, type, side); the preset copy never carries one.
+        CHECK(item.blocks.size() >= 2);
+        for (const Block& b : item.blocks) CHECK(b.rid.empty());
+        for (size_t i = 0; i < item.blocks.size(); ++i) item.blocks[i].rid = "00000000000000a" + std::to_string(i % 10);
+        const std::vector<Block> rid_before = item.blocks;
+        CHECK(UpdateFromPreset(R, item, &err));
+        CHECK(item.blocks.size() == rid_before.size());
+        for (size_t i = 0; i < item.blocks.size(); ++i) CHECK(item.blocks[i].rid == rid_before[i].rid);
+        for (const Block& b : item.preset_copy.blocks) CHECK(b.rid.empty());
+        // A rule renamed in the project gets no rid back from the preset's rule of the old name.
+        {
+            ItemRules other = item;
+            other.blocks[0].marker = "Renamed";
+            ApplyPreset(other, fact);
+            CHECK(other.blocks[0].rid.empty() && other.blocks[1].rid == rid_before[1].rid);
+        }
         // Edited: a project tweak; reloading the preset clears it.
         item.blocks[0].sens = 70.0;  // story 10-8b: an auto block's sensitivity is a tweak too
         CHECK(GetPresetState(R, item) == PresetState::Edited);

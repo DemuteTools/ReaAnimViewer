@@ -457,6 +457,7 @@ std::vector<int> ApplyAutoSettings(std::vector<Block>& blocks, const AutoSetting
         map[i] = static_cast<int>(out.size());
         out.push_back(std::move(b));
     }
+    std::vector<bool> rid_used(old.size(), false);
     for (size_t j = 0; j < want.size(); ++j) {
         if (match_of_want[j] >= 0) continue;
         Block nb = want[j];
@@ -475,6 +476,19 @@ std::vector<int> ApplyAutoSettings(std::vector<Block>& blocks, const AutoSetting
             nb.sens = old[i].sens_from >= 0.0 ? old[i].sens_from : old[i].sens;
             nb.offset_ms = old[i].offset_ms;
             nb.sens_from = -1.0;
+            break;
+        }
+        // Decision 2026-10-12 (13-2 option A): it also keeps the dropped block's rule id (its
+        // sounds), each dropped block's id going to one new block only.
+        nb.rid.clear();
+        for (size_t i = 0; i < old.size(); ++i) {
+            AutoKind k;
+            char     side;
+            if (keep[i] || rid_used[i] || old[i].rid.empty() || !AutoBlockKind(old[i], &k, &side) || side != ws ||
+                AutoTypeOfKind(k) != AutoTypeOfKind(wk))
+                continue;
+            rid_used[i] = true;
+            nb.rid = old[i].rid;
             break;
         }
         out.push_back(std::move(nb));

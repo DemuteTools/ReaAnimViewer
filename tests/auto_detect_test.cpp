@@ -292,6 +292,29 @@ int main()
         CHECK(ReadAutoSettings(blocks).separate_steps);
     }
 
+    // Decision 2026-10-12 (13-2 A): steps switched combined -> separate: the heel block replacing
+    // FS L / FS R keeps its rid; the toe gets none (each rid goes to one block). Lift keeps its own.
+    {
+        std::vector<Block> blocks = AutoBlocks(Ticked(true, true, false, false));
+        CHECK(Markers(blocks) == (std::vector<std::string>{"FS L", "FS R", "Lift L", "Lift R"}));
+        blocks[0].rid = "000000000000000a";
+        blocks[1].rid = "000000000000000b";
+        blocks[2].rid = "000000000000000c";
+        ApplyAutoSettings(blocks, Ticked(true, true, false, false, true));
+        for (const Block& b : blocks) {
+            if (b.marker == "Heel L") CHECK(b.rid == "000000000000000a");
+            else if (b.marker == "Heel R") CHECK(b.rid == "000000000000000b");
+            else if (b.marker == "Lift L") CHECK(b.rid == "000000000000000c");
+            else CHECK(b.rid.empty());
+        }
+        // And back: the combined block takes the first dropped heel / toe block's rid.
+        ApplyAutoSettings(blocks, Ticked(true, true, false, false));
+        for (const Block& b : blocks) {
+            if (b.marker == "FS L") CHECK(b.rid == "000000000000000a");
+            if (b.marker == "FS R") CHECK(b.rid == "000000000000000b");
+        }
+    }
+
     // Pending: ticking, unticking and Separate / Combined wait for Detect; a sensitivity does not.
     {
         const AutoSettings item = Ticked(true, false, false, false);

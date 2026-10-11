@@ -388,6 +388,24 @@ static void TestConvert()
     CHECK(sw.unassigned.size() == 1 && sw.unassigned[0] == "c");
     CHECK(lib.nodes[1].uid == "a" && lib.nodes[2].uid == "b" && lib.nodes[3].uid == "c");
     CHECK(!ConvertNodeType(lib, "r", SoundNodeType::Switch, "gsurf", st));  // same group
+    CHECK(sw.default_value == "swet");  // decision 2026-10-12: first group value given a child
+    {
+        // Only the group's second value gets a child: it is the default (group order, not child order).
+        SoundLibrary l2;
+        l2.root = "r";
+        l2.nodes.push_back(Node("r", "", SoundNodeType::Blend, "B"));
+        l2.nodes.push_back(Node("x", "r", SoundNodeType::Sound, "Foo"));
+        l2.nodes.push_back(Node("y", "r", SoundNodeType::Sound, "grass"));
+        CHECK(ConvertNodeType(l2, "r", SoundNodeType::Switch, "gsurf", st));
+        CHECK(l2.nodes[0].default_value == "sgrass");
+        // No value gets a child: no default.
+        SoundLibrary l3;
+        l3.root = "r";
+        l3.nodes.push_back(Node("r", "", SoundNodeType::Random, "R"));
+        l3.nodes.push_back(Node("x", "r", SoundNodeType::Sound, "Foo"));
+        CHECK(ConvertNodeType(l3, "r", SoundNodeType::Switch, "gsurf", st));
+        CHECK(l3.nodes[0].default_value.empty() && l3.nodes[0].unassigned.size() == 1);
+    }
 
     // Switch -> Switch by name: Surface{Wet Concrete, Grass} -> Material{Concrete, Wood, Grass}.
     lib.nodes[0].default_value = "sgrass";

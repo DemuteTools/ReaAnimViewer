@@ -330,7 +330,14 @@ bool ConvertNodeType(SoundLibrary& lib, const std::string& uid, SoundNodeType ty
             }
             if (!placed) n->unassigned.push_back(kid_uids[i]);
         }
+        // Decision 2026-10-12: the default is the first group value (in group order) that
+        // received a child, else none.
         n->default_value.clear();
+        for (size_t j = 0; j < g->values.size(); ++j) {
+            if (!taken[j]) continue;
+            n->default_value = g->values[j].uid;
+            break;
+        }
         n->preview_value.clear();
         n->group_uid = group_uid;
         n->type = SoundNodeType::Switch;

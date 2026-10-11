@@ -11,6 +11,8 @@
 #include <cstring>
 #include <map>
 #include <mutex>
+#include <random>
+#include <set>
 #include <system_error>
 
 namespace rav {
@@ -742,7 +744,7 @@ bool ReadAutoType(const std::string& v, std::string* out)
     return true;
 }
 
-Fields BlockFields(const Block& b)
+Fields BlockFields(const Block& b, bool with_rid = true)
 {
     // `on` is written only when the rule is off (story 10-3), so a record of rules that are
     // all on writes back byte-identical.
@@ -761,9 +763,11 @@ Fields BlockFields(const Block& b)
             {"hold_ms", FormatNumber(b.min_hold_ms)},
             {"cooldown_ms", FormatNumber(b.cooldown_ms)},
             {"offset_ms", FormatNumber(b.offset_ms)},
-            {"land", FormatLanding(b)},
-            {"marker", CleanFreeText(b.marker)}};
+            {"land", FormatLanding(b)}};
     f.insert(f.end(), rest.begin(), rest.end());
+    // Epic 13 (D3): only when set (and never in a preset), just before the free-text marker.
+    if (with_rid && !b.rid.empty()) f.push_back({"rid", b.rid});
+    f.push_back({"marker", CleanFreeText(b.marker)});
     return f;
 }
 
@@ -792,6 +796,11 @@ Set SetBlock(Block& b, const std::string& k, const std::string& v)
     if (k == "cooldown_ms") return R(ReadNumber(v, &b.cooldown_ms));
     if (k == "offset_ms") return R(ReadNumber(v, &b.offset_ms));
     if (k == "land") return R(ReadLanding(v, b));
+    if (k == "rid") {
+        if (!IsSoundUid(v)) return Set::Bad;
+        b.rid = v;
+        return Set::Ok;
+    }
     if (k == "marker") {
         b.marker = v;
         return Set::Ok;
@@ -1141,10 +1150,10 @@ void WriteLine(std::string& out, const char* word, const Fields& canon, const Ke
         for (const std::string& l : k->lines) out += l + '\n';
 }
 
-void WriteBlocks(std::string& out, const std::vector<Block>& blocks)
+void WriteBlocks(std::string& out, const std::vector<Block>& blocks, bool with_rid)
 {
     for (const Block& b : blocks) {
-        WriteLine(out, "block", BlockFields(b), &b.kept);
+        WriteLine(out, "block", BlockFields(b, with_rid), &b.kept);
         for (const Condition& c : b.conditions) WriteLine(out, "cond", CondFields(c), &c.kept);
         if (HasStrengthLine(b)) WriteLine(out, "strength", StrengthFields(b), &b.kept_strength);
     }
@@ -1452,6 +1461,61 @@ bool BlocksKeep(const std::vector<Block>& blocks)
 
 }  // namespace
 
+// ---- Epic 13 (D3): rule identity -------------------------------------------------------------
+
+std::string NewSoundUid()
+{
+    static std::mutex      mu;
+    static std::mt19937_64 rng([] {
+        std::random_device rd;
+        const uint64_t     a = (static_cast<uint64_t>(rd()) << 32) ^ rd();
+        return a ^ static_cast<uint64_t>(reinterpret_cast<uintptr_t>(&mu));
+    }());
+    uint64_t v = 0;
+    {
+        std::lock_guard<std::mutex> lock(mu);
+        v = rng();
+    }
+    static const char kHex[] = "0123456789abcdef";
+    std::string       s(16, '0');
+    for (int i = 15; i >= 0; --i) {
+        s[static_cast<size_t>(i)] = kHex[v & 15];
+        v >>= 4;
+    }
+    return s;
+}
+
+bool IsSoundUid(const std::string& s)
+{
+    if (s.size() != 16) return false;
+    for (char c : s)
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    return true;
+}
+
+bool EnsureRuleIds(ItemRules* rules)
+{
+    if (!rules) return false;
+    bool                  changed = false;
+    std::set<std::string> seen;
+    for (Block& b : rules->blocks)
+        if (!b.rid.empty()) seen.insert(b.rid);  // reserved: a new id never repeats one in use
+    std::set<std::string> used;
+    for (Block& b : rules->blocks) {
+        if (b.rid.empty() || used.count(b.rid)) {
+            std::string id;
+            do {
+                id = NewSoundUid();
+            } while (seen.count(id));
+            b.rid = id;
+            seen.insert(id);
+            changed = true;
+        }
+        used.insert(b.rid);
+    }
+    return changed;
+}
+
 // ---- Public parse / serialize ----------------------------------------------------------
 
 bool ParseItemRules(const std::string& text, ItemRules* out)
@@ -1491,10 +1555,10 @@ std::string SerializeItemRules(const ItemRules& r)
         WriteLine(out, "copy", {}, &c.copy_kept);
         WriteLine(out, "options", OptionsFields(c.options), &c.options.kept);
         WriteLine(out, "analyse", AnalyseFields(c.analyse), &c.analyse.kept);
-        WriteBlocks(out, c.blocks);
+        WriteBlocks(out, c.blocks, false);
         WriteLine(out, "end", {}, &c.end_kept);
     }
-    WriteBlocks(out, r.blocks);
+    WriteBlocks(out, r.blocks, true);
     const size_t n = r.events.size();
     for (size_t i = 0; i < n; ++i) {
         WriteLine(out, "event", EventFields(r.events[i]), &r.events[i].kept);
@@ -1538,7 +1602,7 @@ std::string SerializePreset(const PresetData& d)
     WriteLine(out, "preset", PresetFields(h, false), &d.kept);
     WriteLine(out, "options", OptionsFields(d.options), &d.options.kept);
     WriteLine(out, "analyse", AnalyseFields(d.analyse), &d.analyse.kept);
-    WriteBlocks(out, d.blocks);
+    WriteBlocks(out, d.blocks, false);
     return out;
 }
 

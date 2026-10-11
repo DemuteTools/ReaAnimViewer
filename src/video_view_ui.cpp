@@ -705,12 +705,14 @@ void DrawVideoViewToggle(float center_x)
     ImGui::SetNextWindowPos(ImVec2(center_x, 8.0f), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
     if (ImGui::Begin("##viewtoggle", nullptr, kOverlayFlags)) {
-        // Story 10-3: RAV view / Tagging view / Video view, in V's cycle order.
-        static const char* const kViews[3] = {"RAV view", "Tagging view", "Video view"};
+        // Story 10-3: RAV view / Tagging view / Video view, in V's cycle order; Epic 13 (D20): Library view.
+        static const char* const kViews[4] = {"RAV view", "Tagging view", "Video view", "Library view"};
+        static const ViewMode kModes[4] = {ViewMode::Rav, ViewMode::Tagging, ViewMode::Video, ViewMode::Library};
         const ViewMode mode = GetViewMode();
-        int sel = mode == ViewMode::Video ? 2 : mode == ViewMode::Tagging ? 1 : 0;
-        if (ui::Segmented("##view", kViews, 3, &sel))
-            SetViewMode(sel == 2 ? ViewMode::Video : sel == 1 ? ViewMode::Tagging : ViewMode::Rav);
+        int sel = 0;
+        for (int i = 0; i < 4; ++i)
+            if (kModes[i] == mode) sel = i;
+        if (ui::Segmented("##view", kViews, 4, &sel) && sel >= 0 && sel < 4) SetViewMode(kModes[sel]);
     }
     ImGui::End();
     ImGui::PopStyleVar();

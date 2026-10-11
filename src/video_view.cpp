@@ -843,6 +843,11 @@ bool VideoViewActive()
     return g_mode == ViewMode::Video;
 }
 
+bool LibraryViewActive()
+{
+    return g_mode == ViewMode::Library;
+}
+
 bool TaggingViewActive()
 {
     return g_mode == ViewMode::Tagging;
@@ -866,6 +871,7 @@ ViewMode NextViewMode(ViewMode mode)
     switch (mode) {
     case ViewMode::Rav: return ViewMode::Tagging;
     case ViewMode::Tagging: return ViewMode::Video;
+    case ViewMode::Video: return ViewMode::Library;
     default: return ViewMode::Rav;
     }
 }

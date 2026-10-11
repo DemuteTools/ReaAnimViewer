@@ -1886,6 +1886,54 @@ int main()
         CHECK(ParseItemRules(SerializeItemRules(to), &back) && back.clip.loop);
     }
 
+    // Epic 13 (D20, D3) -- rule identity: rid.
+    {
+        // Absent: an existing record and the fixtures write back byte-identical.
+        const std::string base = SerializeItemRules(FullRecord());
+        CHECK(base.find("rid=") == std::string::npos);
+        for (const char* f : {"rav_rules_v1_10_5.txt", "rav_rules_committed_v1_10_5.txt"}) {
+            const std::string text = ReadFixture(f);
+            ItemRules         fx;
+            CHECK(ParseItemRules(text, &fx) && SerializeItemRules(fx) == text);
+        }
+        // Ids: 16 lowercase hex digits, random.
+        const std::string u1 = NewSoundUid(), u2 = NewSoundUid();
+        CHECK(IsSoundUid(u1) && IsSoundUid(u2) && u1 != u2);
+        CHECK(!IsSoundUid("0123") && !IsSoundUid("0123456789ABCDEF") && !IsSoundUid("0123456789abcdeg"));
+        // EnsureRuleIds: every block of the item gets one; the preset copy is left alone.
+        ItemRules r = FullRecord();
+        CHECK(r.blocks.size() >= 2);
+        CHECK(EnsureRuleIds(&r));
+        for (const Block& b : r.blocks) CHECK(IsSoundUid(b.rid));
+        CHECK(r.blocks[0].rid != r.blocks[1].rid);
+        for (const Block& b : r.preset_copy.blocks) CHECK(b.rid.empty());
+        CHECK(!EnsureRuleIds(&r));  // nothing left to do
+        CHECK(BlocksEqual(r.blocks, FullRecord().blocks));  // BlocksEqual ignores rid
+        // Written just before marker=, read back, round trip.
+        const std::string with = SerializeItemRules(r);
+        CHECK(with.find(" rid=" + r.blocks[0].rid + " marker=") != std::string::npos);
+        ItemRules back;
+        CHECK(ParseItemRules(with, &back) && back.blocks[0].rid == r.blocks[0].rid &&
+              back.blocks[1].rid == r.blocks[1].rid && SerializeItemRules(back) == with);
+        // A duplicated rule: the first keeps it, the later block gets a new one.
+        ItemRules dup = r;
+        const std::string keep = dup.blocks[0].rid;
+        dup.blocks[1].rid = keep;
+        CHECK(EnsureRuleIds(&dup));
+        CHECK(dup.blocks[0].rid == keep && IsSoundUid(dup.blocks[1].rid) && dup.blocks[1].rid != keep);
+        // A preset never writes it.
+        PresetData pd;
+        pd.id = "user/x";
+        pd.name = "x";
+        pd.blocks = r.blocks;
+        CHECK(SerializePreset(pd).find("rid=") == std::string::npos);
+        // A malformed rid is kept as written, the model holds none.
+        const std::string odd = "RAVRULES 1\nblock color=0 hold_ms=0 cooldown_ms=0 offset_ms=0 land=crossing rid=XYZ marker=Foot\n";
+        ItemRules         o;
+        CHECK(ParseItemRules(odd, &o) && o.blocks.size() == 1 && o.blocks[0].rid.empty() &&
+              SerializeItemRules(o).find(odd.substr(11)) != std::string::npos);
+    }
+
     if (g_fails) {
         std::printf("rule_record_test: %d failure(s)\n", g_fails);
         return 1;

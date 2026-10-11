@@ -3,6 +3,7 @@
 // See tag_markers.h.
 
 #include "tag_markers.h"
+#include "sound_follow.h"
 
 #ifdef _WIN32
 
@@ -1627,6 +1628,11 @@ void MarkerMirrorTick()
             if (mp.count == c.second) continue;  // nothing moved in this project: no work
             try {
                 MirrorOneProject(c.first, mp, &timeline_changed);
+            } catch (...) {
+            }
+            // Epic 13 (D20): placed sounds follow their animation item's events (13-9).
+            try {
+                SoundFollowTick(c.first);
             } catch (...) {
             }
             // The mirror's own writes moved the count: the next tick has nothing to do.

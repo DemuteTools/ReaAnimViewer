@@ -129,3 +129,40 @@ add_test(NAME event_list COMMAND event_list_test)
 add_executable(preset_menu_model_test preset_menu_model_test.cpp ../src/preset_menu_model.cpp)
 target_include_directories(preset_menu_model_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME preset_menu_model COMMAND preset_menu_model_test)
+
+# Epic 13 (D20, story 13-2) -- the sound model's text (src/sound_record.h).
+add_executable(sound_record_test sound_record_test.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+target_include_directories(sound_record_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME sound_record COMMAND sound_record_test)
+
+# Epic 13 -- one target per pure module (13-2 placeholders; each wave story replaces its own test).
+# Story 13-3 -- src/sound_entries.h
+add_executable(sound_entries_test sound_entries_test.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+target_include_directories(sound_entries_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME sound_entries COMMAND sound_entries_test)
+# Story 13-3 -- src/sound_draw.h
+add_executable(sound_draw_test sound_draw_test.cpp ../src/sound_draw.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+target_include_directories(sound_draw_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME sound_draw COMMAND sound_draw_test)
+# Story 13-4 -- src/sound_switch.h
+add_executable(sound_switch_test sound_switch_test.cpp ../src/sound_switch.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+target_include_directories(sound_switch_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME sound_switch COMMAND sound_switch_test)
+# Story 13-5 -- src/media_db.h
+add_executable(media_db_test media_db_test.cpp ../src/media_db.cpp)
+target_include_directories(media_db_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_link_libraries(media_db_test PRIVATE Threads::Threads)
+target_compile_definitions(media_db_test PRIVATE RAV_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
+add_test(NAME media_db COMMAND media_db_test)
+# Story 13-6 -- src/sound_place_plan.h
+add_executable(sound_place_plan_test sound_place_plan_test.cpp ../src/sound_place_plan.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+target_include_directories(sound_place_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME sound_place_plan COMMAND sound_place_plan_test)
+# Story 13-9 -- src/sound_follow_plan.h
+add_executable(sound_follow_plan_test sound_follow_plan_test.cpp ../src/sound_follow_plan.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+target_include_directories(sound_follow_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME sound_follow_plan COMMAND sound_follow_plan_test)
+# Story 13-11 -- src/ravlib.h
+add_executable(ravlib_test ravlib_test.cpp ../src/ravlib.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+target_include_directories(ravlib_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME ravlib COMMAND ravlib_test)

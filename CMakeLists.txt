@@ -197,6 +197,29 @@ if(WIN32)
             src/skeleton_view.cpp
             src/event_list.cpp
             src/tag_markers.cpp
+            # Epic 13 (D20): the sound library and Populate.
+            src/sound_record.cpp
+            src/sound_project.cpp
+            src/sound_entries.cpp
+            src/sound_draw.cpp
+            src/sound_switch.cpp
+            src/media_db.cpp
+            src/sound_place_plan.cpp
+            src/sound_place.cpp
+            src/library_view_ui.cpp
+            src/library_tree_ui.cpp
+            src/library_node_ui.cpp
+            src/sound_peaks.cpp
+            src/sound_audition.cpp
+            src/library_media_ui.cpp
+            src/tagging_populate_ui.cpp
+            src/sound_populate.cpp
+            src/sound_follow.cpp
+            src/sound_follow_plan.cpp
+            src/tagging_attach_ui.cpp
+            src/sound_attach.cpp
+            src/library_user_ui.cpp
+            src/ravlib.cpp
     )
     # Generated rav_version.h (see RAV_VERSION above).
     target_include_directories(animviewer PRIVATE "${CMAKE_BINARY_DIR}/generated")

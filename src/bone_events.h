@@ -212,6 +212,9 @@ struct Block {
     // Story 10-8h -- the sensitivity Detect raised this block from (it found no event there):
     // < 0 = not raised. Cleared when the user edits the sensitivity.
     double                 sens_from = -1.0;
+    // Epic 13 (D20, D3) -- the rule's identity for its sounds: 16 lowercase hex digits, "" = none
+    // yet. Set lazily by EnsureRuleIds (rule_record.h); detection and BlocksEqual ignore it.
+    std::string            rid;
 };
 
 // True for an auto-detection block (Block::auto_type set).

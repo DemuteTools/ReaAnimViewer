@@ -52,6 +52,8 @@
 #include "ui_theme.h"         // Story 11-4: the DM-XYZ-Pad theme over Dear ImGui
 #include "video_view.h"       // Story 11-4: Video view + Video panel model
 #include "video_view_ui.h"    // Story 11-4: their ImGui widgets
+#include "library_view_ui.h"  // Epic 13 (D20): the Library view
+#include "sound_follow.h"     // Epic 13 (D20): the menu's Sounds section (13-9)
 
 #ifndef GL_CLAMP_TO_EDGE
 #define GL_CLAMP_TO_EDGE 0x812F   // GL 1.2; Windows <gl/GL.h> is 1.1 and may omit it
@@ -1444,6 +1446,8 @@ void DrawToolUi()
                                       MarkerModeLine(GetTaggingMarkerMode()));
             }
             ui::EndSection(sec);
+            // Epic 13 (D20): the Sounds section of the menu (13-9).
+            DrawSoundsMenuSection();
             break;
         }
 
@@ -1514,6 +1518,13 @@ void DrawToolUi()
     const float panel_room = VideoPanelFootprint(g_client_w) + TaggingPanelFootprint(g_client_w);
     const float area_right = static_cast<float>(g_client_w) - panel_room;
 
+    // Epic 13 (D20, 13-2) -- Library view: one full-area window under the view toggle, drawn
+    // before the readouts and overlays (which stay on top of it).
+    const bool library_view = LibraryViewActive();
+    if (library_view)
+        DrawLibraryView(8.0f, 44.0f, std::max(1.0f, static_cast<float>(g_client_w) - 16.0f),
+                        std::max(1.0f, static_cast<float>(g_client_h) - 52.0f));
+
     // FPS readout, top-RIGHT (FR53), anchored with a right-edge pivot so it hugs the corner at
     // any client size. This REPLACES the console FPS log removed in 6.5.2 — no console output.
     // Story 11-4: at the view area's corner, left of the panel button in Video view.
@@ -1573,7 +1584,7 @@ void DrawToolUi()
     // (the area left of the panel, above the strip); hidden in Video view. After the panel, so
     // the overlay colours the rule selected this frame.
     SkeletonViewFrame(g_renderer);
-    if (!video_view) {
+    if (!video_view && !library_view) {
         const float view_w = tagging_view ? area_right : static_cast<float>(g_client_w);
         const float view_h = tagging_view ? ViewBottom() : static_cast<float>(g_client_h);
         DrawSkeletonOverlay(g_renderer, view_w, view_h, area_right - kNavCubeMargin - kNavCubeSize - 8.0f,
@@ -1605,7 +1616,9 @@ void DrawToolUi()
     // pair (after the menu + read-outs, before Render) so it is the same single ImGui frame.
     // Story 11-4: in Video view it shows and edits the video camera, and is hidden when there
     // is no camera to edit (no active FX / no item).
-    if (!video_view) {
+    if (library_view) {
+        // Epic 13 (D20): no 3D view in the Library view, so no nav cube.
+    } else if (!video_view) {
         NavCubeWidget(g_renderer.Camera(), /*video=*/false, area_right, ViewBottom());
     } else {
         // Over the picture's bottom-right corner: the frame keeps no room for it.

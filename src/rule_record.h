@@ -352,6 +352,18 @@ bool HasKeptText(const PresetData& preset);
 constexpr const char kRulesMagic[] = "RAVRULES";
 constexpr const char kPresetMagic[] = "RAVPRESET";
 
+// ---- Epic 13 (D20, D3): rule identity -------------------------------------------------------
+//
+// A new random id: 16 lowercase hex digits (never an index). Thread-safe.
+std::string NewSoundUid();
+// True for a well-formed id (16 hex digits, lowercase).
+bool IsSoundUid(const std::string& s);
+// Gives every block of the item (rules and auto blocks) a rid, and a new one to a later block
+// that repeats an earlier block's rid (a duplicated rule). The preset copy's blocks are left
+// alone. True when something changed. A record without rid writes back byte-identical until
+// this runs; `block` lines then carry `rid=` just before `marker=`. Presets never write it.
+bool EnsureRuleIds(ItemRules* rules);
+
 // Parses a record. False (and `out` untouched) when the text does not start with
 // "RAVRULES <n>" (leading blank lines / BOM allowed): a corrupt record reads as no rules.
 // Never throws on bad input.

@@ -11,6 +11,11 @@
 #include "reaper_actions.h"
 #include "reaper_api.h"
 #include "self_update.h"
+#include "sound_audition.h"  // Epic 13 (D20): each sound module resolves its own functions
+#include "sound_follow.h"
+#include "sound_peaks.h"
+#include "sound_place.h"
+#include "sound_project.h"
 #include "video_fx_host.h"
 #include "video_fx_track.h"
 #include "video_timeline.h"
@@ -56,6 +61,12 @@ constexpr const char kMakeUniqueName[] = "RAV_TAGGING_MAKE_UNIQUE";
 constexpr const char kMakeUniqueDesc[] = "RAV: Make tagging unique (selected items)";
 int                  g_make_unique_id    = 0;
 gaccel_register_t    g_make_unique_accel = {};
+
+// Epic 13 (D20, D10) -- the sound library storage check (a dev check, click-based).
+constexpr const char kSoundStoreCheckName[] = "RAV_SOUND_STORE_CHECK";
+constexpr const char kSoundStoreCheckDesc[] = "RAV: Sound library storage check";
+int                  g_sound_check_id    = 0;
+gaccel_register_t    g_sound_check_accel = {};
 
 int                     g_command_id      = 0;
 gaccel_register_t       g_accel           = {};
@@ -117,6 +128,10 @@ bool OnHookCommand(int command, int /*flag*/)
         MakeTaggingUniqueOnSelectedItems();
         return true;
     }
+    if (command == g_sound_check_id) {
+        RunSoundStoreCheck();
+        return true;
+    }
     return false;
 }
 
@@ -161,6 +176,8 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
         // Story 10-4b -- the marker mirror's timer.
         StopMarkerMirror();
         CloseViewerWindow();
+        // Epic 13 (D20) -- the sound store's projectconfig.
+        QuitSoundProject();
         if (g_register) {
             // Story 11-4 -- the viewer's keyboard hook (same pointer as at load).
             g_register("-accelerator", ViewerAcceleratorRegistration());
@@ -169,6 +186,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
             g_register("-pcmsrc",       PcmSourceRegistration());
             g_register("-toggleaction", (void*)&OnToggleAction);
             g_register("-hookcommand",  (void*)&OnHookCommand);
+            if (g_sound_check_id) g_register("-gaccel", &g_sound_check_accel);
             if (g_make_unique_id) g_register("-gaccel", &g_make_unique_accel);
             if (g_measure_detection_id) g_register("-gaccel", &g_measure_detection_accel);
             if (g_video_bg_id) g_register("-gaccel", &g_video_bg_accel);
@@ -217,6 +235,14 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
         RegisterAction(rec, kMeasureDetectionName, kMeasureDetectionDesc, &g_measure_detection_accel);
     // Story 10-6 -- Make tagging unique (selected items). A failure only loses that action.
     g_make_unique_id = RegisterAction(rec, kMakeUniqueName, kMakeUniqueDesc, &g_make_unique_accel);
+    // Epic 13 (D20) -- the sound store (projectconfig), each sound module's own functions (D7), and
+    // the storage check action (D10). A failure only loses that part.
+    InitSoundProject(rec);
+    InitSoundPlace(rec->GetFunc);
+    InitSoundPeaks(rec->GetFunc);
+    InitSoundAudition(rec->GetFunc);
+    InitSoundFollow(rec->GetFunc);
+    g_sound_check_id = RegisterAction(rec, kSoundStoreCheckName, kSoundStoreCheckDesc, &g_sound_check_accel);
 
     rec->Register("hookcommand", (void*)&OnHookCommand);
     rec->Register("toggleaction", (void*)&OnToggleAction);

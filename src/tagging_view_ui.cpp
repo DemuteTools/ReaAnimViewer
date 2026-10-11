@@ -36,9 +36,26 @@
 #include "tagging_signal.h"
 #include "ui_theme.h"
 #include "video_view.h"  // TaggingViewActive, QueueVideoSeek (the playhead move runs outside the frame)
+// Epic 13 (D20, 13-2): the sound hook sites (13-8 Populate, 13-10 Attach).
+#include "tagging_attach_ui.h"
+#include "tagging_populate_ui.h"
+#include "tagging_sound_context.h"
 
 namespace rav {
 namespace {
+
+// Epic 13 (D20): what the sound sections see of the Tagging panel (the shown item, its rules,
+// the selected rule).
+TaggingSoundContext SoundContextOf(const TaggingModel& m, const ItemRules& rules, int rule)
+{
+    TaggingSoundContext c;
+    c.item = m.item;
+    c.model = &m;
+    c.rules = &rules;
+    // An index into rules.blocks, else -1 (a rule added this frame is written at its end).
+    c.rule = rule >= 0 && rule < static_cast<int>(rules.blocks.size()) ? rule : -1;
+    return c;
+}
 
 // Strings outside ASCII are spelled as UTF-8 escapes (the build has no /utf-8).
 #define RAV_DOT "\xC2\xB7"  // middle dot
@@ -1134,6 +1151,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                             const bool moving = dragging && e.kind == g_drag_ev.kind && e.t == g_drag_ev.t;
                             const float ex = std::floor(x_of(pt)) + 0.5f;
                             DrawEventMark(dl, e, ex, ry, row_h, moving ? WithAlpha(col, 0x40) : col, is_sel && !moving);
+                            DrawSoundStripGlyph(dl, m, e, ex, ry + row_h);  // Epic 13 (13-8)
                         }
                         if (dragging) {  // where it lands: the user's own event
                             double pt = 0.0;
@@ -3927,6 +3945,8 @@ void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const Sho
         QueueVideoSeek(t);
     }
     if (!on_timeline) ImGui::EndDisabled();
+    // Epic 13 (D20): the event's sounds (13-8).
+    DrawEventSoundSection(SoundContextOf(m, rules, e.block), e);
 }
 
 // ---- Story 10-8b: the Auto detection section -------------------------------------------------------
@@ -4531,8 +4551,11 @@ void DrawInspector(const ItemRules& rules)
         }
     }
 
-    // Story 10-8b: an auto block has no condition to edit.
-    if (IsAutoBlock(blk)) return;
+    // Story 10-8b: an auto block has no condition to edit. Epic 13 (13-8): it has a Sound section.
+    if (IsAutoBlock(blk)) {
+        DrawRuleSoundSection(SoundContextOf(GetTaggingModel(), rules, b));
+        return;
+    }
 
     // When all of these hold.
     ImGui::Dummy(ImVec2(0.0f, 4.0f));
@@ -4635,6 +4658,8 @@ void DrawInspector(const ItemRules& rules)
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("%s", t.tip);
         }
     }
+    // Epic 13 (D20): the rule's sound library (13-8).
+    DrawRuleSoundSection(SoundContextOf(GetTaggingModel(), rules, b));
 }
 
 // ---- Panel: footer ---------------------------------------------------------------------------------
@@ -4661,6 +4686,15 @@ void DrawFooter(const TaggingModel& m)
     // 10-6: both also act on the other copies of the selected items' pools (sel_linked).
     const int run = std::max(0, m.sel_count + m.sel_linked - m.sel_without_rules - m.sel_roles_skipped);
     const int with_rules = m.sel_cancellable;
+    // Epic 13 (D20, D9): Populate and Attach above Commit while the sound footer shows; Populate
+    // is then the one primary button and Commit a SolidButton.
+    const TaggingSoundContext sound_ctx = SoundContextOf(m, TaggingShownRules(), g_sel);
+    const bool sound_footer = SoundFooterVisible(sound_ctx);
+    if (sound_footer) {
+        DrawPopulateRow(sound_ctx, AttachButtonWidth());
+        DrawAttachButton(sound_ctx);
+        DrawSoundReportLine(sound_ctx);
+    }
     {
         const float cancel_w = ImGui::CalcTextSize("Cancel").x + ImGui::GetStyle().FramePadding.x * 2.0f + 8.0f;
         const float commit_w =
@@ -4670,7 +4704,9 @@ void DrawFooter(const TaggingModel& m)
         if (nothing) std::snprintf(label, sizeof(label), "Nothing to commit##tagapply");
         else std::snprintf(label, sizeof(label), "Commit to %d item%s##tagapply", run, run == 1 ? "" : "s");
         if (run == 0 || nothing) ImGui::BeginDisabled();
-        if (ui::PrimaryButton(label, ImVec2(commit_w, 0.0f))) Later([]() { CommitTaggingMarkers(); });
+        const bool commit_clicked = sound_footer ? ui::SolidButton(label, ImVec2(commit_w, 0.0f))
+                                                 : ui::PrimaryButton(label, ImVec2(commit_w, 0.0f));
+        if (commit_clicked) Later([]() { CommitTaggingMarkers(); });
         if (run == 0 || nothing) ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip(run == 0  ? "Select the items to tag (items with rules) in REAPER."
@@ -4824,7 +4860,8 @@ void DrawTaggingPanel(float x, float y, float w, float h)
             // The inspector scrolls; the footer stays.
             // Story 10-4: the markers line, Commit / Cancel, the selection and the last outcome.
             // Detect sits between the two (story 10-8 follow-up: always in reach).
-            const float footer_h = ImGui::GetFrameHeightWithSpacing() * 3.0f + ImGui::GetTextLineHeightWithSpacing() * 3.0f + 12.0f;
+            const float footer_h = ImGui::GetFrameHeightWithSpacing() * 3.0f + ImGui::GetTextLineHeightWithSpacing() * 3.0f + 12.0f +
+                                   SoundFooterHeight(SoundContextOf(m, rules, g_sel));  // Epic 13 (13-8)
             const float body_h = std::max(40.0f, ImGui::GetContentRegionAvail().y - footer_h);
             ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::Col(ui::kSurface));
             if (ImGui::BeginChild("##taginspector", ImVec2(0.0f, body_h), ImGuiChildFlags_None)) {
@@ -4847,6 +4884,7 @@ void DrawTaggingPanel(float x, float y, float w, float h)
                     ImGui::Dummy(ImVec2(0.0f, 4.0f));
                 }
                 DrawInspector(rules);
+                DrawItemSoundValuesSection(SoundContextOf(m, rules, g_sel));  // Epic 13 (13-8)
             }
             ImGui::EndChild();
             ImGui::PopStyleColor();

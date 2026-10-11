@@ -101,18 +101,20 @@ const VideoViewModel& GetVideoViewModel();
 bool VideoViewShotTouchesNext(int index);
 
 // ---- Session state (not saved) -----------------------------------------------------------
-// Story 10-3 -- the viewer's three views, in the toggle's (and V's) order.
-enum class ViewMode { Rav, Tagging, Video };
+// Story 10-3 -- the viewer's views, in the toggle's (and V's) order. Epic 13 (D20, 13-2): Library.
+enum class ViewMode { Rav, Tagging, Video, Library };
 ViewMode GetViewMode();
 // Entering Video view = SetVideoViewActive(true); leaving it = SetVideoViewActive(false), then
 // the new mode.
 void SetViewMode(ViewMode mode);
-// The next view in the cycle: RAV -> Tagging -> Video -> RAV.
+// The next view in the cycle: RAV -> Tagging -> Video -> Library -> RAV.
 ViewMode NextViewMode(ViewMode mode);
 // True in Tagging view (RAV view's camera and render, the Auto-Tagging strip and panel).
 bool TaggingViewActive();
 // True only in Video view.
 bool VideoViewActive();
+// Epic 13 (D20): true only in Library view (the sound libraries, full area).
+bool LibraryViewActive();
 // The first entry of the session also opens the panel. A switch ends a running drag or
 // wheel gesture as shown (one undo point). Off leaves Video view for RAV view (nothing
 // changes outside Video view).

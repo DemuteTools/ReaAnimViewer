@@ -16,6 +16,7 @@
 #include "sound_follow.h"
 #include "sound_peaks.h"
 #include "sound_place.h"
+#include "sound_populate.h"
 #include "sound_project.h"
 #include "video_fx_host.h"
 #include "video_fx_track.h"
@@ -240,6 +241,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     // the storage check action (D10). A failure only loses that part.
     InitSoundProject(rec);
     InitSoundPlace(rec->GetFunc);
+    InitSoundPopulate(rec->GetFunc);
     InitSoundPeaks(rec->GetFunc);
     InitSoundAudition(rec->GetFunc);
     InitSoundFollow(rec->GetFunc);

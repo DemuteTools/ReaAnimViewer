@@ -162,6 +162,11 @@ add_test(NAME sound_place_plan COMMAND sound_place_plan_test)
 add_executable(sound_attach_plan_test sound_attach_plan_test.cpp ../src/sound_attach_plan.cpp ../src/sound_draw.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
 target_include_directories(sound_attach_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_attach_plan COMMAND sound_attach_plan_test)
+# Story 13-8 -- src/sound_populate_plan.h
+add_executable(sound_populate_plan_test sound_populate_plan_test.cpp ../src/sound_populate_plan.cpp ../src/sound_switch.cpp
+               ../src/sound_draw.cpp ../src/sound_place_plan.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+target_include_directories(sound_populate_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME sound_populate_plan COMMAND sound_populate_plan_test)
 # Story 13-9 -- src/sound_follow_plan.h
 add_executable(sound_follow_plan_test sound_follow_plan_test.cpp ../src/sound_follow_plan.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
 target_include_directories(sound_follow_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

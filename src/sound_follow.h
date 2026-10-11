@@ -9,7 +9,10 @@
 
 #ifdef _WIN32
 
+#include <vector>
+
 #include "reaper_api.h"
+#include "sound_model.h"
 
 namespace rav {
 
@@ -18,6 +21,10 @@ void InitSoundFollow(void* (*get_func)(const char* name));
 void SoundFollowTick(ReaProject* proj);
 // The menu's Sounds section (Tagging tab, after "Markers written").
 void DrawSoundsMenuSection();
+
+// The follow report of a project (13-9 F12): session memory, the last 200 lines, oldest first.
+std::vector<ReportLine> FollowReport(ReaProject* proj);
+void                    ClearFollowReport(ReaProject* proj);
 
 }  // namespace rav
 

@@ -63,12 +63,7 @@ std::string Upper(std::string s)
     return s;
 }
 
-std::string ItemGuidOf(MediaItem* item)
-{
-    char buf[64] = {};
-    if (!item || !GetSetMediaItemInfo_String(item, "GUID", buf, false)) return {};
-    return buf;
-}
+// ItemGuidOf comes from sound_populate.h (13-8, merged first; same body).
 
 std::string TrackGuidOf(MediaItem* item)
 {

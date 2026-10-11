@@ -150,4 +150,13 @@ double ItemGainFor(double gain_db)
     return std::pow(10.0, gain_db / 20.0);
 }
 
+std::string PlacedItemRefusal(bool found, bool has_tag, bool folder, Ownership own, bool edit)
+{
+    if (!found) return "item missing";
+    if (!has_tag) return "not a placed item (no RAV_SND tag)";
+    if (folder) return "folder item";
+    if (edit && own == Ownership::Attached) return "attached by the user";
+    return {};
+}
+
 }  // namespace rav

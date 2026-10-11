@@ -332,22 +332,12 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
 // E7: a placed item we may change. `edit` = replace/remove (attached refused).
 MediaItem* PlacedItemFor(ReaProject* proj, const std::string& guid, bool edit, PlacedTag* tag_out, std::string* error)
 {
-    MediaItem* item = FindItem(proj, guid);
-    if (!item) {
-        *error = "item missing";
-        return nullptr;
-    }
-    PlacedTag tag;
-    if (!ReadPlacedTag(item, &tag)) {
-        *error = "not a placed item (no RAV_SND tag)";
-        return nullptr;
-    }
-    if (IsFolderItem(item)) {
-        *error = "folder item";
-        return nullptr;
-    }
-    if (edit && tag.own == Ownership::Attached) {
-        *error = "attached by the user";
+    MediaItem*        item = FindItem(proj, guid);
+    PlacedTag         tag;
+    const bool        has_tag = item && ReadPlacedTag(item, &tag);
+    const std::string why = PlacedItemRefusal(item != nullptr, has_tag, has_tag && IsFolderItem(item), tag.own, edit);
+    if (!why.empty()) {
+        *error = why;
         return nullptr;
     }
     if (tag_out) *tag_out = tag;

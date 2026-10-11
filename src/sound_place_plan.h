@@ -53,4 +53,8 @@ double PlacementPosition(double event_t, double sync_offset, double blend_ms, do
 // The item volume (D_VOL, linear) for a gain in dB (NaN -> 1).
 double ItemGainFor(double gain_db);
 
+// 13-10 (Antho 2026-10-12): why the engine refuses to move (`edit` false) or replace / remove
+// (`edit` true) a placed item; "" = allowed. An attached sound is never replaced or removed.
+std::string PlacedItemRefusal(bool found, bool has_tag, bool folder, Ownership own, bool edit);
+
 }  // namespace rav

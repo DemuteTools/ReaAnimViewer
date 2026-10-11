@@ -11,6 +11,7 @@
 #include "reaper_actions.h"
 #include "reaper_api.h"
 #include "self_update.h"
+#include "sound_attach.h"
 #include "sound_audition.h"  // Epic 13 (D20): each sound module resolves its own functions
 #include "sound_follow.h"
 #include "sound_peaks.h"
@@ -242,6 +243,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     InitSoundPeaks(rec->GetFunc);
     InitSoundAudition(rec->GetFunc);
     InitSoundFollow(rec->GetFunc);
+    InitSoundAttach(rec->GetFunc);
     g_sound_check_id = RegisterAction(rec, kSoundStoreCheckName, kSoundStoreCheckDesc, &g_sound_check_accel);
 
     rec->Register("hookcommand", (void*)&OnHookCommand);

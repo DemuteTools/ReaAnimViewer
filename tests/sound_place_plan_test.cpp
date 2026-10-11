@@ -86,6 +86,17 @@ int main()
     CHECK(out == expect);
     CHECK(n == 3);
 
+    // 13-10 (Antho 2026-10-12): an attached sound is never replaced or removed; it may move.
+    CHECK(PlacedItemRefusal(false, false, false, Ownership::Populated, false) == "item missing");
+    CHECK(PlacedItemRefusal(true, false, false, Ownership::Populated, true) == "not a placed item (no RAV_SND tag)");
+    CHECK(PlacedItemRefusal(true, true, true, Ownership::Populated, false) == "folder item");
+    CHECK(PlacedItemRefusal(true, true, false, Ownership::Attached, true) == "attached by the user");
+    CHECK(PlacedItemRefusal(true, true, false, Ownership::Attached, false).empty());
+    CHECK(PlacedItemRefusal(true, true, false, Ownership::Spread, true).empty());
+    CHECK(PlacedItemRefusal(true, true, false, Ownership::Populated, true).empty());
+    CHECK(PlacedItemRefusal(true, true, true, Ownership::Spread, true) == "folder item");
+    CHECK(PlacedItemRefusal(true, false, false, Ownership::Populated, false) == "not a placed item (no RAV_SND tag)");
+
     if (g_fail) {
         std::printf("sound_place_plan_test: %d failure(s)\n", g_fail);
         return 1;

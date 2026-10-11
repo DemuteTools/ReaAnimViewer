@@ -218,6 +218,7 @@ if(WIN32)
             src/sound_follow_plan.cpp
             src/tagging_attach_ui.cpp
             src/sound_attach.cpp
+            src/sound_attach_plan.cpp
             src/library_user_ui.cpp
             src/ravlib.cpp
     )

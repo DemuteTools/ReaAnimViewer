@@ -1,17 +1,131 @@
 // SPDX-License-Identifier: MIT
 //
-// Placeholder host test of src/sound_draw.h (Epic 13, created by 13-2): it links the module and calls
-// one stub. Story 13-3 replaces it with the real tests.
+// Host test of src/sound_draw.h (Epic 13 story 13-3): deterministic seeded draw, avoid-repeat,
+// keep-or-draw, reshuffle, Blend parts and child order, event salt. Pure: any C++17 compiler.
 
 #include "sound_draw.h"
 
 #include <cstdio>
+#include <set>
 
 using namespace rav;
 
+namespace {
+
+int g_fails = 0;
+
+#define CHECK(c)                                             \
+    do {                                                     \
+        if (!(c)) {                                          \
+            std::printf("FAIL line %d: %s\n", __LINE__, #c); \
+            ++g_fails;                                       \
+        }                                                    \
+    } while (0)
+
+void TestDraw()
+{
+    const std::vector<int> act = {0, 1, 2, 3};
+    CHECK(DrawPick(act, 0, {}, 42, 7) == DrawPick(act, 0, {}, 42, 7));
+    std::set<int> seen;
+    for (uint64_t s = 0; s < 1000; ++s) seen.insert(DrawPick(act, 0, {}, 42, s));
+    CHECK(seen.size() == 4);
+    for (uint64_t s = 0; s < 200; ++s) CHECK(DrawPick({0, 1, 2}, 2, {2, 2, 0, 1}, 9, s) == 2);
+    for (uint64_t s = 0; s < 200; ++s) {
+        const int p = DrawPick({0, 1, 2}, 99, {0, 1}, 9, s);  // N clamped to 2
+        CHECK(p == 2);
+    }
+    CHECK(DrawPick({5}, 3, {5}, 1, 1) == 5);  // N clamped to 0
+    CHECK(DrawPick({}, 2, {}, 1, 2) == -1);
+    CHECK(DrawPick({0, 1}, -4, {}, 1, 2) >= 0);
+    // Golden values: the fixed splitmix64 mix gives these on every platform and build.
+    CHECK(DrawPick(act, 0, {}, 42, 7) == 0);
+    CHECK(DrawPick({0, 1, 2, 3, 4, 5, 6}, 0, {}, 1, 2) == 1);
+    CHECK(DrawPick({0, 1, 2, 3, 4, 5, 6}, 0, {}, 123456789, 987654321) == 3);
+}
+
+void TestActiveKeep()
+{
+    SoundData d;
+    d.frames.resize(3);
+    d.frames[1].on = false;
+    std::vector<int> a = ActiveVariations(d);
+    CHECK(a.size() == 2 && a[0] == 0 && a[1] == 2);
+    SoundData off;
+    off.frames.resize(1);
+    off.frames[0].on = false;
+    CHECK(ActiveVariations(off).empty());
+
+    SoundDraw prev;
+    prev.pick = 1;
+    prev.hand = true;
+    CHECK(KeepOrDraw(&prev, {0, 1, 2}, 2, {1}, 3, 4) == 1);
+    CHECK(KeepOrDraw(&prev, a, 0, {}, 3, 4) == DrawPick(a, 0, {}, 3, 4));  // pick 1 is off -> redraw
+    CHECK(KeepOrDraw(nullptr, a, 0, {}, 3, 4) == DrawPick(a, 0, {}, 3, 4));
+
+    ItemSounds item;
+    EventSounds ev;
+    SoundDraw h, n;
+    h.node = "a";
+    h.pick = 1;
+    h.hand = true;
+    n.node = "b";
+    n.pick = 0;
+    ev.draws = {h, n};
+    item.events = {ev};
+    Reshuffle(item, 77);
+    CHECK(item.seed == 77);
+    CHECK(item.events[0].draws.size() == 1 && item.events[0].draws[0].node == "a");
+    CHECK(KeepOrDraw(&item.events[0].draws[0], {0, 1, 2}, 2, {}, 77, 4) == 1);
+}
+
+void TestTree()
+{
+    SoundLibrary lib;
+    SoundNode root, b, c1, c2, other;
+    root.uid = "r";
+    b.uid = "b";
+    b.parent = "r";
+    b.type = SoundNodeType::Blend;
+    c1.uid = "c1";
+    c1.parent = "b";
+    c1.offset_ms = 0;
+    c2.uid = "c2";
+    c2.parent = "b";
+    c2.offset_ms = 120;
+    c2.volume_db = -3;
+    other.uid = "o";
+    other.parent = "r";
+    lib.nodes = {root, c2, b, other, c1};
+    const SoundNode& blend = lib.nodes[2];
+    std::vector<const SoundNode*> parts = BlendParts(lib, blend);
+    CHECK(parts.size() == 2 && parts[0]->uid == "c2" && parts[1]->uid == "c1");
+    if (parts.size() == 2) CHECK(parts[0]->offset_ms == 120 && parts[0]->volume_db == -3);
+    CHECK(BlendParts(lib, lib.nodes[0]).empty());
+    std::vector<const SoundNode*> kids = ChildNodes(lib, lib.nodes[0]);
+    CHECK(kids.size() == 2 && kids[0]->uid == "b" && kids[1]->uid == "o");
+}
+
+void TestSalt()
+{
+    CHECK(EventSalt("abc", 1.21) == EventSalt("abc", 1.19));
+    CHECK(EventSalt("abc", 1.2) != EventSalt("abd", 1.2));
+    CHECK(EventSalt("abc", 1.2) != EventSalt("abc", 2.2));
+    CHECK(EventSalt("abc", 1.2) == 9190078331769735277ULL);  // golden: FNV-1a 64 + splitmix64
+    CHECK(EventSalt("", 0.0) == 6566800829925814604ULL);
+}
+
+}  // namespace
+
 int main()
 {
-    (void)DrawPick({}, 2, {}, 1, 2);  // STUB call
-    std::printf("sound_draw_test: placeholder passed (13-2 stub)\n");
+    TestDraw();
+    TestActiveKeep();
+    TestTree();
+    TestSalt();
+    if (g_fails) {
+        std::printf("sound_draw_test: %d failure(s)\n", g_fails);
+        return 1;
+    }
+    std::printf("sound_draw_test: all passed\n");
     return 0;
 }

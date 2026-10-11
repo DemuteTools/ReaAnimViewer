@@ -20,9 +20,17 @@ int DrawPick(const std::vector<int>& active, int avoid_n, const std::vector<int>
              uint64_t salt);
 // The indices of the Sound's frames that are on.
 std::vector<int> ActiveVariations(const SoundData& data);
-// An event's salt (rule id + clip time, stable under the +-30 ms match).
+// An event's salt: rule id + clip time in 100 ms bins (llround(t * 10)). It only seeds a first
+// draw; an event keeps its pick across re-detection through its stored draw (+-30 ms match).
 uint64_t EventSalt(const std::string& rid, double t);
 // The children a Blend node plays together, in line order.
 std::vector<const SoundNode*> BlendParts(const SoundLibrary& lib, const SoundNode& node);
+// Keeps prev->pick when it is still in `active` (hand-picked or stored), else draws (DrawPick).
+int KeepOrDraw(const SoundDraw* prev, const std::vector<int>& active, int avoid_n, const std::vector<int>& history,
+               uint64_t seed, uint64_t salt);
+// A new seed: every draw not picked by hand is erased (drawn again on next use).
+void Reshuffle(ItemSounds& item, uint64_t new_seed);
+// The nodes whose parent is `node`, in line order.
+std::vector<const SoundNode*> ChildNodes(const SoundLibrary& lib, const SoundNode& node);
 
 }  // namespace rav

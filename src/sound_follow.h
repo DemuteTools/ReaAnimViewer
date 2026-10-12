@@ -21,6 +21,9 @@ void InitSoundFollow(void* (*get_func)(const char* name));
 void SoundFollowTick(ReaProject* proj);
 // The menu's Sounds section (Tagging tab, after "Markers written").
 void DrawSoundsMenuSection();
+// Story 13-17 (N6): the menu's Library tab, its Tracks section: where placed sounds land (the
+// Tracks option, moved from Tagging > Sounds) and the separator of joined track names.
+void DrawLibraryTracksSection();
 
 // The follow report of a project (13-9 F12): session memory, the last 200 lines, oldest first.
 std::vector<ReportLine> FollowReport(ReaProject* proj);

@@ -189,18 +189,18 @@ static void TestTrackPath()
     SoundStore                    s = NestedStore();
     const std::vector<SwitchStep> p = SwitchPathOf(s, s.libraries.front(), "conc");
     CHECK(SameSteps(PathOnly(p, TrackLayout::Flat, "RAV Library", "Feet"),
-                    {{"RAV Library", true}, {"Feet", true}, {"Run-Shoes-Concrete", false}}));
+                    {{"RAV Library", true}, {"Feet", true}, {"Run_Shoes_Concrete", false}}));
     CHECK(SameSteps(PathOnly(p, TrackLayout::Tree, "RAV Library", "Feet"),
                     {{"RAV Library", true}, {"Feet", true}, {"Run", true}, {"Shoes", true}, {"Concrete", false}}));
     CHECK(PathOnly(p, TrackLayout::Off, "RAV Library", "Feet").empty());
     CHECK(PathOnly({}, TrackLayout::Tree, "RAV Library", "Feet").empty());
     // A user library's Lands-in folder.
     CHECK(SameSteps(PathOnly(p, TrackLayout::Flat, "Foley", "Steps"),
-                    {{"Foley", true}, {"Steps", true}, {"Run-Shoes-Concrete", false}}));
+                    {{"Foley", true}, {"Steps", true}, {"Run_Shoes_Concrete", false}}));
     // Unnamed value.
     const std::vector<SwitchStep> e = SwitchPathOf(s, s.libraries.front(), "empty");
     CHECK(SameSteps(PathOnly(e, TrackLayout::Flat, "RAV Library", "Feet"),
-                    {{"RAV Library", true}, {"Feet", true}, {"Run-Shoes-(unnamed)", false}}));
+                    {{"RAV Library", true}, {"Feet", true}, {"Run_Shoes_(unnamed)", false}}));
     CHECK(SameSteps(PathOnly(e, TrackLayout::Tree, "RAV Library", "Feet"),
                     {{"RAV Library", true}, {"Feet", true}, {"Run", true}, {"Shoes", true}, {"(unnamed)", false}}));
 }
@@ -353,7 +353,7 @@ static void TestLayerUnderPath()
     CHECK(th.back().mark != ts.back().mark);
     // One per path: the path track is the layers' folder.
     CHECK(SameNames(PathOf(s, "heel", TrackLayout::Flat),
-                    {{"RAV Library", true}, {"Steps", true}, {"Run-Shoes-Concrete", true}, {"Heel", false}}));
+                    {{"RAV Library", true}, {"Steps", true}, {"Run_Shoes_Concrete", true}, {"Heel", false}}));
     // A sound outside any Blend stays on the path track itself (13-13).
     const std::vector<TrackStep> tw = PathOf(s, "wood", TrackLayout::Tree);
     CHECK(SameNames(tw, {{"RAV Library", true}, {"Steps", true}, {"Run", true}, {"Shoes", true}, {"Wood", false}}));
@@ -422,7 +422,7 @@ static void TestLayerKinds()
     CHECK(PathOf(r, "c1", TrackLayout::Off).back().mark != PathOf(r, "heel", TrackLayout::Off).back().mark);
     // Off: RAV Library > library > Footstep > Heel.
     CHECK(SameNames(PathOf(r, "heel", TrackLayout::Off), {{"RAV Library", true}, {"Steps", true}, {"Footstep", true}, {"Heel", false}}));
-    CHECK(LayerOf(L, "t1").layer_name == "Thud" && LayerOf(L, "t2").layer_name == "thud 2");
+    CHECK(LayerOf(L, "t1").layer_name == "Thud" && LayerOf(L, "t2").layer_name == "thud02");
     CHECK(LayerOf(L, "u").layer_name == "(unnamed)");
     // The Blend itself, and a node with no Blend above: no layer.
     CHECK(!LayerOf(L, "bl").in_blend);
@@ -537,8 +537,147 @@ static void TestSpillPlan()
     CHECK(PlacedSpotOf(LaneMark(GuidTrackMark("{G}"), 1), false, &b) == PlacedSpot::MovedByUser && b == "#{G}");
 }
 
+// ---- Story 13-17 ----------------------------------------------------------------------------
+
+static void TestSeparator()
+{
+    SoundStore s;
+    CHECK(TrackSeparatorOf(s) == "_");  // no token: "_" (Default row)
+    CHECK(!SetTrackSeparator(s, "_"));
+    CHECK(!SetTrackSeparator(s, "/"));  // not offered
+    s.kept = {"zz=1", "trk=flat"};
+    CHECK(SetTrackSeparator(s, "-"));
+    CHECK(TrackSeparatorOf(s) == "-");
+    CHECK(s.kept.size() == 3 && s.kept[0] == "zz=1" && s.kept[1] == "trk=flat" && s.kept[2] == "sep=dash");
+    CHECK(!SetTrackSeparator(s, "-"));
+    CHECK(SetTrackSeparator(s, " ") && TrackSeparatorOf(s) == " " && s.kept[2] == "sep=space");
+    CHECK(SetTrackSeparator(s, ".") && TrackSeparatorOf(s) == ".");
+    CHECK(SetTrackSeparator(s, "_") && s.kept.size() == 2 && TrackSeparatorOf(s) == "_");
+    s.kept = {"sep=tilde"};
+    CHECK(TrackSeparatorOf(s) == "_");
+    CHECK(TrackSeparators().size() == 4 && TrackSeparators()[0] == "_");
+    // Round trip through the store's text.
+    SoundStore r = NestedStore();
+    CHECK(SetTrackSeparator(r, "."));
+    SoundStore back;
+    CHECK(ParseSoundStore(SerializeSoundStore(r), &back));
+    CHECK(TrackSeparatorOf(back) == ".");
+    // The joined path follows it; default "_".
+    const std::vector<SwitchStep> p = SwitchPathOf(r, r.libraries.front(), "conc");
+    CHECK(SoundTrackPath(p, BlendLayer(), TrackLayout::Flat, "RAV Library", "lib", "Feet").back().name == "Run_Shoes_Concrete");
+    CHECK(SoundTrackPath(p, BlendLayer(), TrackLayout::Flat, "RAV Library", "lib", "Feet", "-").back().name ==
+          "Run-Shoes-Concrete");
+    CHECK(NumberedName("Heel", 1) == "Heel01" && NumberedName("Thud", 3) == "Thud03" && NumberedName("Heel", 100) == "Heel100");
+}
+
+static std::string NoTrack(const std::string&)
+{
+    return {};
+}
+
+static void TestNameForMark()
+{
+    SoundStore s = BlendUnderPath();
+    // Path marks: the names SoundTrackPath gives (the separator of the store).
+    for (TrackLayout lay : {TrackLayout::Flat, TrackLayout::Tree, TrackLayout::Off}) {
+        const std::vector<TrackStep> p = SoundTrackPath(SwitchPathOf(s, s.libraries.front(), "heel"),
+                                                        LayerOf(s.libraries.front(), "heel"), lay, "RAV Library", "lib",
+                                                        "Steps", TrackSeparatorOf(s));
+        for (size_t i = 1; i < p.size(); ++i) CHECK(NameForMark(s, p[i].mark, NoTrack) == p[i].name);
+    }
+    const std::vector<TrackStep> flat =
+        SoundTrackPath(SwitchPathOf(s, s.libraries.front(), "heel"), LayerOf(s.libraries.front(), "heel"),
+                       TrackLayout::Flat, "RAV|Library", "lib", "Steps");  // a '|' in the Lands-in value
+    CHECK(NameForMark(s, flat[1].mark, NoTrack) == "Steps");
+    CHECK(NameForMark(s, flat[2].mark, NoTrack) == "Run_Shoes_Concrete");  // Default: "_"
+    CHECK(NameForMark(s, flat[3].mark, NoTrack) == "Heel");
+    // Separator changed: Run-Shoes-Concrete.
+    SoundStore d = s;
+    SetTrackSeparator(d, "-");
+    CHECK(NameForMark(d, flat[2].mark, NoTrack) == "Run-Shoes-Concrete");
+    // Layer renamed: Heel; its spill children Heel01, Heel02.
+    SoundStore r = s;
+    r.libraries.front().nodes[4].name = "FEETCrea_CONCRETE-Gloves Rubber On Gloves Boxing_B00M_CFCK";
+    CHECK(NameForMark(r, flat[3].mark, NoTrack) == "FEETCrea_CONCRETE-Gloves Rubber On Gloves Boxing_B00M_CFCK");
+    r.libraries.front().nodes[4].name = "Heel";
+    CHECK(NameForMark(r, LaneMark(flat[3].mark, 1), NoTrack) == "Heel01");
+    CHECK(NameForMark(r, LaneMark(flat[3].mark, 2), NoTrack) == "Heel02");
+    // Folders, value renamed Concrete -> Stone.
+    const std::vector<TrackStep> tree = PathOf(s, "heel", TrackLayout::Tree);
+    SoundStore v = s;
+    v.groups[2].values[0].name = "Stone";
+    CHECK(NameForMark(v, tree[4].mark, NoTrack) == "Stone");
+    // Library and Blend renamed.
+    v.libraries.front().name = "Feet";
+    v.libraries.front().nodes[3].name = "Step";
+    CHECK(NameForMark(v, tree[1].mark, NoTrack) == "Feet");
+    const std::vector<TrackStep> off = PathOf(v, "heel", TrackLayout::Off);
+    CHECK(NameForMark(v, off[2].mark, NoTrack) == "Step");
+    // NVK pile child: its source child track's current name; its spill child numbered.
+    auto names = [](const std::string& m) { return m == "#{SRC}" ? std::string("Kick") : std::string("Layer 1"); };
+    const std::string pile = PileChildMark(flat[3].mark, "#{SRC}");
+    CHECK(NameForMark(s, pile, names) == "Kick");
+    CHECK(NameForMark(s, LaneMark(pile, 2), names) == "Kick02");
+    // 13-11's "layer N" (a GuidTrackMark): never named; its spill children follow its name.
+    CHECK(NameForMark(s, GuidTrackMark("{G}"), names).empty());
+    CHECK(NameForMark(s, LaneMark(GuidTrackMark("{G}"), 1), names) == "Layer 101");
+    // Unknown: a library or node gone, a foreign mark.
+    SoundStore gone = s;
+    gone.libraries.clear();
+    CHECK(NameForMark(gone, flat[3].mark, NoTrack).empty());
+    CHECK(NameForMark(s, "L|x|nolib", NoTrack).empty());
+    CHECK(NameForMark(s, "whatever", NoTrack).empty());
+    CHECK(NameForMark(s, LayerMark(flat[2].mark, "nonode"), NoTrack).empty());
+    // A deleted Switch value or group: no Library name (the track keeps its name).
+    SoundStore dv = s;
+    dv.groups[1].values.clear();  // Shoes gone
+    CHECK(NameForMark(dv, flat[2].mark, NoTrack).empty());
+    CHECK(NameForMark(dv, tree[3].mark, NoTrack).empty());
+    SoundStore dg = s;
+    dg.groups.erase(dg.groups.begin() + 2);  // Material gone
+    CHECK(NameForMark(dg, flat[2].mark, NoTrack).empty());
+    CHECK(NameForMark(dg, tree[4].mark, NoTrack).empty());
+    CHECK(NameForMark(dg, tree[2].mark, NoTrack) == "Run");  // the levels above still named
+    // Same-name layers: Thud, Thud02, Thud03.
+    SoundStore   t;
+    SoundLibrary l;
+    l.uid = "lt";
+    l.name = "Hits";
+    l.nodes.push_back(Named("bl", "", SoundNodeType::Blend, "Hit"));
+    l.nodes.push_back(Named("a", "bl", SoundNodeType::Sound, "Thud"));
+    l.nodes.push_back(Named("b", "bl", SoundNodeType::Sound, "Thud"));
+    l.nodes.push_back(Named("c", "bl", SoundNodeType::Sound, "Thud"));
+    t.libraries.push_back(l);
+    const char* want[] = {"Thud", "Thud02", "Thud03"};
+    const char* uids[] = {"a", "b", "c"};
+    for (int i = 0; i < 3; ++i) {
+        const std::vector<TrackStep> p = PathOf(t, uids[i], TrackLayout::Off);
+        CHECK(p.back().name == want[i]);
+        CHECK(NameForMark(t, p.back().mark, NoTrack) == want[i]);
+    }
+}
+
+static void TestPlanTrackRename()
+{
+    TrackRename r = PlanTrackRename("Heel L", "Heel", "Heel2");  // renamed by the user: untouched
+    CHECK(!r.rename && !r.record);
+    r = PlanTrackRename("Heel 1", "", "Heel01");  // made before 13-17: renamed and recorded
+    CHECK(r.rename && r.record);
+    r = PlanTrackRename("FEET_CFCK", "FEET_CFCK", "Heel");  // untouched, Library renamed
+    CHECK(r.rename && r.record);
+    r = PlanTrackRename("Heel", "", "Heel");  // right name, nothing recorded: only recorded
+    CHECK(!r.rename && r.record);
+    r = PlanTrackRename("Heel", "Heel", "Heel");  // all equal: nothing
+    CHECK(!r.rename && !r.record);
+    r = PlanTrackRename("Heel", "Heel", "");  // no Library name: nothing
+    CHECK(!r.rename && !r.record);
+}
+
 int main()
 {
+    TestPlanTrackRename();
+    TestSeparator();
+    TestNameForMark();
     TestSpillPlan();
     TestLayerUnderPath();
     TestLayerKinds();

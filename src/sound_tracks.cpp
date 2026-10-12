@@ -28,6 +28,8 @@ MoveMediaItemToTrackFn   f_move_item = nullptr;
 constexpr const char* kSwitchTreeExt = "P_EXT:RAV_SWITCH_TREE";
 // 13-16 (B7): the mark of a track RAV made for sounds, saved with the track.
 constexpr const char* kTrackMarkExt = "P_EXT:RAV_TRACK";
+// 13-17 (N2): the name RAV last gave that track; a current name that differs = the user renamed it.
+constexpr const char* kGivenNameExt = "P_EXT:RAV_TRACK_NAME";
 
 // ---- 13-16: the gesture's marks and lanes ----
 
@@ -47,12 +49,26 @@ std::string ReadMark(MediaTrack* tr)
     return buf;
 }
 
+void SetTrackText(MediaTrack* tr, const char* key, const std::string& text)
+{
+    std::vector<char> buf(text.begin(), text.end());
+    buf.push_back('\0');
+    GetSetMediaTrackInfo_String(tr, key, buf.data(), true);
+}
+
+std::string ReadGivenName(MediaTrack* tr)
+{
+    char buf[4096] = {};
+    if (!tr || !GetSetMediaTrackInfo_String(tr, kGivenNameExt, buf, false)) return {};
+    return buf;
+}
+
+// Marks a track RAV just made (named so): its mark, and its name as the one RAV gave (13-17 N2).
 void WriteMark(MediaTrack* tr, const std::string& mark)
 {
     if (!tr || mark.empty()) return;
-    std::vector<char> buf(mark.begin(), mark.end());
-    buf.push_back('\0');
-    GetSetMediaTrackInfo_String(tr, kTrackMarkExt, buf.data(), true);
+    SetTrackText(tr, kTrackMarkExt, mark);
+    SetTrackText(tr, kGivenNameExt, TrackName(tr));
     g_marks[mark] = tr;
 }
 
@@ -152,11 +168,23 @@ std::vector<std::pair<int, MediaTrack*>> LanesOf(ReaProject* proj, const std::st
     return out;
 }
 
-// A new spill child k of `base`, named "<base name> k".
+// The current name of the track carrying `mark` (NameForMark's pile source / "layer N" lookup).
+std::string NameOfMarkedTrack(ReaProject* proj, const std::string& mark)
+{
+    const std::map<std::string, MediaTrack*>& marks = Marks(proj);
+    auto                                      hit = marks.find(mark);
+    return hit != marks.end() ? TrackName(hit->second) : std::string();
+}
+
+// A new spill child k of `base`, named after the Library (13-17 N1: "Heel01"), else "<base name>01".
 MediaTrack* MakeLane(ReaProject* proj, MediaTrack* base, const std::string& base_mark, int k)
 {
-    MediaTrack* t = AddChildTrack(proj, base, TrackName(base) + " " + std::to_string(k));
-    if (t) WriteMark(t, LaneMark(base_mark, k));
+    const std::string lane = LaneMark(base_mark, k);
+    std::string       name = NameForMark(GetSoundStore(proj), lane,
+                                         [proj](const std::string& m) { return NameOfMarkedTrack(proj, m); });
+    if (name.empty()) name = NumberedName(TrackName(base), k);
+    MediaTrack* t = AddChildTrack(proj, base, name);
+    if (t) WriteMark(t, lane);
     return t;
 }
 
@@ -189,6 +217,7 @@ void InitSoundTracks(void* (*get_func)(const char* name))
     f_insert_track = reinterpret_cast<InsertTrackAtIndexFn>(get_func("InsertTrackAtIndex"));
     f_set_track = reinterpret_cast<SetMediaTrackInfoValueFn>(get_func("SetMediaTrackInfo_Value"));
     f_move_item = reinterpret_cast<MoveMediaItemToTrackFn>(get_func("MoveMediaItemToTrack"));
+    SetSoundStoreEditHook(&RefreshRavTrackNames);  // 13-17 N3: a Library rename renames the tracks
 }
 
 bool CanMakeTracks()
@@ -478,6 +507,50 @@ void RefreshLaneItem(MediaItem* item)
     DropLaneItem(item);
     auto hit = g_lanes.find(GetMediaItem_Track(item));
     if (hit != g_lanes.end()) hit->second.push_back(SpanItem(item));
+}
+
+// ---- Story 13-17 ---------------------------------------------------------------------------------
+
+bool RefreshRavTrackNames(ReaProject* proj)
+{
+    try {
+        const int n = CountTracks(proj);
+        if (n <= 0) return false;
+        // One scan: each track's mark (its own, and its GUID's) -> its current name.
+        std::vector<MediaTrack*>           tracks;
+        std::vector<std::string>           marks;
+        std::map<std::string, std::string> names;
+        for (int i = 0; i < n; ++i) {
+            MediaTrack* t = GetTrack(proj, i);
+            if (!t) continue;
+            const std::string m = ReadMark(t);
+            const std::string name = TrackName(t);
+            if (!m.empty()) {
+                tracks.push_back(t);
+                marks.push_back(m);
+                names.emplace(m, name);  // the first one when copied (as Marks)
+            }
+            const std::string g = TrackGuidText(t);
+            if (!g.empty()) names[GuidTrackMark(g)] = name;
+        }
+        if (tracks.empty()) return false;
+        const SoundStore& store = GetSoundStore(proj);
+        auto name_of = [&names](const std::string& m) {
+            auto hit = names.find(m);
+            return hit != names.end() ? hit->second : std::string();
+        };
+        bool changed = false;
+        for (size_t i = 0; i < tracks.size(); ++i) {
+            const std::string want = NameForMark(store, marks[i], name_of);
+            const TrackRename r = PlanTrackRename(TrackName(tracks[i]), ReadGivenName(tracks[i]), want);
+            if (r.rename) SetTrackText(tracks[i], "P_NAME", want);
+            if (r.record) SetTrackText(tracks[i], kGivenNameExt, want);
+            changed = changed || r.rename || r.record;
+        }
+        return changed;
+    } catch (...) {
+        return false;
+    }
 }
 
 }  // namespace rav

@@ -5,6 +5,7 @@
 #include "sound_tracks_plan.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <set>
 
 #include "ravlib.h"
@@ -78,6 +79,69 @@ bool SetTrackLayout(SoundStore& store, TrackLayout layout)
     if (layout != TrackLayout::Off && !written) kept.push_back(std::string(kTrackKey) + LayoutWord(layout));
     store.kept = kept;
     return true;
+}
+
+namespace {
+
+constexpr const char* kSepKey = "sep=";
+
+struct SepWord {
+    const char* sep;
+    const char* word;  // "" = the default (no token)
+};
+constexpr SepWord kSeps[] = {{"_", ""}, {"-", "dash"}, {".", "dot"}, {" ", "space"}};
+
+bool IsSepToken(const std::string& tok)
+{
+    return tok.compare(0, 4, kSepKey) == 0;
+}
+
+}  // namespace
+
+std::string TrackSeparatorOf(const SoundStore& store)
+{
+    for (const std::string& tok : store.kept) {
+        if (!IsSepToken(tok)) continue;
+        const std::string v = tok.substr(4);
+        for (const SepWord& w : kSeps)
+            if (*w.word && v == w.word) return w.sep;
+        return "_";
+    }
+    return "_";
+}
+
+const std::vector<std::string>& TrackSeparators()
+{
+    static const std::vector<std::string> kAll = {"_", "-", ".", " "};
+    return kAll;
+}
+
+bool SetTrackSeparator(SoundStore& store, const std::string& sep)
+{
+    const SepWord* want = nullptr;
+    for (const SepWord& w : kSeps)
+        if (sep == w.sep) want = &w;
+    if (!want || TrackSeparatorOf(store) == sep) return false;
+    std::vector<std::string> kept;
+    bool                     written = false;
+    for (const std::string& tok : store.kept) {
+        if (!IsSepToken(tok)) {
+            kept.push_back(tok);
+            continue;
+        }
+        if (*want->word && !written) kept.push_back(std::string(kSepKey) + want->word);
+        written = true;
+    }
+    if (*want->word && !written) kept.push_back(std::string(kSepKey) + want->word);
+    store.kept = kept;
+    return true;
+}
+
+std::string NumberedName(const std::string& base, int n)
+{
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%02d", n < 0 ? 0 : n);
+    return base + buf;
 }
 
 std::vector<SwitchStep> SwitchPathOf(const SoundStore& store, const SoundLibrary& lib, const std::string& sound_uid)
@@ -206,7 +270,7 @@ BlendLayer LayerOf(const SoundLibrary& lib, const std::string& sound_uid)
         if (TrimmedLower(Named(f->name)) == mine) ++same;
     }
     out.layer_name = Named(Trimmed(layer->name));  // "thud " and "Thud" give "Thud", "thud 2"
-    if (same > 0) out.layer_name += " " + std::to_string(same + 1);
+    if (same > 0) out.layer_name = NumberedName(out.layer_name, same + 1);  // "Thud02" (13-17 N1)
     return out;
 }
 
@@ -257,7 +321,7 @@ int LaneOfMark(const std::string& mark, std::string* base)
 
 std::vector<TrackStep> SoundTrackPath(const std::vector<SwitchStep>& path, const BlendLayer& layer, TrackLayout layout,
                                       const std::string& lands_in, const std::string& lib_uid,
-                                      const std::string& library_name)
+                                      const std::string& library_name, const std::string& sep)
 {
     const bool has_path = layout != TrackLayout::Off && !path.empty();
     if (!has_path && !layer.in_blend) return {};
@@ -268,7 +332,7 @@ std::vector<TrackStep> SoundTrackPath(const std::vector<SwitchStep>& path, const
         if (layout == TrackLayout::Flat) {
             std::string joined;
             for (size_t i = 0; i < path.size(); ++i) {
-                if (i > 0) joined += '-';
+                if (i > 0) joined += sep;
                 joined += Named(path[i].value_name);
             }
             out.push_back({joined, false, PathMark("PF", lands_in, lib_uid, path, path.size())});
@@ -373,6 +437,119 @@ PlacedSpot PlacedSpotOf(const std::string& tk, bool on_tk_track, std::string* ba
     if (tk.empty()) return PlacedSpot::NotRav;
     LaneOfMark(tk, base);
     return on_tk_track ? PlacedSpot::OnRavTrack : PlacedSpot::MovedByUser;
+}
+
+// ---- Story 13-17 ---------------------------------------------------------------------------
+
+namespace {
+
+// The mark's '|'-separated fields from the end: `back` = 0 the last one. False when too few.
+bool FieldFromEnd(const std::string& mark, size_t back, std::string* out)
+{
+    size_t end = mark.size();
+    for (size_t i = 0;; ++i) {
+        const size_t bar = end == 0 ? std::string::npos : mark.rfind('|', end - 1);
+        if (bar == std::string::npos) return false;
+        if (i == back) {
+            *out = mark.substr(bar + 1, end - bar - 1);
+            return true;
+        }
+        end = bar;
+    }
+}
+
+bool StartsWith(const std::string& s, const char* p)
+{
+    return s.compare(0, std::char_traits<char>::length(p), p) == 0;
+}
+
+// The library uid of a library, Switch path or Blend mark ("" when none of those).
+std::string LibUidOf(const std::string& mark)
+{
+    std::string uid;
+    if (StartsWith(mark, "L|")) return FieldFromEnd(mark, 0, &uid) ? uid : std::string();
+    if (StartsWith(mark, "PF|") || StartsWith(mark, "PT|") || StartsWith(mark, "B|"))
+        return FieldFromEnd(mark, 1, &uid) ? uid : std::string();
+    return {};
+}
+
+std::string ValueName(const SoundStore& store, const std::string& group_uid, const std::string& value_uid)
+{
+    if (const SwitchGroup* g = FindGroup(store, group_uid))
+        for (const SwitchValue& v : g->values)
+            if (v.uid == value_uid) return Named(v.name);
+    return {};  // a deleted group or value: no Library name
+}
+
+}  // namespace
+
+std::string NameForMark(const SoundStore& store, const std::string& mark,
+                        const std::function<std::string(const std::string& mark)>& track_name)
+{
+    if (mark.empty()) return {};
+    // A spill child: its base's name, numbered.
+    std::string base;
+    if (const int k = LaneOfMark(mark, &base)) {
+        std::string b = base[0] == '#' ? (track_name ? track_name(base) : std::string()) : NameForMark(store, base, track_name);
+        return b.empty() ? std::string() : NumberedName(b, k);
+    }
+    if (mark[0] == '#') return {};  // a GuidTrackMark: a track RAV does not name (13-11's "layer N")
+    // An NVK pile child: its source child track's name.
+    const size_t kpos = mark.find("|K|");
+    if (kpos != std::string::npos && mark.rfind("|Y|", kpos) != std::string::npos)
+        return track_name ? track_name(mark.substr(kpos + 3)) : std::string();
+    // A layer track: <parent>|Y|<layer uid>.
+    const size_t ypos = mark.rfind("|Y|");
+    if (ypos != std::string::npos && mark.find('|', ypos + 3) == std::string::npos) {
+        const SoundLibrary* lib = FindLibrary(store, LibUidOf(mark.substr(0, ypos)));
+        const std::string   layer_uid = mark.substr(ypos + 3);
+        const SoundNode*    n = lib ? FindNode(*lib, layer_uid) : nullptr;
+        if (!n) return {};
+        const BlendLayer l = LayerOf(*lib, layer_uid);
+        return l.in_blend && l.layer_uid == layer_uid ? l.layer_name : Named(Trimmed(n->name));
+    }
+    const SoundLibrary* lib = FindLibrary(store, LibUidOf(mark));
+    if (!lib) return {};
+    if (StartsWith(mark, "L|")) return Named(lib->name);
+    std::string last;
+    if (!FieldFromEnd(mark, 0, &last)) return {};
+    if (StartsWith(mark, "B|")) {
+        const SoundNode* b = FindNode(*lib, last);
+        return b ? Named(b->name) : std::string();
+    }
+    // A Switch path: "g:v,g:v".
+    std::vector<std::string> values;
+    size_t                   at = 0;
+    while (at <= last.size() && !last.empty()) {
+        size_t comma = last.find(',', at);
+        if (comma == std::string::npos) comma = last.size();
+        const std::string gv = last.substr(at, comma - at);
+        const size_t      colon = gv.find(':');
+        if (colon == std::string::npos) return {};
+        const std::string v = ValueName(store, gv.substr(0, colon), gv.substr(colon + 1));
+        if (v.empty()) return {};  // the track keeps its name
+        values.push_back(v);
+        at = comma + 1;
+    }
+    if (values.empty()) return {};
+    if (StartsWith(mark, "PT|")) return values.back();
+    const std::string sep = TrackSeparatorOf(store);
+    std::string       joined;
+    for (size_t i = 0; i < values.size(); ++i) {
+        if (i > 0) joined += sep;
+        joined += values[i];
+    }
+    return joined;
+}
+
+TrackRename PlanTrackRename(const std::string& cur, const std::string& given, const std::string& want)
+{
+    TrackRename r;
+    if (want.empty()) return r;                    // no Library name: left as it is
+    if (!given.empty() && cur != given) return r;  // renamed by the user (N2): never again
+    r.rename = cur != want;
+    r.record = given != want;
+    return r;
 }
 
 }  // namespace rav

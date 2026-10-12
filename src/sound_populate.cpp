@@ -299,6 +299,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
     // track (every layout); empty = its usual track (outside any Blend, no Switch path). Its track is
     // found or made once per gesture, once its source resolved (SwitchTrackFor).
     const TrackLayout layout = TrackLayoutOf(store);
+    const std::string sep = TrackSeparatorOf(store);  // 13-17 N4
     struct SoundTracks {
         std::vector<TrackStep> path;
         bool                   in_blend = false;
@@ -312,7 +313,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
             const BlendLayer layer = LayerOf(L, n.uid);
             st.in_blend = layer.in_blend;
             st.path = SoundTrackPath(layout == TrackLayout::Off ? std::vector<SwitchStep>() : SwitchPathOf(store, L, n.uid),
-                                     layer, layout, EffectiveLandsIn(L, n.uid), L.uid, L.name);
+                                     layer, layout, EffectiveLandsIn(L, n.uid), L.uid, L.name, sep);
             hit = track_paths.emplace(key, st).first;
         }
         return hit->second;
@@ -891,6 +892,7 @@ SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* even
             // else its events are not placed (they are found by rule id).
             for (MediaItem* it : targets) EnsureRids(it);
             for (MediaItem* it : targets) PopulateOne(it, store, o, rep, events);
+            RefreshRavTrackNames(nullptr);  // 13-17 N3: the RAV tracks take their Library names
         }
         if (counts) {  // the details list says it too
             char buf[160];

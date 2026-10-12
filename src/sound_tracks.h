@@ -2,8 +2,9 @@
 //
 // The tracks RAV places sounds on (REAPER side): the Lands-in folders' tracks (13-11, decision 12,
 // moved here from library_user_ui.cpp) and the Switch-named tracks (story 13-13; the plan is
-// sound_tracks_plan.h). RAV finds a track by name under its parent and makes it only when missing;
-// it never renames, deletes or reorders one. No undo point of its own: call inside a
+// sound_tracks_plan.h). RAV finds a track by its hidden mark (13-16; the Lands-in folder by name)
+// and makes it only when missing; it renames the marked tracks the user has not renamed (13-17)
+// and never deletes or reorders one. No undo point of its own: call inside a
 // SoundUndoScope. Story 13-16: tracks RAV makes for sounds carry a hidden mark (P_EXT:RAV_TRACK,
 // built from uids, sound_tracks_plan.h) and are found by it; a placed item that would overlap
 // another on a RAV track goes to a spill child instead.
@@ -71,7 +72,7 @@ MediaTrack* EnsureMarkedChild(ReaProject* proj, MediaTrack* parent, const std::s
 // B6: puts `item` (just placed or replaced on `base`, the RAV track marked `base_mark`) where it
 // overlaps no item: on `base` while nothing there overlaps it and `base` has no spill child yet;
 // at the first overlap `base`'s items placed there by RAV (their tag's tk = `base_mark`) and
-// `item` move to spill children "<base name> 1", "2"... (each on the first that fits); once
+// `item` move to spill children "<base name>01", "02"... (13-17 N1; each on the first that fits); once
 // spilled, on the first spill child that fits, else a new one. Returns the mark of the track it
 // ends on (its tag's tk); the other items moved are re-tagged here. "" when it could not move it.
 std::string SettleOnLanes(ReaProject* proj, MediaItem* item, MediaTrack* base, const std::string& base_mark);
@@ -81,6 +82,16 @@ bool FixLaneOverlap(ReaProject* proj, MediaItem* item);
 // The lane cache: an item about to be deleted is dropped; an item changed in place is read again.
 void ForgetLaneItem(MediaItem* item);
 void RefreshLaneItem(MediaItem* item);
+
+// ---- Story 13-17: RAV track names follow the Library ----------------------------------------------
+
+// N1/N2/N5: every track with a RAV mark takes the name the Library gives it (NameForMark), unless
+// the user renamed it in REAPER (its name differs from the one RAV recorded on it, P_EXT
+// RAV_TRACK_NAME, written when RAV makes or renames it). Tracks without a mark (the Lands-in folder,
+// 13-11's "layer N") are never renamed. No undo point of its own. True when a track changed.
+// InitSoundTracks hooks it on every store edit (SetSoundStoreEditHook): a rename in the Library is
+// one undo point with the track names.
+bool RefreshRavTrackNames(ReaProject* proj);
 
 }  // namespace rav
 

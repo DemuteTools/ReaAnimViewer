@@ -40,6 +40,9 @@ const SoundStore& GetSoundStore(ReaProject* proj);
 // dirty and, with a non-null `undo_desc`, records one undo point; null = no undo point (inside a
 // caller's SoundUndoScope). False when nothing changed.
 bool ModifySoundStore(ReaProject* proj, const char* undo_desc, const std::function<bool(SoundStore&)>& edit);
+// Story 13-17 (N3): called after every store change, in the same gesture; it returns true when it
+// changed tracks (RefreshRavTrackNames), and the undo point then records the tracks too.
+void SetSoundStoreEditHook(bool (*hook)(ReaProject* proj));
 
 // The animation item's sound state (empty when none or unreadable).
 ItemSounds ReadItemSounds(MediaItem* item);

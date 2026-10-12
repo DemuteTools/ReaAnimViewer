@@ -26,6 +26,7 @@ GetCurrentProjectInLoadSaveFn f_project_in_load_save = nullptr;
 UndoOnStateChangeEx2Fn        f_undo_change_ex2 = nullptr;
 GetItemProjectContextFn       f_item_project = nullptr;
 int (*g_register)(const char*, void*) = nullptr;
+bool (*g_store_edit_hook)(ReaProject*) = nullptr;  // 13-17 (SetSoundStoreEditHook)
 
 std::map<ReaProject*, SoundStore> g_stores;
 // A <RAVSOUNDS chunk that did not read: its text is written back unchanged while the project's
@@ -215,6 +216,11 @@ const SoundStore& GetSoundStore(ReaProject* proj)
     return it == g_stores.end() ? kEmpty : it->second;
 }
 
+void SetSoundStoreEditHook(bool (*hook)(ReaProject* proj))
+{
+    g_store_edit_hook = hook;
+}
+
 bool ModifySoundStore(ReaProject* proj, const char* undo_desc, const std::function<bool(SoundStore&)>& edit)
 {
     try {
@@ -226,7 +232,9 @@ bool ModifySoundStore(ReaProject* proj, const char* undo_desc, const std::functi
         if (SerializeSoundStore(copy) == before) return false;
         g_stores[proj] = std::move(copy);
         MarkProjectDirty(proj);
-        if (undo_desc) UndoPoint(proj, undo_desc, UNDO_STATE_MISCCFG);
+        int states = UNDO_STATE_MISCCFG;
+        if (g_store_edit_hook && g_store_edit_hook(proj)) states |= UNDO_STATE_TRACKCFG;  // 13-17: track names
+        if (undo_desc) UndoPoint(proj, undo_desc, states);
         return true;
     } catch (...) {
         return false;

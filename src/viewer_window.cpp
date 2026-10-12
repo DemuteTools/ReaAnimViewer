@@ -171,7 +171,8 @@ ImGuiContext* g_main_imgui_ctx = nullptr;
 bool  g_menu_open      = false;     // the hamburger toggles the option list
 // Spec viewer-options-menu-tabs -- the menu's tabs, top to bottom (session state). The tab
 // follows the view when the view changes; otherwise the picked tab stays.
-enum MenuTab { kMenuTabGlobal = 0, kMenuTabRav, kMenuTabTagging, kMenuTabVideo, kMenuTabCount };
+// 13-17 (N6): a Library tab, opened with the Library view.
+enum MenuTab { kMenuTabGlobal = 0, kMenuTabRav, kMenuTabTagging, kMenuTabVideo, kMenuTabLibrary, kMenuTabCount };
 int   g_menu_tab       = kMenuTabRav;
 int   g_menu_tab_view  = -1;        // the view the tab last followed (-1 = none yet)
 float g_light_azimuth  = 0.0f;      // seeded from the renderer's default direction
@@ -1239,7 +1240,10 @@ void DrawToolUi()
         const ViewMode vm = GetViewMode();
         if (g_menu_tab_view != static_cast<int>(vm)) {
             g_menu_tab_view = static_cast<int>(vm);
-            g_menu_tab = vm == ViewMode::Tagging ? kMenuTabTagging : vm == ViewMode::Video ? kMenuTabVideo : kMenuTabRav;
+            g_menu_tab = vm == ViewMode::Tagging   ? kMenuTabTagging
+                         : vm == ViewMode::Video   ? kMenuTabVideo
+                         : vm == ViewMode::Library ? kMenuTabLibrary
+                                                   : kMenuTabRav;
         }
     }
     // Story 10-4: the Tagging panel's "Change" (markers written) opens the menu on its tab.
@@ -1290,7 +1294,7 @@ void DrawToolUi()
 
         // Spec viewer-options-menu-tabs: REAPER-style vertical tabs on the left (Global, then one
         // per view), the selected tab's settings on the right, a fixed footer under both.
-        static const char* const kTabLabels[kMenuTabCount] = { "Global", "Main", "Tagging", "Video" };
+        static const char* const kTabLabels[kMenuTabCount] = { "Global", "Main", "Tagging", "Video", "Library" };
         const float tabs_top = ImGui::GetCursorScreenPos().y;
         ui::VerticalTabs("##menutabs", kTabLabels, kMenuTabCount, &g_menu_tab);
         const float tabs_bottom = ImGui::GetItemRectMax().y;
@@ -1448,6 +1452,12 @@ void DrawToolUi()
             ui::EndSection(sec);
             // Epic 13 (D20): the Sounds section of the menu (13-9).
             DrawSoundsMenuSection();
+            break;
+        }
+
+        // --- Story 13-17 (N6): Library view -- the tracks placed sounds land on ---
+        case kMenuTabLibrary: {
+            DrawLibraryTracksSection();
             break;
         }
 

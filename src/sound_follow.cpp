@@ -417,15 +417,23 @@ bool g_confirm_reset = false;
 // 13-13: the Tracks menu only picks; the store gesture runs after the menu (picked_gestures.h).
 PickedGestures g_track_picks;
 
+// The joined name a separator gives (the menus' hint).
+std::string JoinedExample(const std::string& sep)
+{
+    return "Run" + sep + "Shoes" + sep + "Concrete";
+}
+
 // The Tracks row: where placed sounds land (the project's TrackLayout), one undo point a change.
 void DrawTracksRow(ReaProject* proj)
 {
     static const char* const kShort[3] = {"Off", "Per path", "Folders"};
     static const char* const kRows[3] = {"Source or Lands-in track", "One track per Switch path", "Folders by Switch"};
-    static const char* const kHints[3] = {nullptr, "Run-Shoes-Concrete", "Run / Shoes / Concrete"};
     static const TrackLayout kLayouts[3] = {TrackLayout::Off, TrackLayout::Flat, TrackLayout::Tree};
-    const TrackLayout        cur = TrackLayoutOf(GetSoundStore(proj));
+    const SoundStore&        store = GetSoundStore(proj);
+    const TrackLayout        cur = TrackLayoutOf(store);
     const int                sel = cur == TrackLayout::Flat ? 1 : cur == TrackLayout::Tree ? 2 : 0;
+    const std::string        flat_hint = JoinedExample(TrackSeparatorOf(store));
+    const char* const        hints[3] = {nullptr, flat_hint.c_str(), "Run / Shoes / Concrete"};
     ui::LabelRow("Tracks", ui::Dp(90.0f));
     const std::string label = std::string(kShort[sel]) + " \xE2\x96\xBE##sndtracks";
     if (ui::SolidButton(label.c_str())) ImGui::OpenPopup("##sndtracks");
@@ -433,7 +441,7 @@ void DrawTracksRow(ReaProject* proj)
     if (ui::BeginMenuPopup("##sndtracks")) {
         ui::MenuCaption("PLACED SOUNDS LAND ON");
         for (int i = 0; i < 3; ++i)
-            if (ImGui::MenuItem(kRows[i], kHints[i], i == sel) && i != sel) {
+            if (ImGui::MenuItem(kRows[i], hints[i], i == sel) && i != sel) {
                 const TrackLayout to = kLayouts[i];
                 const std::string undo = std::string("RAV: Sound tracks: ") + kShort[i];
                 g_track_picks.Pick([proj, to, undo]() {
@@ -442,7 +450,37 @@ void DrawTracksRow(ReaProject* proj)
             }
         ui::EndMenuPopup();
     }
-    g_track_picks.Run();  // after the menu: the gesture replaces the store
+}
+
+// 13-17 (N4): the separator row: joins the Switch values of One track per Switch path, one undo
+// point a change; the RAV tracks the user did not rename take the new name in it (the store hook).
+void DrawSeparatorRow(ReaProject* proj)
+{
+    static const char* const kWords[4] = {"Underscore", "Dash", "Dot", "Space"};
+    const std::vector<std::string>& seps = TrackSeparators();
+    const std::string               cur = TrackSeparatorOf(GetSoundStore(proj));
+    int                             sel = 0;
+    for (size_t i = 0; i < seps.size() && i < 4; ++i)
+        if (seps[i] == cur) sel = static_cast<int>(i);
+    ui::LabelRow("Separator", ui::Dp(90.0f));
+    const std::string label = std::string(kWords[sel]) + " \xE2\x96\xBE##sndsep";
+    if (ui::SolidButton(label.c_str())) ImGui::OpenPopup("##sndsep");
+    ui::ItemTipText("Joins the Switch values of \"One track per Switch path\".\n"
+                    "RAV renames its tracks at once, except those you renamed.");
+    if (ui::BeginMenuPopup("##sndsep")) {
+        ui::MenuCaption("JOIN SWITCH VALUES WITH");
+        for (int i = 0; i < 4 && i < static_cast<int>(seps.size()); ++i) {
+            const std::string hint = JoinedExample(seps[static_cast<size_t>(i)]);
+            if (ImGui::MenuItem(kWords[i], hint.c_str(), i == sel) && i != sel) {
+                const std::string to = seps[static_cast<size_t>(i)];
+                const std::string undo = std::string("RAV: Track name separator: ") + kWords[i];
+                g_track_picks.Pick([proj, to, undo]() {
+                    ModifySoundStore(proj, undo.c_str(), [to](SoundStore& st) { return SetTrackSeparator(st, to); });
+                });
+            }
+        }
+        ui::EndMenuPopup();
+    }
 }
 
 }  // namespace
@@ -815,6 +853,18 @@ void ClearFollowReport(ReaProject* proj)
     g_report.erase(proj ? proj : CurrentProject());
 }
 
+void DrawLibraryTracksSection()
+{
+    static ui::Section sec;
+    if (ui::BeginSection(sec, "Tracks")) {
+        ReaProject* proj = CurrentProject();
+        DrawTracksRow(proj);      // 13-13 (moved from Tagging > Sounds, 13-17 N6)
+        DrawSeparatorRow(proj);   // 13-17 N4
+        g_track_picks.Run();      // after the menus: the gesture replaces the store
+    }
+    ui::EndSection(sec);
+}
+
 void DrawSoundsMenuSection()
 {
     static ui::Section sec;
@@ -823,7 +873,6 @@ void DrawSoundsMenuSection()
         bool        keep = LoadPrefFloat(kKeepDrawPref, 0.0f) != 0.0f;
         if (ui::Checkbox("Keep the draw on animation copies", &keep)) SavePrefFloat(kKeepDrawPref, keep ? 1.0f : 0.0f);
         ui::ItemTipText("On: a copied animation item plays the same variations.\nOff: it draws new ones.");
-        DrawTracksRow(proj);  // 13-13
 
         int                           placed = 0;
         const std::vector<MediaItem*> items = RepopulateItems(proj, &placed);

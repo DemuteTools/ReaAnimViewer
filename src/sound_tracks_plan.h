@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -24,6 +25,18 @@ enum class TrackLayout { Off, Flat, Tree };
 TrackLayout TrackLayoutOf(const SoundStore& store);
 // Writes the token (Off removes it), the header's other tokens untouched. False when unchanged.
 bool SetTrackLayout(SoundStore& store, TrackLayout layout);
+
+// Story 13-17 (N4): the separator One per path joins Switch values with ("Run_Shoes_Concrete"): the
+// store header's `sep=dash|dot|space` token; none (or another value) = "_", the default.
+std::string TrackSeparatorOf(const SoundStore& store);
+// The separators offered, in menu order: "_", "-", ".", " ".
+const std::vector<std::string>& TrackSeparators();
+// Writes the token ("_" removes it), the header's other tokens untouched. False when unchanged or
+// `sep` is not one of TrackSeparators().
+bool SetTrackSeparator(SoundStore& store, const std::string& sep);
+
+// N1: a numbered name, game convention: no separator, two digits ("Heel01", "Thud02", "Heel100").
+std::string NumberedName(const std::string& base, int n);
 
 // One Switch on a Sound's path: the group and the value whose case holds the child on the path.
 struct SwitchStep {
@@ -68,8 +81,8 @@ struct BlendLayer {
     std::string blend_uid;   // the Blend whose folder holds the layer (the outermost of a Blend-in-Blend chain)
     std::string blend_name;  // its name, "(unnamed)" when empty
     std::string layer_uid;   // the nearest Blend's child on the Sound's path
-    std::string layer_name;  // its name trimmed, "(unnamed)" when empty; "Thud", "Thud 2"... in the Blend's
-                             // flat layer order when two layers share a name
+    std::string layer_name;  // its name trimmed, "(unnamed)" when empty; "Thud", "Thud02"... in the Blend's
+                             // flat layer order when two layers share a name (13-17 N1)
 };
 BlendLayer LayerOf(const SoundLibrary& lib, const std::string& sound_uid);
 
@@ -92,9 +105,31 @@ int LaneOfMark(const std::string& mark, std::string* base);
 // folder and the layer track. Without a Switch path (or Off), inside a Blend: the Lands-in
 // folder, the library folder, a folder named after the Blend, the layer track. Empty (today's
 // track) outside any Blend with no Switch path. Every level but the Lands-in folder is marked.
+// One per path joins the value names with `sep` (TrackSeparatorOf, 13-17).
 std::vector<TrackStep> SoundTrackPath(const std::vector<SwitchStep>& path, const BlendLayer& layer, TrackLayout layout,
                                       const std::string& lands_in, const std::string& lib_uid,
-                                      const std::string& library_name);
+                                      const std::string& library_name, const std::string& sep = "_");
+
+// Story 13-17 (N1): the name the Library gives the RAV track marked `mark`, from the store: library
+// folder = the library's name; Switch path track = its values joined by the store's separator (One
+// per path) or its last value (Folders); Blend folder = the Blend's name; layer track = the layer's
+// name (LayerOf, "Thud02" for a repeat); NVK pile child = the current name of its source child
+// track (`track_name(mark)`: the name of the track carrying that mark, a GuidTrackMark here); spill
+// child k = its base's name numbered ("Heel01"; a base RAV gives no name to, 13-11's "layer N",
+// by its current name). "" = no Library name (a GuidTrackMark, an unknown mark, library or node):
+// the track keeps its name.
+std::string NameForMark(const SoundStore& store, const std::string& mark,
+                        const std::function<std::string(const std::string& mark)>& track_name);
+
+// N2: what to do with a marked track, from its current name `cur`, the name RAV recorded on it
+// `given` ("" = none: a track made before 13-17, taken as RAV's) and its Library name `want`
+// ("" = none: left as it is). A user-renamed track (given set, cur differs) is never touched.
+// `rename`: set its name to `want`; `record`: record `want` as the name RAV gave.
+struct TrackRename {
+    bool rename = false;
+    bool record = false;
+};
+TrackRename PlanTrackRename(const std::string& cur, const std::string& given, const std::string& want);
 
 // An item's time span on a track lane; `id` names the item (-1 = none).
 struct LaneSpan {

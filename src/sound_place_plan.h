@@ -86,12 +86,35 @@ double ItemGainFor(double gain_db);
 // (`edit` true) a placed item; "" = allowed. An attached sound is never replaced or removed.
 std::string PlacedItemRefusal(bool found, bool has_tag, bool folder, Ownership own, bool edit);
 
-// 13-11 (B9): a User Library File Sound is imported muted and marked a library source
-// (kLibSourceTagKey) so it never plays past the content. A copy of a library source is placed
-// unmuted; any other source's mute state is copied as is.
+// 13-11 (B9): an older build imported a User Library File Sound muted and marked a library source
+// (kLibSourceTagKey). A copy of such an item is placed unmuted; any other source's mute state is
+// copied as is.
 bool PlacedCopyMuted(bool src_muted, bool src_is_library_source);
-// 13-11 (B9): where a newly imported library source lands on its layer track: right after the last
-// library source already on that track (+1 s), else 1 s after the project end.
-double LibrarySourcePosition(double project_end, bool track_has_library_source, double last_library_source_end);
+// Antho 2026-10-12 (13-11): a File Sound is placed straight from its file, no source item on the
+// timeline. Its variation is its frame in every mode (a file has one take): `set` false = the whole
+// file (a frame out of range or empty).
+SliceApply FileSliceFor(const SoundData& data, int variation);
+// The fades of a File Sound's placed item: both sides always (the frame's own or the Sound's default,
+// the Sound's default for a variation out of range), with their shapes.
+FadeApply FileFadeApplyFor(const SoundData& data, int variation);
+// The item placed from a file: take D_STARTOFFS, item D_LENGTH, D_SNAPOFFSET (= the sync), D_POSITION
+// (PlacementPosition), D_VOL (the gain), D_FADEINLEN / D_FADEOUTLEN (FadesOnItem, playrate 1).
+// `file_len` = the file's length in s (<= 0 = unknown: the slice is taken as is). The slice is
+// clamped into the file; `ok` false when nothing of it is left (or no slice and no length).
+struct FileItemFields {
+    bool   ok = false;
+    double position = 0.0;
+    double length = 0.0;
+    double start_offs = 0.0;
+    double snap_offset = 0.0;
+    double volume = 1.0;
+    double fade_in = 0.0;
+    double fade_out = 0.0;
+};
+FileItemFields FileItemFieldsFor(double file_len, const SliceApply& slice, const FadeApply& fades, double gain_db,
+                                 double project_t, double blend_ms, double offset_s);
+// The name of a copy of `file_name` in the project media folder: n = 0 the name itself, n >= 1
+// "stem-001.ext" (REAPER's own numbering), the next free one when a different file has the name.
+std::string MediaCopyName(const std::string& file_name, int n);
 
 }  // namespace rav

@@ -74,11 +74,6 @@ int ApplyLocated(SoundStore& store, const std::vector<std::pair<AssetIdentity, s
 // its depth + 1 + that.
 int FolderChildren(const std::vector<int>& depths, int fi, std::vector<int>* kids, int* last);
 
-// Populate's source for a Sound (13-11): a File source whose node has a non-empty entry in
-// `materialised` (node uid -> imported item GUID) becomes that Item; anything else is unchanged.
-SoundSource PopulateSource(const SoundSource& src, const std::string& node_uid,
-                           const std::map<std::string, std::string>* materialised);
-
 // A file name for a library: \ / : * ? " < > | and control bytes -> '_', trimmed (spaces, dots),
 // "" -> "Library", ".ravlib" added, " 2", " 3"... when `taken` (file names) has it, ignoring case.
 std::string RavlibFileName(const std::string& lib_name, const std::vector<std::string>& taken);

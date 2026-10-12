@@ -299,18 +299,6 @@ int FolderChildren(const std::vector<int>& depths, int fi, std::vector<int>* kid
     return level < 0 ? -level : 0;
 }
 
-SoundSource PopulateSource(const SoundSource& src, const std::string& node_uid,
-                           const std::map<std::string, std::string>* materialised)
-{
-    SoundSource out = src;
-    if (src.kind != SoundSourceKind::File || !materialised) return out;
-    const auto it = materialised->find(node_uid);
-    if (it == materialised->end() || it->second.empty()) return out;
-    out.kind = SoundSourceKind::Item;
-    out.item_guid = it->second;
-    return out;
-}
-
 std::string RavlibFileName(const std::string& lib_name, const std::vector<std::string>& taken)
 {
     std::string base;

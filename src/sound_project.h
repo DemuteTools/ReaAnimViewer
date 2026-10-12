@@ -24,7 +24,8 @@ namespace rav {
 
 constexpr const char kItemSoundsKey[] = "P_EXT:RAV_SOUNDS";
 constexpr const char kPlacedTagKey[] = "P_EXT:RAV_SND";
-// 13-11 (B9): the mark of a muted User Library source item ("1"); its copies are placed unmuted.
+// 13-11 (B9): the mark of a muted User Library source item ("1") an older build imported; its
+// copies are placed unmuted. Populate no longer makes such items (Antho 2026-10-12).
 constexpr const char kLibSourceTagKey[] = "P_EXT:RAV_LIBSRC";
 constexpr size_t     kItemSoundsMaxBytes = 1u << 20;
 

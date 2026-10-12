@@ -102,9 +102,64 @@ int main()
     CHECK(!PlacedCopyMuted(false, true));
     CHECK(PlacedCopyMuted(true, false));
     CHECK(!PlacedCopyMuted(false, false));
-    CHECK(LibrarySourcePosition(30.0, false, 0.0) == 31.0);
-    CHECK(LibrarySourcePosition(30.0, true, 34.5) == 35.5);  // after the last library source, past the content
-    CHECK(LibrarySourcePosition(80.0, true, 34.5) == 81.0);  // the content grew past the sources: never inside it
+
+    // Antho 2026-10-12 (13-11): a File Sound is placed straight from its file.
+    {
+        SoundData d;
+        d.mode = DetectMode::Whole;
+        SoundFrame f;
+        f.start = 0.25;
+        f.length = 0.5;
+        d.frames = {f};
+        SliceApply sl = FileSliceFor(d, 0);  // the frame in every mode (Whole too)
+        CHECK(sl.set && Near(sl.start_offs, 0.25) && Near(sl.length, 0.5));
+        d.mode = DetectMode::Takes;
+        CHECK(FileSliceFor(d, 0).set);
+        CHECK(!FileSliceFor(d, 1).set && !FileSliceFor(d, -1).set);  // out of range: the whole file
+        FadeApply fa = FileFadeApplyFor(d, 0);  // both sides, the Sound's default, with shapes
+        CHECK(fa.set_in && fa.set_out && fa.shape_in && fa.shape_out && Near(fa.in, 0.001) && Near(fa.out, 0.005));
+        d.frames[0].fade_in = 0.05;
+        d.frames[0].fade_in_shape = 3;
+        fa = FileFadeApplyFor(d, 0);
+        CHECK(Near(fa.in, 0.05) && fa.in_shape == 3 && Near(fa.out, 0.005));
+        d.fade_out = 0.02;
+        fa = FileFadeApplyFor(d, 4);  // no frame: the Sound's default
+        CHECK(fa.set_in && fa.set_out && Near(fa.in, 0.001) && Near(fa.out, 0.02) && fa.in_shape == 0);
+
+        // The item: the slice, the event minus the sync plus Blend and nudge, the gain, the fades.
+        FileItemFields it = FileItemFieldsFor(2.0, sl, FileFadeApplyFor(d, 0), -6.0, 10.0, 20.0, 0.5);
+        CHECK(it.ok && Near(it.start_offs, 0.25) && Near(it.length, 0.5) && Near(it.snap_offset, 0.0));
+        CHECK(Near(it.position, 10.52));
+        CHECK(Near(it.volume, std::pow(10.0, -6.0 / 20.0)));
+        CHECK(Near(it.fade_in, 0.05) && Near(it.fade_out, 0.02));  // the Sound default set above
+        it = FileItemFieldsFor(3.0, SliceApply{}, FadeApply{}, 0.0, 1.0, 0.0, 0.0);  // whole file
+        CHECK(it.ok && Near(it.start_offs, 0.0) && Near(it.length, 3.0) && Near(it.volume, 1.0) && Near(it.position, 1.0));
+        CHECK(Near(it.fade_in, 0.0) && Near(it.fade_out, 0.0));
+        SliceApply past;
+        past.set = true;
+        past.start_offs = 1.5;
+        past.length = 1.0;
+        it = FileItemFieldsFor(2.0, past, FadeApply{}, 0.0, 0.0, 0.0, 0.0);  // clamped into the file
+        CHECK(it.ok && Near(it.length, 0.5));
+        past.start_offs = 2.5;
+        CHECK(!FileItemFieldsFor(2.0, past, FadeApply{}, 0.0, 0.0, 0.0, 0.0).ok);  // nothing left
+        CHECK(FileItemFieldsFor(0.0, past, FadeApply{}, 0.0, 0.0, 0.0, 0.0).ok);   // length unknown: as is
+        CHECK(!FileItemFieldsFor(0.0, SliceApply{}, FadeApply{}, 0.0, 0.0, 0.0, 0.0).ok);
+        it = FileItemFieldsFor(1.0, SliceApply{}, FileFadeApplyFor(d, 0), 0.0, 0.0, -50.0, 0.0);  // clamped at 0
+        CHECK(it.ok && Near(it.position, 0.0));
+        FadeApply big;
+        big.set_in = big.set_out = true;
+        big.in = 0.8;
+        big.out = 0.8;
+        it = FileItemFieldsFor(1.0, SliceApply{}, big, 0.0, 0.0, 0.0, 0.0);
+        CHECK(it.fade_in + it.fade_out <= 1.0 + 1e-9);  // fades clamped into the item
+
+        CHECK(MediaCopyName("steps.wav", 0) == "steps.wav");
+        CHECK(MediaCopyName("steps.wav", 1) == "steps-001.wav");
+        CHECK(MediaCopyName("my.steps.flac", 12) == "my.steps-012.flac");
+        CHECK(MediaCopyName("noext", 2) == "noext-002");
+        CHECK(MediaCopyName(".hidden", 1) == ".hidden-001");
+    }
 
     // Antho 2026-10-12: the fades a placed variation sets.
     {

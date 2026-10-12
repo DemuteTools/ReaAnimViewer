@@ -16,7 +16,7 @@
 
 #include "event_list.h"
 #include "item_rules.h"
-#include "library_user_ui.h"  // 13-11: File Sounds are imported on first use
+#include "library_user_ui.h"  // 13-11: File Sounds are placed straight from their file
 #include "ravlib.h"
 #include "rule_record.h"
 #include "sound_auto_assign.h"
@@ -165,10 +165,9 @@ void CheckOwners(const std::vector<std::string>& guids, const std::string& owner
     }
 }
 
-// The request for one resolved sound (P11).
+// The request for one resolved sound (P11). `file` = a File Sound's target (PrepareFileSound).
 PlaceRequest RequestFor(MediaItem* owner, const std::string& rid, double event_t, double project_t,
-                        const SoundNode& n, const ResolvedSound& rs,
-                        const std::map<std::string, std::string>* materialised = nullptr)
+                        const SoundNode& n, const ResolvedSound& rs, const FileSoundTarget* file = nullptr)
 {
     PlaceRequest req;
     req.owner = owner;
@@ -177,9 +176,19 @@ PlaceRequest RequestFor(MediaItem* owner, const std::string& rid, double event_t
     req.project_t = project_t;
     req.node = n.uid;
     req.own = Ownership::Populated;
-    req.source = PopulateSource(n.sound.source, n.uid, materialised);  // 13-11: a File Sound's imported item
+    req.source = n.sound.source;
     const int v = rs.variation;
-    if (v >= 0 && v < static_cast<int>(n.sound.frames.size())) {
+    if (n.sound.source.kind == SoundSourceKind::File && file && !file->path.empty()) {
+        // Antho 2026-10-12 (13-11): straight from the file, on its Lands-in layer track.
+        req.file_path = file->path;
+        req.track = file->track;
+        req.slice = FileSliceFor(n.sound, v);
+        req.fades = FileFadeApplyFor(n.sound, v);
+    } else if (n.sound.source.kind == SoundSourceKind::File && file && !file->item_guid.empty()) {
+        req.source.kind = SoundSourceKind::Item;  // an older build's imported item: copied as before
+        req.source.item_guid = file->item_guid;
+    }
+    if (req.source.kind == SoundSourceKind::Item && v >= 0 && v < static_cast<int>(n.sound.frames.size())) {
         if (n.sound.mode == DetectMode::Takes) req.variation = v;
         else if (n.sound.mode == DetectMode::TakeMarkers || n.sound.mode == DetectMode::Silence)
             req.slice = SliceApplyFor(n.sound.frames[static_cast<size_t>(v)]);
@@ -226,8 +235,9 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
     st.seed = rec.seed;
     std::set<std::string> blocked_rules;
     std::set<std::string> gone_rules;
-    std::map<std::string, std::string> materialised;  // File Sound uid -> its imported item ("" = missing)
-    std::map<std::string, std::string> materialise_why;  // File Sound uid -> why it was not imported
+    std::map<std::string, bool>            file_missing;  // File Sound uid -> its file is gone
+    std::map<std::string, FileSoundTarget> file_targets;  // File Sound uid -> where it is placed from
+    std::map<std::string, std::string>     file_why;      // File Sound uid -> why it cannot be placed
 
     // The events and their passes: the one list the follow (13-9) also reads (SoundEventsOf).
     const std::vector<FollowEvent> sound_events =
@@ -278,18 +288,11 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
         ed.t = ev->t;
         ed.prev = &prev;
         const std::string lib_uid = lib->uid;
-        auto is_missing = [&materialised, &materialise_why, &lib_uid, &rep, &guid, &e](const SoundNode& n) {
-            if (n.sound.source.kind == SoundSourceKind::File) {  // 13-11: imported once, then an Item
-                auto it = materialised.find(n.uid);
-                if (it == materialised.end()) {
-                    std::string why, at;
-                    it = materialised.emplace(n.uid, MaterialiseFileSound(nullptr, lib_uid, n.uid, &why, &at)).first;
-                    if (it->second.empty() && !why.empty()) materialise_why[n.uid] = why;
-                    if (!at.empty())  // 13-11 (B9): say where the muted library source sits
-                        AddLine(rep, ReportKind::Info, "Library source \"" + NodeName(&n) + "\" imported on " + at,
-                                n.uid, guid, e.t);
-                }
-                return it->second.empty();
+        auto is_missing = [&file_missing](const SoundNode& n) {
+            if (n.sound.source.kind == SoundSourceKind::File) {  // 13-11: its file (no side effect here)
+                auto it = file_missing.find(n.uid);
+                if (it == file_missing.end()) it = file_missing.emplace(n.uid, FileSoundMissing(n)).first;
+                return it->second;
             }
             return !FindItemByGuid(n.sound.source.item_guid);
         };
@@ -318,8 +321,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
             if (s.missing) {
                 AddLine(rep, ReportKind::Missing,
                         n->sound.source.kind == SoundSourceKind::File
-                            ? (materialise_why.count(n->uid) ? materialise_why[n->uid]
-                                                             : "File not found: " + n->sound.source.asset.name)
+                            ? "File not found: " + n->sound.source.asset.name
                             : "Source item missing: " + NodeName(n),
                         n->uid, guid, e.t);
                 hold.insert(n->uid);
@@ -375,7 +377,23 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
             const SoundNode*     n = FindNode(*lib, d.node);
             if (!n || d.pass < 0 || static_cast<size_t>(d.pass) >= passes.size()) continue;
             const double  pt = passes[static_cast<size_t>(d.pass)];
-            PlaceRequest  req = RequestFor(item, rid, ev->t, pt, *n, s, &materialised);
+            const FileSoundTarget* file = nullptr;
+            if (n->sound.source.kind == SoundSourceKind::File) {  // readied once per gesture, when first placed
+                auto ft = file_targets.find(n->uid);
+                if (ft == file_targets.end()) {
+                    FileSoundTarget t;
+                    std::string     why;
+                    if (!PrepareFileSound(nullptr, lib_uid, n->uid, &t, &why))
+                        file_why[n->uid] = why.empty() ? "File not found: " + n->sound.source.asset.name : why;
+                    ft = file_targets.emplace(n->uid, t).first;
+                }
+                if (file_why.count(n->uid)) {
+                    AddLine(rep, ReportKind::Missing, file_why[n->uid], n->uid, guid, e.t);
+                    continue;
+                }
+                file = &ft->second;
+            }
+            PlaceRequest  req = RequestFor(item, rid, ev->t, pt, *n, s, file);
             PlaceResult   r;
             if (step.act == SlotAction::Place) {
                 r = PlaceSounds(nullptr, req);

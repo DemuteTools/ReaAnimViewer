@@ -380,24 +380,6 @@ static void TestFolderChildren()
     CHECK(kids.empty() && last == 1);
 }
 
-static void TestPopulateSource()
-{
-    SoundSource f;
-    f.kind = SoundSourceKind::File;
-    f.asset.name = "a.wav";
-    const std::map<std::string, std::string> m = {{"n1", "{GUID}"}, {"n2", ""}};
-    const SoundSource got = PopulateSource(f, "n1", &m);
-    CHECK(got.kind == SoundSourceKind::Item && got.item_guid == "{GUID}");
-    CHECK(PopulateSource(f, "n2", &m).kind == SoundSourceKind::File);  // missing: stays a File
-    CHECK(PopulateSource(f, "n3", &m).kind == SoundSourceKind::File);
-    CHECK(PopulateSource(f, "n1", nullptr).kind == SoundSourceKind::File);
-    SoundSource it;
-    it.kind = SoundSourceKind::Item;
-    it.item_guid = "{OWN}";
-    const SoundSource same = PopulateSource(it, "n1", &m);
-    CHECK(same.kind == SoundSourceKind::Item && same.item_guid == "{OWN}");
-}
-
 static void TestFileName()
 {
     CHECK(RavlibFileName("Steps", {}) == "Steps.ravlib");
@@ -420,7 +402,6 @@ int main()
     TestApplyLocated();
     TestFileName();
     TestFolderChildren();
-    TestPopulateSource();
     if (g_fail) {
         std::printf("ravlib_test: %d failure(s)\n", g_fail);
         return 1;

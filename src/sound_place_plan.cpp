@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <vector>
 
 namespace rav {
@@ -210,10 +211,66 @@ bool PlacedCopyMuted(bool src_muted, bool src_is_library_source)
     return src_muted && !src_is_library_source;
 }
 
-double LibrarySourcePosition(double project_end, bool track_has_library_source, double last_library_source_end)
+SliceApply FileSliceFor(const SoundData& data, int variation)
 {
-    // Never inside the content: after this track's last library source only when that is past it.
-    return std::max(project_end, track_has_library_source ? last_library_source_end : project_end) + 1.0;
+    if (variation < 0 || variation >= static_cast<int>(data.frames.size())) return SliceApply{};
+    return SliceApplyFor(data.frames[static_cast<size_t>(variation)]);
+}
+
+FadeApply FileFadeApplyFor(const SoundData& data, int variation)
+{
+    FrameFades f;
+    if (variation >= 0 && variation < static_cast<int>(data.frames.size())) {
+        f = EffectiveFades(data, data.frames[static_cast<size_t>(variation)]);
+    } else {
+        f.in = std::max(0.0, data.fade_in);
+        f.out = std::max(0.0, data.fade_out);
+    }
+    FadeApply fa;
+    fa.set_in = fa.set_out = true;
+    fa.shape_in = fa.shape_out = true;
+    fa.in = f.in;
+    fa.out = f.out;
+    fa.in_shape = f.in_shape;
+    fa.out_shape = f.out_shape;
+    return fa;
+}
+
+FileItemFields FileItemFieldsFor(double file_len, const SliceApply& slice, const FadeApply& fades, double gain_db,
+                                 double project_t, double blend_ms, double offset_s)
+{
+    FileItemFields o;
+    const bool known = std::isfinite(file_len) && file_len > 0.0;
+    double     start = slice.set ? slice.start_offs : 0.0;
+    double     len = slice.set ? slice.length : (known ? file_len : 0.0);
+    if (!std::isfinite(start) || start < 0.0) start = 0.0;
+    if (known) {
+        if (start >= file_len) return o;
+        len = std::min(len, file_len - start);
+    }
+    if (!std::isfinite(len) || !(len > 0.0)) return o;
+    double snap = slice.set && std::isfinite(slice.snap_offset) ? slice.snap_offset : 0.0;
+    snap = std::min(std::max(snap, 0.0), len);
+    o.ok = true;
+    o.start_offs = start;
+    o.length = len;
+    o.snap_offset = snap;
+    o.position = PlacementPosition(project_t, snap, blend_ms, offset_s);
+    o.volume = ItemGainFor(gain_db);
+    FadesOnItem(fades, 1.0, len, 0.0, 0.0, &o.fade_in, &o.fade_out);
+    return o;
+}
+
+std::string MediaCopyName(const std::string& file_name, int n)
+{
+    if (n <= 0) return file_name;
+    const size_t dot = file_name.rfind('.');
+    const bool   has_ext = dot != std::string::npos && dot > 0;
+    const std::string stem = has_ext ? file_name.substr(0, dot) : file_name;
+    const std::string ext = has_ext ? file_name.substr(dot) : std::string();
+    char num[16];
+    std::snprintf(num, sizeof(num), "-%03d", n);
+    return stem + num + ext;
 }
 
 }  // namespace rav

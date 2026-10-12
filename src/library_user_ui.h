@@ -5,8 +5,8 @@
 // owns this file: it fills the stubs and may ADD declarations. Shared types: sound_model.h.
 //
 // The user folder is <resource>/ReaAnimViewer/Libraries/. A User Library is written to its file
-// whenever its text changes (autosave, checked on a timer). File Sounds are imported into the
-// project the first time Populate uses them (MaterialiseFileSound); Locate's folder work runs on a
+// whenever its text changes (autosave, checked on a timer). Populate places File Sounds straight
+// from their file (PrepareFileSound, Antho 2026-10-12: no source item); Locate's folder work runs on a
 // worker thread. Every REAPER function beyond reaper_api.h is resolved in InitLibraryUser
 // (missing = that part greys out).
 
@@ -29,15 +29,20 @@ void InitLibraryUser(reaper_plugin_info_t* rec);
 // Unload: unregisters the timer and joins the Locate worker.
 void QuitLibraryUser();
 
-// The item a File Sound plays from in this project: its materialised item when still there, else
-// the file is imported now (decision 12) and the new item's GUID stored in the Sound (no undo
-// point of its own: call inside a SoundUndoScope). "" = missing (`why` says why).
-// 13-11 (B9): the new item is muted and marked a library source (kLibSourceTagKey), placed right
-// after the last library source on its layer track; `imported` (optional) is set to where it now
-// sits when this call imported it (left untouched otherwise).
-std::string MaterialiseFileSound(ReaProject* proj, const std::string& lib_uid, const std::string& node_uid,
-                                 std::string* why, std::string* imported = nullptr);
-// A File Sound whose materialised item is gone and whose file cannot be found (decision 10).
+// Where Populate places a File Sound from (Antho 2026-10-12, 13-11: straight from the file, no
+// source item on the timeline).
+struct FileSoundTarget {
+    std::string path;             // the file (FileForProject: its project copy when REAPER copies imports)
+    MediaTrack* track = nullptr;  // the layer track of its Lands-in folder (decision 12)
+    std::string item_guid;        // an older build's imported source item, used only when the file is gone
+};
+// Readies a File Sound for placing: resolves its file, copies it into the project media folder once
+// when copyimpmedia is on, finds or makes its folder and layer track (no undo point of its own: call
+// inside a SoundUndoScope). With no file but an older build's source item still in the project, that
+// item. False = missing (`why` says why).
+bool PrepareFileSound(ReaProject* proj, const std::string& lib_uid, const std::string& node_uid,
+                      FileSoundTarget* out, std::string* why);
+// A File Sound whose file cannot be found and that has no older imported item left (decision 10).
 bool FileSoundMissing(const SoundNode& n);
 
 }  // namespace rav

@@ -37,7 +37,8 @@ struct ItemFacts {
 bool ReadItemFacts(MediaItem* item, ItemFacts* out);
 bool IsFolderItem(MediaItem* item);
 
-// One placement: the entry (a pile of items, by its top item's GUID, or a file) copied to the
+// One placement: the entry (a pile of items, by its top item's GUID, copied) or a file (Antho
+// 2026-10-12, 13-11: an item made straight from `file_path` on `track`, no source item) at the
 // event's position.
 struct PlaceRequest {
     MediaItem*  owner = nullptr;  // the animation item (null: dev action only; the tag's owner =
@@ -47,14 +48,15 @@ struct PlaceRequest {
     double      project_t = 0.0;  // the event's project time
     std::string node;
     Ownership   own = Ownership::Populated;
-    SoundSource source;  // Item: the entry's top item; File: the file
+    SoundSource source;  // Item: the entry's top item; File: the file (`file_path`, `track` required)
+    std::string file_path;  // File: the file to place, as FileForProject gave it
     int         variation = -1;
     SliceApply  slice;
     FadeApply   fades;  // the variation's fades (FadeApplyFor); nothing set = the copy's own
     double      gain_db = 0.0;
     double      blend_ms = 0.0;
     double      offset_s = 0.0;
-    MediaTrack* track = nullptr;  // nullptr = the entry's own tracks
+    MediaTrack* track = nullptr;  // nullptr = the entry's own tracks (Item only)
 };
 struct PlaceResult {
     bool                     ok = false;
@@ -75,6 +77,11 @@ bool PlacedPileAnchor(MediaItem* item, double* anchor_pos, double* sync);
 void SetPlaceItemFinder(MediaItem* (*finder)(const std::string& guid));
 // REAPER's "copy imported media to project folder" preference (spike 13-0 D: copyimpmedia).
 bool ReadCopyImportedMedia();
+// The path a file is placed from in `proj` (Antho 2026-10-12, 13-11): with copyimpmedia on, its copy
+// in the project media folder (GetProjectPathEx), made the first time (a copy already there of the
+// same size is reused; a different file of that name gives "name-001.ext"...); else, or when the file
+// already sits in that folder or the copy fails, the file itself.
+std::string FileForProject(ReaProject* proj, const std::string& path);
 
 }  // namespace rav
 

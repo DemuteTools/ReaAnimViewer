@@ -39,6 +39,7 @@
 #include "library_view_ui.h"
 #include "media_db.h"
 #include "ravlib.h"
+#include "sound_place.h"
 #include "sound_place_plan.h"
 #include "sound_populate.h"
 #include "sound_project.h"
@@ -53,28 +54,14 @@ namespace {
 
 namespace fs = std::filesystem;
 
-using InsertMediaFn = int (*)(const char* file, int mode);
-using SetOnlyTrackSelectedFn = void (*)(MediaTrack* track);
-using SetTrackSelectedFn = void (*)(MediaTrack* track, bool selected);
 using InsertTrackAtIndexFn = void (*)(int idx, bool want_defaults);
 using SetMediaTrackInfoValueFn = bool (*)(MediaTrack* tr, const char* parm, double v);
-using SetMediaItemInfoValueFn = bool (*)(MediaItem* item, const char* parm, double v);
-using MoveMediaItemToTrackFn = bool (*)(MediaItem* item, MediaTrack* tr);
-using PreventUIRefreshFn = void (*)(int prevent_count);
-using SetMediaItemSelectedFn = void (*)(MediaItem* item, bool selected);
 using GetParentTrackFn = MediaTrack* (*)(MediaTrack* track);
 using CreateFromFileFn = PCM_source* (*)(const char* filename);
 using GetMainHwndFn = HWND (*)();
 
-InsertMediaFn            f_insert_media = nullptr;
-SetOnlyTrackSelectedFn   f_only_track = nullptr;
-SetTrackSelectedFn       f_track_sel = nullptr;
 InsertTrackAtIndexFn     f_insert_track = nullptr;
 SetMediaTrackInfoValueFn f_set_track = nullptr;
-SetMediaItemInfoValueFn  f_set_item = nullptr;
-MoveMediaItemToTrackFn   f_move_item = nullptr;
-PreventUIRefreshFn       f_prevent = nullptr;
-SetMediaItemSelectedFn   f_item_sel = nullptr;
 GetParentTrackFn         f_parent = nullptr;
 CreateFromFileFn         f_create = nullptr;
 GetMainHwndFn            f_main_hwnd = nullptr;
@@ -82,8 +69,6 @@ GetMainHwndFn            f_main_hwnd = nullptr;
 int (*g_register)(const char*, void*) = nullptr;
 bool g_timer_on = false;
 
-constexpr int kSetLastTouchedTrack = 40914;  // Track: Set first selected track as last touched track
-constexpr int kUnselectAllItems = 40289;     // Item: Unselect (clear selection of) all items
 
 const FileDialogFilter kRavlibFilter = {L"ReaAnimViewer User Library", L"*.ravlib", L"ravlib"};
 const FileDialogFilter kAudioFilter = {L"Audio files", L"*.wav;*.aif;*.aiff;*.flac;*.mp3;*.ogg;*.opus;*.wv;*.m4a",
@@ -621,7 +606,7 @@ void RequestLocate(const std::string& lib_uid, const std::string& node_uid)
     g.pick_node = node_uid;
 }
 
-// ---- Materialise (decision 12) ------------------------------------------------------------------
+// ---- Lands-in tracks (decision 12) ----------------------------------------------------------------
 
 std::string TrackName(MediaTrack* tr)
 {
@@ -710,12 +695,6 @@ MediaTrack* LayerTrack(ReaProject* proj, MediaTrack* folder, int layer)
     return nullptr;
 }
 
-bool ImportAvailable()
-{
-    return f_insert_media && f_only_track && f_track_sel && f_insert_track && f_set_track && f_set_item && f_move_item &&
-           f_item_sel;
-}
-
 }  // namespace
 
 // ---- Public -------------------------------------------------------------------------------------
@@ -728,102 +707,45 @@ bool FileSoundMissing(const SoundNode& n)
     return ResolvedPath(n.sound.source.asset).empty();
 }
 
-std::string MaterialiseFileSound(ReaProject* proj, const std::string& lib_uid, const std::string& node_uid,
-                                 std::string* why, std::string* imported)
+bool PrepareFileSound(ReaProject* proj, const std::string& lib_uid, const std::string& node_uid,
+                      FileSoundTarget* out, std::string* why)
 {
+    if (!out) return false;
+    *out = FileSoundTarget{};
     const SoundStore    store = GetSoundStore(proj);
     const SoundLibrary* lib = FindLibrary(store, lib_uid);
     const SoundNode*    n = lib ? FindNode(*lib, node_uid) : nullptr;
     if (!n || n->type != SoundNodeType::Sound || n->sound.source.kind != SoundSourceKind::File) {
         if (why) *why = "Not a file sound";
-        return {};
+        return false;
     }
     const std::string& name = n->sound.source.asset.name;
-    if (!n->sound.source.item_guid.empty() && FindItemByGuid(n->sound.source.item_guid)) return n->sound.source.item_guid;
     RefreshCaches();
     const std::string path = ResolvedPath(n->sound.source.asset);
     if (path.empty()) {
+        // An older build imported the file as a muted source item: still placed from it.
+        if (!n->sound.source.item_guid.empty() && FindItemByGuid(n->sound.source.item_guid)) {
+            out->item_guid = n->sound.source.item_guid;
+            return true;
+        }
         if (why) *why = "File not found: " + name;
-        return {};
+        return false;
     }
-    if (!ImportAvailable()) {
-        if (why) *why = "This REAPER cannot import files for RAV";
-        return {};
+    if (!f_insert_track || !f_set_track) {
+        if (why) *why = "This REAPER cannot make tracks for RAV";
+        return false;
     }
     const std::string dest = EffectiveLandsIn(*lib, node_uid);
     const int         layer = BlendLayerOf(*lib, node_uid) + 1;
-
-    if (f_prevent) f_prevent(1);
-    std::string guid;
-    // Saved state: edit cursor, track and item selection.
-    const double             cursor = GetCursorPositionEx(proj);
-    std::vector<MediaTrack*> sel_tracks;
-    for (int i = 0, c = CountSelectedTracks(proj); i < c; ++i) sel_tracks.push_back(GetSelectedTrack(proj, i));
-    std::vector<MediaItem*> sel_items;
-    for (int i = 0, c = CountSelectedMediaItems(proj); i < c; ++i) sel_items.push_back(GetSelectedMediaItem(proj, i));
-
-    MediaTrack* folder = FolderFor(proj, store, dest);
-    MediaTrack* track = folder ? LayerTrack(proj, folder, layer) : nullptr;
-    if (track) {
-        double end = 0.0, lib_end = 0.0;
-        bool   has_lib = false;
-        for (int i = 0, c = CountMediaItems(proj); i < c; ++i)
-            if (MediaItem* it = GetMediaItem(proj, i)) {
-                const double e = GetMediaItemInfo_Value(it, "D_POSITION") + GetMediaItemInfo_Value(it, "D_LENGTH");
-                char mark[64] = {};
-                const bool is_lib = GetSetMediaItemInfo_String(it, kLibSourceTagKey, mark, false) && mark[0];
-                if (!is_lib) end = std::max(end, e);  // the content: every item but the library sources
-                else if (GetMediaItem_Track(it) == track) {
-                    lib_end = has_lib ? std::max(lib_end, e) : e;
-                    has_lib = true;
-                }
-            }
-        const double pos = LibrarySourcePosition(end, has_lib, lib_end);
-        f_only_track(track);
-        Main_OnCommand(kSetLastTouchedTrack, 0);
-        Main_OnCommand(kUnselectAllItems, 0);
-        SetEditCurPos(pos, false, false);
-        f_insert_media(path.c_str(), 0);
-        MediaItem* item = CountSelectedMediaItems(proj) > 0 ? GetSelectedMediaItem(proj, 0) : nullptr;
-        if (item) {
-            if (GetMediaItem_Track(item) != track) f_move_item(item, track);
-            f_set_item(item, "D_POSITION", pos);
-            f_set_item(item, "B_MUTE", 1.0);  // 13-11 (B9): never plays past the content
-            char mark[] = "1";
-            GetSetMediaItemInfo_String(item, kLibSourceTagKey, mark, true);
-            guid = ItemGuidOf(item);
-            if (imported) {
-                char at[48];
-                std::snprintf(at, sizeof(at), "%.2f s", pos);
-                *imported = "track \"" + TrackName(track) + "\" in folder \"" + dest + "\" at " + at + " (muted)";
-            }
-        }
+    MediaTrack*       folder = FolderFor(proj, store, dest);
+    MediaTrack*       track = folder ? LayerTrack(proj, folder, layer) : nullptr;
+    if (!track) {
+        if (why) *why = "Could not make the track for " + dest;
+        return false;
     }
-    // Restore.
-    SetEditCurPos(cursor, false, false);
-    for (int i = 0, c = CountTracks(proj); i < c; ++i)
-        if (MediaTrack* t = GetTrack(proj, i)) f_track_sel(t, false);
-    for (MediaTrack* t : sel_tracks)
-        if (t) f_track_sel(t, true);
-    Main_OnCommand(kUnselectAllItems, 0);
-    for (MediaItem* it : sel_items)
-        if (it && ValidatePtr2(proj, it, "MediaItem*")) f_item_sel(it, true);
-    if (f_prevent) f_prevent(-1);
-    UpdateArrange();
-
-    if (guid.empty()) {
-        if (why) *why = track ? "Import failed: " + name : "Could not make the track for " + dest;
-        return {};
-    }
-    ModifySoundStore(proj, nullptr, [&](SoundStore& s) {
-        SoundLibrary* l = FindLibrary(s, lib_uid);
-        SoundNode*    x = l ? FindNode(*l, node_uid) : nullptr;
-        if (!x || x->sound.source.item_guid == guid) return false;
-        x->sound.source.item_guid = guid;
-        return true;
-    });
-    g.live_state = -1;  // the new item is live
-    return guid;
+    out->path = FileForProject(proj, path);
+    out->track = track;
+    return true;
 }
 
 void DrawUserLibrarySection()
@@ -1026,7 +948,7 @@ void DrawUserLibraryNodeSection()
                 ImGui::EndCombo();
             }
             if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("The folder track its files are imported under the first time they are used");
+                ImGui::SetTooltip("The folder track its files are placed under (one layer track per Blend layer)");
             if (g.new_folder && g.new_folder_node == n->uid) {
                 const float okw = ui::ButtonWidth("OK");
                 bool        beside = true;
@@ -1064,15 +986,8 @@ void InitLibraryUser(reaper_plugin_info_t* rec)
 {
     if (!rec || !rec->GetFunc) return;
     auto get = rec->GetFunc;
-    f_insert_media = reinterpret_cast<InsertMediaFn>(get("InsertMedia"));
-    f_only_track = reinterpret_cast<SetOnlyTrackSelectedFn>(get("SetOnlyTrackSelected"));
-    f_track_sel = reinterpret_cast<SetTrackSelectedFn>(get("SetTrackSelected"));
     f_insert_track = reinterpret_cast<InsertTrackAtIndexFn>(get("InsertTrackAtIndex"));
     f_set_track = reinterpret_cast<SetMediaTrackInfoValueFn>(get("SetMediaTrackInfo_Value"));
-    f_set_item = reinterpret_cast<SetMediaItemInfoValueFn>(get("SetMediaItemInfo_Value"));
-    f_move_item = reinterpret_cast<MoveMediaItemToTrackFn>(get("MoveMediaItemToTrack"));
-    f_prevent = reinterpret_cast<PreventUIRefreshFn>(get("PreventUIRefresh"));
-    f_item_sel = reinterpret_cast<SetMediaItemSelectedFn>(get("SetMediaItemSelected"));
     f_parent = reinterpret_cast<GetParentTrackFn>(get("GetParentTrack"));
     f_create = reinterpret_cast<CreateFromFileFn>(get("PCM_Source_CreateFromFile"));
     f_main_hwnd = reinterpret_cast<GetMainHwndFn>(get("GetMainHwnd"));

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 //
-// See sound_place.h (13-6). The engine copies items through their state chunk, never runs a
-// REAPER action, never touches a folder item, never writes RAV_SOUNDS and records no undo.
+// See sound_place.h (13-6). The engine copies items through their state chunk (a file source:
+// makes the item from the file, 13-11), never runs a REAPER action, never touches a folder item,
+// never writes RAV_SOUNDS and records no undo.
 
 #include "sound_place.h"
 
@@ -12,7 +13,10 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include "sound_project.h"
@@ -37,6 +41,11 @@ using GetConfigVarStringFn = bool (*)(const char* name, char* bufOut, int bufOut
 using GetNumTakeMarkersFn = int (*)(MediaItem_Take* take);
 using GetTakeMarkerFn = double (*)(MediaItem_Take* take, int idx, char* nameOut, int nameOut_sz, int* colorOutOptional);
 using GetItemProjectContextFn = ReaProject* (*)(MediaItem* item);
+using AddTakeToMediaItemFn = MediaItem_Take* (*)(MediaItem* item);
+using PCMSourceCreateFromFileFn = PCM_source* (*)(const char* filename);
+using PCMSourceDestroyFn = void (*)(PCM_source* src);
+using SetMediaItemTakeSourceFn = bool (*)(MediaItem_Take* take, PCM_source* source);
+using GetProjectPathExFn = void (*)(ReaProject* proj, char* buf, int buf_sz);
 
 PluginRegisterFn             f_plugin_register = nullptr;
 AddMediaItemToTrackFn        f_add_item = nullptr;
@@ -54,6 +63,11 @@ GetConfigVarStringFn         f_config_string = nullptr;
 GetNumTakeMarkersFn          f_num_take_markers = nullptr;
 GetTakeMarkerFn              f_get_take_marker = nullptr;
 GetItemProjectContextFn      f_item_project = nullptr;
+AddTakeToMediaItemFn         f_add_take = nullptr;
+PCMSourceCreateFromFileFn    f_create_source = nullptr;
+PCMSourceDestroyFn           f_destroy_source = nullptr;
+SetMediaItemTakeSourceFn     f_set_take_source = nullptr;
+GetProjectPathExFn           f_project_path = nullptr;
 
 constexpr const char kMissingFns[] = "a REAPER function is missing";
 
@@ -116,6 +130,21 @@ MediaItem* FindItem(ReaProject* proj, const std::string& guid)
 }
 
 // The item's state chunk: a doubled buffer from 64 KB to 64 MB while the text fills it.
+// True when both files hold the same bytes (read in 64 KB blocks; false on any read error).
+bool SameBytes(const std::filesystem::path& a, const std::filesystem::path& b)
+{
+    std::ifstream fa(a, std::ios::binary), fb(b, std::ios::binary);
+    if (!fa || !fb) return false;
+    std::vector<char> ba(65536), bb(65536);
+    for (;;) {
+        fa.read(ba.data(), static_cast<std::streamsize>(ba.size()));
+        fb.read(bb.data(), static_cast<std::streamsize>(bb.size()));
+        const std::streamsize na = fa.gcount(), nb = fb.gcount();
+        if (na != nb || std::memcmp(ba.data(), bb.data(), static_cast<size_t>(na)) != 0) return false;
+        if (na == 0 || !fa || !fb) return na == nb && fa.eof() == fb.eof();
+    }
+}
+
 std::string ReadChunk(MediaItem* item)
 {
     if (!f_get_chunk || !item) return {};
@@ -196,7 +225,7 @@ bool CollectMembers(ReaProject* proj, const PlaceRequest& req, MediaItem** ancho
                     std::vector<Member>* out, std::string* error)
 {
     if (req.source.kind != SoundSourceKind::Item) {
-        *error = "materialise first (file source)";
+        *error = "a file source is placed from its file";
         return false;
     }
     MediaItem* src = FindItem(proj, req.source.item_guid);
@@ -289,6 +318,113 @@ std::string OwnerGuid(const PlaceRequest& req, const std::string& fallback)
     return fallback;
 }
 
+// Antho 2026-10-12 (13-11): a File Sound's item, made straight from its file on `req.track` (no
+// source item). `kept` non-null = rewritten in place (its GUID kept, its takes replaced).
+PlaceResult PlaceFileImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept, const std::string& kept_owner)
+{
+    PlaceResult r;
+    if (!f_add_take || !f_create_source || !f_set_take_source) {
+        r.error = kMissingFns;
+        return r;
+    }
+    if (req.file_path.empty() || !req.track || !ValidatePtr2(proj, req.track, "MediaTrack*")) {
+        r.error = req.file_path.empty() ? "no file to place" : "no track to place the file on";
+        return r;
+    }
+    PCM_source* src = f_create_source(req.file_path.c_str());
+    if (!src) {
+        r.error = "could not read the file";
+        return r;
+    }
+    auto drop_source = [&src]() {
+        if (src && f_destroy_source) f_destroy_source(src);
+        src = nullptr;
+    };
+    bool                 qn = false;
+    const double         file_len = GetMediaSourceLength(src, &qn);
+    const FileItemFields fld = FileItemFieldsFor(qn ? 0.0 : file_len, req.slice, req.fades, req.gain_db, req.project_t,
+                                                 req.blend_ms, req.offset_s);
+    if (!fld.ok) {
+        drop_source();
+        r.error = "the variation lies outside the file";
+        return r;
+    }
+    MediaItem* item = kept;
+    std::string saved;
+    if (kept) {
+        if (GetMediaItem_Track(kept) != req.track && !f_move_to_track(kept, req.track)) {
+            drop_source();
+            r.error = "could not move the kept item to its track";
+            return r;
+        }
+        // A fresh item with the same GUID: the old takes, their sources and FX go. The old
+        // chunk is kept so a failure below puts the item back as it was.
+        saved = ReadChunk(kept);
+        const std::string fresh = "<ITEM\nPOSITION 0\nSNAPOFFS 0\nLENGTH 1\nLOOP 0\nALLTAKES 0\nMUTE 0 0\nSEL 0\nIGUID " +
+                                  ItemGuid(kept) + "\n>\n";
+        if (!f_set_chunk(kept, fresh.c_str(), false)) {
+            drop_source();
+            r.error = "could not rewrite the kept item";
+            return r;
+        }
+    } else {
+        item = f_add_item(req.track);
+        if (!item) {
+            drop_source();
+            r.error = "could not add an item";
+            return r;
+        }
+    }
+    MediaItem_Take* take = f_add_take(item);
+    if (!take || !f_set_take_source(take, src)) {
+        drop_source();
+        if (!kept) f_delete_item(req.track, item);
+        else if (!saved.empty()) f_set_chunk(kept, saved.c_str(), false);  // back as it was
+        r.error = "could not give the item its file";
+        return r;
+    }
+    src = nullptr;  // the take owns it now
+    f_set_active_take(take);
+    {
+        std::string name = std::filesystem::u8path(req.file_path).filename().u8string();
+        if (name.empty()) name = req.file_path;
+        std::vector<char> buf(name.begin(), name.end());
+        buf.push_back('\0');
+        GetSetMediaItemTakeInfo_String(take, "P_NAME", buf.data(), true);
+    }
+    f_set_take(take, "D_STARTOFFS", fld.start_offs);
+    f_set_take(take, "D_PLAYRATE", 1.0);
+    f_set_item(item, "B_LOOPSRC", 0.0);
+    f_set_item(item, "B_MUTE", 0.0);
+    f_set_item(item, "D_LENGTH", fld.length);
+    f_set_item(item, "D_SNAPOFFSET", fld.snap_offset);
+    f_set_item(item, "D_POSITION", fld.position);
+    f_set_item(item, "D_VOL", fld.volume);
+    f_set_item(item, "D_FADEINLEN", fld.fade_in);
+    f_set_item(item, "D_FADEOUTLEN", fld.fade_out);
+    f_set_item(item, "D_FADEINLEN_AUTO", -1.0);  // REAPER's auto-fade would override the length
+    f_set_item(item, "D_FADEOUTLEN_AUTO", -1.0);
+    f_set_item(item, "D_FADEINDIR", 0.0);
+    f_set_item(item, "D_FADEOUTDIR", 0.0);
+    if (req.fades.shape_in) f_set_item(item, "C_FADEINSHAPE", static_cast<double>(req.fades.in_shape));
+    if (req.fades.shape_out) f_set_item(item, "C_FADEOUTSHAPE", static_cast<double>(req.fades.out_shape));
+
+    PlacedTag tag;
+    tag.owner = kept_owner.empty() ? OwnerGuid(req, {}) : OwnerGuid(req, kept_owner);
+    tag.rid = req.rid;
+    tag.t = req.event_t;
+    tag.node = req.node;
+    tag.own = req.own;
+    tag.has_anchor = true;
+    tag.ao = 0.0;
+    tag.sy = fld.snap_offset;
+    WritePlacedTag(item, tag);
+    r.item_guids.push_back(ItemGuid(item));
+    r.items.push_back(item);
+    r.ok = true;
+    return r;
+}
+
 // The shared place/replace body. `kept` non-null = rewrite it as the first member.
 PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept, const std::string& kept_owner)
 {
@@ -297,6 +433,7 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
         r.error = kMissingFns;
         return r;
     }
+    if (req.source.kind == SoundSourceKind::File) return PlaceFileImpl(proj, req, kept, kept_owner);
     MediaItem*          anchor_src = nullptr;
     bool                folder = false;
     std::vector<Member> members;
@@ -605,6 +742,11 @@ void InitSoundPlace(void* (*get_func)(const char* name))
     f_num_take_markers = reinterpret_cast<GetNumTakeMarkersFn>(get_func("GetNumTakeMarkers"));
     f_get_take_marker = reinterpret_cast<GetTakeMarkerFn>(get_func("GetTakeMarker"));
     f_item_project = reinterpret_cast<GetItemProjectContextFn>(get_func("GetItemProjectContext"));
+    f_add_take = reinterpret_cast<AddTakeToMediaItemFn>(get_func("AddTakeToMediaItem"));
+    f_create_source = reinterpret_cast<PCMSourceCreateFromFileFn>(get_func("PCM_Source_CreateFromFile"));
+    f_destroy_source = reinterpret_cast<PCMSourceDestroyFn>(get_func("PCM_Source_Destroy"));
+    f_set_take_source = reinterpret_cast<SetMediaItemTakeSourceFn>(get_func("SetMediaItemTake_Source"));
+    f_project_path = reinterpret_cast<GetProjectPathExFn>(get_func("GetProjectPathEx"));
 
     // E11: the dev action, registered here (no frozen file changes).
     if (f_plugin_register && g_test_cmd == 0) {
@@ -731,6 +873,46 @@ bool ReadCopyImportedMedia()
     char buf[64] = {};
     if (!f_config_string("copyimpmedia", buf, sizeof(buf)) || !buf[0]) return true;
     return (std::atoi(buf) & 1) != 0;
+}
+
+std::string FileForProject(ReaProject* proj, const std::string& path)
+{
+    namespace fs = std::filesystem;
+    try {
+        if (path.empty() || !ReadCopyImportedMedia() || !f_project_path) return path;
+        char dir_buf[4096] = {};
+        f_project_path(proj, dir_buf, sizeof(dir_buf));
+        if (!dir_buf[0]) return path;
+        std::error_code ec;
+        const fs::path  src = fs::u8path(path);
+        const fs::path  dir = fs::u8path(dir_buf);
+        const auto      size = fs::file_size(src, ec);
+        if (ec) return path;
+        if (fs::equivalent(src.parent_path(), dir, ec)) return path;  // already in the media folder
+        ec.clear();
+        fs::create_directories(dir, ec);
+        ec.clear();
+        if (!fs::is_directory(dir, ec)) return path;
+        const std::string name = src.filename().u8string();
+        for (int n = 0; n < 1000; ++n) {
+            const fs::path dst = dir / fs::u8path(MediaCopyName(name, n));
+            ec.clear();
+            if (fs::exists(dst, ec)) {
+                if (fs::equivalent(src, dst, ec)) return path;
+                ec.clear();
+                const auto dsize = fs::file_size(dst, ec);
+                // Copied before only if it is the same file: same size and same bytes (a
+                // re-rendered take or another folder's file of that name is not).
+                if (!ec && dsize == size && SameBytes(src, dst)) return dst.u8string();
+                continue;  // another file of that name
+            }
+            ec.clear();
+            if (fs::copy_file(src, dst, ec) && !ec) return dst.u8string();
+            return path;
+        }
+    } catch (...) {
+    }
+    return path;
 }
 
 }  // namespace rav

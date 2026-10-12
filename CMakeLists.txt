@@ -230,6 +230,8 @@ if(WIN32)
             src/sound_attach_plan.cpp
             src/library_user_ui.cpp
             src/ravlib.cpp
+            src/sound_tracks.cpp
+            src/sound_tracks_plan.cpp
     )
     # Generated rav_version.h (see RAV_VERSION above).
     target_include_directories(animviewer PRIVATE "${CMAKE_BINARY_DIR}/generated")

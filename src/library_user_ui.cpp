@@ -44,6 +44,7 @@
 #include "sound_populate.h"
 #include "sound_project.h"
 #include "sound_record.h"
+#include "sound_tracks.h"
 #include "ui_flow.h"
 #include "ui_flow_math.h"
 #include "ui_theme.h"
@@ -608,47 +609,7 @@ void RequestLocate(const std::string& lib_uid, const std::string& node_uid)
 
 // ---- Lands-in tracks (decision 12) ----------------------------------------------------------------
 
-std::string TrackName(MediaTrack* tr)
-{
-    char buf[512] = {};
-    if (!tr || !GetSetMediaTrackInfo_String(tr, "P_NAME", buf, false)) return {};
-    return buf;
-}
-
-int TrackIndex(ReaProject* proj, MediaTrack* tr)
-{
-    const int n = CountTracks(proj);
-    for (int i = 0; i < n; ++i)
-        if (GetTrack(proj, i) == tr) return i;
-    return -1;
-}
-
-// The direct children of the folder at `fi`, its last descendant, and how many folders above `fi`
-// that one also closes (FolderChildren, ravlib.h).
-std::vector<int> DirectChildren(ReaProject* proj, int fi, int* last, int* beyond)
-{
-    std::vector<int> depths;
-    const int        n = CountTracks(proj);
-    for (int j = 0; j < n; ++j) {
-        MediaTrack* t = GetTrack(proj, j);
-        depths.push_back(t ? static_cast<int>(GetMediaTrackInfo_Value(t, "I_FOLDERDEPTH")) : 0);
-    }
-    std::vector<int> kids;
-    *beyond = FolderChildren(depths, fi, &kids, last);
-    return kids;
-}
-
-MediaTrack* AddTrackAt(ReaProject* proj, int idx, const std::string& name)
-{
-    f_insert_track(idx, false);
-    MediaTrack* tr = GetTrack(proj, idx);
-    if (!tr) return nullptr;
-    std::string n = name;
-    std::vector<char> buf(n.begin(), n.end());
-    buf.push_back('\0');
-    GetSetMediaTrackInfo_String(tr, "P_NAME", buf.data(), true);
-    return tr;
-}
+// TrackName, TrackIndex, DirectChildren, AddTrackAt, AddChildTrack: sound_tracks.h (13-13).
 
 MediaTrack* FolderFor(ReaProject* proj, const SoundStore& store, const std::string& dest)
 {
@@ -683,14 +644,8 @@ MediaTrack* LayerTrack(ReaProject* proj, MediaTrack* folder, int layer)
         int              last = fi, beyond = 0;
         std::vector<int> kids = DirectChildren(proj, fi, &last, &beyond);
         if (static_cast<int>(kids.size()) >= layer) return GetTrack(proj, kids[static_cast<size_t>(layer - 1)]);
-        // A new child after the last descendant, closing the folder and the folders the old last one
-        // closed above it (a nested folder).
-        MediaTrack* old_last = GetTrack(proj, last);
-        const double d_last = last == fi ? 0.0 : GetMediaTrackInfo_Value(old_last, "I_FOLDERDEPTH");
-        MediaTrack* t = AddTrackAt(proj, last + 1, "layer " + std::to_string(kids.size() + 1));
-        if (!t) return nullptr;
-        if (last != fi) f_set_track(old_last, "I_FOLDERDEPTH", d_last + 1.0 + beyond);
-        f_set_track(t, "I_FOLDERDEPTH", -1.0 - beyond);
+        // A new last child, the folder depths fixed (AddChildTrack).
+        if (!AddChildTrack(proj, folder, "layer " + std::to_string(kids.size() + 1))) return nullptr;
     }
     return nullptr;
 }
@@ -708,7 +663,7 @@ bool FileSoundMissing(const SoundNode& n)
 }
 
 bool PrepareFileSound(ReaProject* proj, const std::string& lib_uid, const std::string& node_uid,
-                      FileSoundTarget* out, std::string* why)
+                      FileSoundTarget* out, std::string* why, bool make_track)
 {
     if (!out) return false;
     *out = FileSoundTarget{};
@@ -730,6 +685,10 @@ bool PrepareFileSound(ReaProject* proj, const std::string& lib_uid, const std::s
         }
         if (why) *why = "File not found: " + name;
         return false;
+    }
+    if (!make_track) {  // 13-13: the caller places it on its Switch-named track
+        out->path = FileForProject(proj, path);
+        return true;
     }
     if (!f_insert_track || !f_set_track) {
         if (why) *why = "This REAPER cannot make tracks for RAV";
@@ -959,6 +918,7 @@ void InitLibraryUser(reaper_plugin_info_t* rec)
     f_parent = reinterpret_cast<GetParentTrackFn>(get("GetParentTrack"));
     f_create = reinterpret_cast<CreateFromFileFn>(get("PCM_Source_CreateFromFile"));
     f_main_hwnd = reinterpret_cast<GetMainHwndFn>(get("GetMainHwnd"));
+    InitSoundTracks(get);  // 13-13: the Lands-in and Switch-named tracks
     ApplyHooks();  // the tree's missing marks, even before column 1 draws
     g_register = rec->Register;
     if (g_register) g_timer_on = g_register("timer", reinterpret_cast<void*>(&OnTimer)) != 0;

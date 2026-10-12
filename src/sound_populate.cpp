@@ -28,6 +28,7 @@
 #include "sound_project.h"
 #include "sound_record.h"
 #include "sound_switch.h"
+#include "sound_tracks.h"
 #include "tagging_session.h"
 #include "tagging_signal.h"
 
@@ -239,6 +240,27 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
     std::map<std::string, bool>            file_missing;  // File Sound uid -> its file is gone
     std::map<std::string, FileSoundTarget> file_targets;  // File Sound uid -> where it is placed from
     std::map<std::string, std::string>     file_why;      // File Sound uid -> why it cannot be placed
+    // 13-13: each Sound's Switch-named track (null = today's track: Off, no Switch on its path, an
+    // NVK folder pile, or a track that could not be made), found or made once per pass.
+    const TrackLayout                  layout = TrackLayoutOf(store);
+    std::map<std::string, MediaTrack*> switch_tracks;  // library uid + Sound uid -> its track
+    auto switch_track_for = [&](const SoundLibrary& L, const SoundNode& n, double t) -> MediaTrack* {
+        if (layout == TrackLayout::Off) return nullptr;
+        const std::string key = L.uid + "/" + n.uid;
+        auto              hit = switch_tracks.find(key);
+        if (hit != switch_tracks.end()) return hit->second;
+        MediaTrack* tr = nullptr;
+        MediaItem*  src = n.sound.source.kind == SoundSourceKind::Item ? FindItemByGuid(n.sound.source.item_guid) : nullptr;
+        if (!src || !IsFolderItem(src)) {  // T6: an NVK pile keeps its own child tracks
+            const std::vector<TrackStep> path =
+                TrackPathFor(SwitchPathOf(store, L, n.uid), layout, EffectiveLandsIn(L, n.uid), L.name);
+            std::string failed;
+            if (!path.empty()) tr = EnsureTrackPath(nullptr, path, &failed);
+            if (!path.empty() && !tr) AddLine(rep, ReportKind::Missing, "Could not make track " + failed, n.uid, guid, t);
+        }
+        switch_tracks.emplace(key, tr);
+        return tr;
+    };
 
     // The events and their passes: the one list the follow (13-9) also reads (SoundEventsOf).
     const std::vector<FollowEvent> sound_events =
@@ -379,13 +401,14 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
             const SoundNode*     n = FindNode(*lib, d.node);
             if (!n || d.pass < 0 || static_cast<size_t>(d.pass) >= passes.size()) continue;
             const double  pt = passes[static_cast<size_t>(d.pass)];
+            MediaTrack* const      switch_track = switch_track_for(*lib, *n, e.t);
             const FileSoundTarget* file = nullptr;
             if (n->sound.source.kind == SoundSourceKind::File) {  // readied once per gesture, when first placed
                 auto ft = file_targets.find(n->uid);
                 if (ft == file_targets.end()) {
                     FileSoundTarget t;
                     std::string     why;
-                    if (!PrepareFileSound(nullptr, lib_uid, n->uid, &t, &why))
+                    if (!PrepareFileSound(nullptr, lib_uid, n->uid, &t, &why, !switch_track))
                         file_why[n->uid] = why.empty() ? "File not found: " + n->sound.source.asset.name : why;
                     ft = file_targets.emplace(n->uid, t).first;
                 }
@@ -396,6 +419,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                 file = &ft->second;
             }
             PlaceRequest  req = RequestFor(item, rid, ev->t, pt, *n, s, file);
+            if (switch_track) req.track = switch_track;  // 13-13: every copy on its Switch-named track
             PlaceResult   r;
             if (step.act == SlotAction::Place) {
                 r = PlaceSounds(nullptr, req);

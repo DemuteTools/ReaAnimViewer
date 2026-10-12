@@ -25,6 +25,7 @@
 #include "event_list.h"
 #include "imgui.h"
 #include "item_rules.h"
+#include "picked_gestures.h"
 #include "shortcuts.h"
 #include "sound_follow_plan.h"
 #include "sound_place.h"
@@ -32,9 +33,11 @@
 #include "sound_project.h"
 #include "sound_populate_plan.h"
 #include "sound_record.h"
+#include "sound_tracks_plan.h"
 #include "tagging_session.h"
 #include "undo_guard.h"
 #include "tagging_signal.h"
+#include "ui_flow.h"
 #include "ui_theme.h"
 
 namespace rav {
@@ -417,6 +420,38 @@ const char* KindText(ReportKind k)
 
 bool g_confirm_reset = false;
 
+// 13-13: the Tracks menu only picks; the store gesture runs after the menu (picked_gestures.h).
+PickedGestures g_track_picks;
+
+// The Tracks row: where placed sounds land (the project's TrackLayout), one undo point a change.
+void DrawTracksRow(ReaProject* proj)
+{
+    static const char* const kShort[3] = {"Off", "Per path", "Folders"};
+    static const char* const kRows[3] = {"Source or Lands-in track", "One track per Switch path", "Folders by Switch"};
+    static const char* const kHints[3] = {nullptr, "Run-Shoes-Concrete", "Run / Shoes / Concrete"};
+    static const TrackLayout kLayouts[3] = {TrackLayout::Off, TrackLayout::Flat, TrackLayout::Tree};
+    const TrackLayout        cur = TrackLayoutOf(GetSoundStore(proj));
+    const int                sel = cur == TrackLayout::Flat ? 1 : cur == TrackLayout::Tree ? 2 : 0;
+    ui::LabelRow("Tracks", ui::Dp(90.0f));
+    const std::string label = std::string(kShort[sel]) + " \xE2\x96\xBE##sndtracks";
+    if (ui::SolidButton(label.c_str())) ImGui::OpenPopup("##sndtracks");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        ImGui::SetTooltip("Applies to new placements. Repopulate (reset) moves the existing ones.");
+    if (ui::BeginMenuPopup("##sndtracks")) {
+        ui::MenuCaption("PLACED SOUNDS LAND ON");
+        for (int i = 0; i < 3; ++i)
+            if (ImGui::MenuItem(kRows[i], kHints[i], i == sel) && i != sel) {
+                const TrackLayout to = kLayouts[i];
+                const std::string undo = std::string("RAV: Sound tracks: ") + kShort[i];
+                g_track_picks.Pick([proj, to, undo]() {
+                    ModifySoundStore(proj, undo.c_str(), [to](SoundStore& st) { return SetTrackLayout(st, to); });
+                });
+            }
+        ui::EndMenuPopup();
+    }
+    g_track_picks.Run();  // after the menu: the gesture replaces the store
+}
+
 }  // namespace
 
 void InitSoundFollow(void* (*get_func)(const char* name))
@@ -795,6 +830,7 @@ void DrawSoundsMenuSection()
         if (ImGui::Checkbox("Keep the draw on animation copies", &keep)) SavePrefFloat(kKeepDrawPref, keep ? 1.0f : 0.0f);
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
             ImGui::SetTooltip("On: a copied animation item plays the same variations.\nOff: it draws new ones.");
+        DrawTracksRow(proj);  // 13-13
 
         int                           placed = 0;
         const std::vector<MediaItem*> items = RepopulateItems(proj, &placed);

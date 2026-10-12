@@ -67,9 +67,10 @@ struct FileSoundTarget {
 // Readies a File Sound for placing: resolves its file, copies it into the project media folder once
 // when copyimpmedia is on, finds or makes its folder and layer track (no undo point of its own: call
 // inside a SoundUndoScope). With no file but an older build's source item still in the project, that
-// item. False = missing (`why` says why).
+// item. False = missing (`why` says why). `make_track` false (13-13: the caller has its Switch-named
+// track): the file only, `track` left null (no unused "layer N" track made).
 bool PrepareFileSound(ReaProject* proj, const std::string& lib_uid, const std::string& node_uid,
-                      FileSoundTarget* out, std::string* why);
+                      FileSoundTarget* out, std::string* why, bool make_track = true);
 // A File Sound whose file cannot be found and that has no older imported item left (decision 10).
 bool FileSoundMissing(const SoundNode& n);
 

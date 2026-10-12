@@ -101,7 +101,8 @@ struct State {
     char          name_buf[96] = {};    // the character sheet's Name field
     std::string   name_for;             // the character (its row key) name_buf holds the name of
     bool          name_active = false;
-    CharacterRef  name_ref;             // review 13-15c: the character being renamed, its name before
+    CharacterRef  name_ref;             // review 13-15c: the character being renamed, its project, its name before
+    ReaProject*   name_proj = nullptr;
     std::string   name_orig;
     ImVec2        name_min, name_max;   // the field's rect (a click outside it ends the typing)
     int           name_frame = -1;      // the frame the field was last drawn
@@ -1458,6 +1459,7 @@ void CommitName()
     while (!name.empty() && name.back() == ' ') name.pop_back();
     while (!name.empty() && name.front() == ' ') name.erase(name.begin());
     if (name.empty() || name == g.name_orig) return;  // the field reads the name again next frame
+    if (EnumProjects(-1, nullptr, 0) != g.name_proj) return;  // typed in another project: never renames this one's
     const CharacterRef ref = g.name_ref;
     PickSoundGesture([ref, name]() {
         const int         c0 = GetProjectStateChangeCount(nullptr);
@@ -1498,6 +1500,7 @@ void DrawCharDetails(const Frame& f)
             if (!g.name_active) {
                 g.name_ref = ce->ref;
                 g.name_orig = ce->ch.name;
+                g.name_proj = EnumProjects(-1, nullptr, 0);
             }
             g.name_active = true;
         } else if (g.name_active) {
@@ -2297,6 +2300,8 @@ void DrawAssignWindow(const TaggingModel& m)
         g.size = ImGui::GetWindowSize();
         const bool focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
         if (focused) g.focused_frame = frame;
+        // Another project tab while typing a name: the typing is dropped (never renames the other project's).
+        if (g.name_active && EnumProjects(-1, nullptr, 0) != g.name_proj) g.name_active = false;
         // A click outside the Name field ends its typing before the click changes the selection.
         if (g.name_active && ImGui::IsMouseClicked(0) && !ImGui::IsMouseHoveringRect(g.name_min, g.name_max, false))
             CommitName();

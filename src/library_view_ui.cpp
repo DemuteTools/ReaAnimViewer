@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <set>
 #include <map>
 
@@ -233,11 +234,16 @@ void DrawKitOffer(float top)
     // Review 13-15c: offered only when a library is added to the project (imported, from the User Library):
     // the libraries the project had when this session first saw it, or that had nothing free when they came,
     // are never offered later out of context (a part cleared, an undo).
-    static std::map<ReaProject*, std::set<std::string>> known;
-    ReaProject* proj = EnumProjects(-1, nullptr, 0);
-    auto        seen = known.find(proj);
+    // Keyed by the project and its file: REAPER keeps the same pointer when a tab opens another project.
+    static std::map<std::string, std::set<std::string>> known;
+    char        path[1024] = {};
+    ReaProject* proj = EnumProjects(-1, path, static_cast<int>(sizeof(path)));
+    char        ptr[32];
+    std::snprintf(ptr, sizeof(ptr), "%p|", static_cast<void*>(proj));
+    const std::string key = std::string(ptr) + path;
+    auto              seen = known.find(key);
     if (seen == known.end()) {
-        std::set<std::string>& k = known[proj];
+        std::set<std::string>& k = known[key];
         for (const SoundLibrary& l : store.libraries) k.insert(l.uid);
         return;
     }

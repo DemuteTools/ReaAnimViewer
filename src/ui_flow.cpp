@@ -111,7 +111,8 @@ float LabelRowText(const std::string& text, float field_min, float label_col, Im
 
 float UnitWidth(const char* unit)
 {
-    return (unit && unit[0]) ? 4.0f + ImGui::CalcTextSize(unit).x : 0.0f;
+    // 13-7 (B6): the .u unit, 10 px, 6 px after its field (as DragNumber draws it).
+    return (unit && unit[0]) ? Dp(6.0f) + TextSizeIn(FontTiny(), unit).x : 0.0f;
 }
 
 bool FittedButton(const char* label, const ImVec2& size)
@@ -231,11 +232,15 @@ bool IconButton(const Icon& icon, const char* label, const ImVec2& size, bool so
 
 namespace {
 
+// 13-7 (B16): a menu row's icon (.pop .mi .ico): 15 px, 8 px before its label.
+float MenuIconPx() { return Dp(15.0f); }
+float MenuIconRoom() { return IconRoom(MenuIconPx(), Dp(8.0f)); }
+
 // The label pushed right by the icon's room (spaces), its "##id" part kept.
 std::string IconPadded(const char* label)
 {
     const float sp = std::max(1.0f, ImGui::CalcTextSize(" ").x);
-    const int   n = static_cast<int>(IconRoom() / sp + 0.999f);
+    const int   n = static_cast<int>(MenuIconRoom() / sp + 0.999f);
     return std::string(static_cast<size_t>(std::max(1, n)), ' ') + label;
 }
 
@@ -248,7 +253,7 @@ bool IconMenuItem(const Icon& icon, const char* label, const char* shortcut, boo
     const std::string padded = IconPadded(label);
     const bool        r = ImGui::MenuItem(padded.c_str(), shortcut, selected, enabled);
     if (!enabled) ImGui::BeginDisabled();
-    PaintIconAt(dl, icon, p.x, p.y, ImGui::GetTextLineHeight());
+    PaintIconAt(dl, icon, p.x, p.y, ImGui::GetTextLineHeight(), MenuIconPx());
     if (!enabled) ImGui::EndDisabled();
     return r;
 }
@@ -259,7 +264,7 @@ bool IconBeginMenu(const Icon& icon, const char* label, bool enabled)
     const ImVec2      p = ImGui::GetCursorScreenPos();
     const std::string padded = IconPadded(label);
     if (!enabled) ImGui::BeginDisabled();
-    PaintIconAt(dl, icon, p.x, p.y, ImGui::GetTextLineHeight());
+    PaintIconAt(dl, icon, p.x, p.y, ImGui::GetTextLineHeight(), MenuIconPx());
     if (!enabled) ImGui::EndDisabled();
     return ImGui::BeginMenu(padded.c_str(), enabled);
 }

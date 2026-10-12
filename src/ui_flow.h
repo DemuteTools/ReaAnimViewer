@@ -24,8 +24,8 @@
 namespace rav {
 namespace ui {
 
-// The label column of a labelled row (LabelRow).
-constexpr float kLabelCol = 90.0f;
+// The label column of a labelled row (LabelRow): the mockup's .row > .k, 80 px.
+constexpr float kLabelCol = 80.0f;
 
 // The visible part of a label ("Text##id" -> "Text") measured.
 float TextWidth(const char* label);
@@ -53,11 +53,12 @@ bool EllipsisTextTip(ImDrawList* dl, ImVec2 p, float max_x, ImU32 col, const std
 // A labelled row: the label in the label column (ellipsized, tooltip), the cursor left where the
 // field goes -- beside the label when the field keeps `field_min`, else under it the whole width.
 // Returns the field's width (pass it to SetNextItemWidth / the widget's width).
-float LabelRow(const char* label, float field_min, float label_col = kLabelCol, ImU32 col = kText);
-// The same with literal text (a user-typed name: "##" in it is shown, not an id).
+// 13-7: a setting's label ("Type", "Volume") is muted, as the mockup's .k.
+float LabelRow(const char* label, float field_min, float label_col = kLabelCol, ImU32 col = kMuted);
+// The same with literal text (a user-typed name: "##" in it is shown, not an id; kText, a name).
 float LabelRowText(const std::string& text, float field_min, float label_col = kLabelCol, ImU32 col = kText);
 
-// The width a unit ("dB") takes after its field (gap included); 0 for none.
+// The width a unit ("dB") takes after its field (gap included: 6 px, the unit in FontTiny); 0 for none.
 float UnitWidth(const char* unit);
 
 // ImGui::Button that never runs past the room left: wider than it (natural or `size.x`), it

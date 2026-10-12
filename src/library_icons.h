@@ -49,5 +49,9 @@ int GlyphOfType(SoundNodeType t);
 // A ui::Icon of `which` (ink: the mock-up's --muted), for IconButton / IconMenuItem / Segmented.
 ui::Icon LibraryIcon(int which);
 ui::Icon TypeIcon(SoundNodeType t);
+// 13-7 (audit A5 / D): a type's icon in the tree and headers: one ink for every container
+// (#a8c2ff, ui::kAccentInk, the mockup's .trow.sw .ti / .tib), muted for a Sound -- instead of
+// a colour per type.
+ui::Icon TypeIconInk(SoundNodeType t);
 
 }  // namespace rav

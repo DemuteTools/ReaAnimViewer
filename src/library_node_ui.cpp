@@ -384,7 +384,7 @@ bool VolumeControl(const char* id, const std::string& key, double stored, double
     const float room = flow::StretchBeside(ImGui::GetContentRegionAvail().x, 40.0f, db_w, ImGui::GetStyle().ItemSpacing.x,
                                            &beside);
     ImGui::SetNextItemWidth(std::max(1.0f, std::min(fader_w, room)));
-    ImGui::SliderFloat("##fader", &v, static_cast<float>(kMinDb), static_cast<float>(kMaxDb), "");
+    ui::Fader("##fader", &v, static_cast<float>(kMinDb), static_cast<float>(kMaxDb));  // 13-7 (B5): the mockup's fader
     if (ImGui::IsItemActive()) {
         P.vol_key = key;
         P.vol_live = v;
@@ -398,7 +398,7 @@ bool VolumeControl(const char* id, const std::string& key, double stored, double
     }
     if (beside) ImGui::SameLine();
     double d = P.vol_key == key ? P.vol_live : stored;
-    switch (ui::DragNumber("##db", &d, 0.1, 1, "dB", kDbField)) {
+    switch (ui::DragNumber("##db", &d, 0.1, 1, "dB", kDbField, /*trim=*/true)) {  // "0", "-14.5"
     case ui::DragNumberEvent::Live:
         P.vol_key = key;
         P.vol_live = std::clamp(d, kMinDb, kMaxDb);
@@ -2088,15 +2088,9 @@ void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
         if (on == 1) ImGui::TextUnformatted("1 variation");
         else ImGui::TextWrapped("%d variations \xE2\x80\x94 one at random at each event", on);
         bool linked = n.sound.linked_copies;
-        // The box, then its label wrapped (a long label never runs past the column).
-        bool toggled = ImGui::Checkbox("##linked", &linked);
-        ImGui::SameLine();
-        ImGui::TextWrapped("Linked copies replay the same variation");
-        if (ImGui::IsItemClicked()) {  // the label toggles too, as a checkbox's own label does
-            linked = !linked;
-            toggled = true;
-        }
-        if (toggled) {
+        // 13-7 (audit B9): the mockup's .chk -- the box, then its label wrapped within the column;
+        // box and label both toggle.
+        if (ui::Checkbox("Linked copies replay the same variation##linked", &linked)) {
             EditNode("Linked copies", lib_uid, uid, [linked](SoundNode& x) {
                 x.sound.linked_copies = linked;
                 return true;

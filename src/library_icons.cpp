@@ -73,6 +73,13 @@ ui::Icon TypeIcon(SoundNodeType t)
     return LibraryIcon(GlyphOfType(t));
 }
 
+ui::Icon TypeIconInk(SoundNodeType t)
+{
+    ui::Icon i = TypeIcon(t);
+    if (t != SoundNodeType::Sound) i.col = ui::kAccentInk;
+    return i;
+}
+
 void DrawLibraryGlyph(ImDrawList* dl, ImVec2 p, float s, int which, ImU32 col)
 {
     const float k = s / 16.0f;

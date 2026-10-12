@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -114,14 +115,11 @@ const char* TypeWord(SoundNodeType t)
     }
 }
 
+// 13-7 (audit A5): one ink for every container's icon (the mockup's #a8c2ff, .trow.sw .ti),
+// muted for a Sound -- as TypeIconInk (library_icons.h).
 ImU32 TypeColor(SoundNodeType t)
 {
-    switch (t) {
-    case SoundNodeType::Sound:  return ui::kMuted;
-    case SoundNodeType::Random: return ui::kCurvePalette[1];
-    case SoundNodeType::Blend:  return ui::kCurvePalette[5];
-    default:                    return ui::kCurvePalette[2];
-    }
+    return t == SoundNodeType::Sound ? ui::kMuted : ui::kAccentInk;
 }
 
 // One gesture = one undo point + a toast offering Undo.
@@ -974,10 +972,11 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
     }
     if (r.kind == TreeRowKind::Value) {
         if (r.is_default) {
+            // 13-7 (audit B3): the mockup's .dtag box (10 px muted, stroke-strong edge).
             const char* t = "default";
-            const float tw = ImGui::CalcTextSize(t).x;
+            const float tw = ui::SmallTagWidth(t);
             rx -= tw + 4.0f;
-            dl->AddText(ImVec2(rx, ty), ui::kMuted, t);
+            ui::DrawSmallTag(dl, ImVec2(rx, std::floor(p.y + (rh - ui::SmallTagHeight()) * 0.5f)), t);
             ImGui::SetCursorScreenPos(ImVec2(rx, p.y));
             ImGui::Dummy(ImVec2(tw, rh));
             if (ImGui::IsItemHovered())

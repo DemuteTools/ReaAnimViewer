@@ -23,9 +23,10 @@
 
 namespace rav {
 
-// Red "missing" and orange Unassigned (DECISIONS section 2).
-constexpr ImU32 kLibMissing = ui::kCurvePalette[0];
-constexpr ImU32 kLibUnassigned = ui::kCurvePalette[6];
+// Red "missing" and amber Unassigned (DECISIONS section 2), the mockup's --bad and --warn (13-7,
+// audit A5; ui::kMissText / kMissName / kUnassignedName for the lighter text variants).
+constexpr ImU32 kLibMissing = ui::kBad;
+constexpr ImU32 kLibUnassigned = ui::kWarn;
 
 void DrawLibrariesSection();
 void DrawSwitchGroupsSection();

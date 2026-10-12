@@ -712,7 +712,10 @@ void DrawVideoViewToggle(float center_x)
         int sel = 0;
         for (int i = 0; i < 4; ++i)
             if (kModes[i] == mode) sel = i;
-        if (ui::Segmented("##view", kViews, 4, &sel) && sel >= 0 && sel < 4) SetViewMode(kModes[sel]);
+        // 13-7 (audit C0.1): the mockup's "new" superscript after Library view (until its release).
+        static const char* const kBadges[4] = {nullptr, nullptr, nullptr, "new"};
+        if (ui::Segmented("##view", kViews, 4, &sel, 0.0f, -1, nullptr, kBadges) && sel >= 0 && sel < 4)
+            SetViewMode(kModes[sel]);
     }
     ImGui::End();
     ImGui::PopStyleVar();

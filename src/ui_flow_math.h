@@ -73,5 +73,15 @@ struct TrailPlace {
 // Returns the row's number of lines (1 when the trail stays beside the lead or is empty).
 int PlaceTrail(const float* w, int n, float left, float right, float lead_min, float gap, TrailPlace* out);
 
+// 13-7 (B5): a fader (ui::Fader). Its thumb (radius `thumb_r`) has its centre from x0 + r to x1 - r.
+// The value under the mouse at `mouse_x`, clamped to [v_min, v_max]; v_min when the track has no room.
+float FaderValueAt(float mouse_x, float x0, float x1, float thumb_r, float v_min, float v_max);
+// The thumb centre's x for value `v` (clamped to the range).
+float FaderThumbX(float v, float x0, float x1, float thumb_r, float v_min, float v_max);
+
+// 13-7 (B6): a number as the mockup shows it ("0", "-14.5", "1.25"): rounded to `decimals` (0..9),
+// trailing zeros and a bare point dropped, never "-0".
+std::string TrimmedNumber(double v, int decimals);
+
 }  // namespace flow
 }  // namespace rav

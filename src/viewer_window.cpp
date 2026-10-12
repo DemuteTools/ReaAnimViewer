@@ -1280,10 +1280,13 @@ void DrawToolUi()
     ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.10f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(1, 1, 1, 0.16f));
+    // 13-7 (audit C0.3): the mockup's burger is 28 x 26 (the theme's wider FramePadding would make it 38).
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(3.0f, 2.0f));
     if (ImGui::ImageButton("##menu", IconTex(g_icon_menu), ImVec2(22.0f, 22.0f),
                            ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0),
                            ImVec4(0.90f, 0.90f, 0.95f, 1.0f)))
         g_menu_open = !g_menu_open;
+    ImGui::PopStyleVar();
     ImGui::PopStyleColor(3);
 
     if (g_menu_open) {
@@ -1666,6 +1669,10 @@ struct UiFontFile {
 constexpr UiFontFile kSegoeUi     = {L"segoeui.ttf", 1.330f};
 constexpr UiFontFile kSegoeSymbol = {L"seguisym.ttf", 1.330f};
 constexpr UiFontFile kArial       = {L"arial.ttf", 1.117f};
+// 13-7: the 600 weight of the mockup's titles (Segoe UI Semibold shares Segoe UI's vertical
+// metrics), Arial Bold when it is missing.
+constexpr UiFontFile kSegoeSemibold = {L"seguisb.ttf", 1.330f};
+constexpr UiFontFile kArialBold     = {L"arialbd.ttf", 1.117f};
 constexpr UiFontFile kCascadia    = {L"CascadiaMono.ttf", 1.172f};
 constexpr UiFontFile kConsolas    = {L"consola.ttf", 1.171f};
 
@@ -1739,13 +1746,32 @@ void LoadUiFontAtlas(ImGuiIO& io, float dpi_scale)
     const std::wstring fonts_dir = std::wstring(win_dir) + L"\\Fonts\\";
 
     // The body font first: the atlas's first font is ImGui's default.
+    // 13-7 (audit A1): the mockup's whole type scale, one baked font per role (ImGui 1.91 has
+    // no dynamic sizes): Segoe UI 12 (body, controls) / 11 (captions) / 13 (rows, section
+    // titles) / 15 / 10 (units, tags) / 9 (badge); Segoe UI Semibold (600) 12 / 11 / 14 / 15
+    // for bold names and titles; Cascadia Mono / Consolas 12 / 11 (number fields) / 10 / 9. A
+    // role whose file is missing falls back to the nearest loaded one (ui_theme.cpp).
     ui::FontSet set;
-    set.body = AddUiFont(io, fonts_dir, {kSegoeUi, kArial}, 12.0f * dpi_scale);
+    const auto sans = [&](float css) { return AddUiFont(io, fonts_dir, {kSegoeUi, kArial}, css * dpi_scale); };
+    const auto bold = [&](float css) {
+        return AddUiFont(io, fonts_dir, {kSegoeSemibold, kArialBold}, css * dpi_scale);
+    };
+    const auto mono = [&](float css) { return AddUiFont(io, fonts_dir, {kCascadia, kConsolas}, css * dpi_scale); };
+    set.body = sans(12.0f);
     if (set.body) {
-        set.small = AddUiFont(io, fonts_dir, {kSegoeUi, kArial}, 11.0f * dpi_scale);
-        set.title = AddUiFont(io, fonts_dir, {kSegoeUi, kArial}, 13.0f * dpi_scale);
-        set.big   = AddUiFont(io, fonts_dir, {kSegoeUi, kArial}, 15.0f * dpi_scale);
-        set.mono  = AddUiFont(io, fonts_dir, {kCascadia, kConsolas}, 12.0f * dpi_scale);
+        set.small        = sans(11.0f);
+        set.title        = sans(13.0f);
+        set.big          = sans(15.0f);
+        set.tiny         = sans(10.0f);
+        set.badge        = sans(9.0f);
+        set.semibold     = bold(12.0f);
+        set.caption_bold = bold(11.0f);
+        set.heading      = bold(14.0f);
+        set.pane_title   = bold(15.0f);
+        set.mono         = mono(12.0f);
+        set.mono_small   = mono(11.0f);
+        set.mono_tiny    = mono(10.0f);
+        set.mono_micro   = mono(9.0f);
     }
     // Build now: a corrupt font file would fail the WHOLE atlas (no text at all), so fall
     // back to the built-in font alone rather than lose every label.
@@ -1864,6 +1890,7 @@ bool StartRendering(HWND hwnd)
         const int dpi_y = g_hdc ? GetDeviceCaps(g_hdc, LOGPIXELSY) : 96;
         const float dpi_scale = dpi_y > 96 ? static_cast<float>(dpi_y) / 96.0f : 1.0f;
         if (dpi_scale > 1.0f) ImGui::GetStyle().ScaleAllSizes(dpi_scale);
+        ui::SetUiScale(dpi_scale);   // the theme's widgets size themselves in mockup px x this (ui::Dp)
         LoadUiFontAtlas(io, dpi_scale);
         // Init the two backends in nested steps so teardown stays symmetric: if the GL
         // backend fails AFTER the Win32 backend already initialized, we must still shut the

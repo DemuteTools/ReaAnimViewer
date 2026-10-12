@@ -30,7 +30,7 @@ namespace {
 // REAPER dock keeps all four columns instead of scrolling them off.
 constexpr float kColumnShare[4] = {0.16f, 0.22f, 0.32f, 0.30f};
 constexpr float kColumnMin[4] = {150.0f, 190.0f, 260.0f, 240.0f};
-constexpr float kColumnGap = 6.0f;
+constexpr float kColumnGap = 8.0f;  // 13-7 (audit A2 / B13): the mockup's 8 px grid gap = the splitter's hit
 constexpr float kStripWidth = 28.0f;
 constexpr double kToastSeconds = 5.0;
 constexpr const char* kWidthKeys[4] = {"lib_col_w0", "lib_col_w1", "lib_col_w2", "lib_col_w3"};
@@ -82,8 +82,8 @@ void DrawColumn(int i)
 {
     switch (i) {
     case 0:
-        if (ImGui::SmallButton("\xC2\xAB##collapse1")) SetLibraryColumn1Collapsed(true);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Collapse (Ctrl+B)");
+        // 13-7 (audit B2): the mockup's .colbtn, a ghost glyph button.
+        if (ui::IconOnlyButton("##collapse1", "\xC2\xAB", "Collapse (Ctrl+B)")) SetLibraryColumn1Collapsed(true);
         DrawLibrariesSection();
         DrawUserLibrarySection();
         DrawSwitchGroupsSection();
@@ -98,11 +98,10 @@ void DrawColumn(int i)
         }
         break;
     default:
-        if (ImGui::SmallButton("\xC2\xBB##collapse4")) {
+        if (ui::IconOnlyButton("##collapse4", "\xC2\xBB", "Collapse the Media Explorer")) {
             g_view.media_collapsed = true;
             SavePrefBool("lib_media_collapsed", true);
         }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Collapse the Media Explorer");
         DrawMediaExplorerPanel();
         break;
     }
@@ -112,14 +111,14 @@ void DrawColumn(int i)
 void DrawStrip(int i, float h)
 {
     ImGui::PushID(i);
-    if (ImGui::SmallButton(i == 0 ? "\xC2\xBB" : "\xC2\xAB")) {
+    if (ui::IconOnlyButton("##expand", i == 0 ? "\xC2\xBB" : "\xC2\xAB",
+                           i == 0 ? "Show the libraries (Ctrl+B)" : "Show the Media Explorer")) {
         if (i == 0) SetLibraryColumn1Collapsed(false);
         else {
             g_view.media_collapsed = false;
             SavePrefBool("lib_media_collapsed", false);
         }
     }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip(i == 0 ? "Show the libraries (Ctrl+B)" : "Show the Media Explorer");
     std::string name = "Media";
     ImU32 dot = ui::kAccent;
     if (i == 0) {
@@ -150,20 +149,16 @@ void DrawStrip(int i, float h)
     ImGui::PopID();
 }
 
-// The splitter between columns a and b: accent on hover, drag to resize, double-click resets.
+// The splitter between columns a and b (ui::SplitterBar: accent-line on hover, accent while
+// dragged), drag to resize, double-click resets.
 void Splitter(int a, int b, float* px, float h, float visible_px, float visible_share)
 {
     ImGui::PushID(a * 8 + b);
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    ImGui::InvisibleButton("##split", ImVec2(kColumnGap, std::max(1.0f, h)));
-    const bool hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
-    if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-    ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p.x + 2.0f, p.y), ImVec2(p.x + kColumnGap - 2.0f, p.y + h),
-                                              hot ? ui::kAccent : ui::kBg);
-    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+    const ui::SplitterState sp = ui::SplitterBar("##split", ImVec2(kColumnGap, std::max(1.0f, h)));
+    if (sp.double_clicked) {
         ResetWidths();
-    } else if (ImGui::IsItemActive()) {
-        const float dx = ImGui::GetIO().MouseDelta.x;
+    } else if (sp.active) {
+        const float dx = sp.delta;
         if (dx != 0.0f) {
             float na = px[a] + dx, nb = px[b] - dx;
             if (na < kColumnMin[a]) {
@@ -182,7 +177,7 @@ void Splitter(int a, int b, float* px, float h, float visible_px, float visible_
             }
         }
     }
-    if (ImGui::IsItemDeactivatedAfterEdit() || ImGui::IsItemDeactivated()) SaveWidths();
+    if (sp.released) SaveWidths();
     ImGui::PopID();
 }
 
@@ -194,14 +189,8 @@ void DrawToast()
         return;
     }
     const ImVec2 ds = ImGui::GetIO().DisplaySize;
-    ImGui::SetNextWindowPos(ImVec2(ds.x * 0.5f, ds.y - 24.0f), ImGuiCond_Always, ImVec2(0.5f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ui::Col(ui::kRaised));
-    ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStrokeStrong));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, ui::kRadiusMd);
-    constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
-                                        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
-                                        ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove;
-    if (ImGui::Begin("##libtoast", nullptr, kFlags)) {
+    // 13-7 (audit B15): the mockup's .toast (pad 14 8, 13 px), its Undo a link.
+    if (ui::BeginToast("##libtoast", ImVec2(ds.x * 0.5f, ds.y - ui::Dp(24.0f)))) {
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(g_toast.text.c_str());
         // Any later change (another edit, an undo) retires the Undo: it would undo that instead.
@@ -211,16 +200,14 @@ void DrawToast()
             g_toast.undo = GestureUndoAvailable(Undo_CanUndo2(nullptr), g_toast.undo_desc, state, g_toast.state);
         }
         if (g_toast.undo) {
-            ImGui::SameLine();
-            if (ui::SolidButton("Undo")) {
+            ImGui::SameLine(0.0f, ui::Dp(10.0f));
+            if (ui::LinkButton("Undo")) {
                 Main_OnCommand(40029, 0);  // Edit: Undo
                 g_toast.text.clear();
             }
         }
     }
-    ImGui::End();
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor(2);
+    ui::EndToast();
 }
 
 }  // namespace
@@ -308,7 +295,7 @@ void DrawLibraryView(float x, float y, float w, float h)
 
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::Col(ui::kSurface));
         ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStroke));
-        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, ui::kRadiusMd);
+        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, ui::kRadiusLg);  // 13-7 (audit A3): .pane r 10
         static const char* const kIds[4] = {"##libcol1", "##libcol2", "##libcol3", "##libcol4"};
         const float ch = std::max(1.0f, h - 2.0f);
         for (int i = 0; i < 4; ++i) {

@@ -5,6 +5,7 @@
 #include "ui_flow_math.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <vector>
 
 namespace rav {
@@ -173,6 +174,38 @@ int PlaceTrail(const float* w, int n, float left, float right, float lead_min, f
     }
     close_line(n);
     return line + 1;
+}
+
+float FaderValueAt(float mouse_x, float x0, float x1, float thumb_r, float v_min, float v_max)
+{
+    const float a = x0 + thumb_r, b = x1 - thumb_r;
+    if (!(b > a)) return v_min;
+    float t = (mouse_x - a) / (b - a);
+    t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    return v_min + t * (v_max - v_min);
+}
+
+float FaderThumbX(float v, float x0, float x1, float thumb_r, float v_min, float v_max)
+{
+    const float a = x0 + thumb_r, b = x1 - thumb_r;
+    if (!(b > a) || !(v_max != v_min)) return a;
+    float t = (v - v_min) / (v_max - v_min);
+    t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    return a + t * (b - a);
+}
+
+std::string TrimmedNumber(double v, int decimals)
+{
+    const int d = decimals < 0 ? 0 : (decimals > 9 ? 9 : decimals);
+    char      buf[64];
+    std::snprintf(buf, sizeof(buf), "%.*f", d, v);
+    std::string s(buf);
+    if (s.find('.') != std::string::npos) {
+        while (!s.empty() && s.back() == '0') s.pop_back();
+        if (!s.empty() && s.back() == '.') s.pop_back();
+    }
+    if (s == "-0") s = "0";
+    return s;
 }
 
 }  // namespace flow

@@ -165,6 +165,39 @@ int main()
         CHECK(PlaceTrail(wide, 1, 16.0f, 108.0f, 52.0f, 6.0f, tp) == 2 && Near(tp[0].w, 92.0f) && Near(tp[0].x, 16.0f));
     }
 
+    // ---- 13-7 B5: the fader's value <-> thumb position ----
+    {
+        // A 200 px track (x 10..210), thumb radius 8: the centre runs 18..202 (184 px) for -60..12 dB.
+        CHECK(Near(FaderValueAt(18.0f, 10.0f, 210.0f, 8.0f, -60.0f, 12.0f), -60.0f));
+        CHECK(Near(FaderValueAt(202.0f, 10.0f, 210.0f, 8.0f, -60.0f, 12.0f), 12.0f));
+        CHECK(Near(FaderValueAt(0.0f, 10.0f, 210.0f, 8.0f, -60.0f, 12.0f), -60.0f));    // left of the track: clamped
+        CHECK(Near(FaderValueAt(999.0f, 10.0f, 210.0f, 8.0f, -60.0f, 12.0f), 12.0f));   // right of it: clamped
+        CHECK(Near(FaderValueAt(110.0f, 10.0f, 210.0f, 8.0f, -60.0f, 12.0f), -24.0f));  // the middle
+        CHECK(Near(FaderThumbX(-24.0f, 10.0f, 210.0f, 8.0f, -60.0f, 12.0f), 110.0f));
+        CHECK(Near(FaderThumbX(0.0f, 10.0f, 210.0f, 8.0f, -60.0f, 12.0f), 18.0f + 184.0f * 60.0f / 72.0f));
+        CHECK(Near(FaderThumbX(50.0f, 10.0f, 210.0f, 8.0f, -60.0f, 12.0f), 202.0f));    // past the range: the end
+        // Round trip at every pixel.
+        for (float x = 18.0f; x <= 202.0f; x += 1.0f)
+            CHECK(Near(FaderThumbX(FaderValueAt(x, 10.0f, 210.0f, 8.0f, -60.0f, 12.0f), 10.0f, 210.0f, 8.0f, -60.0f, 12.0f), x));
+        // No room for the thumb's travel (a track narrower than the thumb): the minimum, the left end.
+        CHECK(Near(FaderValueAt(15.0f, 10.0f, 20.0f, 8.0f, -60.0f, 12.0f), -60.0f));
+        CHECK(Near(FaderThumbX(0.0f, 10.0f, 20.0f, 8.0f, -60.0f, 12.0f), 18.0f));
+        CHECK(Near(FaderThumbX(5.0f, 10.0f, 210.0f, 8.0f, 5.0f, 5.0f), 18.0f));          // an empty range
+    }
+
+    // ---- 13-7 B6: numbers shown as the mockup shows them ----
+    {
+        CHECK(TrimmedNumber(0.0, 1) == "0");
+        CHECK(TrimmedNumber(-0.04, 1) == "0");  // rounds to -0.0: never "-0"
+        CHECK(TrimmedNumber(-14.5, 1) == "-14.5");
+        CHECK(TrimmedNumber(-14.0, 1) == "-14");
+        CHECK(TrimmedNumber(1.25, 2) == "1.25");
+        CHECK(TrimmedNumber(1.20, 2) == "1.2");
+        CHECK(TrimmedNumber(144.0, 0) == "144");
+        CHECK(TrimmedNumber(100.0, 0) == "100");  // zeros before the point stay
+        CHECK(TrimmedNumber(12.0, -3) == "12");
+    }
+
     if (g_fails) {
         std::printf("%d failure(s)\n", g_fails);
         return 1;

@@ -218,6 +218,11 @@ struct KeyRouteState {
     unsigned claimed_vk = 0;   // the key the viewer took: its characters and release follow it
     unsigned released_vk = 0;  // its WM_SYSKEYUP was sent to the viewer: the window swallows it
     bool     alt_wheel_taken = false;  // spec 11-fb-12: Alt + wheel went to the UI since Alt went down
+    // 13-7: the keys pressed while a text field was active, not yet released. The press that
+    // ends the field (Enter, Esc) is released once the field is gone: its release must still
+    // reach the viewer, or ImGui keeps the key down and its auto-repeat validates (Enter) or
+    // cancels (Esc) the next text field the moment it opens.
+    std::array<bool, 256> text_keys{};
 };
 
 // Which keys reach the viewer, and how the claim follows a taken key to its release.
@@ -258,7 +263,23 @@ inline int RouteViewerKey(const ShortcutBindings& b, const KeyRouteInput& in, Ke
     // Spec 11-fb-17 -- an active text field takes every key, with its characters and release:
     // Ctrl (and Ctrl+A / C / V / X / Z), Home / End, Shift + arrows and the rest of the editing
     // keys, which ImGui's InputText handles itself; Space types a space instead of playing.
-    if (in.text_input) return to_viewer;
+    const bool tracked = in.key < st.text_keys.size();
+    if (in.text_input) {
+        if (tracked && down) st.text_keys[in.key] = true;
+        if (tracked && up) st.text_keys[in.key] = false;
+        return to_viewer;
+    }
+    // 13-7: the release (and auto-repeat) of a key pressed in a text field that has closed since.
+    if (tracked && st.text_keys[in.key]) {
+        if (up) {
+            st.text_keys[in.key] = false;
+            if (st.claimed_vk == in.key) st.claimed_vk = 0;
+            if (in.msg == KeyMsg::SysKeyUp) st.released_vk = in.key;
+            return to_viewer;
+        }
+        if (down && in.repeat) return to_viewer;
+        if (down) st.text_keys[in.key] = false;  // a new press: its release was lost (focus moved)
+    }
     if (down) {
         st.released_vk = 0;
         // An auto-repeat of the key we took stays ours, even if it no longer maps to an

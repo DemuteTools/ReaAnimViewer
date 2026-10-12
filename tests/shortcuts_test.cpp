@@ -392,6 +392,42 @@ int main()
         KeyRouteInput tf = msg(KeyMsg::KeyDown, vk::kSpace);
         tf.text_input = true;
         CHECK(RouteViewerKey(rec, tf, st) == kRouteViewer);
+        // 13-7: Enter / Esc that close a text field are released after it closed: the release
+        // (and an auto-repeat) still reaches the viewer, else ImGui keeps the key down and the
+        // next field validates / cancels itself the moment it opens.
+        st = KeyRouteState{};
+        KeyRouteInput enter = msg(KeyMsg::KeyDown, vk::kReturn);
+        enter.text_input = true;
+        CHECK(RouteViewerKey(b, enter, st) == kRouteViewer);
+        KeyRouteInput enter_rep = msg(KeyMsg::KeyDown, vk::kReturn);
+        enter_rep.repeat = true;
+        CHECK(RouteViewerKey(b, enter_rep, st) == kRouteViewer);           // field closed, key held
+        CHECK(RouteViewerKey(b, msg(KeyMsg::KeyUp, vk::kReturn), st) == kRouteViewer);
+        CHECK(RouteViewerKey(b, msg(KeyMsg::KeyUp, vk::kReturn), st) == kRouteReaper);  // once only
+        CHECK(RouteViewerKey(b, msg(KeyMsg::KeyDown, vk::kReturn), st) == kRouteReaper);
+        KeyRouteInput esc_tf = msg(KeyMsg::KeyDown, vk::kEscape);
+        esc_tf.text_input = true;
+        CHECK(RouteViewerKey(b, esc_tf, st) == kRouteViewer);
+        CHECK(RouteViewerKey(b, msg(KeyMsg::KeyUp, vk::kEscape), st) == kRouteViewer);
+        CHECK(RouteViewerKey(b, msg(KeyMsg::KeyUp, vk::kEscape), st) == kRouteReaper);
+        // A key released while the field is still active: nothing left over.
+        KeyRouteInput a_down = msg(KeyMsg::KeyDown, 'A');
+        a_down.text_input = true;
+        KeyRouteInput a_up = msg(KeyMsg::KeyUp, 'A');
+        a_up.text_input = true;
+        CHECK(RouteViewerKey(b, a_down, st) == kRouteViewer);
+        CHECK(RouteViewerKey(b, a_up, st) == kRouteViewer);
+        CHECK(RouteViewerKey(b, msg(KeyMsg::KeyUp, 'A'), st) == kRouteReaper);
+        // A lost release (focus moved): the next plain press forgets the mark.
+        CHECK(RouteViewerKey(b, a_down, st) == kRouteViewer);
+        CHECK(RouteViewerKey(b, msg(KeyMsg::KeyDown, 'A'), st) == kRouteReaper);
+        CHECK(RouteViewerKey(b, msg(KeyMsg::KeyUp, 'A'), st) == kRouteReaper);
+        // An Alt key typed in a field and released after: -20 and swallowed (no menu bar).
+        KeyRouteInput alt_tf = msg(KeyMsg::SysKeyDown, vk::kMenu);
+        alt_tf.text_input = true;
+        CHECK(RouteViewerKey(b, alt_tf, st) == kRouteViewerSys);
+        CHECK(RouteViewerKey(b, msg(KeyMsg::SysKeyUp, vk::kMenu), st) == kRouteViewerSys);
+        CHECK(st.released_vk == vk::kMenu);
     }
 
     // Key names.

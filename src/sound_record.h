@@ -19,7 +19,7 @@
 //                                                       Project `assign` and is never written again
 //   assign key=<part>|<part.type> [lib=<id>|none] [kit=1]   -- 13-15a: a Project assignment (no lib = inherit)
 //   asvalue group=<id> value=<id>                    -- a Switch value of the assign above
-//   character uid=<id> name=<s> skel=<16 hex> [file=<s>] [files=<s>,<s>]   -- a rig (file = a split's model file)
+//   character uid=<id> name=<s> skel=<16 hex> [model=<16 hex>] [files=<s>,<s>]   -- a rig (model = a split's model signature)
 //   cassign key=<k> [lib=<id>|none] [kit=1]          -- an assignment of the character above
 //   casvalue group=<id> value=<id>                   -- a Switch value of the cassign above
 //   group uid=<id> name=<s>

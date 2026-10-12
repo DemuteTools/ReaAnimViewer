@@ -58,7 +58,7 @@ SoundReport SetAutoMarkerValue(MediaItem* item, std::vector<std::string> keys, s
 // Each gesture is one undo point; it edits the store, then re-places the populated events of every
 // RAV item whose effective library or values changed (ChangedRids). Nothing happens (no undo point)
 // when nothing changes. Keys are body parts / part.types ("feet", "feet.step"). A character is given
-// as a CharacterRef: its uid when stored, else its rig (skeleton + model file + default name), which is
+// as a CharacterRef: its uid when stored, else its rig (skeleton + model + default name), which is
 // stored at the first edit.
 SoundReport SetProjectAssignLibrary(std::vector<std::string> keys, LibState state, std::string library_uid);
 SoundReport SetProjectAssignValue(std::vector<std::string> keys, std::string group_uid, std::string value_uid);
@@ -70,29 +70,34 @@ SoundReport SetCharacterAssignValue(CharacterRef character, std::vector<std::str
 // set at that level is left alone unless `replace`. "RAV: Use library kit".
 SoundReport AdoptKit(std::string library_uid, std::string part, CharacterRef character, bool replace);
 SoundReport RenameCharacter(std::string character_uid, std::string name);
-// One character per model file (`files` empty = the character's own files hint).
-SoundReport SplitCharacter(std::string character_uid, std::vector<std::string> files);
+// One character per model the project's items of that rig play (ProjectRigs), each named from its
+// first file and starting with the character's settings. "RAV: Split character".
+SoundReport SplitCharacter(std::string character_uid);
 // The body parts a library suggests itself for; `offered` -1 leaves kit_offered, 0 / 1 sets it.
 SoundReport SetLibraryKit(std::string library_uid, std::vector<std::string> parts, int offered = -1);
 
-// The rig of an item: its skeleton signature (SkeletonKey, cached per animation file for the session;
-// "" when the file does not load), its model file name, its bone count.
+// The rig of an item: its skeleton signature (SkeletonKey) and its model's signature (the meshes'
+// shapes, ModelSignature: the clips of one model, each in its own file, share it), both cached per
+// animation file and refreshed when the file changes ("" when the file does not load); its file name
+// and bone count.
 struct ItemRigInfo {
     std::string skeleton;
-    std::string model_file;
+    std::string model;
+    std::string file;
     int         bones = 0;
 };
 ItemRigInfo ItemRig(MediaItem* item);
-// The rigs present in the project's RAV items, with how many items play each model file.
-struct RigFileCount {
-    std::string file;
-    int         items = 0;
+// The rigs present in the project's RAV items: per model, its files and how many items play it.
+struct RigModelCount {
+    std::string              model;
+    std::vector<std::string> files;  // first seen first
+    int                      items = 0;
 };
 struct ProjectRig {
-    std::string               skeleton;
-    int                       bones = 0;
-    int                       items = 0;
-    std::vector<RigFileCount> files;
+    std::string                skeleton;
+    int                        bones = 0;
+    int                        items = 0;
+    std::vector<RigModelCount> models;
 };
 std::vector<ProjectRig> ProjectRigs();
 

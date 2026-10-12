@@ -124,7 +124,7 @@ AutoSoundShown AutoSoundFor(const SoundStore& store, const ItemSounds& item, con
     AutoKind     k;
     const size_t colon = key.find(':');
     if (colon != std::string::npos && AutoKindFromWord(key.substr(0, colon), &k))
-        out.effective = ResolveBlock(store, ItemSounds{}, ch, MakeAutoBlock(k, 'L', kAutoDefaultSens, 0.0));
+        out.effective = ResolveBlock(store, item, ch, MakeAutoBlock(k, 'L', kAutoDefaultSens, 0.0));
     return out;
 }
 

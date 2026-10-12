@@ -14,6 +14,8 @@
 #include <random>
 #include <set>
 
+#include "asset_cache.h"
+#include "asset_loader.h"
 #include "event_list.h"
 #include "item_rules.h"
 #include "library_user_ui.h"  // 13-11: File Sounds are placed straight from their file
@@ -254,7 +256,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
     ItemSounds rec = ReadItemSounds(item);
     // 13-15a: each rule's library and values come from the layers (rule, Character, Project).
     const ItemRigInfo     rig = ItemRig(item);
-    const SoundCharacter* ch = CharacterFor(store, rig.skeleton, rig.model_file);
+    const SoundCharacter* ch = CharacterFor(store, rig.skeleton, rig.model);
     std::map<std::string, std::pair<std::string, std::string>> part_of;  // rid -> body part, type
     for (const Block& b : blocks)
         if (!b.rid.empty()) {
@@ -626,7 +628,7 @@ void ReplaceChangedRules(const SoundStore& before, SoundReport& rep)
         if (!ReadItemRules(it, &rr) || !rr.valid) continue;
         const ItemRigInfo rig = ItemRig(it);
         const std::vector<std::string> rids =
-            ChangedRids(before, after, ReadItemSounds(it), rr.rules.blocks, rig.skeleton, rig.model_file);
+            ChangedRids(before, after, ReadItemSounds(it), rr.rules.blocks, rig.skeleton, rig.model);
         if (rids.empty()) continue;
         PopOpts o;
         o.only_populated = true;
@@ -693,16 +695,39 @@ ItemRigInfo ItemRig(MediaItem* item)
         if (!take) return r;
         const std::string path = AnimPathOf(take);
         if (path.empty()) return r;
-        r.model_file = FileNameOfPath(path);
-        static std::map<std::string, std::pair<std::string, int>> cache;  // anim path -> key, bone count
-        auto hit = cache.find(path);
-        if (hit == cache.end()) {
-            const SkeletonBones sk = ItemSkeletonBones(item);
+        r.file = FileNameOfPath(path);
+        struct Rig {
+            AssetFileStamp stamp;
+            std::string    skeleton, model;
+            int            bones = 0;
+        };
+        static std::map<std::string, Rig> cache;  // anim path -> its rig, while the file is unchanged
+        const AssetFileStamp stamp = ReadAssetFileStamp(path);
+        auto                 hit = cache.find(path);
+        if (hit == cache.end() || hit->second.stamp != stamp) {
+            const std::shared_ptr<const CpuAsset> asset = AcquireCpuAsset(path);
+            if (!asset) return r;
+            const SkeletonBones sk = SkeletonBonesOf(asset->skeleton);
             if (sk.names.empty()) return r;  // not kept: tried again next time
-            hit = cache.emplace(path, std::make_pair(SkeletonKey(sk.names), static_cast<int>(sk.names.size()))).first;
+            std::vector<MeshShape> shapes;
+            for (const CpuMesh& m : asset->meshes) {
+                MeshShape ms;
+                ms.verts = m.verts.size();
+                ms.indices = m.indices.size();
+                ms.material = m.materialIdx;
+                ms.skinned = m.skinned;
+                shapes.push_back(ms);
+            }
+            Rig rig;
+            rig.stamp = stamp;
+            rig.skeleton = SkeletonKey(sk.names);
+            rig.model = ModelSignature(shapes);
+            rig.bones = static_cast<int>(sk.names.size());
+            hit = cache.insert_or_assign(path, rig).first;
         }
-        r.skeleton = hit->second.first;
-        r.bones = hit->second.second;
+        r.skeleton = hit->second.skeleton;
+        r.model = hit->second.model;
+        r.bones = hit->second.bones;
     } catch (...) {
         r = ItemRigInfo{};
     }
@@ -726,15 +751,16 @@ std::vector<ProjectRig> ProjectRigs()
                 pr->bones = rig.bones;
             }
             ++pr->items;
-            RigFileCount* fc = nullptr;
-            for (RigFileCount& f : pr->files)
-                if (f.file == rig.model_file) fc = &f;
-            if (!fc) {
-                pr->files.emplace_back();
-                fc = &pr->files.back();
-                fc->file = rig.model_file;
+            RigModelCount* mc = nullptr;
+            for (RigModelCount& m : pr->models)
+                if (m.model == rig.model) mc = &m;
+            if (!mc) {
+                pr->models.emplace_back();
+                mc = &pr->models.back();
+                mc->model = rig.model;
             }
-            ++fc->items;
+            ++mc->items;
+            if (std::find(mc->files.begin(), mc->files.end(), rig.file) == mc->files.end()) mc->files.push_back(rig.file);
         }
     } catch (...) {
     }
@@ -1025,13 +1051,20 @@ SoundReport RenameCharacter(std::string character_uid, std::string name)
     return StoreGesture("RAV: Rename character", [&](SoundStore& st) { return RenameCharacterIn(st, character_uid, name); });
 }
 
-SoundReport SplitCharacter(std::string character_uid, std::vector<std::string> files)
+SoundReport SplitCharacter(std::string character_uid)
 {
-    return StoreGesture("RAV: Split character", [&](SoundStore& st) {
-        if (files.empty())
-            if (const SoundCharacter* c = FindCharacterByUid(st, character_uid)) files = c->files;
-        return SplitCharacterIn(st, character_uid, files) > 0;
-    });
+    std::vector<ModelRef> models;
+    {
+        const SoundStore&     store = GetSoundStore(nullptr);
+        const SoundCharacter* c = FindCharacterByUid(store, character_uid);
+        if (!c) return {};
+        for (const ProjectRig& pr : ProjectRigs())
+            if (pr.skeleton == c->skeleton)
+                for (const RigModelCount& m : pr.models)
+                    models.push_back({m.model, m.files.empty() ? std::string() : SplitCharacterName(m.files.front())});
+    }
+    return StoreGesture("RAV: Split character",
+                        [&](SoundStore& st) { return SplitCharacterIn(st, character_uid, models) > 0; });
 }
 
 SoundReport SetLibraryKit(std::string library_uid, std::vector<std::string> parts, int offered)
@@ -1059,7 +1092,7 @@ int CountPopulateEvents(const std::vector<MediaItem*>& items)
             if (det.status != ItemDetection::Status::Ok) continue;
             const ItemSounds rec = ReadItemSounds(it);
             const ItemRigInfo     rig = ItemRig(it);
-            const SoundCharacter* ch = CharacterFor(store, rig.skeleton, rig.model_file);
+            const SoundCharacter* ch = CharacterFor(store, rig.skeleton, rig.model);
             std::vector<char> ok(det.rules.blocks.size(), 0);
             for (size_t b = 0; b < det.rules.blocks.size(); ++b) {
                 if (!det.rules.blocks[b].enabled || det.rules.blocks[b].rid.empty()) continue;

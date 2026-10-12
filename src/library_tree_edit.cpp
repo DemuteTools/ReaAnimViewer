@@ -1152,7 +1152,19 @@ bool DeleteLibrary(SoundStore& store, const std::string& lib_uid)
     store.libraries.erase(std::remove_if(store.libraries.begin(), store.libraries.end(),
                                          [&](const SoundLibrary& l) { return l.uid == lib_uid; }),
                           store.libraries.end());
-    return store.libraries.size() != n;
+    if (store.libraries.size() == n) return false;
+    // 13-15a: a Project / Character assignment of that library goes back to inherit.
+    auto unset = [&](std::vector<SoundAssign>& list) {
+        for (SoundAssign& a : list)
+            if (a.state == LibState::Library && a.library == lib_uid) {
+                a.state = LibState::Inherit;
+                a.library.clear();
+                a.kit = false;
+            }
+    };
+    unset(store.project);
+    for (SoundCharacter& c : store.characters) unset(c.assigns);
+    return true;
 }
 
 int CountMissing(const SoundLibrary& lib, const std::function<bool(const SoundNode&)>& is_missing)

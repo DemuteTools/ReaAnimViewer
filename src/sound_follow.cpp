@@ -694,7 +694,7 @@ void SoundFollowTick(ReaProject* proj)
                 in.owner_guid = guid;
                 in.rec = rec;
                 const ItemRigInfo rig = ItemRig(item);
-                in.blend_ms = BlendOffsets(store, rec, an.rr.rules.blocks, CharacterFor(store, rig.skeleton, rig.model_file));
+                in.blend_ms = BlendOffsets(store, rec, an.rr.rules.blocks, CharacterFor(store, rig.skeleton, rig.model));
                 for (const auto& b : an.rr.rules.blocks) {
                     if (b.rid.empty()) continue;
                     in.rule_rids.push_back(b.rid);

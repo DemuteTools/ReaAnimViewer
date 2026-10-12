@@ -385,18 +385,18 @@ EffectiveAssign ResolveBlock(const SoundStore& store, const ItemSounds& item, co
 }
 
 const SoundCharacter* FindCharacterExact(const SoundStore& store, const std::string& skeleton,
-                                         const std::string& model_file)
+                                         const std::string& model)
 {
     for (const SoundCharacter& c : store.characters)
-        if (c.skeleton == skeleton && Lower(c.model_file) == Lower(model_file)) return &c;
+        if (c.skeleton == skeleton && Lower(c.model) == Lower(model)) return &c;
     return nullptr;
 }
 
-const SoundCharacter* CharacterFor(const SoundStore& store, const std::string& skeleton, const std::string& model_file)
+const SoundCharacter* CharacterFor(const SoundStore& store, const std::string& skeleton, const std::string& model)
 {
     if (skeleton.empty()) return nullptr;
-    if (!model_file.empty())
-        if (const SoundCharacter* c = FindCharacterExact(store, skeleton, model_file)) return c;
+    if (!model.empty())
+        if (const SoundCharacter* c = FindCharacterExact(store, skeleton, model)) return c;
     return FindCharacterExact(store, skeleton, std::string());
 }
 
@@ -415,11 +415,11 @@ SoundCharacter* FindCharacterByUid(SoundStore& store, const std::string& uid)
 
 std::vector<std::string> ChangedRids(const SoundStore& before, const SoundStore& after, const ItemSounds& item,
                                      const std::vector<Block>& blocks, const std::string& skeleton,
-                                     const std::string& model_file)
+                                     const std::string& model)
 {
     std::vector<std::string> out;
-    const SoundCharacter*    cb = CharacterFor(before, skeleton, model_file);
-    const SoundCharacter*    ca = CharacterFor(after, skeleton, model_file);
+    const SoundCharacter*    cb = CharacterFor(before, skeleton, model);
+    const SoundCharacter*    ca = CharacterFor(after, skeleton, model);
     for (const Block& b : blocks) {
         if (b.rid.empty() || std::find(out.begin(), out.end(), b.rid) != out.end()) continue;
         if (!SameEffective(ResolveBlock(before, item, cb, b), ResolveBlock(after, item, ca, b))) out.push_back(b.rid);
@@ -517,33 +517,72 @@ bool SetKitParts(SoundLibrary& lib, const std::vector<std::string>& parts)
     return true;
 }
 
-std::string DefaultCharacterName(const std::string& model_file)
+namespace {
+
+std::string FileStem(const std::string& file)
 {
-    std::string s = model_file;
+    std::string s = file;
     const size_t slash = s.find_last_of("/\\");
     if (slash != std::string::npos) s = s.substr(slash + 1);
     const size_t dot = s.find_last_of('.');
     if (dot != std::string::npos && dot > 0) s = s.substr(0, dot);
+    return s;
+}
+
+}  // namespace
+
+std::string DefaultCharacterName(const std::string& file)
+{
+    std::string s = FileStem(file);
     const size_t us = s.find('_');
     if (us != std::string::npos && us > 0) s = s.substr(0, us);
     return s;
+}
+
+std::string SplitCharacterName(const std::string& file)
+{
+    return FileStem(file);
+}
+
+std::string ModelSignature(const std::vector<MeshShape>& meshes)
+{
+    if (meshes.empty()) return {};
+    std::vector<std::string> parts;
+    for (const MeshShape& m : meshes)
+        parts.push_back(std::to_string(m.verts) + "/" + std::to_string(m.indices) + "/" + std::to_string(m.material) +
+                        (m.skinned ? "s" : "r"));
+    std::sort(parts.begin(), parts.end());
+    uint64_t h = 1469598103934665603ull;  // FNV-1a 64
+    for (const std::string& p : parts)
+        for (unsigned char c : p + ";") {
+            h ^= c;
+            h *= 1099511628211ull;
+        }
+    static const char kHex[] = "0123456789abcdef";
+    std::string out(16, '0');
+    for (int i = 15; i >= 0; --i, h >>= 4) out[i] = kHex[h & 15];
+    return out;
 }
 
 SoundCharacter* EnsureCharacter(SoundStore& store, const CharacterRef& ref)
 {
     if (SoundCharacter* c = FindCharacterByUid(store, ref.uid)) return c;
     if (ref.skeleton.empty()) return nullptr;
-    if (const SoundCharacter* c = FindCharacterExact(store, ref.skeleton, ref.model_file))
+    if (const SoundCharacter* c = FindCharacterExact(store, ref.skeleton, ref.model))
         return const_cast<SoundCharacter*>(c);
     SoundCharacter n;
     n.uid = NewSoundUid();
     n.skeleton = ref.skeleton;
-    n.model_file = ref.model_file;
-    n.name = ref.name.empty() ? DefaultCharacterName(ref.model_file) : ref.name;
-    if (n.name.empty()) n.name = "Character";
+    n.model = ref.model;
+    n.name = ref.name;
     n.files = ref.files;
-    if (!ref.model_file.empty() && std::find(n.files.begin(), n.files.end(), ref.model_file) == n.files.end())
-        n.files.push_back(ref.model_file);
+    if (!ref.model.empty())
+        if (const SoundCharacter* rig = FindCharacterExact(store, ref.skeleton, std::string())) {
+            n.assigns = rig->assigns;  // a split reads the rig's settings until it changes them
+            if (n.name.empty()) n.name = rig->name;
+        }
+    if (n.name.empty()) n.name = ref.files.empty() ? std::string() : DefaultCharacterName(ref.files.front());
+    if (n.name.empty()) n.name = "Character";
     store.characters.push_back(n);
     return &store.characters.back();
 }
@@ -556,21 +595,19 @@ bool RenameCharacterIn(SoundStore& store, const std::string& uid, const std::str
     return true;
 }
 
-int SplitCharacterIn(SoundStore& store, const std::string& uid, const std::vector<std::string>& files)
+int SplitCharacterIn(SoundStore& store, const std::string& uid, const std::vector<ModelRef>& models)
 {
     const SoundCharacter* src = FindCharacterByUid(store, uid);
     if (!src) return 0;
     const SoundCharacter base = *src;  // the vector grows below
     int                  made = 0;
-    for (const std::string& f : files) {
-        if (f.empty() || FindCharacterExact(store, base.skeleton, f)) continue;
+    for (const ModelRef& m : models) {
+        if (m.model.empty() || FindCharacterExact(store, base.skeleton, m.model)) continue;
         SoundCharacter n;
         n.uid = NewSoundUid();
-        n.name = DefaultCharacterName(f);
-        if (n.name.empty()) n.name = base.name;
+        n.name = m.name.empty() ? base.name : m.name;
         n.skeleton = base.skeleton;
-        n.model_file = f;
-        n.files.push_back(f);
+        n.model = m.model;
         n.assigns = base.assigns;
         store.characters.push_back(n);
         ++made;

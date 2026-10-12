@@ -193,7 +193,7 @@ struct SoundCharacter {
     std::string              uid;
     std::string              name;
     std::string              skeleton;    // SkeletonKey (16 hex)
-    std::string              model_file;  // "" = the whole rig; else a split's file name
+    std::string              model;  // "" = the whole rig; else a split's model signature (ModelSignature)
     std::vector<std::string> files;       // model file names seen (a hint)
     std::vector<SoundAssign> assigns;
     std::vector<std::string> kept;

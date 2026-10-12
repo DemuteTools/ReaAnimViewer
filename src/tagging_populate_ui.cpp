@@ -194,7 +194,7 @@ void OpenLibraryArrow()
 const SoundCharacter* CharacterOf(const SoundStore& store, MediaItem* item)
 {
     const ItemRigInfo rig = ItemRig(item);
-    return CharacterFor(store, rig.skeleton, rig.model_file);
+    return CharacterFor(store, rig.skeleton, rig.model);
 }
 
 const ItemSounds kNoSounds;

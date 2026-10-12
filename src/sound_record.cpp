@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <functional>
 #include <system_error>
+#include <algorithm>
 #include <utility>
 
 namespace rav {
@@ -523,7 +524,7 @@ bool SplitDecoded(const std::string& v, std::vector<std::string>* out)
 Fields CharacterFields(const SoundCharacter& c)
 {
     Fields f = {{"uid", Enc(c.uid)}, {"name", Enc(c.name)}, {"skel", Enc(c.skeleton)}};
-    if (!c.model_file.empty()) f.push_back({"file", Enc(c.model_file)});
+    if (!c.model.empty()) f.push_back({"model", Enc(c.model)});
     if (!c.files.empty()) f.push_back({"files", JoinEncoded(c.files)});
     return f;
 }
@@ -533,7 +534,7 @@ Got SetCharacter(SoundCharacter& c, const std::string& k, const std::string& v)
     if (k == "uid") return G(ReadStr(v, &c.uid));
     if (k == "name") return G(ReadStr(v, &c.name));
     if (k == "skel") return G(ReadStr(v, &c.skeleton));
-    if (k == "file") return G(ReadStr(v, &c.model_file));
+    if (k == "model") return G(ReadStr(v, &c.model));
     if (k == "files") return G(SplitDecoded(v, &c.files));
     return Got::Unknown;
 }
@@ -574,30 +575,69 @@ const char* MigratedTarget(const std::string& word)
     return nullptr;
 }
 
+std::vector<std::pair<std::string, std::string>> SortedValues(const std::vector<ValueSet>& v)
+{
+    std::vector<std::pair<std::string, std::string>> out;
+    for (const ValueSet& x : v) out.push_back({x.group_uid, x.value_uid});
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+// Review 13-15a: a target is migrated only when the old entries that fold into it agree. Every
+// old key of that target that is set (heel / toe / step, both sides...) must have both its sides
+// set, with the same library and values; otherwise a marker that played nothing (an unset side or
+// kind, whose rule has no library) would start playing the other's sound. The rules the old
+// Detects filled keep their own copy, so nothing they play is lost either way.
 void MigrateAutoSounds(SoundStore& s)
 {
-    // The L entries first; an R entry only fills a target no L entry took.
-    for (int pass = 0; pass < 2; ++pass)
+    std::vector<std::string> targets;
+    for (const AutoSoundAssign& a : s.auto_sounds) {
+        const size_t colon = a.key.find(':');
+        if (colon == std::string::npos) continue;
+        const char* t = MigratedTarget(a.key.substr(0, colon));
+        if (t && std::find(targets.begin(), targets.end(), t) == targets.end()) targets.push_back(t);
+    }
+    for (const std::string& target : targets) {
+        const AutoSoundAssign* first = nullptr;
+        bool                   agree = true;
+        std::vector<std::string> words;  // each word of the target that has an entry
         for (const AutoSoundAssign& a : s.auto_sounds) {
             const size_t colon = a.key.find(':');
             if (colon == std::string::npos) continue;
-            const bool left = a.key.compare(colon + 1, std::string::npos, "L") == 0;
-            if (left != (pass == 0)) continue;
-            const char* target = MigratedTarget(a.key.substr(0, colon));
-            if (!target || (a.library.empty() && a.values.empty())) continue;
-            bool have = false;
-            for (const SoundAssign& x : s.project)
-                if (x.key == target) have = true;
-            if (have) continue;
-            SoundAssign n;
-            n.key = target;
-            if (!a.library.empty()) {
-                n.state = LibState::Library;
-                n.library = a.library;
-            }
-            n.values = a.values;
-            s.project.push_back(n);
+            const std::string word = a.key.substr(0, colon);
+            const char*       t = MigratedTarget(word);
+            if (!t || target != t) continue;
+            if (std::find(words.begin(), words.end(), word) == words.end()) words.push_back(word);
+            if (!first) first = &a;
+            else if (a.library != first->library || SortedValues(a.values) != SortedValues(first->values)) agree = false;
         }
+        if (!first || !agree || (first->library.empty() && first->values.empty())) continue;
+        for (const std::string& w : words) {
+            bool l = false, r = false;
+            for (const AutoSoundAssign& a : s.auto_sounds) {
+                if (a.key == w + ":L") l = true;
+                if (a.key == w + ":R") r = true;
+            }
+            if (!l || !r) agree = false;
+        }
+        if (!agree) continue;
+        bool have = false;
+        for (const SoundAssign& x : s.project)
+            if (x.key == target) have = true;
+        if (have) continue;
+        SoundAssign n;
+        n.key = target;
+        if (!first->library.empty()) {
+            n.state = LibState::Library;
+            n.library = first->library;
+        }
+        n.values = first->values;
+        s.project.push_back(n);
+    }
+    // Unknown text read with the old lines is kept on the header (written back after it).
+    for (const AutoSoundAssign& a : s.auto_sounds) {
+        s.kept_lines.insert(s.kept_lines.end(), a.kept_lines.begin(), a.kept_lines.end());
+    }
     s.auto_sounds.clear();
 }
 

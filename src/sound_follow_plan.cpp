@@ -711,11 +711,13 @@ FollowPlan PlanItemFollow(const FollowInput& in0)
     for (size_t i = 0; i < rec.rules.size();) {
         const RuleSounds& rs = rec.rules[i];
         if (std::find(in.rule_rids.begin(), in.rule_rids.end(), rs.rid) == in.rule_rids.end()) {
-            ReportLine l;
-            l.kind = ReportKind::Detached;
-            l.text = "Assignment removed: rule no longer exists (" + LibraryName(in, rs.library) + ")";
-            l.item_guid = in.owner_guid;
-            plan.report.push_back(l);
+            if (!rs.library.empty()) {  // 13-15a: a rule that only inherited (or held None / values) is not told
+                ReportLine l;
+                l.kind = ReportKind::Detached;
+                l.text = "Assignment removed: rule no longer exists (" + LibraryName(in, rs.library) + ")";
+                l.item_guid = in.owner_guid;
+                plan.report.push_back(l);
+            }
             orphan.push_back(rs.rid);
             rec.rules.erase(rec.rules.begin() + static_cast<long>(i));
             plan.record_changed = true;

@@ -80,6 +80,7 @@ SoundStore RavlibOf(const SoundStore& store, const std::string& lib_uid, int* it
     if (!lib) return out;
     SoundLibrary copy = *lib;
     copy.ravlib_path.clear();
+    copy.kit_offered = false;  // 13-15a: "offered already" is this project's, not the library's
     std::set<std::string> used_groups;
     for (SoundNode& n : copy.nodes) {
         if (n.type == SoundNodeType::Switch && !n.group_uid.empty()) used_groups.insert(n.group_uid);
@@ -166,6 +167,7 @@ bool AddRavlibLibrary(SoundStore& store, const SoundStore& file, const std::stri
     }
 
     SoundLibrary lib = src;
+    lib.kit_offered = false;  // 13-15a: a new project offers the kit once
     lib.uid = fresh(src.uid);
     for (const SoundNode& n : src.nodes) nmap[n.uid] = fresh(n.uid);
     lib.root = Mapped(nmap, src.root);

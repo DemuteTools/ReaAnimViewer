@@ -293,6 +293,25 @@ static void TestLibrariesAndMisc()
     std::vector<TreeRow> rows = BuildTreeRows(s, *la, {});
     CHECK(rows.size() == 1);  // the root only: the UI shows the centred hint
     CHECK(DeleteLibrary(s, a) && s.libraries.size() == 1);
+    // 13-15a: its Project / Character assignments go back to inherit; others stay.
+    {
+        SoundStore d = s;
+        SoundAssign pa;
+        pa.key = "feet";
+        pa.state = LibState::Library;
+        pa.library = b;
+        pa.kit = true;
+        SoundAssign other = pa;
+        other.key = "hands";
+        other.library = "elsewhere";
+        d.project = {pa, other};
+        SoundCharacter c;
+        c.assigns = {pa};
+        d.characters = {c};
+        CHECK(DeleteLibrary(d, b) && d.libraries.empty());
+        CHECK(d.project[0].state == LibState::Inherit && d.project[0].library.empty() && !d.project[0].kit);
+        CHECK(d.project[1].state == LibState::Library && d.characters[0].assigns[0].state == LibState::Inherit);
+    }
     // Wrap the root, make default, clear a value, rename, type change, group.
     SoundStore t = Store();
     std::vector<std::string> made;

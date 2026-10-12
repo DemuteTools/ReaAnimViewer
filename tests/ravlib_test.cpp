@@ -228,10 +228,10 @@ static void TestKitTravels()
     const SoundStore one = RavlibOf(rich, "l000000000000001", nullptr);
     CHECK(one.libraries[0].kit.size() == 2);
     const std::string text = SerializeRavlib(one);
-    CHECK(text.find("\nkit parts=feet,hands offered=1\n") != std::string::npos);
+    CHECK(text.find("\nkit parts=feet,hands\n") != std::string::npos);  // "offered" is the project's, not exported
     SoundStore back;
     CHECK(ParseRavlib(text, &back));
-    CHECK((back.libraries[0].kit == std::vector<std::string>{"feet", "hands"}) && back.libraries[0].kit_offered);
+    CHECK((back.libraries[0].kit == std::vector<std::string>{"feet", "hands"}) && !back.libraries[0].kit_offered);
     CHECK(SerializeRavlib(back) == text);
     SoundStore proj;
     std::string uid, why;

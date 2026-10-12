@@ -8,13 +8,16 @@
 // - Project and Character assign by body part and type ("feet", "feet.step"; sides L / R stay at
 //   Item level). A target with a type wins over the same part with none.
 // - A Character is a rig recognised by its skeleton signature (SkeletonKey, role_map_store.h); a
-//   character with a model file is a split of the rig (one per file), the whole-rig one has "".
+//   character with a model is a split of the rig (one per model: the mesh's signature, so the
+//   clips of one model, each in its own file, stay one character), the whole-rig one has "".
 // - A Kit is a suggestion stored in a library (SoundLibrary::kit, it travels in the .ravlib):
 //   adopting it copies the library into an assignment (kit flag set). Resolution never reads it.
 // The text of the model is sound_record.h's; the types are sound_model.h's.
 
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -112,12 +115,12 @@ EffectiveAssign ResolveAssignFor(const SoundStore& store, const ItemSounds& item
 // The same for a block (its part and type read from it).
 EffectiveAssign ResolveBlock(const SoundStore& store, const ItemSounds& item, const SoundCharacter* ch, const Block& b);
 
-// The character of a rig: the split of that model file (same skeleton, file equal ignoring case),
-// else the rig's whole-rig character (model_file ""), else null (the Project's settings apply).
-const SoundCharacter* CharacterFor(const SoundStore& store, const std::string& skeleton, const std::string& model_file);
-// The record of exactly that skeleton and model file (no fallback); null when none.
+// The character of a rig: the split of that model (same skeleton and model signature),
+// else the rig's whole-rig character (model ""), else null (the Project's settings apply).
+const SoundCharacter* CharacterFor(const SoundStore& store, const std::string& skeleton, const std::string& model);
+// The record of exactly that skeleton and model (no fallback); null when none.
 const SoundCharacter* FindCharacterExact(const SoundStore& store, const std::string& skeleton,
-                                         const std::string& model_file);
+                                         const std::string& model);
 const SoundCharacter* FindCharacterByUid(const SoundStore& store, const std::string& uid);
 SoundCharacter*       FindCharacterByUid(SoundStore& store, const std::string& uid);
 
@@ -125,7 +128,7 @@ SoundCharacter*       FindCharacterByUid(SoundStore& store, const std::string& u
 // item's character looked up in each). Block order, each once; a block with no rid is skipped.
 std::vector<std::string> ChangedRids(const SoundStore& before, const SoundStore& after, const ItemSounds& item,
                                      const std::vector<Block>& blocks, const std::string& skeleton,
-                                     const std::string& model_file);
+                                     const std::string& model);
 
 // ---- Pure edits -------------------------------------------------------------------------------
 
@@ -152,24 +155,41 @@ bool SetKitParts(SoundLibrary& lib, const std::vector<std::string>& parts);
 bool KitServes(const SoundLibrary& lib, const std::string& part);
 
 // A character's default name from a model file name: Hero_Body.fbx -> "Hero", Hero.glb -> "Hero".
-std::string DefaultCharacterName(const std::string& model_file);
+std::string DefaultCharacterName(const std::string& file);
+// A split's default name: the file's whole stem (Hero_Armored.fbx -> "Hero_Armored").
+std::string SplitCharacterName(const std::string& file);
+
+// The shape of one mesh of a model, and a model's signature: 16 hex over its meshes' shapes (order
+// ignored). Two files exported from the same model (two clips) give the same signature; "" for none.
+struct MeshShape {
+    size_t   verts = 0;
+    size_t   indices = 0;
+    uint32_t material = 0;
+    bool     skinned = false;
+};
+std::string ModelSignature(const std::vector<MeshShape>& meshes);
 
 // A rig to find or make a character for (a virtual character has no record until its first edit).
 struct CharacterRef {
     std::string uid;         // a stored character, or ""
     std::string skeleton;    // else the rig...
-    std::string model_file;  // ...and its model file ("" = the whole rig)
+    std::string model;       // ...and its model signature ("" = the whole rig)
     std::string name;        // the name a new record gets ("" = the default from the file)
     std::vector<std::string> files;  // the rig's model files seen (a hint a new record keeps)
 };
-// The stored character of the ref (by uid, else exactly by skeleton + model file), made and added
-// when absent. Null when the ref names nothing (no uid match and no skeleton).
+// The stored character of the ref (by uid, else exactly by skeleton + model), made and added
+// when absent: a new split starts as a copy of the rig's whole-rig character (its name and settings),
+// so the parts it does not change keep reading the rig's. Null when the ref names nothing (no uid match and no skeleton).
 SoundCharacter* EnsureCharacter(SoundStore& store, const CharacterRef& ref);
 bool            RenameCharacterIn(SoundStore& store, const std::string& uid, const std::string& name);
-// Splits a character into one per model file of `files` (the rig's files): each new character is
-// a copy of the rig's settings, named from its file, with model_file set; a file that already has a
-// character of the rig is skipped. The original stays (it serves files not split). Returns how many
-// were made.
-int SplitCharacterIn(SoundStore& store, const std::string& uid, const std::vector<std::string>& files);
+// One model of a rig to split off: its signature and the name the split gets.
+struct ModelRef {
+    std::string model;
+    std::string name;
+};
+// Splits a character into one per model of `models` (the rig's models): each new character is a
+// copy of the rig's settings, with model set; a model that already has a character of the rig is
+// skipped. The original stays (it serves models not split). Returns how many were made.
+int SplitCharacterIn(SoundStore& store, const std::string& uid, const std::vector<ModelRef>& models);
 
 }  // namespace rav

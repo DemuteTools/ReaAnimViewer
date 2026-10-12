@@ -122,7 +122,9 @@ static void TestPartOfBlock()
     for (int k = 0; k < kAutoKindCount; ++k)
         for (char side : {'L', 'R'}) {
             const Block        b = AutoB(static_cast<AutoKind>(k), side, "x");
-            const std::string  text = "RAVSOUNDS 1\nauto key=" + AutoSoundKeyOf(b) + " lib=LIB\n";
+            const std::string  key = AutoSoundKeyOf(b);
+            const std::string  word = key.substr(0, key.find(':'));
+            const std::string  text = "RAVSOUNDS 1\nauto key=" + word + ":L lib=LIB\nauto key=" + word + ":R lib=LIB\n";
             SoundStore         s;
             CHECK(ParseSoundStore(text, &s));
             CHECK(s.project.size() == 1 && s.project[0].key == PartOf(b));
@@ -292,7 +294,7 @@ static void TestCharacterFor()
     SoundCharacter split = Hero();
     split.uid = "C2";
     split.name = "Hero body";
-    split.model_file = "Hero_Body.fbx";
+    split.model = "Hero_Body.fbx";
     SoundCharacter other = Hero();
     other.uid = "C3";
     other.skeleton = "ffffffffffffffff";
@@ -415,38 +417,56 @@ static void TestCharacterEdits()
     CharacterRef r;
     CHECK(EnsureCharacter(st, r) == nullptr);
     r.skeleton = "sk1";
-    r.model_file = "Hero_Body.fbx";
-    SoundCharacter* c = EnsureCharacter(st, r);
-    CHECK(c && st.characters.size() == 1 && c->name == "Hero" && c->model_file == "Hero_Body.fbx" && IsSoundUid(c->uid));
-    const std::string uid = c->uid;
-    CHECK(EnsureCharacter(st, r)->uid == uid && st.characters.size() == 1);  // exact match, not another
-    CharacterRef byuid;
-    byuid.uid = uid;
-    CHECK(EnsureCharacter(st, byuid)->uid == uid);
-    // The whole rig of the same skeleton is another record.
-    CharacterRef whole;
-    whole.skeleton = "sk1";
-    whole.name = "Hero (all)";
-    SoundCharacter* w = EnsureCharacter(st, whole);
-    CHECK(st.characters.size() == 2 && w->uid != uid && w->name == "Hero (all)" && w->model_file.empty());
+    r.files = {"Hero_Body.fbx"};
+    SoundCharacter* w = EnsureCharacter(st, r);  // the whole rig, named from its first file
+    CHECK(w && st.characters.size() == 1 && w->name == "Hero" && w->model.empty() && IsSoundUid(w->uid));
     const std::string wuid = w->uid;
+    CHECK(EnsureCharacter(st, r)->uid == wuid && st.characters.size() == 1);  // exact match, not another
+    CharacterRef byuid;
+    byuid.uid = wuid;
+    CHECK(EnsureCharacter(st, byuid)->uid == wuid);
     SetAssignLibraryIn(FindCharacterByUid(st, wuid)->assigns, {"feet"}, LibState::Library, "L1");
-    FindCharacterByUid(st, wuid)->files = {"Hero_Body.fbx", "Hero_Head.fbx", "Hero_Hands.fbx"};
+
+    // A split made at its first edit starts as a copy of the whole rig (its name and settings).
+    CharacterRef split;
+    split.skeleton = "sk1";
+    split.model = "m-armored";
+    SoundCharacter* a = EnsureCharacter(st, split);
+    CHECK(a && st.characters.size() == 2 && a->uid != wuid && a->name == "Hero" && a->model == "m-armored" &&
+          a->assigns.size() == 1 && a->assigns[0].library == "L1");
 
     CHECK(RenameCharacterIn(st, wuid, "Knight"));
     CHECK(!RenameCharacterIn(st, wuid, "Knight") && !RenameCharacterIn(st, wuid, "") && !RenameCharacterIn(st, "nope", "x"));
-    // Split: one per file, a copy of the settings; the file with a record is skipped.
-    const int made = SplitCharacterIn(st, wuid, FindCharacterByUid(st, wuid)->files);
-    CHECK(made == 2 && st.characters.size() == 4);
-    const SoundCharacter* head = FindCharacterExact(st, "sk1", "Hero_Head.fbx");
-    CHECK(head && head->name == "Hero" && head->assigns.size() == 1 && head->assigns[0].library == "L1" &&
-          head->files.size() == 1);
-    CHECK(SplitCharacterIn(st, wuid, FindCharacterByUid(st, wuid)->files) == 0);
-    CHECK(SplitCharacterIn(st, "nope", {"a.fbx"}) == 0);
+    // Split: one per model, a copy of the settings; the model with a record is skipped.
+    const std::vector<ModelRef> models = {{"m-body", "Hero_Body"}, {"m-head", "Hero_Head"}, {"m-armored", "Hero_Armored"}};
+    CHECK(SplitCharacterIn(st, wuid, models) == 2 && st.characters.size() == 4);
+    const SoundCharacter* head = FindCharacterExact(st, "sk1", "m-head");
+    CHECK(head && head->name == "Hero_Head" && head->assigns.size() == 1 && head->assigns[0].library == "L1");
+    CHECK(SplitCharacterIn(st, wuid, models) == 0);
+    CHECK(SplitCharacterIn(st, "nope", {{"m-x", "x"}}) == 0);
+    CHECK(SplitCharacterIn(st, wuid, {{"", "empty"}}) == 0);
     // The split is independent of the rig after the copy.
     SoundCharacter* h2 = FindCharacterByUid(st, head->uid);
     SetAssignLibraryIn(h2->assigns, {"feet"}, LibState::None, "");
     CHECK(FindCharacterByUid(st, wuid)->assigns[0].state == LibState::Library);
+    // CharacterFor: the split of that model, else the whole rig, else none.
+    CHECK(CharacterFor(st, "sk1", "m-head") == FindCharacterByUid(st, head->uid));
+    CHECK(CharacterFor(st, "sk1", "m-unknown") == FindCharacterByUid(st, wuid));
+    CHECK(CharacterFor(st, "sk2", "m-head") == nullptr);
+}
+
+static void TestModelSignature()
+{
+    CHECK(ModelSignature({}).empty());
+    MeshShape body{1200, 3600, 0, true}, sword{300, 900, 1, false};
+    const std::string a = ModelSignature({body, sword});
+    CHECK(a.size() == 16 && a == ModelSignature({sword, body}));  // order ignored
+    MeshShape armor{800, 2400, 2, true};
+    CHECK(ModelSignature({body, sword, armor}) != a);
+    MeshShape body2 = body;
+    body2.skinned = false;
+    CHECK(ModelSignature({body2, sword}) != a);
+    CHECK(SplitCharacterName("C:\\m\\Hero_Armored.fbx") == "Hero_Armored" && SplitCharacterName("x") == "x");
 }
 
 static void TestGrammar()
@@ -470,7 +490,7 @@ static void TestGrammar()
     n.state = LibState::None;
     s.project.push_back(n);
     SoundCharacter c = Hero();
-    c.model_file = "Hero_Body.fbx";
+    c.model = "Hero_Body.fbx";
     c.files = {"Hero_Body.fbx", "a,b c.fbx"};
     c.kept = {"cf=1"};
     c.kept_lines = {"cextra y"};
@@ -502,7 +522,7 @@ static void TestGrammar()
     const std::string text = SerializeSoundStore(s);
     CHECK(text.find("RAVSOUNDS 1\nassign key=feet.step lib=LIB%201 kit=1 future=1\nasvalue group=G1 value=V1 vx=1\naextra x=2\n"
                     "assign key=hands lib=none\n"
-                    "character uid=C1 name=Hero skel=0123456789abcdef file=Hero_Body.fbx files=Hero_Body.fbx,a%2Cb%20c.fbx cf=1\n"
+                    "character uid=C1 name=Hero skel=0123456789abcdef model=Hero_Body.fbx files=Hero_Body.fbx,a%2Cb%20c.fbx cf=1\n"
                     "cextra y\ncassign key=feet lib=LIB2\ncasvalue group=G1 value=V2\ncaextra z\ncassign key=hands.grab lib=none\n"
                     "group uid=G1") == 0);
     CHECK(text.find("library uid=LIB1 name=Wood root=N1\nkit parts=feet,hands offered=1 kx=3\nnode uid=N1") != std::string::npos);
@@ -516,7 +536,7 @@ static void TestGrammar()
     CHECK(r.characters.size() == 1 && r.characters[0].assigns.size() == 2 && r.characters[0].kept_lines.size() == 1 &&
           r.characters[0].assigns[0].kept_lines.size() == 1 && r.characters[0].assigns[0].values.size() == 1 &&
           r.characters[0].files.size() == 2 && r.characters[0].files[1] == "a,b c.fbx" &&
-          r.characters[0].model_file == "Hero_Body.fbx" && r.characters[0].kept.size() == 1);
+          r.characters[0].model == "Hero_Body.fbx" && r.characters[0].kept.size() == 1);
     CHECK(r.characters[0].assigns[1].state == LibState::None);
     CHECK(r.libraries.size() == 1 && r.libraries[0].kit.size() == 2 && r.libraries[0].kit_offered &&
           r.libraries[0].kit_kept.size() == 1 && r.libraries[0].kept.empty());
@@ -572,33 +592,52 @@ static void TestGrammar()
 
 static void TestMigration()
 {
+    // Review 13-15a: a target is migrated only when every old entry folding into it is set on both
+    // sides and agrees, so no marker that played nothing starts playing.
     const std::string text =
         "RAVSOUNDS 1\n"
-        "auto key=step:R lib=LR\n"
-        "auto key=step:L lib=LL\n"
+        "auto key=step:R lib=LL\n"
         "avalue group=G1 value=V1\n"
-        "auto key=lift:R lib=LIFTR\n"           // no L: the R one is taken
-        "auto key=heel:L lib=HEEL\n"            // another step kind: the target is taken already
+        "auto key=step:L lib=LL\n"
+        "avalue group=G1 value=V1\n"            // both sides agree: migrated
+        "auto key=lift:R lib=LIFTR\n"           // no L: left lifts played nothing, not migrated
         "auto key=slide_heel:L lib=SL\n"
+        "auto key=slide_heel:R lib=SL\n"
+        "auto key=slide_toe:L lib=OTHER\n"      // another slide kind disagrees: not migrated
+        "auto key=slide_toe:R lib=OTHER\n"
+        "auto key=hand_pivot:L lib=HP\n"
         "auto key=hand_pivot:R lib=HP\n"
+        "keepme line=1\n"                       // an unknown line: kept
         "auto key=grab:L\n"                     // no library, no value: nothing
+        "auto key=grab:R\n"
         "auto key=release:L\n"
-        "avalue group=G2 value=V2\n"            // values alone: kept (inherit)
+        "avalue group=G2 value=V2\n"            // values alone, both sides: kept (inherit)
+        "auto key=release:R\n"
+        "avalue group=G2 value=V2\n"
+        "auto key=pivot:L lib=P1\n"
+        "auto key=pivot:R lib=P2\n"             // sides differ: not migrated
         "auto key=future_kind:L lib=X\n"
         "group uid=G1 name=Surface\n";
     SoundStore s;
     CHECK(ParseSoundStore(text, &s));
     CHECK(s.auto_sounds.empty());
-    CHECK(s.project.size() == 5);
+    CHECK(s.project.size() == 3);
     const SoundAssign* step = FindAssign(s.project, "feet.step");
     CHECK(step && step->state == LibState::Library && step->library == "LL" && step->values.size() == 1);
-    CHECK(FindAssign(s.project, "feet.lift") && FindAssign(s.project, "feet.lift")->library == "LIFTR");
-    CHECK(FindAssign(s.project, "feet.slide") && FindAssign(s.project, "feet.slide")->library == "SL");
+    CHECK(FindAssign(s.project, "feet.lift") == nullptr);
+    CHECK(FindAssign(s.project, "feet.slide") == nullptr);
+    CHECK(FindAssign(s.project, "feet.pivot") == nullptr);
     CHECK(FindAssign(s.project, "hands.hand_pivot") && FindAssign(s.project, "hands.hand_pivot")->library == "HP");
     const SoundAssign* rel = FindAssign(s.project, "hands.release");
     CHECK(rel && rel->state == LibState::Inherit && rel->library.empty() && rel->values.size() == 1);
     CHECK(FindAssign(s.project, "hands.grab") == nullptr);
     CHECK(s.groups.size() == 1);
+    CHECK(SerializeSoundStore(s).find("keepme line=1") != std::string::npos);
+    // A heel step set alone: the only step kind with an entry, so migrated (a toe step, if the project
+    // had one with no sound, then inherits it: accepted, Epic 13 is not released).
+    SoundStore h;
+    CHECK(ParseSoundStore("RAVSOUNDS 1\nauto key=heel:L lib=HEEL\nauto key=heel:R lib=HEEL\n", &h));
+    CHECK(h.project.size() == 1 && h.project[0].library == "HEEL");  // the only step kind set: migrated
     // Never written back as auto lines; reading the result again changes nothing.
     const std::string out = SerializeSoundStore(s);
     CHECK(out.find("auto ") == std::string::npos);
@@ -622,6 +661,7 @@ int main()
     TestChangedRids();
     TestEdits();
     TestCharacterEdits();
+    TestModelSignature();
     TestGrammar();
     TestMigration();
     if (g_fail) {

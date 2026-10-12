@@ -223,9 +223,10 @@ static void TestLayerChild()
     CHECK(PickLayerChild({"Kick", "Feet", "Snap"}, {false, true, false}, 2) == 2);  // position skips it
     // A Switch-tree folder named "layer 1" (a library so named) is not taken either.
     CHECK(PickLayerChild({"layer 1", "x"}, {true, false}, 1) == 1);
-    // By name first: "layer 2" wherever it sits.
+    // By position only, never by name.
     CHECK(PickLayerChild({"Kick", "Layer 2 "}, {false, false}, 2) == 1);
-    CHECK(PickLayerChild({"layer 2", "layer 1"}, {false, false}, 1) == 1);
+    CHECK(PickLayerChild({"layer 2", "layer 1"}, {false, false}, 1) == 0);  // by position, never by name
+    CHECK(PickLayerChild({"layer 2"}, {false}, 2, &next) == -1 && next == 2);  // a deleted layer 1: no shared track
     // A flag list shorter than the names: the rest are layer candidates.
     CHECK(PickLayerChild({"a", "b"}, {}, 2) == 1);
     CHECK(PickLayerChild({"a"}, {false}, 0) == -1);

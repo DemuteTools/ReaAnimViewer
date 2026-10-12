@@ -644,7 +644,7 @@ MediaTrack* LayerTrack(ReaProject* proj, MediaTrack* folder, int layer)
         if (fi < 0) return nullptr;
         int              last = fi, beyond = 0;
         std::vector<int> kids = DirectChildren(proj, fi, &last, &beyond);
-        // 13-13: "layer N" by name, else by position among the children that are no Switch-tree
+        // 13-13: by position among the children that are no Switch-tree
         // folder (a Switch tree in this folder is never taken as a layer).
         std::vector<std::string> names;
         std::vector<bool>        tree;

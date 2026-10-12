@@ -151,9 +151,9 @@ int PickLayerChild(const std::vector<std::string>& child_names, const std::vecto
             index.push_back(static_cast<int>(i));
         }
     if (next_number) *next_number = static_cast<int>(names.size()) + 1;
+    // By position among the children that are not Switch trees, as at 1fe0956 (a name match
+    // could give two layers the same track once a "layer K" track was deleted or moved).
     if (layer < 1) return -1;
-    const int m = MatchChildTrack(names, "layer " + std::to_string(layer));
-    if (m >= 0) return index[static_cast<size_t>(m)];
     if (static_cast<int>(names.size()) >= layer) return index[static_cast<size_t>(layer - 1)];
     return -1;
 }

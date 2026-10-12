@@ -180,7 +180,7 @@ MediaTrack* SwitchTrackFor(const std::vector<TrackStep>& path, SoundReport& rep,
     std::string failed;
     MediaTrack* tr = EnsureTrackPath(nullptr, path, &failed);
     if (!tr)
-        AddLine(rep, ReportKind::Missing, "Could not make track " + failed + " (placed on the usual track)", node,
+        AddLine(rep, ReportKind::Missing, "Could not make track " + failed, node,
                 item_guid, t);
     cache.emplace(key, tr);
     return tr;

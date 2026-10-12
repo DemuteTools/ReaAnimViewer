@@ -53,8 +53,8 @@ std::vector<TrackStep> TrackPathFor(const std::vector<SwitchStep>& path, TrackLa
 int MatchChildTrack(const std::vector<std::string>& child_names, const std::string& name);
 
 // The Lands-in folder's child a File Sound's layer `layer` (1-based) lands on (13-11's layer
-// tracks): the child named "layer N" (MatchChildTrack) first, else the N-th child, counting only
-// the children that are no RAV Switch-tree folder (`switch_tree`, the library folders the
+// tracks): the N-th child (never by name: a deleted "layer K" would give two layers one track),
+// counting only the children that are no RAV Switch-tree folder (`switch_tree`, the library folders the
 // Switch-named tracks sit in), so a Switch tree is never taken as a layer. -1 = none yet: a new
 // last child "layer <next_number>" is made (`next_number` = those children + 1). With no
 // Switch-tree folder this is the position 13-11 took.

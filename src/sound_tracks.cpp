@@ -117,7 +117,7 @@ MediaTrack* AddChildTrack(ReaProject* proj, MediaTrack* parent, const std::strin
 
 bool IsSwitchTreeTrack(MediaTrack* tr)
 {
-    char buf[16] = {};
+    char buf[4096] = {};  // P_EXT copies the whole stored value (see video_timeline.cpp)
     return tr && GetSetMediaTrackInfo_String(tr, kSwitchTreeExt, buf, false) && buf[0] == '1';
 }
 

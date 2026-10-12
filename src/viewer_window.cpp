@@ -1696,7 +1696,7 @@ std::string WindowsFontPath(const std::wstring& fonts_dir, const wchar_t* file)
 ImFontConfig UiFontConfig(float em_px)
 {
     ImFontConfig cfg;
-    cfg.OversampleH        = 2;
+    cfg.OversampleH        = em_px >= 24.0f ? 1 : 2;   // large (high-DPI) sizes are smooth already; keeps the atlas small
     cfg.OversampleV        = 1;
     cfg.PixelSnapH         = em_px <= 16.0f;
     cfg.RasterizerMultiply = 1.15f;
@@ -1735,6 +1735,7 @@ void LoadUiFontAtlas(ImGuiIO& io, float dpi_scale)
                   "kUiGlyphRanges must match ImWchar (16-bit)");
     if (!(dpi_scale >= 1.0f && dpi_scale <= 4.0f)) dpi_scale = 1.0f;
     ui::SetFonts(ui::FontSet{});
+    io.Fonts->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;   // high DPI: stay under GL_MAX_TEXTURE_SIZE
 
     wchar_t win_dir[MAX_PATH] = {};
     const UINT dir_len = GetWindowsDirectoryW(win_dir, MAX_PATH);
@@ -1888,7 +1889,8 @@ bool StartRendering(HWND hwnd)
         // 13-7: the mock-up's fonts (Segoe UI, Cascadia Mono / Consolas) at the screen's
         // DPI; the style's paddings and sizes follow the same scale.
         const int dpi_y = g_hdc ? GetDeviceCaps(g_hdc, LOGPIXELSY) : 96;
-        const float dpi_scale = dpi_y > 96 ? static_cast<float>(dpi_y) / 96.0f : 1.0f;
+        // One scale for the style, the theme and the fonts, clamped to what the fonts accept.
+        const float dpi_scale = std::clamp(dpi_y > 96 ? static_cast<float>(dpi_y) / 96.0f : 1.0f, 1.0f, 4.0f);
         if (dpi_scale > 1.0f) ImGui::GetStyle().ScaleAllSizes(dpi_scale);
         ui::SetUiScale(dpi_scale);   // the theme's widgets size themselves in mockup px x this (ui::Dp)
         LoadUiFontAtlas(io, dpi_scale);

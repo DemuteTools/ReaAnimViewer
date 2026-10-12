@@ -107,6 +107,7 @@ struct Frame {
     std::vector<av::Target> targets;  // by block index
     av::Target             item;      // the "Item values" row
     std::string            item_name, char_name, pool_text;
+    MediaItem*             item_ptr = nullptr;  // the item this frame was built from
     bool                   ok = false;
 };
 
@@ -117,8 +118,11 @@ struct RecCache {
     std::vector<Block> blocks;
     bool               valid = false;
     int                pool = 0;
+    ItemRigInfo        rig;
 };
-RecCache g_cache;
+// Review 13-15b: the window and the strip each keep their item's, so neither reads it again every frame
+// when they show different items.
+RecCache g_cache, g_strip_cache;
 
 std::string ItemNameOf(MediaItem* item)
 {
@@ -133,18 +137,19 @@ std::string LeafTitle(const av::Parent& p, const av::Leaf& l)
     return p.leaves.size() > 1 ? p.name + kDot + l.name : l.name;
 }
 
-// The item's sound record, rules and pool size, read again when the project's state changes.
-void RefreshCache(MediaItem* item)
+// The item's sound record, rules, pool size and rig, read again when the project's state changes.
+void RefreshCache(MediaItem* item, RecCache& c = g_cache)
 {
     const int count = GetProjectStateChangeCount(nullptr);
-    if (item == g_cache.item && count == g_cache.count) return;
-    g_cache.item = item;
-    g_cache.count = count;
-    g_cache.rec = ReadItemSounds(item);
+    if (item == c.item && count == c.count) return;
+    c.item = item;
+    c.count = count;
+    c.rec = ReadItemSounds(item);
     ItemRulesRead rr;
-    g_cache.valid = ReadItemRules(item, &rr) && rr.valid;
-    g_cache.blocks = g_cache.valid ? rr.rules.blocks : std::vector<Block>();
-    g_cache.pool = std::max(0, static_cast<int>(PopulateTargets({item}).size()) - 1);
+    c.valid = ReadItemRules(item, &rr) && rr.valid;
+    c.blocks = c.valid ? rr.rules.blocks : std::vector<Block>();
+    c.pool = std::max(0, static_cast<int>(PopulateTargets({item}).size()) - 1);
+    c.rig = ItemRig(item);
 }
 
 bool BuildFrame(MediaItem* item, Frame* f)
@@ -154,7 +159,8 @@ bool BuildFrame(MediaItem* item, Frame* f)
     RefreshCache(item);
     f->rec = g_cache.rec;
     f->blocks = g_cache.blocks;
-    const ItemRigInfo rig = ItemRig(item);
+    f->item_ptr = item;
+    const ItemRigInfo& rig = g_cache.rig;
     f->ch = CharacterFor(*f->store, rig.skeleton, RigModel(rig));
     f->char_name = f->ch ? f->ch->name : std::string();
     f->item_name = ItemNameOf(item);
@@ -259,7 +265,7 @@ void RulesOf(const Frame& f, const std::vector<const av::Target*>& sel, std::vec
 
 void PickLibrary(const Frame& f, const std::vector<const av::Target*>& sel, const std::string& arg, const std::string& what)
 {
-    MediaItem*               item = g.item;
+    MediaItem*               item = f.item_ptr;
     std::vector<std::string> rids;
     std::vector<int>         blocks;
     RulesOf(f, sel, &rids, &blocks);
@@ -273,8 +279,9 @@ void PickLibrary(const Frame& f, const std::vector<const av::Target*>& sel, cons
     const std::string where = f.item_name;
     const int         n = static_cast<int>(sel.size());
     PickSoundGesture([item, rids, blocks, state, uid, what, where, n]() {
-        const SoundReport rep = SetRulesAssignLibrary(item, rids, state, uid, blocks);
-        SetLast("Set rule library", where, what, n);
+        bool              changed = false;
+        const SoundReport rep = SetRulesAssignLibrary(item, rids, state, uid, blocks, &changed);
+        if (changed) SetLast("Set rule library", where, what, n);
         return rep;
     });
 }
@@ -282,16 +289,17 @@ void PickLibrary(const Frame& f, const std::vector<const av::Target*>& sel, cons
 void PickValue(const Frame& f, const std::vector<const av::Target*>& sel, bool item_row, const std::string& group,
                const std::string& value, const std::string& what)
 {
-    MediaItem*               item = g.item;
+    MediaItem*               item = f.item_ptr;
     std::vector<std::string> rids;
     std::vector<int>         blocks;
     if (!item_row) RulesOf(f, sel, &rids, &blocks);
     const std::string where = f.item_name;
     const int         n = static_cast<int>(sel.size());
     PickSoundGesture([item, rids, blocks, group, value, what, where, n, item_row]() {
+        bool              changed = true;  // SetSoundValue (the Item row) tells nothing: shown as before
         const SoundReport rep = item_row ? SetSoundValue(item, SoundValueLevel::Item, -1, 0.0, group, value)
-                                         : SetRulesAssignValue(item, rids, group, value, blocks);
-        SetLast("Set sound value", where, what, n);
+                                         : SetRulesAssignValue(item, rids, group, value, blocks, &changed);
+        if (changed) SetLast("Set sound value", where, what, n);
         return rep;
     });
 }
@@ -614,10 +622,12 @@ void DrawTreeRows(const Frame& f, const std::vector<Row>& rows)
     }
 }
 
-// Up / Down move the keyboard row, Left / Right fold a parent, Enter / Space click it.
+// Up / Down move the keyboard row, Left / Right fold a parent, Enter clicks it (Space stays REAPER's play).
 void HandleTreeKeys(const std::vector<Row>& rows)
 {
-    if (!ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) || ImGui::GetIO().WantTextInput) return;
+    if (!ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) || ImGui::GetIO().WantTextInput ||
+        ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId))
+        return;
     std::vector<const Row*> navs;
     for (const Row& r : rows)
         if (!r.nav.empty()) navs.push_back(&r);
@@ -641,7 +651,7 @@ void HandleTreeKeys(const std::vector<Row>& rows)
         if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) g.closed[r.id] = false;
         else if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) g.closed[r.id] = true;
     }
-    if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_Space))
+    if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter))
         ActivateRow(r, VisibleKeys(rows), io.KeyShift, io.KeyCtrl);
 }
 
@@ -1229,14 +1239,24 @@ void DrawItemPicker(const Frame& f)
     std::string preview = f.item_name.empty() ? std::string("No animation item") : f.item_name;
     if (!f.char_name.empty()) preview += kDot + f.char_name;
     if (!ui::BeginComboStyled("##assignitem", preview.c_str(), ui::Dp(210.0f))) return;
-    const std::vector<MediaItem*> items = ProjectRavItems();
-    int                           i = 0;
-    for (MediaItem* it : items) {
-        std::string label = ItemNameOf(it);
-        if (label.empty()) label = "(unnamed item)";
-        const ItemRigInfo rig = ItemRig(it);
-        if (const SoundCharacter* c = CharacterFor(GetSoundStore(nullptr), rig.skeleton, RigModel(rig)))
-            label += kDot + c->name;
+    // Review 13-15b: the list is read once each time it opens (each item's rig may parse its file).
+    static std::vector<std::pair<MediaItem*, std::string>> list;
+    if (ImGui::IsWindowAppearing()) {
+        list.clear();
+        for (MediaItem* it : ProjectRavItems()) {
+            std::string label = ItemNameOf(it);
+            if (label.empty()) label = "(unnamed item)";
+            const ItemRigInfo rig = ItemRig(it);
+            if (const SoundCharacter* c = CharacterFor(GetSoundStore(nullptr), rig.skeleton, RigModel(rig)))
+                label += kDot + c->name;
+            list.push_back({it, label});
+        }
+    }
+    const std::vector<std::pair<MediaItem*, std::string>>& items = list;
+    int                                                   i = 0;
+    for (const auto& entry : items) {
+        MediaItem*         it = entry.first;
+        const std::string& label = entry.second;
         const bool cur = it == g.item;
         if (ImGui::Selectable((label + "##item" + std::to_string(i++)).c_str(), cur) && !cur) {
             g.item = it;  // window-local: the sound store is untouched
@@ -1357,6 +1377,16 @@ bool AssignWindowIsOpen()
     return g.open;
 }
 
+bool TaggingAssignTakesKey(unsigned vk, bool ctrl, bool shift, bool alt)
+{
+    (void)shift;
+    if (ctrl || alt || !TaggingAssignWindowOpen()) return false;
+    constexpr unsigned kBack = 0x08, kEnter = 0x0D, kEscape = 0x1B, kLeft = 0x25, kUp = 0x26, kRight = 0x27, kDown = 0x28,
+                       kDelete = 0x2E;
+    return vk == kBack || vk == kEnter || vk == kEscape || vk == kLeft || vk == kUp || vk == kRight || vk == kDown ||
+           vk == kDelete;
+}
+
 bool TaggingAssignWindowOpen()
 {
     if (!g.open || !ImGui::GetCurrentContext()) return false;
@@ -1408,8 +1438,13 @@ void DrawAssignWindow(const TaggingModel& m)
                 if (!g.request) g.sel.Clear();
             }
             if (g.request) ApplyRequest(f);
+        } else if (g.request) {
+            g.request = false;  // its item is gone or unreadable: follow the Tagging item again
+            g.follow = true;
         }
-        if (focused && ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !ImGui::GetIO().WantTextInput) g.open = false;
+        if (focused && ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !ImGui::GetIO().WantTextInput &&
+            !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId))  // Esc in a menu closes the menu only
+            g.open = false;
 
         DrawTitleRow(f);
         {  // Scope bar: where you edit, the item, the reading order.
@@ -1490,12 +1525,12 @@ void DrawAssignSummaryRow(const char* id, MediaItem* item, const std::vector<Blo
                           const char* label)
 {
     if (!item || blocks.empty()) return;
-    RefreshCache(item);
+    RefreshCache(item, g_strip_cache);
     const SoundStore&     store = GetSoundStore(nullptr);
-    const ItemRigInfo     rig = ItemRig(item);
+    const ItemRigInfo&    rig = g_strip_cache.rig;
     const SoundCharacter* ch = CharacterFor(store, rig.skeleton, RigModel(rig));
     std::vector<av::Target> ts;
-    for (const Block& b : blocks) ts.push_back(av::MakeTarget(store, g_cache.rec, ch, b, std::string(), std::string()));
+    for (const Block& b : blocks) ts.push_back(av::MakeTarget(store, g_strip_cache.rec, ch, b, std::string(), std::string()));
     std::vector<const av::Target*> ptrs;
     for (const av::Target& t : ts) ptrs.push_back(&t);
     const av::Summary sum = av::Summarize(store, ptrs, true);
@@ -1513,10 +1548,15 @@ void DrawAssignSummaryRow(const char* id, MediaItem* item, const std::vector<Blo
     const float  fh = ImGui::GetFrameHeight();
     const float  ty = std::floor(p.y + (fh - ImGui::GetTextLineHeight()) * 0.5f);
     if (lw > 0.0f) dl->AddText(ImVec2(p.x, ty), ui::kMuted, label);
-    const float sum_w = std::max(ui::Dp(40.0f), (narrow ? w : w - bw - sp) - lw);
-    const bool  cut = PaintSummary(dl, p.x + lw, ty, sum_w, sum, false);
-    ImGui::Dummy(ImVec2(sum_w + lw, fh));
-    if (cut) ui::ItemTipText(sum.Plain().c_str());
+    // Review 13-15b: an empty or blocked library is flagged here too, as in the window's tree.
+    const float warn_w = sum.blocked ? ImGui::CalcTextSize("!").x + ui::Dp(6.0f) : 0.0f;
+    if (sum.blocked) ui::AddTextIn(dl, ui::FontSemibold(), ImVec2(p.x + lw, ty), ui::kWarn, "!");
+    const float sum_w = std::max(ui::Dp(40.0f), (narrow ? w : w - bw - sp) - lw - warn_w);
+    const bool  cut = PaintSummary(dl, p.x + lw + warn_w, ty, sum_w, sum, false);
+    ImGui::Dummy(ImVec2(sum_w + lw + warn_w, fh));
+    if (cut || sum.blocked)
+        ui::ItemTipText(sum.blocked ? (sum.Plain() + "\nNothing is placed: open Assign... for the details").c_str()
+                                    : sum.Plain().c_str());
     if (!narrow) ImGui::SameLine(0.0f, sp);
     if (!can) ImGui::BeginDisabled();
     if (ui::SolidButton(btn) && can) OpenAssignWindow(item, open_blocks);

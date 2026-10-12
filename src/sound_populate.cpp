@@ -708,21 +708,22 @@ ItemRigInfo ItemRig(MediaItem* item)
             // A changed file: its cached parse (if any) is the old one, so it is read again.
             if (hit != cache.end()) EvictCpuAsset(path);
             const std::shared_ptr<const CpuAsset> asset = AcquireCpuAsset(path);
-            if (!asset) return r;
-            const SkeletonBones sk = SkeletonBonesOf(asset->skeleton);
-            if (sk.names.empty()) return r;  // not kept: tried again next time
+            // Review 13-15b: a file with no skeleton (or that does not load) is kept too, as no rig,
+            // until the file changes: not parsed again on every call.
+            const SkeletonBones sk = asset ? SkeletonBonesOf(asset->skeleton) : SkeletonBones();
             std::vector<MeshShape> shapes;
-            for (const CpuMesh& m : asset->meshes) {
-                MeshShape ms;
-                ms.verts = m.verts.size();
-                ms.indices = m.indices.size();
-                ms.material = m.materialIdx;
-                ms.skinned = m.skinned;
-                shapes.push_back(ms);
-            }
+            if (asset && !sk.names.empty())
+                for (const CpuMesh& m : asset->meshes) {
+                    MeshShape ms;
+                    ms.verts = m.verts.size();
+                    ms.indices = m.indices.size();
+                    ms.material = m.materialIdx;
+                    ms.skinned = m.skinned;
+                    shapes.push_back(ms);
+                }
             Rig rig;
             rig.stamp = stamp;
-            rig.skeleton = SkeletonKey(sk.names);
+            rig.skeleton = sk.names.empty() ? std::string() : SkeletonKey(sk.names);
             rig.model = ModelSignature(shapes);
             rig.bones = static_cast<int>(sk.names.size());
             hit = cache.insert_or_assign(path, rig).first;
@@ -1037,11 +1038,18 @@ void EditRules(MediaItem* item, const std::vector<std::string>& rids, const Soun
 }  // namespace
 
 SoundReport SetRulesAssignLibrary(MediaItem* item, std::vector<std::string> rids, LibState state, std::string library_uid,
-                                  std::vector<int> blocks)
+                                  std::vector<int> blocks, bool* changed)
 {
     SoundReport rep;
+    if (changed) *changed = false;
     try {
         if (!item || !RavTakeOf(item) || (rids.empty() && blocks.empty())) return rep;
+        {  // Review 13-15b: an edit that changes nothing makes no undo point.
+            ItemSounds probe = ReadItemSounds(item);
+            if (!SetRulesLibrary(probe, rids, state, library_uid) && (blocks.empty() || state == LibState::Inherit))
+                return rep;
+        }
+        if (changed) *changed = true;
         const SoundStore store = GetSoundStore(nullptr);
         {
             SoundUndoScope undo(nullptr, "RAV: Set rule library");
@@ -1058,11 +1066,17 @@ SoundReport SetRulesAssignLibrary(MediaItem* item, std::vector<std::string> rids
 }
 
 SoundReport SetRulesAssignValue(MediaItem* item, std::vector<std::string> rids, std::string group_uid,
-                                std::string value_uid, std::vector<int> blocks)
+                                std::string value_uid, std::vector<int> blocks, bool* changed)
 {
     SoundReport rep;
+    if (changed) *changed = false;
     try {
         if (!item || !RavTakeOf(item) || group_uid.empty() || (rids.empty() && blocks.empty())) return rep;
+        {  // Review 13-15b: an edit that changes nothing makes no undo point.
+            ItemSounds probe = ReadItemSounds(item);
+            if (!SetRulesValue(probe, rids, group_uid, value_uid) && (blocks.empty() || value_uid.empty())) return rep;
+        }
+        if (changed) *changed = true;
         const SoundStore store = GetSoundStore(nullptr);
         {
             SoundUndoScope undo(nullptr, "RAV: Set sound value");

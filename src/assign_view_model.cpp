@@ -219,20 +219,50 @@ const GroupState* Target::Group(const std::string& group_uid) const
 
 namespace {
 
+// The nodes an event of these layers can reach (review 13-15b): every child of a Random (any can
+// be drawn) or a Blend (all play), the case a Switch plays for these values (its default when the
+// value has no case). Not ResolveEvent's walk: that follows one Random child only.
+void ReachWalk(const SoundStore& store, const SoundLibrary& lib, const ValueLayers& layers, const SoundNode& n,
+               std::set<std::string>* seen)
+{
+    if (!seen->insert(n.uid).second) return;
+    auto child_of_case = [&](const std::string& value) -> const SoundNode* {
+        for (const SwitchCase& c : n.cases)
+            if (c.value_uid == value) return FindNode(lib, c.child_uid);
+        return nullptr;
+    };
+    switch (n.type) {
+    case SoundNodeType::Sound: return;
+    case SoundNodeType::Random:
+    case SoundNodeType::Blend:
+        for (const SoundNode* c : ChildrenOf(lib, n.uid))
+            if (c) ReachWalk(store, lib, layers, *c, seen);
+        return;
+    case SoundNodeType::Switch: {
+        ValueFrom         from = ValueFrom::Default;
+        const std::string v = EffectiveValue(n, layers, &from);
+        const std::string def = DefaultValue(store, n);
+        const SoundNode*  c = from == ValueFrom::Default ? child_of_case(def) : child_of_case(v);
+        if (!c && from != ValueFrom::Default) c = child_of_case(def);
+        if (c) ReachWalk(store, lib, layers, *c, seen);
+        return;
+    }
+    }
+}
+
 // The groups of `lib` as a target with these layers shows them. `own` = the target's own layer values;
 // `below` = the layers under it (what inherit gives).
 void FillGroups(const SoundStore& store, const SoundLibrary& lib, const EffectiveAssign& ea,
                 const std::vector<ValueSet>& own, bool item_row, bool blocked, Target* t)
 {
     std::set<std::string> path, reached_groups;
-    if (!blocked) {
-        const Resolution res = ResolveEvent(store, lib, ea.layers, ResolveHooks());
-        for (const std::string& n : res.path) {
-            path.insert(n);
-            if (const SoundNode* nd = FindNode(lib, n))
-                if (nd->type == SoundNodeType::Switch) reached_groups.insert(nd->group_uid);
+    if (!blocked)
+        if (const SoundNode* root = FindNode(lib, lib.root)) {
+            ReachWalk(store, lib, ea.layers, *root, &path);
+            for (const std::string& n : path)
+                if (const SoundNode* nd = FindNode(lib, n))
+                    if (nd->type == SoundNodeType::Switch) reached_groups.insert(nd->group_uid);
         }
-    }
     for (const GroupUse& use : GroupsUsed(store, lib)) {
         GroupState gs;
         gs.group_uid = use.group_uid;

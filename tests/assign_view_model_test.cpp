@@ -168,6 +168,28 @@ static void TestState()
     CHECK(t.Unset() && Summarize(st, {&t}, true).Plain() == "nothing set");
 }
 
+// Review 13-15b: every child of a Random can be drawn, so a Switch under its second child is reached.
+static void TestRandomReach()
+{
+    SoundStore st = MakeStore();
+    SoundLibrary mix;
+    mix.uid = "mix";
+    mix.name = "Mix";
+    mix.root = "r";
+    SoundNode a = Node("swa", "r", SoundNodeType::Switch);
+    a.group_uid = "loco";
+    a.cases = {{"loco_Walk", "sa", {}}};
+    SoundNode b = Node("swb", "r", SoundNodeType::Switch);
+    b.group_uid = "feet";
+    b.cases = {{"feet_Boots", "sb", {}}};
+    mix.nodes = {Node("r", "", SoundNodeType::Random), a, Node("sa", "swa", SoundNodeType::Sound), b,
+                 Node("sb", "swb", SoundNodeType::Sound)};
+    st.libraries.push_back(mix);
+    SetAssignLibraryIn(st.project, {"feet"}, LibState::Library, "mix");
+    const Target t = MakeTarget(st, ItemSounds(), nullptr, Auto(AutoKind::Step, 'L', "a0"), "b0", "x");
+    CHECK(t.groups.size() == 2 && t.groups[0].reached && t.groups[1].reached);
+}
+
 static void TestDeletedGroup()
 {
     SoundStore st = MakeStore();
@@ -302,6 +324,7 @@ int main()
 {
     TestTargets();
     TestState();
+    TestRandomReach();
     TestDeletedGroup();
     TestSummaryAndMix();
     TestTitleAndLadder();

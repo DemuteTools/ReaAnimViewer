@@ -57,9 +57,10 @@ SoundReport SetAutoMarkerValue(MediaItem* item, std::vector<std::string> keys, s
 // "RAV: Set rule library" / "RAV: Set sound value". Nothing happens (no undo point) when nothing changes
 // (the rids are not checked: an empty list does nothing).
 SoundReport SetRulesAssignLibrary(MediaItem* item, std::vector<std::string> rids, LibState state, std::string library_uid,
-                                  std::vector<int> blocks = {});
+                                  std::vector<int> blocks = {}, bool* changed = nullptr);
 SoundReport SetRulesAssignValue(MediaItem* item, std::vector<std::string> rids, std::string group_uid,
-                                std::string value_uid, std::vector<int> blocks = {});
+                                std::string value_uid, std::vector<int> blocks = {}, bool* changed = nullptr);
+// (`changed`, when given: false when the edit changed nothing, so no undo point was made.)
 // The RAV items of the project (the assignment window's item picker).
 std::vector<MediaItem*> ProjectRavItems();
 

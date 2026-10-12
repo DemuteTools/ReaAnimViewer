@@ -28,9 +28,12 @@ void OpenAssignWindow(MediaItem* item, const std::vector<int>& blocks);
 void CloseAssignWindow();
 // Open, whichever view shows (it hides, not closes, while another view is shown).
 bool AssignWindowIsOpen();
-// The window is drawn and has the keyboard focus: the viewer takes every key (Esc closes it, a filter typed
-// in it triggers no shortcut), as the Skeleton & roles window (TaggingRolesWindowOpen).
+// The window is drawn and has the keyboard focus.
 bool TaggingAssignWindowOpen();
+// Review 13-15b: the keys the window takes while it has the focus (Esc, the arrows, Enter, and Delete /
+// Backspace so they never reach the Tagging view's marker delete); every other key (Space, Ctrl+Z...)
+// stays REAPER's. Typing in its filter is a text field (WantTextInput) as anywhere.
+bool TaggingAssignTakesKey(unsigned vk, bool ctrl, bool shift, bool alt);
 // Once per frame while the Tagging view is shown, after its panel and before the picked gestures run.
 void DrawAssignWindow(const TaggingModel& m);
 

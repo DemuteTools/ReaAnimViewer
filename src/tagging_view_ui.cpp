@@ -4915,6 +4915,7 @@ void DrawTaggingPanel(float x, float y, float w, float h)
     ImGui::End();
     ImGui::PopStyleColor(2);
     RunLater();
+    RunPickedSoundGestures();  // 13-8 fix: the sound menus' picks, after the widgets
 }
 
 }  // namespace rav

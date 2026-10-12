@@ -36,22 +36,24 @@ std::vector<MediaItem*> SelectedRavItems();
 SoundReport ReshuffleItems(const std::vector<MediaItem*>& items);
 // Sets the library of rule `block` of the item (and its pool; "" = None), then re-places that
 // rule's populated events: one undo point "RAV: Set rule library".
-SoundReport SetRuleLibrary(MediaItem* item, int block, const std::string& library_uid);
+SoundReport SetRuleLibrary(MediaItem* item, int block, std::string library_uid);
 enum class SoundValueLevel { Item, Rule, Event };
 // Sets a Switch value at one level (Rule / Event: rule `block`, Event: clip time `t`; "" = inherit),
 // pool-wide, then re-places the populated events it reaches: one undo point "RAV: Set sound value".
-SoundReport SetSoundValue(MediaItem* item, SoundValueLevel level, int block, double t, const std::string& group_uid,
-                          const std::string& value_uid);
+SoundReport SetSoundValue(MediaItem* item, SoundValueLevel level, int block, double t, std::string group_uid,
+                          std::string value_uid);
 // Antho 2026-10-12 -- each auto marker type's sound (sound_auto_assign.h). The Auto detection
 // row's library for these marker keys: the project's entries, and the rules of the item's blocks
 // of those keys (pool-wide), and on the project's other items the rule of each block of those keys
 // that has no library yet (a rule's own library is never replaced), their populated events
 // re-placed: one undo point "RAV: Set auto marker library". SetRuleLibrary / SetSoundValue (Rule) on an auto block write
 // its key's entry too.
-SoundReport SetAutoMarkerLibrary(MediaItem* item, const std::vector<std::string>& keys, const std::string& library_uid);
+SoundReport SetAutoMarkerLibrary(MediaItem* item, std::vector<std::string> keys, std::string library_uid);
 // The same for one rule-level Switch value ("" = inherit): one undo point "RAV: Set sound value".
-SoundReport SetAutoMarkerValue(MediaItem* item, const std::vector<std::string>& keys, const std::string& group_uid,
-                               const std::string& value_uid);
+SoundReport SetAutoMarkerValue(MediaItem* item, std::vector<std::string> keys, std::string group_uid,
+                               std::string value_uid);
+// 13-8 fix: these four take their uids by value: a caller's reference into the sound store
+// would dangle once the gesture replaces the store (ModifySoundStore).
 // True when a marker type has a library (Detect then wraps its gesture to give it).
 bool AutoMarkerSoundsSet();
 // Detect's step, inside the caller's undo point: each auto block of the item whose rule has no

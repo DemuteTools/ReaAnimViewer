@@ -654,6 +654,21 @@ void RenderTaggingView(float anim_time, bool loop)
 void RenderTick()
 {
     if (!g_hdc || !g_hglrc) return;
+    // 13-8 fix (Antho 2026-10-12, a Switch pick hung REAPER): a gesture run from this frame may
+    // make REAPER pump messages (a dialog REAPER opens); REAPER's timer then calls us again
+    // inside the frame, and a second ImGui frame inside the first breaks both. That nested tick is
+    // skipped (said once in the log); the outer frame finishes as usual.
+    static bool s_in_tick = false;
+    static bool s_said = false;
+    if (s_in_tick) {
+        if (!s_said) LogInfo("viewer: a frame was asked for inside a frame (a REAPER dialog during a gesture); skipped");
+        s_said = true;
+        return;
+    }
+    s_in_tick = true;
+    struct LeaveTick {
+        ~LeaveTick() { s_in_tick = false; }
+    } leave_tick;
 
     // Re-assert OUR context every frame. This is Reaper's main thread, shared with other
     // GL-rendering plugins that make THEIR context current; ours then isn't current here

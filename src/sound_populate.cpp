@@ -131,6 +131,7 @@ struct PopOpts {
     bool        only_populated = false;  // P8: only the events that already have a live placement
     bool        report_replaced = true;
     std::string rid;                      // "" = every rule
+    std::vector<std::string> rids;        // 13-8 fix: when not empty, only these rules (one detection for all)
     bool        has_t = false;
     double      t = 0.0;
 };
@@ -246,6 +247,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
         const std::string& rid = e.rid;
         if (!e.enabled) continue;  // fix C 2026-10-12: a disabled rule's sounds are kept, muted by the follow
         if (!o.rid.empty() && rid != o.rid) continue;
+        if (!o.rids.empty() && std::find(o.rids.begin(), o.rids.end(), rid) == o.rids.end()) continue;
         if (o.has_t && std::fabs(e.t - o.t) > kEventMatchSeconds) continue;
         EventSounds* ev = FindEventSounds(rec, rid, e.t);
         if (o.only_populated && (!ev || !EventIsPopulated(*ev))) continue;
@@ -499,12 +501,10 @@ void EditAutoRules(MediaItem* item, const std::vector<std::string>& keys, const 
     if (rids.empty()) return;
     const std::vector<MediaItem*> members = WithPoolMembers({item});
     for (MediaItem* m : members) ModifyItemSounds(m, nullptr, [&](ItemSounds& s) { return edit(s, rids); });
-    for (const std::string& rid : rids) {
-        PopOpts o;
-        o.only_populated = true;
-        o.rid = rid;
-        for (MediaItem* m : members) PopulateOne(m, store, o, rep, nullptr);
-    }
+    PopOpts o;  // 13-8 fix: every rule of the row in one pass (one detection per member, not one per rule)
+    o.only_populated = true;
+    o.rids = rids;
+    for (MediaItem* m : members) PopulateOne(m, store, o, rep, nullptr);
 }
 
 // Antho 2026-10-12: a row gesture's other side: on the project's other RAV items (not `item` nor
@@ -533,12 +533,11 @@ void FillOtherItems(MediaItem* item, const std::vector<std::string>& keys, const
             rids = AutoFillRids(s, blocks, store, keys);
             return FillAutoSounds(s, blocks, store, keys);
         });
-        for (const std::string& rid : rids) {
-            PopOpts o;
-            o.only_populated = true;
-            o.rid = rid;
-            PopulateOne(it, store, o, rep, nullptr);
-        }
+        if (rids.empty()) continue;  // nothing given here: no detection
+        PopOpts o;
+        o.only_populated = true;
+        o.rids = rids;
+        PopulateOne(it, store, o, rep, nullptr);
     }
 }
 
@@ -653,7 +652,7 @@ SoundReport ReshuffleItems(const std::vector<MediaItem*>& items)
     return rep;
 }
 
-SoundReport SetRuleLibrary(MediaItem* item, int block, const std::string& library_uid)
+SoundReport SetRuleLibrary(MediaItem* item, int block, std::string library_uid)
 {
     SoundReport rep;
     try {
@@ -697,8 +696,8 @@ SoundReport SetRuleLibrary(MediaItem* item, int block, const std::string& librar
     return rep;
 }
 
-SoundReport SetSoundValue(MediaItem* item, SoundValueLevel level, int block, double t, const std::string& group_uid,
-                          const std::string& value_uid)
+SoundReport SetSoundValue(MediaItem* item, SoundValueLevel level, int block, double t, std::string group_uid,
+                          std::string value_uid)
 {
     SoundReport rep;
     try {
@@ -765,7 +764,7 @@ SoundReport SetSoundValue(MediaItem* item, SoundValueLevel level, int block, dou
     return rep;
 }
 
-SoundReport SetAutoMarkerLibrary(MediaItem* item, const std::vector<std::string>& keys, const std::string& library_uid)
+SoundReport SetAutoMarkerLibrary(MediaItem* item, std::vector<std::string> keys, std::string library_uid)
 {
     SoundReport rep;
     try {
@@ -787,8 +786,8 @@ SoundReport SetAutoMarkerLibrary(MediaItem* item, const std::vector<std::string>
     return rep;
 }
 
-SoundReport SetAutoMarkerValue(MediaItem* item, const std::vector<std::string>& keys, const std::string& group_uid,
-                               const std::string& value_uid)
+SoundReport SetAutoMarkerValue(MediaItem* item, std::vector<std::string> keys, std::string group_uid,
+                               std::string value_uid)
 {
     SoundReport rep;
     try {

@@ -30,6 +30,10 @@ void DrawAutoSoundRow(MediaItem* item, const ItemRules& rules, const std::vector
 void DrawItemSoundValuesSection(const TaggingSoundContext& ctx);
 // At the end of the event inspector: the event's sounds, overrides and draws.
 void DrawEventSoundSection(const TaggingSoundContext& ctx, const ShownEvent& e);
+// Antho 2026-10-12 (13-8 fix): the sound gestures the menus above picked this frame, run once the
+// panel's widgets are drawn (a gesture may replace the sound store those menus list). Each is one
+// undo point, as before.
+void RunPickedSoundGestures();
 // True when the footer shows Populate (D9: Commit is then a SolidButton).
 bool SoundFooterVisible(const TaggingSoundContext& ctx);
 // The extra footer height (px) the sound rows take, 0 when hidden.

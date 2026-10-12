@@ -19,6 +19,7 @@
 #include <imgui.h>
 
 #include "library_icons.h"
+#include "picked_gestures.h"
 #include "reaper_api.h"
 #include "rule_record.h"
 #include "sound_auto_assign.h"
@@ -101,6 +102,20 @@ void Remember(const SoundReport& rep, int events)
     g_last.report = rep;
     g_last.events = events;
     g_last.summary = ReportSummary(rep, events);
+}
+
+// Antho 2026-10-12 (13-8 fix): the menus below list the sound store by reference, and a gesture
+// may replace that store (an auto block's value or library also goes to its marker type's store
+// entry). Run from the menu, the gesture got its value through a reference into
+// the store it replaced (the value written was whatever reused that memory: "it does not
+// change"), and the menu went on reading the freed lists (a garbage length: REAPER hung). So a
+// menu only picks: the gesture, holding its own copies, runs after the panel's widgets
+// (RunPickedSoundGestures). Still one undo point each.
+PickedGestures g_picks;
+
+void Pick(std::function<SoundReport()> gesture)
+{
+    g_picks.Pick([gesture]() { Remember(gesture(), -1); });
 }
 
 std::string ValueName(const SwitchGroup* g, const std::string& uid)
@@ -247,13 +262,14 @@ void DrawRuleSoundSection(const TaggingSoundContext& ctx)
             const std::string preview = lib ? lib->name : (rs && !rs->library.empty() ? "(gone)" : "None");
             if (ImGui::BeginCombo("##lib", preview.c_str())) {
                 const bool assigned = rs && !rs->library.empty();  // a deleted library can be set back to None
-                if (ImGui::Selectable("None", !assigned) && assigned) Remember(SetRuleLibrary(item, block, ""), -1);
+                if (ImGui::Selectable("None", !assigned) && assigned)
+                    Pick([item, block]() { return SetRuleLibrary(item, block, std::string()); });
                 for (const SoundLibrary& L : store.libraries) {
                     const LibraryCheck chk = CheckLibrary(store, L);
                     if (chk.blocked) ImGui::BeginDisabled();
                     const bool cur = lib && lib->uid == L.uid;
                     if (ImGui::Selectable((L.name + "##" + L.uid).c_str(), cur) && !cur && !chk.blocked)
-                        Remember(SetRuleLibrary(item, block, L.uid), -1);
+                        Pick([item, block, uid = L.uid]() { return SetRuleLibrary(item, block, uid); });
                     if (chk.blocked) ImGui::EndDisabled();
                     if (chk.blocked && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
                         ImGui::SetTooltip("Blocked: %s", chk.reason.c_str());
@@ -268,7 +284,7 @@ void DrawRuleSoundSection(const TaggingSoundContext& ctx)
                 for (const GroupUse& g : GroupsUsed(store, *lib)) {
                     const std::string gid = g.group_uid;
                     ValueMenu(gid.c_str(), store, g, below, rs ? &rs->values : nullptr, [item, block, gid](const std::string& v) {
-                        Remember(SetSoundValue(item, SoundValueLevel::Rule, block, 0.0, gid, v), -1);
+                        Pick([item, block, gid, v]() { return SetSoundValue(item, SoundValueLevel::Rule, block, 0.0, gid, v); });
                     });
                 }
             }
@@ -312,13 +328,14 @@ void DrawAutoSoundRow(MediaItem* item, const ItemRules& rules, const std::vector
                                           "Detect).\nTheir rule's Sound card shows the same.");
     if (ImGui::BeginPopup("##autolibmenu")) {
         const bool assigned = !same_lib || !lib_uid.empty();
-        if (ImGui::Selectable("None", !assigned) && assigned) Remember(SetAutoMarkerLibrary(item, keys_copy, ""), -1);
+        if (ImGui::Selectable("None", !assigned) && assigned)
+            Pick([item, keys_copy]() { return SetAutoMarkerLibrary(item, keys_copy, std::string()); });
         for (const SoundLibrary& L : store.libraries) {
             const LibraryCheck chk = CheckLibrary(store, L);
             if (chk.blocked) ImGui::BeginDisabled();
             const bool cur = lib && lib->uid == L.uid;
             if (ImGui::Selectable((L.name + "##" + L.uid).c_str(), cur) && !cur && !chk.blocked)
-                Remember(SetAutoMarkerLibrary(item, keys_copy, L.uid), -1);
+                Pick([item, keys_copy, uid = L.uid]() { return SetAutoMarkerLibrary(item, keys_copy, uid); });
             if (chk.blocked) ImGui::EndDisabled();
             if (chk.blocked && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
                 ImGui::SetTooltip("Blocked: %s", chk.reason.c_str());
@@ -354,11 +371,12 @@ void DrawAutoSoundRow(MediaItem* item, const ItemRules& rules, const std::vector
                 std::snprintf(inherit, sizeof(inherit), "inherit %s %s (%s)", kDot, ValueName(grp, inh).c_str(), FromWord(from));
                 const std::string gid = g.group_uid;
                 const bool        own = !same_val || !val.empty();
-                if (ImGui::Selectable(inherit, !own) && own) Remember(SetAutoMarkerValue(item, keys_copy, gid, ""), -1);
+                if (ImGui::Selectable(inherit, !own) && own)
+                    Pick([item, keys_copy, gid]() { return SetAutoMarkerValue(item, keys_copy, gid, std::string()); });
                 for (const SwitchValue& v : grp->values) {
                     const bool cur = same_val && val == v.uid;
                     if (ImGui::Selectable((v.name + "##" + v.uid).c_str(), cur) && !cur)
-                        Remember(SetAutoMarkerValue(item, keys_copy, gid, v.uid), -1);
+                        Pick([item, keys_copy, gid, uid = v.uid]() { return SetAutoMarkerValue(item, keys_copy, gid, uid); });
                 }
                 ImGui::EndPopup();
             }
@@ -398,7 +416,7 @@ void DrawItemSoundValuesSection(const TaggingSoundContext& ctx)
         for (const GroupUse& g : groups) {
             const std::string gid = g.group_uid;
             ValueMenu(gid.c_str(), store, g, ValueLayers{}, &rec.item_values, [item, gid](const std::string& v) {
-                Remember(SetSoundValue(item, SoundValueLevel::Item, -1, 0.0, gid, v), -1);
+                Pick([item, gid, v]() { return SetSoundValue(item, SoundValueLevel::Item, -1, 0.0, gid, v); });
             });
         }
     }
@@ -462,12 +480,17 @@ void DrawEventSoundSection(const TaggingSoundContext& ctx, const ShownEvent& e)
         for (const GroupUse& g : GroupsUsed(store, *lib)) {
             const std::string gid = g.group_uid;
             ValueMenu(gid.c_str(), store, g, below, ev ? &ev->overrides : nullptr, [item, block, t, gid](const std::string& v) {
-                Remember(SetSoundValue(item, SoundValueLevel::Event, block, t, gid, v), -1);
+                Pick([item, block, t, gid, v]() { return SetSoundValue(item, SoundValueLevel::Event, block, t, gid, v); });
             });
         }
     }
     ui::EndSection(s);
     ImGui::PopID();
+}
+
+void RunPickedSoundGestures()
+{
+    g_picks.Run();
 }
 
 bool SoundFooterVisible(const TaggingSoundContext& ctx)

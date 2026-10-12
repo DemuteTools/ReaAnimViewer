@@ -20,24 +20,26 @@ namespace rav {
 void StripHeightGrip(StripGripState& g, const char* id, float* stored_h, float h, float min_h, float max_h,
                      const char* pref_key)
 {
-    constexpr float kGripH = 4.0f;
+    // 13-14: the theme's splitter (a 2 px accent-line bar under the mouse, accent while dragged,
+    // the resize cursor) over the top edge, its hit area kept at 4 px (DPI-scaled) so it never
+    // takes the strip's content. The drag still follows the mouse from the press (no delta drift).
+    const float  grip_h = ui::Dp(4.0f);
     const ImVec2 content = ImGui::GetCursorScreenPos();
     const ImVec2 wpos = ImGui::GetWindowPos();
     ImGui::SetCursorScreenPos(wpos);
-    ImGui::InvisibleButton(id, ImVec2(ImGui::GetWindowSize().x, kGripH));
+    const ui::SplitterState sp = ui::SplitterBar(id, ImVec2(ImGui::GetWindowSize().x, grip_h), /*vertical=*/false);
     const float my = ImGui::GetIO().MousePos.y;
     if (ImGui::IsItemActivated()) {
         g.start_h = h;
         g.press_y = my;
         g.moved = false;
     }
-    if (ImGui::IsItemActive() && my != g.press_y) g.moved = true;
-    if (ImGui::IsItemActive() && g.moved) {
+    if (sp.active && my != g.press_y) g.moved = true;
+    if (sp.active && g.moved) {
         const float nh = g.start_h - (my - g.press_y);
         *stored_h = std::floor(std::min(std::max(nh, min_h), max_h));
     }
-    if (ImGui::IsItemDeactivated() && g.moved && pref_key) SavePrefFloat(pref_key, *stored_h);
-    if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+    if (sp.released && g.moved && pref_key) SavePrefFloat(pref_key, *stored_h);
     ImGui::SetCursorScreenPos(content);
 }
 
@@ -178,10 +180,10 @@ void DrawStripRuler(ImDrawList* dl, const StripWindow& w, const StripRuler& r, f
         const bool major = VideoRulerTickIsMajor(k, r.step, fps);
         // Labelled ticks rise past the minor ones and read brighter (minor kStrokeStrong <
         // frame kFaint < second kMuted on the dark surface): whole seconds the full band.
-        const float tick_h = major ? ruler_h : std::max(3.0f, std::floor(ruler_h * 0.6f));
+        const float tick_h = major ? ruler_h : std::max(ui::Dp(3.0f), std::floor(ruler_h * 0.6f));
         dl->AddLine(ImVec2(tick_x + 0.5f, lane_top - tick_h), ImVec2(tick_x + 0.5f, lane_top),
                     major ? ui::kMuted : ui::kFaint, 1.0f);
-        if (ruler_fs >= 6.0f)
+        if (ruler_fs >= ui::Dp(6.0f))
             dl->AddText(ruler_font, ruler_fs, ImVec2(tick_x + kStripRulerLabelPad, r0.y), major ? ui::kText : ui::kMuted,
                         label);
     }

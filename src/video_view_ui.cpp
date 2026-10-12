@@ -18,6 +18,7 @@
 #include "reaper_actions.h"  // spec 11-fb-5: REAPER's Video window open
 #include "shortcuts.h"   // spec 11-fb-3: the current keys on the key caps; 11-fb-11: LoadPref*
 #include "strip_view.h"  // Story 10-3: the shared strip (grip, view window, ruler, seek)
+#include "ui_flow.h"   // 13-14: LabelRow, TextWidth
 #include "ui_theme.h"
 #include "video_preview_lag.h"
 #include "video_shot_timing.h"
@@ -25,8 +26,9 @@
 namespace rav {
 namespace {
 
-constexpr float kPanelWidth = 300.0f;
-constexpr float kPanelGap   = 8.0f;
+// 13-14 (N3): mockup px, at the screen's DPI.
+constexpr ui::DpPx kPanelWidth{300.0f};
+constexpr ui::DpPx kPanelGap{8.0f};
 
 // Spec 11-fb-11 -- persisted settings (ExtState, shortcuts.h LoadPref* / SavePref*).
 constexpr char kPrefStripHeight[]        = "video.strip_height";
@@ -46,21 +48,21 @@ void SetInspectorCollapsed(bool collapsed)
     SavePrefBool(kPrefInspectorCollapsed, collapsed);
 }
 
+// The strip's minimum height (kVideoStripHeight) at the screen's DPI.
+float StripMinHeight()
+{
+    return ui::Dp(kVideoStripHeight);
+}
+
 float StripMaxHeight(float client_h)
 {
-    return std::max(kVideoStripHeight, std::floor(client_h * 0.5f));
+    return std::max(StripMinHeight(), std::floor(client_h * 0.5f));
 }
 
 // Strings outside ASCII are spelled as UTF-8 escapes (the build has no /utf-8).
 #define RAV_DOT   "\xC2\xB7"   // middle dot
 #define RAV_TIMES "\xC3\x97"   // multiplication sign
 #define RAV_DEG   "\xC2\xB0"   // degree sign
-
-constexpr ImGuiWindowFlags kOverlayFlags =
-    ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-    ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize |
-    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing |
-    ImGuiWindowFlags_NoBackground;
 
 void FormatTime(double t, char* out, size_t cap)
 {
@@ -147,16 +149,19 @@ void FixButton(VideoFxStatus status, float width)
     }
 }
 
-void PanelIcon(ImDrawList* dl, ImVec2 c, ImU32 ink)
+// The mock-up's panel glyph (a ui::IconFn: the square at p, side s): a window with a right
+// column and three lines in it, 13 x 11 in a 14 px square, scaled with it.
+void PanelIcon(ImDrawList* dl, ImVec2 p, float s, int /*which*/, ImU32 ink)
 {
-    // The mock-up's panel glyph: a window with a right column and three lines in it.
-    const ImVec2 a(c.x - 6.5f, c.y - 5.5f);
-    const ImVec2 b(c.x + 6.5f, c.y + 5.5f);
-    dl->AddRect(a, b, ink, 2.0f, 0, 1.4f);
-    dl->AddLine(ImVec2(c.x + 2.0f, a.y), ImVec2(c.x + 2.0f, b.y), ink, 1.4f);
+    const float  k = s / 14.0f;
+    const ImVec2 c(p.x + s * 0.5f, p.y + s * 0.5f);
+    const ImVec2 a(c.x - 6.5f * k, c.y - 5.5f * k);
+    const ImVec2 b(c.x + 6.5f * k, c.y + 5.5f * k);
+    dl->AddRect(a, b, ink, 2.0f * k, 0, 1.4f * k);
+    dl->AddLine(ImVec2(c.x + 2.0f * k, a.y), ImVec2(c.x + 2.0f * k, b.y), ink, 1.4f * k);
     for (int i = 0; i < 3; ++i) {
-        const float y = c.y - 2.5f + 2.0f * static_cast<float>(i);
-        dl->AddLine(ImVec2(c.x + 3.8f, y), ImVec2(c.x + 4.8f, y), ink, 1.2f);
+        const float y = c.y + (-2.5f + 2.0f * static_cast<float>(i)) * k;
+        dl->AddLine(ImVec2(c.x + 3.8f * k, y), ImVec2(c.x + 4.8f * k, y), ink, 1.2f * k);
     }
 }
 
@@ -167,8 +172,8 @@ void ParamRow(int p, const double values[vcam::kParamCount], bool enabled)
                                                            "Target Z"};
     float lo = -180.0f;
     float hi = 180.0f;
-    const char* fmt = "%.0f" RAV_DEG;
-    ImGuiSliderFlags flags = ImGuiSliderFlags_AlwaysClamp;
+    ui::FaderOpts opts;  // the fader keeps the value in [lo, hi] (as AlwaysClamp did)
+    opts.format = "%.0f" RAV_DEG;
     switch (p) {
         case vcam::kYaw: break;
         case vcam::kPitch:
@@ -178,66 +183,27 @@ void ParamRow(int p, const double values[vcam::kParamCount], bool enabled)
         case vcam::kDistance:
             lo = static_cast<float>(vcam::kDistMin);
             hi = static_cast<float>(vcam::kDistMax);
-            fmt = "%.2f" RAV_TIMES "r";
-            flags |= ImGuiSliderFlags_Logarithmic;
+            opts.format = "%.2f" RAV_TIMES "r";
+            opts.log = true;  // kDistMin > 0
             break;
         default:
             lo = static_cast<float>(-vcam::kTargetRange);
             hi = static_cast<float>(vcam::kTargetRange);
-            fmt = "%+.2fr";
+            opts.format = "%+.2fr";
             break;
     }
     ImGui::PushID(p);
-    ImGui::AlignTextToFramePadding();
-    ui::Caption(kLabels[p]);
-    ImGui::SameLine(70.0f);
-    ImGui::SetNextItemWidth(-1.0f);
+    const float field_w = ui::LabelRow(kLabels[p], ui::Dp(80.0f));
     float x = static_cast<float>(vcam::DisplayFromNorm(p, values[p]));
-    if (ImGui::SliderFloat("##v", &x, lo, hi, fmt, flags) && enabled) VideoViewSliderEdit(p, vcam::NormFromDisplay(p, x));
+    if (ui::Fader("##v", &x, lo, hi, field_w, opts) && enabled) VideoViewSliderEdit(p, vcam::NormFromDisplay(p, x));
     // Also when the row went disabled mid-drag: the slider gesture must end (one undo point).
-    if (ImGui::IsItemDeactivatedAfterEdit()) VideoViewSliderCommit(p);
+    // ui::Fader is an InvisibleButton, never "edited": IsItemDeactivated; the commit writes
+    // nothing when no edit began (a click that did not move the value).
+    if (ImGui::IsItemDeactivated()) VideoViewSliderCommit(p);
     ImGui::PopID();
 }
 
 // ---- Story 11-5 helpers ---------------------------------------------------------------------
-
-// A dashed rectangle (the mock-up's .add and dashed chips).
-void DashedRect(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col)
-{
-    constexpr float kDash = 4.0f;
-    constexpr float kGap = 3.0f;
-    for (float x = a.x; x < b.x; x += kDash + kGap) {
-        const float x2 = std::min(x + kDash, b.x);
-        dl->AddLine(ImVec2(x, a.y + 0.5f), ImVec2(x2, a.y + 0.5f), col, 1.0f);
-        dl->AddLine(ImVec2(x, b.y - 0.5f), ImVec2(x2, b.y - 0.5f), col, 1.0f);
-    }
-    for (float y = a.y; y < b.y; y += kDash + kGap) {
-        const float y2 = std::min(y + kDash, b.y);
-        dl->AddLine(ImVec2(a.x + 0.5f, y), ImVec2(a.x + 0.5f, y2), col, 1.0f);
-        dl->AddLine(ImVec2(b.x - 0.5f, y), ImVec2(b.x - 0.5f, y2), col, 1.0f);
-    }
-}
-
-// A full-width dashed button with a label and an optional key cap (the mock-up's .add).
-bool DashedButton(const char* id, const char* label, const char* key, float width, float height, bool enabled)
-{
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImVec2 p0 = ImGui::GetCursorScreenPos();
-    const bool pressed = ImGui::InvisibleButton(id, ImVec2(width, height));
-    const bool hovered = ImGui::IsItemHovered();
-    const bool disabled = !enabled;
-    const ImVec2 p1(p0.x + width, p0.y + height);
-    if (hovered && !disabled) dl->AddRectFilled(p0, p1, ui::kRaised, ui::kRadiusMd);
-    DashedRect(dl, p0, p1, ui::kStrokeStrong);
-    const ImVec2 ts = ImGui::CalcTextSize(label);
-    const float key_w = key ? ImGui::CalcTextSize(key).x + 8.0f + 8.0f : 0.0f;
-    // A long custom key ("Ctrl+Shift+Alt+PageDown") must not push the label off the button.
-    const float x = std::max(p0.x + 6.0f, p0.x + (width - ts.x - key_w) * 0.5f);
-    const float y = p0.y + (height - ts.y) * 0.5f;
-    dl->AddText(ImVec2(x, y), (hovered && !disabled) ? ui::kText : ui::kMuted, label);
-    if (key) ui::KeyCap(dl, ImVec2(x + ts.x + 8.0f, y - 1.5f), key);
-    return pressed;
-}
 
 // A group title: a caption and a faint note on the same line (the mock-up's .grp).
 void GroupHeader(const char* title, const char* note)
@@ -246,22 +212,14 @@ void GroupHeader(const char* title, const char* note)
     ui::Caption(title);
     if (note && note[0]) {
         ImGui::SameLine();
-        ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kFaint));
-        ImGui::TextUnformatted(note);
-        ImGui::PopStyleColor();
+        ui::ToneText(note, ui::kFaint);
     }
 }
 
 // The notice under an action that did nothing (e.g. a cut on a frame that already starts a shot).
 void NoticeLine()
 {
-    if (const char* n = VideoViewNotice()) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kWarn));
-        ImGui::PushTextWrapPos(0.0f);
-        ImGui::TextUnformatted(n);
-        ImGui::PopTextWrapPos();
-        ImGui::PopStyleColor();
-    }
+    if (const char* n = VideoViewNotice()) ui::ToneText(n, ui::kWarn, true);
 }
 
 // The shot list's title (pinned above its scrolling rows).
@@ -275,7 +233,7 @@ void ShotListHeader(const VideoViewModel& m)
 // Spec 11-fb-15 -- a clip's header row in the shot list: its animation name and start time.
 void ClipHeaderRow(int clip, float full)
 {
-    const float row_h = 22.0f;
+    const float row_h = ui::ControlH();
     ImGui::Dummy(ImVec2(full, row_h));
     const ImVec2 a = ImGui::GetItemRectMin();
     const ImVec2 b = ImGui::GetItemRectMax();
@@ -285,14 +243,11 @@ void ClipHeaderRow(int clip, float full)
     char tm[32];
     FormatTime(VideoViewClipStart(clip), tm, sizeof(tm));
     const float tm_w = ImGui::CalcTextSize(tm).x;
-    const float right = b.x - 30.0f;  // the shot rows' time column
+    const float right = b.x - ui::Dp(30.0f);  // the shot rows' time column
     dl->AddText(ImVec2(right - tm_w, cy - th * 0.5f), ui::kFaint, tm);
-    const float name_x = a.x + 4.0f;
-    if (right - tm_w - 8.0f > name_x) {
-        dl->PushClipRect(ImVec2(name_x, a.y), ImVec2(right - tm_w - 8.0f, b.y), true);
-        dl->AddText(ImVec2(name_x, cy - th * 0.5f), ui::kMuted, VideoViewClipName(clip));
-        dl->PopClipRect();
-    }
+    const float name_x = a.x + ui::Dp(4.0f);
+    const float name_end = right - tm_w - ui::Dp(8.0f);
+    if (name_end > name_x) ui::EllipsisText(dl, ImVec2(name_x, cy - th * 0.5f), name_end, ui::kMuted, VideoViewClipName(clip));
     dl->AddLine(ImVec2(a.x, b.y - 0.5f), ImVec2(b.x, b.y - 0.5f), ui::kStroke, 1.0f);
 }
 
@@ -317,11 +272,8 @@ void ShotRows(const VideoViewModel& m, float full)
     static int s_scrolled_to = -1;
     const bool scroll_to_current = current >= 0 && current != s_scrolled_to;
     s_scrolled_to = current;
-    const float row_h = 28.0f;
-    ImGui::PushStyleColor(ImGuiCol_Header, ui::Col(ui::kAccentSoft));
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ui::Col(ui::kRaised));
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ui::Col(ui::kAccentSoft));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 2.0f));
+    const float row_h = ui::RowH();
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ui::Dp(8.0f), ui::Dp(2.0f)));
     int next_clip = 0;  // the next clip whose header is due
     for (int i = 0; i < static_cast<int>(m.shots.size()); ++i) {
         const VideoViewShot& s = m.shots[static_cast<size_t>(i)];
@@ -334,14 +286,14 @@ void ShotRows(const VideoViewModel& m, float full)
         }
         ImGui::PushID(i);
         const bool sel = (i == current);
-        if (ImGui::Selectable("##shotrow", sel, ImGuiSelectableFlags_AllowOverlap, ImVec2(full, row_h)))
-            QueueVideoSeekToShot(i);
+        // The row (hover raised, selected accent-soft with its accent-line edge), full width.
+        if (ui::SelectRow("##shotrow", sel, 0, row_h, ImGuiSelectableFlags_AllowOverlap)) QueueVideoSeekToShot(i);
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip) && !ImGui::IsAnyItemActive()) ImGui::SetTooltip("Move the playhead to this shot");
         // Right-click: this shot's camera into / from the clipboard (Ctrl+C / Ctrl+V do the
         // current shot).
-        if (ImGui::BeginPopupContextItem("##shotctx")) {
+        if (ui::BeginMenuPopupContextItem("##shotctx")) {
             ShotCameraMenuItems(i);
-            ImGui::EndPopup();
+            ui::EndMenuPopup();
         }
         const ImVec2 a = ImGui::GetItemRectMin();
         const ImVec2 b = ImGui::GetItemRectMax();
@@ -353,52 +305,38 @@ void ShotRows(const VideoViewModel& m, float full)
             if (a.y < top || b.y > bottom) ImGui::SetScrollHereY(0.5f);
         }
         ImDrawList* dl = ImGui::GetWindowDrawList();
-        if (sel) dl->AddRect(a, b, ui::kAccentLine, ui::kRadiusMd);
         const float cy = (a.y + b.y) * 0.5f;
         const float th = ImGui::GetTextLineHeight();
-        dl->AddCircleFilled(ImVec2(a.x + 11.0f, cy), 4.0f, ui::kCurvePalette[i % 8], 12);
+        dl->AddCircleFilled(ImVec2(a.x + ui::Dp(11.0f), cy), ui::Dp(4.0f), ui::kCurvePalette[i % 8], 12);
 
         // Right side first: delete, time, Cut/Move tag; the name takes what is left.
         const bool can_delete = !s.clip_first;
-        float right = b.x - 4.0f;
+        float right = b.x - ui::Dp(4.0f);
+        const float del_side = ui::ControlH();
         if (can_delete) {
-            ImGui::SetCursorScreenPos(ImVec2(right - 22.0f, cy - 11.0f));
-            if (ImGui::Button("x##del", ImVec2(22.0f, 22.0f))) QueueVideoDeleteShot(i);
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Delete this shot");
+            ImGui::SetCursorScreenPos(ImVec2(right - del_side, cy - del_side * 0.5f));
+            if (ui::IconOnlyButton("##del", RAV_TIMES, "Delete this shot", del_side)) QueueVideoDeleteShot(i);
         }
-        right -= 26.0f;  // same column with or without the button
+        right -= del_side + ui::Dp(4.0f);  // same column with or without the button
         char tm[32];
         FormatTime(s.start, tm, sizeof(tm));  // its first frame (a cut sits half a frame early)
         const float tm_w = ImGui::CalcTextSize(tm).x;
         dl->AddText(ImVec2(right - tm_w, cy - th * 0.5f), ui::kMuted, tm);
-        right -= tm_w + 8.0f;
-        const char* tag = s.move_to_next ? "Move" : "Cut";
-        const float tag_w = ImGui::CalcTextSize(tag).x + 14.0f;
-        const ImVec2 ta(right - tag_w, cy - th * 0.5f - 2.0f);
-        const ImVec2 tb(right, cy + th * 0.5f + 2.0f);
+        right -= tm_w + ui::Dp(8.0f);
+        // "###tag": the same id whatever the label says.
+        const char* tag = s.move_to_next ? "Move###tag" : "Cut###tag";
+        const float tag_w = ui::TextWidth(tag) + ui::Dp(14.0f);
+        const ImVec2 ta(right - tag_w, cy - th * 0.5f - ui::Dp(2.0f));
         // Spec 11-fb-11: a click on the tag switches this shot between Cut and Move (spec
         // 11-fb-15: an implicit shot gets its point then).
-        bool tag_hovered = false;
-        bool tag_tip = false;
-        {
-            ImGui::SetCursorScreenPos(ta);
-            if (ImGui::InvisibleButton("##tag", ImVec2(tb.x - ta.x, tb.y - ta.y))) QueueVideoTransitionAt(i);
-            tag_hovered = ImGui::IsItemHovered();
-            tag_tip = ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip);
-        }
-        if (tag_tip)
+        ImGui::SetCursorScreenPos(ta);
+        if (ui::ChipButton(tag, ImVec2(tag_w, th + ui::Dp(4.0f)))) QueueVideoTransitionAt(i);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
             ImGui::SetTooltip("%s", s.move_to_next ? "Click: switch to Cut to next" : "Click: switch to Move to next");
-        dl->AddRectFilled(ta, tb, tag_hovered ? ui::kHover : ui::kBg, (tb.y - ta.y) * 0.5f);
-        dl->AddRect(ta, tb, tag_hovered ? ui::kStrokeStrong : ui::kStroke, (tb.y - ta.y) * 0.5f);
-        dl->AddText(ImVec2(ta.x + 7.0f, cy - th * 0.5f), tag_hovered ? ui::kText : ui::kMuted, tag);
-        right = ta.x - 6.0f;
-        const float name_x = a.x + 22.0f;
-        if (right > name_x) {
-            dl->PushClipRect(ImVec2(name_x, a.y), ImVec2(right, b.y), true);
-            dl->AddText(ImVec2(name_x, cy - th * 0.5f), ui::kText, s.name.c_str());
-            dl->PopClipRect();
-        }
-        ImGui::SetCursorScreenPos(ImVec2(a.x, b.y + 2.0f));
+        right = ta.x - ui::Dp(6.0f);
+        const float name_x = a.x + ui::Dp(22.0f);
+        if (right > name_x) ui::EllipsisText(dl, ImVec2(name_x, cy - th * 0.5f), right, ui::kText, s.name);
+        ImGui::SetCursorScreenPos(ImVec2(a.x, b.y + ui::Dp(2.0f)));
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
         ImGui::PopID();
     }
@@ -408,7 +346,6 @@ void ShotRows(const VideoViewModel& m, float full)
         ImGui::PopID();
     }
     ImGui::PopStyleVar();
-    ImGui::PopStyleColor(3);
 }
 
 // "+ Cut at playhead" and the notice line, pinned under the shot list.
@@ -417,7 +354,7 @@ void CutAtPlayhead(float full)
     const bool can_cut = VideoViewCanCut();
     if (!can_cut) ImGui::BeginDisabled();
     const char* cut_key = ShortcutKeyLabel(kShortcutCut);
-    if (DashedButton("##cutpanel", "+ Cut at playhead", cut_key, full, 30.0f, can_cut)) QueueVideoCut();
+    if (ui::AddButton("+ Cut at playhead##cutpanel", ImVec2(full, ui::Dp(30.0f)), cut_key)) QueueVideoCut();
     if (!can_cut) ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
         ImGui::SetTooltip("A new shot starts on the playhead's frame, with the camera shown there (%s in Video view)",
@@ -431,33 +368,31 @@ void SavedAngles(const VideoViewModel& m, float full)
 {
     GroupHeader("Saved angles", nullptr);
     const bool can_apply = (m.status == VideoFxStatus::Active) && !m.shots.empty();
-    const ImGuiStyle& st = ImGui::GetStyle();
-    const float chip_h = 24.0f;
+    const float chip_h = ui::FieldH();
+    const float chip_gap = ui::Dp(4.0f);
     const float start_x = ImGui::GetCursorPosX();
     float line_w = 0.0f;
     static std::string s_ctx_name;
     bool open_ctx = false;
 
     auto place = [&](float w) {
-        if (line_w > 0.0f && line_w + 4.0f + w <= full) {
-            ImGui::SameLine(0.0f, 4.0f);
-            line_w += 4.0f + w;
+        if (line_w > 0.0f && line_w + chip_gap + w <= full) {
+            ImGui::SameLine(0.0f, chip_gap);
+            line_w += chip_gap + w;
         } else {
             if (line_w > 0.0f) ImGui::SetCursorPosX(start_x);
             line_w = w;
         }
     };
 
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, chip_h * 0.5f);
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
-    ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStroke));
     for (int i = 0; i < static_cast<int>(m.angles.size()); ++i) {
         const VideoFxAngle& a = m.angles[static_cast<size_t>(i)];
-        const float w = std::min(full, ImGui::CalcTextSize(a.name.c_str()).x + 2.0f * st.FramePadding.x + 4.0f);
+        // The chip (a pill, 7 px each side of its name), never wider than the panel.
+        const float w = std::min(full, ui::TextWidth(a.name.c_str()) + ui::Dp(14.0f));
         place(w);
         ImGui::PushID(i);
         if (!can_apply) ImGui::BeginDisabled();
-        if (ImGui::Button(a.name.c_str(), ImVec2(w, chip_h))) QueueVideoApplyAngle(i);
+        if (ui::ChipButton(a.name.c_str(), ImVec2(w, chip_h))) QueueVideoApplyAngle(i);
         if (!can_apply) ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
             ImGui::SetTooltip("%.0f" RAV_DEG " yaw, %.0f" RAV_DEG " pitch, %.2f" RAV_TIMES "r\n"
@@ -474,20 +409,16 @@ void SavedAngles(const VideoViewModel& m, float full)
         ImGui::PopID();
     }
     if (open_ctx) ImGui::OpenPopup("##anglectx");
-    ImGui::PopStyleColor();
-    ImGui::PopStyleVar(2);
 
     // + Save (dashed chip): asks a name, then saves the shot under the playhead.
     static char s_new_name[kVideoFxMaxName + 1] = {};
     {
-        const char* label = "+ Save";
-        const float w = ImGui::CalcTextSize(label).x + 2.0f * st.FramePadding.x + 4.0f;
+        const char* label = "+ Save##saveangle";
+        const float w = ui::TextWidth(label) + ui::Dp(20.0f);  // AddButton's 10 px each side
         place(w);
         const bool can_save = !m.shots.empty() && m.fx >= 0;
         if (!can_save) ImGui::BeginDisabled();
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        const ImVec2 p0 = ImGui::GetCursorScreenPos();
-        if (ImGui::InvisibleButton("##saveangle", ImVec2(w, chip_h))) {
+        if (ui::AddButton(label, ImVec2(w, chip_h), nullptr, /*pill=*/true)) {
             // A free default name: "Angle N".
             for (int n = static_cast<int>(m.angles.size()) + 1;; ++n) {
                 std::snprintf(s_new_name, sizeof(s_new_name), "Angle %d", n);
@@ -497,36 +428,28 @@ void SavedAngles(const VideoViewModel& m, float full)
             }
             ImGui::OpenPopup("##saveanglepop");
         }
-        const bool hovered = ImGui::IsItemHovered();
         const bool tip = ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip);
         if (!can_save) ImGui::EndDisabled();
-        const ImVec2 p1(p0.x + w, p0.y + chip_h);
-        if (hovered && can_save) dl->AddRectFilled(p0, p1, ui::kRaised, chip_h * 0.5f);
-        DashedRect(dl, ImVec2(p0.x + 3.0f, p0.y), ImVec2(p1.x - 3.0f, p1.y), ui::kStrokeStrong);
-        const ImVec2 ts = ImGui::CalcTextSize(label);
-        dl->AddText(ImVec2(p0.x + (w - ts.x) * 0.5f, p0.y + (chip_h - ts.y) * 0.5f),
-                    (hovered && can_save) ? ui::kText : ui::kMuted, label);
         if (tip) ImGui::SetTooltip("Save the camera of the shot under the playhead as an angle");
     }
 
-    if (ImGui::BeginPopup("##anglectx")) {
+    if (ui::BeginMenuPopup("##anglectx")) {
         const std::string label = "Delete \"" + s_ctx_name + "\"";
         if (ImGui::Selectable(label.c_str())) QueueVideoDeleteAngle(s_ctx_name);
-        ImGui::EndPopup();
+        ui::EndMenuPopup();
     }
-    if (ImGui::BeginPopup("##saveanglepop")) {
+    if (ui::BeginPanelPopup("##saveanglepop")) {
         ImGui::TextUnformatted("Save this shot's camera as");
         if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
-        ImGui::SetNextItemWidth(220.0f);
-        const bool enter = ImGui::InputText("##anglename", s_new_name, sizeof(s_new_name),
-                                            ImGuiInputTextFlags_EnterReturnsTrue);
-        if (ui::PrimaryButton("Save##angle", ImVec2(106.0f, 0.0f)) || enter) {
+        const bool enter = ui::TextField("##anglename", nullptr, s_new_name, sizeof(s_new_name), ui::Dp(220.0f),
+                                         ImGuiInputTextFlags_EnterReturnsTrue);
+        if (ui::PrimaryButton("Save##angle", ImVec2(ui::Dp(106.0f), 0.0f)) || enter) {
             QueueVideoSaveAngle(s_new_name);
             ImGui::CloseCurrentPopup();
         }
-        ImGui::SameLine(0.0f, 8.0f);
-        if (ui::SolidButton("Cancel##angle", ImVec2(106.0f, 0.0f))) ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
+        ImGui::SameLine(0.0f, ui::Dp(8.0f));
+        if (ui::SolidButton("Cancel##angle", ImVec2(ui::Dp(106.0f), 0.0f))) ImGui::CloseCurrentPopup();
+        ui::EndPanelPopup();
     }
 }
 
@@ -557,7 +480,7 @@ constexpr bool kShowRenderCurrent = false;
 
 void RenderRow(float full)
 {
-    constexpr float kGap = 6.0f;  // between the buttons
+    const float kGap = ui::Dp(6.0f);  // between the buttons
     const int count = kShowRenderCurrent ? 3 : 2;
     // At least 1 px: ImGui reads a width <= 0 as relative to the right edge.
     const float third = std::max(1.0f, std::floor((full - (count - 1) * kGap) / count));
@@ -577,7 +500,7 @@ void RenderRow(float full)
     const VideoStripRange& r = VideoViewStripRange();
     const bool can_render = r.valid && r.under_playhead && r.end > r.start;
     const char* label = "Render Current##rendercurrent";
-    if (ImGui::CalcTextSize("Render Current").x + 2.0f * ImGui::GetStyle().FramePadding.x > last)
+    if (ui::ButtonWidth("Render Current") > last)
         label = "Current##rendercurrent";
     if (!can_render) ImGui::BeginDisabled();
     if (ui::SolidButton(label, ImVec2(last, 0.0f))) QueueVideoRenderCurrent();
@@ -605,7 +528,7 @@ void OutputSection(const VideoViewModel& m, float full)
     ImGui::Spacing();
     ImGui::Separator();
     GroupHeader("Output", nullptr);
-    constexpr float kLabelX = 84.0f;
+    const float kFieldMin = ui::Dp(120.0f);  // narrower: the field goes under its label
 
     // Size.
     std::string project_label;
@@ -622,11 +545,8 @@ void OutputSection(const VideoViewModel& m, float full)
                                                 kSizePresets[preset_index].note)
                                     : SizeLabel(m.override_w, m.override_h, " " RAV_DOT " custom");
     }
-    ImGui::AlignTextToFramePadding();
-    ui::Caption("Size");
-    ImGui::SameLine(kLabelX);
-    ImGui::SetNextItemWidth(-1.0f);
-    if (ImGui::BeginCombo("##outsize", preview.c_str())) {
+    const float size_w = ui::LabelRow("Size", kFieldMin);
+    if (ui::BeginComboStyled("##outsize", preview.c_str(), size_w)) {
         if (ImGui::Selectable(project_label.c_str(), !has_override) && has_override) QueueVideoOutputSize(0, 0);
         for (int i = 0; i < static_cast<int>(sizeof(kSizePresets) / sizeof(kSizePresets[0])); ++i) {
             const SizePreset& p = kSizePresets[i];
@@ -638,33 +558,28 @@ void OutputSection(const VideoViewModel& m, float full)
         if (has_override && preset_index < 0)
             ImGui::Selectable(SizeLabel(m.override_w, m.override_h, " " RAV_DOT " custom").c_str(), true);
         if (ImGui::Selectable("Custom...")) QueueVideoCustomOutputSize();
-        ImGui::EndCombo();
+        ui::EndComboStyled();
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("The size of the rendered picture. Project = Project Settings > Video.");
 
     // Frame rate (read only: REAPER renders at the project's rate).
-    ImGui::AlignTextToFramePadding();
-    ui::Caption("Frame rate");
-    ImGui::SameLine(kLabelX);
+    ui::LabelRow("Frame rate", kFieldMin);
     char fps[32];
     if (m.fps > 0.0) FormatFps(m.fps, fps, sizeof(fps));
     else std::snprintf(fps, sizeof(fps), "not set");
     ImGui::TextUnformatted(fps);
-    ImGui::SameLine(0.0f, 4.0f);
+    ImGui::SameLine(0.0f, ui::Dp(4.0f));
     ui::Caption(RAV_DOT " project");
 
     // Background.
-    ImGui::AlignTextToFramePadding();
-    ui::Caption("Background");
-    ImGui::SameLine(kLabelX);
-    ImGui::SetNextItemWidth(-1.0f);
+    const float bg_w = ui::LabelRow("Background", kFieldMin);
     static const char* const kBackgrounds[2] = {"Viewer background", "Transparent"};
     const int bg = m.transparent ? 1 : 0;
-    if (ImGui::BeginCombo("##outbg", kBackgrounds[bg])) {
+    if (ui::BeginComboStyled("##outbg", kBackgrounds[bg], bg_w)) {
         for (int i = 0; i < 2; ++i) {
             if (ImGui::Selectable(kBackgrounds[i], i == bg) && i != bg) QueueVideoBackground(i == 1);
         }
-        ImGui::EndCombo();
+        ui::EndComboStyled();
     }
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
         ImGui::SetTooltip("Transparent: where there is no model, the video shows the tracks below (if REAPER "
@@ -682,29 +597,28 @@ float VideoTopBand()
 {
     // overlay row, a small gap, the caption line, the 5 px gap the captions keep above the frame
     // (called before ImGui's frame starts: without a context or a font size yet, assume 13 px)
-    const float line = (ImGui::GetCurrentContext() && ImGui::GetFontSize() > 0.0f) ? ImGui::GetTextLineHeight() : 13.0f;
-    return kVideoOverlayRowBottom + 4.0f + line + kVideoCaptionGap;
+    const float line =
+        (ImGui::GetCurrentContext() && ImGui::GetFontSize() > 0.0f) ? ImGui::GetTextLineHeight() : ui::Dp(13.0f);
+    return ui::Dp(kVideoOverlayRowBottom + 4.0f) + line + ui::Dp(kVideoCaptionGap);
 }
 
 float VideoStripHeight(float client_h)
 {
     if (g_strip_h < 0.0f) g_strip_h = LoadPrefFloat(kPrefStripHeight, kVideoStripHeight);
     // The stored height is kept as dragged: a window made taller again gets it back.
-    return std::min(std::max(g_strip_h, kVideoStripHeight), StripMaxHeight(client_h));
+    return std::min(std::max(g_strip_h, StripMinHeight()), StripMaxHeight(client_h));
 }
 
 float VideoPanelFootprint(int client_w)
 {
     if (!VideoPanelVisible()) return 0.0f;
-    const float w = std::min(kPanelWidth, std::max(160.0f, static_cast<float>(client_w) * 0.6f));
+    const float w = std::min<float>(kPanelWidth, std::max(ui::Dp(160.0f), static_cast<float>(client_w) * 0.6f));
     return w + 2.0f * kPanelGap;
 }
 
 void DrawVideoViewToggle(float center_x)
 {
-    ImGui::SetNextWindowPos(ImVec2(center_x, 8.0f), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    if (ImGui::Begin("##viewtoggle", nullptr, kOverlayFlags)) {
+    if (ui::BeginOverlay("##viewtoggle", ImVec2(center_x, ui::Dp(8.0f)), ImVec2(0.5f, 0.0f))) {
         // Story 10-3: RAV view / Tagging view / Video view, in V's cycle order; Epic 13 (D20): Library view.
         static const char* const kViews[4] = {"Main", "Tagging", "Video", "Library"};
         static const ViewMode kModes[4] = {ViewMode::Rav, ViewMode::Tagging, ViewMode::Video, ViewMode::Library};
@@ -715,30 +629,24 @@ void DrawVideoViewToggle(float center_x)
         if (ui::Segmented("##view", kViews, 4, &sel) && sel >= 0 && sel < 4)
             SetViewMode(kModes[sel]);
     }
-    ImGui::End();
-    ImGui::PopStyleVar();
+    ui::EndOverlay();
 }
 
 void DrawVideoPanelButton(float right_x)
 {
-    ImGui::SetNextWindowPos(ImVec2(right_x, 8.0f), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    if (ImGui::Begin("##panelbtn", nullptr, kOverlayFlags)) {
+    if (ui::BeginOverlay("##panelbtn", ImVec2(right_x, ui::Dp(8.0f)), ImVec2(1.0f, 0.0f))) {
         const bool on = VideoPanelVisible();
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        const ImVec2 p0 = ImGui::GetCursorScreenPos();
-        const ImVec2 size(28.0f, 26.0f);
-        if (ImGui::InvisibleButton("##panel", size)) SetVideoPanelVisible(!on);
-        const bool hovered = ImGui::IsItemHovered();
-        const bool tip = ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip);
-        const ImVec2 p1(p0.x + size.x, p0.y + size.y);
-        dl->AddRectFilled(p0, p1, on ? ui::kAccentSoft : (hovered ? ui::kHover : IM_COL32(18, 19, 23, 184)), ui::kRadiusMd);
-        dl->AddRect(p0, p1, on ? ui::kAccentLine : ui::kStroke, ui::kRadiusMd);
-        PanelIcon(dl, ImVec2(p0.x + size.x * 0.5f, p0.y + size.y * 0.5f), IM_COL32(0xC9, 0xCE, 0xD8, 0xFF));
-        if (tip) ImGui::SetTooltip("Show / hide the video settings (%s)", ShortcutKeyLabel(kShortcutTogglePanel));
+        // The .colbtn over the view: kOverlayBg + stroke edge (accent-soft + accent-line when on).
+        ui::IconOnlyOpts o;
+        o.w = ui::Dp(28.0f);
+        o.h = ui::Dp(26.0f);
+        o.on = on;
+        o.framed = true;
+        o.tint = ui::kKnob;
+        if (ui::IconOnlyButton("##panel", ui::Icon{&PanelIcon, 0, ui::kKnob}, nullptr, o)) SetVideoPanelVisible(!on);
+        ui::ItemTip("Show / hide the video settings (%s)", ShortcutKeyLabel(kShortcutTogglePanel));
     }
-    ImGui::End();
-    ImGui::PopStyleVar();
+    ui::EndOverlay();
 }
 
 void DrawVideoFrameDecor(const VideoFrameRect& fr, void (*copy_log)(), bool show_preview_lag)
@@ -857,22 +765,17 @@ void DrawVideoFrameDecor(const VideoFrameRect& fr, void (*copy_log)(), bool show
     if (m.status == VideoFxStatus::Active) {
         const char* line = "No item on this track at the playhead: the video shows nothing here.";
         const ImVec2 ts = ImGui::CalcTextSize(line);
-        if (ts.x < fr.w - 16.0f) bg->AddText(ImVec2(a.x + (fr.w - ts.x) * 0.5f, a.y + (fr.h - ts.y) * 0.5f), ui::kFaint, line);
-        else bg->AddText(nullptr, 0.0f, ImVec2(a.x + 8.0f, a.y + fr.h * 0.5f), ui::kFaint, line, nullptr, fr.w - 16.0f);
+        if (ts.x < fr.w - ui::Dp(16.0f))
+            bg->AddText(ImVec2(a.x + (fr.w - ts.x) * 0.5f, a.y + (fr.h - ts.y) * 0.5f), ui::kFaint, line);
+        else
+            bg->AddText(nullptr, 0.0f, ImVec2(a.x + ui::Dp(8.0f), a.y + fr.h * 0.5f), ui::kFaint, line, nullptr,
+                        fr.w - ui::Dp(16.0f));
         return;
     }
     const StateText st = StateMessage(m);
-    const float box_w = std::min(300.0f, std::max(160.0f, fr.w - 24.0f));
-    ImGui::SetNextWindowPos(ImVec2(a.x + fr.w * 0.5f, a.y + fr.h * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(box_w, 0.0f), ImGuiCond_Always);
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ui::Col(ui::kRaised));
-    ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStrokeStrong));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f, 14.0f));
-    constexpr ImGuiWindowFlags kBoxFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                                           ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-                                           ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
-                                           ImGuiWindowFlags_NoFocusOnAppearing;
-    if (ImGui::Begin("##framemsg", nullptr, kBoxFlags)) {
+    const float box_w = std::min(ui::Dp(300.0f), std::max(ui::Dp(160.0f), fr.w - ui::Dp(24.0f)));
+    // A floating card (kRaised, stroke-strong edge, r7, pad 16 14), not modal, never focused.
+    if (ui::BeginFloatingCard("##framemsg", ImVec2(a.x + fr.w * 0.5f, a.y + fr.h * 0.5f), ImVec2(0.5f, 0.5f), box_w)) {
         ImGui::TextUnformatted(st.title);
         ui::SubText(st.body.c_str());
         NoticeLine();  // e.g. C pressed with no active FX: the strip that shows notices is hidden
@@ -880,9 +783,7 @@ void DrawVideoFrameDecor(const VideoFrameRect& fr, void (*copy_log)(), bool show
         if (m.status == VideoFxStatus::OutOfDate && copy_log && ui::SolidButton("Copy error log##frame", ImVec2(-1.0f, 0.0f)))
             copy_log();
     }
-    ImGui::End();
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor(2);
+    ui::EndFloatingCard();
 }
 
 bool VideoShotStripVisible()
@@ -894,9 +795,9 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
 {
     const VideoViewModel& m = GetVideoViewModel();
     ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(std::max(w, 120.0f), h), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(std::max(w, ui::Dp(120.0f)), h), ImGuiCond_Always);
     ui::PushPanelStyle();
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui::Dp(8.0f), ui::Dp(6.0f)));
     constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                                         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
                                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
@@ -908,12 +809,12 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
         // Spec 11-fb-11: the strip's top edge (about 4 px) drags its height, from
         // kVideoStripHeight to half the client height; kept in ExtState on release.
         static StripGripState s_grip;
-        StripHeightGrip(s_grip, "##stripgrip", &g_strip_h, h, kVideoStripHeight,
+        StripHeightGrip(s_grip, "##stripgrip", &g_strip_h, h, StripMinHeight(),
                         StripMaxHeight(ImGui::GetIO().DisplaySize.y), kPrefStripHeight);
 
         // The extra height above the minimum goes to the lane; the ruler keeps its own.
-        const float lane_h = 24.0f + std::max(0.0f, h - kVideoStripHeight);
-        constexpr float kCtrlH = 24.0f;  // Snap and Cut keep their size, centred on the lane
+        const float lane_h = ui::Dp(24.0f) + std::max(0.0f, h - StripMinHeight());
+        const float kCtrlH = ui::FieldH();  // Snap and Cut keep their size (24), centred on the lane
         // Spec 11-fb-6 / 11-fb-9: a seconds / frames ruler over the lane, its labels at the full
         // font size, over a row of tick room at the bottom of the band for the minor ticks.
         // (strip_view.h: the shared ruler's layout.)
@@ -932,19 +833,21 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
         const float th = ImGui::GetTextLineHeight();
         const ImVec2 tc_pos(ImGui::GetCursorScreenPos().x, top + (lane_h - th) * 0.5f);
         dl->AddText(tc_pos, ui::kMuted, tc);
-        const float tc_w = std::max(64.0f, ImGui::CalcTextSize(tc).x) + 8.0f;
+        const float tc_w = std::max(ui::Dp(64.0f), ImGui::CalcTextSize(tc).x) + ui::Dp(8.0f);
 
         // Snap toggle (spec 11-fb-6), left of Cut: off by default, for the session only.
         static bool s_snap = false;
-        const float snap_w = ImGui::CalcTextSize("Snap").x + 18.0f;
+        const float snap_w = ImGui::CalcTextSize("Snap").x + ui::Dp(18.0f);
+        const float snap_gap = ui::Dp(8.0f);  // lane | Snap
+        const float cut_gap = ui::Dp(6.0f);   // Snap | Cut
 
         // Cut button on the right (label + key cap).
         const char* cut_key = ShortcutKeyLabel(kShortcutCut);
         // A long custom key must not widen the button past the strip: it gets the room left.
-        const float cut_w = std::max(20.0f, std::min(ImGui::CalcTextSize("Cut").x + ImGui::CalcTextSize(cut_key).x +
-                                                         8.0f + 26.0f,
-                                                     avail - tc_w - 20.0f - 8.0f - snap_w - 6.0f));
-        const float lane_w = std::max(20.0f, avail - tc_w - cut_w - 8.0f - snap_w - 6.0f);
+        const float cut_w =
+            std::max(ui::Dp(20.0f), std::min(ImGui::CalcTextSize("Cut").x + ImGui::CalcTextSize(cut_key).x + ui::Dp(8.0f + 26.0f),
+                                             avail - tc_w - ui::Dp(20.0f) - snap_gap - snap_w - cut_gap));
+        const float lane_w = std::max(ui::Dp(20.0f), avail - tc_w - cut_w - snap_gap - snap_w - cut_gap);
         const ImVec2 l0(tc_pos.x + tc_w, top);
         const ImVec2 l1(l0.x + lane_w, top + lane_h);
 
@@ -958,7 +861,7 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
         const bool lane_tip = ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip);
         const bool lane_pressed = ImGui::IsItemActivated();
         const bool lane_released = ImGui::IsItemDeactivated();
-        constexpr float kJunctionGrabPx = 4.0f;
+        const float kJunctionGrabPx = ui::Dp(4.0f);
         static int    s_junction = -1;         // shot whose start is dragged, -1 = none (a scrub)
         static double s_junction_orig = 0.0;   // its time when grabbed
         static double s_junction_time = 0.0;   // the snapped time shown while dragging
@@ -967,7 +870,7 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
         static bool   s_junction_moved = false;
         static bool   s_junction_dropped = false; // grabbed, then lost to a model change: inert until release
         static bool   s_dblclick_hold = false;    // a double-click seeked to a shot: no scrub until release
-        dl->AddRectFilled(l0, l1, ui::kBg, ui::kRadiusSm);
+        dl->AddRectFilled(l0, l1, ui::kBg, ui::Dp(ui::kRadiusSm));
         double ruler_step = 0.0;  // 0: no item, no ruler (Snap is then disabled)
         const VideoStripRange& r = VideoViewStripRange();
         // Spec 11-fb-12: the strip shows a view window of project time around the current
@@ -978,8 +881,8 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
             StripViewReset(s_view);
             const char* line = "No animation item on this track";
             const ImVec2 ts = ImGui::CalcTextSize(line);
-            dl->AddText(ImVec2(l0.x + std::max(6.0f, (lane_w - ts.x) * 0.5f), top + (lane_h - ts.y) * 0.5f), ui::kFaint,
-                        line);
+            dl->AddText(ImVec2(l0.x + std::max(ui::Dp(6.0f), (lane_w - ts.x) * 0.5f), top + (lane_h - ts.y) * 0.5f),
+                        ui::kFaint, line);
         } else {
             // ---- The view window (spec 11-fb-12 / 11-fb-14) ----
             const float mx = ImGui::GetIO().MousePos.x;
@@ -1109,16 +1012,16 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                 const bool move_cue = s.move_to_next && VideoViewShotTouchesNext(i);  // spec 11-fb-15
                 if (move_cue) {
                     const float xm = xa + (xb - xa) * 0.55f;
-                    dl->AddRectFilledMultiColor(ImVec2(xm, l0.y), ImVec2(xb, l1.y), IM_COL32(255, 255, 255, 0),
-                                                IM_COL32(255, 255, 255, 16), IM_COL32(255, 255, 255, 16),
-                                                IM_COL32(255, 255, 255, 0));
+                    constexpr ImU32 kCueClear = ui::WithAlpha(ui::kWhite, 0);
+                    constexpr ImU32 kCue = ui::WithAlpha(ui::kWhite, 16);  // white at .06
+                    dl->AddRectFilledMultiColor(ImVec2(xm, l0.y), ImVec2(xb, l1.y), kCueClear, kCue, kCue, kCueClear);
                 }
                 // Spec 11-fb-14: a light outline per shot, inset 0.5 px so two neighbours read as
                 // two lines. A Move shot's top and bottom edges fade out along its gradient ramp.
                 {
                     constexpr ImU32 kOutline = ui::kStrokeStrong;
                     constexpr ImU32 kOutlineClear = kOutline & ~IM_COL32_A_MASK;
-                    const float rr = std::max(0.0f, std::min({ui::kRadiusSm, (xb - xa) * 0.5f - 0.5f, (l1.y - l0.y) * 0.5f - 0.5f}));
+                    const float rr = std::max(0.0f, std::min({ui::Dp(ui::kRadiusSm), (xb - xa) * 0.5f - 0.5f, (l1.y - l0.y) * 0.5f - 0.5f}));
                     const float x0 = xa + 0.5f;
                     const float x1 = xb - 0.5f;
                     const float y0 = l0.y + 0.5f;
@@ -1159,20 +1062,19 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                     }
                 }
                 // Label: dot + name, clipped to the segment.
-                if (xb - xa > 14.0f) {
-                    dl->PushClipRect(ImVec2(xa, l0.y), ImVec2(xb - 2.0f, l1.y), true);
+                if (xb - xa > ui::Dp(14.0f)) {
+                    dl->PushClipRect(ImVec2(xa, l0.y), ImVec2(xb - ui::Dp(2.0f), l1.y), true);
                     const float cy = (l0.y + l1.y) * 0.5f;
-                    dl->AddCircleFilled(ImVec2(xa + 9.0f, cy), 3.0f, ui::kCurvePalette[i % 8], 10);
-                    dl->AddText(ImVec2(xa + 16.0f, cy - th * 0.5f), i == current ? ui::kText : ui::kMuted,
+                    dl->AddCircleFilled(ImVec2(xa + ui::Dp(9.0f), cy), ui::Dp(3.0f), ui::kCurvePalette[i % 8], 10);
+                    dl->AddText(ImVec2(xa + ui::Dp(16.0f), cy - th * 0.5f), i == current ? ui::kText : ui::kMuted,
                                 s.name.c_str());
                     dl->PopClipRect();
                 }
             }
             // Spec 11-fb-12: outside the current clip (neighbour items, gaps, before 0) greyed,
             // shots included; the neighbours keep their edges, the zone gets an outline.
-            constexpr ImU32 kOutsideDim = IM_COL32(0x12, 0x13, 0x17, 0xA6);  // ui::kBg at 65 %
-            if (zx0 > l0.x) dl->AddRectFilled(l0, ImVec2(std::min(zx0, l1.x), l1.y), kOutsideDim);
-            if (zx1 < l1.x) dl->AddRectFilled(ImVec2(std::max(zx1, l0.x), l0.y), l1, kOutsideDim);
+            if (zx0 > l0.x) dl->AddRectFilled(l0, ImVec2(std::min(zx0, l1.x), l1.y), ui::kOutsideDim);
+            if (zx1 < l1.x) dl->AddRectFilled(ImVec2(std::max(zx1, l0.x), l0.y), l1, ui::kOutsideDim);
             for (const VideoStripSpan& it : r.items) {
                 if (!(it.end >= v0 && it.start <= v1)) continue;
                 for (double e : {it.start, it.end}) {
@@ -1186,9 +1088,9 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
             // zone only, counted from the clip's first frame ("0:00", "+Nf", the ruler's step).
             // Only when the lane is tall enough to keep them under the shot names (mid-lane).
             if (ruler_step > 0.0) {
-                const float clip_fs = std::max(8.0f, std::floor(ImGui::GetFontSize() * 0.8f));
+                const float clip_fs = std::max(ui::Dp(8.0f), std::floor(ImGui::GetFontSize() * 0.8f));
                 const float name_bottom = (l0.y + l1.y) * 0.5f + th * 0.5f;
-                const float clip_y = l1.y - clip_fs - 2.0f;
+                const float clip_y = l1.y - clip_fs - ui::Dp(2.0f);
                 if (clip_y >= name_bottom + 1.0f) {
                     const float cx0 = std::max(zx0, l0.x);
                     const float cx1 = std::min(zx1, l1.x);
@@ -1200,10 +1102,10 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                             const double tick_t = VideoRulerTickTime(k, r.start, ruler_step, m.fps);
                             if (tick_t > t_end + 1e-9) break;
                             const float tick_x = std::floor(x_of(tick_t)) + 0.5f;
-                            dl->AddLine(ImVec2(tick_x, l1.y - 3.0f), ImVec2(tick_x, l1.y), ui::kFaint, 1.0f);
+                            dl->AddLine(ImVec2(tick_x, l1.y - ui::Dp(3.0f)), ImVec2(tick_x, l1.y), ui::kFaint, 1.0f);
                             char label[32];
                             VideoRulerTickLabel(k, ruler_step, m.fps, label, sizeof(label));
-                            dl->AddText(ruler_font, clip_fs, ImVec2(tick_x + 2.0f, clip_y), ui::kFaint, label);
+                            dl->AddText(ruler_font, clip_fs, ImVec2(tick_x + ui::Dp(2.0f), clip_y), ui::kFaint, label);
                         }
                         dl->PopClipRect();
                     }
@@ -1211,11 +1113,12 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
             }
             if (junction_drag) {  // the dragged junction, over the segment edges
                 const float jx = x_of(first_of(s_junction_time));
-                dl->AddLine(ImVec2(jx, l0.y), ImVec2(jx, l1.y), ui::kAccent, 2.0f);
+                dl->AddLine(ImVec2(jx, l0.y), ImVec2(jx, l1.y), ui::kAccent, ui::Dp(2.0f));
             }
             if (playhead >= v0 && playhead <= v1) {
                 const float px = x_of(playhead);
-                dl->AddRectFilled(ImVec2(px - 1.0f, l0.y), ImVec2(px + 1.0f, l1.y), IM_COL32(0xDF, 0xE3, 0xEA, 0xFF));
+                const float pw = ui::Dp(1.0f);  // a 2 px playhead
+                dl->AddRectFilled(ImVec2(px - pw, l0.y), ImVec2(px + pw, l1.y), ui::kPlayhead);
             }
             dl->PopClipRect();
 
@@ -1257,12 +1160,13 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                 s_ctx_shot = VideoClipShotAt(m.shots, t_mouse, m.fps);  // none between clips
                 if (s_ctx_shot >= 0) ImGui::OpenPopup("##stripshotctx");
             }
-            if (ImGui::BeginPopup("##stripshotctx")) {
+            if (ui::BeginMenuPopup("##stripshotctx")) {
                 if (s_ctx_shot >= 0 && s_ctx_shot < static_cast<int>(m.shots.size())) {
+                    // The shot's name: the menu's faint hint (kFaint inside a themed menu).
                     ImGui::TextDisabled("%s", m.shots[static_cast<size_t>(s_ctx_shot)].name.c_str());
                     ShotCameraMenuItems(s_ctx_shot);
                 }
-                ImGui::EndPopup();
+                ui::EndMenuPopup();
             }
             if (junction_drag) {
                 ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
@@ -1281,17 +1185,17 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
             s_junction_dropped = false;
             s_dblclick_hold = false;
         }
-        dl->AddRect(l0, l1, ui::kStroke, ui::kRadiusSm);
+        dl->AddRect(l0, l1, ui::kStroke, ui::Dp(ui::kRadiusSm));
 
         // A notice (e.g. the cut was refused) over the lane.
         if (const char* notice = VideoViewNotice()) {
             const ImVec2 ts = ImGui::CalcTextSize(notice);
-            const ImVec2 na(l0.x + std::max(4.0f, (lane_w - ts.x) * 0.5f - 8.0f), ctrl_y + 2.0f);
-            const ImVec2 nb(std::min(l1.x - 2.0f, na.x + ts.x + 16.0f), ctrl_y + kCtrlH - 2.0f);
-            dl->AddRectFilled(na, nb, ui::kRaised, ui::kRadiusSm);
-            dl->AddRect(na, nb, ui::kStrokeStrong, ui::kRadiusSm);
+            const ImVec2 na(l0.x + std::max(ui::Dp(4.0f), (lane_w - ts.x) * 0.5f - ui::Dp(8.0f)), ctrl_y + ui::Dp(2.0f));
+            const ImVec2 nb(std::min(l1.x - ui::Dp(2.0f), na.x + ts.x + ui::Dp(16.0f)), ctrl_y + kCtrlH - ui::Dp(2.0f));
+            dl->AddRectFilled(na, nb, ui::kRaised, ui::Dp(ui::kRadiusSm));
+            dl->AddRect(na, nb, ui::kStrokeStrong, ui::Dp(ui::kRadiusSm));
             dl->PushClipRect(na, nb, true);
-            dl->AddText(ImVec2(na.x + 8.0f, top + (lane_h - ts.y) * 0.5f), ui::kWarn, notice);
+            dl->AddText(ImVec2(na.x + ui::Dp(8.0f), top + (lane_h - ts.y) * 0.5f), ui::kWarn, notice);
             dl->PopClipRect();
         }
 
@@ -1300,22 +1204,14 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
         {
             const bool snap_enabled = ruler_step > 0.0;
             const bool lit = s_snap && snap_enabled;
-            const ImVec2 s0(l1.x + 8.0f, ctrl_y);
-            const ImVec2 s1(s0.x + snap_w, ctrl_y + kCtrlH);
-            ImGui::SetCursorScreenPos(s0);
+            ImGui::SetCursorScreenPos(ImVec2(l1.x + snap_gap, ctrl_y));
             if (!snap_enabled) ImGui::BeginDisabled();
-            if (ImGui::InvisibleButton("##stripsnap", ImVec2(snap_w, kCtrlH))) s_snap = !s_snap;
-            const bool hovered = snap_enabled && ImGui::IsItemHovered();
+            if (ui::ToggleButton("Snap##stripsnap", lit, ImVec2(snap_w, kCtrlH))) s_snap = !s_snap;
             if (!snap_enabled) ImGui::EndDisabled();
-            dl->AddRectFilled(s0, s1, lit ? ui::kAccentSoft : (hovered ? ui::kHover : ui::kRaised), ui::kRadiusSm);
-            dl->AddRect(s0, s1, lit ? ui::kAccentLine : ui::kStroke, ui::kRadiusSm);
-            const ImVec2 ts = ImGui::CalcTextSize("Snap");
-            dl->AddText(ImVec2(s0.x + (snap_w - ts.x) * 0.5f, ctrl_y + (kCtrlH - th) * 0.5f),
-                        lit ? ui::kText : (snap_enabled ? ui::kMuted : ui::kFaint), "Snap");
         }
 
         // Cut (C by default).
-        ImGui::SetCursorScreenPos(ImVec2(l1.x + 8.0f + snap_w + 6.0f, ctrl_y));
+        ImGui::SetCursorScreenPos(ImVec2(l1.x + snap_gap + snap_w + cut_gap, ctrl_y));
         const bool can_cut = VideoViewCanCut();
         if (!can_cut) ImGui::BeginDisabled();
         const ImVec2 b0 = ImGui::GetCursorScreenPos();
@@ -1325,12 +1221,13 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
             ImGui::SetTooltip("New shot on the playhead's frame, with the camera shown (%s)", cut_key);
         // The button has no label of its own: "Cut" + the key cap are drawn over it.
         const float label_w = ImGui::CalcTextSize("Cut").x;
-        const float key_w = ImGui::CalcTextSize(cut_key).x + 8.0f;
-        const float lx = std::max(b0.x + 4.0f, b0.x + (cut_w - label_w - 6.0f - key_w) * 0.5f);
+        const float key_w = ImGui::CalcTextSize(cut_key).x + ui::Dp(8.0f);
+        const float key_gap = ui::Dp(6.0f);
+        const float lx = std::max(b0.x + ui::Dp(4.0f), b0.x + (cut_w - label_w - key_gap - key_w) * 0.5f);
         const float ly = ctrl_y + (kCtrlH - th) * 0.5f;
         dl->PushClipRect(b0, ImVec2(b0.x + cut_w, b0.y + kCtrlH), true);  // a squeezed button clips its key
         dl->AddText(ImVec2(lx, ly), can_cut ? ui::kText : ui::kFaint, "Cut");
-        ui::KeyCap(dl, ImVec2(lx + label_w + 6.0f, ly - 1.5f), cut_key);
+        ui::KeyCap(dl, ImVec2(lx + label_w + key_gap, ly - ui::Dp(1.5f)), cut_key);
         dl->PopClipRect();
     }
     ImGui::End();
@@ -1378,13 +1275,10 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
 
     // Track: follow the displayed item, or pin one.
     if (m.track || !m.pin_choices.empty()) {
-        ImGui::AlignTextToFramePadding();
-        ui::Caption("Track");
-        ImGui::SameLine(70.0f);
-        ImGui::SetNextItemWidth(-1.0f);
+        const float track_w = ui::LabelRow("Track", ui::Dp(120.0f));
         std::string preview = (m.pinned ? "Pin " RAV_DOT " " : "Follow displayed item " RAV_DOT " ") +
                               (m.track ? m.track_label : std::string("none"));
-        if (ImGui::BeginCombo("##track", preview.c_str())) {
+        if (ui::BeginComboStyled("##track", preview.c_str(), track_w)) {
             if (ImGui::Selectable("Follow displayed item", !m.pinned)) VideoViewPin(nullptr);
             for (const VideoPinChoice& c : m.pin_choices) {
                 const std::string label = "Pin " RAV_DOT " " + c.label;
@@ -1392,7 +1286,7 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
                 if (ImGui::Selectable(label.c_str(), m.pinned && c.track == m.track)) VideoViewPin(c.track);
                 ImGui::PopID();
             }
-            ImGui::EndCombo();
+            ui::EndComboStyled();
         }
     }
 
@@ -1408,18 +1302,14 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
         const bool can_edit = has_shot && VideoViewCanEdit();
         const bool collapsed = InspectorCollapsed();
 
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::Col(ui::kRaised));
-        ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStroke));
-        ImGui::PushStyleColor(ImGuiCol_FrameBg, ui::Col(ui::kBg));
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 10.0f));
-        if (ImGui::BeginChild("##inspector", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY)) {
+        // The inspector card (kRaised, stroke edge, r10), as tall as its content.
+        ui::Card card;
+        ui::BeginCard(card);
+        ImGui::PushID("##inspector");
+        {
             if (!has_shot) {
-                ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
-                ImGui::PushTextWrapPos(0.0f);
-                ImGui::TextUnformatted(m.clips.empty() ? "No shot here: the track has no animation item"
-                                                       : "No shot here: the playhead is between clips");
-                ImGui::PopTextWrapPos();
-                ImGui::PopStyleColor();
+                ui::SubText(m.clips.empty() ? "No shot here: the track has no animation item"
+                                            : "No shot here: the playhead is between clips");
             }
             // Head: chevron, colour dot, name, start time.
             if (has_shot) {
@@ -1428,26 +1318,17 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
                 const float fh = ImGui::GetFrameHeight();
                 const float row_w = ImGui::GetContentRegionAvail().x;
 
-                // Chevron: a single click toggles (works with the shot not editable too).
-                constexpr float kChevW = 14.0f;
-                const bool chev_clicked = ImGui::InvisibleButton("##inspchev", ImVec2(kChevW, fh));
+                // Chevron: a single click toggles (works with the shot not editable too). A square
+                // as high as the row.
+                const bool chev_clicked = ui::Chevron("##inspchev", !collapsed, fh);
                 const bool chev_hovered = ImGui::IsItemHovered();
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
                     ImGui::SetTooltip(collapsed ? "Show the transition and the camera values (or double-click this row)"
                                                 : "Hide the transition and the camera values (or double-click this row)");
-                {
-                    const ImU32 ink = chev_hovered ? ui::kText : ui::kMuted;
-                    const float cx = row0.x + kChevW * 0.5f - 1.0f;
-                    const float cy = row0.y + fh * 0.5f;
-                    if (collapsed)  // pointing right
-                        dl->AddTriangleFilled(ImVec2(cx - 2.5f, cy - 4.0f), ImVec2(cx + 3.0f, cy), ImVec2(cx - 2.5f, cy + 4.0f), ink);
-                    else            // pointing down
-                        dl->AddTriangleFilled(ImVec2(cx - 4.0f, cy - 2.5f), ImVec2(cx + 4.0f, cy - 2.5f), ImVec2(cx, cy + 3.0f), ink);
-                }
-                ImGui::SameLine(0.0f, 2.0f);
+                ImGui::SameLine(0.0f, ui::Dp(2.0f));
                 const ImVec2 p = ImGui::GetCursorScreenPos();
-                dl->AddCircleFilled(ImVec2(p.x + 4.0f, p.y + fh * 0.5f), 4.0f, ui::kCurvePalette[idx % 8], 12);
-                ImGui::Dummy(ImVec2(10.0f, fh));
+                dl->AddCircleFilled(ImVec2(p.x + ui::Dp(4.0f), p.y + fh * 0.5f), ui::Dp(4.0f), ui::kCurvePalette[idx % 8], 12);
+                ImGui::Dummy(ImVec2(ui::Dp(10.0f), fh));
                 ImGui::SameLine();
 
                 static char s_name[160] = {};
@@ -1464,12 +1345,12 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
                 }
                 char tm[32];
                 FormatTime(shot.start, tm, sizeof(tm));  // its first frame
-                const float tag_w = ImGui::CalcTextSize(tm).x + 18.0f;
-                ImGui::SetNextItemWidth(std::max(60.0f, ImGui::GetContentRegionAvail().x - tag_w - 8.0f));
+                const float tag_w = ImGui::CalcTextSize(tm).x + ui::Dp(18.0f);
+                const float name_w = std::max(ui::Dp(60.0f), ImGui::GetContentRegionAvail().x - tag_w - ui::Dp(8.0f));
                 if (!can_edit) ImGui::BeginDisabled();
-                ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
-                ImGui::InputText("##shotname", s_name, sizeof(s_name));
-                ImGui::PopStyleColor();
+                // An inline name in the body font: transparent until hovered or typed into. The
+                // InputText stays the last item (IsItemActivated / Active / DeactivatedAfterEdit).
+                ui::TitleField("##shotname", s_name, sizeof(s_name), name_w, 0, ui::FontBody());
                 if (ImGui::IsItemActivated()) {
                     s_track = m.track;
                     s_fx = m.fx;
@@ -1502,7 +1383,7 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
                     static const char* const kTransitions[2] = {"Cut to next", "Move to next"};
                     int sel = shot.move_to_next ? 1 : 0;
                     const bool last = !VideoViewShotTouchesNext(idx);  // spec 11-fb-15: also before a gap
-                    const float item_w = std::floor((ImGui::GetContentRegionAvail().x - 6.0f) * 0.5f);
+                    const float item_w = std::floor((ImGui::GetContentRegionAvail().x - ui::Dp(6.0f)) * 0.5f);
                     if (ui::Segmented("##transition", kTransitions, 2, &sel, item_w, last && sel == 0 ? 1 : -1))
                         QueueVideoTransition(sel == 1);
                     if (last && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
@@ -1521,8 +1402,8 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
             // Copy RAV view | Frame model | Envelopes, each as wide as its label needs, the
             // room left shared out.
             {
-                constexpr float kGap = 6.0f;
-                const float pad = 2.0f * ImGui::GetStyle().FramePadding.x + 4.0f;
+                const float kGap = ui::Dp(6.0f);
+                const float pad = 2.0f * ImGui::GetStyle().FramePadding.x + ui::Dp(4.0f);
                 const char* const kLabels[3] = {"Copy RAV view", "Frame model", "Envelopes"};
                 float bw[3];
                 float sum = 0.0f;
@@ -1546,14 +1427,7 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
                 const bool has_env = m.has_envelopes;
                 const bool lit = has_env && m.envelopes_visible;
                 if (!has_env) ImGui::BeginDisabled();
-                ImGui::PushStyleColor(ImGuiCol_Button, ui::Col(lit ? ui::kAccentSoft : ui::kRaised));
-                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ui::Col(lit ? ui::kAccentSoft : ui::kHover));
-                ImGui::PushStyleColor(ImGuiCol_ButtonActive, ui::Col(ui::kAccentSoft));
-                ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(lit ? ui::kAccentLine : ui::kStroke));
-                ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
-                if (ImGui::Button("Envelopes##fxenv", ImVec2(bw[2], 0.0f))) QueueVideoToggleEnvelopes();
-                ImGui::PopStyleVar();
-                ImGui::PopStyleColor(4);
+                if (ui::ToggleButton("Envelopes##fxenv", lit, ImVec2(bw[2], 0.0f))) QueueVideoToggleEnvelopes();
                 if (!has_env) ImGui::EndDisabled();
                 if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
                     ImGui::SetTooltip("%s", !has_env ? "The video FX has no envelope yet"
@@ -1565,9 +1439,8 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
             if (has_shot && !can_edit && m.status == VideoFxStatus::Active)
                 ui::SubText("No item on this track at the playhead.");
         }
-        ImGui::EndChild();
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor(3);
+        ImGui::PopID();
+        ui::EndCard(card, ui::kRaised, ui::kStroke);
     }
 
     // ---- In the middle, the shot list (it alone scrolls); under it, "+ Cut at playhead";
@@ -1577,9 +1450,9 @@ void DrawVideoPanel(float x, float y, float w, float h, const OrbitCamera& free_
         // The heights of the pinned blocks under the list, measured on the last frame (the
         // notice line and the angle chips change them). Everything but the list is pinned
         // (Antho): the list takes the room left, at least one row, and alone scrolls.
-        static float s_cut_h = 40.0f;
-        static float s_bottom_h = 200.0f;
-        constexpr float kMinListH = 30.0f;  // one row
+        static float s_cut_h = ui::Dp(40.0f);
+        static float s_bottom_h = ui::Dp(200.0f);
+        const float kMinListH = ui::Dp(30.0f);  // one row
         const bool has_list = !m.shots.empty();
         if (has_list) {
             ShotListHeader(m);
@@ -1623,35 +1496,30 @@ void DrawVideoDeleteConfirm()
         ImGui::OpenPopup(kId);
         s_dont_ask = false;
     }
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f, 14.0f));
-    constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize |
-                                        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings;
-    if (ImGui::BeginPopupModal(kId, nullptr, kFlags)) {
+    // A modal card centred in the viewport, sized to its content.
+    if (ui::BeginModalCard(kId)) {
         if (!VideoDeleteConfirmOpen()) {
             ImGui::CloseCurrentPopup();  // Esc (the window procedure cancels it), or Video view left
         } else {
             ImGui::Text("Delete shot \"%s\"?", VideoDeleteConfirmName());
-            ImGui::Dummy(ImVec2(0.0f, 2.0f));
-            ImGui::Checkbox("Don't ask again", &s_dont_ask);
+            ImGui::Dummy(ImVec2(0.0f, ui::Dp(2.0f)));
+            ui::Checkbox("Don't ask again", &s_dont_ask);
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
                 ImGui::SetTooltip("The Delete key then deletes at once. Ask again: menu > Video view > "
                                   "Ask before deleting a shot.");
-            ImGui::Dummy(ImVec2(0.0f, 4.0f));
-            if (ui::PrimaryButton("Delete##confirmdelete", ImVec2(100.0f, 0.0f)) || by_key) {
+            ImGui::Dummy(ImVec2(0.0f, ui::Dp(4.0f)));
+            if (ui::PrimaryButton("Delete##confirmdelete", ImVec2(ui::Dp(100.0f), 0.0f)) || by_key) {
                 ConfirmVideoDelete(s_dont_ask);
                 ImGui::CloseCurrentPopup();
             }
-            ImGui::SameLine(0.0f, 8.0f);
-            if (ui::SolidButton("Cancel##confirmdelete", ImVec2(100.0f, 0.0f))) {
+            ImGui::SameLine(0.0f, ui::Dp(8.0f));
+            if (ui::SolidButton("Cancel##confirmdelete", ImVec2(ui::Dp(100.0f), 0.0f))) {
                 CancelVideoDelete();
                 ImGui::CloseCurrentPopup();
             }
         }
-        ImGui::EndPopup();
+        ui::EndModalCard();
     }
-    ImGui::PopStyleVar();
 }
 
 }  // namespace rav

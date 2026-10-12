@@ -166,6 +166,8 @@ bool VideoViewInspectorValues(double out[vcam::kParamCount]);
 void VideoViewSliderEdit(int param, double norm);
 // The slider was released: queue the write (one undo point).
 void VideoViewSliderCommit(int param);
+// The slider's typing was cancelled (Esc): the gesture ends unwritten (no undo point).
+void VideoViewSliderCancel();
 
 // Renames the shot at shot_time on that track's FX (captured when the edit began). `auto_name`
 // is its automatic name (typing it back stores none); an implicit shot is written first

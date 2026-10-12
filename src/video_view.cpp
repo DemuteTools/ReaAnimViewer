@@ -1083,6 +1083,11 @@ void VideoViewSliderEdit(int param, double norm)
     g_live.values[param] = vcam::Sanitize(param, norm);
 }
 
+void VideoViewSliderCancel()
+{
+    if (g_live.kind == Gesture::Slider && !g_live.written) g_live = Live();
+}
+
 void VideoViewSliderCommit(int param)
 {
     if (g_live.kind != Gesture::Slider || g_live.written) return;

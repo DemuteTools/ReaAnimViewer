@@ -1174,6 +1174,16 @@ int g_fader_typing_frame = -1;  // the last frame a fader was typed into
 
 bool FaderTyping() { return g_fader_typing_frame >= ImGui::GetFrameCount() - 1; }
 
+// The fader whose typing Esc ended, and that frame (FaderCancelled).
+ImGuiID g_fader_cancel_id = 0;
+int     g_fader_cancel_frame = -1;
+
+bool FaderCancelled()
+{
+    return g_fader_cancel_frame == ImGui::GetFrameCount() && g_fader_cancel_id != 0 &&
+           g_fader_cancel_id == ImGui::GetItemID();
+}
+
 bool Fader(const char* id, float* v, float v_min, float v_max, float width)
 {
     return Fader(id, v, v_min, v_max, width, FaderOpts());
@@ -1210,6 +1220,11 @@ bool Fader(const char* id, float* v, float v_min, float v_max, float width, cons
     const ImGuiID gid = ImGui::GetID(id);
     bool          typing = ImGui::TempInputIsActive(gid);
     bool          hovered = false, active = false;
+    const float   v_start = *v;  // the value at this frame's start
+    // The value typing began with, kept by the fader's id: Esc restores it exactly (ImGui's field
+    // would restore its rounded text, "-14.54" for -14.537).
+    ImGuiStorage* store = ImGui::GetStateStorage();
+    const ImGuiID saved_key = ImHashStr("##fader_saved", 0, gid);
     if (typing) {
         const ImVec2 c = ImGui::GetCursorScreenPos();
         const ImRect bb(c, ImVec2(c.x + track_w, c.y + h));
@@ -1220,6 +1235,7 @@ bool Fader(const char* id, float* v, float v_min, float v_max, float width, cons
         hovered = ImGui::IsItemHovered();
         active = ImGui::IsItemActive();
         typing = ImGui::IsItemActivated() && ImGui::GetIO().KeyCtrl && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+        if (typing) store->SetFloat(saved_key, *v);
     }
     const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
     const float  r = Dp(8.0f);  // the 16 px thumb
@@ -1237,8 +1253,15 @@ bool Fader(const char* id, float* v, float v_min, float v_max, float width, cons
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Dp(kRadiusSm));
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(Dp(5.0f), std::max(0.0f, (h - mono->FontSize) * 0.5f)));
         const float lo = std::min(v_min, v_max), hi = std::max(v_min, v_max);
+        const bool  esc = ImGui::IsKeyPressed(ImGuiKey_Escape, false);
         changed = ImGui::TempInputScalar(ImRect(a, b), gid, id, ImGuiDataType_Float, v,
                                          (o.format && o.format[0]) ? o.format : "%.2f", &lo, &hi);
+        if (esc && !ImGui::TempInputIsActive(gid)) {
+            *v = store->GetFloat(saved_key, v_start);
+            changed = *v != v_start;
+            g_fader_cancel_id = gid;
+            g_fader_cancel_frame = ImGui::GetFrameCount();
+        }
         ImGui::PopStyleVar(3);
         ImGui::PopStyleColor(4);
         ImGui::PopFont();

@@ -516,6 +516,10 @@ bool Fader(const char* id, float* v, float v_min, float v_max, float width, cons
 // `format` without its decorations ("45" for "%.0f°"), "%.2f" with no format.
 // FaderTyping: true while a fader is typed into (no mouse button held: a live edit must not end).
 bool FaderTyping();
+// FaderCancelled: right after a Fader, true on the frame Esc ended its typing. *v is then back to the
+// exact value it had when typing began (not the field's rounded text) and the gesture deactivates
+// (IsItemDeactivated): a caller drops its draft there and writes no undo point.
+bool FaderCancelled();
 
 // 13-7 (B7) text fields. All take the room left when `width` is 0 (else min(width, room left)).
 // TextField: input.txt (FieldH() high, bg kBg, 1 px stroke edge, accent-line edge while typing,

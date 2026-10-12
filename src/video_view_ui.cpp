@@ -199,7 +199,11 @@ void ParamRow(int p, const double values[vcam::kParamCount], bool enabled)
     // Also when the row went disabled mid-drag: the slider gesture must end (one undo point).
     // ui::Fader is an InvisibleButton, never "edited": IsItemDeactivated; the commit writes
     // nothing when no edit began (a click that did not move the value).
-    if (ImGui::IsItemDeactivated()) VideoViewSliderCommit(p);
+    // Esc after typing (ui::FaderCancelled): the shot keeps its exact value, no undo point.
+    if (ImGui::IsItemDeactivated()) {
+        if (ui::FaderCancelled()) VideoViewSliderCancel();
+        else VideoViewSliderCommit(p);
+    }
     ImGui::PopID();
 }
 

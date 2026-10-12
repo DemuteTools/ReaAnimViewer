@@ -24,6 +24,7 @@
 #include <imgui_internal.h>  // ClosePopupToLevel (Esc closes an open menu)
 
 #include "assign_view_model.h"
+#include "float_ui_window.h"
 #include "item_rules.h"
 #include "library_icons.h"
 #include "library_tree_ui.h"
@@ -48,13 +49,11 @@ namespace av = assign;
 
 const char kDot[] = " \xC2\xB7 ";
 
-constexpr char kWindowId[] = "Sound assignment##ravassign";
-constexpr char kPrefX[] = "assign.win_x";  // the window's rect, in dp from the main viewport's corner
-constexpr char kPrefY[] = "assign.win_y";
-constexpr char kPrefW[] = "assign.win_w";
-constexpr char kPrefH[] = "assign.win_h";
-constexpr float kDefaultW = 880.0f, kDefaultH = 600.0f;  // dp: the mockup's first-use size
-constexpr float kMinW = 460.0f, kMinH = 340.0f;
+// Antho 2026-10-12: a window of its own, anywhere on the screen (FloatUiWindow); its rect is kept in screen
+// pixels under "assign.float.*". First-use and minimum sizes in dp (the mockup's).
+constexpr int kDefaultW = 880, kDefaultH = 600;
+constexpr int kMinW = 460, kMinH = 340;
+FloatUiWindow g_host("assign.float", L"Sound assignment", kDefaultW, kDefaultH, kMinW, kMinH);
 
 enum Scope { kScopeProject = 0, kScopeCharacter = 1, kScopeItem = 2 };
 
@@ -66,11 +65,6 @@ std::string RigModel(const ItemRigInfo& rig)
 
 struct State {
     bool       open = false;
-    int        drawn_frame = -10;
-    int        focused_frame = -10;
-    bool       rect_known = false;
-    ImVec2     pos, size;       // the window's rect as last drawn (screen px)
-    ImVec2     saved_pos, saved_size;
     MediaItem* item = nullptr;  // the window's item (follows the Tagging view's unless the user picked one)
     MediaItem* last_model_item = nullptr;
     MediaItem* sel_item = nullptr;  // the item the selection and the folds belong to
@@ -1949,47 +1943,6 @@ void DrawOverview(const Frame& f, float height)
 
 // ---- The window --------------------------------------------------------------------------------------------
 
-ImVec2 ClampPos(ImVec2 pos, ImVec2 size)
-{
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    const float          keep = ui::Dp(60.0f);
-    pos.x = std::max(vp->Pos.x - size.x + keep, std::min(pos.x, vp->Pos.x + vp->Size.x - keep));
-    pos.y = std::max(vp->Pos.y, std::min(pos.y, vp->Pos.y + vp->Size.y - ui::Dp(30.0f)));
-    return pos;
-}
-
-void RestoreRect()
-{
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    const float          s = ui::UiScale();
-    const float          w = std::min(ui::Dp(LoadPrefFloat(kPrefW, kDefaultW)), vp->Size.x - ui::Dp(16.0f));
-    const float          h = std::min(ui::Dp(LoadPrefFloat(kPrefH, kDefaultH)), vp->Size.y - ui::Dp(16.0f));
-    const float          dx = LoadPrefFloat(kPrefX, -100000.0f), dy = LoadPrefFloat(kPrefY, -100000.0f);
-    g.size = ImVec2(std::max(ui::Dp(kMinW), w), std::max(ui::Dp(kMinH), h));
-    if (dx > -99999.0f && dy > -99999.0f) g.pos = ImVec2(vp->Pos.x + dx * s, vp->Pos.y + dy * s);
-    else g.pos = ImVec2(vp->Pos.x + std::max(ui::Dp(8.0f), vp->Size.x - g.size.x - ui::Dp(380.0f)), vp->Pos.y + ui::Dp(40.0f));
-    g.pos = ClampPos(g.pos, g.size);
-    g.saved_pos = g.pos;
-    g.saved_size = g.size;
-    g.rect_known = true;
-}
-
-void SaveRectIfChanged()
-{
-    if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) return;
-    if (std::fabs(g.pos.x - g.saved_pos.x) < 1.0f && std::fabs(g.pos.y - g.saved_pos.y) < 1.0f &&
-        std::fabs(g.size.x - g.saved_size.x) < 1.0f && std::fabs(g.size.y - g.saved_size.y) < 1.0f)
-        return;
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    const float          s = std::max(0.01f, ui::UiScale());
-    SavePrefFloat(kPrefX, (g.pos.x - vp->Pos.x) / s);
-    SavePrefFloat(kPrefY, (g.pos.y - vp->Pos.y) / s);
-    SavePrefFloat(kPrefW, g.size.x / s);
-    SavePrefFloat(kPrefH, g.size.y / s);
-    g.saved_pos = g.pos;
-    g.saved_size = g.size;
-}
-
 void DrawTitleRow(const Frame& f)
 {
     const float  h = ui::Dp(28.0f);
@@ -1997,12 +1950,10 @@ void DrawTitleRow(const Frame& f)
     const float  w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
     const float  close_w = ui::ControlH();
     ImDrawList*  dl = ImGui::GetWindowDrawList();
-    ImGui::InvisibleButton("##assigntitle", ImVec2(std::max(1.0f, w - close_w - ui::Dp(4.0f)), h));
-    if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 0.0f)) {
-        const ImVec2 np = ClampPos(ImVec2(g.pos.x + ImGui::GetIO().MouseDelta.x, g.pos.y + ImGui::GetIO().MouseDelta.y), g.size);
-        ImGui::SetWindowPos(np);
-    }
-    if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll);
+    // Antho 2026-10-12: the window is a window of its own, anywhere on the screen: its title row moves it
+    // (the OS drag, FloatUiWindow's caption area), unless a menu is open over it.
+    g_host.SetDragArea(p.x - ui::Dp(8.0f), p.y - ui::Dp(8.0f), p.x + w - close_w - ui::Dp(4.0f), p.y + h,
+                       ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId));
     const float ty = std::floor(p.y + (h - ImGui::GetTextLineHeight()) * 0.5f);
     std::string title = "Sound assignment";
     const float tw = ImGui::CalcTextSize(title.c_str()).x;
@@ -2261,18 +2212,12 @@ bool TaggingAssignTakesKey(unsigned vk, bool ctrl, bool shift, bool alt)
 
 bool TaggingAssignWindowOpen()
 {
-    if (!g.open || !ImGui::GetCurrentContext()) return false;
-    const int age = ImGui::GetFrameCount() - g.focused_frame;
-    return age >= 0 && age <= 1;
+    return g.open && g_host.HasFocus();
 }
 
 void DrawAssignWindow(const TaggingModel& m)
 {
-    if (!ImGui::GetCurrentContext()) return;
-    if (!g.open) {
-        CommitName();  // closed while typing a name: it is kept
-        return;
-    }
+    if (!g.open) return;
     if (m.item != g.last_model_item) {  // the Tagging view moved to another item: the window follows it again
         g.last_model_item = m.item;
         g.follow = true;
@@ -2283,23 +2228,16 @@ void DrawAssignWindow(const TaggingModel& m)
     } else if (g.follow) {
         g.item = m.item;
     }
-    if (!g.rect_known) RestoreRect();
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(g.pos, ImGuiCond_Appearing);
-    ImGui::SetNextWindowSize(g.size, ImGuiCond_Appearing);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(ui::Dp(kMinW), ui::Dp(kMinH)), vp->Size);
-    if (g.focus_request) {
-        ImGui::SetNextWindowFocus();
-        g.focus_request = false;
-    }
-    const bool shown = ui::BeginMovableCard(kWindowId, ImGuiWindowFlags_NoMove);
-    if (shown) {
-        const int frame = ImGui::GetFrameCount();
-        g.drawn_frame = frame;
-        g.pos = ImGui::GetWindowPos();
-        g.size = ImGui::GetWindowSize();
-        const bool focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
-        if (focused) g.focused_frame = frame;
+}
+
+namespace {
+
+// The window's content, in its own window's ImGui context (FloatUiWindow::Frame: one window covers it all).
+void DrawAssignContent()
+{
+    {
+        const int  frame = ImGui::GetFrameCount();
+        const bool focused = g_host.HasFocus();
         // Another project tab while typing a name: the typing is dropped (never renames the other project's).
         if (g.name_active && EnumProjects(-1, nullptr, 0) != g.name_proj) g.name_active = false;
         // A click outside the Name field ends its typing before the click changes the selection.
@@ -2395,10 +2333,44 @@ void DrawAssignWindow(const TaggingModel& m)
             DrawTreeAndDetails(f, body_h);
         }
         DrawFooter();
-        SaveRectIfChanged();
         if (g.name_active && g.name_frame != frame) CommitName();  // the sheet is gone (scope, selection): kept
     }
-    ui::EndMovableCard();
+}
+
+}  // namespace
+
+void DrawAssignFloat(HWND viewer, HDC viewer_dc, HGLRC rc)
+{
+    if (!ImGui::GetCurrentContext()) return;
+    if (!g.open) CommitName();  // closed while typing a name: it is kept
+    g_host.Bind(viewer, viewer_dc, rc);
+    const bool activate = g.open && g.focus_request;
+    g.focus_request = false;
+    g_host.Frame(g.open, activate, [] { DrawAssignContent(); });
+    if (g_host.TakeCloseRequest()) g.open = false;
+    // Its gestures run now, in any view (the Tagging view runs the strip's own after its widgets).
+    RunPickedSoundGestures();
+}
+
+void HideAssignFloat()
+{
+    g_host.Hide();
+}
+
+void DestroyAssignFloat()
+{
+    g_host.Destroy();
+}
+
+bool AssignFloatOwns(HWND hwnd)
+{
+    const HWND h = g_host.Hwnd();
+    return h && hwnd && (hwnd == h || IsChild(h, hwnd));
+}
+
+bool AssignFloatWantsText()
+{
+    return g_host.WantsText();
 }
 
 std::vector<int> RuleGroupBlocks(const std::vector<Block>& blocks, int b)

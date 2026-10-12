@@ -849,6 +849,10 @@ void RenderTick()
 
     SwapBuffers(g_hdc);
 
+    // 13-15: the Sound assignment window, a window of its own anywhere on the screen (its own ImGui
+    // context on the shared GL context); it puts our context back on return.
+    if (g_imgui_ready) DrawAssignFloat(g_hwnd, g_hdc, g_hglrc);
+
     // Story 11-4 — the Video view's REAPER writes run from the window procedure, never
     // inside this tick (a message box or a plug-in load may run a modal loop).
     if (VideoViewHasPending() && !g_video_post_pending && g_hwnd)
@@ -887,6 +891,7 @@ void CALLBACK FrameTimerProc(HWND, UINT, UINT_PTR, DWORD)
         if (!g_render_paused) {
             g_render_paused = true;
             DropKeyClaims();
+            HideAssignFloat();  // 13-15: no tick runs while hidden: the assignment window hides with the panel
             LogInfo("panel hidden — render paused");
         }
         return;
@@ -1946,6 +1951,7 @@ void StopRendering()
         if (g_icon_performance) { glDeleteTextures(1, &g_icon_performance); g_icon_performance = 0; }
         if (g_icon_keyboard) { glDeleteTextures(1, &g_icon_keyboard); g_icon_keyboard = 0; }
         if (g_imgui_ready) {
+            DestroyAssignFloat();  // 13-15: its context shares our font atlas and GL context: freed first
             ImGui_ImplOpenGL3_Shutdown();
             ImGui_ImplWin32_Shutdown();
             ImGui::DestroyContext();
@@ -2371,6 +2377,20 @@ void UnregisterViewerClass()
 int ViewerTranslateAccel(MSG* msg, accelerator_register_t* /*ctx*/)
 {
     if (!msg || !g_hwnd || !IsWindow(g_hwnd)) return 0;
+    // 13-15: the Sound assignment window (a window of its own): typing in a field, and its own keys (Esc, the
+    // arrows, Enter, Tab, Delete / Backspace) go to it; every other key (Space, Ctrl+Z...) stays REAPER's.
+    if (AssignFloatOwns(msg->hwnd)) {
+        const bool key_msg = msg->message == WM_KEYDOWN || msg->message == WM_KEYUP || msg->message == WM_CHAR ||
+                             msg->message == WM_SYSKEYDOWN || msg->message == WM_SYSKEYUP || msg->message == WM_SYSCHAR;
+        if (!key_msg) return 0;
+        if (AssignFloatWantsText()) return -1;
+        const bool     ctrl = GetKeyState(VK_CONTROL) < 0, alt = GetKeyState(VK_MENU) < 0;
+        const unsigned vk = static_cast<unsigned>(msg->wParam);
+        const bool own = vk == VK_ESCAPE || vk == VK_UP || vk == VK_DOWN || vk == VK_LEFT || vk == VK_RIGHT || vk == VK_RETURN ||
+                         vk == VK_TAB || vk == VK_DELETE || vk == VK_BACK;
+        if ((msg->message == WM_KEYDOWN || msg->message == WM_KEYUP) && !ctrl && !alt && own) return -1;
+        return 0;
+    }
     if (msg->hwnd != g_hwnd && !IsChild(g_hwnd, msg->hwnd)) return 0;
     KeyRouteInput in;
     switch (msg->message) {

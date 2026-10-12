@@ -1628,6 +1628,32 @@ void EndMovableCard()
     ImGui::End();
 }
 
+bool BeginToolWindowFill(const char* id)
+{
+    const ImGuiIO& io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(io.DisplaySize, ImGuiCond_Always);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, Col(kRaised));
+    ImGui::PushStyleColor(ImGuiCol_Border, Col(kStrokeStrong));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Dp(8.0f), Dp(8.0f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+                                   ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                   ImGuiWindowFlags_NoScrollWithMouse;
+    const bool shown = ImGui::Begin(id, nullptr, flags);
+    ImGui::PopStyleVar(3);
+    ImGui::PopStyleColor(2);
+    PushThemeMetrics();  // whatever Begin returned: EndToolWindowFill always pops them
+    return shown;
+}
+
+void EndToolWindowFill()
+{
+    PopThemeMetrics();
+    ImGui::End();
+}
+
 bool BeginOverlay(const char* id, ImVec2 pos, ImVec2 pivot, int extra_flags)
 {
     ImGui::SetNextWindowPos(pos, ImGuiCond_Always, pivot);

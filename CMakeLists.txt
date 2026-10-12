@@ -222,6 +222,7 @@ if(WIN32)
             src/tagging_populate_ui.cpp
             src/assign_view_model.cpp
             src/tagging_assign_ui.cpp
+            src/float_ui_window.cpp
             src/sound_populate.cpp
             src/sound_populate_plan.cpp
             src/sound_auto_assign.cpp

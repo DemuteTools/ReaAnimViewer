@@ -670,6 +670,10 @@ void EndFloatingCard();
 // Always pair with EndMovableCard.
 bool BeginMovableCard(const char* id, int window_flags = 0);
 void EndMovableCard();
+// 13-15: the window filling a tool window of its own (FloatUiWindow): its whole client area, square, the raised
+// card's fill and edge, no move / resize / bring to front (the OS window does that). Pair with EndToolWindowFill.
+bool BeginToolWindowFill(const char* id);
+void EndToolWindowFill();
 
 // 13-14 (G-10): a frameless window over the 3D view holding a few widgets (the view toggle, the
 // panel button, the status icon, the nav cube): pad 0, no background, no border, sized to its

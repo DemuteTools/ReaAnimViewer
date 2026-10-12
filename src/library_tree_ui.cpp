@@ -23,6 +23,7 @@
 
 #include "library_user_ui.h"
 #include "library_view_ui.h"
+#include "picked_gestures.h"
 #include "reaper_api.h"
 #include "sound_place.h"
 #include "sound_project.h"
@@ -88,6 +89,15 @@ struct TreeState {
     bool                     changed = false;
 };
 TreeState g;
+
+// The 13-8 rule (picked_gestures.h), here too: a button, menu item, drop, rename field or key only
+// picks its gesture, a closure holding copies of what it needs (uids, rows, names, the drop's
+// data); the picks run once the part being drawn (Libraries, Switch Groups, the tree, the batch
+// panel) is drawn, so no row, menu or loop still reads the store a gesture replaces
+// (ModifySoundStore swaps it whole). Still one undo point per gesture.
+PickedGestures g_picks;
+
+void Later(std::function<void()> f) { g_picks.Pick(std::move(f)); }
 
 std::string Upper(std::string s)
 {
@@ -436,17 +446,18 @@ void DoCut(const std::string& lib_uid, const std::vector<LibraryRow>& rows)
                          ": select where they go and press Ctrl+V", false);
 }
 
-void DoPaste(const SoundLibrary& lib, const LibraryRow* row)
+void DoPaste(const std::string& lib_uid, const LibraryRow* row)
 {
     if (g.clip.empty()) return;
-    const DropTarget to = PasteTarget(lib, row);
+    const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), lib_uid);
+    if (!lib) return;
+    const DropTarget to = PasteTarget(*lib, row);  // `lib` is stale once the gesture rewrote the store
     const std::string src = g.clip_lib;
     const std::vector<LibraryRow> rows = g.clip;
     if (!CanDrop(GetSoundStore(nullptr), src, rows, to)) {
         ShowLibraryToast("Cannot paste there", false);
         return;
     }
-    const std::string lib_uid = lib.uid;  // `lib` is stale once the gesture rewrote the store
     std::vector<std::string> moved;
     if (Gesture("Paste", [&](SoundStore& s) { return MoveRows(s, src, rows, to, &moved); })) {
         g.clip.clear();
@@ -530,22 +541,22 @@ std::string GroupMenuItems(bool with_new_group, bool* new_group)
 // The type menu of a container: Random / Blend / Switch on ▸ group.
 void TypeMenu(const std::vector<LibraryRow>& rows)
 {
-    if (ui::IconMenuItem(TypeIcon(SoundNodeType::Random), "Random")) DoSetType(rows, SoundNodeType::Random, {});
-    if (ui::IconMenuItem(TypeIcon(SoundNodeType::Blend), "Blend")) DoSetType(rows, SoundNodeType::Blend, {});
+    if (ui::IconMenuItem(TypeIcon(SoundNodeType::Random), "Random")) Later([rows] { DoSetType(rows, SoundNodeType::Random, {}); });
+    if (ui::IconMenuItem(TypeIcon(SoundNodeType::Blend), "Blend")) Later([rows] { DoSetType(rows, SoundNodeType::Blend, {}); });
     if (ui::IconBeginMenu(TypeIcon(SoundNodeType::Switch), "Switch on")) {
         const std::string gid = GroupMenuItems(false, nullptr);
-        if (!gid.empty()) BatchSwitchOn(rows, gid);
+        if (!gid.empty()) Later([rows, gid] { BatchSwitchOn(rows, gid); });
         ImGui::EndMenu();
     }
 }
 
 void WrapMenu(const std::vector<LibraryRow>& rows)
 {
-    if (ui::IconMenuItem(TypeIcon(SoundNodeType::Random), "Random")) DoWrap(rows, SoundNodeType::Random, {});
-    if (ui::IconMenuItem(TypeIcon(SoundNodeType::Blend), "Blend")) DoWrap(rows, SoundNodeType::Blend, {});
+    if (ui::IconMenuItem(TypeIcon(SoundNodeType::Random), "Random")) Later([rows] { DoWrap(rows, SoundNodeType::Random, {}); });
+    if (ui::IconMenuItem(TypeIcon(SoundNodeType::Blend), "Blend")) Later([rows] { DoWrap(rows, SoundNodeType::Blend, {}); });
     if (ui::IconBeginMenu(TypeIcon(SoundNodeType::Switch), "Switch on")) {
         const std::string gid = GroupMenuItems(false, nullptr);
-        if (!gid.empty()) DoWrap(rows, SoundNodeType::Switch, gid);
+        if (!gid.empty()) Later([rows, gid] { DoWrap(rows, SoundNodeType::Switch, gid); });
         ImGui::EndMenu();
     }
 }
@@ -585,18 +596,21 @@ void RowMenu(const SoundLibrary& lib)
     };
     if (ImGui::BeginMenu("Add child")) {
         std::string why;
-        if (ui::IconMenuItem(TypeIcon(SoundNodeType::Sound), "Sound", nullptr, false, can_add(SoundNodeType::Sound, &why))) DoAdd(SoundNodeType::Sound, {}, false, &rows);
+        if (ui::IconMenuItem(TypeIcon(SoundNodeType::Sound), "Sound", nullptr, false, can_add(SoundNodeType::Sound, &why)))
+            Later([rows] { DoAdd(SoundNodeType::Sound, {}, false, &rows); });
         Tip(why);
         why.clear();
-        if (ui::IconMenuItem(TypeIcon(SoundNodeType::Random), "Random", nullptr, false, can_add(SoundNodeType::Random, &why))) DoAdd(SoundNodeType::Random, {}, false, &rows);
+        if (ui::IconMenuItem(TypeIcon(SoundNodeType::Random), "Random", nullptr, false, can_add(SoundNodeType::Random, &why)))
+            Later([rows] { DoAdd(SoundNodeType::Random, {}, false, &rows); });
         Tip(why);
         why.clear();
-        if (ui::IconMenuItem(TypeIcon(SoundNodeType::Blend), "Blend", nullptr, false, can_add(SoundNodeType::Blend, &why))) DoAdd(SoundNodeType::Blend, {}, false, &rows);
+        if (ui::IconMenuItem(TypeIcon(SoundNodeType::Blend), "Blend", nullptr, false, can_add(SoundNodeType::Blend, &why)))
+            Later([rows] { DoAdd(SoundNodeType::Blend, {}, false, &rows); });
         Tip(why);
         if (can_add(SoundNodeType::Switch, nullptr) && ui::IconBeginMenu(TypeIcon(SoundNodeType::Switch), "Switch on")) {
             bool ng = false;
             const std::string gid = GroupMenuItems(true, &ng);
-            if (!gid.empty() || ng) DoAdd(SoundNodeType::Switch, gid, ng, &rows);
+            if (!gid.empty() || ng) Later([rows, gid, ng] { DoAdd(SoundNodeType::Switch, gid, ng, &rows); });
             ImGui::EndMenu();
         }
         ImGui::EndMenu();
@@ -611,28 +625,27 @@ void RowMenu(const SoundLibrary& lib)
     }
     if (is_switch && ImGui::BeginMenu("Change switch group")) {
         const std::string gid = GroupMenuItems(false, nullptr);
-        if (!gid.empty()) BatchSwitchOn(rows, gid);
+        if (!gid.empty()) Later([rows, gid] { BatchSwitchOn(rows, gid); });
         ImGui::EndMenu();
     }
     ImGui::Separator();
     if (ImGui::MenuItem("Rename", "F2", false, (has_node || is_value) && !g.changed)) StartRowRename(lib, row);
     const bool movable = has_node && node_uid != root_uid;
     if (ImGui::MenuItem("Cut", "Ctrl+X", false, movable)) DoCut(lib_uid, rows);
-    if (ImGui::MenuItem("Paste", "Ctrl+V", false, !g.clip.empty() && !g.changed)) DoPaste(lib, &row);
-    if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, movable)) DoDuplicate(rows);
+    if (ImGui::MenuItem("Paste", "Ctrl+V", false, !g.clip.empty() && !g.changed)) Later([lib_uid, row] { DoPaste(lib_uid, &row); });
+    if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, movable)) Later([rows] { DoDuplicate(rows); });
     if (is_value) {
         ImGui::Separator();
-        if (ImGui::MenuItem("Make default")) DoMakeDefault(rows);
-        if (!node_uid.empty() && ImGui::MenuItem("Clear (plays the default)")) {
-            Gesture("Clear value", [&](SoundStore& s) { return ClearValue(s, lib_uid, row); });
-        }
+        if (ImGui::MenuItem("Make default")) Later([rows] { DoMakeDefault(rows); });
+        if (!node_uid.empty() && ImGui::MenuItem("Clear (plays the default)"))
+            Later([lib_uid, row] { Gesture("Clear value", [&](SoundStore& s) { return ClearValue(s, lib_uid, row); }); });
     }
     ImGui::Separator();
-    if (ImGui::MenuItem("Remove", "Del", false, movable)) DoRemove(rows);
+    if (ImGui::MenuItem("Remove", "Del", false, movable)) Later([rows] { DoRemove(rows); });
     if (is_value && group_known) {
         if (ImGui::MenuItem("Remove value from group")) {
             const std::string gid = value_group, vid = row.key;
-            Gesture("Remove value", [&](SoundStore& s) { return DeleteValue(s, gid, vid); });
+            Later([gid, vid] { Gesture("Remove value", [&](SoundStore& s) { return DeleteValue(s, gid, vid); }); });
         }
     }
     ui::EndMenuPopup();
@@ -676,9 +689,13 @@ void MediaDropOn(const std::string& lib_uid, const LibraryRow& row, ImVec2 p0, I
     dl->AddRect(ImVec2(p0.x + 1.0f, p0.y + 1.0f), ImVec2(p1.x - 1.0f, p1.y - 1.0f), ui::kAccent, ui::kRadiusSm, 0, 2.0f);
     if (const ImGuiPayload* mp = ImGui::AcceptDragDropPayload(h.media_payload_type.c_str(),
                                                               ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
-        const auto drop = h.media_drop;  // the hook may replace the hooks
-        drop(lib_uid, row, mp->Data, mp->DataSize);
-        g.changed = true;  // the hook may have rewritten the store
+        const auto        drop = h.media_drop;  // the hook may replace the hooks
+        const char*       d = static_cast<const char*>(mp->Data);
+        std::vector<char> data(d, d ? d + mp->DataSize : d);  // the payload lives only this frame
+        Later([drop, lib_uid, row, data] {
+            drop(lib_uid, row, data.data(), static_cast<int>(data.size()));
+            g.changed = true;  // the hook may have rewritten the store
+        });
     }
 }
 
@@ -700,12 +717,11 @@ void RootDropOn(const SoundLibrary& lib, ImVec2 p0, ImVec2 p1)
             dl->AddRectFilled(p0, p1, ui::kAccentSoft, ui::kRadiusMd);
             dl->AddRect(ImVec2(p0.x + 1.0f, p0.y + 1.0f), ImVec2(p1.x - 1.0f, p1.y - 1.0f), ui::kAccent, ui::kRadiusMd, 0, 2.0f);
             if (ImGui::AcceptDragDropPayload(kRowsPayload, ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
-                const std::string src = g.drag_lib;
-                const std::vector<LibraryRow> rows = g.drag_rows;
-                const std::string lib_uid = lib.uid;
-                std::vector<std::string> moved;
-                if (Gesture("Move", [&](SoundStore& s) { return MoveRows(s, src, rows, to, &moved); }))
-                    FocusNew(lib_uid, moved, false);
+                Later([src = g.drag_lib, rows = g.drag_rows, lib_uid = lib.uid, to] {
+                    std::vector<std::string> moved;
+                    if (Gesture("Move", [&](SoundStore& s) { return MoveRows(s, src, rows, to, &moved); }))
+                        FocusNew(lib_uid, moved, false);
+                });
                 g.drag_rows.clear();
             }
         }
@@ -768,11 +784,9 @@ void RowDropTarget(const SoundLibrary& lib, const TreeRow& r, ImVec2 p0, ImVec2 
                 dl->AddRect(ImVec2(p0.x + 1.0f, p0.y + 1.0f), ImVec2(p1.x - 1.0f, p1.y - 1.0f), ui::kAccent, ui::kRadiusSm, 0, 2.0f);
             }
             if (ImGui::AcceptDragDropPayload(kRowsPayload, ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
-                const std::string src = g.drag_lib;
-                const std::vector<LibraryRow> rows = g.drag_rows;
-                const std::string lib_uid = lib.uid;  // `lib` is stale once the gesture rewrote the store
-                std::vector<std::string> moved;
-                if (Gesture("Move", [&](SoundStore& s) { return MoveRows(s, src, rows, to, &moved); })) {
+                Later([src = g.drag_lib, rows = g.drag_rows, lib_uid = lib.uid, to] {
+                    std::vector<std::string> moved;
+                    if (!Gesture("Move", [&](SoundStore& s) { return MoveRows(s, src, rows, to, &moved); })) return;
                     if (const SoundLibrary* dl2 = FindLibrary(GetSoundStore(nullptr), lib_uid)) {
                         g.sel.clear();
                         for (const std::string& m : moved) {
@@ -780,7 +794,7 @@ void RowDropTarget(const SoundLibrary& lib, const TreeRow& r, ImVec2 p0, ImVec2 
                             g.sel.push_back(RowOfNode(*dl2, m));
                         }
                     }
-                }
+                });
                 g.drag_rows.clear();
             }
         } else {
@@ -806,13 +820,13 @@ void ToolbarAdd(const SoundLibrary& lib, SoundNodeType type, const char* label)
             ui::MenuCaption("Switch on");
             bool ng = false;
             const std::string gid = GroupMenuItems(true, &ng);
-            if (!gid.empty() || ng) DoAdd(SoundNodeType::Switch, gid, ng);
+            if (!gid.empty() || ng) Later([gid, ng, rows = AddTargets()] { DoAdd(SoundNodeType::Switch, gid, ng, &rows); });
             ui::EndMenuPopup();
         }
         return;
     }
     if (ok == 0) ImGui::BeginDisabled();
-    if (ui::IconButton(icon, label)) DoAdd(type, {});
+    if (ui::IconButton(icon, label)) Later([type, rows = AddTargets()] { DoAdd(type, {}, false, &rows); });
     if (ok == 0) ImGui::EndDisabled();
     Tip(why);
 }
@@ -1188,7 +1202,8 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
             const float bs = ui::Dp(18.0f);
             rx -= bs;
             bool hov = false;
-            if (RowToolButton("##star", ImVec2(rx, std::floor(cy - bs * 0.5f)), bs, bs, false, &hov)) DoMakeDefault({r.row});
+            if (RowToolButton("##star", ImVec2(rx, std::floor(cy - bs * 0.5f)), bs, bs, false, &hov))
+                Later([row = r.row] { DoMakeDefault({row}); });
             CentredGlyph(dl, ui::FontSmall(), ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), hov ? ui::kWarn : ui::kFaint,
                          "\xE2\x98\x86");
             Tip("Make it the default value");
@@ -1215,7 +1230,7 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
             const LibraryRow row = r.row;
             const std::string lib_uid = lib.uid;
             EndRename();
-            if (res > 0) Gesture("Rename", [&](SoundStore& s) { return RenameRow(s, lib_uid, row, name); });
+            if (res > 0) Later([lib_uid, row, name] { Gesture("Rename", [&](SoundStore& s) { return RenameRow(s, lib_uid, row, name); }); });
         }
     } else {
         ImU32 col = ui::kText;
@@ -1236,13 +1251,15 @@ void TreeKeys(const SoundLibrary& lib)
     if (!LibraryViewFocused() || !g.tree_focused || io.WantTextInput || g.rename != RenameKind::None) return;
     if (ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId)) return;
     const LibraryRow* first = g.sel.empty() ? nullptr : &g.sel.front();
-    if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) && !g.sel.empty()) DoRemove(g.sel);
+    if (ImGui::IsKeyPressed(ImGuiKey_Delete, false) && !g.sel.empty()) Later([rows = g.sel] { DoRemove(rows); });
     else if (ImGui::IsKeyPressed(ImGuiKey_F2, false) && first) StartRowRename(lib, *first);
-    else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D, false) && !g.sel.empty()) DoDuplicate(g.sel);
+    else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_D, false) && !g.sel.empty()) Later([rows = g.sel] { DoDuplicate(rows); });
     else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_X, false) && !g.sel.empty()) {
         DoCut(lib.uid, g.sel);
     } else if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_V, false)) {
-        DoPaste(lib, first);
+        Later([lib_uid = lib.uid, has = first != nullptr, row = first ? *first : LibraryRow{}] {
+            DoPaste(lib_uid, has ? &row : nullptr);
+        });
     } else if (!io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Space, false) && first) {
         const bool lit = g.hooks.is_lit && g.hooks.is_lit(RowNode(lib, *first));
         if (lit && g.hooks.stop) g.hooks.stop();
@@ -1299,13 +1316,13 @@ void EmptyLibraryHint(const SoundLibrary& lib)
         if (i > 0) SameLineIfFits(ui::IconButtonWidth(kLabels[i]));
         if (!ui::IconButton(TypeIcon(kHintTypes[i]), kLabels[i])) continue;
         if (kHintTypes[i] == SoundNodeType::Switch) ImGui::OpenPopup("##hintswitch");
-        else DoAdd(kHintTypes[i], {});
+        else Later([type = kHintTypes[i], rows = AddTargets()] { DoAdd(type, {}, false, &rows); });
     }
     if (!g.changed && ui::BeginMenuPopup("##hintswitch")) {
         ui::MenuCaption("Switch on");
         bool ng = false;
         const std::string gid = GroupMenuItems(true, &ng);
-        if (!gid.empty() || ng) DoAdd(SoundNodeType::Switch, gid, ng);
+        if (!gid.empty() || ng) Later([gid, ng, rows = AddTargets()] { DoAdd(SoundNodeType::Switch, gid, ng, &rows); });
         ui::EndMenuPopup();
     }
     ImGui::Dummy(ImVec2(0.0f, std::max(0.0f, vgap - ImGui::GetStyle().ItemSpacing.y)));
@@ -1396,7 +1413,7 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
         if (res != 0) {
             const std::string name = g.buf, uid = lib.uid;
             EndRename();
-            if (res > 0) Gesture("Rename library", [&](SoundStore& s) { return RenameLibrary(s, uid, name); });
+            if (res > 0) Later([uid, name] { Gesture("Rename library", [&](SoundStore& s) { return RenameLibrary(s, uid, name); }); });
         }
         dl->AddCircleFilled(ImVec2(p.x + ui::Dp(10.0f), p.y + rh * 0.5f), ui::Dp(4.0f), LibDot(lib.color));
         ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh));
@@ -1490,12 +1507,10 @@ void UserFileRow(const UserLibraryFile& f, std::string* add_file)
     ImGui::PopID();
 }
 
-}  // namespace
-
 // 13-7a (audit C1.1 - C1.4): a fixed "Libraries" section, « at its header's right; the project's
 // libraries under PROJECT, the User Library's under USER (with the folder's files not in the
 // project); "+ Library" and "+ User Library" side by side, then "Import .ravlib..." full width.
-void DrawLibrariesSection()
+void LibrariesSectionWidgets()
 {
     g.changed = false;
     RefreshItemGuids();
@@ -1530,26 +1545,35 @@ void DrawLibrariesSection()
                 for (const UserLibraryFile& f : files) UserFileRow(f, &add_file);
         }
         ImGui::PopStyleVar();
-        if (!g.changed && !to_delete.empty())
-            Gesture("Delete library", [&](SoundStore& s) { return DeleteLibrary(s, to_delete); });
-        if (!g.changed && !add_file.empty()) AddUserLibraryFile(add_file);
+        if (!to_delete.empty())
+            Later([to_delete] { Gesture("Delete library", [&](SoundStore& s) { return DeleteLibrary(s, to_delete); }); });
+        if (!add_file.empty()) Later([add_file] { AddUserLibraryFile(add_file); });
         if (!any_project && !any_user) ui::SubText("No library yet");
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
         // .two: the two add buttons share the width (6 px apart); Import under them, full width.
         const float avail = std::max(1.0f, ImGui::GetContentRegionAvail().x);
         const float sp = ui::Dp(6.0f);
         const float half = std::max(1.0f, std::floor((avail - sp) * 0.5f));
-        if (ui::SolidButton("+ Library", ImVec2(half, 0.0f))) {
-            std::string uid;
-            if (Gesture("Add library", [&](SoundStore& s) { return NewLibrary(s, &uid); })) PickLibrary(uid);
-        }
+        if (ui::SolidButton("+ Library", ImVec2(half, 0.0f)))
+            Later([] {
+                std::string uid;
+                if (Gesture("Add library", [&](SoundStore& s) { return NewLibrary(s, &uid); })) PickLibrary(uid);
+            });
         ImGui::SameLine(0.0f, sp);
-        if (ui::SolidButton("+ User Library", ImVec2(std::max(1.0f, avail - half - sp), 0.0f))) NewUserLibrary();
+        if (ui::SolidButton("+ User Library", ImVec2(std::max(1.0f, avail - half - sp), 0.0f))) Later([] { NewUserLibrary(); });
         Tip("A library saved in its own file in the User Library folder, for every project");
         if (ui::SolidButton("Import .ravlib...", ImVec2(avail, 0.0f))) RequestUserLibraryImport();
         Tip("Add a .ravlib file: it is copied into the User Library folder");
     }
     ui::EndSection(sec);
+}
+
+}  // namespace
+
+void DrawLibrariesSection()
+{
+    LibrariesSectionWidgets();
+    g_picks.Run();  // the gestures picked above, the list drawn
 }
 
 namespace {
@@ -1579,12 +1603,10 @@ bool RowCross(ImVec2 p, float w, const char* tip)
     return clicked;
 }
 
-}  // namespace
-
 // 13-7a (audit C2): a fixed "Switch Groups" section, "+ Group" at its header's right; group rows
 // (.trow.grp, 28 px: chevron, folder icon, name, value count in faint, × on hover), their value
 // rows one level in (18 px; the value dot, name, × on hover), then a dashed "+ value" field.
-void DrawSwitchGroupsSection()
+void SwitchGroupsSectionWidgets()
 {
     g.changed = false;
     const SoundStore& store = GetSoundStore(nullptr);
@@ -1602,16 +1624,16 @@ void DrawSwitchGroupsSection()
     ui::Section sec;
     const bool  open_sec = ui::BeginSection(sec, "Switch Groups", opts);
     ui::BeginSectionHeaderRight(sec);
-    if (ui::SolidButton("+ Group")) {
-        std::string gid;
-        if (Gesture("Add group", [&](SoundStore& s) { return AddGroup(s, "Group", &gid); })) {
+    if (ui::SolidButton("+ Group"))
+        Later([] {
+            std::string gid;
+            if (!Gesture("Add group", [&](SoundStore& s) { return AddGroup(s, "Group", &gid); })) return;
             g.rename = RenameKind::Group;
             g.r_a = gid;
             std::snprintf(g.buf, sizeof(g.buf), "%s",
                           FindGroup(GetSoundStore(nullptr), gid) ? FindGroup(GetSoundStore(nullptr), gid)->name.c_str() : "Group");
             g.r_focus = true;
-        }
-    }
+        });
     ui::EndSectionHeaderRight(sec);
     if (open_sec && !g.changed) {
         std::string  del_group, del_value_group, del_value, add_group, add_name;
@@ -1632,7 +1654,7 @@ void DrawSwitchGroupsSection()
                 if (res != 0) {
                     const std::string name = g.buf, uid = gr.uid;
                     EndRename();
-                    if (res > 0) Gesture("Rename group", [&](SoundStore& s) { return RenameGroup(s, uid, name); });
+                    if (res > 0) Later([uid, name] { Gesture("Rename group", [&](SoundStore& s) { return RenameGroup(s, uid, name); }); });
                 }
                 if (g.changed) {
                     ImGui::PopID();
@@ -1694,7 +1716,9 @@ void DrawSwitchGroupsSection()
                             const std::string name = g.buf, gid = gr.uid, vid = v.uid;
                             EndRename();
                             if (res > 0)
-                                Gesture("Rename value", [&](SoundStore& s) { return RenameValue(s, gid, vid, name); });
+                                Later([gid, vid, name] {
+                                    Gesture("Rename value", [&](SoundStore& s) { return RenameValue(s, gid, vid, name); });
+                                });
                         }
                         if (g.changed) {
                             ImGui::PopID();
@@ -1757,19 +1781,30 @@ void DrawSwitchGroupsSection()
             if (g.changed || !add_group.empty()) break;
         }
         ImGui::PopStyleVar();
-        if (!g.changed && !del_group.empty()) Gesture("Delete group", [&](SoundStore& s) { return DeleteGroup(s, del_group); });
+        if (!g.changed && !del_group.empty())
+            Later([del_group] { Gesture("Delete group", [&](SoundStore& s) { return DeleteGroup(s, del_group); }); });
         if (!g.changed && !del_value.empty())
-            Gesture("Remove value", [&](SoundStore& s) { return DeleteValue(s, del_value_group, del_value); });
-        if (!g.changed && !add_group.empty()) {
-            std::string vid;
-            if (Gesture("Add value", [&](SoundStore& s) { return AddValue(s, add_group, add_name, &vid); })) {
+            Later([del_value_group, del_value] {
+                Gesture("Remove value", [&](SoundStore& s) { return DeleteValue(s, del_value_group, del_value); });
+            });
+        if (!g.changed && !add_group.empty())
+            Later([add_group, add_name] {
+                std::string vid;
+                if (!Gesture("Add value", [&](SoundStore& s) { return AddValue(s, add_group, add_name, &vid); })) return;
                 g.add_value[add_group].fill('\0');
                 g.add_value_focus = add_group;  // type the next one
-            }
-        }
+            });
         if (!g.changed && store.groups.empty()) ui::SubText("No Switch Group yet");
     }
     ui::EndSection(sec);
+}
+
+}  // namespace
+
+void DrawSwitchGroupsSection()
+{
+    SwitchGroupsSectionWidgets();
+    g_picks.Run();  // the gestures picked above, the groups drawn
 }
 
 // ---- Column 2 -----------------------------------------------------------------------------------
@@ -1805,7 +1840,7 @@ void TreeHeader(const SoundLibrary& lib)
         const SoundLibrary* typed = FindLibrary(GetSoundStore(nullptr), uid);
         while (!name.empty() && std::isspace(static_cast<unsigned char>(name.back()))) name.pop_back();
         if (typed && !name.empty() && name != typed->name)
-            Gesture("Rename library", [&](SoundStore& s) { return RenameLibrary(s, uid, name); });
+            Later([uid, name] { Gesture("Rename library", [&](SoundStore& s) { return RenameLibrary(s, uid, name); }); });
         g.title_lib.clear();
         if (g.changed) {
             ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + hh));
@@ -1837,12 +1872,11 @@ void TreeHeader(const SoundLibrary& lib)
     }
     ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + hh));
     ImGui::Dummy(ImVec2(0.0f, 0.0f));
-    if (!to_delete.empty()) Gesture("Delete library", [&](SoundStore& s) { return DeleteLibrary(s, to_delete); });
+    if (!to_delete.empty())
+        Later([to_delete] { Gesture("Delete library", [&](SoundStore& s) { return DeleteLibrary(s, to_delete); }); });
 }
 
-}  // namespace
-
-void DrawLibraryTree()
+void LibraryTreeWidgets()
 {
     g.changed = false;
     g.tree_focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows);  // column 2 and its tree
@@ -1850,10 +1884,11 @@ void DrawLibraryTree()
     const SoundLibrary* lib = CurrentLib();
     if (!lib) {
         ui::SubText("No library yet");
-        if (ui::SolidButton("+ Library##tree")) {
-            std::string uid;
-            if (Gesture("Add library", [&](SoundStore& s) { return NewLibrary(s, &uid); })) g.lib = uid;
-        }
+        if (ui::SolidButton("+ Library##tree"))
+            Later([] {
+                std::string uid;
+                if (Gesture("Add library", [&](SoundStore& s) { return NewLibrary(s, &uid); })) g.lib = uid;
+            });
         return;
     }
     TreeHeader(*lib);
@@ -1922,7 +1957,7 @@ void DrawLibraryTree()
 // 13-7a (audit C6): the title "N rows selected" (15 / 600) and what they are, "Make them default"
 // above the card, then the fixed "Change them all at once · one undo point" card: Type (with
 // "mixed" in warn), the "Switch on" select, "Put into".
-void DrawLibraryBatchPanel()
+void LibraryBatchPanelWidgets()
 {
     g.changed = false;
     const SoundStore& store = GetSoundStore(nullptr);
@@ -1969,7 +2004,7 @@ void DrawLibraryBatchPanel()
     part(empty_values, "empty value", "empty values");
     if (!sum.empty()) ui::SubText(sum.c_str());
     if (values == 0) ImGui::BeginDisabled();
-    if (ui::SolidButton("Make them default (one per Switch)")) DoMakeDefault(rows);
+    if (ui::SolidButton("Make them default (one per Switch)")) Later([rows] { DoMakeDefault(rows); });
     if (values == 0) ImGui::EndDisabled();
     Tip(values ? "One default per Switch" : "Select Switch value rows first");
     if (g.changed) return;
@@ -1985,8 +2020,8 @@ void DrawLibraryBatchPanel()
         const ui::Icon kTypeIcons[3] = {TypeIcon(SoundNodeType::Random), TypeIcon(SoundNodeType::Blend),
                                         TypeIcon(SoundNodeType::Switch)};
         if (ui::Segmented("##batchtype", kTypes, 3, &sel, 0.0f, -1, kTypeIcons)) {
-            if (sel == 0) DoSetType(rows, SoundNodeType::Random, {});
-            else if (sel == 1) DoSetType(rows, SoundNodeType::Blend, {});
+            if (sel == 0) Later([rows] { DoSetType(rows, SoundNodeType::Random, {}); });
+            else if (sel == 1) Later([rows] { DoSetType(rows, SoundNodeType::Blend, {}); });
             else ImGui::OpenPopup("##batchswitch");
         } else if (was == 2 && ImGui::IsMouseReleased(ImGuiMouseButton_Left) && ui::SegmentedHovered() == 2 &&
                    !ImGui::IsPopupOpen("##batchswitch")) {
@@ -2004,25 +2039,25 @@ void DrawLibraryBatchPanel()
         if (ui::BeginMenuPopup("##batchswitch")) {
             ui::MenuCaption("Switch on");
             const std::string gid = GroupMenuItems(false, nullptr);
-            if (!gid.empty()) BatchSwitchOn(rows, gid);
+            if (!gid.empty()) Later([rows, gid] { BatchSwitchOn(rows, gid); });
             ui::EndMenuPopup();
         }
         const SwitchGroup* cg = common == 2 ? FindGroup(store, common_group) : nullptr;
         ui::LabelRow("Switch on", 160.0f);
         if (ui::BeginComboStyled("##batchswitch2", cg ? cg->name.c_str() : "Choose a Switch Group...", ui::Dp(160.0f))) {
             const std::string gid = GroupMenuItems(false, nullptr);
-            if (!gid.empty()) BatchSwitchOn(rows, gid);
+            if (!gid.empty()) Later([rows, gid] { BatchSwitchOn(rows, gid); });
             ui::EndComboStyled();
         }
         Tip("Also converts the Random and Blend containers");
         ui::LabelRow("Put into", MenuButtonWidth("Put into"));
         if (MenuButton("Put into")) ImGui::OpenPopup("##putinto");
         if (ui::BeginMenuPopup("##putinto")) {
-            if (ui::IconMenuItem(TypeIcon(SoundNodeType::Random), "New Random")) DoWrap(rows, SoundNodeType::Random, {});
-            if (ui::IconMenuItem(TypeIcon(SoundNodeType::Blend), "New Blend")) DoWrap(rows, SoundNodeType::Blend, {});
+            if (ui::IconMenuItem(TypeIcon(SoundNodeType::Random), "New Random")) Later([rows] { DoWrap(rows, SoundNodeType::Random, {}); });
+            if (ui::IconMenuItem(TypeIcon(SoundNodeType::Blend), "New Blend")) Later([rows] { DoWrap(rows, SoundNodeType::Blend, {}); });
             if (ui::IconBeginMenu(TypeIcon(SoundNodeType::Switch), "New Switch on")) {
                 const std::string gid = GroupMenuItems(false, nullptr);
-                if (!gid.empty()) DoWrap(rows, SoundNodeType::Switch, gid);
+                if (!gid.empty()) Later([rows, gid] { DoWrap(rows, SoundNodeType::Switch, gid); });
                 ImGui::EndMenu();
             }
             ImGui::Separator();
@@ -2035,16 +2070,30 @@ void DrawLibraryBatchPanel()
                 to.mode = DropMode::Into;
                 const bool ok = CanDrop(store, lib->uid, rows, to);
                 ImGui::PushID(n.uid.c_str());
-                if (ui::IconMenuItem(TypeIcon(n.type), n.name.c_str(), TypeWord(n.type), false, ok)) {
-                    const std::string lib_uid = lib->uid;
-                    Gesture("Put into " + n.name, [&](SoundStore& s) { return MoveRows(s, lib_uid, rows, to, nullptr); });
-                }
+                if (ui::IconMenuItem(TypeIcon(n.type), n.name.c_str(), TypeWord(n.type), false, ok))
+                    Later([lib_uid = lib->uid, rows, to, name = n.name] {
+                        Gesture("Put into " + name, [&](SoundStore& s) { return MoveRows(s, lib_uid, rows, to, nullptr); });
+                    });
                 ImGui::PopID();
             }
             ui::EndMenuPopup();
         }
     }
     ui::EndSection(sec);
+}
+
+}  // namespace
+
+void DrawLibraryTree()
+{
+    LibraryTreeWidgets();
+    g_picks.Run();  // the gestures picked above (toolbar, rows, menus, drops, keys), the tree drawn
+}
+
+void DrawLibraryBatchPanel()
+{
+    LibraryBatchPanelWidgets();
+    g_picks.Run();  // the gestures picked above, the panel drawn
 }
 
 // ---- Seams --------------------------------------------------------------------------------------

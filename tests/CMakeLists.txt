@@ -33,6 +33,11 @@ add_test(NAME undo_guard COMMAND undo_guard_test)
 add_executable(picked_gestures_test picked_gestures_test.cpp)
 target_include_directories(picked_gestures_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME picked_gestures COMMAND picked_gestures_test)
+# The same rule in the Library view: its lists, menus, rename fields and drops pick their
+# gestures over a real sound store (src/library_tree_edit.h), run after the loop.
+add_executable(library_picked_gestures_test library_picked_gestures_test.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+target_include_directories(library_picked_gestures_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME library_picked_gestures COMMAND library_picked_gestures_test)
 
 # Spec 11-fb-13 -- the Output size written into REAPER's render format (src/render_format_size.h).
 add_executable(render_format_size_test render_format_size_test.cpp)

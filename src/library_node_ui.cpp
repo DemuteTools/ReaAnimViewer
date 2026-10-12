@@ -2,9 +2,12 @@
 //
 // See library_node_ui.h. Every gesture is one ModifySoundStore undo point ("RAV: <gesture>")
 // followed by the Library toast with Undo; live drags (faders, offsets, trims, dB, detection
-// fields, the threshold line) preview a local draft and write once on release. After a write
-// every SoundLibrary / SoundNode reference taken before it is stale: the panel stops drawing
-// for this frame (P.changed). The audition / pre-edit logic is sound_audition_plan.h (pure).
+// fields, the threshold line) preview a local draft and write once on release. A gesture is only
+// picked while the panel draws (the 13-8 rule, picked_gestures.h: it holds copies of what it
+// writes) and runs once the panel is drawn, so no SoundLibrary / SoundNode reference the panel
+// holds is read after the store it points into was replaced; the panel stops drawing for the
+// frame a gesture was picked in (P.changed). The audition / pre-edit logic is
+// sound_audition_plan.h (pure).
 
 #include "library_node_ui.h"
 
@@ -26,6 +29,7 @@
 #include "library_icons.h"
 #include "library_tree_ui.h"
 #include "library_view_ui.h"
+#include "picked_gestures.h"
 #include "reaper_api.h"
 #include "shortcuts.h"
 #include "sound_audition.h"
@@ -138,26 +142,42 @@ void OpenEdit(const std::string& lib_uid, const std::string& uid)
 
 // ---- gestures -------------------------------------------------------------------------------------
 
-bool Gesture(const std::string& name, const std::function<bool(SoundStore&)>& edit, const std::string& toast = {})
+// The gestures picked while the panel draws, run by DrawNodePanel once it is drawn.
+PickedGestures g_picks;
+
+// The write itself: one undo point and the toast. False when nothing changed.
+bool WriteNow(const std::string& name, const std::function<bool(SoundStore&)>& edit, const std::string& toast)
 {
     const std::string desc = "RAV: " + name;
     if (!ModifySoundStore(nullptr, desc.c_str(), edit)) return false;
-    P.changed = true;
     ShowLibraryToast(toast.empty() ? name : toast, true, desc);
     return true;
 }
 
-bool EditNode(const std::string& name, const std::string& lib_uid, const std::string& uid,
-              const std::function<bool(SoundNode&)>& f, const std::string& toast = {})
+// Picks the write (`edit` holds copies: it runs after the panel, the caller's locals gone). The
+// panel stops drawing for this frame, as it did after a write.
+void Gesture(const std::string& name, std::function<bool(SoundStore&)> edit, const std::string& toast = {})
 {
-    return Gesture(
-        name,
-        [&](SoundStore& s) {
-            SoundLibrary* l = FindLibrary(s, lib_uid);
-            SoundNode*    n = l ? FindNode(*l, uid) : nullptr;
-            return n && f(*n);
-        },
-        toast);
+    if (!edit) return;
+    P.changed = true;
+    g_picks.Pick([name, edit, toast]() { WriteNow(name, edit, toast); });
+}
+
+// The store edit of one node: `f` on the node `uid` of the library `lib_uid` (copies of all three).
+std::function<bool(SoundStore&)> NodeEdit(const std::string& lib_uid, const std::string& uid,
+                                          std::function<bool(SoundNode&)> f)
+{
+    return [lib_uid, uid, f](SoundStore& s) {
+        SoundLibrary* l = FindLibrary(s, lib_uid);
+        SoundNode*    n = l ? FindNode(*l, uid) : nullptr;
+        return n && f && f(*n);
+    };
+}
+
+void EditNode(const std::string& name, const std::string& lib_uid, const std::string& uid,
+              std::function<bool(SoundNode&)> f, const std::string& toast = {})
+{
+    Gesture(name, NodeEdit(lib_uid, uid, std::move(f)), toast);
 }
 
 const SoundData& Shown(const SoundNode& n) { return (P.live && P.draft_uid == n.uid) ? P.draft : n.sound; }
@@ -179,7 +199,7 @@ void CommitLive(const std::string& name, const std::string& lib_uid, const std::
     if (!P.live || P.draft_uid != uid) return;
     const SoundData d = P.draft;
     P.live = false;
-    EditNode(name, lib_uid, uid, [&d](SoundNode& n) {
+    EditNode(name, lib_uid, uid, [d](SoundNode& n) {
         n.sound = d;
         return true;
     });
@@ -1407,7 +1427,7 @@ void ReplaceFromSelected(const std::string& lib_uid, const std::string& uid, con
     if (n > 1) toast += " (the first of " + std::to_string(n) + " selected items)";
     EditNode(
         gesture, lib_uid, uid,
-        [&](SoundNode& x) {
+        [guid, mode, frames](SoundNode& x) {
             x.sound.source = SoundSource{};
             x.sound.source.kind = SoundSourceKind::Item;
             x.sound.source.item_guid = guid;
@@ -1433,11 +1453,11 @@ void ReplaceFromDrop(const std::string& lib_uid, const std::string& uid, const S
     }
     EditNode(
         "Replace audio", lib_uid, uid,
-        [&](SoundNode& x) {
+        [src, mode, frames, edited = !dropped.empty()](SoundNode& x) {
             x.sound.source = src;
             x.sound.mode = mode;
             x.sound.frames = frames;
-            x.sound.edited = !dropped.empty();
+            x.sound.edited = edited;
             return true;
         },
         "Replaced audio");
@@ -1508,7 +1528,8 @@ bool MediaDropTarget(ImGuiID id, ImVec2 a, ImVec2 b, const SoundLibrary& lib, co
             } else {
                 const LibraryRow row = RowOfNode(lib, n.uid);
                 const auto drop = h.media_drop;  // the hooks may be replaced by the call
-                drop(lib_uid, row, data.data(), static_cast<int>(data.size()));
+                // It may write the store (UseMediaAt): run once the panel is drawn, as a gesture.
+                g_picks.Pick([drop, lib_uid, row, data]() { drop(lib_uid, row, data.data(), static_cast<int>(data.size())); });
             }
             P.changed = true;
             dropped = true;
@@ -1524,6 +1545,9 @@ std::string FileName(const std::string& path)
     return k == std::string::npos ? path : path.substr(k + 1);
 }
 
+// Run as a picked gesture (after the panel): the file dialog lets REAPER's timers run, and a
+// timer may write the store (the User Library's autosave, a Locate result), so no panel reference
+// may be held across it. Writes at once (it already runs after the panel).
 void Locate(const std::string& lib_uid, const std::string& uid, const SoundSource& src)
 {
     std::string path = src.asset.last_path;
@@ -1532,17 +1556,17 @@ void Locate(const std::string& lib_uid, const std::string& uid, const SoundSourc
     std::error_code ec;  // the size too, so the file is found again by name, size and length (13-11)
     const auto fsize = std::filesystem::file_size(std::filesystem::u8path(path), ec);
     const int64_t size = ec ? int64_t(-1) : int64_t(fsize);
-    EditNode(
-        "Locate sound file", lib_uid, uid,
-        [&](SoundNode& x) {
-            x.sound.source.kind = SoundSourceKind::File;
-            x.sound.source.asset.last_path = path;
-            x.sound.source.asset.name = FileName(path);
-            if (len > 0.0) x.sound.source.asset.length = len;
-            x.sound.source.asset.size = size;
-            return true;
-        },
-        "Located " + FileName(path));
+    WriteNow("Locate sound file",
+             NodeEdit(lib_uid, uid,
+                      [path, len, size](SoundNode& x) {
+                          x.sound.source.kind = SoundSourceKind::File;
+                          x.sound.source.asset.last_path = path;
+                          x.sound.source.asset.name = FileName(path);
+                          if (len > 0.0) x.sound.source.asset.length = len;
+                          x.sound.source.asset.size = size;
+                          return true;
+                      }),
+             "Located " + FileName(path));
 }
 
 void ShowInReaper(const SoundSource& src)
@@ -1600,7 +1624,7 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
                                                                        : std::string("Split by ") + labels[static_cast<size_t>(sel)]) +
                                                 ": the hand edits of the previous mode were dropped"
                                           : std::string();
-            EditNode("Detect", lib.uid, n.uid, [&](SoundNode& x) {
+            EditNode("Detect", lib.uid, n.uid, [mode, frames](SoundNode& x) {
                 if (x.sound.mode == mode) return false;  // no empty undo point
                 x.sound.mode = mode;
                 x.sound.frames = frames;
@@ -1679,7 +1703,7 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
     ui::SubText("Saved with the sound in the library (.ravlib).");
     if (ui::SolidButton("Reset to detected")) {
         const std::vector<SoundFrame> det = Detected(m, d.mode, d.silence);
-        EditNode("Reset to detected", lib.uid, n.uid, [&](SoundNode& x) {
+        EditNode("Reset to detected", lib.uid, n.uid, [det](SoundNode& x) {
             ResetToDetected(x.sound, det);
             return true;
         });
@@ -1748,7 +1772,7 @@ void NormalizeControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
             ImGui::EndDisabled();
             return;
         }
-        EditNode("Normalize", lib.uid, n.uid, [&](SoundNode& x) {
+        EditNode("Normalize", lib.uid, n.uid, [frames](SoundNode& x) {
             x.sound.frames = frames;
             x.sound.edited = true;
             return true;
@@ -1979,7 +2003,7 @@ void DrawHeader(const SoundStore& store, const SoundLibrary& lib, const SoundNod
         if (done && P.name_buf[0] && n.name != P.name_buf) {
             const std::string name = P.name_buf, lib_uid = lib.uid;
             const LibraryRow  row = RowOfNode(lib, n.uid);
-            Gesture("Rename", [&](SoundStore& s) { return RenameRow(s, lib_uid, row, name); });
+            Gesture("Rename", [lib_uid, row, name](SoundStore& s) { return RenameRow(s, lib_uid, row, name); });
             if (P.changed) return;
         }
     } else {
@@ -2035,7 +2059,7 @@ void DrawTypeRows(const SoundStore& store, const SoundLibrary& lib, const SoundN
         ImGui::OpenPopup("##switchon");
     } else if (changed && sel != before) {
         const SoundNodeType t = sel == 0 ? SoundNodeType::Random : SoundNodeType::Blend;
-        Gesture(std::string("Make ") + kTypes[sel], [&](SoundStore& s) { return SetRowsType(s, lib_uid, {row}, t, {}); });
+        Gesture(std::string("Make ") + kTypes[sel], [lib_uid, row, t](SoundStore& s) { return SetRowsType(s, lib_uid, {row}, t, {}); });
         if (P.changed) return;
     }
     if (ui::BeginMenuPopup("##switchon")) {
@@ -2046,7 +2070,8 @@ void DrawTypeRows(const SoundStore& store, const SoundLibrary& lib, const SoundN
                 const std::string gid = g.uid;
                 ImGui::CloseCurrentPopup();
                 ui::EndMenuPopup();
-                Gesture("Switch on " + g.name, [&](SoundStore& s) { return SetRowsType(s, lib_uid, {row}, SoundNodeType::Switch, gid); });
+                Gesture("Switch on " + g.name,
+                        [lib_uid, row, gid](SoundStore& s) { return SetRowsType(s, lib_uid, {row}, SoundNodeType::Switch, gid); });
                 return;
             }
         }
@@ -2073,7 +2098,7 @@ void DrawTypeRows(const SoundStore& store, const SoundLibrary& lib, const SoundN
                     const LibraryRow  vr{n.uid, v.uid};
                     const std::string name = v.name;
                     ui::EndComboStyled();
-                    Gesture("Make default", [&](SoundStore& s) { return MakeDefault(s, lib_uid, {vr}); }, name + " is the default");
+                    Gesture("Make default", [lib_uid, vr](SoundStore& s) { return MakeDefault(s, lib_uid, {vr}); }, name + " is the default");
                     return;
                 }
             }
@@ -2100,7 +2125,7 @@ void DrawTypeRows(const SoundStore& store, const SoundLibrary& lib, const SoundN
             ui::EndComboStyled();
             if (picked) {
                 const std::string uid = n.uid;
-                EditNode("Preview value", lib_uid, uid, [&](SoundNode& x) {
+                EditNode("Preview value", lib_uid, uid, [pick](SoundNode& x) {
                     x.preview_value = pick;
                     return true;
                 });
@@ -2474,7 +2499,10 @@ void DrawSourceLine(const SoundLibrary& lib, const SoundNode& n, const SoundMedi
         if (beside) ImGui::SameLine(0.0f, sp);
         if (ui::SolidButton(btn)) {
             if (item) ReplaceFromSelected(lib_uid, uid, "Set from selected item");
-            else Locate(lib_uid, uid, src);
+            else {
+                P.changed = true;  // a gesture is picked: the panel stops drawing for this frame
+                g_picks.Pick([lib_uid, uid, src]() { Locate(lib_uid, uid, src); });
+            }
         }
         return;
     }
@@ -2514,7 +2542,7 @@ void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
             const DetectMode mode = DefaultDetectMode(m.facts, ready);
             const std::vector<SoundFrame> frames = DetectFrames(m.facts, mode, n.sound.silence, ready ? &pk : nullptr);
             if (!frames.empty()) {
-                EditNode("Detect", lib_uid, uid, [&](SoundNode& x) {
+                EditNode("Detect", lib_uid, uid, [mode, frames](SoundNode& x) {
                     x.sound.mode = mode;
                     x.sound.frames = frames;
                     x.sound.edited = false;
@@ -2633,9 +2661,7 @@ void OpenEditKey(const SoundLibrary& lib, const SoundNode& n)
     if (ImGui::IsKeyPressed(ImGuiKey_E, false) && MediaOf(n).ok) OpenEdit(lib.uid, n.uid);
 }
 
-}  // namespace
-
-void DrawNodePanel()
+void NodePanelWidgets()
 {
     P.changed = false;
     // A live edit only lasts while its drag does (an unfinished one never shadows the store).
@@ -2702,6 +2728,14 @@ void DrawNodePanel()
     }
     ImGui::PopID();
     if (!P.changed) DrawEditOverlay();
+}
+
+}  // namespace
+
+void DrawNodePanel()
+{
+    NodePanelWidgets();
+    g_picks.Run();  // the gestures picked above, the panel and the Edit overlay drawn
 }
 
 }  // namespace rav

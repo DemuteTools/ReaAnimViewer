@@ -30,6 +30,7 @@
 #include "sound_switch.h"
 #include "tagging_session.h"
 #include "ui_flow.h"
+#include "ui_flow_math.h"
 #include "ui_theme.h"
 #include "video_view.h"
 
@@ -161,37 +162,35 @@ void ValueMenu(const char* id, const SoundStore& store, const GroupUse& use, con
     const std::string preview = mine ? ValueName(g, mine->value_uid) : std::string(inherit);
 
     ImGui::PushID(id);
-    ImGui::AlignTextToFramePadding();
-    ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
-    ImGui::TextUnformatted(g->name.c_str());
-    ImGui::PopStyleColor();
-    ImGui::SameLine(96.0f);
-    ImGui::SetNextItemWidth(-1.0f);
-    if (ImGui::BeginCombo("##val", preview.c_str())) {
+    // The group's name (user-typed) in the label column, muted as the mockup's .k.
+    const float w = ui::LabelRowText(g->name, ui::Dp(120.0f), ui::kLabelCol, ui::kMuted);
+    if (ui::BeginComboStyled("##val", preview.c_str(), w)) {
         if (ImGui::Selectable(inherit, mine == nullptr) && mine) set(std::string());
         for (const SwitchValue& v : g->values) {
             const bool cur = mine && mine->value_uid == v.uid;
             if (ImGui::Selectable((v.name + "##" + v.uid).c_str(), cur) && !cur) set(v.uid);
         }
-        ImGui::EndCombo();
+        ui::EndComboStyled();
     }
     ImGui::PopID();
+}
+
+// The open-library arrow (a ui::IconFn): a diagonal arrow pointing up-right in the square at p.
+void DrawOpenArrow(ImDrawList* dl, ImVec2 p, float s, int, ImU32 col)
+{
+    const float  t = std::max(1.0f, ui::Dp(1.5f));
+    const ImVec2 a(p.x + s * 0.2f, p.y + s * 0.8f), b(p.x + s * 0.8f, p.y + s * 0.2f);
+    dl->AddLine(a, b, col, t);
+    dl->AddLine(b, ImVec2(b.x - s * 0.4f, b.y), col, t);
+    dl->AddLine(b, ImVec2(b.x, b.y + s * 0.4f), col, t);
 }
 
 // The small arrow that opens the Library view (P14).
 void OpenLibraryArrow()
 {
-    const float h = ImGui::GetFrameHeight();
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    if (ImGui::InvisibleButton("##openlib", ImVec2(h, h))) SetViewMode(ViewMode::Library);
-    const bool hov = ImGui::IsItemHovered();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Open the Library view");
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const ImU32 col = hov ? ui::kText : ui::kMuted;
-    const ImVec2 a(p.x + h * 0.3f, p.y + h * 0.7f), b(p.x + h * 0.7f, p.y + h * 0.3f);
-    dl->AddLine(a, b, col, 1.5f);
-    dl->AddLine(b, ImVec2(b.x - h * 0.25f, b.y), col, 1.5f);
-    dl->AddLine(b, ImVec2(b.x, b.y + h * 0.25f), col, 1.5f);
+    ui::Icon icon;
+    icon.fn = &DrawOpenArrow;
+    if (ui::IconOnlyButton("##openlib", icon, "Open the Library view")) SetViewMode(ViewMode::Library);
 }
 
 // The libraries assigned to the item's rules, each once.
@@ -252,15 +251,11 @@ void DrawRuleSoundSection(const TaggingSoundContext& ctx)
             ui::SubText("No sound library in this project yet: build one in the Library view.");
             OpenLibraryArrow();
         } else {
-            ImGui::AlignTextToFramePadding();
-            ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
-            ImGui::TextUnformatted("Library");
-            ImGui::PopStyleColor();
-            ImGui::SameLine(96.0f);
-            ImGui::SetNextItemWidth(std::max(60.0f, ImGui::GetContentRegionAvail().x - ImGui::GetFrameHeight() -
-                                                        ImGui::GetStyle().ItemSpacing.x));
+            // The combo leaves room for the open-library arrow after it.
+            const float arrow_w = ui::ControlH() + ImGui::GetStyle().ItemSpacing.x;
+            const float field_w = ui::LabelRow("Library", ui::Dp(60.0f) + arrow_w);
             const std::string preview = lib ? lib->name : (rs && !rs->library.empty() ? "(gone)" : "None");
-            if (ImGui::BeginCombo("##lib", preview.c_str())) {
+            if (ui::BeginComboStyled("##lib", preview.c_str(), std::max(ui::Dp(60.0f), field_w - arrow_w))) {
                 const bool assigned = rs && !rs->library.empty();  // a deleted library can be set back to None
                 if (ImGui::Selectable("None", !assigned) && assigned)
                     Pick([item, block]() { return SetRuleLibrary(item, block, std::string()); });
@@ -271,10 +266,9 @@ void DrawRuleSoundSection(const TaggingSoundContext& ctx)
                     if (ImGui::Selectable((L.name + "##" + L.uid).c_str(), cur) && !cur && !chk.blocked)
                         Pick([item, block, uid = L.uid]() { return SetRuleLibrary(item, block, uid); });
                     if (chk.blocked) ImGui::EndDisabled();
-                    if (chk.blocked && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-                        ImGui::SetTooltip("Blocked: %s", chk.reason.c_str());
+                    if (chk.blocked) ui::ItemTip("Blocked: %s", chk.reason.c_str());
                 }
-                ImGui::EndCombo();
+                ui::EndComboStyled();
             }
             ImGui::SameLine();
             OpenLibraryArrow();
@@ -316,17 +310,14 @@ void DrawAutoSoundRow(MediaItem* item, const ItemRules& rules, const std::vector
 
     ImGui::PushID(id.c_str());
     ImGui::AlignTextToFramePadding();
-    ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
-    ImGui::TextUnformatted("Sound");
-    ImGui::PopStyleColor();
+    ui::ToneText("Sound", ui::kMuted);
     ui::SameLineIfFits(ui::MenuButtonWidth(preview.c_str()));
     if (ui::MenuButton("##autolib", true, preview.c_str())) ImGui::OpenPopup("##autolibmenu");
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("%s", on_item ? "The library of these markers: the same as their rule's Sound card (either sets "
-                                          "both).\nDetect gives it to this marker type's new markers."
-                                        : "The library Detect gives to this marker type's markers (set before or after "
-                                          "Detect).\nTheir rule's Sound card shows the same.");
-    if (ImGui::BeginPopup("##autolibmenu")) {
+    ui::ItemTipText(on_item ? "The library of these markers: the same as their rule's Sound card (either sets "
+                              "both).\nDetect gives it to this marker type's new markers."
+                            : "The library Detect gives to this marker type's markers (set before or after "
+                              "Detect).\nTheir rule's Sound card shows the same.");
+    if (ui::BeginMenuPopup("##autolibmenu")) {
         const bool assigned = !same_lib || !lib_uid.empty();
         if (ImGui::Selectable("None", !assigned) && assigned)
             Pick([item, keys_copy]() { return SetAutoMarkerLibrary(item, keys_copy, std::string()); });
@@ -337,10 +328,9 @@ void DrawAutoSoundRow(MediaItem* item, const ItemRules& rules, const std::vector
             if (ImGui::Selectable((L.name + "##" + L.uid).c_str(), cur) && !cur && !chk.blocked)
                 Pick([item, keys_copy, uid = L.uid]() { return SetAutoMarkerLibrary(item, keys_copy, uid); });
             if (chk.blocked) ImGui::EndDisabled();
-            if (chk.blocked && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("Blocked: %s", chk.reason.c_str());
+            if (chk.blocked) ui::ItemTip("Blocked: %s", chk.reason.c_str());
         }
-        ImGui::EndPopup();
+        ui::EndMenuPopup();
     }
     if (lib) {
         // One compact menu per Switch Group the library uses: "<group>: <value>" ("inherit" = the
@@ -363,7 +353,7 @@ void DrawAutoSoundRow(MediaItem* item, const ItemRules& rules, const std::vector
             ImGui::PushID(g.group_uid.c_str());
             ui::SameLineIfFits(ui::MenuButtonWidth(label.c_str()));
             if (ui::MenuButton("##autoval", true, label.c_str())) ImGui::OpenPopup("##autovalmenu");
-            if (ImGui::BeginPopup("##autovalmenu")) {
+            if (ui::BeginMenuPopup("##autovalmenu")) {
                 ValueFrom   from = ValueFrom::Default;
                 std::string inh = EffectiveValue(*g.first_switch, below, &from);
                 if (from == ValueFrom::Default) inh = DefaultValue(store, *g.first_switch);
@@ -378,7 +368,7 @@ void DrawAutoSoundRow(MediaItem* item, const ItemRules& rules, const std::vector
                     if (ImGui::Selectable((v.name + "##" + v.uid).c_str(), cur) && !cur)
                         Pick([item, keys_copy, gid, uid = v.uid]() { return SetAutoMarkerValue(item, keys_copy, gid, uid); });
                 }
-                ImGui::EndPopup();
+                ui::EndMenuPopup();
             }
             ImGui::PopID();
         }
@@ -509,9 +499,9 @@ void DrawPopulateRow(const TaggingSoundContext& ctx, float attach_w)
     const std::vector<MediaItem*> sel = SelectedRavItems();
     const int   n = FooterEvents(sel);
     const float sp = ImGui::GetStyle().ItemSpacing.x;
-    const float reshuffle_w = ImGui::CalcTextSize("Reshuffle").x + ImGui::GetStyle().FramePadding.x * 2.0f + 8.0f;
+    const float reshuffle_w = ui::ButtonWidth("Reshuffle") + ui::Dp(8.0f);
     float avail = ImGui::GetContentRegionAvail().x - (attach_w > 0.0f ? attach_w + sp : 0.0f);
-    const float populate_w = std::max(60.0f, avail - reshuffle_w - sp);
+    const float populate_w = std::max(ui::Dp(60.0f), avail - reshuffle_w - sp);
     char label[64];
     std::snprintf(label, sizeof(label), "Populate %s %d event%s##ravpopulate", kDot, n, n == 1 ? "" : "s");
     const bool none = sel.empty();
@@ -523,40 +513,37 @@ void DrawPopulateRow(const TaggingSoundContext& ctx, float attach_w)
         g_count.valid = false;
     }
     if (none) ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip(none ? "Select animation items"
-                               : "Places each event's sound on the selected items and their linked copies.\n"
-                                 "Placed sounds you moved stay; deleted ones are not added back. One undo point.");
+    ui::ItemTipText(none ? "Select animation items"
+                         : "Places each event's sound on the selected items and their linked copies.\n"
+                           "Placed sounds you moved stay; deleted ones are not added back. One undo point.");
     ImGui::SameLine();
     if (none) ImGui::BeginDisabled();
     if (ui::SolidButton("Reshuffle##ravreshuffle", ImVec2(reshuffle_w, 0.0f))) Remember(ReshuffleItems(sel), -1);
     if (none) ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip(none ? "Select animation items"
-                               : "New random picks for the placed sounds (hand picks kept). One undo point.");
+    ui::ItemTipText(none ? "Select animation items"
+                         : "New random picks for the placed sounds (hand picks kept). One undo point.");
     if (attach_w > 0.0f) ImGui::SameLine();
 }
 
 void DrawSoundReportLine(const TaggingSoundContext& ctx)
 {
     if (!SoundFooterVisible(ctx)) return;
-    const float help_w = ImGui::CalcTextSize("?").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    const float help_w = ui::Dp(18.0f);  // ui::HelpMark's circle
     ImGui::AlignTextToFramePadding();
     if (!g_last.has) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kFaint));
-        ImGui::TextUnformatted("Not populated yet");
-        ImGui::PopStyleColor();
+        ui::ToneText("Not populated yet", ui::kFaint);
     } else {
-        ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
-        const float w = std::max(20.0f, ImGui::GetContentRegionAvail().x - help_w - ImGui::GetStyle().ItemSpacing.x);
-        if (ImGui::Selectable((g_last.summary + "##ravreport").c_str(), false, 0, ImVec2(w, 0.0f)))
-            ImGui::OpenPopup("##ravreportpop");
-        ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Click for the details");
+        // A quiet link (muted, underlined under the mouse), ellipsized to the room before the "?".
+        const float w = std::max(ui::Dp(20.0f), ImGui::GetContentRegionAvail().x - help_w - ImGui::GetStyle().ItemSpacing.x);
+        const flow::MeasureFn measure = [](const char* b, const char* e) { return ImGui::CalcTextSize(b, e).x; };
+        bool              cut = false;
+        const std::string shown = flow::Ellipsize(g_last.summary, w, "...", measure, &cut);
+        if (ui::LinkButton((shown + "##ravreport").c_str(), ui::kMuted)) ImGui::OpenPopup("##ravreportpop");
+        ui::ItemTipText(cut ? (g_last.summary + "\nClick for the details").c_str() : "Click for the details");
     }
     ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetContentRegionMax().x - help_w));
-    ImGui::SmallButton("?##ravglyphs");
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip) && ImGui::BeginTooltip()) {
+    ui::HelpMark("##ravglyphs");
+    if (ui::BeginItemTip()) {
         // The mock-up's legend: each mark drawn as on the strip, then what it means.
         ImGui::TextUnformatted("Under each event on the strip:");
         static const struct { int glyph; const char* text; } kLegend[] = {
@@ -569,33 +556,31 @@ void DrawSoundReportLine(const TaggingSoundContext& ctx)
         const float lh = ImGui::GetTextLineHeight();
         for (const auto& l : kLegend) {
             const ImVec2 p = ImGui::GetCursorScreenPos();
-            DrawEventGlyph(ImGui::GetWindowDrawList(), ImVec2(p.x + lh * 0.5f, p.y + lh * 0.5f), 9.0f, l.glyph);
+            DrawEventGlyph(ImGui::GetWindowDrawList(), ImVec2(p.x + lh * 0.5f, p.y + lh * 0.5f), ui::Dp(9.0f), l.glyph);
             ImGui::Dummy(ImVec2(lh, lh));
             ImGui::SameLine();
             ImGui::TextUnformatted(l.text);
         }
-        ImGui::EndTooltip();
+        ui::EndItemTip();
     }
-    if (ImGui::BeginPopup("##ravreportpop")) {
+    if (ui::BeginPanelPopup("##ravreportpop")) {
         if (g_last.report.lines.empty()) ImGui::TextUnformatted("Nothing to report.");
         for (size_t i = 0; i < g_last.report.lines.size(); ++i) {
             const ReportLine& l = g_last.report.lines[i];
             ImGui::PushID(static_cast<int>(i));
             ImGui::AlignTextToFramePadding();
-            ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(l.kind == ReportKind::Replaced || l.kind == ReportKind::Info ? ui::kMuted : ui::kWarn));
-            ImGui::TextUnformatted(KindWord(l.kind));
-            ImGui::PopStyleColor();
+            ui::ToneText(KindWord(l.kind), l.kind == ReportKind::Replaced || l.kind == ReportKind::Info ? ui::kMuted : ui::kWarn);
             ImGui::SameLine();
             ImGui::TextUnformatted(l.text.c_str());
             ImGui::SameLine();
-            if (ImGui::SmallButton("Open")) SetViewMode(ViewMode::Library);
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Open the Library view");
+            if (ui::LinkButton("Open")) SetViewMode(ViewMode::Library);
+            ui::ItemTipText("Open the Library view");
             ImGui::SameLine();
-            if (ImGui::SmallButton("Select")) SelectOnlyItem(FindItemByGuid(l.item_guid));
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Select the animation item in REAPER");
+            if (ui::LinkButton("Select")) SelectOnlyItem(FindItemByGuid(l.item_guid));
+            ui::ItemTipText("Select the animation item in REAPER");
             ImGui::PopID();
         }
-        ImGui::EndPopup();
+        ui::EndPanelPopup();
     }
 }
 
@@ -619,8 +604,8 @@ void DrawSoundStripGlyph(ImDrawList* dl, const TaggingModel& m, const ShownEvent
             else deleted = true;
         }
     // The mock-up's glyph(): a 9 px mark under the event (library_icons.h kGlyphEv*).
-    const ImVec2 c(x, y - 5.0f);
-    const float  s = 9.0f;
+    const ImVec2 c(x, y - ui::Dp(5.0f));
+    const float  s = ui::Dp(9.0f);
     if (missing) DrawEventGlyph(dl, c, s, kGlyphEvMissing);
     else if (attached) DrawEventGlyph(dl, c, s, kGlyphEvAttached);
     else if (spread) DrawEventGlyph(dl, c, s, kGlyphEvSpread);

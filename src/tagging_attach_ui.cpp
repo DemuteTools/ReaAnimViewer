@@ -18,6 +18,7 @@
 #include "sound_project.h"
 #include "sound_record.h"
 #include "tagging_session.h"
+#include "ui_flow.h"
 #include "ui_theme.h"
 #include "undo_guard.h"
 
@@ -88,8 +89,7 @@ std::string RuleLabel(const ItemRules& rules, int b)
 // A tooltip on the item drawn last, also when it is disabled.
 void Why(const char* text)
 {
-    if (text && *text && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled | ImGuiHoveredFlags_ForTooltip))
-        ImGui::SetTooltip("%s", text);
+    ui::ItemTipText(text);  // disabled items too (the theme's tooltip flags)
 }
 
 // The rule submenu body: the blocks that have at least one event.
@@ -119,11 +119,11 @@ void PromoteItems()
             const SwitchGroup* g = FindGroup(store, root->group_uid);
             const bool         values = g && !g->values.empty();
             if (!values) {
-                ImGui::MenuItem(label.c_str(), nullptr, false, false);
+                ui::MenuEntry(label.c_str(), nullptr, false, false);
                 Why("Its Switch has no values: add one in the Library view.");
                 continue;
             }
-            if (ImGui::BeginMenu(label.c_str())) {
+            if (ui::BeginSubMenu(label.c_str())) {
                 for (const SwitchValue& v : g->values) {
                     const std::string vl = (v.name.empty() ? std::string("Value") : v.name) + "##attval" + v.uid;
                     if (ImGui::MenuItem(vl.c_str())) {
@@ -145,7 +145,7 @@ void PromoteItems()
 
 float AttachButtonWidth()
 {
-    return ImGui::CalcTextSize(RAV_ATTACH_LABEL).x + ImGui::GetStyle().FramePadding.x * 2.0f + 8.0f;
+    return ui::ButtonWidth(RAV_ATTACH_LABEL) + ui::Dp(8.0f);
 }
 
 void DrawAttachButton(const TaggingSoundContext& ctx)
@@ -177,15 +177,15 @@ void DrawAttachButton(const TaggingSoundContext& ctx)
     if (disabled) Why(why);
     else Why("Attach the items selected in REAPER to this animation's events.");
 
-    if (ImGui::BeginPopup("##tagattachmenu")) {
+    if (ui::BeginMenuPopup("##tagattachmenu")) {
         if (ImGui::MenuItem("Attach to nearest event")) Run(&Nearest, ctx.item, events, -1);
         Why("Locks the selected items, as one pile, to the nearest event.");
-        if (ImGui::BeginMenu("Attach Selected to Markers")) {
+        if (ui::BeginSubMenu("Attach Selected to Markers")) {
             RuleItems(ctx, events, &AttachToMarkers);
             ImGui::EndMenu();
         }
         Why("Each group of overlapping items goes to its nearest event of the rule.");
-        if (ImGui::BeginMenu("Spread to")) {
+        if (ui::BeginSubMenu("Spread to")) {
             RuleItems(ctx, events, &SpreadTo);
             ImGui::EndMenu();
         }
@@ -193,22 +193,20 @@ void DrawAttachButton(const TaggingSoundContext& ctx)
         const bool        libs = !GetSoundStore(nullptr).libraries.empty();
         const char*       pwhy = sel.attached == 0 ? "Select an attached sound first." : !libs ? "No library yet: create one in the Library view." : nullptr;
         if (pwhy) {
-            ImGui::MenuItem("Promote to Library", nullptr, false, false);
+            ui::MenuEntry("Promote to Library", nullptr, false, false);
             Why(pwhy);
-        } else if (ImGui::BeginMenu("Promote to Library")) {
+        } else if (ui::BeginSubMenu("Promote to Library")) {
             PromoteItems();
             ImGui::EndMenu();
         }
         if (!sel.skip_note.empty()) ImGui::TextDisabled("%s", sel.skip_note.c_str());
-        ImGui::EndPopup();
+        ui::EndMenuPopup();
     }
 
     // The result note (6 s) with Undo.
     if (!g_note.empty() && ImGui::GetTime() < g_note_until) {
         ImGui::AlignTextToFramePadding();
-        ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
-        ImGui::TextUnformatted(g_note.c_str());
-        ImGui::PopStyleColor();
+        ui::ToneText(g_note, ui::kMuted);
         // Any later change (another edit, an undo) retires the Undo: it would undo that instead.
         const int state = GetProjectStateChangeCount(nullptr);
         if (g_note_undo && g_note_state < 0) g_note_state = state;
@@ -216,7 +214,7 @@ void DrawAttachButton(const TaggingSoundContext& ctx)
             g_note_undo = GestureUndoAvailable(Undo_CanUndo2(nullptr), g_note_undo_desc, state, g_note_state);
         if (g_note_undo) {
             ImGui::SameLine();
-            if (ImGui::SmallButton("Undo##tagattachundo")) {
+            if (ui::LinkButton("Undo##tagattachundo")) {
                 Main_OnCommand(40029, 0);
                 g_note.clear();
                 g_sel_state = -1;

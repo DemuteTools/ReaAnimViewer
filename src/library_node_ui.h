@@ -19,6 +19,7 @@
 
 #include <imgui.h>
 
+#include "reaper_view_keys.h"
 #include "sound_model.h"
 
 namespace rav {
@@ -37,7 +38,8 @@ struct WaveformOptions {
     bool   select = false;              // click selects (Ctrl-click adds) instead of playing
     bool   ruler = false;               // a ms / s ruler on top
     double threshold_db = std::numeric_limits<double>::quiet_NaN();  // a draggable line when finite
-    bool   wheel = false;               // Ctrl+wheel zooms, wheel scrolls
+    bool   wheel = false;               // the wheel zooms / scrolls (see view_keys), middle-drag pans
+    const ViewKeymap* view_keys = nullptr;  // the user's REAPER wheel bindings (null: Ctrl+wheel zooms, wheel scrolls)
     std::vector<bool> solid_edges;      // per frame: drawn solid (a clamped edge); may be empty
 };
 
@@ -60,20 +62,20 @@ struct WaveformEvents {
     bool   threshold_live = false, threshold_done = false;
     double threshold_db = 0.0;
     bool   right_clicked = false;
-    double zoom = 1.0;          // Ctrl+wheel: multiply view_len by this around zoom_at
+    double zoom = 1.0;          // a zoom wheel: multiply view_len by this around zoom_at
     double zoom_at = 0.0;
-    double scroll_s = 0.0;      // wheel: move view_start by this
+    double scroll_s = 0.0;      // a scroll wheel or a middle-drag: move view_start by this
     ImVec2 min, max;            // the waveform's rectangle
 };
 
 WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::vector<SoundFrame>& frames,
                             const std::vector<int>& selection, double playhead_s, const WaveformOptions& options);
 
-// What 13-7c plugs into the Sound panel. Unset: no drop on the Source waveform, and "Show in
-// Media Explorer" greyed.
+// What 13-7c plugs into the Sound panel. Unset: "Show in Media Explorer" greyed. A Media
+// Explorer drop on the node panel goes to LibraryTreeHooks' media_drop (library_tree_ui.h); a
+// drop on a Sound's Source waveform is decoded by decode_media and replaces its audio.
 struct NodePanelHooks {
     std::string media_payload_type;
-    // Reads a dropped payload: the new source and, when variations were dropped, their frames.
     std::function<bool(const void* data, int size, SoundSource* source, std::vector<SoundFrame>* frames)> decode_media;
     std::function<void(const SoundSource& source)> show_in_media;
 };

@@ -15,8 +15,12 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
 #include <limits>
 #include <set>
+
+#include <imgui_internal.h>  // BeginDragDropTargetCustom, ImRect
 
 #include "library_tree_edit.h"
 #include "library_tree_ui.h"
@@ -68,6 +72,7 @@ struct PanelState {
     // The Edit overlay.
     bool                  edit_open = false;
     bool                  edit_focus = false;
+    bool                  edit_has_focus = false;  // the Edit overlay window is focused (its zoom keys)
     int                   edit_opened = -1;  // the frame Edit opened (its E is not read again then)
     std::string           edit_lib, edit_uid;
     double                view_start = 0.0, view_len = 0.0;
@@ -86,8 +91,68 @@ struct PanelState {
     bool                  norm_loaded = false;
     double                norm_db = -1.0;
     bool                  norm_whole = false;
+    // The user's REAPER view bindings (reaper-kb.ini), read when Edit opens.
+    ViewKeymap            keys = DefaultViewKeymap();
+    // Edit's waveform: its x span on screen and the source length (key zoom around the mouse).
+    float                 wave_x0 = 0.0f, wave_x1 = 0.0f;
+    double                wave_len = 0.0;
+    ImGuiID               pan_id = 0;  // the waveform a middle-drag pans
+    bool                  keys_stale = true;  // re-read reaper-kb.ini (each time Edit opens)
 };
 PanelState P;
+
+constexpr float kLabelW = 90.0f;  // the value column of a labelled row
+
+// SameLine when an item `w` wide fits after the last one, else the next line (the column re-flows).
+bool SameLineIfFits(float w)
+{
+    ImGui::SameLine();
+    if (ImGui::GetContentRegionAvail().x >= w) return true;
+    ImGui::NewLine();
+    return false;
+}
+
+float ButtonW(const char* label)
+{
+    return ImGui::CalcTextSize(label, nullptr, true).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+}
+
+// A Segmented's option width: 0 (sized to the labels) when they fit, else the width shared out.
+float SegFit(const char* const* labels, int n)
+{
+    float w = 0.0f;
+    // ui::Segmented: each option = text + 24, plus 2 px between and around them.
+    for (int i = 0; i < n; ++i) w += ImGui::CalcTextSize(labels[i], nullptr, true).x + 26.0f;
+    w += 2.0f;
+    const float avail = ImGui::GetContentRegionAvail().x;
+    return w <= avail || n <= 0 ? 0.0f : std::max(16.0f, (avail - 2.0f) / static_cast<float>(n) - 2.0f);
+}
+
+// A row's label, shortened to fit: its value then starts at the value column when `min_w` fits
+// beside it, else on the next line.
+void RowLabel(const char* text, float min_w)
+{
+    const float  avail = ImGui::GetContentRegionAvail().x;
+    const bool   beside = avail >= kLabelW + min_w;
+    const float  fh = ImGui::GetFrameHeight();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float  lw = beside ? kLabelW - 6.0f : std::min(avail, ImGui::CalcTextSize(text).x + 1.0f);
+    ui::EllipsisText(ImGui::GetWindowDrawList(), ImVec2(p.x, p.y + ImGui::GetStyle().FramePadding.y), p.x + lw, ui::kText, text);
+    ImGui::Dummy(ImVec2(std::max(1.0f, lw), fh));
+    if (beside) ImGui::SameLine(kLabelW);
+}
+
+// One line of text shortened with "..." to the available width.
+void FitText(const std::string& text, ImU32 col)
+{
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float  avail = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    ImGui::AlignTextToFramePadding();
+    if (ui::EllipsisText(ImGui::GetWindowDrawList(), ImVec2(p.x, p.y + ImGui::GetStyle().FramePadding.y), p.x + avail, col, text) &&
+        ImGui::IsMouseHoveringRect(p, ImVec2(p.x + avail, p.y + ImGui::GetFrameHeight())))
+        ImGui::SetTooltip("%s", text.c_str());
+    ImGui::Dummy(ImVec2(std::min(avail, ImGui::CalcTextSize(text.c_str()).x + 1.0f), ImGui::GetFrameHeight()));
+}
 
 double DbToGain(double db) { return std::pow(10.0, db / 20.0); }
 
@@ -102,6 +167,9 @@ void OpenEdit(const std::string& lib_uid, const std::string& uid)
 {
     P.edit_open = true;
     P.edit_focus = true;
+    P.keys_stale = true;
+    P.wave_len = 0.0;  // set by a Sound's waveform; Takes mode leaves it 0 (no key zoom)
+    P.wave_x0 = P.wave_x1 = 0.0f;
     P.edit_opened = ImGui::GetFrameCount();
     P.edit_lib = lib_uid;
     P.edit_uid = uid;
@@ -335,7 +403,10 @@ bool VolumeControl(const char* id, const std::string& key, double stored, double
     const bool live = P.vol_key == key;
     float      v = static_cast<float>(live ? P.vol_live : stored);
     bool       commit = false;
-    ImGui::SetNextItemWidth(std::max(40.0f, fader_w));
+    constexpr float kDbW = 60.0f;  // the dB field with its unit
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const float room = avail - kDbW - ImGui::GetStyle().ItemSpacing.x;  // the fader beside the field
+    ImGui::SetNextItemWidth(std::max(24.0f, room >= 40.0f ? std::min(fader_w, room) : avail));
     ImGui::SliderFloat("##fader", &v, static_cast<float>(kMinDb), static_cast<float>(kMaxDb), "");
     if (ImGui::IsItemActive()) {
         P.vol_key = key;
@@ -348,7 +419,7 @@ bool VolumeControl(const char* id, const std::string& key, double stored, double
             commit = true;
         }
     }
-    ImGui::SameLine();
+    SameLineIfFits(kDbW);
     double d = P.vol_key == key ? P.vol_live : stored;
     switch (ui::DragNumber("##db", &d, 0.1, 1, "dB", 48.0f)) {
     case ui::DragNumberEvent::Live:
@@ -628,12 +699,31 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
         ev.split = under;
         ev.split_at = T(m.x);
     }
-    if (hovered && o.wheel && io.MouseWheel != 0.0f) {
-        if (io.KeyCtrl) {
-            ev.zoom = std::pow(0.8, static_cast<double>(io.MouseWheel));
-            ev.zoom_at = T(m.x);
+    if (hovered && o.wheel && (io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f)) {
+        // The user's REAPER bindings: the action of this wheel with these modifiers.
+        const int mods = (io.KeyCtrl ? kViewModCtrl : 0) | (io.KeyAlt ? kViewModAlt : 0) | (io.KeyShift ? kViewModShift : 0);
+        auto apply = [&](ViewWheelAction a, float wheel) {
+            if (wheel == 0.0f) return;
+            if (a == ViewWheelAction::ZoomH) {
+                ev.zoom *= std::pow(0.8, static_cast<double>(wheel));
+                ev.zoom_at = T(m.x);
+            } else if (a == ViewWheelAction::ScrollH) {
+                ev.scroll_s += -static_cast<double>(wheel) * vl * 0.1;
+            }
+        };
+        if (o.view_keys) {
+            apply(o.view_keys->wheel[mods], io.MouseWheel);
+            apply(o.view_keys->hwheel[mods], io.MouseWheelH);  // ImGui: > 0 = left, so a tilt right scrolls right
         } else {
-            ev.scroll_s = -static_cast<double>(io.MouseWheel) * vl * 0.1;
+            apply(io.KeyCtrl ? ViewWheelAction::ZoomH : ViewWheelAction::ScrollH, io.MouseWheel);
+        }
+    }
+    // Middle-drag pans (REAPER's default middle-drag in the arrange view: hand scroll).
+    if (o.wheel) {
+        if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Middle)) P.pan_id = gid;
+        if (P.pan_id == gid) {
+            if (!ImGui::IsMouseDown(ImGuiMouseButton_Middle)) P.pan_id = 0;
+            else if (io.MouseDelta.x != 0.0f) ev.scroll_s += -static_cast<double>(io.MouseDelta.x) / w * vl;
         }
     }
     ImGui::PopID();
@@ -644,9 +734,15 @@ void SetNodePanelHooks(const NodePanelHooks& hooks) { P.hooks = hooks; }
 
 bool LibraryNodeTakesKey(unsigned vk, bool ctrl, bool shift, bool alt)
 {
-    if (ctrl || shift || alt) return false;
     const int  f = ImGui::GetCurrentContext() ? ImGui::GetFrameCount() : -100;
     const bool edit = P.edit_open && P.edit_frame >= f - 1;
+    if (edit && P.edit_has_focus) {  // the user's zoom keys (Up / Down too) zoom Edit, not the arrange view
+        const int mods = (ctrl ? kViewModCtrl : 0) | (alt ? kViewModAlt : 0) | (shift ? kViewModShift : 0);
+        for (const auto* list : {&P.keys.zoom_in, &P.keys.zoom_out})
+            for (const ViewKeyBinding& b : *list)
+                if (!b.is_char && b.mods == mods && b.code == static_cast<int>(vk)) return true;
+    }
+    if (ctrl || shift || alt) return false;
     if (edit) return vk == 0x20 || vk == 0x1B || vk == 'E' || vk == 'S';
     const bool sound = P.sound_frame >= f - 1;
     return sound && LibraryViewFocused() && (vk == 'E' || vk == 'S');
@@ -733,6 +829,118 @@ void HandleWave(const WaveformEvents& ev, const SoundLibrary& lib, const SoundNo
     }
 }
 
+// ---- the Edit view: zoom and scroll ---------------------------------------------------------------
+
+constexpr float kScrollbarH = 10.0f;
+
+// Multiplies the shown length by `factor` keeping the source time `at` where it is.
+void ZoomView(double factor, double at, double src_len)
+{
+    if (!(src_len > 0.0)) return;
+    const double vl = P.view_len > 0.0 ? P.view_len : src_len;
+    const double nl = std::clamp(vl * factor, 0.01, std::max(0.01, src_len));
+    P.view_start = std::clamp(at - (at - P.view_start) * nl / vl, 0.0, std::max(0.0, src_len - nl));
+    P.view_len = nl >= src_len ? 0.0 : nl;
+}
+
+void ScrollView(double ds, double src_len)
+{
+    const double vl = P.view_len > 0.0 ? P.view_len : src_len;
+    P.view_start = std::clamp(P.view_start + ds, 0.0, std::max(0.0, src_len - vl));
+}
+
+// A horizontal scrollbar under Edit's waveform: drag the thumb, or click the track to page.
+void ViewScrollbar(double src_len)
+{
+    const float  w = std::max(8.0f, ImGui::GetContentRegionAvail().x);
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton("##hscroll", ImVec2(w, kScrollbarH));
+    if (!(src_len > 0.0)) return;
+    const double vl = P.view_len > 0.0 ? P.view_len : src_len;
+    const float  t0 = p.x + static_cast<float>(P.view_start / src_len) * w;
+    const float  t1 = std::max(t0 + 12.0f, p.x + static_cast<float>((P.view_start + vl) / src_len) * w);
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + kScrollbarH), ui::kBg, kScrollbarH * 0.5f);
+    const bool on_thumb = ImGui::IsItemHovered() && ImGui::GetIO().MousePos.x >= t0 && ImGui::GetIO().MousePos.x <= t1;
+    dl->AddRectFilled(ImVec2(t0, p.y + 1.0f), ImVec2(std::min(t1, p.x + w), p.y + kScrollbarH - 1.0f),
+                      ImGui::IsItemActive() || on_thumb ? ui::kMuted : ui::kStrokeStrong, kScrollbarH * 0.5f);
+    if (ImGui::IsItemClicked() && !on_thumb) ScrollView(ImGui::GetIO().MousePos.x < t0 ? -vl : vl, src_len);
+    else if (ImGui::IsItemActive() && ImGui::GetIO().MouseDelta.x != 0.0f)
+        ScrollView(static_cast<double>(ImGui::GetIO().MouseDelta.x) / w * src_len, src_len);
+}
+
+// Reads the user's REAPER view bindings (REAPER's defaults when the file is absent).
+void LoadViewKeys()
+{
+    std::string text;
+    if (const char* rp = GetResourcePath()) {
+        std::ifstream f(std::filesystem::u8path(std::string(rp) + "/reaper-kb.ini"), std::ios::binary);
+        if (f) text.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    }
+    P.keys = ParseViewKeymap(text);
+}
+
+ImGuiKey KeyOfVk(int vk)
+{
+    if (vk >= 'A' && vk <= 'Z') return static_cast<ImGuiKey>(ImGuiKey_A + (vk - 'A'));
+    if (vk >= '0' && vk <= '9') return static_cast<ImGuiKey>(ImGuiKey_0 + (vk - '0'));
+    if (vk >= 0x60 && vk <= 0x69) return static_cast<ImGuiKey>(ImGuiKey_Keypad0 + (vk - 0x60));
+    if (vk >= 0x70 && vk <= 0x7B) return static_cast<ImGuiKey>(ImGuiKey_F1 + (vk - 0x70));
+    switch (vk) {
+    case 0x6B: return ImGuiKey_KeypadAdd;
+    case 0x6D: return ImGuiKey_KeypadSubtract;
+    case 0x6A: return ImGuiKey_KeypadMultiply;
+    case 0x6F: return ImGuiKey_KeypadDivide;
+    case 0xBB: return ImGuiKey_Equal;
+    case 0xBD: return ImGuiKey_Minus;
+    case 0xBC: return ImGuiKey_Comma;
+    case 0xBE: return ImGuiKey_Period;
+    case 0xBA: return ImGuiKey_Semicolon;
+    case 0xBF: return ImGuiKey_Slash;
+    case 0xDB: return ImGuiKey_LeftBracket;
+    case 0xDD: return ImGuiKey_RightBracket;
+    case 0x21: return ImGuiKey_PageUp;
+    case 0x22: return ImGuiKey_PageDown;
+    case 0x24: return ImGuiKey_Home;
+    case 0x23: return ImGuiKey_End;
+    case 0x25: return ImGuiKey_LeftArrow;
+    case 0x26: return ImGuiKey_UpArrow;
+    case 0x27: return ImGuiKey_RightArrow;
+    case 0x28: return ImGuiKey_DownArrow;
+    default: return ImGuiKey_None;
+    }
+}
+
+// True when one of `keys` was pressed this frame (exact modifiers).
+bool ViewKeyPressed(const std::vector<ViewKeyBinding>& keys)
+{
+    const ImGuiIO& io = ImGui::GetIO();
+    const int mods = (io.KeyCtrl ? kViewModCtrl : 0) | (io.KeyAlt ? kViewModAlt : 0) | (io.KeyShift ? kViewModShift : 0);
+    for (const ViewKeyBinding& b : keys) {
+        if (b.is_char) {
+            for (int i = 0; i < io.InputQueueCharacters.Size; ++i)
+                if (static_cast<int>(io.InputQueueCharacters[i]) == b.code) return true;
+        } else if (b.mods == mods) {
+            const ImGuiKey k = KeyOfVk(b.code);
+            if (k != ImGuiKey_None && ImGui::IsKeyPressed(k, true)) return true;
+        }
+    }
+    return false;
+}
+
+// A key zoom: around the mouse when it is over the waveform, else the view's middle.
+void KeyZoom(double factor)
+{
+    const double len = P.wave_len;
+    if (!(len > 0.0)) return;
+    const double vl = P.view_len > 0.0 ? P.view_len : len;
+    const float  mx = ImGui::GetIO().MousePos.x;
+    double       at = P.view_start + vl * 0.5;
+    if (P.wave_x1 > P.wave_x0 && mx >= P.wave_x0 && mx <= P.wave_x1)
+        at = P.view_start + static_cast<double>(mx - P.wave_x0) / (P.wave_x1 - P.wave_x0) * vl;
+    ZoomView(factor, at, len);
+}
+
 // The Sound's waveform(s): one lane, or one lane per take in Takes mode.
 void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, float height,
                     bool in_edit, WaveformEvents* first_ev)
@@ -773,18 +981,21 @@ void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n,
         o.view_len = P.view_len;
         if (d.mode == DetectMode::Silence) o.threshold_db = d.silence.threshold_db;
     }
+    if (in_edit) {
+        o.view_keys = &P.keys;
+        o.size.y = std::max(16.0f, height - kScrollbarH - 4.0f);
+    }
     std::vector<int> all;
     for (size_t i = 0; i < d.frames.size(); ++i) all.push_back(static_cast<int>(i));
     const WaveformEvents ev = DrawWaveform(id, m.path, d.frames, in_edit ? P.sel : std::vector<int>{}, ph, o);
     if (first_ev) *first_ev = ev;
     if (in_edit) {
-        const double vl = P.view_len > 0.0 ? P.view_len : m.source_len;
-        if (ev.zoom != 1.0 && vl > 0.0) {
-            const double nl = std::clamp(vl * ev.zoom, 0.01, std::max(0.01, m.source_len));
-            P.view_start = std::clamp(ev.zoom_at - (ev.zoom_at - P.view_start) * nl / vl, 0.0, std::max(0.0, m.source_len - nl));
-            P.view_len = nl;
-        }
-        if (ev.scroll_s != 0.0) P.view_start = std::clamp(P.view_start + ev.scroll_s, 0.0, std::max(0.0, m.source_len - vl));
+        P.wave_x0 = ev.min.x;
+        P.wave_x1 = ev.max.x;
+        P.wave_len = m.source_len;
+        if (ev.zoom != 1.0) ZoomView(ev.zoom, ev.zoom_at, m.source_len);
+        if (ev.scroll_s != 0.0) ScrollView(ev.scroll_s, m.source_len);
+        ViewScrollbar(m.source_len);
         if (ev.threshold_live || ev.threshold_done) {
             SoundData& dr = Live(n);
             dr.silence.threshold_db = ev.threshold_db;
@@ -868,6 +1079,66 @@ void ReplaceFromDrop(const std::string& lib_uid, const std::string& uid, const S
         "Replaced audio");
 }
 
+// What a Media Explorer drop does on a target (decision 6).
+enum class MediaDropKind {
+    Use,      // the node panel: media_drop (UseMediaAt: a Sound becomes a Random, Random / Blend add)
+    Replace,  // a Source waveform: replaces the Sound's audio (decode_media, one undo point)
+    Refused,  // a Switch: shown, never taken (the caption says why)
+};
+
+// A Media Explorer drop target over a rectangle (LibraryTreeHooks' payload contract, 13-7c): an
+// accent frame while a media drag is over it, and the drop handed to media_drop with the node's
+// row, or decoded and replacing the Sound's audio. True when a drop was taken (the store may have
+// changed: the panel stops drawing for this frame).
+bool MediaDropTarget(ImGuiID id, ImVec2 a, ImVec2 b, const SoundLibrary& lib, const SoundNode& n, const char* caption,
+                     MediaDropKind kind)
+{
+    const LibraryTreeHooks& h = GetLibraryTreeHooks();
+    const ImGuiPayload*     drag = ImGui::GetDragDropPayload();
+    if (h.media_payload_type.empty() || !drag || !drag->IsDataType(h.media_payload_type.c_str())) return false;
+    if (kind == MediaDropKind::Use && !h.media_drop) return false;
+    if (kind == MediaDropKind::Replace && !P.hooks.decode_media) return false;
+    const bool refused = kind == MediaDropKind::Refused;
+    bool dropped = false;
+    // While a media drag runs, every target that takes it shows a thin frame.
+    if (!refused) ImGui::GetWindowDrawList()->AddRect(a, b, ui::kAccentLine, ui::kRadiusSm);
+    if (ImGui::BeginDragDropTargetCustom(ImRect(a, b), id)) {
+        // The innermost target under the mouse takes the drag (ImGui keeps the smallest one).
+        const ImGuiPayload* pl = ImGui::AcceptDragDropPayload(
+            h.media_payload_type.c_str(), ImGuiDragDropFlags_AcceptBeforeDelivery | ImGuiDragDropFlags_AcceptNoDrawDefaultRect);
+        if (pl) {
+            // Drawn on the foreground: the frame shows over the panel's children too.
+            ImDrawList* dl = ImGui::GetForegroundDrawList();
+            if (refused) {
+                ui::EllipsisText(dl, ImVec2(a.x + 6.0f, a.y + 4.0f), b.x - 6.0f, ui::kMuted, caption);
+            } else {
+                dl->AddRectFilled(a, b, WithAlpha(ui::kAccent, 0x1E), ui::kRadiusSm);
+                dl->AddRect(a, b, ui::kAccent, ui::kRadiusSm, 0, 2.0f);
+                ui::EllipsisText(dl, ImVec2(a.x + 6.0f, a.y + 4.0f), b.x - 6.0f, ui::kAccent, caption);
+            }
+        }
+        if (pl && pl->IsDelivery() && !refused) {
+            const std::string lib_uid = lib.uid;
+            const std::vector<char> data(static_cast<const char*>(pl->Data), static_cast<const char*>(pl->Data) + pl->DataSize);
+            if (kind == MediaDropKind::Replace) {
+                SoundSource             src;
+                std::vector<SoundFrame> frames;
+                const auto decode = P.hooks.decode_media;  // the hooks may be replaced by the call
+                if (decode(data.data(), static_cast<int>(data.size()), &src, &frames))
+                    ReplaceFromDrop(lib_uid, n.uid, src, frames);
+            } else {
+                const LibraryRow row = RowOfNode(lib, n.uid);
+                const auto drop = h.media_drop;  // the hooks may be replaced by the call
+                drop(lib_uid, row, data.data(), static_cast<int>(data.size()));
+            }
+            P.changed = true;
+            dropped = true;
+        }
+        ImGui::EndDragDropTarget();
+    }
+    return dropped;
+}
+
 std::string FileName(const std::string& path)
 {
     const size_t k = path.find_last_of("/\\");
@@ -935,10 +1206,10 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
         int sel = -1;
         for (size_t i = 0; i < modes.size(); ++i)
             if (modes[i] == d.mode) sel = static_cast<int>(i);
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("Split by");
-        ImGui::SameLine();
-        if (ui::Segmented("##detmode", labels.data(), static_cast<int>(labels.size()), &sel) && sel >= 0) {
+        RowLabel("Split by", 160.0f);
+        if (ui::Segmented("##detmode", labels.data(), static_cast<int>(labels.size()), &sel,
+                          SegFit(labels.data(), static_cast<int>(labels.size()))) &&
+            sel >= 0) {
             const DetectMode mode = modes[static_cast<size_t>(sel)];
             // A new mode starts from its own detection (hand frames belong to the old one).
             const std::vector<SoundFrame> frames = Detected(m, mode, d.silence);
@@ -973,9 +1244,7 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
             {"##tail", "Tail", "ms", &SilenceParams::tail_ms, 1.0, 0.0, 5000.0},
         };
         for (const F& f : kFields) {
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted(f.label);
-            ImGui::SameLine(90.0f);
+            RowLabel(f.label, 60.0f);
             double v = d.silence.*(f.field);
             const ui::DragNumberEvent e = ui::DragNumber(f.id, &v, f.step, 1, f.unit, 60.0f);
             if (e == ui::DragNumberEvent::Live || e == ui::DragNumberEvent::Commit) {
@@ -991,7 +1260,9 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
             }
         }
     }
-    ImGui::TextDisabled("%s", VariationCountText(DetectedCount(n.uid, m, d), d.frames).c_str());
+    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
+    ImGui::TextWrapped("%s", VariationCountText(DetectedCount(n.uid, m, d), d.frames).c_str());
+    ImGui::PopStyleColor();
     if (ui::SolidButton("Reset to detected")) {
         const std::vector<SoundFrame> det = Detected(m, d.mode, d.silence);
         EditNode("Reset to detected", lib.uid, n.uid, [&](SoundNode& x) {
@@ -1012,9 +1283,8 @@ void LoadNormalizePrefs()
 void NormalizeControls(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m)
 {
     LoadNormalizePrefs();
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Normalize peaks to");
-    ImGui::SameLine();
+    FitText("Normalize peaks to", ui::kText);
+    SameLineIfFits(70.0f);
     double v = P.norm_db;
     if (ui::DragNumber("##normdb", &v, 0.1, 1, "dBFS", 50.0f) == ui::DragNumberEvent::Commit) {
         P.norm_db = std::clamp(v, -60.0, 0.0);
@@ -1022,7 +1292,7 @@ void NormalizeControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
     }
     static const char* const kModes[2] = {"Per variation", "Whole sound"};
     int mode = P.norm_whole ? 1 : 0;
-    if (ui::Segmented("##normmode", kModes, 2, &mode)) {
+    if (ui::Segmented("##normmode", kModes, 2, &mode, SegFit(kModes, 2))) {
         P.norm_whole = mode == 1;
         SavePrefBool("lib_normalize_whole", P.norm_whole);
     }
@@ -1082,6 +1352,10 @@ void DrawEditOverlay()
         return;
     }
     P.edit_frame = ImGui::GetFrameCount();
+    if (P.keys_stale) {
+        P.keys_stale = false;
+        LoadViewKeys();
+    }
     const SoundMedia& m = MediaOf(*n);
     const ImVec2      ds = ImGui::GetIO().DisplaySize;
     ImGui::SetNextWindowPos(ImVec2(24.0f, 52.0f), ImGuiCond_Always);
@@ -1096,8 +1370,10 @@ void DrawEditOverlay()
     constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
                                         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollWithMouse;
     bool close = false;
+    P.edit_has_focus = false;
     if (ImGui::Begin("##soundedit", nullptr, kFlags)) {
         const bool focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+        P.edit_has_focus = focused;
         const bool keys = focused && !ImGui::GetIO().WantTextInput && !ui::DragNumberActive() &&
                           P.edit_opened != ImGui::GetFrameCount();  // the E that opened it
         const bool whole_playing = AuditionPlaying() && AuditionTag() == "whole:" + n->uid;
@@ -1110,24 +1386,26 @@ void DrawEditOverlay()
         if (ui::SolidButton(whole_playing ? "\xE2\x96\xA0##editplay" : "\xE2\x96\xB6##editplay")) toggle_play();
         Tip("Play the whole file (Space)");
         ImGui::SameLine();
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(n->name.c_str());
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s", VariationCountText(DetectedCount(n->uid, m, Shown(*n)), Shown(*n).frames).c_str());
-        const float right = ImGui::GetWindowContentRegionMax().x;
-        ImGui::SameLine(std::max(ImGui::GetCursorPosX() + 8.0f, right - 230.0f));
-        const double vl = P.view_len > 0.0 ? P.view_len : m.source_len;
-        if (ui::SolidButton("\xE2\x88\x92##zoomout") && m.source_len > 0.0) {
-            const double nl = std::min(m.source_len, vl * 1.5);
-            P.view_start = std::clamp(P.view_start - (nl - vl) * 0.5, 0.0, std::max(0.0, m.source_len - nl));
-            P.view_len = nl;
+        const std::string count = VariationCountText(DetectedCount(n->uid, m, Shown(*n)), Shown(*n).frames);
+        const float tools_w = ButtonW("\xE2\x88\x92##zoomout") + ButtonW("+##zoomin") + ButtonW("Fit") + ButtonW("Done") +
+                              ButtonW("\xE2\x9C\x95##editclose") + ImGui::CalcTextSize("?").x + ImGui::GetStyle().ItemSpacing.x * 6.0f;
+        {
+            // The name and count take what the tools leave (shortened), the tools stay right.
+            const float  room = std::max(40.0f, ImGui::GetContentRegionAvail().x - tools_w);
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            const float  y = p.y + ImGui::GetStyle().FramePadding.y;
+            ImDrawList*  dl = ImGui::GetWindowDrawList();
+            const float  name_w = std::min(ImGui::CalcTextSize(n->name.c_str()).x, room * 0.6f);
+            ui::EllipsisText(dl, ImVec2(p.x, y), p.x + name_w + 1.0f, ui::kText, n->name);
+            ui::EllipsisText(dl, ImVec2(p.x + name_w + 8.0f, y), p.x + room, ui::kFaint, count);
+            ImGui::Dummy(ImVec2(room, ImGui::GetFrameHeight()));
         }
+        SameLineIfFits(tools_w);
+        if (ui::SolidButton("\xE2\x88\x92##zoomout")) ZoomView(1.5, P.view_start + (P.view_len > 0.0 ? P.view_len : m.source_len) * 0.5, m.source_len);
+        Tip("Zoom out (your REAPER 'View: Zoom out horizontal' keys)");
         ImGui::SameLine();
-        if (ui::SolidButton("+##zoomin") && m.source_len > 0.0) {
-            const double nl = std::max(0.01, vl / 1.5);
-            P.view_start = std::clamp(P.view_start + (vl - nl) * 0.5, 0.0, std::max(0.0, m.source_len - nl));
-            P.view_len = nl;
-        }
+        if (ui::SolidButton("+##zoomin")) ZoomView(1.0 / 1.5, P.view_start + (P.view_len > 0.0 ? P.view_len : m.source_len) * 0.5, m.source_len);
+        Tip("Zoom in (your REAPER 'View: Zoom in horizontal' keys)");
         ImGui::SameLine();
         if (ui::SolidButton("Fit")) {
             P.view_start = 0.0;
@@ -1141,7 +1419,8 @@ void DrawEditOverlay()
                   "Space: play / stop, Esc: stop, then close"
                 : "Click a variation: play and select (Ctrl-click adds)\nDrag an edge: trim\nDrag up / down inside: its dB\n"
                   "Alt-click: off / on\nS: split under the mouse\nDouble-click empty space: add a variation\n"
-                  "Ctrl+wheel: zoom, wheel: scroll\nDrag the threshold line (Silence)\nSpace: play / stop, Esc: stop, then close");
+                  "Zoom and scroll: your REAPER mouse wheel and zoom keys, middle-drag, the scrollbar\n"
+                  "Drag the threshold line (Silence)\nSpace: play / stop, Esc: stop, then close");
         ImGui::SameLine();
         if (ui::SolidButton("Done")) close = true;
         ImGui::SameLine();
@@ -1179,6 +1458,8 @@ void DrawEditOverlay()
                 else close = true;
             }
             if (ImGui::IsKeyPressed(ImGuiKey_E, false)) close = true;
+            if (ViewKeyPressed(P.keys.zoom_in)) KeyZoom(1.0 / 1.5);
+            else if (ViewKeyPressed(P.keys.zoom_out)) KeyZoom(1.5);
         }
     }
     ImGui::End();
@@ -1202,13 +1483,13 @@ void DrawHeader(const SoundLibrary& lib, const SoundNode& n)
         else PlayNode(lib.uid, n.uid);
     }
     Tip(playing ? "Stop (Esc)" : "Play (Space)");
-    ImGui::SameLine();
+    SameLineIfFits(60.0f);
     if (n.type == SoundNodeType::Sound) {
         if (P.name_uid != n.uid) {
             P.name_uid = n.uid;
             std::snprintf(P.name_buf, sizeof(P.name_buf), "%s", n.name.c_str());
         }
-        ImGui::SetNextItemWidth(std::max(80.0f, ImGui::GetContentRegionAvail().x));
+        ImGui::SetNextItemWidth(std::max(20.0f, ImGui::GetContentRegionAvail().x));
         ImGui::InputText("##name", P.name_buf, sizeof(P.name_buf));
         const bool done = ImGui::IsItemDeactivatedAfterEdit();
         if (!done && !ImGui::IsItemActive() && std::strcmp(P.name_buf, n.name.c_str()) != 0)
@@ -1220,8 +1501,7 @@ void DrawHeader(const SoundLibrary& lib, const SoundNode& n)
             if (P.changed) return;
         }
     } else {
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted(n.name.c_str());
+        FitText(n.name, ui::kText);
     }
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float maxx = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
@@ -1241,10 +1521,8 @@ void DrawTypeRows(const SoundStore& store, const SoundLibrary& lib, const SoundN
     int sel = n.type == SoundNodeType::Random ? 0 : n.type == SoundNodeType::Blend ? 1 : 2;
     const LibraryRow  row = RowOfNode(lib, n.uid);
     const std::string lib_uid = lib.uid;
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Type");
-    ImGui::SameLine(90.0f);
-    if (ui::Segmented("##type", kTypes, 3, &sel)) {
+    RowLabel("Type", 150.0f);
+    if (ui::Segmented("##type", kTypes, 3, &sel, SegFit(kTypes, 3))) {
         if (sel == 2) {
             ImGui::OpenPopup("##switchon");
         } else {
@@ -1256,9 +1534,23 @@ void DrawTypeRows(const SoundStore& store, const SoundLibrary& lib, const SoundN
     }
     if (n.type == SoundNodeType::Switch) {
         const SwitchGroup* g = FindGroup(store, n.group_uid);
-        const std::string  lab = std::string("Switch on: ") + (g ? g->name : std::string("?")) + " \xE2\x96\xBE";
-        ImGui::SameLine();
-        if (ui::SolidButton(lab.c_str())) ImGui::OpenPopup("##switchon");
+        std::string        lab = std::string("Switch on: ") + (g ? g->name : std::string("?")) + " \xE2\x96\xBE";
+        SameLineIfFits(std::min(ButtonW(lab.c_str()), 120.0f));
+        // A long group name: the button takes the row and its label is shortened.
+        const float avail = ImGui::GetContentRegionAvail().x;
+        if (ButtonW(lab.c_str()) > avail) {
+            const std::string full = lab;
+            while (lab.size() > 12 && ButtonW((lab + "\xE2\x80\xA6").c_str()) > avail) {
+                // Drop one whole UTF-8 glyph from the end.
+                while (!lab.empty() && (static_cast<unsigned char>(lab.back()) & 0xC0) == 0x80) lab.pop_back();
+                if (!lab.empty()) lab.pop_back();
+            }
+            lab += "\xE2\x80\xA6";
+            if (ImGui::IsMouseHoveringRect(ImGui::GetCursorScreenPos(),
+                                           ImVec2(ImGui::GetCursorScreenPos().x + avail, ImGui::GetCursorScreenPos().y + ImGui::GetFrameHeight())))
+                ImGui::SetTooltip("%s", full.c_str());
+        }
+        if (ui::SolidButton((lab + "##switchonbtn").c_str())) ImGui::OpenPopup("##switchon");
     }
     if (ImGui::BeginPopup("##switchon")) {
         if (store.groups.empty()) ImGui::TextDisabled("No Switch Group yet");
@@ -1283,10 +1575,8 @@ void DrawTypeRows(const SoundStore& store, const SoundLibrary& lib, const SoundN
     };
     // Default value.
     const std::string def = DefaultValue(store, n);
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Default");
-    ImGui::SameLine(90.0f);
-    ImGui::SetNextItemWidth(160.0f);
+    RowLabel("Default", 100.0f);
+    ImGui::SetNextItemWidth(std::max(40.0f, std::min(160.0f, ImGui::GetContentRegionAvail().x)));
     if (ImGui::BeginCombo("##default", value_name(def).c_str())) {
         for (const SwitchValue& v : g->values) {
             if (ImGui::Selectable(v.name.c_str(), v.uid == def) && v.uid != def) {
@@ -1300,10 +1590,8 @@ void DrawTypeRows(const SoundStore& store, const SoundLibrary& lib, const SoundN
         ImGui::EndCombo();
     }
     // Preview value.
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Preview");
-    ImGui::SameLine(90.0f);
-    ImGui::SetNextItemWidth(160.0f);
+    RowLabel("Preview", 100.0f);
+    ImGui::SetNextItemWidth(std::max(40.0f, std::min(160.0f, ImGui::GetContentRegionAvail().x)));
     bool prev_known = false;  // a deleted value plays the default (SwitchPreviewChild)
     for (const SwitchValue& v : g->values) prev_known = prev_known || v.uid == n.preview_value;
     const std::string prev_label = !prev_known ? "(default: " + value_name(def) + ")" : value_name(n.preview_value);
@@ -1330,11 +1618,9 @@ void DrawTypeRows(const SoundStore& store, const SoundLibrary& lib, const SoundN
 
 void DrawVolume(const SoundLibrary& lib, const SoundNode& n)
 {
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Volume");
-    ImGui::SameLine(90.0f);
+    RowLabel("Volume", 120.0f);
     double v = 0.0;
-    if (VolumeControl("##vol", n.uid, n.volume_db, &v, ImGui::GetContentRegionAvail().x - 110.0f))
+    if (VolumeControl("##vol", n.uid, n.volume_db, &v, 1e9f))
         EditNode("Volume", lib.uid, n.uid, [v](SoundNode& x) {
             x.volume_db = v;
             return true;
@@ -1351,14 +1637,18 @@ void DrawMix(const SoundLibrary& lib, const SoundNode& n)
         for (const SoundNode* k : kids) {
             if (P.changed) break;
             ImGui::PushID(k->uid.c_str());
-            ImGui::AlignTextToFramePadding();
+            // The name beside its fader when both fit, else the name on its own line above it.
             const ImVec2 p = ImGui::GetCursorScreenPos();
-            ui::EllipsisText(ImGui::GetWindowDrawList(), p, p.x + 80.0f, IsLit(k->uid) ? ui::kAccent : ui::kText, k->name);
-            ImGui::Dummy(ImVec2(84.0f, ImGui::GetFrameHeight()));
-            ImGui::SameLine();
+            const float  avail = ImGui::GetContentRegionAvail().x;
+            const bool   beside = avail >= 84.0f + 120.0f;
+            const float  name_w = beside ? 80.0f : avail;
+            ui::EllipsisText(ImGui::GetWindowDrawList(), ImVec2(p.x, p.y + ImGui::GetStyle().FramePadding.y), p.x + name_w,
+                             IsLit(k->uid) ? ui::kAccent : ui::kText, k->name);
+            ImGui::Dummy(ImVec2(beside ? 84.0f : std::max(1.0f, avail), ImGui::GetFrameHeight()));
+            if (beside) ImGui::SameLine();
             double v = 0.0;
             const std::string kid = k->uid;
-            if (VolumeControl("##mixvol", kid, k->volume_db, &v, ImGui::GetContentRegionAvail().x - 110.0f))
+            if (VolumeControl("##mixvol", kid, k->volume_db, &v, 1e9f))
                 EditNode("Volume", lib.uid, kid, [v](SoundNode& x) {
                     x.volume_db = v;
                     return true;
@@ -1371,9 +1661,8 @@ void DrawMix(const SoundLibrary& lib, const SoundNode& n)
 
 void DrawRandomAvoid(const SoundLibrary& lib, const SoundNode& n)
 {
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Avoid repeating the last");
-    ImGui::SameLine();
+    FitText("Avoid repeating the last", ui::kText);
+    SameLineIfFits(40.0f);
     const int v = AvoidControl("##avoid", n.avoid_repeat);
     if (v >= 0)
         EditNode("Avoid repeating", lib.uid, n.uid, [v](SoundNode& x) {
@@ -1399,7 +1688,9 @@ void DrawBlendLanes(const SoundStore& store, const SoundLibrary& lib, const Soun
     total_ms *= 1.15;
     const float name_w = 84.0f, fields_w = 128.0f;
     const float lane_x0 = ImGui::GetCursorScreenPos().x + name_w;
-    const float lane_w = std::max(40.0f, ImGui::GetContentRegionAvail().x - name_w - fields_w);
+    // A narrow column: each lane's ms / dB fields go under it instead of beside it.
+    const bool  stacked = ImGui::GetContentRegionAvail().x < name_w + 80.0f + fields_w;
+    const float lane_w = std::max(24.0f, ImGui::GetContentRegionAvail().x - name_w - (stacked ? 0.0f : fields_w));
     ImDrawList* dl = ImGui::GetWindowDrawList();
     // Ruler.
     {
@@ -1471,7 +1762,8 @@ void DrawBlendLanes(const SoundStore& store, const SoundLibrary& lib, const Soun
             break;
         }
         // Fields: ms and dB.
-        ImGui::SetCursorScreenPos(ImVec2(lane_x0 + lane_w + 6.0f, p.y));
+        const float row_h = stacked ? fh * 2.0f + 2.0f : fh;
+        ImGui::SetCursorScreenPos(stacked ? ImVec2(lane_x0, p.y + fh + 2.0f) : ImVec2(lane_x0 + lane_w + 6.0f, p.y));
         double ms = off;
         if (ui::DragNumber("##ms", &ms, 1.0, 0, "ms", 40.0f) == ui::DragNumberEvent::Commit) {
             const double v = std::max(0.0, ms);
@@ -1491,7 +1783,7 @@ void DrawBlendLanes(const SoundStore& store, const SoundLibrary& lib, const Soun
                 });
             }
         }
-        ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + fh + 2.0f));
+        ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + row_h + 2.0f));
         ImGui::Dummy(ImVec2(1.0f, 0.0f));
         ImGui::PopID();
     }
@@ -1547,24 +1839,12 @@ void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
                 ui::EndSection(src_sec);
                 return;
             }
-            // Drop a Media Explorer file / variations (13-7c) to replace the audio.
-            const ImGuiPayload* drag = ImGui::GetDragDropPayload();
-            if (!P.hooks.media_payload_type.empty() && P.hooks.decode_media && drag && drag->IsDataType(P.hooks.media_payload_type.c_str())) {
-                ImDrawList* dl = ImGui::GetWindowDrawList();
-                dl->AddRect(ev.min, ev.max, ui::kAccent, ui::kRadiusSm, 0, 2.0f);
-                dl->AddText(ImVec2(ev.min.x + 6.0f, ev.min.y + 4.0f), ui::kAccent, "Replace");
-                if (ImGui::BeginDragDropTarget()) {
-                    if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload(P.hooks.media_payload_type.c_str())) {
-                        SoundSource             ns;
-                        std::vector<SoundFrame> fr;
-                        if (P.hooks.decode_media(pl->Data, pl->DataSize, &ns, &fr)) ReplaceFromDrop(lib_uid, uid, ns, fr);
-                    }
-                    ImGui::EndDragDropTarget();
-                }
-                if (P.changed) {
-                    ui::EndSection(src_sec);
-                    return;
-                }
+            // A Media Explorer drag over the waveform (decision 6: on a Source waveform, it
+            // replaces the audio): its own target, so the drop lands on this Sound.
+            if (MediaDropTarget(ImGui::GetID("##wavedrop"), ev.min, ev.max, lib, n, "Drop: replace the audio",
+                                MediaDropKind::Replace)) {
+                ui::EndSection(src_sec);
+                return;
             }
             if (ev.right_clicked) ImGui::OpenPopup("##wavemenu");
             if (ImGui::BeginPopup("##wavemenu")) {
@@ -1582,16 +1862,15 @@ void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
             if (ui::SolidButton("Show in REAPER")) ShowInReaper(src);
             ImGui::EndDisabled();
         } else {
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted(src.asset.name.empty() ? FileName(src.asset.last_path).c_str() : src.asset.name.c_str());
-            ImGui::SameLine();
+            FitText(src.asset.name.empty() ? FileName(src.asset.last_path) : src.asset.name, ui::kText);
+            SameLineIfFits(ButtonW("Show in Media Explorer"));
             const bool can = static_cast<bool>(P.hooks.show_in_media);
             ImGui::BeginDisabled(!can);
             if (ui::SolidButton("Show in Media Explorer") && can) P.hooks.show_in_media(src);
             ImGui::EndDisabled();
             if (!can) Tip(kNoMediaTip);
         }
-        ImGui::SameLine();
+        SameLineIfFits(ButtonW("Edit"));
         ImGui::BeginDisabled(!m.ok);
         if (ui::SolidButton("Edit")) OpenEdit(lib_uid, uid);
         ImGui::EndDisabled();
@@ -1604,9 +1883,17 @@ void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
     if (ui::BeginSection(var_sec, "Variations", ImTextureID(), false)) {
         const int on = static_cast<int>(ActiveVariations(d).size());
         if (on == 1) ImGui::TextUnformatted("1 variation");
-        else ImGui::Text("%d variations \xE2\x80\x94 one at random at each event", on);
+        else ImGui::TextWrapped("%d variations \xE2\x80\x94 one at random at each event", on);
         bool linked = n.sound.linked_copies;
-        if (ImGui::Checkbox("Linked copies replay the same variation", &linked)) {
+        // The box, then its label wrapped (a long label never runs past the column).
+        bool toggled = ImGui::Checkbox("##linked", &linked);
+        ImGui::SameLine();
+        ImGui::TextWrapped("Linked copies replay the same variation");
+        if (ImGui::IsItemClicked()) {  // the label toggles too, as a checkbox's own label does
+            linked = !linked;
+            toggled = true;
+        }
+        if (toggled) {
             EditNode("Linked copies", lib_uid, uid, [linked](SoundNode& x) {
                 x.sound.linked_copies = linked;
                 return true;
@@ -1681,6 +1968,25 @@ void DrawNodePanel()
             OpenEditKey(*lib, *n);
             DrawSoundPanel(*lib, *n);
         }
+    }
+    // The whole node panel takes a Media Explorer drop too (after the waveform's own target, so
+    // the waveform keeps it when the mouse is over it).
+    if (!P.changed) {
+        const ImVec2 a = ImGui::GetWindowPos();
+        const ImVec2 b(a.x + ImGui::GetWindowSize().x, a.y + ImGui::GetWindowSize().y);
+        // The caption says what UseMediaAt does on this node type.
+        MediaDropKind kind = MediaDropKind::Use;
+        std::string   cap;
+        if (n->type == SoundNodeType::Sound) {
+            cap = "Drop: becomes a Random of this sound + the new ones";
+        } else if (n->type == SoundNodeType::Switch) {
+            kind = MediaDropKind::Refused;
+            cap = "Pick a value row of this Switch first";  // UseMediaAt's refusal
+        } else {
+            cap = "Drop: add into " + n->name;
+        }
+        MediaDropTarget(ImGui::GetID("##paneldrop"), ImVec2(a.x + 2.0f, a.y + 2.0f), ImVec2(b.x - 2.0f, b.y - 2.0f), *lib, *n,
+                        cap.c_str(), kind);
     }
     ImGui::PopID();
     if (!P.changed) DrawEditOverlay();

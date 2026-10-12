@@ -97,7 +97,12 @@ TreeState g;
 // (ModifySoundStore swaps it whole). Still one undo point per gesture.
 PickedGestures g_picks;
 
-void Later(std::function<void()> f) { g_picks.Pick(std::move(f)); }
+// Picking also sets `changed`: the rest of the frame stops drawing the store, as before the picks.
+void Later(std::function<void()> f)
+{
+    g_picks.Pick(std::move(f));
+    g.changed = true;
+}
 
 std::string Upper(std::string s)
 {

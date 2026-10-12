@@ -2027,8 +2027,18 @@ bool Chevron(const char* id, bool open, float side)
     const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
     ImDrawList*  dl = ImGui::GetWindowDrawList();
     if (hovered) dl->AddRectFilled(a, b, Ink(kHover), kRadiusSm);
-    DrawFoldTriangle(dl, ImVec2(std::floor((a.x + b.x) * 0.5f) + 0.5f, std::floor((a.y + b.y) * 0.5f) + 0.5f), open,
-                     Ink(hovered ? kText : kMuted));
+    // Antho 2026-10-12: a thin chevron (an open row "v", a folded one ">"), not the filled triangle, which read as
+    // the rows' Play button; the section headers keep their triangle (DrawFoldTriangle).
+    const ImVec2 c(std::floor((a.x + b.x) * 0.5f) + 0.5f, std::floor((a.y + b.y) * 0.5f) + 0.5f);
+    const float  r = Dp(3.0f), t = std::max(1.0f, Dp(1.25f));
+    const ImU32  col = Ink(hovered ? kText : kMuted);
+    if (open) {
+        const ImVec2 pts[3] = {ImVec2(c.x - r, c.y - r * 0.5f), ImVec2(c.x, c.y + r * 0.5f), ImVec2(c.x + r, c.y - r * 0.5f)};
+        dl->AddPolyline(pts, 3, col, ImDrawFlags_None, t);
+    } else {
+        const ImVec2 pts[3] = {ImVec2(c.x - r * 0.5f, c.y - r), ImVec2(c.x + r * 0.5f, c.y), ImVec2(c.x - r * 0.5f, c.y + r)};
+        dl->AddPolyline(pts, 3, col, ImDrawFlags_None, t);
+    }
     return clicked;
 }
 

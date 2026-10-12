@@ -75,6 +75,10 @@ bool PlacedPileAnchor(MediaItem* item, double* anchor_pos, double* sync);
 // A gesture's GUID -> item lookup (no scan; null = none) the engine asks before scanning the
 // project; a hit is checked with ValidatePtr2. Null clears it.
 void SetPlaceItemFinder(MediaItem* (*finder)(const std::string& guid));
+// Antho 2026-10-12 (Populate was slow, sounds appearing one by one): a gesture's batch. On, REAPER's arrange
+// does not redraw (PreventUIRefresh) and each source item's chunk is read once (sources are not changed by a
+// gesture); off (nested calls count) redraws once and forgets the chunks.
+void PlaceBatch(bool on);
 // REAPER's "copy imported media to project folder" preference (spike 13-0 D: copyimpmedia).
 bool ReadCopyImportedMedia();
 // The path a file is placed from in `proj` (Antho 2026-10-12, 13-11): with copyimpmedia on, its copy

@@ -375,15 +375,27 @@ void DrawPopulateRow(const TaggingSoundContext& ctx, float attach_w)
     const bool none = sel.empty();
     if (none) ImGui::BeginDisabled();
     if (ui::PrimaryButton(label, ImVec2(populate_w, 0.0f))) {
-        int events = 0;
-        const SoundReport rep = PopulateItemsCounted(sel, &events);
+        int            events = 0;
+        PopulateCounts counts;
+        const SoundReport rep = PopulateItemsCounted(sel, &events, &counts);
         Remember(rep, events);
+        // Antho 2026-10-12: the line says what happened (a Populate with nothing to do looked broken).
+        char buf[160];
+        if (counts.placed + counts.replaced > 0)
+            std::snprintf(buf, sizeof(buf), " \xC2\xB7 %d placed", counts.placed + counts.replaced);
+        else if (counts.deleted_kept > 0)
+            std::snprintf(buf, sizeof(buf), " \xC2\xB7 nothing placed: %d deleted by hand (Repopulate resets)", counts.deleted_kept);
+        else
+            std::snprintf(buf, sizeof(buf), " \xC2\xB7 already in place");
+        g_last.summary += buf;
         g_count.valid = false;
     }
     if (none) ImGui::EndDisabled();
     ui::ItemTipText(none ? "Select animation items"
                          : "Places each event's sound on the selected items and their linked copies.\n"
-                           "Placed sounds you moved stay; deleted ones are not added back. One undo point.");
+                           "Placed sounds you moved stay; deleted ones are not added back (the menu's Sounds,\n"
+                           "Repopulate (reset), places them again). A change of sound settings already\n"
+                           "re-places the placed sounds. One undo point.");
     ImGui::SameLine();
     if (none) ImGui::BeginDisabled();
     if (ui::SolidButton("Reshuffle##ravreshuffle", ImVec2(reshuffle_w, 0.0f))) Remember(ReshuffleItems(sel), -1);

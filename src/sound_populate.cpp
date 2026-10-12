@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <functional>
 #include <map>
 #include <random>
@@ -105,10 +106,12 @@ public:
         g_tracks = &tracks_;
         owner_ = true;
         SetPlaceItemFinder(&IndexedItem);
+        PlaceBatch(true);  // Antho 2026-10-12: one redraw for the whole gesture, each source chunk read once
     }
     ~ItemIndexScope()
     {
         if (!owner_) return;
+        PlaceBatch(false);
         SetPlaceItemFinder(nullptr);
         g_items = nullptr;
         g_tracks = nullptr;
@@ -138,6 +141,8 @@ uint64_t RandomSeed()
 
 // What one pass over an item does.
 struct PopOpts {
+    // Antho 2026-10-12 (Populate "did nothing"): what a Populate did, for its report line. Optional.
+    PopulateCounts* counts = nullptr;
     bool        only_populated = false;  // P8: only the events that already have a live placement
     bool        report_replaced = true;
     std::string rid;                      // "" = every rule
@@ -424,8 +429,21 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
 
         std::set<int>               erase;
         std::vector<SoundPlacement> added;
+        if (o.counts) {  // a sound deleted by hand is never placed again (PlanEventSlots): said in the report
+            std::set<std::string> deleted;
+            for (const ExistingSlot& x : existing)
+                if (x.own == Ownership::Deleted) deleted.insert(x.node);
+            std::set<std::string> live;
+            for (const ExistingSlot& x : existing)
+                if (x.own == Ownership::Populated) live.insert(x.node);
+            for (const DesiredSlot& d : desired)
+                if (deleted.count(d.node) && !live.count(d.node)) ++o.counts->deleted_kept;
+        }
         for (const SlotStep& step : PlanEventSlots(desired, existing)) {
-            if (step.act == SlotAction::Keep) continue;
+            if (step.act == SlotAction::Keep) {
+                if (o.counts) ++o.counts->kept;
+                continue;
+            }
             if (step.act == SlotAction::Remove) {
                 for (int i : step.existing) {
                     RemoveIndexed(ev->placed[static_cast<size_t>(i)].item_guid);
@@ -516,6 +534,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                 p.offset_s = req.offset_s;
                 p.variation = s.variation;
                 added.push_back(p);
+                if (o.counts) ++(step.act == SlotAction::Place ? o.counts->placed : o.counts->replaced);
             }
         }
         std::vector<SoundPlacement> placed;
@@ -811,10 +830,11 @@ std::vector<MediaItem*> PopulateTargets(const std::vector<MediaItem*>& items)
     return WithPoolMembers(rav);
 }
 
-SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* events)
+SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* events, PopulateCounts* counts)
 {
     SoundReport rep;
     if (events) *events = 0;
+    if (counts) *counts = PopulateCounts();
     try {
         const std::vector<MediaItem*> targets = PopulateTargets(items);
         if (targets.empty()) return rep;
@@ -823,7 +843,21 @@ SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* even
             SoundUndoScope undo(nullptr, "RAV: Populate sounds");
             ItemIndexScope index;
             PopOpts o;
+            o.counts = counts;
             for (MediaItem* it : targets) PopulateOne(it, store, o, rep, events);
+        }
+        if (counts) {  // the details list says it too
+            char buf[160];
+            std::snprintf(buf, sizeof(buf), "%d sound%s placed, %d replaced, %d already in place", counts->placed,
+                          counts->placed == 1 ? "" : "s", counts->replaced, counts->kept);
+            AddLine(rep, ReportKind::Info, buf, "", "", 0.0);
+            if (counts->deleted_kept > 0) {
+                std::snprintf(buf, sizeof(buf),
+                              "%d sound%s you deleted by hand not added back (Repopulate (reset), in the menu's Sounds, "
+                              "places them again)",
+                              counts->deleted_kept, counts->deleted_kept == 1 ? "" : "s");
+                AddLine(rep, ReportKind::Info, buf, "", "", 0.0);
+            }
         }
         UpdateArrange();
     } catch (...) {

@@ -27,7 +27,12 @@ SoundReport PopulateItems(const std::vector<MediaItem*>& items);
 void InitSoundPopulate(void* (*get_func)(const char* name));
 
 // PopulateItems, with the number of events it handled (`events`, optional).
-SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* events);
+// Antho 2026-10-12: what it did (placed / replaced / already in place / deleted by hand, not added back),
+// also given as Info lines of the report.
+struct PopulateCounts {
+    int placed = 0, replaced = 0, kept = 0, deleted_kept = 0;
+};
+SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* events, PopulateCounts* counts = nullptr);
 // The items Populate acts on: the RAV items of `items` plus every other member of their pools.
 std::vector<MediaItem*> PopulateTargets(const std::vector<MediaItem*>& items);
 // The selected items that are RAV animation items.

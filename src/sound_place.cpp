@@ -15,6 +15,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -29,6 +30,7 @@ using PluginRegisterFn = int (*)(const char* name, void* infostruct);
 using AddMediaItemToTrackFn = MediaItem* (*)(MediaTrack* tr);
 using DeleteTrackMediaItemFn = bool (*)(MediaTrack* tr, MediaItem* it);
 using GetItemStateChunkFn = bool (*)(MediaItem* item, char* strNeedBig, int strNeedBig_sz, bool isundo);
+using PreventUIRefreshFn = void (*)(int prevent_count);
 using SetItemStateChunkFn = bool (*)(MediaItem* item, const char* str, bool isundo);
 using SetMediaItemInfo_ValueFn = bool (*)(MediaItem* item, const char* parmname, double newvalue);
 using SetMediaItemTakeInfo_ValueFn = bool (*)(MediaItem_Take* take, const char* parmname, double newvalue);
@@ -52,6 +54,9 @@ AddMediaItemToTrackFn        f_add_item = nullptr;
 DeleteTrackMediaItemFn       f_delete_item = nullptr;
 GetItemStateChunkFn          f_get_chunk = nullptr;
 SetItemStateChunkFn          f_set_chunk = nullptr;
+PreventUIRefreshFn           f_prevent_refresh = nullptr;
+int                          g_batch = 0;  // PlaceBatch depth
+std::map<MediaItem*, std::string> g_batch_chunks;  // a batch's source chunks, read once
 SetMediaItemInfo_ValueFn     f_set_item = nullptr;
 SetMediaItemTakeInfo_ValueFn f_set_take = nullptr;
 GetMediaItemTakeFn           f_get_take = nullptr;
@@ -306,7 +311,14 @@ void ApplyFades(MediaItem* item, const FadeApply& fa)
 // Writes `src`'s chunk into `dst` with the given IGUID.
 bool WriteCopy(MediaItem* src, MediaItem* dst, const std::string& guid)
 {
-    const std::string chunk = ReadChunk(src);
+    std::string chunk;
+    if (g_batch > 0) {
+        auto hit = g_batch_chunks.find(src);
+        if (hit == g_batch_chunks.end()) hit = g_batch_chunks.emplace(src, ReadChunk(src)).first;
+        chunk = hit->second;
+    } else {
+        chunk = ReadChunk(src);
+    }
     if (chunk.empty()) return false;
     const std::string copy = PrepareCopyChunk(chunk, guid, &NewGuidString);
     return f_set_chunk(dst, copy.c_str(), false);
@@ -723,6 +735,19 @@ bool OnPlaceTestCommand(int command, int /*flag*/)
 
 }  // namespace
 
+void PlaceBatch(bool on)
+{
+    if (on) {
+        if (g_batch++ == 0 && f_prevent_refresh) f_prevent_refresh(1);
+        return;
+    }
+    if (g_batch <= 0) return;
+    if (--g_batch == 0) {
+        g_batch_chunks.clear();
+        if (f_prevent_refresh) f_prevent_refresh(-1);
+    }
+}
+
 void InitSoundPlace(void* (*get_func)(const char* name))
 {
     if (!get_func) return;
@@ -731,6 +756,7 @@ void InitSoundPlace(void* (*get_func)(const char* name))
     f_delete_item = reinterpret_cast<DeleteTrackMediaItemFn>(get_func("DeleteTrackMediaItem"));
     f_get_chunk = reinterpret_cast<GetItemStateChunkFn>(get_func("GetItemStateChunk"));
     f_set_chunk = reinterpret_cast<SetItemStateChunkFn>(get_func("SetItemStateChunk"));
+    f_prevent_refresh = reinterpret_cast<PreventUIRefreshFn>(get_func("PreventUIRefresh"));
     f_set_item = reinterpret_cast<SetMediaItemInfo_ValueFn>(get_func("SetMediaItemInfo_Value"));
     f_set_take = reinterpret_cast<SetMediaItemTakeInfo_ValueFn>(get_func("SetMediaItemTakeInfo_Value"));
     f_get_take = reinterpret_cast<GetMediaItemTakeFn>(get_func("GetMediaItemTake"));

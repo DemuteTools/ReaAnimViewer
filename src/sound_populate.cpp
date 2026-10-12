@@ -230,6 +230,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
         SoundEventsOf(BuildEventList(det.events, det.rules.events, blocks.size()), blocks, det.map);
     for (const FollowEvent& e : sound_events) {
         const std::string& rid = e.rid;
+        if (!e.enabled) continue;  // fix C 2026-10-12: a disabled rule's sounds are kept, muted by the follow
         if (!o.rid.empty() && rid != o.rid) continue;
         if (o.has_t && std::fabs(e.t - o.t) > kEventMatchSeconds) continue;
         EventSounds* ev = FindEventSounds(rec, rid, e.t);
@@ -673,7 +674,8 @@ int CountPopulateEvents(const std::vector<MediaItem*>& items)
             std::vector<char> ok(det.rules.blocks.size(), 0);
             for (size_t b = 0; b < det.rules.blocks.size(); ++b) {
                 const RuleSounds* rs = FindRuleSounds(rec, det.rules.blocks[b].rid);
-                if (det.rules.blocks[b].rid.empty() || !rs || rs->library.empty()) continue;
+                if (!det.rules.blocks[b].enabled || det.rules.blocks[b].rid.empty() || !rs || rs->library.empty())
+                    continue;
                 const SoundLibrary* lib = FindLibrary(store, rs->library);
                 ok[b] = lib && !CheckLibrary(store, *lib).blocked ? 1 : 0;
             }

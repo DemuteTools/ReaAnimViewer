@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstring>
 #include <deque>
+#include <initializer_list>
 #include <map>
 #include <set>
 #include <string>
@@ -32,6 +33,7 @@
 #include "sound_populate_plan.h"
 #include "sound_record.h"
 #include "tagging_session.h"
+#include "undo_guard.h"
 #include "tagging_signal.h"
 #include "ui_theme.h"
 
@@ -41,15 +43,82 @@ namespace {
 
 using SetMediaItemInfo_ValueFn = bool (*)(MediaItem* item, const char* parmname, double newvalue);
 SetMediaItemInfo_ValueFn f_set_item = nullptr;
+// Fix C review 2: REAPER's language pack (optional: names stay English without it).
+using LocalizeStringFn = const char* (*)(const char* src_string, const char* section, int flags);
+LocalizeStringFn f_localize = nullptr;
+
+// The localized forms of REAPER's undo names (those that differ from the English), read once.
+std::vector<std::string> LocalizedNames(std::initializer_list<const char*> names)
+{
+    std::vector<std::string> out;
+    if (!f_localize) return out;
+    for (const char* n : names)
+        for (const char* sec : {"undo", "common", "accel_sec"}) {
+            const char* l = nullptr;
+            try {
+                l = f_localize(n, sec, 0);
+            } catch (...) {
+                l = nullptr;
+            }
+            if (!l || !*l || std::strcmp(l, n) == 0) continue;
+            if (std::find(out.begin(), out.end(), std::string(l)) == out.end()) out.emplace_back(l);
+        }
+    return out;
+}
+
+const std::vector<std::string>& CutNames()
+{
+    static const std::vector<std::string> v = LocalizedNames(
+        {"Cut items", "Cut selected area of items", "Cut items/tracks/envelope points", "Ripple cut"});
+    return v;
+}
+
+const std::vector<std::string>& SelectionNames()
+{
+    static const std::vector<std::string> v = LocalizedNames(
+        {"Change media item selection", "Unselect all items", "Select all items", "Change track selection",
+         "Change selection"});
+    return v;
+}
 
 constexpr size_t kReportMax = 200;
 constexpr char   kKeepDrawPref[] = "sound_copy_keeps_draw";
 
-struct FollowProject {
-    bool                                               scanned = false;
-    std::set<std::string>                              seen;    // item GUIDs (upper case)
-    std::map<std::string, std::vector<SoundPlacement>> owners;  // owner GUID -> its placements
+// What the follow last saw of an owner (an animation item with sounds).
+struct OwnerSnap {
+    std::string                  guid;       // as REAPER writes it
+    std::string                  rules_raw;  // its rules record text
+    std::string                  path;       // its file
+    double                       pos = 0.0;
+    std::vector<SoundPlacement>  placed;
+    std::vector<FollowItemFacts> facts;      // its placed items then
+    // Fix C 2026-10-12: what it was before it was moved (cut and paste), latest first: a paste
+    // undone leaves its items tagged for the GUID it had, so they stay its own.
+    std::vector<OwnerSnap>       prev;
 };
+constexpr size_t kPrevMax = 4;
+constexpr size_t kRecentMax = 8;
+// Fix C 2026-10-12: an owner cut, waiting for its paste while the cut is REAPER's last undo point.
+struct PendingGone {
+    OwnerSnap                snap;
+    std::string              undo_desc;  // the cut's undo point name
+    std::vector<std::string> muted;      // its sound items left behind, muted by the follow meanwhile
+};
+struct FollowProject {
+    bool                               scanned = false;
+    std::set<std::string>              seen;     // item GUIDs (upper case)
+    std::map<std::string, OwnerSnap>   owners;   // owner GUID (upper) -> what was last seen
+    std::map<std::string, PendingGone> pending;  // owner GUID (upper) -> gone, not yet handled
+    // Fix C review 2: owners whose deletion was handled, latest first: a copy pasted from one of
+    // them later finds the sound items pasted with it.
+    std::deque<OwnerSnap>              recent;
+};
+
+void Remember(FollowProject& fp, const OwnerSnap& snap)
+{
+    fp.recent.push_front(snap);
+    while (fp.recent.size() > kRecentMax) fp.recent.pop_back();
+}
 std::map<ReaProject*, FollowProject>          g_follow;
 std::map<ReaProject*, std::deque<ReportLine>> g_report;
 
@@ -212,6 +281,7 @@ bool Apply(ReaProject* proj, const FollowPlan& plan, const std::map<std::string,
                     PlacedTag tag;
                     if (ReadPlacedTag(item, &tag)) {
                         tag.t = a.tag_t;
+                        if (!a.tag_owner.empty()) tag.owner = a.tag_owner;
                         WritePlacedTag(item, tag);
                     }
                 }
@@ -222,6 +292,49 @@ bool Apply(ReaProject* proj, const FollowPlan& plan, const std::map<std::string,
         } catch (...) {
         }
     }
+    return arrange;
+}
+
+// The GUIDs an owner's items may be tagged for: its own and those it had before a move.
+std::vector<std::string> OwnerGuids(const OwnerSnap& s)
+{
+    std::vector<std::string> out{s.guid};
+    for (const OwnerSnap& p : s.prev) out.push_back(p.guid);
+    return out;
+}
+
+std::vector<std::string> PlacedGuids(const std::vector<SoundPlacement>& placed)
+{
+    std::vector<std::string> out;
+    for (const SoundPlacement& p : placed) out.push_back(p.item_guid);
+    return out;
+}
+
+void SetMute(const std::map<std::string, ReadItem>& all, const std::string& guid, bool mute)
+{
+    const auto it = all.find(Upper(guid));
+    if (it != all.end() && f_set_item) f_set_item(it->second.item, "B_MUTE", mute ? 1.0 : 0.0);
+}
+
+// F9: a gone owner's items (and those of the GUIDs it had, unless that item is back) handled.
+bool HandleGone(ReaProject* proj, const OwnerSnap& snap, const std::map<std::string, ReadItem>& all)
+{
+    std::vector<SoundPlacement> placed;
+    std::set<std::string>       have;
+    std::vector<std::string>    also;
+    auto add = [&](const OwnerSnap& s) {
+        for (const SoundPlacement& p : s.placed)
+            if (have.insert(Upper(p.item_guid)).second) placed.push_back(p);
+    };
+    add(snap);
+    for (const OwnerSnap& p : snap.prev) {
+        if (all.count(Upper(p.guid))) continue;  // that item is back (undo): its items are its own
+        also.push_back(p.guid);
+        add(p);
+    }
+    const FollowPlan plan = PlanOwnerGone(snap.guid, placed, FactsFor(all, placed), also);
+    const bool       arrange = Apply(proj, plan, all);
+    Report(proj, plan.report);
     return arrange;
 }
 
@@ -310,6 +423,7 @@ void InitSoundFollow(void* (*get_func)(const char* name))
 {
     if (!get_func) return;
     f_set_item = reinterpret_cast<SetMediaItemInfo_ValueFn>(get_func("SetMediaItemInfo_Value"));
+    f_localize = reinterpret_cast<LocalizeStringFn>(get_func("LocalizeString"));
 }
 
 void SoundFollowTick(ReaProject* proj)
@@ -320,7 +434,7 @@ void SoundFollowTick(ReaProject* proj)
 
         // One pass over the items: the facts of every item.
         std::map<std::string, ReadItem> all;
-        std::vector<MediaItem*>         anims;
+        std::vector<MediaItem*>         anim_items;
         const int                       n = CountMediaItems(proj);
         for (int i = 0; i < n; ++i) {
             MediaItem* item = GetMediaItem(proj, i);
@@ -340,49 +454,239 @@ void SoundFollowTick(ReaProject* proj)
                 f.has_tag = true;
                 f.tag_owner = tag.owner;
                 f.tag_t = tag.t;
+                f.tag_rid = tag.rid;
+                f.tag_node = tag.node;
+                f.tag_has_anchor = tag.has_anchor;
+                f.tag_ao = tag.ao;
+                f.tag_sy = tag.sy;
             }
             f.has_store = ParseFollowStore(ItemExt(item, kFollowStoreKey), &f.store);
-            if (RavTakeOf(item)) anims.push_back(item);
+            if (RavTakeOf(item)) anim_items.push_back(item);
             all[Upper(f.item_guid)] = r;
+        }
+
+        // The animation items and their records; every placed GUID of every record.
+        struct Anim {
+            MediaItem*    item = nullptr;
+            std::string   guid, key, path;
+            bool          appeared = false;
+            double        pos = 0.0;
+            double        len = 0.0;
+            ItemSounds    rec;
+            bool          rules_ok = false;
+            ItemRulesRead rr;
+        };
+        std::vector<Anim>     anims;
+        std::set<std::string> placed_guids;
+        // Fix C review 2: an item gone and back (undo, redo) appears again.
+        std::vector<std::string> anim_keys;
+        for (MediaItem* item : anim_items) anim_keys.push_back(Upper(ItemGuidOf(item)));
+        const std::vector<bool> appeared = UpdateSeenOwners(&fp.seen, anim_keys, fp.scanned);
+        for (size_t ai = 0; ai < anim_items.size(); ++ai) {
+            MediaItem* const item = anim_items[ai];
+            try {
+                Anim a;
+                a.item = item;
+                a.guid = ItemGuidOf(item);
+                a.key = Upper(a.guid);
+                a.appeared = appeared[ai];
+                a.rec = ReadItemSounds(item);
+                for (const EventSounds& ev : a.rec.events)
+                    for (const SoundPlacement& p : ev.placed) placed_guids.insert(Upper(p.item_guid));
+                if (!HasSounds(a.rec)) continue;
+                a.rules_ok = ReadItemRules(item, &a.rr) && a.rr.valid;
+                MediaItem_Take* take = RavTakeOf(item);
+                a.path = take ? AnimPathOf(take) : std::string();
+                a.pos = GetMediaItemInfo_Value(item, "D_POSITION");
+                a.len = GetMediaItemInfo_Value(item, "D_LENGTH");
+                anims.push_back(std::move(a));
+            } catch (...) {
+            }
+        }
+        // Fix C 2026-10-12: tagged sound items in no record (copied or pasted with an animation item).
+        std::vector<FollowItemFacts> strays;
+        for (const auto& kv : all)
+            if (kv.second.facts.has_tag && !placed_guids.count(kv.first)) strays.push_back(kv.second.facts);
+
+        // Fix C 2026-10-12: owners gone since the last tick. Matched with an item that appeared
+        // (below), it moved; else a cut waits for its paste, any other deletion is handled now.
+        const char* const  top_read = Undo_CanUndo2(proj);
+        const std::string  top_desc = top_read ? top_read : "";
+        const char* const  top_undo = top_read ? top_desc.c_str() : nullptr;  // a copy: Apply may write
+        std::map<std::string, PendingGone> gone_now;  // owner GUID (upper) -> gone this tick
+        for (auto it = fp.owners.begin(); it != fp.owners.end();) {
+            if (all.count(it->first)) {
+                ++it;
+                continue;
+            }
+            gone_now[it->first] = PendingGone{it->second, top_desc, {}};
+            it = fp.owners.erase(it);
+        }
+        // A gone owner (each GUID it had) and one that appeared with the same rules record, file
+        // and placed items, none of them another owner's: moved.
+        struct Moved {
+            std::string key;   // the gone owner (fp.pending or gone_now)
+            size_t      prev;  // which of its snaps matched: 0 = itself, k = prev[k - 1]
+        };
+        std::map<std::string, Moved> moved;  // new key -> the gone owner
+        {
+            std::vector<MoveCandidate> gone, came;
+            std::vector<Moved>         gone_ids;
+            std::vector<std::string>   came_keys;
+            auto add_gone = [&](const std::string& key, const OwnerSnap& s) {
+                const std::vector<std::string>        owners = OwnerGuids(s);
+                std::vector<std::vector<std::string>> sets;
+                for (size_t k = 0; k <= s.prev.size(); ++k) {
+                    const OwnerSnap&               id = k == 0 ? s : s.prev[k - 1];
+                    const std::vector<std::string> placed = PlacedGuids(id.placed);
+                    bool                           dup = false;  // the same items as a later snap: that one
+                    for (const auto& seen : sets) dup |= seen == placed;
+                    if (dup) continue;
+                    sets.push_back(placed);
+                    gone.push_back({id.guid, id.rules_raw, id.path, placed, owners});
+                    gone_ids.push_back({key, k});
+                }
+            };
+            for (const auto& kv : fp.pending) add_gone(kv.first, kv.second.snap);
+            for (const auto& kv : gone_now) add_gone(kv.first, kv.second.snap);
+            for (const Anim& a : anims)
+                if (a.appeared && a.rules_ok) {
+                    MoveCandidate c{a.guid, a.rr.raw, a.path, PlacedGuids(AllPlacements(a.rec)), {}};
+                    for (const std::string& g : c.placed) {
+                        const auto it = all.find(Upper(g));
+                        if (it != all.end() && it->second.facts.has_tag) c.owners.push_back(it->second.facts.tag_owner);
+                    }
+                    came.push_back(c);
+                    came_keys.push_back(a.key);
+                }
+            std::set<std::string> taken;
+            for (const auto& pr : MatchMovedOwners(gone, came)) {
+                const Moved& g = gone_ids[pr.first];
+                if (!taken.insert(g.key).second) continue;  // one paste per gone owner
+                moved[came_keys[pr.second]] = g;
+            }
         }
 
         const bool               keep_draw = LoadPrefFloat(kKeepDrawPref, 0.0f) != 0.0f;
         const SoundStore&        store = GetSoundStore(proj);
         std::vector<std::pair<std::string, std::string>> libs;
         for (const SoundLibrary& l : store.libraries) libs.emplace_back(l.uid, l.name);
+        std::vector<std::pair<std::string, double>> anim_pos;
+        for (MediaItem* item : anim_items) anim_pos.emplace_back(ItemGuidOf(item), GetMediaItemInfo_Value(item, "D_POSITION"));
+        // Fix C review 2: owners no longer in the project, as last seen (a copy of a gone source).
+        std::vector<FollowOwnerMemory> remembered;
+        {
+            auto add1 = [&](const OwnerSnap& x) {
+                if (x.facts.empty() || all.count(Upper(x.guid))) return;
+                remembered.push_back(FollowOwnerMemory{x.guid, x.pos, x.facts});
+            };
+            auto add = [&](const OwnerSnap& x) {
+                add1(x);
+                for (const OwnerSnap& q : x.prev) add1(q);
+            };
+            for (const auto& kv : gone_now) add(kv.second.snap);
+            for (const auto& kv : fp.pending) add(kv.second.snap);
+            for (const auto& kv : fp.owners) add(kv.second);
+            for (const OwnerSnap& x : fp.recent) add(x);
+        }
 
         bool                    arrange = false;
         std::vector<MediaItem*> copies;
         std::set<std::string>   owners_now;
-        for (MediaItem* item : anims) {
+        for (const Anim& an : anims) {
             try {
-                const std::string guid = ItemGuidOf(item);
-                const std::string key = Upper(guid);
-                const bool        appeared = fp.scanned && fp.seen.count(key) == 0;
-                fp.seen.insert(key);
-                const ItemSounds rec = ReadItemSounds(item);
-                if (!HasSounds(rec)) continue;
+                MediaItem* const   item = an.item;
+                const std::string& guid = an.guid;
+                const std::string& key = an.key;
+                const ItemSounds&  rec = an.rec;
                 owners_now.insert(key);
-                ItemRulesRead rr;
-                if (!ReadItemRules(item, &rr) || !rr.valid) {
-                    fp.owners[key] = AllPlacements(rec);
+                OwnerSnap snap;
+                snap.guid = guid;
+                snap.path = an.path;
+                snap.pos = an.pos;
+                snap.rules_raw = an.rr.raw;
+                const auto was_owner = fp.owners.find(key);
+                if (was_owner != fp.owners.end()) snap.prev = was_owner->second.prev;  // the GUIDs it had
+                snap.placed = AllPlacements(rec);
+                // Fix C 2026-10-12: moved (cut and paste): taken from the gone owner before anything
+                // else, so it is never handled as gone even when this item's detection does not run.
+                std::string                  mv_from;
+                std::vector<std::string>     mv_also;
+                std::vector<FollowItemFacts> mv_items;
+                double                       mv_delta = 0.0;
+                bool                         appeared_now = an.appeared;
+                const auto                   mv = moved.find(key);
+                if (mv != moved.end()) {
+                    auto        pit = fp.pending.find(mv->second.key);
+                    const bool  was_pending = pit != fp.pending.end();
+                    PendingGone pg = was_pending ? pit->second : gone_now[mv->second.key];
+                    if (was_pending) fp.pending.erase(pit);
+                    else gone_now.erase(mv->second.key);
+                    // Fix C review 2: matched with what it was itself (a cut undone): back, nothing
+                    // moved. With a GUID it had before (a paste redone): moved from that one.
+                    const bool       self = mv->second.key == key;
+                    const OwnerSnap& id = mv->second.prev == 0 ? pg.snap : pg.snap.prev[mv->second.prev - 1];
+                    if (!SameFollowGuid(id.guid, guid)) {
+                        mv_from = id.guid;
+                        for (const std::string& g : OwnerGuids(pg.snap))
+                            if (!SameFollowGuid(g, id.guid) && !SameFollowGuid(g, guid)) mv_also.push_back(g);
+                        mv_items = id.facts;
+                        mv_delta = an.pos - id.pos;
+                    } else {
+                        appeared_now = false;
+                    }
+                    // Its sound items the follow muted while the cut waited: back as they were.
+                    for (const std::string& g : pg.muted) {
+                        SetMute(all, g, false);
+                        auto it = all.find(Upper(g));
+                        if (it != all.end()) it->second.facts.muted = false;
+                    }
+                    // Kept, so a paste undone leaves its items to this owner (latest first).
+                    std::vector<OwnerSnap> had;
+                    if (!self) {
+                        had.push_back(pg.snap);
+                        had.back().prev.clear();
+                    }
+                    for (const OwnerSnap& p : pg.snap.prev) had.push_back(p);
+                    snap.prev.clear();
+                    for (const OwnerSnap& p : had)
+                        if (!SameFollowGuid(p.guid, guid)) snap.prev.push_back(p);
+                    if (snap.prev.size() > kPrevMax) snap.prev.resize(kPrevMax);
+                }
+                snap.facts = FactsFor(all, snap.placed);
+                if (!an.rules_ok) {
+                    fp.owners[key] = snap;
                     continue;  // unreadable rules: nothing is decided
                 }
                 FollowInput in;
-                if (!FollowEventsOf(proj, item, key, rr, &in.events)) {
-                    fp.owners[key] = AllPlacements(rec);
+                if (!FollowEventsOf(proj, item, key, an.rr, &in.events)) {
+                    fp.owners[key] = snap;
                     continue;  // its detection does not run: nothing is decided
                 }
                 in.owner_guid = guid;
                 in.rec = rec;
                 in.blend_ms = BlendOffsets(store, rec);
-                for (const auto& b : rr.rules.blocks)
-                    if (!b.rid.empty()) in.rule_rids.push_back(b.rid);
-                in.items = FactsFor(all, AllPlacements(rec));
+                for (const auto& b : an.rr.rules.blocks) {
+                    if (b.rid.empty()) continue;
+                    in.rule_rids.push_back(b.rid);
+                    if (!b.enabled) in.disabled_rids.push_back(b.rid);
+                }
+                in.items = snap.facts;
                 in.library_names = libs;
-                in.appeared = appeared;
+                in.appeared = appeared_now;
                 in.keep_draw = keep_draw;
                 in.copy_seed = FollowGuidHash(guid);
+                in.owner_pos = an.pos;
+                in.moved_from = mv_from;
+                in.moved_also = mv_also;
+                in.moved_items = mv_items;
+                in.moved_delta = mv_delta;
+                if (appeared_now) {
+                    in.strays = strays;
+                    in.owner_positions = anim_pos;
+                    in.owner_len = an.len;
+                    in.remembered = remembered;
+                }
                 const FollowPlan plan = PlanItemFollow(in);
                 arrange |= Apply(proj, plan, all);
                 if (plan.record_changed) {
@@ -393,29 +697,71 @@ void SoundFollowTick(ReaProject* proj)
                     });
                 }
                 Report(proj, plan.report);
-                fp.owners[key] = AllPlacements(plan.record);
+                snap.placed = AllPlacements(plan.record);
+                snap.facts = FactsFor(all, snap.placed);
+                FactsAfterPlan(plan, &snap.facts);  // positions as this tick's moves left them
+                fp.owners[key] = snap;
                 if (plan.populate_copy) copies.push_back(item);
             } catch (...) {
             }
         }
 
-        // F9: owners gone since the last scan.
-        for (auto it = fp.owners.begin(); it != fp.owners.end();) {
-            if (owners_now.count(it->first)) {
+        // Fix C review 2: a pending owner whose item is back (undo) and was not matched as a move
+        // above: forgotten, what the follow muted unmuted.
+        for (auto it = fp.pending.begin(); it != fp.pending.end();) {
+            if (!all.count(it->first)) {
                 ++it;
                 continue;
             }
-            if (all.count(it->first)) {  // still there, its record emptied: nothing to follow
-                it = fp.owners.erase(it);
+            for (const std::string& g : it->second.muted) SetMute(all, g, false);
+            arrange |= !it->second.muted.empty();
+            it = fp.pending.erase(it);
+        }
+        // Still there, its record emptied: nothing to follow.
+        for (auto it = fp.owners.begin(); it != fp.owners.end();)
+            it = owners_now.count(it->first) ? std::next(it) : fp.owners.erase(it);
+        // F9: an owner gone this tick, not moved. A cut (REAPER's last undo point names it) waits
+        // for its paste, its populated sounds left behind muted meanwhile; any other deletion has
+        // its sounds handled now.
+        for (auto& kv : gone_now) {
+            try {
+                PendingGone& pg = kv.second;
+                if (!IsCutUndoName(top_undo, CutNames())) {
+                    arrange |= HandleGone(proj, pg.snap, all);
+                    Remember(fp, pg.snap);
+                    continue;
+                }
+                const std::vector<std::string> owners = OwnerGuids(pg.snap);
+                for (const SoundPlacement& p : pg.snap.placed) {
+                    if (p.own == Ownership::Attached || p.own == Ownership::Deleted) continue;
+                    const auto it = all.find(Upper(p.item_guid));
+                    if (it == all.end() || it->second.facts.muted || !it->second.facts.has_tag) continue;
+                    bool ours = false;
+                    for (const std::string& o : owners) ours |= SameFollowGuid(o, it->second.facts.tag_owner);
+                    if (!ours) continue;
+                    SetMute(all, p.item_guid, true);
+                    pg.muted.push_back(p.item_guid);
+                    arrange = true;
+                }
+                fp.pending[kv.first] = pg;
+            } catch (...) {
+            }
+        }
+        // A cut waits while it is REAPER's last undo point (or a selection change above it, fix C
+        // review 2: REAPER's preference "include selection in undo"); another undo point (its paste
+        // was matched above, or any other gesture): its sounds handled now.
+        for (auto it = fp.pending.begin(); it != fp.pending.end();) {
+            if (GestureUndoAvailable(top_undo, it->second.undo_desc, 0, -1) ||
+                IsSelectionUndoName(top_undo, SelectionNames())) {
+                ++it;
                 continue;
             }
             try {
-                const FollowPlan plan = PlanOwnerGone(it->first, it->second, FactsFor(all, it->second));
-                arrange |= Apply(proj, plan, all);
-                Report(proj, plan.report);
+                arrange |= HandleGone(proj, it->second.snap, all);
+                Remember(fp, it->second.snap);
             } catch (...) {
             }
-            it = fp.owners.erase(it);
+            it = fp.pending.erase(it);
         }
         fp.scanned = true;
         // Detections of items that no longer have sounds (or are gone): forgotten.

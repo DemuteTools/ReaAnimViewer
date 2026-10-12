@@ -7,6 +7,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <set>
 #include <cstdlib>
 
 #include "event_list.h"
@@ -106,7 +107,10 @@ static void CheckIdempotent(FollowInput in, const FollowPlan& p)
             if (a.kind == FollowKind::Store) { f.has_store = true; f.store = a.store; }
             if (a.kind == FollowKind::Mute) f.muted = true;
             if (a.kind == FollowKind::Unmute) f.muted = false;
-            if (a.kind == FollowKind::Retag) f.tag_t = a.tag_t;
+            if (a.kind == FollowKind::Retag) {
+                f.tag_t = a.tag_t;
+                if (!a.tag_owner.empty()) f.tag_owner = a.tag_owner;
+            }
             if (a.kind == FollowKind::Remove) f.present = false;
             if (a.kind == FollowKind::Detach) f.has_tag = false;
         }
@@ -577,6 +581,483 @@ int main()
         FollowInput in = OneSound(Ownership::Populated);
         const FollowPlan p = PlanFollow(in.rec, {Ev("r1", 1.0, 10.0)}, {"{A}"});
         CHECK(Count(p, FollowKind::Store) == 1);
+    }
+
+    // Fix C 2026-10-12 (1): a user unmute of a sound the follow muted is respected until the
+    // event is back inside; the next exit mutes it again.
+    {
+        FollowInput in = OneSound(Ownership::Populated);
+        in.events = {Ev("r1", 1.0, 0.0, false, false)};
+        in.items = {Fact("{A}", 9.9, true, 9.9, 10.0)};
+        in.items[0].store.mute = true;  // the follow muted it, the user unmuted it
+        const FollowPlan p = PlanItemFollow(in);
+        CHECK(Count(p, FollowKind::Mute) == 0);
+        const FollowAction* s = Find(p, FollowKind::Store);
+        CHECK(s && s->store.hand && !s->store.mute);
+        CheckIdempotent(in, p);
+        FollowInput h = in;
+        h.items[0].store = s->store;
+        CHECK(PlanItemFollow(h).actions.empty());
+        // Back inside: no Unmute (not muted by the follow), hand cleared.
+        h.events = {Ev("r1", 1.0, 10.0)};
+        const FollowPlan q = PlanItemFollow(h);
+        CHECK(Count(q, FollowKind::Unmute) == 0 && Count(q, FollowKind::Mute) == 0);
+        const FollowAction* s2 = Find(q, FollowKind::Store);
+        CHECK(s2 && !s2->store.hand && !s2->store.mute);
+        // Out again: muted again.
+        h.items[0].store = s2->store;
+        h.events = {Ev("r1", 1.0, 0.0, false, false)};
+        const FollowPlan r = PlanItemFollow(h);
+        CHECK(Count(r, FollowKind::Mute) == 1);
+        // Store line round trip with hand.
+        FollowStore st, rd;
+        st.hand = true;
+        CHECK(ParseFollowStore(FormatFollowStore(st), &rd) && rd.hand && !rd.mute);
+        CHECK(ParseFollowStore("RAVSNDFOLLOW 1 pos=1 pt=2 mute=1", &rd) && !rd.hand && rd.mute);
+    }
+    // Fix C (2): a disabled rule keeps its sounds, muted; enabled again, unmuted.
+    {
+        // Its Detected event is not detected while disabled: held, muted, nothing removed.
+        FollowInput in = OneSound(Ownership::Populated);
+        in.disabled_rids = {"r1"};
+        in.rec.events[0].placed[0].offset_s = 0.05;
+        in.items = {Fact("{A}", 9.95, true, 9.95, 10.0)};
+        const FollowPlan p = PlanItemFollow(in);
+        CHECK(Count(p, FollowKind::Remove) == 0 && Count(p, FollowKind::Detach) == 0 && Count(p, FollowKind::Mute) == 1);
+        CHECK(!p.record_changed && p.record.events.size() == 1 && Near(p.record.events[0].placed[0].offset_s, 0.05));
+        const FollowAction* s = Find(p, FollowKind::Store);
+        CHECK(s && s->store.mute && Near(s->store.pos, 9.95) && Near(s->store.pt, 10.0));
+        CheckIdempotent(in, p);
+        // Enabled again, its event back: unmuted, not moved, nudge kept.
+        FollowInput on = in;
+        on.disabled_rids.clear();
+        on.events = {Ev("r1", 1.0, 10.0)};
+        on.items[0].muted = true;
+        on.items[0].store = s->store;
+        const FollowPlan q = PlanItemFollow(on);
+        CHECK(Count(q, FollowKind::Unmute) == 1 && Count(q, FollowKind::Move) == 0 && !q.record_changed);
+        CheckIdempotent(on, q);
+        // Unmuted by the user while disabled: left alone; enabled: not muted, not unmuted.
+        FollowInput um = in;
+        um.items[0].store.mute = true;
+        const FollowPlan u = PlanItemFollow(um);
+        CHECK(Count(u, FollowKind::Mute) == 0 && Find(u, FollowKind::Store) && Find(u, FollowKind::Store)->store.hand);
+        // A User event of the disabled rule (still listed): followed, muted.
+        FollowInput ue = in;
+        ue.events = {Ev("r1", 1.0, 11.0, true)};
+        ue.events[0].enabled = false;
+        const FollowPlan v = PlanItemFollow(ue);
+        CHECK(Count(v, FollowKind::Move) == 1 && Count(v, FollowKind::Mute) == 1);
+        CheckIdempotent(ue, v);
+        // An attached sound: muted while disabled (kept attached), unmuted when enabled.
+        FollowInput at = OneSound(Ownership::Attached);
+        at.disabled_rids = {"r1"};
+        at.items = {Fact("{A}", 9.9, false, 0, 0)};
+        const FollowPlan w = PlanItemFollow(at);
+        CHECK(Count(w, FollowKind::Mute) == 1 && Count(w, FollowKind::Detach) == 0 && w.record.events.size() == 1);
+        const FollowAction* ws = Find(w, FollowKind::Store);
+        CHECK(ws && ws->store.mute);
+        CheckIdempotent(at, w);
+        FollowInput at2 = at;
+        at2.disabled_rids.clear();
+        at2.events = {Ev("r1", 1.0, 10.0)};
+        at2.items[0].muted = true;
+        at2.items[0].has_store = true;
+        at2.items[0].store = ws->store;
+        const FollowPlan x = PlanItemFollow(at2);
+        CHECK(Count(x, FollowKind::Unmute) == 1 && Count(x, FollowKind::Move) == 0);
+        CheckIdempotent(at2, x);
+        // SoundEventsOf marks a disabled rule's events (Populate skips them).
+        ItemRules r;
+        r.blocks.resize(1);
+        r.blocks[0].rid = "a";
+        r.blocks[0].enabled = false;
+        EventEntry e;
+        e.t = 1.0;
+        e.kind = EventKind::User;
+        e.block = 0;
+        r.events.push_back(e);
+        ItemClipMap m;
+        m.item_pos = 10.0;
+        m.item_len = 5.0;
+        m.clip_len = 5.0;
+        const std::vector<FollowEvent> ev = SoundEventsOf(BuildEventList({}, r.events, 1), r.blocks, m);
+        CHECK(ev.size() == 1 && !ev[0].enabled);
+    }
+    // Fix C (3): a copy made together with its sound items.
+    {
+        auto copy_in = [](bool keep) {
+            FollowInput in = OneSound(Ownership::Populated);
+            in.owner_guid = "{COPY}";
+            in.appeared = true;
+            in.keep_draw = keep;
+            in.copy_seed = FollowGuidHash("{COPY}");
+            in.owner_pos = 20.0;
+            in.owner_positions = {{kOwner, 9.0}, {"{COPY}", 20.0}};
+            in.events = {Ev("r1", 1.0, 21.0)};
+            in.items = {Fact("{A}", 9.9, true, 9.9, 10.0)};
+            in.items[0].tag_rid = "r1";
+            in.items[0].tag_node = "n1";
+            FollowItemFacts c = Fact("{A2}", 20.9, true, 9.9, 10.0);  // copied with its tag and store
+            c.tag_rid = "r1";
+            c.tag_node = "n1";
+            FollowItemFacts far = Fact("{X}", 30.0, true, 30.0, 30.0);  // tagged, not explained by the copy
+            in.strays = {far, c};
+            return in;
+        };
+        // Keep the draw: adopted, retagged for the copy, nothing new placed.
+        FollowInput in = copy_in(true);
+        const FollowPlan p = PlanItemFollow(in);
+        CHECK(!p.populate_copy && p.record_changed);
+        CHECK(p.record.events[0].placed.size() == 1 && p.record.events[0].placed[0].item_guid == "{A2}");
+        CHECK(p.record.events[0].draws.size() == 1 && p.record.events[0].draws[0].pick == 2);
+        const FollowAction* rt = Find(p, FollowKind::Retag);
+        CHECK(rt && rt->item_guid == "{A2}" && rt->tag_owner == "{COPY}" && p.actions.size() == 1);
+        // Next tick: followed as its own (copied store, both moved: no nudge, no move).
+        FollowInput nx = in;
+        nx.appeared = false;
+        nx.rec = p.record;
+        nx.items = {in.strays[1]};
+        nx.items[0].tag_owner = "{COPY}";
+        const FollowPlan q = PlanItemFollow(nx);
+        CHECK(Count(q, FollowKind::Move) == 0 && Count(q, FollowKind::Remove) == 0 && !q.record_changed);
+        CHECK(Near(q.record.events[0].placed[0].offset_s, 0.0));
+        CheckIdempotent(nx, q);
+        // Keep the draw off: the copied populated sound removed, a new draw placed.
+        const FollowPlan r = PlanItemFollow(copy_in(false));
+        CHECK(r.populate_copy && Count(r, FollowKind::Remove) == 1 && Find(r, FollowKind::Remove)->item_guid == "{A2}");
+        CHECK(r.record.events[0].placed.empty() && r.record.events[0].draws.empty());
+        // ... an attached one is adopted even then.
+        FollowInput at = copy_in(false);
+        at.rec.events[0].placed[0].own = Ownership::Attached;
+        const FollowPlan s = PlanItemFollow(at);
+        CHECK(Count(s, FollowKind::Remove) == 0 && s.record.events[0].placed.size() == 1 &&
+              s.record.events[0].placed[0].item_guid == "{A2}");
+        // A stray at another place (not the copy's): never touched.
+        FollowInput nf = copy_in(true);
+        nf.strays.pop_back();
+        const FollowPlan t = PlanItemFollow(nf);
+        CHECK(t.actions.empty() && t.populate_copy && t.record.events[0].placed.empty());
+    }
+    // Fix C (4): cut and paste = a move: record kept, items retagged / adopted.
+    {
+        // Only the animation item cut: its sound items stay, tagged for the GUID it had.
+        FollowInput in = OneSound(Ownership::Populated);
+        in.owner_guid = "{NEW}";
+        in.appeared = true;
+        in.moved_from = kOwner;
+        in.moved_delta = 5.0;
+        in.rec.events[0].placed[0].offset_s = 0.1;
+        in.events = {Ev("r1", 1.0, 15.0)};
+        in.items = {Fact("{A}", 10.0, true, 10.0, 10.0)};
+        in.moved_items = in.items;
+        const FollowPlan p = PlanItemFollow(in);
+        CHECK(!p.populate_copy && Count(p, FollowKind::Remove) == 0 && Count(p, FollowKind::Detach) == 0);
+        const FollowAction* rt = Find(p, FollowKind::Retag);
+        CHECK(rt && rt->tag_owner == "{NEW}");
+        const FollowAction* mv = Find(p, FollowKind::Move);
+        CHECK(mv && Near(mv->project_t, 15.0));
+        CHECK(p.record.events[0].draws.size() == 1 && Near(p.record.events[0].placed[0].offset_s, 0.1));
+        CheckIdempotent(in, p);
+        // Cut together with its sound item (pasted with a new GUID): adopted, nudge kept, no move.
+        FollowInput tg = in;
+        tg.items.clear();
+        FollowItemFacts c = Fact("{A9}", 15.0, true, 10.0, 10.0);
+        tg.strays = {c};
+        const FollowPlan q = PlanItemFollow(tg);
+        CHECK(!q.populate_copy && q.record_changed && Count(q, FollowKind::Move) == 0);
+        CHECK(q.record.events[0].placed.size() == 1 && q.record.events[0].placed[0].item_guid == "{A9}" &&
+              q.record.events[0].placed[0].own == Ownership::Populated && Near(q.record.events[0].placed[0].offset_s, 0.1));
+        CHECK(Find(q, FollowKind::Retag) && Find(q, FollowKind::Retag)->tag_owner == "{NEW}");
+        // MatchMovedOwners: same rules record and file, one on each side.
+        std::vector<MoveCandidate> gone = {{"{G1}", "rules A", "a.fbx"}, {"{G2}", "rules B", "b.fbx"}};
+        std::vector<MoveCandidate> came = {{"{N1}", "rules B", "b.fbx"}, {"{N2}", "rules A", "c.fbx"}};
+        auto pr = MatchMovedOwners(gone, came);
+        CHECK(pr.size() == 1 && pr[0].first == 1 && pr[0].second == 0);
+        came.push_back({"{N3}", "rules B", "b.fbx"});  // two candidates: not a move
+        CHECK(MatchMovedOwners(gone, came).empty());
+        CHECK(MatchMovedOwners({{"{G}", "", ""}}, {{"{N}", "", ""}}).empty());
+    }
+
+    // Fix C, review (9): an unmute by hand given while the event was outside does not hold
+    // through a later rule disable (the reason is kept: hand=1 outside, hand=2 disabled).
+    {
+        FollowInput in = OneSound(Ownership::Populated);
+        in.events = {Ev("r1", 1.0, 0.0, false, false)};
+        in.items = {Fact("{A}", 9.9, true, 9.9, 10.0)};
+        in.items[0].store.hand = kMuteOutside;  // unmuted by hand while outside
+        CHECK(PlanItemFollow(in).actions.empty());
+        FollowInput d = in;
+        d.events[0].enabled = false;
+        d.disabled_rids = {"r1"};
+        const FollowPlan p = PlanItemFollow(d);
+        CHECK(Count(p, FollowKind::Mute) == 1);
+        const FollowAction* s = Find(p, FollowKind::Store);
+        CHECK(s && s->store.mute && s->store.hand == 0);
+        CheckIdempotent(d, p);
+        // Unmuted by hand while disabled: hand=2, kept while disabled.
+        FollowInput u = d;
+        u.items[0].store = s->store;  // muted by the follow, the user unmuted it (muted false)
+        const FollowPlan q = PlanItemFollow(u);
+        CHECK(Count(q, FollowKind::Mute) == 0 && Find(q, FollowKind::Store) &&
+              Find(q, FollowKind::Store)->store.hand == kMuteDisabled);
+        FollowStore rd;
+        CHECK(ParseFollowStore(FormatFollowStore(Find(q, FollowKind::Store)->store), &rd) && rd.hand == kMuteDisabled);
+        CHECK(ParseFollowStore("RAVSNDFOLLOW 1 pos=1 pt=2 hand=1", &rd) && rd.hand == kMuteOutside);
+    }
+    // Fix C, review (10): at first sight a folder pile member finds its pass by the pile's anchor
+    // (tag ao / sy), as Populate does: one pile never splits across close passes.
+    {
+        FollowInput in = OneSound(Ownership::Populated);
+        FollowEvent e = Ev("r1", 1.0, 10.0);
+        e.passes = {FollowPass{0, 10.0}, FollowPass{1, 12.0}};
+        in.events = {e};
+        in.items = {Fact("{A}", 11.2, false, 0, 0)};  // by its own position: nearer pass 1
+        FollowInput own = in;
+        const FollowAction* s0 = Find(PlanItemFollow(own), FollowKind::Store);
+        CHECK(s0 && s0->store.has_pass && s0->store.pass == 1);
+        in.items[0].tag_has_anchor = true;
+        in.items[0].tag_ao = 1.5;  // anchored at 9.7: pass 0
+        in.items[0].tag_sy = 0.0;
+        const FollowPlan p = PlanItemFollow(in);
+        const FollowAction* s = Find(p, FollowKind::Store);
+        CHECK(s && s->store.has_pass && s->store.pass == 0 && Near(s->store.pt, 10.0));
+        CHECK(Count(p, FollowKind::Move) == 0);
+    }
+    // Fix C, review (1): a duplicate of another identical instance is never a move.
+    {
+        const MoveCandidate g{"{G}", "rules A", "a.fbx", {"{S1}"}, {"{G}"}};
+        CHECK(MatchMovedOwners({g}, {{"{N}", "rules A", "a.fbx", {"{S1}"}, {"{G}"}}}).size() == 1);   // its paste
+        CHECK(MatchMovedOwners({g}, {{"{N}", "rules A", "a.fbx", {"{s1}"}, {}}}).size() == 1);        // cut with its sounds
+        CHECK(MatchMovedOwners({g}, {{"{N}", "rules A", "a.fbx", {"{S2}"}, {"{B}"}}}).empty());       // Ctrl+D of B
+        CHECK(MatchMovedOwners({g}, {{"{N}", "rules A", "a.fbx", {"{S1}"}, {"{B}"}}}).empty());       // B's items
+        CHECK(MatchMovedOwners({g}, {{"{N}", "rules A", "a.fbx", {"{S1}", "{S2}"}, {"{G}"}}}).empty());
+        // Items tagged for a GUID it had before (a paste undone): still its own.
+        const MoveCandidate g2{"{G2}", "rules A", "a.fbx", {"{S1}"}, {"{G2}", "{G}"}};
+        CHECK(MatchMovedOwners({g2}, {{"{N}", "rules A", "a.fbx", {"{S1}"}, {"{G}"}}}).size() == 1);
+    }
+    // Fix C, review (2+3): only a cut waits for its paste.
+    {
+        CHECK(IsCutUndoName("Cut items"));
+        CHECK(IsCutUndoName("cut selected area of items"));
+        CHECK(IsCutUndoName("Ripple CUT"));
+        CHECK(IsCutUndoName("Cut items/tracks/envelope points"));
+        CHECK(!IsCutUndoName("Execute script"));
+        CHECK(!IsCutUndoName("Remove items"));
+        CHECK(!IsCutUndoName("Paste items/tracks"));
+        CHECK(!IsCutUndoName(""));
+        CHECK(!IsCutUndoName(nullptr));
+    }
+    // Fix C, review (4): the facts once a plan is applied (an owner's snapshot after its tick).
+    {
+        std::vector<FollowItemFacts> f = {Fact("{A}", 9.9, true, 9.9, 10.0), Fact("{B}", 5.0, true, 5.0, 5.0)};
+        FollowPlan p;
+        FollowAction mv;
+        mv.kind = FollowKind::Move;
+        mv.item_guid = "{a}";
+        mv.project_t = 11.9;
+        p.actions.push_back(mv);
+        FollowAction rt;
+        rt.kind = FollowKind::Retag;
+        rt.item_guid = "{B}";
+        rt.tag_t = 2.0;
+        rt.tag_owner = "{NEW}";
+        p.actions.push_back(rt);
+        FollowAction mu;
+        mu.kind = FollowKind::Mute;
+        mu.item_guid = "{B}";
+        p.actions.push_back(mu);
+        FollowAction rm;
+        rm.kind = FollowKind::Remove;
+        rm.item_guid = "{X}";
+        p.actions.push_back(rm);
+        FactsAfterPlan(p, &f);
+        CHECK(Near(f[0].pos, 11.9) && !f[0].muted && f[0].present);
+        CHECK(Near(f[1].pos, 5.0) && f[1].muted && f[1].tag_owner == "{NEW}" && Near(f[1].tag_t, 2.0));
+        // The owner's follow moved its sound, then it was cut and pasted 5 s later: the pasted
+        // copy of the sound is found at the moved position + 5.
+        FollowInput in = OneSound(Ownership::Populated);
+        in.owner_guid = "{NEW}";
+        in.appeared = true;
+        in.moved_from = kOwner;
+        in.moved_delta = 5.0;
+        in.events = {Ev("r1", 1.0, 17.0)};
+        in.moved_items = {f[0]};
+        FollowItemFacts c = Fact("{A9}", 16.9, true, 11.9, 12.0);
+        in.strays = {c};
+        const FollowPlan q = PlanItemFollow(in);
+        CHECK(q.record.events[0].placed.size() == 1 && q.record.events[0].placed[0].item_guid == "{A9}");
+    }
+    // Fix C, review (5): after a paste undone, the items tagged for the GUID the owner had stay its
+    // own: a move retags them, and when it is gone they are handled.
+    {
+        FollowInput in = OneSound(Ownership::Populated);
+        in.owner_guid = "{N2}";
+        in.appeared = true;
+        in.moved_from = "{N1}";
+        in.moved_also = {kOwner};
+        in.events = {Ev("r1", 1.0, 10.0)};
+        in.items = {Fact("{A}", 9.9, true, 9.9, 10.0)};  // tagged for kOwner (the paste's retag undone)
+        in.moved_items = in.items;
+        const FollowPlan p = PlanItemFollow(in);
+        const FollowAction* rt = Find(p, FollowKind::Retag);
+        CHECK(rt && rt->item_guid == "{A}" && rt->tag_owner == "{N2}");
+        std::vector<SoundPlacement> placed = in.rec.events[0].placed;
+        CHECK(PlanOwnerGone("{N1}", placed, in.items).actions.empty());
+        const FollowPlan g = PlanOwnerGone("{N1}", placed, in.items, {kOwner});
+        CHECK(Count(g, FollowKind::Remove) == 1);
+    }
+
+    // Fix C, review 2 (1): a copy whose source is gone (pasted a second time after a cut, or
+    // copied, its source deleted, then pasted): the sound items pasted with it, tagged for the gone
+    // source, are adopted (Keep the draw on) or removed (off): never two sets.
+    {
+        auto gone_src = [](bool keep) {
+            FollowInput in = OneSound(Ownership::Populated);
+            in.owner_guid = "{X2}";
+            in.appeared = true;
+            in.keep_draw = keep;
+            in.copy_seed = FollowGuidHash("{X2}");
+            in.owner_pos = 20.0;
+            in.owner_len = 4.0;
+            in.owner_positions = {{"{X1}", 9.0}, {"{X2}", 20.0}, {"{B}", 40.0}};  // kOwner gone
+            in.events = {Ev("r1", 1.0, 21.0)};
+            in.items = {};  // {A}, its record's item, is gone with its owner
+            FollowItemFacts c = Fact("{A3}", 20.9, true, 9.9, 10.0);  // pasted with it, tagged for kOwner
+            c.tag_rid = "r1";
+            c.tag_node = "n1";
+            FollowItemFacts b = c;  // the same place, tagged for an owner in the project: never touched
+            b.item_guid = "{B3}";
+            b.tag_owner = "{B}";
+            in.strays = {b, c};
+            return in;
+        };
+        // Remembered: the gone owner as last seen (at 9.0, its sound at 9.9).
+        FollowInput in = gone_src(true);
+        in.remembered = {FollowOwnerMemory{kOwner, 9.0, {Fact("{A}", 9.9, true, 9.9, 10.0)}}};
+        const FollowPlan p = PlanItemFollow(in);
+        CHECK(!p.populate_copy && p.record.events[0].placed.size() == 1 && p.record.events[0].placed[0].item_guid == "{A3}");
+        CHECK(Find(p, FollowKind::Retag) && Find(p, FollowKind::Retag)->item_guid == "{A3}" &&
+              Find(p, FollowKind::Retag)->tag_owner == "{X2}" && p.actions.size() == 1);
+        FollowInput off = gone_src(false);
+        off.remembered = in.remembered;
+        const FollowPlan q = PlanItemFollow(off);
+        CHECK(q.populate_copy && Count(q, FollowKind::Remove) == 1 && Find(q, FollowKind::Remove)->item_guid == "{A3}");
+        // Nothing remembered: where Populate places it on the copy (the event at 21.0, its nudge).
+        FollowInput g = gone_src(true);
+        g.rec.events[0].placed[0].offset_s = -0.1;
+        const FollowPlan r = PlanItemFollow(g);
+        CHECK(!r.populate_copy && r.record.events[0].placed.size() == 1 && r.record.events[0].placed[0].item_guid == "{A3}" &&
+              Near(r.record.events[0].placed[0].offset_s, -0.1));
+        FollowInput goff = gone_src(false);
+        goff.rec.events[0].placed[0].offset_s = -0.1;
+        const FollowPlan r2 = PlanItemFollow(goff);
+        CHECK(r2.populate_copy && Count(r2, FollowKind::Remove) == 1 && Find(r2, FollowKind::Remove)->item_guid == "{A3}");
+        // ... a pile member by its anchor (tag ao / sy).
+        FollowInput pile = gone_src(true);
+        pile.strays[1].pos = 21.5;
+        pile.strays[1].tag_has_anchor = true;
+        pile.strays[1].tag_ao = 0.6;
+        pile.strays[1].tag_sy = 0.1;  // anchor 20.9 + sync 0.1 = 21.0
+        CHECK(PlanItemFollow(pile).record.events[0].placed.size() == 1);
+        // Not at its place (no nudge recorded): not the copy's, nothing touched.
+        const FollowPlan t = PlanItemFollow(gone_src(true));
+        CHECK(t.actions.empty() && t.populate_copy && t.record.events[0].placed.empty());
+        // Another rule, or tagged for an owner in the project: never.
+        FollowInput wr = gone_src(true);
+        wr.rec.events[0].placed[0].offset_s = -0.1;
+        wr.strays[1].tag_rid = "r2";
+        CHECK(PlanItemFollow(wr).actions.empty());
+        FollowInput pr = gone_src(true);
+        pr.rec.events[0].placed[0].offset_s = -0.1;
+        pr.owner_positions.push_back({kOwner, 9.0});
+        CHECK(PlanItemFollow(pr).actions.empty());
+        // An attached sound: inside the copy's span, and only when alone.
+        FollowInput at = gone_src(false);
+        at.rec.events[0].placed[0].own = Ownership::Attached;
+        at.strays[1].pos = 22.5;
+        const FollowPlan u = PlanItemFollow(at);
+        CHECK(Count(u, FollowKind::Remove) == 0 && u.record.events[0].placed.size() == 1 &&
+              u.record.events[0].placed[0].item_guid == "{A3}");
+        FollowInput at2 = at;
+        FollowItemFacts c2 = at.strays[1];
+        c2.item_guid = "{A4}";
+        c2.pos = 23.0;
+        at2.strays.push_back(c2);
+        CHECK(PlanItemFollow(at2).record.events[0].placed.empty());
+        at.strays[1].pos = 30.0;  // outside the copy
+        CHECK(PlanItemFollow(at).record.events[0].placed.empty());
+    }
+    // Fix C, review 2 (2): an animation item gone and back (undo, redo) appears again.
+    {
+        std::set<std::string> seen;
+        std::vector<bool>     a = UpdateSeenOwners(&seen, {"{A}"}, false);
+        CHECK(a.size() == 1 && !a[0]);
+        a = UpdateSeenOwners(&seen, {"{A}", "{X}"}, true);
+        CHECK(!a[0] && a[1]);
+        a = UpdateSeenOwners(&seen, {"{A}"}, true);  // the paste undone
+        CHECK(!a[0] && seen.size() == 1);
+        a = UpdateSeenOwners(&seen, {"{A}", "{X}"}, true);  // redone: appears again
+        CHECK(!a[0] && a[1]);
+
+        // Cut and paste, the paste undone (X1 waits for a paste, as the cut is the last undo point
+        // again), then redone: X1 comes back as REAPER's redo has it (its record lists A's sound
+        // items, its pasted sound items tagged for A). It matches the GUID it had (A), not itself.
+        const MoveCandidate x1{"{X1}", "rules A", "a.fbx", {"{S1P}"}, {"{X1}", kOwner}};
+        const MoveCandidate a1{kOwner, "rules A", "a.fbx", {"{S1}"}, {"{X1}", kOwner}};
+        const MoveCandidate redo{"{X1}", "rules A", "a.fbx", {"{S1}"}, {}};
+        const auto pr = MatchMovedOwners({x1, a1}, {redo});
+        CHECK(pr.size() == 1 && pr[0].first == 1 && pr[0].second == 0);
+        FollowInput in = OneSound(Ownership::Populated);
+        in.owner_guid = "{X1}";
+        in.appeared = true;
+        in.moved_from = kOwner;
+        in.moved_delta = 5.0;
+        in.events = {Ev("r1", 1.0, 15.0)};
+        in.moved_items = {Fact("{A}", 9.9, true, 9.9, 10.0)};
+        in.strays = {Fact("{S1P}", 14.9, true, 9.9, 10.0)};  // tagged for kOwner
+        const FollowPlan p = PlanItemFollow(in);
+        CHECK(!p.populate_copy && p.record.events[0].placed.size() == 1 && p.record.events[0].placed[0].item_guid == "{S1P}");
+        CHECK(Find(p, FollowKind::Retag) && Find(p, FollowKind::Retag)->tag_owner == "{X1}");
+        // The cut undone: A back, matched with itself (nothing moved).
+        const MoveCandidate back{kOwner, "rules A", "a.fbx", {"{S1}"}, {kOwner}};
+        CHECK(MatchMovedOwners({a1}, {back}).size() == 1);
+
+        // Copy and paste (Keep the draw on), undone, redone: the redo appears again and adopts
+        // the pasted sound items again, as the first paste did.
+        std::set<std::string> seen2 = {kOwner};
+        CHECK(UpdateSeenOwners(&seen2, {kOwner, "{COPY}"}, true)[1]);
+        CHECK(!UpdateSeenOwners(&seen2, {kOwner}, true)[0]);
+        const std::vector<bool> again = UpdateSeenOwners(&seen2, {kOwner, "{COPY}"}, true);
+        FollowInput cp = OneSound(Ownership::Populated);
+        cp.owner_guid = "{COPY}";
+        cp.appeared = again[1];
+        cp.keep_draw = true;
+        cp.owner_pos = 20.0;
+        cp.owner_positions = {{kOwner, 9.0}, {"{COPY}", 20.0}};
+        cp.events = {Ev("r1", 1.0, 21.0)};
+        cp.items = {Fact("{A}", 9.9, true, 9.9, 10.0)};
+        FollowItemFacts c = Fact("{A2}", 20.9, true, 9.9, 10.0);
+        cp.strays = {c};
+        const FollowPlan cq = PlanItemFollow(cp);
+        CHECK(!cq.populate_copy && cq.record.events[0].placed.size() == 1 && cq.record.events[0].placed[0].item_guid == "{A2}");
+    }
+    // Fix C, review 2 (3+4): a selection undo point keeps a cut waiting; localized names.
+    {
+        CHECK(IsSelectionUndoName("Change media item selection"));
+        CHECK(IsSelectionUndoName("Unselect all items"));
+        CHECK(IsSelectionUndoName("SELECT ALL ITEMS"));
+        CHECK(IsSelectionUndoName("Modifier la s\xC3\xA9lection des \xC3\xA9l\xC3\xA9ments"));
+        CHECK(IsSelectionUndoName("S\xC3\x89LECTION"));
+        CHECK(!IsSelectionUndoName("Move items"));
+        CHECK(!IsSelectionUndoName(nullptr));
+        CHECK(IsSelectionUndoName("Auswahl ge\xC3\xA4ndert", {"Auswahl"}));
+        CHECK(!IsSelectionUndoName("Auswahl ge\xC3\xA4ndert"));
+        CHECK(IsCutUndoName("Couper les \xC3\xA9l\xC3\xA9ments"));
+        CHECK(!IsCutUndoName("D\xC3\xA9" "couper"));
+        CHECK(!IsCutUndoName("Elemente ausschneiden"));
+        CHECK(IsCutUndoName("Elemente ausschneiden", {"Ausschneiden"}));
+        CHECK(!IsCutUndoName("Elemente einf\xC3\xBCgen", {"Ausschneiden", ""}));
     }
 
     if (g_fail) {

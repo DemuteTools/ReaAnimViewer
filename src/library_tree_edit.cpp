@@ -938,17 +938,33 @@ bool RenameRow(SoundStore& store, const std::string& lib_uid, const LibraryRow& 
     });
 }
 
+std::string RowTypeNode(const SoundLibrary& lib, const LibraryRow& row)
+{
+    const std::string n = RowNode(lib, row);
+    const SoundNode* nn = n.empty() ? nullptr : FindNode(lib, n);
+    if (nn && IsContainer(*nn)) return n;
+    if (RowIsValue(lib, row)) {
+        const SoundNode* sw = FindNode(lib, row.parent);
+        if (sw && sw->type == SoundNodeType::Switch) return sw->uid;
+    }
+    return {};
+}
+
 bool SetRowsType(SoundStore& store, const std::string& lib_uid, const std::vector<LibraryRow>& rows, SoundNodeType type,
                  const std::string& group_uid)
 {
     return Transact(store, [&](SoundStore& s) {
         SoundLibrary* lib = FindLibrary(s, lib_uid);
         if (!lib) return false;
-        bool any = false;
+        // Resolved before any conversion: a converted Switch's value rows change meaning.
+        std::vector<std::string> targets;
         for (const LibraryRow& r : rows) {
-            std::string n = RowNode(*lib, r);
-            if (!n.empty() && ConvertNodeType(*lib, n, type, group_uid, s)) any = true;
+            std::string n = RowTypeNode(*lib, r);
+            if (!n.empty() && std::find(targets.begin(), targets.end(), n) == targets.end()) targets.push_back(n);
         }
+        bool any = false;
+        for (const std::string& n : targets)
+            if (ConvertNodeType(*lib, n, type, group_uid, s)) any = true;
         return any;
     });
 }

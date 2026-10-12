@@ -111,7 +111,11 @@ bool GroupRows(SoundStore& store, const std::string& lib_uid, const std::vector<
 bool DuplicateRows(SoundStore& store, const std::string& lib_uid, const std::vector<LibraryRow>& rows,
                    std::vector<std::string>* created);
 bool RenameRow(SoundStore& store, const std::string& lib_uid, const LibraryRow& row, const std::string& name);
-// Changes the rows' containers' type (ConvertNodeType); Sounds are skipped.
+// The container a row's type change acts on: the row's own container; a Switch value row playing a
+// Sound or nothing acts on its Switch (a select-all over Switch rows also holds their value rows).
+// "" = none (a Sound row, the Unassigned / add-value / hint rows).
+std::string RowTypeNode(const SoundLibrary& lib, const LibraryRow& row);
+// Changes the rows' containers' type (ConvertNodeType, RowTypeNode); Sounds are skipped.
 bool SetRowsType(SoundStore& store, const std::string& lib_uid, const std::vector<LibraryRow>& rows, SoundNodeType type,
                  const std::string& group_uid);
 // A value row becomes its Switch's default (one per Switch).

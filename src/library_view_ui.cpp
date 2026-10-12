@@ -25,9 +25,11 @@
 namespace rav {
 namespace {
 
-// DECISIONS.md section 1: default widths 16 / 22 / 32 / 30 %, minimum 180 / 220 / 300 / 280 px.
+// DECISIONS.md section 1: default widths 16 / 22 / 32 / 30 %. Minimums lowered (13-7a bug 1) to
+// 150 / 190 / 260 / 240 px: the column contents wrap and ellipsize down to these, so a narrow
+// REAPER dock keeps all four columns instead of scrolling them off.
 constexpr float kColumnShare[4] = {0.16f, 0.22f, 0.32f, 0.30f};
-constexpr float kColumnMin[4] = {180.0f, 220.0f, 300.0f, 280.0f};
+constexpr float kColumnMin[4] = {150.0f, 190.0f, 260.0f, 240.0f};
 constexpr float kColumnGap = 6.0f;
 constexpr float kStripWidth = 28.0f;
 constexpr double kToastSeconds = 5.0;

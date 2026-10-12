@@ -232,6 +232,21 @@ void DrawTypeIcon(ImDrawList* dl, ImVec2 p, float s, SoundNodeType t, bool hot)
 }
 
 // A SolidButton with a small down arrow after its label (a menu opens on click).
+// Bug 1 (13-7a): a row of buttons wraps instead of being cut off when its column is narrow.
+float ButtonWidth(const char* label)
+{
+    return ImGui::CalcTextSize(label, nullptr, true).x + 2.0f * ImGui::GetStyle().FramePadding.x;
+}
+
+float MenuButtonWidth(const char* label) { return ButtonWidth((std::string(label) + "    ").c_str()); }
+
+// SameLine when the next item (`next_w` wide) still fits after the last one, else a new line.
+void SameLineIfFits(float next_w)
+{
+    const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;  // the line's end
+    if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + next_w <= right) ImGui::SameLine();
+}
+
 bool MenuButton(const char* label, bool enabled = true)
 {
     std::string l = std::string(label) + "    ";
@@ -455,6 +470,25 @@ void DoWrap(const std::vector<LibraryRow>& rows, SoundNodeType type, const std::
         FocusNew(lib_uid, made, false);
 }
 
+// The batch "Switch on <group>": a toast says why when nothing changed (bug 3: never silent).
+void BatchSwitchOn(const std::vector<LibraryRow>& rows, const std::string& group_uid)
+{
+    const std::string lib_uid = g.lib;
+    if (Gesture("Make it Switch",
+                [&](SoundStore& s) { return SetRowsType(s, lib_uid, rows, SoundNodeType::Switch, group_uid); }))
+        return;
+    const SoundStore& store = GetSoundStore(nullptr);
+    const SoundLibrary* lib = FindLibrary(store, lib_uid);
+    const SwitchGroup* gr = FindGroup(store, group_uid);
+    bool any_container = false;
+    for (const LibraryRow& r : rows)
+        if (lib && !RowTypeNode(*lib, r).empty()) any_container = true;
+    ShowLibraryToast(!gr ? std::string("That Switch Group no longer exists")
+                     : any_container ? "Already Switch on " + gr->name
+                                     : std::string("Select containers (Random, Blend, Switch): sounds have no type to change"),
+                     false);
+}
+
 void DoMakeDefault(const std::vector<LibraryRow>& rows)
 {
     const std::string lib_uid = g.lib;
@@ -493,7 +527,7 @@ void TypeMenu(const std::vector<LibraryRow>& rows)
     if (ImGui::MenuItem("Blend")) DoSetType(rows, SoundNodeType::Blend, {});
     if (ImGui::BeginMenu("Switch on")) {
         const std::string gid = GroupMenuItems(false, nullptr);
-        if (!gid.empty()) DoSetType(rows, SoundNodeType::Switch, gid);
+        if (!gid.empty()) BatchSwitchOn(rows, gid);
         ImGui::EndMenu();
     }
 }
@@ -570,7 +604,7 @@ void RowMenu(const SoundLibrary& lib)
     }
     if (is_switch && ImGui::BeginMenu("Change switch group")) {
         const std::string gid = GroupMenuItems(false, nullptr);
-        if (!gid.empty()) DoSetType(rows, SoundNodeType::Switch, gid);
+        if (!gid.empty()) BatchSwitchOn(rows, gid);
         ImGui::EndMenu();
     }
     ImGui::Separator();
@@ -618,6 +652,60 @@ void RowDragSource(const SoundLibrary& lib, const TreeRow& r)
     ImGui::SetDragDropPayload(kRowsPayload, &dummy, sizeof(dummy));
     ImGui::TextUnformatted(DragGhost(lib, g.drag_rows).c_str());
     ImGui::EndDragDropSource();
+}
+
+// Bug 6: a Media Explorer drag (LibraryTreeHooks::media_payload_type, set by the media panel) onto
+// a row or the empty space (the root): highlighted while over it, handed to media_drop on release.
+// Called inside BeginDragDropTarget. The hooks are read now, so their set-up order does not matter.
+void MediaDropOn(const std::string& lib_uid, const LibraryRow& row, ImVec2 p0, ImVec2 p1)
+{
+    const LibraryTreeHooks& h = g.hooks;
+    if (h.media_payload_type.empty() || !h.media_drop) return;
+    const ImGuiPayload* pl = ImGui::GetDragDropPayload();
+    if (!pl || !pl->IsDataType(h.media_payload_type.c_str())) return;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(p0, p1, ui::kAccentSoft, ui::kRadiusSm);
+    dl->AddRect(p0, p1, ui::kAccent, ui::kRadiusSm, 0, 1.5f);
+    if (const ImGuiPayload* mp = ImGui::AcceptDragDropPayload(h.media_payload_type.c_str(),
+                                                              ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
+        const auto drop = h.media_drop;  // the hook may replace the hooks
+        drop(lib_uid, row, mp->Data, mp->DataSize);
+        g.changed = true;  // the hook may have rewritten the store
+    }
+}
+
+// Rows dragged onto the empty space below the rows: into the root (a Switch root has no "into").
+void EmptySpaceDropTarget(const SoundLibrary& lib)
+{
+    const float avail = ImGui::GetContentRegionAvail().y;
+    const float h = std::max(ImGui::GetFrameHeight() * 2.0f, avail);
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(ImVec2(std::max(1.0f, ImGui::GetContentRegionAvail().x), h));
+    if (!ImGui::BeginDragDropTarget()) return;
+    const ImVec2 p1 = ImGui::GetItemRectMax();
+    const LibraryRow root_row{"", lib.root};
+    const ImGuiPayload* pl = ImGui::GetDragDropPayload();
+    if (pl && pl->IsDataType(kRowsPayload)) {
+        DropTarget to;
+        to.lib = lib.uid;
+        to.row = root_row;
+        to.mode = DropMode::Into;
+        if (CanDrop(GetSoundStore(nullptr), g.drag_lib, g.drag_rows, to)) {
+            ImGui::GetWindowDrawList()->AddRect(p0, p1, ui::kAccent, ui::kRadiusSm, 0, 1.5f);
+            if (ImGui::AcceptDragDropPayload(kRowsPayload, ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
+                const std::string src = g.drag_lib;
+                const std::vector<LibraryRow> rows = g.drag_rows;
+                const std::string lib_uid = lib.uid;
+                std::vector<std::string> moved;
+                if (Gesture("Move", [&](SoundStore& s) { return MoveRows(s, src, rows, to, &moved); }))
+                    FocusNew(lib_uid, moved, false);
+                g.drag_rows.clear();
+            }
+        }
+    } else {
+        MediaDropOn(lib.uid, root_row, p0, p1);
+    }
+    ImGui::EndDragDropTarget();
 }
 
 void RowDropTarget(const SoundLibrary& lib, const TreeRow& r, ImVec2 p0, ImVec2 p1)
@@ -677,11 +765,8 @@ void RowDropTarget(const SoundLibrary& lib, const TreeRow& r, ImVec2 p0, ImVec2 
         } else {
             dl->AddRectFilled(p0, p1, ui::kHover);  // greyed: cannot drop here
         }
-    } else if (!g.hooks.media_payload_type.empty() && g.hooks.media_drop) {
-        if (const ImGuiPayload* mp = ImGui::AcceptDragDropPayload(g.hooks.media_payload_type.c_str())) {
-            g.hooks.media_drop(lib.uid, r.row, mp->Data, mp->DataSize);
-            g.changed = true;  // the hook may have rewritten the store
-        }
+    } else {
+        MediaDropOn(lib.uid, r.row, p0, p1);
     }
     ImGui::EndDragDropTarget();
 }
@@ -726,25 +811,26 @@ void Toolbar(const SoundLibrary& lib)
 {
     ToolbarAdd(lib, SoundNodeType::Sound, "+ Sound");
     if (g.changed) return;
-    ImGui::SameLine();
+    SameLineIfFits(ButtonWidth("+ Random"));
     ToolbarAdd(lib, SoundNodeType::Random, "+ Random");
     if (g.changed) return;
-    ImGui::SameLine();
+    SameLineIfFits(ButtonWidth("+ Blend"));
     ToolbarAdd(lib, SoundNodeType::Blend, "+ Blend");
     if (g.changed) return;
-    ImGui::SameLine();
+    SameLineIfFits(MenuButtonWidth("+ Switch"));
     ToolbarAdd(lib, SoundNodeType::Switch, "+ Switch");
     if (g.changed) return;
     if (g.sel.size() > 1) {
-        ImGui::SameLine();
-        ImGui::TextColored(ui::Col(ui::kAccent), "\xC2\xBB %d", static_cast<int>(g.sel.size()));
+        const std::string cnt = "\xC2\xBB " + std::to_string(g.sel.size());
+        SameLineIfFits(ImGui::CalcTextSize(cnt.c_str()).x);
+        ImGui::TextColored(ui::Col(ui::kAccent), "%s", cnt.c_str());
         Tip("The + buttons add one to each selected row");
     }
-    ImGui::SameLine();
     int with_node = 0;
     for (const LibraryRow& r : g.sel)
         if (!RowNode(lib, r).empty()) ++with_node;
     const std::string wl = with_node > 1 ? "Group (" + std::to_string(with_node) + ")" : std::string("Wrap");
+    SameLineIfFits(MenuButtonWidth(wl.c_str()));
     if (MenuButton(wl.c_str(), with_node > 0)) ImGui::OpenPopup("##tbwrap");
     Tip(with_node > 1 ? "Groups the selected rows into a new Random or Blend"
                       : with_node ? "Wraps the selected row in a new Random or Blend"
@@ -756,7 +842,7 @@ void Toolbar(const SoundLibrary& lib)
         WrapMenu(rows);
         ImGui::EndPopup();
     }
-    ImGui::SameLine();
+    SameLineIfFits(ImGui::CalcTextSize("(?)").x);
     HelpMark();
 }
 
@@ -1003,16 +1089,18 @@ void EmptyLibraryHint(const SoundLibrary& lib)
     const char* t = "This library is empty. Add a first sound:";
     const float w = ImGui::GetContentRegionAvail().x;
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (w - ImGui::CalcTextSize(t).x) * 0.5f));
+    ImGui::PushTextWrapPos(0.0f);
     ImGui::TextDisabled("%s", t);
+    ImGui::PopTextWrapPos();
     const float bw = 4.0f * 80.0f + 3.0f * ImGui::GetStyle().ItemSpacing.x;
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (w - bw) * 0.5f));
     (void)lib;
     if (ui::SolidButton("+ Sound##hint", ImVec2(80.0f, 0.0f))) DoAdd(SoundNodeType::Sound, {});
-    ImGui::SameLine();
+    SameLineIfFits(80.0f);
     if (ui::SolidButton("+ Random##hint", ImVec2(80.0f, 0.0f))) DoAdd(SoundNodeType::Random, {});
-    ImGui::SameLine();
+    SameLineIfFits(80.0f);
     if (ui::SolidButton("+ Blend##hint", ImVec2(80.0f, 0.0f))) DoAdd(SoundNodeType::Blend, {});
-    ImGui::SameLine();
+    SameLineIfFits(80.0f);
     if (ui::SolidButton("+ Switch##hint", ImVec2(80.0f, 0.0f))) ImGui::OpenPopup("##hintswitch");
     if (ImGui::BeginPopup("##hintswitch")) {
         bool ng = false;
@@ -1164,18 +1252,24 @@ void DrawSwitchGroupsSection()
                 }
                 open = ImGui::GetStateStorage()->GetBool(ImGui::GetID("##grp"), true);
             } else {
+                const ImVec2 hp = ImGui::GetCursorScreenPos();
+                const float bw = ButtonWidth("+") + ImGui::GetStyle().ItemSpacing.x + ButtonWidth("\xC3\x97");
                 ImGui::SetNextItemAllowOverlap();
                 ImGui::SetNextItemOpen(ImGui::GetStateStorage()->GetBool(ImGui::GetID("##grp"), true), ImGuiCond_Once);
                 open = ImGui::TreeNodeEx("##grp", ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DefaultOpen |
                                                       ImGuiTreeNodeFlags_NoTreePushOnOpen,
-                                         "%s", gr.name.c_str());
+                                         "%s", "");
+                const float gty = (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y - ImGui::GetTextLineHeight()) * 0.5f;
+                ui::EllipsisText(ImGui::GetWindowDrawList(), ImVec2(hp.x + ImGui::GetTreeNodeToLabelSpacing(), gty),
+                                 hp.x + w - bw - 6.0f, ui::kText, gr.name);
                 if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                     g.rename = RenameKind::Group;
                     g.r_a = gr.uid;
                     std::snprintf(g.buf, sizeof(g.buf), "%s", gr.name.c_str());
                     g.r_focus = true;
                 }
-                ImGui::SameLine(w - 40.0f);
+                ImGui::SameLine();
+                ImGui::SetCursorScreenPos(ImVec2(std::max(hp.x, hp.x + w - bw), hp.y));
                 if (ImGui::SmallButton("+")) {
                     std::string vid;
                     const std::string gid = gr.uid;
@@ -1217,9 +1311,12 @@ void DrawSwitchGroupsSection()
                             break;
                         }
                     } else {
+                        const ImVec2 vp = ImGui::GetCursorScreenPos();
+                        const float xw = ButtonWidth("\xC3\x97");
                         ImGui::SetNextItemAllowOverlap();
-                        ImGui::Selectable(v.name.c_str(), false, ImGuiSelectableFlags_AllowDoubleClick,
-                                          ImVec2(std::max(1.0f, vw - 24.0f), 0.0f));
+                        ImGui::Selectable("##val", false, ImGuiSelectableFlags_AllowDoubleClick,
+                                          ImVec2(std::max(1.0f, vw - xw - 4.0f), 0.0f));
+                        ui::EllipsisText(ImGui::GetWindowDrawList(), vp, vp.x + vw - xw - 6.0f, ui::kText, v.name);
                         if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                             g.rename = RenameKind::Value;
                             g.r_a = gr.uid;
@@ -1227,7 +1324,8 @@ void DrawSwitchGroupsSection()
                             std::snprintf(g.buf, sizeof(g.buf), "%s", v.name.c_str());
                             g.r_focus = true;
                         }
-                        ImGui::SameLine(vw - 18.0f);
+                        ImGui::SameLine();
+                        ImGui::SetCursorScreenPos(ImVec2(std::max(vp.x, vp.x + vw - xw), vp.y));
                         if (ImGui::SmallButton("\xC3\x97")) {
                             del_value_group = gr.uid;
                             del_value = v.uid;
@@ -1295,7 +1393,11 @@ void DrawLibraryTree()
             ImGui::EndPopup();
         }
     } else {
-        ImGui::TextUnformatted(lib->name.c_str());
+        const ImVec2 np = ImGui::GetCursorScreenPos();
+        const float nw = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+        ImGui::Dummy(ImVec2(nw, ImGui::GetTextLineHeight()));
+        ui::EllipsisText(ImGui::GetWindowDrawList(), np, np.x + nw, ui::kText, lib->name);
+        if (ImGui::IsItemHovered() && ImGui::CalcTextSize(lib->name.c_str()).x > nw) ImGui::SetTooltip("%s", lib->name.c_str());
     }
     lib = CurrentLib();
     if (!lib) {
@@ -1347,6 +1449,8 @@ void DrawLibraryTree()
         const SoundNode* root = lib ? FindNode(*lib, lib->root) : nullptr;
         if (!g.changed && root && root->type != SoundNodeType::Switch && ChildrenOf(*lib, root->uid).empty())
             EmptyLibraryHint(*lib);
+        lib = FindLibrary(GetSoundStore(nullptr), g.lib);
+        if (!g.changed && lib && FindNode(*lib, lib->root)) EmptySpaceDropTarget(*lib);
         if (!ImGui::GetDragDropPayload()) g.hover_uid.clear();
         if (g.open_row_menu) {
             ImGui::OpenPopup("##rowmenu");
@@ -1376,7 +1480,8 @@ void DrawLibraryBatchPanel()
     int values = 0;
     for (const LibraryRow& r : rows) {
         if (RowIsValue(*lib, r)) ++values;
-        const SoundNode* n = FindNode(*lib, RowNode(*lib, r));
+        // Bug 3: a Switch's value rows (a select-all) act on their Switch, as SetRowsType does.
+        const SoundNode* n = FindNode(*lib, RowTypeNode(*lib, r));
         if (!n || n->type == SoundNodeType::Sound) continue;
         const int t = n->type == SoundNodeType::Random ? 0 : n->type == SoundNodeType::Blend ? 1 : 2;
         if (common == -2) {
@@ -1392,19 +1497,29 @@ void DrawLibraryBatchPanel()
         int sel = common >= 0 ? common : -1;
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted("Type");
-        ImGui::SameLine();
+        float seg_w = 2.0f;
+        for (const char* t : kTypes) seg_w += ImGui::CalcTextSize(t).x + 26.0f;
+        SameLineIfFits(seg_w);
+        const int was = sel;
         if (ui::Segmented("##batchtype", kTypes, 3, &sel)) {
             if (sel == 0) DoSetType(rows, SoundNodeType::Random, {});
             else if (sel == 1) DoSetType(rows, SoundNodeType::Blend, {});
             else ImGui::OpenPopup("##batchswitch");
+        } else if (was == 2 && ImGui::IsMouseReleased(ImGuiMouseButton_Left) && ImGui::IsItemHovered() &&
+                   !ImGui::IsPopupOpen("##batchswitch") &&
+                   ImGui::IsMouseHoveringRect(ImVec2(ImGui::GetItemRectMax().x - (ImGui::CalcTextSize(kTypes[2]).x + 26.0f),
+                                                     ImGui::GetItemRectMin().y),
+                                              ImGui::GetItemRectMax())) {
+            // Bug 3: all already Switch, the segment does not "change": it still picks the group.
+            ImGui::OpenPopup("##batchswitch");
         }
         if (common == -1) {
-            ImGui::SameLine();
+            SameLineIfFits(ImGui::CalcTextSize("mixed").x);
             ImGui::TextDisabled("mixed");
         }
         if (ImGui::BeginPopup("##batchswitch")) {
             const std::string gid = GroupMenuItems(false, nullptr);
-            if (!gid.empty()) DoSetType(rows, SoundNodeType::Switch, gid);
+            if (!gid.empty()) BatchSwitchOn(rows, gid);
             ImGui::EndPopup();
         }
         const SwitchGroup* cg = common == 2 ? FindGroup(store, common_group) : nullptr;
@@ -1413,9 +1528,10 @@ void DrawLibraryBatchPanel()
         Tip("Also converts the Random and Blend containers");
         if (ImGui::BeginPopup("##batchswitch2")) {
             const std::string gid = GroupMenuItems(false, nullptr);
-            if (!gid.empty()) DoSetType(rows, SoundNodeType::Switch, gid);
+            if (!gid.empty()) BatchSwitchOn(rows, gid);
             ImGui::EndPopup();
         }
+        SameLineIfFits(MenuButtonWidth("Put into"));
         if (MenuButton("Put into")) ImGui::OpenPopup("##putinto");
         if (ImGui::BeginPopup("##putinto")) {
             if (ImGui::MenuItem("New Random")) DoWrap(rows, SoundNodeType::Random, {});
@@ -1444,6 +1560,7 @@ void DrawLibraryBatchPanel()
             ImGui::EndPopup();
         }
         if (values == 0) ImGui::BeginDisabled();
+        SameLineIfFits(ButtonWidth("Make them default"));
         if (ui::SolidButton("Make them default")) DoMakeDefault(rows);
         if (values == 0) ImGui::EndDisabled();
         Tip(values ? "One default per Switch" : "Select Switch value rows first");

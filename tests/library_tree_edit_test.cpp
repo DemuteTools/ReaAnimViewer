@@ -426,6 +426,46 @@ static void TestShiftRangeUpward()
     CHECK(r.size() == 3 && r[0] == (LibraryRow{"sw", "vwood"}));
 }
 
+// Bug 3 (13-7a): several Switch rows, batch "Switch on" a group created just before (no value yet,
+// then with values): every selected Switch moves to it; value rows in the selection act on their
+// Switch.
+static void TestBatchSwitchOnNewGroup()
+{
+    SoundStore s = Store();
+    SoundLibrary l;
+    l.uid = "B";
+    l.name = "Batch";
+    l.root = "rr";
+    SoundNode s1 = Node("s1", "rr", SoundNodeType::Switch, "S1");
+    s1.group_uid = "gmat";
+    s1.cases = {{"vwood", "a", {}}};
+    SoundNode s2 = Node("s2", "rr", SoundNodeType::Switch, "S2");
+    s2.group_uid = "gmat";
+    s2.cases = {{"vconc", "b", {}}};
+    l.nodes = {Node("rr", "", SoundNodeType::Random, "Root"), s1, Node("a", "s1", SoundNodeType::Sound, "Wood"), s2,
+               Node("b", "s2", SoundNodeType::Sound, "Concrete")};
+    s.libraries.push_back(l);
+    std::string gid;
+    CHECK(AddGroup(s, "Material", &gid));
+    CHECK(!gid.empty() && FindGroup(s, gid)->name == "Material 2");
+    // A group with no value yet.
+    SoundStore t = s;
+    CHECK(SetRowsType(t, "B", {{"rr", "s1"}, {"rr", "s2"}}, SoundNodeType::Switch, gid));
+    CHECK(N(t, "B", "s1")->group_uid == gid && N(t, "B", "s2")->group_uid == gid);
+    CHECK(Has(N(t, "B", "s1")->unassigned, "a") && Has(N(t, "B", "s2")->unassigned, "b"));
+    // With values: matched by name.
+    std::string vw, vc;
+    CHECK(AddValue(s, gid, "Wood", &vw));
+    CHECK(AddValue(s, gid, "Concrete", &vc));
+    t = s;
+    CHECK(SetRowsType(t, "B", {{"rr", "s1"}, {"rr", "s2"}}, SoundNodeType::Switch, gid));
+    CHECK(Case(t, "B", "s1", vw.c_str()) == "a" && Case(t, "B", "s2", vc.c_str()) == "b");
+    // The selection holds value rows too (select-all): they convert their Switch.
+    t = s;
+    CHECK(SetRowsType(t, "B", {{"s1", "vwood"}, {"s2", "vconc"}}, SoundNodeType::Switch, gid));
+    CHECK(N(t, "B", "s1")->group_uid == gid && N(t, "B", "s2")->group_uid == gid);
+}
+
 int main()
 {
     TestDeleteDefaultValue();
@@ -443,6 +483,7 @@ int main()
     TestWrapValueRow();
     TestDeleteValueEverySwitch();
     TestShiftRangeUpward();
+    TestBatchSwitchOnNewGroup();
     if (g_fail) {
         std::printf("library_tree_edit_test: %d failure(s)\n", g_fail);
         return 1;

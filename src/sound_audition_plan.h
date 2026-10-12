@@ -47,6 +47,10 @@ struct AuditionVoice {
     double                   length_s = 0.0;
     double                   delay_ms = 0.0; // Blend offsets below the auditioned node
     double                   gain_db = 0.0;  // volumes from the library root + the frame's db
+    double                   fade_in_s = 0.0;   // the variation's fades as placed (AuditionFades)
+    double                   fade_out_s = 0.0;
+    int                      fade_in_shape = 0;
+    int                      fade_out_shape = 0;
     std::vector<std::string> path;           // uids from the auditioned node's child to the Sound
 };
 
@@ -56,6 +60,18 @@ struct AuditionPlan {
     std::string                played;  // "Layer 2 › grass_b + Sound A", "nothing" when no voice
     double                     length_ms = 0.0;  // max delay + length
 };
+
+// Antho 2026-10-12: the fades an audition of variation i plays, the same as Populate places
+// (FadeApplyFor): the frame's own or the Sound's default fade; a Whole-item Sound only its own (the
+// placed copy keeps its source item's fades, which an audition of the file does not read).
+// A folder-pile source: none (its placed members keep their own fades).
+void AuditionFades(const SoundData& data, int i, double* in_s, double* out_s, int* in_shape, int* out_shape,
+                   bool folder_source = false);
+// The gain of a voice's fades at `t` s into it (0..1): ramps up over `in` s from its start and down
+// over `out` s to its `length` (in + out clamped to it; 1 between). Shapes = REAPER's index (0 linear,
+// 1 / 3 fast start, 2 / 4 fast end, 5 S-curve; anything else linear). No allocation: the audio thread
+// calls it per sample.
+double FadeGainAt(double t, double length, double in, double out, int in_shape = 0, int out_shape = 0);
 
 // What one press plays (decisions 5-6). A child with no active variation is skipped.
 AuditionPlan PlanAudition(const SoundStore& store, const SoundLibrary& lib, const std::string& node_uid,

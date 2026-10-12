@@ -106,6 +106,53 @@ int main()
     CHECK(LibrarySourcePosition(30.0, true, 34.5) == 35.5);  // after the last library source, past the content
     CHECK(LibrarySourcePosition(80.0, true, 34.5) == 81.0);  // the content grew past the sources: never inside it
 
+    // Antho 2026-10-12: the fades a placed variation sets.
+    {
+        SoundData d;
+        d.mode = DetectMode::Silence;
+        SoundFrame f;
+        f.start = 1.0;
+        f.length = 0.5;
+        d.frames = {f};
+        FadeApply fa = FadeApplyFor(d, 0);  // a slice: the Sound's default on both sides
+        CHECK(fa.set_in && fa.set_out && Near(fa.in, 0.001) && Near(fa.out, 0.005) && fa.in_shape == 0);
+        CHECK(fa.shape_in && fa.shape_out);  // a slice writes its shapes
+        fa = FadeApplyFor(d, 0, true);       // a folder-pile source: no fades placed
+        CHECK(!fa.set_in && !fa.set_out);
+        CHECK(!FadeApplyFor(d, 1).set_in && !FadeApplyFor(d, -1).set_out);  // out of range: nothing
+        d.frames[0].fade_out = 0.1;
+        d.frames[0].fade_out_shape = 2;
+        fa = FadeApplyFor(d, 0);
+        CHECK(Near(fa.out, 0.1) && fa.out_shape == 2 && Near(fa.in, 0.001));
+        d.mode = DetectMode::Takes;  // a take too
+        CHECK(FadeApplyFor(d, 0).set_in && FadeApplyFor(d, 0).set_out);
+        // A Whole-item Sound keeps its item's own fades, except a side set by hand.
+        d.mode = DetectMode::Whole;
+        fa = FadeApplyFor(d, 0);
+        CHECK(!fa.set_in && fa.set_out && Near(fa.out, 0.1) && fa.shape_out);
+        d.frames[0].fade_out_shape = 0;  // a hand-set length with the default shape: the item's shape kept
+        fa = FadeApplyFor(d, 0);
+        CHECK(fa.set_out && !fa.shape_out);
+        d.frames[0].fade_out = -1.0;
+        fa = FadeApplyFor(d, 0);
+        CHECK(!fa.set_in && !fa.set_out);
+        // On the item: playrate 2 halves the fades like the item; the copy's own for an unset side.
+        FadeApply x;
+        x.set_in = true;
+        x.in = 0.01;
+        double in = -1.0, out = -1.0;
+        FadesOnItem(x, 2.0, 0.25, 0.3, 0.02, &in, &out);
+        CHECK(Near(in, 0.005) && Near(out, 0.02));
+        // Clamped to the placed item's length.
+        x.set_out = true;
+        x.out = 1.0;
+        x.in = 1.0;
+        FadesOnItem(x, 1.0, 0.5, 0.0, 0.0, &in, &out);
+        CHECK(Near(in, 0.25) && Near(out, 0.25));
+        FadesOnItem(x, 0.0, 0.5, 0.0, 0.0, &in, &out);  // a bad rate reads as 1
+        CHECK(Near(in + out, 0.5));
+    }
+
     if (g_fail) {
         std::printf("sound_place_plan_test: %d failure(s)\n", g_fail);
         return 1;

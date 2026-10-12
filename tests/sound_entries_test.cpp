@@ -296,6 +296,72 @@ void TestNormalize()
     CHECK(std::isinf(FramePeakDb(p, F(5, 1))));
 }
 
+// Antho 2026-10-12: fades on each variation.
+void TestFades()
+{
+    SoundData d;
+    d.frames = {F(0, 1), F(2, 0.004)};
+    // The Sound's default (1 / 5 ms) on a frame with none of its own.
+    FrameFades f = EffectiveFades(d, d.frames[0]);
+    CHECK(Near(f.in, 0.001) && Near(f.out, 0.005) && !f.own_in && !f.own_out && f.in_shape == 0);
+    // A 4 ms frame: 1 + 5 ms scaled down together to 4 ms.
+    f = EffectiveFades(d, d.frames[1]);
+    CHECK(Near(f.in + f.out, 0.004) && Near(f.in, 0.004 / 6.0) && Near(f.out, 0.004 * 5.0 / 6.0));
+    // ClampFadePair: never negative, never past the length.
+    double a = -1.0, b = 2.0;
+    ClampFadePair(1.0, &a, &b);
+    CHECK(Near(a, 0.0) && Near(b, 1.0));
+    a = 0.5, b = 0.5;
+    ClampFadePair(0.5, &a, &b);
+    CHECK(Near(a, 0.25) && Near(b, 0.25));
+    a = 1.0, b = 1.0;
+    ClampFadePair(-3.0, &a, &b);
+    CHECK(Near(a, 0.0) && Near(b, 0.0));
+    // A hand-set fade: kept, marks hand / edited; the other side stays the default.
+    SetFrameFades(d, 0, 0.02, -1.0);
+    CHECK(Near(d.frames[0].fade_in, 0.02) && d.frames[0].fade_out < 0.0 && d.frames[0].hand && d.edited);
+    f = EffectiveFades(d, d.frames[0]);
+    CHECK(f.own_in && !f.own_out && Near(f.in, 0.02) && Near(f.out, 0.005));
+    // The dragged side gives way to the other: fade out 0.9 then fade in 0.5 on a 1 s frame.
+    SetFrameFades(d, 0, 0.02, 0.9);
+    CHECK(Near(d.frames[0].fade_out, 0.9) && Near(d.frames[0].fade_in, 0.02));
+    SetFrameFades(d, 0, 0.5, 0.9);
+    CHECK(Near(d.frames[0].fade_in, 0.1) && Near(d.frames[0].fade_out, 0.9));
+    SetFrameFades(d, 0, 0.1, 2.0);  // out dragged past: it gives way to in
+    CHECK(Near(d.frames[0].fade_in, 0.1) && Near(d.frames[0].fade_out, 0.9));
+    // Back to the default (Alt-click): < 0, shape cleared.
+    d.frames[0].fade_in_shape = 3;
+    SetFrameFades(d, 0, -1.0, 0.9);
+    CHECK(d.frames[0].fade_in < 0.0 && d.frames[0].fade_in_shape == 0 && Near(d.frames[0].fade_out, 0.9));
+    SetFrameFades(d, 7, 0.1, 0.1);  // bad index: nothing
+    // Trim keeps the own fades inside the new length.
+    SoundData t;
+    t.frames = {F(0, 1)};
+    SetFrameFades(t, 0, 0.3, 0.6);
+    TrimFrame(t, 0, 0.0, 0.5, 10.0);
+    CHECK(Near(t.frames[0].length, 0.5) && Near(t.frames[0].fade_in + t.frames[0].fade_out, 0.5) &&
+          Near(t.frames[0].fade_in, 0.5 / 3.0));
+    // Split: the left piece keeps its fade in, the right its fade out; the cut gets the default.
+    SoundData s;
+    s.frames = {F(0, 1)};
+    SetFrameFades(s, 0, 0.05, 0.2);
+    CHECK(SplitFrame(s, 0, 0.5));
+    CHECK(s.frames.size() == 2 && Near(s.frames[0].fade_in, 0.05) && s.frames[0].fade_out < 0.0 &&
+          s.frames[1].fade_in < 0.0 && Near(s.frames[1].fade_out, 0.2));
+    // Split near the start: an own fade in longer than the left piece is clamped.
+    SoundData s2;
+    s2.frames = {F(0, 1)};
+    SetFrameFades(s2, 0, 0.4, -1.0);
+    CHECK(SplitFrame(s2, 0, 0.1));
+    CHECK(Near(s2.frames[0].fade_in, 0.1));
+    // The Sound default: never negative.
+    SetDefaultFades(d, -2.0, 0.01);
+    CHECK(d.fade_in == 0.0 && Near(d.fade_out, 0.01));
+    // Zero default: no fade on a frame without its own.
+    f = EffectiveFades(d, d.frames[1]);
+    CHECK(Near(f.in, 0.0) && Near(f.out, 0.004));
+}
+
 }  // namespace
 
 int main()
@@ -308,6 +374,7 @@ int main()
     TestSilenceMerge();
     TestClampAndEdits();
     TestNormalize();
+    TestFades();
     if (g_fails) {
         std::printf("sound_entries_test: %d failure(s)\n", g_fails);
         return 1;

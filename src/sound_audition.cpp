@@ -31,6 +31,8 @@ PreviewFn        f_stop = nullptr;
 struct Voice {
     std::unique_ptr<PCM_source> src;
     double                      start = 0.0, length = 0.0, delay = 0.0, gain = 1.0;
+    double                      fade_in = 0.0, fade_out = 0.0;  // s (FadeGainAt)
+    int                         in_shape = 0, out_shape = 0;
 };
 
 class AuditionMix : public PCM_source {
@@ -85,11 +87,17 @@ public:
             tr.length = cnt;
             tr.samples = scratch_.data();
             v.src->GetSamples(&tr);
-            const int got = std::min(cnt, std::max(0, tr.samples_out));
-            for (int k = 0; k < got; ++k)
+            const int    got = std::min(cnt, std::max(0, tr.samples_out));
+            const double t_voice = a - v.delay;  // the first sample's time into the voice
+            const bool   fades = v.fade_in > 0.0 || v.fade_out > 0.0;
+            for (int k = 0; k < got; ++k) {
+                const double g = fades ? v.gain * FadeGainAt(t_voice + k / sr, v.length, v.fade_in, v.fade_out,
+                                                             v.in_shape, v.out_shape)
+                                       : v.gain;
                 for (int c = 0; c < nch; ++c)
                     block->samples[static_cast<size_t>((off + k) * nch + c)] +=
-                        scratch_[static_cast<size_t>(k * nch + c)] * v.gain;
+                        scratch_[static_cast<size_t>(k * nch + c)] * g;
+            }
         }
         block->samples_out = n;
     }
@@ -174,6 +182,10 @@ bool PlayVoices(const std::vector<PlayVoice>& voices, const std::string& tag, st
         v.length = p.length_s > 0.0 ? std::min(p.length_s, rest) : rest;
         v.delay = std::max(0.0, p.delay_s);
         v.gain = p.gain;
+        v.fade_in = std::max(0.0, p.fade_in_s);
+        v.fade_out = std::max(0.0, p.fade_out_s);
+        v.in_shape = p.fade_in_shape;
+        v.out_shape = p.fade_out_shape;
         if (v.length > 0.0) vs.push_back(std::move(v));
     }
     if (vs.empty()) {
@@ -199,13 +211,18 @@ bool PlayVoices(const std::vector<PlayVoice>& voices, const std::string& tag, st
     return true;
 }
 
-bool AuditionFile(const std::string& path, double start_s, double length_s, const std::string& tag, double gain)
+bool AuditionFile(const std::string& path, double start_s, double length_s, const std::string& tag, double gain,
+                  double fade_in_s, double fade_out_s, int fade_in_shape, int fade_out_shape)
 {
     PlayVoice v;
     v.path = path;
     v.start_s = start_s;
     v.length_s = length_s;
     v.gain = gain;
+    v.fade_in_s = fade_in_s;
+    v.fade_out_s = fade_out_s;
+    v.fade_in_shape = fade_in_shape;
+    v.fade_out_shape = fade_out_shape;
     return PlayVoices({v}, tag, nullptr);
 }
 

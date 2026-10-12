@@ -8,6 +8,7 @@
 #include <cmath>
 
 #include "sound_draw.h"
+#include "sound_entries.h"
 #include "sound_record.h"
 #include "sound_switch.h"
 
@@ -57,6 +58,8 @@ struct Walker {
             voice.length_s = f.length;
             voice.delay_ms = delay_ms;
             voice.gain_db = GainFromRoot(lib, n) + f.db;
+            AuditionFades(n.sound, v, &voice.fade_in_s, &voice.fade_out_s, &voice.fade_in_shape,
+                          &voice.fade_out_shape);
             voice.path = std::move(path);
             plan.voices.push_back(std::move(voice));
             return;
@@ -335,6 +338,61 @@ std::string VariationCountText(int detected, const std::vector<SoundFrame>& fram
     s += std::to_string(n) + (n == 1 ? " variation" : " variations");
     if (off > 0) s += " \xC2\xB7 " + std::to_string(off) + " off";
     return s;
+}
+
+void AuditionFades(const SoundData& data, int i, double* in_s, double* out_s, int* in_shape, int* out_shape,
+                   bool folder_source)
+{
+    double a = 0.0, b = 0.0;
+    int    sa = 0, sb = 0;
+    if (!folder_source && i >= 0 && i < static_cast<int>(data.frames.size())) {
+        const FrameFades f = EffectiveFades(data, data.frames[static_cast<size_t>(i)]);
+        const bool       whole = data.mode == DetectMode::Whole;
+        if (!whole || f.own_in) {
+            a = f.in;
+            sa = f.in_shape;
+        }
+        if (!whole || f.own_out) {
+            b = f.out;
+            sb = f.out_shape;
+        }
+    }
+    if (in_s) *in_s = a;
+    if (out_s) *out_s = b;
+    if (in_shape) *in_shape = sa;
+    if (out_shape) *out_shape = sb;
+}
+
+namespace {
+// A fade-in curve over x in [0, 1] (0 -> 0, 1 -> 1).
+double FadeCurve(double x, int shape)
+{
+    x = std::min(std::max(x, 0.0), 1.0);
+    switch (shape) {
+    case 1: return 1.0 - (1.0 - x) * (1.0 - x);
+    case 2: return x * x;
+    case 3: { const double y = 1.0 - x; return 1.0 - y * y * y * y; }
+    case 4: return x * x * x * x;
+    case 5: return x * x * (3.0 - 2.0 * x);
+    default: return x;
+    }
+}
+}  // namespace
+
+double FadeGainAt(double t, double length, double in, double out, int in_shape, int out_shape)
+{
+    if (!std::isfinite(t) || !std::isfinite(length) || length <= 0.0) return 1.0;
+    double a = std::isfinite(in) ? std::max(in, 0.0) : 0.0;
+    double b = std::isfinite(out) ? std::max(out, 0.0) : 0.0;
+    if (a + b > length) {
+        const double k = length / (a + b);
+        a *= k;
+        b *= k;
+    }
+    double g = 1.0;
+    if (a > 0.0 && t < a) g *= FadeCurve(t / a, in_shape);
+    if (b > 0.0 && t > length - b) g *= FadeCurve((length - t) / b, out_shape);
+    return g;
 }
 
 }  // namespace rav

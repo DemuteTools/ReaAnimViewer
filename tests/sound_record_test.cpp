@@ -373,6 +373,44 @@ int main()
         Ownership o;
         CHECK(OwnershipFromWord("attached", &o) && o == Ownership::Attached && !OwnershipFromWord("x", &o));
     }
+    // ---- Fades (Antho 2026-10-12): per frame and the Sound's default, optional fields -----------
+    {
+        // Old text (no fade field): the defaults (1 / 5 ms, no frame fade), and nothing is written.
+        SoundStore old;
+        CHECK(ParseSoundStore("RAVSOUNDS 1\nlibrary uid=l name=L root=n\nnode uid=n type=sound\nsound kind=item guid=g\n"
+                              "frame start=0 len=1\n", &old));
+        const SoundData& od = old.libraries[0].nodes[0].sound;
+        CHECK(od.fade_in == kDefaultFadeIn && od.fade_out == kDefaultFadeOut);
+        CHECK(od.frames.size() == 1 && od.frames[0].fade_in < 0.0 && od.frames[0].fade_out < 0.0 &&
+              od.frames[0].fade_in_shape == 0 && od.frames[0].fade_out_shape == 0);
+        const std::string ot = SerializeSoundStore(old);
+        CHECK(ot.find("fin=") == std::string::npos && ot.find("fout=") == std::string::npos &&
+              ot.find("fish=") == std::string::npos);
+        // Set ones round-trip.
+        SoundStore s = old;
+        SoundData& d = s.libraries[0].nodes[0].sound;
+        d.fade_in = 0.0;
+        d.fade_out = 0.012;
+        d.frames[0].fade_in = 0.002;
+        d.frames[0].fade_out = 0.0;  // a hand-set 0 (no fade) is not the default
+        d.frames[0].fade_in_shape = 1;
+        d.frames[0].fade_out_shape = 5;
+        const std::string t = SerializeSoundStore(s);
+        CHECK(t.find("sound kind=item guid=g fin=0 fout=0.012") != std::string::npos);
+        CHECK(t.find("frame start=0 len=1 fin=0.002 fout=0 fish=1 fosh=5") != std::string::npos);
+        SoundStore b;
+        CHECK(ParseSoundStore(t, &b));
+        const SoundData& bd = b.libraries[0].nodes[0].sound;
+        CHECK(bd.fade_in == 0.0 && bd.fade_out == 0.012);
+        CHECK(bd.frames[0].fade_in == 0.002 && bd.frames[0].fade_out == 0.0 && bd.frames[0].fade_in_shape == 1 &&
+              bd.frames[0].fade_out_shape == 5);
+        CHECK(SerializeSoundStore(b) == t);
+        // A bad value is kept as text and stands for the field (the default meanwhile).
+        SoundStore bad;
+        CHECK(ParseSoundStore("RAVSOUNDS 1\nlibrary uid=l name=L root=n\nnode uid=n type=sound\nsound kind=item\n"
+                              "frame start=0 len=1 fin=abc\n", &bad));
+        CHECK(bad.libraries[0].nodes[0].sound.frames[0].fade_in < 0.0);
+    }
 
     if (g_fails) {
         std::printf("sound_record_test: %d failure(s)\n", g_fails);

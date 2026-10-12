@@ -68,4 +68,25 @@ bool SplitFrame(SoundData& data, int i, double at);
 void SetFrameOn(SoundData& data, int i, bool on);
 void SetFrameDb(SoundData& data, int i, double db);
 
+// ---- Fades (Antho 2026-10-12: fade in / out on each variation, against clicks) -------------------
+// A frame's fades as heard and placed: its own (fade_in / fade_out >= 0) or else the Sound's default,
+// never negative, and in + out never past the frame's length (both scaled down together when they
+// would be). `own_*` tells whether the frame set it (a Whole-item copy keeps its item's fade when not).
+struct FrameFades {
+    double in = 0.0;
+    double out = 0.0;
+    int    in_shape = 0;
+    int    out_shape = 0;
+    bool   own_in = false;
+    bool   own_out = false;
+};
+// Clamps a fade pair into a length: each >= 0, in + out <= length (scaled down together).
+void ClampFadePair(double length, double* in, double* out);
+FrameFades EffectiveFades(const SoundData& data, const SoundFrame& frame);
+// Sets frame i's own fades (s; < 0 = back to the Sound's default for that side), clamped to its
+// length: the dragged side gives way to the other one. Marks `hand` and `data.edited`.
+void SetFrameFades(SoundData& data, int i, double in, double out);
+// The Sound's default fades (each >= 0, 0 = none).
+void SetDefaultFades(SoundData& data, double in, double out);
+
 }  // namespace rav

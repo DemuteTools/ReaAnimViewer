@@ -358,6 +358,65 @@ void TestAuditionEnded()
     CHECK(AuditionEnded(0.0, 0.0, 0.0));        // nothing to play
 }
 
+// Antho 2026-10-12: the fades an audition plays (the same as placed) and their gain ramps.
+static void TestFades()
+{
+    // Linear ramps: 0 at the start, 1 after the fade in, back to 0 at the end.
+    CHECK(Near(FadeGainAt(0.0, 1.0, 0.1, 0.2), 0.0));
+    CHECK(Near(FadeGainAt(0.05, 1.0, 0.1, 0.2), 0.5));
+    CHECK(Near(FadeGainAt(0.1, 1.0, 0.1, 0.2), 1.0));
+    CHECK(Near(FadeGainAt(0.5, 1.0, 0.1, 0.2), 1.0));
+    CHECK(Near(FadeGainAt(0.9, 1.0, 0.1, 0.2), 0.5));
+    CHECK(Near(FadeGainAt(1.0, 1.0, 0.1, 0.2), 0.0));
+    CHECK(Near(FadeGainAt(-0.1, 1.0, 0.1, 0.2), 0.0));  // outside the voice: silent
+    CHECK(Near(FadeGainAt(1.5, 1.0, 0.1, 0.2), 0.0));
+    CHECK(Near(FadeGainAt(0.0, 1.0, 0.0, 0.0), 1.0));   // no fade: full gain from the first sample
+    CHECK(Near(FadeGainAt(0.3, 0.0, 0.1, 0.1), 1.0));   // no length: untouched
+    // Longer than the voice: scaled down together (0.6 + 0.6 on 0.6 s -> 0.3 + 0.3).
+    CHECK(Near(FadeGainAt(0.15, 0.6, 0.6, 0.6), 0.5));
+    CHECK(Near(FadeGainAt(0.3, 0.6, 0.6, 0.6), 1.0));
+    // Shapes: fast start above linear, fast end below, S-curve at half = half.
+    CHECK(FadeGainAt(0.025, 1.0, 0.1, 0.0, 1) > 0.25 + 1e-6);
+    CHECK(FadeGainAt(0.025, 1.0, 0.1, 0.0, 2) < 0.25 - 1e-6);
+    CHECK(Near(FadeGainAt(0.05, 1.0, 0.1, 0.0, 5), 0.5));
+    CHECK(Near(FadeGainAt(0.05, 1.0, 0.1, 0.0, 6), 0.5));  // an unknown shape: linear
+    // Monotonic across the fade in, never above 1.
+    double prev = -1.0;
+    bool   mono = true;
+    for (int k = 0; k <= 100; ++k) {
+        const double g = FadeGainAt(0.001 * k, 1.0, 0.1, 0.1, 3, 4);
+        mono = mono && g >= prev - 1e-12 && g <= 1.0;
+        prev = g;
+    }
+    CHECK(mono);
+
+    // A voice carries its frame's fades: the default on a slice, its own where set.
+    SoundLibrary lib;
+    lib.uid = "L";
+    lib.root = "s";
+    SoundNode s = Snd("s", "", "Steps", {0.5, 0.004});
+    s.sound.mode = DetectMode::Silence;
+    s.sound.frames[0].fade_out = 0.05;
+    lib.nodes = {s};
+    SoundStore store;
+    store.libraries = {lib};
+    const AuditionPlan plan = PlanAudition(store, store.libraries[0], "s", First());
+    CHECK(plan.voices.size() == 1 && Near(plan.voices[0].fade_in_s, 0.001) && Near(plan.voices[0].fade_out_s, 0.05));
+    double in = 0, out = 0;
+    int    si = -1, so = -1;
+    AuditionFades(s.sound, 1, &in, &out, &si, &so);  // 4 ms: 1 + 5 ms scaled to 4 ms
+    CHECK(Near(in + out, 0.004) && si == 0 && so == 0);
+    AuditionFades(s.sound, 9, &in, &out, &si, &so);  // out of range: none
+    CHECK(in == 0.0 && out == 0.0);
+    // Whole file: only a fade set by hand (the placed copy keeps its item's own).
+    s.sound.mode = DetectMode::Whole;
+    AuditionFades(s.sound, 0, &in, &out, &si, &so);
+    CHECK(in == 0.0 && Near(out, 0.05));
+    s.sound.mode = DetectMode::Silence;  // a folder-pile source: no fades
+    AuditionFades(s.sound, 0, &in, &out, &si, &so, true);
+    CHECK(in == 0.0 && out == 0.0);
+}
+
 int main()
 {
     TestBlend();
@@ -371,6 +430,7 @@ int main()
     TestNormalizeOnOnly();
     TestNormalizeTakes();
     TestAuditionEnded();
+    TestFades();
     if (g_fail) {
         std::printf("%d failure(s)\n", g_fail);
         return 1;

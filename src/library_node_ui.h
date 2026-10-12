@@ -20,6 +20,7 @@
 #include <imgui.h>
 
 #include "reaper_view_keys.h"
+#include "sound_entries.h"  // FrameFades
 #include "sound_model.h"
 
 namespace rav {
@@ -41,6 +42,9 @@ struct WaveformOptions {
     bool   wheel = false;               // the wheel zooms / scrolls (see view_keys), middle-drag pans
     const ViewKeymap* view_keys = nullptr;  // the user's REAPER wheel bindings (null: Ctrl+wheel zooms, wheel scrolls)
     std::vector<bool> solid_edges;      // per frame: drawn solid (a clamped edge); may be empty
+    // Antho 2026-10-12: per frame, its fades as placed (drawn as REAPER draws an item's); empty = none.
+    // With `gestures`, a handle at each top corner drags the fade, Alt-click resets it.
+    std::vector<FrameFades> fades;
 };
 
 struct WaveformEvents {
@@ -65,6 +69,11 @@ struct WaveformEvents {
     double zoom = 1.0;          // a zoom wheel: multiply view_len by this around zoom_at
     double zoom_at = 0.0;
     double scroll_s = 0.0;      // a scroll wheel or a middle-drag: move view_start by this
+    int    fade_frame = -1;     // a fade handle drag: the frame and its own fades (s, < 0 = the default)
+    double fade_in = -1.0, fade_out = -1.0;
+    bool   fade_done = false;   // released (write it)
+    int    fade_reset = -1;     // Alt-click on a fade handle: that frame's side back to the default
+    int    fade_reset_side = 0; // -1 fade in, +1 fade out
     ImVec2 min, max;            // the waveform's rectangle
 };
 

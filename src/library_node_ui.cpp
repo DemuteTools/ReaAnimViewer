@@ -231,6 +231,14 @@ int DetectedCount(const std::string& uid, const SoundMedia& m, const SoundData& 
 
 // ---- audition -------------------------------------------------------------------------------------
 
+// A Sound whose source is an NVK folder item: its pile is placed as it is, without fades.
+bool FolderSourced(const SoundData& d)
+{
+    if (d.source.kind != SoundSourceKind::Item || d.source.item_guid.empty()) return false;
+    MediaItem* it = FindItemByGuid(d.source.item_guid);
+    return it && IsFolderItem(it);
+}
+
 void PlayNode(const std::string& lib_uid, const std::string& uid)
 {
     const SoundStore&   store = GetSoundStore(nullptr);
@@ -249,6 +257,11 @@ void PlayNode(const std::string& lib_uid, const std::string& uid)
         p.length_s = v.length_s;
         p.delay_s = v.delay_ms / 1000.0;
         p.gain = DbToGain(v.gain_db);
+        p.fade_in_s = v.fade_in_s;
+        p.fade_out_s = v.fade_out_s;
+        p.fade_in_shape = v.fade_in_shape;
+        p.fade_out_shape = v.fade_out_shape;
+        if (FolderSourced(s->sound)) p.fade_in_s = p.fade_out_s = 0.0;  // placed without fades
         pv.push_back(p);
         played.push_back(v);
     }
@@ -268,8 +281,11 @@ void PlayNode(const std::string& lib_uid, const std::string& uid)
         SoundMedia             m;
         if (!act.empty() && ReadSoundMedia(n->sound.source, &m)) {
             const SoundFrame& f = n->sound.frames[static_cast<size_t>(act.front())];
+            double            fin = 0.0, fout = 0.0;
+            int               shin = 0, shout = 0;
+            AuditionFades(n->sound, act.front(), &fin, &fout, &shin, &shout, FolderSourced(n->sound));
             if (AuditionFile(VariationPath(m, n->sound, act.front()), f.start, f.length, uid,
-                             DbToGain(GainFromRoot(*lib, *n) + f.db))) {
+                             DbToGain(GainFromRoot(*lib, *n) + f.db), fin, fout, shin, shout)) {
                 AuditionPlan one;
                 one.root = uid;
                 AuditionVoice v;
@@ -319,7 +335,11 @@ void PlayFrame(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m,
     const SoundData& d = Shown(n);
     if (i < 0 || static_cast<size_t>(i) >= d.frames.size()) return;
     const SoundFrame& f = d.frames[static_cast<size_t>(i)];
-    if (!AuditionFile(VariationPath(m, d, i), f.start, f.length, "frame:" + n.uid, DbToGain(GainFromRoot(lib, n) + f.db)))
+    double            fin = 0.0, fout = 0.0;
+    int               shin = 0, shout = 0;
+    AuditionFades(d, i, &fin, &fout, &shin, &shout, FolderSourced(d));
+    if (!AuditionFile(VariationPath(m, d, i), f.start, f.length, "frame:" + n.uid, DbToGain(GainFromRoot(lib, n) + f.db),
+                      fin, fout, shin, shout))
         ShowLibraryToast("Cannot play: the sound file is not read", false);
     else P.frame_start = f.start;
 }
@@ -442,6 +462,125 @@ int FrameAt(const std::vector<SoundFrame>& frames, double t)
     return -1;
 }
 
+// ---- fades on the waveform (Antho 2026-10-12) -------------------------------------------------------
+
+struct FadeDrag {
+    ImGuiID id = 0;
+    int     frame = -1;
+    int     side = 0;  // -1 fade in, +1 fade out
+    double  in = -1.0, out = -1.0;  // the frame's own fades as dragged (s, < 0 = the Sound's default)
+    bool    moved = false;
+    float   x0 = 0.0f;
+};
+FadeDrag g_fd;
+
+constexpr float kFadeGrab = 5.0f;   // a handle's grab half-width (px)
+constexpr float kFadeBand = 10.0f;  // the top band a handle is grabbed in (px)
+
+// Draws each frame's fades as REAPER draws an item's (a shaded corner over the fade curve) with a
+// handle at the frame's top corners, and drags them: `ev->fade_*` while dragging / on release,
+// Alt-click `ev->fade_reset`. True while the mouse is on a handle or drags one (the waveform's own
+// click is then not started).
+bool WaveFades(ImDrawList* dl, ImGuiID gid, bool hovered, const std::vector<SoundFrame>& frames,
+               const WaveformOptions& o, ImVec2 a, ImVec2 b, double vs, double vl, WaveformEvents* ev)
+{
+    if (o.fades.empty() || !(vl > 0.0)) return false;
+    const float w = b.x - a.x, h = b.y - a.y;
+    auto        X = [&](double t) { return static_cast<float>(a.x + (t - vs) / vl * w); };
+    auto        T = [&](float x) { return vs + static_cast<double>(x - a.x) / w * vl; };
+    const ImU32 shade = WithAlpha(ui::kBg, 0x90), line = WithAlpha(ui::kText, 0xB0);
+    const ImVec2 m = ImGui::GetIO().MousePos;
+    int   hot_frame = -1, hot_side = 0;
+    float hot_d = kFadeGrab + 1.0f;
+    dl->PushClipRect(a, b, true);
+    for (size_t i = 0; i < frames.size() && i < o.fades.size(); ++i) {
+        const SoundFrame& f = frames[i];
+        const FrameFades& fd = o.fades[i];
+        const double      end = f.start + f.length;
+        if (X(end) < a.x || X(f.start) > b.x) continue;
+        constexpr int kSteps = 12;
+        for (int side = -1; side <= 1; side += 2) {
+            const double len = side < 0 ? fd.in : fd.out;
+            if (len > 0.0) {
+                const double t0 = side < 0 ? f.start : end - len;
+                ImVec2       prev;
+                for (int k = 0; k <= kSteps; ++k) {
+                    const double t = t0 + len * k / kSteps;
+                    const double g = FadeGainAt(t - f.start, f.length, side < 0 ? fd.in : 0.0, side > 0 ? fd.out : 0.0,
+                                                fd.in_shape, fd.out_shape);
+                    const ImVec2 p(X(t), b.y - static_cast<float>(g) * h);
+                    if (k > 0) {
+                        dl->AddQuadFilled(ImVec2(prev.x, a.y), ImVec2(p.x, a.y), p, prev, shade);
+                        dl->AddLine(prev, p, line);
+                    }
+                    prev = p;
+                }
+            }
+            if (!o.gestures) continue;
+            const float  hx = X(side < 0 ? f.start + fd.in : end - fd.out);
+            const bool   own = side < 0 ? fd.own_in : fd.own_out;
+            const ImVec2 c(hx, a.y + 4.0f);
+            if (own) dl->AddCircleFilled(c, 3.5f, ui::kAccent);
+            else dl->AddCircle(c, 3.5f, ui::kFaint);
+            const float d = std::fabs(m.x - hx);
+            if (hovered && m.y <= a.y + kFadeBand && d < hot_d) {
+                hot_d = d;
+                hot_frame = static_cast<int>(i);
+                hot_side = side;
+            }
+        }
+    }
+    dl->PopClipRect();
+    if (!o.gestures) return false;
+    const ImGuiIO& io = ImGui::GetIO();
+    if (hot_frame >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        if (io.KeyAlt) {
+            ev->fade_reset = hot_frame;
+            ev->fade_reset_side = hot_side;
+        } else {
+            g_fd = FadeDrag{};
+            g_fd.id = gid;
+            g_fd.frame = hot_frame;
+            g_fd.side = hot_side;
+            g_fd.in = frames[static_cast<size_t>(hot_frame)].fade_in;
+            g_fd.out = frames[static_cast<size_t>(hot_frame)].fade_out;
+            g_fd.x0 = m.x;
+        }
+    }
+    const bool dragging = g_fd.id == gid && g_fd.frame >= 0 && static_cast<size_t>(g_fd.frame) < frames.size();
+    if (dragging) {
+        const SoundFrame& f = frames[static_cast<size_t>(g_fd.frame)];
+        if (std::fabs(m.x - g_fd.x0) > 1.0f) g_fd.moved = true;
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            if (g_fd.moved) {
+                const double t = T(m.x);
+                if (g_fd.side < 0) g_fd.in = std::clamp(t - f.start, 0.0, std::max(0.0, f.length));
+                else g_fd.out = std::clamp(f.start + f.length - t, 0.0, std::max(0.0, f.length));
+                ev->fade_frame = g_fd.frame;
+                ev->fade_in = g_fd.in;
+                ev->fade_out = g_fd.out;
+                ImGui::SetTooltip("Fade %s %.1f ms", g_fd.side < 0 ? "in" : "out",
+                                  (g_fd.side < 0 ? g_fd.in : g_fd.out) * 1000.0);
+            }
+        } else {
+            if (g_fd.moved) {
+                ev->fade_frame = g_fd.frame;
+                ev->fade_in = g_fd.in;
+                ev->fade_out = g_fd.out;
+                ev->fade_done = true;
+            }
+            g_fd = FadeDrag{};
+        }
+    } else if (g_fd.id == gid) {
+        g_fd = FadeDrag{};  // its frame went away
+    }
+    const bool hot = hot_frame >= 0 || dragging;
+    if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    if (hot_frame >= 0 && !dragging)
+        ImGui::SetTooltip("Fade %s: drag to set, Alt-click for the Sound's default", hot_side < 0 ? "in" : "out");
+    return hot;
+}
+
 }  // namespace
 
 WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::vector<SoundFrame>& frames,
@@ -523,6 +662,7 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
     }
     if (playhead_s >= vs && playhead_s <= vs + vl) dl->AddLine(ImVec2(X(playhead_s), a.y), ImVec2(X(playhead_s), b.y), ui::kWhite, 1.5f);
     dl->PopClipRect();
+    const bool fade_hot = WaveFades(dl, gid, hovered, frames, o, a, b, vs, vl, &ev);  // Antho 2026-10-12
     dl->AddRect(a, b, ui::kStroke, ui::kRadiusSm);
 
     // The ruler: ms below 2 s shown, else s.
@@ -562,7 +702,7 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
     if (near_thr) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
     else if (edge_frame >= 0) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
 
-    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    if (hovered && !fade_hot && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         g_wd = WaveDrag{};
         g_wd.id = gid;
         g_wd.m0 = m;
@@ -712,6 +852,78 @@ struct SoundCtx {
     std::string lib_uid, uid;
 };
 
+// ---- fades (Antho 2026-10-12: fade in / out on each variation, against clicks) ---------------------
+
+// Each frame's fades as drawn: as placed and auditioned (a Whole-item Sound only shows a fade it set
+// by hand: its placed copy keeps the source item's own fades).
+std::vector<FrameFades> ShownFades(const SoundData& d)
+{
+    std::vector<FrameFades> out;
+    if (FolderSourced(d)) return out;  // no fade handles: none is placed
+    out.reserve(d.frames.size());
+    for (size_t i = 0; i < d.frames.size(); ++i) {
+        FrameFades f = EffectiveFades(d, d.frames[i]);
+        AuditionFades(d, static_cast<int>(i), &f.in, &f.out, &f.in_shape, &f.out_shape);
+        out.push_back(f);
+    }
+    return out;
+}
+
+// A fade handle's events (drag: live then one write on release; Alt-click: that side back to the
+// Sound's default, one write). True when the event was a fade one.
+bool HandleWaveFades(const WaveformEvents& ev, const SoundLibrary& lib, const SoundNode& n, const std::vector<int>& fi)
+{
+    auto map = [&](int i) { return i >= 0 && static_cast<size_t>(i) < fi.size() ? fi[static_cast<size_t>(i)] : -1; };
+    if (ev.fade_frame >= 0) {
+        const int i = map(ev.fade_frame);
+        SetFrameFades(Live(n), i, ev.fade_in, ev.fade_out);
+        if (ev.fade_done) CommitLive("Variation fade", lib.uid, n.uid);
+        return true;
+    }
+    if (ev.fade_reset >= 0) {
+        const int i = map(ev.fade_reset), side = ev.fade_reset_side;
+        EditNode("Reset variation fade", lib.uid, n.uid, [i, side](SoundNode& x) {
+            if (i < 0 || static_cast<size_t>(i) >= x.sound.frames.size()) return false;
+            const SoundFrame& f = x.sound.frames[static_cast<size_t>(i)];
+            if ((side < 0 ? f.fade_in : f.fade_out) < 0.0) return false;  // already the default: no empty undo point
+            SetFrameFades(x.sound, i, side < 0 ? -1.0 : f.fade_in, side < 0 ? f.fade_out : -1.0);
+            return true;
+        });
+        return true;
+    }
+    return false;
+}
+
+// "Fades in [ms] out [ms]": the Sound's default fades, for every variation with none of its own.
+// A drag previews, its release (or a typed value) is one undo point.
+void DefaultFadeControls(const SoundLibrary& lib, const SoundNode& n)
+{
+    const SoundData& d = Shown(n);
+    if (FolderSourced(d)) return;  // a folder pile is placed without fades
+    ImGui::TextUnformatted("Fades");
+    Tip("Every variation fades in and out by this much (against clicks), unless it has its own fade\n"
+        "(drag a fade handle at a variation's top corner in the waveform; Alt-click it for this default)");
+    for (int side = -1; side <= 1; side += 2) {
+        SameLineIfFits(ui::NumberFieldWidth(50.0f, "ms") + 30.0f);
+        ImGui::TextUnformatted(side < 0 ? "in" : "out");
+        ImGui::SameLine();
+        double v = (side < 0 ? d.fade_in : d.fade_out) * 1000.0;
+        const ui::DragNumberEvent e = ui::DragNumber(side < 0 ? "##fadein" : "##fadeout", &v, 0.1, 1, "ms", 50.0f);
+        if (e == ui::DragNumberEvent::Live || e == ui::DragNumberEvent::Commit) {
+            SoundData&   dr = Live(n);
+            const double sec = std::clamp(v, 0.0, 10000.0) / 1000.0;
+            SetDefaultFades(dr, side < 0 ? sec : dr.fade_in, side < 0 ? dr.fade_out : sec);
+            if (e == ui::DragNumberEvent::Commit) {
+                if (dr.fade_in == n.sound.fade_in && dr.fade_out == n.sound.fade_out) CancelLive();  // no empty undo point
+                else CommitLive("Default fades", lib.uid, n.uid);
+                if (P.changed) return;
+            }
+        } else if (e == ui::DragNumberEvent::Cancel) {
+            CancelLive();
+        }
+    }
+}
+
 // Applies a waveform's events to the Sound (live draft or one write). `fi` maps the waveform's
 // frame index to the Sound's (Takes lanes show one frame each); `take_len` > 0 = a Takes lane.
 void HandleWave(const WaveformEvents& ev, const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m,
@@ -720,6 +932,7 @@ void HandleWave(const WaveformEvents& ev, const SoundLibrary& lib, const SoundNo
     const SoundCtx c{lib.uid, n.uid};
     auto           map = [&](int i) { return i >= 0 && static_cast<size_t>(i) < fi.size() ? fi[static_cast<size_t>(i)] : -1; };
     const DetectMode mode = n.sound.mode;
+    if (HandleWaveFades(ev, lib, n, fi)) return;
     if (ev.trim >= 0) {
         const int i = map(ev.trim);
         SoundData& d = Live(n);
@@ -903,6 +1116,7 @@ void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n,
 {
     const SoundData& d = Shown(n);
     const double     ph = SoundPlayhead(n);
+    const std::vector<FrameFades> fades = ShownFades(d);
     if (d.mode == DetectMode::Takes && m.take_paths.size() >= 2) {
         const float lane_h = std::max(24.0f, height / static_cast<float>(std::max<size_t>(1, d.frames.size())));
         for (size_t i = 0; i < d.frames.size() && !P.changed; ++i) {
@@ -914,6 +1128,7 @@ void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n,
             o.gestures = true;
             o.select = in_edit;
             o.ruler = in_edit && i == 0;
+            if (i < fades.size()) o.fades = {fades[i]};
             std::vector<int> sel;
             if (std::find(P.sel.begin(), P.sel.end(), static_cast<int>(i)) != P.sel.end()) sel.push_back(0);
             char lid[64];
@@ -932,6 +1147,7 @@ void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n,
     o.select = in_edit;
     o.ruler = in_edit;
     o.wheel = in_edit;
+    o.fades = fades;
     if (in_edit) {
         o.view_start = P.view_start;
         o.view_len = P.view_len;
@@ -1855,6 +2071,7 @@ void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
             });
         }
         if (!P.changed) DrawRandomAvoid(lib, n);
+        if (!P.changed) DefaultFadeControls(lib, n);
     }
     ui::EndSection(var_sec);
     if (P.changed) return;

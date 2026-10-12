@@ -4,6 +4,8 @@
 
 #include "sound_place_plan.h"
 
+#include "sound_entries.h"
+
 #include <algorithm>
 #include <cmath>
 #include <vector>
@@ -148,6 +150,38 @@ SliceApply SliceApplyFor(const SoundFrame& frame)
     a.length = frame.length;
     a.snap_offset = 0.0;
     return a;
+}
+
+FadeApply FadeApplyFor(const SoundData& data, int variation, bool folder_source)
+{
+    FadeApply fa;
+    if (folder_source || variation < 0 || variation >= static_cast<int>(data.frames.size())) return fa;
+    const FrameFades f = EffectiveFades(data, data.frames[static_cast<size_t>(variation)]);
+    const bool whole = data.mode == DetectMode::Whole;
+    fa.set_in = !whole || f.own_in;
+    fa.set_out = !whole || f.own_out;
+    if (fa.set_in) {
+        fa.in = f.in;
+        fa.in_shape = f.in_shape;
+        fa.shape_in = !whole || f.in_shape != 0;
+    }
+    if (fa.set_out) {
+        fa.out = f.out;
+        fa.out_shape = f.out_shape;
+        fa.shape_out = !whole || f.out_shape != 0;
+    }
+    return fa;
+}
+
+void FadesOnItem(const FadeApply& fa, double playrate, double item_len, double cur_in, double cur_out,
+                 double* in, double* out)
+{
+    const double rate = (std::isfinite(playrate) && playrate > 0.0) ? playrate : 1.0;
+    double a = fa.set_in ? fa.in / rate : cur_in;
+    double b = fa.set_out ? fa.out / rate : cur_out;
+    ClampFadePair(item_len, &a, &b);
+    if (in) *in = a;
+    if (out) *out = b;
 }
 
 double PlacementPosition(double event_t, double sync_offset, double blend_ms, double hand_offset_s)

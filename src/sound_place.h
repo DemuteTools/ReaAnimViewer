@@ -50,6 +50,7 @@ struct PlaceRequest {
     SoundSource source;  // Item: the entry's top item; File: the file
     int         variation = -1;
     SliceApply  slice;
+    FadeApply   fades;  // the variation's fades (FadeApplyFor); nothing set = the copy's own
     double      gain_db = 0.0;
     double      blend_ms = 0.0;
     double      offset_s = 0.0;

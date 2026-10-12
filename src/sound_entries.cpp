@@ -323,6 +323,81 @@ DetectMode DefaultDetectMode(const EntryFacts& facts, bool has_peaks)
     return DetectMode::Whole;
 }
 
+void ClampFadePair(double length, double* in, double* out)
+{
+    const double len = std::isfinite(length) ? std::max(length, 0.0) : 0.0;
+    double a = (in && std::isfinite(*in)) ? std::max(*in, 0.0) : 0.0;
+    double b = (out && std::isfinite(*out)) ? std::max(*out, 0.0) : 0.0;
+    if (a + b > len) {
+        const double k = a + b > 0.0 ? len / (a + b) : 0.0;
+        a *= k;
+        b *= k;
+    }
+    if (in) *in = a;
+    if (out) *out = b;
+}
+
+namespace {
+// A frame's own fades kept inside its length (unset sides stay unset).
+void ClampOwnFades(SoundFrame& f)
+{
+    const bool has_in = f.fade_in >= 0.0, has_out = f.fade_out >= 0.0;
+    if (!has_in && !has_out) return;
+    double a = has_in ? f.fade_in : 0.0, b = has_out ? f.fade_out : 0.0;
+    ClampFadePair(f.length, &a, &b);
+    if (has_in) f.fade_in = a;
+    if (has_out) f.fade_out = b;
+}
+}  // namespace
+
+FrameFades EffectiveFades(const SoundData& data, const SoundFrame& frame)
+{
+    FrameFades r;
+    r.own_in = frame.fade_in >= 0.0;
+    r.own_out = frame.fade_out >= 0.0;
+    r.in = r.own_in ? frame.fade_in : data.fade_in;
+    r.out = r.own_out ? frame.fade_out : data.fade_out;
+    r.in_shape = r.own_in ? frame.fade_in_shape : 0;
+    r.out_shape = r.own_out ? frame.fade_out_shape : 0;
+    ClampFadePair(frame.length, &r.in, &r.out);
+    return r;
+}
+
+void SetFrameFades(SoundData& data, int i, double in, double out)
+{
+    if (!ValidIndex(data, i)) return;
+    SoundFrame& f = data.frames[static_cast<size_t>(i)];
+    const double len = std::max(f.length, 0.0);
+    const bool   set_in = std::isfinite(in) && in >= 0.0, set_out = std::isfinite(out) && out >= 0.0;
+    // The side that changed gives way to the other one (dragging a handle never moves the other).
+    const double other_out = set_out ? out : std::max(data.fade_out, 0.0);
+    const double other_in = set_in ? in : std::max(data.fade_in, 0.0);
+    const bool   in_changed = set_in != (f.fade_in >= 0.0) || (set_in && std::fabs(in - f.fade_in) > 1e-9);
+    if (set_in) in = std::min(in, len);
+    if (set_out) out = std::min(out, len);
+    if (set_in && set_out) {
+        if (in + out > len) {
+            if (in_changed) in = std::max(len - out, 0.0);
+            else out = std::max(len - in, 0.0);
+        }
+    } else if (set_in) {
+        in = std::min(in, std::max(len - std::min(other_out, len), 0.0));
+    } else if (set_out) {
+        out = std::min(out, std::max(len - std::min(other_in, len), 0.0));
+    }
+    f.fade_in = set_in ? in : -1.0;
+    f.fade_out = set_out ? out : -1.0;
+    if (!set_in) f.fade_in_shape = 0;
+    if (!set_out) f.fade_out_shape = 0;
+    MarkHand(data, i);
+}
+
+void SetDefaultFades(SoundData& data, double in, double out)
+{
+    data.fade_in = std::isfinite(in) ? std::max(in, 0.0) : kDefaultFadeIn;
+    data.fade_out = std::isfinite(out) ? std::max(out, 0.0) : kDefaultFadeOut;
+}
+
 void TrimFrame(SoundData& data, int i, double start, double length, double source_len)
 {
     if (!ValidIndex(data, i)) return;
@@ -334,6 +409,7 @@ void TrimFrame(SoundData& data, int i, double start, double length, double sourc
     if (e - s <= kMinLen) return;  // no room: the frame stays as it was
     data.frames[k].start = s;
     data.frames[k].length = e - s;
+    ClampOwnFades(data.frames[k]);
     MarkHand(data, i);
 }
 
@@ -375,6 +451,13 @@ bool SplitFrame(SoundData& data, int i, double at)
     b.start = at;
     b.length = end - at;
     a.hand = b.hand = true;
+    // The cut gets the Sound's default fades: the left piece keeps its fade in, the right its fade out.
+    a.fade_out = -1.0;
+    a.fade_out_shape = 0;
+    b.fade_in = -1.0;
+    b.fade_in_shape = 0;
+    ClampOwnFades(a);
+    ClampOwnFades(b);
     data.frames[k] = a;
     data.frames.insert(data.frames.begin() + static_cast<std::ptrdiff_t>(k) + 1, b);
     data.edited = true;

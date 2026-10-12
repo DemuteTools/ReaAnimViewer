@@ -180,6 +180,7 @@ PlaceRequest RequestFor(MediaItem* owner, const std::string& rid, double event_t
         if (n.sound.mode == DetectMode::Takes) req.variation = v;
         else if (n.sound.mode == DetectMode::TakeMarkers || n.sound.mode == DetectMode::Silence)
             req.slice = SliceApplyFor(n.sound.frames[static_cast<size_t>(v)]);
+        req.fades = FadeApplyFor(n.sound, v);  // Antho 2026-10-12: fades on every placed variation
     }
     req.gain_db = rs.gain_db;  // ResolveEvent already added the frame's dB
     req.blend_ms = rs.offset_ms;

@@ -52,6 +52,30 @@ struct SliceApply {
 };
 SliceApply SliceApplyFor(const SoundFrame& frame);
 
+// Antho 2026-10-12: the fades a placed variation sets on its item (D_FADEINLEN / D_FADEOUTLEN in
+// item seconds, C_FADEINSHAPE / C_FADEOUTSHAPE). A sliced or Take variation always sets both (its own
+// or the Sound's default fade); a Whole-item Sound keeps its source item's own fades, except a side
+// the variation set by hand (its shape only when the frame set a non-zero one: the length alone is
+// the user's edit). Each side set also clears REAPER's auto-fade (D_FADE*LEN_AUTO = -1, which else
+// overrides the length) and the curve (D_FADE*DIR = 0), so the placed fade is the drawn one. Nothing
+// for a variation out of range or a folder-pile source (its members are copied as they are).
+struct FadeApply {
+    bool   set_in = false;
+    bool   set_out = false;
+    bool   shape_in = false;   // write C_FADEINSHAPE
+    bool   shape_out = false;  // write C_FADEOUTSHAPE
+    double in = 0.0;
+    double out = 0.0;
+    int    in_shape = 0;
+    int    out_shape = 0;
+};
+FadeApply FadeApplyFor(const SoundData& data, int variation, bool folder_source = false);
+// The fades as written on an item of `item_len` s (playrate already applied to the length; the fade
+// lengths are scaled by 1 / playrate like the item): each side clamped so in + out <= item_len.
+// `cur_in` / `cur_out` = the item's fades as copied, used for a side that `fa` leaves alone.
+void FadesOnItem(const FadeApply& fa, double playrate, double item_len, double cur_in, double cur_out,
+                 double* in, double* out);
+
 // The placed item's position (project s): the event, minus the entry's sync offset, plus the
 // Blend offset (ms) and the user's nudge (s); clamped at 0.
 double PlacementPosition(double event_t, double sync_offset, double blend_ms, double hand_offset_s);

@@ -251,6 +251,29 @@ void ApplyVariation(MediaItem* item, const PlaceRequest& req)
     }
 }
 
+// Antho 2026-10-12: the variation's fades on a copied plain item (after ApplyVariation: the length is final).
+void ApplyFades(MediaItem* item, const FadeApply& fa)
+{
+    if (!fa.set_in && !fa.set_out) return;
+    MediaItem_Take* take = GetActiveTake(item);
+    const double    rate = take ? GetMediaItemTakeInfo_Value(take, "D_PLAYRATE") : 1.0;
+    double          in = 0.0, out = 0.0;
+    FadesOnItem(fa, rate, GetMediaItemInfo_Value(item, "D_LENGTH"), GetMediaItemInfo_Value(item, "D_FADEINLEN"),
+                GetMediaItemInfo_Value(item, "D_FADEOUTLEN"), &in, &out);
+    f_set_item(item, "D_FADEINLEN", in);
+    f_set_item(item, "D_FADEOUTLEN", out);
+    if (fa.set_in) {
+        f_set_item(item, "D_FADEINLEN_AUTO", -1.0);  // the source's auto-fade would override the length
+        f_set_item(item, "D_FADEINDIR", 0.0);
+        if (fa.shape_in) f_set_item(item, "C_FADEINSHAPE", static_cast<double>(fa.in_shape));
+    }
+    if (fa.set_out) {
+        f_set_item(item, "D_FADEOUTLEN_AUTO", -1.0);
+        f_set_item(item, "D_FADEOUTDIR", 0.0);
+        if (fa.shape_out) f_set_item(item, "C_FADEOUTSHAPE", static_cast<double>(fa.out_shape));
+    }
+}
+
 // Writes `src`'s chunk into `dst` with the given IGUID.
 bool WriteCopy(MediaItem* src, MediaItem* dst, const std::string& guid)
 {
@@ -309,7 +332,10 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
             r.error = "could not copy the source item";
             return r;
         }
-        if (!folder) ApplyVariation(item, req);
+        if (!folder) {
+            ApplyVariation(item, req);
+            ApplyFades(item, req.fades);
+        }
         {  // 13-11 (B9): a library source is muted; its copy plays (and does not carry the mark)
             char mark[64] = {};
             const bool lib_src = GetSetMediaItemInfo_String(m.src, kLibSourceTagKey, mark, false) && mark[0];

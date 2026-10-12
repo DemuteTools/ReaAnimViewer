@@ -91,6 +91,9 @@ static SoundStore RichStore()
     f1.sound.silence.threshold_db = -30.0;
     f1.sound.frames = {{0.0, 0.5, true, 0.0, false, {}}, {0.6, 0.4, false, -3.0, true, {}}};
     f1.sound.edited = true;
+    f1.sound.fade_out = 0.008;               // Antho 2026-10-12: the Sound's default fade
+    f1.sound.frames[1].fade_in = 0.003;      // and a variation's own
+    f1.sound.frames[1].fade_out_shape = 2;
     lib.nodes.push_back(f1);
     SoundNode f2 = FileSound("n000000000000005", b.uid, "metal1.wav");
     f2.offset_ms = 0.0;
@@ -119,6 +122,19 @@ static void TestRoundTrip()
     CHECK(back.libraries[0].nodes.size() == s.libraries[0].nodes.size());
     CHECK(back.libraries[0].nodes[0].lands_in == "Foley");
     CHECK(back.libraries[0].nodes[3].sound.frames.size() == 2);
+    // Fades travel in the file (optional fields: a v1 reader keeps them as unknown text).
+    CHECK(back.libraries[0].nodes[3].sound.fade_out == 0.008 && back.libraries[0].nodes[3].sound.fade_in == kDefaultFadeIn);
+    CHECK(back.libraries[0].nodes[3].sound.frames[1].fade_in == 0.003 &&
+          back.libraries[0].nodes[3].sound.frames[1].fade_out_shape == 2 &&
+          back.libraries[0].nodes[3].sound.frames[0].fade_in < 0.0);
+    // A .ravlib without fades (written before them) reads with the defaults.
+    SoundStore plain;
+    CHECK(ParseRavlib("RAVLIB 1\nlibrary uid=l000000000000009 name=P root=n000000000000009\n"
+                      "node uid=n000000000000009 type=sound name=S\nsound kind=file aname=a.wav\nframe start=0 len=1\n",
+                      &plain));
+    CHECK(plain.libraries.size() == 1 && plain.libraries[0].nodes[0].sound.fade_in == kDefaultFadeIn &&
+          plain.libraries[0].nodes[0].sound.fade_out == kDefaultFadeOut &&
+          plain.libraries[0].nodes[0].sound.frames[0].fade_out < 0.0);
     // A full library (with ravlib_path) round-trips too.
     SoundStore full;
     full.groups = one.groups;

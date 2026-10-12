@@ -363,6 +363,8 @@ Fields SoundFields(const SoundData& s)
     if (s.silence.tail_ms != d.silence.tail_ms) f.push_back({"tail", FormatNumber(s.silence.tail_ms)});
     if (s.edited) f.push_back({"edited", "1"});
     if (!s.linked_copies) f.push_back({"linked", "0"});
+    if (s.fade_in != d.fade_in) f.push_back({"fin", FormatNumber(s.fade_in)});
+    if (s.fade_out != d.fade_out) f.push_back({"fout", FormatNumber(s.fade_out)});
     if (!a.name.empty()) f.push_back({"aname", Enc(a.name)});
     if (a.size != -1) f.push_back({"asize", FmtInt(a.size)});
     if (a.length != -1.0) f.push_back({"alen", FormatNumber(a.length)});
@@ -389,6 +391,8 @@ Got SetSound(SoundData& s, const std::string& k, const std::string& v)
     if (k == "tail") return G(ReadNumber(v, &s.silence.tail_ms));
     if (k == "edited") return G(ReadFlag(v, &s.edited));
     if (k == "linked") return G(ReadFlag(v, &s.linked_copies));
+    if (k == "fin") return G(ReadNumber(v, &s.fade_in));
+    if (k == "fout") return G(ReadNumber(v, &s.fade_out));
     if (k == "aname") return G(ReadStr(v, &a.name));
     if (k == "asize") return G(ReadInt(v, &a.size));
     if (k == "alen") return G(ReadNumber(v, &a.length));
@@ -404,6 +408,10 @@ Fields FrameFields(const SoundFrame& fr)
     if (!fr.on) f.push_back({"on", "0"});
     if (fr.db != 0.0) f.push_back({"db", FormatNumber(fr.db)});
     if (fr.hand) f.push_back({"hand", "1"});
+    if (fr.fade_in >= 0.0) f.push_back({"fin", FormatNumber(fr.fade_in)});
+    if (fr.fade_out >= 0.0) f.push_back({"fout", FormatNumber(fr.fade_out)});
+    if (fr.fade_in_shape != 0) f.push_back({"fish", FmtInt(fr.fade_in_shape)});
+    if (fr.fade_out_shape != 0) f.push_back({"fosh", FmtInt(fr.fade_out_shape)});
     return f;
 }
 
@@ -414,6 +422,10 @@ Got SetFrame(SoundFrame& fr, const std::string& k, const std::string& v)
     if (k == "on") return G(ReadFlag(v, &fr.on));
     if (k == "db") return G(ReadNumber(v, &fr.db));
     if (k == "hand") return G(ReadFlag(v, &fr.hand));
+    if (k == "fin") return G(ReadNumber(v, &fr.fade_in));
+    if (k == "fout") return G(ReadNumber(v, &fr.fade_out));
+    if (k == "fish") return G(ReadInt(v, &fr.fade_in_shape));
+    if (k == "fosh") return G(ReadInt(v, &fr.fade_out_shape));
     return Got::Unknown;
 }
 

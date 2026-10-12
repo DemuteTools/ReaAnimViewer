@@ -22,9 +22,10 @@
 //   case value=<id> child=<id>                       -- a Switch case of the node above
 //   unassigned child=<id>                            -- a child on no value of the Switch above
 //   sound kind=item|file [guid=<s>] [mode=whole|takes|tmarkers|silence] [thr=] [gap=] [pre=]
-//         [tail=] [edited=1] [linked=0] [aname=<s>] [asize=<n>] [alen=<s>] [apath=<s>]
+//         [tail=] [edited=1] [linked=0] [fin=<s>] [fout=<s>] [aname=<s>] [asize=<n>] [alen=<s>] [apath=<s>]
 //         [arel=<s>] [amtime=<n>]                    -- the Sound data of the node above
-//   frame start=<s> len=<s> [on=0] [db=<dB>] [hand=1]  -- a variation of that Sound
+//   frame start=<s> len=<s> [on=0] [db=<dB>] [hand=1] [fin=<s>] [fout=<s>] [fish=<n>] [fosh=<n>]
+//                                                    -- a variation of that Sound (no fin/fout = the Sound's fades)
 // The groups come first, then the libraries, each library's nodes in order.
 //
 // The per-animation-item record (the take's P_EXT:RAV_SOUNDS):

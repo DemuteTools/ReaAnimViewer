@@ -51,7 +51,18 @@ struct SoundFrame {
     double                   db = 0.0;     // per-variation gain
     bool                     hand = false; // edited by hand (kept across a re-detect)
     std::vector<std::string> kept;
+    // Fades (Antho 2026-10-12; after `kept` so brace-initialised frames keep their meaning): seconds,
+    // < 0 = none set here (the Sound's default fade applies). Shape = REAPER's C_FADEINSHAPE /
+    // C_FADEOUTSHAPE index (0 = linear).
+    double                   fade_in = -1.0;
+    double                   fade_out = -1.0;
+    int                      fade_in_shape = 0;
+    int                      fade_out_shape = 0;
 };
+
+// The Sound-level default fades (s): every variation with no fade of its own gets them.
+constexpr double kDefaultFadeIn = 0.001;
+constexpr double kDefaultFadeOut = 0.005;
 
 enum class SoundSourceKind { Item, File };
 
@@ -72,6 +83,8 @@ struct SoundData {
     bool                     edited = false;        // frames edited after detection
     bool                     linked_copies = true;  // copies of the pile share the takes
     std::vector<std::string> kept;
+    double                   fade_in = kDefaultFadeIn;    // default fades of its variations (s)
+    double                   fade_out = kDefaultFadeOut;
 };
 
 // A Switch's value -> child.

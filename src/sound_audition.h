@@ -29,13 +29,18 @@ struct PlayVoice {
     double      length_s = 0.0;  // <= 0 = to the file's end
     double      delay_s = 0.0;   // silence before it
     double      gain = 1.0;      // linear
+    double      fade_in_s = 0.0;   // Antho 2026-10-12: the variation's fades (FadeGainAt)
+    double      fade_out_s = 0.0;
+    int         fade_in_shape = 0;
+    int         fade_out_shape = 0;
 };
 // Plays the voices together (the previous audition stops first). `tag` names what plays (the
 // node panel's uid, ...). False, with `why`, when nothing can play (no PlayPreview, no voice read).
 bool PlayVoices(const std::vector<PlayVoice>& voices, const std::string& tag, std::string* why = nullptr);
 // One stretch of one file (length <= 0 = to its end).
 bool AuditionFile(const std::string& path, double start_s, double length_s, const std::string& tag = "file",
-                  double gain = 1.0);
+                  double gain = 1.0, double fade_in_s = 0.0, double fade_out_s = 0.0, int fade_in_shape = 0,
+                  int fade_out_shape = 0);
 // True while an audition plays; frees it once it has played to its end.
 bool AuditionPlaying();
 // Seconds played into the current audition (0 when none).

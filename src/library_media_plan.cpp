@@ -4,6 +4,7 @@
 
 #include "library_media_plan.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
@@ -231,6 +232,93 @@ int FrameAt(const std::vector<SoundFrame>& frames, double t)
     for (size_t i = 0; i < frames.size(); ++i)
         if (t >= frames[i].start && t < frames[i].start + frames[i].length) return static_cast<int>(i);
     return -1;
+}
+
+MediaBatch StartMediaBatch(std::vector<MediaPick> picks)
+{
+    MediaBatch b;
+    b.picks = std::move(picks);
+    b.read.reserve(b.picks.size());
+    for (const MediaPick& p : b.picks) b.read.push_back(p.slice || p.frames_known ? PickRead::Ready : PickRead::Reading);
+    return b;
+}
+
+std::vector<std::string> MediaBatchPathsToRead(const MediaBatch& b)
+{
+    std::vector<std::string> out;
+    for (size_t i = 0; i < b.picks.size() && i < b.read.size(); ++i)
+        if (b.read[i] == PickRead::Reading && std::find(out.begin(), out.end(), b.picks[i].path) == out.end())
+            out.push_back(b.picks[i].path);
+    return out;
+}
+
+void MediaBatchSetRead(MediaBatch& b, const std::string& path, bool ok, const std::vector<SoundFrame>& frames,
+                       double length)
+{
+    for (size_t i = 0; i < b.picks.size() && i < b.read.size(); ++i) {
+        MediaPick& p = b.picks[i];
+        if (b.read[i] != PickRead::Reading || p.path != path) continue;
+        b.read[i] = ok ? PickRead::Ready : PickRead::Failed;
+        p.frames = ok ? frames : std::vector<SoundFrame>{};
+        p.frames_known = true;
+        if (ok && length > 0.0) p.length = length;
+    }
+}
+
+void MediaBatchSetMissing(MediaBatch& b, const std::string& path)
+{
+    for (size_t i = 0; i < b.picks.size() && i < b.read.size(); ++i)
+        if (b.read[i] == PickRead::Reading && b.picks[i].path == path) b.read[i] = PickRead::Missing;
+}
+
+std::vector<MediaPick> MediaBatchUsedPicks(const MediaBatch& b)
+{
+    std::vector<MediaPick> out;
+    for (size_t i = 0; i < b.picks.size(); ++i)
+        if (i >= b.read.size() || b.read[i] != PickRead::Missing) out.push_back(b.picks[i]);
+    return out;
+}
+
+std::vector<std::string> MediaBatchMissingNames(const MediaBatch& b)
+{
+    std::vector<std::string> out;
+    for (size_t i = 0; i < b.picks.size() && i < b.read.size(); ++i) {
+        if (b.read[i] != PickRead::Missing) continue;
+        std::string n = MediaFileName(b.picks[i].path);
+        if (std::find(out.begin(), out.end(), n) == out.end()) out.push_back(n);
+    }
+    return out;
+}
+
+int MediaBatchLeft(const MediaBatch& b) { return static_cast<int>(MediaBatchPathsToRead(b).size()); }
+
+std::vector<std::string> MediaBatchFailedNames(const MediaBatch& b)
+{
+    std::vector<std::string> out;
+    for (size_t i = 0; i < b.picks.size() && i < b.read.size(); ++i) {
+        if (b.read[i] != PickRead::Failed) continue;
+        std::string n = MediaFileName(b.picks[i].path);
+        if (std::find(out.begin(), out.end(), n) == out.end()) out.push_back(n);
+    }
+    return out;
+}
+
+std::string MediaReadingLabel(int n_files) { return "Reading " + Plural(n_files, "file") + "..."; }
+
+std::string MediaFailedToastSuffix(const std::vector<std::string>& names)
+{
+    if (names.empty()) return {};
+    std::string s = "; could not read ";
+    for (size_t i = 0; i < names.size(); ++i) s += (i ? ", " : "") + names[i];
+    return s + ": added whole";
+}
+
+std::string MediaMissingToastSuffix(const std::vector<std::string>& names)
+{
+    if (names.empty()) return {};
+    std::string s = "; missing ";
+    for (size_t i = 0; i < names.size(); ++i) s += (i ? ", " : "") + names[i];
+    return s + ": not added";
 }
 
 }  // namespace rav

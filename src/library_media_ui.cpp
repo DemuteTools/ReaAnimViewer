@@ -2,10 +2,15 @@
 //
 // See library_media_ui.h. Spec 13-7c (DECISIONS section 6, mockup renderMediaExplorer / useFiles).
 //
-// Threads: the database load is media_db's worker (MediaDbStartLoad); the peaks of the previewed
-// file are read on this file's worker (its own PCM_source, opened and deleted on the UI thread);
-// no folder is ever walked here. The UI thread only searches the published index and reads the
-// published peaks.
+// Threads: the database load is media_db's worker (MediaDbStartLoad). This file has two more:
+// the probe worker (does a file exist / can it be reached: plain std::filesystem, exists and
+// size, no REAPER call) and the peak reader (only GetSamples on a source the UI thread made). Every
+// REAPER call (PCM_Source_CreateFromFile, deleting a source) stays on the UI thread, made only once
+// the probe answered that the file is reachable, so an offline network share only leaves rows
+// "checking...", the preview "opening..." or a use "Reading N files...". Results come back
+// through a locked queue the draw polls; the UI thread deletes every source it takes back (stale or
+// not); both workers are joined by QuitLibraryMedia, which deletes the sources nobody took.
+// No folder is ever walked here.
 
 #include "library_media_ui.h"
 
@@ -14,11 +19,14 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <filesystem>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <system_error>
@@ -117,6 +125,195 @@ private:
     double      len_ = 0.0;
 };
 
+// ---- Disk workers --------------------------------------------------------------------------------
+
+// Exists: a row's missing check. Reach: the file is there and answers a short read (then the UI
+// thread opens it). Peaks: GetSamples over a source the UI thread opened.
+enum class TaskKind { Exists, Reach, Peaks };
+enum class PeakOwner { Open, Preview, Batch };  // Open: the preview's playback (Reach only)
+
+struct Task {
+    TaskKind    kind = TaskKind::Exists;
+    std::string path;
+    uint64_t    id = 0;  // its owner's generation
+    PeakOwner   owner = PeakOwner::Preview;
+    PCM_source* src = nullptr;  // Peaks: made and deleted by the UI thread
+};
+
+struct TaskResult {
+    TaskKind    kind = TaskKind::Exists;
+    std::string path;
+    uint64_t    id = 0;
+    PeakOwner   owner = PeakOwner::Preview;
+    bool        ok = false;       // Exists / Reach: the file is there; Peaks: it was read
+    bool        done = true;      // Peaks: false when stopped (stale)
+    PCM_source* src = nullptr;    // Peaks: handed back, the UI thread deletes it
+    PeakData    peaks;
+    double      length = 0.0;
+};
+
+// A newer request makes an older one stale: a stale Open deletes its source, a stale read stops.
+std::atomic<uint64_t> g_open_gen{0};
+std::atomic<uint64_t> g_preview_gen{0};
+std::atomic<uint64_t> g_batch_gen{0};
+std::atomic<bool>     g_quitting{false};
+
+bool TaskStale(const Task& t)
+{
+    if (g_quitting) return true;
+    if (t.kind == TaskKind::Exists) return false;
+    switch (t.owner) {
+    case PeakOwner::Open: return t.id != g_open_gen;
+    case PeakOwner::Preview: return t.id != g_preview_gen;
+    default: return t.id != g_batch_gen;
+    }
+}
+
+// The whole file's peaks (max |sample| over the channels) at ~kPeakRate; false when cancelled.
+bool ReadFilePeaks(PCM_source* s, const Task& t, PeakData* peaks, double* length)
+{
+    const int    nch = s->GetNumChannels();
+    const double sr = s->GetSampleRate();
+    const double len = s->GetLength();
+    if (nch < 1 || sr < 1.0 || !(len > 0.0)) return true;
+    const int     per = std::max(1, static_cast<int>(std::lround(sr / kPeakRate)));
+    const int     block = per * 64;
+    const int64_t total = static_cast<int64_t>(len * sr);
+    std::vector<ReaSample> buf(static_cast<size_t>(block) * nch);
+    peaks->rate = sr / per;
+    peaks->max_abs.reserve(static_cast<size_t>(total / per + 1));
+    float cur = 0.0f;
+    int   count = 0;
+    for (int64_t pos = 0; pos < total; pos += block) {
+        if (TaskStale(t)) return false;
+        PCM_source_transfer_t tr{};
+        tr.time_s = pos / sr;
+        tr.samplerate = sr;
+        tr.nch = nch;
+        tr.length = static_cast<int>(std::min<int64_t>(block, total - pos));
+        tr.samples = buf.data();
+        s->GetSamples(&tr);
+        const int out = std::max(0, std::min(tr.length, tr.samples_out));
+        for (int i = 0; i < tr.length; ++i) {
+            float m = 0.0f;
+            if (i < out)
+                for (int c = 0; c < nch; ++c) m = std::max(m, static_cast<float>(std::fabs(buf[static_cast<size_t>(i) * nch + c])));
+            cur = std::max(cur, m);
+            if (++count == per) {
+                peaks->max_abs.push_back(cur);
+                cur = 0.0f;
+                count = 0;
+            }
+        }
+    }
+    if (count > 0) peaks->max_abs.push_back(cur);
+    *length = len;
+    return true;
+}
+
+// One thread running tasks in order (front pushes first); results wait in `out_` for the draw.
+class DiskWorker {
+public:
+    void Push(Task t, bool front)
+    {
+        if (g_quitting) {
+            delete t.src;
+            return;
+        }
+        {
+            std::lock_guard<std::mutex> lk(m_);
+            if (front) q_.push_front(std::move(t));
+            else q_.push_back(std::move(t));
+            if (!th_.joinable()) th_ = std::thread([this] { Run(); });
+        }
+        cv_.notify_one();
+    }
+    std::vector<TaskResult> Take()
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        std::vector<TaskResult> r;
+        r.swap(out_);
+        return r;
+    }
+    // Unload: the queued tasks are dropped, the running one stops (g_quitting), the thread joined,
+    // and the sources nobody took are deleted.
+    void Stop()
+    {
+        {
+            std::lock_guard<std::mutex> lk(m_);
+            stop_ = true;
+            for (Task& t : q_) dropped_.push_back(std::move(t));
+            q_.clear();
+        }
+        cv_.notify_all();
+        if (th_.joinable()) th_.join();
+        for (TaskResult& r : Take()) delete r.src;
+        std::deque<Task> left;
+        {
+            std::lock_guard<std::mutex> lk(m_);
+            left.swap(dropped_);
+        }
+        for (Task& t : left) delete t.src;
+        std::lock_guard<std::mutex> lk(m_);
+        stop_ = false;
+    }
+
+private:
+    void Run()
+    {
+        for (;;) {
+            Task t;
+            {
+                std::unique_lock<std::mutex> lk(m_);
+                cv_.wait(lk, [this] { return stop_ || !q_.empty(); });
+                if (stop_) return;
+                t = std::move(q_.front());
+                q_.pop_front();
+            }
+            // A source always comes back to the UI thread (it deletes it), stale or not.
+            if (TaskStale(t) && !t.src) continue;
+            TaskResult r;
+            r.kind = t.kind;
+            r.path = t.path;
+            r.id = t.id;
+            r.owner = t.owner;
+            r.src = t.src;
+            // Nothing may escape this thread (a throw would end REAPER): a failed task still answers,
+            // so a waiting use never waits forever.
+            try {
+                if (t.kind == TaskKind::Peaks) {
+                    r.done = !TaskStale(t);
+                    if (r.done && t.src) r.done = ReadFilePeaks(t.src, t, &r.peaks, &r.length);
+                    r.ok = r.done && t.src && r.length > 0.0;
+                } else {
+                    std::error_code ec;
+                    const std::filesystem::path fp = std::filesystem::u8path(t.path);
+                    r.ok = std::filesystem::exists(fp, ec);
+                    if (r.ok && t.kind == TaskKind::Reach)  // its size answers too: the share is awake
+                        r.ok = std::filesystem::file_size(fp, ec) != static_cast<std::uintmax_t>(-1) && !ec;
+                }
+            } catch (...) {
+                r.ok = false;
+                r.peaks = PeakData{};
+                r.length = 0.0;
+            }
+            std::lock_guard<std::mutex> lk(m_);
+            out_.push_back(std::move(r));
+        }
+    }
+
+    std::thread             th_;
+    std::mutex              m_;
+    std::condition_variable cv_;
+    std::deque<Task>        q_;
+    std::deque<Task>        dropped_;  // queued at Stop: their sources are deleted after the join
+    std::vector<TaskResult> out_;
+    bool                    stop_ = false;
+};
+
+DiskWorker g_probe;   // Exists, Reach (quick, but may stall on an offline share)
+DiskWorker g_reader;  // Peaks
+
 // ---- Preview (REAPER's preview API, one sound at a time) -----------------------------------------
 
 struct Preview {
@@ -128,6 +325,11 @@ struct Preview {
     double             offset = 0.0;  // file time of the source's 0 (a clip's start)
     double             length = 0.0;  // the played source's length
     int                frame = -1;    // the variation playing, -1 = the file
+    // A start waiting for its source (opened on the probe worker).
+    bool               opening = false;
+    std::string        open_path;
+    double             open_from = 0.0, open_to = -1.0;
+    int                open_frame = -1;
 };
 Preview g_pv;
 
@@ -140,6 +342,10 @@ void EnsureCs()
 
 void StopPreviewNow()
 {
+    if (g_pv.opening) {
+        g_pv.opening = false;
+        ++g_open_gen;  // its reach answer is ignored
+    }
     if (!g_pv.playing) return;
     if (f_stop) f_stop(&g_pv.reg);
     delete g_pv.src;
@@ -149,14 +355,32 @@ void StopPreviewNow()
     g_pv.frame = -1;
 }
 
-// Plays `path` from `from` (file seconds); to > from: only [from, to) (a variation).
+// Plays `path` from `from` (file seconds); to > from: only [from, to) (a variation). The source
+// is reached on the probe worker ("opening..."), then opened here and played by FinishPreview.
 void StartPreview(const std::string& path, double from, double to, int frame)
 {
     StopAudition();
     StopPreviewNow();
     if (!f_play || !f_stop || !f_create || path.empty()) return;
-    PCM_source* file = f_create(path.c_str());
-    if (!file) return;
+    g_pv.opening = true;
+    g_pv.open_path = path;
+    g_pv.open_from = from;
+    g_pv.open_to = to;
+    g_pv.open_frame = frame;
+    Task t;
+    t.kind = TaskKind::Reach;
+    t.path = path;
+    t.id = ++g_open_gen;
+    t.owner = PeakOwner::Open;
+    g_probe.Push(std::move(t), true);
+}
+
+void FinishPreview(PCM_source* file)
+{
+    g_pv.opening = false;
+    const std::string path = g_pv.open_path;
+    const double      from = g_pv.open_from, to = g_pv.open_to;
+    const int         frame = g_pv.open_frame;
     PCM_source* src = file;
     double      cur = std::max(0.0, from);
     if (to > from) {
@@ -200,77 +424,12 @@ double PreviewFileTime()
     return g_pv.offset + cur;
 }
 
-// ---- Peaks of the previewed file (worker) --------------------------------------------------------
-
-struct PeakJob {
-    std::string       path;
-    PCM_source*       src = nullptr;
-    std::thread       th;
-    std::atomic<bool> cancel{false};
-    std::atomic<bool> done{false};
-    PeakData          peaks;   // written by the worker until `done`
-    double            length = 0.0;
-};
-std::unique_ptr<PeakJob> g_job;
-
-void ReadPeaks(PeakJob* j)
-{
-    PCM_source* s = j->src;
-    const int    nch = s->GetNumChannels();
-    const double sr = s->GetSampleRate();
-    const double len = s->GetLength();
-    if (nch < 1 || sr < 1.0 || !(len > 0.0)) {
-        j->done = true;
-        return;
-    }
-    const int     per = std::max(1, static_cast<int>(std::lround(sr / kPeakRate)));
-    const int     block = per * 64;
-    const int64_t total = static_cast<int64_t>(len * sr);
-    std::vector<ReaSample> buf(static_cast<size_t>(block) * nch);
-    j->peaks.rate = sr / per;
-    j->peaks.max_abs.reserve(static_cast<size_t>(total / per + 1));
-    float cur = 0.0f;
-    int   count = 0;
-    for (int64_t pos = 0; pos < total && !j->cancel; pos += block) {
-        PCM_source_transfer_t t{};
-        t.time_s = pos / sr;
-        t.samplerate = sr;
-        t.nch = nch;
-        t.length = static_cast<int>(std::min<int64_t>(block, total - pos));
-        t.samples = buf.data();
-        s->GetSamples(&t);
-        const int out = std::max(0, std::min(t.length, t.samples_out));
-        for (int i = 0; i < t.length; ++i) {
-            float m = 0.0f;
-            if (i < out)
-                for (int c = 0; c < nch; ++c) m = std::max(m, static_cast<float>(std::fabs(buf[static_cast<size_t>(i) * nch + c])));
-            cur = std::max(cur, m);
-            if (++count == per) {
-                j->peaks.max_abs.push_back(cur);
-                cur = 0.0f;
-                count = 0;
-            }
-        }
-    }
-    if (count > 0) j->peaks.max_abs.push_back(cur);
-    j->length = len;
-    j->done = true;
-}
-
-void EndJob()
-{
-    if (!g_job) return;
-    g_job->cancel = true;
-    if (g_job->th.joinable()) g_job->th.join();
-    delete g_job->src;
-    g_job.reset();
-}
-
 // ---- Panel state ---------------------------------------------------------------------------------
 
 struct Analysis {
     std::string             path;
     bool                    ready = false;
+    bool                    failed = false;  // ready, but not read (a use reads it again and names it)
     double                  length = -1.0;
     PeakData                peaks;
     std::vector<SoundFrame> frames;
@@ -292,7 +451,7 @@ struct State {
     std::vector<std::string>            favs;
     std::set<std::string>               fav_keys;  // lowercase
     bool                                favs_loaded = false;
-    std::unordered_map<std::string, bool> missing;  // per path, for the session
+    std::unordered_map<std::string, int> probe;   // per path, for the session: 0 checking, 1 found, 2 missing
     std::vector<DbFile>                 sel;        // selected files (copies)
     bool                                has_cur = false;
     DbFile                              cur;        // the previewed file
@@ -301,6 +460,14 @@ struct State {
     uint32_t                            drag_gen = 0;
     int                                 drag_frame = -10;
     std::vector<MediaPick>              drag_picks;
+    // A use waiting for its files' variations (read on the peak reader, generation g_batch_gen).
+    bool                                pending = false;
+    MediaBatch                          batch;
+    std::string                         pend_lib;
+    bool                                pend_has_row = false;
+    LibraryRow                          pend_row;
+    ReaProject*                         pend_proj = nullptr;  // the project the use was made in
+    int                                 last_frame = -1;  // the last frame the panel was drawn
 };
 State g;
 
@@ -344,16 +511,21 @@ void ToggleFav(const std::string& path)
     if (g.filter == static_cast<int>(g.info.databases.size()) + 1) g.dirty = true;
 }
 
-// Decision 8: checked once per path, for the rows shown.
-bool IsMissing(const std::string& path)
+// Decision 8: checked once per path, for the rows shown, on the probe worker (0 = still checking).
+int Probe(const std::string& path)
 {
-    auto it = g.missing.find(path);
-    if (it != g.missing.end()) return it->second;
-    std::error_code ec;
-    bool miss = !std::filesystem::exists(std::filesystem::u8path(path), ec);
-    g.missing[path] = miss;
-    return miss;
+    auto it = g.probe.find(path);
+    if (it != g.probe.end()) return it->second;
+    g.probe[path] = 0;
+    Task t;
+    t.kind = TaskKind::Exists;
+    t.path = path;
+    g_probe.Push(std::move(t), false);
+    return 0;
 }
+
+// Known missing (a file still being checked is not).
+bool IsMissing(const std::string& path) { return Probe(path) == 2; }
 
 void RunSearch()
 {
@@ -393,6 +565,25 @@ bool IsSelected(const std::string& path)
     return false;
 }
 
+// A file's peaks (read, or failed to open / read) for the preview or the waiting use.
+void PeakResult(TaskResult& r)
+{
+    if (r.owner == PeakOwner::Preview) {
+        if (r.id != g_preview_gen || r.path != g.an.path) return;
+        g.an.peaks = std::move(r.peaks);
+        if (r.length > 0.0) g.an.length = r.length;
+        g.an.frames = r.ok ? SplitOnSilence(g.an.peaks, SilenceParams{}, g.an.length) : std::vector<SoundFrame>{};
+        g.an.failed = !r.ok;
+        g.an.ready = true;
+        // A double-click previews and uses the same file: the use takes this read, not a second one.
+        if (g.pending) MediaBatchSetRead(g.batch, r.path, r.ok, g.an.frames, r.length);
+    } else if (r.owner == PeakOwner::Batch && g.pending && r.id == g_batch_gen) {
+        std::vector<SoundFrame> frames;
+        if (r.ok) frames = SplitOnSilence(r.peaks, SilenceParams{}, r.length);
+        MediaBatchSetRead(g.batch, r.path, r.ok, frames, r.length);
+    }
+}
+
 // Shows a file in the preview (its peaks read on the worker).
 void SetCurrent(const DbFile& f)
 {
@@ -403,32 +594,80 @@ void SetCurrent(const DbFile& f)
     g.an = Analysis{};
     g.an.path = f.path;
     g.an.length = f.length;
-    EndJob();
-    // A missing or unreadable file (or no REAPER API) has nothing to read: no audio, not "Reading...".
-    PCM_source* src = (f_create && !IsMissing(f.path)) ? f_create(f.path.c_str()) : nullptr;
-    if (!src) {
+    const uint64_t gen = ++g_preview_gen;  // the previous file's read stops
+    // A missing file (or no REAPER API) has nothing to read: no audio, not "Reading...". A file
+    // that does not open comes back failed from the reader.
+    if (!f_create || IsMissing(f.path)) {
         g.an.ready = true;
         return;
     }
-    g_job.reset(new PeakJob);
-    g_job->path = f.path;
-    g_job->src = src;
-    PeakJob* j = g_job.get();
-    g_job->th = std::thread([j] { ReadPeaks(j); });
+    Task t;
+    t.kind = TaskKind::Reach;
+    t.path = f.path;
+    t.id = gen;
+    t.owner = PeakOwner::Preview;
+    g_probe.Push(std::move(t), true);  // then read before any file of a waiting use
 }
 
-void PollJob()
+// A file reached: opened here (UI thread), its peaks read on the reader.
+void ReadReached(const TaskResult& r, bool front)
 {
-    if (!g_job || !g_job->done) return;
-    if (g_job->th.joinable()) g_job->th.join();
-    if (g_job->path == g.an.path && !g_job->cancel) {
-        g.an.peaks = std::move(g_job->peaks);
-        if (g_job->length > 0.0) g.an.length = g_job->length;
-        g.an.frames = SplitOnSilence(g.an.peaks, SilenceParams{}, g.an.length);
-        g.an.ready = true;
+    Task t;
+    t.kind = TaskKind::Peaks;
+    t.path = r.path;
+    t.id = r.id;
+    t.owner = r.owner;
+    t.src = f_create ? f_create(r.path.c_str()) : nullptr;
+    if (!t.src) {  // did not open: answered at once, not read
+        TaskResult f;
+        f.kind = TaskKind::Peaks;
+        f.path = r.path;
+        f.id = r.id;
+        f.owner = r.owner;
+        f.ok = false;
+        PeakResult(f);
+        return;
     }
-    delete g_job->src;
-    g_job.reset();
+    g_reader.Push(std::move(t), front);
+}
+
+void CommitPending();
+
+// The workers' results: rows found or missing, the preview's source, the peaks read.
+void PollWorkers()
+{
+    for (TaskResult& r : g_probe.Take()) {
+        auto it = g.probe.find(r.path);
+        if (it != g.probe.end()) it->second = r.ok ? 1 : 2;
+        else if (r.kind == TaskKind::Reach) g.probe[r.path] = r.ok ? 1 : 2;
+        if (r.kind == TaskKind::Exists) {
+            if (!r.ok && g.has_cur && g.cur.path == r.path && !g.an.ready) {
+                ++g_preview_gen;  // found missing while its peaks wait: no audio
+                g.an.ready = true;
+            }
+            continue;
+        }
+        if (r.owner == PeakOwner::Open) {
+            if (!g_pv.opening || r.id != g_open_gen) continue;
+            PCM_source* src = r.ok && f_create ? f_create(r.path.c_str()) : nullptr;
+            if (src) FinishPreview(src);
+            else g_pv.opening = false;  // missing, or it did not open
+        } else if (r.owner == PeakOwner::Preview) {
+            if (r.id != g_preview_gen || r.path != g.an.path) continue;
+            if (r.ok) ReadReached(r, true);
+            else g.an.ready = true;  // missing: no audio
+        } else if (g.pending && r.id == g_batch_gen) {
+            if (r.ok) ReadReached(r, false);
+            else MediaBatchSetMissing(g.batch, r.path);  // dropped from the use, named in the toast
+        }
+    }
+    for (TaskResult& r : g_reader.Take()) {
+        PCM_source* src = r.src;  // the UI thread deletes every source it takes back
+        r.src = nullptr;
+        delete src;
+        if (r.kind == TaskKind::Peaks && r.done) PeakResult(r);
+    }
+    if (g.pending && MediaBatchLeft(g.batch) == 0) CommitPending();
 }
 
 MediaPick WholePick(const DbFile& f)
@@ -438,8 +677,9 @@ MediaPick WholePick(const DbFile& f)
     p.size = f.size;
     p.length = f.length;
     p.mtime = f.mtime;
-    if (g.has_cur && g.cur.path == f.path && g.an.ready) {
+    if (g.has_cur && g.cur.path == f.path && g.an.ready && !g.an.failed) {
         p.frames = g.an.frames;
+        p.frames_known = true;
         if (g.an.length > 0.0) p.length = g.an.length;
     }
     return p;
@@ -477,7 +717,9 @@ std::vector<MediaPick> UsedPicks(bool* variations)
     return out;
 }
 
-void UsePicks(const std::string& lib, const LibraryRow* row, const std::vector<MediaPick>& picks)
+// The Sounds of every pick, one undo point. `suffix` names the files that could not be read.
+void ApplyPicks(const std::string& lib, const LibraryRow* row, const std::vector<MediaPick>& picks,
+                const std::string& suffix)
 {
     if (picks.empty()) return;
     std::string toast, why;
@@ -488,10 +730,71 @@ void UsePicks(const std::string& lib, const LibraryRow* row, const std::vector<M
         return UseMediaAt(s, lib, row, picks, &created, &toast, &why);
     });
     if (ok) {
-        ShowLibraryToast(toast, true, desc);
+        ShowLibraryToast(toast + suffix, true, desc);
         g.vsel.clear();
     } else if (!why.empty()) {
         ShowLibraryToast(why, false);
+    }
+}
+
+// Drops the waiting use (its reads stop).
+void CancelPending()
+{
+    if (!g.pending) return;
+    g.pending = false;
+    g.batch = MediaBatch{};
+    ++g_batch_gen;
+}
+
+void CommitPending()
+{
+    if (!g.pending) return;
+    MediaBatch        b = std::move(g.batch);
+    const std::string lib = g.pend_lib;
+    const LibraryRow  row = g.pend_row;
+    const bool        has_row = g.pend_has_row;
+    ReaProject* const proj = g.pend_proj;
+    CancelPending();
+    if (EnumProjects(-1, nullptr, 0) != proj) {  // another project tab since the use
+        ShowLibraryToast("Use cancelled: the project changed", false);
+        return;
+    }
+    const std::string suffix = MediaFailedToastSuffix(MediaBatchFailedNames(b)) +
+                               MediaMissingToastSuffix(MediaBatchMissingNames(b));
+    const std::vector<MediaPick> used = MediaBatchUsedPicks(b);
+    if (used.empty()) {
+        ShowLibraryToast("Nothing added" + suffix, false);
+        return;
+    }
+    ApplyPicks(lib, has_row ? &row : nullptr, used, suffix);
+}
+
+// A use: every whole file whose variations are not known yet is read first ("Reading N
+// files..."), then all the Sounds are made at once. A new use replaces a waiting one.
+void UsePicks(const std::string& lib, const LibraryRow* row, const std::vector<MediaPick>& picks)
+{
+    CancelPending();
+    if (picks.empty()) return;
+    MediaBatch b = StartMediaBatch(picks);
+    const std::vector<std::string> paths = MediaBatchPathsToRead(b);
+    if (paths.empty()) {
+        ApplyPicks(lib, row, b.picks, std::string());
+        return;
+    }
+    g.pending = true;
+    g.batch = std::move(b);
+    g.pend_lib = lib;
+    g.pend_has_row = row != nullptr;
+    g.pend_row = row ? *row : LibraryRow{};
+    g.pend_proj = EnumProjects(-1, nullptr, 0);
+    const uint64_t gen = ++g_batch_gen;
+    for (const std::string& p : paths) {  // reached on the probe worker, then opened and read
+        Task t;
+        t.kind = TaskKind::Reach;
+        t.path = p;
+        t.id = gen;
+        t.owner = PeakOwner::Batch;
+        g_probe.Push(std::move(t), false);
     }
 }
 
@@ -677,7 +980,7 @@ void DrawHeader()
     ImGui::SameLine();
     if (ui::SolidButton("Reload")) {
         MediaDbStartLoad(ResourcePath());
-        g.missing.clear();
+        g.probe.clear();
         g.info_ready = false;
         g.favs_loaded = false;  // favourites edited in REAPER's Media Explorer since are read again
     }
@@ -802,6 +1105,7 @@ void DrawResults(float h)
             std::string l2 = f.description;
             if (!f.library.empty()) l2 += (l2.empty() ? "(" : " (") + f.library + ")";
             if (miss) l2 = "Not found on this PC";
+            else if (Probe(f.path) == 0) l2 = "checking...";
             ui::EllipsisText(dl, ImVec2(name_x, p.y + 3.0f + lh), right, ui::kFaint, l2);
             ImGui::PopID();
         }
@@ -823,7 +1127,9 @@ void DrawPreview(float wave_h)
     const bool miss = IsMissing(g.cur.path);
     char head[64];
     if (miss) std::snprintf(head, sizeof head, "Missing");
+    else if (Probe(g.cur.path) == 0) std::snprintf(head, sizeof head, "Checking...");
     else if (!g.an.ready) std::snprintf(head, sizeof head, "Reading...");
+    else if (g_pv.opening && g_pv.open_path == g.cur.path) std::snprintf(head, sizeof head, "Opening...");
     else std::snprintf(head, sizeof head, "%zu variation%s detected", g.an.frames.size(), g.an.frames.size() == 1 ? "" : "s");
     ImGui::TextUnformatted(head);
     ImGui::SameLine();
@@ -890,6 +1196,17 @@ void DrawPreview(float wave_h)
 
 void DrawFooter()
 {
+    if (g.pending) {  // a use waiting for its files' variations
+        const std::string msg = MediaReadingLabel(MediaBatchLeft(g.batch));
+        const float cw = ImGui::CalcTextSize("Cancel").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        ui::EllipsisText(ImGui::GetWindowDrawList(), ImVec2(p.x, p.y + ImGui::GetStyle().FramePadding.y),
+                         p.x + ImGui::GetContentRegionAvail().x - cw - 8.0f, ui::kMuted, msg);
+        ImGui::SetCursorScreenPos(ImVec2(p.x + ImGui::GetContentRegionAvail().x - cw, p.y));
+        if (ui::SolidButton("Cancel")) CancelPending();
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Stop reading: no sound is added");
+        return;
+    }
     bool                   variations = false;
     std::vector<MediaPick> picks = UsedPicks(&variations);
     if (picks.empty()) return;
@@ -919,7 +1236,7 @@ void HandleKeys()
     }
     if (io.WantTextInput) return;
     if (!io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Space, false)) {
-        if (g_pv.playing) StopPreviewNow();
+        if (g_pv.playing || g_pv.opening) StopPreviewNow();
         else if (g.has_cur && g.vsel.size() == 1) PlayFrame(g.vsel.front());
         else if (g.has_cur) PlayFile(g.cur);
     }
@@ -932,6 +1249,7 @@ void HandleKeys()
 void InitLibraryMedia(void* (*get_func)(const char* name))
 {
     if (!get_func) return;
+    g_quitting = false;
     f_play = reinterpret_cast<PlayPreviewFn>(get_func("PlayPreview"));
     f_stop = reinterpret_cast<StopPreviewFn>(get_func("StopPreview"));
     f_create = reinterpret_cast<CreateFromFileFn>(get_func("PCM_Source_CreateFromFile"));
@@ -942,7 +1260,12 @@ void StopMediaPreview() { StopPreviewNow(); }
 void QuitLibraryMedia()
 {
     StopPreviewNow();
-    EndJob();
+    CancelPending();
+    // Both workers stop (a read in progress sees g_quitting) and are joined; untaken sources deleted.
+    g_quitting = true;
+    g_probe.Stop();
+    g_reader.Stop();
+    g.probe.clear();
     MediaDbStop();
     if (g_pv.cs_ready) {
         DeleteCriticalSection(&g_pv.reg.cs);
@@ -965,7 +1288,20 @@ void DrawMediaExplorerPanel()
     }
     LoadFavs();
     ApplyHooks();
-    PollJob();
+    // The panel was closed (not drawn) since the last frame: a waiting use is dropped, not made later.
+    const int frame = ImGui::GetFrameCount();
+    if (g.last_frame >= 0 && frame - g.last_frame > 1) {
+        if (g.pending) {
+            CancelPending();
+            ShowLibraryToast("Use cancelled: the Media Explorer was closed", false);
+        }
+        if (g_pv.opening) {  // a slow open does not start playing minutes later
+            g_pv.opening = false;
+            ++g_open_gen;
+        }
+    }
+    g.last_frame = frame;
+    PollWorkers();
     // The published index changed (a load ended): new info, search again.
     if (MediaDbReady()) {
         std::shared_ptr<const MediaDbIndex> idx = MediaDbGet();
@@ -973,7 +1309,7 @@ void DrawMediaExplorerPanel()
             g.info = MediaDbGetInfo();
             g.info_ready = true;
             g.dirty = true;
-            g.missing.clear();
+            g.probe.clear();
         }
     }
     if (g.edited_at >= 0.0 && ImGui::GetTime() - g.edited_at >= kDebounce) {

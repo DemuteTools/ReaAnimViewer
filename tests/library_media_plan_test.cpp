@@ -297,6 +297,74 @@ int main()
         }
         CHECK(FormatMediaLength(HUGE_VAL).empty());
     }
+    // A file found missing before its read: dropped from the use, named in the toast.
+    {
+        std::vector<MediaPick> picks = {Whole("/a/a.wav", 1, 0), Whole("/a/m.wav", 1, 0), Whole("/a/m.wav", 1, 0)};
+        MediaBatch b = StartMediaBatch(picks);
+        CHECK(MediaBatchLeft(b) == 2);
+        MediaBatchSetMissing(b, "/a/m.wav");
+        CHECK(MediaBatchLeft(b) == 1 && b.read[1] == PickRead::Missing && b.read[2] == PickRead::Missing);
+        MediaBatchSetRead(b, "/a/m.wav", true, {}, 2.0);  // a missing pick is not read again
+        CHECK(b.read[1] == PickRead::Missing);
+        std::vector<MediaPick> used = MediaBatchUsedPicks(b);
+        CHECK(used.size() == 1 && used[0].path == "/a/a.wav");
+        std::vector<std::string> miss = MediaBatchMissingNames(b);
+        CHECK(miss.size() == 1 && miss[0] == "m.wav" && MediaBatchFailedNames(b).empty());
+        CHECK(MediaMissingToastSuffix(miss) == "; missing m.wav: not added" && MediaMissingToastSuffix({}).empty());
+    }
+    // Several files used at once: each whole file is read, then all Sounds are made together.
+    {
+        std::vector<MediaPick> picks = {Whole("/a/a.wav", 1, 0), Whole("/a/b.wav", 1, 0), Whole("/a/a.wav", 1, 0),
+                                        SlicePick("/a/c.wav", 1), Whole("/a/d.wav", 1, 2)};
+        picks[4].frames_known = true;  // the previewed file: already read
+        MediaBatch b = StartMediaBatch(picks);
+        CHECK(b.read.size() == 5);
+        CHECK(b.read[3] == PickRead::Ready && b.read[4] == PickRead::Ready && b.read[0] == PickRead::Reading);
+        std::vector<std::string> paths = MediaBatchPathsToRead(b);
+        CHECK(paths.size() == 2 && paths[0] == "/a/a.wav" && paths[1] == "/a/b.wav");
+        CHECK(MediaBatchLeft(b) == 2);
+        CHECK(MediaReadingLabel(2) == "Reading 2 files..." && MediaReadingLabel(1) == "Reading 1 file...");
+        SoundFrame f1, f2, f3;
+        f1.start = 0.0; f1.length = 0.2;
+        f2.start = 0.5; f2.length = 0.2;
+        f3.start = 0.9; f3.length = 0.1;
+        MediaBatchSetRead(b, "/a/zzz.wav", true, {f1}, 3.0);  // not in the batch: nothing changes
+        CHECK(MediaBatchLeft(b) == 2);
+        MediaBatchSetRead(b, "/a/a.wav", true, {f1, f2, f3}, 3.0);
+        CHECK(MediaBatchLeft(b) == 1);
+        CHECK(b.picks[0].frames.size() == 3 && b.picks[2].frames.size() == 3 && b.picks[0].length == 3.0);
+        CHECK(MediaBatchFailedNames(b).empty() && MediaFailedToastSuffix({}).empty());
+        MediaBatchSetRead(b, "/a/b.wav", false, {f1}, 2.0);
+        CHECK(MediaBatchLeft(b) == 0 && MediaBatchPathsToRead(b).empty());
+        CHECK(b.read[1] == PickRead::Failed && b.picks[1].frames.empty() && b.picks[1].length == 1.0);
+        std::vector<std::string> failed = MediaBatchFailedNames(b);
+        CHECK(failed.size() == 1 && failed[0] == "b.wav");
+        CHECK(MediaFailedToastSuffix(failed) == "; could not read b.wav: added whole");
+        CHECK(MediaFailedToastSuffix({"x.wav", "y.wav"}) == "; could not read x.wav, y.wav: added whole");
+
+        SoundStore s = Store();
+        std::vector<std::string> created;
+        std::string toast;
+        CHECK(UseMediaAt(s, "M", nullptr, b.picks, &created, &toast, nullptr));
+        CHECK(created.size() == 5);
+        const SoundLibrary& lib = *FindLibrary(s, "M");
+        if (created.size() == 5) {
+            const SoundNode* a = FindNode(lib, created[0]);
+            const SoundNode* bb = FindNode(lib, created[1]);
+            const SoundNode* c = FindNode(lib, created[3]);
+            const SoundNode* d = FindNode(lib, created[4]);
+            CHECK(a && a->sound.mode == DetectMode::Silence && a->sound.frames.size() == 3);
+            CHECK(FindNode(lib, created[2]) && FindNode(lib, created[2])->sound.frames.size() == 3);
+            CHECK(bb && bb->sound.mode == DetectMode::Whole && bb->sound.frames.size() == 1);
+            CHECK(c && c->sound.frames.size() == 1 && c->sound.frames[0].hand);
+            CHECK(d && d->sound.mode == DetectMode::Silence && d->sound.frames.size() == 2);
+        }
+        // A file read with no variation found is a Whole sound, not a failure.
+        MediaBatch e = StartMediaBatch({Whole("/a/q.wav", 1, 0)});
+        MediaBatchSetRead(e, "/a/q.wav", true, {}, 1.5);
+        CHECK(MediaBatchLeft(e) == 0 && MediaBatchFailedNames(e).empty());
+        CHECK(SoundSpecFor(e.picks[0]).sound.mode == DetectMode::Whole && e.picks[0].length == 1.5);
+    }
     if (g_fail) {
         std::printf("%d failure(s)\n", g_fail);
         return 1;

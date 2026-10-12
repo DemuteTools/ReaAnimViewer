@@ -27,6 +27,7 @@ struct MediaPick {
     SoundFrame              frame;          // slice: the variation
     int                     index = 0;      // slice: its 0-based number (named "stem N", N = index + 1)
     std::vector<SoundFrame> frames;         // whole: the detected variations ({} = none / not ready)
+    bool                    frames_known = false;  // whole: `frames` is the file's read result (no read needed)
 };
 
 // "C:\a\b.wav" -> "b.wav"; "b.wav" -> "b".
@@ -57,5 +58,41 @@ std::string FormatMediaFormat(const DbFile& f);
 std::string FormatMediaLength(double seconds);
 // The index of the frame holding source time t, -1 when none.
 int FrameAt(const std::vector<SoundFrame>& frames, double t);
+
+// ---- Several files used at once: each whole file's variations are read first ---------------------
+
+enum class PickRead { Ready, Reading, Failed, Missing };
+
+// A use waiting for its files' peaks: every whole pick whose variations are not known yet is read
+// (once per file, on the panel's worker), then all the Sounds are made together, in one undo point.
+struct MediaBatch {
+    std::vector<MediaPick> picks;
+    std::vector<PickRead>  read;  // one per pick
+};
+
+// Slices and whole picks with frames_known are Ready, the other whole picks Reading.
+MediaBatch StartMediaBatch(std::vector<MediaPick> picks);
+// The files still to read (each once, in pick order).
+std::vector<std::string> MediaBatchPathsToRead(const MediaBatch& b);
+// A file's result: its variations (ok) or a failed read (its picks become Whole sounds). `length`
+// > 0 replaces the picks' length. Every pick of that file still reading is updated.
+void MediaBatchSetRead(MediaBatch& b, const std::string& path, bool ok, const std::vector<SoundFrame>& frames,
+                       double length);
+// A file found missing before it was read: its picks are dropped from the use (named in the toast).
+void MediaBatchSetMissing(MediaBatch& b, const std::string& path);
+// The picks the use makes Sounds from (every pick but the missing ones).
+std::vector<MediaPick> MediaBatchUsedPicks(const MediaBatch& b);
+// The names of the missing files (each once).
+std::vector<std::string> MediaBatchMissingNames(const MediaBatch& b);
+// The number of files still reading (0 = ready to use).
+int MediaBatchLeft(const MediaBatch& b);
+// The names of the files that could not be read (each once).
+std::vector<std::string> MediaBatchFailedNames(const MediaBatch& b);
+// "Reading 3 files..." / "Reading 1 file...".
+std::string MediaReadingLabel(int n_files);
+// Appended to the use's toast: "" when none failed, else "; could not read a.wav, b.wav: added whole".
+std::string MediaFailedToastSuffix(const std::vector<std::string>& names);
+// Appended to the use's toast: "" when none, else "; missing a.wav, b.wav: not added".
+std::string MediaMissingToastSuffix(const std::vector<std::string>& names);
 
 }  // namespace rav

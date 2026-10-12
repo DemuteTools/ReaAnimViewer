@@ -24,8 +24,9 @@
 namespace rav {
 namespace ui {
 
-// The label column of a labelled row (LabelRow): the mockup's .row > .k, 80 px.
-constexpr float kLabelCol = 80.0f;
+// The label column of a labelled row (LabelRow): the mockup's .row > .k, 80 px. 13-14 (N3): at the
+// screen's DPI (a DpPx reads as the scaled float).
+inline constexpr DpPx kLabelCol{80.0f};
 
 // The visible part of a label ("Text##id" -> "Text") measured.
 float TextWidth(const char* label);
@@ -54,6 +55,9 @@ bool EllipsisTextTip(ImDrawList* dl, ImVec2 p, float max_x, ImU32 col, const std
 // field goes -- beside the label when the field keeps `field_min`, else under it the whole width.
 // Returns the field's width (pass it to SetNextItemWidth / the widget's width).
 // 13-7: a setting's label ("Type", "Volume") is muted, as the mockup's .k.
+// 13-14 (C4.2): beside its field, a label wider than its column wraps onto a second line at a space
+// ("Default / value"), the first line on the field's text line, the row as high as both lines; with
+// no usable space (or still too long) it is ellipsized, its full text as a tooltip.
 float LabelRow(const char* label, float field_min, float label_col = kLabelCol, ImU32 col = kMuted);
 // The same with literal text (a user-typed name: "##" in it is shown, not an id; kText, a name).
 float LabelRowText(const std::string& text, float field_min, float label_col = kLabelCol, ImU32 col = kText);
@@ -79,9 +83,13 @@ float IconMenuButtonWidth(const char* label);  // MenuButtonWidth + IconRoom
 // A FittedButton (solid = SolidButton's colours) with `icon` before its label.
 bool IconButton(const Icon& icon, const char* label, const ImVec2& size = ImVec2(0.0f, 0.0f), bool solid = true);
 // ImGui::MenuItem / BeginMenu with `icon` before the label (padded right by the icon room).
+// 13-14 (B16): the shortcut is the mockup's hint (.pop .mi .hint: 11 px faint, at the row's right);
+// a disabled row (enabled = false) is faint (.pop .mi[disabled]), its icon too.
 bool IconMenuItem(const Icon& icon, const char* label, const char* shortcut = nullptr, bool selected = false,
                   bool enabled = true);
 bool IconBeginMenu(const Icon& icon, const char* label, bool enabled = true);
+// 13-14: the same menu row without an icon (ImGui::MenuItem with the hint and the disabled look).
+bool MenuEntry(const char* label, const char* shortcut = nullptr, bool selected = false, bool enabled = true);
 
 // The option of the last Segmented under the mouse (-1 = none).
 int SegmentedHovered();

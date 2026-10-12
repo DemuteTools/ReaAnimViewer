@@ -185,6 +185,51 @@ int main()
         CHECK(Near(FaderThumbX(5.0f, 10.0f, 210.0f, 8.0f, 5.0f, 5.0f), 18.0f));          // an empty range
     }
 
+    // ---- 13-14 G-13: a logarithmic fader (the Video view's Distance) ----
+    {
+        // Track 10..210, thumb 8: centre 18..202. Range 0.25..4 (x16): the middle is x4 of the minimum = 1.
+        CHECK(Near(FaderValueAt(110.0f, 10.0f, 210.0f, 8.0f, 0.25f, 4.0f, true), 1.0f));
+        CHECK(Near(FaderValueAt(18.0f, 10.0f, 210.0f, 8.0f, 0.25f, 4.0f, true), 0.25f));
+        CHECK(Near(FaderValueAt(202.0f, 10.0f, 210.0f, 8.0f, 0.25f, 4.0f, true), 4.0f));
+        CHECK(Near(FaderValueAt(-50.0f, 10.0f, 210.0f, 8.0f, 0.25f, 4.0f, true), 0.25f));  // clamped
+        CHECK(Near(FaderThumbX(1.0f, 10.0f, 210.0f, 8.0f, 0.25f, 4.0f, true), 110.0f));
+        CHECK(Near(FaderThumbX(0.5f, 10.0f, 210.0f, 8.0f, 0.25f, 4.0f, true), 18.0f + 184.0f * 0.25f));
+        CHECK(Near(FaderThumbX(0.0f, 10.0f, 210.0f, 8.0f, 0.25f, 4.0f, true), 18.0f));  // under the range
+        CHECK(Near(FaderThumbX(9.0f, 10.0f, 210.0f, 8.0f, 0.25f, 4.0f, true), 202.0f));
+        for (float x = 18.0f; x <= 202.0f; x += 1.0f)
+            CHECK(std::fabs(FaderThumbX(FaderValueAt(x, 10.0f, 210.0f, 8.0f, 0.25f, 4.0f, true), 10.0f, 210.0f, 8.0f, 0.25f,
+                                        4.0f, true) - x) < 0.05f);
+        // A range through zero cannot be logarithmic: linear, as without the flag.
+        CHECK(Near(FaderValueAt(110.0f, 10.0f, 210.0f, 8.0f, -60.0f, 12.0f, true), -24.0f));
+        CHECK(Near(FaderThumbX(-24.0f, 10.0f, 210.0f, 8.0f, -60.0f, 12.0f, true), 110.0f));
+    }
+
+    // ---- 13-14 C4.2: a label wraps onto two lines in its column ----
+    {
+        // 7 px a glyph. "Default value" = 13 glyphs (91 px).
+        CHECK(TwoLineBreak("Default value", 91.0f, Measure) == 0);          // fits: one line
+        CHECK(TwoLineBreak("Default value", 80.0f, Measure) == 8);          // "Default" / "value"
+        CHECK(TwoLineBreak("Preview value", 80.0f, Measure) == 8);
+        CHECK(TwoLineBreak("Lands in the folder", 80.0f, Measure) == 9);    // "Lands in" (56) / "the folder"
+        CHECK(TwoLineBreak("Lands in the folder", 90.0f, Measure) == 13);   // "Lands in the" (84) / "folder"
+        CHECK(TwoLineBreak("Supercalifragilistic", 80.0f, Measure) == 0);   // no space: ellipsized on one line
+        CHECK(TwoLineBreak("Supercalifragilistic word", 80.0f, Measure) == 0);  // first word alone too wide
+        CHECK(TwoLineBreak("Default  value", 80.0f, Measure) == 9);         // the spaces are dropped
+        CHECK(TwoLineBreak("Defaultvalue ", 80.0f, Measure) == 0);          // nothing after the space
+        CHECK(TwoLineBreak(" Defaultvalue", 80.0f, Measure) == 0);          // nothing before it
+        CHECK(TwoLineBreak("", 80.0f, Measure) == 0);
+        // Whatever the width, the first line fits it.
+        const std::string t = "Avoid repeating the last two sounds played";
+        for (float w = 0.0f; w <= 320.0f; w += 3.0f) {
+            const size_t brk = TwoLineBreak(t, w, Measure);
+            if (brk == 0) continue;
+            size_t end = brk;
+            while (end > 0 && t[end - 1] == ' ') --end;
+            CHECK(Measure(t.c_str(), t.c_str() + end) <= w);
+            CHECK(t[brk] != ' ');
+        }
+    }
+
     // ---- 13-7 B6: numbers shown as the mockup shows them ----
     {
         CHECK(TrimmedNumber(0.0, 1) == "0");

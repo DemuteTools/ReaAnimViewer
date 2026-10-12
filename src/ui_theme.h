@@ -66,6 +66,61 @@
 //    Toast       BeginToast / EndToast (pad 14 8, 13 px), ToastNote (11 px faint)
 //    Splitter    SplitterBar (8 px hit, accent-line on hover, accent while dragged)
 //    DashedRect  a dashed rounded outline (drop hints, the empty-library box)
+//
+// 13-14 (one theme for every tab: Main, Tagging, Video, Library, the ☰ menu). Every view draws
+// with the widgets above and below; no raw ImGui widget or hand-made style outside ui_theme /
+// ui_flow (menu rows -- MenuItem / Selectable / BeginMenu / TextDisabled / Separator -- are fine
+// inside a themed popup or combo; tooltips are fine, ItemTip styles them).
+//
+//  Metrics
+//    kCardPad 8, kCardGap 8 (here), kLabelCol 80 (ui_flow.h) are DpPx: they read as floats already
+//                scaled by the DPI (N3), so `x + ui::kCardPad` and `label_col = ui::kLabelCol` hold.
+//
+//  Colours (G-11)  kOverlayBg (kBg .72, frameless buttons over the 3D view), kKnob / kKnobLine
+//                (--knob), kPlayhead, kOutsideDim (kBg .65), kAccentFaint (accent .10), kHatch (.35) /
+//                kHatchLight (.20), kRing (white .35), kRaisedVeil (kRaised .95), kAxisX/Y/Z (+ Dark),
+//                kNavEdge, kHighlight (#ffd54f); WithAlpha(c, a)
+//
+//  Disabled (A5 / B2 / C3.2: .btn[disabled] = raised + faint text; .tbb.dis = transparent + faint;
+//    .pop .mi[disabled] = faint). Inside ImGui::BeginDisabled the theme's buttons (Solid / Primary /
+//    Toggle / ghost FittedButton / MenuButton / IconButton / IconOnlyButton / AddButton / ChipButton /
+//    ConfirmButton / ToneButton) draw that skin themselves at full opacity; IconMenuItem / MenuEntry
+//    rows with enabled = false are faint. style.DisabledAlpha stays ImGui's 0.6 for the stock
+//    widgets left (a disabled MenuItem would otherwise look enabled).
+//    BeginDisabledLook / EndDisabledLook: BeginDisabled with no fade, text faint (stock content).
+//    ItemDisabled(): true inside a disabled region.
+//
+//  Text        ToneText (a toned line or wrapped paragraph: kWarn notice, kBad error, kFaint note)
+//  Buttons     ConfirmButton (.btn.confirm: kConfirmAct fill, #1a1a1a text, 22 px), ToneButton (a solid
+//              button with a tone edge + text and a trailing icon: "Roles · 2 missing"), ChipButton
+//              (a clickable .tag pill: angles, Cut / Move), AddButton(+ key cap, pill),
+//              IconOnlyButton(texture; framed = the .colbtn over the 3D view: kOverlayBg + stroke,
+//              28 x 26 burger), LinkButton(label, col)
+//  Switch      the .sw toggle: 26 x 16 track (accent on / stroke-strong off), kKnob thumb r 6
+//  Bands       BeginConfirmBand / EndConfirmBand: the amber in-place confirm (.confirmbox: kWarn .45
+//              edge, .08 fill, r7, inset 6) or the warn band (kWarn .08, r5, inset 8 3)
+//  Combos      BeginChipCombo / EndChipCombo (select.chip: ControlH, sized to its preview, small muted
+//              chevron, list as a menu), BeginComboStyled(..., TagTone) (Bad = kBadInk + kBadLine edge),
+//              SelectField (a select-looking button that opens the caller's popup: "Preset: x  edited ▾")
+//  Popups      BeginPanelPopup (content popup: kRaised, stroke-strong, r7, pad 12, no row spacing),
+//              BeginModalCard (centred modal, pad 16 14), BeginFloatingCard (the same, not modal),
+//              popups / combos / toast / modal cards cast the mockup's shadow (0 18 50 rgba 0 .6)
+//  Menus       MenuEntry (a MenuItem with the 11 px faint hint .pop .mi .hint and a faint disabled
+//              row), BeginSubMenu (BeginMenu, min 220 wide), MenuSeparator (.pop .sep)
+//  Overlays    BeginOverlay (frameless auto-size window over the 3D view), BeginOverlayPanel (the
+//              Edit overlay: kBg, stroke-strong, r10)
+//  Panes       BeginPane (child: kSurface, stroke, r10, pad 8), BeginListPane (kBg, stroke, r5, pad 1),
+//              BeginWell (.tb well: kBg, stroke, r7, pad 4), BeginToolbar (a well with .tbb metrics:
+//              24 px buttons, pad 0 6, 3 px apart, disabled = .tbb.dis)
+//  Fader       Fader(id, v, min, max, width, FaderOpts): + log range, + value drawn in mono 11 (.fader)
+//  DragNumber  + text_col (a toned value: kWarn "raised by Detect")
+//  Fields      TextField's focus ring is 2 px accent-line (outline-offset 1); TitleField(..., font);
+//              RenameField(..., hint)
+//  Colour      ColorSwatchButton (a swatch that opens a themed picker), SwatchPalette (8 dots, r7,
+//              kText ring on the current one)
+//  Tooltips    ItemTip / BeginItemTip / EndItemTip (B14: pad 8 6, wrap 24 em); the theme's own
+//              tooltips use the same look
+//  Labels      LabelRow / LabelRowText wrap a long label onto two lines in its column (ui_flow.h)
 // =====================================================================================
 
 #pragma once
@@ -125,6 +180,32 @@ constexpr ImU32 kUserLine       = IM_COL32(0x9B, 0x7B, 0xFF, 0x80);     // .tag.
 constexpr ImU32 kWarnLine       = IM_COL32(0xFF, 0xD1, 0x66, 0x80);     // .tag.warn edge (.5)
 constexpr ImU32 kOkLine         = IM_COL32(0x5F, 0xDD, 0x9E, 0x73);     // .tag.ok edge (.45)
 
+// 13-14 (G-11): the views' remaining literal colours, named once.
+constexpr ImU32 kOverlayBg   = IM_COL32(0x12, 0x13, 0x17, 0xB8);  // a frameless button over the 3D view (kBg .72)
+constexpr ImU32 kKnob        = IM_COL32(0xC9, 0xCE, 0xD8, 0xFF);  // --knob: a switch's thumb, icons over the view
+constexpr ImU32 kKnobLine    = IM_COL32(0xC9, 0xCE, 0xD8, 0x8C);  // its lines (.55): the skeleton's bones
+constexpr ImU32 kPlayhead    = IM_COL32(0xDF, 0xE3, 0xEA, 0xFF);  // the strips' playhead
+constexpr ImU32 kOutsideDim  = IM_COL32(0x12, 0x13, 0x17, 0xA6);  // kBg .65 over a lane outside its item
+constexpr ImU32 kAccentFaint = IM_COL32(0x5B, 0x8C, 0xFF, 0x1A);  // accent .10: a lane's lit row
+constexpr ImU32 kHatch       = IM_COL32(0x00, 0x00, 0x00, 0x59);  // an off frame's hatch (.35)
+constexpr ImU32 kHatchLight  = IM_COL32(0x00, 0x00, 0x00, 0x33);  // a Blend layer's hatch (.20)
+constexpr ImU32 kRing        = IM_COL32(0xFF, 0xFF, 0xFF, 0x59);  // the white ring of a selected bar (.35)
+constexpr ImU32 kRaisedVeil  = IM_COL32(0x20, 0x23, 0x2A, 0xF2);  // kRaised .95: a label over the 3D view
+constexpr ImU32 kAxisX       = IM_COL32(0xD6, 0x54, 0x4E, 0xFF);  // the nav cube: +X red
+constexpr ImU32 kAxisXDark   = IM_COL32(0x96, 0x34, 0x30, 0xFF);  //   -X
+constexpr ImU32 kAxisY       = IM_COL32(0x78, 0xBE, 0x5A, 0xFF);  //   +Y green
+constexpr ImU32 kAxisYDark   = IM_COL32(0x50, 0x82, 0x3E, 0xFF);  //   -Y
+constexpr ImU32 kAxisZ       = IM_COL32(0x54, 0x8C, 0xDC, 0xFF);  //   +Z blue
+constexpr ImU32 kAxisZDark   = IM_COL32(0x38, 0x60, 0x9C, 0xFF);  //   -Z
+constexpr ImU32 kNavEdge     = IM_COL32(0x14, 0x16, 0x1C, 0xDC);  //   its faces' edges
+constexpr ImU32 kHighlight   = IM_COL32(0xFF, 0xD5, 0x4F, 0xFF);  //   the amber hover highlight
+
+// `c` with alpha `a` (0..255, clamped).
+constexpr ImU32 WithAlpha(ImU32 c, int a)
+{
+    return (c & ~IM_COL32_A_MASK) | (static_cast<ImU32>(a < 0 ? 0 : (a > 255 ? 255 : a)) << IM_COL32_A_SHIFT);
+}
+
 // The curve palette (theme.lua CURVE_PALETTE, the mock-up's shot colours): same
 // saturation and lightness, only the hue changes. Shot i takes kCurvePalette[i % 8].
 constexpr ImU32 kCurvePalette[8] = {
@@ -149,6 +230,12 @@ void  SetUiScale(float scale);
 float UiScale();
 // A size in the mockup's CSS px at the screen's DPI.
 inline float Dp(float px) { return px * UiScale(); }
+// 13-14 (N3): a layout constant in mockup px that reads as a float at the screen's DPI, so it keeps
+// the syntax of the constexpr float it replaces (`x + kCardPad`, `float col = kLabelCol`).
+struct DpPx {
+    float px;
+    operator float() const { return Dp(px); }
+};
 float ControlH();        // 22: .btn.sm, .seg .btn, .lnum (the default frame height)
 float FieldH();          // 24: input.txt, select, .tbb
 float LargeH();          // 26: .btn, .playbig
@@ -258,11 +345,37 @@ bool ToggleButton(const char* label, bool on, const ImVec2& size = ImVec2(0.0f, 
 // muted, kText and kHover under the mouse. `side` 0 = ControlH(). `tip`: its tooltip.
 bool IconOnlyButton(const char* id, const char* glyph, const char* tip = nullptr, float side = 0.0f, bool on = false);
 bool IconOnlyButton(const char* id, const Icon& icon, const char* tip = nullptr, float side = 0.0f, bool on = false);
+// 13-14 (G-9): a texture icon (the ☰ burger, the keyboard), tinted kMuted (kText under the mouse,
+// accent when on); its icon fills the button less 4 px.
+bool IconOnlyButton(const char* id, ImTextureID tex, const char* tip = nullptr, float side = 0.0f, bool on = false);
+// The same with its size and look spelled out. `framed` = the mockup's .colbtn over the 3D view:
+// kOverlayBg fill + a stroke edge (accent-soft + accent-line when on, kHover under the mouse).
+struct IconOnlyOpts {
+    float w = 0.0f, h = 0.0f;  // 0 = ControlH() (h 0 = w)
+    bool  on = false;
+    bool  framed = false;
+    float icon_px = 0.0f;      // 0 = the button's height less 4 px (texture) / IconPx() (Icon)
+    ImU32 tint = 0;            // the icon's ink at rest; 0 = kMuted (texture) / the Icon's own col
+};
+bool IconOnlyButton(const char* id, ImTextureID tex, const char* tip, const IconOnlyOpts& o);
+bool IconOnlyButton(const char* id, const Icon& icon, const char* tip, const IconOnlyOpts& o);
 // A link (.linkbtn): kAccentInk underlined text, kAccentText under the mouse. The toast's Undo.
-bool LinkButton(const char* label);
+// 13-14 (G-21): `col` (non-zero) draws a quiet link in that colour (a muted report line), kText
+// and underlined under the mouse only.
+bool LinkButton(const char* label, ImU32 col = 0);
 // The dashed "add" button (.addbtn: "+ value", "+ Library"): transparent, dashed stroke-strong
 // edge, faint text; solid edge and kText under the mouse. ControlH() high, shrinks + ellipsizes.
-bool AddButton(const char* label, const ImVec2& size = ImVec2(0.0f, 0.0f));
+// 13-14 (G-15): `key` draws its shortcut as a key cap 8 px after the label ("+ Event  E"); `pill`
+// rounds it fully (the Video view's "+ Save" chip).
+bool AddButton(const char* label, const ImVec2& size = ImVec2(0.0f, 0.0f), const char* key = nullptr,
+               bool pill = false);
+// 13-14 (G-1): the amber action of an in-place confirm (.btn.confirm: kConfirmAct fill, kConfirmActHover
+// under the mouse, kConfirmActText). ControlH() high; shrinks and ellipsizes like SolidButton.
+bool ConfirmButton(const char* label, const ImVec2& size = ImVec2(0.0f, 0.0f));
+// 13-14 (G-16): a clickable pill (a .tag that acts): r = h / 2, 1 px stroke edge, kBg (kHover +
+// stroke-strong under the mouse), text muted (kText under the mouse); `on` = accent-soft, accent-line,
+// kAccentText. Natural width = label + 7 px each side; ControlH() high; shrinks and ellipsizes.
+bool ChipButton(const char* label, const ImVec2& size = ImVec2(0.0f, 0.0f), bool on = false);
 // The help mark (.qmark): an 18 px circle with "?"; `tip` shown on hover. True when clicked.
 bool HelpMark(const char* id, const char* tip = nullptr);
 
@@ -290,6 +403,16 @@ float DrawSmallTag(ImDrawList* dl, ImVec2 p, const char* text);  // top-left at 
 float CountChipWidth(const char* text);
 void  CountChip(const char* text);
 
+// 13-14 (G-24): a solid button toned like a Tag (Bad: kBadInk text, kBadLine edge; Ok / Warn / ...),
+// raised fill (kHover under the mouse), r5, ControlH() high, an optional `icon` drawn after the
+// label (its own colour: the ✓ of "Roles"). Shrinks and ellipsizes its label; the icon stays.
+float ToneButtonWidth(const char* label, const Icon* icon = nullptr);
+bool  ToneButton(const char* label, TagTone tone, const Icon* icon = nullptr, const ImVec2& size = ImVec2(0.0f, 0.0f));
+
+// 13-14 (G-3): the on / off switch (.sw): a 26 x 16 track (accent on, stroke-strong off), a kKnob
+// thumb (r 6) at its end, centred on the frame line (an item 26 px x ControlH()). True when clicked.
+bool Switch(const char* id, bool on);
+
 // A small muted caption (the mock-up's .k label).
 void Caption(const char* text);
 // An UPPERCASE caption (.capt / .lgrp, 11 px, letter-spaced): "PROJECT", "USER". `col` 0 = kFaint.
@@ -297,6 +420,21 @@ void GroupCaption(const char* text, ImU32 col = 0);
 
 // Muted, wrapped body text (the mock-up's .sub).
 void SubText(const char* text);
+
+// 13-14 (G-4): text in a token colour: a notice (kWarn), an error (kBad), a note (kFaint), a muted
+// line. `wrap`: wrapped at `wrap_w` from the cursor (0 = at the room left), else one line.
+void ToneText(const char* text, ImU32 col = kMuted, bool wrap = false, float wrap_w = 0.0f);
+void ToneText(const std::string& text, ImU32 col = kMuted, bool wrap = false, float wrap_w = 0.0f);
+
+// 13-14 (G-14, B14) tooltips. The mockup's tooltip look: kRaised, stroke-strong edge, pad 8 6, the
+// 12 px body font. ItemTip: the tooltip of the last item (hovered for a tooltip: still for 0.5 s,
+// disabled items too). BeginItemTip / EndItemTip: free content, wrapped at `wrap_em` font sizes;
+// call EndItemTip only when BeginItemTip returned true.
+void ItemTip(const char* fmt, ...) IM_FMTARGS(1);
+bool BeginItemTip(float wrap_em = 24.0f, int hovered_flags = 0);
+void EndItemTip();
+// The same look for a tooltip shown now (not tied to an item: a draw-list row under the mouse).
+void ShowTip(const char* text);
 
 // Story 10-3 -- a number field (the mock-up's input.nin), never a slider. Dragging it
 // sideways changes the value by `step` per pixel (Shift held: a tenth of it); a click
@@ -313,8 +451,9 @@ enum class DragNumberEvent {
     Commit,  // released after a drag, or a typed value entered: write *value (one undo point)
     Cancel,  // Esc: *value is back to its value before the gesture
 };
+// 13-14 (G-20): `text_col` (non-zero) tones the number (kWarn: a value Detect raised).
 DragNumberEvent DragNumber(const char* id, double* value, double step, int decimals, const char* unit,
-                           float width = 0.0f, bool trim = false);
+                           float width = 0.0f, bool trim = false, ImU32 text_col = 0);
 // True while a DragNumber is dragged or typed into (the viewer routes Esc to it).
 bool DragNumberActive();
 // Forgets a running drag / typed value (its view went away; the caller ends the gesture).
@@ -326,18 +465,33 @@ void DragNumberReset();
 // ControlH() high. Returns true when *v changed this frame; ImGui::IsItemActive() /
 // IsItemDeactivated() after it tell the gesture's state (as with ImGui::SliderFloat).
 bool Fader(const char* id, float* v, float v_min, float v_max, float width = 0.0f);
+// 13-14 (G-13): `log` = a logarithmic range (needs 0 < v_min < v_max); `format` (printf, e.g. "%.2f")
+// draws the value right of the track (.fader: 8 px gap) in mono 11, right-aligned in `value_w`
+// (0 = wide enough for v_min and v_max). `width` covers track and value. The last item is still the
+// track: IsItemActive / IsItemDeactivated after it hold (never IsItemDeactivatedAfterEdit: an
+// InvisibleButton).
+struct FaderOpts {
+    bool        log = false;
+    const char* format = nullptr;
+    float       value_w = 0.0f;
+};
+bool Fader(const char* id, float* v, float v_min, float v_max, float width, const FaderOpts& o);
 
 // 13-7 (B7) text fields. All take the room left when `width` is 0 (else min(width, room left)).
 // TextField: input.txt (FieldH() high, bg kBg, 1 px stroke edge, accent-line edge while typing,
 // r5, faint hint). Returns ImGui::InputText's result (`flags` passed on).
+// 13-14 (B7): while typed into, the mockup's focus ring: 2 px accent-line, 1 px outside the edge.
 bool TextField(const char* id, const char* hint, char* buf, size_t buf_size, float width = 0.0f,
                int flags = 0);
 // TitleField: an inline title (.pane-h input.ttl / .sname): transparent until hovered or typed
 // into (then kBg with a stroke-strong edge), FontHeading, 28 px high.
-bool TitleField(const char* id, char* buf, size_t buf_size, float width = 0.0f, int flags = 0);
+// 13-14 (G-22): `font` (non-null) = an inline field in that font, as high as the font plus 6 px and
+// never under ControlH() (the Video view's shot name in the body font: 22 px).
+bool TitleField(const char* id, char* buf, size_t buf_size, float width = 0.0f, int flags = 0, ImFont* font = nullptr);
 // RenameField: an inline rename in a row (.redit / .gedit): ControlH() high, kBg, accent-line edge,
-// 13 px text.
-bool RenameField(const char* id, char* buf, size_t buf_size, float width = 0.0f, int flags = 0);
+// 13 px text. 13-14 (G-23): `hint` shown faint while empty ("Role name").
+bool RenameField(const char* id, char* buf, size_t buf_size, float width = 0.0f, int flags = 0,
+                 const char* hint = nullptr);
 // AddField: the dashed "+ value" field (.trow.add input): transparent with a dashed stroke-strong
 // edge and a faint hint; solid edge on kBg while typed into.
 bool AddField(const char* id, const char* hint, char* buf, size_t buf_size, float width = 0.0f, int flags = 0);
@@ -345,8 +499,35 @@ bool AddField(const char* id, const char* hint, char* buf, size_t buf_size, floa
 // 13-7 (B8): a dropdown (select): FieldH() high, kStrokeStrong fill and edge, r5, `preview`
 // ellipsized before a drawn muted chevron; its list is styled as a menu popup. `width` 0 =
 // natural (min 150) within the room left. Call EndComboStyled only when it returned true.
-bool BeginComboStyled(const char* id, const char* preview, float width = 0.0f, int flags = 0);
+// 13-14 (G-6): `tone` Bad = a value that is missing: preview kBadInk, edge kBadLine.
+bool BeginComboStyled(const char* id, const char* preview, float width = 0.0f, int flags = 0,
+                      TagTone tone = TagTone::Neutral);
 void EndComboStyled();
+
+// 13-14 (G-5): the small "chip" select of the Tagging rules (select.chip): ControlH() high, r7,
+// stroke-strong fill (kFrameHover under the mouse), sized to its preview (+ 30 px for the pad and the
+// chevron, never under `min_w`; 0 = 40 px) within the room left -- or within `right` (a Sentence's
+// right edge) when given -- the preview ellipsized before a small muted chevron (faint when
+// `disabled`). Its list is a menu popup (BeginMenuPopup's look). `flags`: ImGuiComboFlags (the
+// height). Call EndChipCombo only when it returned true.
+float ChipComboWidth(const char* preview, float min_w = 0.0f);
+bool  BeginChipCombo(const char* id, const char* preview, float min_w = 0.0f, bool disabled = false, int flags = 0,
+                     float right = 0.0f);
+void  EndChipCombo();
+
+// 13-14 (G-17): a select-looking button (the Tagging panel's preset field): FieldH() high, kRaised
+// (kHover under the mouse), r5, its edge kStroke (accent-line while `open`), then: `label` muted,
+// the icon, `value` (ellipsized, kText or value_col), `tag` right-aligned (faint, or toned) and a
+// muted chevron. True when clicked: the caller opens its popup under it (GetItemRectMin / Max).
+struct SelectFieldOpts {
+    const char* tag = nullptr;
+    TagTone     tag_tone = TagTone::Neutral;  // Warn: the tag in kWarn ("Legacy")
+    bool        open = false;
+    float       width = 0.0f;                 // 0 = the room left
+    const Icon* icon = nullptr;               // drawn 12 px before the value (the factory padlock)
+    ImU32       value_col = 0;                // 0 = kText (kMuted: a preset that is gone)
+};
+bool SelectField(const char* id, const char* label, const char* value, const SelectFieldOpts& o = SelectFieldOpts());
 
 // 13-7 (B9): a checkbox (.chk): a 14 px box, r3 (off: kBg + stroke-strong edge; on: accent
 // fill + white tick), the label 6 px after it, wrapped within the room left; box and label
@@ -395,6 +576,46 @@ bool BeginMenuPopupContextItem(const char* id = nullptr, int popup_flags = 1 /* 
 void EndMenuPopup();
 // A caption inside a menu (.pop .mh: 10 px faint UPPERCASE): "SWITCH ON", "LIBRARIES".
 void MenuCaption(const char* text);
+// 13-14 (G-18): a nested menu with the menu's 220 px minimum (ImGui::BeginMenu otherwise); call
+// ImGui::EndMenu only when it returned true. MenuSeparator: the .pop .sep line (kStroke).
+bool BeginSubMenu(const char* label, bool enabled = true);
+void MenuSeparator();
+
+// 13-14 (G-8): a popup that holds content rather than a list of actions (a search field and its
+// cascades, a name field and its buttons, the Shortcuts sheet): the menu's look (kRaised, 1 px
+// stroke-strong edge, r7, the shadow) with `pad` inside (mockup px; default 12 12), the theme's own
+// item spacing and no minimum width. Call EndPanelPopup only when it returned true.
+bool BeginPanelPopup(const char* id, int window_flags = 0, ImVec2 pad = ImVec2(12.0f, 12.0f));
+void EndPanelPopup();
+
+// 13-14 (G-7): a modal card, centred in the viewport: kRaised, 1 px stroke-strong edge, r7, pad 16 14,
+// the shadow; sized to its content (`width` 0) or `width` wide (at most the viewport less 32 px) with
+// its height capped to the viewport less 32 px (the content scrolls). `window_flags` are added to
+// NoTitleBar | NoMove | NoSavedSettings. Open it with ImGui::OpenPopup(id); ImGui::CloseCurrentPopup
+// inside closes it. Call EndModalCard only when it returned true.
+bool BeginModalCard(const char* id, int window_flags = 0, float width = 0.0f);
+void EndModalCard();
+// 13-14 (G-7b): the same card as a plain window (not modal, not focused when it appears) at `pos`
+// (pivot as SetNextWindowPos), `width` wide (0 = sized to its content). Call EndFloatingCard
+// whatever it returns.
+bool BeginFloatingCard(const char* id, ImVec2 pos, ImVec2 pivot = ImVec2(0.0f, 0.0f), float width = 0.0f);
+void EndFloatingCard();
+
+// 13-14 (G-10): a frameless window over the 3D view holding a few widgets (the view toggle, the
+// panel button, the status icon, the nav cube): pad 0, no background, no border, sized to its
+// content, never focused / scrolled / saved. Call EndOverlay whatever it returns.
+bool BeginOverlay(const char* id, ImVec2 pos, ImVec2 pivot = ImVec2(0.0f, 0.0f), int extra_flags = 0);
+void EndOverlay();
+// 13-14 (G-19): a panel over the view at `pos`, `size` (the Library's Edit overlay, .edbox): kBg, 1 px
+// stroke-strong edge, r10, the shadow; no decoration, never moved or saved. Call EndOverlayPanel
+// whatever it returns.
+bool BeginOverlayPanel(const char* id, ImVec2 pos, ImVec2 size, int extra_flags = 0);
+void EndOverlayPanel();
+
+// 13-14: the soft shadow the mockup casts under popups, the toast and the overlay cards (.pop:
+// 0 18px 50px rgba(0,0,0,.6)), drawn around the current window, outside it only. The Begin* above
+// call it; a custom popup calls it right after its Begin.
+void WindowShadow(float alpha = 0.6f);
 
 // 13-7 (B15): the toast (.toast): kRaised, 1 px stroke-strong edge, r7, pad 14 8, 13 px text.
 // A window placed at `pos` (pivot as SetNextWindowPos). Call EndToast whatever it returns.
@@ -436,9 +657,9 @@ void RuleStripe(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col, float radius);
 
 // A card: its fill and edge are drawn behind its content once its height is known.
 // BeginCard / EndCard around the content; the cursor ends under it, a kCardGap below.
-// 13-7 (A3/A4): r 10 (kRadiusLg), 8 px between cards.
-constexpr float kCardPad = 8.0f;
-constexpr float kCardGap = 8.0f;
+// 13-7 (A3/A4): r 10 (kRadiusLg), 8 px between cards. 13-14 (N3): at the screen's DPI (DpPx).
+inline constexpr DpPx kCardPad{8.0f};
+inline constexpr DpPx kCardGap{8.0f};
 // The card's content ends at its inner edge (kCardPad inside its right side): the window's work
 // and content rects are narrowed while it is open, so GetContentRegionAvail, wrapping, spanning
 // rows and the ui_flow helpers all stop there.
@@ -452,6 +673,75 @@ struct Card {
 // `top_pad` < 0 = kCardPad (a Section passes the mockup's 4).
 void BeginCard(Card& k, float top_pad = -1.0f);
 void EndCard(Card& k, ImU32 fill, ImU32 edge);
+
+// 13-14 (G-19) panes. BeginPane: a child window (the Library's columns, a side strip): `fill`, a 1 px
+// kStroke edge (none when `edge` 0), r10, 8 px inside. BeginListPane: a list's dark box (the Media
+// Explorer's results: kBg, stroke edge, r5, rows 1 px inside the edge). Both return ImGui::BeginChild's
+// result; call EndPane / EndListPane whatever they return (as EndChild).
+bool BeginPane(const char* id, ImVec2 size, ImU32 fill = kSurface, int child_flags = 0, int window_flags = 0,
+               ImU32 edge = kStroke);
+void EndPane();
+bool BeginListPane(const char* id, ImVec2 size, int window_flags = 0);
+void EndListPane();
+
+// A well (.tb, the Library toolbar's dark box): kBg, 1 px kStroke edge, r7, `pad` inside (< 0 = 4 px
+// plus the edge), the room left wide. Its content ends at its inner edge (the window's rects are
+// narrowed while it is open, as a Card's), so rows wrap within it; the cursor ends under it, 8 px
+// below. BeginToolbar / EndToolbar: a well holding .tbb buttons -- FieldH() high (pad 0 6), 3 px
+// apart -- and a disabled button inside it takes .tbb.dis (transparent, faint text and icon).
+struct Well {
+    ImDrawListSplitter split;
+    ImVec2             p0;
+    float              w = 0.0f;
+    float              pad = 0.0f;
+    float              saved_work_max = 0.0f;
+    float              saved_content_max = 0.0f;
+    bool               toolbar = false;
+};
+void BeginWell(Well& k, float pad = -1.0f);
+void EndWell(Well& k);
+void BeginToolbar(Well& k);
+void EndToolbar(Well& k);
+
+// 13-14 (G-2): an in-place confirm band around its content (BeginConfirmBand, the content, then
+// EndConfirmBand): `warn` false = the amber confirm (.confirmbox: kConfirmLine edge, its .08 fill,
+// r7, content 6 px inside); `warn` true = the warn band (Legacy: kWarn .08 fill, kConfirmLine edge,
+// r5, content 8 / 3 px inside). `width` 0 = the room left. The content ends at the band's inner
+// edge; the cursor ends under the band.
+struct ConfirmBand {
+    ImDrawListSplitter split;
+    ImVec2             p0;
+    float              w = 0.0f;
+    bool               warn = false;
+    float              pad_x = 0.0f, pad_y = 0.0f;
+    float              saved_work_max = 0.0f;
+    float              saved_content_max = 0.0f;
+};
+void BeginConfirmBand(ConfirmBand& b, float width = 0.0f, bool warn = false);
+void EndConfirmBand(ConfirmBand& b);
+
+// 13-14 (G-12): a colour swatch (ControlH() square, r5, the colour, stroke-strong edge, kFrameHover
+// under the mouse) that opens a themed colour picker (a panel popup) on click. True while `rgb`
+// changed this frame. `tip`: its tooltip.
+bool ColorSwatchButton(const char* id, float rgb[3], const char* tip = nullptr);
+// A row of colour dots to pick from (the rule colours): `count` dots (r7 in a 20 px cell, 4 px apart),
+// a 1.5 px kText ring (r9) around `current`, kStrokeStrong around the one under the mouse. True when
+// one was clicked: *picked = its index.
+bool SwatchPalette(const char* id, const ImU32* colors, int count, ImU32 current, int* picked);
+
+// 13-14 (A5 / B2): the disabled look. ItemDisabled: true inside ImGui::BeginDisabled (the next item
+// is disabled). BeginDisabledLook / EndDisabledLook: BeginDisabled(disabled) without ImGui's fade,
+// the text faint instead (the mockup's [disabled]) -- for stock content (Text, Selectable rows); the
+// theme's buttons need no wrapper. Pair them always (EndDisabledLook ends what Begin started).
+bool ItemDisabled();
+void BeginDisabledLook(bool disabled = true);
+void EndDisabledLook();
+// The skin a themed button takes inside a disabled region, pushed just before ImGui::Button (the
+// base of FittedButton / MenuButton / IconButton): full opacity, faint text, the fill kRaised
+// (.btn[disabled]) or transparent for a ghost button and inside a toolbar (.tbb.dis). Does nothing
+// (returns false) when the item is enabled. Pass its result to PopDisabledButtonSkin.
+bool PushDisabledButtonSkin();
+void PopDisabledButtonSkin(bool pushed);
 
 // THE PANEL: the look of every panel and strip docked in the viewer, and of the open
 // options menu -- the panel grey (kSurface) with a kStroke edge. Pushes 2 colours: call

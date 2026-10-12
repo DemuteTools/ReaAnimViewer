@@ -75,9 +75,17 @@ int PlaceTrail(const float* w, int n, float left, float right, float lead_min, f
 
 // 13-7 (B5): a fader (ui::Fader). Its thumb (radius `thumb_r`) has its centre from x0 + r to x1 - r.
 // The value under the mouse at `mouse_x`, clamped to [v_min, v_max]; v_min when the track has no room.
-float FaderValueAt(float mouse_x, float x0, float x1, float thumb_r, float v_min, float v_max);
+// 13-14 (G-13): `log` spreads the range logarithmically along the track (a distance, a zoom); it
+// needs 0 < v_min < v_max, else the track stays linear.
+float FaderValueAt(float mouse_x, float x0, float x1, float thumb_r, float v_min, float v_max, bool log = false);
 // The thumb centre's x for value `v` (clamped to the range).
-float FaderThumbX(float v, float x0, float x1, float thumb_r, float v_min, float v_max);
+float FaderThumbX(float v, float x0, float x1, float thumb_r, float v_min, float v_max, bool log = false);
+
+// 13-14 (C4.2, the mockup's .row > .k): a label too wide for its column wraps onto a second line
+// (never more). The byte where the second line starts: after the last space whose first line still
+// fits `width`; 0 when the text fits on one line, or when no space allows a first line that fits
+// (the label is then ellipsized on one line). The second line may itself be ellipsized.
+size_t TwoLineBreak(const std::string& text, float width, const MeasureFn& measure);
 
 // 13-7 (B6): a number as the mockup shows it ("0", "-14.5", "1.25"): rounded to `decimals` (0..9),
 // trailing zeros and a bare point dropped, never "-0".

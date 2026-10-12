@@ -12,6 +12,7 @@
 #include <cfloat>
 #include <charconv>
 #include <cmath>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -107,6 +108,9 @@ void ApplyRavTheme()
     s.FramePadding      = ImVec2(8.0f, 3.0f);
     s.ItemSpacing       = ImVec2(6.0f, 7.0f);
     s.ItemInnerSpacing  = ImVec2(6.0f, 4.0f);
+    // 13-14 (A5): s.DisabledAlpha keeps ImGui's 0.6. The theme's buttons draw the mockup's disabled
+    // skin themselves at full opacity (PushDisabledButtonSkin); a global 1.0 would make every stock
+    // widget left in a disabled region (a disabled MenuItem, a Selectable) look enabled.
 }
 
 namespace {
@@ -115,6 +119,10 @@ int     g_seg_hovered = -1;
 FontSet g_fonts;
 int     g_section_depth = 0;   // sections open around the current one (a nested one is kBg)
 bool    g_selrow_hovered = false;
+int     g_toolbar_depth = 0;   // toolbars open around the current item (.tbb.dis)
+// BeginDisabledLook's pushes, one entry per open look: bit 0 = colours, bit 1 = alpha.
+unsigned g_dislook[32] = {};
+int      g_dislook_n = 0;
 
 ImFont* DefaultFont() { return g_fonts.body ? g_fonts.body : ImGui::GetDefaultFont(); }
 ImFont* FontOr(ImFont* f, ImFont* fallback) { return f ? f : fallback; }
@@ -129,7 +137,137 @@ const char* LabelEnd(const char* label)
 // A colour with the current style alpha (faded inside BeginDisabled).
 ImU32 Ink(ImU32 c) { return ImGui::GetColorU32(c); }
 
+// 13-14 (A5): inside a disabled region, the alpha from before ImGui's fade, so a widget drawing its
+// own disabled look (faint) is not faded again. Returns whether it pushed (pass to PopCrisp).
+bool PushCrisp()
+{
+    if (!ItemDisabled()) return false;
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetCurrentContext()->DisabledAlphaBackup);
+    return true;
+}
+void PopCrisp(bool pushed)
+{
+    if (pushed) ImGui::PopStyleVar();
+}
+
 }  // namespace
+
+// ---- disabled look (13-14, A5 / B2) --------------------------------------------------------
+
+bool ItemDisabled()
+{
+    const ImGuiContext* g = ImGui::GetCurrentContext();
+    return g && (g->CurrentItemFlags & ImGuiItemFlags_Disabled) != 0;
+}
+
+void BeginDisabledLook(bool disabled)
+{
+    unsigned bits = 0;
+    if (disabled) {
+        if (ItemDisabled()) {  // already faded by an outer region: back to full opacity
+            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetCurrentContext()->DisabledAlphaBackup);
+            bits |= 2u;
+        }
+        ImGui::PushStyleColor(ImGuiCol_Text, Col(kFaint));
+        ImGui::PushStyleColor(ImGuiCol_TextDisabled, Col(kFaint));
+        bits |= 1u;
+        ImGui::PushStyleVar(ImGuiStyleVar_DisabledAlpha, 1.0f);  // read by BeginDisabled only
+        ImGui::BeginDisabled(true);
+        ImGui::PopStyleVar();
+    } else {
+        ImGui::BeginDisabled(false);
+    }
+    if (g_dislook_n < static_cast<int>(sizeof(g_dislook) / sizeof(g_dislook[0]))) g_dislook[g_dislook_n] = bits;
+    ++g_dislook_n;
+}
+
+void EndDisabledLook()
+{
+    if (g_dislook_n <= 0) return;
+    --g_dislook_n;
+    const unsigned bits =
+        g_dislook_n < static_cast<int>(sizeof(g_dislook) / sizeof(g_dislook[0])) ? g_dislook[g_dislook_n] : 0u;
+    ImGui::EndDisabled();
+    if (bits & 1u) ImGui::PopStyleColor(2);
+    if (bits & 2u) ImGui::PopStyleVar();
+}
+
+bool PushDisabledButtonSkin()
+{
+    if (!ItemDisabled()) return false;
+    // .btn[disabled]: raised fill, faint text; a ghost button stays transparent, and so does a
+    // toolbar button (.tbb.dis). Hovered / active never show (a disabled item is never hovered).
+    const bool   ghost = g_toolbar_depth > 0 || ImGui::GetStyleColorVec4(ImGuiCol_Button).w <= 0.0f;
+    const ImVec4 fill = ghost ? ImVec4(0.0f, 0.0f, 0.0f, 0.0f) : Col(kRaised);
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetCurrentContext()->DisabledAlphaBackup);
+    ImGui::PushStyleColor(ImGuiCol_Button, fill);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, fill);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, fill);
+    ImGui::PushStyleColor(ImGuiCol_Text, Col(kFaint));
+    return true;
+}
+
+void PopDisabledButtonSkin(bool pushed)
+{
+    if (!pushed) return;
+    ImGui::PopStyleColor(4);
+    ImGui::PopStyleVar();
+}
+
+// ---- tooltips (13-14, G-14 / B14) ----------------------------------------------------------
+
+namespace {
+
+// The tooltip window in the theme's look (pad 8 6, stroke-strong edge, the body font). Replaces a
+// tooltip already begun this frame, as SetTooltip. When true: EndStyledTooltip.
+bool BeginStyledTooltip()
+{
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Dp(8.0f), Dp(6.0f)));
+    ImGui::PushStyleColor(ImGuiCol_Border, Col(kStrokeStrong));
+    const bool open = ImGui::BeginTooltipEx(ImGuiTooltipFlags_OverridePrevious, ImGuiWindowFlags_None);
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar();
+    if (open) ImGui::PushFont(DefaultFont());
+    return open;
+}
+void EndStyledTooltip()
+{
+    ImGui::PopFont();
+    ImGui::EndTooltip();
+}
+
+}  // namespace
+
+void ShowTip(const char* text)
+{
+    if (!text || !text[0] || !BeginStyledTooltip()) return;
+    ImGui::TextUnformatted(text);
+    EndStyledTooltip();
+}
+
+void ItemTip(const char* fmt, ...)
+{
+    if (!fmt || !ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) return;
+    char    buf[2048];
+    va_list args;
+    va_start(args, fmt);
+    std::vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    ShowTip(buf);
+}
+
+bool BeginItemTip(float wrap_em, int hovered_flags)
+{
+    if (!ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | hovered_flags) || !BeginStyledTooltip()) return false;
+    ImGui::PushTextWrapPos(wrap_em > 0.0f ? ImGui::GetFontSize() * wrap_em : 0.0f);
+    return true;
+}
+
+void EndItemTip()
+{
+    ImGui::PopTextWrapPos();
+    EndStyledTooltip();
+}
 
 void SetUiScale(float scale) { g_scale = (scale >= 0.5f && scale <= 4.0f) ? scale : 1.0f; }
 float UiScale() { return g_scale; }
@@ -297,9 +435,9 @@ bool Segmented(const char* id, const char* const* labels, int count, int* select
         } else if (room > 0.0f && widths[i] - 8.0f >= room) {  // the icon stays, the label is ellipsized after it
             PaintIconAt(dl, icons[i], a.x + 4.0f, a.y, h, icon_px);
             if (EllipsisText(dl, ImVec2(a.x + 4.0f + room, ty), b.x - 4.0f, ink, text) && hovered)
-                ImGui::SetTooltip("%s", text.c_str());
+                ShowTip(text.c_str());
         } else if (EllipsisText(dl, ImVec2(a.x + 4.0f, ty), b.x - 4.0f, ink, text) && hovered) {
-            ImGui::SetTooltip("%s", text.c_str());
+            ShowTip(text.c_str());
         }
         x += widths[i] + pad;
     }
@@ -350,61 +488,124 @@ bool ToggleButton(const char* label, bool on, const ImVec2& size)
     return pressed;
 }
 
+bool ConfirmButton(const char* label, const ImVec2& size)
+{
+    ImGui::PushStyleColor(ImGuiCol_Button, Col(kConfirmAct));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Col(kConfirmActHover));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, Col(kConfirmAct));
+    ImGui::PushStyleColor(ImGuiCol_Text, Col(kConfirmActText));
+    const bool pressed = FittedButton(label, size);
+    ImGui::PopStyleColor(4);
+    return pressed;
+}
+
 namespace {
 
-// The square ghost button behind IconOnlyButton; returns {clicked, hovered} and its rect.
-bool GhostSquare(const char* id, float side, bool on, bool* hovered, ImVec2* a, ImVec2* b)
+// The ghost button behind IconOnlyButton (w x h); returns clicked, *hovered and its rect.
+bool GhostRect(const char* id, float w, float h, bool on, bool framed, bool* hovered, ImVec2* a, ImVec2* b)
 {
-    const float s = side > 0.0f ? side : ControlH();
-    const bool  clicked = ImGui::InvisibleButton(id, ImVec2(s, s));
+    const bool clicked = ImGui::InvisibleButton(id, ImVec2(std::max(1.0f, w), std::max(1.0f, h)));
     *hovered = ImGui::IsItemHovered();
+    const bool active = ImGui::IsItemActive();
     *a = ImGui::GetItemRectMin();
     *b = ImGui::GetItemRectMax();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     if (on) {
         dl->AddRectFilled(*a, *b, Ink(kAccentSoft), kRadiusMd);
         dl->AddRect(*a, *b, Ink(kAccentLine), kRadiusMd);
-    } else if (*hovered || ImGui::IsItemActive()) {
-        dl->AddRectFilled(*a, *b, Ink(ImGui::IsItemActive() ? kAccentSoft : kHover), kRadiusMd);
+    } else if (framed) {  // .colbtn over the 3D view
+        dl->AddRectFilled(*a, *b, Ink(active ? kAccentSoft : (*hovered ? kHover : kOverlayBg)), kRadiusMd);
+        dl->AddRect(*a, *b, Ink(kStroke), kRadiusMd);
+    } else if (*hovered || active) {
+        dl->AddRectFilled(*a, *b, Ink(active ? kAccentSoft : kHover), kRadiusMd);
     }
     return clicked;
 }
 
 void TipIfHovered(const char* tip)
 {
-    if (tip && tip[0] && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("%s", tip);
+    if (tip && tip[0] && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ShowTip(tip);
+}
+
+// An icon-only button's ink: faint when disabled, accent when on, kText under the mouse.
+ImU32 GlyphInk(bool on, bool hovered, ImU32 rest)
+{
+    return ItemDisabled() ? kFaint : (on ? kAccent : (hovered ? kText : rest));
 }
 
 }  // namespace
 
 bool IconOnlyButton(const char* id, const char* glyph, const char* tip, float side, bool on)
 {
-    bool   hovered = false;
-    ImVec2 a, b;
-    const bool clicked = GhostSquare(id, side, on, &hovered, &a, &b);
+    bool         hovered = false;
+    ImVec2       a, b;
+    const float  s = side > 0.0f ? side : ControlH();
+    const bool   clicked = GhostRect(id, s, s, on, false, &hovered, &a, &b);
+    const bool   crisp = PushCrisp();
     if (glyph && glyph[0]) {
         const ImVec2 ts = ImGui::CalcTextSize(glyph);
         ImGui::GetWindowDrawList()->AddText(ImVec2(std::floor((a.x + b.x - ts.x) * 0.5f), std::floor((a.y + b.y - ts.y) * 0.5f)),
-                                            Ink(on ? kAccent : (hovered ? kText : kMuted)), glyph);
+                                            Ink(GlyphInk(on, hovered, kMuted)), glyph);
     }
+    PopCrisp(crisp);
     TipIfHovered(tip);
     return clicked;
 }
 
 bool IconOnlyButton(const char* id, const Icon& icon, const char* tip, float side, bool on)
 {
-    bool   hovered = false;
-    ImVec2 a, b;
-    const bool clicked = GhostSquare(id, side, on, &hovered, &a, &b);
-    Icon ic = icon;
-    ic.col = on ? kAccent : (hovered ? kText : icon.col);
-    const float s = std::min(IconPx(), b.y - a.y - 4.0f);
+    IconOnlyOpts o;
+    o.w = side;
+    o.on = on;
+    return IconOnlyButton(id, icon, tip, o);
+}
+
+bool IconOnlyButton(const char* id, const Icon& icon, const char* tip, const IconOnlyOpts& o)
+{
+    bool        hovered = false;
+    ImVec2      a, b;
+    const float w = o.w > 0.0f ? o.w : ControlH();
+    const float h = o.h > 0.0f ? o.h : w;
+    const bool  clicked = GhostRect(id, w, h, o.on, o.framed, &hovered, &a, &b);
+    const bool  crisp = PushCrisp();
+    Icon        ic = icon;
+    ic.col = GlyphInk(o.on, hovered, o.tint ? o.tint : icon.col);
+    const float s = o.icon_px > 0.0f ? o.icon_px : std::min(IconPx(), b.y - a.y - 4.0f);
     PaintIconAt(ImGui::GetWindowDrawList(), ic, std::floor((a.x + b.x - s) * 0.5f), a.y, b.y - a.y, s);
+    PopCrisp(crisp);
     TipIfHovered(tip);
     return clicked;
 }
 
-bool LinkButton(const char* label)
+bool IconOnlyButton(const char* id, ImTextureID tex, const char* tip, float side, bool on)
+{
+    IconOnlyOpts o;
+    o.w = side;
+    o.on = on;
+    return IconOnlyButton(id, tex, tip, o);
+}
+
+bool IconOnlyButton(const char* id, ImTextureID tex, const char* tip, const IconOnlyOpts& o)
+{
+    bool        hovered = false;
+    ImVec2      a, b;
+    const float w = o.w > 0.0f ? o.w : ControlH();
+    const float h = o.h > 0.0f ? o.h : w;
+    const bool  clicked = GhostRect(id, w, h, o.on, o.framed, &hovered, &a, &b);
+    if (tex) {
+        const bool  crisp = PushCrisp();
+        const float s = o.icon_px > 0.0f ? o.icon_px : std::max(1.0f, std::min(b.x - a.x, b.y - a.y) - Dp(4.0f));
+        const ImVec2 p(std::floor((a.x + b.x - s) * 0.5f), std::floor((a.y + b.y - s) * 0.5f));
+        // A lit texture icon reads kText (its accent-soft frame says it is on).
+        const ImU32 ink = ItemDisabled() ? kFaint : ((o.on || hovered) ? kText : (o.tint ? o.tint : kMuted));
+        ImGui::GetWindowDrawList()->AddImage(tex, p, ImVec2(p.x + s, p.y + s), ImVec2(0, 0), ImVec2(1, 1), Ink(ink));
+        PopCrisp(crisp);
+    }
+    TipIfHovered(tip);
+    return clicked;
+}
+
+bool LinkButton(const char* label, ImU32 quiet)
 {
     const ImVec2 ts = ImGui::CalcTextSize(label, nullptr, true);
     const float  h = ImGui::GetFrameHeight();
@@ -412,20 +613,34 @@ bool LinkButton(const char* label)
     const bool   hovered = ImGui::IsItemHovered();
     if (hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
     const ImVec2 a = ImGui::GetItemRectMin();
-    const ImU32  col = Ink(hovered ? kAccentText : kAccentInk);
+    const bool   crisp = PushCrisp();
+    ImU32        col = 0;
+    if (ItemDisabled()) col = Ink(kFaint);
+    else if (quiet) col = Ink(hovered ? kText : quiet);
+    else col = Ink(hovered ? kAccentText : kAccentInk);
     ImDrawList*  dl = ImGui::GetWindowDrawList();
     const float  ty = a.y + (h - ts.y) * 0.5f;
     dl->AddText(ImVec2(a.x, ty), col, label, LabelEnd(label));
-    // text-decoration: underline; text-underline-offset 2 px (under the baseline).
-    const float uy = std::floor(ty + ImGui::GetFont()->Ascent + Dp(2.0f)) + 0.5f;
-    dl->AddLine(ImVec2(a.x, uy), ImVec2(a.x + ts.x, uy), col, 1.0f);
+    // text-decoration: underline; text-underline-offset 2 px (under the baseline). A quiet link is
+    // underlined under the mouse only.
+    if (!quiet || hovered) {
+        const float uy = std::floor(ty + ImGui::GetFont()->Ascent + Dp(2.0f)) + 0.5f;
+        dl->AddLine(ImVec2(a.x, uy), ImVec2(a.x + ts.x, uy), col, 1.0f);
+    }
+    PopCrisp(crisp);
     return clicked;
 }
 
-bool AddButton(const char* label, const ImVec2& size)
+namespace {
+float KeyCapWidth(const char* key) { return key && key[0] ? ImGui::CalcTextSize(key).x + Dp(8.0f) : 0.0f; }
+}  // namespace
+
+bool AddButton(const char* label, const ImVec2& size, const char* key, bool pill)
 {
     const float pad = Dp(10.0f);
-    const float nat = TextWidth(label) + 2.0f * pad;
+    const float gap = Dp(8.0f);
+    const float kw = KeyCapWidth(key);
+    const float nat = TextWidth(label) + (kw > 0.0f ? gap + kw : 0.0f) + 2.0f * pad;
     const float avail = ImGui::GetContentRegionAvail().x;
     float       w = size.x > 0.0f ? size.x : (size.x < 0.0f ? std::max(1.0f, avail + size.x) : nat);
     if (!WindowAutoSizes() && w > avail) w = std::max(ControlH(), avail);
@@ -434,14 +649,57 @@ bool AddButton(const char* label, const ImVec2& size)
     const bool  hovered = ImGui::IsItemHovered();
     const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
     ImDrawList*  dl = ImGui::GetWindowDrawList();
-    if (hovered) dl->AddRect(a, b, Ink(kStrokeStrong), kRadiusSm);
-    else DashedRect(dl, a, b, Ink(kStrokeStrong), kRadiusSm);
+    const bool   crisp = PushCrisp();
+    const float  r = pill ? h * 0.5f : kRadiusSm;
+    if (hovered) dl->AddRect(a, b, Ink(kStrokeStrong), r);
+    else DashedRect(dl, a, b, Ink(kStrokeStrong), r);
     const std::string text(label, LabelEnd(label));
     const float       tw = ImGui::CalcTextSize(text.c_str()).x;
-    const float       tx = tw <= w - 2.0f * pad ? a.x + (w - tw) * 0.5f : a.x + Dp(4.0f);
-    const bool        cut = EllipsisText(dl, ImVec2(tx, a.y + (h - ImGui::GetTextLineHeight()) * 0.5f), b.x - Dp(4.0f),
-                                         Ink(hovered ? kText : kFaint), text);
-    if (cut && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("%s", text.c_str());
+    const ImU32       ink = Ink(ItemDisabled() ? kFaint : (hovered ? kText : kFaint));
+    const float       ty = a.y + (h - ImGui::GetTextLineHeight()) * 0.5f;
+    const float       ky = std::floor(a.y + (h - ImGui::GetTextLineHeight() - Dp(3.0f)) * 0.5f);
+    bool              cut = false;
+    if (tw + (kw > 0.0f ? gap + kw : 0.0f) <= w - 2.0f * pad) {  // label and key cap centred together
+        const float tx = a.x + (w - tw - (kw > 0.0f ? gap + kw : 0.0f)) * 0.5f;
+        dl->AddText(ImVec2(tx, ty), ink, text.c_str());
+        if (kw > 0.0f) KeyCap(dl, ImVec2(tx + tw + gap, ky), key, ink);
+    } else if (kw > 0.0f && w - 2.0f * Dp(4.0f) - gap - kw >= Dp(20.0f)) {  // the key cap stays at the right
+        cut = EllipsisText(dl, ImVec2(a.x + Dp(4.0f), ty), b.x - Dp(4.0f) - gap - kw, ink, text);
+        KeyCap(dl, ImVec2(b.x - Dp(4.0f) - kw, ky), key, ink);
+    } else {
+        const float tx = tw <= w - 2.0f * pad ? a.x + (w - tw) * 0.5f : a.x + Dp(4.0f);
+        cut = EllipsisText(dl, ImVec2(tx, ty), b.x - Dp(4.0f), ink, text);
+    }
+    PopCrisp(crisp);
+    if (cut && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ShowTip(text.c_str());
+    return clicked;
+}
+
+bool ChipButton(const char* label, const ImVec2& size, bool on)
+{
+    const float pad = Dp(7.0f);
+    const float h = size.y > 0.0f ? size.y : ControlH();
+    const float nat = TextWidth(label) + 2.0f * pad;
+    const float avail = ImGui::GetContentRegionAvail().x;
+    float       w = size.x > 0.0f ? size.x : (size.x < 0.0f ? std::max(1.0f, avail + size.x) : nat);
+    if (!WindowAutoSizes() && w > avail) w = std::max(h, avail);
+    const bool   clicked = ImGui::InvisibleButton(label, ImVec2(std::max(1.0f, w), h));
+    const bool   hovered = ImGui::IsItemHovered();
+    const bool   dis = ItemDisabled();
+    const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const bool   crisp = PushCrisp();
+    const float  r = h * 0.5f;
+    dl->AddRectFilled(a, b, Ink(on ? kAccentSoft : (hovered ? kHover : kBg)), r);
+    dl->AddRect(a, b, Ink(on ? kAccentLine : (hovered ? kStrokeStrong : kStroke)), r);
+    const std::string text(label, LabelEnd(label));
+    const float       tw = ImGui::CalcTextSize(text.c_str()).x;
+    const ImU32       ink = Ink(dis ? kFaint : (on ? kAccentText : (hovered ? kText : kMuted)));
+    const float       ty = a.y + (h - ImGui::GetTextLineHeight()) * 0.5f;
+    const float       tx = tw <= w - 2.0f * pad ? a.x + (w - tw) * 0.5f : a.x + pad;
+    const bool        cut = EllipsisText(dl, ImVec2(tx, ty), b.x - pad, ink, text);
+    PopCrisp(crisp);
+    if (cut && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ShowTip(text.c_str());
     return clicked;
 }
 
@@ -573,6 +831,58 @@ void CountChip(const char* text)
     AddTextIn(dl, f, ImVec2(p.x + Dp(8.0f), std::floor(y + (h - f->FontSize) * 0.5f)), Ink(kAccentText), text);
 }
 
+float ToneButtonWidth(const char* label, const Icon* icon)
+{
+    return Dp(8.0f) + TextWidth(label) + (icon && icon->fn ? Dp(6.0f) + IconPx() : 0.0f) + Dp(8.0f);
+}
+
+bool ToneButton(const char* label, TagTone tone, const Icon* icon, const ImVec2& size)
+{
+    const float  pad = Dp(8.0f);
+    const float  h = size.y > 0.0f ? size.y : ControlH();
+    const bool   has_icon = icon && icon->fn;
+    const float  icon_room = has_icon ? Dp(6.0f) + IconPx() : 0.0f;
+    const float  nat = ToneButtonWidth(label, icon);
+    const float  avail = ImGui::GetContentRegionAvail().x;
+    float        w = size.x > 0.0f ? size.x : (size.x < 0.0f ? std::max(1.0f, avail + size.x) : nat);
+    if (!WindowAutoSizes() && w > avail) w = std::max(h, avail);
+    const bool   clicked = ImGui::InvisibleButton(label, ImVec2(std::max(1.0f, w), h));
+    const bool   hovered = ImGui::IsItemHovered();
+    const bool   dis = ItemDisabled();
+    const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const bool   crisp = PushCrisp();
+    const TagColours c = ToneColours(tone);
+    dl->AddRectFilled(a, b, Ink(hovered ? kHover : kRaised), kRadiusSm);
+    dl->AddRect(a, b, Ink(dis ? kStroke : c.edge), kRadiusSm);
+    const std::string text(label, LabelEnd(label));
+    const float       ty = a.y + (h - ImGui::GetTextLineHeight()) * 0.5f;
+    const bool cut = EllipsisText(dl, ImVec2(a.x + pad, ty), b.x - pad - icon_room, Ink(dis ? kFaint : c.text), text);
+    if (has_icon) {
+        Icon ic = *icon;
+        if (dis) ic.col = kFaint;
+        PaintIconAt(dl, ic, b.x - pad - IconPx(), a.y, h);
+    }
+    PopCrisp(crisp);
+    if (cut && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ShowTip(text.c_str());
+    return clicked;
+}
+
+bool Switch(const char* id, bool on)
+{
+    // .sw: 26 x 16, the thumb 2 px inside its track.
+    const float  w = Dp(26.0f), h = Dp(16.0f);
+    const float  fh = ImGui::GetFrameHeight();
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const float  y = p0.y + std::floor((fh - h) * 0.5f);
+    ImGui::InvisibleButton(id, ImVec2(w, fh));
+    const bool  clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(ImVec2(p0.x, y), ImVec2(p0.x + w, y + h), Ink(on ? kAccent : kStrokeStrong), h * 0.5f);
+    dl->AddCircleFilled(ImVec2(on ? p0.x + w - h * 0.5f : p0.x + h * 0.5f, y + h * 0.5f), h * 0.5f - Dp(2.0f), Ink(kKnob), 12);
+    return clicked;
+}
+
 void Caption(const char* text)
 {
     ImGui::PushStyleColor(ImGuiCol_Text, Col(kMuted));
@@ -623,6 +933,21 @@ void SubText(const char* text)
     ImGui::TextUnformatted(text);
     ImGui::PopTextWrapPos();
     ImGui::PopStyleColor();
+}
+
+void ToneText(const char* text, ImU32 col, bool wrap, float wrap_w)
+{
+    if (!text) return;
+    ImGui::PushStyleColor(ImGuiCol_Text, Col(col));
+    if (wrap) ImGui::PushTextWrapPos(wrap_w > 0.0f ? ImGui::GetCursorPosX() + wrap_w : 0.0f);
+    ImGui::TextUnformatted(text);
+    if (wrap) ImGui::PopTextWrapPos();
+    ImGui::PopStyleColor();
+}
+
+void ToneText(const std::string& text, ImU32 col, bool wrap, float wrap_w)
+{
+    ToneText(text.c_str(), col, wrap, wrap_w);
 }
 
 namespace {
@@ -682,7 +1007,7 @@ void DragNumberReset()
 }
 
 DragNumberEvent DragNumber(const char* id, double* value, double step, int decimals, const char* unit, float width,
-                           bool trim)
+                           bool trim, ImU32 text_col)
 {
     DragNumberEvent ev = DragNumberEvent::None;
     if (!value) return ev;
@@ -776,7 +1101,7 @@ DragNumberEvent DragNumber(const char* id, double* value, double step, int decim
         const ImVec2 ts = TextSizeIn(mono, text);
         dl->PushClipRect(p0, p1, true);
         AddTextIn(dl, mono, ImVec2(std::max(p0.x + Dp(3.0f), p1.x - Dp(5.0f) - ts.x), std::floor(p0.y + (h - ts.y) * 0.5f)),
-                  Ink(kText), text);
+                  Ink(text_col ? text_col : kText), text);
         dl->PopClipRect();
     }
     if (unit && unit[0]) {
@@ -796,6 +1121,11 @@ DragNumberEvent DragNumber(const char* id, double* value, double step, int decim
 
 bool Fader(const char* id, float* v, float v_min, float v_max, float width)
 {
+    return Fader(id, v, v_min, v_max, width, FaderOpts());
+}
+
+bool Fader(const char* id, float* v, float v_min, float v_max, float width, const FaderOpts& o)
+{
     if (!v) return false;
     ImGuiContext& g = *ImGui::GetCurrentContext();
     const bool    has_next_w = (g.NextItemData.HasFlags & ImGuiNextItemDataFlags_HasWidth) != 0;
@@ -804,14 +1134,30 @@ bool Fader(const char* id, float* v, float v_min, float v_max, float width)
     if (!WindowAutoSizes()) w = std::min(w, avail);
     w = std::max(w, Dp(20.0f));
     const float h = ControlH();
-    ImGui::InvisibleButton(id, ImVec2(w, h));
+    // 13-14 (G-13): the value right of the track (.fader: gap 8), when it leaves the track 20 px.
+    ImFont*     mono = FontMonoSmall();
+    const float gap = Dp(8.0f);
+    float       value_w = 0.0f;
+    char        text[64] = {};
+    if (o.format && o.format[0]) {
+        value_w = o.value_w;
+        if (value_w <= 0.0f) {
+            std::snprintf(text, sizeof(text), o.format, static_cast<double>(v_min));
+            value_w = TextSizeIn(mono, text).x;
+            std::snprintf(text, sizeof(text), o.format, static_cast<double>(v_max));
+            value_w = std::max(value_w, TextSizeIn(mono, text).x) + Dp(2.0f);
+        }
+        if (w - gap - value_w < Dp(20.0f)) value_w = 0.0f;
+    }
+    const float track_w = value_w > 0.0f ? w - gap - value_w : w;
+    ImGui::InvisibleButton(id, ImVec2(track_w, h));
     const bool   hovered = ImGui::IsItemHovered();
     const bool   active = ImGui::IsItemActive();
     const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
     const float  r = Dp(8.0f);  // the 16 px thumb
     bool         changed = false;
     if (active) {
-        const float nv = flow::FaderValueAt(ImGui::GetIO().MousePos.x, a.x, b.x, r, v_min, v_max);
+        const float nv = flow::FaderValueAt(ImGui::GetIO().MousePos.x, a.x, b.x, r, v_min, v_max, o.log);
         if (nv != *v) {
             *v = nv;
             changed = true;
@@ -820,10 +1166,19 @@ bool Fader(const char* id, float* v, float v_min, float v_max, float width)
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float cy = std::floor((a.y + b.y) * 0.5f) + 0.5f;
     const float th = Dp(6.0f);  // the track
-    const float tx = flow::FaderThumbX(*v, a.x, b.x, r, v_min, v_max);
+    const float tx = flow::FaderThumbX(*v, a.x, b.x, r, v_min, v_max, o.log);
     dl->AddRectFilled(ImVec2(a.x, cy - th * 0.5f), ImVec2(b.x, cy + th * 0.5f), Ink(kStrokeStrong), th * 0.5f);
     if (tx > a.x) dl->AddRectFilled(ImVec2(a.x, cy - th * 0.5f), ImVec2(tx, cy + th * 0.5f), Ink(kAccent), th * 0.5f);
     dl->AddCircleFilled(ImVec2(tx, cy), r, Ink((hovered || active) ? kPrimaryHover : kAccent), 24);
+    if (value_w > 0.0f) {
+        // The value takes its room on the line without becoming the last item (ItemSize only), so
+        // IsItemActive / IsItemDeactivated after the fader still read the track.
+        std::snprintf(text, sizeof(text), o.format, static_cast<double>(*v));
+        const ImVec2 ts = TextSizeIn(mono, text);
+        AddTextIn(dl, mono, ImVec2(b.x + gap + value_w - ts.x, std::floor(a.y + (h - ts.y) * 0.5f)), Ink(kText), text);
+        ImGui::SameLine(0.0f, 0.0f);
+        ImGui::ItemSize(ImVec2(gap + value_w, h));
+    }
     return changed;
 }
 
@@ -864,24 +1219,31 @@ bool TextField(const char* id, const char* hint, char* buf, size_t buf_size, flo
     const bool r = hint ? ImGui::InputTextWithHint(id, hint, buf, buf_size, flags) : ImGui::InputText(id, buf, buf_size, flags);
     ImGui::PopStyleVar(3);
     ImGui::PopStyleColor(4);
-    const bool hovered = ImGui::IsItemHovered(), active = ImGui::IsItemActive();
-    ImGui::GetWindowDrawList()->AddRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
-                                        Ink(active ? kAccentLine : (hovered ? kStrokeStrong : kStroke)), kRadiusSm);
+    const bool   hovered = ImGui::IsItemHovered(), active = ImGui::IsItemActive();
+    const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    dl->AddRect(a, b, Ink(active ? kAccentLine : (hovered ? kStrokeStrong : kStroke)), kRadiusSm);
+    if (active) {  // 13-14 (B7): outline 2px accent-line, outline-offset 1px
+        const float o = Dp(2.0f);
+        dl->AddRect(ImVec2(a.x - o, a.y - o), ImVec2(b.x + o, b.y + o), Ink(kAccentLine), kRadiusSm + o, 0, Dp(2.0f));
+    }
     return r;
 }
 
-bool TitleField(const char* id, char* buf, size_t buf_size, float width, int flags)
+bool TitleField(const char* id, char* buf, size_t buf_size, float width, int flags, ImFont* font)
 {
     bool hovered = false, active = false;
     FieldState(id, &hovered, &active);
     const float w = FieldWidth(width);
-    ImFont*     f = FontHeading();
+    ImFont*     f = font ? font : FontHeading();
+    // 28 px for the heading; an inline field in another font: the font plus 6, never under ControlH().
+    const float h = font ? std::max(ControlH(), std::floor(f->FontSize + Dp(6.0f))) : Dp(28.0f);
     ImGui::PushFont(f);
     const ImU32 fill = (hovered || active) ? kBg : IM_COL32(0, 0, 0, 0);
     ImGui::PushStyleColor(ImGuiCol_FrameBg, Col(fill));
     ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, Col(fill));
     ImGui::PushStyleColor(ImGuiCol_FrameBgActive, Col(fill));
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(Dp(6.0f), std::max(0.0f, (Dp(28.0f) - f->FontSize) * 0.5f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(Dp(6.0f), std::max(0.0f, (h - f->FontSize) * 0.5f)));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, kRadiusSm);
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
     ImGui::SetNextItemWidth(w);
@@ -894,7 +1256,7 @@ bool TitleField(const char* id, char* buf, size_t buf_size, float width, int fla
     return r;
 }
 
-bool RenameField(const char* id, char* buf, size_t buf_size, float width, int flags)
+bool RenameField(const char* id, char* buf, size_t buf_size, float width, int flags, const char* hint)
 {
     const float w = FieldWidth(width);
     ImFont*     f = FontTitle();
@@ -902,13 +1264,14 @@ bool RenameField(const char* id, char* buf, size_t buf_size, float width, int fl
     ImGui::PushStyleColor(ImGuiCol_FrameBg, Col(kBg));
     ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, Col(kBg));
     ImGui::PushStyleColor(ImGuiCol_FrameBgActive, Col(kBg));
+    ImGui::PushStyleColor(ImGuiCol_TextDisabled, Col(kFaint));  // the hint
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(Dp(6.0f), std::max(0.0f, (ControlH() - f->FontSize) * 0.5f)));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, kRadiusSm);
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
     ImGui::SetNextItemWidth(w);
-    const bool r = ImGui::InputText(id, buf, buf_size, flags);
+    const bool r = hint ? ImGui::InputTextWithHint(id, hint, buf, buf_size, flags) : ImGui::InputText(id, buf, buf_size, flags);
     ImGui::PopStyleVar(3);
-    ImGui::PopStyleColor(3);
+    ImGui::PopStyleColor(4);
     ImGui::PopFont();
     ImGui::GetWindowDrawList()->AddRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), Ink(kAccentLine), kRadiusSm);
     return r;
@@ -970,6 +1333,36 @@ void PopMenuStyle()
 
 }  // namespace
 
+void WindowShadow(float alpha)
+{
+    ImGuiWindow* win = ImGui::GetCurrentWindow();
+    if (!win || alpha <= 0.0f) return;
+    const ImVec2 a = win->Pos, b(win->Pos.x + win->Size.x, win->Pos.y + win->Size.y);
+    if (b.x - a.x < 2.0f || b.y - a.y < 2.0f) return;
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const ImVec2         v0 = vp->Pos, v1(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y);
+    // box-shadow: 0 18px 50px: the window's rect moved 18 px down, blurred over 50 px (layers spreading
+    // up to 25 px, each a little dark, so the stack reaches `alpha` under the window's edge).
+    constexpr int kLayers = 8;
+    const float   off = Dp(18.0f), spread = Dp(25.0f);
+    const float   layer_a = 1.0f - std::pow(1.0f - std::min(alpha, 0.95f), 1.0f / static_cast<float>(kLayers));
+    const ImU32   col = IM_COL32(0, 0, 0, static_cast<int>(layer_a * 255.0f + 0.5f));
+    const float   r = win->WindowRounding;
+    ImDrawList*   dl = win->DrawList;
+    // Outside the window only (above, below, left, right of it): its own content stays untouched.
+    const ImVec4 clips[4] = {ImVec4(v0.x, v0.y, v1.x, a.y), ImVec4(v0.x, b.y, v1.x, v1.y), ImVec4(v0.x, a.y, a.x, b.y),
+                             ImVec4(b.x, a.y, v1.x, b.y)};
+    for (const ImVec4& c : clips) {
+        if (c.z <= c.x || c.w <= c.y) continue;
+        dl->PushClipRect(ImVec2(c.x, c.y), ImVec2(c.z, c.w), false);
+        for (int i = 0; i < kLayers; ++i) {
+            const float s = spread * static_cast<float>(i + 1) / static_cast<float>(kLayers);
+            dl->AddRectFilled(ImVec2(a.x - s, a.y + off - s), ImVec2(b.x + s, b.y + off + s), col, r + s);
+        }
+        dl->PopClipRect();
+    }
+}
+
 bool BeginMenuPopup(const char* id, int window_flags)
 {
     PushMenuStyle();
@@ -978,6 +1371,7 @@ bool BeginMenuPopup(const char* id, int window_flags)
         PopMenuStyle();
         return false;
     }
+    WindowShadow();
     return true;
 }
 
@@ -989,8 +1383,130 @@ bool BeginMenuPopupContextItem(const char* id, int popup_flags)
         PopMenuStyle();
         return false;
     }
+    WindowShadow();
     return true;
 }
+
+bool BeginSubMenu(const char* label, bool enabled)
+{
+    ImGui::SetNextWindowSizeConstraints(ImVec2(Dp(220.0f), 0.0f), ImVec2(FLT_MAX, FLT_MAX));
+    if (!ImGui::BeginMenu(label, enabled)) return false;
+    WindowShadow();
+    return true;
+}
+
+void MenuSeparator()
+{
+    // .pop .sep: 1 px kStroke, 4 px above and under it, 2 px in from the row's edges.
+    ImGuiWindow* win = ImGui::GetCurrentWindow();
+    const float  x0 = win->WorkRect.Min.x - ImGui::GetStyle().WindowPadding.x + Dp(4.0f) + Dp(2.0f);
+    const float  x1 = win->WorkRect.Max.x + ImGui::GetStyle().WindowPadding.x - Dp(4.0f) - Dp(2.0f);
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float  sp = ImGui::GetStyle().ItemSpacing.y;
+    // The rows' highlights end half a spacing above the cursor and the next one starts half a spacing
+    // under this item: the line sits in the middle of the 9 px (4 + 1 + 4) between them.
+    const float  h = std::max(0.0f, Dp(9.0f) - sp);
+    const float  y = std::floor(p.y + h * 0.5f) + 0.5f;
+    win->DrawList->AddLine(ImVec2(x0, y), ImVec2(std::max(x0, x1), y), Ink(kStroke), 1.0f);
+    ImGui::Dummy(ImVec2(1.0f, h));
+}
+
+bool BeginPanelPopup(const char* id, int window_flags, ImVec2 pad)
+{
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, Col(kRaised));
+    ImGui::PushStyleColor(ImGuiCol_Border, Col(kStrokeStrong));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Dp(pad.x), Dp(pad.y)));
+    const bool open = ImGui::BeginPopup(id, window_flags);
+    ImGui::PopStyleVar();  // read when the window begins: its content keeps the theme's spacing
+    ImGui::PopStyleColor(2);
+    if (open) WindowShadow();
+    return open;
+}
+
+void EndPanelPopup() { ImGui::EndPopup(); }
+
+bool BeginModalCard(const char* id, int window_flags, float width)
+{
+    const ImGuiViewport* vp = ImGui::GetMainViewport();
+    const float          margin = Dp(32.0f);
+    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+                             window_flags;
+    if (width > 0.0f) {
+        ImGui::SetNextWindowSize(ImVec2(std::max(Dp(120.0f), std::min(width, vp->Size.x - margin)), 0.0f), ImGuiCond_Always);
+        ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, std::max(Dp(120.0f), vp->Size.y - margin)));
+        flags |= ImGuiWindowFlags_NoResize;
+    } else {
+        flags |= ImGuiWindowFlags_AlwaysAutoResize;
+    }
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, Col(kRaised));
+    ImGui::PushStyleColor(ImGuiCol_Border, Col(kStrokeStrong));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Dp(16.0f), Dp(14.0f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, kRadiusMd);
+    const bool open = ImGui::BeginPopupModal(id, nullptr, flags);
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+    if (open) WindowShadow();
+    return open;
+}
+
+void EndModalCard() { ImGui::EndPopup(); }
+
+bool BeginFloatingCard(const char* id, ImVec2 pos, ImVec2 pivot, float width)
+{
+    ImGui::SetNextWindowPos(pos, ImGuiCond_Always, pivot);
+    if (width > 0.0f) ImGui::SetNextWindowSize(ImVec2(width, 0.0f), ImGuiCond_Always);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, Col(kRaised));
+    ImGui::PushStyleColor(ImGuiCol_Border, Col(kStrokeStrong));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Dp(16.0f), Dp(14.0f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, kRadiusMd);
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                             ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
+                             ImGuiWindowFlags_NoFocusOnAppearing;
+    if (width <= 0.0f) flags |= ImGuiWindowFlags_AlwaysAutoResize;
+    const bool shown = ImGui::Begin(id, nullptr, flags);
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+    if (shown) WindowShadow();
+    return shown;
+}
+
+void EndFloatingCard() { ImGui::End(); }
+
+bool BeginOverlay(const char* id, ImVec2 pos, ImVec2 pivot, int extra_flags)
+{
+    ImGui::SetNextWindowPos(pos, ImGuiCond_Always, pivot);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                                   ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
+                                   ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar |
+                                   ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing |
+                                   ImGuiWindowFlags_NoBackground | extra_flags;
+    const bool shown = ImGui::Begin(id, nullptr, flags);
+    ImGui::PopStyleVar(2);
+    return shown;
+}
+
+void EndOverlay() { ImGui::End(); }
+
+bool BeginOverlayPanel(const char* id, ImVec2 pos, ImVec2 size, int extra_flags)
+{
+    ImGui::SetNextWindowPos(pos, ImGuiCond_Always);
+    ImGui::SetNextWindowSize(size, ImGuiCond_Always);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, Col(kBg));
+    ImGui::PushStyleColor(ImGuiCol_Border, Col(kStrokeStrong));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, kRadiusLg);
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
+                                   ImGuiWindowFlags_NoMove | extra_flags;
+    const bool shown = ImGui::Begin(id, nullptr, flags);
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(2);
+    if (shown) WindowShadow(0.7f);  // .edbox: 0 26px 80px rgba(0,0,0,.7)
+    return shown;
+}
+
+void EndOverlayPanel() { ImGui::End(); }
 
 void EndMenuPopup()
 {
@@ -1009,8 +1525,9 @@ void MenuCaption(const char* text)
     ImGui::Dummy(ImVec2(std::max(1.0f, w), f->FontSize + Dp(2.0f)));
 }
 
-bool BeginComboStyled(const char* id, const char* preview, float width, int flags)
+bool BeginComboStyled(const char* id, const char* preview, float width, int flags, TagTone tone)
 {
+    const bool bad = tone == TagTone::Bad;
     const float chev = Dp(16.0f);  // the chevron's room at the right
     const float nat = std::max(Dp(150.0f), (preview ? ImGui::CalcTextSize(preview).x : 0.0f) + Dp(12.0f) + chev);
     float       w = width > 0.0f ? width : nat;
@@ -1028,13 +1545,17 @@ bool BeginComboStyled(const char* id, const char* preview, float width, int flag
     ImGui::SetNextItemWidth(w);
     const bool open = ImGui::BeginCombo(id, nullptr, flags | ImGuiComboFlags_NoArrowButton);
     ImGui::PopStyleVar(3);
-    if (open) PushMenuItemStyle();
+    if (open) {
+        PushMenuItemStyle();
+        WindowShadow();
+    }
     // The preview, ellipsized before the chevron (a "v" in the text colour).
     const ImVec2 p1(p0.x + w, p0.y + FieldH());
+    if (bad) dl->AddRect(p0, p1, Ink(kBadLine), kRadiusSm);  // 13-14 (G-6): a missing value
     if (preview && preview[0]) {
         const std::string s(preview);
         EllipsisText(dl, ImVec2(p0.x + Dp(6.0f), p0.y + (FieldH() - ImGui::GetTextLineHeight()) * 0.5f), p1.x - chev - Dp(2.0f),
-                     Ink(kText), s);
+                     Ink(bad ? kBadInk : kText), s);
     }
     const ImVec2 c(p1.x - Dp(11.0f), (p0.y + p1.y) * 0.5f);
     const float  hw = Dp(4.0f), hh = Dp(2.0f);
@@ -1051,6 +1572,99 @@ void EndComboStyled()
 {
     ImGui::EndCombo();
     PopMenuStyle();
+}
+
+float ChipComboWidth(const char* preview, float min_w)
+{
+    return std::max(min_w > 0.0f ? min_w : Dp(40.0f), (preview ? ImGui::CalcTextSize(preview).x : 0.0f) + Dp(30.0f));
+}
+
+bool BeginChipCombo(const char* id, const char* preview, float min_w, bool disabled, int flags, float right)
+{
+    const float  mw = min_w > 0.0f ? min_w : Dp(40.0f);
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    float        avail = ImGui::GetContentRegionAvail().x;
+    if (right > 0.0f) avail = std::min(avail, right - p0.x);
+    const float w = WindowAutoSizes() ? ChipComboWidth(preview, mw) : std::min(ChipComboWidth(preview, mw), std::max(mw, avail));
+    const float h = ImGui::GetFrameHeight();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    // The list's popup style now (read when it begins); its rows' spacing once it is open.
+    PushMenuWindowStyle();
+    ImGui::SetNextItemWidth(w);
+    const bool open = ImGui::BeginCombo(id, nullptr, flags | ImGuiComboFlags_NoArrowButton);
+    if (open) {
+        PushMenuItemStyle();
+        WindowShadow();
+    }
+    // The preview (ellipsized) and the small chevron (select.chip).
+    const bool  crisp = PushCrisp();
+    const ImU32 ink = Ink(disabled || ItemDisabled() ? kFaint : kText);
+    if (preview && preview[0])
+        EllipsisText(dl, ImVec2(p0.x + ImGui::GetStyle().FramePadding.x, p0.y + (h - ImGui::GetTextLineHeight()) * 0.5f),
+                     p0.x + w - Dp(18.0f), ink, std::string(preview));
+    const ImVec2 c(p0.x + w - Dp(10.0f), p0.y + h * 0.5f);
+    dl->AddTriangleFilled(ImVec2(c.x - Dp(3.5f), c.y - Dp(1.5f)), ImVec2(c.x + Dp(3.5f), c.y - Dp(1.5f)),
+                          ImVec2(c.x, c.y + Dp(2.5f)), Ink(disabled || ItemDisabled() ? kFaint : kMuted));
+    PopCrisp(crisp);
+    if (!open) {
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor(2);
+    }
+    return open;
+}
+
+void EndChipCombo()
+{
+    ImGui::EndCombo();
+    PopMenuStyle();
+}
+
+bool SelectField(const char* id, const char* label, const char* value, const SelectFieldOpts& o)
+{
+    const float  h = FieldH();
+    const float  avail = ImGui::GetContentRegionAvail().x;
+    const float  w = std::max(h, o.width > 0.0f ? (WindowAutoSizes() ? o.width : std::min(o.width, avail)) : avail);
+    const bool   clicked = ImGui::InvisibleButton(id, ImVec2(w, h));
+    const bool   hovered = ImGui::IsItemHovered();
+    const bool   dis = ItemDisabled();
+    const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const bool   crisp = PushCrisp();
+    dl->AddRectFilled(a, b, Ink(hovered ? kHover : kRaised), kRadiusSm);
+    dl->AddRect(a, b, Ink(o.open ? kAccentLine : kStroke), kRadiusSm);
+    const float ty = a.y + (h - ImGui::GetTextLineHeight()) * 0.5f;
+    float       x = a.x + Dp(8.0f);
+    const float chev_x = b.x - Dp(10.0f);
+    if (label && label[0]) {
+        dl->AddText(ImVec2(x, ty), Ink(dis ? kFaint : kMuted), label, LabelEnd(label));
+        x += TextWidth(label) + Dp(6.0f);
+    }
+    if (o.icon && o.icon->fn) {
+        Icon ic = *o.icon;
+        if (dis) ic.col = kFaint;
+        PaintIconAt(dl, ic, x, a.y, h, Dp(10.0f));
+        x += Dp(12.0f);
+    }
+    // The tag at the right, before the chevron; the value ellipsized before it.
+    float tag_x = chev_x - Dp(8.0f);
+    if (o.tag && o.tag[0]) {
+        const float tw = ImGui::CalcTextSize(o.tag).x;
+        tag_x = chev_x - Dp(8.0f) - tw;
+        if (tag_x > x + Dp(24.0f))
+            dl->AddText(ImVec2(tag_x, ty), Ink(dis ? kFaint : (o.tag_tone == TagTone::Neutral ? kFaint : ToneColours(o.tag_tone).text)),
+                        o.tag);
+        else tag_x = chev_x - Dp(8.0f);
+    }
+    bool cut = false;
+    if (value && value[0])
+        cut = EllipsisText(dl, ImVec2(x, ty), tag_x - Dp(6.0f), Ink(dis ? kFaint : (o.value_col ? o.value_col : kText)),
+                           std::string(value));
+    const ImVec2 c(chev_x, a.y + h * 0.5f);
+    dl->AddTriangleFilled(ImVec2(c.x - Dp(3.5f), c.y - Dp(2.0f)), ImVec2(c.x + Dp(3.5f), c.y - Dp(2.0f)),
+                          ImVec2(c.x, c.y + Dp(2.5f)), Ink(dis ? kFaint : kMuted));
+    PopCrisp(crisp);
+    if (cut && !o.open && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ShowTip(value);
+    return clicked;
 }
 
 // ---- checkbox (13-7 B9) ------------------------------------------------------------------
@@ -1139,7 +1753,7 @@ bool SelectRow(const char* label, bool selected, unsigned bits, float height, in
         const std::string text(label, end);
         if (EllipsisText(dl, ImVec2(a.x + Dp(6.0f), a.y + (h - ImGui::GetTextLineHeight()) * 0.5f), b.x - Dp(6.0f), ink, text) &&
             ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-            ImGui::SetTooltip("%s", text.c_str());
+            ShowTip(text.c_str());
     }
     return clicked;
 }
@@ -1220,7 +1834,9 @@ bool BeginToast(const char* id, ImVec2 pos, ImVec2 pivot)
     constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
                                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
                                         ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove;
-    return ImGui::Begin(id, nullptr, kFlags);
+    const bool shown = ImGui::Begin(id, nullptr, kFlags);
+    if (shown) WindowShadow(0.55f);  // .toast: 0 18px 50px rgba(0,0,0,.55)
+    return shown;
 }
 
 void EndToast()
@@ -1276,10 +1892,10 @@ SplitterState SplitterBar(const char* id, ImVec2 size, bool vertical)
 float KeyCap(ImDrawList* dl, ImVec2 p, const char* key, ImU32 text)
 {
     const ImVec2 ts = ImGui::CalcTextSize(key);
-    const ImVec2 b(p.x + ts.x + 8.0f, p.y + ts.y + 3.0f);
-    dl->AddRectFilled(p, b, kBg, 4.0f);
-    dl->AddRect(p, b, kStrokeStrong, 4.0f);
-    dl->AddText(ImVec2(p.x + 4.0f, p.y + 1.5f), text ? text : kText, key);
+    const ImVec2 b(p.x + ts.x + Dp(8.0f), p.y + ts.y + Dp(3.0f));
+    dl->AddRectFilled(p, b, kBg, Dp(4.0f));
+    dl->AddRect(p, b, kStrokeStrong, Dp(4.0f));
+    dl->AddText(ImVec2(p.x + Dp(4.0f), p.y + Dp(1.5f)), text ? text : kText, key);
     return b.x - p.x;
 }
 
@@ -1314,7 +1930,7 @@ void TrackEdge(ImDrawList* dl, float x0, float lx, float x1, float y0, float y1,
 
 void RuleStripe(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col, float radius)
 {
-    dl->PushClipRect(p0, ImVec2(p0.x + 3.0f, p1.y), true);
+    dl->PushClipRect(p0, ImVec2(p0.x + Dp(3.0f), p1.y), true);
     dl->AddRectFilled(p0, p1, col, radius);
     dl->PopClipRect();
 }
@@ -1353,6 +1969,197 @@ void EndCard(Card& k, ImU32 fill, ImU32 edge)
     k.split.Merge(dl);
     ImGui::SetCursorScreenPos(ImVec2(k.p0.x, bottom));
     ImGui::Dummy(ImVec2(k.w, std::max(0.0f, kCardGap - ImGui::GetStyle().ItemSpacing.y)));
+}
+
+// ---- panes, wells, bands (13-14 G-19 / G-2) ---------------------------------------------
+
+bool BeginPane(const char* id, ImVec2 size, ImU32 fill, int child_flags, int window_flags, ImU32 edge)
+{
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, Col(fill));
+    ImGui::PushStyleColor(ImGuiCol_Border, Col(edge ? edge : kStroke));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, kRadiusLg);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Dp(8.0f), Dp(8.0f)));
+    const int  flags = child_flags | (edge ? ImGuiChildFlags_Borders : 0) | ImGuiChildFlags_AlwaysUseWindowPadding;
+    const bool shown = ImGui::BeginChild(id, size, flags, window_flags);
+    ImGui::PopStyleVar(2);  // read when the child begins: the popups opened inside keep their own
+    ImGui::PopStyleColor(2);
+    return shown;
+}
+
+void EndPane() { ImGui::EndChild(); }
+
+bool BeginListPane(const char* id, ImVec2 size, int window_flags)
+{
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, Col(kBg));
+    ImGui::PushStyleColor(ImGuiCol_Border, Col(kStroke));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, kRadiusSm);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(1.0f, 1.0f));  // rows inside the 1 px edge
+    const bool shown = ImGui::BeginChild(id, size, ImGuiChildFlags_Borders, window_flags);
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+    return shown;
+}
+
+void EndListPane() { ImGui::EndChild(); }
+
+namespace {
+
+// Narrows the window's work and content rects to `inner` (a box's inner right edge), saving them.
+void NarrowTo(float inner, float* saved_work, float* saved_content)
+{
+    ImGuiWindow* win = ImGui::GetCurrentWindow();
+    *saved_work = win->WorkRect.Max.x;
+    *saved_content = win->ContentRegionRect.Max.x;
+    win->WorkRect.Max.x = std::min(win->WorkRect.Max.x, inner);
+    win->ContentRegionRect.Max.x = std::min(win->ContentRegionRect.Max.x, inner);
+}
+void RestoreFrom(float saved_work, float saved_content)
+{
+    ImGuiWindow* win = ImGui::GetCurrentWindow();
+    win->WorkRect.Max.x = saved_work;
+    win->ContentRegionRect.Max.x = saved_content;
+}
+
+}  // namespace
+
+void BeginWell(Well& k, float pad)
+{
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    k.p0 = ImGui::GetCursorScreenPos();
+    k.w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    k.pad = pad >= 0.0f ? pad : Dp(4.0f) + 1.0f;  // the padding inside the 1 px edge
+    k.split.Split(dl, 2);
+    k.split.SetCurrentChannel(dl, 1);
+    ImGui::SetCursorScreenPos(ImVec2(k.p0.x + k.pad, k.p0.y + k.pad));
+    ImGui::BeginGroup();
+    NarrowTo(std::max(k.p0.x + k.pad + 1.0f, k.p0.x + k.w - k.pad), &k.saved_work_max, &k.saved_content_max);
+}
+
+void EndWell(Well& k)
+{
+    RestoreFrom(k.saved_work_max, k.saved_content_max);
+    ImGui::EndGroup();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float bottom = ImGui::GetItemRectMax().y + k.pad;
+    k.split.SetCurrentChannel(dl, 0);
+    dl->AddRectFilled(k.p0, ImVec2(k.p0.x + k.w, bottom), Ink(kBg), kRadiusMd);
+    dl->AddRect(k.p0, ImVec2(k.p0.x + k.w, bottom), Ink(kStroke), kRadiusMd);
+    k.split.Merge(dl);
+    ImGui::SetCursorScreenPos(ImVec2(k.p0.x, bottom));
+    // The pane's 8 px gap under it.
+    ImGui::Dummy(ImVec2(k.w, std::max(0.0f, Dp(8.0f) - ImGui::GetStyle().ItemSpacing.y)));
+}
+
+void BeginToolbar(Well& k)
+{
+    BeginWell(k);
+    // .tbb: 24 px buttons (pad 0 6), 3 px apart, wrapping inside the well.
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(Dp(6.0f), std::max(0.0f, (FieldH() - ImGui::GetFontSize()) * 0.5f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(Dp(3.0f), Dp(3.0f)));
+    k.toolbar = true;
+    ++g_toolbar_depth;
+}
+
+void EndToolbar(Well& k)
+{
+    if (k.toolbar) {
+        k.toolbar = false;
+        g_toolbar_depth = std::max(0, g_toolbar_depth - 1);
+        ImGui::PopStyleVar(2);
+    }
+    EndWell(k);
+}
+
+void BeginConfirmBand(ConfirmBand& b, float width, bool warn)
+{
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    b.p0 = ImGui::GetCursorScreenPos();
+    b.w = std::max(1.0f, width > 0.0f ? width : ImGui::GetContentRegionAvail().x);
+    b.warn = warn;
+    b.pad_x = warn ? Dp(8.0f) : Dp(6.0f);
+    b.pad_y = warn ? Dp(3.0f) : Dp(4.0f);
+    b.split.Split(dl, 2);
+    b.split.SetCurrentChannel(dl, 1);
+    ImGui::SetCursorScreenPos(ImVec2(b.p0.x + b.pad_x, b.p0.y + b.pad_y));
+    ImGui::BeginGroup();
+    NarrowTo(std::max(b.p0.x + b.pad_x + 1.0f, b.p0.x + b.w - b.pad_x), &b.saved_work_max, &b.saved_content_max);
+}
+
+void EndConfirmBand(ConfirmBand& b)
+{
+    RestoreFrom(b.saved_work_max, b.saved_content_max);
+    ImGui::EndGroup();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float bottom = ImGui::GetItemRectMax().y + b.pad_y;
+    const ImVec2 b1(b.p0.x + b.w, bottom);
+    b.split.SetCurrentChannel(dl, 0);
+    if (b.warn) {  // the Legacy band
+        dl->AddRectFilled(b.p0, b1, Ink(WithAlpha(kWarn, 0x14)), kRadiusSm);
+        dl->AddRect(b.p0, b1, Ink(kConfirmLine), kRadiusSm);
+    } else {  // .confirmbox
+        dl->AddRectFilled(b.p0, b1, Ink(WithAlpha(kConfirmLine, 0x14)), kRadiusMd);
+        dl->AddRect(b.p0, b1, Ink(kConfirmLine), kRadiusMd);
+    }
+    b.split.Merge(dl);
+    ImGui::SetCursorScreenPos(ImVec2(b.p0.x, bottom));
+    ImGui::Dummy(ImVec2(b.w, 0.0f));
+}
+
+// ---- colours (13-14 G-12) -------------------------------------------------------------------
+
+bool ColorSwatchButton(const char* id, float rgb[3], const char* tip)
+{
+    if (!rgb) return false;
+    ImGui::PushID(id);
+    const float  s = ControlH();
+    const bool   clicked = ImGui::InvisibleButton("##swatch", ImVec2(s, s));
+    const bool   hovered = ImGui::IsItemHovered();
+    const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const float  in = Dp(3.0f);
+    dl->AddRectFilled(a, b, Ink(kBg), kRadiusSm);
+    dl->AddRectFilled(ImVec2(a.x + in, a.y + in), ImVec2(b.x - in, b.y - in),
+                      Ink(ImGui::ColorConvertFloat4ToU32(ImVec4(rgb[0], rgb[1], rgb[2], 1.0f))), Dp(3.0f));
+    dl->AddRect(a, b, Ink(hovered ? kFrameHover : kStrokeStrong), kRadiusSm);
+    TipIfHovered(tip);
+    if (clicked) ImGui::OpenPopup("##swatchpick");
+    bool changed = false;
+    if (BeginPanelPopup("##swatchpick")) {
+        ImGui::SetNextItemWidth(Dp(180.0f));
+        changed = ImGui::ColorPicker3("##pick", rgb,
+                                      ImGuiColorEditFlags_NoSidePreview | ImGuiColorEditFlags_NoInputs |
+                                          ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_PickerHueBar);
+        EndPanelPopup();
+    }
+    ImGui::PopID();
+    return changed;
+}
+
+bool SwatchPalette(const char* id, const ImU32* colors, int count, ImU32 current, int* picked)
+{
+    if (!colors || count <= 0) return false;
+    ImGui::PushID(id);
+    bool        clicked_any = false;
+    const float cell = Dp(20.0f);
+    for (int i = 0; i < count; ++i) {
+        ImGui::PushID(i);
+        const ImVec2 q = ImGui::GetCursorScreenPos();
+        const bool   clicked = ImGui::InvisibleButton("##col", ImVec2(cell, cell));
+        const bool   hovered = ImGui::IsItemHovered();
+        ImDrawList*  dl = ImGui::GetWindowDrawList();
+        const ImVec2 c(q.x + cell * 0.5f, q.y + cell * 0.5f);
+        dl->AddCircleFilled(c, Dp(7.0f), Ink(colors[i]), 16);
+        if ((colors[i] | IM_COL32_A_MASK) == (current | IM_COL32_A_MASK)) dl->AddCircle(c, Dp(9.0f), Ink(kText), 16, Dp(1.5f));
+        else if (hovered) dl->AddCircle(c, Dp(9.0f), Ink(kStrokeStrong), 16, Dp(1.5f));
+        if (clicked) {
+            clicked_any = true;
+            if (picked) *picked = i;
+        }
+        if (i + 1 < count) ImGui::SameLine(0.0f, Dp(4.0f));
+        ImGui::PopID();
+    }
+    ImGui::PopID();
+    return clicked_any;
 }
 
 void PushPanelStyle()
@@ -1489,7 +2296,7 @@ float SentenceGap() { return ImGui::GetStyle().ItemSpacing.x; }
 
 float SentenceColumnWidth(const char* const* labels, int count, const char* badge)
 {
-    float w = badge ? ImGui::CalcTextSize(badge).x + 8.0f : 0.0f;
+    float w = badge ? ImGui::CalcTextSize(badge).x + Dp(8.0f) : 0.0f;
     for (int i = 0; labels && i < count; ++i)
         if (labels[i]) w = std::max(w, ImGui::CalcTextSize(labels[i]).x);
     return w;
@@ -1500,7 +2307,7 @@ Sentence MakeSentence(float x0, float right, float column_w)
     Sentence s;
     s.x0 = x0;
     s.chips_x = x0 + column_w + SentenceGap();
-    s.right = std::max(s.chips_x + 20.0f, right);
+    s.right = std::max(s.chips_x + Dp(20.0f), right);
     return s;
 }
 
@@ -1514,10 +2321,10 @@ void SentenceRow(Sentence& s, const char* label, bool badge)
     const ImVec2 ts = ImGui::CalcTextSize(label);
     const float  xr = s.chips_x - SentenceGap();
     if (badge) {
-        const float bx = xr - ts.x - 8.0f;
-        dl->AddRectFilled(ImVec2(bx, y + 3.0f), ImVec2(xr, y + fh - 3.0f), kBg, 4.0f);
-        dl->AddRect(ImVec2(bx, y + 3.0f), ImVec2(xr, y + fh - 3.0f), kStroke, 4.0f);
-        dl->AddText(ImVec2(bx + 4.0f, y + (fh - ts.y) * 0.5f), kMuted, label);
+        const float bx = xr - ts.x - Dp(8.0f);
+        dl->AddRectFilled(ImVec2(bx, y + Dp(3.0f)), ImVec2(xr, y + fh - Dp(3.0f)), kBg, Dp(4.0f));
+        dl->AddRect(ImVec2(bx, y + Dp(3.0f)), ImVec2(xr, y + fh - Dp(3.0f)), kStroke, Dp(4.0f));
+        dl->AddText(ImVec2(bx + Dp(4.0f), y + (fh - ts.y) * 0.5f), kMuted, label);
     } else {
         dl->AddText(ImVec2(xr - ts.x, y + (fh - ts.y) * 0.5f), kMuted, label);
     }
@@ -1547,8 +2354,8 @@ bool VerticalTabs(const char* id, const char* const* labels, int count, int* sel
     if (!labels || count <= 0 || !selected) return false;
     ImGui::PushID(id);
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    const float h = ImGui::GetTextLineHeight() + 10.0f;
-    const float pad_x = 12.0f;  // the text's inset (the accent bar sits in it)
+    const float h = ImGui::GetTextLineHeight() + Dp(10.0f);
+    const float pad_x = Dp(12.0f);  // the text's inset (the accent bar sits in it)
     float w = width;
     if (w <= 0.0f) {
         for (int i = 0; i < count; ++i)
@@ -1558,7 +2365,7 @@ bool VerticalTabs(const char* id, const char* const* labels, int count, int* sel
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     bool changed = false;
     for (int i = 0; i < count; ++i) {
-        const ImVec2 a(p0.x, p0.y + static_cast<float>(i) * (h + 2.0f));
+        const ImVec2 a(p0.x, p0.y + static_cast<float>(i) * (h + Dp(2.0f)));
         const ImVec2 b(a.x + w, a.y + h);
         ImGui::SetCursorScreenPos(a);
         ImGui::PushID(i);
@@ -1572,7 +2379,7 @@ bool VerticalTabs(const char* id, const char* const* labels, int count, int* sel
         const bool on = (*selected == i);
         if (on) {
             dl->AddRectFilled(a, b, kAccentSoft, kRadiusSm);
-            dl->AddRectFilled(ImVec2(a.x, a.y + 4.0f), ImVec2(a.x + 3.0f, b.y - 4.0f), kAccent, 1.5f);
+            dl->AddRectFilled(ImVec2(a.x, a.y + Dp(4.0f)), ImVec2(a.x + Dp(3.0f), b.y - Dp(4.0f)), kAccent, 1.5f);
         } else if (hovered) {
             dl->AddRectFilled(a, b, kHover, kRadiusSm);
         }
@@ -1585,7 +2392,7 @@ bool VerticalTabs(const char* id, const char* const* labels, int count, int* sel
 
     // One item for the whole column, so the layout continues after it.
     ImGui::SetCursorScreenPos(p0);
-    ImGui::Dummy(ImVec2(w, static_cast<float>(count) * (h + 2.0f) - 2.0f));
+    ImGui::Dummy(ImVec2(w, static_cast<float>(count) * (h + Dp(2.0f)) - Dp(2.0f)));
     ImGui::PopID();
     return changed;
 }

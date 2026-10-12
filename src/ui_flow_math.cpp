@@ -5,6 +5,7 @@
 #include "ui_flow_math.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <vector>
 
@@ -176,22 +177,53 @@ int PlaceTrail(const float* w, int n, float left, float right, float lead_min, f
     return line + 1;
 }
 
-float FaderValueAt(float mouse_x, float x0, float x1, float thumb_r, float v_min, float v_max)
+namespace {
+
+bool LogRange(float v_min, float v_max) { return v_min > 0.0f && v_max > v_min; }
+
+}  // namespace
+
+float FaderValueAt(float mouse_x, float x0, float x1, float thumb_r, float v_min, float v_max, bool log)
 {
     const float a = x0 + thumb_r, b = x1 - thumb_r;
     if (!(b > a)) return v_min;
     float t = (mouse_x - a) / (b - a);
     t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+    if (log && LogRange(v_min, v_max)) {
+        if (t <= 0.0f) return v_min;
+        if (t >= 1.0f) return v_max;
+        return v_min * std::pow(v_max / v_min, t);
+    }
     return v_min + t * (v_max - v_min);
 }
 
-float FaderThumbX(float v, float x0, float x1, float thumb_r, float v_min, float v_max)
+float FaderThumbX(float v, float x0, float x1, float thumb_r, float v_min, float v_max, bool log)
 {
     const float a = x0 + thumb_r, b = x1 - thumb_r;
     if (!(b > a) || !(v_max != v_min)) return a;
-    float t = (v - v_min) / (v_max - v_min);
+    float t = 0.0f;
+    if (log && LogRange(v_min, v_max)) t = v <= v_min ? 0.0f : std::log(v / v_min) / std::log(v_max / v_min);
+    else t = (v - v_min) / (v_max - v_min);
     t = t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
     return a + t * (b - a);
+}
+
+size_t TwoLineBreak(const std::string& text, float width, const MeasureFn& measure)
+{
+    const char* b = text.c_str();
+    if (text.empty() || measure(b, b + text.size()) <= width) return 0;
+    // The last space whose first line (its trailing spaces dropped) fits.
+    for (size_t i = text.size(); i-- > 0;) {
+        if (text[i] != ' ') continue;
+        size_t end = i;
+        while (end > 0 && text[end - 1] == ' ') --end;
+        if (end == 0) return 0;  // only spaces before it: no first line
+        if (measure(b, b + end) > width) continue;
+        size_t next = i + 1;
+        while (next < text.size() && text[next] == ' ') ++next;
+        return next < text.size() ? next : 0;  // nothing after the space: one line
+    }
+    return 0;
 }
 
 std::string TrimmedNumber(double v, int decimals)

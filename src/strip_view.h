@@ -20,7 +20,8 @@
 
 namespace rav {
 
-// The ruler's layout (spec 11-fb-6 / 11-fb-9).
+// The ruler's layout (spec 11-fb-6 / 11-fb-9), in mockup px: drawn at the screen's DPI (ui::Dp), so a
+// caller sizes the band ruler_h = font size + ui::Dp(kStripRulerTickRoom).
 constexpr float kStripRulerTickRoom = 6.0f;    // band height under the labels (minor ticks)
 constexpr float kStripRulerMinorTickH = 4.0f;  // minor tick height: inside the tick room
 constexpr float kStripRulerMinorMinPx = 4.0f;  // minor ticks at least this far apart
@@ -97,7 +98,7 @@ struct StripRuler {
 StripRuler StripRulerFor(const StripWindow& w, float lane_w, double fps);
 
 // The ruler band [lane_x, lane_x + lane_w] x [lane_top - ruler_h, lane_top]: minor ticks,
-// labelled ticks, labels at font size ruler_h - kStripRulerTickRoom (none under 6 px).
+// labelled ticks, labels at font size ruler_h - ui::Dp(kStripRulerTickRoom) (none under ui::Dp(6) px).
 void DrawStripRuler(ImDrawList* dl, const StripWindow& w, const StripRuler& r, float lane_x, float lane_w,
                     float lane_top, float ruler_h, double fps);
 

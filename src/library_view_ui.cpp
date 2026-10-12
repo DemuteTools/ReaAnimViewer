@@ -103,43 +103,6 @@ void DrawColumn(int i)
     }
 }
 
-// `text` shortened with "..." (whole UTF-8 characters) to fit `max_w` in `font`.
-std::string FitWidth(ImFont* font, const std::string& text, float max_w)
-{
-    auto width = [&](const std::string& t) { return font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.0f, t.c_str()).x; };
-    if (width(text) <= max_w) return text;
-    std::string t = text;
-    while (!t.empty()) {
-        // a whole character: its continuation bytes, then its lead byte
-        while (!t.empty() && (static_cast<unsigned char>(t.back()) & 0xC0) == 0x80) t.pop_back();
-        if (!t.empty()) t.pop_back();
-        if (width(t + "...") <= max_w) return t + "...";
-    }
-    return std::string();
-}
-
-// `text` drawn turned a quarter (the mockup's writing-mode: vertical-rl), centred on cx from `top`
-// down: reading top to bottom (`down`), or bottom to top (the right strip's rotate(180deg)).
-void VerticalText(ImDrawList* dl, ImFont* font, float cx, float top, ImU32 col, const std::string& text, bool down,
-                  ImVec2 clip_min, ImVec2 clip_max)
-{
-    if (text.empty()) return;
-    const ImVec2 ts = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.0f, text.c_str());
-    // Laid out flat at `o` (never culled: the clip holds the flat text and the strip), then each of
-    // its vertices turned about it and moved into place.
-    const ImVec2 o(cx, top);
-    dl->PushClipRect(ImVec2(std::min(clip_min.x, o.x), std::min(clip_min.y, o.y)),
-                     ImVec2(std::max(clip_max.x, o.x + ts.x), std::max(clip_max.y, o.y + ts.y)), false);
-    const int v0 = dl->VtxBuffer.Size;
-    dl->AddText(font, font->FontSize, o, col, text.c_str());
-    for (int k = v0; k < dl->VtxBuffer.Size; ++k) {
-        ImVec2&     v = dl->VtxBuffer[k].pos;
-        const float x = v.x - o.x, y = v.y - o.y;
-        v = down ? ImVec2(cx + ts.y * 0.5f - y, top + x) : ImVec2(cx - ts.y * 0.5f + y, top + ts.x - x);
-    }
-    dl->PopClipRect();
-}
-
 // 13-14 (C8): a collapsed column, the mockup's .colstrip: the whole strip is one button (kRaised
 // under the mouse, a click expands it), 8 px from its top the 12 px muted chevron, then (column 1)
 // the library's dot, then the name turned a quarter in 12 px kText, ellipsized to the strip.
@@ -188,8 +151,8 @@ void DrawStrip(int i, float h)
         dl->AddCircleFilled(ImVec2(cx, y + r), r, dot);
         y += 2.0f * r + gap;
     }
-    const std::string shown = FitWidth(f, name, b.y - gap - y);
-    VerticalText(dl, f, cx, y, ui::kText, shown, i == 0, wp, b);
+    const std::string shown = ui::EllipsizeToWidth(f, name, b.y - gap - y);
+    ui::VerticalText(dl, f, cx, y, ui::kText, shown, i == 0, wp, b);
     dl->PopClipRect();
     ImGui::PopID();
 }

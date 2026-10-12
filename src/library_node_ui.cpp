@@ -1938,13 +1938,11 @@ void DrawEditOverlay()
             // The side strip (.edside): surface, a stroke line on its left, the captions
             // "DETECTION · THIS SOUND ONLY" and "LEVEL" over their rows (.edrow: 70 px labels).
             ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::Col(ui::kSurface));
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui::Dp(10.0f), ui::Dp(10.0f)));
-            ImGui::BeginChild("##editside", ImVec2(side_w, wave_h), ImGuiChildFlags_AlwaysUseWindowPadding);
-            {
-                const ImVec2 wp = ImGui::GetWindowPos();
-                ImGui::GetWindowDrawList()->AddLine(wp, ImVec2(wp.x, wp.y + ImGui::GetWindowSize().y), ui::kStroke);
-            }
+            ui::PaneOpts side;  // 13-14: the theme's pane, 10 px inside, square, its edge on the left only
+            side.edge = ui::PaneEdge::Left;
+            side.pad = 10.0f;
+            side.radius = 0.0f;
+            ui::BeginPane("##editside", ImVec2(side_w, wave_h), side);
             ui::GroupCaption("Detection \xC2\xB7 this sound only", ui::kMuted);
             if (m.ok) DetectionControls(*lib, *n, m, ui::Dp(70.0f));
             if (!P.changed) {
@@ -1958,9 +1956,7 @@ void DrawEditOverlay()
                 if (m.ok) NormalizeControls(*lib, *n, m);
                 ui::SubText("Every change is saved at once (Ctrl+Z to undo), with the sound in the library (.ravlib).");
             }
-            ImGui::EndChild();
-            ImGui::PopStyleVar();
-            ImGui::PopStyleColor();
+            ui::EndPane();
         }
         if (keys && !P.changed) {
             if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) toggle_play();
@@ -2710,7 +2706,8 @@ void NodePanelWidgets()
 {
     P.changed = false;
     // A live edit only lasts while its drag does (an unfinished one never shadows the store).
-    if (P.live && !ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ui::DragNumberActive()) CancelLive();
+    // (13-14: a fader typed into holds no mouse button either.)
+    if (P.live && !ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ui::DragNumberActive() && !ui::FaderTyping()) CancelLive();
     MergeTreeHooks();
     AuditionPlaying();  // frees an audition that has played to its end
     const SoundStore&   store = GetSoundStore(nullptr);

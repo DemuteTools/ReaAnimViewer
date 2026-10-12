@@ -670,12 +670,18 @@ namespace {
 float KeyCapWidth(const char* key) { return key && key[0] ? ImGui::CalcTextSize(key).x + Dp(8.0f) : 0.0f; }
 }  // namespace
 
+float AddButtonWidth(const char* label, const char* key)
+{
+    const float kw = KeyCapWidth(key);
+    return TextWidth(label) + (kw > 0.0f ? Dp(8.0f) + kw : 0.0f) + 2.0f * Dp(10.0f);
+}
+
 bool AddButton(const char* label, const ImVec2& size, const char* key, bool pill)
 {
     const float pad = Dp(10.0f);
     const float gap = Dp(8.0f);
     const float kw = KeyCapWidth(key);
-    const float nat = TextWidth(label) + (kw > 0.0f ? gap + kw : 0.0f) + 2.0f * pad;
+    const float nat = AddButtonWidth(label, key);
     const float avail = ImGui::GetContentRegionAvail().x;
     float       w = size.x > 0.0f ? size.x : (size.x < 0.0f ? std::max(1.0f, avail + size.x) : nat);
     if (!WindowAutoSizes() && w > avail) w = std::max(ControlH(), avail);
@@ -1162,6 +1168,12 @@ DragNumberEvent DragNumber(const char* id, double* value, double step, int decim
 
 // ---- fader (13-7 B5) ---------------------------------------------------------------------
 
+namespace {
+int g_fader_typing_frame = -1;  // the last frame a fader was typed into
+}  // namespace
+
+bool FaderTyping() { return g_fader_typing_frame >= ImGui::GetFrameCount() - 1; }
+
 bool Fader(const char* id, float* v, float v_min, float v_max, float width)
 {
     return Fader(id, v, v_min, v_max, width, FaderOpts());
@@ -1193,26 +1205,58 @@ bool Fader(const char* id, float* v, float v_min, float v_max, float width, cons
         if (w - gap - value_w < Dp(20.0f)) value_w = 0.0f;
     }
     const float track_w = value_w > 0.0f ? w - gap - value_w : w;
-    ImGui::InvisibleButton(id, ImVec2(track_w, h));
-    const bool   hovered = ImGui::IsItemHovered();
-    const bool   active = ImGui::IsItemActive();
+    // 13-14 (finishing): Ctrl+click types a value, as ImGui's slider does (TempInputScalar): the field
+    // takes the track's id, so the gesture stays one active item for IsItemActive / IsItemDeactivated.
+    const ImGuiID gid = ImGui::GetID(id);
+    bool          typing = ImGui::TempInputIsActive(gid);
+    bool          hovered = false, active = false;
+    if (typing) {
+        const ImVec2 c = ImGui::GetCursorScreenPos();
+        const ImRect bb(c, ImVec2(c.x + track_w, c.y + h));
+        ImGui::ItemSize(bb);
+        ImGui::ItemAdd(bb, gid);
+    } else {
+        ImGui::InvisibleButton(id, ImVec2(track_w, h));
+        hovered = ImGui::IsItemHovered();
+        active = ImGui::IsItemActive();
+        typing = ImGui::IsItemActivated() && ImGui::GetIO().KeyCtrl && ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+    }
     const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
     const float  r = Dp(8.0f);  // the 16 px thumb
     bool         changed = false;
-    if (active) {
-        const float nv = flow::FaderValueAt(ImGui::GetIO().MousePos.x, a.x, b.x, r, v_min, v_max, o.log);
-        if (nv != *v) {
-            *v = nv;
-            changed = true;
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    if (typing) {
+        // The DragNumber's typing look: raised, accent-line edge, r5, the number in mono 11.
+        g_fader_typing_frame = ImGui::GetFrameCount();
+        ImGui::PushFont(mono);
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, Col(kRaised));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, Col(kRaised));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgActive, Col(kRaised));
+        ImGui::PushStyleColor(ImGuiCol_Border, Col(kAccentLine));
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Dp(kRadiusSm));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(Dp(5.0f), std::max(0.0f, (h - mono->FontSize) * 0.5f)));
+        const float lo = std::min(v_min, v_max), hi = std::max(v_min, v_max);
+        changed = ImGui::TempInputScalar(ImRect(a, b), gid, id, ImGuiDataType_Float, v,
+                                         (o.format && o.format[0]) ? o.format : "%.2f", &lo, &hi);
+        ImGui::PopStyleVar(3);
+        ImGui::PopStyleColor(4);
+        ImGui::PopFont();
+    } else {
+        if (active) {
+            const float nv = flow::FaderValueAt(ImGui::GetIO().MousePos.x, a.x, b.x, r, v_min, v_max, o.log);
+            if (nv != *v) {
+                *v = nv;
+                changed = true;
+            }
         }
+        const float cy = std::floor((a.y + b.y) * 0.5f) + 0.5f;
+        const float th = Dp(6.0f);  // the track
+        const float tx = flow::FaderThumbX(*v, a.x, b.x, r, v_min, v_max, o.log);
+        dl->AddRectFilled(ImVec2(a.x, cy - th * 0.5f), ImVec2(b.x, cy + th * 0.5f), Ink(kStrokeStrong), th * 0.5f);
+        if (tx > a.x) dl->AddRectFilled(ImVec2(a.x, cy - th * 0.5f), ImVec2(tx, cy + th * 0.5f), Ink(kAccent), th * 0.5f);
+        dl->AddCircleFilled(ImVec2(tx, cy), r, Ink((hovered || active) ? kPrimaryHover : kAccent), 24);
     }
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const float cy = std::floor((a.y + b.y) * 0.5f) + 0.5f;
-    const float th = Dp(6.0f);  // the track
-    const float tx = flow::FaderThumbX(*v, a.x, b.x, r, v_min, v_max, o.log);
-    dl->AddRectFilled(ImVec2(a.x, cy - th * 0.5f), ImVec2(b.x, cy + th * 0.5f), Ink(kStrokeStrong), th * 0.5f);
-    if (tx > a.x) dl->AddRectFilled(ImVec2(a.x, cy - th * 0.5f), ImVec2(tx, cy + th * 0.5f), Ink(kAccent), th * 0.5f);
-    dl->AddCircleFilled(ImVec2(tx, cy), r, Ink((hovered || active) ? kPrimaryHover : kAccent), 24);
     if (value_w > 0.0f) {
         // The value takes its room on the line without becoming the last item (ItemSize only), so
         // IsItemActive / IsItemDeactivated after the fader still read the track.
@@ -1806,22 +1850,31 @@ void LeftBar(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col, float radius)
 
 }  // namespace
 
-void RowBackground(ImDrawList* dl, ImVec2 a, ImVec2 b, unsigned bits, float radius)
+void RowBackground(ImDrawList* dl, ImVec2 a, ImVec2 b, unsigned bits, float radius, ImU32 stripe)
 {
     if (!dl) return;
-    const bool sel = (bits & kRowSelected) != 0, lit = (bits & kRowLit) != 0;
+    const bool sel = (bits & kRowSelected) != 0, lit = (bits & kRowLit) != 0, hov = (bits & kRowHovered) != 0;
+    if (bits & kRowCard) {
+        // 13-14 (finishing): the card row (10-3 fb-2's rule card): filled and edged, a stripe between.
+        dl->AddRectFilled(a, b, Ink(hov && !sel ? kHover : kRaised), radius);
+        if (sel) dl->AddRectFilled(a, b, Ink(kAccentSoft), radius);
+        if (stripe) RuleStripe(dl, a, b, Ink(stripe), radius);
+        dl->AddRect(a, b, Ink(sel ? kAccentLine : kStroke), radius);
+        return;
+    }
     if (bits & kRowEven) dl->AddRectFilled(a, b, Ink(kRowAlt), radius);
     if (sel || lit) {
         dl->AddRectFilled(a, b, Ink(kAccentSoft), radius);
-    } else if (bits & kRowHovered) {
-        dl->AddRectFilled(a, b, Ink(kRaised), radius);
+    } else if (hov) {
+        dl->AddRectFilled(a, b, Ink((bits & kRowHoverStrong) ? kHover : kRaised), radius);
     }
+    if (stripe) RuleStripe(dl, a, b, Ink(stripe), radius);
     if (sel && !(bits & kRowBarSelect)) dl->AddRect(a, b, Ink(kAccentLine), radius);
     if ((sel && (bits & kRowBarSelect)) || lit) LeftBar(dl, a, b, Ink(kAccent), radius);
     else if (bits & kRowCurrent) LeftBar(dl, a, b, Ink(kAccentLine), radius);
 }
 
-bool SelectRow(const char* label, bool selected, unsigned bits, float height, int sflags, float radius)
+bool SelectRow(const char* label, bool selected, unsigned bits, float height, int sflags, float radius, float width)
 {
     const float h = height > 0.0f ? height : RowH();
     const ImU32 ink = ImGui::GetColorU32(ImGuiCol_Text);
@@ -1829,7 +1882,8 @@ bool SelectRow(const char* label, bool selected, unsigned bits, float height, in
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, Col(IM_COL32(0, 0, 0, 0)));
     ImGui::PushStyleColor(ImGuiCol_HeaderActive, Col(IM_COL32(0, 0, 0, 0)));
     ImGui::PushStyleColor(ImGuiCol_Text, Col(IM_COL32(0, 0, 0, 0)));
-    const bool clicked = ImGui::Selectable(label, selected, sflags | ImGuiSelectableFlags_NoPadWithHalfSpacing, ImVec2(0.0f, h));
+    const bool clicked = ImGui::Selectable(label, selected, sflags | ImGuiSelectableFlags_NoPadWithHalfSpacing,
+                                           ImVec2(width > 0.0f ? width : 0.0f, h));
     ImGui::PopStyleColor(4);
     const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
     // The whole row's hover (its overlaid buttons included), so it does not flicker under them.
@@ -2004,6 +2058,41 @@ bool EllipsisText(ImDrawList* dl, ImVec2 p, float max_x, ImU32 col, const std::s
     return true;
 }
 
+std::string EllipsizeToWidth(ImFont* font, const std::string& text, float max_w)
+{
+    if (!font) return text;
+    auto width = [&](const std::string& t) { return font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.0f, t.c_str()).x; };
+    if (width(text) <= max_w) return text;
+    std::string t = text;
+    while (!t.empty()) {
+        // a whole character: its continuation bytes, then its lead byte
+        while (!t.empty() && (static_cast<unsigned char>(t.back()) & 0xC0) == 0x80) t.pop_back();
+        if (!t.empty()) t.pop_back();
+        if (width(t + "...") <= max_w) return t + "...";
+    }
+    return std::string();
+}
+
+void VerticalText(ImDrawList* dl, ImFont* font, float cx, float top, ImU32 col, const std::string& text, bool down,
+                  ImVec2 clip_min, ImVec2 clip_max)
+{
+    if (!dl || !font || text.empty()) return;
+    const ImVec2 ts = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.0f, text.c_str());
+    // Laid out flat at `o` (never culled: the clip holds the flat text and the strip), then each of
+    // its vertices turned about it and moved into place.
+    const ImVec2 o(cx, top);
+    dl->PushClipRect(ImVec2(std::min(clip_min.x, o.x), std::min(clip_min.y, o.y)),
+                     ImVec2(std::max(clip_max.x, o.x + ts.x), std::max(clip_max.y, o.y + ts.y)), false);
+    const int v0 = dl->VtxBuffer.Size;
+    dl->AddText(font, font->FontSize, o, col, text.c_str());
+    for (int k = v0; k < dl->VtxBuffer.Size; ++k) {
+        ImVec2&     v = dl->VtxBuffer[k].pos;
+        const float x = v.x - o.x, y = v.y - o.y;
+        v = down ? ImVec2(cx + ts.y * 0.5f - y, top + x) : ImVec2(cx - ts.y * 0.5f + y, top + ts.x - x);
+    }
+    dl->PopClipRect();
+}
+
 void TrackFill(ImDrawList* dl, float x0, float lx, float x1, float y0, float y1, ImU32 lane_fill)
 {
     dl->AddRectFilled(ImVec2(x0, y0), ImVec2(lx, y1), kRaised, kRadiusSm, ImDrawFlags_RoundCornersLeft);
@@ -2071,6 +2160,24 @@ bool BeginPane(const char* id, ImVec2 size, ImU32 fill, int child_flags, int win
     const bool shown = ImGui::BeginChild(id, size, flags, window_flags);
     ImGui::PopStyleVar(2);  // read when the child begins: the popups opened inside keep their own
     ImGui::PopStyleColor(2);
+    return shown;
+}
+
+bool BeginPane(const char* id, ImVec2 size, const PaneOpts& o)
+{
+    const bool all = o.edge == PaneEdge::All;
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, Col(o.fill));
+    ImGui::PushStyleColor(ImGuiCol_Border, Col(o.edge_col));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, Dp(o.radius));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Dp(o.pad), Dp(o.pad)));
+    const int  flags = o.child_flags | (all ? ImGuiChildFlags_Borders : 0) | ImGuiChildFlags_AlwaysUseWindowPadding;
+    const bool shown = ImGui::BeginChild(id, size, flags, o.window_flags);
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+    if (o.edge == PaneEdge::Left) {  // a stroke line on its left only (.edside's border-left)
+        const ImVec2 wp = ImGui::GetWindowPos();
+        ImGui::GetWindowDrawList()->AddLine(wp, ImVec2(wp.x, wp.y + ImGui::GetWindowSize().y), Ink(o.edge_col));
+    }
     return shown;
 }
 
@@ -2203,6 +2310,11 @@ void EndConfirmBand(ConfirmBand& b)
 
 bool ColorSwatchButton(const char* id, float rgb[3], const char* tip)
 {
+    return ColorSwatchButton(id, rgb, tip, ColorSwatchOpts());
+}
+
+bool ColorSwatchButton(const char* id, float rgb[3], const char* tip, const ColorSwatchOpts& o)
+{
     if (!rgb) return false;
     ImGui::PushID(id);
     const float  s = ControlH();
@@ -2216,13 +2328,25 @@ bool ColorSwatchButton(const char* id, float rgb[3], const char* tip)
                       Ink(ImGui::ColorConvertFloat4ToU32(ImVec4(rgb[0], rgb[1], rgb[2], 1.0f))), Dp(3.0f));
     dl->AddRect(a, b, Ink(hovered ? kFrameHover : kStrokeStrong), kRadiusSm);
     TipIfHovered(tip);
-    if (clicked) ImGui::OpenPopup("##swatchpick");
+    // 13-14 (finishing): the colour when the picker opened (its Original preview), kept with the swatch.
+    ImGuiStorage* st = ImGui::GetStateStorage();
+    const ImGuiID ref_id = ImGui::GetID("##ref");
+    if (clicked) {
+        ImGui::OpenPopup("##swatchpick");
+        for (int i = 0; i < 3; ++i) st->SetFloat(ref_id + static_cast<ImGuiID>(i), rgb[i]);
+    }
     bool changed = false;
     if (BeginPanelPopup("##swatchpick")) {
         ImGui::SetNextItemWidth(Dp(180.0f));
-        changed = ImGui::ColorPicker3("##pick", rgb,
-                                      ImGuiColorEditFlags_NoSidePreview | ImGuiColorEditFlags_NoInputs |
-                                          ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_PickerHueBar);
+        int flags = ImGuiColorEditFlags_NoAlpha | ImGuiColorEditFlags_PickerHueBar;
+        if (o.inputs) flags |= ImGuiColorEditFlags_DisplayRGB | ImGuiColorEditFlags_DisplayHSV | ImGuiColorEditFlags_DisplayHex;
+        else flags |= ImGuiColorEditFlags_NoInputs;
+        if (!o.original) flags |= ImGuiColorEditFlags_NoSidePreview;
+        float ref[4] = {st->GetFloat(ref_id, rgb[0]), st->GetFloat(ref_id + 1, rgb[1]), st->GetFloat(ref_id + 2, rgb[2]), 1.0f};
+        float col[4] = {rgb[0], rgb[1], rgb[2], 1.0f};
+        changed = ImGui::ColorPicker4("##pick", col, flags, o.original ? ref : nullptr);
+        if (changed)
+            for (int i = 0; i < 3; ++i) rgb[i] = col[i];
         EndPanelPopup();
     }
     ImGui::PopID();
@@ -2265,6 +2389,12 @@ void PushPanelStyle()
     ImGui::PushStyleColor(ImGuiCol_Border, Col(kStroke));
 }
 
+void PushOverlayPanelStyle()
+{
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, Col(kOverlayBg));
+    ImGui::PushStyleColor(ImGuiCol_Border, Col(kStroke));
+}
+
 namespace {
 
 // Puts the cursor at `target` (a line start) through an empty item, so ImGui sees the layout
@@ -2285,6 +2415,22 @@ bool BeginSection(Section& s, const char* title, ImTextureID icon, bool foldable
     return BeginSection(s, title, o);
 }
 
+namespace {
+
+// 13-14 (finishing): SectionOpts.fill_h -- the open section's body, a child as high as the room left
+// less the card's bottom pad and its gap under it (.secx.sg { flex: 1 }), scrolling. Once.
+void BeginSectionBody(Section& s)
+{
+    if (!s.fill_h || !s.open || s.body) return;
+    const float sp_y = ImGui::GetStyle().ItemSpacing.y;
+    const float body_h =
+        std::max(Dp(s.fill_min_h), ImGui::GetContentRegionAvail().y - kCardPad - std::max(0.0f, kCardGap - sp_y) - 1.0f);
+    ImGui::BeginChild("##body", ImVec2(0.0f, body_h), ImGuiChildFlags_None, ImGuiWindowFlags_NoBackground);
+    s.body = true;
+}
+
+}  // namespace
+
 bool BeginSection(Section& s, const char* title, const SectionOpts& o)
 {
     ImGui::PushID(title);
@@ -2295,6 +2441,9 @@ bool BeginSection(Section& s, const char* title, const SectionOpts& o)
     ++g_section_depth;
     s.right_w = std::max(0.0f, o.right_w);
     s.in_header = false;
+    s.fill_h = o.fill_h;
+    s.fill_min_h = o.fill_min_h;
+    s.body = false;
 
     // .secx: padding 4 8 8.
     BeginCard(s.card, Dp(4.0f));
@@ -2360,6 +2509,7 @@ bool BeginSection(Section& s, const char* title, const SectionOpts& o)
     }
     s.resume = ImGui::GetCursorScreenPos();
     s.open = open;
+    if (s.right_w <= 0.0f) BeginSectionBody(s);
     return open;
 }
 
@@ -2377,11 +2527,16 @@ void EndSectionHeaderRight(Section& s)
     if (!s.in_header) return;
     s.in_header = false;
     MoveCursorTo(s.resume);
+    BeginSectionBody(s);
 }
 
 void EndSection(Section& s)
 {
     if (s.in_header) EndSectionHeaderRight(s);
+    if (s.body) {
+        ImGui::EndChild();
+        s.body = false;
+    }
     EndCard(s.card, s.nested ? kBg : kSurface, kStroke);  // .secx .secx: a section inside a section is kBg
     g_section_depth = std::max(0, g_section_depth - 1);
     ImGui::PopID();

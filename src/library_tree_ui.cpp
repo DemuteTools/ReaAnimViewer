@@ -1559,6 +1559,10 @@ void SwitchGroupsSectionWidgets()
     ui::SectionOpts opts;
     opts.foldable = false;
     opts.right_w = ButtonWidth("+ Group");
+    // 13-14 (C2.4): the card fills the rest of the column (.secx.sg { flex:1; min-height:140px }), its
+    // body scrolling (the theme's fill_h body, begun after the header's "+ Group").
+    opts.fill_h = true;
+    opts.fill_min_h = 96.0f;
     ui::Section sec;
     const bool  open_sec = ui::BeginSection(sec, "Switch Groups", opts);
     ui::BeginSectionHeaderRight(sec);
@@ -1574,13 +1578,6 @@ void SwitchGroupsSectionWidgets()
         });
     ui::EndSectionHeaderRight(sec);
     if (open_sec && !g.changed) {
-        // 13-14 (C2.4): the card fills the rest of the column (.secx.sg { flex:1; min-height:140px }),
-        // its body scrolling: the body is a child as high as the room left less the card's bottom pad
-        // and its gap under it.
-        const float sp_y = ImGui::GetStyle().ItemSpacing.y;
-        const float body_h = std::max(ui::Dp(96.0f), ImGui::GetContentRegionAvail().y - ui::kCardPad -
-                                                         std::max(0.0f, ui::kCardGap - sp_y) - 1.0f);
-        ImGui::BeginChild("##sgbody", ImVec2(0.0f, body_h), ImGuiChildFlags_None, ImGuiWindowFlags_NoBackground);
         std::string  del_group, del_value_group, del_value, add_group, add_name;
         ImDrawList*  dl = ImGui::GetWindowDrawList();
         const float  rh = ui::RowH(), gap = ui::Dp(6.0f), cs = ui::Dp(18.0f), is = ui::Dp(16.0f);
@@ -1740,9 +1737,8 @@ void SwitchGroupsSectionWidgets()
                 g.add_value_focus = add_group;  // type the next one
             });
         if (!g.changed && store.groups.empty()) ui::SubText("No Switch Group yet");
-        ImGui::EndChild();
     }
-    ui::EndSection(sec);
+    ui::EndSection(sec);  // ends the body too
 }
 
 }  // namespace

@@ -5,6 +5,7 @@
 #include "library_icons.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace rav {
 
@@ -155,6 +156,136 @@ void DrawEventGlyph(ImDrawList* dl, ImVec2 c, float s, int which)
     }
     default: break;
     }
+}
+
+// ---- 13-14 (finishing): the tool glyphs (were the Tagging panel's own) ----------------------------
+
+namespace {
+
+constexpr float kPi = 3.14159265f;
+
+void IconCross(ImDrawList* dl, ImVec2 c, float r, ImU32 col)
+{
+    dl->AddLine(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), col, 1.4f);
+    dl->AddLine(ImVec2(c.x - r, c.y + r), ImVec2(c.x + r, c.y - r), col, 1.4f);
+}
+
+void IconCheck(ImDrawList* dl, ImVec2 c, float r, ImU32 col)
+{
+    const ImVec2 pts[3] = {ImVec2(c.x - r, c.y), ImVec2(c.x - r * 0.3f, c.y + r * 0.7f), ImVec2(c.x + r, c.y - r * 0.7f)};
+    dl->AddPolyline(pts, 3, col, ImDrawFlags_None, 1.6f);
+}
+
+void IconDuplicate(ImDrawList* dl, ImVec2 c, float r, ImU32 col)
+{
+    dl->AddRect(ImVec2(c.x - r, c.y - r * 0.4f), ImVec2(c.x + r * 0.4f, c.y + r), col, 1.5f);
+    dl->AddRect(ImVec2(c.x - r * 0.4f, c.y - r), ImVec2(c.x + r, c.y + r * 0.4f), col, 1.5f);
+}
+
+void IconLock(ImDrawList* dl, ImVec2 c, float r, ImU32 col, bool closed)
+{
+    dl->AddRectFilled(ImVec2(c.x - r, c.y - r * 0.1f), ImVec2(c.x + r, c.y + r), col, 1.5f);
+    const ImVec2 sc(c.x, c.y - r * 0.1f);
+    const float  sr = r * 0.62f;
+    if (closed) {
+        dl->PathArcTo(sc, sr, kPi, 2.0f * kPi, 10);
+    } else {
+        dl->PathArcTo(ImVec2(sc.x - r * 0.0f, sc.y - r * 0.25f), sr, kPi, 1.75f * kPi, 10);
+    }
+    dl->PathStroke(col, ImDrawFlags_None, 1.5f);
+}
+
+void IconPlus(ImDrawList* dl, ImVec2 c, float r, ImU32 col)
+{
+    dl->AddLine(ImVec2(c.x - r, c.y), ImVec2(c.x + r, c.y), col, 1.6f);
+    dl->AddLine(ImVec2(c.x, c.y - r), ImVec2(c.x, c.y + r), col, 1.6f);
+}
+
+// A fold chevron: down when open, right when folded (a category's row, a type's rows).
+void IconFold(ImDrawList* dl, ImVec2 c, float r, ImU32 col, bool open)
+{
+    if (open)
+        dl->AddTriangleFilled(ImVec2(c.x - r, c.y - r * 0.5f), ImVec2(c.x + r, c.y - r * 0.5f), ImVec2(c.x, c.y + r * 0.6f), col);
+    else
+        dl->AddTriangleFilled(ImVec2(c.x - r * 0.5f, c.y - r), ImVec2(c.x - r * 0.5f, c.y + r), ImVec2(c.x + r * 0.6f, c.y), col);
+}
+
+void IconGear(ImDrawList* dl, ImVec2 c, float r, ImU32 col)
+{
+    for (int i = 0; i < 8; ++i) {
+        const float a = static_cast<float>(i) * kPi / 4.0f;
+        dl->AddLine(ImVec2(c.x + std::cos(a) * r * 0.55f, c.y + std::sin(a) * r * 0.55f),
+                    ImVec2(c.x + std::cos(a) * r, c.y + std::sin(a) * r), col, 2.0f);
+    }
+    dl->AddCircle(c, r * 0.6f, col, 16, 1.6f);
+}
+
+void IconUndo(ImDrawList* dl, ImVec2 c, float r, ImU32 col)
+{
+    const float k = r / 5.0f;  // drawn 5 px wide at 1x
+    dl->PathArcTo(ImVec2(c.x, c.y + 1.5f * k), r, kPi, kPi * 2.45f, 14);
+    dl->PathStroke(col, ImDrawFlags_None, 1.5f);
+    const ImVec2 s(c.x - r, c.y + 1.5f * k);
+    dl->AddTriangleFilled(ImVec2(s.x - 3.2f * k, s.y - 1.0f * k), ImVec2(s.x + 3.2f * k, s.y - 1.0f * k),
+                          ImVec2(s.x, s.y + 3.5f * k), col);
+}
+
+// The open-library arrow: a diagonal arrow pointing up-right, `r` the half side of its square.
+void IconOpenArrow(ImDrawList* dl, ImVec2 c, float r, ImU32 col)
+{
+    const float  s = 2.0f * r;
+    const ImVec2 p(c.x - r, c.y - r);
+    const float  t = std::max(1.0f, ui::Dp(1.5f));
+    const ImVec2 a(p.x + s * 0.2f, p.y + s * 0.8f), b(p.x + s * 0.8f, p.y + s * 0.2f);
+    dl->AddLine(a, b, col, t);
+    dl->AddLine(b, ImVec2(b.x - s * 0.4f, b.y), col, t);
+    dl->AddLine(b, ImVec2(b.x, b.y + s * 0.4f), col, t);
+}
+
+// Each glyph's radius in the 14 px square (the old 1x drawing's).
+float ToolGlyphRadius(int which)
+{
+    switch (which) {
+    case kToolCrossSmall: return 3.5f;
+    case kToolDuplicate:
+    case kToolLockOpen:
+    case kToolLockClosed: return 4.5f;
+    case kToolUndo: return 5.0f;
+    case kToolGear: return 6.0f;
+    case kToolOpenArrow: return 7.0f;  // the whole square
+    default: return 4.0f;
+    }
+}
+
+}  // namespace
+
+void DrawToolGlyphAt(ImDrawList* dl, ImVec2 c, float r, int which, ImU32 col)
+{
+    switch (which) {
+    case kToolCross:
+    case kToolCrossSmall: IconCross(dl, c, r, col); break;
+    case kToolDuplicate: IconDuplicate(dl, c, r, col); break;
+    case kToolUndo: IconUndo(dl, c, r, col); break;
+    case kToolPlus: IconPlus(dl, c, r, col); break;
+    case kToolLockOpen: IconLock(dl, c, r, col, false); break;
+    case kToolLockClosed: IconLock(dl, c, r, col, true); break;
+    case kToolFoldOpen: IconFold(dl, c, r, col, true); break;
+    case kToolFoldClosed: IconFold(dl, c, r, col, false); break;
+    case kToolGear: IconGear(dl, c, r, col); break;
+    case kToolCheck: IconCheck(dl, c, r, col); break;
+    case kToolOpenArrow: IconOpenArrow(dl, c, r, col); break;
+    default: break;
+    }
+}
+
+void DrawToolGlyph(ImDrawList* dl, ImVec2 p, float s, int which, ImU32 col)
+{
+    DrawToolGlyphAt(dl, ImVec2(p.x + s * 0.5f, p.y + s * 0.5f), ToolGlyphRadius(which) * s / 14.0f, which, col);
+}
+
+ui::Icon ToolIcon(int which, ImU32 col)
+{
+    return ui::Icon{DrawToolGlyph, which, col};
 }
 
 }  // namespace rav

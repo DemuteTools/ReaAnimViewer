@@ -4,7 +4,8 @@
 // icons (maquette-sound-library-v11.html, ICON and ICON_SPK), so they stay crisp at any size or
 // DPI. The default ImGui font has no such symbols. The types (Switch / Random / Blend / Sound),
 // the Switch Group (a folder) and its value (a dot), the speaker (Media Explorer auto-play),
-// the Tagging strip's event marks (glyph()).
+// the Tagging strip's event marks (glyph()), and the tool icons (cross, duplicate, undo, plus, lock, gear,
+// check, fold, open arrow) of the Tagging panel.
 
 #pragma once
 
@@ -53,5 +54,30 @@ ui::Icon TypeIcon(SoundNodeType t);
 // (#a8c2ff, ui::kAccentInk, the mockup's .trow.sw .ti / .tib), muted for a Sound -- instead of
 // a colour per type.
 ui::Icon TypeIconInk(SoundNodeType t);
+
+// 13-14 (finishing): the small tool icons the Tagging panel and the Sounds section draw (the default
+// font has no symbols), shared as ui::IconFn glyphs. Each keeps its old 1x drawing: a radius in the
+// mockup's 14 px icon square, scaled with the square (so with the screen's DPI).
+enum ToolGlyph : int {
+    kToolCross = 0,   // remove (r 4)
+    kToolCrossSmall,  // remove a row (r 3.5)
+    kToolDuplicate,
+    kToolUndo,
+    kToolPlus,
+    kToolLockOpen,
+    kToolLockClosed,
+    kToolFoldOpen,    // a fold triangle, down
+    kToolFoldClosed,  //   right
+    kToolGear,
+    kToolCheck,       // ok
+    kToolOpenArrow,   // a diagonal arrow up-right (open the Library view)
+};
+
+// Draws tool glyph `which` (ToolGlyph) in the square at `p` of side `s` with `col`. A ui::IconFn.
+void DrawToolGlyph(ImDrawList* dl, ImVec2 p, float s, int which, ImU32 col);
+// The same centred on `c` at radius `r` (a glyph drawn inside a custom row: the preset tick, its padlock).
+void DrawToolGlyphAt(ImDrawList* dl, ImVec2 c, float r, int which, ImU32 col);
+// A ui::Icon of tool glyph `which`, ink `col` (the mockup's --muted by default).
+ui::Icon ToolIcon(int which, ImU32 col = ui::kMuted);
 
 }  // namespace rav

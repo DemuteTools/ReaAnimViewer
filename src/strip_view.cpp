@@ -134,9 +134,9 @@ StripRuler StripRulerFor(const StripWindow& w, float lane_w, double fps)
     }
     StripRuler r;
     r.step = VideoRulerStep(w.span, static_cast<double>(lane_w), fps,
-                            static_cast<double>(kStripRulerLabelPad + label_w + kStripRulerLabelGap));
+                            static_cast<double>(ui::Dp(kStripRulerLabelPad) + label_w + ui::Dp(kStripRulerLabelGap)));
     // Spec 11-fb-9: minor ticks under it, down to one per frame.
-    r.minor = VideoRulerMinorStep(r.step, w.span, static_cast<double>(lane_w), fps, kStripRulerMinorMinPx);
+    r.minor = VideoRulerMinorStep(r.step, w.span, static_cast<double>(lane_w), fps, ui::Dp(kStripRulerMinorMinPx));
     // Snap lands on the finest graduation drawn (project frames).
     r.snap = VideoRulerSnapStep(r.step, r.minor);
     return r;
@@ -147,7 +147,7 @@ void DrawStripRuler(ImDrawList* dl, const StripWindow& w, const StripRuler& r, f
 {
     if (!(r.step > 0.0)) return;
     ImFont* const ruler_font = ImGui::GetFont();
-    const float ruler_fs = ruler_h - kStripRulerTickRoom;
+    const float ruler_fs = ruler_h - ui::Dp(kStripRulerTickRoom);  // 13-14: the tick room at the screen's DPI
     const double t_lo = std::max(w.v0, 0.0);  // nothing before project time 0
     auto x_of = [&](double t) { return StripX(w, lane_x, lane_w, t); };
     // The ruler (spec 11-fb-6 / 11-fb-9): above the lane, in project time like REAPER's
@@ -159,7 +159,7 @@ void DrawStripRuler(ImDrawList* dl, const StripWindow& w, const StripRuler& r, f
     // faintest stroke; those on a labelled tick are skipped (same frame grid).
     const long long per_label = VideoRulerMinorPerLabel(r.step, r.minor, fps);
     if (per_label > 1) {
-        const float minor_h = std::min(kStripRulerMinorTickH, ruler_h);
+        const float minor_h = std::min(ui::Dp(kStripRulerMinorTickH), ruler_h);
         const long long k0 = VideoRulerFirstTickFrom(t_lo, 0.0, r.minor, fps);
         for (long long k = k0; k <= k0 + 100000; ++k) {
             const double tick_t = VideoRulerTickTime(k, 0.0, r.minor, fps);
@@ -184,7 +184,7 @@ void DrawStripRuler(ImDrawList* dl, const StripWindow& w, const StripRuler& r, f
         dl->AddLine(ImVec2(tick_x + 0.5f, lane_top - tick_h), ImVec2(tick_x + 0.5f, lane_top),
                     major ? ui::kMuted : ui::kFaint, 1.0f);
         if (ruler_fs >= ui::Dp(6.0f))
-            dl->AddText(ruler_font, ruler_fs, ImVec2(tick_x + kStripRulerLabelPad, r0.y), major ? ui::kText : ui::kMuted,
+            dl->AddText(ruler_font, ruler_fs, ImVec2(tick_x + ui::Dp(kStripRulerLabelPad), r0.y), major ? ui::kText : ui::kMuted,
                         label);
     }
     dl->PopClipRect();

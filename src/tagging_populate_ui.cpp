@@ -175,22 +175,10 @@ void ValueMenu(const char* id, const SoundStore& store, const GroupUse& use, con
     ImGui::PopID();
 }
 
-// The open-library arrow (a ui::IconFn): a diagonal arrow pointing up-right in the square at p.
-void DrawOpenArrow(ImDrawList* dl, ImVec2 p, float s, int, ImU32 col)
-{
-    const float  t = std::max(1.0f, ui::Dp(1.5f));
-    const ImVec2 a(p.x + s * 0.2f, p.y + s * 0.8f), b(p.x + s * 0.8f, p.y + s * 0.2f);
-    dl->AddLine(a, b, col, t);
-    dl->AddLine(b, ImVec2(b.x - s * 0.4f, b.y), col, t);
-    dl->AddLine(b, ImVec2(b.x, b.y + s * 0.4f), col, t);
-}
-
-// The small arrow that opens the Library view (P14).
+// The small arrow that opens the Library view (P14): library_icons.h's open arrow.
 void OpenLibraryArrow()
 {
-    ui::Icon icon;
-    icon.fn = &DrawOpenArrow;
-    if (ui::IconOnlyButton("##openlib", icon, "Open the Library view")) SetViewMode(ViewMode::Library);
+    if (ui::IconOnlyButton("##openlib", ToolIcon(kToolOpenArrow), "Open the Library view")) SetViewMode(ViewMode::Library);
 }
 
 // The libraries assigned to the item's rules, each once.

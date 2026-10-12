@@ -49,7 +49,10 @@ void Header(const char* title, const char* note)
     ImGui::Dummy(ImVec2(0.0f, ui::Dp(4.0f)));
     ui::GroupCaption(title);
     if (note) {
+        // The note (body font) on the caption's baseline (11 px small font).
         ImGui::SameLine();
+        const ImVec2 c = ImGui::GetCursorScreenPos();
+        ImGui::SetCursorScreenPos(ImVec2(c.x, c.y + ui::FontSmall()->Ascent - ImGui::GetFont()->Ascent));
         ui::ToneText(note, ui::kFaint);
     }
 }
@@ -67,7 +70,8 @@ bool KeyRow(int id)
     const bool recording = (ShortcutRecordingId() == id);
     const bool custom = CurrentShortcuts()[static_cast<size_t>(id)] != def.def;
     ImGui::PushID(id);
-    ui::SelectRow("##key", recording, 0, ui::Dp(kRowH),
+    // On the popup's kRaised the row's hover is kHover (kRowHoverStrong).
+    ui::SelectRow("##key", recording, ui::kRowHoverStrong, ui::Dp(kRowH),
                   ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_NoAutoClosePopups);
     bool record = false;
     if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) record = true;
@@ -75,8 +79,6 @@ bool KeyRow(int id)
     const ImVec2 a = ImGui::GetItemRectMin();
     const ImVec2 b = ImGui::GetItemRectMax();
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    // The row's hover (kRaised) would not show on the popup's kRaised: kHover instead.
-    if (!recording && ui::SelectRowHovered()) dl->AddRectFilled(a, b, ui::kHover, ui::kRadiusSm);
     const float th = ImGui::GetTextLineHeight();
     const float cy = (a.y + b.y) * 0.5f;
     const char* key = ShortcutKeyLabel(id);

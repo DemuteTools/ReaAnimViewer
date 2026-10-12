@@ -208,12 +208,12 @@ void DrawSkeletonOverlay(const Renderer& r, float area_w, float area_h, float hi
         std::string txt = JointLabel(m, sk.bones[static_cast<size_t>(lab)].name, lab);
         if (hovered < 0) txt += " " RAV_DOT " selected";
         const ImVec2 ts = ImGui::CalcTextSize(txt.c_str());
-        const float  m = ui::Dp(4.0f);  // the gap to the joint and to the view's edges
+        const float  gap = ui::Dp(4.0f);  // the gap to the joint and to the view's edges
         const float  w = ts.x + ui::Dp(14.0f), h = ts.y + ui::Dp(6.0f);
         float x = g_pts[static_cast<size_t>(lab)].x + ui::Dp(10.0f);
-        float y = g_pts[static_cast<size_t>(lab)].y - h - m;
-        x = std::max(m, std::min(x, area_w - w - m));
-        y = std::max(m, std::min(y, area_h - h - m));
+        float y = g_pts[static_cast<size_t>(lab)].y - h - gap;
+        x = std::max(gap, std::min(x, area_w - w - gap));
+        y = std::max(gap, std::min(y, area_h - h - gap));
         dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), ui::kRaisedVeil, ui::Dp(3.0f));
         dl->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), ui::kStrokeStrong, ui::Dp(3.0f));
         dl->AddText(ImVec2(x + ui::Dp(7.0f), y + ui::Dp(3.0f)), ui::kText, txt.c_str());

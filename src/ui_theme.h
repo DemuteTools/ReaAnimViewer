@@ -122,6 +122,25 @@
 //              wrap 24 em, kText / kMuted text even inside a disabled region); the theme's own tooltips use
 //              the same look
 //  Labels      LabelRow / LabelRowText wrap a long label onto two lines in its column (ui_flow.h)
+//
+// 13-14 (finishing: the views' last local helpers, moved here)
+//  Colour      ColorSwatchButton(..., ColorSwatchOpts): `inputs` adds the RGB / HSV / Hex fields under the
+//              picker, `original` the Current / Original preview beside it (click Original = revert)
+//  Fader       Ctrl+click types a value in place of the track (Enter or a click elsewhere enters it, Esc
+//              restores it); the gesture stays one active item (IsItemActive / IsItemDeactivated hold);
+//              FaderTyping() is true meanwhile
+//  Panels      PushOverlayPanelStyle (a window over the 3D view: kOverlayBg + kStroke edge, the closed ☰)
+//  Rows        kRowHoverStrong (hover kHover: a row on a raised popup), kRowCard (a filled, edged card
+//              row: kRaised, kHover under the mouse, accent-soft + accent-line selected) and RowBackground's
+//              `stripe` (a 3 px colour stripe on its left, under the edge); SelectRow(..., width) fixes the
+//              row's width (an auto-sizing submenu sizes itself to it)
+//  Buttons     AddButtonWidth(label, key): AddButton's natural width
+//  Panes       BeginPane(id, size, PaneOpts): padding, radius (0 = square), edge all round / left only / none
+//  Section     SectionOpts.fill_h: the card fills the column's height left, its body a scrolling child
+//  Text        VerticalText (a line turned a quarter), EllipsizeToWidth (whole UTF-8 characters + "...")
+//  Icons       the small tool glyphs (cross, duplicate, undo, plus, lock, gear, check, fold, open arrow) are
+//              library_icons.h's ToolIcon / DrawToolGlyph (ui::IconFn)
+//  Labels      LabelRow in a window that sizes itself (a popup) keeps the label beside its field (ui_flow.h)
 // =====================================================================================
 
 #pragma once
@@ -373,6 +392,9 @@ bool LinkButton(const char* label, ImU32 col = 0);
 // rounds it fully (the Video view's "+ Save" chip).
 bool AddButton(const char* label, const ImVec2& size = ImVec2(0.0f, 0.0f), const char* key = nullptr,
                bool pill = false);
+// 13-14 (finishing): AddButton's natural width: the visible label, 10 px each side, and with `key` 8 px
+// and its key cap.
+float AddButtonWidth(const char* label, const char* key = nullptr);
 // 13-14 (G-1): the amber action of an in-place confirm (.btn.confirm: kConfirmAct fill, kConfirmActHover
 // under the mouse, kConfirmActText). ControlH() high; shrinks and ellipsizes like SolidButton.
 bool ConfirmButton(const char* label, const ImVec2& size = ImVec2(0.0f, 0.0f));
@@ -486,6 +508,14 @@ struct FaderOpts {
     float       value_w = 0.0f;
 };
 bool Fader(const char* id, float* v, float v_min, float v_max, float width, const FaderOpts& o);
+// 13-14 (finishing): Ctrl+click types a value (as ImGui's slider): a raised mono field (accent-line edge)
+// takes the track's place, the value applied as typed (within v_min..v_max); Enter or a click elsewhere
+// ends it, Esc restores the value it had. The field keeps the fader's id, so the whole gesture -- click,
+// typing, end -- is one active item: IsItemActive while typing, IsItemDeactivated once at its end (one
+// undo point). `id` must be an id only ("##v"): it is the field's label. Its text is the value in
+// `format` without its decorations ("45" for "%.0f°"), "%.2f" with no format.
+// FaderTyping: true while a fader is typed into (no mouse button held: a live edit must not end).
+bool FaderTyping();
 
 // 13-7 (B7) text fields. All take the room left when `width` is 0 (else min(width, room left)).
 // TextField: input.txt (FieldH() high, bg kBg, 1 px stroke edge, accent-line edge while typing,
@@ -558,15 +588,24 @@ enum RowBits : unsigned {
     kRowCurrent   = 1u << 3,
     kRowEven      = 1u << 4,
     kRowBarSelect = 1u << 5,
+    // 13-14 (finishing): hovered draws kHover instead of kRaised -- a row on a raised popup (a menu, the
+    // Shortcuts sheet), where kRaised would not show.
+    kRowHoverStrong = 1u << 6,
+    // A card row (the Tagging panel's rule cards): always filled kRaised (kHover under the mouse when not
+    // selected) with a kStroke edge; selected: accent-soft over the fill and a kAccentLine edge.
+    kRowCard = 1u << 7,
 };
-void RowBackground(ImDrawList* dl, ImVec2 a, ImVec2 b, unsigned bits, float radius = kRadiusSm);
+// `stripe` (non-zero): a 3 px stripe in that colour on the row's left (RuleStripe), between its fill
+// and its edge (a rule's colour).
+void RowBackground(ImDrawList* dl, ImVec2 a, ImVec2 b, unsigned bits, float radius = kRadiusSm, ImU32 stripe = 0);
 // A Selectable drawn as a row: ImGui's own highlight off, RowBackground behind, the visible part
 // of `label` (if any) at 6 px, ellipsized. `height` 0 = RowH(); full width. Hover counts the whole
 // row (its overlaid buttons included). `bits` adds kRowLit / kRowCurrent / kRowEven /
 // kRowBarSelect. `sflags`: ImGuiSelectableFlags (AllowDoubleClick, AllowOverlap...).
 // Returns true when clicked.
+// 13-14 (finishing): `width` > 0 fixes the row's width (rows of a submenu that sizes itself to them).
 bool SelectRow(const char* label, bool selected, unsigned bits = 0, float height = 0.0f, int sflags = 0,
-               float radius = kRadiusSm);
+               float radius = kRadiusSm, float width = 0.0f);
 // True when the mouse is over the last SelectRow (its overlaid buttons included).
 bool SelectRowHovered();
 
@@ -660,6 +699,15 @@ float KeyCap(ImDrawList* dl, ImVec2 p, const char* key, ImU32 text = 0);
 // Text from p, shortened with "..." (whole glyphs) so it ends before max_x. True when shortened.
 bool EllipsisText(ImDrawList* dl, ImVec2 p, float max_x, ImU32 col, const std::string& text);
 
+// 13-14 (finishing): `text` shortened to whole characters plus "..." so it is at most max_w wide in
+// `font` (UTF-8 safe: a character's continuation bytes go with its lead byte); "" when even "..." does
+// not fit, `text` itself when it fits.
+std::string EllipsizeToWidth(ImFont* font, const std::string& text, float max_w);
+// `text` drawn turned a quarter (writing-mode: vertical-rl), centred on cx from `top` down: reading top
+// to bottom (`down`), or bottom to top (rotate(180deg)). Clipped to clip_min..clip_max (the strip).
+void VerticalText(ImDrawList* dl, ImFont* font, float cx, float top, ImU32 col, const std::string& text, bool down,
+                  ImVec2 clip_min, ImVec2 clip_max);
+
 // A boxed track: its header cell (x0..lx, kRaised) and its lane (lx..x1, lane_fill), filled.
 void TrackFill(ImDrawList* dl, float x0, float lx, float x1, float y0, float y1, ImU32 lane_fill);
 // A boxed track's edges: the divider between header and lane, one edge around both.
@@ -694,6 +742,19 @@ void EndCard(Card& k, ImU32 fill, ImU32 edge);
 // result; call EndPane / EndListPane whatever they return (as EndChild).
 bool BeginPane(const char* id, ImVec2 size, ImU32 fill = kSurface, int child_flags = 0, int window_flags = 0,
                ImU32 edge = kStroke);
+// 13-14 (finishing): the same with its padding, radius and edge spelled out (the Edit overlay's side
+// strip: 10 px inside, square, a stroke line on its left only). Call EndPane whatever it returns.
+enum class PaneEdge { All, Left, None };
+struct PaneOpts {
+    ImU32    fill = kSurface;
+    ImU32    edge_col = kStroke;
+    PaneEdge edge = PaneEdge::All;
+    float    pad = 8.0f;          // mockup px, each side
+    float    radius = kRadiusLg;  // mockup px; 0 = square corners
+    int      child_flags = 0;
+    int      window_flags = 0;
+};
+bool BeginPane(const char* id, ImVec2 size, const PaneOpts& o);
 void EndPane();
 bool BeginListPane(const char* id, ImVec2 size, int window_flags = 0);
 void EndListPane();
@@ -740,6 +801,14 @@ void EndConfirmBand(ConfirmBand& b);
 // under the mouse) that opens a themed colour picker (a panel popup) on click. True while `rgb`
 // changed this frame. `tip`: its tooltip. The picker is a BeginPanelPopup (the theme's metrics inside).
 bool ColorSwatchButton(const char* id, float rgb[3], const char* tip = nullptr);
+// 13-14 (finishing): the picker's extras. `inputs`: the RGB / HSV / Hex fields under the picker (type a
+// value); `original`: the Current / Original preview beside it, Original the colour when the picker
+// opened (a click on it puts it back).
+struct ColorSwatchOpts {
+    bool inputs = false;
+    bool original = false;
+};
+bool ColorSwatchButton(const char* id, float rgb[3], const char* tip, const ColorSwatchOpts& o);
 // A row of colour dots to pick from (the rule colours): `count` dots (r7 in a 20 px cell, 4 px apart),
 // a 1.5 px kText ring (r9) around `current`, kStrokeStrong around the one under the mouse. Width-aware
 // (ui_flow.h): a dot that does not fit beside the previous one wraps onto the next row. True when
@@ -765,6 +834,10 @@ void PopDisabledButtonSkin(bool pushed);
 // before Begin, PopStyleColor(2) after End. A window that is a panel uses this, never its
 // own colours, so every panel matches.
 void PushPanelStyle();
+// 13-14 (finishing): a window over the 3D view with no panel grey of its own (the closed ☰ menu: the bare
+// burger): kOverlayBg (kBg .72) with a kStroke edge. Pushes 2 colours as PushPanelStyle: call before
+// Begin, PopStyleColor(2) after End.
+void PushOverlayPanelStyle();
 
 // THE SECTION: how every group of settings is shown, in any panel or menu -- a card
 // (kSurface with a kStroke edge, as the Tagging panel's condition cards) headed by its icon and title, a divider under
@@ -783,6 +856,12 @@ struct SectionOpts {
     bool        foldable = true;
     const char* suffix = nullptr;  // faint 11 px after the title: "· 2 children", "· this sound only"
     float       right_w = 0.0f;    // room kept at the header's right for widgets (BeginSectionHeaderRight)
+    // 13-14 (finishing): open, the card fills the window's height left (.secx.sg { flex: 1 }): its body is
+    // a child (no background) as high as that room less the card's bottom pad and gap -- never under
+    // `fill_min_h` mockup px -- and scrolls. The body begins after the header: in BeginSection, or in
+    // EndSectionHeaderRight when `right_w` keeps a header slot; EndSection ends it.
+    bool        fill_h = false;
+    float       fill_min_h = 96.0f;
 };
 struct Section {
     Card   card;
@@ -792,6 +871,9 @@ struct Section {
     float  right_w = 0.0f;
     ImVec2 resume;                 // where the content goes once the header's widgets are drawn
     bool   in_header = false;
+    bool   fill_h = false;         // SectionOpts.fill_h: the body child is begun (body) or still to begin
+    float  fill_min_h = 0.0f;
+    bool   body = false;
 };
 bool BeginSection(Section& s, const char* title, ImTextureID icon = ImTextureID(), bool foldable = true);
 bool BeginSection(Section& s, const char* title, const SectionOpts& opts);

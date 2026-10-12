@@ -24,6 +24,7 @@
 #include "event_list.h"
 #include "file_dialogs.h"
 #include "item_rules.h"
+#include "library_icons.h"  // 13-14: the tool glyphs (ToolIcon)
 #include "preset_menu_model.h"
 #include "preset_store.h"
 #include "reaper_api.h"
@@ -138,13 +139,14 @@ const std::vector<PresetInfo>& CachedPresets(bool refresh = false)
 
 float PanelWidth()
 {
-    if (g_panel_w < 0.0f) g_panel_w = LoadPrefFloat(kPrefPanelWidth, ui::Dp(kPanelDefaultW));
+    // 13-14: stored in mockup px (dp), so it survives a DPI change (a value saved before was at 1x).
+    if (g_panel_w < 0.0f) g_panel_w = ui::Dp(LoadPrefFloat(kPrefPanelWidth, kPanelDefaultW));
     return std::min(std::max(g_panel_w, ui::Dp(kPanelMinW)), ui::Dp(kPanelMaxW));
 }
 
 float StripMaxHeight(float client_h)
 {
-    return std::max(kTaggingStripMinHeight, std::floor(client_h * 0.6f));
+    return std::max(ui::Dp(kTaggingStripMinHeight), std::floor(client_h * 0.6f));
 }
 
 void FormatTime(double t, char* out, size_t cap)
@@ -189,115 +191,7 @@ ImU32 RuleColor(const Block& b)
     return b.enabled ? FromRecordColor(b.color) : ui::kFaint;
 }
 
-// ---- Small drawn icons (the default font has no symbols) -------------------------------------
-
-void IconCross(ImDrawList* dl, ImVec2 c, float r, ImU32 col)
-{
-    dl->AddLine(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), col, 1.4f);
-    dl->AddLine(ImVec2(c.x - r, c.y + r), ImVec2(c.x + r, c.y - r), col, 1.4f);
-}
-
-void IconCheck(ImDrawList* dl, ImVec2 c, float r, ImU32 col)
-{
-    const ImVec2 pts[3] = {ImVec2(c.x - r, c.y), ImVec2(c.x - r * 0.3f, c.y + r * 0.7f), ImVec2(c.x + r, c.y - r * 0.7f)};
-    dl->AddPolyline(pts, 3, col, ImDrawFlags_None, 1.6f);
-}
-
-void IconDuplicate(ImDrawList* dl, ImVec2 c, float r, ImU32 col)
-{
-    dl->AddRect(ImVec2(c.x - r, c.y - r * 0.4f), ImVec2(c.x + r * 0.4f, c.y + r), col, 1.5f);
-    dl->AddRect(ImVec2(c.x - r * 0.4f, c.y - r), ImVec2(c.x + r, c.y + r * 0.4f), col, 1.5f);
-}
-
-void IconLock(ImDrawList* dl, ImVec2 c, float r, ImU32 col, bool closed)
-{
-    dl->AddRectFilled(ImVec2(c.x - r, c.y - r * 0.1f), ImVec2(c.x + r, c.y + r), col, 1.5f);
-    const ImVec2 sc(c.x, c.y - r * 0.1f);
-    const float  sr = r * 0.62f;
-    if (closed) {
-        dl->PathArcTo(sc, sr, 3.14159265f, 2.0f * 3.14159265f, 10);
-    } else {
-        dl->PathArcTo(ImVec2(sc.x - r * 0.0f, sc.y - r * 0.25f), sr, 3.14159265f, 1.75f * 3.14159265f, 10);
-    }
-    dl->PathStroke(col, ImDrawFlags_None, 1.5f);
-}
-
-void IconPlus(ImDrawList* dl, ImVec2 c, float r, ImU32 col)
-{
-    dl->AddLine(ImVec2(c.x - r, c.y), ImVec2(c.x + r, c.y), col, 1.6f);
-    dl->AddLine(ImVec2(c.x, c.y - r), ImVec2(c.x, c.y + r), col, 1.6f);
-}
-
-// A fold chevron: down when open, right when folded (a category's row, a type's rows).
-void IconFold(ImDrawList* dl, ImVec2 c, float r, ImU32 col, bool open)
-{
-    if (open)
-        dl->AddTriangleFilled(ImVec2(c.x - r, c.y - r * 0.5f), ImVec2(c.x + r, c.y - r * 0.5f), ImVec2(c.x, c.y + r * 0.6f), col);
-    else
-        dl->AddTriangleFilled(ImVec2(c.x - r * 0.5f, c.y - r), ImVec2(c.x - r * 0.5f, c.y + r), ImVec2(c.x + r * 0.6f, c.y), col);
-}
-
-void IconGear(ImDrawList* dl, ImVec2 c, float r, ImU32 col)
-{
-    for (int i = 0; i < 8; ++i) {
-        const float a = static_cast<float>(i) * 3.14159265f / 4.0f;
-        dl->AddLine(ImVec2(c.x + std::cos(a) * r * 0.55f, c.y + std::sin(a) * r * 0.55f),
-                    ImVec2(c.x + std::cos(a) * r, c.y + std::sin(a) * r), col, 2.0f);
-    }
-    dl->AddCircle(c, r * 0.6f, col, 16, 1.6f);
-}
-
-void IconUndo(ImDrawList* dl, ImVec2 c, float r, ImU32 col)
-{
-    const float pi = 3.14159265f;
-    const float k = r / 5.0f;  // drawn 5 px wide at 1x
-    dl->PathArcTo(ImVec2(c.x, c.y + 1.5f * k), r, pi, pi * 2.45f, 14);
-    dl->PathStroke(col, ImDrawFlags_None, 1.5f);
-    const ImVec2 s(c.x - r, c.y + 1.5f * k);
-    dl->AddTriangleFilled(ImVec2(s.x - 3.2f * k, s.y - 1.0f * k), ImVec2(s.x + 3.2f * k, s.y - 1.0f * k),
-                          ImVec2(s.x, s.y + 3.5f * k), col);
-}
-
-// 13-14: the drawn icons as ui::IconFn glyphs (ui::IconOnlyButton): `which` picks the icon and its
-// radius in the mockup's 14 px icon square (scaled with the square, so with the screen's DPI).
-enum TagGlyph {
-    kGlyphCross,       // remove (r 4)
-    kGlyphCrossSmall,  // remove a row (r 3.5)
-    kGlyphDuplicate,
-    kGlyphUndo,
-    kGlyphPlus,
-    kGlyphLockOpen,
-    kGlyphLockClosed,
-    kGlyphFoldOpen,
-    kGlyphFoldClosed,
-    kGlyphGear,
-    kGlyphCheck,       // ok (drawn in its own colour: kOk)
-};
-
-void PaintGlyph(ImDrawList* dl, ImVec2 p, float s, int which, ImU32 col)
-{
-    const ImVec2 c(p.x + s * 0.5f, p.y + s * 0.5f);
-    const float  k = s / 14.0f;  // the radii below are the old 1x drawing's
-    switch (which) {
-    case kGlyphCross: IconCross(dl, c, 4.0f * k, col); break;
-    case kGlyphCrossSmall: IconCross(dl, c, 3.5f * k, col); break;
-    case kGlyphDuplicate: IconDuplicate(dl, c, 4.5f * k, col); break;
-    case kGlyphUndo: IconUndo(dl, c, 5.0f * k, col); break;
-    case kGlyphPlus: IconPlus(dl, c, 4.0f * k, col); break;
-    case kGlyphLockOpen: IconLock(dl, c, 4.5f * k, col, false); break;
-    case kGlyphLockClosed: IconLock(dl, c, 4.5f * k, col, true); break;
-    case kGlyphFoldOpen: IconFold(dl, c, 4.0f * k, col, true); break;
-    case kGlyphFoldClosed: IconFold(dl, c, 4.0f * k, col, false); break;
-    case kGlyphGear: IconGear(dl, c, 6.0f * k, col); break;
-    case kGlyphCheck: IconCheck(dl, c, 4.0f * k, col); break;
-    default: break;
-    }
-}
-
-ui::Icon Glyph(int which)
-{
-    return ui::Icon{PaintGlyph, which, ui::kMuted};
-}
+// ---- Small drawn icons: library_icons.h's tool glyphs (ToolIcon, DrawToolGlyphAt) -------------
 
 // ---- Edits -----------------------------------------------------------------------------------
 
@@ -866,7 +760,7 @@ struct LaneGeom {
 float TaggingStripHeight(float client_h)
 {
     if (g_strip_h < 0.0f) g_strip_h = LoadPrefFloat(kPrefStripHeight, ui::Dp(kStripDefaultHeight));
-    return std::min(std::max(g_strip_h, kTaggingStripMinHeight), StripMaxHeight(client_h));
+    return std::min(std::max(g_strip_h, ui::Dp(kTaggingStripMinHeight)), StripMaxHeight(client_h));
 }
 
 float TaggingPanelFootprint(int client_w)
@@ -964,7 +858,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                                         ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing;
     if (ImGui::Begin("##tagstrip", nullptr, kFlags)) {
         ImDrawList* dl = ImGui::GetWindowDrawList();
-        StripHeightGrip(g_strip_grip, "##tagstripgrip", &g_strip_h, h, kTaggingStripMinHeight,
+        StripHeightGrip(g_strip_grip, "##tagstripgrip", &g_strip_h, h, ui::Dp(kTaggingStripMinHeight),
                         StripMaxHeight(ImGui::GetIO().DisplaySize.y), kPrefStripHeight);
 
         bool playing = false;
@@ -987,9 +881,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
             // 13-14: the theme's add button with its key cap (G-15), the Signals toggle (.btn.on).
             {
                 const char* key = ShortcutKeyLabel(kShortcutTagAddEvent);
-                // AddButton's natural width: the label, 8 px, the key cap (its text + 8), 10 px each side.
-                const float ew = ImGui::CalcTextSize("+ Event").x + ui::Dp(8.0f) + ImGui::CalcTextSize(key).x + ui::Dp(8.0f) +
-                                 2.0f * ui::Dp(10.0f);
+                const float ew = ui::AddButtonWidth("+ Event##tagaddev", key);  // its natural width
                 const ImVec2 ep(c0.x + avail_w - bw - gap - ew, c0.y);
                 ImGui::SetCursorScreenPos(ep);
                 const bool can_add = EventsEditableOn(m, g_sel) && g_sel >= 0 && g_sel < static_cast<int>(rules.blocks.size());
@@ -1028,7 +920,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
         const float gutter = std::min(ui::Dp(160.0f), std::max(ui::Dp(90.0f), avail_w * 0.22f));
         const float lane_x = c0.x + gutter;
         const float lane_w = std::max(ui::Dp(20.0f), avail_w - gutter);
-        const float ruler_h = std::floor(ImGui::GetFontSize()) + kStripRulerTickRoom;
+        const float ruler_h = std::floor(ImGui::GetFontSize()) + ui::Dp(kStripRulerTickRoom);
         const float rows_top = body_top + ruler_h;
         const ImVec2 area0(c0.x, body_top);
         const ImVec2 area1(c0.x + avail_w, std::max(body_top + ui::Dp(10.0f), body_bottom));
@@ -1939,15 +1831,6 @@ void PmImport()
     g_pm.status.clear();
 }
 
-// 13-14: a row `w` wide is all a submenu needs to size itself (its rows are ui::SelectRow, as wide
-// as the window): an empty item that widens the window and takes no height.
-void ReserveRowWidth(float w)
-{
-    const float y = ImGui::GetCursorPosY();
-    ImGui::Dummy(ImVec2(w, 0.0f));
-    ImGui::SetCursorPosY(y);
-}
-
 // One preset row: the tick (the item's preset), the name, the padlock (Factory), the source tag
 // while searching. Click selects, double-click loads, right-click opens its menu. `row_w` > 0
 // fixes the width (a submenu sizes itself to its rows), else the row fills the window.
@@ -1957,9 +1840,11 @@ void PresetRow(const TaggingModel& m, const PresetInfo& p, bool with_source, flo
     const bool sel = g_pm.sel == p.id;
     const float rh = ImGui::GetFrameHeight();
     const ImVec2 r0 = ImGui::GetCursorScreenPos();
-    if (row_w > 0.0f) ReserveRowWidth(row_w);
     const float rw = row_w > 0.0f ? row_w : ImGui::GetContentRegionAvail().x;
-    if (ui::SelectRow("##prow", sel, 0, rh, ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_NoAutoClosePopups)) {
+    // 13-14: a row on the menu's kRaised (hover kHover), `row_w` wide in a submenu (it sizes itself to it).
+    if (ui::SelectRow("##prow", sel, ui::kRowHoverStrong, rh,
+                      ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_NoAutoClosePopups, ui::kRadiusSm,
+                      row_w)) {
         g_pm.sel = p.id;
         if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) PmLoad(p.id);
     }
@@ -1967,7 +1852,7 @@ void PresetRow(const TaggingModel& m, const PresetInfo& p, bool with_source, flo
     const float ty = r0.y + (rh - ImGui::GetTextLineHeight()) * 0.5f;
     float x = r0.x + indent;
     if (m.has_preset && m.preset_id == p.id)
-        IconCheck(dl, ImVec2(x + ui::Dp(5.0f), r0.y + rh * 0.5f), ui::Dp(4.0f), ui::kAccent);
+        DrawToolGlyphAt(dl, ImVec2(x + ui::Dp(5.0f), r0.y + rh * 0.5f), ui::Dp(4.0f), kToolCheck, ui::kAccent);
     x += ui::Dp(16.0f);
     const char* src = p.factory ? "Factory" : "User";
     const float src_w = with_source ? ImGui::CalcTextSize(src).x + ui::Dp(8.0f) : 0.0f;
@@ -1976,7 +1861,8 @@ void PresetRow(const TaggingModel& m, const PresetInfo& p, bool with_source, flo
         std::max(0.0f, std::min(ImGui::CalcTextSize(p.name.c_str()).x, r0.x + rw - src_w - lock_w - ui::Dp(6.0f) - x));
     EllipsisText(dl, ImVec2(x, ty), x + name_w, ui::kText, p.name);
     if (p.factory)
-        IconLock(dl, ImVec2(x + name_w + ui::Dp(9.0f), r0.y + rh * 0.5f + ui::Dp(1.0f)), ui::Dp(3.5f), ui::kMuted, true);
+        DrawToolGlyphAt(dl, ImVec2(x + name_w + ui::Dp(9.0f), r0.y + rh * 0.5f + ui::Dp(1.0f)), ui::Dp(3.5f), kToolLockClosed,
+                        ui::kMuted);
     if (with_source) dl->AddText(ImVec2(r0.x + rw - src_w + ui::Dp(2.0f), ty), ui::kFaint, src);
     if (ui::BeginMenuPopupContextItem("##pctx")) {
         g_pm.sel = p.id;
@@ -2186,7 +2072,7 @@ void DrawPresetMenu(const TaggingModel& m)
         ImDrawList* dl = ImGui::GetWindowDrawList();
         EllipsisText(dl, ImVec2(r0.x, r0.y + (fh - ImGui::GetTextLineHeight()) * 0.5f), r0.x + path_w, ui::kFaint, dir);
         ImGui::SameLine();
-        if (ui::IconOnlyButton("##pcopy", Glyph(kGlyphDuplicate), nullptr, fh)) {  // disabled while busy (above)
+        if (ui::IconOnlyButton("##pcopy", ToolIcon(kToolDuplicate), nullptr, fh)) {  // disabled while busy (above)
             ImGui::SetClipboardText(dir.c_str());
             PmStatus(kFolderCopied);
         }
@@ -2224,7 +2110,7 @@ void DrawPresetField(const TaggingModel& m)
         if (kept) tag += (tag.empty() ? "" : "  ") + KeptTag(m.preset_version);
     }
     // 13-14: the theme's select field (G-17): "Preset:", the padlock (Factory), the name, the tag.
-    const ui::Icon lock = Glyph(kGlyphLockClosed);
+    const ui::Icon lock = ToolIcon(kToolLockClosed);
     ui::SelectFieldOpts fo;
     fo.tag = tag.empty() ? nullptr : tag.c_str();
     fo.tag_tone = legacy ? ui::TagTone::Warn : ui::TagTone::Neutral;
@@ -2872,11 +2758,11 @@ void RolesWindow(const TaggingModel& m)
         }
         ImGui::SameLine(0.0f, ui::Dp(4.0f));
         ImGui::BeginDisabled(g_roles_undo.empty());
-        if (ui::IconOnlyButton("##rundo", Glyph(kGlyphUndo), nullptr, fh)) RolesUndo();
+        if (ui::IconOnlyButton("##rundo", ToolIcon(kToolUndo), nullptr, fh)) RolesUndo();
         ImGui::EndDisabled();
         ui::ItemTip("Undo the last change (Ctrl+Z)");
         ImGui::SameLine(0.0f, ui::Dp(4.0f));
-        if (ui::IconOnlyButton("##rclose", Glyph(kGlyphCross), "Close (Esc)", fh)) close = true;
+        if (ui::IconOnlyButton("##rclose", ToolIcon(kToolCross), "Close (Esc)", fh)) close = true;
 
         char sub[64];
         std::snprintf(sub, sizeof(sub), "Skeleton: %d bones", static_cast<int>(g_roles_names.size()));
@@ -3005,7 +2891,7 @@ void RolesWindow(const TaggingModel& m)
             ImGui::SameLine(0.0f, ui::Dp(4.0f));
             if (row.kind == RoleRowKind::Custom) {
                 ImGui::BeginDisabled(!writable);
-                if (ui::IconOnlyButton("##rdel", Glyph(kGlyphCrossSmall), nullptr, fh)) {
+                if (ui::IconOnlyButton("##rdel", ToolIcon(kToolCrossSmall), nullptr, fh)) {
                     g_roles_rename_key.clear();
                     g_roles_confirm_key = row.key;
                 }
@@ -3073,13 +2959,9 @@ void RolesWindow(const TaggingModel& m)
 void ItemOptionsPopup(const ItemRules& rules)
 {
     // 13-14: a content popup (two number rows), the theme's panel popup (G-8). It sizes itself to its
-    // content: never narrower than a label column and a field, so the rows' labels stay beside them.
+    // content (ui::LabelRow keeps the labels beside their fields in it).
     const float field_w = ui::Dp(70.0f);
     const float label_col = ui::Dp(110.0f);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(2.0f * ui::Dp(12.0f) + label_col + ImGui::GetStyle().ItemSpacing.x +
-                                                   ui::NumberFieldWidth(field_w, "ms"),
-                                               0.0f),
-                                        ImVec2(FLT_MAX, FLT_MAX));
     if (!ui::BeginPanelPopup("##tagoptions")) return;
     ui::Caption("Item options");
     ImGui::SameLine();
@@ -3165,7 +3047,7 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
             // every role the rules read has a bone.
             const bool no_skeleton = !m.file_loaded || m.bone_names.empty();
             const bool no_rule = rules.blocks.empty();  // 10-3 fb-1: nothing to check yet
-            ui::Icon check = Glyph(kGlyphCheck);
+            ui::Icon check = ToolIcon(kToolCheck);
             check.col = ui::kOk;
             const bool show_check = m.missing_count == 0 && !no_rule;
             if (no_skeleton) ImGui::BeginDisabled();
@@ -3191,7 +3073,7 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
                 ui::ItemTip("Every role these rules read has a bone on this skeleton.\nClick to see or "
                             "change which bone plays each role.");
             ImGui::SameLine();
-            if (ui::IconOnlyButton("##opts", Glyph(kGlyphGear), "Item options", fh)) ImGui::OpenPopup("##tagoptions");
+            if (ui::IconOnlyButton("##opts", ToolIcon(kToolGear), "Item options", fh)) ImGui::OpenPopup("##tagoptions");
             ItemOptionsPopup(rules);
         }
     }
@@ -3237,12 +3119,11 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
             ClearEventSelection();  // the inspector shows the rule
         }
         const bool hov = ImGui::IsItemHovered();
-        // 10-3 fb-2: every rule is its own card (filled, edged), a stripe in its colour on its left.
-        dl->AddRectFilled(p, ImVec2(p.x + w, p.y + rh), hov && !sel ? ui::kHover : ui::kRaised, ui::kRadiusMd);
-        if (sel) dl->AddRectFilled(p, ImVec2(p.x + w, p.y + rh), ui::kAccentSoft, ui::kRadiusMd);
-        RuleStripe(dl, p, ImVec2(p.x + w, p.y + rh), blk.enabled ? RuleColor(blk) : WithAlpha(RuleColor(blk), 0x66),
-                   ui::kRadiusMd);
-        dl->AddRect(p, ImVec2(p.x + w, p.y + rh), sel ? ui::kAccentLine : ui::kStroke, ui::kRadiusMd);
+        // 10-3 fb-2: every rule is its own card (filled, edged), a stripe in its colour on its left:
+        // 13-14, the theme's card row.
+        ui::RowBackground(dl, p, ImVec2(p.x + w, p.y + rh),
+                          ui::kRowCard | (sel ? ui::kRowSelected : 0u) | (hov ? ui::kRowHovered : 0u), ui::kRadiusMd,
+                          blk.enabled ? RuleColor(blk) : WithAlpha(RuleColor(blk), 0x66));
         ImGui::SetCursorScreenPos(ImVec2(p.x + ui::Dp(9.0f), p.y + ui::Dp(2.0f)));
         if (ui::Switch("##on", blk.enabled)) do_toggle = b;
         ui::ItemTipText(blk.enabled ? "Switch this rule off" : "Switch this rule on");
@@ -3267,9 +3148,9 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
         EllipsisText(dl, ImVec2(p.x + ui::Dp(55.0f), ty), bx - cw - ui::Dp(10.0f), blk.enabled ? ui::kText : ui::kFaint, RuleTitle(blk));
         dl->AddText(ImVec2(bx - cw - ui::Dp(6.0f), ty), blk.enabled ? ui::kMuted : ui::kFaint, count);
         ImGui::SetCursorScreenPos(ImVec2(bx, p.y + ui::Dp(2.0f)));
-        if (ui::IconOnlyButton("##dup", Glyph(kGlyphDuplicate), "Duplicate", fh)) do_dup = b;
+        if (ui::IconOnlyButton("##dup", ToolIcon(kToolDuplicate), "Duplicate", fh)) do_dup = b;
         ImGui::SameLine(0.0f, ui::Dp(2.0f));
-        if (ui::IconOnlyButton("##del", Glyph(kGlyphCross), "Delete", fh)) do_del = b;
+        if (ui::IconOnlyButton("##del", ToolIcon(kToolCross), "Delete", fh)) do_del = b;
         ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh + ui::Dp(4.0f)));
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
         ImGui::PopID();
@@ -3412,7 +3293,7 @@ void ConditionEditor(const Block& blk, int b, int c)
             const bool enabled = !legacy && why.empty();
             ui::SentenceChip(s, fh, ui::Dp(2.0f));
             ImGui::BeginDisabled(!enabled);
-            const bool use = ui::IconOnlyButton("##usebone", Glyph(kGlyphPlus), nullptr, fh);
+            const bool use = ui::IconOnlyButton("##usebone", ToolIcon(kToolPlus), nullptr, fh);
             ImGui::EndDisabled();
             if (use) {
                 if (sel_bone.empty()) {
@@ -3454,7 +3335,7 @@ void ConditionEditor(const Block& blk, int b, int c)
         ui::IconOnlyOpts lock_o;
         lock_o.w = fh;
         lock_o.tint = fixed ? ui::kAccent : 0;  // a fixed threshold: the closed padlock in the accent
-        if (ui::IconOnlyButton("##lock", Glyph(fixed ? kGlyphLockClosed : kGlyphLockOpen),
+        if (ui::IconOnlyButton("##lock", ToolIcon(fixed ? kToolLockClosed : kToolLockOpen),
                                fixed ? "Fixed: Analyse keeps this threshold and margin" : "Analyse may change this threshold",
                                lock_o)) {
             Edit(std::string(fixed ? "RAV: Unlock threshold (" : "RAV: Lock threshold (") + rule + ")", [b, c](ItemRules& r) {
@@ -3466,7 +3347,7 @@ void ConditionEditor(const Block& blk, int b, int c)
         }
         if (nconds > 1) {
             ImGui::SameLine(0.0f, ui::Dp(2.0f));
-            if (ui::IconOnlyButton("##rmc", Glyph(kGlyphCross), "Remove this condition", fh)) {
+            if (ui::IconOnlyButton("##rmc", ToolIcon(kToolCross), "Remove this condition", fh)) {
                 Edit("RAV: Delete condition (" + rule + ")", [b, c](ItemRules& r) {
                     Block* x = BlockAt(r, b);
                     if (!x || x->conditions.size() < 2 || c >= static_cast<int>(x->conditions.size())) return false;
@@ -3995,7 +3876,7 @@ bool AutoCategoryRow(AutoCategory c, ImGuiID open_id, bool* remove)
     std::snprintf(count, sizeof(count), "%d on", AutoCategoryOnCount(g_auto_ui, c));
     dl->AddText(ImVec2(p.x + ui::Dp(16.0f) + ts.x + ui::Dp(8.0f), ty), ui::kFaint, count);
     ImGui::SameLine(0.0f, gap);
-    *remove = ui::IconOnlyButton("##remove", Glyph(kGlyphCrossSmall), nullptr, fh);
+    *remove = ui::IconOnlyButton("##remove", ToolIcon(kToolCrossSmall), nullptr, fh);
     return open;
 }
 
@@ -4038,7 +3919,7 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
         ImGuiStorage* storage = ImGui::GetStateStorage();
         // + (the categories not shown) on the left, the column captions on the right.
         if (any_hidden) {
-            if (ui::IconOnlyButton("##autoaddcat", Glyph(kGlyphPlus), nullptr, ImGui::GetFrameHeight()))
+            if (ui::IconOnlyButton("##autoaddcat", ToolIcon(kToolPlus), nullptr, ImGui::GetFrameHeight()))
                 ImGui::OpenPopup("##autocats");
             if (ui::BeginMenuPopup("##autocats")) {
                 for (int c = 0; c < kAutoCategoryCount; ++c)
@@ -4648,7 +4529,7 @@ void DrawTaggingPanel(float x, float y, float w, float h)
                                                 ui::Dp(kPanelMaxW)));
             if (sp.released && g_panel_drag) {
                 g_panel_drag = false;
-                SavePrefFloat(kPrefPanelWidth, PanelWidth());
+                SavePrefFloat(kPrefPanelWidth, PanelWidth() / ui::UiScale());  // in dp
             }
             ImGui::SetCursorScreenPos(content);
         }

@@ -663,7 +663,7 @@ void DrawVideoFrameDecor(const VideoFrameRect& fr, void (*copy_log)(), bool show
     char left[96];
     std::snprintf(left, sizeof(left), "%d " RAV_TIMES " %d " RAV_DOT " %s", m.out_w, m.out_h, fps);
     const float text_h = ImGui::GetTextLineHeight();
-    const ImVec2 left_pos(a.x, a.y - text_h - kVideoCaptionGap);
+    const ImVec2 left_pos(a.x, a.y - text_h - ui::Dp(kVideoCaptionGap));  // as VideoTopBand
     bg->AddText(left_pos, ui::kMuted, left);
 
     // The shot on the right, measured first: the lag readout must not run into it.
@@ -756,7 +756,7 @@ void DrawVideoFrameDecor(const VideoFrameRect& fr, void (*copy_log)(), bool show
         }
     }
 
-    if (!right.empty()) bg->AddText(ImVec2(b.x - right_w, a.y - text_h - kVideoCaptionGap), ui::kMuted, right.c_str());
+    if (!right.empty()) bg->AddText(ImVec2(b.x - right_w, a.y - text_h - ui::Dp(kVideoCaptionGap)), ui::kMuted, right.c_str());
 
     if (VideoViewCanEdit()) return;  // the picture: nothing is drawn inside the frame
 
@@ -820,7 +820,7 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
         // (strip_view.h: the shared ruler's layout.)
         ImFont* const ruler_font = ImGui::GetFont();
         // The band is clamped so lane + ruler always fit the strip (a large font shrinks it).
-        const float ruler_h = std::max(0.0f, std::min(std::floor(ImGui::GetFontSize()) + kStripRulerTickRoom,
+        const float ruler_h = std::max(0.0f, std::min(std::floor(ImGui::GetFontSize()) + ui::Dp(kStripRulerTickRoom),
                                                       ImGui::GetContentRegionAvail().y - lane_h));
         const float avail = ImGui::GetContentRegionAvail().x;
         const float top = ImGui::GetCursorScreenPos().y +

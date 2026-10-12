@@ -102,7 +102,14 @@ float LabelRow(const char* label, float field_min, float label_col, ImU32 col)
 float LabelRowText(const std::string& text, float field_min, float label_col, ImU32 col)
 {
     const float  sp = ImGui::GetStyle().ItemSpacing.x;
-    const float  avail = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    // 13-14 (finishing): a window that sizes itself to its content (AlwaysAutoResize: a popup; or auto-
+    // fitting its first frames) has no width yet on its first frame and is as wide as its content after:
+    // there the label always goes beside its field, the window grows. A fixed-width card still wraps.
+    float              avail = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const ImGuiWindow* win = ImGui::GetCurrentWindowRead();
+    if (win && !(win->Flags & ImGuiWindowFlags_ChildWindow) &&
+        ((win->Flags & ImGuiWindowFlags_AlwaysAutoResize) || win->AutoFitFramesX > 0))
+        avail = std::max(avail, label_col + sp + field_min);
     const flow::LabelSplit s =
         flow::SplitLabelRow(avail, ImGui::CalcTextSize(text.c_str(), nullptr, false).x, label_col, field_min, sp);
     const ImVec2 p = ImGui::GetCursorScreenPos();

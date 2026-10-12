@@ -59,6 +59,9 @@ bool EllipsisTextTip(ImDrawList* dl, ImVec2 p, float max_x, ImU32 col, const std
 // 13-14 (C4.2): beside its field, a label wider than its column wraps onto a second line at a space
 // ("Default / value"), the first line on the field's text line, the row as high as both lines; with
 // no usable space (or still too long) it is ellipsized, its full text as a tooltip.
+// 13-14 (finishing): in a window that sizes itself to its content (AlwaysAutoResize: a popup, a panel
+// popup; or auto-fitting its first frames), the label is always beside its field (the window grows to
+// label column + field_min), even on its first frame.
 float LabelRow(const char* label, float field_min, float label_col = kLabelCol, ImU32 col = kMuted);
 // The same with literal text (a user-typed name: "##" in it is shown, not an id; kText, a name).
 float LabelRowText(const std::string& text, float field_min, float label_col = kLabelCol, ImU32 col = kText);

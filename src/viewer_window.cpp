@@ -260,7 +260,6 @@ double      g_copied_until = 0.0;
 // Icon textures (Antho's SVGs, uploaded once at ImGui init; freed in StopRendering).
 GLuint g_icon_menu   = 0;
 GLuint g_icon_light  = 0;
-
 GLuint g_icon_shadow = 0;
 GLuint g_icon_ground = 0;
 GLuint g_icon_performance = 0;  // Story 6.5.5 — Antho's Performance-section icon
@@ -1210,15 +1209,6 @@ void NavCubeWidget(const OrbitCamera& cam, bool video, float right_x, float bott
     ui::EndOverlay();
 }
 
-// 13-14 (API gap, to move into ui_theme): the closed options menu's look, the bare burger over
-// the 3D view: kOverlayBg (kBg .72) with a kStroke edge. Pushes 2 colours like ui::PushPanelStyle:
-// call before Begin, PopStyleColor(2) after End.
-void PushOverlayPanelStyle()
-{
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ui::Col(ui::kOverlayBg));
-    ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStroke));
-}
-
 // Builds + renders the Dear ImGui tool UI for this frame, on top of the 3D scene (called
 // between RenderFrame and SwapBuffers). A FRAMELESS hamburger menu (Antho's icons) that
 // shows / hides the options panel: REAPER-style vertical tabs (Global, RAV view, Tagging
@@ -1264,12 +1254,12 @@ void DrawToolUi()
 
     // Story 11-4: the theme (ui_theme.h) styles the menu. Open, it is a panel like the
     // Tagging and Video panels (ui::PushPanelStyle), its settings in ui::Section cards.
-    // Closed, the bare button over the 3D view (PushOverlayPanelStyle).
+    // Closed, the bare button over the 3D view (ui::PushOverlayPanelStyle).
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui::Dp(8.0f), ui::Dp(8.0f)));
     if (g_menu_open) {
         ui::PushPanelStyle();
     } else {
-        PushOverlayPanelStyle();
+        ui::PushOverlayPanelStyle();
     }
     ImGui::Begin("##tools", nullptr, g_menu_open ? kFlags : (kFlags | kClosedFlags));
     ImGuiWindow* const menu_window = ImGui::GetCurrentWindow();
@@ -1322,7 +1312,11 @@ void DrawToolUi()
         if (ui::BeginSection(sec, "Light", IconTex(g_icon_light))) {
             // 13-14 (G-12): a swatch that opens the themed picker, in a labelled row.
             ui::LabelRow("Colour", ui::ControlH());
-            if (ui::ColorSwatchButton("##colour", g_light_color, "Light colour"))
+            // The picker keeps the RGB / HSV / Hex fields and the Current / Original preview.
+            ui::ColorSwatchOpts copts;
+            copts.inputs = true;
+            copts.original = true;
+            if (ui::ColorSwatchButton("##colour", g_light_color, "Light colour", copts))
                 g_renderer.SetLightColor(glm::vec3(g_light_color[0], g_light_color[1], g_light_color[2]));
 
             ImGui::Dummy(ImVec2(0.0f, ui::Dp(3.0f)));

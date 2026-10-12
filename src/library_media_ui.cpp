@@ -1114,7 +1114,7 @@ void DrawResults(float h)
     }
     ImDrawList*   dl = ImGui::GetWindowDrawList();
     const float   lh = ImGui::GetTextLineHeight();
-    const float   rh = lh * 2.0f + 6.0f;
+    const float   rh = lh + 6.0f;  // one line: star + name (the file's info sits above the waveform)
     const float   stride = rh + ImGui::GetStyle().ItemSpacing.y;  // a row's height plus the gap to the next
     const float   w = ImGui::GetContentRegionAvail().x;
     if (g.scroll_to >= 0) {  // the keyboard row is kept in view (the clipper skips hidden rows)
@@ -1150,7 +1150,7 @@ void DrawResults(float h)
             const ImVec2 star_c(p.x + 9.0f, p.y + 3.0f + lh * 0.5f);
             const bool on_star = ImGui::GetIO().MousePos.x < p.x + 18.0f;
             if (ImGui::IsItemHovered() && !ImGui::GetDragDropPayload())
-                ImGui::SetTooltip("%s", miss ? "Not found on this PC"
+                ImGui::SetTooltip("%s", miss ? (f.path + "\nNot found on this PC").c_str()
                                              : (f.path + "\nclick to listen, drag onto the tree, double-click to use").c_str());
             if (clicked && on_star) {
                 if (!dbl) ToggleFav(f.path);  // the double-click's second press would undo the first
@@ -1189,45 +1189,58 @@ void DrawResults(float h)
             }
             const ImU32 tc = miss ? ui::kFaint : ui::kText;
             DrawStar(dl, star_c, 5.5f, IsFav(f.path));
-            const std::string fmt = FormatMediaFormat(f) + (f.length >= 0.0 ? "  " + FormatMediaLength(f.length) : "");
-            const float name_x = p.x + 20.0f, right = p.x + w - 4.0f;
-            // A narrow column: the format leaves the name's line (it would push the name out) and
-            // leads the second line, which ellipsizes.
-            float fw = ImGui::CalcTextSize(fmt.c_str()).x;
-            const bool fmt_inline = fw <= (right - name_x) * 0.45f;
-            if (!fmt_inline) fw = -8.0f;
             const std::string name = MediaFileName(f.path);
-            ui::EllipsisText(dl, ImVec2(name_x, p.y + 3.0f), right - fw - 8.0f, tc, name);
-            ui::EllipsisText(dl, ImVec2(name_x + 0.6f, p.y + 3.0f), right - fw - 8.0f, tc, name);  // bold
-            if (fmt_inline) dl->AddText(ImVec2(right - fw, p.y + 3.0f), ui::kMuted, fmt.c_str());
-            std::string l2 = f.description;
-            if (!f.library.empty()) l2 += (l2.empty() ? "(" : " (") + f.library + ")";
-            if (!fmt_inline && !fmt.empty()) l2 = fmt + (l2.empty() ? "" : "  " + l2);
-            if (miss) l2 = "Not found on this PC";
-            else if (Probe(f.path) == 0) l2 = "checking...";
-            ui::EllipsisText(dl, ImVec2(name_x, p.y + 3.0f + lh), right, ui::kFaint, l2);
+            const float name_x = p.x + 20.0f, right = p.x + w - 4.0f;
+            ui::EllipsisText(dl, ImVec2(name_x, p.y + 3.0f), right, tc, name);
+            ui::EllipsisText(dl, ImVec2(name_x + 0.6f, p.y + 3.0f), right, tc, name);  // bold
             ImGui::PopID();
         }
     }
     ImGui::EndChild();
 }
 
-// The preview header's file line wraps under its status (narrow column); shared by DrawPreview
-// and the panel's height reserve so both agree.
-bool PreviewHeaderWraps(const char* head, const std::string& len, float avail_w)
+// The current file's status, empty when it is ready (Missing / Checking / Reading / Opening).
+const char* PreviewStatus()
 {
-    const float sp = ImGui::GetStyle().ItemSpacing.x;
-    return avail_w - ImGui::CalcTextSize(head).x - sp < ImGui::CalcTextSize(len.c_str()).x + ImGui::GetFrameHeight() + 72.0f;
+    if (IsMissing(g.cur.path)) return "Not found on this PC";
+    if (Probe(g.cur.path) == 0) return "Checking...";
+    if (!g.an.ready) return "Reading...";
+    if (g_pv.opening && g_pv.open_path == g.cur.path) return "Opening...";
+    return "";
 }
 
-void PreviewHead(char* head, size_t n)
+// The current file's info, above the waveform: name (+ status, gear) on line 1, then format,
+// length and database / library (wrapped), then the description (wrapped). Measured with the
+// same code that draws it, so the panel's height reserve agrees.
+struct InfoLines {
+    std::string meta, desc;
+};
+
+InfoLines CurrentInfo()
 {
-    const bool miss = IsMissing(g.cur.path);
-    if (miss) std::snprintf(head, n, "Missing");
-    else if (Probe(g.cur.path) == 0) std::snprintf(head, n, "Checking...");
-    else if (!g.an.ready) std::snprintf(head, n, "Reading...");
-    else if (g_pv.opening && g_pv.open_path == g.cur.path) std::snprintf(head, n, "Opening...");
-    else std::snprintf(head, n, "%zu variation%s detected", g.an.frames.size(), g.an.frames.size() == 1 ? "" : "s");
+    InfoLines in;
+    const DbFile& f = g.cur;
+    in.meta = FormatMediaFormat(f);
+    const double len = g.an.length > 0.0 ? g.an.length : f.length;
+    if (len >= 0.0) in.meta += (in.meta.empty() ? "" : "  \xE2\x80\xA2  ") + FormatMediaLength(len);
+    std::string src = f.db;
+    if (!f.library.empty()) src += (src.empty() ? "" : " / ") + f.library;
+    if (!src.empty()) in.meta += (in.meta.empty() ? "" : "  \xE2\x80\xA2  ") + src;
+    in.desc = f.description;
+    return in;
+}
+
+float PreviewInfoHeight(float w)
+{
+    const float lh = ImGui::GetTextLineHeight(), sp = ImGui::GetStyle().ItemSpacing.y;
+    float h = ImGui::GetFrameHeight() + sp;
+    if (!g.has_cur) return lh + sp;
+    const InfoLines in = CurrentInfo();
+    const char* st = PreviewStatus();
+    if (*st) h += ImGui::CalcTextSize(st, nullptr, false, w).y;  // wraps under the name when narrow
+    if (!in.meta.empty()) h += ImGui::CalcTextSize(in.meta.c_str(), nullptr, false, w).y;
+    if (!in.desc.empty()) h += ImGui::CalcTextSize(in.desc.c_str(), nullptr, false, w).y;
+    return h;
 }
 
 void DrawPreview(float wave_h)
@@ -1242,26 +1255,28 @@ void DrawPreview(float wave_h)
         return;
     }
     const bool miss = IsMissing(g.cur.path);
-    char head[64];
-    PreviewHead(head, sizeof head);
-    const std::string len = FormatMediaLength(g.an.length);
-    const bool wraps = PreviewHeaderWraps(head, len, ImGui::GetContentRegionAvail().x);
-    ImGui::TextUnformatted(head);
-    ImGui::SameLine();
-    const float lw = ImGui::CalcTextSize(len.c_str()).x;
+    const InfoLines in = CurrentInfo();
+    const char* st = PreviewStatus();
     const float gear = ImGui::GetFrameHeight();
-    // A narrow column: the file name, length and gear take their own line (the name ellipsizes).
-    if (wraps) ImGui::NewLine();
+    const float fy = ImGui::GetStyle().FramePadding.y;
     ImVec2 np = ImGui::GetCursorScreenPos();
+    const float left = np.x;
     const float right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
-    ui::EllipsisText(dl, np, right - lw - gear - 12.0f, ui::kMuted, MediaFileName(g.cur.path));
-    dl->AddText(ImVec2(right - lw - gear - 6.0f, np.y), ui::kMuted, len.c_str());
-    ImGui::SetCursorScreenPos(ImVec2(right - gear, np.y - ImGui::GetStyle().FramePadding.y));
+    const float iw = std::max(1.0f, right - left);
+    ImFont* font = ImGui::GetFont();
+    const float fs = ImGui::GetFontSize();
+    // Line 1: the name (bold, ellipsized), the gear right-aligned.
+    const std::string name = MediaFileName(g.cur.path);
+    const ImU32 nc = miss ? ui::kFaint : ui::kText;
+    ui::EllipsisText(dl, ImVec2(left, np.y + fy), right - gear - 6.0f, nc, name);
+    ui::EllipsisText(dl, ImVec2(left + 0.6f, np.y + fy), right - gear - 6.0f, nc, name);  // bold
+    ImGui::SetCursorScreenPos(ImVec2(right - gear, np.y));
     ImGui::InvisibleButton("##megear", ImVec2(gear, gear));
+    const bool gear_hover = ImGui::IsItemHovered();
     {
         // The gear: a ring with 6 teeth (drawn, the default font has no glyph for it).
-        ImVec2 c(right - gear * 0.5f, np.y - ImGui::GetStyle().FramePadding.y + gear * 0.5f);
-        const ImU32 col = ImGui::IsItemHovered() ? ui::kText : ui::kMuted;
+        ImVec2 c(right - gear * 0.5f, np.y + gear * 0.5f);
+        const ImU32 col = gear_hover ? ui::kText : ui::kMuted;
         for (int k = 0; k < 6; ++k) {
             const float a = k * 1.0471976f;
             dl->AddLine(ImVec2(c.x + std::cos(a) * 3.5f, c.y + std::sin(a) * 3.5f),
@@ -1269,7 +1284,20 @@ void DrawPreview(float wave_h)
         }
         dl->AddCircle(c, 4.0f, col, 12, 1.5f);
     }
-    if (ImGui::IsItemHovered()) {
+    float y = np.y + gear + ImGui::GetStyle().ItemSpacing.y;
+    // Then the status (while checking / reading / opening, or missing), format, length, source
+    // and description, each wrapped to the width: nothing cut.
+    auto wrapped = [&](const char* t, ImU32 col) {
+        if (!*t) return;
+        dl->AddText(font, fs, ImVec2(left, y), col, t, nullptr, iw);
+        y += ImGui::CalcTextSize(t, nullptr, false, iw).y;
+    };
+    wrapped(st, miss ? ui::kFaint : ui::kMuted);
+    wrapped(in.meta.c_str(), ui::kMuted);
+    wrapped(in.desc.c_str(), ui::kFaint);
+    ImGui::SetCursorScreenPos(ImVec2(left, np.y));
+    ImGui::Dummy(ImVec2(iw, y - np.y));
+    if (gear_hover) {
         const SilenceParams sp{};
         ImGui::SetTooltip("Detection defaults for new sounds: split on silence, threshold %.0f dB, min gap %.0f ms, "
                           "pre-roll %.0f ms, tail %.0f ms (each sound can then be pre-edited in its panel)",
@@ -1468,13 +1496,7 @@ void DrawMediaExplorerPanel()
     DrawSearch();
     const float wave_h = 72.0f;
     const float foot_h = ImGui::GetFrameHeightWithSpacing();
-    float       prev_h = ImGui::GetTextLineHeightWithSpacing() + wave_h + ImGui::GetStyle().ItemSpacing.y * 2.0f;
-    if (g.has_cur) {  // its header wraps: same test as DrawPreview
-        char head[64];
-        PreviewHead(head, sizeof head);
-        if (PreviewHeaderWraps(head, FormatMediaLength(g.an.length), ImGui::GetContentRegionAvail().x))
-            prev_h += ImGui::GetFrameHeightWithSpacing();
-    }
+    const float prev_h = PreviewInfoHeight(ImGui::GetContentRegionAvail().x) + wave_h + ImGui::GetStyle().ItemSpacing.y * 2.0f;
     const float list_h = std::max(ImGui::GetTextLineHeight() * 4.0f, ImGui::GetContentRegionAvail().y - prev_h - foot_h);
     DrawResults(list_h);
     g.takes_arrows = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) && !ImGui::GetIO().WantTextInput && !g.results.empty();

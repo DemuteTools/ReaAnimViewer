@@ -45,6 +45,8 @@ struct WaveformOptions {
     // Antho 2026-10-12: per frame, its fades as placed (drawn as REAPER draws an item's); empty = none.
     // With `gestures`, a handle at each top corner drags the fade, Alt-click resets it.
     std::vector<FrameFades> fades;
+    // The frames' numbers in mono 11 (Edit's large waveform) instead of mono 9 (the panel's).
+    bool   big_numbers = false;
 };
 
 struct WaveformEvents {

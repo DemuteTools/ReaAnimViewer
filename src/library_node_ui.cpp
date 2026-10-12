@@ -91,6 +91,9 @@ struct PanelState {
     // Detected-count cache (the "D" of "D -> N variations").
     std::string           det_key;
     int                   det_count = 0;
+    // A Detection fader being dragged (its field's key) and its live value.
+    std::string           detf_key;
+    double                detf_live = 0.0;
     bool                  norm_loaded = false;
     double                norm_db = -1.0;
     bool                  norm_whole = false;
@@ -357,18 +360,125 @@ double SoundPlayhead(const SoundNode& n)
 
 // ---- small controls -------------------------------------------------------------------------------
 
-std::string NodePathText(const SoundLibrary& lib, const SoundNode& n)
+const char* TypeName(SoundNodeType t)
 {
-    std::vector<std::string> names;
-    const SoundNode*         p = &n;
-    for (int guard = 0; p && guard < 64; ++guard) {
-        names.push_back(p->name);
-        if (p->parent.empty()) break;
-        p = FindNode(lib, p->parent);
+    switch (t) {
+    case SoundNodeType::Random: return "Random";
+    case SoundNodeType::Blend: return "Blend";
+    case SoundNodeType::Switch: return "Switch";
+    default: return "Sound";
+    }
+}
+
+// The mockup's contName: the node's name, else "Switch on <group>" / its type.
+std::string NodeName(const SoundStore& store, const SoundNode& n)
+{
+    if (!n.name.empty()) return n.name;
+    if (n.type == SoundNodeType::Switch) {
+        const SwitchGroup* g = FindGroup(store, n.group_uid);
+        return std::string("Switch on ") + (g ? g->name : std::string("?"));
+    }
+    return TypeName(n.type);
+}
+
+// The panel's title (the mockup's slotLabel): a container's name, "Blend (2)" when it has none.
+std::string NodeTitle(const SoundStore& store, const SoundLibrary& lib, const SoundNode& n)
+{
+    if (!n.name.empty() || n.type == SoundNodeType::Sound || n.type == SoundNodeType::Switch) return NodeName(store, n);
+    return std::string(TypeName(n.type)) + " (" + std::to_string(ChildNodes(lib, n).size()) + ")";
+}
+
+// The breadcrumb beside the title (the mockup's crumbs): the library, then the node's parents only,
+// a Switch parent as "<group> = <value(s)>" (the value(s) the path plays for).
+std::string Crumbs(const SoundStore& store, const SoundLibrary& lib, const SoundNode& n)
+{
+    std::vector<std::string> segs;
+    const SoundNode*         child = &n;
+    for (int guard = 0; child && !child->parent.empty() && guard < 64; ++guard) {
+        const SoundNode* p = FindNode(lib, child->parent);
+        if (!p) break;
+        std::string seg = NodeName(store, *p);
+        if (p->type == SoundNodeType::Switch) {
+            const SwitchGroup* g = FindGroup(store, p->group_uid);
+            std::string        vals;
+            for (const SwitchCase& c : p->cases) {
+                if (c.child_uid != child->uid || !g) continue;
+                for (const SwitchValue& v : g->values)
+                    if (v.uid == c.value_uid) vals += (vals.empty() ? "" : ", ") + v.name;
+            }
+            const bool unassigned =
+                std::find(p->unassigned.begin(), p->unassigned.end(), child->uid) != p->unassigned.end();
+            if (g && !vals.empty()) seg = g->name + " = " + vals;
+            else if (g && unassigned) seg = g->name + " \xC2\xB7 unassigned";
+        }
+        segs.push_back(seg);
+        child = p;
     }
     std::string s = lib.name;
-    for (auto it = names.rbegin(); it != names.rend(); ++it) s += " \xE2\x80\xBA " + *it;
+    for (auto it = segs.rbegin(); it != segs.rend(); ++it) s += " \xE2\x80\xBA " + *it;
     return s;
+}
+
+// A run of text in one colour (and font) for RichText.
+struct TextRun {
+    std::string text;
+    ImU32       col = ui::kMuted;
+    ImFont*     font = nullptr;  // nullptr = the current font
+};
+
+// Runs of text in their colours, wrapped word by word within the room left (the mockup's .sub /
+// .hint paragraphs with their .hl parts). One item of the height it takes.
+void RichText(const std::vector<TextRun>& runs)
+{
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const float  right = std::max(p0.x + 40.0f, ui::LineRight());
+    const float  line_h = ImGui::GetTextLineHeight();
+    float        x = p0.x, y = p0.y, max_x = p0.x;
+    for (const TextRun& r : runs) {
+        ImFont*     f = r.font ? r.font : ImGui::GetFont();
+        const char* s = r.text.c_str();
+        const char* end = s + r.text.size();
+        while (s < end) {
+            const char* w = s;  // a word with its trailing spaces
+            while (w < end && *w != ' ') ++w;
+            while (w < end && *w == ' ') ++w;
+            const char* t = s;  // the word without its spaces: it goes on the next line when it does not fit
+            while (t < w && *t != ' ') ++t;
+            if (x > p0.x && x + ui::TextSizeIn(f, s, t).x > right) {
+                x = p0.x;
+                y += line_h;
+            }
+            const float ww = ui::TextSizeIn(f, s, w).x;
+            ui::AddTextIn(dl, f, ImVec2(x, y + std::floor((line_h - f->FontSize) * 0.5f)), r.col, s, w);
+            x += ww;
+            max_x = std::max(max_x, x);
+            s = w;
+        }
+    }
+    ImGui::Dummy(ImVec2(std::max(1.0f, std::min(max_x, right) - p0.x), y + line_h - p0.y));
+}
+
+// The children of a container whose sound is missing (an Item gone from the project, a File not
+// found), cached a second per node and project state.
+int MissingChildren(const SoundLibrary& lib, const SoundNode& n)
+{
+    static std::string key;
+    static int         count = 0, frame = -1000;
+    const int          scc = GetProjectStateChangeCount(nullptr);
+    const std::string  k = lib.uid + "|" + n.uid + "|" + std::to_string(scc);
+    if (k == key && ImGui::GetFrameCount() - frame < 60) return count;
+    key = k;
+    frame = ImGui::GetFrameCount();
+    count = 0;
+    const LibraryTreeHooks& h = GetLibraryTreeHooks();
+    for (const SoundNode* c : ChildNodes(lib, n)) {
+        if (c->type != SoundNodeType::Sound) continue;
+        const SoundSource& s = c->sound.source;
+        if (s.kind == SoundSourceKind::Item) count += (s.item_guid.empty() || !FindItemByGuid(s.item_guid)) ? 1 : 0;
+        else if (h.is_missing && h.is_missing(*c)) ++count;
+    }
+    return count;
 }
 
 // A volume fader -60..+12 dB with its dB field; true when a value is to be written (*out).
@@ -378,11 +488,11 @@ bool VolumeControl(const char* id, const std::string& key, double stored, double
     const bool live = P.vol_key == key;
     float      v = static_cast<float>(live ? P.vol_live : stored);
     bool       commit = false;
-    constexpr float kDbField = 48.0f;
+    const float kDbField = ui::Dp(56.0f);  // the mockup's .fader .lnum
     const float db_w = ui::NumberFieldWidth(kDbField, "dB");  // the dB field with its unit, measured
     bool        beside = true;
-    const float room = flow::StretchBeside(ImGui::GetContentRegionAvail().x, 40.0f, db_w, ImGui::GetStyle().ItemSpacing.x,
-                                           &beside);
+    const float room = flow::StretchBeside(ImGui::GetContentRegionAvail().x, ui::Dp(60.0f), db_w,
+                                           ImGui::GetStyle().ItemSpacing.x, &beside);
     ImGui::SetNextItemWidth(std::max(1.0f, std::min(fader_w, room)));
     ui::Fader("##fader", &v, static_cast<float>(kMinDb), static_cast<float>(kMaxDb));  // 13-7 (B5): the mockup's fader
     if (ImGui::IsItemActive()) {
@@ -425,14 +535,25 @@ void SeedSection(const char* title, bool open)
     ImGui::PopID();
 }
 
+// "Avoid repeating [the last 2 v]" (the mockup's select: off, the last 1..3; a larger stored value
+// is listed too). Returns the value picked (one undo point), else -1.
 int AvoidControl(const char* id, int stored)
 {
-    double v = stored;
-    if (ui::DragNumber(id, &v, 0.05, 0, "", 40.0f) == ui::DragNumberEvent::Commit) {
-        const int n = std::clamp(static_cast<int>(std::lround(v)), 0, 32);
-        if (n != stored) return n;
+    auto label = [](int k) { return k <= 0 ? std::string("off") : "the last " + std::to_string(k); };
+    FitText("Avoid repeating", ui::kMuted);
+    const std::string cur = label(stored);
+    const float       w = ImGui::CalcTextSize("the last 3").x + ui::Dp(12.0f + 16.0f + 6.0f);
+    SameLineIfFits(w);
+    int picked = -1;
+    if (ui::BeginComboStyled(id, cur.c_str(), w)) {
+        const int top = std::max(3, std::min(stored, 32));
+        for (int k = 0; k <= top; ++k) {
+            if (k > 3 && k != stored) continue;
+            if (ImGui::Selectable(label(k).c_str(), k == stored) && k != stored) picked = k;
+        }
+        ui::EndComboStyled();
     }
-    return -1;
+    return picked;
 }
 
 void Hatch(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col)
@@ -593,7 +714,7 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
     const ImGuiIO& io = ImGui::GetIO();
     const float  w = std::max(8.0f, o.size.x > 0.0f ? o.size.x : ImGui::GetContentRegionAvail().x);
     const float  h = std::max(16.0f, o.size.y);
-    const float  rh = o.ruler ? 16.0f : 0.0f;
+    const float  rh = o.ruler ? ui::Dp(18.0f) + 4.0f : 0.0f;  // .edruler: 18 px + 4 px under it
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     ImGui::InvisibleButton("##wave", ImVec2(w, h + rh), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
     const bool hovered = ImGui::IsItemHovered();
@@ -601,33 +722,45 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
     ev.min = a;
     ev.max = b;
     ImDrawList* dl = ImGui::GetWindowDrawList();
+    // 13-7b (audit C5.4): the mockup's .swave: --bg, a 1 px stroke edge, r5.
     dl->AddRectFilled(a, b, ui::kBg, ui::kRadiusSm);
     const double vs = o.view_start;
     const double vl = o.view_len > 0.0 ? o.view_len : o.source_len;
+    const float  text_y = std::floor((a.y + b.y - ImGui::GetTextLineHeight()) * 0.5f);
     if (!(vl > 0.0)) {
-        dl->AddText(ImVec2(a.x + 8.0f, a.y + h * 0.5f - 7.0f), ui::kFaint, "No audio");
+        dl->AddText(ImVec2(a.x + 8.0f, text_y), ui::kMuted, "No audio");
+        dl->AddRect(a, b, ui::kStroke, ui::kRadiusSm);
         ImGui::PopID();
         return ev;
     }
     auto X = [&](double t) { return static_cast<float>(a.x + (t - vs) / vl * w); };
     auto T = [&](float x) { return vs + static_cast<double>(x - a.x) / w * vl; };
-    const float mid = (a.y + b.y) * 0.5f, hh = h * 0.5f - 2.0f;
+    const float mid = (a.y + b.y) * 0.5f, hh = h * 0.5f - 3.0f;
+    const ImVec2 m = io.MousePos;
+    const int    under = hovered ? FrameAt(frames, T(m.x)) : -1;
+    const int    playing_frame = playhead_s >= 0.0 ? FrameAt(frames, playhead_s) : -1;
+    const bool   trimming = g_wd.id == gid && g_wd.kind == WaveDrag::Trim && g_wd.moved;
     dl->PushClipRect(a, b, true);
 
-    // Frames: accent ~9 % (on), ~18 % (selected), off hatched on the stroke grey.
+    // Frames (.sbox): a box inset 2 px, accent 9 % (13 % under the mouse, 18 % selected / playing /
+    // trimmed, then with an accent edge); an off frame hatched with a dashed edge.
+    const float by0 = a.y + 2.0f, by1 = b.y - 2.0f;
     for (size_t i = 0; i < frames.size(); ++i) {
         const SoundFrame& f = frames[i];
-        const ImVec2 fa(X(f.start), a.y), fb(X(f.start + f.length), b.y);
+        const ImVec2 fa(X(f.start), by0), fb(std::max(X(f.start + f.length), X(f.start) + 1.0f), by1);
         if (fb.x < a.x || fa.x > b.x) continue;
         const bool sel = std::find(selection.begin(), selection.end(), static_cast<int>(i)) != selection.end();
+        const bool hot = static_cast<int>(i) == playing_frame || (trimming && g_wd.frame == static_cast<int>(i));
         if (!f.on) {
-            dl->AddRectFilled(fa, fb, WithAlpha(ui::kStroke, 0xFF));
-            Hatch(dl, fa, fb, ui::kFaint);
+            dl->AddRectFilled(fa, fb, WithAlpha(ui::kMuted, 0x14), 3.0f);
+            Hatch(dl, fa, fb, IM_COL32(0, 0, 0, 0x59));
         } else {
-            dl->AddRectFilled(fa, fb, WithAlpha(ui::kAccent, sel ? 0x2E : 0x17));
+            const int alpha = (sel || hot) ? 0x2E : (static_cast<int>(i) == under ? 0x21 : 0x17);
+            dl->AddRectFilled(fa, fb, WithAlpha(ui::kAccent, alpha), 3.0f);
         }
     }
-    // Peaks, each column scaled by its frame's dB; the part past full scale in the clip colour.
+    // Peaks, each column scaled by its frame's dB: accent inside an active frame, muted outside;
+    // the part past full scale in --bad.
     PeakData pk;
     if (ReadPeaks(path, vs, vl, w / vl, &pk)) {
         for (size_t i = 0; i < pk.max_abs.size(); ++i) {
@@ -637,56 +770,96 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
             const double amp = pk.max_abs[i] * g;
             const float  x = a.x + static_cast<float>(i) * w / static_cast<float>(pk.max_abs.size());
             const float  y = static_cast<float>(std::min(amp, 1.0)) * hh;
-            const ImU32  col = amp > 1.0 ? kLibMissing
-                               : (fi >= 0 && frames[static_cast<size_t>(fi)].on) ? ui::kText
-                                                                                   : ui::kFaint;
-            dl->AddLine(ImVec2(x, mid - y), ImVec2(x, mid + y + 1.0f), col);
+            const bool   in = fi >= 0 && frames[static_cast<size_t>(fi)].on;
+            dl->AddLine(ImVec2(x, mid - y), ImVec2(x, mid + y + 1.0f), in ? ui::kAccent : ui::kMuted);
+            if (amp > 1.0) {  // clipped: the top and bottom of the column
+                const float over = std::min(hh, static_cast<float>(amp - 1.0) * hh);
+                dl->AddLine(ImVec2(x, mid - hh), ImVec2(x, mid - hh + over), ui::kBad);
+                dl->AddLine(ImVec2(x, mid + hh - over), ImVec2(x, mid + hh + 1.0f), ui::kBad);
+            }
         }
     } else {
         ev.reading = RequestPeaks(path, nullptr) == PeakState::Building;
-        dl->AddText(ImVec2(a.x + 8.0f, mid - 7.0f), ui::kFaint, ev.reading ? "Reading waveform\xE2\x80\xA6" : "Waveform unavailable");
+        dl->AddText(ImVec2(a.x + 8.0f, text_y), ui::kMuted, ev.reading ? "Reading waveform\xE2\x80\xA6" : "Waveform unavailable");
     }
-    // Frame edges: solid when clamped, else the accent line.
+    // The frames' edges and numbers over the peaks: 1 px stroke-strong r3 (accent when selected,
+    // playing or trimmed; dashed when off); a clamped edge (it ends where the next one starts) is a
+    // 2 px text-colour right edge; the number in mono at (3, 1), struck through when off.
+    ImFont* nf = o.big_numbers ? ui::FontMonoSmall() : ui::FontMonoMicro();
     for (size_t i = 0; i < frames.size(); ++i) {
-        const bool solid = i < o.solid_edges.size() && o.solid_edges[i];
-        const ImU32 col = solid ? ui::kAccent : ui::kAccentLine;
-        dl->AddLine(ImVec2(X(frames[i].start), a.y), ImVec2(X(frames[i].start), b.y), col);
-        dl->AddLine(ImVec2(X(frames[i].start + frames[i].length), a.y), ImVec2(X(frames[i].start + frames[i].length), b.y), col);
+        const SoundFrame& f = frames[i];
+        const ImVec2 fa(X(f.start), by0), fb(std::max(X(f.start + f.length), X(f.start) + 1.0f), by1);
+        if (fb.x < a.x || fa.x > b.x) continue;
+        const bool sel = std::find(selection.begin(), selection.end(), static_cast<int>(i)) != selection.end();
+        const bool hot = static_cast<int>(i) == playing_frame || (trimming && g_wd.frame == static_cast<int>(i));
+        if (!f.on) ui::DashedRect(dl, fa, fb, ui::kStrokeStrong, 3.0f, 3.0f, 2.0f);
+        else dl->AddRect(fa, fb, (sel || hot) ? ui::kAccent : ui::kStrokeStrong, 3.0f);
+        if (i < o.solid_edges.size() && o.solid_edges[i])
+            dl->AddRectFilled(ImVec2(fb.x - 2.0f, fa.y), fb, ui::kText);
+        if (fb.x - fa.x >= nf->FontSize + 4.0f) {
+            char num[16];
+            std::snprintf(num, sizeof(num), "%d", static_cast<int>(i) + 1);
+            const ImVec2 np(fa.x + 3.0f, fa.y + 1.0f);
+            ui::AddTextIn(dl, nf, np, sel ? ui::kAccentText : ui::kMuted, num);
+            if (!f.on) {
+                const ImVec2 ns = ui::TextSizeIn(nf, num);
+                const float  sy = std::floor(np.y + ns.y * 0.55f) + 0.5f;
+                dl->AddLine(ImVec2(np.x, sy), ImVec2(np.x + ns.x, sy), ui::kMuted);
+            }
+        }
     }
-    // The threshold line (Silence).
+    // The threshold line (Silence): dashed text colour at 45 % (accent under the mouse), its dB in a
+    // chip at the right.
     const bool thr = std::isfinite(o.threshold_db);
     float      thr_y = 0.0f;
+    const bool near_thr_now = hovered && thr;
     if (thr) {
         thr_y = static_cast<float>(std::min(1.0, DbToGain(o.threshold_db))) * hh;
-        dl->AddLine(ImVec2(a.x, mid - thr_y), ImVec2(b.x, mid - thr_y), ui::kWarn);
-        dl->AddLine(ImVec2(a.x, mid + thr_y), ImVec2(b.x, mid + thr_y), WithAlpha(ui::kWarn, 0x60));
+        const bool  hot = (near_thr_now && (std::fabs(m.y - (mid - thr_y)) <= 4.0f || std::fabs(m.y - (mid + thr_y)) <= 4.0f)) ||
+                          (g_wd.id == gid && g_wd.kind == WaveDrag::Thr);
+        const ImU32 col = hot ? ui::kAccent : WithAlpha(ui::kText, 0x73);
+        for (float x = a.x; x < b.x; x += 6.0f) {
+            dl->AddLine(ImVec2(x, std::floor(mid - thr_y) + 0.5f), ImVec2(std::min(x + 3.0f, b.x), std::floor(mid - thr_y) + 0.5f), col);
+            dl->AddLine(ImVec2(x, std::floor(mid + thr_y) + 0.5f), ImVec2(std::min(x + 3.0f, b.x), std::floor(mid + thr_y) + 0.5f), col);
+        }
+        char lab[32];
+        std::snprintf(lab, sizeof(lab), "%.0f dB", o.threshold_db);
+        ImFont*      cf = ui::FontMonoTiny();
+        const ImVec2 cs = ui::TextSizeIn(cf, lab);
+        const ImVec2 c1(b.x - 4.0f, std::max(a.y + cs.y + 2.0f, mid - thr_y + cs.y * 0.5f + 1.0f));
+        const ImVec2 c0(c1.x - cs.x - 8.0f, c1.y - cs.y - 2.0f);
+        dl->AddRectFilled(c0, c1, ui::kRaised, 3.0f);
+        dl->AddRect(c0, c1, ui::kStrokeStrong, 3.0f);
+        ui::AddTextIn(dl, cf, ImVec2(c0.x + 4.0f, c0.y + 1.0f), ui::kText, lab);
     }
-    if (playhead_s >= vs && playhead_s <= vs + vl) dl->AddLine(ImVec2(X(playhead_s), a.y), ImVec2(X(playhead_s), b.y), ui::kWhite, 1.5f);
+    if (playhead_s >= vs && playhead_s <= vs + vl) dl->AddLine(ImVec2(X(playhead_s), a.y), ImVec2(X(playhead_s), b.y), ui::kText, 1.0f);
     dl->PopClipRect();
     const bool fade_hot = WaveFades(dl, gid, hovered, frames, o, a, b, vs, vl, &ev);  // Antho 2026-10-12
     dl->AddRect(a, b, ui::kStroke, ui::kRadiusSm);
 
-    // The ruler: ms below 2 s shown, else s.
+    // The ruler (.edruler): ms below 2 s shown, else s; mono 10 faint labels 2 px after a 6 px
+    // stroke-strong tick, a stroke line under it.
     if (o.ruler) {
-        const double steps[] = {0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 30, 60};
+        const double steps[] = {0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.25, 0.5, 1, 2, 5, 10, 30, 60};
         double       st = steps[0];
         for (double s : steps) {
             st = s;
-            if (s / vl * w >= 60.0) break;
+            if (s / vl * w >= 70.0) break;
         }
+        ImFont*     rf = ui::FontMonoTiny();
+        const float base = p0.y + rh - 4.0f;
+        dl->AddLine(ImVec2(p0.x, base - 0.5f), ImVec2(p0.x + w, base - 0.5f), ui::kStroke);
         for (double t = std::ceil(vs / st) * st; t <= vs + vl; t += st) {
-            const float x = X(t);
-            dl->AddLine(ImVec2(x, p0.y + rh - 5.0f), ImVec2(x, p0.y + rh), ui::kFaint);
+            const float x = std::floor(X(t)) + 0.5f;
+            dl->AddLine(ImVec2(x, base - 7.0f), ImVec2(x, base - 1.0f), ui::kStrokeStrong);
             char lab[32];
             if (st < 1.0) std::snprintf(lab, sizeof(lab), "%.0f ms", t * 1000.0);
-            else std::snprintf(lab, sizeof(lab), "%.0f s", t);
-            dl->AddText(ImVec2(x + 2.0f, p0.y), ui::kFaint, lab);
+            else std::snprintf(lab, sizeof(lab), "%g s", t);
+            ui::AddTextIn(dl, rf, ImVec2(x + 2.0f, p0.y + 2.0f), ui::kFaint, lab);
         }
     }
 
     // ---- interaction ----
-    const ImVec2 m = io.MousePos;
-    const int    under = hovered ? FrameAt(frames, T(m.x)) : -1;
     int          edge_frame = -1, edge_side = 0;
     if (hovered && o.gestures) {
         for (size_t i = 0; i < frames.size(); ++i) {
@@ -697,6 +870,20 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
                 edge_frame = static_cast<int>(i);
                 edge_side = 1;
             }
+        }
+    }
+    // A trim handle (.sh) lit under the mouse or while trimming: an accent-line band on the edge.
+    {
+        int   hf = edge_frame, hs = edge_side;
+        if (trimming) {
+            hf = g_wd.frame;
+            hs = g_wd.edge;
+        }
+        if (hf >= 0 && static_cast<size_t>(hf) < frames.size() && !fade_hot) {
+            const SoundFrame& f = frames[static_cast<size_t>(hf)];
+            const float       ex = X(hs < 0 ? f.start : f.start + f.length);
+            const float       hw = o.big_numbers ? 4.0f : 3.0f;
+            dl->AddRectFilled(ImVec2(std::max(a.x, ex - hw), by0), ImVec2(std::min(b.x, ex + hw), by1), ui::kAccentLine);
         }
     }
     const bool near_thr = hovered && thr && (std::fabs(m.y - (mid - thr_y)) <= 4.0f || std::fabs(m.y - (mid + thr_y)) <= 4.0f);
@@ -901,15 +1088,17 @@ void DefaultFadeControls(const SoundLibrary& lib, const SoundNode& n)
 {
     const SoundData& d = Shown(n);
     if (FolderSourced(d)) return;  // a folder pile is placed without fades
-    ImGui::TextUnformatted("Fades");
+    // 13-7b (audit C5.5): a .row -- the muted 80 px label, then "in [ms] out [ms]" as .lnum fields.
+    const float fw = ui::Dp(52.0f);
+    ui::LabelRow("Fades", ui::TextWidth("out") + ImGui::GetStyle().ItemSpacing.x + ui::NumberFieldWidth(fw, "ms"));
     Tip("Every variation fades in and out by this much (against clicks), unless it has its own fade\n"
         "(drag a fade handle at a variation's top corner in the waveform; Alt-click it for this default)");
     for (int side = -1; side <= 1; side += 2) {
-        SameLineIfFits(ui::NumberFieldWidth(50.0f, "ms") + 30.0f);
-        ImGui::TextUnformatted(side < 0 ? "in" : "out");
+        if (side > 0) SameLineIfFits(ui::TextWidth("out") + ImGui::GetStyle().ItemSpacing.x + ui::NumberFieldWidth(fw, "ms"));
+        FitText(side < 0 ? "in" : "out", ui::kMuted);
         ImGui::SameLine();
         double v = (side < 0 ? d.fade_in : d.fade_out) * 1000.0;
-        const ui::DragNumberEvent e = ui::DragNumber(side < 0 ? "##fadein" : "##fadeout", &v, 0.1, 1, "ms", 50.0f);
+        const ui::DragNumberEvent e = ui::DragNumber(side < 0 ? "##fadein" : "##fadeout", &v, 0.1, 1, "ms", fw, /*trim=*/true);
         if (e == ui::DragNumberEvent::Live || e == ui::DragNumberEvent::Commit) {
             SoundData&   dr = Live(n);
             const double sec = std::clamp(v, 0.0, 10000.0) / 1000.0;
@@ -1129,6 +1318,7 @@ void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n,
             o.gestures = true;
             o.select = in_edit;
             o.ruler = in_edit && i == 0;
+            o.big_numbers = in_edit;
             if (i < fades.size()) o.fades = {fades[i]};
             std::vector<int> sel;
             if (std::find(P.sel.begin(), P.sel.end(), static_cast<int>(i)) != P.sel.end()) sel.push_back(0);
@@ -1148,6 +1338,7 @@ void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n,
     o.select = in_edit;
     o.ruler = in_edit;
     o.wheel = in_edit;
+    o.big_numbers = in_edit;
     o.fades = fades;
     if (in_edit) {
         o.view_start = P.view_start;
@@ -1284,6 +1475,21 @@ bool MediaDropTarget(ImGuiID id, ImVec2 a, ImVec2 b, const SoundLibrary& lib, co
             ImDrawList* dl = ImGui::GetForegroundDrawList();
             if (refused) {
                 ui::EllipsisText(dl, ImVec2(a.x + 6.0f, a.y + 4.0f), b.x - 6.0f, ui::kMuted, caption);
+            } else if (kind == MediaDropKind::Replace) {
+                // The mockup's .swave.drop: a 2 px accent outline, accent 12 % over the wave, a
+                // centred accent pill "Replace" (semibold 12, white).
+                dl->AddRectFilled(a, b, WithAlpha(ui::kAccent, 0x1F), ui::kRadiusSm);
+                dl->AddRect(a, b, ui::kAccent, ui::kRadiusSm, 0, 2.0f);
+                ImFont*      pf = ui::FontSemibold();
+                const ImVec2 ts = ui::TextSizeIn(pf, caption);
+                const ImVec2 c((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
+                const float  pw = std::min(ts.x + ui::Dp(20.0f), b.x - a.x - 4.0f), ph = ts.y + ui::Dp(4.0f);
+                const ImVec2 q0(c.x - pw * 0.5f, c.y - ph * 0.5f), q1(c.x + pw * 0.5f, c.y + ph * 0.5f);
+                dl->AddRectFilled(q0, q1, ui::kAccent, ph * 0.5f);
+                ImGui::PushFont(pf);
+                ui::EllipsisText(dl, ImVec2(std::max(q0.x + ui::Dp(10.0f), c.x - ts.x * 0.5f), q0.y + ui::Dp(2.0f)),
+                                 q1.x - ui::Dp(8.0f), ui::kWhite, caption);
+                ImGui::PopFont();
             } else {
                 dl->AddRectFilled(a, b, WithAlpha(ui::kAccent, 0x1E), ui::kRadiusSm);
                 dl->AddRect(a, b, ui::kAccent, ui::kRadiusSm, 0, 2.0f);
@@ -1348,8 +1554,10 @@ void ShowInReaper(const SoundSource& src)
     UpdateArrange();
 }
 
-// The Detection controls (panel Section and Edit's side strip).
-void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m)
+// The Detection controls (panel Section and Edit's side strip; `label_col`: the .row > .k 80 px /
+// Edit's .edrow 70 px). 13-7b (audit C5.6): "Split by" segmented, the Silence parameters as a
+// fader with its number field, the saved-with note, Reset to detected + "edited by hand".
+void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, float label_col = ui::kLabelCol)
 {
     const SoundData& d = Shown(n);
     const bool       ready = RequestPeaks(m.path, nullptr) == PeakState::Ready;
@@ -1372,14 +1580,16 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
     }
     if (!ready && d.mode == DetectMode::Silence && RequestPeaks(m.path, nullptr) == PeakState::Building) {
         // Not "Whole file" while the peaks Silence needs are read.
-        ImGui::TextDisabled("Reading\xE2\x80\xA6");
+        ui::LabelRow("Split by", ui::Dp(60.0f), label_col);
+        FitText("Reading\xE2\x80\xA6", ui::kFaint);
     } else if (modes.size() == 1 && d.mode == DetectMode::Whole) {
-        ImGui::TextDisabled("Whole file");
+        ui::LabelRow("Split by", ui::Dp(60.0f), label_col);
+        FitText("Whole file", ui::kMuted);
     } else {
         int sel = -1;
         for (size_t i = 0; i < modes.size(); ++i)
             if (modes[i] == d.mode) sel = static_cast<int>(i);
-        ui::LabelRow("Split by", 160.0f);
+        ui::LabelRow("Split by", ui::Dp(160.0f), label_col);
         if (ui::Segmented("##detmode", labels.data(), static_cast<int>(labels.size()), &sel) &&
             sel >= 0) {
             const DetectMode mode = modes[static_cast<size_t>(sel)];
@@ -1407,18 +1617,51 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
             const char* unit;
             double SilenceParams::*field;
             double step;
-            double lo, hi;
+            double lo, hi;      // what the field takes
+            float  flo, fhi;    // the fader's span (the mockup's ranges)
         };
         static const F kFields[] = {
-            {"##thr", "Threshold", "dB", &SilenceParams::threshold_db, 0.1, -90.0, 0.0},
-            {"##gap", "Min gap", "ms", &SilenceParams::min_gap_ms, 1.0, 0.0, 5000.0},
-            {"##pre", "Pre-roll", "ms", &SilenceParams::preroll_ms, 0.5, 0.0, 1000.0},
-            {"##tail", "Tail", "ms", &SilenceParams::tail_ms, 1.0, 0.0, 5000.0},
+            {"##thr", "Threshold", "dB", &SilenceParams::threshold_db, 0.1, -90.0, 0.0, -60.0f, 0.0f},
+            {"##gap", "Min gap", "ms", &SilenceParams::min_gap_ms, 1.0, 0.0, 5000.0, 0.0f, 400.0f},
+            {"##pre", "Pre-roll", "ms", &SilenceParams::preroll_ms, 0.5, 0.0, 1000.0, 0.0f, 50.0f},
+            {"##tail", "Tail", "ms", &SilenceParams::tail_ms, 1.0, 0.0, 5000.0, 0.0f, 300.0f},
         };
+        const float field_w = ui::Dp(56.0f);
         for (const F& f : kFields) {
-            ui::LabelRow(f.label, ui::NumberFieldWidth(36.0f, f.unit));
-            double v = d.silence.*(f.field);
-            const ui::DragNumberEvent e = ui::DragNumber(f.id, &v, f.step, 1, f.unit, 60.0f);
+            ImGui::PushID(f.id);
+            const float num_w = ui::NumberFieldWidth(field_w, f.unit);
+            ui::LabelRow(f.label, num_w + ui::Dp(40.0f), label_col);
+            // The fader (a live draft, one write on release), then the typed / dragged field.
+            const std::string key = n.uid + f.id;
+            const bool        fader_live = P.detf_key == key;
+            float             fv = static_cast<float>(fader_live ? P.detf_live : d.silence.*(f.field));
+            bool              beside = true;
+            const float room = flow::StretchBeside(ImGui::GetContentRegionAvail().x, ui::Dp(40.0f), num_w,
+                                                   ImGui::GetStyle().ItemSpacing.x, &beside);
+            ImGui::SetNextItemWidth(std::max(1.0f, room));
+            const bool moved = ui::Fader("##fader", &fv, f.flo, f.fhi);
+            const bool active = ImGui::IsItemActive(), released = ImGui::IsItemDeactivated();
+            if (active || (released && fader_live)) {
+                if (moved || !fader_live) P.detf_live = std::clamp(static_cast<double>(fv), f.lo, f.hi);
+                P.detf_key = key;
+                // The draft restarts from the store each frame (Live): this field set again, re-detected.
+                SoundData& dr = Live(n);
+                dr.silence.*(f.field) = P.detf_live;
+                Redetect(dr, m, P.snap.frames);
+                if (released) {
+                    P.detf_key.clear();
+                    if (dr.silence.*(f.field) == n.sound.silence.*(f.field)) CancelLive();  // no empty undo point
+                    else CommitLive("Detection", lib.uid, n.uid);
+                    if (P.changed) {
+                        ImGui::PopID();
+                        return;
+                    }
+                }
+            }
+            if (beside) ImGui::SameLine();
+            double v = P.detf_key == key ? P.detf_live : Shown(n).silence.*(f.field);
+            const ui::DragNumberEvent e = ui::DragNumber("##num", &v, f.step, 1, f.unit, field_w, /*trim=*/true);
+            ImGui::PopID();
             if (e == ui::DragNumberEvent::Live || e == ui::DragNumberEvent::Commit) {
                 SoundData& dr = Live(n);
                 dr.silence.*(f.field) = std::clamp(v, f.lo, f.hi);
@@ -1432,15 +1675,19 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
             }
         }
     }
-    ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
-    ImGui::TextWrapped("%s", VariationCountText(DetectedCount(n.uid, m, d), d.frames).c_str());
-    ImGui::PopStyleColor();
+    ui::SubText(VariationCountText(DetectedCount(n.uid, m, Shown(n)), Shown(n).frames).c_str());
+    ui::SubText("Saved with the sound in the library (.ravlib).");
     if (ui::SolidButton("Reset to detected")) {
         const std::vector<SoundFrame> det = Detected(m, d.mode, d.silence);
         EditNode("Reset to detected", lib.uid, n.uid, [&](SoundNode& x) {
             ResetToDetected(x.sound, det);
             return true;
         });
+        if (P.changed) return;
+    }
+    if (Shown(n).edited) {
+        SameLineIfFits(ui::TextWidth("edited by hand"));
+        FitText("edited by hand", ui::kMuted);
     }
 }
 
@@ -1536,7 +1783,7 @@ void DrawEditOverlay()
         ImGui::SetNextWindowFocus();
         P.edit_focus = false;
     }
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ui::Col(ui::kSurface));
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ui::Col(ui::kBg));  // .edbox: --bg, stroke-strong edge, r10
     ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStrokeStrong));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, ui::kRadiusLg);
     constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
@@ -1554,80 +1801,118 @@ void DrawEditOverlay()
             else if (!AuditionFile(m.path, 0.0, 0.0, "whole:" + n->uid, DbToGain(GainFromRoot(*lib, *n))))
                 ShowLibraryToast("Cannot play: the sound file is not read", false);
         };
-        // Header.
-        if (ui::SolidButton(whole_playing ? "\xE2\x96\xA0##editplay" : "\xE2\x96\xB6##editplay")) toggle_play();
-        Tip("Play the whole file (Space)");
-        ImGui::SameLine();
+        // Header (13-7b, the mockup's .edhead): "▶ Play" / "■ Stop", the name (15 px semibold) and the
+        // count (muted), then the tools at the top right: − + Fit, ?, Done (primary), ✕.
+        if (ui::ToggleButton(whole_playing ? "\xE2\x96\xA0 Stop##editplay" : "\xE2\x96\xB6 Play##editplay", whole_playing,
+                             ImVec2(0.0f, ui::LargeH())))
+            toggle_play();
+        Tip("Play the whole file (Space) \xC2\xB7 Esc stops");
+        ImGui::SameLine(0.0f, ui::Dp(10.0f));
         const std::string count = VariationCountText(DetectedCount(n->uid, m, Shown(*n)), Shown(*n).frames);
+        static const char* const kHelpPlain =
+            "Click a variation: play and select (Ctrl-click adds)\nDrag an edge: trim\nDrag up / down inside: its dB\n"
+            "Alt-click: off / on\nS: split under the mouse\nDouble-click empty space: add a variation\n"
+            "Zoom and scroll: your REAPER mouse wheel and zoom keys, middle-drag, the scrollbar\n"
+            "Drag the threshold line (Silence)\nSpace: play / stop, Esc: stop, then close";
+        static const char* const kHelpTakes =
+            "Click a variation: play and select (Ctrl-click adds)\nDrag an edge: trim (inside its take)\n"
+            "Drag up / down inside: its dB\nAlt-click: off / on\nSplit and add: not in Takes mode\n"
+            "Space: play / stop, Esc: stop, then close";
         // The tools sit at the top right; the name and count take what they leave (shortened),
         // and go above them only when the panel is too narrow for both (Antho, 13-7b).
         const float sp = ImGui::GetStyle().ItemSpacing.x;
-        const float tools_w = ui::ButtonWidth("\xE2\x88\x92##zoomout") + ui::ButtonWidth("+##zoomin") + ui::ButtonWidth("Fit") +
-                              ui::TextWidth("?") + ui::ButtonWidth("Done") + ui::ButtonWidth("\xE2\x9C\x95##editclose") +
-                              sp * 5.0f;
+        const float side_btn = ui::ControlH();
+        const float tools_w = side_btn * 2.0f + ui::ButtonWidth("Fit") + ui::Dp(18.0f) + ui::ButtonWidth("Done") + side_btn +
+                              sp * 5.0f + ui::Dp(10.0f);
         bool        tools_beside = true;
         const float room = flow::StretchBeside(ImGui::GetContentRegionAvail().x, 80.0f, tools_w, sp, &tools_beside);
         {
             const ImVec2 p = ImGui::GetCursorScreenPos();
-            const float  y = p.y + ImGui::GetStyle().FramePadding.y;
+            const float  h = ui::LargeH();
             ImDrawList*  dl = ImGui::GetWindowDrawList();
-            const float  name_w = std::min(ImGui::CalcTextSize(n->name.c_str()).x, room * 0.6f);
-            ui::EllipsisTextTip(dl, ImVec2(p.x, y), p.x + name_w + 1.0f, ui::kText, n->name);
-            ui::EllipsisTextTip(dl, ImVec2(p.x + name_w + 8.0f, y), p.x + room, ui::kFaint, count);
-            ImGui::Dummy(ImVec2(room, ImGui::GetFrameHeight()));
+            ImFont*      tf = ui::FontPaneTitle();
+            const float  name_w = std::min(ui::TextSizeIn(tf, n->name.c_str()).x + 1.0f, room * 0.6f);
+            {
+                ui::FontScope fs(tf);
+                ui::EllipsisTextTip(dl, ImVec2(p.x, p.y + std::floor((h - tf->FontSize) * 0.5f) - 1.0f), p.x + name_w, ui::kText,
+                                    n->name);
+            }
+            ui::EllipsisTextTip(dl, ImVec2(p.x + name_w + ui::Dp(10.0f), p.y + std::floor((h - ImGui::GetTextLineHeight()) * 0.5f)),
+                                p.x + room, ui::kMuted, count);
+            ImGui::Dummy(ImVec2(room, h));
         }
         if (tools_beside) ImGui::SameLine(0.0f, sp);
         else ImGui::SetCursorScreenPos(ImVec2(std::max(ImGui::GetCursorScreenPos().x, ui::LineRight() - tools_w),
                                               ImGui::GetCursorScreenPos().y));
-        if (ui::SolidButton("\xE2\x88\x92##zoomout")) ZoomView(1.5, P.view_start + (P.view_len > 0.0 ? P.view_len : m.source_len) * 0.5, m.source_len);
+        {
+            // The tools' 22 px buttons centred on the 26 px header line.
+            const float dy = std::floor((ui::LargeH() - ui::ControlH()) * 0.5f);
+            ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, ImGui::GetCursorScreenPos().y + (tools_beside ? dy : 0.0f)));
+        }
+        if (ui::SolidButton("\xE2\x88\x92##zoomout", ImVec2(side_btn, 0.0f)))
+            ZoomView(1.5, P.view_start + (P.view_len > 0.0 ? P.view_len : m.source_len) * 0.5, m.source_len);
         Tip("Zoom out (your REAPER 'View: Zoom out horizontal' keys)");
-        SameLineIfFits(ui::ButtonWidth("+##zoomin"));
-        if (ui::SolidButton("+##zoomin")) ZoomView(1.0 / 1.5, P.view_start + (P.view_len > 0.0 ? P.view_len : m.source_len) * 0.5, m.source_len);
+        SameLineIfFits(side_btn);
+        if (ui::SolidButton("+##zoomin", ImVec2(side_btn, 0.0f)))
+            ZoomView(1.0 / 1.5, P.view_start + (P.view_len > 0.0 ? P.view_len : m.source_len) * 0.5, m.source_len);
         Tip("Zoom in (your REAPER 'View: Zoom in horizontal' keys)");
         SameLineIfFits(ui::ButtonWidth("Fit"));
         if (ui::SolidButton("Fit")) {
             P.view_start = 0.0;
             P.view_len = 0.0;
         }
-        SameLineIfFits(ui::TextWidth("?"));
-        ImGui::TextDisabled("?");
-        Tip(Shown(*n).mode == DetectMode::Takes
-                ? "Click a variation: play and select (Ctrl-click adds)\nDrag an edge: trim (inside its take)\n"
-                  "Drag up / down inside: its dB\nAlt-click: off / on\nSplit and add: not in Takes mode\n"
-                  "Space: play / stop, Esc: stop, then close"
-                : "Click a variation: play and select (Ctrl-click adds)\nDrag an edge: trim\nDrag up / down inside: its dB\n"
-                  "Alt-click: off / on\nS: split under the mouse\nDouble-click empty space: add a variation\n"
-                  "Zoom and scroll: your REAPER mouse wheel and zoom keys, middle-drag, the scrollbar\n"
-                  "Drag the threshold line (Silence)\nSpace: play / stop, Esc: stop, then close");
+        SameLineIfFits(ui::Dp(18.0f));
+        ui::HelpMark("##edithelp", Shown(*n).mode == DetectMode::Takes ? kHelpTakes : kHelpPlain);
         SameLineIfFits(ui::ButtonWidth("Done"));
-        if (ui::SolidButton("Done")) close = true;
-        SameLineIfFits(ui::ButtonWidth("\xE2\x9C\x95##editclose"));
-        if (ImGui::Button("\xE2\x9C\x95##editclose")) close = true;
-        ImGui::Separator();
+        if (ui::PrimaryButton("Done")) close = true;
+        SameLineIfFits(side_btn);
+        if (ui::IconOnlyButton("##editclose", "\xE2\x9C\x95", "Close (Esc)")) close = true;
+        {
+            // The header's bottom line (.edhead border-bottom), across the whole box.
+            const float  y = ImGui::GetCursorScreenPos().y + ui::Dp(1.0f);
+            const ImVec2 wp = ImGui::GetWindowPos();
+            ImGui::GetWindowDrawList()->AddLine(ImVec2(wp.x, y), ImVec2(wp.x + ImGui::GetWindowSize().x, y), ui::kStroke);
+            ImGui::Dummy(ImVec2(1.0f, ui::Dp(6.0f)));
+        }
 
         // Waveform | side strip.
-        const float side_w = 260.0f;
+        const float side_w = ui::Dp(270.0f);  // .edmain: 1fr 270px
         const float wave_w = std::max(100.0f, ImGui::GetContentRegionAvail().x - side_w - 8.0f);
         const float wave_h = std::max(80.0f, ImGui::GetContentRegionAvail().y - 4.0f);
         ImGui::BeginChild("##editwave", ImVec2(wave_w, wave_h), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollWithMouse);
         if (!m.ok) {
-            ImGui::TextColored(ui::Col(kLibMissing), "Source not found");
+            FitText("Source not found", ui::kMissText);
         } else {
             DrawSoundWaves("editwave", *lib, *n, m, wave_h - 24.0f, true, nullptr);
         }
         ImGui::EndChild();
         if (!P.changed) {
+            // The side strip (.edside): surface, a stroke line on its left, the captions
+            // "DETECTION · THIS SOUND ONLY" and "LEVEL" over their rows (.edrow: 70 px labels).
             ImGui::SameLine();
-            ImGui::BeginChild("##editside", ImVec2(side_w, wave_h));
-            ui::Section s1;
-            if (ui::BeginSection(s1, "Detection", ImTextureID(), false) && m.ok) DetectionControls(*lib, *n, m);
-            ui::EndSection(s1);
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::Col(ui::kSurface));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui::Dp(10.0f), ui::Dp(10.0f)));
+            ImGui::BeginChild("##editside", ImVec2(side_w, wave_h), ImGuiChildFlags_AlwaysUseWindowPadding);
+            {
+                const ImVec2 wp = ImGui::GetWindowPos();
+                ImGui::GetWindowDrawList()->AddLine(wp, ImVec2(wp.x, wp.y + ImGui::GetWindowSize().y), ui::kStroke);
+            }
+            ui::GroupCaption("Detection Â· this sound only", ui::kMuted);
+            if (m.ok) DetectionControls(*lib, *n, m, ui::Dp(70.0f));
             if (!P.changed) {
-                ui::Section s2;
-                if (ui::BeginSection(s2, "Level", ImTextureID(), false) && m.ok) NormalizeControls(*lib, *n, m);
-                ui::EndSection(s2);
+                ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));
+                const float  y = ImGui::GetCursorScreenPos().y;
+                const ImVec2 wp = ImGui::GetWindowPos();
+                ImGui::GetWindowDrawList()->AddLine(ImVec2(wp.x + ui::Dp(10.0f), y), ImVec2(wp.x + ImGui::GetWindowSize().x - ui::Dp(10.0f), y),
+                                                    ui::kStroke);
+                ImGui::Dummy(ImVec2(1.0f, ui::Dp(6.0f)));
+                ui::GroupCaption("Level", ui::kMuted);
+                if (m.ok) NormalizeControls(*lib, *n, m);
+                ui::SubText("Every change is saved at once (Ctrl+Z to undo), with the sound in the library (.ravlib).");
             }
             ImGui::EndChild();
+            ImGui::PopStyleVar();
+            ImGui::PopStyleColor();
         }
         if (keys && !P.changed) {
             if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) toggle_play();
@@ -1653,23 +1938,42 @@ void DrawEditOverlay()
 
 // ---- node panel sections --------------------------------------------------------------------------
 
-void DrawHeader(const SoundLibrary& lib, const SoundNode& n)
+// 13-7b (audit C4.1 / C5.1): the mockup's .pane-h on one line -- "▶ Play" (26 px, "■ Stop" in the
+// on style while playing), the title (15 px semibold; a Sound's is its name field), then the
+// parents' breadcrumb in 12 px muted, ellipsized, at most 45 % of the row; the breadcrumb goes
+// under the title only when the column is too narrow for both. "played: X" under it.
+void DrawHeader(const SoundStore& store, const SoundLibrary& lib, const SoundNode& n)
 {
     const bool playing = NodePlaying(n.uid) || (AuditionPlaying() && AuditionTag() == "frame:" + n.uid);
-    if (ui::SolidButton(playing ? "\xE2\x96\xA0##play" : "\xE2\x96\xB6##play")) {
+    if (ui::ToggleButton(playing ? "\xE2\x96\xA0 Stop##play" : "\xE2\x96\xB6 Play##play", playing, ImVec2(0.0f, ui::LargeH()))) {
         if (playing) StopPlay();
         else PlayNode(lib.uid, n.uid);
     }
-    Tip(playing ? "Stop (Esc)" : "Play (Space)");
-    SameLineIfFits(60.0f);  // the name field's minimum
-    if (n.type == SoundNodeType::Sound) {
+    Tip(playing ? "Stop (Esc)" : "Play what Populate would place for one event (Space)");
+    const bool        sound = n.type == SoundNodeType::Sound;
+    const float       min_title = ui::Dp(sound ? 140.0f : 60.0f);
+    const float       sp = ui::Dp(8.0f);  // .pane-h gap
+    SameLineIfFits(min_title);
+    if (ImGui::GetCursorScreenPos().x > ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMin().x + 1.0f)
+        ImGui::SameLine(0.0f, sp);
+    const std::string crumbs = Crumbs(store, lib, n);
+    const float       avail = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const float       crumbs_nat = ImGui::CalcTextSize(crumbs.c_str()).x + 1.0f;
+    const float       crumbs_w = std::min(crumbs_nat, avail * 0.45f);
+    const bool        crumbs_beside = avail - crumbs_w - sp >= min_title;
+    const float       row_h = ui::LargeH();
+    ImDrawList*       dl = ImGui::GetWindowDrawList();
+    const ImVec2      p0 = ImGui::GetCursorScreenPos();
+    float             title_end = p0.x;
+    if (sound) {
         if (P.name_uid != n.uid) {
             P.name_uid = n.uid;
             std::snprintf(P.name_buf, sizeof(P.name_buf), "%s", n.name.c_str());
         }
-        ImGui::SetNextItemWidth(std::max(20.0f, ImGui::GetContentRegionAvail().x));
-        ImGui::InputText("##name", P.name_buf, sizeof(P.name_buf));
+        ui::TitleField("##name", P.name_buf, sizeof(P.name_buf), crumbs_beside ? avail - crumbs_w - sp : avail);
         const bool done = ImGui::IsItemDeactivatedAfterEdit();
+        Tip("Click to rename");
+        title_end = ImGui::GetItemRectMax().x;
         if (!done && !ImGui::IsItemActive() && std::strcmp(P.name_buf, n.name.c_str()) != 0)
             std::snprintf(P.name_buf, sizeof(P.name_buf), "%s", n.name.c_str());  // renamed elsewhere / undone
         if (done && P.name_buf[0] && n.name != P.name_buf) {
@@ -1679,117 +1983,154 @@ void DrawHeader(const SoundLibrary& lib, const SoundNode& n)
             if (P.changed) return;
         }
     } else {
-        // The mock-up's container header (.dz-main): the type icon before the name.
-        const ImVec2 ip = ImGui::GetCursorScreenPos();
-        ImGui::Dummy(ImVec2(ui::IconRoom(), ImGui::GetFrameHeight()));
-        ui::PaintIconAt(ImGui::GetWindowDrawList(), TypeIcon(n.type), ip.x, ip.y, ImGui::GetFrameHeight());
-        ImGui::SameLine(0.0f, 0.0f);
-        FitText(n.name, ui::kText);
+        // The container's title (the mockup's slotLabel): no icon here, the icon is in "Plays".
+        ImFont*           tf = ui::FontPaneTitle();
+        const std::string title = NodeTitle(store, lib, n);
+        const float       room = crumbs_beside ? avail - crumbs_w - sp : avail;
+        const float       tw = std::min(room, ui::TextSizeIn(tf, title.c_str()).x + 1.0f);
+        {
+            ui::FontScope fs(tf);
+            ui::EllipsisTextTip(dl, ImVec2(p0.x, p0.y + std::floor((row_h - tf->FontSize) * 0.5f) - 1.0f), p0.x + tw, ui::kText,
+                                title);
+        }
+        ImGui::Dummy(ImVec2(std::max(1.0f, tw), row_h));
+        title_end = p0.x + tw;
     }
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const float maxx = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
-    ImVec2      p = ImGui::GetCursorScreenPos();
-    ui::EllipsisTextTip(dl, p, maxx, ui::kFaint, NodePathText(lib, n));
-    ImGui::Dummy(ImVec2(1.0f, ImGui::GetTextLineHeight()));
-    if (P.plan.root == n.uid && P.plan_lib == lib.uid) {
-        p = ImGui::GetCursorScreenPos();
-        ui::EllipsisText(dl, p, maxx, ui::kMuted, "played: " + P.plan.played);
+    if (crumbs_beside) {
+        const float x = title_end + sp;
+        ui::EllipsisTextTip(dl, ImVec2(x, p0.y + std::floor((row_h - ImGui::GetTextLineHeight()) * 0.5f)), x + crumbs_w,
+                            ui::kMuted, crumbs);
+    } else {
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        ui::EllipsisTextTip(dl, p, p.x + std::min(crumbs_nat, ImGui::GetContentRegionAvail().x), ui::kMuted, crumbs);
         ImGui::Dummy(ImVec2(1.0f, ImGui::GetTextLineHeight()));
     }
+    if (P.plan.root == n.uid && P.plan_lib == lib.uid && !P.plan.played.empty())
+        RichText({{"played: ", ui::kMuted}, {P.plan.played, ui::kText}});
 }
 
+// 13-7b (audit C4.3): Type as a plain row -- [Random | Blend | Switch on <group> ▾], one segmented
+// control; its third option opens the group menu. Then, for a Switch (C4.4), "Default value" /
+// "Preview value" selects and the hint.
 void DrawTypeRows(const SoundStore& store, const SoundLibrary& lib, const SoundNode& n)
 {
     static const char* const kTypes[3] = {"Random", "Blend", "Switch"};
     int sel = n.type == SoundNodeType::Random ? 0 : n.type == SoundNodeType::Blend ? 1 : 2;
     const LibraryRow  row = RowOfNode(lib, n.uid);
     const std::string lib_uid = lib.uid;
-    ui::LabelRow("Type", 150.0f);
+    const SwitchGroup* cur_g = n.type == SoundNodeType::Switch ? FindGroup(store, n.group_uid) : nullptr;
+    const std::string sw_label = n.type == SoundNodeType::Switch
+                                     ? "Switch on " + (cur_g ? cur_g->name : std::string("?")) + " \xE2\x96\xBE"
+                                     : std::string("Switch on \xE2\x96\xBE");
+    const char* const labels[3] = {"Random", "Blend", sw_label.c_str()};
+    ui::LabelRow("Type", ui::Dp(150.0f));
     const ui::Icon kTypeIcons[3] = {TypeIcon(SoundNodeType::Random), TypeIcon(SoundNodeType::Blend),
                                     TypeIcon(SoundNodeType::Switch)};  // the mock-up's .tseg: an icon per type
-    if (ui::Segmented("##type", kTypes, 3, &sel, 0.0f, -1, kTypeIcons)) {
-        if (sel == 2) {
-            ImGui::OpenPopup("##switchon");
-        } else {
-            const SoundNodeType t = sel == 0 ? SoundNodeType::Random : SoundNodeType::Blend;
-            Gesture(std::string("Make ") + kTypes[sel],
-                    [&](SoundStore& s) { return SetRowsType(s, lib_uid, {row}, t, {}); });
-            if (P.changed) return;
-        }
+    const int before = sel;
+    const bool changed = ui::Segmented("##type", labels, 3, &sel, 0.0f, -1, kTypeIcons);
+    // The Switch option opens the group menu, also when it is already the type (to change the group).
+    const bool sw_clicked = ui::SegmentedHovered() == 2 && ImGui::IsMouseReleased(ImGuiMouseButton_Left) &&
+                            !ImGui::IsMouseDragPastThreshold(ImGuiMouseButton_Left);
+    if ((changed && sel == 2) || (sw_clicked && before == 2)) {
+        ImGui::OpenPopup("##switchon");
+    } else if (changed && sel != before) {
+        const SoundNodeType t = sel == 0 ? SoundNodeType::Random : SoundNodeType::Blend;
+        Gesture(std::string("Make ") + kTypes[sel], [&](SoundStore& s) { return SetRowsType(s, lib_uid, {row}, t, {}); });
+        if (P.changed) return;
     }
-    if (n.type == SoundNodeType::Switch) {
-        const SwitchGroup* g = FindGroup(store, n.group_uid);
-        const std::string  lab = std::string("Switch on: ") + (g ? g->name : std::string("?"));
-        // A long group name: the menu button takes the row and its label is ellipsized (ui_flow).
-        SameLineIfFits(std::min(ImGui::CalcTextSize(lab.c_str(), nullptr, false).x + 2.0f * ImGui::GetStyle().FramePadding.x + 14.0f + ui::IconRoom(), 120.0f));
-        const ui::Icon sw_icon = TypeIcon(SoundNodeType::Switch);
-        if (ui::MenuButton("##switchonbtn", true, lab.c_str(), &sw_icon)) ImGui::OpenPopup("##switchon");
-    }
-    if (ImGui::BeginPopup("##switchon")) {
+    if (ui::BeginMenuPopup("##switchon")) {
+        ui::MenuCaption("Switch on");
         if (store.groups.empty()) ImGui::TextDisabled("No Switch Group yet");
         for (const SwitchGroup& g : store.groups) {
             if (ImGui::MenuItem(g.name.c_str(), nullptr, n.type == SoundNodeType::Switch && n.group_uid == g.uid)) {
                 const std::string gid = g.uid;
                 ImGui::CloseCurrentPopup();
-                ImGui::EndPopup();
+                ui::EndMenuPopup();
                 Gesture("Switch on " + g.name, [&](SoundStore& s) { return SetRowsType(s, lib_uid, {row}, SoundNodeType::Switch, gid); });
                 return;
             }
         }
-        ImGui::EndPopup();
+        ui::EndMenuPopup();
     }
     if (n.type != SoundNodeType::Switch) return;
-    const SwitchGroup* g = FindGroup(store, n.group_uid);
+    const SwitchGroup* g = cur_g;
     if (!g) return;
     auto value_name = [&](const std::string& v) {
         for (const SwitchValue& x : g->values)
             if (x.uid == v) return x.name;
         return std::string("none");
     };
+    const float combo_min = ui::Dp(150.0f);
     // Default value.
     const std::string def = DefaultValue(store, n);
-    ImGui::SetNextItemWidth(std::min(160.0f, ui::LabelRow("Default", 100.0f)));
-    if (ImGui::BeginCombo("##default", value_name(def).c_str())) {
-        for (const SwitchValue& v : g->values) {
-            if (ImGui::Selectable(v.name.c_str(), v.uid == def) && v.uid != def) {
-                const LibraryRow vr{n.uid, v.uid};
-                const std::string name = v.name;
-                ImGui::EndCombo();
-                Gesture("Make default", [&](SoundStore& s) { return MakeDefault(s, lib_uid, {vr}); }, name + " is the default");
-                return;
+    {
+        const float w = ui::LabelRow("Default value", combo_min);
+        const bool  open = ui::BeginComboStyled("##default", value_name(def).c_str(), std::min(w, std::max(combo_min, ui::Dp(180.0f))));
+        Tip("Plays when the event's value is not set, or when a value has no sound of its own");
+        if (open) {
+            for (const SwitchValue& v : g->values) {
+                if (ImGui::Selectable(v.name.c_str(), v.uid == def) && v.uid != def) {
+                    const LibraryRow  vr{n.uid, v.uid};
+                    const std::string name = v.name;
+                    ui::EndComboStyled();
+                    Gesture("Make default", [&](SoundStore& s) { return MakeDefault(s, lib_uid, {vr}); }, name + " is the default");
+                    return;
+                }
             }
+            ui::EndComboStyled();
         }
-        ImGui::EndCombo();
     }
     // Preview value.
-    ImGui::SetNextItemWidth(std::min(160.0f, ui::LabelRow("Preview", 100.0f)));
     bool prev_known = false;  // a deleted value plays the default (SwitchPreviewChild)
     for (const SwitchValue& v : g->values) prev_known = prev_known || v.uid == n.preview_value;
     const std::string prev_label = !prev_known ? "(default: " + value_name(def) + ")" : value_name(n.preview_value);
-    if (ImGui::BeginCombo("##preview", prev_label.c_str())) {
-        std::string pick;
-        bool        picked = false;
-        if (ImGui::Selectable("(the default)", !prev_known) && !n.preview_value.empty()) picked = true;
-        for (const SwitchValue& v : g->values)
-            if (ImGui::Selectable(v.name.c_str(), v.uid == n.preview_value) && v.uid != n.preview_value) {
-                pick = v.uid;
-                picked = true;
+    {
+        const float w = ui::LabelRow("Preview value", combo_min);
+        const bool  open = ui::BeginComboStyled("##preview", prev_label.c_str(), std::min(w, std::max(combo_min, ui::Dp(180.0f))));
+        Tip("The value \xE2\x96\xB6 plays (nested Switches use their own preview value)");
+        if (open) {
+            std::string pick;
+            bool        picked = false;
+            if (ImGui::Selectable("(the default)", !prev_known) && !n.preview_value.empty()) picked = true;
+            for (const SwitchValue& v : g->values)
+                if (ImGui::Selectable(v.name.c_str(), v.uid == n.preview_value) && v.uid != n.preview_value) {
+                    pick = v.uid;
+                    picked = true;
+                }
+            ui::EndComboStyled();
+            if (picked) {
+                const std::string uid = n.uid;
+                EditNode("Preview value", lib_uid, uid, [&](SoundNode& x) {
+                    x.preview_value = pick;
+                    return true;
+                });
+                return;
             }
-        ImGui::EndCombo();
-        if (picked) {
-            const std::string uid = n.uid;
-            EditNode("Preview value", lib_uid, uid, [&](SoundNode& x) {
-                x.preview_value = pick;
-                return true;
-            });
-            return;
         }
     }
+    // The hint (.hint): "Switches on Material · 6 values. A value with no sound of its own plays Concrete."
+    ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));
+    std::vector<TextRun> hint = {{"Switches on ", ui::kMuted}, {g->name, ui::kText},
+                                 {" \xC2\xB7 " + std::to_string(g->values.size()) + (g->values.size() == 1 ? " value" : " values"), ui::kMuted}};
+    if (!n.unassigned.empty()) {
+        hint.push_back({" \xC2\xB7 ", ui::kMuted});
+        hint.push_back({std::to_string(n.unassigned.size()) + " unassigned", ui::kWarn});
+    }
+    hint.push_back({". A value with no sound of its own plays ", ui::kMuted});
+    hint.push_back({value_name(def), ui::kText});
+    hint.push_back({".", ui::kMuted});
+    RichText(hint);
+    bool def_has_sound = false;
+    for (const SwitchCase& c : n.cases) def_has_sound = def_has_sound || (c.value_uid == def && !c.child_uid.empty());
+    if (!def.empty() && !def_has_sound)
+        RichText({{value_name(def) + " (the default value) has no sound yet: the library cannot be used until it has one.", ui::kWarn}});
+    ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));
 }
 
+// 13-7b (audit C4.5 / C5.2): Volume as a plain row (no card): the muted label, the fader, its dB.
 void DrawVolume(const SoundLibrary& lib, const SoundNode& n)
 {
-    ui::LabelRow("Volume", 120.0f);
+    ui::LabelRow("Volume", ui::Dp(120.0f));
     double v = 0.0;
     if (VolumeControl("##vol", n.uid, n.volume_db, &v, 1e9f))
         EditNode("Volume", lib.uid, n.uid, [v](SoundNode& x) {
@@ -1813,23 +2154,28 @@ std::string MixLabel(const SoundStore& store, const SoundNode& sw, const SoundNo
     return k.name.empty() ? vals : vals + " \xC2\xB7 " + k.name;
 }
 
+// 13-7b (audit C4.6): the "Mix" section, "· N children" after its title; one .mixrow per child --
+// its type icon (muted), its name in a column 80-150 px wide, its fader and dB.
 void DrawMix(const SoundStore& store, const SoundLibrary& lib, const SoundNode& n)
 {
     SeedSection("Mix", n.type != SoundNodeType::Switch);
+    const std::vector<const SoundNode*> kids = ChildNodes(lib, n);
+    const std::string suffix = "\xC2\xB7 " + std::to_string(kids.size()) + (kids.size() == 1 ? " child" : " children");
+    ui::SectionOpts opts;
+    opts.suffix = suffix.c_str();
     ui::Section s;
-    if (ui::BeginSection(s, "Mix")) {
-        const std::vector<const SoundNode*> kids = ChildNodes(lib, n);
-        if (kids.empty()) ImGui::TextDisabled("No children");
+    if (ui::BeginSection(s, "Mix", opts)) {
+        if (kids.empty()) FitText("No children", ui::kFaint);
+        const float icon_col = ui::Dp(18.0f) + ImGui::GetStyle().ItemSpacing.x;
         for (const SoundNode* k : kids) {
             if (P.changed) break;
             ImGui::PushID(k->uid.c_str());
-            // The mock-up's .mixrow: the child's type icon, then its name beside its fader when both
-            // fit, else the name on its own line above it.
             const ImVec2 ip = ImGui::GetCursorScreenPos();
-            const float  room = ui::IconRoom();
             ui::PaintIconAt(ImGui::GetWindowDrawList(), TypeIcon(k->type), ip.x, ip.y, ImGui::GetFrameHeight());
-            ImGui::SetCursorScreenPos(ImVec2(ip.x + room, ip.y));
-            ui::LabelRowText(MixLabel(store, n, *k), 120.0f, std::max(20.0f, 84.0f - room), IsLit(k->uid) ? ui::kAccent : ui::kText);
+            ImGui::SetCursorScreenPos(ImVec2(ip.x + icon_col, ip.y));
+            const float avail = ImGui::GetContentRegionAvail().x;
+            const float name_col = std::clamp(avail * 0.4f, ui::Dp(80.0f), ui::Dp(150.0f));
+            ui::LabelRowText(MixLabel(store, n, *k), ui::Dp(120.0f), name_col, IsLit(k->uid) ? ui::kAccent : ui::kText);
             double v = 0.0;
             const std::string kid = k->uid;
             if (VolumeControl("##mixvol", kid, k->volume_db, &v, 1e9f))
@@ -1845,9 +2191,7 @@ void DrawMix(const SoundStore& store, const SoundLibrary& lib, const SoundNode& 
 
 void DrawRandomAvoid(const SoundLibrary& lib, const SoundNode& n)
 {
-    FitText("Avoid repeating the last", ui::kText);
-    SameLineIfFits(ui::NumberFieldWidth(40.0f, ""));
-    const int v = AvoidControl("##avoid", n.avoid_repeat);
+    const int v = AvoidControl("##avoid", n.avoid_repeat);  // "Avoid repeating [the last 2 v]"
     if (v >= 0)
         EditNode("Avoid repeating", lib.uid, n.uid, [v](SoundNode& x) {
             x.avoid_repeat = v;
@@ -1855,74 +2199,130 @@ void DrawRandomAvoid(const SoundLibrary& lib, const SoundNode& n)
         });
 }
 
-// The Blend layer view: one lane per child, a ms ruler, drag a bar to offset it; each lane's
-// volume fader and offset under it. A Blend has no Mix section: this is its children's only
-// volume (Antho 2026-10-12, one control per value).
-void DrawBlendLanes(const SoundStore& store, const SoundLibrary& lib, const SoundNode& n)
+// A lane's volume as the mockup's .lnum dB field (46 px), live while dragged / typed, one undo
+// point when entered. True when a value is to be written (*out).
+bool VolumeNumber(const char* id, const std::string& key, double stored, double* out, float width)
 {
-    ui::Section s;
-    if (!ui::BeginSection(s, "Layers")) {
-        ui::EndSection(s);
-        return;
+    bool   commit = false;
+    double d = P.vol_key == key ? P.vol_live : stored;
+    switch (ui::DragNumber(id, &d, 0.1, 1, "dB", width, /*trim=*/true)) {
+    case ui::DragNumberEvent::Live:
+        P.vol_key = key;
+        P.vol_live = std::clamp(d, kMinDb, kMaxDb);
+        break;
+    case ui::DragNumberEvent::Commit:
+        if (P.vol_key == key) P.vol_key.clear();
+        *out = std::clamp(d, kMinDb, kMaxDb);
+        commit = std::fabs(*out - stored) > 1e-6;
+        break;
+    case ui::DragNumberEvent::Cancel:
+        if (P.vol_key == key) P.vol_key.clear();
+        break;
+    default: break;
     }
+    return commit;
+}
+
+// 13-7b (audit C4.8): the Blend layer view (.blendview) -- a dark box (r7, pad 6); a header row
+// with the "ms" caption, the ruler (mono 10 faint, labels centred on their time) and the
+// "offset" / "volume" captions; then one row per layer: its icon and name, its track (surface,
+// stroke edge, the zero line) with the bar (solid accent, hatched where the length varies; drag
+// it to offset the layer, its "+12 ms" chip on it), its offset (ms) and its volume (dB) beside
+// the track. A Blend has no Mix section: the lane's dB is its child's only volume (Antho
+// 2026-10-12, one control per value). A narrow column puts the two fields under the track.
+void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const SoundNode& n)
+{
     const std::vector<const SoundNode*> parts = BlendParts(lib, n);
-    double total_ms = 100.0;
+    if (parts.empty()) return;
+    double end_ms = 100.0;
     for (const SoundNode* k : parts) {
         const double off = P.off_uid == k->uid ? P.off_live : k->offset_ms;
-        total_ms = std::max(total_ms, off + NodeLengthRange(store, lib, k->uid).max_s * 1000.0);
+        end_ms = std::max(end_ms, off + NodeLengthRange(store, lib, k->uid).max_s * 1000.0);
     }
-    total_ms *= 1.15;
-    const float name_w = 84.0f;
-    const float fields_w = ui::NumberFieldWidth(40.0f, "ms") + 6.0f;  // the ms field beside the lane, measured with its unit
-    const float lane_x0 = ImGui::GetCursorScreenPos().x + name_w;
-    // A narrow column: each lane's ms / dB fields go under it instead of beside it.
-    const bool  stacked = ImGui::GetContentRegionAvail().x < name_w + 80.0f + fields_w;
-    const float lane_w = std::max(24.0f, ImGui::GetContentRegionAvail().x - name_w - (stacked ? 0.0f : fields_w));
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    // Ruler.
+    const double step = end_ms > 1500.0 ? 500.0 : end_ms > 600.0 ? 200.0 : end_ms > 250.0 ? 100.0 : 50.0;
+    const double total_ms = std::ceil((end_ms + step * 0.3) / step) * step;
+
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const ImGuiIO& io = ImGui::GetIO();
+    const float  pad = ui::Dp(6.0f), gap = ui::Dp(6.0f);
+    const ImVec2 box0 = ImGui::GetCursorScreenPos();
+    const float  box_x1 = std::max(box0.x + ui::Dp(60.0f), ui::LineRight());
+    const float  x0 = box0.x + pad, x1 = box_x1 - pad, inner = x1 - x0;
+    const float  fh = ImGui::GetFrameHeight();
+    const float  ms_w = ui::Dp(52.0f), db_w = ui::Dp(46.0f);
+    const float  ms_full = ui::NumberFieldWidth(ms_w, "ms"), db_full = ui::NumberFieldWidth(db_w, "dB");
+    const float  name_w = std::clamp(inner * 0.3f, ui::Dp(84.0f), ui::Dp(120.0f));
+    const float  fields_w = ms_full + gap + db_full;
+    const bool   stacked = inner < name_w + gap + ui::Dp(80.0f) + gap + fields_w;
+    const float  lane_x0 = x0 + name_w + gap;
+    const float  lane_w = std::max(ui::Dp(24.0f), (stacked ? x1 : x1 - fields_w - gap) - lane_x0);
+    const float  head_h = ui::Dp(16.0f);
+    const float  row_h = stacked ? std::max(ui::Dp(30.0f), fh) + fh + ui::Dp(2.0f) : std::max(ui::Dp(30.0f), fh);
+    const float  rgap = ui::Dp(2.0f);
+    const float  box_h = pad * 2.0f + head_h + (row_h + rgap) * static_cast<float>(parts.size());
+    // The box behind (its height is known beforehand: one row per layer).
+    dl->AddRectFilled(box0, ImVec2(box_x1, box0.y + box_h), ui::kBg, ui::kRadiusMd);
+    dl->AddRect(box0, ImVec2(box_x1, box0.y + box_h), ui::kStroke, ui::kRadiusMd);
+    auto X = [&](double ms) { return lane_x0 + static_cast<float>(ms / total_ms) * lane_w; };
+
+    // Header: "ms" | the ruler | "offset" | "volume".
     {
-        const ImVec2 p = ImGui::GetCursorScreenPos();
-        const double steps[] = {10, 25, 50, 100, 250, 500, 1000, 2000, 5000, 10000};
-        double       st = steps[0];
-        for (double x : steps) {
-            st = x;
-            if (x / total_ms * lane_w >= 50.0) break;
+        const float  y = box0.y + pad;
+        ImFont*      cf = ui::FontTiny();
+        ImFont*      rf = ui::FontMonoTiny();
+        const float  cy = y + std::floor((head_h - cf->FontSize) * 0.5f);
+        ui::AddTextIn(dl, cf, ImVec2(x0, cy), ui::kFaint, "ms");
+        if (!stacked) {
+            ui::AddTextIn(dl, cf, ImVec2(x1 - fields_w, cy), ui::kFaint, "offset");
+            ui::AddTextIn(dl, cf, ImVec2(x1 - db_full, cy), ui::kFaint, "volume");
         }
-        for (double t = 0.0; t <= total_ms; t += st) {
-            const float x = lane_x0 + static_cast<float>(t / total_ms) * lane_w;
-            dl->AddLine(ImVec2(x, p.y + 10.0f), ImVec2(x, p.y + 14.0f), ui::kFaint);
+        dl->PushClipRect(ImVec2(lane_x0 - ui::Dp(20.0f), y), ImVec2(lane_x0 + lane_w + ui::Dp(20.0f), y + head_h), true);
+        for (double t = 0.0; t <= total_ms + 1e-6; t += step) {
+            if (t / total_ms > 0.94) break;  // the last label would run past the track
             char lab[32];
             std::snprintf(lab, sizeof(lab), "%.0f", t);
-            dl->AddText(ImVec2(x + 2.0f, p.y), ui::kFaint, lab);
+            const ImVec2 ts = ui::TextSizeIn(rf, lab);
+            ui::AddTextIn(dl, rf, ImVec2(std::floor(X(t) - ts.x * 0.5f), y + std::floor((head_h - ts.y) * 0.5f)), ui::kFaint, lab);
         }
-        ImGui::Dummy(ImVec2(1.0f, 15.0f));
+        dl->PopClipRect();
     }
-    const float lanes_top = ImGui::GetCursorScreenPos().y;
-    const ImGuiIO& io = ImGui::GetIO();
+    const float lanes_top = box0.y + pad + head_h;
+    float       y = lanes_top;
     for (const SoundNode* k : parts) {
         if (P.changed) break;
         ImGui::PushID(k->uid.c_str());
         const std::string kid = k->uid;
-        const ImVec2      p = ImGui::GetCursorScreenPos();
-        const float       fh = ImGui::GetFrameHeight();
-        // The mock-up's .ln2: the layer's type icon before its name.
-        ui::PaintIconAt(dl, TypeIcon(k->type), p.x, p.y, fh);
-        ui::EllipsisText(dl, ImVec2(p.x + ui::IconRoom(), p.y + 3.0f), p.x + name_w - 4.0f, IsLit(kid) ? ui::kAccent : ui::kText,
-                         k->name);
+        const float       th = ui::Dp(22.0f);  // .ltrack
+        const float       line_h = std::max(ui::Dp(30.0f), fh);
+        const float       ty = y + std::floor((line_h - th) * 0.5f);
+        // .ln2: the icon (13 px, muted) and the name.
+        ui::PaintIconAt(dl, TypeIcon(k->type), x0, y, line_h, ui::Dp(13.0f));
+        const float nx = x0 + ui::IconRoom(ui::Dp(13.0f), ui::Dp(5.0f));
+        ui::EllipsisTextTip(dl, ImVec2(nx, y + std::floor((line_h - ImGui::GetTextLineHeight()) * 0.5f)), x0 + name_w,
+                            IsLit(kid) ? ui::kAccent : ui::kText, k->name.empty() ? std::string(TypeName(k->type)) : k->name);
+        // The track and its zero line.
+        dl->AddRectFilled(ImVec2(lane_x0, ty), ImVec2(lane_x0 + lane_w, ty + th), ui::kSurface, ui::kRadiusSm);
+        dl->AddRect(ImVec2(lane_x0, ty), ImVec2(lane_x0 + lane_w, ty + th), ui::kStroke, ui::kRadiusSm);
+        dl->AddLine(ImVec2(std::floor(X(0.0)) + 0.5f, ty), ImVec2(std::floor(X(0.0)) + 0.5f, ty + th), ui::kStrokeStrong);
+        // The bar.
         const LengthRange r = NodeLengthRange(store, lib, kid);
         const double      off = P.off_uid == kid ? P.off_live : k->offset_ms;
-        const float       bx0 = lane_x0 + static_cast<float>(off / total_ms) * lane_w;
-        const float       bx1 = bx0 + std::max(3.0f, static_cast<float>(r.max_s * 1000.0 / total_ms) * lane_w);
-        const float       bmin = bx0 + static_cast<float>(r.min_s * 1000.0 / total_ms) * lane_w;
-        dl->AddRectFilled(ImVec2(lane_x0, p.y + 1.0f), ImVec2(lane_x0 + lane_w, p.y + fh - 1.0f), ui::kBg, ui::kRadiusSm);
-        dl->AddRectFilled(ImVec2(bx0, p.y + 3.0f), ImVec2(std::max(bx0 + 3.0f, bmin), p.y + fh - 3.0f), WithAlpha(ui::kAccent, 0x8C), ui::kRadiusSm);
+        const float       bx0 = X(off);
+        const float       bx1 = std::min(lane_x0 + lane_w, bx0 + std::max(ui::Dp(3.0f), static_cast<float>(r.max_s * 1000.0 / total_ms) * lane_w));
+        const ImVec2      ba(bx0, ty + 3.0f), bb(std::max(bx0 + 3.0f, bx1), ty + th - 3.0f);
+        dl->AddRectFilled(ba, bb, ui::kAccent, 3.0f);
         if (r.varies()) {
-            dl->AddRectFilled(ImVec2(bmin, p.y + 3.0f), ImVec2(bx1, p.y + fh - 3.0f), WithAlpha(ui::kAccent, 0x2E));
-            Hatch(dl, ImVec2(bmin, p.y + 3.0f), ImVec2(bx1, p.y + fh - 3.0f), WithAlpha(ui::kAccent, 0x8C));
+            const float bmin = X(off + r.min_s * 1000.0);
+            Hatch(dl, ImVec2(std::max(ba.x, bmin), ba.y), bb, IM_COL32(0, 0, 0, 0x33));
         }
-        ImGui::SetCursorScreenPos(ImVec2(bx0, p.y));
-        ImGui::InvisibleButton("##bar", ImVec2(std::max(6.0f, bx1 - bx0), fh));
-        if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        ImGui::SetCursorScreenPos(ImVec2(bx0, ty));
+        ImGui::InvisibleButton("##bar", ImVec2(std::max(6.0f, bb.x - bx0), th));
+        const bool bar_hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
+        if (bar_hot) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+            dl->AddRect(ImVec2(ba.x - 2.0f, ba.y - 2.0f), ImVec2(bb.x + 2.0f, bb.y + 2.0f), IM_COL32(255, 255, 255, 0x59), 5.0f, 0, 2.0f);
+        }
+        if (ImGui::IsItemHovered() && !ImGui::IsItemActive()) Tip("Drag to set the offset \xC2\xB7 Shift = free");
         if (ImGui::IsItemActivated()) {
             P.off_uid = kid;
             P.off0 = k->offset_ms;
@@ -1935,8 +2335,16 @@ void DrawBlendLanes(const SoundStore& store, const SoundLibrary& lib, const Soun
             double v = P.off0 + static_cast<double>(P.off_dx) / lane_w * P.off_scale;
             if (!io.KeyShift) v = std::round(v);
             P.off_live = std::max(0.0, v);
-            const double delta = P.off_live - P.off0;
-            ImGui::SetTooltip("%s%.0f ms", delta >= 0.0 ? "+" : "", delta);
+            // The .barlbl chip on the bar (mono 11, raised, stroke-strong edge, r4).
+            char lab[32];
+            std::snprintf(lab, sizeof(lab), "%s%.0f ms", P.off_live >= 0.0 ? "+" : "", P.off_live);
+            ImFont*      cf = ui::FontMonoSmall();
+            const ImVec2 ts = ui::TextSizeIn(cf, lab);
+            const ImVec2 c0(std::min(bx0 + 4.0f, lane_x0 + lane_w - ts.x - 8.0f), ty + std::floor((th - ts.y - 2.0f) * 0.5f));
+            const ImVec2 c1(c0.x + ts.x + 8.0f, c0.y + ts.y + 2.0f);
+            dl->AddRectFilled(c0, c1, ui::kRaised, 4.0f);
+            dl->AddRect(c0, c1, ui::kStrokeStrong, 4.0f);
+            ui::AddTextIn(dl, cf, ImVec2(c0.x + 4.0f, c0.y + 1.0f), ui::kText, lab);
         }
         if (ImGui::IsItemDeactivated() && P.off_uid == kid) {
             const double v = P.off_live;
@@ -1951,11 +2359,11 @@ void DrawBlendLanes(const SoundStore& store, const SoundLibrary& lib, const Soun
             ImGui::PopID();
             break;
         }
-        // The offset field (the bar follows its drag), then the volume under the lane.
-        const float row_h = stacked ? fh * 2.0f + 2.0f : fh;
-        ImGui::SetCursorScreenPos(stacked ? ImVec2(lane_x0, p.y + fh + 2.0f) : ImVec2(lane_x0 + lane_w + 6.0f, p.y));
+        // The offset (ms) then the volume (dB): beside the track, or under it in a narrow column.
+        const float fy = stacked ? y + line_h + ui::Dp(2.0f) : y + std::floor((line_h - fh) * 0.5f);
+        ImGui::SetCursorScreenPos(ImVec2(stacked ? lane_x0 : x1 - fields_w, fy));
         double ms = off;
-        switch (ui::DragNumber("##ms", &ms, 1.0, 0, "ms", 40.0f)) {
+        switch (ui::DragNumber("##ms", &ms, 1.0, 0, "ms", ms_w)) {
         case ui::DragNumberEvent::Live:
             P.off_uid = kid;
             P.off_live = std::max(0.0, ms);
@@ -1979,22 +2387,114 @@ void DrawBlendLanes(const SoundStore& store, const SoundLibrary& lib, const Soun
             ImGui::PopID();
             break;
         }
-        ImGui::SetCursorScreenPos(ImVec2(lane_x0, p.y + row_h + 2.0f));
+        ImGui::SetCursorScreenPos(ImVec2((stacked ? lane_x0 : x1 - fields_w) + ms_full + gap, fy));
         double v = 0.0;
-        if (VolumeControl("##vol", kid, k->volume_db, &v, 1e9f))
+        if (VolumeNumber("##vol", kid, k->volume_db, &v, db_w))
             EditNode("Volume", lib.uid, kid, [v](SoundNode& x) {
                 x.volume_db = v;
                 return true;
             });
-        ImGui::SetCursorScreenPos(ImVec2(p.x, ImGui::GetCursorScreenPos().y + 2.0f));
-        ImGui::Dummy(ImVec2(1.0f, 0.0f));
         ImGui::PopID();
+        y += row_h + rgap;
     }
     if (!P.changed && NodePlaying(n.uid)) {
-        const float x = lane_x0 + static_cast<float>(AuditionPosition() * 1000.0 / total_ms) * lane_w;
-        dl->AddLine(ImVec2(x, lanes_top), ImVec2(x, ImGui::GetCursorScreenPos().y), ui::kWhite, 1.5f);
+        const float x = std::floor(X(AuditionPosition() * 1000.0)) + 0.5f;
+        if (x <= lane_x0 + lane_w) dl->AddLine(ImVec2(x, lanes_top), ImVec2(x, y), ui::kText, 1.0f);
+    }
+    ImGui::SetCursorScreenPos(box0);
+    ImGui::Dummy(ImVec2(box_x1 - box0.x, box_h));
+}
+
+// 13-7b (audit C4.7): the fixed "Plays" section of a Random / Blend (also the panel's drop zone):
+// the type icon (17 px muted), the type in 15 px semibold and "N children" (" · M missing" in
+// --bad); what the type does; Random: Avoid repeating; Blend: the layer view; an empty container's
+// warning; "Drop files here to add them as children."
+void DrawPlays(const SoundStore& store, const SoundLibrary& lib, const SoundNode& n)
+{
+    ui::SectionOpts opts;
+    opts.foldable = false;
+    ui::Section s;
+    if (ui::BeginSection(s, "Plays", opts)) {
+        const size_t nk = ChildNodes(lib, n).size();
+        const int    miss = MissingChildren(lib, n);
+        {
+            ImDrawList*  dl = ImGui::GetWindowDrawList();
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            const float  h = ui::LargeH();
+            const float  ip = ui::Dp(17.0f);
+            ui::PaintIconAt(dl, TypeIcon(n.type), p.x, p.y, h, ip);
+            float        x = p.x + ip + ui::Dp(8.0f);
+            ImFont*      tf = ui::FontPaneTitle();
+            const char*  tn = TypeName(n.type);
+            ui::AddTextIn(dl, tf, ImVec2(x, p.y + std::floor((h - tf->FontSize) * 0.5f) - 1.0f), ui::kText, tn);
+            x += ui::TextSizeIn(tf, tn).x + ui::Dp(8.0f);
+            const float       ty = p.y + std::floor((h - ImGui::GetTextLineHeight()) * 0.5f);
+            const float       right = std::max(x + 1.0f, ui::LineRight());
+            const std::string kids = std::to_string(nk) + (nk == 1 ? " child" : " children");
+            ui::EllipsisTextTip(dl, ImVec2(x, ty), right, ui::kMuted, kids);
+            x += ImGui::CalcTextSize(kids.c_str()).x;
+            if (miss > 0 && x < right) {
+                const std::string ms = " \xC2\xB7 " + std::to_string(miss) + " missing";
+                ui::EllipsisTextTip(dl, ImVec2(x, ty), right, ui::kBad, ms);
+            }
+            ImGui::Dummy(ImVec2(1.0f, h));
+        }
+        if (n.type == SoundNodeType::Random) {
+            ui::SubText("At each event, plays one of its children, picked at random.");
+            DrawRandomAvoid(lib, n);
+        } else {
+            ui::SubText("At each event, plays all its children together, layered. Drag a bar to offset a layer.");
+            DrawBlendView(store, lib, n);
+        }
+        if (!P.changed) {
+            if (nk == 0) RichText({{"Empty: add sounds, or the library cannot be assigned.", ui::kWarn}});
+            ui::SubText("Drop files here to add them as children.");
+        }
     }
     ui::EndSection(s);
+}
+
+// 13-7b (audit C5.3): the source's state under its waveform -- an item: [Show in REAPER] at the
+// right; a file: its name (text) and [Show in Media Explorer] at the right. Missing: the red line
+// (#ffc4c4) with [Set from selected item] / [Locate…].
+void DrawSourceLine(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m)
+{
+    const SoundSource& src = n.sound.source;
+    const std::string  lib_uid = lib.uid, uid = n.uid;
+    const float        sp = ui::Dp(8.0f);
+    if (!m.ok) {
+        const bool        item = src.kind == SoundSourceKind::Item;
+        const char*       btn = item ? "Set from selected item" : "Locate\xE2\x80\xA6";
+        const std::string msg = item ? std::string("Its item is no longer on the tracks.")
+                                     : (src.asset.last_path.empty() ? std::string("Its file") : src.asset.last_path) + " not found on this PC.";
+        const float bw = ui::ButtonWidth(btn);
+        bool        beside = true;
+        const float room = flow::StretchBeside(ImGui::GetContentRegionAvail().x, ui::Dp(60.0f), bw, sp, &beside);
+        FitText(msg, ui::kMissName, room);
+        if (beside) ImGui::SameLine(0.0f, sp);
+        if (ui::SolidButton(btn)) {
+            if (item) ReplaceFromSelected(lib_uid, uid, "Set from selected item");
+            else Locate(lib_uid, uid, src);
+        }
+        return;
+    }
+    if (src.kind == SoundSourceKind::Item) {
+        const float bw = ui::ButtonWidth("Show in REAPER");
+        ImGui::SetCursorScreenPos(ImVec2(std::max(ImGui::GetCursorScreenPos().x, ui::LineRight() - bw), ImGui::GetCursorScreenPos().y));
+        if (ui::SolidButton("Show in REAPER")) ShowInReaper(src);
+        return;
+    }
+    const char* btn = "Show in Media Explorer";
+    const float bw = ui::ButtonWidth(btn);
+    bool        beside = true;
+    const float room = flow::StretchBeside(ImGui::GetContentRegionAvail().x, ui::Dp(60.0f), bw, sp, &beside);
+    FitText(src.asset.name.empty() ? FileName(src.asset.last_path) : src.asset.name, ui::kText, room);
+    if (beside) ImGui::SameLine(0.0f, std::max(sp, room - ImGui::GetItemRectSize().x + sp));
+    const bool can = static_cast<bool>(P.hooks.show_in_media);
+    ImGui::BeginDisabled(!can);
+    if (ui::SolidButton(btn) && can) P.hooks.show_in_media(src);
+    ImGui::EndDisabled();
+    if (!can) Tip(kNoMediaTip);
 }
 
 void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
@@ -2003,7 +2503,6 @@ void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
     const SoundMedia& m = MediaOf(n);
     const SoundData&  d = Shown(n);
     const std::string lib_uid = lib.uid, uid = n.uid;
-    const SoundSource src = n.sound.source;
 
     // A new Sound (no frames yet) detects once, when its waveform is read (decision 7).
     if (n.sound.frames.empty() && m.ok && !P.auto_tried.count(uid)) {
@@ -2026,33 +2525,58 @@ void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
         }
     }
 
+    // Source: [Edit] (and "Takes side by side") in the header's right slot.
+    const bool  takes = d.mode == DetectMode::Takes && m.take_paths.size() >= 2;
+    const char* kTakesNote = "Takes side by side";
+    ui::SectionOpts src_opts;
+    src_opts.foldable = false;
+    src_opts.right_w = (m.ok ? ui::ButtonWidth("Edit") : 0.0f) +
+                       (takes ? ui::TextSizeIn(ui::FontSmall(), kTakesNote).x + ImGui::GetStyle().ItemSpacing.x : 0.0f);
     ui::Section src_sec;
-    if (ui::BeginSection(src_sec, "Source", ImTextureID(), false)) {
+    const bool  src_open = ui::BeginSection(src_sec, "Source", src_opts);
+    if (src_opts.right_w > 0.0f) {
+        ui::BeginSectionHeaderRight(src_sec);
+        if (takes) {
+            ui::FontScope fs(ui::FontSmall());
+            FitText(kTakesNote, ui::kMuted);
+            if (m.ok) ImGui::SameLine();
+        }
+        if (m.ok) {
+            if (ui::SolidButton("Edit")) OpenEdit(lib_uid, uid);
+            Tip("Edit the variations large (E)");
+        }
+        ui::EndSectionHeaderRight(src_sec);
+    }
+    if (src_open) {
+        const float wave_h = ui::Dp(96.0f);  // .swave
         if (!m.ok) {
-            ImGui::TextColored(ui::Col(kLibMissing), "Source not found");
-            if (src.kind == SoundSourceKind::Item) {
-                if (ui::SolidButton("Set from selected item")) ReplaceFromSelected(lib_uid, uid, "Set from selected item");
-            } else {
-                if (ui::SolidButton("Locate\xE2\x80\xA6")) Locate(lib_uid, uid, src);
-            }
+            // .swave.missing: a dashed red box, "Source not found" in its middle.
+            const ImVec2 a = ImGui::GetCursorScreenPos();
+            const ImVec2 b(std::max(a.x + 8.0f, ui::LineRight()), a.y + wave_h);
+            ImDrawList*  dl = ImGui::GetWindowDrawList();
+            dl->AddRectFilled(a, b, ui::kBadSoft, ui::kRadiusSm);
+            ui::DashedRect(dl, a, b, ui::kBadLine, ui::kRadiusSm);
+            const char*  t = "Source not found";
+            const ImVec2 ts = ImGui::CalcTextSize(t);
+            dl->AddText(ImVec2(std::max(a.x + 4.0f, (a.x + b.x - ts.x) * 0.5f), (a.y + b.y - ts.y) * 0.5f), ui::kMissText, t);
+            ImGui::Dummy(ImVec2(b.x - a.x, wave_h));
         } else {
             WaveformEvents ev;
-            DrawSoundWaves("panelwave", lib, n, m, 90.0f, false, &ev);
+            DrawSoundWaves("panelwave", lib, n, m, wave_h, false, &ev);
             if (P.changed) {
                 ui::EndSection(src_sec);
                 return;
             }
             // A Media Explorer drag over the waveform (decision 6: on a Source waveform, it
             // replaces the audio): its own target, so the drop lands on this Sound.
-            if (MediaDropTarget(ImGui::GetID("##wavedrop"), ev.min, ev.max, lib, n, "Drop: replace the audio",
-                                MediaDropKind::Replace)) {
+            if (MediaDropTarget(ImGui::GetID("##wavedrop"), ev.min, ev.max, lib, n, "Replace", MediaDropKind::Replace)) {
                 ui::EndSection(src_sec);
                 return;
             }
             if (ev.right_clicked) ImGui::OpenPopup("##wavemenu");
-            if (ImGui::BeginPopup("##wavemenu")) {
+            if (ui::BeginMenuPopup("##wavemenu")) {
                 const bool go = ImGui::MenuItem("Replace with selected items");
-                ImGui::EndPopup();
+                ui::EndMenuPopup();
                 if (go) {
                     ReplaceFromSelected(lib_uid, uid, "Replace audio");
                     ui::EndSection(src_sec);
@@ -2060,33 +2584,24 @@ void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
                 }
             }
         }
-        if (src.kind == SoundSourceKind::Item) {
-            ImGui::BeginDisabled(!m.ok);
-            if (ui::SolidButton("Show in REAPER")) ShowInReaper(src);
-            ImGui::EndDisabled();
-        } else {
-            FitText(src.asset.name.empty() ? FileName(src.asset.last_path) : src.asset.name, ui::kText);
-            SameLineIfFits(ui::ButtonWidth("Show in Media Explorer"));
-            const bool can = static_cast<bool>(P.hooks.show_in_media);
-            ImGui::BeginDisabled(!can);
-            if (ui::SolidButton("Show in Media Explorer") && can) P.hooks.show_in_media(src);
-            ImGui::EndDisabled();
-            if (!can) Tip(kNoMediaTip);
-        }
-        SameLineIfFits(ui::ButtonWidth("Edit"));
-        ImGui::BeginDisabled(!m.ok);
-        if (ui::SolidButton("Edit")) OpenEdit(lib_uid, uid);
-        ImGui::EndDisabled();
-        Tip("Edit the variations (E)");
+        DrawSourceLine(lib, n, m);
     }
     ui::EndSection(src_sec);
     if (P.changed) return;
 
+    // Variations (C5.5): "6 variations" in text, "(2 off) — one at random at each event" muted.
+    ui::SectionOpts var_opts;
+    var_opts.foldable = false;
     ui::Section var_sec;
-    if (ui::BeginSection(var_sec, "Variations", ImTextureID(), false)) {
+    if (ui::BeginSection(var_sec, "Variations", var_opts)) {
         const int on = static_cast<int>(ActiveVariations(d).size());
-        if (on == 1) ImGui::TextUnformatted("1 variation");
-        else ImGui::TextWrapped("%d variations \xE2\x80\x94 one at random at each event", on);
+        const int off = static_cast<int>(d.frames.size()) - on;
+        std::vector<TextRun> line = {{std::to_string(on) + (on == 1 ? " variation" : " variations"), ui::kText}};
+        std::string rest;
+        if (off > 0) rest += " (" + std::to_string(off) + " off)";
+        if (on > 1) rest += " \xE2\x80\x94 one at random at each event";
+        if (!rest.empty()) line.push_back({rest, ui::kMuted});
+        RichText(line);
         bool linked = n.sound.linked_copies;
         // 13-7 (audit B9): the mockup's .chk -- the box, then its label wrapped within the column;
         // box and label both toggle.
@@ -2096,6 +2611,7 @@ void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
                 return true;
             });
         }
+        Tip("Copies of an animation item (linked items) replay the same variation as their source");
         if (!P.changed) DrawRandomAvoid(lib, n);
         if (!P.changed) DefaultFadeControls(lib, n);
     }
@@ -2103,8 +2619,10 @@ void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
     if (P.changed) return;
 
     SeedSection("Detection", false);
+    ui::SectionOpts det_opts;
+    det_opts.suffix = "\xC2\xB7 this sound only";
     ui::Section det_sec;
-    if (ui::BeginSection(det_sec, "Detection") && m.ok) DetectionControls(lib, n, m);
+    if (ui::BeginSection(det_sec, "Detection", det_opts) && m.ok) DetectionControls(lib, n, m);
     ui::EndSection(det_sec);
 }
 
@@ -2147,21 +2665,17 @@ void DrawNodePanel()
     }
     ImGui::PushID(uid.c_str());
     ImGui::Dummy(ImVec2(0.0f, 2.0f));
-    DrawHeader(*lib, *n);
+    DrawHeader(store, *lib, *n);
+    // 13-7b (audit C4.2 / C5.2): Type / Volume are plain rows under the header (no "Node" / "Level"
+    // card); then Mix (Random, Switch), then Plays (Random, Blend: a Blend's lanes carry its
+    // children's volumes, it has no Mix).
     if (!P.changed && n->type != SoundNodeType::Sound) {
-        ui::Section s;
-        if (ui::BeginSection(s, "Node", ImTextureID(), false)) {
-            DrawTypeRows(store, *lib, *n);
-            if (!P.changed) DrawVolume(*lib, *n);
-            if (!P.changed && n->type == SoundNodeType::Random) DrawRandomAvoid(*lib, *n);
-        }
-        ui::EndSection(s);
-        if (!P.changed && n->type == SoundNodeType::Blend) DrawBlendLanes(store, *lib, *n);
-        else if (!P.changed) DrawMix(store, *lib, *n);
+        DrawTypeRows(store, *lib, *n);
+        if (!P.changed) DrawVolume(*lib, *n);
+        if (!P.changed && n->type != SoundNodeType::Blend) DrawMix(store, *lib, *n);
+        if (!P.changed && n->type != SoundNodeType::Switch) DrawPlays(store, *lib, *n);
     } else if (!P.changed) {
-        ui::Section s;
-        if (ui::BeginSection(s, "Level", ImTextureID(), false)) DrawVolume(*lib, *n);
-        ui::EndSection(s);
+        DrawVolume(*lib, *n);
         if (!P.changed) {
             OpenEditKey(*lib, *n);
             DrawSoundPanel(*lib, *n);

@@ -209,6 +209,7 @@ if(WIN32)
             src/sound_place_plan.cpp
             src/sound_place.cpp
             src/library_view_ui.cpp
+            src/library_icons.cpp
             src/library_tree_ui.cpp
             src/library_node_ui.cpp
             src/sound_peaks.cpp

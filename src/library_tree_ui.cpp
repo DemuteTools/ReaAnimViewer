@@ -6,6 +6,8 @@
 
 #include "library_tree_ui.h"
 
+#include "library_icons.h"
+
 #ifdef _WIN32
 
 #include <algorithm>
@@ -121,16 +123,6 @@ ImU32 TypeColor(SoundNodeType t)
     }
 }
 
-const char* TypeLetter(SoundNodeType t)
-{
-    switch (t) {
-    case SoundNodeType::Sound:  return "~";
-    case SoundNodeType::Random: return "R";
-    case SoundNodeType::Blend:  return "B";
-    default:                    return "S";
-    }
-}
-
 // One gesture = one undo point + a toast offering Undo.
 bool Gesture(const std::string& name, const std::function<bool(SoundStore&)>& edit, const std::string& toast = {})
 {
@@ -224,11 +216,13 @@ void DrawChevron(ImDrawList* dl, ImVec2 c, bool open, ImU32 col)
 
 void DrawTypeIcon(ImDrawList* dl, ImVec2 p, float s, SoundNodeType t, bool hot)
 {
-    const ImU32 col = TypeColor(t);
-    dl->AddRect(p, ImVec2(p.x + s, p.y + s), hot ? ui::kText : col, ui::kRadiusSm * 0.6f);
-    const char* l = TypeLetter(t);
-    const ImVec2 ts = ImGui::CalcTextSize(l);
-    dl->AddText(ImVec2(p.x + (s - ts.x) * 0.5f, p.y + (s - ts.y) * 0.5f), col, l);
+    // The mock-up's .tib: the icon is the button face, framed on hover.
+    if (hot) {
+        dl->AddRectFilled(p, ImVec2(p.x + s, p.y + s), ui::kRaised, ui::kRadiusSm * 0.6f);
+        dl->AddRect(p, ImVec2(p.x + s, p.y + s), ui::kStrokeStrong, ui::kRadiusSm * 0.6f);
+    }
+    const float g = s * 0.8f, o = (s - g) * 0.5f;
+    DrawNodeTypeGlyph(dl, ImVec2(p.x + o, p.y + o), g, t, hot ? ui::kText : TypeColor(t));
 }
 
 // A SolidButton with a small down arrow after its label (a menu opens on click).

@@ -274,6 +274,13 @@ bool TrimTakeFrame(SoundData& data, int i, double start, double length, double t
     return true;
 }
 
+bool AuditionEnded(double pos, double length, double stalled_s)
+{
+    if (!(length > 0.0)) return true;
+    if (pos >= length) return true;  // stopped exactly at its end; short of it, the stall rule ends it
+    return pos > 0.0 && stalled_s >= 0.5;
+}
+
 bool FrameEditAllowed(DetectMode mode, FrameEdit edit)
 {
     if (mode == DetectMode::Takes) return edit != FrameEdit::Add && edit != FrameEdit::Split;

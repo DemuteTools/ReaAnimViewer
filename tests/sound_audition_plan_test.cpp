@@ -346,6 +346,18 @@ static void TestNormalizeTakes()
     CHECK(!NormalizeTakeFrames(f, {-6.0, -3.0, -12.0}, -1.0, false, {0}));
 }
 
+void TestAuditionEnded()
+{
+    CHECK(!AuditionEnded(0.0, 2.0, 0.0));       // just started
+    CHECK(!AuditionEnded(0.0, 2.0, 3.0));       // not started yet: never "stalled"
+    CHECK(!AuditionEnded(1.0, 2.0, 0.1));       // playing
+    CHECK(!AuditionEnded(1.99, 2.0, 0.0));      // last block still to be heard
+    CHECK(!AuditionEnded(0.0, 0.02, 0.0));      // a 20 ms variation plays to its end
+    CHECK(AuditionEnded(2.5, 2.0, 0.0));        // past the end
+    CHECK(AuditionEnded(1.2, 2.0, 0.6));        // stopped short of the end
+    CHECK(AuditionEnded(0.0, 0.0, 0.0));        // nothing to play
+}
+
 int main()
 {
     TestBlend();
@@ -358,6 +370,7 @@ int main()
     TestCountText();
     TestNormalizeOnOnly();
     TestNormalizeTakes();
+    TestAuditionEnded();
     if (g_fail) {
         std::printf("%d failure(s)\n", g_fail);
         return 1;

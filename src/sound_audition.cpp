@@ -10,11 +10,13 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <memory>
 
 #include "library_media_ui.h"
 #include "reaper_api.h"
+#include "sound_audition_plan.h"
 
 namespace rav {
 namespace {
@@ -104,9 +106,16 @@ struct Playing {
     preview_register_t           reg = {};
     std::unique_ptr<AuditionMix> mix;
     std::string                  tag;
+    double                       last_pos = -1.0;  // AuditionPlaying's end watch
+    double                       moved_s = 0.0;
 };
 Playing     g_play;
 std::string g_empty;
+
+double NowS()
+{
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 void InitReg(preview_register_t& r, PCM_source* src)
 {
@@ -175,6 +184,8 @@ bool PlayVoices(const std::vector<PlayVoice>& voices, const std::string& tag, st
     InitReg(g_play.reg, g_play.mix.get());
     g_play.active = true;
     g_play.tag = tag;
+    g_play.last_pos = -1.0;
+    g_play.moved_s = NowS();
     if (f_play(&g_play.reg) == 0) {
         // Not started: nothing reads the source, free it at once.
         DeleteCriticalSection(&g_play.reg.cs);
@@ -210,7 +221,13 @@ double AuditionPosition()
 bool AuditionPlaying()
 {
     if (!g_play.active) return false;
-    if (AuditionPosition() >= g_play.mix->GetLength()) {
+    const double    pos = AuditionPosition();
+    const double    now = NowS();
+    if (pos != g_play.last_pos) {
+        g_play.last_pos = pos;
+        g_play.moved_s = now;
+    }
+    if (AuditionEnded(pos, g_play.mix->GetLength(), now - g_play.moved_s)) {
         StopAudition();
         return false;
     }

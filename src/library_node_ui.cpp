@@ -911,6 +911,9 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
     const bool       ready = RequestPeaks(m.path, nullptr) == PeakState::Ready;
     std::vector<DetectMode>  modes;
     std::vector<const char*> labels;
+    // Whole file is always offered: a Sound in another mode can go back to one variation.
+    modes.push_back(DetectMode::Whole);
+    labels.push_back("Whole file");
     if (m.facts.takes.size() >= 2) {
         modes.push_back(DetectMode::Takes);
         labels.push_back("Takes");
@@ -923,7 +926,10 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
         modes.push_back(DetectMode::Silence);
         labels.push_back("Silence");
     }
-    if (modes.empty()) {
+    if (!ready && d.mode == DetectMode::Silence && RequestPeaks(m.path, nullptr) == PeakState::Building) {
+        // Not "Whole file" while the peaks Silence needs are read.
+        ImGui::TextDisabled("Reading\xE2\x80\xA6");
+    } else if (modes.size() == 1 && d.mode == DetectMode::Whole) {
         ImGui::TextDisabled("Whole file");
     } else {
         int sel = -1;
@@ -936,12 +942,18 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
             const DetectMode mode = modes[static_cast<size_t>(sel)];
             // A new mode starts from its own detection (hand frames belong to the old one).
             const std::vector<SoundFrame> frames = Detected(m, mode, d.silence);
+            const std::string toast = d.edited && mode != d.mode
+                                          ? (mode == DetectMode::Whole ? std::string("Whole file")
+                                                                       : std::string("Split by ") + labels[static_cast<size_t>(sel)]) +
+                                                ": the hand edits of the previous mode were dropped"
+                                          : std::string();
             EditNode("Detect", lib.uid, n.uid, [&](SoundNode& x) {
+                if (x.sound.mode == mode) return false;  // no empty undo point
                 x.sound.mode = mode;
                 x.sound.frames = frames;
                 x.sound.edited = false;
                 return true;
-            });
+            }, toast);
             if (P.changed) return;
         }
     }

@@ -89,6 +89,11 @@ std::vector<SoundFrame> MergeHandFrames(const std::vector<SoundFrame>& detected,
 // (bad index, or 1 ms or less left). Sets `hand` and `data.edited`.
 bool TrimTakeFrame(SoundData& data, int i, double start, double length, double take_source_len);
 
+// Whether a playing audition has ended (the play button then shows Play again): its position
+// reached the mix's length (within an audio block), or it stopped moving for `stalled_s` seconds
+// (a preview that stops short of the end). Polled each frame.
+bool AuditionEnded(double pos, double length, double stalled_s);
+
 enum class FrameEdit { Trim, Add, Split, Toggle, Db };
 // Decision 3: Takes mode refuses Add and Split.
 bool FrameEditAllowed(DetectMode mode, FrameEdit edit);

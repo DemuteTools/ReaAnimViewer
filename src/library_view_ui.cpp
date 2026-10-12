@@ -15,8 +15,11 @@
 #include "library_node_ui.h"
 #include "library_tree_ui.h"
 #include "library_user_ui.h"
+#include "assign_view_model.h"
 #include "reaper_api.h"
 #include "shortcuts.h"
+#include "sound_assign.h"
+#include "sound_populate.h"
 #include "sound_project.h"
 #include "sound_record.h"
 #include "ui_theme.h"
@@ -219,6 +222,44 @@ void DrawToast()
     ui::EndToast();
 }
 
+// 13-15c: a library with a kit that the project has not been offered yet, while at least one of its parts is
+// free at the Project level: "<Library> serves <Parts>: use it as the project default?" [Use] [Not now]. Either
+// way it is offered once (kit_offered is set in the same undo point).
+void DrawKitOffer(float top)
+{
+    const SoundStore& store = GetSoundStore(nullptr);
+    const SoundLibrary* lib = nullptr;
+    std::vector<std::string> free_parts;
+    for (const SoundLibrary& l : store.libraries) {
+        free_parts = assign::KitOfferParts(store, l);
+        if (!free_parts.empty()) {
+            lib = &l;
+            break;
+        }
+    }
+    if (!lib) return;
+    std::string parts;
+    for (size_t i = 0; i < free_parts.size(); ++i)
+        parts += (i == 0 ? "" : i + 1 == free_parts.size() ? " and " : ", ") + PartLabel(free_parts[i]);
+    const std::string uid = lib->uid;
+    const std::string text = lib->name + " serves " + parts + ": use it as the project default?";
+    const ImVec2 ds = ImGui::GetIO().DisplaySize;
+    if (ui::BeginToast("##libkitoffer", ImVec2(ds.x * 0.5f, top + ui::Dp(8.0f)), ImVec2(0.5f, 0.0f))) {
+        ImGui::AlignTextToFramePadding();
+        ImGui::TextUnformatted(text.c_str());
+        ImGui::SameLine(0.0f, ui::Dp(10.0f));
+        const bool use = ui::PrimaryButton("Use##kitoffer");
+        ImGui::SameLine();
+        const bool later = ui::SolidButton("Not now##kitoffer");
+        if (use || later) {
+            ui::EndToast();
+            OfferKit(uid, use);  // (the store is replaced: nothing above is read again)
+            return;
+        }
+    }
+    ui::EndToast();
+}
+
 }  // namespace
 
 void ShowLibraryToast(const std::string& text, bool undo, const std::string& undo_desc)
@@ -325,6 +366,7 @@ void DrawLibraryView(float x, float y, float w, float h)
     ImGui::End();
     ImGui::PopStyleVar();
     DrawToast();
+    DrawKitOffer(y);
 }
 
 }  // namespace rav

@@ -87,6 +87,14 @@ SoundReport RenameCharacter(std::string character_uid, std::string name);
 // One character per model the project's items of that rig play (ProjectRigs), each named from its
 // first file and starting with the character's settings. "RAV: Split character".
 SoundReport SplitCharacter(std::string character_uid);
+// 13-15c: the same for a character that may have no record yet (a rig the project plays, stored at the edit).
+SoundReport RenameCharacterRef(CharacterRef character, std::string name);
+// Stores the rig's character if it has no record, then splits it per model, in one undo point "RAV: Split character".
+SoundReport SplitRig(CharacterRef character);
+// The Library view's kit offer for a library: `accept` adopts its kit parts that are free at the Project level
+// (the ones set are left alone), and either way the kit counts as offered, in one undo point "RAV: Use library kit"
+// (declined: "RAV: Set library kit").
+SoundReport OfferKit(std::string library_uid, bool accept);
 // The body parts a library suggests itself for; `offered` -1 leaves kit_offered, 0 / 1 sets it.
 SoundReport SetLibraryKit(std::string library_uid, std::vector<std::string> parts, int offered = -1);
 

@@ -94,12 +94,35 @@ struct State {
     MediaItem*       request_item = nullptr;
     std::vector<int> request_blocks;
     bool             focus_request = false;
+    // 13-15c: the Project and Character scopes.
+    av::Selection sel_by[3];  // each scope's selection while another is shown
+    bool          key_init[3] = {false, false, false};
+    std::string   cur_skel, cur_model;  // the current character: its rig and model signature
+    char          name_buf[96] = {};    // the character sheet's Name field
+    std::string   name_for;             // the character (its row key) name_buf holds the name of
+    bool          name_active = false;
+    int           rigs_count = -1;      // the project state, and the time, the rig list was read at
+    double        rigs_time = 0.0;
+    std::vector<av::RigIn> rigs;
+    std::string   kit_char;             // the kit sheet's character picker (a character row key)
 };
 State g;
 
 // ---- Per-frame data ---------------------------------------------------------------------------------
 
+// What the Project and Character scopes read (13-15c): the project's characters and, per body part and type, the
+// target of that key at this scope.
+struct KeyData {
+    std::vector<av::CharEntry>        chars;
+    int                               cur = -1;  // the current character (its index), -1 when the project has none
+    const SoundCharacter*             scope_ch = nullptr;  // Character scope: the current character's record, else null
+    std::map<std::string, av::Target> targets;   // by key ("feet", "feet.step"); empty in the Overview
+    std::set<std::string>             own;       // the keys this scope sets (a library or a Switch value)
+};
+
 struct Frame {
+    bool                   keyed = false;  // Project / Character scope: `key` is read, not the item
+    KeyData                key;
     const SoundStore*      store = nullptr;
     ItemSounds             rec;
     const SoundCharacter*  ch = nullptr;
@@ -189,8 +212,72 @@ bool BuildFrame(MediaItem* item, Frame* f)
     return true;
 }
 
+// The rigs of the project's items, read again when the project changes (and every few seconds: a re-exported
+// file changes no project state); ProjectRigs walks every RAV item, so never per frame.
+void RefreshRigs()
+{
+    const int    count = GetProjectStateChangeCount(nullptr);
+    const double now = ImGui::GetTime();
+    if (count == g.rigs_count && now - g.rigs_time < 3.0) return;
+    g.rigs_count = count;
+    g.rigs_time = now;
+    g.rigs.clear();
+    for (const ProjectRig& r : ProjectRigs()) {
+        av::RigIn in;
+        in.skeleton = r.skeleton;
+        in.bones = r.bones;
+        in.items = r.items;
+        for (const RigModelCount& m : r.models) in.models.push_back({m.model, m.files, m.items});
+        g.rigs.push_back(in);
+    }
+}
+
+// The current character's index: the one last picked, else the window's item's, else the first.
+int FindCurrentChar(const std::vector<av::CharEntry>& cs)
+{
+    if (cs.empty()) return -1;
+    for (size_t i = 0; i < cs.size(); ++i)
+        if (cs[i].ch.skeleton == g.cur_skel && cs[i].ch.model == g.cur_model) return static_cast<int>(i);
+    for (size_t i = 0; i < cs.size(); ++i)
+        if (cs[i].ch.skeleton == g.cur_skel && cs[i].ch.model.empty()) return static_cast<int>(i);
+    size_t pick = 0;
+    if (g.item && ValidatePtr2(nullptr, g.item, "MediaItem*")) {
+        const ItemRigInfo rig = ItemRig(g.item);
+        for (size_t i = 0; i < cs.size(); ++i)
+            if (cs[i].ch.skeleton == rig.skeleton && (cs[i].ch.model == RigModel(rig) || (cs[i].ch.model.empty() && cs[pick].ch.skeleton != rig.skeleton)))
+                pick = i;
+    }
+    g.cur_skel = cs[pick].ch.skeleton;
+    g.cur_model = cs[pick].ch.model;
+    return static_cast<int>(pick);
+}
+
+// The Project / Character scopes' frame: no item needed.
+void BuildKeyFrame(Frame* f)
+{
+    f->store = &GetSoundStore(nullptr);
+    f->keyed = true;
+    RefreshRigs();
+    KeyData& k = f->key;
+    k.chars = av::BuildCharacters(*f->store, g.rigs);
+    k.cur = FindCurrentChar(k.chars);
+    const bool char_scope = g.scope == kScopeCharacter;
+    if (char_scope && k.cur >= 0) k.scope_ch = &k.chars[static_cast<size_t>(k.cur)].ch;
+    f->ok = !char_scope || k.scope_ch != nullptr;
+    f->item_name = char_scope ? (k.scope_ch ? "Character " + k.scope_ch->name : std::string("Character")) : std::string("Project defaults");
+    f->char_name = k.scope_ch ? k.scope_ch->name : std::string();
+    if (!f->ok) return;
+    for (const std::string& key : av::OverrideKeys(k.scope_ch ? k.scope_ch->assigns : f->store->project)) k.own.insert(key);
+    if (!g.overview)
+        for (const std::string& key : av::AllKeys()) k.targets[key] = av::MakeKeyTarget(*f->store, k.scope_ch, key);
+}
+
 const av::Target* TargetOf(const Frame& f, const std::string& key)
 {
+    if (f.keyed) {
+        const auto it = f.key.targets.find(key);
+        return it == f.key.targets.end() ? nullptr : &it->second;
+    }
     if (key == av::kItemKey) return &f.item;
     int b = -1;
     if (av::BlockOfKey(key, &b) && b >= 0 && static_cast<size_t>(b) < f.targets.size()) return &f.targets[static_cast<size_t>(b)];
@@ -214,6 +301,7 @@ ImU32 ToneInk(av::SegTone t)
     case av::SegTone::Inherited: return ui::kMuted;
     case av::SegTone::Mixed:
     case av::SegTone::Warn: return ui::kWarn;
+    case av::SegTone::Ok: return ui::kOk;
     case av::SegTone::Faint: break;
     }
     return ui::kFaint;
@@ -274,8 +362,62 @@ void RulesOf(const Frame& f, const std::vector<const av::Target*>& sel, std::vec
     }
 }
 
+// A Project / Character key's library (13-15c): one undo point for all the keys.
+void PickKeyLibrary(const Frame& f, const std::vector<const av::Target*>& sel, const std::string& arg, const std::string& what)
+{
+    std::vector<std::string> keys;
+    bool                     differs = false;
+    for (const av::Target* t : sel) {
+        keys.push_back(t->key);
+        if (av::OwnLibraryArg(*t) != arg) differs = true;
+    }
+    if (!differs || (f.key.scope_ch && f.key.cur < 0)) return;
+    LibState    state = LibState::Inherit;
+    std::string uid;
+    if (arg == kLibNoneWord) state = LibState::None;
+    else if (!arg.empty()) {
+        state = LibState::Library;
+        uid = arg;
+    }
+    const bool         project = f.key.scope_ch == nullptr;
+    const CharacterRef ref = project ? CharacterRef() : f.key.chars[static_cast<size_t>(f.key.cur)].ref;
+    const std::string  where = project ? std::string("Project") : f.key.scope_ch->name;
+    const int          n = static_cast<int>(sel.size());
+    PickSoundGesture([project, ref, keys, state, uid, what, where, n]() {
+        const SoundReport rep = project ? SetProjectAssignLibrary(keys, state, uid) : SetCharacterAssignLibrary(ref, keys, state, uid);
+        SetLast(project ? "Set project sound default" : "Set character library", where, what, n);
+        return rep;
+    });
+}
+
+void PickKeyValue(const Frame& f, const std::vector<const av::Target*>& sel, const std::string& group, const std::string& value,
+                  const std::string& what)
+{
+    std::vector<std::string> keys;
+    bool                     differs = false;
+    for (const av::Target* t : sel) {
+        keys.push_back(t->key);
+        const av::GroupState* gs = t->Group(group);
+        if (gs && gs->own_uid != value) differs = true;
+    }
+    if (!differs || (f.key.scope_ch && f.key.cur < 0)) return;
+    const bool         project = f.key.scope_ch == nullptr;
+    const CharacterRef ref = project ? CharacterRef() : f.key.chars[static_cast<size_t>(f.key.cur)].ref;
+    const std::string  where = project ? std::string("Project") : f.key.scope_ch->name;
+    const int          n = static_cast<int>(sel.size());
+    PickSoundGesture([project, ref, keys, group, value, what, where, n]() {
+        const SoundReport rep = project ? SetProjectAssignValue(keys, group, value) : SetCharacterAssignValue(ref, keys, group, value);
+        SetLast(project ? "Set project sound value" : "Set character sound value", where, what, n);
+        return rep;
+    });
+}
+
 void PickLibrary(const Frame& f, const std::vector<const av::Target*>& sel, const std::string& arg, const std::string& what)
 {
+    if (f.keyed) {
+        PickKeyLibrary(f, sel, arg, what);
+        return;
+    }
     MediaItem*               item = f.item_ptr;
     std::vector<std::string> rids;
     std::vector<int>         blocks;
@@ -300,6 +442,10 @@ void PickLibrary(const Frame& f, const std::vector<const av::Target*>& sel, cons
 void PickValue(const Frame& f, const std::vector<const av::Target*>& sel, bool item_row, const std::string& group,
                const std::string& value, const std::string& what)
 {
+    if (f.keyed) {
+        PickKeyValue(f, sel, group, value, what);
+        return;
+    }
     MediaItem*               item = f.item_ptr;
     std::vector<std::string> rids;
     std::vector<int>         blocks;
@@ -317,7 +463,7 @@ void PickValue(const Frame& f, const std::vector<const av::Target*>& sel, bool i
 
 // ---- Tree rows ---------------------------------------------------------------------------------------------
 
-enum class RowT { Section, ItemRow, Parent, Leaf, Note };
+enum class RowT { Section, ItemRow, Parent, Leaf, Note, KitRow, CharRow, PartRow, TypeRow };
 
 struct Row {
     RowT                  t = RowT::Note;
@@ -327,8 +473,20 @@ struct Row {
     const av::Leaf*       l = nullptr;
     std::string           title, scope_text, note;
     int                   count = -1;
-    std::vector<const av::Parent*> section_parents;  // a section's parents (Expand all)
+    std::vector<std::string> section_ids;  // the fold ids of a section's parent rows (Expand all)
+    // 13-15c: the Project / Character scopes' rows.
+    std::string                key;      // the selection key ("kit:<uid>", "char:...", "feet", "feet.step")
+    const SoundLibrary*        lib = nullptr;
+    const av::CharEntry*       ce = nullptr;
+    const BodyPart*            bp = nullptr;
+    bool                       foldable = false;  // Left / Right fold it
+    std::string                fold_id;
 };
+
+bool IsKeyRow(const Row& r)
+{
+    return r.t == RowT::KitRow || r.t == RowT::CharRow || r.t == RowT::PartRow || r.t == RowT::TypeRow;
+}
 
 bool IsClosed(const std::string& id)
 {
@@ -380,7 +538,7 @@ std::vector<Row> BuildRows(const Frame& f)
         s.title = title;
         s.scope_text = scope;
         s.count = static_cast<int>(parents.size());
-        s.section_parents = shown;
+        for (const av::Parent* q : shown) s.section_ids.push_back(q->id);
         rows.push_back(s);
         if (IsFolded(id)) return;
         if (parents.empty()) {
@@ -395,6 +553,8 @@ std::vector<Row> BuildRows(const Frame& f)
             r.id = p->id;
             r.nav = "P:" + p->id;
             r.p = p;
+            r.foldable = p->leaves.size() > 1;
+            r.fold_id = p->id;
             rows.push_back(r);
             if (IsClosed(p->id) || p->leaves.size() < 2) continue;
             for (const av::Leaf& l : p->leaves) {
@@ -413,6 +573,111 @@ std::vector<Row> BuildRows(const Frame& f)
     return rows;
 }
 
+// The Project scope's Library kits and Body parts, the Character scope's Characters and Body parts (13-15c).
+std::vector<Row> BuildKeyRows(const Frame& f)
+{
+    std::vector<Row> rows;
+    const std::string filter = g.filter;
+    const SoundStore& store = *f.store;
+    auto note = [&](const std::string& text) {
+        Row n;
+        n.t = RowT::Note;
+        n.note = text;
+        rows.push_back(n);
+    };
+    if (g.scope == kScopeProject) {
+        std::vector<const SoundLibrary*> libs;
+        for (const SoundLibrary& l : store.libraries)
+            if (!l.kit.empty() && av::FilterMatch(filter, l.name)) libs.push_back(&l);
+        if (filter.empty() || !libs.empty()) {
+            Row s;
+            s.t = RowT::Section;
+            s.id = "kits";
+            s.title = "Library kits";
+            s.scope_text = "what each library says it serves";
+            s.count = static_cast<int>(libs.size());
+            rows.push_back(s);
+            if (!IsFolded("kits")) {
+                if (libs.empty()) note("No library suggests itself for a body part yet: set a kit from a library's \xE2\x8B\xAF menu (Kit...).");
+                for (const SoundLibrary* l : libs) {
+                    Row r;
+                    r.t = RowT::KitRow;
+                    r.key = "kit:" + l->uid;
+                    r.id = r.nav = r.key;
+                    r.lib = l;
+                    rows.push_back(r);
+                }
+            }
+        }
+    } else {
+        std::vector<const av::CharEntry*> cs;
+        for (const av::CharEntry& c : f.key.chars)
+            if (av::FilterMatch(filter, c.ch.name)) cs.push_back(&c);
+        if (filter.empty() || !cs.empty()) {
+            Row s;
+            s.t = RowT::Section;
+            s.id = "chars";
+            s.title = "Characters";
+            s.scope_text = "one per rig in this project";
+            s.count = static_cast<int>(cs.size());
+            rows.push_back(s);
+            if (!IsFolded("chars")) {
+                if (cs.empty()) note("No animation item in the project yet: its character appears here.");
+                for (const av::CharEntry* c : cs) {
+                    Row r;
+                    r.t = RowT::CharRow;
+                    r.key = c->key;
+                    r.id = r.nav = r.key;
+                    r.ce = c;
+                    rows.push_back(r);
+                }
+            }
+        }
+    }
+    // Body parts: every part, its types under it.
+    std::vector<const BodyPart*> parts;
+    for (const BodyPart& bp : BodyParts()) {
+        bool any = av::FilterMatch(filter, bp.label);
+        for (const PartType& t : bp.types)
+            if (av::FilterMatch(filter, t.label)) any = true;
+        if (any) parts.push_back(&bp);
+    }
+    if (!filter.empty() && parts.empty()) return rows;
+    Row s;
+    s.t = RowT::Section;
+    s.id = "parts";
+    s.title = "Body parts";
+    s.scope_text = g.scope == kScopeProject ? std::string("project defaults, for every character")
+                                            : f.char_name + ": only what differs from the project";
+    s.count = static_cast<int>(parts.size());
+    for (const BodyPart* bp : parts) s.section_ids.push_back("p:" + bp->id);
+    rows.push_back(s);
+    if (IsFolded("parts")) return rows;
+    for (const BodyPart* bp : parts) {
+        Row r;
+        r.t = RowT::PartRow;
+        r.key = bp->id;
+        r.id = r.nav = r.key;
+        r.bp = bp;
+        r.foldable = true;
+        r.fold_id = "p:" + bp->id;
+        rows.push_back(r);
+        if (IsClosed(r.fold_id)) continue;
+        const bool whole = av::FilterMatch(filter, bp->label);
+        for (const PartType& t : bp->types) {
+            if (!whole && !av::FilterMatch(filter, t.label)) continue;
+            Row tr;
+            tr.t = RowT::TypeRow;
+            tr.key = AssignKey(bp->id, t.word);
+            tr.id = tr.nav = tr.key;
+            tr.bp = bp;
+            tr.title = t.label;
+            rows.push_back(tr);
+        }
+    }
+    return rows;
+}
+
 // The keys of the rows a click can land on (leaves, a single-leaf parent's leaf, the Item row), in order.
 std::vector<std::string> VisibleKeys(const std::vector<Row>& rows)
 {
@@ -421,6 +686,7 @@ std::vector<std::string> VisibleKeys(const std::vector<Row>& rows)
         if (r.t == RowT::ItemRow) out.push_back(av::kItemKey);
         else if (r.t == RowT::Leaf) out.push_back(r.l->key);
         else if (r.t == RowT::Parent && r.p->leaves.size() == 1) out.push_back(r.p->leaves[0].key);
+        else if (IsKeyRow(r)) out.push_back(r.key);
     }
     return out;
 }
@@ -446,20 +712,26 @@ void NoteView(const std::string& text)
 }
 
 // "Expand all" / "Collapse all": view only, no undo point.
-void SectionAll(const std::string& id, const std::vector<const av::Parent*>& parents)
+void SectionAll(const std::string& id, const std::vector<std::string>& fold_ids)
 {
     bool all_open = !IsFolded(id);
-    for (const av::Parent* p : parents)
-        if (IsClosed(p->id)) all_open = false;
+    for (const std::string& q : fold_ids)
+        if (IsClosed(q)) all_open = false;
     g.folded[id] = false;
-    for (const av::Parent* p : parents) g.closed[p->id] = all_open;
-    NoteView(std::string(all_open ? "Collapsed" : "Expanded") + " every row of " + (id == "rules" ? "Bone rules" : "Auto detection") +
-             " (view only, no undo point).");
+    for (const std::string& q : fold_ids) g.closed[q] = all_open;
+    NoteView(std::string(all_open ? "Collapsed" : "Expanded") + " every row of " +
+             (id == "rules" ? "Bone rules" : id == "auto" ? "Auto detection" : "Body parts") + " (view only, no undo point).");
 }
 
 void ActivateRow(const Row& r, const std::vector<std::string>& visible, bool shift, bool ctrl)
 {
-    if (r.t == RowT::ItemRow) av::ClickRow(g.sel, av::kItemKey, shift, ctrl, visible);
+    if (IsKeyRow(r)) {
+        av::ClickRow(g.sel, r.key, shift, ctrl, visible);
+        if (r.t == RowT::CharRow && r.ce) {  // a character picked is the current one
+            g.cur_skel = r.ce->ch.skeleton;
+            g.cur_model = r.ce->ch.model;
+        }
+    } else if (r.t == RowT::ItemRow) av::ClickRow(g.sel, av::kItemKey, shift, ctrl, visible);
     else if (r.t == RowT::Leaf) av::ClickRow(g.sel, r.l->key, shift, ctrl, visible);
     else if (r.t == RowT::Parent) {
         if (r.p->leaves.size() == 1) av::ClickRow(g.sel, r.p->leaves[0].key, shift, ctrl, visible);
@@ -482,15 +754,15 @@ void DrawSectionHeader(const Row& r)
     x += ui::Dp(22.0f);
     // "Expand all / Collapse all" at the right, for the sections that hold parent rows.
     float right = p.x + w;
-    if (!r.section_parents.empty() || r.id == "rules" || r.id == "auto") {
+    if (!r.section_ids.empty()) {
         bool all_open = !folded;
-        for (const av::Parent* q : r.section_parents)
-            if (IsClosed(q->id)) all_open = false;
+        for (const std::string& q : r.section_ids)
+            if (IsClosed(q)) all_open = false;
         const char* label = all_open ? "\xE2\x8A\x9F Collapse all##all" : "\xE2\x8A\x9E Expand all##all";
         const float bw = ui::ButtonWidth(label);
-        if (right - bw >= x + ui::Dp(90.0f) && !r.section_parents.empty()) {
+        if (right - bw >= x + ui::Dp(90.0f)) {
             ImGui::SetCursorScreenPos(ImVec2(right - bw, p.y + (h - ui::ControlH()) * 0.5f));
-            if (ui::SolidButton(label)) SectionAll(r.id, r.section_parents);
+            if (ui::SolidButton(label)) SectionAll(r.id, r.section_ids);
             right -= bw + ui::Dp(6.0f);
         }
     }
@@ -524,6 +796,101 @@ void RowName(ImDrawList* dl, float x, float y, float max_w, ImU32 col, const std
     ui::EllipsisTextTip(dl, ImVec2(x, y), x + max_w, col, name);
 }
 
+// One kit / character / body part / type row of the Project and Character scopes (13-15c); the caller has the
+// row's rect (p, w, rh), its text line y and the keyboard bit.
+void DrawKeyRow(const Frame& f, const Row& r, const std::vector<std::string>& visible, unsigned bits, ImVec2 p, float w, float rh,
+                float ty)
+{
+    ImDrawList*    dl = ImGui::GetWindowDrawList();
+    const ImGuiIO& io = ImGui::GetIO();
+    const float    pad = ui::Dp(6.0f);
+    const float    right = p.x + w - pad;
+    const bool     sel = g.sel.Has(r.key);
+    const bool     current = r.t == RowT::CharRow && r.ce && f.key.cur >= 0 && r.ce == &f.key.chars[static_cast<size_t>(f.key.cur)];
+    ImGui::SetNextItemAllowOverlap();
+    if (ui::SelectRow("##row", sel, current && !sel ? (bits | ui::kRowCurrent) : bits, rh, ImGuiSelectableFlags_AllowOverlap, ui::kRadiusMd)) {
+        g.nav = r.nav;
+        ActivateRow(r, visible, io.KeyShift, io.KeyCtrl);
+    }
+    auto summary_at = [&](float x, const av::Summary& sum) {
+        if (x >= right - ui::Dp(20.0f)) return;
+        if (PaintSummary(dl, x, ty, right - x, sum, true)) {
+            ImGui::SetCursorScreenPos(ImVec2(x, p.y));
+            ImGui::Dummy(ImVec2(right - x, rh));
+            ui::ItemTipText(sum.Plain().c_str());
+        }
+    };
+    if (r.t == RowT::KitRow) {
+        const SoundLibrary& L = *r.lib;
+        float               x = p.x + pad;
+        dl->AddCircleFilled(ImVec2(x + ui::Dp(4.0f), p.y + rh * 0.5f), ui::Dp(4.0f), ui::LibDot(L.color));
+        x += ui::Dp(14.0f);
+        const float name_w = std::min(ImGui::CalcTextSize(L.name.c_str()).x + 1.0f, (right - x) * 0.4f);
+        RowName(dl, x, ty, name_w, ui::kText, L.name);
+        x += name_w + ui::Dp(8.0f);
+        av::Summary sum;
+        sum.segs = av::KitRowSegs(av::KitParts(*f.store, L, f.key.chars));
+        summary_at(x, sum);
+    } else if (r.t == RowT::CharRow) {
+        const av::CharEntry& c = *r.ce;
+        float                x = p.x + pad + ui::Dp(4.0f);
+        const std::string    tag = c.overrides > 0 ? std::to_string(c.overrides) + (c.overrides > 1 ? " overrides" : " override")
+                                                   : std::string("inherits the project");
+        float                tag_w = c.overrides > 0 ? ui::TagWidth(tag.c_str()) : ImGui::CalcTextSize(tag.c_str()).x;
+        const bool           tag_fits = right - tag_w > x + ui::Dp(90.0f);
+        const float          lim = tag_fits ? right - tag_w - ui::Dp(8.0f) : right;
+        {
+            ui::FontScope fs(current ? ui::FontRole::Semibold : ui::FontRole::Body);
+            const float   name_w = std::min(ImGui::CalcTextSize(c.ch.name.c_str()).x + 1.0f, (lim - x) * 0.5f);
+            RowName(dl, x, ty, name_w, ui::kText, c.ch.name);
+            x += name_w + ui::Dp(8.0f);
+        }
+        std::string hint = "rig " + av::RigSig(c.ch.skeleton);
+        if (!c.ch.model.empty() && !c.models.empty() && !c.models[0].files.empty()) hint += kDot + c.models[0].files.front();
+        hint += kDot + std::to_string(c.items) + (c.items == 1 ? " item" : " items");
+        if (x < lim - ui::Dp(30.0f)) {
+            ui::FontScope fs(ui::FontRole::Small);
+            ui::EllipsisTextTip(dl, ImVec2(x, std::floor(p.y + (rh - ImGui::GetTextLineHeight()) * 0.5f)), lim, ui::kFaint, hint);
+        }
+        if (tag_fits) {
+            if (c.overrides > 0) ui::DrawTag(dl, ImVec2(right - tag_w, p.y + (rh - ui::TagHeight()) * 0.5f), tag.c_str(), ui::TagTone::Project);
+            else dl->AddText(ImVec2(right - tag_w, ty), ui::kFaint, tag.c_str());
+        }
+    } else if (r.t == RowT::PartRow) {
+        const auto it = f.key.targets.find(r.key);
+        if (it == f.key.targets.end()) return;
+        const av::Target& t = it->second;
+        float             x = p.x + pad;
+        ImGui::SetCursorScreenPos(ImVec2(x, p.y + (rh - ui::Dp(18.0f)) * 0.5f));
+        if (ui::Chevron("##chev", !IsClosed(r.fold_id))) g.closed[r.fold_id] = !IsClosed(r.fold_id);
+        ui::ItemTipText(IsClosed(r.fold_id) ? "Show the types" : "Hide the types");
+        x += ui::Dp(18.0f) + ui::Dp(6.0f);
+        const float name_w = std::min(ImGui::CalcTextSize(r.bp->label.c_str()).x + 1.0f, (right - x) * 0.4f);
+        RowName(dl, x, ty, name_w, ui::kText, r.bp->label);
+        x += name_w + ui::Dp(6.0f);
+        av::Summary sum = av::Summarize(*f.store, {&t}, true);
+        if (sum.blocked) {
+            ui::AddTextIn(dl, ui::FontSemibold(), ImVec2(x, ty), ui::kWarn, "!");
+            x += ui::Dp(10.0f);
+        }
+        if (t.OwnLib() && t.own_kit && x < right - ui::Dp(60.0f)) {
+            x += ui::DrawTag(dl, ImVec2(x, p.y + (rh - ui::TagHeight()) * 0.5f), "kit", ui::TagTone::Project) + ui::Dp(6.0f);
+        }
+        if (!t.OwnLib() && !t.Unset()) sum.segs.push_back({"  (" + t.ea.from + ")", av::SegTone::Faint});
+        summary_at(x, sum);
+    } else {  // a type of a part
+        const auto it = f.key.targets.find(r.key);
+        if (it == f.key.targets.end()) return;
+        const float x = p.x + ui::Dp(50.0f);
+        const float name_w = std::min(ImGui::CalcTextSize(r.title.c_str()).x + 1.0f, std::max(ui::Dp(30.0f), (right - x) * 0.35f));
+        RowName(dl, x, ty, name_w, sel ? ui::kText : ui::kMuted, r.title);
+        av::Summary sum;
+        if (f.key.own.count(r.key)) sum = av::Summarize(*f.store, {&it->second}, true);
+        else sum.segs.push_back({"inherit", av::SegTone::Faint});
+        summary_at(x + name_w + ui::Dp(8.0f), sum);
+    }
+}
+
 void DrawTreeRows(const Frame& f, const std::vector<Row>& rows)
 {
     const std::vector<std::string> visible = VisibleKeys(rows);
@@ -553,7 +920,9 @@ void DrawTreeRows(const Frame& f, const std::vector<Row>& rows)
         }
         const unsigned bits = is_nav ? ui::kRowCurrent : 0u;
 
-        if (r.t == RowT::Parent) {
+        if (IsKeyRow(r)) {
+            DrawKeyRow(f, r, visible, bits, p, w, rh, ty);
+        } else if (r.t == RowT::Parent) {
             const std::vector<std::string> keys = LeafKeysOf(*r.p);
             const int                      state = av::ParentState(g.sel, keys);
             const bool                     multi = r.p->leaves.size() > 1;
@@ -658,9 +1027,9 @@ void HandleTreeKeys(const std::vector<Row>& rows)
     }
     if (cur < 0) return;
     const Row& r = *navs[static_cast<size_t>(cur)];
-    if (r.t == RowT::Parent && r.p->leaves.size() > 1) {
-        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) g.closed[r.id] = false;
-        else if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) g.closed[r.id] = true;
+    if (r.foldable) {
+        if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) g.closed[r.fold_id] = false;
+        else if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) g.closed[r.fold_id] = true;
     }
     if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter))
         ActivateRow(r, VisibleKeys(rows), io.KeyShift, io.KeyCtrl);
@@ -668,10 +1037,16 @@ void HandleTreeKeys(const std::vector<Row>& rows)
 
 // ---- Details ----------------------------------------------------------------------------------------------
 
+void OpenLibraryViewUid(const std::string& uid)
+{
+    if (const SoundLibrary* l = FindLibrary(GetSoundStore(nullptr), uid)) SelectLibraryRow(l->uid, LibraryRow{std::string(), l->root});
+    SetViewMode(ViewMode::Library);
+}
+
 void OpenLibraryView(const av::Target* t)
 {
-    if (t && t->lib) SelectLibraryRow(t->lib->uid, LibraryRow{std::string(), t->lib->root});
-    SetViewMode(ViewMode::Library);
+    if (t && t->lib) OpenLibraryViewUid(t->lib->uid);
+    else SetViewMode(ViewMode::Library);
 }
 
 void Banner(bool warn, const std::string& text, const av::Target* open_for)
@@ -851,7 +1226,7 @@ void DrawGroupRow(const Frame& f, const std::vector<const av::Target*>& sel, boo
         }
     if (unreached == static_cast<int>(sel.size())) ImGui::PopStyleVar();
     // Events that set their own value of this group.
-    if (!item_row) {
+    if (!item_row && !f.keyed) {
         std::vector<std::string> rids;
         std::vector<int>         blocks;
         RulesOf(f, sel, &rids, &blocks);
@@ -865,9 +1240,8 @@ void DrawGroupRow(const Frame& f, const std::vector<const av::Target*>& sel, boo
     ImGui::PopID();
 }
 
-void DrawPlays(const std::vector<const av::Target*>& sel, bool item_scope_note)
+void DrawPlays(const std::vector<const av::Target*>& sel, bool for_defaults)
 {
-    (void)item_scope_note;
     const std::vector<av::PlaysLine> lines = av::PlaysLines(sel);
     bool                             blocked = false;
     for (const av::Target* t : sel)
@@ -876,7 +1250,7 @@ void DrawPlays(const std::vector<const av::Target*>& sel, bool item_scope_note)
     ui::Well        well;
     if (blocked) ui::BeginConfirmBand(band, 0.0f, true);
     else ui::BeginWell(well);
-    ui::GroupCaption("Plays");
+    ui::GroupCaption(for_defaults ? "Plays (for an item that sets nothing)" : "Plays");
     const size_t shown = std::min<size_t>(lines.size(), 4);
     for (size_t i = 0; i < shown; ++i) {
         ImGui::PushID(static_cast<int>(i));
@@ -914,7 +1288,7 @@ void LadderRowDraw(const SoundStore& store, const std::string& label, bool hit, 
 
 void DrawLadder(const Frame& f, const av::Target& t)
 {
-    const av::Ladder ld = av::BuildLadder(*f.store, f.ch, t);
+    const av::Ladder ld = av::BuildLadder(*f.store, f.keyed ? f.key.scope_ch : f.ch, t, !f.keyed);
     ui::Section      s;
     ui::SectionOpts  o;
     o.suffix = "top = general \xC2\xB7 bottom = precise";
@@ -941,15 +1315,297 @@ void DrawLadder(const Frame& f, const av::Target& t)
                 ui::EllipsisTextTip(dl, ImVec2(nx, y), right, ui::kText, text);
             });
         }
-        LadderRowDraw(*f.store, "event", false, [&](ImDrawList* dl, float x, float y, float right) {
-            ui::EllipsisTextTip(dl, ImVec2(x, y), right, ui::kFaint, "values only, in the event inspector");
-        });
+        if (!f.keyed)
+            LadderRowDraw(*f.store, "event", false, [&](ImDrawList* dl, float x, float y, float right) {
+                ui::EllipsisTextTip(dl, ImVec2(x, y), right, ui::kFaint, "values only, in the event inspector");
+            });
     }
     ui::EndSection(s);
 }
 
+// ---- Kit and character sheets (13-15c) ---------------------------------------------------------------------
+
+// The title of a sheet: a pane title wrapped, then (same line) its tag.
+void SheetTitle(const std::string& title, const char* tag, ImU32 dot)
+{
+    {
+        ui::FontScope fs(ui::FontRole::PaneTitle);
+        float         x = 0.0f;
+        if (dot) {
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            const float  lh = ImGui::GetTextLineHeight();
+            ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + ui::Dp(5.0f), p.y + lh * 0.5f), ui::Dp(5.0f), dot);
+            x = ui::Dp(16.0f);
+            ImGui::SetCursorScreenPos(ImVec2(p.x + x, p.y));
+        }
+        ui::ToneText(title, ui::kText, true);
+        if (dot) ImGui::SetCursorPosX(ImGui::GetCursorPosX() - x);
+    }
+    if (tag) {
+        ImGui::SameLine();
+        ui::Tag(tag, ui::TagTone::Project);
+    }
+}
+
+void PickAdopt(const std::string& lib_uid, const std::string& part, const CharacterRef& ref, bool replace, const std::string& where,
+               const std::string& what)
+{
+    PickSoundGesture([lib_uid, part, ref, replace, where, what]() {
+        const SoundReport rep = AdoptKit(lib_uid, part, ref, replace);
+        SetLast("Use library kit", where, what, 1);
+        return rep;
+    });
+}
+
+void DrawKitDetails(const Frame& f)
+{
+    const std::string   uid = g.sel.keys[0].substr(4);
+    const SoundLibrary* L = FindLibrary(*f.store, uid);
+    if (!L || L->kit.empty()) {
+        ui::ToneText("This library has no kit any more.", ui::kMuted, true);
+        return;
+    }
+    SheetTitle(L->name, "kit", ui::LibDot(L->color));
+    ui::ToneText("stored in the library: it travels with its .ravlib and the User Library", ui::kMuted, true);
+    ui::ToneText("A kit is a suggestion: it plays nothing until this project (or one of its characters) uses it. Edit it in the "
+                 "Library view (the library's \xE2\x8B\xAF menu, Kit...).",
+                 ui::kFaint, true);
+    const std::vector<av::KitPart> parts = av::KitParts(*f.store, *L, f.key.chars);
+    for (const av::KitPart& kp : parts) {
+        ImGui::PushID(kp.part.c_str());
+        const std::string roles = "roles: " + av::KitPartRoles(kp.part);
+        ui::Section       s;
+        ui::SectionOpts   o;
+        o.suffix = roles.c_str();
+        if (ui::BeginSection(s, PartLabel(kp.part).c_str(), o)) {
+            const bool taken = kp.state != av::KitPart::State::ProjectDefault && PartIsSet(f.store->project, kp.part);
+            if (kp.state == av::KitPart::State::ProjectDefault) {
+                ui::Tag("project default", ui::TagTone::Project);
+            } else if (taken) {
+                const SoundLibrary* other = FindLibrary(*f.store, kp.project_lib);
+                ui::Tag(("project uses " + (other ? other->name : std::string("None"))).c_str(), ui::TagTone::Warn);
+            } else {
+                ui::Tag("not used");
+            }
+            for (const std::string& c : kp.chars) {
+                ui::SameLineIfFits(ui::TagWidth(c.c_str()));
+                ui::Tag(c.c_str(), ui::TagTone::Project);
+            }
+            ui::ToneText(av::KitPartWhat(kp.part), ui::kMuted, true);
+            const std::string where = "Project", what = PartLabel(kp.part) + " = " + L->name;
+            if (kp.state != av::KitPart::State::ProjectDefault) {
+                const char* label = taken ? "Replace as project default##adopt" : "Use as project default##adopt";
+                if (taken ? ui::SolidButton(label) : ui::PrimaryButton(label)) PickAdopt(uid, kp.part, CharacterRef(), taken, where, what);
+                ui::SameLineIfFits(ui::Dp(150.0f));
+            }
+            // "Use for this character": the picked character gets the library for this part.
+            const av::CharEntry* pick = nullptr;
+            for (const av::CharEntry& c : f.key.chars)
+                if (c.key == g.kit_char) pick = &c;
+            if (!pick && !f.key.chars.empty()) pick = &f.key.chars[static_cast<size_t>(std::max(0, f.key.cur))];
+            if (!pick) ImGui::BeginDisabled();
+            if (ui::BeginComboStyled("##kitchar", pick ? pick->ch.name.c_str() : "No character yet", ui::Dp(150.0f))) {
+                for (const av::CharEntry& c : f.key.chars)
+                    if (ImGui::Selectable((c.ch.name + "##" + c.key).c_str(), pick == &c)) g.kit_char = c.key;
+                ui::EndComboStyled();
+            }
+            ui::SameLineIfFits(ui::ButtonWidth("Use for this character##usechar"));
+            if (ui::SolidButton("Use for this character##usechar") && pick)
+                PickAdopt(uid, kp.part, pick->ref, true, pick->ch.name, PartLabel(kp.part) + " = " + L->name);
+            if (!pick) ImGui::EndDisabled();
+        }
+        ui::EndSection(s);
+        ImGui::PopID();
+    }
+    ui::ToneText("When a library is added to the project, RAV offers its kit once (\"FS Hero serves Feet: use it?\"). It never "
+                 "replaces a body part already set.",
+                 ui::kFaint, true);
+}
+
+// "Feet \xC2\xB7 Step" as a link that selects that key in the tree.
+void GoToKey(const std::string& key)
+{
+    std::string part, type;
+    SplitAssignKey(key, &part, &type);
+    g.sel.Clear();
+    g.sel.keys.push_back(key);
+    g.sel.anchor = g.sel.cursor = key;
+    g.closed["p:" + part] = false;
+    g.folded["parts"] = false;
+    g.nav = key;
+    g.nav_shown = true;
+    g.nav_scroll = true;
+}
+
+void DrawCharDetails(const Frame& f)
+{
+    const av::CharEntry* ce = nullptr;
+    for (const av::CharEntry& c : f.key.chars)
+        if (c.key == g.sel.keys[0]) ce = &c;
+    if (!ce) {
+        ui::ToneText("This character is no longer in the project.", ui::kMuted, true);
+        return;
+    }
+    const SoundStore& store = *f.store;
+    SheetTitle(ce->ch.name, nullptr, 0);
+    ui::ToneText("rig " + av::RigSig(ce->ch.skeleton) + kDot + std::to_string(ce->items) + (ce->items == 1 ? " item" : " items") +
+                     " in this project",
+                 ui::kMuted, true);
+    // Name: Enter or leaving the field renames it (one undo point); empty puts the name back.
+    {
+        if (g.name_for != ce->key || !g.name_active) {
+            g.name_for = ce->key;
+            std::snprintf(g.name_buf, sizeof(g.name_buf), "%s", ce->ch.name.c_str());
+        }
+        const float w = ui::LabelRow("Name", ui::Dp(140.0f));
+        ui::TextField("##charname", "Character name", g.name_buf, sizeof(g.name_buf), w,
+                      ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+        g.name_active = ImGui::IsItemActive();
+        if (ImGui::IsItemDeactivated()) {
+            std::string name = g.name_buf;
+            while (!name.empty() && name.back() == ' ') name.pop_back();
+            while (!name.empty() && name.front() == ' ') name.erase(name.begin());
+            if (name.empty()) {
+                std::snprintf(g.name_buf, sizeof(g.name_buf), "%s", ce->ch.name.c_str());
+            } else if (name != ce->ch.name) {
+                const CharacterRef ref = ce->ref;
+                PickSoundGesture([ref, name]() {
+                    const SoundReport rep = RenameCharacterRef(ref, name);
+                    SetLast("Rename character", name, "Name = " + name, 1);
+                    return rep;
+                });
+            }
+        }
+    }
+    ui::LabelRow("Recognised by", ui::Dp(140.0f));
+    ui::ToneText("its skeleton: " + av::RigSig(ce->ch.skeleton) + kDot + std::to_string(ce->bones) + " bones (same key as the bone roles)",
+                 ui::kMuted, true);
+    {  // Model files
+        ui::Section     s;
+        ui::SectionOpts o;
+        const std::string all = "all read as " + ce->ch.name;
+        o.suffix = all.c_str();
+        if (ui::BeginSection(s, "Model files", o)) {
+            if (ce->models.empty()) ui::SubText("No animation item reads this character yet.");
+            for (const av::RigModelIn& m : ce->models) {
+                std::string files;
+                for (const std::string& file : m.files) files += (files.empty() ? "" : ", ") + file;
+                if (files.empty()) files = "(model not readable)";
+                ImGui::PushID(m.model.c_str());
+                ui::ToneText(files, ui::kText, true);
+                ui::ToneText(std::to_string(m.items) + (m.items == 1 ? " item" : " items"), ui::kFaint, true);
+                ImGui::PopID();
+            }
+            const bool can = ce->ch.model.empty() && ce->models.size() > 1;
+            if (!can) ImGui::BeginDisabled();
+            if (ui::SolidButton("Split by model file...##split") && can) {
+                const CharacterRef ref = ce->ref;
+                PickSoundGesture([ref]() {
+                    const SoundReport rep = SplitRig(ref);
+                    SetLast("Split character", ref.name, "one character per model file", 1);
+                    return rep;
+                });
+            }
+            if (!can) ImGui::EndDisabled();
+            ui::ItemTipText(can ? "Each model file becomes its own character, starting from this one's settings"
+                                : "Needs two or more model files on this rig");
+            ui::SameLineIfFits(ui::TextWidth("when two characters share this rig") + ui::Dp(8.0f));
+            ui::ToneText("when two characters share this rig", ui::kFaint);
+        }
+        ui::EndSection(s);
+    }
+    {  // Differs from the project
+        const std::vector<std::string> keys = av::OverrideKeys(ce->ch.assigns);
+        ui::Section                    s;
+        ui::SectionOpts                o;
+        const std::string              count = std::to_string(keys.size());
+        o.suffix = count.c_str();
+        if (ui::BeginSection(s, "Differs from the project", o)) {
+            if (keys.empty()) ui::SubText("Nothing: every item of this character reads the project defaults.");
+            for (const std::string& key : keys) {
+                const SoundAssign* a = FindAssign(ce->ch.assigns, key);
+                if (!a) continue;
+                ImGui::PushID(key.c_str());
+                if (ui::LinkButton((AssignKeyLabel(key) + "##go").c_str())) GoToKey(key);
+                std::string bits;
+                if (a->state == LibState::None) bits = "None";
+                else if (a->state == LibState::Library) {
+                    const SoundLibrary* l = FindLibrary(store, a->library);
+                    bits = l ? l->name : std::string("(gone)");
+                }
+                for (const ValueSet& v : a->values) {
+                    if (v.value_uid.empty()) continue;
+                    const SwitchGroup* grp = FindGroup(store, v.group_uid);
+                    std::string        vn = v.value_uid;
+                    if (grp)
+                        for (const SwitchValue& sv : grp->values)
+                            if (sv.uid == v.value_uid) vn = sv.name;
+                    bits += (bits.empty() ? "" : ", ") + (grp ? grp->name : std::string("(deleted group)")) + " = " + vn;
+                }
+                ui::ToneText(bits, ui::kMuted, true);
+                ImGui::PopID();
+            }
+        }
+        ui::EndSection(s);
+    }
+}
+
+// Under a Project / Character key's library row: the kits that also serve a Project part, the other characters.
+void DrawKeyExtras(const Frame& f, const std::vector<const av::Target*>& sel)
+{
+    if (sel.size() != 1) return;
+    const av::Target& t = *sel[0];
+    if (!f.key.scope_ch && t.type.empty()) {
+        for (const SoundLibrary* l : av::OtherKitsServing(*f.store, t.part, t.ea.library)) {
+            ImGui::PushID(l->uid.c_str());
+            ui::Well well;
+            ui::BeginWell(well);
+            ui::ToneText(l->name + "'s kit also serves " + PartLabel(t.part) +
+                             ". A project has one default per body part: use it for a character instead.",
+                         ui::kMuted, true);
+            if (ui::SolidButton("See the kit##seekit")) {
+                g.sel.Clear();
+                g.sel.keys.push_back("kit:" + l->uid);
+                g.sel.anchor = g.sel.cursor = g.sel.keys[0];
+                g.folded["kits"] = false;
+                g.nav = g.sel.keys[0];
+            }
+            ui::EndWell(well);
+            ImGui::PopID();
+        }
+    }
+    if (f.key.scope_ch) {
+        const std::vector<av::OtherChar> others = av::OtherCharacters(*f.store, f.key.chars, static_cast<size_t>(std::max(0, f.key.cur)), t.key);
+        if (!others.empty()) {
+            ui::ToneText("Other characters:", ui::kMuted);
+            for (const av::OtherChar& o : others) {
+                LadderRowDraw(*f.store, o.name, false, [&](ImDrawList* dl, float x, float y, float right) {
+                    const SoundLibrary* l = o.ea.library.empty() ? nullptr : FindLibrary(*f.store, o.ea.library);
+                    float               nx = x;
+                    if (l) {
+                        dl->AddCircleFilled(ImVec2(x + ui::Dp(4.0f), y + ImGui::GetTextLineHeight() * 0.5f), ui::Dp(4.0f), ui::LibDot(l->color));
+                        nx += ui::Dp(14.0f);
+                    }
+                    const std::string name = l ? l->name : o.ea.none ? std::string("None") : std::string("nothing");
+                    ui::EllipsisTextTip(dl, ImVec2(nx, y), right, l ? ui::kText : ui::kFaint, name + (o.ea.level == AssignLevel::Unset ? std::string() : "  (" + o.ea.from + ")"));
+                });
+            }
+        }
+    }
+}
+
 void DrawDetails(const Frame& f)
 {
+    if (f.keyed && !g.sel.keys.empty()) {
+        if (g.sel.keys[0].compare(0, 4, "kit:") == 0) {
+            DrawKitDetails(f);
+            return;
+        }
+        if (g.sel.keys[0].compare(0, 5, "char:") == 0) {
+            DrawCharDetails(f);
+            return;
+        }
+    }
     std::vector<const av::Target*> sel = SelectedTargets(f);
     if (sel.empty()) {
         ImGui::Dummy(ImVec2(0.0f, ui::Dp(16.0f)));
@@ -974,10 +1630,18 @@ void DrawDetails(const Frame& f)
         int b = -1;
         if (av::BlockOfKey(t->key, &b) && b >= 0 && static_cast<size_t>(b) < f.blocks.size() && !IsAutoBlock(f.blocks[static_cast<size_t>(b)])) any_rule = true;
     }
-    ui::ToneText(av::ScopeLine(item_row, any_rule, f.pool_text, f.char_name), ui::kMuted, true);
+    if (f.keyed) {
+        ui::ToneText(f.key.scope_ch ? "every item of " + f.char_name + " (rig " + av::RigSig(f.key.scope_ch->skeleton) +
+                                          "), unless the item sets its own"
+                                    : std::string("project default \xC2\xB7 every character and item, unless they set their own"),
+                     ui::kMuted, true);
+    } else {
+        ui::ToneText(av::ScopeLine(item_row, any_rule, f.pool_text, f.char_name), ui::kMuted, true);
+    }
 
     if (!item_row) {
         DrawLibraryRow(f, sel, mix);
+        if (f.keyed) DrawKeyExtras(f, sel);
     }
     if (mix.lib) {
         Banner(false,
@@ -987,7 +1651,7 @@ void DrawDetails(const Frame& f)
                    return libs;
                }()).size()) + " different libraries. Pick one library above to edit their Switch values together.",
                nullptr);
-        DrawPlays(sel, false);
+        DrawPlays(sel, f.keyed);
         return;
     }
     const av::Target& first = *sel[0];
@@ -1016,8 +1680,9 @@ void DrawDetails(const Frame& f)
     }
     ui::EndSection(s);
     if (item_row) return;
-    DrawPlays(sel, false);
+    DrawPlays(sel, f.keyed);
     if (sel.size() == 1) DrawLadder(f, first);
+    if (f.keyed) return;
     // Where the sounds land in the Library.
     std::vector<std::string> tracks;
     for (const av::Target* t : sel)
@@ -1042,8 +1707,130 @@ void DrawDetails(const Frame& f)
 
 // ---- Overview -----------------------------------------------------------------------------------------------
 
+// Moves to a scope (13-15c), keeping each scope's selection: the Project and Character scopes come back as they
+// were (the first time on "Feet"), the Item scope starts empty.
+void SwitchScope(int sc)
+{
+    if (sc == g.scope) return;
+    g.sel_by[g.scope] = g.sel;
+    g.scope = sc;
+    g.nav.clear();
+    if (sc == kScopeItem) {
+        g.sel.Clear();
+        g.sel_sig.clear();
+        return;
+    }
+    g.sel = g.sel_by[sc];
+    if (!g.key_init[sc]) {
+        g.key_init[sc] = true;
+        g.sel.keys.assign(1, "feet");
+        g.sel.anchor = g.sel.cursor = "feet";
+        g.closed["p:feet"] = false;
+    }
+}
+
+// "Who plays what" (the Overview at Project / Character scope): the body parts and their types by the Project
+// and every character; click a character's cell to edit that character, anything else to edit the project.
+void DrawWhoOverview(const Frame& f, float height)
+{
+    if (!ui::BeginPane("##assignmx", ImVec2(0.0f, height), ui::kSurface, 0, ImGuiWindowFlags_HorizontalScrollbar)) {
+        ui::EndPane();
+        return;
+    }
+    const std::vector<av::CharEntry>& cs = f.key.chars;
+    const size_t cols = 1 + cs.size();
+    const float  avail = std::max(ui::Dp(420.0f), ImGui::GetContentRegionAvail().x);
+    const float  c0 = ui::Dp(150.0f);
+    const float  cw = std::max(ui::Dp(150.0f), (avail - c0) / static_cast<float>(cols));
+    const float  total = c0 + cw * static_cast<float>(cols);
+    const float  rh = ui::Dp(28.0f);
+    const int    cur_col = g.scope == kScopeProject || f.key.cur < 0 ? 0 : 1 + f.key.cur;
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    {  // header
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        ui::FontScope fs(ui::FontRole::Tiny);
+        auto head = [&](float x, std::string t, bool cur) {
+            for (char& c : t) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            ui::EllipsisTextTip(dl, ImVec2(p.x + x + ui::Dp(8.0f), p.y + ui::Dp(5.0f)), p.x + x + cw - ui::Dp(6.0f), cur ? ui::kAccentText : ui::kFaint, t);
+        };
+        dl->AddText(ImVec2(p.x + ui::Dp(8.0f), p.y + ui::Dp(5.0f)), ui::kFaint, "BODY PART \xC2\xB7 TYPE");
+        head(c0, "Project", cur_col == 0);
+        for (size_t i = 0; i < cs.size(); ++i) head(c0 + cw * static_cast<float>(i + 1), cs[i].ch.name, cur_col == static_cast<int>(i + 1));
+        dl->AddLine(ImVec2(p.x, p.y + ui::Dp(22.0f)), ImVec2(p.x + total, p.y + ui::Dp(22.0f)), ui::kStroke);
+        ImGui::Dummy(ImVec2(total, ui::Dp(24.0f)));
+    }
+    for (const BodyPart& bp : BodyParts()) {
+        std::vector<std::string> keys = {bp.id};
+        for (const PartType& t : bp.types) keys.push_back(AssignKey(bp.id, t.word));
+        for (const std::string& key : keys) {
+            const bool   is_part = key == bp.id;
+            std::string  part_id, type_id;
+            SplitAssignKey(key, &part_id, &type_id);
+            ImGui::PushID(key.c_str());
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            const float  ty = std::floor(p.y + (rh - ImGui::GetTextLineHeight()) * 0.5f);
+            // The current column behind the cells.
+            dl->AddRectFilled(ImVec2(p.x + c0 + cw * static_cast<float>(cur_col), p.y), ImVec2(p.x + c0 + cw * static_cast<float>(cur_col + 1), p.y + rh),
+                              ui::kAccentFaint);
+            if (ui::SelectRow("##mxrow", g.sel.Has(key), 0, rh, 0, ui::kRadiusSm, total)) {
+                const float mx = ImGui::GetIO().MousePos.x - p.x - c0;
+                const int   col = mx < 0.0f ? 0 : static_cast<int>(mx / cw);  // 0 = the Project, i = a character
+                if (col > 0 && static_cast<size_t>(col) <= cs.size()) {
+                    g.cur_skel = cs[static_cast<size_t>(col - 1)].ch.skeleton;
+                    g.cur_model = cs[static_cast<size_t>(col - 1)].ch.model;
+                    SwitchScope(kScopeCharacter);
+                } else {
+                    SwitchScope(kScopeProject);
+                }
+                g.key_init[g.scope] = true;
+                g.sel.Clear();
+                g.sel.keys.push_back(key);
+                g.sel.anchor = g.sel.cursor = key;
+                g.closed["p:" + part_id] = false;
+                g.folded["parts"] = false;
+                g.overview = false;
+            }
+            {
+                ui::FontScope fs(is_part ? ui::FontRole::Semibold : ui::FontRole::Body);
+                ui::EllipsisTextTip(dl, ImVec2(p.x + ui::Dp(is_part ? 8.0f : 22.0f), ty), p.x + c0 - ui::Dp(6.0f), is_part ? ui::kText : ui::kFaint,
+                                    is_part ? bp.label : TypeLabel(bp.id, type_id));
+            }
+            for (size_t c = 0; c < cols; ++c) {
+                const av::WhoCell cell = av::WhoCellFor(*f.store, c == 0 ? nullptr : &cs[c - 1].ch, key);
+                float             x = p.x + c0 + cw * static_cast<float>(c) + ui::Dp(8.0f);
+                const float       lim = p.x + c0 + cw * static_cast<float>(c + 1) - ui::Dp(6.0f);
+                const SoundLibrary* l = cell.library.empty() ? nullptr : FindLibrary(*f.store, cell.library);
+                if (l) {
+                    dl->AddCircleFilled(ImVec2(x + ui::Dp(4.0f), ty + ImGui::GetTextLineHeight() * 0.5f), ui::Dp(4.0f), ui::LibDot(l->color));
+                    x += ui::Dp(14.0f);
+                }
+                std::string text = l ? l->name : cell.unset ? std::string("\xE2\x80\x94") : cell.none ? std::string("None") : std::string("(gone)");
+                const float kit_w = cell.kit ? ui::SmallTagWidth("kit") + ui::Dp(6.0f) : 0.0f;
+                if (!cell.own && !cell.unset) text += "  " + cell.from;
+                ui::EllipsisTextTip(dl, ImVec2(x, ty), lim - kit_w, cell.own ? ui::kText : cell.unset ? ui::kFaint : ui::kMuted, text);
+                if (cell.kit && lim - kit_w > x + ui::Dp(40.0f)) {
+                    const float tw = std::min(ImGui::CalcTextSize(text.c_str()).x, lim - kit_w - x);
+                    ui::DrawSmallTag(dl, ImVec2(x + tw + ui::Dp(6.0f), p.y + (rh - ui::SmallTagHeight()) * 0.5f), "kit");
+                }
+            }
+            ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh));
+            ImGui::Dummy(ImVec2(0.0f, 0.0f));
+            ImGui::PopID();
+        }
+    }
+    ImGui::Dummy(ImVec2(0.0f, ui::Dp(4.0f)));
+    ui::ToneText("Who plays what, per character. White = set at that level; grey = inherited (its source after it). Click a character's cell "
+                 "to edit that character, a row to edit the project.",
+                 ui::kMuted, true);
+    ui::EndPane();
+}
+
 void DrawOverview(const Frame& f, float height)
 {
+    if (f.keyed) {
+        DrawWhoOverview(f, height);
+        return;
+    }
     if (!ui::BeginPane("##assignmx", ImVec2(0.0f, height), ui::kSurface, 0, ImGuiWindowFlags_HorizontalScrollbar)) {
         ui::EndPane();
         return;
@@ -1278,6 +2065,47 @@ void DrawItemPicker(const Frame& f)
     ui::EndComboStyled();
 }
 
+// The Character scope's picker: one entry per character of the project; the one picked is the current one.
+void DrawCharPicker(const Frame& f)
+{
+    std::string preview = "No character yet";
+    if (f.key.cur >= 0) {
+        const av::CharEntry& c = f.key.chars[static_cast<size_t>(f.key.cur)];
+        preview = c.ch.name + kDot + "rig " + av::RigSig(c.ch.skeleton);
+    }
+    if (!ui::BeginComboStyled("##assignchar", preview.c_str(), ui::Dp(210.0f))) return;
+    for (size_t i = 0; i < f.key.chars.size(); ++i) {
+        const av::CharEntry& c = f.key.chars[i];
+        std::string          label = c.ch.name + kDot + "rig " + av::RigSig(c.ch.skeleton);
+        if (!c.ch.model.empty() && !c.models.empty() && !c.models[0].files.empty()) label += kDot + c.models[0].files.front();
+        const bool cur = static_cast<int>(i) == f.key.cur;
+        if (ImGui::Selectable((label + "##" + c.key).c_str(), cur) && !cur) {
+            g.cur_skel = c.ch.skeleton;
+            g.cur_model = c.ch.model;
+            if (!g.sel.keys.empty() && g.sel.keys[0].compare(0, 5, "char:") == 0) {
+                g.sel.keys.assign(1, c.key);
+                g.sel.anchor = g.sel.cursor = c.key;
+            }
+        }
+    }
+    ui::EndComboStyled();
+}
+
+// Drops the selected rows that went away (a kit removed, a character gone); a character stored since keeps its row.
+void PruneKeySel(const Frame& f)
+{
+    std::vector<std::string> valid = av::AllKeys();
+    for (const SoundLibrary& l : f.store->libraries)
+        if (!l.kit.empty()) valid.push_back("kit:" + l.uid);
+    for (const av::CharEntry& c : f.key.chars) valid.push_back(c.key);
+    if (!g.sel.keys.empty() && av::KindOf(g.sel.keys[0]) == av::RowKind::Char &&
+        std::find(valid.begin(), valid.end(), g.sel.keys[0]) == valid.end() && f.key.cur >= 0) {
+        g.sel.keys.assign(1, f.key.chars[static_cast<size_t>(f.key.cur)].key);
+        g.sel.anchor = g.sel.cursor = g.sel.keys[0];
+    }
+    av::Prune(g.sel, valid);
+}
+
 void DrawFooter()
 {
     const float  h = ImGui::GetTextLineHeight() + ui::Dp(10.0f);
@@ -1308,7 +2136,7 @@ void DrawFooter()
 void DrawTreePane(const Frame& f, ImVec2 size)
 {
     if (ui::BeginPane("##assigntree", size, ui::kSurface)) {
-        const std::vector<Row> rows = BuildRows(f);
+        const std::vector<Row> rows = f.keyed ? BuildKeyRows(f) : BuildRows(f);
         if (rows.empty()) ui::SubText("Nothing matches the filter.");
         DrawTreeRows(f, rows);
         HandleTreeKeys(rows);
@@ -1370,6 +2198,7 @@ void ApplyRequest(const Frame& f)
 void OpenAssignWindow(MediaItem* item, const std::vector<int>& blocks)
 {
     g.open = true;
+    g.rigs_count = -1;  // the rigs of the project are read again
     g.focus_request = true;
     if (item && !blocks.empty()) {
         g.request = true;
@@ -1435,9 +2264,19 @@ void DrawAssignWindow(const TaggingModel& m)
         g.size = ImGui::GetWindowSize();
         const bool focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
         if (focused) g.focused_frame = frame;
-        Frame      f;
-        const bool ok = BuildFrame(g.item, &f);
-        if (ok) {
+        if (g.request && g.scope != kScopeItem) SwitchScope(kScopeItem);  // the strip's Assign... opens the Item scope
+        Frame f;
+        bool  ok = false;
+        if (g.scope != kScopeItem) {
+            BuildKeyFrame(&f);
+            ok = f.ok;
+            PruneKeySel(f);
+        } else {
+            ok = BuildFrame(g.item, &f);
+        }
+        if (g.scope != kScopeItem) {
+            // (the Project and Character scopes keep their selection until a row goes away)
+        } else if (ok) {
             if (g.sel_item != g.item) {  // another item: its rows are not these rows
                 g.sel.Clear();
                 g.closed.clear();
@@ -1463,14 +2302,13 @@ void DrawAssignWindow(const TaggingModel& m)
         {  // Scope bar: where you edit, the item, the reading order.
             static const char* const kScopes[] = {"Project", "Character", "Item"};
             int                      sc = g.scope;
-            if (ui::Segmented("##assignscope", kScopes, 3, &sc)) {
-                g.scope = sc;
-                g.sel.Clear();
-                g.sel_sig.clear();
-            }
+            if (ui::Segmented("##assignscope", kScopes, 3, &sc)) SwitchScope(sc);
             if (g.scope == kScopeItem) {
                 ui::SameLineIfFits(ui::Dp(210.0f));
                 DrawItemPicker(f);
+            } else if (g.scope == kScopeCharacter) {
+                ui::SameLineIfFits(ui::Dp(210.0f));
+                DrawCharPicker(f);
             }
             DrawCrumb(f);
         }
@@ -1495,7 +2333,10 @@ void DrawAssignWindow(const TaggingModel& m)
                 std::set<std::string>                libs;
                 for (const av::Target* t : sel)
                     if (t->lib) libs.insert(t->lib->uid);
-                if (libs.size() == 1) OpenLibraryView(sel[0]);
+                if (ok && f.keyed)
+                    for (const std::string& k : g.sel.keys)
+                        if (k.compare(0, 4, "kit:") == 0) libs.insert(k.substr(4));  // a kit row: its library
+                if (libs.size() == 1) OpenLibraryViewUid(*libs.begin());
                 else SetViewMode(ViewMode::Library);
             }
             ui::ItemTipText("Open the Library view (this window stays open)");
@@ -1503,12 +2344,9 @@ void DrawAssignWindow(const TaggingModel& m)
         const float foot_h = ImGui::GetTextLineHeight() + ui::Dp(10.0f) + ImGui::GetStyle().ItemSpacing.y;
         const float body_h = std::max(ui::Dp(80.0f), ImGui::GetContentRegionAvail().y - foot_h);
         if (!ok) {
-            ui::SubText("No animation item with readable rules is shown. Select a RAV animation item in REAPER.");
-            ImGui::Dummy(ImVec2(0.0f, body_h - ImGui::GetTextLineHeightWithSpacing()));
-        } else if (g.scope != kScopeItem) {
-            // 13-15c: the Project and Character scopes replace this branch (their tree + details + overview go
-            // here, dispatched on g.scope like the Item ones below).
-            ui::SubText("Project and Character levels: next update");
+            ui::SubText(g.scope == kScopeItem
+                            ? "No animation item with readable rules is shown. Select a RAV animation item in REAPER."
+                            : "No animation item in the project has a readable rig yet: its character appears here.");
             ImGui::Dummy(ImVec2(0.0f, body_h - ImGui::GetTextLineHeightWithSpacing()));
         } else if (g.overview) {
             DrawOverview(f, body_h);

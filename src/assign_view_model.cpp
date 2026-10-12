@@ -253,8 +253,10 @@ void ReachWalk(const SoundStore& store, const SoundLibrary& lib, const ValueLaye
 // The groups of `lib` as a target with these layers shows them. `own` = the target's own layer values;
 // `below` = the layers under it (what inherit gives).
 void FillGroups(const SoundStore& store, const SoundLibrary& lib, const EffectiveAssign& ea,
-                const std::vector<ValueSet>& own, bool item_row, bool blocked, Target* t)
+                const std::vector<ValueSet>& own, bool item_row, bool blocked, Target* t, const EffectiveAssign* inh = nullptr)
 {
+    // `inh` (13-15c, a Project / Character key): what inherit gives is that resolution, not the item layer.
+    const EffectiveAssign& below_ea = inh ? *inh : ea;
     std::set<std::string> path, reached_groups;
     if (!blocked)
         if (const SoundNode* root = FindNode(lib, lib.root)) {
@@ -283,15 +285,15 @@ void FillGroups(const SoundStore& store, const SoundLibrary& lib, const Effectiv
             }
             // What inherit gives: the layers under the own one (for a rule, the item layer; for the Item row, the default).
             ValueLayers below;
-            if (!item_row) below.item = ea.layers.item;
+            if (!item_row) below.item = below_ea.layers.item;
             ValueFrom   vf2 = ValueFrom::Default;
             std::string iv = EffectiveValue(*use.first_switch, below, &vf2);
             if (vf2 == ValueFrom::Default) iv = DefaultValue(store, *use.first_switch);
             gs.inherit_name = ValueNameOf(g, iv);
             gs.inherit_from = "default";
             if (vf2 != ValueFrom::Default) {
-                gs.inherit_from = "item";
-                for (const auto& f : ea.item_from)
+                gs.inherit_from = inh ? "default" : "item";
+                for (const auto& f : below_ea.item_from)
                     if (f.first == use.group_uid) gs.inherit_from = f.second;
             }
             if (!blocked && !reached_groups.count(use.group_uid)) {
@@ -301,6 +303,24 @@ void FillGroups(const SoundStore& store, const SoundLibrary& lib, const Effectiv
         }
         t->groups.push_back(gs);
     }
+}
+
+
+// The library of a target's effective assignment: found, empty or blocked, and its Switch Groups.
+void FinishTarget(const SoundStore& store, const std::vector<ValueSet>& own_values, Target* t, const EffectiveAssign* inh)
+{
+    t->lib = t->ea.library.empty() ? nullptr : FindLibrary(store, t->ea.library);
+    if (!t->lib) return;
+    if (!HasSound(*t->lib)) {
+        t->lib_empty = true;
+    } else {
+        const LibraryCheck chk = CheckLibrary(store, *t->lib);
+        if (chk.blocked) {
+            t->lib_blocked = true;
+            t->blocked_reason = BlockedText(store, *t->lib, chk);
+        }
+    }
+    if (!t->lib_empty) FillGroups(store, *t->lib, t->ea, own_values, false, t->lib_blocked, t, inh);
 }
 
 }  // namespace
@@ -319,19 +339,7 @@ Target MakeTarget(const SoundStore& store, const ItemSounds& rec, const SoundCha
         t.own_state = rs->none ? LibState::None : rs->library.empty() ? LibState::Inherit : LibState::Library;
         t.own_library = rs->library;
     }
-    t.lib = t.ea.library.empty() ? nullptr : FindLibrary(store, t.ea.library);
-    if (t.lib) {
-        if (!HasSound(*t.lib)) {
-            t.lib_empty = true;
-        } else {
-            const LibraryCheck chk = CheckLibrary(store, *t.lib);
-            if (chk.blocked) {
-                t.lib_blocked = true;
-                t.blocked_reason = BlockedText(store, *t.lib, chk);
-            }
-        }
-        if (!t.lib_empty) FillGroups(store, *t.lib, t.ea, rs ? rs->values : std::vector<ValueSet>(), false, t.lib_blocked, &t);
-    }
+    FinishTarget(store, rs ? rs->values : std::vector<ValueSet>(), &t, nullptr);
     return t;
 }
 
@@ -585,7 +593,7 @@ int EventOverrideCount(const ItemSounds& rec, const std::vector<std::string>& ri
     return n;
 }
 
-Ladder BuildLadder(const SoundStore& store, const SoundCharacter* ch, const Target& t)
+Ladder BuildLadder(const SoundStore& store, const SoundCharacter* ch, const Target& t, bool rule_row)
 {
     Ladder out;
     out.part_label = PartLabel(t.part);
@@ -605,11 +613,15 @@ Ladder BuildLadder(const SoundStore& store, const SoundCharacter* ch, const Targ
         out.rows.push_back(r);
     };
     level("Project", store.project, t.part, std::string());
-    level("Project", store.project, AssignKey(t.part, t.type), t.type);
+    if (!t.type.empty()) level("Project", store.project, AssignKey(t.part, t.type), t.type);
     if (ch) {
         const std::string name = ch->name.empty() ? std::string("Character") : ch->name;
         level(name, ch->assigns, t.part, std::string());
-        level(name, ch->assigns, AssignKey(t.part, t.type), t.type);
+        if (!t.type.empty()) level(name, ch->assigns, AssignKey(t.part, t.type), t.type);
+    }
+    if (!rule_row) {
+        for (LadderRow& r : out.rows) r.hit = r.set && r.label == t.ea.from;
+        return out;
     }
     LadderRow rule;
     rule.label = t.type == kTypeRules ? "this rule" : "this type";
@@ -652,6 +664,240 @@ Cell OverviewCell(const Target& t, const std::string& group_uid)
     return c;
 }
 
+// ---- Project and Character scopes (13-15c) -------------------------------------------------------------
+
+std::string RigSig(const std::string& skeleton)
+{
+    if (skeleton.size() <= 4) return skeleton;
+    return skeleton.substr(0, 4) + "\xC2\xB7" + skeleton.substr(4, 4);
+}
+
+std::vector<std::string> OverrideKeys(const std::vector<SoundAssign>& list)
+{
+    std::vector<std::string> out;
+    for (const SoundAssign& a : list) {
+        bool sets_value = false;
+        for (const ValueSet& v : a.values)
+            if (!v.value_uid.empty()) sets_value = true;
+        if (a.state != LibState::Inherit || sets_value) out.push_back(a.key);
+    }
+    return out;
+}
+
+std::vector<std::string> AllKeys()
+{
+    std::vector<std::string> out;
+    for (const BodyPart& p : BodyParts()) {
+        out.push_back(AssignKey(p.id, std::string()));
+        for (const PartType& t : p.types) out.push_back(AssignKey(p.id, t.word));
+    }
+    return out;
+}
+
+std::vector<CharEntry> BuildCharacters(const SoundStore& store, const std::vector<RigIn>& rigs)
+{
+    std::vector<CharEntry> out;
+    for (const RigIn& rig : rigs) {
+        if (rig.skeleton.empty()) continue;
+        std::vector<std::string> all_files;
+        for (const RigModelIn& m : rig.models)
+            for (const std::string& f : m.files)
+                if (std::find(all_files.begin(), all_files.end(), f) == all_files.end()) all_files.push_back(f);
+        // The whole rig reads every model that has no split of its own.
+        CharEntry whole;
+        whole.bones = rig.bones;
+        for (const RigModelIn& m : rig.models) {
+            if (!m.model.empty() && FindCharacterExact(store, rig.skeleton, m.model)) continue;
+            whole.models.push_back(m);
+            whole.items += m.items;
+        }
+        const SoundCharacter* rec = FindCharacterExact(store, rig.skeleton, std::string());
+        if (rec) {
+            whole.ch = *rec;
+            whole.stored = true;
+        } else {
+            whole.ch.skeleton = rig.skeleton;
+            std::string first;
+            for (const RigModelIn& m : rig.models)
+                if (first.empty() && !m.files.empty()) first = m.files.front();
+            whole.ch.name = first.empty() ? std::string("Character") : DefaultCharacterName(first);
+            if (whole.ch.name.empty()) whole.ch.name = "Character";
+        }
+        whole.ref.uid = whole.stored ? whole.ch.uid : std::string();
+        whole.ref.skeleton = rig.skeleton;
+        whole.ref.name = whole.ch.name;
+        whole.ref.files = all_files;
+        whole.key = whole.stored ? "char:" + whole.ch.uid : "char:v:" + rig.skeleton;
+        whole.overrides = static_cast<int>(OverrideKeys(whole.ch.assigns).size());
+        out.push_back(whole);
+        for (const RigModelIn& m : rig.models) {
+            if (m.model.empty()) continue;
+            const SoundCharacter* sp = FindCharacterExact(store, rig.skeleton, m.model);
+            if (!sp) continue;
+            CharEntry e;
+            e.ch = *sp;
+            e.stored = true;
+            e.bones = rig.bones;
+            e.items = m.items;
+            e.models.push_back(m);
+            e.ref.uid = sp->uid;
+            e.ref.skeleton = rig.skeleton;
+            e.ref.model = m.model;
+            e.ref.name = sp->name;
+            e.ref.files = m.files;
+            e.key = "char:" + sp->uid;
+            e.overrides = static_cast<int>(OverrideKeys(sp->assigns).size());
+            out.push_back(e);
+        }
+    }
+    return out;
+}
+
+Target MakeKeyTarget(const SoundStore& store, const SoundCharacter* ch, const std::string& key)
+{
+    Target t;
+    t.key = key;
+    SplitAssignKey(key, &t.part, &t.type);
+    t.title = AssignKeyLabel(key);
+    t.ea = ResolveAssign(store, ItemSounds(), ch, std::string(), t.part, t.type);
+    // What inherit gives: the same read with this key's own entry removed (its library and its values).
+    SoundStore below_store;
+    below_store.project = store.project;
+    SoundCharacter below_ch;
+    if (ch) below_ch = *ch;
+    std::vector<SoundAssign>& list = ch ? below_ch.assigns : below_store.project;
+    std::vector<ValueSet>     own_values;
+    if (const SoundAssign* own = FindAssign(static_cast<const std::vector<SoundAssign>&>(list), key)) {
+        t.own_state = own->state;
+        t.own_library = own->library;
+        t.own_kit = own->kit;
+        t.own_here = own->state != LibState::Inherit;
+        own_values = own->values;
+        list.erase(std::remove_if(list.begin(), list.end(), [&](const SoundAssign& a) { return a.key == key; }), list.end());
+    }
+    t.inherited = ResolveAssign(below_store, ItemSounds(), ch ? &below_ch : nullptr, std::string(), t.part, t.type);
+    FinishTarget(store, own_values, &t, &t.inherited);
+    return t;
+}
+
+std::vector<KitPart> KitParts(const SoundStore& store, const SoundLibrary& lib, const std::vector<CharEntry>& chars)
+{
+    std::vector<KitPart> out;
+    for (const std::string& part : lib.kit) {
+        KitPart k;
+        k.part = part;
+        if (const SoundAssign* a = FindAssign(store.project, part))
+            if (a->state != LibState::Inherit) {
+                if (a->state == LibState::Library && a->library == lib.uid) {
+                    k.state = KitPart::State::ProjectDefault;
+                } else {
+                    k.state = KitPart::State::ProjectUses;
+                    k.project_lib = a->state == LibState::Library ? a->library : std::string();
+                }
+            }
+        for (const CharEntry& c : chars)
+            if (const SoundAssign* a = FindAssign(c.ch.assigns, part))
+                if (a->state == LibState::Library && a->library == lib.uid) k.chars.push_back(c.ch.name);
+        out.push_back(k);
+    }
+    return out;
+}
+
+std::string KitStatusText(const KitPart& p)
+{
+    if (p.state == KitPart::State::ProjectDefault) return "project default";
+    if (!p.chars.empty()) {
+        std::string s = "used by ";
+        for (size_t i = 0; i < p.chars.size(); ++i) s += (i ? ", " : "") + p.chars[i];
+        return s;
+    }
+    return "not used";
+}
+
+std::vector<Seg> KitRowSegs(const std::vector<KitPart>& parts)
+{
+    std::vector<Seg> out;
+    for (size_t i = 0; i < parts.size(); ++i) {
+        if (i) out.push_back({kDot, SegTone::Faint});
+        out.push_back({PartLabel(parts[i].part) + kDot, SegTone::Normal});
+        const bool used = parts[i].state == KitPart::State::ProjectDefault || !parts[i].chars.empty();
+        const SegTone tone = parts[i].state == KitPart::State::ProjectDefault ? SegTone::Ok : used ? SegTone::Normal : SegTone::Inherited;
+        out.push_back({KitStatusText(parts[i]), tone});
+    }
+    return out;
+}
+
+std::string KitPartRoles(const std::string& part)
+{
+    if (part == "feet") return "heels, toes, knees, legs";
+    if (part == "hands") return "hands, elbows, shoulders";
+    if (part == "body") return "hips, spine, chest, neck, head";
+    return "other bones";
+}
+
+std::string KitPartWhat(const std::string& part)
+{
+    const BodyPart*          bp = FindBodyPart(part);
+    std::vector<std::string> autos;
+    if (bp)
+        for (const PartType& t : bp->types)
+            if (t.is_auto) autos.push_back(t.label);
+    const std::string roles = part == "feet" ? "foot" : part == "hands" ? "hand" : part == "body" ? "hips and spine" : "other bone";
+    if (autos.empty()) return "The bone rules on " + roles + " roles";
+    std::string s;
+    for (size_t i = 0; i < autos.size(); ++i) s += (i == 0 ? "" : i + 1 == autos.size() ? " and " : ", ") + autos[i];
+    return s + " and the bone rules on " + roles + " roles";
+}
+
+std::vector<const SoundLibrary*> OtherKitsServing(const SoundStore& store, const std::string& part, const std::string& exclude_uid)
+{
+    std::vector<const SoundLibrary*> out;
+    for (const SoundLibrary& l : store.libraries)
+        if (l.uid != exclude_uid && KitServes(l, part)) out.push_back(&l);
+    return out;
+}
+
+std::vector<std::string> KitOfferParts(const SoundStore& store, const SoundLibrary& lib)
+{
+    std::vector<std::string> out;
+    if (lib.kit.empty() || lib.kit_offered) return out;
+    for (const std::string& part : lib.kit)
+        if (!PartIsSet(store.project, part)) out.push_back(part);
+    return out;
+}
+
+std::vector<OtherChar> OtherCharacters(const SoundStore& store, const std::vector<CharEntry>& chars, size_t current,
+                                       const std::string& key)
+{
+    std::vector<OtherChar> out;
+    std::string            part, type;
+    SplitAssignKey(key, &part, &type);
+    for (size_t i = 0; i < chars.size(); ++i) {
+        if (i == current) continue;
+        OtherChar o;
+        o.name = chars[i].ch.name;
+        o.ea = ResolveAssign(store, ItemSounds(), &chars[i].ch, std::string(), part, type);
+        out.push_back(o);
+    }
+    return out;
+}
+
+WhoCell WhoCellFor(const SoundStore& store, const SoundCharacter* ch, const std::string& key)
+{
+    WhoCell     c;
+    std::string part, type;
+    SplitAssignKey(key, &part, &type);
+    const EffectiveAssign ea = ResolveAssign(store, ItemSounds(), ch, std::string(), part, type);
+    c.unset = ea.level == AssignLevel::Unset;
+    c.none = ea.none;
+    c.library = ea.library;
+    c.from = ea.from;
+    const SoundAssign* a = FindAssign(ch ? ch->assigns : store.project, key);
+    c.own = a && a->state != LibState::Inherit;
+    c.kit = c.own && a->kit;
+    return c;
+}
+
 // ---- Last change ---------------------------------------------------------------------------------------
 
 ChangeText LastChange(const std::string& undo_name, const std::string& where, const std::string& what, int targets)
@@ -679,13 +925,21 @@ void Selection::Clear()
 
 RowKind KindOf(const std::string& key)
 {
-    return key == kItemKey ? RowKind::Item : RowKind::Rule;
+    if (key == kItemKey) return RowKind::Item;
+    if (key.compare(0, 4, "kit:") == 0) return RowKind::Kit;
+    if (key.compare(0, 5, "char:") == 0) return RowKind::Char;
+    return RowKind::Rule;
 }
 
 void ClickRow(Selection& s, const std::string& key, bool shift, bool ctrl, const std::vector<std::string>& visible)
 {
     const RowKind kind = KindOf(key);
     s.cursor = key;
+    if (kind == RowKind::Kit || kind == RowKind::Char) {  // a kit or a character is picked alone
+        s.keys.assign(1, key);
+        s.anchor = key;
+        return;
+    }
     if (shift && !s.anchor.empty() && KindOf(s.anchor) == kind) {
         const auto a = std::find(visible.begin(), visible.end(), s.anchor);
         const auto b = std::find(visible.begin(), visible.end(), key);

@@ -1164,6 +1164,54 @@ SoundReport SplitCharacter(std::string character_uid)
                         [&](SoundStore& st) { return SplitCharacterIn(st, character_uid, models) > 0; });
 }
 
+SoundReport RenameCharacterRef(CharacterRef character, std::string name)
+{
+    return StoreGesture("RAV: Rename character", [&](SoundStore& st) {
+        return EditCharacter(st, character, [&](SoundCharacter& c) { return RenameCharacterIn(st, c.uid, name); });
+    });
+}
+
+SoundReport SplitRig(CharacterRef character)
+{
+    std::vector<ModelRef> models;
+    {
+        std::string skeleton = character.skeleton;
+        if (skeleton.empty())
+            if (const SoundCharacter* c = FindCharacterByUid(GetSoundStore(nullptr), character.uid)) skeleton = c->skeleton;
+        if (skeleton.empty()) return {};
+        for (const ProjectRig& pr : ProjectRigs())
+            if (pr.skeleton == skeleton)
+                for (const RigModelCount& m : pr.models)
+                    models.push_back({m.model, m.files.empty() ? std::string() : SplitCharacterName(m.files.front())});
+    }
+    return StoreGesture("RAV: Split character", [&](SoundStore& st) {
+        const size_t    had = st.characters.size();
+        SoundCharacter* c = EnsureCharacter(st, character);
+        if (!c) return false;
+        const std::string uid = c->uid;  // (a split added below may move the vector)
+        const bool        split = SplitCharacterIn(st, uid, models) > 0;
+        if (!split && st.characters.size() > had) st.characters.erase(st.characters.begin() + static_cast<long>(had), st.characters.end());
+        return split;
+    });
+}
+
+SoundReport OfferKit(std::string library_uid, bool accept)
+{
+    return StoreGesture(accept ? "RAV: Use library kit" : "RAV: Set library kit", [&](SoundStore& st) {
+        SoundLibrary* lib = FindLibrary(st, library_uid);
+        if (!lib) return false;
+        bool changed = false;
+        if (accept)
+            for (const std::string& part : std::vector<std::string>(lib->kit))
+                if (AdoptKitIn(st.project, part, library_uid, false)) changed = true;
+        if (!lib->kit_offered) {
+            lib->kit_offered = true;
+            changed = true;
+        }
+        return changed;
+    });
+}
+
 SoundReport SetLibraryKit(std::string library_uid, std::vector<std::string> parts, int offered)
 {
     return StoreGesture("RAV: Set library kit", [&](SoundStore& st) {

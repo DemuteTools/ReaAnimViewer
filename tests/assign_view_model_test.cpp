@@ -320,8 +320,116 @@ static void TestSelection()
     CHECK(FilterMatch("", "x") && FilterMatch("SCU", "Scuff") && !FilterMatch("zz", "Scuff"));
 }
 
+// ---- 13-15c: Project and Character scopes ----
+
+static std::vector<RigIn> TwoRigs()
+{
+    RigIn a;
+    a.skeleton = "3f9ac21e00000000";
+    a.bones = 54;
+    a.items = 8;
+    a.models = {{"mA", {"Hero_Body.fbx"}, 6}, {"mB", {"Hero_Armored.fbx"}, 2}};
+    RigIn b;
+    b.skeleton = "b7e04d0900000000";
+    b.bones = 71;
+    b.items = 4;
+    b.models = {{"mC", {"Creature_Base.glb"}, 4}};
+    return {a, b};
+}
+
+static void TestScopes()
+{
+    SoundStore st = MakeStore();
+    SoundLibrary cr = st.libraries[0];
+    cr.uid = "cr";
+    cr.name = "FS Creature";
+    st.libraries.push_back(cr);
+    st.libraries[0].kit = {"feet"};
+    st.libraries.back().kit = {"feet"};
+    SetAssignLibraryIn(st.project, {"feet"}, LibState::Library, "hero", true);
+    SetAssignValueIn(st.project, {"feet.step"}, "feet", "feet_Boots");
+    // Characters: virtual ones named from the first file, one per rig.
+    std::vector<CharEntry> ch = BuildCharacters(st, TwoRigs());
+    CHECK(ch.size() == 2 && !ch[0].stored && ch[0].ch.name == "Hero" && ch[0].items == 8 && ch[0].key == "char:v:3f9ac21e00000000");
+    CHECK(ch[1].ch.name == "Creature" && ch[0].overrides == 0 && RigSig("3f9ac21e0000") == "3f9a\xC2\xB7" "c21e");
+    // A stored whole-rig character with a split: the split is listed after, the whole rig reads the rest.
+    SoundCharacter hero;
+    hero.uid = "c1";
+    hero.name = "Hero";
+    hero.skeleton = "3f9ac21e00000000";
+    SetAssignLibraryIn(hero.assigns, {"feet"}, LibState::Library, "cr");
+    st.characters.push_back(hero);
+    SoundCharacter armored = hero;
+    armored.uid = "c2";
+    armored.name = "Armored";
+    armored.model = "mB";
+    armored.assigns.clear();
+    st.characters.push_back(armored);
+    ch = BuildCharacters(st, TwoRigs());
+    CHECK(ch.size() == 3 && ch[0].stored && ch[0].items == 6 && ch[0].overrides == 1 && ch[1].ch.name == "Armored" && ch[1].items == 2 &&
+          ch[1].ref.model == "mB" && ch[2].ch.name == "Creature");
+    // A key read at the Project level: own, with its inherit and sources.
+    Target p = MakeKeyTarget(st, nullptr, "feet");
+    CHECK(p.OwnLib() && p.own_kit && p.lib && p.lib->uid == "hero" && p.ea.from == "Project \xC2\xB7 Feet" && p.inherited.level == AssignLevel::Unset);
+    Target ps = MakeKeyTarget(st, nullptr, "feet.step");
+    CHECK(!ps.OwnLib() && ps.lib && ps.ea.from == "Project \xC2\xB7 Feet" && ps.Group("feet") && ps.Group("feet")->own &&
+          ps.Group("feet")->value_name == "Boots");
+    CHECK(ps.Group("loco") && !ps.Group("loco")->own);
+    Target pt = MakeKeyTarget(st, nullptr, "hands");
+    CHECK(pt.Unset() && !pt.lib);
+    // At the Character level: its own library wins, "inherit" gives the Project's.
+    Target c = MakeKeyTarget(st, &ch[0].ch, "feet");
+    CHECK(c.OwnLib() && c.lib->uid == "cr" && c.inherited.library == "hero" && c.inherited.from == "Project \xC2\xB7 Feet");
+    Target cs = MakeKeyTarget(st, &ch[0].ch, "feet.step");
+    CHECK(!cs.OwnLib() && cs.ea.from == "Hero \xC2\xB7 Feet" && cs.Group("feet")->value_name == "Boots" && !cs.Group("feet")->own);
+    // The ladder of a key: no rule row, no typed rows for a part.
+    Ladder ld = BuildLadder(st, nullptr, p, false);
+    CHECK(ld.rows.size() == 1 && ld.rows[0].hit);
+    Ladder ld2 = BuildLadder(st, &ch[0].ch, cs, false);
+    CHECK(ld2.rows.size() == 4 && ld2.rows[2].set && ld2.rows[2].hit);
+    // Kits: hero's kit is the project default of Feet; cr's is used by the Hero character.
+    std::vector<KitPart> kp = KitParts(st, st.libraries[0], ch);
+    CHECK(kp.size() == 1 && kp[0].state == KitPart::State::ProjectDefault && KitStatusText(kp[0]) == "project default");
+    kp = KitParts(st, st.libraries.back(), ch);
+    CHECK(kp[0].state == KitPart::State::ProjectUses && kp[0].chars.size() == 1 && KitStatusText(kp[0]) == "used by Hero");
+    SoundStore st2 = st;
+    st2.characters.clear();
+    kp = KitParts(st2, st2.libraries.back(), BuildCharacters(st2, TwoRigs()));
+    CHECK(KitStatusText(kp[0]) == "not used");
+    CHECK(OtherKitsServing(st, "feet", "hero").size() == 1 && OtherKitsServing(st, "feet", "hero")[0]->uid == "cr" &&
+          OtherKitsServing(st, "hands", "").empty());
+    CHECK(KitPartWhat("feet").find("and the bone rules on foot roles") != std::string::npos);
+    CHECK(KitPartWhat("body") == "The bone rules on hips and spine roles");
+    // The kit offer: only the parts free at the Project level, and once.
+    st.libraries.back().kit = {"feet", "body"};
+    CHECK(KitOfferParts(st, st.libraries.back()) == std::vector<std::string>({"body"}));
+    st.libraries.back().kit_offered = true;
+    CHECK(KitOfferParts(st, st.libraries.back()).empty());
+    // Other characters and the Who plays what cells.
+    const std::vector<OtherChar> oc = OtherCharacters(st, ch, 0, "feet");
+    CHECK(oc.size() == 2 && oc[0].name == "Armored" && oc[0].ea.library == "hero" && oc[1].name == "Creature");
+    const WhoCell w0 = WhoCellFor(st, nullptr, "feet"), w1 = WhoCellFor(st, &ch[0].ch, "feet"), w2 = WhoCellFor(st, &ch[0].ch, "feet.slide"),
+                  w3 = WhoCellFor(st, nullptr, "hands");
+    CHECK(w0.own && w0.kit && w0.library == "hero" && w1.own && !w1.kit && w1.library == "cr");
+    CHECK(!w2.own && w2.library == "cr" && w2.from == "Hero \xC2\xB7 Feet" && w3.unset && !w3.own);
+    CHECK(AllKeys().size() >= 10 && AllKeys()[0] == "feet" && AllKeys()[1] == "feet.step");
+    CHECK(OverrideKeys(hero.assigns) == std::vector<std::string>({"feet"}));
+    // Selection: kits and characters are picked alone.
+    Selection s;
+    std::vector<std::string> vis = {"kit:a", "kit:b", "feet", "feet.step", "char:c1"};
+    ClickRow(s, "kit:a", false, false, vis);
+    ClickRow(s, "kit:b", false, true, vis);
+    CHECK(s.keys.size() == 1 && s.keys[0] == "kit:b");
+    ClickRow(s, "feet", false, false, vis);
+    ClickRow(s, "feet.step", false, true, vis);
+    CHECK(s.keys.size() == 2 && KindOf("feet.step") == RowKind::Rule && KindOf("kit:a") == RowKind::Kit && KindOf("char:x") == RowKind::Char);
+    ClickRow(s, "char:c1", false, true, vis);
+    CHECK(s.keys.size() == 1 && s.keys[0] == "char:c1");
+}
+
 int main()
 {
+    TestScopes();
     TestTargets();
     TestState();
     TestRandomReach();

@@ -25,6 +25,7 @@
 #include "library_view_ui.h"
 #include "picked_gestures.h"
 #include "reaper_api.h"
+#include "sound_assign.h"
 #include "sound_place.h"
 #include "sound_project.h"
 #include "sound_record.h"
@@ -1327,6 +1328,29 @@ void LibraryMenuItems(const SoundLibrary& lib, std::string* to_delete, bool rena
         ui::ItemTipText(miss > 0 ? "Pick the file of its first missing sound: the others are looked for near it"
                                  : "No missing sound");
         if (ImGui::MenuItem("Refresh the User Library folder")) RefreshUserLibraries();
+    }
+    // 13-15c: the body parts this library suggests itself for (its kit, stored in the library): a tick per part,
+    // each toggle one undo point.
+    if (ui::BeginSubMenu("Kit...")) {
+        ui::MenuCaption("SERVES THESE BODY PARTS");
+        for (const BodyPart& bp : BodyParts()) {
+            if (bp.id == "other") continue;
+            const bool on = KitServes(lib, bp.id);
+            if (ImGui::MenuItem(bp.label.c_str(), nullptr, on)) {
+                std::vector<std::string> parts = lib.kit;
+                if (on) parts.erase(std::remove(parts.begin(), parts.end(), bp.id), parts.end());
+                else parts.push_back(bp.id);
+                const std::string uid = lib.uid;
+                Later([uid, parts] {
+                    Gesture("Set library kit", [&](SoundStore& st) {
+                        SoundLibrary* l = FindLibrary(st, uid);
+                        return l && SetKitParts(*l, parts);
+                    });
+                });
+            }
+        }
+        ui::ItemTipText("A kit is a suggestion: Assign sounds > Project can use it as the project default");
+        ImGui::EndMenu();
     }
     ImGui::Separator();
     if (ImGui::MenuItem("Delete library")) *to_delete = lib.uid;

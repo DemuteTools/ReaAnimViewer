@@ -56,7 +56,7 @@ std::string PairStem(const std::string& marker, char* side);
 
 // ---- One target's state -------------------------------------------------------------------------------
 
-enum class SegTone { Normal, Inherited, Mixed, Faint, Warn };
+enum class SegTone { Normal, Inherited, Mixed, Faint, Warn, Ok };
 struct Seg {
     std::string text;
     SegTone     tone = SegTone::Normal;
@@ -92,9 +92,11 @@ struct Target {
     std::string      blocked_reason;
     LibState         own_state = LibState::Inherit;  // the rule's own library state
     std::string      own_library;
+    bool             own_kit = false;   // 13-15c: a Project / Character key whose own library was adopted from a kit
+    bool             own_here = false;  // 13-15c: a Project / Character key that sets a library at its own level
     std::vector<GroupState> groups;
     bool Unset() const { return ea.library.empty() && !ea.none && ea.level == AssignLevel::Unset; }
-    bool OwnLib() const { return ea.level == AssignLevel::Rule; }
+    bool OwnLib() const { return ea.level == AssignLevel::Rule || own_here; }
     bool Plays() const { return lib && !lib_empty && !lib_blocked; }
     const GroupState* Group(const std::string& group_uid) const;
 };
@@ -167,7 +169,8 @@ struct Ladder {
     std::string              part_label;
     std::vector<LadderRow>   rows;
 };
-Ladder BuildLadder(const SoundStore& store, const SoundCharacter* ch, const Target& t);
+// `rule_row` false: a Project / Character key (13-15c), which has no rule level and, with no type, no typed rows.
+Ladder BuildLadder(const SoundStore& store, const SoundCharacter* ch, const Target& t, bool rule_row = true);
 
 // ---- Overview (Item scope) ------------------------------------------------------------------------------
 
@@ -180,6 +183,85 @@ struct Cell {
     bool        inherited = false;
 };
 Cell OverviewCell(const Target& t, const std::string& group_uid);
+
+// ---- Project and Character scopes (13-15c) -------------------------------------------------------------
+
+// The rigs the project's items play (sound_populate.h's ProjectRigs, read once per project change).
+struct RigModelIn {
+    std::string              model;
+    std::vector<std::string> files;
+    int                      items = 0;
+};
+struct RigIn {
+    std::string             skeleton;
+    int                     bones = 0;
+    int                     items = 0;
+    std::vector<RigModelIn> models;
+};
+
+// One character of the Character picker / tree: a rig of the project. The one with no record yet is virtual
+// (name from its first file, no assignments: "inherits the project"); the gestures store it at its first edit.
+struct CharEntry {
+    std::string             key;         // "char:<uid>" for a stored one, "char:v:<skeleton>" for a virtual one
+    SoundCharacter          ch;          // the record (a copy), or the virtual one
+    bool                    stored = false;
+    CharacterRef            ref;         // what a gesture is given
+    int                     bones = 0;
+    int                     items = 0;   // the project's items that read as this character
+    std::vector<RigModelIn> models;      // the models it reads (a split: its own; the whole rig: the ones not split)
+    int                     overrides = 0;
+};
+// Per rig (in the order given) its whole-rig character, then the splits of its models the project plays.
+std::vector<CharEntry> BuildCharacters(const SoundStore& store, const std::vector<RigIn>& rigs);
+// The first 4 and next 4 hex of a skeleton signature: "3f9a\xC2\xB7c21e".
+std::string RigSig(const std::string& skeleton);
+// The keys of `list` that set a library or a Switch value (what the character changes from the project).
+std::vector<std::string> OverrideKeys(const std::vector<SoundAssign>& list);
+// Every body part key then its type keys ("feet", "feet.step"... "feet.rules", "hands"...), in table order.
+std::vector<std::string> AllKeys();
+
+// A Project (`ch` null) or Character key read at its own level: the library and Switch values through the
+// layers above it, what "inherit" gives (`inherited`: the level below), and whether it sets its own.
+Target MakeKeyTarget(const SoundStore& store, const SoundCharacter* ch, const std::string& key);
+
+// What a library's kit says about one of its parts, against the project and the characters.
+struct KitPart {
+    enum class State { NotUsed, ProjectDefault, ProjectUses };
+    std::string              part;
+    State                    state = State::NotUsed;
+    std::string              project_lib;   // ProjectUses: the library the project has for it ("" = None)
+    std::vector<std::string> chars;         // the characters that use this library for the part
+};
+std::vector<KitPart> KitParts(const SoundStore& store, const SoundLibrary& lib, const std::vector<CharEntry>& chars);
+// "project default", "used by Hero, Creature", "not used".
+std::string KitStatusText(const KitPart& p);
+// The kit row's status line: "Feet \xC2\xB7 project default \xC2\xB7 Hands \xC2\xB7 not used".
+std::vector<Seg> KitRowSegs(const std::vector<KitPart>& parts);
+// "heels, toes, knees, legs" and "Step, Lift-off, Slide, Pivot and the bone rules on foot roles".
+std::string KitPartRoles(const std::string& part);
+std::string KitPartWhat(const std::string& part);
+// The libraries (other than `exclude_uid`) whose kit serves `part`.
+std::vector<const SoundLibrary*> OtherKitsServing(const SoundStore& store, const std::string& part, const std::string& exclude_uid);
+// The kit parts a library offers that are free at the Project level; none when the kit was offered already.
+std::vector<std::string> KitOfferParts(const SoundStore& store, const SoundLibrary& lib);
+
+// What every other character plays for `key` (Character scope's "Other characters" line).
+struct OtherChar {
+    std::string     name;
+    EffectiveAssign ea;
+};
+std::vector<OtherChar> OtherCharacters(const SoundStore& store, const std::vector<CharEntry>& chars, size_t current, const std::string& key);
+
+// One cell of "Who plays what": `key` read at the Project (`ch` null) or one character.
+struct WhoCell {
+    bool        unset = false;
+    bool        none = false;
+    bool        own = false;   // set at that column's own level
+    bool        kit = false;   // ...adopted from a kit
+    std::string library;       // uid
+    std::string from;          // where an inherited cell comes from
+};
+WhoCell WhoCellFor(const SoundStore& store, const SoundCharacter* ch, const std::string& key);
 
 // ---- Last change line -----------------------------------------------------------------------------------
 
@@ -199,8 +281,10 @@ struct Selection {
     bool Has(const std::string& key) const;
     void Clear();
 };
-// "item" and "rule" leaves are two kinds and are never mixed in one selection.
-enum class RowKind { Item, Rule };
+// "item" and "rule" leaves are two kinds and are never mixed in one selection; 13-15c: nor are a kit row
+// ("kit:<uid>") or a character row ("char:...") with anything (each is picked alone). A Project / Character
+// key ("feet", "feet.step") is a Rule.
+enum class RowKind { Item, Rule, Kit, Char };
 RowKind KindOf(const std::string& key);
 // A click on a leaf / the Item row. `visible` = the keys of the rows shown, in order. Plain: only this one.
 // Shift: the visible rows of the same kind between the anchor and this one. Ctrl: add or remove (same kind only).

@@ -23,6 +23,7 @@
 #include <imgui_internal.h>  // BeginDragDropTargetCustom, ImRect
 
 #include "library_tree_edit.h"
+#include "library_icons.h"
 #include "library_tree_ui.h"
 #include "library_view_ui.h"
 #include "reaper_api.h"
@@ -1678,6 +1679,11 @@ void DrawHeader(const SoundLibrary& lib, const SoundNode& n)
             if (P.changed) return;
         }
     } else {
+        // The mock-up's container header (.dz-main): the type icon before the name.
+        const ImVec2 ip = ImGui::GetCursorScreenPos();
+        ImGui::Dummy(ImVec2(ui::IconRoom(), ImGui::GetFrameHeight()));
+        ui::PaintIconAt(ImGui::GetWindowDrawList(), TypeIcon(n.type), ip.x, ip.y, ImGui::GetFrameHeight());
+        ImGui::SameLine(0.0f, 0.0f);
         FitText(n.name, ui::kText);
     }
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -1699,7 +1705,9 @@ void DrawTypeRows(const SoundStore& store, const SoundLibrary& lib, const SoundN
     const LibraryRow  row = RowOfNode(lib, n.uid);
     const std::string lib_uid = lib.uid;
     ui::LabelRow("Type", 150.0f);
-    if (ui::Segmented("##type", kTypes, 3, &sel)) {
+    const ui::Icon kTypeIcons[3] = {TypeIcon(SoundNodeType::Random), TypeIcon(SoundNodeType::Blend),
+                                    TypeIcon(SoundNodeType::Switch)};  // the mock-up's .tseg: an icon per type
+    if (ui::Segmented("##type", kTypes, 3, &sel, 0.0f, -1, kTypeIcons)) {
         if (sel == 2) {
             ImGui::OpenPopup("##switchon");
         } else {
@@ -1713,8 +1721,9 @@ void DrawTypeRows(const SoundStore& store, const SoundLibrary& lib, const SoundN
         const SwitchGroup* g = FindGroup(store, n.group_uid);
         const std::string  lab = std::string("Switch on: ") + (g ? g->name : std::string("?"));
         // A long group name: the menu button takes the row and its label is ellipsized (ui_flow).
-        SameLineIfFits(std::min(ImGui::CalcTextSize(lab.c_str(), nullptr, false).x + 2.0f * ImGui::GetStyle().FramePadding.x + 14.0f, 120.0f));
-        if (ui::MenuButton("##switchonbtn", true, lab.c_str())) ImGui::OpenPopup("##switchon");
+        SameLineIfFits(std::min(ImGui::CalcTextSize(lab.c_str(), nullptr, false).x + 2.0f * ImGui::GetStyle().FramePadding.x + 14.0f + ui::IconRoom(), 120.0f));
+        const ui::Icon sw_icon = TypeIcon(SoundNodeType::Switch);
+        if (ui::MenuButton("##switchonbtn", true, lab.c_str(), &sw_icon)) ImGui::OpenPopup("##switchon");
     }
     if (ImGui::BeginPopup("##switchon")) {
         if (store.groups.empty()) ImGui::TextDisabled("No Switch Group yet");
@@ -1814,8 +1823,13 @@ void DrawMix(const SoundStore& store, const SoundLibrary& lib, const SoundNode& 
         for (const SoundNode* k : kids) {
             if (P.changed) break;
             ImGui::PushID(k->uid.c_str());
-            // The name beside its fader when both fit, else the name on its own line above it.
-            ui::LabelRowText(MixLabel(store, n, *k), 120.0f, 84.0f, IsLit(k->uid) ? ui::kAccent : ui::kText);
+            // The mock-up's .mixrow: the child's type icon, then its name beside its fader when both
+            // fit, else the name on its own line above it.
+            const ImVec2 ip = ImGui::GetCursorScreenPos();
+            const float  room = ui::IconRoom();
+            ui::PaintIconAt(ImGui::GetWindowDrawList(), TypeIcon(k->type), ip.x, ip.y, ImGui::GetFrameHeight());
+            ImGui::SetCursorScreenPos(ImVec2(ip.x + room, ip.y));
+            ui::LabelRowText(MixLabel(store, n, *k), 120.0f, std::max(20.0f, 84.0f - room), IsLit(k->uid) ? ui::kAccent : ui::kText);
             double v = 0.0;
             const std::string kid = k->uid;
             if (VolumeControl("##mixvol", kid, k->volume_db, &v, 1e9f))
@@ -1891,7 +1905,10 @@ void DrawBlendLanes(const SoundStore& store, const SoundLibrary& lib, const Soun
         const std::string kid = k->uid;
         const ImVec2      p = ImGui::GetCursorScreenPos();
         const float       fh = ImGui::GetFrameHeight();
-        ui::EllipsisText(dl, ImVec2(p.x, p.y + 3.0f), p.x + name_w - 4.0f, IsLit(kid) ? ui::kAccent : ui::kText, k->name);
+        // The mock-up's .ln2: the layer's type icon before its name.
+        ui::PaintIconAt(dl, TypeIcon(k->type), p.x, p.y, fh);
+        ui::EllipsisText(dl, ImVec2(p.x + ui::IconRoom(), p.y + 3.0f), p.x + name_w - 4.0f, IsLit(kid) ? ui::kAccent : ui::kText,
+                         k->name);
         const LengthRange r = NodeLengthRange(store, lib, kid);
         const double      off = P.off_uid == kid ? P.off_live : k->offset_ms;
         const float       bx0 = lane_x0 + static_cast<float>(off / total_ms) * lane_w;

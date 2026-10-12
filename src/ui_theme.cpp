@@ -104,8 +104,20 @@ int g_seg_hovered = -1;
 
 int SegmentedHovered() { return g_seg_hovered; }
 
+float IconRoom()
+{
+    return ImGui::GetFontSize() + 5.0f;
+}
+
+void PaintIconAt(ImDrawList* dl, const Icon& icon, float x, float y, float line_h)
+{
+    if (!icon.fn || !dl) return;
+    const float s = ImGui::GetFontSize();
+    icon.fn(dl, ImVec2(x, y + (line_h - s) * 0.5f), s, icon.which, ImGui::GetColorU32(icon.col));
+}
+
 bool Segmented(const char* id, const char* const* labels, int count, int* selected, float item_width,
-               int disabled_index)
+               int disabled_index, const Icon* icons)
 {
     g_seg_hovered = -1;
     if (!labels || count <= 0 || !selected) return false;
@@ -120,7 +132,8 @@ bool Segmented(const char* id, const char* const* labels, int count, int* select
     int       row_of[8] = {};
     const int n = std::min(count, 8);
     for (int i = 0; i < n; ++i)
-        text_w[i] = item_width > 0.0f ? std::max(0.0f, item_width - kPadNat) : TextWidth(labels[i]);
+        text_w[i] = item_width > 0.0f ? std::max(0.0f, item_width - kPadNat)
+                                      : TextWidth(labels[i]) + (icons && icons[i].fn ? IconRoom() : 0.0f);
     const float avail = WindowAutoSizes() ? 1e9f : std::max(1.0f, ImGui::GetContentRegionAvail().x);
     const int   rows = flow::LayoutSegments(text_w, n, avail, kPadNat, kPadMin, pad, widths, row_of);
     float       total = 0.0f;  // the widest row
@@ -164,11 +177,22 @@ bool Segmented(const char* id, const char* const* labels, int count, int* select
         }
         const char*       end = std::strstr(labels[i], "##");  // the visible part of the label
         const std::string text = end ? std::string(labels[i], end) : std::string(labels[i]);
-        const float       tw = TextWidth(labels[i]);
+        const float       room = icons && icons[i].fn ? IconRoom() : 0.0f;  // the option's icon, before its label
+        const float       tw = TextWidth(labels[i]) + room;
         const ImU32       ink = disabled ? kFaint : (on ? kText : kMuted);
         const float       ty = a.y + (h - ImGui::GetTextLineHeight()) * 0.5f;
         if (tw <= widths[i] - 4.0f) {
-            dl->AddText(ImVec2(a.x + (widths[i] - tw) * 0.5f, ty), ink, text.c_str());
+            const float tx = a.x + (widths[i] - tw) * 0.5f;
+            if (room > 0.0f) {
+                Icon ic = icons[i];
+                if (disabled) ic.col = kFaint;
+                PaintIconAt(dl, ic, tx, a.y, h);
+            }
+            dl->AddText(ImVec2(tx + room, ty), ink, text.c_str());
+        } else if (room > 0.0f && widths[i] - 8.0f >= room) {  // the icon stays, the label is ellipsized after it
+            PaintIconAt(dl, icons[i], a.x + 4.0f, a.y, h);
+            if (EllipsisText(dl, ImVec2(a.x + 4.0f + room, ty), b.x - 4.0f, ink, text) && hovered)
+                ImGui::SetTooltip("%s", text.c_str());
         } else if (EllipsisText(dl, ImVec2(a.x + 4.0f, ty), b.x - 4.0f, ink, text) && hovered) {
             ImGui::SetTooltip("%s", text.c_str());
         }

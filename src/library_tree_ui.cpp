@@ -497,9 +497,9 @@ std::string GroupMenuItems(bool with_new_group, bool* new_group)
 // The type menu of a container: Random / Blend / Switch on ▸ group.
 void TypeMenu(const std::vector<LibraryRow>& rows)
 {
-    if (ImGui::MenuItem("Random")) DoSetType(rows, SoundNodeType::Random, {});
-    if (ImGui::MenuItem("Blend")) DoSetType(rows, SoundNodeType::Blend, {});
-    if (ImGui::BeginMenu("Switch on")) {
+    if (ui::IconMenuItem(TypeIcon(SoundNodeType::Random), "Random")) DoSetType(rows, SoundNodeType::Random, {});
+    if (ui::IconMenuItem(TypeIcon(SoundNodeType::Blend), "Blend")) DoSetType(rows, SoundNodeType::Blend, {});
+    if (ui::IconBeginMenu(TypeIcon(SoundNodeType::Switch), "Switch on")) {
         const std::string gid = GroupMenuItems(false, nullptr);
         if (!gid.empty()) BatchSwitchOn(rows, gid);
         ImGui::EndMenu();
@@ -508,9 +508,9 @@ void TypeMenu(const std::vector<LibraryRow>& rows)
 
 void WrapMenu(const std::vector<LibraryRow>& rows)
 {
-    if (ImGui::MenuItem("Random")) DoWrap(rows, SoundNodeType::Random, {});
-    if (ImGui::MenuItem("Blend")) DoWrap(rows, SoundNodeType::Blend, {});
-    if (ImGui::BeginMenu("Switch on")) {
+    if (ui::IconMenuItem(TypeIcon(SoundNodeType::Random), "Random")) DoWrap(rows, SoundNodeType::Random, {});
+    if (ui::IconMenuItem(TypeIcon(SoundNodeType::Blend), "Blend")) DoWrap(rows, SoundNodeType::Blend, {});
+    if (ui::IconBeginMenu(TypeIcon(SoundNodeType::Switch), "Switch on")) {
         const std::string gid = GroupMenuItems(false, nullptr);
         if (!gid.empty()) DoWrap(rows, SoundNodeType::Switch, gid);
         ImGui::EndMenu();
@@ -552,15 +552,15 @@ void RowMenu(const SoundLibrary& lib)
     };
     if (ImGui::BeginMenu("Add child")) {
         std::string why;
-        if (ImGui::MenuItem("Sound", nullptr, false, can_add(SoundNodeType::Sound, &why))) DoAdd(SoundNodeType::Sound, {}, false, &rows);
+        if (ui::IconMenuItem(TypeIcon(SoundNodeType::Sound), "Sound", nullptr, false, can_add(SoundNodeType::Sound, &why))) DoAdd(SoundNodeType::Sound, {}, false, &rows);
         Tip(why);
         why.clear();
-        if (ImGui::MenuItem("Random", nullptr, false, can_add(SoundNodeType::Random, &why))) DoAdd(SoundNodeType::Random, {}, false, &rows);
+        if (ui::IconMenuItem(TypeIcon(SoundNodeType::Random), "Random", nullptr, false, can_add(SoundNodeType::Random, &why))) DoAdd(SoundNodeType::Random, {}, false, &rows);
         Tip(why);
         why.clear();
-        if (ImGui::MenuItem("Blend", nullptr, false, can_add(SoundNodeType::Blend, &why))) DoAdd(SoundNodeType::Blend, {}, false, &rows);
+        if (ui::IconMenuItem(TypeIcon(SoundNodeType::Blend), "Blend", nullptr, false, can_add(SoundNodeType::Blend, &why))) DoAdd(SoundNodeType::Blend, {}, false, &rows);
         Tip(why);
-        if (can_add(SoundNodeType::Switch, nullptr) && ImGui::BeginMenu("Switch on")) {
+        if (can_add(SoundNodeType::Switch, nullptr) && ui::IconBeginMenu(TypeIcon(SoundNodeType::Switch), "Switch on")) {
             bool ng = false;
             const std::string gid = GroupMenuItems(true, &ng);
             if (!gid.empty() || ng) DoAdd(SoundNodeType::Switch, gid, ng, &rows);
@@ -751,8 +751,9 @@ void ToolbarAdd(const SoundLibrary& lib, SoundNodeType type, const char* label)
 {
     std::string why;
     const int ok = AddReadiness(lib, type, &why);
+    const ui::Icon icon = TypeIcon(type);  // the mock-up's .tbb: the type icon before the label
     if (type == SoundNodeType::Switch) {
-        if (MenuButton(label, ok > 0)) ImGui::OpenPopup("##tbswitch");
+        if (MenuButton(label, ok > 0, nullptr, &icon)) ImGui::OpenPopup("##tbswitch");
         Tip(why);
         if (ImGui::BeginPopup("##tbswitch")) {
             ImGui::TextDisabled("Switch on");
@@ -764,7 +765,7 @@ void ToolbarAdd(const SoundLibrary& lib, SoundNodeType type, const char* label)
         return;
     }
     if (ok == 0) ImGui::BeginDisabled();
-    if (ui::SolidButton(label)) DoAdd(type, {});
+    if (ui::IconButton(icon, label)) DoAdd(type, {});
     if (ok == 0) ImGui::EndDisabled();
     Tip(why);
 }
@@ -785,13 +786,13 @@ void Toolbar(const SoundLibrary& lib)
 {
     ToolbarAdd(lib, SoundNodeType::Sound, "+ Sound");
     if (g.changed) return;
-    SameLineIfFits(ButtonWidth("+ Random"));
+    SameLineIfFits(ui::IconButtonWidth("+ Random"));
     ToolbarAdd(lib, SoundNodeType::Random, "+ Random");
     if (g.changed) return;
-    SameLineIfFits(ButtonWidth("+ Blend"));
+    SameLineIfFits(ui::IconButtonWidth("+ Blend"));
     ToolbarAdd(lib, SoundNodeType::Blend, "+ Blend");
     if (g.changed) return;
-    SameLineIfFits(MenuButtonWidth("+ Switch"));
+    SameLineIfFits(ui::IconMenuButtonWidth("+ Switch"));
     ToolbarAdd(lib, SoundNodeType::Switch, "+ Switch");
     if (g.changed) return;
     if (g.sel.size() > 1) {
@@ -928,7 +929,9 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
         }
         DrawTypeIcon(dl, ip, is, n->type, hot);
     } else {
-        dl->AddCircle(ImVec2(ip.x + is * 0.5f, ip.y + is * 0.5f), is * 0.3f, ui::kFaint);
+        // A value with no sound of its own: the mock-up's value dot (ICON.value).
+        const float g = is * 0.8f, o = (is - g) * 0.5f;
+        DrawLibraryGlyph(dl, ImVec2(ip.x + o, ip.y + o), g, kGlyphValue, ui::kMuted);
     }
     if (ImGui::BeginPopup("##typemenu")) {
         TypeMenu(IsSel(r.row) ? g.sel : std::vector<LibraryRow>{r.row});
@@ -1047,16 +1050,20 @@ void EmptyLibraryHint(const SoundLibrary& lib)
     const float w = ImGui::GetContentRegionAvail().x;
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (w - ImGui::CalcTextSize(t).x) * 0.5f));
     ui::SubText(t);
-    const float bw = 4.0f * 80.0f + 3.0f * ImGui::GetStyle().ItemSpacing.x;
+    // The mock-up's hint buttons: each type's icon before its label, at least 80 px wide.
+    const char* const kLabels[4] = {"+ Sound##hint", "+ Random##hint", "+ Blend##hint", "+ Switch##hint"};
+    const SoundNodeType kHintTypes[4] = {SoundNodeType::Sound, SoundNodeType::Random, SoundNodeType::Blend,
+                                         SoundNodeType::Switch};
+    float bw = 3.0f * ImGui::GetStyle().ItemSpacing.x;
+    for (const char* l : kLabels) bw += std::max(80.0f, ui::IconButtonWidth(l));
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (w - bw) * 0.5f));  // centred when on one line
     (void)lib;
-    if (ui::SolidButton("+ Sound##hint", ImVec2(80.0f, 0.0f))) DoAdd(SoundNodeType::Sound, {});
-    SameLineIfFits(80.0f);
-    if (ui::SolidButton("+ Random##hint", ImVec2(80.0f, 0.0f))) DoAdd(SoundNodeType::Random, {});
-    SameLineIfFits(80.0f);
-    if (ui::SolidButton("+ Blend##hint", ImVec2(80.0f, 0.0f))) DoAdd(SoundNodeType::Blend, {});
-    SameLineIfFits(80.0f);
-    if (ui::SolidButton("+ Switch##hint", ImVec2(80.0f, 0.0f))) ImGui::OpenPopup("##hintswitch");
+    for (int i = 0; i < 4; ++i) {
+        if (i > 0) SameLineIfFits(std::max(80.0f, ui::IconButtonWidth(kLabels[i])));
+        if (!ui::IconButton(TypeIcon(kHintTypes[i]), kLabels[i], ImVec2(80.0f, 0.0f))) continue;
+        if (kHintTypes[i] == SoundNodeType::Switch) ImGui::OpenPopup("##hintswitch");
+        else DoAdd(kHintTypes[i], {});
+    }
     if (ImGui::BeginPopup("##hintswitch")) {
         bool ng = false;
         const std::string gid = GroupMenuItems(true, &ng);
@@ -1224,7 +1231,10 @@ void DrawSwitchGroupsSection()
                                                       ImGuiTreeNodeFlags_NoTreePushOnOpen,
                                          "%s", "");
                 const float gty = (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y - ImGui::GetTextLineHeight()) * 0.5f;
-                ui::EllipsisTextTip(ImGui::GetWindowDrawList(), ImVec2(hp.x + ImGui::GetTreeNodeToLabelSpacing(), gty),
+                const float gx = hp.x + ImGui::GetTreeNodeToLabelSpacing();
+                // The mock-up's group row: a folder icon (ICON.group) before the name.
+                ui::PaintIconAt(ImGui::GetWindowDrawList(), LibraryIcon(kGlyphGroup), gx, gty, ImGui::GetTextLineHeight());
+                ui::EllipsisTextTip(ImGui::GetWindowDrawList(), ImVec2(gx + ui::IconRoom(), gty),
                                     hp.x + w - bw - 6.0f, ui::kText, gr.name);
                 if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                     g.rename = RenameKind::Group;
@@ -1280,7 +1290,11 @@ void DrawSwitchGroupsSection()
                         ImGui::SetNextItemAllowOverlap();
                         ImGui::Selectable("##val", false, ImGuiSelectableFlags_AllowDoubleClick,
                                           ImVec2(std::max(1.0f, vw - xw - 4.0f), 0.0f));
-                        ui::EllipsisTextTip(ImGui::GetWindowDrawList(), vp, vp.x + vw - xw - 6.0f, ui::kText, v.name);
+                        // The mock-up's value row: a dot (ICON.value) before the name.
+                        const float vty = (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y - ImGui::GetTextLineHeight()) * 0.5f;
+                        ui::PaintIconAt(ImGui::GetWindowDrawList(), LibraryIcon(kGlyphValue), vp.x, vty, ImGui::GetTextLineHeight());
+                        ui::EllipsisTextTip(ImGui::GetWindowDrawList(), ImVec2(vp.x + ui::IconRoom(), vp.y),
+                                            vp.x + vw - xw - 6.0f, ui::kText, v.name);
                         if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                             g.rename = RenameKind::Value;
                             g.r_a = gr.uid;
@@ -1460,7 +1474,9 @@ void DrawLibraryBatchPanel()
         int sel = common >= 0 ? common : -1;
         ui::LabelRow("Type", 150.0f, 48.0f);
         const int was = sel;
-        if (ui::Segmented("##batchtype", kTypes, 3, &sel)) {
+        const ui::Icon kTypeIcons[3] = {TypeIcon(SoundNodeType::Random), TypeIcon(SoundNodeType::Blend),
+                                        TypeIcon(SoundNodeType::Switch)};
+        if (ui::Segmented("##batchtype", kTypes, 3, &sel, 0.0f, -1, kTypeIcons)) {
             if (sel == 0) DoSetType(rows, SoundNodeType::Random, {});
             else if (sel == 1) DoSetType(rows, SoundNodeType::Blend, {});
             else ImGui::OpenPopup("##batchswitch");
@@ -1480,7 +1496,8 @@ void DrawLibraryBatchPanel()
         }
         const SwitchGroup* cg = common == 2 ? FindGroup(store, common_group) : nullptr;
         const std::string sw_label = std::string("Switch on: ") + (cg ? cg->name : std::string("..."));
-        if (MenuButton(sw_label.c_str())) ImGui::OpenPopup("##batchswitch2");
+        const ui::Icon sw_icon = TypeIcon(SoundNodeType::Switch);
+        if (MenuButton(sw_label.c_str(), true, nullptr, &sw_icon)) ImGui::OpenPopup("##batchswitch2");
         Tip("Also converts the Random and Blend containers");
         if (ImGui::BeginPopup("##batchswitch2")) {
             const std::string gid = GroupMenuItems(false, nullptr);
@@ -1490,9 +1507,9 @@ void DrawLibraryBatchPanel()
         SameLineIfFits(MenuButtonWidth("Put into"));
         if (MenuButton("Put into")) ImGui::OpenPopup("##putinto");
         if (ImGui::BeginPopup("##putinto")) {
-            if (ImGui::MenuItem("New Random")) DoWrap(rows, SoundNodeType::Random, {});
-            if (ImGui::MenuItem("New Blend")) DoWrap(rows, SoundNodeType::Blend, {});
-            if (ImGui::BeginMenu("New Switch on")) {
+            if (ui::IconMenuItem(TypeIcon(SoundNodeType::Random), "New Random")) DoWrap(rows, SoundNodeType::Random, {});
+            if (ui::IconMenuItem(TypeIcon(SoundNodeType::Blend), "New Blend")) DoWrap(rows, SoundNodeType::Blend, {});
+            if (ui::IconBeginMenu(TypeIcon(SoundNodeType::Switch), "New Switch on")) {
                 const std::string gid = GroupMenuItems(false, nullptr);
                 if (!gid.empty()) DoWrap(rows, SoundNodeType::Switch, gid);
                 ImGui::EndMenu();
@@ -1507,7 +1524,7 @@ void DrawLibraryBatchPanel()
                 to.mode = DropMode::Into;
                 const bool ok = CanDrop(store, lib->uid, rows, to);
                 ImGui::PushID(n.uid.c_str());
-                if (ImGui::MenuItem(n.name.c_str(), TypeWord(n.type), false, ok)) {
+                if (ui::IconMenuItem(TypeIcon(n.type), n.name.c_str(), TypeWord(n.type), false, ok)) {
                     const std::string lib_uid = lib->uid;
                     Gesture("Put into " + n.name, [&](SoundStore& s) { return MoveRows(s, lib_uid, rows, to, nullptr); });
                 }

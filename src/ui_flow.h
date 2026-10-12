@@ -67,7 +67,20 @@ bool FittedButton(const char* label, const ImVec2& size = ImVec2(0.0f, 0.0f));
 
 // A SolidButton with a small down arrow after its label (a menu opens on click). Its label is
 // ellipsized when the room left is narrower; the arrow always shows.
-bool MenuButton(const char* label, bool enabled = true, const char* visible = nullptr);  // visible: literal shown text
+bool MenuButton(const char* label, bool enabled = true, const char* visible = nullptr,  // visible: literal shown text
+                const Icon* icon = nullptr);                                           // icon: drawn before the label
+
+// 13-7: icon + label widgets (the mock-up's buttons and menu rows carry a type icon). Measured
+// as icon + text, so SameLineIfFits / the shrink-and-ellipsize rules above hold for them too:
+// a narrow button keeps its icon and ellipsizes its label.
+float IconButtonWidth(const char* label);      // ButtonWidth + IconRoom
+float IconMenuButtonWidth(const char* label);  // MenuButtonWidth + IconRoom
+// A FittedButton (solid = SolidButton's colours) with `icon` before its label.
+bool IconButton(const Icon& icon, const char* label, const ImVec2& size = ImVec2(0.0f, 0.0f), bool solid = true);
+// ImGui::MenuItem / BeginMenu with `icon` before the label (padded right by the icon room).
+bool IconMenuItem(const Icon& icon, const char* label, const char* shortcut = nullptr, bool selected = false,
+                  bool enabled = true);
+bool IconBeginMenu(const Icon& icon, const char* label, bool enabled = true);
 
 // The option of the last Segmented under the mouse (-1 = none).
 int SegmentedHovered();

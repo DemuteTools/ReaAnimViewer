@@ -18,6 +18,7 @@
 
 #include <imgui.h>
 
+#include "library_icons.h"
 #include "reaper_api.h"
 #include "rule_record.h"
 #include "sound_populate.h"
@@ -440,13 +441,26 @@ void DrawSoundReportLine(const TaggingSoundContext& ctx)
     }
     ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetContentRegionMax().x - help_w));
     ImGui::SmallButton("?##ravglyphs");
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-        ImGui::SetTooltip("Under each event on the strip:\n"
-                          "  green dot: sound placed by Populate\n"
-                          "  blue ring: sound attached by hand\n"
-                          "  grey dot: spread sound\n"
-                          "  grey cross: placed sound deleted by hand (not added back)\n"
-                          "  yellow triangle: missing in the last Populate");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip) && ImGui::BeginTooltip()) {
+        // The mock-up's legend: each mark drawn as on the strip, then what it means.
+        ImGui::TextUnformatted("Under each event on the strip:");
+        static const struct { int glyph; const char* text; } kLegend[] = {
+            {kGlyphEvPopulated, "sound placed by Populate"},
+            {kGlyphEvAttached, "your attached sound"},
+            {kGlyphEvSpread, "Spread copy"},
+            {kGlyphEvMissing, "sound missing in the last Populate"},
+            {kGlyphEvDeleted, "deleted by hand (not put back)"},
+        };
+        const float lh = ImGui::GetTextLineHeight();
+        for (const auto& l : kLegend) {
+            const ImVec2 p = ImGui::GetCursorScreenPos();
+            DrawEventGlyph(ImGui::GetWindowDrawList(), ImVec2(p.x + lh * 0.5f, p.y + lh * 0.5f), 9.0f, l.glyph);
+            ImGui::Dummy(ImVec2(lh, lh));
+            ImGui::SameLine();
+            ImGui::TextUnformatted(l.text);
+        }
+        ImGui::EndTooltip();
+    }
     if (ImGui::BeginPopup("##ravreportpop")) {
         if (g_last.report.lines.empty()) ImGui::TextUnformatted("Nothing to report.");
         for (size_t i = 0; i < g_last.report.lines.size(); ++i) {
@@ -489,21 +503,14 @@ void DrawSoundStripGlyph(ImDrawList* dl, const TaggingModel& m, const ShownEvent
             else if (p.own == Ownership::Spread) spread = true;
             else deleted = true;
         }
+    // The mock-up's glyph(): a 9 px mark under the event (library_icons.h kGlyphEv*).
     const ImVec2 c(x, y - 5.0f);
-    const float  r = 2.5f;
-    if (missing) {
-        dl->AddTriangleFilled(ImVec2(c.x, c.y - r - 0.5f), ImVec2(c.x - r - 0.5f, c.y + r), ImVec2(c.x + r + 0.5f, c.y + r),
-                              ui::kWarn);
-    } else if (attached) {
-        dl->AddCircle(c, r + 0.5f, ui::kAccent, 12, 1.5f);
-    } else if (spread) {
-        dl->AddCircleFilled(c, r, ui::kMuted);
-    } else if (populated) {
-        dl->AddCircleFilled(c, r, ui::kOk);
-    } else if (deleted) {
-        dl->AddLine(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), ui::kFaint, 1.5f);
-        dl->AddLine(ImVec2(c.x - r, c.y + r), ImVec2(c.x + r, c.y - r), ui::kFaint, 1.5f);
-    }
+    const float  s = 9.0f;
+    if (missing) DrawEventGlyph(dl, c, s, kGlyphEvMissing);
+    else if (attached) DrawEventGlyph(dl, c, s, kGlyphEvAttached);
+    else if (spread) DrawEventGlyph(dl, c, s, kGlyphEvSpread);
+    else if (populated) DrawEventGlyph(dl, c, s, kGlyphEvPopulated);
+    else if (deleted) DrawEventGlyph(dl, c, s, kGlyphEvDeleted);
 }
 
 }  // namespace rav

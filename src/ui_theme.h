@@ -69,8 +69,24 @@ void ApplyRavTheme();
 // `disabled_index` cannot be picked. Returns true when *selected changed.
 // Width-aware (ui_flow.h): narrower than its options, they share the room, then wrap onto
 // rows that fill the width; a label that still does not fit is ellipsized (tooltip).
+// 13-7: an icon drawn before a widget's label (the mock-up's .ico in .btn / .mi / .seg). `fn`
+// draws glyph `which` in the square at `p` of side `s` (the Library's are library_icons.h);
+// `col` is its ink (the mock-up's icons are --muted), faded with the widget when disabled.
+using IconFn = void (*)(ImDrawList* dl, ImVec2 p, float s, int which, ImU32 col);
+struct Icon {
+    IconFn fn = nullptr;
+    int    which = 0;
+    ImU32  col = kMuted;
+};
+// The room an icon takes before its label (icon + gap), at the current font size.
+float IconRoom();
+// Draws `icon` (nothing when it has no fn) in its room starting at x, centred on a line of
+// height `line_h` from y.
+void PaintIconAt(ImDrawList* dl, const Icon& icon, float x, float y, float line_h);
+
 bool Segmented(const char* id, const char* const* labels, int count, int* selected,
-               float item_width = 0.0f, int disabled_index = -1);
+               float item_width = 0.0f, int disabled_index = -1,
+               const Icon* icons = nullptr);  // icons: one per option, drawn before its label
 
 // Buttons: primary = accent fill, solid = raised fill with a stroke edge. Ghost (the
 // default ImGui::Button under this theme) needs no helper. Both shrink to the room left

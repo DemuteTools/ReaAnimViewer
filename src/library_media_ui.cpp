@@ -51,6 +51,7 @@
 #include "sound_project.h"
 #include "sound_record.h"
 #include "ui_flow.h"
+#include "library_icons.h"
 #include "ui_theme.h"
 
 namespace rav {
@@ -941,25 +942,6 @@ void DrawStar(ImDrawList* dl, ImVec2 c, float r, bool on)
     }
 }
 
-void DrawSpeaker(ImDrawList* dl, ImVec2 p, float s, ImU32 col, bool on)
-{
-    const float k = s / 16.0f;
-    auto P = [&](float x, float y) { return ImVec2(p.x + x * k, p.y + y * k); };
-    ImVec2 body[4] = {P(2.5f, 6.0f), P(5.0f, 6.0f), P(5.0f, 10.0f), P(2.5f, 10.0f)};
-    dl->AddConvexPolyFilled(body, 4, col);
-    ImVec2 cone[4] = {P(5.0f, 6.0f), P(8.5f, 3.0f), P(8.5f, 13.0f), P(5.0f, 10.0f)};
-    dl->AddConvexPolyFilled(cone, 4, col);
-    if (on) {
-        dl->PathArcTo(P(8.5f, 8.0f), 3.0f * k, -0.9f, 0.9f, 8);
-        dl->PathStroke(col, ImDrawFlags_None, 1.2f);
-        dl->PathArcTo(P(8.5f, 8.0f), 5.5f * k, -0.9f, 0.9f, 10);
-        dl->PathStroke(col, ImDrawFlags_None, 1.2f);
-    } else {
-        dl->AddLine(P(10.5f, 5.5f), P(14.0f, 10.5f), col, 1.2f);
-        dl->AddLine(P(14.0f, 5.5f), P(10.5f, 10.5f), col, 1.2f);
-    }
-}
-
 // The waveform, coloured like the Sound panel's (13-7b DrawWaveform): variations tinted accent
 // (~9 %, ~18 % selected) with accent edges, peaks in text inside a variation and faint outside,
 // past full scale in the clip colour; the variation number on top; a white playhead (file time,
@@ -1066,8 +1048,10 @@ void DrawHeader()
     const bool hov = ImGui::IsItemHovered();
     if (g.autoplay || hov)
         dl->AddRectFilled(sp, ImVec2(sp.x + sz, sp.y + sz), g.autoplay ? ui::kAccentSoft : ui::kHover, ui::kRadiusSm);
-    DrawSpeaker(dl, ImVec2(sp.x + (sz - 16.0f) * 0.5f, sp.y + (sz - 16.0f) * 0.5f), 16.0f,
-                g.autoplay ? ui::kAccent : ui::kMuted, g.autoplay);
+    // The mock-up's .btn.ico.spk: ICON_SPK at 14 px, accent on accent-soft when on, muted when off.
+    const float is = 14.0f;
+    DrawLibraryGlyph(dl, ImVec2(sp.x + (sz - is) * 0.5f, sp.y + (sz - is) * 0.5f), is, kGlyphSpeaker,
+                     g.autoplay ? ui::kAccent : ui::kMuted);
     if (hov) ImGui::SetTooltip("Auto-play on select: %s", g.autoplay ? "on" : "off");
     ImGui::SameLine();
     if (ui::SolidButton("Reload")) {

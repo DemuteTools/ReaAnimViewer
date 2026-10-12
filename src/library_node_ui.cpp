@@ -1789,7 +1789,22 @@ void DrawVolume(const SoundLibrary& lib, const SoundNode& n)
         });
 }
 
-void DrawMix(const SoundLibrary& lib, const SoundNode& n)
+// The Mix label of a child: under a Switch, the value(s) it plays for, then its own name.
+std::string MixLabel(const SoundStore& store, const SoundNode& sw, const SoundNode& k)
+{
+    if (sw.type != SoundNodeType::Switch) return k.name;
+    const SwitchGroup* g = FindGroup(store, sw.group_uid);
+    std::string vals;
+    for (const SwitchCase& c : sw.cases) {
+        if (c.child_uid != k.uid || !g) continue;
+        for (const SwitchValue& v : g->values)
+            if (v.uid == c.value_uid) vals += (vals.empty() ? "" : ", ") + v.name;
+    }
+    if (vals.empty()) return k.name;
+    return k.name.empty() ? vals : vals + " \xC2\xB7 " + k.name;
+}
+
+void DrawMix(const SoundStore& store, const SoundLibrary& lib, const SoundNode& n)
 {
     SeedSection("Mix", n.type != SoundNodeType::Switch);
     ui::Section s;
@@ -1800,7 +1815,7 @@ void DrawMix(const SoundLibrary& lib, const SoundNode& n)
             if (P.changed) break;
             ImGui::PushID(k->uid.c_str());
             // The name beside its fader when both fit, else the name on its own line above it.
-            ui::LabelRowText(k->name, 120.0f, 84.0f, IsLit(k->uid) ? ui::kAccent : ui::kText);
+            ui::LabelRowText(MixLabel(store, n, *k), 120.0f, 84.0f, IsLit(k->uid) ? ui::kAccent : ui::kText);
             double v = 0.0;
             const std::string kid = k->uid;
             if (VolumeControl("##mixvol", kid, k->volume_db, &v, 1e9f))
@@ -2131,7 +2146,7 @@ void DrawNodePanel()
         }
         ui::EndSection(s);
         if (!P.changed && n->type == SoundNodeType::Blend) DrawBlendLanes(store, *lib, *n);
-        else if (!P.changed) DrawMix(*lib, *n);
+        else if (!P.changed) DrawMix(store, *lib, *n);
     } else if (!P.changed) {
         ui::Section s;
         if (ui::BeginSection(s, "Level", ImTextureID(), false)) DrawVolume(*lib, *n);

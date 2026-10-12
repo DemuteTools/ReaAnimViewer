@@ -29,7 +29,7 @@ struct LibraryRow {
     bool operator<(const LibraryRow& o) const { return parent < o.parent || (parent == o.parent && key < o.key); }
 };
 
-enum class TreeRowKind { Node, Value, UnassignedHeader, AddValue, Hint };
+enum class TreeRowKind { Node, Value, UnassignedHeader, Hint };
 
 struct TreeRow {
     LibraryRow  row;

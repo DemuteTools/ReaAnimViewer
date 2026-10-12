@@ -14,7 +14,6 @@ namespace rav {
 namespace {
 
 constexpr const char kUnassignedKey[] = "#unassigned";
-constexpr const char kAddValueKey[] = "#addvalue";
 constexpr const char kHintKey[] = "#hint";
 
 bool IsContainer(const SoundNode& n) { return n.type != SoundNodeType::Sound; }
@@ -282,7 +281,7 @@ InsertPoint ResolveInsert(const SoundLibrary& lib, const LibraryRow* row, SoundN
     if (row) r = *row;
     if (r.key.empty()) r = {"", lib.root};
     if (r.key == kHintKey) r = RowOfNode(lib, r.parent);
-    if (r.key == kUnassignedKey || r.key == kAddValueKey) {
+    if (r.key == kUnassignedKey) {
         ip.why = "Select a value or a container";
         return ip;
     }
@@ -452,15 +451,7 @@ void EmitChildren(std::vector<TreeRow>& rows, const SoundStore& store, const Sou
                 EmitNode(rows, store, lib, open, r, seen);
             }
         }
-        if (g) {
-            TreeRow a;
-            a.row = {cid, kAddValueKey};
-            a.kind = TreeRowKind::AddValue;
-            a.depth = depth;
-            a.label = "+ value";
-            rows.push_back(a);
-        }
-        return;
+        return;  // values are added in the Switch Groups column only (Antho 2026-10-12)
     }
     std::vector<const SoundNode*> kids = ChildrenOf(lib, cid);
     for (const SoundNode* k : kids) {

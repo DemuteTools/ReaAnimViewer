@@ -58,7 +58,6 @@ struct TreeState {
     bool                     open_row_menu = false;
     LibraryRow               menu_row;
     std::vector<LibraryRow>  menu_rows;
-    std::map<std::string, std::string> add_value_text;
     LibraryTreeHooks         hooks;
     // Missing items: the project's item GUIDs (upper case), rebuilt on a project change.
     int                      guid_scc = -1;
@@ -883,23 +882,6 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
     if (r.kind == TreeRowKind::UnassignedHeader) {
         dl->AddText(ImVec2(x0 + 14.0f, ty), kLibUnassigned, r.label.c_str());
         ImGui::Dummy(ImVec2(w, rh));
-        return;
-    }
-    if (r.kind == TreeRowKind::AddValue) {
-        ImGui::SetCursorScreenPos(ImVec2(x0 + 14.0f, p.y));
-        std::string& text = g.add_value_text[r.row.parent];
-        char buf[128] = {};
-        std::snprintf(buf, sizeof(buf), "%s", text.c_str());
-        ImGui::SetNextItemWidth(std::max(60.0f, std::min(160.0f, p.x + w - x0 - 20.0f)));
-        const bool enter = ImGui::InputTextWithHint("##addval", "+ value", buf, sizeof(buf),
-                                                    ImGuiInputTextFlags_EnterReturnsTrue);
-        text = buf;
-        if (enter && !text.empty()) {
-            const SoundNode* sw = FindNode(lib, r.row.parent);
-            const std::string gid = sw ? sw->group_uid : std::string();
-            const std::string name = text;
-            if (Gesture("Add value", [&](SoundStore& s) { return AddValue(s, gid, name, nullptr); })) text.clear();
-        }
         return;
     }
 

@@ -195,10 +195,10 @@ static void TestShiftRangeByLevel()
     l->nodes.push_back(Node("g2", "gr", SoundNodeType::Sound, "G2"));
     std::set<std::string> open = {"gr"};
     std::vector<TreeRow> rows = BuildTreeRows(s, *l, open);
-    // root, Wood(y), Concrete(empty), Grass(gr), g1, g2, + value
-    CHECK(rows.size() == 7);
+    // root, Wood(y), Concrete(empty), Grass(gr), g1, g2 (values are added in the Switch Groups column)
+    CHECK(rows.size() == 6);
     CHECK(rows[1].kind == TreeRowKind::Value && rows[1].is_default && rows[1].node == "y");
-    CHECK(rows[4].depth == 2 && rows[6].kind == TreeRowKind::AddValue);
+    CHECK(rows[4].depth == 2 && rows[5].kind == TreeRowKind::Node);
     std::vector<LibraryRow> r = RangeSelectByLevel(rows, {"sw", "vwood"}, {"gr", "g2"});
     // Anchor depth 1: Wood, Concrete, Grass (the target's row at depth 1).
     CHECK(r.size() == 3 && r[2] == (LibraryRow{"sw", "vgrass"}));

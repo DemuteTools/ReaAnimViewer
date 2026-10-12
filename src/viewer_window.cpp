@@ -26,6 +26,7 @@
 #include <cfloat>      // FLT_MAX (spec 11-fb-11: the menu's height cap)
 #include <algorithm>   // std::min/max — the load message's wrap width
 #include <exception>   // std::exception — the no-throw host boundary (AR18)
+#include <initializer_list>  // 13-7: the UI font fallback chains
 #include <filesystem>  // issue #1: the item folder for "Locate textures..."
 #include <string>
 #include <type_traits>    // 13-7: kUiGlyphRanges is ImWchar-compatible
@@ -1642,49 +1643,120 @@ void DrawToolUi()
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
 
-// 13-7: the UI font. ImGui's default font (ProggyClean) only holds Basic Latin + Latin-1,
-// so every other symbol in a UI string (play / stop, ellipsis, arrows, stars...) drew as
-// "?". Merge Windows' own fonts into the atlas for the blocks of ui_glyph_ranges.h: Segoe
-// UI (punctuation, arrows), then Segoe UI Symbol (shapes, stars, dingbats), then Arial.
-// The first font holding a code point wins; a font missing a glyph simply adds nothing.
-// A missing or unreadable file is skipped: the UI keeps running with the default font.
-void LoadUiFontAtlas(ImGuiIO& io)
+// 13-7: the UI fonts, those of the validated mock-up: --font Segoe UI (body 12 px, small
+// 11, titles 13, big 15) and --mono Cascadia Mono / Consolas (numbers). ImGui's own
+// ProggyClean (a 13 px pixel font, Basic Latin + Latin-1 only) stays the last resort.
+//
+// Sizes: CSS px are em sizes, but ImGui's size is the font's ascent + descent height
+// (stbtt_ScaleForPixelHeight), and Segoe UI's ascent + descent is 1.33 em (hhea
+// 2210 + 514 over 2048). So 12 CSS px = 16 ImGui px (a 16 px line, as a browser lays
+// 12 px Segoe UI out), not 12: 12 would draw the letters a quarter smaller than the
+// mock-up. Each file carries its own ratio below; all are scaled by the screen's DPI.
+//
+// Every font gets the Windows symbol fonts merged in for the blocks of
+// ui_glyph_ranges.h (Segoe UI punctuation and arrows, then Segoe UI Symbol shapes,
+// stars and dingbats, then Arial): the first font holding a code point wins, a font
+// missing a glyph adds nothing, and a missing or unreadable file is skipped.
+namespace {
+
+struct UiFontFile {
+    const wchar_t* name;
+    float          height_per_em;   // (hhea ascent + descent) / units per em
+};
+constexpr UiFontFile kSegoeUi     = {L"segoeui.ttf", 1.330f};
+constexpr UiFontFile kSegoeSymbol = {L"seguisym.ttf", 1.330f};
+constexpr UiFontFile kArial       = {L"arial.ttf", 1.117f};
+constexpr UiFontFile kCascadia    = {L"CascadiaMono.ttf", 1.172f};
+constexpr UiFontFile kConsolas    = {L"consola.ttf", 1.171f};
+
+// The UTF-8 path of a file of the Windows Fonts folder, or "" when it is not there.
+std::string WindowsFontPath(const std::wstring& fonts_dir, const wchar_t* file)
+{
+    const std::wstring path = fonts_dir + file;
+    const DWORD attr = GetFileAttributesW(path.c_str());
+    if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) return {};
+    const int bytes = WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (bytes <= 1) return {};
+    std::string utf8(static_cast<size_t>(bytes), '\0');   // ImGui opens it as UTF-8 (_wfopen)
+    if (WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, &utf8[0], bytes, nullptr, nullptr) != bytes) return {};
+    utf8.resize(static_cast<size_t>(bytes - 1));
+    return utf8;
+}
+
+// Crisp small text: 2x horizontal oversampling for smooth subpixel placement, glyph
+// advances snapped to whole pixels at UI sizes, and a touch more ink, as Segoe UI's
+// thin stems at 11-13 px wash out grey under stb_truetype's plain coverage.
+ImFontConfig UiFontConfig(float em_px)
+{
+    ImFontConfig cfg;
+    cfg.OversampleH        = 2;
+    cfg.OversampleV        = 1;
+    cfg.PixelSnapH         = em_px <= 16.0f;
+    cfg.RasterizerMultiply = 1.15f;
+    return cfg;
+}
+
+// Adds the first of `files` that loads at `em_px` (CSS px, DPI applied), the symbol
+// fonts merged in. nullptr when none loaded.
+ImFont* AddUiFont(ImGuiIO& io, const std::wstring& fonts_dir, std::initializer_list<UiFontFile> files, float em_px)
+{
+    ImFont* font = nullptr;
+    for (const UiFontFile& f : files) {
+        const std::string path = WindowsFontPath(fonts_dir, f.name);
+        if (path.empty()) continue;
+        ImFontConfig cfg = UiFontConfig(em_px);
+        font = io.Fonts->AddFontFromFileTTF(path.c_str(), std::round(em_px * f.height_per_em), &cfg, kUiGlyphRanges);
+        if (font) break;
+    }
+    if (!font) return nullptr;
+    for (const UiFontFile& f : {kSegoeUi, kSegoeSymbol, kArial}) {
+        const std::string path = WindowsFontPath(fonts_dir, f.name);
+        if (path.empty()) continue;
+        ImFontConfig cfg = UiFontConfig(em_px);
+        cfg.MergeMode = true;
+        io.Fonts->AddFontFromFileTTF(path.c_str(), std::round(em_px * f.height_per_em), &cfg, kUiGlyphRanges);
+    }
+    return font;
+}
+
+}  // namespace
+
+// `dpi_scale` is the screen's DPI over 96 (1 at 100 % scaling).
+void LoadUiFontAtlas(ImGuiIO& io, float dpi_scale)
 {
     static_assert(std::is_same<ImWchar, std::remove_cv_t<std::remove_extent_t<decltype(kUiGlyphRanges)>>>::value,
                   "kUiGlyphRanges must match ImWchar (16-bit)");
-    constexpr float kFontPx = 13.0f;   // ProggyClean's size: merged glyphs sit on its baseline
-    io.Fonts->AddFontDefault();
+    if (!(dpi_scale >= 1.0f && dpi_scale <= 4.0f)) dpi_scale = 1.0f;
+    ui::SetFonts(ui::FontSet{});
 
     wchar_t win_dir[MAX_PATH] = {};
     const UINT dir_len = GetWindowsDirectoryW(win_dir, MAX_PATH);
     if (dir_len == 0 || dir_len >= MAX_PATH) {
-        LogInfo("UI symbols: the Windows folder was not found; symbols may show as '?'");
+        io.Fonts->AddFontDefault();
+        LogInfo("UI fonts: the Windows folder was not found; the built-in font is used");
         return;
     }
-    static const wchar_t* const kFontFiles[] = {L"segoeui.ttf", L"seguisym.ttf", L"arial.ttf"};
-    int merged = 0;
-    for (const wchar_t* file : kFontFiles) {
-        const std::wstring path = std::wstring(win_dir) + L"\\Fonts\\" + file;
-        const DWORD attr = GetFileAttributesW(path.c_str());
-        if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) continue;
-        const int bytes = WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, nullptr, 0, nullptr, nullptr);
-        if (bytes <= 1) continue;
-        std::string utf8(static_cast<size_t>(bytes), '\0');   // ImGui opens it as UTF-8 (_wfopen)
-        if (WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, &utf8[0], bytes, nullptr, nullptr) != bytes) continue;
-        utf8.resize(static_cast<size_t>(bytes - 1));
-        ImFontConfig cfg;
-        cfg.MergeMode  = true;
-        cfg.PixelSnapH = true;
-        if (io.Fonts->AddFontFromFileTTF(utf8.c_str(), kFontPx, &cfg, kUiGlyphRanges)) ++merged;
+    const std::wstring fonts_dir = std::wstring(win_dir) + L"\\Fonts\\";
+
+    // The body font first: the atlas's first font is ImGui's default.
+    ui::FontSet set;
+    set.body = AddUiFont(io, fonts_dir, {kSegoeUi, kArial}, 12.0f * dpi_scale);
+    if (set.body) {
+        set.small = AddUiFont(io, fonts_dir, {kSegoeUi, kArial}, 11.0f * dpi_scale);
+        set.title = AddUiFont(io, fonts_dir, {kSegoeUi, kArial}, 13.0f * dpi_scale);
+        set.big   = AddUiFont(io, fonts_dir, {kSegoeUi, kArial}, 15.0f * dpi_scale);
+        set.mono  = AddUiFont(io, fonts_dir, {kCascadia, kConsolas}, 12.0f * dpi_scale);
     }
     // Build now: a corrupt font file would fail the WHOLE atlas (no text at all), so fall
-    // back to the default font alone rather than lose every label.
-    if (merged > 0 && !io.Fonts->Build()) {
+    // back to the built-in font alone rather than lose every label.
+    if (!set.body || !io.Fonts->Build()) {
         io.Fonts->Clear();
         io.Fonts->AddFontDefault();
-        merged = 0;
+        LogInfo("UI fonts: Segoe UI / Arial could not be loaded; the built-in font is used");
+        return;
     }
-    if (merged == 0) LogInfo("UI symbols: no Windows symbol font could be loaded; symbols may show as '?'");
+    io.FontDefault = set.body;
+    ui::SetFonts(set);
 }
 
 // Brings up the GL context + renderer + frame loop. Returns false (with a
@@ -1787,7 +1859,12 @@ bool StartRendering(HWND hwnd)
         io.IniFilename = nullptr;   // do not write imgui.ini next to Reaper
         io.LogFilename = nullptr;
         ui::ApplyRavTheme();   // Story 11-4: the DM-XYZ-Pad theme (ui_theme.h), over StyleColorsDark
-        LoadUiFontAtlas(io);   // 13-7: Windows symbol fonts merged in, so symbols are not "?"
+        // 13-7: the mock-up's fonts (Segoe UI, Cascadia Mono / Consolas) at the screen's
+        // DPI; the style's paddings and sizes follow the same scale.
+        const int dpi_y = g_hdc ? GetDeviceCaps(g_hdc, LOGPIXELSY) : 96;
+        const float dpi_scale = dpi_y > 96 ? static_cast<float>(dpi_y) / 96.0f : 1.0f;
+        if (dpi_scale > 1.0f) ImGui::GetStyle().ScaleAllSizes(dpi_scale);
+        LoadUiFontAtlas(io, dpi_scale);
         // Init the two backends in nested steps so teardown stays symmetric: if the GL
         // backend fails AFTER the Win32 backend already initialized, we must still shut the
         // Win32 backend down (DestroyContext alone leaks its platform data). [Review][Patch]

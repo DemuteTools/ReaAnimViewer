@@ -100,7 +100,16 @@ void ApplyRavTheme()
 
 namespace {
 int g_seg_hovered = -1;
+FontSet g_fonts;
+ImFont* FontOr(ImFont* f) { return f ? f : (g_fonts.body ? g_fonts.body : ImGui::GetDefaultFont()); }
 }  // namespace
+
+void SetFonts(const FontSet& fonts) { g_fonts = fonts; }
+ImFont* FontBody()  { return FontOr(g_fonts.body); }
+ImFont* FontSmall() { return FontOr(g_fonts.small); }
+ImFont* FontTitle() { return FontOr(g_fonts.title); }
+ImFont* FontBig()   { return FontOr(g_fonts.big); }
+ImFont* FontMono()  { return FontOr(g_fonts.mono); }
 
 int SegmentedHovered() { return g_seg_hovered; }
 

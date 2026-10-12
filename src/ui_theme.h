@@ -64,6 +64,24 @@ ImVec4 Col(ImU32 c);
 // Lays the theme over the live style (call once after ImGui::CreateContext).
 void ApplyRavTheme();
 
+// ---- fonts (13-7: the mock-up's --font Segoe UI and --mono Cascadia Mono / Consolas) ----
+// The viewer builds the atlas and registers its fonts here once; a role whose font could
+// not be loaded answers the default font, so ImGui::PushFont(ui::FontMono()) is always safe.
+// Sizes are the mock-up's CSS pixels: body 12, small 11, title 13, big 15, mono 12.
+struct FontSet {
+    ImFont* body  = nullptr;
+    ImFont* small = nullptr;
+    ImFont* title = nullptr;
+    ImFont* big   = nullptr;
+    ImFont* mono  = nullptr;
+};
+void SetFonts(const FontSet& fonts);
+ImFont* FontBody();
+ImFont* FontSmall();
+ImFont* FontTitle();
+ImFont* FontBig();
+ImFont* FontMono();
+
 // A segmented control (the mock-up's .seg): `count` options side by side in a dark
 // well, the selected one raised. `item_width` 0 = sized to the labels. An option at
 // `disabled_index` cannot be picked. Returns true when *selected changed.

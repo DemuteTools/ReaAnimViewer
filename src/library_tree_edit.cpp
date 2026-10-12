@@ -5,6 +5,7 @@
 #include "library_tree_edit.h"
 
 #include <algorithm>
+#include <cctype>
 
 #include "rule_record.h"
 #include "sound_record.h"
@@ -381,6 +382,27 @@ bool IsInSubtree(const SoundLibrary& lib, const std::string& uid, const std::str
 
 namespace {
 
+// The name a node row shows.
+std::string NodeLabel(const SoundNode& n)
+{
+    return n.name.empty() ? (IsContainer(n) ? TypeName(n.type) : "Empty sound") : n.name;
+}
+
+// 13-17c: A to Z, case-insensitive.
+bool LessNoCase(const std::string& a, const std::string& b)
+{
+    return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(), [](char x, char y) {
+        return std::tolower(static_cast<unsigned char>(x)) < std::tolower(static_cast<unsigned char>(y));
+    });
+}
+
+bool ContainsNoCase(const std::string& text, const std::string& part)
+{
+    return std::search(text.begin(), text.end(), part.begin(), part.end(), [](char x, char y) {
+               return std::tolower(static_cast<unsigned char>(x)) == std::tolower(static_cast<unsigned char>(y));
+           }) != text.end();
+}
+
 void EmitChildren(std::vector<TreeRow>& rows, const SoundStore& store, const SoundLibrary& lib,
                   const std::set<std::string>& open, const std::string& cid, int depth, std::set<std::string>& seen);
 
@@ -390,8 +412,10 @@ void EmitNode(std::vector<TreeRow>& rows, const SoundStore& store, const SoundLi
     const SoundNode* n = r.node.empty() ? nullptr : FindNode(lib, r.node);
     if (n) {
         r.container = IsContainer(*n);
-        if (r.label.empty()) r.label = n->name.empty() ? (r.container ? TypeName(n->type) : "Empty sound") : n->name;
-        r.open = r.container && (n->uid == lib.root ? !open.count("!root") : open.count(n->uid) != 0);
+        if (r.label.empty()) r.label = NodeLabel(*n);
+        // "*": every container open (a search, 13-17c).
+        r.open = r.container &&
+                 (open.count("*") != 0 || (n->uid == lib.root ? !open.count("!root") : open.count(n->uid) != 0));
     }
     rows.push_back(r);
     if (n && r.open && !seen.count(n->uid)) {
@@ -409,19 +433,25 @@ void EmitChildren(std::vector<TreeRow>& rows, const SoundStore& store, const Sou
         const SwitchGroup* g = FindGroup(store, c->group_uid);
         const std::string dv = DefaultValue(store, *c);
         std::vector<std::string> shown;
+        std::vector<const SwitchValue*> values;  // A to Z by name (13-17c)
         if (g)
-            for (const SwitchValue& v : g->values) {
-                TreeRow r;
-                r.row = {cid, v.uid};
-                r.kind = TreeRowKind::Value;
-                r.depth = depth;
-                r.node = CaseChild(*c, v.uid);
-                if (!FindNode(lib, r.node)) r.node.clear();
-                r.label = v.name.empty() ? "(unnamed)" : v.name;
-                r.is_default = v.uid == dv;
-                shown.push_back(v.uid);
-                EmitNode(rows, store, lib, open, r, seen);
-            }
+            for (const SwitchValue& v : g->values) values.push_back(&v);
+        std::stable_sort(values.begin(), values.end(), [](const SwitchValue* a, const SwitchValue* b) {
+            return LessNoCase(a->name.empty() ? "(unnamed)" : a->name, b->name.empty() ? "(unnamed)" : b->name);
+        });
+        for (const SwitchValue* vp : values) {
+            const SwitchValue& v = *vp;
+            TreeRow r;
+            r.row = {cid, v.uid};
+            r.kind = TreeRowKind::Value;
+            r.depth = depth;
+            r.node = CaseChild(*c, v.uid);
+            if (!FindNode(lib, r.node)) r.node.clear();
+            r.label = v.name.empty() ? "(unnamed)" : v.name;
+            r.is_default = v.uid == dv;
+            shown.push_back(v.uid);
+            EmitNode(rows, store, lib, open, r, seen);
+        }
         for (const SwitchCase& sc : c->cases) {  // a case on a value the group no longer has
             if (std::find(shown.begin(), shown.end(), sc.value_uid) != shown.end()) continue;
             TreeRow r;
@@ -441,12 +471,16 @@ void EmitChildren(std::vector<TreeRow>& rows, const SoundStore& store, const Sou
                                                      [&](const std::string& u) { return FindNode(lib, u) != nullptr; }));
             h.label = "Unassigned (" + std::to_string(h.count) + ") · drag them onto a value";
             rows.push_back(h);
-            for (const std::string& u : c->unassigned) {
-                if (!FindNode(lib, u)) continue;
+            std::vector<const SoundNode*> loose;  // A to Z (13-17c)
+            for (const std::string& u : c->unassigned)
+                if (const SoundNode* un = FindNode(lib, u)) loose.push_back(un);
+            std::stable_sort(loose.begin(), loose.end(),
+                             [](const SoundNode* a, const SoundNode* b) { return LessNoCase(NodeLabel(*a), NodeLabel(*b)); });
+            for (const SoundNode* un : loose) {
                 TreeRow r;
-                r.row = {cid, u};
+                r.row = {cid, un->uid};
                 r.depth = depth;
-                r.node = u;
+                r.node = un->uid;
                 r.unassigned = true;
                 EmitNode(rows, store, lib, open, r, seen);
             }
@@ -454,6 +488,8 @@ void EmitChildren(std::vector<TreeRow>& rows, const SoundStore& store, const Sou
         return;  // values are added in the Switch Groups column only (Antho 2026-10-12)
     }
     std::vector<const SoundNode*> kids = ChildrenOf(lib, cid);
+    std::stable_sort(kids.begin(), kids.end(),  // A to Z (13-17c)
+                     [](const SoundNode* a, const SoundNode* b) { return LessNoCase(NodeLabel(*a), NodeLabel(*b)); });
     for (const SoundNode* k : kids) {
         TreeRow r;
         r.row = {cid, k->uid};
@@ -473,7 +509,8 @@ void EmitChildren(std::vector<TreeRow>& rows, const SoundStore& store, const Sou
 
 }  // namespace
 
-std::vector<TreeRow> BuildTreeRows(const SoundStore& store, const SoundLibrary& lib, const std::set<std::string>& open)
+std::vector<TreeRow> BuildTreeRows(const SoundStore& store, const SoundLibrary& lib, const std::set<std::string>& open,
+                                   const std::string& search)
 {
     std::vector<TreeRow> rows;
     if (!FindNode(lib, lib.root)) return rows;
@@ -481,8 +518,43 @@ std::vector<TreeRow> BuildTreeRows(const SoundStore& store, const SoundLibrary& 
     TreeRow r;
     r.row = {"", lib.root};
     r.node = lib.root;
-    EmitNode(rows, store, lib, open, r, seen);
-    return rows;
+    EmitNode(rows, store, lib, search.empty() ? open : std::set<std::string>{"*"}, r, seen);
+    if (search.empty()) return rows;
+
+    // 13-17c: keep the matching rows and their ancestors. Backwards, `below[d]` = a row kept since
+    // the last row at depth <= d - 1, i.e. under the ancestor at depth d - 1. An Unassigned header
+    // sits at its rows' depth, just before them: it stays when one of its rows stays.
+    std::vector<char>          keep(rows.size(), 0);
+    std::vector<char>          below;
+    std::set<std::string>      loose_kept;  // Switches with an Unassigned row kept
+    for (size_t i = rows.size(); i-- > 0;) {
+        const TreeRow& t = rows[i];
+        const size_t   d = static_cast<size_t>(std::max(0, t.depth));
+        if (below.size() < d + 2) below.resize(d + 2, 0);
+        bool under = false;
+        for (size_t k = d + 1; k < below.size(); ++k) {
+            under = under || below[k] != 0;
+            below[k] = 0;
+        }
+        bool k = false;
+        if (t.kind == TreeRowKind::Node || t.kind == TreeRowKind::Value) {
+            const SoundNode* n = t.node.empty() ? nullptr : FindNode(lib, t.node);
+            k = under || ContainsNoCase(t.label, search) ||
+                (t.kind == TreeRowKind::Value && n && ContainsNoCase(NodeLabel(*n), search));
+            if (k && t.unassigned) loose_kept.insert(t.row.parent);
+        } else if (t.kind == TreeRowKind::UnassignedHeader) {
+            k = loose_kept.count(t.row.parent) != 0;
+        }
+        keep[i] = k ? 1 : 0;
+        if (k) below[d] = 1;
+    }
+    std::vector<TreeRow> out;
+    for (size_t i = 0; i < rows.size(); ++i)
+        if (keep[i]) out.push_back(rows[i]);
+    // A container shows open only when a row is kept under it.
+    for (size_t i = 0; i < out.size(); ++i)
+        if (out[i].open) out[i].open = i + 1 < out.size() && out[i + 1].depth > out[i].depth;
+    return out;
 }
 
 std::vector<LibraryRow> RangeSelectByLevel(const std::vector<TreeRow>& rows, const LibraryRow& anchor,

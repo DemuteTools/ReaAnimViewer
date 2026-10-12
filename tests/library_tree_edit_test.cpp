@@ -195,16 +195,17 @@ static void TestShiftRangeByLevel()
     l->nodes.push_back(Node("g2", "gr", SoundNodeType::Sound, "G2"));
     std::set<std::string> open = {"gr"};
     std::vector<TreeRow> rows = BuildTreeRows(s, *l, open);
-    // root, Wood(y), Concrete(empty), Grass(gr), g1, g2 (values are added in the Switch Groups column)
+    // root, Concrete(empty), Grass(gr), g1, g2, Wood(y): A to Z (13-17c; values are added in the
+    // Switch Groups column)
     CHECK(rows.size() == 6);
-    CHECK(rows[1].kind == TreeRowKind::Value && rows[1].is_default && rows[1].node == "y");
-    CHECK(rows[4].depth == 2 && rows[5].kind == TreeRowKind::Node);
-    std::vector<LibraryRow> r = RangeSelectByLevel(rows, {"sw", "vwood"}, {"gr", "g2"});
-    // Anchor depth 1: Wood, Concrete, Grass (the target's row at depth 1).
-    CHECK(r.size() == 3 && r[2] == (LibraryRow{"sw", "vgrass"}));
+    CHECK(rows[5].kind == TreeRowKind::Value && rows[5].is_default && rows[5].node == "y");
+    CHECK(rows[3].depth == 2 && rows[4].kind == TreeRowKind::Node);
+    std::vector<LibraryRow> r = RangeSelectByLevel(rows, {"sw", "vconc"}, {"gr", "g2"});
+    // Anchor depth 1: Concrete, Grass (the target's row at depth 1).
+    CHECK(r.size() == 2 && r[1] == (LibraryRow{"sw", "vgrass"}));
     r = RangeSelectByLevel(rows, {"gr", "g1"}, {"gr", "g2"});
     CHECK(r.size() == 2);
-    r = RangeSelectByLevel(rows, {"sw", "vwood"}, {"sw", "vgrass"});
+    r = RangeSelectByLevel(rows, {"sw", "vconc"}, {"sw", "vwood"});
     CHECK(r.size() == 3);
 }
 
@@ -441,8 +442,8 @@ static void TestShiftRangeUpward()
 {
     SoundStore s = Store();
     std::vector<TreeRow> rows = BuildTreeRows(s, *FindLibrary(s, "L"), {"gr"});
-    std::vector<LibraryRow> r = RangeSelectByLevel(rows, {"sw", "vgrass"}, {"sw", "vwood"});
-    CHECK(r.size() == 3 && r[0] == (LibraryRow{"sw", "vwood"}));
+    std::vector<LibraryRow> r = RangeSelectByLevel(rows, {"sw", "vwood"}, {"sw", "vconc"});
+    CHECK(r.size() == 3 && r[0] == (LibraryRow{"sw", "vconc"}));
 }
 
 // Bug 3 (13-7a): several Switch rows, batch "Switch on" a group created just before (no value yet,
@@ -485,8 +486,56 @@ static void TestBatchSwitchOnNewGroup()
     CHECK(N(t, "B", "s1")->group_uid == gid && N(t, "B", "s2")->group_uid == gid);
 }
 
+// 13-17c: every level A to Z (display only), and the search field's filter.
+static std::vector<std::string> Labels(const std::vector<TreeRow>& rows)
+{
+    std::vector<std::string> out;
+    for (const TreeRow& r : rows) out.push_back(r.label);
+    return out;
+}
+
+static void TestSortAndSearch()
+{
+    SoundStore    s = Store();
+    SoundLibrary* l = FindLibrary(s, "L");
+    // Unassigned rows A to Z.
+    l->nodes.push_back(Node("u1", "sw", SoundNodeType::Sound, "Zed"));
+    l->nodes.push_back(Node("u2", "sw", SoundNodeType::Sound, "alpha"));
+    FindNode(*l, "sw")->unassigned = {"u1", "u2"};
+    // Random children A to Z, case-insensitive, equal names in stored order.
+    l->nodes.push_back(Node("g3", "gr", SoundNodeType::Sound, "b"));
+    l->nodes.push_back(Node("g4", "gr", SoundNodeType::Sound, "A"));
+    l->nodes.push_back(Node("g5", "gr", SoundNodeType::Sound, "b"));
+    l->nodes.push_back(Node("e", "gr", SoundNodeType::Random, "Hollow"));
+    const std::vector<TreeRow> rows = BuildTreeRows(s, *l, {"gr", "e"});
+    CHECK((Labels(rows) == std::vector<std::string>{"Steps", "Concrete", "Grass", "A", "b", "b", "G1", "Hollow",
+                                                    "Drop sounds here or use + Sound", "Wood",
+                                                    "Unassigned (2) \xC2\xB7 drag them onto a value", "alpha", "Zed"}));
+    CHECK(rows[4].node == "g3" && rows[5].node == "g5");
+    // The stored order is unchanged.
+    CHECK(ChildrenOf(*l, "gr").front()->uid == "g1");
+    // Search: a match with its ancestors, folded containers shown open, case-insensitive.
+    std::vector<TreeRow> f = BuildTreeRows(s, *l, {}, "g1");
+    CHECK((Labels(f) == std::vector<std::string>{"Steps", "Grass", "G1"}));
+    CHECK(f[1].open);
+    // A value row by its content's name ("Y" under Wood).
+    f = BuildTreeRows(s, *l, {"gr"}, "y");
+    CHECK((Labels(f) == std::vector<std::string>{"Steps", "Wood"}));
+    // An Unassigned row keeps its header; a hint row goes.
+    f = BuildTreeRows(s, *l, {"gr"}, "ZED");
+    CHECK(f.size() == 3 && f[1].kind == TreeRowKind::UnassignedHeader && f[2].node == "u1");
+    f = BuildTreeRows(s, *l, {"gr"}, "holl");
+    CHECK((Labels(f) == std::vector<std::string>{"Steps", "Grass", "Hollow"}));
+    // A matching container shows without its children (only matches and their ancestors).
+    f = BuildTreeRows(s, *l, {"gr"}, "grass");
+    CHECK((Labels(f) == std::vector<std::string>{"Steps", "Grass"}) && f[0].open && !f[1].open);
+    // Nothing matches: no row.
+    CHECK(BuildTreeRows(s, *l, {"gr"}, "nothing like it").empty());
+}
+
 int main()
 {
+    TestSortAndSearch();
     TestDeleteDefaultValue();
     TestMoveIntoDescendant();
     TestMultiDropOnValue();

@@ -45,8 +45,14 @@ struct TreeRow {
 };
 
 // Visible rows, depth first. `open` holds the uids of the open containers; the root is open
-// unless "!root" is in the set.
-std::vector<TreeRow> BuildTreeRows(const SoundStore& store, const SoundLibrary& lib, const std::set<std::string>& open);
+// unless "!root" is in the set. 13-17c: each level is listed A to Z (case-insensitive, stable:
+// equal names keep the stored order; a Switch's value rows by value name, its "(deleted value)"
+// rows after them, its Unassigned rows by name); the stored order is unchanged. A non-empty
+// `search` keeps the Node / Value rows whose label (or a value row's content name) contains it,
+// case-insensitive, with their ancestors, every container on the way shown open; hint rows go,
+// an Unassigned header stays while one of its rows does. Nothing matches = no row.
+std::vector<TreeRow> BuildTreeRows(const SoundStore& store, const SoundLibrary& lib, const std::set<std::string>& open,
+                                   const std::string& search = {});
 
 // The node a row targets ("" = none: an empty value or a non-node row).
 std::string RowNode(const SoundLibrary& lib, const LibraryRow& row);

@@ -87,6 +87,8 @@ struct TreeState {
     // 13-7a (audit C3.1): the tree header's library name field (the name being typed).
     std::string              title_lib;
     char                     title[256] = {};
+    // 13-17c: the tree's search field (session; kept across libraries, Esc clears it).
+    char                     search[128] = {};
     // The row menu was open last frame (its row keeps its ⋯ lit).
     bool                     row_menu_open = false;
     // A gesture ran this frame: the store was rewritten, so every SoundLibrary / SoundNode
@@ -1919,6 +1921,10 @@ void LibraryTreeWidgets()
     if (!g.changed) TreeKeys(*lib);  // after a toolbar gesture `lib` is stale
     lib = CurrentLib();  // a gesture above rewrote the store
     if (!lib) return;
+    // 13-17c: the search field under the toolbar filters the tree as you type.
+    ui::TextField("##treesearch", "Search nodes", g.search, sizeof g.search, 0.0f,
+                  ImGuiInputTextFlags_EscapeClearsAll);
+    const std::string search = g.search;
 
     // Antho 2026-10-12: every container starts open (the whole hierarchy shows); ▶ folds one. BuildTreeRows takes
     // the open set: every container not folded ("!root" marks a folded root).
@@ -1926,8 +1932,9 @@ void LibraryTreeWidgets()
     for (const SoundNode& n : lib->nodes)
         if (n.type != SoundNodeType::Sound && !g.closed.count(n.uid)) open.insert(n.uid);
     if (g.closed.count(lib->root)) open.insert("!root");
-    g.rows = BuildTreeRows(GetSoundStore(nullptr), *lib, open);
-    // The selection is pruned against the rows (an undo may remove uids).
+    g.rows = BuildTreeRows(GetSoundStore(nullptr), *lib, open, search);
+    // The selection is pruned against the rows shown (an undo may remove uids; 13-17c: a search
+    // keeps only the rows it shows, so Delete / Cut never act on a hidden row).
     g.sel.erase(std::remove_if(g.sel.begin(), g.sel.end(),
                                [&](const LibraryRow& s) {
                                    for (const TreeRow& r : g.rows)
@@ -1964,7 +1971,8 @@ void LibraryTreeWidgets()
         ImGui::PopStyleVar();
         lib = FindLibrary(GetSoundStore(nullptr), g.lib);
         const SoundNode* root = lib ? FindNode(*lib, lib->root) : nullptr;
-        if (!g.changed && root && root->type != SoundNodeType::Switch && ChildrenOf(*lib, root->uid).empty())
+        if (!search.empty() && rows.empty()) ui::SubText("No node matches");  // 13-17c
+        else if (!g.changed && root && root->type != SoundNodeType::Switch && ChildrenOf(*lib, root->uid).empty())
             EmptyLibraryHint(*lib);
         lib = FindLibrary(GetSoundStore(nullptr), g.lib);
         if (!g.changed && lib && FindNode(*lib, lib->root)) EmptySpaceDropTarget(*lib);

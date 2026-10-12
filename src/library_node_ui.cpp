@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <limits>
 #include <set>
 
@@ -878,6 +879,9 @@ void Locate(const std::string& lib_uid, const std::string& uid, const SoundSourc
     std::string path = src.asset.last_path;
     if (!ChooseSoundFile("Locate " + src.asset.name, &path)) return;
     const double len = SourceFileLength(path);
+    std::error_code ec;  // the size too, so the file is found again by name, size and length (13-11)
+    const auto fsize = std::filesystem::file_size(std::filesystem::u8path(path), ec);
+    const int64_t size = ec ? int64_t(-1) : int64_t(fsize);
     EditNode(
         "Locate sound file", lib_uid, uid,
         [&](SoundNode& x) {
@@ -885,6 +889,7 @@ void Locate(const std::string& lib_uid, const std::string& uid, const SoundSourc
             x.sound.source.asset.last_path = path;
             x.sound.source.asset.name = FileName(path);
             if (len > 0.0) x.sound.source.asset.length = len;
+            x.sound.source.asset.size = size;
             return true;
         },
         "Located " + FileName(path));

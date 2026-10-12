@@ -13,6 +13,7 @@
 #include <cmath>
 #include <memory>
 
+#include "library_media_ui.h"
 #include "reaper_api.h"
 
 namespace rav {
@@ -143,6 +144,7 @@ void StopAudition()
 bool PlayVoices(const std::vector<PlayVoice>& voices, const std::string& tag, std::string* why)
 {
     StopAudition();
+    StopMediaPreview();  // a tree audition and a Media Explorer preview never sound together (13-7c)
     if (!f_play || !f_stop || !f_create) {
         if (why) *why = "REAPER's preview is not available";
         return false;

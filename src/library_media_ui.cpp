@@ -2,12 +2,15 @@
 //
 // See library_media_ui.h. Spec 13-7c (DECISIONS section 6, mockup renderMediaExplorer / useFiles).
 //
-// Threads: the database load is media_db's worker (MediaDbStartLoad). This file has two more:
-// the probe worker (does a file exist / can it be reached: plain std::filesystem, exists and
-// size, no REAPER call) and the peak reader (only GetSamples on a source the UI thread made). Every
-// REAPER call (PCM_Source_CreateFromFile, deleting a source) stays on the UI thread, made only once
-// the probe answered that the file is reachable, so an offline network share only leaves rows
-// "checking...", the preview "opening..." or a use "Reading N files...". Results come back
+// Threads: the database load is media_db's worker (MediaDbStartLoad). This file has three more:
+// the row checker (are the files of the rows on screen on this PC: one batch at a time, each path
+// once per session, MediaExistsCache), the probe worker (can the previewed / used file be reached:
+// plain std::filesystem, exists and size, no REAPER call) and the peak reader (only GetSamples on a
+// source the UI thread made). The list itself comes straight from the index: a row is drawn at
+// once and only dims once its file is known missing; the row checks never delay a preview or a use
+// (their own worker). Every REAPER call (PCM_Source_CreateFromFile, deleting a source) stays on the
+// UI thread, made only once the probe answered that the file is reachable, so an offline network
+// share only leaves the preview "opening..." or a use "Reading N files...". Results come back
 // through a locked queue the draw polls; the UI thread deletes every source it takes back (stale or
 // not); both workers are joined by QuitLibraryMedia, which deletes the sources nobody took.
 // No folder is ever walked here.
@@ -129,7 +132,7 @@ private:
 
 // ---- Disk workers --------------------------------------------------------------------------------
 
-// Exists: a row's missing check. Reach: the file is there and answers a short read (then the UI
+// Exists: the rows' missing checks (a batch of paths). Reach: the file is there and answers a short read (then the UI
 // thread opens it). Peaks: GetSamples over a source the UI thread opened.
 enum class TaskKind { Exists, Reach, Peaks };
 enum class PeakOwner { Open, Preview, Batch };  // Open: the preview's playback (Reach only)
@@ -140,6 +143,7 @@ struct Task {
     uint64_t    id = 0;  // its owner's generation
     PeakOwner   owner = PeakOwner::Preview;
     PCM_source* src = nullptr;  // Peaks: made and deleted by the UI thread
+    std::vector<std::string> paths;  // Exists: the batch
 };
 
 struct TaskResult {
@@ -152,6 +156,8 @@ struct TaskResult {
     PCM_source* src = nullptr;    // Peaks: handed back, the UI thread deletes it
     PeakData    peaks;
     double      length = 0.0;
+    std::vector<std::string> paths;  // Exists: the batch, and whether each file is there
+    std::vector<char>        found;
 };
 
 // A newer request makes an older one stale: a stale Open deletes its source, a stale read stops.
@@ -283,7 +289,14 @@ private:
             // Nothing may escape this thread (a throw would end REAPER): a failed task still answers,
             // so a waiting use never waits forever.
             try {
-                if (t.kind == TaskKind::Peaks) {
+                if (t.kind == TaskKind::Exists) {
+                    r.paths = std::move(t.paths);
+                    r.found.assign(r.paths.size(), 1);  // unchecked at unload: not reported missing
+                    for (size_t i = 0; i < r.paths.size() && !g_quitting; ++i) {
+                        std::error_code ec;
+                        r.found[i] = std::filesystem::exists(std::filesystem::u8path(r.paths[i]), ec) ? 1 : 0;
+                    }
+                } else if (t.kind == TaskKind::Peaks) {
                     r.done = !TaskStale(t);
                     if (r.done && t.src) r.done = ReadFilePeaks(t.src, t, &r.peaks, &r.length);
                     r.ok = r.done && t.src && r.length > 0.0;
@@ -313,7 +326,8 @@ private:
     bool                    stop_ = false;
 };
 
-DiskWorker g_probe;   // Exists, Reach (quick, but may stall on an offline share)
+DiskWorker g_rows;    // Exists: the rows' checks, never ahead of a preview or a use
+DiskWorker g_probe;   // Reach (quick, but may stall on an offline share)
 DiskWorker g_reader;  // Peaks
 
 // ---- Preview (REAPER's preview API, one sound at a time) -----------------------------------------
@@ -453,7 +467,7 @@ struct State {
     std::vector<std::string>            favs;
     std::set<std::string>               fav_keys;  // lowercase
     bool                                favs_loaded = false;
-    std::unordered_map<std::string, int> probe;   // per path, for the session: 0 checking, 1 found, 2 missing
+    MediaExistsCache                    exists;     // per path, for the session (the rows on screen)
     std::vector<DbFile>                 sel;        // selected files (copies)
     bool                                has_cur = false;
     DbFile                              cur;        // the previewed file
@@ -516,21 +530,24 @@ void ToggleFav(const std::string& path)
     if (g.filter == static_cast<int>(g.info.databases.size()) + 1) g.dirty = true;
 }
 
-// Decision 8: checked once per path, for the rows shown, on the probe worker (0 = still checking).
-int Probe(const std::string& path)
+// Known missing (a file not checked yet is not: it is drawn and used as found). Never touches
+// the disk: the rows on screen are checked by CheckVisibleRows, the previewed / used files when
+// reached.
+bool IsMissing(const std::string& path) { return g.exists.Missing(path); }
+
+// Decision 8: after the list is drawn, the visible rows whose files are not known yet are checked
+// in one batch on the row checker (one batch out at a time, each path once for the session).
+void CheckVisibleRows()
 {
-    auto it = g.probe.find(path);
-    if (it != g.probe.end()) return it->second;
-    g.probe[path] = 0;
+    uint64_t gen = 0;
+    std::vector<std::string> batch = g.exists.EndFrame(64, &gen);
+    if (batch.empty()) return;
     Task t;
     t.kind = TaskKind::Exists;
-    t.path = path;
-    g_probe.Push(std::move(t), false);
-    return 0;
+    t.id = gen;
+    t.paths = std::move(batch);
+    g_rows.Push(std::move(t), false);
 }
-
-// Known missing (a file still being checked is not).
-bool IsMissing(const std::string& path) { return Probe(path) == 2; }
 
 void RunSearch()
 {
@@ -643,17 +660,15 @@ void CommitPending();
 // The workers' results: rows found or missing, the preview's source, the peaks read.
 void PollWorkers()
 {
-    for (TaskResult& r : g_probe.Take()) {
-        auto it = g.probe.find(r.path);
-        if (it != g.probe.end()) it->second = r.ok ? 1 : 2;
-        else if (r.kind == TaskKind::Reach) g.probe[r.path] = r.ok ? 1 : 2;
-        if (r.kind == TaskKind::Exists) {
-            if (!r.ok && g.has_cur && g.cur.path == r.path && !g.an.ready) {
-                ++g_preview_gen;  // found missing while its peaks wait: no audio
-                g.an.ready = true;
-            }
-            continue;
+    for (TaskResult& r : g_rows.Take()) {
+        g.exists.Answer(r.id, r.paths, r.found);
+        if (g.has_cur && !g.an.ready && IsMissing(g.cur.path)) {
+            ++g_preview_gen;  // found missing while its peaks wait: no audio
+            g.an.ready = true;
         }
+    }
+    for (TaskResult& r : g_probe.Take()) {
+        g.exists.Set(r.path, r.ok);
         if (r.owner == PeakOwner::Open) {
             if (!g_pv.opening || r.id != g_open_gen) continue;
             PCM_source* src = r.ok && f_create ? f_create(r.path.c_str()) : nullptr;
@@ -1057,7 +1072,7 @@ void DrawHeader()
     ImGui::SameLine();
     if (ui::SolidButton("Reload")) {
         MediaDbStartLoad(ResourcePath());
-        g.probe.clear();
+        g.exists.Clear();  // files moved since are checked again
         g.info_ready = false;
         g.favs_loaded = false;  // favourites edited in REAPER's Media Explorer since are read again
     }
@@ -1132,6 +1147,7 @@ void DrawResults(float h)
                 continue;
             }
             const DbFile& f = *g.results[i];
+            g.exists.Want(f.path);  // checked after the frame, with the other rows on screen
             const bool    miss = IsMissing(f.path);
             const bool    sel = IsSelected(f.path);
             const bool    cur = g.has_cur && g.cur.path == f.path;  // the previewed file = the keyboard row
@@ -1195,11 +1211,10 @@ void DrawResults(float h)
     ImGui::EndChild();
 }
 
-// The current file's status, empty when it is ready (Missing / Checking / Reading / Opening).
+// The current file's status, empty when it is ready (Missing / Reading / Opening).
 const char* PreviewStatus()
 {
     if (IsMissing(g.cur.path)) return "Not found on this PC";
-    if (Probe(g.cur.path) == 0) return "Checking...";
     if (!g.an.ready) return "Reading...";
     if (g_pv.opening && g_pv.open_path == g.cur.path) return "Opening...";
     return "";
@@ -1281,7 +1296,7 @@ void DrawPreview(float wave_h)
         dl->AddCircle(c, 4.0f, col, 12, 1.5f);
     }
     float y = np.y + gear + ImGui::GetStyle().ItemSpacing.y;
-    // Then the status (while checking / reading / opening, or missing), format, length, source
+    // Then the status (while reading / opening, or missing), format, length, source
     // and description, each wrapped to the width: nothing cut.
     auto wrapped = [&](const char* t, ImU32 col) {
         if (!*t) return;
@@ -1432,9 +1447,10 @@ void QuitLibraryMedia()
     CancelPending();
     // Both workers stop (a read in progress sees g_quitting) and are joined; untaken sources deleted.
     g_quitting = true;
+    g_rows.Stop();
     g_probe.Stop();
     g_reader.Stop();
-    g.probe.clear();
+    g.exists.Clear();
     MediaDbStop();
     if (g_pv.cs_ready) {
         DeleteCriticalSection(&g_pv.reg.cs);
@@ -1477,8 +1493,7 @@ void DrawMediaExplorerPanel()
         if (!g.info_ready || idx != g.index) {
             g.info = MediaDbGetInfo();
             g.info_ready = true;
-            g.dirty = true;
-            g.probe.clear();
+            g.dirty = true;  // the files already checked stay known (Reload clears them)
         }
     }
     if (g.edited_at >= 0.0 && ImGui::GetTime() - g.edited_at >= kDebounce) {
@@ -1495,6 +1510,7 @@ void DrawMediaExplorerPanel()
     const float prev_h = PreviewInfoHeight(ImGui::GetContentRegionAvail().x) + wave_h + ImGui::GetStyle().ItemSpacing.y * 2.0f;
     const float list_h = std::max(ImGui::GetTextLineHeight() * 4.0f, ImGui::GetContentRegionAvail().y - prev_h - foot_h);
     DrawResults(list_h);
+    CheckVisibleRows();
     g.takes_arrows = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) && !ImGui::GetIO().WantTextInput && !g.results.empty();
     DrawPreview(wave_h);
     DrawFooter();

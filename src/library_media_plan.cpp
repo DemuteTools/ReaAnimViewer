@@ -330,4 +330,58 @@ std::vector<const DbFile*> MediaListAll(const std::vector<DbFile>& files, const 
     return out;
 }
 
+// ---- MediaExistsCache --------------------------------------------------------------------------
+
+MediaExistsCache::State MediaExistsCache::Get(const std::string& path) const
+{
+    auto it = state_.find(path);
+    return it == state_.end() ? State::Unknown : it->second;
+}
+
+void MediaExistsCache::Want(const std::string& path)
+{
+    if (state_.count(path)) return;
+    if (std::find(want_.begin(), want_.end(), path) == want_.end()) want_.push_back(path);
+}
+
+std::vector<std::string> MediaExistsCache::EndFrame(size_t max, uint64_t* gen)
+{
+    std::vector<std::string> batch;
+    if (!out_ && max > 0) {
+        for (const std::string& p : want_) {
+            if (batch.size() >= max) break;
+            batch.push_back(p);
+            state_[p] = State::Checking;
+        }
+        if (!batch.empty()) {
+            out_ = true;
+            if (gen) *gen = gen_;
+        }
+    }
+    want_.clear();
+    return batch;
+}
+
+void MediaExistsCache::Answer(uint64_t gen, const std::vector<std::string>& paths, const std::vector<char>& found)
+{
+    if (gen != gen_) return;
+    out_ = false;
+    for (size_t i = 0; i < paths.size(); ++i) {
+        auto it = state_.find(paths[i]);
+        // A path known some other way meanwhile keeps that answer (it is the newer one).
+        if (it == state_.end() || it->second == State::Checking)
+            state_[paths[i]] = i < found.size() && found[i] ? State::Found : State::Missing;
+    }
+}
+
+void MediaExistsCache::Set(const std::string& path, bool found) { state_[path] = found ? State::Found : State::Missing; }
+
+void MediaExistsCache::Clear()
+{
+    state_.clear();
+    want_.clear();
+    ++gen_;
+    out_ = false;
+}
+
 }  // namespace rav

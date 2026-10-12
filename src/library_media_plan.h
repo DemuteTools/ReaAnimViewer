@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "library_tree_edit.h"
@@ -62,6 +63,40 @@ int FrameAt(const std::vector<SoundFrame>& frames, double t);
 // An empty search: every file of `db_filter` ("" = all databases), in index order, pointers into
 // `files` (no copy; one pass, no sort, cheap for 400k entries).
 std::vector<const DbFile*> MediaListAll(const std::vector<DbFile>& files, const std::string& db_filter);
+
+// ---- Whether the listed files are on this PC (decision 8) -----------------------------------------
+
+// The rows come straight from the index: a row is drawn at once, as found, until its file is known
+// missing. Each path is checked once for the session, only when its row is on screen, in batches of
+// the rows visible in one frame, one batch at a time off the UI thread: rows scrolled past before
+// their turn are never checked, and nothing waits behind the checks.
+class MediaExistsCache {
+public:
+    enum class State { Unknown, Checking, Found, Missing };
+
+    State Get(const std::string& path) const;
+    bool  Missing(const std::string& path) const { return Get(path) == State::Missing; }
+    // A row on screen this frame (an unknown path joins this frame's batch, each once).
+    void  Want(const std::string& path);
+    // End of a frame: the next batch to check (up to `max` paths, now Checking, `*gen` names it), or
+    // {} while a batch is out or nothing is wanted. This frame's wants are dropped either way.
+    std::vector<std::string> EndFrame(size_t max, uint64_t* gen);
+    // A batch's answers (`found[i]` for `paths[i]`); a batch of an older generation (cleared since)
+    // is ignored. Ends the batch out.
+    void  Answer(uint64_t gen, const std::vector<std::string>& paths, const std::vector<char>& found);
+    // Known some other way (the preview or a use reached the file, or not).
+    void  Set(const std::string& path, bool found);
+    // Reload: every path is checked again when shown; the batch out is ignored.
+    void  Clear();
+    bool  BatchOut() const { return out_; }
+    size_t Known() const { return state_.size(); }
+
+private:
+    std::unordered_map<std::string, State> state_;  // Checking / Found / Missing
+    std::vector<std::string>               want_;
+    uint64_t                               gen_ = 0;
+    bool                                   out_ = false;
+};
 
 // ---- Several files used at once: each whole file's variations are read first ---------------------
 

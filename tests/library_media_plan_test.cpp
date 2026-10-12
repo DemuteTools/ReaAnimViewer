@@ -378,6 +378,72 @@ int main()
         CHECK(MediaBatchLeft(e) == 0 && MediaBatchFailedNames(e).empty());
         CHECK(SoundSpecFor(e.picks[0]).sound.mode == DetectMode::Whole && e.picks[0].length == 1.5);
     }
+    // The rows' missing checks (decision 8): a row is never "checking", each path checked once per
+    // session, only the rows on screen, one batch out at a time.
+    {
+        MediaExistsCache c;
+        uint64_t gen = 99;
+        CHECK(c.Get("/a.wav") == MediaExistsCache::State::Unknown && !c.Missing("/a.wav"));
+        CHECK(c.EndFrame(64, &gen).empty() && gen == 99 && !c.BatchOut());  // nothing on screen
+        // Frame 1: rows a, b, a (drawn twice: once in the batch).
+        c.Want("/a.wav");
+        c.Want("/b.wav");
+        c.Want("/a.wav");
+        std::vector<std::string> b1 = c.EndFrame(64, &gen);
+        CHECK(b1.size() == 2 && b1[0] == "/a.wav" && b1[1] == "/b.wav" && c.BatchOut());
+        CHECK(c.Get("/a.wav") == MediaExistsCache::State::Checking && !c.Missing("/a.wav"));
+        const uint64_t g1 = gen;
+        // Frame 2 while that batch is out: scrolled to c, d; nothing sent, and their wants dropped.
+        c.Want("/c.wav");
+        c.Want("/d.wav");
+        c.Want("/a.wav");  // checking: not asked again
+        CHECK(c.EndFrame(64, &gen).empty());
+        c.Answer(g1, b1, {1, 0});
+        CHECK(!c.BatchOut() && c.Get("/a.wav") == MediaExistsCache::State::Found && c.Missing("/b.wav"));
+        // Frame 3: scrolled on to e (c, d left the screen before their turn: never checked).
+        c.Want("/e.wav");
+        c.Want("/a.wav");
+        c.Want("/b.wav");
+        std::vector<std::string> b2 = c.EndFrame(64, &gen);
+        CHECK(b2.size() == 1 && b2[0] == "/e.wav");
+        CHECK(c.Get("/c.wav") == MediaExistsCache::State::Unknown && c.Get("/d.wav") == MediaExistsCache::State::Unknown);
+        // Known some other way meanwhile (the preview reached it): that answer wins over the batch's.
+        c.Set("/e.wav", true);
+        c.Answer(gen, b2, {0});
+        CHECK(c.Get("/e.wav") == MediaExistsCache::State::Found && !c.BatchOut());
+        // Known paths never go out again; a batch is capped and the rest waits for the next frame.
+        for (int i = 0; i < 10; ++i) c.Want("/n" + std::to_string(i) + ".wav");
+        c.Want("/a.wav");
+        std::vector<std::string> b3 = c.EndFrame(4, &gen);
+        CHECK(b3.size() == 4 && b3[0] == "/n0.wav" && b3[3] == "/n3.wav");
+        CHECK(c.Get("/n4.wav") == MediaExistsCache::State::Unknown);
+        const uint64_t g3 = gen;
+        // Reload while it is out: everything forgotten, the old batch's answers ignored.
+        c.Clear();
+        CHECK(!c.BatchOut() && c.Known() == 0);
+        c.Answer(g3, b3, {0, 0, 0, 0});
+        CHECK(c.Known() == 0 && !c.Missing("/n0.wav"));
+        c.Want("/b.wav");
+        std::vector<std::string> b4 = c.EndFrame(64, &gen);
+        CHECK(b4.size() == 1 && b4[0] == "/b.wav" && gen != g3);
+        c.Answer(gen, b4, {1});
+        CHECK(c.Get("/b.wav") == MediaExistsCache::State::Found);
+        // A large list scrolled through: only the rows of the frames when no batch is out are checked.
+        MediaExistsCache big;
+        int sent = 0;
+        uint64_t bg = 0;
+        std::vector<std::string> out;
+        for (int frame = 0; frame < 1000; ++frame) {  // 30 rows on screen, scrolled one screen per frame
+            for (int r = 0; r < 30; ++r) big.Want("/f" + std::to_string(frame * 30 + r));
+            std::vector<std::string> b = big.EndFrame(64, &bg);
+            if (!b.empty()) {
+                sent += static_cast<int>(b.size());
+                out = b;
+            }
+            if (frame % 10 == 9 && big.BatchOut()) big.Answer(bg, out, std::vector<char>(out.size(), 1));
+        }
+        CHECK(sent == 100 * 30);  // one screen per answered batch, not 30000 queued checks
+    }
     if (g_fail) {
         std::printf("%d failure(s)\n", g_fail);
         return 1;

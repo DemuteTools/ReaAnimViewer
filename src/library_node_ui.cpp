@@ -1180,6 +1180,70 @@ void DefaultFadeControls(const SoundLibrary& lib, const SoundNode& n)
     }
 }
 
+// Antho 2026-10-13: the Edit window's "Selected (N) in [ms] out [ms]": the selected variations' own
+// fades (the first one's value shown, "mixed" when they differ), a drag sets that side on all of
+// them (one undo point on release); "Default" puts them back on the Sound's default fades.
+void SelectedFadeControls(const SoundLibrary& lib, const SoundNode& n)
+{
+    const SoundData& d = Shown(n);
+    if (FolderSourced(d)) return;
+    std::vector<int> sel;
+    for (int i : P.sel)
+        if (i >= 0 && static_cast<size_t>(i) < d.frames.size()) sel.push_back(i);
+    if (sel.empty()) {
+        ui::SubText("Select variations to give them their own fades.");
+        return;
+    }
+    const float       fw = ui::Dp(52.0f);
+    const std::string label = "Selected (" + std::to_string(sel.size()) + ")";
+    ui::LabelRow(label.c_str(), ui::TextWidth("out") + ImGui::GetStyle().ItemSpacing.x + ui::NumberFieldWidth(fw, "ms"));
+    ui::ItemTipText("The selected variations' own fades (their fade handles in the waveform)");
+    bool own = false;
+    for (int side = -1; side <= 1; side += 2) {
+        double first = 0.0;
+        bool   mixed = false;
+        for (size_t k = 0; k < sel.size(); ++k) {
+            const SoundFrame& f = d.frames[static_cast<size_t>(sel[k])];
+            const FrameFades  ef = EffectiveFades(d, f);
+            const double      v = side < 0 ? ef.in : ef.out;
+            own = own || (side < 0 ? f.fade_in : f.fade_out) >= 0.0;
+            if (k == 0) first = v;
+            else if (std::fabs(v - first) > 1e-9) mixed = true;
+        }
+        if (side > 0) SameLineIfFits(ui::TextWidth("out") + ImGui::GetStyle().ItemSpacing.x + ui::NumberFieldWidth(fw, "ms"));
+        FitText(side < 0 ? "in" : "out", ui::kMuted);
+        ImGui::SameLine();
+        double v = first * 1000.0;
+        const ui::DragNumberEvent e = ui::DragNumber(side < 0 ? "##selfadein" : "##selfadeout", &v, 0.1, 1, "ms", fw, /*trim=*/true);
+        if (mixed) ui::ItemTipText("mixed: the selected variations differ; a drag sets them all");
+        if (e == ui::DragNumberEvent::Live || e == ui::DragNumberEvent::Commit) {
+            SoundData&   dr = Live(n);
+            const double sec = std::clamp(v, 0.0, 10000.0) / 1000.0;
+            for (int i : sel) {
+                const SoundFrame& f = dr.frames[static_cast<size_t>(i)];
+                SetFrameFades(dr, i, side < 0 ? sec : f.fade_in, side < 0 ? f.fade_out : sec);
+            }
+            if (e == ui::DragNumberEvent::Commit) {
+                CommitLive("Variation fades", lib.uid, n.uid);
+                if (P.changed) return;
+            }
+        } else if (e == ui::DragNumberEvent::Cancel) {
+            CancelLive();
+        }
+    }
+    if (own) {
+        if (ui::LinkButton("Default##selfadedef")) {
+            const std::vector<int> picked = sel;
+            EditNode("Variation fades", lib.uid, n.uid, [picked](SoundNode& x) {
+                for (int i : picked)
+                    if (static_cast<size_t>(i) < x.sound.frames.size()) SetFrameFades(x.sound, i, -1.0, -1.0);
+                return true;
+            });
+        }
+        ui::ItemTipText("Back to the Sound's default fades");
+    }
+}
+
 // Applies a waveform's events to the Sound (live draft or one write). `fi` maps the waveform's
 // frame index to the Sound's (Takes lanes show one frame each); `take_len` > 0 = a Takes lane.
 void HandleWave(const WaveformEvents& ev, const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m,
@@ -2007,6 +2071,12 @@ void DrawEditOverlay()
                 ImGui::Dummy(ImVec2(1.0f, ui::Dp(6.0f)));
                 ui::GroupCaption("Level", ui::kMuted);
                 if (m.ok) NormalizeControls(*lib, *n, m);
+                if (!P.changed) {  // Antho 2026-10-13: the fades here too
+                    ImGui::Dummy(ImVec2(1.0f, ui::Dp(6.0f)));
+                    ui::GroupCaption("Fades", ui::kMuted);
+                    DefaultFadeControls(*lib, *n);
+                    if (!P.changed) SelectedFadeControls(*lib, *n);
+                }
                 ui::SubText("Every change is saved at once (Ctrl+Z to undo), with the sound in the library (.ravlib).");
             }
             ui::EndPane();

@@ -1197,8 +1197,8 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
 }
 
 // 13-17d (Antho 2026-10-13): the arrow keys walk the tree's rows (last frame's g.rows). Up / Down:
-// the row above / below (none selected: the first). Right: opens a folded container, else goes to
-// its first child. Left: folds an open container, else goes to the parent's row.
+// the row above / below (none selected: the first). Right opens the selected container, Left
+// folds it; on anything else they do nothing (Antho: Left / Right only open and close).
 void ArrowKeys()
 {
     const bool up = ImGui::IsKeyPressed(ImGuiKey_UpArrow), down = ImGui::IsKeyPressed(ImGuiKey_DownArrow);
@@ -1226,16 +1226,10 @@ void ArrowKeys()
         const int step = down ? 1 : -1;
         for (int i = cur + step; i >= 0 && i < n; i += step)
             if (pickable(g.rows[static_cast<size_t>(i)])) return go(i);
-    } else if (right) {
-        if (r.container && !r.open) g.closed.erase(r.node);
-        else if (r.container && cur + 1 < n && g.rows[static_cast<size_t>(cur + 1)].depth > r.depth &&
-                 pickable(g.rows[static_cast<size_t>(cur + 1)]))
-            go(cur + 1);
-    } else if (r.container && r.open) {
+    } else if (r.container && right && !r.open) {
+        g.closed.erase(r.node);
+    } else if (r.container && left && r.open) {
         g.closed.insert(r.node);
-    } else {
-        for (int i = cur - 1; i >= 0; --i)
-            if (g.rows[static_cast<size_t>(i)].depth < r.depth && pickable(g.rows[static_cast<size_t>(i)])) return go(i);
     }
 }
 
@@ -1979,8 +1973,15 @@ void LibraryTreeWidgets()
     lib = CurrentLib();  // a gesture above rewrote the store
     if (!lib) return;
     // 13-17c: the search field under the toolbar filters the tree as you type.
-    ui::TextField("##treesearch", "Search nodes", g.search, sizeof g.search, 0.0f,
-                  ImGuiInputTextFlags_EscapeClearsAll);
+    {  // Antho 2026-10-13: an × at its right clears it
+        const float bs = ui::ControlH(), sp = ImGui::GetStyle().ItemSpacing.x;
+        ui::TextField("##treesearch", "Search nodes", g.search, sizeof g.search,
+                      std::max(ui::Dp(40.0f), ImGui::GetContentRegionAvail().x - bs - sp), ImGuiInputTextFlags_EscapeClearsAll);
+        ImGui::SameLine(0.0f, sp);
+        ImGui::BeginDisabled(g.search[0] == '\0');
+        if (ui::IconOnlyButton("##treesearchx", "\xE2\x9C\x95", "Clear the search (Esc)")) g.search[0] = '\0';
+        ImGui::EndDisabled();
+    }
     const std::string search = g.search;
 
     // Antho 2026-10-12: every container starts open (the whole hierarchy shows); ▶ folds one. BuildTreeRows takes

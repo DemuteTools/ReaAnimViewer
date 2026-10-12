@@ -28,6 +28,7 @@
 #include <exception>   // std::exception — the no-throw host boundary (AR18)
 #include <filesystem>  // issue #1: the item folder for "Locate textures..."
 #include <string>
+#include <type_traits>    // 13-7: kUiGlyphRanges is ImWchar-compatible
 #include <unordered_set>  // g_noticed_paths
 #include <vector>
 
@@ -50,6 +51,7 @@
 #include "texture_locate.h"    // issue #1: "Locate textures..." (folder picker + copy)
 #include "gpu_resources.h"    // Story 11-4: the Video view's render target
 #include "ui_theme.h"         // Story 11-4: the DM-XYZ-Pad theme over Dear ImGui
+#include "ui_glyph_ranges.h"  // 13-7: the symbol blocks merged into the UI font
 #include "video_view.h"       // Story 11-4: Video view + Video panel model
 #include "video_view_ui.h"    // Story 11-4: their ImGui widgets
 #include "library_view_ui.h"  // Epic 13 (D20): the Library view
@@ -1640,6 +1642,51 @@ void DrawToolUi()
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 }
 
+// 13-7: the UI font. ImGui's default font (ProggyClean) only holds Basic Latin + Latin-1,
+// so every other symbol in a UI string (play / stop, ellipsis, arrows, stars...) drew as
+// "?". Merge Windows' own fonts into the atlas for the blocks of ui_glyph_ranges.h: Segoe
+// UI (punctuation, arrows), then Segoe UI Symbol (shapes, stars, dingbats), then Arial.
+// The first font holding a code point wins; a font missing a glyph simply adds nothing.
+// A missing or unreadable file is skipped: the UI keeps running with the default font.
+void LoadUiFontAtlas(ImGuiIO& io)
+{
+    static_assert(std::is_same<ImWchar, std::remove_cv_t<std::remove_extent_t<decltype(kUiGlyphRanges)>>>::value,
+                  "kUiGlyphRanges must match ImWchar (16-bit)");
+    constexpr float kFontPx = 13.0f;   // ProggyClean's size: merged glyphs sit on its baseline
+    io.Fonts->AddFontDefault();
+
+    wchar_t win_dir[MAX_PATH] = {};
+    const UINT dir_len = GetWindowsDirectoryW(win_dir, MAX_PATH);
+    if (dir_len == 0 || dir_len >= MAX_PATH) {
+        LogInfo("UI symbols: the Windows folder was not found; symbols may show as '?'");
+        return;
+    }
+    static const wchar_t* const kFontFiles[] = {L"segoeui.ttf", L"seguisym.ttf", L"arial.ttf"};
+    int merged = 0;
+    for (const wchar_t* file : kFontFiles) {
+        const std::wstring path = std::wstring(win_dir) + L"\\Fonts\\" + file;
+        const DWORD attr = GetFileAttributesW(path.c_str());
+        if (attr == INVALID_FILE_ATTRIBUTES || (attr & FILE_ATTRIBUTE_DIRECTORY)) continue;
+        const int bytes = WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        if (bytes <= 1) continue;
+        std::string utf8(static_cast<size_t>(bytes), '\0');   // ImGui opens it as UTF-8 (_wfopen)
+        if (WideCharToMultiByte(CP_UTF8, 0, path.c_str(), -1, &utf8[0], bytes, nullptr, nullptr) != bytes) continue;
+        utf8.resize(static_cast<size_t>(bytes - 1));
+        ImFontConfig cfg;
+        cfg.MergeMode  = true;
+        cfg.PixelSnapH = true;
+        if (io.Fonts->AddFontFromFileTTF(utf8.c_str(), kFontPx, &cfg, kUiGlyphRanges)) ++merged;
+    }
+    // Build now: a corrupt font file would fail the WHOLE atlas (no text at all), so fall
+    // back to the default font alone rather than lose every label.
+    if (merged > 0 && !io.Fonts->Build()) {
+        io.Fonts->Clear();
+        io.Fonts->AddFontDefault();
+        merged = 0;
+    }
+    if (merged == 0) LogInfo("UI symbols: no Windows symbol font could be loaded; symbols may show as '?'");
+}
+
 // Brings up the GL context + renderer + frame loop. Returns false (with a
 // console diagnostic) on any failure so WM_CREATE can bail without a broken
 // window. (Story 1.4 hardens this into the full symmetric teardown-on-bail path.)
@@ -1740,6 +1787,7 @@ bool StartRendering(HWND hwnd)
         io.IniFilename = nullptr;   // do not write imgui.ini next to Reaper
         io.LogFilename = nullptr;
         ui::ApplyRavTheme();   // Story 11-4: the DM-XYZ-Pad theme (ui_theme.h), over StyleColorsDark
+        LoadUiFontAtlas(io);   // 13-7: Windows symbol fonts merged in, so symbols are not "?"
         // Init the two backends in nested steps so teardown stays symmetric: if the GL
         // backend fails AFTER the Win32 backend already initialized, we must still shut the
         // Win32 backend down (DestroyContext alone leaks its platform data). [Review][Patch]

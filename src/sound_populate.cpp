@@ -19,6 +19,7 @@
 #include "library_user_ui.h"  // 13-11: File Sounds are placed straight from their file
 #include "ravlib.h"
 #include "rule_record.h"
+#include "sound_assign.h"
 #include "sound_auto_assign.h"
 #include "sound_draw.h"
 #include "sound_follow_plan.h"
@@ -251,6 +252,16 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
     const std::string guid = ItemGuidOf(item);
     const std::vector<Block>& blocks = det.rules.blocks;
     ItemSounds rec = ReadItemSounds(item);
+    // 13-15a: each rule's library and values come from the layers (rule, Character, Project).
+    const ItemRigInfo     rig = ItemRig(item);
+    const SoundCharacter* ch = CharacterFor(store, rig.skeleton, rig.model_file);
+    std::map<std::string, std::pair<std::string, std::string>> part_of;  // rid -> body part, type
+    for (const Block& b : blocks)
+        if (!b.rid.empty()) {
+            std::pair<std::string, std::string> pt;
+            PartOfBlock(b, &pt.first, &pt.second);
+            part_of[b.rid] = pt;
+        }
 
     // P1: assignments of rules that no longer exist.
     std::set<std::string> live;
@@ -259,6 +270,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
     const OrphanPrune pr = PruneOrphanRules(rec, live);
     for (const std::string& g : pr.remove_guids) RemoveIndexed(g);
     for (const RuleSounds& r : pr.rules) {  // Antho 2026-10-12: removed and listed, by every gesture
+        if (r.library.empty()) continue;  // 13-15a: inherit / None: no library was unassigned
         const SoundLibrary* lib = FindLibrary(store, r.library);
         AddLine(rep, ReportKind::Detached, RuleGoneText(lib ? lib->name : r.library), "", guid, 0.0);
     }
@@ -299,12 +311,15 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
         if (o.only_populated && (!ev || !EventIsPopulated(*ev))) continue;
         if (EventSkippedByPopulate(ev)) continue;  // attached / spread: left alone
 
-        const RuleSounds*   rs = FindRuleSounds(rec, rid);
-        const SoundLibrary* lib = rs && !rs->library.empty() ? FindLibrary(store, rs->library) : nullptr;
-        if (!lib) {  // P8: library None removes the populated sounds
+        const auto            po = part_of.find(rid);
+        const EffectiveAssign ea = po == part_of.end()
+                                       ? EffectiveAssign()
+                                       : ResolveAssignFor(store, rec, ch, rid, po->second.first, po->second.second, e.t);
+        const SoundLibrary*   lib = !ea.library.empty() ? FindLibrary(store, ea.library) : nullptr;
+        if (!lib) {  // P8: library None (or nothing set) removes the populated sounds
             const bool had = ev && EventIsPopulated(*ev);
             if (ev) RemovePopulated(*ev);
-            if (rs && !rs->library.empty() && gone_rules.insert(rid).second)  // a deleted library: said
+            if (!ea.library.empty() && gone_rules.insert(rid).second)  // a deleted library: said
                 AddLine(rep, ReportKind::Blocked,
                         had ? "Library gone: its placed sounds removed" : "Library gone: nothing placed", "", guid,
                         e.t);
@@ -344,7 +359,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
             }
             return !FindItemByGuid(n.sound.source.item_guid);
         };
-        const Resolution res = ResolveEvent(store, *lib, LayersFor(rec, rid, ev->t), MakeDrawHooks(st, ed, is_missing));
+        const Resolution res = ResolveEvent(store, *lib, ea.layers, MakeDrawHooks(st, ed, is_missing));
         std::vector<SoundDraw> draws = ed.out;
         for (const SoundDraw& d : prev) {  // a hand pick on a branch not walked now is kept
             bool have = false;
@@ -568,38 +583,90 @@ void EditAutoRules(MediaItem* item, const std::vector<std::string>& keys, const 
     for (MediaItem* m : members) PopulateOne(m, store, o, rep, nullptr);
 }
 
-// Antho 2026-10-12: a row gesture's other side: on the project's other RAV items (not `item` nor
-// its pool), each auto block of these keys whose rule has no library yet gets the key's store
-// entry (never a rule with a library of its own), rids given first where needed, their populated
-// events re-placed. Inside the caller's undo scope.
-void FillOtherItems(MediaItem* item, const std::vector<std::string>& keys, const SoundStore& store, SoundReport& rep)
+// A gesture's library argument: "" = inherit, kLibNoneWord = None, else a library uid.
+void LibraryArg(const std::string& arg, LibState* state, std::string* uid)
 {
-    if (keys.empty() || !HasAutoSounds(store)) return;
-    const std::vector<MediaItem*> mine = item ? WithPoolMembers({item}) : std::vector<MediaItem*>{};
-    // The list first: re-placing events adds and removes items.
-    std::vector<MediaItem*> others;
+    if (arg.empty()) {
+        *state = LibState::Inherit;
+        uid->clear();
+    } else if (arg == kLibNoneWord) {
+        *state = LibState::None;
+        uid->clear();
+    } else {
+        *state = LibState::Library;
+        *uid = arg;
+    }
+}
+
+std::string FileNameOfPath(const std::string& path)
+{
+    const size_t slash = path.find_last_of("/\\");
+    return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+// The RAV items of the project (the list first: re-placing events adds and removes items).
+std::vector<MediaItem*> AllRavItems()
+{
+    std::vector<MediaItem*> out;
     const int               n = CountMediaItems(nullptr);
     for (int i = 0; i < n; ++i) {
         MediaItem* it = GetMediaItem(nullptr, i);
-        if (it && RavTakeOf(it) && std::find(mine.begin(), mine.end(), it) == mine.end()) others.push_back(it);
+        if (it && RavTakeOf(it)) out.push_back(it);
     }
-    for (MediaItem* it : others) {
-        std::vector<Block> blocks = BlocksOf(it);
-        if (AutoFillNeedsRids(blocks, store, keys)) {
-            EnsureRids(it);  // a pool's other members get the same rids (read again below)
-            blocks = BlocksOf(it);
-        }
-        std::vector<std::string> rids;
-        ModifyItemSounds(it, nullptr, [&](ItemSounds& s) {
-            rids = AutoFillRids(s, blocks, store, keys);
-            return FillAutoSounds(s, blocks, store, keys);
-        });
-        if (rids.empty()) continue;  // nothing given here: no detection
+    return out;
+}
+
+// After a store edit (13-15a): the populated events of every RAV item whose effective library or
+// values changed (ChangedRids) are re-placed. Inside the caller's undo scope and item index.
+void ReplaceChangedRules(const SoundStore& before, SoundReport& rep)
+{
+    const SoundStore after = GetSoundStore(nullptr);
+    for (MediaItem* it : AllRavItems()) {
+        ItemRulesRead rr;
+        if (!ReadItemRules(it, &rr) || !rr.valid) continue;
+        const ItemRigInfo rig = ItemRig(it);
+        const std::vector<std::string> rids =
+            ChangedRids(before, after, ReadItemSounds(it), rr.rules.blocks, rig.skeleton, rig.model_file);
+        if (rids.empty()) continue;
         PopOpts o;
         o.only_populated = true;
         o.rids = rids;
-        PopulateOne(it, store, o, rep, nullptr);
+        PopulateOne(it, after, o, rep, nullptr);
     }
+}
+
+// One store gesture: nothing happens (no undo point) when `edit` changes nothing; else the store is
+// edited and the rules it changes are re-placed, in one undo point.
+SoundReport StoreGesture(const char* undo_desc, const std::function<bool(SoundStore&)>& edit)
+{
+    SoundReport rep;
+    try {
+        const SoundStore before = GetSoundStore(nullptr);
+        SoundStore       probe = before;
+        if (!edit(probe)) return rep;
+        {
+            SoundUndoScope undo(nullptr, undo_desc);
+            ItemIndexScope index;
+            ModifySoundStore(nullptr, nullptr, edit);
+            ReplaceChangedRules(before, rep);
+        }
+        UpdateArrange();
+    } catch (...) {
+        AddLine(rep, ReportKind::Blocked, "Internal error: the gesture stopped part way (Ctrl+Z undoes it)", "", "", 0.0);
+    }
+    return rep;
+}
+
+// The character of `ref` (stored at its first edit), `f` applied to it. A record made for an edit
+// that changed nothing is dropped again.
+bool EditCharacter(SoundStore& st, const CharacterRef& ref, const std::function<bool(SoundCharacter&)>& f)
+{
+    const size_t    had = st.characters.size();
+    SoundCharacter* c = EnsureCharacter(st, ref);
+    if (!c) return false;
+    const bool changed = f(*c);
+    if (!changed && st.characters.size() > had) st.characters.erase(st.characters.begin() + static_cast<long>(had), st.characters.end());
+    return changed;
 }
 
 }  // namespace
@@ -615,6 +682,63 @@ std::string ItemGuidOf(MediaItem* item)
     char buf[64] = {};
     if (!item || !GetSetMediaItemInfo_String(item, "GUID", buf, false)) return {};
     return buf;
+}
+
+ItemRigInfo ItemRig(MediaItem* item)
+{
+    ItemRigInfo r;
+    try {
+        if (!item) return r;
+        MediaItem_Take* take = RavTakeOf(item);
+        if (!take) return r;
+        const std::string path = AnimPathOf(take);
+        if (path.empty()) return r;
+        r.model_file = FileNameOfPath(path);
+        static std::map<std::string, std::pair<std::string, int>> cache;  // anim path -> key, bone count
+        auto hit = cache.find(path);
+        if (hit == cache.end()) {
+            const SkeletonBones sk = ItemSkeletonBones(item);
+            if (sk.names.empty()) return r;  // not kept: tried again next time
+            hit = cache.emplace(path, std::make_pair(SkeletonKey(sk.names), static_cast<int>(sk.names.size()))).first;
+        }
+        r.skeleton = hit->second.first;
+        r.bones = hit->second.second;
+    } catch (...) {
+        r = ItemRigInfo{};
+    }
+    return r;
+}
+
+std::vector<ProjectRig> ProjectRigs()
+{
+    std::vector<ProjectRig> out;
+    try {
+        for (MediaItem* it : AllRavItems()) {
+            const ItemRigInfo rig = ItemRig(it);
+            if (rig.skeleton.empty()) continue;
+            ProjectRig* pr = nullptr;
+            for (ProjectRig& x : out)
+                if (x.skeleton == rig.skeleton) pr = &x;
+            if (!pr) {
+                out.emplace_back();
+                pr = &out.back();
+                pr->skeleton = rig.skeleton;
+                pr->bones = rig.bones;
+            }
+            ++pr->items;
+            RigFileCount* fc = nullptr;
+            for (RigFileCount& f : pr->files)
+                if (f.file == rig.model_file) fc = &f;
+            if (!fc) {
+                pr->files.emplace_back();
+                fc = &pr->files.back();
+                fc->file = rig.model_file;
+            }
+            ++fc->items;
+        }
+    } catch (...) {
+    }
+    return out;
 }
 
 MediaItem* FindItemByGuid(const std::string& guid)
@@ -725,26 +849,12 @@ SoundReport SetRuleLibrary(MediaItem* item, int block, std::string library_uid)
             EnsureRids(item);
             const std::string rid = RidOf(item, block);
             if (rid.empty()) return rep;
-            // Antho 2026-10-12: an auto block's library is its marker type's too (the Auto
-            // detection row shows the same).
-            const std::string key = AutoKeyOf(item, block);
-            if (!key.empty())
-                ModifySoundStore(nullptr, nullptr, [&](SoundStore& st) { return SetAutoSoundLibrary(st, {key}, library_uid); });
+            LibState    state;
+            std::string lib;
+            LibraryArg(library_uid, &state, &lib);
             const std::vector<MediaItem*> members = WithPoolMembers({item});
             for (MediaItem* m : members)
-                ModifyItemSounds(m, nullptr, [&](ItemSounds& s) {
-                    RuleSounds* r = FindRuleSounds(s, rid);
-                    if (!r) {
-                        if (library_uid.empty()) return false;
-                        RuleSounds fresh;
-                        fresh.rid = rid;
-                        s.rules.push_back(fresh);
-                        r = &s.rules.back();
-                    }
-                    if (r->library == library_uid) return false;
-                    r->library = library_uid;
-                    return true;
-                });
+                ModifyItemSounds(m, nullptr, [&](ItemSounds& s) { return SetRulesLibrary(s, {rid}, state, lib); });
             PopOpts o;
             o.only_populated = true;
             o.rid = rid;
@@ -772,13 +882,6 @@ SoundReport SetSoundValue(MediaItem* item, SoundValueLevel level, int block, dou
                 EnsureRids(item);
                 rid = RidOf(item, block);
                 if (rid.empty()) return rep;
-            }
-            if (level == SoundValueLevel::Rule) {
-                // Antho 2026-10-12: an auto block's rule values are its marker type's too.
-                const std::string key = AutoKeyOf(item, block);
-                if (!key.empty())
-                    ModifySoundStore(nullptr, nullptr,
-                                     [&](SoundStore& st) { return SetAutoSoundValue(st, {key}, group_uid, value_uid); });
             }
             const std::vector<MediaItem*> members = WithPoolMembers({item});
             for (MediaItem* m : members)
@@ -833,12 +936,13 @@ SoundReport SetAutoMarkerLibrary(MediaItem* item, std::vector<std::string> keys,
         {
             SoundUndoScope undo(nullptr, "RAV: Set auto marker library");
             ItemIndexScope index;
-            ModifySoundStore(nullptr, nullptr, [&](SoundStore& st) { return SetAutoSoundLibrary(st, keys, library_uid); });
+            LibState       state;
+            std::string    lib;
+            LibraryArg(library_uid, &state, &lib);
             const SoundStore store = GetSoundStore(nullptr);
             EditAutoRules(item, keys, store,
-                          [&](ItemSounds& s, const std::vector<std::string>& rids) { return SetRulesLibrary(s, rids, library_uid); },
+                          [&](ItemSounds& s, const std::vector<std::string>& rids) { return SetRulesLibrary(s, rids, state, lib); },
                           rep);
-            FillOtherItems(item, keys, store, rep);
         }
         UpdateArrange();
     } catch (...) {
@@ -856,15 +960,12 @@ SoundReport SetAutoMarkerValue(MediaItem* item, std::vector<std::string> keys, s
         {
             SoundUndoScope undo(nullptr, "RAV: Set sound value");
             ItemIndexScope index;
-            ModifySoundStore(nullptr, nullptr,
-                             [&](SoundStore& st) { return SetAutoSoundValue(st, keys, group_uid, value_uid); });
             const SoundStore store = GetSoundStore(nullptr);
             EditAutoRules(item, keys, store,
                           [&](ItemSounds& s, const std::vector<std::string>& rids) {
                               return SetRulesValue(s, rids, group_uid, value_uid);
                           },
                           rep);
-            FillOtherItems(item, keys, store, rep);
         }
         UpdateArrange();
     } catch (...) {
@@ -873,30 +974,78 @@ SoundReport SetAutoMarkerValue(MediaItem* item, std::vector<std::string> keys, s
     return rep;
 }
 
-bool AutoMarkerSoundsSet()
+// ---- 13-15a: Project and Character assignments ---------------------------------------------------
+
+SoundReport SetProjectAssignLibrary(std::vector<std::string> keys, LibState state, std::string library_uid)
 {
-    try {
-        return HasAutoSounds(GetSoundStore(nullptr));
-    } catch (...) {
-        return false;
-    }
+    return StoreGesture("RAV: Set project sound default", [&](SoundStore& st) {
+        return SetAssignLibraryIn(st.project, keys, state, library_uid);
+    });
 }
 
-bool FillAutoMarkerSounds(MediaItem* item)
+SoundReport SetProjectAssignValue(std::vector<std::string> keys, std::string group_uid, std::string value_uid)
 {
-    try {
-        if (!item || !RavTakeOf(item)) return false;
-        const SoundStore& store = GetSoundStore(nullptr);
-        if (!HasAutoSounds(store)) return false;
-        if (AutoFillNeedsRids(BlocksOf(item), store)) EnsureRids(item);
-        const std::vector<Block> blocks = BlocksOf(item);
-        bool changed = false;
-        for (MediaItem* m : WithPoolMembers({item}))
-            if (ModifyItemSounds(m, nullptr, [&](ItemSounds& s) { return FillAutoSounds(s, blocks, store); })) changed = true;
+    return StoreGesture("RAV: Set project sound value", [&](SoundStore& st) {
+        return SetAssignValueIn(st.project, keys, group_uid, value_uid);
+    });
+}
+
+SoundReport SetCharacterAssignLibrary(CharacterRef character, std::vector<std::string> keys, LibState state,
+                                      std::string library_uid)
+{
+    return StoreGesture("RAV: Set character library", [&](SoundStore& st) {
+        return EditCharacter(st, character, [&](SoundCharacter& c) {
+            return SetAssignLibraryIn(c.assigns, keys, state, library_uid);
+        });
+    });
+}
+
+SoundReport SetCharacterAssignValue(CharacterRef character, std::vector<std::string> keys, std::string group_uid,
+                                    std::string value_uid)
+{
+    return StoreGesture("RAV: Set character sound value", [&](SoundStore& st) {
+        return EditCharacter(st, character, [&](SoundCharacter& c) {
+            return SetAssignValueIn(c.assigns, keys, group_uid, value_uid);
+        });
+    });
+}
+
+SoundReport AdoptKit(std::string library_uid, std::string part, CharacterRef character, bool replace)
+{
+    return StoreGesture("RAV: Use library kit", [&](SoundStore& st) {
+        const SoundLibrary* lib = FindLibrary(st, library_uid);
+        if (!lib || !KitServes(*lib, part)) return false;
+        if (character.uid.empty() && character.skeleton.empty()) return AdoptKitIn(st.project, part, library_uid, replace);
+        return EditCharacter(st, character, [&](SoundCharacter& c) { return AdoptKitIn(c.assigns, part, library_uid, replace); });
+    });
+}
+
+SoundReport RenameCharacter(std::string character_uid, std::string name)
+{
+    return StoreGesture("RAV: Rename character", [&](SoundStore& st) { return RenameCharacterIn(st, character_uid, name); });
+}
+
+SoundReport SplitCharacter(std::string character_uid, std::vector<std::string> files)
+{
+    return StoreGesture("RAV: Split character", [&](SoundStore& st) {
+        if (files.empty())
+            if (const SoundCharacter* c = FindCharacterByUid(st, character_uid)) files = c->files;
+        return SplitCharacterIn(st, character_uid, files) > 0;
+    });
+}
+
+SoundReport SetLibraryKit(std::string library_uid, std::vector<std::string> parts, int offered)
+{
+    return StoreGesture("RAV: Set library kit", [&](SoundStore& st) {
+        SoundLibrary* lib = FindLibrary(st, library_uid);
+        if (!lib) return false;
+        bool changed = SetKitParts(*lib, parts);
+        if (offered >= 0 && lib->kit_offered != (offered != 0)) {
+            lib->kit_offered = offered != 0;
+            changed = true;
+        }
         return changed;
-    } catch (...) {
-        return false;
-    }
+    });
 }
 
 int CountPopulateEvents(const std::vector<MediaItem*>& items)
@@ -909,12 +1058,14 @@ int CountPopulateEvents(const std::vector<MediaItem*>& items)
             const ItemDetection det = DetectItem(it);
             if (det.status != ItemDetection::Status::Ok) continue;
             const ItemSounds rec = ReadItemSounds(it);
+            const ItemRigInfo     rig = ItemRig(it);
+            const SoundCharacter* ch = CharacterFor(store, rig.skeleton, rig.model_file);
             std::vector<char> ok(det.rules.blocks.size(), 0);
             for (size_t b = 0; b < det.rules.blocks.size(); ++b) {
-                const RuleSounds* rs = FindRuleSounds(rec, det.rules.blocks[b].rid);
-                if (!det.rules.blocks[b].enabled || det.rules.blocks[b].rid.empty() || !rs || rs->library.empty())
-                    continue;
-                const SoundLibrary* lib = FindLibrary(store, rs->library);
+                if (!det.rules.blocks[b].enabled || det.rules.blocks[b].rid.empty()) continue;
+                const EffectiveAssign ea = ResolveBlock(store, rec, ch, det.rules.blocks[b]);
+                if (ea.library.empty()) continue;
+                const SoundLibrary* lib = FindLibrary(store, ea.library);
                 ok[b] = lib && !CheckLibrary(store, *lib).blocked ? 1 : 0;
             }
             std::vector<int> evb;

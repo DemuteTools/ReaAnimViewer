@@ -200,12 +200,17 @@ bool FollowEventsOf(ReaProject* proj, MediaItem* item, const std::string& key, c
 }
 
 // Each placed node's Blend offset (ms), for finding a sound's pass as Populate does.
-std::vector<std::pair<std::string, double>> BlendOffsets(const SoundStore& store, const ItemSounds& rec)
+std::vector<std::pair<std::string, double>> BlendOffsets(const SoundStore& store, const ItemSounds& rec,
+                                                         const std::vector<Block>& blocks, const SoundCharacter* ch)
 {
     std::vector<std::pair<std::string, double>> out;
     for (const EventSounds& ev : rec.events) {
-        const RuleSounds*   rs = FindRuleSounds(rec, ev.rid);
-        const SoundLibrary* lib = rs && !rs->library.empty() ? FindLibrary(store, rs->library) : nullptr;
+        const Block* blk = nullptr;
+        for (const Block& b : blocks)
+            if (!b.rid.empty() && b.rid == ev.rid) blk = &b;
+        if (!blk) continue;
+        const EffectiveAssign ea = ResolveBlock(store, rec, ch, *blk);  // 13-15a: rule, Character, Project
+        const SoundLibrary*   lib = ea.library.empty() ? nullptr : FindLibrary(store, ea.library);
         if (!lib) continue;
         for (const SoundPlacement& p : ev.placed) {
             bool have = false;
@@ -688,7 +693,8 @@ void SoundFollowTick(ReaProject* proj)
                 }
                 in.owner_guid = guid;
                 in.rec = rec;
-                in.blend_ms = BlendOffsets(store, rec);
+                const ItemRigInfo rig = ItemRig(item);
+                in.blend_ms = BlendOffsets(store, rec, an.rr.rules.blocks, CharacterFor(store, rig.skeleton, rig.model_file));
                 for (const auto& b : an.rr.rules.blocks) {
                     if (b.rid.empty()) continue;
                     in.rule_rids.push_back(b.rid);

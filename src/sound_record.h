@@ -14,11 +14,19 @@
 //
 // The project store (the .rpp's <RAVSOUNDS chunk, one line per chunk line):
 //   RAVSOUNDS 1
-//   auto key=<s> [lib=<id>]                          -- an auto marker type's sound (Antho 2026-10-12)
-//   avalue group=<id> value=<id>                     -- a rule-level value of the auto line above
+//   auto key=<s> [lib=<id>]                          -- an auto marker type's sound (Antho 2026-10-12);
+//   avalue group=<id> value=<id>                        read for migration only (13-15a): each becomes a
+//                                                       Project `assign` and is never written again
+//   assign key=<part>|<part.type> [lib=<id>|none] [kit=1]   -- 13-15a: a Project assignment (no lib = inherit)
+//   asvalue group=<id> value=<id>                    -- a Switch value of the assign above
+//   character uid=<id> name=<s> skel=<16 hex> [file=<s>] [files=<s>,<s>]   -- a rig (file = a split's model file)
+//   cassign key=<k> [lib=<id>|none] [kit=1]          -- an assignment of the character above
+//   casvalue group=<id> value=<id>                   -- a Switch value of the cassign above
 //   group uid=<id> name=<s>
 //   value uid=<id> name=<s>                          -- a value of the group above
 //   library uid=<id> name=<s> root=<id> [color=<hex>] [user=1] [ravlib=<s>]
+//   kit parts=<id>,<id> [offered=1]                  -- 13-15a: the body parts the library suggests itself for
+//                                                       (right after its library line; travels in the .ravlib)
 //   node uid=<id> type=sound|random|blend|switch [parent=<id>] [name=<s>] [vol=<dB>]
 //        [offset_ms=<ms>] [avoid=<n>] [group=<id>] [default=<id>] [preview=<id>] [lands=<s>]
 //   case value=<id> child=<id>                       -- a Switch case of the node above
@@ -28,13 +36,13 @@
 //         [arel=<s>] [amtime=<n>]                    -- the Sound data of the node above
 //   frame start=<s> len=<s> [on=0] [db=<dB>] [hand=1] [fin=<s>] [fout=<s>] [fish=<n>] [fosh=<n>]
 //                                                    -- a variation of that Sound (no fin/fout = the Sound's fades)
-// The auto lines come first (a version without them keeps them as the header's unknown lines),
-// then the groups, then the libraries, each library's nodes in order.
+// The auto / assign / character lines come first (a version without them keeps them as the header's
+// unknown lines), then the groups, then the libraries, each library's nodes in order.
 //
 // The per-animation-item record (the take's P_EXT:RAV_SOUNDS):
 //   RAVITEMSND 1 [seed=<n>]
 //   ivalue group=<id> value=<id>                     -- an item-level Switch value
-//   rule rid=<rid> [lib=<id>]
+//   rule rid=<rid> [lib=<id>] [none=1]               -- none: place nothing on purpose (no lib, no none = inherit)
 //   rvalue group=<id> value=<id>                     -- a value of the rule above
 //   event rid=<rid> t=<clip s>
 //   evalue group=<id> value=<id>                     -- an override of the event above

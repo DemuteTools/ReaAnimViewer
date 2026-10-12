@@ -8,6 +8,9 @@
 // goes to the orchestrator. Text grammars: sound_record.h. Ids are random 16-hex strings
 // (NewSoundUid, rule_record.h), never indices.
 //
+// 13-15a: append-only extension (assignment layers), orchestrator decision: SoundAssign,
+// SoundCharacter, SoundStore::project / characters, SoundLibrary::kit, RuleSounds::none.
+//
 // Every `kept` member holds text this version did not understand, written back as read:
 // unknown fields ("key=value" tokens) of the object's own line, and `kept_lines` the unknown
 // lines read right after it.
@@ -141,6 +144,12 @@ struct SoundLibrary {
     std::vector<SoundNode>   nodes;         // children in line order
     std::vector<std::string> kept;
     std::vector<std::string> kept_lines;
+    // 13-15a: the body parts this library suggests itself for (a kit, sound_assign.h part ids); it
+    // travels in the .ravlib and is never read by resolution. `kit_offered`: the kit was offered
+    // to the project already.
+    std::vector<std::string> kit;
+    bool                     kit_offered = false;
+    std::vector<std::string> kit_kept;  // unknown fields of its `kit` line
 };
 
 // A Switch Group's value at one level (item, rule, event, auto marker type).
@@ -162,6 +171,35 @@ struct AutoSoundAssign {
     std::vector<std::string> kept_lines;
 };
 
+// ---- 13-15a: assignment layers (Kit > Project > Character > Item > Event) -----------------------
+
+// inherit = this level says nothing; None = place nothing, on purpose; Library = that library.
+enum class LibState { Inherit, None, Library };
+
+// One target at Project or Character level: a body part ("feet") or a part and type ("feet.step";
+// the type is an AutoType word, or "rules" for the bone rules of that part).
+struct SoundAssign {
+    std::string              key;
+    LibState                 state = LibState::Inherit;
+    std::string              library;       // state Library: its uid
+    bool                     kit = false;   // adopted from a library's kit
+    std::vector<ValueSet>    values;        // Switch values at this target
+    std::vector<std::string> kept;
+    std::vector<std::string> kept_lines;
+};
+
+// A rig the project knows (recognised by its skeleton signature), with its own assignments.
+struct SoundCharacter {
+    std::string              uid;
+    std::string              name;
+    std::string              skeleton;    // SkeletonKey (16 hex)
+    std::string              model_file;  // "" = the whole rig; else a split's file name
+    std::vector<std::string> files;       // model file names seen (a hint)
+    std::vector<SoundAssign> assigns;
+    std::vector<std::string> kept;
+    std::vector<std::string> kept_lines;
+};
+
 // The project's store (the .rpp's <RAVSOUNDS chunk).
 struct SoundStore {
     int                       version = 1;
@@ -170,7 +208,10 @@ struct SoundStore {
     std::vector<std::string>  kept;  // unknown fields of the header line
     std::vector<std::string>  kept_lines;  // unknown lines right after the header line
     // Antho 2026-10-12 (13-8): each auto marker type's sound (written right after the header).
-    std::vector<AutoSoundAssign> auto_sounds;
+    std::vector<AutoSoundAssign> auto_sounds;  // 13-15a: read for migration only, never written
+    // 13-15a: the project's and the characters' assignments.
+    std::vector<SoundAssign>     project;
+    std::vector<SoundCharacter>  characters;
 };
 
 // ---- Per-animation-item state (the take's P_EXT:RAV_SOUNDS) -------------------------------------
@@ -208,10 +249,11 @@ struct EventSounds {
 
 struct RuleSounds {
     std::string              rid;
-    std::string              library;  // library uid ("" = none)
+    std::string              library;  // library uid ("" and !none = inherit)
     std::vector<ValueSet>    values;   // rule-level Switch values
     std::vector<std::string> kept;
     std::vector<std::string> kept_lines;
+    bool                     none = false;  // 13-15a: "None (place nothing)"
 };
 
 struct ItemSounds {

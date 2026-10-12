@@ -458,10 +458,154 @@ Got SetAuto(AutoSoundAssign& a, const std::string& k, const std::string& v)
     return Got::Unknown;
 }
 
+// 13-15a: an assignment at Project or Character level, and a character.
+Fields AssignFields(const SoundAssign& a)
+{
+    Fields f = {{"key", Enc(a.key)}};
+    if (a.state == LibState::None) f.push_back({"lib", "none"});
+    else if (a.state == LibState::Library && !a.library.empty()) f.push_back({"lib", Enc(a.library)});
+    if (a.kit) f.push_back({"kit", "1"});
+    return f;
+}
+
+Got SetAssign(SoundAssign& a, const std::string& k, const std::string& v)
+{
+    if (k == "key") return G(ReadStr(v, &a.key));
+    if (k == "lib") {
+        std::string lib;
+        if (!ReadStr(v, &lib)) return Got::Bad;
+        if (lib == "none") {
+            a.state = LibState::None;
+            a.library.clear();
+        } else if (!lib.empty()) {
+            a.state = LibState::Library;
+            a.library = lib;
+        }
+        return Got::Ok;
+    }
+    if (k == "kit") return G(ReadFlag(v, &a.kit));
+    return Got::Unknown;
+}
+
+std::vector<std::string> SplitCommas(const std::string& s)
+{
+    std::vector<std::string> out;
+    size_t                   pos = 0;
+    while (pos <= s.size()) {
+        size_t c = s.find(',', pos);
+        if (c == std::string::npos) c = s.size();
+        if (c > pos) out.push_back(s.substr(pos, c - pos));
+        pos = c + 1;
+    }
+    return out;
+}
+
+// Names joined by ',' (each percent-encoded, so a ',' in a name cannot split it).
+std::string JoinEncoded(const std::vector<std::string>& names)
+{
+    std::string list;
+    for (const std::string& n : names) list += (list.empty() ? "" : ",") + Enc(n);
+    return list;
+}
+
+bool SplitDecoded(const std::string& v, std::vector<std::string>* out)
+{
+    std::vector<std::string> names;
+    for (const std::string& part : SplitCommas(v)) {
+        std::string n;
+        if (!ReadStr(part, &n)) return false;
+        names.push_back(n);
+    }
+    *out = names;
+    return true;
+}
+
+Fields CharacterFields(const SoundCharacter& c)
+{
+    Fields f = {{"uid", Enc(c.uid)}, {"name", Enc(c.name)}, {"skel", Enc(c.skeleton)}};
+    if (!c.model_file.empty()) f.push_back({"file", Enc(c.model_file)});
+    if (!c.files.empty()) f.push_back({"files", JoinEncoded(c.files)});
+    return f;
+}
+
+Got SetCharacter(SoundCharacter& c, const std::string& k, const std::string& v)
+{
+    if (k == "uid") return G(ReadStr(v, &c.uid));
+    if (k == "name") return G(ReadStr(v, &c.name));
+    if (k == "skel") return G(ReadStr(v, &c.skeleton));
+    if (k == "file") return G(ReadStr(v, &c.model_file));
+    if (k == "files") return G(SplitDecoded(v, &c.files));
+    return Got::Unknown;
+}
+
+// A library's `kit` line.
+Fields KitFields(const SoundLibrary& l)
+{
+    Fields f = {{"parts", JoinEncoded(l.kit)}};
+    if (l.kit_offered) f.push_back({"offered", "1"});
+    return f;
+}
+
+Got SetKit(SoundLibrary& l, const std::string& k, const std::string& v)
+{
+    if (k == "parts") return G(SplitDecoded(v, &l.kit));
+    if (k == "offered") return G(ReadFlag(v, &l.kit_offered));
+    return Got::Unknown;
+}
+
+bool HasKitLine(const SoundLibrary& l)
+{
+    return !l.kit.empty() || l.kit_offered || !l.kit_kept.empty();
+}
+
+// 13-15a: the old per-marker-type sounds become Project assignments (feet.step...). The same words
+// as sound_assign's table (a test keeps them in step); here so this file links alone.
+const char* MigratedTarget(const std::string& word)
+{
+    static const char* const kMap[][2] = {
+        {"step", "feet.step"},       {"heel", "feet.step"},       {"toe", "feet.step"},
+        {"lift", "feet.lift"},       {"slide", "feet.slide"},     {"slide_heel", "feet.slide"},
+        {"slide_toe", "feet.slide"}, {"pivot", "feet.pivot"},     {"pivot_heel", "feet.pivot"},
+        {"pivot_toe", "feet.pivot"}, {"grab", "hands.grab"},      {"release", "hands.release"},
+        {"hand_pivot", "hands.hand_pivot"},
+    };
+    for (const auto& m : kMap)
+        if (word == m[0]) return m[1];
+    return nullptr;
+}
+
+void MigrateAutoSounds(SoundStore& s)
+{
+    // The L entries first; an R entry only fills a target no L entry took.
+    for (int pass = 0; pass < 2; ++pass)
+        for (const AutoSoundAssign& a : s.auto_sounds) {
+            const size_t colon = a.key.find(':');
+            if (colon == std::string::npos) continue;
+            const bool left = a.key.compare(colon + 1, std::string::npos, "L") == 0;
+            if (left != (pass == 0)) continue;
+            const char* target = MigratedTarget(a.key.substr(0, colon));
+            if (!target || (a.library.empty() && a.values.empty())) continue;
+            bool have = false;
+            for (const SoundAssign& x : s.project)
+                if (x.key == target) have = true;
+            if (have) continue;
+            SoundAssign n;
+            n.key = target;
+            if (!a.library.empty()) {
+                n.state = LibState::Library;
+                n.library = a.library;
+            }
+            n.values = a.values;
+            s.project.push_back(n);
+        }
+    s.auto_sounds.clear();
+}
+
 Fields RuleFields(const RuleSounds& r)
 {
     Fields f = {{"rid", Enc(r.rid)}};
     if (!r.library.empty()) f.push_back({"lib", Enc(r.library)});
+    if (r.none) f.push_back({"none", "1"});
     return f;
 }
 
@@ -469,6 +613,7 @@ Got SetRule(RuleSounds& r, const std::string& k, const std::string& v)
 {
     if (k == "rid") return G(ReadStr(v, &r.rid));
     if (k == "lib") return G(ReadStr(v, &r.library));
+    if (k == "none") return G(ReadFlag(v, &r.none));
     return Got::Unknown;
 }
 
@@ -539,12 +684,16 @@ bool ParseStoreCore(const std::string& text, SoundStore& s)
     SoundLibrary* lib = nullptr;
     SoundNode*    node = nullptr;
     AutoSoundAssign* au = nullptr;
+    SoundAssign*     asg = nullptr;  // 13-15a: the project / character assign read last
+    SoundCharacter*  chr = nullptr;
     for (; i < lines.size(); ++i) {
         std::vector<std::string> t;
         const std::string        kind = KindOf(lines[i], &t);
         if (kind == "auto") {
             s.auto_sounds.emplace_back();
             au = &s.auto_sounds.back();
+            asg = nullptr;
+            chr = nullptr;
             group = nullptr;
             lib = nullptr;
             node = nullptr;
@@ -554,10 +703,47 @@ bool ParseStoreCore(const std::string& text, SoundStore& s)
             au->values.emplace_back();
             ValueSet& x = au->values.back();
             ReadFields(t, 1, x.kept, [&](const std::string& k, const std::string& v) { return SetValueSet(x, k, v); });
+        } else if (kind == "assign") {
+            s.project.emplace_back();
+            asg = &s.project.back();
+            au = nullptr;
+            chr = nullptr;
+            group = nullptr;
+            lib = nullptr;
+            node = nullptr;
+            ReadFields(t, 1, asg->kept, [&](const std::string& k, const std::string& v) { return SetAssign(*asg, k, v); });
+            unknown_to = &asg->kept_lines;
+        } else if (kind == "asvalue" && asg && !chr) {
+            asg->values.emplace_back();
+            ValueSet& x = asg->values.back();
+            ReadFields(t, 1, x.kept, [&](const std::string& k, const std::string& v) { return SetValueSet(x, k, v); });
+        } else if (kind == "character") {
+            s.characters.emplace_back();
+            chr = &s.characters.back();
+            asg = nullptr;
+            au = nullptr;
+            group = nullptr;
+            lib = nullptr;
+            node = nullptr;
+            ReadFields(t, 1, chr->kept, [&](const std::string& k, const std::string& v) { return SetCharacter(*chr, k, v); });
+            unknown_to = &chr->kept_lines;
+        } else if (kind == "cassign" && chr) {
+            chr->assigns.emplace_back();
+            asg = &chr->assigns.back();
+            ReadFields(t, 1, asg->kept, [&](const std::string& k, const std::string& v) { return SetAssign(*asg, k, v); });
+            unknown_to = &asg->kept_lines;
+        } else if (kind == "casvalue" && asg && chr) {
+            asg->values.emplace_back();
+            ValueSet& x = asg->values.back();
+            ReadFields(t, 1, x.kept, [&](const std::string& k, const std::string& v) { return SetValueSet(x, k, v); });
+        } else if (kind == "kit" && lib && !node) {
+            ReadFields(t, 1, lib->kit_kept, [&](const std::string& k, const std::string& v) { return SetKit(*lib, k, v); });
         } else if (kind == "group") {
             s.groups.emplace_back();
             group = &s.groups.back();
             au = nullptr;
+            asg = nullptr;
+            chr = nullptr;
             lib = nullptr;  // a later case/frame/sound line never attaches to an earlier library's node
             node = nullptr;
             ReadFields(t, 1, group->kept, [&](const std::string& k, const std::string& v) { return SetGroup(*group, k, v); });
@@ -572,6 +758,8 @@ bool ParseStoreCore(const std::string& text, SoundStore& s)
             node = nullptr;
             group = nullptr;
             au = nullptr;
+            asg = nullptr;
+            chr = nullptr;
             ReadFields(t, 1, lib->kept, [&](const std::string& k, const std::string& v) { return SetLibrary(*lib, k, v); });
             unknown_to = &lib->kept_lines;
         } else if (kind == "node" && lib) {
@@ -700,6 +888,7 @@ bool ParseSoundStore(const std::string& text, SoundStore* out)
     try {
         SoundStore s;
         if (!ParseStoreCore(text, s)) return false;
+        MigrateAutoSounds(s);
         *out = std::move(s);
         return true;
     } catch (...) {
@@ -709,7 +898,8 @@ bool ParseSoundStore(const std::string& text, SoundStore* out)
 
 bool SoundStoreEmpty(const SoundStore& s)
 {
-    return s.groups.empty() && s.libraries.empty() && s.kept.empty() && s.kept_lines.empty() && s.auto_sounds.empty();
+    return s.groups.empty() && s.libraries.empty() && s.kept.empty() && s.kept_lines.empty() && s.auto_sounds.empty() &&
+           s.project.empty() && s.characters.empty();
 }
 
 std::string SerializeSoundStore(const SoundStore& s)
@@ -724,6 +914,17 @@ std::string SerializeSoundStore(const SoundStore& s)
         for (const ValueSet& v : a.values) WriteLine(out, "avalue", ValueSetFields(v), v.kept);
         WriteLines(out, a.kept_lines);
     }
+    auto write_assign = [&](const char* line, const char* vline, const SoundAssign& a) {
+        WriteLine(out, line, AssignFields(a), a.kept);
+        for (const ValueSet& v : a.values) WriteLine(out, vline, ValueSetFields(v), v.kept);
+        WriteLines(out, a.kept_lines);
+    };
+    for (const SoundAssign& a : s.project) write_assign("assign", "asvalue", a);
+    for (const SoundCharacter& c : s.characters) {
+        WriteLine(out, "character", CharacterFields(c), c.kept);
+        WriteLines(out, c.kept_lines);
+        for (const SoundAssign& a : c.assigns) write_assign("cassign", "casvalue", a);
+    }
     for (const SwitchGroup& g : s.groups) {
         WriteLine(out, "group", GroupFields(g), g.kept);
         for (const SwitchValue& v : g.values) WriteLine(out, "value", ValueFields(v), v.kept);
@@ -731,6 +932,7 @@ std::string SerializeSoundStore(const SoundStore& s)
     }
     for (const SoundLibrary& l : s.libraries) {
         WriteLine(out, "library", LibraryFields(l), l.kept);
+        if (HasKitLine(l)) WriteLine(out, "kit", KitFields(l), l.kit_kept);
         WriteLines(out, l.kept_lines);
         for (const SoundNode& n : l.nodes) {
             WriteLine(out, "node", NodeFields(n), n.kept);

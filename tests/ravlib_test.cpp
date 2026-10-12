@@ -219,6 +219,30 @@ static void TestImportMerge()
     }
 }
 
+// 13-15a: a library's kit (the body parts it serves) travels in the file and back into a project.
+static void TestKitTravels()
+{
+    SoundStore rich = RichStore();
+    rich.libraries[0].kit = {"feet", "hands"};
+    rich.libraries[0].kit_offered = true;
+    const SoundStore one = RavlibOf(rich, "l000000000000001", nullptr);
+    CHECK(one.libraries[0].kit.size() == 2);
+    const std::string text = SerializeRavlib(one);
+    CHECK(text.find("\nkit parts=feet,hands offered=1\n") != std::string::npos);
+    SoundStore back;
+    CHECK(ParseRavlib(text, &back));
+    CHECK((back.libraries[0].kit == std::vector<std::string>{"feet", "hands"}) && back.libraries[0].kit_offered);
+    CHECK(SerializeRavlib(back) == text);
+    SoundStore proj;
+    std::string uid, why;
+    CHECK(AddRavlibLibrary(proj, back, "Steps.ravlib", &uid, &why));
+    const SoundLibrary* lib = FindLibrary(proj, uid);
+    CHECK(lib && lib->kit == back.libraries[0].kit);
+    // A file without the line has no kit.
+    SoundStore plain = RavlibOf(RichStore(), "l000000000000001", nullptr);
+    CHECK(SerializeRavlib(plain).find("kit ") == std::string::npos);
+}
+
 static void TestUidClash()
 {
     SoundStore file = RavlibOf(RichStore(), "l000000000000001", nullptr);
@@ -395,6 +419,7 @@ int main()
     TestNotRavlib();
     TestExportForm();
     TestImportMerge();
+    TestKitTravels();
     TestUidClash();
     TestAlreadyThere();
     TestLandsInAndLayer();

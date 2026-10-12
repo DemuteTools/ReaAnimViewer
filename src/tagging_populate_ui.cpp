@@ -22,6 +22,7 @@
 #include "picked_gestures.h"
 #include "reaper_api.h"
 #include "rule_record.h"
+#include "sound_assign.h"
 #include "sound_auto_assign.h"
 #include "sound_populate.h"
 #include "sound_populate_plan.h"
@@ -146,10 +147,14 @@ const ValueSet* FindValue(const std::vector<ValueSet>* vals, const std::string& 
     return nullptr;
 }
 
+using FromTexts = std::vector<std::pair<std::string, std::string>>;
+
 // One value menu (P14): "inherit · <value> (<from>)" then the group's values. `below` = the
 // layers under this one; `own` = this level's values. `set` gets the value uid ("" = inherit).
+// 13-15a: `texts` (optional) names where an inherited value comes from (group -> "Project · Feet").
 void ValueMenu(const char* id, const SoundStore& store, const GroupUse& use, const ValueLayers& below,
-               const std::vector<ValueSet>* own, const std::function<void(const std::string&)>& set)
+               const std::vector<ValueSet>* own, const std::function<void(const std::string&)>& set,
+               const FromTexts* texts = nullptr)
 {
     const SwitchGroup* g = FindGroup(store, use.group_uid);
     if (!g || !use.first_switch) return;
@@ -157,7 +162,11 @@ void ValueMenu(const char* id, const SoundStore& store, const GroupUse& use, con
     std::string inh = EffectiveValue(*use.first_switch, below, &from);
     if (from == ValueFrom::Default) inh = DefaultValue(store, *use.first_switch);
     char inherit[192];
-    std::snprintf(inherit, sizeof(inherit), "inherit %s %s (%s)", kDot, ValueName(g, inh).c_str(), FromWord(from));
+    std::string from_text = FromWord(from);
+    if (texts && from != ValueFrom::Default)
+        for (const auto& t : *texts)
+            if (t.first == use.group_uid) from_text = t.second;
+    std::snprintf(inherit, sizeof(inherit), "inherit %s %s (%s)", kDot, ValueName(g, inh).c_str(), from_text.c_str());
     const ValueSet* mine = FindValue(own, use.group_uid);
     const std::string preview = mine ? ValueName(g, mine->value_uid) : std::string(inherit);
 
@@ -181,15 +190,39 @@ void OpenLibraryArrow()
     if (ui::IconOnlyButton("##openlib", ToolIcon(kToolOpenArrow), "Open the Library view")) SetViewMode(ViewMode::Library);
 }
 
-// The libraries assigned to the item's rules, each once.
-std::vector<const SoundLibrary*> ItemLibraries(const SoundStore& store, const ItemSounds& rec, const ItemRules& rules)
+// The item's character (its rig, 13-15a), null when the Project's settings apply.
+const SoundCharacter* CharacterOf(const SoundStore& store, MediaItem* item)
+{
+    const ItemRigInfo rig = ItemRig(item);
+    return CharacterFor(store, rig.skeleton, rig.model_file);
+}
+
+const ItemSounds kNoSounds;
+
+std::string LibraryNameOf(const SoundStore& store, const std::string& uid)
+{
+    const SoundLibrary* lib = FindLibrary(store, uid);
+    return lib ? lib->name : std::string("(gone)");
+}
+
+// "inherit · Wood steps (Project · Feet · Step)" / "inherit · None (Hero · Feet)" / "inherit · nothing set".
+std::string InheritText(const SoundStore& store, const EffectiveAssign& inh)
+{
+    if (inh.level == AssignLevel::Unset) return std::string("inherit ") + kDot + " nothing set";
+    const std::string what = inh.none ? std::string("None") : LibraryNameOf(store, inh.library);
+    return std::string("inherit ") + kDot + " " + what + " (" + inh.from + ")";
+}
+
+// The libraries the item's rules play (their resolved library), each once.
+std::vector<const SoundLibrary*> ItemLibraries(const SoundStore& store, const ItemSounds& rec, const ItemRules& rules,
+                                               const SoundCharacter* ch)
 {
     std::vector<const SoundLibrary*> out;
     for (const Block& b : rules.blocks) {
         if (b.rid.empty()) continue;
-        const RuleSounds* rs = FindRuleSounds(rec, b.rid);
-        if (!rs || rs->library.empty()) continue;
-        const SoundLibrary* lib = FindLibrary(store, rs->library);
+        const EffectiveAssign ea = ResolveBlock(store, rec, ch, b);
+        if (ea.library.empty()) continue;
+        const SoundLibrary* lib = FindLibrary(store, ea.library);
         bool have = false;
         for (const SoundLibrary* l : out)
             if (l == lib) have = true;
@@ -226,9 +259,18 @@ void DrawRuleSoundSection(const TaggingSoundContext& ctx)
     if (!ctx.item || !ctx.rules || ctx.rule < 0 || static_cast<size_t>(ctx.rule) >= ctx.rules->blocks.size()) return;
     const SoundStore&  store = GetSoundStore(nullptr);
     const ItemSounds&  rec = Rec(ctx.item).rec;
-    const std::string& rid = ctx.rules->blocks[static_cast<size_t>(ctx.rule)].rid;
+    const Block&       blk = ctx.rules->blocks[static_cast<size_t>(ctx.rule)];
+    const std::string& rid = blk.rid;
     const RuleSounds*  rs = rid.empty() ? nullptr : FindRuleSounds(rec, rid);
-    const SoundLibrary* lib = rs && !rs->library.empty() ? FindLibrary(store, rs->library) : nullptr;
+    // 13-15a: the library and values this rule plays come from its layers (rule, Character, Project).
+    const SoundCharacter* ch = CharacterOf(store, ctx.item);
+    const EffectiveAssign ea = ResolveBlock(store, rec, ch, blk);
+    std::string           part, type;
+    PartOfBlock(blk, &part, &type);
+    const EffectiveAssign inh = ResolveAssign(store, kNoSounds, ch, std::string(), part, type);  // with no rule of its own
+    const SoundLibrary*   lib = !ea.library.empty() ? FindLibrary(store, ea.library) : nullptr;
+    const bool            own_none = rs && rs->none;
+    const bool            own_lib = rs && !rs->library.empty();
     MediaItem* item = ctx.item;
     const int  block = ctx.rule;
 
@@ -242,15 +284,19 @@ void DrawRuleSoundSection(const TaggingSoundContext& ctx)
             // The combo leaves room for the open-library arrow after it.
             const float arrow_w = ui::ControlH() + ImGui::GetStyle().ItemSpacing.x;
             const float field_w = ui::LabelRow("Library", ui::Dp(60.0f) + arrow_w);
-            const std::string preview = lib ? lib->name : (rs && !rs->library.empty() ? "(gone)" : "None");
+            const std::string preview = own_none  ? std::string("None (place nothing)")
+                                        : own_lib ? LibraryNameOf(store, rs->library)
+                                                  : InheritText(store, inh);
             if (ui::BeginComboStyled("##lib", preview.c_str(), std::max(ui::Dp(60.0f), field_w - arrow_w))) {
-                const bool assigned = rs && !rs->library.empty();  // a deleted library can be set back to None
-                if (ImGui::Selectable("None", !assigned) && assigned)
+                const bool inherits = !own_none && !own_lib;
+                if (ImGui::Selectable((InheritText(store, inh) + "##inherit").c_str(), inherits) && !inherits)
                     Pick([item, block]() { return SetRuleLibrary(item, block, std::string()); });
+                if (ImGui::Selectable("None (place nothing)", own_none) && !own_none)
+                    Pick([item, block]() { return SetRuleLibrary(item, block, kLibNoneWord); });
                 for (const SoundLibrary& L : store.libraries) {
                     const LibraryCheck chk = CheckLibrary(store, L);
                     if (chk.blocked) ImGui::BeginDisabled();
-                    const bool cur = lib && lib->uid == L.uid;
+                    const bool cur = own_lib && rs->library == L.uid;
                     if (ImGui::Selectable((L.name + "##" + L.uid).c_str(), cur) && !cur && !chk.blocked)
                         Pick([item, block, uid = L.uid]() { return SetRuleLibrary(item, block, uid); });
                     if (chk.blocked) ImGui::EndDisabled();
@@ -261,13 +307,13 @@ void DrawRuleSoundSection(const TaggingSoundContext& ctx)
             ImGui::SameLine();
             OpenLibraryArrow();
             if (lib) {
-                ValueLayers below;
-                below.item = rec.item_values;
                 for (const GroupUse& g : GroupsUsed(store, *lib)) {
                     const std::string gid = g.group_uid;
-                    ValueMenu(gid.c_str(), store, g, below, rs ? &rs->values : nullptr, [item, block, gid](const std::string& v) {
-                        Pick([item, block, gid, v]() { return SetSoundValue(item, SoundValueLevel::Rule, block, 0.0, gid, v); });
-                    });
+                    ValueMenu(gid.c_str(), store, g, ValueLayers{ea.layers.item, {}, {}}, rs ? &rs->values : nullptr,
+                              [item, block, gid](const std::string& v) {
+                                  Pick([item, block, gid, v]() { return SetSoundValue(item, SoundValueLevel::Rule, block, 0.0, gid, v); });
+                              },
+                              &ea.item_from);
                 }
             }
         }
@@ -281,17 +327,23 @@ void DrawAutoSoundRow(MediaItem* item, const ItemRules& rules, const std::vector
     if (keys.empty()) return;
     const SoundStore& store = GetSoundStore(nullptr);
     if (store.libraries.empty()) return;
-    const ItemSounds& rec = Rec(item).rec;
+    const ItemSounds&     rec = Rec(item).rec;
+    const SoundCharacter* ch = CharacterOf(store, item);
     std::vector<AutoSoundShown> shown;
-    for (const std::string& k : keys) shown.push_back(AutoSoundFor(store, rec, rules.blocks, k));
-    bool same_lib = true, on_item = false;
+    for (const std::string& k : keys) shown.push_back(AutoSoundFor(store, rec, ch, rules.blocks, k));
+    bool same_own = true, same_eff = true, on_item = false;
     for (const AutoSoundShown& s : shown) {
-        if (s.library != shown[0].library) same_lib = false;
+        if (s.own_state != shown[0].own_state || s.own_library != shown[0].own_library) same_own = false;
+        if (s.effective.library != shown[0].effective.library || s.effective.none != shown[0].effective.none) same_eff = false;
         if (s.on_item) on_item = true;
     }
-    const std::string&  lib_uid = shown[0].library;
-    const SoundLibrary* lib = same_lib && !lib_uid.empty() ? FindLibrary(store, lib_uid) : nullptr;
-    const std::string   preview = !same_lib ? "Mixed" : lib ? lib->name : (lib_uid.empty() ? "None" : "(gone)");
+    const AutoSoundShown& first = shown[0];
+    const SoundLibrary*   lib = same_eff && !first.effective.library.empty() ? FindLibrary(store, first.effective.library) : nullptr;
+    const std::string     inherit_text = same_eff ? InheritText(store, first.effective) : std::string("inherit");
+    const std::string     preview = !same_own ? std::string("Mixed")
+                                    : first.own_state == LibState::None    ? std::string("None (place nothing)")
+                                    : first.own_state == LibState::Library ? LibraryNameOf(store, first.own_library)
+                                                                           : inherit_text;
     std::string         id;
     for (const std::string& k : keys) id += k + ",";
     const std::vector<std::string> keys_copy = keys;
@@ -301,18 +353,20 @@ void DrawAutoSoundRow(MediaItem* item, const ItemRules& rules, const std::vector
     ui::ToneText("Sound", ui::kMuted);
     ui::SameLineIfFits(ui::MenuButtonWidth(preview.c_str()));
     if (ui::MenuButton("##autolib", true, preview.c_str())) ImGui::OpenPopup("##autolibmenu");
-    ui::ItemTipText(on_item ? "The library of these markers: the same as their rule's Sound card (either sets "
-                              "both).\nDetect gives it to this marker type's new markers."
-                            : "The library Detect gives to this marker type's markers (set before or after "
-                              "Detect).\nTheir rule's Sound card shows the same.");
+    ui::ItemTipText(on_item ? "The library of these markers: the same as their rule's Sound card.\n"
+                              "Inherit follows the Character, then the Project."
+                            : "No marker of this type on the item yet.\nInherit follows the Character, then the Project.");
     if (ui::BeginMenuPopup("##autolibmenu")) {
-        const bool assigned = !same_lib || !lib_uid.empty();
-        if (ImGui::Selectable("None", !assigned) && assigned)
+        const bool inherits = same_own && first.own_state == LibState::Inherit;
+        if (ImGui::Selectable((inherit_text + "##inherit").c_str(), inherits) && !inherits)
             Pick([item, keys_copy]() { return SetAutoMarkerLibrary(item, keys_copy, std::string()); });
+        const bool is_none = same_own && first.own_state == LibState::None;
+        if (ImGui::Selectable("None (place nothing)", is_none) && !is_none)
+            Pick([item, keys_copy]() { return SetAutoMarkerLibrary(item, keys_copy, kLibNoneWord); });
         for (const SoundLibrary& L : store.libraries) {
             const LibraryCheck chk = CheckLibrary(store, L);
             if (chk.blocked) ImGui::BeginDisabled();
-            const bool cur = lib && lib->uid == L.uid;
+            const bool cur = same_own && first.own_state == LibState::Library && first.own_library == L.uid;
             if (ImGui::Selectable((L.name + "##" + L.uid).c_str(), cur) && !cur && !chk.blocked)
                 Pick([item, keys_copy, uid = L.uid]() { return SetAutoMarkerLibrary(item, keys_copy, uid); });
             if (chk.blocked) ImGui::EndDisabled();
@@ -322,9 +376,9 @@ void DrawAutoSoundRow(MediaItem* item, const ItemRules& rules, const std::vector
     }
     if (lib) {
         // One compact menu per Switch Group the library uses: "<group>: <value>" ("inherit" = the
-        // item's value or the Switch's default, as the rule's Sound card says).
+        // item's value, the Character's / Project's or the Switch's default, as the rule's Sound card says).
         ValueLayers below;
-        below.item = rec.item_values;
+        below.item = first.effective.layers.item;
         for (const GroupUse& g : GroupsUsed(store, *lib)) {
             const SwitchGroup* grp = FindGroup(store, g.group_uid);
             if (!grp || !g.first_switch) continue;
@@ -345,8 +399,12 @@ void DrawAutoSoundRow(MediaItem* item, const ItemRules& rules, const std::vector
                 ValueFrom   from = ValueFrom::Default;
                 std::string inh = EffectiveValue(*g.first_switch, below, &from);
                 if (from == ValueFrom::Default) inh = DefaultValue(store, *g.first_switch);
+                std::string from_text = FromWord(from);
+                if (from != ValueFrom::Default)
+                    for (const auto& t : first.effective.item_from)
+                        if (t.first == g.group_uid) from_text = t.second;
                 char inherit[192];
-                std::snprintf(inherit, sizeof(inherit), "inherit %s %s (%s)", kDot, ValueName(grp, inh).c_str(), FromWord(from));
+                std::snprintf(inherit, sizeof(inherit), "inherit %s %s (%s)", kDot, ValueName(grp, inh).c_str(), from_text.c_str());
                 const std::string gid = g.group_uid;
                 const bool        own = !same_val || !val.empty();
                 if (ImGui::Selectable(inherit, !own) && own)
@@ -371,7 +429,7 @@ void DrawItemSoundValuesSection(const TaggingSoundContext& ctx)
     if (store.libraries.empty()) return;
     const ItemSounds& rec = Rec(ctx.item).rec;
     std::vector<GroupUse> groups;
-    for (const SoundLibrary* lib : ItemLibraries(store, rec, *ctx.rules))
+    for (const SoundLibrary* lib : ItemLibraries(store, rec, *ctx.rules, CharacterOf(store, ctx.item)))
         for (const GroupUse& g : GroupsUsed(store, *lib)) {
             bool have = false;
             for (const GroupUse& x : groups)
@@ -408,9 +466,11 @@ void DrawEventSoundSection(const TaggingSoundContext& ctx, const ShownEvent& e)
     if (e.kind != ShownKind::Detected && e.kind != ShownKind::User) return;
     const SoundStore&  store = GetSoundStore(nullptr);
     const ItemSounds&  rec = Rec(ctx.item).rec;
-    const std::string& rid = ctx.rules->blocks[static_cast<size_t>(ctx.rule)].rid;
-    const RuleSounds*  rs = rid.empty() ? nullptr : FindRuleSounds(rec, rid);
-    const SoundLibrary* lib = rs && !rs->library.empty() ? FindLibrary(store, rs->library) : nullptr;
+    const Block&       blk = ctx.rules->blocks[static_cast<size_t>(ctx.rule)];
+    const std::string& rid = blk.rid;
+    const SoundCharacter* ch = CharacterOf(store, ctx.item);
+    const EffectiveAssign ea_rule = ResolveBlock(store, rec, ch, blk);  // the rule's layers, no event
+    const SoundLibrary*   lib = !ea_rule.library.empty() ? FindLibrary(store, ea_rule.library) : nullptr;
     if (!lib) return;
     const EventSounds* ev = FindEventSounds(rec, rid, e.t);
     MediaItem*   item = ctx.item;
@@ -428,7 +488,10 @@ void DrawEventSoundSection(const TaggingSoundContext& ctx, const ShownEvent& e)
         ed.rid = rid;
         ed.t = t;
         ed.prev = ev ? &ev->draws : nullptr;
-        const Resolution res = ResolveEvent(store, *lib, LayersFor(rec, rid, t), MakeDrawHooks(st, ed, nullptr));
+        std::string part, type;
+        PartOfBlock(blk, &part, &type);
+        const Resolution res = ResolveEvent(store, *lib, ResolveAssignFor(store, rec, ch, rid, part, type, t).layers,
+                                            MakeDrawHooks(st, ed, nullptr));
         ui::SubText(res.blocked ? ("Blocked: " + res.reason).c_str() : res.path_text.c_str());
         bool undrawn = false;  // a pick not stored yet: Populate draws it (with the item's history)
         for (const SoundDraw& d : ed.out) {
@@ -453,13 +516,15 @@ void DrawEventSoundSection(const TaggingSoundContext& ctx, const ShownEvent& e)
             ui::Caption(line);
         }
         ValueLayers below;
-        below.item = rec.item_values;
-        below.rule = rs->values;
+        below.item = ea_rule.layers.item;
+        below.rule = ea_rule.layers.rule;
         for (const GroupUse& g : GroupsUsed(store, *lib)) {
             const std::string gid = g.group_uid;
-            ValueMenu(gid.c_str(), store, g, below, ev ? &ev->overrides : nullptr, [item, block, t, gid](const std::string& v) {
-                Pick([item, block, t, gid, v]() { return SetSoundValue(item, SoundValueLevel::Event, block, t, gid, v); });
-            });
+            ValueMenu(gid.c_str(), store, g, below, ev ? &ev->overrides : nullptr,
+                      [item, block, t, gid](const std::string& v) {
+                          Pick([item, block, t, gid, v]() { return SetSoundValue(item, SoundValueLevel::Event, block, t, gid, v); });
+                      },
+                      &ea_rule.value_from);
         }
     }
     ui::EndSection(s);

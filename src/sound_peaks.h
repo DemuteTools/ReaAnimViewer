@@ -5,7 +5,7 @@
 // owns this file: it fills the stubs and may ADD declarations. Shared types: sound_model.h.
 //
 // 13-7b: a file's peaks are read once for the whole file at kPeakRate peaks/s (max |sample| over
-// its channels), incrementally (a bounded slice of work per call, one file at a time) and kept
+// its channels, plus one series per lane L / R for a stereo file: PeakData), incrementally (a bounded slice of work per call, one file at a time) and kept
 // in a cache of the last 32 files. Seams for 13-7c: RequestPeaks / ReadPeaks / ReadSoundMedia.
 
 #pragma once

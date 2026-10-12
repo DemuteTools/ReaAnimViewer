@@ -155,6 +155,11 @@ add_test(NAME sound_record COMMAND sound_record_test)
 add_executable(sound_entries_test sound_entries_test.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
 target_include_directories(sound_entries_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_entries COMMAND sound_entries_test)
+
+# Story 13-14 -- the peak lane helpers of src/sound_model.h (stereo waveform lanes).
+add_executable(peak_lanes_test peak_lanes_test.cpp)
+target_include_directories(peak_lanes_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME peak_lanes COMMAND peak_lanes_test)
 # Story 13-3 -- src/sound_draw.h
 add_executable(sound_draw_test sound_draw_test.cpp ../src/sound_draw.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
 target_include_directories(sound_draw_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

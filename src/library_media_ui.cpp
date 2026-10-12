@@ -179,7 +179,8 @@ bool TaskStale(const Task& t)
     }
 }
 
-// The whole file's peaks (max |sample| over the channels) at ~kPeakRate; false when cancelled.
+// The whole file's peaks (max |sample| over the channels, and per lane L / R for a stereo file)
+// at ~kPeakRate; false when cancelled.
 bool ReadFilePeaks(PCM_source* s, const Task& t, PeakData* peaks, double* length)
 {
     const int    nch = s->GetNumChannels();
@@ -191,9 +192,7 @@ bool ReadFilePeaks(PCM_source* s, const Task& t, PeakData* peaks, double* length
     const int64_t total = static_cast<int64_t>(len * sr);
     std::vector<ReaSample> buf(static_cast<size_t>(block) * nch);
     peaks->rate = sr / per;
-    peaks->max_abs.reserve(static_cast<size_t>(total / per + 1));
-    float cur = 0.0f;
-    int   count = 0;
+    PeakInit(peaks, nch, static_cast<size_t>((total + per - 1) / per));  // lanes: stereo only (13-14)
     for (int64_t pos = 0; pos < total; pos += block) {
         if (TaskStale(t)) return false;
         PCM_source_transfer_t tr{};
@@ -203,20 +202,10 @@ bool ReadFilePeaks(PCM_source* s, const Task& t, PeakData* peaks, double* length
         tr.length = static_cast<int>(std::min<int64_t>(block, total - pos));
         tr.samples = buf.data();
         s->GetSamples(&tr);
-        const int out = std::max(0, std::min(tr.length, tr.samples_out));
-        for (int i = 0; i < tr.length; ++i) {
-            float m = 0.0f;
-            if (i < out)
-                for (int c = 0; c < nch; ++c) m = std::max(m, static_cast<float>(std::fabs(buf[static_cast<size_t>(i) * nch + c])));
-            cur = std::max(cur, m);
-            if (++count == per) {
-                peaks->max_abs.push_back(cur);
-                cur = 0.0f;
-                count = 0;
-            }
-        }
+        const int out = std::max(0, std::min(tr.length, tr.samples_out));  // the rest is silence
+        for (int i = 0; i < out; ++i)
+            PeakAddFrame(peaks, static_cast<size_t>((pos + i) / per), buf.data() + static_cast<size_t>(i) * nch, nch);
     }
-    if (count > 0) peaks->max_abs.push_back(cur);
     *length = len;
     return true;
 }

@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -250,11 +251,73 @@ struct Slice {
     std::string name;
 };
 
-// Mono peaks of a source (13-7b reads them).
+// Peaks of a source (13-7b reads them). `max_abs` is the max |sample| over every channel: what
+// detection reads (SplitOnSilence, FramePeakDb, NormalizeFrames). 13-14: the waveform's lanes,
+// one for a mono source, two (L, R) for a source of 2 channels or more (channel c goes to lane
+// c % 2). A mono source keeps `lanes` empty: its one lane is `max_abs`, so its memory is unchanged;
+// a stereo one adds two series the size of `max_abs`. Read them with PeakChannels / PeakLane.
 struct PeakData {
     double             rate = 0.0;  // peaks per second
     std::vector<float> max_abs;
+    int                channels = 1;  // lanes: 1 (mono) or 2 (L, R)
+    std::vector<float> lanes[2];      // channels == 2: max |sample| of each lane; else empty
 };
+
+// ---- Peak lanes (13-14): pure helpers shared by the peak readers and the waveform drawers ----
+
+// The lanes to draw: 2 when the per-lane series are there, else 1 (a mono source, or peaks read
+// without lanes).
+inline int PeakChannels(const PeakData& p)
+{
+    return p.channels == 2 && p.lanes[0].size() == p.max_abs.size() && p.lanes[1].size() == p.max_abs.size() ? 2 : 1;
+}
+
+// The series of lane `ch` (max |sample| per bin; the lane spans -v..+v). Mono, or a lane out of
+// range: `max_abs`.
+inline const std::vector<float>& PeakLane(const PeakData& p, int ch)
+{
+    return PeakChannels(p) == 2 && (ch == 0 || ch == 1) ? p.lanes[ch] : p.max_abs;
+}
+
+// The max of lane `ch` over bins [i0, i1) (clamped; 0 when empty): the lane is drawn from -max to
+// +max.
+inline float PeakLaneMax(const PeakData& p, int ch, size_t i0, size_t i1)
+{
+    const std::vector<float>& v = PeakLane(p, ch);
+    float                     m = 0.0f;
+    for (size_t i = i0; i < i1 && i < v.size(); ++i) m = v[i] > m ? v[i] : m;
+    return m;
+}
+
+// Sizes `p` for `bins` bins of a source of `source_channels` channels (all bins 0): the lanes only
+// when it has 2 channels or more. `rate` is left to the caller.
+inline void PeakInit(PeakData* p, int source_channels, size_t bins)
+{
+    p->max_abs.assign(bins, 0.0f);
+    p->channels = source_channels >= 2 ? 2 : 1;
+    for (int l = 0; l < 2; ++l) {
+        if (p->channels == 2) p->lanes[l].assign(bins, 0.0f);
+        else std::vector<float>().swap(p->lanes[l]);
+    }
+}
+
+// Folds one sample frame (`nch` interleaved values; |v| is taken) into bin `bin`: `max_abs` gets the
+// max over all channels, lane c % 2 the max of its channels. A bin out of range is ignored.
+template <typename Sample>
+inline void PeakAddFrame(PeakData* p, size_t bin, const Sample* frame, int nch)
+{
+    if (bin >= p->max_abs.size()) return;
+    float m = 0.0f, lane[2] = {0.0f, 0.0f};
+    for (int c = 0; c < nch; ++c) {
+        const Sample s = frame[c];
+        const float  a = static_cast<float>(s < 0 ? -s : s);
+        m = m < a ? a : m;  // as std::max(m, a): a NaN sample is skipped
+        lane[c & 1] = lane[c & 1] < a ? a : lane[c & 1];
+    }
+    p->max_abs[bin] = p->max_abs[bin] < m ? m : p->max_abs[bin];
+    if (p->channels == 2 && bin < p->lanes[0].size() && bin < p->lanes[1].size())
+        for (int l = 0; l < 2; ++l) p->lanes[l][bin] = p->lanes[l][bin] < lane[l] ? lane[l] : p->lanes[l][bin];
+}
 
 enum class ReportKind { Missing, Replaced, Detached, Blocked, Info };  // Info (13-11): not counted
 

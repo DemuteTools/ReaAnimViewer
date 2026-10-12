@@ -89,7 +89,7 @@ bool Open(const std::string& path, Entry& e)
     }
     e.total = static_cast<int64_t>(std::ceil(e.length * e.sr));
     e.peaks.rate = kPeakRate;
-    e.peaks.max_abs.assign(static_cast<size_t>(std::ceil(e.length * kPeakRate)) + 1, 0.0f);
+    PeakInit(&e.peaks, e.nch, static_cast<size_t>(std::ceil(e.length * kPeakRate)) + 1);  // lanes: stereo only
     g_len[path] = e.length;
     return true;
 }
@@ -109,11 +109,8 @@ bool Run(Entry& e, double budget_ms)
         e.src->GetSamples(&tr);
         const int got = tr.samples_out > 0 ? std::min(tr.samples_out, tr.length) : 0;
         for (int k = 0; k < got; ++k) {
-            float m = 0.0f;
-            for (int c = 0; c < e.nch; ++c)
-                m = std::max(m, static_cast<float>(std::fabs(buf[static_cast<size_t>(k * e.nch + c)])));
             const size_t bin = static_cast<size_t>(static_cast<double>(e.done + k) * kPeakRate / e.sr);
-            if (bin < e.peaks.max_abs.size()) e.peaks.max_abs[bin] = std::max(e.peaks.max_abs[bin], m);
+            PeakAddFrame(&e.peaks, bin, buf.data() + static_cast<size_t>(k) * static_cast<size_t>(e.nch), e.nch);
         }
         e.done += tr.length;  // a short read is silence: never stall on it
         const double ms =
@@ -199,8 +196,9 @@ bool ReadPeaks(const std::string& path, double start, double length, double rate
     if (RequestPeaks(path, nullptr) != PeakState::Ready) return false;
     const PeakData& p = g_cache[path].peaks;
     const size_t    n = static_cast<size_t>(std::max(1.0, std::floor(length * rate)));
+    const int       lanes = PeakChannels(p);
+    PeakInit(out, lanes, n);
     out->rate = rate;
-    out->max_abs.assign(n, 0.0f);
     for (size_t i = 0; i < n; ++i) {
         const double a = (start + static_cast<double>(i) / rate) * kPeakRate;
         const double b = (start + static_cast<double>(i + 1) / rate) * kPeakRate;
@@ -210,6 +208,11 @@ bool ReadPeaks(const std::string& path, double start, double length, double rate
         for (int64_t k = std::max<int64_t>(0, lo); k < hi && k < static_cast<int64_t>(p.max_abs.size()); ++k)
             m = std::max(m, p.max_abs[static_cast<size_t>(k)]);
         out->max_abs[i] = m;
+        if (lanes == 2) {
+            const size_t k0 = static_cast<size_t>(std::max<int64_t>(0, lo));
+            const size_t k1 = static_cast<size_t>(std::max<int64_t>(0, hi));
+            for (int l = 0; l < 2; ++l) out->lanes[l][i] = PeakLaneMax(p, l, k0, k1);
+        }
     }
     return true;
 }

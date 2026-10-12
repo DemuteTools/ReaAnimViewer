@@ -10,6 +10,7 @@
 #ifdef _WIN32
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -56,6 +57,12 @@ constexpr int kMinW = 460, kMinH = 340;
 FloatUiWindow g_host("assign.float", L"Sound assignment", kDefaultW, kDefaultH, kMinW, kMinH);
 
 enum Scope { kScopeProject = 0, kScopeCharacter = 1, kScopeItem = 2 };
+
+// Seconds on a process clock (review: not ImGui's time, which a new context of the window starts again at 0).
+double ClockSeconds()
+{
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 // The model signature of a rig (ItemRigInfo::model): its meshes, so the clips of one model are one character.
 std::string RigModel(const ItemRigInfo& rig)
@@ -142,7 +149,7 @@ struct RecCache {
     bool               valid = false;
     int                pool = 0;
     ItemRigInfo        rig;
-    double             rig_time = 0.0;  // when the rig was last read (ImGui time)
+    double             rig_time = 0.0;  // when the rig was last read (ClockSeconds)
 };
 // Review 13-15b: the window and the strip each keep their item's, so neither reads it again every frame
 // when they show different items.
@@ -167,14 +174,14 @@ void RefreshCache(MediaItem* item, RecCache& c = g_cache)
     const int count = GetProjectStateChangeCount(nullptr);
     if (item == c.item && count == c.count) {
         // Review: a re-exported file changes no project state: its rig is checked again each second.
-        const double now = ImGui::GetTime();
+        const double now = ClockSeconds();
         if (now - c.rig_time >= 1.0) {
             c.rig = ItemRig(item);
             c.rig_time = now;
         }
         return;
     }
-    c.rig_time = ImGui::GetTime();
+    c.rig_time = ClockSeconds();
     c.item = item;
     c.count = count;
     c.rec = ReadItemSounds(item);
@@ -216,7 +223,7 @@ bool BuildFrame(MediaItem* item, Frame* f)
 void RefreshRigs()
 {
     const int    count = GetProjectStateChangeCount(nullptr);
-    const double now = ImGui::GetTime();
+    const double now = ClockSeconds();
     if (count == g.rigs_count && now - g.rigs_time < 3.0) return;
     g.rigs_count = count;
     g.rigs_time = now;
@@ -2360,6 +2367,7 @@ void HideAssignFloat()
 void DestroyAssignFloat()
 {
     g_host.Destroy();
+    FloatUiWindow::UnregisterWindowClass();  // a later load of the DLL registers its own
 }
 
 bool AssignFloatOwns(HWND hwnd)

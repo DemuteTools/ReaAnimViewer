@@ -1787,7 +1787,8 @@ void SwitchGroupsSectionWidgets()
                 ImGui::OpenPopup("##sgmenu");
             }
             if (ui::BeginMenuPopup("##sgmenu")) {
-                if (cg && ImGui::MenuItem("Rename", "F2", false, !g.changed)) start_rename();
+                if (!cg) ImGui::CloseCurrentPopup();  // its row went (undo)
+                if (cg && ImGui::MenuItem("Rename", "F2", false, !g.changed && g.rename == RenameKind::None)) start_rename();
                 if (cg && !cv && ImGui::MenuItem("Delete group")) del_group = cg->uid;
                 if (cg && cv && ImGui::MenuItem("Remove value")) {
                     del_value_group = cg->uid;
@@ -1895,6 +1896,10 @@ void LibraryTreeWidgets()
 {
     g.changed = false;
     g.tree_focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows);  // column 2 and its tree
+    if (g.tree_focused) {  // the Switch Groups row picked last lets go (its F2 / highlight)
+        g.sg_gid.clear();
+        g.sg_vid.clear();
+    }
     RefreshItemGuids();
     const SoundLibrary* lib = CurrentLib();
     if (!lib) {

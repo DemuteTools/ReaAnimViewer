@@ -165,6 +165,9 @@ int g_last_y = 0;
 // converted to a direction with the SAME spherical form as OrbitCamera::Eye (camera.h,
 // Y-up AR9); the colour is RGB the picker edits. Both push to the renderer on change.
 bool  g_imgui_ready    = false;     // true once ImGui + its backends are initialized
+// 13-15: the viewer's ImGui context (the Sound assignment window has one of its own): our messages always
+// reach this one, whichever is current when a message comes in synchronously.
+ImGuiContext* g_main_imgui_ctx = nullptr;
 bool  g_menu_open      = false;     // the hamburger toggles the option list
 // Spec viewer-options-menu-tabs -- the menu's tabs, top to bottom (session state). The tab
 // follows the view when the view changes; otherwise the picked tab stays.
@@ -1874,7 +1877,8 @@ bool StartRendering(HWND hwnd)
     // light state from the renderer's current direction/colour so the pad/picker
     // start in sync. ImGui input arrives via ImGui_ImplWin32_WndProcHandler in WindowProc.
     IMGUI_CHECKVERSION();
-    if (ImGui::CreateContext()) {
+    if (ImGuiContext* created = ImGui::CreateContext()) {
+        g_main_imgui_ctx = created;
         ImGuiIO& io = ImGui::GetIO();
         io.IniFilename = nullptr;   // do not write imgui.ini next to Reaper
         io.LogFilename = nullptr;
@@ -1917,10 +1921,12 @@ bool StartRendering(HWND hwnd)
                 LogInfo("tool UI (Dear ImGui) could not initialize — the viewport still works");
                 ImGui_ImplWin32_Shutdown();
                 ImGui::DestroyContext();
+                g_main_imgui_ctx = nullptr;
             }
         } else {
             LogInfo("tool UI (Dear ImGui) could not initialize — the viewport still works");
             ImGui::DestroyContext();
+            g_main_imgui_ctx = nullptr;
         }
     }
 
@@ -1955,6 +1961,7 @@ void StopRendering()
             ImGui_ImplOpenGL3_Shutdown();
             ImGui_ImplWin32_Shutdown();
             ImGui::DestroyContext();
+            g_main_imgui_ctx = nullptr;
             g_imgui_ready = false;
         }
         ReleaseVideoTarget();  // Story 11-4: the Video view's target, while the context is current
@@ -2005,6 +2012,24 @@ bool ViewerTakesCharNow() { return ViewerTakesChar(g_key_route, ShortcutRecordin
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
+    // Only when another context is current (then put back): WM_CREATE makes ours, WM_DESTROY frees it.
+    struct MainContext {
+        ImGuiContext* prev = nullptr;
+        bool          switched = false;
+        MainContext()
+        {
+            ImGuiContext* cur = ImGui::GetCurrentContext();
+            if (g_main_imgui_ctx && cur != g_main_imgui_ctx) {
+                prev = cur;
+                ImGui::SetCurrentContext(g_main_imgui_ctx);
+                switched = true;
+            }
+        }
+        ~MainContext()
+        {
+            if (switched) ImGui::SetCurrentContext(prev);
+        }
+    } main_context;
     // Feed input to Dear ImGui first (Story 6.5.3 rev). Only after it is initialized —
     // StartRendering (which inits ImGui) runs synchronously inside WM_CREATE, so earlier
     // messages must not reach the handler. If ImGui fully handles a message, stop here.
@@ -2383,7 +2408,10 @@ int ViewerTranslateAccel(MSG* msg, accelerator_register_t* /*ctx*/)
         const bool key_msg = msg->message == WM_KEYDOWN || msg->message == WM_KEYUP || msg->message == WM_CHAR ||
                              msg->message == WM_SYSKEYDOWN || msg->message == WM_SYSKEYUP || msg->message == WM_SYSCHAR;
         if (!key_msg) return 0;
-        if (AssignFloatWantsText()) return -1;
+        if (msg->message == WM_SYSKEYDOWN && msg->wParam == VK_F4) return kRouteViewerSys;  // Alt+F4 closes it
+        if (AssignFloatWantsText()) return msg->message == WM_SYSKEYDOWN || msg->message == WM_SYSKEYUP || msg->message == WM_SYSCHAR
+                                               ? 0
+                                               : -1;
         const bool     ctrl = GetKeyState(VK_CONTROL) < 0, alt = GetKeyState(VK_MENU) < 0;
         const unsigned vk = static_cast<unsigned>(msg->wParam);
         const bool own = vk == VK_ESCAPE || vk == VK_UP || vk == VK_DOWN || vk == VK_LEFT || vk == VK_RIGHT || vk == VK_RETURN ||

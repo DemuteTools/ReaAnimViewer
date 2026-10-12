@@ -53,6 +53,8 @@ public:
     void Hide();
     // Frees everything (the viewer's GL context must be current, its ImGui context too).
     void Destroy();
+    // The window class goes (the DLL unloads, or the viewer closes): call after every window is destroyed.
+    static void UnregisterWindowClass();
 
     // The window procedure's way in (one window per object).
     LRESULT Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);

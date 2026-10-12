@@ -26,6 +26,7 @@ namespace rav {
 namespace {
 
 constexpr wchar_t kClass[] = L"RAV_FloatUiWindow";
+HINSTANCE         g_class_inst = nullptr;  // the class is registered (by this DLL) while set
 
 LRESULT CALLBACK FloatProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -68,8 +69,7 @@ bool FloatUiWindow::Create()
 {
     if (!viewer_ || !viewer_dc_ || !rc_ || !ImGui::GetCurrentContext()) return false;
     HINSTANCE hi = reinterpret_cast<HINSTANCE>(GetWindowLongPtrW(viewer_, GWLP_HINSTANCE));
-    static bool registered = false;
-    if (!registered) {
+    if (!g_class_inst) {
         WNDCLASSEXW wc = {};
         wc.cbSize = sizeof(wc);
         wc.style = CS_OWNDC | CS_DBLCLKS;
@@ -77,8 +77,13 @@ bool FloatUiWindow::Create()
         wc.hInstance = hi;
         wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));  // IDC_ARROW
         wc.lpszClassName = kClass;
-        if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
-        registered = true;
+        // A class left by an earlier load of this DLL would point into the unloaded image: replaced.
+        if (!RegisterClassExW(&wc)) {
+            if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
+            UnregisterClassW(kClass, hi);
+            if (!RegisterClassExW(&wc)) return false;
+        }
+        g_class_inst = hi;
     }
     // The rect it had (screen pixels), else beside the viewer's right edge; back on a screen when its
     // monitor is gone.
@@ -91,12 +96,23 @@ bool FloatUiWindow::Create()
     h = std::max(h, static_cast<int>(min_h_ * s));
     int  x = static_cast<int>(LoadPrefFloat(Key(pref_, "x").c_str(), -100000.0f));
     int  y = static_cast<int>(LoadPrefFloat(Key(pref_, "y").c_str(), -100000.0f));
-    RECT r = {x, y, x + w, y + h};
-    if (x <= -99999 || y <= -99999 || !MonitorFromRect(&r, MONITOR_DEFAULTTONULL)) {
+    if (x <= -99999 || y <= -99999) {
         x = std::max(static_cast<int>(vr.left), static_cast<int>(vr.right) - w - static_cast<int>(24 * s));
         y = vr.top + static_cast<int>(40 * s);
     }
-    HWND owner = GetAncestor(viewer_, GA_ROOT);
+    // Wholly on the nearest monitor's work area (it has no system caption: its title row must stay reachable).
+    RECT        r = {x, y, x + w, y + h};
+    MONITORINFO mi = {};
+    mi.cbSize = sizeof(mi);
+    if (GetMonitorInfoW(MonitorFromRect(&r, MONITOR_DEFAULTTONEAREST), &mi)) {
+        const RECT& wa = mi.rcWork;
+        w = std::min(w, static_cast<int>(wa.right - wa.left));
+        h = std::min(h, static_cast<int>(wa.bottom - wa.top));
+        x = std::max(static_cast<int>(wa.left), std::min(x, static_cast<int>(wa.right) - w));
+        y = std::max(static_cast<int>(wa.top), std::min(y, static_cast<int>(wa.bottom) - h));
+    }
+    // Owned by REAPER's main window (the root owner): a floating docker's frame comes and goes with redocks.
+    HWND owner = GetAncestor(viewer_, GA_ROOTOWNER);
     hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW, kClass, title_, WS_POPUP | WS_THICKFRAME | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, x,
                             y, w, h, owner, nullptr, hi, this);
     if (!hwnd_) return false;
@@ -145,6 +161,7 @@ void FloatUiWindow::Frame(bool show, bool activate, const std::function<void()>&
         Hide();
         return;
     }
+    if (hwnd_ && !IsWindow(hwnd_)) Destroy();  // destroyed under us (review): its context goes, a new one is made
     if (!hwnd_) {
         if (failed_) return;
         if (!Create()) {
@@ -152,22 +169,27 @@ void FloatUiWindow::Frame(bool show, bool activate, const std::function<void()>&
             return;
         }
     }
-    if (!IsWindowVisible(hwnd_)) {
-        ShowWindow(hwnd_, activate ? SW_SHOW : SW_SHOWNOACTIVATE);
-    } else if (activate) {
-        SetForegroundWindow(hwnd_);
-        SetFocus(hwnd_);
-    }
-    if (activate) SetFocus(hwnd_);
 
     ContextScope scope(ctx_);
     if (!wglMakeCurrent(dc_, rc_)) {
         wglMakeCurrent(viewer_dc_, rc_);
         return;
     }
+    if (!IsWindowVisible(hwnd_)) {
+        ShowWindow(hwnd_, activate ? SW_SHOW : SW_SHOWNOACTIVATE);
+    } else if (activate) {
+        SetForegroundWindow(hwnd_);
+    }
+    if (activate) SetFocus(hwnd_);
     ImGui_ImplOpenGL3_NewFrame();
     atlas_->SetTexID(main_tex_);  // its backend made a texture of its own: both read the viewer's, alive in the shared context
     ImGui_ImplWin32_NewFrame();
+    {  // The modifiers as they are now: a Ctrl released while the key went to REAPER is never held here.
+        ImGuiIO& io = ImGui::GetIO();
+        io.AddKeyEvent(ImGuiMod_Ctrl, GetKeyState(VK_CONTROL) < 0);
+        io.AddKeyEvent(ImGuiMod_Shift, GetKeyState(VK_SHIFT) < 0);
+        io.AddKeyEvent(ImGuiMod_Alt, GetKeyState(VK_MENU) < 0);
+    }
     ImGui::NewFrame();
     if (ui::BeginToolWindowFill("##floatui")) draw();
     ui::EndToolWindowFill();
@@ -229,10 +251,10 @@ void FloatUiWindow::Destroy()
 {
     if (ctx_) {
         ContextScope scope(ctx_);
-        if (dc_ && rc_ && wglMakeCurrent(dc_, rc_)) {
-            ImGui_ImplOpenGL3_Shutdown();
-            wglMakeCurrent(viewer_dc_, rc_);
-        }
+        // Its GL objects belong to the shared context, not to a DC: the viewer's DC does when its own is gone.
+        const bool own_dc = hwnd_ && dc_ && IsWindow(hwnd_);
+        if (rc_ && ((own_dc && wglMakeCurrent(dc_, rc_)) || wglMakeCurrent(viewer_dc_, rc_))) ImGui_ImplOpenGL3_Shutdown();
+        if (rc_) wglMakeCurrent(viewer_dc_, rc_);
         ImGui_ImplWin32_Shutdown();
         if (atlas_) atlas_->SetTexID(main_tex_);  // its backend cleared the shared atlas's texture: the viewer's again
     }
@@ -242,7 +264,7 @@ void FloatUiWindow::Destroy()
         ImGui::SetCurrentContext(prev == ctx_ ? nullptr : prev);
         ctx_ = nullptr;
     }
-    if (hwnd_) {
+    if (hwnd_ && IsWindow(hwnd_)) {
         if (rect_dirty_) SaveRect();
         if (dc_) ReleaseDC(hwnd_, dc_);
         SetWindowLongPtrW(hwnd_, GWLP_USERDATA, 0);
@@ -252,6 +274,12 @@ void FloatUiWindow::Destroy()
     dc_ = nullptr;
     atlas_ = nullptr;
     failed_ = false;
+}
+
+void FloatUiWindow::UnregisterWindowClass()
+{
+    if (g_class_inst) UnregisterClassW(kClass, g_class_inst);
+    g_class_inst = nullptr;
 }
 
 void FloatUiWindow::SaveRect()
@@ -309,6 +337,10 @@ LRESULT FloatUiWindow::Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
     case WM_ERASEBKGND:
         return 1;
+    case WM_NCDESTROY:  // destroyed by Windows (its owner went): the next Frame frees its context and makes a new one
+        if (rect_dirty_) SaveRect();
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+        break;
     case WM_CLOSE:  // Alt+F4: hidden, and the content is told (TakeCloseRequest)
         close_requested_ = true;
         Hide();

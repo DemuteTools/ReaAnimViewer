@@ -332,7 +332,7 @@ void DrawEventSoundSection(const TaggingSoundContext& ctx, const ShownEvent& e)
     ui::Section s;
     if (ui::BeginSection(s, "Event sound")) {
         // The path it plays (its stored draws; nothing is drawn nor written here).
-        DrawState st;
+        PopulateDrawState st;
         st.lib = lib;
         st.seed = rec.seed ? rec.seed : 1;
         EventDraw ed;

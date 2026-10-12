@@ -45,7 +45,7 @@ const SoundDraw* FindDraw(const std::vector<SoundDraw>* draws, const std::string
     return nullptr;
 }
 
-int Draw(DrawState& st, EventDraw& ev, const SoundNode& n, const std::vector<int>& active, int avoid)
+int Draw(PopulateDrawState& st, EventDraw& ev, const SoundNode& n, const std::vector<int>& active, int avoid)
 {
     const SoundDraw* prev = FindDraw(ev.prev, n.uid);
     std::vector<int>& hist = st.history[n.uid];
@@ -153,10 +153,10 @@ uint64_t NodeSalt(const std::string& rid, double t, const std::string& node_uid)
     return EventSalt(rid, t) ^ h;
 }
 
-ResolveHooks MakeDrawHooks(DrawState& state, EventDraw& ev, std::function<bool(const SoundNode&)> is_missing)
+ResolveHooks MakeDrawHooks(PopulateDrawState& state, EventDraw& ev, std::function<bool(const SoundNode&)> is_missing)
 {
     ResolveHooks h;
-    DrawState* st = &state;
+    PopulateDrawState* st = &state;
     EventDraw* e = &ev;
     h.random_child = [st, e](const SoundNode& n) -> int {
         if (!st->lib) return -1;

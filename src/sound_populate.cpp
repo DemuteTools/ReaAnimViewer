@@ -218,7 +218,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
     }
 
     if (rec.seed == 0) rec.seed = RandomSeed();
-    DrawState st;
+    PopulateDrawState st;
     st.seed = rec.seed;
     std::set<std::string> blocked_rules;
     std::set<std::string> gone_rules;

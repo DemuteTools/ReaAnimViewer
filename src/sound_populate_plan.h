@@ -53,7 +53,7 @@ std::vector<GroupUse> GroupsUsed(const SoundStore& store, const SoundLibrary& li
 uint64_t NodeSalt(const std::string& rid, double t, const std::string& node_uid);
 
 // One item's draw state across its events (time order): the history of picks per node.
-struct DrawState {
+struct PopulateDrawState {
     const SoundLibrary*                     lib = nullptr;
     uint64_t                                seed = 0;
     std::map<std::string, std::vector<int>> history;  // node uid -> picks so far
@@ -69,7 +69,7 @@ struct EventDraw {
 };
 // The hooks for ResolveEvent: Random -> a child index, Sound -> a variation index (-1 = as copied:
 // no frames, or none on), through KeepOrDraw. `is_missing` is passed through.
-ResolveHooks MakeDrawHooks(DrawState& state, EventDraw& ev, std::function<bool(const SoundNode&)> is_missing);
+ResolveHooks MakeDrawHooks(PopulateDrawState& state, EventDraw& ev, std::function<bool(const SoundNode&)> is_missing);
 
 // ---- P9: event slots -------------------------------------------------------------------------
 

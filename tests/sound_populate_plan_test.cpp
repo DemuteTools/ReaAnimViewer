@@ -161,7 +161,7 @@ int main()
 
     // ---- P10: draws, avoid-repeat history, stable re-draw ----
     {
-        DrawState st;
+        PopulateDrawState st;
         st.lib = &lib;
         st.seed = 1234;
         std::vector<std::string> nodes;
@@ -178,7 +178,7 @@ int main()
         }
         for (size_t i = 1; i < nodes.size(); ++i) CHECK(nodes[i] != nodes[i - 1]);  // avoid 1 of 2 children
         // Other seed, stored draws: the same picks.
-        DrawState st2;
+        PopulateDrawState st2;
         st2.lib = &lib;
         st2.seed = 999;
         for (int i = 0; i < 6; ++i) {
@@ -198,7 +198,7 @@ int main()
         CHECK(res.sounds.size() == 1 && res.sounds[0].node == "s3" && res.sounds[0].variation >= 0);
         SoundLibrary off = lib;
         for (SoundFrame& f : FindNode(off, "s3")->sound.frames) f.on = false;
-        DrawState st3;
+        PopulateDrawState st3;
         st3.lib = &off;
         st3.seed = 5;
         EventDraw ev3;
@@ -218,7 +218,7 @@ int main()
         SoundStore st3;
         st3.libraries.push_back(r3);
         for (int pick = 0; pick < 3; ++pick) {  // at least two of the three differ from a fresh draw
-            DrawState ds;
+            PopulateDrawState ds;
             ds.lib = &r3;
             ds.seed = 77;
             std::vector<SoundDraw> prev(1);
@@ -252,7 +252,7 @@ int main()
         bl.nodes = {b, bn, x, r, y};
         SoundStore sb;
         sb.libraries.push_back(bl);
-        DrawState ds;
+        PopulateDrawState ds;
         ds.lib = &bl;
         ds.seed = 3;
         EventDraw ev;

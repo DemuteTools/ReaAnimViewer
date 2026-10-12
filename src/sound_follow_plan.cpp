@@ -83,13 +83,46 @@ void GoneEvent(const EventSounds& ev, const std::vector<FollowItemFacts>& items,
     }
 }
 
-// F3 / F5: a kept placement of a matched event.
-void FollowPlacement(SoundPlacement& p, const FollowEvent& e, const std::vector<FollowItemFacts>& items,
-                     FollowPlan* plan)
+double BlendOf(const FollowInput& in, const std::string& node)
 {
+    for (const auto& b : in.blend_ms)
+        if (b.first == node) return b.second;
+    return 0.0;
+}
+
+// F3 / F5: a kept placement of a matched event.
+void FollowPlacement(SoundPlacement& p, const FollowEvent& ev, const FollowInput& in, FollowPlan* plan)
+{
+    const std::vector<FollowItemFacts>& items = in.items;
     if (p.own == Ownership::Deleted) return;
     const FollowItemFacts* f = FactsOf(items, p.item_guid);
     if (!f || !f->present) return;  // handled by the caller (F6)
+
+    // Fix 2026-10-12: the pass this sound sits on (13-8 places one per loop pass). Its stored
+    // pass; at first sight (or an older line) the pass nearest its sync point, as Populate finds
+    // it (NearestPassOfItem). The event as this sound sees it: that pass's project time, or
+    // outside the item when the pass is gone.
+    std::vector<FollowPass> passes = ev.passes;
+    if (passes.empty() && ev.in_item) passes.push_back(FollowPass{0, ev.project_t});
+    bool      have_pass = f->has_store && f->store.has_pass;
+    long long pass = have_pass ? f->store.pass : 0;
+    if (!have_pass && !passes.empty()) {
+        const double anchor = f->pos + f->sync_offset - BlendOf(in, p.node) / 1000.0;
+        size_t       best = 0;
+        for (size_t k = 1; k < passes.size(); ++k)
+            if (std::fabs(passes[k].project_t - anchor) < std::fabs(passes[best].project_t - anchor)) best = k;
+        pass = passes[best].id;
+        have_pass = true;
+    }
+    FollowEvent e = ev;
+    e.in_item = false;
+    e.project_t = 0.0;
+    if (have_pass)
+        for (const FollowPass& fp : passes)
+            if (fp.id == pass) {
+                e.in_item = true;
+                e.project_t = fp.project_t;
+            }
     // F6: a track move.
     if (!f->track_guid.empty() && f->track_guid != p.track_guid) {
         p.track_guid = f->track_guid;
@@ -109,6 +142,8 @@ void FollowPlacement(SoundPlacement& p, const FollowEvent& e, const std::vector<
     if (!f->has_store && !e.in_item) return;
 
     FollowStore st = f->store;
+    st.has_pass = have_pass;
+    st.pass = pass;
     double      pos = f->pos;
     if (!f->has_store) {
         // First sight: stored, nothing moved.
@@ -145,7 +180,9 @@ void FollowPlacement(SoundPlacement& p, const FollowEvent& e, const std::vector<
         if (f->muted) plan->actions.push_back(FollowAction{FollowKind::Unmute, p.item_guid, 0.0, {}, 0.0});
         st.mute = false;
     }
-    const bool same = f->has_store && st.pos == f->store.pos && st.pt == f->store.pt && st.mute == f->store.mute;
+    const bool same = f->has_store && st.pos == f->store.pos && st.pt == f->store.pt && st.mute == f->store.mute &&
+                      // an older line (no pass) is not rewritten for the pass alone
+                      (!f->store.has_pass || (st.has_pass && st.pass == f->store.pass));
     if (!same) {
         FollowAction a;
         a.kind = FollowKind::Store;
@@ -184,6 +221,7 @@ std::string FormatFollowStore(const FollowStore& s)
 {
     std::string out = "RAVSNDFOLLOW 1 pos=" + Num(s.pos) + " pt=" + Num(s.pt);
     if (s.mute) out += " mute=1";
+    if (s.has_pass) out += " pass=" + std::to_string(s.pass);
     return out;
 }
 
@@ -204,10 +242,61 @@ bool ParseFollowStore(const std::string& text, FollowStore* out)
         if (k == "pos") has_pos = ReadNum(v, &s.pos);
         else if (k == "pt") has_pt = ReadNum(v, &s.pt);
         else if (k == "mute") s.mute = v == "1";
+        else if (k == "pass") {
+            long long         id = 0;
+            const char*       b = v.data();
+            const char*       e = b + v.size();
+            const auto        r = std::from_chars(b, e, id);
+            s.has_pass = !v.empty() && r.ec == std::errc() && r.ptr == e;
+            s.pass = s.has_pass ? id : 0;
+        }
     }
     if (!has_pos || !has_pt) return false;
     *out = s;
     return true;
+}
+
+std::vector<FollowPass> FollowPassesOf(const ItemClipMap& m, double clip_t)
+{
+    std::vector<FollowPass> out;
+    if (!std::isfinite(clip_t)) return out;
+    const double rate = (m.rate > 0.0 && std::isfinite(m.rate)) ? m.rate : 1.0;
+    const double offs = std::isfinite(m.start_offs) ? m.start_offs : 0.0;
+    for (const ClipPass& p : ClipPasses(m)) {
+        // ClipToProjectTimes' test, pass for pass.
+        const double t = p.p0 + (clip_t - p.clip0) / rate;
+        if (!(t >= p.p0 - 1e-9 && t < p.p1 - 1e-12)) continue;
+        FollowPass fp;
+        fp.project_t = t;
+        if (m.loop && m.clip_len > 0.0) {
+            // The pass starts at source time offs + (p0 - item_pos) * rate = id * clip_len + clip0.
+            const double ks = offs + (p.p0 - m.item_pos) * rate - p.clip0;
+            fp.id = static_cast<long long>(std::llround(ks / m.clip_len));
+        }
+        out.push_back(fp);
+    }
+    return out;
+}
+
+std::vector<FollowEvent> SoundEventsOf(const std::vector<ShownEvent>& shown, const std::vector<Block>& blocks,
+                                       const ItemClipMap& map)
+{
+    std::vector<FollowEvent> out;
+    for (const ShownEvent& e : shown) {
+        if (e.kind != ShownKind::Detected && e.kind != ShownKind::User) continue;
+        if (e.block < 0 || static_cast<size_t>(e.block) >= blocks.size()) continue;
+        const std::string& rid = blocks[static_cast<size_t>(e.block)].rid;
+        if (rid.empty()) continue;
+        FollowEvent fe;
+        fe.rid = rid;
+        fe.t = e.t;
+        fe.user = e.kind == ShownKind::User;
+        fe.passes = FollowPassesOf(map, e.t);
+        fe.in_item = !fe.passes.empty();
+        fe.project_t = fe.in_item ? fe.passes.front().project_t : 0.0;
+        out.push_back(fe);
+    }
+    return out;
 }
 
 std::vector<FollowEvent> CommittedFollowEvents(const ItemRules& rules, const ItemClipMap& map)
@@ -361,7 +450,7 @@ FollowPlan PlanItemFollow(const FollowInput& in)
                 }
                 p.own = Ownership::Deleted;
             } else {
-                FollowPlacement(p, e, in.items, &plan);
+                FollowPlacement(p, e, in, &plan);
             }
             ++i;
         }

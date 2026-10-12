@@ -7,7 +7,9 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 
+#include "event_list.h"
 #include "rule_record.h"
 #include "tagging_signal.h"
 
@@ -444,6 +446,132 @@ int main()
             CHECK(Near(ev[2].t, 9.0) && !ev[2].in_item && ev[2].rid == "a");
         }
     }
+    // Fix 2026-10-12: a freshly populated record plans no Remove on the next tick. Populate (13-8)
+    // places on the live event list (detections not committed yet + User entries), one sound per
+    // loop pass; the follow reads the same list (SoundEventsOf), all passes.
+    {
+        ItemRules r;
+        Block b;
+        b.rid = "a";
+        b.enabled = true;
+        r.blocks.push_back(b);
+        EventEntry u;  // a User event; no Detected entry: no Commit since detection changed
+        u.t = 0.8;
+        u.kind = EventKind::User;
+        u.block = 0;
+        r.events.push_back(u);
+        std::vector<Event> dets(1);
+        dets[0].time_s = 0.25;
+        dets[0].block = 0;
+        ItemClipMap m;  // loops a 1 s clip three times from 10 s
+        m.item_pos = 10.0;
+        m.item_len = 3.0;
+        m.clip_len = 1.0;
+        m.loop = true;
+        const std::vector<FollowEvent> ev = SoundEventsOf(BuildEventList(dets, r.events, r.blocks.size()), r.blocks, m);
+        CHECK(ev.size() == 2);
+        for (const FollowEvent& e : ev) {
+            const std::vector<double> pt = ClipToProjectTimes(m, e.t);  // what Populate placed on
+            CHECK(e.passes.size() == 3 && pt.size() == 3);
+            for (size_t k = 0; k < e.passes.size() && k < pt.size(); ++k)
+                CHECK(e.passes[k].id == static_cast<long long>(k) && Near(e.passes[k].project_t, pt[k]));
+        }
+        CHECK(ev.size() == 2 && ev[0].rid == "a" && !ev[0].user && ev[1].user);
+
+        // The record as Populate wrote it: a node with a 30 ms Blend offset, placed at pass + 30 ms.
+        FollowInput in;
+        in.owner_guid = kOwner;
+        RuleSounds rs;
+        rs.rid = "a";
+        rs.library = "L1";
+        in.rec.rules.push_back(rs);
+        in.rule_rids = {"a"};
+        in.blend_ms = {{"n1", 30.0}};
+        int g = 0;
+        for (const FollowEvent& e : ev) {
+            EventSounds es;
+            es.rid = "a";
+            es.t = e.t;
+            for (const FollowPass& fp : e.passes) {
+                char guid[16];
+                std::snprintf(guid, sizeof(guid), "{P%d}", g++);
+                SoundPlacement p;
+                p.item_guid = guid;
+                p.node = "n1";
+                p.own = Ownership::Populated;
+                p.track_guid = "{T1}";
+                es.placed.push_back(p);
+                in.items.push_back(Fact(guid, fp.project_t + 0.03, false, 0.0, 0.0, e.t));
+            }
+            in.rec.events.push_back(es);
+        }
+        in.events = ev;
+        const FollowPlan p = PlanItemFollow(in);
+        CHECK(Count(p, FollowKind::Remove) == 0 && Count(p, FollowKind::Detach) == 0);
+        CHECK(Count(p, FollowKind::Move) == 0 && Count(p, FollowKind::Mute) == 0);
+        CHECK(Count(p, FollowKind::Store) == 6 && !p.record_changed);
+        for (const FollowAction& a : p.actions) {  // each sound keeps its own pass
+            if (a.kind != FollowKind::Store) continue;
+            const int k = std::atoi(a.item_guid.c_str() + 2) % 3;
+            CHECK(a.store.has_pass && a.store.pass == k);
+            CHECK(Near(a.store.pt, 10.0 + k + (std::atoi(a.item_guid.c_str() + 2) < 3 ? 0.25 : 0.8)));
+        }
+        CheckIdempotent(in, p);
+
+        // The old source (the record's last Commit) had no event for the detection: it removed.
+        FollowInput old_in = in;
+        old_in.events = CommittedFollowEvents(r, m);
+        CHECK(Count(PlanItemFollow(old_in), FollowKind::Remove) == 3);
+
+        // The stores written, then the item changes.
+        FollowInput next = in;
+        for (const FollowAction& a : p.actions)
+            for (FollowItemFacts& f : next.items)
+                if (a.kind == FollowKind::Store && SameFollowGuid(f.item_guid, a.item_guid)) {
+                    f.has_store = true;
+                    f.store = a.store;
+                }
+        auto replan = [&](const ItemClipMap& mm) {
+            FollowInput x = next;
+            x.events = SoundEventsOf(BuildEventList(dets, r.events, r.blocks.size()), r.blocks, mm);
+            return PlanItemFollow(x);
+        };
+        {  // moved 2 s later: every sound moves 2 s, each on its pass
+            ItemClipMap mm = m;
+            mm.item_pos = 12.0;
+            const FollowPlan q = replan(mm);
+            CHECK(Count(q, FollowKind::Move) == 6 && Count(q, FollowKind::Remove) == 0);
+            for (const FollowAction& a : q.actions)
+                if (a.kind == FollowKind::Move)
+                    for (const FollowItemFacts& f : next.items)
+                        if (f.item_guid == a.item_guid) CHECK(Near(a.project_t, f.pos + 2.0));
+        }
+        {  // played twice as fast: pass k of 0.25 lands at 10 + (k + 0.25) / 2
+            ItemClipMap mm = m;
+            mm.rate = 2.0;
+            const FollowPlan q = replan(mm);
+            CHECK(Count(q, FollowKind::Remove) == 0 && Count(q, FollowKind::Mute) == 0);
+            const FollowAction* a1 = nullptr;
+            for (const FollowAction& a : q.actions)
+                if (a.kind == FollowKind::Move && a.item_guid == "{P1}") a1 = &a;
+            CHECK(a1 && Near(a1->project_t, 10.0 + 1.25 / 2.0 + 0.03));
+        }
+        {  // trimmed at its start by one loop: the first pass's sounds are muted, the others stay
+            ItemClipMap mm = m;
+            mm.item_pos = 11.0;
+            mm.item_len = 2.0;
+            mm.start_offs = 1.0;
+            const FollowPlan q = replan(mm);
+            CHECK(Count(q, FollowKind::Mute) == 2 && Count(q, FollowKind::Move) == 0);
+            CHECK(Count(q, FollowKind::Remove) == 0);
+        }
+        // An older store line (no pass) is read, and the pass round-trips.
+        FollowStore st;
+        CHECK(ParseFollowStore("RAVSNDFOLLOW 1 pos=1 pt=2 pass=-3", &st) && st.has_pass && st.pass == -3);
+        CHECK(ParseFollowStore(FormatFollowStore(st), &st) && st.pass == -3);
+        CHECK(ParseFollowStore("RAVSNDFOLLOW 1 pos=1 pt=2", &st) && !st.has_pass);
+    }
+
     // PlanFollow (13-2 wrapper) still links and plans.
     {
         FollowInput in = OneSound(Ownership::Populated);

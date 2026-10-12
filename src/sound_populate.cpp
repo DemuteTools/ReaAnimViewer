@@ -18,6 +18,7 @@
 #include "ravlib.h"
 #include "rule_record.h"
 #include "sound_draw.h"
+#include "sound_follow_plan.h"
 #include "sound_place.h"
 #include "sound_place_plan.h"
 #include "sound_populate_plan.h"
@@ -157,12 +158,11 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
     std::map<std::string, std::string> materialised;  // File Sound uid -> its imported item ("" = missing)
     std::map<std::string, std::string> materialise_why;  // File Sound uid -> why it was not imported
 
-    const std::vector<ShownEvent> shown = BuildEventList(det.events, det.rules.events, blocks.size());
-    for (const ShownEvent& e : shown) {
-        if (e.kind != ShownKind::Detected && e.kind != ShownKind::User) continue;
-        if (e.block < 0 || static_cast<size_t>(e.block) >= blocks.size()) continue;
-        const std::string& rid = blocks[static_cast<size_t>(e.block)].rid;
-        if (rid.empty()) continue;
+    // The events and their passes: the one list the follow (13-9) also reads (SoundEventsOf).
+    const std::vector<FollowEvent> sound_events =
+        SoundEventsOf(BuildEventList(det.events, det.rules.events, blocks.size()), blocks, det.map);
+    for (const FollowEvent& e : sound_events) {
+        const std::string& rid = e.rid;
         if (!o.rid.empty() && rid != o.rid) continue;
         if (o.has_t && std::fabs(e.t - o.t) > kEventMatchSeconds) continue;
         EventSounds* ev = FindEventSounds(rec, rid, e.t);
@@ -232,7 +232,8 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
             continue;
         }
 
-        const std::vector<double> passes = ClipToProjectTimes(det.map, e.t);
+        std::vector<double> passes;
+        for (const FollowPass& fp : e.passes) passes.push_back(fp.project_t);
         std::vector<DesiredSlot>   desired;
         std::vector<const ResolvedSound*> desired_rs;
         std::set<std::string>      hold;  // missing / no active variation: placed copies are kept

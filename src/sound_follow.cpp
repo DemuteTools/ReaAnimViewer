@@ -29,7 +29,9 @@
 #include "sound_place.h"
 #include "sound_populate.h"
 #include "sound_project.h"
+#include "sound_populate_plan.h"
 #include "sound_record.h"
+#include "tagging_session.h"
 #include "tagging_signal.h"
 #include "ui_theme.h"
 
@@ -81,29 +83,65 @@ std::string ItemExt(MediaItem* item, const char* key)
     return buf;
 }
 
-// The item's clip map from REAPER alone (the twin of tag_markers.cpp's file-local MirrorClipMap).
-bool FollowClipMap(MediaItem* item, MediaItem_Take* take, ItemClipMap* out)
+// Fix 2026-10-12: the follow's events are Populate's (SoundEventsOf over the live detection, the
+// marker mirror's list), not the record's last Commit. Detection is the costly part: it runs again
+// only when what it reads changed (the item's rules record, its file) or after kDetectKeepS (the
+// file re-exported in place, a role mapping changed in its own file). The passes are recomputed
+// every tick from the item's position, length, loop, start offset and rate (cheap).
+constexpr double kDetectKeepS = 5.0;
+struct DetectedEvents {
+    std::string                           rules_raw;
+    std::string                           path;
+    std::chrono::steady_clock::time_point when;
+    bool                                  ok = false;
+    double                                clip_len = 0.0;
+    std::vector<Event>                    events;  // DetectItem's detections
+    ItemRules                             rules;   // the record they go with
+};
+std::map<ReaProject*, std::map<std::string, DetectedEvents>> g_detected;  // owner GUID (upper) -> its detection
+
+// The item's sound events now, as PopulateOne builds them. False when its detection does not run
+// (nothing is decided then, as Populate places nothing).
+bool FollowEventsOf(ReaProject* proj, MediaItem* item, const std::string& key, const ItemRulesRead& rr,
+                    std::vector<FollowEvent>* out)
 {
-    PCM_source* src = GetMediaItemTake_Source(take);
-    for (int depth = 0; src && depth < 4; ++depth) {
-        const char* type = src->GetType();
-        if (type && std::strcmp(type, "RAV_ANIM") == 0) break;
-        src = src->GetSource();
+    MediaItem_Take*   take = RavTakeOf(item);
+    const std::string path = take ? AnimPathOf(take) : std::string();
+    const auto           now = std::chrono::steady_clock::now();
+    DetectedEvents&      d = g_detected[proj][key];
+    const bool fresh = d.when.time_since_epoch().count() != 0 && d.rules_raw == rr.raw && d.path == path &&
+                       std::chrono::duration<double>(now - d.when).count() < kDetectKeepS;
+    if (!fresh) {
+        const ItemDetection det = DetectItem(item);
+        d.rules_raw = rr.raw;
+        d.path = path;
+        d.when = now;
+        d.ok = det.status == ItemDetection::Status::Ok;
+        d.clip_len = det.map.clip_len;
+        d.events = d.ok ? det.events : std::vector<Event>();
+        d.rules = d.ok ? det.rules : ItemRules();
     }
-    if (!src) return false;
-    bool         qn = false;
-    const double len = GetMediaSourceLength(src, &qn);
-    if (qn || !(len > 0.0) || !std::isfinite(len)) return false;
-    ItemClipMap map;
-    map.clip_len = len;
-    map.item_pos = GetMediaItemInfo_Value(item, "D_POSITION");
-    map.item_len = GetMediaItemInfo_Value(item, "D_LENGTH");
-    map.loop = GetMediaItemInfo_Value(item, "B_LOOPSRC") != 0.0;
-    map.start_offs = GetMediaItemTakeInfo_Value(take, "D_STARTOFFS");
-    const double rate = GetMediaItemTakeInfo_Value(take, "D_PLAYRATE");
-    map.rate = (rate > 0.0 && std::isfinite(rate)) ? rate : 1.0;
-    *out = map;
+    if (!d.ok) return false;
+    const ItemClipMap map = ItemClipMapOf(item, d.clip_len);  // DetectItem's own map, now
+    *out = SoundEventsOf(BuildEventList(d.events, d.rules.events, d.rules.blocks.size()), d.rules.blocks, map);
     return true;
+}
+
+// Each placed node's Blend offset (ms), for finding a sound's pass as Populate does.
+std::vector<std::pair<std::string, double>> BlendOffsets(const SoundStore& store, const ItemSounds& rec)
+{
+    std::vector<std::pair<std::string, double>> out;
+    for (const EventSounds& ev : rec.events) {
+        const RuleSounds*   rs = FindRuleSounds(rec, ev.rid);
+        const SoundLibrary* lib = rs && !rs->library.empty() ? FindLibrary(store, rs->library) : nullptr;
+        if (!lib) continue;
+        for (const SoundPlacement& p : ev.placed) {
+            bool have = false;
+            for (const auto& b : out) have |= b.first == p.node;
+            if (!have) out.emplace_back(p.node, BlendOffsetMs(*lib, p.node));
+        }
+    }
+    return out;
 }
 
 bool HasSounds(const ItemSounds& s)
@@ -295,6 +333,7 @@ void SoundFollowTick(ReaProject* proj)
             f.pos = GetMediaItemInfo_Value(item, "D_POSITION");
             f.track_guid = TrackGuidOf(item);
             f.muted = GetMediaItemInfo_Value(item, "B_MUTE") != 0.0;
+            f.sync_offset = GetMediaItemInfo_Value(item, "D_SNAPOFFSET");
             PlacedTag tag;
             if (ReadPlacedTag(item, &tag)) {
                 f.has_tag = true;
@@ -328,15 +367,14 @@ void SoundFollowTick(ReaProject* proj)
                     fp.owners[key] = AllPlacements(rec);
                     continue;  // unreadable rules: nothing is decided
                 }
-                ItemClipMap map;
-                if (!FollowClipMap(item, RavTakeOf(item), &map)) {
-                    fp.owners[key] = AllPlacements(rec);
-                    continue;
-                }
                 FollowInput in;
+                if (!FollowEventsOf(proj, item, key, rr, &in.events)) {
+                    fp.owners[key] = AllPlacements(rec);
+                    continue;  // its detection does not run: nothing is decided
+                }
                 in.owner_guid = guid;
                 in.rec = rec;
-                in.events = CommittedFollowEvents(rr.rules, map);
+                in.blend_ms = BlendOffsets(store, rec);
                 for (const auto& b : rr.rules.blocks)
                     if (!b.rid.empty()) in.rule_rids.push_back(b.rid);
                 in.items = FactsFor(all, AllPlacements(rec));
@@ -379,6 +417,9 @@ void SoundFollowTick(ReaProject* proj)
             it = fp.owners.erase(it);
         }
         fp.scanned = true;
+        // Detections of items that no longer have sounds (or are gone): forgotten.
+        auto& det = g_detected[proj];
+        for (auto it = det.begin(); it != det.end();) it = owners_now.count(it->first) ? std::next(it) : det.erase(it);
 
         if (arrange) UpdateArrange();
         if (!copies.empty()) Report(proj, PopulateItems(copies).lines);  // 13-8's own undo point

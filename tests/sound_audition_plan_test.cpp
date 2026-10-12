@@ -417,8 +417,28 @@ static void TestFades()
     CHECK(in == 0.0 && out == 0.0);
 }
 
+// The Edit window's Play: each variation at its own dB, the file between them at 0 dB.
+static void TestWholeFileStretches()
+{
+    SoundFrame a, b, c;
+    a.start = 1.0, a.length = 1.0, a.db = -3.0;
+    b.start = 0.5, b.length = 0.25, b.db = 2.0;  // listed after, starts before
+    c.start = 1.5, c.length = 1.0, c.db = -6.0;  // overlaps a: a wins until 2.0
+    const std::vector<WholeFileStretch> w = WholeFileStretches({a, b, c}, 4.0);
+    CHECK(w.size() == 6);
+    auto is = [](const WholeFileStretch& x, double s, double l, double db) {
+        return std::fabs(x.start - s) < 1e-9 && std::fabs(x.length - l) < 1e-9 && x.db == db;
+    };
+    CHECK(is(w[0], 0.0, 0.5, 0.0) && is(w[1], 0.5, 0.25, 2.0) && is(w[2], 0.75, 0.25, 0.0));
+    CHECK(is(w[3], 1.0, 1.0, -3.0) && is(w[4], 2.0, 0.5, -6.0) && is(w[5], 2.5, 1.5, 0.0));
+    // No frame: the whole file once; unknown length: to its end.
+    CHECK(WholeFileStretches({}, 3.0).size() == 1 && is(WholeFileStretches({}, 3.0)[0], 0.0, 3.0, 0.0));
+    CHECK(is(WholeFileStretches({a}, 0.0).back(), 2.0, 0.0, 0.0));
+}
+
 int main()
 {
+    TestWholeFileStretches();
     TestBlend();
     TestSwitch();
     TestRandomAvoid();

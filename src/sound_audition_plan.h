@@ -123,6 +123,15 @@ std::vector<int> NormalizeSelection(const std::vector<SoundFrame>& frames, const
 bool NormalizeTakeFrames(std::vector<SoundFrame>& frames, const std::vector<double>& peak_db, double target_db,
                          bool whole, const std::vector<int>& selection);
 
+// The Edit window's Play (the whole file) in stretches of the file, each with its gain: a variation
+// plays at its own dB, the file between them at 0 dB, so a Normalize or a dB drag is heard at once.
+// Overlapping frames: the earlier one wins until it ends. `file_len` <= 0 = unknown (the last
+// stretch then plays to the file's end, length 0).
+struct WholeFileStretch {
+    double start = 0.0, length = 0.0, db = 0.0;
+};
+std::vector<WholeFileStretch> WholeFileStretches(const std::vector<SoundFrame>& frames, double file_len);
+
 // "D → N variations · K off" (decision 7): "D → " dropped when D = N, " · K off" when K = 0;
 // "1 variation" singular.
 std::string VariationCountText(int detected, const std::vector<SoundFrame>& frames);

@@ -395,4 +395,24 @@ double FadeGainAt(double t, double length, double in, double out, int in_shape, 
     return g;
 }
 
+std::vector<WholeFileStretch> WholeFileStretches(const std::vector<SoundFrame>& frames, double file_len)
+{
+    std::vector<const SoundFrame*> by_start;
+    for (const SoundFrame& f : frames)
+        if (f.length > 0.0) by_start.push_back(&f);
+    std::stable_sort(by_start.begin(), by_start.end(),
+                     [](const SoundFrame* a, const SoundFrame* b) { return a->start < b->start; });
+    std::vector<WholeFileStretch> out;
+    double                        at = 0.0;
+    for (const SoundFrame* f : by_start) {
+        const double s = std::max(f->start, at), e = f->start + f->length;
+        if (s > at) out.push_back({at, s - at, 0.0});
+        if (e > s) out.push_back({s, e - s, f->db});
+        at = std::max(at, e);
+    }
+    if (file_len <= 0.0) out.push_back({at, 0.0, 0.0});
+    else if (file_len > at) out.push_back({at, file_len - at, 0.0});
+    return out;
+}
+
 }  // namespace rav

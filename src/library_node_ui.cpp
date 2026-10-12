@@ -1876,9 +1876,31 @@ void DrawEditOverlay()
                           P.edit_opened != ImGui::GetFrameCount();  // the E that opened it
         const bool whole_playing = AuditionPlaying() && AuditionTag() == "whole:" + n->uid;
         auto       toggle_play = [&] {
-            if (AuditionPlaying()) StopAudition();
-            else if (!AuditionFile(m.path, 0.0, 0.0, "whole:" + n->uid, DbToGain(GainFromRoot(*lib, *n))))
-                ShowLibraryToast("Cannot play: the sound file is not read", false);
+            if (AuditionPlaying()) {
+                StopAudition();
+                return;
+            }
+            // Antho 2026-10-13: each variation at its own dB (a Normalize is heard at once, not after
+            // Done); Takes mode plays the active take's file as it is.
+            const SoundData& d = Shown(*n);
+            const double     root_db = GainFromRoot(*lib, *n);
+            bool             ok = false;
+            if (d.mode != DetectMode::Takes) {
+                std::vector<PlayVoice> pv;
+                for (const WholeFileStretch& st : WholeFileStretches(d.frames, m.source_len)) {
+                    PlayVoice v;
+                    v.path = m.path;
+                    v.start_s = st.start;
+                    v.length_s = st.length;
+                    v.delay_s = st.start;  // the audition's clock = the file's time (the playhead)
+                    v.gain = DbToGain(root_db + st.db);
+                    pv.push_back(v);
+                }
+                ok = PlayVoices(pv, "whole:" + n->uid);
+            } else {
+                ok = AuditionFile(m.path, 0.0, 0.0, "whole:" + n->uid, DbToGain(root_db));
+            }
+            if (!ok) ShowLibraryToast("Cannot play: the sound file is not read", false);
         };
         // Header (13-7b, the mockup's .edhead): "▶ Play" / "■ Stop", the name (15 px semibold) and the
         // count (muted), then the tools at the top right: − + Fit, ?, Done (primary), ✕.

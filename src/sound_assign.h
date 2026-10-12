@@ -179,7 +179,7 @@ struct CharacterRef {
 };
 // The stored character of the ref (by uid, else exactly by skeleton + model), made and added
 // when absent: a new split starts as a copy of the rig's whole-rig character (its name and settings),
-// so the parts it does not change keep reading the rig's. Null when the ref names nothing (no uid match and no skeleton).
+// copied once (later edits of the whole rig do not reach the split). Null when the ref names nothing (no uid match and no skeleton).
 SoundCharacter* EnsureCharacter(SoundStore& store, const CharacterRef& ref);
 bool            RenameCharacterIn(SoundStore& store, const std::string& uid, const std::string& name);
 // One model of a rig to split off: its signature and the name the split gets.

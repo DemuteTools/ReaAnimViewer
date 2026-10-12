@@ -705,6 +705,8 @@ ItemRigInfo ItemRig(MediaItem* item)
         const AssetFileStamp stamp = ReadAssetFileStamp(path);
         auto                 hit = cache.find(path);
         if (hit == cache.end() || hit->second.stamp != stamp) {
+            // A changed file: its cached parse (if any) is the old one, so it is read again.
+            if (hit != cache.end()) EvictCpuAsset(path);
             const std::shared_ptr<const CpuAsset> asset = AcquireCpuAsset(path);
             if (!asset) return r;
             const SkeletonBones sk = SkeletonBonesOf(asset->skeleton);

@@ -21,6 +21,7 @@
 #include <vector>
 
 #include <imgui.h>
+#include <imgui_internal.h>  // ClosePopupToLevel (Esc closes an open menu)
 
 #include "assign_view_model.h"
 #include "item_rules.h"
@@ -119,6 +120,7 @@ struct RecCache {
     bool               valid = false;
     int                pool = 0;
     ItemRigInfo        rig;
+    double             rig_time = 0.0;  // when the rig was last read (ImGui time)
 };
 // Review 13-15b: the window and the strip each keep their item's, so neither reads it again every frame
 // when they show different items.
@@ -141,7 +143,16 @@ std::string LeafTitle(const av::Parent& p, const av::Leaf& l)
 void RefreshCache(MediaItem* item, RecCache& c = g_cache)
 {
     const int count = GetProjectStateChangeCount(nullptr);
-    if (item == c.item && count == c.count) return;
+    if (item == c.item && count == c.count) {
+        // Review: a re-exported file changes no project state: its rig is checked again each second.
+        const double now = ImGui::GetTime();
+        if (now - c.rig_time >= 1.0) {
+            c.rig = ItemRig(item);
+            c.rig_time = now;
+        }
+        return;
+    }
+    c.rig_time = ImGui::GetTime();
     c.item = item;
     c.count = count;
     c.rec = ReadItemSounds(item);
@@ -1442,9 +1453,11 @@ void DrawAssignWindow(const TaggingModel& m)
             g.request = false;  // its item is gone or unreadable: follow the Tagging item again
             g.follow = true;
         }
-        if (focused && ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !ImGui::GetIO().WantTextInput &&
-            !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId))  // Esc in a menu closes the menu only
-            g.open = false;
+        if (focused && ImGui::IsKeyPressed(ImGuiKey_Escape, false) && !ImGui::GetIO().WantTextInput) {
+            // Esc in an open menu closes the menu only (no keyboard nav here, so ImGui does not do it).
+            if (ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId)) ImGui::ClosePopupToLevel(0, true);
+            else g.open = false;
+        }
 
         DrawTitleRow(f);
         {  // Scope bar: where you edit, the item, the reading order.

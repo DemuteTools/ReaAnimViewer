@@ -2188,6 +2188,9 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (wp == VK_ESCAPE && TaggingViewActive() && TaggingGestureActive()) return 0;
         // A text field, or the Tagging view's preset menu (story 10-3b), takes every key.
         if (TextInputNow()) return 0;
+        // 13-15b: no viewer shortcut (Del, E, V...) runs while the Sound assignment window has the focus;
+        // the keys it takes are its own, the others go to REAPER (the accelerator hook).
+        if (TaggingViewActive() && TaggingAssignWindowOpen()) return 0;
         const int action =
             ShortcutActionForKey(static_cast<unsigned>(wp), ctrl, shift, alt, VideoViewActive(), TaggingViewActive());
         if (action < 0) {

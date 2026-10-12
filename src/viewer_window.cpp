@@ -1311,7 +1311,7 @@ void DrawToolUi()
 
         // Spec viewer-options-menu-tabs: REAPER-style vertical tabs on the left (Global, then one
         // per view), the selected tab's settings on the right, a fixed footer under both.
-        static const char* const kTabLabels[kMenuTabCount] = { "Global", "RAV view", "Tagging view", "Video view" };
+        static const char* const kTabLabels[kMenuTabCount] = { "Global", "Main", "Tagging", "Video" };
         const float tabs_top = ImGui::GetCursorScreenPos().y;
         ui::VerticalTabs("##menutabs", kTabLabels, kMenuTabCount, &g_menu_tab);
         const float tabs_bottom = ImGui::GetItemRectMax().y;

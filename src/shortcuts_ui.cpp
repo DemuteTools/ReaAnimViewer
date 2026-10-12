@@ -87,7 +87,7 @@ bool KeyRow(int id)
     if (def.context != ShortcutContext::Anywhere) {
         const float lw = ImGui::CalcTextSize(def.label).x;
         dl->AddText(ImVec2(a.x + 8.0f + lw + 6.0f, cy - th * 0.5f), ui::kFaint,
-                    def.context == ShortcutContext::VideoView ? "Video view" : "Tagging view");
+                    def.context == ShortcutContext::VideoView ? "Video" : "Tagging");
     }
     dl->PopClipRect();
     // A custom key shows in the accent colour.

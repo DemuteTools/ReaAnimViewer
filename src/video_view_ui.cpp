@@ -706,15 +706,13 @@ void DrawVideoViewToggle(float center_x)
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
     if (ImGui::Begin("##viewtoggle", nullptr, kOverlayFlags)) {
         // Story 10-3: RAV view / Tagging view / Video view, in V's cycle order; Epic 13 (D20): Library view.
-        static const char* const kViews[4] = {"RAV view", "Tagging view", "Video view", "Library view"};
+        static const char* const kViews[4] = {"Main", "Tagging", "Video", "Library"};
         static const ViewMode kModes[4] = {ViewMode::Rav, ViewMode::Tagging, ViewMode::Video, ViewMode::Library};
         const ViewMode mode = GetViewMode();
         int sel = 0;
         for (int i = 0; i < 4; ++i)
             if (kModes[i] == mode) sel = i;
-        // 13-7 (audit C0.1): the mockup's "new" superscript after Library view (until its release).
-        static const char* const kBadges[4] = {nullptr, nullptr, nullptr, "new"};
-        if (ui::Segmented("##view", kViews, 4, &sel, 0.0f, -1, nullptr, kBadges) && sel >= 0 && sel < 4)
+        if (ui::Segmented("##view", kViews, 4, &sel) && sel >= 0 && sel < 4)
             SetViewMode(kModes[sel]);
     }
     ImGui::End();

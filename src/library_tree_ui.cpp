@@ -1673,7 +1673,18 @@ void DrawSwitchGroupsSection()
             if (open && !g.changed) {
                 const float vx0 = p.x + ui::Dp(kRowPad + kIndent);
                 const float vnx = vx0 + cs + gap + is + gap;
-                for (const SwitchValue& v : gr.values) {
+                // Values listed A to Z (case-insensitive); the group's stored order is unchanged.
+                std::vector<const SwitchValue*> sorted;
+                for (const SwitchValue& sv : gr.values) sorted.push_back(&sv);
+                std::stable_sort(sorted.begin(), sorted.end(), [](const SwitchValue* a, const SwitchValue* b) {
+                    return std::lexicographical_compare(a->name.begin(), a->name.end(), b->name.begin(), b->name.end(),
+                                                        [](char x, char y) {
+                                                            return std::tolower(static_cast<unsigned char>(x)) <
+                                                                   std::tolower(static_cast<unsigned char>(y));
+                                                        });
+                });
+                for (const SwitchValue* vp_ : sorted) {
+                    const SwitchValue& v = *vp_;
                     ImGui::PushID(v.uid.c_str());
                     const ImVec2 vp = ImGui::GetCursorScreenPos();
                     const float  vcy = vp.y + rh * 0.5f;

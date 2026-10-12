@@ -13,6 +13,7 @@
 #include <exception>
 #include <map>
 #include <memory>
+#include <optional>
 
 #include "asset_cache.h"
 #include "asset_loader.h"
@@ -24,6 +25,8 @@
 #include "pcm_source_anim.h"
 #include "role_map_store.h"
 #include "tag_markers.h"  // the marker option (markers up to date)
+#include "sound_populate.h"  // 13-8: each auto marker type's sound, given on Detect
+#include "sound_project.h"   // SoundUndoScope
 
 namespace rav {
 namespace {
@@ -635,7 +638,11 @@ bool TaggingAnalyse()
 bool TaggingDetectAuto(const AutoSettings& settings)
 {
     if (!g.model.item) return false;
-    return TaggingEdit("RAV: Detect auto events", [settings](ItemRules& r) {
+    // Antho 2026-10-12 (13-8): the auto blocks Detect creates get their marker type's sound
+    // (sound_auto_assign.h), in the same undo point. Without one set, Detect is as before.
+    std::optional<SoundUndoScope> undo;
+    if (AutoMarkerSoundsSet()) undo.emplace(nullptr, "RAV: Detect auto events");
+    const bool ok = TaggingEdit("RAV: Detect auto events", [settings](ItemRules& r) {
         bool                   changed = false;
         const std::vector<int> map = ApplyAutoSettings(r.blocks, settings, &changed);
         if (changed) RemapEventBlocks(r.events, map);
@@ -655,6 +662,8 @@ bool TaggingDetectAuto(const AutoSettings& settings)
         }
         return changed;
     });
+    if (undo) FillAutoMarkerSounds(g.model.item);
+    return ok;
 }
 
 bool TaggingSetLooping(bool on, MediaItem* for_item)
@@ -693,7 +702,16 @@ bool TaggingLoadPreset(const std::string& preset_id)
     g.model.previewing = false;
     if (!g.model.item) return false;
     std::string missing, err;
+    // Antho 2026-10-12 (13-8): a preset's auto blocks get their marker type's sound too, as Detect's.
+    // The block's name is the one SetUpPresetOnItem gives its own undo point (the outer one wins).
+    std::optional<SoundUndoScope> undo;
+    if (AutoMarkerSoundsSet()) {
+        PresetInfo info;
+        const std::string desc = "RAV: Load preset " + (FindPreset(RulesResourceRoot(), preset_id, &info) ? info.name : preset_id);
+        undo.emplace(nullptr, desc.c_str());
+    }
     const bool ok = SetUpPresetOnItem(g.model.item, preset_id, &missing, &err);
+    if (undo && ok) FillAutoMarkerSounds(g.model.item);
     if (!ok) g.last_error = err.empty() ? "The preset could not be loaded." : err;
     ReadItem();
     RunDetection();

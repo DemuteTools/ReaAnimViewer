@@ -14,6 +14,8 @@
 //
 // The project store (the .rpp's <RAVSOUNDS chunk, one line per chunk line):
 //   RAVSOUNDS 1
+//   auto key=<s> [lib=<id>]                          -- an auto marker type's sound (Antho 2026-10-12)
+//   avalue group=<id> value=<id>                     -- a rule-level value of the auto line above
 //   group uid=<id> name=<s>
 //   value uid=<id> name=<s>                          -- a value of the group above
 //   library uid=<id> name=<s> root=<id> [color=<hex>] [user=1] [ravlib=<s>]
@@ -26,7 +28,8 @@
 //         [arel=<s>] [amtime=<n>]                    -- the Sound data of the node above
 //   frame start=<s> len=<s> [on=0] [db=<dB>] [hand=1] [fin=<s>] [fout=<s>] [fish=<n>] [fosh=<n>]
 //                                                    -- a variation of that Sound (no fin/fout = the Sound's fades)
-// The groups come first, then the libraries, each library's nodes in order.
+// The auto lines come first (a version without them keeps them as the header's unknown lines),
+// then the groups, then the libraries, each library's nodes in order.
 //
 // The per-animation-item record (the take's P_EXT:RAV_SOUNDS):
 //   RAVITEMSND 1 [seed=<n>]

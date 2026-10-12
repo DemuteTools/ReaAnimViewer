@@ -180,6 +180,13 @@ add_executable(sound_populate_plan_test sound_populate_plan_test.cpp ../src/soun
                ../src/sound_draw.cpp ../src/sound_place_plan.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
 target_include_directories(sound_populate_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_populate_plan COMMAND sound_populate_plan_test)
+# Story 13-8, Antho 2026-10-12 -- src/sound_auto_assign.h (each auto marker type's sound)
+add_executable(sound_auto_assign_test sound_auto_assign_test.cpp ../src/sound_auto_assign.cpp ../src/sound_populate_plan.cpp
+               ../src/sound_switch.cpp ../src/sound_draw.cpp ../src/sound_place_plan.cpp ../src/sound_entries.cpp
+               ../src/sound_record.cpp ../src/rule_record.cpp ../src/auto_detect.cpp ../src/motion_physics.cpp
+               ../src/bone_events.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
+target_include_directories(sound_auto_assign_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME sound_auto_assign COMMAND sound_auto_assign_test)
 # Story 13-9 -- src/sound_follow_plan.h
 add_executable(sound_follow_plan_test sound_follow_plan_test.cpp ../src/sound_follow_plan.cpp ../src/sound_record.cpp ../src/rule_record.cpp ../src/sound_draw.cpp ../src/event_list.cpp ../src/tagging_signal.cpp ../src/auto_detect.cpp ../src/motion_physics.cpp ../src/bone_events.cpp)
 target_include_directories(sound_follow_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

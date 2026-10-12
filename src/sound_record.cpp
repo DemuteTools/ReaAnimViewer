@@ -443,6 +443,21 @@ Got SetValueSet(ValueSet& x, const std::string& k, const std::string& v)
     return Got::Unknown;
 }
 
+// Antho 2026-10-12 (13-8): an auto marker type's sound.
+Fields AutoFields(const AutoSoundAssign& a)
+{
+    Fields f = {{"key", Enc(a.key)}};
+    if (!a.library.empty()) f.push_back({"lib", Enc(a.library)});
+    return f;
+}
+
+Got SetAuto(AutoSoundAssign& a, const std::string& k, const std::string& v)
+{
+    if (k == "key") return G(ReadStr(v, &a.key));
+    if (k == "lib") return G(ReadStr(v, &a.library));
+    return Got::Unknown;
+}
+
 Fields RuleFields(const RuleSounds& r)
 {
     Fields f = {{"rid", Enc(r.rid)}};
@@ -523,12 +538,26 @@ bool ParseStoreCore(const std::string& text, SoundStore& s)
     SwitchGroup*  group = nullptr;
     SoundLibrary* lib = nullptr;
     SoundNode*    node = nullptr;
+    AutoSoundAssign* au = nullptr;
     for (; i < lines.size(); ++i) {
         std::vector<std::string> t;
         const std::string        kind = KindOf(lines[i], &t);
-        if (kind == "group") {
+        if (kind == "auto") {
+            s.auto_sounds.emplace_back();
+            au = &s.auto_sounds.back();
+            group = nullptr;
+            lib = nullptr;
+            node = nullptr;
+            ReadFields(t, 1, au->kept, [&](const std::string& k, const std::string& v) { return SetAuto(*au, k, v); });
+            unknown_to = &au->kept_lines;
+        } else if (kind == "avalue" && au) {
+            au->values.emplace_back();
+            ValueSet& x = au->values.back();
+            ReadFields(t, 1, x.kept, [&](const std::string& k, const std::string& v) { return SetValueSet(x, k, v); });
+        } else if (kind == "group") {
             s.groups.emplace_back();
             group = &s.groups.back();
+            au = nullptr;
             lib = nullptr;  // a later case/frame/sound line never attaches to an earlier library's node
             node = nullptr;
             ReadFields(t, 1, group->kept, [&](const std::string& k, const std::string& v) { return SetGroup(*group, k, v); });
@@ -542,6 +571,7 @@ bool ParseStoreCore(const std::string& text, SoundStore& s)
             lib = &s.libraries.back();
             node = nullptr;
             group = nullptr;
+            au = nullptr;
             ReadFields(t, 1, lib->kept, [&](const std::string& k, const std::string& v) { return SetLibrary(*lib, k, v); });
             unknown_to = &lib->kept_lines;
         } else if (kind == "node" && lib) {
@@ -679,7 +709,7 @@ bool ParseSoundStore(const std::string& text, SoundStore* out)
 
 bool SoundStoreEmpty(const SoundStore& s)
 {
-    return s.groups.empty() && s.libraries.empty() && s.kept.empty() && s.kept_lines.empty();
+    return s.groups.empty() && s.libraries.empty() && s.kept.empty() && s.kept_lines.empty() && s.auto_sounds.empty();
 }
 
 std::string SerializeSoundStore(const SoundStore& s)
@@ -688,6 +718,12 @@ std::string SerializeSoundStore(const SoundStore& s)
     std::string out;
     WriteHeader(out, kSoundStoreMagic, s.version, {}, s.kept);
     WriteLines(out, s.kept_lines);
+    // Right after the header: a version without them keeps them there (the header's unknown lines).
+    for (const AutoSoundAssign& a : s.auto_sounds) {
+        WriteLine(out, "auto", AutoFields(a), a.kept);
+        for (const ValueSet& v : a.values) WriteLine(out, "avalue", ValueSetFields(v), v.kept);
+        WriteLines(out, a.kept_lines);
+    }
     for (const SwitchGroup& g : s.groups) {
         WriteLine(out, "group", GroupFields(g), g.kept);
         for (const SwitchValue& v : g.values) WriteLine(out, "value", ValueFields(v), v.kept);

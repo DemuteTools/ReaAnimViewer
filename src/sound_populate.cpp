@@ -7,7 +7,9 @@
 
 #ifdef _WIN32
 
+#include <algorithm>
 #include <cmath>
+#include <functional>
 #include <map>
 #include <random>
 #include <set>
@@ -17,6 +19,7 @@
 #include "library_user_ui.h"  // 13-11: File Sounds are imported on first use
 #include "ravlib.h"
 #include "rule_record.h"
+#include "sound_auto_assign.h"
 #include "sound_draw.h"
 #include "sound_follow_plan.h"
 #include "sound_place.h"
@@ -451,6 +454,76 @@ std::string RidOf(MediaItem* item, int block)
     return rr.rules.blocks[static_cast<size_t>(block)].rid;
 }
 
+// Antho 2026-10-12: the auto marker key of the item's block ("" for a rule).
+std::string AutoKeyOf(MediaItem* item, int block)
+{
+    ItemRulesRead rr;
+    if (!ReadItemRules(item, &rr) || !rr.valid) return {};
+    if (block < 0 || static_cast<size_t>(block) >= rr.rules.blocks.size()) return {};
+    return AutoSoundKeyOf(rr.rules.blocks[static_cast<size_t>(block)]);
+}
+
+std::vector<Block> BlocksOf(MediaItem* item)
+{
+    ItemRulesRead rr;
+    if (!ReadItemRules(item, &rr) || !rr.valid) return {};
+    return rr.rules.blocks;
+}
+
+// A row gesture's rule side: rids for the item's blocks of these keys, `edit` on each pool
+// member's record, then their populated events re-placed (P8). Inside the caller's undo scope.
+void EditAutoRules(MediaItem* item, const std::vector<std::string>& keys, const SoundStore& store,
+                   const std::function<bool(ItemSounds&, const std::vector<std::string>&)>& edit, SoundReport& rep)
+{
+    if (!item || !RavTakeOf(item)) return;
+    if (AutoKeysNeedRids(BlocksOf(item), keys)) EnsureRids(item);
+    const std::vector<std::string> rids = AutoKeyRids(BlocksOf(item), keys);
+    if (rids.empty()) return;
+    const std::vector<MediaItem*> members = WithPoolMembers({item});
+    for (MediaItem* m : members) ModifyItemSounds(m, nullptr, [&](ItemSounds& s) { return edit(s, rids); });
+    for (const std::string& rid : rids) {
+        PopOpts o;
+        o.only_populated = true;
+        o.rid = rid;
+        for (MediaItem* m : members) PopulateOne(m, store, o, rep, nullptr);
+    }
+}
+
+// Antho 2026-10-12: a row gesture's other side: on the project's other RAV items (not `item` nor
+// its pool), each auto block of these keys whose rule has no library yet gets the key's store
+// entry (never a rule with a library of its own), rids given first where needed, their populated
+// events re-placed. Inside the caller's undo scope.
+void FillOtherItems(MediaItem* item, const std::vector<std::string>& keys, const SoundStore& store, SoundReport& rep)
+{
+    if (keys.empty() || !HasAutoSounds(store)) return;
+    const std::vector<MediaItem*> mine = item ? WithPoolMembers({item}) : std::vector<MediaItem*>{};
+    // The list first: re-placing events adds and removes items.
+    std::vector<MediaItem*> others;
+    const int               n = CountMediaItems(nullptr);
+    for (int i = 0; i < n; ++i) {
+        MediaItem* it = GetMediaItem(nullptr, i);
+        if (it && RavTakeOf(it) && std::find(mine.begin(), mine.end(), it) == mine.end()) others.push_back(it);
+    }
+    for (MediaItem* it : others) {
+        std::vector<Block> blocks = BlocksOf(it);
+        if (AutoFillNeedsRids(blocks, store, keys)) {
+            EnsureRids(it);  // a pool's other members get the same rids (read again below)
+            blocks = BlocksOf(it);
+        }
+        std::vector<std::string> rids;
+        ModifyItemSounds(it, nullptr, [&](ItemSounds& s) {
+            rids = AutoFillRids(s, blocks, store, keys);
+            return FillAutoSounds(s, blocks, store, keys);
+        });
+        for (const std::string& rid : rids) {
+            PopOpts o;
+            o.only_populated = true;
+            o.rid = rid;
+            PopulateOne(it, store, o, rep, nullptr);
+        }
+    }
+}
+
 }  // namespace
 
 void InitSoundPopulate(void* (*get_func)(const char* name))
@@ -574,6 +647,11 @@ SoundReport SetRuleLibrary(MediaItem* item, int block, const std::string& librar
             EnsureRids(item);
             const std::string rid = RidOf(item, block);
             if (rid.empty()) return rep;
+            // Antho 2026-10-12: an auto block's library is its marker type's too (the Auto
+            // detection row shows the same).
+            const std::string key = AutoKeyOf(item, block);
+            if (!key.empty())
+                ModifySoundStore(nullptr, nullptr, [&](SoundStore& st) { return SetAutoSoundLibrary(st, {key}, library_uid); });
             const std::vector<MediaItem*> members = WithPoolMembers({item});
             for (MediaItem* m : members)
                 ModifyItemSounds(m, nullptr, [&](ItemSounds& s) {
@@ -616,6 +694,13 @@ SoundReport SetSoundValue(MediaItem* item, SoundValueLevel level, int block, dou
                 EnsureRids(item);
                 rid = RidOf(item, block);
                 if (rid.empty()) return rep;
+            }
+            if (level == SoundValueLevel::Rule) {
+                // Antho 2026-10-12: an auto block's rule values are its marker type's too.
+                const std::string key = AutoKeyOf(item, block);
+                if (!key.empty())
+                    ModifySoundStore(nullptr, nullptr,
+                                     [&](SoundStore& st) { return SetAutoSoundValue(st, {key}, group_uid, value_uid); });
             }
             const std::vector<MediaItem*> members = WithPoolMembers({item});
             for (MediaItem* m : members)
@@ -660,6 +745,80 @@ SoundReport SetSoundValue(MediaItem* item, SoundValueLevel level, int block, dou
         AddLine(rep, ReportKind::Blocked, "Internal error: the gesture stopped part way (Ctrl+Z undoes it)", "", "", 0.0);
     }
     return rep;
+}
+
+SoundReport SetAutoMarkerLibrary(MediaItem* item, const std::vector<std::string>& keys, const std::string& library_uid)
+{
+    SoundReport rep;
+    try {
+        if (keys.empty()) return rep;
+        {
+            SoundUndoScope undo(nullptr, "RAV: Set auto marker library");
+            ItemIndexScope index;
+            ModifySoundStore(nullptr, nullptr, [&](SoundStore& st) { return SetAutoSoundLibrary(st, keys, library_uid); });
+            const SoundStore store = GetSoundStore(nullptr);
+            EditAutoRules(item, keys, store,
+                          [&](ItemSounds& s, const std::vector<std::string>& rids) { return SetRulesLibrary(s, rids, library_uid); },
+                          rep);
+            FillOtherItems(item, keys, store, rep);
+        }
+        UpdateArrange();
+    } catch (...) {
+        AddLine(rep, ReportKind::Blocked, "Internal error: the gesture stopped part way (Ctrl+Z undoes it)", "", "", 0.0);
+    }
+    return rep;
+}
+
+SoundReport SetAutoMarkerValue(MediaItem* item, const std::vector<std::string>& keys, const std::string& group_uid,
+                               const std::string& value_uid)
+{
+    SoundReport rep;
+    try {
+        if (keys.empty() || group_uid.empty()) return rep;
+        {
+            SoundUndoScope undo(nullptr, "RAV: Set sound value");
+            ItemIndexScope index;
+            ModifySoundStore(nullptr, nullptr,
+                             [&](SoundStore& st) { return SetAutoSoundValue(st, keys, group_uid, value_uid); });
+            const SoundStore store = GetSoundStore(nullptr);
+            EditAutoRules(item, keys, store,
+                          [&](ItemSounds& s, const std::vector<std::string>& rids) {
+                              return SetRulesValue(s, rids, group_uid, value_uid);
+                          },
+                          rep);
+            FillOtherItems(item, keys, store, rep);
+        }
+        UpdateArrange();
+    } catch (...) {
+        AddLine(rep, ReportKind::Blocked, "Internal error: the gesture stopped part way (Ctrl+Z undoes it)", "", "", 0.0);
+    }
+    return rep;
+}
+
+bool AutoMarkerSoundsSet()
+{
+    try {
+        return HasAutoSounds(GetSoundStore(nullptr));
+    } catch (...) {
+        return false;
+    }
+}
+
+bool FillAutoMarkerSounds(MediaItem* item)
+{
+    try {
+        if (!item || !RavTakeOf(item)) return false;
+        const SoundStore& store = GetSoundStore(nullptr);
+        if (!HasAutoSounds(store)) return false;
+        if (AutoFillNeedsRids(BlocksOf(item), store)) EnsureRids(item);
+        const std::vector<Block> blocks = BlocksOf(item);
+        bool changed = false;
+        for (MediaItem* m : WithPoolMembers({item}))
+            if (ModifyItemSounds(m, nullptr, [&](ItemSounds& s) { return FillAutoSounds(s, blocks, store); })) changed = true;
+        return changed;
+    } catch (...) {
+        return false;
+    }
 }
 
 int CountPopulateEvents(const std::vector<MediaItem*>& items)

@@ -30,6 +30,7 @@
 #include "rule_record.h"
 #include "shortcuts.h"  // LoadPrefFloat / SavePrefFloat
 #include "skeleton_view.h"  // spec 10-3c: the bone selected in the 3D view ("+")
+#include "sound_auto_assign.h"  // 13-8: each auto marker type's sound
 #include "strip_view.h"
 #include "tag_markers.h"
 #include "tagging_session.h"
@@ -4038,6 +4039,17 @@ std::string AutoValueUndo(AutoType t, bool sens, const std::string& part = std::
     return std::string(sens ? "RAV: Set auto sensitivity (" : "RAV: Set auto offset (") + label + ")";
 }
 
+// Antho 2026-10-12 (13-8): the sound keys of a type's rows (sound_auto_assign.h), each once.
+std::vector<std::string> AutoSoundKeys(const std::vector<Block>& rows)
+{
+    std::vector<std::string> out;
+    for (const Block& b : rows) {
+        const std::string k = AutoSoundKeyOf(b);
+        if (!k.empty() && std::find(out.begin(), out.end(), k) == out.end()) out.push_back(k);
+    }
+    return out;
+}
+
 // Story 10-8h: a sensitivity Detect raised (raised_from >= 0) is drawn in amber.
 void PushRaised(double raised_from)
 {
@@ -4306,6 +4318,9 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
                     if (differ) ImGui::SetTooltip("%s\nAn edit sets every row.", row_list(false).c_str());
                     else ImGui::SetTooltip("Moves every marker of this type, in ms (+ = later).");
                 }
+                // Antho 2026-10-12 (13-8): the type's sound, every row at once.
+                ImGui::SetCursorPosX(x0 + ImGui::GetFrameHeight() + 4.0f);
+                DrawAutoSoundRow(m.item, rules, AutoSoundKeys(rows));
             } else {
                 // One row per block, labelled by its marker.
                 for (size_t bi = 0; bi < rows.size(); ++bi) {
@@ -4329,6 +4344,9 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
                         else if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
                             ImGui::SetTooltip("Moves this row's markers, in ms (+ = later).");
                     }
+                    // Antho 2026-10-12 (13-8): this row's sound.
+                    ImGui::SetCursorPosX(x0 + ImGui::GetFrameHeight() + 4.0f);
+                    DrawAutoSoundRow(m.item, rules, AutoSoundKeys({b}));
                     ImGui::PopID();
                 }
             }

@@ -21,12 +21,14 @@
 #include "library_icons.h"
 #include "reaper_api.h"
 #include "rule_record.h"
+#include "sound_auto_assign.h"
 #include "sound_populate.h"
 #include "sound_populate_plan.h"
 #include "sound_project.h"
 #include "sound_record.h"
 #include "sound_switch.h"
 #include "tagging_session.h"
+#include "ui_flow.h"
 #include "ui_theme.h"
 #include "video_view.h"
 
@@ -273,6 +275,96 @@ void DrawRuleSoundSection(const TaggingSoundContext& ctx)
         }
     }
     ui::EndSection(s);
+    ImGui::PopID();
+}
+
+void DrawAutoSoundRow(MediaItem* item, const ItemRules& rules, const std::vector<std::string>& keys)
+{
+    if (keys.empty()) return;
+    const SoundStore& store = GetSoundStore(nullptr);
+    if (store.libraries.empty()) return;
+    const ItemSounds& rec = Rec(item).rec;
+    std::vector<AutoSoundShown> shown;
+    for (const std::string& k : keys) shown.push_back(AutoSoundFor(store, rec, rules.blocks, k));
+    bool same_lib = true, on_item = false;
+    for (const AutoSoundShown& s : shown) {
+        if (s.library != shown[0].library) same_lib = false;
+        if (s.on_item) on_item = true;
+    }
+    const std::string&  lib_uid = shown[0].library;
+    const SoundLibrary* lib = same_lib && !lib_uid.empty() ? FindLibrary(store, lib_uid) : nullptr;
+    const std::string   preview = !same_lib ? "Mixed" : lib ? lib->name : (lib_uid.empty() ? "None" : "(gone)");
+    std::string         id;
+    for (const std::string& k : keys) id += k + ",";
+    const std::vector<std::string> keys_copy = keys;
+
+    ImGui::PushID(id.c_str());
+    ImGui::AlignTextToFramePadding();
+    ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
+    ImGui::TextUnformatted("Sound");
+    ImGui::PopStyleColor();
+    ui::SameLineIfFits(ui::MenuButtonWidth(preview.c_str()));
+    if (ui::MenuButton("##autolib", true, preview.c_str())) ImGui::OpenPopup("##autolibmenu");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("%s", on_item ? "The library of these markers: the same as their rule's Sound card (either sets "
+                                          "both).\nDetect gives it to this marker type's new markers."
+                                        : "The library Detect gives to this marker type's markers (set before or after "
+                                          "Detect).\nTheir rule's Sound card shows the same.");
+    if (ImGui::BeginPopup("##autolibmenu")) {
+        const bool assigned = !same_lib || !lib_uid.empty();
+        if (ImGui::Selectable("None", !assigned) && assigned) Remember(SetAutoMarkerLibrary(item, keys_copy, ""), -1);
+        for (const SoundLibrary& L : store.libraries) {
+            const LibraryCheck chk = CheckLibrary(store, L);
+            if (chk.blocked) ImGui::BeginDisabled();
+            const bool cur = lib && lib->uid == L.uid;
+            if (ImGui::Selectable((L.name + "##" + L.uid).c_str(), cur) && !cur && !chk.blocked)
+                Remember(SetAutoMarkerLibrary(item, keys_copy, L.uid), -1);
+            if (chk.blocked) ImGui::EndDisabled();
+            if (chk.blocked && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("Blocked: %s", chk.reason.c_str());
+        }
+        ImGui::EndPopup();
+    }
+    if (lib) {
+        // One compact menu per Switch Group the library uses: "<group>: <value>" ("inherit" = the
+        // item's value or the Switch's default, as the rule's Sound card says).
+        ValueLayers below;
+        below.item = rec.item_values;
+        for (const GroupUse& g : GroupsUsed(store, *lib)) {
+            const SwitchGroup* grp = FindGroup(store, g.group_uid);
+            if (!grp || !g.first_switch) continue;
+            std::string val;
+            bool        same_val = true;
+            for (size_t i = 0; i < shown.size(); ++i) {
+                const ValueSet* v = FindValue(&shown[i].values, g.group_uid);
+                const std::string uid = v ? v->value_uid : std::string();
+                if (i == 0) val = uid;
+                else if (uid != val) same_val = false;
+            }
+            const std::string label =
+                grp->name + ": " + (!same_val ? std::string("Mixed") : val.empty() ? std::string("inherit") : ValueName(grp, val));
+            ImGui::PushID(g.group_uid.c_str());
+            ui::SameLineIfFits(ui::MenuButtonWidth(label.c_str()));
+            if (ui::MenuButton("##autoval", true, label.c_str())) ImGui::OpenPopup("##autovalmenu");
+            if (ImGui::BeginPopup("##autovalmenu")) {
+                ValueFrom   from = ValueFrom::Default;
+                std::string inh = EffectiveValue(*g.first_switch, below, &from);
+                if (from == ValueFrom::Default) inh = DefaultValue(store, *g.first_switch);
+                char inherit[192];
+                std::snprintf(inherit, sizeof(inherit), "inherit %s %s (%s)", kDot, ValueName(grp, inh).c_str(), FromWord(from));
+                const std::string gid = g.group_uid;
+                const bool        own = !same_val || !val.empty();
+                if (ImGui::Selectable(inherit, !own) && own) Remember(SetAutoMarkerValue(item, keys_copy, gid, ""), -1);
+                for (const SwitchValue& v : grp->values) {
+                    const bool cur = same_val && val == v.uid;
+                    if (ImGui::Selectable((v.name + "##" + v.uid).c_str(), cur) && !cur)
+                        Remember(SetAutoMarkerValue(item, keys_copy, gid, v.uid), -1);
+                }
+                ImGui::EndPopup();
+            }
+            ImGui::PopID();
+        }
+    }
     ImGui::PopID();
 }
 

@@ -142,6 +142,25 @@ struct SoundLibrary {
     std::vector<std::string> kept_lines;
 };
 
+// A Switch Group's value at one level (item, rule, event, auto marker type).
+struct ValueSet {
+    std::string              group_uid;
+    std::string              value_uid;
+    std::vector<std::string> kept;
+};
+
+// The sound an auto marker type gets (Antho 2026-10-12, 13-8): the library and rule-level Switch
+// values the Tagging view's Auto detection section sets per marker type, before or after Detect.
+// Detect gives it to the rule of each auto block of that key with no library yet; an edit in the
+// section or in an auto block's Sound card writes both (sound_auto_assign.h).
+struct AutoSoundAssign {
+    std::string              key;      // AutoSoundKey (sound_auto_assign.h): "step:L", "slide_heel:R"...
+    std::string              library;  // library uid ("" = none)
+    std::vector<ValueSet>    values;   // rule-level Switch values
+    std::vector<std::string> kept;
+    std::vector<std::string> kept_lines;
+};
+
 // The project's store (the .rpp's <RAVSOUNDS chunk).
 struct SoundStore {
     int                       version = 1;
@@ -149,15 +168,11 @@ struct SoundStore {
     std::vector<SoundLibrary> libraries;
     std::vector<std::string>  kept;  // unknown fields of the header line
     std::vector<std::string>  kept_lines;  // unknown lines right after the header line
+    // Antho 2026-10-12 (13-8): each auto marker type's sound (written right after the header).
+    std::vector<AutoSoundAssign> auto_sounds;
 };
 
 // ---- Per-animation-item state (the take's P_EXT:RAV_SOUNDS) -------------------------------------
-
-struct ValueSet {
-    std::string              group_uid;
-    std::string              value_uid;
-    std::vector<std::string> kept;
-};
 
 // A draw: which variation (pick) a Random / Sound node gave this event.
 struct SoundDraw {

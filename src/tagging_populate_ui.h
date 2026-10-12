@@ -8,7 +8,11 @@
 
 #ifdef _WIN32
 
+#include <string>
+#include <vector>
+
 #include "event_list.h"
+#include "rule_record.h"  // ItemRules
 #include "tagging_sound_context.h"
 
 struct ImDrawList;
@@ -17,6 +21,11 @@ namespace rav {
 
 // Under the selected rule's settings: its library and values.
 void DrawRuleSoundSection(const TaggingSoundContext& ctx);
+// Antho 2026-10-12: in the Auto detection section, under a marker type's row (or one of its
+// per-side rows): the sound of these auto marker keys (sound_auto_assign.h): Library menu, then one
+// compact value menu per Switch Group the library uses, wrapping to the width. The item's rule
+// when it has those markers, else the type's own (what Detect gives). Nothing without a library.
+void DrawAutoSoundRow(MediaItem* item, const ItemRules& rules, const std::vector<std::string>& keys);
 // Under the inspector: the item-level Switch values.
 void DrawItemSoundValuesSection(const TaggingSoundContext& ctx);
 // At the end of the event inspector: the event's sounds, overrides and draws.

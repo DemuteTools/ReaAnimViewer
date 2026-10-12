@@ -2095,7 +2095,7 @@ void DrawPresetMenu(const TaggingModel& m)
         g_pm_focus_search = false;
     }
     const std::string ph = SearchPlaceholder(static_cast<int>(presets.size()));
-    ui::TextField("##pq", ph.c_str(), g_pm_query, sizeof(g_pm_query));
+    ui::TextField("##pq", ph.c_str(), g_pm_query, sizeof(g_pm_query), inner_w);
     g_pm_search_active = ImGui::IsItemActive();
     ImGui::Separator();
 
@@ -2137,7 +2137,7 @@ void DrawPresetMenu(const TaggingModel& m)
             ImGui::SetKeyboardFocusHere();
             g_pm_focus_name = false;
         }
-        if (ui::TextField("##pname", "Preset name", g_pm_name, sizeof(g_pm_name), 0.0f,
+        if (ui::TextField("##pname", "Preset name", g_pm_name, sizeof(g_pm_name), inner_w,
                           ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll))
             PmSubmitName();
     } else {
@@ -2248,7 +2248,7 @@ void DrawPresetField(const TaggingModel& m)
     }
 
     // The menu (13-14: the theme's panel popup, G-8).
-    ImGui::SetNextWindowPos(ImVec2(p.x, p.y + fh + ui::Dp(2.0f)), ImGuiCond_Always);
+    ImGui::SetNextWindowPos(ImVec2(p.x, p.y + ui::FieldH() + ui::Dp(2.0f)), ImGuiCond_Always);  // under the 24 px SelectField
     ImGui::SetNextWindowSizeConstraints(ImVec2(w, 0.0f), ImVec2(w, ui::Dp(560.0f)));
     g_pm_drawn_frame = ImGui::GetFrameCount();
     if (ui::BeginPanelPopup("##tagpresets")) {
@@ -2723,7 +2723,7 @@ void RolesMenu(const std::string& key, const StoredRoleEntry& e)
     ui::ItemTip("No bone plays this role");
     ui::MenuSeparator();
     if (g_roles_menu_appearing) ImGui::SetKeyboardFocusHere();
-    ui::TextField("##rq", "Search bones", g_roles_query, sizeof(g_roles_query));
+    ui::TextField("##rq", "Search bones", g_roles_query, sizeof(g_roles_query), ImGui::GetContentRegionAvail().x);
     const float lh = ImGui::GetTextLineHeightWithSpacing();
     const float list_h =
         std::min(ui::Dp(300.0f), lh * static_cast<float>(std::max<size_t>(1, g_roles_names.size())) + ui::Dp(8.0f));

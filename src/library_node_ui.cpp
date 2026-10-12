@@ -847,11 +847,11 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
     const bool thr = std::isfinite(o.threshold_db);
     float      thr_y = 0.0f;
     if (thr) thr_y = static_cast<float>(std::min(1.0, DbToGain(o.threshold_db))) * hh;
-    // The mouse within 4 px of a threshold line (two per lane).
+    // The mouse within 4 px of a threshold line of the lane it is over (two per lane), so a stereo
+    // wave has no more grab zones under the mouse than a mono one.
     auto       on_thr = [&](float y) {
-        for (int l = 0; l < lanes; ++l)
-            if (std::fabs(y - (LaneMid(l) - thr_y)) <= ui::Dp(4.0f) || std::fabs(y - (LaneMid(l) + thr_y)) <= ui::Dp(4.0f)) return true;
-        return false;
+        const int l = LaneAt(y);
+        return std::fabs(y - (LaneMid(l) - thr_y)) <= ui::Dp(4.0f) || std::fabs(y - (LaneMid(l) + thr_y)) <= ui::Dp(4.0f);
     };
     const bool near_thr = hovered && thr && on_thr(m.y);
     if (thr) {

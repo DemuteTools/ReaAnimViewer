@@ -110,8 +110,9 @@ std::string FitWidth(ImFont* font, const std::string& text, float max_w)
     if (width(text) <= max_w) return text;
     std::string t = text;
     while (!t.empty()) {
-        do t.pop_back();
-        while (!t.empty() && (static_cast<unsigned char>(t.back()) & 0xC0) == 0x80);  // a whole character
+        // a whole character: its continuation bytes, then its lead byte
+        while (!t.empty() && (static_cast<unsigned char>(t.back()) & 0xC0) == 0x80) t.pop_back();
+        if (!t.empty()) t.pop_back();
         if (width(t + "...") <= max_w) return t + "...";
     }
     return std::string();
@@ -147,8 +148,11 @@ void DrawStrip(int i, float h)
     ImGui::PushID(i);
     const ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
     ImGui::SetCursorScreenPos(wp);
+    // The pane's padding insets its clip rect: open it to the whole strip, so its edge takes the mouse too.
+    ImGui::PushClipRect(wp, ImVec2(wp.x + ws.x, wp.y + ws.y), false);
     const bool clicked = ImGui::InvisibleButton("##expand", ImVec2(ws.x, std::max(1.0f, h)));
     const bool hot = ImGui::IsItemHovered();
+    ImGui::PopClipRect();
     ui::ItemTipText(i == 0 ? "Show the libraries (Ctrl+B)" : "Show the Media Explorer");
     if (clicked) {
         if (i == 0) SetLibraryColumn1Collapsed(false);

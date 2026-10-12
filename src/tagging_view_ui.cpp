@@ -35,6 +35,7 @@
 #include "tag_markers.h"
 #include "tagging_session.h"
 #include "tagging_signal.h"
+#include "ui_flow.h"
 #include "ui_theme.h"
 #include "video_view.h"  // TaggingViewActive, QueueVideoSeek (the playhead move runs outside the frame)
 // Epic 13 (D20, 13-2): the sound hook sites (13-8 Populate, 13-10 Attach).
@@ -66,15 +67,16 @@ constexpr char kPrefPanelWidth[] = "tagging.panel_width";
 // Story 10-8s: the strip's "Signals" toggle (a viewer pref, not project data).
 constexpr char kPrefAutoSignals[] = "tagging.auto_signals";
 int g_auto_signals = -1;  // -1 = not read yet, else 0 / 1
+// Mockup px (13-14: at the screen's DPI through ui::Dp where they are used).
 constexpr float kStripDefaultHeight = 230.0f;
 constexpr float kPanelMinW = 280.0f;
 constexpr float kPanelMaxW = 600.0f;
 constexpr float kPanelDefaultW = 330.0f;
 
-// The mock-up's "bad" red (missing roles): its stroke and its text.
-constexpr ImU32 kBad = IM_COL32(0xF0, 0x6C, 0x6C, 0xFF);
-constexpr ImU32 kBadText = IM_COL32(0xFF, 0xB3, 0xB3, 0xFF);
-constexpr ImU32 kPlayhead = IM_COL32(0xDF, 0xE3, 0xEA, 0xFF);
+// 13-14: the mock-up's "bad" red (missing roles) and the playhead are the theme's tokens.
+using ui::kBad;
+using ui::kPlayhead;
+using ui::WithAlpha;
 
 float g_strip_h = -1.0f;  // -1 = not read yet
 float g_panel_w = -1.0f;
@@ -136,8 +138,8 @@ const std::vector<PresetInfo>& CachedPresets(bool refresh = false)
 
 float PanelWidth()
 {
-    if (g_panel_w < 0.0f) g_panel_w = LoadPrefFloat(kPrefPanelWidth, kPanelDefaultW);
-    return std::min(std::max(g_panel_w, kPanelMinW), kPanelMaxW);
+    if (g_panel_w < 0.0f) g_panel_w = LoadPrefFloat(kPrefPanelWidth, ui::Dp(kPanelDefaultW));
+    return std::min(std::max(g_panel_w, ui::Dp(kPanelMinW)), ui::Dp(kPanelMaxW));
 }
 
 float StripMaxHeight(float client_h)
@@ -180,11 +182,6 @@ uint32_t ToRecordColor(ImU32 c)
 {
     const uint32_t r = c & 0xFF, g = (c >> 8) & 0xFF, b = (c >> 16) & 0xFF;
     return 0x1000000u | (r << 16) | (g << 8) | b;
-}
-
-ImU32 WithAlpha(ImU32 c, int a)
-{
-    return (c & ~IM_COL32_A_MASK) | (static_cast<ImU32>(a & 0xFF) << IM_COL32_A_SHIFT);
 }
 
 ImU32 RuleColor(const Block& b)
@@ -250,34 +247,56 @@ void IconGear(ImDrawList* dl, ImVec2 c, float r, ImU32 col)
     dl->AddCircle(c, r * 0.6f, col, 16, 1.6f);
 }
 
-// A frameless square icon button; `draw` paints the icon at its centre.
-bool IconButton(const char* id, float size, const std::function<void(ImDrawList*, ImVec2, ImU32)>& draw,
-                bool enabled = true)
+void IconUndo(ImDrawList* dl, ImVec2 c, float r, ImU32 col)
 {
-    const ImVec2 p0 = ImGui::GetCursorScreenPos();
-    if (!enabled) ImGui::BeginDisabled();
-    const bool pressed = ImGui::InvisibleButton(id, ImVec2(size, size));
-    const bool hovered = enabled && ImGui::IsItemHovered();
-    if (!enabled) ImGui::EndDisabled();
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    if (hovered) dl->AddRectFilled(p0, ImVec2(p0.x + size, p0.y + size), ui::kHover, ui::kRadiusSm);
-    draw(dl, ImVec2(p0.x + size * 0.5f, p0.y + size * 0.5f), enabled ? (hovered ? ui::kText : ui::kMuted) : ui::kFaint);
-    return pressed && enabled;
+    const float pi = 3.14159265f;
+    const float k = r / 5.0f;  // drawn 5 px wide at 1x
+    dl->PathArcTo(ImVec2(c.x, c.y + 1.5f * k), r, pi, pi * 2.45f, 14);
+    dl->PathStroke(col, ImDrawFlags_None, 1.5f);
+    const ImVec2 s(c.x - r, c.y + 1.5f * k);
+    dl->AddTriangleFilled(ImVec2(s.x - 3.2f * k, s.y - 1.0f * k), ImVec2(s.x + 3.2f * k, s.y - 1.0f * k),
+                          ImVec2(s.x, s.y + 3.5f * k), col);
 }
 
-// The rule's on/off switch (the mock-up's .sw). Returns true when clicked.
-bool Switch(const char* id, bool on)
+// 13-14: the drawn icons as ui::IconFn glyphs (ui::IconOnlyButton): `which` picks the icon and its
+// radius in the mockup's 14 px icon square (scaled with the square, so with the screen's DPI).
+enum TagGlyph {
+    kGlyphCross,       // remove (r 4)
+    kGlyphCrossSmall,  // remove a row (r 3.5)
+    kGlyphDuplicate,
+    kGlyphUndo,
+    kGlyphPlus,
+    kGlyphLockOpen,
+    kGlyphLockClosed,
+    kGlyphFoldOpen,
+    kGlyphFoldClosed,
+    kGlyphGear,
+    kGlyphCheck,       // ok (drawn in its own colour: kOk)
+};
+
+void PaintGlyph(ImDrawList* dl, ImVec2 p, float s, int which, ImU32 col)
 {
-    const float w = 26.0f, h = 16.0f;
-    const ImVec2 p0 = ImGui::GetCursorScreenPos();
-    const float y = p0.y + std::floor((ImGui::GetFrameHeight() - h) * 0.5f);
-    ImGui::InvisibleButton(id, ImVec2(w, ImGui::GetFrameHeight()));
-    const bool clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(ImVec2(p0.x, y), ImVec2(p0.x + w, y + h), on ? ui::kAccent : ui::kStrokeStrong, h * 0.5f);
-    dl->AddCircleFilled(ImVec2(on ? p0.x + w - h * 0.5f : p0.x + h * 0.5f, y + h * 0.5f), h * 0.5f - 2.0f,
-                        IM_COL32(0xC9, 0xCE, 0xD8, 0xFF), 12);
-    return clicked;
+    const ImVec2 c(p.x + s * 0.5f, p.y + s * 0.5f);
+    const float  k = s / 14.0f;  // the radii below are the old 1x drawing's
+    switch (which) {
+    case kGlyphCross: IconCross(dl, c, 4.0f * k, col); break;
+    case kGlyphCrossSmall: IconCross(dl, c, 3.5f * k, col); break;
+    case kGlyphDuplicate: IconDuplicate(dl, c, 4.5f * k, col); break;
+    case kGlyphUndo: IconUndo(dl, c, 5.0f * k, col); break;
+    case kGlyphPlus: IconPlus(dl, c, 4.0f * k, col); break;
+    case kGlyphLockOpen: IconLock(dl, c, 4.5f * k, col, false); break;
+    case kGlyphLockClosed: IconLock(dl, c, 4.5f * k, col, true); break;
+    case kGlyphFoldOpen: IconFold(dl, c, 4.0f * k, col, true); break;
+    case kGlyphFoldClosed: IconFold(dl, c, 4.0f * k, col, false); break;
+    case kGlyphGear: IconGear(dl, c, 6.0f * k, col); break;
+    case kGlyphCheck: IconCheck(dl, c, 4.0f * k, col); break;
+    default: break;
+    }
+}
+
+ui::Icon Glyph(int which)
+{
+    return ui::Icon{PaintGlyph, which, ui::kMuted};
 }
 
 // ---- Edits -----------------------------------------------------------------------------------
@@ -528,33 +547,36 @@ bool EventsEditableOn(const TaggingModel& m, int b)
 // The marker kinds a shown event draws, in a notify row from ry to ry + rh at x.
 void DrawEventMark(ImDrawList* dl, const ShownEvent& e, float x, float ry, float rh, ImU32 col, bool selected)
 {
-    const float y0 = ry + 2.0f, y1 = ry + rh - 2.0f;
+    // 13-14: mockup px at the screen's DPI.
+    const float y0 = ry + ui::Dp(2.0f), y1 = ry + rh - ui::Dp(2.0f);
     if (e.kind == ShownKind::Orphan) {
-        for (float y = y0; y < y1; y += 4.0f)
-            dl->AddLine(ImVec2(x, y), ImVec2(x, std::min(y + 2.0f, y1)), WithAlpha(col, 0x73), 1.0f);
+        for (float y = y0; y < y1; y += ui::Dp(4.0f))
+            dl->AddLine(ImVec2(x, y), ImVec2(x, std::min(y + ui::Dp(2.0f), y1)), WithAlpha(col, 0x73), 1.0f);
     } else {
         const ImU32 c = e.kind == ShownKind::Suppressed ? WithAlpha(col, 0x59) : col;
         dl->AddLine(ImVec2(x, y0), ImVec2(x, y1), c, selected ? 1.5f : 1.0f);
-        const ImVec2 a(x - 4.5f, y0), b(x + 4.5f, y0), d(x, y0 + 6.0f);
+        const ImVec2 a(x - ui::Dp(4.5f), y0), b(x + ui::Dp(4.5f), y0), d(x, y0 + ui::Dp(6.0f));
         if (e.kind == ShownKind::User) dl->AddTriangle(a, b, d, c, 1.5f);
         else dl->AddTriangleFilled(a, b, d, c);
     }
     if (e.kind == ShownKind::Suppressed || e.kind == ShownKind::Orphan)
-        dl->AddLine(ImVec2(x - 4.0f, y1 - 2.0f), ImVec2(x + 5.0f, y0 + 4.0f), ui::kText, 1.3f);
+        dl->AddLine(ImVec2(x - ui::Dp(4.0f), y1 - ui::Dp(2.0f)), ImVec2(x + ui::Dp(5.0f), y0 + ui::Dp(4.0f)), ui::kText, 1.3f);
     if (e.kind == ShownKind::User) {
         const float fs = ImGui::GetFontSize() * 0.85f;
-        dl->AddText(ImGui::GetFont(), fs, ImVec2(x + 4.0f, y1 - fs), col, "you");
+        dl->AddText(ImGui::GetFont(), fs, ImVec2(x + ui::Dp(4.0f), y1 - fs), col, "you");
     }
-    if (selected) dl->AddRect(ImVec2(x - 7.0f, ry + 1.0f), ImVec2(x + 8.0f, ry + rh - 1.0f), kPlayhead, 3.0f);
+    if (selected)
+        dl->AddRect(ImVec2(x - ui::Dp(7.0f), ry + 1.0f), ImVec2(x + ui::Dp(8.0f), ry + rh - 1.0f), kPlayhead, ui::Dp(3.0f));
 }
 
 // A number field bound to one value of the rules (display units): drag previews, release /
 // Enter writes one undo point, Esc cancels.
+// 13-14: `text_col` (non-zero) tones the number (kWarn: a sensitivity Detect raised, story 10-8h).
 void NumberField(const char* id, double display_value, double step, int decimals, const char* unit, float width,
-                 const std::string& undo, const std::function<bool(ItemRules&, double)>& set)
+                 const std::string& undo, const std::function<bool(ItemRules&, double)>& set, ImU32 text_col = 0)
 {
     double v = display_value;
-    switch (ui::DragNumber(id, &v, step, decimals, unit, width)) {
+    switch (ui::DragNumber(id, &v, step, decimals, unit, width, /*trim=*/false, text_col)) {
     case ui::DragNumberEvent::Live:
         Later([set, v, item = GetTaggingModel().item]() {
             if (GetTaggingModel().item != item) return;
@@ -656,9 +678,9 @@ int BoneMenuItems(int current_single, bool joints_only = false)
     RoleGroup  group = RoleGroup::Legs;
     for (Role role : RolesInListOrder()) {
         if (first || RoleGroupOf(role) != group) {
-            if (!first) ImGui::Separator();
+            if (!first) ui::MenuSeparator();
             group = RoleGroupOf(role);
-            ImGui::TextDisabled("%s", RoleGroupName(group));
+            ui::MenuCaption(RoleGroupName(group));
             first = false;
         }
         const int  r = static_cast<int>(role);
@@ -674,8 +696,8 @@ int BoneMenuItems(int current_single, bool joints_only = false)
         std::vector<char>              foreign;
         const std::vector<std::string> keys = CustomRoleRowKeys(m, &foreign);
         if (!keys.empty()) {
-            ImGui::Separator();
-            ImGui::TextDisabled("Your roles");
+            ui::MenuSeparator();
+            ui::MenuCaption("Your roles");
         }
         for (size_t k = 0; k < keys.size(); ++k) {
             const int  id = BoneRefId(std::string("role:") + keys[k]);
@@ -687,14 +709,13 @@ int BoneMenuItems(int current_single, bool joints_only = false)
             if (ImGui::Selectable(label.c_str(), current_single == id,
                                   off ? ImGuiSelectableFlags_Disabled : ImGuiSelectableFlags_None))
                 picked = id;
-            if (foreign[k] && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-                ImGui::SetTooltip("Not in your roles (from these rules)");
+            if (foreign[k]) ui::ItemTip("Not in your roles (from these rules)");
             ImGui::PopID();
         }
     }
     if (!m.bone_names.empty()) {
-        ImGui::Separator();
-        ImGui::TextDisabled("Bones");
+        ui::MenuSeparator();
+        ui::MenuCaption("Bones");
         for (size_t i = 0; i < m.bone_names.size(); ++i) {
             ImGui::PushID(static_cast<int>(i));
             const int id = BoneRefForBone(m.bone_names[i]);
@@ -708,36 +729,9 @@ int BoneMenuItems(int current_single, bool joints_only = false)
     return picked;
 }
 
-// The width a chip takes for this preview text.
-float ChipWidth(const char* preview, float min_w = 40.0f)
-{
-    return std::max(min_w, ImGui::CalcTextSize(preview).x + 30.0f);
-}
-
-// 10-3 fb-2: the right edge the next chip stays within (set by PlaceChip; 0 = the window's).
-float g_chip_right = 0.0f;
-
-// A small combo ("chip", the mock-up's select.chip) sized to its preview text, a small
-// chevron on its right.
-bool BeginChip(const char* id, const char* preview, float min_w = 40.0f, bool disabled = false)
-{
-    const ImVec2 p0 = ImGui::GetCursorScreenPos();
-    float avail = ImGui::GetContentRegionAvail().x;
-    if (g_chip_right > 0.0f) avail = std::min(avail, g_chip_right - p0.x);
-    g_chip_right = 0.0f;
-    const float w = std::min(ChipWidth(preview, min_w), std::max(min_w, avail));
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const float h = ImGui::GetFrameHeight();
-    ImGui::SetNextItemWidth(w);
-    const bool open = ImGui::BeginCombo(id, preview, ImGuiComboFlags_HeightLarge | ImGuiComboFlags_NoArrowButton);
-    const ImVec2 c(p0.x + w - 10.0f, p0.y + h * 0.5f);
-    dl->AddTriangleFilled(ImVec2(c.x - 3.5f, c.y - 1.5f), ImVec2(c.x + 3.5f, c.y - 1.5f), ImVec2(c.x, c.y + 2.5f),
-                          disabled ? ui::kFaint : ui::kMuted);
-    return open;
-}
-
 // ---- 10-3 fb-2: compartments and aligned sentences ------------------------------------------
-// The components live in ui_theme (ui::Card, ui::Sentence, ui::TrackFill, ...); the chips stay here.
+// The components live in ui_theme (ui::Card, ui::Sentence, ui::TrackFill, ...). 13-14: the chips too
+// (ui::BeginChipCombo, kept within the sentence's right edge).
 
 using ui::Card;
 using ui::EllipsisText;
@@ -764,11 +758,16 @@ Sentence InspectorSentence(float x0, float right)
     return MakeSentence(x0, right, InspectorColumnWidth());
 }
 
-// ui::SentenceChip, and the next chip (BeginChip) stays within the sentence's right edge.
-void PlaceChip(Sentence& s, float w, float spacing = -1.0f)
+// A sentence's chip: ui::BeginChipCombo sized to its preview (never under min_w, mockup px) within
+// the sentence's right edge, its list a menu. Call ui::EndChipCombo only when it returned true.
+bool BeginSentenceChip(const Sentence& s, const char* id, const char* preview, float min_w, bool disabled = false)
 {
-    g_chip_right = s.right;
-    ui::SentenceChip(s, w, spacing);
+    return ui::BeginChipCombo(id, preview, ui::Dp(min_w), disabled, ImGuiComboFlags_HeightLarge, s.right);
+}
+
+float ChipWidth(const char* preview, float min_w)
+{
+    return ui::ChipComboWidth(preview, ui::Dp(min_w));
 }
 
 // ---- Strip -----------------------------------------------------------------------------------
@@ -831,7 +830,7 @@ void OnItemChanged(MediaItem* item)
 
 void DashedHLine(ImDrawList* dl, float x0, float x1, float y, ImU32 col)
 {
-    for (float x = x0; x < x1; x += 7.0f) dl->AddLine(ImVec2(x, y), ImVec2(std::min(x + 4.0f, x1), y), col, 1.0f);
+    for (float x = x0; x < x1; x += ui::Dp(7.0f)) dl->AddLine(ImVec2(x, y), ImVec2(std::min(x + ui::Dp(4.0f), x1), y), col, 1.0f);
 }
 
 // Centred message lines over a rect.
@@ -839,14 +838,14 @@ void CenterLines(ImDrawList* dl, ImVec2 a, ImVec2 b, const char* l1, ImU32 c1, c
                  ImU32 c2 = ui::kMuted)
 {
     const float th = ImGui::GetTextLineHeight();
-    const float total = l2 ? th * 2.0f + 4.0f : th;
+    const float total = l2 ? th * 2.0f + ui::Dp(4.0f) : th;
     float y = (a.y + b.y - total) * 0.5f;
     for (int k = 0; k < 2; ++k) {
         const char* l = k == 0 ? l1 : l2;
         if (!l) continue;
         const ImVec2 ts = ImGui::CalcTextSize(l);
-        dl->AddText(ImVec2(std::max(a.x + 6.0f, (a.x + b.x - ts.x) * 0.5f), y), k == 0 ? c1 : c2, l);
-        y += th + 4.0f;
+        dl->AddText(ImVec2(std::max(a.x + ui::Dp(6.0f), (a.x + b.x - ts.x) * 0.5f), y), k == 0 ? c1 : c2, l);
+        y += th + ui::Dp(4.0f);
     }
 }
 
@@ -857,16 +856,16 @@ struct LaneGeom {
     float  Y(double v) const
     {
         const double f = (std::min(std::max(v, lo), hi) - lo) / (hi - lo);
-        return y1 - 3.0f - static_cast<float>(f) * (y1 - y0 - 6.0f);
+        return y1 - ui::Dp(3.0f) - static_cast<float>(f) * (y1 - y0 - ui::Dp(6.0f));
     }
-    double V(float y) const { return lo + static_cast<double>((y1 - 3.0f - y) / (y1 - y0 - 6.0f)) * (hi - lo); }
+    double V(float y) const { return lo + static_cast<double>((y1 - ui::Dp(3.0f) - y) / (y1 - y0 - ui::Dp(6.0f))) * (hi - lo); }
 };
 
 }  // namespace
 
 float TaggingStripHeight(float client_h)
 {
-    if (g_strip_h < 0.0f) g_strip_h = LoadPrefFloat(kPrefStripHeight, kStripDefaultHeight);
+    if (g_strip_h < 0.0f) g_strip_h = LoadPrefFloat(kPrefStripHeight, ui::Dp(kStripDefaultHeight));
     return std::min(std::max(g_strip_h, kTaggingStripMinHeight), StripMaxHeight(client_h));
 }
 
@@ -874,7 +873,7 @@ float TaggingPanelFootprint(int client_w)
 {
     if (!TaggingViewActive()) return 0.0f;
     // A narrow window keeps some room for the 3D view.
-    const float w = std::min(PanelWidth(), std::max(160.0f, static_cast<float>(client_w) * 0.7f));
+    const float w = std::min(PanelWidth(), std::max(ui::Dp(160.0f), static_cast<float>(client_w) * 0.7f));
     return w + 2.0f * kTaggingGap;
 }
 
@@ -956,9 +955,9 @@ void DrawTaggingStrip(float x, float y, float w, float h)
     if (g_sel >= static_cast<int>(rules.blocks.size()) || g_sel < -1) g_sel = FirstRuleIndex(rules.blocks);
 
     ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(std::max(w, 160.0f), h), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(std::max(w, ui::Dp(160.0f)), h), ImGuiCond_Always);
     ui::PushPanelStyle();
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui::Dp(8.0f), ui::Dp(6.0f)));
     constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                                         ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
                                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
@@ -981,64 +980,58 @@ void DrawTaggingStrip(float x, float y, float w, float h)
         FormatTime(playhead, tc, sizeof(tc));
         dl->AddText(ImVec2(c0.x, c0.y + (head_h - th) * 0.5f), ui::kMuted, tc);
         {
-            const char* label = "Analyse";
-            const float bw = ImGui::CalcTextSize(label).x + 20.0f;
+            const char* label = "Analyse##taganalyse";
+            const float bw = ui::ButtonWidth(label);
+            const float gap = ui::Dp(8.0f);
             // Story 10-4: "+ Event [E]" adds a user event at the playhead on the selected rule.
+            // 13-14: the theme's add button with its key cap (G-15), the Signals toggle (.btn.on).
             {
                 const char* key = ShortcutKeyLabel(kShortcutTagAddEvent);
-                const float ew = ImGui::CalcTextSize("+ Event").x + ImGui::CalcTextSize(key).x + 30.0f;
-                const ImVec2 ep(c0.x + avail_w - bw - 8.0f - ew, c0.y);
+                // AddButton's natural width: the label, 8 px, the key cap (its text + 8), 10 px each side.
+                const float ew = ImGui::CalcTextSize("+ Event").x + ui::Dp(8.0f) + ImGui::CalcTextSize(key).x + ui::Dp(8.0f) +
+                                 2.0f * ui::Dp(10.0f);
+                const ImVec2 ep(c0.x + avail_w - bw - gap - ew, c0.y);
                 ImGui::SetCursorScreenPos(ep);
                 const bool can_add = EventsEditableOn(m, g_sel) && g_sel >= 0 && g_sel < static_cast<int>(rules.blocks.size());
                 if (!can_add) ImGui::BeginDisabled();
-                if (ui::SolidButton("##tagaddev", ImVec2(ew, 0.0f))) Later([]() { TaggingAddEventAtPlayhead(); });
+                if (ui::AddButton("+ Event##tagaddev", ImVec2(ew, 0.0f), key)) Later([]() { TaggingAddEventAtPlayhead(); });
                 if (!can_add) ImGui::EndDisabled();
-                const float ty = ep.y + (head_h - th) * 0.5f;
-                dl->AddText(ImVec2(ep.x + 8.0f, ty), can_add ? ui::kText : ui::kFaint, "+ Event");
-                ui::KeyCap(dl, ImVec2(ep.x + 14.0f + ImGui::CalcTextSize("+ Event").x, ty - 1.5f), key,
-                           can_add ? ui::kText : ui::kFaint);
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-                    ImGui::SetTooltip("Adds your own event at the playhead on the selected rule.\n"
-                                      "Double-click a rule's row to add one there.");
+                ui::ItemTip("Adds your own event at the playhead on the selected rule.\n"
+                            "Double-click a rule's row to add one there.");
                 // Story 10-8s: "Signals" shows what a selected auto row reads (a viewer pref).
                 if (g_auto_signals < 0) g_auto_signals = LoadPrefBool(kPrefAutoSignals, false) ? 1 : 0;
-                const char* sl = "Signals";
-                const float sw = ImGui::CalcTextSize(sl).x + 20.0f;
-                const ImVec2 sp(ep.x - 8.0f - sw, c0.y);
+                const char* sl = "Signals##tagautosig";
+                const float sw = ui::ButtonWidth(sl);
+                const ImVec2 sp(ep.x - gap - sw, c0.y);
                 ImGui::SetCursorScreenPos(sp);
-                if (ui::SolidButton("##tagautosig", ImVec2(sw, 0.0f))) {
+                if (ui::ToggleButton(sl, g_auto_signals != 0, ImVec2(sw, 0.0f))) {
                     g_auto_signals = g_auto_signals ? 0 : 1;
                     SavePrefBool(kPrefAutoSignals, g_auto_signals != 0);
                 }
-                if (g_auto_signals)
-                    dl->AddRect(sp, ImVec2(sp.x + sw, sp.y + head_h), ui::kAccentLine, ui::kRadiusSm);
-                dl->AddText(ImVec2(sp.x + 10.0f, ty), g_auto_signals ? ui::kAccent : ui::kMuted, sl);
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-                    ImGui::SetTooltip("Signals: with an auto row selected, shows each part it reads and\n"
-                                      "its sensitivity's line, to see why it found nothing.\n"
-                                      "A view setting only: nothing is written to the project.");
+                ui::ItemTip("Signals: with an auto row selected, shows each part it reads and\n"
+                            "its sensitivity's line, to see why it found nothing.\n"
+                            "A view setting only: nothing is written to the project.");
             }
             ImGui::SetCursorScreenPos(ImVec2(c0.x + avail_w - bw, c0.y));
             // Story 10-8b: auto blocks have no threshold: Analyse needs a rule.
             const bool can = m.item && m.has_record && m.missing_count == 0 && m.file_loaded &&
                              std::any_of(rules.blocks.begin(), rules.blocks.end(), [](const Block& b) { return !IsAutoBlock(b); });
             if (!can) ImGui::BeginDisabled();
-            if (ui::SolidButton("Analyse##taganalyse", ImVec2(bw, 0.0f))) Later([]() { TaggingAnalyse(); });
+            if (ui::SolidButton(label, ImVec2(bw, 0.0f))) Later([]() { TaggingAnalyse(); });
             if (!can) ImGui::EndDisabled();
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip("Proposes this item's thresholds from the clip.\nFixed (locked) conditions keep theirs.");
+            ui::ItemTip("Proposes this item's thresholds from the clip.\nFixed (locked) conditions keep theirs.");
         }
 
         // ---- The body: a gutter of labels, then the lanes over the view window ----
-        const float body_top = c0.y + head_h + 6.0f;
-        const float body_bottom = ImGui::GetWindowPos().y + ImGui::GetWindowSize().y - 6.0f;
-        const float gutter = std::min(160.0f, std::max(90.0f, avail_w * 0.22f));
+        const float body_top = c0.y + head_h + ui::Dp(6.0f);
+        const float body_bottom = ImGui::GetWindowPos().y + ImGui::GetWindowSize().y - ui::Dp(6.0f);
+        const float gutter = std::min(ui::Dp(160.0f), std::max(ui::Dp(90.0f), avail_w * 0.22f));
         const float lane_x = c0.x + gutter;
-        const float lane_w = std::max(20.0f, avail_w - gutter);
+        const float lane_w = std::max(ui::Dp(20.0f), avail_w - gutter);
         const float ruler_h = std::floor(ImGui::GetFontSize()) + kStripRulerTickRoom;
         const float rows_top = body_top + ruler_h;
         const ImVec2 area0(c0.x, body_top);
-        const ImVec2 area1(c0.x + avail_w, std::max(body_top + 10.0f, body_bottom));
+        const ImVec2 area1(c0.x + avail_w, std::max(body_top + ui::Dp(10.0f), body_bottom));
 
         // One invisible button over the body: it takes the clicks (seek, select, line drags).
         ImGui::SetCursorScreenPos(area0);
@@ -1066,7 +1059,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
             std::snprintf(miss_line, sizeof(miss_line), "%d role%s no bone on this skeleton: no signal to draw.",
                           m.missing_count, m.missing_count == 1 ? " has" : "s have");
             msg1 = miss_line;
-            msg_col = kBadText;
+            msg_col = ui::kBadInk;
             miss_names = "Missing: " + m.missing + ". Commit skips this item until they have a bone.";
             msg2 = miss_names.c_str();
         } else if (!m.sample_error.empty()) {
@@ -1102,10 +1095,9 @@ void DrawTaggingStrip(float x, float y, float w, float h)
 
             // The item's zone in the lanes area (outside it: dimmed).
             auto dim_outside = [&](float ya, float yb) {
-                constexpr ImU32 kOutsideDim = IM_COL32(0x12, 0x13, 0x17, 0xA6);
-                if (zx0 > lane_x) dl->AddRectFilled(ImVec2(lane_x, ya), ImVec2(std::min(zx0, lane_x + lane_w), yb), kOutsideDim);
+                if (zx0 > lane_x) dl->AddRectFilled(ImVec2(lane_x, ya), ImVec2(std::min(zx0, lane_x + lane_w), yb), ui::kOutsideDim);
                 if (zx1 < lane_x + lane_w)
-                    dl->AddRectFilled(ImVec2(std::max(zx1, lane_x), ya), ImVec2(lane_x + lane_w, yb), kOutsideDim);
+                    dl->AddRectFilled(ImVec2(std::max(zx1, lane_x), ya), ImVec2(lane_x + lane_w, yb), ui::kOutsideDim);
             };
 
             const bool can_draw = msg1 == nullptr && m.detected;
@@ -1118,11 +1110,11 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                 // ---- Notify rows: one per rule, its markers ----
                 const int nb = static_cast<int>(rules.blocks.size());
                 const ShownEvent* sel_ev = SelectedEvent(m);
-                const float row_h = std::max(16.0f, th + 6.0f);
+                const float row_h = std::max(ui::Dp(16.0f), th + ui::Dp(6.0f));
                 // 10-3 fb-2: every notify row and condition lane is one boxed track (a header
                 // cell in the gutter, its lane), kTrackGap apart. A shortened header keeps its
                 // full text for the tooltip.
-                constexpr float kTrackGap = 3.0f;
+                const float kTrackGap = ui::Dp(3.0f);
                 struct GutterTip {
                     float       y0, y1;
                     std::string text;
@@ -1136,7 +1128,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                     const bool sel = b == g_sel;
                     TrackFill(dl, c0.x, lane_x, lane_x + lane_w, ry, ry + row_h, ui::kBg);
                     if (sel)
-                        dl->AddRectFilled(ImVec2(lane_x, ry), ImVec2(lane_x + lane_w, ry + row_h), IM_COL32(0x5B, 0x8C, 0xFF, 0x1A),
+                        dl->AddRectFilled(ImVec2(lane_x, ry), ImVec2(lane_x + lane_w, ry + row_h), ui::kAccentFaint,
                                           ui::kRadiusSm, ImDrawFlags_RoundCornersRight);
                     dl->PushClipRect(ImVec2(lane_x, ry), ImVec2(lane_x + lane_w, ry + row_h), true);
                     // Story 10-4: the rule's events (detected, suppressed, orphan suppressions,
@@ -1167,22 +1159,22 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                     // last Commit's, kept until the role has a bone).
                     if (RowSkipped(m, b) && static_cast<size_t>(b) < m.skipped_missing.size()) {
                         const std::string note = "No bone for: " + m.skipped_missing[static_cast<size_t>(b)];
-                        const ImVec2      tp(lane_x + 6.0f, ry + (row_h - th) * 0.5f);
+                        const ImVec2      tp(lane_x + ui::Dp(6.0f), ry + (row_h - th) * 0.5f);
                         const ImVec2      ts = ImGui::CalcTextSize(note.c_str());
-                        dl->AddRectFilled(ImVec2(tp.x - 3.0f, ry + 1.0f),
-                                          ImVec2(std::min(tp.x + ts.x + 3.0f, lane_x + lane_w), ry + row_h - 1.0f),
+                        dl->AddRectFilled(ImVec2(tp.x - ui::Dp(3.0f), ry + 1.0f),
+                                          ImVec2(std::min(tp.x + ts.x + ui::Dp(3.0f), lane_x + lane_w), ry + row_h - 1.0f),
                                           WithAlpha(ui::kBg, 0x59), ui::kRadiusSm);  // light: the kept marks show through
-                        dl->AddText(tp, kBadText, note.c_str());
+                        dl->AddText(tp, ui::kBadInk, note.c_str());
                     }
                     dl->PopClipRect();
                     dim_outside(ry, ry + row_h);  // over the marks too (outside the item: dimmed)
                     TrackEdge(dl, c0.x, lane_x, lane_x + lane_w, ry, ry + row_h, sel ? ui::kAccentLine : ui::kStroke);
                     if (sel)  // the selected rule: a stripe in its colour on its header's left
                         RuleStripe(dl, ImVec2(c0.x, ry), ImVec2(lane_x + lane_w, ry + row_h), RuleColor(blk), ui::kRadiusSm);
-                    dl->AddCircleFilled(ImVec2(c0.x + 11.0f, ry + row_h * 0.5f), 3.5f,
+                    dl->AddCircleFilled(ImVec2(c0.x + ui::Dp(11.0f), ry + row_h * 0.5f), ui::Dp(3.5f),
                                         blk.enabled ? RuleColor(blk) : WithAlpha(RuleColor(blk), 0x66), 12);
                     const std::string title = RuleTitle(blk);
-                    if (EllipsisText(dl, ImVec2(c0.x + 20.0f, ry + (row_h - th) * 0.5f), lane_x - 5.0f,
+                    if (EllipsisText(dl, ImVec2(c0.x + ui::Dp(20.0f), ry + (row_h - th) * 0.5f), lane_x - ui::Dp(5.0f),
                                      blk.enabled ? (sel ? ui::kText : ui::kMuted) : ui::kFaint, title))
                         gutter_tips.push_back({ry, ry + row_h, title});
                 }
@@ -1194,11 +1186,12 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                 const BlockTrace* bt = (sel_blk && g_sel < static_cast<int>(m.trace.blocks.size()))
                                            ? &m.trace.blocks[static_cast<size_t>(g_sel)]
                                            : nullptr;
-                const float lanes_top = rows_bottom + 4.0f;
-                if (sel_blk && bt && bt->ran && lanes_top < area1.y - 20.0f) {
+                const float lanes_top = rows_bottom + ui::Dp(4.0f);
+                const float lanes_min = ui::Dp(20.0f);  // the room the lanes need under the rows
+                if (sel_blk && bt && bt->ran && lanes_top < area1.y - lanes_min) {
                     const int nc = static_cast<int>(sel_blk->conditions.size());
                     const float gap = kTrackGap;
-                    const float lh = std::max(28.0f, (area1.y - lanes_top - gap * static_cast<float>(nc - 1)) / nc);
+                    const float lh = std::max(ui::Dp(28.0f), (area1.y - lanes_top - gap * static_cast<float>(nc - 1)) / nc);
                     const Block* saved_blk =
                         g_sel < static_cast<int>(m.rules.blocks.size()) ? &m.rules.blocks[static_cast<size_t>(g_sel)] : nullptr;
                     const ImU32 rc = RuleColor(*sel_blk);
@@ -1211,7 +1204,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                         L.cond = c;
                         L.y0 = lanes_top + static_cast<float>(c) * (lh + gap);
                         L.y1 = std::min(L.y0 + lh, area1.y);
-                        if (L.y1 - L.y0 < 12.0f) break;
+                        if (L.y1 - L.y0 < ui::Dp(12.0f)) break;
                         const Condition& cd = sel_blk->conditions[static_cast<size_t>(c)];
                         const Condition* saved =
                             (saved_blk && c < static_cast<int>(saved_blk->conditions.size())) ? &saved_blk->conditions[static_cast<size_t>(c)]
@@ -1291,35 +1284,36 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                         dl->PopClipRect();
                         dim_outside(L.y0, L.y1);
                         TrackEdge(dl, c0.x, lane_x, lane_x + lane_w, L.y0, L.y1, ui::kStroke);
-                        dl->AddRectFilled(ImVec2(lane_x - 2.0f, yt - 4.0f), ImVec2(lane_x + 6.0f, yt + 4.0f), rc, 2.0f);
+                        dl->AddRectFilled(ImVec2(lane_x - ui::Dp(2.0f), yt - ui::Dp(4.0f)), ImVec2(lane_x + ui::Dp(6.0f), yt + ui::Dp(4.0f)), rc,
+                                          ui::Dp(2.0f));
 
                         // The gutter (the track's header cell): the signal's name, its
                         // condition, its value now; shortened with "..." to the cell.
-                        dl->PushClipRect(ImVec2(c0.x, L.y0), ImVec2(lane_x - 4.0f, L.y1), true);
-                        const float gx = c0.x + 6.0f, gx1 = lane_x - 5.0f;
+                        dl->PushClipRect(ImVec2(c0.x, L.y0), ImVec2(lane_x - ui::Dp(4.0f), L.y1), true);
+                        const float gx = c0.x + ui::Dp(6.0f), gx1 = lane_x - ui::Dp(5.0f);
                         const std::string name = std::string(c ? "AND " : "IF ") +
                                                  SignalName(cd.signal, SignalBoneLabel(cd.signal)) +
                                                  ((sel_blk->landing == Landing::PeakOf && sel_blk->peak_condition == c)
                                                       ? (sel_blk->peak_max ? "  (peak)" : "  (low)")
                                                       : "");
-                        bool cut = EllipsisText(dl, ImVec2(gx, L.y0 + 2.0f), gx1, ui::kText, name);
+                        bool cut = EllipsisText(dl, ImVec2(gx, L.y0 + ui::Dp(2.0f)), gx1, ui::kText, name);
                         std::string cond_text = std::string(cd.dir == Direction::Below ? "< " : "> ") +
                                                 FormatDisplay(cd.signal, cd.threshold);
                         if (m_ > 0.0) cond_text += "  margin " + FormatDisplay(cd.signal, m_);
-                        if (L.y1 - L.y0 > th * 2.0f + 4.0f) {
-                            if (EllipsisText(dl, ImVec2(gx, L.y0 + 3.0f + th), gx1, rc, cond_text)) cut = true;
+                        if (L.y1 - L.y0 > th * 2.0f + ui::Dp(4.0f)) {
+                            if (EllipsisText(dl, ImVec2(gx, L.y0 + ui::Dp(3.0f) + th), gx1, rc, cond_text)) cut = true;
                         } else {
                             cut = true;  // the condition line has no room: the tooltip shows it
                         }
                         std::string tip = name + "\n" + cond_text;
-                        if (now_in && L.y1 - L.y0 > th * 3.0f + 6.0f && !curve.empty()) {
+                        if (now_in && L.y1 - L.y0 > th * 3.0f + ui::Dp(6.0f) && !curve.empty()) {
                             const double pos = clip_now * rate_hz;
                             const double v_now = InterpSample(curve, pos);
                             const size_t hi_ = static_cast<size_t>(std::min<double>(static_cast<double>(curve.size() - 1),
                                                                                     std::max(0.0, std::round(pos))));
                             const bool in_now = hi_ < hold.size() && hold[hi_];
                             const std::string now_text = "now " + FormatDisplay(cd.signal, v_now);
-                            if (EllipsisText(dl, ImVec2(gx, L.y0 + 4.0f + 2.0f * th), gx1, in_now ? ui::kText : ui::kFaint,
+                            if (EllipsisText(dl, ImVec2(gx, L.y0 + ui::Dp(4.0f) + 2.0f * th), gx1, in_now ? ui::kText : ui::kFaint,
                                              now_text))
                                 cut = true;
                             tip += "\n" + now_text;
@@ -1327,7 +1321,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                         if (cut) gutter_tips.push_back({L.y0, L.y1, tip});
                         dl->PopClipRect();
                     }
-                } else if (sel_blk && sel_blk->enabled && g_auto_signals > 0 && IsAutoBlock(*sel_blk) && lanes_top < area1.y - 20.0f) {
+                } else if (sel_blk && sel_blk->enabled && g_auto_signals > 0 && IsAutoBlock(*sel_blk) && lanes_top < area1.y - lanes_min) {
                     // ---- Story 10-8s: the selected auto block's signals (read-only) ----
                     // One lane per part it reads: its signal vs its sensitivity's threshold, shaded
                     // where the part is in contact. Not in `lanes`: no drag takes them.
@@ -1339,7 +1333,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                     } else {
                         const int na = static_cast<int>(al.size());
                         const float gap = kTrackGap;
-                        const float lh = std::max(28.0f, (area1.y - lanes_top - gap * static_cast<float>(na - 1)) / na);
+                        const float lh = std::max(ui::Dp(28.0f), (area1.y - lanes_top - gap * static_cast<float>(na - 1)) / na);
                         const ImU32 rc = RuleColor(*sel_blk);
                         const double item_rate = m.map.rate > 0.0 ? m.map.rate : 1.0;
                         double clip_now = 0.0;
@@ -1349,7 +1343,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                             LaneGeom L;
                             L.y0 = lanes_top + static_cast<float>(c) * (lh + gap);
                             L.y1 = std::min(L.y0 + lh, area1.y);
-                            if (L.y1 - L.y0 < 12.0f) break;
+                            if (L.y1 - L.y0 < ui::Dp(12.0f)) break;
                             double vmax = A.threshold;
                             for (double v : A.curve)
                                 if (std::isfinite(v)) vmax = std::max(vmax, v);
@@ -1414,18 +1408,18 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                             TrackEdge(dl, c0.x, lane_x, lane_x + lane_w, L.y0, L.y1, ui::kStroke);
 
                             // The gutter: the part and signal, the threshold, its value now.
-                            dl->PushClipRect(ImVec2(c0.x, L.y0), ImVec2(lane_x - 4.0f, L.y1), true);
-                            const float gx = c0.x + 6.0f, gx1 = lane_x - 5.0f;
+                            dl->PushClipRect(ImVec2(c0.x, L.y0), ImVec2(lane_x - ui::Dp(4.0f), L.y1), true);
+                            const float gx = c0.x + ui::Dp(6.0f), gx1 = lane_x - ui::Dp(5.0f);
                             char buf[96];
                             std::snprintf(buf, sizeof(buf), "  %.2f %s", A.threshold, A.unit.c_str());
                             const std::string head = A.label + buf;  // "Heel L  speed  0.32 leg/s"
-                            EllipsisText(dl, ImVec2(gx, L.y0 + 2.0f), gx1, ui::kText, head);
+                            EllipsisText(dl, ImVec2(gx, L.y0 + ui::Dp(2.0f)), gx1, ui::kText, head);
                             std::string tip = head + "\nThe line is the threshold this sensitivity gives.";
                             if (now_in && !curve.empty()) {
                                 const double v_now = InterpSample(curve, clip_now * rate_hz);
                                 std::snprintf(buf, sizeof(buf), "now %.2f %s", v_now, A.unit.c_str());
-                                if (L.y1 - L.y0 > th * 2.0f + 4.0f)
-                                    EllipsisText(dl, ImVec2(gx, L.y0 + 3.0f + th), gx1,
+                                if (L.y1 - L.y0 > th * 2.0f + ui::Dp(4.0f))
+                                    EllipsisText(dl, ImVec2(gx, L.y0 + ui::Dp(3.0f) + th), gx1,
                                                  (A.above ? v_now > A.threshold : v_now < A.threshold) ? ui::kText : ui::kFaint, buf);
                                 tip += std::string("\n") + buf;
                             }
@@ -1439,7 +1433,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                             dl->PopClipRect();
                         }
                     }
-                } else if (sel_blk && lanes_top >= area1.y - 20.0f) {
+                } else if (sel_blk && lanes_top >= area1.y - lanes_min) {
                     // The notify rows leave no room for the lanes.
                     if (area1.y - rows_bottom > ImGui::GetTextLineHeight())
                         CenterLines(dl, ImVec2(lane_x, rows_bottom), area1, "Enlarge the strip to see this rule's signals",
@@ -1461,8 +1455,8 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                     const bool dragging = g_drag == StripDrag::Event && g_drag_moved && g_drag_ev.block == g_sel;
                     auto vline = [&](float x, ImU32 col, float thick, bool dashed) {
                         if (dashed) {
-                            for (float y = ly0; y < ly1; y += 5.0f)
-                                dl->AddLine(ImVec2(x, y), ImVec2(x, std::min(y + 2.5f, ly1)), col, thick);
+                            for (float y = ly0; y < ly1; y += ui::Dp(5.0f))
+                                dl->AddLine(ImVec2(x, y), ImVec2(x, std::min(y + ui::Dp(2.5f), ly1)), col, thick);
                         } else {
                             dl->AddLine(ImVec2(x, ly0), ImVec2(x, ly1), col, thick);
                         }
@@ -1502,12 +1496,12 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                         const float yt = L.Y(cd.threshold);
                         const double mg = std::max(0.0, cd.margin);
                         const float yr = L.Y(cd.dir == Direction::Below ? cd.threshold + mg : cd.threshold - mg);
-                        if (std::fabs(my - yt) <= 5.0f) {
+                        if (std::fabs(my - yt) <= ui::Dp(5.0f)) {
                             *cond = L.cond;
                             *margin = false;
                             return true;
                         }
-                        if (mg > 0.0 && std::fabs(my - yr) <= 5.0f) {
+                        if (mg > 0.0 && std::fabs(my - yr) <= ui::Dp(5.0f)) {
                             *cond = L.cond;
                             *margin = true;
                             return true;
@@ -1528,7 +1522,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                     // 10-8b fb-1: a skipped rule's events cannot be picked (nor edited).
                     if (b < 0 || RowSkipped(m, b) || mx < lane_x || mx > lane_x + lane_w) return nullptr;
                     const ShownEvent* best = nullptr;
-                    float best_d = 7.0f;
+                    float best_d = ui::Dp(7.0f);
                     for (const ShownEvent& e : m.events) {
                         double pt = 0.0;
                         if (e.block != b || !FirstPassProjectTime(m.map, e.t, &pt)) continue;
@@ -1571,7 +1565,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                 }
                 // Story 10-4: dragging an event (past 2 px) moves it; Esc cancels; release writes.
                 if (area_active && g_drag == StripDrag::Event) {
-                    if (!g_drag_moved && std::fabs(mouse.x - g_drag_press_x) > 2.0f) g_drag_moved = true;
+                    if (!g_drag_moved && std::fabs(mouse.x - g_drag_press_x) > ui::Dp(2.0f)) g_drag_moved = true;
                     if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
                         g_drag = StripDrag::None;  // inert until the release
                         g_drag_moved = false;
@@ -1650,23 +1644,21 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                     bool margin = false;
                     if (events_ok && event_at(mouse.x, mouse.y)) {
                         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-                        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-                            ImGui::SetTooltip("Click: select  " RAV_DOT "  Drag: make it yours at a new time\n"
-                                              "Right-click / Del: suppress, restore or delete");
+                        ui::ItemTip("Click: select  " RAV_DOT "  Drag: make it yours at a new time\n"
+                                    "Right-click / Del: suppress, restore or delete");
                     } else if (line_at(mouse.x, mouse.y, &cond, &margin)) {
                         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
                     } else if (mouse.x < lane_x) {
                         // 10-3 fb-2: a shortened header cell shows its full text.
-                        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-                            for (const GutterTip& g : gutter_tips)
-                                if (mouse.y >= g.y0 && mouse.y <= g.y1) {
-                                    ImGui::SetTooltip("%s", g.text.c_str());
-                                    break;
-                                }
-                    } else if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
-                        ImGui::SetTooltip("Click or drag to move the playhead\nDrag a threshold line (dashed: the re-arm "
-                                          "level) to tune it\nDouble-click a rule's row: add an event there\n"
-                                          "Alt+wheel: zoom  " RAV_DOT "  Shift+wheel: scroll");
+                        for (const GutterTip& g : gutter_tips)
+                            if (mouse.y >= g.y0 && mouse.y <= g.y1) {
+                                ui::ItemTipText(g.text.c_str());
+                                break;
+                            }
+                    } else {
+                        ui::ItemTip("Click or drag to move the playhead\nDrag a threshold line (dashed: the re-arm "
+                                    "level) to tune it\nDouble-click a rule's row: add an event there\n"
+                                    "Alt+wheel: zoom  " RAV_DOT "  Shift+wheel: scroll");
                     }
                 }
             }
@@ -1947,13 +1939,13 @@ void PmImport()
     g_pm.status.clear();
 }
 
-// Text clipped to [x0, x1].
-void ClippedText(ImDrawList* dl, float x0, float x1, float y, ImU32 col, const char* text)
+// 13-14: a row `w` wide is all a submenu needs to size itself (its rows are ui::SelectRow, as wide
+// as the window): an empty item that widens the window and takes no height.
+void ReserveRowWidth(float w)
 {
-    const ImVec2 lo(x0, y - 2.0f), hi(std::max(x0, x1), y + ImGui::GetTextLineHeight() + 2.0f);
-    dl->PushClipRect(lo, hi, true);
-    dl->AddText(ImVec2(x0, y), col, text);
-    dl->PopClipRect();
+    const float y = ImGui::GetCursorPosY();
+    ImGui::Dummy(ImVec2(w, 0.0f));
+    ImGui::SetCursorPosY(y);
 }
 
 // One preset row: the tick (the item's preset), the name, the padlock (Factory), the source tag
@@ -1965,41 +1957,43 @@ void PresetRow(const TaggingModel& m, const PresetInfo& p, bool with_source, flo
     const bool sel = g_pm.sel == p.id;
     const float rh = ImGui::GetFrameHeight();
     const ImVec2 r0 = ImGui::GetCursorScreenPos();
+    if (row_w > 0.0f) ReserveRowWidth(row_w);
     const float rw = row_w > 0.0f ? row_w : ImGui::GetContentRegionAvail().x;
-    if (ImGui::Selectable("##prow", sel, ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_NoAutoClosePopups,
-                          ImVec2(rw, rh))) {
+    if (ui::SelectRow("##prow", sel, 0, rh, ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_NoAutoClosePopups)) {
         g_pm.sel = p.id;
         if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) PmLoad(p.id);
     }
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float ty = r0.y + (rh - ImGui::GetTextLineHeight()) * 0.5f;
     float x = r0.x + indent;
-    if (m.has_preset && m.preset_id == p.id) IconCheck(dl, ImVec2(x + 5.0f, r0.y + rh * 0.5f), 4.0f, ui::kAccent);
-    x += 16.0f;
+    if (m.has_preset && m.preset_id == p.id)
+        IconCheck(dl, ImVec2(x + ui::Dp(5.0f), r0.y + rh * 0.5f), ui::Dp(4.0f), ui::kAccent);
+    x += ui::Dp(16.0f);
     const char* src = p.factory ? "Factory" : "User";
-    const float src_w = with_source ? ImGui::CalcTextSize(src).x + 8.0f : 0.0f;
-    const float lock_w = p.factory ? 14.0f : 0.0f;
+    const float src_w = with_source ? ImGui::CalcTextSize(src).x + ui::Dp(8.0f) : 0.0f;
+    const float lock_w = p.factory ? ui::Dp(14.0f) : 0.0f;
     const float name_w =
-        std::max(0.0f, std::min(ImGui::CalcTextSize(p.name.c_str()).x, r0.x + rw - src_w - lock_w - 6.0f - x));
-    ClippedText(dl, x, x + name_w, ty, ui::kText, p.name.c_str());
-    if (p.factory) IconLock(dl, ImVec2(x + name_w + 9.0f, r0.y + rh * 0.5f + 1.0f), 3.5f, ui::kMuted, true);
-    if (with_source) dl->AddText(ImVec2(r0.x + rw - src_w + 2.0f, ty), ui::kFaint, src);
-    if (ImGui::BeginPopupContextItem("##pctx")) {
+        std::max(0.0f, std::min(ImGui::CalcTextSize(p.name.c_str()).x, r0.x + rw - src_w - lock_w - ui::Dp(6.0f) - x));
+    EllipsisText(dl, ImVec2(x, ty), x + name_w, ui::kText, p.name);
+    if (p.factory)
+        IconLock(dl, ImVec2(x + name_w + ui::Dp(9.0f), r0.y + rh * 0.5f + ui::Dp(1.0f)), ui::Dp(3.5f), ui::kMuted, true);
+    if (with_source) dl->AddText(ImVec2(r0.x + rw - src_w + ui::Dp(2.0f), ty), ui::kFaint, src);
+    if (ui::BeginMenuPopupContextItem("##pctx")) {
         g_pm.sel = p.id;
         if (ImGui::MenuItem("Load")) PmLoad(p.id);
         if (p.factory) {
-            ImGui::Separator();
+            ui::MenuSeparator();
             ImGui::TextDisabled("%s", kFactoryReadOnly);
         }
-        if (ImGui::MenuItem("Rename...", "F2", false, !p.factory)) PmStartRenaming(p);
-        if (ImGui::MenuItem("Delete", "Del", false, !p.factory)) PmStartDelete(p);
+        if (ui::MenuEntry("Rename...", "F2", false, !p.factory)) PmStartRenaming(p);
+        if (ui::MenuEntry("Delete", "Del", false, !p.factory)) PmStartDelete(p);
         if (ImGui::MenuItem("Export...")) PmExport(p.id, p.name);
-        ImGui::EndPopup();
+        ui::EndMenuPopup();
     }
     ImGui::PopID();
 }
 
-// A row's width in a cascade submenu (DM-XYZ-Pad's ROW_W).
+// A row's width in a cascade submenu (DM-XYZ-Pad's ROW_W), mockup px.
 constexpr float kPresetRowW = 260.0f;
 
 // One cascade entry, as DM-XYZ-Pad: "Factory (n) >" opens a submenu on hover with its rows (or
@@ -2007,53 +2001,33 @@ constexpr float kPresetRowW = 260.0f;
 bool PresetCascadeMenu(const TaggingModel& m, const std::vector<PresetInfo>& presets, bool factory)
 {
     const std::string label = CascadeLabel(factory, CountPresets(presets, factory)) + (factory ? "##pcf" : "##pcu");
-    if (!ImGui::BeginMenu(label.c_str())) return false;
+    if (!ui::BeginSubMenu(label.c_str())) return false;
+    const float row_w = ui::Dp(kPresetRowW);
     const std::vector<int> list = PresetMenuRows(presets, "", factory ? PresetCascade::Factory : PresetCascade::User);
     if (list.empty()) {
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + kPresetRowW);
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + row_w);
         ImGui::TextDisabled("%s", EmptyCascadeText(factory));
         ImGui::PopTextWrapPos();
     }
-    for (int i : list) PresetRow(m, presets[static_cast<size_t>(i)], /*with_source=*/false, 4.0f, kPresetRowW);
-    ImGui::Separator();
+    for (int i : list) PresetRow(m, presets[static_cast<size_t>(i)], /*with_source=*/false, ui::Dp(4.0f), row_w);
+    ui::MenuSeparator();
     if (factory) {
         ImGui::TextDisabled("Built into ReaAnimViewer");
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-            ImGui::SetTooltip("Factory presets ship with the extension and update with it (read-only)");
+        ui::ItemTip("Factory presets ship with the extension and update with it (read-only)");
     } else {
         // The folder, shortened from the start (its end is what tells folders apart).
         const std::string dir = UserPresetDir(RulesResourceRoot());
         std::string shown = dir;
-        while (shown.size() > 4 && ImGui::CalcTextSize(shown.c_str()).x > kPresetRowW) {
+        while (shown.size() > 4 && ImGui::CalcTextSize(shown.c_str()).x > row_w) {
             shown.erase(0, 4);
             while (!shown.empty() && (static_cast<unsigned char>(shown[0]) & 0xC0) == 0x80) shown.erase(0, 1);
         }
         if (shown != dir) shown = "..." + shown;
         ImGui::TextDisabled("%s", shown.c_str());
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("%s", dir.c_str());
+        ui::ItemTipText(dir.c_str());
     }
     ImGui::EndMenu();
     return true;
-}
-
-bool AmberButton(const char* label)
-{
-    ImGui::PushStyleColor(ImGuiCol_Button, ui::Col(ui::kConfirmAct));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ui::Col(ui::kConfirmActHover));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ui::Col(ui::kConfirmAct));
-    ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kConfirmActText));
-    const bool pressed = ImGui::Button(label);
-    ImGui::PopStyleColor(4);
-    return pressed;
-}
-
-void WrappedText(ImU32 col, const std::string& text, float wrap_w)
-{
-    ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(col));
-    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrap_w);
-    ImGui::TextUnformatted(text.c_str());
-    ImGui::PopTextWrapPos();
-    ImGui::PopStyleColor();
 }
 
 // The keys, read before the widgets (a mode change takes effect on the next frame's widgets).
@@ -2093,10 +2067,11 @@ void PresetMenuKeys(const std::vector<std::string>& visible)
     else if (pressed(ImGuiKey_Delete) && (!g_pm_search_active || g_pm_query[0] == '\0')) PmStartDelete(*sel);
 }
 
-void DrawPresetMenu(const TaggingModel& m, float menu_w)
+void DrawPresetMenu(const TaggingModel& m)
 {
     const std::vector<PresetInfo>& presets = CachedPresets();
-    const float inner_w = menu_w - ImGui::GetStyle().WindowPadding.x * 2.0f;
+    // 13-14: the panel popup's own padding (its width is fixed: the field's).
+    const float inner_w = ImGui::GetContentRegionAvail().x;
     const bool busy = g_pm.mode == PresetMenuMode::Confirm;
 
     // The rows the keys walk (last frame's query and submenu): the search hits, else the open
@@ -2115,13 +2090,12 @@ void DrawPresetMenu(const TaggingModel& m, float menu_w)
 
     // Search.
     ImGui::BeginDisabled(busy);
-    ImGui::SetNextItemWidth(-1.0f);
     if (g_pm_focus_search) {
         ImGui::SetKeyboardFocusHere();
         g_pm_focus_search = false;
     }
     const std::string ph = SearchPlaceholder(static_cast<int>(presets.size()));
-    ImGui::InputTextWithHint("##pq", ph.c_str(), g_pm_query, sizeof(g_pm_query));
+    ui::TextField("##pq", ph.c_str(), g_pm_query, sizeof(g_pm_query));
     g_pm_search_active = ImGui::IsItemActive();
     ImGui::Separator();
 
@@ -2129,7 +2103,7 @@ void DrawPresetMenu(const TaggingModel& m, float menu_w)
     if (g_pm_query[0] != '\0') {
         const std::vector<int> hits = PresetMenuRows(presets, g_pm_query, PresetCascade::None);
         if (hits.empty()) ImGui::TextDisabled("%s", kNoPresetMatches);
-        for (int i : hits) PresetRow(m, presets[static_cast<size_t>(i)], /*with_source=*/true, 4.0f);
+        for (int i : hits) PresetRow(m, presets[static_cast<size_t>(i)], /*with_source=*/true, ui::Dp(4.0f));
     } else {
         // Factory (n) > / User (n) >: submenus that open on hover.
         // Up / Down with no submenu open: open the walked folder's, so the selection shows.
@@ -2148,70 +2122,57 @@ void DrawPresetMenu(const TaggingModel& m, float menu_w)
 
     // The Save row, the name field, or the amber confirm.
     if (g_pm.mode == PresetMenuMode::Confirm) {
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        dl->ChannelsSplit(2);
-        dl->ChannelsSetCurrent(1);
-        const ImVec2 b0 = ImGui::GetCursorScreenPos();
-        ImGui::Indent(6.0f);
-        ImGui::Dummy(ImVec2(0.0f, 2.0f));
+        ui::ConfirmBand band;
+        ui::BeginConfirmBand(band, inner_w);
         ImGui::TextUnformatted(ConfirmQuestion(g_pm.confirm, g_pm.target_name).c_str());
-        WrappedText(ui::kMuted, ConfirmDetail(g_pm.confirm, g_pm.confirm_clash), inner_w - 12.0f);
+        ui::ToneText(ConfirmDetail(g_pm.confirm, g_pm.confirm_clash), ui::kMuted, /*wrap=*/true);
         if (ui::SolidButton("Cancel##pccancel")) PmCancel();
         ImGui::SameLine();
-        if (AmberButton(ConfirmAction(g_pm.confirm))) PmConfirmed();
-        ImGui::TextDisabled("%s", ConfirmHint(g_pm.confirm));
-        ImGui::Dummy(ImVec2(0.0f, 1.0f));
-        ImGui::Unindent(6.0f);
-        const ImVec2 b1(b0.x + inner_w, ImGui::GetCursorScreenPos().y - ImGui::GetStyle().ItemSpacing.y * 0.5f);
-        dl->ChannelsSetCurrent(0);
-        dl->AddRectFilled(b0, b1, WithAlpha(ui::kConfirmLine, 0x14), ui::kRadiusMd);
-        dl->AddRect(b0, b1, ui::kConfirmLine, ui::kRadiusMd);
-        dl->ChannelsMerge();
+        if (ui::ConfirmButton(ConfirmAction(g_pm.confirm))) PmConfirmed();
+        ui::ToneText(ConfirmHint(g_pm.confirm), ui::kFaint);
+        ui::EndConfirmBand(band);
     } else if (g_pm.mode == PresetMenuMode::Naming || g_pm.mode == PresetMenuMode::Renaming) {
-        if (g_pm.mode == PresetMenuMode::Renaming)
-            ImGui::TextDisabled("Rename %s", g_pm.target_name.c_str());
-        ImGui::SetNextItemWidth(-1.0f);
+        if (g_pm.mode == PresetMenuMode::Renaming) ui::ToneText("Rename " + g_pm.target_name, ui::kFaint);
         if (g_pm_focus_name) {
             ImGui::SetKeyboardFocusHere();
             g_pm_focus_name = false;
         }
-        if (ImGui::InputTextWithHint("##pname", "Preset name", g_pm_name, sizeof(g_pm_name),
-                                     ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll))
+        if (ui::TextField("##pname", "Preset name", g_pm_name, sizeof(g_pm_name), 0.0f,
+                          ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll))
             PmSubmitName();
     } else {
         const bool can_write = m.has_record && !m.rules.blocks.empty();
         const bool factory = m.has_preset && m.preset_factory;
         const std::string save_label =
             std::string("Save") + (m.has_preset && !factory ? " " + m.preset_name : std::string()) + "##psave";
-        const float as_w = ImGui::CalcTextSize("+ Save as...").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+        const float as_w = ui::ButtonWidth("+ Save as...##psaveas");
         const bool gone = m.has_preset && m.preset_gone;
         const bool unchanged = m.has_preset && !gone && m.preset_state == PresetState::UpToDate;
         ImGui::BeginDisabled(!can_write || factory || gone || unchanged);
-        if (ui::SolidButton(save_label.c_str(), ImVec2(std::max(40.0f, inner_w - as_w - ImGui::GetStyle().ItemSpacing.x), 0.0f))) {
+        if (ui::SolidButton(save_label.c_str(), ImVec2(std::max(ui::Dp(40.0f), inner_w - as_w - ImGui::GetStyle().ItemSpacing.x), 0.0f))) {
             if (!m.has_preset) PmStatus(kNothingLoadedToSave);
             else PmConfirm(PresetConfirm::Overwrite, m.preset_id, m.preset_name, false);
         }
         ImGui::EndDisabled();
-        if (m.has_preset && !factory && can_write &&
-            ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled)) {
+        if (m.has_preset && !factory && can_write) {
             if (gone)
-                ImGui::SetTooltip("%s: Save as writes it again", kPresetGoneTip);
+                ui::ItemTip("%s: Save as writes it again", kPresetGoneTip);
             else if (unchanged)
-                ImGui::SetTooltip("No change to save: this item's rules are %s as it is", m.preset_name.c_str());
+                ui::ItemTip("No change to save: this item's rules are %s as it is", m.preset_name.c_str());
             else
-                ImGui::SetTooltip("Overwrite %s with this item's rules", m.preset_name.c_str());
+                ui::ItemTip("Overwrite %s with this item's rules", m.preset_name.c_str());
         }
         ImGui::SameLine();
         ImGui::BeginDisabled(!can_write);
         if (ui::SolidButton("+ Save as...##psaveas")) PmStartNaming();
         ImGui::EndDisabled();
-        if (factory) WrappedText(ui::kFaint, FactorySaveNote(m.preset_name), inner_w);
-        if (!can_write) WrappedText(ui::kFaint, "Nothing to save yet: add a rule (+ Rule) or load a preset.", inner_w);
+        if (factory) ui::ToneText(FactorySaveNote(m.preset_name), ui::kFaint, true, inner_w);
+        if (!can_write) ui::ToneText("Nothing to save yet: add a rule (+ Rule) or load a preset.", ui::kFaint, true, inner_w);
     }
 
     // The status line (or the mode's hint).
     const std::string status = g_pm.status.empty() ? std::string(PresetMenuHint(g_pm.mode)) : g_pm.status;
-    if (!status.empty()) WrappedText(ui::kMuted, status, inner_w);
+    if (!status.empty()) ui::ToneText(status, ui::kMuted, true, inner_w);
 
     // The User folder, with Copy.
     ImGui::BeginDisabled(busy);
@@ -2219,31 +2180,29 @@ void DrawPresetMenu(const TaggingModel& m, float menu_w)
         const std::string dir = UserPresetDir(RulesResourceRoot());
         const float fh = ImGui::GetFrameHeight();
         const ImVec2 r0 = ImGui::GetCursorScreenPos();
-        const float path_w = std::max(20.0f, inner_w - fh - 6.0f);
+        const float path_w = std::max(ui::Dp(20.0f), inner_w - fh - ui::Dp(6.0f));
         ImGui::Dummy(ImVec2(path_w, fh));
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("%s\nYour User presets", dir.c_str());
+        ui::ItemTipText((dir + "\nYour User presets").c_str());
         ImDrawList* dl = ImGui::GetWindowDrawList();
-        ClippedText(dl, r0.x, r0.x + path_w, r0.y + (fh - ImGui::GetTextLineHeight()) * 0.5f, ui::kFaint, dir.c_str());
+        EllipsisText(dl, ImVec2(r0.x, r0.y + (fh - ImGui::GetTextLineHeight()) * 0.5f), r0.x + path_w, ui::kFaint, dir);
         ImGui::SameLine();
-        if (IconButton("##pcopy", fh, [](ImDrawList* d, ImVec2 c, ImU32 col) { IconDuplicate(d, c, 4.5f, col); }, !busy)) {
+        if (ui::IconOnlyButton("##pcopy", Glyph(kGlyphDuplicate), nullptr, fh)) {  // disabled while busy (above)
             ImGui::SetClipboardText(dir.c_str());
             PmStatus(kFolderCopied);
         }
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("Copy the folder path");
+        ui::ItemTip("Copy the folder path");
     }
     // Import / Export.
-    if (ImGui::SmallButton("Import...##pimport")) PmImport();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Copies a .ravpreset file into your User folder");
+    if (ui::SolidButton("Import...##pimport")) PmImport();
+    ui::ItemTip("Copies a .ravpreset file into your User folder");
     ImGui::SameLine();
-    if (ImGui::SmallButton("Export...##pexport")) {
+    if (ui::SolidButton("Export...##pexport")) {
         const PresetInfo* p = !g_pm.sel.empty() ? PresetById(g_pm.sel) : nullptr;
         if (!p && m.has_preset && !m.preset_gone) p = PresetById(m.preset_id);
         if (p) PmExport(p->id, p->name);
         else PmStatus("Select a preset to export.");
     }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-        ImGui::SetTooltip("Writes the selected (or loaded) preset to a file you can send");
+    ui::ItemTip("Writes the selected (or loaded) preset to a file you can send");
     ImGui::EndDisabled();
 }
 
@@ -2251,28 +2210,9 @@ void DrawPresetMenu(const TaggingModel& m, float menu_w)
 // Under it, the Legacy band (Update / Keep) when the preset on disk has another version.
 void DrawPresetField(const TaggingModel& m)
 {
-    ImDrawList* dl = ImGui::GetWindowDrawList();
     const float fh = ImGui::GetFrameHeight();
     const ImVec2 p = ImGui::GetCursorScreenPos();
     const float w = ImGui::GetContentRegionAvail().x;
-    if (ImGui::InvisibleButton("##presetfield", ImVec2(w, fh))) {
-        CachedPresets(/*refresh=*/true);  // the menu opens on the files as they are now
-        ResetPresetMenu();
-        g_pm.open = true;
-        g_pm_focus_search = true;
-        ImGui::OpenPopup("##tagpresets");
-    }
-    const bool hov = ImGui::IsItemHovered();
-    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + fh), hov ? ui::kHover : ui::kRaised, ui::kRadiusSm);
-    dl->AddRect(p, ImVec2(p.x + w, p.y + fh), g_pm.open ? ui::kAccentLine : ui::kStroke, ui::kRadiusSm);
-    const float ty = p.y + (fh - ImGui::GetTextLineHeight()) * 0.5f;
-    float x = p.x + 8.0f;
-    dl->AddText(ImVec2(x, ty), ui::kMuted, "Preset:");
-    x += ImGui::CalcTextSize("Preset:").x + 6.0f;
-    if (m.has_preset && m.preset_factory) {
-        IconLock(dl, ImVec2(x + 4.0f, p.y + fh * 0.5f + 1.0f), 4.0f, ui::kMuted, true);
-        x += 12.0f;
-    }
     const char* name = m.has_preset ? m.preset_name.c_str() : "none";
     const bool legacy = m.has_preset && m.preset_state == PresetState::Legacy;
     const bool kept = ShowKeptTag(m.has_preset, m.preset_gone, m.kept_version, m.disk_version);
@@ -2283,83 +2223,77 @@ void DrawPresetField(const TaggingModel& m)
         if (m.preset_state == PresetState::Edited) tag = "edited";
         if (kept) tag += (tag.empty() ? "" : "  ") + KeptTag(m.preset_version);
     }
-    const float tag_w = !tag.empty() ? ImGui::CalcTextSize(tag.c_str()).x + 12.0f : 0.0f;
-    ClippedText(dl, x, p.x + w - tag_w - 18.0f, ty, m.preset_gone ? ui::kMuted : ui::kText, name);
-    if (!tag.empty()) dl->AddText(ImVec2(p.x + w - tag_w - 14.0f, ty), legacy ? ui::kWarn : ui::kFaint, tag.c_str());
-    // The chevron.
-    const ImVec2 cc(p.x + w - 10.0f, p.y + fh * 0.5f);
-    dl->AddTriangleFilled(ImVec2(cc.x - 3.5f, cc.y - 2.0f), ImVec2(cc.x + 3.5f, cc.y - 2.0f), ImVec2(cc.x, cc.y + 2.5f),
-                          ui::kMuted);
-    if (hov && !g_pm.open && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
+    // 13-14: the theme's select field (G-17): "Preset:", the padlock (Factory), the name, the tag.
+    const ui::Icon lock = Glyph(kGlyphLockClosed);
+    ui::SelectFieldOpts fo;
+    fo.tag = tag.empty() ? nullptr : tag.c_str();
+    fo.tag_tone = legacy ? ui::TagTone::Warn : ui::TagTone::Neutral;
+    fo.open = g_pm.open;
+    fo.width = w;
+    fo.icon = (m.has_preset && m.preset_factory) ? &lock : nullptr;
+    fo.value_col = m.preset_gone ? ui::kMuted : 0;
+    if (ui::SelectField("##presetfield", "Preset:", name, fo)) {
+        CachedPresets(/*refresh=*/true);  // the menu opens on the files as they are now
+        ResetPresetMenu();
+        g_pm.open = true;
+        g_pm_focus_search = true;
+        ImGui::OpenPopup("##tagpresets");
+    }
+    if (!g_pm.open) {
         if (m.preset_gone)
-            ImGui::SetTooltip("%s", kPresetGoneTip);
+            ui::ItemTipText(kPresetGoneTip);
         else
-            ImGui::SetTooltip(m.preset_factory ? "A factory preset (read-only). Click for the preset menu."
-                                               : "Click for the preset menu: load, save, rename, import, export");
+            ui::ItemTipText(m.preset_factory ? "A factory preset (read-only). Click for the preset menu."
+                                             : "Click for the preset menu: load, save, rename, import, export");
     }
 
-    // The menu.
-    ImGui::SetNextWindowPos(ImVec2(p.x, p.y + fh + 2.0f), ImGuiCond_Always);
-    ImGui::SetNextWindowSizeConstraints(ImVec2(w, 0.0f), ImVec2(w, 560.0f));
-    ImGui::PushStyleColor(ImGuiCol_PopupBg, ui::Col(ui::kRaised));
-    ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStrokeStrong));
+    // The menu (13-14: the theme's panel popup, G-8).
+    ImGui::SetNextWindowPos(ImVec2(p.x, p.y + fh + ui::Dp(2.0f)), ImGuiCond_Always);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(w, 0.0f), ImVec2(w, ui::Dp(560.0f)));
     g_pm_drawn_frame = ImGui::GetFrameCount();
-    const bool open = ImGui::BeginPopup("##tagpresets");
-    ImGui::PopStyleColor(2);
-    if (open) {
+    if (ui::BeginPanelPopup("##tagpresets")) {
         if (!g_pm.open) {  // opened another way (never): start clean
             ResetPresetMenu();
             g_pm.open = true;
         }
-        DrawPresetMenu(m, w);
+        DrawPresetMenu(m);
         if (g_pm_close) {
             ImGui::CloseCurrentPopup();
             ResetPresetMenu();
         }
-        ImGui::EndPopup();
+        ui::EndPanelPopup();
     } else if (g_pm.open) {
         ResetPresetMenu();  // closed (a click outside, Esc): a pending confirm or name counts as Cancel
     }
 
     // The Legacy band: "Legacy - v3 is installed  [Update] [Keep v2]" (the buttons wrap under
-    // the text when the panel is narrow).
+    // the text when the panel is narrow). 13-14: the theme's warn band (G-2).
     if (m.has_record && m.has_preset && !m.preset_gone && m.preset_state == PresetState::Legacy) {
         ImGui::Dummy(ImVec2(0.0f, 1.0f));
         const ImGuiStyle& st = ImGui::GetStyle();
         const std::string text = LegacyText(m.disk_version);
-        const std::string keep = KeepLabel(m.preset_version);
-        const float keep_w = ImGui::CalcTextSize(keep.c_str()).x + st.FramePadding.x * 2.0f;
-        const float up_w = ImGui::CalcTextSize("Update").x + st.FramePadding.x * 2.0f;
+        const std::string keep = KeepLabel(m.preset_version) + "##lgkeep";
+        const float keep_w = ui::ButtonWidth(keep.c_str());
+        const float up_w = ui::ButtonWidth("Update##lgup");
         const float text_w = ImGui::CalcTextSize(text.c_str()).x;
-        const bool one_line = 8.0f + text_w + 12.0f + up_w + st.ItemSpacing.x + keep_w + 6.0f <= w;
-        dl->ChannelsSplit(2);
-        dl->ChannelsSetCurrent(1);
-        const ImVec2 b0 = ImGui::GetCursorScreenPos();
-        ImGui::SetCursorScreenPos(ImVec2(b0.x + 8.0f, b0.y + 3.0f));
+        ui::ConfirmBand band;
+        ui::BeginConfirmBand(band, w, /*warn=*/true);
+        const float inner_r = ui::LineRight();
+        const float inner_w = ImGui::GetContentRegionAvail().x;
+        const bool one_line = text_w + ui::Dp(12.0f) + up_w + st.ItemSpacing.x + keep_w <= inner_w;
         ImGui::AlignTextToFramePadding();
-        ImGui::TextColored(ui::Col(ui::kWarn), "%s", text.c_str());
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-            ImGui::SetTooltip("This item uses v%d of %s. Update takes the installed version; Keep stays on v%d.",
-                              m.preset_version, m.preset_name.c_str(), m.preset_version);
-        const float bx = b0.x + w - 6.0f - keep_w - up_w - st.ItemSpacing.x;
-        if (one_line) {
-            ImGui::SameLine();
-            ImGui::SetCursorScreenPos(ImVec2(std::max(ImGui::GetCursorScreenPos().x, bx), ImGui::GetCursorScreenPos().y));
-        } else {
-            ImGui::SetCursorScreenPos(ImVec2(std::max(b0.x + 8.0f, bx), ImGui::GetCursorScreenPos().y));
-        }
-        if (AmberButton("Update##lgup")) {
+        ui::ToneText(text, ui::kWarn);
+        ui::ItemTip("This item uses v%d of %s. Update takes the installed version; Keep stays on v%d.",
+                    m.preset_version, m.preset_name.c_str(), m.preset_version);
+        const float bx = inner_r - keep_w - up_w - st.ItemSpacing.x;
+        if (one_line) ImGui::SameLine();  // else under the text
+        ImGui::SetCursorScreenPos(ImVec2(std::max(ImGui::GetCursorScreenPos().x, bx), ImGui::GetCursorScreenPos().y));
+        if (ui::ConfirmButton("Update##lgup")) {
             Later([]() { TaggingUpdatePreset(); });  // the footer's last Commit line goes stale with the write
         }
         ImGui::SameLine();
-        if (ui::SolidButton((keep + "##lgkeep").c_str())) Later([]() { TaggingKeepPreset(); });
-        const float y1 = ImGui::GetItemRectMax().y + 3.0f;
-        dl->ChannelsSetCurrent(0);
-        dl->AddRectFilled(b0, ImVec2(b0.x + w, y1), WithAlpha(ui::kWarn, 0x14), ui::kRadiusSm);
-        dl->AddRect(b0, ImVec2(b0.x + w, y1), ui::kConfirmLine, ui::kRadiusSm);
-        dl->ChannelsMerge();
-        ImGui::SetCursorScreenPos(ImVec2(b0.x, y1));
-        ImGui::Dummy(ImVec2(w, 0.0f));
+        if (ui::SolidButton(keep.c_str())) Later([]() { TaggingKeepPreset(); });
+        ui::EndConfirmBand(band);
     }
 }
 
@@ -2752,30 +2686,6 @@ void RolesStartRename(const std::string& key, const std::string& name)
     g_roles_last_custom = key;
 }
 
-void IconUndo(ImDrawList* dl, ImVec2 c, float r, ImU32 col)
-{
-    const float pi = 3.14159265f;
-    dl->PathArcTo(ImVec2(c.x, c.y + 1.5f), r, pi, pi * 2.45f, 14);
-    dl->PathStroke(col, ImDrawFlags_None, 1.5f);
-    const ImVec2 s(c.x - r, c.y + 1.5f);
-    dl->AddTriangleFilled(ImVec2(s.x - 3.2f, s.y - 1.0f), ImVec2(s.x + 3.2f, s.y - 1.0f), ImVec2(s.x, s.y + 3.5f), col);
-}
-
-// The mock-up's .tag pill, vertically centred on a frame-high line.
-void TagPill(const char* text, ImU32 text_col, ImU32 edge)
-{
-    ImDrawList*  dl = ImGui::GetWindowDrawList();
-    const float  fh = ImGui::GetFrameHeight();
-    const ImVec2 ts = ImGui::CalcTextSize(text);
-    const float  h = ts.y + 4.0f, w = ts.x + 18.0f;
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    ImGui::Dummy(ImVec2(w, fh));
-    const float y = p.y + (fh - h) * 0.5f;
-    dl->AddRectFilled(ImVec2(p.x, y), ImVec2(p.x + w, y + h), ui::kBg, h * 0.5f);
-    dl->AddRect(ImVec2(p.x, y), ImVec2(p.x + w, y + h), edge, h * 0.5f);
-    dl->AddText(ImVec2(p.x + 9.0f, y + 2.0f), text_col, text);
-}
-
 bool ContainsNoCase(const std::string& hay, const char* needle)
 {
     const size_t n = std::strlen(needle);
@@ -2805,19 +2715,18 @@ void RolesMenu(const std::string& key, const StoredRoleEntry& e)
         ")";
     const bool builtin = RoleFromKey(key, nullptr);
     if (ImGui::Selectable(auto_label.c_str(), !e.stored) && e.stored) RolesChange(key, RoleChangeKind::Auto, "");
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-        ImGui::SetTooltip(builtin ? "Back to RAV's guess from the bone names"
-                                  : "Back to RAV's guess: a bone named like the one you picked for this role on "
-                                    "another skeleton");
+    ui::ItemTipText(builtin ? "Back to RAV's guess from the bone names"
+                            : "Back to RAV's guess: a bone named like the one you picked for this role on "
+                              "another skeleton");
     const bool is_none = e.stored && e.bone.empty();
     if (ImGui::Selectable("\xE2\x80\x94 none \xE2\x80\x94", is_none) && !is_none) RolesChange(key, RoleChangeKind::None, "");
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("No bone plays this role");
-    ImGui::Separator();
-    ImGui::SetNextItemWidth(-1.0f);
+    ui::ItemTip("No bone plays this role");
+    ui::MenuSeparator();
     if (g_roles_menu_appearing) ImGui::SetKeyboardFocusHere();
-    ImGui::InputTextWithHint("##rq", "Search bones", g_roles_query, sizeof(g_roles_query));
+    ui::TextField("##rq", "Search bones", g_roles_query, sizeof(g_roles_query));
     const float lh = ImGui::GetTextLineHeightWithSpacing();
-    const float list_h = std::min(300.0f, lh * static_cast<float>(std::max<size_t>(1, g_roles_names.size())) + 8.0f);
+    const float list_h =
+        std::min(ui::Dp(300.0f), lh * static_cast<float>(std::max<size_t>(1, g_roles_names.size())) + ui::Dp(8.0f));
     if (ImGui::BeginChild("##rbones", ImVec2(0.0f, list_h), ImGuiChildFlags_None)) {
         const bool searching = g_roles_query[0] != '\0';
         int shown = 0;
@@ -2827,7 +2736,7 @@ void RolesMenu(const std::string& key, const StoredRoleEntry& e)
             ++shown;
             ImGui::PushID(static_cast<int>(i));
             if (!searching && i < g_roles_depth.size())
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 10.0f * static_cast<float>(std::min(g_roles_depth[i], 20)));
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ui::Dp(10.0f) * static_cast<float>(std::min(g_roles_depth[i], 20)));
             // The store also matches a stored bone by its normalized name (another namespace).
             const bool sel = e.stored && !e.bone.empty() &&
                              (nm == e.bone || NormalizeBoneName(nm) == NormalizeBoneName(e.bone));
@@ -2855,29 +2764,18 @@ std::string RoleRowLabel(const std::string& name)
 // The amber in-place confirm of a role's delete (the preset menu's pattern).
 void RolesDeleteConfirm(const RoleRow& row, bool used, float inner_w)
 {
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->ChannelsSplit(2);
-    dl->ChannelsSetCurrent(1);
-    const ImVec2 b0 = ImGui::GetCursorScreenPos();
-    ImGui::Indent(6.0f);
-    ImGui::Dummy(ImVec2(0.0f, 2.0f));
+    ui::ConfirmBand band;
+    ui::BeginConfirmBand(band, inner_w);
     ImGui::TextUnformatted(("Delete the role \"" + row.name + "\"?").c_str());
-    WrappedText(ui::kMuted,
-                std::string(used ? "These rules use it. " : "") + "Rules and presets keep it; its bones stay remembered.",
-                inner_w - 12.0f);
+    ui::ToneText(std::string(used ? "These rules use it. " : "") + "Rules and presets keep it; its bones stay remembered.",
+                 ui::kMuted, /*wrap=*/true);
     if (ui::SolidButton("Cancel##rdcancel")) g_roles_confirm_key.clear();
     ImGui::SameLine();
-    if (AmberButton("Delete##rdok")) {
+    if (ui::ConfirmButton("Delete##rdok")) {
         RolesDelete(row.key);
         g_roles_confirm_key.clear();
     }
-    ImGui::Dummy(ImVec2(0.0f, 1.0f));
-    ImGui::Unindent(6.0f);
-    const ImVec2 b1(b0.x + inner_w, ImGui::GetCursorScreenPos().y - ImGui::GetStyle().ItemSpacing.y * 0.5f);
-    dl->ChannelsSetCurrent(0);
-    dl->AddRectFilled(b0, b1, WithAlpha(ui::kConfirmLine, 0x14), ui::kRadiusMd);
-    dl->AddRect(b0, b1, ui::kConfirmLine, ui::kRadiusMd);
-    dl->ChannelsMerge();
+    ui::EndConfirmBand(band);
 }
 
 void RolesWindow(const TaggingModel& m)
@@ -2907,17 +2805,11 @@ void RolesWindow(const TaggingModel& m)
         if (!confirm_ok) g_roles_confirm_key.clear();
     }
 
+    // 13-14: the theme's modal card (G-7): centred, its height capped to the viewport (a short docked
+    // panel: the body scrolls instead of running off-screen).
     const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(std::max(260.0f, std::min(kRolesW, vp->Size.x - 32.0f)), 0.0f), ImGuiCond_Always);
-    // A short docked panel: the body scrolls instead of running off-screen.
-    ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, std::max(120.0f, vp->Size.y - 32.0f)));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f, 14.0f));
-    ImGui::PushStyleColor(ImGuiCol_PopupBg, ui::Col(ui::kRaised));
-    ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStrokeStrong));
-    constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                                        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings;
-    if (ImGui::BeginPopupModal(kRolesId, nullptr, kFlags)) {
+    const float width = std::max(ui::Dp(260.0f), std::min(ui::Dp(kRolesW), vp->Size.x - ui::Dp(32.0f)));
+    if (ui::BeginModalCard(kRolesId, 0, width)) {
         g_roles_drawn_frame = frame;
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const float fh = ImGui::GetFrameHeight();
@@ -2958,47 +2850,38 @@ void RolesWindow(const TaggingModel& m)
         }
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted("Skeleton & roles");
-        ImGui::SameLine(0.0f, 8.0f);
+        ImGui::SameLine(0.0f, ui::Dp(8.0f));
         char count[32];
         if (not_found > 0) {
             std::snprintf(count, sizeof(count), "%d not found", not_found);
-            TagPill(count, kBadText, WithAlpha(kBad, 0x80));
+            ui::Tag(count, ui::TagTone::Bad);
         } else {
-            TagPill("all found", ui::kMuted, ui::kStroke);
+            ui::Tag("all found");
         }
         // The explanation sits behind "?" (the window stays short; the README has the rest).
-        ImGui::SameLine(ImGui::GetContentRegionMax().x - 3.0f * fh - 8.0f);
-        IconButton("##rhelp", fh, [](ImDrawList* d, ImVec2 c, ImU32 col) {
-            const ImVec2 ts = ImGui::CalcTextSize("?");
-            d->AddText(ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), col, "?");
-        });
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
-            ImGui::BeginTooltip();
-            ImGui::PushTextWrapPos(ImGui::GetFontSize() * 24.0f);
+        ImGui::SameLine(ImGui::GetContentRegionMax().x - ui::Dp(18.0f) - 2.0f * fh - ui::Dp(8.0f) - ui::Dp(8.0f));
+        ui::HelpMark("##rhelp");
+        if (ui::BeginItemTip()) {
             ImGui::TextUnformatted("Presets speak in roles (heel, toe, knee\xE2\x80\xA6). RAV guesses the bones from "
                                    "their names and remembers your choice for every item with this skeleton.");
             ImGui::TextUnformatted("+ Role adds your own roles, for every project. Right-click or F2 renames one.");
             ImGui::TextUnformatted("Role changes are saved at once. Ctrl+Z here undoes them while this window is open.");
             ImGui::TextUnformatted("Export... writes your roles and this skeleton's bones to a .csv file (a spreadsheet "
                                    "or a text editor opens it); Import... reads one into your roles for this skeleton.");
-            ImGui::PopTextWrapPos();
-            ImGui::EndTooltip();
+            ui::EndItemTip();
         }
-        ImGui::SameLine(0.0f, 4.0f);
-        if (IconButton("##rundo", fh, [](ImDrawList* d, ImVec2 c, ImU32 col) { IconUndo(d, c, 5.0f, col); },
-                       !g_roles_undo.empty()))
-            RolesUndo();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip("Undo the last change (Ctrl+Z)");
-        ImGui::SameLine(0.0f, 4.0f);
-        if (IconButton("##rclose", fh, [](ImDrawList* d, ImVec2 c, ImU32 col) { IconCross(d, c, 4.0f, col); }))
-            close = true;
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Close (Esc)");
+        ImGui::SameLine(0.0f, ui::Dp(4.0f));
+        ImGui::BeginDisabled(g_roles_undo.empty());
+        if (ui::IconOnlyButton("##rundo", Glyph(kGlyphUndo), nullptr, fh)) RolesUndo();
+        ImGui::EndDisabled();
+        ui::ItemTip("Undo the last change (Ctrl+Z)");
+        ImGui::SameLine(0.0f, ui::Dp(4.0f));
+        if (ui::IconOnlyButton("##rclose", Glyph(kGlyphCross), "Close (Esc)", fh)) close = true;
 
         char sub[64];
         std::snprintf(sub, sizeof(sub), "Skeleton: %d bones", static_cast<int>(g_roles_names.size()));
         ui::SubText(sub);
-        ImGui::Dummy(ImVec2(0.0f, 2.0f));
+        ImGui::Dummy(ImVec2(0.0f, ui::Dp(2.0f)));
 
         // One row per role: the role, its bone menu, where the bone comes from, ✕ (custom roles).
         const float inner_w = ImGui::GetContentRegionAvail().x;
@@ -3008,17 +2891,15 @@ void RolesWindow(const TaggingModel& m)
             if (r.kind == RoleRowKind::Foreign) l += kNotInRoles;
             label_w = std::max(label_w, ImGui::CalcTextSize(l.c_str()).x);
         }
-        label_w = std::min(label_w + 12.0f, std::max(80.0f, inner_w * 0.45f));
-        const float src_w = ImGui::CalcTextSize("auto").x + 10.0f;
+        label_w = std::min(label_w + ui::Dp(12.0f), std::max(ui::Dp(80.0f), inner_w * 0.45f));
+        const float src_w = ImGui::CalcTextSize("auto").x + ui::Dp(10.0f);
         const float x_w = fh;  // the ✕ column (empty on built-in and foreign rows)
         const char* group = nullptr;
         for (const RoleRow& row : rows) {
             if (!group || std::strcmp(group, row.group) != 0) {
                 if (group) ImGui::Dummy(ImVec2(0.0f, 1.0f));
                 group = row.group;
-                ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kFaint));
-                ImGui::TextUnformatted(group);
-                ImGui::PopStyleColor();
+                ui::GroupCaption(group);
             }
             ImGui::PushID(row.key.c_str());
             Role      role;
@@ -3044,32 +2925,30 @@ void RolesWindow(const TaggingModel& m)
             const float x0 = ImGui::GetCursorPosX();
             if (renaming) {
                 // In place: Enter applies, Esc (or a click elsewhere) cancels.
-                ImGui::SetNextItemWidth(std::max(60.0f, inner_w - src_w - x_w - 12.0f));
                 if (g_roles_rename_focus) {
                     ImGui::SetKeyboardFocusHere();
                     g_roles_rename_focus = false;
                 }
-                const bool enter = ImGui::InputTextWithHint("##rename", "Role name", g_roles_rename_buf,
-                                                            sizeof(g_roles_rename_buf),
-                                                            ImGuiInputTextFlags_EnterReturnsTrue |
-                                                                ImGuiInputTextFlags_AutoSelectAll);
+                const bool enter = ui::RenameField("##rename", g_roles_rename_buf, sizeof(g_roles_rename_buf),
+                                                   std::max(ui::Dp(60.0f), inner_w - src_w - x_w - ui::Dp(12.0f)),
+                                                   ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll,
+                                                   "Role name");
                 if (enter) {
                     RolesRename(row.key, g_roles_rename_buf);
                     g_roles_rename_key.clear();
                 } else if (ImGui::IsItemDeactivated()) {
                     g_roles_rename_key.clear();
                 }
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-                    ImGui::SetTooltip("Enter renames (its rules and bones keep working), Esc cancels");
+                ui::ItemTip("Enter renames (its rules and bones keep working), Esc cancels");
             } else {
                 // The label: a custom role's is clickable (F2 / right-click renames it).
                 std::string label = RoleRowLabel(row.name);
                 const ImVec2 lp = ImGui::GetCursorScreenPos();
-                ImGui::InvisibleButton("##label", ImVec2(std::max(1.0f, label_w - 8.0f), fh));
+                ImGui::InvisibleButton("##label", ImVec2(std::max(1.0f, label_w - ui::Dp(8.0f)), fh));
                 const bool hovered = ImGui::IsItemHovered();
                 const ImU32 label_col = row.kind == RoleRowKind::Builtin ? ui::kMuted : ui::kText;
                 const float ty = lp.y + (fh - ImGui::GetTextLineHeight()) * 0.5f;
-                dl->PushClipRect(lp, ImVec2(lp.x + label_w - 8.0f, lp.y + fh), true);
+                dl->PushClipRect(lp, ImVec2(lp.x + label_w - ui::Dp(8.0f), lp.y + fh), true);
                 dl->AddText(ImVec2(lp.x, ty), label_col, label.c_str());
                 if (row.kind == RoleRowKind::Foreign)
                     dl->AddText(ImVec2(lp.x + ImGui::CalcTextSize(label.c_str()).x, ty), ui::kFaint, kNotInRoles);
@@ -3077,41 +2956,35 @@ void RolesWindow(const TaggingModel& m)
                 if (row.kind == RoleRowKind::Custom) {
                     if (hovered) g_roles_hovered_key = row.key;
                     if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) g_roles_last_custom = row.key;
-                    if (ImGui::BeginPopupContextItem("##rowctx")) {
+                    if (ui::BeginMenuPopupContextItem("##rowctx")) {
                         g_roles_last_custom = row.key;
-                        if (ImGui::MenuItem("Rename", "F2", false, writable)) RolesStartRename(row.key, row.name);
-                        if (ImGui::MenuItem("Delete\xE2\x80\xA6", nullptr, false, writable)) {
+                        if (ui::MenuEntry("Rename", "F2", false, writable)) RolesStartRename(row.key, row.name);
+                        if (ui::MenuEntry("Delete\xE2\x80\xA6", nullptr, false, writable)) {
                             g_roles_rename_key.clear();
                             g_roles_confirm_key = row.key;
                         }
-                        ImGui::EndPopup();
+                        ui::EndMenuPopup();
                     }
                 }
-                if (hovered && !ImGui::IsPopupOpen("##rowctx")) {
+                if (!ImGui::IsPopupOpen("##rowctx")) {
                     if (row.kind == RoleRowKind::Custom)
-                        ImGui::SetTooltip("%s (role:%s)\nYour role, for every project. Right-click or F2 renames it.",
+                        ui::ItemTip("%s (role:%s)\nYour role, for every project. Right-click or F2 renames it.",
                                           row.name.c_str(), row.key.c_str());
                     else if (row.kind == RoleRowKind::Foreign)
-                        ImGui::SetTooltip("%s (role:%s)\nRead by these rules but not in your roles (a colleague's "
+                        ui::ItemTip("%s (role:%s)\nRead by these rules but not in your roles (a colleague's "
                                           "preset?). Map it here, or create it with + Role to name it.",
                                           row.name.c_str(), row.key.c_str());
                 }
                 ImGui::SameLine(x0 + label_w);
-                const float combo_w = std::max(60.0f, ImGui::GetContentRegionAvail().x - src_w - x_w - 12.0f);
-                const ImVec2 c0 = ImGui::GetCursorScreenPos();
-                ImGui::SetNextItemWidth(combo_w);
-                if (!has_bone) ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(kBadText));
-                const bool open = ImGui::BeginCombo("##bone", preview.c_str(), ImGuiComboFlags_HeightLargest);
-                if (!has_bone) ImGui::PopStyleColor();
-                if (open) {
+                const float combo_w = std::max(ui::Dp(60.0f), ImGui::GetContentRegionAvail().x - src_w - x_w - ui::Dp(12.0f));
+                // 13-14: a role with no bone reads in red (the theme's bad tone, G-6).
+                if (ui::BeginComboStyled("##bone", preview.c_str(), combo_w, ImGuiComboFlags_HeightLargest,
+                                         has_bone ? ui::TagTone::Neutral : ui::TagTone::Bad)) {
                     RolesMenu(row.key, e);
-                    ImGui::EndCombo();
+                    ui::EndComboStyled();
                 }
-                if (!has_bone)
-                    dl->AddRect(c0, ImVec2(c0.x + combo_w, c0.y + fh), WithAlpha(kBad, 0x99),
-                                ImGui::GetStyle().FrameRounding);
             }
-            ImGui::SameLine(0.0f, 6.0f);
+            ImGui::SameLine(0.0f, ui::Dp(6.0f));
             const ImVec2 sp = ImGui::GetCursorScreenPos();
             ImGui::Dummy(ImVec2(src_w, fh));
             const float sw = ImGui::CalcTextSize(src).x;
@@ -3127,17 +3000,17 @@ void RolesWindow(const TaggingModel& m)
                                   : "RAV's guess: named like the bone you picked for this role on another skeleton.";
                 else
                     tip = "No bone plays this role.";
-                ImGui::SetTooltip("%s", tip.c_str());
+                ui::ShowTip(tip.c_str());
             }
-            ImGui::SameLine(0.0f, 4.0f);
+            ImGui::SameLine(0.0f, ui::Dp(4.0f));
             if (row.kind == RoleRowKind::Custom) {
-                if (IconButton("##rdel", fh, [](ImDrawList* d, ImVec2 c, ImU32 col) { IconCross(d, c, 3.5f, col); },
-                               writable)) {
+                ImGui::BeginDisabled(!writable);
+                if (ui::IconOnlyButton("##rdel", Glyph(kGlyphCrossSmall), nullptr, fh)) {
                     g_roles_rename_key.clear();
                     g_roles_confirm_key = row.key;
                 }
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-                    ImGui::SetTooltip("Delete this role (its bones stay remembered)");
+                ImGui::EndDisabled();
+                ui::ItemTip("Delete this role (its bones stay remembered)");
             } else {
                 ImGui::Dummy(ImVec2(x_w, fh));
             }
@@ -3150,91 +3023,82 @@ void RolesWindow(const TaggingModel& m)
         }
 
         // + Role: a new role, for every project.
-        ImGui::Dummy(ImVec2(0.0f, 2.0f));
+        ImGui::Dummy(ImVec2(0.0f, ui::Dp(2.0f)));
         {
             if (!writable) ImGui::BeginDisabled();
-            const float btn_w = ImGui::CalcTextSize("+ Role").x + ImGui::GetStyle().FramePadding.x * 2.0f;
-            // 10-3f: Import... / Export... (small buttons) share the row.
-            const float io_w = ImGui::CalcTextSize("Import...").x + ImGui::CalcTextSize("Export...").x +
-                               ImGui::GetStyle().FramePadding.x * 4.0f + 10.0f;
-            ImGui::SetNextItemWidth(std::max(60.0f, inner_w - btn_w - io_w - 6.0f));
-            const bool enter = ImGui::InputTextWithHint("##newrole", "New role name, e.g. sword tip", g_roles_new,
-                                                        sizeof(g_roles_new), ImGuiInputTextFlags_EnterReturnsTrue);
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-                ImGui::SetTooltip("A role of your own (a weapon tip, a tail, a finger...): rules and presets can "
-                                  "then name it, and it is mapped per skeleton like the others");
-            ImGui::SameLine(0.0f, 6.0f);
+            const float btn_w = ui::ButtonWidth("+ Role");
+            // 10-3f: Import... / Export... share the row.
+            const float io_w = ui::ButtonWidth("Import...##rimport") + ui::ButtonWidth("Export...##rexport") + ui::Dp(10.0f);
+            const bool enter = ui::TextField("##newrole", "New role name, e.g. sword tip", g_roles_new, sizeof(g_roles_new),
+                                             std::max(ui::Dp(60.0f), inner_w - btn_w - io_w - ui::Dp(6.0f)),
+                                             ImGuiInputTextFlags_EnterReturnsTrue);
+            ui::ItemTip("A role of your own (a weapon tip, a tail, a finger...): rules and presets can "
+                        "then name it, and it is mapped per skeleton like the others");
+            ImGui::SameLine(0.0f, ui::Dp(6.0f));
             const bool click = ui::SolidButton("+ Role");
             if ((enter || click) && writable) RolesCreate(g_roles_new);  // refused (red line) when empty or taken
             // 10-3f: Import (a write: refused like the others when roles.txt cannot be read).
-            ImGui::SameLine(0.0f, 6.0f);
-            if (ImGui::SmallButton("Import...##rimport") && writable && !TaggingHasPendingDialog())
+            ImGui::SameLine(0.0f, ui::Dp(6.0f));
+            if (ui::SolidButton("Import...##rimport") && writable && !TaggingHasPendingDialog())
                 RolesRequestDialog(PendingDialog::Kind::RolesImport, m);
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-                ImGui::SetTooltip("Reads a role .csv file into your roles and this skeleton's bones (Ctrl+Z undoes it)");
+            ui::ItemTip("Reads a role .csv file into your roles and this skeleton's bones (Ctrl+Z undoes it)");
             if (!writable) ImGui::EndDisabled();
             // Export works from what is shown, even when roles.txt cannot be read.
-            ImGui::SameLine(0.0f, 4.0f);
-            if (ImGui::SmallButton("Export...##rexport") && !TaggingHasPendingDialog())
+            ImGui::SameLine(0.0f, ui::Dp(4.0f));
+            if (ui::SolidButton("Export...##rexport") && !TaggingHasPendingDialog())
                 RolesRequestDialog(PendingDialog::Kind::RolesExport, m);
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-                ImGui::SetTooltip("Writes your roles and this skeleton's bones to a .csv file you can send");
+            ui::ItemTip("Writes your roles and this skeleton's bones to a .csv file you can send");
         }
 
         // roles.txt that RAV cannot read, a refused write: in red, never silent.
-        ImGui::PushTextWrapPos(0.0f);
-        ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(kBadText));
         if (m.roles_status == RoleMapStatus::Unreadable)
-            ImGui::TextUnformatted("roles.txt could not be read: choices are not saved.");
+            ui::ToneText("roles.txt could not be read: choices are not saved.", ui::kBadInk, true);
         else if (m.roles_status == RoleMapStatus::NotRolesFile)
-            ImGui::TextUnformatted("roles.txt is not a roles file: your next choice moves it aside and starts a new one.");
-        if (!g_roles_err.empty()) ImGui::TextUnformatted(g_roles_err.c_str());
-        ImGui::PopStyleColor();
-        if (!g_roles_status.empty()) {
-            ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
-            ImGui::TextUnformatted(g_roles_status.c_str());
-            ImGui::PopStyleColor();
-        }
-        ImGui::PopTextWrapPos();
+            ui::ToneText("roles.txt is not a roles file: your next choice moves it aside and starts a new one.", ui::kBadInk,
+                         true);
+        if (!g_roles_err.empty()) ui::ToneText(g_roles_err, ui::kBadInk, true);
+        if (!g_roles_status.empty()) ui::ToneText(g_roles_status, ui::kMuted, true);
 
 
         if (close) {
             ImGui::CloseCurrentPopup();
             RolesForget();
         }
-        ImGui::EndPopup();
+        ui::EndModalCard();
     } else {
         RolesForget();
     }
-    ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar();
 }
 
 void ItemOptionsPopup(const ItemRules& rules)
 {
-    if (!ImGui::BeginPopup("##tagoptions")) return;
+    // 13-14: a content popup (two number rows), the theme's panel popup (G-8). It sizes itself to its
+    // content: never narrower than a label column and a field, so the rows' labels stay beside them.
+    const float field_w = ui::Dp(70.0f);
+    const float label_col = ui::Dp(110.0f);
+    ImGui::SetNextWindowSizeConstraints(ImVec2(2.0f * ui::Dp(12.0f) + label_col + ImGui::GetStyle().ItemSpacing.x +
+                                                   ui::NumberFieldWidth(field_w, "ms"),
+                                               0.0f),
+                                        ImVec2(FLT_MAX, FLT_MAX));
+    if (!ui::BeginPanelPopup("##tagoptions")) return;
     ui::Caption("Item options");
     ImGui::SameLine();
-    ImGui::TextDisabled("(all its rules)");
-    ImGui::TextUnformatted("Sensitivity");
-    ImGui::SameLine(110.0f);
-    NumberField("##sens", rules.options.sensitivity * 100.0, 0.5, 0, "%", 70.0f, "RAV: Set sensitivity",
+    ui::ToneText("(all its rules)", ui::kFaint);
+    ui::LabelRow("Sensitivity", ui::NumberFieldWidth(field_w, "%"), label_col, ui::kText);
+    NumberField("##sens", rules.options.sensitivity * 100.0, 0.5, 0, "%", field_w, "RAV: Set sensitivity",
                 [](ItemRules& r, double v) {
                     r.options.sensitivity = std::min(1.0, std::max(0.0, v / 100.0));
                     return true;
                 });
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-        ImGui::SetTooltip("Drops events weaker than this share of the clip's strongest (0 = off)");
-    ImGui::TextUnformatted("Edge margin");
-    ImGui::SameLine(110.0f);
-    NumberField("##edge", rules.options.edge_margin_ms, 1.0, 0, "ms", 70.0f, "RAV: Set edge margin",
+    ui::ItemTip("Drops events weaker than this share of the clip's strongest (0 = off)");
+    ui::LabelRow("Edge margin", ui::NumberFieldWidth(field_w, "ms"), label_col, ui::kText);
+    NumberField("##edge", rules.options.edge_margin_ms, 1.0, 0, "ms", field_w, "RAV: Set edge margin",
                 [](ItemRules& r, double v) {
                     r.options.edge_margin_ms = std::max(0.0, v);
                     return true;
                 });
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-        ImGui::SetTooltip("Ignores events this close to the clip's start and end (T-pose frames)");
-    ImGui::EndPopup();
+    ui::ItemTip("Ignores events this close to the clip's start and end (T-pose frames)");
+    ui::EndPanelPopup();
 }
 
 // ---- 10-6: pooled copies ---------------------------------------------------------------------------
@@ -3252,14 +3116,13 @@ void DrawPoolLine(const TaggingModel& m)
                       m.pool_others == 1 ? "copy" : "copies");
     else
         std::snprintf(text, sizeof(text), "Not linked");
-    const char* label = linked ? "Make unique" : "Unique";
-    const float bw = ImGui::CalcTextSize(label).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    const char* label = linked ? "Make unique##pool" : "Unique##pool";
+    const float bw = ui::ButtonWidth(label);
     ImGui::AlignTextToFramePadding();
-    ImGui::TextColored(ui::Col(ui::kMuted), "%s", text);
+    ui::ToneText(text, ui::kMuted);
     // The button right-aligned, never over the text on a narrow panel (from the text's right edge).
-    const float after_text = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + 6.0f;
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-        ImGui::SetTooltip(linked ? "Linked items play the same animation file and share one tagging: rules, thresholds,\n"
+    const float after_text = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + ui::Dp(6.0f);
+    ui::ItemTipText(linked ? "Linked items play the same animation file and share one tagging: rules, thresholds,\n"
                                    "item options, preset and events. A change on one reaches every linked item, markers\n"
                                    "included, in one undo step. Each item places the events on its own position, trim\n"
                                    "and rate. Commit and Cancel act on every linked item of the selected ones."
@@ -3268,10 +3131,9 @@ void DrawPoolLine(const TaggingModel& m)
     ImGui::SameLine(std::max(after_text, ImGui::GetContentRegionMax().x - bw));
     if (!linked) ImGui::BeginDisabled();
     MediaItem* item = m.item;
-    if (ui::SolidButton(linked ? "Make unique##pool" : "Unique##pool")) Later([item]() { TaggingMakeUnique(item); });
+    if (ui::SolidButton(label)) Later([item]() { TaggingMakeUnique(item); });
     if (!linked) ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip(linked ? "Gives this item a tagging of its own, as it is now: from then on a change on it no\n"
+    ui::ItemTipText(linked ? "Gives this item a tagging of its own, as it is now: from then on a change on it no\n"
                                    "longer reaches the linked items, nor theirs this one. One undo step (Ctrl+Z links it\n"
                                    "back). A duplicate of it is linked to it. Also: action \"RAV: Make tagging unique\n"
                                    "(selected items)\"."
@@ -3285,61 +3147,51 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
     // Item name, Roles, options.
     {
         // 10-3 fb-1: Roles and options show on an item without a record too (a gesture creates it).
-        const float right_w = fh + 4.0f + 8.0f + ImGui::CalcTextSize("Roles " RAV_DOT " 00 missing").x + 16.0f;
-        const float name_w = std::max(40.0f, ImGui::GetContentRegionAvail().x - right_w);
+        const float right_w = fh + ui::Dp(4.0f) + ui::Dp(8.0f) + ImGui::CalcTextSize("Roles " RAV_DOT " 00 missing").x + ui::Dp(16.0f);
+        const float name_w = std::max(ui::Dp(40.0f), ImGui::GetContentRegionAvail().x - right_w);
         const ImVec2 p = ImGui::GetCursorScreenPos();
         ImGui::Dummy(ImVec2(name_w, fh));
-        dl->PushClipRect(p, ImVec2(p.x + name_w, p.y + fh), true);
-        dl->AddText(ImVec2(p.x, p.y + (fh - ImGui::GetTextLineHeight()) * 0.5f), ui::kText, m.item_name.c_str());
-        dl->PopClipRect();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-            ImGui::SetTooltip("%s\nThe item under the playhead", m.path.c_str());
+        EllipsisText(dl, ImVec2(p.x, p.y + (fh - ImGui::GetTextLineHeight()) * 0.5f), p.x + name_w, ui::kText, m.item_name);
+        ui::ItemTip("%s\nThe item under the playhead", m.path.c_str());
         {
             ImGui::SameLine();
             char label[64];
             if (m.missing_count > 0)
-                std::snprintf(label, sizeof(label), "Roles " RAV_DOT " %d missing", m.missing_count);
+                std::snprintf(label, sizeof(label), "Roles " RAV_DOT " %d missing###roles", m.missing_count);
             else
-                std::snprintf(label, sizeof(label), "Roles");
-            const ImVec2 rp = ImGui::GetCursorScreenPos();
-            const float rw = ImGui::CalcTextSize(label).x + (m.missing_count > 0 ? 16.0f : 30.0f);
+                std::snprintf(label, sizeof(label), "Roles###roles");
             // Story 10-3d: it opens the Skeleton & roles window (disabled without a skeleton).
+            // 13-14: the theme's tone button (G-24): red edge and text while roles miss, a check once
+            // every role the rules read has a bone.
             const bool no_skeleton = !m.file_loaded || m.bone_names.empty();
-            if (no_skeleton) ImGui::BeginDisabled();
-            if (ImGui::InvisibleButton("##roles", ImVec2(rw, fh))) g_roles_request = true;
-            if (no_skeleton) ImGui::EndDisabled();
-            if (ImGui::IsItemHovered() && !no_skeleton)
-                dl->AddRectFilled(rp, ImVec2(rp.x + rw, rp.y + fh), ui::kHover, ui::kRadiusSm);
-            const ImU32 edge = m.missing_count > 0 ? WithAlpha(kBad, 0x99) : ui::kStroke;
-            dl->AddRect(rp, ImVec2(rp.x + rw, rp.y + fh), edge, ui::kRadiusSm);
-            dl->AddText(ImVec2(rp.x + 8.0f, rp.y + (fh - ImGui::GetTextLineHeight()) * 0.5f),
-                        m.missing_count > 0 ? kBadText : ui::kMuted, label);
             const bool no_rule = rules.blocks.empty();  // 10-3 fb-1: nothing to check yet
-            if (m.missing_count == 0 && !no_rule)
-                IconCheck(dl, ImVec2(rp.x + rw - 12.0f, rp.y + fh * 0.5f), 4.0f, ui::kOk);
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled)) {
-                if (no_skeleton)
-                    ImGui::SetTooltip("%s", m.file_loaded ? "This file has no skeleton: no bone to map roles on."
-                                                          : "The animation file is not loaded: no skeleton to map roles on.");
-                else if (m.missing_count > 0 && m.nothing_runs)
-                    ImGui::SetTooltip("No bone plays: %s.\nDetection and Commit skip this item until they are mapped."
-                                      "\nClick to pick their bones.",
-                                      m.missing.c_str());
-                else if (m.missing_count > 0)  // 10-8b fb-1
-                    ImGui::SetTooltip("No bone plays: %s.\nOnly the rules that read them are skipped: their markers "
-                                      "stay as last committed.\nThe other rules and Auto detection still run.\n"
-                                      "Click to pick their bones.",
-                                      m.missing.c_str());
-                else if (no_rule)
-                    ImGui::SetTooltip("No rule reads a role yet.\nClick to see which bone plays each role.");
-                else
-                    ImGui::SetTooltip("Every role these rules read has a bone on this skeleton.\nClick to see or "
-                                      "change which bone plays each role.");
-            }
+            ui::Icon check = Glyph(kGlyphCheck);
+            check.col = ui::kOk;
+            const bool show_check = m.missing_count == 0 && !no_rule;
+            if (no_skeleton) ImGui::BeginDisabled();
+            if (ui::ToneButton(label, m.missing_count > 0 ? ui::TagTone::Bad : ui::TagTone::Neutral,
+                               show_check ? &check : nullptr))
+                g_roles_request = true;
+            if (no_skeleton) ImGui::EndDisabled();
+            if (no_skeleton)
+                ui::ItemTipText(m.file_loaded ? "This file has no skeleton: no bone to map roles on."
+                                              : "The animation file is not loaded: no skeleton to map roles on.");
+            else if (m.missing_count > 0 && m.nothing_runs)
+                ui::ItemTip("No bone plays: %s.\nDetection and Commit skip this item until they are mapped."
+                            "\nClick to pick their bones.",
+                            m.missing.c_str());
+            else if (m.missing_count > 0)  // 10-8b fb-1
+                ui::ItemTip("No bone plays: %s.\nOnly the rules that read them are skipped: their markers "
+                            "stay as last committed.\nThe other rules and Auto detection still run.\n"
+                            "Click to pick their bones.",
+                            m.missing.c_str());
+            else if (no_rule)
+                ui::ItemTip("No rule reads a role yet.\nClick to see which bone plays each role.");
+            else
+                ui::ItemTip("Every role these rules read has a bone on this skeleton.\nClick to see or "
+                            "change which bone plays each role.");
             ImGui::SameLine();
-            if (IconButton("##opts", fh, [](ImDrawList* d, ImVec2 c, ImU32 col) { IconGear(d, c, 6.0f, col); }))
-                ImGui::OpenPopup("##tagoptions");
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Item options");
+            if (ui::IconOnlyButton("##opts", Glyph(kGlyphGear), "Item options", fh)) ImGui::OpenPopup("##tagoptions");
             ItemOptionsPopup(rules);
         }
     }
@@ -3352,10 +3204,11 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
     DrawPresetField(m);
 
     // The rules.
-    ImGui::Dummy(ImVec2(0.0f, 2.0f));
+    ImGui::Dummy(ImVec2(0.0f, ui::Dp(2.0f)));
     ui::Caption("Rules");
-    ImGui::SameLine(ImGui::GetContentRegionMax().x - ImGui::CalcTextSize("+ Rule").x - 16.0f);
-    if (ImGui::SmallButton("+ Rule##addrule")) {
+    // 13-14: the theme's dashed add button (its natural width: the label and 10 px each side).
+    ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetContentRegionMax().x - ImGui::CalcTextSize("+ Rule").x - ui::Dp(20.0f)));
+    if (ui::AddButton("+ Rule##addrule")) {
         const ImU32 col = NextRuleColor(rules.blocks);
         Edit("RAV: Add rule", [col](ItemRules& r) {
             char name[32];
@@ -3375,7 +3228,7 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
         ImGui::PushID(b);
         const ImVec2 p = ImGui::GetCursorScreenPos();
         const float w = ImGui::GetContentRegionAvail().x;
-        const float rh = fh + 4.0f;
+        const float rh = fh + ui::Dp(4.0f);
         const bool sel = b == g_sel;
         // The card: the whole row selects; the switch and the buttons sit on it.
         ImGui::SetNextItemAllowOverlap();
@@ -3390,11 +3243,11 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
         RuleStripe(dl, p, ImVec2(p.x + w, p.y + rh), blk.enabled ? RuleColor(blk) : WithAlpha(RuleColor(blk), 0x66),
                    ui::kRadiusMd);
         dl->AddRect(p, ImVec2(p.x + w, p.y + rh), sel ? ui::kAccentLine : ui::kStroke, ui::kRadiusMd);
-        ImGui::SetCursorScreenPos(ImVec2(p.x + 9.0f, p.y + 2.0f));
-        if (Switch("##on", blk.enabled)) do_toggle = b;
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip(blk.enabled ? "Switch this rule off" : "Switch this rule on");
+        ImGui::SetCursorScreenPos(ImVec2(p.x + ui::Dp(9.0f), p.y + ui::Dp(2.0f)));
+        if (ui::Switch("##on", blk.enabled)) do_toggle = b;
+        ui::ItemTipText(blk.enabled ? "Switch this rule off" : "Switch this rule on");
         const float ty = p.y + (rh - ImGui::GetTextLineHeight()) * 0.5f;
-        dl->AddCircleFilled(ImVec2(p.x + 46.0f, p.y + rh * 0.5f), 4.0f,
+        dl->AddCircleFilled(ImVec2(p.x + ui::Dp(46.0f), p.y + rh * 0.5f), ui::Dp(4.0f),
                             blk.enabled ? RuleColor(blk) : WithAlpha(RuleColor(blk), 0x66), 12);
         // Count (an off rule: 0, faint), duplicate, delete on the right.
         char count[16];
@@ -3409,17 +3262,15 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
         }
         else
             std::snprintf(count, sizeof(count), "-");
-        const float bx = p.x + w - 2.0f * (fh + 2.0f) - 4.0f;
+        const float bx = p.x + w - 2.0f * (fh + ui::Dp(2.0f)) - ui::Dp(4.0f);
         const float cw = ImGui::CalcTextSize(count).x;
-        EllipsisText(dl, ImVec2(p.x + 55.0f, ty), bx - cw - 10.0f, blk.enabled ? ui::kText : ui::kFaint, RuleTitle(blk));
-        dl->AddText(ImVec2(bx - cw - 6.0f, ty), blk.enabled ? ui::kMuted : ui::kFaint, count);
-        ImGui::SetCursorScreenPos(ImVec2(bx, p.y + 2.0f));
-        if (IconButton("##dup", fh, [](ImDrawList* d, ImVec2 c, ImU32 col) { IconDuplicate(d, c, 4.5f, col); })) do_dup = b;
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Duplicate");
-        ImGui::SameLine(0.0f, 2.0f);
-        if (IconButton("##del", fh, [](ImDrawList* d, ImVec2 c, ImU32 col) { IconCross(d, c, 4.0f, col); })) do_del = b;
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Delete");
-        ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh + 4.0f));
+        EllipsisText(dl, ImVec2(p.x + ui::Dp(55.0f), ty), bx - cw - ui::Dp(10.0f), blk.enabled ? ui::kText : ui::kFaint, RuleTitle(blk));
+        dl->AddText(ImVec2(bx - cw - ui::Dp(6.0f), ty), blk.enabled ? ui::kMuted : ui::kFaint, count);
+        ImGui::SetCursorScreenPos(ImVec2(bx, p.y + ui::Dp(2.0f)));
+        if (ui::IconOnlyButton("##dup", Glyph(kGlyphDuplicate), "Duplicate", fh)) do_dup = b;
+        ImGui::SameLine(0.0f, ui::Dp(2.0f));
+        if (ui::IconOnlyButton("##del", Glyph(kGlyphCross), "Delete", fh)) do_del = b;
+        ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh + ui::Dp(4.0f)));
         ImGui::Dummy(ImVec2(0.0f, 0.0f));
         ImGui::PopID();
     }
@@ -3492,8 +3343,8 @@ void ConditionEditor(const Block& blk, int b, int c)
     // IF / AND, kind, Bone, lock, delete.
     {
         SentenceRow(s, c ? "AND" : "IF", true);
-        PlaceChip(s, ChipWidth(ConditionKindLabel(kind), 50.0f));
-        if (BeginChip("##kind", ConditionKindLabel(kind), 50.0f)) {
+        ui::SentenceChip(s, ChipWidth(ConditionKindLabel(kind), 50.0f));
+        if (BeginSentenceChip(s, "##kind", ConditionKindLabel(kind), 50.0f)) {
             for (ConditionKind k : kConditionKindChoices)
                 if (ImGui::Selectable(ConditionKindLabel(k), k == kind) && k != kind)
                     Edit("RAV: Condition kind (" + rule + ")", [b, c, k](ItemRules& r) {
@@ -3509,19 +3360,17 @@ void ConditionEditor(const Block& blk, int b, int c)
                         }
                         return true;
                     });
-            ImGui::EndCombo();
+            ui::EndChipCombo();
         }
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-            ImGui::SetTooltip(legacy ? "An older condition: changing its kind starts it over"
-                                     : "What this condition reads: a bone's position, the angle at a joint, or a "
+        ui::ItemTipText(legacy ? "An older condition: changing its kind starts it over"
+                               : "What this condition reads: a bone's position, the angle at a joint, or a "
                                        "bone's rotation (changing it starts the condition over)");
         const std::string bone = SignalBoneLabel(cd.signal);
-        PlaceChip(s, ChipWidth(bone.empty() ? "?" : bone.c_str(), 60.0f));
-        if (legacy) ImGui::BeginDisabled();
+        ui::SentenceChip(s, ChipWidth(bone.empty() ? "?" : bone.c_str(), 60.0f));
         const int single = cd.signal.bones.size() == 1 ? cd.signal.bones[0] : -1;
-        if (BeginChip("##bone", bone.empty() ? "?" : bone.c_str(), 60.0f, legacy)) {
+        if (BeginSentenceChip(s, "##bone", bone.empty() ? "?" : bone.c_str(), 60.0f, legacy)) {
             const int id = BoneMenuItems(single, kind == ConditionKind::JointAngle);
-            ImGui::EndCombo();
+            ui::EndChipCombo();
             if (id >= 0) {
                 Edit("RAV: Condition bone (" + rule + ")", [b, c, id](ItemRules& r) {
                     Condition* x = CondAt(r, b, c);
@@ -3535,9 +3384,7 @@ void ConditionEditor(const Block& blk, int b, int c)
                 });
             }
         }
-        if (legacy) ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip(legacy ? "An older angle reads several bones: they are not picked here (another kind starts over)"
+        ui::ItemTipText(legacy ? "An older angle reads several bones: they are not picked here (another kind starts over)"
                               : kind == ConditionKind::JointAngle
                                   ? "The joint: RAV reads the angle between its parent and its child (180 = straight)"
                               : kind == ConditionKind::Rotation ? "The bone whose rotation this condition reads"
@@ -3563,9 +3410,11 @@ void ConditionEditor(const Block& blk, int b, int c)
                     why = sel_bone + " has no parent or no child: no joint angle there";
             }
             const bool enabled = !legacy && why.empty();
-            PlaceChip(s, fh, 2.0f);
-            if (IconButton("##usebone", fh, [](ImDrawList* d, ImVec2 cc, ImU32 col) { IconPlus(d, cc, 4.0f, col); },
-                           enabled)) {
+            ui::SentenceChip(s, fh, ui::Dp(2.0f));
+            ImGui::BeginDisabled(!enabled);
+            const bool use = ui::IconOnlyButton("##usebone", Glyph(kGlyphPlus), nullptr, fh);
+            ImGui::EndDisabled();
+            if (use) {
                 if (sel_bone.empty()) {
                     SetSkeletonModeOn(true);
                 } else {
@@ -3584,29 +3433,30 @@ void ConditionEditor(const Block& blk, int b, int c)
                     });
                 }
             }
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled)) {
-                if (legacy)
-                    ImGui::SetTooltip("An older angle: its bones are not picked here");
-                else if (sel_bone.empty())
-                    ImGui::SetTooltip("Select a bone in the 3D view (this switches it to Skeleton), then + uses it");
-                else if (!why.empty())
-                    ImGui::SetTooltip("%s", why.c_str());
-                else
-                    ImGui::SetTooltip("Use %s", what.c_str());
-            }
+            if (legacy)
+                ui::ItemTip("An older angle: its bones are not picked here");
+            else if (sel_bone.empty())
+                ui::ItemTip("Select a bone in the 3D view (this switches it to Skeleton), then + uses it");
+            else if (!why.empty())
+                ui::ItemTipText(why.c_str());
+            else
+                ui::ItemTip("Use %s", what.c_str());
         }
         // Lock and delete, right-aligned in the card (under the chips when they do not fit).
         const int nconds = static_cast<int>(blk.conditions.size());
-        const float right = (nconds > 1 ? 2.0f : 1.0f) * (fh + 2.0f) - 2.0f;
+        const float right = (nconds > 1 ? 2.0f : 1.0f) * (fh + ui::Dp(2.0f)) - ui::Dp(2.0f);
         {
             const float rx = std::max(s.chips_x, s.right - right);
             if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x <= rx) ImGui::SameLine();
             ImGui::SetCursorScreenPos(ImVec2(rx, ImGui::GetCursorScreenPos().y));
         }
         const bool fixed = !cd.auto_threshold;
-        if (IconButton("##lock", fh, [fixed](ImDrawList* d, ImVec2 cc, ImU32 col) {
-                IconLock(d, cc, 4.5f, fixed ? ui::kAccent : col, fixed);
-            })) {
+        ui::IconOnlyOpts lock_o;
+        lock_o.w = fh;
+        lock_o.tint = fixed ? ui::kAccent : 0;  // a fixed threshold: the closed padlock in the accent
+        if (ui::IconOnlyButton("##lock", Glyph(fixed ? kGlyphLockClosed : kGlyphLockOpen),
+                               fixed ? "Fixed: Analyse keeps this threshold and margin" : "Analyse may change this threshold",
+                               lock_o)) {
             Edit(std::string(fixed ? "RAV: Unlock threshold (" : "RAV: Lock threshold (") + rule + ")", [b, c](ItemRules& r) {
                 Condition* x = CondAt(r, b, c);
                 if (!x) return false;
@@ -3614,11 +3464,9 @@ void ConditionEditor(const Block& blk, int b, int c)
                 return true;
             });
         }
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-            ImGui::SetTooltip(fixed ? "Fixed: Analyse keeps this threshold and margin" : "Analyse may change this threshold");
         if (nconds > 1) {
-            ImGui::SameLine(0.0f, 2.0f);
-            if (IconButton("##rmc", fh, [](ImDrawList* d, ImVec2 cc, ImU32 col) { IconCross(d, cc, 4.0f, col); })) {
+            ImGui::SameLine(0.0f, ui::Dp(2.0f));
+            if (ui::IconOnlyButton("##rmc", Glyph(kGlyphCross), "Remove this condition", fh)) {
                 Edit("RAV: Delete condition (" + rule + ")", [b, c](ItemRules& r) {
                     Block* x = BlockAt(r, b);
                     if (!x || x->conditions.size() < 2 || c >= static_cast<int>(x->conditions.size())) return false;
@@ -3626,20 +3474,18 @@ void ConditionEditor(const Block& blk, int b, int c)
                     return true;
                 });
             }
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Remove this condition");
         }
     }
     // reads [Measure] [axis]  /  from [reference]   --   reads [Measure] (angle: no from)
     {
         SentenceRow(s, "reads");
-        PlaceChip(s, ChipWidth(MeasureLabelFor(cd.signal, cd.signal.measure), 70.0f));
-        if (BeginChip("##measure", MeasureLabelFor(cd.signal, cd.signal.measure), 70.0f)) {
+        ui::SentenceChip(s, ChipWidth(MeasureLabelFor(cd.signal, cd.signal.measure), 70.0f));
+        if (BeginSentenceChip(s, "##measure", MeasureLabelFor(cd.signal, cd.signal.measure), 70.0f)) {
             for (Measure ms : kMeasureChoices) {
                 const bool picked = ImGui::Selectable(MeasureLabelFor(cd.signal, ms), ms == cd.signal.measure);
                 // Spike 10-7a: what Stillness and Relative drop read (their windows are the defaults).
                 const std::string hint = MeasureHint(ms);
-                if (!hint.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-                    ImGui::SetTooltip("%s", hint.c_str());
+                if (!hint.empty()) ui::ItemTipText(hint.c_str());
                 if (picked && ms != cd.signal.measure)
                     Edit("RAV: Condition measure (" + rule + ")", [b, c, ms](ItemRules& r) {
                         Condition* x = CondAt(r, b, c);
@@ -3655,19 +3501,19 @@ void ConditionEditor(const Block& blk, int b, int c)
                         return true;
                     });
             }
-            ImGui::EndCombo();
+            ui::EndChipCombo();
         }
         if (legacy) {
             const char* what = kind == ConditionKind::Bend ? "(bend)" : "(turn)";
-            PlaceChip(s, ImGui::CalcTextSize(what).x);
+            ui::SentenceChip(s, ImGui::CalcTextSize(what).x);
             ImGui::AlignTextToFramePadding();
-            ImGui::TextDisabled("%s", what);
+            ui::ToneText(what, ui::kFaint);
         } else if (kind == ConditionKind::JointAngle) {
             // The angle at the joint: no axis, no reference.
         } else if (kind == ConditionKind::Rotation) {
             const Axis cur = RotationAxisOf(cd.signal);
-            PlaceChip(s, ChipWidth(AxisLabel(cur), 50.0f));
-            if (BeginChip("##raxis", AxisLabel(cur), 50.0f)) {
+            ui::SentenceChip(s, ChipWidth(AxisLabel(cur), 50.0f));
+            if (BeginSentenceChip(s, "##raxis", AxisLabel(cur), 50.0f)) {
                 for (Axis a : kRotationAxisChoices) {
                     if (!RotationAxisOffered(cd.signal.measure, a)) continue;
                     if (ImGui::Selectable(AxisLabel(a), a == cur) && a != cur)
@@ -3678,15 +3524,14 @@ void ConditionEditor(const Block& blk, int b, int c)
                             return true;
                         });
                 }
-                ImGui::EndCombo();
+                ui::EndChipCombo();
             }
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-                ImGui::SetTooltip("The rotation axis (rotate order XYZ, like a 3D tool's rotate channels); total = "
-                                  "the overall turning rate");
+            ui::ItemTip("The rotation axis (rotate order XYZ, like a 3D tool's rotate channels); total = "
+                        "the overall turning rate");
             const char* ref = RotationReferenceLabel(cd.signal.reference);
             SentenceRow(s, "from");
-            PlaceChip(s, ChipWidth(ref, 70.0f));
-            if (BeginChip("##rref", ref, 70.0f)) {
+            ui::SentenceChip(s, ChipWidth(ref, 70.0f));
+            if (BeginSentenceChip(s, "##rref", ref, 70.0f)) {
                 for (Reference rf : {Reference::Parent, Reference::Floor})
                     if (ImGui::Selectable(RotationReferenceLabel(rf), rf == cd.signal.reference) &&
                         rf != cd.signal.reference)
@@ -3697,11 +3542,11 @@ void ConditionEditor(const Block& blk, int b, int c)
                             x->signal.ref_bones.clear();
                             return true;
                         });
-                ImGui::EndCombo();
+                ui::EndChipCombo();
             }
         } else {
-            PlaceChip(s, ChipWidth(AxisLabel(cd.signal.axis), 60.0f));
-            if (BeginChip("##axis", AxisLabel(cd.signal.axis), 60.0f)) {
+            ui::SentenceChip(s, ChipWidth(AxisLabel(cd.signal.axis), 60.0f));
+            if (BeginSentenceChip(s, "##axis", AxisLabel(cd.signal.axis), 60.0f)) {
                 for (Axis a : kAxisChoices)
                     if (ImGui::Selectable(AxisLabel(a), a == cd.signal.axis) && a != cd.signal.axis)
                         Edit("RAV: Condition axis (" + rule + ")", [b, c, a](ItemRules& r) {
@@ -3710,22 +3555,22 @@ void ConditionEditor(const Block& blk, int b, int c)
                             x->signal.axis = a;
                             return true;
                         });
-                ImGui::EndCombo();
+                ui::EndChipCombo();
             }
             const std::string ref = cd.signal.reference == Reference::Floor ? std::string("the floor")
                                                                             : RefLabel(cd.signal.ref_bones);
             SentenceRow(s, "from");
-            PlaceChip(s, ChipWidth(ref.c_str(), 70.0f));
-            if (BeginChip("##ref", ref.c_str(), 70.0f)) {
+            ui::SentenceChip(s, ChipWidth(ref.c_str(), 70.0f));
+            if (BeginSentenceChip(s, "##ref", ref.c_str(), 70.0f)) {
                 int picked = -2;
                 if (ImGui::Selectable("the floor", cd.signal.reference == Reference::Floor)) picked = -1;
-                ImGui::Separator();
+                ui::MenuSeparator();
                 const int single = (cd.signal.reference == Reference::Bones && cd.signal.ref_bones.size() == 1)
                                        ? cd.signal.ref_bones[0]
                                        : -3;
                 const int id = BoneMenuItems(single);
                 if (id >= 0) picked = id;
-                ImGui::EndCombo();
+                ui::EndChipCombo();
                 if (picked != -2)
                     Edit("RAV: Condition reference (" + rule + ")", [b, c, picked](ItemRules& r) {
                         Condition* x = CondAt(r, b, c);
@@ -3745,8 +3590,8 @@ void ConditionEditor(const Block& blk, int b, int c)
         }
         // goes [below|above] N unit  /  margin N unit
         SentenceRow(s, "goes");
-        PlaceChip(s, ChipWidth(DirectionLabel(cd.dir), 56.0f));
-        if (BeginChip("##dir", DirectionLabel(cd.dir), 56.0f)) {
+        ui::SentenceChip(s, ChipWidth(DirectionLabel(cd.dir), 56.0f));
+        if (BeginSentenceChip(s, "##dir", DirectionLabel(cd.dir), 56.0f)) {
             for (Direction d : kDirectionChoices)
                 if (ImGui::Selectable(DirectionLabel(d), d == cd.dir) && d != cd.dir)
                     Edit("RAV: Condition direction (" + rule + ")", [b, c, d](ItemRules& r) {
@@ -3755,29 +3600,28 @@ void ConditionEditor(const Block& blk, int b, int c)
                         x->dir = d;
                         return true;
                     });
-            ImGui::EndCombo();
+            ui::EndChipCombo();
         }
         const SignalUnit u = UnitOf(cd.signal);
-        PlaceChip(s, NumberFieldWidth(64.0f, UnitLabel(u)));
-        NumberField("##thr", ToDisplay(cd.signal, cd.threshold), UnitDragStep(u), UnitDecimals(u), UnitLabel(u), 64.0f,
+        ui::SentenceChip(s, NumberFieldWidth(ui::Dp(64.0f), UnitLabel(u)));
+        NumberField("##thr", ToDisplay(cd.signal, cd.threshold), UnitDragStep(u), UnitDecimals(u), UnitLabel(u), ui::Dp(64.0f),
                     "RAV: Set threshold (" + rule + ")", [b, c](ItemRules& r, double v) {
                         Condition* x = CondAt(r, b, c);
                         if (!x) return false;
                         x->threshold = FromDisplay(x->signal, v);
                         return true;
                     });
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Threshold: drag sideways (Shift: fine), click to type");
+        ui::ItemTip("Threshold: drag sideways (Shift: fine), click to type");
         SentenceRow(s, "margin");
-        PlaceChip(s, NumberFieldWidth(64.0f, UnitLabel(u)));
+        ui::SentenceChip(s, NumberFieldWidth(ui::Dp(64.0f), UnitLabel(u)));
         NumberField("##margin", ToDisplay(cd.signal, std::max(0.0, cd.margin)), UnitDragStep(u), UnitDecimals(u),
-                    UnitLabel(u), 64.0f, "RAV: Set margin (" + rule + ")", [b, c](ItemRules& r, double v) {
+                    UnitLabel(u), ui::Dp(64.0f), "RAV: Set margin (" + rule + ")", [b, c](ItemRules& r, double v) {
                         Condition* x = CondAt(r, b, c);
                         if (!x) return false;
                         x->margin = std::max(0.0, FromDisplay(x->signal, v));
                         return true;
                     });
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-            ImGui::SetTooltip("Hysteresis: how far back past the threshold before it can fire again");
+        ui::ItemTip("Hysteresis: how far back past the threshold before it can fire again");
     }
     ui::EndCard(card, ui::kSurface, ui::kStroke);
     ImGui::PopID();
@@ -3792,20 +3636,23 @@ void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const Sho
     ImDrawList* dl = ImGui::GetWindowDrawList();
     // Crumb: < rule  >  (dot) Event rule
     {
+        // 13-14: the crumb's back link (.crumb .btn: muted, kText under the mouse).
         const std::string back = "< " + rule + "##evback";
-        if (ImGui::SmallButton(back.c_str())) ClearEventSelection();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Back to the rule");
+        if (ui::LinkButton(back.c_str(), ui::kMuted)) ClearEventSelection();
+        ui::ItemTip("Back to the rule");
         ImGui::SameLine();
-        ImGui::TextDisabled(">");
+        ImGui::AlignTextToFramePadding();
+        ui::Caption(">");
         ImGui::SameLine();
         const ImVec2 p = ImGui::GetCursorScreenPos();
-        const float  lh = ImGui::GetTextLineHeight();
-        dl->AddCircleFilled(ImVec2(p.x + 4.0f, p.y + lh * 0.5f), 4.0f, RuleColor(blk), 12);
-        ImGui::Dummy(ImVec2(10.0f, lh));
+        const float  lh = ImGui::GetFrameHeight();
+        dl->AddCircleFilled(ImVec2(p.x + ui::Dp(4.0f), p.y + lh * 0.5f), ui::Dp(4.0f), RuleColor(blk), 12);
+        ImGui::Dummy(ImVec2(ui::Dp(10.0f), lh));
         ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(("Event " + rule).c_str());
     }
-    ImGui::Dummy(ImVec2(0.0f, 4.0f));
+    ImGui::Dummy(ImVec2(0.0f, ui::Dp(4.0f)));
 
     const char* state = e.kind == ShownKind::Detected     ? "Detected"
                         : e.kind == ShownKind::User       ? "Yours (fixed time)"
@@ -3819,16 +3666,17 @@ void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const Sho
     speed_spec.measure = Measure::Speed;
     SignalSpec strength_spec = blk.strength_signal.bones.empty() ? speed_spec : blk.strength_signal;
 
+    // 13-14: the theme's labelled rows (ui::LabelRow: the key in its column, the value beside it).
     constexpr float kKeyW = 78.0f;
     auto key = [&](const char* k) {
         ImGui::AlignTextToFramePadding();
-        ImGui::TextDisabled("%s", k);
-        ImGui::SameLine(kKeyW);
+        ui::LabelRow(k, ui::Dp(90.0f), ui::Dp(kKeyW));
     };
     key("State");
     ImGui::TextUnformatted(state);
 
     key("Time");
+    const float value_x = ImGui::GetCursorPosX();
     double project_t = 0.0;
     const bool on_timeline = FirstPassProjectTime(m.map, e.t, &project_t);
     const bool editable = !RowSkipped(m, e.block);  // 10-8b fb-1: a skipped rule's events stay as committed
@@ -3841,7 +3689,7 @@ void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const Sho
                                 m.rules.events[static_cast<size_t>(entry)].kind == EventKind::User)
                                    ? m.rules.events[static_cast<size_t>(entry)].t
                                    : e.t;
-        switch (ui::DragNumber("##evtime", &ms, 1.0, 1, "ms", 90.0f)) {
+        switch (ui::DragNumber("##evtime", &ms, 1.0, 1, "ms", ui::Dp(90.0f))) {
         case ui::DragNumberEvent::Live: {
             const double t = std::min(std::max(0.0, ms / 1000.0), clip_len);
             Later([entry, block, t, item = m.item]() {
@@ -3881,17 +3729,16 @@ void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const Sho
         default:
             break;
         }
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-            ImGui::SetTooltip("Its time in the clip: drag sideways, or click to type (Enter)");
+        ui::ItemTip("Its time in the clip: drag sideways, or click to type (Enter)");
     } else {
         ImGui::Text("%.1f ms", e.t * 1000.0);
     }
     {
         char tl[48];
         if (on_timeline) FormatTime(project_t, tl, sizeof(tl));
-        ImGui::SetCursorPosX(kKeyW);
-        if (on_timeline) ImGui::TextDisabled("at %s on the timeline", tl);
-        else ImGui::TextDisabled("outside the item: not written");
+        ImGui::SetCursorPosX(value_x);
+        if (on_timeline) ui::Caption((std::string("at ") + tl + " on the timeline").c_str());
+        else ui::Caption("outside the item: not written");
     }
 
     if (e.kind != ShownKind::Orphan && IsAutoBlock(blk)) {
@@ -3919,11 +3766,11 @@ void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const Sho
     key("Rule");
     ImGui::TextUnformatted(rule.c_str());
 
-    ImGui::Dummy(ImVec2(0.0f, 2.0f));
+    ImGui::Dummy(ImVec2(0.0f, ui::Dp(2.0f)));
     ui::SubText(e.kind == ShownKind::User       ? "Detection never moves your events. Their values are measured at their time."
                 : e.kind == ShownKind::Detected ? "Drag it in the strip to make it yours, or suppress it."
                                                 : "Masks any detection of this rule within 30 ms of this time.");
-    ImGui::Dummy(ImVec2(0.0f, 4.0f));
+    ImGui::Dummy(ImVec2(0.0f, ui::Dp(4.0f)));
 
     const char* dk = ShortcutKeyLabel(kShortcutTagDelEvent);
     const std::string act = std::string(e.kind == ShownKind::Detected ? "Suppress" : e.kind == ShownKind::User ? "Delete" : "Restore") +
@@ -3934,14 +3781,14 @@ void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const Sho
         ToggleEvent(copy);
     }
     if (!editable) ImGui::EndDisabled();
-    if (!editable && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("No bone for: %s.\nThis rule is skipped: its events stay as last committed.",
-                          static_cast<size_t>(e.block) < m.skipped_missing.size()
-                              ? m.skipped_missing[static_cast<size_t>(e.block)].c_str()
-                              : "");
+    if (!editable)
+        ui::ItemTip("No bone for: %s.\nThis rule is skipped: its events stay as last committed.",
+                    static_cast<size_t>(e.block) < m.skipped_missing.size()
+                        ? m.skipped_missing[static_cast<size_t>(e.block)].c_str()
+                        : "");
     ImGui::SameLine();
     if (!on_timeline) ImGui::BeginDisabled();
-    if (ImGui::Button("Go to event##evgo")) {
+    if (ui::SolidButton("Go to event##evgo")) {
         const double t = project_t;
         QueueVideoSeek(t);
     }
@@ -4050,14 +3897,11 @@ std::vector<std::string> AutoSoundKeys(const std::vector<Block>& rows)
     return out;
 }
 
-// Story 10-8h: a sensitivity Detect raised (raised_from >= 0) is drawn in amber.
-void PushRaised(double raised_from)
+// Story 10-8h: a sensitivity Detect raised (raised_from >= 0) is drawn in amber (13-14: the
+// number field's own tone).
+ImU32 RaisedTone(double raised_from)
 {
-    if (raised_from >= 0.0) ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kWarn));
-}
-void PopRaised(double raised_from)
-{
-    if (raised_from >= 0.0) ImGui::PopStyleColor();
+    return raised_from >= 0.0 ? ui::kWarn : 0;
 }
 
 // A type's sensitivity (%) or offset (ms). On a detected type it edits the item's blocks as a
@@ -4069,10 +3913,9 @@ void AutoValueField(const char* id, AutoType t, bool sens, bool detected, double
     const double step = 1.0;  // whole % and ms (the fields show no decimals)
     const char*  unit = sens ? "%" : "ms";
     if (detected) {
-        PushRaised(raised_from);
         NumberField(id, shown, step, 0, unit, w, AutoValueUndo(t, sens),
-                    [t, sens](ItemRules& r, double v) { return SetAutoValue(r, t, sens, ClampAutoValue(sens, v)); });
-        PopRaised(raised_from);
+                    [t, sens](ItemRules& r, double v) { return SetAutoValue(r, t, sens, ClampAutoValue(sens, v)); },
+                    RaisedTone(raised_from));
     } else {
         double& slot = sens ? g_auto_ui.type[ti].sens : g_auto_ui.type[ti].offset_ms;
         double  v = shown;
@@ -4090,22 +3933,20 @@ void AutoBlockField(const char* id, AutoType t, const Block& b, bool sens, float
     const double      raised_from = sens ? b.sens_from : -1.0;
     const std::string type = b.auto_type;
     const char        side = b.auto_side;
-    PushRaised(raised_from);
     NumberField(id, sens ? b.sens : b.offset_ms, 1.0, 0, sens ? "%" : "ms", w, AutoValueUndo(t, sens, b.marker),
-                [type, side, sens](ItemRules& r, double v) { return SetAutoBlockValue(r, type, side, sens, ClampAutoValue(sens, v)); });
-    PopRaised(raised_from);
+                [type, side, sens](ItemRules& r, double v) { return SetAutoBlockValue(r, type, side, sens, ClampAutoValue(sens, v)); },
+                RaisedTone(raised_from));
 }
 
 // The sensitivity field's tooltip (story 10-8h: and where Detect raised it from).
 void AutoSensTooltip(double raised_from)
 {
-    if (!ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled)) return;
     if (raised_from >= 0.0)
-        ImGui::SetTooltip("Raised by Detect from %.0f %%: it found no event there.\n"
-                          "Sensitivity: higher finds more events, lower fewer (50 %% = the default).",
-                          raised_from);
+        ui::ItemTip("Raised by Detect from %.0f %%: it found no event there.\n"
+                    "Sensitivity: higher finds more events, lower fewer (50 %% = the default).",
+                    raised_from);
     else
-        ImGui::SetTooltip("Sensitivity: higher finds more events, lower fewer (50 %% = the default).");
+        ui::ItemTip("Sensitivity: higher finds more events, lower fewer (50 %% = the default).");
 }
 
 const char* AutoTypeHint(AutoType t)
@@ -4135,23 +3976,26 @@ bool AutoCategoryRow(AutoCategory c, ImGuiID open_id, bool* remove)
     const float   fh = ImGui::GetFrameHeight();
     const ImVec2  p = ImGui::GetCursorScreenPos();
     const float   w = ImGui::GetContentRegionAvail().x;
-    if (ImGui::InvisibleButton("##fold", ImVec2(std::max(1.0f, w - fh - 4.0f), fh))) {
+    const float   gap = ui::Dp(4.0f);
+    if (ImGui::InvisibleButton("##fold", ImVec2(std::max(1.0f, w - fh - gap), fh))) {
         open = !open;
         st->SetBool(open_id, open);
     }
     const bool  hovered = ImGui::IsItemHovered();
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    if (hovered) dl->AddRectFilled(ImVec2(p.x - 4.0f, p.y), ImVec2(p.x + w - fh - 4.0f, p.y + fh), ui::kHover, ui::kRadiusSm);
-    IconFold(dl, ImVec2(p.x + 5.0f, p.y + fh * 0.5f), 4.0f, hovered ? ui::kText : ui::kMuted, open);
+    // 13-14: the theme's row look under the mouse and its fold triangle (the whole row folds).
+    ui::RowBackground(dl, ImVec2(p.x - gap, p.y), ImVec2(p.x + w - fh - gap, p.y + fh), hovered ? ui::kRowHovered : 0u);
+    ui::DrawFoldTriangle(dl, ImVec2(std::floor(p.x + ui::Dp(5.0f)) + 0.5f, std::floor(p.y + fh * 0.5f) + 0.5f), open,
+                         hovered ? ui::kText : ui::kMuted);
     const char*  label = AutoCategoryLabel(c);
     const ImVec2 ts = ImGui::CalcTextSize(label);
     const float  ty = p.y + (fh - ts.y) * 0.5f;
-    dl->AddText(ImVec2(p.x + 16.0f, ty), ui::kText, label);
+    dl->AddText(ImVec2(p.x + ui::Dp(16.0f), ty), ui::kText, label);
     char count[32];
     std::snprintf(count, sizeof(count), "%d on", AutoCategoryOnCount(g_auto_ui, c));
-    dl->AddText(ImVec2(p.x + 16.0f + ts.x + 8.0f, ty), ui::kFaint, count);
-    ImGui::SameLine(0.0f, 4.0f);
-    *remove = IconButton("##remove", fh, [](ImDrawList* d, ImVec2 x, ImU32 xc) { IconCross(d, x, 3.5f, xc); });
+    dl->AddText(ImVec2(p.x + ui::Dp(16.0f) + ts.x + ui::Dp(8.0f), ty), ui::kFaint, count);
+    ImGui::SameLine(0.0f, gap);
+    *remove = ui::IconOnlyButton("##remove", Glyph(kGlyphCrossSmall), nullptr, fh);
     return open;
 }
 
@@ -4168,13 +4012,16 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
         const float x0 = ImGui::GetCursorPosX();
         const float avail = std::max(1.0f, ImGui::GetContentRegionAvail().x);
         const float cap_w = ImGui::CalcTextSize("Sensitivity").x;
-        const float min_label = 90.0f + ImGui::GetFrameHeight() * 2.0f;  // tick, label, row icon
-        float       fw = 48.0f;
-        while (fw > 24.0f && min_label + std::max(NumberFieldWidth(fw, "%"), cap_w) + 10.0f + NumberFieldWidth(fw, "ms") > avail)
-            fw -= 2.0f;
+        const float min_label = ui::Dp(90.0f) + ImGui::GetFrameHeight() * 2.0f;  // tick, label, row icon
+        const float col_gap = ui::Dp(10.0f);
+        float       fw = ui::Dp(48.0f);
+        while (fw > ui::Dp(24.0f) &&
+               min_label + std::max(NumberFieldWidth(fw, "%"), cap_w) + col_gap + NumberFieldWidth(fw, "ms") > avail)
+            fw -= ui::Dp(2.0f);
         const float w_sens = NumberFieldWidth(fw, "%"), w_off = NumberFieldWidth(fw, "ms");
         const float x_off = x0 + std::max(0.0f, avail - w_off);
-        const float x_sens = std::max(x0, x_off - 10.0f - std::max(w_sens, cap_w));
+        const float x_sens = std::max(x0, x_off - col_gap - std::max(w_sens, cap_w));
+        const float x_row = x0 + ImGui::GetFrameHeight() + ui::Dp(4.0f);  // a type's rows, under its label
         // Story 10-8c: the categories shown (added with +, or with a block on the item), and the
         // fold state of each (the window's storage).
         bool    cat_shown[kAutoCategoryCount];
@@ -4191,16 +4038,15 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
         ImGuiStorage* storage = ImGui::GetStateStorage();
         // + (the categories not shown) on the left, the column captions on the right.
         if (any_hidden) {
-            if (IconButton("##autoaddcat", ImGui::GetFrameHeight(),
-                           [](ImDrawList* d, ImVec2 c, ImU32 col) { IconPlus(d, c, 4.0f, col); }))
+            if (ui::IconOnlyButton("##autoaddcat", Glyph(kGlyphPlus), nullptr, ImGui::GetFrameHeight()))
                 ImGui::OpenPopup("##autocats");
-            if (ImGui::BeginPopup("##autocats")) {
+            if (ui::BeginMenuPopup("##autocats")) {
                 for (int c = 0; c < kAutoCategoryCount; ++c)
                     if (!cat_shown[c] && ImGui::Selectable(AutoCategoryLabel(static_cast<AutoCategory>(c)))) {
                         g_auto_added[c] = true;
                         storage->SetBool(cat_open_id[c], true);
                     }
-                ImGui::EndPopup();
+                ui::EndMenuPopup();
             }
             if (any_shown) ImGui::SameLine();
         }
@@ -4208,18 +4054,17 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
             // Story 10-8i: "Is looping" on the left of the captions (after the +): one undo point,
             // the events read again at once.
             bool loop = rules.clip.loop;
-            if (ImGui::Checkbox("Is looping##autoloop", &loop))
+            if (ui::Checkbox("Is looping##autoloop", &loop))
                 Later([loop, item = m.item]() { TaggingSetLooping(loop, item); });
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-                ImGui::SetTooltip("The animation loops: its end continues into its start.\nAuto detection reads the "
-                                  "motion as a cycle, so a contact, step, grab or release\nthat crosses the loop point "
-                                  "is found whole. Saved on the item.");
+            ui::ItemTip("The animation loops: its end continues into its start.\nAuto detection reads the "
+                        "motion as a cycle, so a contact, step, grab or release\nthat crosses the loop point "
+                        "is found whole. Saved on the item.");
             ImGui::SameLine();
             ImGui::SetCursorPosX(std::max(x_sens, ImGui::GetCursorPosX()));
             ImGui::AlignTextToFramePadding();
-            ImGui::TextDisabled("Sensitivity");
+            ui::Caption("Sensitivity");
             ImGui::SameLine(x_off);
-            ImGui::TextDisabled("Offset");
+            ui::Caption("Offset");
         }
         for (int ti = 0; ti < kAutoTypeCount; ++ti) {
             const AutoType t = static_cast<AutoType>(ti);
@@ -4243,8 +4088,8 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
             if (!cat_open[c]) continue;
             ImGui::PushID(ti);
             bool on = g_auto_ui.type[ti].on;
-            if (ImGui::Checkbox(AutoTypeLabel(t), &on)) g_auto_ui.type[ti].on = on;
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("%s", AutoTypeHint(t));
+            if (ui::Checkbox(AutoTypeLabel(t), &on)) g_auto_ui.type[ti].on = on;
+            ui::ItemTipText(AutoTypeHint(t));
             const bool detected = item.type[ti].on;
             // Story 10-8h: the type's blocks (one per side or part) on the item, whether their
             // values differ, Detect's raise, and the blocks that found no event up to 100 %.
@@ -4293,12 +4138,10 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
             };
             if (can_split) {
                 const float fh = ImGui::GetFrameHeight();
-                ImGui::SameLine(x_sens - fh - 4.0f);
-                if (IconButton("##autosplitbtn", fh, [split](ImDrawList* d, ImVec2 c, ImU32 col) { IconFold(d, c, 4.0f, col, split); }))
-                    storage->SetInt(split_id, split ? 0 : 1);
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-                    ImGui::SetTooltip("%s", split ? "Fold the rows: one sensitivity and offset for the whole type (an edit sets every row)."
-                                                  : "Unfold: sensitivity and offset per row.");
+                ImGui::SameLine(x_sens - fh - ui::Dp(4.0f));
+                if (ui::Chevron("##autosplitbtn", split, fh)) storage->SetInt(split_id, split ? 0 : 1);
+                ui::ItemTipText(split ? "Fold the rows: one sensitivity and offset for the whole type (an edit sets every row)."
+                                      : "Unfold: sensitivity and offset per row.");
             }
             if (!on) ImGui::BeginDisabled();
             if (!split) {
@@ -4306,29 +4149,27 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
                 const double off_v = rows.empty() ? g_auto_ui.type[ti].offset_ms : rows[0].offset_ms;
                 ImGui::SameLine(x_sens);
                 AutoValueField("##sens", t, true, detected, sens_v, fw, detected ? raised_from : -1.0);
-                if (differ && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-                    ImGui::SetTooltip("%s\n%s", row_list(true).c_str(),
-                                      raised_from >= 0.0 ? "Raised by Detect on a row. An edit sets every row."
-                                                         : "An edit sets every row.");
+                if (differ)
+                    ui::ItemTip("%s\n%s", row_list(true).c_str(),
+                                raised_from >= 0.0 ? "Raised by Detect on a row. An edit sets every row."
+                                                   : "An edit sets every row.");
                 else
                     AutoSensTooltip(detected ? raised_from : -1.0);
                 ImGui::SameLine(x_off);
                 AutoValueField("##offset", t, false, detected, off_v, fw);
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled)) {
-                    if (differ) ImGui::SetTooltip("%s\nAn edit sets every row.", row_list(false).c_str());
-                    else ImGui::SetTooltip("Moves every marker of this type, in ms (+ = later).");
-                }
+                if (differ) ui::ItemTip("%s\nAn edit sets every row.", row_list(false).c_str());
+                else ui::ItemTip("Moves every marker of this type, in ms (+ = later).");
                 // Antho 2026-10-12 (13-8): the type's sound, every row at once.
-                ImGui::SetCursorPosX(x0 + ImGui::GetFrameHeight() + 4.0f);
+                ImGui::SetCursorPosX(x_row);
                 DrawAutoSoundRow(m.item, rules, AutoSoundKeys(rows));
             } else {
                 // One row per block, labelled by its marker.
                 for (size_t bi = 0; bi < rows.size(); ++bi) {
                     const Block& b = rows[bi];
                     ImGui::PushID(static_cast<int>(bi));
-                    ImGui::SetCursorPosX(x0 + ImGui::GetFrameHeight() + 4.0f);
+                    ImGui::SetCursorPosX(x_row);
                     ImGui::AlignTextToFramePadding();
-                    ImGui::TextDisabled("%s", b.marker.c_str());
+                    ui::Caption(b.marker.c_str());
                     for (int f = 0; f < 2; ++f) {
                         const bool sens = f == 0;
                         ImGui::SameLine(sens ? x_sens : x_off);
@@ -4341,29 +4182,27 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
                                 SetAutoRowValue(g_auto_ui.type[ti], b.auto_type, b.auto_side, sens, ClampAutoValue(sens, v));
                         }
                         if (sens) AutoSensTooltip(b.sens_from);
-                        else if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-                            ImGui::SetTooltip("Moves this row's markers, in ms (+ = later).");
+                        else
+                            ui::ItemTip("Moves this row's markers, in ms (+ = later).");
                     }
                     // Antho 2026-10-12 (13-8): this row's sound.
-                    ImGui::SetCursorPosX(x0 + ImGui::GetFrameHeight() + 4.0f);
+                    ImGui::SetCursorPosX(x_row);
                     DrawAutoSoundRow(m.item, rules, AutoSoundKeys({b}));
                     ImGui::PopID();
                 }
             }
             if (detected && !none_parts.empty()) {
-                ImGui::SetCursorPosX(x0 + ImGui::GetFrameHeight() + 4.0f);
-                ImGui::TextColored(ui::Col(ui::kWarn), "No event up to 100 %% (%s)", none_parts.c_str());
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-                    ImGui::SetTooltip("Detect tried up to 100 %% and found nothing there: the value is unchanged.");
+                ImGui::SetCursorPosX(x_row);
+                ui::ToneText("No event up to 100 % (" + none_parts + ")", ui::kWarn);
+                ui::ItemTip("Detect tried up to 100 %% and found nothing there: the value is unchanged.");
             }
             if (t == AutoType::Step) {
                 static const char* const kStepModes[] = {"Combined", "Separate"};
-                ImGui::SetCursorPosX(x0 + ImGui::GetFrameHeight() + 4.0f);
+                ImGui::SetCursorPosX(x_row);
                 int sel = g_auto_ui.separate_steps ? 1 : 0;
                 if (ui::Segmented("##stepmode", kStepModes, 2, &sel)) g_auto_ui.separate_steps = sel == 1;
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-                    ImGui::SetTooltip("Combined: one marker per landing (FS L / FS R).\nSeparate: the heel and the toe "
-                                      "each get theirs (Heel L, Toe L...).");
+                ui::ItemTip("Combined: one marker per landing (FS L / FS R).\nSeparate: the heel and the toe "
+                            "each get theirs (Heel L, Toe L...).");
             }
             if (t == AutoType::Slide || t == AutoType::Pivot) {
                 // Story 10-8m: heel / toe separate scuffs, and Each part or Longest part while
@@ -4372,30 +4211,28 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
                 static const char* const kScuffParts[] = {"Each part", "Longest part"};
                 ScuffParts& mode = t == AutoType::Slide ? g_auto_ui.slide_parts : g_auto_ui.pivot_parts;
                 const char* word = t == AutoType::Slide ? "Slide" : "Pivot";
-                ImGui::SetCursorPosX(x0 + ImGui::GetFrameHeight() + 4.0f);
+                ImGui::SetCursorPosX(x_row);
                 int sel = mode == ScuffParts::Combined ? 0 : 1;
                 if (ui::Segmented(t == AutoType::Slide ? "##slidemode" : "##pivotmode", kScuffModes, 2, &sel))
                     mode = sel == 0 ? ScuffParts::Combined : ScuffParts::EachPart;
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-                    ImGui::SetTooltip("Combined: one marker per scuff (%s L / %s R).\nSeparate: the heel and the toe "
-                                      "each get their block (%s Heel L, %s Toe L...).",
-                                      word, word, word, word);
+                ui::ItemTip("Combined: one marker per scuff (%s L / %s R).\nSeparate: the heel and the toe "
+                            "each get their block (%s Heel L, %s Toe L...).",
+                            word, word, word, word);
                 if (mode != ScuffParts::Combined) {
-                    ImGui::SetCursorPosX(x0 + ImGui::GetFrameHeight() + 4.0f);
+                    ImGui::SetCursorPosX(x_row);
                     int part = mode == ScuffParts::Longest ? 1 : 0;
                     if (ui::Segmented(t == AutoType::Slide ? "##slideparts" : "##pivotparts", kScuffParts, 2, &part))
                         mode = part == 1 ? ScuffParts::Longest : ScuffParts::EachPart;
-                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-                        ImGui::SetTooltip("Each part: every part that scuffs gets its event (a whole-foot scuff gives a "
-                                          "heel and a toe one).\nLongest part: one event per scuff, on the part that "
-                                          "holds longest.");
+                    ui::ItemTip("Each part: every part that scuffs gets its event (a whole-foot scuff gives a "
+                                "heel and a toe one).\nLongest part: one event per scuff, on the part that "
+                                "holds longest.");
                 }
             }
             if (t == AutoType::HandPivot) {
                 // Story 10-8e: on, only a hand that came to rest with a grab pivots.
-                ImGui::SetCursorPosX(x0 + ImGui::GetFrameHeight() + 4.0f);
+                ImGui::SetCursorPosX(x_row);
                 bool after_grab = !g_auto_ui.hand_pivot_any;
-                if (ImGui::Checkbox("Only after a Grab##handpivotgrab", &after_grab)) g_auto_ui.hand_pivot_any = !after_grab;
+                if (ui::Checkbox("Only after a Grab##handpivotgrab", &after_grab)) g_auto_ui.hand_pivot_any = !after_grab;
             }
             if (!on) ImGui::EndDisabled();
             ImGui::PopID();
@@ -4415,10 +4252,10 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
                 std::string line = "No bone for: ";
                 for (size_t i = 0; i < miss.size(); ++i) line += (i ? ", " : "") + miss[i];
                 line += ". Their events are skipped: map them in Roles.";
-                WrappedText(kBadText, line, ImGui::GetContentRegionAvail().x);
+                ui::ToneText(line, ui::kBadInk, /*wrap=*/true);
             }
         }
-        if (!m.auto_error.empty()) WrappedText(ui::kMuted, "Nothing detected: " + m.auto_error + ".", ImGui::GetContentRegionAvail().x);
+        if (!m.auto_error.empty()) ui::ToneText("Nothing detected: " + m.auto_error + ".", ui::kMuted, /*wrap=*/true);
     }
     ui::EndSection(sec);
 }
@@ -4446,15 +4283,14 @@ void DrawAutoDetect(const TaggingModel& m, const ItemRules& rules)
     const bool clicked = lit ? ui::PrimaryButton("Detect##autodetect", ImVec2(-1.0f, 0.0f))
                              : ui::SolidButton("Detect##autodetect", ImVec2(-1.0f, 0.0f));
     if (!can) ImGui::EndDisabled();
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-        ImGui::SetTooltip("%s", pending ? "Adds the ticked types to this item and removes the unticked ones (one undo "
-                                          "point).\nYour corrections stay, except on a type you untick.\n"
-                                          "A side or part that finds no event gets the lowest sensitivity that finds one."
-                                : search_waiting
-                                    ? "A ticked type finds no event on a side or part: Detect raises its sensitivity\n"
-                                      "to the lowest that finds one, up to 100 % (one undo point)."
-                                    : "Tick or untick a type, or switch Combined / Separate or Only after a Grab, then Detect.\n"
-                                      "Sensitivity and offset of a detected type apply at once.");
+    ui::ItemTipText(pending ? "Adds the ticked types to this item and removes the unticked ones (one undo "
+                              "point).\nYour corrections stay, except on a type you untick.\n"
+                              "A side or part that finds no event gets the lowest sensitivity that finds one."
+                    : search_waiting
+                        ? "A ticked type finds no event on a side or part: Detect raises its sensitivity\n"
+                          "to the lowest that finds one, up to 100 % (one undo point)."
+                        : "Tick or untick a type, or switch Combined / Separate or Only after a Grab, then Detect.\n"
+                          "Sensitivity and offset of a detected type apply at once.");
     if (clicked) {
         const AutoSettings s = g_auto_ui;
         ClearEventSelection();
@@ -4492,7 +4328,7 @@ void DrawInspector(const ItemRules& rules)
     if (g_sel < 0 || g_sel >= nb) {
         if (std::any_of(rules.blocks.begin(), rules.blocks.end(), [](const Block& x) { return IsAutoBlock(x); })) return;
         ui::SubText("No rule. Add one (+ Rule) and pick its bone and signal, or start from a preset:");
-        ImGui::Dummy(ImVec2(0.0f, 2.0f));
+        ImGui::Dummy(ImVec2(0.0f, ui::Dp(2.0f)));
         DrawPresetButtons();
         return;
     }
@@ -4517,26 +4353,21 @@ void DrawInspector(const ItemRules& rules)
         if (ImGui::InvisibleButton("##swatch", ImVec2(fh, fh))) ImGui::OpenPopup("##palette");
         dl->AddCircleFilled(ImVec2(p.x + fh * 0.5f, p.y + fh * 0.5f), fh * 0.32f, FromRecordColor(blk.color), 16);
         if (ImGui::IsItemHovered()) dl->AddCircle(ImVec2(p.x + fh * 0.5f, p.y + fh * 0.5f), fh * 0.40f, ui::kStrokeStrong, 16, 1.5f);
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("Marker colour");
-        if (ImGui::BeginPopup("##palette")) {
-            for (int i = 0; i < 8; ++i) {
-                ImGui::PushID(i);
-                const ImVec2 q = ImGui::GetCursorScreenPos();
-                const uint32_t rc = ToRecordColor(ui::kCurvePalette[i]);
-                if (ImGui::InvisibleButton("##col", ImVec2(20.0f, 20.0f)) && rc != blk.color)
+        ui::ItemTip("Marker colour");
+        // 13-14: the theme's colour dots (G-12) in a menu popup.
+        if (ui::BeginMenuPopup("##palette")) {
+            int picked = -1;
+            if (ui::SwatchPalette("##rulecols", ui::kCurvePalette, 8, FromRecordColor(blk.color), &picked) && picked >= 0) {
+                const uint32_t rc = ToRecordColor(ui::kCurvePalette[picked]);
+                if (rc != blk.color)
                     Edit("RAV: Rule colour (" + rule + ")", [b, rc](ItemRules& r) {
                         Block* x = BlockAt(r, b);
                         if (!x) return false;
                         x->color = rc;
                         return true;
                     });
-                ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(q.x + 10.0f, q.y + 10.0f), 7.0f, ui::kCurvePalette[i], 16);
-                if (rc == blk.color)
-                    ImGui::GetWindowDrawList()->AddCircle(ImVec2(q.x + 10.0f, q.y + 10.0f), 9.0f, ui::kText, 16, 1.5f);
-                if (i < 7) ImGui::SameLine(0.0f, 4.0f);
-                ImGui::PopID();
             }
-            ImGui::EndPopup();
+            ui::EndMenuPopup();
         }
         ImGui::SameLine();
         // The field shows the saved name whenever it is not being typed into. While it is,
@@ -4547,10 +4378,9 @@ void DrawInspector(const ItemRules& rules)
             g_name_block = b;
             g_name_item = GetTaggingModel().item;
         }
-        ImGui::SetNextItemWidth(-1.0f);
-        ImGui::InputText("##markername", g_name_buf, sizeof(g_name_buf));
+        ui::TextField("##markername", nullptr, g_name_buf, sizeof(g_name_buf));  // the room left
         g_name_active = ImGui::IsItemActive();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("The marker's name on the timeline");
+        ui::ItemTip("The marker's name on the timeline");
         if (ImGui::IsItemDeactivatedAfterEdit() && !ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
             const std::string name = g_name_buf;
             const int nb = g_name_block;
@@ -4576,10 +4406,10 @@ void DrawInspector(const ItemRules& rules)
     }
 
     // When all of these hold.
-    ImGui::Dummy(ImVec2(0.0f, 4.0f));
+    ImGui::Dummy(ImVec2(0.0f, ui::Dp(4.0f)));
     ui::Caption("When all of these hold");
     for (int c = 0; c < static_cast<int>(blk.conditions.size()); ++c) ConditionEditor(blk, b, c);
-    if (ImGui::SmallButton("+ AND condition")) {
+    if (ui::AddButton("+ AND condition")) {
         Edit("RAV: Add condition (" + rule + ")", [b](ItemRules& r) {
             Block* x = BlockAt(r, b);
             if (!x) return false;
@@ -4589,7 +4419,7 @@ void DrawInspector(const ItemRules& rules)
     }
 
     // Place the marker at [the start | the highest point | the lowest point] of [signal].
-    ImGui::Dummy(ImVec2(0.0f, 6.0f));
+    ImGui::Dummy(ImVec2(0.0f, ui::Dp(6.0f)));
     ui::Caption("Place the marker");
     // 10-3 fb-2: the same label column and chip edge as the condition cards (decision A).
     const float sx0 = ImGui::GetCursorScreenPos().x + kCardPad;
@@ -4598,8 +4428,8 @@ void DrawInspector(const ItemRules& rules)
         const Placement pl = PlacementOf(blk);
         Sentence sen = InspectorSentence(sx0, sx1);
         SentenceRow(sen, "at");
-        PlaceChip(sen, ChipWidth(PlacementLabel(pl), 80.0f));
-        if (BeginChip("##place", PlacementLabel(pl), 80.0f)) {
+        ui::SentenceChip(sen, ChipWidth(PlacementLabel(pl), 80.0f));
+        if (BeginSentenceChip(sen, "##place", PlacementLabel(pl), 80.0f)) {
             for (Placement q : kPlacementChoices)
                 if (ImGui::Selectable(PlacementLabel(q), q == pl) && q != pl) {
                     const int of = blk.peak_condition;
@@ -4610,11 +4440,11 @@ void DrawInspector(const ItemRules& rules)
                         return true;
                     });
                 }
-            ImGui::EndCombo();
+            ui::EndChipCombo();
         }
         SentenceRow(sen, "of");
         if (pl == Placement::Start) {
-            PlaceChip(sen, ImGui::CalcTextSize("the match").x);
+            ui::SentenceChip(sen, ImGui::CalcTextSize("the match").x);
             ImGui::AlignTextToFramePadding();
             ImGui::TextUnformatted("the match");
         } else {
@@ -4623,8 +4453,8 @@ void DrawInspector(const ItemRules& rules)
                 of >= 0 ? SignalName(blk.conditions[static_cast<size_t>(of)].signal,
                                      SignalBoneLabel(blk.conditions[static_cast<size_t>(of)].signal))
                         : std::string("?");
-            PlaceChip(sen, ChipWidth(cur.c_str(), 80.0f));
-            if (BeginChip("##placeof", cur.c_str(), 80.0f)) {
+            ui::SentenceChip(sen, ChipWidth(cur.c_str(), 80.0f));
+            if (BeginSentenceChip(sen, "##placeof", cur.c_str(), 80.0f)) {
                 for (int c = 0; c < static_cast<int>(blk.conditions.size()); ++c) {
                     const SignalSpec& s = blk.conditions[static_cast<size_t>(c)].signal;
                     ImGui::PushID(c);
@@ -4637,7 +4467,7 @@ void DrawInspector(const ItemRules& rules)
                         });
                     ImGui::PopID();
                 }
-                ImGui::EndCombo();
+                ui::EndChipCombo();
             }
         }
         ui::SubText("The match is the stretch where all the conditions hold. A footstep: the highest point of the "
@@ -4661,10 +4491,10 @@ void DrawInspector(const ItemRules& rules)
         Sentence sen = InspectorSentence(sx0, sx1);
         for (const Timing& t : rows) {
             SentenceRow(sen, t.label);
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("%s", t.tip);
-            PlaceChip(sen, NumberFieldWidth(70.0f, "ms"));
+            ui::ItemTipText(t.tip);
+            ui::SentenceChip(sen, NumberFieldWidth(ui::Dp(70.0f), "ms"));
             const int which = t.which;
-            NumberField(t.id, t.value, 1.0, 0, "ms", 70.0f, std::string("RAV: Set ") + (which == 0 ? "offset" : which == 1 ? "min length" : "cooldown") + " (" + rule + ")",
+            NumberField(t.id, t.value, 1.0, 0, "ms", ui::Dp(70.0f), std::string("RAV: Set ") + (which == 0 ? "offset" : which == 1 ? "min length" : "cooldown") + " (" + rule + ")",
                         [b, which](ItemRules& r, double v) {
                             Block* x = BlockAt(r, b);
                             if (!x) return false;
@@ -4673,7 +4503,7 @@ void DrawInspector(const ItemRules& rules)
                             else x->cooldown_ms = std::max(0.0, v);
                             return true;
                         });
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ImGui::SetTooltip("%s", t.tip);
+            ui::ItemTipText(t.tip);
         }
     }
     // Epic 13 (D20): the rule's sound library (13-8).
@@ -4689,15 +4519,12 @@ void DrawFooter(const TaggingModel& m)
     {
         const MarkerMode mode = GetTaggingMarkerMode();
         ImGui::AlignTextToFramePadding();
-        ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
-        ImGui::TextUnformatted(MarkerModeLine(mode));
-        ImGui::PopStyleColor();
-        ImGui::SameLine(std::max(ImGui::GetCursorPosX() + 6.0f,
-                                 ImGui::GetContentRegionMax().x - ImGui::CalcTextSize("Change").x - 12.0f));
-        if (ImGui::SmallButton("Change##tagmarkmode")) g_menu_request = true;
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-            ImGui::SetTooltip("Take, project or both: applies to every project; set in the menu's Tagging view tab.\n"
-                              "Project markers take the rule's colour.");
+        ui::ToneText(MarkerModeLine(mode), ui::kMuted);
+        ImGui::SameLine(std::max(ImGui::GetCursorPosX() + ui::Dp(6.0f),
+                                 ImGui::GetContentRegionMax().x - ui::ButtonWidth("Change##tagmarkmode")));
+        if (ui::SolidButton("Change##tagmarkmode")) g_menu_request = true;
+        ui::ItemTip("Take, project or both: applies to every project; set in the menu's Tagging view tab.\n"
+                    "Project markers take the rule's colour.");
     }
     // Commit (Apply renamed, 10-4 fb-4): every selected item that has rules, one undo point.
     // Cancel beside it: the same items' previews deleted, their rules back to the last Commit.
@@ -4714,9 +4541,9 @@ void DrawFooter(const TaggingModel& m)
         DrawSoundReportLine(sound_ctx);
     }
     {
-        const float cancel_w = ImGui::CalcTextSize("Cancel").x + ImGui::GetStyle().FramePadding.x * 2.0f + 8.0f;
+        const float cancel_w = ui::ButtonWidth("Cancel##tagcancel") + ui::Dp(8.0f);
         const float commit_w =
-            std::max(60.0f, ImGui::GetContentRegionAvail().x - cancel_w - ImGui::GetStyle().ItemSpacing.x);
+            std::max(ui::Dp(60.0f), ImGui::GetContentRegionAvail().x - cancel_w - ImGui::GetStyle().ItemSpacing.x);
         char label[64];
         const bool nothing = run > 0 && m.sel_to_commit == 0;  // every item's markers are up to date
         if (nothing) std::snprintf(label, sizeof(label), "Nothing to commit##tagapply");
@@ -4726,22 +4553,20 @@ void DrawFooter(const TaggingModel& m)
                                                  : ui::PrimaryButton(label, ImVec2(commit_w, 0.0f));
         if (commit_clicked) Later([]() { CommitTaggingMarkers(); });
         if (run == 0 || nothing) ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip(run == 0  ? "Select the items to tag (items with rules) in REAPER."
-                              : nothing ? "The selected items' markers are up to date: no preview to commit."
-                                        : "Writes the markers of every selected item that has rules, each with its own "
-                                         "rules,\nand removes their previews. Replaces only RAV's markers. One undo point.\n"
-                                         "Items linked to a selected one (same animation file) are committed too.");
+        ui::ItemTipText(run == 0  ? "Select the items to tag (items with rules) in REAPER."
+                        : nothing ? "The selected items' markers are up to date: no preview to commit."
+                                  : "Writes the markers of every selected item that has rules, each with its own "
+                                    "rules,\nand removes their previews. Replaces only RAV's markers. One undo point.\n"
+                                    "Items linked to a selected one (same animation file) are committed too.");
         ImGui::SameLine();
         if (with_rules == 0) ImGui::BeginDisabled();
         if (ui::SolidButton("Cancel##tagcancel", ImVec2(-1.0f, 0.0f))) Later([]() { CancelTaggingChanges(); });
         if (with_rules == 0) ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip(with_rules == 0 ? "Select the items to tag (items with rules) in REAPER."
-                                              : "Deletes the preview markers of every selected item that has rules and "
-                                                "puts\ntheir rules, thresholds and events back as they were at the last "
-                                                "Commit. One undo point.\nItems linked to a selected one get the same "
-                                                "rules, thresholds and events back.");
+        ui::ItemTipText(with_rules == 0 ? "Select the items to tag (items with rules) in REAPER."
+                                        : "Deletes the preview markers of every selected item that has rules and "
+                                          "puts\ntheir rules, thresholds and events back as they were at the last "
+                                          "Commit. One undo point.\nItems linked to a selected one get the same "
+                                          "rules, thresholds and events back.");
     }
     // The selection, and whether this item's markers are written.
     {
@@ -4749,47 +4574,35 @@ void DrawFooter(const TaggingModel& m)
         // 10-6: the copies Commit and Cancel also act on (linked to a selected item).
         if (m.sel_linked > 0) line += " " RAV_DOT " " + std::to_string(m.sel_linked) + " linked";
         if (m.sel_without_rules > 0) line += " " RAV_DOT " " + std::to_string(m.sel_without_rules) + " without rules skipped";
-        ImGui::PushTextWrapPos(0.0f);
-        ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
-        ImGui::TextUnformatted(line.c_str());
-        ImGui::PopStyleColor();
+        ui::ToneText(line, ui::kMuted, /*wrap=*/true);
         if (m.sel_roles_skipped > 0) {
-            ImGui::SameLine(0.0f, 4.0f);
+            ImGui::SameLine(0.0f, ui::Dp(4.0f));
             char roles[64];
             std::snprintf(roles, sizeof(roles), RAV_DOT " %d skipped: roles", m.sel_roles_skipped);
-            ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(kBadText));
-            ImGui::TextUnformatted(roles);
-            ImGui::PopStyleColor();
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))  // 10-8b fb-1
-                ImGui::SetTooltip("Items where nothing can run: every rule that is on reads a role with no bone\n"
-                                  "and no Auto detection type is ticked, or the animation file did not load or has no skeleton.\n"
-                                  "Their markers stay as they are.");
+            ui::ToneText(roles, ui::kBadInk, true);
+            ui::ItemTip("Items where nothing can run: every rule that is on reads a role with no bone\n"  // 10-8b fb-1
+                        "and no Auto detection type is ticked, or the animation file did not load or has no skeleton.\n"
+                        "Their markers stay as they are.");
         }
         if (m.detected && !m.rules.blocks.empty()) {  // 10-3 fb-1: no rule = nothing to write, no warning
-            ImGui::SameLine(0.0f, 4.0f);
-            ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(m.markers_up_to_date ? ui::kMuted : ui::kWarn));
-            ImGui::TextUnformatted(m.markers_up_to_date ? RAV_DOT " markers up to date"
-                                   : m.has_previews     ? RAV_DOT " preview not committed"
-                                                        : RAV_DOT " markers not written yet");
-            ImGui::PopStyleColor();
+            ImGui::SameLine(0.0f, ui::Dp(4.0f));
+            ui::ToneText(m.markers_up_to_date ? RAV_DOT " markers up to date"
+                         : m.has_previews     ? RAV_DOT " preview not committed"
+                                              : RAV_DOT " markers not written yet",
+                         m.markers_up_to_date ? ui::kMuted : ui::kWarn, true);
         }
         // The last Commit or Cancel outcome.
         const ApplyResult& ar = LastApplyResult();
         if (!ar.error.empty()) {
-            ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(kBadText));
-            ImGui::TextUnformatted(ar.error.c_str());
-            ImGui::PopStyleColor();
+            ui::ToneText(ar.error, ui::kBadInk, true);
         } else if (ar.ran) {
             std::string out = std::string(ar.cancel ? "Changes cancelled on " : "Markers committed on ") +
                               std::to_string(ar.items) + " item" + (ar.items == 1 ? "" : "s");
             if (ar.already_present > 0)
                 out += " " RAV_DOT " " + std::to_string(ar.already_present) + " already present, left as is";
             if (ar.failed > 0) out += " " RAV_DOT " " + std::to_string(ar.failed) + " could not be written";
-            ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
-            ImGui::TextUnformatted(out.c_str());
-            ImGui::PopStyleColor();
+            ui::ToneText(out, ui::kMuted, true);
         }
-        ImGui::PopTextWrapPos();
     }
 }
 
@@ -4816,28 +4629,26 @@ void DrawTaggingPanel(float x, float y, float w, float h)
                                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
                                         ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing;
     if (ImGui::Begin("##tagpanel", nullptr, kFlags)) {
-        // The left edge (6 px) drags the panel's width (280-600 px), kept on release.
+        // The left edge drags the panel's width (280-600 px), kept on release. 13-14: the theme's
+        // splitter (8 px hit, its bar on the panel's edge: accent-line under the mouse, accent dragged).
         {
             const ImVec2 content = ImGui::GetCursorScreenPos();
             const ImVec2 wp = ImGui::GetWindowPos();
-            ImGui::SetCursorScreenPos(ImVec2(wp.x - 3.0f, wp.y + 8.0f));
-            ImGui::InvisibleButton("##panelgrip", ImVec2(6.0f, std::max(1.0f, h - 16.0f)));
+            const float  edge = ui::Dp(8.0f);
+            ImGui::SetCursorScreenPos(ImVec2(wp.x + ui::Dp(1.0f) - ui::Dp(4.0f), wp.y + edge));
+            const ui::SplitterState sp = ui::SplitterBar("##panelgrip", ImVec2(ui::Dp(8.0f), std::max(1.0f, h - 2.0f * edge)));
             const float mx = ImGui::GetIO().MousePos.x;
-            if (ImGui::IsItemActivated()) {
+            if (ImGui::IsItemActivated()) {  // pressed: the anchor (the splitter's hit area is the last item)
                 g_panel_drag = true;
                 g_panel_press_x = mx;
                 g_panel_start_w = PanelWidth();
             }
-            if (ImGui::IsItemActive() && g_panel_drag)
-                g_panel_w = std::floor(std::min(std::max(g_panel_start_w - (mx - g_panel_press_x), kPanelMinW), kPanelMaxW));
-            if (ImGui::IsItemDeactivated() && g_panel_drag) {
+            if (sp.active && g_panel_drag)
+                g_panel_w = std::floor(std::min(std::max(g_panel_start_w - (mx - g_panel_press_x), ui::Dp(kPanelMinW)),
+                                                ui::Dp(kPanelMaxW)));
+            if (sp.released && g_panel_drag) {
                 g_panel_drag = false;
                 SavePrefFloat(kPrefPanelWidth, PanelWidth());
-            }
-            if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
-                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-                ImGui::GetWindowDrawList()->AddLine(ImVec2(wp.x + 0.5f, wp.y + 8.0f), ImVec2(wp.x + 0.5f, wp.y + h - 8.0f),
-                                                    ui::kAccentLine, 2.0f);
             }
             ImGui::SetCursorScreenPos(content);
         }
@@ -4848,40 +4659,30 @@ void DrawTaggingPanel(float x, float y, float w, float h)
             // 10-3 fb-1: only a record RAV cannot read stays behind a preset load (a hand edit
             // would write over data RAV does not understand). No record = the editor, empty.
             ImGui::TextUnformatted(m.item_name.c_str());
-            ImGui::Dummy(ImVec2(0.0f, 2.0f));
+            ImGui::Dummy(ImVec2(0.0f, ui::Dp(2.0f)));
             DrawPresetField(m);  // story 10-3b: the menu loads, imports, exports (Save needs rules)
-            ImGui::Dummy(ImVec2(0.0f, 4.0f));
+            ImGui::Dummy(ImVec2(0.0f, ui::Dp(4.0f)));
             ImGui::TextUnformatted("No rules");
             ui::SubText("This item's rules could not be read. They are kept as they are until you load a preset.");
-            ImGui::Dummy(ImVec2(0.0f, 2.0f));
+            ImGui::Dummy(ImVec2(0.0f, ui::Dp(2.0f)));
             DrawPresetButtons();
-            if (!TaggingLastError().empty()) {
-                ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(kBadText));
-                ImGui::PushTextWrapPos(0.0f);
-                ImGui::TextUnformatted(TaggingLastError().c_str());
-                ImGui::PopTextWrapPos();
-                ImGui::PopStyleColor();
-            }
+            if (!TaggingLastError().empty()) ui::ToneText(TaggingLastError(), ui::kBadInk, /*wrap=*/true);
         } else {
             if (g_sel >= static_cast<int>(rules.blocks.size()) || g_sel < -1) g_sel = FirstRuleIndex(rules.blocks);
             DrawHeader(m, rules);
             if (!TaggingLastError().empty()) {
-                ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(kBadText));
-                ImGui::PushTextWrapPos(0.0f);
-                ImGui::TextUnformatted(TaggingLastError().c_str());
-                ImGui::PopTextWrapPos();
-                ImGui::PopStyleColor();
+                ui::ToneText(TaggingLastError(), ui::kBadInk, /*wrap=*/true);
                 ImGui::SameLine();
-                if (ImGui::SmallButton("OK##tagerr")) TaggingClearError();
+                if (ui::SolidButton("OK##tagerr")) TaggingClearError();
             }
             ImGui::Separator();
             // The inspector scrolls; the footer stays.
             // Story 10-4: the markers line, Commit / Cancel, the selection and the last outcome.
             // Detect sits between the two (story 10-8 follow-up: always in reach).
-            const float footer_h = ImGui::GetFrameHeightWithSpacing() * 3.0f + ImGui::GetTextLineHeightWithSpacing() * 3.0f + 12.0f +
+            const float footer_h = ImGui::GetFrameHeightWithSpacing() * 3.0f + ImGui::GetTextLineHeightWithSpacing() * 3.0f + ui::Dp(12.0f) +
                                    SoundFooterHeight(SoundContextOf(m, rules, g_sel));  // Epic 13 (13-8)
-            const float body_h = std::max(40.0f, ImGui::GetContentRegionAvail().y - footer_h);
-            ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::Col(ui::kSurface));
+            const float body_h = std::max(ui::Dp(40.0f), ImGui::GetContentRegionAvail().y - footer_h);
+            // The theme's ChildBg is the panel grey (kSurface) already.
             if (ImGui::BeginChild("##taginspector", ImVec2(0.0f, body_h), ImGuiChildFlags_None)) {
                 DrawAutoSection(m, rules);  // story 10-8b
                 if (m.missing_count > 0) {
@@ -4899,14 +4700,13 @@ void DrawTaggingPanel(float x, float y, float w, float h)
                                       m.skipped_count, m.skipped_count == 1 ? "" : "s",
                                       m.skipped_count == 1 ? "is" : "are");
                     ui::SubText(line);
-                    ImGui::Dummy(ImVec2(0.0f, 4.0f));
+                    ImGui::Dummy(ImVec2(0.0f, ui::Dp(4.0f)));
                 }
                 DrawInspector(rules);
                 DrawItemSoundValuesSection(SoundContextOf(m, rules, g_sel));  // Epic 13 (13-8)
             }
             ImGui::EndChild();
-            ImGui::PopStyleColor();
-            ImGui::Dummy(ImVec2(0.0f, 2.0f));
+            ImGui::Dummy(ImVec2(0.0f, ui::Dp(2.0f)));
             DrawAutoDetect(m, rules);
             DrawFooter(m);
         }

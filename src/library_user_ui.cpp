@@ -638,14 +638,26 @@ MediaTrack* FolderFor(ReaProject* proj, const SoundStore& store, const std::stri
 
 MediaTrack* LayerTrack(ReaProject* proj, MediaTrack* folder, int layer)
 {
+    if (layer < 1) return nullptr;
     for (int guard = 0; guard < 64; ++guard) {
         const int fi = TrackIndex(proj, folder);
         if (fi < 0) return nullptr;
         int              last = fi, beyond = 0;
         std::vector<int> kids = DirectChildren(proj, fi, &last, &beyond);
-        if (static_cast<int>(kids.size()) >= layer) return GetTrack(proj, kids[static_cast<size_t>(layer - 1)]);
+        // 13-13: "layer N" by name, else by position among the children that are no Switch-tree
+        // folder (a Switch tree in this folder is never taken as a layer).
+        std::vector<std::string> names;
+        std::vector<bool>        tree;
+        for (int j : kids) {
+            MediaTrack* t = GetTrack(proj, j);
+            names.push_back(TrackName(t));
+            tree.push_back(IsSwitchTreeTrack(t));
+        }
+        int       next = 1;
+        const int pick = PickLayerChild(names, tree, layer, &next);
+        if (pick >= 0) return GetTrack(proj, kids[static_cast<size_t>(pick)]);
         // A new last child, the folder depths fixed (AddChildTrack).
-        if (!AddChildTrack(proj, folder, "layer " + std::to_string(kids.size() + 1))) return nullptr;
+        if (!AddChildTrack(proj, folder, "layer " + std::to_string(next))) return nullptr;
     }
     return nullptr;
 }

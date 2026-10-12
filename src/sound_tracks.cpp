@@ -18,9 +18,19 @@ using SetMediaTrackInfoValueFn = bool (*)(MediaTrack* tr, const char* parm, doub
 InsertTrackAtIndexFn     f_insert_track = nullptr;
 SetMediaTrackInfoValueFn f_set_track = nullptr;
 
+// The mark of a Switch-tree folder (IsSwitchTreeTrack): saved with the track in the project.
+constexpr const char* kSwitchTreeExt = "P_EXT:RAV_SWITCH_TREE";
+
 double DepthOf(MediaTrack* tr)
 {
     return tr ? GetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH") : 0.0;
+}
+
+void MarkSwitchTree(MediaTrack* tr)
+{
+    if (!tr || IsSwitchTreeTrack(tr)) return;
+    char one[] = "1";
+    GetSetMediaTrackInfo_String(tr, kSwitchTreeExt, one, true);
 }
 
 }  // namespace
@@ -105,6 +115,12 @@ MediaTrack* AddChildTrack(ReaProject* proj, MediaTrack* parent, const std::strin
     return t;
 }
 
+bool IsSwitchTreeTrack(MediaTrack* tr)
+{
+    char buf[16] = {};
+    return tr && GetSetMediaTrackInfo_String(tr, kSwitchTreeExt, buf, false) && buf[0] == '1';
+}
+
 MediaTrack* EnsureTrackPath(ReaProject* proj, const std::vector<TrackStep>& path, std::string* failed)
 {
     if (failed) failed->clear();
@@ -135,12 +151,21 @@ MediaTrack* EnsureTrackPath(ReaProject* proj, const std::vector<TrackStep>& path
             int                      last = fi, beyond = 0;
             const std::vector<int>   kids = DirectChildren(proj, fi, &last, &beyond);
             std::vector<std::string> names;
-            for (int j : kids) names.push_back(TrackName(GetTrack(proj, j)));
+            std::vector<MediaTrack*> tracks;
+            for (int j : kids) {
+                MediaTrack* t = GetTrack(proj, j);
+                // The library folder (k == 1) is a Switch-tree folder or a folder: a Lands-in
+                // folder's plain child named so is a layer track, never taken.
+                if (k == 1 && !IsSwitchTreeTrack(t) && DepthOf(t) < 1.0) continue;
+                names.push_back(TrackName(t));
+                tracks.push_back(t);
+            }
             const int m = MatchChildTrack(names, path[k].name);
-            if (m >= 0) next = GetTrack(proj, kids[static_cast<size_t>(m)]);
+            if (m >= 0) next = tracks[static_cast<size_t>(m)];
         }
         if (!next) next = AddChildTrack(proj, cur, path[k].name);
         if (!next) return fail(path[k].name);
+        if (k == 1) MarkSwitchTree(next);  // the library folder: never a layer track (PickLayerChild)
         cur = next;
     }
     return cur;

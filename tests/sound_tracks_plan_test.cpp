@@ -165,6 +165,12 @@ static void TestOddTrees()
     const std::vector<SwitchStep> d = SwitchPathOf(s, lib, "d");
     CHECK(d.size() == 1 && d[0].group_name == "Mat" && d[0].value_name == "?");
     CHECK(SwitchPathOf(s, lib, "e").empty());
+    // Cased but also Unassigned (review F4): CaseChild reads no content, so no path.
+    SoundNode sw2 = Switch("sw2", "", "gMat", {{"vWood", "f", {}}});
+    sw2.unassigned = {"f"};
+    lib.nodes.push_back(sw2);
+    lib.nodes.push_back(Node("f", "sw2", SoundNodeType::Sound));
+    CHECK(SwitchPathOf(s, lib, "f").empty());
 }
 
 static void TestTrackPath()
@@ -196,6 +202,33 @@ static void TestMatch()
     CHECK(MatchChildTrack({}, "Concrete") == -1);
     CHECK(MatchChildTrack({"Run", "run"}, "RUN") == 0);  // first of two
     CHECK(MatchChildTrack({"Run-Shoes"}, "Run") == -1);
+}
+
+// Review F1: the Lands-in folder's layer children with a Switch tree among them.
+static void TestLayerChild()
+{
+    int next = 0;
+    // No Switch tree: 13-11's position (byte-identical to 1fe0956).
+    CHECK(PickLayerChild({"layer 1", "layer 2"}, {false, false}, 1, &next) == 0 && next == 3);
+    CHECK(PickLayerChild({"layer 1", "layer 2"}, {false, false}, 2) == 1);
+    CHECK(PickLayerChild({"Kick", "Snap"}, {false, false}, 2) == 1);  // renamed: by position
+    CHECK(PickLayerChild({"layer 1"}, {false}, 2, &next) == -1 && next == 2);
+    CHECK(PickLayerChild({}, {}, 1, &next) == -1 && next == 1);
+    // The Switch tree ("Feet", made first in an empty Lands-in folder) is never a layer, even
+    // after the option is back to Off.
+    CHECK(PickLayerChild({"Feet"}, {true}, 1, &next) == -1 && next == 1);
+    CHECK(PickLayerChild({"Feet", "layer 1"}, {true, false}, 1) == 1);
+    CHECK(PickLayerChild({"Feet", "layer 1"}, {true, false}, 2, &next) == -1 && next == 2);
+    CHECK(PickLayerChild({"layer 1", "Feet", "layer 2"}, {false, true, false}, 2) == 2);
+    CHECK(PickLayerChild({"Kick", "Feet", "Snap"}, {false, true, false}, 2) == 2);  // position skips it
+    // A Switch-tree folder named "layer 1" (a library so named) is not taken either.
+    CHECK(PickLayerChild({"layer 1", "x"}, {true, false}, 1) == 1);
+    // By name first: "layer 2" wherever it sits.
+    CHECK(PickLayerChild({"Kick", "Layer 2 "}, {false, false}, 2) == 1);
+    CHECK(PickLayerChild({"layer 2", "layer 1"}, {false, false}, 1) == 1);
+    // A flag list shorter than the names: the rest are layer candidates.
+    CHECK(PickLayerChild({"a", "b"}, {}, 2) == 1);
+    CHECK(PickLayerChild({"a"}, {false}, 0) == -1);
 }
 
 static void TestLayoutToken()
@@ -245,6 +278,7 @@ int main()
     TestOddTrees();
     TestTrackPath();
     TestMatch();
+    TestLayerChild();
     TestLayoutToken();
     if (g_fail) {
         std::printf("%d failure(s)\n", g_fail);

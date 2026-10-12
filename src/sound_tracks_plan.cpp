@@ -88,7 +88,10 @@ std::vector<SwitchStep> SwitchPathOf(const SoundStore& store, const SoundLibrary
                     hit = &c;
                     break;
                 }
-            if (!hit) return {};  // on no value (Unassigned): never played through this Switch
+            // On no value, or cased but also Unassigned (CaseChild: no content): never played
+            // through this Switch.
+            if (!hit || std::find(p->unassigned.begin(), p->unassigned.end(), n->uid) != p->unassigned.end())
+                return {};
             SwitchStep s;
             s.group_uid = p->group_uid;
             s.value_uid = hit->value_uid;
@@ -133,6 +136,25 @@ int MatchChildTrack(const std::vector<std::string>& child_names, const std::stri
     const std::string want = TrimmedLower(name);
     for (size_t i = 0; i < child_names.size(); ++i)
         if (TrimmedLower(child_names[i]) == want) return static_cast<int>(i);
+    return -1;
+}
+
+int PickLayerChild(const std::vector<std::string>& child_names, const std::vector<bool>& switch_tree, int layer,
+                   int* next_number)
+{
+    auto is_tree = [&](size_t i) { return i < switch_tree.size() && switch_tree[i]; };
+    std::vector<std::string> names;  // the layer candidates
+    std::vector<int>         index;  // their index among all the children
+    for (size_t i = 0; i < child_names.size(); ++i)
+        if (!is_tree(i)) {
+            names.push_back(child_names[i]);
+            index.push_back(static_cast<int>(i));
+        }
+    if (next_number) *next_number = static_cast<int>(names.size()) + 1;
+    if (layer < 1) return -1;
+    const int m = MatchChildTrack(names, "layer " + std::to_string(layer));
+    if (m >= 0) return index[static_cast<size_t>(m)];
+    if (static_cast<int>(names.size()) >= layer) return index[static_cast<size_t>(layer - 1)];
     return -1;
 }
 

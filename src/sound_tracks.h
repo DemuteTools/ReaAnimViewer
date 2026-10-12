@@ -36,10 +36,16 @@ MediaTrack* AddTrackAt(ReaProject* proj, int idx, const std::string& name);
 // fixed so every folder still closes where it did (a parent that was no folder becomes one).
 MediaTrack* AddChildTrack(ReaProject* proj, MediaTrack* parent, const std::string& name);
 
+// True when the track is a RAV Switch-tree folder: the library folder EnsureTrackPath found or made
+// in a Lands-in folder (its P_EXT mark), never one of that folder's layer tracks (PickLayerChild).
+bool IsSwitchTreeTrack(MediaTrack* tr);
+
 // The track at the end of a track path (TrackPathFor), found or made level by level (T3): the top
 // level is a folder track named exactly so anywhere in the project, else a new folder at the
-// bottom; each next level is the parent's direct child that MatchChildTrack finds, else a new last
-// child. nullptr when the path is empty or a track could not be made (`failed` = its name).
+// bottom; each next level is the parent's direct child that MatchChildTrack finds (the second
+// level, the library folder, among the children that are folders or Switch-tree folders), else a
+// new last child. The library folder is marked a Switch-tree folder (IsSwitchTreeTrack). nullptr
+// when the path is empty or a track could not be made (`failed` = its name).
 MediaTrack* EnsureTrackPath(ReaProject* proj, const std::vector<TrackStep>& path, std::string* failed = nullptr);
 
 }  // namespace rav

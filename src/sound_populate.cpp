@@ -854,6 +854,9 @@ SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* even
             PopOpts o;
             o.counts = counts;
             o.revive_deleted = revive_deleted;
+            // 13-15: a rule that only inherits its sound (Project / Character) has no id until now: given first,
+            // else its events are not placed (they are found by rule id).
+            for (MediaItem* it : targets) EnsureRids(it);
             for (MediaItem* it : targets) PopulateOne(it, store, o, rep, events);
         }
         if (counts) {  // the details list says it too
@@ -1283,7 +1286,8 @@ int CountPopulateEvents(const std::vector<MediaItem*>& items)
             const SoundCharacter* ch = CharacterFor(store, rig.skeleton, rig.model);
             std::vector<char> ok(det.rules.blocks.size(), 0);
             for (size_t b = 0; b < det.rules.blocks.size(); ++b) {
-                if (!det.rules.blocks[b].enabled || det.rules.blocks[b].rid.empty()) continue;
+                // 13-15: a rule with no id yet (it never had a sound of its own) inherits one: Populate gives it its id.
+                if (!det.rules.blocks[b].enabled) continue;
                 const EffectiveAssign ea = ResolveBlock(store, rec, ch, det.rules.blocks[b]);
                 if (ea.library.empty()) continue;
                 const SoundLibrary* lib = FindLibrary(store, ea.library);

@@ -280,6 +280,9 @@ struct PlacedTag {
     bool        has_anchor = false;
     double      ao = 0.0;
     double      sy = 0.0;
+    // Story 13-16 (B7b): the mark of the RAV track it was placed on ("" = a track RAV did not make,
+    // such as the source's own). An item no longer on that track was moved there by the user.
+    std::string tk;
     int         version = 2;      // a higher version is read best-effort and kept on write
     std::vector<std::string> kept;  // unknown fields, written back after the known ones
 };

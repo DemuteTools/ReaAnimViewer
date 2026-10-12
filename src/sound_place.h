@@ -9,6 +9,7 @@
 
 #ifdef _WIN32
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -57,6 +58,13 @@ struct PlaceRequest {
     double      blend_ms = 0.0;
     double      offset_s = 0.0;
     MediaTrack* track = nullptr;  // nullptr = the entry's own tracks (Item only)
+    // Story 13-16: `track` is a RAV track carrying this mark (sound_tracks.h): the item never
+    // overlaps another there (it spills onto the track's children, SettleOnLanes) and its tag
+    // records the mark of the track it lands on (PlacedTag::tk). "" = neither (the source's track).
+    std::string track_mark;
+    // B5: an NVK pile's member tracks: given a member's source child track, its destination track
+    // and that track's mark (nullptr = the member's own track). Unset = as `track` says.
+    std::function<MediaTrack*(MediaTrack* source_track, std::string* mark)> pile_track;
 };
 struct PlaceResult {
     bool                     ok = false;
@@ -66,6 +74,8 @@ struct PlaceResult {
 };
 PlaceResult PlaceSounds(ReaProject* proj, const PlaceRequest& req);
 bool        MovePlacement(ReaProject* proj, const std::string& item_guid, double project_t);
+// The kept item is moved to the request's track, except (13-16 B7b) when its tag records a RAV
+// track it is no longer on: the user moved it, it stays where it is.
 PlaceResult ReplacePlacement(ReaProject* proj, const std::string& item_guid, const PlaceRequest& req);
 bool        RemovePlacement(ReaProject* proj, const std::string& item_guid);
 // Where a placed pile is anchored, from any one of its placed items (its tag's ao / sy, 13-8):

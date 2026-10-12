@@ -707,7 +707,9 @@ bool PrepareFileSound(ReaProject* proj, const std::string& lib_uid, const std::s
         return false;
     }
     const std::string dest = EffectiveLandsIn(*lib, node_uid);
-    const int         layer = BlendLayerOf(*lib, node_uid) + 1;
+    // 13-16 (B4): a Blend's layers land on their own layer tracks (SoundTrackPath); "layer N" is
+    // left for the sounds outside any Blend, so always the first one.
+    const int         layer = 1;
     MediaTrack*       folder = FolderFor(proj, store, dest);
     MediaTrack*       track = folder ? LayerTrack(proj, folder, layer) : nullptr;
     if (!track) {

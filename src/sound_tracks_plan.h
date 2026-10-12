@@ -40,14 +40,11 @@ std::vector<SwitchStep> SwitchPathOf(const SoundStore& store, const SoundLibrary
 struct TrackStep {
     std::string name;
     bool        folder = false;
+    // Story 13-16 (B7): the track's hidden mark (track P_EXT, built from uids): the track is found
+    // by it anywhere in the project. "" = found by name under its parent (the Lands-in folder).
+    std::string mark;
 };
 
-// The track path for a Switch path (T2, T5, T11): the Lands-in folder, a folder named after the
-// library, then one track "Run-Shoes-Concrete" (Flat) or one folder per value, the last one the
-// items' track (Tree). Empty (keep today's track) when Off or with no Switch on the path. An
-// empty name reads "(unnamed)".
-std::vector<TrackStep> TrackPathFor(const std::vector<SwitchStep>& path, TrackLayout layout,
-                                    const std::string& lands_in, const std::string& library_name);
 
 // The child track a level matches (T3): trimmed, ASCII case ignored, the first one. -1 = none.
 int MatchChildTrack(const std::vector<std::string>& child_names, const std::string& name);
@@ -60,5 +57,88 @@ int MatchChildTrack(const std::vector<std::string>& child_names, const std::stri
 // Switch-tree folder this is the position 13-11 took.
 int PickLayerChild(const std::vector<std::string>& child_names, const std::vector<bool>& switch_tree, int layer,
                    int* next_number = nullptr);
+
+// ---- Story 13-16: Blend layer tracks, no overlapping placed items ------------------------------
+
+// A Sound's Blend layer (B1, B2): the child of its nearest Blend ancestor on its path (a Sound, a
+// Random or a Switch). Blends nested straight in Blends share the outermost one's folder: their
+// layers sit flat beside the outer layers.
+struct BlendLayer {
+    bool        in_blend = false;
+    std::string blend_uid;   // the Blend whose folder holds the layer (the outermost of a Blend-in-Blend chain)
+    std::string blend_name;  // its name, "(unnamed)" when empty
+    std::string layer_uid;   // the nearest Blend's child on the Sound's path
+    std::string layer_name;  // its name trimmed, "(unnamed)" when empty; "Thud", "Thud 2"... in the Blend's
+                             // flat layer order when two layers share a name
+};
+BlendLayer LayerOf(const SoundLibrary& lib, const std::string& sound_uid);
+
+// The hidden marks (B7), from uids only (the Lands-in value is the node's setting, not a track
+// name). A library folder; a Switch path track; a Blend folder (no Switch path); a layer track
+// under the track marked `parent`; an NVK pile child (B5) under a layer track, per source child
+// track (its GUID); a spill child (B6, k >= 1) of the track marked `base`; a RAV track that has
+// no mark (13-11's "layer N"), by its GUID.
+std::string LibraryMark(const std::string& lands_in, const std::string& lib_uid);
+std::string BlendMark(const std::string& lands_in, const std::string& lib_uid, const std::string& blend_uid);
+std::string LayerMark(const std::string& parent, const std::string& layer_uid);
+std::string PileChildMark(const std::string& layer_mark, const std::string& source_track_guid);
+std::string LaneMark(const std::string& base, int k);
+std::string GuidTrackMark(const std::string& track_guid);
+// The k of a spill child's mark (and its base's mark in `base`); 0 (base = the mark) otherwise.
+int LaneOfMark(const std::string& mark, std::string* base);
+
+// The track path of a Sound (B3, B4, 13-13 T2): with a Switch path (layout not Off), the Lands-in
+// folder, the library folder and the Switch path tracks, then, inside a Blend, the last one as a
+// folder and the layer track. Without a Switch path (or Off), inside a Blend: the Lands-in
+// folder, the library folder, a folder named after the Blend, the layer track. Empty (today's
+// track) outside any Blend with no Switch path. Every level but the Lands-in folder is marked.
+std::vector<TrackStep> SoundTrackPath(const std::vector<SwitchStep>& path, const BlendLayer& layer, TrackLayout layout,
+                                      const std::string& lands_in, const std::string& lib_uid,
+                                      const std::string& library_name);
+
+// An item's time span on a track lane; `id` names the item (-1 = none).
+struct LaneSpan {
+    double start = 0.0;
+    double end = 0.0;
+    int    id = -1;
+};
+// True when they overlap: items that only touch (end = start, within 1 us) do not.
+bool SpansOverlap(const LaneSpan& a, const LaneSpan& b);
+// True when `s` overlaps no span of `lane` but those with id `exclude_id` (the item itself).
+bool FitsLane(const std::vector<LaneSpan>& lane, const LaneSpan& s, int exclude_id = -1);
+// The first lane where `s` fits (B6), -1 = none (a new lane).
+int PickLane(const std::vector<std::vector<LaneSpan>>& lanes, const LaneSpan& s, int exclude_id = -1);
+// A track's items spilled onto lanes (B6, the first overlap): `items` in position order (ties: as
+// given), each on the first lane of `lanes` (the existing ones, filled in) where it fits, new lanes
+// added at the end. Returns each item's lane index.
+std::vector<int> SpillOnLanes(std::vector<LaneSpan> items, std::vector<std::vector<LaneSpan>>* lanes);
+
+// B6 on a plain RAV track (marked `base_mark`, no spill child yet): `items` = the items on it but
+// the new one, `tks` their tags' tk ("" = not placed by RAV). False (nothing moves) when `item`
+// fits there. Else the first overlap: the items RAV placed there (tk == base_mark) and `item`
+// spill onto children 1..`lanes` (SpillOnLanes); the user's items, and those the user moved
+// there, stay (B6b, B7b). A mover's new tk = LaneMark(base_mark, lane + 1).
+struct SpillPlan {
+    int              lanes = 0;      // spill children to make, k = 1..lanes
+    std::vector<int> lane_of;        // per entry of `items`: its lane (0-based), -1 = stays on the track
+    int              item_lane = 0;  // the new item's lane (0-based)
+};
+bool PlanSpill(const std::vector<LaneSpan>& items, const std::vector<std::string>& tks, const std::string& base_mark,
+               const LaneSpan& item, SpillPlan* out);
+// B6 once spilled: the k of the spill child `item` goes on, given the existing ones (`ks`, their
+// items `lanes`, same order, ks ascending): the first that fits, else a new one, the highest k + 1
+// (`*made` true).
+int PickLaneK(const std::vector<int>& ks, const std::vector<std::vector<LaneSpan>>& lanes, const LaneSpan& item,
+              bool* made);
+
+// B7b: where a placed item sits, from its tag's tk and whether it is on the track RAV uses for that
+// mark (FindTrackByMark: a copy of a RAV track carrying the same mark is not it).
+enum class PlacedSpot {
+    NotRav,       // tk "": placed on a track RAV did not make (its source's own): never "moved"
+    OnRavTrack,   // where RAV put it
+    MovedByUser,  // the user put it elsewhere: kept there by a replace, the follow and the spill
+};
+// `base` (optional) = the mark of its track family (a spill child's tk resolves to its base).
+PlacedSpot PlacedSpotOf(const std::string& tk, bool on_tk_track, std::string* base = nullptr);
 
 }  // namespace rav

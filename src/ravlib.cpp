@@ -207,21 +207,23 @@ std::string EffectiveLandsIn(const SoundLibrary& lib, const std::string& node_ui
     return kDefaultLandsIn;
 }
 
-int BlendLayerOf(const SoundLibrary& lib, const std::string& node_uid)
+bool BlendLayerPath(const SoundLibrary& lib, const std::string& node_uid, std::string* blend_uid,
+                    std::string* child_uid)
 {
+    if (blend_uid) blend_uid->clear();
+    if (child_uid) child_uid->clear();
     const SoundNode* n = FindNode(lib, node_uid);
     for (size_t guard = 0; n && !n->parent.empty() && guard <= lib.nodes.size(); ++guard) {
         const SoundNode* p = FindNode(lib, n->parent);
-        if (!p) break;
+        if (!p) return false;
         if (p->type == SoundNodeType::Blend) {
-            const std::vector<const SoundNode*> kids = ChildrenOf(lib, p->uid);
-            for (size_t i = 0; i < kids.size(); ++i)
-                if (kids[i]->uid == n->uid) return static_cast<int>(i);
-            return 0;
+            if (blend_uid) *blend_uid = p->uid;
+            if (child_uid) *child_uid = n->uid;
+            return true;
         }
         n = p;
     }
-    return 0;
+    return false;
 }
 
 std::string ResolveAssetPath(const AssetIdentity& id, const std::function<int64_t(const std::string&)>& file_size,

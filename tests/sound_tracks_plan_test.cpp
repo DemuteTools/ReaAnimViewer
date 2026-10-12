@@ -90,6 +90,13 @@ static bool SameSteps(const std::vector<TrackStep>& got, const std::vector<std::
     return true;
 }
 
+// A Switch path with no Blend layer (13-13's TrackPathFor cases, now on SoundTrackPath).
+static std::vector<TrackStep> PathOnly(const std::vector<SwitchStep>& path, TrackLayout layout, const std::string& lands,
+                                       const std::string& lib_name)
+{
+    return SoundTrackPath(path, BlendLayer(), layout, lands, "lib", lib_name);
+}
+
 static void TestSwitchPath()
 {
     SoundStore          s = NestedStore();
@@ -132,9 +139,13 @@ static void TestRandomBlend()
     CHECK(SwitchPathOf(s, lib, "s2").empty());
     CHECK((Names(SwitchPathOf(s, lib, "s3")) == std::vector<std::string>{"Wood"}));
     CHECK(SwitchPathOf(s, lib, "s4").empty());
-    CHECK(TrackPathFor(SwitchPathOf(s, lib, "s4"), TrackLayout::Flat, "RAV Library", "L").empty());
-    CHECK(SameSteps(TrackPathFor(SwitchPathOf(s, lib, "s3"), TrackLayout::Flat, "RAV Library", "L"),
+    CHECK(PathOnly(SwitchPathOf(s, lib, "s4"), TrackLayout::Flat, "RAV Library", "L").empty());
+    CHECK(SameSteps(PathOnly(SwitchPathOf(s, lib, "s3"), TrackLayout::Flat, "RAV Library", "L"),
                     {{"RAV Library", true}, {"L", true}, {"Wood", false}}));
+    // 13-16: with its Blend layer, Wood becomes the folder of the layer (the Switch "mat2").
+    CHECK(SameSteps(SoundTrackPath(SwitchPathOf(s, lib, "s3"), LayerOf(lib, "s3"), TrackLayout::Flat, "RAV Library",
+                                   "lib", "L"),
+                    {{"RAV Library", true}, {"L", true}, {"Wood", true}, {"mat2", false}}));
 }
 
 static void TestOddTrees()
@@ -177,20 +188,20 @@ static void TestTrackPath()
 {
     SoundStore                    s = NestedStore();
     const std::vector<SwitchStep> p = SwitchPathOf(s, s.libraries.front(), "conc");
-    CHECK(SameSteps(TrackPathFor(p, TrackLayout::Flat, "RAV Library", "Feet"),
+    CHECK(SameSteps(PathOnly(p, TrackLayout::Flat, "RAV Library", "Feet"),
                     {{"RAV Library", true}, {"Feet", true}, {"Run-Shoes-Concrete", false}}));
-    CHECK(SameSteps(TrackPathFor(p, TrackLayout::Tree, "RAV Library", "Feet"),
+    CHECK(SameSteps(PathOnly(p, TrackLayout::Tree, "RAV Library", "Feet"),
                     {{"RAV Library", true}, {"Feet", true}, {"Run", true}, {"Shoes", true}, {"Concrete", false}}));
-    CHECK(TrackPathFor(p, TrackLayout::Off, "RAV Library", "Feet").empty());
-    CHECK(TrackPathFor({}, TrackLayout::Tree, "RAV Library", "Feet").empty());
+    CHECK(PathOnly(p, TrackLayout::Off, "RAV Library", "Feet").empty());
+    CHECK(PathOnly({}, TrackLayout::Tree, "RAV Library", "Feet").empty());
     // A user library's Lands-in folder.
-    CHECK(SameSteps(TrackPathFor(p, TrackLayout::Flat, "Foley", "Steps"),
+    CHECK(SameSteps(PathOnly(p, TrackLayout::Flat, "Foley", "Steps"),
                     {{"Foley", true}, {"Steps", true}, {"Run-Shoes-Concrete", false}}));
     // Unnamed value.
     const std::vector<SwitchStep> e = SwitchPathOf(s, s.libraries.front(), "empty");
-    CHECK(SameSteps(TrackPathFor(e, TrackLayout::Flat, "RAV Library", "Feet"),
+    CHECK(SameSteps(PathOnly(e, TrackLayout::Flat, "RAV Library", "Feet"),
                     {{"RAV Library", true}, {"Feet", true}, {"Run-Shoes-(unnamed)", false}}));
-    CHECK(SameSteps(TrackPathFor(e, TrackLayout::Tree, "RAV Library", "Feet"),
+    CHECK(SameSteps(PathOnly(e, TrackLayout::Tree, "RAV Library", "Feet"),
                     {{"RAV Library", true}, {"Feet", true}, {"Run", true}, {"Shoes", true}, {"(unnamed)", false}}));
 }
 
@@ -272,8 +283,268 @@ static void TestLayoutToken()
     CHECK(TrackLayoutOf(again) == TrackLayout::Off);
 }
 
+// ---- Story 13-16: Blend layer tracks, no overlapping placed items -------------------------------
+
+static SoundNode Named(const std::string& uid, const std::string& parent, SoundNodeType t, const std::string& name)
+{
+    SoundNode n = Node(uid, parent, t);
+    n.name = name;
+    return n;
+}
+
+static bool SameNames(const std::vector<TrackStep>& got, const std::vector<std::pair<std::string, bool>>& want)
+{
+    return SameSteps(got, want);
+}
+
+// Every level but the Lands-in folder carries a mark, none twice.
+static bool MarkedOnce(const std::vector<TrackStep>& p)
+{
+    if (p.empty() || !p[0].mark.empty()) return false;
+    for (size_t i = 1; i < p.size(); ++i) {
+        if (p[i].mark.empty()) return false;
+        for (size_t j = 1; j < i; ++j)
+            if (p[j].mark == p[i].mark) return false;
+    }
+    return true;
+}
+
+static std::vector<TrackStep> PathOf(const SoundStore& s, const std::string& sound, TrackLayout layout,
+                                     const std::string& lands = "RAV Library")
+{
+    const SoundLibrary& lib = s.libraries.front();
+    return SoundTrackPath(SwitchPathOf(s, lib, sound), LayerOf(lib, sound), layout, lands, lib.uid, lib.name);
+}
+
+// Run > Shoes > Concrete > Blend [Heel, Scuff].
+static SoundStore BlendUnderPath()
+{
+    SoundStore s;
+    s.groups.push_back(Group("gLoco", "Loco", {{"vRun", "Run"}}));
+    s.groups.push_back(Group("gFeet", "Feet", {{"vShoes", "Shoes"}}));
+    s.groups.push_back(Group("gMat", "Material", {{"vConcrete", "Concrete"}, {"vWood", "Wood"}}));
+    SoundLibrary lib;
+    lib.uid = "lib";
+    lib.name = "Steps";
+    lib.nodes.push_back(Switch("loco", "", "gLoco", {{"vRun", "feet", {}}}));
+    lib.nodes.push_back(Switch("feet", "loco", "gFeet", {{"vShoes", "mat", {}}}));
+    lib.nodes.push_back(Switch("mat", "feet", "gMat", {{"vConcrete", "bl", {}}, {"vWood", "wood", {}}}));
+    lib.nodes.push_back(Named("bl", "mat", SoundNodeType::Blend, "Blend"));
+    lib.nodes.push_back(Named("heel", "bl", SoundNodeType::Sound, "Heel"));
+    lib.nodes.push_back(Named("scuff", "bl", SoundNodeType::Sound, "Scuff"));
+    lib.nodes.push_back(Named("wood", "mat", SoundNodeType::Sound, "WoodStep"));
+    s.libraries.push_back(lib);
+    return s;
+}
+
+static void TestLayerUnderPath()
+{
+    const SoundStore s = BlendUnderPath();
+    const BlendLayer heel = LayerOf(s.libraries.front(), "heel");
+    CHECK(heel.in_blend && heel.layer_uid == "heel" && heel.layer_name == "Heel" && heel.blend_uid == "bl");
+    CHECK(!LayerOf(s.libraries.front(), "wood").in_blend);
+    // Folders: Concrete becomes a folder, Heel and Scuff inside it.
+    const std::vector<TrackStep> th = PathOf(s, "heel", TrackLayout::Tree);
+    const std::vector<TrackStep> ts = PathOf(s, "scuff", TrackLayout::Tree);
+    CHECK(SameNames(th, {{"RAV Library", true}, {"Steps", true}, {"Run", true}, {"Shoes", true}, {"Concrete", true}, {"Heel", false}}));
+    CHECK(SameNames(ts, {{"RAV Library", true}, {"Steps", true}, {"Run", true}, {"Shoes", true}, {"Concrete", true}, {"Scuff", false}}));
+    CHECK(MarkedOnce(th) && MarkedOnce(ts));
+    for (size_t i = 0; i + 1 < th.size(); ++i) CHECK(th[i].mark == ts[i].mark);  // one Concrete
+    CHECK(th.back().mark != ts.back().mark);
+    // One per path: the path track is the layers' folder.
+    CHECK(SameNames(PathOf(s, "heel", TrackLayout::Flat),
+                    {{"RAV Library", true}, {"Steps", true}, {"Run-Shoes-Concrete", true}, {"Heel", false}}));
+    // A sound outside any Blend stays on the path track itself (13-13).
+    const std::vector<TrackStep> tw = PathOf(s, "wood", TrackLayout::Tree);
+    CHECK(SameNames(tw, {{"RAV Library", true}, {"Steps", true}, {"Run", true}, {"Shoes", true}, {"Wood", false}}));
+    CHECK(tw[3].mark == th[3].mark && tw[4].mark != th[4].mark);  // the same Shoes, another value
+    // Off: the Blend folder in the library folder, every mode (B4).
+    CHECK(SameNames(PathOf(s, "heel", TrackLayout::Off),
+                    {{"RAV Library", true}, {"Steps", true}, {"Blend", true}, {"Heel", false}}));
+    CHECK(PathOf(s, "wood", TrackLayout::Off).empty());
+    // Marks are uids: the same path twice gives the same marks; another Lands-in, another library folder.
+    const std::vector<TrackStep> again = PathOf(s, "heel", TrackLayout::Tree);
+    for (size_t i = 0; i < th.size(); ++i) CHECK(again[i].mark == th[i].mark);
+    CHECK(PathOf(s, "heel", TrackLayout::Tree, "Foley")[1].mark != th[1].mark);
+    // A renamed value or layer: the same marks (found by mark, the name used only when made).
+    SoundStore r = s;
+    r.groups[2].values[0].name = "Stone";
+    r.libraries.front().nodes[4].name = "Heel2";
+    const std::vector<TrackStep> tr = PathOf(r, "heel", TrackLayout::Tree);
+    CHECK(tr[4].name == "Stone" && tr[5].name == "Heel2");
+    for (size_t i = 0; i < th.size(); ++i) CHECK(tr[i].mark == th[i].mark);
+    // Flat and Tree never share a track.
+    CHECK(PathOf(s, "heel", TrackLayout::Flat)[2].mark != th[4].mark);
+}
+
+static void TestLayerKinds()
+{
+    SoundStore   s;
+    SoundLibrary lib;
+    lib.uid = "lib";
+    lib.name = "Foley";
+    // Blend in Blend: Blend [Body, Impact = Blend [Click, Thud]].
+    lib.nodes.push_back(Named("outer", "", SoundNodeType::Blend, "Hit"));
+    lib.nodes.push_back(Named("body", "outer", SoundNodeType::Sound, "Body"));
+    lib.nodes.push_back(Named("impact", "outer", SoundNodeType::Blend, "Impact"));
+    lib.nodes.push_back(Named("click", "impact", SoundNodeType::Sound, "Click"));
+    lib.nodes.push_back(Named("thud", "impact", SoundNodeType::Sound, "Thud"));
+    s.libraries.push_back(lib);
+    const BlendLayer body = LayerOf(s.libraries.front(), "body");
+    const BlendLayer click = LayerOf(s.libraries.front(), "click");
+    const BlendLayer thud = LayerOf(s.libraries.front(), "thud");
+    CHECK(body.blend_uid == "outer" && click.blend_uid == "outer" && thud.blend_uid == "outer");
+    CHECK(body.layer_name == "Body" && click.layer_name == "Click" && thud.layer_name == "Thud");
+    const std::vector<TrackStep> pb = PathOf(s, "body", TrackLayout::Off);
+    const std::vector<TrackStep> pc = PathOf(s, "click", TrackLayout::Tree);  // no Switch: as Off
+    CHECK(SameNames(pb, {{"RAV Library", true}, {"Foley", true}, {"Hit", true}, {"Body", false}}));
+    CHECK(SameNames(pc, {{"RAV Library", true}, {"Foley", true}, {"Hit", true}, {"Click", false}}));
+    CHECK(pb[2].mark == pc[2].mark && pb[3].mark != pc[3].mark);  // side by side, no folder per inner Blend
+
+    // Random layer: Blend [Cloth = Random (3 files), Heel]; same names: Blend [Thud, Thud].
+    SoundStore   r;
+    SoundLibrary l2;
+    l2.uid = "l2";
+    l2.name = "Steps";
+    l2.nodes.push_back(Named("bl", "", SoundNodeType::Blend, "Footstep"));
+    l2.nodes.push_back(Named("cloth", "bl", SoundNodeType::Random, "Cloth"));
+    l2.nodes.push_back(Named("c1", "cloth", SoundNodeType::Sound, "a"));
+    l2.nodes.push_back(Named("c2", "cloth", SoundNodeType::Sound, "b"));
+    l2.nodes.push_back(Named("c3", "cloth", SoundNodeType::Sound, "c"));
+    l2.nodes.push_back(Named("heel", "bl", SoundNodeType::Sound, "Heel"));
+    l2.nodes.push_back(Named("t1", "bl", SoundNodeType::Sound, "Thud"));
+    l2.nodes.push_back(Named("t2", "bl", SoundNodeType::Sound, "thud "));
+    l2.nodes.push_back(Named("u", "bl", SoundNodeType::Sound, ""));
+    r.libraries.push_back(l2);
+    const SoundLibrary& L = r.libraries.front();
+    CHECK(LayerOf(L, "c1").layer_uid == "cloth" && LayerOf(L, "c3").layer_name == "Cloth");
+    CHECK(PathOf(r, "c1", TrackLayout::Off).back().mark == PathOf(r, "c2", TrackLayout::Off).back().mark);
+    CHECK(PathOf(r, "c1", TrackLayout::Off).back().mark != PathOf(r, "heel", TrackLayout::Off).back().mark);
+    // Off: RAV Library > library > Footstep > Heel.
+    CHECK(SameNames(PathOf(r, "heel", TrackLayout::Off), {{"RAV Library", true}, {"Steps", true}, {"Footstep", true}, {"Heel", false}}));
+    CHECK(LayerOf(L, "t1").layer_name == "Thud" && LayerOf(L, "t2").layer_name == "thud 2");
+    CHECK(LayerOf(L, "u").layer_name == "(unnamed)");
+    // The Blend itself, and a node with no Blend above: no layer.
+    CHECK(!LayerOf(L, "bl").in_blend);
+    CHECK(!LayerOf(L, "nope").in_blend);
+}
+
+static void TestBlendAboveSwitch()
+{
+    // Blend [Heel > Switch Material > Wood, Scuff], One per path.
+    SoundStore s;
+    s.groups.push_back(Group("gMat", "Material", {{"vWood", "Wood"}}));
+    SoundLibrary lib;
+    lib.uid = "lib";
+    lib.name = "Steps";
+    lib.nodes.push_back(Named("bl", "", SoundNodeType::Blend, "Footstep"));
+    SoundNode heel = Switch("heelsw", "bl", "gMat", {{"vWood", "w", {}}});
+    heel.name = "Heel";
+    lib.nodes.push_back(heel);
+    lib.nodes.push_back(Named("w", "heelsw", SoundNodeType::Sound, "wood file"));
+    lib.nodes.push_back(Named("scuff", "bl", SoundNodeType::Sound, "Scuff"));
+    s.libraries.push_back(lib);
+    CHECK(SameNames(PathOf(s, "w", TrackLayout::Flat), {{"RAV Library", true}, {"Steps", true}, {"Wood", true}, {"Heel", false}}));
+    CHECK(SameNames(PathOf(s, "scuff", TrackLayout::Flat),
+                    {{"RAV Library", true}, {"Steps", true}, {"Footstep", true}, {"Scuff", false}}));
+    CHECK(MarkedOnce(PathOf(s, "w", TrackLayout::Flat)));
+}
+
+static void TestMarks()
+{
+    std::string base;
+    CHECK(LaneOfMark(LaneMark("L|x|lib|Y|heel", 3), &base) == 3 && base == "L|x|lib|Y|heel");
+    CHECK(LaneOfMark("L|x|lib|Y|heel", &base) == 0 && base == "L|x|lib|Y|heel");
+    CHECK(LaneOfMark(LaneMark(GuidTrackMark("{AB}"), 12), &base) == 12 && base == "#{AB}");
+    CHECK(LaneOfMark("a|S|", &base) == 0 && base == "a|S|");
+    CHECK(LaneOfMark("a|S|x1", nullptr) == 0);
+    CHECK(LaneOfMark("a|S|0", nullptr) == 0);
+    CHECK(PileChildMark("m", "{G}") != PileChildMark("m", "{H}"));
+    CHECK(LayerMark("p", "a") != LayerMark("q", "a"));
+}
+
+static void TestLanes()
+{
+    // Two events overlap: Heel 2 s long, events 0.3 s apart -> Heel 1 (1st item), Heel 2 (2nd).
+    std::vector<std::vector<LaneSpan>> lanes;
+    std::vector<int> got = SpillOnLanes({{0.3, 2.3, 2}, {0.0, 2.0, 1}}, &lanes);
+    CHECK(lanes.size() == 2 && got[1] == 0 && got[0] == 1);
+    // No overlap: Heel 0.2 s, events 0.3 s apart -> one lane.
+    lanes.clear();
+    got = SpillOnLanes({{0.0, 0.2, 1}, {0.3, 0.5, 2}}, &lanes);
+    CHECK(lanes.size() == 1 && got[0] == 0 && got[1] == 0);
+    CHECK(FitsLane({{0.0, 0.2, 1}}, {0.3, 0.5, 2}));
+    // Touching: end = start does not overlap.
+    CHECK(!SpansOverlap({0.0, 1.0, 1}, {1.0, 2.0, 2}));
+    CHECK(!SpansOverlap({1.0, 2.0, 2}, {0.0, 1.0000000001, 1}));
+    CHECK(SpansOverlap({0.0, 1.01, 1}, {1.0, 2.0, 2}));
+    // Nested: a short item inside a long one overlaps.
+    CHECK(SpansOverlap({0.0, 5.0, 1}, {1.0, 1.5, 2}));
+    lanes.clear();
+    got = SpillOnLanes({{0.0, 5.0, 1}, {1.0, 1.5, 2}, {2.0, 2.5, 3}}, &lanes);
+    CHECK(lanes.size() == 2 && got[0] == 0 && got[1] == 1 && got[2] == 1);
+    // A gap reused: lane 0 is free again after its item ends.
+    const std::vector<std::vector<LaneSpan>> two = {{{0.0, 1.0, 1}, {3.0, 4.0, 3}}, {{0.5, 1.5, 2}}};
+    CHECK(PickLane(two, {1.0, 3.0, 9}) == 0);
+    CHECK(PickLane(two, {0.9, 1.2, 9}) == -1);
+    CHECK(PickLane(two, {1.2, 2.0, 9}) == 0);
+    CHECK(PickLane(two, {3.5, 3.8, 9}) == 1);
+    // The replaced item itself is excluded (it may stay where it is).
+    CHECK(PickLane(two, {0.0, 1.2, 1}, 1) == 0);
+    CHECK(PickLane(two, {0.0, 1.2, 1}) == -1);
+    CHECK(FitsLane(two[0], {0.0, 1.2, 1}, 1));
+    CHECK(!FitsLane(two[0], {0.0, 1.2, 1}));
+    CHECK(PickLane({}, {0.0, 1.0, 1}) == -1);
+    // Existing lanes are filled first.
+    lanes = {{{0.0, 1.0, 7}}};
+    got = SpillOnLanes({{2.0, 3.0, 1}, {0.5, 0.8, 2}}, &lanes);
+    CHECK(lanes.size() == 2 && got[0] == 0 && got[1] == 1);
+}
+
+// The spill mover choice (B6, B6b, B7b) and the moved-by-user rule.
+static void TestSpillPlan()
+{
+    const std::string base = "L|RAV Library|lib|Y|heel";
+    SpillPlan         p;
+    // Fits: nothing moves.
+    CHECK(!PlanSpill({{0.0, 0.2, -1}}, {base}, base, {0.3, 0.5, -1}, &p) && p.lanes == 0 && p.lane_of[0] == -1);
+    // Two events overlap: RAV's item to Heel 1, the new one to Heel 2.
+    CHECK(PlanSpill({{0.0, 2.0, -1}}, {base}, base, {0.3, 2.3, -1}, &p));
+    CHECK(p.lanes == 2 && p.lane_of[0] == 0 && p.item_lane == 1);
+    CHECK(LaneMark(base, p.lane_of[0] + 1) == base + "|S|1" && LaneMark(base, p.item_lane + 1) == base + "|S|2");
+    // The user's own item (tk "") and one the user moved there (another tk) stay; they still count
+    // as overlapping (the spill happens), the new item takes lane 1.
+    CHECK(PlanSpill({{0.0, 2.0, -1}, {5.0, 6.0, -1}}, {"", "PT|x|lib|g:v|Y|scuff"}, base, {0.3, 2.3, -1}, &p));
+    CHECK(p.lanes == 1 && p.lane_of[0] == -1 && p.lane_of[1] == -1 && p.item_lane == 0);
+    // RAV's items that do not overlap each other share lane 1; the new one takes the first that fits.
+    CHECK(PlanSpill({{0.0, 1.0, -1}, {2.0, 3.0, -1}}, {base, base}, base, {0.5, 2.5, -1}, &p));
+    CHECK(p.lanes == 2 && p.lane_of[0] == 0 && p.lane_of[1] == 0 && p.item_lane == 1);
+    // A lane item of another base (tk base|S|1 of a moved item) is not this track's: stays.
+    CHECK(PlanSpill({{0.0, 2.0, -1}}, {LaneMark(base, 1)}, base, {1.0, 3.0, -1}, &p) && p.lane_of[0] == -1);
+    // Once spilled: the first child that fits, else a new k above the highest (a deleted child skipped).
+    bool made = true;
+    CHECK(PickLaneK({1, 3}, {{{0.0, 1.0, -1}}, {}}, {0.5, 0.8, -1}, &made) == 3 && !made);
+    CHECK(PickLaneK({1, 3}, {{{0.0, 1.0, -1}}, {}}, {1.0, 1.5, -1}, &made) == 1 && !made);
+    CHECK(PickLaneK({1, 3}, {{{0.0, 1.0, -1}}, {{0.0, 1.0, -1}}}, {0.5, 0.8, -1}, &made) == 4 && made);
+    CHECK(PickLaneK({}, {}, {0.0, 1.0, -1}, &made) == 1 && made);
+    // Moved by the user (B7b).
+    std::string b;
+    CHECK(PlacedSpotOf("", false, &b) == PlacedSpot::NotRav && b.empty());
+    CHECK(PlacedSpotOf("", true) == PlacedSpot::NotRav);
+    CHECK(PlacedSpotOf(base, true, &b) == PlacedSpot::OnRavTrack && b == base);
+    CHECK(PlacedSpotOf(base, false, &b) == PlacedSpot::MovedByUser && b == base);
+    CHECK(PlacedSpotOf(LaneMark(base, 2), true, &b) == PlacedSpot::OnRavTrack && b == base);
+    CHECK(PlacedSpotOf(LaneMark(GuidTrackMark("{G}"), 1), false, &b) == PlacedSpot::MovedByUser && b == "#{G}");
+}
+
 int main()
 {
+    TestSpillPlan();
+    TestLayerUnderPath();
+    TestLayerKinds();
+    TestBlendAboveSwitch();
+    TestMarks();
+    TestLanes();
     TestSwitchPath();
     TestRandomBlend();
     TestOddTrees();

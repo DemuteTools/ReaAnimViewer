@@ -22,6 +22,7 @@
 
 #include "sound_project.h"
 #include "sound_record.h"
+#include "sound_tracks.h"
 
 namespace rav {
 namespace {
@@ -223,6 +224,7 @@ FolderItemFacts ReadFolderFacts(MediaItem* item)
 struct Member {
     MediaItem*  src = nullptr;
     MediaTrack* track = nullptr;
+    std::string mark;  // 13-16: the RAV track's mark ("" = no spill, no record)
 };
 
 // E1: the items an entry places (the source, or a folder item's children inside its span).
@@ -241,7 +243,8 @@ bool CollectMembers(ReaProject* proj, const PlaceRequest& req, MediaItem** ancho
     *anchor_out = src;
     *folder_out = IsFolderItem(src);
     if (!*folder_out) {
-        out->push_back({src, req.track ? req.track : GetMediaItem_Track(src)});
+        if (req.track) out->push_back({src, req.track, req.track_mark});
+        else out->push_back({src, GetMediaItem_Track(src), {}});
         return true;
     }
     const double pos = GetMediaItemInfo_Value(src, "D_POSITION");
@@ -255,7 +258,18 @@ bool CollectMembers(ReaProject* proj, const PlaceRequest& req, MediaItem** ancho
             if (ReadPlacedTag(c, &placed_tag)) continue;  // an earlier placement, not part of the source
             if (!SpanInside(pos, len, GetMediaItemInfo_Value(c, "D_POSITION"), GetMediaItemInfo_Value(c, "D_LENGTH")))
                 continue;
-            out->push_back({c, req.track ? req.track : t});
+            Member m{c, t, {}};
+            if (req.pile_track) {  // 13-16 B5: the member's own child of the layer track
+                std::string mark;
+                if (MediaTrack* to = req.pile_track(t, &mark)) {
+                    m.track = to;
+                    m.mark = mark;
+                }
+            } else if (req.track) {
+                m.track = req.track;
+                m.mark = req.track_mark;
+            }
+            out->push_back(m);
         }
     }
     if (out->empty()) {
@@ -324,6 +338,31 @@ bool WriteCopy(MediaItem* src, MediaItem* dst, const std::string& guid)
     return f_set_chunk(dst, copy.c_str(), false);
 }
 
+// 13-16 (B7b): a kept item whose tag records a RAV track it is not on (the track RAV uses for that
+// mark: a copy of it carrying the same mark is not it) was moved by the user.
+bool MovedByUser(ReaProject* proj, MediaItem* kept, const std::string& kept_tk)
+{
+    return kept && PlacedSpotOf(kept_tk, GetMediaItem_Track(kept) == FindTrackByMark(proj, kept_tk)) ==
+                       PlacedSpot::MovedByUser;
+}
+
+// 13-16 (B6): where a placed item lands: settled on its RAV track's lanes (its mark returned), or
+// the lane cache told of it ("" or the kept mark returned).
+std::string Land(ReaProject* proj, MediaItem* item, MediaTrack* track, const std::string& mark, bool user_moved,
+                 const std::string& kept_tk)
+{
+    if (user_moved) {
+        RefreshLaneItem(item);
+        return kept_tk;
+    }
+    if (mark.empty()) {
+        RefreshLaneItem(item);
+        return {};
+    }
+    const std::string landed = SettleOnLanes(proj, item, track, mark);
+    return landed.empty() ? mark : landed;
+}
+
 std::string OwnerGuid(const PlaceRequest& req, const std::string& fallback)
 {
     if (req.owner) return ItemGuid(req.owner);
@@ -332,7 +371,8 @@ std::string OwnerGuid(const PlaceRequest& req, const std::string& fallback)
 
 // Antho 2026-10-12 (13-11): a File Sound's item, made straight from its file on `req.track` (no
 // source item). `kept` non-null = rewritten in place (its GUID kept, its takes replaced).
-PlaceResult PlaceFileImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept, const std::string& kept_owner)
+PlaceResult PlaceFileImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept, const std::string& kept_owner,
+                          const std::string& kept_tk)
 {
     PlaceResult r;
     if (!f_add_take || !f_create_source || !f_set_take_source) {
@@ -363,8 +403,9 @@ PlaceResult PlaceFileImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* 
     }
     MediaItem* item = kept;
     std::string saved;
+    const bool  user_moved = MovedByUser(proj, kept, kept_tk);
     if (kept) {
-        if (GetMediaItem_Track(kept) != req.track && !f_move_to_track(kept, req.track)) {
+        if (!user_moved && GetMediaItem_Track(kept) != req.track && !f_move_to_track(kept, req.track)) {
             drop_source();
             r.error = "could not move the kept item to its track";
             return r;
@@ -430,6 +471,7 @@ PlaceResult PlaceFileImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* 
     tag.has_anchor = true;
     tag.ao = 0.0;
     tag.sy = fld.snap_offset;
+    tag.tk = Land(proj, item, req.track, req.track_mark, user_moved, kept_tk);
     WritePlacedTag(item, tag);
     r.item_guids.push_back(ItemGuid(item));
     r.items.push_back(item);
@@ -438,14 +480,16 @@ PlaceResult PlaceFileImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* 
 }
 
 // The shared place/replace body. `kept` non-null = rewrite it as the first member.
-PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept, const std::string& kept_owner)
+PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept, const std::string& kept_owner,
+                      const std::string& kept_tk)
 {
     PlaceResult r;
     if (!EngineReady()) {
         r.error = kMissingFns;
         return r;
     }
-    if (req.source.kind == SoundSourceKind::File) return PlaceFileImpl(proj, req, kept, kept_owner);
+    if (req.source.kind == SoundSourceKind::File) return PlaceFileImpl(proj, req, kept, kept_owner, kept_tk);
+    const bool user_moved = MovedByUser(proj, kept, kept_tk);  // 13-16 B7b: the kept item stays on its track
     MediaItem*          anchor_src = nullptr;
     bool                folder = false;
     std::vector<Member> members;
@@ -464,7 +508,7 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
         if (i == 0 && kept) {
             item = kept;
             guid = ItemGuid(kept);
-            if (GetMediaItem_Track(kept) != m.track && !f_move_to_track(kept, m.track)) {
+            if (!user_moved && GetMediaItem_Track(kept) != m.track && !f_move_to_track(kept, m.track)) {
                 r.error = "could not move the kept item to the source track";
                 return r;
             }
@@ -518,6 +562,7 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
         tag.has_anchor = true;
         tag.ao = pos - anchor;  // as placed: a member clamped at 0 still gives the anchor back
         tag.sy = sync;
+        tag.tk = Land(proj, placed[i], members[i].track, members[i].mark, i == 0 && user_moved, kept_tk);
         WritePlacedTag(placed[i], tag);
     }
     r.ok = true;
@@ -738,10 +783,12 @@ bool OnPlaceTestCommand(int command, int /*flag*/)
 void PlaceBatch(bool on)
 {
     if (on) {
+        TracksBatch(true);  // 13-16: the gesture's track marks and lane items, read once
         if (g_batch++ == 0 && f_prevent_refresh) f_prevent_refresh(1);
         return;
     }
     if (g_batch <= 0) return;
+    TracksBatch(false);
     if (--g_batch == 0) {
         g_batch_chunks.clear();
         if (f_prevent_refresh) f_prevent_refresh(-1);
@@ -841,7 +888,7 @@ bool PlacedPileAnchor(MediaItem* item, double* anchor_pos, double* sync)
 PlaceResult PlaceSounds(ReaProject* proj, const PlaceRequest& req)
 {
     try {
-        return PlaceImpl(proj, req, nullptr, {});
+        return PlaceImpl(proj, req, nullptr, {}, {});
     } catch (...) {
         PlaceResult r;
         r.error = "placement failed";
@@ -856,7 +903,9 @@ bool MovePlacement(ReaProject* proj, const std::string& item_guid, double projec
         std::string why;
         MediaItem*  item = PlacedItemFor(proj, item_guid, false, nullptr, &why);
         if (!item) return false;
-        return f_set_item(item, "D_POSITION", project_t);
+        const bool moved = f_set_item(item, "D_POSITION", project_t);
+        RefreshLaneItem(item);  // 13-16: the gesture's lane cache in step
+        return moved;
     } catch (...) {
         return false;
     }
@@ -873,7 +922,7 @@ PlaceResult ReplacePlacement(ReaProject* proj, const std::string& item_guid, con
         PlacedTag  tag;
         MediaItem* item = PlacedItemFor(proj, item_guid, true, &tag, &r.error);
         if (!item) return r;
-        return PlaceImpl(proj, req, item, tag.owner);
+        return PlaceImpl(proj, req, item, tag.owner, tag.tk);
     } catch (...) {
         r.error = "replace failed";
         return r;
@@ -887,6 +936,7 @@ bool RemovePlacement(ReaProject* proj, const std::string& item_guid)
         std::string why;
         MediaItem*  item = PlacedItemFor(proj, item_guid, true, nullptr, &why);
         if (!item) return false;
+        ForgetLaneItem(item);  // 13-16: out of the gesture's lane cache
         return f_delete_item(GetMediaItem_Track(item), item);
     } catch (...) {
         return false;

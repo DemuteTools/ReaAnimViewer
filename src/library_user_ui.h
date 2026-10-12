@@ -61,7 +61,8 @@ void QuitLibraryUser();
 // source item on the timeline).
 struct FileSoundTarget {
     std::string path;             // the file (FileForProject: its project copy when REAPER copies imports)
-    MediaTrack* track = nullptr;  // the layer track of its Lands-in folder (decision 12)
+    MediaTrack* track = nullptr;  // the "layer 1" track of its Lands-in folder (decision 12; 13-16:
+                                  // a Blend's layers have their own tracks, SoundTrackPath)
     std::string item_guid;        // an older build's imported source item, used only when the file is gone
 };
 // Readies a File Sound for placing: resolves its file, copies it into the project media folder once

@@ -293,15 +293,19 @@ static void TestLandsInAndLayer()
     CHECK(EffectiveLandsIn(lib, "n000000000000004") == "Mine");
     lib.user = false;
     CHECK(EffectiveLandsIn(lib, "n000000000000004") == kDefaultLandsIn);
-    CHECK(BlendLayerOf(lib, "n000000000000006") == 1);
-    CHECK(BlendLayerOf(lib, "n000000000000005") == 0);
-    CHECK(BlendLayerOf(lib, "n000000000000004") == 0);
-    // A Sound under a Random that is the Blend's second child: layer 1.
+    // 13-16: the nearest Blend and its child on the path (BlendLayerOf's cases, now uids).
+    std::string blend, child;
+    CHECK(BlendLayerPath(lib, "n000000000000006", &blend, &child) && blend == "n000000000000003" &&
+          child == "n000000000000006");
+    CHECK(BlendLayerPath(lib, "n000000000000005", &blend, &child) && child == "n000000000000005");
+    CHECK(!BlendLayerPath(lib, "n000000000000004", &blend, &child) && blend.empty() && child.empty());
+    // A Sound under a Random that is a Blend child: the Random is its layer.
     SoundNode r2 = Node("n000000000000008", "n000000000000003", SoundNodeType::Random, "Layer 2 random");
     lib.nodes.push_back(r2);
     lib.nodes.push_back(FileSound("n000000000000009", r2.uid, "metal3.wav"));
-    CHECK(BlendLayerOf(lib, "n000000000000009") == 2);
-    CHECK(BlendLayerOf(lib, "n000000000000008") == 2);
+    CHECK(BlendLayerPath(lib, "n000000000000009", &blend, &child) && blend == "n000000000000003" &&
+          child == "n000000000000008");
+    CHECK(BlendLayerPath(lib, "n000000000000008", &blend, &child) && child == "n000000000000008");
 }
 
 static void TestResolve()

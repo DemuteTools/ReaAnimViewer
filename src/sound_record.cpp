@@ -1054,6 +1054,7 @@ bool ParsePlacedTag(const std::string& text, PlacedTag* out)
             if (k == "own") return G(OwnershipFromWord(v, &t.own));
             if (k == "ao") return G(ao = ReadNumber(v, &t.ao));
             if (k == "sy") return G(sy = ReadNumber(v, &t.sy));
+            if (k == "tk") return G(ReadStr(v, &t.tk));
             return Got::Unknown;
         });
         if (!owner || t.owner.empty()) return false;
@@ -1077,6 +1078,7 @@ std::string SerializePlacedTag(const PlacedTag& t)
         f.push_back({"ao", FormatNumber(t.ao)});
         f.push_back({"sy", FormatNumber(t.sy)});
     }
+    if (!t.tk.empty()) f.push_back({"tk", Enc(t.tk)});
     WriteHeader(out, kPlacedTagMagic, t.version, f, t.kept);
     return out;
 }

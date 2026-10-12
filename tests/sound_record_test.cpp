@@ -356,6 +356,15 @@ int main()
             PlacedTag half;
             CHECK(ParsePlacedTag("RAVSND 2 owner={O} ao=1\n", &half) && !half.has_anchor);  // ao without sy: unused
         }
+        // 13-16: the placed-on track mark (with spaces and |) round-trips; none = no field.
+        {
+            PlacedTag a = t;
+            a.tk = "PT|RAV Library|lib|g:v|Y|heel|S|2";
+            const std::string at = SerializePlacedTag(a);
+            PlacedTag b;
+            CHECK(ParsePlacedTag(at, &b) && b.tk == a.tk && SerializePlacedTag(b) == at);
+            CHECK(SerializePlacedTag(t).find("tk=") == std::string::npos);
+        }
         CHECK(ParsePlacedTag(fut, &f) && f.version == 3 && !f.has_anchor && f.kept.size() == 1 && SerializePlacedTag(f) == fut);
     }
     // ---- Lookups in the store --------------------------------------------------------------------

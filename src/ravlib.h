@@ -49,9 +49,10 @@ bool AddRavlibLibrary(SoundStore& store, const SoundStore& file, const std::stri
 // The node's destination folder: its lands_in, else its nearest ancestor's, else kDefaultLandsIn.
 // A library that is not a User Library always gives kDefaultLandsIn.
 std::string EffectiveLandsIn(const SoundLibrary& lib, const std::string& node_uid);
-// The node's index among the children of its nearest Blend ancestor (the child on its path); 0
-// when it has none.
-int BlendLayerOf(const SoundLibrary& lib, const std::string& node_uid);
+// Story 13-16: the node's nearest Blend ancestor (`blend_uid`) and that Blend's child on its path
+// (`child_uid`, the node itself when it is one). False (both cleared) when it has none or on a cycle.
+bool BlendLayerPath(const SoundLibrary& lib, const std::string& node_uid, std::string* blend_uid,
+                    std::string* child_uid);
 
 // Where a file is now: last_path when `file_size` (-1 = absent) says it exists with the same size
 // (identity size -1 = any), else the database's Found path; "" = missing (Ambiguous / none).

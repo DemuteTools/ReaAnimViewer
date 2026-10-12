@@ -49,7 +49,7 @@ struct TreeState {
     std::vector<LibraryRow>  sel;
     LibraryRow               anchor;
     bool                     has_anchor = false;
-    std::set<std::string>    open;
+    std::set<std::string>    closed;  // the containers the user folded (every container starts open)
     std::vector<TreeRow>     rows;  // last frame's visible rows
     // Inline rename.
     RenameKind               rename = RenameKind::None;
@@ -190,8 +190,7 @@ void RevealNode(const SoundLibrary& lib, const std::string& uid)
 {
     const SoundNode* n = FindNode(lib, uid);
     for (size_t guard = 0; n && !n->parent.empty() && guard < lib.nodes.size(); ++guard) {
-        g.open.insert(n->parent);
-        if (n->parent == lib.root) g.open.erase("!root");
+        g.closed.erase(n->parent);
         n = FindNode(lib, n->parent);
     }
 }
@@ -762,8 +761,7 @@ void RowDropTarget(const SoundLibrary& lib, const TreeRow& r, ImVec2 p0, ImVec2 
             g.hover_uid = n->uid;
             g.hover_since = ImGui::GetTime();
         } else if (ImGui::GetTime() - g.hover_since > kAutoOpenSeconds) {
-            if (n->uid == lib.root) g.open.erase("!root");
-            else g.open.insert(n->uid);
+            g.closed.erase(n->uid);
         }
     }
 
@@ -1054,14 +1052,8 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
     if (r.container) {
         ImGui::SetCursorScreenPos(ImVec2(x0, std::floor(cy - cs * 0.5f)));
         if (ui::Chevron("##chev", r.open, cs)) {
-            if (r.node == lib.root) {
-                if (r.open) g.open.insert("!root");
-                else g.open.erase("!root");
-            } else if (r.open) {
-                g.open.erase(r.node);
-            } else {
-                g.open.insert(r.node);
-            }
+            if (r.open) g.closed.insert(r.node);
+            else g.closed.erase(r.node);
         }
     }
     // Type icon (a container's is a button: its type menu).
@@ -1864,7 +1856,13 @@ void LibraryTreeWidgets()
     lib = CurrentLib();  // a gesture above rewrote the store
     if (!lib) return;
 
-    g.rows = BuildTreeRows(GetSoundStore(nullptr), *lib, g.open);
+    // Antho 2026-10-12: every container starts open (the whole hierarchy shows); ▶ folds one. BuildTreeRows takes
+    // the open set: every container not folded ("!root" marks a folded root).
+    std::set<std::string> open;
+    for (const SoundNode& n : lib->nodes)
+        if (n.type != SoundNodeType::Sound && !g.closed.count(n.uid)) open.insert(n.uid);
+    if (g.closed.count(lib->root)) open.insert("!root");
+    g.rows = BuildTreeRows(GetSoundStore(nullptr), *lib, open);
     // The selection is pruned against the rows (an undo may remove uids).
     g.sel.erase(std::remove_if(g.sel.begin(), g.sel.end(),
                                [&](const LibraryRow& s) {

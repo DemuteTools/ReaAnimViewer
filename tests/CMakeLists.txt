@@ -206,3 +206,8 @@ add_executable(ui_glyphs_test ui_glyphs_test.cpp)
 target_include_directories(ui_glyphs_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_compile_definitions(ui_glyphs_test PRIVATE RAV_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../src")
 add_test(NAME ui_glyphs COMMAND ui_glyphs_test)
+
+# 13-7a / 13-7b / 13-7c -- the Library view's adaptive layout arithmetic (src/ui_flow_math.h).
+add_executable(ui_flow_test ui_flow_test.cpp ../src/ui_flow_math.cpp)
+target_include_directories(ui_flow_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME ui_flow COMMAND ui_flow_test)

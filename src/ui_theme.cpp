@@ -15,6 +15,11 @@
 #include <string>
 #include <system_error>
 
+#include <imgui_internal.h>  // a card narrows the window's work rect
+
+#include "ui_flow.h"
+#include "ui_flow_math.h"
+
 namespace rav {
 namespace ui {
 
@@ -93,33 +98,50 @@ void ApplyRavTheme()
     s.ItemSpacing       = ImVec2(8.0f, 6.0f);
 }
 
+namespace {
+int g_seg_hovered = -1;
+}  // namespace
+
+int SegmentedHovered() { return g_seg_hovered; }
+
 bool Segmented(const char* id, const char* const* labels, int count, int* selected, float item_width,
                int disabled_index)
 {
+    g_seg_hovered = -1;
     if (!labels || count <= 0 || !selected) return false;
     ImGui::PushID(id);
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float pad = 2.0f;
     const float h = ImGui::GetTextLineHeight() + 8.0f;
+    constexpr float kPadNat = 24.0f, kPadMin = 8.0f;  // an option's room around its label
 
-    float widths[8] = {};
+    // Measure, then lay out within the room left (ui_flow_math: share, then wrap onto rows).
+    float     text_w[8] = {}, widths[8] = {};
+    int       row_of[8] = {};
     const int n = std::min(count, 8);
-    float total = pad;
-    for (int i = 0; i < n; ++i) {
-        widths[i] = item_width > 0.0f ? item_width : ImGui::CalcTextSize(labels[i], nullptr, true).x + 24.0f;
-        total += widths[i] + pad;
+    for (int i = 0; i < n; ++i)
+        text_w[i] = item_width > 0.0f ? std::max(0.0f, item_width - kPadNat) : TextWidth(labels[i]);
+    const float avail = WindowAutoSizes() ? 1e9f : std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const int   rows = flow::LayoutSegments(text_w, n, avail, kPadNat, kPadMin, pad, widths, row_of);
+    float       total = 0.0f;  // the widest row
+    for (int r = 0, i = 0; r < rows; ++r) {
+        float x = pad;
+        for (; i < n && row_of[i] == r; ++i) x += widths[i] + pad;
+        total = std::max(total, x);
     }
 
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
-    const ImVec2 size(total, h + 2.0f * pad);
+    const ImVec2 size(total, static_cast<float>(rows) * (h + pad) + pad);
     dl->AddRectFilled(p0, ImVec2(p0.x + size.x, p0.y + size.y), kBg, kRadiusMd);
     dl->AddRect(p0, ImVec2(p0.x + size.x, p0.y + size.y), kStroke, kRadiusMd);
 
-    bool changed = false;
+    bool  changed = false;
     float x = p0.x + pad;
     for (int i = 0; i < n; ++i) {
-        const ImVec2 a(x, p0.y + pad);
-        const ImVec2 b(x + widths[i], p0.y + pad + h);
+        if (i > 0 && row_of[i] != row_of[i - 1]) x = p0.x + pad;
+        const float  y = p0.y + pad + static_cast<float>(row_of[i]) * (h + pad);
+        const ImVec2 a(x, y);
+        const ImVec2 b(x + widths[i], y + h);
         const bool disabled = (i == disabled_index);
         ImGui::SetCursorScreenPos(a);
         ImGui::PushID(i);
@@ -128,6 +150,7 @@ bool Segmented(const char* id, const char* const* labels, int count, int* select
         const bool hovered = ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled);
         if (disabled) ImGui::EndDisabled();
         ImGui::PopID();
+        if (hovered) g_seg_hovered = i;
         if (clicked && !disabled && *selected != i) {
             *selected = i;
             changed = true;
@@ -139,10 +162,16 @@ bool Segmented(const char* id, const char* const* labels, int count, int* select
         } else if (hovered && !disabled) {
             dl->AddRectFilled(a, b, kHover, kRadiusSm);
         }
-        const ImVec2 ts = ImGui::CalcTextSize(labels[i], nullptr, true);
-        const ImU32 ink = disabled ? kFaint : (on ? kText : kMuted);
-        const char* end = std::strstr(labels[i], "##");  // the visible part of the label
-        dl->AddText(ImVec2(a.x + (widths[i] - ts.x) * 0.5f, a.y + (h - ts.y) * 0.5f), ink, labels[i], end);
+        const char*       end = std::strstr(labels[i], "##");  // the visible part of the label
+        const std::string text = end ? std::string(labels[i], end) : std::string(labels[i]);
+        const float       tw = TextWidth(labels[i]);
+        const ImU32       ink = disabled ? kFaint : (on ? kText : kMuted);
+        const float       ty = a.y + (h - ImGui::GetTextLineHeight()) * 0.5f;
+        if (tw <= widths[i] - 4.0f) {
+            dl->AddText(ImVec2(a.x + (widths[i] - tw) * 0.5f, ty), ink, text.c_str());
+        } else if (EllipsisText(dl, ImVec2(a.x + 4.0f, ty), b.x - 4.0f, ink, text) && hovered) {
+            ImGui::SetTooltip("%s", text.c_str());
+        }
         x += widths[i] + pad;
     }
 
@@ -159,7 +188,7 @@ bool PrimaryButton(const char* label, const ImVec2& size)
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Col(kPrimaryHover));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, Col(kAccent));
     ImGui::PushStyleColor(ImGuiCol_Text, Col(kWhite));
-    const bool pressed = ImGui::Button(label, size);
+    const bool pressed = FittedButton(label, size);
     ImGui::PopStyleColor(4);
     return pressed;
 }
@@ -171,7 +200,7 @@ bool SolidButton(const char* label, const ImVec2& size)
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, Col(kAccentSoft));
     ImGui::PushStyleColor(ImGuiCol_Border, Col(kStroke));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
-    const bool pressed = ImGui::Button(label, size);
+    const bool pressed = FittedButton(label, size);
     ImGui::PopStyleVar();
     ImGui::PopStyleColor(4);
     return pressed;
@@ -265,7 +294,10 @@ DragNumberEvent DragNumber(const char* id, double* value, double step, int decim
     const ImGuiID gid = ImGui::GetID("##dragnum");
     const ImGuiIO& io = ImGui::GetIO();
     const float h = ImGui::GetFrameHeight();
-    const float w = width > 0.0f ? width : ImGui::CalcTextSize("-0000.00").x + 12.0f;
+    float       w = width > 0.0f ? width : ImGui::CalcTextSize("-0000.00").x + 12.0f;
+    // The field gives way to its unit: both end within the room left (never under 24 px).
+    if (!WindowAutoSizes())
+        w = flow::FieldBeforeUnit(ImGui::GetContentRegionAvail().x, w, UnitWidth(unit), 0.0f, std::min(w, 24.0f));
     char text[64];
     std::snprintf(text, sizeof(text), "%.*f", decimals < 0 ? 0 : decimals, RoundTo(*value, decimals));
 
@@ -360,22 +392,13 @@ float KeyCap(ImDrawList* dl, ImVec2 p, const char* key, ImU32 text)
 
 bool EllipsisText(ImDrawList* dl, ImVec2 p, float max_x, ImU32 col, const std::string& text)
 {
-    const float avail = max_x - p.x;
-    if (ImGui::CalcTextSize(text.c_str()).x <= avail) {
+    const flow::MeasureFn measure = [](const char* b, const char* e) { return ImGui::CalcTextSize(b, e).x; };
+    const size_t keep = flow::EllipsisKeep(text, max_x - p.x, ImGui::CalcTextSize("...").x, measure);
+    if (keep >= text.size()) {
         dl->AddText(p, col, text.c_str());
         return false;
     }
-    const float dots = ImGui::CalcTextSize("...").x;
-    size_t n = text.size();
-    while (n > 0) {
-        do {
-            --n;
-        } while (n > 0 && (static_cast<unsigned char>(text[n]) & 0xC0) == 0x80);  // a whole UTF-8 glyph
-        if (ImGui::CalcTextSize(text.c_str(), text.c_str() + n).x + dots <= avail) break;
-    }
-    std::string s = text.substr(0, n);
-    while (!s.empty() && s.back() == ' ') s.pop_back();
-    s += "...";
+    const std::string s = text.substr(0, keep) + "...";
     dl->PushClipRect(ImVec2(p.x, p.y - 1.0f), ImVec2(std::max(p.x, max_x), p.y + ImGui::GetFontSize() + 1.0f), true);
     dl->AddText(p, col, s.c_str());
     dl->PopClipRect();
@@ -410,10 +433,21 @@ void BeginCard(Card& k)
     k.split.SetCurrentChannel(dl, 1);
     ImGui::SetCursorScreenPos(ImVec2(k.p0.x + kCardPad, k.p0.y + kCardPad));
     ImGui::BeginGroup();
+    // The content ends at the card's inner edge, not at the window's: everything inside measures
+    // the room it really has (13-7a: rows ran into the card's right edge and were clipped).
+    ImGuiWindow* win = ImGui::GetCurrentWindow();
+    k.saved_work_max = win->WorkRect.Max.x;
+    k.saved_content_max = win->ContentRegionRect.Max.x;
+    const float inner = std::max(k.p0.x + kCardPad + 1.0f, k.p0.x + k.w - kCardPad);
+    win->WorkRect.Max.x = std::min(win->WorkRect.Max.x, inner);
+    win->ContentRegionRect.Max.x = std::min(win->ContentRegionRect.Max.x, inner);
 }
 
 void EndCard(Card& k, ImU32 fill, ImU32 edge)
 {
+    ImGuiWindow* win = ImGui::GetCurrentWindow();
+    win->WorkRect.Max.x = k.saved_work_max;
+    win->ContentRegionRect.Max.x = k.saved_content_max;
     ImGui::EndGroup();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float bottom = ImGui::GetItemRectMax().y + kCardPad;
@@ -464,8 +498,10 @@ bool BeginSection(Section& s, const char* title, ImTextureID icon, bool foldable
                      ImVec2(0, 0), ImVec2(1, 1), IM_COL32(0xD1, 0xD6, 0xE5, 0xFF));
         tx += is + 8.0f;
     }
-    const ImVec2 ts = ImGui::CalcTextSize(title, nullptr, true);
-    dl->AddText(ImVec2(tx, p.y + (fh - ts.y) * 0.5f), kText, title, std::strstr(title, "##"));
+    // The title ends before the chevron (ellipsized, the full title as a tooltip).
+    const char* tend = std::strstr(title, "##");
+    EllipsisTextTip(dl, ImVec2(tx, p.y + (fh - ImGui::GetTextLineHeight()) * 0.5f), p.x + w - (foldable ? 14.0f : 0.0f),
+                    kText, tend ? std::string(title, tend) : std::string(title));
     if (foldable) {
         // The chevron: down when open, right when folded.
         const ImVec2 c(p.x + w - 6.0f, p.y + fh * 0.5f);

@@ -4154,7 +4154,7 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
         // Story 10-8h: the columns from the width inside the card (its right padding too), the
         // fields narrowed on a narrow panel, so the last field and its unit always fit.
         const float x0 = ImGui::GetCursorPosX();
-        const float avail = std::max(1.0f, ImGui::GetContentRegionAvail().x - ui::kCardPad);
+        const float avail = std::max(1.0f, ImGui::GetContentRegionAvail().x);
         const float cap_w = ImGui::CalcTextSize("Sensitivity").x;
         const float min_label = 90.0f + ImGui::GetFrameHeight() * 2.0f;  // tick, label, row icon
         float       fw = 48.0f;

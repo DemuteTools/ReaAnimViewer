@@ -23,6 +23,8 @@
 #include "sound_project.h"
 #include "sound_record.h"
 #include "sound_switch.h"
+#include "ui_flow.h"
+#include "ui_flow_math.h"
 
 namespace rav {
 namespace {
@@ -224,33 +226,12 @@ void DrawTypeIcon(ImDrawList* dl, ImVec2 p, float s, SoundNodeType t, bool hot)
     DrawNodeTypeGlyph(dl, ImVec2(p.x + o, p.y + o), g, t, hot ? ui::kText : TypeColor(t));
 }
 
-// A SolidButton with a small down arrow after its label (a menu opens on click).
-// Bug 1 (13-7a): a row of buttons wraps instead of being cut off when its column is narrow.
-float ButtonWidth(const char* label)
-{
-    return ImGui::CalcTextSize(label, nullptr, true).x + 2.0f * ImGui::GetStyle().FramePadding.x;
-}
-
-float MenuButtonWidth(const char* label) { return ButtonWidth((std::string(label) + "    ").c_str()); }
-
-// SameLine when the next item (`next_w` wide) still fits after the last one, else a new line.
-void SameLineIfFits(float next_w)
-{
-    const float right = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;  // the line's end
-    if (ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + next_w <= right) ImGui::SameLine();
-}
-
-bool MenuButton(const char* label, bool enabled = true)
-{
-    std::string l = std::string(label) + "    ";
-    if (!enabled) ImGui::BeginDisabled();
-    const bool r = ui::SolidButton(l.c_str());
-    if (!enabled) ImGui::EndDisabled();
-    const ImVec2 mx = ImGui::GetItemRectMax(), mn = ImGui::GetItemRectMin();
-    DrawChevron(ImGui::GetWindowDrawList(), ImVec2(mx.x - 9.0f, (mn.y + mx.y) * 0.5f), true,
-                enabled ? ui::kMuted : ui::kFaint);
-    return r;
-}
+// 13-7a: the layout helpers are the shared ones (ui_flow.h): rows of buttons wrap, labels and
+// buttons shrink with an ellipsis, nothing is cut off by a narrow column.
+using ui::ButtonWidth;
+using ui::MenuButton;
+using ui::MenuButtonWidth;
+using ui::SameLineIfFits;
 
 void Tip(const std::string& text)
 {
@@ -1029,7 +1010,7 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
         if (missing && r.kind == TreeRowKind::Node) col = kLibMissing;
         if (is_cut) col = ui::kFaint;
         if (g.hooks.is_lit && n && g.hooks.is_lit(n->uid)) col = ui::kAccent;
-        ui::EllipsisText(dl, ImVec2(nx, ty), rx - 4.0f, col, r.label);
+        ui::EllipsisTextTip(dl, ImVec2(nx, ty), rx - 4.0f, col, r.label);
     }
     ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh));
     ImGui::Dummy(ImVec2(0.0f, 0.0f));
@@ -1065,11 +1046,9 @@ void EmptyLibraryHint(const SoundLibrary& lib)
     const char* t = "This library is empty. Add a first sound:";
     const float w = ImGui::GetContentRegionAvail().x;
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (w - ImGui::CalcTextSize(t).x) * 0.5f));
-    ImGui::PushTextWrapPos(0.0f);
-    ImGui::TextDisabled("%s", t);
-    ImGui::PopTextWrapPos();
+    ui::SubText(t);
     const float bw = 4.0f * 80.0f + 3.0f * ImGui::GetStyle().ItemSpacing.x;
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (w - bw) * 0.5f));
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (w - bw) * 0.5f));  // centred when on one line
     (void)lib;
     if (ui::SolidButton("+ Sound##hint", ImVec2(80.0f, 0.0f))) DoAdd(SoundNodeType::Sound, {});
     SameLineIfFits(80.0f);
@@ -1117,8 +1096,26 @@ void DrawLibrariesSection()
                 if (g.changed) break;
                 continue;
             }
+            // 13-7a: the trail, left to right "User", missing count, "!", the ... menu (its room kept
+            // even while hidden, so the name does not jump under the mouse), stays beside the name
+            // while the name keeps ~4 em, else it goes under it (wrapping): the row grows, nothing is cut.
+            const LibraryCheck chk = CheckLibrary(store, lib);
+            const int          miss = CountMissing(lib, SoundMissing);
+            const std::string miss_t = miss > 0 ? std::to_string(miss) : std::string();
+            float             tw[4];
+            int               tk[4];
+            int               nt = 0;
+            if (lib.user) { tk[nt] = 0; tw[nt++] = ui::TextWidth("User"); }
+            if (miss > 0) { tk[nt] = 1; tw[nt++] = ui::TextWidth(miss_t.c_str()); }
+            if (chk.blocked) { tk[nt] = 2; tw[nt++] = 10.0f; }
+            tk[nt] = 3;
+            tw[nt++] = 22.0f;
+            flow::TrailPlace tp[4];
+            const float      lead_min = std::min(ui::TextWidth(lib.name.c_str()), 4.0f * ImGui::GetFontSize());
+            const int        lines = flow::PlaceTrail(tw, nt, p.x + 16.0f, p.x + w - 4.0f, lead_min, 4.0f, tp);
             ImGui::SetNextItemAllowOverlap();
-            if (ImGui::Selectable("##lib", g.lib == lib.uid, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(w, rh))) {
+            if (ImGui::Selectable("##lib", g.lib == lib.uid, ImGuiSelectableFlags_AllowDoubleClick,
+                                  ImVec2(w, rh * static_cast<float>(lines)))) {
                 if (g.lib != lib.uid) {
                     g.lib = lib.uid;
                     g.sel.clear();
@@ -1137,36 +1134,27 @@ void DrawLibrariesSection()
             if (lib.color & 0x1000000u)
                 dot = IM_COL32((lib.color >> 16) & 0xFF, (lib.color >> 8) & 0xFF, lib.color & 0xFF, 0xFF);
             dl->AddCircleFilled(ImVec2(p.x + 6.0f, p.y + rh * 0.5f), 4.0f, dot);
-            // Right side: ⋯, "!", missing count, "User".
-            float rx = p.x + w - 4.0f;
-            if (hovered || g.lib == lib.uid) {
-                rx -= 22.0f;
-                ImGui::SetCursorScreenPos(ImVec2(rx, p.y));
-                if (ImGui::InvisibleButton("##more", ImVec2(22.0f, rh))) ImGui::OpenPopup("##libmenu");
-                dl->AddText(ImVec2(rx + 4.0f, ty), ImGui::IsItemHovered() ? ui::kText : ui::kMuted, "...");
+            for (int i = 0; i < nt; ++i) {
+                const flow::TrailPlace& t = tp[i];
+                const float y = p.y + static_cast<float>(t.line) * rh;
+                const float by = y + (rh - ImGui::GetTextLineHeight()) * 0.5f;
+                ImGui::SetCursorScreenPos(ImVec2(t.x, y));
+                if (tk[i] == 0) {
+                    dl->AddText(ImVec2(t.x, by), ui::kMuted, "User");
+                } else if (tk[i] == 1) {
+                    ImGui::Dummy(ImVec2(t.w, rh));
+                    dl->AddText(ImVec2(t.x, by), kLibMissing, miss_t.c_str());
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%d missing sound(s)", miss);
+                } else if (tk[i] == 2) {
+                    ImGui::Dummy(ImVec2(t.w, rh));
+                    dl->AddText(ImVec2(t.x + 2.0f, by), ui::kWarn, "!");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Blocked: %s", chk.reason.c_str());
+                } else if (hovered || g.lib == lib.uid) {
+                    if (ImGui::InvisibleButton("##more", ImVec2(t.w, rh))) ImGui::OpenPopup("##libmenu");
+                    dl->AddText(ImVec2(t.x + 4.0f, by), ImGui::IsItemHovered() ? ui::kText : ui::kMuted, "...");
+                }
             }
-            const LibraryCheck chk = CheckLibrary(store, lib);
-            if (chk.blocked) {
-                rx -= 14.0f;
-                ImGui::SetCursorScreenPos(ImVec2(rx, p.y));
-                ImGui::Dummy(ImVec2(12.0f, rh));
-                dl->AddText(ImVec2(rx + 3.0f, ty), ui::kWarn, "!");
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Blocked: %s", chk.reason.c_str());
-            }
-            const int miss = CountMissing(lib, SoundMissing);
-            if (miss > 0) {
-                const std::string t = std::to_string(miss);
-                rx -= ImGui::CalcTextSize(t.c_str()).x + 6.0f;
-                ImGui::SetCursorScreenPos(ImVec2(rx, p.y));
-                ImGui::Dummy(ImVec2(ImGui::CalcTextSize(t.c_str()).x, rh));
-                dl->AddText(ImVec2(rx, ty), kLibMissing, t.c_str());
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%d missing sound(s)", miss);
-            }
-            if (lib.user) {
-                rx -= ImGui::CalcTextSize("User").x + 6.0f;
-                dl->AddText(ImVec2(rx, ty), ui::kMuted, "User");
-            }
-            ui::EllipsisText(dl, ImVec2(p.x + 16.0f, ty), rx - 4.0f, ui::kText, lib.name);
+            ui::EllipsisTextTip(dl, ImVec2(p.x + 16.0f, ty), (lines == 1 ? tp[0].x : p.x + w) - 4.0f, ui::kText, lib.name);
             if (ImGui::BeginPopup("##libmenu")) {
                 if (ImGui::MenuItem("Rename")) {
                     g.rename = RenameKind::Library;
@@ -1177,13 +1165,13 @@ void DrawLibrariesSection()
                 if (ImGui::MenuItem("Delete")) to_delete = lib.uid;
                 ImGui::EndPopup();
             }
-            ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh));
+            ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh * static_cast<float>(lines)));
             ImGui::Dummy(ImVec2(0.0f, 0.0f));
             ImGui::PopID();
         }
         if (!to_delete.empty())
             Gesture("Delete library", [&](SoundStore& s) { return DeleteLibrary(s, to_delete); });
-        if (store.libraries.empty()) ImGui::TextDisabled("No library yet");
+        if (store.libraries.empty()) ui::SubText("No library yet");
         if (ui::SolidButton("+ Library")) {
             std::string uid;
             if (Gesture("Add library", [&](SoundStore& s) { return NewLibrary(s, &uid); })) {
@@ -1229,15 +1217,15 @@ void DrawSwitchGroupsSection()
                 open = ImGui::GetStateStorage()->GetBool(ImGui::GetID("##grp"), true);
             } else {
                 const ImVec2 hp = ImGui::GetCursorScreenPos();
-                const float bw = ButtonWidth("+") + ImGui::GetStyle().ItemSpacing.x + ButtonWidth("\xC3\x97");
+                const float bw = ButtonWidth("+") + ImGui::GetStyle().ItemSpacing.x + ButtonWidth("\xC3\x97");  // SmallButtons
                 ImGui::SetNextItemAllowOverlap();
                 ImGui::SetNextItemOpen(ImGui::GetStateStorage()->GetBool(ImGui::GetID("##grp"), true), ImGuiCond_Once);
                 open = ImGui::TreeNodeEx("##grp", ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DefaultOpen |
                                                       ImGuiTreeNodeFlags_NoTreePushOnOpen,
                                          "%s", "");
                 const float gty = (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y - ImGui::GetTextLineHeight()) * 0.5f;
-                ui::EllipsisText(ImGui::GetWindowDrawList(), ImVec2(hp.x + ImGui::GetTreeNodeToLabelSpacing(), gty),
-                                 hp.x + w - bw - 6.0f, ui::kText, gr.name);
+                ui::EllipsisTextTip(ImGui::GetWindowDrawList(), ImVec2(hp.x + ImGui::GetTreeNodeToLabelSpacing(), gty),
+                                    hp.x + w - bw - 6.0f, ui::kText, gr.name);
                 if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                     g.rename = RenameKind::Group;
                     g.r_a = gr.uid;
@@ -1292,7 +1280,7 @@ void DrawSwitchGroupsSection()
                         ImGui::SetNextItemAllowOverlap();
                         ImGui::Selectable("##val", false, ImGuiSelectableFlags_AllowDoubleClick,
                                           ImVec2(std::max(1.0f, vw - xw - 4.0f), 0.0f));
-                        ui::EllipsisText(ImGui::GetWindowDrawList(), vp, vp.x + vw - xw - 6.0f, ui::kText, v.name);
+                        ui::EllipsisTextTip(ImGui::GetWindowDrawList(), vp, vp.x + vw - xw - 6.0f, ui::kText, v.name);
                         if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                             g.rename = RenameKind::Value;
                             g.r_a = gr.uid;
@@ -1310,7 +1298,7 @@ void DrawSwitchGroupsSection()
                     }
                     ImGui::PopID();
                 }
-                if (!g.changed && gr.values.empty()) ImGui::TextDisabled("No value: press +");
+                if (!g.changed && gr.values.empty()) ui::SubText("No value: press +");
                 ImGui::Unindent(kIndent + 4.0f);
             }
             ImGui::PopID();
@@ -1372,8 +1360,7 @@ void DrawLibraryTree()
         const ImVec2 np = ImGui::GetCursorScreenPos();
         const float nw = std::max(1.0f, ImGui::GetContentRegionAvail().x);
         ImGui::Dummy(ImVec2(nw, ImGui::GetTextLineHeight()));
-        ui::EllipsisText(ImGui::GetWindowDrawList(), np, np.x + nw, ui::kText, lib->name);
-        if (ImGui::IsItemHovered() && ImGui::CalcTextSize(lib->name.c_str()).x > nw) ImGui::SetTooltip("%s", lib->name.c_str());
+        ui::EllipsisTextTip(ImGui::GetWindowDrawList(), np, np.x + nw, ui::kText, lib->name);
     }
     lib = CurrentLib();
     if (!lib) {
@@ -1471,26 +1458,19 @@ void DrawLibraryBatchPanel()
     if (ui::BeginSection(sec, "Batch edit", ImTextureID(), false)) {
         static const char* const kTypes[3] = {"Random", "Blend", "Switch"};
         int sel = common >= 0 ? common : -1;
-        ImGui::AlignTextToFramePadding();
-        ImGui::TextUnformatted("Type");
-        float seg_w = 2.0f;
-        for (const char* t : kTypes) seg_w += ImGui::CalcTextSize(t).x + 26.0f;
-        SameLineIfFits(seg_w);
+        ui::LabelRow("Type", 150.0f, 48.0f);
         const int was = sel;
         if (ui::Segmented("##batchtype", kTypes, 3, &sel)) {
             if (sel == 0) DoSetType(rows, SoundNodeType::Random, {});
             else if (sel == 1) DoSetType(rows, SoundNodeType::Blend, {});
             else ImGui::OpenPopup("##batchswitch");
-        } else if (was == 2 && ImGui::IsMouseReleased(ImGuiMouseButton_Left) && ImGui::IsItemHovered() &&
-                   !ImGui::IsPopupOpen("##batchswitch") &&
-                   ImGui::IsMouseHoveringRect(ImVec2(ImGui::GetItemRectMax().x - (ImGui::CalcTextSize(kTypes[2]).x + 26.0f),
-                                                     ImGui::GetItemRectMin().y),
-                                              ImGui::GetItemRectMax())) {
+        } else if (was == 2 && ImGui::IsMouseReleased(ImGuiMouseButton_Left) && ui::SegmentedHovered() == 2 &&
+                   !ImGui::IsPopupOpen("##batchswitch")) {
             // Bug 3: all already Switch, the segment does not "change": it still picks the group.
             ImGui::OpenPopup("##batchswitch");
         }
         if (common == -1) {
-            SameLineIfFits(ImGui::CalcTextSize("mixed").x);
+            SameLineIfFits(ui::TextWidth("mixed"));
             ImGui::TextDisabled("mixed");
         }
         if (ImGui::BeginPopup("##batchswitch")) {

@@ -1421,7 +1421,7 @@ void DrawToolUi()
         // switch at the bottom left: either one changes both) ---
         case kMenuTabRav: {
             if (ui::BeginSection(sec, "Camera")) {
-                if (ui::SolidButton("Recenter camera", ImVec2(ImGui::GetContentRegionAvail().x - ui::kCardPad, 0.0f)))
+                if (ui::SolidButton("Recenter camera", ImVec2(ImGui::GetContentRegionAvail().x, 0.0f)))
                     g_renderer.ResetCamera();
             }
             ui::EndSection(sec);

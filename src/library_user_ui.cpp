@@ -43,6 +43,8 @@
 #include "sound_populate.h"
 #include "sound_project.h"
 #include "sound_record.h"
+#include "ui_flow.h"
+#include "ui_flow_math.h"
 #include "ui_theme.h"
 
 namespace rav {
@@ -843,45 +845,66 @@ void DrawUserLibrarySection()
             ImDrawList*  dl = ImGui::GetWindowDrawList();
             const float  ty = p.y + (rh - ImGui::GetTextLineHeight()) * 0.5f;
             const SoundLibrary* in = f.uid.empty() ? nullptr : FindLibrary(store, f.uid);
+            // 13-7a: the trail (unreadable | in project, missing count, Locate... | Add) stays beside
+            // the name while the name keeps ~4 em, else it goes under it, wrapping: nothing is cut.
+            enum { kUnreadable, kInProject, kMissing, kLocate, kAdd };
+            std::string first;
+            const int   miss = in ? MissingIn(*in, &first) : 0;
+            const std::string miss_t = std::to_string(miss);
+            int   tk[3];
+            float tw[3];
+            int   nt = 0;
+            if (f.uid.empty()) {
+                tk[nt] = kUnreadable;
+                tw[nt++] = ui::TextWidth("unreadable");
+            } else if (in) {
+                tk[nt] = kInProject;
+                tw[nt++] = ui::TextWidth("in project");
+                if (miss > 0) {
+                    tk[nt] = kMissing;
+                    tw[nt++] = ui::TextWidth(miss_t.c_str());
+                    tk[nt] = kLocate;
+                    tw[nt++] = ui::ButtonWidth("Locate...");
+                }
+            } else {
+                tk[nt] = kAdd;
+                tw[nt++] = ui::ButtonWidth("Add");
+            }
+            flow::TrailPlace tp[3];
+            const float lead_min = std::min(ui::TextWidth(f.name.c_str()), 4.0f * ImGui::GetFontSize());
+            const int   lines = flow::PlaceTrail(tw, nt, p.x + 16.0f, p.x + w - 4.0f, lead_min, 6.0f, tp);
             ImGui::SetNextItemAllowOverlap();
-            if (ImGui::Selectable("##ufile", in && SelectedLibraryUid() == f.uid, 0, ImVec2(w, rh)) && in)
+            if (ImGui::Selectable("##ufile", in && SelectedLibraryUid() == f.uid, 0, ImVec2(w, rh * static_cast<float>(lines))) && in)
                 SelectLibraryRow(in->uid, LibraryRow{"", in->root});
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", f.file.c_str());
             ImU32 dot = ui::kAccent;
             if (f.color & 0x1000000u) dot = IM_COL32((f.color >> 16) & 0xFF, (f.color >> 8) & 0xFF, f.color & 0xFF, 0xFF);
             if (!f.uid.empty()) dl->AddCircleFilled(ImVec2(p.x + 6.0f, p.y + rh * 0.5f), 4.0f, dot);
-            float rx = p.x + w - 4.0f;
-            if (f.uid.empty()) {
-                const char* t = "unreadable";
-                rx -= ImGui::CalcTextSize(t).x;
-                dl->AddText(ImVec2(rx, ty), ui::kMuted, t);
-            } else if (in) {
-                std::string first;
-                const int   miss = MissingIn(*in, &first);
-                if (miss > 0) {
-                    rx -= 64.0f;
-                    ImGui::SetCursorScreenPos(ImVec2(rx, p.y));
-                    if (ui::SolidButton("Locate...", ImVec2(62.0f, rh))) RequestLocate(in->uid, first);
+            for (int i = 0; i < nt; ++i) {
+                const float y = p.y + static_cast<float>(tp[i].line) * rh;
+                const float by = y + (rh - ImGui::GetTextLineHeight()) * 0.5f;
+                switch (tk[i]) {
+                case kUnreadable: dl->AddText(ImVec2(tp[i].x, by), ui::kMuted, "unreadable"); break;
+                case kInProject: dl->AddText(ImVec2(tp[i].x, by), ui::kMuted, "in project"); break;
+                case kMissing: dl->AddText(ImVec2(tp[i].x, by), kLibMissing, miss_t.c_str()); break;
+                case kLocate:
+                    ImGui::SetCursorScreenPos(ImVec2(tp[i].x, y));
+                    if (ui::SolidButton("Locate...", ImVec2(tp[i].w, rh))) RequestLocate(in->uid, first);
                     if (ImGui::IsItemHovered())
                         ImGui::SetTooltip("Pick the file of its first missing sound: the others are looked for near it");
-                    const std::string t = std::to_string(miss);
-                    rx -= ImGui::CalcTextSize(t.c_str()).x + 6.0f;
-                    dl->AddText(ImVec2(rx, ty), kLibMissing, t.c_str());
+                    break;
+                default:
+                    ImGui::SetCursorScreenPos(ImVec2(tp[i].x, y));
+                    if (ui::SolidButton("Add", ImVec2(tp[i].w, rh))) add_file = f.file;
+                    break;
                 }
-                const char* t = "in project";
-                rx -= ImGui::CalcTextSize(t).x + 6.0f;
-                dl->AddText(ImVec2(rx, ty), ui::kMuted, t);
-            } else {
-                rx -= 42.0f;
-                ImGui::SetCursorScreenPos(ImVec2(rx, p.y));
-                if (ui::SolidButton("Add", ImVec2(40.0f, rh))) add_file = f.file;
             }
-            ui::EllipsisText(dl, ImVec2(p.x + 16.0f, ty), rx - 4.0f, f.uid.empty() ? ui::kMuted : ui::kText, f.name);
-            ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh));
+            ui::EllipsisTextTip(dl, ImVec2(p.x + 16.0f, ty), (lines == 1 && nt > 0 ? tp[0].x : p.x + w) - 4.0f,
+                                f.uid.empty() ? ui::kMuted : ui::kText, f.name, f.file.c_str());
+            ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh * static_cast<float>(lines)));
             ImGui::Dummy(ImVec2(0.0f, 0.0f));
             ImGui::PopID();
         }
-        if (g.files.empty()) ImGui::TextDisabled("No User Library yet");
+        if (g.files.empty()) ui::SubText("No User Library yet");
         if (!add_file.empty()) {
             for (const UserFile& f : g.files)
                 if (f.file == add_file) {
@@ -922,12 +945,12 @@ void DrawUserLibrarySection()
                 }
             }
         }
-        ImGui::SameLine();
+        ui::SameLineIfFits(ui::ButtonWidth("Import..."));
         if (ui::SolidButton("Import...")) g.pick = PickKind::Import;
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add a .ravlib file: it is copied into the folder");
         const SoundLibrary* sel = FindLibrary(store, SelectedLibraryUid());
         const bool          can_export = sel && sel->user;
-        ImGui::SameLine();
+        ui::SameLineIfFits(ui::ButtonWidth("Export..."));
         ImGui::BeginDisabled(!can_export);
         if (ui::SolidButton("Export...") && can_export) {
             g.pick = PickKind::Export;
@@ -937,7 +960,7 @@ void DrawUserLibrarySection()
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
             ImGui::SetTooltip(can_export ? "Save the selected User Library where you choose"
                                          : "Select a User Library to export it");
-        ImGui::SameLine();
+        ui::SameLineIfFits(ui::ButtonWidth("Refresh"));
         if (ui::SolidButton("Refresh")) {
             ListUserFolder();
             g.resolved.clear();
@@ -983,10 +1006,7 @@ void DrawUserLibraryNodeSection()
                 for (const SoundNode& x : l.nodes) add(x.lands_in);
             std::string pick;
             bool        picked = false;
-            ImGui::AlignTextToFramePadding();
-            ImGui::TextUnformatted("Lands in");
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(std::max(80.0f, ImGui::GetContentRegionAvail().x));
+            ImGui::SetNextItemWidth(ui::LabelRow("Lands in", 80.0f, ui::TextWidth("Lands in") + ImGui::GetStyle().ItemSpacing.x));
             if (ImGui::BeginCombo("##landsin", shown.c_str())) {
                 if (!is_root && ImGui::Selectable(inherit.c_str(), n->lands_in.empty())) {
                     pick.clear();
@@ -1008,10 +1028,13 @@ void DrawUserLibraryNodeSection()
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("The folder track its files are imported under the first time they are used");
             if (g.new_folder && g.new_folder_node == n->uid) {
-                ImGui::SetNextItemWidth(std::max(60.0f, ImGui::GetContentRegionAvail().x - 70.0f));
+                const float okw = ui::ButtonWidth("OK");
+                bool        beside = true;
+                ImGui::SetNextItemWidth(flow::StretchBeside(ImGui::GetContentRegionAvail().x, 60.0f, okw,
+                                                            ImGui::GetStyle().ItemSpacing.x, &beside));
                 const bool enter = ImGui::InputTextWithHint("##newfolder", "Folder name", g.buf, sizeof g.buf,
                                                             ImGuiInputTextFlags_EnterReturnsTrue);
-                ImGui::SameLine();
+                if (beside) ImGui::SameLine();
                 const bool ok = ui::SolidButton("OK");
                 if ((enter || ok) && g.buf[0]) {
                     pick = g.buf;

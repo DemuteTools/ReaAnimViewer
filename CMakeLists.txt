@@ -172,6 +172,8 @@ if(WIN32)
             src/video_camera.cpp
             src/video_shots.cpp
             src/ui_theme.cpp
+            src/ui_flow.cpp
+            src/ui_flow_math.cpp
             src/video_view.cpp
             src/video_view_ui.cpp
             src/reaper_actions.cpp

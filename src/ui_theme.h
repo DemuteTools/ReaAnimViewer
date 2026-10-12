@@ -67,11 +67,14 @@ void ApplyRavTheme();
 // A segmented control (the mock-up's .seg): `count` options side by side in a dark
 // well, the selected one raised. `item_width` 0 = sized to the labels. An option at
 // `disabled_index` cannot be picked. Returns true when *selected changed.
+// Width-aware (ui_flow.h): narrower than its options, they share the room, then wrap onto
+// rows that fill the width; a label that still does not fit is ellipsized (tooltip).
 bool Segmented(const char* id, const char* const* labels, int count, int* selected,
                float item_width = 0.0f, int disabled_index = -1);
 
 // Buttons: primary = accent fill, solid = raised fill with a stroke edge. Ghost (the
-// default ImGui::Button under this theme) needs no helper.
+// default ImGui::Button under this theme) needs no helper. Both shrink to the room left
+// and ellipsize their label (ui::FittedButton).
 bool PrimaryButton(const char* label, const ImVec2& size = ImVec2(0.0f, 0.0f));
 bool SolidButton(const char* label, const ImVec2& size = ImVec2(0.0f, 0.0f));
 
@@ -88,7 +91,8 @@ void SubText(const char* text);
 // sideways changes the value by `step` per pixel (Shift held: a tenth of it); a click
 // without a drag types a value (Enter or a click elsewhere enters it, Esc cancels).
 // `*value` is in the field's own (display) units, rounded to `decimals`; `unit` is drawn
-// after the number ("" = none). `width` 0 = sized to a typical value.
+// after the number ("" = none). `width` 0 = sized to a typical value. The field shrinks to
+// the room left so that its unit always shows (never under 24 px).
 enum class DragNumberEvent {
     None,
     Live,    // dragging: *value changed this frame (preview it, write nothing)
@@ -125,10 +129,15 @@ void RuleStripe(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 col, float radius);
 // BeginCard / EndCard around the content; the cursor ends under it, a kCardGap below.
 constexpr float kCardPad = 8.0f;
 constexpr float kCardGap = 6.0f;
+// The card's content ends at its inner edge (kCardPad inside its right side): the window's work
+// and content rects are narrowed while it is open, so GetContentRegionAvail, wrapping, spanning
+// rows and the ui_flow helpers all stop there.
 struct Card {
     ImDrawListSplitter split;
     ImVec2             p0;
     float              w = 0.0f;
+    float              saved_work_max = 0.0f;  // the window's rects before the card narrowed them
+    float              saved_content_max = 0.0f;
 };
 void BeginCard(Card& k);
 void EndCard(Card& k, ImU32 fill, ImU32 edge);

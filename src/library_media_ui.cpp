@@ -47,6 +47,7 @@
 #include "sound_entries.h"
 #include "sound_project.h"
 #include "sound_record.h"
+#include "ui_flow.h"
 #include "ui_theme.h"
 
 namespace rav {
@@ -1020,8 +1021,8 @@ void PlayFrame(int i)
 void DrawHeader()
 {
     ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImGui::AlignTextToFramePadding();
     ImGui::TextUnformatted("Media Explorer");
-    ImGui::SameLine();
     const MediaDbInfo& info = g.info;
     std::string status;
     if (!MediaDbReady()) status = "Loading...";
@@ -1031,19 +1032,17 @@ void DrawHeader()
                       info.databases.size() == 1 ? "" : "s");
         status = buf;
     }
-    // A narrow column: each part that does not fit goes to the next line (nothing clipped).
+    // A narrow column: each part that does not fit goes to the next line, the status is
+    // ellipsized when even a line of its own is too short (ui_flow: nothing clipped).
     const float sp_x = ImGui::GetStyle().ItemSpacing.x;
-    if (ImGui::GetContentRegionAvail().x < ImGui::CalcTextSize(status.c_str()).x) ImGui::NewLine();
-    ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
-    ImGui::TextUnformatted(status.c_str());
-    ImGui::PopStyleColor();
-    // Right side: the auto-play toggle, then Reload.
-    const float rw = ImGui::CalcTextSize("Reload").x + ImGui::GetStyle().FramePadding.x * 2.0f;
+    ui::SameLineIfFits(ui::TextWidth(status.c_str()));
+    ui::FitText(status, ui::kMuted);
+    // Right side: the auto-play toggle, then Reload, right-aligned.
+    const float rw = ui::ButtonWidth("Reload");
     const float sz = ImGui::GetFrameHeight();
-    const float right = ImGui::GetWindowContentRegionMax().x;
-    ImGui::SameLine();
-    if (ImGui::GetContentRegionAvail().x < rw + sz + sp_x) ImGui::NewLine();
-    else ImGui::SameLine(std::max(ImGui::GetCursorPosX(), right - rw - sz - sp_x));
+    if (ui::SameLineIfFits(rw + sz + sp_x))
+        ImGui::SetCursorScreenPos(ImVec2(std::max(ImGui::GetCursorScreenPos().x, ui::LineRight() - rw - sz - sp_x),
+                                         ImGui::GetCursorScreenPos().y));
     ImVec2 sp = ImGui::GetCursorScreenPos();
     if (ImGui::InvisibleButton("##meauto", ImVec2(sz, sz))) {
         g.autoplay = !g.autoplay;

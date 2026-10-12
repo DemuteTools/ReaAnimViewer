@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: MIT
+//
+// The width arithmetic behind ui_flow.h (13-7a / 13-7b / 13-7c: the Library view adapts to any
+// column width by construction). Pure, ImGui-free: text widths come from a measure function, so
+// the host tests run it with a fixed-pitch measure. Every function answers one question:
+// does it fit, and if not, where does it go and how wide is it -- never a width that overflows.
+
+#pragma once
+
+#include <cstddef>
+#include <functional>
+#include <string>
+#include <vector>
+
+namespace rav {
+namespace flow {
+
+// The width of the text [begin, end).
+using MeasureFn = std::function<float(const char* begin, const char* end)>;
+
+// How many bytes of `text` to keep so that they plus the ellipsis (`dots_w` wide) end within
+// `avail`: text.size() when the whole text fits, else whole UTF-8 glyphs only (0 when even the
+// ellipsis alone does not fit). Trailing spaces of the kept part are dropped.
+size_t EllipsisKeep(const std::string& text, float avail, float dots_w, const MeasureFn& measure);
+
+// The text shortened to `avail` with `dots` ("..."), or the text itself; *cut says which.
+std::string Ellipsize(const std::string& text, float avail, const char* dots, const MeasureFn& measure,
+                      bool* cut = nullptr);
+
+// True when an item `next_w` wide, put `spacing` after the last item (ending at `last_right`),
+// still ends within `line_right`.
+bool FitsAfter(float last_right, float spacing, float next_w, float line_right);
+
+// A labelled row: the label in a column `label_col` wide, its field beside it -- or, when the
+// field would get less than `field_min`, the label on its own line and the field under it, the
+// whole width. The label is never wider than what it is given (it is ellipsized to label_w).
+struct LabelSplit {
+    bool  beside = true;
+    float label_w = 0.0f;  // the room the label is drawn in
+    float field_dx = 0.0f; // the field's x from the row's left
+    float field_w = 0.0f;  // the field's width
+};
+LabelSplit SplitLabelRow(float avail, float label_natural, float label_col, float field_min, float spacing);
+
+// A value field followed by its unit ("dB", "ms"): the field's width so that both end within
+// `avail` -- `want` when it fits, else shrunk, never under `field_min` (the unit is never cut:
+// the field gives way first). unit_w 0 = no unit; `gap` sits between field and unit.
+float FieldBeforeUnit(float avail, float want, float unit_w, float gap, float field_min);
+
+// Two things on a row, `a` stretching and `b` fixed (`b_w`): `a` beside `b` when it keeps at least
+// `a_min`, else `a` alone the whole width and `b` on the next line. Returns a's width; *beside.
+float StretchBeside(float avail, float a_min, float b_w, float spacing, bool* beside);
+
+// A segmented control's options: `text_w[i]` is each label's width. Each option is its text plus
+// `pad_nat` (natural) and may shrink to its text plus `pad_min`; `gap` sits around and between
+// options. Lays them out within `avail`:
+//   - one row at their natural widths when it fits;
+//   - else one row, each option between its minimum and natural width (the room shared out);
+//   - else several rows (greedy, minimum widths), each row stretched to the full width;
+//   - an option wider than the whole width alone gets the whole width (its label is ellipsized).
+// Writes out_w[i] and out_row[i]; returns the number of rows.
+int LayoutSegments(const float* text_w, int n, float avail, float pad_nat, float pad_min, float gap, float* out_w,
+                   int* out_row);
+
+// Trailing badges / buttons on a row (counts, "!", "Locate..."), left to right, `w[i]` wide:
+// beside the row's leading part when that keeps `lead_min` (from `left`), right-aligned on line 0;
+// else on the lines under it, packed greedily and right-aligned, each never wider than the row.
+struct TrailPlace {
+    float x = 0.0f;
+    float w = 0.0f;
+    int   line = 0;
+};
+// Returns the row's number of lines (1 when the trail stays beside the lead or is empty).
+int PlaceTrail(const float* w, int n, float left, float right, float lead_min, float gap, TrailPlace* out);
+
+}  // namespace flow
+}  // namespace rav

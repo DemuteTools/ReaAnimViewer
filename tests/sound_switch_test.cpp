@@ -332,38 +332,72 @@ static void TestUnassigned()
 static void TestBlocked()
 {
     SoundStore st = Store();
-    // Default value with no content.
+    // 13-21: a default value with no content warns, does not block.
     SoundLibrary lib = MatLib();
     lib.nodes[0].default_value = "vwood";
-    Resolution r = ResolveEvent(st, lib, {}, {});
-    CHECK(r.blocked && r.sounds.empty() && !r.reason.empty());
     LibraryCheck c = CheckLibrary(st, lib);
-    CHECK(c.blocked && c.nodes.size() == 1 && c.nodes[0] == "sw");
-    CHECK(c.reason == "Mat: default value has no sound");
-    // Empty Random / Blend.
+    CHECK(!c.blocked && c.nodes.empty());
+    CHECK(c.warnings.size() == 1 && c.warnings[0].node == "sw");
+    CHECK(c.warnings[0].reason == "Mat: default Wood has no sound");
+    // Event unset: nothing placed, the gap said.
+    Resolution r = ResolveEvent(st, lib, {}, {});
+    CHECK(!r.blocked && r.sounds.empty() && r.gap_node == "sw");
+    CHECK(r.gap == "Steps \xE2\x80\xBA Material Wood (default) has no sound");
+    // Event on a value with a sound: placed, no gap.
+    ValueLayers L;
+    L.event = {{"gmat", "vgrass", {}}};
+    r = ResolveEvent(st, lib, L, {});
+    CHECK(!r.blocked && r.sounds.size() == 1 && r.sounds[0].node == "sg" && r.gap.empty());
+    // Empty Random / Blend: warnings.
     SoundLibrary e;
+    e.name = "Footstep";
     e.root = "r";
     e.nodes.push_back(Node("r", "", SoundNodeType::Random, "Empty R"));
     c = CheckLibrary(st, e);
-    CHECK(c.blocked && c.reason.find("Empty R") != std::string::npos);
-    CHECK(ResolveEvent(st, e, {}, {}).blocked);
+    CHECK(!c.blocked && c.warnings.size() == 1 && c.warnings[0].reason == "Empty R: empty Random");
+    r = ResolveEvent(st, e, {}, {});
+    CHECK(!r.blocked && r.sounds.empty() && r.gap == "Footstep \xE2\x80\xBA Empty R: empty Random" && r.gap_node == "r");
     e.nodes[0].type = SoundNodeType::Blend;
-    CHECK(CheckLibrary(e).blocked);
+    c = CheckLibrary(e);
+    CHECK(!c.blocked && c.warnings.size() == 1 && c.warnings[0].reason == "Empty R: empty Blend");
     // Empty Blend deeper inside the tree.
     lib = MatLib();
     lib.nodes.push_back(Node("eb", "sg", SoundNodeType::Blend, "Deep"));
     lib.nodes[4].type = SoundNodeType::Blend;  // sg becomes a Blend holding only eb (empty)
     c = CheckLibrary(st, lib);
-    CHECK(c.blocked && c.nodes.size() == 1 && c.nodes[0] == "eb");
+    CHECK(!c.blocked && c.warnings.size() == 1 && c.warnings[0].node == "eb");
     // Unassigned subtrees are not reachable.
     lib.nodes[0].unassigned.push_back("sg");
-    CHECK(!CheckLibrary(st, lib).blocked);
-    // No root.
+    c = CheckLibrary(st, lib);
+    CHECK(!c.blocked && c.warnings.empty());
+    // Matrix: an empty Random in one Switch value; the event on another value plays.
+    lib = MatLib();
+    lib.nodes[0].cases.push_back({"vwood", "er", {}});
+    lib.nodes.push_back(Node("er", "sw", SoundNodeType::Random, "Wood R"));
+    c = CheckLibrary(st, lib);
+    CHECK(!c.blocked && c.warnings.size() == 1 && c.warnings[0].node == "er");
+    L.event = {{"gmat", "vcon", {}}};
+    r = ResolveEvent(st, lib, L, {});
+    CHECK(!r.blocked && r.sounds.size() == 2 && r.gap.empty());
+    L.event = {{"gmat", "vwood", {}}};
+    r = ResolveEvent(st, lib, L, {});
+    CHECK(!r.blocked && r.sounds.empty() && r.gap_node == "er");
+    // Matrix: two gaps (default without sound + an empty Blend) are both listed.
+    lib = MatLib();
+    lib.nodes[0].default_value = "vwood";
+    lib.nodes.push_back(Node("eb", "bl", SoundNodeType::Blend, "Inner"));
+    c = CheckLibrary(st, lib);
+    CHECK(!c.blocked && c.warnings.size() == 2 && c.warnings[0].node == "sw" && c.warnings[1].node == "eb");
+    // A gap beside a sound that plays is not reported (something resolved).
+    L.event = {{"gmat", "vcon", {}}};
+    r = ResolveEvent(st, lib, L, {});
+    CHECK(r.sounds.size() == 2 && r.gap.empty());
+    // No root: blocked.
     SoundLibrary nr;
     CHECK(CheckLibrary(st, nr).blocked && ResolveEvent(st, nr, {}, {}).blocked);
     nr.root = "nope";
     CHECK(CheckLibrary(nr).blocked);
-    // Cycle (malformed store).
+    // Cycle (malformed store): blocked.
     SoundLibrary cy;
     cy.root = "a";
     cy.nodes.push_back(Node("a", "b", SoundNodeType::Random, "A"));
@@ -371,11 +405,12 @@ static void TestBlocked()
     c = CheckLibrary(st, cy);
     CHECK(c.blocked && c.reason == "A: cycle");
     CHECK(ResolveEvent(st, cy, {}, {}).blocked);
-    // Missing / empty group (2-argument form only).
+    // Missing / empty group (2-argument form only): blocked (matrix: Switch group deleted).
     lib = MatLib();
     lib.nodes[0].group_uid = "missing";
     c = CheckLibrary(st, lib);
-    CHECK(c.blocked && c.reason == "Mat: Switch Group not found");
+    CHECK(c.blocked && c.reason == "Mat: Switch Group not found" && c.nodes.size() == 1 && c.nodes[0] == "sw");
+    CHECK(c.warnings.empty());
     CHECK(ResolveEvent(st, lib, {}, {}).blocked);
     CHECK(!CheckLibrary(lib).blocked);  // 1-arg: default "" -> first case (vcon -> bl)
     SoundStore st2 = st;
@@ -384,24 +419,27 @@ static void TestBlocked()
     c = CheckLibrary(st2, lib);
     CHECK(c.blocked && c.reason == "Mat: Switch Group has no value");
     CHECK(ResolveEvent(st2, lib, {}, {}).blocked);
-    // 1-arg form: an explicit default with no case blocks.
+    // 1-arg form: an explicit default with no case warns.
     lib = MatLib();
     lib.nodes[0].default_value = "vwood";
-    CHECK(CheckLibrary(lib).blocked);
-    // Several blocking nodes are all listed.
+    c = CheckLibrary(lib);
+    CHECK(!c.blocked && c.warnings.size() == 1 && c.warnings[0].reason == "Mat: default value has no sound");
+    // Several gaps are all listed, in tree order.
     SoundLibrary two;
     two.root = "b";
     two.nodes.push_back(Node("b", "", SoundNodeType::Blend, "B"));
     two.nodes.push_back(Node("e1", "b", SoundNodeType::Random, "E1"));
     two.nodes.push_back(Node("e2", "b", SoundNodeType::Blend, "E2"));
     c = CheckLibrary(st, two);
-    CHECK(c.blocked && c.nodes.size() == 2 && c.nodes[0] == "e1" && c.nodes[1] == "e2");
+    CHECK(!c.blocked && c.warnings.size() == 2 && c.warnings[0].node == "e1" && c.warnings[1].node == "e2");
     // Healthy library.
-    CHECK(!CheckLibrary(st, MatLib()).blocked);
-    // A case child whose parent is not the Switch is not content.
+    c = CheckLibrary(st, MatLib());
+    CHECK(!c.blocked && c.warnings.empty());
+    // A case child whose parent is not the Switch is not content (the default Concrete has none).
     lib = MatLib();
     lib.nodes[1].parent = "elsewhere";
-    CHECK(CheckLibrary(st, lib).blocked);
+    c = CheckLibrary(st, lib);
+    CHECK(!c.blocked && c.warnings.size() == 1 && c.warnings[0].reason == "Mat: default Concrete has no sound");
 }
 
 static void TestNoForeignUid()

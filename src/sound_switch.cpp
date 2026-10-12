@@ -48,6 +48,23 @@ std::string ValueName(const SwitchGroup* g, const std::string& value)
     return "(deleted value)";
 }
 
+// A node's name in a gap's reason; an unnamed one reads as its Switch Group (a Switch) or its type,
+// never its uid.
+std::string NodeLabel(const SoundStore* store, const SoundNode& n)
+{
+    if (!n.name.empty()) return n.name;
+    switch (n.type) {
+    case SoundNodeType::Switch:
+        if (const SwitchGroup* g = store ? FindGroup(*store, n.group_uid) : nullptr)
+            if (!g->name.empty()) return g->name;
+        return "Switch";
+    case SoundNodeType::Random: return "Random";
+    case SoundNodeType::Blend: return "Blend";
+    case SoundNodeType::Sound: return "Sound";
+    }
+    return "Node";
+}
+
 std::string GroupLabel(const SwitchGroup* g, const SoundNode& sw)
 {
     return g ? g->name : sw.name;
@@ -61,6 +78,14 @@ struct Walker {
     Resolution&         res;
     std::set<std::string> stack;
     bool                text_open = true;  // the path text still follows this branch
+
+    // 13-21: the first library gap walked (kept only when nothing resolved).
+    void Gap(const SoundNode& n, const std::string& why)
+    {
+        if (!res.gap.empty()) return;
+        res.gap = (lib.name.empty() ? std::string() : lib.name + kSep) + why;
+        res.gap_node = n.uid;
+    }
 
     void Seg(const std::string& s)
     {
@@ -99,6 +124,7 @@ struct Walker {
         case SoundNodeType::Random: {
             std::vector<const SoundNode*> kids = ChildrenOf(lib, n.uid);
             int idx = hooks.random_child ? hooks.random_child(n) : 0;
+            if (kids.empty()) Gap(n, NodeLabel(&store, n) + ": empty Random");
             if (idx < 0 || idx >= (int)kids.size()) {
                 Seg("Random");
                 text_open = false;
@@ -112,6 +138,7 @@ struct Walker {
         }
         case SoundNodeType::Blend: {
             std::vector<const SoundNode*> kids = ChildrenOf(lib, n.uid);
+            if (kids.empty()) Gap(n, NodeLabel(&store, n) + ": empty Blend");
             Seg(std::string("Blend ") + kTimes + std::to_string(kids.size()));
             text_open = false;
             for (const SoundNode* c : kids) Walk(*c, gain, offset);
@@ -141,6 +168,7 @@ struct Walker {
                 }
                 Walk(*c, gain, offset);
             } else {
+                Gap(n, label + " has no sound");
                 text_open = false;
             }
             break;
@@ -163,6 +191,12 @@ struct Checker {
         if (!Contains(out.nodes, n.uid)) out.nodes.push_back(n.uid);
     }
 
+    // 13-21: a gap that warns (the library stays usable).
+    void Warn(const SoundNode& n, const std::string& why)
+    {
+        out.warnings.push_back({n.uid, NodeLabel(store, n) + ": " + why});
+    }
+
     void Walk(const SoundNode& n)
     {
         if (stack.count(n.uid)) {
@@ -178,19 +212,23 @@ struct Checker {
         case SoundNodeType::Random:
         case SoundNodeType::Blend: {
             std::vector<const SoundNode*> kids = ChildrenOf(lib, n.uid);
-            if (kids.empty()) Block(n, n.type == SoundNodeType::Random ? "empty Random" : "empty Blend");
+            if (kids.empty()) Warn(n, n.type == SoundNodeType::Random ? "empty Random" : "empty Blend");
             for (const SoundNode* c : kids) Walk(*c);
             break;
         }
         case SoundNodeType::Switch: {
             static const SoundStore kEmpty;
             const SoundStore& st = store ? *store : kEmpty;
+            const SwitchGroup* g = store ? FindGroup(st, n.group_uid) : nullptr;
+            bool               group_ok = true;
             if (store) {
-                const SwitchGroup* g = FindGroup(st, n.group_uid);
                 if (!g) Block(n, "Switch Group not found");
                 else if (g->values.empty()) Block(n, "Switch Group has no value");
+                group_ok = g && !g->values.empty();
             }
-            if (!CaseChild(lib, n, DefaultValue(st, n))) Block(n, "default value has no sound");
+            const std::string def = DefaultValue(st, n);
+            if (group_ok && !CaseChild(lib, n, def))
+                Warn(n, g ? "default " + ValueName(g, def) + " has no sound" : std::string("default value has no sound"));
             std::set<std::string> seen;
             for (const SwitchCase& c : n.cases) {
                 const SoundNode* k = CaseChild(lib, n, c.value_uid);
@@ -295,6 +333,10 @@ Resolution ResolveEvent(const SoundStore& store, const SoundLibrary& lib, const 
         w.text_open = false;
     }
     w.Walk(*root, 0.0, 0.0);
+    if (!res.sounds.empty()) {  // 13-21: a gap matters only when it left the event with nothing
+        res.gap.clear();
+        res.gap_node.clear();
+    }
     return res;
 }
 

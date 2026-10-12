@@ -51,6 +51,9 @@ struct TreeState {
     // 13-17d: the row an arrow key moved to, scrolled into view when drawn.
     LibraryRow               scroll_to;
     bool                     has_scroll_to = false;
+    // 13-21: this frame's library gaps (node uid -> its reasons), each row's amber "!".
+    std::map<std::string, std::string> gaps;
+    std::vector<LibraryGap>            hidden_gaps;  // 13-21: gaps whose node no row shows (folded / searched out)
     bool                     has_anchor = false;
     std::set<std::string>    closed;  // the containers the user folded (every container starts open)
     std::vector<TreeRow>     rows;  // last frame's visible rows
@@ -1165,6 +1168,29 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
         }
     }
     if (g.changed) return;
+    // 13-21: a library gap on this node, or hidden under it (folded, searched out): an amber "!",
+    // the reasons on hover.
+    if (n && r.kind != TreeRowKind::UnassignedHeader) {
+        std::string tip;
+        const auto  own = g.gaps.find(n->uid);
+        if (own != g.gaps.end()) tip = own->second + "\nNothing plays from it.";
+        if (r.container) {
+            std::string inside;
+            for (const LibraryGap& h : g.hidden_gaps)
+                if (h.node != n->uid && IsInSubtree(lib, h.node, n->uid)) inside += "\n" + h.reason;
+            if (!inside.empty()) tip += (tip.empty() ? "" : "\n") + std::string("Gaps inside:") + inside;
+        }
+        if (!tip.empty()) {
+            ImFont*     f = ui::FontSemibold();
+            const float tw = ui::TextSizeIn(f, "!").x + ui::Dp(2.0f);
+            rx -= tw;
+            ui::AddTextIn(dl, f, ImVec2(rx + ui::Dp(1.0f), std::floor(cy - f->FontSize * 0.5f)), Faded(ui::kWarn, is_cut), "!");
+            ImGui::SetCursorScreenPos(ImVec2(rx, p.y));
+            ImGui::Dummy(ImVec2(tw, rh));
+            ui::ItemTipText(tip.c_str());
+            rx -= gap;
+        }
+    }
     const bool missing = n && SoundMissing(*n);
     if (missing) {
         // .rt.miss: 12 px #ff9a9a.
@@ -1442,7 +1468,15 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
     float              tw[2];
     int                tk[2];
     int                nt = 0;
-    if (chk.blocked) { tk[nt] = 0; tw[nt++] = ui::TextSizeIn(blk_f, "!").x + ui::Dp(2.0f); }
+    // 13-21: a red "!" when blocked, an amber one for gaps; the tooltip lists every reason.
+    std::string chk_tip;
+    if (chk.blocked) chk_tip = "Blocked: " + chk.reason;
+    if (!chk.warnings.empty()) {
+        if (!chk_tip.empty()) chk_tip += "\n";
+        chk_tip += "Gaps (events on them place nothing):";
+        for (const LibraryGap& gp : chk.warnings) chk_tip += "\n- " + gp.reason;
+    }
+    if (!chk_tip.empty()) { tk[nt] = 0; tw[nt++] = ui::TextSizeIn(blk_f, "!").x + ui::Dp(2.0f); }
     if (miss > 0) { tk[nt] = 1; tw[nt++] = ui::TextSizeIn(miss_f, miss_t.c_str()).x; }
     flow::TrailPlace tp[2];
     float            name_w = 0.0f;
@@ -1466,8 +1500,8 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
         ImGui::SetCursorScreenPos(ImVec2(tp[i].x, y));
         ImGui::Dummy(ImVec2(tp[i].w, rh));
         ui::AddTextIn(dl, f, ImVec2(tp[i].x + (tk[i] == 0 ? ui::Dp(1.0f) : 0.0f), std::floor(y + (rh - f->FontSize) * 0.5f)),
-                      tk[i] == 0 ? ui::kWarn : ui::kBad, t);
-        if (tk[i] == 0) ui::ItemTip("Blocked: %s", chk.reason.c_str());
+                      tk[i] == 0 && !chk.blocked ? ui::kWarn : ui::kBad, t);
+        if (tk[i] == 0) ui::ItemTipText(chk_tip.c_str());
         else ui::ItemTip("%d missing sound(s)", miss);
     }
     {
@@ -2138,6 +2172,16 @@ void LibraryTreeWidgets()
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 0.0f));
         g.row_menu_open = ImGui::IsPopupOpen("##rowmenu");
         const std::vector<TreeRow> rows = g.rows;  // a gesture may rebuild g.rows
+        g.gaps.clear();
+        g.hidden_gaps.clear();
+        std::set<std::string> shown;
+        for (const TreeRow& r : rows)
+            if (!r.node.empty()) shown.insert(r.node);
+        for (const LibraryGap& gp : CheckLibrary(GetSoundStore(nullptr), *lib).warnings) {
+            std::string& t = g.gaps[gp.node];
+            t += (t.empty() ? "" : "\n") + gp.reason;
+            if (!shown.count(gp.node)) g.hidden_gaps.push_back(gp);
+        }
         for (size_t i = 0; i < rows.size() && !g.changed; ++i) {
             const SoundLibrary* cur = FindLibrary(GetSoundStore(nullptr), g.lib);
             if (!cur) break;
@@ -2319,6 +2363,9 @@ void SelectLibraryRow(const std::string& lib_uid, const LibraryRow& row)
 {
     if (g.lib != lib_uid) g.has_anchor = false;
     g.lib = lib_uid;
+    g.search[0] = '\0';  // 13-21: a search would prune the row picked here
+    g.scroll_to = row;
+    g.has_scroll_to = true;
     if (const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), lib_uid)) {
         const std::string n = RowNode(*lib, row);
         if (!n.empty()) RevealNode(*lib, n);

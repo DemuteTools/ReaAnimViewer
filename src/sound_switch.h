@@ -45,6 +45,11 @@ struct Resolution {
     std::string                path_text;  // e.g. "Material Wood → Concrete (default) › Blend ×2"
     bool                       blocked = false;
     std::string                reason;
+    // 13-21: no sound at all because a branch ended on a library gap (a Switch value without
+    // sound, an empty Random / Blend): e.g. "Steps › Material Concrete (default) has no sound".
+    // Empty when a sound resolved or nothing played for another reason.
+    std::string                gap;
+    std::string                gap_node;  // the node of that gap
 };
 
 // Where a value came from (EffectiveValue's `from`).
@@ -67,14 +72,21 @@ bool GroupHasValue(const SwitchGroup& g, const std::string& value_uid);
 // value), else its first value; "" when it has none.
 std::string GroupDefaultValue(const SwitchGroup& g);
 
+// 13-21: a gap that warns, not blocks: the node and why ("Mat: default Concrete has no sound").
+struct LibraryGap {
+    std::string node;
+    std::string reason;
+};
 struct LibraryCheck {
     bool                     blocked = false;
-    std::string              reason;
-    std::vector<std::string> nodes;  // the nodes that block it
+    std::string              reason;   // the first blocking reason
+    std::vector<std::string> nodes;    // the nodes that block it
+    std::vector<LibraryGap>  warnings; // 13-21: every gap, in tree order (the library stays usable)
 };
-// Blocked: a Switch whose default value has no sound, or an empty Random / Blend.
-// Also blocked: no root, a cycle, a Switch whose group is missing or has no value (the 2-argument
-// form only). The 1-argument form checks against an empty store (default "" = the first case).
+// Blocked (W1): no root, a cycle, a Switch whose group is missing or has no value (the 2-argument
+// form only). Warnings (13-21 W2, not blocking): a Switch whose default value has no sound, an
+// empty Random / Blend; an event that lands on one places nothing. The 1-argument form checks
+// against an empty store (default "" = the first case).
 LibraryCheck CheckLibrary(const SoundStore& store, const SoundLibrary& lib);
 LibraryCheck CheckLibrary(const SoundLibrary& lib);
 // Changes a container's type, keeping its children (to a Switch: by name, the rest Unassigned).

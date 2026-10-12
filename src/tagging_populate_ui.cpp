@@ -209,6 +209,7 @@ const char* KindWord(ReportKind k)
     case ReportKind::Detached: return "Rule gone";
     case ReportKind::Blocked: return "Blocked";
     case ReportKind::Info: return "Note";
+    case ReportKind::NoSound: return "No sound";
     }
     return "";
 }
@@ -217,7 +218,7 @@ bool ListedMissing(const std::string& item_guid, double t)
 {
     if (!g_last.has || item_guid.empty()) return false;
     for (const ReportLine& l : g_last.report.lines)
-        if (l.kind == ReportKind::Missing && l.item_guid == item_guid && std::fabs(l.t - t) <= kEventMatchSeconds)
+        if ((l.kind == ReportKind::Missing || l.kind == ReportKind::NoSound) && l.item_guid == item_guid && std::fabs(l.t - t) <= kEventMatchSeconds)
             return true;
     return false;
 }
@@ -306,6 +307,7 @@ void DrawEventSoundSection(const TaggingSoundContext& ctx, const ShownEvent& e)
         const Resolution res = ResolveEvent(store, *lib, ResolveAssignFor(store, rec, ch, rid, part, type, t).layers,
                                             MakeDrawHooks(st, ed, nullptr));
         ui::SubText(res.blocked ? ("Blocked: " + res.reason).c_str() : res.path_text.c_str());
+        if (!res.blocked && !res.gap.empty()) ui::ToneText("Nothing placed: " + res.gap, ui::kWarn, true);
         bool undrawn = false;  // a pick not stored yet: Populate draws it (with the item's history)
         for (const SoundDraw& d : ed.out) {
             bool stored = false;
@@ -362,9 +364,10 @@ static void RunPopulate(const std::vector<MediaItem*>& items, bool restore)
     PopulateCounts    counts;
     const SoundReport rep = PopulateItemsCounted(items, &events, &counts, restore);
     Remember(rep, events);
-    bool trouble = false;  // missing / blocked lines: the summary already says why
+    bool trouble = false;  // missing / blocked / no-sound lines: the summary already says why
     for (const ReportLine& l : rep.lines)
-        if (l.kind == ReportKind::Missing || l.kind == ReportKind::Blocked) trouble = true;
+        if (l.kind == ReportKind::Missing || l.kind == ReportKind::Blocked || l.kind == ReportKind::NoSound)
+            trouble = true;
     char buf[160];
     buf[0] = '\0';
     if (counts.placed + counts.replaced + counts.removed > 0)

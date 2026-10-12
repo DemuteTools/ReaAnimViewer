@@ -90,6 +90,7 @@ struct Target {
     bool             lib_empty = false;    // no Sound in it: nothing to place yet
     bool             lib_blocked = false;  // Populate reports Blocked (a Switch lost its group...)
     std::string      blocked_reason;
+    std::vector<LibraryGap> lib_warnings;  // 13-21: the library's gaps (not blocking; events on them place nothing)
     LibState         own_state = LibState::Inherit;  // the rule's own library state
     std::string      own_library;
     bool             own_kit = false;   // 13-15c: a Project / Character key whose own library was adopted from a kit
@@ -147,6 +148,9 @@ struct PlaysLine {
     std::vector<std::string> titles;
 };
 std::vector<PlaysLine> PlaysLines(const std::vector<const Target*>& targets);
+// 13-21: the banner of a library with gaps: "Footstep has gaps: A; B; C +2 more. Events on them place
+// nothing." ("" when it has none or is blocked).
+std::string            GapsText(const Target& t);
 std::string            PlaysText(const Target& t);  // "FS Hero \xE2\x80\xBA Run \xE2\x80\xBA Boots", "No sound", "X \xE2\x80\xBA blocked"
 // "Run: item \xC2\xB7 Boots: Hero \xC2\xB7 Feet" -- the source of each value a single target plays.
 std::string WhyText(const Target& t);

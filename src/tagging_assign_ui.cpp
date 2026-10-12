@@ -1053,10 +1053,17 @@ void OpenLibraryViewUid(const std::string& uid)
     SetViewMode(ViewMode::Library);
 }
 
+// The target's library; a library with gaps (13-21) opens on its first gap node, selected and revealed.
 void OpenLibraryView(const av::Target* t)
 {
-    if (t && t->lib) OpenLibraryViewUid(t->lib->uid);
-    else SetViewMode(ViewMode::Library);
+    if (t && t->lib && !t->lib_blocked && !t->lib_warnings.empty()) {
+        SelectLibraryRow(t->lib->uid, RowOfNode(*t->lib, t->lib_warnings.front().node));
+        SetViewMode(ViewMode::Library);
+    } else if (t && t->lib) {
+        OpenLibraryViewUid(t->lib->uid);
+    } else {
+        SetViewMode(ViewMode::Library);
+    }
 }
 
 void Banner(bool warn, const std::string& text, const av::Target* open_for)
@@ -1122,7 +1129,11 @@ void DrawLibraryRow(const Frame& f, const std::vector<const av::Target*>& sel, c
             for (const SoundNode& n : L.nodes)
                 if (n.type == SoundNodeType::Sound) has_sound = true;
             if (!has_sound) label += " (empty)";
-            else if (CheckLibrary(store, L).blocked) label += " (blocked)";
+            else {
+                const LibraryCheck chk = CheckLibrary(store, L);
+                if (chk.blocked) label += " (blocked)";
+                else if (!chk.warnings.empty()) label += " (gaps)";  // 13-21: usable, but some branches play nothing
+            }
             const bool cur = !own_mixed && own == L.uid;
             if (ImGui::Selectable((label + "##" + L.uid).c_str(), cur) && !cur) PickLibrary(f, sel, L.uid, "Library = " + L.name);
         }
@@ -1700,6 +1711,8 @@ void DrawDetails(const Frame& f)
     }
     if (!item_row && first.lib_blocked)
         Banner(true, first.lib->name + " is blocked: " + first.blocked_reason + ". Nothing is placed from this library until it is fixed.", &first);
+    else if (!item_row && !first.lib_warnings.empty())  // 13-21: gaps warn; the library still places
+        Banner(true, av::GapsText(first), &first);
 
     // Switch values.
     std::vector<std::string> groups;

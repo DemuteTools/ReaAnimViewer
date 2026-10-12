@@ -204,6 +204,37 @@ static void TestDeletedGroup()
     CHECK(s.blocked && s.Plain().find("! group deleted") != std::string::npos);
 }
 
+// 13-21: a library gap warns: the library stays usable, the banner lists every reason.
+static void TestGaps()
+{
+    SoundStore st = MakeStore();
+    SoundLibrary& hero = st.libraries[0];
+    hero.nodes[0].default_value = "loco_Crouch";
+    hero.nodes[0].cases.pop_back();  // Crouch: no sound
+    hero.nodes.pop_back();
+    hero.nodes[0].name.clear();  // unnamed: its reason names the Switch Group, never the uid
+    SetAssignLibraryIn(st.project, {"feet"}, LibState::Library, "hero");
+    Target t = MakeTarget(st, ItemSounds(), nullptr, Auto(AutoKind::Step, 'L', "a0"), "b0", "x");
+    CHECK(!t.lib_blocked && t.Plays() && t.lib_warnings.size() == 1 && t.lib_warnings[0].node == "sw1");
+    CHECK(GapsText(t) == "FS Hero has gaps: Loco: default Crouch has no sound. Nothing plays from them.");
+    CHECK(!Summarize(st, {&t}, true).blocked);
+    // Two gaps (an empty Blend too), then more than three.
+    SoundLibrary& h2 = st.libraries[0];
+    h2.nodes.push_back(Node("eb", "sw2", SoundNodeType::Blend));
+    h2.nodes.back().name.clear();  // unnamed: its type
+    h2.nodes[2].cases.push_back({"feet_Boots", "eb", {}});
+    h2.nodes[2].cases.erase(h2.nodes[2].cases.begin());  // Boots -> the empty Blend
+    t = MakeTarget(st, ItemSounds(), nullptr, Auto(AutoKind::Step, 'L', "a0"), "b0", "x");
+    CHECK(t.lib_warnings.size() == 2 &&
+          GapsText(t) == "FS Hero has gaps: Loco: default Crouch has no sound; Blend: empty Blend. Nothing plays from them.");
+    for (int i = 0; i < 3; ++i) t.lib_warnings.push_back({"x", "more"});
+    CHECK(GapsText(t) ==
+          "FS Hero has gaps: Loco: default Crouch has no sound; Blend: empty Blend; more +2 more. Nothing plays from them.");
+    // A blocked library has no gap banner.
+    t.lib_blocked = true;
+    CHECK(GapsText(t).empty());
+}
+
 static void TestSummaryAndMix()
 {
     SoundStore st = MakeStore();
@@ -434,6 +465,7 @@ int main()
     TestState();
     TestRandomReach();
     TestDeletedGroup();
+    TestGaps();
     TestSummaryAndMix();
     TestTitleAndLadder();
     TestSelection();

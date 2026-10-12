@@ -414,6 +414,12 @@ int main()
         l.kind = ReportKind::Blocked;
         bl.lines = {l, l};
         CHECK(ReportSummary(bl, 3) == "Last populate: 3 events \xC2\xB7 2 blocked");
+        SoundReport ns;  // 13-21: an event left with nothing by a library gap
+        l.kind = ReportKind::NoSound;
+        ns.lines = {l, l};
+        l.kind = ReportKind::Missing;
+        ns.lines.push_back(l);
+        CHECK(ReportSummary(ns, 5) == "Last populate: 5 events \xC2\xB7 1 missing \xC2\xB7 2 no sound");
     }
 
     if (g_fail) {

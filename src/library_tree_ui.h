@@ -38,7 +38,8 @@ void DrawLibraryBatchPanel();
 const std::string& SelectedLibraryUid();
 // The selected rows of that library (pruned each frame against the visible rows).
 const std::vector<LibraryRow>& SelectedLibraryRows();
-// Selects one row of a library (and shows that library).
+// Selects one row of a library (and shows that library): clears the tree's search, reveals the
+// row and scrolls it into view.
 void SelectLibraryRow(const std::string& lib_uid, const LibraryRow& row);
 // The node of the single selected row ("" = none, an empty value, or several rows).
 std::string LibraryRowNode();

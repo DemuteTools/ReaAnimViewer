@@ -408,6 +408,7 @@ const char* KindText(ReportKind k)
     case ReportKind::Detached: return "Detached";
     case ReportKind::Blocked: return "Blocked";
     case ReportKind::Info: return "Note";
+    case ReportKind::NoSound: return "No sound";
     }
     return "";
 }

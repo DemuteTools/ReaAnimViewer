@@ -318,6 +318,8 @@ void FinishTarget(const SoundStore& store, const std::vector<ValueSet>& own_valu
         if (chk.blocked) {
             t->lib_blocked = true;
             t->blocked_reason = BlockedText(store, *t->lib, chk);
+        } else {
+            t->lib_warnings = chk.warnings;
         }
     }
     if (!t->lib_empty) FillGroups(store, *t->lib, t->ea, own_values, false, t->lib_blocked, t, inh);
@@ -529,6 +531,16 @@ std::string ScopeLine(bool item_row, bool any_bone_rule, const std::string& pool
     std::string s = any_bone_rule ? pool_text : std::string("this item");
     if (!character.empty()) s += std::string(kDot) + "character " + character;
     return s;
+}
+
+std::string GapsText(const Target& t)
+{
+    if (!t.lib || t.lib_blocked || t.lib_empty || t.lib_warnings.empty()) return {};
+    std::string  s = t.lib->name + " has gaps: ";
+    const size_t shown = std::min<size_t>(t.lib_warnings.size(), 3);
+    for (size_t i = 0; i < shown; ++i) s += (i ? "; " : "") + t.lib_warnings[i].reason;
+    if (t.lib_warnings.size() > shown) s += " +" + std::to_string(t.lib_warnings.size() - shown) + " more";
+    return s + ". Nothing plays from them.";
 }
 
 std::string PlaysText(const Target& t)

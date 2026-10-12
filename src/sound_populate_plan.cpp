@@ -326,7 +326,7 @@ int CountEvents(const std::vector<int>& event_blocks, const std::vector<char>& r
 
 std::string ReportSummary(const SoundReport& report, int events)
 {
-    int missing = 0, replaced = 0, gone = 0, blocked = 0;
+    int missing = 0, replaced = 0, gone = 0, blocked = 0, no_sound = 0;
     for (const ReportLine& l : report.lines) {
         switch (l.kind) {
         case ReportKind::Missing: ++missing; break;
@@ -334,6 +334,7 @@ std::string ReportSummary(const SoundReport& report, int events)
         case ReportKind::Detached: ++gone; break;
         case ReportKind::Blocked: ++blocked; break;
         case ReportKind::Info: break;
+        case ReportKind::NoSound: ++no_sound; break;
         }
     }
     char buf[96];
@@ -351,6 +352,7 @@ std::string ReportSummary(const SoundReport& report, int events)
         s += buf;
     };
     add(missing, "missing", "missing");
+    add(no_sound, "no sound", "no sound");
     add(replaced, "replaced", "replaced");
     add(gone, "rule gone", "rules gone");
     add(blocked, "blocked", "blocked");

@@ -365,7 +365,8 @@ inline void PeakAddFrame(PeakData* p, size_t bin, const Sample* frame, int nch)
         for (int l = 0; l < 2; ++l) p->lanes[l][bin] = p->lanes[l][bin] < lane[l] ? lane[l] : p->lanes[l][bin];
 }
 
-enum class ReportKind { Missing, Replaced, Detached, Blocked, Info };  // Info (13-11): not counted
+// Info (13-11): not counted. NoSound (13-21): an event left with nothing by a library gap.
+enum class ReportKind { Missing, Replaced, Detached, Blocked, Info, NoSound };
 
 struct ReportLine {
     ReportKind  kind = ReportKind::Missing;

@@ -397,6 +397,8 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
             AddLine(rep, ReportKind::Blocked, res.reason.empty() ? std::string("blocked") : res.reason, "", guid, e.t);
             continue;
         }
+        if (res.sounds.empty() && !res.gap.empty())  // 13-21: a library gap; the planner removes what it had placed
+            AddLine(rep, ReportKind::NoSound, "Nothing placed: " + res.gap, res.gap_node, guid, e.t);
 
         std::vector<double> passes;
         for (const FollowPass& fp : e.passes) passes.push_back(fp.project_t);

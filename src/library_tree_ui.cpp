@@ -75,6 +75,10 @@ struct TreeState {
     ReaProject*              guid_proj = nullptr;
     // Column 2 (toolbar + tree) had the keyboard focus last frame: the tree keys act only then.
     bool                     tree_focused = false;
+    // Antho 2026-10-12: the Switch Groups row clicked last (a value when sg_vid is set): F2 and its right-click
+    // menu rename it.
+    std::string              sg_gid, sg_vid;
+    bool                     sg_menu = false;
     std::set<std::string>    item_guids;
     // 13-7a (audit C2.3): each open group's dashed "+ value" field (by group uid); the group whose
     // field takes the keyboard again after a value was added (to type the next one).
@@ -1618,7 +1622,16 @@ void SwitchGroupsSectionWidgets()
                 }
             } else {
                 ImGui::SetNextItemAllowOverlap();
-                ui::SelectRow("##grprow", false, 0, rh, ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_AllowOverlap);
+                const bool cur = g.sg_gid == gr.uid && g.sg_vid.empty();
+                if (ui::SelectRow("##grprow", cur, 0, rh, ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_AllowOverlap)) {
+                    g.sg_gid = gr.uid;
+                    g.sg_vid.clear();
+                }
+                if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+                    g.sg_gid = gr.uid;
+                    g.sg_vid.clear();
+                    g.sg_menu = true;
+                }
                 const bool hovered = ui::SelectRowHovered();
                 if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                     g.rename = RenameKind::Group;
@@ -1682,7 +1695,16 @@ void SwitchGroupsSectionWidgets()
                         }
                     } else {
                         ImGui::SetNextItemAllowOverlap();
-                        ui::SelectRow("##val", false, 0, rh, ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_AllowOverlap);
+                        const bool cur = g.sg_gid == gr.uid && g.sg_vid == v.uid;
+                        if (ui::SelectRow("##val", cur, 0, rh, ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_AllowOverlap)) {
+                            g.sg_gid = gr.uid;
+                            g.sg_vid = v.uid;
+                        }
+                        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+                            g.sg_gid = gr.uid;
+                            g.sg_vid = v.uid;
+                            g.sg_menu = true;
+                        }
                         const bool hovered = ui::SelectRowHovered();
                         if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                             g.rename = RenameKind::Value;
@@ -1737,6 +1759,43 @@ void SwitchGroupsSectionWidgets()
             if (g.changed || !add_group.empty()) break;
         }
         ImGui::PopStyleVar();
+        // Antho 2026-10-12: the clicked row renames by F2 or its right-click menu (as the tree's rows), besides the
+        // double-click; the menu also deletes it.
+        {
+            const SwitchGroup* cg = g.sg_gid.empty() ? nullptr : FindGroup(store, g.sg_gid);
+            const SwitchValue* cv = nullptr;
+            if (cg && !g.sg_vid.empty())
+                for (const SwitchValue& v : cg->values)
+                    if (v.uid == g.sg_vid) cv = &v;
+            if (!cg || (!g.sg_vid.empty() && !cv)) {  // gone (deleted, undone)
+                g.sg_gid.clear();
+                g.sg_vid.clear();
+            }
+            auto start_rename = [&]() {
+                g.rename = cv ? RenameKind::Value : RenameKind::Group;
+                g.r_a = cg->uid;
+                g.r_b = cv ? cv->uid : std::string();
+                std::snprintf(g.buf, sizeof(g.buf), "%s", cv ? cv->name.c_str() : cg->name.c_str());
+                g.r_focus = true;
+            };
+            if (cg && !g.changed && g.rename == RenameKind::None && !ImGui::GetIO().WantTextInput &&
+                ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) &&
+                ImGui::IsKeyPressed(ImGuiKey_F2, false))
+                start_rename();
+            if (g.sg_menu) {
+                g.sg_menu = false;
+                ImGui::OpenPopup("##sgmenu");
+            }
+            if (ui::BeginMenuPopup("##sgmenu")) {
+                if (cg && ImGui::MenuItem("Rename", "F2", false, !g.changed)) start_rename();
+                if (cg && !cv && ImGui::MenuItem("Delete group")) del_group = cg->uid;
+                if (cg && cv && ImGui::MenuItem("Remove value")) {
+                    del_value_group = cg->uid;
+                    del_value = cv->uid;
+                }
+                ui::EndMenuPopup();
+            }
+        }
         if (!g.changed && !del_group.empty())
             Later([del_group] { Gesture("Delete group", [&](SoundStore& s) { return DeleteGroup(s, del_group); }); });
         if (!g.changed && !del_value.empty())

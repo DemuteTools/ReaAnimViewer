@@ -39,6 +39,7 @@
 #include "library_view_ui.h"
 #include "media_db.h"
 #include "ravlib.h"
+#include "sound_place_plan.h"
 #include "sound_populate.h"
 #include "sound_project.h"
 #include "sound_record.h"
@@ -726,7 +727,7 @@ bool FileSoundMissing(const SoundNode& n)
 }
 
 std::string MaterialiseFileSound(ReaProject* proj, const std::string& lib_uid, const std::string& node_uid,
-                                 std::string* why)
+                                 std::string* why, std::string* imported)
 {
     const SoundStore    store = GetSoundStore(proj);
     const SoundLibrary* lib = FindLibrary(store, lib_uid);
@@ -762,11 +763,20 @@ std::string MaterialiseFileSound(ReaProject* proj, const std::string& lib_uid, c
     MediaTrack* folder = FolderFor(proj, store, dest);
     MediaTrack* track = folder ? LayerTrack(proj, folder, layer) : nullptr;
     if (track) {
-        double end = 0.0;
+        double end = 0.0, lib_end = 0.0;
+        bool   has_lib = false;
         for (int i = 0, c = CountMediaItems(proj); i < c; ++i)
-            if (MediaItem* it = GetMediaItem(proj, i))
-                end = std::max(end, GetMediaItemInfo_Value(it, "D_POSITION") + GetMediaItemInfo_Value(it, "D_LENGTH"));
-        const double pos = end + 1.0;
+            if (MediaItem* it = GetMediaItem(proj, i)) {
+                const double e = GetMediaItemInfo_Value(it, "D_POSITION") + GetMediaItemInfo_Value(it, "D_LENGTH");
+                char mark[64] = {};
+                const bool is_lib = GetSetMediaItemInfo_String(it, kLibSourceTagKey, mark, false) && mark[0];
+                if (!is_lib) end = std::max(end, e);  // the content: every item but the library sources
+                else if (GetMediaItem_Track(it) == track) {
+                    lib_end = has_lib ? std::max(lib_end, e) : e;
+                    has_lib = true;
+                }
+            }
+        const double pos = LibrarySourcePosition(end, has_lib, lib_end);
         f_only_track(track);
         Main_OnCommand(kSetLastTouchedTrack, 0);
         Main_OnCommand(kUnselectAllItems, 0);
@@ -776,7 +786,15 @@ std::string MaterialiseFileSound(ReaProject* proj, const std::string& lib_uid, c
         if (item) {
             if (GetMediaItem_Track(item) != track) f_move_item(item, track);
             f_set_item(item, "D_POSITION", pos);
+            f_set_item(item, "B_MUTE", 1.0);  // 13-11 (B9): never plays past the content
+            char mark[] = "1";
+            GetSetMediaItemInfo_String(item, kLibSourceTagKey, mark, true);
             guid = ItemGuidOf(item);
+            if (imported) {
+                char at[48];
+                std::snprintf(at, sizeof(at), "%.2f s", pos);
+                *imported = "track \"" + TrackName(track) + "\" in folder \"" + dest + "\" at " + at + " (muted)";
+            }
         }
     }
     // Restore.

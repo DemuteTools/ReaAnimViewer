@@ -57,4 +57,12 @@ double ItemGainFor(double gain_db);
 // (`edit` true) a placed item; "" = allowed. An attached sound is never replaced or removed.
 std::string PlacedItemRefusal(bool found, bool has_tag, bool folder, Ownership own, bool edit);
 
+// 13-11 (B9): a User Library File Sound is imported muted and marked a library source
+// (kLibSourceTagKey) so it never plays past the content. A copy of a library source is placed
+// unmuted; any other source's mute state is copied as is.
+bool PlacedCopyMuted(bool src_muted, bool src_is_library_source);
+// 13-11 (B9): where a newly imported library source lands on its layer track: right after the last
+// library source already on that track (+1 s), else 1 s after the project end.
+double LibrarySourcePosition(double project_end, bool track_has_library_source, double last_library_source_end);
+
 }  // namespace rav

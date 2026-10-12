@@ -297,6 +297,7 @@ const char* KindText(ReportKind k)
     case ReportKind::Replaced: return "Replaced";
     case ReportKind::Detached: return "Detached";
     case ReportKind::Blocked: return "Blocked";
+    case ReportKind::Info: return "Note";
     }
     return "";
 }

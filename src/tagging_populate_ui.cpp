@@ -200,6 +200,7 @@ const char* KindWord(ReportKind k)
     case ReportKind::Replaced: return "Replaced";
     case ReportKind::Detached: return "Rule gone";
     case ReportKind::Blocked: return "Blocked";
+    case ReportKind::Info: return "Note";
     }
     return "";
 }
@@ -452,7 +453,7 @@ void DrawSoundReportLine(const TaggingSoundContext& ctx)
             const ReportLine& l = g_last.report.lines[i];
             ImGui::PushID(static_cast<int>(i));
             ImGui::AlignTextToFramePadding();
-            ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(l.kind == ReportKind::Replaced ? ui::kMuted : ui::kWarn));
+            ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(l.kind == ReportKind::Replaced || l.kind == ReportKind::Info ? ui::kMuted : ui::kWarn));
             ImGui::TextUnformatted(KindWord(l.kind));
             ImGui::PopStyleColor();
             ImGui::SameLine();

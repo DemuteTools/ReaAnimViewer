@@ -4,6 +4,7 @@
 
 #include "sound_place_plan.h"
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -157,6 +158,17 @@ std::string PlacedItemRefusal(bool found, bool has_tag, bool folder, Ownership o
     if (folder) return "folder item";
     if (edit && own == Ownership::Attached) return "attached by the user";
     return {};
+}
+
+bool PlacedCopyMuted(bool src_muted, bool src_is_library_source)
+{
+    return src_muted && !src_is_library_source;
+}
+
+double LibrarySourcePosition(double project_end, bool track_has_library_source, double last_library_source_end)
+{
+    // Never inside the content: after this track's last library source only when that is past it.
+    return std::max(project_end, track_has_library_source ? last_library_source_end : project_end) + 1.0;
 }
 
 }  // namespace rav

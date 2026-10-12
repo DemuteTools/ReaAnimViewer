@@ -32,8 +32,11 @@ void QuitLibraryUser();
 // The item a File Sound plays from in this project: its materialised item when still there, else
 // the file is imported now (decision 12) and the new item's GUID stored in the Sound (no undo
 // point of its own: call inside a SoundUndoScope). "" = missing (`why` says why).
+// 13-11 (B9): the new item is muted and marked a library source (kLibSourceTagKey), placed right
+// after the last library source on its layer track; `imported` (optional) is set to where it now
+// sits when this call imported it (left untouched otherwise).
 std::string MaterialiseFileSound(ReaProject* proj, const std::string& lib_uid, const std::string& node_uid,
-                                 std::string* why);
+                                 std::string* why, std::string* imported = nullptr);
 // A File Sound whose materialised item is gone and whose file cannot be found (decision 10).
 bool FileSoundMissing(const SoundNode& n);
 

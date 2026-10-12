@@ -221,7 +221,7 @@ struct PeakData {
     std::vector<float> max_abs;
 };
 
-enum class ReportKind { Missing, Replaced, Detached, Blocked };
+enum class ReportKind { Missing, Replaced, Detached, Blocked, Info };  // Info (13-11): not counted
 
 struct ReportLine {
     ReportKind  kind = ReportKind::Missing;

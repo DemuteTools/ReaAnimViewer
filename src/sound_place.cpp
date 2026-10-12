@@ -305,6 +305,16 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
             return r;
         }
         if (!folder) ApplyVariation(item, req);
+        {  // 13-11 (B9): a library source is muted; its copy plays (and does not carry the mark)
+            char mark[64] = {};
+            const bool lib_src = GetSetMediaItemInfo_String(m.src, kLibSourceTagKey, mark, false) && mark[0];
+            if (lib_src) {
+                char none[1] = {};
+                GetSetMediaItemInfo_String(item, kLibSourceTagKey, none, true);
+                f_set_item(item, "B_MUTE",
+                           PlacedCopyMuted(GetMediaItemInfo_Value(m.src, "B_MUTE") != 0.0, true) ? 1.0 : 0.0);
+            }
+        }
         f_set_item(item, "D_VOL", GetMediaItemInfo_Value(m.src, "D_VOL") * gain);
         placed.push_back(item);
         r.item_guids.push_back(ItemGuid(item));

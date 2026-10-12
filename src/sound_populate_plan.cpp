@@ -333,6 +333,7 @@ std::string ReportSummary(const SoundReport& report, int events)
         case ReportKind::Replaced: ++replaced; break;
         case ReportKind::Detached: ++gone; break;
         case ReportKind::Blocked: ++blocked; break;
+        case ReportKind::Info: break;
         }
     }
     char buf[96];

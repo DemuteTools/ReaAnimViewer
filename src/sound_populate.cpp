@@ -206,13 +206,16 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
         ed.t = ev->t;
         ed.prev = &prev;
         const std::string lib_uid = lib->uid;
-        auto is_missing = [&materialised, &materialise_why, &lib_uid](const SoundNode& n) {
+        auto is_missing = [&materialised, &materialise_why, &lib_uid, &rep, &guid, &e](const SoundNode& n) {
             if (n.sound.source.kind == SoundSourceKind::File) {  // 13-11: imported once, then an Item
                 auto it = materialised.find(n.uid);
                 if (it == materialised.end()) {
-                    std::string why;
-                    it = materialised.emplace(n.uid, MaterialiseFileSound(nullptr, lib_uid, n.uid, &why)).first;
+                    std::string why, at;
+                    it = materialised.emplace(n.uid, MaterialiseFileSound(nullptr, lib_uid, n.uid, &why, &at)).first;
                     if (it->second.empty() && !why.empty()) materialise_why[n.uid] = why;
+                    if (!at.empty())  // 13-11 (B9): say where the muted library source sits
+                        AddLine(rep, ReportKind::Info, "Library source \"" + NodeName(&n) + "\" imported on " + at,
+                                n.uid, guid, e.t);
                 }
                 return it->second.empty();
             }

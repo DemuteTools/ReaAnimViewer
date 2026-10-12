@@ -24,6 +24,8 @@ namespace rav {
 
 constexpr const char kItemSoundsKey[] = "P_EXT:RAV_SOUNDS";
 constexpr const char kPlacedTagKey[] = "P_EXT:RAV_SND";
+// 13-11 (B9): the mark of a muted User Library source item ("1"); its copies are placed unmuted.
+constexpr const char kLibSourceTagKey[] = "P_EXT:RAV_LIBSRC";
 constexpr size_t     kItemSoundsMaxBytes = 1u << 20;
 
 // Registers the projectconfig extension and resolves this module's extra functions (D7).

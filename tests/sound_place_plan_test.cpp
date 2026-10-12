@@ -97,6 +97,15 @@ int main()
     CHECK(PlacedItemRefusal(true, true, true, Ownership::Spread, true) == "folder item");
     CHECK(PlacedItemRefusal(true, false, false, Ownership::Populated, false) == "not a placed item (no RAV_SND tag)");
 
+    // 13-11 (B9): a library source is muted; its copy is placed unmuted, any other source's mute copied.
+    CHECK(!PlacedCopyMuted(true, true));
+    CHECK(!PlacedCopyMuted(false, true));
+    CHECK(PlacedCopyMuted(true, false));
+    CHECK(!PlacedCopyMuted(false, false));
+    CHECK(LibrarySourcePosition(30.0, false, 0.0) == 31.0);
+    CHECK(LibrarySourcePosition(30.0, true, 34.5) == 35.5);  // after the last library source, past the content
+    CHECK(LibrarySourcePosition(80.0, true, 34.5) == 81.0);  // the content grew past the sources: never inside it
+
     if (g_fail) {
         std::printf("sound_place_plan_test: %d failure(s)\n", g_fail);
         return 1;

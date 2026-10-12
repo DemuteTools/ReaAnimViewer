@@ -59,8 +59,12 @@ bool WindowAutoSizes()
 
 bool SameLineIfFits(float next_w)
 {
-    const bool fits = WindowAutoSizes() ||
-                      flow::FitsAfter(ImGui::GetItemRectMax().x, ImGui::GetStyle().ItemSpacing.x, next_w, LineRight());
+    // The line ends where the last ItemSize left it (DC.CursorPosPrevLine), not at the last item's
+    // rect: a Fader's value readout takes room after its track without being the last item. For a
+    // plain item both are the same; the larger one is kept (an item drawn past its size).
+    const ImGuiWindow* win = ImGui::GetCurrentWindowRead();
+    const float        end = std::max(ImGui::GetItemRectMax().x, win ? win->DC.CursorPosPrevLine.x : 0.0f);
+    const bool         fits = WindowAutoSizes() || flow::FitsAfter(end, ImGui::GetStyle().ItemSpacing.x, next_w, LineRight());
     if (fits) ImGui::SameLine();
     return fits;
 }
@@ -116,7 +120,7 @@ float LabelRowText(const std::string& text, float field_min, float label_col, Im
         dl->AddText(ImVec2(p.x, ty), col, text.c_str(), text.c_str() + end);
         const bool cut = EllipsisText(dl, ImVec2(p.x, ty + line), p.x + s.label_w, col, text.substr(brk));
         row_h = std::max(row_h, ty - p.y + 2.0f * line);
-        if (cut && !ImGui::IsAnyItemActive() &&
+        if (cut && !ImGui::IsAnyItemActive() && !ImGui::GetDragDropPayload() &&
             ImGui::IsMouseHoveringRect(p, ImVec2(p.x + s.label_w, p.y + row_h)) &&
             ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows | ImGuiHoveredFlags_ForTooltip))
             ShowTip(text.c_str());

@@ -119,7 +119,12 @@ int     g_seg_hovered = -1;
 FontSet g_fonts;
 int     g_section_depth = 0;   // sections open around the current one (a nested one is kBg)
 bool    g_selrow_hovered = false;
-int     g_toolbar_depth = 0;   // toolbars open around the current item (.tbb.dis)
+// The toolbars open (.tbb.dis), each with the window it was begun in, for the frame they were begun in:
+// a popup / card / child window opened inside one is another window, so never a toolbar; a toolbar
+// left open (a missed EndToolbar) is forgotten on the next frame.
+ImGuiWindow* g_toolbar_win[16] = {};
+int          g_toolbar_depth = 0;
+int          g_toolbar_frame = -1;
 // BeginDisabledLook's pushes, one entry per open look: bit 0 = colours, bit 1 = alpha.
 unsigned g_dislook[32] = {};
 int      g_dislook_n = 0;
@@ -149,6 +154,23 @@ void PopCrisp(bool pushed)
 {
     if (pushed) ImGui::PopStyleVar();
 }
+
+// True when the current item is a toolbar's (BeginToolbar in this window, this frame).
+bool InToolbar()
+{
+    if (g_toolbar_frame != ImGui::GetFrameCount() || g_toolbar_depth <= 0) return false;
+    const int top = std::min(g_toolbar_depth, static_cast<int>(sizeof(g_toolbar_win) / sizeof(g_toolbar_win[0]))) - 1;
+    return g_toolbar_win[top] == ImGui::GetCurrentWindowRead();
+}
+
+// The theme's own item spacing and frame padding (ApplyRavTheme's, at the screen's DPI), pushed inside a
+// popup or card so its content never inherits a toolbar's or a menu's metrics. Pushes 2 vars.
+void PushThemeMetrics()
+{
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(Dp(6.0f), Dp(7.0f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(Dp(8.0f), Dp(3.0f)));
+}
+void PopThemeMetrics() { ImGui::PopStyleVar(2); }
 
 }  // namespace
 
@@ -197,7 +219,7 @@ bool PushDisabledButtonSkin()
     if (!ItemDisabled()) return false;
     // .btn[disabled]: raised fill, faint text; a ghost button stays transparent, and so does a
     // toolbar button (.tbb.dis). Hovered / active never show (a disabled item is never hovered).
-    const bool   ghost = g_toolbar_depth > 0 || ImGui::GetStyleColorVec4(ImGuiCol_Button).w <= 0.0f;
+    const bool   ghost = InToolbar() || ImGui::GetStyleColorVec4(ImGuiCol_Button).w <= 0.0f;
     const ImVec4 fill = ghost ? ImVec4(0.0f, 0.0f, 0.0f, 0.0f) : Col(kRaised);
     ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetCurrentContext()->DisabledAlphaBackup);
     ImGui::PushStyleColor(ImGuiCol_Button, fill);
@@ -227,11 +249,18 @@ bool BeginStyledTooltip()
     const bool open = ImGui::BeginTooltipEx(ImGuiTooltipFlags_OverridePrevious, ImGuiWindowFlags_None);
     ImGui::PopStyleColor();
     ImGui::PopStyleVar();
-    if (open) ImGui::PushFont(DefaultFont());
+    if (open) {
+        // The tooltip's own text colours: a disabled region (BeginDisabledLook, a disabled skin) may
+        // have pushed kFaint for its items; ImGui already lifts its fade inside a tooltip.
+        ImGui::PushFont(DefaultFont());
+        ImGui::PushStyleColor(ImGuiCol_Text, Col(kText));
+        ImGui::PushStyleColor(ImGuiCol_TextDisabled, Col(kMuted));
+    }
     return open;
 }
 void EndStyledTooltip()
 {
+    ImGui::PopStyleColor(2);
     ImGui::PopFont();
     ImGui::EndTooltip();
 }
@@ -243,6 +272,12 @@ void ShowTip(const char* text)
     if (!text || !text[0] || !BeginStyledTooltip()) return;
     ImGui::TextUnformatted(text);
     EndStyledTooltip();
+}
+
+void ItemTipText(const char* text)
+{
+    if (!text || !text[0] || !ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) return;
+    ShowTip(text);
 }
 
 void ItemTip(const char* fmt, ...)
@@ -475,7 +510,7 @@ bool SolidButton(const char* label, const ImVec2& size)
 
 bool ToggleButton(const char* label, bool on, const ImVec2& size)
 {
-    if (!on) return SolidButton(label, size);
+    if (!on || ItemDisabled()) return SolidButton(label, size);  // disabled: the disabled skin, no accent
     ImGui::PushStyleColor(ImGuiCol_Button, Col(kAccentSoft));
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Col(IM_COL32(0x5B, 0x8C, 0xFF, 0x3D)));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, Col(kAccentSoft));
@@ -875,12 +910,20 @@ bool Switch(const char* id, bool on)
     const float  fh = ImGui::GetFrameHeight();
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     const float  y = p0.y + std::floor((fh - h) * 0.5f);
-    ImGui::InvisibleButton(id, ImVec2(w, fh));
-    const bool  clicked = ImGui::IsItemClicked(ImGuiMouseButton_Left);
+    // Toggled on release over it (ImGui's button), or by the keyboard / gamepad (nav activation).
+    const bool  toggled = ImGui::InvisibleButton(id, ImVec2(w, fh));
+    const bool  hovered = ImGui::IsItemHovered();
+    const bool  dis = ItemDisabled();
+    const bool  crisp = PushCrisp();
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled(ImVec2(p0.x, y), ImVec2(p0.x + w, y + h), Ink(on ? kAccent : kStrokeStrong), h * 0.5f);
-    dl->AddCircleFilled(ImVec2(on ? p0.x + w - h * 0.5f : p0.x + h * 0.5f, y + h * 0.5f), h * 0.5f - Dp(2.0f), Ink(kKnob), 12);
-    return clicked;
+    ImU32       track = on ? (hovered ? kPrimaryHover : kAccent) : (hovered ? kFrameHover : kStrokeStrong);
+    if (dis) track = on ? WithAlpha(kAccent, 0x59) : kStroke;  // faint, the thumb still says on / off
+    dl->AddRectFilled(ImVec2(p0.x, y), ImVec2(p0.x + w, y + h), Ink(track), h * 0.5f);
+    dl->AddCircleFilled(ImVec2(on ? p0.x + w - h * 0.5f : p0.x + h * 0.5f, y + h * 0.5f), h * 0.5f - Dp(2.0f),
+                        Ink(dis ? kFaint : kKnob), 12);
+    PopCrisp(crisp);
+    ImGui::RenderNavCursor(ImRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax()), ImGui::GetItemID());
+    return toggled;
 }
 
 void Caption(const char* text)
@@ -1032,7 +1075,7 @@ DragNumberEvent DragNumber(const char* id, double* value, double step, int decim
         ImGui::PushStyleColor(ImGuiCol_FrameBgActive, Col(kRaised));
         ImGui::PushStyleColor(ImGuiCol_Border, Col(kAccentLine));
         ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, kRadiusSm);
+        ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Dp(kRadiusSm));
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(Dp(5.0f), std::max(0.0f, (h - mono->FontSize) * 0.5f)));
         ImGui::SetNextItemWidth(w);
         if (g_dn.focus_frames > 0) ImGui::SetKeyboardFocusHere();
@@ -1095,8 +1138,8 @@ DragNumberEvent DragNumber(const char* id, double* value, double step, int decim
         // the number in mono 11 right-aligned 5 px from its edge.
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const ImVec2 p1(p0.x + w, p0.y + h);
-        dl->AddRectFilled(p0, p1, Ink(kRaised), kRadiusSm);
-        dl->AddRect(p0, p1, Ink((hovered || active) ? kStrokeStrong : kStroke), kRadiusSm);
+        dl->AddRectFilled(p0, p1, Ink(kRaised), Dp(kRadiusSm));
+        dl->AddRect(p0, p1, Ink((hovered || active) ? kStrokeStrong : kStroke), Dp(kRadiusSm));
         FormatNumber(text, sizeof(text), *value, decimals, trim);
         const ImVec2 ts = TextSizeIn(mono, text);
         dl->PushClipRect(p0, p1, true);
@@ -1213,7 +1256,7 @@ bool TextField(const char* id, const char* hint, char* buf, size_t buf_size, flo
     ImGui::PushStyleColor(ImGuiCol_FrameBgActive, Col(kBg));
     ImGui::PushStyleColor(ImGuiCol_TextDisabled, Col(kFaint));  // the hint
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(Dp(6.0f), std::max(0.0f, (FieldH() - line) * 0.5f)));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, kRadiusSm);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Dp(kRadiusSm));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
     ImGui::SetNextItemWidth(w);
     const bool r = hint ? ImGui::InputTextWithHint(id, hint, buf, buf_size, flags) : ImGui::InputText(id, buf, buf_size, flags);
@@ -1222,10 +1265,10 @@ bool TextField(const char* id, const char* hint, char* buf, size_t buf_size, flo
     const bool   hovered = ImGui::IsItemHovered(), active = ImGui::IsItemActive();
     const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
     ImDrawList*  dl = ImGui::GetWindowDrawList();
-    dl->AddRect(a, b, Ink(active ? kAccentLine : (hovered ? kStrokeStrong : kStroke)), kRadiusSm);
+    dl->AddRect(a, b, Ink(active ? kAccentLine : (hovered ? kStrokeStrong : kStroke)), Dp(kRadiusSm));
     if (active) {  // 13-14 (B7): outline 2px accent-line, outline-offset 1px
         const float o = Dp(2.0f);
-        dl->AddRect(ImVec2(a.x - o, a.y - o), ImVec2(b.x + o, b.y + o), Ink(kAccentLine), kRadiusSm + o, 0, Dp(2.0f));
+        dl->AddRect(ImVec2(a.x - o, a.y - o), ImVec2(b.x + o, b.y + o), Ink(kAccentLine), Dp(kRadiusSm) + o, 0, Dp(2.0f));
     }
     return r;
 }
@@ -1244,7 +1287,7 @@ bool TitleField(const char* id, char* buf, size_t buf_size, float width, int fla
     ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, Col(fill));
     ImGui::PushStyleColor(ImGuiCol_FrameBgActive, Col(fill));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(Dp(6.0f), std::max(0.0f, (h - f->FontSize) * 0.5f)));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, kRadiusSm);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Dp(kRadiusSm));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
     ImGui::SetNextItemWidth(w);
     const bool r = ImGui::InputText(id, buf, buf_size, flags);
@@ -1252,7 +1295,7 @@ bool TitleField(const char* id, char* buf, size_t buf_size, float width, int fla
     ImGui::PopStyleColor(3);
     ImGui::PopFont();
     if (ImGui::IsItemHovered() || ImGui::IsItemActive())
-        ImGui::GetWindowDrawList()->AddRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), Ink(kStrokeStrong), kRadiusSm);
+        ImGui::GetWindowDrawList()->AddRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), Ink(kStrokeStrong), Dp(kRadiusSm));
     return r;
 }
 
@@ -1266,14 +1309,14 @@ bool RenameField(const char* id, char* buf, size_t buf_size, float width, int fl
     ImGui::PushStyleColor(ImGuiCol_FrameBgActive, Col(kBg));
     ImGui::PushStyleColor(ImGuiCol_TextDisabled, Col(kFaint));  // the hint
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(Dp(6.0f), std::max(0.0f, (ControlH() - f->FontSize) * 0.5f)));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, kRadiusSm);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Dp(kRadiusSm));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
     ImGui::SetNextItemWidth(w);
     const bool r = hint ? ImGui::InputTextWithHint(id, hint, buf, buf_size, flags) : ImGui::InputText(id, buf, buf_size, flags);
     ImGui::PopStyleVar(3);
     ImGui::PopStyleColor(4);
     ImGui::PopFont();
-    ImGui::GetWindowDrawList()->AddRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), Ink(kAccentLine), kRadiusSm);
+    ImGui::GetWindowDrawList()->AddRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), Ink(kAccentLine), Dp(kRadiusSm));
     return r;
 }
 
@@ -1289,15 +1332,15 @@ bool AddField(const char* id, const char* hint, char* buf, size_t buf_size, floa
     ImGui::PushStyleColor(ImGuiCol_FrameBgActive, Col(fill));
     ImGui::PushStyleColor(ImGuiCol_TextDisabled, Col(kFaint));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(Dp(8.0f), std::max(0.0f, (ControlH() - line) * 0.5f)));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, kRadiusSm);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Dp(kRadiusSm));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
     ImGui::SetNextItemWidth(w);
     const bool r = ImGui::InputTextWithHint(id, hint ? hint : "", buf, buf_size, flags);
     ImGui::PopStyleVar(3);
     ImGui::PopStyleColor(4);
     const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
-    if (ImGui::IsItemActive() || ImGui::IsItemHovered()) ImGui::GetWindowDrawList()->AddRect(a, b, Ink(kStrokeStrong), kRadiusSm);
-    else DashedRect(ImGui::GetWindowDrawList(), a, b, Ink(kStrokeStrong), kRadiusSm);
+    if (ImGui::IsItemActive() || ImGui::IsItemHovered()) ImGui::GetWindowDrawList()->AddRect(a, b, Ink(kStrokeStrong), Dp(kRadiusSm));
+    else DashedRect(ImGui::GetWindowDrawList(), a, b, Ink(kStrokeStrong), Dp(kRadiusSm));
     return r;
 }
 
@@ -1417,13 +1460,20 @@ bool BeginPanelPopup(const char* id, int window_flags, ImVec2 pad)
     ImGui::PushStyleColor(ImGuiCol_Border, Col(kStrokeStrong));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Dp(pad.x), Dp(pad.y)));
     const bool open = ImGui::BeginPopup(id, window_flags);
-    ImGui::PopStyleVar();  // read when the window begins: its content keeps the theme's spacing
+    ImGui::PopStyleVar();  // read when the window begins
     ImGui::PopStyleColor(2);
-    if (open) WindowShadow();
+    if (open) {
+        WindowShadow();
+        PushThemeMetrics();  // not a toolbar's / menu's metrics around it
+    }
     return open;
 }
 
-void EndPanelPopup() { ImGui::EndPopup(); }
+void EndPanelPopup()
+{
+    PopThemeMetrics();
+    ImGui::EndPopup();
+}
 
 bool BeginModalCard(const char* id, int window_flags, float width)
 {
@@ -1432,25 +1482,36 @@ bool BeginModalCard(const char* id, int window_flags, float width)
     ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
                              window_flags;
+    // Never taller (nor wider) than the viewport less the margin, sized to its content or not: the
+    // content scrolls.
+    const ImVec2 cap(std::max(Dp(120.0f), vp->Size.x - margin), std::max(Dp(120.0f), vp->Size.y - margin));
     if (width > 0.0f) {
         ImGui::SetNextWindowSize(ImVec2(std::max(Dp(120.0f), std::min(width, vp->Size.x - margin)), 0.0f), ImGuiCond_Always);
-        ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, std::max(Dp(120.0f), vp->Size.y - margin)));
+        ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, cap.y));
         flags |= ImGuiWindowFlags_NoResize;
     } else {
+        ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), cap);
         flags |= ImGuiWindowFlags_AlwaysAutoResize;
     }
     ImGui::PushStyleColor(ImGuiCol_PopupBg, Col(kRaised));
     ImGui::PushStyleColor(ImGuiCol_Border, Col(kStrokeStrong));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Dp(16.0f), Dp(14.0f)));
-    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, kRadiusMd);
+    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, Dp(kRadiusMd));
     const bool open = ImGui::BeginPopupModal(id, nullptr, flags);
     ImGui::PopStyleVar(2);
     ImGui::PopStyleColor(2);
-    if (open) WindowShadow();
+    if (open) {
+        WindowShadow();
+        PushThemeMetrics();
+    }
     return open;
 }
 
-void EndModalCard() { ImGui::EndPopup(); }
+void EndModalCard()
+{
+    PopThemeMetrics();
+    ImGui::EndPopup();
+}
 
 bool BeginFloatingCard(const char* id, ImVec2 pos, ImVec2 pivot, float width)
 {
@@ -1459,7 +1520,7 @@ bool BeginFloatingCard(const char* id, ImVec2 pos, ImVec2 pivot, float width)
     ImGui::PushStyleColor(ImGuiCol_WindowBg, Col(kRaised));
     ImGui::PushStyleColor(ImGuiCol_Border, Col(kStrokeStrong));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Dp(16.0f), Dp(14.0f)));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, kRadiusMd);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, Dp(kRadiusMd));
     ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                              ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
                              ImGuiWindowFlags_NoFocusOnAppearing;
@@ -1468,10 +1529,15 @@ bool BeginFloatingCard(const char* id, ImVec2 pos, ImVec2 pivot, float width)
     ImGui::PopStyleVar(2);
     ImGui::PopStyleColor(2);
     if (shown) WindowShadow();
+    PushThemeMetrics();  // whatever Begin returned: EndFloatingCard always pops them
     return shown;
 }
 
-void EndFloatingCard() { ImGui::End(); }
+void EndFloatingCard()
+{
+    PopThemeMetrics();
+    ImGui::End();
+}
 
 bool BeginOverlay(const char* id, ImVec2 pos, ImVec2 pivot, int extra_flags)
 {
@@ -1496,7 +1562,7 @@ bool BeginOverlayPanel(const char* id, ImVec2 pos, ImVec2 size, int extra_flags)
     ImGui::SetNextWindowSize(size, ImGuiCond_Always);
     ImGui::PushStyleColor(ImGuiCol_WindowBg, Col(kBg));
     ImGui::PushStyleColor(ImGuiCol_Border, Col(kStrokeStrong));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, kRadiusLg);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, Dp(kRadiusLg));
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
                                    ImGuiWindowFlags_NoMove | extra_flags;
     const bool shown = ImGui::Begin(id, nullptr, flags);
@@ -1540,7 +1606,7 @@ bool BeginComboStyled(const char* id, const char* preview, float width, int flag
     // open, so the frame itself is laid out with the caller's spacing.
     PushMenuWindowStyle();
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(Dp(6.0f), std::max(0.0f, (FieldH() - line) * 0.5f)));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, kRadiusSm);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Dp(kRadiusSm));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);  // Border = stroke-strong (PushMenuWindowStyle)
     ImGui::SetNextItemWidth(w);
     const bool open = ImGui::BeginCombo(id, nullptr, flags | ImGuiComboFlags_NoArrowButton);
@@ -1551,7 +1617,7 @@ bool BeginComboStyled(const char* id, const char* preview, float width, int flag
     }
     // The preview, ellipsized before the chevron (a "v" in the text colour).
     const ImVec2 p1(p0.x + w, p0.y + FieldH());
-    if (bad) dl->AddRect(p0, p1, Ink(kBadLine), kRadiusSm);  // 13-14 (G-6): a missing value
+    if (bad) dl->AddRect(p0, p1, Ink(kBadLine), Dp(kRadiusSm));  // 13-14 (G-6): a missing value
     if (preview && preview[0]) {
         const std::string s(preview);
         EllipsisText(dl, ImVec2(p0.x + Dp(6.0f), p0.y + (FieldH() - ImGui::GetTextLineHeight()) * 0.5f), p1.x - chev - Dp(2.0f),
@@ -1591,7 +1657,18 @@ bool BeginChipCombo(const char* id, const char* preview, float min_w, bool disab
     // The list's popup style now (read when it begins); its rows' spacing once it is open.
     PushMenuWindowStyle();
     ImGui::SetNextItemWidth(w);
-    const bool open = ImGui::BeginCombo(id, nullptr, flags | ImGuiComboFlags_NoArrowButton);
+    if (disabled) {  // really disabled (never hovered, never opens), without ImGui's fade
+        ImGui::PushStyleVar(ImGuiStyleVar_DisabledAlpha, 1.0f);  // read by BeginDisabled only
+        ImGui::BeginDisabled(true);
+        ImGui::PopStyleVar();
+    }
+    bool open = ImGui::BeginCombo(id, nullptr, flags | ImGuiComboFlags_NoArrowButton);
+    if (open && disabled) {  // its list was open when it became disabled: closed now
+        ImGui::CloseCurrentPopup();
+        ImGui::EndCombo();
+        open = false;
+    }
+    if (disabled) ImGui::EndDisabled();
     if (open) {
         PushMenuItemStyle();
         WindowShadow();
@@ -1635,9 +1712,16 @@ bool SelectField(const char* id, const char* label, const char* value, const Sel
     const float ty = a.y + (h - ImGui::GetTextLineHeight()) * 0.5f;
     float       x = a.x + Dp(8.0f);
     const float chev_x = b.x - Dp(10.0f);
-    if (label && label[0]) {
-        dl->AddText(ImVec2(x, ty), Ink(dis ? kFaint : kMuted), label, LabelEnd(label));
-        x += TextWidth(label) + Dp(6.0f);
+    const float text_r = chev_x - Dp(8.0f);  // nothing runs into the chevron
+    bool        cut = false;
+    const std::string label_s = label ? std::string(label, LabelEnd(label)) : std::string();
+    if (!label_s.empty()) {
+        // Narrow, the label keeps at most half the room when a value follows it, and is ellipsized.
+        const float lw = ImGui::CalcTextSize(label_s.c_str()).x;
+        const float room = std::max(0.0f, text_r - x);
+        const float lmax = (value && value[0]) ? std::max(room * 0.5f, std::min(lw, room - Dp(40.0f))) : room;
+        cut = EllipsisText(dl, ImVec2(x, ty), x + std::min(lw, lmax), Ink(dis ? kFaint : kMuted), label_s) || cut;
+        x += std::min(lw, lmax) + Dp(6.0f);
     }
     if (o.icon && o.icon->fn) {
         Icon ic = *o.icon;
@@ -1655,15 +1739,19 @@ bool SelectField(const char* id, const char* label, const char* value, const Sel
                         o.tag);
         else tag_x = chev_x - Dp(8.0f);
     }
-    bool cut = false;
-    if (value && value[0])
+    if (value && value[0] && tag_x - Dp(6.0f) > x)
         cut = EllipsisText(dl, ImVec2(x, ty), tag_x - Dp(6.0f), Ink(dis ? kFaint : (o.value_col ? o.value_col : kText)),
-                           std::string(value));
+                           std::string(value)) || cut;
+    else if (value && value[0]) cut = true;  // no room left for it at all
     const ImVec2 c(chev_x, a.y + h * 0.5f);
     dl->AddTriangleFilled(ImVec2(c.x - Dp(3.5f), c.y - Dp(2.0f)), ImVec2(c.x + Dp(3.5f), c.y - Dp(2.0f)),
                           ImVec2(c.x, c.y + Dp(2.5f)), Ink(dis ? kFaint : kMuted));
     PopCrisp(crisp);
-    if (cut && !o.open && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ShowTip(value);
+    if (cut && !o.open && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
+        std::string tip = label_s;
+        if (value && value[0]) tip += (tip.empty() ? "" : " ") + std::string(value);
+        ShowTip(tip.c_str());
+    }
     return clicked;
 }
 
@@ -1828,7 +1916,7 @@ bool BeginToast(const char* id, ImVec2 pos, ImVec2 pivot)
     ImGui::SetNextWindowPos(pos, ImGuiCond_Always, pivot);
     ImGui::PushStyleColor(ImGuiCol_WindowBg, Col(kRaised));
     ImGui::PushStyleColor(ImGuiCol_Border, Col(kStrokeStrong));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, kRadiusMd);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, Dp(kRadiusMd));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Dp(14.0f), Dp(8.0f)));
     ImGui::PushFont(FontTitle());
     constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
@@ -1977,7 +2065,7 @@ bool BeginPane(const char* id, ImVec2 size, ImU32 fill, int child_flags, int win
 {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, Col(fill));
     ImGui::PushStyleColor(ImGuiCol_Border, Col(edge ? edge : kStroke));
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, kRadiusLg);
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, Dp(kRadiusLg));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Dp(8.0f), Dp(8.0f)));
     const int  flags = child_flags | (edge ? ImGuiChildFlags_Borders : 0) | ImGuiChildFlags_AlwaysUseWindowPadding;
     const bool shown = ImGui::BeginChild(id, size, flags, window_flags);
@@ -1992,7 +2080,7 @@ bool BeginListPane(const char* id, ImVec2 size, int window_flags)
 {
     ImGui::PushStyleColor(ImGuiCol_ChildBg, Col(kBg));
     ImGui::PushStyleColor(ImGuiCol_Border, Col(kStroke));
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, kRadiusSm);
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, Dp(kRadiusSm));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(1.0f, 1.0f));  // rows inside the 1 px edge
     const bool shown = ImGui::BeginChild(id, size, ImGuiChildFlags_Borders, window_flags);
     ImGui::PopStyleVar(2);
@@ -2053,10 +2141,16 @@ void EndWell(Well& k)
 void BeginToolbar(Well& k)
 {
     BeginWell(k);
+    if (g_toolbar_frame != ImGui::GetFrameCount()) {  // a new frame: no toolbar is open yet
+        g_toolbar_frame = ImGui::GetFrameCount();
+        g_toolbar_depth = 0;
+    }
     // .tbb: 24 px buttons (pad 0 6), 3 px apart, wrapping inside the well.
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(Dp(6.0f), std::max(0.0f, (FieldH() - ImGui::GetFontSize()) * 0.5f)));
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(Dp(3.0f), Dp(3.0f)));
     k.toolbar = true;
+    if (g_toolbar_depth < static_cast<int>(sizeof(g_toolbar_win) / sizeof(g_toolbar_win[0])))
+        g_toolbar_win[g_toolbar_depth] = ImGui::GetCurrentWindow();
     ++g_toolbar_depth;
 }
 
@@ -2141,7 +2235,11 @@ bool SwatchPalette(const char* id, const ImU32* colors, int count, ImU32 current
     ImGui::PushID(id);
     bool        clicked_any = false;
     const float cell = Dp(20.0f);
+    const float gap = Dp(4.0f);
     for (int i = 0; i < count; ++i) {
+        // Width-aware (ui_flow.h): beside the previous dot when it fits, else on the next row.
+        if (i > 0 && (WindowAutoSizes() || flow::FitsAfter(ImGui::GetItemRectMax().x, gap, cell, LineRight())))
+            ImGui::SameLine(0.0f, gap);
         ImGui::PushID(i);
         const ImVec2 q = ImGui::GetCursorScreenPos();
         const bool   clicked = ImGui::InvisibleButton("##col", ImVec2(cell, cell));
@@ -2155,7 +2253,6 @@ bool SwatchPalette(const char* id, const ImU32* colors, int count, ImU32 current
             clicked_any = true;
             if (picked) *picked = i;
         }
-        if (i + 1 < count) ImGui::SameLine(0.0f, Dp(4.0f));
         ImGui::PopID();
     }
     ImGui::PopID();

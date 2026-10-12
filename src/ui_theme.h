@@ -118,8 +118,9 @@
 //              RenameField(..., hint)
 //  Colour      ColorSwatchButton (a swatch that opens a themed picker), SwatchPalette (8 dots, r7,
 //              kText ring on the current one)
-//  Tooltips    ItemTip / BeginItemTip / EndItemTip (B14: pad 8 6, wrap 24 em); the theme's own
-//              tooltips use the same look
+//  Tooltips    ItemTipText (literal text) / ItemTip (printf format) / BeginItemTip / EndItemTip (B14: pad 8 6,
+//              wrap 24 em, kText / kMuted text even inside a disabled region); the theme's own tooltips use
+//              the same look
 //  Labels      LabelRow / LabelRowText wrap a long label onto two lines in its column (ui_flow.h)
 // =====================================================================================
 
@@ -236,6 +237,8 @@ struct DpPx {
     float px;
     operator float() const { return Dp(px); }
 };
+// A DpPx is already scaled: Dp(kCardPad) would scale it twice, so it does not compile (pass it as is).
+float Dp(DpPx) = delete;
 float ControlH();        // 22: .btn.sm, .seg .btn, .lnum (the default frame height)
 float FieldH();          // 24: input.txt, select, .tbb
 float LargeH();          // 26: .btn, .playbig
@@ -339,7 +342,8 @@ bool Segmented(const char* id, const char* const* labels, int count, int* select
 bool PrimaryButton(const char* label, const ImVec2& size = ImVec2(0.0f, 0.0f));
 bool SolidButton(const char* label, const ImVec2& size = ImVec2(0.0f, 0.0f));
 // A solid button that shows an on state (.btn.on / .playbig.on): accent-soft fill, accent-line
-// edge, text kAccentText. Play <-> Stop, the speaker toggle.
+// edge, text kAccentText. Play <-> Stop, the speaker toggle. Disabled, on or off, it takes the disabled
+// button's skin (raised, stroke edge, faint text: no accent).
 bool ToggleButton(const char* label, bool on, const ImVec2& size = ImVec2(0.0f, 0.0f));
 // A square ghost button holding one glyph (.btn.sm.ico, .colbtn: "«", "»", "⋯", "×") or an icon:
 // muted, kText and kHover under the mouse. `side` 0 = ControlH(). `tip`: its tooltip.
@@ -410,7 +414,9 @@ float ToneButtonWidth(const char* label, const Icon* icon = nullptr);
 bool  ToneButton(const char* label, TagTone tone, const Icon* icon = nullptr, const ImVec2& size = ImVec2(0.0f, 0.0f));
 
 // 13-14 (G-3): the on / off switch (.sw): a 26 x 16 track (accent on, stroke-strong off), a kKnob
-// thumb (r 6) at its end, centred on the frame line (an item 26 px x ControlH()). True when clicked.
+// thumb (r 6) at its end, centred on the frame line (an item 26 px x ControlH()). True when toggled:
+// a click released over it, or the keyboard / gamepad activating it. Under the mouse its track lightens;
+// disabled (ImGui::BeginDisabled) it is drawn faint at full opacity, its thumb still telling on / off.
 bool Switch(const char* id, bool on);
 
 // A small muted caption (the mock-up's .k label).
@@ -427,9 +433,13 @@ void ToneText(const char* text, ImU32 col = kMuted, bool wrap = false, float wra
 void ToneText(const std::string& text, ImU32 col = kMuted, bool wrap = false, float wrap_w = 0.0f);
 
 // 13-14 (G-14, B14) tooltips. The mockup's tooltip look: kRaised, stroke-strong edge, pad 8 6, the
-// 12 px body font. ItemTip: the tooltip of the last item (hovered for a tooltip: still for 0.5 s,
-// disabled items too). BeginItemTip / EndItemTip: free content, wrapped at `wrap_em` font sizes;
-// call EndItemTip only when BeginItemTip returned true.
+// 12 px body font, kText (kMuted for TextDisabled) even over a disabled item. ItemTipText: the tooltip
+// of the last item (hovered for a tooltip: still for 0.5 s, disabled items too), its text shown as is --
+// use it for any text that is not a format of your own (a name, a path, a translated string: a '%' in
+// it is shown, never read as a format). ItemTip: the same with a printf format and its arguments
+// (ItemTip("%d events", n)); never pass it a variable as the format. BeginItemTip / EndItemTip: free
+// content, wrapped at `wrap_em` font sizes; call EndItemTip only when BeginItemTip returned true.
+void ItemTipText(const char* text);
 void ItemTip(const char* fmt, ...) IM_FMTARGS(1);
 bool BeginItemTip(float wrap_em = 24.0f, int hovered_flags = 0);
 void EndItemTip();
@@ -507,9 +517,10 @@ void EndComboStyled();
 // 13-14 (G-5): the small "chip" select of the Tagging rules (select.chip): ControlH() high, r7,
 // stroke-strong fill (kFrameHover under the mouse), sized to its preview (+ 30 px for the pad and the
 // chevron, never under `min_w`; 0 = 40 px) within the room left -- or within `right` (a Sentence's
-// right edge) when given -- the preview ellipsized before a small muted chevron (faint when
-// `disabled`). Its list is a menu popup (BeginMenuPopup's look). `flags`: ImGuiComboFlags (the
-// height). Call EndChipCombo only when it returned true.
+// right edge) when given -- the preview ellipsized before a small muted chevron. `disabled` = really
+// disabled (ImGui::BeginDisabled around it: never hovered, never opens, returns false), drawn at full
+// opacity with a faint preview and chevron. Its list is a menu popup (BeginMenuPopup's look). `flags`:
+// ImGuiComboFlags (the height). Call EndChipCombo only when it returned true.
 float ChipComboWidth(const char* preview, float min_w = 0.0f);
 bool  BeginChipCombo(const char* id, const char* preview, float min_w = 0.0f, bool disabled = false, int flags = 0,
                      float right = 0.0f);
@@ -518,7 +529,8 @@ void  EndChipCombo();
 // 13-14 (G-17): a select-looking button (the Tagging panel's preset field): FieldH() high, kRaised
 // (kHover under the mouse), r5, its edge kStroke (accent-line while `open`), then: `label` muted,
 // the icon, `value` (ellipsized, kText or value_col), `tag` right-aligned (faint, or toned) and a
-// muted chevron. True when clicked: the caller opens its popup under it (GetItemRectMin / Max).
+// muted chevron. Narrow, the label and the value are ellipsized (both in the tooltip; the tag goes
+// first). True when clicked: the caller opens its popup under it (GetItemRectMin / Max).
 struct SelectFieldOpts {
     const char* tag = nullptr;
     TagTone     tag_tone = TagTone::Neutral;  // Warn: the tag in kWarn ("Legacy")
@@ -584,20 +596,22 @@ void MenuSeparator();
 // 13-14 (G-8): a popup that holds content rather than a list of actions (a search field and its
 // cascades, a name field and its buttons, the Shortcuts sheet): the menu's look (kRaised, 1 px
 // stroke-strong edge, r7, the shadow) with `pad` inside (mockup px; default 12 12), the theme's own
-// item spacing and no minimum width. Call EndPanelPopup only when it returned true.
+// item spacing and frame padding (6 7 / 8 3, whatever a toolbar or menu around it pushed) and no
+// minimum width; a button inside it is never a toolbar's. Call EndPanelPopup only when it returned true.
 bool BeginPanelPopup(const char* id, int window_flags = 0, ImVec2 pad = ImVec2(12.0f, 12.0f));
 void EndPanelPopup();
 
 // 13-14 (G-7): a modal card, centred in the viewport: kRaised, 1 px stroke-strong edge, r7, pad 16 14,
 // the shadow; sized to its content (`width` 0) or `width` wide (at most the viewport less 32 px) with
-// its height capped to the viewport less 32 px (the content scrolls). `window_flags` are added to
+// its height capped to the viewport less 32 px in both cases (the content scrolls); the theme's item
+// spacing and frame padding inside, as BeginPanelPopup. `window_flags` are added to
 // NoTitleBar | NoMove | NoSavedSettings. Open it with ImGui::OpenPopup(id); ImGui::CloseCurrentPopup
 // inside closes it. Call EndModalCard only when it returned true.
 bool BeginModalCard(const char* id, int window_flags = 0, float width = 0.0f);
 void EndModalCard();
 // 13-14 (G-7b): the same card as a plain window (not modal, not focused when it appears) at `pos`
-// (pivot as SetNextWindowPos), `width` wide (0 = sized to its content). Call EndFloatingCard
-// whatever it returns.
+// (pivot as SetNextWindowPos), `width` wide (0 = sized to its content), the theme's item spacing and
+// frame padding inside. Call EndFloatingCard whatever it returns.
 bool BeginFloatingCard(const char* id, ImVec2 pos, ImVec2 pivot = ImVec2(0.0f, 0.0f), float width = 0.0f);
 void EndFloatingCard();
 
@@ -688,7 +702,9 @@ void EndListPane();
 // plus the edge), the room left wide. Its content ends at its inner edge (the window's rects are
 // narrowed while it is open, as a Card's), so rows wrap within it; the cursor ends under it, 8 px
 // below. BeginToolbar / EndToolbar: a well holding .tbb buttons -- FieldH() high (pad 0 6), 3 px
-// apart -- and a disabled button inside it takes .tbb.dis (transparent, faint text and icon).
+// apart -- and a disabled button inside it takes .tbb.dis (transparent, faint text and icon). The
+// toolbar belongs to the window it was begun in, for this frame only: a popup, a card or a child
+// window opened inside it never takes .tbb.dis, and a toolbar left open is forgotten next frame.
 struct Well {
     ImDrawListSplitter split;
     ImVec2             p0;
@@ -722,10 +738,11 @@ void EndConfirmBand(ConfirmBand& b);
 
 // 13-14 (G-12): a colour swatch (ControlH() square, r5, the colour, stroke-strong edge, kFrameHover
 // under the mouse) that opens a themed colour picker (a panel popup) on click. True while `rgb`
-// changed this frame. `tip`: its tooltip.
+// changed this frame. `tip`: its tooltip. The picker is a BeginPanelPopup (the theme's metrics inside).
 bool ColorSwatchButton(const char* id, float rgb[3], const char* tip = nullptr);
 // A row of colour dots to pick from (the rule colours): `count` dots (r7 in a 20 px cell, 4 px apart),
-// a 1.5 px kText ring (r9) around `current`, kStrokeStrong around the one under the mouse. True when
+// a 1.5 px kText ring (r9) around `current`, kStrokeStrong around the one under the mouse. Width-aware
+// (ui_flow.h): a dot that does not fit beside the previous one wraps onto the next row. True when
 // one was clicked: *picked = its index.
 bool SwatchPalette(const char* id, const ImU32* colors, int count, ImU32 current, int* picked);
 

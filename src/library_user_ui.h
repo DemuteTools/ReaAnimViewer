@@ -14,15 +14,43 @@
 
 #ifdef _WIN32
 
+#include <cstdint>
 #include <string>
+#include <vector>
 
 #include "reaper_api.h"
 #include "sound_model.h"
 
 namespace rav {
 
-void DrawUserLibrarySection();
 void DrawUserLibraryNodeSection();
+
+// 13-7a (audit C1.4): user libraries are listed in the Libraries list under USER (library_tree_ui.cpp);
+// this module keeps their folder, files and pickers.
+// Once a frame before the list: installs the tree's missing hook, refreshes the caches, lists the
+// folder (again when its files change).
+void PrepareUserLibraries();
+// A .ravlib of the user folder whose library is not in this project (unreadable ones included).
+struct UserLibraryFile {
+    std::string file;      // file name
+    std::string name;      // its library's name (the file's stem when unreadable)
+    uint32_t    color = 0;
+    bool        readable = false;
+};
+std::vector<UserLibraryFile> UserFilesNotInProject();
+// Adds that file's library to the project (one undo point) and selects it.
+void AddUserLibraryFile(const std::string& file);
+// "+ User Library": a new library saved to its own file in the folder (one undo point).
+void NewUserLibrary();
+// The pickers (run by this module's timer, never inside the frame).
+void RequestUserLibraryImport();
+void RequestUserLibraryExport(const std::string& lib_uid);
+void RequestUserLibraryLocate(const std::string& lib_uid, const std::string& node_uid);
+// A library's missing File Sounds; `first` = the first one's node uid.
+int UserLibraryMissing(const std::string& lib_uid, std::string* first);
+// Lists the folder again and forgets the found / missing files.
+void RefreshUserLibraries();
+std::string UserLibraryFolderText();
 
 // Resolves this module's functions and registers its timer (pickers, Locate result, autosave).
 void InitLibraryUser(reaper_plugin_info_t* rec);

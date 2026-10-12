@@ -82,10 +82,9 @@ void DrawColumn(int i)
 {
     switch (i) {
     case 0:
-        // 13-7 (audit B2): the mockup's .colbtn, a ghost glyph button.
-        if (ui::IconOnlyButton("##collapse1", "\xC2\xAB", "Collapse (Ctrl+B)")) SetLibraryColumn1Collapsed(true);
+        // 13-7a (audit C1.1 / C1.4): the collapse button sits in the Libraries header, and the user
+        // libraries are listed in Libraries under USER (no User Library section of their own).
         DrawLibrariesSection();
-        DrawUserLibrarySection();
         DrawSwitchGroupsSection();
         break;
     case 1: DrawLibraryTree(); break;
@@ -301,7 +300,13 @@ void DrawLibraryView(float x, float y, float w, float h)
                 else ImGui::Dummy(ImVec2(kColumnGap, ch));
                 ImGui::SameLine(0.0f, 0.0f);
             }
-            if (ImGui::BeginChild(kIds[i], ImVec2(px[i], ch), ImGuiChildFlags_Borders)) {
+            // 13-7a (audit A2): the mockup's .pane padding, 8 px inside every open column (a collapsed
+            // strip keeps the theme's). The child reads it when it begins; popped at once, so the
+            // popups opened inside keep their own.
+            if (!Collapsed(i)) ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui::Dp(8.0f), ui::Dp(8.0f)));
+            const bool shown = ImGui::BeginChild(kIds[i], ImVec2(px[i], ch), ImGuiChildFlags_Borders);
+            if (!Collapsed(i)) ImGui::PopStyleVar();
+            if (shown) {
                 if (Collapsed(i)) DrawStrip(i, ch);
                 else DrawColumn(i);
             }

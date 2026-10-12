@@ -11,6 +11,7 @@
 #ifdef _WIN32
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdio>
@@ -18,6 +19,9 @@
 #include <map>
 #include <set>
 
+#include <imgui_internal.h>  // the toolbar well narrows the work rect; the empty-library box is a drop target
+
+#include "library_user_ui.h"
 #include "library_view_ui.h"
 #include "reaper_api.h"
 #include "sound_place.h"
@@ -30,7 +34,9 @@
 namespace rav {
 namespace {
 
-constexpr float kIndent = 14.0f;
+// 13-7a (audit C3.3): the mockup's .trow: 4 px in, 18 px per level (ui::Dp of these).
+constexpr float kIndent = 18.0f;
+constexpr float kRowPad = 4.0f;
 constexpr double kAutoOpenSeconds = 0.6;
 constexpr const char kRowsPayload[] = "RAV_LIB_ROWS";
 
@@ -68,6 +74,15 @@ struct TreeState {
     // Column 2 (toolbar + tree) had the keyboard focus last frame: the tree keys act only then.
     bool                     tree_focused = false;
     std::set<std::string>    item_guids;
+    // 13-7a (audit C2.3): each open group's dashed "+ value" field (by group uid); the group whose
+    // field takes the keyboard again after a value was added (to type the next one).
+    std::map<std::string, std::array<char, 128>> add_value;
+    std::string              add_value_focus;
+    // 13-7a (audit C3.1): the tree header's library name field (the name being typed).
+    std::string              title_lib;
+    char                     title[256] = {};
+    // The row menu was open last frame (its row keeps its ⋯ lit).
+    bool                     row_menu_open = false;
     // A gesture ran this frame: the store was rewritten, so every SoundLibrary / SoundNode
     // reference taken before it is stale; the drawing loops stop at once (next frame redraws).
     bool                     changed = false;
@@ -204,24 +219,44 @@ void FocusNew(const std::string& lib_uid, const std::vector<std::string>& made, 
 
 // ---- Small drawing helpers ----------------------------------------------------------------------
 
-void DrawChevron(ImDrawList* dl, ImVec2 c, bool open, ImU32 col)
+// 13-7a (audit C3.3): a type icon, 16 px, centred in the square at p of side `box` (20 px: a
+// container's .tib button face, framed -- raised fill, stroke-strong edge, r5 -- while hovered or
+// selected; 16 px: a Sound's .ti). Containers in kAccentInk, a Sound muted (TypeColor).
+void DrawTypeIcon(ImDrawList* dl, ImVec2 p, float box, SoundNodeType t, bool framed, ImU32 ink)
 {
-    const float r = 3.5f;
-    if (open)
-        dl->AddTriangleFilled(ImVec2(c.x - r, c.y - r * 0.6f), ImVec2(c.x + r, c.y - r * 0.6f), ImVec2(c.x, c.y + r * 0.8f), col);
-    else
-        dl->AddTriangleFilled(ImVec2(c.x - r * 0.6f, c.y - r), ImVec2(c.x - r * 0.6f, c.y + r), ImVec2(c.x + r * 0.8f, c.y), col);
+    if (framed) {
+        dl->AddRectFilled(p, ImVec2(p.x + box, p.y + box), ui::kRaised, ui::kRadiusSm);
+        dl->AddRect(p, ImVec2(p.x + box, p.y + box), ui::kStrokeStrong, ui::kRadiusSm);
+    }
+    const float is = std::min(box, ui::Dp(16.0f)), o = std::floor((box - is) * 0.5f);
+    DrawNodeTypeGlyph(dl, ImVec2(p.x + o, p.y + o), is, t, ink);
 }
 
-void DrawTypeIcon(ImDrawList* dl, ImVec2 p, float s, SoundNodeType t, bool hot)
+// A small ghost button drawn over a row (the mockup's .more / .playb / .star): w x h at p, hover
+// kHover r5; `on` keeps the hover look (playing). Returns true when clicked; *hovered as it is.
+bool RowToolButton(const char* id, ImVec2 p, float w, float h, bool on, bool* hovered)
 {
-    // The mock-up's .tib: the icon is the button face, framed on hover.
-    if (hot) {
-        dl->AddRectFilled(p, ImVec2(p.x + s, p.y + s), ui::kRaised, ui::kRadiusSm * 0.6f);
-        dl->AddRect(p, ImVec2(p.x + s, p.y + s), ui::kStrokeStrong, ui::kRadiusSm * 0.6f);
-    }
-    const float g = s * 0.8f, o = (s - g) * 0.5f;
-    DrawNodeTypeGlyph(dl, ImVec2(p.x + o, p.y + o), g, t, hot ? ui::kText : TypeColor(t));
+    ImGui::SetCursorScreenPos(p);
+    const bool clicked = ImGui::InvisibleButton(id, ImVec2(w, h));
+    const bool hov = ImGui::IsItemHovered();
+    if (hov || on)
+        ImGui::GetWindowDrawList()->AddRectFilled(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), ui::kHover, ui::kRadiusSm);
+    if (hovered) *hovered = hov;
+    return clicked;
+}
+
+// `glyph` in `font` centred in [a, b].
+void CentredGlyph(ImDrawList* dl, ImFont* font, ImVec2 a, ImVec2 b, ImU32 col, const char* glyph)
+{
+    const ImVec2 ts = ui::TextSizeIn(font, glyph);
+    ui::AddTextIn(dl, font, ImVec2(std::floor((a.x + b.x - ts.x) * 0.5f), std::floor((a.y + b.y - ts.y) * 0.5f)), col, glyph);
+}
+
+// A library's colour (colour 0 = the accent).
+ImU32 LibDot(uint32_t color)
+{
+    if (color & 0x1000000u) return IM_COL32((color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF, 0xFF);
+    return ui::kAccent;
 }
 
 // 13-7a: the layout helpers are the shared ones (ui_flow.h): rows of buttons wrap, labels and
@@ -236,16 +271,16 @@ void Tip(const std::string& text)
     if (!text.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", text.c_str());
 }
 
-// An inline name field: 1 = commit, -1 = cancel, 0 = still typing.
+// An inline name field (13-7a: the mockup's .redit / .gedit, ui::RenameField, 22 px): 1 = commit,
+// -1 = cancel, 0 = still typing.
 int InlineName(float width)
 {
-    ImGui::SetNextItemWidth(std::max(40.0f, width));
     if (g.r_focus) {
         ImGui::SetKeyboardFocusHere();
         g.r_focus = false;
     }
-    const bool enter = ImGui::InputText("##rename", g.buf, sizeof(g.buf),
-                                        ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+    const bool enter = ui::RenameField("##rename", g.buf, sizeof(g.buf), std::max(ui::Dp(40.0f), width),
+                                       ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
     if (enter) return 1;
     if (ImGui::IsItemActive() && ImGui::IsKeyPressed(ImGuiKey_Escape)) return -1;
     if (ImGui::IsItemDeactivated()) return ImGui::IsKeyPressed(ImGuiKey_Escape) ? -1 : 1;
@@ -519,7 +554,7 @@ void WrapMenu(const std::vector<LibraryRow>& rows)
 
 void RowMenu(const SoundLibrary& lib)
 {
-    if (!ImGui::BeginPopup("##rowmenu")) return;
+    if (!ui::BeginMenuPopup("##rowmenu")) return;
     const std::vector<LibraryRow> rows = g.menu_rows;
     const LibraryRow row = g.menu_row;
     const std::string node_uid = RowNode(lib, row);
@@ -600,7 +635,7 @@ void RowMenu(const SoundLibrary& lib)
             Gesture("Remove value", [&](SoundStore& s) { return DeleteValue(s, gid, vid); });
         }
     }
-    ImGui::EndPopup();
+    ui::EndMenuPopup();
 }
 
 // ---- Drag and drop ------------------------------------------------------------------------------
@@ -635,9 +670,10 @@ void MediaDropOn(const std::string& lib_uid, const LibraryRow& row, ImVec2 p0, I
     if (h.media_payload_type.empty() || !h.media_drop) return;
     const ImGuiPayload* pl = ImGui::GetDragDropPayload();
     if (!pl || !pl->IsDataType(h.media_payload_type.c_str())) return;
+    // 13-7a (audit C3.7): the mockup's .drop-in, accent-soft with a 2 px accent outline inside.
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(p0, p1, ui::kAccentSoft, ui::kRadiusSm);
-    dl->AddRect(p0, p1, ui::kAccent, ui::kRadiusSm, 0, 1.5f);
+    dl->AddRect(ImVec2(p0.x + 1.0f, p0.y + 1.0f), ImVec2(p1.x - 1.0f, p1.y - 1.0f), ui::kAccent, ui::kRadiusSm, 0, 2.0f);
     if (const ImGuiPayload* mp = ImGui::AcceptDragDropPayload(h.media_payload_type.c_str(),
                                                               ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
         const auto drop = h.media_drop;  // the hook may replace the hooks
@@ -646,15 +682,10 @@ void MediaDropOn(const std::string& lib_uid, const LibraryRow& row, ImVec2 p0, I
     }
 }
 
-// Rows dragged onto the empty space below the rows: into the root (a Switch root has no "into").
-void EmptySpaceDropTarget(const SoundLibrary& lib)
+// Inside a drag-drop target over [p0, p1]: rows or a Media Explorer drag go into the root (a Switch
+// root has no "into"), the area lit as the mockup's .drop-in while an acceptable drag is over it.
+void RootDropOn(const SoundLibrary& lib, ImVec2 p0, ImVec2 p1)
 {
-    const float avail = ImGui::GetContentRegionAvail().y;
-    const float h = std::max(ImGui::GetFrameHeight() * 2.0f, avail);
-    const ImVec2 p0 = ImGui::GetCursorScreenPos();
-    ImGui::Dummy(ImVec2(std::max(1.0f, ImGui::GetContentRegionAvail().x), h));
-    if (!ImGui::BeginDragDropTarget()) return;
-    const ImVec2 p1 = ImGui::GetItemRectMax();
     const LibraryRow root_row{"", lib.root};
     const ImGuiPayload* pl = ImGui::GetDragDropPayload();
     if (pl && pl->IsDataType(kRowsPayload)) {
@@ -662,8 +693,12 @@ void EmptySpaceDropTarget(const SoundLibrary& lib)
         to.lib = lib.uid;
         to.row = root_row;
         to.mode = DropMode::Into;
-        if (CanDrop(GetSoundStore(nullptr), g.drag_lib, g.drag_rows, to)) {
-            ImGui::GetWindowDrawList()->AddRect(p0, p1, ui::kAccent, ui::kRadiusSm, 0, 1.5f);
+        if (!CanDrop(GetSoundStore(nullptr), g.drag_lib, g.drag_rows, to)) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_NotAllowed);
+        } else {
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            dl->AddRectFilled(p0, p1, ui::kAccentSoft, ui::kRadiusMd);
+            dl->AddRect(ImVec2(p0.x + 1.0f, p0.y + 1.0f), ImVec2(p1.x - 1.0f, p1.y - 1.0f), ui::kAccent, ui::kRadiusMd, 0, 2.0f);
             if (ImGui::AcceptDragDropPayload(kRowsPayload, ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
                 const std::string src = g.drag_lib;
                 const std::vector<LibraryRow> rows = g.drag_rows;
@@ -677,6 +712,17 @@ void EmptySpaceDropTarget(const SoundLibrary& lib)
     } else {
         MediaDropOn(lib.uid, root_row, p0, p1);
     }
+}
+
+// Rows dragged onto the empty space below the rows: into the root.
+void EmptySpaceDropTarget(const SoundLibrary& lib)
+{
+    const float avail = ImGui::GetContentRegionAvail().y;
+    const float h = std::max(ui::RowH() * 2.0f, avail);
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    ImGui::Dummy(ImVec2(std::max(1.0f, ImGui::GetContentRegionAvail().x), h));
+    if (!ImGui::BeginDragDropTarget()) return;
+    RootDropOn(lib, p0, ImGui::GetItemRectMax());
     ImGui::EndDragDropTarget();
 }
 
@@ -712,11 +758,14 @@ void RowDropTarget(const SoundLibrary& lib, const TreeRow& r, ImVec2 p0, ImVec2 
     if (pl && pl->IsDataType(kRowsPayload)) {
         const bool ok = CanDrop(GetSoundStore(nullptr), g.drag_lib, g.drag_rows, to);
         if (ok) {
+            // 13-7a (audit C3.7): before / after = a 2 px accent line inside the row's edge; into =
+            // accent-soft with a 2 px accent outline inside.
             if (to.mode == DropMode::Before || to.mode == DropMode::After) {
-                const float y = to.mode == DropMode::Before ? p0.y : p1.y;
-                dl->AddLine(ImVec2(p0.x + r.depth * kIndent, y), ImVec2(p1.x, y), ui::kAccent, 2.0f);
+                const float y = to.mode == DropMode::Before ? p0.y + 1.0f : p1.y - 1.0f;
+                dl->AddLine(ImVec2(p0.x + ui::Dp(kRowPad + r.depth * kIndent), y), ImVec2(p1.x, y), ui::kAccent, 2.0f);
             } else {
-                dl->AddRect(p0, p1, ui::kAccent, ui::kRadiusSm, 0, 1.5f);
+                dl->AddRectFilled(p0, p1, ui::kAccentSoft, ui::kRadiusSm);
+                dl->AddRect(ImVec2(p0.x + 1.0f, p0.y + 1.0f), ImVec2(p1.x - 1.0f, p1.y - 1.0f), ui::kAccent, ui::kRadiusSm, 0, 2.0f);
             }
             if (ImGui::AcceptDragDropPayload(kRowsPayload, ImGuiDragDropFlags_AcceptNoDrawDefaultRect)) {
                 const std::string src = g.drag_lib;
@@ -735,7 +784,7 @@ void RowDropTarget(const SoundLibrary& lib, const TreeRow& r, ImVec2 p0, ImVec2 
                 g.drag_rows.clear();
             }
         } else {
-            dl->AddRectFilled(p0, p1, ui::kHover);  // greyed: cannot drop here
+            ImGui::SetMouseCursor(ImGuiMouseCursor_NotAllowed);  // the mockup's .drop-no
         }
     } else {
         MediaDropOn(lib.uid, r.row, p0, p1);
@@ -753,12 +802,12 @@ void ToolbarAdd(const SoundLibrary& lib, SoundNodeType type, const char* label)
     if (type == SoundNodeType::Switch) {
         if (MenuButton(label, ok > 0, nullptr, &icon)) ImGui::OpenPopup("##tbswitch");
         Tip(why);
-        if (ImGui::BeginPopup("##tbswitch")) {
-            ImGui::TextDisabled("Switch on");
+        if (ui::BeginMenuPopup("##tbswitch")) {
+            ui::MenuCaption("Switch on");
             bool ng = false;
             const std::string gid = GroupMenuItems(true, &ng);
             if (!gid.empty() || ng) DoAdd(SoundNodeType::Switch, gid, ng);
-            ImGui::EndPopup();
+            ui::EndMenuPopup();
         }
         return;
     }
@@ -768,55 +817,156 @@ void ToolbarAdd(const SoundLibrary& lib, SoundNodeType type, const char* label)
     Tip(why);
 }
 
-void HelpMark()
+// 13-7a (audit C3.2): the toolbar's dark well (.tb): kBg, 1 px stroke edge, r7, 4 px inside. Its
+// content ends at its inner edge (the window's work rect is narrowed while it is open), so the
+// buttons wrap within it.
+struct Well {
+    ImDrawListSplitter split;
+    ImVec2             p0;
+    float              w = 0.0f;
+    float              pad = 0.0f;
+    float              saved_work_max = 0.0f;
+    float              saved_content_max = 0.0f;
+};
+
+void BeginWell(Well& k)
 {
-    ImGui::TextDisabled("(?)");
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Switch: plays one child, chosen by a Switch Group value (Material = Grass...).\n"
-                          "Random: plays one of its children, picked at random at each event.\n"
-                          "Blend: plays all its children together, layered.\n"
-                          "Sound: one file or item (its Takes / take markers are its variations).\n\n"
-                          "Shortcuts: F2 rename, Delete remove, Ctrl+D duplicate, Ctrl+X / Ctrl+V move,\n"
-                          "Ctrl+Z undo, Space play. Ctrl / Shift-click selects several rows.");
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    k.p0 = ImGui::GetCursorScreenPos();
+    k.w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    k.pad = ui::Dp(4.0f) + 1.0f;  // the padding inside the 1 px edge
+    k.split.Split(dl, 2);
+    k.split.SetCurrentChannel(dl, 1);
+    ImGui::SetCursorScreenPos(ImVec2(k.p0.x + k.pad, k.p0.y + k.pad));
+    ImGui::BeginGroup();
+    ImGuiWindow* win = ImGui::GetCurrentWindow();
+    k.saved_work_max = win->WorkRect.Max.x;
+    k.saved_content_max = win->ContentRegionRect.Max.x;
+    const float inner = std::max(k.p0.x + k.pad + 1.0f, k.p0.x + k.w - k.pad);
+    win->WorkRect.Max.x = std::min(win->WorkRect.Max.x, inner);
+    win->ContentRegionRect.Max.x = std::min(win->ContentRegionRect.Max.x, inner);
+}
+
+void EndWell(Well& k)
+{
+    ImGuiWindow* win = ImGui::GetCurrentWindow();
+    win->WorkRect.Max.x = k.saved_work_max;
+    win->ContentRegionRect.Max.x = k.saved_content_max;
+    ImGui::EndGroup();
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float bottom = ImGui::GetItemRectMax().y + k.pad;
+    k.split.SetCurrentChannel(dl, 0);
+    dl->AddRectFilled(k.p0, ImVec2(k.p0.x + k.w, bottom), ui::kBg, ui::kRadiusMd);
+    dl->AddRect(k.p0, ImVec2(k.p0.x + k.w, bottom), ui::kStroke, ui::kRadiusMd);
+    k.split.Merge(dl);
+    ImGui::SetCursorScreenPos(ImVec2(k.p0.x, bottom));
+    // The pane's 8 px gap under it.
+    ImGui::Dummy(ImVec2(k.w, std::max(0.0f, ui::Dp(8.0f) - ImGui::GetStyle().ItemSpacing.y)));
+}
+
+// 13-7a (audit B17 / C3.2): the "?" circle at the toolbar's right end; a click opens the mockup's
+// help (each type's icon, its name and what it does); the shortcuts on hover.
+void ToolbarHelp()
+{
+    if (ui::HelpMark("##tbhelpmark", "What do Switch, Random, Blend and Sound do?\n\n"
+                                     "Shortcuts: F2 rename, Delete remove, Ctrl+D duplicate, Ctrl+X / Ctrl+V move,\n"
+                                     "Ctrl+Z undo, Space play. Ctrl / Shift-click selects several rows."))
+        ImGui::OpenPopup("##tbhelp");
+    if (!ui::BeginMenuPopup("##tbhelp")) return;
+    struct Line {
+        SoundNodeType type;
+        const char*   name;
+        const char*   text;
+    };
+    static const Line kLines[4] = {
+        {SoundNodeType::Switch, "Switch", "plays one child, chosen by a Switch Group value (Material = Grass...)."},
+        {SoundNodeType::Random, "Random", "plays one of its children, picked at random at each event."},
+        {SoundNodeType::Blend, "Blend", "plays all its children together, layered."},
+        {SoundNodeType::Sound, "Sound", "one file or item (its Takes / take markers are its variations)."},
+    };
+    const float wrap = ui::Dp(336.0f);
+    for (const Line& l : kLines) {
+        ImDrawList*  dl = ImGui::GetWindowDrawList();
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float  is = ui::Dp(14.0f), lh = ImGui::GetTextLineHeight();
+        DrawNodeTypeGlyph(dl, ImVec2(p.x, p.y + std::floor((lh - is) * 0.5f)), is, l.type, TypeColor(l.type));
+        ImGui::SetCursorScreenPos(ImVec2(p.x + is + ui::Dp(6.0f), p.y));
+        {
+            ui::FontScope f(ui::FontSemibold());
+            ImGui::TextUnformatted(l.name);
+        }
+        ImGui::SameLine(0.0f, ui::Dp(5.0f));
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + std::max(ui::Dp(80.0f), wrap - (ImGui::GetCursorScreenPos().x - p.x)));
+        ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
+        ImGui::TextUnformatted(l.text);
+        ImGui::PopStyleColor();
+        ImGui::PopTextWrapPos();
+    }
+    ui::EndMenuPopup();
 }
 
 void Toolbar(const SoundLibrary& lib)
 {
-    ToolbarAdd(lib, SoundNodeType::Sound, "+ Sound");
-    if (g.changed) return;
-    SameLineIfFits(ui::IconButtonWidth("+ Random"));
-    ToolbarAdd(lib, SoundNodeType::Random, "+ Random");
-    if (g.changed) return;
-    SameLineIfFits(ui::IconButtonWidth("+ Blend"));
-    ToolbarAdd(lib, SoundNodeType::Blend, "+ Blend");
-    if (g.changed) return;
-    SameLineIfFits(ui::IconMenuButtonWidth("+ Switch"));
-    ToolbarAdd(lib, SoundNodeType::Switch, "+ Switch");
-    if (g.changed) return;
-    if (g.sel.size() > 1) {
-        const std::string cnt = "\xC2\xBB " + std::to_string(g.sel.size());
-        SameLineIfFits(ImGui::CalcTextSize(cnt.c_str()).x);
-        ImGui::TextColored(ui::Col(ui::kAccent), "%s", cnt.c_str());
-        Tip("The + buttons add one to each selected row");
-    }
-    int with_node = 0;
-    for (const LibraryRow& r : g.sel)
-        if (!RowNode(lib, r).empty()) ++with_node;
-    const std::string wl = with_node > 1 ? "Group (" + std::to_string(with_node) + ")" : std::string("Wrap");
-    SameLineIfFits(MenuButtonWidth(wl.c_str()));
-    if (MenuButton(wl.c_str(), with_node > 0)) ImGui::OpenPopup("##tbwrap");
-    Tip(with_node > 1 ? "Groups the selected rows into a new Random or Blend"
-                      : with_node ? "Wraps the selected row in a new Random or Blend"
-                                  : "Select rows first (Ctrl / Shift-click for several)");
-    if (ImGui::BeginPopup("##tbwrap")) {
-        std::vector<LibraryRow> rows;
+    // The mockup's .tbb: 24 px buttons (pad 0 6), 3 px apart, wrapping inside the well.
+    Well well;
+    BeginWell(well);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
+                        ImVec2(ui::Dp(6.0f), std::max(0.0f, (ui::FieldH() - ImGui::GetFontSize()) * 0.5f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ui::Dp(3.0f), ui::Dp(3.0f)));
+    [&] {
+        ToolbarAdd(lib, SoundNodeType::Sound, "+ Sound");
+        if (g.changed) return;
+        SameLineIfFits(ui::IconButtonWidth("+ Random"));
+        ToolbarAdd(lib, SoundNodeType::Random, "+ Random");
+        if (g.changed) return;
+        SameLineIfFits(ui::IconButtonWidth("+ Blend"));
+        ToolbarAdd(lib, SoundNodeType::Blend, "+ Blend");
+        if (g.changed) return;
+        SameLineIfFits(ui::IconMenuButtonWidth("+ Switch"));
+        ToolbarAdd(lib, SoundNodeType::Switch, "+ Switch");
+        if (g.changed) return;
+        if (g.sel.size() > 1) {
+            // The mockup's .tbto chip: "→ N".
+            const std::string cnt = "\xE2\x86\x92 " + std::to_string(g.sel.size());
+            SameLineIfFits(ui::CountChipWidth(cnt.c_str()));
+            ui::CountChip(cnt.c_str());
+            Tip("The + buttons add one to each selected row");
+        }
+        int with_node = 0;
         for (const LibraryRow& r : g.sel)
-            if (!RowNode(lib, r).empty()) rows.push_back(r);
-        WrapMenu(rows);
-        ImGui::EndPopup();
-    }
-    SameLineIfFits(ImGui::CalcTextSize("(?)").x);
-    HelpMark();
+            if (!RowNode(lib, r).empty()) ++with_node;
+        const std::string wl = with_node > 1 ? "Group (" + std::to_string(with_node) + ")" : std::string("Wrap");
+        // The .tbsep before Wrap (a 1 x 18 stroke line, 2 px each side), only beside the buttons:
+        // when Wrap goes onto a line of its own, no separator leads it.
+        const float sep_w = ui::Dp(5.0f);
+        if (SameLineIfFits(sep_w + ImGui::GetStyle().ItemSpacing.x + MenuButtonWidth(wl.c_str()))) {
+            const ImVec2 sp = ImGui::GetCursorScreenPos();
+            const float  fh = ImGui::GetFrameHeight();
+            ImGui::Dummy(ImVec2(sep_w, fh));
+            const float x = std::floor(sp.x + sep_w * 0.5f) + 0.5f, half = ui::Dp(9.0f);
+            ImGui::GetWindowDrawList()->AddLine(ImVec2(x, sp.y + fh * 0.5f - half), ImVec2(x, sp.y + fh * 0.5f + half),
+                                                ui::kStroke, 1.0f);
+            ImGui::SameLine();
+        }
+        if (MenuButton(wl.c_str(), with_node > 0)) ImGui::OpenPopup("##tbwrap");
+        Tip(with_node > 1 ? "Groups the selected rows into a new Random or Blend"
+                          : with_node ? "Wraps the selected row in a new Random or Blend"
+                                      : "Select rows first (Ctrl / Shift-click for several)");
+        if (ui::BeginMenuPopup("##tbwrap")) {
+            std::vector<LibraryRow> rows;
+            for (const LibraryRow& r : g.sel)
+                if (!RowNode(lib, r).empty()) rows.push_back(r);
+            WrapMenu(rows);
+            ui::EndMenuPopup();
+        }
+        if (g.changed) return;
+        // The "?" at the far right of the last line (a flex spacer before it in the mockup).
+        const float qs = ui::Dp(18.0f);
+        if (SameLineIfFits(qs)) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, ImGui::GetContentRegionAvail().x - qs));
+        ToolbarHelp();
+    }();
+    ImGui::PopStyleVar(2);
+    EndWell(well);
 }
 
 // ---- Rows ---------------------------------------------------------------------------------------
@@ -849,55 +999,104 @@ void DrawRow(const SoundLibrary& lib, const TreeRow& r, size_t index)
     ImGui::PopID();
 }
 
+// `c` at .45 opacity (the mockup's cut rows, .trow.cutting).
+ImU32 Faded(ImU32 c, bool fade)
+{
+    if (!fade) return c;
+    const unsigned a = (c >> IM_COL32_A_SHIFT) & 0xFFu;
+    return (c & ~IM_COL32_A_MASK) | (static_cast<ImU32>(a * 45u / 100u) << IM_COL32_A_SHIFT);
+}
+
+// 13-7a (audit C3.5): the Unassigned header (.trow.uhead): 24 px after a 4 px margin, its caption
+// UPPERCASE letter-spaced in warn 11 px, then its hint in faint.
+void DrawUnassignedHeader(const TreeRow& r)
+{
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float  w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const float  top = ui::Dp(4.0f), h = ui::Dp(24.0f);
+    const float  x = p.x + ui::Dp(kRowPad + r.depth * kIndent) + ui::Dp(18.0f + 6.0f);
+    std::string  caps = r.label, rest;
+    const size_t dot = caps.find(" \xC2\xB7 ");
+    if (dot != std::string::npos) {
+        rest = caps.substr(dot);
+        caps.resize(dot);
+    }
+    ImFont*     f = ui::FontSmall();
+    const float ty = std::floor(p.y + top + (h - f->FontSize) * 0.5f);
+    ImGui::SetCursorScreenPos(ImVec2(x, ty));
+    ui::GroupCaption(caps.c_str(), kLibUnassigned);
+    const float cx = ImGui::GetItemRectMax().x;
+    if (!rest.empty()) {
+        ui::FontScope fs(f);
+        ui::EllipsisTextTip(ImGui::GetWindowDrawList(), ImVec2(cx, ty), p.x + w - ui::Dp(4.0f), ui::kFaint, rest);
+    }
+    ImGui::SetCursorScreenPos(p);
+    ImGui::Dummy(ImVec2(w, top + h));
+}
+
 // One row; returns at once after a gesture (`lib` is then stale).
+// 13-7a (audit C3.3 - C3.5, B10): the mockup's .trow, 28 px: from the left 4 px + 18 px a level,
+// the 18 px chevron (or its empty room), the type icon (a container's a 20 px button in the
+// accent ink, framed while hovered or selected; a Sound's 16 px muted; an empty value's dot),
+// the name in 13 px; from the right, each shown only while the row is hovered / selected and
+// taking no room otherwise: the ⋯ menu, ▶ / ■, the "default" tag or ☆, then "missing".
 void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
 {
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const float rh = ImGui::GetFrameHeight();
-    const ImVec2 p = ImGui::GetCursorScreenPos();
-    const float w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
-    const float x0 = p.x + r.depth * kIndent;
-    const float ty = p.y + (rh - ImGui::GetTextLineHeight()) * 0.5f;
-
     if (r.kind == TreeRowKind::UnassignedHeader) {
-        dl->AddText(ImVec2(x0 + 14.0f, ty), kLibUnassigned, r.label.c_str());
-        ImGui::Dummy(ImVec2(w, rh));
+        DrawUnassignedHeader(r);
+        return;
+    }
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const float  rh = ui::RowH();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float  w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const float  x0 = p.x + ui::Dp(kRowPad + r.depth * kIndent);
+    const float  cy = p.y + rh * 0.5f;
+    const float  gap = ui::Dp(6.0f);
+
+    if (r.kind == TreeRowKind::Hint) {
+        // .trow.hintrow: a dashed box at the row's depth, its text faint 12 px.
+        ImGui::SetNextItemAllowOverlap();
+        ImGui::InvisibleButton("##row", ImVec2(w, rh));
+        const ImVec2 a(p.x + ui::Dp(r.depth * kIndent), p.y + ui::Dp(2.0f)), b(p.x + w, p.y + rh - ui::Dp(2.0f));
+        RowDropTarget(lib, r, ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
+        if (g.changed) return;
+        const bool drag = ImGui::GetDragDropPayload() != nullptr;
+        ui::DashedRect(dl, a, b, drag ? ui::kAccentLine : ui::kStrokeStrong, ui::kRadiusSm);
+        ui::EllipsisTextTip(dl, ImVec2(a.x + ui::Dp(4.0f) + ui::Dp(18.0f) + gap, cy - ImGui::GetTextLineHeight() * 0.5f),
+                            b.x - ui::Dp(4.0f), drag ? ui::kMuted : ui::kFaint, r.label);
         return;
     }
 
-    const bool selected = IsSel(r.row);
-    const bool is_cut = g.clip_lib == lib.uid && std::find(g.clip.begin(), g.clip.end(), r.row) != g.clip.end();
+    const bool       selected = IsSel(r.row);
+    const bool       is_cut = g.clip_lib == lib.uid && std::find(g.clip.begin(), g.clip.end(), r.row) != g.clip.end();
+    const SoundNode* n = r.node.empty() ? nullptr : FindNode(lib, r.node);
+    const bool       lit = g.hooks.is_lit && n && g.hooks.is_lit(n->uid);
     ImGui::SetNextItemAllowOverlap();
-    const bool clicked = ImGui::Selectable("##row", selected, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(w, rh));
+    const bool clicked = ui::SelectRow("##row", selected, lit ? ui::kRowLit : 0u, rh,
+                                       ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_AllowOverlap);
     const ImVec2 r0 = ImGui::GetItemRectMin(), r1 = ImGui::GetItemRectMax();
     // Hover of the whole row (its overlaid buttons included), so they do not flicker.
-    const bool hovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem) &&
-                         ImGui::IsMouseHoveringRect(r0, r1);
-    if (r.kind != TreeRowKind::Hint) {
-        if (clicked) ClickRow(r);
-        if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && (!r.node.empty() || r.kind == TreeRowKind::Value))
-            StartRowRename(lib, r.row);
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
-            if (!selected) SelectOnly(r.row);
-            g.menu_row = r.row;
-            g.menu_rows = IsSel(r.row) ? g.sel : std::vector<LibraryRow>{r.row};
-            g.open_row_menu = true;
-        }
-        RowDragSource(lib, r);
+    const bool hovered = ui::SelectRowHovered();
+    if (r.unassigned && !selected && !lit) dl->AddRectFilled(r0, r1, ui::kUnassignedSoft, ui::kRadiusSm);
+    if (clicked) ClickRow(r);
+    if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && (!r.node.empty() || r.kind == TreeRowKind::Value))
+        StartRowRename(lib, r.row);
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+        if (!selected) SelectOnly(r.row);
+        g.menu_row = r.row;
+        g.menu_rows = IsSel(r.row) ? g.sel : std::vector<LibraryRow>{r.row};
+        g.open_row_menu = true;
     }
+    RowDragSource(lib, r);
     RowDropTarget(lib, r, r0, r1);
     if (g.changed) return;
 
-    if (r.kind == TreeRowKind::Hint) {
-        dl->AddText(ImVec2(x0 + 14.0f, ty), ui::kFaint, r.label.c_str());
-        return;
-    }
-
-    const SoundNode* n = r.node.empty() ? nullptr : FindNode(lib, r.node);
-    // Chevron.
+    // Chevron (an 18 px button) or its empty room.
+    const float cs = ui::Dp(18.0f);
     if (r.container) {
-        ImGui::SetCursorScreenPos(ImVec2(x0, p.y));
-        if (ImGui::InvisibleButton("##chev", ImVec2(12.0f, rh))) {
+        ImGui::SetCursorScreenPos(ImVec2(x0, std::floor(cy - cs * 0.5f)));
+        if (ui::Chevron("##chev", r.open, cs)) {
             if (r.node == lib.root) {
                 if (r.open) g.open.insert("!root");
                 else g.open.erase("!root");
@@ -907,98 +1106,110 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
                 g.open.insert(r.node);
             }
         }
-        DrawChevron(dl, ImVec2(x0 + 6.0f, p.y + rh * 0.5f), r.open, ImGui::IsItemHovered() ? ui::kText : ui::kMuted);
     }
     // Type icon (a container's is a button: its type menu).
-    const float is = rh - 8.0f;
-    const ImVec2 ip(x0 + 14.0f, p.y + 4.0f);
-    if (n) {
-        bool hot = false;
-        if (r.container) {
-            ImGui::SetCursorScreenPos(ip);
-            if (ImGui::InvisibleButton("##type", ImVec2(is, is))) ImGui::OpenPopup("##typemenu");
-            hot = ImGui::IsItemHovered();
-            if (hot) {
-                std::string tip = TypeWord(n->type);
-                if (n->type == SoundNodeType::Switch)
-                    if (const SwitchGroup* gr = FindGroup(GetSoundStore(nullptr), n->group_uid)) tip += " on " + gr->name;
-                ImGui::SetTooltip("%s \xC2\xB7 click to change the type", tip.c_str());
-            }
+    const float ix = x0 + cs + gap;
+    float       icon_w = ui::Dp(16.0f);
+    if (n && r.container) {
+        const float  box = ui::Dp(20.0f);
+        const ImVec2 ip(ix, std::floor(cy - box * 0.5f));
+        ImGui::SetCursorScreenPos(ip);
+        if (ImGui::InvisibleButton("##type", ImVec2(box, box))) ImGui::OpenPopup("##typemenu");
+        const bool hot = ImGui::IsItemHovered();
+        if (hot) {
+            std::string tip = TypeWord(n->type);
+            if (n->type == SoundNodeType::Switch)
+                if (const SwitchGroup* gr = FindGroup(GetSoundStore(nullptr), n->group_uid)) tip += " on " + gr->name;
+            ImGui::SetTooltip("%s \xC2\xB7 click to change the type", tip.c_str());
         }
-        DrawTypeIcon(dl, ip, is, n->type, hot);
+        DrawTypeIcon(dl, ip, box, n->type, hot || selected || ImGui::IsPopupOpen("##typemenu"), Faded(TypeColor(n->type), is_cut));
+        icon_w = box;
+    } else if (n) {
+        const float is = ui::Dp(16.0f);
+        DrawTypeIcon(dl, ImVec2(ix, std::floor(cy - is * 0.5f)), is, n->type, false, Faded(TypeColor(n->type), is_cut));
     } else {
-        // A value with no sound of its own: the mock-up's value dot (ICON.value).
-        const float g = is * 0.8f, o = (is - g) * 0.5f;
-        DrawLibraryGlyph(dl, ImVec2(ip.x + o, ip.y + o), g, kGlyphValue, ui::kMuted);
+        // A value with no sound of its own: the mockup's value dot (ICON.value).
+        const float is = ui::Dp(16.0f);
+        DrawLibraryGlyph(dl, ImVec2(ix, std::floor(cy - is * 0.5f)), is, kGlyphValue, Faded(ui::kMuted, is_cut));
     }
-    if (ImGui::BeginPopup("##typemenu")) {
+    if (ui::BeginMenuPopup("##typemenu")) {
         TypeMenu(IsSel(r.row) ? g.sel : std::vector<LibraryRow>{r.row});
-        ImGui::EndPopup();
+        ui::EndMenuPopup();
     }
     if (g.changed) return;
 
-    // Right side, from the right edge: ⋯, ▶ (hover / selected, play hook set), default / ☆, missing.
-    float rx = p.x + w - 4.0f;
-    const bool show_tools = hovered || selected || ImGui::IsPopupOpen("##typemenu");
-    auto right_button = [&](const char* id, const char* text, ImU32 col) {
-        const float bw = ImGui::CalcTextSize(text).x + 8.0f;
+    // Right side, from the right edge.
+    float      rx = p.x + w - ui::Dp(4.0f);
+    const bool more_on = (g.open_row_menu || g.row_menu_open) && g.menu_row == r.row;
+    const bool show_tools = hovered || selected || more_on || ImGui::IsPopupOpen("##typemenu");
+    if (show_tools) {
+        const float bw = ui::Dp(22.0f), bh = ui::Dp(20.0f);
         rx -= bw;
-        ImGui::SetCursorScreenPos(ImVec2(rx, p.y));
-        const bool pressed = ImGui::InvisibleButton(id, ImVec2(bw, rh));
-        dl->AddText(ImVec2(rx + 4.0f, ty), ImGui::IsItemHovered() ? ui::kText : col, text);
-        rx -= 2.0f;
-        return pressed;
-    };
-    if (show_tools && right_button("##more", "...", ui::kMuted)) {
-        if (!selected) SelectOnly(r.row);
-        g.menu_row = r.row;
-        g.menu_rows = IsSel(r.row) ? g.sel : std::vector<LibraryRow>{r.row};
-        g.open_row_menu = true;
+        bool hov = false;
+        if (RowToolButton("##more", ImVec2(rx, std::floor(cy - bh * 0.5f)), bw, bh, more_on, &hov)) {
+            if (!selected) SelectOnly(r.row);
+            g.menu_row = r.row;
+            g.menu_rows = IsSel(r.row) ? g.sel : std::vector<LibraryRow>{r.row};
+            g.open_row_menu = true;
+        }
+        CentredGlyph(dl, ui::FontTitle(), ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), hov ? ui::kText : ui::kMuted,
+                     "\xE2\x8B\xAF");
+        rx -= gap;
     }
-    if (show_tools && n && g.hooks.play) {
-        const bool lit = g.hooks.is_lit && g.hooks.is_lit(n->uid);
-        const float bw = 16.0f;
-        rx -= bw;
-        ImGui::SetCursorScreenPos(ImVec2(rx, p.y));
-        if (ImGui::InvisibleButton("##play", ImVec2(bw, rh))) {
+    if ((show_tools || lit) && n && g.hooks.play) {
+        const float bs = ui::Dp(20.0f);
+        rx -= bs;
+        bool hov = false;
+        if (RowToolButton("##play", ImVec2(rx, std::floor(cy - bs * 0.5f)), bs, bs, lit, &hov)) {
             if (lit && g.hooks.stop) g.hooks.stop();
             else g.hooks.play(lib.uid, n->uid);
         }
-        const ImU32 pc = ImGui::IsItemHovered() || lit ? ui::kAccent : ui::kMuted;
-        const float cy = p.y + rh * 0.5f;
-        if (lit) dl->AddRectFilled(ImVec2(rx + 4.0f, cy - 4.0f), ImVec2(rx + 12.0f, cy + 4.0f), pc);
-        else dl->AddTriangleFilled(ImVec2(rx + 4.0f, cy - 5.0f), ImVec2(rx + 4.0f, cy + 5.0f), ImVec2(rx + 13.0f, cy), pc);
-        rx -= 2.0f;
+        Tip(lit ? "Stop" : "Play");
+        const ImU32 pc = hov || lit ? ui::kAccent : ui::kMuted;
+        const float c = rx + bs * 0.5f, s = ui::Dp(4.0f);
+        if (lit) dl->AddRectFilled(ImVec2(c - s, cy - s), ImVec2(c + s, cy + s), pc);
+        else dl->AddTriangleFilled(ImVec2(c - s, cy - s - 1.0f), ImVec2(c - s, cy + s + 1.0f), ImVec2(c + s + 1.0f, cy), pc);
+        rx -= gap;
     }
     if (r.kind == TreeRowKind::Value) {
         if (r.is_default) {
             // 13-7 (audit B3): the mockup's .dtag box (10 px muted, stroke-strong edge).
             const char* t = "default";
             const float tw = ui::SmallTagWidth(t);
-            rx -= tw + 4.0f;
-            ui::DrawSmallTag(dl, ImVec2(rx, std::floor(p.y + (rh - ui::SmallTagHeight()) * 0.5f)), t);
+            rx -= tw;
+            ui::DrawSmallTag(dl, ImVec2(rx, std::floor(cy - ui::SmallTagHeight() * 0.5f)), t);
             ImGui::SetCursorScreenPos(ImVec2(rx, p.y));
             ImGui::Dummy(ImVec2(tw, rh));
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("Default value: plays when the event's value is not set, or when a value has no sound of its own");
+            rx -= gap;
         } else if (hovered) {
-            if (right_button("##star", "*", ui::kMuted)) DoMakeDefault({r.row});
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Make it the default value");
+            // .star: 18 px, faint, warn on its hover background.
+            const float bs = ui::Dp(18.0f);
+            rx -= bs;
+            bool hov = false;
+            if (RowToolButton("##star", ImVec2(rx, std::floor(cy - bs * 0.5f)), bs, bs, false, &hov)) DoMakeDefault({r.row});
+            CentredGlyph(dl, ui::FontSmall(), ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), hov ? ui::kWarn : ui::kFaint,
+                         "\xE2\x98\x86");
+            Tip("Make it the default value");
+            rx -= gap;
         }
     }
     if (g.changed) return;
     const bool missing = n && SoundMissing(*n);
     if (missing) {
+        // .rt.miss: 12 px #ff9a9a.
         const char* t = "missing";
-        rx -= ImGui::CalcTextSize(t).x + 6.0f;
-        dl->AddText(ImVec2(rx, ty), kLibMissing, t);
+        rx -= ImGui::CalcTextSize(t).x;
+        dl->AddText(ImVec2(rx, cy - ImGui::GetTextLineHeight() * 0.5f), Faded(ui::kMissText, is_cut), t);
+        rx -= gap;
     }
 
-    // The name (or its inline rename field).
-    const float nx = ip.x + is + 6.0f;
+    // The name (or its inline rename field), 13 px.
+    const float nx = ix + icon_w + gap;
     if (g.rename == RenameKind::Row && g.r_a == lib.uid && g.r_row == r.row) {
-        ImGui::SetCursorScreenPos(ImVec2(nx, p.y));
-        const int res = InlineName(rx - nx - 4.0f);
+        ImGui::SetCursorScreenPos(ImVec2(nx, std::floor(cy - ui::ControlH() * 0.5f)));
+        const int res = InlineName(rx - nx);
         if (res != 0) {
             const std::string name = g.buf;
             const LibraryRow row = r.row;
@@ -1008,11 +1219,11 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
         }
     } else {
         ImU32 col = ui::kText;
-        if (r.kind == TreeRowKind::Value && r.node.empty()) col = ui::kFaint;  // an empty value, dimmed
-        if (missing && r.kind == TreeRowKind::Node) col = kLibMissing;
-        if (is_cut) col = ui::kFaint;
-        if (g.hooks.is_lit && n && g.hooks.is_lit(n->uid)) col = ui::kAccent;
-        ui::EllipsisTextTip(dl, ImVec2(nx, ty), rx - 4.0f, col, r.label);
+        if (r.kind == TreeRowKind::Value && r.node.empty()) col = ui::kMuted;  // an empty value (.nm.emptyv)
+        if (r.unassigned) col = ui::kUnassignedName;
+        if (missing && r.kind == TreeRowKind::Node) col = ui::kMissName;
+        ui::FontScope f(ui::FontTitle());
+        ui::EllipsisTextTip(dl, ImVec2(nx, std::floor(cy - ImGui::GetTextLineHeight() * 0.5f)), rx, Faded(col, is_cut), r.label);
     }
     ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh));
     ImGui::Dummy(ImVec2(0.0f, 0.0f));
@@ -1042,154 +1253,337 @@ void TreeKeys(const SoundLibrary& lib)
     }
 }
 
+// A line of text centred in [x, x + w] (wrapped within it, from its left, when it does not fit).
+void CentredText(const char* text, ImU32 col, float x, float w)
+{
+    const float tw = ImGui::CalcTextSize(text).x;
+    ImGui::SetCursorScreenPos(ImVec2(tw <= w ? std::floor(x + (w - tw) * 0.5f) : x, ImGui::GetCursorScreenPos().y));
+    ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(col));
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + std::max(1.0f, tw <= w ? tw + 1.0f : w));
+    ImGui::TextUnformatted(text);
+    ImGui::PopTextWrapPos();
+    ImGui::PopStyleColor();
+}
+
+// 13-7a (audit C3.6): the mockup's .empty-big -- a dashed box (stroke-strong, r7, 18 px above and
+// below, 8 px each side, 18 px inside), centred muted text, the four add buttons with their icons,
+// then the drop sentence; the box takes rows and Media Explorer files (accent edge + accent-soft
+// while an acceptable drag is over it).
 void EmptyLibraryHint(const SoundLibrary& lib)
 {
-    ImGui::Spacing();
-    const char* t = "This library is empty. Add a first sound:";
-    const float w = ImGui::GetContentRegionAvail().x;
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (w - ImGui::CalcTextSize(t).x) * 0.5f));
-    ui::SubText(t);
-    // The mock-up's hint buttons: each type's icon before its label, at least 80 px wide.
-    const char* const kLabels[4] = {"+ Sound##hint", "+ Random##hint", "+ Blend##hint", "+ Switch##hint"};
+    const ImVec2 c0 = ImGui::GetCursorScreenPos();
+    const float  avail = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const float  mx = std::min(ui::Dp(8.0f), avail * 0.1f), my = ui::Dp(18.0f);
+    const float  pad = std::min(ui::Dp(18.0f), std::max(ui::Dp(4.0f), (avail - 2.0f * mx) * 0.1f));
+    const ImVec2 b0(c0.x + mx, c0.y + my);
+    const float  bw = std::max(1.0f, avail - 2.0f * mx);
+    const float  ix = b0.x + pad, iw = std::max(1.0f, bw - 2.0f * pad);
+    const float  vgap = ui::Dp(10.0f);
+
+    ImGuiWindow* win = ImGui::GetCurrentWindow();
+    const float  saved_work = win->WorkRect.Max.x, saved_content = win->ContentRegionRect.Max.x;
+    win->WorkRect.Max.x = std::min(saved_work, ix + iw);
+    win->ContentRegionRect.Max.x = std::min(saved_content, ix + iw);
+    ImGui::SetCursorScreenPos(ImVec2(ix, b0.y + pad));
+    ImGui::BeginGroup();
+    CentredText("This library is empty.", ui::kMuted, ix, iw);
+    CentredText("Add its first sound, or a container:", ui::kMuted, ix, iw);
+    ImGui::Dummy(ImVec2(0.0f, std::max(0.0f, vgap - ImGui::GetStyle().ItemSpacing.y)));
+    const char* const   kLabels[4] = {"+ Sound##hint", "+ Random##hint", "+ Blend##hint", "+ Switch##hint"};
     const SoundNodeType kHintTypes[4] = {SoundNodeType::Sound, SoundNodeType::Random, SoundNodeType::Blend,
                                          SoundNodeType::Switch};
-    float bw = 3.0f * ImGui::GetStyle().ItemSpacing.x;
-    for (const char* l : kLabels) bw += std::max(80.0f, ui::IconButtonWidth(l));
-    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, (w - bw) * 0.5f));  // centred when on one line
-    (void)lib;
-    for (int i = 0; i < 4; ++i) {
-        if (i > 0) SameLineIfFits(std::max(80.0f, ui::IconButtonWidth(kLabels[i])));
-        if (!ui::IconButton(TypeIcon(kHintTypes[i]), kLabels[i], ImVec2(80.0f, 0.0f))) continue;
+    float row_w = 3.0f * ImGui::GetStyle().ItemSpacing.x;
+    for (const char* l : kLabels) row_w += ui::IconButtonWidth(l);
+    ImGui::SetCursorScreenPos(ImVec2(row_w <= iw ? std::floor(ix + (iw - row_w) * 0.5f) : ix, ImGui::GetCursorScreenPos().y));
+    for (int i = 0; i < 4 && !g.changed; ++i) {
+        if (i > 0) SameLineIfFits(ui::IconButtonWidth(kLabels[i]));
+        if (!ui::IconButton(TypeIcon(kHintTypes[i]), kLabels[i])) continue;
         if (kHintTypes[i] == SoundNodeType::Switch) ImGui::OpenPopup("##hintswitch");
         else DoAdd(kHintTypes[i], {});
     }
-    if (ImGui::BeginPopup("##hintswitch")) {
+    if (!g.changed && ui::BeginMenuPopup("##hintswitch")) {
+        ui::MenuCaption("Switch on");
         bool ng = false;
         const std::string gid = GroupMenuItems(true, &ng);
         if (!gid.empty() || ng) DoAdd(SoundNodeType::Switch, gid, ng);
-        ImGui::EndPopup();
+        ui::EndMenuPopup();
     }
+    ImGui::Dummy(ImVec2(0.0f, std::max(0.0f, vgap - ImGui::GetStyle().ItemSpacing.y)));
+    CentredText("or drop files from the Media Explorer here.", ui::kMuted, ix, iw);
+    ImGui::EndGroup();
+    win->WorkRect.Max.x = saved_work;
+    win->ContentRegionRect.Max.x = saved_content;
+    const float  bottom = ImGui::GetItemRectMax().y + pad;
+    const ImVec2 b1(b0.x + bw, bottom);
+    if (g.changed) return;  // `lib` is stale
+    ui::DashedRect(ImGui::GetWindowDrawList(), b0, b1, ui::kStrokeStrong, ui::kRadiusMd);
+    // The box is a drop target: the root.
+    ImGui::SetCursorScreenPos(b0);
+    ImGui::Dummy(ImVec2(bw, bottom - b0.y));
+    if (ImGui::BeginDragDropTarget()) {
+        RootDropOn(lib, b0, b1);
+        ImGui::EndDragDropTarget();
+    }
+    ImGui::SetCursorScreenPos(ImVec2(c0.x, bottom + my));
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
 }
 
 }  // namespace
 
 // ---- Column 1 -----------------------------------------------------------------------------------
 
+namespace {
+
+void StartLibraryRename(const SoundLibrary& lib)
+{
+    g.rename = RenameKind::Library;
+    g.r_a = lib.uid;
+    std::snprintf(g.buf, sizeof(g.buf), "%s", lib.name.c_str());
+    g.r_focus = true;
+}
+
+void PickLibrary(const std::string& uid)
+{
+    if (g.lib == uid) return;
+    g.lib = uid;
+    g.sel.clear();
+    g.has_anchor = false;
+}
+
+// A list caption (.lgrp: 11 px faint UPPERCASE, letter-spaced, margin 6 2 2).
+void ListCaption(const char* text, const char* tip = nullptr)
+{
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::SetCursorScreenPos(ImVec2(p.x + ui::Dp(2.0f), p.y + ui::Dp(6.0f) - ImGui::GetStyle().ItemSpacing.y));
+    ui::GroupCaption(text);
+    if (tip && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+    ImGui::Dummy(ImVec2(0.0f, std::max(0.0f, ui::Dp(2.0f) - ImGui::GetStyle().ItemSpacing.y)));
+}
+
+// The library's menu (the row's right-click, the tree header's ⋯): Rename, a User Library's
+// Export / Locate / Refresh, Delete. Sets *to_delete for the caller to delete after its loop.
+void LibraryMenuItems(const SoundLibrary& lib, std::string* to_delete, bool rename_item)
+{
+    if (rename_item && ImGui::MenuItem("Rename")) StartLibraryRename(lib);
+    if (lib.user) {
+        if (ImGui::MenuItem("Export .ravlib...")) RequestUserLibraryExport(lib.uid);
+        std::string first;
+        const int   miss = UserLibraryMissing(lib.uid, &first);
+        if (ImGui::MenuItem("Locate missing files...", nullptr, false, miss > 0)) RequestUserLibraryLocate(lib.uid, first);
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+            ImGui::SetTooltip(miss > 0 ? "Pick the file of its first missing sound: the others are looked for near it"
+                                       : "No missing sound");
+        if (ImGui::MenuItem("Refresh the User Library folder")) RefreshUserLibraries();
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Delete library")) *to_delete = lib.uid;
+}
+
+// 13-7a (audit C1.3): a library row (.lrow): 28 px, r7, the 8 px dot in the library's colour,
+// the name in 13 px, then the blocked "!" (12 px bold warn) and the missing count (11 px semibold
+// bad). The trail stays beside the name while the name keeps ~4 em, else it goes under it.
+void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::string* to_delete)
+{
+    ImGui::PushID(lib.uid.c_str());
+    const float  rh = ui::RowH();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float  w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const float  nx = p.x + ui::Dp(6.0f + 8.0f + 7.0f);
+    if (g.rename == RenameKind::Library && g.r_a == lib.uid) {
+        ImGui::SetCursorScreenPos(ImVec2(nx, std::floor(p.y + (rh - ui::ControlH()) * 0.5f)));
+        const int res = InlineName(p.x + w - nx);
+        if (res != 0) {
+            const std::string name = g.buf, uid = lib.uid;
+            EndRename();
+            if (res > 0) Gesture("Rename library", [&](SoundStore& s) { return RenameLibrary(s, uid, name); });
+        }
+        dl->AddCircleFilled(ImVec2(p.x + ui::Dp(10.0f), p.y + rh * 0.5f), ui::Dp(4.0f), LibDot(lib.color));
+        ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh));
+        ImGui::Dummy(ImVec2(0.0f, 0.0f));
+        ImGui::PopID();
+        return;
+    }
+    const LibraryCheck chk = CheckLibrary(store, lib);
+    const int          miss = CountMissing(lib, SoundMissing);
+    const std::string  miss_t = miss > 0 ? std::to_string(miss) : std::string();
+    ImFont*            blk_f = ui::FontSemibold();
+    ImFont*            miss_f = ui::FontCaptionBold();
+    float              tw[2];
+    int                tk[2];
+    int                nt = 0;
+    if (chk.blocked) { tk[nt] = 0; tw[nt++] = ui::TextSizeIn(blk_f, "!").x + ui::Dp(2.0f); }
+    if (miss > 0) { tk[nt] = 1; tw[nt++] = ui::TextSizeIn(miss_f, miss_t.c_str()).x; }
+    flow::TrailPlace tp[2];
+    float            name_w = 0.0f;
+    {
+        ui::FontScope f(ui::FontTitle());
+        name_w = ui::TextWidth(lib.name.c_str());
+    }
+    const float lead_min = std::min(name_w, 4.0f * ImGui::GetFontSize());
+    const int   lines = nt > 0 ? flow::PlaceTrail(tw, nt, nx, p.x + w - ui::Dp(6.0f), lead_min, ui::Dp(7.0f), tp) : 1;
+    ImGui::SetNextItemAllowOverlap();
+    if (ui::SelectRow("##lib", g.lib == lib.uid, 0, rh * static_cast<float>(lines),
+                      ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_AllowOverlap, ui::kRadiusMd))
+        PickLibrary(lib.uid);
+    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) StartLibraryRename(lib);
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) ImGui::OpenPopup("##libmenu");
+    dl->AddCircleFilled(ImVec2(p.x + ui::Dp(10.0f), p.y + rh * 0.5f), ui::Dp(4.0f), LibDot(lib.color));
+    for (int i = 0; i < nt; ++i) {
+        const float y = p.y + static_cast<float>(tp[i].line) * rh;
+        ImFont*     f = tk[i] == 0 ? blk_f : miss_f;
+        const char* t = tk[i] == 0 ? "!" : miss_t.c_str();
+        ImGui::SetCursorScreenPos(ImVec2(tp[i].x, y));
+        ImGui::Dummy(ImVec2(tp[i].w, rh));
+        ui::AddTextIn(dl, f, ImVec2(tp[i].x + (tk[i] == 0 ? ui::Dp(1.0f) : 0.0f), std::floor(y + (rh - f->FontSize) * 0.5f)),
+                      tk[i] == 0 ? ui::kWarn : ui::kBad, t);
+        if (ImGui::IsItemHovered()) {
+            if (tk[i] == 0) ImGui::SetTooltip("Blocked: %s", chk.reason.c_str());
+            else ImGui::SetTooltip("%d missing sound(s)", miss);
+        }
+    }
+    {
+        ui::FontScope f(ui::FontTitle());
+        ui::EllipsisTextTip(dl, ImVec2(nx, std::floor(p.y + (rh - ImGui::GetTextLineHeight()) * 0.5f)),
+                            (lines == 1 && nt > 0 ? tp[0].x - ui::Dp(7.0f) : p.x + w - ui::Dp(6.0f)), ui::kText, lib.name);
+    }
+    if (ui::BeginMenuPopup("##libmenu")) {
+        LibraryMenuItems(lib, to_delete, true);
+        ui::EndMenuPopup();
+    }
+    ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh * static_cast<float>(lines)));
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
+    ImGui::PopID();
+}
+
+// 13-7a (audit C1.4): a .ravlib of the User Library folder not in this project, under USER:
+// dimmed, its dot, an "Add" button (or "unreadable").
+void UserFileRow(const UserLibraryFile& f, std::string* add_file)
+{
+    ImGui::PushID(f.file.c_str());
+    const float  rh = ui::RowH();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float  w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const float  nx = p.x + ui::Dp(6.0f + 8.0f + 7.0f);
+    const char*  trail = f.readable ? "Add" : "unreadable";
+    const float  tw = f.readable ? ui::ButtonWidth(trail) : ui::TextWidth(trail);
+    ImGui::SetNextItemAllowOverlap();
+    ui::SelectRow("##ufile", false, 0, rh, ImGuiSelectableFlags_AllowOverlap, ui::kRadiusMd);
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        ImGui::SetTooltip(f.readable ? "%s\nNot in this project: Add puts it in" : "%s\nThis file cannot be read", f.file.c_str());
+    if (f.readable) dl->AddCircleFilled(ImVec2(p.x + ui::Dp(10.0f), p.y + rh * 0.5f), ui::Dp(4.0f), Faded(LibDot(f.color), true));
+    const float tx = std::max(nx, p.x + w - ui::Dp(6.0f) - tw);
+    if (f.readable) {
+        ImGui::SetCursorScreenPos(ImVec2(tx, std::floor(p.y + (rh - ui::ControlH()) * 0.5f)));
+        if (ui::SolidButton(trail, ImVec2(std::min(tw, p.x + w - ui::Dp(6.0f) - tx), 0.0f))) *add_file = f.file;
+    } else {
+        dl->AddText(ImVec2(tx, std::floor(p.y + (rh - ImGui::GetTextLineHeight()) * 0.5f)), ui::kFaint, trail);
+    }
+    {
+        ui::FontScope fs(ui::FontTitle());
+        ui::EllipsisTextTip(dl, ImVec2(nx, std::floor(p.y + (rh - ImGui::GetTextLineHeight()) * 0.5f)), tx - ui::Dp(7.0f),
+                            f.readable ? ui::kMuted : ui::kFaint, f.name, f.file.c_str());
+    }
+    ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh));
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
+    ImGui::PopID();
+}
+
+}  // namespace
+
+// 13-7a (audit C1.1 - C1.4): a fixed "Libraries" section, « at its header's right; the project's
+// libraries under PROJECT, the User Library's under USER (with the folder's files not in the
+// project); "+ Library" and "+ User Library" side by side, then "Import .ravlib..." full width.
 void DrawLibrariesSection()
 {
     g.changed = false;
     RefreshItemGuids();
+    PrepareUserLibraries();
     const SoundStore& store = GetSoundStore(nullptr);
     CurrentLib();
+    ui::SectionOpts opts;
+    opts.foldable = false;
+    opts.right_w = ui::ControlH();
     ui::Section sec;
-    if (ui::BeginSection(sec, "Libraries")) {
-        std::string to_delete;
-        for (const SoundLibrary& lib : store.libraries) {
-            ImGui::PushID(lib.uid.c_str());
-            const float rh = ImGui::GetFrameHeight();
-            const ImVec2 p = ImGui::GetCursorScreenPos();
-            const float w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
-            ImDrawList* dl = ImGui::GetWindowDrawList();
-            const float ty = p.y + (rh - ImGui::GetTextLineHeight()) * 0.5f;
-            if (g.rename == RenameKind::Library && g.r_a == lib.uid) {
-                const int res = InlineName(w);
-                if (res != 0) {
-                    const std::string name = g.buf, uid = lib.uid;
-                    EndRename();
-                    if (res > 0) Gesture("Rename library", [&](SoundStore& s) { return RenameLibrary(s, uid, name); });
-                }
-                ImGui::PopID();
+    const bool  open = ui::BeginSection(sec, "Libraries", opts);
+    ui::BeginSectionHeaderRight(sec);
+    // 13-7 (audit B2 / C1.1): the mockup's .colbtn, a ghost glyph button.
+    if (ui::IconOnlyButton("##collapse1", "\xC2\xAB", "Collapse (Ctrl+B)")) SetLibraryColumn1Collapsed(true);
+    ui::EndSectionHeaderRight(sec);
+    if (open) {
+        std::string                        to_delete, add_file;
+        const std::vector<UserLibraryFile> files = UserFilesNotInProject();
+        bool                               any_project = false, any_user = !files.empty();
+        for (const SoundLibrary& lib : store.libraries) (lib.user ? any_user : any_project) = true;
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, ui::Dp(1.0f)));
+        for (int user = 0; user < 2 && !g.changed; ++user) {
+            if (!(user ? any_user : any_project)) continue;
+            const std::string folder_tip = user ? "Folder: " + UserLibraryFolderText() : std::string();
+            ListCaption(user ? "User" : "Project", user ? folder_tip.c_str() : nullptr);
+            for (const SoundLibrary& lib : store.libraries) {
+                if (lib.user != (user == 1)) continue;
+                LibraryListRow(store, lib, &to_delete);
                 if (g.changed) break;
-                continue;
             }
-            // 13-7a: the trail, left to right "User", missing count, "!", the ... menu (its room kept
-            // even while hidden, so the name does not jump under the mouse), stays beside the name
-            // while the name keeps ~4 em, else it goes under it (wrapping): the row grows, nothing is cut.
-            const LibraryCheck chk = CheckLibrary(store, lib);
-            const int          miss = CountMissing(lib, SoundMissing);
-            const std::string miss_t = miss > 0 ? std::to_string(miss) : std::string();
-            float             tw[4];
-            int               tk[4];
-            int               nt = 0;
-            if (lib.user) { tk[nt] = 0; tw[nt++] = ui::TextWidth("User"); }
-            if (miss > 0) { tk[nt] = 1; tw[nt++] = ui::TextWidth(miss_t.c_str()); }
-            if (chk.blocked) { tk[nt] = 2; tw[nt++] = 10.0f; }
-            tk[nt] = 3;
-            tw[nt++] = 22.0f;
-            flow::TrailPlace tp[4];
-            const float      lead_min = std::min(ui::TextWidth(lib.name.c_str()), 4.0f * ImGui::GetFontSize());
-            const int        lines = flow::PlaceTrail(tw, nt, p.x + 16.0f, p.x + w - 4.0f, lead_min, 4.0f, tp);
-            ImGui::SetNextItemAllowOverlap();
-            if (ImGui::Selectable("##lib", g.lib == lib.uid, ImGuiSelectableFlags_AllowDoubleClick,
-                                  ImVec2(w, rh * static_cast<float>(lines)))) {
-                if (g.lib != lib.uid) {
-                    g.lib = lib.uid;
-                    g.sel.clear();
-                    g.has_anchor = false;
-                }
-            }
-            const bool hovered = ImGui::IsItemHovered();
-            if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                g.rename = RenameKind::Library;
-                g.r_a = lib.uid;
-                std::snprintf(g.buf, sizeof(g.buf), "%s", lib.name.c_str());
-                g.r_focus = true;
-            }
-            if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) ImGui::OpenPopup("##libmenu");
-            ImU32 dot = ui::kAccent;  // colour 0 = the accent
-            if (lib.color & 0x1000000u)
-                dot = IM_COL32((lib.color >> 16) & 0xFF, (lib.color >> 8) & 0xFF, lib.color & 0xFF, 0xFF);
-            dl->AddCircleFilled(ImVec2(p.x + 6.0f, p.y + rh * 0.5f), 4.0f, dot);
-            for (int i = 0; i < nt; ++i) {
-                const flow::TrailPlace& t = tp[i];
-                const float y = p.y + static_cast<float>(t.line) * rh;
-                const float by = y + (rh - ImGui::GetTextLineHeight()) * 0.5f;
-                ImGui::SetCursorScreenPos(ImVec2(t.x, y));
-                if (tk[i] == 0) {
-                    dl->AddText(ImVec2(t.x, by), ui::kMuted, "User");
-                } else if (tk[i] == 1) {
-                    ImGui::Dummy(ImVec2(t.w, rh));
-                    dl->AddText(ImVec2(t.x, by), kLibMissing, miss_t.c_str());
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%d missing sound(s)", miss);
-                } else if (tk[i] == 2) {
-                    ImGui::Dummy(ImVec2(t.w, rh));
-                    dl->AddText(ImVec2(t.x + 2.0f, by), ui::kWarn, "!");
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Blocked: %s", chk.reason.c_str());
-                } else if (hovered || g.lib == lib.uid) {
-                    if (ImGui::InvisibleButton("##more", ImVec2(t.w, rh))) ImGui::OpenPopup("##libmenu");
-                    dl->AddText(ImVec2(t.x + 4.0f, by), ImGui::IsItemHovered() ? ui::kText : ui::kMuted, "...");
-                }
-            }
-            ui::EllipsisTextTip(dl, ImVec2(p.x + 16.0f, ty), (lines == 1 ? tp[0].x : p.x + w) - 4.0f, ui::kText, lib.name);
-            if (ImGui::BeginPopup("##libmenu")) {
-                if (ImGui::MenuItem("Rename")) {
-                    g.rename = RenameKind::Library;
-                    g.r_a = lib.uid;
-                    std::snprintf(g.buf, sizeof(g.buf), "%s", lib.name.c_str());
-                    g.r_focus = true;
-                }
-                if (ImGui::MenuItem("Delete")) to_delete = lib.uid;
-                ImGui::EndPopup();
-            }
-            ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh * static_cast<float>(lines)));
-            ImGui::Dummy(ImVec2(0.0f, 0.0f));
-            ImGui::PopID();
+            if (user && !g.changed)
+                for (const UserLibraryFile& f : files) UserFileRow(f, &add_file);
         }
-        if (!to_delete.empty())
+        ImGui::PopStyleVar();
+        if (!g.changed && !to_delete.empty())
             Gesture("Delete library", [&](SoundStore& s) { return DeleteLibrary(s, to_delete); });
-        if (store.libraries.empty()) ui::SubText("No library yet");
-        if (ui::SolidButton("+ Library")) {
+        if (!g.changed && !add_file.empty()) AddUserLibraryFile(add_file);
+        if (!any_project && !any_user) ui::SubText("No library yet");
+        ImGui::Dummy(ImVec2(0.0f, 0.0f));
+        // .two: the two add buttons share the width (6 px apart); Import under them, full width.
+        const float avail = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+        const float sp = ui::Dp(6.0f);
+        const float half = std::max(1.0f, std::floor((avail - sp) * 0.5f));
+        if (ui::SolidButton("+ Library", ImVec2(half, 0.0f))) {
             std::string uid;
-            if (Gesture("Add library", [&](SoundStore& s) { return NewLibrary(s, &uid); })) {
-                g.lib = uid;
-                g.sel.clear();
-                g.has_anchor = false;
-            }
+            if (Gesture("Add library", [&](SoundStore& s) { return NewLibrary(s, &uid); })) PickLibrary(uid);
         }
+        ImGui::SameLine(0.0f, sp);
+        if (ui::SolidButton("+ User Library", ImVec2(std::max(1.0f, avail - half - sp), 0.0f))) NewUserLibrary();
+        Tip("A library saved in its own file in the User Library folder, for every project");
+        if (ui::SolidButton("Import .ravlib...", ImVec2(avail, 0.0f))) RequestUserLibraryImport();
+        Tip("Add a .ravlib file: it is copied into the User Library folder");
     }
     ui::EndSection(sec);
 }
 
+namespace {
+
+// The rename field of a Switch Groups row, at x on a 28 px row; returns InlineName's result.
+int GroupRowRename(float x)
+{
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float  w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    ImGui::SetCursorScreenPos(ImVec2(x, std::floor(p.y + (ui::RowH() - ui::ControlH()) * 0.5f)));
+    const int res = InlineName(p.x + w - x - ui::Dp(4.0f));
+    ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + ui::RowH()));
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
+    return res;
+}
+
+// The × of a Switch Groups row (.more, 22 x 20) at the row's right end, shown while it is hovered.
+bool RowCross(ImVec2 p, float w, const char* tip)
+{
+    const float bw = ui::Dp(22.0f), bh = ui::Dp(20.0f);
+    bool        hov = false;
+    const bool  clicked = RowToolButton("##x", ImVec2(p.x + w - ui::Dp(4.0f) - bw, std::floor(p.y + (ui::RowH() - bh) * 0.5f)),
+                                        bw, bh, false, &hov);
+    CentredGlyph(ImGui::GetWindowDrawList(), ui::FontTitle(), ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
+                 hov ? ui::kText : ui::kMuted, "\xC3\x97");
+    Tip(tip);
+    return clicked;
+}
+
+}  // namespace
+
+// 13-7a (audit C2): a fixed "Switch Groups" section, "+ Group" at its header's right; group rows
+// (.trow.grp, 28 px: chevron, folder icon, name, value count in faint, × on hover), their value
+// rows one level in (18 px; the value dot, name, × on hover), then a dashed "+ value" field.
 void DrawSwitchGroupsSection()
 {
     g.changed = false;
@@ -1202,15 +1596,39 @@ void DrawSwitchGroupsSection()
             alive = std::any_of(rg->values.begin(), rg->values.end(), [](const SwitchValue& v) { return v.uid == g.r_b; });
         if (!alive) EndRename();
     }
+    ui::SectionOpts opts;
+    opts.foldable = false;
+    opts.right_w = ButtonWidth("+ Group");
     ui::Section sec;
-    if (ui::BeginSection(sec, "Switch Groups")) {
-        std::string del_group, del_value_group, del_value;
+    const bool  open_sec = ui::BeginSection(sec, "Switch Groups", opts);
+    ui::BeginSectionHeaderRight(sec);
+    if (ui::SolidButton("+ Group")) {
+        std::string gid;
+        if (Gesture("Add group", [&](SoundStore& s) { return AddGroup(s, "Group", &gid); })) {
+            g.rename = RenameKind::Group;
+            g.r_a = gid;
+            std::snprintf(g.buf, sizeof(g.buf), "%s",
+                          FindGroup(GetSoundStore(nullptr), gid) ? FindGroup(GetSoundStore(nullptr), gid)->name.c_str() : "Group");
+            g.r_focus = true;
+        }
+    }
+    ui::EndSectionHeaderRight(sec);
+    if (open_sec && !g.changed) {
+        std::string  del_group, del_value_group, del_value, add_group, add_name;
+        ImDrawList*  dl = ImGui::GetWindowDrawList();
+        const float  rh = ui::RowH(), gap = ui::Dp(6.0f), cs = ui::Dp(18.0f), is = ui::Dp(16.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 0.0f));
         for (const SwitchGroup& gr : store.groups) {
             ImGui::PushID(gr.uid.c_str());
-            const float w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
-            bool open = false;
+            const ImGuiID open_id = ImGui::GetID("##grp");
+            const bool    open = ImGui::GetStateStorage()->GetBool(open_id, true);
+            const ImVec2  p = ImGui::GetCursorScreenPos();
+            const float   w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+            const float   cy = p.y + rh * 0.5f;
+            const float   x0 = p.x + ui::Dp(kRowPad);
+            const float   nx = x0 + cs + gap + is + gap;
             if (g.rename == RenameKind::Group && g.r_a == gr.uid) {
-                const int res = InlineName(w);
+                const int res = GroupRowRename(nx);
                 if (res != 0) {
                     const std::string name = g.buf, uid = gr.uid;
                     EndRename();
@@ -1220,59 +1638,47 @@ void DrawSwitchGroupsSection()
                     ImGui::PopID();
                     break;
                 }
-                open = ImGui::GetStateStorage()->GetBool(ImGui::GetID("##grp"), true);
             } else {
-                const ImVec2 hp = ImGui::GetCursorScreenPos();
-                const float bw = ButtonWidth("+") + ImGui::GetStyle().ItemSpacing.x + ButtonWidth("\xC3\x97");  // SmallButtons
                 ImGui::SetNextItemAllowOverlap();
-                ImGui::SetNextItemOpen(ImGui::GetStateStorage()->GetBool(ImGui::GetID("##grp"), true), ImGuiCond_Once);
-                open = ImGui::TreeNodeEx("##grp", ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DefaultOpen |
-                                                      ImGuiTreeNodeFlags_NoTreePushOnOpen,
-                                         "%s", "");
-                const float gty = (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y - ImGui::GetTextLineHeight()) * 0.5f;
-                const float gx = hp.x + ImGui::GetTreeNodeToLabelSpacing();
-                // The mock-up's group row: a folder icon (ICON.group) before the name.
-                ui::PaintIconAt(ImGui::GetWindowDrawList(), LibraryIcon(kGlyphGroup), gx, gty, ImGui::GetTextLineHeight());
-                ui::EllipsisTextTip(ImGui::GetWindowDrawList(), ImVec2(gx + ui::IconRoom(), gty),
-                                    hp.x + w - bw - 6.0f, ui::kText, gr.name);
+                ui::SelectRow("##grprow", false, 0, rh, ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_AllowOverlap);
+                const bool hovered = ui::SelectRowHovered();
                 if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                     g.rename = RenameKind::Group;
                     g.r_a = gr.uid;
                     std::snprintf(g.buf, sizeof(g.buf), "%s", gr.name.c_str());
                     g.r_focus = true;
                 }
-                ImGui::SameLine();
-                ImGui::SetCursorScreenPos(ImVec2(std::max(hp.x, hp.x + w - bw), hp.y));
-                if (ImGui::SmallButton("+")) {
-                    std::string vid;
-                    const std::string gid = gr.uid;
-                    if (Gesture("Add value", [&](SoundStore& s) { return AddValue(s, gid, "Value", &vid); })) {
-                        ImGui::GetStateStorage()->SetBool(ImGui::GetID("##grp"), true);  // its field must be drawn
-                        g.rename = RenameKind::Value;
-                        g.r_a = gid;
-                        g.r_b = vid;
-                        if (const SwitchGroup* ng = FindGroup(GetSoundStore(nullptr), gid))
-                            for (const SwitchValue& v : ng->values)
-                                if (v.uid == vid) std::snprintf(g.buf, sizeof(g.buf), "%s", v.name.c_str());
-                        g.r_focus = true;
-                    }
+                ImGui::SetCursorScreenPos(ImVec2(x0, std::floor(cy - cs * 0.5f)));
+                if (ui::Chevron("##chev", open, cs)) ImGui::GetStateStorage()->SetBool(open_id, !open);
+                // The mockup's group row: a folder icon (ICON.group) before the name.
+                DrawLibraryGlyph(dl, ImVec2(x0 + cs + gap, std::floor(cy - is * 0.5f)), is, kGlyphGroup, ui::kMuted);
+                float rx = p.x + w - ui::Dp(4.0f);
+                if (hovered) {
+                    if (RowCross(p, w, "Delete the group: every Switch on it becomes a Random, its sounds kept")) del_group = gr.uid;
+                    rx -= ui::Dp(22.0f) + gap;
                 }
-                Tip("Add a value");
-                ImGui::SameLine();
-                if (ImGui::SmallButton("\xC3\x97")) del_group = gr.uid;
-                Tip("Delete the group: every Switch on it becomes a Random, its sounds kept");
-                if (g.changed) {
-                    ImGui::PopID();
-                    break;
+                // .rt.dim: the value count, 12 px faint.
+                const std::string cnt = std::to_string(gr.values.size());
+                const float       cw = ImGui::CalcTextSize(cnt.c_str()).x;
+                if (rx - cw > nx + ui::Dp(16.0f)) {
+                    rx -= cw;
+                    dl->AddText(ImVec2(rx, std::floor(cy - ImGui::GetTextLineHeight() * 0.5f)), ui::kFaint, cnt.c_str());
+                    rx -= gap;
                 }
+                ui::FontScope f(ui::FontTitle());
+                ui::EllipsisTextTip(dl, ImVec2(nx, std::floor(cy - ImGui::GetTextLineHeight() * 0.5f)), rx, ui::kText, gr.name);
+                ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh));
+                ImGui::Dummy(ImVec2(0.0f, 0.0f));
             }
-            if (open) {
-                ImGui::Indent(kIndent + 4.0f);
+            if (open && !g.changed) {
+                const float vx0 = p.x + ui::Dp(kRowPad + kIndent);
+                const float vnx = vx0 + cs + gap + is + gap;
                 for (const SwitchValue& v : gr.values) {
                     ImGui::PushID(v.uid.c_str());
-                    const float vw = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+                    const ImVec2 vp = ImGui::GetCursorScreenPos();
+                    const float  vcy = vp.y + rh * 0.5f;
                     if (g.rename == RenameKind::Value && g.r_a == gr.uid && g.r_b == v.uid) {
-                        const int res = InlineName(vw);
+                        const int res = GroupRowRename(vnx);
                         if (res != 0) {
                             const std::string name = g.buf, gid = gr.uid, vid = v.uid;
                             EndRename();
@@ -1284,16 +1690,9 @@ void DrawSwitchGroupsSection()
                             break;
                         }
                     } else {
-                        const ImVec2 vp = ImGui::GetCursorScreenPos();
-                        const float xw = ButtonWidth("\xC3\x97");
                         ImGui::SetNextItemAllowOverlap();
-                        ImGui::Selectable("##val", false, ImGuiSelectableFlags_AllowDoubleClick,
-                                          ImVec2(std::max(1.0f, vw - xw - 4.0f), 0.0f));
-                        // The mock-up's value row: a dot (ICON.value) before the name.
-                        const float vty = (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y - ImGui::GetTextLineHeight()) * 0.5f;
-                        ui::PaintIconAt(ImGui::GetWindowDrawList(), LibraryIcon(kGlyphValue), vp.x, vty, ImGui::GetTextLineHeight());
-                        ui::EllipsisTextTip(ImGui::GetWindowDrawList(), ImVec2(vp.x + ui::IconRoom(), vp.y),
-                                            vp.x + vw - xw - 6.0f, ui::kText, v.name);
+                        ui::SelectRow("##val", false, 0, rh, ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_AllowOverlap);
+                        const bool hovered = ui::SelectRowHovered();
                         if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                             g.rename = RenameKind::Value;
                             g.r_a = gr.uid;
@@ -1301,88 +1700,156 @@ void DrawSwitchGroupsSection()
                             std::snprintf(g.buf, sizeof(g.buf), "%s", v.name.c_str());
                             g.r_focus = true;
                         }
-                        ImGui::SameLine();
-                        ImGui::SetCursorScreenPos(ImVec2(std::max(vp.x, vp.x + vw - xw), vp.y));
-                        if (ImGui::SmallButton("\xC3\x97")) {
-                            del_value_group = gr.uid;
-                            del_value = v.uid;
+                        // The mockup's value row: the chevron's empty room, a dot (ICON.value), the name.
+                        DrawLibraryGlyph(dl, ImVec2(vx0 + cs + gap, std::floor(vcy - is * 0.5f)), is, kGlyphValue, ui::kMuted);
+                        float rx = vp.x + w - ui::Dp(4.0f);
+                        if (hovered) {
+                            if (RowCross(vp, w, "Remove the value: its sounds go to Unassigned in every Switch on this group")) {
+                                del_value_group = gr.uid;
+                                del_value = v.uid;
+                            }
+                            rx -= ui::Dp(22.0f) + gap;
                         }
-                        Tip("Remove the value: its sounds go to Unassigned in every Switch on this group");
+                        ui::FontScope f(ui::FontTitle());
+                        ui::EllipsisTextTip(dl, ImVec2(vnx, std::floor(vcy - ImGui::GetTextLineHeight() * 0.5f)), rx, ui::kText, v.name);
+                        ImGui::SetCursorScreenPos(ImVec2(vp.x, vp.y + rh));
+                        ImGui::Dummy(ImVec2(0.0f, 0.0f));
                     }
                     ImGui::PopID();
                 }
-                if (!g.changed && gr.values.empty()) ui::SubText("No value: press +");
-                ImGui::Unindent(kIndent + 4.0f);
+                if (!g.changed) {
+                    // .trow.add: the dashed "+ value" field one level in, 170 px; Enter adds the
+                    // value (one undo point) and keeps the field for the next one.
+                    std::array<char, 128>& buf = g.add_value[gr.uid];
+                    const ImVec2           ap = ImGui::GetCursorScreenPos();
+                    ImGui::SetCursorScreenPos(ImVec2(vx0, std::floor(ap.y + (rh - ui::ControlH()) * 0.5f)));
+                    if (g.add_value_focus == gr.uid) {
+                        ImGui::SetKeyboardFocusHere();
+                        g.add_value_focus.clear();
+                    }
+                    const float aw = std::min(ui::Dp(170.0f), std::max(ui::Dp(40.0f), ap.x + w - vx0 - ui::Dp(4.0f)));
+                    if (ui::AddField("##addval", "+ value", buf.data(), buf.size(), aw, ImGuiInputTextFlags_EnterReturnsTrue)) {
+                        std::string name = buf.data();
+                        while (!name.empty() && std::isspace(static_cast<unsigned char>(name.back()))) name.pop_back();
+                        while (!name.empty() && std::isspace(static_cast<unsigned char>(name.front()))) name.erase(name.begin());
+                        if (!name.empty()) {
+                            add_group = gr.uid;
+                            add_name = name;
+                        }
+                    }
+                    Tip("Type a value's name, then Enter");
+                    ImGui::SetCursorScreenPos(ImVec2(ap.x, ap.y + rh));
+                    ImGui::Dummy(ImVec2(0.0f, 0.0f));
+                }
             }
             ImGui::PopID();
-            if (g.changed) break;
+            if (g.changed || !add_group.empty()) break;
         }
-        if (!del_group.empty()) Gesture("Delete group", [&](SoundStore& s) { return DeleteGroup(s, del_group); });
-        if (!del_value.empty())
+        ImGui::PopStyleVar();
+        if (!g.changed && !del_group.empty()) Gesture("Delete group", [&](SoundStore& s) { return DeleteGroup(s, del_group); });
+        if (!g.changed && !del_value.empty())
             Gesture("Remove value", [&](SoundStore& s) { return DeleteValue(s, del_value_group, del_value); });
-        if (ui::SolidButton("+ Group")) {
-            std::string gid;
-            if (Gesture("Add group", [&](SoundStore& s) { return AddGroup(s, "Group", &gid); })) {
-                g.rename = RenameKind::Group;
-                g.r_a = gid;
-                std::snprintf(g.buf, sizeof(g.buf), "%s",
-                              FindGroup(GetSoundStore(nullptr), gid) ? FindGroup(GetSoundStore(nullptr), gid)->name.c_str() : "Group");
-                g.r_focus = true;
+        if (!g.changed && !add_group.empty()) {
+            std::string vid;
+            if (Gesture("Add value", [&](SoundStore& s) { return AddValue(s, add_group, add_name, &vid); })) {
+                g.add_value[add_group].fill('\0');
+                g.add_value_focus = add_group;  // type the next one
             }
         }
+        if (!g.changed && store.groups.empty()) ui::SubText("No Switch Group yet");
     }
     ui::EndSection(sec);
 }
 
 // ---- Column 2 -----------------------------------------------------------------------------------
 
+namespace {
+
+// 13-7a (audit C3.1): the tree's header (.pane-h, 28 px): the library's 8 px dot, its name as an
+// inline title (14 px 600, transparent until hovered: typing renames it, one undo point), the ▾
+// library switcher while column 1 is collapsed, then the ⋯ menu (Export / Locate / Refresh for a
+// User Library, Delete).
+void TreeHeader(const SoundLibrary& lib)
+{
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float  w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const float  hh = ui::Dp(28.0f), gap = ui::Dp(8.0f), bs = ui::ControlH();
+    const bool   switcher = LibraryColumn1Collapsed();
+    dl->AddCircleFilled(ImVec2(p.x + ui::Dp(4.0f), p.y + hh * 0.5f), ui::Dp(4.0f), LibDot(lib.color));
+    const float tx = p.x + ui::Dp(8.0f) + gap;
+    const float right = (switcher ? bs + ui::Dp(4.0f) : 0.0f) + bs + gap;
+    const float tw = std::max(ui::Dp(40.0f), p.x + w - tx - right);
+    const ImGuiID title_id = ImGui::GetID("##libtitle");
+    if (ImGui::GetActiveID() != title_id) {  // shows the name, unless it is being typed
+        g.title_lib = lib.uid;
+        std::snprintf(g.title, sizeof(g.title), "%s", lib.name.c_str());
+    }
+    ImGui::SetCursorScreenPos(ImVec2(tx, p.y));
+    ui::TitleField("##libtitle", g.title, sizeof(g.title), tw);
+    if (ImGui::IsItemDeactivated()) {
+        // The library typed into (another may be shown by now: a click in column 1 ended the typing).
+        std::string         name = g.title;
+        const std::string   uid = g.title_lib;
+        const SoundLibrary* typed = FindLibrary(GetSoundStore(nullptr), uid);
+        while (!name.empty() && std::isspace(static_cast<unsigned char>(name.back()))) name.pop_back();
+        if (typed && !name.empty() && name != typed->name)
+            Gesture("Rename library", [&](SoundStore& s) { return RenameLibrary(s, uid, name); });
+        g.title_lib.clear();
+        if (g.changed) {
+            ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + hh));
+            return;
+        }
+    }
+    const float by = std::floor(p.y + (hh - bs) * 0.5f);
+    float       bx = p.x + w - bs;
+    if (switcher) {
+        ImGui::SetCursorScreenPos(ImVec2(bx - bs - ui::Dp(4.0f), by));
+        if (ui::IconOnlyButton("##libswitch", "\xE2\x96\xBE", "Show another library")) ImGui::OpenPopup("##libswitchmenu");
+        if (ui::BeginMenuPopup("##libswitchmenu")) {
+            ui::MenuCaption("Libraries");
+            for (const SoundLibrary& l : GetSoundStore(nullptr).libraries) {
+                ImGui::PushID(l.uid.c_str());
+                if (ImGui::MenuItem(l.name.c_str(), nullptr, l.uid == g.lib)) PickLibrary(l.uid);
+                ImGui::PopID();
+            }
+            ui::EndMenuPopup();
+        }
+    }
+    ImGui::SetCursorScreenPos(ImVec2(bx, by));
+    if (ui::IconOnlyButton("##libmore", "\xE2\x8B\xAF", "Library menu", 0.0f, ImGui::IsPopupOpen("##libheadmenu")))
+        ImGui::OpenPopup("##libheadmenu");
+    std::string to_delete;
+    if (ui::BeginMenuPopup("##libheadmenu")) {
+        LibraryMenuItems(lib, &to_delete, false);
+        ui::EndMenuPopup();
+    }
+    ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + hh));
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));
+    if (!to_delete.empty()) Gesture("Delete library", [&](SoundStore& s) { return DeleteLibrary(s, to_delete); });
+}
+
+}  // namespace
+
 void DrawLibraryTree()
 {
     g.changed = false;
     g.tree_focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows);  // column 2 and its tree
     RefreshItemGuids();
-    const SoundStore& store = GetSoundStore(nullptr);
     const SoundLibrary* lib = CurrentLib();
-    ImGui::Dummy(ImVec2(0.0f, 2.0f));
-    ImGui::Indent(6.0f);
     if (!lib) {
-        ImGui::TextDisabled("No library yet");
+        ui::SubText("No library yet");
         if (ui::SolidButton("+ Library##tree")) {
             std::string uid;
             if (Gesture("Add library", [&](SoundStore& s) { return NewLibrary(s, &uid); })) g.lib = uid;
         }
-        ImGui::Unindent(6.0f);
         return;
     }
-    // Header: the library's name (a switcher while column 1 is collapsed).
-    if (LibraryColumn1Collapsed()) {
-        if (MenuButton(lib->name.c_str())) ImGui::OpenPopup("##libswitch");
-        if (ImGui::BeginPopup("##libswitch")) {
-            for (const SoundLibrary& l : store.libraries) {
-                ImGui::PushID(l.uid.c_str());
-                if (ImGui::MenuItem(l.name.c_str(), nullptr, l.uid == g.lib)) {
-                    g.lib = l.uid;
-                    g.sel.clear();
-                    g.has_anchor = false;
-                }
-                ImGui::PopID();
-            }
-            ImGui::EndPopup();
-        }
-    } else {
-        const ImVec2 np = ImGui::GetCursorScreenPos();
-        const float nw = std::max(1.0f, ImGui::GetContentRegionAvail().x);
-        ImGui::Dummy(ImVec2(nw, ImGui::GetTextLineHeight()));
-        ui::EllipsisTextTip(ImGui::GetWindowDrawList(), np, np.x + nw, ui::kText, lib->name);
-    }
+    TreeHeader(*lib);
     lib = CurrentLib();
-    if (!lib) {
-        ImGui::Unindent(6.0f);
-        return;
-    }
+    if (!lib || g.changed) return;
+    // 13-7a (audit C3.2): the toolbar in its well; the pane's gap under it (no separator).
     Toolbar(*lib);
-    ImGui::Unindent(6.0f);
-    ImGui::Separator();
     if (!g.changed) TreeKeys(*lib);  // after a toolbar gesture `lib` is stale
     lib = CurrentLib();  // a gesture above rewrote the store
     if (!lib) return;
@@ -1413,7 +1880,9 @@ void DrawLibraryTree()
         if (!ImGui::IsAnyItemActive() && !ImGui::GetDragDropPayload() && ImGui::IsWindowHovered() &&
             ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !ImGui::IsAnyItemHovered())
             g.sel.clear();
-        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 1.0f));
+        // The tree's rows touch (.tree gap 0).
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 0.0f));
+        g.row_menu_open = ImGui::IsPopupOpen("##rowmenu");
         const std::vector<TreeRow> rows = g.rows;  // a gesture may rebuild g.rows
         for (size_t i = 0; i < rows.size() && !g.changed; ++i) {
             const SoundLibrary* cur = FindLibrary(GetSoundStore(nullptr), g.lib);
@@ -1439,23 +1908,26 @@ void DrawLibraryTree()
 
 // ---- Column 3: several rows selected ------------------------------------------------------------
 
+// 13-7a (audit C6): the title "N rows selected" (15 / 600) and what they are, "Make them default"
+// above the card, then the fixed "Change them all at once · one undo point" card: Type (with
+// "mixed" in warn), the "Switch on" select, "Put into".
 void DrawLibraryBatchPanel()
 {
     g.changed = false;
     const SoundStore& store = GetSoundStore(nullptr);
     const SoundLibrary* lib = FindLibrary(store, g.lib);
     if (!lib) return;
-    ImGui::Dummy(ImVec2(0.0f, 2.0f));
-    ImGui::Indent(6.0f);
-    ImGui::Text("%d rows selected", static_cast<int>(g.sel.size()));
-    ImGui::Unindent(6.0f);
     const std::vector<LibraryRow> rows = g.sel;
     // The common type of the selected containers (-1 = mixed or none).
     int common = -2;
     std::string common_group;
-    int values = 0;
+    int values = 0, containers = 0, sounds = 0, empty_values = 0;
     for (const LibraryRow& r : rows) {
         if (RowIsValue(*lib, r)) ++values;
+        if (const SoundNode* shown = FindNode(*lib, RowNode(*lib, r)))
+            (shown->type == SoundNodeType::Sound ? sounds : containers) += 1;
+        else
+            ++empty_values;
         // Bug 3: a Switch's value rows (a select-all) act on their Switch, as SetRowsType does.
         const SoundNode* n = FindNode(*lib, RowTypeNode(*lib, r));
         if (!n || n->type == SoundNodeType::Sound) continue;
@@ -1467,11 +1939,37 @@ void DrawLibraryBatchPanel()
             common = -1;
         }
     }
+    {
+        const std::string title = std::to_string(rows.size()) + " rows selected";
+        ui::FontScope     f(ui::FontPaneTitle());
+        const ImVec2      p = ImGui::GetCursorScreenPos();
+        const float       w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+        ImGui::Dummy(ImVec2(w, ImGui::GetTextLineHeight()));
+        ui::EllipsisTextTip(ImGui::GetWindowDrawList(), p, p.x + w, ui::kText, title);
+    }
+    std::string sum;
+    auto part = [&](int count, const char* one, const char* many) {
+        if (count <= 0) return;
+        if (!sum.empty()) sum += " \xC2\xB7 ";
+        sum += std::to_string(count) + " " + (count == 1 ? one : many);
+    };
+    part(containers, "container", "containers");
+    part(sounds, "sound", "sounds");
+    part(empty_values, "empty value", "empty values");
+    if (!sum.empty()) ui::SubText(sum.c_str());
+    if (values == 0) ImGui::BeginDisabled();
+    if (ui::SolidButton("Make them default (one per Switch)")) DoMakeDefault(rows);
+    if (values == 0) ImGui::EndDisabled();
+    Tip(values ? "One default per Switch" : "Select Switch value rows first");
+    if (g.changed) return;
+    ui::SectionOpts opts;
+    opts.foldable = false;
+    opts.suffix = "\xC2\xB7 one undo point";
     ui::Section sec;
-    if (ui::BeginSection(sec, "Batch edit", ImTextureID(), false)) {
+    if (ui::BeginSection(sec, "Change them all at once", opts)) {
         static const char* const kTypes[3] = {"Random", "Blend", "Switch"};
         int sel = common >= 0 ? common : -1;
-        ui::LabelRow("Type", 150.0f, 48.0f);
+        ui::LabelRow("Type", 150.0f);
         const int was = sel;
         const ui::Icon kTypeIcons[3] = {TypeIcon(SoundNodeType::Random), TypeIcon(SoundNodeType::Blend),
                                         TypeIcon(SoundNodeType::Switch)};
@@ -1485,27 +1983,30 @@ void DrawLibraryBatchPanel()
             ImGui::OpenPopup("##batchswitch");
         }
         if (common == -1) {
+            // The mockup's "mixed": 11 px in warn.
+            ui::FontScope f(ui::FontSmall());
             SameLineIfFits(ui::TextWidth("mixed"));
-            ImGui::TextDisabled("mixed");
+            const float y = ImGui::GetCursorPosY();
+            ImGui::SetCursorPosY(y + std::max(0.0f, (ui::ControlH() - ImGui::GetTextLineHeight()) * 0.5f));
+            ImGui::TextColored(ui::Col(ui::kWarn), "mixed");
         }
-        if (ImGui::BeginPopup("##batchswitch")) {
+        if (ui::BeginMenuPopup("##batchswitch")) {
+            ui::MenuCaption("Switch on");
             const std::string gid = GroupMenuItems(false, nullptr);
             if (!gid.empty()) BatchSwitchOn(rows, gid);
-            ImGui::EndPopup();
+            ui::EndMenuPopup();
         }
         const SwitchGroup* cg = common == 2 ? FindGroup(store, common_group) : nullptr;
-        const std::string sw_label = std::string("Switch on: ") + (cg ? cg->name : std::string("..."));
-        const ui::Icon sw_icon = TypeIcon(SoundNodeType::Switch);
-        if (MenuButton(sw_label.c_str(), true, nullptr, &sw_icon)) ImGui::OpenPopup("##batchswitch2");
-        Tip("Also converts the Random and Blend containers");
-        if (ImGui::BeginPopup("##batchswitch2")) {
+        ui::LabelRow("Switch on", 160.0f);
+        if (ui::BeginComboStyled("##batchswitch2", cg ? cg->name.c_str() : "Choose a Switch Group...", ui::Dp(160.0f))) {
             const std::string gid = GroupMenuItems(false, nullptr);
             if (!gid.empty()) BatchSwitchOn(rows, gid);
-            ImGui::EndPopup();
+            ui::EndComboStyled();
         }
-        SameLineIfFits(MenuButtonWidth("Put into"));
+        Tip("Also converts the Random and Blend containers");
+        ui::LabelRow("Put into", MenuButtonWidth("Put into"));
         if (MenuButton("Put into")) ImGui::OpenPopup("##putinto");
-        if (ImGui::BeginPopup("##putinto")) {
+        if (ui::BeginMenuPopup("##putinto")) {
             if (ui::IconMenuItem(TypeIcon(SoundNodeType::Random), "New Random")) DoWrap(rows, SoundNodeType::Random, {});
             if (ui::IconMenuItem(TypeIcon(SoundNodeType::Blend), "New Blend")) DoWrap(rows, SoundNodeType::Blend, {});
             if (ui::IconBeginMenu(TypeIcon(SoundNodeType::Switch), "New Switch on")) {
@@ -1529,13 +2030,8 @@ void DrawLibraryBatchPanel()
                 }
                 ImGui::PopID();
             }
-            ImGui::EndPopup();
+            ui::EndMenuPopup();
         }
-        if (values == 0) ImGui::BeginDisabled();
-        SameLineIfFits(ButtonWidth("Make them default"));
-        if (ui::SolidButton("Make them default")) DoMakeDefault(rows);
-        if (values == 0) ImGui::EndDisabled();
-        Tip(values ? "One default per Switch" : "Select Switch value rows first");
     }
     ui::EndSection(sec);
 }

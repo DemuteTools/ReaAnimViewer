@@ -748,148 +748,116 @@ bool PrepareFileSound(ReaProject* proj, const std::string& lib_uid, const std::s
     return true;
 }
 
-void DrawUserLibrarySection()
+// ---- 13-7a (audit C1.4): the User Library pieces of the Libraries list -------------------------
+// The mockup has no User Library section: user libraries are listed under USER in Libraries
+// (library_tree_ui.cpp), with "+ User Library" and "Import .ravlib..." under the list; Export,
+// Locate and Refresh sit in the tree header's menu. This module keeps the folder, the files and
+// the pickers; the list asks it through these functions.
+
+void PrepareUserLibraries()
 {
     ApplyHooks();
     RefreshCaches();
     if (!g.listed) ListUserFolder();
-    const SoundStore& store = GetSoundStore(nullptr);
-    ui::Section       sec;
-    const bool        open = ui::BeginSection(sec, "User Library");
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Folder: %s", UserFolderText().c_str());
-    if (open) {
-        std::string add_file;
-        for (const UserFile& f : g.files) {
-            ImGui::PushID(f.file.c_str());
-            const float  rh = ImGui::GetFrameHeight();
-            const ImVec2 p = ImGui::GetCursorScreenPos();
-            const float  w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
-            ImDrawList*  dl = ImGui::GetWindowDrawList();
-            const float  ty = p.y + (rh - ImGui::GetTextLineHeight()) * 0.5f;
-            const SoundLibrary* in = f.uid.empty() ? nullptr : FindLibrary(store, f.uid);
-            // 13-7a: the trail (unreadable | in project, missing count, Locate... | Add) stays beside
-            // the name while the name keeps ~4 em, else it goes under it, wrapping: nothing is cut.
-            enum { kUnreadable, kInProject, kMissing, kLocate, kAdd };
-            std::string first;
-            const int   miss = in ? MissingIn(*in, &first) : 0;
-            const std::string miss_t = std::to_string(miss);
-            int   tk[3];
-            float tw[3];
-            int   nt = 0;
-            if (f.uid.empty()) {
-                tk[nt] = kUnreadable;
-                tw[nt++] = ui::TextWidth("unreadable");
-            } else if (in) {
-                tk[nt] = kInProject;
-                tw[nt++] = ui::TextWidth("in project");
-                if (miss > 0) {
-                    tk[nt] = kMissing;
-                    tw[nt++] = ui::TextWidth(miss_t.c_str());
-                    tk[nt] = kLocate;
-                    tw[nt++] = ui::ButtonWidth("Locate...");
-                }
-            } else {
-                tk[nt] = kAdd;
-                tw[nt++] = ui::ButtonWidth("Add");
-            }
-            flow::TrailPlace tp[3];
-            const float lead_min = std::min(ui::TextWidth(f.name.c_str()), 4.0f * ImGui::GetFontSize());
-            const int   lines = flow::PlaceTrail(tw, nt, p.x + 16.0f, p.x + w - 4.0f, lead_min, 6.0f, tp);
-            ImGui::SetNextItemAllowOverlap();
-            if (ImGui::Selectable("##ufile", in && SelectedLibraryUid() == f.uid, 0, ImVec2(w, rh * static_cast<float>(lines))) && in)
-                SelectLibraryRow(in->uid, LibraryRow{"", in->root});
-            ImU32 dot = ui::kAccent;
-            if (f.color & 0x1000000u) dot = IM_COL32((f.color >> 16) & 0xFF, (f.color >> 8) & 0xFF, f.color & 0xFF, 0xFF);
-            if (!f.uid.empty()) dl->AddCircleFilled(ImVec2(p.x + 6.0f, p.y + rh * 0.5f), 4.0f, dot);
-            for (int i = 0; i < nt; ++i) {
-                const float y = p.y + static_cast<float>(tp[i].line) * rh;
-                const float by = y + (rh - ImGui::GetTextLineHeight()) * 0.5f;
-                switch (tk[i]) {
-                case kUnreadable: dl->AddText(ImVec2(tp[i].x, by), ui::kMuted, "unreadable"); break;
-                case kInProject: dl->AddText(ImVec2(tp[i].x, by), ui::kMuted, "in project"); break;
-                case kMissing: dl->AddText(ImVec2(tp[i].x, by), kLibMissing, miss_t.c_str()); break;
-                case kLocate:
-                    ImGui::SetCursorScreenPos(ImVec2(tp[i].x, y));
-                    if (ui::SolidButton("Locate...", ImVec2(tp[i].w, rh))) RequestLocate(in->uid, first);
-                    if (ImGui::IsItemHovered())
-                        ImGui::SetTooltip("Pick the file of its first missing sound: the others are looked for near it");
-                    break;
-                default:
-                    ImGui::SetCursorScreenPos(ImVec2(tp[i].x, y));
-                    if (ui::SolidButton("Add", ImVec2(tp[i].w, rh))) add_file = f.file;
-                    break;
-                }
-            }
-            ui::EllipsisTextTip(dl, ImVec2(p.x + 16.0f, ty), (lines == 1 && nt > 0 ? tp[0].x : p.x + w) - 4.0f,
-                                f.uid.empty() ? ui::kMuted : ui::kText, f.name, f.file.c_str());
-            ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh * static_cast<float>(lines)));
-            ImGui::Dummy(ImVec2(0.0f, 0.0f));
-            ImGui::PopID();
-        }
-        if (g.files.empty()) ui::SubText("No User Library yet");
-        if (!add_file.empty()) {
-            for (const UserFile& f : g.files)
-                if (f.file == add_file) {
-                    std::string uid, why;
-                    const SoundStore file = f.store;
-                    if (Gesture("Add user library", [&](SoundStore& s) { return AddRavlibLibrary(s, file, add_file, &uid, &why); })) {
-                        const SoundLibrary* l = FindLibrary(GetSoundStore(nullptr), uid);
-                        if (l) SelectLibraryRow(uid, LibraryRow{"", l->root});
-                    } else if (!why.empty()) {
-                        ShowToastNoUndo(why);
-                    }
-                    break;
-                }
-        }
-        if (ui::SolidButton("+ User Library")) {
-            std::string uid;
-            const std::string file_dir_ok = ResourcePath();
-            if (Gesture("New user library", [&](SoundStore& s) {
-                    if (!NewLibrary(s, &uid)) return false;
-                    SoundLibrary* l = FindLibrary(s, uid);
-                    if (!l) return false;
-                    std::vector<std::string> names;
-                    for (const SoundLibrary& o : s.libraries)
-                        if (o.uid != uid) names.push_back(o.name);
-                    l->name = UniqueName("New User Library", names);
-                    if (SoundNode* root = FindNode(*l, l->root)) root->name = l->name;
-                    l->user = true;
-                    l->ravlib_path = FreeFileName(s, uid, l->name);
-                    return true;
-                })) {
-                const SoundStore&   now = GetSoundStore(nullptr);
-                const SoundLibrary* l = FindLibrary(now, uid);
-                if (l && !file_dir_ok.empty()) {
-                    const std::string text = SerializeRavlib(RavlibOf(now, uid, nullptr));
-                    if (WriteText(FileOf(l->ravlib_path), text)) g.saved[SavedKey(nullptr, uid)] = text;
-                    ListUserFolder();
-                    SelectLibraryRow(uid, LibraryRow{"", l->root});
-                }
-            }
-        }
-        ui::SameLineIfFits(ui::ButtonWidth("Import..."));
-        if (ui::SolidButton("Import...")) g.pick = PickKind::Import;
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Add a .ravlib file: it is copied into the folder");
-        const SoundLibrary* sel = FindLibrary(store, SelectedLibraryUid());
-        const bool          can_export = sel && sel->user;
-        ui::SameLineIfFits(ui::ButtonWidth("Export..."));
-        ImGui::BeginDisabled(!can_export);
-        if (ui::SolidButton("Export...") && can_export) {
-            g.pick = PickKind::Export;
-            g.pick_lib = sel->uid;
-        }
-        ImGui::EndDisabled();
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip(can_export ? "Save the selected User Library where you choose"
-                                         : "Select a User Library to export it");
-        ui::SameLineIfFits(ui::ButtonWidth("Refresh"));
-        if (ui::SolidButton("Refresh")) {
-            ListUserFolder();
-            g.resolved.clear();
-        }
-    }
-    ui::EndSection(sec);
+    // The folder is listed again when a file is added, removed or renamed there (its time
+    // changes), looked at about once a second.
+    static double             next_look = 0.0;
+    static fs::file_time_type seen{};
+    static bool               seen_set = false;
+    const double              now = ImGui::GetTime();
+    if (now < next_look) return;
+    next_look = now + 1.0;
+    std::error_code ec;
+    const fs::file_time_type t = fs::last_write_time(UserFolder(), ec);
+    if (ec) return;
+    if (seen_set && t != seen) ListUserFolder();
+    seen = t;
+    seen_set = true;
 }
+
+std::vector<UserLibraryFile> UserFilesNotInProject()
+{
+    std::vector<UserLibraryFile> out;
+    const SoundStore&            store = GetSoundStore(nullptr);
+    for (const UserFile& f : g.files) {
+        if (!f.uid.empty() && FindLibrary(store, f.uid)) continue;
+        UserLibraryFile u;
+        u.file = f.file;
+        u.name = f.name;
+        u.color = f.color;
+        u.readable = !f.uid.empty();
+        out.push_back(u);
+    }
+    return out;
+}
+
+void AddUserLibraryFile(const std::string& file)
+{
+    for (const UserFile& f : g.files) {
+        if (f.file != file || f.uid.empty()) continue;
+        std::string      uid, why;
+        const SoundStore src = f.store;
+        if (Gesture("Add user library", [&](SoundStore& s) { return AddRavlibLibrary(s, src, file, &uid, &why); })) {
+            const SoundLibrary* l = FindLibrary(GetSoundStore(nullptr), uid);
+            if (l) SelectLibraryRow(uid, LibraryRow{"", l->root});
+        } else if (!why.empty()) {
+            ShowToastNoUndo(why);
+        }
+        return;
+    }
+}
+
+void NewUserLibrary()
+{
+    std::string       uid;
+    const std::string file_dir_ok = ResourcePath();
+    if (!Gesture("New user library", [&](SoundStore& s) {
+            if (!NewLibrary(s, &uid)) return false;
+            SoundLibrary* l = FindLibrary(s, uid);
+            if (!l) return false;
+            std::vector<std::string> names;
+            for (const SoundLibrary& o : s.libraries)
+                if (o.uid != uid) names.push_back(o.name);
+            l->name = UniqueName("New User Library", names);
+            if (SoundNode* root = FindNode(*l, l->root)) root->name = l->name;
+            l->user = true;
+            l->ravlib_path = FreeFileName(s, uid, l->name);
+            return true;
+        }))
+        return;
+    const SoundStore&   now = GetSoundStore(nullptr);
+    const SoundLibrary* l = FindLibrary(now, uid);
+    if (l && !file_dir_ok.empty()) {
+        const std::string text = SerializeRavlib(RavlibOf(now, uid, nullptr));
+        if (WriteText(FileOf(l->ravlib_path), text)) g.saved[SavedKey(nullptr, uid)] = text;
+        ListUserFolder();
+        SelectLibraryRow(uid, LibraryRow{"", l->root});
+    }
+}
+
+void RequestUserLibraryImport() { g.pick = PickKind::Import; }
+
+void RequestUserLibraryExport(const std::string& lib_uid)
+{
+    g.pick = PickKind::Export;
+    g.pick_lib = lib_uid;
+}
+
+int UserLibraryMissing(const std::string& lib_uid, std::string* first)
+{
+    const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), lib_uid);
+    return lib ? MissingIn(*lib, first) : 0;
+}
+
+void RequestUserLibraryLocate(const std::string& lib_uid, const std::string& node_uid) { RequestLocate(lib_uid, node_uid); }
+
+void RefreshUserLibraries()
+{
+    ListUserFolder();
+    g.resolved.clear();
+}
+
+std::string UserLibraryFolderText() { return UserFolderText(); }
 
 void DrawUserLibraryNodeSection()
 {

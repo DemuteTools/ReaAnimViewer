@@ -204,6 +204,7 @@ if(WIN32)
             src/sound_draw.cpp
             src/sound_switch.cpp
             src/library_tree_edit.cpp
+            src/sound_audition_plan.cpp
             src/media_db.cpp
             src/sound_place_plan.cpp
             src/sound_place.cpp

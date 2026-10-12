@@ -183,3 +183,7 @@ add_test(NAME sound_follow_plan COMMAND sound_follow_plan_test)
 add_executable(ravlib_test ravlib_test.cpp ../src/ravlib.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
 target_include_directories(ravlib_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME ravlib COMMAND ravlib_test)
+# Story 13-7b -- src/sound_audition_plan.h
+add_executable(sound_audition_plan_test sound_audition_plan_test.cpp ../src/sound_audition_plan.cpp ../src/sound_draw.cpp ../src/sound_switch.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+target_include_directories(sound_audition_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME sound_audition_plan COMMAND sound_audition_plan_test)

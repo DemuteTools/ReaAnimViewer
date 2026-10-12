@@ -178,6 +178,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
         UnregisterVideoFxApi(g_register);
         // Story 10-4b -- the marker mirror's timer.
         StopMarkerMirror();
+        StopAudition();  // Story 13-7b -- a playing audition is stopped and freed before unload
         CloseViewerWindow();
         // Epic 13 (D20) -- the sound store's projectconfig.
         QuitSoundProject();

@@ -225,6 +225,7 @@ bool LibraryViewFocused() { return g_view.focused; }
 
 bool LibraryViewTakesKey(unsigned vk, bool ctrl, bool shift, bool alt)
 {
+    if (LibraryNodeTakesKey(vk, ctrl, shift, alt)) return true;  // 13-7b: E, S (and the Edit overlay's keys)
     if (!g_view.focused || alt) return false;
     constexpr unsigned kDelete = 0x2E, kF2 = 0x71, kSpace = 0x20, kEscape = 0x1B;
     if (ctrl) return !shift && (vk == 'B' || vk == 'D' || vk == 'X' || vk == 'V');

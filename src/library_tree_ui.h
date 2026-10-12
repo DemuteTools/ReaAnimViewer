@@ -55,7 +55,8 @@ struct LibraryTreeHooks {
     std::function<void(const std::string& lib, const LibraryRow& row, const void* data, int size)> media_drop;
 };
 void SetLibraryTreeHooks(const LibraryTreeHooks& hooks);
-// The hooks set (13-7c re-applies its media fields over what another story set).
+// The hooks set now (13-7b merges its play / stop / is_lit into them; 13-7c
+// re-applies its media fields over what another story set).
 const LibraryTreeHooks& GetLibraryTreeHooks();
 
 }  // namespace rav

@@ -2231,11 +2231,25 @@ void DrawTypeRows(const SoundStore& store, const SoundLibrary& lib, const SoundN
     const std::string def = DefaultValue(store, n);
     {
         const float w = ui::LabelRow("Default value", combo_min);
-        const bool  open = ui::BeginComboStyled("##default", value_name(def).c_str(), std::min(w, std::max(combo_min, ui::Dp(180.0f))));
+        // 13-18 D4: a node with no valid default of its own follows its group's ("Group default (X)").
+        const bool        own = GroupHasValue(*g, n.default_value);
+        const std::string glabel = "Group default (" + value_name(GroupDefaultValue(*g)) + ")";
+        const bool        open = ui::BeginComboStyled("##default", own ? value_name(def).c_str() : glabel.c_str(),
+                                                      std::min(w, std::max(combo_min, ui::Dp(180.0f))));
         ui::ItemTipText("Plays when the event's value is not set, or when a value has no sound of its own");
         if (open) {
+            // First, follow the group's default (clears the node's own, a stale one too).
+            if (ImGui::Selectable(glabel.c_str(), !own) && !n.default_value.empty()) {
+                const std::string sw_uid = n.uid;
+                ui::EndComboStyled();
+                Gesture("Follow group default", [lib_uid, sw_uid](SoundStore& s) { return FollowGroupDefault(s, lib_uid, sw_uid); },
+                        "Follows the group's default");
+                return;
+            }
+            ui::ItemTipText("Plays the Switch Group's default (set by right-clicking a value in Switch Groups)");
+            ImGui::Separator();
             for (const SwitchValue& v : g->values) {
-                if (ImGui::Selectable(v.name.c_str(), v.uid == def) && v.uid != def) {
+                if (ImGui::Selectable(v.name.c_str(), own && v.uid == def) && !(own && v.uid == def)) {
                     const LibraryRow  vr{n.uid, v.uid};
                     const std::string name = v.name;
                     ui::EndComboStyled();

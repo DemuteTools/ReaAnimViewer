@@ -243,12 +243,29 @@ std::string EffectiveValue(const SoundNode& sw, const ValueLayers& layers, Value
     return sw.default_value;
 }
 
+bool GroupHasValue(const SwitchGroup& g, const std::string& value_uid)
+{
+    if (value_uid.empty()) return false;
+    for (const SwitchValue& x : g.values)
+        if (x.uid == value_uid) return true;
+    return false;
+}
+
+std::string GroupDefaultValue(const SwitchGroup& g)
+{
+    if (GroupHasValue(g, g.default_value)) return g.default_value;
+    return g.values.empty() ? std::string() : g.values.front().uid;
+}
+
 std::string DefaultValue(const SoundStore& store, const SoundNode& sw)
 {
-    if (!sw.default_value.empty()) return sw.default_value;
-    if (const SwitchGroup* g = FindGroup(store, sw.group_uid))
-        return g->values.empty() ? std::string() : g->values.front().uid;
-    return sw.cases.empty() ? std::string() : sw.cases.front().value_uid;
+    const SwitchGroup* g = FindGroup(store, sw.group_uid);
+    if (!g) {
+        if (!sw.default_value.empty()) return sw.default_value;
+        return sw.cases.empty() ? std::string() : sw.cases.front().value_uid;
+    }
+    if (GroupHasValue(*g, sw.default_value)) return sw.default_value;  // the node's own (13-18: an override)
+    return GroupDefaultValue(*g);
 }
 
 LibraryCheck CheckLibrary(const SoundStore& store, const SoundLibrary& lib)
@@ -331,9 +348,14 @@ bool ConvertNodeType(SoundLibrary& lib, const std::string& uid, SoundNodeType ty
             if (!placed) n->unassigned.push_back(kid_uids[i]);
         }
         // Decision 2026-10-12: the default is the first group value (in group order) that
-        // received a child, else none.
+        // received a child, else none. 13-18: none either when the group's effective default
+        // received one (the node follows the group's default).
         n->default_value.clear();
-        for (size_t j = 0; j < g->values.size(); ++j) {
+        const std::string gdef = GroupDefaultValue(*g);
+        bool group_def_taken = false;
+        for (size_t j = 0; j < g->values.size(); ++j)
+            if (taken[j] && g->values[j].uid == gdef) group_def_taken = true;
+        for (size_t j = 0; j < g->values.size() && !group_def_taken; ++j) {
             if (!taken[j]) continue;
             n->default_value = g->values[j].uid;
             break;
@@ -381,8 +403,12 @@ bool ConvertNodeType(SoundLibrary& lib, const std::string& uid, SoundNodeType ty
         if (!still_cased && !Contains(unassigned, k)) unassigned.push_back(k);
     }
     // The default maps by name, including an implicit one (the old group's first value).
+    // 13-18: it followed the old group's default (no own default, or a stale one).
+    const bool  followed = old_g ? !GroupHasValue(*old_g, n->default_value) : n->default_value.empty();
     std::string old_def = DefaultValue(store, *n);
     n->default_value = old_def.empty() ? std::string() : map_value(old_def);
+    if (followed && !n->default_value.empty() && n->default_value == GroupDefaultValue(*g))
+        n->default_value.clear();  // the same value by name: it keeps following (the new group's)
     n->preview_value = n->preview_value.empty() ? std::string() : map_value(n->preview_value);
     n->cases = cases;
     n->unassigned = unassigned;

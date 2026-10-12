@@ -1046,6 +1046,15 @@ bool MakeDefault(SoundStore& store, const std::string& lib_uid, const std::vecto
     });
 }
 
+bool FollowGroupDefault(SoundStore& store, const std::string& lib_uid, const std::string& switch_uid)
+{
+    SoundLibrary* lib = FindLibrary(store, lib_uid);
+    SoundNode*    sw = lib ? FindNode(*lib, switch_uid) : nullptr;
+    if (!sw || sw->type != SoundNodeType::Switch || sw->default_value.empty()) return false;
+    sw->default_value.clear();
+    return true;
+}
+
 bool ClearValue(SoundStore& store, const std::string& lib_uid, const LibraryRow& row)
 {
     return Transact(store, [&](SoundStore& s) {
@@ -1155,6 +1164,8 @@ bool DeleteValue(SoundStore& store, const std::string& group_uid, const std::str
     auto vit = std::find_if(g->values.begin(), g->values.end(), [&](const SwitchValue& v) { return v.uid == value_uid; });
     if (vit == g->values.end()) return false;
     g->values.erase(vit);
+    if (g->default_value == value_uid) g->default_value.clear();  // 13-18 D5: back to the first value
+    const std::string gdef = GroupDefaultValue(*g);
     for (SoundLibrary& lib : store.libraries)
         for (SoundNode& sw : lib.nodes) {
             if (sw.type != SoundNodeType::Switch || sw.group_uid != group_uid) continue;
@@ -1168,15 +1179,52 @@ bool DeleteValue(SoundStore& store, const std::string& group_uid, const std::str
             }
             if (sw.default_value == value_uid) {
                 sw.default_value.clear();
-                for (const SwitchValue& v : g->values)
-                    if (!CaseChild(sw, v.uid).empty()) {
-                        sw.default_value = v.uid;
-                        break;
-                    }
+                // 13-18: the group's default has a child here: it follows the group.
+                if (gdef.empty() || CaseChild(sw, gdef).empty())
+                    for (const SwitchValue& v : g->values)
+                        if (!CaseChild(sw, v.uid).empty()) {
+                            sw.default_value = v.uid;
+                            break;
+                        }
             }
             if (sw.preview_value == value_uid) sw.preview_value.clear();
         }
     return true;
+}
+
+int CountDefaultOverrides(const SoundStore& store, const std::string& group_uid, const std::string& value_uid)
+{
+    const SwitchGroup* g = FindGroup(store, group_uid);
+    if (!g) return 0;
+    int n = 0;
+    for (const SoundLibrary& lib : store.libraries)
+        for (const SoundNode& sw : lib.nodes) {
+            if (sw.type != SoundNodeType::Switch || sw.group_uid != group_uid) continue;
+            if (sw.default_value.empty() || sw.default_value == value_uid) continue;
+            for (const SwitchValue& v : g->values)
+                if (v.uid == sw.default_value) {
+                    ++n;
+                    break;
+                }
+        }
+    return n;
+}
+
+bool SetGroupDefault(SoundStore& store, const std::string& group_uid, const std::string& value_uid, bool follow)
+{
+    SwitchGroup* g = FindGroup(store, group_uid);
+    if (!g || !std::any_of(g->values.begin(), g->values.end(), [&](const SwitchValue& v) { return v.uid == value_uid; }))
+        return false;
+    bool changed = g->default_value != value_uid;
+    g->default_value = value_uid;
+    if (follow)
+        for (SoundLibrary& lib : store.libraries)
+            for (SoundNode& sw : lib.nodes) {
+                if (sw.type != SoundNodeType::Switch || sw.group_uid != group_uid || sw.default_value.empty()) continue;
+                sw.default_value.clear();
+                changed = true;
+            }
+    return changed;
 }
 
 // ---- Libraries ----------------------------------------------------------------------------------

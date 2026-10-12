@@ -125,6 +125,9 @@ bool AddRavlibLibrary(SoundStore& store, const SoundStore& file, const std::stri
     };
 
     std::map<std::string, std::string> gmap, vmap, nmap;
+    // 13-18: a merged group whose project default differs from the file's: the file's (mapped), so a
+    // Switch that followed it in the file keeps playing it.
+    std::map<std::string, std::string> merged_def;
     for (const SwitchGroup& fg : file.groups) {
         SwitchGroup* target = nullptr;
         for (SwitchGroup& pg : s.groups)
@@ -150,6 +153,9 @@ bool AddRavlibLibrary(SoundStore& store, const SoundStore& file, const std::stri
                     target->values.push_back(nv);
                 }
             }
+            const std::string fdef = GroupDefaultValue(fg);
+            const std::string mdef = fdef.empty() ? std::string() : Mapped(vmap, fdef);
+            if (!mdef.empty() && mdef != GroupDefaultValue(*target)) merged_def[target->uid] = mdef;
         } else {
             SwitchGroup ng = fg;
             ng.uid = fresh(fg.uid);
@@ -159,6 +165,8 @@ bool AddRavlibLibrary(SoundStore& store, const SoundStore& file, const std::stri
                 v.uid = fresh(old);
                 vmap[old] = v.uid;
             }
+            // 13-18 D6: a new group's default follows its values (a merged group keeps the project's).
+            if (!ng.default_value.empty()) ng.default_value = vmap.count(ng.default_value) ? vmap[ng.default_value] : std::string();
             std::vector<std::string> names;
             for (const SwitchGroup& g : s.groups) names.push_back(g.name);
             ng.name = UniqueName(ng.name, names);
@@ -179,7 +187,12 @@ bool AddRavlibLibrary(SoundStore& store, const SoundStore& file, const std::stri
             c.value_uid = Mapped(vmap, c.value_uid);
             c.child_uid = Mapped(nmap, c.child_uid);
         }
+        const bool followed = n.type == SoundNodeType::Switch && (n.default_value.empty() || !vmap.count(n.default_value));
         if (!n.default_value.empty()) n.default_value = Mapped(vmap, n.default_value);
+        if (followed) {  // 13-18: on a merged group, what it played in the file keeps playing
+            const auto md = merged_def.find(n.group_uid);
+            if (md != merged_def.end()) n.default_value = md->second;
+        }
         if (!n.preview_value.empty()) n.preview_value = Mapped(vmap, n.preview_value);
         for (std::string& u : n.unassigned) u = Mapped(nmap, u);
         if (n.type == SoundNodeType::Sound && n.sound.source.kind == SoundSourceKind::File) n.sound.source.item_guid.clear();

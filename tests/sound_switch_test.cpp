@@ -134,6 +134,60 @@ static void TestDefaultFallbackAndPath()
     CHECK(r.path_text == "Material (deleted value) \xE2\x86\x92 Concrete (default) \xE2\x80\xBA Blend \xC3\x97" "2");
 }
 
+// 13-18 D1: the node's own default, else the group's, else the group's first value.
+static void TestGroupDefault()
+{
+    SoundStore st = Store();
+    st.groups[0].default_value = "vwood";
+    SoundNode d = Node("x", "", SoundNodeType::Switch, "X");
+    d.group_uid = "gmat";
+    CHECK(DefaultValue(st, d) == "vwood");   // follows the group
+    d.default_value = "vgrass";
+    CHECK(DefaultValue(st, d) == "vgrass");  // its own overrides
+    d.default_value = "vgone";
+    CHECK(DefaultValue(st, d) == "vwood");   // a deleted own value: the group's
+    st.groups[0].default_value = "vgone2";
+    CHECK(DefaultValue(st, d) == "vcon");    // both stale: the first value
+    // Resolution plays the group default where nothing is set.
+    st.groups[0].default_value = "vgrass";
+    SoundLibrary lib = MatLib();
+    Resolution r = ResolveEvent(st, lib, {}, {});
+    CHECK(r.sounds.size() == 1 && r.sounds[0].node == "sg");
+    lib.nodes[0].default_value = "vcon";
+    r = ResolveEvent(st, lib, {}, {});
+    CHECK(r.sounds.size() == 2);
+
+    // Converting to a Switch: none of its own when the group's default got a child.
+    SoundLibrary c;
+    c.root = "r";
+    c.nodes = {Node("r", "", SoundNodeType::Random, "R"), Node("a", "r", SoundNodeType::Sound, "wet_concrete"),
+               Node("b", "r", SoundNodeType::Sound, "Grass")};
+    SoundStore s2 = Store();
+    s2.groups[1].default_value = "sgrass";
+    SoundLibrary c1 = c;
+    CHECK(ConvertNodeType(c1, "r", SoundNodeType::Switch, "gsurf", s2));
+    CHECK(c1.nodes[0].default_value.empty() && DefaultValue(s2, c1.nodes[0]) == "sgrass");
+    // The group's default got no child: the first value given one, as before.
+    SoundLibrary c2 = c;
+    c2.nodes.pop_back();
+    CHECK(ConvertNodeType(c2, "r", SoundNodeType::Switch, "gsurf", s2));
+    CHECK(c2.nodes[0].default_value == "swet");
+    // Switch -> Switch: a follower whose default maps to the new group's default keeps following.
+    s2.groups[0].default_value = "vgrass";
+    SoundLibrary c3;
+    c3.root = "sw";
+    SoundNode sw = Node("sw", "", SoundNodeType::Switch, "S");
+    sw.group_uid = "gmat";
+    c3.nodes = {sw};
+    CHECK(ConvertNodeType(c3, "sw", SoundNodeType::Switch, "gsurf", s2));
+    CHECK(c3.nodes[0].default_value.empty() && DefaultValue(s2, c3.nodes[0]) == "sgrass");
+    // ... and one whose value differs from it gets it as its own (what it played is kept).
+    s2.groups[1].default_value = "swet";
+    c3.nodes[0] = sw;
+    CHECK(ConvertNodeType(c3, "sw", SoundNodeType::Switch, "gsurf", s2));
+    CHECK(c3.nodes[0].default_value == "sgrass");
+}
+
 static void TestNested()
 {
     SoundStore st = Store();
@@ -388,7 +442,9 @@ static void TestConvert()
     CHECK(sw.unassigned.size() == 1 && sw.unassigned[0] == "c");
     CHECK(lib.nodes[1].uid == "a" && lib.nodes[2].uid == "b" && lib.nodes[3].uid == "c");
     CHECK(!ConvertNodeType(lib, "r", SoundNodeType::Switch, "gsurf", st));  // same group
-    CHECK(sw.default_value == "swet");  // decision 2026-10-12: first group value given a child
+    // Decision 2026-10-12: first group value given a child; 13-18: that is the group's (first value)
+    // default, so none of its own (it follows the group).
+    CHECK(sw.default_value.empty() && DefaultValue(st, sw) == "swet");
     {
         // Only the group's second value gets a child: it is the default (group order, not child order).
         SoundLibrary l2;
@@ -450,7 +506,8 @@ static void TestConvert()
               t.cases[1].value_uid == "twood" && t.cases[1].child_uid == "k3");
         CHECK(t.unassigned.size() == 1 && t.unassigned[0] == "k2");
         CHECK(t.preview_value == "twood");
-        CHECK(t.default_value == "tgrass");  // implicit default d1 "grass" -> Grass
+        // Implicit default d1 "grass" -> Grass, the new group's first value: it keeps following (13-18).
+        CHECK(t.default_value.empty() && DefaultValue(s2, t) == "tgrass");
 
         // Same child on an unmatched case then a matched one: cased, not Unassigned.
         SoundLibrary sl;
@@ -520,6 +577,7 @@ int main()
 {
     TestInheritance();
     TestDefaultFallbackAndPath();
+    TestGroupDefault();
     TestNested();
     TestRootsAndNullHooks();
     TestUnassigned();

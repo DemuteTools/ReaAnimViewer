@@ -61,8 +61,8 @@ bool SameStore(const SoundStore& a, const SoundStore& b)
     if (a.groups.size() != b.groups.size() || a.libraries.size() != b.libraries.size()) return false;
     for (size_t i = 0; i < a.groups.size(); ++i) {
         const SwitchGroup &g = a.groups[i], &h = b.groups[i];
-        if (g.uid != h.uid || g.name != h.name || g.kept != h.kept || g.kept_lines != h.kept_lines ||
-            g.values.size() != h.values.size())
+        if (g.uid != h.uid || g.name != h.name || g.default_value != h.default_value || g.kept != h.kept ||
+            g.kept_lines != h.kept_lines || g.values.size() != h.values.size())
             return false;
         for (size_t j = 0; j < g.values.size(); ++j)
             if (g.values[j].uid != h.values[j].uid || g.values[j].name != h.values[j].name ||
@@ -88,6 +88,7 @@ SoundStore BigStore()
     mat.uid = "a000000000000001";
     mat.name = "Material";
     mat.values = {{"a000000000000002", "Wood", {}}, {"a000000000000003", "Wet concrete", {}}};
+    mat.default_value = "a000000000000003";  // 13-18
     SwitchGroup spd;
     spd.uid = "a000000000000004";
     spd.name = "Speed=fast %";
@@ -212,6 +213,15 @@ int main()
         // parse(write(x)) == x with kept text too.
         SoundStore q;
         CHECK(ParseSoundStore(SerializeSoundStore(p), &q) && SameStore(p, q));
+    }
+    // ---- 13-18: a group's default value (written only when set) ------------------------------------
+    {
+        SoundStore d;
+        CHECK(ParseSoundStore("RAVSOUNDS 1\ngroup uid=g name=G default=v2\nvalue uid=v1 name=A\nvalue uid=v2 name=B\n", &d));
+        CHECK(d.groups.size() == 1 && d.groups[0].default_value == "v2" && d.groups[0].kept.empty());
+        CHECK(SerializeSoundStore(d).find("group uid=g name=G default=v2\n") != std::string::npos);
+        d.groups[0].default_value.clear();
+        CHECK(SerializeSoundStore(d).find("group uid=g name=G\n") != std::string::npos);
     }
     // ---- Empty store: no chunk -------------------------------------------------------------------
     {

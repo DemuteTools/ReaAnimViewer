@@ -82,6 +82,8 @@ struct TreeState {
     // menu rename it.
     std::string              sg_gid, sg_vid;
     bool                     sg_menu = false;
+    // 13-18: the group default awaiting the confirm band (Switches on the group have their own default).
+    std::string              sgd_gid, sgd_vid;
     std::set<std::string>    item_guids;
     // 13-7a (audit C2.3): each open group's dashed "+ value" field (by group uid); the group whose
     // field takes the keyboard again after a value was added (to type the next one).
@@ -1650,8 +1652,13 @@ void SwitchGroupsSectionWidgets()
     ui::EndSectionHeaderRight(sec);
     if (open_sec && !g.changed) {
         std::string  del_group, del_value_group, del_value, add_group, add_name;
+        // 13-18: a group default to set (follow: -1 none, 0 keep the Switches' own defaults, 1 clear them).
+        std::string  def_group, def_value;
+        int          def_follow = -1, def_count = 0;
+        bool         sgd_drawn = false;  // the pending band's value row was drawn this frame
         ImDrawList*  dl = ImGui::GetWindowDrawList();
         const float  rh = ui::RowH(), gap = ui::Dp(6.0f), cs = ui::Dp(18.0f), is = ui::Dp(16.0f);
+        const ImVec2 spacing0 = ImGui::GetStyle().ItemSpacing;
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 0.0f));
         for (const SwitchGroup& gr : store.groups) {
             ImGui::PushID(gr.uid.c_str());
@@ -1717,6 +1724,11 @@ void SwitchGroupsSectionWidgets()
             if (open && !g.changed) {
                 const float vx0 = p.x + ui::Dp(kRowPad + kIndent);
                 const float vnx = vx0 + cs + gap + is + gap;
+                // 13-18 D2: the value that plays for a Switch with no default of its own: the group's
+                // default (its "default" tag), else the first value (the tag faint).
+                const bool gdef_set = std::any_of(gr.values.begin(), gr.values.end(),
+                                                  [&](const SwitchValue& x) { return x.uid == gr.default_value; });
+                const std::string gdef = gdef_set ? gr.default_value : gr.values.empty() ? std::string() : gr.values.front().uid;
                 // Values listed A to Z (case-insensitive); the group's stored order is unchanged.
                 std::vector<const SwitchValue*> sorted;
                 for (const SwitchValue& sv : gr.values) sorted.push_back(&sv);
@@ -1776,10 +1788,72 @@ void SwitchGroupsSectionWidgets()
                             }
                             rx -= ui::Dp(22.0f) + gap;
                         }
+                        if (v.uid == gdef) {
+                            // The tree's "default" tag (.dtag); faint while no default is set.
+                            const char* t = "default";
+                            const float tw = ui::SmallTagWidth(t);
+                            if (rx - tw > vnx + ui::Dp(16.0f)) {
+                                rx -= tw;
+                                if (!gdef_set) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
+                                ui::DrawSmallTag(dl, ImVec2(rx, std::floor(vcy - ui::SmallTagHeight() * 0.5f)), t);
+                                if (!gdef_set) ImGui::PopStyleVar();
+                                ImGui::SetCursorScreenPos(ImVec2(rx, vp.y));
+                                ImGui::Dummy(ImVec2(tw, rh));
+                                ui::ItemTipText(gdef_set ? "The group's default value: plays for every Switch on this group that has no "
+                                                           "default of its own"
+                                                         : "No default set: the first value plays for every Switch on this group that "
+                                                           "has no default of its own. Right-click a value to make it the default");
+                                rx -= gap;
+                            }
+                        }
                         ui::FontScope f(ui::FontTitle());
                         ui::EllipsisTextTip(dl, ImVec2(vnx, std::floor(vcy - ImGui::GetTextLineHeight() * 0.5f)), rx, ui::kText, v.name);
                         ImGui::SetCursorScreenPos(ImVec2(vp.x, vp.y + rh));
                         ImGui::Dummy(ImVec2(0.0f, 0.0f));
+                    }
+                    if (!g.changed && g.sgd_gid == gr.uid && g.sgd_vid == v.uid) {
+                        // 13-18 D3: the in-place confirm under the value row.
+                        sgd_drawn = true;
+                        const int n = CountDefaultOverrides(store, gr.uid, v.uid);
+                        if (n == 0) {  // nothing left to ask (undo)
+                            g.sgd_gid.clear();
+                            g.sgd_vid.clear();
+                        } else {
+                            const ImVec2 bp = ImGui::GetCursorScreenPos();
+                            ImGui::SetCursorScreenPos(ImVec2(vx0, bp.y + ui::Dp(2.0f)));
+                            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, spacing0);
+                            ui::ConfirmBand band;
+                            ui::BeginConfirmBand(band, std::max(ui::Dp(40.0f), bp.x + w - vx0 - ui::Dp(4.0f)));
+                            char msg[512];
+                            if (n == 1)
+                                std::snprintf(msg, sizeof(msg), "1 Switch has its own default. Make it follow %s?", v.name.c_str());
+                            else
+                                std::snprintf(msg, sizeof(msg), "%d Switches have their own default. Make them follow %s?", n,
+                                              v.name.c_str());
+                            ui::ToneText(msg, ui::kText, true);
+                            if (ui::ConfirmButton("Follow##sgdef")) def_follow = 1;
+                            ui::ItemTipText("Their own defaults are cleared: they play the group's default");
+                            SameLineIfFits(ButtonWidth("Keep theirs"));
+                            if (ui::SolidButton("Keep theirs##sgdef")) def_follow = 0;
+                            ui::ItemTipText("Only the group's default changes");
+                            SameLineIfFits(ButtonWidth("Cancel"));
+                            if (ui::SolidButton("Cancel##sgdef")) {
+                                g.sgd_gid.clear();
+                                g.sgd_vid.clear();
+                            }
+                            ui::EndConfirmBand(band);
+                            ImGui::PopStyleVar();
+                            if (def_follow >= 0) {
+                                def_count = n;
+                                def_group = gr.uid;
+                                def_value = v.uid;
+                                g.sgd_gid.clear();
+                                g.sgd_vid.clear();
+                            }
+                            const ImVec2 ep = ImGui::GetCursorScreenPos();
+                            ImGui::SetCursorScreenPos(ImVec2(bp.x, ep.y + ui::Dp(4.0f)));
+                            ImGui::Dummy(ImVec2(0.0f, 0.0f));
+                        }
                     }
                     ImGui::PopID();
                 }
@@ -1812,6 +1886,12 @@ void SwitchGroupsSectionWidgets()
             if (g.changed || !add_group.empty()) break;
         }
         ImGui::PopStyleVar();
+        // 13-18: a pending band whose value row was not drawn (its group folded) is dropped, so it
+        // never comes back later out of context.
+        if (!g.changed && add_group.empty() && !sgd_drawn) {
+            g.sgd_gid.clear();
+            g.sgd_vid.clear();
+        }
         // Antho 2026-10-12: the clicked row renames by F2 or its right-click menu (as the tree's rows), besides the
         // double-click; the menu also deletes it.
         {
@@ -1823,6 +1903,13 @@ void SwitchGroupsSectionWidgets()
             if (!cg || (!g.sg_vid.empty() && !cv)) {  // gone (deleted, undone)
                 g.sg_gid.clear();
                 g.sg_vid.clear();
+            }
+            const SwitchGroup* pg = g.sgd_gid.empty() ? nullptr : FindGroup(store, g.sgd_gid);
+            if (!g.sgd_gid.empty() &&
+                (!pg || std::none_of(pg->values.begin(), pg->values.end(), [](const SwitchValue& v) { return v.uid == g.sgd_vid; }))) {
+                // its value went (undo)
+                g.sgd_gid.clear();
+                g.sgd_vid.clear();
             }
             auto start_rename = [&]() {
                 g.rename = cv ? RenameKind::Value : RenameKind::Group;
@@ -1843,12 +1930,42 @@ void SwitchGroupsSectionWidgets()
                 if (!cg) ImGui::CloseCurrentPopup();  // its row went (undo)
                 if (cg && ImGui::MenuItem("Rename", "F2", false, !g.changed && g.rename == RenameKind::None)) start_rename();
                 if (cg && !cv && ImGui::MenuItem("Delete group")) del_group = cg->uid;
+                if (cg && cv) {
+                    // 13-18 D2 / D3: the group's default; asks first when Switches have their own.
+                    const bool is_def = cg->default_value == cv->uid;
+                    if (ImGui::MenuItem("Make default", nullptr, is_def, !is_def)) {
+                        if (CountDefaultOverrides(store, cg->uid, cv->uid) == 0) {
+                            def_group = cg->uid;
+                            def_value = cv->uid;
+                            def_follow = 0;
+                        } else {
+                            g.sgd_gid = cg->uid;
+                            g.sgd_vid = cv->uid;
+                        }
+                    }
+                    ui::ItemTipText("Plays for every Switch on this group that has no default of its own");
+                }
                 if (cg && cv && ImGui::MenuItem("Remove value")) {
                     del_value_group = cg->uid;
                     del_value = cv->uid;
                 }
                 ui::EndMenuPopup();
             }
+        }
+        if (!g.changed && def_follow >= 0 && !def_group.empty()) {
+            const SwitchGroup* dg = FindGroup(store, def_group);
+            std::string        vname;
+            if (dg)
+                for (const SwitchValue& v : dg->values)
+                    if (v.uid == def_value) vname = v.name;
+            std::string toast = vname + " is the group's default";
+            if (def_follow == 1)
+                toast += def_count == 1 ? " \xC2\xB7 1 Switch follows it" : " \xC2\xB7 " + std::to_string(def_count) + " Switches follow it";
+            Later([def_group, def_value, def_follow, toast] {
+                Gesture(
+                    "Make group default",
+                    [&](SoundStore& s) { return SetGroupDefault(s, def_group, def_value, def_follow == 1); }, toast);
+            });
         }
         if (!g.changed && !del_group.empty())
             Later([del_group] { Gesture("Delete group", [&](SoundStore& s) { return DeleteGroup(s, del_group); }); });

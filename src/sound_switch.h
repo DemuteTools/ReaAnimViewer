@@ -57,9 +57,15 @@ Resolution ResolveEvent(const SoundStore& store, const SoundLibrary& lib, const 
 // returns sw.default_value (may be "") with `from` = Default. What a Switch then plays (and what a
 // UI shows as its effective value) is DefaultValue(store, sw), not this "".
 std::string EffectiveValue(const SoundNode& sw, const ValueLayers& layers, ValueFrom* from);
-// A Switch's default value: default_value, else the group's first value, else (group not found)
-// the first case's value; "" when none.
+// A Switch's default value (13-18 D1): the node's own default_value (when still a value of the
+// group), else the group's default_value (same), else the group's first value, else (group not
+// found) the node's own, else the first case's value; "" when none.
 std::string DefaultValue(const SoundStore& store, const SoundNode& sw);
+// 13-18: whether `value_uid` is one of the group's values ("" = no).
+bool GroupHasValue(const SwitchGroup& g, const std::string& value_uid);
+// 13-18: what a Switch with no default of its own plays: the group's default_value (when still a
+// value), else its first value; "" when it has none.
+std::string GroupDefaultValue(const SwitchGroup& g);
 
 struct LibraryCheck {
     bool                     blocked = false;

@@ -109,7 +109,7 @@ struct SoundNode {
     // Switch only.
     std::string              group_uid;
     std::vector<SwitchCase>  cases;
-    std::string              default_value;   // value uid ("" = the group's first)
+    std::string              default_value;   // value uid: overrides the group's ("" = the group's default, DefaultValue)
     std::string              preview_value;   // value uid ("" = the default)
     std::vector<std::string> unassigned;      // child uids on no value (the orange list)
     // User Library sounds (13-11): the destination folder ("Lands in").
@@ -130,6 +130,7 @@ struct SwitchGroup {
     std::string              uid;
     std::string              name;
     std::vector<SwitchValue> values;
+    std::string              default_value;  // 13-18: value uid ("" = the first value); a Switch's own overrides it
     std::vector<std::string> kept;
     std::vector<std::string> kept_lines;
 };

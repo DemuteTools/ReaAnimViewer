@@ -11,6 +11,7 @@
 
 #include "media_db.h"
 #include "sound_record.h"
+#include "sound_switch.h"
 
 using namespace rav;
 
@@ -193,15 +194,18 @@ static void TestExportForm()
 static void TestImportMerge()
 {
     SoundStore file = RavlibOf(RichStore(), "l000000000000001", nullptr);
+    file.groups[0].default_value = "v000000000000002";  // 13-18: the file's group default (Metal)
     SoundStore proj;
     SwitchGroup pg;
     pg.uid = "p000000000000001";
     pg.name = "Foot Material";
     pg.values = {{"p000000000000002", "wood", {}}};
+    pg.default_value = "p000000000000002";
     proj.groups.push_back(pg);
     std::string uid, why;
     CHECK(AddRavlibLibrary(proj, file, "Steps.ravlib", &uid, &why));
     CHECK(proj.groups.size() == 1);
+    CHECK(proj.groups[0].default_value == "p000000000000002");  // a merged group keeps the project's
     CHECK(proj.groups[0].values.size() == 2 && proj.groups[0].values[1].name == "Metal");
     const SoundLibrary* lib = FindLibrary(proj, uid);
     CHECK(lib && lib->user && lib->ravlib_path == "Steps.ravlib");
@@ -216,6 +220,22 @@ static void TestImportMerge()
         CHECK(sw && sw->unassigned.size() == 1 && FindNode(*lib, sw->unassigned[0]) != nullptr);
         for (const SoundNode& n : lib->nodes)
             if (n.sound.source.kind == SoundSourceKind::File) CHECK(n.sound.source.item_guid.empty());
+    }
+    // 13-18: a Switch that followed the file's group default (Metal) keeps playing it on the merged
+    // group whose project default is wood.
+    {
+        SoundStore f2 = RavlibOf(RichStore(), "l000000000000001", nullptr);
+        f2.groups[0].default_value = "v000000000000002";
+        f2.libraries[0].nodes[0].default_value.clear();
+        SoundStore p2;
+        p2.groups.push_back(pg);
+        std::string u2;
+        CHECK(AddRavlibLibrary(p2, f2, "Steps.ravlib", &u2, nullptr));
+        const SoundLibrary* l2 = FindLibrary(p2, u2);
+        const SoundNode*    s2 = l2 ? FindNode(*l2, l2->root) : nullptr;
+        CHECK(p2.groups.size() == 1 && p2.groups[0].default_value == "p000000000000002");
+        CHECK(s2 && s2->type == SoundNodeType::Switch && DefaultValue(p2, *s2) == p2.groups[0].values[1].uid);
+        CHECK(p2.groups[0].values[1].name == "Metal");
     }
 }
 
@@ -246,6 +266,11 @@ static void TestKitTravels()
 static void TestUidClash()
 {
     SoundStore file = RavlibOf(RichStore(), "l000000000000001", nullptr);
+    file.groups[0].default_value = "v000000000000002";  // 13-18: travels in the file
+    {
+        SoundStore back;
+        CHECK(ParseRavlib(SerializeRavlib(file), &back) && back.groups[0].default_value == "v000000000000002");
+    }
     SoundStore proj;
     SwitchGroup other;
     other.uid = "q000000000000001";
@@ -263,6 +288,7 @@ static void TestUidClash()
     CHECK(sw && sw->group_uid == added.uid);
     CHECK(sw && sw->cases[1].value_uid == added.values[1].uid);
     CHECK(sw && sw->default_value == added.values[1].uid);
+    CHECK(added.default_value == added.values[1].uid);  // a new group's default remapped with its values
     CHECK(proj.groups[0].values[0].uid == "v000000000000002");
 }
 

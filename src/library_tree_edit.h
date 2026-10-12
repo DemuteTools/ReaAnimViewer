@@ -126,6 +126,8 @@ bool SetRowsType(SoundStore& store, const std::string& lib_uid, const std::vecto
                  const std::string& group_uid);
 // A value row becomes its Switch's default (one per Switch).
 bool MakeDefault(SoundStore& store, const std::string& lib_uid, const std::vector<LibraryRow>& rows);
+// 13-18 D4: the Switch's own default is cleared (it plays its group's default). False when none was set.
+bool FollowGroupDefault(SoundStore& store, const std::string& lib_uid, const std::string& switch_uid);
 // "Clear (plays the default)": the value's content goes to Unassigned.
 bool ClearValue(SoundStore& store, const std::string& lib_uid, const LibraryRow& row);
 
@@ -137,9 +139,17 @@ bool DeleteGroup(SoundStore& store, const std::string& group_uid);
 bool AddValue(SoundStore& store, const std::string& group_uid, const std::string& name, std::string* uid);
 bool RenameValue(SoundStore& store, const std::string& group_uid, const std::string& value_uid, const std::string& name);
 // Decision 2 (Antho 2026-10-12): every Switch on the group, in every library: the value's
-// content goes to Unassigned; a default naming it becomes the first remaining value (group
-// order) that has a child, else ""; a preview naming it becomes "".
+// content goes to Unassigned; a default naming it becomes "" (it follows the group) when the
+// group's default (GroupDefaultValue, after the delete) has a child there, else the first
+// remaining value (group order) that has a child, else ""; a preview naming it becomes "".
+// 13-18 D5: the group's own default naming it is cleared (the first value plays).
 bool DeleteValue(SoundStore& store, const std::string& group_uid, const std::string& value_uid);
+// 13-18: the Switches (every library) on the group whose own default is a value of the group other
+// than `value_uid` (they would not follow a new group default `value_uid`).
+int CountDefaultOverrides(const SoundStore& store, const std::string& group_uid, const std::string& value_uid);
+// 13-18: the group's default becomes `value_uid` (a value of the group); `follow` also clears every
+// own default of the Switches on the group (they follow it). False when nothing changed.
+bool SetGroupDefault(SoundStore& store, const std::string& group_uid, const std::string& value_uid, bool follow);
 // "Name", "Name 2", ... not used by `taken` (names compared with SwitchNameKey).
 std::string UniqueName(const std::string& base, const std::vector<std::string>& taken);
 

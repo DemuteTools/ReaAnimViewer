@@ -256,13 +256,16 @@ bool ModeFromWord(const std::string& s, DetectMode* out)
 
 Fields GroupFields(const SwitchGroup& g)
 {
-    return {{"uid", Enc(g.uid)}, {"name", Enc(g.name)}};
+    Fields f = {{"uid", Enc(g.uid)}, {"name", Enc(g.name)}};
+    if (!g.default_value.empty()) f.push_back({"default", Enc(g.default_value)});
+    return f;
 }
 
 Got SetGroup(SwitchGroup& g, const std::string& k, const std::string& v)
 {
     if (k == "uid") return G(ReadStr(v, &g.uid));
     if (k == "name") return G(ReadStr(v, &g.name));
+    if (k == "default") return G(ReadStr(v, &g.default_value));
     return Got::Unknown;
 }
 

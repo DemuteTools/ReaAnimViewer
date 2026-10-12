@@ -433,11 +433,77 @@ static void TestDeleteValueEverySwitch()
     m->nodes.push_back(Node("w", "sw3", SoundNodeType::Sound, "W"));
     CHECK(DeleteValue(s, "gmat", "vwood"));
     CHECK(Has(N(s, "L", "sw2")->unassigned, "q") && Case(s, "L", "sw2", "vwood").empty());
-    CHECK(N(s, "L", "sw2")->default_value == "vconc" && N(s, "L", "sw2")->preview_value.empty());
+    // 13-18: Concrete, now the group's first value (its default), has a child: sw2 follows the group.
+    CHECK(N(s, "L", "sw2")->default_value.empty() && DefaultValue(s, *N(s, "L", "sw2")) == "vconc" &&
+          N(s, "L", "sw2")->preview_value.empty());
     CHECK(Has(N(s, "M", "sw3")->unassigned, "w") && N(s, "M", "sw3")->default_value.empty());
 }
 
 // Shift range going upward (target above the anchor).
+// 13-18: the group's default, the override count, Follow / Keep theirs, delete, a new Switch.
+static void TestGroupDefault()
+{
+    SoundStore s = Store();  // sw (L) has its own default Wood
+    SoundNode sw2 = Node("sw2", "mr", SoundNodeType::Switch, "S2");
+    sw2.group_uid = "gmat";
+    sw2.default_value = "vwood";
+    FindLibrary(s, "M")->nodes.push_back(sw2);
+    // A Switch on another group, with its own default: never touched by Material's default.
+    SwitchGroup spd;
+    spd.uid = "gspd";
+    spd.name = "Speed";
+    spd.values = {{"vwalk", "Walk", {}}, {"vrun", "Run", {}}};
+    s.groups.push_back(spd);
+    SoundNode sw3 = Node("sw3", "mr", SoundNodeType::Switch, "S3");
+    sw3.group_uid = "gspd";
+    sw3.default_value = "vrun";
+    FindLibrary(s, "M")->nodes.push_back(sw3);
+    CHECK(CountDefaultOverrides(s, "gmat", "vconc") == 2);
+    CHECK(CountDefaultOverrides(s, "gmat", "vwood") == 0);  // theirs is the same value
+    CHECK(CountDefaultOverrides(s, "nope", "vconc") == 0);
+    // Keep theirs: only the group changes.
+    SoundStore k = s;
+    CHECK(SetGroupDefault(k, "gmat", "vconc", false));
+    CHECK(FindGroup(k, "gmat")->default_value == "vconc");
+    CHECK(DefaultValue(k, *N(k, "L", "sw")) == "vwood" && DefaultValue(k, *N(k, "M", "sw2")) == "vwood");
+    CHECK(!SetGroupDefault(k, "gmat", "vconc", false));  // nothing changes
+    CHECK(!SetGroupDefault(k, "gmat", "vgone", false));
+    // Follow: their own defaults are cleared, both play Concrete (one call = one undo point).
+    SoundStore f = s;
+    CHECK(SetGroupDefault(f, "gmat", "vconc", true));
+    CHECK(N(f, "L", "sw")->default_value.empty() && N(f, "M", "sw2")->default_value.empty());
+    CHECK(DefaultValue(f, *N(f, "L", "sw")) == "vconc" && DefaultValue(f, *N(f, "M", "sw2")) == "vconc");
+    CHECK(N(f, "M", "sw3")->default_value == "vrun" && FindGroup(f, "gspd")->default_value.empty());
+    // The round trip keeps it.
+    SoundStore rt;
+    CHECK(ParseSoundStore(SerializeSoundStore(f), &rt) && FindGroup(rt, "gmat")->default_value == "vconc");
+    // The tree tags it on a Switch with no default of its own.
+    std::vector<std::string> tagged;
+    for (const TreeRow& r : BuildTreeRows(f, *FindLibrary(f, "L"), {}))
+        if (r.kind == TreeRowKind::Value && r.is_default) tagged.push_back(r.row.key);
+    CHECK(tagged.size() == 1 && tagged[0] == "vconc");
+    // A node set back to its own, then to follow (the node panel's "Group default").
+    CHECK(MakeDefault(f, "L", {{"sw", "vgrass"}}) && DefaultValue(f, *N(f, "L", "sw")) == "vgrass");
+    CHECK(FollowGroupDefault(f, "L", "sw") && DefaultValue(f, *N(f, "L", "sw")) == "vconc");
+    CHECK(!FollowGroupDefault(f, "L", "sw"));
+    // A new Switch on the group added in a Random follows it.
+    std::vector<std::string> in;
+    LibraryRow               mrow{"", "mr"};
+    NewNodeSpec              spec;
+    spec.type = SoundNodeType::Switch;
+    spec.group_uid = "gmat";
+    CHECK(AddNodes(f, "M", &mrow, {spec}, &in, nullptr) && in.size() == 1);
+    CHECK(DefaultValue(f, *N(f, "M", in[0])) == "vconc");
+    // Its value deleted: the group's default is cleared (the first value plays).
+    CHECK(DeleteValue(f, "gmat", "vconc"));
+    CHECK(FindGroup(f, "gmat")->default_value.empty() && DefaultValue(f, *N(f, "M", in[0])) == "vwood");
+    // A Switch's own default deleted while the group's default has a child there: it follows the group.
+    SoundStore d = Store();  // sw: own Wood; Wood -> y, Grass -> gr
+    CHECK(SetGroupDefault(d, "gmat", "vgrass", false));
+    CHECK(DeleteValue(d, "gmat", "vwood"));
+    CHECK(N(d, "L", "sw")->default_value.empty() && DefaultValue(d, *N(d, "L", "sw")) == "vgrass");
+}
+
 static void TestShiftRangeUpward()
 {
     SoundStore s = Store();
@@ -550,6 +616,7 @@ int main()
     TestReorderBeforeAfter();
     TestWrapValueRow();
     TestDeleteValueEverySwitch();
+    TestGroupDefault();
     TestShiftRangeUpward();
     TestBatchSwitchOnNewGroup();
     if (g_fail) {

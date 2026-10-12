@@ -445,6 +445,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                 continue;
             }
             if (step.act == SlotAction::Remove) {
+                if (o.counts && !step.existing.empty()) ++o.counts->removed;
                 for (int i : step.existing) {
                     RemoveIndexed(ev->placed[static_cast<size_t>(i)].item_guid);
                     erase.insert(i);
@@ -522,6 +523,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                         guid, e.t);
                 continue;
             }
+            if (o.counts) ++(step.act == SlotAction::Place ? o.counts->placed : o.counts->replaced);  // per sound, not per pile item
             if (g_items)
                 for (size_t k = 0; k < r.item_guids.size() && k < r.items.size(); ++k)
                     (*g_items)[GuidKey(r.item_guids[k])] = r.items[k];
@@ -534,7 +536,6 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                 p.offset_s = req.offset_s;
                 p.variation = s.variation;
                 added.push_back(p);
-                if (o.counts) ++(step.act == SlotAction::Place ? o.counts->placed : o.counts->replaced);
             }
         }
         std::vector<SoundPlacement> placed;
@@ -848,8 +849,8 @@ SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* even
         }
         if (counts) {  // the details list says it too
             char buf[160];
-            std::snprintf(buf, sizeof(buf), "%d sound%s placed, %d replaced, %d already in place", counts->placed,
-                          counts->placed == 1 ? "" : "s", counts->replaced, counts->kept);
+            std::snprintf(buf, sizeof(buf), "%d sound%s placed, %d changed, %d removed, %d already in place", counts->placed,
+                          counts->placed == 1 ? "" : "s", counts->replaced, counts->removed, counts->kept);
             AddLine(rep, ReportKind::Info, buf, "", "", 0.0);
             if (counts->deleted_kept > 0) {
                 std::snprintf(buf, sizeof(buf),

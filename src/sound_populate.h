@@ -30,7 +30,7 @@ void InitSoundPopulate(void* (*get_func)(const char* name));
 // Antho 2026-10-12: what it did (placed / replaced / already in place / deleted by hand, not added back),
 // also given as Info lines of the report.
 struct PopulateCounts {
-    int placed = 0, replaced = 0, kept = 0, deleted_kept = 0;
+    int placed = 0, replaced = 0, removed = 0, kept = 0, deleted_kept = 0;  // sounds (a pile counts once)
 };
 SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* events, PopulateCounts* counts = nullptr);
 // The items Populate acts on: the RAV items of `items` plus every other member of their pools.

@@ -380,13 +380,19 @@ void DrawPopulateRow(const TaggingSoundContext& ctx, float attach_w)
         const SoundReport rep = PopulateItemsCounted(sel, &events, &counts);
         Remember(rep, events);
         // Antho 2026-10-12: the line says what happened (a Populate with nothing to do looked broken).
+        bool trouble = false;  // missing / blocked lines: the summary already says why
+        for (const ReportLine& l : rep.lines)
+            if (l.kind == ReportKind::Missing || l.kind == ReportKind::Blocked) trouble = true;
         char buf[160];
-        if (counts.placed + counts.replaced > 0)
+        buf[0] = '\0';
+        if (counts.placed + counts.replaced + counts.removed > 0)
             std::snprintf(buf, sizeof(buf), " \xC2\xB7 %d placed", counts.placed + counts.replaced);
         else if (counts.deleted_kept > 0)
             std::snprintf(buf, sizeof(buf), " \xC2\xB7 nothing placed: %d deleted by hand (Repopulate resets)", counts.deleted_kept);
-        else
+        else if (counts.kept > 0 && !trouble)
             std::snprintf(buf, sizeof(buf), " \xC2\xB7 already in place");
+        else if (!trouble)
+            std::snprintf(buf, sizeof(buf), " \xC2\xB7 nothing placed");
         g_last.summary += buf;
         g_count.valid = false;
     }

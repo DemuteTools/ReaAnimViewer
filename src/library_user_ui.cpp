@@ -249,7 +249,7 @@ bool Gesture(const std::string& name, const std::function<bool(SoundStore&)>& ed
 {
     const std::string desc = "RAV: " + name;
     if (!ModifySoundStore(nullptr, desc.c_str(), edit)) return false;
-    ShowLibraryToast(toast.empty() ? name : toast);
+    ShowLibraryToast(toast.empty() ? name : toast, true, desc);
     return true;
 }
 
@@ -511,7 +511,8 @@ void ApplyLocateResult()
     });
     g.resolved.clear();
     const int m = std::max(g_job.missing, changed);
-    ShowLibraryToast("Located " + std::to_string(changed) + " of " + std::to_string(m) + " sounds", changed > 0);
+    ShowLibraryToast("Located " + std::to_string(changed) + " of " + std::to_string(m) + " sounds", changed > 0,
+                     "RAV: Locate sounds");
 }
 
 // ---- Pickers (run by the timer) -----------------------------------------------------------------

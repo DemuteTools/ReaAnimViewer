@@ -20,6 +20,7 @@
 #include "sound_project.h"
 #include "sound_record.h"
 #include "ui_theme.h"
+#include "undo_guard.h"
 
 namespace rav {
 namespace {
@@ -44,6 +45,8 @@ ViewState g_view;
 struct Toast {
     std::string text;
     bool        undo = false;
+    std::string undo_desc;   // the gesture's undo point description
+    int         state = -1;  // the project state right after the gesture (read when the toast is shown)
     double      until = 0.0;
 };
 Toast g_toast;
@@ -199,6 +202,12 @@ void DrawToast()
     if (ImGui::Begin("##libtoast", nullptr, kFlags)) {
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted(g_toast.text.c_str());
+        // Any later change (another edit, an undo) retires the Undo: it would undo that instead.
+        if (g_toast.undo) {
+            const int state = GetProjectStateChangeCount(nullptr);
+            if (g_toast.state < 0) g_toast.state = state;
+            g_toast.undo = GestureUndoAvailable(Undo_CanUndo2(nullptr), g_toast.undo_desc, state, g_toast.state);
+        }
         if (g_toast.undo) {
             ImGui::SameLine();
             if (ui::SolidButton("Undo")) {
@@ -214,10 +223,18 @@ void DrawToast()
 
 }  // namespace
 
-void ShowLibraryToast(const std::string& text, bool undo)
+void ShowLibraryToast(const std::string& text, bool undo, const std::string& undo_desc)
 {
     g_toast.text = text;
     g_toast.undo = undo;
+    g_toast.undo_desc.clear();
+    if (undo) {
+        const char* last = Undo_CanUndo2(nullptr);
+        g_toast.undo_desc = !undo_desc.empty() ? undo_desc : (last ? last : "");
+    }
+    // Every caller shows its toast once the gesture's undo point is closed: read the state now,
+    // so an undo made while the view is hidden cannot slip in before the first draw.
+    g_toast.state = undo ? GetProjectStateChangeCount(nullptr) : -1;
     g_toast.until = ImGui::GetTime() + kToastSeconds;
 }
 

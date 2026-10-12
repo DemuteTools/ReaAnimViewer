@@ -19,6 +19,7 @@
 #include "sound_record.h"
 #include "tagging_session.h"
 #include "ui_theme.h"
+#include "undo_guard.h"
 
 namespace rav {
 namespace {
@@ -31,6 +32,7 @@ constexpr double kNoteSeconds = 6.0;
 std::function<void()> g_pending;    // the gesture picked this frame, run on the next one
 std::string           g_note;
 bool                  g_note_undo = false;
+std::string           g_note_undo_desc;   // the gesture's undo point description
 double                g_note_until = 0.0;
 int                   g_note_state = -1;    // the project state right after the gesture
 
@@ -59,8 +61,9 @@ void ShowResult(const AttachResult& r)
 {
     g_note = r.note;
     g_note_undo = r.wrote;
+    g_note_undo_desc = r.undo_desc;
     g_note_until = ImGui::GetTime() + kNoteSeconds;
-    g_note_state = -1;  // read on the next draw, once the gesture's undo point is closed
+    g_note_state = r.wrote ? GetProjectStateChangeCount(nullptr) : -1;  // the gesture's undo point is closed here
     g_sel_state = -1;
 }
 
@@ -209,7 +212,8 @@ void DrawAttachButton(const TaggingSoundContext& ctx)
         // Any later change (another edit, an undo) retires the Undo: it would undo that instead.
         const int state = GetProjectStateChangeCount(nullptr);
         if (g_note_undo && g_note_state < 0) g_note_state = state;
-        else if (g_note_undo && state != g_note_state) g_note_undo = false;
+        if (g_note_undo)
+            g_note_undo = GestureUndoAvailable(Undo_CanUndo2(nullptr), g_note_undo_desc, state, g_note_state);
         if (g_note_undo) {
             ImGui::SameLine();
             if (ImGui::SmallButton("Undo##tagattachundo")) {

@@ -153,6 +153,7 @@
 #define REAPERAPI_WANT_GetSelectedMediaItem
 #define REAPERAPI_WANT_Undo_BeginBlock
 #define REAPERAPI_WANT_Undo_EndBlock
+#define REAPERAPI_WANT_Undo_CanUndo2
 // REF may also be project markers over the item (old, safe).
 #define REAPERAPI_WANT_EnumProjectMarkers2
 

@@ -488,7 +488,7 @@ void UsePicks(const std::string& lib, const LibraryRow* row, const std::vector<M
         return UseMediaAt(s, lib, row, picks, &created, &toast, &why);
     });
     if (ok) {
-        ShowLibraryToast(toast);
+        ShowLibraryToast(toast, true, desc);
         g.vsel.clear();
     } else if (!why.empty()) {
         ShowLibraryToast(why, false);

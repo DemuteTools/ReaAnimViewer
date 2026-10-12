@@ -24,6 +24,11 @@ add_executable(shortcuts_test shortcuts_test.cpp)
 target_include_directories(shortcuts_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME shortcuts COMMAND shortcuts_test)
 
+# 13-7a / 13-10 -- a gesture's Undo only while it is REAPER's last undo point (src/undo_guard.h).
+add_executable(undo_guard_test undo_guard_test.cpp)
+target_include_directories(undo_guard_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME undo_guard COMMAND undo_guard_test)
+
 # Spec 11-fb-13 -- the Output size written into REAPER's render format (src/render_format_size.h).
 add_executable(render_format_size_test render_format_size_test.cpp)
 target_include_directories(render_format_size_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

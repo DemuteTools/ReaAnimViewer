@@ -46,6 +46,7 @@ struct AttachResult {
     bool        wrote = false;
     std::string note;
     SoundReport report;
+    std::string undo_desc;  // the gesture's undo point description, when it wrote
 };
 // Attach to nearest event: the eligible selected items as one pile, on the event nearest to its
 // anchor (any rule).

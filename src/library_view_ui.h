@@ -19,7 +19,10 @@ namespace rav {
 void DrawLibraryView(float x, float y, float w, float h);
 
 // A short message at the bottom centre for ~5 s; `undo` adds an Undo button (REAPER's undo).
-void ShowLibraryToast(const std::string& text, bool undo = true);
+// `undo_desc` is the description the gesture gave its undo point: the button shows only while
+// REAPER's last undo point has that description and the project has not changed since, so it
+// never reverts another change (empty = the last point's description when the toast is shown).
+void ShowLibraryToast(const std::string& text, bool undo = true, const std::string& undo_desc = {});
 
 // Decision 7 (13-7a): whether a key down goes to the viewer while the Library view's window
 // has the focus (Delete, F2, Space, Esc, Ctrl+B / D / X / V). Ctrl+Z stays REAPER's undo.

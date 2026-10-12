@@ -137,7 +137,7 @@ bool Gesture(const std::string& name, const std::function<bool(SoundStore&)>& ed
     const std::string desc = "RAV: " + name;
     if (!ModifySoundStore(nullptr, desc.c_str(), edit)) return false;
     g.changed = true;
-    ShowLibraryToast(toast.empty() ? name : toast);
+    ShowLibraryToast(toast.empty() ? name : toast, true, desc);
     return true;
 }
 

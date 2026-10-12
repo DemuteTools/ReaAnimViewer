@@ -287,6 +287,7 @@ AttachResult AttachImpl(MediaItem* anim, const std::vector<AttachEvent>& events_
     WriteRecord(anim, rec);
     UpdateArrange();
     res.wrote = n_items > 0;
+    res.undo_desc = undo;
     res.note = "Attached " + Plural(n_items, "item");
     if (block >= 0 && n_groups > 1) res.note += " (" + Plural(n_groups, "group") + ")";
     if (n_none > 0) res.note += ", " + std::to_string(n_none) + " with no event of this rule";
@@ -418,14 +419,14 @@ AttachSelectionInfo ReadAttachSelection()
 
 AttachResult AttachToNearest(MediaItem* anim_item, const std::vector<AttachEvent>& events)
 {
-    if (!Ready()) return {false, kMissing, {}};
+    if (!Ready()) return {false, kMissing, {}, {}};
     return AttachImpl(anim_item, events, -1, "RAV: Attach to nearest event");
 }
 
 AttachResult AttachToMarkers(MediaItem* anim_item, const std::vector<AttachEvent>& events, int block)
 {
-    if (!Ready()) return {false, kMissing, {}};
-    if (block < 0) return {false, "No rule", {}};
+    if (!Ready()) return {false, kMissing, {}, {}};
+    if (block < 0) return {false, "No rule", {}, {}};
     return AttachImpl(anim_item, events, block, "RAV: Attach to markers");
 }
 
@@ -525,6 +526,7 @@ AttachResult SpreadTo(MediaItem* anim_item, const std::vector<AttachEvent>& even
     WriteRecord(anim_item, rec);
     UpdateArrange();
     res.wrote = n_copies > 0 || replaced > 0;
+    res.undo_desc = "RAV: Spread sound";
     res.note = "Spread to " + Plural(n_events, "event") + " (" + std::to_string(n_copies)
              + (n_copies == 1 ? " copy)" : " copies)");
     if (replaced > 0) res.note += ", " + std::to_string(replaced) + " replaced";
@@ -666,6 +668,7 @@ AttachResult PromoteToLibrary(const std::string& library_uid, const std::string&
     });
     UpdateArrange();
     res.wrote = true;
+    res.undo_desc = "RAV: Promote to library";
     if (!added) {
         res.note = "Copied " + Plural(static_cast<int>(copies.size()), "item") + ", not added: " + err;
         return res;

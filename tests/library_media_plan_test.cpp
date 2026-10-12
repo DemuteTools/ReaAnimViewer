@@ -96,6 +96,19 @@ static std::string Case(const SoundStore& s, const char* lib, const char* sw, co
 
 int main()
 {
+    {  // empty search: every entry of the selected database, in order, pointing into the index
+        std::vector<DbFile> files(5);
+        for (int i = 0; i < 5; ++i) {
+            files[i].path = "f" + std::to_string(i);
+            files[i].db = (i % 2) ? "B" : "A";
+        }
+        const std::vector<const DbFile*> all = MediaListAll(files, "");
+        CHECK(all.size() == 5 && all[0] == &files[0] && all[4] == &files[4]);
+        const std::vector<const DbFile*> b = MediaListAll(files, "B");
+        CHECK(b.size() == 2 && b[0] == &files[1] && b[1] == &files[3]);
+        CHECK(MediaListAll(files, "C").empty());
+        CHECK(MediaListAll({}, "").empty());
+    }
     // Whole file on an empty value: one Sound "stem", Silence, 4 frames, File identity.
     {
         SoundStore s = Store();

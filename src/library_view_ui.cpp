@@ -245,6 +245,8 @@ bool LibraryViewTakesKey(unsigned vk, bool ctrl, bool shift, bool alt)
     if (LibraryNodeTakesKey(vk, ctrl, shift, alt)) return true;  // 13-7b: E, S (and the Edit overlay's keys)
     if (!g_view.focused || alt) return false;
     constexpr unsigned kDelete = 0x2E, kF2 = 0x71, kSpace = 0x20, kEscape = 0x1B;
+    if (!ctrl && !shift && (vk == 0x26 || vk == 0x28) && !g_view.media_collapsed && MediaPanelTakesArrows())
+        return true;  // 13-7c: Up/Down move the Media Explorer's row
     if (ctrl) return !shift && (vk == 'B' || vk == 'D' || vk == 'X' || vk == 'V');
     return vk == kDelete || vk == kF2 || vk == kSpace || vk == kEscape;
 }
@@ -261,6 +263,14 @@ void SetLibraryColumn1Collapsed(bool collapsed)
     if (g_view.col1_collapsed == collapsed) return;
     g_view.col1_collapsed = collapsed;
     SavePrefBool("lib_col1_collapsed", collapsed);
+}
+
+void SetLibraryMediaCollapsed(bool collapsed)
+{
+    LoadPrefs();
+    if (g_view.media_collapsed == collapsed) return;
+    g_view.media_collapsed = collapsed;
+    SavePrefBool("lib_media_collapsed", collapsed);
 }
 
 void DrawLibraryView(float x, float y, float w, float h)

@@ -24,6 +24,8 @@ void InitLibraryMedia(void* (*get_func)(const char* name));
 void QuitLibraryMedia();
 // Stops the Media Explorer's preview (if any).
 void StopMediaPreview();
+// True when the panel had the focus (not typing) with results last frame: Up/Down move its row.
+bool MediaPanelTakesArrows();
 
 }  // namespace rav
 

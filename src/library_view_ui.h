@@ -33,6 +33,8 @@ bool LibraryViewFocused();
 // Column 1 collapsed to its strip (the tree header then shows a library switcher).
 bool LibraryColumn1Collapsed();
 void SetLibraryColumn1Collapsed(bool collapsed);
+// The Media Explorer column collapsed to its strip (Show in Media Explorer expands it).
+void SetLibraryMediaCollapsed(bool collapsed);
 
 }  // namespace rav
 

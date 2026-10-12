@@ -37,6 +37,7 @@
 #include <imgui.h>
 
 #include "library_media_plan.h"
+#include "library_node_ui.h"
 #include "library_tree_ui.h"
 #include "library_view_ui.h"
 #include "media_db.h"
@@ -468,6 +469,9 @@ struct State {
     LibraryRow                          pend_row;
     ReaProject*                         pend_proj = nullptr;  // the project the use was made in
     int                                 last_frame = -1;  // the last frame the panel was drawn
+    int                                 scroll_to = -1;   // a result row to bring into view (arrow keys)
+    int                                 cur_row = -1;     // results index of the keyboard row (checked before use)
+    bool                                takes_arrows = false;  // the panel is focused with results: Up/Down are ours
 };
 State g;
 
@@ -548,11 +552,13 @@ void RunSearch()
         }
         for (const DbFile* f : pool)
             if (IsFav(f->path)) g.results.push_back(f);
-    } else if (!blank) {
+    } else {
         std::string db = (g.filter >= 1 && g.filter <= ndb) ? g.info.databases[g.filter - 1].name : std::string();
-        g.results = g.index->Search(q, db, kMaxResults + 1);
+        // An empty search lists every file of the filter (the clipper draws only the visible rows).
+        if (blank) g.results = MediaListAll(g.index->Files(), db);
+        else g.results = g.index->Search(q, db, kMaxResults + 1);
     }
-    if (g.results.size() > kMaxResults) {
+    if (!blank && g.results.size() > kMaxResults) {
         g.results.resize(kMaxResults);
         g.capped = true;
     }
@@ -832,13 +838,65 @@ void BeginDrag(const std::vector<MediaPick>& picks, const std::string& what)
         g.drag_picks = picks;
         ImGui::SetDragDropPayload(kPayload, &g.drag_gen, sizeof g.drag_gen);
         ImGui::TextUnformatted(what.c_str());
+        ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
+        ImGui::TextUnformatted("Drop on a container, a value row or empty space in the tree,\n"
+                               "or on a Sound's waveform to replace its audio");
+        ImGui::PopStyleColor();
         ImGui::EndDragDropSource();
     }
 }
 
-// Decision 5: re-applied whenever another story replaced the hooks.
+// The Sound panel's drop (13-7b): the dragged picks of the first file become its new source; the
+// dragged variations of that file (or the file's detected ones) its frames. False on a stale drag.
+bool DecodeMediaDrop(const void* data, int size, SoundSource* source, std::vector<SoundFrame>* frames)
+{
+    if (!data || size != static_cast<int>(sizeof(uint32_t)) || !source || !frames) return false;
+    uint32_t gen = 0;
+    std::memcpy(&gen, data, sizeof gen);
+    if (gen != g.drag_gen || g.drag_picks.empty()) return false;
+    const std::vector<MediaPick> picks = std::move(g.drag_picks);
+    g.drag_picks.clear();
+    const MediaPick& first = picks.front();
+    *source = SoundSpecFor(first).sound.source;
+    frames->clear();
+    for (const MediaPick& p : picks) {
+        if (p.path != first.path) continue;
+        if (p.slice) {
+            SoundFrame f = p.frame;
+            f.hand = true;
+            frames->push_back(f);
+        } else {
+            *frames = SoundSpecFor(p).sound.frames;
+            break;
+        }
+    }
+    return true;
+}
+
+// "Show in Media Explorer": searches the file's name in every database.
+void ShowInMedia(const SoundSource& src)
+{
+    const std::string stem = MediaFileStem(src.asset.name.empty() ? src.asset.last_path : src.asset.name);
+    SetLibraryMediaCollapsed(false);  // the Media column is shown to show the file
+    std::snprintf(g.query, sizeof g.query, "%s", stem.c_str());
+    g.filter = 0;
+    g.dirty = true;
+}
+
+// Decision 5: the tree's media members are re-applied whenever another story replaced the hooks
+// (called at init and before every draw of the Library view's columns that this panel draws,
+// so a drop never depends on the column draw order). The Sound panel's hooks are set once.
 void ApplyHooks()
 {
+    static bool node_set = false;
+    if (!node_set) {
+        node_set = true;
+        NodePanelHooks nh;
+        nh.media_payload_type = kPayload;
+        nh.decode_media = &DecodeMediaDrop;
+        nh.show_in_media = &ShowInMedia;
+        SetNodePanelHooks(nh);
+    }
     const LibraryTreeHooks& h = GetLibraryTreeHooks();
     if (h.media_payload_type == kPayload && h.media_drop) return;
     LibraryTreeHooks n = h;
@@ -886,47 +944,62 @@ void DrawSpeaker(ImDrawList* dl, ImVec2 p, float s, ImU32 col, bool on)
     }
 }
 
-// The waveform: neutral peaks, framed variations with their number (accent when selected), a
-// white playhead (file time, -1 = none).
+// The waveform, coloured like the Sound panel's (13-7b DrawWaveform): variations tinted accent
+// (~9 %, ~18 % selected) with accent edges, peaks in text inside a variation and faint outside,
+// past full scale in the clip colour; the variation number on top; a white playhead (file time,
+// -1 = none).
+ImU32 MediaAlpha(ImU32 c, unsigned a) { return (c & ~IM_COL32_A_MASK) | (static_cast<ImU32>(a) << IM_COL32_A_SHIFT); }
+
 void DrawMediaWaveform(ImDrawList* dl, ImVec2 p0, ImVec2 p1, const Analysis& an, const std::vector<int>& vsel,
                        double playhead)
 {
     dl->AddRectFilled(p0, p1, ui::kBg, ui::kRadiusSm);
-    dl->AddRect(p0, p1, ui::kStroke, ui::kRadiusSm);
     const float  w = p1.x - p0.x, h = p1.y - p0.y, mid = (p0.y + p1.y) * 0.5f;
     const double len = an.length;
-    if (!(len > 0.0) || w < 4.0f) return;
+    if (!(len > 0.0) || w < 4.0f) {
+        dl->AddRect(p0, p1, ui::kStroke, ui::kRadiusSm);
+        return;
+    }
+    dl->PushClipRect(p0, p1, true);
     auto X = [&](double t) { return p0.x + static_cast<float>(t / len) * w; };
+    auto Sel = [&](int i) { return std::find(vsel.begin(), vsel.end(), i) != vsel.end(); };
     for (size_t i = 0; i < an.frames.size(); ++i) {
         const SoundFrame& f = an.frames[i];
-        const bool sel = std::find(vsel.begin(), vsel.end(), static_cast<int>(i)) != vsel.end();
-        ImVec2 a(X(f.start), p0.y + 1.0f), b(X(f.start + f.length), p1.y - 1.0f);
-        dl->AddRectFilled(a, b, sel ? ui::kAccentSoft : ui::kRaised);
-        dl->AddRect(a, b, sel ? ui::kAccent : ui::kStrokeStrong);
-        char num[16];
-        std::snprintf(num, sizeof num, "%d", static_cast<int>(i) + 1);
-        if (b.x - a.x > 12.0f) dl->AddText(ImVec2(a.x + 3.0f, a.y + 1.0f), sel ? ui::kAccent : ui::kMuted, num);
+        dl->AddRectFilled(ImVec2(X(f.start), p0.y), ImVec2(X(f.start + f.length), p1.y),
+                          MediaAlpha(ui::kAccent, Sel(static_cast<int>(i)) ? 0x2E : 0x17));
     }
     if (an.ready && an.peaks.rate > 0.0 && !an.peaks.max_abs.empty()) {
         const size_t n = an.peaks.max_abs.size();
+        const float  hh = h * 0.5f - 2.0f;
         for (int x = 0; x < static_cast<int>(w); ++x) {
             const double t0 = len * x / w, t1 = len * (x + 1) / w;
             size_t       i0 = static_cast<size_t>(t0 * an.peaks.rate), i1 = static_cast<size_t>(t1 * an.peaks.rate);
             i1 = std::max(i1, i0 + 1);
             float m = 0.0f;
             for (size_t i = i0; i < i1 && i < n; ++i) m = std::max(m, an.peaks.max_abs[i]);
-            const float amp = std::sqrt(std::min(1.0f, m)) * (h * 0.46f);
+            const float amp = std::min(1.0f, m) * hh;
             const int   fi = FrameAt(an.frames, (t0 + t1) * 0.5);
-            const bool  sel = fi >= 0 && std::find(vsel.begin(), vsel.end(), fi) != vsel.end();
-            dl->AddLine(ImVec2(p0.x + x + 0.5f, mid - amp), ImVec2(p0.x + x + 0.5f, mid + amp + 1.0f),
-                        sel ? ui::kAccent : ui::kMuted);
+            const ImU32 col = m > 1.0f ? kLibMissing : fi >= 0 ? ui::kText : ui::kFaint;
+            dl->AddLine(ImVec2(p0.x + x + 0.5f, mid - amp), ImVec2(p0.x + x + 0.5f, mid + amp + 1.0f), col);
         }
     } else {
         const char* t = an.ready ? "No audio" : "Reading...";
         ImVec2      ts = ImGui::CalcTextSize(t);
         dl->AddText(ImVec2((p0.x + p1.x - ts.x) * 0.5f, mid - ts.y * 0.5f), ui::kFaint, t);
     }
+    for (size_t i = 0; i < an.frames.size(); ++i) {
+        const SoundFrame& f = an.frames[i];
+        const bool  sel = Sel(static_cast<int>(i));
+        const float xa = X(f.start), xb = X(f.start + f.length);
+        dl->AddLine(ImVec2(xa, p0.y), ImVec2(xa, p1.y), sel ? ui::kAccent : ui::kAccentLine);
+        dl->AddLine(ImVec2(xb, p0.y), ImVec2(xb, p1.y), sel ? ui::kAccent : ui::kAccentLine);
+        char num[16];
+        std::snprintf(num, sizeof num, "%d", static_cast<int>(i) + 1);
+        if (xb - xa > 12.0f) dl->AddText(ImVec2(xa + 3.0f, p0.y + 1.0f), sel ? ui::kAccent : ui::kMuted, num);
+    }
     if (playhead >= 0.0) dl->AddLine(ImVec2(X(playhead), p0.y), ImVec2(X(playhead), p1.y), ui::kWhite, 1.5f);
+    dl->PopClipRect();
+    dl->AddRect(p0, p1, ui::kStroke, ui::kRadiusSm);
 }
 
 void PlayFile(const DbFile& f)
@@ -958,6 +1031,9 @@ void DrawHeader()
                       info.databases.size() == 1 ? "" : "s");
         status = buf;
     }
+    // A narrow column: each part that does not fit goes to the next line (nothing clipped).
+    const float sp_x = ImGui::GetStyle().ItemSpacing.x;
+    if (ImGui::GetContentRegionAvail().x < ImGui::CalcTextSize(status.c_str()).x) ImGui::NewLine();
     ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
     ImGui::TextUnformatted(status.c_str());
     ImGui::PopStyleColor();
@@ -965,7 +1041,9 @@ void DrawHeader()
     const float rw = ImGui::CalcTextSize("Reload").x + ImGui::GetStyle().FramePadding.x * 2.0f;
     const float sz = ImGui::GetFrameHeight();
     const float right = ImGui::GetWindowContentRegionMax().x;
-    ImGui::SameLine(std::max(ImGui::GetCursorPosX(), right - rw - sz - ImGui::GetStyle().ItemSpacing.x));
+    ImGui::SameLine();
+    if (ImGui::GetContentRegionAvail().x < rw + sz + sp_x) ImGui::NewLine();
+    else ImGui::SameLine(std::max(ImGui::GetCursorPosX(), right - rw - sz - sp_x));
     ImVec2 sp = ImGui::GetCursorScreenPos();
     if (ImGui::InvisibleButton("##meauto", ImVec2(sz, sz))) {
         g.autoplay = !g.autoplay;
@@ -990,12 +1068,15 @@ void DrawHeader()
 void DrawSearch()
 {
     const float cw = 120.0f;
-    ImGui::SetNextItemWidth(std::max(60.0f, ImGui::GetContentRegionAvail().x - cw - ImGui::GetStyle().ItemSpacing.x));
+    const float avail = ImGui::GetContentRegionAvail().x;
+    // Under ~260 px the filter goes under the search field, both full width (nothing clipped).
+    const bool  stack = avail < 140.0f + cw + ImGui::GetStyle().ItemSpacing.x;
+    ImGui::SetNextItemWidth(stack ? avail : avail - cw - ImGui::GetStyle().ItemSpacing.x);
     if (ImGui::InputTextWithHint("##mesearch", "Search media databases", g.query, sizeof g.query)) {
         g.edited_at = ImGui::GetTime();
     }
-    ImGui::SameLine();
-    ImGui::SetNextItemWidth(cw);
+    if (!stack) ImGui::SameLine();
+    ImGui::SetNextItemWidth(stack ? avail : cw);
     const int   ndb = static_cast<int>(g.info.databases.size());
     if (g.filter > ndb + 1) g.filter = 0;
     std::string preview = g.filter == 0 ? "All" : g.filter == ndb + 1 ? "Favourites" : g.info.databases[g.filter - 1].name;
@@ -1025,11 +1106,8 @@ void DrawResults(float h)
         if (!MediaDbReady()) hint = "Loading the media databases...";
         else if (g.info.databases.empty()) hint = "No media database found: build one in REAPER's Media Explorer";
         else if (g.filter == ndb + 1) hint = "No favourite matches";
-        else if (g.query[0] == 0) {
-            char buf[128];
-            std::snprintf(buf, sizeof buf, "Type to search %zu files in %zu databases", g.info.files, g.info.databases.size());
-            hint = buf;
-        } else hint = std::string("No file matches \"") + g.query + "\"";
+        else if (g.query[0] == 0) hint = "No file in this database";
+        else hint = std::string("No file matches \"") + g.query + "\"";
         ui::SubText(hint.c_str());
         ImGui::EndChild();
         return;
@@ -1037,9 +1115,17 @@ void DrawResults(float h)
     ImDrawList*   dl = ImGui::GetWindowDrawList();
     const float   lh = ImGui::GetTextLineHeight();
     const float   rh = lh * 2.0f + 6.0f;
+    const float   stride = rh + ImGui::GetStyle().ItemSpacing.y;  // a row's height plus the gap to the next
     const float   w = ImGui::GetContentRegionAvail().x;
+    if (g.scroll_to >= 0) {  // the keyboard row is kept in view (the clipper skips hidden rows)
+        const float y = g.scroll_to * stride, top = ImGui::GetScrollY(), vh = ImGui::GetWindowHeight();
+        const float pad = ImGui::GetStyle().WindowPadding.y * 2.0f;
+        if (y < top) ImGui::SetScrollY(y);
+        else if (y + rh > top + vh - pad) ImGui::SetScrollY(y + rh - vh + pad);
+        g.scroll_to = -1;
+    }
     ImGuiListClipper clip;
-    clip.Begin(static_cast<int>(g.results.size()) + (g.capped ? 1 : 0), rh);
+    clip.Begin(static_cast<int>(g.results.size()) + (g.capped ? 1 : 0), stride);
     while (clip.Step()) {
         for (int i = clip.DisplayStart; i < clip.DisplayEnd; ++i) {
             if (i >= static_cast<int>(g.results.size())) {
@@ -1049,14 +1135,21 @@ void DrawResults(float h)
             const DbFile& f = *g.results[i];
             const bool    miss = IsMissing(f.path);
             const bool    sel = IsSelected(f.path);
+            const bool    cur = g.has_cur && g.cur.path == f.path;  // the previewed file = the keyboard row
             ImGui::PushID(i);
             ImVec2 p = ImGui::GetCursorScreenPos();
-            if (i % 2) dl->AddRectFilled(p, ImVec2(p.x + w, p.y + rh), ui::kRaised);
+            // Selected rows (current and Ctrl-selected) tinted accent, the current one with an accent
+            // bar; drawn here, not left to the theme's Header colour.
+            if (sel || cur) dl->AddRectFilled(p, ImVec2(p.x + w, p.y + rh), ui::kAccentSoft);
+            else if (i % 2) dl->AddRectFilled(p, ImVec2(p.x + w, p.y + rh), ui::kRaised);
+            if (cur) dl->AddRectFilled(p, ImVec2(p.x + 3.0f, p.y + rh), ui::kAccent);
+            ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
             const bool clicked = ImGui::Selectable("##r", sel, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(w, rh));
+            ImGui::PopStyleColor();
             const bool dbl = clicked && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
             const ImVec2 star_c(p.x + 9.0f, p.y + 3.0f + lh * 0.5f);
             const bool on_star = ImGui::GetIO().MousePos.x < p.x + 18.0f;
-            if (ImGui::IsItemHovered())
+            if (ImGui::IsItemHovered() && !ImGui::GetDragDropPayload())
                 ImGui::SetTooltip("%s", miss ? "Not found on this PC"
                                              : (f.path + "\nclick to listen, drag onto the tree, double-click to use").c_str());
             if (clicked && on_star) {
@@ -1079,6 +1172,7 @@ void DrawResults(float h)
                 g.vsel.clear();
                 if (added) {
                     SetCurrent(f);
+                    g.cur_row = i;
                     if (miss) StopPreviewNow();
                     else if (g.autoplay) PlayFile(f);
                 }
@@ -1096,14 +1190,19 @@ void DrawResults(float h)
             const ImU32 tc = miss ? ui::kFaint : ui::kText;
             DrawStar(dl, star_c, 5.5f, IsFav(f.path));
             const std::string fmt = FormatMediaFormat(f) + (f.length >= 0.0 ? "  " + FormatMediaLength(f.length) : "");
-            const float fw = ImGui::CalcTextSize(fmt.c_str()).x;
             const float name_x = p.x + 20.0f, right = p.x + w - 4.0f;
+            // A narrow column: the format leaves the name's line (it would push the name out) and
+            // leads the second line, which ellipsizes.
+            float fw = ImGui::CalcTextSize(fmt.c_str()).x;
+            const bool fmt_inline = fw <= (right - name_x) * 0.45f;
+            if (!fmt_inline) fw = -8.0f;
             const std::string name = MediaFileName(f.path);
             ui::EllipsisText(dl, ImVec2(name_x, p.y + 3.0f), right - fw - 8.0f, tc, name);
             ui::EllipsisText(dl, ImVec2(name_x + 0.6f, p.y + 3.0f), right - fw - 8.0f, tc, name);  // bold
-            dl->AddText(ImVec2(right - fw, p.y + 3.0f), ui::kMuted, fmt.c_str());
+            if (fmt_inline) dl->AddText(ImVec2(right - fw, p.y + 3.0f), ui::kMuted, fmt.c_str());
             std::string l2 = f.description;
             if (!f.library.empty()) l2 += (l2.empty() ? "(" : " (") + f.library + ")";
+            if (!fmt_inline && !fmt.empty()) l2 = fmt + (l2.empty() ? "" : "  " + l2);
             if (miss) l2 = "Not found on this PC";
             else if (Probe(f.path) == 0) l2 = "checking...";
             ui::EllipsisText(dl, ImVec2(name_x, p.y + 3.0f + lh), right, ui::kFaint, l2);
@@ -1111,6 +1210,24 @@ void DrawResults(float h)
         }
     }
     ImGui::EndChild();
+}
+
+// The preview header's file line wraps under its status (narrow column); shared by DrawPreview
+// and the panel's height reserve so both agree.
+bool PreviewHeaderWraps(const char* head, const std::string& len, float avail_w)
+{
+    const float sp = ImGui::GetStyle().ItemSpacing.x;
+    return avail_w - ImGui::CalcTextSize(head).x - sp < ImGui::CalcTextSize(len.c_str()).x + ImGui::GetFrameHeight() + 72.0f;
+}
+
+void PreviewHead(char* head, size_t n)
+{
+    const bool miss = IsMissing(g.cur.path);
+    if (miss) std::snprintf(head, n, "Missing");
+    else if (Probe(g.cur.path) == 0) std::snprintf(head, n, "Checking...");
+    else if (!g.an.ready) std::snprintf(head, n, "Reading...");
+    else if (g_pv.opening && g_pv.open_path == g.cur.path) std::snprintf(head, n, "Opening...");
+    else std::snprintf(head, n, "%zu variation%s detected", g.an.frames.size(), g.an.frames.size() == 1 ? "" : "s");
 }
 
 void DrawPreview(float wave_h)
@@ -1126,16 +1243,15 @@ void DrawPreview(float wave_h)
     }
     const bool miss = IsMissing(g.cur.path);
     char head[64];
-    if (miss) std::snprintf(head, sizeof head, "Missing");
-    else if (Probe(g.cur.path) == 0) std::snprintf(head, sizeof head, "Checking...");
-    else if (!g.an.ready) std::snprintf(head, sizeof head, "Reading...");
-    else if (g_pv.opening && g_pv.open_path == g.cur.path) std::snprintf(head, sizeof head, "Opening...");
-    else std::snprintf(head, sizeof head, "%zu variation%s detected", g.an.frames.size(), g.an.frames.size() == 1 ? "" : "s");
+    PreviewHead(head, sizeof head);
+    const std::string len = FormatMediaLength(g.an.length);
+    const bool wraps = PreviewHeaderWraps(head, len, ImGui::GetContentRegionAvail().x);
     ImGui::TextUnformatted(head);
     ImGui::SameLine();
-    const std::string len = FormatMediaLength(g.an.length);
     const float lw = ImGui::CalcTextSize(len.c_str()).x;
     const float gear = ImGui::GetFrameHeight();
+    // A narrow column: the file name, length and gear take their own line (the name ellipsizes).
+    if (wraps) ImGui::NewLine();
     ImVec2 np = ImGui::GetCursorScreenPos();
     const float right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
     ui::EllipsisText(dl, np, right - lw - gear - 12.0f, ui::kMuted, MediaFileName(g.cur.path));
@@ -1235,6 +1351,32 @@ void HandleKeys()
         return;
     }
     if (io.WantTextInput) return;
+    const bool up = ImGui::IsKeyPressed(ImGuiKey_UpArrow), down = ImGui::IsKeyPressed(ImGuiKey_DownArrow);
+    if ((up || down) && !g.results.empty()) {  // the keyboard row = the previewed file
+        int at = -1;
+        if (g.has_cur && g.cur_row >= 0 && g.cur_row < static_cast<int>(g.results.size()) &&
+            g.results[static_cast<size_t>(g.cur_row)]->path == g.cur.path)
+            at = g.cur_row;  // O(1): the row kept on click / arrow
+        else if (g.has_cur)
+            for (size_t i = 0; i < g.results.size(); ++i)
+                if (g.results[i]->path == g.cur.path) {
+                    at = static_cast<int>(i);
+                    break;
+                }
+        const int n = static_cast<int>(g.results.size());
+        const int to = at < 0 ? 0 : std::clamp(at + (down ? 1 : -1), 0, n - 1);
+        if (to != at) {
+            const DbFile& f = *g.results[static_cast<size_t>(to)];
+            g.sel.assign(1, f);
+            g.vsel.clear();
+            SetCurrent(f);
+            g.cur_row = to;
+            if (IsMissing(f.path)) StopPreviewNow();
+            else if (g.autoplay) PlayFile(f);
+            g.scroll_to = to;
+        }
+        return;
+    }
     if (!io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Space, false)) {
         if (g_pv.playing || g_pv.opening) StopPreviewNow();
         else if (g.has_cur && g.vsel.size() == 1) PlayFrame(g.vsel.front());
@@ -1253,9 +1395,12 @@ void InitLibraryMedia(void* (*get_func)(const char* name))
     f_play = reinterpret_cast<PlayPreviewFn>(get_func("PlayPreview"));
     f_stop = reinterpret_cast<StopPreviewFn>(get_func("StopPreview"));
     f_create = reinterpret_cast<CreateFromFileFn>(get_func("PCM_Source_CreateFromFile"));
+    ApplyHooks();  // the drop targets know the payload before the panel first draws
 }
 
 void StopMediaPreview() { StopPreviewNow(); }
+
+bool MediaPanelTakesArrows() { return g.takes_arrows; }
 
 void QuitLibraryMedia()
 {
@@ -1323,9 +1468,16 @@ void DrawMediaExplorerPanel()
     DrawSearch();
     const float wave_h = 72.0f;
     const float foot_h = ImGui::GetFrameHeightWithSpacing();
-    const float prev_h = ImGui::GetTextLineHeightWithSpacing() + wave_h + ImGui::GetStyle().ItemSpacing.y * 2.0f;
+    float       prev_h = ImGui::GetTextLineHeightWithSpacing() + wave_h + ImGui::GetStyle().ItemSpacing.y * 2.0f;
+    if (g.has_cur) {  // its header wraps: same test as DrawPreview
+        char head[64];
+        PreviewHead(head, sizeof head);
+        if (PreviewHeaderWraps(head, FormatMediaLength(g.an.length), ImGui::GetContentRegionAvail().x))
+            prev_h += ImGui::GetFrameHeightWithSpacing();
+    }
     const float list_h = std::max(ImGui::GetTextLineHeight() * 4.0f, ImGui::GetContentRegionAvail().y - prev_h - foot_h);
     DrawResults(list_h);
+    g.takes_arrows = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) && !ImGui::GetIO().WantTextInput && !g.results.empty();
     DrawPreview(wave_h);
     DrawFooter();
     HandleKeys();

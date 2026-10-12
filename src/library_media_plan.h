@@ -59,6 +59,10 @@ std::string FormatMediaLength(double seconds);
 // The index of the frame holding source time t, -1 when none.
 int FrameAt(const std::vector<SoundFrame>& frames, double t);
 
+// An empty search: every file of `db_filter` ("" = all databases), in index order, pointers into
+// `files` (no copy; one pass, no sort, cheap for 400k entries).
+std::vector<const DbFile*> MediaListAll(const std::vector<DbFile>& files, const std::string& db_filter);
+
 // ---- Several files used at once: each whole file's variations are read first ---------------------
 
 enum class PickRead { Ready, Reading, Failed, Missing };

@@ -321,4 +321,13 @@ std::string MediaMissingToastSuffix(const std::vector<std::string>& names)
     return s + ": not added";
 }
 
+std::vector<const DbFile*> MediaListAll(const std::vector<DbFile>& files, const std::string& db_filter)
+{
+    std::vector<const DbFile*> out;
+    out.reserve(db_filter.empty() ? files.size() : 0);
+    for (const DbFile& f : files)
+        if (db_filter.empty() || f.db == db_filter) out.push_back(&f);
+    return out;
+}
+
 }  // namespace rav

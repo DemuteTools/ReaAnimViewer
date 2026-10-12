@@ -1488,6 +1488,7 @@ std::string LibraryRowNode()
 }
 
 void SetLibraryTreeHooks(const LibraryTreeHooks& hooks) { g.hooks = hooks; }
+const LibraryTreeHooks& GetLibraryTreeHooks() { return g.hooks; }
 
 }  // namespace rav
 

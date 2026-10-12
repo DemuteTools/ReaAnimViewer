@@ -152,6 +152,10 @@ add_test(NAME sound_switch COMMAND sound_switch_test)
 add_executable(library_tree_edit_test library_tree_edit_test.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
 target_include_directories(library_tree_edit_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME library_tree_edit COMMAND library_tree_edit_test)
+# Story 13-7c -- src/library_media_plan.h
+add_executable(library_media_plan_test library_media_plan_test.cpp ../src/library_media_plan.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+target_include_directories(library_media_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME library_media_plan COMMAND library_media_plan_test)
 # Story 13-5 -- src/media_db.h
 add_executable(media_db_test media_db_test.cpp ../src/media_db.cpp)
 target_include_directories(media_db_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

@@ -213,6 +213,7 @@ if(WIN32)
             src/sound_peaks.cpp
             src/sound_audition.cpp
             src/library_media_ui.cpp
+            src/library_media_plan.cpp
             src/tagging_populate_ui.cpp
             src/sound_populate.cpp
             src/sound_populate_plan.cpp

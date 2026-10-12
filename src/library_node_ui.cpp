@@ -1671,7 +1671,9 @@ void DrawRandomAvoid(const SoundLibrary& lib, const SoundNode& n)
         });
 }
 
-// The Blend layer view: one lane per child, a ms ruler, drag a bar to offset it.
+// The Blend layer view: one lane per child, a ms ruler, drag a bar to offset it; each lane's
+// volume fader and offset under it. A Blend has no Mix section: this is its children's only
+// volume (Antho 2026-10-12, one control per value).
 void DrawBlendLanes(const SoundStore& store, const SoundLibrary& lib, const SoundNode& n)
 {
     ui::Section s;
@@ -1686,7 +1688,7 @@ void DrawBlendLanes(const SoundStore& store, const SoundLibrary& lib, const Soun
         total_ms = std::max(total_ms, off + NodeLengthRange(store, lib, k->uid).max_s * 1000.0);
     }
     total_ms *= 1.15;
-    const float name_w = 84.0f, fields_w = 128.0f;
+    const float name_w = 84.0f, fields_w = 64.0f;
     const float lane_x0 = ImGui::GetCursorScreenPos().x + name_w;
     // A narrow column: each lane's ms / dB fields go under it instead of beside it.
     const bool  stacked = ImGui::GetContentRegionAvail().x < name_w + 80.0f + fields_w;
@@ -1761,29 +1763,42 @@ void DrawBlendLanes(const SoundStore& store, const SoundLibrary& lib, const Soun
             ImGui::PopID();
             break;
         }
-        // Fields: ms and dB.
+        // The offset field (the bar follows its drag), then the volume under the lane.
         const float row_h = stacked ? fh * 2.0f + 2.0f : fh;
         ImGui::SetCursorScreenPos(stacked ? ImVec2(lane_x0, p.y + fh + 2.0f) : ImVec2(lane_x0 + lane_w + 6.0f, p.y));
         double ms = off;
-        if (ui::DragNumber("##ms", &ms, 1.0, 0, "ms", 40.0f) == ui::DragNumberEvent::Commit) {
+        switch (ui::DragNumber("##ms", &ms, 1.0, 0, "ms", 40.0f)) {
+        case ui::DragNumberEvent::Live:
+            P.off_uid = kid;
+            P.off_live = std::max(0.0, ms);
+            break;
+        case ui::DragNumberEvent::Commit: {
             const double v = std::max(0.0, ms);
-            EditNode("Offset", lib.uid, kid, [v](SoundNode& x) {
-                x.offset_ms = v;
-                return true;
-            });
-        }
-        if (!P.changed) {
-            ImGui::SameLine();
-            double db = k->volume_db;
-            if (ui::DragNumber("##db", &db, 0.1, 1, "dB", 36.0f) == ui::DragNumberEvent::Commit) {
-                const double v = std::clamp(db, kMinDb, kMaxDb);
-                EditNode("Volume", lib.uid, kid, [v](SoundNode& x) {
-                    x.volume_db = v;
+            if (P.off_uid == kid) P.off_uid.clear();
+            if (std::fabs(v - k->offset_ms) > 1e-6)
+                EditNode("Offset", lib.uid, kid, [v](SoundNode& x) {
+                    x.offset_ms = v;
                     return true;
                 });
-            }
+            break;
         }
-        ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + row_h + 2.0f));
+        case ui::DragNumberEvent::Cancel:
+            if (P.off_uid == kid) P.off_uid.clear();
+            break;
+        default: break;
+        }
+        if (P.changed) {
+            ImGui::PopID();
+            break;
+        }
+        ImGui::SetCursorScreenPos(ImVec2(lane_x0, p.y + row_h + 2.0f));
+        double v = 0.0;
+        if (VolumeControl("##vol", kid, k->volume_db, &v, 1e9f))
+            EditNode("Volume", lib.uid, kid, [v](SoundNode& x) {
+                x.volume_db = v;
+                return true;
+            });
+        ImGui::SetCursorScreenPos(ImVec2(p.x, ImGui::GetCursorScreenPos().y + 2.0f));
         ImGui::Dummy(ImVec2(1.0f, 0.0f));
         ImGui::PopID();
     }
@@ -1958,8 +1973,8 @@ void DrawNodePanel()
             if (!P.changed && n->type == SoundNodeType::Random) DrawRandomAvoid(*lib, *n);
         }
         ui::EndSection(s);
-        if (!P.changed) DrawMix(*lib, *n);
         if (!P.changed && n->type == SoundNodeType::Blend) DrawBlendLanes(store, *lib, *n);
+        else if (!P.changed) DrawMix(*lib, *n);
     } else if (!P.changed) {
         ui::Section s;
         if (ui::BeginSection(s, "Level", ImTextureID(), false)) DrawVolume(*lib, *n);

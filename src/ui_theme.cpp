@@ -3,6 +3,7 @@
 // See ui_theme.h.
 
 #include "ui_theme.h"
+#include "ui_drag_number.h"
 
 #ifdef _WIN32
 
@@ -210,25 +211,16 @@ namespace {
 
 // One DragNumber at a time is dragged or typed into.
 struct DragNumberState {
-    ImGuiID drag = 0;          // the field being dragged
-    double  start = 0.0;       // its value when the press began
-    double  acc = 0.0;         // the drag's change so far
-    float   press_x = 0.0f;
-    bool    moved = false;     // past the drag threshold: a drag, not a click
-    bool    cancelled = false; // Esc during the drag: inert until the release
-    ImGuiID typing = 0;        // the field being typed into
-    int     focus_frames = 0;  // frames left for the text field to take the focus
-    char    buf[64] = {};
-    int     seen_frame = -1;   // the frame the dragged / typed field was last drawn
+    ImGuiID     drag = 0;          // the field being dragged
+    DragGesture g;                 // its gesture (ui_drag_number.h)
+    ImGuiID     typing = 0;        // the field being typed into
+    int         focus_frames = 0;  // frames left for the text field to take the focus
+    char        buf[64] = {};
+    int         seen_frame = -1;   // the frame the dragged / typed field was last drawn
 };
 DragNumberState g_dn;
 
-double RoundTo(double v, int decimals)
-{
-    const double k = std::pow(10.0, decimals < 0 ? 0 : (decimals > 9 ? 9 : decimals));
-    const double r = std::round(v * k) / k;
-    return r == 0.0 ? 0.0 : r;  // never -0
-}
+double RoundTo(double v, int decimals) { return DragRound(v, decimals); }
 
 bool ParseTyped(const char* text, double* out)
 {
@@ -262,7 +254,7 @@ void DragNumberReset()
 {
     g_dn.drag = 0;
     g_dn.typing = 0;
-    g_dn.cancelled = false;
+    g_dn.g.cancelled = false;
 }
 
 DragNumberEvent DragNumber(const char* id, double* value, double step, int decimals, const char* unit, float width)
@@ -306,47 +298,31 @@ DragNumberEvent DragNumber(const char* id, double* value, double step, int decim
         const bool active = ImGui::IsItemActive();
         if (ImGui::IsItemActivated()) {
             g_dn.drag = gid;
-            g_dn.start = *value;
-            g_dn.acc = 0.0;
-            g_dn.press_x = io.MousePos.x;
-            g_dn.moved = false;
-            g_dn.cancelled = false;
             g_dn.seen_frame = ImGui::GetFrameCount();
         }
-        if (active && g_dn.drag == gid && !g_dn.cancelled) {
-            const double k = step * (io.KeyShift ? 0.1 : 1.0);
-            if (!g_dn.moved && std::fabs(io.MousePos.x - g_dn.press_x) >= io.MouseDragThreshold) {
-                g_dn.moved = true;
-                g_dn.acc = static_cast<double>(io.MousePos.x - g_dn.press_x) * k;
-            } else if (g_dn.moved) {
-                g_dn.acc += static_cast<double>(io.MouseDelta.x) * k;
+        if (g_dn.drag == gid) {
+            DragFrame f;
+            f.activated = ImGui::IsItemActivated();
+            f.active = active;
+            f.deactivated = ImGui::IsItemDeactivated();
+            f.esc = active && ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+            f.shift = io.KeyShift;
+            f.mouse_x = io.MousePos.x;
+            f.mouse_dx = io.MouseDelta.x;
+            f.threshold = io.MouseDragThreshold;
+            switch (DragStep(g_dn.g, f, step, decimals, value)) {
+            case DragStepEvent::Live: ev = DragNumberEvent::Live; break;
+            case DragStepEvent::Commit: ev = DragNumberEvent::Commit; break;
+            case DragStepEvent::Cancel: ev = DragNumberEvent::Cancel; break;
+            case DragStepEvent::Click:  // a click: type a value
+                g_dn.typing = gid;
+                g_dn.focus_frames = 3;
+                g_dn.seen_frame = ImGui::GetFrameCount();
+                std::snprintf(g_dn.buf, sizeof(g_dn.buf), "%s", text);
+                break;
+            default: break;
             }
-            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-                g_dn.cancelled = true;
-                if (*value != g_dn.start) {
-                    *value = g_dn.start;
-                }
-                ev = DragNumberEvent::Cancel;
-            } else if (g_dn.moved) {
-                const double nv = RoundTo(g_dn.start + g_dn.acc, decimals);
-                if (nv != *value) {
-                    *value = nv;
-                    ev = DragNumberEvent::Live;
-                }
-            }
-        }
-        if (ImGui::IsItemDeactivated() && g_dn.drag == gid) {
-            if (!g_dn.cancelled) {
-                if (g_dn.moved) {
-                    ev = DragNumberEvent::Commit;
-                } else {  // a click: type a value
-                    g_dn.typing = gid;
-                    g_dn.focus_frames = 3;
-                    g_dn.seen_frame = ImGui::GetFrameCount();
-                    std::snprintf(g_dn.buf, sizeof(g_dn.buf), "%s", text);
-                }
-            }
-            g_dn.drag = 0;
+            if (f.deactivated) g_dn.drag = 0;
         }
         if (hovered || active) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
         ImDrawList* dl = ImGui::GetWindowDrawList();

@@ -849,7 +849,7 @@ SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* even
         if (targets.empty()) return rep;
         const SoundStore store = GetSoundStore(nullptr);
         {
-            SoundUndoScope undo(nullptr, "RAV: Populate sounds");
+            SoundUndoScope undo(nullptr, revive_deleted ? "RAV: Restore deleted sounds" : "RAV: Populate sounds");
             ItemIndexScope index;
             PopOpts o;
             o.counts = counts;
@@ -863,8 +863,7 @@ SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* even
             AddLine(rep, ReportKind::Info, buf, "", "", 0.0);
             if (counts->deleted_kept > 0) {
                 std::snprintf(buf, sizeof(buf),
-                              "%d sound%s you deleted by hand not added back (Repopulate (reset), in the menu's Sounds, "
-                              "places them again)",
+                              "%d sound%s you deleted by hand kept (Restore, on the Populate line, places them again)",
                               counts->deleted_kept, counts->deleted_kept == 1 ? "" : "s");
                 AddLine(rep, ReportKind::Info, buf, "", "", 0.0);
             }

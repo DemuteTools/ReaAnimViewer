@@ -95,6 +95,9 @@ struct LastReport {
     SoundReport report;
     int         events = -1;  // -1: a gesture, not a Populate
     std::string summary;
+    // Antho 2026-10-12: Populate keeps the sounds deleted by hand; the line's "Restore" places them again.
+    int                     deleted_kept = 0;
+    std::vector<MediaItem*> restore_items;
 };
 LastReport g_last;
 
@@ -351,6 +354,35 @@ void PickSoundGesture(std::function<SoundReport()> gesture)
     Pick(std::move(gesture));
 }
 
+// Populate (or, with `restore`, Populate placing again the sounds deleted by hand: the line's Restore), then
+// the line says what happened (Antho 2026-10-12: a Populate with nothing to do looked broken).
+static void RunPopulate(const std::vector<MediaItem*>& items, bool restore)
+{
+    int               events = 0;
+    PopulateCounts    counts;
+    const SoundReport rep = PopulateItemsCounted(items, &events, &counts, restore);
+    Remember(rep, events);
+    bool trouble = false;  // missing / blocked lines: the summary already says why
+    for (const ReportLine& l : rep.lines)
+        if (l.kind == ReportKind::Missing || l.kind == ReportKind::Blocked) trouble = true;
+    char buf[160];
+    buf[0] = '\0';
+    if (counts.placed + counts.replaced + counts.removed > 0)
+        std::snprintf(buf, sizeof(buf), " \xC2\xB7 %d placed", counts.placed + counts.replaced);
+    else if (counts.kept > 0 && !trouble && counts.deleted_kept == 0)
+        std::snprintf(buf, sizeof(buf), " \xC2\xB7 already in place");
+    else if (!trouble && counts.deleted_kept == 0)
+        std::snprintf(buf, sizeof(buf), " \xC2\xB7 nothing placed");
+    g_last.summary += buf;
+    if (counts.deleted_kept > 0) {
+        std::snprintf(buf, sizeof(buf), " \xC2\xB7 %d deleted by hand kept", counts.deleted_kept);
+        g_last.summary += buf;
+    }
+    g_last.deleted_kept = counts.deleted_kept;
+    g_last.restore_items = counts.deleted_kept > 0 ? items : std::vector<MediaItem*>();
+    g_count.valid = false;
+}
+
 bool SoundFooterVisible(const TaggingSoundContext& ctx)
 {
     return ctx.item != nullptr && !GetSoundStore(nullptr).libraries.empty();
@@ -374,33 +406,12 @@ void DrawPopulateRow(const TaggingSoundContext& ctx, float attach_w)
     std::snprintf(label, sizeof(label), "Populate %s %d event%s##ravpopulate", kDot, n, n == 1 ? "" : "s");
     const bool none = sel.empty();
     if (none) ImGui::BeginDisabled();
-    if (ui::PrimaryButton(label, ImVec2(populate_w, 0.0f))) {
-        int            events = 0;
-        PopulateCounts counts;
-        const SoundReport rep = PopulateItemsCounted(sel, &events, &counts, true);
-        Remember(rep, events);
-        // Antho 2026-10-12: the line says what happened (a Populate with nothing to do looked broken).
-        bool trouble = false;  // missing / blocked lines: the summary already says why
-        for (const ReportLine& l : rep.lines)
-            if (l.kind == ReportKind::Missing || l.kind == ReportKind::Blocked) trouble = true;
-        char buf[160];
-        buf[0] = '\0';
-        if (counts.placed + counts.replaced + counts.removed > 0)
-            std::snprintf(buf, sizeof(buf), " \xC2\xB7 %d placed", counts.placed + counts.replaced);
-        else if (counts.deleted_kept > 0)
-            std::snprintf(buf, sizeof(buf), " \xC2\xB7 nothing placed: %d deleted by hand (Repopulate resets)", counts.deleted_kept);
-        else if (counts.kept > 0 && !trouble)
-            std::snprintf(buf, sizeof(buf), " \xC2\xB7 already in place");
-        else if (!trouble)
-            std::snprintf(buf, sizeof(buf), " \xC2\xB7 nothing placed");
-        g_last.summary += buf;
-        g_count.valid = false;
-    }
+    if (ui::PrimaryButton(label, ImVec2(populate_w, 0.0f))) RunPopulate(sel, false);
     if (none) ImGui::EndDisabled();
     ui::ItemTipText(none ? "Select animation items"
-                         : "Places each event's sound on the selected items and their linked copies,\n"
-                           "the sounds you deleted by hand too. Placed sounds you moved stay where you put them.\n"
-                           "A change of sound settings already re-places the placed sounds. One undo point.");
+                         : "Places each event's sound on the selected items and their linked copies.\n"
+                           "Placed sounds you moved stay where you put them; the ones you deleted by hand stay\n"
+                           "deleted (Restore, on the line below, places them again). One undo point.");
     ImGui::SameLine();
     if (none) ImGui::BeginDisabled();
     if (ui::SolidButton("Reshuffle##ravreshuffle", ImVec2(reshuffle_w, 0.0f))) Remember(ReshuffleItems(sel), -1);
@@ -418,13 +429,27 @@ void DrawSoundReportLine(const TaggingSoundContext& ctx)
     if (!g_last.has) {
         ui::ToneText("Not populated yet", ui::kFaint);
     } else {
-        // A quiet link (muted, underlined under the mouse), ellipsized to the room before the "?".
-        const float w = std::max(ui::Dp(20.0f), ImGui::GetContentRegionAvail().x - help_w - ImGui::GetStyle().ItemSpacing.x);
+        // A quiet link (muted, underlined under the mouse), ellipsized to the room before Restore and the "?".
+        const char* restore = "Restore##ravrestore";
+        const bool  can_restore = g_last.deleted_kept > 0 && !g_last.restore_items.empty();
+        const float sp = ImGui::GetStyle().ItemSpacing.x;
+        const float restore_w = can_restore ? ImGui::CalcTextSize("Restore").x + sp : 0.0f;
+        const float w = std::max(ui::Dp(20.0f), ImGui::GetContentRegionAvail().x - help_w - sp - restore_w);
         const flow::MeasureFn measure = [](const char* b, const char* e) { return ImGui::CalcTextSize(b, e).x; };
         bool              cut = false;
         const std::string shown = flow::Ellipsize(g_last.summary, w, "...", measure, &cut);
         if (ui::LinkButton((shown + "##ravreport").c_str(), ui::kMuted)) ImGui::OpenPopup("##ravreportpop");
         ui::ItemTipText(cut ? (g_last.summary + "\nClick for the details").c_str() : "Click for the details");
+        if (can_restore) {
+            ImGui::SameLine();
+            if (ui::LinkButton(restore)) {
+                std::vector<MediaItem*> items;  // the items Populate ran on, still in the project
+                for (MediaItem* it : g_last.restore_items)
+                    if (ValidatePtr2(nullptr, it, "MediaItem*")) items.push_back(it);
+                if (!items.empty()) RunPopulate(items, true);
+            }
+            ui::ItemTipText("Places again the sounds you deleted by hand on these items. One undo point.");
+        }
     }
     ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetContentRegionMax().x - help_w));
     ui::HelpMark("##ravglyphs");

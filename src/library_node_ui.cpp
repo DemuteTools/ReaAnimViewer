@@ -118,12 +118,7 @@ using ui::SameLineIfFits;
 
 double DbToGain(double db) { return std::pow(10.0, db / 20.0); }
 
-ImU32 WithAlpha(ImU32 c, int a) { return (c & ~IM_COL32_A_MASK) | (static_cast<ImU32>(a) << IM_COL32_A_SHIFT); }
-
-void Tip(const char* text)
-{
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", text);
-}
+using ui::WithAlpha;
 
 void OpenEdit(const std::string& lib_uid, const std::string& uid)
 {
@@ -594,6 +589,7 @@ struct WaveDrag {
     ImVec2  m0;
     double  last_s = 0.0, last_l = 0.0, last_db = 0.0, last_thr = 0.0;
     bool    moved = false;
+    int     lane = 0;  // Thr: the lane whose line is dragged (a stereo source has two)
 };
 WaveDrag g_wd;
 
@@ -701,8 +697,10 @@ bool WaveFades(ImDrawList* dl, ImGuiID gid, bool hovered, const std::vector<Soun
                 ev->fade_frame = g_fd.frame;
                 ev->fade_in = g_fd.in;
                 ev->fade_out = g_fd.out;
-                ImGui::SetTooltip("Fade %s %.1f ms", g_fd.side < 0 ? "in" : "out",
-                                  (g_fd.side < 0 ? g_fd.in : g_fd.out) * 1000.0);
+                char tip[64];
+                std::snprintf(tip, sizeof(tip), "Fade %s %.1f ms", g_fd.side < 0 ? "in" : "out",
+                              (g_fd.side < 0 ? g_fd.in : g_fd.out) * 1000.0);
+                ui::ShowTip(tip);
             }
         } else {
             if (g_fd.moved) {
@@ -719,7 +717,8 @@ bool WaveFades(ImDrawList* dl, ImGuiID gid, bool hovered, const std::vector<Soun
     const bool hot = hot_frame >= 0 || dragging;
     if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
     if (hot_frame >= 0 && !dragging)
-        ImGui::SetTooltip("Fade %s: drag to set, Alt-click for the Sound's default", hot_side < 0 ? "in" : "out");
+        ui::ShowTip(hot_side < 0 ? "Fade in: drag to set, Alt-click for the Sound's default"
+                                 : "Fade out: drag to set, Alt-click for the Sound's default");
     return hot;
 }
 
@@ -734,7 +733,7 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
     const ImGuiIO& io = ImGui::GetIO();
     const float  w = std::max(8.0f, o.size.x > 0.0f ? o.size.x : ImGui::GetContentRegionAvail().x);
     const float  h = std::max(16.0f, o.size.y);
-    const float  rh = o.ruler ? ui::Dp(18.0f) + 4.0f : 0.0f;  // .edruler: 18 px + 4 px under it
+    const float  rh = o.ruler ? ui::Dp(18.0f + 4.0f) : 0.0f;  // .edruler: 18 px + 4 px under it
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     ImGui::InvisibleButton("##wave", ImVec2(w, h + rh), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
     const bool hovered = ImGui::IsItemHovered();
@@ -748,14 +747,22 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
     const double vl = o.view_len > 0.0 ? o.view_len : o.source_len;
     const float  text_y = std::floor((a.y + b.y - ImGui::GetTextLineHeight()) * 0.5f);
     if (!(vl > 0.0)) {
-        dl->AddText(ImVec2(a.x + 8.0f, text_y), ui::kMuted, "No audio");
+        dl->AddText(ImVec2(a.x + ui::Dp(8.0f), text_y), ui::kMuted, "No audio");
         dl->AddRect(a, b, ui::kStroke, ui::kRadiusSm);
         ImGui::PopID();
         return ev;
     }
     auto X = [&](double t) { return static_cast<float>(a.x + (t - vs) / vl * w); };
     auto T = [&](float x) { return vs + static_cast<double>(x - a.x) / w * vl; };
-    const float mid = (a.y + b.y) * 0.5f, hh = h * 0.5f - 3.0f;
+    // 13-14 (C5.4): a stereo source draws two lanes (L above R), each half the height with its own
+    // zero line (the mockup's paintWave(..., 2)); frames, trim handles, fades and the playhead span
+    // both. hh: a lane's half height; LaneMid(l): its zero line; LaneAt(y): the lane at y.
+    PeakData   pk;
+    const bool have_peaks = ReadPeaks(path, vs, vl, w / vl, &pk);
+    const int  lanes = have_peaks ? PeakChannels(pk) : 1;
+    const float lane_h = h / static_cast<float>(lanes), hh = lane_h * 0.5f - 3.0f;
+    auto LaneMid = [&](int l) { return a.y + lane_h * (static_cast<float>(l) + 0.5f); };
+    auto LaneAt = [&](float y) { return std::clamp(static_cast<int>((y - a.y) / std::max(1.0f, lane_h)), 0, lanes - 1); };
     const ImVec2 m = io.MousePos;
     const int    under = hovered ? FrameAt(frames, T(m.x)) : -1;
     const int    playing_frame = playhead_s >= 0.0 ? FrameAt(frames, playhead_s) : -1;
@@ -773,7 +780,7 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
         const bool hot = static_cast<int>(i) == playing_frame || (trimming && g_wd.frame == static_cast<int>(i));
         if (!f.on) {
             dl->AddRectFilled(fa, fb, WithAlpha(ui::kMuted, 0x14), 3.0f);
-            Hatch(dl, fa, fb, IM_COL32(0, 0, 0, 0x59));
+            Hatch(dl, fa, fb, ui::kHatch);
         } else {
             const int alpha = (sel || hot) ? 0x2E : (static_cast<int>(i) == under ? 0x21 : 0x17);
             dl->AddRectFilled(fa, fb, WithAlpha(ui::kAccent, alpha), 3.0f);
@@ -781,26 +788,33 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
     }
     // Peaks, each column scaled by its frame's dB: accent inside an active frame, muted outside;
     // the part past full scale in --bad.
-    PeakData pk;
-    if (ReadPeaks(path, vs, vl, w / vl, &pk)) {
+    if (have_peaks) {
         for (size_t i = 0; i < pk.max_abs.size(); ++i) {
             const double t = vs + (static_cast<double>(i) + 0.5) / pk.rate;
             const int    fi = FrameAt(frames, t);
             const double g = fi >= 0 ? DbToGain(frames[static_cast<size_t>(fi)].db) : 1.0;
-            const double amp = pk.max_abs[i] * g;
             const float  x = a.x + static_cast<float>(i) * w / static_cast<float>(pk.max_abs.size());
-            const float  y = static_cast<float>(std::min(amp, 1.0)) * hh;
             const bool   in = fi >= 0 && frames[static_cast<size_t>(fi)].on;
-            dl->AddLine(ImVec2(x, mid - y), ImVec2(x, mid + y + 1.0f), in ? ui::kAccent : ui::kMuted);
-            if (amp > 1.0) {  // clipped: the top and bottom of the column
-                const float over = std::min(hh, static_cast<float>(amp - 1.0) * hh);
-                dl->AddLine(ImVec2(x, mid - hh), ImVec2(x, mid - hh + over), ui::kBad);
-                dl->AddLine(ImVec2(x, mid + hh - over), ImVec2(x, mid + hh + 1.0f), ui::kBad);
+            for (int l = 0; l < lanes; ++l) {
+                const float  mid = LaneMid(l);
+                const double amp = PeakLane(pk, l)[i] * g;
+                const float  y = static_cast<float>(std::min(amp, 1.0)) * hh;
+                dl->AddLine(ImVec2(x, mid - y), ImVec2(x, mid + y + 1.0f), in ? ui::kAccent : ui::kMuted);
+                if (amp > 1.0) {  // clipped: the top and bottom of the column
+                    const float over = std::min(hh, static_cast<float>(amp - 1.0) * hh);
+                    dl->AddLine(ImVec2(x, mid - hh), ImVec2(x, mid - hh + over), ui::kBad);
+                    dl->AddLine(ImVec2(x, mid + hh - over), ImVec2(x, mid + hh + 1.0f), ui::kBad);
+                }
             }
+        }
+        // The line between the lanes (1 px stroke-strong).
+        for (int l = 1; l < lanes; ++l) {
+            const float y = std::floor(a.y + lane_h * static_cast<float>(l));
+            dl->AddRectFilled(ImVec2(a.x, y), ImVec2(b.x, y + 1.0f), ui::kStrokeStrong);
         }
     } else {
         ev.reading = RequestPeaks(path, nullptr) == PeakState::Building;
-        dl->AddText(ImVec2(a.x + 8.0f, text_y), ui::kMuted, ev.reading ? "Reading waveform\xE2\x80\xA6" : "Waveform unavailable");
+        dl->AddText(ImVec2(a.x + ui::Dp(8.0f), text_y), ui::kMuted, ev.reading ? "Reading waveform\xE2\x80\xA6" : "Waveform unavailable");
     }
     // The frames' edges and numbers over the peaks: 1 px stroke-strong r3 (accent when selected,
     // playing or trimmed; dashed when off); a clamped edge (it ends where the next one starts) is a
@@ -832,16 +846,26 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
     // chip at the right.
     const bool thr = std::isfinite(o.threshold_db);
     float      thr_y = 0.0f;
-    const bool near_thr_now = hovered && thr;
+    if (thr) thr_y = static_cast<float>(std::min(1.0, DbToGain(o.threshold_db))) * hh;
+    // The mouse within 4 px of a threshold line (two per lane).
+    auto       on_thr = [&](float y) {
+        for (int l = 0; l < lanes; ++l)
+            if (std::fabs(y - (LaneMid(l) - thr_y)) <= ui::Dp(4.0f) || std::fabs(y - (LaneMid(l) + thr_y)) <= ui::Dp(4.0f)) return true;
+        return false;
+    };
+    const bool near_thr = hovered && thr && on_thr(m.y);
     if (thr) {
-        thr_y = static_cast<float>(std::min(1.0, DbToGain(o.threshold_db))) * hh;
-        const bool  hot = (near_thr_now && (std::fabs(m.y - (mid - thr_y)) <= 4.0f || std::fabs(m.y - (mid + thr_y)) <= 4.0f)) ||
-                          (g_wd.id == gid && g_wd.kind == WaveDrag::Thr);
+        const bool  hot = near_thr || (g_wd.id == gid && g_wd.kind == WaveDrag::Thr);
         const ImU32 col = hot ? ui::kAccent : WithAlpha(ui::kText, 0x73);
-        for (float x = a.x; x < b.x; x += 6.0f) {
-            dl->AddLine(ImVec2(x, std::floor(mid - thr_y) + 0.5f), ImVec2(std::min(x + 3.0f, b.x), std::floor(mid - thr_y) + 0.5f), col);
-            dl->AddLine(ImVec2(x, std::floor(mid + thr_y) + 0.5f), ImVec2(std::min(x + 3.0f, b.x), std::floor(mid + thr_y) + 0.5f), col);
+        const float dash = ui::Dp(3.0f), step = ui::Dp(6.0f);
+        for (int l = 0; l < lanes; ++l) {
+            const float mid = LaneMid(l);
+            for (float x = a.x; x < b.x; x += step) {
+                dl->AddLine(ImVec2(x, std::floor(mid - thr_y) + 0.5f), ImVec2(std::min(x + dash, b.x), std::floor(mid - thr_y) + 0.5f), col);
+                dl->AddLine(ImVec2(x, std::floor(mid + thr_y) + 0.5f), ImVec2(std::min(x + dash, b.x), std::floor(mid + thr_y) + 0.5f), col);
+            }
         }
+        const float mid = LaneMid(0);  // the chip by the first lane's upper line
         char lab[32];
         std::snprintf(lab, sizeof(lab), "%.0f dB", o.threshold_db);
         ImFont*      cf = ui::FontMonoTiny();
@@ -906,7 +930,6 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
             dl->AddRectFilled(ImVec2(std::max(a.x, ex - hw), by0), ImVec2(std::min(b.x, ex + hw), by1), ui::kAccentLine);
         }
     }
-    const bool near_thr = hovered && thr && (std::fabs(m.y - (mid - thr_y)) <= 4.0f || std::fabs(m.y - (mid + thr_y)) <= 4.0f);
     if (near_thr) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
     else if (edge_frame >= 0) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
 
@@ -916,6 +939,7 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
         g_wd.m0 = m;
         if (near_thr) {
             g_wd.kind = WaveDrag::Thr;
+            g_wd.lane = LaneAt(m.y);
         } else if (edge_frame >= 0) {
             g_wd.kind = WaveDrag::Trim;
             g_wd.frame = edge_frame;
@@ -953,13 +977,18 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
                 g_wd.last_db = std::clamp(g_wd.db0 - (m.y - g_wd.m0.y) * 0.1, -60.0, 24.0);
                 ev.db_frame = g_wd.frame;
                 ev.db = g_wd.last_db;
-                ImGui::SetTooltip("%+.1f dB", g_wd.last_db);
+                char tip[32];
+                std::snprintf(tip, sizeof(tip), "%+.1f dB", g_wd.last_db);
+                ui::ShowTip(tip);
             } else if (g_wd.kind == WaveDrag::Thr && g_wd.moved) {
-                const double amp = std::max(1e-4, static_cast<double>(std::fabs(mid - m.y) / std::max(1.0f, hh)));
+                const int    l = std::min(g_wd.lane, lanes - 1);
+                const double amp = std::max(1e-4, static_cast<double>(std::fabs(LaneMid(l) - m.y) / std::max(1.0f, hh)));
                 g_wd.last_thr = std::clamp(20.0 * std::log10(amp), -90.0, 0.0);
                 ev.threshold_live = true;
                 ev.threshold_db = g_wd.last_thr;
-                ImGui::SetTooltip("%.1f dB", g_wd.last_thr);
+                char tip[32];
+                std::snprintf(tip, sizeof(tip), "%.1f dB", g_wd.last_thr);
+                ui::ShowTip(tip);
             }
         } else {
             switch (g_wd.kind) {
@@ -1111,7 +1140,7 @@ void DefaultFadeControls(const SoundLibrary& lib, const SoundNode& n)
     // 13-7b (audit C5.5): a .row -- the muted 80 px label, then "in [ms] out [ms]" as .lnum fields.
     const float fw = ui::Dp(52.0f);
     ui::LabelRow("Fades", ui::TextWidth("out") + ImGui::GetStyle().ItemSpacing.x + ui::NumberFieldWidth(fw, "ms"));
-    Tip("Every variation fades in and out by this much (against clicks), unless it has its own fade\n"
+    ui::ItemTipText("Every variation fades in and out by this much (against clicks), unless it has its own fade\n"
         "(drag a fade handle at a variation's top corner in the waveform; Alt-click it for this default)");
     for (int side = -1; side <= 1; side += 2) {
         if (side > 0) SameLineIfFits(ui::TextWidth("out") + ImGui::GetStyle().ItemSpacing.x + ui::NumberFieldWidth(fw, "ms"));
@@ -1494,7 +1523,7 @@ bool MediaDropTarget(ImGuiID id, ImVec2 a, ImVec2 b, const SoundLibrary& lib, co
             // Drawn on the foreground: the frame shows over the panel's children too.
             ImDrawList* dl = ImGui::GetForegroundDrawList();
             if (refused) {
-                ui::EllipsisText(dl, ImVec2(a.x + 6.0f, a.y + 4.0f), b.x - 6.0f, ui::kMuted, caption);
+                ui::EllipsisText(dl, ImVec2(a.x + ui::Dp(6.0f), a.y + ui::Dp(4.0f)), b.x - ui::Dp(6.0f), ui::kMuted, caption);
             } else if (kind == MediaDropKind::Replace) {
                 // The mockup's .swave.drop: a 2 px accent outline, accent 12 % over the wave, a
                 // centred accent pill "Replace" (semibold 12, white).
@@ -1503,13 +1532,12 @@ bool MediaDropTarget(ImGuiID id, ImVec2 a, ImVec2 b, const SoundLibrary& lib, co
                 ImFont*      pf = ui::FontSemibold();
                 const ImVec2 ts = ui::TextSizeIn(pf, caption);
                 const ImVec2 c((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f);
-                const float  pw = std::min(ts.x + ui::Dp(20.0f), b.x - a.x - 4.0f), ph = ts.y + ui::Dp(4.0f);
+                const float  pw = std::min(ts.x + ui::Dp(20.0f), b.x - a.x - ui::Dp(4.0f)), ph = ts.y + ui::Dp(4.0f);
                 const ImVec2 q0(c.x - pw * 0.5f, c.y - ph * 0.5f), q1(c.x + pw * 0.5f, c.y + ph * 0.5f);
                 dl->AddRectFilled(q0, q1, ui::kAccent, ph * 0.5f);
-                ImGui::PushFont(pf);
+                ui::FontScope f(pf);
                 ui::EllipsisText(dl, ImVec2(std::max(q0.x + ui::Dp(10.0f), c.x - ts.x * 0.5f), q0.y + ui::Dp(2.0f)),
                                  q1.x - ui::Dp(8.0f), ui::kWhite, caption);
-                ImGui::PopFont();
             } else {
                 dl->AddRectFilled(a, b, WithAlpha(ui::kAccent, 0x1E), ui::kRadiusSm);
                 dl->AddRect(a, b, ui::kAccent, ui::kRadiusSm, 0, 2.0f);
@@ -1779,7 +1807,7 @@ void NormalizeControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
         });
     }
     ImGui::EndDisabled();
-    if (!ready) Tip("Waiting for the waveform");
+    if (!ready) ui::ItemTipText("Waiting for the waveform");
 }
 
 // ---- the Edit overlay -------------------------------------------------------------------------------
@@ -1801,20 +1829,16 @@ void DrawEditOverlay()
     }
     const SoundMedia& m = MediaOf(*n);
     const ImVec2      ds = ImGui::GetIO().DisplaySize;
-    ImGui::SetNextWindowPos(ImVec2(24.0f, 52.0f), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(std::max(200.0f, ds.x - 48.0f), std::max(160.0f, ds.y - 84.0f)), ImGuiCond_Always);
     if (P.edit_focus) {
         ImGui::SetNextWindowFocus();
         P.edit_focus = false;
     }
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ui::Col(ui::kBg));  // .edbox: --bg, stroke-strong edge, r10
-    ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStrokeStrong));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, ui::kRadiusLg);
-    constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
-                                        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollWithMouse;
     bool close = false;
     P.edit_has_focus = false;
-    if (ImGui::Begin("##soundedit", nullptr, kFlags)) {
+    // .edbox: --bg, stroke-strong edge, r10, its shadow (ui::BeginOverlayPanel).
+    if (ui::BeginOverlayPanel("##soundedit", ImVec2(ui::Dp(24.0f), ui::Dp(52.0f)),
+                              ImVec2(std::max(ui::Dp(200.0f), ds.x - ui::Dp(48.0f)), std::max(ui::Dp(160.0f), ds.y - ui::Dp(84.0f))),
+                              ImGuiWindowFlags_NoScrollWithMouse)) {
         const bool focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
         P.edit_has_focus = focused;
         const bool keys = focused && !ImGui::GetIO().WantTextInput && !ui::DragNumberActive() &&
@@ -1830,7 +1854,7 @@ void DrawEditOverlay()
         if (ui::ToggleButton(whole_playing ? "\xE2\x96\xA0 Stop##editplay" : "\xE2\x96\xB6 Play##editplay", whole_playing,
                              ImVec2(0.0f, ui::LargeH())))
             toggle_play();
-        Tip("Play the whole file (Space) \xC2\xB7 Esc stops");
+        ui::ItemTipText("Play the whole file (Space) \xC2\xB7 Esc stops");
         ImGui::SameLine(0.0f, ui::Dp(10.0f));
         const std::string count = VariationCountText(DetectedCount(n->uid, m, Shown(*n)), Shown(*n).frames);
         static const char* const kHelpPlain =
@@ -1849,7 +1873,7 @@ void DrawEditOverlay()
         const float tools_w = side_btn * 2.0f + ui::ButtonWidth("Fit") + ui::Dp(18.0f) + ui::ButtonWidth("Done") + side_btn +
                               sp * 5.0f + ui::Dp(10.0f);
         bool        tools_beside = true;
-        const float room = flow::StretchBeside(ImGui::GetContentRegionAvail().x, 80.0f, tools_w, sp, &tools_beside);
+        const float room = flow::StretchBeside(ImGui::GetContentRegionAvail().x, ui::Dp(80.0f), tools_w, sp, &tools_beside);
         {
             const ImVec2 p = ImGui::GetCursorScreenPos();
             const float  h = ui::LargeH();
@@ -1875,11 +1899,11 @@ void DrawEditOverlay()
         }
         if (ui::SolidButton("\xE2\x88\x92##zoomout", ImVec2(side_btn, 0.0f)))
             ZoomView(1.5, P.view_start + (P.view_len > 0.0 ? P.view_len : m.source_len) * 0.5, m.source_len);
-        Tip("Zoom out (your REAPER 'View: Zoom out horizontal' keys)");
+        ui::ItemTipText("Zoom out (your REAPER 'View: Zoom out horizontal' keys)");
         SameLineIfFits(side_btn);
         if (ui::SolidButton("+##zoomin", ImVec2(side_btn, 0.0f)))
             ZoomView(1.0 / 1.5, P.view_start + (P.view_len > 0.0 ? P.view_len : m.source_len) * 0.5, m.source_len);
-        Tip("Zoom in (your REAPER 'View: Zoom in horizontal' keys)");
+        ui::ItemTipText("Zoom in (your REAPER 'View: Zoom in horizontal' keys)");
         SameLineIfFits(ui::ButtonWidth("Fit"));
         if (ui::SolidButton("Fit")) {
             P.view_start = 0.0;
@@ -1901,8 +1925,8 @@ void DrawEditOverlay()
 
         // Waveform | side strip.
         const float side_w = ui::Dp(270.0f);  // .edmain: 1fr 270px
-        const float wave_w = std::max(100.0f, ImGui::GetContentRegionAvail().x - side_w - 8.0f);
-        const float wave_h = std::max(80.0f, ImGui::GetContentRegionAvail().y - 4.0f);
+        const float wave_w = std::max(ui::Dp(100.0f), ImGui::GetContentRegionAvail().x - side_w - ui::Dp(8.0f));
+        const float wave_h = std::max(ui::Dp(80.0f), ImGui::GetContentRegionAvail().y - ui::Dp(4.0f));
         ImGui::BeginChild("##editwave", ImVec2(wave_w, wave_h), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollWithMouse);
         if (!m.ok) {
             FitText("Source not found", ui::kMissText);
@@ -1921,7 +1945,7 @@ void DrawEditOverlay()
                 const ImVec2 wp = ImGui::GetWindowPos();
                 ImGui::GetWindowDrawList()->AddLine(wp, ImVec2(wp.x, wp.y + ImGui::GetWindowSize().y), ui::kStroke);
             }
-            ui::GroupCaption("Detection Â· this sound only", ui::kMuted);
+            ui::GroupCaption("Detection \xC2\xB7 this sound only", ui::kMuted);
             if (m.ok) DetectionControls(*lib, *n, m, ui::Dp(70.0f));
             if (!P.changed) {
                 ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));
@@ -1949,9 +1973,7 @@ void DrawEditOverlay()
             else if (ViewKeyPressed(P.keys.zoom_out)) KeyZoom(1.5);
         }
     }
-    ImGui::End();
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor(2);
+    ui::EndOverlayPanel();
     if (close) {
         P.edit_open = false;
         P.sel.clear();
@@ -1973,7 +1995,7 @@ void DrawHeader(const SoundStore& store, const SoundLibrary& lib, const SoundNod
         if (playing) StopPlay();
         else PlayNode(lib.uid, n.uid);
     }
-    Tip(playing ? "Stop (Esc)" : "Play what Populate would place for one event (Space)");
+    ui::ItemTipText(playing ? "Stop (Esc)" : "Play what Populate would place for one event (Space)");
     const bool        sound = n.type == SoundNodeType::Sound;
     const float       min_title = ui::Dp(sound ? 140.0f : 60.0f);
     const float       sp = ui::Dp(8.0f);  // .pane-h gap
@@ -1996,7 +2018,7 @@ void DrawHeader(const SoundStore& store, const SoundLibrary& lib, const SoundNod
         }
         ui::TitleField("##name", P.name_buf, sizeof(P.name_buf), crumbs_beside ? avail - crumbs_w - sp : avail);
         const bool done = ImGui::IsItemDeactivatedAfterEdit();
-        Tip("Click to rename");
+        ui::ItemTipText("Click to rename");
         title_end = ImGui::GetItemRectMax().x;
         if (!done && !ImGui::IsItemActive() && std::strcmp(P.name_buf, n.name.c_str()) != 0)
             std::snprintf(P.name_buf, sizeof(P.name_buf), "%s", n.name.c_str());  // renamed elsewhere / undone
@@ -2091,7 +2113,7 @@ void DrawTypeRows(const SoundStore& store, const SoundLibrary& lib, const SoundN
     {
         const float w = ui::LabelRow("Default value", combo_min);
         const bool  open = ui::BeginComboStyled("##default", value_name(def).c_str(), std::min(w, std::max(combo_min, ui::Dp(180.0f))));
-        Tip("Plays when the event's value is not set, or when a value has no sound of its own");
+        ui::ItemTipText("Plays when the event's value is not set, or when a value has no sound of its own");
         if (open) {
             for (const SwitchValue& v : g->values) {
                 if (ImGui::Selectable(v.name.c_str(), v.uid == def) && v.uid != def) {
@@ -2112,7 +2134,7 @@ void DrawTypeRows(const SoundStore& store, const SoundLibrary& lib, const SoundN
     {
         const float w = ui::LabelRow("Preview value", combo_min);
         const bool  open = ui::BeginComboStyled("##preview", prev_label.c_str(), std::min(w, std::max(combo_min, ui::Dp(180.0f))));
-        Tip("The value \xE2\x96\xB6 plays (nested Switches use their own preview value)");
+        ui::ItemTipText("The value \xE2\x96\xB6 plays (nested Switches use their own preview value)");
         if (open) {
             std::string pick;
             bool        picked = false;
@@ -2272,20 +2294,35 @@ void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const Sound
     const float  pad = ui::Dp(6.0f), gap = ui::Dp(6.0f);
     const ImVec2 box0 = ImGui::GetCursorScreenPos();
     const float  box_x1 = std::max(box0.x + ui::Dp(60.0f), ui::LineRight());
-    const float  x0 = box0.x + pad, x1 = box_x1 - pad, inner = x1 - x0;
+    const float  x0 = box0.x + pad;
     const float  fh = ImGui::GetFrameHeight();
     const float  ms_w = ui::Dp(52.0f), db_w = ui::Dp(46.0f);
     const float  ms_full = ui::NumberFieldWidth(ms_w, "ms"), db_full = ui::NumberFieldWidth(db_w, "dB");
-    const float  name_w = std::clamp(inner * 0.3f, ui::Dp(84.0f), ui::Dp(120.0f));
     const float  fields_w = ms_full + gap + db_full;
-    const bool   stacked = inner < name_w + gap + ui::Dp(80.0f) + gap + fields_w;
-    const float  lane_x0 = x0 + name_w + gap;
-    const float  lane_w = std::max(ui::Dp(24.0f), (stacked ? x1 : x1 - fields_w - gap) - lane_x0);
     const float  head_h = ui::Dp(16.0f);
-    const float  row_h = stacked ? std::max(ui::Dp(30.0f), fh) + fh + ui::Dp(2.0f) : std::max(ui::Dp(30.0f), fh);
     const float  rgap = ui::Dp(2.0f);
-    const float  box_h = pad * 2.0f + head_h + (row_h + rgap) * static_cast<float>(parts.size());
-    // The box behind (its height is known beforehand: one row per layer).
+    // 13-14 (C4.8): the lanes take at most 196 px (.lanes { max-height:196px; overflow-y:auto }) and
+    // scroll beyond; a scrolling list keeps the scrollbar's room at the right of its rows.
+    const float lanes_max = ui::Dp(196.0f);
+    float       x1 = box_x1 - pad, inner = 0.0f, name_w = 0.0f, row_h = 0.0f;
+    bool        stacked = false;
+    auto        layout = [&] {
+        inner = x1 - x0;
+        name_w = std::clamp(inner * 0.3f, ui::Dp(84.0f), ui::Dp(120.0f));
+        stacked = inner < name_w + gap + ui::Dp(80.0f) + gap + fields_w;
+        row_h = stacked ? std::max(ui::Dp(30.0f), fh) + fh + ui::Dp(2.0f) : std::max(ui::Dp(30.0f), fh);
+    };
+    layout();
+    const bool scrolls = (row_h + rgap) * static_cast<float>(parts.size()) > lanes_max;
+    if (scrolls) {
+        x1 -= ImGui::GetStyle().ScrollbarSize;
+        layout();
+    }
+    const float lanes_h = std::min(lanes_max, (row_h + rgap) * static_cast<float>(parts.size()));
+    const float lane_x0 = x0 + name_w + gap;
+    const float lane_w = std::max(ui::Dp(24.0f), (stacked ? x1 : x1 - fields_w - gap) - lane_x0);
+    const float box_h = pad * 2.0f + head_h + lanes_h;
+    // The box behind (its height is known beforehand: one row per layer, up to the cap).
     dl->AddRectFilled(box0, ImVec2(box_x1, box0.y + box_h), ui::kBg, ui::kRadiusMd);
     dl->AddRect(box0, ImVec2(box_x1, box0.y + box_h), ui::kStroke, ui::kRadiusMd);
     auto X = [&](double ms) { return lane_x0 + static_cast<float>(ms / total_ms) * lane_w; };
@@ -2311,7 +2348,12 @@ void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const Sound
         }
         dl->PopClipRect();
     }
-    const float lanes_top = box0.y + pad + head_h;
+    // The lanes in a child of their own (scrolled past the cap); drawn at the same screen x.
+    ImGui::SetCursorScreenPos(ImVec2(box0.x + 1.0f, box0.y + pad + head_h));
+    ImGui::BeginChild("##blendlanes", ImVec2(std::max(1.0f, box_x1 - box0.x - 2.0f), lanes_h), ImGuiChildFlags_None,
+                      ImGuiWindowFlags_NoBackground);
+    dl = ImGui::GetWindowDrawList();
+    const float lanes_top = ImGui::GetCursorScreenPos().y;
     float       y = lanes_top;
     for (const SoundNode* k : parts) {
         if (P.changed) break;
@@ -2338,16 +2380,16 @@ void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const Sound
         dl->AddRectFilled(ba, bb, ui::kAccent, 3.0f);
         if (r.varies()) {
             const float bmin = X(off + r.min_s * 1000.0);
-            Hatch(dl, ImVec2(std::max(ba.x, bmin), ba.y), bb, IM_COL32(0, 0, 0, 0x33));
+            Hatch(dl, ImVec2(std::max(ba.x, bmin), ba.y), bb, ui::kHatchLight);
         }
         ImGui::SetCursorScreenPos(ImVec2(bx0, ty));
-        ImGui::InvisibleButton("##bar", ImVec2(std::max(6.0f, bb.x - bx0), th));
+        ImGui::InvisibleButton("##bar", ImVec2(std::max(ui::Dp(6.0f), bb.x - bx0), th));
         const bool bar_hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
         if (bar_hot) {
             ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-            dl->AddRect(ImVec2(ba.x - 2.0f, ba.y - 2.0f), ImVec2(bb.x + 2.0f, bb.y + 2.0f), IM_COL32(255, 255, 255, 0x59), 5.0f, 0, 2.0f);
+            dl->AddRect(ImVec2(ba.x - 2.0f, ba.y - 2.0f), ImVec2(bb.x + 2.0f, bb.y + 2.0f), ui::kRing, 5.0f, 0, 2.0f);
         }
-        if (ImGui::IsItemHovered() && !ImGui::IsItemActive()) Tip("Drag to set the offset \xC2\xB7 Shift = free");
+        if (ImGui::IsItemHovered() && !ImGui::IsItemActive()) ui::ItemTipText("Drag to set the offset \xC2\xB7 Shift = free");
         if (ImGui::IsItemActivated()) {
             P.off_uid = kid;
             P.off0 = k->offset_ms;
@@ -2426,6 +2468,9 @@ void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const Sound
         const float x = std::floor(X(AuditionPosition() * 1000.0)) + 0.5f;
         if (x <= lane_x0 + lane_w) dl->AddLine(ImVec2(x, lanes_top), ImVec2(x, y), ui::kText, 1.0f);
     }
+    ImGui::SetCursorScreenPos(ImVec2(box0.x, y));
+    ImGui::Dummy(ImVec2(0.0f, 0.0f));  // the child's content ends under the last lane
+    ImGui::EndChild();
     ImGui::SetCursorScreenPos(box0);
     ImGui::Dummy(ImVec2(box_x1 - box0.x, box_h));
 }
@@ -2522,7 +2567,7 @@ void DrawSourceLine(const SoundLibrary& lib, const SoundNode& n, const SoundMedi
     ImGui::BeginDisabled(!can);
     if (ui::SolidButton(btn) && can) P.hooks.show_in_media(src);
     ImGui::EndDisabled();
-    if (!can) Tip(kNoMediaTip);
+    if (!can) ui::ItemTipText(kNoMediaTip);
 }
 
 void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
@@ -2571,7 +2616,7 @@ void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
         }
         if (m.ok) {
             if (ui::SolidButton("Edit")) OpenEdit(lib_uid, uid);
-            Tip("Edit the variations large (E)");
+            ui::ItemTipText("Edit the variations large (E)");
         }
         ui::EndSectionHeaderRight(src_sec);
     }
@@ -2639,7 +2684,7 @@ void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
                 return true;
             });
         }
-        Tip("Copies of an animation item (linked items) replay the same variation as their source");
+        ui::ItemTipText("Copies of an animation item (linked items) replay the same variation as their source");
         if (!P.changed) DrawRandomAvoid(lib, n);
         if (!P.changed) DefaultFadeControls(lib, n);
     }
@@ -2674,10 +2719,10 @@ void NodePanelWidgets()
     const SoundNode*    n = lib && !uid.empty() ? FindNode(*lib, uid) : nullptr;
     if (P.live && (!n || P.draft_uid != uid)) CancelLive();
     if (!n) {
-        ImGui::Dummy(ImVec2(0.0f, 4.0f));
-        ImGui::Indent(6.0f);
-        ImGui::TextDisabled(lib ? "Select a node of the tree" : "No library");
-        ImGui::Unindent(6.0f);
+        ImGui::Dummy(ImVec2(0.0f, ui::Dp(4.0f)));
+        ImGui::Indent(ui::Dp(6.0f));
+        ui::ToneText(lib ? "Select a node of the tree" : "No library", ui::kFaint);
+        ImGui::Unindent(ui::Dp(6.0f));
         DrawEditOverlay();
         return;
     }
@@ -2690,7 +2735,7 @@ void NodePanelWidgets()
         }
     }
     ImGui::PushID(uid.c_str());
-    ImGui::Dummy(ImVec2(0.0f, 2.0f));
+    ImGui::Dummy(ImVec2(0.0f, ui::Dp(2.0f)));
     DrawHeader(store, *lib, *n);
     // 13-7b (audit C4.2 / C5.2): Type / Volume are plain rows under the header (no "Node" / "Level"
     // card); then Mix (Random, Switch), then Plays (Random, Blend: a Blend's lanes carry its

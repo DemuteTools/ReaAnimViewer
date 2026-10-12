@@ -281,11 +281,6 @@ using ui::MenuButton;
 using ui::MenuButtonWidth;
 using ui::SameLineIfFits;
 
-void Tip(const std::string& text)
-{
-    if (!text.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", text.c_str());
-}
-
 // An inline name field (13-7a: the mockup's .redit / .gedit, ui::RenameField, 22 px): 1 = commit,
 // -1 = cancel, 0 = still typing.
 int InlineName(float width)
@@ -603,15 +598,15 @@ void RowMenu(const SoundLibrary& lib)
         std::string why;
         if (ui::IconMenuItem(TypeIcon(SoundNodeType::Sound), "Sound", nullptr, false, can_add(SoundNodeType::Sound, &why)))
             Later([rows] { DoAdd(SoundNodeType::Sound, {}, false, &rows); });
-        Tip(why);
+        ui::ItemTipText(why.c_str());
         why.clear();
         if (ui::IconMenuItem(TypeIcon(SoundNodeType::Random), "Random", nullptr, false, can_add(SoundNodeType::Random, &why)))
             Later([rows] { DoAdd(SoundNodeType::Random, {}, false, &rows); });
-        Tip(why);
+        ui::ItemTipText(why.c_str());
         why.clear();
         if (ui::IconMenuItem(TypeIcon(SoundNodeType::Blend), "Blend", nullptr, false, can_add(SoundNodeType::Blend, &why)))
             Later([rows] { DoAdd(SoundNodeType::Blend, {}, false, &rows); });
-        Tip(why);
+        ui::ItemTipText(why.c_str());
         if (can_add(SoundNodeType::Switch, nullptr) && ui::IconBeginMenu(TypeIcon(SoundNodeType::Switch), "Switch on")) {
             bool ng = false;
             const std::string gid = GroupMenuItems(true, &ng);
@@ -820,7 +815,7 @@ void ToolbarAdd(const SoundLibrary& lib, SoundNodeType type, const char* label)
     const ui::Icon icon = TypeIcon(type);  // the mock-up's .tbb: the type icon before the label
     if (type == SoundNodeType::Switch) {
         if (MenuButton(label, ok > 0, nullptr, &icon)) ImGui::OpenPopup("##tbswitch");
-        Tip(why);
+        ui::ItemTipText(why.c_str());
         if (ui::BeginMenuPopup("##tbswitch")) {
             ui::MenuCaption("Switch on");
             bool ng = false;
@@ -833,54 +828,7 @@ void ToolbarAdd(const SoundLibrary& lib, SoundNodeType type, const char* label)
     if (ok == 0) ImGui::BeginDisabled();
     if (ui::IconButton(icon, label)) Later([type, rows = AddTargets()] { DoAdd(type, {}, false, &rows); });
     if (ok == 0) ImGui::EndDisabled();
-    Tip(why);
-}
-
-// 13-7a (audit C3.2): the toolbar's dark well (.tb): kBg, 1 px stroke edge, r7, 4 px inside. Its
-// content ends at its inner edge (the window's work rect is narrowed while it is open), so the
-// buttons wrap within it.
-struct Well {
-    ImDrawListSplitter split;
-    ImVec2             p0;
-    float              w = 0.0f;
-    float              pad = 0.0f;
-    float              saved_work_max = 0.0f;
-    float              saved_content_max = 0.0f;
-};
-
-void BeginWell(Well& k)
-{
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    k.p0 = ImGui::GetCursorScreenPos();
-    k.w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
-    k.pad = ui::Dp(4.0f) + 1.0f;  // the padding inside the 1 px edge
-    k.split.Split(dl, 2);
-    k.split.SetCurrentChannel(dl, 1);
-    ImGui::SetCursorScreenPos(ImVec2(k.p0.x + k.pad, k.p0.y + k.pad));
-    ImGui::BeginGroup();
-    ImGuiWindow* win = ImGui::GetCurrentWindow();
-    k.saved_work_max = win->WorkRect.Max.x;
-    k.saved_content_max = win->ContentRegionRect.Max.x;
-    const float inner = std::max(k.p0.x + k.pad + 1.0f, k.p0.x + k.w - k.pad);
-    win->WorkRect.Max.x = std::min(win->WorkRect.Max.x, inner);
-    win->ContentRegionRect.Max.x = std::min(win->ContentRegionRect.Max.x, inner);
-}
-
-void EndWell(Well& k)
-{
-    ImGuiWindow* win = ImGui::GetCurrentWindow();
-    win->WorkRect.Max.x = k.saved_work_max;
-    win->ContentRegionRect.Max.x = k.saved_content_max;
-    ImGui::EndGroup();
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const float bottom = ImGui::GetItemRectMax().y + k.pad;
-    k.split.SetCurrentChannel(dl, 0);
-    dl->AddRectFilled(k.p0, ImVec2(k.p0.x + k.w, bottom), ui::kBg, ui::kRadiusMd);
-    dl->AddRect(k.p0, ImVec2(k.p0.x + k.w, bottom), ui::kStroke, ui::kRadiusMd);
-    k.split.Merge(dl);
-    ImGui::SetCursorScreenPos(ImVec2(k.p0.x, bottom));
-    // The pane's 8 px gap under it.
-    ImGui::Dummy(ImVec2(k.w, std::max(0.0f, ui::Dp(8.0f) - ImGui::GetStyle().ItemSpacing.y)));
+    ui::ItemTipText(why.c_str());
 }
 
 // 13-7a (audit B17 / C3.2): the "?" circle at the toolbar's right end; a click opens the mockup's
@@ -915,23 +863,17 @@ void ToolbarHelp()
             ImGui::TextUnformatted(l.name);
         }
         ImGui::SameLine(0.0f, ui::Dp(5.0f));
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + std::max(ui::Dp(80.0f), wrap - (ImGui::GetCursorScreenPos().x - p.x)));
-        ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
-        ImGui::TextUnformatted(l.text);
-        ImGui::PopStyleColor();
-        ImGui::PopTextWrapPos();
+        ui::ToneText(l.text, ui::kMuted, true, std::max(ui::Dp(80.0f), wrap - (ImGui::GetCursorScreenPos().x - p.x)));
     }
     ui::EndMenuPopup();
 }
 
 void Toolbar(const SoundLibrary& lib)
 {
-    // The mockup's .tbb: 24 px buttons (pad 0 6), 3 px apart, wrapping inside the well.
-    Well well;
-    BeginWell(well);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
-                        ImVec2(ui::Dp(6.0f), std::max(0.0f, (ui::FieldH() - ImGui::GetFontSize()) * 0.5f)));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ui::Dp(3.0f), ui::Dp(3.0f)));
+    // The mockup's .tb well of .tbb buttons (24 px, pad 0 6, 3 px apart, wrapping inside it); a
+    // disabled one takes .tbb.dis (transparent, faint label and icon).
+    ui::Well well;
+    ui::BeginToolbar(well);
     [&] {
         ToolbarAdd(lib, SoundNodeType::Sound, "+ Sound");
         if (g.changed) return;
@@ -949,7 +891,7 @@ void Toolbar(const SoundLibrary& lib)
             const std::string cnt = "\xE2\x86\x92 " + std::to_string(g.sel.size());
             SameLineIfFits(ui::CountChipWidth(cnt.c_str()));
             ui::CountChip(cnt.c_str());
-            Tip("The + buttons add one to each selected row");
+            ui::ItemTipText("The + buttons add one to each selected row");
         }
         int with_node = 0;
         for (const LibraryRow& r : g.sel)
@@ -968,9 +910,9 @@ void Toolbar(const SoundLibrary& lib)
             ImGui::SameLine();
         }
         if (MenuButton(wl.c_str(), with_node > 0)) ImGui::OpenPopup("##tbwrap");
-        Tip(with_node > 1 ? "Groups the selected rows into a new Random or Blend"
-                          : with_node ? "Wraps the selected row in a new Random or Blend"
-                                      : "Select rows first (Ctrl / Shift-click for several)");
+        ui::ItemTipText(with_node > 1 ? "Groups the selected rows into a new Random or Blend"
+                                      : with_node ? "Wraps the selected row in a new Random or Blend"
+                                                  : "Select rows first (Ctrl / Shift-click for several)");
         if (ui::BeginMenuPopup("##tbwrap")) {
             std::vector<LibraryRow> rows;
             for (const LibraryRow& r : g.sel)
@@ -984,8 +926,7 @@ void Toolbar(const SoundLibrary& lib)
         if (SameLineIfFits(qs)) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, ImGui::GetContentRegionAvail().x - qs));
         ToolbarHelp();
     }();
-    ImGui::PopStyleVar(2);
-    EndWell(well);
+    ui::EndToolbar(well);
 }
 
 // ---- Rows ---------------------------------------------------------------------------------------
@@ -1139,7 +1080,7 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
             std::string tip = TypeWord(n->type);
             if (n->type == SoundNodeType::Switch)
                 if (const SwitchGroup* gr = FindGroup(GetSoundStore(nullptr), n->group_uid)) tip += " on " + gr->name;
-            ImGui::SetTooltip("%s \xC2\xB7 click to change the type", tip.c_str());
+            ui::ItemTip("%s \xC2\xB7 click to change the type", tip.c_str());
         }
         DrawTypeIcon(dl, ip, box, n->type, hot || selected || ImGui::IsPopupOpen("##typemenu"), Faded(TypeColor(n->type), is_cut));
         icon_w = box;
@@ -1183,7 +1124,7 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
             if (lit && g.hooks.stop) g.hooks.stop();
             else g.hooks.play(lib.uid, n->uid);
         }
-        Tip(lit ? "Stop" : "Play");
+        ui::ItemTipText(lit ? "Stop" : "Play");
         const ImU32 pc = hov || lit ? ui::kAccent : ui::kMuted;
         const float c = rx + bs * 0.5f, s = ui::Dp(4.0f);
         if (lit) dl->AddRectFilled(ImVec2(c - s, cy - s), ImVec2(c + s, cy + s), pc);
@@ -1199,8 +1140,7 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
             ui::DrawSmallTag(dl, ImVec2(rx, std::floor(cy - ui::SmallTagHeight() * 0.5f)), t);
             ImGui::SetCursorScreenPos(ImVec2(rx, p.y));
             ImGui::Dummy(ImVec2(tw, rh));
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Default value: plays when the event's value is not set, or when a value has no sound of its own");
+            ui::ItemTipText("Default value: plays when the event's value is not set, or when a value has no sound of its own");
             rx -= gap;
         } else if (hovered) {
             // .star: 18 px, faint, warn on its hover background.
@@ -1211,7 +1151,7 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
                 Later([row = r.row] { DoMakeDefault({row}); });
             CentredGlyph(dl, ui::FontSmall(), ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), hov ? ui::kWarn : ui::kFaint,
                          "\xE2\x98\x86");
-            Tip("Make it the default value");
+            ui::ItemTipText("Make it the default value");
             rx -= gap;
         }
     }
@@ -1280,11 +1220,7 @@ void CentredText(const char* text, ImU32 col, float x, float w)
 {
     const float tw = ImGui::CalcTextSize(text).x;
     ImGui::SetCursorScreenPos(ImVec2(tw <= w ? std::floor(x + (w - tw) * 0.5f) : x, ImGui::GetCursorScreenPos().y));
-    ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(col));
-    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + std::max(1.0f, tw <= w ? tw + 1.0f : w));
-    ImGui::TextUnformatted(text);
-    ImGui::PopTextWrapPos();
-    ImGui::PopStyleColor();
+    ui::ToneText(text, col, true, std::max(1.0f, tw <= w ? tw + 1.0f : w));
 }
 
 // 13-7a (audit C3.6): the mockup's .empty-big -- a dashed box (stroke-strong, r7, 18 px above and
@@ -1378,7 +1314,7 @@ void ListCaption(const char* text, const char* tip = nullptr)
     const ImVec2 p = ImGui::GetCursorScreenPos();
     ImGui::SetCursorScreenPos(ImVec2(p.x + ui::Dp(2.0f), p.y + ui::Dp(6.0f) - ImGui::GetStyle().ItemSpacing.y));
     ui::GroupCaption(text);
-    if (tip && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tip);
+    if (tip) ui::ItemTipText(tip);
     ImGui::Dummy(ImVec2(0.0f, std::max(0.0f, ui::Dp(2.0f) - ImGui::GetStyle().ItemSpacing.y)));
 }
 
@@ -1392,9 +1328,8 @@ void LibraryMenuItems(const SoundLibrary& lib, std::string* to_delete, bool rena
         std::string first;
         const int   miss = UserLibraryMissing(lib.uid, &first);
         if (ImGui::MenuItem("Locate missing files...", nullptr, false, miss > 0)) RequestUserLibraryLocate(lib.uid, first);
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            ImGui::SetTooltip(miss > 0 ? "Pick the file of its first missing sound: the others are looked for near it"
-                                       : "No missing sound");
+        ui::ItemTipText(miss > 0 ? "Pick the file of its first missing sound: the others are looked for near it"
+                                 : "No missing sound");
         if (ImGui::MenuItem("Refresh the User Library folder")) RefreshUserLibraries();
     }
     ImGui::Separator();
@@ -1459,10 +1394,8 @@ void LibraryListRow(const SoundStore& store, const SoundLibrary& lib, std::strin
         ImGui::Dummy(ImVec2(tp[i].w, rh));
         ui::AddTextIn(dl, f, ImVec2(tp[i].x + (tk[i] == 0 ? ui::Dp(1.0f) : 0.0f), std::floor(y + (rh - f->FontSize) * 0.5f)),
                       tk[i] == 0 ? ui::kWarn : ui::kBad, t);
-        if (ImGui::IsItemHovered()) {
-            if (tk[i] == 0) ImGui::SetTooltip("Blocked: %s", chk.reason.c_str());
-            else ImGui::SetTooltip("%d missing sound(s)", miss);
-        }
+        if (tk[i] == 0) ui::ItemTip("Blocked: %s", chk.reason.c_str());
+        else ui::ItemTip("%d missing sound(s)", miss);
     }
     {
         ui::FontScope f(ui::FontTitle());
@@ -1492,8 +1425,8 @@ void UserFileRow(const UserLibraryFile& f, std::string* add_file)
     const float  tw = f.readable ? ui::ButtonWidth(trail) : ui::TextWidth(trail);
     ImGui::SetNextItemAllowOverlap();
     ui::SelectRow("##ufile", false, 0, rh, ImGuiSelectableFlags_AllowOverlap, ui::kRadiusMd);
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-        ImGui::SetTooltip(f.readable ? "%s\nNot in this project: Add puts it in" : "%s\nThis file cannot be read", f.file.c_str());
+    if (f.readable) ui::ItemTip("%s\nNot in this project: Add puts it in", f.file.c_str());
+    else ui::ItemTip("%s\nThis file cannot be read", f.file.c_str());
     if (f.readable) dl->AddCircleFilled(ImVec2(p.x + ui::Dp(10.0f), p.y + rh * 0.5f), ui::Dp(4.0f), Faded(LibDot(f.color), true));
     const float tx = std::max(nx, p.x + w - ui::Dp(6.0f) - tw);
     if (f.readable) {
@@ -1566,9 +1499,9 @@ void LibrariesSectionWidgets()
             });
         ImGui::SameLine(0.0f, sp);
         if (ui::SolidButton("+ User Library", ImVec2(std::max(1.0f, avail - half - sp), 0.0f))) Later([] { NewUserLibrary(); });
-        Tip("A library saved in its own file in the User Library folder, for every project");
+        ui::ItemTipText("A library saved in its own file in the User Library folder, for every project");
         if (ui::SolidButton("Import .ravlib...", ImVec2(avail, 0.0f))) RequestUserLibraryImport();
-        Tip("Add a .ravlib file: it is copied into the User Library folder");
+        ui::ItemTipText("Add a .ravlib file: it is copied into the User Library folder");
     }
     ui::EndSection(sec);
 }
@@ -1604,7 +1537,7 @@ bool RowCross(ImVec2 p, float w, const char* tip)
                                         bw, bh, false, &hov);
     CentredGlyph(ImGui::GetWindowDrawList(), ui::FontTitle(), ImGui::GetItemRectMin(), ImGui::GetItemRectMax(),
                  hov ? ui::kText : ui::kMuted, "\xC3\x97");
-    Tip(tip);
+    ui::ItemTipText(tip);
     return clicked;
 }
 
@@ -1641,6 +1574,13 @@ void SwitchGroupsSectionWidgets()
         });
     ui::EndSectionHeaderRight(sec);
     if (open_sec && !g.changed) {
+        // 13-14 (C2.4): the card fills the rest of the column (.secx.sg { flex:1; min-height:140px }),
+        // its body scrolling: the body is a child as high as the room left less the card's bottom pad
+        // and its gap under it.
+        const float sp_y = ImGui::GetStyle().ItemSpacing.y;
+        const float body_h = std::max(ui::Dp(96.0f), ImGui::GetContentRegionAvail().y - ui::kCardPad -
+                                                         std::max(0.0f, ui::kCardGap - sp_y) - 1.0f);
+        ImGui::BeginChild("##sgbody", ImVec2(0.0f, body_h), ImGuiChildFlags_None, ImGuiWindowFlags_NoBackground);
         std::string  del_group, del_value_group, del_value, add_group, add_name;
         ImDrawList*  dl = ImGui::GetWindowDrawList();
         const float  rh = ui::RowH(), gap = ui::Dp(6.0f), cs = ui::Dp(18.0f), is = ui::Dp(16.0f);
@@ -1777,7 +1717,7 @@ void SwitchGroupsSectionWidgets()
                             add_name = name;
                         }
                     }
-                    Tip("Type a value's name, then Enter");
+                    ui::ItemTipText("Type a value's name, then Enter");
                     ImGui::SetCursorScreenPos(ImVec2(ap.x, ap.y + rh));
                     ImGui::Dummy(ImVec2(0.0f, 0.0f));
                 }
@@ -1800,6 +1740,7 @@ void SwitchGroupsSectionWidgets()
                 g.add_value_focus = add_group;  // type the next one
             });
         if (!g.changed && store.groups.empty()) ui::SubText("No Switch Group yet");
+        ImGui::EndChild();
     }
     ui::EndSection(sec);
 }
@@ -2011,7 +1952,7 @@ void LibraryBatchPanelWidgets()
     if (values == 0) ImGui::BeginDisabled();
     if (ui::SolidButton("Make them default (one per Switch)")) Later([rows] { DoMakeDefault(rows); });
     if (values == 0) ImGui::EndDisabled();
-    Tip(values ? "One default per Switch" : "Select Switch value rows first");
+    ui::ItemTipText(values ? "One default per Switch" : "Select Switch value rows first");
     if (g.changed) return;
     ui::SectionOpts opts;
     opts.foldable = false;
@@ -2020,7 +1961,7 @@ void LibraryBatchPanelWidgets()
     if (ui::BeginSection(sec, "Change them all at once", opts)) {
         static const char* const kTypes[3] = {"Random", "Blend", "Switch"};
         int sel = common >= 0 ? common : -1;
-        ui::LabelRow("Type", 150.0f);
+        ui::LabelRow("Type", ui::Dp(150.0f));
         const int was = sel;
         const ui::Icon kTypeIcons[3] = {TypeIcon(SoundNodeType::Random), TypeIcon(SoundNodeType::Blend),
                                         TypeIcon(SoundNodeType::Switch)};
@@ -2039,7 +1980,7 @@ void LibraryBatchPanelWidgets()
             SameLineIfFits(ui::TextWidth("mixed"));
             const float y = ImGui::GetCursorPosY();
             ImGui::SetCursorPosY(y + std::max(0.0f, (ui::ControlH() - ImGui::GetTextLineHeight()) * 0.5f));
-            ImGui::TextColored(ui::Col(ui::kWarn), "mixed");
+            ui::ToneText("mixed", ui::kWarn);
         }
         if (ui::BeginMenuPopup("##batchswitch")) {
             ui::MenuCaption("Switch on");
@@ -2048,13 +1989,13 @@ void LibraryBatchPanelWidgets()
             ui::EndMenuPopup();
         }
         const SwitchGroup* cg = common == 2 ? FindGroup(store, common_group) : nullptr;
-        ui::LabelRow("Switch on", 160.0f);
+        ui::LabelRow("Switch on", ui::Dp(160.0f));
         if (ui::BeginComboStyled("##batchswitch2", cg ? cg->name.c_str() : "Choose a Switch Group...", ui::Dp(160.0f))) {
             const std::string gid = GroupMenuItems(false, nullptr);
             if (!gid.empty()) Later([rows, gid] { BatchSwitchOn(rows, gid); });
             ui::EndComboStyled();
         }
-        Tip("Also converts the Random and Blend containers");
+        ui::ItemTipText("Also converts the Random and Blend containers");
         ui::LabelRow("Put into", MenuButtonWidth("Put into"));
         if (MenuButton("Put into")) ImGui::OpenPopup("##putinto");
         if (ui::BeginMenuPopup("##putinto")) {

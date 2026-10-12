@@ -842,12 +842,9 @@ void DrawUserLibraryNodeSection()
     ui::Section sec;
     if (ui::BeginSection(sec, lib->user ? "User Library" : "File", ImTextureID(), false)) {
         if (file_missing) {
-            ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(kLibMissing));
-            ImGui::TextWrapped("File not found: %s", n->sound.source.asset.name.c_str());
-            ImGui::PopStyleColor();
+            ui::ToneText("File not found: " + n->sound.source.asset.name, kLibMissing, true);
             if (ui::SolidButton("Locate folder...")) RequestLocate(lib->uid, n->uid);
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("Pick this file: the other missing sounds are looked for in the same folders");
+            ui::ItemTipText("Pick this file: the other missing sounds are looked for in the same folders");
         }
         if (lib->user) {
             const bool        is_root = n->uid == lib->root || n->parent.empty();
@@ -867,8 +864,9 @@ void DrawUserLibraryNodeSection()
                 for (const SoundNode& x : l.nodes) add(x.lands_in);
             std::string pick;
             bool        picked = false;
-            ImGui::SetNextItemWidth(ui::LabelRow("Lands in", 80.0f, ui::TextWidth("Lands in") + ImGui::GetStyle().ItemSpacing.x));
-            if (ImGui::BeginCombo("##landsin", shown.c_str())) {
+            // 13-14 (N2): the .row (.k label in the 80 px column) and the themed select.
+            const float field_w = ui::LabelRow("Lands in", ui::Dp(80.0f));
+            if (ui::BeginComboStyled("##landsin", shown.c_str(), field_w)) {
                 if (!is_root && ImGui::Selectable(inherit.c_str(), n->lands_in.empty())) {
                     pick.clear();
                     picked = true;
@@ -878,23 +876,22 @@ void DrawUserLibraryNodeSection()
                         pick = s;
                         picked = true;
                     }
-                ImGui::Separator();
+                ui::MenuSeparator();
                 if (ImGui::Selectable("New folder...")) {
                     g.new_folder = true;
                     g.new_folder_node = n->uid;
                     g.buf[0] = '\0';
                 }
-                ImGui::EndCombo();
+                ui::EndComboStyled();
             }
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("The folder track its files are placed under (one layer track per Blend layer)");
+            ui::ItemTipText("The folder track its files are placed under (one layer track per Blend layer)");
             if (g.new_folder && g.new_folder_node == n->uid) {
                 const float okw = ui::ButtonWidth("OK");
                 bool        beside = true;
-                ImGui::SetNextItemWidth(flow::StretchBeside(ImGui::GetContentRegionAvail().x, 60.0f, okw,
-                                                            ImGui::GetStyle().ItemSpacing.x, &beside));
-                const bool enter = ImGui::InputTextWithHint("##newfolder", "Folder name", g.buf, sizeof g.buf,
-                                                            ImGuiInputTextFlags_EnterReturnsTrue);
+                const float fw = flow::StretchBeside(ImGui::GetContentRegionAvail().x, ui::Dp(60.0f), okw,
+                                                     ImGui::GetStyle().ItemSpacing.x, &beside);
+                const bool  enter = ui::TextField("##newfolder", "Folder name", g.buf, sizeof g.buf, fw,
+                                                  ImGuiInputTextFlags_EnterReturnsTrue);
                 if (beside) ImGui::SameLine();
                 const bool ok = ui::SolidButton("OK");
                 if ((enter || ok) && g.buf[0]) {

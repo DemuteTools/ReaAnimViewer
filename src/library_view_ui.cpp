@@ -29,9 +29,10 @@ namespace {
 // 150 / 190 / 260 / 240 px: the column contents wrap and ellipsize down to these, so a narrow
 // REAPER dock keeps all four columns instead of scrolling them off.
 constexpr float kColumnShare[4] = {0.16f, 0.22f, 0.32f, 0.30f};
-constexpr float kColumnMin[4] = {150.0f, 190.0f, 260.0f, 240.0f};
-constexpr float kColumnGap = 8.0f;  // 13-7 (audit A2 / B13): the mockup's 8 px grid gap = the splitter's hit
-constexpr float kStripWidth = 28.0f;
+// 13-14 (N3): the sizes below are mockup px at the screen's DPI (ui::DpPx reads as the scaled float).
+constexpr ui::DpPx kColumnMin[4] = {{150.0f}, {190.0f}, {260.0f}, {240.0f}};
+constexpr ui::DpPx kColumnGap{8.0f};  // 13-7 (audit A2 / B13): the mockup's 8 px grid gap = the splitter's hit
+constexpr ui::DpPx kStripWidth{28.0f};
 constexpr double kToastSeconds = 5.0;
 constexpr const char* kWidthKeys[4] = {"lib_col_w0", "lib_col_w1", "lib_col_w2", "lib_col_w3"};
 
@@ -102,12 +103,54 @@ void DrawColumn(int i)
     }
 }
 
-// A collapsed column: a 28 px strip with its expand button and its name, one letter per line.
+// `text` shortened with "..." (whole UTF-8 characters) to fit `max_w` in `font`.
+std::string FitWidth(ImFont* font, const std::string& text, float max_w)
+{
+    auto width = [&](const std::string& t) { return font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.0f, t.c_str()).x; };
+    if (width(text) <= max_w) return text;
+    std::string t = text;
+    while (!t.empty()) {
+        do t.pop_back();
+        while (!t.empty() && (static_cast<unsigned char>(t.back()) & 0xC0) == 0x80);  // a whole character
+        if (width(t + "...") <= max_w) return t + "...";
+    }
+    return std::string();
+}
+
+// `text` drawn turned a quarter (the mockup's writing-mode: vertical-rl), centred on cx from `top`
+// down: reading top to bottom (`down`), or bottom to top (the right strip's rotate(180deg)).
+void VerticalText(ImDrawList* dl, ImFont* font, float cx, float top, ImU32 col, const std::string& text, bool down,
+                  ImVec2 clip_min, ImVec2 clip_max)
+{
+    if (text.empty()) return;
+    const ImVec2 ts = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.0f, text.c_str());
+    // Laid out flat at `o` (never culled: the clip holds the flat text and the strip), then each of
+    // its vertices turned about it and moved into place.
+    const ImVec2 o(cx, top);
+    dl->PushClipRect(ImVec2(std::min(clip_min.x, o.x), std::min(clip_min.y, o.y)),
+                     ImVec2(std::max(clip_max.x, o.x + ts.x), std::max(clip_max.y, o.y + ts.y)), false);
+    const int v0 = dl->VtxBuffer.Size;
+    dl->AddText(font, font->FontSize, o, col, text.c_str());
+    for (int k = v0; k < dl->VtxBuffer.Size; ++k) {
+        ImVec2&     v = dl->VtxBuffer[k].pos;
+        const float x = v.x - o.x, y = v.y - o.y;
+        v = down ? ImVec2(cx + ts.y * 0.5f - y, top + x) : ImVec2(cx - ts.y * 0.5f + y, top + ts.x - x);
+    }
+    dl->PopClipRect();
+}
+
+// 13-14 (C8): a collapsed column, the mockup's .colstrip: the whole strip is one button (kRaised
+// under the mouse, a click expands it), 8 px from its top the 12 px muted chevron, then (column 1)
+// the library's dot, then the name turned a quarter in 12 px kText, ellipsized to the strip.
 void DrawStrip(int i, float h)
 {
     ImGui::PushID(i);
-    if (ui::IconOnlyButton("##expand", i == 0 ? "\xC2\xBB" : "\xC2\xAB",
-                           i == 0 ? "Show the libraries (Ctrl+B)" : "Show the Media Explorer")) {
+    const ImVec2 wp = ImGui::GetWindowPos(), ws = ImGui::GetWindowSize();
+    ImGui::SetCursorScreenPos(wp);
+    const bool clicked = ImGui::InvisibleButton("##expand", ImVec2(ws.x, std::max(1.0f, h)));
+    const bool hot = ImGui::IsItemHovered();
+    ui::ItemTipText(i == 0 ? "Show the libraries (Ctrl+B)" : "Show the Media Explorer");
+    if (clicked) {
         if (i == 0) SetLibraryColumn1Collapsed(false);
         else {
             g_view.media_collapsed = false;
@@ -124,23 +167,26 @@ void DrawStrip(int i, float h)
                 dot = IM_COL32((lib->color >> 16) & 0xFF, (lib->color >> 8) & 0xFF, lib->color & 0xFF, 0xFF);
         }
     }
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImVec2 p = ImGui::GetCursorScreenPos();
-    const float cx = p.x + kStripWidth * 0.5f - 4.0f;
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const ImVec2 b(wp.x + ws.x, wp.y + ws.y);
+    dl->PushClipRect(wp, b, false);  // the whole strip (the pane's padding is not for its look)
+    if (hot) dl->AddRectFilled(ImVec2(wp.x + 1.0f, wp.y + 1.0f), ImVec2(b.x - 1.0f, b.y - 1.0f), ui::kRaised,
+                               std::max(0.0f, ui::Dp(ui::kRadiusLg) - 1.0f));
+    ImFont*     f = ui::FontBody();
+    const float cx = std::floor(wp.x + ws.x * 0.5f), gap = ui::Dp(8.0f);
+    float       y = wp.y + gap;
+    const char* chev = i == 0 ? "\xC2\xBB" : "\xC2\xAB";
+    const ImVec2 cs = ui::TextSizeIn(f, chev);
+    ui::AddTextIn(dl, f, ImVec2(std::floor(cx - cs.x * 0.5f), y), hot ? ui::kText : ui::kMuted, chev);
+    y += cs.y + gap;
     if (i == 0) {
-        dl->AddCircleFilled(ImVec2(cx + 3.0f, p.y + 8.0f), 4.0f, dot);
-        p.y += 18.0f;
+        const float r = ui::Dp(4.0f);
+        dl->AddCircleFilled(ImVec2(cx, y + r), r, dot);
+        y += 2.0f * r + gap;
     }
-    const float lh = ImGui::GetTextLineHeight();
-    // One UTF-8 character per line (an accented letter is several bytes).
-    for (size_t k = 0; k < name.size() && p.y + lh < ImGui::GetWindowPos().y + h;) {
-        const unsigned char c = static_cast<unsigned char>(name[k]);
-        size_t len = c < 0x80 ? 1 : (c >> 5) == 0x6 ? 2 : (c >> 4) == 0xE ? 3 : (c >> 3) == 0x1E ? 4 : 1;
-        len = std::min(len, name.size() - k);
-        dl->AddText(ImVec2(cx, p.y), ui::kMuted, name.data() + k, name.data() + k + len);
-        k += len;
-        p.y += lh;
-    }
+    const std::string shown = FitWidth(f, name, b.y - gap - y);
+    VerticalText(dl, f, cx, y, ui::kText, shown, i == 0, wp, b);
+    dl->PopClipRect();
     ImGui::PopID();
 }
 
@@ -281,16 +327,13 @@ void DrawLibraryView(float x, float y, float w, float h)
             if (Collapsed(i)) strips += kStripWidth;
             else visible_share += g_view.share[i];
         }
-        const float visible_px = std::max(1.0f, w - 3.0f * kColumnGap - strips);
+        const float visible_px = std::max(1.0f, w - 3.0f * static_cast<float>(kColumnGap) - strips);
         float px[4];
         for (int i = 0; i < 4; ++i)
-            px[i] = Collapsed(i) ? kStripWidth
-                                 : std::max(kColumnMin[i], std::floor(visible_px * g_view.share[i] /
-                                                                      std::max(0.01f, visible_share)));
+            px[i] = Collapsed(i) ? static_cast<float>(kStripWidth)
+                                 : std::max(static_cast<float>(kColumnMin[i]),
+                                            std::floor(visible_px * g_view.share[i] / std::max(0.01f, visible_share)));
 
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::Col(ui::kSurface));
-        ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStroke));
-        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, ui::kRadiusLg);  // 13-7 (audit A3): .pane r 10
         static const char* const kIds[4] = {"##libcol1", "##libcol2", "##libcol3", "##libcol4"};
         const float ch = std::max(1.0f, h - 2.0f);
         for (int i = 0; i < 4; ++i) {
@@ -300,20 +343,16 @@ void DrawLibraryView(float x, float y, float w, float h)
                 else ImGui::Dummy(ImVec2(kColumnGap, ch));
                 ImGui::SameLine(0.0f, 0.0f);
             }
-            // 13-7a (audit A2): the mockup's .pane padding, 8 px inside every open column (a collapsed
-            // strip keeps the theme's). The child reads it when it begins; popped at once, so the
-            // popups opened inside keep their own.
-            if (!Collapsed(i)) ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui::Dp(8.0f), ui::Dp(8.0f)));
-            const bool shown = ImGui::BeginChild(kIds[i], ImVec2(px[i], ch), ImGuiChildFlags_Borders);
-            if (!Collapsed(i)) ImGui::PopStyleVar();
+            // 13-7 (audit A2 / A3) / 13-14 (G-19): the mockup's .pane -- kSurface, a stroke edge, r10, 8 px
+            // inside (ui::BeginPane); a collapsed strip draws its own content over the whole pane.
+            const bool shown = ui::BeginPane(kIds[i], ImVec2(px[i], ch), ui::kSurface, 0,
+                                             Collapsed(i) ? ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse : 0);
             if (shown) {
                 if (Collapsed(i)) DrawStrip(i, ch);
                 else DrawColumn(i);
             }
-            ImGui::EndChild();
+            ui::EndPane();
         }
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor(2);
     }
     ImGui::End();
     ImGui::PopStyleVar();

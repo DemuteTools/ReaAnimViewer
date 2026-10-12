@@ -845,10 +845,8 @@ void BeginDrag(const std::vector<MediaPick>& picks, const std::string& what)
         g.drag_picks = picks;
         ImGui::SetDragDropPayload(kPayload, &g.drag_gen, sizeof g.drag_gen);
         ImGui::TextUnformatted(what.c_str());
-        ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
-        ImGui::TextUnformatted("Drop on a container, a value row or empty space in the tree,\n"
-                               "or on a Sound's waveform to replace its audio");
-        ImGui::PopStyleColor();
+        ui::ToneText("Drop on a container, a value row or empty space in the tree,\n"
+                     "or on a Sound's waveform to replace its audio");
         ImGui::EndDragDropSource();
     }
 }
@@ -933,8 +931,6 @@ void DrawStar(ImDrawList* dl, ImVec2 c, float r, bool on, ImU32 col)
     }
 }
 
-ImU32 MediaAlpha(ImU32 c, unsigned a) { return (c & ~IM_COL32_A_MASK) | (static_cast<ImU32>(a) << IM_COL32_A_SHIFT); }
-
 // The waveform (the mockup's .wave, DECISIONS section 6): kBg, 1 px stroke edge, r5. The peaks are
 // neutral (muted), accent inside the selected variations, past full scale in the clip colour.
 // Each variation is a box (.vbox): inset 2 px top and bottom, 1 px stroke-strong edge r3, accent
@@ -946,6 +942,10 @@ void DrawMediaWaveform(ImDrawList* dl, ImVec2 p0, ImVec2 p1, const Analysis& an,
 {
     dl->AddRectFilled(p0, p1, ui::kBg, ui::kRadiusSm);
     const float  w = p1.x - p0.x, h = p1.y - p0.y, mid = (p0.y + p1.y) * 0.5f;
+    // 13-14 (C7.5): a stereo file draws two lanes (L above R), each half the height with its own
+    // zero line and a 1 px stroke-strong line between them; a mono one, one lane.
+    const int    lanes = PeakChannels(an.peaks);
+    const float  lane_h = h / static_cast<float>(lanes);
     const double len = an.length;
     if (!(len > 0.0) || w < 4.0f) {
         dl->AddRect(p0, p1, ui::kStroke, ui::kRadiusSm);
@@ -958,23 +958,28 @@ void DrawMediaWaveform(ImDrawList* dl, ImVec2 p0, ImVec2 p1, const Analysis& an,
     for (size_t i = 0; i < an.frames.size(); ++i) {
         const SoundFrame& f = an.frames[i];
         const int         k = static_cast<int>(i);
-        const unsigned    a = Sel(k) ? 0x2E : (k == hover ? 0x21 : 0x17);  // 18 % / 13 % / 9 %
+        const int         a = Sel(k) ? 0x2E : (k == hover ? 0x21 : 0x17);  // 18 % / 13 % / 9 %
         dl->AddRectFilled(ImVec2(X(f.start), p0.y + inset), ImVec2(X(f.start + f.length), p1.y - inset),
-                          MediaAlpha(ui::kAccent, a), r3);
+                          ui::WithAlpha(ui::kAccent, a), r3);
     }
     if (an.ready && an.peaks.rate > 0.0 && !an.peaks.max_abs.empty()) {
-        const size_t n = an.peaks.max_abs.size();
-        const float  hh = h * 0.5f - ui::Dp(4.0f);
+        const float hh = lane_h * 0.5f - ui::Dp(lanes > 1 ? 2.0f : 4.0f);
         for (int x = 0; x < static_cast<int>(w); ++x) {
             const double t0 = len * x / w, t1 = len * (x + 1) / w;
             size_t       i0 = static_cast<size_t>(t0 * an.peaks.rate), i1 = static_cast<size_t>(t1 * an.peaks.rate);
             i1 = std::max(i1, i0 + 1);
-            float m = 0.0f;
-            for (size_t i = i0; i < i1 && i < n; ++i) m = std::max(m, an.peaks.max_abs[i]);
-            const float amp = std::min(1.0f, m) * hh;
-            const int   fi = FrameAt(an.frames, (t0 + t1) * 0.5);
-            const ImU32 col = m > 1.0f ? kLibMissing : (fi >= 0 && Sel(fi)) ? ui::kAccent : ui::kMuted;
-            dl->AddLine(ImVec2(p0.x + x + 0.5f, mid - amp), ImVec2(p0.x + x + 0.5f, mid + amp + 1.0f), col);
+            const int fi = FrameAt(an.frames, (t0 + t1) * 0.5);
+            for (int l = 0; l < lanes; ++l) {
+                const float m = PeakLaneMax(an.peaks, l, i0, i1);
+                const float amp = std::min(1.0f, m) * hh;
+                const float lm = p0.y + lane_h * (static_cast<float>(l) + 0.5f);
+                const ImU32 col = m > 1.0f ? kLibMissing : (fi >= 0 && Sel(fi)) ? ui::kAccent : ui::kMuted;
+                dl->AddLine(ImVec2(p0.x + x + 0.5f, lm - amp), ImVec2(p0.x + x + 0.5f, lm + amp + 1.0f), col);
+            }
+        }
+        for (int l = 1; l < lanes; ++l) {
+            const float y = std::floor(p0.y + lane_h * static_cast<float>(l));
+            dl->AddRectFilled(ImVec2(p0.x, y), ImVec2(p1.x, y + 1.0f), ui::kStrokeStrong);
         }
     } else {
         const char*  t = an.ready ? "No audio" : "Reading...";
@@ -1126,15 +1131,8 @@ float ResultRowH()
 // accent bar, the previewed file (not selected) a 2 px accent-line bar.
 void DrawResults(float h)
 {
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::Col(ui::kBg));
-    ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStroke));
-    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, ui::kRadiusSm);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(1.0f, 1.0f));  // rows inside the 1 px edge
-    const bool shown = ImGui::BeginChild("##meresults", ImVec2(0.0f, h), ImGuiChildFlags_Borders);
-    ImGui::PopStyleVar(2);
-    ImGui::PopStyleColor(2);
-    if (!shown) {
-        ImGui::EndChild();
+    if (!ui::BeginListPane("##meresults", ImVec2(0.0f, h))) {  // kBg, 1 px stroke, r5, rows inside the edge
+        ui::EndListPane();
         return;
     }
     const int ndb = static_cast<int>(g.info.databases.size());
@@ -1146,12 +1144,8 @@ void DrawResults(float h)
         else if (g.query[0] == 0) hint = "No file in this database";
         else hint = std::string("No file matches \"") + g.query + "\"";
         ImGui::SetCursorPos(ImVec2(ui::Dp(8.0f), ui::Dp(6.0f)));
-        ImGui::PushTextWrapPos(std::max(ui::Dp(8.0f) + 1.0f, ImGui::GetContentRegionMax().x - ui::Dp(8.0f)));
-        ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
-        ImGui::TextUnformatted(hint.c_str());
-        ImGui::PopStyleColor();
-        ImGui::PopTextWrapPos();
-        ImGui::EndChild();
+        ui::ToneText(hint, ui::kMuted, true, std::max(1.0f, ImGui::GetContentRegionAvail().x - ui::Dp(8.0f)));
+        ui::EndListPane();
         return;
     }
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -1185,15 +1179,11 @@ void DrawResults(float h)
             const bool    cur = g.has_cur && g.cur.path == f.path;  // the previewed file = the keyboard row
             ImGui::PushID(i);
             const ImVec2 p = ImGui::GetCursorScreenPos();
-            ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
-            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0, 0, 0, 0));
-            ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0, 0, 0, 0));
-            const bool clicked = ImGui::Selectable("##r", sel, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(w, rh));
-            ImGui::PopStyleColor(3);
-            const bool hov = ImGui::IsItemHovered();
-            unsigned   bits = ui::kRowBarSelect | (sel ? ui::kRowSelected : (cur ? ui::kRowCurrent : 0u)) |
-                            ((i % 2) ? ui::kRowEven : 0u) | (hov ? ui::kRowHovered : 0u);
-            ui::RowBackground(dl, p, ImVec2(p.x + w, p.y + rh), bits, 0.0f);
+            // The row (.frow.res): hover raised, selected = a 2 px accent bar, the previewed file a
+            // 2 px accent-line bar, every other row kRowAlt.
+            const unsigned bits = ui::kRowBarSelect | (!sel && cur ? ui::kRowCurrent : 0u) | ((i % 2) ? ui::kRowEven : 0u);
+            const bool     clicked = ui::SelectRow("##r", sel, bits, rh, ImGuiSelectableFlags_AllowDoubleClick, 0.0f);
+            const bool     hov = ImGui::IsItemHovered();
             const bool dbl = clicked && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
             const bool on_star = ImGui::GetIO().MousePos.x < p.x + star_hit;
             if (clicked && on_star) {
@@ -1242,7 +1232,7 @@ void DrawResults(float h)
         }
     }
     ImGui::PopStyleVar();
-    ImGui::EndChild();
+    ui::EndListPane();
 }
 
 // The current file's status, empty when it is ready (Missing / Reading / Opening).
@@ -1369,12 +1359,11 @@ void DrawPreview(float wave_h)
     DrawMediaWaveform(dl, p, p1, g.an, g.vsel, ph, miss ? -1 : HoveredFrame(p, p1, g.an));
     ImGui::InvisibleButton("##mewave", ImVec2(w, wave_h));
     if (miss) {
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Not found on this PC");
+        ui::ItemTipText("Not found on this PC");
         return;
     }
-    if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("Click a variation to play it, Ctrl-click to select several, click between them to play from "
-                          "there, drag onto the tree");
+    ui::ItemTipText("Click a variation to play it, Ctrl-click to select several, click between them to play from "
+                    "there, drag onto the tree");
     if (ImGui::IsItemActivated() && g.an.length > 0.0) {
         const double t = std::clamp((ImGui::GetIO().MousePos.x - p.x) / w, 0.0f, 1.0f) * g.an.length;
         const int    fi = g.an.ready ? FrameAt(g.an.frames, t) : -1;
@@ -1423,7 +1412,7 @@ void DrawFooter(const ui::Section& s)
                          ui::kMuted, msg);
         ImGui::SetCursorScreenPos(ImVec2(c.x + std::max(0.0f, room - cw), line_y));
         if (ui::SolidButton("Cancel")) CancelPending();
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Stop reading: no sound is added");
+        ui::ItemTipText("Stop reading: no sound is added");
         return;
     }
     bool                   variations = false;

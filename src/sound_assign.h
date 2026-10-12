@@ -50,6 +50,8 @@ struct BodyPart {
     bool                  has_category = false;         // feet / hands: an auto marker category
     AutoCategory          category = AutoCategory::Feet;
     std::vector<PartType> types;  // in order; "rules" last
+    std::string           roles;      // its roles as a kit sheet lists them: "heels, toes, knees, legs"
+    std::string           role_word;  // "foot": "the bone rules on foot roles"
 };
 
 // The table: feet, hands, body, other.
@@ -145,9 +147,10 @@ bool SetAssignValueIn(std::vector<SoundAssign>& list, const std::vector<std::str
                       const std::string& group_uid, const std::string& value_uid);
 // True when the part (its key alone or any "part.type") has a library state other than inherit.
 bool PartIsSet(const std::vector<SoundAssign>& list, const std::string& part);
-// Adopts a library's kit for `part`: its key gets the library (kit flag). Nothing happens when the
-// part is already set in the list, unless `replace` (the part's own and its types' library states
-// are cleared first). True when the list changed.
+// True when the part's own key ("feet", not a "feet.step") has a library state other than inherit.
+bool PartKeySet(const std::vector<SoundAssign>& list, const std::string& part);
+// Adopts a library's kit for `part`: its own key gets the library (kit flag); its types are left as
+// they are. Nothing happens when that key is already set, unless `replace`. True when the list changed.
 bool AdoptKitIn(std::vector<SoundAssign>& list, const std::string& part, const std::string& library_uid,
                 bool replace = false);
 // Sets a library's kit: the known part ids, deduplicated, in table order. True when it changed.

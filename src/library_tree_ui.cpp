@@ -1344,7 +1344,9 @@ void LibraryMenuItems(const SoundLibrary& lib, std::string* to_delete, bool rena
                 Later([uid, parts] {
                     Gesture("Set library kit", [&](SoundStore& st) {
                         SoundLibrary* l = FindLibrary(st, uid);
-                        return l && SetKitParts(*l, parts);
+                        if (!l || !SetKitParts(*l, parts)) return false;
+                        l->kit_offered = true;  // set by hand here: no "use it?" offer later
+                        return true;
                     });
                 });
             }

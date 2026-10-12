@@ -388,10 +388,13 @@ static void TestEdits()
     CHECK(FindAssign(list, "feet")->kit && FindAssign(list, "feet")->library == "KIT1");
     CHECK(!AdoptKitIn(list, "feet", "KIT2"));
     CHECK(FindAssign(list, "feet")->library == "KIT1");
-    SetAssignLibraryIn(list, {"hands.grab"}, LibState::Library, "L1");  // a typed one counts as "set"
-    CHECK(!AdoptKitIn(list, "hands", "KIT2"));
-    CHECK(AdoptKitIn(list, "hands", "KIT2", true));
-    CHECK(FindAssign(list, "hands")->library == "KIT2" && FindAssign(list, "hands.grab") == nullptr);
+    SetAssignLibraryIn(list, {"hands.grab"}, LibState::Library, "L1");  // a typed one is not the part's key
+    CHECK(PartIsSet(list, "hands") && !PartKeySet(list, "hands"));
+    CHECK(AdoptKitIn(list, "hands", "KIT2"));
+    CHECK(FindAssign(list, "hands")->library == "KIT2" && FindAssign(list, "hands.grab")->library == "L1");  // types kept
+    CHECK(!AdoptKitIn(list, "hands", "KIT3"));
+    CHECK(AdoptKitIn(list, "hands", "KIT3", true) && FindAssign(list, "hands")->library == "KIT3" &&
+          FindAssign(list, "hands.grab")->library == "L1");
     CHECK(PartIsSet(list, "hands") && !PartIsSet(list, "body"));
     // Setting a library by hand clears the kit flag.
     CHECK(SetAssignLibraryIn(list, {"feet"}, LibState::Library, "L9"));

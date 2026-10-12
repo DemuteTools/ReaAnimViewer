@@ -829,10 +829,8 @@ std::vector<Seg> KitRowSegs(const std::vector<KitPart>& parts)
 
 std::string KitPartRoles(const std::string& part)
 {
-    if (part == "feet") return "heels, toes, knees, legs";
-    if (part == "hands") return "hands, elbows, shoulders";
-    if (part == "body") return "hips, spine, chest, neck, head";
-    return "other bones";
+    const BodyPart* bp = FindBodyPart(part);
+    return bp && !bp->roles.empty() ? bp->roles : std::string("other bones");
 }
 
 std::string KitPartWhat(const std::string& part)
@@ -842,7 +840,7 @@ std::string KitPartWhat(const std::string& part)
     if (bp)
         for (const PartType& t : bp->types)
             if (t.is_auto) autos.push_back(t.label);
-    const std::string roles = part == "feet" ? "foot" : part == "hands" ? "hand" : part == "body" ? "hips and spine" : "other bone";
+    const std::string roles = bp && !bp->role_word.empty() ? bp->role_word : std::string("other bone");
     if (autos.empty()) return "The bone rules on " + roles + " roles";
     std::string s;
     for (size_t i = 0; i < autos.size(); ++i) s += (i == 0 ? "" : i + 1 == autos.size() ? " and " : ", ") + autos[i];
@@ -862,7 +860,7 @@ std::vector<std::string> KitOfferParts(const SoundStore& store, const SoundLibra
     std::vector<std::string> out;
     if (lib.kit.empty() || lib.kit_offered) return out;
     for (const std::string& part : lib.kit)
-        if (!PartIsSet(store.project, part)) out.push_back(part);
+        if (!PartKeySet(store.project, part)) out.push_back(part);
     return out;
 }
 

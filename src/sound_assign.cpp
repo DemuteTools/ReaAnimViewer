@@ -52,6 +52,8 @@ std::vector<BodyPart> BuildParts()
     for (AutoType t : {AutoType::Step, AutoType::LiftOff, AutoType::Slide, AutoType::Pivot})
         feet.types.push_back(MakeAutoType(t));
     feet.types.push_back(RulesType());
+    feet.roles = "heels, toes, knees, legs";
+    feet.role_word = "foot";
     v.push_back(feet);
     BodyPart hands;
     hands.id = "hands";
@@ -61,18 +63,24 @@ std::vector<BodyPart> BuildParts()
     hands.category = AutoCategory::Hands;
     for (AutoType t : {AutoType::Grab, AutoType::Release, AutoType::HandPivot}) hands.types.push_back(MakeAutoType(t));
     hands.types.push_back(RulesType());
+    hands.roles = "hands, elbows, shoulders";
+    hands.role_word = "hand";
     v.push_back(hands);
     BodyPart body;
     body.id = "body";
     body.label = "Hips & spine";
     body.group = RoleGroup::Body;
     body.types.push_back(RulesType());
+    body.roles = "hips, spine, chest, neck, head";
+    body.role_word = "hips and spine";
     v.push_back(body);
     BodyPart other;
     other.id = "other";
     other.label = "Other bones";
     other.group = RoleGroup::Body;  // custom roles and raw bones: never found by group
     other.types.push_back(RulesType());
+    other.roles = "other bones";
+    other.role_word = "other bone";
     v.push_back(other);
     return v;
 }
@@ -486,19 +494,17 @@ bool PartIsSet(const std::vector<SoundAssign>& list, const std::string& part)
     return false;
 }
 
+bool PartKeySet(const std::vector<SoundAssign>& list, const std::string& part)
+{
+    const SoundAssign* a = FindAssign(list, part);
+    return a && a->state != LibState::Inherit;
+}
+
 bool AdoptKitIn(std::vector<SoundAssign>& list, const std::string& part, const std::string& library_uid, bool replace)
 {
     if (part.empty() || library_uid.empty()) return false;
-    if (PartIsSet(list, part)) {
-        if (!replace) return false;
-        std::vector<std::string> keys;
-        for (const SoundAssign& a : list) {
-            std::string p;
-            SplitAssignKey(a.key, &p, nullptr);
-            if (p == part && a.key != part && a.state != LibState::Inherit) keys.push_back(a.key);
-        }
-        SetAssignLibraryIn(list, keys, LibState::Inherit, std::string());
-    }
+    // Review 13-15c (the mockup's adopt): only the part's own key; its types ("feet.slide") are left as set.
+    if (PartKeySet(list, part) && !replace) return false;
     return SetAssignLibraryIn(list, {part}, LibState::Library, library_uid, true);
 }
 

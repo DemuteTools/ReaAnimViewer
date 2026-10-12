@@ -101,10 +101,14 @@ struct State {
     char          name_buf[96] = {};    // the character sheet's Name field
     std::string   name_for;             // the character (its row key) name_buf holds the name of
     bool          name_active = false;
+    CharacterRef  name_ref;             // review 13-15c: the character being renamed, its name before
+    std::string   name_orig;
+    ImVec2        name_min, name_max;   // the field's rect (a click outside it ends the typing)
+    int           name_frame = -1;      // the frame the field was last drawn
     int           rigs_count = -1;      // the project state, and the time, the rig list was read at
     double        rigs_time = 0.0;
     std::vector<av::RigIn> rigs;
-    std::string   kit_char;             // the kit sheet's character picker (a character row key)
+    std::string   kit_skel, kit_model;  // the kit sheet's character picker (its rig: a key changes when stored)
 };
 State g;
 
@@ -384,8 +388,10 @@ void PickKeyLibrary(const Frame& f, const std::vector<const av::Target*>& sel, c
     const std::string  where = project ? std::string("Project") : f.key.scope_ch->name;
     const int          n = static_cast<int>(sel.size());
     PickSoundGesture([project, ref, keys, state, uid, what, where, n]() {
+        const int         c0 = GetProjectStateChangeCount(nullptr);
         const SoundReport rep = project ? SetProjectAssignLibrary(keys, state, uid) : SetCharacterAssignLibrary(ref, keys, state, uid);
-        SetLast(project ? "Set project sound default" : "Set character library", where, what, n);
+        if (GetProjectStateChangeCount(nullptr) != c0)
+            SetLast(project ? "Set project sound default" : "Set character library", where, what, n);
         return rep;
     });
 }
@@ -406,8 +412,10 @@ void PickKeyValue(const Frame& f, const std::vector<const av::Target*>& sel, con
     const std::string  where = project ? std::string("Project") : f.key.scope_ch->name;
     const int          n = static_cast<int>(sel.size());
     PickSoundGesture([project, ref, keys, group, value, what, where, n]() {
+        const int         c0 = GetProjectStateChangeCount(nullptr);
         const SoundReport rep = project ? SetProjectAssignValue(keys, group, value) : SetCharacterAssignValue(ref, keys, group, value);
-        SetLast(project ? "Set project sound value" : "Set character sound value", where, what, n);
+        if (GetProjectStateChangeCount(nullptr) != c0)
+            SetLast(project ? "Set project sound value" : "Set character sound value", where, what, n);
         return rep;
     });
 }
@@ -1351,8 +1359,9 @@ void PickAdopt(const std::string& lib_uid, const std::string& part, const Charac
                const std::string& what)
 {
     PickSoundGesture([lib_uid, part, ref, replace, where, what]() {
+        const int         c0 = GetProjectStateChangeCount(nullptr);
         const SoundReport rep = AdoptKit(lib_uid, part, ref, replace);
-        SetLast("Use library kit", where, what, 1);
+        if (GetProjectStateChangeCount(nullptr) != c0) SetLast("Use library kit", where, what, 1);
         return rep;
     });
 }
@@ -1378,7 +1387,7 @@ void DrawKitDetails(const Frame& f)
         ui::SectionOpts   o;
         o.suffix = roles.c_str();
         if (ui::BeginSection(s, PartLabel(kp.part).c_str(), o)) {
-            const bool taken = kp.state != av::KitPart::State::ProjectDefault && PartIsSet(f.store->project, kp.part);
+            const bool taken = kp.state != av::KitPart::State::ProjectDefault && PartKeySet(f.store->project, kp.part);
             if (kp.state == av::KitPart::State::ProjectDefault) {
                 ui::Tag("project default", ui::TagTone::Project);
             } else if (taken) {
@@ -1401,12 +1410,15 @@ void DrawKitDetails(const Frame& f)
             // "Use for this character": the picked character gets the library for this part.
             const av::CharEntry* pick = nullptr;
             for (const av::CharEntry& c : f.key.chars)
-                if (c.key == g.kit_char) pick = &c;
+                if (c.ch.skeleton == g.kit_skel && c.ch.model == g.kit_model) pick = &c;
             if (!pick && !f.key.chars.empty()) pick = &f.key.chars[static_cast<size_t>(std::max(0, f.key.cur))];
             if (!pick) ImGui::BeginDisabled();
             if (ui::BeginComboStyled("##kitchar", pick ? pick->ch.name.c_str() : "No character yet", ui::Dp(150.0f))) {
                 for (const av::CharEntry& c : f.key.chars)
-                    if (ImGui::Selectable((c.ch.name + "##" + c.key).c_str(), pick == &c)) g.kit_char = c.key;
+                    if (ImGui::Selectable((c.ch.name + "##" + c.key).c_str(), pick == &c)) {
+                        g.kit_skel = c.ch.skeleton;
+                        g.kit_model = c.ch.model;
+                    }
                 ui::EndComboStyled();
             }
             ui::SameLineIfFits(ui::ButtonWidth("Use for this character##usechar"));
@@ -1437,6 +1449,24 @@ void GoToKey(const std::string& key)
     g.nav_scroll = true;
 }
 
+// Ends the Name field's typing: a changed, non-empty name renames the character (one undo point).
+void CommitName()
+{
+    if (!g.name_active) return;
+    g.name_active = false;
+    std::string name = g.name_buf;
+    while (!name.empty() && name.back() == ' ') name.pop_back();
+    while (!name.empty() && name.front() == ' ') name.erase(name.begin());
+    if (name.empty() || name == g.name_orig) return;  // the field reads the name again next frame
+    const CharacterRef ref = g.name_ref;
+    PickSoundGesture([ref, name]() {
+        const int         c0 = GetProjectStateChangeCount(nullptr);
+        const SoundReport rep = RenameCharacterRef(ref, name);
+        if (GetProjectStateChangeCount(nullptr) != c0) SetLast("Rename character", name, "Name = " + name, 1);
+        return rep;
+    });
+}
+
 void DrawCharDetails(const Frame& f)
 {
     const av::CharEntry* ce = nullptr;
@@ -1451,30 +1481,27 @@ void DrawCharDetails(const Frame& f)
     ui::ToneText("rig " + av::RigSig(ce->ch.skeleton) + kDot + std::to_string(ce->items) + (ce->items == 1 ? " item" : " items") +
                      " in this project",
                  ui::kMuted, true);
-    // Name: Enter or leaving the field renames it (one undo point); empty puts the name back.
+    // Name: Enter or leaving the field renames it (one undo point); empty puts the name back. Review 13-15c:
+    // leaving it by a click on another row, another scope or closing the window renames it too (CommitName).
     {
-        if (g.name_for != ce->key || !g.name_active) {
+        if (!g.name_active) {
             g.name_for = ce->key;
             std::snprintf(g.name_buf, sizeof(g.name_buf), "%s", ce->ch.name.c_str());
         }
         const float w = ui::LabelRow("Name", ui::Dp(140.0f));
         ui::TextField("##charname", "Character name", g.name_buf, sizeof(g.name_buf), w,
                       ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
-        g.name_active = ImGui::IsItemActive();
-        if (ImGui::IsItemDeactivated()) {
-            std::string name = g.name_buf;
-            while (!name.empty() && name.back() == ' ') name.pop_back();
-            while (!name.empty() && name.front() == ' ') name.erase(name.begin());
-            if (name.empty()) {
-                std::snprintf(g.name_buf, sizeof(g.name_buf), "%s", ce->ch.name.c_str());
-            } else if (name != ce->ch.name) {
-                const CharacterRef ref = ce->ref;
-                PickSoundGesture([ref, name]() {
-                    const SoundReport rep = RenameCharacterRef(ref, name);
-                    SetLast("Rename character", name, "Name = " + name, 1);
-                    return rep;
-                });
+        g.name_min = ImGui::GetItemRectMin();
+        g.name_max = ImGui::GetItemRectMax();
+        g.name_frame = ImGui::GetFrameCount();
+        if (ImGui::IsItemActive()) {
+            if (!g.name_active) {
+                g.name_ref = ce->ref;
+                g.name_orig = ce->ch.name;
             }
+            g.name_active = true;
+        } else if (g.name_active) {
+            CommitName();
         }
     }
     ui::LabelRow("Recognised by", ui::Dp(140.0f));
@@ -1501,8 +1528,10 @@ void DrawCharDetails(const Frame& f)
             if (ui::SolidButton("Split by model file...##split") && can) {
                 const CharacterRef ref = ce->ref;
                 PickSoundGesture([ref]() {
+                    const int         c0 = GetProjectStateChangeCount(nullptr);
                     const SoundReport rep = SplitRig(ref);
-                    SetLast("Split character", ref.name, "one character per model file", 1);
+                    if (GetProjectStateChangeCount(nullptr) != c0)
+                        SetLast("Split character", ref.name, "one character per model file", 1);
                     return rep;
                 });
             }
@@ -2236,7 +2265,11 @@ bool TaggingAssignWindowOpen()
 
 void DrawAssignWindow(const TaggingModel& m)
 {
-    if (!g.open || !ImGui::GetCurrentContext()) return;
+    if (!ImGui::GetCurrentContext()) return;
+    if (!g.open) {
+        CommitName();  // closed while typing a name: it is kept
+        return;
+    }
     if (m.item != g.last_model_item) {  // the Tagging view moved to another item: the window follows it again
         g.last_model_item = m.item;
         g.follow = true;
@@ -2264,6 +2297,9 @@ void DrawAssignWindow(const TaggingModel& m)
         g.size = ImGui::GetWindowSize();
         const bool focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
         if (focused) g.focused_frame = frame;
+        // A click outside the Name field ends its typing before the click changes the selection.
+        if (g.name_active && ImGui::IsMouseClicked(0) && !ImGui::IsMouseHoveringRect(g.name_min, g.name_max, false))
+            CommitName();
         if (g.request && g.scope != kScopeItem) SwitchScope(kScopeItem);  // the strip's Assign... opens the Item scope
         Frame f;
         bool  ok = false;
@@ -2355,6 +2391,7 @@ void DrawAssignWindow(const TaggingModel& m)
         }
         DrawFooter();
         SaveRectIfChanged();
+        if (g.name_active && g.name_frame != frame) CommitName();  // the sheet is gone (scope, selection): kept
     }
     ui::EndMovableCard();
 }

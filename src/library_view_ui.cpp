@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <set>
+#include <map>
 
 #include <imgui.h>
 
@@ -228,14 +230,28 @@ void DrawToast()
 void DrawKitOffer(float top)
 {
     const SoundStore& store = GetSoundStore(nullptr);
+    // Review 13-15c: offered only when a library is added to the project (imported, from the User Library):
+    // the libraries the project had when this session first saw it, or that had nothing free when they came,
+    // are never offered later out of context (a part cleared, an undo).
+    static std::map<ReaProject*, std::set<std::string>> known;
+    ReaProject* proj = EnumProjects(-1, nullptr, 0);
+    auto        seen = known.find(proj);
+    if (seen == known.end()) {
+        std::set<std::string>& k = known[proj];
+        for (const SoundLibrary& l : store.libraries) k.insert(l.uid);
+        return;
+    }
     const SoundLibrary* lib = nullptr;
     std::vector<std::string> free_parts;
     for (const SoundLibrary& l : store.libraries) {
+        if (seen->second.count(l.uid)) continue;
         free_parts = assign::KitOfferParts(store, l);
-        if (!free_parts.empty()) {
-            lib = &l;
-            break;
+        if (free_parts.empty()) {
+            seen->second.insert(l.uid);  // nothing to offer when it came: never later
+            continue;
         }
+        lib = &l;
+        break;
     }
     if (!lib) return;
     std::string parts;
@@ -253,6 +269,7 @@ void DrawKitOffer(float top)
         const bool later = ui::SolidButton("Not now##kitoffer");
         if (use || later) {
             ui::EndToast();
+            seen->second.insert(uid);
             OfferKit(uid, use);  // (the store is replaced: nothing above is read again)
             return;
         }

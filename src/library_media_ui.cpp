@@ -1149,9 +1149,6 @@ void DrawResults(float h)
             const bool dbl = clicked && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
             const ImVec2 star_c(p.x + 9.0f, p.y + 3.0f + lh * 0.5f);
             const bool on_star = ImGui::GetIO().MousePos.x < p.x + 18.0f;
-            if (ImGui::IsItemHovered() && !ImGui::GetDragDropPayload())
-                ImGui::SetTooltip("%s", miss ? (f.path + "\nNot found on this PC").c_str()
-                                             : (f.path + "\nclick to listen, drag onto the tree, double-click to use").c_str());
             if (clicked && on_star) {
                 if (!dbl) ToggleFav(f.path);  // the double-click's second press would undo the first
             } else if (dbl && !miss) {

@@ -41,6 +41,7 @@
 #include "video_view.h"  // TaggingViewActive, QueueVideoSeek (the playhead move runs outside the frame)
 // Epic 13 (D20, 13-2): the sound hook sites (13-8 Populate, 13-10 Attach).
 #include "tagging_attach_ui.h"
+#include "tagging_assign_ui.h"
 #include "tagging_populate_ui.h"
 #include "tagging_sound_context.h"
 
@@ -3087,6 +3088,12 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
 
     // The rules.
     ImGui::Dummy(ImVec2(0.0f, ui::Dp(2.0f)));
+    // 13-15b: the section folds, as the mockup's strip (its Auto detection section already does).
+    static bool s_rules_folded = false;
+    if (ui::Chevron("##rulesfold", !s_rules_folded)) s_rules_folded = !s_rules_folded;
+    ui::ItemTipText(s_rules_folded ? "Show the rules" : "Fold the rules");
+    ImGui::SameLine();
+    ImGui::AlignTextToFramePadding();
     ui::Caption("Rules");
     // 13-14: the theme's dashed add button (its natural width: the label and 10 px each side).
     ImGui::SameLine(std::max(ImGui::GetCursorPosX(), ImGui::GetContentRegionMax().x - ImGui::CalcTextSize("+ Rule").x - ui::Dp(20.0f)));
@@ -3104,7 +3111,7 @@ void DrawHeader(const TaggingModel& m, const ItemRules& rules)
     }
     const int nb = static_cast<int>(rules.blocks.size());
     int do_toggle = -1, do_dup = -1, do_del = -1;
-    for (int b = 0; b < nb; ++b) {
+    for (int b = 0; b < (s_rules_folded ? 0 : nb); ++b) {
         const Block& blk = rules.blocks[static_cast<size_t>(b)];
         if (IsAutoBlock(blk)) continue;  // story 10-8b: the Auto detection section's
         ImGui::PushID(b);
@@ -4584,7 +4591,6 @@ void DrawTaggingPanel(float x, float y, float w, float h)
                     ImGui::Dummy(ImVec2(0.0f, ui::Dp(4.0f)));
                 }
                 DrawInspector(rules);
-                DrawItemSoundValuesSection(SoundContextOf(m, rules, g_sel));  // Epic 13 (13-8)
             }
             ImGui::EndChild();
             ImGui::Dummy(ImVec2(0.0f, ui::Dp(2.0f)));
@@ -4596,7 +4602,8 @@ void DrawTaggingPanel(float x, float y, float w, float h)
     ImGui::End();
     ImGui::PopStyleColor(2);
     RunLater();
-    RunPickedSoundGestures();  // 13-8 fix: the sound menus' picks, after the widgets
+    DrawAssignWindow(m);  // 13-15b: the Sound assignment window, over the panel
+    RunPickedSoundGestures();  // 13-8 fix: the sound menus' and the window's picks, after the widgets
 }
 
 }  // namespace rav

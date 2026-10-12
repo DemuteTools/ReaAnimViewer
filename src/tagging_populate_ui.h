@@ -8,32 +8,35 @@
 
 #ifdef _WIN32
 
+#include <functional>
 #include <string>
 #include <vector>
 
 #include "event_list.h"
 #include "rule_record.h"  // ItemRules
+#include "sound_model.h"   // SoundReport
 #include "tagging_sound_context.h"
 
 struct ImDrawList;
 
 namespace rav {
 
-// Under the selected rule's settings: its library and values.
+// Under the selected rule's settings (13-15b): its sound as one summary line and an Assign... button that opens the
+// Sound assignment window (tagging_assign_ui.h) on the rule (both sides of its marker pair).
 void DrawRuleSoundSection(const TaggingSoundContext& ctx);
-// Antho 2026-10-12: in the Auto detection section, under a marker type's row (or one of its
-// per-side rows): the sound of these auto marker keys (sound_auto_assign.h): Library menu, then one
-// compact value menu per Switch Group the library uses, wrapping to the width. The item's rule
-// when it has those markers, else the type's own (what Detect gives). Nothing without a library.
+// In the Auto detection section, under a marker type's row (or one of its per-side rows): the sound of these auto
+// marker keys (sound_auto_assign.h) as a summary line and Assign.... With no block of those keys on the item yet
+// the line shows what a new one would get and Assign... is off ("Detect first, or set it at Project / Character level").
 void DrawAutoSoundRow(MediaItem* item, const ItemRules& rules, const std::vector<std::string>& keys);
-// Under the inspector: the item-level Switch values.
-void DrawItemSoundValuesSection(const TaggingSoundContext& ctx);
 // At the end of the event inspector: the event's sounds, overrides and draws.
 void DrawEventSoundSection(const TaggingSoundContext& ctx, const ShownEvent& e);
 // Antho 2026-10-12 (13-8 fix): the sound gestures the menus above picked this frame, run once the
 // panel's widgets are drawn (a gesture may replace the sound store those menus list). Each is one
 // undo point, as before.
 void RunPickedSoundGestures();
+// 13-15b: queues a gesture picked in the assignment window with the same rule: it holds its own copies and
+// runs after the widgets (RunPickedSoundGestures), its report remembered like the menus' ones.
+void PickSoundGesture(std::function<SoundReport()> gesture);
 // True when the footer shows Populate (D9: Commit is then a SolidButton).
 bool SoundFooterVisible(const TaggingSoundContext& ctx);
 // The extra footer height (px) the sound rows take, 0 when hidden.

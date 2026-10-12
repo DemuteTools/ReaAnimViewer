@@ -50,6 +50,19 @@ SoundReport SetAutoMarkerLibrary(MediaItem* item, std::vector<std::string> keys,
 // The same for one rule-level Switch value ("" = inherit): one undo point "RAV: Set sound value".
 SoundReport SetAutoMarkerValue(MediaItem* item, std::vector<std::string> keys, std::string group_uid,
                                std::string value_uid);
+// ---- 13-15b: the assignment window's Item scope --------------------------------------------------
+//
+// Several rules of the item in ONE undo point, pool-wide, their populated events re-placed. `rids` are the
+// rules' ids; `blocks` are the item's rules that have no id yet (block indices): they get one first.
+// "RAV: Set rule library" / "RAV: Set sound value". Nothing happens (no undo point) when nothing changes
+// (the rids are not checked: an empty list does nothing).
+SoundReport SetRulesAssignLibrary(MediaItem* item, std::vector<std::string> rids, LibState state, std::string library_uid,
+                                  std::vector<int> blocks = {});
+SoundReport SetRulesAssignValue(MediaItem* item, std::vector<std::string> rids, std::string group_uid,
+                                std::string value_uid, std::vector<int> blocks = {});
+// The RAV items of the project (the assignment window's item picker).
+std::vector<MediaItem*> ProjectRavItems();
+
 // 13-8 fix: these take their uids by value: a caller's reference into the sound store
 // would dangle once the gesture replaces the store (ModifySoundStore).
 

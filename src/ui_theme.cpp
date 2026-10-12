@@ -1605,6 +1605,29 @@ void EndFloatingCard()
     ImGui::End();
 }
 
+bool BeginMovableCard(const char* id, int window_flags)
+{
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, Col(kRaised));
+    ImGui::PushStyleColor(ImGuiCol_Border, Col(kStrokeStrong));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(Dp(8.0f), Dp(8.0f)));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, Dp(kRadiusMd));
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
+                                   ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
+                                   ImGuiWindowFlags_NoScrollWithMouse | window_flags;
+    const bool shown = ImGui::Begin(id, nullptr, flags);
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+    if (shown) WindowShadow();
+    PushThemeMetrics();  // whatever Begin returned: EndMovableCard always pops them
+    return shown;
+}
+
+void EndMovableCard()
+{
+    PopThemeMetrics();
+    ImGui::End();
+}
+
 bool BeginOverlay(const char* id, ImVec2 pos, ImVec2 pivot, int extra_flags)
 {
     ImGui::SetNextWindowPos(pos, ImGuiCond_Always, pivot);
@@ -1856,6 +1879,40 @@ bool Checkbox(const char* label, bool* v)
         dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(a.x + box + gap, a.y + (fh - ImGui::GetTextLineHeight()) * 0.5f),
                     Ink(kText), label, end, wrap);
     return clicked;
+}
+
+bool TriCheckbox(const char* id, int state)
+{
+    const float box = Dp(14.0f);
+    const float fh = ImGui::GetFrameHeight();
+    const bool  clicked = ImGui::InvisibleButton(id, ImVec2(box, std::max(fh, box)));
+    const bool  hovered = ImGui::IsItemHovered();
+    const ImVec2 a = ImGui::GetItemRectMin();
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const float  by = std::floor(a.y + (std::max(fh, box) - box) * 0.5f);
+    const ImVec2 b0(a.x, by), b1(a.x + box, by + box);
+    const float  r = Dp(3.0f), k = box / 14.0f;
+    if (state != 0) {
+        dl->AddRectFilled(b0, b1, Ink(hovered ? kPrimaryHover : kAccent), r);
+        if (state == 2) {  // half-ticked: a dash
+            const float y = std::floor(b0.y + box * 0.5f) + 0.5f;
+            dl->AddLine(ImVec2(b0.x + 3.5f * k, y), ImVec2(b1.x - 3.5f * k, y), Ink(kWhite), std::max(1.5f, 1.8f * k));
+        } else {
+            const ImVec2 tick[3] = {ImVec2(b0.x + 3.2f * k, b0.y + 7.2f * k), ImVec2(b0.x + 5.9f * k, b0.y + 9.9f * k),
+                                    ImVec2(b0.x + 10.8f * k, b0.y + 4.2f * k)};
+            dl->AddPolyline(tick, 3, Ink(kWhite), ImDrawFlags_None, std::max(1.5f, 1.8f * k));
+        }
+    } else {
+        dl->AddRectFilled(b0, b1, Ink(kBg), r);
+        dl->AddRect(b0, b1, Ink(hovered ? kFrameHover : kStrokeStrong), r);
+    }
+    return clicked;
+}
+
+ImU32 LibDot(unsigned int color)
+{
+    if (color & 0x1000000u) return IM_COL32((color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF, 0xFF);
+    return kAccent;
 }
 
 // ---- rows (13-7 B10) ---------------------------------------------------------------------

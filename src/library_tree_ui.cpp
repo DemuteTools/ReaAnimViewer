@@ -267,12 +267,8 @@ void CentredGlyph(ImDrawList* dl, ImFont* font, ImVec2 a, ImVec2 b, ImU32 col, c
     ui::AddTextIn(dl, font, ImVec2(std::floor((a.x + b.x - ts.x) * 0.5f), std::floor((a.y + b.y - ts.y) * 0.5f)), col, glyph);
 }
 
-// A library's colour (colour 0 = the accent).
-ImU32 LibDot(uint32_t color)
-{
-    if (color & 0x1000000u) return IM_COL32((color >> 16) & 0xFF, (color >> 8) & 0xFF, color & 0xFF, 0xFF);
-    return ui::kAccent;
-}
+// A library's colour (colour 0 = the accent): the theme's (13-15b moved it there, the assignment window draws it too).
+using ui::LibDot;
 
 // 13-7a: the layout helpers are the shared ones (ui_flow.h): rows of buttons wrap, labels and
 // buttons shrink with an ellipsis, nothing is cut off by a narrow column.

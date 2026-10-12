@@ -245,3 +245,11 @@ add_test(NAME ui_glyphs COMMAND ui_glyphs_test)
 add_executable(ui_flow_test ui_flow_test.cpp ../src/ui_flow_math.cpp)
 target_include_directories(ui_flow_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME ui_flow COMMAND ui_flow_test)
+# Story 13-15b -- src/assign_view_model.h (the sound assignment window's targets, summaries, selection)
+add_executable(assign_view_model_test assign_view_model_test.cpp ../src/assign_view_model.cpp ../src/sound_assign.cpp
+               ../src/sound_auto_assign.cpp ../src/sound_populate_plan.cpp ../src/sound_switch.cpp ../src/sound_draw.cpp
+               ../src/sound_place_plan.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp
+               ../src/auto_detect.cpp ../src/motion_physics.cpp ../src/bone_events.cpp ../src/event_list.cpp
+               ../src/tagging_signal.cpp)
+target_include_directories(assign_view_model_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME assign_view_model COMMAND assign_view_model_test)

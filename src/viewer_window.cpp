@@ -47,6 +47,7 @@
 #include "shortcuts.h"         // spec 11-fb-3: the viewer's keys, rebindable
 #include "shortcuts_ui.h"      // spec 11-fb-3: the keyboard icon + Shortcuts popup
 #include "skeleton_view.h"     // spec 10-3c: the Model / Skeleton switch and its overlay
+#include "tagging_assign_ui.h"  // 13-15b: the Sound assignment window takes the keys while it has the focus
 #include "tagging_session.h"   // Story 10-3: the Tagging view's model (item, rules, detection)
 #include "tag_markers.h"       // Story 10-4: the markers option (Take / Project / Both)
 #include "tagging_view_ui.h"   // Story 10-3: its curve strip and panel
@@ -1992,7 +1993,7 @@ bool ImGuiWantsMouse()
 bool TextInputNow()
 {
     return (g_imgui_ready && ImGui::GetIO().WantTextInput) ||
-           (TaggingViewActive() && (TaggingPresetMenuOpen() || TaggingRolesWindowOpen()));
+           (TaggingViewActive() && (TaggingPresetMenuOpen() || TaggingRolesWindowOpen() || TaggingAssignWindowOpen()));
 }
 bool ViewerTakesCharNow() { return ViewerTakesChar(g_key_route, ShortcutRecordingId() >= 0, TextInputNow()); }
 

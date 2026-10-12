@@ -1002,6 +1002,87 @@ SoundReport SetAutoMarkerValue(MediaItem* item, std::vector<std::string> keys, s
     return rep;
 }
 
+// ---- 13-15b: several rules at once (the assignment window's Item scope) ---------------------------
+
+namespace {
+
+// The rids of `rids` plus those of the item's `blocks` (given an id first), each once. Inside the caller's undo scope.
+std::vector<std::string> RulesRidsFor(MediaItem* item, std::vector<std::string> rids, const std::vector<int>& blocks)
+{
+    if (!blocks.empty()) {
+        EnsureRids(item);
+        for (int b : blocks) {
+            const std::string rid = RidOf(item, b);
+            if (!rid.empty()) rids.push_back(rid);
+        }
+    }
+    std::vector<std::string> out;
+    for (const std::string& r : rids)
+        if (!r.empty() && std::find(out.begin(), out.end(), r) == out.end()) out.push_back(r);
+    return out;
+}
+
+// `edit` on each pool member's record, then their populated events of those rules re-placed.
+void EditRules(MediaItem* item, const std::vector<std::string>& rids, const SoundStore& store,
+               const std::function<bool(ItemSounds&)>& edit, SoundReport& rep)
+{
+    const std::vector<MediaItem*> members = WithPoolMembers({item});
+    for (MediaItem* m : members) ModifyItemSounds(m, nullptr, edit);
+    PopOpts o;
+    o.only_populated = true;
+    o.rids = rids;
+    for (MediaItem* m : members) PopulateOne(m, store, o, rep, nullptr);
+}
+
+}  // namespace
+
+SoundReport SetRulesAssignLibrary(MediaItem* item, std::vector<std::string> rids, LibState state, std::string library_uid,
+                                  std::vector<int> blocks)
+{
+    SoundReport rep;
+    try {
+        if (!item || !RavTakeOf(item) || (rids.empty() && blocks.empty())) return rep;
+        const SoundStore store = GetSoundStore(nullptr);
+        {
+            SoundUndoScope undo(nullptr, "RAV: Set rule library");
+            ItemIndexScope index;
+            const std::vector<std::string> all = RulesRidsFor(item, std::move(rids), blocks);
+            if (all.empty()) return rep;
+            EditRules(item, all, store, [&](ItemSounds& s) { return SetRulesLibrary(s, all, state, library_uid); }, rep);
+        }
+        UpdateArrange();
+    } catch (...) {
+        AddLine(rep, ReportKind::Blocked, "Internal error: the gesture stopped part way (Ctrl+Z undoes it)", "", "", 0.0);
+    }
+    return rep;
+}
+
+SoundReport SetRulesAssignValue(MediaItem* item, std::vector<std::string> rids, std::string group_uid,
+                                std::string value_uid, std::vector<int> blocks)
+{
+    SoundReport rep;
+    try {
+        if (!item || !RavTakeOf(item) || group_uid.empty() || (rids.empty() && blocks.empty())) return rep;
+        const SoundStore store = GetSoundStore(nullptr);
+        {
+            SoundUndoScope undo(nullptr, "RAV: Set sound value");
+            ItemIndexScope index;
+            const std::vector<std::string> all = RulesRidsFor(item, std::move(rids), blocks);
+            if (all.empty()) return rep;
+            EditRules(item, all, store, [&](ItemSounds& s) { return SetRulesValue(s, all, group_uid, value_uid); }, rep);
+        }
+        UpdateArrange();
+    } catch (...) {
+        AddLine(rep, ReportKind::Blocked, "Internal error: the gesture stopped part way (Ctrl+Z undoes it)", "", "", 0.0);
+    }
+    return rep;
+}
+
+std::vector<MediaItem*> ProjectRavItems()
+{
+    return AllRavItems();
+}
+
 // ---- 13-15a: Project and Character assignments ---------------------------------------------------
 
 SoundReport SetProjectAssignLibrary(std::vector<std::string> keys, LibState state, std::string library_uid)

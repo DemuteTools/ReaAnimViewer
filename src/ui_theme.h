@@ -579,6 +579,13 @@ bool SelectField(const char* id, const char* label, const char* value, const Sel
 // fill + white tick), the label 6 px after it, wrapped within the room left; box and label
 // both toggle. Returns true when *v changed.
 bool Checkbox(const char* label, bool* v);
+// 13-15b: a Checkbox's box with no label that can also be half-ticked (state 2: a dash), for a parent row
+// whose children are partly selected. state 0 off, 1 on, 2 mixed. True when clicked (the caller decides what
+// the next state is: a mixed box usually ticks everything).
+bool TriCheckbox(const char* id, int state);
+// A library's colour (Block::color form: 0x1000000 | 0xRRGGBB; 0 = the accent): its dot's ink (13-15b: moved
+// here from the Library view, the assignment window draws it too).
+ImU32 LibDot(unsigned int color);
 
 // 13-7 (B10) rows. RowBackground draws a row's look behind custom content (any list):
 //   hovered: kRaised; selected: kAccentSoft + a 1 px kAccentLine edge; lit (playing):
@@ -657,6 +664,12 @@ void EndModalCard();
 // frame padding inside. Call EndFloatingCard whatever it returns.
 bool BeginFloatingCard(const char* id, ImVec2 pos, ImVec2 pivot = ImVec2(0.0f, 0.0f), float width = 0.0f);
 void EndFloatingCard();
+// 13-15b: the floating card's look (kRaised, stroke-strong edge, r7, shadow, the theme's metrics) for a window the
+// user moves and resizes (the caller places it and sets its size constraints; `window_flags` adds to
+// NoTitleBar | NoCollapse | NoSavedSettings | NoScrollbar; pass NoMove to drag it by its own title row).
+// Always pair with EndMovableCard.
+bool BeginMovableCard(const char* id, int window_flags = 0);
+void EndMovableCard();
 
 // 13-14 (G-10): a frameless window over the 3D view holding a few widgets (the view toggle, the
 // panel button, the status icon, the nav cube): pad 0, no background, no border, sized to its

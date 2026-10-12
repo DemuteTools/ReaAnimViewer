@@ -8,6 +8,7 @@
 #ifdef _WIN32
 
 #include <algorithm>
+#include <string>
 
 #include "shortcuts.h"
 #include "ui_theme.h"
@@ -18,6 +19,7 @@ namespace {
 constexpr char kPopupId[]  = "##shortcuts";
 constexpr char kRecordId[] = "##recordkey";
 
+// Mockup px (Dp at use).
 constexpr float kIconSize = 18.0f;   // the glyph
 constexpr float kIconPad  = 3.0f;    // around it: a 24 px button
 constexpr float kRowW     = 350.0f;  // the popup's rows
@@ -32,7 +34,7 @@ void DrawKeyboardGlyph(ImDrawList* dl, ImVec2 c, float s, ImU32 col)
 {
     const float w = s * 0.84f, h = s * 0.56f;
     const ImVec2 a(c.x - w * 0.5f, c.y - h * 0.5f), b(c.x + w * 0.5f, c.y + h * 0.5f);
-    dl->AddRect(a, b, col, 2.0f, 0, 1.5f);
+    dl->AddRect(a, b, col, ui::Dp(2.0f), 0, ui::Dp(1.5f));
     const float k = w / 7.0f;
     for (int row = 0; row < 2; ++row)
         for (int i = 0; i < 5; ++i) {
@@ -44,20 +46,18 @@ void DrawKeyboardGlyph(ImDrawList* dl, ImVec2 c, float s, ImU32 col)
 
 void Header(const char* title, const char* note)
 {
-    ImGui::Dummy(ImVec2(0.0f, 4.0f));
-    ui::Caption(title);
+    ImGui::Dummy(ImVec2(0.0f, ui::Dp(4.0f)));
+    ui::GroupCaption(title);
     if (note) {
         ImGui::SameLine();
-        ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kFaint));
-        ImGui::TextUnformatted(note);
-        ImGui::PopStyleColor();
+        ui::ToneText(note, ui::kFaint);
     }
 }
 
 // The key column: caps right-aligned here, "fixed" right of them.
 float CapRight(float row_right)
 {
-    return row_right - 10.0f - ImGui::CalcTextSize("fixed").x - 10.0f;
+    return row_right - ui::Dp(10.0f) - ImGui::CalcTextSize("fixed").x - ui::Dp(10.0f);
 }
 
 // One key action. Returns true when a double-click asked to record it.
@@ -67,31 +67,32 @@ bool KeyRow(int id)
     const bool recording = (ShortcutRecordingId() == id);
     const bool custom = CurrentShortcuts()[static_cast<size_t>(id)] != def.def;
     ImGui::PushID(id);
-    ImGui::Selectable("##key", recording,
-                      ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_NoAutoClosePopups,
-                      ImVec2(kRowW, kRowH));
+    ui::SelectRow("##key", recording, 0, ui::Dp(kRowH),
+                  ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_NoAutoClosePopups);
     bool record = false;
     if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) record = true;
     if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) ResetShortcutToDefault(id);
     const ImVec2 a = ImGui::GetItemRectMin();
     const ImVec2 b = ImGui::GetItemRectMax();
     ImDrawList* dl = ImGui::GetWindowDrawList();
+    // The row's hover (kRaised) would not show on the popup's kRaised: kHover instead.
+    if (!recording && ui::SelectRowHovered()) dl->AddRectFilled(a, b, ui::kHover, ui::kRadiusSm);
     const float th = ImGui::GetTextLineHeight();
     const float cy = (a.y + b.y) * 0.5f;
     const char* key = ShortcutKeyLabel(id);
-    const float cap_w = ImGui::CalcTextSize(key).x + 8.0f;
+    const float cap_w = ImGui::CalcTextSize(key).x + ui::Dp(8.0f);
     const float cap_x = CapRight(b.x) - cap_w;
     // The label gives way to a long key ("Ctrl+Shift+Alt+PageDown").
-    dl->PushClipRect(a, ImVec2(std::max(a.x, cap_x - 6.0f), b.y), true);
-    dl->AddText(ImVec2(a.x + 8.0f, cy - th * 0.5f), ui::kText, def.label);
+    dl->PushClipRect(a, ImVec2(std::max(a.x, cap_x - ui::Dp(6.0f)), b.y), true);
+    dl->AddText(ImVec2(a.x + ui::Dp(8.0f), cy - th * 0.5f), ui::kText, def.label);
     if (def.context != ShortcutContext::Anywhere) {
         const float lw = ImGui::CalcTextSize(def.label).x;
-        dl->AddText(ImVec2(a.x + 8.0f + lw + 6.0f, cy - th * 0.5f), ui::kFaint,
+        dl->AddText(ImVec2(a.x + ui::Dp(8.0f) + lw + ui::Dp(6.0f), cy - th * 0.5f), ui::kFaint,
                     def.context == ShortcutContext::VideoView ? "Video" : "Tagging");
     }
     dl->PopClipRect();
     // A custom key shows in the accent colour.
-    ui::KeyCap(dl, ImVec2(cap_x, cy - th * 0.5f - 1.5f), key, custom ? ui::kAccent : ui::kText);
+    ui::KeyCap(dl, ImVec2(cap_x, cy - th * 0.5f - ui::Dp(1.5f)), key, custom ? ui::kAccent : ui::kText);
     ImGui::PopID();
     return record;
 }
@@ -100,36 +101,27 @@ bool KeyRow(int id)
 void GestureRow(const char* action, const char* gesture)
 {
     const ImVec2 a = ImGui::GetCursorScreenPos();
-    ImGui::Dummy(ImVec2(kRowW, kRowH));
+    ImGui::Dummy(ImVec2(ui::Dp(kRowW), ui::Dp(kRowH)));
     const float th = ImGui::GetTextLineHeight();
-    const float cy = a.y + kRowH * 0.5f;
-    const float right = a.x + kRowW;
+    const float cy = a.y + ui::Dp(kRowH) * 0.5f;
+    const float right = a.x + ui::Dp(kRowW);
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddText(ImVec2(a.x + 8.0f, cy - th * 0.5f), ui::kMuted, action);
-    const float cap_w = ImGui::CalcTextSize(gesture).x + 8.0f;
-    ui::KeyCap(dl, ImVec2(CapRight(right) - cap_w, cy - th * 0.5f - 1.5f), gesture, ui::kMuted);
+    dl->AddText(ImVec2(a.x + ui::Dp(8.0f), cy - th * 0.5f), ui::kMuted, action);
+    const float cap_w = ImGui::CalcTextSize(gesture).x + ui::Dp(8.0f);
+    ui::KeyCap(dl, ImVec2(CapRight(right) - cap_w, cy - th * 0.5f - ui::Dp(1.5f)), gesture, ui::kMuted);
     const float fw = ImGui::CalcTextSize("fixed").x;
-    dl->AddText(ImVec2(right - 10.0f - fw, cy - th * 0.5f), ui::kFaint, "fixed");
+    dl->AddText(ImVec2(right - ui::Dp(10.0f) - fw, cy - th * 0.5f), ui::kFaint, "fixed");
 }
 
 void Note(const char* text)
 {
-    ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kFaint));
-    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + kRowW);
-    ImGui::TextUnformatted(text);
-    ImGui::PopTextWrapPos();
-    ImGui::PopStyleColor();
+    ui::ToneText(text, ui::kFaint, /*wrap=*/true, ui::Dp(kRowW));
 }
 
 void RecordModal(bool open_now)
 {
     if (open_now) ImGui::OpenPopup(kRecordId);
-    const ImGuiViewport* vp = ImGui::GetMainViewport();
-    ImGui::SetNextWindowPos(vp->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(16.0f, 14.0f));
-    constexpr ImGuiWindowFlags kFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize |
-                                        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings;
-    if (ImGui::BeginPopupModal(kRecordId, nullptr, kFlags)) {
+    if (ui::BeginModalCard(kRecordId)) {
         const int id = ShortcutRecordingId();
         if (id < 0) {
             ImGui::CloseCurrentPopup();  // a key was taken, or Esc
@@ -137,21 +129,18 @@ void RecordModal(bool open_now)
             ImGui::Text("Press a key for %s...", kShortcutTable[id].label);
             ui::Caption("Ctrl, Shift and Alt can be held with it. Esc to cancel.");
             if (const char* owner = ShortcutRecordingConflict()) {
-                ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kWarn));
-                ImGui::Text("Already used by %s", owner);
-                ImGui::PopStyleColor();
+                ui::ToneText(std::string("Already used by ") + owner, ui::kWarn);
             } else {
                 ImGui::TextUnformatted(" ");  // keeps the modal's size when the warning shows
             }
-            ImGui::Dummy(ImVec2(0.0f, 4.0f));
-            if (ui::SolidButton("Cancel", ImVec2(90.0f, 0.0f))) {
+            ImGui::Dummy(ImVec2(0.0f, ui::Dp(4.0f)));
+            if (ui::SolidButton("Cancel", ImVec2(ui::Dp(90.0f), 0.0f))) {
                 CancelShortcutRecording();
                 ImGui::CloseCurrentPopup();
             }
         }
-        ImGui::EndPopup();
+        ui::EndModalCard();
     }
-    ImGui::PopStyleVar();
 }
 
 void PopupBody()
@@ -161,18 +150,14 @@ void PopupBody()
          "Keys work while the viewer has the focus.");
 
     Header("KEYS", nullptr);
-    ImGui::PushStyleColor(ImGuiCol_Header, ui::Col(ui::kAccentSoft));
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ui::Col(ui::kHover));
-    ImGui::PushStyleColor(ImGuiCol_HeaderActive, ui::Col(ui::kAccentSoft));
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 2.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ui::Dp(8.0f), ui::Dp(2.0f)));
     int record = -1;
     for (int i = 0; i < kShortcutCount; ++i)
         if (KeyRow(i)) record = i;
     ImGui::PopStyleVar();
-    ImGui::PopStyleColor(3);
     if (record >= 0) BeginShortcutRecording(record);
 
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 2.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ui::Dp(8.0f), ui::Dp(2.0f)));
     constexpr int kGroups = static_cast<int>(sizeof(kMouseGestureGroups) / sizeof(kMouseGestureGroups[0]));
     for (int g = 0; g < kGroups; ++g) {
         const MouseGestureGroup& grp = kMouseGestureGroups[g];
@@ -190,62 +175,41 @@ void PopupBody()
 
 void DrawShortcutsButton(float right_x, float centre_y, ImTextureID icon)
 {
-    const float btn = kIconSize + 2.0f * kIconPad;
-    ImGui::SetNextWindowPos(ImVec2(right_x, centre_y - btn * 0.5f), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(kIconPad, kIconPad));
-    constexpr ImGuiWindowFlags kFlags =
-        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize |
-        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing |
-        ImGuiWindowFlags_NoBackground;
-    const bool shown = ImGui::Begin("##keysbtn", nullptr, kFlags);
-    ImGui::PopStyleVar(3);
+    const float btn = ui::Dp(kIconSize + 2.0f * kIconPad);
+    const bool  shown = ui::BeginOverlay("##keysbtn", ImVec2(right_x, centre_y - btn * 0.5f), ImVec2(1.0f, 0.0f));
     if (shown) {
         // Frameless like the menu button; lit while the popup is open. No tooltip: the
         // popup is the help.
-        ImGui::PushStyleColor(ImGuiCol_Button, g_open ? ui::Col(ui::kAccentSoft) : ImVec4(0, 0, 0, 0));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.10f));
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1, 1, 1, 0.16f));
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(kIconPad, kIconPad));
-        const ImU32 tint = g_open ? ui::kText : ui::kMuted;
-        bool pressed;
-        if (icon) {
-            pressed = ImGui::ImageButton("##keys", icon, ImVec2(kIconSize, kIconSize), ImVec2(0, 0), ImVec2(1, 1),
-                                         ImVec4(0, 0, 0, 0), ui::Col(tint));
-        } else {
-            pressed = ImGui::Button("##keys", ImVec2(btn, btn));
+        ui::IconOnlyOpts o;
+        o.w = btn;
+        o.on = g_open;
+        o.icon_px = ui::Dp(kIconSize);
+        const bool pressed = ui::IconOnlyButton("##keys", icon, nullptr, o);
+        if (!icon) {
             const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
-            DrawKeyboardGlyph(ImGui::GetWindowDrawList(), ImVec2((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f), kIconSize,
-                              tint);
+            const ImU32  tint = (g_open || ImGui::IsItemHovered()) ? ui::kText : ui::kMuted;
+            DrawKeyboardGlyph(ImGui::GetWindowDrawList(), ImVec2((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f),
+                              ui::Dp(kIconSize), tint);
         }
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor(3);
         // A click outside the popup closes it on the press; a press on the icon while it
         // was open must not reopen it on the release.
         if (ImGui::IsItemActivated()) g_open_at_press = g_open;
         if (pressed && !g_open_at_press) ImGui::OpenPopup(kPopupId);
         const ImVec2 bmax = ImGui::GetItemRectMax();
 
-        ImGui::SetNextWindowPos(ImVec2(bmax.x, bmax.y + 6.0f), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 12.0f));
-        ImGui::PushStyleColor(ImGuiCol_PopupBg, ui::Col(ui::kRaised));
-        ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStrokeStrong));
-        const bool open = ImGui::BeginPopup(kPopupId);
-        ImGui::PopStyleColor(2);
-        ImGui::PopStyleVar();
+        ImGui::SetNextWindowPos(ImVec2(bmax.x, bmax.y + ui::Dp(6.0f)), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+        const bool open = ui::BeginPanelPopup(kPopupId);
         if (open) {
             if (g_close_request && ShortcutRecordingId() < 0) ImGui::CloseCurrentPopup();
             PopupBody();
-            ImGui::EndPopup();
+            ui::EndPanelPopup();
         }
         g_open = open;
     } else {
         g_open = false;
     }
     g_close_request = false;
-    ImGui::End();
+    ui::EndOverlay();
 
     // The popup went away (e.g. the viewer closed it): no recording without its modal.
     if (!g_open && ShortcutRecordingId() >= 0) CancelShortcutRecording();

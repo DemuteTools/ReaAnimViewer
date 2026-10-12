@@ -24,6 +24,7 @@
 #include <windowsx.h>  // GET_X_LPARAM / GET_Y_LPARAM — unpack WM_MOUSEMOVE coords
 #include <cmath>       // std::sin/cos/asin/atan2/sqrt — light azimuth/elevation ↔ direction
 #include <cfloat>      // FLT_MAX (spec 11-fb-11: the menu's height cap)
+#include <cstdio>      // std::snprintf (13-14: the FPS readout)
 #include <algorithm>   // std::min/max — the load message's wrap width
 #include <exception>   // std::exception — the no-throw host boundary (AR18)
 #include <initializer_list>  // 13-7: the UI font fallback chains
@@ -52,6 +53,7 @@
 #include "texture_locate.h"    // issue #1: "Locate textures..." (folder picker + copy)
 #include "gpu_resources.h"    // Story 11-4: the Video view's render target
 #include "ui_theme.h"         // Story 11-4: the DM-XYZ-Pad theme over Dear ImGui
+#include "ui_flow.h"          // 13-14: LabelRow (the Light faders, the Colour row)
 #include "ui_glyph_ranges.h"  // 13-7: the symbol blocks merged into the UI font
 #include "video_view.h"       // Story 11-4: Video view + Video panel model
 #include "video_view_ui.h"    // Story 11-4: their ImGui widgets
@@ -244,8 +246,8 @@ std::unordered_set<std::string> g_noticed_paths;
 // Bottom-left status icon (red = the current item failed to load, amber = it loaded with
 // problems). Hovering it opens the message panel; g_status_panel_until keeps that panel
 // open for a short grace period so the mouse can travel from the icon to its button.
-constexpr float  kStatusIconSize    = 22.0f;
-constexpr float  kStatusIconMargin  = 12.0f;
+constexpr ui::DpPx kStatusIconSize{22.0f};    // at the screen's DPI (13-14)
+constexpr ui::DpPx kStatusIconMargin{12.0f};
 constexpr double kStatusPanelGrace  = 0.3;
 double           g_status_panel_until = 0.0;
 
@@ -258,7 +260,7 @@ double      g_copied_until = 0.0;
 // Icon textures (Antho's SVGs, uploaded once at ImGui init; freed in StopRendering).
 GLuint g_icon_menu   = 0;
 GLuint g_icon_light  = 0;
-GLuint g_icon_color  = 0;
+
 GLuint g_icon_shadow = 0;
 GLuint g_icon_ground = 0;
 GLuint g_icon_performance = 0;  // Story 6.5.5 — Antho's Performance-section icon
@@ -284,8 +286,9 @@ constexpr float kHalfPi = 1.57079633f;
 // sensitivities (camera.h) — judged in-Reaper on Windows, not on the Linux dev box.
 // kNavCubeSize is the square hit/draw area edge (px); kNavCubeMargin is the gap from the
 // viewport's bottom-right corner. The 3D cube is drawn + picked inside that square.
-constexpr float kNavCubeSize   = 96.0f;
-constexpr float kNavCubeMargin = 12.0f;
+// Both at the screen's DPI (13-14).
+constexpr ui::DpPx kNavCubeSize{96.0f};
+constexpr ui::DpPx kNavCubeMargin{12.0f};
 
 // Story 11-4 — Video view. The frame is rendered into its own target at the frame's size
 // (same aspect as the FX output, so the same framing), then copied into the frame rect of
@@ -943,7 +946,7 @@ bool LightDirectionPad(float diameter)
     ImGui::InvisibleButton("##lightpad", ImVec2(diameter, diameter));
     const bool active = ImGui::IsItemActive();
     const ImVec2 c(p0.x + diameter * 0.5f, p0.y + diameter * 0.5f);
-    const float R = diameter * 0.5f - 4.0f;
+    const float R = diameter * 0.5f - ui::Dp(4.0f);
 
     bool changed = false;
     if (active) {
@@ -958,18 +961,18 @@ bool LightDirectionPad(float diameter)
     }
 
     // Disc + horizon ring + axes.
-    dl->AddCircleFilled(c, R, IM_COL32(26, 28, 34, 255), 48);
-    dl->AddCircle(c, R, IM_COL32(92, 98, 112, 255), 48, 1.5f);
-    dl->AddCircle(c, R * 0.5f, IM_COL32(58, 62, 72, 255), 40, 1.0f);
-    dl->AddLine(ImVec2(c.x - R, c.y), ImVec2(c.x + R, c.y), IM_COL32(52, 55, 64, 255));
-    dl->AddLine(ImVec2(c.x, c.y - R), ImVec2(c.x, c.y + R), IM_COL32(52, 55, 64, 255));
+    dl->AddCircleFilled(c, R, ui::kBg, 48);
+    dl->AddCircle(c, R, ui::kStrokeStrong, 48, ui::Dp(1.5f));
+    dl->AddCircle(c, R * 0.5f, ui::kStroke, 40, 1.0f);
+    dl->AddLine(ImVec2(c.x - R, c.y), ImVec2(c.x + R, c.y), ui::kStroke);
+    dl->AddLine(ImVec2(c.x, c.y - R), ImVec2(c.x, c.y + R), ui::kStroke);
 
     // Handle, placed from the current azimuth/elevation.
     const float rho = (kHalfPi - g_light_elevation) / kPiF;    // 0..1
     const ImVec2 h(c.x + std::sin(g_light_azimuth) * rho * R,
                    c.y - std::cos(g_light_azimuth) * rho * R);
-    dl->AddCircleFilled(h, 6.0f, IM_COL32(120, 170, 255, 255), 16);
-    dl->AddCircle(h, 6.0f, IM_COL32(255, 255, 255, 255), 16, 1.5f);
+    dl->AddCircleFilled(h, ui::Dp(6.0f), ui::kAccent, 16);
+    dl->AddCircle(h, ui::Dp(6.0f), ui::kWhite, 16, ui::Dp(1.5f));
     return changed;
 }
 
@@ -979,17 +982,14 @@ bool LightDirectionPad(float diameter)
 // docked panel still shows it.
 void DrawLoadMessageBody()
 {
-    const float wrap_w = std::max(160.0f, std::min(480.0f, g_client_w - 60.0f));
-    const ImVec4 title_col = g_load_msg_error ? ImVec4(1.0f, 0.5f, 0.4f, 1.0f)
-                           : g_load_msg_info  ? ui::Col(ui::kOk)
-                                              : ImVec4(1.0f, 0.75f, 0.3f, 1.0f);
+    const float wrap_w = std::max(ui::Dp(160.0f), std::min(ui::Dp(480.0f), g_client_w - ui::Dp(60.0f)));
+    const ImU32 title_col = g_load_msg_error ? ui::kBad : g_load_msg_info ? ui::kOk : ui::kWarn;
+    // One wrap edge for the title and every bullet (ToneText wraps within it).
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wrap_w);
-    ImGui::TextColored(title_col, "%s", g_load_msg_title.c_str());
+    ui::ToneText(g_load_msg_title, title_col);
     for (const std::string& line : g_load_msg_report) {   // issue #1: the locate outcome
         ImGui::Bullet();
-        ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kOk));
-        ImGui::TextUnformatted(line.c_str());
-        ImGui::PopStyleColor();
+        ui::ToneText(line, ui::kOk);
     }
     for (const std::string& line : g_load_msg_lines) {
         ImGui::Bullet();
@@ -1003,7 +1003,7 @@ void DrawLoadMessageBody()
             g_locate_pending = PostMessageW(g_hwnd, kMsgLocateTextures, 0, 0) != FALSE;
     }
     const bool copied = ElapsedSeconds() < g_copied_until;
-    if (ImGui::SmallButton(copied ? "Copied!##copyerr" : "Copy details##copyerr"))
+    if (ui::SolidButton(copied ? "Copied!##copyerr" : "Copy details##copyerr"))
         CopyErrorLogToClipboard();
 }
 
@@ -1018,18 +1018,9 @@ void StatusIconWidget()
 {
     if (g_load_msg_title.empty() || g_load_msg_info) return;  // info = no problem to show
 
-    constexpr ImGuiWindowFlags kIconFlags =
-        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
-        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar |
-        ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing |
-        ImGuiWindowFlags_NoBackground;
-
     const float icon_top = ViewBottom() - kStatusIconMargin - kStatusIconSize;  // Story 11-5: above the strip
-    ImGui::SetNextWindowPos(ImVec2(kStatusIconMargin, icon_top), ImGuiCond_Always);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
     bool icon_hovered = false;
-    if (ImGui::Begin("##statusicon", nullptr, kIconFlags)) {
+    if (ui::BeginOverlay("##statusicon", ImVec2(kStatusIconMargin, icon_top))) {
         ImDrawList* dl = ImGui::GetWindowDrawList();
         const ImVec2 p0 = ImGui::GetCursorScreenPos();
         ImGui::InvisibleButton("##statushit", ImVec2(kStatusIconSize, kStatusIconSize));
@@ -1037,21 +1028,21 @@ void StatusIconWidget()
 
         const float  s  = kStatusIconSize;
         const float  cx = p0.x + s * 0.5f;
+        const float  bar = ui::Dp(1.5f), dot = ui::Dp(1.9f), in = ui::Dp(1.0f);  // the "!"'s bar and dot
         if (g_load_msg_error) {
-            const ImU32 ink = IM_COL32(255, 255, 255, 255);
-            dl->AddCircleFilled(ImVec2(cx, p0.y + s * 0.5f), s * 0.5f, IM_COL32(222, 84, 70, 255), 24);
-            dl->AddRectFilled(ImVec2(cx - 1.5f, p0.y + s * 0.22f), ImVec2(cx + 1.5f, p0.y + s * 0.60f), ink, 1.0f);
-            dl->AddCircleFilled(ImVec2(cx, p0.y + s * 0.75f), 1.9f, ink, 8);
+            const ImU32 ink = ui::kWhite;
+            dl->AddCircleFilled(ImVec2(cx, p0.y + s * 0.5f), s * 0.5f, ui::kBad, 24);
+            dl->AddRectFilled(ImVec2(cx - bar, p0.y + s * 0.22f), ImVec2(cx + bar, p0.y + s * 0.60f), ink, in);
+            dl->AddCircleFilled(ImVec2(cx, p0.y + s * 0.75f), dot, ink, 8);
         } else {
-            const ImU32 ink = IM_COL32(48, 34, 8, 255);
-            dl->AddTriangleFilled(ImVec2(cx, p0.y + 1.0f), ImVec2(p0.x + s - 1.0f, p0.y + s - 2.0f),
-                                  ImVec2(p0.x + 1.0f, p0.y + s - 2.0f), IM_COL32(255, 191, 77, 255));
-            dl->AddRectFilled(ImVec2(cx - 1.5f, p0.y + s * 0.34f), ImVec2(cx + 1.5f, p0.y + s * 0.64f), ink, 1.0f);
-            dl->AddCircleFilled(ImVec2(cx, p0.y + s * 0.78f), 1.9f, ink, 8);
+            const ImU32 ink = ui::kConfirmActText;  // dark ink on amber
+            dl->AddTriangleFilled(ImVec2(cx, p0.y + in), ImVec2(p0.x + s - in, p0.y + s - 2.0f * in),
+                                  ImVec2(p0.x + in, p0.y + s - 2.0f * in), ui::kWarn);
+            dl->AddRectFilled(ImVec2(cx - bar, p0.y + s * 0.34f), ImVec2(cx + bar, p0.y + s * 0.64f), ink, in);
+            dl->AddCircleFilled(ImVec2(cx, p0.y + s * 0.78f), dot, ink, 8);
         }
     }
-    ImGui::End();
-    ImGui::PopStyleVar();
+    ui::EndOverlay();
 
     const double now = ElapsedSeconds();
     if (icon_hovered) g_status_panel_until = now + kStatusPanelGrace;
@@ -1059,18 +1050,12 @@ void StatusIconWidget()
 
     // The panel's bottom edge sits just above the icon (pivot bottom-left), so the mouse
     // crosses only a couple of pixels — covered by the grace — to reach "Copy details".
-    constexpr ImGuiWindowFlags kPanelFlags =
-        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
-        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar |
-        ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing;
-    ImGui::SetNextWindowPos(ImVec2(kStatusIconMargin, icon_top - 2.0f), ImGuiCond_Always,
-                            ImVec2(0.0f, 1.0f));
-    if (ImGui::Begin("##statuspanel", nullptr, kPanelFlags)) {
+    // 13-14: the theme's floating card.
+    if (ui::BeginFloatingCard("##statuspanel", ImVec2(kStatusIconMargin, icon_top - ui::Dp(2.0f)), ImVec2(0.0f, 1.0f))) {
         DrawLoadMessageBody();
         if (ImGui::IsWindowHovered()) g_status_panel_until = now + kStatusPanelGrace;
     }
-    ImGui::End();
+    ui::EndFloatingCard();
 }
 
 // Story 6.5.8 — Navigation cube (ViewCube): a small axis-coloured cube in the bottom-right
@@ -1102,30 +1087,20 @@ void NavCubeWidget(const OrbitCamera& cam, bool video, float right_x, float bott
     // Faces: X red, Y green, Z blue, the +axis brighter than the -axis so orientation reads.
     struct Face { glm::vec3 n, u, v; ImU32 col; };
     static const Face kFaces[6] = {
-        { { 1, 0, 0}, {0, 1, 0}, {0, 0, 1}, IM_COL32(214,  84,  78, 255) },  // +X  red
-        { {-1, 0, 0}, {0, 1, 0}, {0, 0, 1}, IM_COL32(150,  52,  48, 255) },  // -X  dark red
-        { { 0, 1, 0}, {1, 0, 0}, {0, 0, 1}, IM_COL32(120, 190,  90, 255) },  // +Y  green
-        { { 0,-1, 0}, {1, 0, 0}, {0, 0, 1}, IM_COL32( 80, 130,  62, 255) },  // -Y  dark green
-        { { 0, 0, 1}, {1, 0, 0}, {0, 1, 0}, IM_COL32( 84, 140, 220, 255) },  // +Z  blue
-        { { 0, 0,-1}, {1, 0, 0}, {0, 1, 0}, IM_COL32( 56,  96, 156, 255) },  // -Z  dark blue
+        { { 1, 0, 0}, {0, 1, 0}, {0, 0, 1}, ui::kAxisX },      // +X  red
+        { {-1, 0, 0}, {0, 1, 0}, {0, 0, 1}, ui::kAxisXDark },  // -X  dark red
+        { { 0, 1, 0}, {1, 0, 0}, {0, 0, 1}, ui::kAxisY },      // +Y  green
+        { { 0,-1, 0}, {1, 0, 0}, {0, 0, 1}, ui::kAxisYDark },  // -Y  dark green
+        { { 0, 0, 1}, {1, 0, 0}, {0, 1, 0}, ui::kAxisZ },      // +Z  blue
+        { { 0, 0,-1}, {1, 0, 0}, {0, 1, 0}, ui::kAxisZDark },  // -Z  dark blue
     };
 
-    constexpr ImGuiWindowFlags kFlags =
-        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
-        ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar |
-        ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing |
-        ImGuiWindowFlags_NoBackground;  // just the cube floats over the viewport
-
     // Bottom-right pivot (1,1) anchored to the live client size (current in WM_SIZE) — mirrors
-    // the FPS read-out's right-edge pivot but pinned to the bottom-right corner.
-    ImGui::SetNextWindowPos(
-        ImVec2(right_x - kNavCubeMargin, bottom_y - kNavCubeMargin),  // Story 11-5: above the shot strip
-        ImGuiCond_Always, ImVec2(1.0f, 1.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    if (!ImGui::Begin("##navcube", nullptr, kFlags)) {
-        ImGui::End();
-        ImGui::PopStyleVar();
+    // the FPS read-out's right-edge pivot but pinned to the bottom-right corner. Just the cube
+    // floats over the viewport (ui::BeginOverlay: no background).
+    if (!ui::BeginOverlay("##navcube", ImVec2(right_x - kNavCubeMargin, bottom_y - kNavCubeMargin),  // Story 11-5: above the shot strip
+                          ImVec2(1.0f, 1.0f))) {
+        ui::EndOverlay();
         return;
     }
 
@@ -1137,7 +1112,7 @@ void NavCubeWidget(const OrbitCamera& cam, bool video, float right_x, float bott
     const bool hovered = ImGui::IsItemHovered();
 
     const ImVec2 c(p0.x + kNavCubeSize * 0.5f, p0.y + kNavCubeSize * 0.5f);
-    const float scale = (kNavCubeSize * 0.5f - 6.0f) / 1.85f;  // fit the sqrt(3) cube corner inside
+    const float scale = (kNavCubeSize * 0.5f - ui::Dp(6.0f)) / 1.85f;  // fit the sqrt(3) cube corner inside
 
     // Camera view basis from the LIVE yaw/pitch — the cube is seen THROUGH the camera so it
     // turns with the view (AC1). viewDir = cube->camera (== Eye()-target, camera.h spherical
@@ -1171,7 +1146,7 @@ void NavCubeWidget(const OrbitCamera& cam, bool video, float right_x, float bott
                      P11 = project(f.n + f.u + f.v), P01 = project(f.n - f.u + f.v);
         const ImVec2 quad[4] = { P00, P10, P11, P01 };
         dl->AddConvexPolyFilled(quad, 4, f.col);
-        dl->AddPolyline(quad, 4, IM_COL32(20, 22, 28, 220), ImDrawFlags_Closed, 1.5f);
+        dl->AddPolyline(quad, 4, ui::kNavEdge, ImDrawFlags_Closed, ui::Dp(1.5f));
 
         if (hovered && hitFace < 0) {
             const ImVec2 A(P10.x - P00.x, P10.y - P00.y);
@@ -1197,19 +1172,19 @@ void NavCubeWidget(const OrbitCamera& cam, bool video, float right_x, float bott
     if (hitFace >= 0) {
         const Face& f = kFaces[hitFace];
         const bool  iEdge = (hitI != 1), jEdge = (hitJ != 1);
-        const ImU32 kHi = IM_COL32(255, 213, 79, 255);   // amber highlight (matches the reference)
+        const ImU32 kHi = ui::kHighlight;   // amber highlight (matches the reference)
 
         if (!iEdge && !jEdge) {
             // FACE — translucent fill + outline over the whole face.
             const ImVec2 q[4] = { project(f.n - f.u - f.v), project(f.n + f.u - f.v),
                                   project(f.n + f.u + f.v), project(f.n - f.u + f.v) };
-            dl->AddConvexPolyFilled(q, 4, IM_COL32(255, 213, 79, 90));
-            dl->AddPolyline(q, 4, kHi, ImDrawFlags_Closed, 2.0f);
+            dl->AddConvexPolyFilled(q, 4, ui::WithAlpha(ui::kHighlight, 90));
+            dl->AddPolyline(q, 4, kHi, ImDrawFlags_Closed, ui::Dp(2.0f));
         } else if (iEdge && jEdge) {
             // CORNER — a dot at the cube corner.
             const ImVec2 cc = project(f.n + float(hitI - 1) * f.u + float(hitJ - 1) * f.v);
-            dl->AddCircleFilled(cc, 7.0f, kHi, 16);
-            dl->AddCircle(cc, 7.0f, IM_COL32(40, 34, 10, 255), 16, 1.5f);
+            dl->AddCircleFilled(cc, ui::Dp(7.0f), kHi, 16);
+            dl->AddCircle(cc, ui::Dp(7.0f), ui::kConfirmActText, 16, ui::Dp(1.5f));
         } else {
             // EDGE — a thick bar along the cube edge, rounded caps.
             glm::vec3 e0, e1;
@@ -1221,9 +1196,9 @@ void NavCubeWidget(const OrbitCamera& cam, bool video, float right_x, float bott
                 e1 = f.n + float(hitI - 1) * f.u + f.v;
             }
             const ImVec2 a = project(e0), b = project(e1);
-            dl->AddLine(a, b, kHi, 6.0f);
-            dl->AddCircleFilled(a, 3.0f, kHi, 12);
-            dl->AddCircleFilled(b, 3.0f, kHi, 12);
+            dl->AddLine(a, b, kHi, ui::Dp(6.0f));
+            dl->AddCircleFilled(a, ui::Dp(3.0f), kHi, 12);
+            dl->AddCircleFilled(b, ui::Dp(3.0f), kHi, 12);
         }
 
         if (pressed) {
@@ -1232,8 +1207,16 @@ void NavCubeWidget(const OrbitCamera& cam, bool video, float right_x, float bott
         }
     }
 
-    ImGui::End();
-    ImGui::PopStyleVar();
+    ui::EndOverlay();
+}
+
+// 13-14 (API gap, to move into ui_theme): the closed options menu's look, the bare burger over
+// the 3D view: kOverlayBg (kBg .72) with a kStroke edge. Pushes 2 colours like ui::PushPanelStyle:
+// call before Begin, PopStyleColor(2) after End.
+void PushOverlayPanelStyle()
+{
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ui::Col(ui::kOverlayBg));
+    ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStroke));
 }
 
 // Builds + renders the Dear ImGui tool UI for this frame, on top of the 3D scene (called
@@ -1266,11 +1249,11 @@ void DrawToolUi()
         g_menu_tab = kMenuTabTagging;
     }
 
-    ImGui::SetNextWindowPos(ImVec2(10.0f, 10.0f), ImGuiCond_Always);
     // Spec 11-fb-11: open, the menu stops 10 px above the window's bottom (its tab content
     // scrolls, the tab column stays); closed, it is the bare button.
-    constexpr float kMenuMargin = 10.0f;  // its gap to the window's top and bottom edges
-    const float menu_max_h = std::max(48.0f, static_cast<float>(g_client_h) - 2.0f * kMenuMargin);
+    const float kMenuMargin = ui::Dp(10.0f);  // its gap to the window's top and bottom edges
+    ImGui::SetNextWindowPos(ImVec2(kMenuMargin, kMenuMargin), ImGuiCond_Always);
+    const float menu_max_h = std::max(ui::Dp(48.0f), static_cast<float>(g_client_h) - 2.0f * kMenuMargin);
     constexpr ImGuiWindowFlags kFlags =
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
@@ -1281,31 +1264,28 @@ void DrawToolUi()
 
     // Story 11-4: the theme (ui_theme.h) styles the menu. Open, it is a panel like the
     // Tagging and Video panels (ui::PushPanelStyle), its settings in ui::Section cards.
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 8.0f));
+    // Closed, the bare button over the 3D view (PushOverlayPanelStyle).
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui::Dp(8.0f), ui::Dp(8.0f)));
     if (g_menu_open) {
         ui::PushPanelStyle();
     } else {
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ui::Col(IM_COL32(18, 19, 23, 184)));
-        ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStroke));
+        PushOverlayPanelStyle();
     }
     ImGui::Begin("##tools", nullptr, g_menu_open ? kFlags : (kFlags | kClosedFlags));
     ImGuiWindow* const menu_window = ImGui::GetCurrentWindow();
 
-    // Hamburger button — frameless icon; toggles the option list.
-    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1, 1, 1, 0.10f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(1, 1, 1, 0.16f));
-    // 13-7 (audit C0.3): the mockup's burger is 28 x 26 (the theme's wider FramePadding would make it 38).
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(3.0f, 2.0f));
-    if (ImGui::ImageButton("##menu", IconTex(g_icon_menu), ImVec2(22.0f, 22.0f),
-                           ImVec2(0, 0), ImVec2(1, 1), ImVec4(0, 0, 0, 0),
-                           ImVec4(0.90f, 0.90f, 0.95f, 1.0f)))
-        g_menu_open = !g_menu_open;
-    ImGui::PopStyleVar();
-    ImGui::PopStyleColor(3);
+    // Hamburger button — frameless icon (the window behind is its frame); toggles the option list.
+    // 13-7 (audit C0.3): the mockup's burger is 28 x 26, its 22 px icon bright (kText).
+    {
+        ui::IconOnlyOpts o;
+        o.w = ui::Dp(28.0f);
+        o.h = ui::Dp(26.0f);
+        o.icon_px = ui::Dp(22.0f);
+        o.tint = ui::kText;
+        if (ui::IconOnlyButton("##menu", IconTex(g_icon_menu), nullptr, o)) g_menu_open = !g_menu_open;
+    }
 
     if (g_menu_open) {
-        const ImVec4 kIconTint(0.82f, 0.84f, 0.90f, 1.0f);
         const ImGuiStyle& st = ImGui::GetStyle();
         ImGui::Spacing();
 
@@ -1315,19 +1295,20 @@ void DrawToolUi()
         const float tabs_top = ImGui::GetCursorScreenPos().y;
         ui::VerticalTabs("##menutabs", kTabLabels, kMenuTabCount, &g_menu_tab);
         const float tabs_bottom = ImGui::GetItemRectMax().y;
-        const float divider_x = ImGui::GetItemRectMax().x + 7.0f;  // between the tabs and the content
-        ImGui::SameLine(0.0f, 14.0f);
+        const float divider_x = ImGui::GetItemRectMax().x + ui::Dp(7.0f);  // between the tabs and the content
+        ImGui::SameLine(0.0f, ui::Dp(14.0f));
 
         // The content scrolls within what the window's height leaves after the header and the
         // footer (separator, one button row, the version line, the bottom padding).
-        constexpr float kContentW = 256.0f;
+        const float kContentW = ui::Dp(256.0f);
         const float footer_h = 2.0f * st.ItemSpacing.y + 1.0f + ImGui::GetFrameHeightWithSpacing() +
-                               4.0f + st.ItemSpacing.y + ImGui::GetTextLineHeight() + st.WindowPadding.y;
+                               ui::Dp(4.0f) + st.ItemSpacing.y + ImGui::GetTextLineHeight() + st.WindowPadding.y;
         const float content_max_h =
             std::max(tabs_bottom - tabs_top, kMenuMargin + menu_max_h - tabs_top - footer_h);
         ImGui::SetNextWindowSizeConstraints(ImVec2(kContentW, 0.0f), ImVec2(kContentW, content_max_h));
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
-        ImGui::BeginChild("##menutab", ImVec2(kContentW, 0.0f), ImGuiChildFlags_AutoResizeY);
+        // No fill of its own: the menu's panel shows through.
+        ImGui::BeginChild("##menutab", ImVec2(kContentW, 0.0f), ImGuiChildFlags_AutoResizeY,
+                          ImGuiWindowFlags_NoBackground);
 
         // Every group of settings is a ui::Section (the theme's card with its header), so each
         // tab reads the same way and a new setting needs no styling of its own.
@@ -1339,31 +1320,27 @@ void DrawToolUi()
 
         // --- Light: Colour + Position ---
         if (ui::BeginSection(sec, "Light", IconTex(g_icon_light))) {
-            ImGui::Image(IconTex(g_icon_color), ImVec2(17.0f, 17.0f),
-                         ImVec2(0, 0), ImVec2(1, 1), kIconTint);
-            ImGui::SameLine();
-            if (ImGui::ColorEdit3("##colour", g_light_color,
-                                  ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_NoAlpha))
+            // 13-14 (G-12): a swatch that opens the themed picker, in a labelled row.
+            ui::LabelRow("Colour", ui::ControlH());
+            if (ui::ColorSwatchButton("##colour", g_light_color, "Light colour"))
                 g_renderer.SetLightColor(glm::vec3(g_light_color[0], g_light_color[1], g_light_color[2]));
-            ImGui::SameLine();
-            ImGui::TextUnformatted("Colour");
 
-            ImGui::Dummy(ImVec2(0.0f, 3.0f));
-            ImGui::TextUnformatted("Position");
-            if (LightDirectionPad(150.0f))
+            ImGui::Dummy(ImVec2(0.0f, ui::Dp(3.0f)));
+            ui::Caption("Position");
+            if (LightDirectionPad(ui::Dp(150.0f)))
                 g_renderer.SetLightDir(LightDirFromAngles(g_light_azimuth, g_light_elevation));
 
             // Lighting-quality knobs to fix the "flat/cheap vs Mixamo" look in-Reaper, live:
             // Ambient = fill (lower → more contrast), Specular = sheen, Relief = normal-map boost.
-            ImGui::Dummy(ImVec2(0.0f, 3.0f));
-            ImGui::SetNextItemWidth(140.0f);
-            if (ImGui::SliderFloat("Ambient",  &g_ambient,        0.0f, 1.0f, "%.2f"))
+            // 13-14 (G-13): labelled faders, the value drawn after the track.
+            ImGui::Dummy(ImVec2(0.0f, ui::Dp(3.0f)));
+            ui::FaderOpts fo;
+            fo.format = "%.2f";
+            if (ui::Fader("##ambient", &g_ambient, 0.0f, 1.0f, ui::LabelRow("Ambient", ui::Dp(100.0f)), fo))
                 g_renderer.SetAmbient(g_ambient);
-            ImGui::SetNextItemWidth(140.0f);
-            if (ImGui::SliderFloat("Specular", &g_spec_strength,  0.0f, 2.0f, "%.2f"))
+            if (ui::Fader("##specular", &g_spec_strength, 0.0f, 2.0f, ui::LabelRow("Specular", ui::Dp(100.0f)), fo))
                 g_renderer.SetSpecStrength(g_spec_strength);
-            ImGui::SetNextItemWidth(140.0f);
-            if (ImGui::SliderFloat("Relief",   &g_normal_strength, 0.0f, 3.0f, "%.2f"))
+            if (ui::Fader("##relief", &g_normal_strength, 0.0f, 3.0f, ui::LabelRow("Relief", ui::Dp(100.0f)), fo))
                 g_renderer.SetNormalStrength(g_normal_strength);
         }
         ui::EndSection(sec);
@@ -1371,7 +1348,7 @@ void DrawToolUi()
         // --- Ground: show/hide the floor + grid (hiding it also drops the cast shadow,
         // the floor being the only receiver) ---
         if (ui::BeginSection(sec, "Ground", IconTex(g_icon_ground))) {
-            if (ImGui::Checkbox("Enable", &g_floor_visible))
+            if (ui::Checkbox("Enable", &g_floor_visible))
                 g_renderer.SetFloorVisible(g_floor_visible);
             // Epic 9 — grid cell size in real metres; the renderer converts it to the
             // file's unit, so sizes read in cells whatever the format.
@@ -1400,7 +1377,7 @@ void DrawToolUi()
         // and TOGETHER with these complete the FR52 set — not duplicated here. ---
         if (ui::BeginSection(sec, "Performance", IconTex(g_icon_performance))) {
 
-            if (ImGui::Checkbox("Normal maps", &g_normal_maps_on))
+            if (ui::Checkbox("Normal maps", &g_normal_maps_on))
                 g_renderer.SetNormalMapsEnabled(g_normal_maps_on);
 
             // Story 6.5.6 — MSAA level selector (FR52), replacing 6.5.5's on/off checkbox: a row
@@ -1430,7 +1407,7 @@ void DrawToolUi()
                 g_renderer.SetMsaaSamples(g_msaa_level);
             }
 
-            ImGui::Checkbox("FPS", &g_fps_overlay_on);  // pure UI state — read by the overlay below
+            ui::Checkbox("FPS", &g_fps_overlay_on);  // pure UI state — read by the overlay below
         }
         ui::EndSection(sec);
         break;
@@ -1462,9 +1439,8 @@ void DrawToolUi()
                 int mark_sel = mode == MarkerMode::Take ? 0 : mode == MarkerMode::Project ? 1 : 2;
                 if (ui::Segmented("##tagmarkers", kMarkLabels, 3, &mark_sel, 0.0f, -1))
                     SetTaggingMarkerMode(mark_sel == 0 ? MarkerMode::Take : mark_sel == 1 ? MarkerMode::Project : MarkerMode::Both);
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-                    ImGui::SetTooltip("%s on Commit (previews too).\nProject markers take the rule's colour.",
-                                      MarkerModeLine(GetTaggingMarkerMode()));
+                ui::ItemTip("%s on Commit (previews too).\nProject markers take the rule's colour.",
+                            MarkerModeLine(GetTaggingMarkerMode()));
             }
             ui::EndSection(sec);
             // Epic 13 (D20): the Sounds section of the menu (13-9).
@@ -1477,20 +1453,19 @@ void DrawToolUi()
         default: {
             if (ui::BeginSection(sec, "Panel")) {
                 bool panel = VideoPanelVisible();
-                if (ImGui::Checkbox("Video panel", &panel)) SetVideoPanelVisible(panel);
+                if (ui::Checkbox("Video panel", &panel)) SetVideoPanelVisible(panel);
                 // Spec 11-fb-11 -- the Delete key asks first unless "Don't ask again" was ticked;
                 // this gives the question back (or takes it away).
                 bool ask = VideoAskBeforeDeleteShot();
-                if (ImGui::Checkbox("Ask before deleting a shot", &ask)) SetVideoAskBeforeDeleteShot(ask);
-                if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-                    ImGui::SetTooltip("The %s key in Video view deletes the current shot: ask first, or delete at once",
-                                      ShortcutKeyLabel(kShortcutDeleteShot));
+                if (ui::Checkbox("Ask before deleting a shot", &ask)) SetVideoAskBeforeDeleteShot(ask);
+                ui::ItemTip("The %s key in Video view deletes the current shot: ask first, or delete at once",
+                            ShortcutKeyLabel(kShortcutDeleteShot));
             }
             ui::EndSection(sec);
             if (ui::BeginSection(sec, "REAPER's Video window")) {
                 // How long REAPER's Video window takes to catch up with an output size or display
                 // change while playing, on Video view's caption line (spec 11-fb-5).
-                ImGui::Checkbox("REAPER catch-up", &g_preview_lag_on);
+                ui::Checkbox("REAPER catch-up", &g_preview_lag_on);
             }
             ui::EndSection(sec);
             break;
@@ -1498,7 +1473,6 @@ void DrawToolUi()
         }
 
         ImGui::EndChild();
-        ImGui::PopStyleColor();
         // The line between the tab column and the content.
         ImGui::GetWindowDrawList()->AddLine(ImVec2(divider_x, tabs_top),
                                             ImVec2(divider_x, std::max(tabs_bottom, ImGui::GetItemRectMax().y)),
@@ -1508,13 +1482,13 @@ void DrawToolUi()
         ImGui::Separator();
         // Always enabled: even with no error kept, the GPU line helps a bug report.
         const bool copied = ElapsedSeconds() < g_copied_until;
-        if (ui::SolidButton(copied ? "Copied!##copylog" : "Copy error log##copylog", ImVec2(196.0f, 0.0f)))
+        if (ui::SolidButton(copied ? "Copied!##copylog" : "Copy error log##copylog", ImVec2(ui::Dp(196.0f), 0.0f)))
             CopyErrorLogToClipboard();
 
         // Build version (a dev build shows "<last release>-dev+<commit>"), so a user can tell
         // which one they run.
-        ImGui::Dummy(ImVec2(0.0f, 4.0f));
-        ImGui::TextDisabled("Version %s", RAV_DISPLAY_VERSION);
+        ImGui::Dummy(ImVec2(0.0f, ui::Dp(4.0f)));
+        ui::Caption("Version " RAV_DISPLAY_VERSION);
     }
 
     ImGui::End();
@@ -1543,20 +1517,24 @@ void DrawToolUi()
     // before the readouts and overlays (which stay on top of it).
     const bool library_view = LibraryViewActive();
     if (library_view)
-        DrawLibraryView(8.0f, 44.0f, std::max(1.0f, static_cast<float>(g_client_w) - 16.0f),
-                        std::max(1.0f, static_cast<float>(g_client_h) - 52.0f));
+        DrawLibraryView(ui::Dp(8.0f), ui::Dp(44.0f), std::max(1.0f, static_cast<float>(g_client_w) - ui::Dp(16.0f)),
+                        std::max(1.0f, static_cast<float>(g_client_h) - ui::Dp(52.0f)));
 
     // FPS readout, top-RIGHT (FR53), anchored with a right-edge pivot so it hugs the corner at
     // any client size. This REPLACES the console FPS log removed in 6.5.2 — no console output.
     // Story 11-4: at the view area's corner, left of the panel button in Video view.
-    const float corner_x = area_right - (video_view ? 46.0f : 10.0f);
-    if (g_fps_overlay_on) {
-        ImGui::SetNextWindowPos(ImVec2(corner_x, 14.0f), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
-        ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
-        if (ImGui::Begin("##fps", nullptr, kReadoutFlags))
-            ImGui::Text("%.0f FPS", g_fps);
+    // 13-14 (C0.4): hidden in the Library view (no 3D view to measure); the other views keep it.
+    const float corner_x = area_right - ui::Dp(video_view ? 46.0f : 10.0f);
+    const float readout_top = ui::Dp(14.0f);
+    const bool  fps_shown = g_fps_overlay_on && !library_view;
+    if (fps_shown) {
+        ImGui::SetNextWindowPos(ImVec2(corner_x, readout_top), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+        if (ImGui::Begin("##fps", nullptr, kReadoutFlags)) {
+            char fps_text[32];
+            std::snprintf(fps_text, sizeof(fps_text), "%.0f FPS", g_fps);
+            ui::ToneText(fps_text, ui::kMuted);
+        }
         ImGui::End();
-        ImGui::PopStyleColor();
     }
 
     // Spec 11-fb-3 — the keyboard icon (Shortcuts popup), left of the FPS readout, centred on
@@ -1564,9 +1542,9 @@ void DrawToolUi()
     // icon does not jitter as the digits change.
     {
         const ImGuiStyle& st = ImGui::GetStyle();
-        const float text_mid = 14.0f + st.WindowPadding.y + ImGui::GetTextLineHeight() * 0.5f;
-        const float fps_w = g_fps_overlay_on
-            ? ImGui::CalcTextSize("000 FPS").x + 2.0f * st.WindowPadding.x + 2.0f : 0.0f;
+        const float text_mid = readout_top + st.WindowPadding.y + ImGui::GetTextLineHeight() * 0.5f;
+        const float fps_w = fps_shown
+            ? ImGui::CalcTextSize("000 FPS").x + 2.0f * st.WindowPadding.x + ui::Dp(2.0f) : 0.0f;
         DrawShortcutsButton(corner_x - fps_w, text_mid, IconTex(g_icon_keyboard));
     }
 
@@ -1575,7 +1553,7 @@ void DrawToolUi()
     DrawVideoViewToggle(area_right * 0.5f);
     if (video_view) {
         DrawVideoFrameDecor(g_video_frame, &CopyErrorLogToClipboard, g_preview_lag_on);
-        DrawVideoPanelButton(area_right - 8.0f);
+        DrawVideoPanelButton(area_right - ui::Dp(8.0f));
         // Story 11-5 -- the shot strip under the viewport (UX decision 4).
         if (VideoStripBand() > 0.0f) {
             const float strip_h = VideoStripHeight(static_cast<float>(g_client_h));
@@ -1592,7 +1570,7 @@ void DrawToolUi()
                          std::max(1.0f, static_cast<float>(g_client_h) - 2.0f * kTaggingGap));
     }
     if (video_view && panel_room > 0.0f) {
-        const float gap = 8.0f;
+        const float gap = ui::Dp(8.0f);
         DrawVideoPanel(area_right + gap, gap, panel_room - 2.0f * gap,
                        std::max(1.0f, static_cast<float>(g_client_h) - 2.0f * gap), g_renderer.Camera(),
                        &CopyErrorLogToClipboard);
@@ -1608,9 +1586,9 @@ void DrawToolUi()
     if (!video_view && !library_view) {
         const float view_w = tagging_view ? area_right : static_cast<float>(g_client_w);
         const float view_h = tagging_view ? ViewBottom() : static_cast<float>(g_client_h);
-        DrawSkeletonOverlay(g_renderer, view_w, view_h, area_right - kNavCubeMargin - kNavCubeSize - 8.0f,
+        DrawSkeletonOverlay(g_renderer, view_w, view_h, area_right - kNavCubeMargin - kNavCubeSize - ui::Dp(8.0f),
                             ViewBottom() - kNavCubeMargin);
-        DrawSkeletonSwitch(kStatusIconMargin, ViewBottom() - kStatusIconMargin - kStatusIconSize - 6.0f);
+        DrawSkeletonSwitch(kStatusIconMargin, ViewBottom() - kStatusIconMargin - kStatusIconSize - ui::Dp(6.0f));
     }
 
     // Load message (AC7) — a brief transient message, top-centre, shown while fresh
@@ -1623,14 +1601,14 @@ void DrawToolUi()
     if (!g_load_msg_title.empty() && ElapsedSeconds() < g_load_msg_until) {
         // Story 11-4: under the view toggle (which owns the top centre now).
         // Spec 11-fb-8: in Video view, below the caption band (not over the captions).
-        ImGui::SetNextWindowPos(ImVec2(area_right * 0.5f, video_view ? VideoTopBand() + 4.0f : 48.0f),
-                                ImGuiCond_Always, ImVec2(0.5f, 0.0f));
-        if (ImGui::Begin("##loadmsg", nullptr, kReadoutFlags & ~ImGuiWindowFlags_NoInputs)) {
+        // 13-14: the theme's floating card.
+        const ImVec2 pos(area_right * 0.5f, video_view ? VideoTopBand() + ui::Dp(4.0f) : ui::Dp(48.0f));
+        if (ui::BeginFloatingCard("##loadmsg", pos, ImVec2(0.5f, 0.0f))) {
             DrawLoadMessageBody();
             if (ImGui::IsWindowHovered() && g_load_msg_until < ElapsedSeconds() + 1.0)
                 g_load_msg_until = ElapsedSeconds() + 1.0;
         }
-        ImGui::End();
+        ui::EndFloatingCard();
     }
 
     // Story 6.5.8 — navigation cube (ViewCube), bottom-right. Drawn in THIS NewFrame/Render
@@ -1931,7 +1909,6 @@ bool StartRendering(HWND hwnd)
                 // Upload Antho's icons (context is current). A 0 handle just means no glyph.
                 g_icon_menu   = UploadIconTexture(kIcon_menu,   kIconSize, kIconSize);
                 g_icon_light  = UploadIconTexture(kIcon_light,  kIconSize, kIconSize);
-                g_icon_color  = UploadIconTexture(kIcon_color,  kIconSize, kIconSize);
                 g_icon_shadow = UploadIconTexture(kIcon_shadow, kIconSize, kIconSize);
                 g_icon_ground = UploadIconTexture(kIcon_ground, kIconSize, kIconSize);
                 g_icon_performance = UploadIconTexture(kIcon_performance, kIconSize, kIconSize);
@@ -1969,7 +1946,6 @@ void StopRendering()
         // current, before the renderer's and before the context itself is dropped.
         if (g_icon_menu)   { glDeleteTextures(1, &g_icon_menu);   g_icon_menu   = 0; }
         if (g_icon_light)  { glDeleteTextures(1, &g_icon_light);  g_icon_light  = 0; }
-        if (g_icon_color)  { glDeleteTextures(1, &g_icon_color);  g_icon_color  = 0; }
         if (g_icon_shadow) { glDeleteTextures(1, &g_icon_shadow); g_icon_shadow = 0; }
         if (g_icon_ground) { glDeleteTextures(1, &g_icon_ground); g_icon_ground = 0; }
         if (g_icon_performance) { glDeleteTextures(1, &g_icon_performance); g_icon_performance = 0; }

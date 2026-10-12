@@ -394,17 +394,6 @@ void Repopulate(ReaProject* proj)
     UpdateArrange();
 }
 
-// The amber in-place confirm's action button (tagging_view_ui.cpp's pattern).
-bool AmberButton(const char* label)
-{
-    ImGui::PushStyleColor(ImGuiCol_Button, ui::Col(ui::kConfirmAct));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ui::Col(ui::kConfirmActHover));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ui::Col(ui::kConfirmAct));
-    ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kConfirmActText));
-    const bool pressed = ImGui::Button(label);
-    ImGui::PopStyleColor(4);
-    return pressed;
-}
 
 const char* KindText(ReportKind k)
 {
@@ -435,8 +424,7 @@ void DrawTracksRow(ReaProject* proj)
     ui::LabelRow("Tracks", ui::Dp(90.0f));
     const std::string label = std::string(kShort[sel]) + " \xE2\x96\xBE##sndtracks";
     if (ui::SolidButton(label.c_str())) ImGui::OpenPopup("##sndtracks");
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-        ImGui::SetTooltip("Applies to new placements. Repopulate (reset) moves the existing ones.");
+    ui::ItemTipText("Applies to new placements. Repopulate (reset) moves the existing ones.");
     if (ui::BeginMenuPopup("##sndtracks")) {
         ui::MenuCaption("PLACED SOUNDS LAND ON");
         for (int i = 0; i < 3; ++i)
@@ -827,56 +815,42 @@ void DrawSoundsMenuSection()
     if (ui::BeginSection(sec, "Sounds")) {
         ReaProject* proj = CurrentProject();
         bool        keep = LoadPrefFloat(kKeepDrawPref, 0.0f) != 0.0f;
-        if (ImGui::Checkbox("Keep the draw on animation copies", &keep)) SavePrefFloat(kKeepDrawPref, keep ? 1.0f : 0.0f);
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-            ImGui::SetTooltip("On: a copied animation item plays the same variations.\nOff: it draws new ones.");
+        if (ui::Checkbox("Keep the draw on animation copies", &keep)) SavePrefFloat(kKeepDrawPref, keep ? 1.0f : 0.0f);
+        ui::ItemTipText("On: a copied animation item plays the same variations.\nOff: it draws new ones.");
         DrawTracksRow(proj);  // 13-13
 
         int                           placed = 0;
         const std::vector<MediaItem*> items = RepopulateItems(proj, &placed);
         if (items.empty()) g_confirm_reset = false;
         if (g_confirm_reset) {
-            ImDrawList* dl = ImGui::GetWindowDrawList();
-            const float w = ImGui::GetContentRegionAvail().x;
-            dl->ChannelsSplit(2);
-            dl->ChannelsSetCurrent(1);
-            const ImVec2 b0 = ImGui::GetCursorScreenPos();
-            ImGui::Indent(6.0f);
-            ImGui::Dummy(ImVec2(0.0f, 2.0f));
+            ui::ConfirmBand band;
+            ui::BeginConfirmBand(band);
             ImGui::Text("Remove %d placed sound%s and populate again?", placed, placed == 1 ? "" : "s");
-            if (AmberButton("Repopulate##sndreset")) {
+            if (ui::ConfirmButton("Repopulate##sndreset")) {
                 g_confirm_reset = false;
                 Repopulate(proj);
             }
             ImGui::SameLine();
             if (ui::SolidButton("Cancel##sndresetcancel")) g_confirm_reset = false;
-            ImGui::Dummy(ImVec2(0.0f, 1.0f));
-            ImGui::Unindent(6.0f);
-            const ImVec2 b1(b0.x + w, ImGui::GetCursorScreenPos().y - ImGui::GetStyle().ItemSpacing.y * 0.5f);
-            dl->ChannelsSetCurrent(0);
-            dl->AddRectFilled(b0, b1, (ui::kConfirmLine & ~IM_COL32_A_MASK) | (0x14u << IM_COL32_A_SHIFT), ui::kRadiusMd);
-            dl->AddRect(b0, b1, ui::kConfirmLine, ui::kRadiusMd);
-            dl->ChannelsMerge();
+            ui::EndConfirmBand(band);
         } else {
             ImGui::BeginDisabled(items.empty());
             if (ui::SolidButton("Repopulate (reset)##sndreset", ImVec2(-1.0f, 0.0f))) g_confirm_reset = true;
             ImGui::EndDisabled();
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))
-                ImGui::SetTooltip(items.empty()
-                                      ? "Select animation items that have sounds"
-                                      : "Removes the populated sounds of the selected animation items,\n"
-                                        "forgets the ones deleted by hand and draws again.\n"
-                                        "Attached and spread sounds stay.");
+            ui::ItemTipText(items.empty() ? "Select animation items that have sounds"
+                                          : "Removes the populated sounds of the selected animation items,\n"
+                                            "forgets the ones deleted by hand and draws again.\n"
+                                            "Attached and spread sounds stay.");
         }
 
         const std::vector<ReportLine> rep = FollowReport(proj);
         if (rep.empty()) {
-            ImGui::TextDisabled("Follow report: nothing to report");
+            ui::Caption("Follow report: nothing to report");
         } else {
             ImGui::Text("Follow report: %d line%s", static_cast<int>(rep.size()), rep.size() == 1 ? "" : "s");
             ImGui::SameLine();
             if (ui::SolidButton("Clear##sndfollowclear")) ClearFollowReport(proj);
-            const float h = std::min(8, static_cast<int>(rep.size())) * ImGui::GetTextLineHeightWithSpacing() + 4.0f;
+            const float h = std::min(8, static_cast<int>(rep.size())) * ImGui::GetTextLineHeightWithSpacing() + ui::Dp(4.0f);
             if (ImGui::BeginChild("##sndfollowreport", ImVec2(-1.0f, h))) {
                 for (auto it = rep.rbegin(); it != rep.rend(); ++it) {
                     if (it->t > 0.0)

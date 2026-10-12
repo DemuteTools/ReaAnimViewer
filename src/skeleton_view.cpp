@@ -30,16 +30,7 @@ namespace {
 // Strings outside ASCII are spelled as UTF-8 escapes (the build has no /utf-8).
 #define RAV_DOT "\xC2\xB7"  // middle dot
 
-constexpr float kPickRadius = 10.0f;
-constexpr ImU32 kKnob = IM_COL32(0xC9, 0xCE, 0xD8, 0xFF);      // the mock-up's --knob grey
-constexpr ImU32 kKnobLine = IM_COL32(0xC9, 0xCE, 0xD8, 0x8C);  // its bone lines (.55)
-constexpr ImU32 kLabelFill = IM_COL32(0x20, 0x23, 0x2A, 0xF2);  // kRaised at .95
-
-constexpr ImGuiWindowFlags kSwitchFlags =
-    ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-    ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize |
-    ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoFocusOnAppearing |
-    ImGuiWindowFlags_NoBackground;
+constexpr float kPickRadius = 10.0f;  // mockup px (Dp at use)
 
 bool        g_skeleton = false;  // Skeleton mode (Model at start)
 std::string g_selected;          // the selected bone's raw name ("" = none)
@@ -110,15 +101,12 @@ void SkeletonViewFrame(const Renderer& r)
 
 void DrawSkeletonSwitch(float left_x, float bottom_y)
 {
-    ImGui::SetNextWindowPos(ImVec2(left_x, bottom_y), ImGuiCond_Always, ImVec2(0.0f, 1.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-    if (ImGui::Begin("##skeletonswitch", nullptr, kSwitchFlags)) {
+    if (ui::BeginOverlay("##skeletonswitch", ImVec2(left_x, bottom_y), ImVec2(0.0f, 1.0f))) {
         static const char* const kModes[2] = {"Model", "Skeleton"};
         int sel = g_skeleton ? 1 : 0;
         if (ui::Segmented("##skelmode", kModes, 2, &sel)) g_skeleton = sel == 1;
     }
-    ImGui::End();
-    ImGui::PopStyleVar();
+    ui::EndOverlay();
 }
 
 void DrawSkeletonOverlay(const Renderer& r, float area_w, float area_h, float hint_right, float hint_bottom)
@@ -133,7 +121,7 @@ void DrawSkeletonOverlay(const Renderer& r, float area_w, float area_h, float hi
         if (!a.meshes.empty()) {
             const char*  t = "No animated skeleton in this file";
             const ImVec2 ts = ImGui::CalcTextSize(t);
-            ImGui::GetBackgroundDrawList()->AddText(ImVec2(std::max(4.0f, hint_right - ts.x), hint_bottom - ts.y),
+            ImGui::GetBackgroundDrawList()->AddText(ImVec2(std::max(ui::Dp(4.0f), hint_right - ts.x), hint_bottom - ts.y),
                                                     ui::kMuted, t);
         }
         return;
@@ -163,7 +151,7 @@ void DrawSkeletonOverlay(const Renderer& r, float area_w, float area_h, float hi
     const TaggingModel& tm = GetTaggingModel();
     const TaggingModel* m = ModelMatches(tm, sk) ? &tm : nullptr;
     g_used.assign(n, 0);
-    ImU32 rule_col = kKnob;
+    ImU32 rule_col = ui::kKnob;
     if (m && TaggingViewActive()) {
         unsigned int c = 0;
         if (TaggingSelectedRuleBones(&g_rule_bones, &c)) {
@@ -179,7 +167,7 @@ void DrawSkeletonOverlay(const Renderer& r, float area_w, float area_h, float hi
     const ImVec2   mouse = io.MousePos;
     int hovered = -1;
     if (!io.WantCaptureMouse && mouse.x >= 0.0f && mouse.y >= 0.0f && mouse.x < area_w && mouse.y < area_h) {
-        hovered = NearestJoint(g_pts, g_vis, OverlayPoint{mouse.x, mouse.y}, kPickRadius);
+        hovered = NearestJoint(g_pts, g_vis, OverlayPoint{mouse.x, mouse.y}, ui::Dp(kPickRadius));
         if (hovered >= 0) {
             ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
             if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
@@ -196,18 +184,18 @@ void DrawSkeletonOverlay(const Renderer& r, float area_w, float area_h, float hi
     for (const auto& s : g_segs) {
         const size_t c = static_cast<size_t>(s.first), p = static_cast<size_t>(s.second);
         if (!g_vis[c] || !g_vis[p]) continue;
-        const ImU32 col = (g_used[c] && g_used[p]) ? rule_col : kKnobLine;
-        dl->AddLine(ImVec2(g_pts[c].x, g_pts[c].y), ImVec2(g_pts[p].x, g_pts[p].y), col, 2.0f);
+        const ImU32 col = (g_used[c] && g_used[p]) ? rule_col : ui::kKnobLine;
+        dl->AddLine(ImVec2(g_pts[c].x, g_pts[c].y), ImVec2(g_pts[p].x, g_pts[p].y), col, ui::Dp(2.0f));
     }
     // Joints: the selected one blue, the rule's bones in its colour, the others grey; the
     // selected and hovered ones drawn last (on top), larger, with a white ring.
     auto joint = [&](size_t i) {
         const bool  sel = static_cast<int>(i) == selected;
         const bool  hov = static_cast<int>(i) == hovered;
-        const ImU32 col = sel ? ui::kAccent : g_used[i] ? rule_col : kKnob;
+        const ImU32 col = sel ? ui::kAccent : g_used[i] ? rule_col : ui::kKnob;
         const ImVec2 c(g_pts[i].x, g_pts[i].y);
-        dl->AddCircleFilled(c, (sel || hov) ? 6.0f : 4.0f, col, 16);
-        if (sel || hov) dl->AddCircle(c, 6.0f, ui::kWhite, 16, 1.5f);
+        dl->AddCircleFilled(c, ui::Dp((sel || hov) ? 6.0f : 4.0f), col, 16);
+        if (sel || hov) dl->AddCircle(c, ui::Dp(6.0f), ui::kWhite, 16, ui::Dp(1.5f));
     };
     for (size_t i = 0; i < n; ++i)
         if (g_vis[i] && static_cast<int>(i) != selected && static_cast<int>(i) != hovered) joint(i);
@@ -220,14 +208,15 @@ void DrawSkeletonOverlay(const Renderer& r, float area_w, float area_h, float hi
         std::string txt = JointLabel(m, sk.bones[static_cast<size_t>(lab)].name, lab);
         if (hovered < 0) txt += " " RAV_DOT " selected";
         const ImVec2 ts = ImGui::CalcTextSize(txt.c_str());
-        const float  w = ts.x + 14.0f, h = ts.y + 6.0f;
-        float x = g_pts[static_cast<size_t>(lab)].x + 10.0f;
-        float y = g_pts[static_cast<size_t>(lab)].y - h - 4.0f;
-        x = std::max(4.0f, std::min(x, area_w - w - 4.0f));
-        y = std::max(4.0f, std::min(y, area_h - h - 4.0f));
-        dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), kLabelFill, 3.0f);
-        dl->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), ui::kStrokeStrong, 3.0f);
-        dl->AddText(ImVec2(x + 7.0f, y + 3.0f), ui::kText, txt.c_str());
+        const float  m = ui::Dp(4.0f);  // the gap to the joint and to the view's edges
+        const float  w = ts.x + ui::Dp(14.0f), h = ts.y + ui::Dp(6.0f);
+        float x = g_pts[static_cast<size_t>(lab)].x + ui::Dp(10.0f);
+        float y = g_pts[static_cast<size_t>(lab)].y - h - m;
+        x = std::max(m, std::min(x, area_w - w - m));
+        y = std::max(m, std::min(y, area_h - h - m));
+        dl->AddRectFilled(ImVec2(x, y), ImVec2(x + w, y + h), ui::kRaisedVeil, ui::Dp(3.0f));
+        dl->AddRect(ImVec2(x, y), ImVec2(x + w, y + h), ui::kStrokeStrong, ui::Dp(3.0f));
+        dl->AddText(ImVec2(x + ui::Dp(7.0f), y + ui::Dp(3.0f)), ui::kText, txt.c_str());
     }
     dl->PopClipRect();
 
@@ -236,7 +225,7 @@ void DrawSkeletonOverlay(const Renderer& r, float area_w, float area_h, float hi
                              : TaggingViewActive() ? g_selected + " selected " RAV_DOT " + in a condition uses it"
                                                    : g_selected + " selected";
     const ImVec2 hs = ImGui::CalcTextSize(hint.c_str());
-    dl->AddText(ImVec2(std::max(4.0f, hint_right - hs.x), hint_bottom - hs.y), ui::kMuted, hint.c_str());
+    dl->AddText(ImVec2(std::max(ui::Dp(4.0f), hint_right - hs.x), hint_bottom - hs.y), ui::kMuted, hint.c_str());
 }
 
 }  // namespace rav

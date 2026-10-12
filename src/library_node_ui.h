@@ -26,6 +26,10 @@
 namespace rav {
 
 void DrawNodePanel();
+// Enters a value typed in a Volume / Detection fader whose panel is not drawn this frame (a Ctrl /
+// Shift-click on another tree row shows the batch panel instead): one undo point on its own node.
+// Called before column 3 draws; a fader left behind longer than a frame is dropped unwritten.
+void SettleNodePanelFaders();
 
 // ---- 13-7b additions ----------------------------------------------------------------------------
 

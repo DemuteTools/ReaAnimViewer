@@ -1170,13 +1170,12 @@ DragNumberEvent DragNumber(const char* id, double* value, double step, int decim
 
 namespace {
 int g_fader_typing_frame = -1;  // the last frame a fader was typed into
-}  // namespace
-
-bool FaderTyping() { return g_fader_typing_frame >= ImGui::GetFrameCount() - 1; }
-
 // The fader whose typing Esc ended, and that frame (FaderCancelled).
 ImGuiID g_fader_cancel_id = 0;
 int     g_fader_cancel_frame = -1;
+}  // namespace
+
+bool FaderTyping() { return g_fader_typing_frame >= ImGui::GetFrameCount() - 1; }
 
 bool FaderCancelled()
 {

@@ -76,6 +76,7 @@ struct PanelState {
     // own node when the node it belongs to is no longer drawn (SettleLostFaders).
     ImGuiID               vol_gid = 0;
     std::string           vol_lib;
+    int                   vol_seen = -1;  // the last frame its fader was drawn active
     std::string           off_uid;
     double                off0 = 0.0, off_live = 0.0;
     double                off_scale = 0.0;  // the lanes' ms at the drag's start (fixed while dragging)
@@ -106,6 +107,7 @@ struct PanelState {
     ImGuiID               detf_gid = 0;
     std::string           detf_lib, detf_uid;
     double SilenceParams::*detf_field = nullptr;
+    int                   detf_seen = -1;  // the last frame its fader was drawn active
     bool                  norm_loaded = false;
     double                norm_db = -1.0;
     bool                  norm_whole = false;
@@ -524,6 +526,7 @@ bool VolumeControl(const char* id, const std::string& lib_uid, const std::string
         P.vol_live = v;
         P.vol_gid = ImGui::GetItemID();
         P.vol_lib = lib_uid;
+        P.vol_seen = ImGui::GetFrameCount();
     }
     if (ImGui::IsItemDeactivated() && P.vol_key == key) {
         P.vol_key.clear();
@@ -1708,7 +1711,12 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
             const bool moved = ui::Fader("##fader", &fv, f.flo, f.fhi);
             const bool active = ImGui::IsItemActive(), released = ImGui::IsItemDeactivated();
             const bool cancelled = released && ui::FaderCancelled();  // Esc after typing
-            if (active || (released && fader_live)) {
+            if (cancelled && fader_live) {
+                // Esc: the draft is dropped, nothing re-detected or written (no undo point).
+                P.detf_key.clear();
+                P.detf_gid = 0;
+                CancelLive();
+            } else if (active || (released && fader_live)) {
                 // Not moved yet: the stored value itself (not its float), so a click alone changes nothing.
                 if (moved) P.detf_live = std::clamp(static_cast<double>(fv), f.lo, f.hi);
                 else if (!fader_live) P.detf_live = d.silence.*(f.field);
@@ -1717,6 +1725,7 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
                 P.detf_lib = lib.uid;
                 P.detf_uid = n.uid;
                 P.detf_field = f.field;
+                P.detf_seen = ImGui::GetFrameCount();
                 // The draft restarts from the store each frame (Live): this field set again, re-detected.
                 SoundData& dr = Live(n);
                 dr.silence.*(f.field) = P.detf_live;
@@ -1724,7 +1733,7 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
                 if (released) {
                     P.detf_key.clear();
                     P.detf_gid = 0;
-                    if (cancelled || dr.silence.*(f.field) == n.sound.silence.*(f.field)) CancelLive();  // no empty undo point
+                    if (dr.silence.*(f.field) == n.sound.silence.*(f.field)) CancelLive();  // no empty undo point
                     else CommitLive("Detection", lib.uid, n.uid);
                     if (P.changed) {
                         ImGui::PopID();
@@ -2726,18 +2735,22 @@ void OpenEditKey(const SoundLibrary& lib, const SoundNode& n)
 }
 
 // A fader typed into whose node is no longer drawn: a click on another tree node took the mouse
-// (the tree is drawn before this panel) and the panel moved to that node in the same frame, so the
-// fader never saw its end. Its value is entered on its own node, as a click elsewhere would (one undo
-// point), and its live state cleared (never shown on another node).
+// (the tree is drawn before this panel) and the panel moved to that node, or to the batch panel, in
+// the same frame, so the fader never saw its end. Its value is entered on its own node, as a click
+// elsewhere would (one undo point), and its live state cleared (never shown on another node).
+// Only a fader drawn last frame (or this one) counts: one left behind longer (the view left, the
+// panel not drawn) is dropped unwritten, never entered minutes later over newer edits.
 void SettleLostFaders()
 {
     const ImGuiID active = ImGui::GetCurrentContext()->ActiveId;
+    const int     frame = ImGui::GetFrameCount();
     if (P.vol_gid != 0 && active != P.vol_gid) {
         const std::string lib_uid = P.vol_lib, uid = P.vol_key;
         const double      v = P.vol_live;
+        const bool        fresh = P.vol_seen >= frame - 1;
         P.vol_gid = 0;
         P.vol_key.clear();
-        const SoundLibrary* l = uid.empty() ? nullptr : FindLibrary(GetSoundStore(nullptr), lib_uid);
+        const SoundLibrary* l = (!fresh || uid.empty()) ? nullptr : FindLibrary(GetSoundStore(nullptr), lib_uid);
         const SoundNode*    nd = l ? FindNode(*l, uid) : nullptr;
         if (nd && std::fabs(v - nd->volume_db) > 1e-4)
             EditNode("Volume", lib_uid, uid, [v](SoundNode& x) {
@@ -2746,10 +2759,11 @@ void SettleLostFaders()
             });
     }
     if (P.detf_gid != 0 && active != P.detf_gid) {
+        const bool fresh = P.detf_seen >= frame - 1;
         P.detf_gid = 0;
         P.detf_key.clear();
         if (!P.live || P.draft_uid != P.detf_uid || !P.detf_field) return;
-        const SoundLibrary* l = FindLibrary(GetSoundStore(nullptr), P.detf_lib);
+        const SoundLibrary* l = fresh ? FindLibrary(GetSoundStore(nullptr), P.detf_lib) : nullptr;
         const SoundNode*    nd = l ? FindNode(*l, P.detf_uid) : nullptr;
         if (nd && P.draft.silence.*(P.detf_field) != nd->sound.silence.*(P.detf_field))
             CommitLive("Detection", P.detf_lib, P.detf_uid);
@@ -2836,6 +2850,13 @@ void DrawNodePanel()
 {
     NodePanelWidgets();
     g_picks.Run();  // the gestures picked above, the panel and the Edit overlay drawn
+}
+
+void SettleNodePanelFaders()
+{
+    P.changed = false;
+    SettleLostFaders();
+    g_picks.Run();
 }
 
 }  // namespace rav

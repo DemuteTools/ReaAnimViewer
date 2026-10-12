@@ -510,15 +510,15 @@ struct FaderOpts {
 bool Fader(const char* id, float* v, float v_min, float v_max, float width, const FaderOpts& o);
 // 13-14 (finishing): Ctrl+click types a value (as ImGui's slider): a raised mono field (accent-line edge)
 // takes the track's place, the value applied as typed (within v_min..v_max); Enter or a click elsewhere
-// ends it, Esc restores the value it had. The field keeps the fader's id, so the whole gesture -- click,
-// typing, end -- is one active item: IsItemActive while typing, IsItemDeactivated once at its end (one
-// undo point). `id` must be an id only ("##v"): it is the field's label. Its text is the value in
+// ends it, Esc puts *v back to the float it held when typing began (FaderCancelled). The field keeps
+// the fader's id, so the whole gesture -- click, typing, end -- is one active item: IsItemActive while
+// typing, IsItemDeactivated once at its end (one undo point). `id` must be an id only ("##v"): it is the field's label. Its text is the value in
 // `format` without its decorations ("45" for "%.0f°"), "%.2f" with no format.
 // FaderTyping: true while a fader is typed into (no mouse button held: a live edit must not end).
 bool FaderTyping();
 // FaderCancelled: right after a Fader, true on the frame Esc ended its typing. *v is then back to the
-// exact value it had when typing began (not the field's rounded text) and the gesture deactivates
-// (IsItemDeactivated): a caller drops its draft there and writes no undo point.
+// float it held when typing began (not the field's rounded text) and the gesture deactivates
+// (IsItemDeactivated): a caller must then skip its write (drop its draft, no undo point).
 bool FaderCancelled();
 
 // 13-7 (B7) text fields. All take the room left when `width` is 0 (else min(width, room left)).

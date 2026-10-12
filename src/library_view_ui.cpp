@@ -90,6 +90,7 @@ void DrawColumn(int i)
         break;
     case 1: DrawLibraryTree(); break;
     case 2:
+        SettleNodePanelFaders();  // a fader typed into before a click on the tree ended it
         if (SelectedLibraryRows().size() > 1) {
             DrawLibraryBatchPanel();
         } else {

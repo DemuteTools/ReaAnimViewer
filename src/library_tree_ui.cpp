@@ -48,6 +48,9 @@ struct TreeState {
     std::string              lib;
     std::vector<LibraryRow>  sel;
     LibraryRow               anchor;
+    // 13-17d: the row an arrow key moved to, scrolled into view when drawn.
+    LibraryRow               scroll_to;
+    bool                     has_scroll_to = false;
     bool                     has_anchor = false;
     std::set<std::string>    closed;  // the containers the user folded (every container starts open)
     std::vector<TreeRow>     rows;  // last frame's visible rows
@@ -955,7 +958,16 @@ void DrawRow(const SoundLibrary& lib, const TreeRow& r, size_t index)
 {
     ImGui::PushID(static_cast<int>(index));
     ImGui::PushID(r.row.key.c_str());
+    const float y0 = ImGui::GetCursorScreenPos().y;
     DrawRowBody(lib, r);
+    if (g.has_scroll_to && r.row == g.scroll_to && !g.changed) {  // 13-17d: the arrow keys' row in view
+        g.has_scroll_to = false;
+        const float  y1 = std::max(y0 + 1.0f, ImGui::GetCursorScreenPos().y);
+        const ImVec2 wp = ImGui::GetWindowPos();
+        const float  wh = ImGui::GetWindowHeight();
+        if (y0 < wp.y) ImGui::SetScrollFromPosY(y0 - wp.y, 0.0f);
+        else if (y1 > wp.y + wh) ImGui::SetScrollFromPosY(y1 - wp.y, 1.0f);
+    }
     ImGui::PopID();
     ImGui::PopID();
 }
@@ -1184,6 +1196,49 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
     ImGui::Dummy(ImVec2(0.0f, 0.0f));
 }
 
+// 13-17d (Antho 2026-10-13): the arrow keys walk the tree's rows (last frame's g.rows). Up / Down:
+// the row above / below (none selected: the first). Right: opens a folded container, else goes to
+// its first child. Left: folds an open container, else goes to the parent's row.
+void ArrowKeys()
+{
+    const bool up = ImGui::IsKeyPressed(ImGuiKey_UpArrow), down = ImGui::IsKeyPressed(ImGuiKey_DownArrow);
+    const bool left = ImGui::IsKeyPressed(ImGuiKey_LeftArrow), right = ImGui::IsKeyPressed(ImGuiKey_RightArrow);
+    if (!up && !down && !left && !right) return;
+    auto pickable = [](const TreeRow& r) { return r.kind == TreeRowKind::Node || r.kind == TreeRowKind::Value; };
+    int cur = -1;
+    if (!g.sel.empty())
+        for (size_t i = 0; i < g.rows.size(); ++i)
+            if (g.rows[i].row == g.sel.back()) cur = static_cast<int>(i);
+    const int n = static_cast<int>(g.rows.size());
+    auto go = [&](int i) {
+        if (i < 0 || i >= n) return;
+        SelectOnly(g.rows[static_cast<size_t>(i)].row);
+        g.scroll_to = g.rows[static_cast<size_t>(i)].row;
+        g.has_scroll_to = true;
+    };
+    if (cur < 0) {
+        for (int i = 0; i < n; ++i)
+            if (pickable(g.rows[static_cast<size_t>(i)])) return go(i);
+        return;
+    }
+    const TreeRow& r = g.rows[static_cast<size_t>(cur)];
+    if (up || down) {
+        const int step = down ? 1 : -1;
+        for (int i = cur + step; i >= 0 && i < n; i += step)
+            if (pickable(g.rows[static_cast<size_t>(i)])) return go(i);
+    } else if (right) {
+        if (r.container && !r.open) g.closed.erase(r.node);
+        else if (r.container && cur + 1 < n && g.rows[static_cast<size_t>(cur + 1)].depth > r.depth &&
+                 pickable(g.rows[static_cast<size_t>(cur + 1)]))
+            go(cur + 1);
+    } else if (r.container && r.open) {
+        g.closed.insert(r.node);
+    } else {
+        for (int i = cur - 1; i >= 0; --i)
+            if (g.rows[static_cast<size_t>(i)].depth < r.depth && pickable(g.rows[static_cast<size_t>(i)])) return go(i);
+    }
+}
+
 // The keys of decision 7, while the Library view has the focus and no field takes them.
 void TreeKeys(const SoundLibrary& lib)
 {
@@ -1207,6 +1262,8 @@ void TreeKeys(const SoundLibrary& lib)
     } else if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
         if (g.hooks.stop) g.hooks.stop();
         g.clip.clear();
+    } else if (!io.KeyCtrl && !io.KeyShift) {
+        ArrowKeys();
     }
 }
 
@@ -2159,6 +2216,11 @@ std::string LibraryRowNode()
 }
 
 void SetLibraryTreeHooks(const LibraryTreeHooks& hooks) { g.hooks = hooks; }
+
+bool LibraryTreeTakesArrows()
+{
+    return g.tree_focused && g.rename == RenameKind::None && !g.rows.empty();
+}
 const LibraryTreeHooks& GetLibraryTreeHooks() { return g.hooks; }
 
 }  // namespace rav

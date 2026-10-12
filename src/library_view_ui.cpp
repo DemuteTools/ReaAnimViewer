@@ -309,6 +309,8 @@ bool LibraryViewTakesKey(unsigned vk, bool ctrl, bool shift, bool alt)
     constexpr unsigned kDelete = 0x2E, kF2 = 0x71, kSpace = 0x20, kEscape = 0x1B;
     if (!ctrl && !shift && (vk == 0x26 || vk == 0x28) && !g_view.media_collapsed && MediaPanelTakesArrows())
         return true;  // 13-7c: Up/Down move the Media Explorer's row
+    if (!ctrl && !shift && vk >= 0x25 && vk <= 0x28 && LibraryTreeTakesArrows())
+        return true;  // 13-17d: the arrow keys walk the node tree
     if (ctrl) return !shift && (vk == 'B' || vk == 'D' || vk == 'X' || vk == 'V');
     return vk == kDelete || vk == kF2 || vk == kSpace || vk == kEscape;
 }

@@ -56,6 +56,8 @@ struct LibraryTreeHooks {
     std::function<void(const std::string& lib, const LibraryRow& row, const void* data, int size)> media_drop;
 };
 void SetLibraryTreeHooks(const LibraryTreeHooks& hooks);
+// 13-17d: the tree has the focus (its rows walk with the arrow keys; REAPER must not take them).
+bool LibraryTreeTakesArrows();
 // The hooks set now (13-7b merges its play / stop / is_lit into them; 13-7c
 // re-applies its media fields over what another story set).
 const LibraryTreeHooks& GetLibraryTreeHooks();

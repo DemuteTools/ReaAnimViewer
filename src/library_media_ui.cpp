@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cfloat>
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
@@ -922,9 +923,10 @@ void ApplyHooks()
     SetLibraryTreeHooks(n);
 }
 
-// ---- Drawing helpers (Latin-1 default font: glyphs outside it drawn as shapes, 13-7a B8) --------
+// ---- Drawing helpers (13-7c: the mockup's .fav star, .wave and .vbox) ---------------------------
 
-void DrawStar(ImDrawList* dl, ImVec2 c, float r, bool on)
+// The favourite star (.fav): drawn, outlined in `col` when off, filled in warn when on.
+void DrawStar(ImDrawList* dl, ImVec2 c, float r, bool on, ImU32 col)
 {
     ImVec2 pts[10];
     for (int i = 0; i < 10; ++i) {
@@ -938,18 +940,20 @@ void DrawStar(ImDrawList* dl, ImVec2 c, float r, bool on)
         ImVec2 inner[5] = {pts[1], pts[3], pts[5], pts[7], pts[9]};
         dl->AddConvexPolyFilled(inner, 5, ui::kWarn);
     } else {
-        dl->AddPolyline(pts, 10, ui::kFaint, ImDrawFlags_Closed, 1.0f);
+        dl->AddPolyline(pts, 10, col, ImDrawFlags_Closed, 1.0f);
     }
 }
 
-// The waveform, coloured like the Sound panel's (13-7b DrawWaveform): variations tinted accent
-// (~9 %, ~18 % selected) with accent edges, peaks in text inside a variation and faint outside,
-// past full scale in the clip colour; the variation number on top; a white playhead (file time,
-// -1 = none).
 ImU32 MediaAlpha(ImU32 c, unsigned a) { return (c & ~IM_COL32_A_MASK) | (static_cast<ImU32>(a) << IM_COL32_A_SHIFT); }
 
+// The waveform (the mockup's .wave, DECISIONS section 6): kBg, 1 px stroke edge, r5. The peaks are
+// neutral (muted), accent inside the selected variations, past full scale in the clip colour.
+// Each variation is a box (.vbox): inset 2 px top and bottom, 1 px stroke-strong edge r3, accent
+// at ~9 % (~13 % under the mouse); a selected one at ~18 % with an accent edge and an inner
+// accent-line edge. Its number in mono 9 at (3, 1), muted (selected: accent text). The playhead
+// is a 1 px text-coloured line (file time, -1 = none). `hover`: the box under the mouse, -1 none.
 void DrawMediaWaveform(ImDrawList* dl, ImVec2 p0, ImVec2 p1, const Analysis& an, const std::vector<int>& vsel,
-                       double playhead)
+                       double playhead, int hover = -1)
 {
     dl->AddRectFilled(p0, p1, ui::kBg, ui::kRadiusSm);
     const float  w = p1.x - p0.x, h = p1.y - p0.y, mid = (p0.y + p1.y) * 0.5f;
@@ -961,14 +965,17 @@ void DrawMediaWaveform(ImDrawList* dl, ImVec2 p0, ImVec2 p1, const Analysis& an,
     dl->PushClipRect(p0, p1, true);
     auto X = [&](double t) { return p0.x + static_cast<float>(t / len) * w; };
     auto Sel = [&](int i) { return std::find(vsel.begin(), vsel.end(), i) != vsel.end(); };
+    const float inset = ui::Dp(2.0f), r3 = ui::Dp(3.0f);
     for (size_t i = 0; i < an.frames.size(); ++i) {
         const SoundFrame& f = an.frames[i];
-        dl->AddRectFilled(ImVec2(X(f.start), p0.y), ImVec2(X(f.start + f.length), p1.y),
-                          MediaAlpha(ui::kAccent, Sel(static_cast<int>(i)) ? 0x2E : 0x17));
+        const int         k = static_cast<int>(i);
+        const unsigned    a = Sel(k) ? 0x2E : (k == hover ? 0x21 : 0x17);  // 18 % / 13 % / 9 %
+        dl->AddRectFilled(ImVec2(X(f.start), p0.y + inset), ImVec2(X(f.start + f.length), p1.y - inset),
+                          MediaAlpha(ui::kAccent, a), r3);
     }
     if (an.ready && an.peaks.rate > 0.0 && !an.peaks.max_abs.empty()) {
         const size_t n = an.peaks.max_abs.size();
-        const float  hh = h * 0.5f - 2.0f;
+        const float  hh = h * 0.5f - ui::Dp(4.0f);
         for (int x = 0; x < static_cast<int>(w); ++x) {
             const double t0 = len * x / w, t1 = len * (x + 1) / w;
             size_t       i0 = static_cast<size_t>(t0 * an.peaks.rate), i1 = static_cast<size_t>(t1 * an.peaks.rate);
@@ -977,27 +984,48 @@ void DrawMediaWaveform(ImDrawList* dl, ImVec2 p0, ImVec2 p1, const Analysis& an,
             for (size_t i = i0; i < i1 && i < n; ++i) m = std::max(m, an.peaks.max_abs[i]);
             const float amp = std::min(1.0f, m) * hh;
             const int   fi = FrameAt(an.frames, (t0 + t1) * 0.5);
-            const ImU32 col = m > 1.0f ? kLibMissing : fi >= 0 ? ui::kText : ui::kFaint;
+            const ImU32 col = m > 1.0f ? kLibMissing : (fi >= 0 && Sel(fi)) ? ui::kAccent : ui::kMuted;
             dl->AddLine(ImVec2(p0.x + x + 0.5f, mid - amp), ImVec2(p0.x + x + 0.5f, mid + amp + 1.0f), col);
         }
     } else {
-        const char* t = an.ready ? "No audio" : "Reading...";
-        ImVec2      ts = ImGui::CalcTextSize(t);
-        dl->AddText(ImVec2((p0.x + p1.x - ts.x) * 0.5f, mid - ts.y * 0.5f), ui::kFaint, t);
+        const char*  t = an.ready ? "No audio" : "Reading...";
+        ImFont*      sf = ui::FontSmall();
+        const ImVec2 ts = ui::TextSizeIn(sf, t);
+        ui::AddTextIn(dl, sf, ImVec2((p0.x + p1.x - ts.x) * 0.5f, mid - ts.y * 0.5f), ui::kFaint, t);
     }
+    ImFont* nf = ui::FontMonoMicro();
     for (size_t i = 0; i < an.frames.size(); ++i) {
         const SoundFrame& f = an.frames[i];
-        const bool  sel = Sel(static_cast<int>(i));
-        const float xa = X(f.start), xb = X(f.start + f.length);
-        dl->AddLine(ImVec2(xa, p0.y), ImVec2(xa, p1.y), sel ? ui::kAccent : ui::kAccentLine);
-        dl->AddLine(ImVec2(xb, p0.y), ImVec2(xb, p1.y), sel ? ui::kAccent : ui::kAccentLine);
+        const bool   sel = Sel(static_cast<int>(i));
+        const float  xa = X(f.start), xb = X(f.start + f.length);
+        const ImVec2 a(xa, p0.y + inset), b(xb, p1.y - inset);
+        if (sel) {
+            dl->AddRect(a, b, ui::kAccent, r3);
+            dl->AddRect(ImVec2(a.x + 1.0f, a.y + 1.0f), ImVec2(b.x - 1.0f, b.y - 1.0f), ui::kAccentLine, r3);
+        } else {
+            dl->AddRect(a, b, ui::kStrokeStrong, r3);
+        }
         char num[16];
         std::snprintf(num, sizeof num, "%d", static_cast<int>(i) + 1);
-        if (xb - xa > 12.0f) dl->AddText(ImVec2(xa + 3.0f, p0.y + 1.0f), sel ? ui::kAccent : ui::kMuted, num);
+        const ImVec2 ns = ui::TextSizeIn(nf, num);
+        if (xb - xa > ns.x + ui::Dp(6.0f))
+            ui::AddTextIn(dl, nf, ImVec2(xa + ui::Dp(3.0f), a.y + ui::Dp(1.0f)), sel ? ui::kAccentText : ui::kMuted, num);
     }
-    if (playhead >= 0.0) dl->AddLine(ImVec2(X(playhead), p0.y), ImVec2(X(playhead), p1.y), ui::kWhite, 1.5f);
+    if (playhead >= 0.0) {
+        const float px = std::floor(X(playhead)) + 0.5f;
+        dl->AddLine(ImVec2(px, p0.y), ImVec2(px, p1.y), ui::kText, 1.0f);
+    }
     dl->PopClipRect();
     dl->AddRect(p0, p1, ui::kStroke, ui::kRadiusSm);
+}
+
+// The variation under the mouse in a waveform at p0..p1 (-1: none, or the mouse is elsewhere).
+int HoveredFrame(ImVec2 p0, ImVec2 p1, const Analysis& an)
+{
+    if (!an.ready || !(an.length > 0.0) || p1.x - p0.x < 4.0f) return -1;
+    if (!ImGui::IsWindowHovered() || !ImGui::IsMouseHoveringRect(p0, p1)) return -1;
+    const double t = std::clamp((ImGui::GetIO().MousePos.x - p0.x) / (p1.x - p0.x), 0.0f, 1.0f) * an.length;
+    return FrameAt(an.frames, t);
 }
 
 void PlayFile(const DbFile& f)
@@ -1015,72 +1043,77 @@ void PlayFrame(int i)
 
 // ---- Sections ------------------------------------------------------------------------------------
 
-void DrawHeader()
+// The databases' status, the card header's faint suffix ("405112 files - 4 databases").
+std::string HeaderStatus()
 {
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    ImGui::AlignTextToFramePadding();
-    ImGui::TextUnformatted("Media Explorer");
-    const MediaDbInfo& info = g.info;
-    std::string status;
-    if (!MediaDbReady()) status = "Loading...";
-    else {
-        char buf[96];
-        std::snprintf(buf, sizeof buf, "%zu files \xC2\xB7 %zu database%s", info.files, info.databases.size(),
-                      info.databases.size() == 1 ? "" : "s");
-        status = buf;
+    if (!MediaDbReady()) return "Loading...";
+    char buf[96];
+    std::snprintf(buf, sizeof buf, "%zu files \xC2\xB7 %zu database%s", g.info.files, g.info.databases.size(),
+                  g.info.databases.size() == 1 ? "" : "s");
+    return buf;
+}
+
+// How many of the header's buttons fit a card `inner_w` wide (the title keeps ~40 px):
+// 3 = reload, collapse and speaker; 2 drops reload first; 1 keeps the speaker only.
+int HeaderButtons(float inner_w)
+{
+    const float sz = ui::ControlH(), sp = ImGui::GetStyle().ItemSpacing.x;
+    for (int n = 3; n > 1; --n)
+        if (inner_w >= n * sz + (n - 1) * sp + ui::Dp(8.0f) + ui::Dp(40.0f)) return n;
+    return 1;
+}
+
+float HeaderButtonsWidth(int n)
+{
+    return n * ui::ControlH() + (n - 1) * ImGui::GetStyle().ItemSpacing.x;
+}
+
+// The card header's right slot (.secx.me .secx-h): a quiet reload (RAV only), the collapse ">>"
+// (.colbtn) and the auto-play speaker (.btn.sm.ico.spk: accent on accent-soft when on).
+void DrawHeaderButtons(int n)
+{
+    if (n >= 3) {
+        if (ui::IconOnlyButton("##mereload", "\xE2\x86\xBB", "Read REAPER's media databases again")) {
+            MediaDbStartLoad(ResourcePath());
+            g.exists.Clear();  // files moved since are checked again
+            g.info_ready = false;
+            g.favs_loaded = false;  // favourites edited in REAPER's Media Explorer since are read again
+        }
+        ImGui::SameLine();
     }
-    // A narrow column: each part that does not fit goes to the next line, the status is
-    // ellipsized when even a line of its own is too short (ui_flow: nothing clipped).
-    const float sp_x = ImGui::GetStyle().ItemSpacing.x;
-    ui::SameLineIfFits(ui::TextWidth(status.c_str()));
-    ui::FitText(status, ui::kMuted);
-    // Right side: the auto-play toggle, then Reload, right-aligned.
-    const float rw = ui::ButtonWidth("Reload");
-    const float sz = ImGui::GetFrameHeight();
-    if (ui::SameLineIfFits(rw + sz + sp_x))
-        ImGui::SetCursorScreenPos(ImVec2(std::max(ImGui::GetCursorScreenPos().x, ui::LineRight() - rw - sz - sp_x),
-                                         ImGui::GetCursorScreenPos().y));
-    ImVec2 sp = ImGui::GetCursorScreenPos();
-    if (ImGui::InvisibleButton("##meauto", ImVec2(sz, sz))) {
+    if (n >= 2) {
+        if (ui::IconOnlyButton("##mecollapse", "\xC2\xBB", "Collapse the Media Explorer")) SetLibraryMediaCollapsed(true);
+        ImGui::SameLine();
+    }
+    ui::Icon spk;
+    spk.fn = &DrawLibraryGlyph;
+    spk.which = kGlyphSpeaker;
+    spk.col = ui::kMuted;
+    if (ui::IconOnlyButton("##meauto", spk, g.autoplay ? "Auto-play on select: on" : "Auto-play on select: off", 0.0f,
+                           g.autoplay)) {
         g.autoplay = !g.autoplay;
         SavePrefBool(kAutoPref, g.autoplay);
     }
-    const bool hov = ImGui::IsItemHovered();
-    if (g.autoplay || hov)
-        dl->AddRectFilled(sp, ImVec2(sp.x + sz, sp.y + sz), g.autoplay ? ui::kAccentSoft : ui::kHover, ui::kRadiusSm);
-    // The mock-up's .btn.ico.spk: ICON_SPK at 14 px, accent on accent-soft when on, muted when off.
-    const float is = 14.0f;
-    DrawLibraryGlyph(dl, ImVec2(sp.x + (sz - is) * 0.5f, sp.y + (sz - is) * 0.5f), is, kGlyphSpeaker,
-                     g.autoplay ? ui::kAccent : ui::kMuted);
-    if (hov) ImGui::SetTooltip("Auto-play on select: %s", g.autoplay ? "on" : "off");
-    ImGui::SameLine();
-    if (ui::SolidButton("Reload")) {
-        MediaDbStartLoad(ResourcePath());
-        g.exists.Clear();  // files moved since are checked again
-        g.info_ready = false;
-        g.favs_loaded = false;  // favourites edited in REAPER's Media Explorer since are read again
-    }
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Read REAPER's media databases again");
 }
 
+// The search row (.me-search): the dark field (input.txt) and the database filter (select) at its
+// natural width beside it; under ~120 px of field the filter goes under it, both full width.
 void DrawSearch()
 {
-    const float cw = 120.0f;
-    const float avail = ImGui::GetContentRegionAvail().x;
-    // Under ~260 px the filter goes under the search field, both full width (nothing clipped).
-    const bool  stack = avail < 140.0f + cw + ImGui::GetStyle().ItemSpacing.x;
-    ImGui::SetNextItemWidth(stack ? avail : avail - cw - ImGui::GetStyle().ItemSpacing.x);
-    if (ImGui::InputTextWithHint("##mesearch", "Search media databases", g.query, sizeof g.query)) {
-        g.edited_at = ImGui::GetTime();
-    }
-    if (!stack) ImGui::SameLine();
-    ImGui::SetNextItemWidth(stack ? avail : cw);
-    const int   ndb = static_cast<int>(g.info.databases.size());
+    const int ndb = static_cast<int>(g.info.databases.size());
     if (g.filter > ndb + 1) g.filter = 0;
-    std::string preview = g.filter == 0 ? "All" : g.filter == ndb + 1 ? "Favourites" : g.info.databases[g.filter - 1].name;
-    if (ImGui::BeginCombo("##medb", preview.c_str())) {
+    const std::string preview =
+        g.filter == 0 ? "All" : g.filter == ndb + 1 ? "Favourites" : g.info.databases[g.filter - 1].name;
+    const float sp = ImGui::GetStyle().ItemSpacing.x;
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const float cw = std::min(std::max(ui::Dp(70.0f), ui::TextWidth(preview.c_str()) + ui::Dp(28.0f)), ui::Dp(160.0f));
+    const bool  stack = avail < ui::Dp(120.0f) + sp + cw;
+    if (ui::TextField("##mesearch", "Search media databases", g.query, sizeof g.query, stack ? avail : avail - cw - sp))
+        g.edited_at = ImGui::GetTime();
+    if (!stack) ImGui::SameLine();
+    if (ui::BeginComboStyled("##medb", preview.c_str(), stack ? avail : cw)) {
         for (int i = 0; i <= ndb + 1; ++i) {
-            std::string label = i == 0 ? "All" : i == ndb + 1 ? "Favourites" : g.info.databases[i - 1].name;
+            const std::string label = i == 0 ? "All" : i == ndb + 1 ? "Favourites" : g.info.databases[i - 1].name;
             ImGui::PushID(i);
             if (ImGui::Selectable(label.c_str(), g.filter == i) && g.filter != i) {
                 g.filter = i;
@@ -1088,13 +1121,30 @@ void DrawSearch()
             }
             ImGui::PopID();
         }
-        ImGui::EndCombo();
+        ui::EndComboStyled();
     }
 }
 
+// A result row's height (.frow.res: pad 3 8 4 around a 12 px line), rows flush.
+float ResultRowH()
+{
+    return std::round(std::max(ImGui::GetTextLineHeight(), ui::FontSemibold()->FontSize) + ui::Dp(7.0f));
+}
+
+// The results (.res-list): a dark box (kBg, 1 px stroke, r5), one flush row per file: the star
+// (.fav: faint, warn when on or under the mouse) and the name in semibold 12 (ellipsized, faint
+// when missing). Rows: every other one kRowAlt, hover raised, selected accent-soft with a 2 px
+// accent bar, the previewed file (not selected) a 2 px accent-line bar.
 void DrawResults(float h)
 {
-    if (!ImGui::BeginChild("##meresults", ImVec2(0.0f, h), ImGuiChildFlags_Border)) {
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ui::Col(ui::kBg));
+    ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStroke));
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, ui::kRadiusSm);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(1.0f, 1.0f));  // rows inside the 1 px edge
+    const bool shown = ImGui::BeginChild("##meresults", ImVec2(0.0f, h), ImGuiChildFlags_Borders);
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(2);
+    if (!shown) {
         ImGui::EndChild();
         return;
     }
@@ -1106,28 +1156,37 @@ void DrawResults(float h)
         else if (g.filter == ndb + 1) hint = "No favourite matches";
         else if (g.query[0] == 0) hint = "No file in this database";
         else hint = std::string("No file matches \"") + g.query + "\"";
-        ui::SubText(hint.c_str());
+        ImGui::SetCursorPos(ImVec2(ui::Dp(8.0f), ui::Dp(6.0f)));
+        ImGui::PushTextWrapPos(std::max(ui::Dp(8.0f) + 1.0f, ImGui::GetContentRegionMax().x - ui::Dp(8.0f)));
+        ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
+        ImGui::TextUnformatted(hint.c_str());
+        ImGui::PopStyleColor();
+        ImGui::PopTextWrapPos();
         ImGui::EndChild();
         return;
     }
-    ImDrawList*   dl = ImGui::GetWindowDrawList();
-    const float   lh = ImGui::GetTextLineHeight();
-    const float   rh = lh + 6.0f;  // one line: star + name (the file's info sits above the waveform)
-    const float   stride = rh + ImGui::GetStyle().ItemSpacing.y;  // a row's height plus the gap to the next
-    const float   w = ImGui::GetContentRegionAvail().x;
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    ImFont*     bf = ui::FontSemibold();
+    const float rh = ResultRowH();  // one line: star + name (the file's info sits above the waveform)
+    const float w = ImGui::GetContentRegionAvail().x;
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 0.0f));  // rows flush
     if (g.scroll_to >= 0) {  // the keyboard row is kept in view (the clipper skips hidden rows)
-        const float y = g.scroll_to * stride, top = ImGui::GetScrollY(), vh = ImGui::GetWindowHeight();
+        const float y = g.scroll_to * rh, top = ImGui::GetScrollY(), vh = ImGui::GetWindowHeight();
         const float pad = ImGui::GetStyle().WindowPadding.y * 2.0f;
         if (y < top) ImGui::SetScrollY(y);
         else if (y + rh > top + vh - pad) ImGui::SetScrollY(y + rh - vh + pad);
         g.scroll_to = -1;
     }
+    const float star_x = ui::Dp(17.0f), star_hit = ui::Dp(26.0f), name_dx = ui::Dp(29.0f);
     ImGuiListClipper clip;
-    clip.Begin(static_cast<int>(g.results.size()) + (g.capped ? 1 : 0), stride);
+    clip.Begin(static_cast<int>(g.results.size()) + (g.capped ? 1 : 0), rh);
     while (clip.Step()) {
         for (int i = clip.DisplayStart; i < clip.DisplayEnd; ++i) {
             if (i >= static_cast<int>(g.results.size())) {
-                ui::SubText("1000+ files: type more words to narrow");
+                const ImVec2 p = ImGui::GetCursorScreenPos();
+                ui::EllipsisText(dl, ImVec2(p.x + ui::Dp(8.0f), p.y + (rh - ImGui::GetTextLineHeight()) * 0.5f),
+                                 p.x + w - ui::Dp(8.0f), ui::kMuted, "1000+ files: type more words to narrow");
+                ImGui::Dummy(ImVec2(w, rh));
                 continue;
             }
             const DbFile& f = *g.results[i];
@@ -1136,18 +1195,18 @@ void DrawResults(float h)
             const bool    sel = IsSelected(f.path);
             const bool    cur = g.has_cur && g.cur.path == f.path;  // the previewed file = the keyboard row
             ImGui::PushID(i);
-            ImVec2 p = ImGui::GetCursorScreenPos();
-            // Selected rows (current and Ctrl-selected) tinted accent, the current one with an accent
-            // bar; drawn here, not left to the theme's Header colour.
-            if (sel || cur) dl->AddRectFilled(p, ImVec2(p.x + w, p.y + rh), ui::kAccentSoft);
-            else if (i % 2) dl->AddRectFilled(p, ImVec2(p.x + w, p.y + rh), ui::kRaised);
-            if (cur) dl->AddRectFilled(p, ImVec2(p.x + 3.0f, p.y + rh), ui::kAccent);
+            const ImVec2 p = ImGui::GetCursorScreenPos();
             ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
+            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0, 0, 0, 0));
+            ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0, 0, 0, 0));
             const bool clicked = ImGui::Selectable("##r", sel, ImGuiSelectableFlags_AllowDoubleClick, ImVec2(w, rh));
-            ImGui::PopStyleColor();
+            ImGui::PopStyleColor(3);
+            const bool hov = ImGui::IsItemHovered();
+            unsigned   bits = ui::kRowBarSelect | (sel ? ui::kRowSelected : (cur ? ui::kRowCurrent : 0u)) |
+                            ((i % 2) ? ui::kRowEven : 0u) | (hov ? ui::kRowHovered : 0u);
+            ui::RowBackground(dl, p, ImVec2(p.x + w, p.y + rh), bits, 0.0f);
             const bool dbl = clicked && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
-            const ImVec2 star_c(p.x + 9.0f, p.y + 3.0f + lh * 0.5f);
-            const bool on_star = ImGui::GetIO().MousePos.x < p.x + 18.0f;
+            const bool on_star = ImGui::GetIO().MousePos.x < p.x + star_hit;
             if (clicked && on_star) {
                 if (!dbl) ToggleFav(f.path);  // the double-click's second press would undo the first
             } else if (dbl && !miss) {
@@ -1183,15 +1242,17 @@ void DrawResults(float h)
                 }
                 BeginDrag(picks, picks.size() > 1 ? std::to_string(picks.size()) + " files" : MediaFileName(f.path));
             }
-            const ImU32 tc = miss ? ui::kFaint : ui::kText;
-            DrawStar(dl, star_c, 5.5f, IsFav(f.path));
-            const std::string name = MediaFileName(f.path);
-            const float name_x = p.x + 20.0f, right = p.x + w - 4.0f;
-            ui::EllipsisText(dl, ImVec2(name_x, p.y + 3.0f), right, tc, name);
-            ui::EllipsisText(dl, ImVec2(name_x + 0.6f, p.y + 3.0f), right, tc, name);  // bold
+            DrawStar(dl, ImVec2(p.x + star_x, std::floor(p.y + rh * 0.5f) + 0.5f), ui::Dp(5.0f), IsFav(f.path),
+                     hov && on_star ? ui::kWarn : ui::kFaint);
+            {
+                ui::FontScope fs(bf);
+                ui::EllipsisText(dl, ImVec2(p.x + name_dx, std::floor(p.y + (rh - bf->FontSize) * 0.5f)),
+                                 p.x + w - ui::Dp(8.0f), miss ? ui::kFaint : ui::kText, MediaFileName(f.path));
+            }
             ImGui::PopID();
         }
     }
+    ImGui::PopStyleVar();
     ImGui::EndChild();
 }
 
@@ -1204,105 +1265,120 @@ const char* PreviewStatus()
     return "";
 }
 
-// The current file's info, above the waveform: name (+ status, gear) on line 1, then format,
-// length and database / library (wrapped), then the description (wrapped). Measured with the
-// same code that draws it, so the panel's height reserve agrees.
-struct InfoLines {
-    std::string meta, desc;
-};
+// The empty preview's hint (.sub) above an empty 60 px box.
+const char* kPreviewHint = "Click a result to see and hear it";
 
-InfoLines CurrentInfo()
+// The current file's info, above the waveform (DECISIONS section 6, the mockup's typography): line 1 the
+// name in semibold 12 (ellipsized; the gear at the right, drawn by the caller); then the status
+// (11, muted; missing in the miss colour), then format (mono 10 faint) - length (mono 11 muted) -
+// "(database / library)" (11 faint), each part on the line while it fits, else on the next one
+// (ellipsized when even a line of its own is too short); then the description (11 muted,
+// wrapped). Measures when `dl` is null, so the panel's height reserve is what is drawn. Returns
+// the block's height from y.
+float LayoutInfo(ImDrawList* dl, float x, float y, float w)
 {
-    InfoLines in;
     const DbFile& f = g.cur;
-    in.meta = FormatMediaFormat(f);
+    const bool    miss = IsMissing(f.path);
+    const float   gear = ui::ControlH(), gap = ui::Dp(3.0f);
+    const float   y0 = y;
+    w = std::max(1.0f, w);
+    ImFont* bf = ui::FontSemibold();
+    if (dl) {
+        ui::FontScope fs(bf);
+        ui::EllipsisText(dl, ImVec2(x, std::floor(y + (gear - bf->FontSize) * 0.5f)), x + w - gear - ui::Dp(6.0f),
+                         miss ? ui::kFaint : ui::kText, MediaFileName(f.path));
+    }
+    y += gear;
+    ImFont* sf = ui::FontSmall();
+    auto wrapped = [&](const char* t, ImU32 col) {
+        if (!t || !*t) return;
+        y += gap;
+        if (dl) dl->AddText(sf, sf->FontSize, ImVec2(x, y), col, t, nullptr, w);
+        y += sf->CalcTextSizeA(sf->FontSize, FLT_MAX, w, t).y;
+    };
+    wrapped(PreviewStatus(), miss ? ui::kMissText : ui::kMuted);
+    // The meta line: parts that flow and wrap as words.
+    struct Part {
+        std::string text;
+        ImFont*     font;
+        ImU32       col;
+    };
+    std::vector<Part> parts;
+    const std::string fmt = FormatMediaFormat(f);
+    if (!fmt.empty()) parts.push_back({fmt, ui::FontMonoTiny(), ui::kFaint});
     const double len = g.an.length > 0.0 ? g.an.length : f.length;
-    if (len >= 0.0) in.meta += (in.meta.empty() ? "" : "  \xE2\x80\xA2  ") + FormatMediaLength(len);
+    const std::string ls = len >= 0.0 ? FormatMediaLength(len) : std::string();
+    if (!ls.empty()) parts.push_back({ls, ui::FontMonoSmall(), ui::kMuted});
     std::string src = f.db;
     if (!f.library.empty()) src += (src.empty() ? "" : " / ") + f.library;
-    if (!src.empty()) in.meta += (in.meta.empty() ? "" : "  \xE2\x80\xA2  ") + src;
-    in.desc = f.description;
-    return in;
+    if (!src.empty()) parts.push_back({"(" + src + ")", sf, ui::kFaint});
+    if (!parts.empty()) {
+        float line_h = 0.0f;
+        for (const Part& p : parts) line_h = std::max(line_h, p.font->FontSize);
+        y += gap;
+        float       cx = x;
+        const float sep = ui::Dp(8.0f);
+        for (const Part& p : parts) {
+            const float pw = ui::TextSizeIn(p.font, p.text.c_str()).x;
+            if (cx > x && cx + sep + pw > x + w) {  // does not fit after the previous part: next line
+                y += line_h;
+                cx = x;
+            } else if (cx > x) {
+                cx += sep;
+            }
+            if (dl) {
+                ui::FontScope fs(p.font);
+                ui::EllipsisText(dl, ImVec2(cx, std::floor(y + (line_h - p.font->FontSize) * 0.5f)), x + w, p.col, p.text);
+            }
+            cx += std::min(pw, x + w - cx);
+        }
+        y += line_h;
+    }
+    wrapped(f.description.c_str(), ui::kMuted);
+    return y - y0;
 }
 
 float PreviewInfoHeight(float w)
 {
-    const float lh = ImGui::GetTextLineHeight(), sp = ImGui::GetStyle().ItemSpacing.y;
-    float h = ImGui::GetFrameHeight() + sp;
-    if (!g.has_cur) return lh + sp;
-    const InfoLines in = CurrentInfo();
-    const char* st = PreviewStatus();
-    if (*st) h += ImGui::CalcTextSize(st, nullptr, false, w).y;  // wraps under the name when narrow
-    if (!in.meta.empty()) h += ImGui::CalcTextSize(in.meta.c_str(), nullptr, false, w).y;
-    if (!in.desc.empty()) h += ImGui::CalcTextSize(in.desc.c_str(), nullptr, false, w).y;
-    return h;
+    if (!g.has_cur) return ImGui::CalcTextSize(kPreviewHint, nullptr, false, w).y;
+    return LayoutInfo(nullptr, 0.0f, 0.0f, w);
 }
 
 void DrawPreview(float wave_h)
 {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     if (!g.has_cur) {
-        ui::SubText("Click a result to see and hear it");
-        ImVec2 p = ImGui::GetCursorScreenPos();
-        const float w = ImGui::GetContentRegionAvail().x;
+        ui::SubText(kPreviewHint);
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float  w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
         DrawMediaWaveform(dl, p, ImVec2(p.x + w, p.y + wave_h), Analysis{}, {}, -1.0);
         ImGui::Dummy(ImVec2(w, wave_h));
         return;
     }
-    const bool miss = IsMissing(g.cur.path);
-    const InfoLines in = CurrentInfo();
-    const char* st = PreviewStatus();
-    const float gear = ImGui::GetFrameHeight();
-    const float fy = ImGui::GetStyle().FramePadding.y;
-    ImVec2 np = ImGui::GetCursorScreenPos();
-    const float left = np.x;
-    const float right = ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMax().x;
-    const float iw = std::max(1.0f, right - left);
-    ImFont* font = ImGui::GetFont();
-    const float fs = ImGui::GetFontSize();
-    // Line 1: the name (bold, ellipsized), the gear right-aligned.
-    const std::string name = MediaFileName(g.cur.path);
-    const ImU32 nc = miss ? ui::kFaint : ui::kText;
-    ui::EllipsisText(dl, ImVec2(left, np.y + fy), right - gear - 6.0f, nc, name);
-    ui::EllipsisText(dl, ImVec2(left + 0.6f, np.y + fy), right - gear - 6.0f, nc, name);  // bold
-    ImGui::SetCursorScreenPos(ImVec2(right - gear, np.y));
-    ImGui::InvisibleButton("##megear", ImVec2(gear, gear));
-    const bool gear_hover = ImGui::IsItemHovered();
+    const bool   miss = IsMissing(g.cur.path);
+    const ImVec2 np = ImGui::GetCursorScreenPos();
+    const float  left = np.x;
+    const float  iw = std::max(1.0f, ui::LineRight() - left);
+    const float  info_h = LayoutInfo(dl, left, np.y, iw);
+    // The gear (.btn.sm.ico gear glyph), right-aligned on the name's line: the detection defaults.
     {
-        // The gear: a ring with 6 teeth (drawn, the default font has no glyph for it).
-        ImVec2 c(right - gear * 0.5f, np.y + gear * 0.5f);
-        const ImU32 col = gear_hover ? ui::kText : ui::kMuted;
-        for (int k = 0; k < 6; ++k) {
-            const float a = k * 1.0471976f;
-            dl->AddLine(ImVec2(c.x + std::cos(a) * 3.5f, c.y + std::sin(a) * 3.5f),
-                        ImVec2(c.x + std::cos(a) * 6.5f, c.y + std::sin(a) * 6.5f), col, 2.0f);
-        }
-        dl->AddCircle(c, 4.0f, col, 12, 1.5f);
-    }
-    float y = np.y + gear + ImGui::GetStyle().ItemSpacing.y;
-    // Then the status (while reading / opening, or missing), format, length, source
-    // and description, each wrapped to the width: nothing cut.
-    auto wrapped = [&](const char* t, ImU32 col) {
-        if (!*t) return;
-        dl->AddText(font, fs, ImVec2(left, y), col, t, nullptr, iw);
-        y += ImGui::CalcTextSize(t, nullptr, false, iw).y;
-    };
-    wrapped(st, miss ? ui::kFaint : ui::kMuted);
-    wrapped(in.meta.c_str(), ui::kMuted);
-    wrapped(in.desc.c_str(), ui::kFaint);
-    ImGui::SetCursorScreenPos(ImVec2(left, np.y));
-    ImGui::Dummy(ImVec2(iw, y - np.y));
-    if (gear_hover) {
         const SilenceParams sp{};
-        ImGui::SetTooltip("Detection defaults for new sounds: split on silence, threshold %.0f dB, min gap %.0f ms, "
-                          "pre-roll %.0f ms, tail %.0f ms (each sound can then be pre-edited in its panel)",
-                          sp.threshold_db, sp.min_gap_ms, sp.preroll_ms, sp.tail_ms);
+        char tip[320];
+        std::snprintf(tip, sizeof tip,
+                      "Detection defaults for new sounds: split on silence, threshold %.0f dB, min gap %.0f ms, "
+                      "pre-roll %.0f ms, tail %.0f ms (each sound can then be pre-edited in its panel)",
+                      sp.threshold_db, sp.min_gap_ms, sp.preroll_ms, sp.tail_ms);
+        ImGui::SetCursorScreenPos(ImVec2(left + iw - ui::ControlH(), np.y));
+        ui::IconOnlyButton("##megear", "\xE2\x9A\x99", tip);
     }
-    ImVec2      p = ImGui::GetCursorScreenPos();
-    const float w = ImGui::GetContentRegionAvail().x;
+    ImGui::SetCursorScreenPos(np);
+    ImGui::Dummy(ImVec2(iw, info_h));
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float  w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+    const ImVec2 p1(p.x + w, p.y + wave_h);
     const double ph = (g_pv.playing && g_pv.path == g.cur.path) ? PreviewFileTime() : -1.0;
-    DrawMediaWaveform(dl, p, ImVec2(p.x + w, p.y + wave_h), g.an, g.vsel, ph);
-    ImGui::InvisibleButton("##mewave", ImVec2(std::max(1.0f, w), wave_h));
+    DrawMediaWaveform(dl, p, p1, g.an, g.vsel, ph, miss ? -1 : HoveredFrame(p, p1, g.an));
+    ImGui::InvisibleButton("##mewave", ImVec2(w, wave_h));
     if (miss) {
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Not found on this PC");
         return;
@@ -1333,36 +1409,54 @@ void DrawPreview(float wave_h)
     }
 }
 
-void DrawFooter()
+// The footer (.me-foot): a divider across the card, then 6 px under it the use button at its
+// natural width, left-aligned (or the reading line with Cancel). Always one ControlH() line, so
+// the list above keeps its height.
+float FooterHeight() { return 1.0f + ui::Dp(6.0f) + ui::ControlH(); }
+
+void DrawFooter(const ui::Section& s)
 {
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const ImVec2 c = ImGui::GetCursorScreenPos();
+    const float  dy = std::floor(c.y) + 0.5f;
+    dl->AddLine(ImVec2(s.card.p0.x + 1.0f, dy), ImVec2(s.card.p0.x + s.card.w - 1.0f, dy), ui::kStroke, 1.0f);
+    ImGui::SetCursorScreenPos(ImVec2(c.x, std::floor(c.y) + 1.0f + ui::Dp(6.0f)));
+    const float line_y = ImGui::GetCursorScreenPos().y;
+    auto line_text = [&](const char* t) {  // one muted line, ellipsized (its full text as a tooltip)
+        ImGui::AlignTextToFramePadding();
+        ui::FitText(t, ui::kMuted);
+    };
     if (g.pending) {  // a use waiting for its files' variations
         const std::string msg = MediaReadingLabel(MediaBatchLeft(g.batch));
-        const float cw = ImGui::CalcTextSize("Cancel").x + ImGui::GetStyle().FramePadding.x * 2.0f;
-        ImVec2 p = ImGui::GetCursorScreenPos();
-        ui::EllipsisText(ImGui::GetWindowDrawList(), ImVec2(p.x, p.y + ImGui::GetStyle().FramePadding.y),
-                         p.x + ImGui::GetContentRegionAvail().x - cw - 8.0f, ui::kMuted, msg);
-        ImGui::SetCursorScreenPos(ImVec2(p.x + ImGui::GetContentRegionAvail().x - cw, p.y));
+        const float       cw = ui::ButtonWidth("Cancel");
+        const float       room = ImGui::GetContentRegionAvail().x;
+        ui::EllipsisText(dl, ImVec2(c.x, line_y + ImGui::GetStyle().FramePadding.y), c.x + room - cw - ui::Dp(8.0f),
+                         ui::kMuted, msg);
+        ImGui::SetCursorScreenPos(ImVec2(c.x + std::max(0.0f, room - cw), line_y));
         if (ui::SolidButton("Cancel")) CancelPending();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Stop reading: no sound is added");
         return;
     }
     bool                   variations = false;
     std::vector<MediaPick> picks = UsedPicks(&variations);
-    if (picks.empty()) return;
+    if (picks.empty()) {
+        ImGui::Dummy(ImVec2(1.0f, ui::ControlH()));
+        return;
+    }
     const std::vector<LibraryRow>& rows = SelectedLibraryRows();
     const LibraryRow*              rp = rows.size() == 1 ? &rows.front() : nullptr;
     const std::string              lib = SelectedLibraryUid();
     std::string                    label;
     const SoundStore&              store = GetSoundStore(nullptr);
     if (lib.empty() || !FindLibrary(store, lib)) {
-        ui::SubText("Create a library first");
+        line_text("Create a library first");
         return;
     }
     if (!MediaUseLabel(store, lib, rp, static_cast<int>(picks.size()), variations, &label)) {
-        ui::SubText("Pick a value row of this Switch first");
+        line_text("Pick a value row of this Switch first");
         return;
     }
-    if (ui::SolidButton(label.c_str(), ImVec2(ImGui::GetContentRegionAvail().x, 0.0f))) UseAtTarget(picks);
+    if (ui::SolidButton(label.c_str())) UseAtTarget(picks);
 }
 
 void HandleKeys()
@@ -1487,17 +1581,39 @@ void DrawMediaExplorerPanel()
     if (g.dirty && MediaDbReady()) RunSearch();
 
     ImGui::PushID("##media");
-    DrawHeader();
+    // 13-7c (audit C7): the whole panel is one fixed section card (.secx.me) that fills the column:
+    // "Media Explorer" with the databases' status as its faint suffix, the header's buttons at the
+    // right; then search, results, the file's info, the waveform and the footer.
+    const float top_y = ImGui::GetCursorScreenPos().y;
+    const float avail_h = ImGui::GetContentRegionAvail().y;
+    const int   nbtn = HeaderButtons(ImGui::GetContentRegionAvail().x - 2.0f * ui::kCardPad);
+    const std::string status = HeaderStatus();
+    ui::SectionOpts so;
+    so.foldable = false;
+    so.suffix = status.c_str();
+    so.right_w = HeaderButtonsWidth(nbtn);
+    ui::Section sec;
+    ui::BeginSection(sec, "Media Explorer", so);
+    ui::BeginSectionHeaderRight(sec);
+    DrawHeaderButtons(nbtn);
+    ui::EndSectionHeaderRight(sec);
     DrawSearch();
-    const float wave_h = 72.0f;
-    const float foot_h = ImGui::GetFrameHeightWithSpacing();
-    const float prev_h = PreviewInfoHeight(ImGui::GetContentRegionAvail().x) + wave_h + ImGui::GetStyle().ItemSpacing.y * 2.0f;
-    const float list_h = std::max(ImGui::GetTextLineHeight() * 4.0f, ImGui::GetContentRegionAvail().y - prev_h - foot_h);
+    // The list takes what is left once the info, the waveform (120 px; 96 when the column is short;
+    // the empty box 60) and the footer have their room, the card's bottom padding included.
+    const float sp = ImGui::GetStyle().ItemSpacing.y;
+    const float row_h = ResultRowH();
+    const float info_h = PreviewInfoHeight(std::max(1.0f, ui::LineRight() - ImGui::GetCursorScreenPos().x));
+    const float room = top_y + avail_h - ui::kCardPad - ui::Dp(2.0f) - ImGui::GetCursorScreenPos().y - 3.0f * sp -
+                       info_h - FooterHeight();
+    float wave_h = g.has_cur ? ui::Dp(120.0f) : ui::Dp(60.0f);
+    if (g.has_cur && room - wave_h < row_h * 4.0f + 2.0f) wave_h = ui::Dp(96.0f);
+    const float list_h = std::max(row_h * 4.0f + 2.0f, room - wave_h);
     DrawResults(list_h);
     CheckVisibleRows();
     g.takes_arrows = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) && !ImGui::GetIO().WantTextInput && !g.results.empty();
     DrawPreview(wave_h);
-    DrawFooter();
+    DrawFooter(sec);
+    ui::EndSection(sec);
     HandleKeys();
     // A preview that reached its end is released even when the waveform is another file's.
     if (g_pv.playing) PreviewFileTime();

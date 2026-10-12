@@ -98,11 +98,7 @@ void DrawColumn(int i)
         }
         break;
     default:
-        if (ui::IconOnlyButton("##collapse4", "\xC2\xBB", "Collapse the Media Explorer")) {
-            g_view.media_collapsed = true;
-            SavePrefBool("lib_media_collapsed", true);
-        }
-        DrawMediaExplorerPanel();
+        DrawMediaExplorerPanel();  // its card header carries the collapse button (13-7c)
         break;
     }
 }

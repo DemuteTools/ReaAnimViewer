@@ -32,7 +32,10 @@ void InitSoundPopulate(void* (*get_func)(const char* name));
 struct PopulateCounts {
     int placed = 0, replaced = 0, removed = 0, kept = 0, deleted_kept = 0;  // sounds (a pile counts once)
 };
-SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* events, PopulateCounts* counts = nullptr);
+// `revive_deleted` (the Populate button, Antho 2026-10-12): the sounds deleted by hand are placed again; the
+// other callers (follow, copies) leave them deleted.
+SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* events, PopulateCounts* counts = nullptr,
+                                 bool revive_deleted = false);
 // The items Populate acts on: the RAV items of `items` plus every other member of their pools.
 std::vector<MediaItem*> PopulateTargets(const std::vector<MediaItem*>& items);
 // The selected items that are RAV animation items.

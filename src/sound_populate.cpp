@@ -143,6 +143,9 @@ uint64_t RandomSeed()
 struct PopOpts {
     // Antho 2026-10-12 (Populate "did nothing"): what a Populate did, for its report line. Optional.
     PopulateCounts* counts = nullptr;
+    // Antho 2026-10-12: the Populate button places again the sounds deleted by hand (a click asks for them);
+    // the automatic re-placements (a setting changed, the follow) still leave them deleted.
+    bool        revive_deleted = false;
     bool        only_populated = false;  // P8: only the events that already have a live placement
     bool        report_replaced = true;
     std::string rid;                      // "" = every rule
@@ -349,6 +352,10 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
 
         // P9: a recorded item no longer in the project was deleted by hand.
         MarkDeletedPlacements(*ev, [](const std::string& g) { return FindItemByGuid(g) != nullptr; });
+        if (o.revive_deleted)
+            ev->placed.erase(std::remove_if(ev->placed.begin(), ev->placed.end(),
+                                            [](const SoundPlacement& p) { return p.own == Ownership::Deleted; }),
+                             ev->placed.end());
 
         // P10: the draw.
         st.lib = lib;
@@ -831,7 +838,8 @@ std::vector<MediaItem*> PopulateTargets(const std::vector<MediaItem*>& items)
     return WithPoolMembers(rav);
 }
 
-SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* events, PopulateCounts* counts)
+SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* events, PopulateCounts* counts,
+                                 bool revive_deleted)
 {
     SoundReport rep;
     if (events) *events = 0;
@@ -845,6 +853,7 @@ SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* even
             ItemIndexScope index;
             PopOpts o;
             o.counts = counts;
+            o.revive_deleted = revive_deleted;
             for (MediaItem* it : targets) PopulateOne(it, store, o, rep, events);
         }
         if (counts) {  // the details list says it too

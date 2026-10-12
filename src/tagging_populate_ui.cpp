@@ -377,7 +377,7 @@ void DrawPopulateRow(const TaggingSoundContext& ctx, float attach_w)
     if (ui::PrimaryButton(label, ImVec2(populate_w, 0.0f))) {
         int            events = 0;
         PopulateCounts counts;
-        const SoundReport rep = PopulateItemsCounted(sel, &events, &counts);
+        const SoundReport rep = PopulateItemsCounted(sel, &events, &counts, true);
         Remember(rep, events);
         // Antho 2026-10-12: the line says what happened (a Populate with nothing to do looked broken).
         bool trouble = false;  // missing / blocked lines: the summary already says why
@@ -398,10 +398,9 @@ void DrawPopulateRow(const TaggingSoundContext& ctx, float attach_w)
     }
     if (none) ImGui::EndDisabled();
     ui::ItemTipText(none ? "Select animation items"
-                         : "Places each event's sound on the selected items and their linked copies.\n"
-                           "Placed sounds you moved stay; deleted ones are not added back (the menu's Sounds,\n"
-                           "Repopulate (reset), places them again). A change of sound settings already\n"
-                           "re-places the placed sounds. One undo point.");
+                         : "Places each event's sound on the selected items and their linked copies,\n"
+                           "the sounds you deleted by hand too. Placed sounds you moved stay where you put them.\n"
+                           "A change of sound settings already re-places the placed sounds. One undo point.");
     ImGui::SameLine();
     if (none) ImGui::BeginDisabled();
     if (ui::SolidButton("Reshuffle##ravreshuffle", ImVec2(reshuffle_w, 0.0f))) Remember(ReshuffleItems(sel), -1);

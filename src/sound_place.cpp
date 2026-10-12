@@ -98,10 +98,15 @@ std::string NewGuidString()
     return buf;
 }
 
-// E11b: scan the project's items.
+MediaItem* (*g_item_finder)(const std::string& guid) = nullptr;
+
+// E11b: the active gesture's finder first (a hit still checked live), else scan the project's items.
 MediaItem* FindItem(ReaProject* proj, const std::string& guid)
 {
     if (guid.empty()) return nullptr;
+    if (g_item_finder)
+        if (MediaItem* hit = g_item_finder(guid))
+            if (ValidatePtr2(proj, hit, "MediaItem*") && SameGuid(ItemGuid(hit), guid)) return hit;
     const int n = CountMediaItems(proj);
     for (int i = 0; i < n; ++i) {
         MediaItem* it = GetMediaItem(proj, i);
@@ -318,6 +323,7 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
         f_set_item(item, "D_VOL", GetMediaItemInfo_Value(m.src, "D_VOL") * gain);
         placed.push_back(item);
         r.item_guids.push_back(ItemGuid(item));
+        r.items.push_back(item);
     }
 
     // E2: sync = the source (topmost) item's snap, read after the variation.
@@ -326,13 +332,17 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
     const double anchor = PlacementPosition(req.project_t, sync, req.blend_ms, req.offset_s);
     for (size_t i = 0; i < placed.size(); ++i) {
         const double src_pos = GetMediaItemInfo_Value(members[i].src, "D_POSITION");
-        f_set_item(placed[i], "D_POSITION", folder ? std::max(0.0, PileMemberPosition(anchor, src_anchor_pos, src_pos)) : anchor);
+        const double pos = folder ? std::max(0.0, PileMemberPosition(anchor, src_anchor_pos, src_pos)) : anchor;
+        f_set_item(placed[i], "D_POSITION", pos);
         PlacedTag tag;
         tag.owner = owner;
         tag.rid = req.rid;
         tag.t = req.event_t;
         tag.node = req.node;
         tag.own = req.own;
+        tag.has_anchor = true;
+        tag.ao = pos - anchor;  // as placed: a member clamped at 0 still gives the anchor back
+        tag.sy = sync;
         WritePlacedTag(placed[i], tag);
     }
     r.ok = true;
@@ -610,6 +620,25 @@ bool IsFolderItem(MediaItem* item)
     if (!item) return false;
     try {
         return IsFolderItemRule(ReadFolderFacts(item));
+    } catch (...) {
+        return false;
+    }
+}
+
+void SetPlaceItemFinder(MediaItem* (*finder)(const std::string& guid))
+{
+    g_item_finder = finder;
+}
+
+bool PlacedPileAnchor(MediaItem* item, double* anchor_pos, double* sync)
+{
+    if (!item || !anchor_pos || !sync) return false;
+    try {
+        PlacedTag tag;
+        if (!ReadPlacedTag(item, &tag)) tag = PlacedTag();  // untagged: its own position and snap
+        PlacedAnchorOf(tag, GetMediaItemInfo_Value(item, "D_POSITION"), GetMediaItemInfo_Value(item, "D_SNAPOFFSET"),
+                       anchor_pos, sync);
+        return true;
     } catch (...) {
         return false;
     }

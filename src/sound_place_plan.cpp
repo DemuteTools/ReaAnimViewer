@@ -128,6 +128,17 @@ double PileMemberPosition(double anchor, double src_anchor_pos, double member_sr
     return anchor + (member_src_pos - src_anchor_pos);
 }
 
+double PileAnchorOf(double member_pos, double src_anchor_pos, double member_src_pos)
+{
+    return member_pos - (member_src_pos - src_anchor_pos);
+}
+
+void PlacedAnchorOf(const PlacedTag& tag, double item_pos, double item_snap, double* anchor_pos, double* sync)
+{
+    if (anchor_pos) *anchor_pos = tag.has_anchor ? item_pos - tag.ao : item_pos;
+    if (sync) *sync = tag.has_anchor ? tag.sy : item_snap;
+}
+
 SliceApply SliceApplyFor(const SoundFrame& frame)
 {
     SliceApply a;

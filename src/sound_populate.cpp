@@ -49,6 +49,73 @@ bool SameGuidText(const std::string& a, const std::string& b)
     return true;
 }
 
+// The project scan behind FindItemByGuid.
+MediaItem* FindPlacedItem(const std::string& guid)
+{
+    const int n = CountMediaItems(nullptr);
+    for (int i = 0; i < n; ++i) {
+        MediaItem* it = GetMediaItem(nullptr, i);
+        if (it && SameGuidText(ItemGuidOf(it), guid)) return it;
+    }
+    return nullptr;
+}
+
+// One gesture's GUID -> item map (built once, kept in step with the items the gesture places and
+// removes, dropped when the gesture ends: never a pointer kept across gestures).
+std::string GuidKey(const std::string& g)
+{
+    std::string k = g;
+    for (char& c : k)
+        if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 32);
+    return k;
+}
+
+std::map<std::string, MediaItem*>* g_items = nullptr;
+
+// The engine's finder: the gesture's map only (a miss: the engine scans).
+MediaItem* IndexedItem(const std::string& guid)
+{
+    if (!g_items) return nullptr;
+    auto hit = g_items->find(GuidKey(guid));
+    return hit == g_items->end() ? nullptr : hit->second;
+}
+
+class ItemIndexScope {
+public:
+    ItemIndexScope()
+    {
+        if (g_items) return;  // nested: the outer gesture's map
+        const int n = CountMediaItems(nullptr);
+        for (int i = 0; i < n; ++i)
+            if (MediaItem* it = GetMediaItem(nullptr, i)) {
+                char buf[64] = {};
+                if (GetSetMediaItemInfo_String(it, "GUID", buf, false) && buf[0]) map_[GuidKey(buf)] = it;
+            }
+        g_items = &map_;
+        owner_ = true;
+        SetPlaceItemFinder(&IndexedItem);
+    }
+    ~ItemIndexScope()
+    {
+        if (!owner_) return;
+        SetPlaceItemFinder(nullptr);
+        g_items = nullptr;
+    }
+    ItemIndexScope(const ItemIndexScope&) = delete;
+    ItemIndexScope& operator=(const ItemIndexScope&) = delete;
+
+private:
+    std::map<std::string, MediaItem*> map_;
+    bool                              owner_ = false;
+};
+
+// RemovePlacement, the item dropped from the gesture's map.
+bool RemoveIndexed(const std::string& g)
+{
+    if (g_items) g_items->erase(GuidKey(g));
+    return RemovePlacement(nullptr, g);
+}
+
 uint64_t RandomSeed()
 {
     std::random_device rd;
@@ -123,7 +190,7 @@ void RemovePopulated(EventSounds& ev)
 {
     std::vector<SoundPlacement> keep;
     for (const SoundPlacement& p : ev.placed) {
-        if (p.own == Ownership::Populated) RemovePlacement(nullptr, p.item_guid);
+        if (p.own == Ownership::Populated) RemoveIndexed(p.item_guid);
         else keep.push_back(p);
     }
     ev.placed = keep;
@@ -144,7 +211,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
     for (const Block& b : blocks)
         if (!b.rid.empty()) live.insert(b.rid);
     const OrphanPrune pr = PruneOrphanRules(rec, live);
-    for (const std::string& g : pr.remove_guids) RemovePlacement(nullptr, g);
+    for (const std::string& g : pr.remove_guids) RemoveIndexed(g);
     for (const RuleSounds& r : pr.rules) {  // Antho 2026-10-12: removed and listed, by every gesture
         const SoundLibrary* lib = FindLibrary(store, r.library);
         AddLine(rep, ReportKind::Detached, RuleGoneText(lib ? lib->name : r.library), "", guid, 0.0);
@@ -275,9 +342,11 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
             x.own = p.own;
             if (p.own == Ownership::Populated && hold.count(p.node)) x.own = Ownership::Attached;  // planner: leave it
             if (x.own == Ownership::Populated)
-                if (MediaItem* it = FindItemByGuid(p.item_guid))
-                    x.pass = NearestPassOfItem(passes, GetMediaItemInfo_Value(it, "D_POSITION"),
-                                               GetMediaItemInfo_Value(it, "D_SNAPOFFSET"), BlendOffsetMs(*lib, p.node));
+                if (MediaItem* it = FindItemByGuid(p.item_guid)) {
+                    double anchor = 0.0, sync = 0.0;  // the pile's anchor: one pass for the whole pile
+                    PlacedPileAnchor(it, &anchor, &sync);
+                    x.pass = NearestPassOfItem(passes, anchor, sync, BlendOffsetMs(*lib, p.node));
+                }
             existing.push_back(x);
         }
 
@@ -287,7 +356,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
             if (step.act == SlotAction::Keep) continue;
             if (step.act == SlotAction::Remove) {
                 for (int i : step.existing) {
-                    RemovePlacement(nullptr, ev->placed[static_cast<size_t>(i)].item_guid);
+                    RemoveIndexed(ev->placed[static_cast<size_t>(i)].item_guid);
                     erase.insert(i);
                 }
                 if (o.report_replaced && !step.existing.empty()) {
@@ -309,14 +378,17 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                 // Replace in place, the user's nudge kept.
                 const SoundPlacement& old = ev->placed[static_cast<size_t>(step.existing.front())];
                 if (MediaItem* oi = FindItemByGuid(old.item_guid)) {
+                    // A folder pile is placed from the folder's snap, its members offset from it:
+                    // read back from the surviving member's tag (13-8).
                     const SoundLibrary& L = *lib;
-                    req.offset_s = NudgeOf(GetMediaItemInfo_Value(oi, "D_POSITION"), pt,
-                                           GetMediaItemInfo_Value(oi, "D_SNAPOFFSET"), BlendOffsetMs(L, old.node));
+                    double              anchor = 0.0, sync = 0.0;
+                    PlacedPileAnchor(oi, &anchor, &sync);
+                    req.offset_s = NudgeOf(anchor, pt, sync, BlendOffsetMs(L, old.node));
                 }
                 r = ReplacePlacement(nullptr, old.item_guid, req);
                 for (size_t k = 0; k < step.existing.size(); ++k) {
                     const int i = step.existing[k];
-                    if (k > 0 && r.ok) RemovePlacement(nullptr, ev->placed[static_cast<size_t>(i)].item_guid);
+                    if (k > 0 && r.ok) RemoveIndexed(ev->placed[static_cast<size_t>(i)].item_guid);
                     if (r.ok) erase.insert(i);
                 }
                 if (r.ok && step.act == SlotAction::ReplaceNode && o.report_replaced) {
@@ -329,6 +401,9 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                         guid, e.t);
                 continue;
             }
+            if (g_items)
+                for (size_t k = 0; k < r.item_guids.size() && k < r.items.size(); ++k)
+                    (*g_items)[GuidKey(r.item_guids[k])] = r.items[k];
             CheckOwners(r.item_guids, guid, rep, n->uid, e.t);
             for (const std::string& g : r.item_guids) {
                 SoundPlacement p;
@@ -392,12 +467,14 @@ std::string ItemGuidOf(MediaItem* item)
 MediaItem* FindItemByGuid(const std::string& guid)
 {
     if (guid.empty()) return nullptr;
-    const int n = CountMediaItems(nullptr);
-    for (int i = 0; i < n; ++i) {
-        MediaItem* it = GetMediaItem(nullptr, i);
-        if (it && SameGuidText(ItemGuidOf(it), guid)) return it;
+    if (g_items) {  // inside a gesture: its map; a miss (an item added outside it) is looked up and kept
+        auto hit = g_items->find(GuidKey(guid));
+        if (hit != g_items->end()) return hit->second;
+        MediaItem* it = FindPlacedItem(guid);
+        if (it) (*g_items)[GuidKey(guid)] = it;
+        return it;
     }
-    return nullptr;
+    return FindPlacedItem(guid);
 }
 
 void SelectOnlyItem(MediaItem* item)
@@ -438,6 +515,7 @@ SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* even
         const SoundStore store = GetSoundStore(nullptr);
         {
             SoundUndoScope undo(nullptr, "RAV: Populate sounds");
+            ItemIndexScope index;
             PopOpts o;
             for (MediaItem* it : targets) PopulateOne(it, store, o, rep, events);
         }
@@ -462,6 +540,7 @@ SoundReport ReshuffleItems(const std::vector<MediaItem*>& items)
         const SoundStore store = GetSoundStore(nullptr);
         {
             SoundUndoScope undo(nullptr, "RAV: Reshuffle sounds");
+            ItemIndexScope index;
             PopOpts o;
             o.only_populated = true;
             o.report_replaced = false;
@@ -489,6 +568,7 @@ SoundReport SetRuleLibrary(MediaItem* item, int block, const std::string& librar
         const SoundStore store = GetSoundStore(nullptr);
         {
             SoundUndoScope undo(nullptr, "RAV: Set rule library");
+            ItemIndexScope index;
             EnsureRids(item);
             const std::string rid = RidOf(item, block);
             if (rid.empty()) return rep;
@@ -528,6 +608,7 @@ SoundReport SetSoundValue(MediaItem* item, SoundValueLevel level, int block, dou
         const SoundStore store = GetSoundStore(nullptr);
         {
             SoundUndoScope undo(nullptr, "RAV: Set sound value");
+            ItemIndexScope index;
             std::string rid;
             if (level != SoundValueLevel::Item) {
                 EnsureRids(item);

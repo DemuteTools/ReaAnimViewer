@@ -755,16 +755,19 @@ bool ParsePlacedTag(const std::string& text, PlacedTag* out)
         if (!ReadHeader(lines, kPlacedTagMagic, &i, &version, &rest)) return false;
         PlacedTag t;
         t.version = version;
-        bool      owner = false;
+        bool      owner = false, ao = false, sy = false;
         ReadFields(rest, 0, t.kept, [&](const std::string& k, const std::string& v) {
             if (k == "owner") return (owner = ReadStr(v, &t.owner)) ? Got::Ok : Got::Bad;
             if (k == "rid") return G(ReadStr(v, &t.rid));
             if (k == "t") return G(ReadNumber(v, &t.t));
             if (k == "node") return G(ReadStr(v, &t.node));
             if (k == "own") return G(OwnershipFromWord(v, &t.own));
+            if (k == "ao") return G(ao = ReadNumber(v, &t.ao));
+            if (k == "sy") return G(sy = ReadNumber(v, &t.sy));
             return Got::Unknown;
         });
         if (!owner || t.owner.empty()) return false;
+        t.has_anchor = ao && sy;
         *out = std::move(t);
         return true;
     } catch (...) {
@@ -775,13 +778,16 @@ bool ParsePlacedTag(const std::string& text, PlacedTag* out)
 std::string SerializePlacedTag(const PlacedTag& t)
 {
     std::string out;
-    WriteHeader(out, kPlacedTagMagic, t.version,
-                {{"owner", Enc(t.owner)},
-                 {"rid", Enc(t.rid)},
-                 {"t", FormatNumber(t.t)},
-                 {"node", Enc(t.node)},
-                 {"own", OwnershipWord(t.own)}},
-                t.kept);
+    Fields      f = {{"owner", Enc(t.owner)},
+                     {"rid", Enc(t.rid)},
+                     {"t", FormatNumber(t.t)},
+                     {"node", Enc(t.node)},
+                     {"own", OwnershipWord(t.own)}};
+    if (t.has_anchor) {
+        f.push_back({"ao", FormatNumber(t.ao)});
+        f.push_back({"sy", FormatNumber(t.sy)});
+    }
+    WriteHeader(out, kPlacedTagMagic, t.version, f, t.kept);
     return out;
 }
 

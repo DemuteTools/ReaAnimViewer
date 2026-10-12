@@ -4,7 +4,9 @@
 // slots on a re-Populate, the nearest pass, the nudge, the footer count and the report line.
 
 #include "sound_populate_plan.h"
+#include "sound_place_plan.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 
@@ -306,6 +308,55 @@ int main()
         CHECK(NearestPass({1.0, 3.0, 5.0}, 3.4) == 1);
         CHECK(NearestPass({}, 3.4) == -1);
         CHECK(std::fabs(NudgeOf(9.862, 10.0, 0.25, 12.0) - 0.1) < 1e-9);
+        // A folder pile (NVK): placed from the folder's snap, its first member offset from the folder;
+        // the nudge is read back from the pile's anchor, not from the member's own position and snap.
+        {
+            const double folder_src = 3.0, member_src = 3.25, folder_snap = 0.4, member_snap = 0.05;
+            const double anchor = PlacementPosition(10.0, folder_snap, 12.0, 0.2);
+            const double member = PileMemberPosition(anchor, folder_src, member_src);
+            CHECK(std::fabs(NudgeOf(PileAnchorOf(member, folder_src, member_src), 10.0, folder_snap, 12.0) - 0.2) < 1e-9);
+            CHECK(std::fabs(NudgeOf(member, 10.0, member_snap, 12.0) - 0.2) > 0.1);  // the old reading: wrong
+            CHECK(std::fabs(PileAnchorOf(PileMemberPosition(7.5, 2.0, 1.0), 2.0, 1.0) - 7.5) < 1e-9);
+        }
+        // 13-8: the anchor from any surviving member's tag (ao / sy), clamp case, legacy tag, pass by anchor.
+        {
+            // Folder at src 3.0 snap 0.4, members at src 2.5 / 3.0 / 3.6; event at 0.7 so member 0 clamps.
+            const double folder_src = 3.0, snap = 0.4, pt = 0.7;
+            const double anchor = PlacementPosition(pt, snap, 0.0, 0.05);
+            const double srcs[3] = {2.5, 3.0, 3.6};
+            for (double src : srcs) {
+                PlacedTag tag;
+                tag.owner = "{A}";
+                tag.has_anchor = true;
+                const double pos = std::max(0.0, PileMemberPosition(anchor, folder_src, src));
+                tag.ao = pos - anchor;  // as PlaceImpl stores it (after the clamp)
+                tag.sy = snap;
+                PlacedTag back;
+                CHECK(ParsePlacedTag(SerializePlacedTag(tag), &back));
+                CHECK(back.has_anchor && std::fabs(back.ao - tag.ao) < 1e-9 && std::fabs(back.sy - snap) < 1e-9);
+                double a = 0.0, sy = 0.0;
+                PlacedAnchorOf(back, pos, 0.0, &a, &sy);
+                CHECK(std::fabs(NudgeOf(a, pt, sy, 0.0) - 0.05) < 1e-9);  // any survivor, clamped too
+            }
+            CHECK(std::max(0.0, PileMemberPosition(anchor, folder_src, 2.5)) == 0.0);  // member 0 did clamp
+            // On close loop passes every member is assigned the anchor's pass.
+            PlacedTag far;
+            far.owner = "{A}";
+            far.has_anchor = true;
+            far.ao = 0.7;
+            far.sy = 0.0;
+            double a = 0.0, sy = 0.0;
+            PlacedAnchorOf(far, 1.7, 0.0, &a, &sy);
+            CHECK(NearestPassOfItem({0.0, 0.8, 1.6}, a, sy, 0.0) == 1);
+            CHECK(NearestPassOfItem({0.0, 0.8, 1.6}, 1.7, 0.0, 0.0) == 2);  // the member's own reading
+            // A legacy tag (no ao / sy): the item's own position and snap, and it round-trips without them.
+            PlacedTag leg;
+            leg.owner = "{A}";
+            PlacedTag lb;
+            CHECK(ParsePlacedTag(SerializePlacedTag(leg), &lb) && !lb.has_anchor);
+            PlacedAnchorOf(lb, 4.0, 0.25, &a, &sy);
+            CHECK(std::fabs(a - 4.0) < 1e-9 && std::fabs(sy - 0.25) < 1e-9);
+        }
         // A long sync offset on close passes: the pass is where the sync point lands, not the item start.
         CHECK(NearestPassOfItem({0.0, 0.8, 1.6}, 0.3, 0.5, 0.0) == 1);
         CHECK(NearestPassOfItem({0.0, 0.8, 1.6}, 1.1 + 0.012, 0.5, 12.0) == 2);

@@ -202,7 +202,14 @@ struct PlacedTag {
     double      t = 0.0;
     std::string node;
     Ownership   own = Ownership::Populated;
-    int         version = 1;      // a higher version is read best-effort and kept on write
+    // 13-8 (version 2): how the item was placed. `ao` = its offset from the pile's anchor (a folder
+    // pile member: where it was put minus the anchor, so a member clamped at 0 still inverts; else 0),
+    // `sy` = the snap the anchor was placed by. Without them (has_anchor false) the item's own
+    // position and snap are read.
+    bool        has_anchor = false;
+    double      ao = 0.0;
+    double      sy = 0.0;
+    int         version = 2;      // a higher version is read best-effort and kept on write
     std::vector<std::string> kept;  // unknown fields, written back after the known ones
 };
 

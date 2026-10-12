@@ -58,12 +58,20 @@ struct PlaceRequest {
 struct PlaceResult {
     bool                     ok = false;
     std::vector<std::string> item_guids;  // the items placed (tagged)
+    std::vector<MediaItem*>  items;       // the same items, valid until the gesture ends
     std::string              error;
 };
 PlaceResult PlaceSounds(ReaProject* proj, const PlaceRequest& req);
 bool        MovePlacement(ReaProject* proj, const std::string& item_guid, double project_t);
 PlaceResult ReplacePlacement(ReaProject* proj, const std::string& item_guid, const PlaceRequest& req);
 bool        RemovePlacement(ReaProject* proj, const std::string& item_guid);
+// Where a placed pile is anchored, from any one of its placed items (its tag's ao / sy, 13-8):
+// `anchor_pos` = the position its anchor lands at, `sync` = the snap it was placed by. A tag
+// without them: the item's own position and snap. False when `item` is null.
+bool PlacedPileAnchor(MediaItem* item, double* anchor_pos, double* sync);
+// A gesture's GUID -> item lookup (no scan; null = none) the engine asks before scanning the
+// project; a hit is checked with ValidatePtr2. Null clears it.
+void SetPlaceItemFinder(MediaItem* (*finder)(const std::string& guid));
 // REAPER's "copy imported media to project folder" preference (spike 13-0 D: copyimpmedia).
 bool ReadCopyImportedMedia();
 

@@ -36,6 +36,11 @@ std::string PrepareCopyChunk(const std::string& chunk, const std::string& item_g
 bool SpanInside(double outer_pos, double outer_len, double inner_pos, double inner_len, double tol = 0.001);
 // A pile member's position: the anchor plus its offset from the source anchor item.
 double PileMemberPosition(double anchor, double src_anchor_pos, double member_src_pos);
+// Its inverse: the pile's anchor from where one member of it sits (13-8: a folder pile's nudge).
+double PileAnchorOf(double member_pos, double src_anchor_pos, double member_src_pos);
+// Where a placed item's pile is anchored, from its tag and its own position and snap (13-8):
+// anchor = pos - tag.ao, sync = tag.sy; a tag without them: the item's own position and snap.
+void PlacedAnchorOf(const PlacedTag& tag, double item_pos, double item_snap, double* anchor_pos, double* sync);
 
 // How a slice variation is applied to the placed item: take D_STARTOFFS, item D_LENGTH,
 // D_SNAPOFFSET 0. `set` false = leave the item as copied (a Take variation sets I_CURTAKE).

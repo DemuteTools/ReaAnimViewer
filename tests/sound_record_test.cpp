@@ -326,7 +326,7 @@ int main()
         t.node = "c000000000000004";
         t.own = Ownership::Spread;
         const std::string text = SerializePlacedTag(t);
-        CHECK(text == "RAVSND 1 owner={01234567-89AB-CDEF-0123-456789ABCDEF} rid=0123456789abcdef t=0.5 "
+        CHECK(text == "RAVSND 2 owner={01234567-89AB-CDEF-0123-456789ABCDEF} rid=0123456789abcdef t=0.5 "
                       "node=c000000000000004 own=spread\n");
         PlacedTag p;
         CHECK(ParsePlacedTag(text, &p) && p.owner == t.owner && p.rid == t.rid && p.t == t.t && p.node == t.node &&
@@ -338,9 +338,25 @@ int main()
         CHECK(!ParsePlacedTag("", &keep));
         CHECK(keep.owner == t.owner);
         // A higher version and unknown fields survive a write.
-        const std::string fut = "RAVSND 2 owner={O} rid=0123456789abcdef t=1 node=n own=populated glow=1\n";
+        const std::string fut = "RAVSND 3 owner={O} rid=0123456789abcdef t=1 node=n own=populated glow=1\n";
         PlacedTag f;
-        CHECK(ParsePlacedTag(fut, &f) && f.version == 2 && f.kept.size() == 1 && SerializePlacedTag(f) == fut);
+        // 13-8: the pile anchor (ao / sy) round-trips; a v1 tag reads without it and stays v1.
+        {
+            PlacedTag a = t;
+            a.has_anchor = true;
+            a.ao = -0.25;
+            a.sy = 0.4;
+            const std::string at = SerializePlacedTag(a);
+            CHECK(at.find(" ao=-0.25 sy=0.4") != std::string::npos);
+            PlacedTag b;
+            CHECK(ParsePlacedTag(at, &b) && b.has_anchor && b.ao == -0.25 && b.sy == 0.4 && SerializePlacedTag(b) == at);
+            const std::string v1 = "RAVSND 1 owner={O} rid=r t=1 node=n own=populated\n";
+            PlacedTag c;
+            CHECK(ParsePlacedTag(v1, &c) && !c.has_anchor && c.version == 1 && SerializePlacedTag(c) == v1);
+            PlacedTag half;
+            CHECK(ParsePlacedTag("RAVSND 2 owner={O} ao=1\n", &half) && !half.has_anchor);  // ao without sy: unused
+        }
+        CHECK(ParsePlacedTag(fut, &f) && f.version == 3 && !f.has_anchor && f.kept.size() == 1 && SerializePlacedTag(f) == fut);
     }
     // ---- Lookups in the store --------------------------------------------------------------------
     {

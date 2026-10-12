@@ -1128,14 +1128,6 @@ void DrawLibrariesSection()
                 g.has_anchor = false;
             }
         }
-        ImGui::SameLine();
-        ImGui::BeginDisabled();
-        ui::SolidButton("+ User Library");
-        Tip("Arrives with User Libraries (.ravlib)");
-        ImGui::SameLine();
-        ui::SolidButton("Import");
-        ImGui::EndDisabled();
-        Tip("Arrives with User Libraries (.ravlib)");
     }
     ui::EndSection(sec);
 }

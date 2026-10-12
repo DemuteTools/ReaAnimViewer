@@ -13,6 +13,7 @@
 #include "self_update.h"
 #include "sound_attach.h"
 #include "library_media_ui.h"
+#include "library_user_ui.h"
 #include "sound_audition.h"  // Epic 13 (D20): each sound module resolves its own functions
 #include "sound_follow.h"
 #include "sound_peaks.h"
@@ -184,6 +185,8 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
         QuitSoundProject();
         // 13-7c -- stops the media preview, joins the peak reader and the database load.
         QuitLibraryMedia();
+        // 13-11 -- the User Library timer and the Locate worker.
+        QuitLibraryUser();
         if (g_register) {
             // Story 11-4 -- the viewer's keyboard hook (same pointer as at load).
             g_register("-accelerator", ViewerAcceleratorRegistration());
@@ -251,6 +254,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     InitSoundFollow(rec->GetFunc);
     InitSoundAttach(rec->GetFunc);
     InitLibraryMedia(rec->GetFunc);  // 13-7c: preview + the media database load (on first draw)
+    InitLibraryUser(rec);            // 13-11: User Libraries (.ravlib), File Sound import, Locate
     g_sound_check_id = RegisterAction(rec, kSoundStoreCheckName, kSoundStoreCheckDesc, &g_sound_check_accel);
 
     rec->Register("hookcommand", (void*)&OnHookCommand);

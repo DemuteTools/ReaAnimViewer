@@ -14,6 +14,8 @@
 
 #include "event_list.h"
 #include "item_rules.h"
+#include "library_user_ui.h"  // 13-11: File Sounds are imported on first use
+#include "ravlib.h"
 #include "rule_record.h"
 #include "sound_draw.h"
 #include "sound_place.h"
@@ -94,7 +96,8 @@ void CheckOwners(const std::vector<std::string>& guids, const std::string& owner
 
 // The request for one resolved sound (P11).
 PlaceRequest RequestFor(MediaItem* owner, const std::string& rid, double event_t, double project_t,
-                        const SoundNode& n, const ResolvedSound& rs)
+                        const SoundNode& n, const ResolvedSound& rs,
+                        const std::map<std::string, std::string>* materialised = nullptr)
 {
     PlaceRequest req;
     req.owner = owner;
@@ -103,7 +106,7 @@ PlaceRequest RequestFor(MediaItem* owner, const std::string& rid, double event_t
     req.project_t = project_t;
     req.node = n.uid;
     req.own = Ownership::Populated;
-    req.source = n.sound.source;
+    req.source = PopulateSource(n.sound.source, n.uid, materialised);  // 13-11: a File Sound's imported item
     const int v = rs.variation;
     if (v >= 0 && v < static_cast<int>(n.sound.frames.size())) {
         if (n.sound.mode == DetectMode::Takes) req.variation = v;
@@ -151,6 +154,8 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
     st.seed = rec.seed;
     std::set<std::string> blocked_rules;
     std::set<std::string> gone_rules;
+    std::map<std::string, std::string> materialised;  // File Sound uid -> its imported item ("" = missing)
+    std::map<std::string, std::string> materialise_why;  // File Sound uid -> why it was not imported
 
     const std::vector<ShownEvent> shown = BuildEventList(det.events, det.rules.events, blocks.size());
     for (const ShownEvent& e : shown) {
@@ -200,8 +205,18 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
         ed.rid = rid;
         ed.t = ev->t;
         ed.prev = &prev;
-        auto is_missing = [](const SoundNode& n) {
-            return n.sound.source.kind == SoundSourceKind::File || !FindItemByGuid(n.sound.source.item_guid);
+        const std::string lib_uid = lib->uid;
+        auto is_missing = [&materialised, &materialise_why, &lib_uid](const SoundNode& n) {
+            if (n.sound.source.kind == SoundSourceKind::File) {  // 13-11: imported once, then an Item
+                auto it = materialised.find(n.uid);
+                if (it == materialised.end()) {
+                    std::string why;
+                    it = materialised.emplace(n.uid, MaterialiseFileSound(nullptr, lib_uid, n.uid, &why)).first;
+                    if (it->second.empty() && !why.empty()) materialise_why[n.uid] = why;
+                }
+                return it->second.empty();
+            }
+            return !FindItemByGuid(n.sound.source.item_guid);
         };
         const Resolution res = ResolveEvent(store, *lib, LayersFor(rec, rid, ev->t), MakeDrawHooks(st, ed, is_missing));
         std::vector<SoundDraw> draws = ed.out;
@@ -226,8 +241,10 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
             if (!n) continue;
             if (s.missing) {
                 AddLine(rep, ReportKind::Missing,
-                        n->sound.source.kind == SoundSourceKind::File ? "File sound not placed: " + NodeName(n)
-                                                                       : "Source item missing: " + NodeName(n),
+                        n->sound.source.kind == SoundSourceKind::File
+                            ? (materialise_why.count(n->uid) ? materialise_why[n->uid]
+                                                             : "File not found: " + n->sound.source.asset.name)
+                            : "Source item missing: " + NodeName(n),
                         n->uid, guid, e.t);
                 hold.insert(n->uid);
                 continue;
@@ -280,7 +297,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
             const SoundNode*     n = FindNode(*lib, d.node);
             if (!n || d.pass < 0 || static_cast<size_t>(d.pass) >= passes.size()) continue;
             const double  pt = passes[static_cast<size_t>(d.pass)];
-            PlaceRequest  req = RequestFor(item, rid, ev->t, pt, *n, s);
+            PlaceRequest  req = RequestFor(item, rid, ev->t, pt, *n, s, &materialised);
             PlaceResult   r;
             if (step.act == SlotAction::Place) {
                 r = PlaceSounds(nullptr, req);

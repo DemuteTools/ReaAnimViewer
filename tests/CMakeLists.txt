@@ -180,7 +180,8 @@ add_executable(sound_follow_plan_test sound_follow_plan_test.cpp ../src/sound_fo
 target_include_directories(sound_follow_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_follow_plan COMMAND sound_follow_plan_test)
 # Story 13-11 -- src/ravlib.h
-add_executable(ravlib_test ravlib_test.cpp ../src/ravlib.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+add_executable(ravlib_test ravlib_test.cpp ../src/ravlib.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/media_db.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+target_link_libraries(ravlib_test PRIVATE Threads::Threads)
 target_include_directories(ravlib_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME ravlib COMMAND ravlib_test)
 # Story 13-7b -- src/sound_audition_plan.h

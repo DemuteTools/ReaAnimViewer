@@ -12,6 +12,7 @@
 
 #ifdef _WIN32
 
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -50,6 +51,10 @@ struct SoundMedia {
 // Item: the item of that GUID in the current project (take markers, then the chunk's slices);
 // File: asset.last_path. False (ok = false) when the source is not found.
 bool ReadSoundMedia(const SoundSource& source, SoundMedia* out);
+// Where a File Sound's file is when it is not at its last path (the User Library's search: Media
+// Explorer databases, another project item playing it); "" = not found. Set by library_user_ui, so
+// the panel, Edit and audition find the file the missing check finds (Antho 2026-10-13).
+void SetFileSoundResolver(std::function<std::string(const SoundSource&)> resolver);
 // The file a variation plays: Takes mode = that take's file, else the active take's.
 std::string VariationPath(const SoundMedia& media, const SoundData& data, int variation);
 // The source's file ("" when not found).

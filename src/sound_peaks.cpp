@@ -304,6 +304,15 @@ bool ReadItemMedia(MediaItem* item, SoundMedia* out)
     return out->ok;
 }
 
+namespace {
+std::function<std::string(const SoundSource&)> g_file_resolver;
+}
+
+void SetFileSoundResolver(std::function<std::string(const SoundSource&)> resolver)
+{
+    g_file_resolver = std::move(resolver);
+}
+
 bool ReadSoundMedia(const SoundSource& source, SoundMedia* out)
 {
     if (!out) return false;
@@ -312,8 +321,12 @@ bool ReadSoundMedia(const SoundSource& source, SoundMedia* out)
         MediaItem* item = source.item_guid.empty() ? nullptr : FindItemByGuid(source.item_guid);
         return item ? ReadItemMedia(item, out) : false;
     }
-    const std::string& path = source.asset.last_path;
-    const double       len = SourceFileLength(path);
+    std::string path = source.asset.last_path;
+    double      len = SourceFileLength(path);
+    if (!(len > 0.0) && g_file_resolver) {  // moved: found where the missing check finds it
+        path = g_file_resolver(source);
+        len = path.empty() ? 0.0 : SourceFileLength(path);
+    }
     if (!(len > 0.0)) return false;
     out->path = path;
     out->source_len = len;

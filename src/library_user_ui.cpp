@@ -332,6 +332,14 @@ bool LiveItem(const std::string& guid)
 
 void ApplyHooks()
 {
+    static bool resolver_set = false;
+    if (!resolver_set) {
+        resolver_set = true;
+        SetFileSoundResolver([](const SoundSource& s) {
+            RefreshCaches();
+            return ResolvedPath(s.asset);
+        });
+    }
     const LibraryTreeHooks& h = GetLibraryTreeHooks();
     if (h.is_missing) return;
     LibraryTreeHooks n = h;
@@ -1203,6 +1211,7 @@ void InitLibraryUser(reaper_plugin_info_t* rec)
 
 void QuitLibraryUser()
 {
+    SetFileSoundResolver(nullptr);
     if (g_timer_on && g_register) g_register("-timer", reinterpret_cast<void*>(&OnTimer));
     g_timer_on = false;
     g_job.cancel = true;  // 13-38: a scan of a huge folder stops at once

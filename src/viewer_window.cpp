@@ -1316,7 +1316,8 @@ void DrawToolUi()
         o.h = ui::Dp(26.0f);
         o.icon_px = ui::Dp(22.0f);
         o.tint = ui::kText;
-        if (ui::IconOnlyButton("##menu", IconTex(g_icon_menu), nullptr, o)) g_menu_open = !g_menu_open;
+        if (ui::IconOnlyButton("##menu", IconTex(g_icon_menu), g_menu_open ? "Close the options" : "Options", o))
+            g_menu_open = !g_menu_open;
     }
 
     if (g_menu_open) {
@@ -1360,13 +1361,17 @@ void DrawToolUi()
             ui::ColorSwatchOpts copts;
             copts.inputs = true;
             copts.original = true;
-            if (ui::ColorSwatchButton("##colour", g_light_color, "Light colour", copts))
+            // 13-37: every setting of the menu says what it changes, in a tip.
+            if (ui::ColorSwatchButton("##colour", g_light_color, "The colour of the light on the model", copts))
                 g_renderer.SetLightColor(glm::vec3(g_light_color[0], g_light_color[1], g_light_color[2]));
 
             ImGui::Dummy(ImVec2(0.0f, ui::Dp(3.0f)));
             ui::Caption("Position");
             if (LightDirectionPad(ui::Dp(150.0f)))
                 g_renderer.SetLightDir(LightDirFromAngles(g_light_azimuth, g_light_elevation));
+            ui::ItemTipText("Drag the dot to move the light around the model.\n"
+                            "Centre: straight above. Middle ring: level with the model. Edge: below.\n"
+                            "The shadow on the floor follows.");
 
             // Lighting-quality knobs to fix the "flat/cheap vs Mixamo" look in-Reaper, live:
             // Ambient = fill (lower → more contrast), Specular = sheen, Relief = normal-map boost.
@@ -1376,10 +1381,15 @@ void DrawToolUi()
             fo.format = "%.2f";
             if (ui::Fader("##ambient", &g_ambient, 0.0f, 1.0f, ui::LabelRow("Ambient", ui::Dp(100.0f)), fo))
                 g_renderer.SetAmbient(g_ambient);
+            ui::ItemTipText("How much light reaches the side of the model the light does not face.\n"
+                            "Lower: darker shadows, more contrast.");
             if (ui::Fader("##specular", &g_spec_strength, 0.0f, 2.0f, ui::LabelRow("Specular", ui::Dp(100.0f)), fo))
                 g_renderer.SetSpecStrength(g_spec_strength);
+            ui::ItemTipText("How shiny the model looks: the strength of the light's highlights.");
             if (ui::Fader("##relief", &g_normal_strength, 0.0f, 3.0f, ui::LabelRow("Relief", ui::Dp(100.0f)), fo))
                 g_renderer.SetNormalStrength(g_normal_strength);
+            ui::ItemTipText("How deep the surface detail of the textures looks (bumps, folds, seams).\n"
+                            "0: flat. Needs Normal maps on (Performance).");
         }
         ui::EndSection(sec);
 
@@ -1388,6 +1398,8 @@ void DrawToolUi()
         if (ui::BeginSection(sec, "Ground", IconTex(g_icon_ground))) {
             if (ui::Checkbox("Enable", &g_floor_visible))
                 g_renderer.SetFloorVisible(g_floor_visible);
+            ui::ItemTipText("Shows the floor and its grid under the model.\n"
+                            "Off also removes the shadow, which falls on the floor.");
             // Epic 9 — grid cell size in real metres; the renderer converts it to the
             // file's unit, so sizes read in cells whatever the format.
             // Exclusive choices are segmented controls (house style): the picked one stands out.
@@ -1399,6 +1411,7 @@ void DrawToolUi()
                 g_grid_step_m = (grid_sel == 1) ? 10 : 1;
                 g_renderer.SetGridStep(static_cast<float>(g_grid_step_m));
             }
+            ui::ItemTipText("The size of one grid square, in real metres, to judge distances and speed.");
         }
         ui::EndSection(sec);
 
@@ -1407,6 +1420,8 @@ void DrawToolUi()
             static const char* const kShadowLabels[4] = { "Off", "Low", "Mid", "High" };
             if (ui::Segmented("##shadow", kShadowLabels, 4, &g_shadow_quality, 0.0f, -1))
                 g_renderer.SetShadowQuality(static_cast<ShadowQuality>(g_shadow_quality));
+            ui::ItemTipText("The shadow the model casts on the floor.\n"
+                            "Higher: sharper, smoother edges, more work for the graphics card. Off: no shadow, fastest.");
         }
         ui::EndSection(sec);
 
@@ -1417,6 +1432,8 @@ void DrawToolUi()
 
             if (ui::Checkbox("Normal maps", &g_normal_maps_on))
                 g_renderer.SetNormalMapsEnabled(g_normal_maps_on);
+            ui::ItemTipText("Shows the surface detail painted in the model's textures (bumps, folds, seams).\n"
+                            "Off: smoother look, a little faster.");
 
             // Story 6.5.6 — MSAA level selector (FR52), replacing 6.5.5's on/off checkbox: a row
             // of Off / 2× / 4× / 8× radio buttons, mirroring the Shadow selector. An option whose
@@ -1444,8 +1461,12 @@ void DrawToolUi()
                 g_msaa_level = kMsaaLevels[msaa_sel];
                 g_renderer.SetMsaaSamples(g_msaa_level);
             }
+            ui::ItemTipText("Smooths the jagged edges of the model.\n"
+                            "Higher: smoother, more work for the graphics card. A greyed level is beyond your card.");
 
             ui::Checkbox("FPS", &g_fps_overlay_on);  // pure UI state — read by the overlay below
+            ui::ItemTipText("Shows at the top right of the view how many images per second it draws.\n"
+                            "Low numbers: lower Shadow or MSAA.");
         }
         ui::EndSection(sec);
         break;
@@ -1457,12 +1478,15 @@ void DrawToolUi()
             if (ui::BeginSection(sec, "Camera")) {
                 if (ui::SolidButton("Recenter camera", ImVec2(ImGui::GetContentRegionAvail().x, 0.0f)))
                     g_renderer.ResetCamera();
+                ui::ItemTipText("Puts the camera back in front of the model, framing it whole.");
             }
             ui::EndSection(sec);
             if (ui::BeginSection(sec, "Model / Skeleton")) {
                 static const char* const kModes[2] = { "Model", "Skeleton" };
                 int skel_sel = SkeletonModeOn() ? 1 : 0;
                 if (ui::Segmented("##menuskelmode", kModes, 2, &skel_sel)) SetSkeletonModeOn(skel_sel == 1);
+                ui::ItemTipText("What the view shows: the model, or its bones (click a bone to pick it for a rule).\n"
+                                "The same as the switch at the bottom left.");
             }
             ui::EndSection(sec);
             break;
@@ -1477,7 +1501,8 @@ void DrawToolUi()
                 int mark_sel = mode == MarkerMode::Take ? 0 : mode == MarkerMode::Project ? 1 : 2;
                 if (ui::Segmented("##tagmarkers", kMarkLabels, 3, &mark_sel, 0.0f, -1))
                     SetTaggingMarkerMode(mark_sel == 0 ? MarkerMode::Take : mark_sel == 1 ? MarkerMode::Project : MarkerMode::Both);
-                ui::ItemTip("%s on Commit (previews too).\nProject markers take the rule's colour.",
+                ui::ItemTip("Where Commit writes the events it detects: on the take (moves with the item), on the\n"
+                            "project's timeline, or both. %s (previews too).\nProject markers take the rule's colour.",
                             MarkerModeLine(GetTaggingMarkerMode()));
             }
             ui::EndSection(sec);
@@ -1498,6 +1523,8 @@ void DrawToolUi()
             if (ui::BeginSection(sec, "Panel")) {
                 bool panel = VideoPanelVisible();
                 if (ui::Checkbox("Video panel", &panel)) SetVideoPanelVisible(panel);
+                ui::ItemTipText("Shows the Video panel on the right of Video view (shots, camera, render).\n"
+                                "The same as the panel button at the top right.");
                 // Spec 11-fb-11 -- the Delete key asks first unless "Don't ask again" was ticked;
                 // this gives the question back (or takes it away).
                 bool ask = VideoAskBeforeDeleteShot();
@@ -1510,6 +1537,8 @@ void DrawToolUi()
                 // How long REAPER's Video window takes to catch up with an output size or display
                 // change while playing, on Video view's caption line (spec 11-fb-5).
                 ui::Checkbox("REAPER catch-up", &g_preview_lag_on);
+                ui::ItemTipText("Shows on Video view's caption line how long REAPER's Video window takes to catch up\n"
+                                "after an output size or display change while playing.");
             }
             ui::EndSection(sec);
             break;
@@ -1528,6 +1557,7 @@ void DrawToolUi()
         const bool copied = ElapsedSeconds() < g_copied_until;
         if (ui::SolidButton(copied ? "Copied!##copylog" : "Copy error log##copylog", ImVec2(ui::Dp(196.0f), 0.0f)))
             CopyErrorLogToClipboard();
+        ui::ItemTipText("Copies RAV's recent errors and your graphics card's name, to paste in a bug report.");
 
         // Build version (a dev build shows "<last release>-dev+<commit>"), so a user can tell
         // which one they run.

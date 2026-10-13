@@ -443,7 +443,10 @@ void DrawTracksRow(ReaProject* proj)
     ui::LabelRow("Tracks", ui::Dp(90.0f));
     const std::string label = std::string(kShort[sel]) + " \xE2\x96\xBE##sndtracks";
     if (ui::SolidButton(label.c_str())) ImGui::OpenPopup("##sndtracks");
-    ui::ItemTipText("Applies to new placements. Repopulate (reset) moves the existing ones.");
+    // 13-37: what the setting changes, then when it applies.
+    ui::ItemTipText("Which track each placed sound lands on: its source's (or its Lands-in) track,\n"
+                    "one track per Switch path, or folders by Switch.\n"
+                    "Applies to new placements. Repopulate (reset) moves the existing ones.");
     if (ui::BeginMenuPopup("##sndtracks")) {
         ui::MenuCaption("PLACED SOUNDS LAND ON");
         for (int i = 0; i < 3; ++i)
@@ -907,10 +910,15 @@ void DrawSoundsMenuSection()
         const std::vector<ReportLine> rep = FollowReport(proj);
         if (rep.empty()) {
             ui::Caption("Follow report: nothing to report");
+            ui::ItemTipText("What RAV did on its own when you moved, copied or deleted animation items\n"
+                            "(sounds moved, replaced, missing...).");
         } else {
             ImGui::Text("Follow report: %d line%s", static_cast<int>(rep.size()), rep.size() == 1 ? "" : "s");
+            ui::ItemTipText("What RAV did on its own when you moved, copied or deleted animation items\n"
+                            "(sounds moved, replaced, missing...).");
             ImGui::SameLine();
             if (ui::SolidButton("Clear##sndfollowclear")) ClearFollowReport(proj);
+            ui::ItemTipText("Empties this report.");
             const float h = std::min(8, static_cast<int>(rep.size())) * ImGui::GetTextLineHeightWithSpacing() + ui::Dp(4.0f);
             if (ImGui::BeginChild("##sndfollowreport", ImVec2(-1.0f, h))) {
                 for (auto it = rep.rbegin(); it != rep.rend(); ++it) {

@@ -163,9 +163,7 @@ bool FxValid(MediaTrack* t, int fx)
 
 double Playhead(bool* out_playing)
 {
-    const bool playing = (GetPlayStateEx(nullptr) & 1) != 0;
-    if (out_playing) *out_playing = playing;
-    return playing ? GetPlayPosition2Ex(nullptr) : GetCursorPositionEx(nullptr);
+    return RavPlayhead(nullptr, out_playing);  // 11-6: the heard position
 }
 
 std::string TrackLabel(MediaTrack* t)

@@ -163,9 +163,7 @@ void FormatTime(double t, char* out, size_t cap)
 
 double Playhead(bool* playing)
 {
-    const bool p = (GetPlayStateEx(nullptr) & 1) != 0;
-    if (playing) *playing = p;
-    return p ? GetPlayPosition2Ex(nullptr) : GetCursorPositionEx(nullptr);
+    return RavPlayhead(nullptr, playing);  // 11-6: the heard position
 }
 
 double ProjectFps()

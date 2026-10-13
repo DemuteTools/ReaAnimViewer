@@ -258,10 +258,9 @@ bool GetCurrentAnimItemOn(MediaTrack* only_track, std::string& out_path, double&
                           MediaTrack** out_track, MediaItem** out_item)
 {
     ReaProject* proj = nullptr;  // current project
-    // Play cursor (continuous audio clock) while playing, edit cursor while stopped —
-    // so a stopped scrub still drives the displayed frame (AC1).
-    const bool playing = (GetPlayStateEx(proj) & 1) != 0;
-    const double pos = playing ? GetPlayPosition2Ex(proj) : GetCursorPositionEx(proj);
+    // The heard play position while playing, edit cursor while stopped — so a stopped scrub
+    // still drives the displayed frame (AC1); 11-6: in sync with the sound (RavPlayhead).
+    const double pos = RavPlayhead(proj);
 
     // Story 11-4 — one track only (Video view on a pinned track): the first spanning RAV
     // item in the track's item order, the rule the video FX uses (video_timeline.h

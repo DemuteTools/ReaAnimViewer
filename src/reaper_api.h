@@ -23,7 +23,7 @@
 // locate the current item). No other symbol is added (no Main_OnCommand / project
 // helpers — those are later phases).
 #define REAPERAPI_WANT_GetPlayStateEx          // transport playing? (bit 0)
-#define REAPERAPI_WANT_GetPlayPosition2Ex      // play-cursor position (continuous audio clock)
+#define REAPERAPI_WANT_GetPlayPositionEx       // play position as HEARD (latency-compensated)
 #define REAPERAPI_WANT_GetCursorPositionEx     // edit-cursor position when stopped (scrub)
 #define REAPERAPI_WANT_CountMediaItems
 #define REAPERAPI_WANT_GetMediaItem
@@ -185,3 +185,14 @@
 
 #include "reaper_plugin.h"
 #include "reaper_plugin_functions.h"
+
+// Story 11-6 -- the time every RAV view shows: while playing, the position the listener HEARS
+// (GetPlayPositionEx, latency-compensated, the clock REAPER's video window follows), not the one
+// REAPER is processing (GetPlayPosition2Ex, ahead by the audio buffer + output latency, which put
+// the viewport ahead of the sound); the edit cursor while stopped, so a scrub drives the frame.
+inline double RavPlayhead(ReaProject* proj, bool* out_playing = nullptr)
+{
+    const bool playing = (GetPlayStateEx(proj) & 1) != 0;
+    if (out_playing) *out_playing = playing;
+    return playing ? GetPlayPositionEx(proj) : GetCursorPositionEx(proj);
+}

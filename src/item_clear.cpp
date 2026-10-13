@@ -57,11 +57,13 @@ std::string ItemText(MediaItem* item, const char* key)
     return buf;
 }
 
-// Writes a take key ("" removes it). No undo point (inside the gesture's).
+// Writes a take key ("" removes it). No undo point (inside the gesture's). Judged by reading the
+// key back: REAPER can answer false to a removal (an empty value) that it did make.
 bool SetTakeText(MediaItem_Take* take, const char* key, const std::string& text)
 {
     if (!take || !ValidatePtr2(nullptr, take, "MediaItem_Take*")) return false;
-    return GetSetMediaItemTakeInfo_String(take, key, const_cast<char*>(text.c_str()), true);
+    GetSetMediaItemTakeInfo_String(take, key, const_cast<char*>(text.c_str()), true);
+    return TakeText(take, key) == text;
 }
 
 // Everything the plan reads, and the handles it acts on.

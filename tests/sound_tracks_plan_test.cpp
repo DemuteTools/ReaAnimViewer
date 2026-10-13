@@ -521,6 +521,19 @@ static void TestSpillPlan()
     CHECK(p.lanes == 2 && p.lane_of[0] == 0 && p.lane_of[1] == 0 && p.item_lane == 1);
     // A lane item of another base (tk base|S|1 of a moved item) is not this track's: stays.
     CHECK(PlanSpill({{0.0, 2.0, -1}}, {LaneMark(base, 1)}, base, {1.0, 3.0, -1}, &p) && p.lane_of[0] == -1);
+    // 13-19: whatever the tags say, PlanSpill stays (false) exactly when the item fits the track, so
+    // SettleOnLanes reads the tags only once the item does not fit.
+    {
+        const std::vector<std::vector<LaneSpan>> tracks = {
+            {}, {{0.0, 0.2, -1}}, {{0.0, 2.0, -1}}, {{0.0, 1.0, -1}, {2.0, 3.0, -1}}, {{0.5, 0.5, -1}}};
+        const std::vector<LaneSpan> items = {{0.3, 0.5, -1}, {0.3, 2.3, -1}, {1.0, 2.0, -1}, {3.0, 4.0, -1}, {0.5, 0.5, -1}};
+        for (const auto& t : tracks)
+            for (const LaneSpan& it : items)
+                for (const std::string& tk : {std::string(), base, std::string("other")}) {
+                    const std::vector<std::string> tks(t.size(), tk);
+                    CHECK(PlanSpill(t, tks, base, it, &p) == !FitsLane(t, it));
+                }
+    }
     // Once spilled: the first child that fits, else a new k above the highest (a deleted child skipped).
     bool made = true;
     CHECK(PickLaneK({1, 3}, {{{0.0, 1.0, -1}}, {}}, {0.5, 0.8, -1}, &made) == 3 && !made);

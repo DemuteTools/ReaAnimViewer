@@ -358,11 +358,11 @@ void PickSoundGesture(std::function<SoundReport()> gesture)
 
 // Populate (or, with `restore`, Populate placing again the sounds deleted by hand: the line's Restore), then
 // the line says what happened (Antho 2026-10-12: a Populate with nothing to do looked broken).
-static void RunPopulate(const std::vector<MediaItem*>& items, bool restore)
+static void RunPopulate(const std::vector<MediaItem*>& items, bool restore, const PopulateProgressFn& progress)
 {
     int               events = 0;
     PopulateCounts    counts;
-    const SoundReport rep = PopulateItemsCounted(items, &events, &counts, restore);
+    const SoundReport rep = PopulateItemsCounted(items, &events, &counts, restore, progress);
     Remember(rep, events);
     bool trouble = false;  // missing / blocked / no-sound lines: the summary already says why
     for (const ReportLine& l : rep.lines)
@@ -386,6 +386,47 @@ static void RunPopulate(const std::vector<MediaItem*>& items, bool restore)
     g_count.valid = false;
 }
 
+// 13-19: a Populate / Restore clicked this frame runs from RAV's window procedure, outside the ImGui
+// frame, so RAV's window can show its progress (PopulateHasPending / RunPendingPopulate).
+namespace {
+struct PendingPopulate {
+    bool                    has = false;
+    bool                    restore = false;
+    std::vector<MediaItem*> items;
+};
+PendingPopulate g_pending;
+}  // namespace
+
+static void QueuePopulate(const std::vector<MediaItem*>& items, bool restore)
+{
+    if (g_pending.has || items.empty()) return;
+    g_pending.has = true;
+    g_pending.restore = restore;
+    g_pending.items = items;
+}
+
+bool PopulateHasPending()
+{
+    return g_pending.has;
+}
+
+void RunPendingPopulate(const PopulateProgressFn& progress)
+{
+    if (!g_pending.has) return;
+    const PendingPopulate job = g_pending;
+    g_pending = PendingPopulate();
+    std::vector<MediaItem*> items;  // the items clicked on, still in the project
+    for (MediaItem* it : job.items)
+        if (ValidatePtr2(nullptr, it, "MediaItem*")) items.push_back(it);
+    if (items.empty()) return;
+    RunPopulate(items, job.restore, progress);
+}
+
+void DropPendingPopulate()
+{
+    g_pending = PendingPopulate();
+}
+
 bool SoundFooterVisible(const TaggingSoundContext& ctx)
 {
     return ctx.item != nullptr && !GetSoundStore(nullptr).libraries.empty();
@@ -406,12 +447,15 @@ void DrawPopulateRow(const TaggingSoundContext& ctx, float attach_w)
     float avail = ImGui::GetContentRegionAvail().x - (attach_w > 0.0f ? attach_w + sp : 0.0f);
     const float populate_w = std::max(ui::Dp(60.0f), avail - reshuffle_w - sp);
     char label[64];
-    std::snprintf(label, sizeof(label), "Populate %s %d event%s##ravpopulate", kDot, n, n == 1 ? "" : "s");
-    const bool none = sel.empty();
+    if (g_pending.has)
+        std::snprintf(label, sizeof(label), "Populating...##ravpopulate");
+    else
+        std::snprintf(label, sizeof(label), "Populate %s %d event%s##ravpopulate", kDot, n, n == 1 ? "" : "s");
+    const bool none = sel.empty() || g_pending.has;
     if (none) ImGui::BeginDisabled();
-    if (ui::PrimaryButton(label, ImVec2(populate_w, 0.0f))) RunPopulate(sel, false);
+    if (ui::PrimaryButton(label, ImVec2(populate_w, 0.0f))) QueuePopulate(sel, false);
     if (none) ImGui::EndDisabled();
-    ui::ItemTipText(none ? "Select animation items"
+    ui::ItemTipText(sel.empty() ? "Select animation items"
                          : "Places each event's sound on the selected items and their linked copies.\n"
                            "Placed sounds you moved stay where you put them; the ones you deleted by hand stay\n"
                            "deleted (Restore, on the line below, places them again). One undo point.");
@@ -419,7 +463,7 @@ void DrawPopulateRow(const TaggingSoundContext& ctx, float attach_w)
     if (none) ImGui::BeginDisabled();
     if (ui::SolidButton("Reshuffle##ravreshuffle", ImVec2(reshuffle_w, 0.0f))) Remember(ReshuffleItems(sel), -1);
     if (none) ImGui::EndDisabled();
-    ui::ItemTipText(none ? "Select animation items"
+    ui::ItemTipText(sel.empty() ? "Select animation items"
                          : "New random picks for the placed sounds (hand picks kept). One undo point.");
     if (attach_w > 0.0f) ImGui::SameLine();
 }
@@ -445,12 +489,7 @@ void DrawSoundReportLine(const TaggingSoundContext& ctx)
         ui::ItemTipText(cut ? (g_last.summary + "\nClick for the details").c_str() : "Click for the details");
         if (can_restore) {
             ImGui::SameLine();
-            if (ui::LinkButton(restore)) {
-                std::vector<MediaItem*> items;  // the items Populate ran on, still in the project
-                for (MediaItem* it : g_last.restore_items)
-                    if (ValidatePtr2(nullptr, it, "MediaItem*")) items.push_back(it);
-                if (!items.empty()) RunPopulate(items, true);
-            }
+            if (ui::LinkButton(restore)) QueuePopulate(g_last.restore_items, true);  // 13-19: checked when it runs
             ui::ItemTipText("Places again the sounds you deleted by hand on these items. One undo point.");
         }
     }

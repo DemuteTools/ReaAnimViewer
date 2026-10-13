@@ -436,10 +436,15 @@ std::string SettleOnLanes(ReaProject* proj, MediaItem* item, MediaTrack* base, c
         std::vector<std::string> tks;
         for (const LaneItem& l : LaneItems(base)) {
             if (l.item == item) continue;
-            PlacedTag tag;
             on.push_back(l.item);
             spans.push_back({l.start, l.end, -1});
-            tks.push_back(ReadPlacedTag(l.item, &tag) ? tag.tk : std::string());
+        }
+        // 13-19: PlanSpill stays exactly when the item fits; the tags (a read per item on the track,
+        // for every sound placed) are read only when it spills.
+        if (FitsLane(spans, span)) return stay();
+        for (MediaItem* it : on) {
+            PlacedTag tag;
+            tks.push_back(ReadPlacedTag(it, &tag) ? tag.tk : std::string());
         }
         SpillPlan plan;
         if (!PlanSpill(spans, tks, base_mark, span, &plan)) return stay();

@@ -253,3 +253,9 @@ add_executable(assign_view_model_test assign_view_model_test.cpp ../src/assign_v
                ../src/tagging_signal.cpp)
 target_include_directories(assign_view_model_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME assign_view_model COMMAND assign_view_model_test)
+
+# Story 13-19 -- a fast Populate with a progress bar: the gesture's live-item set, the progress
+# fraction / text and the frame pacing (src/populate_progress.h).
+add_executable(populate_progress_test populate_progress_test.cpp)
+target_include_directories(populate_progress_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME populate_progress COMMAND populate_progress_test)

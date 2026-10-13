@@ -13,6 +13,7 @@
 
 #include "console_log.h"
 #include "item_rules.h"  // RavTakeOf
+#include "populate_progress.h"  // 13-19: LiveSet
 #include "sound_record.h"
 
 namespace rav {
@@ -147,9 +148,12 @@ std::string ReadItemText(MediaItem* item, const char* key)
     return buf.data();
 }
 
+// 13-19: a gesture's items already checked live (LiveItemsBatch): ValidatePtr2 walks the project's items.
+LiveSet g_live;
+
 bool ItemValid(MediaItem* item)
 {
-    return item && ValidatePtr2(nullptr, item, "MediaItem*");
+    return IsLiveItem(item);
 }
 
 // ---- The dev check (D10) ------------------------------------------------------------------------
@@ -207,6 +211,26 @@ void QuitSoundProject()
     g_pcreg_on = false;
     g_stores.clear();
     g_unreadable.clear();
+}
+
+void LiveItemsBatch(bool on)
+{
+    if (on) g_live.Begin();
+    else g_live.End();
+}
+
+void ForgetLiveItem(MediaItem* item)
+{
+    g_live.Forget(item);
+}
+
+bool IsLiveItem(MediaItem* item)
+{
+    if (!item) return false;
+    if (g_live.Known(item)) return true;
+    const bool live = ValidatePtr2(nullptr, item, "MediaItem*");
+    if (live) g_live.Learn(item);
+    return live;
 }
 
 const SoundStore& GetSoundStore(ReaProject* proj)

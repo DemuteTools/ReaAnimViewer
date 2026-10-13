@@ -83,7 +83,7 @@ std::map<std::string, MediaItem*>* g_items = nullptr;
 // once, the sounds on their usual tracks). Found or made once per gesture (SwitchTrackFor).
 std::map<std::string, MediaTrack*>* g_tracks = nullptr;
 
-// The engine's finder: the gesture's map only (a miss: the engine scans).
+// The engine's finder: the gesture's map only (a miss, or a GUID known as none: the engine scans).
 MediaItem* IndexedItem(const std::string& guid)
 {
     if (!g_items) return nullptr;
@@ -152,6 +152,8 @@ struct PopOpts {
     std::vector<std::string> rids;        // 13-8 fix: when not empty, only these rules (one detection for all)
     bool        has_t = false;
     double      t = 0.0;
+    // 13-19: told before each of the item's events (handled so far, the item's count). Optional.
+    std::function<void(int, int)> on_event;
 };
 
 std::string NodeName(const SoundNode* n)
@@ -322,7 +324,10 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
     // The events and their passes: the one list the follow (13-9) also reads (SoundEventsOf).
     const std::vector<FollowEvent> sound_events =
         SoundEventsOf(BuildEventList(det.events, det.rules.events, blocks.size()), blocks, det.map);
+    const int n_events = static_cast<int>(sound_events.size());
+    int       handled = 0;
     for (const FollowEvent& e : sound_events) {
+        if (o.on_event) o.on_event(handled++, n_events);
         const std::string& rid = e.rid;
         if (!e.enabled) continue;  // fix C 2026-10-12: a disabled rule's sounds are kept, muted by the follow
         if (!o.rid.empty() && rid != o.rid) continue;
@@ -839,8 +844,11 @@ MediaItem* FindItemByGuid(const std::string& guid)
     if (g_items) {  // inside a gesture: its map; a miss (an item added outside it) is looked up and kept
         auto hit = g_items->find(GuidKey(guid));
         if (hit != g_items->end()) return hit->second;
+        // 13-19: a GUID not in the project (a sound deleted by hand, a missing source) is kept as none, so
+        // each later lookup in the gesture does not scan the project again. Items the gesture places
+        // overwrite their entry (PopulateOne); GUIDs are never reused.
         MediaItem* it = FindPlacedItem(guid);
-        if (it) (*g_items)[GuidKey(guid)] = it;
+        (*g_items)[GuidKey(guid)] = it;
         return it;
     }
     return FindPlacedItem(guid);
@@ -875,7 +883,7 @@ std::vector<MediaItem*> PopulateTargets(const std::vector<MediaItem*>& items)
 }
 
 SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* events, PopulateCounts* counts,
-                                 bool revive_deleted)
+                                 bool revive_deleted, const PopulateProgressFn& progress)
 {
     SoundReport rep;
     if (events) *events = 0;
@@ -883,6 +891,9 @@ SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* even
     try {
         const std::vector<MediaItem*> targets = PopulateTargets(items);
         if (targets.empty()) return rep;
+        PopulateProgress where;  // 13-19: the caller's progress frames, the first one before any work
+        where.items = static_cast<int>(targets.size());
+        if (progress) progress(where);
         const SoundStore store = GetSoundStore(nullptr);
         {
             SoundUndoScope undo(nullptr, revive_deleted ? "RAV: Restore deleted sounds" : "RAV: Populate sounds");
@@ -893,7 +904,18 @@ SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* even
             // 13-15: a rule that only inherits its sound (Project / Character) has no id until now: given first,
             // else its events are not placed (they are found by rule id).
             for (MediaItem* it : targets) EnsureRids(it);
-            for (MediaItem* it : targets) PopulateOne(it, store, o, rep, events);
+            if (progress)
+                o.on_event = [&where, &progress](int done, int total) {
+                    where.event = done;
+                    where.events = total;
+                    progress(where);
+                };
+            for (size_t k = 0; k < targets.size(); ++k) {
+                where.item = static_cast<int>(k);
+                where.event = where.events = 0;
+                if (progress) progress(where);
+                PopulateOne(targets[k], store, o, rep, events);
+            }
             RefreshRavTrackNames(nullptr);  // 13-17 N3: the RAV tracks take their Library names
         }
         if (counts) {  // the details list says it too

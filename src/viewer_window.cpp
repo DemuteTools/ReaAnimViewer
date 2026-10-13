@@ -51,6 +51,8 @@
 #include "tagging_session.h"   // Story 10-3: the Tagging view's model (item, rules, detection)
 #include "tag_markers.h"       // Story 10-4: the markers option (Take / Project / Both)
 #include "tagging_view_ui.h"   // Story 10-3: its curve strip and panel
+#include "tagging_populate_ui.h"  // 13-19: Populate runs from the window procedure, with its progress
+#include "populate_progress.h"    // 13-19: the progress frames' pace, fill and text
 #include "texture_locate.h"    // issue #1: "Locate textures..." (folder picker + copy)
 #include "gpu_resources.h"    // Story 11-4: the Video view's render target
 #include "ui_theme.h"         // Story 11-4: the DM-XYZ-Pad theme over Dear ImGui
@@ -302,6 +304,10 @@ constexpr UINT kMsgRunVideoCommands = WM_APP + 0x31;  // runs the Video view's q
 // procedure only); the flag stops a second post meanwhile.
 constexpr UINT kMsgTaggingDialog = WM_APP + 0x33;
 bool            g_tagging_dialog_pending = false;
+// 13-19: a Populate / Restore clicked in the panel runs from the window procedure (outside the render
+// tick and its ImGui frame), drawing its progress frames; the flag stops a second post meanwhile.
+constexpr UINT kMsgRunPopulate = WM_APP + 0x34;
+bool           g_populate_post_pending = false;
 GpuFramebuffer  g_video_fbo;
 GpuRenderbuffer g_video_color_rb;
 GpuRenderbuffer g_video_depth_rb;
@@ -863,6 +869,8 @@ void RenderTick()
         g_video_post_pending = PostMessageW(g_hwnd, kMsgRunVideoCommands, 0, 0) != FALSE;
     if (TaggingHasPendingDialog() && !g_tagging_dialog_pending && g_hwnd)
         g_tagging_dialog_pending = PostMessageW(g_hwnd, kMsgTaggingDialog, 0, 0) != FALSE;
+    if (PopulateHasPending() && !g_populate_post_pending && g_hwnd)
+        g_populate_post_pending = PostMessageW(g_hwnd, kMsgRunPopulate, 0, 0) != FALSE;
 
     ++g_frame_count;
     LARGE_INTEGER now;
@@ -1987,6 +1995,8 @@ void StopRendering()
     g_drag_video = false;
     g_video_post_pending = false;
     g_tagging_dialog_pending = false;  // story 10-3b: a post lost with the window
+    g_populate_post_pending = false;   // 13-19: so is a queued Populate (nothing written)
+    DropPendingPopulate();
     g_current_load_ok = false;
 
     // The renderer's asset died with the context, so forget which item it showed: a
@@ -2019,6 +2029,73 @@ bool TextInputNow()
            (TaggingViewActive() && (TaggingPresetMenuOpen() || TaggingRolesWindowOpen()));
 }
 bool ViewerTakesCharNow() { return ViewerTakesChar(g_key_route, ShortcutRecordingId() >= 0, TextInputNow()); }
+
+// 13-19: one progress frame of a running Populate on RAV's window: the theme background and a centred
+// card (title, bar, "Item i of n · event j of m"). Only this card is drawn: the panels would read the
+// project while the gesture is half written. Runs outside any ImGui frame (from the window procedure),
+// on the main ImGui context; the GL context and ImGui context in place are put back. Then the thread
+// peeks its queue without taking anything (PM_NOREMOVE), so Windows does not replace REAPER by a
+// "Not responding" ghost after 5 s and hide the progress; no input is read, nothing is dispatched.
+void PaintPopulateProgress(const PopulateProgress& p)
+{
+    if (g_imgui_ready && g_main_imgui_ctx && g_hwnd && g_hdc && g_hglrc && IsWindowVisible(g_hwnd) &&
+        g_client_w > 0 && g_client_h > 0) {
+        const HGLRC prev_rc = wglGetCurrentContext();
+        const HDC   prev_dc = wglGetCurrentDC();
+        const bool  switched = prev_rc != g_hglrc || prev_dc != g_hdc;
+        if (!switched || wglMakeCurrent(g_hdc, g_hglrc)) {
+            ImGuiContext* prev_ctx = ImGui::GetCurrentContext();
+            ImGui::SetCurrentContext(g_main_imgui_ctx);
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glViewport(0, 0, g_client_w, g_client_h);
+            const ImVec4 bg = ui::Col(ui::kBg);
+            glClearColor(bg.x, bg.y, bg.z, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+            ImGui_ImplOpenGL3_NewFrame();
+            ImGui_ImplWin32_NewFrame();
+            ImGui::NewFrame();
+            const ImGuiViewport* vp = ImGui::GetMainViewport();
+            const float          card_w = std::min(ui::Dp(360.0f), std::max(ui::Dp(120.0f), vp->WorkSize.x - ui::Dp(32.0f)));
+            ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f),
+                                    ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+            ImGui::SetNextWindowSize(ImVec2(card_w, 0.0f), ImGuiCond_Always);
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, ui::Col(ui::kSurface));
+            ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStroke));
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, ui::Col(ui::kBg));
+            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ui::Col(ui::kAccent));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, ui::Dp(10.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui::Dp(16.0f), ui::Dp(14.0f)));
+            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ui::Dp(4.0f));
+            constexpr ImGuiWindowFlags kCard = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                                               ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs |
+                                               ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav |
+                                               ImGuiWindowFlags_AlwaysAutoResize;
+            if (ImGui::Begin("##ravpopulateprogress", nullptr, kCard)) {
+                ImGui::TextUnformatted("Populating sounds");
+                ImGui::Spacing();
+                ImGui::ProgressBar(ProgressFraction(p), ImVec2(-1.0f, ui::Dp(8.0f)), "");
+                ImGui::Spacing();
+                ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
+                ImGui::TextUnformatted(ProgressText(p).c_str());
+                ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kFaint));
+                ImGui::TextWrapped("REAPER resumes when it is done. One undo point.");
+                ImGui::PopStyleColor(2);
+            }
+            ImGui::End();
+            ImGui::PopStyleVar(4);
+            ImGui::PopStyleColor(4);
+            ImGui::Render();
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+            SwapBuffers(g_hdc);
+            ImGui::SetCurrentContext(prev_ctx);
+            if (switched) wglMakeCurrent(prev_dc, prev_rc);
+        }
+    }
+    MSG peek;
+    PeekMessageW(&peek, nullptr, 0, 0, PM_NOREMOVE);
+}
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -2330,6 +2407,22 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             LogError("Video view: a write failed (Reaper is unaffected)");
         }
         return 0;
+
+    case kMsgRunPopulate: {
+        // 13-19: the queued Populate / Restore (one undo point), its progress drawn about every 100 ms.
+        g_populate_post_pending = false;
+        try {
+            ProgressPacer pace(0.1);
+            RunPendingPopulate([&pace](const PopulateProgress& p) {
+                if (pace.Due(ElapsedSeconds())) PaintPopulateProgress(p);
+            });
+        } catch (const std::exception& e) {
+            LogError("Populate failed: %s", e.what());
+        } catch (...) {
+            LogError("Populate failed");
+        }
+        return 0;
+    }
 
     case kMsgTaggingDialog: {
         // Story 10-3b -- the preset Import / Export picker, owned by the top-level window (the

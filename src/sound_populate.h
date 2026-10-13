@@ -9,9 +9,11 @@
 
 #ifdef _WIN32
 
+#include <functional>
 #include <string>
 #include <vector>
 
+#include "populate_progress.h"
 #include "reaper_api.h"
 #include "sound_assign.h"
 #include "sound_model.h"
@@ -34,8 +36,12 @@ struct PopulateCounts {
 };
 // `revive_deleted` (the Populate button, Antho 2026-10-12): the sounds deleted by hand are placed again; the
 // other callers (follow, copies) leave them deleted.
+// 13-19: `progress` (optional) is told where the work is: once before any work, then before each item and
+// each of its events (the caller paces its frames, populate_progress.h ProgressPacer). It must not touch
+// the project.
+using PopulateProgressFn = std::function<void(const PopulateProgress&)>;
 SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* events, PopulateCounts* counts = nullptr,
-                                 bool revive_deleted = false);
+                                 bool revive_deleted = false, const PopulateProgressFn& progress = nullptr);
 // The items Populate acts on: the RAV items of `items` plus every other member of their pools.
 std::vector<MediaItem*> PopulateTargets(const std::vector<MediaItem*>& items);
 // The selected items that are RAV animation items.

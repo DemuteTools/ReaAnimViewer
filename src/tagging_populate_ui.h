@@ -15,6 +15,7 @@
 #include "event_list.h"
 #include "rule_record.h"  // ItemRules
 #include "sound_model.h"   // SoundReport
+#include "sound_populate.h"  // 13-19: PopulateProgressFn
 #include "tagging_sound_context.h"
 
 struct ImDrawList;
@@ -45,6 +46,12 @@ float SoundFooterHeight(const TaggingSoundContext& ctx);
 void DrawPopulateRow(const TaggingSoundContext& ctx, float attach_w);
 // The last Populate's report, one line.
 void DrawSoundReportLine(const TaggingSoundContext& ctx);
+// 13-19: the Populate button and the report line's Restore only queue their run (it cannot draw from inside
+// the ImGui frame). RAV's window procedure runs it (RunPendingPopulate), outside any frame, with a painter
+// for its progress frames (one undo point, as before); the pointers are checked then. Dropped with the viewer.
+bool PopulateHasPending();
+void RunPendingPopulate(const PopulateProgressFn& progress);
+void DropPendingPopulate();
 // On the strip, under an event's mark at (x, y): its sound glyph.
 void DrawSoundStripGlyph(ImDrawList* dl, const TaggingModel& m, const ShownEvent& e, float x, float y);
 

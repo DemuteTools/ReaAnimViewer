@@ -58,6 +58,7 @@ SetItemStateChunkFn          f_set_chunk = nullptr;
 PreventUIRefreshFn           f_prevent_refresh = nullptr;
 int                          g_batch = 0;  // PlaceBatch depth
 std::map<MediaItem*, std::string> g_batch_chunks;  // a batch's source chunks, read once
+std::map<MediaItem*, bool>        g_batch_folders;  // 13-19: a batch's IsFolderItem answers, decided once
 SetMediaItemInfo_ValueFn     f_set_item = nullptr;
 SetMediaItemTakeInfo_ValueFn f_set_take = nullptr;
 GetMediaItemTakeFn           f_get_take = nullptr;
@@ -120,13 +121,22 @@ std::string NewGuidString()
 
 MediaItem* (*g_item_finder)(const std::string& guid) = nullptr;
 
+// 13-19: an item the gesture is about to delete leaves its caches (a later item may reuse the pointer).
+void ForgetDeleted(MediaItem* item)
+{
+    ForgetLiveItem(item);
+    g_batch_folders.erase(item);
+}
+
 // E11b: the active gesture's finder first (a hit still checked live), else scan the project's items.
 MediaItem* FindItem(ReaProject* proj, const std::string& guid)
 {
     if (guid.empty()) return nullptr;
     if (g_item_finder)
         if (MediaItem* hit = g_item_finder(guid))
-            if (ValidatePtr2(proj, hit, "MediaItem*") && SameGuid(ItemGuid(hit), guid)) return hit;
+            // 13-19: the gesture's live-item cache for the current project (ValidatePtr2 walks its items).
+            if ((proj ? ValidatePtr2(proj, hit, "MediaItem*") : IsLiveItem(hit)) && SameGuid(ItemGuid(hit), guid))
+                return hit;
     const int n = CountMediaItems(proj);
     for (int i = 0; i < n; ++i) {
         MediaItem* it = GetMediaItem(proj, i);
@@ -431,7 +441,10 @@ PlaceResult PlaceFileImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* 
     MediaItem_Take* take = f_add_take(item);
     if (!take || !f_set_take_source(take, src)) {
         drop_source();
-        if (!kept) f_delete_item(req.track, item);
+        if (!kept) {
+            ForgetDeleted(item);
+            f_delete_item(req.track, item);
+        }
         else if (!saved.empty()) f_set_chunk(kept, saved.c_str(), false);  // back as it was
         r.error = "could not give the item its file";
         return r;
@@ -521,7 +534,10 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
             return r;
         }
         if (!WriteCopy(m.src, item, guid)) {
-            if (!(i == 0 && kept)) f_delete_item(m.track, item);
+            if (!(i == 0 && kept)) {
+                ForgetDeleted(item);
+                f_delete_item(m.track, item);
+            }
             r.error = "could not copy the source item";
             return r;
         }
@@ -783,14 +799,17 @@ bool OnPlaceTestCommand(int command, int /*flag*/)
 void PlaceBatch(bool on)
 {
     if (on) {
-        TracksBatch(true);  // 13-16: the gesture's track marks and lane items, read once
+        TracksBatch(true);     // 13-16: the gesture's track marks and lane items, read once
+        LiveItemsBatch(true);  // 13-19: each item checked live once
         if (g_batch++ == 0 && f_prevent_refresh) f_prevent_refresh(1);
         return;
     }
     if (g_batch <= 0) return;
     TracksBatch(false);
+    LiveItemsBatch(false);
     if (--g_batch == 0) {
         g_batch_chunks.clear();
+        g_batch_folders.clear();
         if (f_prevent_refresh) f_prevent_refresh(-1);
     }
 }
@@ -860,6 +879,14 @@ bool IsFolderItem(MediaItem* item)
 {
     if (!item) return false;
     try {
+        // 13-19: decided once a batch (a folder pile's check scans its child tracks and reads its chunk).
+        if (g_batch > 0) {
+            auto hit = g_batch_folders.find(item);
+            if (hit != g_batch_folders.end()) return hit->second;
+            const bool folder = IsFolderItemRule(ReadFolderFacts(item));
+            g_batch_folders.emplace(item, folder);
+            return folder;
+        }
         return IsFolderItemRule(ReadFolderFacts(item));
     } catch (...) {
         return false;
@@ -937,6 +964,7 @@ bool RemovePlacement(ReaProject* proj, const std::string& item_guid)
         MediaItem*  item = PlacedItemFor(proj, item_guid, true, nullptr, &why);
         if (!item) return false;
         ForgetLaneItem(item);  // 13-16: out of the gesture's lane cache
+        ForgetDeleted(item);   // 13-19: out of the gesture's live and folder caches
         return f_delete_item(GetMediaItem_Track(item), item);
     } catch (...) {
         return false;

@@ -34,6 +34,14 @@ void InitSoundProject(reaper_plugin_info_t* rec);
 // Unregisters it (plugin unload, reverse order).
 void QuitSoundProject();
 
+// 13-19: a gesture's live-item cache (PlaceBatch turns it on and off; nested calls count). On, an item
+// checked live once (IsLiveItem, and the Read / Write calls below) is not checked again with
+// ValidatePtr2, which walks the project's items. Every item the gesture deletes must be forgotten
+// (ForgetLiveItem) before it is deleted. Off, every check is ValidatePtr2 on the current project.
+void LiveItemsBatch(bool on);
+void ForgetLiveItem(MediaItem* item);
+bool IsLiveItem(MediaItem* item);
+
 // The project's store (nullptr = the current project). Empty for a project without one.
 const SoundStore& GetSoundStore(ReaProject* proj);
 // Edits the store: `edit` returns false to change nothing. A changed store marks the project

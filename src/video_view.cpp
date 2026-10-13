@@ -421,6 +421,10 @@ void UpdateStripRange()
         if (!(it.end > it.start)) continue;
         g_range.items.push_back(VideoStripSpan{it.start, it.end});  // spec 11-fb-12: the neighbours too
         if (spanning) continue;
+        // A muted item, or one on a lane that does not play, shows nothing (the pick skips
+        // it): kept as a block (its shots sit on it) but never the current one (its gap to a
+        // playhead inside it would be negative, so it would always win).
+        if (k < tl->plays.size() && (tl->plays[k].muted || !tl->plays[k].lane_plays)) continue;
         const int idx = static_cast<int>(g_range.items.size()) - 1;
         if (static_cast<int>(k) == playing) {
             best = idx;

@@ -47,8 +47,12 @@ bool GetCurrentAnimItem(std::string& out_path, double& out_anim_time);
 // pinned track: the same rule on that track, the video FX's), and reporting the chosen item's track (`out_track` may be null; untouched when
 // nothing matches). only_track == nullptr = GetCurrentAnimItem. Main thread, no-throw.
 // Story 10-3: `out_item` (optional) gets the chosen item, untouched when nothing matches.
+// Story 11-7: `out_skipped` (optional) is true when nothing matches although RAV items span
+// the playhead (all muted or on lanes that do not play: the view clears), false otherwise
+// (a gap: the view holds the last frame).
 bool GetCurrentAnimItemOn(MediaTrack* only_track, std::string& out_path, double& out_anim_time,
-                          MediaTrack** out_track, MediaItem** out_item = nullptr);
+                          MediaTrack** out_track, MediaItem** out_item = nullptr,
+                          bool* out_skipped = nullptr);
 
 // Story 11-2 — the rules above, shared with the video FX timeline (video_timeline.cpp)
 // so the rendered video maps time exactly like the viewer.

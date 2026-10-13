@@ -549,6 +549,10 @@ VideoTrackClipShots ReadVideoClipShots(MediaTrack* track, int fx, double fps)
     const std::shared_ptr<const VideoTimelineSnapshot> snap = CurrentVideoTimeline();
     if (const VideoTrackTimeline* tl = snap ? snap->Find(track) : nullptr) {
         clips.reserve(tl->items.size());
+        // Story 11-7: muted items and items on lanes that do not play are listed too (left on
+        // purpose): shots are stored by time on the FX, and dropping their clip here would
+        // move them to a neighbour clip or hide them from Rename / Delete. The picture skips
+        // such items (FindVideoItemAt) and the strip never makes one current (UpdateStripRange).
         for (const VideoItemSpan& it : tl->items) {
             VideoClipIn c;
             c.start = it.start;

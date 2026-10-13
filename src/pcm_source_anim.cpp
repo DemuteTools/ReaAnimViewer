@@ -11,9 +11,12 @@
 
 #include "pcm_source_anim.h"
 
+#include "asset_cache.h"   // ReadAssetFileStamp — the loop period follows a re-export (11-7)
 #include "asset_loader.h"  // ProbeAnimationDuration — CPU-only, GL-free (Story 4.2)
 
+#include <atomic>
 #include <cctype>
+#include <chrono>
 #include <climits>  // INT_MAX — the "no track yet / lowest priority" selection sentinel (Story 4.5)
 #include <cstring>
 #include <string>
@@ -85,7 +88,7 @@ public:
     // per GetLength call). GL-free, no-throw — safe with no GL context on drop.
     explicit AnimSource(const char* path) : m_path(path ? path : "")
     {
-        m_len = ProbeAnimationDuration(m_path);
+        Probe();
     }
 
     PCM_source* Duplicate() override            { return new AnimSource(m_path.c_str()); }
@@ -96,14 +99,18 @@ public:
     bool        SetFileName(const char* fn) override
     {
         m_path = fn ? fn : "";
-        m_len = ProbeAnimationDuration(m_path);
+        Probe();
         return true;
     }
     int         GetNumChannels() override         { return 0; }    // not audio
     double      GetSampleRate() override          { return 0.0; }  // <1.0 => silent
     // Real animation duration (FR9); 1.0 is now only the FALLBACK for a clip-less /
     // unparseable file — never return 0, which would be a degenerate item (AC3).
-    double      GetLength() override              { return m_len > 0.0 ? m_len : 1.0; }
+    double      GetLength() override
+    {
+        const double len = m_len.load(std::memory_order_relaxed);
+        return len > 0.0 ? len : 1.0;
+    }
     int         PropertiesWindow(HWND) override   { return 0; }
     void        GetSamples(PCM_source_transfer_t* block) override { if (block) block->samples_out = 0; }
     void        GetPeakInfo(PCM_source_peaktransfer_t*) override {}
@@ -147,7 +154,27 @@ public:
     int         PeaksBuild_Run() override   { return 0; }
     void        PeaksBuild_Finish() override {}
 
+    // Story 11-7 review: the loop period is this length, and the Tagging markers use the
+    // file's clip duration, which the Tagging view re-reads when the file is re-exported.
+    // Re-probe here too when the file's date or size changed (checked at most once a second;
+    // the probe is the same parse as at creation). Main thread.
+    void RefreshLengthIfChanged()
+    {
+        const double now = std::chrono::duration<double>(
+                               std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (m_checked_at >= 0.0 && now - m_checked_at < 1.0) return;
+        m_checked_at = now;
+        if (ReadAssetFileStamp(m_path) != m_stamp) Probe();
+    }
+
 private:
+    // The stamp is read BEFORE the parse, so a re-export during it is seen next time.
+    void Probe()
+    {
+        m_stamp = ReadAssetFileStamp(m_path);
+        m_len.store(ProbeAnimationDuration(m_path), std::memory_order_relaxed);
+    }
+
     // Apply one persisted state line (D9, Story 6.1). Ignores any line that isn't
     // key=value (the native FILE line, a <…> opener, a blank line) and every key we
     // don't recognize (incl. rav_ver and any future key) — that IS the AC3 fwd-compat
@@ -167,7 +194,11 @@ private:
     }
 
     std::string m_path;
-    double      m_len = 0.0;  // cached clip duration in seconds (0 => use fallback)
+    // Cached clip duration in seconds (0 => use fallback). Atomic: REAPER may read the
+    // length off the main thread while a re-export re-probes it.
+    std::atomic<double> m_len{0.0};
+    AssetFileStamp      m_stamp;              // the file's version m_len was probed from
+    double              m_checked_at = -1.0;  // RefreshLengthIfChanged's last check (s)
 };
 
 // --- pcmsrc_register_t callbacks (C-style entries Reaper drives → no-throw, D5/AR18) ---
@@ -249,6 +280,11 @@ bool ReadPlayCandidate(MediaItem* item, int track_rank, PlayCandidate* out, std:
     // the source's length stays in source time), and that length is the loop period.
     c.start_offs = GetMediaItemTakeInfo_Value(tk, "D_STARTOFFS");
     c.rate       = GetMediaItemTakeInfo_Value(tk, "D_PLAYRATE");
+    // A re-exported file: its new length (the Tagging view re-reads it too).
+    if (const char* t = src->GetType(); t && !std::strcmp(t, kSourceType))
+        static_cast<AnimSource*>(src)->RefreshLengthIfChanged();
+    else if (PCM_source* inner = src->GetSource(); inner && inner->GetType() && !std::strcmp(inner->GetType(), kSourceType))
+        static_cast<AnimSource*>(inner)->RefreshLengthIfChanged();
     c.clip_len   = src->GetLength();
     c.loop       = GetMediaItemInfo_Value(item, "B_LOOPSRC") != 0.0;
     c.muted      = GetMediaItemInfo_Value(item, "B_MUTE") != 0.0;
@@ -276,8 +312,9 @@ bool GetCurrentAnimItem(std::string& out_path, double& out_anim_time)
 }
 
 bool GetCurrentAnimItemOn(MediaTrack* only_track, std::string& out_path, double& out_anim_time,
-                          MediaTrack** out_track, MediaItem** out_item)
+                          MediaTrack** out_track, MediaItem** out_item, bool* out_skipped)
 {
+    if (out_skipped) *out_skipped = false;
     ReaProject* proj = nullptr;  // current project
     // The heard play position while playing, edit cursor while stopped — so a stopped scrub
     // still drives the displayed frame (AC1); 11-6: in sync with the sound (RavPlayhead).
@@ -295,12 +332,21 @@ bool GetCurrentAnimItemOn(MediaTrack* only_track, std::string& out_path, double&
     };
     std::vector<PlayCandidate> cands;
     std::vector<Found>         found;
-    auto consider = [&](MediaItem* it, int rank) {
+    auto consider = [&](MediaItem* it) {
         if (!it) return;
-        // Cheap span test first: most items are not under the playhead.
+        // Cheap span test first: most items are not under the playhead; only spanning items
+        // pay for the track rank.
         const double ip = GetMediaItemInfo_Value(it, "D_POSITION");
         const double il = GetMediaItemInfo_Value(it, "D_LENGTH");
         if (!(pos >= ip && pos < ip + il)) return;
+        int rank = 0;
+        if (!only_track) {
+            // Topmost track = smallest 1-based IP_TRACKNUMBER (returned directly, not a
+            // pointer-out). 0 (not found) / -1 (master) / null track => lowest priority.
+            MediaTrack* tr = GetMediaItem_Track(it);
+            rank = tr ? static_cast<int>(GetMediaTrackInfo_Value(tr, "IP_TRACKNUMBER")) : 0;
+            if (rank <= 0) rank = INT_MAX;
+        }
         PlayCandidate c;
         std::string   path;
         if (!ReadPlayCandidate(it, rank, &c, &path)) return;
@@ -309,21 +355,18 @@ bool GetCurrentAnimItemOn(MediaTrack* only_track, std::string& out_path, double&
     };
     if (only_track) {
         for (int i = 0, n = CountTrackMediaItems(only_track); i < n; ++i)
-            consider(GetTrackMediaItem(only_track, i), 0);
+            consider(GetTrackMediaItem(only_track, i));
     } else {
-        for (int i = 0, n = CountMediaItems(proj); i < n; ++i) {
-            MediaItem* it = GetMediaItem(proj, i);
-            if (!it) continue;
-            // Topmost track = smallest 1-based IP_TRACKNUMBER (returned directly, not a
-            // pointer-out). 0 (not found) / -1 (master) / null track => lowest priority.
-            MediaTrack* tr = GetMediaItem_Track(it);
-            int tn = tr ? static_cast<int>(GetMediaTrackInfo_Value(tr, "IP_TRACKNUMBER")) : 0;
-            if (tn <= 0) tn = INT_MAX;
-            consider(it, tn);
-        }
+        for (int i = 0, n = CountMediaItems(proj); i < n; ++i) consider(GetMediaItem(proj, i));
     }
     const int best = PickPlayingItem(cands, pos);
-    if (best < 0) return false;  // nothing plays under the playhead -> the viewer holds (AC1)
+    if (best < 0) {
+        // RAV items under the playhead, none playing (muted, or on a lane that does not
+        // play): REAPER shows nothing there, so the viewer clears. Nothing at all: it holds
+        // the last frame (AC1).
+        if (out_skipped) *out_skipped = !cands.empty();
+        return false;
+    }
 
     out_path      = found[best].path;
     out_anim_time = PlayClipTime(cands[best], pos);

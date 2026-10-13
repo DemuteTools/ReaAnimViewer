@@ -130,6 +130,9 @@ Renderer g_renderer;
 std::string g_current_anim_path;
 double      g_display_time     = 0.0;
 bool        g_transport_driven = false;
+// Story 11-7 review: the view was emptied because the items under the playhead do not play
+// (muted / lane); cleared again as soon as an item plays.
+bool        g_view_cleared     = false;
 
 UINT_PTR g_timer_id = 0;
 int g_client_w = kInitialWidth;
@@ -717,8 +720,10 @@ void RenderTick()
     double item_time = 0.0;
     MediaTrack* item_track = nullptr;
     MediaItem*  item_media = nullptr;  // Story 10-3: the Tagging view reads its rules
-    const bool item_found =
-        GetCurrentAnimItemOn(VideoViewPinnedTrack(), item_path, item_time, &item_track, &item_media);
+    bool        item_skipped = false;  // Story 11-7: items here, none playing (muted / lane)
+    const bool item_found = GetCurrentAnimItemOn(VideoViewPinnedTrack(), item_path, item_time, &item_track,
+                                                 &item_media, &item_skipped);
+    if (item_found) g_view_cleared = false;
     if (item_found) {
         if (item_path != g_current_anim_path) {
             // Item changed (first item, or a scrub onto a DIFFERENT source) → (re)load
@@ -792,6 +797,17 @@ void RenderTick()
     // Not found → HOLD: leave g_display_time and g_current_anim_path unchanged so the
     // last in-span frame (already at the boundary under continuous scrubbing) freezes
     // (AC3). Do NOT revert to the looping fixture here — reload thrash + breaks "hold".
+    // Story 11-7 review: but when the only items under the playhead are muted or on lanes
+    // that do not play, REAPER shows nothing there: the view clears (once; the Tagging view
+    // drops the item too), and the item's file loads again when one plays.
+    else if (item_skipped && !g_view_cleared) {
+        g_view_cleared = true;
+        g_renderer.SetAsset(Asset{});
+        g_current_anim_path.clear();
+        g_current_load_ok = false;
+        g_missing_tex_item.clear();
+        g_missing_tex_files.clear();
+    }
 
     // Story 6.5.8 — advance the ViewCube snap tween once per frame, JUST before the view is
     // derived in RenderFrame (view_ = cam_.ViewMatrix() at renderer.cpp), so the new
@@ -2011,6 +2027,7 @@ void StopRendering()
     // loaded" (the reload gate compares against this path) and draw nothing.
     g_current_anim_path.clear();
     g_transport_driven = false;
+    g_view_cleared     = false;
     g_noticed_paths.clear();   // a reopened panel pops each file's notices up again
     ClearLoadMessage();        // the status belongs to the item, reloaded on reopen
     g_missing_tex_item.clear();

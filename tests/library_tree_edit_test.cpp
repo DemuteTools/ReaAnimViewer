@@ -599,6 +599,29 @@ static void TestSortAndSearch()
     CHECK(BuildTreeRows(s, *l, {"gr"}, "nothing like it").empty());
 }
 
+// Unwrap: a one-node container gives its place to that node (a Switch case, the root).
+static void TestUnwrap()
+{
+    SoundStore s = Store();
+    const SoundLibrary* l = FindLibrary(s, "L");
+    CHECK(CanUnwrap(*l, "gr") && !CanUnwrap(*l, "sw") && !CanUnwrap(*l, "g1"));
+    FindNode(s.libraries[0], "gr")->volume_db = -3.0;
+    CHECK(UnwrapRows(s, "L", {RowOfNode(*FindLibrary(s, "L"), "gr")}));
+    l = FindLibrary(s, "L");
+    CHECK(!FindNode(*l, "gr") && FindNode(*l, "g1")->parent == "sw" && FindNode(*l, "g1")->volume_db == -3.0);
+    bool on_grass = false;
+    for (const SwitchCase& c : FindNode(*l, "sw")->cases) on_grass = on_grass || (c.value_uid == "vgrass" && c.child_uid == "g1");
+    CHECK(on_grass);
+    // The root: wrapped in a Random, then unwrapped back (Antho: a Switch out of the library's Random).
+    std::vector<std::string> made;
+    CHECK(WrapRows(s, "L", {RowOfNode(*FindLibrary(s, "L"), "sw")}, SoundNodeType::Random, std::string(), &made) && made.size() == 1);
+    FindNode(s.libraries[0], made[0])->lands_in = "Foley";
+    CHECK(FindLibrary(s, "L")->root == made[0]);
+    CHECK(UnwrapRows(s, "L", {RowOfNode(*FindLibrary(s, "L"), made[0])}));
+    l = FindLibrary(s, "L");
+    CHECK(l->root == "sw" && FindNode(*l, "sw")->parent.empty() && !FindNode(*l, made[0]) && FindNode(*l, "sw")->lands_in == "Foley");
+}
+
 int main()
 {
     TestSortAndSearch();
@@ -619,6 +642,7 @@ int main()
     TestGroupDefault();
     TestShiftRangeUpward();
     TestBatchSwitchOnNewGroup();
+    TestUnwrap();
     if (g_fail) {
         std::printf("library_tree_edit_test: %d failure(s)\n", g_fail);
         return 1;

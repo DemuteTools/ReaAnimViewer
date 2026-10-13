@@ -507,6 +507,20 @@ void DoWrap(const std::vector<LibraryRow>& rows, SoundNodeType type, const std::
         FocusNew(lib_uid, made, false);
 }
 
+// Unwrap (Antho 2026-10-13): each selected container holding one node gives its place to that node,
+// which is then selected.
+void DoUnwrap(const std::vector<LibraryRow>& rows)
+{
+    const std::string        lib_uid = g.lib;
+    std::vector<std::string> kept;
+    if (const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), lib_uid))
+        for (const LibraryRow& r : rows) {
+            const std::string cu = RowNode(*lib, r);
+            if (CanUnwrap(*lib, cu)) kept.push_back(ChildrenOf(*lib, cu).front()->uid);
+        }
+    if (Gesture("Unwrap", [&](SoundStore& s) { return UnwrapRows(s, lib_uid, rows); })) FocusNew(lib_uid, kept, false);
+}
+
 // The batch "Switch on <group>": a toast says why when nothing changed (bug 3: never silent).
 void BatchSwitchOn(const std::vector<LibraryRow>& rows, const std::string& group_uid)
 {
@@ -641,6 +655,13 @@ void RowMenu(const SoundLibrary& lib)
     if (has_node && ImGui::BeginMenu(rows.size() > 1 ? "Group into" : "Wrap in")) {
         WrapMenu(rows);
         ImGui::EndMenu();
+    }
+    if (has_node) {
+        bool can = false;
+        for (const LibraryRow& r : rows) can = can || CanUnwrap(lib, RowNode(lib, r));
+        if (ImGui::MenuItem("Unwrap", nullptr, false, can && !g.changed)) Later([rows] { DoUnwrap(rows); });
+        ui::ItemTipText(can ? "Removes this container: the one node inside takes its place (its dB and Lands in kept)"
+                            : "Only a container holding exactly one node can be unwrapped");
     }
     if (is_switch && ImGui::BeginMenu("Change switch group")) {
         const std::string gid = GroupMenuItems(false, nullptr);

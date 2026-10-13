@@ -110,6 +110,11 @@ bool MoveRows(SoundStore& store, const std::string& src_lib, const std::vector<L
 bool WrapRows(SoundStore& store, const std::string& lib_uid, const std::vector<LibraryRow>& rows, SoundNodeType type,
               const std::string& group_uid, std::vector<std::string>* created);
 // Groups several rows into ONE new container at the first row's place.
+// Unwrap (Antho 2026-10-13, the opposite of Wrap): a container (Random / Blend / Switch) holding exactly
+// one node is removed and that node takes its place, the library's root included; the container's dB,
+// Blend offset and Lands in carry onto it. Rows whose node is not such a container are skipped.
+bool CanUnwrap(const SoundLibrary& lib, const std::string& uid);
+bool UnwrapRows(SoundStore& store, const std::string& lib_uid, const std::vector<LibraryRow>& rows);
 bool GroupRows(SoundStore& store, const std::string& lib_uid, const std::vector<LibraryRow>& rows, SoundNodeType type,
                const std::string& group_uid, std::string* created);
 // Duplicates each row's subtree (new uids): a value's content goes to that Switch's Unassigned,

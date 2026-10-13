@@ -923,6 +923,45 @@ bool WrapRows(SoundStore& store, const std::string& lib_uid, const std::vector<L
     return ok;
 }
 
+bool CanUnwrap(const SoundLibrary& lib, const std::string& uid)
+{
+    const SoundNode* c = FindNode(lib, uid);
+    return c && c->type != SoundNodeType::Sound && ChildrenOf(lib, uid).size() == 1;
+}
+
+bool UnwrapRows(SoundStore& store, const std::string& lib_uid, const std::vector<LibraryRow>& rows)
+{
+    return Transact(store, [&](SoundStore& s) {
+        SoundLibrary* lib = FindLibrary(s, lib_uid);
+        if (!lib) return false;
+        bool done = false;
+        for (const std::string& cu : RowNodes(*lib, rows, /*allow_root=*/true)) {
+            if (!CanUnwrap(*lib, cu)) continue;
+            const SoundNode   c = *FindNode(*lib, cu);
+            const std::string ku = ChildrenOf(*lib, cu).front()->uid;
+            const Slot        slot = SlotOf(*lib, cu);
+            Detach(*lib, ku);  // off the container's cases (a Switch)
+            SoundNode* k = FindNode(*lib, ku);
+            k->volume_db += c.volume_db;
+            k->offset_ms = c.offset_ms + (c.type == SoundNodeType::Blend ? k->offset_ms : 0.0);
+            if (k->lands_in.empty()) k->lands_in = c.lands_in;
+            if (cu == lib->root) {
+                k->parent.clear();
+                lib->root = ku;
+            } else {
+                Detach(*lib, cu);
+                k->parent = slot.parent;
+                SoundNode* p = FindNode(*lib, slot.parent);
+                if (p && p->type == SoundNodeType::Switch) Attach(*lib, ku, slot);
+            }
+            MoveLineBefore(*lib, ku, cu);
+            lib->nodes.erase(lib->nodes.begin() + IndexOf(*lib, cu));
+            done = true;
+        }
+        return done;
+    });
+}
+
 bool GroupRows(SoundStore& store, const std::string& lib_uid, const std::vector<LibraryRow>& rows, SoundNodeType type,
                const std::string& group_uid, std::string* created)
 {

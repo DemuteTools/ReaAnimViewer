@@ -113,6 +113,16 @@ Condition DefaultCondition();
 // A new rule: one default condition, crossing landing, cooldown 250 ms.
 Block DefaultBlock(const std::string& marker, uint32_t color);
 // Removing condition `index` keeps the peak landing on the same signal (or the first one).
+
+// Story 10-11 -- a condition switched to measure `c.signal.measure` (its quantity and axis
+// already set) gets that measure's starting threshold and margin, so it never sits on the old
+// measure's number in a new unit (2 m/s read as 200 %). Distance: position 5 cm / 2 cm, speed
+// 0.3 m/s / 0.15, acceleration 5 m/s2 / 2.5, stillness 1 cm / 0.5 cm. Angle: position 90 / 5 deg
+// (a joint angle) or 45 / 5 deg, speed 300 / 50 deg/s, acceleration 3000 / 500 deg/s2, stillness
+// 2 / 1 deg. Relative drop 20 % / 10 %. Stillness and relative drop read "below" (set here); the
+// others keep their direction (a signed speed or acceleration below gets the negative level, as
+// Analyse gives it). Fixed or not: the old number means nothing in the new unit.
+void ApplyMeasureDefaults(Condition& c);
 void RemoveCondition(Block& b, size_t index);
 
 // ---- Binding to bone tracks --------------------------------------------------------------

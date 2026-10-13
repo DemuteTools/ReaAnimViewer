@@ -3389,6 +3389,8 @@ void ConditionEditor(const Block& blk, int b, int c)
                         x->signal.window_ms = 0.0;  // the new measure's default window (spike 10-7a)
                         if (x->signal.quantity == Quantity::Rotation && !RotationAxisOffered(ms, x->signal.axis))
                             x->signal.axis = Axis::X;
+                        // 10-11: the new measure's own starting level (not the old number in a new unit).
+                        ApplyMeasureDefaults(*x);
                         return true;
                     });
             }

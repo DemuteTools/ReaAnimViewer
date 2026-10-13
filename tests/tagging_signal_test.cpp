@@ -351,6 +351,75 @@ int main()
         CHECK(Near(InterpSample({}, 1.0), 0.0));
     }
 
+    // 10-11: a measure switch takes the new measure's starting level (engine units).
+    {
+        // Bone speed above 2 m/s switched to relative drop: below 20 %, margin 10 %.
+        Condition c = DefaultCondition();
+        c.signal.measure = Measure::Speed;
+        c.dir = Direction::Above;
+        c.threshold = 2.0;
+        c.margin = 0.4;
+        c.signal.measure = Measure::RelativeDrop;
+        ApplyMeasureDefaults(c);
+        CHECK(c.dir == Direction::Below && Near(c.threshold, 0.2) && Near(c.margin, 0.1));
+        CHECK(FormatDisplay(c.signal, c.threshold) == "20 %");
+        // Stillness on a bone: below 1 cm, margin 0.5 cm; a fixed condition too.
+        c.auto_threshold = false;
+        c.dir = Direction::Above;
+        c.signal.measure = Measure::Stillness;
+        ApplyMeasureDefaults(c);
+        CHECK(c.dir == Direction::Below && Near(c.threshold, 0.01) && Near(c.margin, 0.005));
+        CHECK(!c.auto_threshold);
+        CHECK(FormatDisplay(c.signal, c.threshold) == "1.0 cm");
+        // Speed and acceleration keep the user's direction.
+        c.dir = Direction::Above;
+        c.signal.measure = Measure::Speed;
+        ApplyMeasureDefaults(c);
+        CHECK(c.dir == Direction::Above && Near(c.threshold, 0.3) && Near(c.margin, 0.15));
+        c.signal.measure = Measure::Acceleration;
+        ApplyMeasureDefaults(c);
+        CHECK(Near(c.threshold, 5.0) && Near(c.margin, 2.5));
+        c.signal.measure = Measure::Position;
+        ApplyMeasureDefaults(c);
+        CHECK(Near(c.threshold, 0.05) && Near(c.margin, 0.02));
+        // A signed speed below: the negative level (Analyse's sign).
+        c.signal.keep_sign = true;
+        c.dir = Direction::Below;
+        c.signal.measure = Measure::Speed;
+        ApplyMeasureDefaults(c);
+        CHECK(Near(c.threshold, -0.3) && Near(c.margin, 0.15));
+        c.dir = Direction::Above;
+        ApplyMeasureDefaults(c);
+        CHECK(Near(c.threshold, 0.3));
+
+        // Angles: a rotation, a joint angle.
+        Condition r;
+        SetConditionKind(r, ConditionKind::Rotation);
+        r.signal.measure = Measure::Acceleration;
+        ApplyMeasureDefaults(r);
+        CHECK(r.dir == Direction::Above && Near(r.threshold, 3000.0) && Near(r.margin, 500.0));
+        r.signal.measure = Measure::Speed;
+        ApplyMeasureDefaults(r);
+        CHECK(Near(r.threshold, 300.0) && Near(r.margin, 50.0));
+        r.signal.measure = Measure::Position;
+        ApplyMeasureDefaults(r);
+        CHECK(Near(r.threshold, 45.0) && Near(r.margin, 5.0));
+        r.signal.measure = Measure::Stillness;
+        ApplyMeasureDefaults(r);
+        CHECK(r.dir == Direction::Below && Near(r.threshold, 2.0) && Near(r.margin, 1.0));
+        r.signal.measure = Measure::RelativeDrop;
+        ApplyMeasureDefaults(r);
+        CHECK(Near(r.threshold, 0.2) && Near(r.margin, 0.1));
+        Condition j;
+        SetConditionKind(j, ConditionKind::JointAngle);
+        j.signal.measure = Measure::Speed;
+        ApplyMeasureDefaults(j);
+        CHECK(Near(j.threshold, 300.0));
+        j.signal.measure = Measure::Position;
+        ApplyMeasureDefaults(j);
+        CHECK(Near(j.threshold, 90.0) && Near(j.margin, 5.0));
+    }
+
     if (g_fails) {
         std::printf("tagging_signal_test: %d failure(s)\n", g_fails);
         return 1;

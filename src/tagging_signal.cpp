@@ -334,6 +334,45 @@ Block DefaultBlock(const std::string& marker, uint32_t color)
     return b;
 }
 
+void ApplyMeasureDefaults(Condition& c)
+{
+    const bool angle = IsAngleSignal(c.signal);
+    double     thr = 0.0, margin = 0.0;
+    switch (c.signal.measure) {
+    case Measure::Position:
+        if (!angle) {
+            thr = 0.05;
+            margin = 0.02;
+        } else {
+            thr = c.signal.quantity == Quantity::InteriorAngle ? 90.0 : 45.0;
+            margin = 5.0;
+        }
+        break;
+    case Measure::Speed:
+        thr = angle ? 300.0 : 0.3;
+        margin = angle ? 50.0 : 0.15;
+        break;
+    case Measure::Acceleration:
+        thr = angle ? 3000.0 : 5.0;
+        margin = angle ? 500.0 : 2.5;
+        break;
+    case Measure::Stillness:
+        thr = angle ? 2.0 : 0.01;
+        margin = angle ? 1.0 : 0.005;
+        c.dir = Direction::Below;
+        break;
+    case Measure::RelativeDrop:
+        thr = 0.2;
+        margin = 0.1;
+        c.dir = Direction::Below;
+        break;
+    }
+    const bool signed_rate = c.signal.keep_sign &&
+                             (c.signal.measure == Measure::Speed || c.signal.measure == Measure::Acceleration);
+    c.threshold = (signed_rate && c.dir == Direction::Below) ? -thr : thr;
+    c.margin = margin;
+}
+
 void RemoveCondition(Block& b, size_t index)
 {
     if (index >= b.conditions.size()) return;

@@ -269,8 +269,9 @@ std::string ResolveAssetPath(const AssetIdentity& id, const std::function<int64_
         if (sz >= 0 && (id.size < 0 || sz == id.size)) return id.last_path;
     }
     if (idx) {
+        // A database lists where a file was when it was scanned: the file must still be there.
         const LookupResult r = idx->Find(id);
-        if (r.status == LookupStatus::Found) return r.path;
+        if (r.status == LookupStatus::Found && (!file_size || file_size(r.path) >= 0)) return r.path;
     }
     return {};
 }

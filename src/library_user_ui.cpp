@@ -120,7 +120,8 @@ struct State {
     // Missing caches (decision 10).
     const MediaDbIndex*                          idx_seen = nullptr;
     std::unordered_map<std::string, std::string> resolved;  // asset key -> path ("" = missing)
-    std::unordered_set<std::string>              live_guids;
+    // The project's items (lower GUID -> its active take's file when on disk, "" when offline).
+    std::unordered_map<std::string, std::string> live_files;
     int                                          live_state = -1;
     // A missing file found in another project item playing it (asset key -> path, "" = none): read
     // again when the project changes.
@@ -262,6 +263,8 @@ std::string AssetKey(const AssetIdentity& a)
     return LowerAscii(a.name) + buf + a.last_path;
 }
 
+std::string ProjectFolder();  // below
+
 void RefreshCaches()
 {
     const std::shared_ptr<const MediaDbIndex> idx = MediaDbGet();
@@ -274,15 +277,22 @@ void RefreshCaches()
     if (st != g.live_state || proj != g.live_proj) {
         g.live_state = st;
         g.live_proj = proj;
-        g.live_guids.clear();
+        g.live_files.clear();
         g.from_items.clear();
-        const int n = CountMediaItems(proj);
-        for (int i = 0; i < n; ++i)
-            if (MediaItem* it = GetMediaItem(proj, i)) g.live_guids.insert(LowerAscii(ItemGuidOf(it)));
+        const std::string dir = ProjectFolder();
+        const int         n = CountMediaItems(proj);
+        for (int i = 0; i < n; ++i) {
+            MediaItem* it = GetMediaItem(proj, i);
+            if (!it) continue;
+            MediaItem_Take* t = GetActiveTake(it);
+            PCM_source*     src = t ? GetMediaItemTake_Source(t) : nullptr;
+            const char*     fn = src ? src->GetFileName() : nullptr;
+            std::string     path = fn && fn[0] ? AbsoluteMediaPath(fn, dir) : std::string();
+            if (!path.empty() && FileSize(path) < 0) path.clear();
+            g.live_files[LowerAscii(ItemGuidOf(it))] = path;
+        }
     }
 }
-
-std::string ProjectFolder();  // below
 
 // The file of a project item that plays the same file (same name, same size when known, still on
 // disk), "" when none: a Sound whose own item was deleted finds its audio in a copy kept elsewhere.
@@ -325,9 +335,18 @@ std::string ResolvedPath(const AssetIdentity& a)
     return g.from_items[key] = FileFromProjectItems(a);
 }
 
-bool LiveItem(const std::string& guid)
+// Where a File Sound's audio is on disk ("" = missing): its file (last path, Media Explorer, another
+// item playing it), else the file its own project item plays. The missing check, the panel, Edit and
+// audition all ask this, so a Sound is never "not missing" in one and "Source not found" in another.
+std::string SoundFilePath(const SoundSource& s)
 {
-    return !guid.empty() && g.live_guids.count(LowerAscii(guid)) != 0;
+    RefreshCaches();
+    std::string path = ResolvedPath(s.asset);
+    if (path.empty() && !s.item_guid.empty()) {
+        const auto it = g.live_files.find(LowerAscii(s.item_guid));
+        if (it != g.live_files.end()) path = it->second;
+    }
+    return path;
 }
 
 void ApplyHooks()
@@ -335,10 +354,7 @@ void ApplyHooks()
     static bool resolver_set = false;
     if (!resolver_set) {
         resolver_set = true;
-        SetFileSoundResolver([](const SoundSource& s) {
-            RefreshCaches();
-            return ResolvedPath(s.asset);
-        });
+        SetFileSoundResolver([](const SoundSource& s) { return SoundFilePath(s); });
     }
     const LibraryTreeHooks& h = GetLibraryTreeHooks();
     if (h.is_missing) return;
@@ -856,9 +872,7 @@ ItemFileFacts ReadItemFileFacts(const std::string& guid, const std::string& proj
 bool FileSoundMissing(const SoundNode& n)
 {
     if (n.type != SoundNodeType::Sound || n.sound.source.kind != SoundSourceKind::File) return false;
-    RefreshCaches();
-    if (LiveItem(n.sound.source.item_guid)) return false;
-    return ResolvedPath(n.sound.source.asset).empty();
+    return SoundFilePath(n.sound.source).empty();
 }
 
 bool PrepareFileSound(ReaProject* proj, const std::string& lib_uid, const std::string& node_uid,
@@ -875,9 +889,13 @@ bool PrepareFileSound(ReaProject* proj, const std::string& lib_uid, const std::s
     }
     // 13-24 (C3): a Sound converted from a Project Library is still placed from its own project item,
     // as before the conversion (an older build's imported library item keeps the file-first rule).
+    // An offline own item gives way to the file once Locate has found it again.
     if (!n->sound.source.item_guid.empty()) {
         MediaItem* own = FindItemByGuid(n->sound.source.item_guid);
-        if (own && !OldLibraryItem(own)) {
+        RefreshCaches();
+        const auto f = g.live_files.find(LowerAscii(n->sound.source.item_guid));
+        const bool offline = f != g.live_files.end() && f->second.empty();
+        if (own && !OldLibraryItem(own) && !(offline && !ResolvedPath(n->sound.source.asset).empty())) {
             out->item_guid = n->sound.source.item_guid;
             return true;
         }

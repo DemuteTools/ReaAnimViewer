@@ -353,7 +353,13 @@ static void TestResolve()
     auto exists = [](int64_t sz) { return [sz](const std::string&) { return sz; }; };
     CHECK(ResolveAssetPath(id, exists(100), &idx) == "C:/x/a.wav");
     CHECK(ResolveAssetPath(id, exists(99), &idx) == "D:/db/a.wav");
-    CHECK(ResolveAssetPath(id, exists(-1), &idx) == "D:/db/a.wav");
+    auto only = [](const std::string& on_disk) {
+        return [on_disk](const std::string& p) { return p == on_disk ? int64_t(100) : int64_t(-1); };
+    };
+    CHECK(ResolveAssetPath(id, only("D:/db/a.wav"), &idx) == "D:/db/a.wav");
+    // The database still lists it but the file is gone (moved, other PC's drive): missing.
+    CHECK(ResolveAssetPath(id, exists(-1), &idx).empty());
+    CHECK(ResolveAssetPath(id, nullptr, &idx) == "D:/db/a.wav");
     AssetIdentity any = id;
     any.size = -1;
     CHECK(ResolveAssetPath(any, exists(55), nullptr) == "C:/x/a.wav");

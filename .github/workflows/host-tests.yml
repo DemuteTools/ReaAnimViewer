@@ -1,0 +1,17 @@
+# Builds and runs the host tests (tests/, RAV's pure REAPER-free helpers) on every push
+# and pull request. Independent from the ReaPack check and deploy workflows.
+name: host-tests
+on: [push, pull_request]
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Fetch repository
+        uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S tests -B build-tests -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build-tests -j4
+      - name: Run
+        run: ctest --test-dir build-tests --output-on-failure

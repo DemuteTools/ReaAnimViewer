@@ -16,6 +16,7 @@ rem  Options:
 rem    clean       Delete the build folder first (full rebuild).
 rem    noinstall   Do not copy the DLL and the video FX into REAPER.
 rem    nopause     Do not wait for a key press at the end (used by release.bat).
+rem    notests     Skip the host tests (tests\ folder) run after the build.
 rem
 rem  Double-click = release build + install into REAPER:
 rem    reaper_animviewer.dll  -> %APPDATA%\REAPER\UserPlugins\
@@ -33,6 +34,8 @@ set "MODE=release"
 set "CLEAN=0"
 set "INSTALL=1"
 set "PAUSE_AT_END=1"
+set "TESTS=1"
+set "TESTS_RESULT=0"
 
 :parse_args
 if "%~1"=="" goto args_done
@@ -42,8 +45,9 @@ if /I "%~1"=="forcefail" set "MODE=forcefail" & shift & goto parse_args
 if /I "%~1"=="clean"     set "CLEAN=1"        & shift & goto parse_args
 if /I "%~1"=="noinstall" set "INSTALL=0"      & shift & goto parse_args
 if /I "%~1"=="nopause"   set "PAUSE_AT_END=0" & shift & goto parse_args
+if /I "%~1"=="notests"   set "TESTS=0"        & shift & goto parse_args
 echo [ERROR] Unknown argument: %~1
-echo Usage: build.bat [release^|debuglog^|forcefail] [clean] [noinstall] [nopause]
+echo Usage: build.bat [release^|debuglog^|forcefail] [clean] [noinstall] [nopause] [notests]
 set "RESULT=1"
 goto done
 :args_done
@@ -116,6 +120,23 @@ if not exist "%CLAP%" (
 )
 
 echo.
+if "%TESTS%"=="0" goto tests_done
+rem Host tests (tests\ folder): they never block the install, a failure is only reported.
+echo [tests] Building and running the host tests...
+cmake -S tests -B build-tests -G "Visual Studio 17 2022" -A x64 >nul
+if errorlevel 1 goto tests_failed
+cmake --build build-tests --config Release >nul
+if errorlevel 1 goto tests_failed
+ctest --test-dir build-tests -C Release --output-on-failure
+if errorlevel 1 goto tests_failed
+echo [tests] All host tests passed.
+goto tests_done
+:tests_failed
+set "TESTS_RESULT=1"
+echo [tests] WARNING: host tests failed. Not blocking: the install goes ahead. Tell Claude.
+:tests_done
+
+echo.
 if "%INSTALL%"=="0" (
     echo [3/3] Install skipped ^(noinstall^).
     goto success
@@ -153,6 +174,7 @@ if "%INSTALL%"=="1" echo   Start REAPER and run the action "RAV: Open Viewer".
 if /I "%MODE%"=="debuglog"  echo   Open the REAPER console: [RAV] log lines should appear.
 if /I "%MODE%"=="forcefail" echo   Opening the viewer should show the GL init error message.
 if not "%DEFINE%"=="" echo   When done testing, run build.bat again to reinstall the normal build.
+if "%TESTS_RESULT%"=="1" echo   WARNING: host tests failed ^(see [tests] above^), tell Claude.
 echo ============================================================
 set "RESULT=0"
 

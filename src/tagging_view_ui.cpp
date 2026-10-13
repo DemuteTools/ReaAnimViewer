@@ -3927,10 +3927,21 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
             ImGui::PopID();
         }
         ImGuiStorage* storage = ImGui::GetStateStorage();
+        // Story 10-8i: "Is looping" on its own row, first: a setting of the item, not of a
+        // category. One undo point, the events read again at once.
+        {
+            bool loop = rules.clip.loop;
+            if (ui::Checkbox("Is looping##autoloop", &loop))
+                Later([loop, item = m.item]() { TaggingSetLooping(loop, item); });
+            ui::ItemTip("The animation loops: its end continues into its start.\nAuto detection reads the "
+                        "motion as a cycle, so a contact, step, grab or release\nthat crosses the loop point "
+                        "is found whole. Saved on the item.");
+        }
         // + (the categories not shown) on the left, the column captions on the right.
         if (any_hidden) {
             if (ui::IconOnlyButton("##autoaddcat", ToolIcon(kToolPlus), nullptr, ImGui::GetFrameHeight()))
                 ImGui::OpenPopup("##autocats");
+            ui::ItemTip("Add a category of event types.");
             if (ui::BeginMenuPopup("##autocats")) {
                 for (int c = 0; c < kAutoCategoryCount; ++c)
                     if (!cat_shown[c] && ImGui::Selectable(AutoCategoryLabel(static_cast<AutoCategory>(c)))) {
@@ -3942,15 +3953,6 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
             if (any_shown) ImGui::SameLine();
         }
         if (any_shown) {
-            // Story 10-8i: "Is looping" on the left of the captions (after the +): one undo point,
-            // the events read again at once.
-            bool loop = rules.clip.loop;
-            if (ui::Checkbox("Is looping##autoloop", &loop))
-                Later([loop, item = m.item]() { TaggingSetLooping(loop, item); });
-            ui::ItemTip("The animation loops: its end continues into its start.\nAuto detection reads the "
-                        "motion as a cycle, so a contact, step, grab or release\nthat crosses the loop point "
-                        "is found whole. Saved on the item.");
-            ImGui::SameLine();
             ImGui::SetCursorPosX(std::max(x_sens, ImGui::GetCursorPosX()));
             ImGui::AlignTextToFramePadding();
             ui::Caption("Sensitivity");

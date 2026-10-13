@@ -1035,14 +1035,12 @@ void DrawUserLibraryNodeSection()
             bool        picked = false;
             // 13-14 (N2): the .row (.k label in the 80 px column) and the themed select.
             const float field_w = ui::LabelRow("Lands in", ui::Dp(80.0f));
-            if (ui::BeginComboStyled("##landsin", shown.c_str(), field_w)) {
-                // First, so it is seen without scrolling a long track list.
-                if (ImGui::Selectable("New folder...")) {
-                    g.new_folder = true;
-                    g.new_folder_node = n->uid;
-                    g.buf[0] = '\0';
-                }
-                ui::MenuSeparator();
+            if (ui::BeginComboStyled("##landsin", shown.c_str(), field_w, ImGuiComboFlags_HeightLargest)) {
+                // The tracks scroll in their own child (10 rows at most), so "New folder..." below them
+                // is always seen, however long the project's track list.
+                const int   rows = static_cast<int>(names.size()) + (is_root ? 0 : 1);
+                const float list_h = static_cast<float>(std::clamp(rows, 1, 10)) * ImGui::GetTextLineHeightWithSpacing();
+                ImGui::BeginChild("##landsinlist", ImVec2(0.0f, list_h), ImGuiChildFlags_None);
                 if (!is_root && ImGui::Selectable(inherit.c_str(), n->lands_in.empty())) {
                     pick.clear();
                     picked = true;
@@ -1052,6 +1050,13 @@ void DrawUserLibraryNodeSection()
                         pick = s;
                         picked = true;
                     }
+                ImGui::EndChild();
+                ui::MenuSeparator();
+                if (ImGui::Selectable("New folder...")) {
+                    g.new_folder = true;
+                    g.new_folder_node = n->uid;
+                    g.buf[0] = '\0';
+                }
                 ui::EndComboStyled();
             }
             ui::ItemTipText("The folder track its files are placed under (one layer track per Blend layer)");

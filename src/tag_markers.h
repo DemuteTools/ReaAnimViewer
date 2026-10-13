@@ -13,7 +13,11 @@
 //     (take marker) or in the project (project marker) is left as it is: RAV writes no
 //     duplicate and takes no ownership; the result counts it ("already present").
 //   - Items without rules, and items whose roles have no bone (or whose file does not load),
-//     are skipped and counted.
+//     are skipped and counted. 10-11: an item whose rules were all deleted but that still owns
+//     its last Commit's markers is committed with an empty plan (its markers deleted).
+//   - 10-11: a committed project marker that another item still wants (two stacked items with
+//     the same marker at the same time: one marker, one owner) is handed over to that item
+//     instead of deleted, unless this Commit writes it again (event_list.h HandOverProjectMarkers).
 //   - The marker functions are resolved through GetFunc (REAPER 5.981+ take markers, REAPER 7
 //     marker GUIDs): when one the option needs is missing, Commit writes nothing and says so.
 //
@@ -35,6 +39,7 @@
 #ifdef _WIN32
 
 #include <string>
+#include <vector>
 
 #include "reaper_api.h"
 #include "rule_record.h"  // MarkerMode
@@ -96,7 +101,9 @@ void ClearLastApplyResult();
 // Story 13-26 (Clear item data): deletes the markers RAV owns on this item, committed and previews
 // (take markers on its take, project markers by GUID), as its record lists them. No undo point
 // (inside the caller's). Nothing when the item has no RAV take or its record does not read.
-void DeleteItemMarkersNoUndo(MediaItem* item);
+// 10-11: a committed project marker another item still wants (not one of `clearing`, the items
+// cleared with it) is handed over to that item instead (event_list.h HandOverProjectMarkers).
+void DeleteItemMarkersNoUndo(MediaItem* item, const std::vector<MediaItem*>& clearing = {});
 
 // The timer callback (main thread). No-throw.
 void MarkerMirrorTick();

@@ -432,7 +432,9 @@ void RefreshSelection()
         // 10-6: a linked item with no record holds its pool's tagging (Commit gives it that first).
         if (it && !rd.present && ItemPoolContent(it, &rd.rules)) readable = true;
         if (!readable || rd.rules.blocks.empty()) {
-            ++m.sel_without_rules;
+            // 10-11: every rule deleted but its markers still written: Commit clears them.
+            if (readable && rd.present && CommitClearsEmptyItem(rd.rules)) ++m.sel_to_commit;
+            else ++m.sel_without_rules;
             continue;
         }
         const std::string path = AnimPathOf(RavTakeOf(it));
@@ -815,6 +817,8 @@ ItemDetection DetectItem(MediaItem* item)
         ItemRulesRead rd;
         if (!ReadItemRules(item, &rd) || !rd.present || !rd.valid || rd.rules.blocks.empty()) {
             out.status = ItemDetection::Status::NoRules;
+            // 10-11: a record with no rule left still lists the markers its last Commit wrote.
+            if (rd.present && rd.valid) out.rules = rd.rules;
             return out;
         }
         out.rules = rd.rules;

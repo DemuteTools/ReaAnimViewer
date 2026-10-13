@@ -981,4 +981,71 @@ void ClearCorrections(ItemRules& rules)
     rules.applied = AppliedInfo{};
 }
 
+// ---- 10-11 ------------------------------------------------------------------------------------------
+
+bool HasCommittedMarkers(const ItemRules& rules)
+{
+    return !rules.tmarkers.empty() || !rules.pmarkers.empty();
+}
+
+bool CommitClearsEmptyItem(const ItemRules& rules)
+{
+    return rules.blocks.empty() && HasCommittedMarkers(rules);
+}
+
+std::vector<PlannedMarker> CommittedProjectWants(const ItemRules& rules, const ItemClipMap& map)
+{
+    std::vector<PlannedMarker> out;
+    if (!rules.has_applied || rules.applied.mode == MarkerMode::Take || rules.blocks.empty()) return out;
+    std::vector<Event> dets;
+    KeepBlockEvents(dets, rules.events, rules.blocks, std::vector<char>(rules.blocks.size(), 1));
+    const std::vector<ShownEvent> list = BuildEventList(dets, rules.events, rules.blocks.size());
+    for (const PlannedMarker& m : PlanMarkers(list, rules.blocks, map))
+        if (m.in_item) out.push_back(m);
+    return out;
+}
+
+std::vector<int> HandOverProjectMarkers(const std::vector<ProjectMarkerRef>& leaving,
+                                        const std::vector<PlannedMarker>& rewritten,
+                                        std::vector<MarkerClaimant>& claimants, std::vector<ProjectMarkerRef>* given)
+{
+    std::vector<int> out(leaving.size(), -1);
+    if (given) given->assign(leaving.size(), ProjectMarkerRef{});
+    auto twin_planned = [](const std::vector<PlannedMarker>& v, double t, const std::string& name) -> int {
+        for (size_t i = 0; i < v.size(); ++i)
+            if (v[i].in_item && v[i].name == name && std::fabs(v[i].project_t - t) <= kMarkerTwinTolS)
+                return static_cast<int>(i);
+        return -1;
+    };
+    for (size_t i = 0; i < leaving.size(); ++i) {
+        const ProjectMarkerRef& r = leaving[i];
+        if (r.guid.empty() || !r.has_name || r.name.empty()) continue;
+        if (twin_planned(rewritten, r.t, r.name) >= 0) continue;  // written again by this Commit
+        for (size_t k = 0; k < claimants.size(); ++k) {
+            MarkerClaimant& c = claimants[k];
+            const int w = twin_planned(c.wants, r.t, r.name);
+            if (w < 0) continue;
+            const bool owns_twin = std::any_of(c.owns.begin(), c.owns.end(), [&](const ProjectMarkerRef& o) {
+                return !o.guid.empty() && o.name == r.name && std::fabs(o.t - r.t) <= kMarkerTwinTolS;
+            });
+            if (owns_twin) continue;
+            const PlannedMarker& want = c.wants[static_cast<size_t>(w)];
+            ProjectMarkerRef     ref;
+            ref.guid = r.guid;
+            ref.t = r.t;
+            ref.c = want.clip_t;
+            ref.has_c = true;
+            ref.color = want.color;
+            ref.has_color = true;
+            ref.name = r.name;
+            ref.has_name = true;
+            c.owns.push_back(ref);
+            out[i] = static_cast<int>(k);
+            if (given) (*given)[i] = ref;
+            break;
+        }
+    }
+    return out;
+}
+
 }  // namespace rav

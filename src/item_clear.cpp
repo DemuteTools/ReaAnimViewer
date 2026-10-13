@@ -146,7 +146,7 @@ ItemClearResult ClearItemData(MediaItem* item)
             res.ran = true;
             // 1. The markers RAV owns, while the records still list them.
             for (size_t i = 0; i < g.items.size(); ++i)
-                if (g.plan.markers[i]) DeleteItemMarkersNoUndo(g.items[i]);
+                if (g.plan.markers[i]) DeleteItemMarkersNoUndo(g.items[i], g.items);
             // 2. The records. A failed write stops the clear (the undo block still closes).
             for (const ClearRecordWrite& w : g.plan.records) {
                 MediaItem_Take* take = g.takes[w.target];

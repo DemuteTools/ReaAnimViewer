@@ -1444,6 +1444,122 @@ int main()
         }
     }
 
+    // ---- 10-11: an item with no rule left; a project marker two items want --------------------
+    {
+        ItemRules empty;
+        CHECK(!HasCommittedMarkers(empty) && !CommitClearsEmptyItem(empty));
+        ProjectMarkerRef pm;
+        pm.guid = "{P1}";
+        empty.pmarkers.push_back(pm);
+        CHECK(HasCommittedMarkers(empty) && CommitClearsEmptyItem(empty));
+        empty.pmarkers.clear();
+        empty.tmarkers.push_back(TakeMarkerRef{});
+        CHECK(CommitClearsEmptyItem(empty));
+        // Previews alone are not committed markers.
+        ItemRules prev;
+        prev.ppmarkers.push_back(pm);
+        CHECK(!CommitClearsEmptyItem(prev));
+        // Rules left: a normal Commit, not the empty one.
+        ItemRules ruled = empty;
+        ruled.blocks.push_back(Rule("FS"));
+        CHECK(HasCommittedMarkers(ruled) && !CommitClearsEmptyItem(ruled));
+        // An empty plan clears: the committed record owns nothing.
+        ComposeCommittedRecord(empty, {}, {}, false, false, {}, MarkerMode::Both);
+        CHECK(!HasCommittedMarkers(empty) && empty.has_applied);
+        CHECK(!CommitClearsEmptyItem(empty));
+
+        // B committed "Hit" at clip 1.0 (project 11.0) and a user "Hit" at 2.0; A owns the marker.
+        const std::vector<Block> blocks = {Rule("Hit")};
+        ItemClipMap map;
+        map.item_pos = 10.0;
+        map.item_len = 5.0;
+        map.clip_len = 5.0;
+        ItemRules b_rec;
+        b_rec.blocks = blocks;
+        b_rec.events.push_back(MakeUserEvent(0, 2.0, 0.0, 0.0));
+        const std::vector<PlannedMarker> b_plan =
+            PlanMarkers(BuildEventList({Det(0, 1.0), Det(0, 7.0)}, b_rec.events, 1), blocks, map);
+        RecordApplied(b_rec, b_plan, MarkerMode::Both);
+        const std::vector<PlannedMarker> wants = CommittedProjectWants(b_rec, map);
+        CHECK(wants.size() == 2);  // 7.0 is outside the item: no project marker
+        CHECK(wants.size() == 2 && Near(wants[0].project_t, 11.0) && Near(wants[1].project_t, 12.0));
+        // No Commit, or take markers only: wants none.
+        ItemRules never = b_rec;
+        never.has_applied = false;
+        CHECK(CommittedProjectWants(never, map).empty());
+        ItemRules take_only = b_rec;
+        take_only.applied.mode = MarkerMode::Take;
+        CHECK(CommittedProjectWants(take_only, map).empty());
+        // A suppression added since the Commit: no longer wanted.
+        ItemRules supp = b_rec;
+        supp.events.push_back(MakeSuppression(0, 1.0));
+        CHECK(CommittedProjectWants(supp, map).size() == 1);
+
+        ProjectMarkerRef a_hit;  // A's marker at 11.0, then one only A wants, one without name
+        a_hit.guid = "{A1}";
+        a_hit.t = 11.0005;  // within the twin tolerance
+        a_hit.c = 3.0;
+        a_hit.has_c = true;
+        a_hit.name = "Hit";
+        a_hit.has_name = true;
+        ProjectMarkerRef a_own = a_hit;
+        a_own.guid = "{A2}";
+        a_own.t = 13.0;
+        ProjectMarkerRef a_old = a_hit;
+        a_old.guid = "{A3}";
+        a_old.has_name = false;
+        a_old.name.clear();
+        ProjectMarkerRef a_hidden = a_hit;
+        a_hidden.guid.clear();
+        const std::vector<ProjectMarkerRef> leaving = {a_hit, a_own, a_old, a_hidden};
+
+        MarkerClaimant other;  // wants nothing
+        MarkerClaimant b;
+        b.wants = wants;
+        std::vector<MarkerClaimant> claimants = {other, b};
+        std::vector<ProjectMarkerRef> given;
+        std::vector<int> to = HandOverProjectMarkers(leaving, {}, claimants, &given);
+        CHECK(to.size() == 4 && to[0] == 1 && to[1] == -1 && to[2] == -1 && to[3] == -1);
+        CHECK(given.size() == 4 && given[0].guid == "{A1}" && Near(given[0].t, 11.0005));
+        CHECK(given[0].has_c && Near(given[0].c, 1.0) && given[0].has_name && given[0].name == "Hit");
+        CHECK(claimants[1].owns.size() == 1 && claimants[0].owns.empty());
+
+        // Written again by this Commit (a twin in the new plans): deleted and rewritten, no hand-over.
+        PlannedMarker again;
+        again.name = "Hit";
+        again.project_t = 11.0;
+        claimants = {b};
+        to = HandOverProjectMarkers(leaving, {again}, claimants, &given);
+        CHECK(to[0] == -1 && claimants[0].owns.empty());
+        // A twin outside the item is not written again: still handed over.
+        again.in_item = false;
+        to = HandOverProjectMarkers(leaving, {again}, claimants, &given);
+        CHECK(to[0] == 0);
+
+        // The claimant already owns a twin: deleted (no second marker).
+        MarkerClaimant owner = b;
+        ProjectMarkerRef twin = a_hit;
+        twin.guid = "{B1}";
+        twin.t = 11.0;
+        owner.owns.push_back(twin);
+        claimants = {owner};
+        to = HandOverProjectMarkers(leaving, {}, claimants, &given);
+        CHECK(to[0] == -1 && claimants[0].owns.size() == 1);
+
+        // Two leaving twins: the first goes to B, the second is deleted (B now owns a twin).
+        ProjectMarkerRef dup = a_hit;
+        dup.guid = "{A4}";
+        claimants = {b};
+        to = HandOverProjectMarkers({a_hit, dup}, {}, claimants, nullptr);
+        CHECK(to.size() == 2 && to[0] == 0 && to[1] == -1);
+
+        // Another name at the same time is not a twin.
+        ProjectMarkerRef other_name = a_hit;
+        other_name.name = "Swing";
+        claimants = {b};
+        CHECK(HandOverProjectMarkers({other_name}, {}, claimants, nullptr)[0] == -1);
+    }
+
     if (g_fails) {
         std::printf("event_list_test: %d failure(s)\n", g_fails);
         return 1;

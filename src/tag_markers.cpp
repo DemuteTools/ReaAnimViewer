@@ -240,8 +240,9 @@ const char* MissingApiReason(MarkerMode mode)
 }
 
 // Deletes the markers RAV recorded as its own on this item, committed AND previews (both kinds:
-// an option change removes the other kind).
-void DeleteItemOwnMarkers(MediaItem* item, const ItemRules& rules)
+// an option change removes the other kind). 10-11: `handed` = the GUIDs of committed project
+// markers another item took over (HandOverNoUndo): those stay.
+void DeleteItemOwnMarkers(MediaItem* item, const ItemRules& rules, const std::set<std::string>* handed = nullptr)
 {
     MediaItem_Take* take = RavTakeOf(item);
     if (!take) return;
@@ -250,9 +251,70 @@ void DeleteItemOwnMarkers(MediaItem* item, const ItemRules& rules)
         DeleteOwnTakeMarkers(take, rules.ptmarkers);
     }
     if (ProjectApiReady()) {
-        DeleteOwnProjectMarkers(rules.pmarkers);
+        for (const ProjectMarkerRef& ref : rules.pmarkers)
+            if (!handed || !handed->count(ref.guid)) DeleteProjectMarkerByGuid(ref.guid);
         DeleteOwnProjectMarkers(rules.ppmarkers);
     }
+}
+
+bool MirrorClipMap(MediaItem* item, MediaItem_Take* take, ItemClipMap* out);  // below (the mirror)
+
+// 10-11: before committed project markers (`leaving`) are deleted, each one another RAV item of
+// the current project still wants (its last Commit planned a twin inside it, it owns none; not
+// an item of `skip`, not a copy) goes to that item's record instead (event_list.h
+// HandOverProjectMarkers); `rewritten` = this Commit's new plans (a twin there is written again).
+// Returns the GUIDs handed over (to keep). No undo point: the caller's block holds it.
+std::set<std::string> HandOverNoUndo(const std::vector<ProjectMarkerRef>& leaving,
+                                     const std::vector<PlannedMarker>& rewritten, const std::vector<MediaItem*>& skip)
+{
+    std::set<std::string> kept;
+    try {
+        const bool any = std::any_of(leaving.begin(), leaving.end(), [](const ProjectMarkerRef& r) {
+            return !r.guid.empty() && r.has_name && !r.name.empty();
+        });
+        if (!any || !ProjectApiReady()) return kept;
+        std::vector<MediaItem*>     items;
+        std::vector<MarkerClaimant> claimants;
+        const int                   n = CountMediaItems(nullptr);
+        for (int i = 0; i < n; ++i) {
+            MediaItem* it = GetMediaItem(nullptr, i);
+            if (!it || std::find(skip.begin(), skip.end(), it) != skip.end()) continue;
+            MediaItem_Take* take = RavTakeOf(it);
+            if (!take) continue;
+            ItemRulesRead rd;
+            if (!ReadItemRules(it, &rd) || !rd.present || !rd.valid || !rd.rules.has_applied) continue;
+            const std::string owner = RecordOwner(rd.rules);
+            if (!owner.empty() && owner != ItemGuidOf(it)) continue;  // a copy: the mirror gives it its own
+            ItemClipMap map;
+            if (!MirrorClipMap(it, take, &map)) continue;
+            MarkerClaimant c;
+            c.wants = CommittedProjectWants(rd.rules, map);
+            if (c.wants.empty()) continue;
+            c.owns = rd.rules.pmarkers;
+            items.push_back(it);
+            claimants.push_back(std::move(c));
+        }
+        if (claimants.empty()) return kept;
+        std::vector<ProjectMarkerRef> given;
+        const std::vector<int>        to = HandOverProjectMarkers(leaving, rewritten, claimants, &given);
+        for (size_t k = 0; k < items.size(); ++k) {
+            std::vector<ProjectMarkerRef> mine;
+            for (size_t i = 0; i < to.size(); ++i)
+                if (to[i] == static_cast<int>(k)) mine.push_back(given[i]);
+            if (mine.empty()) continue;
+            const bool ok = ModifyItemRulesNoUndo(
+                items[k],
+                [&](ItemRules& rec) {
+                    for (const ProjectMarkerRef& r : mine) rec.pmarkers.push_back(r);
+                    return true;
+                },
+                nullptr);
+            if (!ok) continue;  // not recorded: the marker is deleted as before
+            for (const ProjectMarkerRef& r : mine) kept.insert(r.guid);
+        }
+    } catch (...) {
+    }
+    return kept;
 }
 
 // Deletes only the item's preview markers.
@@ -1464,8 +1526,13 @@ ApplyResult CommitTaggingMarkers()
                 r.det = DetectItem(it);
                 switch (r.det.status) {
                 case ItemDetection::Status::Ok: runs.push_back(std::move(r)); break;
-                case ItemDetection::Status::NotRav:
-                case ItemDetection::Status::NoRules: ++res.without_rules; break;
+                case ItemDetection::Status::NoRules:
+                    // 10-11: no rule left but its last Commit's markers still there: an empty plan
+                    // clears them.
+                    if (CommitClearsEmptyItem(r.det.rules)) runs.push_back(std::move(r));
+                    else ++res.without_rules;
+                    break;
+                case ItemDetection::Status::NotRav: ++res.without_rules; break;
                 case ItemDetection::Status::NoFile:
                 case ItemDetection::Status::RolesMissing: ++res.roles_skipped; break;
                 case ItemDetection::Status::Failed: ++res.failed; break;
@@ -1486,11 +1553,29 @@ ApplyResult CommitTaggingMarkers()
 
         if (!in_block) Undo_BeginBlock2(nullptr);
         try {
+            // 10-11: a committed project marker another item still wants (and this Commit does not
+            // write again) goes to that item instead of being deleted.
+            std::set<std::string> handed;
+            {
+                std::vector<ProjectMarkerRef> leaving;
+                std::vector<PlannedMarker>    rewritten;
+                std::vector<MediaItem*>       committing;
+                for (const Run& r : runs) {
+                    committing.push_back(r.item);
+                    leaving.insert(leaving.end(), r.det.rules.pmarkers.begin(), r.det.rules.pmarkers.end());
+                    if (mode == MarkerMode::Take) continue;
+                    const std::vector<ShownEvent> list =
+                        BuildEventList(r.det.events, r.det.rules.events, r.det.rules.blocks.size());
+                    const std::vector<PlannedMarker> plan = PlanMarkers(list, r.det.rules.blocks, r.det.map);
+                    rewritten.insert(rewritten.end(), plan.begin(), plan.end());
+                }
+                handed = HandOverNoUndo(leaving, rewritten, committing);
+            }
             // First every item's previous RAV markers (committed and previews) go, so no item
             // takes another's old RAV marker for a foreign one.
             for (Run& r : runs) {
                 try {
-                    DeleteItemOwnMarkers(r.item, r.det.rules);
+                    DeleteItemOwnMarkers(r.item, r.det.rules, &handed);
                 } catch (...) {
                 }
             }
@@ -1661,12 +1746,15 @@ void StopMarkerMirror()
     g_mirror.clear();
 }
 
-void DeleteItemMarkersNoUndo(MediaItem* item)
+void DeleteItemMarkersNoUndo(MediaItem* item, const std::vector<MediaItem*>& clearing)
 {
     try {
         ItemRulesRead rd;
         if (!item || !ReadItemRules(item, &rd) || !rd.present || !rd.valid) return;
-        DeleteItemOwnMarkers(item, rd.rules);
+        std::vector<MediaItem*> skip = clearing;
+        skip.push_back(item);
+        const std::set<std::string> handed = HandOverNoUndo(rd.rules.pmarkers, {}, skip);
+        DeleteItemOwnMarkers(item, rd.rules, &handed);
     } catch (...) {
     }
 }

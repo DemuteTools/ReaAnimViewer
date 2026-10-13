@@ -209,6 +209,44 @@ void ComposeCommittedRecord(ItemRules& rec, const std::vector<TakeMarkerRef>& ow
                             const std::vector<ProjectMarkerRef>& own_project, bool keep_take_refs,
                             bool keep_project_refs, const std::vector<PlannedMarker>& planned, MarkerMode mode);
 
+// ---- 10-11: an item with no rule left, and a project marker two items want ---------------------
+//
+// An item whose rules were all deleted still owns the markers its last Commit wrote: Commit runs
+// on it with an empty plan, which deletes them (and records none).
+//
+// Two items may plan the same project marker (same name, same time within kMarkerTwinTolS:
+// stacked character and weapon items). REAPER gets one marker, owned (in its record) by the item
+// that wrote it; the other's Commit found it already present. So that rewriting the owner never
+// takes the marker from the other one, an owned project marker about to be deleted (Commit, Clear
+// item data) is handed over instead to another item that still wants it: its last Commit planned
+// a twin inside the item and it owns no twin itself. Nothing is handed over when the marker is
+// being written again anyway (a twin in this Commit's new plans). One owner per GUID, as the
+// mirror expects.
+
+// True when the record owns committed markers (take or project).
+bool HasCommittedMarkers(const ItemRules& rules);
+// True when Commit runs on an item with no rule: it owns committed markers to clear.
+bool CommitClearsEmptyItem(const ItemRules& rules);
+
+// The project markers the record's last Commit planned inside the item (its Detected entries and
+// user events, as RecordApplied left them, on `map`). None when it has no Commit or its option
+// wrote take markers only.
+std::vector<PlannedMarker> CommittedProjectWants(const ItemRules& rules, const ItemClipMap& map);
+
+// Another item that may take over a marker.
+struct MarkerClaimant {
+    std::vector<PlannedMarker>    wants;  // CommittedProjectWants
+    std::vector<ProjectMarkerRef> owns;   // its committed project refs (grown by a hand-over)
+};
+
+// For each `leaving` ref (an owned committed project marker about to be deleted): -1 = delete it
+// (no GUID, no name, written again by a twin in `rewritten`, or no claimant), else the index of
+// the claimant that takes it, the first in order; (*given)[i] is then the ref to add to that
+// claimant's record (the marker's GUID and place, the claimant's clip time, colour and name).
+std::vector<int> HandOverProjectMarkers(const std::vector<ProjectMarkerRef>& leaving,
+                                        const std::vector<PlannedMarker>& rewritten,
+                                        std::vector<MarkerClaimant>& claimants, std::vector<ProjectMarkerRef>* given);
+
 // ---- 10-4b: the marker mirror ----------------------------------------------------------------------
 //
 // RAV's project markers (committed and previews) follow their item: a main-thread timer

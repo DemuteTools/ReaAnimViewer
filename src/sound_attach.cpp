@@ -3,6 +3,7 @@
 // See sound_attach.h (13-10).
 
 #include "sound_attach.h"
+#include "sound_peaks.h"  // ItemGainDb
 
 #ifdef _WIN32
 
@@ -311,10 +312,7 @@ SoundData PromotedSoundData(MediaItem* item)
     EntryFacts      f;
     MediaItem_Take* take = GetActiveTake(item);
     f.item_len = GetMediaItemInfo_Value(item, "D_LENGTH");
-    {
-        const double vol = GetMediaItemInfo_Value(item, "D_VOL");  // the item's gain: its variations' (DetectFrames)
-        f.item_db = vol > 0.0 ? 20.0 * std::log10(vol) : -60.0;
-    }
+    f.item_db = ItemGainDb(item);  // the item's gain: its variations' (DetectFrames)
     if (take) {
         f.start_offs = GetMediaItemTakeInfo_Value(take, "D_STARTOFFS");
         PCM_source* src = GetMediaItemTake_Source(take);

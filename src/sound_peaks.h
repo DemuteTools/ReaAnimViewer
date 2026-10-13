@@ -56,6 +56,9 @@ std::string VariationPath(const SoundMedia& media, const SoundData& data, int va
 std::string SoundSourcePath(const SoundSource& source);
 // The facts of an item (as ReadSoundMedia's Item branch); false for a null item.
 bool ReadItemMedia(MediaItem* item, SoundMedia* out);
+// The gain an item plays its audio at, as REAPER shows it on the item: its volume x its active take's
+// volume (a REAPER "Normalize items" sets the take's), in dB; -60 for a silent item.
+double ItemGainDb(MediaItem* item);
 // Locate...: one sound file chosen in REAPER's file dialog (false when cancelled or unavailable).
 bool ChooseSoundFile(const std::string& title, std::string* path);
 

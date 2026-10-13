@@ -233,6 +233,15 @@ double SourceFileLength(const std::string& path)
     return len;
 }
 
+double ItemGainDb(MediaItem* item)
+{
+    if (!item) return 0.0;
+    double          g = GetMediaItemInfo_Value(item, "D_VOL");
+    MediaItem_Take* t = GetActiveTake(item);
+    if (t) g *= std::fabs(GetMediaItemTakeInfo_Value(t, "D_VOL"));  // < 0 = polarity flipped
+    return g > 0.0 ? 20.0 * std::log10(g) : -60.0;
+}
+
 bool ReadItemMedia(MediaItem* item, SoundMedia* out)
 {
     if (!out) return false;
@@ -241,10 +250,7 @@ bool ReadItemMedia(MediaItem* item, SoundMedia* out)
     MediaItem_Take* active = GetActiveTake(item);
     out->item_pos = GetMediaItemInfo_Value(item, "D_POSITION");
     out->facts.item_len = GetMediaItemInfo_Value(item, "D_LENGTH");
-    {
-        const double vol = GetMediaItemInfo_Value(item, "D_VOL");  // the item's gain: its variations' (DetectFrames)
-        out->facts.item_db = vol > 0.0 ? 20.0 * std::log10(vol) : -60.0;
-    }
+    out->facts.item_db = ItemGainDb(item);  // the item's gain: its variations' (DetectFrames)
     const int n = f_count_takes ? f_count_takes(item) : (active ? 1 : 0);
     for (int k = 0; k < n; ++k) {
         MediaItem_Take* t = f_get_take ? f_get_take(item, k) : active;

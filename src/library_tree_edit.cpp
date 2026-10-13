@@ -234,7 +234,10 @@ SoundNode MakeNode(const NewNodeSpec& spec, const std::string& parent)
     n.parent = parent;
     n.type = spec.type;
     n.name = spec.name.empty() ? TypeName(spec.type) : spec.name;
-    if (spec.type == SoundNodeType::Sound) n.sound = spec.sound;
+    if (spec.type == SoundNodeType::Sound) {
+        n.sound = spec.sound;
+        n.volume_db = spec.volume_db;
+    }
     if (spec.type == SoundNodeType::Switch) n.group_uid = spec.group_uid;
     return n;
 }

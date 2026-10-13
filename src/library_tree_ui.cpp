@@ -332,6 +332,10 @@ std::vector<NewNodeSpec> SelectedItemSounds()
         if (GetSetMediaItemInfo_String(item, "GUID", buf, false)) sp.sound.source.item_guid = buf;
         sp.sound.source.kind = SoundSourceKind::Item;
         sp.sound.mode = DetectMode::Whole;
+        // Antho 2026-10-13: the item's volume becomes the Sound's Volume, so RAV plays it as the timeline
+        // did and Populate places it at that level (a copy plays at the library's gain alone).
+        const double vol = GetMediaItemInfo_Value(item, "D_VOL");
+        sp.volume_db = vol > 0.0 ? 20.0 * std::log10(vol) : -60.0;
         if (MediaItem_Take* take = GetActiveTake(item))
             if (const char* nm = GetTakeName(take)) sp.name = nm;
         if (sp.name.empty()) sp.name = "Sound";

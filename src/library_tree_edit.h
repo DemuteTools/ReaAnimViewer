@@ -75,6 +75,7 @@ struct NewNodeSpec {
     std::string   name;       // "" = the type's name ("New Sound" for a Sound)
     std::string   group_uid;  // Switch
     SoundData     sound;
+    double        volume_db = 0.0;  // Sound: its Volume (an imported item's own volume, Antho 2026-10-13)
 };
 
 // Whether a "+ <type>" can act on a row (empty row = no selection: the root), and why not.

@@ -249,6 +249,9 @@ double FrameLabelDb(const SoundData& data, int variation);
 bool FrameClips(const SoundData& data, int variation, const PeakData& peaks);
 // True when "Per part" is offered: a Sound divided by a Switch Group, not in Takes mode (a take plays whole).
 bool NormPartsAvailable(const SoundData& data);
+// True when what a Normalize measures is the same in both: the frames (start, length, on, cuts), the zones,
+// the divide group and values, the role map and the detect mode (the measuring job is cancelled otherwise).
+bool SameNormMeasured(const SoundData& x, const SoundData& y);
 
 // One stretch of audio Normalize measures and gives a gain: a variation (`part` "") or one part of it.
 // `spans` = what is placed of it (excluded zones left out; a part cut by a zone has several spans), in

@@ -1213,7 +1213,7 @@ double FrameLabelDb(const SoundData& data, int variation)
 {
     if (!ValidIndex(data, variation)) return 0.0;
     const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
-    if (IsDivided(data) && !f.part_db.empty()) {
+    if (NormPartsAvailable(data) && !f.part_db.empty()) {  // a take plays whole, at the frame's dB
         bool   any = false;
         double top = 0.0;
         for (const std::string& v : data.divide_values) {
@@ -1245,6 +1245,23 @@ bool FrameClips(const SoundData& data, int variation, const PeakData& peaks)
 bool NormPartsAvailable(const SoundData& data)
 {
     return IsDivided(data) && data.mode != DetectMode::Takes;
+}
+
+bool SameNormMeasured(const SoundData& x, const SoundData& y)
+{
+    const std::vector<SoundFrame>& a = x.frames;
+    const std::vector<SoundFrame>& b = y.frames;
+    if (a.size() != b.size() || x.zones.size() != y.zones.size() || x.role_map.size() != y.role_map.size() ||
+        x.divide_group != y.divide_group || x.divide_values != y.divide_values || x.mode != y.mode)
+        return false;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (a[i].start != b[i].start || a[i].length != b[i].length || a[i].on != b[i].on || a[i].cuts != b[i].cuts) return false;
+    for (size_t i = 0; i < x.zones.size(); ++i)
+        if (x.zones[i].start != y.zones[i].start || x.zones[i].length != y.zones[i].length || x.zones[i].to != y.zones[i].to)
+            return false;
+    for (size_t i = 0; i < x.role_map.size(); ++i)
+        if (x.role_map[i].role != y.role_map[i].role || x.role_map[i].value != y.role_map[i].value) return false;
+    return true;
 }
 
 std::vector<NormRegion> NormalizeRegions(const SoundData& data, NormScope scope, const std::vector<int>& selection)

@@ -2820,25 +2820,6 @@ void CancelNormJob()
     P.norm_job = NormJob{};
 }
 
-// What the measured regions depend on: the frames (start, length, on, cuts), the zones, the divide group
-// and values, the role map and the detect mode.
-bool SameMeasuredSound(const SoundData& x, const SoundData& y)
-{
-    const std::vector<SoundFrame>& a = x.frames;
-    const std::vector<SoundFrame>& b = y.frames;
-    if (a.size() != b.size() || x.zones.size() != y.zones.size() || x.role_map.size() != y.role_map.size() ||
-        x.divide_group != y.divide_group || x.divide_values != y.divide_values || x.mode != y.mode)
-        return false;
-    for (size_t i = 0; i < a.size(); ++i)
-        if (a[i].start != b[i].start || a[i].length != b[i].length || a[i].on != b[i].on || a[i].cuts != b[i].cuts) return false;
-    for (size_t i = 0; i < x.zones.size(); ++i)
-        if (x.zones[i].start != y.zones[i].start || x.zones[i].length != y.zones[i].length || x.zones[i].to != y.zones[i].to)
-            return false;
-    for (size_t i = 0; i < x.role_map.size(); ++i)
-        if (x.role_map[i].role != y.role_map[i].role || x.role_map[i].value != y.role_map[i].value) return false;
-    return true;
-}
-
 // Writes the measured adjustments: one undo point and the toast; "Nothing to normalize" (no undo point)
 // when no gain changes.
 void FinishNormalize(const SoundLibrary& lib, const SoundNode& n, NormScope scope, NormMode mode, double target,
@@ -2912,11 +2893,12 @@ void PumpNormJob(const SoundLibrary& lib, const SoundNode& n)
         CancelNormJob();
         return;
     }
-    if (!SameMeasuredSound(j.data0, n.sound)) {
+    if (!SameNormMeasured(j.data0, n.sound)) {
         CancelNormJob();
         ShowLibraryToast("The variations changed while measuring: Normalize again", false);
         return;
     }
+    if (P.live && P.draft_uid == n.uid) return;  // a drag in progress: its commit would write over the result
     using Clock = std::chrono::steady_clock;
     const Clock::time_point t0 = Clock::now();
     bool                    first = true;
@@ -3075,7 +3057,7 @@ void LevelSection(const SoundLibrary& lib, const SoundNode& n, const SoundMedia&
     if (update >= 0) {
         const std::vector<NormPreset> before = P.presets;
         NormPreset&                   p = P.presets[static_cast<size_t>(update)];
-        p.scope = EffectiveNormScope(P.norm_scope, divided);
+        p.scope = P.norm_scope;  // as set (mockup pupd): a Per part preset stays Per part on an undivided Sound
         p.mode = P.norm_mode;
         p.target = P.norm_db;
         if (SavePresets())

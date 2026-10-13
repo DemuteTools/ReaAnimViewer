@@ -491,6 +491,38 @@ void TestNormalizeParts()
     c.frames[0].on = false;
     c.frames[0].db = 20.0;
     CHECK(!FrameClips(c, 0, p));
+    // Undivided: the frame's dB; Takes: the take whole at the frame's dB, a part gain neither shown nor used.
+    SoundData w;
+    w.frames = {F(0, 1)};
+    w.frames[0].db = 5.0;
+    CHECK(!FrameClips(w, 0, p));
+    w.frames[0].db = 7.0;
+    CHECK(FrameClips(w, 0, p));
+    c.frames[0].on = true;
+    c.frames[0].db = 0.0;
+    c.frames[0].part_db[front] = 7.0;
+    c.mode = DetectMode::Takes;
+    CHECK(!FrameClips(c, 0, p) && Near(FrameLabelDb(c, 0), 0.0));
+    c.frames[0].db = 7.0;
+    CHECK(FrameClips(c, 0, p) && Near(FrameLabelDb(c, 0), 7.0));
+    // SameNormMeasured: what the regions depend on cancels the job; a gain change does not.
+    {
+        SoundData a = d, x = d;
+        CHECK(SameNormMeasured(a, x));
+        x.frames[0].db = 9.0;
+        x.frames[0].part_db[back] = 4.0;
+        CHECK(SameNormMeasured(a, x));
+        x = d; x.frames[0].start += 0.01; CHECK(!SameNormMeasured(a, x));
+        x = d; x.frames[0].cuts = {0.3}; CHECK(!SameNormMeasured(a, x));
+        x = d; x.frames[0].on = !x.frames[0].on; CHECK(!SameNormMeasured(a, x));
+        x = d; x.zones[0].start += 0.01; CHECK(!SameNormMeasured(a, x));
+        x = d; x.zones[0].to = front; CHECK(!SameNormMeasured(a, x));
+        x = d; x.zones.pop_back(); CHECK(!SameNormMeasured(a, x));
+        x = d; x.divide_values = {front, back}; CHECK(!SameNormMeasured(a, x));
+        x = d; x.divide_group = "h"; CHECK(!SameNormMeasured(a, x));
+        x = d; x.role_map.push_back({"toe", front}); CHECK(!SameNormMeasured(a, x));
+        x = d; x.mode = DetectMode::Takes; CHECK(!SameNormMeasured(a, x));
+    }
 }
 
 // Antho 2026-10-12: fades on each variation.

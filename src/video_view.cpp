@@ -411,19 +411,23 @@ void UpdateStripRange()
     const std::shared_ptr<const VideoTimelineSnapshot> snap = CurrentVideoTimeline();
     const VideoTrackTimeline* tl = snap ? snap->Find(g_model.track) : nullptr;
     if (!tl || tl->items.empty()) return;
+    // Story 11-7: the item under the playhead is the one the viewer and the FX show.
+    const int playing = PickPlayingItem(tl->plays, g_playhead);
     int best = -1;
     double best_gap = 0.0;
     bool spanning = false;
-    for (const VideoItemSpan& it : tl->items) {
+    for (size_t k = 0; k < tl->items.size(); ++k) {
+        const VideoItemSpan& it = tl->items[k];
         if (!(it.end > it.start)) continue;
         g_range.items.push_back(VideoStripSpan{it.start, it.end});  // spec 11-fb-12: the neighbours too
         if (spanning) continue;
         const int idx = static_cast<int>(g_range.items.size()) - 1;
-        if (g_playhead >= it.start && g_playhead < it.end) {  // the viewer's rule: first spanning item
+        if (static_cast<int>(k) == playing) {
             best = idx;
             spanning = true;
             continue;
         }
+        if (playing >= 0) continue;  // another item plays here: it is the current one
         const double gap = (g_playhead < it.start) ? it.start - g_playhead : g_playhead - it.end;
         if (best < 0 || gap < best_gap) {
             best = idx;

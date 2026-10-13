@@ -271,3 +271,8 @@ add_test(NAME populate_progress COMMAND populate_progress_test)
 add_executable(item_clear_plan_test item_clear_plan_test.cpp ../src/item_clear_plan.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
 target_include_directories(item_clear_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME item_clear_plan COMMAND item_clear_plan_test)
+
+# Story 11-7 -- which item REAPER plays at p, at which clip time (src/play_item_plan.h).
+add_executable(play_item_plan_test play_item_plan_test.cpp ../src/play_item_plan.cpp ../src/tagging_signal.cpp)
+target_include_directories(play_item_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME play_item_plan COMMAND play_item_plan_test)

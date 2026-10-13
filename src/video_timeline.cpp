@@ -88,20 +88,15 @@ void AddTrack(MediaTrack* tr, int vw, int vh, VideoTimelineSnapshot& out,
     const int n = CountTrackMediaItems(tr);
     for (int j = 0; j < n; ++j) {
         MediaItem* it = GetTrackMediaItem(tr, j);
-        if (!it) continue;
-        MediaItem_Take* tk = GetActiveTake(it);
-        if (!tk) continue;
-        PCM_source* src = GetMediaItemTake_Source(tk);
-        if (!IsRavAnimSource(src)) continue;
-        const char* fn = src->GetFileName();
-        if (!fn || !fn[0]) continue;
+        // Story 11-7: the viewer's reading (pcm_source_anim.h), so both pick and time alike.
+        PlayCandidate play;
         VideoItemSpan span;
-        span.start      = GetMediaItemInfo_Value(it, "D_POSITION");
-        span.end        = span.start + GetMediaItemInfo_Value(it, "D_LENGTH");
-        span.start_offs = GetMediaItemTakeInfo_Value(tk, "D_STARTOFFS");
-        span.path       = fn;
+        if (!ReadPlayCandidate(it, 0, &play, &span.path)) continue;
+        span.start = play.pos;
+        span.end   = play.pos + play.len;
         paths.push_back(span.path);
         tl.items.push_back(std::move(span));
+        tl.plays.push_back(play);
     }
     out.tracks.push_back(std::move(tl));
 }
@@ -153,16 +148,14 @@ bool FindVideoItemAt(const VideoTimelineSnapshot& snap, const MediaTrack* track,
 {
     const VideoTrackTimeline* tl = snap.Find(track);
     if (!tl) return false;
-    for (const VideoItemSpan& it : tl->items) {
-        // The viewer's "under the playhead" (start <= t < end), written so that a
-        // non-finite t matches nothing.
-        if (!(t >= it.start && t < it.end)) continue;
-        out.track     = tl;
-        out.item      = &it;
-        out.anim_time = ItemAnimTime(t, it.start, it.start_offs);
-        return true;
-    }
-    return false;
+    // The viewer's rule (Story 11-7); a non-finite t matches nothing. No allocation: this
+    // runs on the video thread.
+    const int i = PickPlayingItem(tl->plays, t);
+    if (i < 0 || i >= static_cast<int>(tl->items.size())) return false;
+    out.track     = tl;
+    out.item      = &tl->items[static_cast<size_t>(i)];
+    out.anim_time = PlayClipTime(tl->plays[static_cast<size_t>(i)], t);
+    return true;
 }
 
 std::shared_ptr<const VideoTimelineSnapshot> CurrentVideoTimeline()

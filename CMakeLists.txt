@@ -194,6 +194,7 @@ if(WIN32)
             src/item_rules.cpp
             src/strip_view.cpp
             src/tagging_signal.cpp
+            src/play_item_plan.cpp  # 11-7
             src/tagging_session.cpp
             src/tagging_view_ui.cpp
             src/skeleton_view.cpp

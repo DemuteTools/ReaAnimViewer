@@ -17,6 +17,7 @@
 
 #include <string>
 
+#include "play_item_plan.h"  // PlayCandidate (Story 11-7)
 #include "reaper_api.h"  // pcmsrc_register_t, PCM_source (SDK types via reaper_plugin.h)
 
 namespace rav {
@@ -27,14 +28,14 @@ pcmsrc_register_t* PcmSourceRegistration();
 
 // Story 4.3 — the read-only transport→current-item query the viewer polls each
 // render tick. Reads the playhead (play cursor while playing, edit cursor while
-// stopped) and walks ALL the project's items, selecting the spanning RAV item on
-// the HIGHEST-PRIORITY (topmost) track — smallest 1-based IP_TRACKNUMBER — so an
-// overlap on different tracks resolves to the topmost track (Story 4.5, FR14).
-// Ties (same track, or an unreadable track number) keep the first walk-order item
-// (deterministic). On a match: fills out_path with that item's source file path and
-// out_anim_time with the item-relative time (low-guarded ≥0; RenderFrame clamps the
-// high end to [0, duration]), and returns true. No match → returns false, leaving
-// both outs untouched.
+// stopped) and walks ALL the project's items, selecting the RAV item REAPER plays there
+// (Story 11-7, play_item_plan.h PickPlayingItem): not muted, on a playing lane, on the
+// HIGHEST-PRIORITY (topmost) track — smallest 1-based IP_TRACKNUMBER (Story 4.5, FR14) —
+// then the upper fixed lane, then the later start, then the later in walk order. On a
+// match: fills out_path with that item's source file path and out_anim_time with the clip
+// time (PlayClipTime: take offset, play rate, loop; low-guarded ≥0; RenderFrame clamps the
+// high end to [0, duration]), and returns true. No match → returns false, leaving both
+// outs untouched.
 //
 // NO-THROW, MAIN-THREAD ONLY: it calls Reaper item APIs, so it must run on the
 // thread Reaper drives the UI pump on (the viewer's NULL-hwnd render timer is
@@ -43,8 +44,7 @@ pcmsrc_register_t* PcmSourceRegistration();
 bool GetCurrentAnimItem(std::string& out_path, double& out_anim_time);
 
 // Story 11-4 — the same query, optionally restricted to ONE track (Video view on a
-// pinned track: the first spanning RAV item in that track's item order, the video FX's
-// rule), and reporting the chosen item's track (`out_track` may be null; untouched when
+// pinned track: the same rule on that track, the video FX's), and reporting the chosen item's track (`out_track` may be null; untouched when
 // nothing matches). only_track == nullptr = GetCurrentAnimItem. Main thread, no-throw.
 // Story 10-3: `out_item` (optional) gets the chosen item, untouched when nothing matches.
 bool GetCurrentAnimItemOn(MediaTrack* only_track, std::string& out_path, double& out_anim_time,
@@ -57,9 +57,10 @@ bool GetCurrentAnimItemOn(MediaTrack* only_track, std::string& out_path, double&
 // Null-safe. Main thread (it calls the source's virtuals).
 bool IsRavAnimSource(PCM_source* s);
 
-// Item-relative animation time for project time `pos`, given the item position and the
-// take's start-in-source offset (D_STARTOFFS): (pos - item_pos) + start_offs, low-guarded
-// at 0 (a NaN offset also gives 0). The renderer clamps the high end to the clip. Pure.
-double ItemAnimTime(double pos, double item_pos, double start_offs);
+// Story 11-7 — `item` as a playback candidate (play_item_plan.h): position, length, take
+// start offset and play rate, the source length (the loop period), loop, mute, fixed lane
+// and whether it plays, with `track_rank` as given; `out_path` (optional) gets its file.
+// False when the item's active take is not a RAV animation with a file. Main thread.
+bool ReadPlayCandidate(MediaItem* item, int track_rank, PlayCandidate* out, std::string* out_path);
 
 }  // namespace rav

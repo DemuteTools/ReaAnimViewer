@@ -17,6 +17,7 @@
 #include <climits>  // INT_MAX — the "no track yet / lowest priority" selection sentinel (Story 4.5)
 #include <cstring>
 #include <string>
+#include <vector>
 
 namespace rav {
 namespace {
@@ -230,18 +231,38 @@ pcmsrc_register_t* PcmSourceRegistration() { return &g_reg; }
 
 bool IsRavAnimSource(PCM_source* s) { return IsOurs(s); }
 
-double ItemAnimTime(double pos, double item_pos, double start_offs)
+bool ReadPlayCandidate(MediaItem* item, int track_rank, PlayCandidate* out, std::string* out_path)
 {
-    // Native left-trim: D_STARTOFFS is the take's start-in-source. animTime advances
-    // from there, so trimming the left edge reveals LATER frames of the same clip
-    // (FR11 native-media behavior) rather than restarting at frame 0. Take-level value.
-    double at = (pos - item_pos) + start_offs;
-    if (!(at >= 0.0)) at = 0.0; // low guard; the negated form also catches a non-finite
-                              // D_STARTOFFS (NaN compares false → reset to 0, not propagated).
-                              // RenderFrame (loop==false) clamps the HIGH end
-                              // to the clip duration, so a deep startoffs past the clip
-                              // end holds the last frame (AC3) — do NOT re-clamp to il here.
-    return at;
+    if (!item || !out) return false;
+    MediaItem_Take* tk = GetActiveTake(item);
+    if (!tk) return false;
+    PCM_source* src = GetMediaItemTake_Source(tk);
+    if (!IsOurs(src)) return false;    // skip non-RAV (coexistence)
+    const char* fn = src->GetFileName();
+    if (!fn || !fn[0]) return false;   // no file: nothing to show
+    PlayCandidate c;
+    c.pos = GetMediaItemInfo_Value(item, "D_POSITION");
+    c.len = GetMediaItemInfo_Value(item, "D_LENGTH");
+    // D_STARTOFFS is the take's start-in-source: trimming the left edge reveals LATER
+    // frames of the same clip (FR11), like native media. Source time then advances at
+    // D_PLAYRATE (REAPER resizes the item itself when the rate changes in Item properties;
+    // the source's length stays in source time), and that length is the loop period.
+    c.start_offs = GetMediaItemTakeInfo_Value(tk, "D_STARTOFFS");
+    c.rate       = GetMediaItemTakeInfo_Value(tk, "D_PLAYRATE");
+    c.clip_len   = src->GetLength();
+    c.loop       = GetMediaItemInfo_Value(item, "B_LOOPSRC") != 0.0;
+    c.muted      = GetMediaItemInfo_Value(item, "B_MUTE") != 0.0;
+    // REAPER 7 lanes: on a fixed-lane track only the playing lanes count (C_LANEPLAYS 1 or
+    // 2); -1 = a hidden, non-playing lane of a formerly fixed-lane track, on any track.
+    MediaTrack*  tr    = GetMediaItem_Track(item);
+    const bool   fixed = tr && static_cast<int>(GetMediaTrackInfo_Value(tr, "I_FREEMODE")) == 2;
+    const double lp    = GetMediaItemInfo_Value(item, "C_LANEPLAYS");
+    c.lane_plays = fixed ? (lp > 0.0) : !(lp < 0.0);
+    c.lane       = fixed ? static_cast<int>(GetMediaItemInfo_Value(item, "I_FIXEDLANE")) : 0;
+    c.track_rank = track_rank;
+    *out = c;
+    if (out_path) *out_path = fn;
+    return true;
 }
 
 // Read-only transport→current-item query (Story 4.3). Mirrors the Spike's
@@ -262,82 +283,52 @@ bool GetCurrentAnimItemOn(MediaTrack* only_track, std::string& out_path, double&
     // still drives the displayed frame (AC1); 11-6: in sync with the sound (RavPlayhead).
     const double pos = RavPlayhead(proj);
 
-    // Story 11-4 — one track only (Video view on a pinned track): the first spanning RAV
-    // item in the track's item order, the rule the video FX uses (video_timeline.h
-    // FindVideoItemAt), so Video view shows what that track's FX renders.
-    if (only_track) {
-        for (int i = 0, n = CountTrackMediaItems(only_track); i < n; ++i) {
-            MediaItem* it = GetTrackMediaItem(only_track, i);
-            if (!it) continue;
-            const double ip = GetMediaItemInfo_Value(it, "D_POSITION");
-            const double il = GetMediaItemInfo_Value(it, "D_LENGTH");
-            if (pos < ip || pos >= ip + il) continue;
-            MediaItem_Take* tk = GetActiveTake(it);
-            if (!tk) continue;
-            PCM_source* src = GetMediaItemTake_Source(tk);
-            if (!IsOurs(src)) continue;
-            const char* fn = src->GetFileName();
-            if (!fn || !fn[0]) continue;  // no file: the FX skips it too (video_timeline.cpp)
-            out_path = fn;
-            out_anim_time = ItemAnimTime(pos, ip, GetMediaItemTakeInfo_Value(tk, "D_STARTOFFS"));
-            if (out_track) *out_track = only_track;
-            if (out_item) *out_item = it;
-            return true;
-        }
-        return false;
-    }
-
-    // Highest-priority spanning RAV item wins (Story 4.5): on overlap, the one on the
-    // TOPMOST track (smallest 1-based IP_TRACKNUMBER) — mirroring Reaper's native video
-    // compositing precedence. This is NOT an early-return: a higher-priority item may
-    // appear LATER in CountMediaItems order, so scan EVERY item, keep the best candidate,
-    // and emit the outputs for the WINNER after the loop. Ties (same track, or an
-    // unreadable track number) keep the first walk-order item via strict < (deterministic,
-    // no flicker — AC3). Null-guard every handle in the chain.
-    MediaItem*      best    = nullptr;
-    MediaItem_Take* best_tk = nullptr;
-    double          best_ip = 0.0;
-    int             best_tn = INT_MAX;  // smaller = higher priority; sentinel = none yet
-
-    for (int i = 0, n = CountMediaItems(proj); i < n; ++i) {
-        MediaItem* it = GetMediaItem(proj, i);
-        if (!it) continue;
+    // Story 11-7: every RAV item under the playhead is a candidate; PickPlayingItem
+    // (play_item_plan.h) keeps the one REAPER plays: not muted, on a playing lane, the
+    // topmost track (Story 4.5), then the upper lane, then the later start. Story 11-4:
+    // one track only (Video view on a pinned track) = the same rule on that track, the
+    // rule the video FX uses (video_timeline.cpp FindVideoItemAt), so Video view shows
+    // what that track's FX renders. The clip time follows rate and loop (PlayClipTime).
+    struct Found {
+        MediaItem*  item;
+        std::string path;
+    };
+    std::vector<PlayCandidate> cands;
+    std::vector<Found>         found;
+    auto consider = [&](MediaItem* it, int rank) {
+        if (!it) return;
+        // Cheap span test first: most items are not under the playhead.
         const double ip = GetMediaItemInfo_Value(it, "D_POSITION");
         const double il = GetMediaItemInfo_Value(it, "D_LENGTH");
-        if (pos < ip || pos >= ip + il) continue;          // not under the playhead
-        MediaItem_Take* tk = GetActiveTake(it);
-        if (!tk) continue;
-        if (!IsOurs(GetMediaItemTake_Source(tk))) continue; // skip non-RAV (coexistence)
-
-        // Highest-priority track = topmost = smallest 1-based IP_TRACKNUMBER.
-        // GetMediaTrackInfo_Value(tr, "IP_TRACKNUMBER") returns the int DIRECTLY (not a
-        // pointer-out attribute). 0 (not found) / -1 (master) / null track => lowest
-        // priority (INT_MAX), never "wins as track 0".
-        MediaTrack* tr = GetMediaItem_Track(it);
-        int tn = tr ? (int)GetMediaTrackInfo_Value(tr, "IP_TRACKNUMBER") : 0;
-        if (tn <= 0) tn = INT_MAX;
-
-        // (!best ||) admits the FIRST spanning candidate unconditionally, so a lone item
-        // whose track is unreadable (tn remapped to INT_MAX) is still selected — otherwise
-        // INT_MAX < INT_MAX is false and a valid item under the playhead would be dropped.
-        // The strict < then keeps the first walk-order item on a same-track tie (AC3).
-        if (!best || tn < best_tn) {
-            best_tn = tn; best = it; best_tk = tk; best_ip = ip;
+        if (!(pos >= ip && pos < ip + il)) return;
+        PlayCandidate c;
+        std::string   path;
+        if (!ReadPlayCandidate(it, rank, &c, &path)) return;
+        cands.push_back(c);
+        found.push_back({it, std::move(path)});
+    };
+    if (only_track) {
+        for (int i = 0, n = CountTrackMediaItems(only_track); i < n; ++i)
+            consider(GetTrackMediaItem(only_track, i), 0);
+    } else {
+        for (int i = 0, n = CountMediaItems(proj); i < n; ++i) {
+            MediaItem* it = GetMediaItem(proj, i);
+            if (!it) continue;
+            // Topmost track = smallest 1-based IP_TRACKNUMBER (returned directly, not a
+            // pointer-out). 0 (not found) / -1 (master) / null track => lowest priority.
+            MediaTrack* tr = GetMediaItem_Track(it);
+            int tn = tr ? static_cast<int>(GetMediaTrackInfo_Value(tr, "IP_TRACKNUMBER")) : 0;
+            if (tn <= 0) tn = INT_MAX;
+            consider(it, tn);
         }
     }
-    if (!best) return false;          // no RAV item under the playhead -> viewer holds (AC1)
+    const int best = PickPlayingItem(cands, pos);
+    if (best < 0) return false;  // nothing plays under the playhead -> the viewer holds (AC1)
 
-    // Emit for the WINNER (best/best_tk/best_ip), not the first match. The per-item time
-    // math is the SAME as 4.4 — only WHICH item feeds it changed.
-    PCM_source* src = GetMediaItemTake_Source(best_tk);
-    const char* fn  = src ? src->GetFileName() : nullptr;   // re-read; null-guard
-    out_path = fn ? fn : "";                                // std::string assign LAST
-    // Item-relative time from the take's start-in-source (left-trim) — ItemAnimTime,
-    // shared with the video FX timeline (Story 11-2).
-    const double off = GetMediaItemTakeInfo_Value(best_tk, "D_STARTOFFS");
-    out_anim_time = ItemAnimTime(pos, best_ip, off);
-    if (out_track) *out_track = GetMediaItem_Track(best);
-    if (out_item) *out_item = best;
+    out_path      = found[best].path;
+    out_anim_time = PlayClipTime(cands[best], pos);
+    if (out_track) *out_track = only_track ? only_track : GetMediaItem_Track(found[best].item);
+    if (out_item) *out_item = found[best].item;
     return true;
 }
 

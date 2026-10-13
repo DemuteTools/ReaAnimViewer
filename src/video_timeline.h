@@ -21,16 +21,17 @@
 #include <string>
 #include <vector>
 
+#include "play_item_plan.h"
+
 class MediaTrack;
 class ReaProject;
 
 namespace rav {
 
 struct VideoItemSpan {
-    double      start      = 0.0;  // D_POSITION
-    double      end        = 0.0;  // D_POSITION + D_LENGTH (exclusive)
-    double      start_offs = 0.0;  // take D_STARTOFFS
-    std::string path;              // the animation file
+    double      start = 0.0;  // D_POSITION
+    double      end   = 0.0;  // D_POSITION + D_LENGTH (exclusive)
+    std::string path;         // the animation file
 };
 
 struct VideoTrackTimeline {
@@ -38,7 +39,10 @@ struct VideoTrackTimeline {
     int  video_width  = 0;          // project video size; 0 = not set (use the default)
     int  video_height = 0;
     bool transparent  = false;      // background option (P_EXT, saved with the project)
-    std::vector<VideoItemSpan> items;  // in the track's item order
+    std::vector<VideoItemSpan> items;  // in the track's item order (muted ones too)
+    // Story 11-7: items[i] as a playback candidate (offset, rate, loop, mute, lane), same
+    // order, for PickPlayingItem / PlayClipTime (play_item_plan.h).
+    std::vector<PlayCandidate> plays;
 };
 
 struct VideoTimelineSnapshot {
@@ -46,8 +50,9 @@ struct VideoTimelineSnapshot {
     const VideoTrackTimeline* Find(const MediaTrack* track) const;
 };
 
-// The item a frame shows: on `track`, the first item (track order) with
-// start <= t < end — the viewer's rule — and the item-relative animation time.
+// The item a frame shows: on `track`, the item REAPER plays at t — the viewer's rule
+// (Story 11-7, PickPlayingItem: not muted, on a playing lane, the upper lane, then the
+// later start) — and its clip time (PlayClipTime: offset, play rate, loop).
 struct VideoItemHit {
     const VideoTrackTimeline* track = nullptr;
     const VideoItemSpan*      item  = nullptr;

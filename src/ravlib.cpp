@@ -338,4 +338,132 @@ std::string RavlibFileName(const std::string& lib_name, const std::vector<std::s
     return name;
 }
 
+// ---- 13-24 ----------------------------------------------------------------------------------------
+
+namespace {
+
+// Windows paths: one file whatever the case and the slash.
+std::string PathKey(const std::string& p)
+{
+    std::string k = LowerAscii(p);
+    for (char& c : k)
+        if (c == '\\') c = '/';
+    return k;
+}
+
+std::string UpperAscii(std::string s)
+{
+    for (char& c : s) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    return s;
+}
+
+std::string BaseName(const std::string& path)
+{
+    const size_t p = path.find_last_of("/\\");
+    return p == std::string::npos ? path : path.substr(p + 1);
+}
+
+// Why one take cannot be a file ("" = it can).
+std::string TakeRefusal(const ItemTakeFile& t)
+{
+    const std::string type = UpperAscii(t.type);
+    if (type == "MIDI" || type == "MIDIPOOL") return "MIDI";
+    if (type == "RPP_PROJECT") return "a subproject";
+    if (type == "SECTION") return "a reversed or section take";
+    if (type == "EMPTY" || t.path.empty()) return "no media file";
+    return {};
+}
+
+}  // namespace
+
+bool FileSourceFromItem(const SoundData& data, const ItemFileFacts& facts, SoundSource* out, std::string* why)
+{
+    auto refuse = [&](const std::string& w) {
+        if (why) *why = w;
+        return false;
+    };
+    if (data.source.kind != SoundSourceKind::Item) return refuse("not an item sound");
+    if (!facts.found || data.source.item_guid.empty()) return refuse("its item is not in the project");
+    if (facts.pile) return refuse("an item pile");
+    if (facts.takes.empty()) return refuse("no media file");
+    const ItemTakeFile* file = nullptr;
+    if (data.mode == DetectMode::Takes && facts.takes.size() >= 2) {
+        for (const ItemTakeFile& t : facts.takes) {
+            const std::string w = TakeRefusal(t);
+            if (!w.empty()) return refuse(w);
+            if (file && PathKey(file->path) != PathKey(t.path)) return refuse("takes of different files");
+            if (!file) file = &t;
+        }
+    } else {
+        const int a = facts.active >= 0 && facts.active < static_cast<int>(facts.takes.size()) ? facts.active : 0;
+        file = &facts.takes[static_cast<size_t>(a)];
+        const std::string w = TakeRefusal(*file);
+        if (!w.empty()) return refuse(w);
+    }
+    if (!out) return true;
+    SoundSource s;
+    s.kind = SoundSourceKind::File;
+    s.item_guid = data.source.item_guid;  // the item is this project's copy of the file (C3)
+    s.asset.name = BaseName(file->path);
+    s.asset.size = file->size >= 0 ? file->size : -1;
+    s.asset.length = file->length > 0.0 ? file->length : -1.0;
+    s.asset.last_path = file->path;
+    *out = s;
+    return true;
+}
+
+bool ConvertLibraryToUser(SoundStore& store, const std::string& lib_uid, const std::string& file_name,
+                          const std::function<ItemFileFacts(const std::string& item_guid)>& facts,
+                          ConvertReport* report)
+{
+    ConvertReport r;
+    SoundLibrary* found = FindLibrary(store, lib_uid);
+    if (!found || found->user) return false;
+    SoundLibrary lib = *found;
+    lib.user = true;
+    lib.ravlib_path = file_name;
+    for (SoundNode& n : lib.nodes) {
+        if (n.type != SoundNodeType::Sound) continue;
+        ++r.sounds;
+        if (n.sound.source.kind != SoundSourceKind::Item) continue;
+        const ItemFileFacts f =
+            (facts && !n.sound.source.item_guid.empty()) ? facts(n.sound.source.item_guid) : ItemFileFacts{};
+        SoundSource src;
+        std::string why;
+        if (FileSourceFromItem(n.sound, f, &src, &why)) {
+            n.sound.source = src;
+            ++r.converted;
+        } else {
+            r.project_only.push_back({n.uid, n.name, why});
+        }
+    }
+    *found = lib;
+    if (report) *report = r;
+    return true;
+}
+
+std::string ConvertReportText(const ConvertReport& r, const std::string& file_name)
+{
+    std::string t = "Converted to a User Library (" + file_name + ")";
+    const int   n = static_cast<int>(r.project_only.size());
+    if (n == 0) return t;
+    t += ": " + std::to_string(n) + " of " + std::to_string(r.sounds) +
+         (r.sounds == 1 ? " sound is" : " sounds are") + " project-only and will be missing in other projects (";
+    for (int i = 0; i < n && i < 3; ++i) {
+        const ProjectOnlySound& p = r.project_only[static_cast<size_t>(i)];
+        t += (i ? ", " : "") + (p.name.empty() ? std::string("Sound") : p.name) + ": " + p.why;
+    }
+    if (n > 3) t += ", +" + std::to_string(n - 3) + " more";
+    return t + ")";
+}
+
+std::string AbsoluteMediaPath(const std::string& path, const std::string& dir)
+{
+    if (path.empty() || dir.empty()) return path;
+    const bool drive = path.size() >= 2 && std::isalpha(static_cast<unsigned char>(path[0])) && path[1] == ':';
+    if (drive || path[0] == '/' || path[0] == '\\') return path;
+    const char last = dir.back();
+    return (last == '/' || last == '\\') ? dir + path : dir + "/" + path;
+}
+
 }  // namespace rav

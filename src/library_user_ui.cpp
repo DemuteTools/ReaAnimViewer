@@ -60,7 +60,11 @@ using SetMediaTrackInfoValueFn = bool (*)(MediaTrack* tr, const char* parm, doub
 using GetParentTrackFn = MediaTrack* (*)(MediaTrack* track);
 using CreateFromFileFn = PCM_source* (*)(const char* filename);
 using GetMainHwndFn = HWND (*)();
+using CountTakesFn = int (*)(MediaItem* item);
+using GetMediaItemTakeFn = MediaItem_Take* (*)(MediaItem* item, int tk);
 
+CountTakesFn             f_count_takes = nullptr;  // 13-24
+GetMediaItemTakeFn       f_get_take = nullptr;
 InsertTrackAtIndexFn     f_insert_track = nullptr;
 SetMediaTrackInfoValueFn f_set_track = nullptr;
 GetParentTrackFn         f_parent = nullptr;
@@ -611,6 +615,8 @@ void RequestLocate(const std::string& lib_uid, const std::string& node_uid)
 
 // TrackName, TrackIndex, DirectChildren, AddTrackAt, AddChildTrack: sound_tracks.h (13-13).
 
+bool OldLibraryItem(MediaItem* it);  // 13-24, below
+
 MediaTrack* FolderFor(ReaProject* proj, const SoundStore& store, const std::string& dest)
 {
     // 1. The parent folder of an already-materialised Sound with the same destination.
@@ -620,6 +626,7 @@ MediaTrack* FolderFor(ReaProject* proj, const SoundStore& store, const std::stri
                 if (n.type != SoundNodeType::Sound || n.sound.source.kind != SoundSourceKind::File) continue;
                 if (n.sound.source.item_guid.empty() || EffectiveLandsIn(lib, n.uid) != dest) continue;
                 MediaItem* it = FindItemByGuid(n.sound.source.item_guid);
+                if (!OldLibraryItem(it)) continue;  // 13-24: a converted Sound's own item sits anywhere
                 MediaTrack* tr = it ? GetMediaItem_Track(it) : nullptr;
                 MediaTrack* par = tr ? f_parent(tr) : nullptr;
                 if (par && GetMediaTrackInfo_Value(par, "I_FOLDERDEPTH") >= 1.0) return par;
@@ -662,6 +669,57 @@ MediaTrack* LayerTrack(ReaProject* proj, MediaTrack* folder, int layer)
     return nullptr;
 }
 
+// ---- 13-24: Convert to User Library -------------------------------------------------------------
+
+// An older build's imported User Library source item (kLibSourceTagKey). A File Sound's item that
+// is not one is the project item a converted Sound came from (spec 13-24 C3).
+bool OldLibraryItem(MediaItem* it)
+{
+    char mark[64] = {};
+    return it && GetSetMediaItemInfo_String(it, kLibSourceTagKey, mark, false) && mark[0];
+}
+
+// The folder of the current project's file ("" = not saved yet).
+std::string ProjectFolder()
+{
+    char fn[4096] = {};
+    EnumProjects(-1, fn, sizeof fn);
+    const std::string p = fn;
+    const size_t      s = p.find_last_of("/\\");
+    return s == std::string::npos ? std::string() : p.substr(0, s);
+}
+
+// What REAPER says of an Item Sound's item: its takes' source types, files, lengths and sizes.
+ItemFileFacts ReadItemFileFacts(const std::string& guid, const std::string& project_dir)
+{
+    ItemFileFacts f;
+    MediaItem* item = guid.empty() ? nullptr : FindItemByGuid(guid);
+    if (!item) return f;
+    f.found = true;
+    f.pile = IsFolderItem(item);
+    MediaItem_Take* active = GetActiveTake(item);
+    const bool      all = f_count_takes && f_get_take;
+    const int       n = all ? f_count_takes(item) : (active ? 1 : 0);
+    for (int k = 0; k < n; ++k) {
+        MediaItem_Take* t = all ? f_get_take(item, k) : active;
+        PCM_source*     src = t ? GetMediaItemTake_Source(t) : nullptr;
+        ItemTakeFile    tf;
+        if (src) {
+            const char* type = src->GetType();
+            tf.type = type ? type : "";
+            const char* fn = src->GetFileName();
+            tf.path = AbsoluteMediaPath(fn ? std::string(fn) : std::string(), project_dir);
+            tf.length = src->GetLength();
+            tf.size = FileSize(tf.path);
+        } else {
+            tf.type = "EMPTY";
+        }
+        if (t && t == active) f.active = k;
+        f.takes.push_back(tf);
+    }
+    return f;
+}
+
 }  // namespace
 
 // ---- Public -------------------------------------------------------------------------------------
@@ -685,6 +743,15 @@ bool PrepareFileSound(ReaProject* proj, const std::string& lib_uid, const std::s
     if (!n || n->type != SoundNodeType::Sound || n->sound.source.kind != SoundSourceKind::File) {
         if (why) *why = "Not a file sound";
         return false;
+    }
+    // 13-24 (C3): a Sound converted from a Project Library is still placed from its own project item,
+    // as before the conversion (an older build's imported library item keeps the file-first rule).
+    if (!n->sound.source.item_guid.empty()) {
+        MediaItem* own = FindItemByGuid(n->sound.source.item_guid);
+        if (own && !OldLibraryItem(own)) {
+            out->item_guid = n->sound.source.item_guid;
+            return true;
+        }
     }
     const std::string& name = n->sound.source.asset.name;
     RefreshCaches();
@@ -808,6 +875,50 @@ void NewUserLibrary()
     }
 }
 
+void ConvertToUserLibrary(const std::string& lib_uid)
+{
+    const SoundStore    store = GetSoundStore(nullptr);
+    const SoundLibrary* lib = FindLibrary(store, lib_uid);
+    if (!lib || lib->user) return;
+    if (ResourcePath().empty()) {
+        ShowToastNoUndo("No REAPER resource folder: a User Library cannot be saved");
+        return;
+    }
+    // REAPER read once, before the gesture: every Item Sound's item.
+    const std::string                    dir = ProjectFolder();
+    std::map<std::string, ItemFileFacts> facts;
+    for (const SoundNode& n : lib->nodes)
+        if (n.type == SoundNodeType::Sound && n.sound.source.kind == SoundSourceKind::Item && !n.sound.source.item_guid.empty() &&
+            !facts.count(n.sound.source.item_guid))
+            facts[n.sound.source.item_guid] = ReadItemFileFacts(n.sound.source.item_guid, dir);
+    ListUserFolder();
+    const std::string file = FreeFileName(store, lib_uid, lib->name);
+    ConvertReport     rep;
+    const char*       desc = "RAV: Convert to user library";
+    const bool        ok = ModifySoundStore(nullptr, desc, [&](SoundStore& s) {
+        return ConvertLibraryToUser(
+            s, lib_uid, file,
+            [&facts](const std::string& guid) {
+                const auto it = facts.find(guid);
+                return it == facts.end() ? ItemFileFacts{} : it->second;
+            },
+            &rep);
+    });
+    if (!ok) return;
+    std::string         toast = ConvertReportText(rep, file);
+    const SoundStore&   now = GetSoundStore(nullptr);
+    const SoundLibrary* l = FindLibrary(now, lib_uid);
+    if (l) {
+        // Written at once (as New); on failure the autosave tries again (first sight: file absent).
+        const std::string text = SerializeRavlib(RavlibOf(now, lib_uid, nullptr));
+        if (WriteText(FileOf(l->ravlib_path), text)) g.saved[SavedKey(nullptr, lib_uid)] = text;
+        else toast += ". Could not write it to " + UserFolderText() + " yet";
+        ListUserFolder();
+        SelectLibraryRow(lib_uid, LibraryRow{"", l->root});
+    }
+    ShowLibraryToast(toast, true, desc);
+}
+
 void RequestUserLibraryImport() { g.pick = PickKind::Import; }
 
 void RequestUserLibraryExport(const std::string& lib_uid)
@@ -929,6 +1040,8 @@ void InitLibraryUser(reaper_plugin_info_t* rec)
     f_parent = reinterpret_cast<GetParentTrackFn>(get("GetParentTrack"));
     f_create = reinterpret_cast<CreateFromFileFn>(get("PCM_Source_CreateFromFile"));
     f_main_hwnd = reinterpret_cast<GetMainHwndFn>(get("GetMainHwnd"));
+    f_count_takes = reinterpret_cast<CountTakesFn>(get("CountTakes"));
+    f_get_take = reinterpret_cast<GetMediaItemTakeFn>(get("GetMediaItemTake"));
     InitSoundTracks(get);  // 13-13: the Lands-in and Switch-named tracks
     ApplyHooks();  // the tree's missing marks, even before column 1 draws
     g_register = rec->Register;

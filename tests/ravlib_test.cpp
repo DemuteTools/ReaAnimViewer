@@ -443,8 +443,167 @@ static void TestFileName()
     CHECK(RavlibFileName("Steps", {"Steps.ravlib", "STEPS 2.ravlib"}) == "Steps 3.ravlib");
 }
 
+// ---- 13-24: Convert a Project Library to a User Library ----
+
+static SoundNode ItemSound(const std::string& uid, const std::string& parent, const std::string& guid, DetectMode mode)
+{
+    SoundNode n = Node(uid, parent, SoundNodeType::Sound, "snd " + uid);
+    n.sound.source.kind = SoundSourceKind::Item;
+    n.sound.source.item_guid = guid;
+    n.sound.mode = mode;
+    return n;
+}
+
+static ItemFileFacts OneTake(const std::string& type, const std::string& path, double len = 1.2, int64_t size = 4800)
+{
+    ItemFileFacts f;
+    f.found = true;
+    f.takes.push_back({type, path, len, size});
+    return f;
+}
+
+static std::string Why(const SoundData& d, const ItemFileFacts& f)
+{
+    SoundSource s;
+    s.item_guid = "untouched";
+    std::string why;
+    CHECK(!FileSourceFromItem(d, f, &s, &why));
+    CHECK(s.item_guid == "untouched");
+    return why;
+}
+
+static void TestFileSourceFromItem()
+{
+    // WAV item, Silence, frames with dB / fades: the file's identity, item_guid kept.
+    SoundNode n = ItemSound("s1", "", "{AAA}", DetectMode::Silence);
+    SoundSource s;
+    std::string why;
+    CHECK(FileSourceFromItem(n.sound, OneTake("WAVE", "C:/a/kick.wav"), &s, &why));
+    CHECK(s.kind == SoundSourceKind::File && s.item_guid == "{AAA}");
+    CHECK(s.asset.name == "kick.wav" && s.asset.last_path == "C:/a/kick.wav");
+    CHECK(s.asset.size == 4800 && s.asset.length > 1.19 && s.asset.length < 1.21);
+    // Unknown size / length stay unknown; a backslash path gives its name.
+    CHECK(FileSourceFromItem(n.sound, OneTake("FLAC", "C:\\a\\b\\x.flac", 0.0, -1), &s, &why));
+    CHECK(s.asset.name == "x.flac" && s.asset.size == -1 && s.asset.length < 0.0);
+    // Refusals.
+    CHECK(Why(n.sound, OneTake("MIDI", "C:/a/x.mid")) == "MIDI");
+    CHECK(Why(n.sound, OneTake("MIDIPOOL", "")) == "MIDI");
+    CHECK(Why(n.sound, OneTake("RPP_PROJECT", "C:/a/sub.rpp")) == "a subproject");
+    CHECK(Why(n.sound, OneTake("SECTION", "C:/a/kick.wav")) == "a reversed or section take");
+    CHECK(Why(n.sound, OneTake("EMPTY", "")) == "no media file");
+    CHECK(Why(n.sound, OneTake("WAVE", "")) == "no media file");
+    ItemFileFacts none;
+    CHECK(Why(n.sound, none) == "its item is not in the project");
+    ItemFileFacts pile = OneTake("WAVE", "C:/a/kick.wav");
+    pile.pile = true;
+    CHECK(Why(n.sound, pile) == "an item pile");
+    SoundNode noguid = ItemSound("s2", "", "", DetectMode::Whole);
+    CHECK(Why(noguid.sound, OneTake("WAVE", "C:/a/kick.wav")) == "its item is not in the project");
+    // Takes mode: one file for every take converts; different files do not.
+    SoundNode tk = ItemSound("s3", "", "{BBB}", DetectMode::Takes);
+    ItemFileFacts same = OneTake("WAVE", "C:/a/Take.wav");
+    same.takes.push_back({"WAVE", "c:\\A\\take.WAV", 1.2, 4800});
+    same.takes.push_back({"WAVE", "C:/a/Take.wav", 1.2, 4800});
+    CHECK(FileSourceFromItem(tk.sound, same, &s, &why) && s.asset.name == "Take.wav");
+    ItemFileFacts diff = OneTake("WAVE", "C:/a/a.wav");
+    diff.takes.push_back({"WAVE", "C:/a/b.wav", 1.0, 100});
+    CHECK(Why(tk.sound, diff) == "takes of different files");
+    ItemFileFacts midi_take = OneTake("WAVE", "C:/a/a.wav");
+    midi_take.takes.push_back({"MIDI", "", 1.0, -1});
+    CHECK(Why(tk.sound, midi_take) == "MIDI");
+    // Whole mode, two takes of different files: the active one.
+    SoundNode wh = ItemSound("s4", "", "{CCC}", DetectMode::Whole);
+    diff.active = 1;
+    CHECK(FileSourceFromItem(wh.sound, diff, &s, &why) && s.asset.name == "b.wav" && s.asset.size == 100);
+    // Relative path made absolute.
+    CHECK(AbsoluteMediaPath("Audio/x.wav", "C:/p") == "C:/p/Audio/x.wav");
+    CHECK(AbsoluteMediaPath("Audio/x.wav", "C:\\p\\") == "C:\\p\\Audio/x.wav");
+    CHECK(AbsoluteMediaPath("D:/x.wav", "C:/p") == "D:/x.wav");
+    CHECK(AbsoluteMediaPath("\\\\srv\\x.wav", "C:/p") == "\\\\srv\\x.wav");
+    CHECK(AbsoluteMediaPath("x.wav", "") == "x.wav");
+}
+
+static void TestConvertLibrary()
+{
+    SoundStore s = RichStore();
+    // A Project Library: root Random, 2 WAV Sounds (Silence with frames), 1 MIDI, 1 File already.
+    SoundLibrary lib;
+    lib.uid = "L000000000000009";
+    lib.name = "Foley";
+    lib.root = "n000000000000090";
+    lib.nodes.push_back(Node(lib.root, "", SoundNodeType::Random, "Foley"));
+    SoundNode a = ItemSound("n000000000000091", lib.root, "{G1}", DetectMode::Silence);
+    SoundFrame f1;
+    f1.start = 0.1;
+    f1.length = 0.3;
+    f1.db = -3.0;
+    f1.fade_in = 0.01;
+    f1.hand = true;
+    SoundFrame f2;
+    f2.start = 0.5;
+    f2.length = 0.2;
+    f2.on = false;
+    a.sound.frames = {f1, f2};
+    a.sound.edited = true;
+    a.sound.silence.threshold_db = -30.0;
+    a.sound.fade_out = 0.02;
+    a.volume_db = -6.0;
+    lib.nodes.push_back(a);
+    lib.nodes.push_back(ItemSound("n000000000000092", lib.root, "{G2}", DetectMode::Whole));
+    lib.nodes.push_back(ItemSound("n000000000000093", lib.root, "{G3}", DetectMode::Whole));
+    lib.nodes.push_back(FileSound("n000000000000094", lib.root, "done.wav"));
+    s.libraries.push_back(lib);
+    auto facts = [](const std::string& guid) {
+        if (guid == "{G1}") return OneTake("WAVE", "C:/a/one.wav");
+        if (guid == "{G2}") return OneTake("WAVE", "C:/a/two.wav");
+        return OneTake("MIDI", "");
+    };
+    ConvertReport r;
+    CHECK(ConvertLibraryToUser(s, lib.uid, "Foley.ravlib", facts, &r));
+    const SoundLibrary* out = FindLibrary(s, lib.uid);
+    CHECK(out && out->user && out->ravlib_path == "Foley.ravlib" && out->name == "Foley");
+    CHECK(r.sounds == 4 && r.converted == 2 && r.project_only.size() == 1);
+    CHECK(r.project_only.size() == 1 && r.project_only[0].uid == "n000000000000093" && r.project_only[0].why == "MIDI");
+    if (out) {
+        const SoundNode* na = FindNode(*out, "n000000000000091");
+        CHECK(na && na->sound.source.kind == SoundSourceKind::File && na->sound.source.item_guid == "{G1}");
+        CHECK(na && na->sound.source.asset.name == "one.wav");
+        // Everything else kept.
+        CHECK(na && na->sound.frames.size() == 2 && na->sound.frames[0].db == -3.0 && na->sound.frames[0].hand &&
+              na->sound.frames[0].fade_in == 0.01 && !na->sound.frames[1].on && na->sound.edited &&
+              na->sound.silence.threshold_db == -30.0 && na->sound.fade_out == 0.02 && na->volume_db == -6.0 &&
+              na->sound.mode == DetectMode::Silence && na->name == a.name);
+        const SoundNode* nm = FindNode(*out, "n000000000000093");
+        CHECK(nm && nm->sound.source.kind == SoundSourceKind::Item && nm->sound.source.item_guid == "{G3}");
+        const SoundNode* nf = FindNode(*out, "n000000000000094");
+        CHECK(nf && nf->sound.source.kind == SoundSourceKind::File && nf->sound.source.asset.name == "done.wav");
+        // The .ravlib form drops the converted Sounds' item GUIDs and counts the project-only one.
+        int              items = -1;
+        const SoundStore one = RavlibOf(s, lib.uid, &items);
+        CHECK(items == 1);
+        const SoundNode* xa = one.libraries.empty() ? nullptr : FindNode(one.libraries.front(), "n000000000000091");
+        CHECK(xa && xa->sound.source.item_guid.empty());
+    }
+    const std::string txt = ConvertReportText(r, "Foley.ravlib");
+    CHECK(txt == "Converted to a User Library (Foley.ravlib): 1 of 4 sounds are project-only and will be missing in "
+                 "other projects (snd n000000000000093: MIDI)");
+    ConvertReport clean;
+    CHECK(ConvertReportText(clean, "X.ravlib") == "Converted to a User Library (X.ravlib)");
+    ConvertReport many;
+    many.sounds = 5;
+    for (int i = 0; i < 5; ++i) many.project_only.push_back({"u", "S" + std::to_string(i), "MIDI"});
+    CHECK(ConvertReportText(many, "M.ravlib").find("(S0: MIDI, S1: MIDI, S2: MIDI, +2 more)") != std::string::npos);
+    // Already a User Library / unknown uid: false, store unchanged.
+    const std::string before = SerializeSoundStore(s);
+    CHECK(!ConvertLibraryToUser(s, lib.uid, "Other.ravlib", facts, &r));
+    CHECK(!ConvertLibraryToUser(s, "nope", "Other.ravlib", facts, &r));
+    CHECK(SerializeSoundStore(s) == before);
+}
+
 int main()
 {
+    TestFileSourceFromItem();
+    TestConvertLibrary();
     TestRoundTrip();
     TestNotRavlib();
     TestExportForm();

@@ -1203,6 +1203,17 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
         rx -= ImGui::CalcTextSize(t).x;
         dl->AddText(ImVec2(rx, cy - ImGui::GetTextLineHeight() * 0.5f), Faded(ui::kMissText, is_cut), t);
         rx -= gap;
+    } else if (lib.user && n && n->type == SoundNodeType::Sound && n->sound.source.kind == SoundSourceKind::Item &&
+               r.kind == TreeRowKind::Node) {
+        // 13-24 (C6): an item Sound in a User Library plays only in this project.
+        const char* t = "project";
+        const float tw = ui::SmallTagWidth(t);
+        rx -= tw;
+        ui::DrawSmallTag(dl, ImVec2(rx, std::floor(cy - ui::SmallTagHeight() * 0.5f)), t);
+        ImGui::SetCursorScreenPos(ImVec2(rx, p.y));
+        ImGui::Dummy(ImVec2(tw, rh));
+        ui::ItemTipText("Project only: an item of this project, missing in other projects");
+        rx -= gap;
     }
 
     // The name (or its inline rename field), 13 px.
@@ -1410,6 +1421,14 @@ void LibraryMenuItems(const SoundLibrary& lib, std::string* to_delete, bool rena
         ui::ItemTipText(miss > 0 ? "Pick the file of its first missing sound: the others are looked for near it"
                                  : "No missing sound");
         if (ImGui::MenuItem("Refresh the User Library folder")) RefreshUserLibraries();
+    } else {
+        // 13-24: reusable in other projects; its item Sounds become File Sounds of their files.
+        if (ImGui::MenuItem("Convert to User Library")) {
+            const std::string uid = lib.uid;
+            Later([uid] { ConvertToUserLibrary(uid); });
+        }
+        ui::ItemTipText("Save it as a User Library (.ravlib) for other projects. Sounds whose item plays a media file "
+                        "use that file; the others (MIDI, piles, ...) stay project-only");
     }
     // 13-15c: the body parts this library suggests itself for (its kit, stored in the library): a tick per part,
     // each toggle one undo point.

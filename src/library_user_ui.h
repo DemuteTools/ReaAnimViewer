@@ -42,6 +42,11 @@ std::vector<UserLibraryFile> UserFilesNotInProject();
 void AddUserLibraryFile(const std::string& file);
 // "+ User Library": a new library saved to its own file in the folder (one undo point).
 void NewUserLibrary();
+// 13-24: "Convert to User Library" on a Project Library: in place, its Item Sounds that play a plain
+// media file become File Sounds of it (still placed from their item in this project), the library
+// is saved at once to its own .ravlib (one undo point; the toast lists the project-only Sounds).
+// Call outside the ImGui frame's widgets (Later).
+void ConvertToUserLibrary(const std::string& lib_uid);
 // The pickers (run by this module's timer, never inside the frame).
 void RequestUserLibraryImport();
 void RequestUserLibraryExport(const std::string& lib_uid);

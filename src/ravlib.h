@@ -79,4 +79,49 @@ int FolderChildren(const std::vector<int>& depths, int fi, std::vector<int>* kid
 // "" -> "Library", ".ravlib" added, " 2", " 3"... when `taken` (file names) has it, ignoring case.
 std::string RavlibFileName(const std::string& lib_name, const std::vector<std::string>& taken);
 
+// ---- 13-24: Convert a Project Library to a User Library -------------------------------------------
+
+// One take of an Item Sound's item, as REAPER reports it (read by the caller).
+struct ItemTakeFile {
+    std::string type;          // its source's GetType() ("WAVE", "MIDI", "SECTION", "RPP_PROJECT", "EMPTY"...)
+    std::string path;          // its file, absolute ("" = none)
+    double      length = -1.0; // its source's length (s), -1 = unknown
+    int64_t     size = -1;     // the file's size (bytes), -1 = unknown
+};
+struct ItemFileFacts {
+    bool                      found = false;  // the item is in the project
+    bool                      pile = false;   // a folder item (NVK pile)
+    int                       active = 0;     // the active take's index
+    std::vector<ItemTakeFile> takes;
+};
+// The File source an Item Sound becomes (spec 13-24 C2, C4): kind File, the asset of the file its
+// item plays (Takes mode: every take, all one file; else the active take), item_guid kept. False
+// (`out` untouched) with `why` when it cannot: no item, a pile, MIDI, a subproject, a reversed /
+// section take, no file, takes of different files.
+bool FileSourceFromItem(const SoundData& data, const ItemFileFacts& facts, SoundSource* out, std::string* why);
+// What a conversion did: the library's Sounds, how many became File Sounds, and the ones left
+// project-only (node uid, name, reason) in library order.
+struct ProjectOnlySound {
+    std::string uid;
+    std::string name;
+    std::string why;
+};
+struct ConvertReport {
+    int                           sounds = 0;
+    int                           converted = 0;
+    std::vector<ProjectOnlySound> project_only;
+};
+// Turns a Project Library of `store` into a User Library in place: user = true, ravlib_path =
+// `file_name`, every Item Sound that FileSourceFromItem accepts (facts by its item GUID) becomes a
+// File Sound; nothing else changes. False (store unchanged) for an unknown uid or a User Library.
+bool ConvertLibraryToUser(SoundStore& store, const std::string& lib_uid, const std::string& file_name,
+                          const std::function<ItemFileFacts(const std::string& item_guid)>& facts,
+                          ConvertReport* report);
+// The conversion's toast: "Converted to a User Library (<file>)", then the project-only count and up
+// to 3 "name: reason" (C5).
+std::string ConvertReportText(const ConvertReport& r, const std::string& file_name);
+// `path` made absolute against `dir` when it is relative ("C:/p" + "Audio/x.wav"); an absolute one
+// (drive letter, leading slash / backslash) unchanged.
+std::string AbsoluteMediaPath(const std::string& path, const std::string& dir);
+
 }  // namespace rav

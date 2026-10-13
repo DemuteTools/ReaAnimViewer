@@ -207,12 +207,15 @@ std::vector<SoundFrame> DetectFrames(const EntryFacts& facts, DetectMode mode, c
                                      const PeakData* peaks)
 {
     std::vector<SoundFrame> out;
+    // The item's length in source time (13-24 review: a converted Sound reads its frames in file time).
+    const double rate = (std::isfinite(facts.playrate) && facts.playrate > 0.0) ? facts.playrate : 1.0;
+    const double src_len = facts.item_len * rate;
     switch (mode) {
     case DetectMode::Takes:
         for (const SoundFrame& t : facts.takes) {
             SoundFrame f;
             f.start = t.start;
-            f.length = t.length > 0.0 ? t.length : facts.item_len;
+            f.length = t.length > 0.0 ? t.length : src_len;
             out.push_back(f);
         }
         if (!out.empty()) return out;
@@ -237,7 +240,7 @@ std::vector<SoundFrame> DetectFrames(const EntryFacts& facts, DetectMode mode, c
         break;
     }
     const double ws = std::max(0.0, facts.start_offs);
-    const double we = std::min(facts.start_offs + facts.item_len, facts.source_len);
+    const double we = std::min(facts.start_offs + src_len, facts.source_len);
     if (we - ws <= kMinLen) return {};  // the item plays no part of a known source
     SoundFrame w;
     w.start = ws;

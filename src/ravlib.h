@@ -18,6 +18,7 @@
 #include <utility>
 #include <vector>
 
+#include "sound_entries.h"
 #include "sound_model.h"
 
 namespace rav {
@@ -93,6 +94,10 @@ struct ItemFileFacts {
     bool                      pile = false;   // a folder item (NVK pile)
     int                       active = 0;     // the active take's index
     std::vector<ItemTakeFile> takes;
+    // 13-24 review: what detection reads of the item (ReadItemMedia), so the conversion freezes the
+    // frames a File Sound needs (the item's trimmed portion, in source time) when `entry_ok`.
+    bool                      entry_ok = false;
+    EntryFacts                entry;
 };
 // The File source an Item Sound becomes (spec 13-24 C2, C4): kind File, the asset of the file its
 // item plays (Takes mode: every take, all one file; else the active take), item_guid kept. False
@@ -114,6 +119,10 @@ struct ConvertReport {
 // Turns a Project Library of `store` into a User Library in place: user = true, ravlib_path =
 // `file_name`, every Item Sound that FileSourceFromItem accepts (facts by its item GUID) becomes a
 // File Sound; nothing else changes. False (store unchanged) for an unknown uid or a User Library.
+// 13-24 review: a converted Sound's frames are frozen from its item's facts (`entry_ok`): empty frames
+// get the item's default detection (DefaultDetectMode without peaks, so Takes / TakeMarkers / the
+// item's portion, never the whole file); unedited Whole / Takes frames get the item's portion in
+// source time (its playrate).
 bool ConvertLibraryToUser(SoundStore& store, const std::string& lib_uid, const std::string& file_name,
                           const std::function<ItemFileFacts(const std::string& item_guid)>& facts,
                           ConvertReport* report);

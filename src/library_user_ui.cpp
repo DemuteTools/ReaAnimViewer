@@ -39,6 +39,7 @@
 #include "library_view_ui.h"
 #include "media_db.h"
 #include "ravlib.h"
+#include "sound_peaks.h"
 #include "sound_place.h"
 #include "sound_place_plan.h"
 #include "sound_populate.h"
@@ -717,6 +718,10 @@ ItemFileFacts ReadItemFileFacts(const std::string& guid, const std::string& proj
         if (t && t == active) f.active = k;
         f.takes.push_back(tf);
     }
+    // 13-24 review: detection's facts, so the conversion freezes the item's frames (C2).
+    SoundMedia m;
+    f.entry_ok = ReadItemMedia(item, &m);
+    if (f.entry_ok) f.entry = m.facts;
     return f;
 }
 
@@ -892,7 +897,15 @@ void ConvertToUserLibrary(const std::string& lib_uid)
             !facts.count(n.sound.source.item_guid))
             facts[n.sound.source.item_guid] = ReadItemFileFacts(n.sound.source.item_guid, dir);
     ListUserFolder();
-    const std::string file = FreeFileName(store, lib_uid, lib->name);
+    // 13-24 review: the file this library was already saved to (a conversion undone, then made
+    // again) is reused, never a second "<name> 2" file with the same uid.
+    std::string file;
+    for (const UserFile& f : g.files)
+        if (!f.uid.empty() && f.uid == lib_uid) {
+            file = f.file;
+            break;
+        }
+    if (file.empty()) file = FreeFileName(store, lib_uid, lib->name);
     ConvertReport     rep;
     const char*       desc = "RAV: Convert to user library";
     const bool        ok = ModifySoundStore(nullptr, desc, [&](SoundStore& s) {

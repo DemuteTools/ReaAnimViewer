@@ -24,6 +24,7 @@ struct EntryFacts {
     double                  source_len = 0.0;  // the active take's source length (s)
     double                  start_offs = 0.0;  // the active take's start in its source (s)
     double                  item_len = 0.0;    // the item's length (s)
+    double                  playrate = 1.0;    // the active take's D_PLAYRATE (item s x playrate = source s)
     std::vector<SoundFrame> takes;             // one per take of the item (start = its start offset)
     std::vector<Slice>      slices;            // the active take's slices (take markers or .rpp text)
 };
@@ -38,6 +39,7 @@ std::vector<Slice> SlicesFromTakeMarkers(const std::vector<TakeMarkerPos>& marke
 std::vector<SoundFrame> SplitOnSilence(const PeakData& peaks, const SilenceParams& params, double source_len);
 // The detected (pre-edit) frames of an entry for a mode. `peaks` may be null (no Silence mode then).
 // The Whole fallback is the item's stretch inside [0, source_len]; {} when that is 1 ms or less.
+// Lengths are in source seconds: the item's length times the playrate (13-24 review).
 std::vector<SoundFrame> DetectFrames(const EntryFacts& facts, DetectMode mode, const SilenceParams& silence,
                                      const PeakData* peaks);
 // Keeps the frames inside [0, source_len], drops empty ones, sorts by start.

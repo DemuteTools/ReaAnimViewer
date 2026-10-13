@@ -374,6 +374,30 @@ std::string TakeRefusal(const ItemTakeFile& t)
     return {};
 }
 
+// 13-24 review: the frames a converted Sound keeps, read in file time once it is a File Sound.
+void FreezeFrames(SoundData& d, const EntryFacts& entry)
+{
+    if (d.frames.empty()) {
+        // Never detected (added with several items, panel not opened): the item's own detection,
+        // not the file's (no peaks: Takes, TakeMarkers or the item's portion).
+        const DetectMode              mode = DefaultDetectMode(entry, false);
+        const std::vector<SoundFrame> frames = DetectFrames(entry, mode, d.silence, nullptr);
+        if (frames.empty()) return;
+        d.mode = mode;
+        d.frames = frames;
+        d.edited = false;
+        return;
+    }
+    if (d.edited || (d.mode != DetectMode::Whole && d.mode != DetectMode::Takes)) return;
+    // An item copy ignored these lengths; a file slice reads them: the item's length in source time.
+    const std::vector<SoundFrame> det = DetectFrames(entry, d.mode, d.silence, nullptr);
+    if (det.size() != d.frames.size()) return;
+    for (size_t i = 0; i < det.size(); ++i) {
+        d.frames[i].start = det[i].start;
+        d.frames[i].length = det[i].length;
+    }
+}
+
 }  // namespace
 
 bool FileSourceFromItem(const SoundData& data, const ItemFileFacts& facts, SoundSource* out, std::string* why)
@@ -431,6 +455,7 @@ bool ConvertLibraryToUser(SoundStore& store, const std::string& lib_uid, const s
         SoundSource src;
         std::string why;
         if (FileSourceFromItem(n.sound, f, &src, &why)) {
+            if (f.entry_ok) FreezeFrames(n.sound, f.entry);
             n.sound.source = src;
             ++r.converted;
         } else {

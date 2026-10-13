@@ -10,6 +10,7 @@
 #include <string>
 
 #include "media_db.h"
+#include "sound_place_plan.h"
 #include "sound_record.h"
 #include "sound_switch.h"
 
@@ -600,10 +601,118 @@ static void TestConvertLibrary()
     CHECK(SerializeSoundStore(s) == before);
 }
 
+// 13-24 review: frames frozen from the item (in source time) when a Sound becomes a File Sound.
+static ItemFileFacts WithEntry(ItemFileFacts f, double source_len, double start_offs, double item_len,
+                               double playrate = 1.0)
+{
+    f.entry_ok = true;
+    f.entry.source_len = source_len;
+    f.entry.start_offs = start_offs;
+    f.entry.item_len = item_len;
+    f.entry.playrate = playrate;
+    return f;
+}
+
+static bool Near(double a, double b) { return a > b - 1e-9 && a < b + 1e-9; }
+
+static void TestConvertFreezesFrames()
+{
+    SoundLibrary lib;
+    lib.uid = "L000000000000010";
+    lib.name = "Freeze";
+    lib.root = "n000000000000100";
+    lib.nodes.push_back(Node(lib.root, "", SoundNodeType::Random, "Freeze"));
+    // Never detected (several items added at once): the item's trimmed portion, not the whole file.
+    lib.nodes.push_back(ItemSound("n000000000000101", lib.root, "{T1}", DetectMode::Silence));
+    // Never detected, take markers: TakeMarkers (no peaks, never the file's silence).
+    lib.nodes.push_back(ItemSound("n000000000000102", lib.root, "{T2}", DetectMode::Silence));
+    // Never detected, 2 takes of one file: Takes.
+    lib.nodes.push_back(ItemSound("n000000000000103", lib.root, "{T3}", DetectMode::Silence));
+    // Detected Whole at playrate 2 (item length 0.8 s = 1.6 s of the file), not edited: 1.6 s.
+    SoundNode w = ItemSound("n000000000000104", lib.root, "{T4}", DetectMode::Whole);
+    SoundFrame wf;
+    wf.start = 12.0;
+    wf.length = 0.8;
+    wf.db = -2.0;
+    w.sound.frames = {wf};
+    lib.nodes.push_back(w);
+    // The same, edited by hand: kept.
+    SoundNode we = w;
+    we.uid = "n000000000000105";
+    we.sound.source.item_guid = "{T5}";
+    we.sound.edited = true;
+    lib.nodes.push_back(we);
+    // Takes at playrate 2, not edited: each take's length from the item.
+    SoundNode tk = ItemSound("n000000000000106", lib.root, "{T6}", DetectMode::Takes);
+    SoundFrame t1, t2;
+    t1.start = 0.0;
+    t1.length = 0.5;
+    t2.start = 2.0;
+    t2.length = 0.5;
+    tk.sound.frames = {t1, t2};
+    lib.nodes.push_back(tk);
+    // Never detected, item facts unread: left empty.
+    lib.nodes.push_back(ItemSound("n000000000000107", lib.root, "{T7}", DetectMode::Silence));
+    SoundStore s;
+    s.libraries.push_back(lib);
+    auto facts = [](const std::string& guid) {
+        const ItemFileFacts wav = OneTake("WAVE", "C:/a/long.wav", 60.0);
+        if (guid == "{T1}") return WithEntry(wav, 60.0, 12.0, 0.8);
+        if (guid == "{T2}") {
+            ItemFileFacts f = WithEntry(wav, 60.0, 0.0, 60.0);
+            f.entry.slices = {Slice{1.0, 2.0, "a"}, Slice{4.0, 1.5, "b"}};
+            return f;
+        }
+        if (guid == "{T3}" || guid == "{T6}") {
+            ItemFileFacts f = wav;
+            f.takes.push_back(f.takes[0]);
+            f = WithEntry(f, 60.0, 0.0, 0.5, guid == "{T6}" ? 2.0 : 1.0);
+            SoundFrame a, b;
+            a.start = 0.0;
+            b.start = 2.0;
+            f.entry.takes = {a, b};  // length 0: the item's length (in source time)
+            return f;
+        }
+        if (guid == "{T4}" || guid == "{T5}") return WithEntry(wav, 60.0, 12.0, 0.8, 2.0);
+        return wav;  // {T7}: no entry
+    };
+    ConvertReport r;
+    CHECK(ConvertLibraryToUser(s, lib.uid, "Freeze.ravlib", facts, &r));
+    CHECK(r.converted == 7 && r.project_only.empty());
+    const SoundLibrary* out = FindLibrary(s, lib.uid);
+    if (!out) return;
+    const SoundNode* a = FindNode(*out, "n000000000000101");
+    CHECK(a && a->sound.source.kind == SoundSourceKind::File && a->sound.mode == DetectMode::Whole &&
+          a->sound.frames.size() == 1 && Near(a->sound.frames[0].start, 12.0) && Near(a->sound.frames[0].length, 0.8) &&
+          !a->sound.edited);
+    // In another project the placed slice is that portion, not the 60 s file.
+    if (a) {
+        const SliceApply sl = FileSliceFor(a->sound, 0);
+        CHECK(sl.set && Near(sl.start_offs, 12.0) && Near(sl.length, 0.8));
+    }
+    const SoundNode* b = FindNode(*out, "n000000000000102");
+    CHECK(b && b->sound.mode == DetectMode::TakeMarkers && b->sound.frames.size() == 2 &&
+          Near(b->sound.frames[1].start, 4.0) && Near(b->sound.frames[1].length, 1.5));
+    const SoundNode* c = FindNode(*out, "n000000000000103");
+    CHECK(c && c->sound.mode == DetectMode::Takes && c->sound.frames.size() == 2 &&
+          Near(c->sound.frames[1].start, 2.0) && Near(c->sound.frames[1].length, 0.5));
+    const SoundNode* d = FindNode(*out, "n000000000000104");
+    CHECK(d && d->sound.mode == DetectMode::Whole && d->sound.frames.size() == 1 &&
+          Near(d->sound.frames[0].start, 12.0) && Near(d->sound.frames[0].length, 1.6) && d->sound.frames[0].db == -2.0);
+    const SoundNode* e = FindNode(*out, "n000000000000105");
+    CHECK(e && e->sound.frames.size() == 1 && Near(e->sound.frames[0].length, 0.8));
+    const SoundNode* t = FindNode(*out, "n000000000000106");
+    CHECK(t && t->sound.frames.size() == 2 && Near(t->sound.frames[0].length, 1.0) && Near(t->sound.frames[1].length, 1.0));
+    const SoundNode* g = FindNode(*out, "n000000000000107");
+    CHECK(g && g->sound.source.kind == SoundSourceKind::File && g->sound.frames.empty() &&
+          g->sound.mode == DetectMode::Silence);
+}
+
 int main()
 {
     TestFileSourceFromItem();
     TestConvertLibrary();
+    TestConvertFreezesFrames();
     TestRoundTrip();
     TestNotRavlib();
     TestExportForm();

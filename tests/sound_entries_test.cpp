@@ -77,6 +77,32 @@ void TestWholeClamp()
     CHECK(DetectFrames(e, DetectMode::Whole, SilenceParams{}, nullptr).empty());
 }
 
+// 13-24 review: the item's length is read in source time (playrate), so a File Sound slices it right.
+void TestPlayrate()
+{
+    EntryFacts e;
+    e.source_len = 60;
+    e.start_offs = 12;
+    e.item_len = 0.8;
+    e.playrate = 2;
+    std::vector<SoundFrame> fr = DetectFrames(e, DetectMode::Whole, SilenceParams{}, nullptr);
+    CHECK(fr.size() == 1 && Near(fr[0].start, 12) && Near(fr[0].length, 1.6));
+    e.start_offs = 59;  // clamped to the source end
+    fr = DetectFrames(e, DetectMode::Whole, SilenceParams{}, nullptr);
+    CHECK(fr.size() == 1 && Near(fr[0].length, 1));
+    e.start_offs = 0;
+    e.takes = {F(0, 0), F(3, 0.4)};  // 0 = the item's length in source time; a set length kept
+    fr = DetectFrames(e, DetectMode::Takes, SilenceParams{}, nullptr);
+    CHECK(fr.size() == 2 && Near(fr[0].length, 1.6) && Near(fr[1].length, 0.4));
+    e.playrate = 0;  // unreadable: 1
+    fr = DetectFrames(e, DetectMode::Takes, SilenceParams{}, nullptr);
+    CHECK(fr.size() == 2 && Near(fr[0].length, 0.8));
+    e.playrate = 0.5;
+    e.takes.clear();
+    fr = DetectFrames(e, DetectMode::Whole, SilenceParams{}, nullptr);
+    CHECK(fr.size() == 1 && Near(fr[0].length, 0.4));
+}
+
 void TestTakeMarkers()
 {
     std::vector<TakeMarkerPos> m = {{0, "V1"}, {0, "R1"}, {1, "V2"}, {2, "V3"}, {3, "V4"}};
@@ -377,6 +403,7 @@ int main()
 {
     TestTakes();
     TestWholeClamp();
+    TestPlayrate();
     TestTakeMarkers();
     TestRpp();
     TestSilence();

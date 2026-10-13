@@ -253,7 +253,12 @@ bool ReadItemMedia(MediaItem* item, SoundMedia* out)
         if (n >= 2) {
             SoundFrame fr;
             fr.start = t ? GetMediaItemTakeInfo_Value(t, "D_STARTOFFS") : 0.0;
-            fr.length = 0.0;  // the item's length (DetectFrames)
+            // 13-24 review: the item's length in this take's source time (its playrate), inside its
+            // source; 0 = the item's length (DetectFrames).
+            const double rate = t ? GetMediaItemTakeInfo_Value(t, "D_PLAYRATE") : 1.0;
+            double       fl = out->facts.item_len * ((std::isfinite(rate) && rate > 0.0) ? rate : 1.0);
+            if (len > 0.0) fl = std::min(fl, len - fr.start);
+            fr.length = fl > 0.0 ? fl : 0.0;
             out->facts.takes.push_back(fr);
         }
     }
@@ -262,6 +267,8 @@ bool ReadItemMedia(MediaItem* item, SoundMedia* out)
     out->source_len = out->take_lens[static_cast<size_t>(out->active_take)];
     out->facts.source_len = out->source_len;
     out->facts.start_offs = GetMediaItemTakeInfo_Value(active, "D_STARTOFFS");
+    out->facts.playrate = GetMediaItemTakeInfo_Value(active, "D_PLAYRATE");
+    if (!std::isfinite(out->facts.playrate) || !(out->facts.playrate > 0.0)) out->facts.playrate = 1.0;
     // Slices: the take markers, else the chunk's text (spike 13-0 A).
     if (f_num_tm && f_get_tm) {
         std::vector<TakeMarkerPos> marks;

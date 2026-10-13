@@ -12,7 +12,7 @@
 // SoundCharacter, SoundStore::project / characters, SoundLibrary::kit, RuleSounds::none.
 // 13-20/23/25 (spec 13-20-23-25 D4): append-only extension (parts, zones, sync points, roles):
 // SoundFrame cuts / syncs, SoundData divide / roles / sync / zones, SwitchValue::roles,
-// SoundNode::layer_part, SoundDraw::part, PlacedTag::pt.
+// SoundDraw::part, PlacedTag::pt. 13-31: SoundNode::layer_roles / layer_keep_offset.
 //
 // Every `kept` member holds text this version did not understand, written back as read:
 // unknown fields ("key=value" tokens) of the object's own line, and `kept_lines` the unknown
@@ -176,12 +176,12 @@ struct SoundNode {
     SoundData                sound;
     std::vector<std::string> kept;
     std::vector<std::string> kept_lines;
-    // 13-23 (A9): a Blend layer's part: "" = by event, "*" = the whole variation, else a value uid.
-    std::string              layer_part;
+    // 13-31: a Blend layer's role keys (EventRoleKey form): on an event with a role, a Blend where some
+    // child has a role plays only the children holding it; "" list = combined events only.
+    std::vector<std::string> layer_roles;
+    // 13-31: keep offset_ms on events with a role (off: the offset applies on combined events only).
+    bool                     layer_keep_offset = false;
 };
-
-// 13-23: what "whole" reads as in SoundNode::layer_part.
-constexpr const char kLayerPartWhole[] = "*";
 
 struct SwitchValue {
     std::string              uid;

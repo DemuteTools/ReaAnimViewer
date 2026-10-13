@@ -637,6 +637,8 @@ static void TestUnwrap()
     rr.lands_in = "Box";
     SoundNode r1 = Node("r1", "rr", SoundNodeType::Sound, "R1");
     r1.offset_ms = 99.0;
+    rr.layer_roles = {"toe"};  // 13-31: the layer's roles go to the node taking its place
+    rr.layer_keep_offset = true;
     bl.nodes = {Node("mb", "", SoundNodeType::Blend, "Top"), Node("a", "mb", SoundNodeType::Sound, "A"), inner, rr,
                 Node("z", "mb", SoundNodeType::Sound, "Z"), b1, r1};
     b.libraries.push_back(bl);
@@ -648,6 +650,16 @@ static void TestUnwrap()
     std::vector<std::string> order;
     for (const SoundNode* k : ChildrenOf(*lb, "mb")) order.push_back(k->uid);
     CHECK((order == std::vector<std::string>{"a", "b1", "r1", "z"}));
+    CHECK(FindNode(*lb, "r1")->layer_roles == std::vector<std::string>{"toe"} && FindNode(*lb, "r1")->layer_keep_offset);
+    CHECK(FindNode(*lb, "b1")->layer_roles.empty());
+    // 13-31: Wrap moves a Blend layer's roles onto the wrapper.
+    std::vector<std::string> wmade;
+    CHECK(WrapRows(b, "B", {RowOfNode(*FindLibrary(b, "B"), "r1")}, SoundNodeType::Random, std::string(), &wmade) &&
+          wmade.size() == 1);
+    lb = FindLibrary(b, "B");
+    const SoundNode* wr = FindNode(*lb, wmade[0]);
+    CHECK(wr && wr->layer_roles == std::vector<std::string>{"toe"} && wr->layer_keep_offset);
+    CHECK(FindNode(*lb, "r1")->layer_roles.empty() && !FindNode(*lb, "r1")->layer_keep_offset);
 }
 
 int main()

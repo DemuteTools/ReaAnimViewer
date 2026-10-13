@@ -132,7 +132,9 @@ struct FollowInput {
     bool                         appeared = false;  // first seen after the project was scanned
     bool                         keep_draw = false;
     uint64_t                     copy_seed = 0;
-    std::vector<std::pair<std::string, double>> blend_ms;  // node uid -> its Blend offset (ms), BlendOffsetMs
+    // node uid -> its Blend offset (ms), BlendOffsetMs; 13-31: "<rid>\x1f<node uid>" -> the offset on
+    // that rule's events (its role), read first.
+    std::vector<std::pair<std::string, double>> blend_ms;
     // Fix C 2026-10-12.
     std::vector<std::string> disabled_rids;  // rules of the item that are disabled: their sounds muted, kept
     double owner_pos = 0.0;                  // the animation item's position

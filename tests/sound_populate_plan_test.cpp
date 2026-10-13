@@ -300,29 +300,20 @@ static void TestParts()
         CHECK(r.res.sounds[0].part_value.empty() && r.res.sounds[0].variation >= 0 && r.ed.no_part.empty());
         CHECK(PieceApplyFor(n.sound, 0, "").empty());
     }
-    // A9: a Blend layer's own part wins over the event's role; "*" = the whole variation; a value that
-    // is not one of its divide values reads as the whole.
+    // 13-31 (d): a Blend picks its layers by the event's role, then each divided layer its own part.
     {
         SoundLibrary bl;
         bl.uid = "L";
         bl.root = "b";
         bl.nodes.push_back(Node("b", "", SoundNodeType::Blend));
         SoundNode a = DividedSteps("a", "b");
-        a.layer_part = "vf";
+        a.layer_roles = {"heel"};
         SoundNode c = DividedSteps("c", "b");
-        c.layer_part = kLayerPartWhole;
-        SoundNode e = DividedSteps("e", "b");
-        e.layer_part = "nope";
-        SoundNode f = DividedSteps("f", "b");  // by event
-        bl.nodes.insert(bl.nodes.end(), {a, c, e, f});
+        c.layer_roles = {"toe"};
+        SoundNode e = DividedSteps("e", "b");  // no role: combined events only
+        bl.nodes.insert(bl.nodes.end(), {a, c, e});
         Resolved r = ResolveFor(st, bl, Auto(AutoKind::Heel));
-        CHECK(r.res.sounds.size() == 4);
-        CHECK(r.res.sounds[0].part_value == "vf" && r.res.sounds[1].part_value.empty() &&
-              r.res.sounds[2].part_value.empty() && r.res.sounds[3].part_value == "vb");
-        // Outside a Blend, a stale layer part is ignored: the event's role decides.
-        SoundNode solo = DividedSteps("s", "");
-        solo.layer_part = "vf";
-        CHECK(ResolveFor(st, OneSound(solo), Auto(AutoKind::Heel)).res.sounds[0].part_value == "vb");
+        CHECK(r.res.sounds.size() == 1 && r.res.sounds[0].node == "a" && r.res.sounds[0].part_value == "vb");
     }
     // A combined Sound on a heel event: the whole variation (A3); a value outside divide_values too.
     {
@@ -535,6 +526,35 @@ int main()
         CHECK(res.sounds.size() == 2);
         for (const ResolvedSound& s : res.sounds) CHECK(std::fabs(BlendOffsetMs(bl, s.node) - s.offset_ms) < 1e-9);
         CHECK(std::fabs(BlendOffsetMs(bl, "x") - 15.0) < 1e-9 && std::fabs(BlendOffsetMs(bl, "y") - 20.0) < 1e-9);
+    }
+    // 13-31: on an event with a role, a role-using Blend's layer offset is dropped (unless kept), as the resolver.
+    {
+        SoundLibrary bl;
+        bl.uid = "B";
+        bl.root = "b";
+        SoundNode b = Node("b", "", SoundNodeType::Blend);
+        SoundNode h = Leaf("h", "b", 0);
+        h.layer_roles = {"heel"};
+        SoundNode t = Leaf("t", "b", 0);
+        t.offset_ms = 90.0;
+        t.layer_roles = {"toe"};
+        bl.nodes = {b, h, t};
+        SoundStore sb;
+        sb.libraries.push_back(bl);
+        PopulateDrawState ds;
+        ds.lib = &bl;
+        EventDraw ev;
+        ev.rid = "aaaa";
+        for (const char* role : {"", "toe"}) {
+            ValueLayers l;
+            l.role = role;
+            const Resolution res = ResolveEvent(sb, bl, l, MakeDrawHooks(ds, ev, nullptr));
+            CHECK(!res.sounds.empty());
+            for (const ResolvedSound& s : res.sounds) CHECK(std::fabs(BlendOffsetMs(bl, s.node, role) - s.offset_ms) < 1e-9);
+        }
+        CHECK(std::fabs(BlendOffsetMs(bl, "t", "toe")) < 1e-9 && std::fabs(BlendOffsetMs(bl, "t") - 90.0) < 1e-9);
+        bl.nodes[2].layer_keep_offset = true;
+        CHECK(std::fabs(BlendOffsetMs(bl, "t", "toe") - 90.0) < 1e-9);
     }
 
     // ---- P9: event slots ----

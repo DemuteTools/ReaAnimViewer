@@ -748,8 +748,9 @@ static SoundStore DividedStore()
     d.frames[0].syncs = {0.01, 0.21};
     d.frames[0].hand_syncs = {0.21};
     d.frames[0].part_db = {{"v000000000000091", 2.5}, {"v000000000000092", -1.5}};  // 13-28
-    s.libraries[0].nodes[5].layer_part = "v000000000000092";  // metal2.wav, a Blend layer
-    s.libraries[0].nodes[4].layer_part = kLayerPartWhole;
+    s.libraries[0].nodes[5].layer_roles = {"toe", "toe_end"};  // metal2.wav, a Blend layer (13-31)
+    s.libraries[0].nodes[5].layer_keep_offset = true;
+    s.libraries[0].nodes[4].layer_roles = {"heel"};
     return s;
 }
 
@@ -761,6 +762,7 @@ static void TestDividedTravels()
     CHECK(text.rfind("RAVLIB 2\n", 0) == 0);
     CHECK(text.find("value uid=v000000000000092 name=Front roles=toe,toe_end\n") != std::string::npos);
     CHECK(text.find(" pdb.v000000000000091=2.5 pdb.v000000000000092=-1.5\n") != std::string::npos);
+    CHECK(text.find(" roles=toe,toe_end koff=1") != std::string::npos);  // 13-31
     SoundStore back;
     CHECK(ParseRavlib(text, &back) && SerializeRavlib(back) == text);
 
@@ -793,7 +795,8 @@ static void TestDividedTravels()
         CHECK(d.lanes_split && d.sync_mode == SyncMode::Peak && d.sync_offset_ms == -5.0 && d.cut_fade == 0.003);
         CHECK(d.frames[0].cuts == std::vector<double>{0.2} && d.frames[0].cuts_hand);
         CHECK(d.frames[0].syncs == (std::vector<double>{0.01, 0.21}) && d.frames[0].hand_syncs == std::vector<double>{0.21});
-        CHECK(lay->layer_part == g->values[1].uid && whole->layer_part == kLayerPartWhole);
+        CHECK(lay->layer_roles == (std::vector<std::string>{"toe", "toe_end"}) && lay->layer_keep_offset);
+        CHECK(whole->layer_roles == std::vector<std::string>{"heel"} && !whole->layer_keep_offset);
         // 13-28: the per-part gains follow their values; a frame without writes none.
         CHECK(d.frames[0].part_db.size() == 2 && d.frames[0].part_db.at(g->values[0].uid) == 2.5 &&
               d.frames[0].part_db.at(g->values[1].uid) == -1.5);

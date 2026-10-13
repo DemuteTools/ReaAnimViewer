@@ -157,6 +157,7 @@ struct PanelState {
     double                menu_at = 0.0;
     int                   menu_frame = -1, menu_kind = 0;
     bool                  roles_more = false;
+    bool                  layer_roles_more = false;  // 13-31: the "plays on" list's own "More roles"
 };
 PanelState P;
 
@@ -187,6 +188,7 @@ void OpenEdit(const std::string& lib_uid, const std::string& uid)
     P.zone_start = P.zone_len = 0.0;
     P.solo = -1;
     P.roles_more = false;
+    P.layer_roles_more = false;
     CancelNormJob();          // 13-28: switching Sound cancels a measuring
     P.presets_stale = true;   // 13-28: another project may have changed them
     P.pname_kind = 0;
@@ -2589,9 +2591,6 @@ void PartsControls(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
                 P.solo = -1;
                 EditNode("Divide by", lib_uid, uid, [gid, vals, path](SoundNode& x) {
                     if (!SetDivide(x.sound, gid, vals)) return false;
-                    if (!x.layer_part.empty() && x.layer_part != kLayerPartWhole &&
-                        std::find(vals.begin(), vals.end(), x.layer_part) == vals.end())
-                        x.layer_part.clear();  // a Blend layer's part no longer a value: back to By event
                     RefreshWith(x.sound, path);
                     return true;
                 }, toast);
@@ -3832,48 +3831,94 @@ bool VolumeNumber(const char* id, const std::string& key, double stored, double*
     return commit;
 }
 
-// 13-23 (A9): a Blend layer's part (the Part column): By event (default: the part the event's role asks
-// for), Whole, or one "<V> part" of the layer's divide values. Greyed with a tip when the layer is not a
-// divided Sound. One undo point.
-void BlendLayerPart(const SoundStore& store, const SoundLibrary& lib, const SoundNode& k, float w)
+// 13-31: a Blend layer's roles (the "plays on" column, any layer type): a chip whose preview is the role
+// labels joined ("toe, toe end"), or a muted "Combined only" while it has none; its list = checkable
+// role keys (the common ones, "More roles", the custom ones), then "Keep offset on separate events"
+// (greyed while no role). The list stays open; one undo point per click.
+void BlendLayerRoles(const SoundLibrary& lib, const SoundNode& k, float w)
 {
-    const bool  can = k.type == SoundNodeType::Sound && IsDivided(k.sound) && k.sound.mode != DetectMode::Takes;
-    std::string preview = "By event";
-    if (can && !k.layer_part.empty())
-        preview = k.layer_part == kLayerPartWhole || PartIndex(k.sound, k.layer_part) < 0
-                      ? std::string("Whole")
-                      : ValueName(store, k.sound.divide_group, k.layer_part) + " part";
-    if (ui::BeginChipCombo("##part", preview.c_str(), w, !can)) {
-        bool        picked = false;
-        std::string pick, toast;
-        if (ImGui::Selectable("By event", k.layer_part.empty()) && !k.layer_part.empty()) {
-            picked = true;
-            toast = "Layer follows the event (by its role)";
-        }
-        if (ImGui::Selectable("Whole", preview == "Whole") && k.layer_part != kLayerPartWhole) {
-            picked = true;
-            pick = kLayerPartWhole;
-            toast = "Layer always plays the whole variation";
-        }
-        for (const std::string& v : k.sound.divide_values) {
-            const std::string nm = ValueName(store, k.sound.divide_group, v);
-            if (ImGui::Selectable((nm + " part##" + v).c_str(), k.layer_part == v) && k.layer_part != v) {
-                picked = true;
-                pick = v;
-                toast = "Layer always plays the " + nm + " part (offset kept)";
+    // 13-31 (Q1): a Blend where no layer has a role plays every layer on every event.
+    const SoundNode* parent = k.parent.empty() ? nullptr : FindNode(lib, k.parent);
+    const bool       uses_roles = parent && BlendUsesRoles(lib, *parent);
+    std::string joined;
+    for (const std::string& r : k.layer_roles) joined += (joined.empty() ? "" : ", ") + RoleKeyLabel(r);
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const float  right = p0.x + w;
+    const bool   open = ui::BeginChipCombo("##roles", joined.c_str(), w, false, 0, right);
+    if (joined.empty()) {  // the muted preview (the chip draws its own in kText)
+        const float h = ImGui::GetFrameHeight();
+        ui::EllipsisText(dl, ImVec2(p0.x + ImGui::GetStyle().FramePadding.x, p0.y + (h - ImGui::GetTextLineHeight()) * 0.5f),
+                         right - ui::Dp(18.0f), ui::kMuted, uses_roles ? "Combined only" : "Every event");
+    }
+    if (open) {
+        const std::vector<std::string>& all = LibraryRoleKeys();
+        const size_t                    nb = std::min(LibraryBuiltinRoleCount(), all.size());
+        static const char* const        kCommon[] = {"heel", "toe", "toe_end", "hand", "knee"};
+        std::vector<std::string>        keys;
+        if (P.layer_roles_more) keys.assign(all.begin(), all.begin() + static_cast<long>(nb));
+        else keys.assign(std::begin(kCommon), std::end(kCommon));
+        const std::vector<std::string> custom(all.begin() + static_cast<long>(nb), all.end());
+        for (const std::string& r : k.layer_roles)  // a role held outside the list stays visible (and removable)
+            if (std::find(keys.begin(), keys.end(), r) == keys.end() && std::find(custom.begin(), custom.end(), r) == custom.end())
+                keys.push_back(r);
+        std::string toggle;
+        bool        koff = false;
+        ImGui::PushItemFlag(ImGuiItemFlags_AutoClosePopups, false);
+        ui::MenuCaption("Plays on");
+        auto rows = [&](const std::vector<std::string>& list) {
+            for (const std::string& key : list) {
+                const bool on = std::find(k.layer_roles.begin(), k.layer_roles.end(), key) != k.layer_roles.end();
+                if (ui::MenuEntry((RoleKeyLabel(key) + "##" + key).c_str(), nullptr, on)) toggle = key;
             }
+        };
+        rows(keys);
+        if (!custom.empty()) {
+            ui::MenuSeparator();
+            ui::MenuCaption("Custom");
+            rows(custom);
         }
+        if (ui::MenuEntry(P.layer_roles_more ? "Fewer roles" : "More roles\xE2\x80\xA6")) P.layer_roles_more = !P.layer_roles_more;
+        ui::MenuSeparator();
+        if (ui::MenuEntry("Keep offset on separate events", nullptr, k.layer_keep_offset, !k.layer_roles.empty())) koff = true;
+        if (k.layer_roles.empty()) ui::ItemTipText("Give this layer a role first");
+        else ui::ItemTipText("On an event with a role this layer keeps its offset (off: offset 0)");
+        ImGui::PopItemFlag();
         ui::EndChipCombo();
-        if (picked)
-            EditNode("Layer part", lib.uid, k.uid, [pick](SoundNode& x) {
-                if (x.layer_part == pick) return false;
-                x.layer_part = pick;
+        if (!toggle.empty()) {
+            std::vector<std::string> roles = k.layer_roles;
+            const auto               it = std::find(roles.begin(), roles.end(), toggle);
+            if (it != roles.end()) roles.erase(it);
+            else roles.push_back(toggle);
+            std::string list;
+            for (const std::string& r : roles) list += (list.empty() ? "" : ", ") + RoleKeyLabel(r);
+            bool sibling_roles = false;  // another layer of this Blend still has a role
+            if (parent)
+                for (const SoundNode* c : ChildrenOf(lib, parent->uid))
+                    if (c->uid != k.uid && !c->layer_roles.empty()) sibling_roles = true;
+            const std::string toast = !roles.empty()   ? "Layer plays on: " + list + " (and combined events)"
+                                      : sibling_roles ? std::string("Layer plays on combined events only")
+                                                      : std::string("No layer has a role now: every layer plays on every event");
+            EditNode("Layer roles", lib.uid, k.uid, [roles](SoundNode& x) {
+                if (x.layer_roles == roles) return false;
+                x.layer_roles = roles;
                 return true;
             }, toast);
+        } else if (koff) {
+            const bool v = !k.layer_keep_offset;
+            EditNode("Layer keep offset", lib.uid, k.uid, [v](SoundNode& x) {
+                if (x.layer_keep_offset == v) return false;
+                x.layer_keep_offset = v;
+                return true;
+            }, v ? "Layer keeps its offset on separate events" : "Layer offset applies on combined events only");
+        }
     }
-    ui::ItemTipText(can ? "Part played by this layer. By event: the part the event's role asks for (default); Whole or one part: "
-                          "always that, its offset kept"
-                        : "Divide this sound by a Switch Group to pick a part");
+    if (open) return;
+    if (k.layer_roles.empty() && !uses_roles)
+        ui::ItemTipText("No layer of this Blend has a role: every layer plays on every event, offsets kept. Give layers "
+                        "a role to split it by event");
+    else if (k.layer_roles.empty()) ui::ItemTipText("Combined only: silent on separate events (heel, toe...) until given a role");
+    else ui::ItemTipText(("Plays on combined events and on: " + joined).c_str());
 }
 
 // 13-7b (audit C4.8): the Blend layer view (.blendview) -- a dark box (r7, pad 6); a header row
@@ -3902,7 +3947,7 @@ void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const Sound
     const float  box_x1 = std::max(box0.x + ui::Dp(60.0f), ui::LineRight());
     const float  x0 = box0.x + pad;
     const float  fh = ImGui::GetFrameHeight();
-    const float  ms_w = ui::Dp(52.0f), db_w = ui::Dp(46.0f), part_w = ui::Dp(92.0f);  // 13-23: the Part column
+    const float  ms_w = ui::Dp(52.0f), db_w = ui::Dp(46.0f), part_w = ui::Dp(92.0f);  // 13-31: the "plays on" column
     const float  ms_full = ui::NumberFieldWidth(ms_w, "ms"), db_full = ui::NumberFieldWidth(db_w, "dB");
     const float  fields_w = ms_full + gap + db_full + gap + part_w;
     const float  head_h = ui::Dp(16.0f);
@@ -3943,7 +3988,7 @@ void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const Sound
         if (!stacked) {
             ui::AddTextIn(dl, cf, ImVec2(x1 - fields_w, cy), ui::kFaint, "offset");
             ui::AddTextIn(dl, cf, ImVec2(x1 - fields_w + ms_full + gap, cy), ui::kFaint, "volume");
-            ui::AddTextIn(dl, cf, ImVec2(x1 - part_w, cy), ui::kFaint, "part");
+            ui::AddTextIn(dl, cf, ImVec2(x1 - part_w, cy), ui::kFaint, "plays on");
         }
         dl->PushClipRect(ImVec2(lane_x0 - ui::Dp(20.0f), y), ImVec2(lane_x0 + lane_w + ui::Dp(20.0f), y + head_h), true);
         for (double t = 0.0; t <= total_ms + 1e-6; t += step) {
@@ -4057,6 +4102,8 @@ void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const Sound
             break;
         default: break;
         }
+        if (!k->layer_roles.empty() && !k->layer_keep_offset)  // 13-31 (a)
+            ui::ItemTipText("Offset \xC2\xB7 applies on combined events only (0 on events with a role)");
         if (P.changed) {
             ImGui::PopID();
             break;
@@ -4073,7 +4120,7 @@ void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const Sound
             break;
         }
         ImGui::SetCursorScreenPos(ImVec2((stacked ? lane_x0 : x1 - fields_w) + ms_full + gap + db_full + gap, fy));
-        BlendLayerPart(store, lib, *k, part_w);
+        BlendLayerRoles(lib, *k, part_w);
         if (P.changed) {
             ImGui::PopID();
             break;

@@ -557,6 +557,23 @@ int main()
         }
         CheckIdempotent(in, p);
 
+        // 13-31: the rule's own entry wins over the node's: on a role event the layer's offset was dropped
+        // (placed at pass + 0) although the node's combined offset is 600 ms; each sound keeps its pass.
+        {
+            FollowInput r0 = in;
+            r0.blend_ms = {{"n1", 600.0}, {std::string("a") + '\x1f' + "n1", 0.0}};
+            int i = 0;
+            for (const FollowEvent& e : ev)
+                for (const FollowPass& fp : e.passes) r0.items[static_cast<size_t>(i++)].pos = fp.project_t;
+            const FollowPlan q = PlanItemFollow(r0);
+            CHECK(Count(q, FollowKind::Move) == 0 && Count(q, FollowKind::Mute) == 0 && Count(q, FollowKind::Remove) == 0);
+            CHECK(Count(q, FollowKind::Store) == 6);
+            for (const FollowAction& a : q.actions) {
+                if (a.kind != FollowKind::Store) continue;
+                CHECK(a.store.has_pass && a.store.pass == std::atoi(a.item_guid.c_str() + 2) % 3);
+            }
+        }
+
         // The old source (the record's last Commit) had no event for the detection: it removed.
         FollowInput old_in = in;
         old_in.events = CommittedFollowEvents(r, m);

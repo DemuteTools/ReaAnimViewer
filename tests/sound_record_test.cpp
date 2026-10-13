@@ -59,7 +59,7 @@ bool SameNode(const SoundNode& a, const SoundNode& b)
         a.volume_db != b.volume_db || a.offset_ms != b.offset_ms || a.avoid_repeat != b.avoid_repeat ||
         a.group_uid != b.group_uid || a.default_value != b.default_value || a.preview_value != b.preview_value ||
         a.unassigned != b.unassigned || a.lands_in != b.lands_in || a.kept != b.kept || a.kept_lines != b.kept_lines ||
-        a.layer_part != b.layer_part)
+        a.layer_roles != b.layer_roles || a.layer_keep_offset != b.layer_keep_offset)
         return false;
     if (a.cases.size() != b.cases.size()) return false;
     for (size_t i = 0; i < a.cases.size(); ++i)
@@ -184,7 +184,8 @@ SoundStore BigStore()
     file.sound.linked_copies = false;
     file.sound.mode = DetectMode::Takes;
     file.lands_in = "Foley/Steps";
-    file.layer_part = kLayerPartWhole;
+    file.layer_roles = {"heel", "toe_end"};  // 13-31
+    file.layer_keep_offset = true;
     steps.nodes = {root, rnd, blend, snd, file};
 
     SoundLibrary user;
@@ -509,10 +510,19 @@ int main()
         CHECK(t.find("hsync=0.13\nframe start=0.5") != std::string::npos);
         CHECK(t.find("cutq=1 sync=-1,0.57\nzone start=0.05 len=0.01\nzone start=0.1 len=0.02 to=a000000000000002\n") !=
               std::string::npos);
-        CHECK(t.find(" lands=Foley%2FSteps part=*\n") != std::string::npos ||
-              t.find(" lands=Foley/Steps part=*\n") != std::string::npos);
+        CHECK(t.find(" lands=Foley%2FSteps roles=heel,toe_end koff=1\n") != std::string::npos ||
+              t.find(" lands=Foley/Steps roles=heel,toe_end koff=1\n") != std::string::npos);  // 13-31
         SoundStore p;
         CHECK(ParseSoundStore(t, &p) && SameStore(p, s) && SerializeSoundStore(p) == t);
+        {  // 13-31: the retired 13-23 layer part (part=*) is read and dropped, never kept
+            std::string old_t = t;
+            const size_t at = old_t.find(" koff=1\n");
+            CHECK(at != std::string::npos);
+            if (at != std::string::npos) old_t.insert(at, " part=*");
+            SoundStore q;
+            CHECK(old_t != t && ParseSoundStore(old_t, &q) && SerializeSoundStore(q) == t);
+            CHECK(SerializeSoundStore(q).find("part=") == std::string::npos);
+        }
         const SoundData& d = p.libraries[0].nodes[3].sound;
         CHECK(d.sync_mode == SyncMode::SliceStart && d.zones.size() == 2 && d.zones[1].to == "a000000000000002");
         CHECK(d.role_map.size() == 2 && d.role_map[1].role == "hand");

@@ -606,7 +606,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                     }
                     double anchor = 0.0, sync = 0.0;  // the pile's anchor: one pass for the whole pile
                     PlacedPileAnchor(it, &anchor, &sync);
-                    x.pass = NearestPassOfItem(passes, anchor, sync, BlendOffsetMs(*lib, p.node));
+                    x.pass = NearestPassOfItem(passes, anchor, sync, BlendOffsetMs(*lib, p.node, layers.role));  // 13-31
                 }
             existing.push_back(x);
         }
@@ -717,7 +717,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                     const SoundLibrary& L = *lib;
                     double              anchor = 0.0, sync = 0.0;
                     PlacedPileAnchor(oi, &anchor, &sync);
-                    req.offset_s = NudgeOf(anchor, pt, sync, BlendOffsetMs(L, old.node));
+                    req.offset_s = NudgeOf(anchor, pt, sync, BlendOffsetMs(L, old.node, layers.role));  // 13-31
                 }
                 r = ReplacePlacement(nullptr, old.item_guid, req);
                 for (size_t k = 0; k < step.existing.size(); ++k) {

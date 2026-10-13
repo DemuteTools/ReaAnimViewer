@@ -216,6 +216,11 @@ std::vector<std::pair<std::string, double>> BlendOffsets(const SoundStore& store
             bool have = false;
             for (const auto& b : out) have |= b.first == p.node;
             if (!have) out.emplace_back(p.node, BlendOffsetMs(*lib, p.node));
+            // 13-31: per event rule, the offset its role gives (a role-using Blend drops it on a role event).
+            const std::string key = ev.rid + '\x1f' + p.node;
+            bool              have_r = false;
+            for (const auto& b : out) have_r |= b.first == key;
+            if (!have_r) out.emplace_back(key, BlendOffsetMs(*lib, p.node, EventRoleKey(*blk)));
         }
     }
     return out;

@@ -203,7 +203,7 @@ bool OwnerPresent(const FollowInput& in, const std::string& g)
     return false;
 }
 
-double BlendOf(const FollowInput& in, const std::string& node);
+double BlendOf(const FollowInput& in, const std::string& rid, const std::string& node);
 
 // Fix C review 2: the sound item pasted with a copy whose source is no longer in the project (a
 // second paste after a cut, a copy pasted after its source was deleted): tagged for a gone owner,
@@ -250,7 +250,7 @@ int FindGoneSourceStray(const FollowInput& in, const std::vector<bool>& claimed,
             if (passes.empty()) continue;
             const double apos = s.tag_has_anchor ? s.pos - s.tag_ao : s.pos;
             const double sync = s.tag_has_anchor ? s.tag_sy : s.sync_offset;
-            const double at = apos + sync - BlendOf(in, p.node) / 1000.0 - p.offset_s;
+            const double at = apos + sync - BlendOf(in, ev.rid, p.node) / 1000.0 - p.offset_s;
             d = -1.0;
             for (const FollowPass& fp : passes)
                 if (d < 0.0 || std::fabs(fp.project_t - at) < d) d = std::fabs(fp.project_t - at);
@@ -313,8 +313,12 @@ FollowAction RetagOwner(const std::string& guid, double t, const std::string& ow
     return a;
 }
 
-double BlendOf(const FollowInput& in, const std::string& node)
+// 13-31: the event rule's own entry ("<rid>\x1f<node>": the offset its role gives) first, else the node's.
+double BlendOf(const FollowInput& in, const std::string& rid, const std::string& node)
 {
+    const std::string key = rid + '\x1f' + node;
+    for (const auto& b : in.blend_ms)
+        if (b.first == key) return b.second;
     for (const auto& b : in.blend_ms)
         if (b.first == node) return b.second;
     return 0.0;
@@ -340,7 +344,7 @@ void FollowPlacement(SoundPlacement& p, const FollowEvent& ev, const FollowInput
         // The pile's anchor (13-8 tag ao / sy), as Populate finds it: one pile, one pass.
         const double apos = f->tag_has_anchor ? f->pos - f->tag_ao : f->pos;
         const double sync = f->tag_has_anchor ? f->tag_sy : f->sync_offset;
-        const double anchor = apos + sync - BlendOf(in, p.node) / 1000.0;
+        const double anchor = apos + sync - BlendOf(in, ev.rid, p.node) / 1000.0;
         size_t       best = 0;
         for (size_t k = 1; k < passes.size(); ++k)
             if (std::fabs(passes[k].project_t - anchor) < std::fabs(passes[best].project_t - anchor)) best = k;

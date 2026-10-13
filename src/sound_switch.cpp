@@ -66,6 +66,21 @@ std::string NodeLabel(const SoundStore* store, const SoundNode& n)
     return "Node";
 }
 
+// 13-31: how a role key reads in a gap ('_' as spaces, as RoleKeyLabel; no other module called).
+std::string RoleText(const std::string& key)
+{
+    std::string s = key;
+    for (char& c : s)
+        if (c == '_') c = ' ';
+    return s;
+}
+
+// 13-31 (a): whether a played Blend layer keeps its offset_ms.
+bool LayerOffsetApplies(const SoundNode& c, const std::string& role, bool blend_has_roles)
+{
+    return role.empty() || !blend_has_roles || c.layer_keep_offset;
+}
+
 std::string GroupLabel(const SwitchGroup* g, const SoundNode& sw)
 {
     return g ? g->name : sw.name;
@@ -95,14 +110,12 @@ struct Walker {
         res.path_text += s;
     }
 
-    // 13-23 (D3): the part a Sound plays for this event: a Blend layer's own part wins ("*" = the whole
-    // variation), else the part its role map gives the event's role; "" (the whole variation) when
-    // combined, in Takes mode (A8), or for a value that is not one of its divide values.
+    // 13-23 (D3): the part a Sound plays for this event: the part its role map gives the event's role;
+    // "" (the whole variation) when combined, in Takes mode (A8), or for a value that is not one of its
+    // divide values. 13-31 (d): a Blend layer reached composes with this (the Blend picks, the Sound divides).
     std::string PartFor(const SoundNode& n) const
     {
         if (n.sound.mode == DetectMode::Takes || !IsDivided(n.sound)) return std::string();
-        std::string part;
-        if (LayerPartOverride(lib, n, &part)) return part;
         return PartOfRole(store, n.sound, layers.role);
     }
 
@@ -111,10 +124,7 @@ struct Walker {
         if (stack.count(n.uid)) return;
         stack.insert(n.uid);
         res.path.push_back(n.uid);
-        gain += n.volume_db;
-        if (!n.parent.empty())
-            if (const SoundNode* p = FindNode(lib, n.parent))
-                if (p->type == SoundNodeType::Blend) offset += n.offset_ms;
+        gain += n.volume_db;  // 13-31: a Blend layer's offset is added by the Blend case (its rule)
 
         switch (n.type) {
         case SoundNodeType::Sound: {
@@ -151,11 +161,20 @@ struct Walker {
             break;
         }
         case SoundNodeType::Blend: {
+            // 13-31: on an event with a role, a Blend where some child has a role plays only the children
+            // holding it, their offsets dropped unless kept (Q1: a Blend without roles plays every child).
             std::vector<const SoundNode*> kids = ChildrenOf(lib, n.uid);
+            const bool uses_roles = BlendUsesRoles(lib, n);
+            std::vector<const SoundNode*> play;
+            for (const SoundNode* c : kids)
+                if (LayerPlays(*c, layers.role, uses_roles)) play.push_back(c);
             if (kids.empty()) Gap(n, NodeLabel(&store, n) + ": empty Blend");
-            Seg(std::string("Blend ") + kTimes + std::to_string(kids.size()));
+            else if (play.empty())  // Q2: a role no layer holds
+                Gap(n, NodeLabel(&store, n) + ": no layer plays on " + RoleText(layers.role));
+            Seg(std::string("Blend ") + kTimes + std::to_string(play.size()));
             text_open = false;
-            for (const SoundNode* c : kids) Walk(*c, gain, offset);
+            for (const SoundNode* c : play)
+                Walk(*c, gain, offset + (LayerOffsetApplies(*c, layers.role, uses_roles) ? c->offset_ms : 0.0));
             break;
         }
         case SoundNodeType::Switch: {
@@ -472,16 +491,17 @@ bool ConvertNodeType(SoundLibrary& lib, const std::string& uid, SoundNodeType ty
     return true;
 }
 
-bool LayerPartOverride(const SoundLibrary& lib, const SoundNode& n, std::string* part)
+bool BlendUsesRoles(const SoundLibrary& lib, const SoundNode& blend)
 {
-    if (part) part->clear();
-    if (n.type != SoundNodeType::Sound || n.layer_part.empty() || n.parent.empty()) return false;
-    const SoundNode* p = FindNode(lib, n.parent);
-    if (!p || p->type != SoundNodeType::Blend) return false;
-    if (part && n.layer_part != kLayerPartWhole && n.sound.mode != DetectMode::Takes &&
-        PartIndex(n.sound, n.layer_part) >= 0)
-        *part = n.layer_part;
-    return true;
+    if (blend.type != SoundNodeType::Blend) return false;
+    for (const SoundNode* c : ChildrenOf(lib, blend.uid))
+        if (!c->layer_roles.empty()) return true;
+    return false;
+}
+
+bool LayerPlays(const SoundNode& blend_child, const std::string& role, bool blend_has_roles)
+{
+    return role.empty() || !blend_has_roles || Contains(blend_child.layer_roles, role);
 }
 
 std::string SwitchNameKey(const std::string& s)

@@ -291,14 +291,21 @@ double NudgeOf(double item_pos, double project_t, double sync_offset, double ble
     return item_pos - PlacementPosition(project_t, sync_offset, blend_ms, 0.0);
 }
 
-double BlendOffsetMs(const SoundLibrary& lib, const std::string& node_uid)
+double BlendOffsetMs(const SoundLibrary& lib, const std::string& node_uid, const std::string& role)
 {
     double                ms = 0.0;
     std::set<std::string> seen;
     const SoundNode*      n = FindNode(lib, node_uid);
     while (n && !n->parent.empty() && seen.insert(n->uid).second) {
         const SoundNode* p = FindNode(lib, n->parent);
-        if (p && p->type == SoundNodeType::Blend) ms += n->offset_ms;
+        if (p && p->type == SoundNodeType::Blend) {
+            // 13-31 (a): on an event with a role, a role-using Blend drops its layer's offset (unless kept),
+            // as ResolveEvent does (BlendUsesRoles, inlined: this file links without sound_switch).
+            bool uses_roles = false;
+            if (!role.empty() && !n->layer_keep_offset)
+                for (const SoundNode* c : ChildrenOf(lib, p->uid)) uses_roles |= !c->layer_roles.empty();
+            if (!uses_roles) ms += n->offset_ms;
+        }
         n = p;
     }
     return ms;

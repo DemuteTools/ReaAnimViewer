@@ -30,7 +30,7 @@
 //                                                       (right after its library line; travels in the .ravlib)
 //   node uid=<id> type=sound|random|blend|switch [parent=<id>] [name=<s>] [vol=<dB>]
 //        [offset_ms=<ms>] [avoid=<n>] [group=<id>] [default=<id>] [preview=<id>] [lands=<s>]
-//        [part=<id>|*]                               -- 13-23: a Blend layer's part (* = whole; none = by event)
+//        [roles=<k>,<k>] [koff=1]                    -- 13-31: a Blend layer's role keys, keep offset on separate events
 //   case value=<id> child=<id>                       -- a Switch case of the node above
 //   unassigned child=<id>                            -- a child on no value of the Switch above
 //   sound kind=item|file [guid=<s>] [mode=whole|takes|tmarkers|silence] [thr=] [gap=] [pre=]

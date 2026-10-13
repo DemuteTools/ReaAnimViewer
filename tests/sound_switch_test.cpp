@@ -629,7 +629,6 @@ static void TestParts()
             n.sound.divide_values = {"vb", "vf"};
             n.sound.frames.resize(2);
         }
-    FindNode(lib, "s2")->layer_part = "vf";  // the Toe layer always takes Front
     ValueLayers l;
     l.role = "heel";
     std::vector<std::string> asked;
@@ -641,8 +640,8 @@ static void TestParts()
     };
     Resolution r = ResolveEvent(st, lib, l, h);  // the default value Concrete: the Blend
     CHECK(r.sounds.size() == 2);
-    CHECK(r.sounds[0].part_value == "vb" && r.sounds[1].part_value == "vf");
-    CHECK(r.sounds[0].variation == 1 && asked.size() == 2 && asked[0] == "s1:vb" && asked[1] == "s2:vf");
+    CHECK(r.sounds[0].part_value == "vb" && r.sounds[1].part_value == "vb");  // no layer roles: both play
+    CHECK(r.sounds[0].variation == 1 && asked.size() == 2 && asked[0] == "s1:vb" && asked[1] == "s2:vb");
     // Without the part hook: the plain variation hook, the part still told.
     h.part_variation = nullptr;
     r = ResolveEvent(st, lib, l, h);
@@ -654,10 +653,10 @@ static void TestParts()
     FindNode(lib, "s1")->sound.frames[0].part_db = {{"vb", 4.0}, {"vf", -6.0}};
     r = ResolveEvent(st, lib, l, h);
     CHECK(std::fabs(r.sounds[0].gain_db - (g0 + 4.0)) < 1e-9);
-    // No role: the whole variation, except the layer's own part.
+    // No role: the whole variation.
     l.role.clear();
     r = ResolveEvent(st, lib, l, h);
-    CHECK(r.sounds[0].part_value.empty() && r.sounds[1].part_value == "vf");
+    CHECK(r.sounds[0].part_value.empty() && r.sounds[1].part_value.empty());
     CHECK(std::fabs(r.sounds[0].gain_db - (g0 - 1.0)) < 1e-9);
     FindNode(lib, "s1")->sound.frames[0] = SoundFrame{};
     // A missing Sound still says its part, plays nothing.
@@ -665,16 +664,103 @@ static void TestParts()
     l.role = "toe";
     r = ResolveEvent(st, lib, l, h);
     CHECK(r.sounds[0].missing && r.sounds[0].variation == -1 && r.sounds[0].part_value == "vf");
-    // LayerPartOverride: only a Blend's child; "*" = whole; a value outside its divide values = whole.
-    std::string part;
-    CHECK(LayerPartOverride(lib, *FindNode(lib, "s2"), &part) && part == "vf");
-    CHECK(!LayerPartOverride(lib, *FindNode(lib, "s1"), &part) && part.empty());
-    FindNode(lib, "s1")->layer_part = kLayerPartWhole;
-    CHECK(LayerPartOverride(lib, *FindNode(lib, "s1"), &part) && part.empty());
-    FindNode(lib, "sg")->layer_part = "vf";  // under a Switch: not a Blend layer
-    CHECK(!LayerPartOverride(lib, *FindNode(lib, "sg"), &part));
-    FindNode(lib, "s2")->layer_part = "gone";
-    CHECK(LayerPartOverride(lib, *FindNode(lib, "s2"), &part) && part.empty());
+}
+
+// 13-31: a Blend layer follows the role of its event (the spec's I/O matrix, through ResolveEvent).
+static void TestBlendRoles()
+{
+    SoundStore st = Store();
+    SwitchGroup c;
+    c.uid = "gc";
+    c.name = "Contact";
+    c.values = {{"vf", "Front", {}, {"toe", "toe_end"}}, {"vb", "Back", {}, {"heel"}}};
+    st.groups.push_back(c);
+    SoundLibrary lib;
+    lib.uid = "L";
+    lib.name = "Steps";
+    lib.root = "bl";
+    lib.nodes.push_back(Node("bl", "", SoundNodeType::Blend, "FS"));
+    lib.nodes.push_back(Node("l1", "bl", SoundNodeType::Sound, "Heel", 0, 0));
+    lib.nodes.push_back(Node("l2", "bl", SoundNodeType::Sound, "Toe", 0, 90));
+    FindNode(lib, "l1")->layer_roles = {"heel"};
+    FindNode(lib, "l2")->layer_roles = {"toe"};
+    ResolveHooks h;
+    h.variation = [](const SoundNode&) { return 0; };
+    auto run = [&](const std::string& role) {
+        ValueLayers l;
+        l.role = role;
+        return ResolveEvent(st, lib, l, h);
+    };
+    // Combined: every layer, offsets kept.
+    Resolution r = run("");
+    CHECK(r.sounds.size() == 2 && r.sounds[0].node == "l1" && r.sounds[1].node == "l2");
+    CHECK(Near(r.sounds[0].offset_ms, 0) && Near(r.sounds[1].offset_ms, 90));
+    CHECK(r.path_text == "Blend \xC3\x97" "2");
+    // Separate heel / toe: the layer holding the role, offset 0.
+    r = run("heel");
+    CHECK(r.sounds.size() == 1 && r.sounds[0].node == "l1" && Near(r.sounds[0].offset_ms, 0));
+    CHECK(r.path_text == "Blend \xC3\x97" "1");
+    r = run("toe");
+    CHECK(r.sounds.size() == 1 && r.sounds[0].node == "l2" && Near(r.sounds[0].offset_ms, 0));
+    // Keep offset.
+    FindNode(lib, "l2")->layer_keep_offset = true;
+    r = run("toe");
+    CHECK(r.sounds.size() == 1 && Near(r.sounds[0].offset_ms, 90));
+    FindNode(lib, "l2")->layer_keep_offset = false;
+    // An unvalued layer: silent on a role event, plays on a combined one.
+    lib.nodes.push_back(Node("l3", "bl", SoundNodeType::Sound, "Cloth", 0, 10));
+    r = run("heel");
+    CHECK(r.sounds.size() == 1 && r.sounds[0].node == "l1");
+    r = run("");
+    CHECK(r.sounds.size() == 3 && r.sounds[2].node == "l3" && Near(r.sounds[2].offset_ms, 10));
+    lib.nodes.pop_back();
+    // Role nobody holds: nothing, a gap.
+    r = run("toe_end");
+    CHECK(r.sounds.empty() && r.gap == "Steps \xE2\x80\xBA FS: no layer plays on toe end" && r.gap_node == "bl");
+    // Multi-role.
+    FindNode(lib, "l2")->layer_roles = {"toe", "toe_end"};
+    r = run("toe_end");
+    CHECK(r.sounds.size() == 1 && r.sounds[0].node == "l2" && r.gap.empty());
+    // A divided layer: the Blend picks the layer, the Sound its part (heel -> Back); combined = whole.
+    {
+        SoundNode& l1 = *FindNode(lib, "l1");
+        l1.sound.divide_group = "gc";
+        l1.sound.divide_values = {"vf", "vb"};
+        l1.sound.frames.resize(1);
+    }
+    r = run("heel");
+    CHECK(r.sounds.size() == 1 && r.sounds[0].node == "l1" && r.sounds[0].part_value == "vb");
+    r = run("");
+    CHECK(r.sounds.size() == 2 && r.sounds[0].part_value.empty());
+    // Nested: a Random of toe sounds holds the role; one drawn toe sound plays.
+    {
+        SoundLibrary nl = lib;
+        FindNode(nl, "l2")->type = SoundNodeType::Random;
+        nl.nodes.push_back(Node("t1", "l2", SoundNodeType::Sound, "ToeA"));
+        nl.nodes.push_back(Node("t2", "l2", SoundNodeType::Sound, "ToeB"));
+        ResolveHooks nh = h;
+        nh.random_child = [](const SoundNode&) { return 1; };
+        ValueLayers l;
+        l.role = "toe";
+        r = ResolveEvent(st, nl, l, nh);
+        CHECK(r.sounds.size() == 1 && r.sounds[0].node == "t2" && Near(r.sounds[0].offset_ms, 0));
+        l.role.clear();
+        r = ResolveEvent(st, nl, l, nh);
+        CHECK(r.sounds.size() == 2 && r.sounds[1].node == "t2" && Near(r.sounds[1].offset_ms, 90));
+    }
+    // No roles in the Blend: every layer, offsets kept, on any event.
+    FindNode(lib, "l1")->layer_roles.clear();
+    FindNode(lib, "l2")->layer_roles.clear();
+    r = run("hand");
+    CHECK(r.sounds.size() == 2 && Near(r.sounds[1].offset_ms, 90));
+    // The pure helpers.
+    SoundNode k = Node("k", "bl", SoundNodeType::Blend, "K");
+    CHECK(!BlendUsesRoles(lib, *FindNode(lib, "bl")));
+    CHECK(LayerPlays(k, "heel", false) && LayerPlays(k, "", true) && !LayerPlays(k, "heel", true));
+    k.layer_roles = {"heel"};
+    CHECK(LayerPlays(k, "heel", true) && !LayerPlays(k, "toe", true));
+    FindNode(lib, "l1")->layer_roles = {"heel"};
+    CHECK(BlendUsesRoles(lib, *FindNode(lib, "bl")) && !BlendUsesRoles(lib, *FindNode(lib, "l1")));
 }
 
 int main()
@@ -689,6 +775,7 @@ int main()
     TestNoForeignUid();
     TestConvert();
     TestParts();
+    TestBlendRoles();
     if (g_fail) {
         std::printf("sound_switch_test: %d failure(s)\n", g_fail);
         return 1;

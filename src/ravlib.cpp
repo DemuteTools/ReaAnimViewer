@@ -206,8 +206,7 @@ bool AddRavlibLibrary(SoundStore& store, const SoundStore& file, const std::stri
         if (!n.preview_value.empty()) n.preview_value = Mapped(vmap, n.preview_value);
         for (std::string& u : n.unassigned) u = Mapped(nmap, u);
         if (n.type == SoundNodeType::Sound && n.sound.source.kind == SoundSourceKind::File) n.sound.source.item_guid.clear();
-        // 13-23: the parts follow the merged groups and values.
-        if (!n.layer_part.empty() && n.layer_part != kLayerPartWhole) n.layer_part = Mapped(vmap, n.layer_part);
+        // 13-23: the parts follow the merged groups and values (13-31: layer roles are keys, unmapped).
         SoundData& d = n.sound;
         if (!d.divide_group.empty()) d.divide_group = Mapped(gmap, d.divide_group);
         for (std::string& v : d.divide_values) v = Mapped(vmap, v);

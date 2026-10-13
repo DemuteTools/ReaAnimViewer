@@ -123,8 +123,10 @@ int MarkDeletedPlacements(EventSounds& ev, const std::function<bool(const std::s
 bool EventSkippedByPopulate(const EventSounds* ev);
 // The user's nudge of a placed item: its position minus where it lands with no nudge.
 double NudgeOf(double item_pos, double project_t, double sync_offset, double blend_ms);
-// The Blend offsets (ms) summed from the node up to the root (what ResolveEvent adds on its path).
-double BlendOffsetMs(const SoundLibrary& lib, const std::string& node_uid);
+// The Blend offsets (ms) summed from the node up to the root (what ResolveEvent adds on its path) for
+// an event with `role` (13-31: "" = combined, every offset; else a role-using Blend's layer adds its
+// offset only when layer_keep_offset).
+double BlendOffsetMs(const SoundLibrary& lib, const std::string& node_uid, const std::string& role = std::string());
 // True when the event has an Attached or Spread placement (Populate leaves it alone).
 bool EventHasUserPlacement(const EventSounds& ev);
 // True when the event has a live Populated placement.

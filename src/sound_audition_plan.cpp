@@ -49,9 +49,8 @@ struct Walker {
         if (depth > kMaxDepth) return;
         switch (n.type) {
         case SoundNodeType::Sound: {
-            // 13-23 (A9): a Blend layer may play one part of its variations (no event here: no role).
-            std::string part;
-            LayerPartOverride(lib, n, &part);
+            // 13-31: an audition is a combined event (no role): the whole variation, every Blend layer.
+            const std::string part;
             const int v = picker.pick_part_variation ? picker.pick_part_variation(n, part)
                           : picker.pick_variation     ? picker.pick_variation(n)
                                                       : -1;

@@ -60,10 +60,13 @@ struct Resolution {
 // Where a value came from (EffectiveValue's `from`).
 enum class ValueFrom { Default, Item, Rule, Event };
 
-// 13-23 (D3): each Sound reached gets its part (ResolvedSound::part_value): a Blend layer's own
-// (SoundNode::layer_part: "*" = the whole variation) wins, else, when the Sound is divided, the value
-// its role map (its own, else its divide group's) gives `layers.role`; else "" (the whole variation).
-// Takes mode and a value outside the Sound's divide values read as "".
+// 13-23 (D3): each Sound reached gets its part (ResolvedSound::part_value): when the Sound is divided,
+// the value its role map (its own, else its divide group's) gives `layers.role`; else "" (the whole
+// variation). Takes mode and a value outside the Sound's divide values read as "".
+// 13-31: a Blend where some child has layer_roles plays, on an event with a role, only the children
+// holding that role, offset 0 unless layer_keep_offset; none holding it = nothing, with a gap
+// ("<Blend>: no layer plays on <role>"). A combined event, or a Blend with no role on any child,
+// plays every child with its offset.
 Resolution ResolveEvent(const SoundStore& store, const SoundLibrary& lib, const ValueLayers& layers,
                         const ResolveHooks& hooks);
 // The value a Switch node plays for these layers ("" = none); `from` (optional) says which layer.
@@ -81,10 +84,11 @@ bool GroupHasValue(const SwitchGroup& g, const std::string& value_uid);
 // value), else its first value; "" when it has none.
 std::string GroupDefaultValue(const SwitchGroup& g);
 
-// 13-23 (A9): whether a Sound is a Blend layer that picks its own part (SoundNode::layer_part set, its
-// parent a Blend); `part` gets it: "" for "*" (the whole variation), a value that is not one of its
-// divide values, or Takes mode, else the value uid.
-bool LayerPartOverride(const SoundLibrary& lib, const SoundNode& n, std::string* part);
+// 13-31: whether a Blend has a child with a role (SoundNode::layer_roles): only then does it filter by role.
+bool BlendUsesRoles(const SoundLibrary& lib, const SoundNode& blend);
+// 13-31: whether a Blend's child plays on an event with `role` ("" = combined: always), given whether the
+// Blend uses roles (BlendUsesRoles; false: always).
+bool LayerPlays(const SoundNode& blend_child, const std::string& role, bool blend_has_roles);
 
 // 13-21: a gap that warns, not blocks: the node and why ("Mat: default Concrete has no sound").
 struct LibraryGap {

@@ -894,7 +894,15 @@ std::string WrapOne(SoundStore& s, SoundLibrary& lib, const std::string& n, Soun
         }
         MoveLineBefore(lib, wu, n);
     }
-    FindNode(lib, n)->parent = wu;
+    SoundNode* wn = FindNode(lib, n);
+    wn->parent = wu;
+    {  // 13-31: the wrapper takes the layer's place in a Blend, so its roles too
+        SoundNode* wr = FindNode(lib, wu);
+        wr->layer_roles = std::move(wn->layer_roles);
+        wr->layer_keep_offset = wn->layer_keep_offset;
+        wn->layer_roles.clear();
+        wn->layer_keep_offset = false;
+    }
     if (type == SoundNodeType::Blend) FindNode(lib, wu)->type = SoundNodeType::Blend;
     if (type == SoundNodeType::Switch) ConvertNodeType(lib, wu, SoundNodeType::Switch, group_uid, s);
     return wu;
@@ -945,6 +953,11 @@ bool UnwrapRows(SoundStore& store, const std::string& lib_uid, const std::vector
             k->volume_db += c.volume_db;
             k->offset_ms = c.offset_ms + (c.type == SoundNodeType::Blend ? k->offset_ms : 0.0);
             if (k->lands_in.empty()) k->lands_in = c.lands_in;
+            if (const SoundNode* cp = c.parent.empty() ? nullptr : FindNode(*lib, c.parent))
+                if (cp->type == SoundNodeType::Blend) {  // 13-31: the node takes the layer's place, its roles too
+                    k->layer_roles = c.layer_roles;
+                    k->layer_keep_offset = c.layer_keep_offset;
+                }
             if (cu == lib->root) {
                 k->parent.clear();
                 lib->root = ku;

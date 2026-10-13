@@ -532,7 +532,7 @@ static void TestWholeFileStretches()
 }
 
 // 13-20 / 13-23: a part played alone, its pieces (the gap of an excluded zone kept), cut_fade at a cut
-// or zone edge; a zone played alone; a Blend layer's own part in a Blend audition.
+// or zone edge; a zone played alone; 13-31: a Blend layer with a role plays whole in an audition.
 static void TestPartsAudition()
 {
     SoundNode n = Snd("s", "", "Steps", {0.4, 0.4}, -2.0);  // frames [0, 0.4), [0.9, 1.3)
@@ -585,26 +585,21 @@ static void TestPartsAudition()
     v = PartAuditionVoices(lib, t, 0, "vb");
     CHECK(v.size() == 1 && Near(v[0].length_s, 0.4));
 
-    // A Blend layer taking only its Front part (A9): the audition plays that part.
+    // 13-31: a Blend layer with a role: an audition is a combined event (the whole variation, offset kept).
     SoundLibrary bl;
     bl.uid = "B";
     bl.root = "b";
     bl.nodes.push_back(Node("b", "", SoundNodeType::Blend, "Blend"));
     SoundNode layer = n;
     layer.parent = "b";
-    layer.layer_part = "vf";
+    layer.layer_roles = {"toe"};
+    layer.offset_ms = 30.0;
     bl.nodes.push_back(layer);
     SoundStore   store;
     AuditionPlan plan = PlanAudition(store, bl, "b", First());
-    CHECK(plan.voices.size() == 1 && Near(plan.voices[0].start_s, 0.2) && Near(plan.voices[0].length_s, 0.2));
-    // The history picker never draws a variation with nothing of that part.
-    bl.nodes[1].sound.zones.clear();
-    AddZone(bl.nodes[1].sound, 0.2, 0.2, "");  // variation 0's Front excluded
-    AuditionHistory h(3);
-    for (int k = 0; k < 5; ++k) {
-        AuditionPlan p = PlanAudition(store, bl, "b", h.Picker());
-        CHECK(p.voices.size() == 1 && p.voices[0].variation == 1);
-    }
+    const std::vector<AuditionVoice> whole = PartAuditionVoices(bl, layer, 0, "", 30.0);
+    CHECK(!plan.voices.empty() && plan.voices.size() == whole.size());
+    CHECK(Near(plan.voices[0].start_s, 0.0) && Near(plan.voices[0].delay_ms, 30.0));
 }
 
 int main()

@@ -211,6 +211,20 @@ bool PlacedCopyMuted(bool src_muted, bool src_is_library_source)
     return src_muted && !src_is_library_source;
 }
 
+PlacedVolumes PlacedCopyVolumes(bool folder, double src_item_vol, double take_vol, double gain)
+{
+    PlacedVolumes v;
+    if (folder) {
+        v.item = src_item_vol * gain;
+        v.take = take_vol;
+        return v;
+    }
+    v.item = gain;
+    v.take = take_vol < 0.0 ? -1.0 : 1.0;
+    v.set_take = true;
+    return v;
+}
+
 SliceApply FileSliceFor(const SoundData& data, int variation)
 {
     if (variation < 0 || variation >= static_cast<int>(data.frames.size())) return SliceApply{};

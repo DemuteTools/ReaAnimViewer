@@ -74,6 +74,15 @@ void TestWholeClamp()
         loud.item_db = 18.5;
         const std::vector<SoundFrame> lf = DetectFrames(loud, DetectMode::Whole, SilenceParams{}, nullptr);
         CHECK(lf.size() == 1 && Near(lf[0].db, 18.5));
+        // Takes: each variation at its own take's gain (the item x that take), not the active take's.
+        EntryFacts tk = loud;
+        SoundFrame t0, t1;
+        t0.db = 18.5;
+        t1.db = -3.0;
+        t1.start = 0.5;
+        tk.takes = {t0, t1};
+        const std::vector<SoundFrame> tf = DetectFrames(tk, DetectMode::Takes, SilenceParams{}, nullptr);
+        CHECK(tf.size() == 2 && Near(tf[0].db, 18.5) && Near(tf[1].db, -3.0));
     }
     e.start_offs = -1;  // the item starts 1 s before its source
     e.item_len = 2;

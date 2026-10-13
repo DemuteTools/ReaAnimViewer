@@ -313,6 +313,7 @@ SoundData PromotedSoundData(MediaItem* item)
     MediaItem_Take* take = GetActiveTake(item);
     f.item_len = GetMediaItemInfo_Value(item, "D_LENGTH");
     f.item_db = ItemGainDb(item);  // the item's gain: its variations' (DetectFrames)
+    d.source.item_db = f.item_db;  // kept with the source (it outlives a conversion to a file)
     if (take) {
         f.start_offs = GetMediaItemTakeInfo_Value(take, "D_STARTOFFS");
         PCM_source* src = GetMediaItemTake_Source(take);
@@ -326,6 +327,7 @@ SoundData PromotedSoundData(MediaItem* item)
             SoundFrame      fr;
             fr.start = t ? GetMediaItemTakeInfo_Value(t, "D_STARTOFFS") : 0.0;
             fr.length = 0.0;  // the item's length (DetectFrames)
+            fr.db = ItemTakeGainDb(item, t);  // this take's gain: its variation's
             f.takes.push_back(fr);
         }
     }

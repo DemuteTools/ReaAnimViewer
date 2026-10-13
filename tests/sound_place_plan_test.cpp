@@ -214,6 +214,17 @@ int main()
     CHECK(PlacedCopyMuted(true, false));
     CHECK(!PlacedCopyMuted(false, false));
 
+    // Antho 2026-10-13: a copy plays at the library's gain alone (never on top of its source item's
+    // volume), its take at unity with its polarity kept; a folder pile keeps its members' volumes.
+    {
+        const PlacedVolumes a = PlacedCopyVolumes(false, 16.4, 0.5, 2.0);
+        CHECK(Near(a.item, 2.0) && a.set_take && Near(a.take, 1.0));
+        const PlacedVolumes b = PlacedCopyVolumes(false, 1.0, -0.5, 2.0);  // polarity flipped
+        CHECK(Near(b.item, 2.0) && b.set_take && Near(b.take, -1.0));
+        const PlacedVolumes c = PlacedCopyVolumes(true, 0.5, 0.7, 2.0);  // a folder pile member
+        CHECK(Near(c.item, 1.0) && !c.set_take);
+    }
+
     // Antho 2026-10-12 (13-11): a File Sound is placed straight from its file.
     {
         SoundData d;

@@ -64,6 +64,8 @@ bool ReadItemMedia(MediaItem* item, SoundMedia* out);
 // The gain an item plays its audio at, as REAPER shows it on the item: its volume x its active take's
 // volume (a REAPER "Normalize items" sets the take's), in dB; -60 for a silent item.
 double ItemGainDb(MediaItem* item);
+// The same with a given take's volume (Takes mode: each take is a variation at its own gain).
+double ItemTakeGainDb(MediaItem* item, MediaItem_Take* take);
 // Locate...: one sound file chosen in REAPER's file dialog (false when cancelled or unavailable).
 bool ChooseSoundFile(const std::string& title, std::string* path);
 

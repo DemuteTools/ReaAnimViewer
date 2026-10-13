@@ -91,6 +91,16 @@ std::string PlacedItemRefusal(bool found, bool has_tag, bool folder, Ownership o
 // (kLibSourceTagKey). A copy of such an item is placed unmuted; any other source's mute state is
 // copied as is.
 bool PlacedCopyMuted(bool src_muted, bool src_is_library_source);
+// Antho 2026-10-13: the volumes of a placed copy. The level heard in RAV is the level placed, so a copy
+// plays at the library's gain alone (item D_VOL = gain, its take at unity with its polarity kept: the
+// take's volume is in the library's gain, ItemGainDb). A folder pile keeps its members' volumes (the
+// balance inside the pile): item = source item x gain, take untouched (set_take false).
+struct PlacedVolumes {
+    double item = 1.0;
+    double take = 1.0;
+    bool   set_take = false;
+};
+PlacedVolumes PlacedCopyVolumes(bool folder, double src_item_vol, double take_vol, double gain);
 // Antho 2026-10-12 (13-11): a File Sound is placed straight from its file, no source item on the
 // timeline. Its variation is its frame in every mode (a file has one take): `set` false = the whole
 // file (a frame out of range or empty).

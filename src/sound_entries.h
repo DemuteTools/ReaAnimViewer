@@ -27,7 +27,7 @@ struct EntryFacts {
     double                  start_offs = 0.0;  // the active take's start in its source (s)
     double                  item_len = 0.0;    // the item's length (s)
     double                  playrate = 1.0;    // the active take's D_PLAYRATE (item s x playrate = source s)
-    std::vector<SoundFrame> takes;             // one per take of the item (start = its start offset)
+    std::vector<SoundFrame> takes;             // one per take of the item (start = its start offset, db = its gain)
     std::vector<Slice>      slices;            // the active take's slices (take markers or .rpp text)
     double                  item_db = 0.0;     // the item's own volume (D_VOL, dB): every detected variation's gain
 };

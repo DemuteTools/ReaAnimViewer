@@ -210,12 +210,14 @@ std::vector<SoundFrame> DetectFramesAt0(const EntryFacts& facts, DetectMode mode
 
 // Antho 2026-10-13: as in REAPER, the item's gain sits on what it plays: each detected variation starts
 // at the source item's own volume (an item at +18.5 dB gives variations at +18.5 dB, shown on their
-// boxes, drawn, heard and placed at that level).
+// boxes, drawn, heard and placed at that level). Takes: each variation is a take, at its own take's
+// gain (EntryFacts::takes[k].db: the item's volume x that take's).
 std::vector<SoundFrame> DetectFrames(const EntryFacts& facts, DetectMode mode, const SilenceParams& silence,
                                      const PeakData* peaks)
 {
     std::vector<SoundFrame> out = DetectFramesAt0(facts, mode, silence, peaks);
-    if (std::isfinite(facts.item_db))
+    const bool per_take = mode == DetectMode::Takes && !facts.takes.empty();
+    if (!per_take && std::isfinite(facts.item_db))
         for (SoundFrame& f : out) f.db = facts.item_db;
     return out;
 }
@@ -233,6 +235,7 @@ std::vector<SoundFrame> DetectFramesAt0(const EntryFacts& facts, DetectMode mode
             SoundFrame f;
             f.start = t.start;
             f.length = t.length > 0.0 ? t.length : src_len;
+            f.db = std::isfinite(t.db) ? t.db : 0.0;  // that take's gain (DetectFrames)
             out.push_back(f);
         }
         if (!out.empty()) return out;

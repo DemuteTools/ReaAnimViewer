@@ -3731,7 +3731,7 @@ void DrawTypeRows(const SoundStore& store, const SoundLibrary& lib, const SoundN
     bool def_has_sound = false;
     for (const SwitchCase& c : n.cases) def_has_sound = def_has_sound || (c.value_uid == def && !c.child_uid.empty());
     if (!def.empty() && !def_has_sound)
-        RichText({{value_name(def) + " (the default value) has no sound yet: an event on a value with no sound of its own gets nothing until it has one.", ui::kWarn}});
+        RichText({{value_name(def) + " (the default value) has no sound yet: an event on a value with no sound of its own gets nothing until the default value has a sound.", ui::kWarn}});
     ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));
 }
 

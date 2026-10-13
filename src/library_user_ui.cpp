@@ -1150,6 +1150,7 @@ void DrawUserLibraryNodeSection()
                         picked = true;
                     }
                 ImGui::EndChild();
+                if (picked) ImGui::CloseCurrentPopup();  // a Selectable in a child does not close the combo
                 ui::MenuSeparator();
                 if (ImGui::Selectable("New folder...")) {
                     g.new_folder = true;

@@ -620,6 +620,34 @@ static void TestUnwrap()
     CHECK(UnwrapRows(s, "L", {RowOfNode(*FindLibrary(s, "L"), made[0])}));
     l = FindLibrary(s, "L");
     CHECK(l->root == "sw" && FindNode(*l, "sw")->parent.empty() && !FindNode(*l, made[0]) && FindNode(*l, "sw")->lands_in == "Foley");
+    // In a Blend: a one-layer Blend's offset adds to its layer's; a Random's stale child offset gives
+    // way to the Random's; the node keeps the container's place among its siblings and its own Lands in.
+    SoundStore b;
+    SoundLibrary bl;
+    bl.uid = "B";
+    bl.root = "mb";
+    SoundNode inner = Node("bl", "mb", SoundNodeType::Blend, "Inner");
+    inner.offset_ms = 50.0;
+    inner.lands_in = "Box";
+    SoundNode b1 = Node("b1", "bl", SoundNodeType::Sound, "B1");
+    b1.offset_ms = 20.0;
+    b1.lands_in = "Own";
+    SoundNode rr = Node("rr", "mb", SoundNodeType::Random, "R");
+    rr.offset_ms = 30.0;
+    rr.lands_in = "Box";
+    SoundNode r1 = Node("r1", "rr", SoundNodeType::Sound, "R1");
+    r1.offset_ms = 99.0;
+    bl.nodes = {Node("mb", "", SoundNodeType::Blend, "Top"), Node("a", "mb", SoundNodeType::Sound, "A"), inner, rr,
+                Node("z", "mb", SoundNodeType::Sound, "Z"), b1, r1};
+    b.libraries.push_back(bl);
+    CHECK(UnwrapRows(b, "B", {RowOfNode(*FindLibrary(b, "B"), "bl"), RowOfNode(*FindLibrary(b, "B"), "rr")}));
+    const SoundLibrary* lb = FindLibrary(b, "B");
+    CHECK(!FindNode(*lb, "bl") && !FindNode(*lb, "rr"));
+    CHECK(FindNode(*lb, "b1")->parent == "mb" && FindNode(*lb, "b1")->offset_ms == 70.0 && FindNode(*lb, "b1")->lands_in == "Own");
+    CHECK(FindNode(*lb, "r1")->parent == "mb" && FindNode(*lb, "r1")->offset_ms == 30.0 && FindNode(*lb, "r1")->lands_in == "Box");
+    std::vector<std::string> order;
+    for (const SoundNode* k : ChildrenOf(*lb, "mb")) order.push_back(k->uid);
+    CHECK((order == std::vector<std::string>{"a", "b1", "r1", "z"}));
 }
 
 int main()

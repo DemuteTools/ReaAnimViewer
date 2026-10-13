@@ -1393,6 +1393,20 @@ NormalizeOutcome ApplyNormalize(std::vector<SoundFrame>& frames, NormScope scope
             f.hand = true;
             ++out.done;
         }
+        // Per part: the whole variation (a combined event, an unmapped role, a Blend layer "Whole", a
+        // part not measured) plays at the frame's dB, so it follows its parts: the smallest of them,
+        // the loudest part reaching the target. Left as it was, it kept an older gain (Antho 2026-10-13:
+        // a box at +24.3 dB placed at +47).
+        if (scope == NormScope::Part)
+            for (size_t i = 0; i < regions.size(); ++i) {
+                if (!valid(i) || regions[i].part.empty()) continue;
+                SoundFrame& f = frames[static_cast<size_t>(regions[i].frame)];
+                bool        any = false;
+                for (const auto& kv : f.part_db) {
+                    f.db = any ? std::min(f.db, kv.second) : kv.second;
+                    any = true;
+                }
+            }
     }
     for (size_t i = 0; i < frames.size() && !out.changed; ++i) {
         const SoundFrame& a = frames[i];

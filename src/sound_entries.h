@@ -284,7 +284,8 @@ struct NormalizeOutcome {
     bool changed = false;
 };
 // Writes the gains (adj_db[i] for regions[i]; NaN or > +60 = silent, skipped). Per variation: each region's
-// frame.db; Per part: frame.part_db[part] (frame.db untouched); Whole: every measured frame at the smallest
+// frame.db; Per part: frame.part_db[part], and frame.db = the smallest of its part dBs (what the whole
+// variation plays at); Whole: every measured frame at the smallest
 // adjustment (the loudest reaches the target). Per variation and Whole clear the acted frames' part_db. Each
 // written frame gets `hand`; the caller sets `data.edited`.
 NormalizeOutcome ApplyNormalize(std::vector<SoundFrame>& frames, NormScope scope, const std::vector<NormRegion>& regions,

@@ -406,7 +406,7 @@ void TestNormalizeParts()
     d.frames = {F(0, 1), F(1, 1), F(2, 1)};
     for (size_t i = 0; i < 3; ++i) d.frames[i].cuts = {d.frames[i].start + 0.4};
     CHECK(NormPartsAvailable(d));
-    // Matrix "Per part": divided Back / Front, 3 variations -> 6 part dBs, frame dB untouched.
+    // Matrix "Per part": divided Back / Front, 3 variations -> 6 part dBs, frame dB = the smallest of them.
     std::vector<NormRegion> regs = NormalizeRegions(d, NormScope::Part, {});
     CHECK(regs.size() == 6 && regs[0].frame == 0 && regs[0].part == back && regs[1].part == front);
     CHECK(regs[0].spans.size() == 1 && Near(regs[0].spans[0].length, 0.4) && Near(regs[1].spans[0].start, 0.4));
@@ -414,17 +414,17 @@ void TestNormalizeParts()
     std::vector<double> adj = {1, 2, 3, 4, 5, 6};
     NormalizeOutcome    o = ApplyNormalize(d.frames, NormScope::Part, regs, adj);
     CHECK(o.done == 6 && o.changed);
-    CHECK(Near(d.frames[0].db, -2) && d.frames[0].part_db.size() == 2 && Near(d.frames[0].part_db[back], 1) &&
-          Near(d.frames[2].part_db[front], 6));
-    // FrameGainDb: the part's own, else the frame's; "" = the frame's.
-    CHECK(Near(FrameGainDb(d.frames[0], front), 2) && Near(FrameGainDb(d.frames[0], ""), -2) &&
-          Near(FrameGainDb(d.frames[0], "other"), -2));
+    CHECK(Near(d.frames[0].db, 1) && d.frames[0].part_db.size() == 2 && Near(d.frames[0].part_db[back], 1) &&
+          Near(d.frames[2].part_db[front], 6) && Near(d.frames[2].db, 5));
+    // FrameGainDb: the part's own, else the frame's; "" = the frame's (the whole variation, never an older gain).
+    CHECK(Near(FrameGainDb(d.frames[0], front), 2) && Near(FrameGainDb(d.frames[0], ""), 1) &&
+          Near(FrameGainDb(d.frames[0], "other"), 1));
     CHECK(Near(FrameLabelDb(d, 0), 2) && Near(FrameLabelDb(d, 2), 6));
     // A hand dB drag moves the parts' own gains by the same step.
     {
         SoundData h = d;
-        SetFrameDb(h, 0, 1.0);  // -2 -> +1: +3
-        CHECK(Near(h.frames[0].db, 1) && Near(h.frames[0].part_db[back], 4) && Near(h.frames[0].part_db[front], 5));
+        SetFrameDb(h, 0, 4.0);  // +1 -> +4: +3
+        CHECK(Near(h.frames[0].db, 4) && Near(h.frames[0].part_db[back], 4) && Near(h.frames[0].part_db[front], 5));
     }
     // Matrix "Per variation after Per part": the acted frames' part dBs cleared, frame dB written.
     regs = NormalizeRegions(d, NormScope::Variation, {1});

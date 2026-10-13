@@ -51,7 +51,11 @@ void ConvertToUserLibrary(const std::string& lib_uid);
 void RequestUserLibraryImport();
 void RequestUserLibraryExport(const std::string& lib_uid);
 void RequestUserLibraryLocate(const std::string& lib_uid, const std::string& node_uid);
-// A library's missing File Sounds; `first` = the first one's node uid.
+// 13-38: "Locate in a folder...": picks a folder (timer), then every missing File Sound of every
+// library is looked for under it and its subfolders on the worker; one undo point "RAV: Locate sounds".
+void RequestLibraryLocateFolder();
+// A library's missing File Sounds (any library, Project Libraries included); `first` = the first
+// one's node uid.
 int UserLibraryMissing(const std::string& lib_uid, std::string* first);
 // Lists the folder again and forgets the found / missing files.
 void RefreshUserLibraries();

@@ -89,11 +89,23 @@ std::vector<LookupResult> RelocateFolder(const AssetIdentity& located, const std
                                          const std::vector<AssetIdentity>& missing,
                                          const std::function<std::vector<DbFile>(const std::string&)>& list_folder);
 
+// 13-38: "Locate in a folder": finds each of `missing` under `root` (the folder the user picked,
+// searched with its subfolders). Phase 1, per sound: the folders root/<last k components of its old
+// folder>, deepest tail first (each listed once); the first Found wins. Phase 2, for those still not
+// Found: root itself, listed once; MediaDbIndex::Find ranks the candidates by their trailing
+// components in common with the old path (a tie = Ambiguous, never Found). One result per `missing`
+// entry. `cancel` (optional): returns early when set (the rest stays Missing).
+std::vector<LookupResult> LocateUnderRoot(const std::string& root, const std::vector<AssetIdentity>& missing,
+                                          const std::function<std::vector<DbFile>(const std::string&)>& list_folder,
+                                          const std::atomic<bool>* cancel = nullptr);
+
 // Fallback folder index (D7). Lists the audio files under `folder` (recursive) with their size;
 // the length comes from `cached` when path + size + mtime are unchanged, else from `length_of`
-// (null -> -1). `calls` (optional) counts the length_of calls.
+// (null -> -1). `calls` (optional) counts the length_of calls. `cancel` (optional): the walk stops
+// when it is set (a partial list).
 std::vector<DbFile> ScanFolder(const std::string& folder, const std::vector<DbFile>& cached,
-                               const std::function<double(const std::string&)>& length_of, size_t* calls);
+                               const std::function<double(const std::string&)>& length_of, size_t* calls,
+                               const std::atomic<bool>* cancel = nullptr);
 // <resource>/ReaAnimViewer/mediadb
 std::string MediaCacheDir(const std::string& resource_path);
 // The cache file of one folder in that dir.
@@ -101,9 +113,12 @@ std::string FolderCachePath(const std::string& resource_path, const std::string&
 std::string FolderCacheText(const std::vector<DbFile>& files);
 bool        LoadFolderCache(const std::string& cache_path, std::vector<DbFile>* out);
 bool        SaveFolderCache(const std::string& cache_path, const std::vector<DbFile>& files);
-// A list_folder for LocateFolder / RelocateFolder: ScanFolder through the folder's cache file.
+// A list_folder for LocateFolder / RelocateFolder / LocateUnderRoot: ScanFolder through the
+// folder's cache file. A folder that does not exist lists nothing and writes no cache file; a
+// listing cut short by `cancel` (optional, must outlive the lister) is not written either.
 std::function<std::vector<DbFile>(const std::string&)> MakeCachedFolderLister(
-    const std::string& resource_path, std::function<double(const std::string&)> length_of);
+    const std::string& resource_path, std::function<double(const std::string&)> length_of,
+    const std::atomic<bool>* cancel = nullptr);
 
 // The background load of every database (one at a time; a later call restarts it).
 void MediaDbStartLoad(const std::string& resource_path);

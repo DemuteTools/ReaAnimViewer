@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -284,6 +285,163 @@ static void TestRelocateAndScan()
     fs::remove_all(root, ec);
 }
 
+// 13-38: a fake list_folder over an in-memory tree (recursive, like ScanFolder): records each call.
+struct FakeTree {
+    std::vector<DbFile>      files;  // lengths unknown (-1), as the Locate worker lists them
+    std::vector<std::string> calls;
+    std::function<std::vector<DbFile>(const std::string&)> Lister()
+    {
+        return [this](const std::string& folder) {
+            calls.push_back(folder);
+            auto norm = [](std::string p) {
+                for (char& c : p)
+                    if (c == '\\') c = '/';
+                return p;
+            };
+            std::vector<DbFile> out;
+            const std::string nf = norm(folder);
+            const std::string pre = nf.back() == '/' ? nf : nf + "/";
+            for (const DbFile& f : files)
+                if (norm(f.path).compare(0, pre.size(), pre) == 0) out.push_back(f);
+            return out;
+        };
+    }
+    bool Listed(const std::string& folder) const
+    {
+        for (const std::string& c : calls)
+            if (c == folder) return true;
+        return false;
+    }
+};
+
+static void TestLocateUnderRoot()
+{
+    const std::string old = "D:/SFX/Bank/Foot/a.wav";
+    {  // bank moved, same tree: the targeted folder, no full scan
+        FakeTree t;
+        t.files = {F("E:/Lib/Bank/Foot/a.wav", 10, -1), F("E:/Lib/Other/x.wav", 5, -1)};
+        auto r = LocateUnderRoot("E:/Lib", {Id("a.wav", 10, 1.0, old)}, t.Lister());
+        CHECK(r.size() == 1 && r[0].status == LookupStatus::Found && r[0].path == "E:/Lib/Bank/Foot/a.wav");
+        CHECK(t.Listed("E:/Lib/SFX/Bank/Foot"));
+        CHECK(t.Listed("E:/Lib/Bank/Foot"));
+        CHECK(!t.Listed("E:/Lib"));
+        CHECK(!t.Listed("E:/Lib/D:/SFX/Bank/Foot"));  // the drive is never put under the root
+    }
+    {  // Windows separators: backslash stored path, backslash root with a trailing separator
+        FakeTree t;
+        t.files = {F("E:\\Lib\\Bank\\Foot\\a.wav", 10, -1)};
+        auto r = LocateUnderRoot("E:\\Lib\\", {Id("a.wav", 10, 1.0, "D:\\SFX\\Bank\\Foot\\a.wav")}, t.Lister());
+        CHECK(r.size() == 1 && r[0].status == LookupStatus::Found && r[0].path == "E:\\Lib\\Bank\\Foot\\a.wav");
+        CHECK(t.Listed("E:\\Lib\\Bank/Foot"));
+        CHECK(!t.Listed("E:\\Lib\\"));
+    }
+    {  // bank one level up
+        FakeTree t;
+        t.files = {F("E:/Lib/Foot/a.wav", 10, -1)};
+        auto r = LocateUnderRoot("E:/Lib", {Id("a.wav", 10, 1.0, old)}, t.Lister());
+        CHECK(r.size() == 1 && r[0].status == LookupStatus::Found && r[0].path == "E:/Lib/Foot/a.wav");
+        CHECK(t.Listed("E:/Lib/Foot"));
+        CHECK(!t.Listed("E:/Lib"));
+    }
+    {  // bank one level down: no targeted folder holds it, the full scan does
+        FakeTree t;
+        t.files = {F("E:/Lib/New/Bank/Foot/a.wav", 10, -1)};
+        auto r = LocateUnderRoot("E:/Lib", {Id("a.wav", 10, 1.0, old)}, t.Lister());
+        CHECK(r.size() == 1 && r[0].status == LookupStatus::Found && r[0].path == "E:/Lib/New/Bank/Foot/a.wav");
+        CHECK(t.Listed("E:/Lib"));
+    }
+    {  // duplicates, one better (higher trailing score)
+        FakeTree t;
+        t.files = {F("E:/Lib/Bank/Foot/a.wav", 10, -1), F("E:/Lib/Old/a.wav", 10, -1)};
+        auto r = LocateUnderRoot("E:/Lib", {Id("a.wav", 10, 1.0, old)}, t.Lister());
+        CHECK(r.size() == 1 && r[0].status == LookupStatus::Found && r[0].path == "E:/Lib/Bank/Foot/a.wav");
+        // The same through the full scan alone (no targeted folder: another old tail).
+        FakeTree u;
+        u.files = {F("E:/Lib/X/Bank/Foot/a.wav", 10, -1), F("E:/Lib/Old/a.wav", 10, -1)};
+        r = LocateUnderRoot("E:/Lib", {Id("a.wav", 10, 1.0, "D:/Q/Bank/Foot/a.wav")}, u.Lister());
+        CHECK(r.size() == 1 && r[0].status == LookupStatus::Found && r[0].path == "E:/Lib/X/Bank/Foot/a.wav");
+    }
+    {  // duplicates, tie: not re-linked, ambiguous
+        FakeTree t;
+        t.files = {F("E:/Lib/X/a.wav", 10, -1), F("E:/Lib/Y/a.wav", 10, -1)};
+        auto r = LocateUnderRoot("E:/Lib", {Id("a.wav", 10, 1.0, old)}, t.Lister());
+        CHECK(r.size() == 1 && r[0].status == LookupStatus::Ambiguous && r[0].path.empty());
+        CHECK(r.size() == 1 && r[0].candidates.size() == 2);
+    }
+    {  // size differs: not re-linked
+        FakeTree t;
+        t.files = {F("E:/Lib/Bank/Foot/a.wav", 11, -1)};
+        auto r = LocateUnderRoot("E:/Lib", {Id("a.wav", 10, 1.0, old)}, t.Lister());
+        CHECK(r.size() == 1 && r[0].status == LookupStatus::Missing);
+    }
+    {  // several sounds: a targeted folder listed once; the root once for the rest; name ignores case
+        FakeTree t;
+        t.files = {F("E:/Lib/Bank/Foot/a.wav", 10, -1), F("E:/Lib/Bank/Foot/b.wav", 20, -1),
+                   F("E:/Lib/Deep/c.WAV", 30, -1)};
+        auto r = LocateUnderRoot("E:/Lib/",
+                                 {Id("a.wav", 10, 1.0, old), Id("b.wav", 20, -1, "D:/SFX/Bank/Foot/b.wav"),
+                                  Id("C.wav", 30, -1, "D:/SFX/Bank/Hit/c.wav"), Id("z.wav", 1, -1, "D:/z.wav")},
+                                 t.Lister());
+        CHECK(r.size() == 4);
+        if (r.size() == 4) {
+            CHECK(r[0].status == LookupStatus::Found && r[1].status == LookupStatus::Found);
+            CHECK(r[2].status == LookupStatus::Found && r[2].path == "E:/Lib/Deep/c.WAV");
+            CHECK(r[3].status == LookupStatus::Missing);
+        }
+        int bank_foot = 0, root = 0;
+        for (const std::string& c : t.calls) {
+            if (c == "E:/Lib/Bank/Foot") ++bank_foot;
+            if (c == "E:/Lib/") ++root;
+        }
+        CHECK(bank_foot == 1 && root == 1);
+    }
+    {  // cancelled: returns early, nothing listed, all Missing
+        FakeTree t;
+        t.files = {F("E:/Lib/Bank/Foot/a.wav", 10, -1)};
+        std::atomic<bool> cancel{true};
+        auto r = LocateUnderRoot("E:/Lib", {Id("a.wav", 10, 1.0, old)}, t.Lister(), &cancel);
+        CHECK(r.size() == 1 && r[0].status == LookupStatus::Missing);
+        CHECK(t.calls.empty());
+        // Cancelled during a listing: the scan stops there.
+        std::atomic<bool> c2{false};
+        FakeTree u;
+        u.files = {F("E:/Lib/New/Bank/Foot/a.wav", 10, -1)};
+        auto inner = u.Lister();
+        auto lister = [&](const std::string& f) {
+            c2 = true;
+            return inner(f);
+        };
+        r = LocateUnderRoot("E:/Lib", {Id("a.wav", 10, 1.0, old)}, lister, &c2);
+        CHECK(r.size() == 1 && r[0].status == LookupStatus::Missing);
+        CHECK(u.calls.size() == 1);
+    }
+    {  // single-file Locate (StartLocate passes the stored old path): the sibling is found in its mapped folder
+        FakeTree t;
+        t.files = {F("E:/Lib/Bank/Foot/a.wav", 10, -1), F("E:/Lib/Bank/Hit/b.wav", 20, -1)};
+        auto r = RelocateFolder(Id("a.wav", 10, 1.0, old), "E:/Lib/Bank/Foot/a.wav",
+                                {Id("b.wav", 20, -1, "D:/SFX/Bank/Hit/b.wav")}, t.Lister());
+        CHECK(r.size() == 1 && r[0].status == LookupStatus::Found && r[0].path == "E:/Lib/Bank/Hit/b.wav");
+    }
+    {  // real folders: ScanFolder stops when cancelled; the cached lister skips absent folders, caches nothing
+        const fs::path root = TempDir("under");
+        WriteAll(root / "Bank" / "Foot" / "a.wav", std::string(10, 'a'));
+        const std::string res = (root / "res").u8string();
+        std::atomic<bool> cancel{true};
+        CHECK(ScanFolder(root.u8string(), {}, nullptr, nullptr, &cancel).empty());
+        auto cancelled = MakeCachedFolderLister(res, nullptr, &cancel);
+        cancelled(root.u8string());
+        std::error_code ec;
+        CHECK(!fs::exists(fs::u8path(FolderCachePath(res, root.u8string())), ec));
+        auto lister = MakeCachedFolderLister(res, nullptr);
+        CHECK(lister((root / "Nope").u8string()).empty());
+        CHECK(!fs::exists(fs::u8path(FolderCachePath(res, (root / "Nope").u8string())), ec));
+        auto r = LocateUnderRoot(root.u8string(), {Id("a.wav", 10, 1.0, "D:/SFX/Bank/Foot/a.wav")}, lister);
+        CHECK(r.size() == 1 && r[0].status == LookupStatus::Found &&
+              fs::u8path(r[0].path) == root / "Bank" / "Foot" / "a.wav");
+        fs::remove_all(root, ec);
+    }
+}
+
 static void TestLoad()
 {
     const fs::path res = TempDir("load");
@@ -382,6 +540,7 @@ int main(int argc, char** argv)
     TestFind();
     TestSearch();
     TestRelocateAndScan();
+    TestLocateUnderRoot();
     TestLoad();
     TestFavourites();
     Bench();

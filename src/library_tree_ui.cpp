@@ -1415,11 +1415,20 @@ void ListCaption(const char* text, const char* tip = nullptr)
 void LibraryMenuItems(const SoundLibrary& lib, std::string* to_delete, bool rename_item)
 {
     if (rename_item && ImGui::MenuItem("Rename")) StartLibraryRename(lib);
+    // 13-38: offered in every library's menu (Project Libraries included); it looks for the missing
+    // File Sounds of every library, so it is enabled when any library has one.
+    std::string first;
+    const int   miss = UserLibraryMissing(lib.uid, &first);
+    int         miss_all = 0;
+    for (const SoundLibrary& l : GetSoundStore(nullptr).libraries) miss_all += UserLibraryMissing(l.uid, nullptr);
+    if (ImGui::MenuItem("Locate missing files in a folder...", nullptr, false, miss_all > 0))
+        RequestLibraryLocateFolder();
+    ui::ItemTipText(miss_all > 0 ? "Pick the folder that holds the sounds (for example the soundbank's parent): RAV "
+                                   "searches it and its subfolders for the missing sounds of every library"
+                                 : "No missing sound in any library");
     if (lib.user) {
         if (ImGui::MenuItem("Export .ravlib...")) RequestUserLibraryExport(lib.uid);
-        std::string first;
-        const int   miss = UserLibraryMissing(lib.uid, &first);
-        if (ImGui::MenuItem("Locate missing files...", nullptr, false, miss > 0)) RequestUserLibraryLocate(lib.uid, first);
+        if (ImGui::MenuItem("Locate a missing file...", nullptr, false, miss > 0)) RequestUserLibraryLocate(lib.uid, first);
         ui::ItemTipText(miss > 0 ? "Pick the file of its first missing sound: the others are looked for near it"
                                  : "No missing sound");
         if (ImGui::MenuItem("Refresh the User Library folder")) RefreshUserLibraries();

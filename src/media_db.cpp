@@ -544,10 +544,81 @@ std::vector<LookupResult> RelocateFolder(const AssetIdentity& located, const std
     return out;
 }
 
+namespace {
+
+// `root` joined with `rel` (components joined by '/'), keeping root's own spelling.
+std::string JoinUnder(const std::string& root, const std::string& rel)
+{
+    if (rel.empty()) return root;
+    if (root.empty()) return rel;
+    const char last = root.back();
+    return (last == '/' || last == '\\') ? root + rel : root + "/" + rel;
+}
+
+// A component that names a drive ("D:"), never a folder under the picked root.
+bool IsDriveComponent(const std::string& c)
+{
+    return c.find(':') != std::string::npos;
+}
+
+}  // namespace
+
+std::vector<LookupResult> LocateUnderRoot(const std::string& root, const std::vector<AssetIdentity>& missing,
+                                          const std::function<std::vector<DbFile>(const std::string&)>& list_folder,
+                                          const std::atomic<bool>* cancel)
+{
+    std::vector<LookupResult> out(missing.size());
+    if (root.empty() || !list_folder) return out;
+    auto cancelled = [cancel] { return cancel && cancel->load(); };
+    // Phase 1: the targeted folders (the tail of each old folder under root), each listed once.
+    std::map<std::string, MediaDbIndex> folders;  // normalized folder -> its files
+    for (size_t m = 0; m < missing.size(); ++m) {
+        if (cancelled()) return out;
+        const std::vector<std::string> pm = SplitPath(missing[m].last_path);
+        if (pm.size() < 2) continue;  // no folder part
+        const size_t nf = pm.size() - 1;  // folder components
+        for (size_t k = nf; k >= 1; --k) {
+            bool drive = false;
+            std::string rel;
+            for (size_t i = nf - k; i < nf; ++i) {
+                if (IsDriveComponent(pm[i])) drive = true;
+                rel += (rel.empty() ? "" : "/") + pm[i];
+            }
+            if (drive) continue;
+            const std::string dir = JoinUnder(root, rel);
+            const std::string key = NormPath(dir);
+            auto it = folders.find(key);
+            if (it == folders.end()) {
+                it = folders.emplace(key, MediaDbIndex()).first;
+                for (const DbFile& f : list_folder(dir)) it->second.Add(f);
+                if (cancelled()) return out;
+            }
+            if (it->second.Size() == 0) continue;
+            const LookupResult r = it->second.Find(missing[m]);
+            if (r.status == LookupStatus::Found) {
+                out[m] = r;
+                break;
+            }
+        }
+    }
+    // Phase 2: the whole root, for those still not Found.
+    bool rest = false;
+    for (const LookupResult& r : out)
+        if (r.status != LookupStatus::Found) rest = true;
+    if (!rest || cancelled()) return out;
+    MediaDbIndex all;
+    for (const DbFile& f : list_folder(root)) all.Add(f);
+    if (cancelled()) return out;
+    for (size_t m = 0; m < missing.size(); ++m)
+        if (out[m].status != LookupStatus::Found) out[m] = all.Find(missing[m]);
+    return out;
+}
+
 // ---------------------------------------------------------------- folder index (D7)
 
 std::vector<DbFile> ScanFolder(const std::string& folder, const std::vector<DbFile>& cached,
-                               const std::function<double(const std::string&)>& length_of, size_t* calls)
+                               const std::function<double(const std::string&)>& length_of, size_t* calls,
+                               const std::atomic<bool>* cancel)
 {
     if (calls) *calls = 0;
     std::unordered_map<std::string, const DbFile*> cache;
@@ -557,6 +628,7 @@ std::vector<DbFile> ScanFolder(const std::string& folder, const std::vector<DbFi
     fs::recursive_directory_iterator it(fs::u8path(folder), fs::directory_options::skip_permission_denied, ec);
     const fs::recursive_directory_iterator end;
     for (; !ec && it != end; it.increment(ec)) {
+        if (cancel && cancel->load()) break;
         std::error_code e2;
         if (!it->is_regular_file(e2) || e2) continue;
         const std::string path = it->path().u8string();
@@ -629,15 +701,19 @@ bool SaveFolderCache(const std::string& cache_path, const std::vector<DbFile>& f
 }
 
 std::function<std::vector<DbFile>(const std::string&)> MakeCachedFolderLister(
-    const std::string& resource_path, std::function<double(const std::string&)> length_of)
+    const std::string& resource_path, std::function<double(const std::string&)> length_of,
+    const std::atomic<bool>* cancel)
 {
-    return [resource_path, length_of](const std::string& folder) {
+    return [resource_path, length_of, cancel](const std::string& folder) {
+        std::error_code ec;
+        if (folder.empty() || !fs::is_directory(fs::u8path(folder), ec) || ec) return std::vector<DbFile>();
         const std::string cp = FolderCachePath(resource_path, folder);
         std::vector<DbFile> cached;
         std::string old;
         const bool had = ReadFileText(cp, &old);
         if (had) ParseReaperFileList(old, "", &cached, nullptr);
-        std::vector<DbFile> files = ScanFolder(folder, cached, length_of, nullptr);
+        std::vector<DbFile> files = ScanFolder(folder, cached, length_of, nullptr, cancel);
+        if (cancel && cancel->load()) return files;  // partial: never cached
         if (!had || old != FolderCacheText(files)) SaveFolderCache(cp, files);
         return files;
     };

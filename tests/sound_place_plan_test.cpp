@@ -132,8 +132,16 @@ static void TestPieces()
     CHECK(Near(PiecePosition(0.05, -0.1, 1.0), 0.0) && Near(PiecePosition(1.0, 0.5, 0.0), 1.5));
 }
 
+// 13-41: the take channel mode of a Sound forced to mono (REAPER's I_CHANMODE).
+static void TestChanMode()
+{
+    CHECK(ChanModeFor(MonoMode::Off) == 0 && ChanModeFor(MonoMode::Sum) == 2 && ChanModeFor(MonoMode::Left) == 3 &&
+          ChanModeFor(MonoMode::Right) == 4);
+}
+
 int main()
 {
+    TestChanMode();
     // Position (Blend offset + nudge) and clamp.
     CHECK(Near(PlacementPosition(10.0, 0.25, 12.0, 0.1), 9.862));
     CHECK(Near(PlacementPosition(0.1, 0.5, 0.0, 0.0), 0.0));

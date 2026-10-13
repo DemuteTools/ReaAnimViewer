@@ -748,6 +748,7 @@ static SoundStore DividedStore()
     d.sync_mode = SyncMode::Peak;
     d.sync_offset_ms = -5.0;
     d.cut_fade = 0.003;
+    d.mono = MonoMode::Sum;  // 13-41
     d.zones = {{0.1, 0.05, "", {}}, {0.3, 0.02, "v000000000000091", {}}};
     d.frames[0].cuts = {0.2};
     d.frames[0].cuts_hand = true;
@@ -769,6 +770,7 @@ static void TestDividedTravels()
     CHECK(text.find("value uid=v000000000000092 name=Front roles=toe,toe_end\n") != std::string::npos);
     CHECK(text.find(" pdb.v000000000000091=2.5 pdb.v000000000000092=-1.5\n") != std::string::npos);
     CHECK(text.find(" roles=toe,toe_end koff=1") != std::string::npos);  // 13-31
+    CHECK(text.find(" mono=sum") != std::string::npos);                  // 13-41
     SoundStore back;
     CHECK(ParseRavlib(text, &back) && SerializeRavlib(back) == text);
 
@@ -798,7 +800,8 @@ static void TestDividedTravels()
         CHECK(d.divide_values == (std::vector<std::string>{g->values[0].uid, g->values[1].uid}));
         CHECK(d.role_map.size() == 1 && d.role_map[0].role == "hand" && d.role_map[0].value == g->values[1].uid);
         CHECK(d.zones.size() == 2 && d.zones[0].to.empty() && d.zones[1].to == g->values[0].uid);
-        CHECK(d.lanes_split && d.sync_mode == SyncMode::Peak && d.sync_offset_ms == -5.0 && d.cut_fade == 0.003);
+        CHECK(d.lanes_split && d.sync_mode == SyncMode::Peak && d.sync_offset_ms == -5.0 && d.cut_fade == 0.003 &&
+              d.mono == MonoMode::Sum);
         CHECK(d.frames[0].cuts == std::vector<double>{0.2} && d.frames[0].cuts_hand);
         CHECK(d.frames[0].syncs == (std::vector<double>{0.01, 0.21}) && d.frames[0].hand_syncs == std::vector<double>{0.21});
         CHECK(lay->layer_roles == (std::vector<std::string>{"toe", "toe_end"}) && lay->layer_keep_offset);

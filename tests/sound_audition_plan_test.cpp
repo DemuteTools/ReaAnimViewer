@@ -395,50 +395,41 @@ static void TestPartGains()
     d.divide_values = {"a", "b"};
     f.cuts = {1.5};
     d.frames = {f};
-    const std::vector<WholeFileStretch> st = PartGainStretches(d, 3.0);
-    CHECK(st.size() == 4);
-    if (st.size() == 4) {
-        CHECK(Near(st[0].start, 0.0) && Near(st[0].length, 1.0) && Near(st[0].db, 0.0));
-        CHECK(Near(st[1].start, 1.0) && Near(st[1].length, 0.5) && Near(st[1].db, 4.0));
-        CHECK(Near(st[2].start, 1.5) && Near(st[2].length, 0.5) && Near(st[2].db, -3.0));
-        CHECK(Near(st[3].start, 2.0) && Near(st[3].length, 1.0));
+    // 13-29: Edit's Play, each part at its own gain, the piece's fades kept across the parts.
+    SoundLibrary lib;
+    lib.uid = "L";
+    lib.root = "s";
+    SoundNode sn = Node("s", "", SoundNodeType::Sound, "S");
+    sn.sound = d;
+    sn.sound.mode = DetectMode::Silence;
+    lib.nodes.push_back(sn);
+    std::vector<AuditionVoice> st = EditPlayVoices(lib, sn);
+    CHECK(st.size() == 2);
+    if (st.size() == 2) {
+        CHECK(Near(st[0].start_s, 1.0) && Near(st[0].length_s, 0.5) && Near(st[0].gain_db, 4.0) && Near(st[0].delay_ms, 1000.0));
+        CHECK(Near(st[1].start_s, 1.5) && Near(st[1].length_s, 0.5) && Near(st[1].gain_db, -3.0) && Near(st[1].delay_ms, 1500.0));
+        CHECK(Near(st[0].fade_from_s, 0.0) && Near(st[0].fade_span_s, 1.0) && Near(st[1].fade_from_s, 0.5) &&
+              Near(st[1].fade_span_s, 1.0));
+        CHECK(Near(st[0].fade_in_s, kDefaultFadeIn) && Near(st[1].fade_out_s, kDefaultFadeOut));
     }
-    // An excluded zone inside part a: that stretch at the frame's dB, a on both sides of it.
+    // An excluded zone inside part a: silent, the Sound's cut_fade at its edges (two pieces).
     {
-        SoundData z = d;
-        z.zones.push_back({1.2, 0.1, "", {}});
-        const std::vector<WholeFileStretch> sz = PartGainStretches(z, 3.0);
-        CHECK(sz.size() == 6);
-        if (sz.size() == 6) {
-            CHECK(Near(sz[1].start, 1.0) && Near(sz[1].length, 0.2) && Near(sz[1].db, 4.0));
-            CHECK(Near(sz[2].start, 1.2) && Near(sz[2].length, 0.1) && Near(sz[2].db, -3.0));
-            CHECK(Near(sz[3].start, 1.3) && Near(sz[3].length, 0.2) && Near(sz[3].db, 4.0));
-            CHECK(Near(sz[4].start, 1.5) && Near(sz[4].db, -3.0));
+        SoundNode z = sn;
+        z.sound.zones.push_back({1.2, 0.1, "", {}});
+        const std::vector<AuditionVoice> sz = EditPlayVoices(lib, z);
+        CHECK(sz.size() == 3);
+        if (sz.size() == 3) {
+            CHECK(Near(sz[0].start_s, 1.0) && Near(sz[0].length_s, 0.2) && Near(sz[0].gain_db, 4.0) &&
+                  Near(sz[0].fade_out_s, kDefaultCutFade));
+            CHECK(Near(sz[1].start_s, 1.3) && Near(sz[1].length_s, 0.2) && Near(sz[1].gain_db, 4.0) &&
+                  Near(sz[1].fade_in_s, kDefaultCutFade) && Near(sz[1].fade_from_s, 0.0) && Near(sz[1].fade_span_s, 0.7));
+            CHECK(Near(sz[2].start_s, 1.5) && Near(sz[2].gain_db, -3.0) && Near(sz[2].fade_from_s, 0.2));
         }
     }
-    // A second divided frame: each at its own part gains.
-    {
-        SoundData two = d;
-        SoundFrame g;
-        g.start = 2.5;
-        g.length = 0.4;
-        g.db = 0.5;
-        g.cuts = {2.7};
-        g.part_db = {{"b", -6.0}};
-        two.frames.push_back(g);
-        const std::vector<WholeFileStretch> s2 = PartGainStretches(two, 3.0);
-        CHECK(s2.size() == 7);
-        if (s2.size() == 7) {
-            CHECK(Near(s2[1].db, 4.0) && Near(s2[2].db, -3.0));
-            CHECK(Near(s2[3].start, 2.0) && Near(s2[3].length, 0.5) && Near(s2[3].db, 0.0));
-            CHECK(Near(s2[4].start, 2.5) && Near(s2[4].length, 0.2) && Near(s2[4].db, 0.5));
-            CHECK(Near(s2[5].start, 2.7) && Near(s2[5].length, 0.2) && Near(s2[5].db, -6.0));
-            CHECK(Near(s2[6].start, 2.9) && Near(s2[6].db, 0.0));
-        }
-    }
-    // Without part gains: as the frames' version.
-    d.frames[0].part_db.clear();
-    CHECK(PartGainStretches(d, 3.0).size() == 3);
+    // Without part gains: one voice for the variation, at its dB.
+    sn.sound.frames[0].part_db.clear();
+    st = EditPlayVoices(lib, sn);
+    CHECK(st.size() == 1 && Near(st[0].length_s, 1.0) && Near(st[0].gain_db, -3.0) && Near(st[0].fade_span_s, 0.0));
 }
 
 void TestAuditionEnded()
@@ -512,23 +503,144 @@ static void TestFades()
     CHECK(in == 0.0 && out == 0.0);
 }
 
-// The Edit window's Play: each variation at its own dB, the file between them at 0 dB.
-static void TestWholeFileStretches()
+// 13-29: the Edit window's Play plays what is shown, as placed: on variations only (trims, fades, dB, the
+// root's volume), on the file's clock; off variations and the gaps silent; the earlier variation wins.
+static void TestEditPlay()
 {
-    SoundFrame a, b, c;
+    SoundLibrary lib;
+    lib.uid = "L";
+    lib.root = "r";
+    SoundNode r = Node("r", "", SoundNodeType::Random, "R");
+    r.volume_db = -1.0;
+    lib.nodes.push_back(r);
+    SoundNode n = Node("s", "r", SoundNodeType::Sound, "S");
+    n.sound.mode = DetectMode::Silence;
+    SoundFrame a, b, c, off;
     a.start = 1.0, a.length = 1.0, a.db = -3.0;
+    a.fade_in = 0.1;
     b.start = 0.5, b.length = 0.25, b.db = 2.0;  // listed after, starts before
     c.start = 1.5, c.length = 1.0, c.db = -6.0;  // overlaps a: a wins until 2.0
-    const std::vector<WholeFileStretch> w = WholeFileStretches({a, b, c}, 4.0);
-    CHECK(w.size() == 6);
-    auto is = [](const WholeFileStretch& x, double s, double l, double db) {
-        return std::fabs(x.start - s) < 1e-9 && std::fabs(x.length - l) < 1e-9 && x.db == db;
-    };
-    CHECK(is(w[0], 0.0, 0.5, 0.0) && is(w[1], 0.5, 0.25, 2.0) && is(w[2], 0.75, 0.25, 0.0));
-    CHECK(is(w[3], 1.0, 1.0, -3.0) && is(w[4], 2.0, 0.5, -6.0) && is(w[5], 2.5, 1.5, 0.0));
-    // No frame: the whole file once; unknown length: to its end.
-    CHECK(WholeFileStretches({}, 3.0).size() == 1 && is(WholeFileStretches({}, 3.0)[0], 0.0, 3.0, 0.0));
-    CHECK(is(WholeFileStretches({a}, 0.0).back(), 2.0, 0.0, 0.0));
+    off.start = 3.0, off.length = 0.5, off.on = false;
+    n.sound.frames = {a, b, c, off};
+    n.sound.mono = MonoMode::Left;
+    lib.nodes.push_back(n);
+    const std::vector<AuditionVoice> v = EditPlayVoices(lib, n);
+    CHECK(v.size() == 3);
+    if (v.size() == 3) {
+        CHECK(v[0].variation == 1 && Near(v[0].start_s, 0.5) && Near(v[0].length_s, 0.25) && Near(v[0].delay_ms, 500.0) &&
+              Near(v[0].gain_db, 1.0));
+        CHECK(v[1].variation == 0 && Near(v[1].start_s, 1.0) && Near(v[1].gain_db, -4.0) && Near(v[1].fade_in_s, 0.1) &&
+              Near(v[1].fade_out_s, kDefaultFadeOut));
+        CHECK(v[2].variation == 2 && Near(v[2].start_s, 2.0) && Near(v[2].length_s, 0.5) && Near(v[2].delay_ms, 2000.0) &&
+              Near(v[2].fade_from_s, 0.5) && Near(v[2].fade_span_s, 1.0) && Near(v[2].gain_db, -7.0));
+        for (const AuditionVoice& x : v) CHECK(x.mono == MonoMode::Left);
+    }
+    // Nothing on: nothing plays.
+    SoundNode none = n;
+    for (SoundFrame& f : none.sound.frames) f.on = false;
+    CHECK(EditPlayVoices(lib, none).empty());
+    // Takes mode: the take asked for, whole, at delay 0; an off take or a bad index: nothing.
+    SoundNode t = n;
+    t.sound.mode = DetectMode::Takes;
+    const std::vector<AuditionVoice> tv = EditPlayVoices(lib, t, 2);
+    CHECK(tv.size() == 1 && tv[0].variation == 2 && Near(tv[0].delay_ms, 0.0) && Near(tv[0].length_s, 1.0));
+    CHECK(EditPlayVoices(lib, t, 3).empty() && EditPlayVoices(lib, t, -1).empty() && EditPlayVoices(lib, t, 9).empty());
+
+    // Restarted at 1.25 s: the first voice over, the second cut (its fade-in already past), the third later.
+    const std::vector<AuditionVoice> from = VoicesFrom(v, 1.25);
+    CHECK(from.size() == 2);
+    if (from.size() == 2) {
+        CHECK(Near(from[0].start_s, 1.25) && Near(from[0].length_s, 0.75) && Near(from[0].delay_ms, 0.0) &&
+              Near(from[0].fade_from_s, 0.25) && Near(from[0].fade_span_s, 1.0));
+        CHECK(Near(from[1].delay_ms, 750.0) && Near(from[1].fade_from_s, 0.5));
+        // The fades heard after the restart are the ones of the whole variation.
+        CHECK(Near(FadeGainAt(from[0].fade_from_s + 0.0, from[0].fade_span_s, 0.1, 0.005), 1.0));
+    }
+    CHECK(VoicesFrom(v, 0.0).size() == 3 && VoicesFrom(v, 10.0).empty());
+    CHECK(SameVoices(v, EditPlayVoices(lib, n)) && !SameVoices(v, from) && !SameVoices(v, {}));
+    SoundNode louder = n;
+    louder.sound.frames[0].db = -2.5;
+    CHECK(!SameVoices(v, EditPlayVoices(lib, louder)));
+    SoundNode summed = n;
+    summed.sound.mono = MonoMode::Sum;
+    CHECK(!SameVoices(v, EditPlayVoices(lib, summed)));
+}
+
+// 13-41: a sample forced to mono, and the channel mode a placed item gets.
+static void TestMono()
+{
+    CHECK(Near(MonoOf(0.5, -0.25, MonoMode::Left), 0.5) && Near(MonoOf(0.5, -0.25, MonoMode::Right), -0.25));
+    CHECK(Near(MonoOf(0.5, -0.25, MonoMode::Sum), 0.125) && Near(MonoOf(0.5, -0.25, MonoMode::Off), 0.5));
+    SoundLibrary lib;
+    lib.uid = "L";
+    lib.root = "s";
+    SoundNode n = Snd("s", "", "S", {0.4});
+    n.sound.mono = MonoMode::Right;
+    lib.nodes.push_back(n);
+    CHECK(PartAuditionVoices(lib, n, 0, "")[0].mono == MonoMode::Right);
+    CHECK(ZoneAuditionVoice(lib, n, 0.1, 0.1).mono == MonoMode::Right);
+    SoundStore store;
+    const AuditionPlan p = PlanAudition(store, lib, "s", First());
+    CHECK(p.voices.size() == 1 && p.voices[0].mono == MonoMode::Right);
+}
+
+// 13-40: a child of the Mix section auditioned with its own resolution, under its parent's name.
+static void TestChildAudition()
+{
+    SoundStore   store;
+    SoundLibrary lib;
+    lib.uid = "L";
+    lib.root = "r";
+    lib.nodes.push_back(Node("r", "", SoundNodeType::Random, "Shoes"));
+    lib.nodes.push_back(Node("b", "r", SoundNodeType::Blend, "Sneakers"));
+    lib.nodes.push_back(Snd("b1", "b", "Layer 1", {0.2}));
+    SoundNode l2 = Snd("b2", "b", "Layer 2", {0.3});
+    l2.offset_ms = 20.0;
+    lib.nodes.push_back(l2);
+    lib.nodes.push_back(Node("h", "r", SoundNodeType::Random, "HighHeel"));
+    lib.nodes.push_back(Snd("h1", "h", "heel_a", {0.1}));
+    lib.nodes.push_back(Snd("h2", "h", "heel_b", {0.1}));
+    // The Blend child: both its layers, named from the child, the parent as the root.
+    AuditionPlan p = PlanChildAudition(store, lib, "r", "b", First());
+    CHECK(p.root == "r" && p.voices.size() == 2);
+    if (p.voices.size() == 2) {
+        CHECK(p.voices[0].path == (std::vector<std::string>{"b", "b1"}) && Near(p.voices[1].delay_ms, 20.0));
+        CHECK(p.played == "Sneakers \xE2\x80\xBA Layer 1 + Sneakers \xE2\x80\xBA Layer 2");
+    }
+    std::set<std::string> lit = LitAt(p, 1.0);
+    CHECK(lit.count("r") && lit.count("b") && lit.count("b1") && !lit.count("h"));
+    // The Random child draws one of its own children (the picker's second).
+    AuditionPicker second = First();
+    second.pick_child = [](const SoundNode&, int count) { return count > 1 ? 1 : 0; };
+    p = PlanChildAudition(store, lib, "r", "h", second);
+    CHECK(p.voices.size() == 1 && p.voices[0].path == (std::vector<std::string>{"h", "h2"}) &&
+          p.played == "HighHeel \xE2\x80\xBA heel_b");
+    // A Sound child: itself.
+    p = PlanChildAudition(store, lib, "h", "h1", First());
+    CHECK(p.voices.size() == 1 && p.played == "heel_a" && p.root == "h");
+    // Not a child of that parent / unknown: nothing.
+    CHECK(PlanChildAudition(store, lib, "r", "h1", First()).voices.empty());
+    CHECK(PlanChildAudition(store, lib, "r", "zz", First()).voices.empty());
+}
+
+// 13-46: the Sound panel's "Divided by" line.
+static void TestDividedByText()
+{
+    SoundStore  store;
+    SwitchGroup g;
+    g.uid = "g";
+    g.name = "Foot part";
+    g.values = {{"vh", "Heel", {}, {}}, {"vt", "Toe", {}, {}}};
+    store.groups.push_back(g);
+    SoundData d;
+    CHECK(DividedByText(store, d).empty());
+    d.divide_group = "g";
+    d.divide_values = {"vh", "vt"};
+    CHECK(DividedByText(store, d) == "Divided by Foot part (Heel / Toe)");
+    d.divide_values = {"vt", "gone"};
+    CHECK(DividedByText(store, d) == "Divided by Foot part (Toe / ?)");
+    d.divide_group = "deleted";
+    CHECK(DividedByText(store, d) == "Divided by ? (? / ?)");
 }
 
 // 13-20 / 13-23: a part played alone, its pieces (the gap of an excluded zone kept), cut_fade at a cut
@@ -604,7 +716,10 @@ static void TestPartsAudition()
 
 int main()
 {
-    TestWholeFileStretches();
+    TestEditPlay();
+    TestMono();
+    TestChildAudition();
+    TestDividedByText();
     TestBlend();
     TestSwitch();
     TestRandomAvoid();

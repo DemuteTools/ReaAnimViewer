@@ -56,6 +56,11 @@ struct AuditionVoice {
     int                      fade_out_shape = 0;
     std::vector<std::string> path;           // uids from the auditioned node's child to the Sound
     int                      piece = 0;      // 13-20 / 13-23: its piece of the variation (0 = the first)
+    // 13-29: a voice that is a window of a longer faded stretch (a part of a piece, or a voice restarted
+    // mid-way): its fades are those of [fade_from_s, ...) inside a stretch of fade_span_s (0 = itself).
+    double                   fade_from_s = 0.0;
+    double                   fade_span_s = 0.0;
+    MonoMode                 mono = MonoMode::Off;  // 13-41: the Sound's
 };
 
 struct AuditionPlan {
@@ -132,17 +137,30 @@ bool FrameEditAllowed(DetectMode mode, FrameEdit edit);
 // The selection Normalize works on: the selected frames (NormalizeRegions keeps the on ones); {} =
 // every frame (no selection); {-1} = none when only off frames are selected.
 std::vector<int> NormalizeSelection(const std::vector<SoundFrame>& frames, const std::vector<int>& selected);
-// The Edit window's Play (the whole file) in stretches of the file, each with its gain: a variation
-// plays at its own dB, the file between them at 0 dB, so a Normalize or a dB drag is heard at once.
-// Overlapping frames: the earlier one wins until it ends. `file_len` <= 0 = unknown (the last
-// stretch then plays to the file's end, length 0).
-struct WholeFileStretch {
-    double start = 0.0, length = 0.0, db = 0.0;
-};
-std::vector<WholeFileStretch> WholeFileStretches(const std::vector<SoundFrame>& frames, double file_len);
-// 13-28: the same for a Sound, each part of a divided variation at its own gain (FrameGainDb) when it has
-// one (an excluded stretch at the variation's dB).
-std::vector<WholeFileStretch> PartGainStretches(const SoundData& data, double file_len);
+// 13-29 (Antho 2026-10-13: Play in Edit plays exactly what is shown): the Edit window's Play, on the file's
+// clock (a voice's delay = its start in the file, so the playhead follows the file). Every variation that is
+// on plays as Populate places it on a combined event (PartAuditionVoices with part ""): its trims, its fades,
+// its dB, the excluded zones silent with the Sound's cut_fade at their edges; off variations and the file
+// between variations are silent. A divided variation whose parts have their own gain (13-28 part_db) plays
+// each part at it, one voice per part, the piece's fades kept across them (fade_from_s / fade_span_s).
+// Overlapping variations: the earlier one wins until it ends. Takes mode: take `take` whole as placed
+// (each take is its own file), at delay 0; -1 or a bad index = nothing.
+std::vector<AuditionVoice> EditPlayVoices(const SoundLibrary& lib, const SoundNode& n, int take = -1);
+// The voices as heard from `from_s` s into them (a Play restarted where it was): those over are dropped,
+// the one under it cut (start, length, fade_from_s moved), every delay shifted back by from_s.
+std::vector<AuditionVoice> VoicesFrom(const std::vector<AuditionVoice>& voices, double from_s);
+// Whether two voice lists play the same (a changed one restarts Edit's Play).
+bool SameVoices(const std::vector<AuditionVoice>& a, const std::vector<AuditionVoice>& b);
+// 13-41: a voice's sample forced to mono from its left / right samples: Left l, Right r, Sum (l + r) / 2;
+// Off l (the caller keeps the channels). The peaks drawn use it too (per column, on the lanes' max abs).
+double MonoOf(double l, double r, MonoMode mono);
+
+// 13-40: what the Play button / Space plays when child `child_uid` of `parent_uid` is selected in its Mix
+// section: the child's own resolution (a Random draws, a Switch its preview / default value, a Blend its
+// layers), named from the child ("Child › grass_b"), with the parent as the plan's root (the parent's panel
+// shows Stop and "played: ..."; the child's row is lit). An unknown child: an empty plan.
+AuditionPlan PlanChildAudition(const SoundStore& store, const SoundLibrary& lib, const std::string& parent_uid,
+                               const std::string& child_uid, const AuditionPicker& picker);
 
 // "D → N variations · K off" (decision 7): "D → " dropped when D = N, " · K off" when K = 0;
 // "1 variation" singular.

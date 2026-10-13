@@ -197,6 +197,17 @@ double ItemGainFor(double gain_db)
     return std::pow(10.0, gain_db / 20.0);
 }
 
+int ChanModeFor(MonoMode mono)
+{
+    switch (mono) {
+    case MonoMode::Sum: return 2;
+    case MonoMode::Left: return 3;
+    case MonoMode::Right: return 4;
+    case MonoMode::Off: break;
+    }
+    return 0;
+}
+
 std::string PlacedItemRefusal(bool found, bool has_tag, bool folder, Ownership own, bool edit)
 {
     if (!found) return "item missing";

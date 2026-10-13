@@ -242,6 +242,18 @@ const char* const kNodeWords[] = {"sound", "random", "blend", "switch"};
 const char* const kOwnWords[] = {"populated", "attached", "spread", "deleted"};
 const char* const kModeWords[] = {"whole", "takes", "tmarkers", "silence"};
 const char* const kSyncWords[] = {"attack", "peak", "start"};
+// 13-41: MonoMode, Off never written.
+const char* const kMonoWords[] = {"off", "left", "right", "sum"};
+
+bool MonoFromWord(const std::string& s, MonoMode* out)
+{
+    for (int i = 0; i < 4; ++i)
+        if (s == kMonoWords[i]) {
+            *out = static_cast<MonoMode>(i);
+            return true;
+        }
+    return false;
+}
 
 bool SyncFromWord(const std::string& s, SyncMode* out)
 {
@@ -480,6 +492,7 @@ Fields SoundFields(const SoundData& s)
     if (s.sync_mode != d.sync_mode) f.push_back({"sync", kSyncWords[static_cast<int>(s.sync_mode)]});
     if (s.sync_offset_ms != d.sync_offset_ms) f.push_back({"soff", FormatNumber(s.sync_offset_ms)});
     if (s.cut_fade != d.cut_fade) f.push_back({"cfade", FormatNumber(s.cut_fade)});
+    if (s.mono != d.mono) f.push_back({"mono", kMonoWords[static_cast<int>(s.mono)]});
     return f;
 }
 
@@ -521,6 +534,7 @@ Got SetSound(SoundData& s, const std::string& k, const std::string& v)
     if (k == "sync") return G(SyncFromWord(v, &s.sync_mode));
     if (k == "soff") return G(ReadNumber(v, &s.sync_offset_ms));
     if (k == "cfade") return G(ReadNumber(v, &s.cut_fade));
+    if (k == "mono") return G(MonoFromWord(v, &s.mono));
     return Got::Unknown;
 }
 

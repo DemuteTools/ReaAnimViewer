@@ -1439,4 +1439,19 @@ NormalizeOutcome ApplyNormalize(std::vector<SoundFrame>& frames, NormScope scope
     return out;
 }
 
+std::string DividedByText(const SoundStore& store, const SoundData& data)
+{
+    if (!IsDivided(data)) return {};
+    const SwitchGroup* g = FindGroup(store, data.divide_group);
+    std::string        vals;
+    for (const std::string& v : data.divide_values) {
+        std::string name = "?";
+        if (g)
+            for (const SwitchValue& x : g->values)
+                if (x.uid == v) name = x.name;
+        vals += (vals.empty() ? "" : " / ") + name;
+    }
+    return "Divided by " + (g ? g->name : std::string("?")) + " (" + vals + ")";
+}
+
 }  // namespace rav

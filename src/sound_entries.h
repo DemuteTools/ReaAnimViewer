@@ -292,4 +292,8 @@ struct NormalizeOutcome {
 NormalizeOutcome ApplyNormalize(std::vector<SoundFrame>& frames, NormScope scope, const std::vector<NormRegion>& regions,
                                 const std::vector<double>& adj_db);
 
+// 13-46: the Sound panel's read-only line for a divided Sound: "Divided by <Group> (<value> / <value>)",
+// its divide values in their order (a deleted value reads "?", a deleted group "?"); "" when combined.
+std::string DividedByText(const SoundStore& store, const SoundData& data);
+
 }  // namespace rav

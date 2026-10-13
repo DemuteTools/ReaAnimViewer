@@ -359,6 +359,10 @@ PlaceRequest RequestFor(MediaItem* owner, const std::string& rid, double event_t
     }
     req.part = rs.part_value;
     req.gain_db = rs.gain_db;  // ResolveEvent already added the frame's dB
+    // 13-29 / 13-41: placed as the audition plays it (no take FX, pan, playrate / pitch of the source item),
+    // forced to mono as the Sound says.
+    req.as_auditioned = true;
+    req.chan_mode = ChanModeFor(sd.mono);
     req.blend_ms = rs.offset_ms;
     return req;
 }

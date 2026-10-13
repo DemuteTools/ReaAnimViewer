@@ -160,6 +160,14 @@ struct PanelState {
     int                   menu_frame = -1, menu_kind = 0;
     bool                  roles_more = false;
     bool                  layer_roles_more = false;  // 13-31: the "plays on" list's own "More roles"
+    // 13-29: Edit's Play -- the voices it plays (EditPlayVoices), the audition's clock offset into them at its
+    // last (re)start, the file time at clock 0 (a take's start in Takes mode), when the Sound shown first
+    // differed from them (a restart waits for the change to settle; < 0 = none).
+    std::vector<AuditionVoice> edit_voices;
+    double                edit_from = 0.0, edit_head0 = 0.0;
+    double                edit_changed_at = -1.0;
+    // 13-40: the Mix row selected (its parent and the child): Play / Space plays that child.
+    std::string           mix_parent, mix_child;
 };
 PanelState P;
 
@@ -340,41 +348,64 @@ bool FolderSourced(const SoundData& d)
     return it && IsFolderItem(it);
 }
 
+// A voice of a plan as PlayVoices plays it, from `path`.
+PlayVoice ToPlayVoice(const AuditionVoice& v, const std::string& path)
+{
+    PlayVoice p;
+    p.path = path;
+    p.start_s = v.start_s;
+    p.length_s = v.length_s;
+    p.delay_s = v.delay_ms / 1000.0;
+    p.gain = DbToGain(v.gain_db);
+    p.fade_in_s = v.fade_in_s;
+    p.fade_out_s = v.fade_out_s;
+    p.fade_in_shape = v.fade_in_shape;
+    p.fade_out_shape = v.fade_out_shape;
+    p.fade_from_s = v.fade_from_s;
+    p.fade_span_s = v.fade_span_s;
+    p.mono = v.mono;
+    return p;
+}
+
+// Plays `plan` tagged `tag`: the voices whose file is read; P.plan then names only the voices that play
+// (13-7b review: a file PlayVoices could not open is not named). False, with `why`, when nothing plays.
+bool PlayPlan(const std::string& lib_uid, const SoundLibrary& lib, AuditionPlan plan, const std::string& tag,
+              std::string* why)
+{
+    std::vector<PlayVoice>     pv;
+    std::vector<AuditionVoice> read;
+    for (const AuditionVoice& v : plan.voices) {
+        const SoundNode* s = FindNode(lib, v.node);
+        SoundMedia       m;
+        if (!s || !ReadSoundMedia(s->sound.source, &m)) continue;
+        PlayVoice p = ToPlayVoice(v, VariationPath(m, s->sound, v.variation));
+        if (FolderSourced(s->sound)) p.fade_in_s = p.fade_out_s = 0.0;  // placed without fades
+        pv.push_back(p);
+        read.push_back(v);
+    }
+    std::string reason = plan.voices.empty() ? std::string("nothing to play")
+                         : pv.empty()        ? std::string("the sound files are not found")
+                                             : std::string();
+    std::vector<int> kept;
+    const bool       ok = !pv.empty() && PlayVoices(pv, tag, &reason, &kept);
+    if (why) *why = reason;
+    if (!ok) return false;
+    plan.voices.clear();
+    for (int k : kept)
+        if (k >= 0 && static_cast<size_t>(k) < read.size()) plan.voices.push_back(read[static_cast<size_t>(k)]);
+    plan.played = PlayedText(lib, plan.voices);  // only the voices that play
+    P.plan = plan;
+    P.plan_lib = lib_uid;
+    return true;
+}
+
 void PlayNode(const std::string& lib_uid, const std::string& uid)
 {
     const SoundStore&   store = GetSoundStore(nullptr);
     const SoundLibrary* lib = FindLibrary(store, lib_uid);
     if (!lib) return;
-    AuditionPlan           plan = PlanAudition(store, *lib, uid, P.hist.Picker());
-    std::vector<PlayVoice> pv;
-    std::vector<AuditionVoice> played;
-    for (const AuditionVoice& v : plan.voices) {
-        const SoundNode* s = FindNode(*lib, v.node);
-        SoundMedia       m;
-        if (!s || !ReadSoundMedia(s->sound.source, &m)) continue;
-        PlayVoice p;
-        p.path = VariationPath(m, s->sound, v.variation);
-        p.start_s = v.start_s;
-        p.length_s = v.length_s;
-        p.delay_s = v.delay_ms / 1000.0;
-        p.gain = DbToGain(v.gain_db);
-        p.fade_in_s = v.fade_in_s;
-        p.fade_out_s = v.fade_out_s;
-        p.fade_in_shape = v.fade_in_shape;
-        p.fade_out_shape = v.fade_out_shape;
-        if (FolderSourced(s->sound)) p.fade_in_s = p.fade_out_s = 0.0;  // placed without fades
-        pv.push_back(p);
-        played.push_back(v);
-    }
-    std::string why = plan.voices.empty() ? std::string("nothing to play") : std::string();
-    if (!pv.empty() && PlayVoices(pv, uid, &why)) {
-        plan.voices = played;
-        plan.played = PlayedText(*lib, played);  // only the voices that play
-        P.plan = plan;
-        P.plan_lib = lib_uid;
-        return;
-    }
-    if (!plan.voices.empty() && pv.empty()) why = "the sound files are not found";
+    std::string why;
+    if (PlayPlan(lib_uid, *lib, PlanAudition(store, *lib, uid, P.hist.Picker()), uid, &why)) return;
     // Fallback (decision 2): the selected Sound's one variation.
     const SoundNode* n = FindNode(*lib, uid);
     if (n && n->type == SoundNodeType::Sound) {
@@ -382,17 +413,18 @@ void PlayNode(const std::string& lib_uid, const std::string& uid)
         SoundMedia             m;
         if (!act.empty() && ReadSoundMedia(n->sound.source, &m)) {
             const SoundFrame& f = n->sound.frames[static_cast<size_t>(act.front())];
-            double            fin = 0.0, fout = 0.0;
-            int               shin = 0, shout = 0;
-            AuditionFades(n->sound, act.front(), &fin, &fout, &shin, &shout, FolderSourced(n->sound));
-            if (AuditionFile(VariationPath(m, n->sound, act.front()), f.start, f.length, uid,
-                             DbToGain(GainFromRoot(*lib, *n) + f.db), fin, fout, shin, shout)) {
+            AuditionVoice     v;
+            v.node = uid;
+            v.variation = act.front();
+            v.start_s = f.start;
+            v.length_s = f.length;
+            v.gain_db = GainFromRoot(*lib, *n) + f.db;
+            v.mono = n->sound.mono;
+            AuditionFades(n->sound, act.front(), &v.fade_in_s, &v.fade_out_s, &v.fade_in_shape, &v.fade_out_shape,
+                          FolderSourced(n->sound));
+            if (PlayVoices({ToPlayVoice(v, VariationPath(m, n->sound, act.front()))}, uid)) {
                 AuditionPlan one;
                 one.root = uid;
-                AuditionVoice v;
-                v.node = uid;
-                v.variation = act.front();
-                v.length_s = f.length;
                 one.voices = {v};
                 one.played = n->name;
                 P.plan = one;
@@ -402,6 +434,30 @@ void PlayNode(const std::string& lib_uid, const std::string& uid)
         }
     }
     ShowLibraryToast("Cannot play: " + (why.empty() ? std::string("unknown reason") : why), false);
+}
+
+// 13-40: the Mix row selected under `n` (still one of its children), "" = none. Only a Random or a Switch
+// has a Mix section.
+std::string MixSelected(const SoundLibrary& lib, const SoundNode& n)
+{
+    if (n.type != SoundNodeType::Random && n.type != SoundNodeType::Switch) return {};
+    if (P.mix_parent != n.uid || P.mix_child.empty()) return {};
+    const SoundNode* k = FindNode(lib, P.mix_child);
+    return k && k->parent == n.uid ? P.mix_child : std::string();
+}
+
+// 13-40: the panel's Play / Space: the Mix row selected (that child, resolved as itself, under the
+// panel's node), else the node.
+void PlayPanel(const SoundLibrary& lib, const SoundNode& n)
+{
+    const std::string child = MixSelected(lib, n);
+    if (child.empty()) {
+        PlayNode(lib.uid, n.uid);
+        return;
+    }
+    std::string why;
+    if (!PlayPlan(lib.uid, lib, PlanChildAudition(GetSoundStore(nullptr), lib, n.uid, child, P.hist.Picker()), n.uid, &why))
+        ShowLibraryToast("Cannot play: " + (why.empty() ? std::string("unknown reason") : why), false);
 }
 
 void StopPlay() { StopAudition(); }
@@ -436,11 +492,15 @@ void PlayFrame(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m,
     const SoundData& d = Shown(n);
     if (i < 0 || static_cast<size_t>(i) >= d.frames.size()) return;
     const SoundFrame& f = d.frames[static_cast<size_t>(i)];
-    double            fin = 0.0, fout = 0.0;
-    int               shin = 0, shout = 0;
-    AuditionFades(d, i, &fin, &fout, &shin, &shout, FolderSourced(d));
-    if (!AuditionFile(VariationPath(m, d, i), f.start, f.length, "frame:" + n.uid, DbToGain(GainFromRoot(lib, n) + f.db),
-                      fin, fout, shin, shout))
+    AuditionVoice     v;
+    v.node = n.uid;
+    v.variation = i;
+    v.start_s = f.start;
+    v.length_s = f.length;
+    v.gain_db = GainFromRoot(lib, n) + f.db;
+    v.mono = d.mono;  // 13-41
+    AuditionFades(d, i, &v.fade_in_s, &v.fade_out_s, &v.fade_in_shape, &v.fade_out_shape, FolderSourced(d));
+    if (!PlayVoices({ToPlayVoice(v, VariationPath(m, d, i))}, "frame:" + n.uid))
         ShowLibraryToast("Cannot play: the sound file is not read", false);
     else P.frame_start = f.start;
 }
@@ -452,17 +512,7 @@ void PlaySoundVoices(const SoundNode& n, const SoundMedia& m, const std::vector<
     std::vector<PlayVoice> pv;
     for (const AuditionVoice& v : voices) {
         if (!(v.length_s > 0.0)) continue;
-        PlayVoice p;
-        p.path = v.variation >= 0 ? VariationPath(m, n.sound, v.variation) : m.path;
-        p.start_s = v.start_s;
-        p.length_s = v.length_s;
-        p.delay_s = v.delay_ms / 1000.0;
-        p.gain = DbToGain(v.gain_db);
-        p.fade_in_s = v.fade_in_s;
-        p.fade_out_s = v.fade_out_s;
-        p.fade_in_shape = v.fade_in_shape;
-        p.fade_out_shape = v.fade_out_shape;
-        pv.push_back(p);
+        pv.push_back(ToPlayVoice(v, v.variation >= 0 ? VariationPath(m, n.sound, v.variation) : m.path));
     }
     if (pv.empty()) {
         ShowLibraryToast("Nothing to play there", false);
@@ -494,7 +544,7 @@ double SoundPlayhead(const SoundNode& n)
 {
     if (!AuditionPlaying()) return -1.0;
     const std::string& tag = AuditionTag();
-    if (tag == "whole:" + n.uid) return AuditionPosition();
+    if (tag == "whole:" + n.uid) return P.edit_head0 + P.edit_from + AuditionPosition();  // 13-29: Edit's Play
     if (tag == "frame:" + n.uid) return P.frame_start + AuditionPosition();
     return -1.0;
 }
@@ -902,7 +952,9 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
     // both. hh: a lane's half height; LaneMid(l): its zero line; LaneAt(y): the lane at y.
     PeakData   pk;
     const bool have_peaks = ReadPeaks(path, vs, vl, w / vl, &pk);
-    const int  lanes = split ? nparts : have_peaks ? PeakChannels(pk) : 1;  // Split: a mono lane per value
+    // 13-41: a Sound forced to mono draws one lane, the channel (or L + R) heard.
+    const bool mono = o.mono != MonoMode::Off && have_peaks && PeakChannels(pk) == 2 && !split;
+    const int  lanes = split ? nparts : mono ? 1 : have_peaks ? PeakChannels(pk) : 1;  // Split: a mono lane per value
     const float lane_h = (b.y - a.y) / static_cast<float>(lanes), hh = std::max(1.0f, lane_h * 0.5f - 3.0f);
     auto LaneMid = [&](int l) { return a.y + lane_h * (static_cast<float>(l) + 0.5f); };
     auto LaneAt = [&](float y) { return std::clamp(static_cast<int>((y - a.y) / std::max(1.0f, lane_h)), 0, lanes - 1); };
@@ -945,7 +997,10 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
             const double g = fi >= 0 ? DbToGain(FrameGainDb(frames[static_cast<size_t>(fi)], own_k >= 0 ? own : std::string())) : 1.0;
             for (int l = 0; l < lanes; ++l) {
                 const float  mid = LaneMid(l);
-                const double amp = (split ? pk.max_abs : PeakLane(pk, l))[i] * g;
+                const double raw = mono  ? std::fabs(MonoOf(pk.lanes[0][i], pk.lanes[1][i], o.mono))
+                                   : split ? pk.max_abs[i]
+                                           : PeakLane(pk, l)[i];
+                const double amp = raw * g;
                 const float  y = static_cast<float>(std::min(amp, 1.0)) * hh;
                 ImU32 col = in ? ui::kAccent : ui::kMuted;
                 if (split) {
@@ -2052,6 +2107,7 @@ void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n,
             o.ruler = in_edit && i == 0;
             o.big_numbers = in_edit;
             if (i < fades.size()) o.fades = {fades[i]};
+            o.mono = d.mono;  // 13-41
             std::vector<int> sel;
             if (std::find(P.sel.begin(), P.sel.end(), static_cast<int>(i)) != P.sel.end()) sel.push_back(0);
             char lid[64];
@@ -2073,6 +2129,7 @@ void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n,
     o.wheel = in_edit;
     o.big_numbers = in_edit;
     o.fades = fades;
+    o.mono = d.mono;  // 13-41
     if (in_edit) {
         o.view_start = P.view_start;
         o.view_len = P.view_len;
@@ -3310,6 +3367,66 @@ void CutFadeControl(const SoundLibrary& lib, const SoundNode& n)
     }
 }
 
+// ---- 13-29 / 13-41: Edit's Play and Mono ----------------------------------------------------------------
+
+// What Edit's Play plays now: the Sound as shown (a live drag included), EditPlayVoices; Takes mode the
+// first selected take that is on, else the first take that is on.
+std::vector<AuditionVoice> EditVoicesNow(const SoundLibrary& lib, const SoundNode& n)
+{
+    SoundNode shown = n;
+    shown.sound = Shown(n);
+    const SoundData& d = shown.sound;
+    int              take = -1;
+    if (d.mode == DetectMode::Takes) {
+        for (int i : P.sel)
+            if (take < 0 && i >= 0 && static_cast<size_t>(i) < d.frames.size() && d.frames[static_cast<size_t>(i)].on) take = i;
+        const std::vector<int> act = ActiveVariations(d);
+        if (take < 0 && !act.empty()) take = act.front();
+    }
+    std::vector<AuditionVoice> v = EditPlayVoices(lib, shown, take);
+    if (FolderSourced(d))
+        for (AuditionVoice& x : v) x.fade_in_s = x.fade_out_s = 0.0;  // a folder pile is placed without fades
+    return v;
+}
+
+// Plays `voices` from `from_s` s into them, tagged "whole:<uid>" (the playhead: SoundPlayhead).
+bool StartEditPlay(const SoundNode& n, const SoundMedia& m, const std::vector<AuditionVoice>& voices, double from_s)
+{
+    const SoundData&       d = Shown(n);
+    std::vector<PlayVoice> pv;
+    for (const AuditionVoice& v : VoicesFrom(voices, from_s))
+        pv.push_back(ToPlayVoice(v, v.variation >= 0 ? VariationPath(m, d, v.variation) : m.path));
+    P.edit_voices = voices;
+    P.edit_from = from_s;
+    P.edit_changed_at = -1.0;
+    P.edit_head0 = d.mode == DetectMode::Takes && !voices.empty() ? voices.front().start_s : 0.0;
+    return !pv.empty() && PlayVoices(pv, "whole:" + n.uid);
+}
+
+// 13-41: Mono -- Off (as the file) / Left / Right / Sum: heard on Play and on audition, placed as the
+// take's channel mode (I_CHANMODE), one lane on the waveform. One undo point per pick.
+void MonoControl(const SoundLibrary& lib, const SoundNode& n)
+{
+    static const char* const kLabels[4] = {"Off", "Left", "Right", "Sum"};
+    static const char* const kTips[4] = {"As the file: a stereo file stays stereo",
+                                         "The left channel alone, on both sides",
+                                         "The right channel alone, on both sides", "Left + right mixed into one channel"};
+    static const char* const kWords[4] = {"off (as the file)", "left", "right", "sum L+R"};
+    ui::LabelRow("Mono", ui::Dp(160.0f), ui::Dp(70.0f));
+    int        sel = static_cast<int>(n.sound.mono);
+    const bool picked = ui::Segmented("##mono", kLabels, 4, &sel);
+    const int  hov = ui::SegmentedHovered();
+    if (hov >= 0 && hov < 4) ui::ShowTip(kTips[hov]);
+    if (picked && sel >= 0 && sel < 4 && sel != static_cast<int>(n.sound.mono)) {
+        const MonoMode mode = static_cast<MonoMode>(sel);
+        EditNode("Mono", lib.uid, n.uid, [mode](SoundNode& x) {
+            if (x.sound.mono == mode) return false;
+            x.sound.mono = mode;
+            return true;
+        }, std::string("Mono: ") + kWords[sel]);
+    }
+}
+
 // ---- the Edit overlay -------------------------------------------------------------------------------
 
 void DrawEditOverlay()
@@ -3348,39 +3465,41 @@ void DrawEditOverlay()
         const bool keys = focused && !ImGui::GetIO().WantTextInput && !ui::DragNumberActive() &&
                           P.edit_opened != ImGui::GetFrameCount();  // the E that opened it
         const bool whole_playing = AuditionPlaying() && AuditionTag() == "whole:" + n->uid;
-        auto       toggle_play = [&] {
+        // 13-29: a change made while Play plays is heard: once the Sound shown has settled (0.15 s, a drag
+        // restarts only when it pauses or ends), Play restarts from where it was.
+        if (whole_playing) {
+            const std::vector<AuditionVoice> now = EditVoicesNow(*lib, *n);
+            if (SameVoices(now, P.edit_voices)) {
+                P.edit_changed_at = -1.0;
+            } else if (P.edit_changed_at < 0.0) {
+                P.edit_changed_at = ImGui::GetTime();
+            } else if (ImGui::GetTime() - P.edit_changed_at >= 0.15) {
+                if (!StartEditPlay(*n, m, now, P.edit_from + AuditionPosition())) StopAudition();
+            }
+        }
+        auto toggle_play = [&] {
             if (AuditionPlaying()) {
                 StopAudition();
                 return;
             }
-            // Antho 2026-10-13: each variation at its own dB (a Normalize is heard at once, not after
-            // Done); Takes mode plays the active take's file as it is.
-            const SoundData& d = Shown(*n);
-            const double     root_db = GainFromRoot(*lib, *n);
-            bool             ok = false;
-            if (d.mode != DetectMode::Takes) {
-                std::vector<PlayVoice> pv;
-                for (const WholeFileStretch& st : PartGainStretches(d, m.source_len)) {  // 13-28: parts at their own gain
-                    PlayVoice v;
-                    v.path = m.path;
-                    v.start_s = st.start;
-                    v.length_s = st.length;
-                    v.delay_s = st.start;  // the audition's clock = the file's time (the playhead)
-                    v.gain = DbToGain(root_db + st.db);
-                    pv.push_back(v);
-                }
-                ok = PlayVoices(pv, "whole:" + n->uid);
-            } else {
-                ok = AuditionFile(m.path, 0.0, 0.0, "whole:" + n->uid, DbToGain(root_db));
-            }
-            if (!ok) ShowLibraryToast("Cannot play: the sound file is not read", false);
+            // 13-29 (Antho 2026-10-13): what is shown, as placed -- EditPlayVoices.
+            const std::vector<AuditionVoice> v = EditVoicesNow(*lib, *n);
+            if (v.empty())
+                ShowLibraryToast(Shown(*n).mode == DetectMode::Takes ? "Nothing to play: select a take that is on"
+                                                                     : "Nothing to play: every variation is off",
+                                 false);
+            else if (!StartEditPlay(*n, m, v, 0.0))
+                ShowLibraryToast("Cannot play: the sound file is not read", false);
         };
         // Header (13-7b, the mockup's .edhead): "▶ Play" / "■ Stop", the name (15 px semibold) and the
         // count (muted), then the tools at the top right: − + Fit, ?, Done (primary), ✕.
         if (ui::ToggleButton(whole_playing ? "\xE2\x96\xA0 Stop##editplay" : "\xE2\x96\xB6 Play##editplay", whole_playing,
                              ImVec2(0.0f, ui::LargeH())))
             toggle_play();
-        ui::ItemTipText("Play the whole file (Space) \xC2\xB7 Esc stops");
+        ui::ItemTipText(Shown(*n).mode == DetectMode::Takes
+                            ? "Play the selected take as placed (Space) \xC2\xB7 Esc stops"
+                            : "Play the variations as placed, on the file's time: fades, dB, cuts, excluded zones, mono "
+                              "(Space) \xC2\xB7 a change is heard at once \xC2\xB7 Esc stops");
         ImGui::SameLine(0.0f, ui::Dp(10.0f));
         std::string count = VariationCountText(DetectedCount(n->uid, m, Shown(*n)), Shown(*n).frames);
         {  // 13-20 / 13-23: "· z excluded zones · divided by G"
@@ -3498,6 +3617,7 @@ void DrawEditOverlay()
                 ui::GroupCaption("Level", ui::kMuted);
                 if (m.ok) LevelSection(*lib, *n, m);
                 else if (P.norm_job.active) CancelNormJob();  // 13-28: the media stopped reading
+                if (!StoreReplaced()) MonoControl(*lib, *n);         // 13-41
                 if (!StoreReplaced()) {  // Antho 2026-10-13: the fades here too
                     ImGui::Dummy(ImVec2(1.0f, ui::Dp(6.0f)));
                     ui::GroupCaption("Fades", ui::kMuted);
@@ -3542,9 +3662,17 @@ void DrawHeader(const SoundStore& store, const SoundLibrary& lib, const SoundNod
     const bool playing = NodePlaying(n.uid) || (AuditionPlaying() && AuditionTag() == "frame:" + n.uid);
     if (ui::ToggleButton(playing ? "\xE2\x96\xA0 Stop##play" : "\xE2\x96\xB6 Play##play", playing, ImVec2(0.0f, ui::LargeH()))) {
         if (playing) StopPlay();
-        else PlayNode(lib.uid, n.uid);
+        else PlayPanel(lib, n);  // 13-40: the Mix row selected, else the node
     }
-    ui::ItemTipText(playing ? "Stop (Esc)" : "Play what Populate would place for one event (Space)");
+    {
+        const std::string child = MixSelected(lib, n);
+        const SoundNode*  k = child.empty() ? nullptr : FindNode(lib, child);
+        const std::string tip = playing ? std::string("Stop (Esc)")
+                                : k     ? "Play the child selected in Mix, " + NodeName(store, *k) +
+                                          ", as it plays on its own (Space); click its row again for the whole node"
+                                        : std::string("Play what Populate would place for one event (Space)");
+        ui::ItemTipText(tip.c_str());
+    }
     const bool        sound = n.type == SoundNodeType::Sound;
     const float       min_title = ui::Dp(sound ? 140.0f : 60.0f);
     const float       sp = ui::Dp(8.0f);  // .pane-h gap
@@ -3777,15 +3905,33 @@ void DrawMix(const SoundStore& store, const SoundLibrary& lib, const SoundNode& 
     if (ui::BeginSection(s, "Mix", opts)) {
         if (kids.empty()) FitText("No children", ui::kFaint);
         const float icon_col = ui::Dp(18.0f) + ImGui::GetStyle().ItemSpacing.x;
+        const std::string selected = MixSelected(lib, n);  // 13-40
         for (const SoundNode* k : kids) {
             if (StoreReplaced()) break;
             ImGui::PushID(k->uid.c_str());
             const ImVec2 ip = ImGui::GetCursorScreenPos();
-            ui::PaintIconAt(ImGui::GetWindowDrawList(), TypeIcon(k->type), ip.x, ip.y, ImGui::GetFrameHeight());
+            ImDrawList*  dl = ImGui::GetWindowDrawList();
+            // 13-40: the selected row's fill under the row (drawn first: channel 0).
+            dl->ChannelsSplit(2);
+            dl->ChannelsSetCurrent(1);
+            ui::PaintIconAt(dl, TypeIcon(k->type), ip.x, ip.y, ImGui::GetFrameHeight());
             ImGui::SetCursorScreenPos(ImVec2(ip.x + icon_col, ip.y));
             const float avail = ImGui::GetContentRegionAvail().x;
             const float name_col = std::clamp(avail * 0.4f, ui::Dp(80.0f), ui::Dp(150.0f));
-            ui::LabelRowText(MixLabel(store, n, *k), ui::Dp(120.0f), name_col, IsLit(k->uid) ? ui::kAccent : ui::kText);
+            const bool  is_sel = selected == k->uid;
+            ui::LabelRowText(MixLabel(store, n, *k), ui::Dp(120.0f), name_col,
+                             IsLit(k->uid) ? ui::kAccent : is_sel ? ui::kAccentText : ui::kText);
+            // 13-40: a click on its icon or name selects the row (again: none); Play / Space then play it.
+            const ImVec2 lmax = ImGui::GetItemRectMax();
+            const bool   over = ImGui::IsWindowHovered() && ImGui::IsMouseHoveringRect(ip, lmax) && !ImGui::IsAnyItemActive();
+            if (over) {
+                ui::ShowTip(is_sel ? "Selected: Play / Space plays this child \xC2\xB7 click again to unselect"
+                                   : "Click to select: Play / Space then play this child");
+                if (ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+                    P.mix_parent = n.uid;
+                    P.mix_child = is_sel ? std::string() : k->uid;
+                }
+            }
             double v = 0.0;
             const std::string kid = k->uid;
             if (VolumeControl("##mixvol", lib.uid, kid, k->volume_db, &v, 1e9f))
@@ -3793,6 +3939,13 @@ void DrawMix(const SoundStore& store, const SoundLibrary& lib, const SoundNode& 
                     x.volume_db = v;
                     return true;
                 });
+            dl->ChannelsSetCurrent(0);
+            if (is_sel || over) {
+                const float y1 = std::max(ImGui::GetItemRectMax().y, lmax.y);
+                dl->AddRectFilled(ImVec2(ip.x - ui::Dp(4.0f), ip.y - ui::Dp(1.0f)), ImVec2(ui::LineRight() + ui::Dp(4.0f), y1 + ui::Dp(1.0f)),
+                                  is_sel ? ui::kAccentSoft : ui::kRowAlt, ui::kRadiusSm);
+            }
+            dl->ChannelsMerge();
             ImGui::PopID();
         }
     }
@@ -4343,6 +4496,12 @@ void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
         if (on > 1) rest += " \xE2\x80\x94 one at random at each event";
         if (!rest.empty()) line.push_back({rest, ui::kMuted});
         RichText(line);
+        // 13-46 (indicative only): a divided Sound says so, read-only (the Edit window divides it).
+        const std::string divided = DividedByText(GetSoundStore(nullptr), d);
+        if (!divided.empty()) {
+            FitText(divided, ui::kMuted);
+            ui::ItemTipText("Set in the Edit window (E): each event plays the part its role maps to");
+        }
         bool linked = n.sound.linked_copies;
         // 13-7 (audit B9): the mockup's .chk -- the box, then its label wrapped within the column;
         // box and label both toggle.
@@ -4440,7 +4599,7 @@ void NodePanelWidgets()
         if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && AuditionPlaying()) StopPlay();
         else if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) {
             if (NodePlaying(uid)) StopPlay();
-            else PlayNode(lib->uid, uid);
+            else PlayPanel(*lib, *n);  // 13-40
         }
     }
     ImGui::PushID(uid.c_str());

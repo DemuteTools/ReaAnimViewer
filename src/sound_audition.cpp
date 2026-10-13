@@ -33,6 +33,8 @@ struct Voice {
     double                      start = 0.0, length = 0.0, delay = 0.0, gain = 1.0;
     double                      fade_in = 0.0, fade_out = 0.0;  // s (FadeGainAt)
     int                         in_shape = 0, out_shape = 0;
+    double                      fade_from = 0.0, fade_span = 0.0;  // 13-29: a window of a longer stretch
+    MonoMode                    mono = MonoMode::Off;               // 13-41
 };
 
 class AuditionMix : public PCM_source {
@@ -88,15 +90,22 @@ public:
             tr.samples = scratch_.data();
             v.src->GetSamples(&tr);
             const int    got = std::min(cnt, std::max(0, tr.samples_out));
-            const double t_voice = a - v.delay;  // the first sample's time into the voice
+            const double t_voice = a - v.delay + v.fade_from;  // the first sample's time into the faded stretch
+            const double span = v.fade_span > 0.0 ? v.fade_span : v.length;
             const bool   fades = v.fade_in > 0.0 || v.fade_out > 0.0;
+            const bool   mono = v.mono != MonoMode::Off && nch >= 2;  // 13-41: one channel or L + R, on both
             for (int k = 0; k < got; ++k) {
-                const double g = fades ? v.gain * FadeGainAt(t_voice + k / sr, v.length, v.fade_in, v.fade_out,
+                const double g = fades ? v.gain * FadeGainAt(t_voice + k / sr, span, v.fade_in, v.fade_out,
                                                              v.in_shape, v.out_shape)
                                        : v.gain;
-                for (int c = 0; c < nch; ++c)
-                    block->samples[static_cast<size_t>((off + k) * nch + c)] +=
-                        scratch_[static_cast<size_t>(k * nch + c)] * g;
+                const ReaSample* in = &scratch_[static_cast<size_t>(k * nch)];
+                ReaSample*       out = &block->samples[static_cast<size_t>((off + k) * nch)];
+                if (mono) {
+                    const double m = MonoOf(in[0], in[1], v.mono) * g;
+                    for (int c = 0; c < nch; ++c) out[c] += m;
+                } else {
+                    for (int c = 0; c < nch; ++c) out[c] += in[c] * g;
+                }
             }
         }
         block->samples_out = n;
@@ -158,8 +167,9 @@ void StopAudition()
     g_play.active = false;
 }
 
-bool PlayVoices(const std::vector<PlayVoice>& voices, const std::string& tag, std::string* why)
+bool PlayVoices(const std::vector<PlayVoice>& voices, const std::string& tag, std::string* why, std::vector<int>* kept)
 {
+    if (kept) kept->clear();
     StopAudition();
     StopMediaPreview();  // a tree audition and a Media Explorer preview never sound together (13-7c)
     if (!f_play || !f_stop || !f_create) {
@@ -167,7 +177,9 @@ bool PlayVoices(const std::vector<PlayVoice>& voices, const std::string& tag, st
         return false;
     }
     std::vector<Voice> vs;
-    for (const PlayVoice& p : voices) {
+    std::vector<int>   used;
+    for (size_t pi = 0; pi < voices.size(); ++pi) {
+        const PlayVoice& p = voices[pi];
         if (p.path.empty()) continue;
         PCM_source* s = f_create(p.path.c_str());
         if (!s) continue;
@@ -186,7 +198,13 @@ bool PlayVoices(const std::vector<PlayVoice>& voices, const std::string& tag, st
         v.fade_out = std::max(0.0, p.fade_out_s);
         v.in_shape = p.fade_in_shape;
         v.out_shape = p.fade_out_shape;
-        if (v.length > 0.0) vs.push_back(std::move(v));
+        v.fade_from = std::max(0.0, p.fade_from_s);
+        v.fade_span = std::max(0.0, p.fade_span_s);
+        v.mono = p.mono;
+        if (v.length > 0.0) {
+            vs.push_back(std::move(v));
+            used.push_back(static_cast<int>(pi));
+        }
     }
     if (vs.empty()) {
         if (why) *why = "no sound file could be read";
@@ -208,6 +226,7 @@ bool PlayVoices(const std::vector<PlayVoice>& voices, const std::string& tag, st
         if (why) *why = "REAPER refused the preview";
         return false;
     }
+    if (kept) *kept = std::move(used);
     return true;
 }
 

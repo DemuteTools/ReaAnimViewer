@@ -232,6 +232,7 @@ std::vector<AuditionVoice> PartAuditionVoices(const SoundLibrary& lib, const Sou
         voice.length_s = f.length;
         voice.delay_ms = delay_ms;
         voice.gain_db = gain;
+        voice.mono = n.sound.mono;
         AuditionFades(n.sound, variation, &voice.fade_in_s, &voice.fade_out_s, &voice.fade_in_shape,
                       &voice.fade_out_shape);
         out.push_back(voice);
@@ -252,6 +253,7 @@ std::vector<AuditionVoice> PartAuditionVoices(const SoundLibrary& lib, const Sou
         voice.fade_in_shape = pa.fades.set_in ? pa.fades.in_shape : 0;
         voice.fade_out_shape = pa.fades.set_out ? pa.fades.out_shape : 0;
         voice.piece = static_cast<int>(k);
+        voice.mono = n.sound.mono;
         out.push_back(voice);
     }
     return out;
@@ -261,6 +263,7 @@ AuditionVoice ZoneAuditionVoice(const SoundLibrary& lib, const SoundNode& n, dou
 {
     AuditionVoice voice;
     voice.node = n.uid;
+    voice.mono = n.sound.mono;
     if (!std::isfinite(start) || !std::isfinite(length) || !(length > 0.0)) return voice;
     voice.start_s = std::max(0.0, start);
     voice.length_s = start + length - voice.start_s;
@@ -439,66 +442,149 @@ double FadeGainAt(double t, double length, double in, double out, int in_shape, 
     return g;
 }
 
-std::vector<WholeFileStretch> WholeFileStretches(const std::vector<SoundFrame>& frames, double file_len)
+std::vector<AuditionVoice> EditPlayVoices(const SoundLibrary& lib, const SoundNode& n, int take)
 {
-    std::vector<const SoundFrame*> by_start;
-    for (const SoundFrame& f : frames)
-        if (f.length > 0.0) by_start.push_back(&f);
-    std::stable_sort(by_start.begin(), by_start.end(),
-                     [](const SoundFrame* a, const SoundFrame* b) { return a->start < b->start; });
-    std::vector<WholeFileStretch> out;
-    double                        at = 0.0;
-    for (const SoundFrame* f : by_start) {
-        const double s = std::max(f->start, at), e = f->start + f->length;
-        if (s > at) out.push_back({at, s - at, 0.0});
-        if (e > s) out.push_back({s, e - s, f->db});
-        at = std::max(at, e);
+    std::vector<AuditionVoice> out;
+    const SoundData&           d = n.sound;
+    if (d.mode == DetectMode::Takes) {
+        if (take < 0 || static_cast<size_t>(take) >= d.frames.size() || !d.frames[static_cast<size_t>(take)].on) return out;
+        return PartAuditionVoices(lib, n, take, "");
     }
-    if (file_len <= 0.0) out.push_back({at, 0.0, 0.0});
-    else if (file_len > at) out.push_back({at, file_len - at, 0.0});
+    std::vector<int> order;
+    for (size_t i = 0; i < d.frames.size(); ++i)
+        if (d.frames[i].on && d.frames[i].length > 0.0) order.push_back(static_cast<int>(i));
+    std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
+        return d.frames[static_cast<size_t>(a)].start < d.frames[static_cast<size_t>(b)].start;
+    });
+    const double root = GainFromRoot(lib, n);
+    double       covered = -1e300;  // the file is heard up to here (the earlier variation wins)
+    auto         push = [&](AuditionVoice v) {
+        const double end = v.start_s + v.length_s;
+        if (end <= covered + 1e-9) return;
+        if (v.start_s < covered) {
+            const double cut = covered - v.start_s;
+            if (!(v.fade_span_s > 0.0)) v.fade_span_s = v.length_s;
+            v.start_s += cut;
+            v.length_s -= cut;
+            v.fade_from_s += cut;
+        }
+        v.delay_ms = v.start_s * 1000.0;  // the file's clock
+        out.push_back(std::move(v));
+    };
+    for (int i : order) {
+        const SoundFrame& f = d.frames[static_cast<size_t>(i)];
+        const bool        by_part = IsDivided(d) && !f.part_db.empty();
+        for (const AuditionVoice& piece : PartAuditionVoices(lib, n, i, "")) {
+            if (!by_part) {
+                push(piece);
+                continue;
+            }
+            // 13-28: the piece cut where its owner changes (a cut, a zone edge), each stretch at its part's gain.
+            const double        s0 = piece.start_s, s1 = piece.start_s + piece.length_s;
+            std::vector<double> b = {s0, s1};
+            for (double c : f.cuts)
+                if (c > s0 && c < s1) b.push_back(c);
+            for (const SoundZone& z : d.zones)
+                for (double t : {z.start, z.start + z.length})
+                    if (t > s0 && t < s1) b.push_back(t);
+            std::sort(b.begin(), b.end());
+            AuditionVoice cur;
+            bool          open = false;
+            for (size_t k = 0; k + 1 < b.size(); ++k) {
+                if (b[k + 1] - b[k] <= 1e-9) continue;
+                std::string  own;
+                const double db = root + (PartAt(d, i, (b[k] + b[k + 1]) * 0.5, &own) ? FrameGainDb(f, own) : f.db);
+                if (open && std::fabs(cur.gain_db - db) < 1e-12) {
+                    cur.length_s = b[k + 1] - cur.start_s;
+                    continue;
+                }
+                if (open) push(cur);
+                cur = piece;
+                cur.start_s = b[k];
+                cur.length_s = b[k + 1] - b[k];
+                cur.gain_db = db;
+                cur.fade_from_s = b[k] - s0;
+                cur.fade_span_s = piece.length_s;
+                open = true;
+            }
+            if (open) {
+                if (std::fabs(cur.start_s - s0) < 1e-12 && std::fabs(cur.length_s - piece.length_s) < 1e-12) {
+                    cur.fade_from_s = 0.0;  // one part all along: the piece itself
+                    cur.fade_span_s = 0.0;
+                }
+                push(cur);
+            }
+        }
+        covered = std::max(covered, f.start + f.length);
+    }
     return out;
 }
 
-std::vector<WholeFileStretch> PartGainStretches(const SoundData& data, double file_len)
+std::vector<AuditionVoice> VoicesFrom(const std::vector<AuditionVoice>& voices, double from_s)
 {
-    const std::vector<WholeFileStretch> base = WholeFileStretches(data.frames, file_len);
-    if (!IsDivided(data)) return base;
-    std::vector<WholeFileStretch> out;
-    for (const WholeFileStretch& st : base) {
-        // Its frame: the earliest one holding its start at that dB (the earlier one wins until it ends).
-        int fi = -1;
-        for (size_t i = 0; i < data.frames.size(); ++i) {
-            const SoundFrame& f = data.frames[i];
-            if (st.start < f.start - 1e-9 || st.start >= f.start + f.length || f.db != st.db) continue;
-            if (fi < 0 || f.start < data.frames[static_cast<size_t>(fi)].start) fi = static_cast<int>(i);
+    if (!(from_s > 0.0) || !std::isfinite(from_s)) return voices;
+    const double               from_ms = from_s * 1000.0;
+    std::vector<AuditionVoice> out;
+    for (AuditionVoice v : voices) {
+        const double end_ms = v.delay_ms + v.length_s * 1000.0;
+        if (end_ms <= from_ms + 1e-6) continue;
+        if (v.delay_ms < from_ms) {
+            const double cut = (from_ms - v.delay_ms) / 1000.0;
+            if (!(v.fade_span_s > 0.0)) v.fade_span_s = v.length_s;
+            v.start_s += cut;
+            v.length_s -= cut;
+            v.fade_from_s += cut;
+            v.delay_ms = 0.0;
+        } else {
+            v.delay_ms -= from_ms;
         }
-        if (fi < 0 || data.frames[static_cast<size_t>(fi)].part_db.empty() || !(st.length > 0.0)) {
-            out.push_back(st);
-            continue;
-        }
-        const SoundFrame&   f = data.frames[static_cast<size_t>(fi)];
-        const double        s0 = st.start, s1 = st.start + st.length;
-        std::vector<double> b = {s0, s1};
-        auto                add = [&](double t) {
-            if (t > s0 && t < s1) b.push_back(t);
-        };
-        for (double c : f.cuts) add(c);
-        for (const SoundZone& z : data.zones) {
-            add(z.start);
-            add(z.start + z.length);
-        }
-        std::sort(b.begin(), b.end());
-        for (size_t k = 0; k + 1 < b.size(); ++k) {
-            if (b[k + 1] - b[k] <= 1e-9) continue;
-            std::string  own;
-            const double db = PartAt(data, fi, (b[k] + b[k + 1]) * 0.5, &own) ? FrameGainDb(f, own) : f.db;
-            if (!out.empty() && out.back().db == db && std::fabs(out.back().start + out.back().length - b[k]) <= 1e-9)
-                out.back().length = b[k + 1] - out.back().start;
-            else
-                out.push_back({b[k], b[k + 1] - b[k], db});
-        }
+        out.push_back(std::move(v));
     }
     return out;
+}
+
+bool SameVoices(const std::vector<AuditionVoice>& a, const std::vector<AuditionVoice>& b)
+{
+    if (a.size() != b.size()) return false;
+    auto eq = [](double x, double y) { return std::fabs(x - y) <= 1e-9; };
+    for (size_t i = 0; i < a.size(); ++i) {
+        const AuditionVoice& x = a[i];
+        const AuditionVoice& y = b[i];
+        if (x.node != y.node || x.variation != y.variation || !eq(x.start_s, y.start_s) || !eq(x.length_s, y.length_s) ||
+            !eq(x.delay_ms, y.delay_ms) || !eq(x.gain_db, y.gain_db) || !eq(x.fade_in_s, y.fade_in_s) ||
+            !eq(x.fade_out_s, y.fade_out_s) || x.fade_in_shape != y.fade_in_shape || x.fade_out_shape != y.fade_out_shape ||
+            !eq(x.fade_from_s, y.fade_from_s) || !eq(x.fade_span_s, y.fade_span_s) || x.mono != y.mono)
+            return false;
+    }
+    return true;
+}
+
+double MonoOf(double l, double r, MonoMode mono)
+{
+    switch (mono) {
+    case MonoMode::Right: return r;
+    case MonoMode::Sum: return (l + r) * 0.5;
+    case MonoMode::Left:
+    case MonoMode::Off: break;
+    }
+    return l;
+}
+
+AuditionPlan PlanChildAudition(const SoundStore& store, const SoundLibrary& lib, const std::string& parent_uid,
+                               const std::string& child_uid, const AuditionPicker& picker)
+{
+    const SoundNode* k = FindNode(lib, child_uid);
+    if (!k || k->parent != parent_uid) {
+        AuditionPlan none;
+        none.root = parent_uid;
+        none.played = "nothing";
+        return none;
+    }
+    AuditionPlan plan = PlanAudition(store, lib, child_uid, picker);
+    plan.root = parent_uid;
+    for (AuditionVoice& v : plan.voices) v.path.insert(v.path.begin(), child_uid);
+    plan.played = PlayedText(lib, plan.voices);
+    return plan;
 }
 
 }  // namespace rav

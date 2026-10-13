@@ -82,6 +82,9 @@ void FadesOnItem(const FadeApply& fa, double playrate, double item_len, double c
 double PlacementPosition(double event_t, double sync_offset, double blend_ms, double hand_offset_s);
 // The item volume (D_VOL, linear) for a gain in dB (NaN -> 1).
 double ItemGainFor(double gain_db);
+// 13-41: the take channel mode (I_CHANMODE) a placed item of a Sound forced to `mono` gets: Off 0
+// (normal), Sum 2 (mono downmix), Left 3, Right 4.
+int ChanModeFor(MonoMode mono);
 
 // 13-10 (Antho 2026-10-12): why the engine refuses to move (`edit` false) or replace / remove
 // (`edit` true) a placed item; "" = allowed. An attached sound is never replaced or removed.

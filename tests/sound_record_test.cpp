@@ -40,7 +40,7 @@ bool SameFrames(const std::vector<SoundFrame>& a, const std::vector<SoundFrame>&
 bool SameParts(const SoundData& x, const SoundData& y)
 {
     if (x.divide_group != y.divide_group || x.divide_values != y.divide_values || x.lanes_split != y.lanes_split ||
-        x.sync_mode != y.sync_mode || x.sync_offset_ms != y.sync_offset_ms || x.cut_fade != y.cut_fade ||
+        x.sync_mode != y.sync_mode || x.sync_offset_ms != y.sync_offset_ms || x.cut_fade != y.cut_fade || x.mono != y.mono ||
         x.fade_in != y.fade_in || x.fade_out != y.fade_out || x.role_map.size() != y.role_map.size() ||
         x.zones.size() != y.zones.size())
         return false;
@@ -167,6 +167,7 @@ SoundStore BigStore()
     snd.sound.sync_mode = SyncMode::SliceStart;
     snd.sound.sync_offset_ms = 1.5;
     snd.sound.cut_fade = 0.004;
+    snd.sound.mono = MonoMode::Right;  // 13-41
     snd.sound.zones = {{0.05, 0.01, "", {}}, {0.1, 0.02, "a000000000000002", {}}};
     snd.sound.frames[0].cuts = {0.125};
     snd.sound.frames[0].cuts_hand = true;
@@ -501,7 +502,7 @@ int main()
         CHECK(t.find("value uid=a000000000000002 name=Wood roles=heel,toe_end\n") != std::string::npos);
         CHECK(t.find("value uid=a000000000000003 name=Wet%20concrete roles=my%20role\n") != std::string::npos);
         CHECK(t.find(" div=a000000000000001 divv=a000000000000002,a000000000000003 "
-                     "rmap=heel:a000000000000003,hand:a000000000000002 lanes=split sync=start soff=1.5 cfade=0.004\n") !=
+                     "rmap=heel:a000000000000003,hand:a000000000000002 lanes=split sync=start soff=1.5 cfade=0.004 mono=right\n") !=
               std::string::npos);
         CHECK(t.find("frame start=0 len=0.25 cuts=0.125 cutsh=1 sync=0.018,0.13 hsync=0.13\n") != std::string::npos);
         CHECK(t.find("frame start=0.5 len=0.125 on=0 db=-2.25 hand=1 cuts=0.5625 cutq=1 sync=-1,0.57\n") !=
@@ -534,12 +535,27 @@ int main()
             SoundStore r;
             CHECK(ParseSoundStore(SerializeSoundStore(q), &r) && r.libraries[0].nodes[3].sound.sync_mode == m);
         }
+        // 13-41: each mono word reads back; Off is never written; an unknown word is refused.
+        for (MonoMode m : {MonoMode::Off, MonoMode::Left, MonoMode::Right, MonoMode::Sum}) {
+            SoundStore q = s;
+            q.libraries[0].nodes[3].sound.mono = m;
+            SoundStore r;
+            const std::string t = SerializeSoundStore(q);
+            CHECK(ParseSoundStore(t, &r) && r.libraries[0].nodes[3].sound.mono == m);
+            CHECK((t.find(" mono=") == std::string::npos) == (m == MonoMode::Off));
+        }
+        {
+            SoundStore bad;
+            CHECK(!ParseSoundStore("RAVSOUNDS 1\nlibrary uid=l name=L root=n\nnode uid=n type=sound\nsound kind=item guid=g mono=both\n", &bad) ||
+                  bad.libraries[0].nodes[0].sound.mono == MonoMode::Off);
+        }
         SoundStore old;
         CHECK(ParseSoundStore("RAVSOUNDS 1\nlibrary uid=l name=L root=n\nnode uid=n type=sound\nsound kind=item guid=g\n"
                               "frame start=0 len=1\n", &old));
         const SoundData& od = old.libraries[0].nodes[0].sound;
         CHECK(od.divide_group.empty() && od.zones.empty() && od.sync_mode == SyncMode::Attack &&
-              od.sync_offset_ms == kDefaultSyncOffsetMs && od.cut_fade == kDefaultCutFade && !od.lanes_split);
+              od.sync_offset_ms == kDefaultSyncOffsetMs && od.cut_fade == kDefaultCutFade && !od.lanes_split &&
+              od.mono == MonoMode::Off);
         CHECK(od.frames[0].cuts.empty() && od.frames[0].syncs.empty() && !od.frames[0].cuts_hand);
         CHECK(SerializeSoundStore(old) == "RAVSOUNDS 1\nlibrary uid=l name=L root=n\nnode uid=n type=sound\n"
                                           "sound kind=item guid=g\nframe start=0 len=1\n");

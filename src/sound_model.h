@@ -122,6 +122,10 @@ struct RoleValue {
     std::string value;  // a value uid of the divide group
 };
 
+// 13-41: a Sound forced to mono (the Edit window): Off = as the file; Left / Right = that channel alone;
+// Sum = L + R mixed. Placed as the take's channel mode (I_CHANMODE, ChanModeFor), heard on audition.
+enum class MonoMode { Off, Left, Right, Sum };
+
 // A Sound leaf's data. `frames` = the detected (pre-edit) variations, stored: Populate never
 // re-detects (D6).
 struct SoundData {
@@ -147,6 +151,8 @@ struct SoundData {
     double                   sync_offset_ms = kDefaultSyncOffsetMs;
     double                   cut_fade = kDefaultCutFade;
     std::vector<SoundZone>   zones;
+    // 13-41 (appended): forced to mono.
+    MonoMode                 mono = MonoMode::Off;
 };
 
 // A Switch's value -> child.

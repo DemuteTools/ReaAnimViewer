@@ -15,6 +15,8 @@
 #include <string>
 #include <vector>
 
+#include "sound_model.h"  // MonoMode (13-41)
+
 namespace rav {
 
 void InitSoundAudition(void* (*get_func)(const char* name));
@@ -33,10 +35,17 @@ struct PlayVoice {
     double      fade_out_s = 0.0;
     int         fade_in_shape = 0;
     int         fade_out_shape = 0;
+    // 13-29: the voice is a window of a longer faded stretch (AuditionVoice::fade_from_s / fade_span_s).
+    double      fade_from_s = 0.0;
+    double      fade_span_s = 0.0;  // 0 = the voice itself
+    MonoMode    mono = MonoMode::Off;  // 13-41: forced to mono (MonoOf), on every output channel
 };
 // Plays the voices together (the previous audition stops first). `tag` names what plays (the
 // node panel's uid, ...). False, with `why`, when nothing can play (no PlayPreview, no voice read).
-bool PlayVoices(const std::vector<PlayVoice>& voices, const std::string& tag, std::string* why = nullptr);
+// `kept` (13-7b review): the indices of the voices that play (a file that cannot be opened, or with
+// nothing left past its start, is dropped), so the caller names only those.
+bool PlayVoices(const std::vector<PlayVoice>& voices, const std::string& tag, std::string* why = nullptr,
+                std::vector<int>* kept = nullptr);
 // One stretch of one file (length <= 0 = to its end).
 bool AuditionFile(const std::string& path, double start_s, double length_s, const std::string& tag = "file",
                   double gain = 1.0, double fade_in_s = 0.0, double fade_out_s = 0.0, int fade_in_shape = 0,

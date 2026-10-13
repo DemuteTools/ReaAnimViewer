@@ -71,6 +71,8 @@ struct WaveformOptions {
     // labels) and whether it clips (drawn in --bad).
     std::vector<double> gain_db;
     std::vector<bool>   gain_clip;
+    // 13-41: the Sound forced to mono: one lane, the channel (or L + R) heard (MonoOf).
+    MonoMode mono = MonoMode::Off;
 };
 
 struct WaveformEvents {

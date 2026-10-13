@@ -70,6 +70,13 @@ struct PlaceRequest {
     // B5: an NVK pile's member tracks: given a member's source child track, its destination track
     // and that track's mark (nullptr = the member's own track). Unset = as `track` says.
     std::function<MediaTrack*(MediaTrack* source_track, std::string* mark)> pile_track;
+    // 13-29 / 13-41 (Antho 2026-10-13: what RAV plays is what is placed): a library Sound's copy plays its
+    // file as the audition does: every take of a copied plain item gets playrate 1 (its length kept in
+    // source seconds), pitch 0, pan centre, no take FX and channel mode `chan_mode` (ChanModeFor); an item
+    // placed from a file gets `chan_mode`. False = the copy as it is (a Spread copy). A folder pile's members
+    // are always copied as they are.
+    bool as_auditioned = false;
+    int  chan_mode = 0;
 };
 struct PlaceResult {
     bool                     ok = false;

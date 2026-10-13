@@ -278,12 +278,12 @@ void ResetToDetected(SoundData& data, const std::vector<SoundFrame>& detected)
     data.edited = false;
 }
 
-double FramePeakDb(const PeakData& peaks, const SoundFrame& frame)
+double SpanPeakDb(const PeakData& peaks, double start, double length)
 {
     if (peaks.rate <= 0.0 || peaks.max_abs.empty()) return NegInf();
     // 1e-9 guards against 0.6 * 10 = 6.0000000001 reaching one peak past the frame.
-    const double a = std::floor(frame.start * peaks.rate + 1e-9);
-    const double b = std::ceil((frame.start + frame.length) * peaks.rate - 1e-9);
+    const double a = std::floor(start * peaks.rate + 1e-9);
+    const double b = std::ceil((start + length) * peaks.rate - 1e-9);
     const long long n = static_cast<long long>(peaks.max_abs.size());
     const long long lo = std::max(0LL, static_cast<long long>(a));
     const long long hi = std::min(n, static_cast<long long>(b));
@@ -293,35 +293,9 @@ double FramePeakDb(const PeakData& peaks, const SoundFrame& frame)
     return 20.0 * std::log10(static_cast<double>(mx));
 }
 
-void NormalizeFrames(std::vector<SoundFrame>& frames, const PeakData& peaks, double target_db, bool whole,
-                     const std::vector<int>& selection)
+double FramePeakDb(const PeakData& peaks, const SoundFrame& frame)
 {
-    std::vector<int> set;
-    if (selection.empty()) {
-        for (size_t i = 0; i < frames.size(); ++i)
-            if (frames[i].on) set.push_back(static_cast<int>(i));
-    } else {
-        for (int i : selection)
-            if (i >= 0 && i < static_cast<int>(frames.size()) && frames[static_cast<size_t>(i)].on) set.push_back(i);
-    }
-    if (whole) {
-        double top = NegInf();
-        for (int i : set) top = std::max(top, FramePeakDb(peaks, frames[static_cast<size_t>(i)]));
-        if (!std::isfinite(top)) return;
-        for (int i : set)
-            if (std::isfinite(FramePeakDb(peaks, frames[static_cast<size_t>(i)]))) {
-                frames[static_cast<size_t>(i)].db = target_db - top;
-                frames[static_cast<size_t>(i)].hand = true;
-            }
-    } else {
-        for (int i : set) {
-            const double p = FramePeakDb(peaks, frames[static_cast<size_t>(i)]);
-            if (std::isfinite(p)) {
-                frames[static_cast<size_t>(i)].db = target_db - p;
-                frames[static_cast<size_t>(i)].hand = true;
-            }
-        }
-    }
+    return SpanPeakDb(peaks, frame.start, frame.length);
 }
 
 DetectMode DefaultDetectMode(const EntryFacts& facts, bool has_peaks)
@@ -483,7 +457,10 @@ void SetFrameOn(SoundData& data, int i, bool on)
 void SetFrameDb(SoundData& data, int i, double db)
 {
     if (!ValidIndex(data, i)) return;
-    data.frames[static_cast<size_t>(i)].db = db;
+    SoundFrame&  f = data.frames[static_cast<size_t>(i)];
+    const double delta = db - f.db;
+    f.db = db;
+    for (auto& kv : f.part_db) kv.second += delta;  // 13-28: its parts' own gains move with it
     MarkHand(data, i);
 }
 
@@ -1211,6 +1188,206 @@ bool ToggleGroupRole(SoundStore& store, const std::string& group_uid, const std:
     }
     if (!had) target->roles.push_back(role);
     return true;
+}
+
+// ---- 13-28: Normalize -------------------------------------------------------------------------------
+
+namespace {
+
+constexpr double kNormMaxAdjDb = 60.0;  // more than this = silence (spec 13-28 matrix)
+
+bool UsableAdj(double db) { return std::isfinite(db) && db <= kNormMaxAdjDb; }
+
+}  // namespace
+
+double FrameGainDb(const SoundFrame& frame, const std::string& part_value)
+{
+    if (!part_value.empty()) {
+        const auto it = frame.part_db.find(part_value);
+        if (it != frame.part_db.end()) return it->second;
+    }
+    return frame.db;
+}
+
+double FrameLabelDb(const SoundData& data, int variation)
+{
+    if (!ValidIndex(data, variation)) return 0.0;
+    const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    if (IsDivided(data) && !f.part_db.empty()) {
+        bool   any = false;
+        double top = 0.0;
+        for (const std::string& v : data.divide_values) {
+            const auto it = f.part_db.find(v);
+            if (it == f.part_db.end()) continue;
+            top = any ? std::max(top, it->second) : it->second;
+            any = true;
+        }
+        if (any) return top;
+    }
+    return f.db;
+}
+
+bool FrameClips(const SoundData& data, int variation, const PeakData& peaks)
+{
+    if (!ValidIndex(data, variation)) return false;
+    const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    if (!f.on) return false;
+    std::vector<PartSpan> spans;
+    if (data.mode == DetectMode::Takes) spans.push_back({std::string(), f.start, f.length});
+    else spans = PartSpansOf(data, variation);
+    for (const PartSpan& sp : spans) {
+        const double pk = SpanPeakDb(peaks, sp.start, sp.length);
+        if (std::isfinite(pk) && pk + FrameGainDb(f, sp.value_uid) > 1e-9) return true;
+    }
+    return false;
+}
+
+bool NormPartsAvailable(const SoundData& data)
+{
+    return IsDivided(data) && data.mode != DetectMode::Takes;
+}
+
+std::vector<NormRegion> NormalizeRegions(const SoundData& data, NormScope scope, const std::vector<int>& selection)
+{
+    std::vector<NormRegion> out;
+    std::vector<int>        set;
+    if (selection.empty()) {
+        for (size_t i = 0; i < data.frames.size(); ++i) set.push_back(static_cast<int>(i));
+    } else {
+        for (int i : selection)
+            if (ValidIndex(data, i) && std::find(set.begin(), set.end(), i) == set.end()) set.push_back(i);
+        std::sort(set.begin(), set.end());
+    }
+    const bool takes = data.mode == DetectMode::Takes;
+    const bool parts = scope == NormScope::Part && NormPartsAvailable(data);
+    for (int i : set) {
+        const SoundFrame& f = data.frames[static_cast<size_t>(i)];
+        if (!f.on || !(f.length > 0.0)) continue;
+        if (takes) {  // a take plays whole, in its own file
+            NormRegion r;
+            r.frame = i;
+            r.spans.push_back({std::string(), f.start, f.length});
+            out.push_back(r);
+            continue;
+        }
+        if (!parts) {
+            NormRegion r;
+            r.frame = i;
+            r.spans = PlacedSpans(data, i, std::string());
+            if (!r.spans.empty()) out.push_back(r);
+            continue;
+        }
+        const std::vector<PartSpan> spans = PartSpansOf(data, i);
+        for (const std::string& v : data.divide_values) {
+            NormRegion r;
+            r.frame = i;
+            r.part = v;
+            for (const PartSpan& sp : spans)
+                if (sp.value_uid == v) r.spans.push_back(sp);
+            if (!r.spans.empty()) out.push_back(r);
+        }
+    }
+    return out;
+}
+
+double NormAdjustmentDb(double factor)
+{
+    if (!std::isfinite(factor) || factor <= 0.0) return std::numeric_limits<double>::quiet_NaN();
+    const double db = 20.0 * std::log10(factor);
+    return UsableAdj(db) ? db : std::numeric_limits<double>::quiet_NaN();
+}
+
+double CombineSpanAdjustments(NormMode mode, double target, const std::vector<double>& adj_db,
+                              const std::vector<double>& durations)
+{
+    const double nan = std::numeric_limits<double>::quiet_NaN();
+    const bool   integrated = mode == NormMode::RmsI || mode == NormMode::LufsI;
+    double       best = nan, energy = 0.0, dur = 0.0;
+    for (size_t k = 0; k < adj_db.size(); ++k) {
+        const double a = adj_db[k];
+        if (!UsableAdj(a)) continue;
+        if (!integrated) {
+            best = std::isfinite(best) ? std::min(best, a) : a;
+            continue;
+        }
+        const double d = k < durations.size() && durations[k] > 0.0 ? durations[k] : 0.0;
+        if (!(d > 0.0)) continue;
+        energy += d * std::pow(10.0, (target - a) / 10.0);  // the span's level = target - its adjustment
+        dur += d;
+    }
+    if (!integrated) return best;
+    if (!(dur > 0.0) || !(energy > 0.0)) return nan;
+    const double adj = target - 10.0 * std::log10(energy / dur);
+    return UsableAdj(adj) ? adj : nan;
+}
+
+double RegionPeakAdjDb(const PeakData& peaks, const NormRegion& region, double target)
+{
+    double top = NegInf();
+    for (const PartSpan& sp : region.spans) top = std::max(top, SpanPeakDb(peaks, sp.start, sp.length));
+    if (!std::isfinite(top)) return std::numeric_limits<double>::quiet_NaN();
+    const double adj = target - top;
+    return UsableAdj(adj) ? adj : std::numeric_limits<double>::quiet_NaN();
+}
+
+NormalizeOutcome ApplyNormalize(std::vector<SoundFrame>& frames, NormScope scope, const std::vector<NormRegion>& regions,
+                                const std::vector<double>& adj_db)
+{
+    NormalizeOutcome out;
+    const std::vector<SoundFrame> before = frames;
+    auto valid = [&](size_t i) {
+        return i < adj_db.size() && UsableAdj(adj_db[i]) && regions[i].frame >= 0 &&
+               static_cast<size_t>(regions[i].frame) < frames.size() && frames[static_cast<size_t>(regions[i].frame)].on;
+    };
+    if (scope == NormScope::Whole) {
+        double low = 0.0;
+        bool   any = false;
+        for (size_t i = 0; i < regions.size(); ++i) {
+            if (!valid(i)) continue;
+            low = any ? std::min(low, adj_db[i]) : adj_db[i];
+            any = true;
+        }
+        std::set<int> acted;
+        for (size_t i = 0; i < regions.size(); ++i) {
+            if (!valid(i)) {
+                ++out.skipped;
+                continue;
+            }
+            if (!acted.insert(regions[i].frame).second) continue;
+            SoundFrame& f = frames[static_cast<size_t>(regions[i].frame)];
+            f.db = low;
+            f.part_db.clear();
+            f.hand = true;
+            ++out.done;
+        }
+    } else {
+        for (size_t i = 0; i < regions.size(); ++i) {
+            if (!valid(i)) {
+                ++out.skipped;
+                continue;
+            }
+            SoundFrame& f = frames[static_cast<size_t>(regions[i].frame)];
+            if (scope == NormScope::Part && !regions[i].part.empty()) {
+                f.part_db[regions[i].part] = adj_db[i];
+            } else {
+                f.db = adj_db[i];
+                f.part_db.clear();
+            }
+            f.hand = true;
+            ++out.done;
+        }
+    }
+    for (size_t i = 0; i < frames.size() && !out.changed; ++i) {
+        const SoundFrame& a = frames[i];
+        const SoundFrame& b = before[i];
+        out.changed = std::fabs(a.db - b.db) > 1e-9 || a.hand != b.hand || a.part_db.size() != b.part_db.size();
+        if (!out.changed)
+            for (const auto& kv : a.part_db) {
+                const auto it = b.part_db.find(kv.first);
+                if (it == b.part_db.end() || std::fabs(it->second - kv.second) > 1e-9) out.changed = true;
+            }
+    }
+    return out;
 }
 
 }  // namespace rav

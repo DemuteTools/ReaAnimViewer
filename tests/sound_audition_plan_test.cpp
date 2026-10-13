@@ -292,9 +292,21 @@ static void TestCountText()
     CHECK(VariationCountText(1, std::vector<SoundFrame>(1)) == "1 variation");
 }
 
+// The Peak Normalize gesture: its selection (NormalizeSelection) -> regions -> ApplyNormalize.
+static void PeakNorm(std::vector<SoundFrame>& f, const PeakData& pk, double target, bool whole, const std::vector<int>& sel)
+{
+    SoundData d;
+    d.frames = f;
+    const NormScope               scope = whole ? NormScope::Whole : NormScope::Variation;
+    const std::vector<NormRegion> regs = NormalizeRegions(d, scope, sel);
+    std::vector<double>           adj;
+    for (const NormRegion& r : regs) adj.push_back(RegionPeakAdjDb(pk, r, target));
+    ApplyNormalize(f, scope, regs, adj);
+}
+
 static void TestNormalizeOnOnly()
 {
-    // Matrix "Normalize": the gesture's selection (NormalizeSelection) -> NormalizeFrames.
+    // Matrix "Normalize": the gesture's selection (NormalizeSelection) -> regions -> ApplyNormalize.
     PeakData pk;
     pk.rate = 10.0;
     pk.max_abs.assign(30, 0.5f);
@@ -306,44 +318,127 @@ static void TestNormalizeOnOnly()
     base[1].on = false;
     // An off frame in the selection: only the on ones change.
     std::vector<SoundFrame> f = base;
-    NormalizeFrames(f, pk, -1.0, false, NormalizeSelection(f, {0, 1, 2}));
+    PeakNorm(f, pk, -1.0, false, NormalizeSelection(f, {0, 1, 2}));
     CHECK(f[0].db > 4.0 && Near(f[1].db, 0.0) && f[2].db > 4.0);
     // Only off frames selected: nothing.
     CHECK((NormalizeSelection(base, {1}) == std::vector<int>{-1}));
     f = base;
-    NormalizeFrames(f, pk, -1.0, false, NormalizeSelection(f, {1}));
+    PeakNorm(f, pk, -1.0, false, NormalizeSelection(f, {1}));
     for (const SoundFrame& x : f) CHECK(Near(x.db, 0.0) && !x.hand);
     // No selection: every on frame.
     CHECK(NormalizeSelection(base, {}).empty());
     f = base;
-    NormalizeFrames(f, pk, -1.0, true, NormalizeSelection(f, {}));
+    PeakNorm(f, pk, -1.0, true, NormalizeSelection(f, {}));
     CHECK(f[0].db > 4.0 && Near(f[1].db, 0.0) && f[2].db > 4.0);
 }
 
 static void TestNormalizeTakes()
 {
-    std::vector<SoundFrame> base(3);
-    const double            ninf = -std::numeric_limits<double>::infinity();
+    // Ported from NormalizeTakeFrames: each take measured in its own file (adjustment = target - its peak).
+    SoundData d;
+    d.mode = DetectMode::Takes;
+    d.frames.resize(3);
+    for (SoundFrame& x : d.frames) x.length = 1.0;
+    const double ninf = -std::numeric_limits<double>::infinity();
+    auto         run = [&](std::vector<SoundFrame>& f, const std::vector<double>& peak, bool whole,
+                   const std::vector<int>& sel) {
+        SoundData dd = d;
+        dd.frames = f;
+        const NormScope               scope = whole ? NormScope::Whole : NormScope::Variation;
+        const std::vector<NormRegion> regs = NormalizeRegions(dd, scope, sel);
+        std::vector<double>           adj;
+        for (const NormRegion& r : regs) {
+            const double pk = peak[static_cast<size_t>(r.frame)];
+            adj.push_back(std::isfinite(pk) ? -1.0 - pk : std::nan(""));
+        }
+        return ApplyNormalize(f, scope, regs, adj).changed;
+    };
     // Per variation: each take to its own target.
-    std::vector<SoundFrame> f = base;
-    CHECK(NormalizeTakeFrames(f, {-6.0, -3.0, -12.0}, -1.0, false, {}));
+    std::vector<SoundFrame> f = d.frames;
+    CHECK(run(f, {-6.0, -3.0, -12.0}, false, {}));
     CHECK(Near(f[0].db, 5.0) && Near(f[1].db, 2.0) && Near(f[2].db, 11.0) && f[0].hand);
     // Whole: the loudest take's gain for all.
-    f = base;
-    CHECK(NormalizeTakeFrames(f, {-6.0, -3.0, -12.0}, -1.0, true, {}));
+    f = d.frames;
+    CHECK(run(f, {-6.0, -3.0, -12.0}, true, {}));
     CHECK(Near(f[0].db, 2.0) && Near(f[1].db, 2.0) && Near(f[2].db, 2.0));
     // A take whose peaks are not read is left as is (and does not set the loudest).
-    f = base;
-    CHECK(NormalizeTakeFrames(f, {-6.0, ninf, -12.0}, -1.0, true, {}));
+    f = d.frames;
+    CHECK(run(f, {-6.0, ninf, -12.0}, true, {}));
     CHECK(Near(f[0].db, 5.0) && Near(f[1].db, 0.0) && !f[1].hand && Near(f[2].db, 5.0));
     // Selection: on ones only; {-1} = nothing.
-    f = base;
+    f = d.frames;
     f[2].on = false;
-    CHECK(NormalizeTakeFrames(f, {-6.0, -3.0, -12.0}, -1.0, false, {0, 2}));
+    CHECK(run(f, {-6.0, -3.0, -12.0}, false, {0, 2}));
     CHECK(Near(f[0].db, 5.0) && Near(f[1].db, 0.0) && Near(f[2].db, 0.0));
-    CHECK(!NormalizeTakeFrames(f, {-6.0, -3.0, -12.0}, -1.0, false, {-1}));
+    CHECK(!run(f, {-6.0, -3.0, -12.0}, false, {-1}));
     // Again on the same frames: no change.
-    CHECK(!NormalizeTakeFrames(f, {-6.0, -3.0, -12.0}, -1.0, false, {0}));
+    CHECK(!run(f, {-6.0, -3.0, -12.0}, false, {0}));
+    // Takes mode never offers Per part (a take plays whole).
+    SoundData t = d;
+    t.divide_group = "g";
+    t.divide_values = {"a", "b"};
+    CHECK(!NormPartsAvailable(t) && NormalizeRegions(t, NormScope::Part, {}).size() == 3);
+}
+
+// 13-28: FrameGainDb's fallback, and Edit's Play at each part's own gain.
+static void TestPartGains()
+{
+    SoundFrame f;
+    f.start = 1.0;
+    f.length = 1.0;
+    f.db = -3.0;
+    CHECK(Near(FrameGainDb(f, ""), -3.0) && Near(FrameGainDb(f, "a"), -3.0));
+    f.part_db["a"] = 4.0;
+    CHECK(Near(FrameGainDb(f, "a"), 4.0) && Near(FrameGainDb(f, "b"), -3.0) && Near(FrameGainDb(f, ""), -3.0));
+    SoundData d;
+    d.divide_group = "g";
+    d.divide_values = {"a", "b"};
+    f.cuts = {1.5};
+    d.frames = {f};
+    const std::vector<WholeFileStretch> st = PartGainStretches(d, 3.0);
+    CHECK(st.size() == 4);
+    if (st.size() == 4) {
+        CHECK(Near(st[0].start, 0.0) && Near(st[0].length, 1.0) && Near(st[0].db, 0.0));
+        CHECK(Near(st[1].start, 1.0) && Near(st[1].length, 0.5) && Near(st[1].db, 4.0));
+        CHECK(Near(st[2].start, 1.5) && Near(st[2].length, 0.5) && Near(st[2].db, -3.0));
+        CHECK(Near(st[3].start, 2.0) && Near(st[3].length, 1.0));
+    }
+    // An excluded zone inside part a: that stretch at the frame's dB, a on both sides of it.
+    {
+        SoundData z = d;
+        z.zones.push_back({1.2, 0.1, "", {}});
+        const std::vector<WholeFileStretch> sz = PartGainStretches(z, 3.0);
+        CHECK(sz.size() == 6);
+        if (sz.size() == 6) {
+            CHECK(Near(sz[1].start, 1.0) && Near(sz[1].length, 0.2) && Near(sz[1].db, 4.0));
+            CHECK(Near(sz[2].start, 1.2) && Near(sz[2].length, 0.1) && Near(sz[2].db, -3.0));
+            CHECK(Near(sz[3].start, 1.3) && Near(sz[3].length, 0.2) && Near(sz[3].db, 4.0));
+            CHECK(Near(sz[4].start, 1.5) && Near(sz[4].db, -3.0));
+        }
+    }
+    // A second divided frame: each at its own part gains.
+    {
+        SoundData two = d;
+        SoundFrame g;
+        g.start = 2.5;
+        g.length = 0.4;
+        g.db = 0.5;
+        g.cuts = {2.7};
+        g.part_db = {{"b", -6.0}};
+        two.frames.push_back(g);
+        const std::vector<WholeFileStretch> s2 = PartGainStretches(two, 3.0);
+        CHECK(s2.size() == 7);
+        if (s2.size() == 7) {
+            CHECK(Near(s2[1].db, 4.0) && Near(s2[2].db, -3.0));
+            CHECK(Near(s2[3].start, 2.0) && Near(s2[3].length, 0.5) && Near(s2[3].db, 0.0));
+            CHECK(Near(s2[4].start, 2.5) && Near(s2[4].length, 0.2) && Near(s2[4].db, 0.5));
+            CHECK(Near(s2[5].start, 2.7) && Near(s2[5].length, 0.2) && Near(s2[5].db, -6.0));
+            CHECK(Near(s2[6].start, 2.9) && Near(s2[6].db, 0.0));
+        }
+    }
+    // Without part gains: as the frames' version.
+    d.frames[0].part_db.clear();
+    CHECK(PartGainStretches(d, 3.0).size() == 3);
 }
 
 void TestAuditionEnded()
@@ -470,6 +565,20 @@ static void TestPartsAudition()
           Near(z.fade_in_s, kDefaultCutFade) && Near(z.fade_out_s, kDefaultCutFade));
     CHECK(Near(ZoneAuditionVoice(lib, n, 0.5, 0.2).gain_db, 0.0));   // between the variations
     CHECK(Near(ZoneAuditionVoice(lib, n, 0.5, 0.0).length_s, 0.0));  // nothing
+    // 13-28: a part with its own gain (part_db) plays at it, the others at the frame's dB; a zone in it too
+    // (the root's gain is 0 here).
+    {
+        SoundNode g = n;
+        g.sound.frames[0].part_db = {{"vb", 4.0}};
+        g.sound.frames[0].db = 1.0;
+        const std::vector<AuditionVoice> vb = PartAuditionVoices(lib, g, 0, "vb");
+        CHECK(vb.size() == 2);
+        for (const AuditionVoice& x : vb) CHECK(Near(x.gain_db, 4.0));
+        const std::vector<AuditionVoice> vf = PartAuditionVoices(lib, g, 0, "vf");
+        CHECK(vf.size() == 1 && Near(vf[0].gain_db, 1.0));
+        CHECK(Near(ZoneAuditionVoice(lib, g, 0.02, 0.04).gain_db, 4.0));   // inside Back
+        CHECK(Near(ZoneAuditionVoice(lib, g, 0.25, 0.05).gain_db, 1.0));   // inside Front
+    }
     // Takes mode: the take whole.
     SoundNode t = n;
     t.sound.mode = DetectMode::Takes;
@@ -511,6 +620,7 @@ int main()
     TestCountText();
     TestNormalizeOnOnly();
     TestNormalizeTakes();
+    TestPartGains();
     TestAuditionEnded();
     TestFades();
     TestPartsAudition();

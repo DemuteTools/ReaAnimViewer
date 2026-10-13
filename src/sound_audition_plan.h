@@ -129,15 +129,9 @@ enum class FrameEdit { Trim, Add, Split, Toggle, Db };
 // Decision 3: Takes mode refuses Add and Split.
 bool FrameEditAllowed(DetectMode mode, FrameEdit edit);
 
-// The selection Normalize works on: the selected frames (NormalizeFrames keeps the on ones); {} =
+// The selection Normalize works on: the selected frames (NormalizeRegions keeps the on ones); {} =
 // every frame (no selection); {-1} = none when only off frames are selected.
 std::vector<int> NormalizeSelection(const std::vector<SoundFrame>& frames, const std::vector<int>& selected);
-// Takes mode Normalize: each take has its own file, peak_db[i] = take i's frame peak (non-finite =
-// not read: left as is). Per variation: target - own peak; whole: target - the loudest of the set,
-// for each. `selection` as NormalizeSelection. Sets `hand`; true when a frame changed.
-bool NormalizeTakeFrames(std::vector<SoundFrame>& frames, const std::vector<double>& peak_db, double target_db,
-                         bool whole, const std::vector<int>& selection);
-
 // The Edit window's Play (the whole file) in stretches of the file, each with its gain: a variation
 // plays at its own dB, the file between them at 0 dB, so a Normalize or a dB drag is heard at once.
 // Overlapping frames: the earlier one wins until it ends. `file_len` <= 0 = unknown (the last
@@ -146,6 +140,9 @@ struct WholeFileStretch {
     double start = 0.0, length = 0.0, db = 0.0;
 };
 std::vector<WholeFileStretch> WholeFileStretches(const std::vector<SoundFrame>& frames, double file_len);
+// 13-28: the same for a Sound, each part of a divided variation at its own gain (FrameGainDb) when it has
+// one (an excluded stretch at the variation's dB).
+std::vector<WholeFileStretch> PartGainStretches(const SoundData& data, double file_len);
 
 // "D → N variations · K off" (decision 7): "D → " dropped when D = N, " · K off" when K = 0;
 // "1 variation" singular.

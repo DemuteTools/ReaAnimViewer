@@ -22,6 +22,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -77,6 +78,9 @@ struct SoundFrame {
     bool                     cut_unsure = false;
     std::vector<double>      syncs;
     std::vector<double>      hand_syncs;
+    // 13-28: per-part gains (dB) set by a "Per part" Normalize, keyed by the part's Switch value uid. A part
+    // with none plays at `db` (FrameGainDb).
+    std::map<std::string, double> part_db;
 };
 
 // The Sound-level default fades (s): every variation with no fade of its own gets them.

@@ -205,6 +205,7 @@ if(WIN32)
             src/sound_record.cpp
             src/sound_project.cpp
             src/sound_entries.cpp
+            src/normalize_presets.cpp  # 13-28
             src/sound_draw.cpp
             src/sound_switch.cpp
             src/library_tree_edit.cpp

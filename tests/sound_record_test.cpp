@@ -31,7 +31,7 @@ bool SameFrames(const std::vector<SoundFrame>& a, const std::vector<SoundFrame>&
             a[i].hand != b[i].hand || a[i].kept != b[i].kept || a[i].fade_in != b[i].fade_in ||
             a[i].fade_out != b[i].fade_out || a[i].fade_in_shape != b[i].fade_in_shape ||
             a[i].fade_out_shape != b[i].fade_out_shape || a[i].cuts != b[i].cuts || a[i].cuts_hand != b[i].cuts_hand ||
-            a[i].cut_unsure != b[i].cut_unsure || a[i].syncs != b[i].syncs || a[i].hand_syncs != b[i].hand_syncs)
+            a[i].cut_unsure != b[i].cut_unsure || a[i].syncs != b[i].syncs || a[i].hand_syncs != b[i].hand_syncs || a[i].part_db != b[i].part_db)
             return false;
     return true;
 }
@@ -469,6 +469,28 @@ int main()
         CHECK(ParseSoundStore("RAVSOUNDS 1\nlibrary uid=l name=L root=n\nnode uid=n type=sound\nsound kind=item\n"
                               "frame start=0 len=1 fin=abc\n", &bad));
         CHECK(bad.libraries[0].nodes[0].sound.frames[0].fade_in < 0.0);
+    }
+
+    // ---- 13-28: a part's own gain (pdb.<value uid>), none written for a frame without ----------------
+    {
+        SoundStore s = BigStore();
+        SoundFrame& f = s.libraries[0].nodes[3].sound.frames[1];
+        f.part_db["a000000000000002"] = 3.5;
+        f.part_db["a 3"] = -1.25;  // a uid that needs escaping
+        const std::string t = SerializeSoundStore(s);
+        CHECK(t.find(" pdb.a%203=-1.25 pdb.a000000000000002=3.5\n") != std::string::npos);
+        CHECK(t.find("frame start=0 len=0.25 cuts=0.125 cutsh=1 sync=0.018,0.13 hsync=0.13\n") != std::string::npos);
+        SoundStore p;
+        CHECK(ParseSoundStore(t, &p) && SameStore(p, s) && SerializeSoundStore(p) == t);
+        CHECK(p.libraries[0].nodes[3].sound.frames[1].part_db.size() == 2 &&
+              p.libraries[0].nodes[3].sound.frames[1].part_db.at("a 3") == -1.25);
+        CHECK(p.libraries[0].nodes[3].sound.frames[0].part_db.empty());
+        // A pdb that does not read is kept as written.
+        SoundStore bad;
+        CHECK(ParseSoundStore("RAVSOUNDS 1\nlibrary uid=l name=L root=n\nnode uid=n type=sound\nsound kind=item\n"
+                              "frame start=0 len=1 pdb.x=abc\n", &bad));
+        CHECK(bad.libraries[0].nodes[0].sound.frames[0].part_db.empty() &&
+              SerializeSoundStore(bad).find(" pdb.x=abc\n") != std::string::npos);
     }
 
     // ---- 13-20 / 13-23 / 13-25: parts, zones, sync points, roles, a layer's / draw's / tag's part ---

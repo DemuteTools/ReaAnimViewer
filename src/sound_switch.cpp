@@ -130,7 +130,7 @@ struct Walker {
                 if (hooks.part_variation) rs.variation = hooks.part_variation(n, rs.part_value);
                 else rs.variation = hooks.variation ? hooks.variation(n) : -1;
                 if (rs.variation >= 0 && rs.variation < (int)n.sound.frames.size())
-                    rs.gain_db += n.sound.frames[(size_t)rs.variation].db;
+                    rs.gain_db += FrameGainDb(n.sound.frames[(size_t)rs.variation], rs.part_value);  // 13-28: a part's own gain
             }
             res.sounds.push_back(rs);
             break;

@@ -224,7 +224,7 @@ std::vector<AuditionVoice> PartAuditionVoices(const SoundLibrary& lib, const Sou
     std::vector<AuditionVoice> out;
     if (variation < 0 || static_cast<size_t>(variation) >= n.sound.frames.size()) return out;
     const SoundFrame& f = n.sound.frames[static_cast<size_t>(variation)];
-    const double      gain = GainFromRoot(lib, n) + f.db;
+    const double      gain = GainFromRoot(lib, n) + FrameGainDb(f, part_value);  // 13-28: the part's own gain
     if (n.sound.mode == DetectMode::Takes) {  // A8: the take whole
         AuditionVoice voice;
         voice.node = n.uid;
@@ -273,7 +273,8 @@ AuditionVoice ZoneAuditionVoice(const SoundLibrary& lib, const SoundNode& n, dou
     for (size_t i = 0; i < n.sound.frames.size(); ++i) {
         const SoundFrame& f = n.sound.frames[i];
         if (voice.start_s >= f.start && voice.start_s < f.start + f.length) {
-            db = f.db;
+            std::string own;  // 13-28: the part there plays at its own gain
+            db = PartAt(n.sound, static_cast<int>(i), voice.start_s, &own) ? FrameGainDb(f, own) : f.db;
             voice.variation = static_cast<int>(i);
             break;
         }
@@ -371,35 +372,6 @@ std::vector<int> NormalizeSelection(const std::vector<SoundFrame>& frames, const
     return {-1};  // only off frames selected: nothing
 }
 
-bool NormalizeTakeFrames(std::vector<SoundFrame>& frames, const std::vector<double>& peak_db, double target_db,
-                         bool whole, const std::vector<int>& selection)
-{
-    auto ok = [&](int i) {
-        return i >= 0 && static_cast<size_t>(i) < frames.size() && static_cast<size_t>(i) < peak_db.size() &&
-               frames[static_cast<size_t>(i)].on && std::isfinite(peak_db[static_cast<size_t>(i)]);
-    };
-    std::vector<int> set;
-    if (selection.empty()) {
-        for (size_t i = 0; i < frames.size(); ++i)
-            if (ok(static_cast<int>(i))) set.push_back(static_cast<int>(i));
-    } else {
-        for (int i : selection)
-            if (ok(i)) set.push_back(i);
-    }
-    if (set.empty()) return false;
-    double top = peak_db[static_cast<size_t>(set.front())];
-    for (int i : set) top = std::max(top, peak_db[static_cast<size_t>(i)]);
-    bool changed = false;
-    for (int i : set) {
-        SoundFrame&  f = frames[static_cast<size_t>(i)];
-        const double db = target_db - (whole ? top : peak_db[static_cast<size_t>(i)]);
-        if (std::fabs(f.db - db) > 1e-9 || !f.hand) changed = true;
-        f.db = db;
-        f.hand = true;
-    }
-    return changed;
-}
-
 std::string VariationCountText(int detected, const std::vector<SoundFrame>& frames)
 {
     const int n = static_cast<int>(frames.size());
@@ -485,6 +457,48 @@ std::vector<WholeFileStretch> WholeFileStretches(const std::vector<SoundFrame>& 
     }
     if (file_len <= 0.0) out.push_back({at, 0.0, 0.0});
     else if (file_len > at) out.push_back({at, file_len - at, 0.0});
+    return out;
+}
+
+std::vector<WholeFileStretch> PartGainStretches(const SoundData& data, double file_len)
+{
+    const std::vector<WholeFileStretch> base = WholeFileStretches(data.frames, file_len);
+    if (!IsDivided(data)) return base;
+    std::vector<WholeFileStretch> out;
+    for (const WholeFileStretch& st : base) {
+        // Its frame: the earliest one holding its start at that dB (the earlier one wins until it ends).
+        int fi = -1;
+        for (size_t i = 0; i < data.frames.size(); ++i) {
+            const SoundFrame& f = data.frames[i];
+            if (st.start < f.start - 1e-9 || st.start >= f.start + f.length || f.db != st.db) continue;
+            if (fi < 0 || f.start < data.frames[static_cast<size_t>(fi)].start) fi = static_cast<int>(i);
+        }
+        if (fi < 0 || data.frames[static_cast<size_t>(fi)].part_db.empty() || !(st.length > 0.0)) {
+            out.push_back(st);
+            continue;
+        }
+        const SoundFrame&   f = data.frames[static_cast<size_t>(fi)];
+        const double        s0 = st.start, s1 = st.start + st.length;
+        std::vector<double> b = {s0, s1};
+        auto                add = [&](double t) {
+            if (t > s0 && t < s1) b.push_back(t);
+        };
+        for (double c : f.cuts) add(c);
+        for (const SoundZone& z : data.zones) {
+            add(z.start);
+            add(z.start + z.length);
+        }
+        std::sort(b.begin(), b.end());
+        for (size_t k = 0; k + 1 < b.size(); ++k) {
+            if (b[k + 1] - b[k] <= 1e-9) continue;
+            std::string  own;
+            const double db = PartAt(data, fi, (b[k] + b[k + 1]) * 0.5, &own) ? FrameGainDb(f, own) : f.db;
+            if (!out.empty() && out.back().db == db && std::fabs(out.back().start + out.back().length - b[k]) <= 1e-9)
+                out.back().length = b[k + 1] - out.back().start;
+            else
+                out.push_back({b[k], b[k + 1] - b[k], db});
+        }
+    }
     return out;
 }
 

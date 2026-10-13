@@ -734,6 +734,7 @@ static SoundStore DividedStore()
     d.frames[0].cuts_hand = true;
     d.frames[0].syncs = {0.01, 0.21};
     d.frames[0].hand_syncs = {0.21};
+    d.frames[0].part_db = {{"v000000000000091", 2.5}, {"v000000000000092", -1.5}};  // 13-28
     s.libraries[0].nodes[5].layer_part = "v000000000000092";  // metal2.wav, a Blend layer
     s.libraries[0].nodes[4].layer_part = kLayerPartWhole;
     return s;
@@ -746,6 +747,7 @@ static void TestDividedTravels()
     const std::string text = SerializeRavlib(one);
     CHECK(text.rfind("RAVLIB 2\n", 0) == 0);
     CHECK(text.find("value uid=v000000000000092 name=Front roles=toe,toe_end\n") != std::string::npos);
+    CHECK(text.find(" pdb.v000000000000091=2.5 pdb.v000000000000092=-1.5\n") != std::string::npos);
     SoundStore back;
     CHECK(ParseRavlib(text, &back) && SerializeRavlib(back) == text);
 
@@ -779,6 +781,10 @@ static void TestDividedTravels()
         CHECK(d.frames[0].cuts == std::vector<double>{0.2} && d.frames[0].cuts_hand);
         CHECK(d.frames[0].syncs == (std::vector<double>{0.01, 0.21}) && d.frames[0].hand_syncs == std::vector<double>{0.21});
         CHECK(lay->layer_part == g->values[1].uid && whole->layer_part == kLayerPartWhole);
+        // 13-28: the per-part gains follow their values; a frame without writes none.
+        CHECK(d.frames[0].part_db.size() == 2 && d.frames[0].part_db.at(g->values[0].uid) == 2.5 &&
+              d.frames[0].part_db.at(g->values[1].uid) == -1.5);
+        CHECK(d.frames.size() < 2 || d.frames[1].part_db.empty());
         // The same parts: Back owns the start (the excluded zone a hole in it) and the zone given to it
         // inside Front.
         const std::vector<PartSpan> back_spans = PlacedSpans(d, 0, g->values[0].uid);
@@ -806,6 +812,8 @@ static void TestDividedTravels()
             if (n.name == "wood1.wav") s2 = &n;
     CHECK(m && s2 && s2->sound.divide_group == m->uid && s2->sound.divide_values[0] == "p000000000000091" &&
           s2->sound.divide_values[1] == m->values[1].uid);
+    CHECK(m && s2 && s2->sound.frames[0].part_db.count("p000000000000091") == 1 &&
+          s2->sound.frames[0].part_db.count(m->values[1].uid) == 1);
 
     // A v1 file (written before parts) still reads: combined, no syncs.
     SoundStore v1;

@@ -225,6 +225,11 @@ add_executable(sound_tracks_plan_test sound_tracks_plan_test.cpp ../src/sound_tr
 target_link_libraries(sound_tracks_plan_test PRIVATE Threads::Threads)
 target_include_directories(sound_tracks_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_tracks_plan COMMAND sound_tracks_plan_test)
+# Story 13-28 -- src/normalize_presets.h (the user's normalize presets, pure)
+add_executable(normalize_presets_test normalize_presets_test.cpp ../src/normalize_presets.cpp)
+target_include_directories(normalize_presets_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME normalize_presets COMMAND normalize_presets_test)
+
 # Story 13-7b -- src/sound_audition_plan.h
 add_executable(sound_audition_plan_test sound_audition_plan_test.cpp ../src/sound_audition_plan.cpp ../src/sound_place_plan.cpp ../src/sound_draw.cpp ../src/sound_switch.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
 target_include_directories(sound_audition_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

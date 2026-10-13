@@ -214,6 +214,11 @@ bool AddRavlibLibrary(SoundStore& store, const SoundStore& file, const std::stri
         for (RoleValue& r : d.role_map) r.value = Mapped(vmap, r.value);
         for (SoundZone& z : d.zones)
             if (!z.to.empty()) z.to = Mapped(vmap, z.to);
+        for (SoundFrame& f : d.frames) {  // 13-28: the per-part gains follow their values
+            std::map<std::string, double> pdb;
+            for (const auto& kv : f.part_db) pdb[Mapped(vmap, kv.first)] = kv.second;
+            f.part_db = pdb;
+        }
     }
     std::vector<std::string> names;
     for (const SoundLibrary& l : s.libraries) names.push_back(l.name);

@@ -550,6 +550,7 @@ Fields FrameFields(const SoundFrame& fr)
     if (fr.cut_unsure) f.push_back({"cutq", "1"});
     if (!fr.syncs.empty()) f.push_back({"sync", JoinNumbers(fr.syncs)});
     if (!fr.hand_syncs.empty()) f.push_back({"hsync", JoinNumbers(fr.hand_syncs)});
+    for (const auto& pd : fr.part_db) f.push_back({"pdb." + Enc(pd.first), FormatNumber(pd.second)});  // 13-28
     return f;
 }
 
@@ -569,6 +570,13 @@ Got SetFrame(SoundFrame& fr, const std::string& k, const std::string& v)
     if (k == "cutq") return G(ReadFlag(v, &fr.cut_unsure));
     if (k == "sync") return G(SplitNumbers(v, &fr.syncs));
     if (k == "hsync") return G(SplitNumbers(v, &fr.hand_syncs));
+    if (k.size() > 4 && k.compare(0, 4, "pdb.") == 0) {  // 13-28: a part's gain, pdb.<value uid>
+        std::string uid;
+        double      db = 0.0;
+        if (!Dec(k.substr(4), &uid) || uid.empty() || !ReadNumber(v, &db)) return Got::Bad;
+        fr.part_db[uid] = db;
+        return Got::Ok;
+    }
     return Got::Unknown;
 }
 

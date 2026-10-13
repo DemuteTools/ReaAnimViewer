@@ -67,6 +67,10 @@ struct WaveformOptions {
     // 13-20 / 13-23 / 13-25: the parts drawn, with their gestures (drag a cut or a sync flag, a
     // horizontal drag selects a zone); null = none.
     const WaveParts* parts = nullptr;
+    // 13-28: per frame, the gain from Normalize shown at the top right of its box (0 = none; empty = no
+    // labels) and whether it clips (drawn in --bad).
+    std::vector<double> gain_db;
+    std::vector<bool>   gain_clip;
 };
 
 struct WaveformEvents {

@@ -310,28 +310,187 @@ void TestClampAndEdits()
     CHECK(s.frames.size() == 1 && !s.edited && !s.frames[0].hand);
 }
 
+// Peak Normalize as the gesture runs it (13-28): regions, cached-peak adjustments, ApplyNormalize.
+NormalizeOutcome PeakNormalize(std::vector<SoundFrame>& fr, const PeakData& p, double target, NormScope scope,
+                               const std::vector<int>& sel)
+{
+    SoundData d;
+    d.frames = fr;
+    const std::vector<NormRegion> regs = NormalizeRegions(d, scope, sel);
+    std::vector<double>           adj;
+    for (const NormRegion& r : regs) adj.push_back(RegionPeakAdjDb(p, r, target));
+    const NormalizeOutcome o = ApplyNormalize(fr, scope, regs, adj);
+    return o;
+}
+
 void TestNormalize()
 {
+    // Ported from NormalizeFrames: the Peak cases behave as before.
     PeakData p;
     p.rate = 10;
     p.max_abs = {0.5f, 0.5f, 0.25f, 0.25f, 0.0f, 0.0f, 1.0f, 1.0f};
     std::vector<SoundFrame> fr = {F(0, 0.2), F(0.2, 0.2), F(0.4, 0.2), F(0.6, 0.2)};
     fr[3].on = false;
     fr[3].db = 7;
-    NormalizeFrames(fr, p, -1, false, {});
+    PeakNormalize(fr, p, -1, NormScope::Variation, {});
     CHECK(Near(FramePeakDb(p, fr[0]) + fr[0].db, -1, 0.1));
     CHECK(Near(FramePeakDb(p, fr[1]) + fr[1].db, -1, 0.1));
     CHECK(Near(fr[2].db, 0) && std::isinf(FramePeakDb(p, fr[2])));
     CHECK(Near(fr[3].db, 7));
-    NormalizeFrames(fr, p, -1, true, {});
+    PeakNormalize(fr, p, -1, NormScope::Whole, {});
     CHECK(Near(FramePeakDb(p, fr[0]) + fr[0].db, -1, 0.1));
     CHECK(Near(fr[1].db, fr[0].db));
     CHECK(Near(fr[3].db, 7));
     CHECK(Near(fr[2].db, 0) && !fr[2].hand);  // -inf peak: untouched by the whole pass too
     CHECK(fr[0].hand && !fr[3].hand);
-    NormalizeFrames(fr, p, -6, false, {1, 3});
+    PeakNormalize(fr, p, -6, NormScope::Variation, {1, 3});
     CHECK(Near(FramePeakDb(p, fr[1]) + fr[1].db, -6, 0.1) && Near(fr[3].db, 7));
     CHECK(std::isinf(FramePeakDb(p, F(5, 1))));
+}
+
+// 13-28: the modes table, the applier per scope, silent regions, per-part gains.
+void TestNormalizeModes()
+{
+    // REAPER's normalizeTo, in the mockup's order.
+    const int want[kNormModeCount] = {2, 3, 1, 0, 4, 5};
+    for (int i = 0; i < kNormModeCount; ++i) CHECK(NormModeReaperIndex(static_cast<NormMode>(i)) == want[i]);
+
+    // Matrix "Per variation, Peak -1": peaks -6 / -3 / -9 / -12 -> +5 / +2 / +8 / +11.
+    std::vector<SoundFrame> fr = {F(0, 1), F(1, 1), F(2, 1), F(3, 1)};
+    std::vector<NormRegion> regs(4);
+    for (int i = 0; i < 4; ++i) regs[static_cast<size_t>(i)].frame = i;
+    NormalizeOutcome o = ApplyNormalize(fr, NormScope::Variation, regs, {-1 + 6.0, -1 + 3.0, -1 + 9.0, -1 + 12.0});
+    CHECK(o.done == 4 && o.skipped == 0 && o.changed);
+    CHECK(Near(fr[0].db, 5) && Near(fr[1].db, 2) && Near(fr[2].db, 8) && Near(fr[3].db, 11) && fr[0].hand);
+    // The same again: nothing changed.
+    CHECK(!ApplyNormalize(fr, NormScope::Variation, regs, {5.0, 2.0, 8.0, 11.0}).changed);
+
+    // Matrix "Whole, LUFS-I -14": adjustments +3 / +1 / +6 -> all +1.
+    fr = {F(0, 1), F(1, 1), F(2, 1)};
+    regs.resize(3);
+    o = ApplyNormalize(fr, NormScope::Whole, regs, {3.0, 1.0, 6.0});
+    CHECK(o.done == 3 && Near(fr[0].db, 1) && Near(fr[1].db, 1) && Near(fr[2].db, 1));
+
+    // Matrix "Silent region": factor <= 0, NaN, or > +60 dB -> skipped, counted out.
+    CHECK(std::isnan(NormAdjustmentDb(0.0)) && std::isnan(NormAdjustmentDb(-1.0)) &&
+          std::isnan(NormAdjustmentDb(std::nan(""))) && std::isnan(NormAdjustmentDb(std::pow(10.0, 61.0 / 20.0))));
+    CHECK(Near(NormAdjustmentDb(2.0), 6.0206, 1e-3));
+    fr = {F(0, 1), F(1, 1), F(2, 1)};
+    o = ApplyNormalize(fr, NormScope::Variation, regs, {NormAdjustmentDb(0.0), 61.0, 4.0});
+    CHECK(o.done == 1 && o.skipped == 2 && Near(fr[0].db, 0) && !fr[0].hand && Near(fr[1].db, 0) && Near(fr[2].db, 4));
+    o = ApplyNormalize(fr, NormScope::Whole, regs, {std::nan(""), 2.0, 4.0});
+    CHECK(o.done == 2 && o.skipped == 1 && Near(fr[1].db, 2) && Near(fr[2].db, 2) && Near(fr[0].db, 0));
+
+    // An off frame is never changed (even when a region names it).
+    fr = {F(0, 1), F(1, 1)};
+    fr[1].on = false;
+    regs.resize(2);
+    o = ApplyNormalize(fr, NormScope::Variation, regs, {3.0, 3.0});
+    CHECK(o.done == 1 && Near(fr[1].db, 0) && !fr[1].hand);
+
+    // Combining spans: Peak = the loudest span (smallest adjustment); LUFS-I = energy over the summed duration.
+    CHECK(Near(CombineSpanAdjustments(NormMode::Peak, -1, {5.0, 2.0}, {0.1, 0.1}), 2.0));
+    CHECK(Near(CombineSpanAdjustments(NormMode::LufsSMax, -18, {5.0, std::nan(""), 7.0}, {}), 5.0));
+    CHECK(Near(CombineSpanAdjustments(NormMode::LufsI, -14, {3.0, 3.0}, {0.2, 0.5}), 3.0));
+    // Two equal-length spans 10 dB apart: the energy mean is ~7.4 dB under the loud one.
+    CHECK(Near(CombineSpanAdjustments(NormMode::LufsI, -14, {0.0, 10.0}, {1.0, 1.0}), 10.0 * std::log10(2.0 / 1.1), 1e-6));
+    CHECK(std::isnan(CombineSpanAdjustments(NormMode::RmsI, -14, {std::nan("")}, {1.0})));
+}
+
+void TestNormalizeParts()
+{
+    const std::string back = "vb", front = "vf";
+    SoundData d;
+    d.divide_group = "g";
+    d.divide_values = {back, front};
+    d.frames = {F(0, 1), F(1, 1), F(2, 1)};
+    for (size_t i = 0; i < 3; ++i) d.frames[i].cuts = {d.frames[i].start + 0.4};
+    CHECK(NormPartsAvailable(d));
+    // Matrix "Per part": divided Back / Front, 3 variations -> 6 part dBs, frame dB untouched.
+    std::vector<NormRegion> regs = NormalizeRegions(d, NormScope::Part, {});
+    CHECK(regs.size() == 6 && regs[0].frame == 0 && regs[0].part == back && regs[1].part == front);
+    CHECK(regs[0].spans.size() == 1 && Near(regs[0].spans[0].length, 0.4) && Near(regs[1].spans[0].start, 0.4));
+    d.frames[0].db = -2;
+    std::vector<double> adj = {1, 2, 3, 4, 5, 6};
+    NormalizeOutcome    o = ApplyNormalize(d.frames, NormScope::Part, regs, adj);
+    CHECK(o.done == 6 && o.changed);
+    CHECK(Near(d.frames[0].db, -2) && d.frames[0].part_db.size() == 2 && Near(d.frames[0].part_db[back], 1) &&
+          Near(d.frames[2].part_db[front], 6));
+    // FrameGainDb: the part's own, else the frame's; "" = the frame's.
+    CHECK(Near(FrameGainDb(d.frames[0], front), 2) && Near(FrameGainDb(d.frames[0], ""), -2) &&
+          Near(FrameGainDb(d.frames[0], "other"), -2));
+    CHECK(Near(FrameLabelDb(d, 0), 2) && Near(FrameLabelDb(d, 2), 6));
+    // A hand dB drag moves the parts' own gains by the same step.
+    {
+        SoundData h = d;
+        SetFrameDb(h, 0, 1.0);  // -2 -> +1: +3
+        CHECK(Near(h.frames[0].db, 1) && Near(h.frames[0].part_db[back], 4) && Near(h.frames[0].part_db[front], 5));
+    }
+    // Matrix "Per variation after Per part": the acted frames' part dBs cleared, frame dB written.
+    regs = NormalizeRegions(d, NormScope::Variation, {1});
+    CHECK(regs.size() == 1 && regs[0].frame == 1 && regs[0].part.empty());
+    ApplyNormalize(d.frames, NormScope::Variation, regs, {7.0});
+    CHECK(d.frames[1].part_db.empty() && Near(d.frames[1].db, 7) && d.frames[0].part_db.size() == 2);
+    // An excluded zone inside Back of frame 0: Back measured over its 2 spans; a frame with nothing left gives none.
+    d.zones.push_back({0.1, 0.1, "", {}});
+    d.zones.push_back({2.0, 1.0, "", {}});  // frame 2 fully excluded
+    regs = NormalizeRegions(d, NormScope::Part, {});
+    CHECK(regs.size() == 4 && regs[0].part == back && regs[0].spans.size() == 2);
+    for (const NormRegion& r : regs) CHECK(r.frame != 2);
+    // Per variation / Whole: frame 0's spans skip the zone; the fully excluded frame 2 gives no region.
+    regs = NormalizeRegions(d, NormScope::Variation, {});
+    CHECK(regs.size() == 2 && regs[0].frame == 0 && regs[1].frame == 1);
+    if (!regs.empty())
+        CHECK(regs[0].spans.size() == 2 && Near(regs[0].spans[0].start, 0.0) && Near(regs[0].spans[0].length, 0.1) &&
+              Near(regs[0].spans[1].start, 0.2) && Near(regs[0].spans[1].length, 0.8));
+    regs = NormalizeRegions(d, NormScope::Whole, {});
+    CHECK(regs.size() == 2);
+    // Whole on a divided frame with part gains clears them.
+    CHECK(!d.frames[0].part_db.empty());
+    ApplyNormalize(d.frames, NormScope::Whole, regs, {3.0, 5.0});
+    CHECK(d.frames[0].part_db.empty() && Near(d.frames[0].db, 3) && Near(d.frames[1].db, 3));
+    // Selection: only the selected on frames; {-1} = none; an off frame none.
+    d.frames[1].on = false;
+    CHECK(NormalizeRegions(d, NormScope::Variation, {-1}).empty());
+    CHECK(NormalizeRegions(d, NormScope::Variation, {1}).empty());
+    CHECK(NormalizeRegions(d, NormScope::Variation, {0, 1}).size() == 1);
+    // Matrix "Part preset, undivided": Per part acts per variation.
+    SoundData u;
+    u.frames = {F(0, 1), F(1, 1)};
+    CHECK(!NormPartsAvailable(u));
+    regs = NormalizeRegions(u, NormScope::Part, {});
+    CHECK(regs.size() == 2 && regs[0].part.empty());
+    // Peak from cached peaks over the spans: the loudest span.
+    PeakData p;
+    p.rate = 10;
+    p.max_abs.assign(10, 0.25f);
+    p.max_abs[7] = 0.5f;
+    NormRegion r;
+    r.spans = {{"", 0.0, 0.3}, {"", 0.6, 0.3}};
+    CHECK(Near(RegionPeakAdjDb(p, r, -1), -1 - 20 * std::log10(0.5), 1e-4));
+    r.spans = {{"", 0.0, 0.3}};
+    CHECK(Near(RegionPeakAdjDb(p, r, -1), -1 - 20 * std::log10(0.25), 1e-4));
+    p.max_abs.assign(10, 0.0f);
+    CHECK(std::isnan(RegionPeakAdjDb(p, r, -1)));
+    // FrameClips: peak + the gain it plays at over 0 dBFS, part by part (the red dB label).
+    SoundData c;
+    c.divide_group = "g";
+    c.divide_values = {back, front};
+    c.frames = {F(0, 1)};
+    c.frames[0].cuts = {0.5};
+    p.rate = 10;
+    p.max_abs.assign(10, 0.5f);  // -6 dBFS
+    CHECK(!FrameClips(c, 0, p));
+    c.frames[0].part_db[front] = 7.0;
+    CHECK(FrameClips(c, 0, p));
+    c.frames[0].part_db[front] = 5.0;
+    c.frames[0].db = 7.0;  // Back plays at the frame's dB
+    CHECK(FrameClips(c, 0, p));
+    c.frames[0].db = 0.0;
+    CHECK(!FrameClips(c, 0, p) && Near(FrameLabelDb(c, 0), 5.0));
+    c.frames[0].on = false;
+    c.frames[0].db = 20.0;
+    CHECK(!FrameClips(c, 0, p));
 }
 
 // Antho 2026-10-12: fades on each variation.
@@ -865,6 +1024,8 @@ int main()
     TestSilenceMerge();
     TestClampAndEdits();
     TestNormalize();
+    TestNormalizeModes();
+    TestNormalizeParts();
     TestFades();
     if (g_fails) {
         std::printf("sound_entries_test: %d failure(s)\n", g_fails);

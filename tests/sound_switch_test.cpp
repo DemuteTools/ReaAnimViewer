@@ -647,10 +647,19 @@ static void TestParts()
     h.part_variation = nullptr;
     r = ResolveEvent(st, lib, l, h);
     CHECK(r.sounds[0].variation == 0 && r.sounds[0].part_value == "vb");
+    // 13-28: after a Per part Normalize, the event's part plays at its own gain; a whole placement at the
+    // variation's dB.
+    const double g0 = r.sounds[0].gain_db;
+    FindNode(lib, "s1")->sound.frames[0].db = -1.0;
+    FindNode(lib, "s1")->sound.frames[0].part_db = {{"vb", 4.0}, {"vf", -6.0}};
+    r = ResolveEvent(st, lib, l, h);
+    CHECK(std::fabs(r.sounds[0].gain_db - (g0 + 4.0)) < 1e-9);
     // No role: the whole variation, except the layer's own part.
     l.role.clear();
     r = ResolveEvent(st, lib, l, h);
     CHECK(r.sounds[0].part_value.empty() && r.sounds[1].part_value == "vf");
+    CHECK(std::fabs(r.sounds[0].gain_db - (g0 - 1.0)) < 1e-9);
+    FindNode(lib, "s1")->sound.frames[0] = SoundFrame{};
     // A missing Sound still says its part, plays nothing.
     h.is_missing = [](const SoundNode& n) { return n.uid == "s1"; };
     l.role = "toe";

@@ -177,5 +177,11 @@
 #define REAPERAPI_WANT_genGuid
 #define REAPERAPI_WANT_guidToString
 
+// Story 13-28 -- Normalize in REAPER's modes (LUFS-I, RMS-I, true peak, LUFS-M / LUFS-S max): each
+// variation's file opened as a source and measured by REAPER (src/library_node_ui.cpp, main thread only).
+// Both present in every REAPER 7.
+#define REAPERAPI_WANT_CalculateNormalization
+#define REAPERAPI_WANT_PCM_Source_CreateFromFile
+
 #include "reaper_plugin.h"
 #include "reaper_plugin_functions.h"

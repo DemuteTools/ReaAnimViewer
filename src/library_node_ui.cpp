@@ -14,6 +14,7 @@
 #ifdef _WIN32
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -21,11 +22,13 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <set>
 
 #include <imgui_internal.h>  // BeginDragDropTargetCustom, ImRect
 
 #include "library_tree_edit.h"
+#include "normalize_presets.h"
 #include "library_icons.h"
 #include "library_tree_ui.h"
 #include "library_view_ui.h"
@@ -54,6 +57,22 @@ constexpr double kMinDb = -60.0, kMaxDb = 12.0;
 constexpr double kNewFrameSeconds = 0.25;  // a frame added by double-click in Edit
 constexpr const char kNoMediaTip[] = "Arrives with the Media Explorer";
 constexpr const char kTakesTip[] = "Not in Takes mode";
+
+// 13-28: a Normalize measured by REAPER (every mode but Peak), time-sliced: one span per call, ~8 ms per
+// frame. Its sources (one per file) are deleted at its end or cancel; nothing is written before its end.
+struct NormJob {
+    bool                             active = false;
+    std::string                      lib, uid, label;
+    NormScope                        scope = NormScope::Variation;  // the effective one
+    NormMode                         mode = NormMode::Peak;
+    double                           target = -1.0;
+    std::vector<NormRegion>          regions;
+    std::vector<std::vector<double>> span_adj;  // per region, per span (dB, NaN = silent)
+    size_t                           region = 0, span = 0, done_spans = 0, total_spans = 0;
+    std::map<std::string, PCM_source*> sources;
+    SoundData                        data0;  // the Sound measured: a change of its frames, zones, divide, roles
+                                             // or mode meanwhile cancels
+};
 
 struct PanelState {
     AuditionHistory       hist;
@@ -109,9 +128,20 @@ struct PanelState {
     std::string           detf_lib, detf_uid;
     double SilenceParams::*detf_field = nullptr;
     int                   detf_seen = -1;  // the last frame its fader was drawn active
+    // 13-28: Normalize's current settings (the user's, ExtState), the user's presets (reloaded when Edit
+    // opens: another project may have changed them), the preset name popup and the measuring job.
     bool                  norm_loaded = false;
+    NormScope             norm_scope = NormScope::Variation;
+    NormMode              norm_mode = NormMode::Peak;
     double                norm_db = -1.0;
-    bool                  norm_whole = false;
+    bool                  presets_stale = true;
+    bool                  presets_unread = false;  // the presets file exists but did not read: never saved over
+    std::vector<NormPreset> presets;
+    int                   pname_kind = 0;     // the name popup: 1 = a new preset, 2 = rename pname_index
+    int                   pname_index = -1;
+    bool                  pname_open = false;  // open it on the next draw (asked from a menu)
+    char                  pname_buf[128] = {};
+    NormJob               norm_job;
     // The user's REAPER view bindings (reaper-kb.ini), read when Edit opens.
     ViewKeymap            keys = DefaultViewKeymap();
     // Edit's waveform: its x span on screen and the source length (key zoom around the mouse).
@@ -129,6 +159,8 @@ struct PanelState {
     bool                  roles_more = false;
 };
 PanelState P;
+
+void CancelNormJob();  // 13-28 (below)
 
 // 13-7a / 13-7b: the layout helpers are the shared ones (ui_flow.h): labelled rows, text
 // ellipsized with a tooltip, items wrapping when they do not fit beside the last one.
@@ -155,6 +187,10 @@ void OpenEdit(const std::string& lib_uid, const std::string& uid)
     P.zone_start = P.zone_len = 0.0;
     P.solo = -1;
     P.roles_more = false;
+    CancelNormJob();          // 13-28: switching Sound cancels a measuring
+    P.presets_stale = true;   // 13-28: another project may have changed them
+    P.pname_kind = 0;
+    P.pname_open = false;
 }
 
 // ---- gestures -------------------------------------------------------------------------------------
@@ -893,15 +929,14 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
         for (size_t i = 0; i < pk.max_abs.size(); ++i) {
             const double t = vs + (static_cast<double>(i) + 0.5) / pk.rate;
             const int    fi = FrameAt(frames, t);
-            const double g = fi >= 0 ? DbToGain(frames[static_cast<size_t>(fi)].db) : 1.0;
             const float  x = a.x + static_cast<float>(i) * w / static_cast<float>(pk.max_abs.size());
             const bool   in = fi >= 0 && frames[static_cast<size_t>(fi)].on;
             // 13-20 / 13-23: who owns the column: -2 outside / off, -1 excluded, else its part (0 combined).
-            int own_k = in ? 0 : -2;
-            if (pd && in) {
-                std::string own;
-                own_k = PartAt(*pd, fi, t, &own) ? std::max(0, PartIndex(*pd, own)) : -1;
-            }
+            int         own_k = in ? 0 : -2;
+            std::string own;
+            if (pd && in) own_k = PartAt(*pd, fi, t, &own) ? std::max(0, PartIndex(*pd, own)) : -1;
+            // 13-28: the column at its part's own gain (FrameGainDb), else its frame's.
+            const double g = fi >= 0 ? DbToGain(FrameGainDb(frames[static_cast<size_t>(fi)], own_k >= 0 ? own : std::string())) : 1.0;
             for (int l = 0; l < lanes; ++l) {
                 const float  mid = LaneMid(l);
                 const double amp = (split ? pk.max_abs : PeakLane(pk, l))[i] * g;
@@ -955,6 +990,23 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
                 const ImVec2 ns = ui::TextSizeIn(nf, num);
                 const float  sy = std::floor(np.y + ns.y * 0.55f) + 0.5f;
                 dl->AddLine(ImVec2(np.x, sy), ImVec2(np.x + ns.x, sy), ui::kMuted);
+            }
+        }
+        // 13-28: the gain from Normalize at the top right (.sdb: a raised box, its border --bad when it clips).
+        if (i < o.gain_db.size() && std::fabs(o.gain_db[i]) >= 0.05) {
+            char gtxt[32];
+            std::snprintf(gtxt, sizeof(gtxt), "%+.1f dB", o.gain_db[i]);
+            const ImVec2 gs = ui::TextSizeIn(nf, gtxt);
+            const ImVec2 ns = ui::TextSizeIn(nf, "00");
+            if (fb.x - fa.x >= gs.x + ns.x + 16.0f) {
+                const bool   clip = i < o.gain_clip.size() && o.gain_clip[i];
+                const ImVec2 gp(fb.x - 7.0f - gs.x, fa.y + 2.0f);
+                dl->AddRectFilled(ImVec2(gp.x - 3.0f, gp.y - 1.0f), ImVec2(gp.x + gs.x + 3.0f, gp.y + gs.y), ui::kRaised, 3.0f);
+                dl->AddRect(ImVec2(gp.x - 3.0f, gp.y - 1.0f), ImVec2(gp.x + gs.x + 3.0f, gp.y + gs.y),
+                            clip ? WithAlpha(ui::kBad, 0x99) : ui::kStrokeStrong, 3.0f);
+                ui::AddTextIn(dl, nf, gp, clip ? IM_COL32(0xFF, 0xB3, 0xB3, 0xFF) : ui::kText, gtxt);
+                if (hovered && ImGui::IsMouseHoveringRect(gp, ImVec2(gp.x + gs.x, gp.y + gs.y)))
+                    ui::ShowTip(clip ? "Gain from Normalize: clips" : "Gain from Normalize");
             }
         }
     }
@@ -1956,6 +2008,24 @@ bool HandleWaveParts(const WaveformEvents& ev, const SoundLibrary& lib, const So
     return false;
 }
 
+// 13-28: each variation's gain label and whether it clips (its cached peak + its gain over 0 dBFS, part by
+// part). `only` >= 0: that one frame (a Takes lane, drawn alone).
+void GainLabels(const SoundData& d, const std::string& path, int only, WaveformOptions* o)
+{
+    std::vector<int> idx;
+    bool             any = false;
+    for (size_t i = 0; i < d.frames.size(); ++i) {
+        if (only >= 0 && static_cast<int>(i) != only) continue;
+        idx.push_back(static_cast<int>(i));
+        o->gain_db.push_back(FrameLabelDb(d, static_cast<int>(i)));
+        any = any || std::fabs(o->gain_db.back()) >= 0.05;
+    }
+    PeakData   pk;
+    const bool have = any && RequestPeaks(path, &pk) == PeakState::Ready;
+    for (size_t k = 0; k < idx.size(); ++k)
+        o->gain_clip.push_back(have && std::fabs(o->gain_db[k]) >= 0.05 && FrameClips(d, idx[k], pk));
+}
+
 // The Sound's waveform(s): one lane, or one lane per take in Takes mode.
 void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, float height,
                     bool in_edit, WaveformEvents* first_ev)
@@ -1980,6 +2050,7 @@ void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n,
             if (std::find(P.sel.begin(), P.sel.end(), static_cast<int>(i)) != P.sel.end()) sel.push_back(0);
             char lid[64];
             std::snprintf(lid, sizeof(lid), "%s_t%d", id, static_cast<int>(i));
+            if (in_edit) GainLabels(d, path, static_cast<int>(i), &o);  // 13-28
             const WaveformEvents ev = DrawWaveform(lid, path, {d.frames[i]}, sel, -1.0, o);
             if (i == 0 && first_ev) *first_ev = ev;
             if (ev.right_clicked && first_ev) first_ev->right_clicked = true;
@@ -2026,6 +2097,7 @@ void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n,
         }
         o.parts = &parts;
     }
+    if (in_edit) GainLabels(d, m.path, -1, &o);  // 13-28
     std::vector<int> all;
     for (size_t i = 0; i < d.frames.size(); ++i) all.push_back(static_cast<int>(i));
     const WaveformEvents ev = DrawWaveform(id, m.path, d.frames, in_edit ? P.sel : std::vector<int>{}, ph, o);
@@ -2718,71 +2790,405 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
     }
 }
 
+// ---- 13-28: LEVEL -- normalize modes, scope, the user's presets ---------------------------------------
+
 void LoadNormalizePrefs()
 {
     if (P.norm_loaded) return;
     P.norm_loaded = true;
-    P.norm_db = LoadPrefFloat("lib_normalize_db", -1.0f);
-    P.norm_whole = LoadPrefBool("lib_normalize_whole", false);
+    P.norm_db = std::clamp(static_cast<double>(LoadPrefFloat("lib_normalize_db", -1.0f)), kNormTargetMin, kNormTargetMax);
+    P.norm_scope = NormScopeFromIndex(static_cast<int>(std::lround(LoadPrefFloat("lib_normalize_scope", 0.0f))));
+    P.norm_mode = NormModeFromIndex(static_cast<int>(std::lround(LoadPrefFloat("lib_normalize_mode", 0.0f))));
 }
 
-void NormalizeControls(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m)
+void SaveNormalizePrefs()
+{
+    SavePrefFloat("lib_normalize_db", static_cast<float>(P.norm_db));
+    SavePrefFloat("lib_normalize_scope", static_cast<float>(static_cast<int>(P.norm_scope)));
+    SavePrefFloat("lib_normalize_mode", static_cast<float>(static_cast<int>(P.norm_mode)));
+}
+
+std::string ResourceRoot()
+{
+    const char* p = GetResourcePath();
+    return p ? std::string(p) : std::string();
+}
+
+void CancelNormJob()
+{
+    for (auto& kv : P.norm_job.sources) delete kv.second;
+    P.norm_job = NormJob{};
+}
+
+// What the measured regions depend on: the frames (start, length, on, cuts), the zones, the divide group
+// and values, the role map and the detect mode.
+bool SameMeasuredSound(const SoundData& x, const SoundData& y)
+{
+    const std::vector<SoundFrame>& a = x.frames;
+    const std::vector<SoundFrame>& b = y.frames;
+    if (a.size() != b.size() || x.zones.size() != y.zones.size() || x.role_map.size() != y.role_map.size() ||
+        x.divide_group != y.divide_group || x.divide_values != y.divide_values || x.mode != y.mode)
+        return false;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (a[i].start != b[i].start || a[i].length != b[i].length || a[i].on != b[i].on || a[i].cuts != b[i].cuts) return false;
+    for (size_t i = 0; i < x.zones.size(); ++i)
+        if (x.zones[i].start != y.zones[i].start || x.zones[i].length != y.zones[i].length || x.zones[i].to != y.zones[i].to)
+            return false;
+    for (size_t i = 0; i < x.role_map.size(); ++i)
+        if (x.role_map[i].role != y.role_map[i].role || x.role_map[i].value != y.role_map[i].value) return false;
+    return true;
+}
+
+// Writes the measured adjustments: one undo point and the toast; "Nothing to normalize" (no undo point)
+// when no gain changes.
+void FinishNormalize(const SoundLibrary& lib, const SoundNode& n, NormScope scope, NormMode mode, double target,
+                     const std::string& label, const std::vector<NormRegion>& regions, const std::vector<double>& adj)
+{
+    std::vector<SoundFrame> frames = n.sound.frames;
+    const NormalizeOutcome  o = ApplyNormalize(frames, scope, regions, adj);
+    if (!o.changed) {
+        ShowLibraryToast(o.done == 0 && o.skipped > 0 ? std::string("Nothing to normalize: silent") : std::string("Nothing to normalize"),
+                         false);  // no empty undo point
+        return;
+    }
+    EditNode("Normalize", lib.uid, n.uid, [frames](SoundNode& x) {
+        x.sound.frames = frames;
+        x.sound.edited = true;
+        return true;
+    }, NormalizeToastText(label, o.done, o.skipped, scope, mode, target));
+}
+
+// The Normalize gesture (the button or a preset chip) with the current settings: Peak is measured at
+// once on the cached peaks; the other modes start the time-sliced job (REAPER's CalculateNormalization).
+void StartNormalize(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, const std::string& label)
+{
+    CancelNormJob();
+    const SoundData&        d = n.sound;
+    const NormScope         scope = EffectiveNormScope(P.norm_scope, NormPartsAvailable(d));
+    std::vector<NormRegion> regions = NormalizeRegions(d, scope, NormalizeSelection(d.frames, P.sel));
+    if (regions.empty()) {
+        ShowLibraryToast("Nothing to normalize", false);
+        return;
+    }
+    for (NormRegion& r : regions) r.path = VariationPath(m, d, r.frame);
+    if (P.norm_mode == NormMode::Peak) {
+        std::vector<double>             adj;
+        std::map<std::string, PeakData> peaks;
+        for (const NormRegion& r : regions) {
+            auto it = peaks.find(r.path);
+            if (it == peaks.end()) {
+                PeakData pk;
+                if (RequestPeaks(r.path, &pk) != PeakState::Ready) pk = PeakData{};
+                it = peaks.emplace(r.path, std::move(pk)).first;
+            }
+            adj.push_back(RegionPeakAdjDb(it->second, r, P.norm_db));
+        }
+        FinishNormalize(lib, n, scope, P.norm_mode, P.norm_db, label, regions, adj);
+        return;
+    }
+    NormJob& j = P.norm_job;
+    j.active = true;
+    j.lib = lib.uid;
+    j.uid = n.uid;
+    j.label = label;
+    j.scope = scope;
+    j.mode = P.norm_mode;
+    j.target = P.norm_db;
+    j.regions = std::move(regions);
+    j.data0 = d;
+    j.span_adj.resize(j.regions.size());
+    for (size_t i = 0; i < j.regions.size(); ++i) {
+        j.span_adj[i].assign(j.regions[i].spans.size(), std::numeric_limits<double>::quiet_NaN());
+        j.total_spans += j.regions[i].spans.size();
+    }
+}
+
+// One frame of the job: spans measured until ~8 ms are spent (at least one), then the write once all are.
+void PumpNormJob(const SoundLibrary& lib, const SoundNode& n)
+{
+    NormJob& j = P.norm_job;
+    if (!j.active) return;
+    if (j.lib != lib.uid || j.uid != n.uid) {
+        CancelNormJob();
+        return;
+    }
+    if (!SameMeasuredSound(j.data0, n.sound)) {
+        CancelNormJob();
+        ShowLibraryToast("The variations changed while measuring: Normalize again", false);
+        return;
+    }
+    using Clock = std::chrono::steady_clock;
+    const Clock::time_point t0 = Clock::now();
+    bool                    first = true;
+    while (j.region < j.regions.size()) {
+        if (!first && Clock::now() - t0 > std::chrono::milliseconds(8)) return;
+        first = false;
+        const NormRegion& r = j.regions[j.region];
+        if (j.span >= r.spans.size()) {
+            ++j.region;
+            j.span = 0;
+            continue;
+        }
+        auto it = j.sources.find(r.path);
+        if (it == j.sources.end()) it = j.sources.emplace(r.path, r.path.empty() ? nullptr : PCM_Source_CreateFromFile(r.path.c_str())).first;
+        const PartSpan& sp = r.spans[j.span];
+        double          adj = std::numeric_limits<double>::quiet_NaN();
+        if (it->second && sp.length > 0.0)
+            adj = NormAdjustmentDb(CalculateNormalization(it->second, NormModeReaperIndex(j.mode), j.target, sp.start,
+                                                          sp.start + sp.length));
+        j.span_adj[j.region][j.span] = adj;
+        ++j.span;
+        ++j.done_spans;
+    }
+    std::vector<double> adj(j.regions.size());
+    for (size_t i = 0; i < j.regions.size(); ++i) {
+        std::vector<double> dur;
+        for (const PartSpan& sp : j.regions[i].spans) dur.push_back(sp.length);
+        adj[i] = CombineSpanAdjustments(j.mode, j.target, j.span_adj[i], dur);
+    }
+    const NormScope               scope = j.scope;
+    const NormMode                mode = j.mode;
+    const double                  target = j.target;
+    const std::string             label = j.label;
+    const std::vector<NormRegion> regions = j.regions;
+    CancelNormJob();  // the sources deleted
+    FinishNormalize(lib, n, scope, mode, target, label, regions, adj);
+}
+
+// Saves the presets; a failure says so (the list in memory is kept).
+bool SavePresets()
+{
+    if (P.presets_unread) {
+        ShowLibraryToast("Cannot read the presets file: not saved", false);
+        P.presets_stale = true;  // the gesture's change in memory goes: read the file again
+        return false;
+    }
+    std::string err;
+    if (SaveNormPresets(ResourceRoot(), P.presets, &err)) return true;
+    ShowLibraryToast("Cannot save the presets: " + err, false);
+    return false;
+}
+
+// The preset name popup (+ and Rename): a name field and Save (Enter too).
+void PresetNamePopup(bool divided)
+{
+    if (P.pname_open) {
+        P.pname_open = false;
+        ImGui::OpenPopup("##pname");
+    }
+    if (!ui::BeginPanelPopup("##pname", 0, ImVec2(10.0f, 10.0f))) {
+        if (!ImGui::IsPopupOpen("##pname")) P.pname_kind = 0;
+        return;
+    }
+    const bool rename = P.pname_kind == 2 && P.pname_index >= 0 && static_cast<size_t>(P.pname_index) < P.presets.size();
+    ui::MenuCaption(rename ? "Rename preset" : "Save current settings as a preset");
+    if (ImGui::IsWindowAppearing()) ImGui::SetKeyboardFocusHere();
+    const bool enter = ui::TextField("##pnamefield", "Preset name", P.pname_buf, sizeof(P.pname_buf), ui::Dp(180.0f),
+                                     ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::SameLine();
+    if (ui::PrimaryButton("Save") || enter) {
+        const std::string name = CleanNormPresetName(P.pname_buf);
+        const std::string why = NormPresetNameError(P.presets, name, rename ? P.pname_index : -1);
+        if (!why.empty()) {
+            ShowLibraryToast(why, false);
+        } else if (rename) {
+            P.presets[static_cast<size_t>(P.pname_index)].name = name;
+            if (SavePresets()) ShowLibraryToast("Renamed \xC2\xAB " + name + " \xC2\xBB", false);
+            ImGui::CloseCurrentPopup();
+            P.pname_kind = 0;
+        } else {
+            NormPreset np;
+            np.name = name;
+            np.scope = EffectiveNormScope(P.norm_scope, divided);  // Per part on an undivided Sound: Per variation
+            np.mode = P.norm_mode;
+            np.target = P.norm_db;
+            P.presets.push_back(np);
+            if (SavePresets()) ShowLibraryToast("Preset \xC2\xAB " + name + " \xC2\xBB saved (shared across projects)", false);
+            ImGui::CloseCurrentPopup();
+            P.pname_kind = 0;
+        }
+    }
+    ui::EndPanelPopup();
+}
+
+void OpenPresetName(int kind, int index)
+{
+    P.pname_kind = kind;
+    P.pname_index = index;
+    P.pname_open = true;
+    const std::string init = kind == 2 && index >= 0 && static_cast<size_t>(index) < P.presets.size() ? P.presets[static_cast<size_t>(index)].name
+                                                                                                       : std::string();
+    std::snprintf(P.pname_buf, sizeof(P.pname_buf), "%s", init.c_str());
+}
+
+// The mockup's levelHTML(): the preset chips and "+", the scope, the mode and its target, Normalize.
+void LevelSection(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m)
 {
     LoadNormalizePrefs();
-    FitText("Normalize peaks to", ui::kText);
-    SameLineIfFits(ui::NumberFieldWidth(50.0f, "dBFS"));
-    double v = P.norm_db;
-    if (ui::DragNumber("##normdb", &v, 0.1, 1, "dBFS", 50.0f) == ui::DragNumberEvent::Commit) {
-        P.norm_db = std::clamp(v, -60.0, 0.0);
-        SavePrefFloat("lib_normalize_db", static_cast<float>(P.norm_db));
+    if (P.presets_stale) {
+        P.presets = LoadNormPresets(ResourceRoot(), &P.presets_unread);
+        P.presets_stale = false;
     }
-    static const char* const kModes[2] = {"Per variation", "Whole sound"};
-    int mode = P.norm_whole ? 1 : 0;
-    if (ui::Segmented("##normmode", kModes, 2, &mode)) {
-        P.norm_whole = mode == 1;
-        SavePrefBool("lib_normalize_whole", P.norm_whole);
-    }
+    PumpNormJob(lib, n);
+    if (P.changed) return;
     const SoundData& d = n.sound;
-    bool ready = true;
+    const bool       divided = NormPartsAvailable(d);
+    const bool       busy = P.norm_job.active;
+    // Peak reads RAV's cached peaks: the waveform first.
+    bool peaks_ready = true;
     if (d.mode == DetectMode::Takes) {
-        for (const std::string& p : m.take_paths) ready = ready && RequestPeaks(p, nullptr) == PeakState::Ready;
+        for (const std::string& p : m.take_paths) peaks_ready = peaks_ready && RequestPeaks(p, nullptr) == PeakState::Ready;
     } else {
-        ready = RequestPeaks(m.path, nullptr) == PeakState::Ready;
+        peaks_ready = RequestPeaks(m.path, nullptr) == PeakState::Ready;
     }
-    std::string label = "Normalize";
-    if (!P.sel.empty()) label += " (" + std::to_string(P.sel.size()) + " selected)";
-    ImGui::BeginDisabled(!ready);
-    if (ui::SolidButton(label.c_str())) {
-        const std::vector<int> sel = NormalizeSelection(d.frames, P.sel);
-        std::vector<SoundFrame> frames = d.frames;
-        if (d.mode == DetectMode::Takes) {
-            // Each take has its own file: its peak is read there (not read = left as is).
-            std::vector<double> peak(frames.size(), -std::numeric_limits<double>::infinity());
-            for (size_t i = 0; i < frames.size() && i < m.take_paths.size(); ++i) {
-                PeakData pk;
-                if (RequestPeaks(m.take_paths[i], &pk) == PeakState::Ready) peak[i] = FramePeakDb(pk, frames[i]);
+
+    // Preset chips (.pchips): lit = the settings they hold; click = apply; right-click = its menu.
+    int apply = -1, update = -1, remove = -1;
+    ImGui::BeginDisabled(busy);
+    for (size_t i = 0; i < P.presets.size(); ++i) {
+        const NormPreset& p = P.presets[i];
+        const std::string id = p.name + "##preset" + std::to_string(i);
+        if (i > 0) SameLineIfFits(ui::TextWidth(p.name.c_str()) + ui::Dp(14.0f));
+        const bool lit = NormPresetMatches(p, P.norm_scope, P.norm_mode, P.norm_db, divided);
+        if (ui::ChipButton(id.c_str(), ImVec2(0.0f, 0.0f), lit)) apply = static_cast<int>(i);
+        const std::string tip = NormPresetDescription(p) +
+                                " \xC2\xB7 click: apply \xC2\xB7 right-click: Rename / Update / Delete \xC2\xB7 shared across projects";
+        ui::ItemTipText(tip.c_str());
+        const std::string menu = "##pmenu" + std::to_string(i);
+        if (ui::BeginMenuPopupContextItem(menu.c_str())) {
+            ui::MenuCaption(p.name.c_str());
+            if (ui::MenuEntry("Rename")) OpenPresetName(2, static_cast<int>(i));
+            if (ui::MenuEntry("Update from current")) update = static_cast<int>(i);
+            ui::MenuSeparator();
+            if (ui::MenuEntry("Delete")) remove = static_cast<int>(i);
+            ui::EndMenuPopup();
+        }
+    }
+    const float add_w = std::max(ui::Dp(22.0f), ui::TextWidth("+") + ui::Dp(14.0f));
+    if (!P.presets.empty()) SameLineIfFits(add_w);
+    if (ui::ChipButton("+##pnew", ImVec2(add_w, 0.0f)))
+        OpenPresetName(1, -1);
+    ui::ItemTipText("Save the current settings as a preset (shared across projects)");
+    ImGui::EndDisabled();
+    PresetNamePopup(divided);
+
+    if (update >= 0) {
+        const std::vector<NormPreset> before = P.presets;
+        NormPreset&                   p = P.presets[static_cast<size_t>(update)];
+        p.scope = EffectiveNormScope(P.norm_scope, divided);
+        p.mode = P.norm_mode;
+        p.target = P.norm_db;
+        if (SavePresets())
+            ShowLibraryToastLocal("\xC2\xAB " + p.name + " \xC2\xBB updated from current settings", [before] {
+                P.presets = before;
+                SavePresets();
+            });
+    }
+    if (remove >= 0) {
+        const std::vector<NormPreset> before = P.presets;
+        const std::string             name = P.presets[static_cast<size_t>(remove)].name;
+        P.presets.erase(P.presets.begin() + remove);
+        if (SavePresets())
+            ShowLibraryToastLocal("Preset \xC2\xAB " + name + " \xC2\xBB deleted", [before] {
+                P.presets = before;
+                SavePresets();
+            });
+    }
+
+    // Scope: Per variation | Per part (divided only) | Whole sound.
+    {
+        const NormScope eff = EffectiveNormScope(P.norm_scope, divided);
+        std::vector<NormScope> opts = {NormScope::Variation};
+        if (divided) opts.push_back(NormScope::Part);
+        opts.push_back(NormScope::Whole);
+        std::vector<const char*> labels;
+        int                      sel = 0;
+        for (size_t k = 0; k < opts.size(); ++k) {
+            labels.push_back(NormScopeLabel(opts[k]));
+            if (opts[k] == eff) sel = static_cast<int>(k);
+        }
+        ImGui::BeginDisabled(busy);
+        if (ui::Segmented("##normscope", labels.data(), static_cast<int>(labels.size()), &sel)) {
+            P.norm_scope = opts[static_cast<size_t>(sel)];
+            SaveNormalizePrefs();
+        }
+        const int hov = ui::SegmentedHovered();
+        if (hov >= 0 && static_cast<size_t>(hov) < opts.size()) {
+            std::string tip = "Each variation gets its own gain";
+            if (opts[static_cast<size_t>(hov)] == NormScope::Whole) tip = "One gain for all: the loudest reaches the target";
+            if (opts[static_cast<size_t>(hov)] == NormScope::Part) {
+                std::string names;
+                const SwitchGroup* g = FindGroup(GetSoundStore(nullptr), d.divide_group);
+                for (const std::string& v : d.divide_values) {
+                    std::string nm = v;
+                    if (g)
+                        for (const SwitchValue& x : g->values)
+                            if (x.uid == v) nm = x.name;
+                    names += (names.empty() ? "" : " / ") + nm;
+                }
+                tip = "Each part (" + names + ") gets its own gain";
             }
-            NormalizeTakeFrames(frames, peak, P.norm_db, P.norm_whole, sel);
-        } else {
-            PeakData pk;
-            if (RequestPeaks(m.path, &pk) == PeakState::Ready) NormalizeFrames(frames, pk, P.norm_db, P.norm_whole, sel);
+            ui::ShowTip(tip.c_str());
         }
-        bool same = true;
-        for (size_t i = 0; i < frames.size(); ++i)
-            same = same && frames[i].db == d.frames[i].db && frames[i].hand == d.frames[i].hand;
-        if (same) {
-            ShowLibraryToast("Nothing to normalize", false);  // no empty undo point
-            ImGui::EndDisabled();
-            return;
+        ImGui::EndDisabled();
+    }
+
+    // Mode and target (one value for every mode, its unit after it).
+    ImGui::BeginDisabled(busy);
+    {
+        const float unit_w = ui::NumberFieldWidth(50.0f, NormModeUnit(P.norm_mode));
+        const float combo_w = std::max(ui::Dp(90.0f), ImGui::GetContentRegionAvail().x - unit_w - ImGui::GetStyle().ItemSpacing.x);
+        if (ui::BeginComboStyled("##normmode", NormModeLabel(P.norm_mode), std::min(combo_w, ui::Dp(130.0f)))) {
+            for (int k = 0; k < kNormModeCount; ++k) {
+                const NormMode md = static_cast<NormMode>(k);
+                if (ImGui::Selectable(NormModeLabel(md), md == P.norm_mode) && md != P.norm_mode) {
+                    P.norm_mode = md;
+                    SaveNormalizePrefs();
+                }
+            }
+            ui::EndComboStyled();
         }
-        EditNode("Normalize", lib.uid, n.uid, [frames](SoundNode& x) {
-            x.sound.frames = frames;
-            x.sound.edited = true;
-            return true;
-        });
+        ui::ItemTipText("Normalize mode (REAPER's)");
+        SameLineIfFits(unit_w);
+        double v = P.norm_db;
+        if (ui::DragNumber("##normdb", &v, 0.1, 1, NormModeUnit(P.norm_mode), 50.0f) == ui::DragNumberEvent::Commit) {
+            P.norm_db = std::clamp(std::round(v * 10.0) / 10.0, kNormTargetMin, kNormTargetMax);
+            SaveNormalizePrefs();
+        }
+        const std::string tip = std::string("Target (") + NormModeUnit(P.norm_mode) + ")";
+        ui::ItemTipText(tip.c_str());
     }
     ImGui::EndDisabled();
-    if (!ready) ui::ItemTipText("Waiting for the waveform");
+
+    // Normalize (the selection only when variations are selected).
+    std::string label = "Normalize";
+    if (busy) {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "Measuring %d / %d\xE2\x80\xA6##normbtn", static_cast<int>(P.norm_job.done_spans),
+                      static_cast<int>(P.norm_job.total_spans));
+        label = buf;
+    } else if (!P.sel.empty()) {
+        label += " (" + std::to_string(P.sel.size()) + " selected)";
+    }
+    const bool need_peaks = P.norm_mode == NormMode::Peak && !peaks_ready;
+    ImGui::BeginDisabled(busy || need_peaks);
+    if (ui::SolidButton(label.c_str())) {
+        StartNormalize(lib, n, m, std::string());
+    }
+    ImGui::EndDisabled();
+    if (need_peaks) ui::ItemTipText("Waiting for the waveform");
+    else if (!busy) ui::ItemTipText("Normalize now (one undo point)");
+
+    // A chip applies its settings, then the same gesture with its name in the toast.
+    if (apply >= 0 && !P.changed) {
+        const NormPreset p = P.presets[static_cast<size_t>(apply)];
+        P.norm_scope = p.scope;
+        P.norm_mode = p.mode;
+        P.norm_db = p.target;
+        SaveNormalizePrefs();
+        if (p.mode == NormMode::Peak && !peaks_ready) ShowLibraryToast("Waiting for the waveform", false);
+        else StartNormalize(lib, n, m, p.name);
+    }
 }
 
 // ---- 13-20 / 13-23 / 13-25: Edit's legend and the fade at cuts ------------------------------------------
@@ -2922,12 +3328,16 @@ void CutFadeControl(const SoundLibrary& lib, const SoundNode& n)
 
 void DrawEditOverlay()
 {
-    if (!P.edit_open) return;
+    if (!P.edit_open) {
+        if (P.norm_job.active) CancelNormJob();  // 13-28: Edit closed while measuring: nothing written
+        return;
+    }
     const SoundStore&   store = GetSoundStore(nullptr);
     const SoundLibrary* lib = FindLibrary(store, P.edit_lib);
     const SoundNode*    n = lib ? FindNode(*lib, P.edit_uid) : nullptr;
     if (!n || n->type != SoundNodeType::Sound) {
         P.edit_open = false;
+        CancelNormJob();
         return;
     }
     P.edit_frame = ImGui::GetFrameCount();
@@ -2964,7 +3374,7 @@ void DrawEditOverlay()
             bool             ok = false;
             if (d.mode != DetectMode::Takes) {
                 std::vector<PlayVoice> pv;
-                for (const WholeFileStretch& st : WholeFileStretches(d.frames, m.source_len)) {
+                for (const WholeFileStretch& st : PartGainStretches(d, m.source_len)) {  // 13-28: parts at their own gain
                     PlayVoice v;
                     v.path = m.path;
                     v.start_s = st.start;
@@ -3100,7 +3510,8 @@ void DrawEditOverlay()
                                                     ui::kStroke);
                 ImGui::Dummy(ImVec2(1.0f, ui::Dp(6.0f)));
                 ui::GroupCaption("Level", ui::kMuted);
-                if (m.ok) NormalizeControls(*lib, *n, m);
+                if (m.ok) LevelSection(*lib, *n, m);
+                else if (P.norm_job.active) CancelNormJob();  // 13-28: the media stopped reading
                 if (!P.changed) {  // Antho 2026-10-13: the fades here too
                     ImGui::Dummy(ImVec2(1.0f, ui::Dp(6.0f)));
                     ui::GroupCaption("Fades", ui::kMuted);
@@ -3129,6 +3540,7 @@ void DrawEditOverlay()
         P.edit_open = false;
         P.sel.clear();
         CancelLive();
+        CancelNormJob();  // 13-28: nothing written, no undo point
         g_wd = WaveDrag{};  // a drag cut by the close never fires on the next Edit
     }
 }

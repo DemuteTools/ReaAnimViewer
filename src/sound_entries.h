@@ -10,6 +10,7 @@
 #include <string>
 #include <vector>
 
+#include "normalize_presets.h"  // NormScope, NormMode (13-28)
 #include "sound_model.h"
 
 namespace rav {
@@ -51,10 +52,8 @@ void ClampFrames(std::vector<SoundFrame>& frames, double source_len);
 void ResetToDetected(SoundData& data, const std::vector<SoundFrame>& detected);
 // The frame's peak (dBFS), -inf when the peaks do not cover it.
 double FramePeakDb(const PeakData& peaks, const SoundFrame& frame);
-// Sets each frame's db so its peak reaches target_db: every frame (whole) or the `selection` indices.
-// Sets `hand` on each frame it changes; the caller (the Normalize gesture) sets `data.edited`.
-void NormalizeFrames(std::vector<SoundFrame>& frames, const PeakData& peaks, double target_db, bool whole,
-                     const std::vector<int>& selection);
+// The peak (dBFS) over [start, start + length) source seconds, -inf when the peaks do not cover it.
+double SpanPeakDb(const PeakData& peaks, double start, double length);
 
 // The default mode of a new entry (DECISIONS Q24): Takes when >= 2 takes, else TakeMarkers when
 // >= 2 slices, else Silence when peaks exist, else Whole.
@@ -71,6 +70,7 @@ int AddFrame(SoundData& data, double start, double length, double source_len);
 // Splits frame i at source time `at` into 2 frames (on and db kept); false when `at` is outside it.
 bool SplitFrame(SoundData& data, int i, double at);
 void SetFrameOn(SoundData& data, int i, bool on);
+// 13-28: a frame with per-part gains moves them by the same step (their balance kept).
 void SetFrameDb(SoundData& data, int i, double db);
 
 // ---- Fades (Antho 2026-10-12: fade in / out on each variation, against clicks) -------------------
@@ -235,5 +235,56 @@ bool ToggleSoundRole(const SoundStore& store, SoundData& data, const std::string
 // unknown group / value or an empty role.
 bool ToggleGroupRole(SoundStore& store, const std::string& group_uid, const std::string& value_uid, const std::string& role,
                      std::string* moved_from = nullptr);
+
+// ---- 13-28: Normalize (modes, scopes, per-part gains) -------------------------------------------------
+
+// The gain (dB) a part of a frame plays at: its own (part_db[part_value], set by a "Per part" Normalize) or
+// else the frame's. part_value "" (the whole variation) = the frame's.
+double FrameGainDb(const SoundFrame& frame, const std::string& part_value);
+// The gain shown on a variation's box: divided, the largest of its current parts' own gains (when any),
+// else the frame's dB.
+double FrameLabelDb(const SoundData& data, int variation);
+// True when a stretch of variation `variation` plays past 0 dBFS: a span's peak (cached peaks of its file)
+// plus the gain it plays at (its part's, else the frame's). An off frame never.
+bool FrameClips(const SoundData& data, int variation, const PeakData& peaks);
+// True when "Per part" is offered: a Sound divided by a Switch Group, not in Takes mode (a take plays whole).
+bool NormPartsAvailable(const SoundData& data);
+
+// One stretch of audio Normalize measures and gives a gain: a variation (`part` "") or one part of it.
+// `spans` = what is placed of it (excluded zones left out; a part cut by a zone has several spans), in
+// file time; `path` = the file it is measured in (filled by the caller: VariationPath).
+struct NormRegion {
+    int                   frame = -1;
+    std::string           part;
+    std::vector<PartSpan> spans;
+    std::string           path;
+};
+// The regions of a Normalize: each on frame of `selection` (NormalizeSelection's: {} = every frame, {-1} =
+// none) once (Per variation, Whole sound), or once per part with something left (Per part; on an undivided
+// Sound, as Per variation). A frame with nothing left gives none.
+std::vector<NormRegion> NormalizeRegions(const SoundData& data, NormScope scope, const std::vector<int>& selection);
+// REAPER's CalculateNormalization answer (a linear volume factor) in dB; NaN when it means silence (<= 0,
+// not finite, or more than +60 dB).
+double NormAdjustmentDb(double factor);
+// One region's adjustment from its spans' adjustments (dB, NaN = silent span, left out): Peak, True peak,
+// LUFS-M / LUFS-S max = the loudest span's (the smallest adjustment); RMS-I, LUFS-I = the energy over the
+// summed duration (`durations`, s). NaN when every span is silent.
+double CombineSpanAdjustments(NormMode mode, double target, const std::vector<double>& adj_db,
+                              const std::vector<double>& durations);
+// A region's adjustment in Peak mode from the file's cached peaks: target - its loudest span's peak; NaN when
+// silent (no peaks there, or more than +60 dB).
+double RegionPeakAdjDb(const PeakData& peaks, const NormRegion& region, double target);
+
+struct NormalizeOutcome {
+    int  done = 0;     // regions given a gain (Whole: the frames)
+    int  skipped = 0;  // silent regions left as they are
+    bool changed = false;
+};
+// Writes the gains (adj_db[i] for regions[i]; NaN or > +60 = silent, skipped). Per variation: each region's
+// frame.db; Per part: frame.part_db[part] (frame.db untouched); Whole: every measured frame at the smallest
+// adjustment (the loudest reaches the target). Per variation and Whole clear the acted frames' part_db. Each
+// written frame gets `hand`; the caller sets `data.edited`.
+NormalizeOutcome ApplyNormalize(std::vector<SoundFrame>& frames, NormScope scope, const std::vector<NormRegion>& regions,
+                                const std::vector<double>& adj_db);
 
 }  // namespace rav

@@ -57,6 +57,7 @@ struct Toast {
     std::string undo_desc;   // the gesture's undo point description
     int         state = -1;  // the project state right after the gesture (read when the toast is shown)
     double      until = 0.0;
+    std::function<void()> local_undo;  // 13-28: an Undo that is not REAPER's (the user's presets)
 };
 Toast g_toast;
 
@@ -221,6 +222,15 @@ void DrawToast()
                 g_toast.text.clear();
             }
         }
+        if (g_toast.local_undo) {
+            ImGui::SameLine(0.0f, ui::Dp(10.0f));
+            if (ui::LinkButton("Undo")) {
+                const std::function<void()> undo = g_toast.local_undo;
+                g_toast.local_undo = nullptr;
+                g_toast.text.clear();
+                undo();
+            }
+        }
     }
     ui::EndToast();
 }
@@ -290,6 +300,7 @@ void ShowLibraryToast(const std::string& text, bool undo, const std::string& und
     g_toast.text = text;
     g_toast.undo = undo;
     g_toast.undo_desc.clear();
+    g_toast.local_undo = nullptr;
     if (undo) {
         const char* last = Undo_CanUndo2(nullptr);
         g_toast.undo_desc = !undo_desc.empty() ? undo_desc : (last ? last : "");
@@ -298,6 +309,12 @@ void ShowLibraryToast(const std::string& text, bool undo, const std::string& und
     // so an undo made while the view is hidden cannot slip in before the first draw.
     g_toast.state = undo ? GetProjectStateChangeCount(nullptr) : -1;
     g_toast.until = ImGui::GetTime() + kToastSeconds;
+}
+
+void ShowLibraryToastLocal(const std::string& text, std::function<void()> undo)
+{
+    ShowLibraryToast(text, false);
+    g_toast.local_undo = std::move(undo);
 }
 
 bool LibraryViewFocused() { return g_view.focused; }

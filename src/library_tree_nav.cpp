@@ -98,20 +98,34 @@ void SetTreeFoldsAll(const SoundLibrary& lib, bool collapse, std::set<std::strin
         for (const std::string& uid : CollapsedTreeFolds(lib)) closed->insert(uid);
 }
 
+FoldScopeButtons FoldScopeButtonsFor(int foldable, int open)
+{
+    FoldScopeButtons b;
+    b.shown = foldable >= 2;
+    if (!b.shown) return b;
+    b.can_expand = open < foldable;
+    b.can_collapse = open > 0;
+    return b;
+}
+
 LibraryRow RevealRowFor(const SoundStore& store, const SoundLibrary& lib, const ValueLayers& layers)
 {
     const SoundNode* n = FindNode(lib, lib.root);
     if (!n) return {"", lib.root};
     for (size_t guard = 0; guard <= lib.nodes.size(); ++guard) {
         if (n->type != SoundNodeType::Switch) return RowOfNode(lib, n->uid);
-        if (!FindGroup(store, n->group_uid)) return RowOfNode(lib, n->uid);
+        const SwitchGroup* g = FindGroup(store, n->group_uid);
+        if (!g) return RowOfNode(lib, n->uid);  // no value rows to show: stop on the Switch
         ValueFrom         from = ValueFrom::Default;
         const std::string v = EffectiveValue(*n, layers, &from);
         const std::string def = DefaultValue(store, *n);
         const std::string picked = from == ValueFrom::Default ? def : v;
         const SoundNode*  c = CaseChildOf(lib, *n, picked);
         if (!c && from != ValueFrom::Default) c = CaseChildOf(lib, *n, def);  // ResolveEvent's fallback
-        if (!c) return picked.empty() ? RowOfNode(lib, n->uid) : LibraryRow{n->uid, picked};
+        if (!c) {  // a value no longer in the group has no row: stop on the Switch
+            if (picked.empty() || !GroupHasValue(*g, picked)) return RowOfNode(lib, n->uid);
+            return LibraryRow{n->uid, picked};
+        }
         n = c;
     }
     return RowOfNode(lib, n->uid);  // a cycle: stop where the walk is

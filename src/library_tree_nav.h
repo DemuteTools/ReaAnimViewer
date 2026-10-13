@@ -33,11 +33,20 @@ bool TreeCanCollapseAll(const SoundLibrary& lib, const std::set<std::string>& cl
 // Applies one of them to `closed`, leaving the other libraries' uids alone.
 void SetTreeFoldsAll(const SoundLibrary& lib, bool collapse, std::set<std::string>* closed);
 
+// 13-33: a fold-all scope (ui::FoldScopeBar: the foldable cards of one panel) shows Expand all /
+// Collapse all only with at least two foldable cards; Expand all is on while one is folded, Collapse
+// all while one is open.
+struct FoldScopeButtons {
+    bool shown = false, can_expand = false, can_collapse = false;
+};
+FoldScopeButtons FoldScopeButtonsFor(int foldable, int open);
+
 // 13-42: the row the Library opens on for an assignment of `lib` with `layers` (a rule's values):
 // from the root, each Switch follows the value the layers give (else its default, as ResolveEvent
 // does), down to the first node that is not a Switch (a Random, a Blend or a Sound: what the rule
 // plays), shown on its row (RowOfNode: a value row under a Switch). A value that holds no sound
-// stops on that empty value row; an unknown group or a cycle stops on the Switch.
+// stops on that empty value row; a value no longer in the group, an unknown group or a cycle stops on
+// the Switch.
 LibraryRow RevealRowFor(const SoundStore& store, const SoundLibrary& lib, const ValueLayers& layers);
 
 }  // namespace rav

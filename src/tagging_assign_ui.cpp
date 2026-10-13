@@ -2511,7 +2511,7 @@ void DrawAssignSummaryRow(const char* id, MediaItem* item, const std::vector<Blo
                                     : sum.Plain().c_str());
     if (!narrow) ImGui::SameLine(0.0f, sp);
     if (reveal) {
-        if (ui::IconOnlyButton("##reveal", ToolIcon(kToolOpenArrow), "Show this sound in the Library"))
+        if (ui::IconOnlyButton("##reveal", ToolIcon(kToolOpenArrow), "Show in the Library the sound the rule plays (events with their own values may play another)"))
             ShowInLibrary(reveal->lib->uid, RevealRowFor(store, *reveal->lib, reveal->ea.layers));
         ImGui::SameLine(0.0f, sp);
     }

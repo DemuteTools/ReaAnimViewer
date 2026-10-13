@@ -16,7 +16,8 @@ namespace rav {
 namespace ui {
 
 // The pair on the cursor's line: +1 = Expand all clicked, -1 = Collapse all, 0 = neither.
-int   FoldAllButtons(const char* id, bool can_expand, bool can_collapse);
+// `off_tip` (optional): both buttons' tooltip instead of their names (why they are off).
+int   FoldAllButtons(const char* id, bool can_expand, bool can_collapse, const char* off_tip = nullptr);
 float FoldAllButtonsWidth();
 
 // The foldable ui::Sections drawn between BeginFoldScope(id) and EndFoldScope() form one scope;

@@ -11,6 +11,7 @@
 
 #include <imgui_internal.h>  // ImHashStr
 
+#include "library_tree_nav.h"  // FoldScopeButtonsFor
 #include "ui_theme.h"
 
 namespace rav {
@@ -30,16 +31,16 @@ FoldScope& ScopeOf(const char* id) { return g_scopes[ImHashStr(id ? id : "")]; }
 
 }  // namespace
 
-int FoldAllButtons(const char* id, bool can_expand, bool can_collapse)
+int FoldAllButtons(const char* id, bool can_expand, bool can_collapse, const char* off_tip)
 {
     int r = 0;
     ImGui::PushID(id);
     ImGui::BeginDisabled(!can_expand);
-    if (IconOnlyButton("##expandall", "\xE2\x8A\x9E", "Expand all")) r = 1;
+    if (IconOnlyButton("##expandall", "\xE2\x8A\x9E", off_tip ? off_tip : "Expand all")) r = 1;
     ImGui::EndDisabled();
     ImGui::SameLine(0.0f, Dp(2.0f));
     ImGui::BeginDisabled(!can_collapse);
-    if (IconOnlyButton("##collapseall", "\xE2\x8A\x9F", "Collapse all")) r = -1;
+    if (IconOnlyButton("##collapseall", "\xE2\x8A\x9F", off_tip ? off_tip : "Collapse all")) r = -1;
     ImGui::EndDisabled();
     ImGui::PopID();
     return r;
@@ -72,11 +73,12 @@ void EndFoldScope(bool complete)
 bool FoldScopeBar(const char* id)
 {
     FoldScope& s = ScopeOf(id);
-    if (s.last_count < 2) return false;
+    const FoldScopeButtons b = FoldScopeButtonsFor(s.last_count, s.last_open);
+    if (!b.shown) return false;
     const float  w = FoldAllButtonsWidth();
     const ImVec2 p = ImGui::GetCursorScreenPos();
     ImGui::SetCursorScreenPos(ImVec2(p.x + std::max(0.0f, ImGui::GetContentRegionAvail().x - w), p.y));
-    const int r = FoldAllButtons(id, s.last_open < s.last_count, s.last_open > 0);
+    const int r = FoldAllButtons(id, b.can_expand, b.can_collapse);
     if (r != 0) s.pending = r;
     return true;
 }

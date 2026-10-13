@@ -257,12 +257,14 @@ void SyncTreeFolds(const SoundLibrary& lib)
 
 // 13-33: Expand all / Collapse all under the search field, right-aligned (always there; each button off
 // while it has nothing to do). Collapse all leaves the root open: its children show, folded.
-void TreeFoldAllRow(const SoundLibrary& lib)
+void TreeFoldAllRow(const SoundLibrary& lib, bool searching)
 {
     const float  w = ui::FoldAllButtonsWidth();
     const ImVec2 p = ImGui::GetCursorScreenPos();
     ImGui::SetCursorScreenPos(ImVec2(p.x + std::max(0.0f, ImGui::GetContentRegionAvail().x - w), p.y));
-    const int r = ui::FoldAllButtons("##treefoldall", TreeCanExpandAll(lib, g.closed), TreeCanCollapseAll(lib, g.closed));
+    // A typed search opens every container that holds a match: folding would show nothing, so both are off.
+    const int r = ui::FoldAllButtons("##treefoldall", !searching && TreeCanExpandAll(lib, g.closed), !searching && TreeCanCollapseAll(lib, g.closed),
+                                     searching ? "Off while a search is typed: the search opens every container (clear it to fold)" : nullptr);
     if (r != 0) SetTreeFoldsAll(lib, r < 0, &g.closed);
 }
 
@@ -2308,9 +2310,10 @@ void LibraryTreeWidgets()
         if (ui::IconOnlyButton("##treesearchx", "\xE2\x9C\x95", "Clear the search (Esc)")) g.search[0] = '\0';
         ImGui::EndDisabled();
     }
-    TreeFoldAllRow(*lib);  // 13-33
+    ReadTreeFolds(*lib);  // 13-32: the saved folds first (the fold-all row reads them)
+    TreeFoldAllRow(*lib, g.search[0] != '\0');  // 13-33
     const std::string search = g.search;
-    SyncTreeFolds(*lib);  // 13-32: the folds read on first show, written when they change
+    SyncTreeFolds(*lib);  // 13-32: written when they change
 
     // Antho 2026-10-12: every container starts open (the whole hierarchy shows); ▶ folds one. BuildTreeRows takes
     // the open set: every container not folded ("!root" marks a folded root).

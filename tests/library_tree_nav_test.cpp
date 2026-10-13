@@ -116,6 +116,19 @@ static void TestFoldAll()
     CHECK(!TreeCanExpandAll(l, closed));
 }
 
+static void TestFoldScopeButtons()
+{
+    // One foldable card (the node panel today): no buttons.
+    CHECK(!FoldScopeButtonsFor(0, 0).shown);
+    CHECK(!FoldScopeButtonsFor(1, 1).shown);
+    const FoldScopeButtons all_open = FoldScopeButtonsFor(3, 3);
+    CHECK(all_open.shown && !all_open.can_expand && all_open.can_collapse);
+    const FoldScopeButtons all_shut = FoldScopeButtonsFor(2, 0);
+    CHECK(all_shut.shown && all_shut.can_expand && !all_shut.can_collapse);
+    const FoldScopeButtons mixed = FoldScopeButtonsFor(2, 1);
+    CHECK(mixed.can_expand && mixed.can_collapse);
+}
+
 static void TestRevealRow()
 {
     const SoundStore    s = Store();
@@ -140,6 +153,10 @@ static void TestRevealRow()
     SoundStore s3 = Store();
     s3.groups.pop_back();
     CHECK(RevealRowFor(s3, s3.libraries.front(), {}) == (LibraryRow{"sa", "vgrab"}));
+    // A rule value no longer in the group, with an empty default: the Switch row, not a row that is gone.
+    SoundStore s4 = Store();
+    s4.groups[1].default_value = "vstone";
+    CHECK(RevealRowFor(s4, s4.libraries.front(), Rule({{"gmat", "vgone"}})) == (LibraryRow{"sa", "vgrab"}));
     // A root that is not a Switch: the root row.
     SoundLibrary r;
     r.uid = "R";
@@ -182,6 +199,7 @@ int main()
 {
     TestFoldsText();
     TestFoldAll();
+    TestFoldScopeButtons();
     TestRevealRow();
     TestKeyClaim();
     if (g_fail) {

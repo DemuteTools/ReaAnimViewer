@@ -30,6 +30,7 @@ int (*g_register)(const char*, void*) = nullptr;
 bool (*g_store_edit_hook)(ReaProject*) = nullptr;  // 13-17 (SetSoundStoreEditHook)
 
 std::map<ReaProject*, SoundStore> g_stores;
+uint64_t                          g_store_gen = 0;  // SoundStoreGeneration
 // A <RAVSOUNDS chunk that did not read: its text is written back unchanged while the project's
 // store stays empty (a save never deletes a library it could not read).
 std::map<ReaProject*, std::string> g_unreadable;
@@ -85,6 +86,7 @@ bool ProcessExtensionLine(const char* line, ProjectStateContext* ctx, bool, proj
             g_unreadable[proj] = text;
         }
         g_stores[proj] = std::move(s);
+        ++g_store_gen;
         return true;
     } catch (...) {
         return true;
@@ -120,6 +122,7 @@ void BeginLoadProjectState(bool, project_config_extension_t*)
     try {
         ReaProject* proj = LoadSaveProject();
         g_stores.erase(proj);
+        ++g_store_gen;
         g_unreadable.erase(proj);
     } catch (...) {
     }
@@ -210,6 +213,7 @@ void QuitSoundProject()
     if (g_register && g_pcreg_on) g_register("-projectconfig", &g_pcreg);
     g_pcreg_on = false;
     g_stores.clear();
+    ++g_store_gen;
     g_unreadable.clear();
 }
 
@@ -233,6 +237,8 @@ bool IsLiveItem(MediaItem* item)
     return live;
 }
 
+uint64_t SoundStoreGeneration() { return g_store_gen; }
+
 const SoundStore& GetSoundStore(ReaProject* proj)
 {
     static const SoundStore kEmpty;
@@ -255,6 +261,7 @@ bool ModifySoundStore(ReaProject* proj, const char* undo_desc, const std::functi
         if (!edit(copy)) return false;
         if (SerializeSoundStore(copy) == before) return false;
         g_stores[proj] = std::move(copy);
+        ++g_store_gen;
         MarkProjectDirty(proj);
         int states = UNDO_STATE_MISCCFG;
         if (g_store_edit_hook && g_store_edit_hook(proj)) states |= UNDO_STATE_TRACKCFG;  // 13-17: track names

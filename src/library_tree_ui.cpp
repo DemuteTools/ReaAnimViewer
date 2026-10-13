@@ -108,11 +108,16 @@ struct TreeState {
     char                     search[128] = {};
     // The row menu was open last frame (its row keeps its ⋯ lit).
     bool                     row_menu_open = false;
-    // A gesture ran this frame: the store was rewritten, so every SoundLibrary / SoundNode
-    // reference taken before it is stale; the drawing loops stop at once (next frame redraws).
-    bool                     changed = false;
+    // SoundStoreGeneration when the part being drawn began (StoreReplaced).
+    uint64_t                 gen = 0;
 };
 TreeState g;
+
+// The store was replaced since the part being drawn began (a write, a project load): every
+// SoundLibrary / SoundNode reference taken before is stale, so the drawing loops stop at once (the
+// next frame redraws). Picking a gesture does not stop them: it runs once the part is drawn
+// (Antho 2026-10-14: the rows below a change flickered).
+bool StoreReplaced() { return SoundStoreGeneration() != g.gen; }
 
 // The 13-8 rule (picked_gestures.h), here too: a button, menu item, drop, rename field or key only
 // picks its gesture, a closure holding copies of what it needs (uids, rows, names, the drop's
@@ -121,12 +126,7 @@ TreeState g;
 // (ModifySoundStore swaps it whole). Still one undo point per gesture.
 PickedGestures g_picks;
 
-// Picking also sets `changed`: the rest of the frame stops drawing the store, as before the picks.
-void Later(std::function<void()> f)
-{
-    g_picks.Pick(std::move(f));
-    g.changed = true;
-}
+void Later(std::function<void()> f) { g_picks.Pick(std::move(f)); }
 
 std::string Upper(std::string s)
 {
@@ -181,7 +181,6 @@ bool Gesture(const std::string& name, const std::function<bool(SoundStore&)>& ed
 {
     const std::string desc = "RAV: " + name;
     if (!ModifySoundStore(nullptr, desc.c_str(), edit)) return false;
-    g.changed = true;
     ShowLibraryToast(toast.empty() ? name : toast, true, desc);
     return true;
 }
@@ -660,7 +659,7 @@ void RowMenu(const SoundLibrary& lib)
     if (has_node) {
         bool can = false;
         for (const LibraryRow& r : rows) can = can || CanUnwrap(lib, RowNode(lib, r));
-        if (ImGui::MenuItem("Unwrap", nullptr, false, can && !g.changed)) Later([rows] { DoUnwrap(rows); });
+        if (ImGui::MenuItem("Unwrap", nullptr, false, can && !StoreReplaced())) Later([rows] { DoUnwrap(rows); });
         ui::ItemTipText(can ? "Removes this container: the one node inside takes its place (its dB and Lands in kept)"
                             : "Only a container holding exactly one node can be unwrapped");
     }
@@ -670,10 +669,10 @@ void RowMenu(const SoundLibrary& lib)
         ImGui::EndMenu();
     }
     ImGui::Separator();
-    if (ImGui::MenuItem("Rename", "F2", false, (has_node || is_value) && !g.changed)) StartRowRename(lib, row);
+    if (ImGui::MenuItem("Rename", "F2", false, (has_node || is_value) && !StoreReplaced())) StartRowRename(lib, row);
     const bool movable = has_node && node_uid != root_uid;
     if (ImGui::MenuItem("Cut", "Ctrl+X", false, movable)) DoCut(lib_uid, rows);
-    if (ImGui::MenuItem("Paste", "Ctrl+V", false, !g.clip.empty() && !g.changed)) Later([lib_uid, row] { DoPaste(lib_uid, &row); });
+    if (ImGui::MenuItem("Paste", "Ctrl+V", false, !g.clip.empty() && !StoreReplaced())) Later([lib_uid, row] { DoPaste(lib_uid, &row); });
     if (ImGui::MenuItem("Duplicate", "Ctrl+D", false, movable)) Later([rows] { DoDuplicate(rows); });
     if (is_value) {
         ImGui::Separator();
@@ -735,7 +734,6 @@ void MediaDropOn(const std::string& lib_uid, const LibraryRow& row, ImVec2 p0, I
         std::vector<char> data(d, d ? d + mp->DataSize : d);  // the payload lives only this frame
         Later([drop, lib_uid, row, data] {
             drop(lib_uid, row, data.data(), static_cast<int>(data.size()));
-            g.changed = true;  // the hook may have rewritten the store
         });
     }
 }
@@ -916,16 +914,16 @@ void Toolbar(const SoundLibrary& lib)
     ui::BeginToolbar(well);
     [&] {
         ToolbarAdd(lib, SoundNodeType::Sound, "+ Sound");
-        if (g.changed) return;
+        if (StoreReplaced()) return;
         SameLineIfFits(ui::IconButtonWidth("+ Random"));
         ToolbarAdd(lib, SoundNodeType::Random, "+ Random");
-        if (g.changed) return;
+        if (StoreReplaced()) return;
         SameLineIfFits(ui::IconButtonWidth("+ Blend"));
         ToolbarAdd(lib, SoundNodeType::Blend, "+ Blend");
-        if (g.changed) return;
+        if (StoreReplaced()) return;
         SameLineIfFits(ui::IconMenuButtonWidth("+ Switch"));
         ToolbarAdd(lib, SoundNodeType::Switch, "+ Switch");
-        if (g.changed) return;
+        if (StoreReplaced()) return;
         if (g.sel.size() > 1) {
             // The mockup's .tbto chip: "→ N".
             const std::string cnt = "\xE2\x86\x92 " + std::to_string(g.sel.size());
@@ -960,7 +958,7 @@ void Toolbar(const SoundLibrary& lib)
             WrapMenu(rows);
             ui::EndMenuPopup();
         }
-        if (g.changed) return;
+        if (StoreReplaced()) return;
         // The "?" at the far right of the last line (a flex spacer before it in the mockup).
         const float qs = ui::Dp(18.0f);
         if (SameLineIfFits(qs)) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, ImGui::GetContentRegionAvail().x - qs));
@@ -996,7 +994,7 @@ void DrawRow(const SoundLibrary& lib, const TreeRow& r, size_t index)
     ImGui::PushID(r.row.key.c_str());
     const float y0 = ImGui::GetCursorScreenPos().y;
     DrawRowBody(lib, r);
-    if (g.has_scroll_to && r.row == g.scroll_to && !g.changed) {  // 13-17d: the arrow keys' row in view
+    if (g.has_scroll_to && r.row == g.scroll_to && !StoreReplaced()) {  // 13-17d: the arrow keys' row in view
         g.has_scroll_to = false;
         const float  y1 = std::max(y0 + 1.0f, ImGui::GetCursorScreenPos().y);
         const ImVec2 wp = ImGui::GetWindowPos();
@@ -1069,7 +1067,7 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
         ImGui::InvisibleButton("##row", ImVec2(w, rh));
         const ImVec2 a(p.x + ui::Dp(r.depth * kIndent), p.y + ui::Dp(2.0f)), b(p.x + w, p.y + rh - ui::Dp(2.0f));
         RowDropTarget(lib, r, ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
-        if (g.changed) return;
+        if (StoreReplaced()) return;
         const bool drag = ImGui::GetDragDropPayload() != nullptr;
         ui::DashedRect(dl, a, b, drag ? ui::kAccentLine : ui::kStrokeStrong, ui::kRadiusSm);
         ui::EllipsisTextTip(dl, ImVec2(a.x + ui::Dp(4.0f) + ui::Dp(18.0f) + gap, cy - ImGui::GetTextLineHeight() * 0.5f),
@@ -1099,7 +1097,7 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
     }
     RowDragSource(lib, r);
     RowDropTarget(lib, r, r0, r1);
-    if (g.changed) return;
+    if (StoreReplaced()) return;
 
     // Chevron (an 18 px button) or its empty room.
     const float cs = ui::Dp(18.0f);
@@ -1139,7 +1137,7 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
         TypeMenu(IsSel(r.row) ? g.sel : std::vector<LibraryRow>{r.row});
         ui::EndMenuPopup();
     }
-    if (g.changed) return;
+    if (StoreReplaced()) return;
 
     // Right side, from the right edge.
     float      rx = p.x + w - ui::Dp(4.0f);
@@ -1198,7 +1196,7 @@ void DrawRowBody(const SoundLibrary& lib, const TreeRow& r)
             rx -= gap;
         }
     }
-    if (g.changed) return;
+    if (StoreReplaced()) return;
     // 13-21: a library gap on this node, or hidden under it (folded, searched out): an amber "!",
     // the reasons on hover.
     if (n && r.kind != TreeRowKind::UnassignedHeader) {
@@ -1369,13 +1367,13 @@ void EmptyLibraryHint(const SoundLibrary& lib)
     float row_w = 3.0f * ImGui::GetStyle().ItemSpacing.x;
     for (const char* l : kLabels) row_w += ui::IconButtonWidth(l);
     ImGui::SetCursorScreenPos(ImVec2(row_w <= iw ? std::floor(ix + (iw - row_w) * 0.5f) : ix, ImGui::GetCursorScreenPos().y));
-    for (int i = 0; i < 4 && !g.changed; ++i) {
+    for (int i = 0; i < 4 && !StoreReplaced(); ++i) {
         if (i > 0) SameLineIfFits(ui::IconButtonWidth(kLabels[i]));
         if (!ui::IconButton(TypeIcon(kHintTypes[i]), kLabels[i])) continue;
         if (kHintTypes[i] == SoundNodeType::Switch) ImGui::OpenPopup("##hintswitch");
         else Later([type = kHintTypes[i], rows = AddTargets()] { DoAdd(type, {}, false, &rows); });
     }
-    if (!g.changed && ui::BeginMenuPopup("##hintswitch")) {
+    if (!StoreReplaced() && ui::BeginMenuPopup("##hintswitch")) {
         ui::MenuCaption("Switch on");
         bool ng = false;
         const std::string gid = GroupMenuItems(true, &ng);
@@ -1389,7 +1387,7 @@ void EmptyLibraryHint(const SoundLibrary& lib)
     win->ContentRegionRect.Max.x = saved_content;
     const float  bottom = ImGui::GetItemRectMax().y + pad;
     const ImVec2 b1(b0.x + bw, bottom);
-    if (g.changed) return;  // `lib` is stale
+    if (StoreReplaced()) return;  // `lib` is stale
     ui::DashedRect(ImGui::GetWindowDrawList(), b0, b1, ui::kStrokeStrong, ui::kRadiusMd);
     // The box is a drop target: the root.
     ImGui::SetCursorScreenPos(b0);
@@ -1606,7 +1604,7 @@ void UserFileRow(const UserLibraryFile& f, std::string* add_file)
 // project); "+ Library" and "+ User Library" side by side, then "Import .ravlib..." full width.
 void LibrariesSectionWidgets()
 {
-    g.changed = false;
+    g.gen = SoundStoreGeneration();
     RefreshItemGuids();
     PrepareUserLibraries();
     const SoundStore& store = GetSoundStore(nullptr);
@@ -1626,16 +1624,16 @@ void LibrariesSectionWidgets()
         bool                               any_project = false, any_user = !files.empty();
         for (const SoundLibrary& lib : store.libraries) (lib.user ? any_user : any_project) = true;
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, ui::Dp(1.0f)));
-        for (int user = 0; user < 2 && !g.changed; ++user) {
+        for (int user = 0; user < 2 && !StoreReplaced(); ++user) {
             if (!(user ? any_user : any_project)) continue;
             const std::string folder_tip = user ? "Folder: " + UserLibraryFolderText() : std::string();
             ListCaption(user ? "User" : "Project", user ? folder_tip.c_str() : nullptr);
             for (const SoundLibrary& lib : store.libraries) {
                 if (lib.user != (user == 1)) continue;
                 LibraryListRow(store, lib, &to_delete);
-                if (g.changed) break;
+                if (StoreReplaced()) break;
             }
-            if (user && !g.changed)
+            if (user && !StoreReplaced())
                 for (const UserLibraryFile& f : files) UserFileRow(f, &add_file);
         }
         ImGui::PopStyleVar();
@@ -1702,7 +1700,7 @@ bool RowCross(ImVec2 p, float w, const char* tip)
 // rows one level in (18 px; the value dot, name, × on hover), then a dashed "+ value" field.
 void SwitchGroupsSectionWidgets()
 {
-    g.changed = false;
+    g.gen = SoundStoreGeneration();
     const SoundStore& store = GetSoundStore(nullptr);
     // A group / value rename whose target is gone (undo) ends, so it never blocks the tree keys.
     if (g.rename == RenameKind::Group || g.rename == RenameKind::Value) {
@@ -1733,7 +1731,7 @@ void SwitchGroupsSectionWidgets()
             g.r_focus = true;
         });
     ui::EndSectionHeaderRight(sec);
-    if (open_sec && !g.changed) {
+    if (open_sec && !StoreReplaced()) {
         std::string  del_group, del_value_group, del_value, add_group, add_name;
         // 13-18: a group default to set (follow: -1 none, 0 keep the Switches' own defaults, 1 clear them).
         std::string  def_group, def_value;
@@ -1759,7 +1757,7 @@ void SwitchGroupsSectionWidgets()
                     EndRename();
                     if (res > 0) Later([uid, name] { Gesture("Rename group", [&](SoundStore& s) { return RenameGroup(s, uid, name); }); });
                 }
-                if (g.changed) {
+                if (StoreReplaced()) {
                     ImGui::PopID();
                     break;
                 }
@@ -1804,7 +1802,7 @@ void SwitchGroupsSectionWidgets()
                 ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rh));
                 ImGui::Dummy(ImVec2(0.0f, 0.0f));
             }
-            if (open && !g.changed) {
+            if (open && !StoreReplaced()) {
                 const float vx0 = p.x + ui::Dp(kRowPad + kIndent);
                 const float vnx = vx0 + cs + gap + is + gap;
                 // 13-18 D2: the value that plays for a Switch with no default of its own: the group's
@@ -1837,7 +1835,7 @@ void SwitchGroupsSectionWidgets()
                                     Gesture("Rename value", [&](SoundStore& s) { return RenameValue(s, gid, vid, name); });
                                 });
                         }
-                        if (g.changed) {
+                        if (StoreReplaced()) {
                             ImGui::PopID();
                             break;
                         }
@@ -1906,7 +1904,7 @@ void SwitchGroupsSectionWidgets()
                         ImGui::SetCursorScreenPos(ImVec2(vp.x, vp.y + rh));
                         ImGui::Dummy(ImVec2(0.0f, 0.0f));
                     }
-                    if (!g.changed && g.sgd_gid == gr.uid && g.sgd_vid == v.uid) {
+                    if (!StoreReplaced() && g.sgd_gid == gr.uid && g.sgd_vid == v.uid) {
                         // 13-18 D3: the in-place confirm under the value row.
                         sgd_drawn = true;
                         const int n = CountDefaultOverrides(store, gr.uid, v.uid);
@@ -1952,7 +1950,7 @@ void SwitchGroupsSectionWidgets()
                     }
                     ImGui::PopID();
                 }
-                if (!g.changed) {
+                if (!StoreReplaced()) {
                     // .trow.add: the dashed "+ value" field one level in, 170 px; Enter adds the
                     // value (one undo point) and keeps the field for the next one.
                     std::array<char, 128>& buf = g.add_value[gr.uid];
@@ -1978,12 +1976,12 @@ void SwitchGroupsSectionWidgets()
                 }
             }
             ImGui::PopID();
-            if (g.changed || !add_group.empty()) break;
+            if (StoreReplaced() || !add_group.empty()) break;
         }
         ImGui::PopStyleVar();
         // 13-18: a pending band whose value row was not drawn (its group folded) is dropped, so it
         // never comes back later out of context.
-        if (!g.changed && add_group.empty() && !sgd_drawn) {
+        if (!StoreReplaced() && add_group.empty() && !sgd_drawn) {
             g.sgd_gid.clear();
             g.sgd_vid.clear();
         }
@@ -2013,7 +2011,7 @@ void SwitchGroupsSectionWidgets()
                 std::snprintf(g.buf, sizeof(g.buf), "%s", cv ? cv->name.c_str() : cg->name.c_str());
                 g.r_focus = true;
             };
-            if (cg && !g.changed && g.rename == RenameKind::None && !ImGui::GetIO().WantTextInput &&
+            if (cg && !StoreReplaced() && g.rename == RenameKind::None && !ImGui::GetIO().WantTextInput &&
                 ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows) && !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) &&
                 ImGui::IsKeyPressed(ImGuiKey_F2, false))
                 start_rename();
@@ -2023,7 +2021,7 @@ void SwitchGroupsSectionWidgets()
             }
             if (ui::BeginMenuPopup("##sgmenu")) {
                 if (!cg) ImGui::CloseCurrentPopup();  // its row went (undo)
-                if (cg && ImGui::MenuItem("Rename", "F2", false, !g.changed && g.rename == RenameKind::None)) start_rename();
+                if (cg && ImGui::MenuItem("Rename", "F2", false, !StoreReplaced() && g.rename == RenameKind::None)) start_rename();
                 if (cg && !cv && ImGui::MenuItem("Delete group")) del_group = cg->uid;
                 if (cg && cv) {
                     // 13-18 D2 / D3: the group's default; asks first when Switches have their own.
@@ -2080,7 +2078,7 @@ void SwitchGroupsSectionWidgets()
                 ui::EndMenuPopup();
             }
         }
-        if (!g.changed && def_follow >= 0 && !def_group.empty()) {
+        if (!StoreReplaced() && def_follow >= 0 && !def_group.empty()) {
             const SwitchGroup* dg = FindGroup(store, def_group);
             std::string        vname;
             if (dg)
@@ -2095,20 +2093,20 @@ void SwitchGroupsSectionWidgets()
                     [&](SoundStore& s) { return SetGroupDefault(s, def_group, def_value, def_follow == 1); }, toast);
             });
         }
-        if (!g.changed && !del_group.empty())
+        if (!StoreReplaced() && !del_group.empty())
             Later([del_group] { Gesture("Delete group", [&](SoundStore& s) { return DeleteGroup(s, del_group); }); });
-        if (!g.changed && !del_value.empty())
+        if (!StoreReplaced() && !del_value.empty())
             Later([del_value_group, del_value] {
                 Gesture("Remove value", [&](SoundStore& s) { return DeleteValue(s, del_value_group, del_value); });
             });
-        if (!g.changed && !add_group.empty())
+        if (!StoreReplaced() && !add_group.empty())
             Later([add_group, add_name] {
                 std::string vid;
                 if (!Gesture("Add value", [&](SoundStore& s) { return AddValue(s, add_group, add_name, &vid); })) return;
                 g.add_value[add_group].fill('\0');
                 g.add_value_focus = add_group;  // type the next one
             });
-        if (!g.changed && store.groups.empty()) ui::SubText("No Switch Group yet");
+        if (!StoreReplaced() && store.groups.empty()) ui::SubText("No Switch Group yet");
     }
     ui::EndSection(sec);  // ends the body too
 }
@@ -2156,7 +2154,7 @@ void TreeHeader(const SoundLibrary& lib)
         if (typed && !name.empty() && name != typed->name)
             Later([uid, name] { Gesture("Rename library", [&](SoundStore& s) { return RenameLibrary(s, uid, name); }); });
         g.title_lib.clear();
-        if (g.changed) {
+        if (StoreReplaced()) {
             ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + hh));
             return;
         }
@@ -2192,7 +2190,7 @@ void TreeHeader(const SoundLibrary& lib)
 
 void LibraryTreeWidgets()
 {
-    g.changed = false;
+    g.gen = SoundStoreGeneration();
     g.tree_focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_ChildWindows);  // column 2 and its tree
     if (g.tree_focused) {  // the Switch Groups row picked last lets go (its F2 / highlight)
         g.sg_gid.clear();
@@ -2211,10 +2209,10 @@ void LibraryTreeWidgets()
     }
     TreeHeader(*lib);
     lib = CurrentLib();
-    if (!lib || g.changed) return;
+    if (!lib || StoreReplaced()) return;
     // 13-7a (audit C3.2): the toolbar in its well; the pane's gap under it (no separator).
     Toolbar(*lib);
-    if (!g.changed) TreeKeys(*lib);  // after a toolbar gesture `lib` is stale
+    if (!StoreReplaced()) TreeKeys(*lib);  // after a toolbar gesture `lib` is stale
     lib = CurrentLib();  // a gesture above rewrote the store
     if (!lib) return;
     // 13-17c: the search field under the toolbar filters the tree as you type.
@@ -2291,7 +2289,7 @@ void LibraryTreeWidgets()
             t += (t.empty() ? "" : "\n") + gp.reason;
             if (!shown.count(gp.node)) g.hidden_gaps.push_back(gp);
         }
-        for (size_t i = 0; i < rows.size() && !g.changed; ++i) {
+        for (size_t i = 0; i < rows.size() && !StoreReplaced(); ++i) {
             const SoundLibrary* cur = FindLibrary(GetSoundStore(nullptr), g.lib);
             if (!cur) break;
             DrawRow(*cur, rows[i], i);
@@ -2300,10 +2298,10 @@ void LibraryTreeWidgets()
         lib = FindLibrary(GetSoundStore(nullptr), g.lib);
         const SoundNode* root = lib ? FindNode(*lib, lib->root) : nullptr;
         if (!search.empty() && rows.empty()) ui::SubText("No node matches");  // 13-17c
-        else if (!g.changed && root && root->type != SoundNodeType::Switch && ChildrenOf(*lib, root->uid).empty())
+        else if (!StoreReplaced() && root && root->type != SoundNodeType::Switch && ChildrenOf(*lib, root->uid).empty())
             EmptyLibraryHint(*lib);
         lib = FindLibrary(GetSoundStore(nullptr), g.lib);
-        if (!g.changed && lib && FindNode(*lib, lib->root)) EmptySpaceDropTarget(*lib);
+        if (!StoreReplaced() && lib && FindNode(*lib, lib->root)) EmptySpaceDropTarget(*lib);
         if (!ImGui::GetDragDropPayload()) g.hover_uid.clear();
         if (g.open_row_menu) {
             ImGui::OpenPopup("##rowmenu");
@@ -2313,7 +2311,7 @@ void LibraryTreeWidgets()
         // 13-17b: a gesture's frame stops drawing rows; the tree keeps its last full height so ImGui
         // does not clamp the scroll to the rows drawn (the tree jumped to the top).
         const float y = ImGui::GetCursorPosY();
-        if (!g.changed) g.rows_h = y;
+        if (!StoreReplaced()) g.rows_h = y;
         else if (g.rows_h > y) ImGui::Dummy(ImVec2(0.0f, g.rows_h - y));
     }
     ImGui::EndChild();
@@ -2326,7 +2324,7 @@ void LibraryTreeWidgets()
 // "mixed" in warn), the "Switch on" select, "Put into".
 void LibraryBatchPanelWidgets()
 {
-    g.changed = false;
+    g.gen = SoundStoreGeneration();
     const SoundStore& store = GetSoundStore(nullptr);
     const SoundLibrary* lib = FindLibrary(store, g.lib);
     if (!lib) return;
@@ -2374,7 +2372,7 @@ void LibraryBatchPanelWidgets()
     if (ui::SolidButton("Make them default (one per Switch)")) Later([rows] { DoMakeDefault(rows); });
     if (values == 0) ImGui::EndDisabled();
     ui::ItemTipText(values ? "One default per Switch" : "Select Switch value rows first");
-    if (g.changed) return;
+    if (StoreReplaced()) return;
     ui::SectionOpts opts;
     opts.foldable = false;
     opts.suffix = "\xC2\xB7 one undo point";
@@ -2428,7 +2426,7 @@ void LibraryBatchPanelWidgets()
                 ImGui::EndMenu();
             }
             ImGui::Separator();
-            for (size_t ni = 0; !g.changed && ni < lib->nodes.size(); ++ni) {
+            for (size_t ni = 0; !StoreReplaced() && ni < lib->nodes.size(); ++ni) {
                 const SoundNode& n = lib->nodes[ni];
                 if (n.type != SoundNodeType::Random && n.type != SoundNodeType::Blend) continue;
                 DropTarget to;

@@ -5,8 +5,9 @@
 // fields, the threshold line) preview a local draft and write once on release. A gesture is only
 // picked while the panel draws (the 13-8 rule, picked_gestures.h: it holds copies of what it
 // writes) and runs once the panel is drawn, so no SoundLibrary / SoundNode reference the panel
-// holds is read after the store it points into was replaced; the panel stops drawing for the
-// frame a gesture was picked in (P.changed). The audition / pre-edit logic is
+// holds is read after the store it points into was replaced. Picking a gesture does not stop the
+// drawing (the rest of the panel stayed blank for a frame: Antho 2026-10-14, everything below a
+// changed setting flickered); only a store really replaced meanwhile does (StoreReplaced). The audition / pre-edit logic is
 // sound_audition_plan.h (pure).
 
 #include "library_node_ui.h"
@@ -79,7 +80,7 @@ struct PanelState {
     AuditionPlan          plan;
     std::string           plan_lib;
     NodePanelHooks        hooks;
-    bool                  changed = false;
+    uint64_t              gen = 0;  // SoundStoreGeneration when this frame's drawing began
     // The shown Sound's media, re-read on a project change.
     std::string           media_uid;
     int                   media_scc = -1;
@@ -161,6 +162,10 @@ struct PanelState {
 };
 PanelState P;
 
+// The store was replaced since this frame's drawing began: every SoundLibrary / SoundNode
+// reference taken before is stale, so the drawing stops (the next frame draws again).
+bool StoreReplaced() { return SoundStoreGeneration() != P.gen; }
+
 void CancelNormJob();  // 13-28 (below)
 
 // 13-7a / 13-7b: the layout helpers are the shared ones (ui_flow.h): labelled rows, text
@@ -209,12 +214,10 @@ bool WriteNow(const std::string& name, const std::function<bool(SoundStore&)>& e
     return true;
 }
 
-// Picks the write (`edit` holds copies: it runs after the panel, the caller's locals gone). The
-// panel stops drawing for this frame, as it did after a write.
+// Picks the write (`edit` holds copies: it runs after the panel, the caller's locals gone).
 void Gesture(const std::string& name, std::function<bool(SoundStore&)> edit, const std::string& toast = {})
 {
     if (!edit) return;
-    P.changed = true;
     g_picks.Pick([name, edit, toast]() { WriteNow(name, edit, toast); });
 }
 
@@ -1570,7 +1573,7 @@ void DefaultFadeControls(const SoundLibrary& lib, const SoundNode& n)
             if (e == ui::DragNumberEvent::Commit) {
                 if (dr.fade_in == n.sound.fade_in && dr.fade_out == n.sound.fade_out) CancelLive();  // no empty undo point
                 else CommitLive("Default fades", lib.uid, n.uid);
-                if (P.changed) return;
+                if (StoreReplaced()) return;
             }
         } else if (e == ui::DragNumberEvent::Cancel) {
             CancelLive();
@@ -1623,7 +1626,7 @@ void SelectedFadeControls(const SoundLibrary& lib, const SoundNode& n)
             }
             if (e == ui::DragNumberEvent::Commit) {
                 CommitLive("Variation fades", lib.uid, n.uid);
-                if (P.changed) return;
+                if (StoreReplaced()) return;
             }
         } else if (e == ui::DragNumberEvent::Cancel) {
             CancelLive();
@@ -2037,7 +2040,7 @@ void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n,
     const std::vector<FrameFades> fades = ShownFades(d);
     if (d.mode == DetectMode::Takes && m.take_paths.size() >= 2) {
         const float lane_h = std::max(24.0f, height / static_cast<float>(std::max<size_t>(1, d.frames.size())));
-        for (size_t i = 0; i < d.frames.size() && !P.changed; ++i) {
+        for (size_t i = 0; i < d.frames.size() && !StoreReplaced(); ++i) {
             const std::string path = i < m.take_paths.size() ? m.take_paths[i] : m.path;
             const double      len = i < m.take_lens.size() ? m.take_lens[i] : m.source_len;
             WaveformOptions   o;
@@ -2125,7 +2128,7 @@ void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n,
     if (o.parts) {
         if (HandleWaveParts(ev, lib, n, m)) return;
         EditWaveMenu(GetSoundStore(nullptr), lib, n, m);
-        if (P.changed) return;
+        if (StoreReplaced()) return;
     }
     // Takes mode on one lane (fewer than 2 takes read): a trim still stays inside its take (decision 3).
     HandleWave(ev, lib, n, m, all, d.mode == DetectMode::Takes ? m.source_len : 0.0, in_edit);
@@ -2218,8 +2221,8 @@ enum class MediaDropKind {
 
 // A Media Explorer drop target over a rectangle (LibraryTreeHooks' payload contract, 13-7c): an
 // accent frame while a media drag is over it, and the drop handed to media_drop with the node's
-// row, or decoded and replacing the Sound's audio. True when a drop was taken (the store may have
-// changed: the panel stops drawing for this frame).
+// row, or decoded and replacing the Sound's audio. True when a drop was taken (its write runs once
+// the panel is drawn).
 bool MediaDropTarget(ImGuiID id, ImVec2 a, ImVec2 b, const SoundLibrary& lib, const SoundNode& n, const char* caption,
                      MediaDropKind kind)
 {
@@ -2276,7 +2279,6 @@ bool MediaDropTarget(ImGuiID id, ImVec2 a, ImVec2 b, const SoundLibrary& lib, co
                 // It may write the store (UseMediaAt): run once the panel is drawn, as a gesture.
                 g_picks.Pick([drop, lib_uid, row, data]() { drop(lib_uid, row, data.data(), static_cast<int>(data.size())); });
             }
-            P.changed = true;
             dropped = true;
         }
         ImGui::EndDragDropTarget();
@@ -2532,7 +2534,7 @@ void PartsControls(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
                     std::snprintf(toast, sizeof(toast), "Sync offset %+g ms on every detected sync point", dr.sync_offset_ms);
                     CommitLive("Sync offset", lib_uid, uid, toast);
                 }
-                if (P.changed) {
+                if (StoreReplaced()) {
                     ImGui::EndDisabled();
                     return;
                 }
@@ -2612,7 +2614,7 @@ void PartsControls(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
         if (ui::SolidButton("Roles\xE2\x80\xA6")) ImGui::OpenPopup("##rolespop");
         ui::ItemTipText("Set which role gets which part, for this sound");
         RolesPopup(store, lib, n);
-        if (P.changed) {
+        if (StoreReplaced()) {
             ImGui::EndDisabled();
             return;
         }
@@ -2681,7 +2683,7 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
                 RefreshWith(x.sound, path);
                 return true;
             }, toast);
-            if (P.changed) return;
+            if (StoreReplaced()) return;
         }
     }
     if (d.mode == DetectMode::Silence) {
@@ -2740,7 +2742,7 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
                     P.detf_gid = 0;
                     if (dr.silence.*(f.field) == n.sound.silence.*(f.field)) CancelLive();  // no empty undo point
                     else CommitLive("Detection", lib.uid, n.uid);
-                    if (P.changed) {
+                    if (StoreReplaced()) {
                         ImGui::PopID();
                         return;
                     }
@@ -2756,7 +2758,7 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
                 Redetect(dr, m, P.snap.frames);
                 if (e == ui::DragNumberEvent::Commit) {
                     CommitLive("Detection", lib.uid, n.uid);
-                    if (P.changed) return;
+                    if (StoreReplaced()) return;
                 }
             } else if (e == ui::DragNumberEvent::Cancel) {
                 CancelLive();
@@ -2765,7 +2767,7 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
     }
     if (edit) {  // 13-20 / 13-23 / 13-25
         PartsControls(lib, n, m, label_col);
-        if (P.changed) return;
+        if (StoreReplaced()) return;
     }
     ui::SubText(VariationCountText(DetectedCount(n.uid, m, Shown(n)), Shown(n).frames).c_str());
     ui::SubText("Saved with the sound in the library (.ravlib).");
@@ -2781,7 +2783,7 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
             RefreshWith(x.sound, path);
             return true;
         }, toast);
-        if (P.changed) return;
+        if (StoreReplaced()) return;
     }
     ui::ItemTipText("Variations and cuts back to RAV's proposal. Excluded zones are kept, and sync points moved by hand stay on "
                     "every variation that still exists.");
@@ -3013,7 +3015,7 @@ void LevelSection(const SoundLibrary& lib, const SoundNode& n, const SoundMedia&
         P.presets_stale = false;
     }
     PumpNormJob(lib, n);
-    if (P.changed) return;
+    if (StoreReplaced()) return;
     const SoundData& d = n.sound;
     const bool       divided = NormPartsAvailable(d);
     const bool       busy = P.norm_job.active;
@@ -3163,7 +3165,7 @@ void LevelSection(const SoundLibrary& lib, const SoundNode& n, const SoundMedia&
     else if (!busy) ui::ItemTipText("Normalize now (one undo point)");
 
     // A chip applies its settings, then the same gesture with its name in the toast.
-    if (apply >= 0 && !P.changed) {
+    if (apply >= 0 && !StoreReplaced()) {
         const NormPreset p = P.presets[static_cast<size_t>(apply)];
         P.norm_scope = p.scope;
         P.norm_mode = p.mode;
@@ -3471,10 +3473,10 @@ void DrawEditOverlay()
             const float y0 = ImGui::GetCursorScreenPos().y;
             if (Shown(*n).mode != DetectMode::Takes) EditLegend(store, *lib, *n);  // 13-20 / 13-23 / 13-25
             const float used = ImGui::GetCursorScreenPos().y - y0;
-            if (!P.changed) DrawSoundWaves("editwave", *lib, *n, m, std::max(ui::Dp(60.0f), wave_h - 24.0f - used), true, nullptr);
+            if (!StoreReplaced()) DrawSoundWaves("editwave", *lib, *n, m, std::max(ui::Dp(60.0f), wave_h - 24.0f - used), true, nullptr);
         }
         ImGui::EndChild();
-        if (!P.changed) {
+        if (!StoreReplaced()) {
             // The side strip (.edside): surface, a stroke line on its left, the captions
             // "DETECTION · THIS SOUND ONLY" and "LEVEL" over their rows (.edrow: 70 px labels).
             ImGui::SameLine();
@@ -3485,7 +3487,7 @@ void DrawEditOverlay()
             ui::BeginPane("##editside", ImVec2(side_w, wave_h), side);
             ui::GroupCaption("Detection \xC2\xB7 this sound only", ui::kMuted);
             if (m.ok) DetectionControls(*lib, *n, m, ui::Dp(70.0f), /*edit=*/true);
-            if (!P.changed) {
+            if (!StoreReplaced()) {
                 ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));
                 const float  y = ImGui::GetCursorScreenPos().y;
                 const ImVec2 wp = ImGui::GetWindowPos();
@@ -3495,18 +3497,18 @@ void DrawEditOverlay()
                 ui::GroupCaption("Level", ui::kMuted);
                 if (m.ok) LevelSection(*lib, *n, m);
                 else if (P.norm_job.active) CancelNormJob();  // 13-28: the media stopped reading
-                if (!P.changed) {  // Antho 2026-10-13: the fades here too
+                if (!StoreReplaced()) {  // Antho 2026-10-13: the fades here too
                     ImGui::Dummy(ImVec2(1.0f, ui::Dp(6.0f)));
                     ui::GroupCaption("Fades", ui::kMuted);
                     DefaultFadeControls(*lib, *n);
-                    if (!P.changed) CutFadeControl(*lib, *n);  // 13-23 (A4)
-                    if (!P.changed) SelectedFadeControls(*lib, *n);
+                    if (!StoreReplaced()) CutFadeControl(*lib, *n);  // 13-23 (A4)
+                    if (!StoreReplaced()) SelectedFadeControls(*lib, *n);
                 }
                 ui::SubText("Every change is saved at once (Ctrl+Z to undo), with the sound in the library (.ravlib).");
             }
             ui::EndPane();
         }
-        if (keys && !P.changed) {
+        if (keys && !StoreReplaced()) {
             if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) toggle_play();
             if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
                 if (P.zone_len > 0.0) P.zone_len = 0.0;  // 13-20: Esc clears the zone selected first
@@ -3572,7 +3574,7 @@ void DrawHeader(const SoundStore& store, const SoundLibrary& lib, const SoundNod
             const std::string name = P.name_buf, lib_uid = lib.uid;
             const LibraryRow  row = RowOfNode(lib, n.uid);
             Gesture("Rename", [lib_uid, row, name](SoundStore& s) { return RenameRow(s, lib_uid, row, name); });
-            if (P.changed) return;
+            if (StoreReplaced()) return;
         }
     } else {
         // The container's title (the mockup's slotLabel): no icon here, the icon is in "Plays".
@@ -3628,7 +3630,7 @@ void DrawTypeRows(const SoundStore& store, const SoundLibrary& lib, const SoundN
     } else if (changed && sel != before) {
         const SoundNodeType t = sel == 0 ? SoundNodeType::Random : SoundNodeType::Blend;
         Gesture(std::string("Make ") + kTypes[sel], [lib_uid, row, t](SoundStore& s) { return SetRowsType(s, lib_uid, {row}, t, {}); });
-        if (P.changed) return;
+        if (StoreReplaced()) return;
     }
     if (ui::BeginMenuPopup("##switchon")) {
         ui::MenuCaption("Switch on");
@@ -3775,7 +3777,7 @@ void DrawMix(const SoundStore& store, const SoundLibrary& lib, const SoundNode& 
         if (kids.empty()) FitText("No children", ui::kFaint);
         const float icon_col = ui::Dp(18.0f) + ImGui::GetStyle().ItemSpacing.x;
         for (const SoundNode* k : kids) {
-            if (P.changed) break;
+            if (StoreReplaced()) break;
             ImGui::PushID(k->uid.c_str());
             const ImVec2 ip = ImGui::GetCursorScreenPos();
             ui::PaintIconAt(ImGui::GetWindowDrawList(), TypeIcon(k->type), ip.x, ip.y, ImGui::GetFrameHeight());
@@ -4008,7 +4010,7 @@ void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const Sound
     const float lanes_top = ImGui::GetCursorScreenPos().y;
     float       y = lanes_top;
     for (const SoundNode* k : parts) {
-        if (P.changed) break;
+        if (StoreReplaced()) break;
         ImGui::PushID(k->uid.c_str());
         const std::string kid = k->uid;
         const float       th = ui::Dp(22.0f);  // .ltrack
@@ -4074,7 +4076,7 @@ void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const Sound
                     return true;
                 });
         }
-        if (P.changed) {
+        if (StoreReplaced()) {
             ImGui::PopID();
             break;
         }
@@ -4104,7 +4106,7 @@ void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const Sound
         }
         if (!k->layer_roles.empty() && !k->layer_keep_offset)  // 13-31 (a)
             ui::ItemTipText("Offset \xC2\xB7 applies on combined events only (0 on events with a role)");
-        if (P.changed) {
+        if (StoreReplaced()) {
             ImGui::PopID();
             break;
         }
@@ -4115,20 +4117,20 @@ void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const Sound
                 x.volume_db = v;
                 return true;
             });
-        if (P.changed) {
+        if (StoreReplaced()) {
             ImGui::PopID();
             break;
         }
         ImGui::SetCursorScreenPos(ImVec2((stacked ? lane_x0 : x1 - fields_w) + ms_full + gap + db_full + gap, fy));
         BlendLayerRoles(lib, *k, part_w);
-        if (P.changed) {
+        if (StoreReplaced()) {
             ImGui::PopID();
             break;
         }
         ImGui::PopID();
         y += row_h + rgap;
     }
-    if (!P.changed && NodePlaying(n.uid)) {
+    if (!StoreReplaced() && NodePlaying(n.uid)) {
         const float x = std::floor(X(AuditionPosition() * 1000.0)) + 0.5f;
         if (x <= lane_x0 + lane_w) dl->AddLine(ImVec2(x, lanes_top), ImVec2(x, y), ui::kText, 1.0f);
     }
@@ -4180,7 +4182,7 @@ void DrawPlays(const SoundStore& store, const SoundLibrary& lib, const SoundNode
             ui::SubText("At each event, plays all its children together, layered. Drag a bar to offset a layer.");
             DrawBlendView(store, lib, n);
         }
-        if (!P.changed) {
+        if (!StoreReplaced()) {
             if (nk == 0) RichText({{"Empty: add sounds, or the library cannot be assigned.", ui::kWarn}});
             ui::SubText("Drop files here to add them as children.");
         }
@@ -4209,7 +4211,6 @@ void DrawSourceLine(const SoundLibrary& lib, const SoundNode& n, const SoundMedi
         if (ui::SolidButton(btn)) {
             if (item) ReplaceFromSelected(lib_uid, uid, "Set from selected item");
             else {
-                P.changed = true;  // a gesture is picked: the panel stops drawing for this frame
                 g_picks.Pick([lib_uid, uid, src]() { Locate(lib_uid, uid, src); });
             }
         }
@@ -4302,7 +4303,7 @@ void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
         } else {
             WaveformEvents ev;
             DrawSoundWaves("panelwave", lib, n, m, wave_h, false, &ev);
-            if (P.changed) {
+            if (StoreReplaced()) {
                 ui::EndSection(src_sec);
                 return;
             }
@@ -4326,7 +4327,7 @@ void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
         DrawSourceLine(lib, n, m);
     }
     ui::EndSection(src_sec);
-    if (P.changed) return;
+    if (StoreReplaced()) return;
 
     // Variations (C5.5): "6 variations" in text, "(2 off) — one at random at each event" muted.
     ui::SectionOpts var_opts;
@@ -4351,11 +4352,11 @@ void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
             });
         }
         ui::ItemTipText("Copies of an animation item (linked items) replay the same variation as their source");
-        if (!P.changed) DrawRandomAvoid(lib, n);
-        if (!P.changed) DefaultFadeControls(lib, n);
+        if (!StoreReplaced()) DrawRandomAvoid(lib, n);
+        if (!StoreReplaced()) DefaultFadeControls(lib, n);
     }
     ui::EndSection(var_sec);
-    if (P.changed) return;
+    if (StoreReplaced()) return;
 
     SeedSection("Detection", false);
     ui::SectionOpts det_opts;
@@ -4412,9 +4413,9 @@ void SettleLostFaders()
 
 void NodePanelWidgets()
 {
-    P.changed = false;
+    P.gen = SoundStoreGeneration();
     SettleLostFaders();
-    if (P.changed) return;  // the panel draws again once that value is written
+    if (StoreReplaced()) return;
     // A live edit only lasts while its drag does (an unfinished one never shadows the store).
     // (13-14: a fader typed into holds no mouse button either.)
     if (P.live && !ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ui::DragNumberActive() && !ui::FaderTyping()) CancelLive();
@@ -4447,21 +4448,21 @@ void NodePanelWidgets()
     // 13-7b (audit C4.2 / C5.2): Type / Volume are plain rows under the header (no "Node" / "Level"
     // card); then Mix (Random, Switch), then Plays (Random, Blend: a Blend's lanes carry its
     // children's volumes, it has no Mix).
-    if (!P.changed && n->type != SoundNodeType::Sound) {
+    if (!StoreReplaced() && n->type != SoundNodeType::Sound) {
         DrawTypeRows(store, *lib, *n);
-        if (!P.changed) DrawVolume(*lib, *n);
-        if (!P.changed && n->type != SoundNodeType::Blend) DrawMix(store, *lib, *n);
-        if (!P.changed && n->type != SoundNodeType::Switch) DrawPlays(store, *lib, *n);
-    } else if (!P.changed) {
+        if (!StoreReplaced()) DrawVolume(*lib, *n);
+        if (!StoreReplaced() && n->type != SoundNodeType::Blend) DrawMix(store, *lib, *n);
+        if (!StoreReplaced() && n->type != SoundNodeType::Switch) DrawPlays(store, *lib, *n);
+    } else if (!StoreReplaced()) {
         DrawVolume(*lib, *n);
-        if (!P.changed) {
+        if (!StoreReplaced()) {
             OpenEditKey(*lib, *n);
             DrawSoundPanel(*lib, *n);
         }
     }
     // The whole node panel takes a Media Explorer drop too (after the waveform's own target, so
     // the waveform keeps it when the mouse is over it).
-    if (!P.changed) {
+    if (!StoreReplaced()) {
         const ImVec2 a = ImGui::GetWindowPos();
         const ImVec2 b(a.x + ImGui::GetWindowSize().x, a.y + ImGui::GetWindowSize().y);
         // The caption says what UseMediaAt does on this node type.
@@ -4479,7 +4480,7 @@ void NodePanelWidgets()
                         cap.c_str(), kind);
     }
     ImGui::PopID();
-    if (!P.changed) DrawEditOverlay();
+    if (!StoreReplaced()) DrawEditOverlay();
 }
 
 }  // namespace
@@ -4492,7 +4493,7 @@ void DrawNodePanel()
 
 void SettleNodePanelFaders()
 {
-    P.changed = false;
+    P.gen = SoundStoreGeneration();
     SettleLostFaders();
     g_picks.Run();
 }

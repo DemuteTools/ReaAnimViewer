@@ -14,6 +14,7 @@
 
 #ifdef _WIN32
 
+#include <cstdint>
 #include <functional>
 #include <string>
 
@@ -44,6 +45,9 @@ bool IsLiveItem(MediaItem* item);
 
 // The project's store (nullptr = the current project). Empty for a project without one.
 const SoundStore& GetSoundStore(ReaProject* proj);
+// Moves each time a store is replaced (an edit, a project load or close): a reference taken from
+// GetSoundStore is stale once it has moved.
+uint64_t SoundStoreGeneration();
 // Edits the store: `edit` returns false to change nothing. A changed store marks the project
 // dirty and, with a non-null `undo_desc`, records one undo point; null = no undo point (inside a
 // caller's SoundUndoScope). False when nothing changed.

@@ -52,6 +52,9 @@ void DrawSoundReportLine(const TaggingSoundContext& ctx);
 bool PopulateHasPending();
 void RunPendingPopulate(const PopulateProgressFn& progress);
 void DropPendingPopulate();
+// 13-26 (Clear item data): the shown item's sound record, the Populate count and the last report are
+// forgotten (read again on the next frame; the report line goes: it spoke of sounds now removed).
+void DropSoundFooterCaches();
 // On the strip, under an event's mark at (x, y): its sound glyph.
 void DrawSoundStripGlyph(ImDrawList* dl, const TaggingModel& m, const ShownEvent& e, float x, float y);
 

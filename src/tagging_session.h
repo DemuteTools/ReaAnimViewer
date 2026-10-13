@@ -233,6 +233,14 @@ void TaggingPresetFilesChanged();
 // is written when it is no longer the current item). Errors go to TaggingLastError.
 bool TaggingMakeUnique(MediaItem* for_item);
 
+// Story 13-26 -- "Clear item data" on the item and its linked copies (item_clear.h, one undo point):
+// their rules, events, markers, sound settings and sounds go; the item reads again as freshly
+// imported (the Detect search notes cleared). `for_item`: the item it was clicked on (nothing is
+// written when it is no longer the current item). Errors go to TaggingLastError. The result says
+// what was cleared (`ran` false: nothing).
+struct ItemClearResult;
+ItemClearResult TaggingClearItem(MediaItem* for_item);
+
 // The last write's error ("" when it went through), shown inline.
 const std::string& TaggingLastError();
 void TaggingClearError();

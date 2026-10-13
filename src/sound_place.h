@@ -78,6 +78,11 @@ bool        MovePlacement(ReaProject* proj, const std::string& item_guid, double
 // track it is no longer on: the user moved it, it stays where it is.
 PlaceResult ReplacePlacement(ReaProject* proj, const std::string& item_guid, const PlaceRequest& req);
 bool        RemovePlacement(ReaProject* proj, const std::string& item_guid);
+// Story 13-26 (Clear item data): deletes a placed item whatever its ownership, attached by the user
+// included: the one gesture allowed past RemovePlacement's "attached" guard. Still only an item that
+// carries a RAV_SND tag, never a folder item. The caller found it (one project scan for the gesture);
+// it leaves the gesture's caches (ForgetLiveItem included) before it goes. False when not deleted.
+bool        RemovePlacedAny(ReaProject* proj, MediaItem* item);
 // Where a placed pile is anchored, from any one of its placed items (its tag's ao / sy, 13-8):
 // `anchor_pos` = the position its anchor lands at, `sync` = the snap it was placed by. A tag
 // without them: the item's own position and snap. False when `item` is null.

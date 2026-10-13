@@ -971,6 +971,23 @@ bool RemovePlacement(ReaProject* proj, const std::string& item_guid)
     }
 }
 
+bool RemovePlacedAny(ReaProject* proj, MediaItem* item)
+{
+    try {
+        if (!f_delete_item || !item) return false;
+        if (!(proj ? ValidatePtr2(proj, item, "MediaItem*") : IsLiveItem(item))) return false;
+        PlacedTag  tag;
+        const bool has_tag = ReadPlacedTag(item, &tag);
+        // The refusals of PlacedItemFor, without the "attached" one (edit = false).
+        if (!PlacedItemRefusal(true, has_tag, has_tag && IsFolderItem(item), tag.own, false).empty()) return false;
+        ForgetLaneItem(item);  // 13-16: out of the gesture's lane cache
+        ForgetDeleted(item);   // 13-19: out of the gesture's live and folder caches
+        return f_delete_item(GetMediaItem_Track(item), item);
+    } catch (...) {
+        return false;
+    }
+}
+
 bool ReadCopyImportedMedia()
 {
     if (!f_config_string) return true;

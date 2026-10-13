@@ -93,6 +93,11 @@ void ClearLastApplyResult();
 // change and the previews are rewritten. Written without an undo point: it rides the edit's own
 // (state-based, so Ctrl+Z / Ctrl+Y converge again). One console_log info line per edit.
 
+// Story 13-26 (Clear item data): deletes the markers RAV owns on this item, committed and previews
+// (take markers on its take, project markers by GUID), as its record lists them. No undo point
+// (inside the caller's). Nothing when the item has no RAV take or its record does not read.
+void DeleteItemMarkersNoUndo(MediaItem* item);
+
 // The timer callback (main thread). No-throw.
 void MarkerMirrorTick();
 // Registers / unregisters the timer (plugin load / unload).

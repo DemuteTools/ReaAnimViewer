@@ -1658,6 +1658,16 @@ void StopMarkerMirror()
     g_mirror.clear();
 }
 
+void DeleteItemMarkersNoUndo(MediaItem* item)
+{
+    try {
+        ItemRulesRead rd;
+        if (!item || !ReadItemRules(item, &rd) || !rd.present || !rd.valid) return;
+        DeleteItemOwnMarkers(item, rd.rules);
+    } catch (...) {
+    }
+}
+
 const ApplyResult& LastApplyResult()
 {
     return g_last;

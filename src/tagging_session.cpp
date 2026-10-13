@@ -20,6 +20,7 @@
 #include "bone_sampling.h"
 #include "console_log.h"
 #include "footstep_measure.h"  // kDetectRateHz
+#include "item_clear.h"  // 13-26
 #include "item_rules.h"
 #include "motion_physics.h"
 #include "pcm_source_anim.h"
@@ -765,6 +766,25 @@ bool TaggingMakeUnique(MediaItem* for_item)
     RefreshSelection();
     RefreshPool();
     return ok && done;
+}
+
+ItemClearResult TaggingClearItem(MediaItem* for_item)
+{
+    ItemClearResult res;
+    // Queued for another item (the playhead moved on): nothing is written.
+    if (for_item && for_item != g.model.item) return res;
+    g.last_error.clear();
+    if (!g.model.item) return res;
+    TaggingCancelPreview();
+    res = ClearItemData(g.model.item);
+    if (!res.error.empty()) g.last_error = res.error;
+    g.model.auto_searched.clear();
+    g.model.auto_none.clear();
+    ReadItem();
+    RunDetection();
+    RefreshSelection();
+    RefreshPool();
+    return res;
 }
 
 ItemClipMap ItemClipMapOf(MediaItem* item, double clip_len)

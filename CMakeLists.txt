@@ -199,6 +199,8 @@ if(WIN32)
             src/skeleton_view.cpp
             src/event_list.cpp
             src/tag_markers.cpp
+            src/item_clear_plan.cpp
+            src/item_clear.cpp
             # Epic 13 (D20): the sound library and Populate.
             src/sound_record.cpp
             src/sound_project.cpp

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cfloat>
 #include <cmath>
 #include <cstdio>
@@ -23,6 +24,7 @@
 #include "bone_roles.h"
 #include "event_list.h"
 #include "file_dialogs.h"
+#include "item_clear.h"  // 13-26: Clear item data
 #include "item_rules.h"
 #include "library_icons.h"  // 13-14: the tool glyphs (ToolIcon)
 #include "preset_menu_model.h"
@@ -708,6 +710,8 @@ int FirstRuleIndex(const std::vector<Block>& blocks)
     return -1;
 }
 
+void CloseClearItem();  // 13-26 (the footer's Clear item data)
+
 // The item under the playhead changed: a running number drag or typed value, a preview
 // and a line drag belonged to the previous one (nothing of them is written).
 void OnItemChanged(MediaItem* item)
@@ -721,6 +725,7 @@ void OnItemChanged(MediaItem* item)
     ClearLastApplyResult();
     ui::DragNumberReset();
     TaggingCancelPreview();
+    CloseClearItem();  // 13-26: the band and its note belong to the item
 }
 
 void DashedHLine(ImDrawList* dl, float x0, float x1, float y, ImU32 col)
@@ -4398,6 +4403,139 @@ void DrawInspector(const ItemRules& rules)
     DrawRuleSoundSection(SoundContextOf(GetTaggingModel(), rules, b));
 }
 
+// ---- Story 13-26: Clear item data ------------------------------------------------------------------
+
+// The confirm band (open on one item, with the counts read when it opened) and the last outcome.
+struct ClearItemUi {
+    bool            open = false;
+    MediaItem*      item = nullptr;
+    ItemClearCounts counts;
+    MediaItem*      note_item = nullptr;
+    std::string     note;  // "Cleared: 1 item + 2 copies · 37 sounds removed"
+    // Whether there is something to clear (the button's state): read again when the item or the
+    // project's state changes, at most every 500 ms (a scan of the project's items).
+    MediaItem*                            info_item = nullptr;
+    int                                   info_count = -1;
+    bool                                  info_valid = false;
+    bool                                  anything = false;
+    std::chrono::steady_clock::time_point info_at;
+};
+ClearItemUi g_clear;
+
+void CloseClearItem()
+{
+    g_clear.open = false;
+    g_clear.item = nullptr;
+    g_clear.note.clear();
+    g_clear.note_item = nullptr;
+    g_clear.info_valid = false;
+}
+
+bool ClearItemHasData(MediaItem* item)
+{
+    const int  count = GetProjectStateChangeCount(nullptr);
+    const auto now = std::chrono::steady_clock::now();
+    const bool changed = !g_clear.info_valid || item != g_clear.info_item || count != g_clear.info_count;
+    if (changed && (!g_clear.info_valid || item != g_clear.info_item ||
+                    now - g_clear.info_at >= std::chrono::milliseconds(500))) {
+        g_clear.info_item = item;
+        g_clear.info_count = count;
+        g_clear.anything = item && ReadItemClear(item).anything;
+        g_clear.info_valid = true;
+        g_clear.info_at = now;
+    }
+    return g_clear.anything;
+}
+
+// A text's height drawn wrapped at `w` px.
+float WrappedHeight(const std::string& text, float w)
+{
+    return ImGui::CalcTextSize(text.c_str(), nullptr, false, std::max(1.0f, w)).y;
+}
+
+// The extra footer height the Clear row, its band and its note take (measured at the panel's
+// content width, as they are drawn: wrapped).
+float ClearItemRowHeight(const TaggingModel& m)
+{
+    if (!m.item) return 0.0f;
+    const ImGuiStyle& st = ImGui::GetStyle();
+    const float       w = ImGui::GetContentRegionAvail().x;
+    float             h = 0.0f;
+    if (g_clear.open && g_clear.item == m.item) {
+        const float inner = w - 2.0f * ui::Dp(8.0f);  // the warn band's side padding
+        h += WrappedHeight(ClearConfirmTitle(g_clear.counts.copies), inner) + st.ItemSpacing.y;
+        h += WrappedHeight(ClearConfirmText(g_clear.counts), inner) + st.ItemSpacing.y;
+        h += ImGui::GetFrameHeightWithSpacing() + 2.0f * ui::Dp(3.0f) + ui::Dp(4.0f);  // buttons, padding
+    } else {
+        h += ImGui::GetFrameHeightWithSpacing();
+    }
+    if (!g_clear.note.empty() && g_clear.note_item == m.item) h += WrappedHeight(g_clear.note, w) + st.ItemSpacing.y;
+    return h;
+}
+
+// "Clear item data", right-aligned on its own row; confirmed in place by the amber band.
+void DrawClearItemRow(const TaggingModel& m)
+{
+    if (!m.item) return;
+    if (g_clear.open && g_clear.item != m.item) g_clear.open = false;  // the shown item changed
+    if (g_clear.open) {
+        ui::ConfirmBand band;
+        ui::BeginConfirmBand(band, ImGui::GetContentRegionAvail().x, /*warn=*/true);
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextUnformatted(ClearConfirmTitle(g_clear.counts.copies).c_str());
+        ImGui::PopTextWrapPos();
+        ui::ToneText(ClearConfirmText(g_clear.counts), ui::kMuted, /*wrap=*/true);
+        MediaItem* item = g_clear.item;
+        const bool busy = PopulateHasPending();  // a queued or running Populate: Clear waits
+        if (busy) ImGui::BeginDisabled();
+        const bool clear_clicked = ui::ConfirmButton("Clear##clearitem");
+        if (busy) ImGui::EndDisabled();
+        if (busy) ui::ItemTipText("Populate is running.");
+        if (clear_clicked) {
+            g_clear.open = false;
+            Later([item]() {
+                const ItemClearResult res = TaggingClearItem(item);
+                if (!res.ran) return;
+                // The view shows the item as freshly imported.
+                ClearEventSelection();
+                g_sel = FirstRuleIndex(TaggingShownRules().blocks);
+                g_drag = StripDrag::None;
+                ClearLastApplyResult();
+                DropSoundFooterCaches();
+                g_clear.info_valid = false;
+                g_clear.note_item = item;
+                g_clear.note = res.error.empty() ? ClearDoneText(res.counts) : std::string();
+            });
+        }
+        ImGui::SameLine();
+        const bool cancel = ui::SolidButton("Cancel##clearitemno") || ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+        if (cancel) g_clear.open = false;
+        ui::EndConfirmBand(band);
+    } else {
+        const char* label = "Clear item data##clearitem";
+        const bool  busy = PopulateHasPending();
+        const bool  nothing = !ClearItemHasData(m.item);
+        ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), ImGui::GetContentRegionMax().x - ui::ButtonWidth(label)));
+        if (busy || nothing) ImGui::BeginDisabled();
+        if (ui::SolidButton(label)) {
+            const ItemClearInfo info = ReadItemClear(m.item);  // the counts as they are now
+            if (info.anything) {
+                g_clear.open = true;
+                g_clear.item = m.item;
+                g_clear.counts = info.counts;
+                g_clear.note.clear();
+            }
+        }
+        if (busy || nothing) ImGui::EndDisabled();
+        ui::ItemTipText(busy      ? "Populate is running."
+                        : nothing ? "Nothing to clear: this item and its linked copies have no rules, events, markers,\n"
+                                    "sound settings or sounds from RAV."
+                                  : "Removes this item's rules, events, markers, sound settings and sounds, and its "
+                                    "linked copies'.\nOne undo step.");
+    }
+    if (!g_clear.note.empty() && g_clear.note_item == m.item) ui::ToneText(g_clear.note, ui::kMuted, /*wrap=*/true);
+}
+
 // ---- Panel: footer ---------------------------------------------------------------------------------
 
 void DrawFooter(const TaggingModel& m)
@@ -4428,6 +4566,7 @@ void DrawFooter(const TaggingModel& m)
         DrawAttachButton(sound_ctx);
         DrawSoundReportLine(sound_ctx);
     }
+    DrawClearItemRow(m);  // 13-26: under Populate / Attach and the report line, above Commit
     {
         const float cancel_w = ui::ButtonWidth("Cancel##tagcancel") + ui::Dp(8.0f);
         const float commit_w =
@@ -4555,6 +4694,9 @@ void DrawTaggingPanel(float x, float y, float w, float h)
             ImGui::Dummy(ImVec2(0.0f, ui::Dp(2.0f)));
             DrawPresetButtons();
             if (!TaggingLastError().empty()) ui::ToneText(TaggingLastError(), ui::kBadInk, /*wrap=*/true);
+            // 13-26: an unreadable record can still be cleared (its keys go, its sounds by their tag).
+            ImGui::Dummy(ImVec2(0.0f, ui::Dp(4.0f)));
+            DrawClearItemRow(m);
         } else {
             if (g_sel >= static_cast<int>(rules.blocks.size()) || g_sel < -1) g_sel = FirstRuleIndex(rules.blocks);
             DrawHeader(m, rules);
@@ -4568,7 +4710,8 @@ void DrawTaggingPanel(float x, float y, float w, float h)
             // Story 10-4: the markers line, Commit / Cancel, the selection and the last outcome.
             // Detect sits between the two (story 10-8 follow-up: always in reach).
             const float footer_h = ImGui::GetFrameHeightWithSpacing() * 3.0f + ImGui::GetTextLineHeightWithSpacing() * 3.0f + ui::Dp(12.0f) +
-                                   SoundFooterHeight(SoundContextOf(m, rules, g_sel));  // Epic 13 (13-8)
+                                   SoundFooterHeight(SoundContextOf(m, rules, g_sel)) +  // Epic 13 (13-8)
+                                   ClearItemRowHeight(m);  // 13-26
             const float body_h = std::max(ui::Dp(40.0f), ImGui::GetContentRegionAvail().y - footer_h);
             // The theme's ChildBg is the panel grey (kSurface) already.
             if (ImGui::BeginChild("##taginspector", ImVec2(0.0f, body_h), ImGuiChildFlags_None)) {

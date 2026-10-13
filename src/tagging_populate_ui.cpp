@@ -433,6 +433,13 @@ void DropPendingPopulate()
     g_pending = PendingPopulate();
 }
 
+void DropSoundFooterCaches()
+{
+    g_rec = RecCache();
+    g_count = CountCache();
+    g_last = LastReport();
+}
+
 bool SoundFooterVisible(const TaggingSoundContext& ctx)
 {
     return ctx.item != nullptr && !GetSoundStore(nullptr).libraries.empty();

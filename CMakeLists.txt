@@ -152,6 +152,7 @@ if(WIN32)
             src/plugin_main.cpp
             src/reaper_api.cpp
             src/viewer_window.cpp
+            src/viewer_fullscreen.cpp
             src/gl_loader.cpp
             src/renderer.cpp
             src/asset_loader.cpp

@@ -17,7 +17,8 @@
 // while hidden (no SwapBuffers / no fps / no GPU — nothing runs in the background).
 // The window is destroyed only by the toggle action (Action while open) or unload —
 // the paths where WE know it is a real close. Init-failure hardening is Story 1.4;
-// mesh loading is Epic 2.
+// mesh loading is Epic 2. Story 6-5-9: full screen takes this same window out of the
+// docker and gives it back, never destroying it (src/viewer_fullscreen.h).
 
 #include "viewer_window.h"
 
@@ -60,6 +61,8 @@
 #include "ui_glyph_ranges.h"  // 13-7: the symbol blocks merged into the UI font
 #include "video_view.h"       // Story 11-4: Video view + Video panel model
 #include "video_view_ui.h"    // Story 11-4: their ImGui widgets
+#include "viewer_fullscreen.h"       // Story 6-5-9: out of the docker, full screen, and back
+#include "viewer_fullscreen_plan.h"  // Story 6-5-9: when Esc leaves full screen
 #include "library_view_ui.h"  // Epic 13 (D20): the Library view
 #include "sound_follow.h"     // Epic 13 (D20): the menu's Sounds section (13-9)
 
@@ -311,6 +314,14 @@ bool            g_tagging_dialog_pending = false;
 // tick and its ImGui frame), drawing its progress frames; the flag stops a second post meanwhile.
 constexpr UINT kMsgRunPopulate = WM_APP + 0x34;
 bool           g_populate_post_pending = false;
+// Story 6-5-9 -- full screen. The button's click changes the window's mode from the window
+// procedure (never inside the render tick, which is inside the ImGui frame); the flag stops a
+// second post meanwhile. REAPER's main window: the parent of the docked child, the owner of the
+// full screen window. The action's id, to refresh its toolbar button on every change.
+constexpr UINT kMsgFullScreen = WM_APP + 0x59;
+bool           g_full_screen_post_pending = false;
+HWND           g_reaper_main_hwnd = nullptr;
+int            g_full_screen_cmd = 0;
 GpuFramebuffer  g_video_fbo;
 GpuRenderbuffer g_video_color_rb;
 GpuRenderbuffer g_video_depth_rb;
@@ -1620,6 +1631,12 @@ void DrawToolUi()
         const float fps_w = fps_shown
             ? ImGui::CalcTextSize("000 FPS").x + 2.0f * st.WindowPadding.x + ui::Dp(2.0f) : 0.0f;
         DrawShortcutsButton(corner_x - fps_w, text_mid, IconTex(g_icon_keyboard));
+        // Story 6-5-9 -- the Full screen button, left of the keyboard icon (the same 24 px button).
+        // Its click is posted: the window changes mode from the window procedure, not this frame.
+        const float keys_w = ui::Dp(24.0f) + ui::Dp(2.0f);
+        if (DrawFullScreenButton(corner_x - fps_w - keys_w, text_mid, ShortcutKeyLabel(kShortcutFullScreen)) &&
+            !g_full_screen_post_pending && g_hwnd)
+            g_full_screen_post_pending = PostMessageW(g_hwnd, kMsgFullScreen, 0, 0) != FALSE;
     }
 
     // Story 11-4 — RAV view / Video view toggle (top centre of the view area, key V); in
@@ -2161,6 +2178,23 @@ void PaintPopulateProgress(const PopulateProgress& p)
     PeekMessageW(&peek, nullptr, 0, 0, PM_NOREMOVE);
 }
 
+// Story 6-5-9 -- full screen on / off: the same window leaves the docker or goes back to it
+// (src/viewer_fullscreen.h). A running camera / Video view drag ends first (a Video view drag is
+// written), as when the view changes. Never called inside the render tick.
+void SetFullScreenMode(bool on)
+{
+    if (!g_hwnd || !IsWindow(g_hwnd) || on == FullScreenActive()) return;
+    if (g_drag != DragMode::None) {
+        if (g_drag_video) VideoViewEndDrag();
+        g_drag_video = false;
+        g_drag = DragMode::None;
+        ReleaseCapture();
+    }
+    if (on) EnterFullScreen(g_hwnd, g_reaper_main_hwnd, kDockName, kDockIdent);
+    else    LeaveFullScreen(g_hwnd, g_reaper_main_hwnd, kDockName, kDockIdent);
+    if (g_full_screen_cmd) RefreshToolbar(g_full_screen_cmd);
+}
+
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     // Only when another context is current (then put back): WM_CREATE makes ours, WM_DESTROY frees it.
@@ -2373,6 +2407,21 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         // 13-15b: no viewer shortcut (Del, E, V...) runs while the Sound assignment window has the focus;
         // the keys it takes are its own, the others go to REAPER (the accelerator hook).
         if (TaggingViewActive() && TaggingAssignWindowOpen()) return 0;
+        // Story 6-5-9: full screen, an Esc that nothing else takes leaves it (the Library view keeps its own).
+        if (wp == VK_ESCAPE && FullScreenActive()) {
+            fullscreen::EscState es;
+            es.full_screen = true;
+            es.shortcuts_popup = ShortcutsPopupOpen();
+            es.delete_confirm = VideoDeleteConfirmOpen();
+            es.tagging_gesture = TaggingViewActive() && TaggingGestureActive();
+            es.text_input = TextInputNow();
+            es.recording = ShortcutRecordingId() >= 0;
+            es.assign_window = TaggingViewActive() && TaggingAssignWindowOpen();
+            es.library_takes_esc = LibraryViewActive() && LibraryViewTakesKey(VK_ESCAPE, ctrl, shift, alt);
+            if (!fullscreen::EscLeavesFullScreen(es)) break;
+            if (!(lp & (1 << 30))) SetFullScreenMode(false);
+            return 0;
+        }
         const int action =
             ShortcutActionForKey(static_cast<unsigned>(wp), ctrl, shift, alt, VideoViewActive(), TaggingViewActive());
         if (action < 0) {
@@ -2382,6 +2431,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         if (lp & (1 << 30)) return 0;  // auto-repeat of a held key: one toggle per press
         if (VideoDeleteConfirmOpen()) return 0;  // spec 11-fb-11: no shortcut runs behind the confirmation
+        if (action == kShortcutFullScreen) {  // story 6-5-9 (F11)
+            SetFullScreenMode(!FullScreenActive());
+            return 0;
+        }
         if (action == kShortcutToggleView || (action == kShortcutTogglePanel && !VideoViewActive())) {
             // A running drag ends before the view changes (a Video view drag is written).
             // The panel key from RAV view opens the panel, which enters Video view: same rule.
@@ -2527,10 +2580,52 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         return 0;
 
+    case kMsgFullScreen:
+        // Story 6-5-9 -- the Full screen button's click, here outside the render tick.
+        g_full_screen_post_pending = false;
+        SetFullScreenMode(!FullScreenActive());
+        return 0;
+
+    case WM_SYSCOMMAND:
+        // Story 6-5-9 -- full screen, the window is top-level: Alt+F4 (SC_CLOSE) leaves full
+        // screen instead of destroying it. Docked, nothing changes.
+        if ((wp & 0xFFF0) == SC_CLOSE && FullScreenActive()) {
+            SetFullScreenMode(false);
+            return 0;
+        }
+        break;
+
+    case WM_CLOSE:
+        if (FullScreenActive()) {  // story 6-5-9: the same, for a WM_CLOSE sent by anything else
+            SetFullScreenMode(false);
+            return 0;
+        }
+        break;
+
+    case WM_MOUSEACTIVATE:
+        // Story 6-5-9 -- full screen, a click while a REAPER modal window is open (its main window
+        // disabled) brings that window to the front instead of hiding it behind the viewer.
+        if (FullScreenActive() && FullScreenForwardToReaperModal(hwnd, g_reaper_main_hwnd)) return MA_NOACTIVATEANDEAT;
+        break;
+
+    case WM_DISPLAYCHANGE:
+    case WM_DPICHANGED:
+        // Story 6-5-9 -- full screen, the monitor's size or scale changed: cover it again (the
+        // suggested rect of WM_DPICHANGED is a window's, not the monitor's). Docked, the docker lays
+        // the window out; the UI scale stays the one it opened with, as when docked.
+        if (FullScreenActive()) {
+            RefitFullScreen(hwnd);
+            return 0;
+        }
+        break;
+
     case WM_DESTROY:
         // Reached only on the paths WE initiate (CloseViewerWindow → DestroyWindow,
         // and unload) — NOT the docker tab X, which merely hides us (see header). Tear
         // the render loop + GL (and ImGui) down here while the context is still current.
+        // Story 6-5-9: also when REAPER destroys the full screen window's owner (REAPER quits).
+        ForgetFullScreen();
+        g_full_screen_post_pending = false;  // a click posted to this window dies with it
         StopRendering();
         g_hwnd = nullptr;
         return 0;
@@ -2625,6 +2720,7 @@ int ViewerTranslateAccel(MSG* msg, accelerator_register_t* /*ctx*/)
     in.popup_open = ShortcutsPopupOpen() || VideoDeleteConfirmOpen() || (TaggingViewActive() && TaggingGestureActive());
     in.confirm_open = VideoDeleteConfirmOpen();  // Enter confirms the delete
     in.imgui_mouse = ImGuiWantsMouse();          // spec 11-fb-12: Alt + wheel over the UI
+    in.full_screen = FullScreenActive();         // story 6-5-9: Esc leaves, other keys reach REAPER
     // Story 13-7a (decision 7): the Library view's keys (Delete, F2, Space, Esc, Ctrl+B / D / X / V)
     // reach the viewer while its window has the focus; the key's character and release follow it.
     if (in.msg == KeyMsg::KeyDown && LibraryViewActive() && LibraryViewTakesKey(in.key, in.ctrl, in.shift, in.alt)) {
@@ -2651,7 +2747,13 @@ accelerator_register_t* ViewerAcceleratorRegistration()
 
 void OpenViewerWindow(REAPER_PLUGIN_HINSTANCE hInst, HWND reaper_main)
 {
+    g_reaper_main_hwnd = reaper_main;  // story 6-5-9: the docked child's parent, the full screen owner
     if (g_hwnd && IsWindow(g_hwnd)) {
+        // Story 6-5-9: full screen it is in no docker; it just comes to the front.
+        if (FullScreenActive()) {
+            SetForegroundWindow(g_hwnd);
+            return;
+        }
         // Already created (possibly hidden by a docker-X close): bring the docked
         // tab forward; the visibility-gated render loop resumes on its own.
         DockWindowActivate(g_hwnd);
@@ -2735,19 +2837,53 @@ void ToggleViewerWindow(REAPER_PLUGIN_HINSTANCE hInst, HWND reaper_main)
 
 void CloseViewerWindow()
 {
+    const bool was_full_screen = FullScreenActive();
     if (g_hwnd && IsWindow(g_hwnd)) {
         // This is a path WE own (explicit close / unload), so detach from the
         // docker first (AR15), then destroy — WM_DESTROY runs StopRendering().
-        DockWindowRemove(g_hwnd);
+        // Story 6-5-9: full screen it left the docker already (no second DockWindowRemove);
+        // its tool windows go back to REAPER's main window first. The next open is docked.
+        if (was_full_screen) ForgetFullScreen();
+        else                 DockWindowRemove(g_hwnd);
         DestroyWindow(g_hwnd);
     } else {
+        ForgetFullScreen();
         StopRendering();         // window already hidden/gone; make sure the timer/context are down
     }
     g_hwnd = nullptr;
+    if (was_full_screen && g_full_screen_cmd) RefreshToolbar(g_full_screen_cmd);
 
     // Unregister the window class so a future DLL load doesn't inherit a stale
     // lpfnWndProc pointing into our unmapped image.
     UnregisterViewerClass();
+}
+
+void ToggleViewerFullScreen(REAPER_PLUGIN_HINSTANCE hInst, HWND reaper_main)
+{
+    // AR18 -- the same no-throw boundary as ToggleViewerWindow (called from REAPER's hookcommand).
+    try {
+        if (FullScreenActive()) {
+            SetFullScreenMode(false);
+            return;
+        }
+        // Closed (or hidden by a docker X): open it first, docked, then straight to full screen.
+        OpenViewerWindow(hInst, reaper_main);
+        if (g_hwnd && IsWindow(g_hwnd)) SetFullScreenMode(true);
+    } catch (const std::exception& e) {
+        LogError("viewer full screen failed: %s (Reaper is unaffected)", e.what());
+    } catch (...) {
+        LogError("viewer full screen failed: unknown error (Reaper is unaffected)");
+    }
+}
+
+bool ViewerIsFullScreen()
+{
+    return FullScreenActive() && g_hwnd && IsWindow(g_hwnd);
+}
+
+void SetViewerFullScreenCommandId(int command_id)
+{
+    g_full_screen_cmd = command_id;
 }
 
 }  // namespace rav

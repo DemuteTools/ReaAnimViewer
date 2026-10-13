@@ -33,6 +33,12 @@ namespace {
 constexpr const char kCommandName[] = "RAV_OPEN_VIEWER";
 constexpr const char kActionDesc[]  = "RAV: Open Viewer";
 
+// Story 6-5-9 -- the viewer full screen (a toggle: lit while full screen).
+constexpr const char kFullScreenName[] = "RAV_VIEWER_FULLSCREEN";
+constexpr const char kFullScreenDesc[] = "RAV: Viewer full screen (toggle)";
+int                  g_full_screen_id    = 0;
+gaccel_register_t    g_full_screen_accel = {};
+
 // Story 11-1 -- the video FX actions.
 constexpr const char kAddVideoFxName[]     = "RAV_VIDEOFX_ADD";
 constexpr const char kAddVideoFxDesc[]     = "RAV: Add video FX to selected track";
@@ -101,6 +107,13 @@ bool OnHookCommand(int command, int /*flag*/)
     if (command == g_command_id) {
         ToggleViewerWindow(g_hinstance, g_reaper_main);
         RefreshToolbar(g_command_id);  // reflect the new on/off state on the toolbar/menu now
+        if (g_full_screen_id) RefreshToolbar(g_full_screen_id);
+        return true;
+    }
+    if (command == g_full_screen_id) {
+        ToggleViewerFullScreen(g_hinstance, g_reaper_main);
+        RefreshToolbar(g_full_screen_id);
+        RefreshToolbar(g_command_id);  // it may have opened the viewer
         return true;
     }
     if (command == g_add_fx_id) {
@@ -145,6 +158,7 @@ int OnToggleAction(int command)
     if (command == 0) return -1;
     if (command == g_video_bg_id) return VideoBackgroundToggleState();
     if (command == g_command_id) return ViewerWindowIsVisible() ? 1 : 0;
+    if (command == g_full_screen_id) return ViewerIsFullScreen() ? 1 : 0;
     if (command == g_pattern_id) return VideoTestPatternEnabled() ? 1 : 0;
     return -1;  // not ours / doesn't toggle
 }
@@ -195,6 +209,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
             g_register("-pcmsrc",       PcmSourceRegistration());
             g_register("-toggleaction", (void*)&OnToggleAction);
             g_register("-hookcommand",  (void*)&OnHookCommand);
+            if (g_full_screen_id) g_register("-gaccel", &g_full_screen_accel);
             if (g_sound_check_id) g_register("-gaccel", &g_sound_check_accel);
             if (g_make_unique_id) g_register("-gaccel", &g_make_unique_accel);
             if (g_measure_detection_id) g_register("-gaccel", &g_measure_detection_accel);
@@ -223,6 +238,11 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
 
     g_command_id = RegisterAction(rec, kCommandName, kActionDesc, &g_accel);
     if (g_command_id == 0) return 0;
+
+    // Story 6-5-9 -- the viewer full screen. A failure only loses that action (F11 and the
+    // viewer's button still work).
+    g_full_screen_id = RegisterAction(rec, kFullScreenName, kFullScreenDesc, &g_full_screen_accel);
+    SetViewerFullScreenCommandId(g_full_screen_id);
 
     // Story 11-2 -- the video FX background option. A failure only loses that action.
     g_video_bg_id = RegisterAction(rec, kVideoBgName, kVideoBgDesc, &g_video_bg_accel);

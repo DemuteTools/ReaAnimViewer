@@ -648,6 +648,85 @@ int main()
         CHECK(FormatShortcut(b[kShortcutTagAddEvent]) == "E");
     }
 
+    // Story 6-5-9 -- full screen: F11 (anywhere, rebindable), Esc is the viewer's while full
+    // screen, and a key it does not take goes to REAPER's main shortcuts (-666), Alt ones excepted.
+    {
+        const ShortcutBindings b = DefaultShortcutBindings();
+        CHECK(b[kShortcutFullScreen] == Key(vk::kF11));
+        CHECK(kShortcutTable[kShortcutFullScreen].context == ShortcutContext::Anywhere);
+        CHECK(ShortcutActionFor(b, vk::kF11, false, false, false, false, false) == kShortcutFullScreen);
+        CHECK(ShortcutActionFor(b, vk::kF11, false, false, false, true, false) == kShortcutFullScreen);
+        CHECK(ShortcutActionFor(b, vk::kF11, false, false, false, false, true) == kShortcutFullScreen);
+        CHECK(FormatShortcut(b[kShortcutFullScreen]) == "F11");
+        ShortcutBindings d = DefaultShortcutBindings();
+        CHECK(SanitizeShortcuts(d).empty());
+        // A custom key for it: V and E are taken (Anywhere overlaps every context), F is free.
+        int owner = -1;
+        CHECK(ShortcutRecordStep(d, kShortcutFullScreen, 'V', false, false, false, &owner) == RecordOutcome::Conflict);
+        CHECK(owner == kShortcutToggleView);
+        CHECK(ShortcutRecordStep(d, kShortcutFullScreen, 'E', false, false, false, &owner) == RecordOutcome::Conflict);
+        CHECK(ShortcutRecordStep(d, kShortcutFullScreen, 'F', false, false, false) == RecordOutcome::Assigned);
+        CHECK(DecodeShortcut(EncodeShortcut(Key(vk::kF11)).c_str(), &d[kShortcutFullScreen]) &&
+              d[kShortcutFullScreen] == Key(vk::kF11));
+
+        KeyRouteState st;
+        KeyRouteInput f11;
+        f11.msg = KeyMsg::KeyDown;
+        f11.key = vk::kF11;
+        CHECK(RouteViewerKey(b, f11, st) == kRouteViewer);  // docked: F11 is the viewer's (not REAPER's)
+        f11.msg = KeyMsg::KeyUp;
+        CHECK(RouteViewerKey(b, f11, st) == kRouteViewer);  // its release follows it
+        CHECK(st.claimed_vk == 0);
+
+        KeyRouteInput esc;
+        esc.msg = KeyMsg::KeyDown;
+        esc.key = vk::kEscape;
+        CHECK(RouteViewerKey(b, esc, st) == kRouteReaper);  // docked: Esc stays REAPER's
+        esc.full_screen = true;
+        CHECK(RouteViewerKey(b, esc, st) == kRouteViewer);  // full screen: it leaves
+        esc.msg = KeyMsg::KeyUp;
+        CHECK(RouteViewerKey(b, esc, st) == kRouteViewer);
+
+        KeyRouteInput space;
+        space.msg = KeyMsg::KeyDown;
+        space.key = vk::kSpace;
+        CHECK(RouteViewerKey(b, space, st) == kRouteReaper);  // docked: unchanged
+        space.full_screen = true;
+        CHECK(RouteViewerKey(b, space, st) == kRouteReaperMain);  // full screen: REAPER plays
+        space.msg = KeyMsg::KeyUp;
+        CHECK(RouteViewerKey(b, space, st) == kRouteReaperMain);
+        KeyRouteInput ctrl_s;
+        ctrl_s.msg = KeyMsg::KeyDown;
+        ctrl_s.key = 'S';
+        ctrl_s.ctrl = true;
+        ctrl_s.full_screen = true;
+        CHECK(RouteViewerKey(b, ctrl_s, st) == kRouteReaperMain);
+        KeyRouteInput alt_x;
+        alt_x.msg = KeyMsg::SysKeyDown;
+        alt_x.key = 'X';
+        alt_x.alt = true;
+        alt_x.full_screen = true;
+        CHECK(RouteViewerKey(b, alt_x, st) == kRouteReaper);  // Alt: no menu bar behind the window
+        KeyRouteInput ch;
+        ch.msg = KeyMsg::Char;
+        ch.key = ' ';
+        ch.full_screen = true;
+        CHECK(RouteViewerKey(b, ch, st) == kRouteReaper);  // characters keep their old path
+        // A text field still takes every key, Esc and Space included.
+        KeyRouteInput typed = space;
+        typed.msg = KeyMsg::KeyDown;
+        typed.text_input = true;
+        CHECK(RouteViewerKey(b, typed, st) == kRouteViewer);
+        typed.msg = KeyMsg::KeyUp;
+        CHECK(RouteViewerKey(b, typed, st) == kRouteViewer);
+        // V still switches views full screen.
+        KeyRouteInput v;
+        v.msg = KeyMsg::KeyDown;
+        v.key = 'V';
+        v.full_screen = true;
+        CHECK(RouteViewerKey(b, v, st) == kRouteViewer);
+    }
+
     if (g_fails == 0) std::printf("shortcuts: all checks passed\n");
     return g_fails == 0 ? 0 : 1;
 }

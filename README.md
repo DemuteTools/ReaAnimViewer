@@ -194,6 +194,8 @@ A manual install does not update itself: repeat these steps for each new version
 
 **Tip:** bind **RAV: Open Viewer** to a key or toolbar button to toggle the viewer quickly.
 
+**Full screen:** the corners icon in the top-right corner of the viewer (left of the keyboard icon), **F11** while the viewer has the focus, or the action **RAV: Viewer full screen (toggle)** puts the viewer over the whole screen it is on. **Esc**, **F11** or the icon again put it back where it was docked. REAPER's keys keep working while it is full screen (Space plays).
+
 ---
 
 ## Supported Files
@@ -298,6 +300,7 @@ Click the **keyboard icon** in the top-right corner of the viewer (left of the F
 | **Ctrl+V** | Paste shot camera | Video view |
 | **E** | Add event at playhead | Tagging view |
 | **Delete** | Suppress / delete event | Tagging view |
+| **F11** | Full screen on / off (**Esc** also leaves full screen) | Anywhere |
 
 - **Double-click** a key to change it, then press the new key. Ctrl, Shift and Alt can be held with it. Esc cancels. A key already used by another RAV action is refused.
 - **Right-click** a key to restore its default.

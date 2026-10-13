@@ -55,6 +55,10 @@ public:
     void Destroy();
     // The window class goes (the DLL unloads, or the viewer closes): call after every window is destroyed.
     static void UnregisterWindowClass();
+    // 6-5-9: while the viewer is full screen (a top-level window of its own), every tool window is owned
+    // by it, so a click on the viewer never hides them behind it; null = back to the full screen
+    // window's owner (REAPER's main window). Call before the viewer stops being top-level.
+    static void SetFullScreenOwner(HWND full_screen);
 
     // The window procedure's way in (one window per object).
     LRESULT Proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);

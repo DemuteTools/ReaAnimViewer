@@ -32,7 +32,7 @@ constexpr unsigned kBack = 0x08, kTab = 0x09, kReturn = 0x0D, kShift = 0x10, kCo
                    kRight = 0x27, kDown = 0x28, kInsert = 0x2D, kDelete = 0x2E, kLWin = 0x5B,
                    kRWin = 0x5C, kApps = 0x5D, kNumpad0 = 0x60, kMultiply = 0x6A, kAdd = 0x6B,
                    kSeparator = 0x6C, kSubtract = 0x6D, kDecimal = 0x6E, kDivide = 0x6F, kF1 = 0x70,
-                   kF24 = 0x87, kNumLock = 0x90, kScroll = 0x91, kLShift = 0xA0, kRMenu = 0xA5,
+                   kF11 = 0x7A, kF24 = 0x87, kNumLock = 0x90, kScroll = 0x91, kLShift = 0xA0, kRMenu = 0xA5,
                    kProcessKey = 0xE5, kPacket = 0xE7;
 }  // namespace vk
 
@@ -80,7 +80,8 @@ enum ShortcutId : int {
     kShortcutPasteCamera = 5,  // paste it into the current shot (Video view only)
     kShortcutTagAddEvent = 6,  // story 10-4: add an event at the playhead on the selected rule (Tagging view only)
     kShortcutTagDelEvent = 7,  // story 10-4: suppress / restore / delete the selected event (Tagging view only)
-    kShortcutCount       = 8,
+    kShortcutFullScreen  = 8,  // story 6-5-9: the viewer full screen on / off (Esc leaves it too)
+    kShortcutCount       = 9,
 };
 
 inline const ShortcutDef kShortcutTable[kShortcutCount] = {
@@ -92,6 +93,7 @@ inline const ShortcutDef kShortcutTable[kShortcutCount] = {
     {"paste_camera", "Paste shot camera",            {'V', true, false, false}, ShortcutContext::VideoView},
     {"tag_add_event", "Add event at playhead",       {'E', false, false, false}, ShortcutContext::TaggingView},
     {"tag_del_event", "Suppress / delete event",     {vk::kDelete, false, false, false}, ShortcutContext::TaggingView},
+    {"full_screen",  "Full screen on / off",         {vk::kF11, false, false, false}, ShortcutContext::Anywhere},
 };
 
 // The mouse gestures the popup lists (fixed, never rebindable), by group.
@@ -191,7 +193,9 @@ inline int ShortcutOwner(const ShortcutBindings& b, const KeyBinding& key, int e
 
 // What the hook says to REAPER: keep the key (0), or hand it to the viewer window (-1;
 // -20 for WM_SYSKEY* / WM_SYSCHAR, which REAPER would otherwise drop: the Alt keys).
-constexpr int kRouteReaper = 0, kRouteViewer = -1, kRouteViewerSys = -20;
+// Story 6-5-9: -666 forces a key to REAPER's main shortcuts: the full screen viewer is a
+// top-level window of its own, not a docker child, so REAPER would not take it as its own.
+constexpr int kRouteReaper = 0, kRouteViewer = -1, kRouteViewerSys = -20, kRouteReaperMain = -666;
 
 enum class KeyMsg { KeyDown, SysKeyDown, KeyUp, SysKeyUp, Char, SysChar, DeadChar, SysDeadChar, Wheel, Other };
 
@@ -212,6 +216,7 @@ struct KeyRouteInput {
     bool     popup_open = false;  // the Shortcuts popup (or the delete confirmation) is open: Esc closes it
     bool     confirm_open = false;  // the delete confirmation is open: Enter confirms it (spec 11-fb-11)
     bool     imgui_mouse = false;   // the viewer's UI wants the mouse (spec 11-fb-12: Alt + wheel zooms the strip)
+    bool     full_screen = false;   // story 6-5-9: Esc is the viewer's (it leaves), other keys go to REAPER's main shortcuts
 };
 
 struct KeyRouteState {
@@ -280,23 +285,29 @@ inline int RouteViewerKey(const ShortcutBindings& b, const KeyRouteInput& in, Ke
         if (down && in.repeat) return to_viewer;
         if (down) st.text_keys[in.key] = false;  // a new press: its release was lost (focus moved)
     }
+    // Story 6-5-9 -- full screen, a key the viewer does not take goes to REAPER's main shortcuts
+    // (Space plays). Not an Alt one: REAPER's menu bar would open behind the full screen window.
+    const int to_reaper =
+        (in.full_screen && !IsSysKeyMsg(in.msg) && !in.alt) ? kRouteReaperMain : kRouteReaper;
     if (down) {
         st.released_vk = 0;
         // An auto-repeat of the key we took stays ours, even if it no longer maps to an
         // action (e.g. the key just recorded for a Video view only action, in RAV view).
         if (in.repeat && st.claimed_vk != 0 && in.key == st.claimed_vk) return to_viewer;
-        const bool ours = (in.key == vk::kEscape && in.popup_open) || (in.key == vk::kReturn && in.confirm_open) ||
+        // Story 6-5-9: full screen, Esc is the viewer's (it leaves full screen).
+        const bool ours = (in.key == vk::kEscape && (in.popup_open || in.full_screen)) ||
+                          (in.key == vk::kReturn && in.confirm_open) ||
                           ShortcutActionFor(b, in.key, in.ctrl, in.shift, in.alt, in.video_view, in.tagging_view) >= 0;
         if (!ours) {
             st.claimed_vk = 0;  // a lost release (focus moved) must not keep claiming characters
-            return kRouteReaper;
+            return to_reaper;
         }
         st.claimed_vk = in.key;
         return to_viewer;
     }
     if (up) {
         // The release of the key we took (its modifiers may already be up) follows it.
-        if (st.claimed_vk == 0 || in.key != st.claimed_vk) return kRouteReaper;
+        if (st.claimed_vk == 0 || in.key != st.claimed_vk) return to_reaper;
         st.claimed_vk = 0;
         if (in.msg == KeyMsg::SysKeyUp) st.released_vk = in.key;
         return to_viewer;

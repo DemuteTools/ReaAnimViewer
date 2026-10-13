@@ -27,6 +27,15 @@ namespace {
 
 constexpr wchar_t kClass[] = L"RAV_FloatUiWindow";
 HINSTANCE         g_class_inst = nullptr;  // the class is registered (by this DLL) while set
+HWND              g_full_screen_owner = nullptr;  // 6-5-9: the viewer while it is full screen
+
+// 6-5-9: gives every tool window of this thread (our class) the owner `lp`.
+BOOL CALLBACK ReownProc(HWND hwnd, LPARAM lp)
+{
+    wchar_t cls[64] = {};
+    if (GetClassNameW(hwnd, cls, 64) > 0 && lstrcmpW(cls, kClass) == 0) SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, lp);
+    return TRUE;
+}
 
 LRESULT CALLBACK FloatProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -112,7 +121,8 @@ bool FloatUiWindow::Create()
         y = std::max(static_cast<int>(wa.top), std::min(y, static_cast<int>(wa.bottom) - h));
     }
     // Owned by REAPER's main window (the root owner): a floating docker's frame comes and goes with redocks.
-    HWND owner = GetAncestor(viewer_, GA_ROOTOWNER);
+    // 6-5-9: by the viewer itself while it is full screen (then in front of it).
+    HWND owner = g_full_screen_owner ? g_full_screen_owner : GetAncestor(viewer_, GA_ROOTOWNER);
     hwnd_ = CreateWindowExW(WS_EX_TOOLWINDOW, kClass, title_, WS_POPUP | WS_THICKFRAME | WS_CLIPCHILDREN | WS_CLIPSIBLINGS, x,
                             y, w, h, owner, nullptr, hi, this);
     if (!hwnd_) return false;
@@ -274,6 +284,14 @@ void FloatUiWindow::Destroy()
     dc_ = nullptr;
     atlas_ = nullptr;
     failed_ = false;
+}
+
+void FloatUiWindow::SetFullScreenOwner(HWND full_screen)
+{
+    // Leaving: back to the full screen window's own owner (REAPER's main window).
+    HWND to = full_screen ? full_screen : (g_full_screen_owner ? GetWindow(g_full_screen_owner, GW_OWNER) : nullptr);
+    g_full_screen_owner = full_screen;
+    if (to) EnumThreadWindows(GetCurrentThreadId(), &ReownProc, reinterpret_cast<LPARAM>(to));
 }
 
 void FloatUiWindow::UnregisterWindowClass()

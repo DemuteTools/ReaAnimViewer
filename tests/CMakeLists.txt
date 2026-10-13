@@ -24,6 +24,11 @@ add_executable(shortcuts_test shortcuts_test.cpp)
 target_include_directories(shortcuts_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME shortcuts COMMAND shortcuts_test)
 
+# Story 6-5-9 -- the viewer's full screen plan (src/viewer_fullscreen_plan.h).
+add_executable(viewer_fullscreen_plan_test viewer_fullscreen_plan_test.cpp)
+target_include_directories(viewer_fullscreen_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME viewer_fullscreen_plan COMMAND viewer_fullscreen_plan_test)
+
 # 13-7a / 13-10 -- a gesture's Undo only while it is REAPER's last undo point (src/undo_guard.h).
 add_executable(undo_guard_test undo_guard_test.cpp)
 target_include_directories(undo_guard_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

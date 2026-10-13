@@ -454,6 +454,7 @@ Fields SoundFields(const SoundData& s)
     const AssetIdentity& a = s.source.asset;
     Fields f = {{"kind", s.source.kind == SoundSourceKind::File ? "file" : "item"}};
     if (!s.source.item_guid.empty()) f.push_back({"guid", Enc(s.source.item_guid)});
+    if (s.source.item_db != 0.0) f.push_back({"idb", FormatNumber(s.source.item_db)});
     if (s.mode != d.mode) f.push_back({"mode", kModeWords[static_cast<int>(s.mode)]});
     if (s.silence.threshold_db != d.silence.threshold_db) f.push_back({"thr", FormatNumber(s.silence.threshold_db)});
     if (s.silence.min_gap_ms != d.silence.min_gap_ms) f.push_back({"gap", FormatNumber(s.silence.min_gap_ms)});
@@ -489,6 +490,7 @@ Got SetSound(SoundData& s, const std::string& k, const std::string& v)
         return Got::Ok;
     }
     if (k == "guid") return G(ReadStr(v, &s.source.item_guid));
+    if (k == "idb") return G(ReadNumber(v, &s.source.item_db));
     if (k == "mode") return G(ModeFromWord(v, &s.mode));
     if (k == "thr") return G(ReadNumber(v, &s.silence.threshold_db));
     if (k == "gap") return G(ReadNumber(v, &s.silence.min_gap_ms));

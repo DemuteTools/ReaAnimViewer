@@ -451,6 +451,7 @@ bool FileSourceFromItem(const SoundData& data, const ItemFileFacts& facts, Sound
     SoundSource s;
     s.kind = SoundSourceKind::File;
     s.item_guid = data.source.item_guid;  // the item is this project's copy of the file (C3)
+    s.item_db = facts.entry_ok ? facts.entry.item_db : data.source.item_db;  // its gain, for later detections
     s.asset.name = BaseName(file->path);
     s.asset.size = file->size >= 0 ? file->size : -1;
     s.asset.length = file->length > 0.0 ? file->length : -1.0;

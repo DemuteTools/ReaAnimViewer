@@ -94,6 +94,10 @@ struct SoundSource {
     SoundSourceKind kind = SoundSourceKind::Item;
     std::string     item_guid;
     AssetIdentity   asset;
+    // Antho 2026-10-13: the gain (dB) of the item it was imported from, given to every detected variation
+    // (as in REAPER, the item's gain sits on what it plays). Kept when the Sound becomes a file (User
+    // Library), so a later detection on the file still starts from it. An item Sound reads its live item.
+    double          item_db = 0.0;
 };
 
 // 13-25: where a variation's (or part's) sync point sits before its offset: the attack, the loudest

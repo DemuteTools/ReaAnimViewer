@@ -332,6 +332,10 @@ std::vector<NewNodeSpec> SelectedItemSounds()
         if (GetSetMediaItemInfo_String(item, "GUID", buf, false)) sp.sound.source.item_guid = buf;
         sp.sound.source.kind = SoundSourceKind::Item;
         sp.sound.mode = DetectMode::Whole;
+        {  // the item's gain, kept with the source (it outlives a conversion to a file)
+            const double vol = GetMediaItemInfo_Value(item, "D_VOL");
+            sp.sound.source.item_db = vol > 0.0 ? 20.0 * std::log10(vol) : -60.0;
+        }
         if (MediaItem_Take* take = GetActiveTake(item))
             if (const char* nm = GetTakeName(take)) sp.name = nm;
         if (sp.name.empty()) sp.name = "Sound";

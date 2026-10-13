@@ -2163,12 +2163,14 @@ void ReplaceFromSelected(const std::string& lib_uid, const std::string& uid, con
     std::string toast = "Replaced audio";
     if (n > 1) toast += " (the first of " + std::to_string(n) + " selected items)";
     const std::string path = m.path;
+    const double      item_db = m.facts.item_db;
     EditNode(
         gesture, lib_uid, uid,
-        [guid, mode, frames, path](SoundNode& x) {
+        [guid, mode, frames, path, item_db](SoundNode& x) {
             x.sound.source = SoundSource{};
             x.sound.source.kind = SoundSourceKind::Item;
             x.sound.source.item_guid = guid;
+            x.sound.source.item_db = item_db;
             x.sound.mode = mode;
             x.sound.frames = frames;
             x.sound.edited = false;

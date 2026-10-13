@@ -315,6 +315,7 @@ bool ReadSoundMedia(const SoundSource& source, SoundMedia* out)
     out->take_lens = {len};
     out->facts.source_len = len;
     out->facts.item_len = len;
+    out->facts.item_db = source.item_db;  // the item it was imported from (DetectFrames)
     out->ok = true;
     return true;
 }

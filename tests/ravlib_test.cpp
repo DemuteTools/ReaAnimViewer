@@ -44,6 +44,7 @@ static SoundNode FileSound(const std::string& uid, const std::string& parent, co
     n.sound.source.asset.size = 1000;
     n.sound.source.asset.length = 1.5;
     n.sound.source.asset.last_path = "C:/old/" + file;
+    n.sound.source.item_db = 18.5;  // imported from an item at +18.5 dB (travels in the file)
     return n;
 }
 
@@ -125,6 +126,8 @@ static void TestRoundTrip()
     CHECK(back.libraries[0].nodes.size() == s.libraries[0].nodes.size());
     CHECK(back.libraries[0].nodes[0].lands_in == "Foley");
     CHECK(back.libraries[0].nodes[3].sound.frames.size() == 2);
+    for (const SoundNode& x : back.libraries[0].nodes)
+        if (x.type == SoundNodeType::Sound && x.sound.source.kind == SoundSourceKind::File) CHECK(x.sound.source.item_db == 18.5);
     // Fades travel in the file (optional fields: a v1 reader keeps them as unknown text).
     CHECK(back.libraries[0].nodes[3].sound.fade_out == 0.008 && back.libraries[0].nodes[3].sound.fade_in == kDefaultFadeIn);
     CHECK(back.libraries[0].nodes[3].sound.frames[1].fade_in == 0.003 &&
@@ -484,6 +487,16 @@ static void TestFileSourceFromItem()
     CHECK(s.kind == SoundSourceKind::File && s.item_guid == "{AAA}");
     CHECK(s.asset.name == "kick.wav" && s.asset.last_path == "C:/a/kick.wav");
     CHECK(s.asset.size == 4800 && s.asset.length > 1.19 && s.asset.length < 1.21);
+    {  // the item's gain is kept with the file: the live item's when read, else the stored one
+        ItemFileFacts lf = OneTake("WAVE", "C:/a/kick.wav");
+        lf.entry_ok = true;
+        lf.entry.item_db = 18.5;
+        SoundSource ls;
+        CHECK(FileSourceFromItem(n.sound, lf, &ls, &why) && ls.item_db == 18.5);
+        SoundData stored = n.sound;
+        stored.source.item_db = 6.0;
+        CHECK(FileSourceFromItem(stored, OneTake("WAVE", "C:/a/kick.wav"), &ls, &why) && ls.item_db == 6.0);
+    }
     // Unknown size / length stay unknown; a backslash path gives its name.
     CHECK(FileSourceFromItem(n.sound, OneTake("FLAC", "C:\\a\\b\\x.flac", 0.0, -1), &s, &why));
     CHECK(s.asset.name == "x.flac" && s.asset.size == -1 && s.asset.length < 0.0);

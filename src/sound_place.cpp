@@ -612,7 +612,11 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
                            PlacedCopyMuted(GetMediaItemInfo_Value(m.src, "B_MUTE") != 0.0, true) ? 1.0 : 0.0);
             }
         }
-        f_set_item(item, "D_VOL", GetMediaItemInfo_Value(m.src, "D_VOL") * gain);
+        // Antho 2026-10-13: the level heard in RAV is the level placed, so a copied item plays at the
+        // library's gain alone, never on top of its source item's own volume (an item placed earlier and
+        // taken as a source gave +24.3 dB in the library, +47 dB on the track). A folder pile keeps its
+        // members' volumes: they are the balance inside the pile.
+        f_set_item(item, "D_VOL", folder ? GetMediaItemInfo_Value(m.src, "D_VOL") * gain : gain);
         placed.push_back(item);
         r.item_guids.push_back(ItemGuid(item));
         r.items.push_back(item);

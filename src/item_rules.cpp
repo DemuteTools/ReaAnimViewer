@@ -39,11 +39,15 @@ std::string TrimPresetNameForUndo(const std::string& s)
 // Writes the record text, then records one undo point (UNDO_STATE_ITEMS) only when REAPER
 // accepted it: a refused write leaves no empty undo point. `with_undo` false: no undo point
 // (the caller's undo block records it).
+std::string ReadRecordText(MediaItem_Take* take);  // below
+
 bool WriteRaw(MediaItem_Take* take, const std::string& text, const char* undo_desc, bool with_undo, std::string* err)
 {
     if (text.size() >= kItemRulesMaxBytes) return Fail(err, "The item's rules are too large to save.");
     if (!take || !ValidatePtr2(nullptr, take, "MediaItem_Take*")) return Fail(err, "The item's take is gone.");
-    if (!GetSetMediaItemTakeInfo_String(take, kItemRulesKey, const_cast<char*>(text.c_str()), true))
+    // A removal (empty text) REAPER may answer false to though it made it: judged by reading back.
+    if (!GetSetMediaItemTakeInfo_String(take, kItemRulesKey, const_cast<char*>(text.c_str()), true) &&
+        !(text.empty() && ReadRecordText(take).empty()))
         return Fail(err, "REAPER refused to save the item's rules.");
     if (with_undo) Undo_OnStateChangeEx(undo_desc ? undo_desc : "RAV: Edit auto-tagging rules", UNDO_STATE_ITEMS, -1);
     return true;
@@ -326,7 +330,9 @@ bool WriteCommittedSnapshotNoUndo(MediaItem* item, const std::string& text, std:
         if (text.size() >= kItemRulesMaxBytes) return Fail(err, "The item's rules are too large to save.");
         MediaItem_Take* take = RavTakeOf(item);
         if (!take || !ValidatePtr2(nullptr, take, "MediaItem_Take*")) return Fail(err, "The item's take is gone.");
-        if (!GetSetMediaItemTakeInfo_String(take, kItemRulesCommittedKey, const_cast<char*>(text.c_str()), true))
+        std::string left;  // a removal REAPER answers false to though it made it: judged by reading back
+        if (!GetSetMediaItemTakeInfo_String(take, kItemRulesCommittedKey, const_cast<char*>(text.c_str()), true) &&
+            !(text.empty() && (!ReadCommittedSnapshot(item, &left) || left.empty())))
             return Fail(err, "REAPER refused to save the item's committed rules.");
         return true;
     } catch (...) {

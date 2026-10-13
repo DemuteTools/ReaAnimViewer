@@ -531,7 +531,10 @@ std::string ReadRecordRaw(MediaItem_Take* take)
 // CURRENT project only, and the mirror works on every tab).
 bool WriteTakeKeyRaw(MediaItem_Take* take, const char* key, const std::string& text)
 {
-    return text.size() < kItemRulesMaxBytes && GetSetMediaItemTakeInfo_String(take, key, const_cast<char*>(text.c_str()), true);
+    if (text.size() >= kItemRulesMaxBytes) return false;
+    // A removal (empty text) REAPER may answer false to though it made it: judged by reading back.
+    return GetSetMediaItemTakeInfo_String(take, key, const_cast<char*>(text.c_str()), true) ||
+           (text.empty() && ReadTakeKeyRaw(take, key).empty());
 }
 
 // The item's clip map from REAPER alone (no asset loaded): the twin of tagging_session's

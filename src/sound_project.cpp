@@ -296,7 +296,10 @@ bool ModifyItemSounds(MediaItem* item, const char* undo_desc, const std::functio
             LogInfo("RAV: the item's sound record is too large to save.");
             return false;
         }
-        if (!GetSetMediaItemTakeInfo_String(take, kItemSoundsKey, const_cast<char*>(after.c_str()), true)) return false;
+        // A removal (empty record) REAPER may answer false to though it made it: judged by reading back.
+        if (!GetSetMediaItemTakeInfo_String(take, kItemSoundsKey, const_cast<char*>(after.c_str()), true) &&
+            !(after.empty() && ReadTakeText(take, kItemSoundsKey).empty()))
+            return false;
         // The item's own project (it may sit in another tab), as ModifySoundStore does.
         ReaProject* proj = ProjectOrCurrent(f_item_project ? f_item_project(item) : nullptr);
         MarkProjectDirty(proj);
@@ -335,7 +338,8 @@ bool ClearPlacedTag(MediaItem* item)
     try {
         if (!ItemValid(item)) return false;
         char empty[1] = {'\0'};
-        return GetSetMediaItemInfo_String(item, kPlacedTagKey, empty, true);
+        // REAPER may answer false to a removal it made: judged by reading back.
+        return GetSetMediaItemInfo_String(item, kPlacedTagKey, empty, true) || ReadItemText(item, kPlacedTagKey).empty();
     } catch (...) {
         return false;
     }

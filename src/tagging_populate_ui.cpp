@@ -405,9 +405,11 @@ static void QueuePopulate(const std::vector<MediaItem*>& items, bool restore)
     g_pending.items = items;
 }
 
+static bool g_job_running = false;  // 13-19 review: the button stays disabled while the job runs
+
 bool PopulateHasPending()
 {
-    return g_pending.has;
+    return g_pending.has || g_job_running;
 }
 
 void RunPendingPopulate(const PopulateProgressFn& progress)
@@ -419,6 +421,10 @@ void RunPendingPopulate(const PopulateProgressFn& progress)
     for (MediaItem* it : job.items)
         if (ValidatePtr2(nullptr, it, "MediaItem*")) items.push_back(it);
     if (items.empty()) return;
+    struct Running {
+        Running() { g_job_running = true; }
+        ~Running() { g_job_running = false; }
+    } running;
     RunPopulate(items, job.restore, progress);
 }
 

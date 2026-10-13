@@ -664,9 +664,15 @@ void RenderTaggingView(float anim_time, bool loop)
     }
 }
 
+// 13-19 review: true while the queued Populate runs (kMsgRunPopulate). REAPER may pump messages
+// during it; no frame runs inside the gesture (only the progress painter draws), and a nested
+// kMsgRunPopulate is ignored.
+static bool g_populate_running = false;
+
 void RenderTick()
 {
     if (!g_hdc || !g_hglrc) return;
+    if (g_populate_running) return;
     // 13-8 fix (Antho 2026-10-12, a Switch pick hung REAPER): a gesture run from this frame may
     // make REAPER pump messages (a dialog REAPER opens); REAPER's timer then calls us again
     // inside the frame, and a second ImGui frame inside the first breaks both. That nested tick is
@@ -915,6 +921,7 @@ void CALLBACK FrameTimerProc(HWND, UINT, UINT_PTR, DWORD)
         g_last_tick.QuadPart = 0;  // 6.5.8 — force dt=0 next frame so a hidden gap can't jump the tween
         LogInfo("panel shown — render resumed");
     }
+    if (g_populate_running) return;  // 13-19 review: no frame inside the Populate gesture
     RenderTick();
 }
 
@@ -2059,7 +2066,17 @@ void PaintPopulateProgress(const PopulateProgress& p)
             const float          card_w = std::min(ui::Dp(360.0f), std::max(ui::Dp(120.0f), vp->WorkSize.x - ui::Dp(32.0f)));
             ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f),
                                     ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-            ImGui::SetNextWindowSize(ImVec2(card_w, 0.0f), ImGuiCond_Always);
+            // 13-19 review: an explicit height; ImGui hides a new auto-sized window for its first
+            // frame, so a 0 height left the first paint without the card.
+            const float pad_x = ui::Dp(16.0f), pad_y = ui::Dp(14.0f);
+            const float line_h = ImGui::GetTextLineHeight();
+            const float sp = ImGui::GetStyle().ItemSpacing.y;
+            const float note_h =
+                ImGui::CalcTextSize("REAPER resumes when it is done. One undo point.", nullptr, false,
+                                    std::max(1.0f, card_w - 2.0f * pad_x)).y;
+            // title, Spacing, bar, Spacing, status line, note (each item followed by ItemSpacing)
+            const float card_h = 2.0f * pad_y + line_h + sp + sp + ui::Dp(8.0f) + sp + sp + line_h + sp + note_h;
+            ImGui::SetNextWindowSize(ImVec2(card_w, card_h), ImGuiCond_Always);
             ImGui::PushStyleColor(ImGuiCol_WindowBg, ui::Col(ui::kSurface));
             ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStroke));
             ImGui::PushStyleColor(ImGuiCol_FrameBg, ui::Col(ui::kBg));
@@ -2411,7 +2428,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case kMsgRunPopulate: {
         // 13-19: the queued Populate / Restore (one undo point), its progress drawn about every 100 ms.
         g_populate_post_pending = false;
+        if (g_populate_running) return 0;  // 13-19 review: a nested run is ignored
         try {
+            struct RunningGuard {
+                RunningGuard() { g_populate_running = true; }
+                ~RunningGuard() { g_populate_running = false; }
+            } running;
             ProgressPacer pace(0.1);
             RunPendingPopulate([&pace](const PopulateProgress& p) {
                 if (pace.Due(ElapsedSeconds())) PaintPopulateProgress(p);
@@ -2420,6 +2442,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             LogError("Populate failed: %s", e.what());
         } catch (...) {
             LogError("Populate failed");
+        }
+        // 13-19 review: clicks / keys made on the progress card must not reach the widgets below
+        // nor queue Populate again.
+        if (g_hwnd) {
+            MSG m;
+            while (PeekMessageW(&m, g_hwnd, WM_MOUSEFIRST, WM_MOUSELAST, PM_REMOVE)) {}
+            while (PeekMessageW(&m, g_hwnd, WM_KEYFIRST, WM_KEYLAST, PM_REMOVE)) {}
         }
         return 0;
     }

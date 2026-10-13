@@ -707,9 +707,10 @@ bool AddButton(const char* label, const ImVec2& size, const char* key, bool pill
     } else if (kw > 0.0f && w - 2.0f * Dp(4.0f) - gap - kw >= Dp(20.0f)) {  // the key cap stays at the right
         cut = EllipsisText(dl, ImVec2(a.x + Dp(4.0f), ty), b.x - Dp(4.0f) - gap - kw, ink, text);
         KeyCap(dl, ImVec2(b.x - Dp(4.0f) - kw, ky), key, ink);
+    } else if (flow::ButtonLabelFit(text, tw, w, Dp(4.0f)) != flow::LabelFit::Cut) {  // 13-30: whole, centred
+        dl->AddText(ImVec2(std::floor(a.x + (w - tw) * 0.5f), ty), ink, text.c_str());
     } else {
-        const float tx = tw <= w - 2.0f * pad ? a.x + (w - tw) * 0.5f : a.x + Dp(4.0f);
-        cut = EllipsisText(dl, ImVec2(tx, ty), b.x - Dp(4.0f), ink, text);
+        cut = EllipsisText(dl, ImVec2(a.x + Dp(4.0f), ty), b.x - Dp(4.0f), ink, text);
     }
     PopCrisp(crisp);
     if (cut && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ShowTip(text.c_str());
@@ -724,6 +725,9 @@ bool ChipButton(const char* label, const ImVec2& size, bool on)
     const float avail = ImGui::GetContentRegionAvail().x;
     float       w = size.x > 0.0f ? size.x : (size.x < 0.0f ? std::max(1.0f, avail + size.x) : nat);
     if (!WindowAutoSizes() && w > avail) w = std::max(h, avail);
+    const std::string text(label, LabelEnd(label));
+    const float       tw = ImGui::CalcTextSize(text.c_str()).x;
+    w = std::max(w, flow::GlyphButtonMinWidth(text, tw));  // 13-30: a lone "+" keeps its glyph's width
     const bool   clicked = ImGui::InvisibleButton(label, ImVec2(std::max(1.0f, w), h));
     const bool   hovered = ImGui::IsItemHovered();
     const bool   dis = ItemDisabled();
@@ -733,12 +737,14 @@ bool ChipButton(const char* label, const ImVec2& size, bool on)
     const float  r = h * 0.5f;
     dl->AddRectFilled(a, b, Ink(on ? kAccentSoft : (hovered ? kHover : kBg)), r);
     dl->AddRect(a, b, Ink(on ? kAccentLine : (hovered ? kStrokeStrong : kStroke)), r);
-    const std::string text(label, LabelEnd(label));
-    const float       tw = ImGui::CalcTextSize(text.c_str()).x;
     const ImU32       ink = Ink(dis ? kFaint : (on ? kAccentText : (hovered ? kText : kMuted)));
     const float       ty = a.y + (h - ImGui::GetTextLineHeight()) * 0.5f;
-    const float       tx = tw <= w - 2.0f * pad ? a.x + (w - tw) * 0.5f : a.x + pad;
-    const bool        cut = EllipsisText(dl, ImVec2(tx, ty), b.x - pad, ink, text);
+    // 13-30: a label that fits (with or without the padding) or a lone glyph is drawn whole, centred.
+    bool cut = false;
+    if (flow::ButtonLabelFit(text, tw, w, pad) != flow::LabelFit::Cut)
+        dl->AddText(ImVec2(std::floor(a.x + (w - tw) * 0.5f), ty), ink, text.c_str());
+    else
+        cut = EllipsisText(dl, ImVec2(a.x + pad, ty), b.x - pad, ink, text);
     PopCrisp(crisp);
     if (cut && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) ShowTip(text.c_str());
     return clicked;
@@ -1450,12 +1456,13 @@ void WindowShadow(float alpha)
     if (b.x - a.x < 2.0f || b.y - a.y < 2.0f) return;
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     const ImVec2         v0 = vp->Pos, v1(vp->Pos.x + vp->Size.x, vp->Pos.y + vp->Size.y);
-    // box-shadow: 0 18px 50px: the window's rect moved 18 px down, blurred over 50 px (layers spreading
-    // up to 25 px, each a little dark, so the stack reaches `alpha` under the window's edge).
-    constexpr int kLayers = 8;
-    const float   off = Dp(18.0f), spread = Dp(25.0f);
-    const float   layer_a = 1.0f - std::pow(1.0f - std::min(alpha, 0.95f), 1.0f / static_cast<float>(kLayers));
-    const ImU32   col = IM_COL32(0, 0, 0, static_cast<int>(layer_a * 255.0f + 0.5f));
+    // 13-47: a soft, tight shadow (Antho: the mockup's 0 18px 50px read as a dark slab): the window's
+    // rect moved 4 px down, fading over 10 px past it, at most half `alpha` dark at its edge. Ten
+    // 1 px layers whose alphas stack to a smooth (1 - t)^2 falloff (flow::ShadowLayerAlphas).
+    constexpr int kLayers = 10;
+    const float   off = Dp(4.0f), spread = Dp(10.0f);
+    float         layer_a[kLayers];
+    flow::ShadowLayerAlphas(alpha * 0.5f, kLayers, layer_a);
     const float   r = win->WindowRounding;
     ImDrawList*   dl = win->DrawList;
     // Outside the window only (above, below, left, right of it): its own content stays untouched.
@@ -1465,8 +1472,10 @@ void WindowShadow(float alpha)
         if (c.z <= c.x || c.w <= c.y) continue;
         dl->PushClipRect(ImVec2(c.x, c.y), ImVec2(c.z, c.w), false);
         for (int i = 0; i < kLayers; ++i) {
+            const int la = static_cast<int>(layer_a[i] * 255.0f + 0.5f);
+            if (la <= 0) continue;
             const float s = spread * static_cast<float>(i + 1) / static_cast<float>(kLayers);
-            dl->AddRectFilled(ImVec2(a.x - s, a.y + off - s), ImVec2(b.x + s, b.y + off + s), col, r + s);
+            dl->AddRectFilled(ImVec2(a.x - s, a.y + off - s), ImVec2(b.x + s, b.y + off + s), IM_COL32(0, 0, 0, la), r + s);
         }
         dl->PopClipRect();
     }
@@ -1683,7 +1692,7 @@ bool BeginOverlayPanel(const char* id, ImVec2 pos, ImVec2 size, int extra_flags)
     const bool shown = ImGui::Begin(id, nullptr, flags);
     ImGui::PopStyleVar();
     ImGui::PopStyleColor(2);
-    if (shown) WindowShadow(0.7f);  // .edbox: 0 26px 80px rgba(0,0,0,.7)
+    if (shown) WindowShadow(0.7f);  // a little heavier than a menu (the mockup's .edbox .7)
     return shown;
 }
 
@@ -2092,7 +2101,7 @@ bool BeginToast(const char* id, ImVec2 pos, ImVec2 pivot)
                                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
                                         ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove;
     const bool shown = ImGui::Begin(id, nullptr, kFlags);
-    if (shown) WindowShadow(0.55f);  // .toast: 0 18px 50px rgba(0,0,0,.55)
+    if (shown) WindowShadow(0.55f);  // a little lighter than a menu (the mockup's .toast .55)
     return shown;
 }
 

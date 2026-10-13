@@ -155,8 +155,11 @@ bool FittedButtonBody(const char* label, const ImVec2& size)
     const float avail = ImGui::GetContentRegionAvail().x;
     // A negative width is "the room left minus |size.x|", as in ImGui; resolved here so it shortens too.
     const float want = size.x < 0.0f ? std::max(1.0f, avail + size.x) : size.x;
-    float       w = want > 0.0f ? want : nat;
+    const std::string text(label, VisibleEnd(label));
+    const float       tw = ImGui::CalcTextSize(text.c_str()).x;
+    float             w = want > 0.0f ? want : nat;
     if (w > avail) w = std::max(ImGui::GetFrameHeight(), avail);  // never narrower than a square
+    w = std::max(w, flow::GlyphButtonMinWidth(text, tw));          // 13-30: nor than its lone glyph
     if (w >= nat) return ImGui::Button(label, ImVec2(want > 0.0f ? w : 0.0f, size.y));
     // Too narrow for its label: the button keeps its id and colours, its label is ellipsized.
     const ImU32 ink = ImGui::GetColorU32(ImGuiCol_Text);
@@ -165,11 +168,9 @@ bool FittedButtonBody(const char* label, const ImVec2& size)
     ImGui::PopStyleColor();
     const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
     const float  px = ImGui::GetStyle().FramePadding.x;
-    const std::string text(label, VisibleEnd(label));
-    // A label that fits once the padding is given up (a "−" / "+" on a square button) is drawn whole and
-    // centred, never cut to "..".
-    const float tw = ImGui::CalcTextSize(text.c_str()).x;
-    if (tw + 2.0f <= b.x - a.x) {
+    // A label that fits once the padding is given up, or a lone glyph (the minus / "+" of a square
+    // button, 13-30), is drawn whole and centred, never cut to "..".
+    if (flow::ButtonLabelFit(text, tw, b.x - a.x, px) != flow::LabelFit::Cut) {
         ImGui::GetWindowDrawList()->AddText(
             ImVec2(std::floor(a.x + (b.x - a.x - tw) * 0.5f), a.y + (b.y - a.y - ImGui::GetTextLineHeight()) * 0.5f), ink,
             text.c_str());

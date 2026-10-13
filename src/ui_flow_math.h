@@ -91,5 +91,25 @@ size_t TwoLineBreak(const std::string& text, float width, const MeasureFn& measu
 // trailing zeros and a bare point dropped, never "-0".
 std::string TrimmedNumber(double v, int decimals);
 
+// 13-30: true when `text` is one visible glyph (exactly one UTF-8 code point, not a space): the
+// minus, "+" or cross of a glyph-only button.
+bool SingleGlyph(const std::string& text);
+
+// 13-30: how a button draws its label (`label_w` wide) in a frame `frame_w` wide with `pad` on each
+// side. Padded: it fits with the padding (drawn as usual). Bare: it fits once the padding is given up,
+// or it is a single glyph: drawn whole and centred, never cut to "..". Cut: ellipsized within the pad.
+enum class LabelFit { Padded, Bare, Cut };
+LabelFit ButtonLabelFit(const std::string& label, float label_w, float frame_w, float pad);
+
+// 13-30: the narrowest a button may shrink to: a single glyph keeps its width plus a pixel each side;
+// any other label 0 (it may be ellipsized).
+float GlyphButtonMinWidth(const std::string& label, float label_w);
+
+// 13-47: a soft drop shadow drawn as `bands` concentric layers, layer i spreading (i + 1) / bands of
+// the spread past the window. out[i] gets each layer's own alpha so that the stacked layers darken
+// band j (between layers j - 1 and j) to peak x (1 - j / bands)^2: `peak` at the window's edge,
+// fading smoothly to nothing at the spread. `peak` is clamped to [0, 0.95].
+void ShadowLayerAlphas(float peak, int bands, float* out);
+
 }  // namespace flow
 }  // namespace rav

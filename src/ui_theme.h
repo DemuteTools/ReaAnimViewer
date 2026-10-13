@@ -686,9 +686,10 @@ void EndOverlay();
 bool BeginOverlayPanel(const char* id, ImVec2 pos, ImVec2 size, int extra_flags = 0);
 void EndOverlayPanel();
 
-// 13-14: the soft shadow the mockup casts under popups, the toast and the overlay cards (.pop:
-// 0 18px 50px rgba(0,0,0,.6)), drawn around the current window, outside it only. The Begin* above
-// call it; a custom popup calls it right after its Begin.
+// 13-14: the soft shadow under popups, the toast and the overlay cards, drawn around the current
+// window, outside it only. 13-47: tight and soft (4 px drop, 10 px fade, half `alpha` dark at the
+// window's edge), not the mockup's 0 18px 50px slab; `alpha` = the caller's weight (the Edit box
+// 0.7, the toast 0.55). The Begin* above call it; a custom popup calls it right after its Begin.
 void WindowShadow(float alpha = 0.6f);
 
 // 13-7 (B15): the toast (.toast): kRaised, 1 px stroke-strong edge, r7, pad 14 8, 13 px text.

@@ -240,5 +240,40 @@ std::string TrimmedNumber(double v, int decimals)
     return s;
 }
 
+bool SingleGlyph(const std::string& text)
+{
+    if (text.empty() || text[0] == ' ') return false;
+    size_t leads = 0;
+    for (const char c : text)
+        if ((static_cast<unsigned char>(c) & 0xC0) != 0x80) ++leads;
+    return leads == 1;
+}
+
+LabelFit ButtonLabelFit(const std::string& label, float label_w, float frame_w, float pad)
+{
+    if (label_w <= frame_w - 2.0f * pad) return LabelFit::Padded;
+    if (label_w + 2.0f <= frame_w || SingleGlyph(label)) return LabelFit::Bare;
+    return LabelFit::Cut;
+}
+
+float GlyphButtonMinWidth(const std::string& label, float label_w)
+{
+    return SingleGlyph(label) ? label_w + 2.0f : 0.0f;
+}
+
+void ShadowLayerAlphas(float peak, int bands, float* out)
+{
+    if (!out || bands <= 0) return;
+    peak = std::min(std::max(peak, 0.0f), 0.95f);
+    // The opacity wanted in band j; the outermost layer alone covers the last band, and each layer
+    // further in adds what band j lacks over band j + 1: 1 - (1 - f(j)) / (1 - f(j + 1)).
+    auto f = [&](int j) {
+        if (j >= bands) return 0.0f;
+        const float t = 1.0f - static_cast<float>(j) / static_cast<float>(bands);
+        return peak * t * t;
+    };
+    for (int j = 0; j < bands; ++j) out[j] = 1.0f - (1.0f - f(j)) / (1.0f - f(j + 1));
+}
+
 }  // namespace flow
 }  // namespace rav

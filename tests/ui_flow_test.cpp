@@ -243,6 +243,48 @@ int main()
         CHECK(TrimmedNumber(12.0, -3) == "12");
     }
 
+    // ---- 13-30: a glyph-only button is never cut to ".." ----
+    {
+        CHECK(SingleGlyph("+"));
+        CHECK(SingleGlyph("\xE2\x88\x92"));  // minus sign, 3 bytes
+        CHECK(!SingleGlyph(""));
+        CHECK(!SingleGlyph(" "));
+        CHECK(!SingleGlyph("Fit"));
+        CHECK(!SingleGlyph("+ Sound"));
+        // Edit's zoom: a 22 px square, 8 px padding each side (6 px left), the glyph 7 px wide.
+        CHECK(ButtonLabelFit("+", 7.0f, 22.0f, 8.0f) == LabelFit::Bare);
+        CHECK(ButtonLabelFit("+", 7.0f, 40.0f, 8.0f) == LabelFit::Padded);
+        // Wider than its frame (high DPI, a fallback font): still whole, never "..".
+        CHECK(ButtonLabelFit("\xE2\x88\x92", 12.0f, 10.0f, 8.0f) == LabelFit::Bare);
+        // A word that fits without its padding is drawn whole; one that does not is cut.
+        CHECK(ButtonLabelFit("Fit", 21.0f, 24.0f, 8.0f) == LabelFit::Bare);
+        CHECK(ButtonLabelFit("Done", 28.0f, 22.0f, 8.0f) == LabelFit::Cut);
+        CHECK(Near(GlyphButtonMinWidth("+", 7.0f), 9.0f));
+        CHECK(Near(GlyphButtonMinWidth("Done", 28.0f), 0.0f));
+    }
+
+    // ---- 13-47: the soft drop shadow's layers ----
+    {
+        constexpr int N = 10;
+        float a[N];
+        ShadowLayerAlphas(0.3f, N, a);
+        // Stacked from the outermost layer in: band j's opacity is 0.3 (1 - j / N)^2.
+        float through = 1.0f;  // light left through the layers covering band j
+        for (int j = N - 1; j >= 0; --j) {
+            CHECK(a[j] >= 0.0f && a[j] < 1.0f);
+            through *= 1.0f - a[j];
+            const float t = 1.0f - static_cast<float>(j) / N;
+            CHECK(Near(1.0f - through, 0.3f * t * t));
+        }
+        CHECK(Near(1.0f - through, 0.3f));  // the window's edge: the peak
+        ShadowLayerAlphas(2.0f, N, a);      // clamped to 0.95
+        through = 1.0f;
+        for (int j = N - 1; j >= 0; --j) through *= 1.0f - a[j];
+        CHECK(Near(1.0f - through, 0.95f));
+        ShadowLayerAlphas(0.0f, N, a);
+        for (int j = 0; j < N; ++j) CHECK(Near(a[j], 0.0f));
+    }
+
     if (g_fails) {
         std::printf("%d failure(s)\n", g_fails);
         return 1;

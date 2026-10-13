@@ -73,6 +73,14 @@ struct TrailPlace {
 // Returns the row's number of lines (1 when the trail stays beside the lead or is empty).
 int PlaceTrail(const float* w, int n, float left, float right, float lead_min, float gap, TrailPlace* out);
 
+// Story 6-5-9: a top row with an item `centre_w` wide centred on `centre_x` (the view switch) and a
+// group `trail_w` wide ending at `trail_right` (the corner icons). The item keeps its centre when the
+// group fits after it (`gap` between); else it moves left to make room, never starting before `left`;
+// when even that leaves no room, the group goes on the line under the item (*trail_below) and the
+// item stays centred (never starting before `left`). Returns the item's centre x.
+float CentreBesideTrail(float left, float centre_x, float centre_w, float trail_w, float trail_right, float gap,
+                        bool* trail_below);
+
 // 13-7 (B5): a fader (ui::Fader). Its thumb (radius `thumb_r`) has its centre from x0 + r to x1 - r.
 // The value under the mouse at `mouse_x`, clamped to [v_min, v_max]; v_min when the track has no room.
 // 13-14 (G-13): `log` spreads the range logarithmically along the track (a distance, a zoom); it

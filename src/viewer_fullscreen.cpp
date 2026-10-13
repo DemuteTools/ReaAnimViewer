@@ -102,14 +102,15 @@ bool EnterFullScreen(HWND hwnd, HWND reaper_main, const char* dock_name, const c
     }
     g_docked_ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
 
-    // Out of the docker (as on a close), hidden while its styles change (no flash of a framed child).
-    DockWindowRemove(hwnd);
+    // Made top-level FIRST, hidden while its styles change (no flash of a framed child), and only
+    // then taken out of the docker: if REAPER closes a floating docker frame that RAV leaves empty,
+    // the frame's destruction must not take our window with it (it is no longer its child).
     ShowWindow(hwnd, SW_HIDE);
     SetLastError(0);
     if (!SetParent(hwnd, nullptr) && GetLastError() != 0) {
         LogWarn("full screen: the window could not leave the docker (error %lu); it stays docked",
                 static_cast<unsigned long>(GetLastError()));
-        Redock(hwnd, reaper_main, dock_name, dock_ident);
+        DockWindowActivate(hwnd);  // still in its docker: shown again there
         return false;
     }
     const LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
@@ -117,6 +118,19 @@ bool EnterFullScreen(HWND hwnd, HWND reaper_main, const char* dock_name, const c
                       static_cast<LONG_PTR>(fullscreen::FullScreenStyle(static_cast<std::uint32_t>(style))));
     SetWindowLongPtrW(hwnd, GWL_EXSTYLE,
                       static_cast<LONG_PTR>(fullscreen::FullScreenExStyle(static_cast<std::uint32_t>(g_docked_ex))));
+    DockWindowRemove(hwnd);  // out of the docker's list (as on a close)
+    if (!IsWindow(hwnd)) {   // defensive: destroyed meanwhile (WM_DESTROY has cleared the viewer)
+        LogWarn("full screen: the viewer was closed while it left the docker");
+        return false;
+    }
+    // Should the docker have taken it back as its child or shown it, top-level and hidden again.
+    if (GetAncestor(hwnd, GA_PARENT) != GetDesktopWindow()) {
+        ShowWindow(hwnd, SW_HIDE);
+        SetParent(hwnd, nullptr);
+        const LONG_PTR again = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        SetWindowLongPtrW(hwnd, GWL_STYLE,
+                          static_cast<LONG_PTR>(fullscreen::FullScreenStyle(static_cast<std::uint32_t>(again))));
+    }
     // Owned by REAPER's main window (once it is a popup, GWLP_HWNDPARENT is its owner): it stays in
     // front of REAPER, has no taskbar button, minimizes with it and goes when REAPER closes.
     if (reaper_main) SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, reinterpret_cast<LONG_PTR>(reaper_main));

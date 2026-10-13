@@ -165,6 +165,22 @@ int main()
         CHECK(PlaceTrail(wide, 1, 16.0f, 108.0f, 52.0f, 6.0f, tp) == 2 && Near(tp[0].w, 92.0f) && Near(tp[0].x, 16.0f));
     }
 
+    // ---- 6-5-9: the view switch centred beside the corner icons ----
+    {
+        bool below = true;
+        // Room to spare: the switch keeps the middle (a 1000 px view, switch 260, icons 110 at 990).
+        CHECK(Near(CentreBesideTrail(8.0f, 500.0f, 260.0f, 110.0f, 990.0f, 8.0f, &below), 500.0f) && !below);
+        // 440 px: centred it would end at 350, the icons start at 320 -> it moves left to end at 312.
+        const float c = CentreBesideTrail(8.0f, 220.0f, 260.0f, 110.0f, 430.0f, 8.0f, &below);
+        CHECK(!below && Near(c + 130.0f, 312.0f) && c - 130.0f >= 8.0f);
+        // 360 px: no room beside it even moved -> the icons go under it, the switch stays centred.
+        CHECK(Near(CentreBesideTrail(8.0f, 180.0f, 260.0f, 110.0f, 350.0f, 8.0f, &below), 180.0f) && below);
+        // 200 px: wider than the room; it starts at the left margin, the icons under it.
+        CHECK(Near(CentreBesideTrail(8.0f, 100.0f, 260.0f, 110.0f, 190.0f, 8.0f, &below), 138.0f) && below);
+        // Nothing measured yet (0 wide): a point, kept left of the icons, never under them.
+        CHECK(Near(CentreBesideTrail(8.0f, 100.0f, 0.0f, 110.0f, 190.0f, 8.0f, &below), 72.0f) && !below);
+    }
+
     // ---- 13-7 B5: the fader's value <-> thumb position ----
     {
         // A 200 px track (x 10..210), thumb radius 8: the centre runs 18..202 (184 px) for -60..12 dB.

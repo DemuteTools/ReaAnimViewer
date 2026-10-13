@@ -99,8 +99,11 @@ int main()
     }
     {
         EscState t = e;
-        t.assign_window = true;
+        // An ImGui menu / combo open at key-down: this Esc closes it, full screen stays; the next leaves.
+        t.imgui_popup = true;
         CHECK(!EscLeavesFullScreen(t));
+        t.imgui_popup = false;
+        CHECK(EscLeavesFullScreen(t));
     }
     {
         EscState t = e;

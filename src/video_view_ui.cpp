@@ -620,6 +620,15 @@ float VideoPanelFootprint(int client_w)
     return w + 2.0f * kPanelGap;
 }
 
+namespace {
+ImVec2 g_view_toggle_size(0.0f, 0.0f);  // story 6-5-9: VideoViewToggleSize
+}  // namespace
+
+ImVec2 VideoViewToggleSize()
+{
+    return g_view_toggle_size;
+}
+
 void DrawVideoViewToggle(float center_x)
 {
     if (ui::BeginOverlay("##viewtoggle", ImVec2(center_x, ui::Dp(8.0f)), ImVec2(0.5f, 0.0f))) {
@@ -632,6 +641,7 @@ void DrawVideoViewToggle(float center_x)
             if (kModes[i] == mode) sel = i;
         if (ui::Segmented("##view", kViews, 4, &sel) && sel >= 0 && sel < 4)
             SetViewMode(kModes[sel]);
+        g_view_toggle_size = ImGui::GetItemRectSize();  // Segmented ends with one item, the whole well
     }
     ui::EndOverlay();
 }

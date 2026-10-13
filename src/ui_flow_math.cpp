@@ -136,6 +136,23 @@ int LayoutSegments(const float* text_w, int n, float avail, float pad_nat, float
     return row + 1;
 }
 
+float CentreBesideTrail(float left, float centre_x, float centre_w, float trail_w, float trail_right, float gap,
+                        bool* trail_below)
+{
+    const float half = std::max(0.0f, centre_w) * 0.5f;
+    const float trail_left = trail_right - std::max(0.0f, trail_w);
+    bool below = false;
+    float c = centre_x;
+    if (c + half + gap > trail_left) {
+        const float moved = trail_left - gap - half;
+        if (moved - half >= left) c = moved;
+        else below = true;
+    }
+    if (below) c = std::max(centre_x, left + half);
+    if (trail_below) *trail_below = below;
+    return c;
+}
+
 int PlaceTrail(const float* w, int n, float left, float right, float lead_min, float gap, TrailPlace* out)
 {
     if (n <= 0) return 1;

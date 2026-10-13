@@ -62,6 +62,8 @@ inline Placement CoverMonitor(const ScreenRect& monitor)
 }
 
 // What else wants an Esc pressed in the viewer. Each of them keeps it, as before full screen.
+// (The Sound assignment window having the focus is not here: it takes every viewer key before
+// this rule is asked, viewer_window.cpp WM_KEYDOWN.)
 struct EscState {
     bool full_screen = false;
     bool shortcuts_popup = false;   // the Shortcuts popup closes
@@ -69,8 +71,9 @@ struct EscState {
     bool tagging_gesture = false;   // a Tagging view drag cancels
     bool text_input = false;        // a text field (or the preset menu) takes every key
     bool recording = false;         // a new key is being recorded (Esc cancels it)
-    bool assign_window = false;     // the Sound assignment window takes the viewer's keys
     bool library_takes_esc = false; // the Library view uses Esc itself
+    bool imgui_popup = false;       // an ImGui menu / combo / popup was open when Esc went down: it
+                                    // closes that popup only (one Esc, one thing)
 };
 
 // True when this Esc leaves full screen.
@@ -78,7 +81,7 @@ inline bool EscLeavesFullScreen(const EscState& s)
 {
     if (!s.full_screen) return false;
     return !(s.shortcuts_popup || s.delete_confirm || s.tagging_gesture || s.text_input || s.recording ||
-             s.assign_window || s.library_takes_esc);
+             s.library_takes_esc || s.imgui_popup);
 }
 
 }  // namespace fullscreen

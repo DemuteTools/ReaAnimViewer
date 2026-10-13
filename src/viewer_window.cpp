@@ -57,6 +57,7 @@
 #include "texture_locate.h"    // issue #1: "Locate textures..." (folder picker + copy)
 #include "gpu_resources.h"    // Story 11-4: the Video view's render target
 #include "ui_theme.h"         // Story 11-4: the DM-XYZ-Pad theme over Dear ImGui
+#include "ui_flow_math.h"     // Story 6-5-9: the view switch beside the corner icons
 #include "ui_flow.h"          // 13-14: LabelRow (the Light faders, the Colour row)
 #include "ui_glyph_ranges.h"  // 13-7: the symbol blocks merged into the UI font
 #include "video_view.h"       // Story 11-4: Video view + Video panel model
@@ -1598,20 +1599,39 @@ void DrawToolUi()
     const float panel_room = VideoPanelFootprint(g_client_w) + TaggingPanelFootprint(g_client_w);
     const float area_right = static_cast<float>(g_client_w) - panel_room;
 
-    // Epic 13 (D20, 13-2) -- Library view: one full-area window under the view toggle, drawn
-    // before the readouts and overlays (which stay on top of it).
-    const bool library_view = LibraryViewActive();
-    if (library_view)
-        DrawLibraryView(ui::Dp(8.0f), ui::Dp(44.0f), std::max(1.0f, static_cast<float>(g_client_w) - ui::Dp(16.0f)),
-                        std::max(1.0f, static_cast<float>(g_client_h) - ui::Dp(52.0f)));
-
     // FPS readout, top-RIGHT (FR53), anchored with a right-edge pivot so it hugs the corner at
     // any client size. This REPLACES the console FPS log removed in 6.5.2 — no console output.
     // Story 11-4: at the view area's corner, left of the panel button in Video view.
     // 13-14 (C0.4): hidden in the Library view (no 3D view to measure); the other views keep it.
-    const float corner_x = area_right - ui::Dp(video_view ? 46.0f : 10.0f);
-    const float readout_top = ui::Dp(14.0f);
-    const bool  fps_shown = g_fps_overlay_on && !library_view;
+    const bool        library_view = LibraryViewActive();
+    const float       corner_x = area_right - ui::Dp(video_view ? 46.0f : 10.0f);
+    const bool        fps_shown = g_fps_overlay_on && !library_view;
+    const ImGuiStyle& st = ImGui::GetStyle();
+    // A fixed slot ("000 FPS") so the icons do not jitter as the digits change.
+    const float fps_w = fps_shown ? ImGui::CalcTextSize("000 FPS").x + 2.0f * st.WindowPadding.x + ui::Dp(2.0f) : 0.0f;
+    const float keys_w = ui::Dp(24.0f) + ui::Dp(2.0f);  // the keyboard icon's 24 px button + its gap
+    // Story 6-5-9 -- the top row adapts to its width: the view switch keeps the middle while the
+    // corner group (FPS, keyboard, full screen) fits beside it, moves left to make room, and when
+    // even that does not fit the corner group goes under the switch (ui_flow_math, host-tested).
+    // The switch's size is the one it had last frame (it does not depend on where it is drawn).
+    const ImVec2 toggle_size = VideoViewToggleSize();
+    bool         corner_below = false;
+    // Never left of the closed menu button's card (x 10, 28 px button + 2 x 8 padding) + 8 px.
+    const float  toggle_x = flow::CentreBesideTrail(ui::Dp(10.0f + 44.0f + 8.0f), area_right * 0.5f, toggle_size.x,
+                                                    fps_w + keys_w + ui::Dp(24.0f), corner_x, ui::Dp(8.0f),
+                                                    &corner_below);
+    const float readout_top = corner_below ? ui::Dp(8.0f) + toggle_size.y + ui::Dp(4.0f) : ui::Dp(14.0f);
+    const float text_mid = readout_top + st.WindowPadding.y + ImGui::GetTextLineHeight() * 0.5f;
+
+    // Epic 13 (D20, 13-2) -- Library view: one full-area window under the view toggle, drawn
+    // before the readouts and overlays (which stay on top of it). Story 6-5-9: under the corner
+    // icons too when they went under the switch.
+    if (library_view) {
+        const float lib_top = std::max(ui::Dp(44.0f), corner_below ? text_mid + ui::Dp(12.0f + 6.0f) : 0.0f);
+        DrawLibraryView(ui::Dp(8.0f), lib_top, std::max(1.0f, static_cast<float>(g_client_w) - ui::Dp(16.0f)),
+                        std::max(1.0f, static_cast<float>(g_client_h) - lib_top - ui::Dp(8.0f)));
+    }
+
     if (fps_shown) {
         ImGui::SetNextWindowPos(ImVec2(corner_x, readout_top), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
         if (ImGui::Begin("##fps", nullptr, kReadoutFlags)) {
@@ -1623,25 +1643,17 @@ void DrawToolUi()
     }
 
     // Spec 11-fb-3 — the keyboard icon (Shortcuts popup), left of the FPS readout, centred on
-    // its text line; at the corner when the readout is hidden. A fixed slot ("000 FPS") so the
-    // icon does not jitter as the digits change.
-    {
-        const ImGuiStyle& st = ImGui::GetStyle();
-        const float text_mid = readout_top + st.WindowPadding.y + ImGui::GetTextLineHeight() * 0.5f;
-        const float fps_w = fps_shown
-            ? ImGui::CalcTextSize("000 FPS").x + 2.0f * st.WindowPadding.x + ui::Dp(2.0f) : 0.0f;
-        DrawShortcutsButton(corner_x - fps_w, text_mid, IconTex(g_icon_keyboard));
-        // Story 6-5-9 -- the Full screen button, left of the keyboard icon (the same 24 px button).
-        // Its click is posted: the window changes mode from the window procedure, not this frame.
-        const float keys_w = ui::Dp(24.0f) + ui::Dp(2.0f);
-        if (DrawFullScreenButton(corner_x - fps_w - keys_w, text_mid, ShortcutKeyLabel(kShortcutFullScreen)) &&
-            !g_full_screen_post_pending && g_hwnd)
-            g_full_screen_post_pending = PostMessageW(g_hwnd, kMsgFullScreen, 0, 0) != FALSE;
-    }
+    // its text line; at the corner when the readout is hidden.
+    DrawShortcutsButton(corner_x - fps_w, text_mid, IconTex(g_icon_keyboard));
+    // Story 6-5-9 -- the Full screen button, left of the keyboard icon (the same 24 px button).
+    // Its click is posted: the window changes mode from the window procedure, not this frame.
+    if (DrawFullScreenButton(corner_x - fps_w - keys_w, text_mid, ShortcutKeyLabel(kShortcutFullScreen)) &&
+        !g_full_screen_post_pending && g_hwnd)
+        g_full_screen_post_pending = PostMessageW(g_hwnd, kMsgFullScreen, 0, 0) != FALSE;
 
     // Story 11-4 — RAV view / Video view toggle (top centre of the view area, key V); in
     // Video view the frame's edge + captions, its state message, and the panel button.
-    DrawVideoViewToggle(area_right * 0.5f);
+    DrawVideoViewToggle(toggle_x);
     if (video_view) {
         DrawVideoFrameDecor(g_video_frame, &CopyErrorLogToClipboard, g_preview_lag_on);
         DrawVideoPanelButton(area_right - ui::Dp(8.0f));
@@ -2416,8 +2428,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             es.tagging_gesture = TaggingViewActive() && TaggingGestureActive();
             es.text_input = TextInputNow();
             es.recording = ShortcutRecordingId() >= 0;
-            es.assign_window = TaggingViewActive() && TaggingAssignWindowOpen();
             es.library_takes_esc = LibraryViewActive() && LibraryViewTakesKey(VK_ESCAPE, ctrl, shift, alt);
+            // Under the main ImGui context (MainContext above); ImGui reads this key only at the next
+            // frame, so this is the popup state at key-down: an open menu / combo closes, full screen stays.
+            es.imgui_popup = ImGui::GetCurrentContext() &&
+                             ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
             if (!fullscreen::EscLeavesFullScreen(es)) break;
             if (!(lp & (1 << 30))) SetFullScreenMode(false);
             return 0;

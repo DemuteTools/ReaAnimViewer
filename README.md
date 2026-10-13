@@ -194,7 +194,7 @@ A manual install does not update itself: repeat these steps for each new version
 
 **Tip:** bind **RAV: Open Viewer** to a key or toolbar button to toggle the viewer quickly.
 
-**Full screen:** the corners icon in the top-right corner of the viewer (left of the keyboard icon), **F11** while the viewer has the focus, or the action **RAV: Viewer full screen (toggle)** puts the viewer over the whole screen it is on. **Esc**, **F11** or the icon again put it back where it was docked. REAPER's keys keep working while it is full screen (Space plays).
+**Full screen:** the corners icon in the top-right corner of the viewer (left of the keyboard icon), **F11** while the viewer has the focus, or the action **RAV: Viewer full screen (toggle)** puts the viewer over the whole screen it is on. **Esc** (when nothing else in the viewer uses it: an open menu, a text field...), **F11** or the icon again put it back where it was docked. REAPER's keys without Alt keep working while it is full screen (Space plays).
 
 ---
 

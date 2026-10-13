@@ -12,6 +12,8 @@
 
 #ifdef _WIN32
 
+#include <imgui.h>
+
 #include "camera.h"
 #include "video_view.h"
 
@@ -45,6 +47,9 @@ float VideoPanelFootprint(int client_w);
 
 // The RAV view / Tagging view / Video view segmented toggle, centred on center_x at the top.
 void DrawVideoViewToggle(float center_x);
+// Story 6-5-9: the view switch's size when it was last drawn (0 x 0 before the first frame), so the
+// top row can keep it clear of the corner icons.
+ImVec2 VideoViewToggleSize();
 
 // The panel button (shows / hides the Video panel), its right edge at right_x. Video view only.
 void DrawVideoPanelButton(float right_x);

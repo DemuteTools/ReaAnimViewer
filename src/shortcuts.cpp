@@ -49,13 +49,14 @@ void RefreshLabels()
         g_labels[i] = FormatShortcut(g_bindings[static_cast<size_t>(i)], &LayoutKeyName);
 }
 
-// Only custom keys are stored: a default deletes the entry.
+// Only custom keys are stored: a default deletes the entry (10-11: so does unbound, which
+// gives the default back on the next load once its key is free).
 void Save(int id)
 {
     if (id < 0 || id >= kShortcutCount) return;
     const KeyBinding& b = g_bindings[static_cast<size_t>(id)];
     const std::string key = ExtKey(id);
-    if (b == kShortcutTable[id].def) {
+    if (b == kShortcutTable[id].def || b.vk == 0) {
         if (DeleteExtState) DeleteExtState(kExtSection, key.c_str(), true);
     } else if (SetExtState) {
         SetExtState(kExtSection, key.c_str(), EncodeShortcut(b).c_str(), true);
@@ -68,6 +69,7 @@ void LoadShortcuts()
 {
     g_bindings = DefaultShortcutBindings();
     bool bad[kShortcutCount] = {};
+    bool stored[kShortcutCount] = {};  // 10-11: the key comes from the user's settings
     for (int i = 0; i < kShortcutCount; ++i) {
         if (!GetExtState) break;
         const std::string key = ExtKey(i);
@@ -76,16 +78,27 @@ void LoadShortcuts()
         KeyBinding b;
         if (DecodeShortcut(v, &b)) {
             g_bindings[static_cast<size_t>(i)] = b;
+            stored[i] = true;
         } else {
             LogWarn("shortcut \"%s\": stored key \"%s\" is not valid, using %s", kShortcutTable[i].label, v,
                     FormatShortcut(kShortcutTable[i].def, &LayoutKeyName).c_str());
             bad[i] = true;
         }
     }
-    for (int i : SanitizeShortcuts(g_bindings)) {
+    std::vector<int> unbound;
+    for (int i : SanitizeShortcuts(g_bindings, stored, &unbound)) {
         LogWarn("shortcut \"%s\": stored key clashes with another action, using %s", kShortcutTable[i].label,
                 FormatShortcut(kShortcutTable[i].def, &LayoutKeyName).c_str());
         Save(i);
+    }
+    // 10-11: a default another action's stored key holds waits, unbound and unsaved.
+    for (int i : unbound) {
+        int owner = -1;
+        for (int j = 0; j < kShortcutCount && owner < 0; ++j)
+            if (j != i && g_bindings[static_cast<size_t>(j)] == kShortcutTable[i].def) owner = j;
+        LogInfo("shortcut \"%s\": its key %s is yours for \"%s\", so it has no key (set one in Shortcuts)",
+                kShortcutTable[i].label, FormatShortcut(kShortcutTable[i].def, &LayoutKeyName).c_str(),
+                owner >= 0 ? kShortcutTable[owner].label : "another action");
     }
     for (int i = 0; i < kShortcutCount; ++i)
         if (bad[i]) Save(i);  // the default now: the stale entry goes

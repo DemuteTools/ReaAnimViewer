@@ -278,7 +278,8 @@ int main()
         CHECK(DecodeShortcut("Shift+Ctrl+75", &k) && k == Key('K', true, true, false));  // any modifier order
     }
 
-    // Load: stale stored values that clash are made valid (custom one reset).
+    // Without the stored flags (10-11: the load passes them, see below): stale values that clash
+    // are made valid (custom one reset).
     {
         ShortcutBindings b = DefaultShortcutBindings();
         b[kShortcutToggleView] = Key('C');  // clashes with Cut's default
@@ -300,6 +301,55 @@ int main()
         const std::vector<int> bad = SanitizeShortcuts(b);
         CHECK(b == DefaultShortcutBindings());
         CHECK(bad.size() == 3);
+    }
+
+    // 10-11: on load a stored key beats an action still on its (new) default: that action goes
+    // unbound, nothing reset, and it gets its default back once the key is free.
+    {
+        ShortcutBindings b = DefaultShortcutBindings();
+        bool stored[kShortcutCount] = {};
+        b[kShortcutToggleView] = Key('C');  // the user's key; Cut's default is C (a "new" default)
+        stored[kShortcutToggleView] = true;
+        std::vector<int> unbound;
+        const std::vector<int> reset = SanitizeShortcuts(b, stored, &unbound);
+        CHECK(reset.empty());
+        CHECK(b[kShortcutToggleView] == Key('C'));
+        CHECK(b[kShortcutCut].vk == 0);
+        CHECK(unbound.size() == 1 && unbound[0] == kShortcutCut);
+        CHECK(FormatShortcut(b[kShortcutCut]).empty());
+        // Unbound matches no key.
+        CHECK(ShortcutActionFor(b, 'C', false, false, false, true) == kShortcutToggleView);
+        CHECK(ShortcutActionFor(b, 0, false, false, false, true) == -1);
+        // A later load with the key free: the default comes back (nothing was saved for it).
+        ShortcutBindings later = DefaultShortcutBindings();
+        bool stored2[kShortcutCount] = {};
+        later[kShortcutToggleView] = Key('K');
+        stored2[kShortcutToggleView] = true;
+        std::vector<int> none;
+        CHECK(SanitizeShortcuts(later, stored2, &none).empty() && none.empty());
+        CHECK(later[kShortcutCut] == Key('C'));
+        // Two stored keys that clash: the old rule (the later custom one is reset).
+        ShortcutBindings two = DefaultShortcutBindings();
+        bool stored3[kShortcutCount] = {};
+        two[kShortcutCut] = Key('K');
+        two[kShortcutTogglePanel] = Key('K');
+        stored3[kShortcutCut] = stored3[kShortcutTogglePanel] = true;
+        std::vector<int> u3;
+        const std::vector<int> r3 = SanitizeShortcuts(two, stored3, &u3);
+        CHECK(u3.empty() && r3.size() == 1 && r3[0] == kShortcutCut);
+        CHECK(two[kShortcutTogglePanel] == Key('K') && two[kShortcutCut] == Key('C'));
+        // A stored key that holds another action's default and is not its own default: when the
+        // other side is stored and custom too, the old rule applies; when it is not stored and on
+        // its default, it goes unbound even if it comes first in the table.
+        ShortcutBindings first = DefaultShortcutBindings();
+        bool stored4[kShortcutCount] = {};
+        const KeyBinding view_def = first[kShortcutToggleView];
+        first[kShortcutCut] = view_def;
+        stored4[kShortcutCut] = true;
+        std::vector<int> u4;
+        CHECK(SanitizeShortcuts(first, stored4, &u4).empty());
+        CHECK(first[kShortcutCut] == view_def && first[kShortcutToggleView].vk == 0);
+        CHECK(u4.size() == 1 && u4[0] == kShortcutToggleView);
     }
 
     // Unbindable keys are never recorded (IME process key, injected Unicode, 0xFF).

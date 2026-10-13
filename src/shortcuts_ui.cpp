@@ -82,6 +82,7 @@ bool KeyRow(int id)
     const float th = ImGui::GetTextLineHeight();
     const float cy = (a.y + b.y) * 0.5f;
     const char* key = ShortcutKeyLabel(id);
+    if (!key[0]) key = "None";  // 10-11: unbound (its default is another action's key)
     const float cap_w = ImGui::CalcTextSize(key).x + ui::Dp(8.0f);
     const float cap_x = CapRight(b.x) - cap_w;
     // The label gives way to a long key ("Ctrl+Shift+Alt+PageDown").

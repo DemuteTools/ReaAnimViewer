@@ -379,7 +379,14 @@ inline std::vector<int> ResetShortcut(ShortcutBindings& b, int id)
 
 // Makes a set of bindings valid (each bindable, no key shared), resetting what is not.
 // Returns the actions it reset. Used on load, where the stored values may be stale.
-inline std::vector<int> SanitizeShortcuts(ShortcutBindings& b)
+// Story 10-11: `stored` (optional, one flag per action) says which keys the user's settings
+// hold. A stored key that clashes with an action still on its default (not stored: a default
+// added or changed by a newer RAV) wins: that action goes unbound (vk 0, listed in `unbound`,
+// never saved), so it gets its default back by itself on a later load once the key is free.
+// Two stored keys (or no `stored`) keep the old rule: the custom one is reset, the later one
+// when both are custom.
+inline std::vector<int> SanitizeShortcuts(ShortcutBindings& b, const bool* stored = nullptr,
+                                          std::vector<int>* unbound = nullptr)
 {
     std::vector<int> reset;
     auto note = [&reset](const std::vector<int>& v) {
@@ -388,15 +395,26 @@ inline std::vector<int> SanitizeShortcuts(ShortcutBindings& b)
     };
     for (int i = 0; i < kShortcutCount; ++i)
         if (!IsBindableKey(b[static_cast<size_t>(i)].vk)) note(ResetShortcut(b, i));
-    for (int pass = 0; pass < kShortcutCount; ++pass) {
+    auto on_default = [&b](int k) { return b[static_cast<size_t>(k)] == kShortcutTable[k].def; };
+    for (int pass = 0; pass < 2 * kShortcutCount; ++pass) {
         bool clash = false;
         for (int i = 0; i < kShortcutCount && !clash; ++i) {
+            if (b[static_cast<size_t>(i)].vk == 0) continue;  // unbound: owns no key
             const int j = ShortcutOwner(b, b[static_cast<size_t>(i)], i);
             if (j < 0) continue;
-            // Reset the custom one (the later one when both are custom).
-            const int victim = (b[static_cast<size_t>(j)] == kShortcutTable[j].def) ? i : std::max(i, j);
-            note(ResetShortcut(b, victim));
             clash = true;
+            if (stored && stored[i] != stored[j]) {
+                const int def_side = stored[i] ? j : i;
+                if (on_default(def_side)) {
+                    b[static_cast<size_t>(def_side)] = KeyBinding{};
+                    if (unbound && std::find(unbound->begin(), unbound->end(), def_side) == unbound->end())
+                        unbound->push_back(def_side);
+                    continue;
+                }
+            }
+            // Reset the custom one (the later one when both are custom).
+            const int victim = on_default(j) ? i : std::max(i, j);
+            note(ResetShortcut(b, victim));
         }
         if (!clash) break;
     }
@@ -507,9 +525,10 @@ inline std::string ShortcutKeyName(unsigned k, std::string (*fallback)(unsigned)
     return buf;
 }
 
-// "Ctrl+Shift+Alt+K" (modifiers only when held).
+// "Ctrl+Shift+Alt+K" (modifiers only when held); "" when unbound.
 inline std::string FormatShortcut(const KeyBinding& b, std::string (*fallback)(unsigned) = nullptr)
 {
+    if (b.vk == 0) return "";  // 10-11: unbound (SanitizeShortcuts)
     std::string s;
     if (b.ctrl) s += "Ctrl+";
     if (b.shift) s += "Shift+";

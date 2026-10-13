@@ -910,11 +910,11 @@ void DrawSoundsMenuSection()
         const std::vector<ReportLine> rep = FollowReport(proj);
         if (rep.empty()) {
             ui::Caption("Follow report: nothing to report");
-            ui::ItemTipText("What RAV did on its own when you moved, copied or deleted animation items\n"
+            ui::ItemTipText("What RAV did on its own when you changed, copied or deleted animation items\n"
                             "(sounds moved, replaced, missing...).");
         } else {
             ImGui::Text("Follow report: %d line%s", static_cast<int>(rep.size()), rep.size() == 1 ? "" : "s");
-            ui::ItemTipText("What RAV did on its own when you moved, copied or deleted animation items\n"
+            ui::ItemTipText("What RAV did on its own when you changed, copied or deleted animation items\n"
                             "(sounds moved, replaced, missing...).");
             ImGui::SameLine();
             if (ui::SolidButton("Clear##sndfollowclear")) ClearFollowReport(proj);

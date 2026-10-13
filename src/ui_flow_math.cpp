@@ -249,10 +249,10 @@ bool SingleGlyph(const std::string& text)
     return leads == 1;
 }
 
-LabelFit ButtonLabelFit(const std::string& label, float label_w, float frame_w, float pad)
+LabelFit ButtonLabelFit(const std::string& label, float label_w, float frame_w, float pad, float bare_inset)
 {
     if (label_w <= frame_w - 2.0f * pad) return LabelFit::Padded;
-    if (label_w + 2.0f <= frame_w || SingleGlyph(label)) return LabelFit::Bare;
+    if (label_w + 2.0f * bare_inset <= frame_w || SingleGlyph(label)) return LabelFit::Bare;
     return LabelFit::Cut;
 }
 

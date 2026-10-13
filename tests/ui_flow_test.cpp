@@ -259,6 +259,9 @@ int main()
         // A word that fits without its padding is drawn whole; one that does not is cut.
         CHECK(ButtonLabelFit("Fit", 21.0f, 24.0f, 8.0f) == LabelFit::Bare);
         CHECK(ButtonLabelFit("Done", 28.0f, 22.0f, 8.0f) == LabelFit::Cut);
+        CHECK(ButtonLabelFit("Fit", 21.0f, 24.0f, 8.0f, 6.6f) == LabelFit::Cut);   // 13-47: pill ends
+        CHECK(ButtonLabelFit("Fit", 21.0f, 35.0f, 8.0f, 6.6f) == LabelFit::Bare);
+        CHECK(ButtonLabelFit("+", 7.0f, 10.0f, 8.0f, 6.6f) == LabelFit::Bare);
         CHECK(Near(GlyphButtonMinWidth("+", 7.0f), 9.0f));
         CHECK(Near(GlyphButtonMinWidth("Done", 28.0f), 0.0f));
     }

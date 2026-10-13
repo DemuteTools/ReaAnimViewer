@@ -685,6 +685,9 @@ bool AddButton(const char* label, const ImVec2& size, const char* key, bool pill
     const float avail = ImGui::GetContentRegionAvail().x;
     float       w = size.x > 0.0f ? size.x : (size.x < 0.0f ? std::max(1.0f, avail + size.x) : nat);
     if (!WindowAutoSizes() && w > avail) w = std::max(ControlH(), avail);
+    const std::string text(label, LabelEnd(label));
+    const float       tw = ImGui::CalcTextSize(text.c_str()).x;
+    w = std::max(w, flow::GlyphButtonMinWidth(text, tw));  // 13-47: a lone "+" keeps its glyph's width
     const float h = size.y > 0.0f ? size.y : ControlH();
     const bool  clicked = ImGui::InvisibleButton(label, ImVec2(std::max(1.0f, w), h));
     const bool  hovered = ImGui::IsItemHovered();
@@ -694,8 +697,6 @@ bool AddButton(const char* label, const ImVec2& size, const char* key, bool pill
     const float  r = pill ? h * 0.5f : kRadiusSm;
     if (hovered) dl->AddRect(a, b, Ink(kStrokeStrong), r);
     else DashedRect(dl, a, b, Ink(kStrokeStrong), r);
-    const std::string text(label, LabelEnd(label));
-    const float       tw = ImGui::CalcTextSize(text.c_str()).x;
     const ImU32       ink = Ink(ItemDisabled() ? kFaint : (hovered ? kText : kFaint));
     const float       ty = a.y + (h - ImGui::GetTextLineHeight()) * 0.5f;
     const float       ky = std::floor(a.y + (h - ImGui::GetTextLineHeight() - Dp(3.0f)) * 0.5f);
@@ -707,7 +708,7 @@ bool AddButton(const char* label, const ImVec2& size, const char* key, bool pill
     } else if (kw > 0.0f && w - 2.0f * Dp(4.0f) - gap - kw >= Dp(20.0f)) {  // the key cap stays at the right
         cut = EllipsisText(dl, ImVec2(a.x + Dp(4.0f), ty), b.x - Dp(4.0f) - gap - kw, ink, text);
         KeyCap(dl, ImVec2(b.x - Dp(4.0f) - kw, ky), key, ink);
-    } else if (flow::ButtonLabelFit(text, tw, w, Dp(4.0f)) != flow::LabelFit::Cut) {  // 13-30: whole, centred
+    } else if (flow::ButtonLabelFit(text, tw, w, Dp(4.0f), pill ? std::max(Dp(4.0f), 0.3f * h) : 1.0f) != flow::LabelFit::Cut) {  // 13-30: whole, centred
         dl->AddText(ImVec2(std::floor(a.x + (w - tw) * 0.5f), ty), ink, text.c_str());
     } else {
         cut = EllipsisText(dl, ImVec2(a.x + Dp(4.0f), ty), b.x - Dp(4.0f), ink, text);
@@ -741,7 +742,7 @@ bool ChipButton(const char* label, const ImVec2& size, bool on)
     const float       ty = a.y + (h - ImGui::GetTextLineHeight()) * 0.5f;
     // 13-30: a label that fits (with or without the padding) or a lone glyph is drawn whole, centred.
     bool cut = false;
-    if (flow::ButtonLabelFit(text, tw, w, pad) != flow::LabelFit::Cut)
+    if (flow::ButtonLabelFit(text, tw, w, pad, std::min(pad, 0.3f * h)) != flow::LabelFit::Cut)
         dl->AddText(ImVec2(std::floor(a.x + (w - tw) * 0.5f), ty), ink, text.c_str());
     else
         cut = EllipsisText(dl, ImVec2(a.x + pad, ty), b.x - pad, ink, text);

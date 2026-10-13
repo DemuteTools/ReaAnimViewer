@@ -99,7 +99,9 @@ bool SingleGlyph(const std::string& text);
 // side. Padded: it fits with the padding (drawn as usual). Bare: it fits once the padding is given up,
 // or it is a single glyph: drawn whole and centred, never cut to "..". Cut: ellipsized within the pad.
 enum class LabelFit { Padded, Bare, Cut };
-LabelFit ButtonLabelFit(const std::string& label, float label_w, float frame_w, float pad);
+// `bare_inset`: the room a multi-character label keeps on each side when drawn Bare (a pill's rounded
+// ends need ~0.3 x its height so the text never touches the curve; 1 px for square corners).
+LabelFit ButtonLabelFit(const std::string& label, float label_w, float frame_w, float pad, float bare_inset = 1.0f);
 
 // 13-30: the narrowest a button may shrink to: a single glyph keeps its width plus a pixel each side;
 // any other label 0 (it may be ellipsized).

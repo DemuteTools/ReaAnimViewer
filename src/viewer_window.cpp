@@ -1462,7 +1462,7 @@ void DrawToolUi()
                 g_renderer.SetMsaaSamples(g_msaa_level);
             }
             ui::ItemTipText("Smooths the jagged edges of the model.\n"
-                            "Higher: smoother, more work for the graphics card. A greyed level is beyond your card.");
+                            "Higher: smoother, more work for the graphics card. The greyed level and those above it are beyond your card.");
 
             ui::Checkbox("FPS", &g_fps_overlay_on);  // pure UI state — read by the overlay below
             ui::ItemTipText("Shows at the top right of the view how many images per second it draws.\n"
@@ -1478,7 +1478,7 @@ void DrawToolUi()
             if (ui::BeginSection(sec, "Camera")) {
                 if (ui::SolidButton("Recenter camera", ImVec2(ImGui::GetContentRegionAvail().x, 0.0f)))
                     g_renderer.ResetCamera();
-                ui::ItemTipText("Puts the camera back in front of the model, framing it whole.");
+                ui::ItemTipText("Puts the camera back to its starting view, framing the whole model.");
             }
             ui::EndSection(sec);
             if (ui::BeginSection(sec, "Model / Skeleton")) {

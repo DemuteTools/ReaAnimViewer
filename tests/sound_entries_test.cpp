@@ -165,7 +165,12 @@ void TestSilence()
 {
     PeakData p = Bursts();
     SilenceParams sp;
+    // 13-17b: the defaults Antho picked (-45 dB, 200 ms gap, 100 ms tail); the checks below pin
+    // their own values so they test the split, not the defaults.
+    CHECK(sp.threshold_db == -45.0 && sp.min_gap_ms == 200.0 && sp.preroll_ms == 5.0 && sp.tail_ms == 100.0);
     sp.threshold_db = -40;
+    sp.min_gap_ms = 50;
+    sp.tail_ms = 50;
     std::vector<SoundFrame> fr = SplitOnSilence(p, sp, 10);
     CHECK(fr.size() == 10);
     if (!fr.empty()) CHECK(Near(fr[0].start, 0.195) && Near(fr[0].length, 0.255));
@@ -197,7 +202,10 @@ void TestSilenceMerge()
     p.max_abs.assign(1000, 0.0f);
     for (int i = 100; i < 200; ++i) p.max_abs[size_t(i)] = 1.0f;
     for (int i = 220; i < 300; ++i) p.max_abs[size_t(i)] = 1.0f;  // 20 ms gap < min_gap 50 ms
-    std::vector<SoundFrame> fr = SplitOnSilence(p, SilenceParams{}, 1);
+    SilenceParams m;
+    m.min_gap_ms = 50;
+    m.tail_ms = 50;
+    std::vector<SoundFrame> fr = SplitOnSilence(p, m, 1);
     CHECK(fr.size() == 1);
     if (fr.size() == 1) CHECK(Near(fr[0].start, 0.095) && Near(fr[0].length, 0.255));
 
@@ -207,6 +215,7 @@ void TestSilenceMerge()
     for (int i = 100; i < 200; ++i) q.max_abs[size_t(i)] = 1.0f;
     for (int i = 300; i < 400; ++i) q.max_abs[size_t(i)] = 1.0f;
     SilenceParams sp;
+    sp.min_gap_ms = 50;   // the 100 ms gap splits
     sp.preroll_ms = 150;  // reaches back past the previous run's end
     sp.tail_ms = 200;     // reaches past the next frame's start
     fr = SplitOnSilence(q, sp, 1);

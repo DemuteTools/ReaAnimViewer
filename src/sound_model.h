@@ -40,11 +40,11 @@ struct AssetIdentity {
 // How a Sound's variations (frames) were detected (13-3).
 enum class DetectMode { Whole, Takes, TakeMarkers, Silence };
 
-struct SilenceParams {
-    double threshold_db = -40.0;
-    double min_gap_ms = 50.0;
+struct SilenceParams {  // 13-17b (Antho 2026-10-12): -45 dB, 200 ms gap, 100 ms tail
+    double threshold_db = -45.0;
+    double min_gap_ms = 200.0;
     double preroll_ms = 5.0;
-    double tail_ms = 50.0;
+    double tail_ms = 100.0;
 };
 
 // One variation of a Sound: a stretch of its source (source seconds).

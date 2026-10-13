@@ -51,6 +51,11 @@ struct TreeState {
     // 13-17d: the row an arrow key moved to, scrolled into view when drawn.
     LibraryRow               scroll_to;
     bool                     has_scroll_to = false;
+    // 13-17b: the tree's height on the last full frame (kept on a gesture's frame, so the scroll is
+    // not clamped), and the shown library's node uids last frame (a node not in it is new).
+    float                    rows_h = 0.0f;
+    std::string              known_lib;
+    std::set<std::string>    known_nodes;
     // 13-21: this frame's library gaps (node uid -> its reasons), each row's amber "!".
     std::map<std::string, std::string> gaps;
     std::vector<LibraryGap>            hidden_gaps;  // 13-21: gaps whose node no row shows (folded / searched out)
@@ -2142,6 +2147,21 @@ void LibraryTreeWidgets()
         if (n.type != SoundNodeType::Sound && !g.closed.count(n.uid)) open.insert(n.uid);
     if (g.closed.count(lib->root)) open.insert("!root");
     g.rows = BuildTreeRows(GetSoundStore(nullptr), *lib, open, search);
+    // 13-17b: a node that just appeared (added, duplicated, dropped, brought back by an undo) is
+    // scrolled into view, just enough (DrawRow); a library switch never scrolls.
+    {
+        std::set<std::string> now;
+        for (const SoundNode& n : lib->nodes) now.insert(n.uid);
+        if (g.known_lib == lib->uid && now != g.known_nodes)
+            for (const TreeRow& r : g.rows)
+                if (!r.node.empty() && !g.known_nodes.count(r.node)) {
+                    g.scroll_to = r.row;
+                    g.has_scroll_to = true;
+                    break;
+                }
+        g.known_lib = lib->uid;
+        g.known_nodes = std::move(now);
+    }
     // The selection is pruned against the rows shown (an undo may remove uids; 13-17c: a search
     // keeps only the rows it shows, so Delete / Cut never act on a hidden row).
     g.sel.erase(std::remove_if(g.sel.begin(), g.sel.end(),
@@ -2201,6 +2221,11 @@ void LibraryTreeWidgets()
             g.open_row_menu = false;
         }
         if (const SoundLibrary* cur = FindLibrary(GetSoundStore(nullptr), g.lib)) RowMenu(*cur);
+        // 13-17b: a gesture's frame stops drawing rows; the tree keeps its last full height so ImGui
+        // does not clamp the scroll to the rows drawn (the tree jumped to the top).
+        const float y = ImGui::GetCursorPosY();
+        if (!g.changed) g.rows_h = y;
+        else if (g.rows_h > y) ImGui::Dummy(ImVec2(0.0f, g.rows_h - y));
     }
     ImGui::EndChild();
 }

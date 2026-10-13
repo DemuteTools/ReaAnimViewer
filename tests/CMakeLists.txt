@@ -276,3 +276,8 @@ add_test(NAME item_clear_plan COMMAND item_clear_plan_test)
 add_executable(play_item_plan_test play_item_plan_test.cpp ../src/play_item_plan.cpp ../src/tagging_signal.cpp)
 target_include_directories(play_item_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME play_item_plan COMMAND play_item_plan_test)
+
+# 13-48 -- src/library_tree_nav.h, src/library_view_keys.h
+add_executable(library_tree_nav_test library_tree_nav_test.cpp ../src/library_tree_nav.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+target_include_directories(library_tree_nav_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME library_tree_nav COMMAND library_tree_nav_test)

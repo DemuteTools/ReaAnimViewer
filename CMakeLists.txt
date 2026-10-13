@@ -174,6 +174,7 @@ if(WIN32)
             src/ui_theme.cpp
             src/ui_flow.cpp
             src/ui_flow_math.cpp
+            src/ui_fold_all.cpp
             src/video_view.cpp
             src/video_view_ui.cpp
             src/reaper_actions.cpp
@@ -210,6 +211,7 @@ if(WIN32)
             src/sound_draw.cpp
             src/sound_switch.cpp
             src/library_tree_edit.cpp
+            src/library_tree_nav.cpp
             src/sound_audition_plan.cpp
             src/media_db.cpp
             src/sound_place_plan.cpp

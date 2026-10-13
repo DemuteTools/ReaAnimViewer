@@ -39,8 +39,12 @@ const std::string& SelectedLibraryUid();
 // The selected rows of that library (pruned each frame against the visible rows).
 const std::vector<LibraryRow>& SelectedLibraryRows();
 // Selects one row of a library (and shows that library): clears the tree's search, reveals the
-// row and scrolls it into view.
+// row (an empty value row: its Switch too) and scrolls it into view.
 void SelectLibraryRow(const std::string& lib_uid, const LibraryRow& row);
+// 13-42: the same, then the Library view shown (from the Tagging view, the Sound assignment window, the
+// Populate report): the library shown, the tree opened down to the row, the row selected and scrolled
+// into view, its node's panel in column 3. An unknown library only switches the view.
+void ShowInLibrary(const std::string& lib_uid, const LibraryRow& row);
 // The node of the single selected row ("" = none, an empty value, or several rows).
 std::string LibraryRowNode();
 // 13-43: adds or removes one body part of a library's kit (the Kit... menu, the Roles card's chips), after the

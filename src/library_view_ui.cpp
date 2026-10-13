@@ -4,6 +4,8 @@
 
 #include "library_view_ui.h"
 
+#include "library_view_keys.h"
+
 #ifdef _WIN32
 
 #include <algorithm>
@@ -375,14 +377,12 @@ bool LibraryViewFocused() { return g_view.focused; }
 bool LibraryViewTakesKey(unsigned vk, bool ctrl, bool shift, bool alt)
 {
     if (LibraryNodeTakesKey(vk, ctrl, shift, alt)) return true;  // 13-7b: E, S (and the Edit overlay's keys)
-    if (!g_view.focused || alt) return false;
-    constexpr unsigned kDelete = 0x2E, kF2 = 0x71, kSpace = 0x20, kEscape = 0x1B;
-    if (!ctrl && !shift && (vk == 0x26 || vk == 0x28) && !g_view.media_collapsed && MediaPanelTakesArrows())
-        return true;  // 13-7c: Up/Down move the Media Explorer's row
-    if (!ctrl && !shift && vk >= 0x25 && vk <= 0x28 && LibraryTreeTakesArrows())
-        return true;  // 13-17d: the arrow keys walk the node tree
-    if (ctrl) return !shift && (vk == 'B' || vk == 'D' || vk == 'X' || vk == 'V');
-    return vk == kDelete || vk == kF2 || vk == kSpace || vk == kEscape;
+    // 13-48: the claim itself is pure (library_view_keys.h, host-tested).
+    LibraryKeyState st;
+    st.focused = g_view.focused;
+    st.media_takes_arrows = st.focused && !g_view.media_collapsed && MediaPanelTakesArrows();  // 13-7c: Up/Down
+    st.tree_takes_arrows = st.focused && LibraryTreeTakesArrows();                             // 13-17d: the arrows
+    return LibraryViewClaimsKey(st, vk, ctrl, shift, alt);
 }
 
 bool LibraryColumn1Collapsed()

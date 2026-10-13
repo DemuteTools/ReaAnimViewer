@@ -22,6 +22,7 @@
 
 #include "ui_flow.h"
 #include "ui_flow_math.h"
+#include "ui_fold_all.h"
 
 namespace rav {
 namespace ui {
@@ -2562,6 +2563,7 @@ bool BeginSection(Section& s, const char* title, const SectionOpts& o)
     ImGuiStorage* store = ImGui::GetStateStorage();
     const ImGuiID open_id = ImGui::GetID("##open");
     bool open = !o.foldable || store->GetBool(open_id, true);
+    if (o.foldable) NoteFoldableSection(open_id, &open);  // 13-33: Expand / Collapse all of its scope
     s.nested = g_section_depth > 0;
     ++g_section_depth;
     s.right_w = std::max(0.0f, o.right_w);

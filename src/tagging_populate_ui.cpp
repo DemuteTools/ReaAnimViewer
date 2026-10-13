@@ -19,6 +19,7 @@
 #include <imgui.h>
 
 #include "library_icons.h"
+#include "library_tree_ui.h"  // 13-48: ShowInLibrary
 #include "library_user_ui.h"  // FileSoundMissing, Locate (missing report lines)
 #include "picked_gestures.h"
 #include "reaper_api.h"
@@ -193,6 +194,19 @@ void ValueMenu(const char* id, const SoundStore& store, const GroupUse& use, con
 void OpenLibraryArrow()
 {
     if (ui::IconOnlyButton("##openlib", ToolIcon(kToolOpenArrow), "Open the Library view")) SetViewMode(ViewMode::Library);
+}
+
+// 13-48 (13-8 P14): a report line's Open: the Library view on the line's node (its library shown, the
+// tree opened down to it, selected), else the view as it was.
+void OpenReportNode(const std::string& node)
+{
+    if (!node.empty())
+        for (const SoundLibrary& lib : GetSoundStore(nullptr).libraries)
+            if (FindNode(lib, node)) {
+                ShowInLibrary(lib.uid, RowOfNode(lib, node));
+                return;
+            }
+    SetViewMode(ViewMode::Library);
 }
 
 // The item's character (its rig, 13-15a), null when the Project's settings apply.
@@ -549,8 +563,8 @@ void DrawSoundReportLine(const TaggingSoundContext& ctx)
             ImGui::SameLine();
             ImGui::TextUnformatted(l.text.c_str());
             ImGui::SameLine();
-            if (ui::LinkButton("Open")) SetViewMode(ViewMode::Library);
-            ui::ItemTipText("Open the Library view");
+            if (ui::LinkButton("Open")) OpenReportNode(l.node);
+            ui::ItemTipText(l.node.empty() ? "Open the Library view" : "Show this sound in the Library");
             ImGui::SameLine();
             if (ui::LinkButton("Select")) SelectOnlyItem(FindItemByGuid(l.item_guid));
             ui::ItemTipText("Select the animation item in REAPER");

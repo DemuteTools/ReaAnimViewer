@@ -28,6 +28,7 @@
 #include "float_ui_window.h"
 #include "item_rules.h"
 #include "library_icons.h"
+#include "library_tree_nav.h"  // 13-42: RevealRowFor
 #include "library_tree_ui.h"
 #include "reaper_api.h"
 #include "shortcuts.h"  // LoadPrefFloat / SavePrefFloat
@@ -2392,7 +2393,9 @@ void DrawAssignContent()
                 if (ok && f.keyed)
                     for (const std::string& k : g.sel.keys)
                         if (k.compare(0, 4, "kit:") == 0) libs.insert(k.substr(4));  // a kit row: its library
-                if (libs.size() == 1) OpenLibraryViewUid(*libs.begin());
+                if (sel.size() == 1 && sel.front()->lib && libs.size() == 1)  // 13-42: on the node it plays
+                    ShowInLibrary(sel.front()->lib->uid, RevealRowFor(GetSoundStore(nullptr), *sel.front()->lib, sel.front()->ea.layers));
+                else if (libs.size() == 1) OpenLibraryViewUid(*libs.begin());
                 else SetViewMode(ViewMode::Library);
             }
             ui::ItemTipText("Open the Library view (this window stays open)");
@@ -2482,8 +2485,13 @@ void DrawAssignSummaryRow(const char* id, MediaItem* item, const std::vector<Blo
     ImGui::PushID(id);
     const bool   can = !open_blocks.empty();
     const char*  btn = "Assign...##assign";
-    const float  bw = ui::ButtonWidth(btn);
     const float  sp = ImGui::GetStyle().ItemSpacing.x;
+    // 13-42: a small ↗ before Assign... opens the Library on the node this plays (the first target with a
+    // library: both sides of a pair resolve alike unless their values differ).
+    const av::Target* reveal = nullptr;
+    for (const av::Target& t : ts)
+        if (!reveal && t.lib) reveal = &t;
+    const float  bw = ui::ButtonWidth(btn) + (reveal ? ui::ControlH() + sp : 0.0f);
     const float  w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
     const float  lw = label && label[0] ? ImGui::CalcTextSize(label).x + ui::Dp(6.0f) : 0.0f;
     const bool   narrow = w < lw + ui::Dp(120.0f) + bw + sp;
@@ -2502,6 +2510,11 @@ void DrawAssignSummaryRow(const char* id, MediaItem* item, const std::vector<Blo
         ui::ItemTipText(sum.blocked ? (sum.Plain() + "\nNothing is placed: open Assign... for the details").c_str()
                                     : sum.Plain().c_str());
     if (!narrow) ImGui::SameLine(0.0f, sp);
+    if (reveal) {
+        if (ui::IconOnlyButton("##reveal", ToolIcon(kToolOpenArrow), "Show this sound in the Library"))
+            ShowInLibrary(reveal->lib->uid, RevealRowFor(store, *reveal->lib, reveal->ea.layers));
+        ImGui::SameLine(0.0f, sp);
+    }
     if (!can) ImGui::BeginDisabled();
     if (ui::SolidButton(btn) && can) OpenAssignWindow(item, open_blocks);
     if (!can) ImGui::EndDisabled();

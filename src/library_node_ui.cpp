@@ -49,6 +49,7 @@
 #include "sound_switch.h"
 #include "ui_flow.h"
 #include "ui_flow_math.h"
+#include "ui_fold_all.h"
 #include "ui_theme.h"
 
 namespace rav {
@@ -4448,18 +4449,29 @@ void NodePanelWidgets()
     // 13-7b (audit C4.2 / C5.2): Type / Volume are plain rows under the header (no "Node" / "Level"
     // card); then Mix (Random, Switch), then Plays (Random, Blend: a Blend's lanes carry its
     // children's volumes, it has no Mix).
+    // 13-33: Expand / Collapse all over the panel's sections (Mix, Plays; Source, Variations, Detection),
+    // right-aligned above the first one when two or more show. One scope per node type (each type shows
+    // its own sections), so selecting another node never blinks the bar.
+    const char* fold_scope = n->type == SoundNodeType::Sound    ? "libnode.sound"
+                             : n->type == SoundNodeType::Random ? "libnode.random"
+                             : n->type == SoundNodeType::Blend  ? "libnode.blend"
+                                                                : "libnode.switch";
+    ui::BeginFoldScope(fold_scope);
     if (!StoreReplaced() && n->type != SoundNodeType::Sound) {
         DrawTypeRows(store, *lib, *n);
         if (!StoreReplaced()) DrawVolume(*lib, *n);
+        if (!StoreReplaced()) ui::FoldScopeBar(fold_scope);
         if (!StoreReplaced() && n->type != SoundNodeType::Blend) DrawMix(store, *lib, *n);
         if (!StoreReplaced() && n->type != SoundNodeType::Switch) DrawPlays(store, *lib, *n);
     } else if (!StoreReplaced()) {
         DrawVolume(*lib, *n);
         if (!StoreReplaced()) {
             OpenEditKey(*lib, *n);
+            ui::FoldScopeBar(fold_scope);
             DrawSoundPanel(*lib, *n);
         }
     }
+    ui::EndFoldScope(!StoreReplaced());
     // The whole node panel takes a Media Explorer drop too (after the waveform's own target, so
     // the waveform keeps it when the mouse is over it).
     if (!StoreReplaced()) {

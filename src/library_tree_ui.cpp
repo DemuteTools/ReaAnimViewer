@@ -21,6 +21,7 @@
 
 #include <imgui_internal.h>  // the toolbar well narrows the work rect; the empty-library box is a drop target
 
+#include "library_tree_nav.h"  // 13-48: folds kept, Collapse / Expand all
 #include "library_user_ui.h"
 #include "library_view_ui.h"
 #include "picked_gestures.h"
@@ -36,6 +37,8 @@
 #include "tagging_assign_ui.h"  // 13-43: Assign... opens its Overview
 #include "ui_flow.h"
 #include "ui_flow_math.h"
+#include "ui_fold_all.h"
+#include "video_view.h"  // 13-48: ShowInLibrary switches to the Library view
 
 namespace rav {
 namespace {
@@ -215,6 +218,72 @@ void RevealNode(const SoundLibrary& lib, const std::string& uid)
         g.closed.erase(n->parent);
         n = FindNode(lib, n->parent);
     }
+}
+
+// ---- 13-32: the folds kept per library ----------------------------------------------------------
+//
+// View state, not a project change: REAPER ExtState (section ReaAnimViewer, key
+// "libtree_folds.<library uid>", persisted), never the project's ext state (that marks the project
+// modified) and never an undo point. Read the first time a library is shown in the session; written
+// whenever its folded set changes (the chevrons, the arrow keys, a drag's auto-open, Expand / Collapse
+// all, a reveal), pruned to its containers. A User Library keeps its folds in every project that uses it.
+
+constexpr char kFoldsSection[] = "ReaAnimViewer";
+std::set<std::string>              g_folds_read;   // the libraries read this session
+std::map<std::string, std::string> g_folds_saved;  // library uid -> the text last read / written
+
+std::string FoldsKey(const std::string& lib_uid) { return "libtree_folds." + lib_uid; }
+
+void ReadTreeFolds(const SoundLibrary& lib)
+{
+    if (!g_folds_read.insert(lib.uid).second) return;
+    if (GetExtState) {
+        const char* t = GetExtState(kFoldsSection, FoldsKey(lib.uid).c_str());
+        for (const std::string& uid : DecodeTreeFolds(t ? t : "")) g.closed.insert(uid);
+    }
+    g_folds_saved[lib.uid] = EncodeTreeFolds(lib, g.closed);
+}
+
+void SyncTreeFolds(const SoundLibrary& lib)
+{
+    ReadTreeFolds(lib);
+    const std::string now = EncodeTreeFolds(lib, g.closed);
+    std::string&      saved = g_folds_saved[lib.uid];
+    if (now == saved) return;
+    saved = now;
+    if (now.empty() && DeleteExtState) DeleteExtState(kFoldsSection, FoldsKey(lib.uid).c_str(), true);
+    else if (SetExtState) SetExtState(kFoldsSection, FoldsKey(lib.uid).c_str(), now.c_str(), true);
+}
+
+// 13-33: Expand all / Collapse all under the search field, right-aligned (always there; each button off
+// while it has nothing to do). Collapse all leaves the root open: its children show, folded.
+void TreeFoldAllRow(const SoundLibrary& lib)
+{
+    const float  w = ui::FoldAllButtonsWidth();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::SetCursorScreenPos(ImVec2(p.x + std::max(0.0f, ImGui::GetContentRegionAvail().x - w), p.y));
+    const int r = ui::FoldAllButtons("##treefoldall", TreeCanExpandAll(lib, g.closed), TreeCanCollapseAll(lib, g.closed));
+    if (r != 0) SetTreeFoldsAll(lib, r < 0, &g.closed);
+}
+
+// 13-33: the Switch Groups list's Expand / Collapse all (its groups fold in ImGui storage, session only):
+// last frame's open / folded groups (what the buttons offer), and a click applied as the rows draw.
+struct GroupFoldAll {
+    bool any_open = false, any_closed = false;  // last frame
+    bool now_open = false, now_closed = false;  // this frame
+    int  pending = 0;                           // +1 expand / -1 collapse, clicked this frame
+};
+GroupFoldAll g_group_folds;
+
+// A group row's open state, after a pending Expand / Collapse all; counted for the buttons.
+bool GroupRowOpen(ImGuiID open_id)
+{
+    ImGuiStorage* st = ImGui::GetStateStorage();
+    if (g_group_folds.pending != 0) st->SetBool(open_id, g_group_folds.pending > 0);
+    const bool open = st->GetBool(open_id, true);
+    if (open) g_group_folds.now_open = true;
+    else g_group_folds.now_closed = true;
+    return open;
 }
 
 void StartRowRename(const SoundLibrary& lib, const LibraryRow& row)
@@ -1713,6 +1782,8 @@ void SwitchGroupsSectionWidgets()
     ui::SectionOpts opts;
     opts.foldable = false;
     opts.right_w = ButtonWidth("+ Group");
+    const bool fold_all = store.groups.size() >= 2;  // 13-33: Expand / Collapse all before "+ Group"
+    if (fold_all) opts.right_w += ui::FoldAllButtonsWidth() + ImGui::GetStyle().ItemSpacing.x;
     // 13-14 (C2.4): the card fills the rest of the column (.secx.sg { flex:1; min-height:140px }), its
     // body scrolling (the theme's fill_h body, begun after the header's "+ Group").
     opts.fill_h = true;
@@ -1720,6 +1791,11 @@ void SwitchGroupsSectionWidgets()
     ui::Section sec;
     const bool  open_sec = ui::BeginSection(sec, "Switch Groups", opts);
     ui::BeginSectionHeaderRight(sec);
+    int fold_click = 0;
+    if (fold_all) {
+        fold_click = ui::FoldAllButtons("##grpfoldall", g_group_folds.any_closed, g_group_folds.any_open);
+        ImGui::SameLine();
+    }
     if (ui::SolidButton("+ Group"))
         Later([] {
             std::string gid;
@@ -1731,6 +1807,7 @@ void SwitchGroupsSectionWidgets()
             g.r_focus = true;
         });
     ui::EndSectionHeaderRight(sec);
+    g_group_folds.pending = fold_click;  // 13-33: applied while the rows draw below
     if (open_sec && !StoreReplaced()) {
         std::string  del_group, del_value_group, del_value, add_group, add_name;
         // 13-18: a group default to set (follow: -1 none, 0 keep the Switches' own defaults, 1 clear them).
@@ -1741,10 +1818,11 @@ void SwitchGroupsSectionWidgets()
         const float  rh = ui::RowH(), gap = ui::Dp(6.0f), cs = ui::Dp(18.0f), is = ui::Dp(16.0f);
         const ImVec2 spacing0 = ImGui::GetStyle().ItemSpacing;
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, 0.0f));
+        g_group_folds.now_open = g_group_folds.now_closed = false;  // 13-33
         for (const SwitchGroup& gr : store.groups) {
             ImGui::PushID(gr.uid.c_str());
             const ImGuiID open_id = ImGui::GetID("##grp");
-            const bool    open = ImGui::GetStateStorage()->GetBool(open_id, true);
+            const bool    open = GroupRowOpen(open_id);
             const ImVec2  p = ImGui::GetCursorScreenPos();
             const float   w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
             const float   cy = p.y + rh * 0.5f;
@@ -2107,7 +2185,12 @@ void SwitchGroupsSectionWidgets()
                 g.add_value_focus = add_group;  // type the next one
             });
         if (!StoreReplaced() && store.groups.empty()) ui::SubText("No Switch Group yet");
+        if (!StoreReplaced()) {  // 13-33: what the buttons offer next frame
+            g_group_folds.any_open = g_group_folds.now_open;
+            g_group_folds.any_closed = g_group_folds.now_closed;
+        }
     }
+    g_group_folds.pending = 0;
     ui::EndSection(sec);  // ends the body too
 }
 
@@ -2225,7 +2308,9 @@ void LibraryTreeWidgets()
         if (ui::IconOnlyButton("##treesearchx", "\xE2\x9C\x95", "Clear the search (Esc)")) g.search[0] = '\0';
         ImGui::EndDisabled();
     }
+    TreeFoldAllRow(*lib);  // 13-33
     const std::string search = g.search;
+    SyncTreeFolds(*lib);  // 13-32: the folds read on first show, written when they change
 
     // Antho 2026-10-12: every container starts open (the whole hierarchy shows); ▶ folds one. BuildTreeRows takes
     // the open set: every container not folded ("!root" marks a folded root).
@@ -2479,10 +2564,22 @@ void SelectLibraryRow(const std::string& lib_uid, const LibraryRow& row)
     g.scroll_to = row;
     g.has_scroll_to = true;
     if (const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), lib_uid)) {
+        ReadTreeFolds(*lib);  // 13-32: before the reveal opens its way (a later first read would fold it again)
         const std::string n = RowNode(*lib, row);
-        if (!n.empty()) RevealNode(*lib, n);
+        if (!n.empty()) {
+            RevealNode(*lib, n);
+        } else if (!row.parent.empty()) {  // 13-42: an empty value row: its Switch open, and the way to it
+            g.closed.erase(row.parent);
+            RevealNode(*lib, row.parent);
+        }
     }
     SelectOnly(row);
+}
+
+void ShowInLibrary(const std::string& lib_uid, const LibraryRow& row)
+{
+    if (FindLibrary(GetSoundStore(nullptr), lib_uid)) SelectLibraryRow(lib_uid, row);
+    SetViewMode(ViewMode::Library);
 }
 
 std::string LibraryRowNode()

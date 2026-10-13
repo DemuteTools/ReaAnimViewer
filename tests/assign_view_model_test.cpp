@@ -444,6 +444,24 @@ static void TestScopes()
     CHECK(w0.own && w0.kit && w0.library == "hero" && w1.own && !w1.kit && w1.library == "cr");
     CHECK(!w2.own && w2.library == "cr" && w2.from == "Hero \xC2\xB7 Feet" && w3.unset && !w3.own);
     CHECK(AllKeys().size() >= 10 && AllKeys()[0] == "feet" && AllKeys()[1] == "feet.step");
+    // 13-43 Played by: a whole part reads as the part; the characters that inherit the Project count.
+    CHECK(PlayedByText(LibraryPlayedBy(st, ch, "hero")) == "Feet (Project, Armored, Creature)");
+    CHECK(PlayedByText(LibraryPlayedBy(st, ch, "cr")) == "Feet (Hero)");
+    CHECK(LibraryPlayedBy(st, ch, "nope").empty() && PlayedByText({}).empty() && LibraryPlayedBy(st, ch, "").empty());
+    {
+        // One type taken by another library: the part is no longer whole, its other types are listed, grouped.
+        SoundStore st3 = st;
+        SetAssignLibraryIn(st3.project, {"feet.step"}, LibState::Library, "cr");
+        const std::vector<PlayedByGroup> h = LibraryPlayedBy(st3, ch, "hero");
+        size_t feet_types = 0;
+        for (const std::string& k : AllKeys()) feet_types += k.compare(0, 5, "feet.") == 0;
+        CHECK(h.size() == 1 && h[0].keys.size() == feet_types - 1 &&
+              std::find(h[0].keys.begin(), h[0].keys.end(), "feet") == h[0].keys.end() &&
+              std::find(h[0].keys.begin(), h[0].keys.end(), "feet.step") == h[0].keys.end() &&
+              h[0].columns == std::vector<std::string>({"Project", "Armored", "Creature"}));
+        // cr: the whole part in Hero's column, Step alone in the others.
+        CHECK(PlayedByText(LibraryPlayedBy(st3, ch, "cr")) == "Feet (Hero); Feet \xC2\xB7 Step (Project, Armored, Creature)");
+    }
     CHECK(OverrideKeys(hero.assigns) == std::vector<std::string>({"feet"}));
     // Selection: kits and characters are picked alone.
     Selection s;

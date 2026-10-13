@@ -14,6 +14,7 @@
 
 #include <windows.h>
 
+#include <string>
 #include <vector>
 
 #include "bone_events.h"  // Block
@@ -27,6 +28,12 @@ struct TaggingModel;
 // Opens the window at the Item scope on `item` (the Tagging view's shown item), the item's rules `blocks`
 // (indices into its blocks) selected and their section unfolded; no blocks = the window as it was.
 void OpenAssignWindow(MediaItem* item, const std::vector<int>& blocks);
+// 13-43: opens the window from the Library on its Overview at the Project scope, the cells that play
+// `library_uid` lit (until the window closes or opens another way).
+void OpenAssignOverview(const std::string& library_uid);
+// 13-43: where a library plays now (assign_view_model.h's PlayedByText over the project's characters);
+// "" when nowhere.
+std::string AssignPlayedByText(const std::string& library_uid);
 void CloseAssignWindow();
 // Open (Antho 2026-10-12: a window of its own, anywhere on the screen, shown in every view while the
 // viewer is; hidden, not closed, while the viewer is hidden).

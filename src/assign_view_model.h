@@ -267,6 +267,20 @@ struct WhoCell {
 };
 WhoCell WhoCellFor(const SoundStore& store, const SoundCharacter* ch, const std::string& key);
 
+// 13-43: where a library plays now, read off the "Who plays what" grid (rows: each BodyParts() part then its
+// types, as AllKeys; columns: the Project then `chars`): every cell resolving to `library_uid`, inherited ones
+// included. In the columns where a part's own row and all its type rows play it, it reads as the part alone
+// ("Feet"); a type is listed for its other columns. Consecutive keys with the same columns form one group (the
+// table order is kept, so a column list may come back later).
+struct PlayedByGroup {
+    std::vector<std::string> keys;     // "feet" / "feet.step"
+    std::vector<std::string> columns;  // "Project", character names
+};
+std::vector<PlayedByGroup> LibraryPlayedBy(const SoundStore& store, const std::vector<CharEntry>& chars,
+                                           const std::string& library_uid);
+// "Feet \xC2\xB7 Step, Feet \xC2\xB7 Scuff (Project, Hero); Hands (Hero)"; "" when it plays nowhere.
+std::string PlayedByText(const std::vector<PlayedByGroup>& groups);
+
 // ---- Last change line -----------------------------------------------------------------------------------
 
 struct ChangeText {

@@ -25,6 +25,8 @@
 #include "sound_populate.h"
 #include "sound_project.h"
 #include "sound_record.h"
+#include "tagging_assign_ui.h"  // 13-43: the Roles card's Assign opens its Overview
+#include "ui_flow.h"
 #include "ui_theme.h"
 #include "undo_guard.h"
 
@@ -86,6 +88,56 @@ void ResetWidths()
 
 bool Collapsed(int i) { return (i == 0 && g_view.col1_collapsed) || (i == 3 && g_view.media_collapsed); }
 
+// 13-43 (mockup maquette-overview-depuis-library.html, A): a library's root shows its Roles: the body parts it
+// offers to serve (its kit, a chip per part, toggled as the Kit... menu), where it plays now, and Assign, which
+// opens the Overview of Assign sounds on it.
+void DrawLibraryRolesSection()
+{
+    const SoundStore&   store = GetSoundStore(nullptr);
+    const SoundLibrary* lib = FindLibrary(store, SelectedLibraryUid());
+    if (!lib || lib->root.empty() || LibraryRowNode() != lib->root) return;
+    const std::string uid = lib->uid;
+    const char*       kAssign = "Assign \xE2\x86\x97##libroles";
+    ui::SectionOpts   opts;
+    opts.foldable = false;
+    opts.right_w = ui::ButtonWidth(kAssign);
+    ui::Section sec;
+    const bool  open = ui::BeginSection(sec, "Roles", opts);
+    ui::BeginSectionHeaderRight(sec);
+    if (ui::SolidButton(kAssign)) OpenAssignOverview(uid);
+    ui::ItemTipText("Open Assign sounds on its Overview (Project): the body parts and characters this library plays are lit");
+    ui::EndSectionHeaderRight(sec);
+    if (open) {
+        // Kit: a chip per body part, wrapping with the column.
+        ui::LabelRow("Kit", ui::Dp(120.0f));
+        const float x0 = ImGui::GetCursorScreenPos().x;
+        const float wrap = std::max(ui::Dp(60.0f), ImGui::GetContentRegionAvail().x);
+        bool        first = true;
+        for (const BodyPart& bp : BodyParts()) {
+            if (bp.id == "other") continue;
+            const std::string label = bp.label + "##kit" + bp.id;
+            const float       cw = ui::TextWidth(label.c_str()) + ui::Dp(14.0f);
+            if (!first && ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + cw <= x0 + wrap) ImGui::SameLine();
+            else if (!first) ImGui::SetCursorScreenPos(ImVec2(x0, ImGui::GetCursorScreenPos().y));
+            first = false;
+            const bool on = KitServes(*lib, bp.id);
+            if (ui::ChipButton(label.c_str(), ImVec2(0.0f, 0.0f), on)) ToggleLibraryKitPart(uid, bp.id);
+            ui::ItemTipText(on ? "Click to remove it from the kit" : "Click to add it to the kit");
+        }
+        // Played by: where it resolves now (Project and characters).
+        const std::string played = AssignPlayedByText(uid);
+        ui::LabelRow("Played by", ui::Dp(120.0f));
+        ui::ToneText(played.empty() ? std::string("Not assigned yet") : played, played.empty() ? ui::kFaint : ui::kText, true);
+        {
+            ui::FontScope fs(ui::FontSmall());
+            ui::ToneText("Kit = the body parts this library offers to serve (as Kit... in its menu). Played by = where it is "
+                         "assigned now.",
+                         ui::kMuted, true);
+        }
+    }
+    ui::EndSection(sec);
+}
+
 void DrawColumn(int i)
 {
     switch (i) {
@@ -103,6 +155,7 @@ void DrawColumn(int i)
         } else {
             DrawNodePanel();
             DrawUserLibraryNodeSection();
+            DrawLibraryRolesSection();
         }
         break;
     default:

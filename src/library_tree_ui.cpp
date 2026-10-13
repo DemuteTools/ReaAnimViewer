@@ -33,6 +33,7 @@
 #include "sound_record.h"
 #include "sound_entries.h"  // ToggleGroupRole (13-23 role maps)
 #include "sound_switch.h"
+#include "tagging_assign_ui.h"  // 13-43: Assign... opens its Overview
 #include "ui_flow.h"
 #include "ui_flow_math.h"
 
@@ -1471,24 +1472,14 @@ void LibraryMenuItems(const SoundLibrary& lib, std::string* to_delete, bool rena
         for (const BodyPart& bp : BodyParts()) {
             if (bp.id == "other") continue;
             const bool on = KitServes(lib, bp.id);
-            if (ImGui::MenuItem(bp.label.c_str(), nullptr, on)) {
-                std::vector<std::string> parts = lib.kit;
-                if (on) parts.erase(std::remove(parts.begin(), parts.end(), bp.id), parts.end());
-                else parts.push_back(bp.id);
-                const std::string uid = lib.uid;
-                Later([uid, parts] {
-                    Gesture("Set library kit", [&](SoundStore& st) {
-                        SoundLibrary* l = FindLibrary(st, uid);
-                        if (!l || !SetKitParts(*l, parts)) return false;
-                        l->kit_offered = true;  // set by hand here: no "use it?" offer later
-                        return true;
-                    });
-                });
-            }
+            if (ImGui::MenuItem(bp.label.c_str(), nullptr, on)) ToggleLibraryKitPart(lib.uid, bp.id);
         }
         ui::ItemTipText("A kit is a suggestion: Assign sounds > Project can use it as the project default");
         ImGui::EndMenu();
     }
+    // 13-43: the Overview of Assign sounds (who plays what), this library's cells lit.
+    if (ImGui::MenuItem("Assign...")) OpenAssignOverview(lib.uid);
+    ui::ItemTipText("Open Assign sounds on its Overview (Project): the body parts and characters this library plays are lit");
     ImGui::Separator();
     if (ImGui::MenuItem("Delete library")) *to_delete = lib.uid;
 }
@@ -2526,6 +2517,23 @@ const std::vector<std::string>& LibraryRoleKeys()
 }
 
 size_t LibraryBuiltinRoleCount() { return RoleMenuKeys({}).size(); }
+
+void ToggleLibraryKitPart(const std::string& lib_uid, const std::string& part)
+{
+    const std::string uid = lib_uid, id = part;
+    Later([uid, id] {
+        Gesture("Set library kit", [&](SoundStore& st) {
+            SoundLibrary* l = FindLibrary(st, uid);
+            if (!l) return false;
+            std::vector<std::string> parts = l->kit;
+            if (KitServes(*l, id)) parts.erase(std::remove(parts.begin(), parts.end(), id), parts.end());
+            else parts.push_back(id);
+            if (!SetKitParts(*l, parts)) return false;
+            l->kit_offered = true;  // set by hand here: no "use it?" offer later
+            return true;
+        });
+    });
+}
 
 }  // namespace rav
 

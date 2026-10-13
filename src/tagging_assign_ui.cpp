@@ -111,6 +111,7 @@ struct State {
     double        rigs_time = 0.0;
     std::vector<av::RigIn> rigs;
     std::string   kit_skel, kit_model;  // the kit sheet's character picker (its rig: a key changes when stored)
+    std::string   from_library;         // 13-43: opened from the Library on this library: its Overview cells are lit
 };
 State g;
 
@@ -1802,6 +1803,18 @@ void DrawWhoOverview(const Frame& f, float height)
     const float  rh = ui::Dp(28.0f);
     const int    cur_col = g.scope == kScopeProject || f.key.cur < 0 ? 0 : 1 + f.key.cur;
     ImDrawList*  dl = ImGui::GetWindowDrawList();
+    // 13-43: opened from the Library: say on which library, and light the cells that play it.
+    const SoundLibrary* from = g.from_library.empty() ? nullptr : FindLibrary(*f.store, g.from_library);
+    if (from) {  // one line, ellipsized to the pane's visible width
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float  lh = ImGui::GetTextLineHeight();
+        const float  lim = p.x + ImGui::GetContentRegionAvail().x - ui::Dp(6.0f);
+        dl->AddCircleFilled(ImVec2(p.x + ui::Dp(12.0f), p.y + lh * 0.5f), ui::Dp(4.0f), ui::LibDot(from->color));
+        const bool plays = !AssignPlayedByText(from->uid).empty();
+        ui::EllipsisTextTip(dl, ImVec2(p.x + ui::Dp(22.0f), p.y), lim, plays ? ui::kAccentText : ui::kMuted,
+                            "Opened from the Library on " + from->name + (plays ? ": its cells are lit" : ": it plays nowhere yet"));
+        ImGui::Dummy(ImVec2(0.0f, lh + ui::Dp(4.0f)));
+    }
     {  // header
         const ImVec2 p = ImGui::GetCursorScreenPos();
         ui::FontScope fs(ui::FontRole::Tiny);
@@ -1853,6 +1866,12 @@ void DrawWhoOverview(const Frame& f, float height)
             }
             for (size_t c = 0; c < cols; ++c) {
                 const av::WhoCell cell = av::WhoCellFor(*f.store, c == 0 ? nullptr : &cs[c - 1].ch, key);
+                if (from && cell.library == from->uid) {
+                    const ImVec2 a(p.x + c0 + cw * static_cast<float>(c) + ui::Dp(2.0f), p.y + ui::Dp(2.0f));
+                    const ImVec2 b(p.x + c0 + cw * static_cast<float>(c + 1) - ui::Dp(2.0f), p.y + rh - ui::Dp(2.0f));
+                    dl->AddRectFilled(a, b, ui::kAccentSoft, ui::kRadiusSm);
+                    dl->AddRect(a, b, ui::kAccentLine, ui::kRadiusSm);
+                }
                 float             x = p.x + c0 + cw * static_cast<float>(c) + ui::Dp(8.0f);
                 const float       lim = p.x + c0 + cw * static_cast<float>(c + 1) - ui::Dp(6.0f);
                 const SoundLibrary* l = cell.library.empty() ? nullptr : FindLibrary(*f.store, cell.library);
@@ -2213,11 +2232,39 @@ void OpenAssignWindow(MediaItem* item, const std::vector<int>& blocks)
     g.open = true;
     g.rigs_count = -1;  // the rigs of the project are read again
     g.focus_request = true;
+    g.from_library.clear();
     if (item && !blocks.empty()) {
         g.request = true;
         g.request_item = item;
         g.request_blocks = blocks;
     }
+}
+
+void OpenAssignOverview(const std::string& library_uid)
+{
+    g.open = true;
+    g.rigs_count = -1;
+    g.focus_request = true;
+    g.request = false;  // a pending strip request would switch back to the Item scope
+    g.request_blocks.clear();
+    SwitchScope(kScopeProject);
+    g.overview = true;
+    g.from_library = library_uid;
+}
+
+std::string AssignPlayedByText(const std::string& library_uid)
+{
+    // Read once per project change (drawn every frame by the Roles card and the Overview's caption).
+    static int         s_count = -1;
+    static std::string s_uid, s_text;
+    const int          count = GetProjectStateChangeCount(nullptr);
+    if (count == s_count && library_uid == s_uid) return s_text;
+    RefreshRigs();
+    const SoundStore& store = GetSoundStore(nullptr);
+    s_count = count;
+    s_uid = library_uid;
+    s_text = av::PlayedByText(av::LibraryPlayedBy(store, av::BuildCharacters(store, g.rigs), library_uid));
+    return s_text;
 }
 
 void CloseAssignWindow()
@@ -2378,6 +2425,7 @@ void DrawAssignFloat(HWND viewer, HDC viewer_dc, HGLRC rc)
     g.focus_request = false;
     g_host.Frame(g.open, activate, [] { DrawAssignContent(); });
     if (g_host.TakeCloseRequest()) g.open = false;
+    if (!g.open) g.from_library.clear();  // 13-43: the lit library is for that opening only
     // Its gestures run now, in any view (the Tagging view runs the strip's own after its widgets).
     RunPickedSoundGestures();
 }

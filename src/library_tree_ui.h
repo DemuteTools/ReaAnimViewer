@@ -43,6 +43,9 @@ const std::vector<LibraryRow>& SelectedLibraryRows();
 void SelectLibraryRow(const std::string& lib_uid, const LibraryRow& row);
 // The node of the single selected row ("" = none, an empty value, or several rows).
 std::string LibraryRowNode();
+// 13-43: adds or removes one body part of a library's kit (the Kit... menu, the Roles card's chips), after the
+// frame, one undo point "RAV: Set library kit" with its toast.
+void ToggleLibraryKitPart(const std::string& lib_uid, const std::string& part);
 
 // What other stories plug into the tree. Every member is optional.
 struct LibraryTreeHooks {

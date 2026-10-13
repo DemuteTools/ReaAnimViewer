@@ -908,6 +908,59 @@ WhoCell WhoCellFor(const SoundStore& store, const SoundCharacter* ch, const std:
     return c;
 }
 
+std::vector<PlayedByGroup> LibraryPlayedBy(const SoundStore& store, const std::vector<CharEntry>& chars,
+                                           const std::string& library_uid)
+{
+    std::vector<PlayedByGroup> out;
+    if (library_uid.empty()) return out;
+    // The columns of one key that resolve to the library.
+    auto columns = [&](const std::string& key) {
+        std::vector<std::string> cols;
+        if (WhoCellFor(store, nullptr, key).library == library_uid) cols.push_back("Project");
+        for (const CharEntry& c : chars)
+            if (WhoCellFor(store, &c.ch, key).library == library_uid) cols.push_back(c.ch.name);
+        return cols;
+    };
+    auto add = [&](const std::string& key, const std::vector<std::string>& cols) {
+        if (!out.empty() && out.back().columns == cols) out.back().keys.push_back(key);
+        else out.push_back({{key}, cols});
+    };
+    for (const BodyPart& p : BodyParts()) {
+        const std::string        part_key = AssignKey(p.id, std::string());
+        std::vector<std::string> whole = columns(part_key);  // the columns where the part and all its types play it
+        std::vector<std::pair<std::string, std::vector<std::string>>> types;
+        for (const PartType& t : p.types) {
+            const std::string key = AssignKey(p.id, t.word);
+            std::vector<std::string> cols = columns(key);
+            whole.erase(std::remove_if(whole.begin(), whole.end(),
+                                       [&](const std::string& c) { return std::find(cols.begin(), cols.end(), c) == cols.end(); }),
+                        whole.end());
+            types.push_back({key, std::move(cols)});
+        }
+        if (!whole.empty()) add(part_key, whole);
+        for (auto& t : types) {  // a type is listed for the columns the whole part does not cover
+            t.second.erase(std::remove_if(t.second.begin(), t.second.end(),
+                                          [&](const std::string& c) { return std::find(whole.begin(), whole.end(), c) != whole.end(); }),
+                           t.second.end());
+            if (!t.second.empty()) add(t.first, t.second);
+        }
+    }
+    return out;
+}
+
+std::string PlayedByText(const std::vector<PlayedByGroup>& groups)
+{
+    std::string s;
+    for (const PlayedByGroup& g : groups) {
+        if (!s.empty()) s += "; ";
+        for (size_t i = 0; i < g.keys.size(); ++i) s += (i ? ", " : "") + AssignKeyLabel(g.keys[i]);
+        s += " (";
+        for (size_t i = 0; i < g.columns.size(); ++i) s += (i ? ", " : "") + g.columns[i];
+        s += ")";
+    }
+    return s;
+}
+
 // ---- Last change ---------------------------------------------------------------------------------------
 
 ChangeText LastChange(const std::string& undo_name, const std::string& where, const std::string& what, int targets)

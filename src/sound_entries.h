@@ -29,6 +29,7 @@ struct EntryFacts {
     double                  playrate = 1.0;    // the active take's D_PLAYRATE (item s x playrate = source s)
     std::vector<SoundFrame> takes;             // one per take of the item (start = its start offset)
     std::vector<Slice>      slices;            // the active take's slices (take markers or .rpp text)
+    double                  item_db = 0.0;     // the item's own volume (D_VOL, dB): every detected variation's gain
 };
 
 // Slices from an item's .rpp chunk text (the fallback reader of take markers, spike 13-0 A):

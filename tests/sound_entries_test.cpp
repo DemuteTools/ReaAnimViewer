@@ -68,7 +68,13 @@ void TestWholeClamp()
     e.start_offs = 2;
     e.item_len = 5;
     std::vector<SoundFrame> fr = DetectFrames(e, DetectMode::Whole, SilenceParams{}, nullptr);
-    CHECK(fr.size() == 1 && Near(fr[0].start, 2) && Near(fr[0].length, 1));
+    CHECK(fr.size() == 1 && Near(fr[0].start, 2) && Near(fr[0].length, 1) && Near(fr[0].db, 0));
+    {  // the item's own volume is every detected variation's gain (an item at +18.5 dB)
+        EntryFacts loud = e;
+        loud.item_db = 18.5;
+        const std::vector<SoundFrame> lf = DetectFrames(loud, DetectMode::Whole, SilenceParams{}, nullptr);
+        CHECK(lf.size() == 1 && Near(lf[0].db, 18.5));
+    }
     e.start_offs = -1;  // the item starts 1 s before its source
     e.item_len = 2;
     fr = DetectFrames(e, DetectMode::Whole, SilenceParams{}, nullptr);

@@ -259,11 +259,6 @@ static void TestBatchAdd()
     CHECK(AddNodes(s, "L", &g1, {snd, snd}, &made, nullptr));
     std::vector<const SoundNode*> kids = ChildrenOf(*FindLibrary(s, "L"), "gr");
     CHECK(made.size() == 2 && kids.size() == 4 && kids[1]->uid == made[0] && kids[2]->uid == made[1]);
-    // An imported item's volume becomes the new Sound's Volume.
-    NewNodeSpec loud = snd;
-    loud.volume_db = 10.0;
-    std::vector<std::string> lv;
-    CHECK(AddNodes(s, "L", &g1, {loud}, &lv, nullptr) && lv.size() == 1 && N(s, "L", lv[0])->volume_db == 10.0);
 }
 
 static void TestDuplicateFreshUids()

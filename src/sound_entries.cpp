@@ -205,8 +205,23 @@ std::vector<SoundFrame> SplitOnSilence(const PeakData& peaks, const SilenceParam
     return out;
 }
 
+std::vector<SoundFrame> DetectFramesAt0(const EntryFacts& facts, DetectMode mode, const SilenceParams& silence,
+                                        const PeakData* peaks);
+
+// Antho 2026-10-13: as in REAPER, the item's gain sits on what it plays: each detected variation starts
+// at the source item's own volume (an item at +18.5 dB gives variations at +18.5 dB, shown on their
+// boxes, drawn, heard and placed at that level).
 std::vector<SoundFrame> DetectFrames(const EntryFacts& facts, DetectMode mode, const SilenceParams& silence,
                                      const PeakData* peaks)
+{
+    std::vector<SoundFrame> out = DetectFramesAt0(facts, mode, silence, peaks);
+    if (std::isfinite(facts.item_db))
+        for (SoundFrame& f : out) f.db = facts.item_db;
+    return out;
+}
+
+std::vector<SoundFrame> DetectFramesAt0(const EntryFacts& facts, DetectMode mode, const SilenceParams& silence,
+                                        const PeakData* peaks)
 {
     std::vector<SoundFrame> out;
     // The item's length in source time (13-24 review: a converted Sound reads its frames in file time).

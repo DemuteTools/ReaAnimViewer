@@ -79,6 +79,16 @@ std::string AssignKeyLabel(const std::string& key);
 // word. False (part "other", type "rules") for an auto block of a kind this version does not know.
 bool PartOfBlock(const Block& b, std::string* part, std::string* type);
 
+// 13-23 (spec 13-20-23-25 D1): a built-in role's side-free key, RolePart with spaces as '_' ("heel",
+// "toe_end", "hips").
+std::string RoleFamilyKey(Role r);
+// The side-free role key of a block's events ("" = none: a divided Sound places the whole variation).
+// Auto blocks: the heel kinds (Heel, Slide / Pivot Heel, both part modes) "heel", the toe kinds "toe",
+// Grab / Release / Hand Pivot (both) "hand", Step / Slide / Pivot / Lift "". Bone rules: the first role
+// its first condition reads (bones, then ref_bones, as PartOfBlock): a built-in role's RoleFamilyKey, a
+// custom role's key without a leading "left_" / "right_"; plain bones are skipped ("" when no role).
+std::string EventRoleKey(const Block& b);
+
 // ---- Resolution -------------------------------------------------------------------------------
 
 // Where the library came from.

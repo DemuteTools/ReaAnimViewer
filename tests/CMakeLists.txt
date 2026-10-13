@@ -152,7 +152,7 @@ add_test(NAME sound_record COMMAND sound_record_test)
 
 # Epic 13 -- one target per pure module (13-2 placeholders; each wave story replaces its own test).
 # Story 13-3 -- src/sound_entries.h
-add_executable(sound_entries_test sound_entries_test.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+add_executable(sound_entries_test sound_entries_test.cpp ../src/sound_entries.cpp ../src/sound_draw.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
 target_include_directories(sound_entries_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_entries COMMAND sound_entries_test)
 
@@ -161,7 +161,7 @@ add_executable(peak_lanes_test peak_lanes_test.cpp)
 target_include_directories(peak_lanes_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME peak_lanes COMMAND peak_lanes_test)
 # Story 13-3 -- src/sound_draw.h
-add_executable(sound_draw_test sound_draw_test.cpp ../src/sound_draw.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+add_executable(sound_draw_test sound_draw_test.cpp ../src/sound_draw.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
 target_include_directories(sound_draw_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_draw COMMAND sound_draw_test)
 # Story 13-4 -- src/sound_switch.h
@@ -187,7 +187,7 @@ add_executable(sound_place_plan_test sound_place_plan_test.cpp ../src/sound_plac
 target_include_directories(sound_place_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_place_plan COMMAND sound_place_plan_test)
 # Story 13-10 -- src/sound_attach_plan.h
-add_executable(sound_attach_plan_test sound_attach_plan_test.cpp ../src/sound_attach_plan.cpp ../src/sound_draw.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+add_executable(sound_attach_plan_test sound_attach_plan_test.cpp ../src/sound_attach_plan.cpp ../src/sound_draw.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
 target_include_directories(sound_attach_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_attach_plan COMMAND sound_attach_plan_test)
 # Story 13-8 -- src/sound_populate_plan.h
@@ -210,7 +210,7 @@ add_executable(sound_assign_test sound_assign_test.cpp ../src/sound_assign.cpp .
 target_include_directories(sound_assign_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_assign COMMAND sound_assign_test)
 # Story 13-9 -- src/sound_follow_plan.h
-add_executable(sound_follow_plan_test sound_follow_plan_test.cpp ../src/sound_follow_plan.cpp ../src/sound_record.cpp ../src/rule_record.cpp ../src/sound_draw.cpp ../src/event_list.cpp ../src/tagging_signal.cpp ../src/auto_detect.cpp ../src/motion_physics.cpp ../src/bone_events.cpp)
+add_executable(sound_follow_plan_test sound_follow_plan_test.cpp ../src/sound_follow_plan.cpp ../src/sound_record.cpp ../src/rule_record.cpp ../src/sound_draw.cpp ../src/sound_entries.cpp ../src/event_list.cpp ../src/tagging_signal.cpp ../src/auto_detect.cpp ../src/motion_physics.cpp ../src/bone_events.cpp)
 target_include_directories(sound_follow_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_follow_plan COMMAND sound_follow_plan_test)
 # Story 13-11 -- src/ravlib.h

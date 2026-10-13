@@ -19,6 +19,7 @@ struct ValueLayers {
     std::vector<ValueSet> item;
     std::vector<ValueSet> rule;
     std::vector<ValueSet> event;
+    std::string           role;  // 13-23 (D1): the event's side-free role key ("" = none: the whole variation)
 };
 
 // What resolution asks its caller (so it calls no other module): the child index a Random node
@@ -37,6 +38,7 @@ struct ResolvedSound {
     double      gain_db = 0.0;    // volumes summed down the path
     int         variation = -1;
     bool        missing = false;
+    std::string part_value;       // 13-23 (D3): the part it plays (value uid, "" = the whole variation)
 };
 
 struct Resolution {

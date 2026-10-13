@@ -8,6 +8,9 @@
 // v1 file: line 1 "RAVLIB 1", then exactly SerializeSoundStore of a store holding the one library
 // and the groups its Switches use, its header line dropped. The file never holds the library's
 // ravlib_path nor a File source's item_guid (both project-local, spec 13-11 decision 5).
+// v2 (13-23, spec 13-20-23-25 D8): the same grammar; the groups also include the ones its Sounds are
+// divided by (with their values' roles), and Sound / frame / zone lines may hold the parts, zones and
+// sync points. A v1 file reads with the same parser (its Sounds combined).
 
 #pragma once
 
@@ -26,6 +29,7 @@ namespace rav {
 class MediaDbIndex;
 
 constexpr const char kRavlibMagic[] = "RAVLIB";
+constexpr int        kRavlibVersion = 2;  // the version SerializeRavlib writes; any >= 1 reads
 constexpr const char kRavlibExt[] = ".ravlib";
 // Where a User Library Sound lands when no node above it says (decision 12).
 constexpr const char kDefaultLandsIn[] = "RAV Library";
@@ -37,13 +41,16 @@ bool ParseRavlib(const std::string& text, SoundStore* out);
 std::string SerializeRavlib(const SoundStore& one);
 
 // The export form of one library of `store`: the library (ravlib_path cleared, File sources'
-// item_guid cleared) and the groups its Switches use, in store order. `item_sounds` (optional)
+// item_guid cleared) and the groups its Switches use or its Sounds are divided by, in store order. `item_sounds` (optional)
 // gets how many of its Sounds come from project items (missing anywhere else). An unknown uid
 // gives an empty store.
 SoundStore RavlibOf(const SoundStore& store, const std::string& lib_uid, int* item_sounds);
 
 // Import merge (decision 7). False and `store` unchanged when `file` is not one library or its
 // uid is already in the store (`why` "Already in this project", `lib_uid` = that uid).
+// 13-23 (D2): a group new to the project comes with its values' roles; a group the project has keeps
+// the project's role map (a value it adds brings only the role keys no value of that group holds).
+// Divide groups and values, role maps, zones' parts and Blend layer parts follow the merge's uids.
 bool AddRavlibLibrary(SoundStore& store, const SoundStore& file, const std::string& file_name, std::string* lib_uid,
                       std::string* why);
 

@@ -4,6 +4,7 @@
 
 #include "ravlib.h"
 
+#include <cmath>
 #include <cstdio>
 #include <map>
 #include <vector>
@@ -116,7 +117,7 @@ static void TestRoundTrip()
     const SoundStore s = RichStore();
     const SoundStore one = RavlibOf(s, "l000000000000001", nullptr);
     const std::string text = SerializeRavlib(one);
-    CHECK(text.rfind("RAVLIB 1\n", 0) == 0);
+    CHECK(text.rfind("RAVLIB 2\n", 0) == 0);  // 13-23: kRavlibVersion
     SoundStore back;
     CHECK(ParseRavlib(text, &back));
     CHECK(SerializeRavlib(back) == text);
@@ -708,8 +709,118 @@ static void TestConvertFreezesFrames()
           g->sound.mode == DetectMode::Silence);
 }
 
+
+// 13-23 (spec 13-20-23-25 D2 / D8): a divided Sound's group (with its roles) travels in the file; a
+// new project gets the group and the same parts, zones and syncs; an existing group keeps the
+// project's role map; a v1 file still reads (its Sounds combined).
+static SoundStore DividedStore()
+{
+    SoundStore  s = RichStore();
+    SwitchGroup c;
+    c.uid = "g000000000000009";
+    c.name = "Contact";
+    c.values = {{"v000000000000091", "Back", {}, {"heel"}}, {"v000000000000092", "Front", {}, {"toe", "toe_end"}}};
+    s.groups.push_back(c);
+    SoundData& d = s.libraries[0].nodes[3].sound;  // wood1.wav, under a Random
+    d.divide_group = c.uid;
+    d.divide_values = {"v000000000000091", "v000000000000092"};
+    d.role_map = {{"hand", "v000000000000092"}};
+    d.lanes_split = true;
+    d.sync_mode = SyncMode::Peak;
+    d.sync_offset_ms = -5.0;
+    d.cut_fade = 0.003;
+    d.zones = {{0.1, 0.05, "", {}}, {0.3, 0.02, "v000000000000091", {}}};
+    d.frames[0].cuts = {0.2};
+    d.frames[0].cuts_hand = true;
+    d.frames[0].syncs = {0.01, 0.21};
+    d.frames[0].hand_syncs = {0.21};
+    s.libraries[0].nodes[5].layer_part = "v000000000000092";  // metal2.wav, a Blend layer
+    s.libraries[0].nodes[4].layer_part = kLayerPartWhole;
+    return s;
+}
+
+static void TestDividedTravels()
+{
+    const SoundStore one = RavlibOf(DividedStore(), "l000000000000001", nullptr);
+    CHECK(one.groups.size() == 2 && one.groups[1].name == "Contact");  // the divide group comes along
+    const std::string text = SerializeRavlib(one);
+    CHECK(text.rfind("RAVLIB 2\n", 0) == 0);
+    CHECK(text.find("value uid=v000000000000092 name=Front roles=toe,toe_end\n") != std::string::npos);
+    SoundStore back;
+    CHECK(ParseRavlib(text, &back) && SerializeRavlib(back) == text);
+
+    // Into a new project: a fresh group with its roles, every uid of the Sound follows.
+    SoundStore  proj;
+    std::string uid;
+    CHECK(AddRavlibLibrary(proj, back, "Steps.ravlib", &uid, nullptr));
+    const SwitchGroup* g = nullptr;
+    for (const SwitchGroup& x : proj.groups)
+        if (x.name == "Contact") g = &x;
+    CHECK(g && g->values.size() == 2 && g->values[0].roles == std::vector<std::string>{"heel"} &&
+          g->values[1].roles == (std::vector<std::string>{"toe", "toe_end"}));
+    const SoundLibrary* lib = FindLibrary(proj, uid);
+    const SoundNode*    snd = nullptr;
+    const SoundNode*    lay = nullptr;
+    const SoundNode*    whole = nullptr;
+    if (lib)
+        for (const SoundNode& n : lib->nodes) {
+            if (n.name == "wood1.wav") snd = &n;
+            if (n.name == "metal2.wav") lay = &n;
+            if (n.name == "metal1.wav") whole = &n;
+        }
+    CHECK(g && snd && lay && whole);
+    if (g && snd && lay && whole) {
+        const SoundData& d = snd->sound;
+        CHECK(d.divide_group == g->uid);
+        CHECK(d.divide_values == (std::vector<std::string>{g->values[0].uid, g->values[1].uid}));
+        CHECK(d.role_map.size() == 1 && d.role_map[0].role == "hand" && d.role_map[0].value == g->values[1].uid);
+        CHECK(d.zones.size() == 2 && d.zones[0].to.empty() && d.zones[1].to == g->values[0].uid);
+        CHECK(d.lanes_split && d.sync_mode == SyncMode::Peak && d.sync_offset_ms == -5.0 && d.cut_fade == 0.003);
+        CHECK(d.frames[0].cuts == std::vector<double>{0.2} && d.frames[0].cuts_hand);
+        CHECK(d.frames[0].syncs == (std::vector<double>{0.01, 0.21}) && d.frames[0].hand_syncs == std::vector<double>{0.21});
+        CHECK(lay->layer_part == g->values[1].uid && whole->layer_part == kLayerPartWhole);
+        // The same parts: Back owns the start (the excluded zone a hole in it) and the zone given to it
+        // inside Front.
+        const std::vector<PartSpan> back_spans = PlacedSpans(d, 0, g->values[0].uid);
+        CHECK(back_spans.size() == 3 && back_spans[0].start == 0.0 && std::fabs(back_spans[0].length - 0.1) < 1e-9 &&
+              std::fabs(back_spans[1].start - 0.15) < 1e-9 && std::fabs(back_spans[2].start - 0.3) < 1e-9);
+    }
+
+    // Into a project that has Contact already (other roles): its map stands; a value it adds brings
+    // only the keys no value of the group holds.
+    SoundStore  p2;
+    SwitchGroup pc;
+    pc.uid = "p000000000000009";
+    pc.name = "contact";
+    pc.values = {{"p000000000000091", "Back", {}, {"heel", "toe"}}};
+    p2.groups.push_back(pc);
+    std::string u2;
+    CHECK(AddRavlibLibrary(p2, back, "Steps.ravlib", &u2, nullptr));
+    const SwitchGroup* m = FindGroup(p2, "p000000000000009");
+    CHECK(m && m->values.size() == 2 && m->values[0].roles == (std::vector<std::string>{"heel", "toe"}));
+    CHECK(m && m->values[1].name == "Front" && m->values[1].roles == std::vector<std::string>{"toe_end"});
+    const SoundLibrary* l2 = FindLibrary(p2, u2);
+    const SoundNode*    s2 = nullptr;
+    if (l2)
+        for (const SoundNode& n : l2->nodes)
+            if (n.name == "wood1.wav") s2 = &n;
+    CHECK(m && s2 && s2->sound.divide_group == m->uid && s2->sound.divide_values[0] == "p000000000000091" &&
+          s2->sound.divide_values[1] == m->values[1].uid);
+
+    // A v1 file (written before parts) still reads: combined, no syncs.
+    SoundStore v1;
+    CHECK(ParseRavlib("RAVLIB 1\nlibrary uid=l000000000000009 name=P root=n000000000000009\n"
+                      "node uid=n000000000000009 type=sound name=S\nsound kind=file aname=a.wav\nframe start=0 len=1\n",
+                      &v1));
+    CHECK(v1.libraries.size() == 1 && v1.libraries[0].nodes[0].sound.divide_group.empty() &&
+          v1.libraries[0].nodes[0].sound.frames[0].syncs.empty() &&
+          v1.libraries[0].nodes[0].sound.sync_mode == SyncMode::Attack &&
+          v1.libraries[0].nodes[0].sound.sync_offset_ms == kDefaultSyncOffsetMs);
+}
+
 int main()
 {
+    TestDividedTravels();
     TestFileSourceFromItem();
     TestConvertLibrary();
     TestConvertFreezesFrames();

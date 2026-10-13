@@ -4,6 +4,8 @@
 
 #include "sound_draw.h"
 
+#include "sound_entries.h"  // PlacedSpans
+
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
@@ -46,6 +48,14 @@ std::vector<int> ActiveVariations(const SoundData& data)
     std::vector<int> out;
     for (size_t i = 0; i < data.frames.size(); ++i)
         if (data.frames[i].on) out.push_back(static_cast<int>(i));
+    return out;
+}
+
+std::vector<int> ActiveVariationsFor(const SoundData& data, const std::string& part_value)
+{
+    std::vector<int> out;
+    for (int i : ActiveVariations(data))
+        if (!PlacedSpans(data, i, part_value).empty()) out.push_back(i);
     return out;
 }
 

@@ -80,6 +80,45 @@ static void TestTable()
     }
 }
 
+
+// 13-23 (spec 13-20-23-25 D1): the side-free role of a block's events.
+static void TestEventRoleKey()
+{
+    CHECK(RoleFamilyKey(Role::LeftToeEnd) == "toe_end" && RoleFamilyKey(Role::RightHeel) == "heel" &&
+          RoleFamilyKey(Role::Hips) == "hips" && RoleFamilyKey(Role::LeftUpLeg) == "hip" &&
+          RoleFamilyKey(Role::RightHand) == "hand");
+    // Every auto kind, both sides: heel kinds, toe kinds, hand kinds; combined ones have none.
+    const char* want[kAutoKindCount] = {"",     "heel", "toe",  "",     "",     "",     "hand", "hand", "hand",
+                                        "hand", "heel", "toe",  "heel", "toe",  "heel", "toe",  "heel", "toe"};
+    for (int k = 0; k < kAutoKindCount; ++k)
+        for (char side : {'L', 'R'}) CHECK(EventRoleKey(AutoB(static_cast<AutoKind>(k), side, "x")) == want[k]);
+    Block unknown = AutoB(AutoKind::Heel, 'L', "x");
+    unknown.auto_type = "future_kind";
+    CHECK(EventRoleKey(unknown).empty());
+    // Rules: the first role of the first condition; built-in roles read side-free.
+    CHECK(EventRoleKey(RuleB("r", {static_cast<int>(Role::LeftToeEnd)})) == "toe_end");
+    CHECK(EventRoleKey(RuleB("r", {static_cast<int>(Role::RightHeel), static_cast<int>(Role::LeftToe)})) == "heel");
+    CHECK(EventRoleKey(RuleB("r", {}, {static_cast<int>(Role::LeftHand)})) == "hand");  // ref bones too
+    // A custom role: its key without its side; a plain bone is skipped; nothing = "".
+    const int ball = BoneRefId("role:left_ball");
+    const int paw = BoneRefId("role:paw");
+    const int bone = BoneRefForBone("mixamorig:LeftFoot");
+    CHECK(EventRoleKey(RuleB("r", {ball})) == "ball" && EventRoleKey(RuleB("r", {paw})) == "paw");
+    CHECK(EventRoleKey(RuleB("r", {BoneRefId("role:right_ball")})) == "ball");
+    CHECK(EventRoleKey(RuleB("r", {bone})).empty());
+    CHECK(EventRoleKey(RuleB("r", {bone, static_cast<int>(Role::LeftToe)})) == "toe");
+    CHECK(EventRoleKey(RuleB("r", {bone}, {ball})) == "ball");
+    Block none;
+    none.marker = "Rule";
+    CHECK(EventRoleKey(none).empty());
+    // Only the first condition counts.
+    Block two = RuleB("r", {bone});
+    Condition c2;
+    c2.signal.bones = {static_cast<int>(Role::LeftHeel)};
+    two.conditions.push_back(c2);
+    CHECK(EventRoleKey(two).empty());
+}
+
 static void TestPartOfBlock()
 {
     CHECK(PartOf(RuleB("r", {static_cast<int>(Role::LeftHeel)})) == "feet.rules");
@@ -658,6 +697,7 @@ int main()
 {
     TestTable();
     TestPartOfBlock();
+    TestEventRoleKey();
     TestLibraryChain();
     TestValueChain();
     TestCharacterFor();

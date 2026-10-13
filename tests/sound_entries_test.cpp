@@ -5,6 +5,8 @@
 
 #include "sound_entries.h"
 
+#include "sound_draw.h"  // ActiveVariationsFor
+
 #include <cmath>
 #include <cstdio>
 
@@ -397,10 +399,356 @@ void TestFades()
     CHECK(Near(f.in, 0.0) && Near(f.out, 0.004));
 }
 
+// ---- 13-20 / 13-23 / 13-25: parts, zones, sync points (spec 13-20-23-25 D5 / D6) -----------------
+
+// 1 kHz peaks of `seconds`, silent at -100 dB.
+PeakData Quiet(double seconds)
+{
+    PeakData p;
+    p.rate = 1000.0;
+    p.max_abs.assign(static_cast<size_t>(seconds * 1000.0), 1e-5f);
+    return p;
+}
+
+// A transient at `t` (s) peaking at `db`, decaying 1 dB per ms (kept where louder than what is there).
+void Hit(PeakData& p, double t, double db)
+{
+    const long long i0 = std::llround(t * p.rate);
+    for (long long i = i0; i < static_cast<long long>(p.max_abs.size()) && i < i0 + 200; ++i) {
+        const float v = static_cast<float>(std::pow(10.0, (db - static_cast<double>(i - i0)) / 20.0));
+        if (v > p.max_abs[static_cast<size_t>(i)]) p.max_abs[static_cast<size_t>(i)] = v;
+    }
+}
+
+// A footstep Sound: one frame 1.000-1.400 s, heel at 1.020 (-4 dB), toe at 1.150 (-7 dB).
+SoundData Step(PeakData* peaks)
+{
+    *peaks = Quiet(3.0);
+    Hit(*peaks, 1.020, -4.0);
+    Hit(*peaks, 1.150, -7.0);
+    SoundData d;
+    d.mode = DetectMode::Silence;
+    d.frames = {F(1.0, 0.4)};
+    return d;
+}
+
+const char kBack[] = "v0000000000000b1";
+const char kFront[] = "v0000000000000f1";
+
+void TestSyncSliced()
+{
+    PeakData  pk;
+    SoundData d = Step(&pk);
+    RefreshParts(d, &pk);
+    // Matrix row 1: the attack at 1.020, -2 ms: the item starts at 1.000 with snap 0.018.
+    CHECK(d.frames[0].syncs.size() == 1 && Near(d.frames[0].syncs[0], 1.018));
+    CHECK(Near(SyncFor(d, 0, ""), 1.018) && !SyncsStale(d, 0));
+    CHECK(d.frames[0].cuts.empty());
+    // Peak: the loudest bin (the heel's top), + the offset.
+    d.sync_mode = SyncMode::Peak;
+    d.sync_offset_ms = 0.0;
+    RefreshParts(d, &pk);
+    CHECK(Near(d.frames[0].syncs[0], 1.020));
+    // Slice start + 3 ms; a negative offset is clamped into the frame.
+    d.sync_mode = SyncMode::SliceStart;
+    d.sync_offset_ms = 3.0;
+    RefreshParts(d, &pk);
+    CHECK(Near(d.frames[0].syncs[0], 1.003));
+    d.sync_offset_ms = -5.0;
+    RefreshParts(d, &pk);
+    CHECK(Near(d.frames[0].syncs[0], 1.0));
+    // Attack + a large offset is clamped to the frame's end.
+    d.sync_mode = SyncMode::Attack;
+    d.sync_offset_ms = 1000.0;
+    RefreshParts(d, &pk);
+    CHECK(Near(d.frames[0].syncs[0], 1.4));
+    // Attack over a part quieter than the threshold: 20 dB under its peak still finds it.
+    d.sync_offset_ms = 0.0;
+    d.silence.threshold_db = 10.0;
+    RefreshParts(d, &pk);
+    CHECK(Near(d.frames[0].syncs[0], 1.020));
+    // Without peaks: Slice start is measured, Attack / Peak keep a stored sync still inside, else wait
+    // for placement (syncs empty: stale).
+    SoundData n = d;
+    RefreshParts(n, nullptr);
+    CHECK(n.frames[0].syncs.size() == 1 && Near(n.frames[0].syncs[0], 1.020));
+    n.frames[0].syncs.clear();
+    RefreshParts(n, nullptr);
+    CHECK(n.frames[0].syncs.empty() && SyncsStale(n, 0) && SyncFor(n, 0, "") < 0.0);
+    n.sync_mode = SyncMode::SliceStart;
+    RefreshParts(n, nullptr);
+    CHECK(n.frames[0].syncs.size() == 1 && Near(n.frames[0].syncs[0], 1.0));
+    // Review: changing the sync settings drops the measured syncs, so without peaks the old Attack sync
+    // is not kept under Peak: placement measures it.
+    SoundData m = d;
+    CHECK(SetSyncSettings(m, SyncMode::Peak, 0.0) && !SetSyncSettings(m, SyncMode::Peak, 0.0));
+    CHECK(m.frames[0].syncs.empty());
+    RefreshParts(m, nullptr);
+    CHECK(SyncsStale(m, 0));
+    CHECK(!SetSyncSettings(m, SyncMode::Attack, std::nan("")));
+    // Takes mode: no cuts, no syncs (A8).
+    SoundData t = d;
+    t.mode = DetectMode::Takes;
+    RefreshParts(t, &pk);
+    CHECK(t.frames[0].syncs.empty() && t.frames[0].cuts.empty() && !SyncsStale(t, 0));
+}
+
+// Review: a transient rising over 30 ms (-60 to -4 dB): Attack and Peak differ, and the threshold
+// counts only when it is above the peak - 20 dB.
+void TestAttackVsPeak()
+{
+    PeakData pk = Quiet(2.0);
+    for (int k = 0; k <= 30; ++k)
+        pk.max_abs[static_cast<size_t>(1000 + k)] = static_cast<float>(std::pow(10.0, (-60.0 + 56.0 * k / 30.0) / 20.0));
+    Hit(pk, 1.030, -4.0);
+    SoundData d;
+    d.mode = DetectMode::Silence;
+    d.frames = {F(0.9, 0.4)};
+    d.sync_offset_ms = 0.0;
+    d.silence.threshold_db = -50.0;
+    RefreshParts(d, &pk);
+    CHECK(Near(d.frames[0].syncs[0], 1.020));  // first bin >= -24 dB (peak - 20)
+    d.silence.threshold_db = -10.0;
+    RefreshParts(d, &pk);
+    CHECK(Near(d.frames[0].syncs[0], 1.027));  // first bin >= the threshold
+    SetSyncSettings(d, SyncMode::Peak, 0.0);
+    RefreshParts(d, &pk);
+    CHECK(Near(d.frames[0].syncs[0], 1.030));
+}
+
+void TestOnsetsAndCuts()
+{
+    PeakData  pk;
+    SoundData d = Step(&pk);
+    std::vector<Onset> on = FindOnsets(pk, 1.0, 0.4);
+    CHECK(on.size() == 2);
+    if (on.size() == 2) {
+        CHECK(Near(on[0].t, 1.020) && Near(on[0].db, -4.0, 1e-3) && Near(on[1].t, 1.150) && Near(on[1].db, -7.0, 1e-3));
+        CHECK(Near(on[1].rise, 1.150));  // it rises from the heel's tail right at 1.150
+    }
+    // A rise under 6 dB is no onset; two maxima closer than 20 ms keep the louder.
+    PeakData small = Quiet(1.0);
+    Hit(small, 0.1, -10.0);
+    Hit(small, 0.112, -4.0);  // 12 ms later, louder
+    Hit(small, 0.3, -10.0);
+    Hit(small, 0.330, -36.0);  // a bump in its tail rising 3 dB over the previous 15 ms: no onset
+    std::vector<Onset> s2 = FindOnsets(small, 0.0, 1.0);
+    CHECK(s2.size() == 2 && Near(s2[0].t, 0.112) && Near(s2[1].t, 0.3));
+    // A transient on the source's first bin is an onset; a quiet floor there is not.
+    PeakData first = Quiet(0.5);
+    CHECK(FindOnsets(first, 0.0, 0.5).empty());
+    Hit(first, 0.0, -6.0);
+    std::vector<Onset> f0 = FindOnsets(first, 0.0, 0.5);
+    CHECK(f0.size() == 1 && Near(f0[0].t, 0.0) && Near(f0[0].rise, 0.0));
+
+    // Divided in two: the cut sits 5 ms before the toe's rise; sure (one candidate).
+    bool unsure = true;
+    std::vector<double> cuts = AutoCuts(&pk, d.frames[0], 2, &unsure);
+    CHECK(cuts.size() == 1 && Near(cuts[0], 1.145) && !unsure);
+    // Two candidates within 3 dB after the first: unsure; the louder one is cut.
+    PeakData q = pk;
+    Hit(q, 1.250, -8.5);
+    cuts = AutoCuts(&q, d.frames[0], 2, &unsure);
+    CHECK(cuts.size() == 1 && Near(cuts[0], 1.145) && unsure);
+    // Three parts: both, in time order.
+    cuts = AutoCuts(&q, d.frames[0], 3, &unsure);
+    CHECK(cuts.size() == 2 && Near(cuts[0], 1.145) && Near(cuts[1], 1.245) && !unsure);
+    // Too few onsets: an even split.
+    cuts = AutoCuts(&pk, d.frames[0], 3, &unsure);
+    CHECK(cuts.size() == 2 && Near(cuts[0], 1.0 + 0.4 / 3) && Near(cuts[1], 1.0 + 0.8 / 3) && !unsure);
+    cuts = AutoCuts(nullptr, d.frames[0], 2, &unsure);
+    CHECK(cuts.size() == 1 && Near(cuts[0], 1.2));
+    CHECK(AutoCuts(&pk, d.frames[0], 1, &unsure).empty());
+}
+
+void TestOwnershipAndSpans()
+{
+    PeakData  pk;
+    SoundData d = Step(&pk);
+    CHECK(!IsDivided(d) && PartCount(d) == 1);
+    // Combined: one span, owner "".
+    std::vector<PartSpan> sp = PartSpansOf(d, 0);
+    CHECK(sp.size() == 1 && sp[0].value_uid.empty() && Near(sp[0].start, 1.0) && Near(sp[0].length, 0.4));
+    CHECK(SetDivide(d, "g", {kBack, kFront}) && !SetDivide(d, "g", {kBack, kFront}));
+    CHECK(IsDivided(d) && PartCount(d) == 2 && PartIndex(d, kFront) == 1 && PartIndex(d, "x") == -1);
+    RefreshParts(d, &pk);
+    CHECK(d.frames[0].cuts.size() == 1 && Near(d.frames[0].cuts[0], 1.145));
+    // Each part's sync on its own attack, -2 ms.
+    CHECK(d.frames[0].syncs.size() == 2 && Near(d.frames[0].syncs[0], 1.018) && Near(d.frames[0].syncs[1], 1.148));
+    CHECK(Near(SyncFor(d, 0, kFront), 1.148) && Near(SyncFor(d, 0, ""), 1.018));
+    std::string v;
+    CHECK(PartAt(d, 0, 1.1, &v) && v == kBack && PartAt(d, 0, 1.2, &v) && v == kFront);
+    CHECK(!PartAt(d, 0, 0.5, &v) && !PartAt(d, 3, 1.1, &v));
+    sp = PartSpansOf(d, 0);
+    CHECK(sp.size() == 2 && sp[0].value_uid == kBack && Near(sp[0].length, 0.145) && sp[1].value_uid == kFront);
+    // An excluded zone inside Back: 2 Back spans, the gap empty; the whole placement keeps the hole.
+    CHECK(AddZone(d, 1.05, 0.03, ""));
+    CHECK(!PartAt(d, 0, 1.06, &v));
+    std::vector<PartSpan> back = PlacedSpans(d, 0, kBack);
+    CHECK(back.size() == 2 && Near(back[0].start, 1.0) && Near(back[0].length, 0.05) && Near(back[1].start, 1.08) &&
+          Near(back[1].length, 0.065));
+    std::vector<PartSpan> whole = PlacedSpans(d, 0, "");
+    CHECK(whole.size() == 2 && whole[0].value_uid.empty() && Near(whole[1].start, 1.08) && Near(whole[1].length, 0.32));
+    // A zone given to Back inside Front: Back owns it (later zones win), Front gets two spans.
+    CHECK(AddZone(d, 1.3, 0.02, kBack));
+    CHECK(PartAt(d, 0, 1.31, &v) && v == kBack);
+    CHECK(PlacedSpans(d, 0, kFront).size() == 2 && PlacedSpans(d, 0, kBack).size() == 3);
+    // A later exclusion over it wins; Include again removes the exclusion only.
+    CHECK(AddZone(d, 1.29, 0.04, ""));  // covers the Back zone fully: it goes
+    CHECK(d.zones.size() == 2 && !PartAt(d, 0, 1.31, &v));
+    CHECK(IncludeAgain(d, 1.31) && d.zones.size() == 1 && PartAt(d, 0, 1.31, &v) && v == kFront);
+    CHECK(!IncludeAgain(d, 1.31) && !AddZone(d, 1.2, 0.0005, ""));
+    // A zone's `to` that is not a divide value: the part by cuts.
+    SoundData o = d;
+    o.zones.push_back({1.2, 0.05, "elsewhere", {}});
+    CHECK(PartAt(o, 0, 1.22, &v) && v == kFront);
+    // Combined: a `to` zone owns nothing special.
+    SoundData c = d;
+    CHECK(SetDivide(c, "", {}));
+    CHECK(c.divide_values.empty() && PartSpansOf(c, 0).size() == 2);
+    // An off frame has no span.
+    SoundData off = d;
+    off.frames[0].on = false;
+    CHECK(PartSpansOf(off, 0).empty() && PlacedSpans(off, 0, "").empty());
+}
+
+void TestEmptyPart()
+{
+    PeakData  pk;
+    SoundData d = Step(&pk);
+    SetDivide(d, "g", {kBack, kFront});
+    d.frames.push_back(F(2.0, 0.4));
+    Hit(pk, 2.020, -4.0);
+    Hit(pk, 2.150, -7.0);
+    RefreshParts(d, &pk);
+    // Every Front part excluded in frame 0: it is skipped for Front, kept for Back and the whole.
+    CHECK(AddZone(d, 1.145, 0.255, ""));
+    RefreshParts(d, &pk);
+    CHECK(PlacedSpans(d, 0, kFront).empty() && d.frames[0].syncs.size() == 2 && d.frames[0].syncs[1] < 0.0);
+    CHECK(!SyncsStale(d, 0) && SyncFor(d, 0, kFront) < 0.0);
+    CHECK(ActiveVariationsFor(d, kFront) == std::vector<int>{1});
+    CHECK((ActiveVariationsFor(d, kBack) == std::vector<int>{0, 1}) && (ActiveVariationsFor(d, "") == std::vector<int>{0, 1}));
+    CHECK(AddZone(d, 2.145, 0.255, ""));
+    CHECK(ActiveVariationsFor(d, kFront).empty());
+    d.frames[1].on = false;
+    CHECK(ActiveVariationsFor(d, kBack) == std::vector<int>{0});
+}
+
+void TestHandMarks()
+{
+    PeakData  pk;
+    SoundData d = Step(&pk);
+    SetDivide(d, "g", {kBack, kFront});
+    RefreshParts(d, &pk);
+    // Move the cut by hand: clamped inside the frame, kept by a refresh.
+    CHECK(MoveCut(d, 0, 0, 1.6) && Near(d.frames[0].cuts[0], 1.399) && d.frames[0].cuts_hand);
+    CHECK(MoveCut(d, 0, 0, 1.17) && !MoveCut(d, 0, 0, 1.17) && !MoveCut(d, 0, 1, 1.2) && !MoveCut(d, 2, 0, 1.2));
+    RefreshParts(d, &pk);
+    CHECK(Near(d.frames[0].cuts[0], 1.17) && d.frames[0].cuts_hand && !d.frames[0].cut_unsure);
+    // Move Front's sync by hand: clamped into Front, wins over the attack, kept by a refresh.
+    CHECK(MoveSync(d, 0, 1, 1.1) && Near(d.frames[0].hand_syncs.back(), 1.17, 1e-5) && d.frames[0].hand_syncs.back() > 1.17);
+    CHECK(MoveSync(d, 0, 1, 1.2) && d.frames[0].hand_syncs.size() == 1 && Near(d.frames[0].syncs[1], 1.2));
+    CHECK(!MoveSync(d, 0, 2, 1.2) && !MoveSync(d, 1, 0, 1.2));
+    // Review: a sync dragged onto the cut belongs to one part only; Back's does not take or erase Front's.
+    {
+        SoundData c = d;
+        CHECK(MoveSync(c, 0, 1, 1.1) && MoveSync(c, 0, 0, 1.3) && c.frames[0].hand_syncs.size() == 2);
+        RefreshParts(c, &pk);
+        CHECK(Near(c.frames[0].syncs[0], 1.17, 1e-5) && c.frames[0].syncs[0] < 1.17);
+        CHECK(Near(c.frames[0].syncs[1], 1.17, 1e-5) && c.frames[0].syncs[1] > 1.17);
+    }
+    d.sync_offset_ms = -4.0;
+    RefreshParts(d, &pk);
+    CHECK(Near(d.frames[0].syncs[1], 1.2) && Near(d.frames[0].syncs[0], 1.016));
+
+    // Threshold change (matrix): a new detection splits the frame in two; the hand sync goes to the frame
+    // now holding 1.2, the hand cut stays when it falls inside one new frame.
+    std::vector<SoundFrame> now = {F(1.0, 0.1), F(1.12, 0.28)};
+    CarryHandMarks(now, d.frames);
+    CHECK(now[0].hand_syncs.empty() && now[1].hand_syncs == std::vector<double>{1.2});
+    CHECK(now[1].cuts_hand && now[1].cuts == std::vector<double>{1.17} && !now[0].cuts_hand);
+    // A hand cut whose cuts fall in two frames is not carried.
+    SoundData three = d;
+    SetDivide(three, "g", {kBack, kFront, "v0000000000000c1"});
+    three.frames[0].cuts = {1.05, 1.3};
+    three.frames[0].cuts_hand = true;
+    std::vector<SoundFrame> split = {F(1.0, 0.1), F(1.12, 0.28)};
+    CarryHandMarks(split, three.frames);
+    CHECK(!split[0].cuts_hand && !split[1].cuts_hand);
+    // Marks `now` held are replaced (a hand frame copied by MergeHandFrames does not double them).
+    std::vector<SoundFrame> same = d.frames;
+    CarryHandMarks(same, d.frames);
+    CHECK(same[0].hand_syncs.size() == 1 && same[0].cuts_hand);
+
+    // Reset to detected (A7): the hand sync stays, the excluded zone stays, the hand cut and the
+    // "-> value" zone go.
+    CHECK(AddZone(d, 1.3, 0.02, ""));
+    CHECK(AddZone(d, 1.05, 0.02, kFront));
+    d.edited = true;
+    ResetToDetected(d, {F(1.0, 0.4)});
+    CHECK(!d.edited && d.frames.size() == 1 && d.frames[0].hand_syncs == std::vector<double>{1.2});
+    CHECK(!d.frames[0].cuts_hand && d.zones.size() == 1 && d.zones[0].to.empty());
+    RefreshParts(d, &pk);
+    CHECK(Near(d.frames[0].cuts[0], 1.145) && Near(d.frames[0].syncs[1], 1.2));
+    // Reset sync point / cuts of one variation.
+    CHECK(ResetSyncs(d, 0) && !ResetSyncs(d, 0) && !ResetCuts(d, 0));
+    RefreshParts(d, &pk);
+    CHECK(Near(d.frames[0].syncs[1], 1.146));  // the toe's attack, -4 ms
+    CHECK(MoveCut(d, 0, 0, 1.16) && ResetCuts(d, 0) && d.frames[0].cuts.empty());
+    RefreshParts(d, &pk);
+    CHECK(Near(d.frames[0].cuts[0], 1.145) && !d.frames[0].cuts_hand);
+    // A stale sync (outside its part after a hand cut) is reported.
+    d.frames[0].cuts[0] = 1.3;
+    CHECK(SyncsStale(d, 0));
+}
+
+void TestSetDivideAndRoles()
+{
+    SoundStore  st;
+    SwitchGroup g;
+    g.uid = "g";
+    g.name = "Contact";
+    g.values = {{kBack, "Back", {}, {"heel"}}, {kFront, "Front", {}, {"toe", "toe_end"}}, {"v0000000000000z1", "Ball", {}, {"ball"}}};
+    st.groups.push_back(g);
+    SoundData d;
+    d.frames = {F(0, 1)};
+    CHECK(PartOfRole(st, d, "heel").empty());  // combined: the whole variation
+    d.zones = {{0.1, 0.1, "", {}}, {0.3, 0.1, "v0000000000000z1", {}}, {0.5, 0.1, kFront, {}}};
+    d.role_map = {{"hand", kFront}, {"heel", "v0000000000000z1"}};
+    d.frames[0].cuts = {0.5};
+    d.frames[0].syncs = {0.1, 0.6};
+    d.frames[0].hand_syncs = {0.62};
+    CHECK(SetDivide(d, "g", {kBack, kFront}));
+    // The "-> Ball" zone and the role entry on Ball go; the excluded zone, the Front zone and the hand
+    // sync stay; cuts and syncs are measured again.
+    CHECK(d.zones.size() == 2 && d.zones[0].to.empty() && d.zones[1].to == kFront);
+    CHECK(d.role_map.size() == 1 && d.role_map[0].role == "hand");
+    CHECK(d.frames[0].cuts.empty() && d.frames[0].syncs.empty() && d.frames[0].hand_syncs.size() == 1);
+    // The Sound's own map wins whole: hand -> Front, heel (not listed) -> the whole variation.
+    CHECK(PartOfRole(st, d, "hand") == kFront && PartOfRole(st, d, "heel").empty() && PartOfRole(st, d, "").empty());
+    // The group's map when the Sound has none.
+    d.role_map.clear();
+    CHECK(PartOfRole(st, d, "heel") == kBack && PartOfRole(st, d, "toe_end") == kFront && PartOfRole(st, d, "hand").empty());
+    // A value the Sound is not divided by (Ball): the whole variation.
+    CHECK(PartOfRole(st, d, "ball").empty());
+    // An override of heel -> Front for this Sound only.
+    d.role_map = {{"heel", kFront}};
+    CHECK(PartOfRole(st, d, "heel") == kFront);
+    // Back to combined: every part setting goes.
+    CHECK(SetDivide(d, "", {kBack}) && d.divide_values.empty() && d.role_map.empty() && d.zones.size() == 1);
+}
+
 }  // namespace
 
 int main()
 {
+    TestSyncSliced();
+    TestOnsetsAndCuts();
+    TestOwnershipAndSpans();
+    TestEmptyPart();
+    TestAttackVsPeak();
+    TestHandMarks();
+    TestSetDivideAndRoles();
     TestTakes();
     TestWholeClamp();
     TestPlayrate();

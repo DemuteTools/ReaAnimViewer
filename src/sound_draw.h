@@ -20,6 +20,9 @@ int DrawPick(const std::vector<int>& active, int avoid_n, const std::vector<int>
              uint64_t salt);
 // The indices of the Sound's frames that are on.
 std::vector<int> ActiveVariations(const SoundData& data);
+// 13-23 (A5): the frames that can play part `part_value` (a value uid; "" = the whole variation): on,
+// with at least one span of it (PlacedSpans). A variation whose part is empty or excluded is skipped.
+std::vector<int> ActiveVariationsFor(const SoundData& data, const std::string& part_value);
 // An event's salt: rule id + clip time in 100 ms bins (llround(t * 10)). It only seeds a first
 // draw; an event keeps its pick across re-detection through its stored draw (+-30 ms match).
 uint64_t EventSalt(const std::string& rid, double t);

@@ -28,7 +28,27 @@ bool SameFrames(const std::vector<SoundFrame>& a, const std::vector<SoundFrame>&
     if (a.size() != b.size()) return false;
     for (size_t i = 0; i < a.size(); ++i)
         if (a[i].start != b[i].start || a[i].length != b[i].length || a[i].on != b[i].on || a[i].db != b[i].db ||
-            a[i].hand != b[i].hand || a[i].kept != b[i].kept)
+            a[i].hand != b[i].hand || a[i].kept != b[i].kept || a[i].fade_in != b[i].fade_in ||
+            a[i].fade_out != b[i].fade_out || a[i].fade_in_shape != b[i].fade_in_shape ||
+            a[i].fade_out_shape != b[i].fade_out_shape || a[i].cuts != b[i].cuts || a[i].cuts_hand != b[i].cuts_hand ||
+            a[i].cut_unsure != b[i].cut_unsure || a[i].syncs != b[i].syncs || a[i].hand_syncs != b[i].hand_syncs)
+            return false;
+    return true;
+}
+
+// 13-20 / 13-23 / 13-25: a Sound's parts, zones and sync settings.
+bool SameParts(const SoundData& x, const SoundData& y)
+{
+    if (x.divide_group != y.divide_group || x.divide_values != y.divide_values || x.lanes_split != y.lanes_split ||
+        x.sync_mode != y.sync_mode || x.sync_offset_ms != y.sync_offset_ms || x.cut_fade != y.cut_fade ||
+        x.fade_in != y.fade_in || x.fade_out != y.fade_out || x.role_map.size() != y.role_map.size() ||
+        x.zones.size() != y.zones.size())
+        return false;
+    for (size_t i = 0; i < x.role_map.size(); ++i)
+        if (x.role_map[i].role != y.role_map[i].role || x.role_map[i].value != y.role_map[i].value) return false;
+    for (size_t i = 0; i < x.zones.size(); ++i)
+        if (x.zones[i].start != y.zones[i].start || x.zones[i].length != y.zones[i].length ||
+            x.zones[i].to != y.zones[i].to || x.zones[i].kept != y.zones[i].kept)
             return false;
     return true;
 }
@@ -38,7 +58,8 @@ bool SameNode(const SoundNode& a, const SoundNode& b)
     if (a.uid != b.uid || a.parent != b.parent || a.type != b.type || a.name != b.name ||
         a.volume_db != b.volume_db || a.offset_ms != b.offset_ms || a.avoid_repeat != b.avoid_repeat ||
         a.group_uid != b.group_uid || a.default_value != b.default_value || a.preview_value != b.preview_value ||
-        a.unassigned != b.unassigned || a.lands_in != b.lands_in || a.kept != b.kept || a.kept_lines != b.kept_lines)
+        a.unassigned != b.unassigned || a.lands_in != b.lands_in || a.kept != b.kept || a.kept_lines != b.kept_lines ||
+        a.layer_part != b.layer_part)
         return false;
     if (a.cases.size() != b.cases.size()) return false;
     for (size_t i = 0; i < a.cases.size(); ++i)
@@ -52,7 +73,7 @@ bool SameNode(const SoundNode& a, const SoundNode& b)
            x.mode == y.mode && x.silence.threshold_db == y.silence.threshold_db &&
            x.silence.min_gap_ms == y.silence.min_gap_ms && x.silence.preroll_ms == y.silence.preroll_ms &&
            x.silence.tail_ms == y.silence.tail_ms && x.edited == y.edited && x.linked_copies == y.linked_copies &&
-           x.kept == y.kept && SameFrames(x.frames, y.frames);
+           x.kept == y.kept && SameFrames(x.frames, y.frames) && SameParts(x, y);
 }
 
 bool SameStore(const SoundStore& a, const SoundStore& b)
@@ -66,7 +87,7 @@ bool SameStore(const SoundStore& a, const SoundStore& b)
             return false;
         for (size_t j = 0; j < g.values.size(); ++j)
             if (g.values[j].uid != h.values[j].uid || g.values[j].name != h.values[j].name ||
-                g.values[j].kept != h.values[j].kept)
+                g.values[j].kept != h.values[j].kept || g.values[j].roles != h.values[j].roles)
                 return false;
     }
     for (size_t i = 0; i < a.libraries.size(); ++i) {
@@ -136,6 +157,24 @@ SoundStore BigStore()
     snd.sound.silence.tail_ms = 120;
     snd.sound.edited = true;
     snd.sound.frames = {{0.0, 0.25, true, 0.0, false, {}}, {0.5, 0.125, false, -2.25, true, {}}};
+    // 13-20 / 13-23 / 13-25: divided by Material (with roles on its values), zones, cuts and syncs.
+    s.groups[0].values[0].roles = {"heel", "toe_end"};
+    s.groups[0].values[1].roles = {"my role"};  // encoded: a custom key never holds a space, the grammar copes
+    snd.sound.divide_group = mat.uid;
+    snd.sound.divide_values = {"a000000000000002", "a000000000000003"};
+    snd.sound.role_map = {{"heel", "a000000000000003"}, {"hand", "a000000000000002"}};
+    snd.sound.lanes_split = true;
+    snd.sound.sync_mode = SyncMode::SliceStart;
+    snd.sound.sync_offset_ms = 1.5;
+    snd.sound.cut_fade = 0.004;
+    snd.sound.zones = {{0.05, 0.01, "", {}}, {0.1, 0.02, "a000000000000002", {}}};
+    snd.sound.frames[0].cuts = {0.125};
+    snd.sound.frames[0].cuts_hand = true;
+    snd.sound.frames[0].syncs = {0.018, 0.13};
+    snd.sound.frames[0].hand_syncs = {0.13};
+    snd.sound.frames[1].cuts = {0.5625};
+    snd.sound.frames[1].cut_unsure = true;
+    snd.sound.frames[1].syncs = {-1, 0.57};
     SoundNode file;
     file.uid = "c000000000000005";
     file.parent = root.uid;
@@ -145,6 +184,7 @@ SoundStore BigStore()
     file.sound.linked_copies = false;
     file.sound.mode = DetectMode::Takes;
     file.lands_in = "Foley/Steps";
+    file.layer_part = kLayerPartWhole;
     steps.nodes = {root, rnd, blend, snd, file};
 
     SoundLibrary user;
@@ -429,6 +469,91 @@ int main()
         CHECK(ParseSoundStore("RAVSOUNDS 1\nlibrary uid=l name=L root=n\nnode uid=n type=sound\nsound kind=item\n"
                               "frame start=0 len=1 fin=abc\n", &bad));
         CHECK(bad.libraries[0].nodes[0].sound.frames[0].fade_in < 0.0);
+    }
+
+    // ---- 13-20 / 13-23 / 13-25: parts, zones, sync points, roles, a layer's / draw's / tag's part ---
+    {
+        const SoundStore  s = BigStore();
+        const std::string t = SerializeSoundStore(s);
+        CHECK(t.find("value uid=a000000000000002 name=Wood roles=heel,toe_end\n") != std::string::npos);
+        CHECK(t.find("value uid=a000000000000003 name=Wet%20concrete roles=my%20role\n") != std::string::npos);
+        CHECK(t.find(" div=a000000000000001 divv=a000000000000002,a000000000000003 "
+                     "rmap=heel:a000000000000003,hand:a000000000000002 lanes=split sync=start soff=1.5 cfade=0.004\n") !=
+              std::string::npos);
+        CHECK(t.find("frame start=0 len=0.25 cuts=0.125 cutsh=1 sync=0.018,0.13 hsync=0.13\n") != std::string::npos);
+        CHECK(t.find("frame start=0.5 len=0.125 on=0 db=-2.25 hand=1 cuts=0.5625 cutq=1 sync=-1,0.57\n") !=
+              std::string::npos);
+        // Zones after the Sound's frames, `to` only when set.
+        CHECK(t.find("hsync=0.13\nframe start=0.5") != std::string::npos);
+        CHECK(t.find("cutq=1 sync=-1,0.57\nzone start=0.05 len=0.01\nzone start=0.1 len=0.02 to=a000000000000002\n") !=
+              std::string::npos);
+        CHECK(t.find(" lands=Foley%2FSteps part=*\n") != std::string::npos ||
+              t.find(" lands=Foley/Steps part=*\n") != std::string::npos);
+        SoundStore p;
+        CHECK(ParseSoundStore(t, &p) && SameStore(p, s) && SerializeSoundStore(p) == t);
+        const SoundData& d = p.libraries[0].nodes[3].sound;
+        CHECK(d.sync_mode == SyncMode::SliceStart && d.zones.size() == 2 && d.zones[1].to == "a000000000000002");
+        CHECK(d.role_map.size() == 2 && d.role_map[1].role == "hand");
+        CHECK(p.groups[1 - 1].values[1].roles == std::vector<std::string>{"my role"});
+        // Each sync word reads; defaults are not written (an old Sound line is unchanged).
+        for (SyncMode m : {SyncMode::Attack, SyncMode::Peak, SyncMode::SliceStart}) {
+            SoundStore q = s;
+            q.libraries[0].nodes[3].sound.sync_mode = m;
+            SoundStore r;
+            CHECK(ParseSoundStore(SerializeSoundStore(q), &r) && r.libraries[0].nodes[3].sound.sync_mode == m);
+        }
+        SoundStore old;
+        CHECK(ParseSoundStore("RAVSOUNDS 1\nlibrary uid=l name=L root=n\nnode uid=n type=sound\nsound kind=item guid=g\n"
+                              "frame start=0 len=1\n", &old));
+        const SoundData& od = old.libraries[0].nodes[0].sound;
+        CHECK(od.divide_group.empty() && od.zones.empty() && od.sync_mode == SyncMode::Attack &&
+              od.sync_offset_ms == kDefaultSyncOffsetMs && od.cut_fade == kDefaultCutFade && !od.lanes_split);
+        CHECK(od.frames[0].cuts.empty() && od.frames[0].syncs.empty() && !od.frames[0].cuts_hand);
+        CHECK(SerializeSoundStore(old) == "RAVSOUNDS 1\nlibrary uid=l name=L root=n\nnode uid=n type=sound\n"
+                                          "sound kind=item guid=g\nframe start=0 len=1\n");
+        // A zone line on a node without a Sound line still reads (it makes the Sound line written).
+        SoundStore z;
+        CHECK(ParseSoundStore("RAVSOUNDS 1\nlibrary uid=l name=L root=n\nnode uid=n type=random\n"
+                              "zone start=1 len=2 glow=1\n", &z));
+        CHECK(z.libraries[0].nodes[0].sound.zones.size() == 1 && z.libraries[0].nodes[0].sound.zones[0].kept.size() == 1);
+        CHECK(SerializeSoundStore(z).find("zone start=1 len=2 glow=1\n") != std::string::npos);
+        // A bad list is kept as text.
+        SoundStore bad;
+        CHECK(ParseSoundStore("RAVSOUNDS 1\nlibrary uid=l name=L root=n\nnode uid=n type=sound\nsound kind=item sync=sideways\n"
+                              "frame start=0 len=1 cuts=0.5,x\n", &bad));
+        CHECK(bad.libraries[0].nodes[0].sound.sync_mode == SyncMode::Attack &&
+              bad.libraries[0].nodes[0].sound.kept.size() == 1 && bad.libraries[0].nodes[0].sound.frames[0].cuts.empty() &&
+              bad.libraries[0].nodes[0].sound.frames[0].kept.size() == 1);
+        // A draw's part and a tag's part.
+        ItemSounds it;
+        EventSounds e;
+        e.rid = "r";
+        e.t = 1;
+        SoundDraw dr;
+        dr.node = "n";
+        dr.pick = 2;
+        dr.part = "a000000000000003";
+        SoundDraw whole;
+        whole.node = "n";
+        whole.pick = 0;
+        e.draws = {dr, whole};
+        it.events = {e};
+        const std::string it_text = SerializeItemSounds(it);
+        CHECK(it_text.find("draw node=n pick=2 part=a000000000000003\ndraw node=n pick=0\n") != std::string::npos);
+        ItemSounds ib;
+        CHECK(ParseItemSounds(it_text, &ib) && ib.events[0].draws[0].part == "a000000000000003" &&
+              ib.events[0].draws[1].part.empty() && SerializeItemSounds(ib) == it_text);
+        PlacedTag tag;
+        tag.owner = "{O}";
+        tag.rid = "r";
+        tag.node = "n";
+        tag.pt = "a000000000000002";
+        const std::string tt = SerializePlacedTag(tag);
+        CHECK(tt.find(" pt=a000000000000002\n") != std::string::npos);
+        PlacedTag tb;
+        CHECK(ParsePlacedTag(tt, &tb) && tb.pt == tag.pt && SerializePlacedTag(tb) == tt);
+        tag.pt.clear();
+        CHECK(SerializePlacedTag(tag).find("pt=") == std::string::npos);
     }
 
     if (g_fails) {

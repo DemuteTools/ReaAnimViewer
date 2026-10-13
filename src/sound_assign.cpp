@@ -289,6 +289,54 @@ bool PartOfBlock(const Block& b, std::string* part, std::string* type)
     return ok;
 }
 
+std::string RoleFamilyKey(Role r)
+{
+    std::string k = RolePart(r);
+    for (char& c : k)
+        if (c == ' ') c = '_';
+    return k == "?" ? std::string() : k;
+}
+
+std::string EventRoleKey(const Block& b)
+{
+    if (IsAutoBlock(b)) {
+        AutoKind kind;
+        char     side;
+        if (!AutoBlockKind(b, &kind, &side)) return std::string();
+        switch (kind) {
+        case AutoKind::Heel: case AutoKind::SlideHeel: case AutoKind::PivotHeel: case AutoKind::SlideHeelLongest:
+        case AutoKind::PivotHeelLongest: return "heel";
+        case AutoKind::Toe: case AutoKind::SlideToe: case AutoKind::PivotToe: case AutoKind::SlideToeLongest:
+        case AutoKind::PivotToeLongest: return "toe";
+        case AutoKind::Grab: case AutoKind::Release: case AutoKind::HandPivot: case AutoKind::HandPivotAny: return "hand";
+        case AutoKind::Step: case AutoKind::Slide: case AutoKind::Pivot: case AutoKind::Lift: return std::string();
+        }
+        return std::string();
+    }
+    if (b.conditions.empty()) return std::string();
+    const SignalSpec& sp = b.conditions.front().signal;
+    for (const std::vector<int>* ids : {&sp.bones, &sp.ref_bones})
+        for (int id : *ids) {
+            if (id < 0) continue;
+            if (id < static_cast<int>(Role::Count) && id < kBoneRefExtra) return RoleFamilyKey(static_cast<Role>(id));
+            const std::string ref = BoneRefKey(id);
+            static const char kRole[] = "role:";
+            if (ref.compare(0, sizeof(kRole) - 1, kRole) != 0) continue;  // a plain bone: not a role
+            std::string key = ref.substr(sizeof(kRole) - 1);
+            Role        builtin;
+            if (RoleFromKey(key, &builtin)) return RoleFamilyKey(builtin);
+            for (const char* side : {"left_", "right_"}) {
+                const std::string pre = side;
+                if (key.size() > pre.size() && key.compare(0, pre.size(), pre) == 0) {
+                    key = key.substr(pre.size());
+                    break;
+                }
+            }
+            if (!key.empty()) return key;
+        }
+    return std::string();
+}
+
 // ---- Resolution -------------------------------------------------------------------------------
 
 std::string EffectiveAssign::ValueFromText(const std::string& group_uid) const

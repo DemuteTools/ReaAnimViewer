@@ -67,7 +67,7 @@ std::string SerializeRavlib(const SoundStore& one)
 {
     const std::string body = SerializeSoundStore(one);
     const size_t      nl = body.find('\n');
-    std::string       out = std::string(kRavlibMagic) + " 1\n";
+    std::string       out = std::string(kRavlibMagic) + " " + std::to_string(kRavlibVersion) + "\n";
     if (nl != std::string::npos) out += body.substr(nl + 1);
     return out;
 }
@@ -85,6 +85,7 @@ SoundStore RavlibOf(const SoundStore& store, const std::string& lib_uid, int* it
     for (SoundNode& n : copy.nodes) {
         if (n.type == SoundNodeType::Switch && !n.group_uid.empty()) used_groups.insert(n.group_uid);
         if (n.type != SoundNodeType::Sound) continue;
+        if (!n.sound.divide_group.empty()) used_groups.insert(n.sound.divide_group);  // 13-23
         if (n.sound.source.kind == SoundSourceKind::File) n.sound.source.item_guid.clear();
         else if (item_sounds) ++*item_sounds;
     }
@@ -150,6 +151,15 @@ bool AddRavlibLibrary(SoundStore& store, const SoundStore& file, const std::stri
                     SwitchValue nv = fv;
                     nv.uid = fresh(fv.uid);
                     vmap[fv.uid] = nv.uid;
+                    // 13-23: the project's map stands; only the keys no value of the group holds come along.
+                    std::vector<std::string> roles;
+                    for (const std::string& r : nv.roles) {
+                        bool held = false;
+                        for (const SwitchValue& pv : target->values)
+                            held = held || std::find(pv.roles.begin(), pv.roles.end(), r) != pv.roles.end();
+                        if (!held) roles.push_back(r);
+                    }
+                    nv.roles = roles;
                     target->values.push_back(nv);
                 }
             }
@@ -196,6 +206,14 @@ bool AddRavlibLibrary(SoundStore& store, const SoundStore& file, const std::stri
         if (!n.preview_value.empty()) n.preview_value = Mapped(vmap, n.preview_value);
         for (std::string& u : n.unassigned) u = Mapped(nmap, u);
         if (n.type == SoundNodeType::Sound && n.sound.source.kind == SoundSourceKind::File) n.sound.source.item_guid.clear();
+        // 13-23: the parts follow the merged groups and values.
+        if (!n.layer_part.empty() && n.layer_part != kLayerPartWhole) n.layer_part = Mapped(vmap, n.layer_part);
+        SoundData& d = n.sound;
+        if (!d.divide_group.empty()) d.divide_group = Mapped(gmap, d.divide_group);
+        for (std::string& v : d.divide_values) v = Mapped(vmap, v);
+        for (RoleValue& r : d.role_map) r.value = Mapped(vmap, r.value);
+        for (SoundZone& z : d.zones)
+            if (!z.to.empty()) z.to = Mapped(vmap, z.to);
     }
     std::vector<std::string> names;
     for (const SoundLibrary& l : s.libraries) names.push_back(l.name);

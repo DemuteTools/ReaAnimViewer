@@ -4,6 +4,8 @@
 
 #include "sound_entries.h"
 
+#include "sound_record.h"  // FindGroup
+
 #include <algorithm>
 #include <charconv>
 #include <cmath>
@@ -268,7 +270,11 @@ void ClampFrames(std::vector<SoundFrame>& frames, double source_len)
 
 void ResetToDetected(SoundData& data, const std::vector<SoundFrame>& detected)
 {
+    const std::vector<SoundFrame> old = data.frames;
     data.frames = detected;
+    CarryHandMarks(data.frames, old, false);  // A7: hand sync points survive, hand cuts go
+    data.zones.erase(std::remove_if(data.zones.begin(), data.zones.end(), [](const SoundZone& z) { return !z.to.empty(); }),
+                     data.zones.end());  // excluded zones stay, "-> value" ones go
     data.edited = false;
 }
 
@@ -479,6 +485,545 @@ void SetFrameDb(SoundData& data, int i, double db)
     if (!ValidIndex(data, i)) return;
     data.frames[static_cast<size_t>(i)].db = db;
     MarkHand(data, i);
+}
+
+}  // namespace rav
+
+// ---- 13-20 / 13-23 / 13-25: parts, zones, sync points ------------------------------------------
+
+namespace rav {
+
+namespace {
+
+constexpr double kTimeEps = 1e-9;
+constexpr double kEdgeNudge = 1e-6;  // a hand sync is kept this far inside its part's span
+constexpr double kOnsetSpacing = 0.020;  // onsets >= 20 ms apart
+constexpr double kOnsetWindow = 0.015;   // a rise is read over the previous 15 ms
+constexpr double kOnsetRiseDb = 6.0;
+constexpr double kCutLead = 0.005;       // a cut sits 5 ms before its onset's rise
+constexpr double kUnsureDb = 3.0;
+constexpr double kAttackBelowPeakDb = 20.0;
+constexpr double kSilentDb = -200.0;
+// What is read before the source's first bin: a transient at the very start of a file is an onset,
+// its noise floor is not.
+constexpr double kBeforeSourceDb = -90.0;
+
+double FrameEnd(const SoundFrame& f)
+{
+    return f.start + f.length;
+}
+
+double BinDb(const PeakData& p, long long i)
+{
+    if (i < 0 || i >= static_cast<long long>(p.max_abs.size())) return kSilentDb;
+    const double v = static_cast<double>(p.max_abs[static_cast<size_t>(i)]);
+    return v > 0.0 && std::isfinite(v) ? std::max(20.0 * std::log10(v), kSilentDb) : kSilentDb;
+}
+
+bool HasPeaks(const PeakData* p)
+{
+    return p && p->rate > 0.0 && !p->max_abs.empty();
+}
+
+// The bins [lo, hi) whose start lies in [start, end).
+void BinRange(const PeakData& p, double start, double end, long long* lo, long long* hi)
+{
+    const long long n = static_cast<long long>(p.max_abs.size());
+    *lo = std::max(0LL, static_cast<long long>(std::ceil(start * p.rate - 1e-6)));
+    *hi = std::min(n, static_cast<long long>(std::ceil(end * p.rate - 1e-6)));
+}
+
+bool InSpans(const std::vector<PartSpan>& spans, double t)
+{
+    for (const PartSpan& s : spans)
+        if (t >= s.start - kTimeEps && t <= s.start + s.length + kTimeEps) return true;
+    return false;
+}
+
+std::vector<double> EvenCuts(const SoundFrame& f, int parts)
+{
+    std::vector<double> cuts;
+    for (int k = 1; k < parts; ++k) cuts.push_back(f.start + f.length * k / parts);
+    return cuts;
+}
+
+// Cuts sorted, inside the frame and >= 1 ms apart from each other and the frame's edges; false when
+// they cannot be.
+bool SaneCuts(const SoundFrame& f, std::vector<double>& cuts)
+{
+    std::sort(cuts.begin(), cuts.end());
+    double lo = f.start + kMinLen;
+    for (size_t k = 0; k < cuts.size(); ++k) {
+        const double hi = FrameEnd(f) - kMinLen * static_cast<double>(cuts.size() - k);
+        if (!std::isfinite(cuts[k])) return false;
+        cuts[k] = std::min(std::max(cuts[k], lo), hi);
+        if (cuts[k] < lo - kTimeEps) return false;
+        lo = cuts[k] + kMinLen;
+    }
+    return true;
+}
+
+}  // namespace
+
+bool IsDivided(const SoundData& data)
+{
+    return !data.divide_group.empty() && !data.divide_values.empty();
+}
+
+int PartCount(const SoundData& data)
+{
+    return IsDivided(data) ? static_cast<int>(data.divide_values.size()) : 1;
+}
+
+int PartIndex(const SoundData& data, const std::string& value_uid)
+{
+    if (value_uid.empty() || !IsDivided(data)) return -1;
+    for (size_t k = 0; k < data.divide_values.size(); ++k)
+        if (data.divide_values[k] == value_uid) return static_cast<int>(k);
+    return -1;
+}
+
+bool PartAt(const SoundData& data, int variation, double t, std::string* value)
+{
+    if (!ValidIndex(data, variation)) return false;
+    const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    if (!f.on || t < f.start - kTimeEps || t > FrameEnd(f) + kTimeEps) return false;
+    const SoundZone* last = nullptr;
+    for (const SoundZone& z : data.zones)
+        if (z.length > 0.0 && t >= z.start && t < z.start + z.length) last = &z;
+    if (last && last->to.empty()) return false;
+    std::string owner;
+    if (last && PartIndex(data, last->to) >= 0) {
+        owner = last->to;
+    } else if (IsDivided(data)) {
+        size_t k = 0;
+        while (k < f.cuts.size() && t >= f.cuts[k]) ++k;
+        k = std::min(k, data.divide_values.size() - 1);
+        owner = data.divide_values[k];
+    }
+    if (value) *value = owner;
+    return true;
+}
+
+std::vector<PartSpan> PartSpansOf(const SoundData& data, int variation)
+{
+    std::vector<PartSpan> out;
+    if (!ValidIndex(data, variation)) return out;
+    const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    if (!f.on || !(f.length > 0.0)) return out;
+    const double        fs = f.start, fe = FrameEnd(f);
+    std::vector<double> b = {fs, fe};
+    auto                add = [&](double t) {
+        if (t > fs && t < fe) b.push_back(t);
+    };
+    if (IsDivided(data))
+        for (double c : f.cuts) add(c);
+    for (const SoundZone& z : data.zones) {
+        add(z.start);
+        add(z.start + z.length);
+    }
+    std::sort(b.begin(), b.end());
+    for (size_t k = 0; k + 1 < b.size(); ++k) {
+        const double a = b[k], e = b[k + 1];
+        if (e - a <= kTimeEps) continue;
+        std::string owner;
+        if (!PartAt(data, variation, (a + e) * 0.5, &owner)) continue;
+        if (!out.empty() && out.back().value_uid == owner && std::fabs(out.back().start + out.back().length - a) <= kTimeEps)
+            out.back().length = e - out.back().start;
+        else
+            out.push_back({owner, a, e - a});
+    }
+    return out;
+}
+
+std::vector<PartSpan> PlacedSpans(const SoundData& data, int variation, const std::string& part_value)
+{
+    std::vector<PartSpan> out;
+    for (const PartSpan& s : PartSpansOf(data, variation)) {
+        if (!part_value.empty()) {
+            if (s.value_uid == part_value) out.push_back(s);
+            continue;
+        }
+        if (!out.empty() && std::fabs(out.back().start + out.back().length - s.start) <= kTimeEps)
+            out.back().length = s.start + s.length - out.back().start;
+        else
+            out.push_back({std::string(), s.start, s.length});
+    }
+    return out;
+}
+
+std::vector<Onset> FindOnsets(const PeakData& peaks, double start, double length)
+{
+    std::vector<Onset> cand;
+    if (!HasPeaks(&peaks) || !(length > 0.0)) return cand;
+    long long lo = 0, hi = 0;
+    BinRange(peaks, start, start + length, &lo, &hi);
+    const long long win = std::max(1LL, static_cast<long long>(std::llround(kOnsetWindow * peaks.rate)));
+    for (long long i = lo; i < hi; ++i) {
+        const double v = BinDb(peaks, i);
+        const double prev = i > 0 ? BinDb(peaks, i - 1) : kBeforeSourceDb;
+        if (!(v > prev && v >= BinDb(peaks, i + 1))) continue;  // a local maximum (plateau: its first bin)
+        double    mn = 0.0;
+        long long at = -1;
+        for (long long j = std::max(0LL, i - win); j < i; ++j) {
+            const double d = BinDb(peaks, j);
+            if (at < 0 || d <= mn) {
+                mn = d;
+                at = j;
+            }
+        }
+        if (at < 0) {  // the source's first bin
+            mn = kBeforeSourceDb;
+            at = i - 1;
+        }
+        if (v - mn < kOnsetRiseDb) continue;
+        Onset o;
+        o.t = static_cast<double>(i) / peaks.rate;
+        o.db = v;
+        o.rise = static_cast<double>(at + 1) / peaks.rate;
+        cand.push_back(o);
+    }
+    // >= 20 ms apart: the louder first (the earlier on a tie).
+    std::vector<Onset> by_level = cand;
+    std::stable_sort(by_level.begin(), by_level.end(), [](const Onset& a, const Onset& b) { return a.db > b.db; });
+    std::vector<Onset> out;
+    for (const Onset& o : by_level) {
+        bool close = false;
+        for (const Onset& k : out) close = close || std::fabs(k.t - o.t) < kOnsetSpacing - kTimeEps;
+        if (!close) out.push_back(o);
+    }
+    std::sort(out.begin(), out.end(), [](const Onset& a, const Onset& b) { return a.t < b.t; });
+    return out;
+}
+
+std::vector<double> AutoCuts(const PeakData* peaks, const SoundFrame& frame, int parts, bool* unsure)
+{
+    if (unsure) *unsure = false;
+    if (parts < 2) return {};
+    if (HasPeaks(peaks)) {
+        std::vector<Onset> ons = FindOnsets(*peaks, frame.start, frame.length);
+        if (ons.size() >= static_cast<size_t>(parts)) {  // the first onset, then parts - 1 more
+            std::vector<Onset> after(ons.begin() + 1, ons.end());
+            std::stable_sort(after.begin(), after.end(), [](const Onset& a, const Onset& b) { return a.db > b.db; });
+            const bool          q = parts == 2 && after.size() >= 2 && after[0].db - after[1].db < kUnsureDb;
+            std::vector<double> cuts;
+            for (int k = 0; k < parts - 1; ++k) cuts.push_back(after[static_cast<size_t>(k)].rise - kCutLead);
+            if (SaneCuts(frame, cuts)) {
+                if (unsure) *unsure = q;
+                return cuts;
+            }
+        }
+    }
+    std::vector<double> even = EvenCuts(frame, parts);
+    SaneCuts(frame, even);
+    return even;
+}
+
+double ClampIntoSpans(const std::vector<PartSpan>& spans, double t)
+{
+    if (spans.empty() || InSpans(spans, t)) return t;
+    double best = spans.front().start, best_d = std::numeric_limits<double>::infinity();
+    for (const PartSpan& s : spans)
+        for (double edge : {s.start, s.start + s.length}) {
+            const double d = std::fabs(edge - t);
+            if (d < best_d) {
+                best_d = d;
+                best = edge;
+            }
+        }
+    return best;
+}
+
+double AutoSync(const SoundData& data, const PeakData* peaks, const std::vector<PartSpan>& spans)
+{
+    if (spans.empty()) return -1.0;
+    double base = spans.front().start;
+    if (data.sync_mode != SyncMode::SliceStart && HasPeaks(peaks)) {
+        double top = kSilentDb;
+        for (const PartSpan& s : spans) {
+            long long lo = 0, hi = 0;
+            BinRange(*peaks, s.start, s.start + s.length, &lo, &hi);
+            for (long long i = lo; i < hi; ++i) top = std::max(top, BinDb(*peaks, i));
+        }
+        if (top > kSilentDb) {
+            // Attack: the first bin reaching the threshold, or 20 dB under the peak when that is higher
+            // (never above the peak: a part quieter than the threshold still has an attack).
+            const double want = data.sync_mode == SyncMode::Peak
+                                    ? top
+                                    : std::min(top, std::max(data.silence.threshold_db, top - kAttackBelowPeakDb));
+            bool found = false;
+            for (const PartSpan& s : spans) {
+                long long lo = 0, hi = 0;
+                BinRange(*peaks, s.start, s.start + s.length, &lo, &hi);
+                for (long long i = lo; i < hi && !found; ++i)
+                    if (BinDb(*peaks, i) >= want - 1e-9) {
+                        base = static_cast<double>(i) / peaks->rate;
+                        found = true;
+                    }
+                if (found) break;
+            }
+        }
+    }
+    const double off = std::isfinite(data.sync_offset_ms) ? data.sync_offset_ms / 1000.0 : 0.0;
+    return ClampIntoSpans(spans, base + off);
+}
+
+namespace {
+
+std::vector<PartSpan> SpansOfPart(const SoundData& data, int variation, int part)
+{
+    return PlacedSpans(data, variation, IsDivided(data) ? data.divide_values[static_cast<size_t>(part)] : std::string());
+}
+
+}  // namespace
+
+void RefreshFrame(SoundData& data, int variation, const PeakData* peaks)
+{
+    if (!ValidIndex(data, variation)) return;
+    SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    if (data.mode == DetectMode::Takes) {  // A8: a take keeps its item's snap
+        f.cuts.clear();
+        f.cuts_hand = f.cut_unsure = false;
+        f.syncs.clear();
+        return;
+    }
+    const int n = PartCount(data);
+    if (n < 2) {
+        f.cuts.clear();
+        f.cuts_hand = f.cut_unsure = false;
+    } else if (f.cuts_hand && f.cuts.size() == static_cast<size_t>(n - 1) && SaneCuts(f, f.cuts)) {
+        f.cut_unsure = false;
+    } else if (HasPeaks(peaks)) {
+        bool q = false;
+        f.cuts = AutoCuts(peaks, f, n, &q);
+        f.cuts_hand = false;
+        f.cut_unsure = q;
+    } else if (!(f.cuts.size() == static_cast<size_t>(n - 1) && SaneCuts(f, f.cuts))) {
+        f.cuts = EvenCuts(f, n);
+        SaneCuts(f, f.cuts);
+        f.cuts_hand = f.cut_unsure = false;
+    }
+    const std::vector<double> old = f.syncs;
+    std::vector<double>       syncs(static_cast<size_t>(n), -1.0);
+    const bool                measurable = data.sync_mode == SyncMode::SliceStart || HasPeaks(peaks);
+    for (int k = 0; k < n; ++k) {
+        const std::vector<PartSpan> spans = SpansOfPart(data, variation, k);
+        if (spans.empty()) continue;
+        double s = -1.0;
+        for (double h : f.hand_syncs)
+            if (InSpans(spans, h)) {
+                s = h;
+                break;
+            }
+        if (s < 0.0 && measurable) s = AutoSync(data, peaks, spans);
+        if (s < 0.0 && old.size() == static_cast<size_t>(n) && old[static_cast<size_t>(k)] >= 0.0 &&
+            InSpans(spans, old[static_cast<size_t>(k)]))
+            s = old[static_cast<size_t>(k)];
+        if (s < 0.0) {  // cannot be measured here: at placement
+            f.syncs.clear();
+            return;
+        }
+        syncs[static_cast<size_t>(k)] = s;
+    }
+    f.syncs = syncs;
+}
+
+void RefreshParts(SoundData& data, const PeakData* peaks)
+{
+    for (size_t i = 0; i < data.frames.size(); ++i) RefreshFrame(data, static_cast<int>(i), peaks);
+}
+
+bool SyncsStale(const SoundData& data, int variation)
+{
+    if (!ValidIndex(data, variation) || data.mode == DetectMode::Takes) return false;
+    const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    const int         n = PartCount(data);
+    if (f.syncs.size() != static_cast<size_t>(n)) return true;
+    for (int k = 0; k < n; ++k) {
+        const std::vector<PartSpan> spans = SpansOfPart(data, variation, k);
+        const double                s = f.syncs[static_cast<size_t>(k)];
+        if (spans.empty() ? s >= 0.0 : !InSpans(spans, s)) return true;
+    }
+    return false;
+}
+
+double SyncFor(const SoundData& data, int variation, const std::string& part_value)
+{
+    if (!ValidIndex(data, variation)) return -1.0;
+    const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    if (f.syncs.size() != static_cast<size_t>(PartCount(data))) return -1.0;
+    if (part_value.empty()) {
+        for (double s : f.syncs)
+            if (s >= 0.0) return s;
+        return -1.0;
+    }
+    const int k = PartIndex(data, part_value);
+    return k < 0 ? -1.0 : f.syncs[static_cast<size_t>(k)];
+}
+
+void CarryHandMarks(std::vector<SoundFrame>& now, const std::vector<SoundFrame>& old, bool with_cuts)
+{
+    auto holder = [&](double t) -> SoundFrame* {
+        for (SoundFrame& f : now)
+            if (t >= f.start - kTimeEps && t <= FrameEnd(f) + kTimeEps) return &f;
+        return nullptr;
+    };
+    for (SoundFrame& f : now) {
+        f.hand_syncs.clear();
+        if (with_cuts && f.cuts_hand) {
+            f.cuts.clear();
+            f.cuts_hand = f.cut_unsure = false;
+        }
+    }
+    for (const SoundFrame& o : old) {
+        for (double h : o.hand_syncs) {
+            SoundFrame* f = holder(h);
+            if (f && std::find(f->hand_syncs.begin(), f->hand_syncs.end(), h) == f->hand_syncs.end()) f->hand_syncs.push_back(h);
+        }
+        if (!with_cuts || !o.cuts_hand || o.cuts.empty()) continue;
+        SoundFrame* f = holder(o.cuts.front());
+        bool        all = f != nullptr;
+        for (double c : o.cuts) all = all && holder(c) == f;
+        if (all && !f->cuts_hand) {
+            f->cuts = o.cuts;
+            f->cuts_hand = true;
+            f->cut_unsure = false;
+        }
+    }
+}
+
+bool SetDivide(SoundData& data, const std::string& group, const std::vector<std::string>& values)
+{
+    const std::vector<std::string> vals = group.empty() ? std::vector<std::string>() : values;
+    if (data.divide_group == group && data.divide_values == vals) return false;
+    data.divide_group = group;
+    data.divide_values = vals;
+    for (SoundFrame& f : data.frames) {
+        f.cuts.clear();
+        f.cuts_hand = f.cut_unsure = false;
+        f.syncs.clear();
+    }
+    auto known = [&](const std::string& v) { return std::find(vals.begin(), vals.end(), v) != vals.end(); };
+    data.zones.erase(std::remove_if(data.zones.begin(), data.zones.end(),
+                                    [&](const SoundZone& z) { return !z.to.empty() && !known(z.to); }),
+                     data.zones.end());
+    data.role_map.erase(std::remove_if(data.role_map.begin(), data.role_map.end(),
+                                       [&](const RoleValue& r) { return !known(r.value); }),
+                        data.role_map.end());
+    return true;
+}
+
+bool SetSyncSettings(SoundData& data, SyncMode mode, double offset_ms)
+{
+    if (!std::isfinite(offset_ms) || (data.sync_mode == mode && data.sync_offset_ms == offset_ms)) return false;
+    data.sync_mode = mode;
+    data.sync_offset_ms = offset_ms;
+    for (SoundFrame& f : data.frames) f.syncs.clear();
+    return true;
+}
+
+bool AddZone(SoundData& data, double start, double length, const std::string& to)
+{
+    if (!std::isfinite(start) || !std::isfinite(length) || length <= kMinLen) return false;
+    const double end = start + length;
+    data.zones.erase(std::remove_if(data.zones.begin(), data.zones.end(),
+                                    [&](const SoundZone& z) {
+                                        return z.start >= start - kTimeEps && z.start + z.length <= end + kTimeEps;
+                                    }),
+                     data.zones.end());
+    SoundZone z;
+    z.start = start;
+    z.length = length;
+    z.to = to;
+    data.zones.push_back(z);
+    return true;
+}
+
+bool IncludeAgain(SoundData& data, double t)
+{
+    const size_t before = data.zones.size();
+    data.zones.erase(std::remove_if(data.zones.begin(), data.zones.end(),
+                                    [&](const SoundZone& z) {
+                                        return z.to.empty() && t >= z.start - kTimeEps && t <= z.start + z.length + kTimeEps;
+                                    }),
+                     data.zones.end());
+    return data.zones.size() != before;
+}
+
+bool MoveCut(SoundData& data, int variation, int k, double t)
+{
+    if (!ValidIndex(data, variation) || !std::isfinite(t)) return false;
+    SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    if (k < 0 || static_cast<size_t>(k) >= f.cuts.size()) return false;
+    const size_t i = static_cast<size_t>(k);
+    const double lo = (i > 0 ? f.cuts[i - 1] : f.start) + kMinLen;
+    const double hi = (i + 1 < f.cuts.size() ? f.cuts[i + 1] : FrameEnd(f)) - kMinLen;
+    if (lo > hi) return false;
+    const double c = std::min(std::max(t, lo), hi);
+    if (std::fabs(c - f.cuts[i]) <= kTimeEps && f.cuts_hand) return false;
+    f.cuts[i] = c;
+    f.cuts_hand = true;
+    f.cut_unsure = false;
+    return true;
+}
+
+bool MoveSync(SoundData& data, int variation, int part, double t)
+{
+    if (!ValidIndex(data, variation) || !std::isfinite(t) || part < 0 || part >= PartCount(data)) return false;
+    const std::vector<PartSpan> spans = SpansOfPart(data, variation, part);
+    if (spans.empty()) return false;
+    SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    double      s = ClampIntoSpans(spans, t);
+    // On a span edge (a cut) the sync would sit in both neighbouring parts: keep it 1 us inside its own.
+    for (const PartSpan& sp : spans)
+        if (InSpans({sp}, s)) {
+            s = std::min(std::max(s, sp.start + kEdgeNudge), sp.start + sp.length - kEdgeNudge);
+            break;
+        }
+    f.hand_syncs.erase(std::remove_if(f.hand_syncs.begin(), f.hand_syncs.end(), [&](double h) { return InSpans(spans, h); }),
+                       f.hand_syncs.end());
+    f.hand_syncs.push_back(s);
+    if (f.syncs.size() == static_cast<size_t>(PartCount(data))) f.syncs[static_cast<size_t>(part)] = s;
+    return true;
+}
+
+bool ResetSyncs(SoundData& data, int variation)
+{
+    if (!ValidIndex(data, variation)) return false;
+    SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    if (f.hand_syncs.empty()) return false;
+    f.hand_syncs.clear();
+    return true;
+}
+
+bool ResetCuts(SoundData& data, int variation)
+{
+    if (!ValidIndex(data, variation)) return false;
+    SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    if (!f.cuts_hand) return false;
+    f.cuts.clear();
+    f.cuts_hand = f.cut_unsure = false;
+    return true;
+}
+
+std::string PartOfRole(const SoundStore& store, const SoundData& data, const std::string& role)
+{
+    if (role.empty() || !IsDivided(data)) return std::string();
+    std::string value;
+    if (!data.role_map.empty()) {
+        for (const RoleValue& r : data.role_map)
+            if (r.role == role) {
+                value = r.value;
+                break;
+            }
+    } else if (const SwitchGroup* g = FindGroup(store, data.divide_group)) {
+        for (const SwitchValue& v : g->values)
+            if (std::find(v.roles.begin(), v.roles.end(), role) != v.roles.end()) {
+                value = v.uid;
+                break;
+            }
+    }
+    return PartIndex(data, value) >= 0 ? value : std::string();
 }
 
 }  // namespace rav

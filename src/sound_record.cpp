@@ -241,6 +241,17 @@ std::string KindOf(const std::string& l, std::vector<std::string>* toks)
 const char* const kNodeWords[] = {"sound", "random", "blend", "switch"};
 const char* const kOwnWords[] = {"populated", "attached", "spread", "deleted"};
 const char* const kModeWords[] = {"whole", "takes", "tmarkers", "silence"};
+const char* const kSyncWords[] = {"attack", "peak", "start"};
+
+bool SyncFromWord(const std::string& s, SyncMode* out)
+{
+    for (int i = 0; i < 3; ++i)
+        if (s == kSyncWords[i]) {
+            *out = static_cast<SyncMode>(i);
+            return true;
+        }
+    return false;
+}
 
 bool ModeFromWord(const std::string& s, DetectMode* out)
 {
@@ -250,6 +261,84 @@ bool ModeFromWord(const std::string& s, DetectMode* out)
             return true;
         }
     return false;
+}
+
+// ---- Lists ------------------------------------------------------------------------------------
+
+std::vector<std::string> SplitCommas(const std::string& s)
+{
+    std::vector<std::string> out;
+    size_t                   pos = 0;
+    while (pos <= s.size()) {
+        size_t c = s.find(',', pos);
+        if (c == std::string::npos) c = s.size();
+        if (c > pos) out.push_back(s.substr(pos, c - pos));
+        pos = c + 1;
+    }
+    return out;
+}
+
+// Names joined by ',' (each percent-encoded, so a ',' in a name cannot split it).
+std::string JoinEncoded(const std::vector<std::string>& names)
+{
+    std::string list;
+    for (const std::string& n : names) list += (list.empty() ? "" : ",") + Enc(n);
+    return list;
+}
+
+bool SplitDecoded(const std::string& v, std::vector<std::string>* out)
+{
+    std::vector<std::string> names;
+    for (const std::string& part : SplitCommas(v)) {
+        std::string n;
+        if (!ReadStr(part, &n)) return false;
+        names.push_back(n);
+    }
+    *out = names;
+    return true;
+}
+
+// 13-23: numbers joined by ',' (C locale); empty = none.
+std::string JoinNumbers(const std::vector<double>& v)
+{
+    std::string list;
+    for (double x : v) list += (list.empty() ? "" : ",") + FormatNumber(x);
+    return list;
+}
+
+bool SplitNumbers(const std::string& v, std::vector<double>* out)
+{
+    std::vector<double> nums;
+    for (const std::string& part : SplitCommas(v)) {
+        double x = 0.0;
+        if (!ReadNumber(part, &x)) return false;
+        nums.push_back(x);
+    }
+    *out = nums;
+    return true;
+}
+
+// 13-23: a Sound's own role map, "heel:<uid>,toe_end:<uid>" (each side percent-encoded; split on the
+// last ':', a uid never holds one).
+std::string JoinRoleMap(const std::vector<RoleValue>& m)
+{
+    std::string list;
+    for (const RoleValue& r : m) list += (list.empty() ? "" : ",") + Enc(r.role) + ":" + Enc(r.value);
+    return list;
+}
+
+bool SplitRoleMap(const std::string& v, std::vector<RoleValue>* out)
+{
+    std::vector<RoleValue> m;
+    for (const std::string& part : SplitCommas(v)) {
+        const size_t colon = part.rfind(':');
+        if (colon == std::string::npos) return false;
+        RoleValue r;
+        if (!ReadStr(part.substr(0, colon), &r.role) || !ReadStr(part.substr(colon + 1), &r.value)) return false;
+        m.push_back(r);
+    }
+    *out = m;
+    return true;
 }
 
 // ---- Store: fields ----------------------------------------------------------------------------
@@ -271,13 +360,16 @@ Got SetGroup(SwitchGroup& g, const std::string& k, const std::string& v)
 
 Fields ValueFields(const SwitchValue& x)
 {
-    return {{"uid", Enc(x.uid)}, {"name", Enc(x.name)}};
+    Fields f = {{"uid", Enc(x.uid)}, {"name", Enc(x.name)}};
+    if (!x.roles.empty()) f.push_back({"roles", JoinEncoded(x.roles)});
+    return f;
 }
 
 Got SetValue(SwitchValue& x, const std::string& k, const std::string& v)
 {
     if (k == "uid") return G(ReadStr(v, &x.uid));
     if (k == "name") return G(ReadStr(v, &x.name));
+    if (k == "roles") return G(SplitDecoded(v, &x.roles));
     return Got::Unknown;
 }
 
@@ -313,6 +405,7 @@ Fields NodeFields(const SoundNode& n)
     if (!n.default_value.empty()) f.push_back({"default", Enc(n.default_value)});
     if (!n.preview_value.empty()) f.push_back({"preview", Enc(n.preview_value)});
     if (!n.lands_in.empty()) f.push_back({"lands", Enc(n.lands_in)});
+    if (!n.layer_part.empty()) f.push_back({"part", Enc(n.layer_part)});
     return f;
 }
 
@@ -329,6 +422,7 @@ Got SetNode(SoundNode& n, const std::string& k, const std::string& v)
     if (k == "default") return G(ReadStr(v, &n.default_value));
     if (k == "preview") return G(ReadStr(v, &n.preview_value));
     if (k == "lands") return G(ReadStr(v, &n.lands_in));
+    if (k == "part") return G(ReadStr(v, &n.layer_part));
     return Got::Unknown;
 }
 
@@ -350,7 +444,7 @@ Fields SoundFields(const SoundData& s);
 bool HasSoundLine(const SoundNode& n)
 {
     const SoundData& s = n.sound;
-    return n.type == SoundNodeType::Sound || !s.kept.empty() || !s.frames.empty() ||
+    return n.type == SoundNodeType::Sound || !s.kept.empty() || !s.frames.empty() || !s.zones.empty() ||
            SoundFields(s) != SoundFields(SoundData{});
 }
 
@@ -375,6 +469,13 @@ Fields SoundFields(const SoundData& s)
     if (!a.last_path.empty()) f.push_back({"apath", Enc(a.last_path)});
     if (!a.rel_path.empty()) f.push_back({"arel", Enc(a.rel_path)});
     if (a.mtime != 0) f.push_back({"amtime", FmtInt(a.mtime)});
+    if (!s.divide_group.empty()) f.push_back({"div", Enc(s.divide_group)});
+    if (!s.divide_values.empty()) f.push_back({"divv", JoinEncoded(s.divide_values)});
+    if (!s.role_map.empty()) f.push_back({"rmap", JoinRoleMap(s.role_map)});
+    if (s.lanes_split) f.push_back({"lanes", "split"});
+    if (s.sync_mode != d.sync_mode) f.push_back({"sync", kSyncWords[static_cast<int>(s.sync_mode)]});
+    if (s.sync_offset_ms != d.sync_offset_ms) f.push_back({"soff", FormatNumber(s.sync_offset_ms)});
+    if (s.cut_fade != d.cut_fade) f.push_back({"cfade", FormatNumber(s.cut_fade)});
     return f;
 }
 
@@ -403,6 +504,34 @@ Got SetSound(SoundData& s, const std::string& k, const std::string& v)
     if (k == "apath") return G(ReadStr(v, &a.last_path));
     if (k == "arel") return G(ReadStr(v, &a.rel_path));
     if (k == "amtime") return G(ReadInt(v, &a.mtime));
+    if (k == "div") return G(ReadStr(v, &s.divide_group));
+    if (k == "divv") return G(SplitDecoded(v, &s.divide_values));
+    if (k == "rmap") return G(SplitRoleMap(v, &s.role_map));
+    if (k == "lanes") {
+        if (v == "split") s.lanes_split = true;
+        else if (v == "combined") s.lanes_split = false;
+        else return Got::Bad;
+        return Got::Ok;
+    }
+    if (k == "sync") return G(SyncFromWord(v, &s.sync_mode));
+    if (k == "soff") return G(ReadNumber(v, &s.sync_offset_ms));
+    if (k == "cfade") return G(ReadNumber(v, &s.cut_fade));
+    return Got::Unknown;
+}
+
+// 13-20: a zone of the Sound above (`to` "" = excluded).
+Fields ZoneFields(const SoundZone& z)
+{
+    Fields f = {{"start", FormatNumber(z.start)}, {"len", FormatNumber(z.length)}};
+    if (!z.to.empty()) f.push_back({"to", Enc(z.to)});
+    return f;
+}
+
+Got SetZone(SoundZone& z, const std::string& k, const std::string& v)
+{
+    if (k == "start") return G(ReadNumber(v, &z.start));
+    if (k == "len") return G(ReadNumber(v, &z.length));
+    if (k == "to") return G(ReadStr(v, &z.to));
     return Got::Unknown;
 }
 
@@ -416,6 +545,11 @@ Fields FrameFields(const SoundFrame& fr)
     if (fr.fade_out >= 0.0) f.push_back({"fout", FormatNumber(fr.fade_out)});
     if (fr.fade_in_shape != 0) f.push_back({"fish", FmtInt(fr.fade_in_shape)});
     if (fr.fade_out_shape != 0) f.push_back({"fosh", FmtInt(fr.fade_out_shape)});
+    if (!fr.cuts.empty()) f.push_back({"cuts", JoinNumbers(fr.cuts)});
+    if (fr.cuts_hand) f.push_back({"cutsh", "1"});
+    if (fr.cut_unsure) f.push_back({"cutq", "1"});
+    if (!fr.syncs.empty()) f.push_back({"sync", JoinNumbers(fr.syncs)});
+    if (!fr.hand_syncs.empty()) f.push_back({"hsync", JoinNumbers(fr.hand_syncs)});
     return f;
 }
 
@@ -430,6 +564,11 @@ Got SetFrame(SoundFrame& fr, const std::string& k, const std::string& v)
     if (k == "fout") return G(ReadNumber(v, &fr.fade_out));
     if (k == "fish") return G(ReadInt(v, &fr.fade_in_shape));
     if (k == "fosh") return G(ReadInt(v, &fr.fade_out_shape));
+    if (k == "cuts") return G(SplitNumbers(v, &fr.cuts));
+    if (k == "cutsh") return G(ReadFlag(v, &fr.cuts_hand));
+    if (k == "cutq") return G(ReadFlag(v, &fr.cut_unsure));
+    if (k == "sync") return G(SplitNumbers(v, &fr.syncs));
+    if (k == "hsync") return G(SplitNumbers(v, &fr.hand_syncs));
     return Got::Unknown;
 }
 
@@ -489,39 +628,6 @@ Got SetAssign(SoundAssign& a, const std::string& k, const std::string& v)
     }
     if (k == "kit") return G(ReadFlag(v, &a.kit));
     return Got::Unknown;
-}
-
-std::vector<std::string> SplitCommas(const std::string& s)
-{
-    std::vector<std::string> out;
-    size_t                   pos = 0;
-    while (pos <= s.size()) {
-        size_t c = s.find(',', pos);
-        if (c == std::string::npos) c = s.size();
-        if (c > pos) out.push_back(s.substr(pos, c - pos));
-        pos = c + 1;
-    }
-    return out;
-}
-
-// Names joined by ',' (each percent-encoded, so a ',' in a name cannot split it).
-std::string JoinEncoded(const std::vector<std::string>& names)
-{
-    std::string list;
-    for (const std::string& n : names) list += (list.empty() ? "" : ",") + Enc(n);
-    return list;
-}
-
-bool SplitDecoded(const std::string& v, std::vector<std::string>* out)
-{
-    std::vector<std::string> names;
-    for (const std::string& part : SplitCommas(v)) {
-        std::string n;
-        if (!ReadStr(part, &n)) return false;
-        names.push_back(n);
-    }
-    *out = names;
-    return true;
 }
 
 Fields CharacterFields(const SoundCharacter& c)
@@ -676,6 +782,7 @@ Fields DrawFields(const SoundDraw& d)
 {
     Fields f = {{"node", Enc(d.node)}, {"pick", FmtInt(d.pick)}};
     if (d.hand) f.push_back({"hand", "1"});
+    if (!d.part.empty()) f.push_back({"part", Enc(d.part)});
     return f;
 }
 
@@ -684,6 +791,7 @@ Got SetDraw(SoundDraw& d, const std::string& k, const std::string& v)
     if (k == "node") return G(ReadStr(v, &d.node));
     if (k == "pick") return G(ReadInt(v, &d.pick));
     if (k == "hand") return G(ReadFlag(v, &d.hand));
+    if (k == "part") return G(ReadStr(v, &d.part));
     return Got::Unknown;
 }
 
@@ -825,6 +933,10 @@ bool ParseStoreCore(const std::string& text, SoundStore& s)
             node->sound.frames.emplace_back();
             SoundFrame& fr = node->sound.frames.back();
             ReadFields(t, 1, fr.kept, [&](const std::string& k, const std::string& v) { return SetFrame(fr, k, v); });
+        } else if (kind == "zone" && node) {
+            node->sound.zones.emplace_back();
+            SoundZone& z = node->sound.zones.back();
+            ReadFields(t, 1, z.kept, [&](const std::string& k, const std::string& v) { return SetZone(z, k, v); });
         } else {
             unknown_to->push_back(lines[i]);
         }
@@ -984,6 +1096,7 @@ std::string SerializeSoundStore(const SoundStore& s)
             if (HasSoundLine(n)) {
                 WriteLine(out, "sound", SoundFields(n.sound), n.sound.kept);
                 for (const SoundFrame& fr : n.sound.frames) WriteLine(out, "frame", FrameFields(fr), fr.kept);
+                for (const SoundZone& z : n.sound.zones) WriteLine(out, "zone", ZoneFields(z), z.kept);
             }
             WriteLines(out, n.kept_lines);
         }
@@ -1058,6 +1171,7 @@ bool ParsePlacedTag(const std::string& text, PlacedTag* out)
             if (k == "ao") return G(ao = ReadNumber(v, &t.ao));
             if (k == "sy") return G(sy = ReadNumber(v, &t.sy));
             if (k == "tk") return G(ReadStr(v, &t.tk));
+            if (k == "pt") return G(ReadStr(v, &t.pt));
             return Got::Unknown;
         });
         if (!owner || t.owner.empty()) return false;
@@ -1082,6 +1196,7 @@ std::string SerializePlacedTag(const PlacedTag& t)
         f.push_back({"sy", FormatNumber(t.sy)});
     }
     if (!t.tk.empty()) f.push_back({"tk", Enc(t.tk)});
+    if (!t.pt.empty()) f.push_back({"pt", Enc(t.pt)});
     WriteHeader(out, kPlacedTagMagic, t.version, f, t.kept);
     return out;
 }

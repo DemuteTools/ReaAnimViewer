@@ -23,19 +23,28 @@
 //   cassign key=<k> [lib=<id>|none] [kit=1]          -- an assignment of the character above
 //   casvalue group=<id> value=<id>                   -- a Switch value of the cassign above
 //   group uid=<id> name=<s>
-//   value uid=<id> name=<s>                          -- a value of the group above
+//   value uid=<id> name=<s> [roles=<key>,<key>]      -- a value of the group above (13-23: the side-free
+//                                                       role keys whose events get its part)
 //   library uid=<id> name=<s> root=<id> [color=<hex>] [user=1] [ravlib=<s>]
 //   kit parts=<id>,<id> [offered=1]                  -- 13-15a: the body parts the library suggests itself for
 //                                                       (right after its library line; travels in the .ravlib)
 //   node uid=<id> type=sound|random|blend|switch [parent=<id>] [name=<s>] [vol=<dB>]
 //        [offset_ms=<ms>] [avoid=<n>] [group=<id>] [default=<id>] [preview=<id>] [lands=<s>]
+//        [part=<id>|*]                               -- 13-23: a Blend layer's part (* = whole; none = by event)
 //   case value=<id> child=<id>                       -- a Switch case of the node above
 //   unassigned child=<id>                            -- a child on no value of the Switch above
 //   sound kind=item|file [guid=<s>] [mode=whole|takes|tmarkers|silence] [thr=] [gap=] [pre=]
 //         [tail=] [edited=1] [linked=0] [fin=<s>] [fout=<s>] [aname=<s>] [asize=<n>] [alen=<s>] [apath=<s>]
 //         [arel=<s>] [amtime=<n>]                    -- the Sound data of the node above
+//         [div=<group id>] [divv=<id>,<id>] [rmap=<role>:<id>,...] [lanes=split] [sync=peak|start]
+//         [soff=<ms>] [cfade=<s>]                    -- 13-23/25: divided by a group (its values at divide
+//                                                       time), its own role map, lane mode, sync point, cut fade
 //   frame start=<s> len=<s> [on=0] [db=<dB>] [hand=1] [fin=<s>] [fout=<s>] [fish=<n>] [fosh=<n>]
-//                                                    -- a variation of that Sound (no fin/fout = the Sound's fades)
+//         [cuts=<s>,<s>] [cutsh=1] [cutq=1] [sync=<s>,<s>] [hsync=<s>,<s>]
+//                                                    -- a variation of that Sound (no fin/fout = the Sound's fades;
+//                                                       13-23/25: its cuts, hand / unsure flags, one sync per
+//                                                       part and the hand sync points, absolute source s)
+//   zone start=<s> len=<s> [to=<id>]                 -- 13-20: a zone of that Sound (no to = excluded; later win)
 // The auto / assign / character lines come first (a version without them keeps them as the header's
 // unknown lines), then the groups, then the libraries, each library's nodes in order.
 //
@@ -46,11 +55,12 @@
 //   rvalue group=<id> value=<id>                     -- a value of the rule above
 //   event rid=<rid> t=<clip s>
 //   evalue group=<id> value=<id>                     -- an override of the event above
-//   draw node=<id> pick=<n> [hand=1]
+//   draw node=<id> pick=<n> [hand=1] [part=<id>]     -- 13-23: the part the draw is for (none = whole)
 //   place item=<guid> node=<id> own=populated|attached|spread|deleted [off=<s>] [var=<n>] [track=<guid>]
 //
 // The tag on a placed item (item P_EXT:RAV_SND), one line:
-//   RAVSND 1 owner=<guid> rid=<rid> t=<clip s> node=<id> own=populated|attached|spread
+//   RAVSND 1 owner=<guid> rid=<rid> t=<clip s> node=<id> own=populated|attached|spread [ao=<s> sy=<s>] [tk=<s>]
+//        [pt=<id>]                                   -- 13-23: the part it plays (none = the whole variation)
 
 #pragma once
 

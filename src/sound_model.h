@@ -10,6 +10,9 @@
 //
 // 13-15a: append-only extension (assignment layers), orchestrator decision: SoundAssign,
 // SoundCharacter, SoundStore::project / characters, SoundLibrary::kit, RuleSounds::none.
+// 13-20/23/25 (spec 13-20-23-25 D4): append-only extension (parts, zones, sync points, roles):
+// SoundFrame cuts / syncs, SoundData divide / roles / sync / zones, SwitchValue::roles,
+// SoundNode::layer_part, SoundDraw::part, PlacedTag::pt.
 //
 // Every `kept` member holds text this version did not understand, written back as read:
 // unknown fields ("key=value" tokens) of the object's own line, and `kept_lines` the unknown
@@ -62,6 +65,18 @@ struct SoundFrame {
     double                   fade_out = -1.0;
     int                      fade_in_shape = 0;
     int                      fade_out_shape = 0;
+    // 13-23 / 13-25 (spec 13-20-23-25 D4, appended): the variation's parts and sync points, stored so
+    // Populate never re-detects (D6). Absolute source seconds. `cuts`: the parts' edges inside the frame
+    // (parts - 1 of them when the Sound is divided, none when combined); `cuts_hand`: moved by hand
+    // (kept across a threshold change, cleared by Reset to detected); `cut_unsure`: RAV's cut is a guess
+    // (2 parts, two candidates within 3 dB). `syncs`: one sync point per part (1 when combined; -1 for a
+    // part with nothing left), as measured by RefreshParts; `hand_syncs`: sync points moved by hand (any
+    // count; the one inside a part's spans wins for that part).
+    std::vector<double>      cuts;
+    bool                     cuts_hand = false;
+    bool                     cut_unsure = false;
+    std::vector<double>      syncs;
+    std::vector<double>      hand_syncs;
 };
 
 // The Sound-level default fades (s): every variation with no fade of its own gets them.
@@ -77,6 +92,28 @@ struct SoundSource {
     AssetIdentity   asset;
 };
 
+// 13-25: where a variation's (or part's) sync point sits before its offset: the attack, the loudest
+// bin, or the start of its first span.
+enum class SyncMode { Attack, Peak, SliceStart };
+constexpr double kDefaultSyncOffsetMs = -2.0;
+// 13-23 (A4): the fade each part gets at a cut or zone edge (s).
+constexpr double kDefaultCutFade = 0.002;
+
+// 13-20: a zone of a Sound's source (source seconds). `to` "" = excluded (never placed), else a value
+// uid of the Sound's divide group: that stretch belongs to that part. Later zones win.
+struct SoundZone {
+    double                   start = 0.0;
+    double                   length = 0.0;
+    std::string              to;
+    std::vector<std::string> kept;
+};
+
+// 13-23: one entry of a role -> value map (a Sound's own override of its divide group's roles).
+struct RoleValue {
+    std::string role;   // a side-free role key: "heel", "toe_end", a custom role's key
+    std::string value;  // a value uid of the divide group
+};
+
 // A Sound leaf's data. `frames` = the detected (pre-edit) variations, stored: Populate never
 // re-detects (D6).
 struct SoundData {
@@ -89,6 +126,19 @@ struct SoundData {
     std::vector<std::string> kept;
     double                   fade_in = kDefaultFadeIn;    // default fades of its variations (s)
     double                   fade_out = kDefaultFadeOut;
+    // 13-23 / 13-20 / 13-25 (spec 13-20-23-25 D4, appended). Divided by a Switch Group: `divide_group`
+    // ("" = combined) and its value uids at divide time (part k = value k, in time order). `role_map`:
+    // this Sound's own role -> value map (empty = the group's, SwitchValue::roles). `lanes_split`: the
+    // Edit window draws one lane per value. Sync point: mode + offset (ms). `cut_fade`: the fade at a
+    // cut or zone edge (s). `zones`: excluded / forced stretches of the source.
+    std::string              divide_group;
+    std::vector<std::string> divide_values;
+    std::vector<RoleValue>   role_map;
+    bool                     lanes_split = false;
+    SyncMode                 sync_mode = SyncMode::Attack;
+    double                   sync_offset_ms = kDefaultSyncOffsetMs;
+    double                   cut_fade = kDefaultCutFade;
+    std::vector<SoundZone>   zones;
 };
 
 // A Switch's value -> child.
@@ -118,12 +168,20 @@ struct SoundNode {
     SoundData                sound;
     std::vector<std::string> kept;
     std::vector<std::string> kept_lines;
+    // 13-23 (A9): a Blend layer's part: "" = by event, "*" = the whole variation, else a value uid.
+    std::string              layer_part;
 };
+
+// 13-23: what "whole" reads as in SoundNode::layer_part.
+constexpr const char kLayerPartWhole[] = "*";
 
 struct SwitchValue {
     std::string              uid;
     std::string              name;
     std::vector<std::string> kept;
+    // 13-23 (D2): the side-free role keys whose events get this value's part ("heel", "toe_end"...). A
+    // key belongs to at most one value of a group.
+    std::vector<std::string> roles;
 };
 
 struct SwitchGroup {
@@ -223,6 +281,7 @@ struct SoundDraw {
     int                      pick = -1;
     bool                     hand = false;  // picked by hand: kept on Reshuffle
     std::vector<std::string> kept;
+    std::string              part;  // 13-23: the part (value uid) this draw is for ("" = whole)
 };
 
 enum class Ownership { Populated, Attached, Spread, Deleted };
@@ -286,6 +345,7 @@ struct PlacedTag {
     std::string tk;
     int         version = 2;      // a higher version is read best-effort and kept on write
     std::vector<std::string> kept;  // unknown fields, written back after the known ones
+    std::string pt;                 // 13-23: the part (value uid) it plays ("" = the whole variation)
 };
 
 // ---- Shared working types --------------------------------------------------------------------

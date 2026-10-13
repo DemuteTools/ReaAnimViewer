@@ -19,6 +19,7 @@
 #include <imgui.h>
 
 #include "library_icons.h"
+#include "library_user_ui.h"  // FileSoundMissing, Locate (missing report lines)
 #include "picked_gestures.h"
 #include "reaper_api.h"
 #include "rule_record.h"
@@ -543,6 +544,20 @@ void DrawSoundReportLine(const TaggingSoundContext& ctx)
             ImGui::SameLine();
             if (ui::LinkButton("Select")) SelectOnlyItem(FindItemByGuid(l.item_guid));
             ui::ItemTipText("Select the animation item in REAPER");
+            // A File Sound whose file is not found: Locate, as in the Library (the picked file's
+            // folder is searched for the other missing sounds too).
+            if (l.kind == ReportKind::Missing && !l.node.empty())
+                for (const SoundLibrary& lib : GetSoundStore(nullptr).libraries) {
+                    const SoundNode* n = FindNode(lib, l.node);
+                    if (!n) continue;
+                    if (FileSoundMissing(*n)) {
+                        ImGui::SameLine();
+                        if (ui::LinkButton("Locate...")) RequestUserLibraryLocate(lib.uid, n->uid);
+                        ui::ItemTipText("Pick this file where it is now. RAV also looks in its folder for\n"
+                                        "the other missing sounds (one undo step).");
+                    }
+                    break;
+                }
             ImGui::PopID();
         }
         ui::EndPanelPopup();

@@ -767,7 +767,14 @@ bool PrepareFileSound(ReaProject* proj, const std::string& lib_uid, const std::s
             out->item_guid = n->sound.source.item_guid;
             return true;
         }
-        if (why) *why = "File not found: " + name;
+        if (why) {
+            // Explicit: the item it was placed from is gone (13-24), and where the file was last seen.
+            *why = "File not found: " + name;
+            if (!n->sound.source.item_guid.empty()) *why += " (its item in this project was deleted)";
+            const std::string& last = n->sound.source.asset.last_path;
+            const size_t       cut = last.find_last_of("\\/");
+            if (cut != std::string::npos) *why += ", last seen in " + last.substr(0, cut);
+        }
         return false;
     }
     if (!make_track) {  // 13-13: the caller places it on its Switch-named track

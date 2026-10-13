@@ -6,6 +6,7 @@
 // (assign / character / kit / none lines, unknown text kept) and the migration of the old per-type
 // sounds.
 
+#include <algorithm>
 #include "sound_assign.h"
 
 #include <cstdio>
@@ -693,11 +694,30 @@ static void TestMigration()
     CHECK(e.library == "LL");
 }
 
+static void TestRoleMenuKeys()
+{
+    const std::vector<std::string> k = RoleMenuKeys({"ball", "left_paw", "right_paw", "left_heel", "left_up_leg", "toe", ""});
+    CHECK(k.size() == 16 && k[0] == "heel" && k[2] == "toe_end" && k[13] == "head" && k[14] == "ball" && k[15] == "paw");
+    CHECK(RoleKeyLabel("toe_end") == "toe end" && RoleKeyLabel("heel") == "heel");
+    // The built-in list is exactly the keys events carry (RoleFamilyKey of every role).
+    const std::vector<std::string> b = RoleMenuKeys({});
+    for (int r = 0; r < static_cast<int>(Role::Count); ++r) {
+        const std::string fk = RoleFamilyKey(static_cast<Role>(r));
+        CHECK(fk.empty() || std::find(b.begin(), b.end(), fk) != b.end());
+    }
+    for (const std::string& key : b) {
+        bool found = false;
+        for (int r = 0; r < static_cast<int>(Role::Count); ++r) found = found || RoleFamilyKey(static_cast<Role>(r)) == key;
+        CHECK(found);
+    }
+}
+
 int main()
 {
     TestTable();
     TestPartOfBlock();
     TestEventRoleKey();
+    TestRoleMenuKeys();
     TestLibraryChain();
     TestValueChain();
     TestCharacterFor();

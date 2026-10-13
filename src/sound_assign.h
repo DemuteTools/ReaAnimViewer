@@ -88,6 +88,12 @@ std::string RoleFamilyKey(Role r);
 // its first condition reads (bones, then ref_bones, as PartOfBlock): a built-in role's RoleFamilyKey, a
 // custom role's key without a leading "left_" / "right_"; plain bones are skipped ("" when no role).
 std::string EventRoleKey(const Block& b);
+// 13-23 (D9): the role keys a role map offers, in menu order: the built-in families (heel, toe, toe_end,
+// knee, hip, hips, clavicle, shoulder, elbow, hand, spine, chest, neck, head), then the user's custom role
+// keys without a leading "left_" / "right_" (EventRoleKey's form), each once, built-in ones skipped.
+std::vector<std::string> RoleMenuKeys(const std::vector<std::string>& custom_role_keys);
+// How a role key reads: '_' as spaces ("toe end").
+std::string RoleKeyLabel(const std::string& key);
 
 // ---- Resolution -------------------------------------------------------------------------------
 

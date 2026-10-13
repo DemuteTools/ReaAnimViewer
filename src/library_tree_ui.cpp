@@ -25,10 +25,12 @@
 #include "library_view_ui.h"
 #include "picked_gestures.h"
 #include "reaper_api.h"
+#include "item_rules.h"  // RulesResourceRoot, GetCustomRoles (13-23 role maps)
 #include "sound_assign.h"
 #include "sound_place.h"
 #include "sound_project.h"
 #include "sound_record.h"
+#include "sound_entries.h"  // ToggleGroupRole (13-23 role maps)
 #include "sound_switch.h"
 #include "ui_flow.h"
 #include "ui_flow_math.h"
@@ -1864,6 +1866,18 @@ void SwitchGroupsSectionWidgets()
                                 rx -= gap;
                             }
                         }
+                        if (!v.roles.empty()) {
+                            // 13-23 (D9): its roles, muted ("← toe, toe end"): their events get this value's part.
+                            std::string rl = "\xE2\x86\x90 ";
+                            for (size_t k = 0; k < v.roles.size(); ++k) rl += (k ? ", " : "") + RoleKeyLabel(v.roles[k]);
+                            const float tw = std::min(ImGui::CalcTextSize(rl.c_str()).x + 1.0f, (rx - vnx) * 0.5f);
+                            if (tw > ui::Dp(24.0f)) {
+                                ui::EllipsisTextTip(dl, ImVec2(rx - tw, std::floor(vcy - ImGui::GetTextLineHeight() * 0.5f)), rx, ui::kMuted, rl,
+                                                    "Events with these roles get this value's part, in every sound divided by the group "
+                                                    "(right-click \xE2\x80\xBA Roles)");
+                                rx -= tw + gap;
+                            }
+                        }
                         ui::FontScope f(ui::FontTitle());
                         ui::EllipsisTextTip(dl, ImVec2(vnx, std::floor(vcy - ImGui::GetTextLineHeight() * 0.5f)), rx, ui::kText, v.name);
                         ImGui::SetCursorScreenPos(ImVec2(vp.x, vp.y + rh));
@@ -2002,7 +2016,40 @@ void SwitchGroupsSectionWidgets()
                         }
                     }
                     ui::ItemTipText("Plays for every Switch on this group that has no default of its own");
+                    // 13-23 (D9): Roles ▸ -- which events (by role) get this value's part in every sound divided
+                    // by the group. A role belongs to one value: one used by another shows "(→ Back)" and moves.
+                    ui::MenuSeparator();
+                    if (ui::BeginSubMenu("Roles")) {
+                        const std::vector<std::string>& keys = LibraryRoleKeys();
+                        const size_t                    nb = std::min(LibraryBuiltinRoleCount(), keys.size());
+                        ui::MenuCaption(("Roles \xE2\x86\x92 " + cv->name).c_str());
+                        for (size_t i = 0; i < keys.size(); ++i) {
+                            if (i == nb) {
+                                ui::MenuSeparator();
+                                ui::MenuCaption("Custom roles");
+                            }
+                            const std::string& key = keys[i];
+                            const SwitchValue* owner = nullptr;
+                            for (const SwitchValue& o : cg->values)
+                                if (std::find(o.roles.begin(), o.roles.end(), key) != o.roles.end()) owner = &o;
+                            const bool        on = owner == cv;
+                            const std::string hint = owner && !on ? "(\xE2\x86\x92 " + owner->name + ")" : std::string();
+                            const std::string label = RoleKeyLabel(key) + "##role" + key;
+                            if (ui::MenuEntry(label.c_str(), hint.empty() ? nullptr : hint.c_str(), on)) {
+                                const std::string gid = cg->uid, vid = cv->uid, gname = cg->name, vname = cv->name;
+                                const std::string toast = on ? gname + ": " + RoleKeyLabel(key) + " removed from " + vname
+                                                             : gname + ": " + RoleKeyLabel(key) + " \xE2\x86\x92 " + vname +
+                                                                   (owner ? " (moved from " + owner->name + ")" : std::string());
+                                Later([gid, vid, key, toast] {
+                                    Gesture("Roles", [&](SoundStore& s) { return ToggleGroupRole(s, gid, vid, key); }, toast);
+                                });
+                            }
+                        }
+                        ui::ToneText("One undo point per change. A role belongs to one value of the group.", ui::kFaint, true, ui::Dp(200.0f));
+                        ImGui::EndMenu();
+                    }
                 }
+                if (cg && cv) ui::MenuSeparator();
                 if (cg && cv && ImGui::MenuItem("Remove value")) {
                     del_value_group = cg->uid;
                     del_value = cv->uid;
@@ -2431,6 +2478,22 @@ bool LibraryTreeTakesArrows()
     return g.tree_focused && g.rename == RenameKind::None && !g.rows.empty();
 }
 const LibraryTreeHooks& GetLibraryTreeHooks() { return g.hooks; }
+
+const std::vector<std::string>& LibraryRoleKeys()
+{
+    static std::vector<std::string> keys;
+    static int                      frame = -1000;
+    const int                       f = ImGui::GetFrameCount();
+    if (keys.empty() || f - frame >= 60 || f < frame) {
+        frame = f;
+        std::vector<std::string> custom;
+        for (const CustomRole& c : GetCustomRoles(RulesResourceRoot())) custom.push_back(c.key);
+        keys = RoleMenuKeys(custom);
+    }
+    return keys;
+}
+
+size_t LibraryBuiltinRoleCount() { return RoleMenuKeys({}).size(); }
 
 }  // namespace rav
 

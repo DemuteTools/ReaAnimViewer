@@ -297,6 +297,34 @@ std::string RoleFamilyKey(Role r)
     return k == "?" ? std::string() : k;
 }
 
+std::vector<std::string> RoleMenuKeys(const std::vector<std::string>& custom_role_keys)
+{
+    std::vector<std::string> out = {"heel", "toe",   "toe_end", "knee",  "hip",  "hips", "clavicle",
+                                    "shoulder", "elbow", "hand", "spine", "chest", "neck", "head"};
+    for (std::string key : custom_role_keys) {
+        Role r;
+        if (RoleFromKey(key, &r)) continue;  // a custom key that became built-in reads as the built-in
+        for (const char* side : {"left_", "right_"}) {
+            const std::string pre = side;
+            if (key.size() > pre.size() && key.compare(0, pre.size(), pre) == 0) {
+                key = key.substr(pre.size());
+                break;
+            }
+        }
+        if (key.empty() || std::find(out.begin(), out.end(), key) != out.end()) continue;
+        out.push_back(key);
+    }
+    return out;
+}
+
+std::string RoleKeyLabel(const std::string& key)
+{
+    std::string s = key;
+    for (char& c : s)
+        if (c == '_') c = ' ';
+    return s;
+}
+
 std::string EventRoleKey(const Block& b)
 {
     if (IsAutoBlock(b)) {

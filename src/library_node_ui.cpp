@@ -32,6 +32,7 @@
 #include "picked_gestures.h"
 #include "reaper_api.h"
 #include "shortcuts.h"
+#include "sound_assign.h"  // RoleKeyLabel (13-23 role maps)
 #include "sound_audition.h"
 #include "sound_audition_plan.h"
 #include "sound_draw.h"
@@ -118,6 +119,14 @@ struct PanelState {
     double                wave_len = 0.0;
     ImGuiID               pan_id = 0;  // the waveform a middle-drag pans
     bool                  keys_stale = true;  // re-read reaper-kb.ini (each time Edit opens)
+    // 13-20 / 13-23 / 13-25: Edit's parts -- the zone selected, the part shown alone (Combined), the
+    // waveform's right-click (its time, frame, and kind: 0 outside, 1 a variation, 2 the zone), the
+    // Roles... popup's "More roles".
+    double                zone_start = 0.0, zone_len = 0.0;
+    int                   solo = -1;
+    double                menu_at = 0.0;
+    int                   menu_frame = -1, menu_kind = 0;
+    bool                  roles_more = false;
 };
 PanelState P;
 
@@ -143,6 +152,9 @@ void OpenEdit(const std::string& lib_uid, const std::string& uid)
     P.view_start = 0.0;
     P.view_len = 0.0;
     P.sel.clear();
+    P.zone_start = P.zone_len = 0.0;
+    P.solo = -1;
+    P.roles_more = false;
 }
 
 // ---- gestures -------------------------------------------------------------------------------------
@@ -199,7 +211,7 @@ SoundData& Live(const SoundNode& n)
     return P.draft;
 }
 
-void CommitLive(const std::string& name, const std::string& lib_uid, const std::string& uid)
+void CommitLive(const std::string& name, const std::string& lib_uid, const std::string& uid, const std::string& toast = {})
 {
     if (!P.live || P.draft_uid != uid) return;
     const SoundData d = P.draft;
@@ -207,7 +219,7 @@ void CommitLive(const std::string& name, const std::string& lib_uid, const std::
     EditNode(name, lib_uid, uid, [d](SoundNode& n) {
         n.sound = d;
         return true;
-    });
+    }, toast);
 }
 
 void CancelLive() { P.live = false; }
@@ -238,10 +250,28 @@ std::vector<SoundFrame> Detected(const SoundMedia& m, DetectMode mode, const Sil
     return DetectFrames(m.facts, mode, sp, has ? &pk : nullptr);
 }
 
-// A re-detection that keeps the hand frames (decision 7).
+// 13-20 / 13-23 / 13-25: the parts' cuts and sync points measured again on the file's peaks (without them
+// while they are read: the stored ones kept, else measured at placement). Every write that changes
+// frames, detection, divide, sync settings or zones runs it. RefreshOne: one variation (a cut dragged).
+void RefreshWith(SoundData& d, const std::string& path)
+{
+    PeakData pk;
+    RefreshParts(d, !path.empty() && RequestPeaks(path, &pk) == PeakState::Ready ? &pk : nullptr);
+}
+
+void RefreshOne(SoundData& d, int i, const std::string& path)
+{
+    PeakData pk;
+    RefreshFrame(d, i, !path.empty() && RequestPeaks(path, &pk) == PeakState::Ready ? &pk : nullptr);
+}
+
+// A re-detection that keeps the hand frames (decision 7), their hand sync points and cuts carried to the
+// new frames that hold them (A7), the parts measured again.
 void Redetect(SoundData& d, const SoundMedia& m, const std::vector<SoundFrame>& previous)
 {
     d.frames = MergeHandFrames(Detected(m, d.mode, d.silence), previous, d.mode == DetectMode::Takes);
+    CarryHandMarks(d.frames, previous);
+    RefreshWith(d, m.path);
 }
 
 int DetectedCount(const std::string& uid, const SoundMedia& m, const SoundData& d)
@@ -371,6 +401,50 @@ void PlayFrame(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m,
                       fin, fout, shin, shout))
         ShowLibraryToast("Cannot play: the sound file is not read", false);
     else P.frame_start = f.start;
+}
+
+// 13-20 / 13-23: plays audition voices of one Sound (a part's pieces, a zone) as "frame:<uid>", so the
+// playhead follows them in the file (the pieces are delayed by their distance from the first).
+void PlaySoundVoices(const SoundNode& n, const SoundMedia& m, const std::vector<AuditionVoice>& voices)
+{
+    std::vector<PlayVoice> pv;
+    for (const AuditionVoice& v : voices) {
+        if (!(v.length_s > 0.0)) continue;
+        PlayVoice p;
+        p.path = v.variation >= 0 ? VariationPath(m, n.sound, v.variation) : m.path;
+        p.start_s = v.start_s;
+        p.length_s = v.length_s;
+        p.delay_s = v.delay_ms / 1000.0;
+        p.gain = DbToGain(v.gain_db);
+        p.fade_in_s = v.fade_in_s;
+        p.fade_out_s = v.fade_out_s;
+        p.fade_in_shape = v.fade_in_shape;
+        p.fade_out_shape = v.fade_out_shape;
+        pv.push_back(p);
+    }
+    if (pv.empty()) {
+        ShowLibraryToast("Nothing to play there", false);
+        return;
+    }
+    if (!PlayVoices(pv, "frame:" + n.uid)) ShowLibraryToast("Cannot play: the sound file is not read", false);
+    else P.frame_start = pv.front().start_s;
+}
+
+// A part of variation i ("" = the whole variation minus its exclusions), as Populate places it.
+void PlayPart(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, int i, const std::string& part)
+{
+    PlaySoundVoices(n, m, PartAuditionVoices(lib, n, i, part));
+}
+
+// A click at source time t of variation i in Edit: the part there (an off variation: the whole of it).
+void PlayAt(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, int i, double t)
+{
+    const SoundData& d = n.sound;
+    if (i < 0 || static_cast<size_t>(i) >= d.frames.size()) return;
+    std::string own;
+    if (!d.frames[static_cast<size_t>(i)].on) PlayFrame(lib, n, m, i);
+    else if (!PartAt(d, i, t, &own)) ShowLibraryToast("Excluded: never placed (right-click \xE2\x80\xBA Include again)", false);
+    else PlayPart(lib, n, m, i, own);
 }
 
 // The playhead in a Sound's source seconds (or < 0): its frame, or its whole file.
@@ -599,7 +673,7 @@ void Hatch(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col)
 
 struct WaveDrag {
     ImGuiID id = 0;
-    enum Kind { None, Pending, Trim, Db, Thr } kind = None;
+    enum Kind { None, Pending, Trim, Db, Thr, Sync, Cut, Zone } kind = None;
     int     frame = -1;
     int     edge = 0;  // -1 left, +1 right
     double  s0 = 0.0, l0 = 0.0, db0 = 0.0;
@@ -607,6 +681,8 @@ struct WaveDrag {
     double  last_s = 0.0, last_l = 0.0, last_db = 0.0, last_thr = 0.0;
     bool    moved = false;
     int     lane = 0;  // Thr: the lane whose line is dragged (a stereo source has two)
+    int     part = -1;  // Sync: the part of the flag; Cut: the cut's index
+    double  last_t = 0.0, zone_a = 0.0;  // Sync / Cut: the time dragged to; Zone: where it started
 };
 WaveDrag g_wd;
 
@@ -751,10 +827,18 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
     const float  w = std::max(8.0f, o.size.x > 0.0f ? o.size.x : ImGui::GetContentRegionAvail().x);
     const float  h = std::max(16.0f, o.size.y);
     const float  rh = o.ruler ? ui::Dp(18.0f + 4.0f) : 0.0f;  // .edruler: 18 px + 4 px under it
+    // 13-20 / 13-23 / 13-25: the parts (Edit). Combined and divided: a ribbon under the waveform;
+    // Split: one lane per value.
+    const WaveParts* wp = o.parts && o.parts->data ? o.parts : nullptr;
+    const SoundData* pd = wp ? wp->data : nullptr;
+    const bool       divided = pd && IsDivided(*pd);
+    const int        nparts = pd ? PartCount(*pd) : 1;
+    const bool       split = divided && wp->split;
+    const float      ribbon_h = divided && !split ? ui::Dp(14.0f) : 0.0f, ribbon_gap = ribbon_h > 0.0f ? ui::Dp(3.0f) : 0.0f;
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
     ImGui::InvisibleButton("##wave", ImVec2(w, h + rh), ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight);
     const bool hovered = ImGui::IsItemHovered();
-    const ImVec2 a(p0.x, p0.y + rh), b(p0.x + w, p0.y + rh + h);
+    const ImVec2 a(p0.x, p0.y + rh), b(p0.x + w, p0.y + rh + std::max(16.0f, h - ribbon_h - ribbon_gap));
     ev.min = a;
     ev.max = b;
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -776,8 +860,8 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
     // both. hh: a lane's half height; LaneMid(l): its zero line; LaneAt(y): the lane at y.
     PeakData   pk;
     const bool have_peaks = ReadPeaks(path, vs, vl, w / vl, &pk);
-    const int  lanes = have_peaks ? PeakChannels(pk) : 1;
-    const float lane_h = h / static_cast<float>(lanes), hh = lane_h * 0.5f - 3.0f;
+    const int  lanes = split ? nparts : have_peaks ? PeakChannels(pk) : 1;  // Split: a mono lane per value
+    const float lane_h = (b.y - a.y) / static_cast<float>(lanes), hh = std::max(1.0f, lane_h * 0.5f - 3.0f);
     auto LaneMid = [&](int l) { return a.y + lane_h * (static_cast<float>(l) + 0.5f); };
     auto LaneAt = [&](float y) { return std::clamp(static_cast<int>((y - a.y) / std::max(1.0f, lane_h)), 0, lanes - 1); };
     const ImVec2 m = io.MousePos;
@@ -812,12 +896,27 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
             const double g = fi >= 0 ? DbToGain(frames[static_cast<size_t>(fi)].db) : 1.0;
             const float  x = a.x + static_cast<float>(i) * w / static_cast<float>(pk.max_abs.size());
             const bool   in = fi >= 0 && frames[static_cast<size_t>(fi)].on;
+            // 13-20 / 13-23: who owns the column: -2 outside / off, -1 excluded, else its part (0 combined).
+            int own_k = in ? 0 : -2;
+            if (pd && in) {
+                std::string own;
+                own_k = PartAt(*pd, fi, t, &own) ? std::max(0, PartIndex(*pd, own)) : -1;
+            }
             for (int l = 0; l < lanes; ++l) {
                 const float  mid = LaneMid(l);
-                const double amp = PeakLane(pk, l)[i] * g;
+                const double amp = (split ? pk.max_abs : PeakLane(pk, l))[i] * g;
                 const float  y = static_cast<float>(std::min(amp, 1.0)) * hh;
-                dl->AddLine(ImVec2(x, mid - y), ImVec2(x, mid + y + 1.0f), in ? ui::kAccent : ui::kMuted);
-                if (amp > 1.0) {  // clipped: the top and bottom of the column
+                ImU32 col = in ? ui::kAccent : ui::kMuted;
+                if (split) {
+                    col = own_k == l ? wp->colors[static_cast<size_t>(l)] : WithAlpha(ui::kMuted, 0x21);  // the others: a ghost
+                } else if (pd && own_k == -1) {
+                    col = WithAlpha(ui::kMuted, 0x4D);  // excluded
+                } else if (divided && own_k >= 0) {
+                    col = wp->colors[static_cast<size_t>(own_k)];
+                    if (wp->solo >= 0 && own_k != wp->solo) col = WithAlpha(col, 0x38);
+                }
+                dl->AddLine(ImVec2(x, mid - y), ImVec2(x, mid + y + 1.0f), col);
+                if (amp > 1.0 && ((col >> IM_COL32_A_SHIFT) & 0xFF) == 0xFF) {  // clipped: the top and bottom of the column
                     const float over = std::min(hh, static_cast<float>(amp - 1.0) * hh);
                     dl->AddLine(ImVec2(x, mid - hh), ImVec2(x, mid - hh + over), ui::kBad);
                     dl->AddLine(ImVec2(x, mid + hh - over), ImVec2(x, mid + hh + 1.0f), ui::kBad);
@@ -859,6 +958,122 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
             }
         }
     }
+    // 13-20 / 13-23 / 13-25: excluded stretches hatched ("Excluded"), the cuts (a grab at the bottom) and
+    // the sync points (a flag at the top), the lanes' names (Split), the zone selected. The flag / cut
+    // under the mouse is found here (it is grabbed before a trim edge or the threshold line).
+    int hot_flag = -1, hot_flag_part = -1, hot_cut = -1, hot_cut_k = -1;
+    if (pd) {
+        ImFont*     tf = ui::FontMonoMicro();
+        const float dash = 3.0f, dstep = 6.0f;
+        auto        vline = [&](float x, float y0, float y1, ImU32 col, bool solid) {
+            x = std::floor(x) + 0.5f;
+            if (solid) dl->AddLine(ImVec2(x, y0), ImVec2(x, y1), col, 1.5f);
+            else
+                for (float y = y0; y < y1; y += dstep) dl->AddLine(ImVec2(x, y), ImVec2(x, std::min(y + dash, y1)), col);
+        };
+        for (size_t i = 0; i < frames.size() && i < pd->frames.size(); ++i) {
+            const SoundFrame& f = pd->frames[i];
+            if (!f.on || X(f.start + f.length) < a.x || X(f.start) > b.x) continue;
+            double at = f.start;
+            auto   hatch = [&](double s0, double s1) {
+                const ImVec2 za(X(s0), by0), zb(std::max(X(s1), X(s0) + 1.0f), by1);
+                dl->AddRectFilled(za, zb, WithAlpha(ui::kBg, 0x66));
+                Hatch(dl, za, zb, ui::kHatch);
+                const ImVec2 ls = ui::TextSizeIn(tf, "Excluded");
+                if (zb.x - za.x >= ls.x + 6.0f) ui::AddTextIn(dl, tf, ImVec2(za.x + 3.0f, zb.y - ls.y - 2.0f), ui::kMuted, "Excluded");
+            };
+            for (const PartSpan& sp : PlacedSpans(*pd, static_cast<int>(i), std::string())) {
+                if (sp.start - at > 1e-9) hatch(at, sp.start);
+                at = sp.start + sp.length;
+            }
+            if (f.start + f.length - at > 1e-9) hatch(at, f.start + f.length);
+        }
+        // Cuts: a line over the frame, its grab at the bottom.
+        const float grab_w = ui::Dp(4.0f), grab_h = ui::Dp(12.0f);
+        float       cut_d = ui::Dp(6.0f);
+        for (size_t i = 0; divided && i < frames.size() && i < pd->frames.size(); ++i) {
+            const SoundFrame& f = pd->frames[i];
+            if (!f.on) continue;
+            const bool unsure = f.cut_unsure && !f.cuts_hand;
+            for (size_t k = 0; k < f.cuts.size(); ++k) {
+                const float x = X(f.cuts[k]);
+                if (x < a.x - grab_w || x > b.x + grab_w) continue;
+                const bool  hot = (g_wd.id == gid && g_wd.kind == WaveDrag::Cut && g_wd.frame == static_cast<int>(i) &&
+                                  g_wd.part == static_cast<int>(k));
+                const ImU32 col = unsure ? ui::kWarn : WithAlpha(ui::kText, hot ? 0xFF : 0xC0);
+                vline(x, by0, by1 - grab_h, col, f.cuts_hand);
+                const ImVec2 g0(x - grab_w, by1 - grab_h), g1(x + grab_w, by1 - 1.0f);
+                if (unsure) {
+                    dl->AddRectFilled(g0, g1, ui::kWarn, 2.0f);
+                    const ImVec2 qs = ui::TextSizeIn(tf, "?");
+                    ui::AddTextIn(dl, tf, ImVec2(std::floor(x - qs.x * 0.5f), std::floor((g0.y + g1.y - qs.y) * 0.5f)), ui::kBg, "?");
+                } else if (f.cuts_hand) {
+                    dl->AddRectFilled(g0, g1, ui::kText, 2.0f);
+                } else {
+                    dl->AddRectFilled(g0, g1, ui::kRaised, 2.0f);
+                    dl->AddRect(g0, g1, col, 2.0f);
+                }
+                const float d = std::fabs(m.x - x);
+                if (hovered && o.gestures && m.y >= by1 - grab_h - ui::Dp(4.0f) && m.y <= b.y && d < cut_d) {
+                    cut_d = d;
+                    hot_cut = static_cast<int>(i);
+                    hot_cut_k = static_cast<int>(k);
+                }
+            }
+        }
+        // Sync points: a dashed (detected) or solid (moved by hand) line and a flag at the top, "S" or the
+        // value's initial, in the part's colour (amber when combined).
+        float flag_d = 1e9f;
+        for (size_t i = 0; i < frames.size() && i < pd->frames.size(); ++i) {
+            const SoundFrame& f = pd->frames[i];
+            if (!f.on || f.syncs.size() != static_cast<size_t>(nparts)) continue;
+            for (int k = 0; k < nparts; ++k) {
+                const double sy = f.syncs[static_cast<size_t>(k)];
+                if (sy < 0.0) continue;
+                const float x = X(sy);
+                if (x < a.x - 20.0f || x > b.x) continue;
+                const ImU32 col = divided && static_cast<size_t>(k) < wp->colors.size() ? wp->colors[static_cast<size_t>(k)] : ui::kWarn;
+                std::string lab = "S";
+                if (divided && static_cast<size_t>(k) < wp->names.size() && !wp->names[static_cast<size_t>(k)].empty()) {
+                    const std::string& nm = wp->names[static_cast<size_t>(k)];
+                    size_t             len = 1;  // the first UTF-8 character
+                    while (len < nm.size() && (static_cast<unsigned char>(nm[len]) & 0xC0) == 0x80) ++len;
+                    lab = nm.substr(0, len);
+                }
+                const bool   hand = SyncIsHand(*pd, static_cast<int>(i), k);
+                const ImVec2 ts = ui::TextSizeIn(tf, lab.c_str());
+                const float  fy = by0 + ui::Dp(12.0f);
+                const ImVec2 f0(std::floor(x), fy), f1(std::floor(x) + ts.x + 6.0f, fy + ts.y + 2.0f);
+                vline(x, fy, by1, WithAlpha(col, 0xD0), hand);
+                dl->AddRectFilled(f0, f1, col, 2.0f);
+                if (!hand) dl->AddRect(f0, f1, WithAlpha(ui::kBg, 0x80), 2.0f);
+                ui::AddTextIn(dl, tf, ImVec2(f0.x + 3.0f, f0.y + 1.0f), ui::kBg, lab.c_str());
+                const bool on_flag = m.x >= f0.x - 2.0f && m.x <= f1.x + 2.0f && m.y >= f0.y - 2.0f && m.y <= f1.y + 2.0f;
+                const bool on_line = std::fabs(m.x - x) <= 3.0f && m.y >= by0 && m.y <= f1.y + ui::Dp(10.0f);
+                const float d = std::fabs(m.x - x);
+                if (hovered && o.gestures && (on_flag || on_line) && d < flag_d) {
+                    flag_d = d;
+                    hot_flag = static_cast<int>(i);
+                    hot_flag_part = k;
+                }
+            }
+        }
+        if (split) {  // each lane's name (under the frames' numbers)
+            for (int l = 0; l < lanes && static_cast<size_t>(l) < wp->names.size(); ++l) {
+                const float  y = a.y + lane_h * static_cast<float>(l) + ui::Dp(16.0f);
+                const float  r = ui::Dp(3.5f);
+                dl->AddCircleFilled(ImVec2(a.x + ui::Dp(8.0f), y + ImGui::GetTextLineHeight() * 0.5f), r, wp->colors[static_cast<size_t>(l)]);
+                dl->AddText(ImVec2(a.x + ui::Dp(14.0f), y), ui::kText, wp->names[static_cast<size_t>(l)].c_str());
+                if (l > 0) dl->AddRectFilled(ImVec2(a.x, std::floor(a.y + lane_h * l)), ImVec2(b.x, std::floor(a.y + lane_h * l) + 1.0f), ui::kStrokeStrong);
+            }
+        }
+        if (wp->sel_len > 0.0) {  // the zone selected
+            const ImVec2 za(X(wp->sel_start), a.y), zb(std::max(X(wp->sel_start + wp->sel_len), X(wp->sel_start) + 1.0f), b.y);
+            dl->AddRectFilled(za, zb, WithAlpha(ui::kAccent, 0x2E));
+            dl->AddLine(ImVec2(za.x, za.y), ImVec2(za.x, zb.y), ui::kAccent);
+            dl->AddLine(ImVec2(zb.x, za.y), ImVec2(zb.x, zb.y), ui::kAccent);
+        }
+    }
     // The threshold line (Silence): dashed text colour at 45 % (accent under the mouse), its dB in a
     // chip at the right.
     const bool thr = std::isfinite(o.threshold_db);
@@ -868,6 +1083,7 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
     // wave has no more grab zones under the mouse than a mono one.
     auto       on_thr = [&](float y) {
         const int l = LaneAt(y);
+        if (split && l != 0) return false;  // Split: the first lane's line only
         return std::fabs(y - (LaneMid(l) - thr_y)) <= ui::Dp(4.0f) || std::fabs(y - (LaneMid(l) + thr_y)) <= ui::Dp(4.0f);
     };
     const bool near_thr = hovered && thr && on_thr(m.y);
@@ -875,7 +1091,7 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
         const bool  hot = near_thr || (g_wd.id == gid && g_wd.kind == WaveDrag::Thr);
         const ImU32 col = hot ? ui::kAccent : WithAlpha(ui::kText, 0x73);
         const float dash = ui::Dp(3.0f), step = ui::Dp(6.0f);
-        for (int l = 0; l < lanes; ++l) {
+        for (int l = 0; l < (split ? 1 : lanes); ++l) {
             const float mid = LaneMid(l);
             for (float x = a.x; x < b.x; x += step) {
                 dl->AddLine(ImVec2(x, std::floor(mid - thr_y) + 0.5f), ImVec2(std::min(x + dash, b.x), std::floor(mid - thr_y) + 0.5f), col);
@@ -897,6 +1113,43 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
     dl->PopClipRect();
     const bool fade_hot = WaveFades(dl, gid, hovered, frames, o, a, b, vs, vl, &ev);  // Antho 2026-10-12
     dl->AddRect(a, b, ui::kStroke, ui::kRadiusSm);
+    // 13-23 (Combined, divided): the ribbon under the waveform -- each part in its colour with its name,
+    // excluded stretches and off variations hatched, the solo'd part bright.
+    if (ribbon_h > 0.0f) {
+        const float y0 = b.y + ribbon_gap, y1 = y0 + ribbon_h;
+        dl->AddRectFilled(ImVec2(a.x, y0), ImVec2(b.x, y1), ui::kBg, 3.0f);
+        dl->PushClipRect(ImVec2(a.x, y0), ImVec2(b.x, y1), true);
+        ImFont* tf = ui::FontMonoMicro();
+        auto    hatch = [&](double s0, double s1) {
+            const ImVec2 za(X(s0), y0), zb(std::max(X(s1), X(s0) + 1.0f), y1);
+            dl->AddRectFilled(za, zb, WithAlpha(ui::kMuted, 0x14));
+            Hatch(dl, za, zb, ui::kHatch);
+        };
+        for (size_t i = 0; i < pd->frames.size(); ++i) {
+            const SoundFrame& f = pd->frames[i];
+            if (X(f.start + f.length) < a.x || X(f.start) > b.x) continue;
+            if (!f.on) {
+                hatch(f.start, f.start + f.length);
+                continue;
+            }
+            double at = f.start;
+            for (const PartSpan& sp : PartSpansOf(*pd, static_cast<int>(i))) {
+                if (sp.start - at > 1e-9) hatch(at, sp.start);
+                at = sp.start + sp.length;
+                const int k = std::max(0, PartIndex(*pd, sp.value_uid));
+                ImU32     col = static_cast<size_t>(k) < wp->colors.size() ? wp->colors[static_cast<size_t>(k)] : ui::kAccent;
+                if (wp->solo >= 0 && k != wp->solo) col = WithAlpha(col, 0x4D);
+                const ImVec2 za(X(sp.start) + 0.5f, y0 + 1.0f), zb(std::max(X(sp.start + sp.length) - 0.5f, za.x + 1.0f), y1 - 1.0f);
+                dl->AddRectFilled(za, zb, col, 2.0f);
+                const std::string& nm = static_cast<size_t>(k) < wp->names.size() ? wp->names[static_cast<size_t>(k)] : std::string();
+                const ImVec2       ts = ui::TextSizeIn(tf, nm.c_str());
+                if (!nm.empty() && zb.x - za.x >= ts.x + 6.0f)
+                    ui::AddTextIn(dl, tf, ImVec2(za.x + 3.0f, std::floor((y0 + y1 - ts.y) * 0.5f)), ui::kBg, nm.c_str());
+            }
+            if (f.start + f.length - at > 1e-9) hatch(at, f.start + f.length);
+        }
+        dl->PopClipRect();
+    }
 
     // The ruler (.edruler): ms below 2 s shown, else s; mono 10 faint labels 2 px after a 6 px
     // stroke-strong tick, a stroke line under it.
@@ -940,21 +1193,57 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
             hf = g_wd.frame;
             hs = g_wd.edge;
         }
-        if (hf >= 0 && static_cast<size_t>(hf) < frames.size() && !fade_hot) {
+        if (hf >= 0 && static_cast<size_t>(hf) < frames.size() && !fade_hot && hot_flag < 0 && hot_cut < 0) {
             const SoundFrame& f = frames[static_cast<size_t>(hf)];
             const float       ex = X(hs < 0 ? f.start : f.start + f.length);
             const float       hw = o.big_numbers ? 4.0f : 3.0f;
             dl->AddRectFilled(ImVec2(std::max(a.x, ex - hw), by0), ImVec2(std::min(b.x, ex + hw), by1), ui::kAccentLine);
         }
     }
-    if (near_thr) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+    const bool part_hot = hot_flag >= 0 || hot_cut >= 0;
+    if (part_hot || (g_wd.id == gid && (g_wd.kind == WaveDrag::Sync || g_wd.kind == WaveDrag::Cut)))
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    else if (near_thr) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
     else if (edge_frame >= 0) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    if (pd && part_hot && !fade_hot && g_wd.id != gid) {  // what the handle under the mouse is
+        char tip[512];
+        if (hot_flag >= 0) {
+            const bool  hand = SyncIsHand(*pd, hot_flag, hot_flag_part);
+            const char* mode = pd->sync_mode == SyncMode::Peak ? "peak" : pd->sync_mode == SyncMode::SliceStart ? "slice start" : "attack";
+            std::string part = divided && static_cast<size_t>(hot_flag_part) < wp->names.size()
+                                   ? " of the " + wp->names[static_cast<size_t>(hot_flag_part)] + " part" : std::string();
+            if (hand)
+                std::snprintf(tip, sizeof(tip), "Sync point (snap offset)%s: placed exactly on the event. Moved by hand: kept through "
+                              "threshold changes and Reset to detected while this variation exists (right-click \xE2\x80\xBA Reset "
+                              "sync point). Drag to move.", part.c_str());
+            else
+                std::snprintf(tip, sizeof(tip), "Sync point (snap offset)%s: placed exactly on the event. Detected (%s %+g ms). Drag "
+                              "to move.", part.c_str(), mode, pd->sync_offset_ms);
+        } else {
+            const SoundFrame& f = pd->frames[static_cast<size_t>(hot_cut)];
+            const size_t      k = static_cast<size_t>(hot_cut_k);
+            const std::string v0 = k < wp->names.size() ? wp->names[k] : "?", v1 = k + 1 < wp->names.size() ? wp->names[k + 1] : "?";
+            std::snprintf(tip, sizeof(tip), "Cut (%s | %s). %sDrag to move.", v0.c_str(), v1.c_str(),
+                          f.cut_unsure && !f.cuts_hand ? "RAV is not sure here (two transients almost as loud): check this cut. "
+                          : f.cuts_hand              ? "Moved by hand. "
+                                                     : "Proposed by RAV (next transient). ");
+        }
+        ui::ShowTip(tip);
+    }
 
     if (hovered && !fade_hot && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         g_wd = WaveDrag{};
         g_wd.id = gid;
         g_wd.m0 = m;
-        if (near_thr) {
+        if (hot_flag >= 0) {
+            g_wd.kind = WaveDrag::Sync;
+            g_wd.frame = hot_flag;
+            g_wd.part = hot_flag_part;
+        } else if (hot_cut >= 0) {
+            g_wd.kind = WaveDrag::Cut;
+            g_wd.frame = hot_cut;
+            g_wd.part = hot_cut_k;
+        } else if (near_thr) {
             g_wd.kind = WaveDrag::Thr;
             g_wd.lane = LaneAt(m.y);
         } else if (edge_frame >= 0) {
@@ -965,7 +1254,7 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
             g_wd.kind = WaveDrag::Pending;
             g_wd.frame = under;
         }
-        if (g_wd.frame >= 0) {
+        if (g_wd.frame >= 0 && static_cast<size_t>(g_wd.frame) < frames.size()) {
             g_wd.s0 = frames[static_cast<size_t>(g_wd.frame)].start;
             g_wd.l0 = frames[static_cast<size_t>(g_wd.frame)].length;
             g_wd.db0 = frames[static_cast<size_t>(g_wd.frame)].db;
@@ -973,12 +1262,42 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
     }
     if (g_wd.id == gid && g_wd.kind != WaveDrag::None) {
         const bool down = ImGui::IsMouseDown(ImGuiMouseButton_Left);
-        if (g_wd.kind == WaveDrag::Pending && o.gestures && g_wd.frame >= 0 && std::fabs(m.y - g_wd.m0.y) > 3.0f)
+        const float dx = std::fabs(m.x - g_wd.m0.x), dy = std::fabs(m.y - g_wd.m0.y);
+        // 13-20: a horizontal drag selects a zone (with parts), a vertical one keeps the dB drag.
+        if (g_wd.kind == WaveDrag::Pending && pd && o.gestures && dx > 4.0f && dx >= dy) {
+            g_wd.kind = WaveDrag::Zone;
+            g_wd.zone_a = std::clamp(T(g_wd.m0.x), 0.0, o.source_len);
+        }
+        if (g_wd.kind == WaveDrag::Pending && o.gestures && g_wd.frame >= 0 && dy > 3.0f)
             g_wd.kind = WaveDrag::Db;
-        const bool moved = std::fabs(m.x - g_wd.m0.x) > 1.0f || std::fabs(m.y - g_wd.m0.y) > 1.0f;
-        if (moved && (g_wd.kind == WaveDrag::Trim || g_wd.kind == WaveDrag::Thr)) g_wd.moved = true;
+        const bool moved = dx > 1.0f || dy > 1.0f;
+        if (moved && (g_wd.kind == WaveDrag::Trim || g_wd.kind == WaveDrag::Thr || g_wd.kind == WaveDrag::Sync ||
+                      g_wd.kind == WaveDrag::Cut))
+            g_wd.moved = true;
         if (down) {
-            if (g_wd.kind == WaveDrag::Trim && g_wd.moved) {
+            if ((g_wd.kind == WaveDrag::Sync || g_wd.kind == WaveDrag::Cut) && g_wd.moved) {
+                g_wd.last_t = std::clamp(T(m.x), 0.0, o.source_len);
+                if (g_wd.kind == WaveDrag::Sync) {
+                    ev.sync_frame = g_wd.frame;
+                    ev.sync_part = g_wd.part;
+                    ev.sync_t = g_wd.last_t;
+                } else {
+                    ev.cut_frame = g_wd.frame;
+                    ev.cut_k = g_wd.part;
+                    ev.cut_t = g_wd.last_t;
+                }
+                char tip[32];
+                std::snprintf(tip, sizeof(tip), "%.0f ms", g_wd.last_t * 1000.0);
+                ui::ShowTip(tip);
+            } else if (g_wd.kind == WaveDrag::Zone) {
+                const double t = std::clamp(T(m.x), 0.0, o.source_len);
+                ev.zone_live = true;
+                ev.zone_start = std::min(g_wd.zone_a, t);
+                ev.zone_len = std::fabs(t - g_wd.zone_a);
+                char tip[64];
+                std::snprintf(tip, sizeof(tip), "Zone %.0f\xE2\x80\x93%.0f ms", ev.zone_start * 1000.0, (ev.zone_start + ev.zone_len) * 1000.0);
+                ui::ShowTip(tip);
+            } else if (g_wd.kind == WaveDrag::Trim && g_wd.moved) {
                 const double t = std::clamp(T(m.x), 0.0, o.source_len);
                 if (g_wd.edge < 0) {
                     g_wd.last_s = std::min(t, g_wd.s0 + g_wd.l0);
@@ -1009,6 +1328,27 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
             }
         } else {
             switch (g_wd.kind) {
+            case WaveDrag::Sync:
+                if (!g_wd.moved) break;
+                ev.sync_frame = g_wd.frame;
+                ev.sync_part = g_wd.part;
+                ev.sync_t = g_wd.last_t;
+                ev.sync_done = true;
+                break;
+            case WaveDrag::Cut:
+                if (!g_wd.moved) break;
+                ev.cut_frame = g_wd.frame;
+                ev.cut_k = g_wd.part;
+                ev.cut_t = g_wd.last_t;
+                ev.cut_done = true;
+                break;
+            case WaveDrag::Zone: {
+                const double t = std::clamp(T(m.x), 0.0, o.source_len);
+                ev.zone_done = true;
+                ev.zone_start = std::min(g_wd.zone_a, t);
+                ev.zone_len = std::fabs(t - g_wd.zone_a);
+                break;
+            }
             case WaveDrag::Trim:
                 if (!g_wd.moved) break;
                 ev.trim = g_wd.frame;
@@ -1031,6 +1371,7 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
                 else if (!io.KeyAlt) {
                     ev.clicked = g_wd.frame;
                     ev.clicked_empty = g_wd.frame < 0;
+                    ev.click_at = T(g_wd.m0.x);
                     ev.ctrl = io.KeyCtrl;
                 }
                 break;
@@ -1043,7 +1384,10 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
         ev.double_clicked = under >= 0 ? under : -2;
         ev.double_at = T(m.x);
     }
-    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) ev.right_clicked = true;
+    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
+        ev.right_clicked = true;
+        ev.right_at = T(m.x);
+    }
     if (hovered && o.gestures && under >= 0 && !io.WantTextInput && !io.KeyCtrl && !io.KeyAlt && !io.KeyShift &&
         ImGui::IsKeyPressed(ImGuiKey_S, false)) {
         ev.split = under;
@@ -1252,12 +1596,14 @@ void HandleWave(const WaveformEvents& ev, const SoundLibrary& lib, const SoundNo
     const SoundCtx c{lib.uid, n.uid};
     auto           map = [&](int i) { return i >= 0 && static_cast<size_t>(i) < fi.size() ? fi[static_cast<size_t>(i)] : -1; };
     const DetectMode mode = n.sound.mode;
+    const std::string path = m.path;  // the parts are measured on it (RefreshWith)
     if (HandleWaveFades(ev, lib, n, fi)) return;
     if (ev.trim >= 0) {
         const int i = map(ev.trim);
         SoundData& d = Live(n);
         if (take_len > 0.0) TrimTakeFrame(d, i, ev.trim_start, ev.trim_len, take_len);
         else TrimFrame(d, i, ev.trim_start, ev.trim_len, m.source_len);
+        RefreshOne(d, i, path);
         if (ev.trim_done) CommitLive("Trim variation", c.lib_uid, c.uid);
         return;
     }
@@ -1268,12 +1614,14 @@ void HandleWave(const WaveformEvents& ev, const SoundLibrary& lib, const SoundNo
         return;
     }
     if (ev.toggled >= 0) {
-        const int i = map(ev.toggled);
-        EditNode("Variation on / off", c.lib_uid, c.uid, [i](SoundNode& x) {
+        const int  i = map(ev.toggled);
+        const bool was_on = i >= 0 && static_cast<size_t>(i) < n.sound.frames.size() && n.sound.frames[static_cast<size_t>(i)].on;
+        EditNode("Variation on / off", c.lib_uid, c.uid, [i, path](SoundNode& x) {
             if (i < 0 || static_cast<size_t>(i) >= x.sound.frames.size()) return false;
             SetFrameOn(x.sound, i, !x.sound.frames[static_cast<size_t>(i)].on);
+            RefreshOne(x.sound, i, path);
             return true;
-        });
+        }, was_on ? "Variation excluded: never placed" : "Variation included");
         return;
     }
     if (ev.split >= 0) {
@@ -1283,7 +1631,11 @@ void HandleWave(const WaveformEvents& ev, const SoundLibrary& lib, const SoundNo
         }
         const int    i = map(ev.split);
         const double at = ev.split_at;
-        EditNode("Split variation", c.lib_uid, c.uid, [i, at](SoundNode& x) { return SplitFrame(x.sound, i, at); });
+        EditNode("Split variation", c.lib_uid, c.uid, [i, at, path](SoundNode& x) {
+            if (!SplitFrame(x.sound, i, at)) return false;
+            RefreshWith(x.sound, path);
+            return true;
+        });
         return;
     }
     if (ev.double_clicked != -1) {
@@ -1296,8 +1648,11 @@ void HandleWave(const WaveformEvents& ev, const SoundLibrary& lib, const SoundNo
             }
             if (take_len > 0.0) return;
             const double at = ev.double_at, len = m.source_len;
-            EditNode("Add variation", c.lib_uid, c.uid,
-                     [at, len](SoundNode& x) { return AddFrame(x.sound, at, kNewFrameSeconds, len) >= 0; });
+            EditNode("Add variation", c.lib_uid, c.uid, [at, len, path](SoundNode& x) {
+                if (AddFrame(x.sound, at, kNewFrameSeconds, len) < 0) return false;
+                RefreshWith(x.sound, path);
+                return true;
+            });
         }
         return;
     }
@@ -1312,7 +1667,10 @@ void HandleWave(const WaveformEvents& ev, const SoundLibrary& lib, const SoundNo
                 P.sel = {i};
             }
         }
-        PlayFrame(lib, n, m, i);
+        // 13-20 / 13-23: in Edit a click plays the part under it (the variation minus its exclusions
+        // when combined); Takes mode the take.
+        if (in_edit && take_len <= 0.0 && mode != DetectMode::Takes) PlayAt(lib, n, m, i, ev.click_at);
+        else PlayFrame(lib, n, m, i);
     } else if (ev.clicked_empty && in_edit && !ev.ctrl) {
         P.sel.clear();
     }
@@ -1430,6 +1788,174 @@ void KeyZoom(double factor)
     ZoomView(factor, at, len);
 }
 
+// ---- 13-20 / 13-23 / 13-25: parts, zones and sync points in Edit ---------------------------------------
+
+// A value's name in a group ("?" when gone).
+std::string ValueName(const SoundStore& store, const std::string& group_uid, const std::string& value_uid)
+{
+    if (const SwitchGroup* g = FindGroup(store, group_uid))
+        for (const SwitchValue& v : g->values)
+            if (v.uid == value_uid) return v.name.empty() ? std::string("(unnamed value)") : v.name;
+    return "?";
+}
+
+// A part's colour: the curve palette by the value's index (ui::kCurvePalette).
+ImU32 PartColor(int k) { return ui::kCurvePalette[static_cast<size_t>(std::max(0, k)) % 8]; }
+
+// What Edit draws of a Sound's parts.
+WaveParts EditParts(const SoundStore& store, const SoundData& d)
+{
+    WaveParts w;
+    w.data = &d;
+    if (IsDivided(d))
+        for (size_t k = 0; k < d.divide_values.size(); ++k) {
+            w.colors.push_back(PartColor(static_cast<int>(k)));
+            w.names.push_back(ValueName(store, d.divide_group, d.divide_values[k]));
+        }
+    w.split = d.lanes_split;
+    w.solo = IsDivided(d) && P.solo < PartCount(d) ? P.solo : -1;
+    w.sel_start = P.zone_start;
+    w.sel_len = P.zone_len;
+    return w;
+}
+
+// "Reset sync point" / "Reset its cut(s)" / zone writes: one undo point, the parts measured again.
+void PartsEdit(const std::string& name, const SoundLibrary& lib, const SoundNode& n, const std::string& path,
+               std::function<bool(SoundData&)> f, const std::string& toast)
+{
+    EditNode(name, lib.uid, n.uid, [f, path](SoundNode& x) {
+        if (!f(x.sound)) return false;
+        RefreshWith(x.sound, path);
+        return true;
+    }, toast);
+}
+
+// The waveform's right-click menu in Edit (the mockup's zone / variation / outside menus).
+void EditWaveMenu(const SoundStore& store, const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m)
+{
+    if (!ui::BeginMenuPopup("##editwavemenu")) return;
+    const SoundData&  d = Shown(n);
+    const std::string path = m.path;
+    const float       note_w = ui::Dp(220.0f);
+    if (P.menu_kind == 2 && P.zone_len > 0.0) {
+        const double zs = P.zone_start, zl = P.zone_len;
+        char         head[64];
+        std::snprintf(head, sizeof(head), "Zone %.0f\xE2\x80\x93%.0f ms", zs * 1000.0, (zs + zl) * 1000.0);
+        ui::MenuCaption(head);
+        if (ui::MenuEntry("Exclude", "never placed")) {
+            P.zone_len = 0.0;
+            PartsEdit("Exclude zone", lib, n, path, [zs, zl](SoundData& x) { return AddZone(x, zs, zl, std::string()); },
+                      "Zone excluded: never placed");
+        }
+        ui::MenuSeparator();
+        if (IsDivided(d)) {
+            for (size_t k = 0; k < d.divide_values.size(); ++k) {
+                const std::string v = d.divide_values[k], nm = ValueName(store, d.divide_group, v);
+                const std::string label = "\xE2\x86\x92 " + nm + "##zoneto" + std::to_string(k);
+                if (ui::MenuEntry(label.c_str())) {
+                    P.zone_len = 0.0;
+                    PartsEdit("Zone to part", lib, n, path, [zs, zl, v](SoundData& x) { return AddZone(x, zs, zl, v); },
+                              "Zone \xE2\x86\x92 " + nm);
+                }
+            }
+        } else {
+            ui::MenuEntry("\xE2\x86\x92 a part", "divide first", false, false);
+            ui::ToneText("Divide by a Switch Group to assign a zone to one of its values.", ui::kFaint, true, note_w);
+        }
+        ui::MenuSeparator();
+        if (ui::MenuEntry("\xE2\x96\xB6 Play zone")) PlaySoundVoices(n, m, {ZoneAuditionVoice(lib, n, zs, zl)});
+    } else if (P.menu_kind == 1 && P.menu_frame >= 0 && static_cast<size_t>(P.menu_frame) < d.frames.size()) {
+        const int         i = P.menu_frame;
+        const SoundFrame& f = d.frames[static_cast<size_t>(i)];
+        const double      at = P.menu_at;
+        const std::string num = std::to_string(i + 1);
+        ui::MenuCaption(("Variation " + num).c_str());
+        if (ui::MenuEntry(("\xE2\x96\xB6 Play variation " + num).c_str())) PlayFrame(lib, n, m, i);
+        std::string own;
+        if (IsDivided(d) && PartAt(d, i, at, &own) && !own.empty()) {
+            const std::string label = "\xE2\x96\xB6 Play its " + ValueName(store, d.divide_group, own) + " part";
+            if (ui::MenuEntry(label.c_str())) PlayPart(lib, n, m, i, own);
+        }
+        ui::MenuSeparator();
+        bool in_excluded = false;
+        for (const SoundZone& z : d.zones) in_excluded = in_excluded || (z.to.empty() && at >= z.start && at <= z.start + z.length);
+        if (in_excluded && ui::MenuEntry("Include again"))
+            PartsEdit("Include again", lib, n, path, [at](SoundData& x) { return IncludeAgain(x, at); }, "Included again");
+        if (ui::MenuEntry(f.on ? "Exclude this variation" : "Include this variation", "Alt+click")) {
+            const bool on = !f.on;
+            PartsEdit("Variation on / off", lib, n, path, [i, on](SoundData& x) {
+                if (static_cast<size_t>(i) >= x.frames.size()) return false;
+                SetFrameOn(x, i, on);
+                return true;
+            }, on ? "Variation included" : "Variation excluded: never placed");
+        }
+        const bool moved = !f.hand_syncs.empty();
+        if (ui::MenuEntry(IsDivided(d) ? "Reset sync points" : "Reset sync point", moved ? nullptr : "detected", false, moved))
+            PartsEdit("Reset sync point", lib, n, path, [i](SoundData& x) { return ResetSyncs(x, i); }, "Sync point back to detected");
+        if (IsDivided(d) && f.cuts_hand &&
+            ui::MenuEntry(PartCount(d) > 2 ? "Reset its cuts" : "Reset its cut"))
+            PartsEdit("Reset cut", lib, n, path, [i](SoundData& x) { return ResetCuts(x, i); }, "Cut back to RAV's proposal");
+        if (!IsDivided(d) && d.mode != DetectMode::Takes)
+            ui::ToneText("Drag across the waveform to select a zone, then right-click it.", ui::kFaint, true, note_w);
+    } else {
+        ui::MenuEntry("Outside the variations", nullptr, false, false);
+        ui::ToneText("Double-click here to add a variation.", ui::kFaint, true, note_w);
+    }
+    ui::EndMenuPopup();
+}
+
+// The parts' own events in Edit (a cut / sync flag dragged, a zone selected, the right-click menu).
+// True when the event was one of them.
+bool HandleWaveParts(const WaveformEvents& ev, const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m)
+{
+    const SoundData& d = Shown(n);
+    if (ev.zone_live || ev.zone_done) {
+        P.zone_start = ev.zone_start;
+        P.zone_len = ev.zone_len > 0.001 ? ev.zone_len : 0.0;
+        if (ev.zone_done && P.zone_len > 0.0) ShowLibraryToast("Zone selected: right-click it for Exclude / \xE2\x86\x92 value", false);
+        return true;
+    }
+    // A drag that moved nothing (clamped, same spot, empty part) writes nothing: no empty undo point.
+    auto same_frame = [&](const SoundData& dr, int i) {
+        if (i < 0 || static_cast<size_t>(i) >= dr.frames.size() || static_cast<size_t>(i) >= n.sound.frames.size()) return true;
+        const SoundFrame &a = dr.frames[static_cast<size_t>(i)], &b = n.sound.frames[static_cast<size_t>(i)];
+        return a.cuts == b.cuts && a.cuts_hand == b.cuts_hand && a.hand_syncs == b.hand_syncs && a.syncs == b.syncs;
+    };
+    if (ev.cut_frame >= 0) {
+        SoundData& dr = Live(n);
+        if (SyncsStale(dr, ev.cut_frame)) RefreshOne(dr, ev.cut_frame, m.path);  // never measured yet: as drawn
+        if (MoveCut(dr, ev.cut_frame, ev.cut_k, ev.cut_t)) RefreshOne(dr, ev.cut_frame, m.path);
+        if (ev.cut_done) {
+            if (same_frame(dr, ev.cut_frame)) CancelLive();
+            else CommitLive("Move cut", lib.uid, n.uid, "Cut moved \xC2\xB7 variation " + std::to_string(ev.cut_frame + 1));
+        }
+        return true;
+    }
+    if (ev.sync_frame >= 0) {
+        SoundData& dr = Live(n);
+        if (SyncsStale(dr, ev.sync_frame)) RefreshOne(dr, ev.sync_frame, m.path);  // never measured yet
+        MoveSync(dr, ev.sync_frame, ev.sync_part, ev.sync_t);
+        if (ev.sync_done && same_frame(dr, ev.sync_frame)) CancelLive();
+        else if (ev.sync_done)
+            CommitLive("Move sync point", lib.uid, n.uid,
+                       "Sync point moved by hand \xC2\xB7 variation " + std::to_string(ev.sync_frame + 1) + " (kept while it exists)");
+        return true;
+    }
+    if (ev.right_clicked) {
+        P.menu_at = ev.right_at;
+        P.menu_frame = FrameAt(d.frames, ev.right_at);
+        if (P.zone_len > 0.0 && ev.right_at >= P.zone_start && ev.right_at <= P.zone_start + P.zone_len) {
+            P.menu_kind = 2;
+        } else {
+            P.zone_len = 0.0;
+            P.menu_kind = P.menu_frame >= 0 ? 1 : 0;
+        }
+        ImGui::OpenPopup("##editwavemenu");
+    }
+    if (ev.clicked >= 0 || ev.clicked_empty) P.zone_len = 0.0;  // a click clears the zone selected
+    return false;
+}
+
 // The Sound's waveform(s): one lane, or one lane per take in Takes mode.
 void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, float height,
                     bool in_edit, WaveformEvents* first_ev)
@@ -1479,6 +2005,27 @@ void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n,
         o.view_keys = &P.keys;
         o.size.y = std::max(16.0f, height - kScrollbarH - 4.0f);
     }
+    // 13-20 / 13-23 / 13-25: Edit draws the parts (not in Takes mode: a take keeps its item's snap).
+    WaveParts parts;
+    if (in_edit && d.mode != DetectMode::Takes) {
+        parts = EditParts(GetSoundStore(nullptr), d);
+        // A Sound whose sync points were never measured (an older .ravlib, the peaks not read at its last
+        // write) shows them measured, unsaved: the next write, or Populate, stores them (D6).
+        static SoundData measured;
+        static std::string measured_key;
+        bool stale = false;
+        for (size_t i = 0; i < d.frames.size() && !stale; ++i) stale = SyncsStale(d, static_cast<int>(i));
+        if (stale && !P.live && RequestPeaks(m.path, nullptr) == PeakState::Ready) {
+            const std::string key = n.uid + "|" + std::to_string(GetProjectStateChangeCount(nullptr));
+            if (key != measured_key) {
+                measured_key = key;
+                measured = d;
+                RefreshWith(measured, m.path);
+            }
+            parts.data = &measured;
+        }
+        o.parts = &parts;
+    }
     std::vector<int> all;
     for (size_t i = 0; i < d.frames.size(); ++i) all.push_back(static_cast<int>(i));
     const WaveformEvents ev = DrawWaveform(id, m.path, d.frames, in_edit ? P.sel : std::vector<int>{}, ph, o);
@@ -1494,9 +2041,17 @@ void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n,
             SoundData& dr = Live(n);
             dr.silence.threshold_db = ev.threshold_db;
             Redetect(dr, m, P.snap.frames);
-            if (ev.threshold_done) CommitLive("Detection", lib.uid, n.uid);
+            const int nx = ExcludedZoneCount(dr);
+            if (ev.threshold_done)
+                CommitLive("Detection", lib.uid, n.uid,
+                           nx > 0 ? std::to_string(nx) + (nx == 1 ? " excluded zone kept" : " excluded zones kept") : std::string());
             return;
         }
+    }
+    if (o.parts) {
+        if (HandleWaveParts(ev, lib, n, m)) return;
+        EditWaveMenu(GetSoundStore(nullptr), lib, n, m);
+        if (P.changed) return;
     }
     // Takes mode on one lane (fewer than 2 takes read): a trim still stays inside its take (decision 3).
     HandleWave(ev, lib, n, m, all, d.mode == DetectMode::Takes ? m.source_len : 0.0, in_edit);
@@ -1535,15 +2090,17 @@ void ReplaceFromSelected(const std::string& lib_uid, const std::string& uid, con
     frames = DetectFrames(m.facts, mode, sp, ready ? &pk : nullptr);
     std::string toast = "Replaced audio";
     if (n > 1) toast += " (the first of " + std::to_string(n) + " selected items)";
+    const std::string path = m.path;
     EditNode(
         gesture, lib_uid, uid,
-        [guid, mode, frames](SoundNode& x) {
+        [guid, mode, frames, path](SoundNode& x) {
             x.sound.source = SoundSource{};
             x.sound.source.kind = SoundSourceKind::Item;
             x.sound.source.item_guid = guid;
             x.sound.mode = mode;
             x.sound.frames = frames;
             x.sound.edited = false;
+            RefreshWith(x.sound, path);  // 13-20 / 13-23 / 13-25: the parts on the new audio
             return true;
         },
         toast);
@@ -1555,7 +2112,9 @@ void ReplaceFromDrop(const std::string& lib_uid, const std::string& uid, const S
     SoundMedia m;
     std::vector<SoundFrame> frames = dropped;
     DetectMode              mode = DetectMode::Whole;
-    if (frames.empty() && ReadSoundMedia(src, &m)) {
+    const bool              read = ReadSoundMedia(src, &m);
+    const std::string       path = read ? m.path : std::string();
+    if (frames.empty() && read) {
         PeakData   pk;
         const bool ready = RequestPeaks(m.path, &pk) == PeakState::Ready;
         mode = DefaultDetectMode(m.facts, ready);
@@ -1563,11 +2122,12 @@ void ReplaceFromDrop(const std::string& lib_uid, const std::string& uid, const S
     }
     EditNode(
         "Replace audio", lib_uid, uid,
-        [src, mode, frames, edited = !dropped.empty()](SoundNode& x) {
+        [src, mode, frames, path, edited = !dropped.empty()](SoundNode& x) {
             x.sound.source = src;
             x.sound.mode = mode;
             x.sound.frames = frames;
             x.sound.edited = edited;
+            RefreshWith(x.sound, path);  // 13-20 / 13-23 / 13-25: the parts on the new audio
             return true;
         },
         "Replaced audio");
@@ -1687,10 +2247,314 @@ void ShowInReaper(const SoundSource& src)
     UpdateArrange();
 }
 
+// ---- 13-20 / 13-23 / 13-25: Edit's DETECTION rows for parts and sync points ---------------------------
+
+constexpr const char kTakesPartsTip[] = "Not in Takes mode: each take keeps its item's snap offset";
+
+// "Front ← toe, toe end · Back ← heel" (the values in text, their roles muted).
+std::vector<TextRun> RolesRuns(const SoundStore& store, const SoundData& d, const std::vector<std::vector<std::string>>& by)
+{
+    std::vector<TextRun> runs;
+    for (size_t k = 0; k < d.divide_values.size(); ++k) {
+        if (k > 0) runs.push_back({" \xC2\xB7 ", ui::kMuted});
+        runs.push_back({ValueName(store, d.divide_group, d.divide_values[k]), ui::kText});
+        std::string keys;
+        if (k < by.size())
+            for (const std::string& r : by[k]) keys += (keys.empty() ? "" : ", ") + RoleKeyLabel(r);
+        runs.push_back({" \xE2\x86\x90 " + (keys.empty() ? std::string("\xE2\x80\x94") : keys), ui::kMuted});
+    }
+    return runs;
+}
+
+// A coloured dot on the text line at the cursor (a part's colour), the cursor moved past it.
+void PartDot(ImU32 col)
+{
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float  h = ImGui::GetFrameHeight(), r = ui::Dp(4.0f);
+    ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(p.x + r, p.y + h * 0.5f), r, col);
+    ImGui::Dummy(ImVec2(r * 2.0f + ui::Dp(4.0f), h));
+    ImGui::SameLine(0.0f, 0.0f);
+}
+
+// The Roles... popup (D9): per value, its role keys as chips (on = this value's; "→ Back" = another
+// value's, moved on click), "More roles", "Use the group's roles". One undo point per change.
+void RolesPopup(const SoundStore& store, const SoundLibrary& lib, const SoundNode& n)
+{
+    if (!ui::BeginPanelPopup("##rolespop", 0, ImVec2(10.0f, 10.0f))) return;
+    const SoundData& d = n.sound;
+    if (!IsDivided(d)) {
+        ImGui::CloseCurrentPopup();
+        ui::EndPanelPopup();
+        return;
+    }
+    bool                                        own = false;
+    const std::vector<std::vector<std::string>> by = RolesByValue(store, d, &own);
+    const std::vector<std::string>&             all = LibraryRoleKeys();
+    const size_t                                nb = std::min(LibraryBuiltinRoleCount(), all.size());
+    static const char* const                    kCommon[] = {"heel", "toe", "toe_end", "hand", "knee"};
+    std::vector<std::string>                    keys;
+    if (P.roles_more) keys.assign(all.begin(), all.begin() + static_cast<long>(nb));
+    else keys.assign(std::begin(kCommon), std::end(kCommon));
+    if (!P.roles_more)  // a role already mapped outside the common list stays visible (and removable)
+        for (const std::vector<std::string>& rs : by)
+            for (const std::string& r : rs)
+                if (std::find(keys.begin(), keys.end(), r) == keys.end() &&
+                    std::find(all.begin() + static_cast<long>(nb), all.end(), r) == all.end())
+                    keys.push_back(r);
+    const std::vector<std::string> custom(all.begin() + static_cast<long>(nb), all.end());
+    const float                    wrap = ui::Dp(300.0f);
+    ui::MenuCaption(("Roles \xC2\xB7 " + n.name + (own ? " (this sound)" : " (group)")).c_str());
+    const std::string lib_uid = lib.uid, uid = n.uid;
+    for (size_t k = 0; k < d.divide_values.size(); ++k) {
+        ImGui::PushID(static_cast<int>(k));
+        if (k > 0) ui::MenuSeparator();
+        const std::string v = d.divide_values[k], vname = ValueName(store, d.divide_group, v);
+        PartDot(PartColor(static_cast<int>(k)));
+        FitText(vname, ui::kText);
+        const float x0 = ImGui::GetCursorScreenPos().x;
+        auto        chips = [&](const std::vector<std::string>& list) {
+            bool first = true;
+            for (const std::string& key : list) {
+                int owner = -1;
+                for (size_t j = 0; j < by.size(); ++j)
+                    if (std::find(by[j].begin(), by[j].end(), key) != by[j].end()) owner = static_cast<int>(j);
+                const bool        on = owner == static_cast<int>(k);
+                const std::string other = owner >= 0 && !on ? ValueName(store, d.divide_group, d.divide_values[static_cast<size_t>(owner)]) : "";
+                const std::string label = RoleKeyLabel(key) + (other.empty() ? "" : " \xE2\x86\x92 " + other) + "##" + key;
+                const float       cw = ui::TextWidth(label.c_str()) + ui::Dp(14.0f);
+                if (!first && ImGui::GetItemRectMax().x + ImGui::GetStyle().ItemSpacing.x + cw <= x0 + wrap) ImGui::SameLine();
+                first = false;
+                if (ui::ChipButton(label.c_str(), ImVec2(0.0f, 0.0f), on)) {
+                    const std::string toast = "This sound: " + RoleKeyLabel(key) + " \xE2\x86\x92 " + (on ? std::string("whole") : vname);
+                    Gesture("Roles", [lib_uid, uid, v, key](SoundStore& s) {
+                        SoundLibrary* l = FindLibrary(s, lib_uid);
+                        SoundNode*    x = l ? FindNode(*l, uid) : nullptr;
+                        return x && ToggleSoundRole(s, x->sound, v, key);
+                    }, toast);
+                }
+                if (on) ui::ItemTipText("Click to remove");
+                else if (!other.empty()) ui::ItemTip("Used by %s: click to move it to %s", other.c_str(), vname.c_str());
+                else ui::ItemTip("Click: events with this role get the %s part", vname.c_str());
+            }
+        };
+        chips(keys);
+        if (!custom.empty()) {
+            ui::ToneText("Custom", ui::kFaint);
+            chips(custom);
+        }
+        ImGui::PopID();
+    }
+    ui::MenuSeparator();
+    if (ui::MenuEntry(P.roles_more ? "Fewer roles" : "More roles\xE2\x80\xA6 (knee, hip, spine, head\xE2\x80\xA6)")) P.roles_more = !P.roles_more;
+    ui::MenuSeparator();
+    if (ui::MenuEntry("Use the group's roles", own ? nullptr : "already", false, own))
+        EditNode("Roles", lib_uid, uid, [](SoundNode& x) {
+            if (x.sound.role_map.empty()) return false;
+            x.sound.role_map.clear();
+            return true;
+        }, "This sound uses the group's roles again");
+    ui::ToneText("An event gets the part its role maps to; no role (a combined FS step) or an unmapped role = the whole "
+                 "sound. A change here applies to this sound only; the group's roles (Library \xE2\x80\xBA Switch Groups) serve "
+                 "every other sound.", ui::kFaint, true, wrap);
+    ui::EndPanelPopup();
+}
+
+// The part list: a row per value (its dot, name and "n/N" variations holding it), "Excluded" and its
+// count, then what was moved by hand / is to check.
+void PartList(const SoundStore& store, const SoundData& d)
+{
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float lh = ImGui::GetTextLineHeight() + ui::Dp(4.0f);
+    auto        row = [&](ImU32 dot, bool hatch, const std::string& name, const std::string& count) {
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float  right = std::max(p.x + ui::Dp(60.0f), ui::LineRight());
+        const float  r = ui::Dp(4.0f), cy = p.y + lh * 0.5f;
+        if (hatch) {
+            const ImVec2 a(p.x, cy - r), b(p.x + r * 2.0f, cy + r);
+            dl->AddRectFilled(a, b, WithAlpha(ui::kMuted, 0x30), 2.0f);
+            Hatch(dl, a, b, ui::kText);
+        } else {
+            dl->AddCircleFilled(ImVec2(p.x + r, cy), r, dot);
+        }
+        const float cw = ImGui::CalcTextSize(count.c_str()).x;
+        const float ty = std::floor(cy - ImGui::GetTextLineHeight() * 0.5f);
+        dl->AddText(ImVec2(right - cw, ty), ui::kMuted, count.c_str());
+        ui::EllipsisTextTip(dl, ImVec2(p.x + r * 2.0f + ui::Dp(6.0f), ty), right - cw - ui::Dp(8.0f), ui::kText, name);
+        ImGui::Dummy(ImVec2(right - p.x, lh));
+    };
+    const std::string total = "/" + std::to_string(d.frames.size());
+    for (size_t k = 0; k < d.divide_values.size(); ++k)
+        row(PartColor(static_cast<int>(k)), false, ValueName(store, d.divide_group, d.divide_values[k]),
+            std::to_string(VariationsWithPart(d, d.divide_values[k])) + total);
+    const int nx = ExcludedStretchCount(d);
+    if (nx > 0) row(0, true, "Excluded", std::to_string(nx));
+    std::vector<TextRun> sub;
+    const int            moved = HandCutCount(d), unsure = UnsureCutCount(d);
+    if (moved > 0) sub.push_back({std::to_string(moved) + (moved == 1 ? " cut" : " cuts") + " moved by hand \xC2\xB7 ", ui::kMuted});
+    if (unsure > 0) {
+        sub.push_back({std::to_string(unsure) + " to check (?)", ui::kWarn});
+        sub.push_back({" \xC2\xB7 ", ui::kMuted});
+    }
+    sub.push_back({"Drag a cut to correct it. Right-click a zone: Exclude / \xE2\x86\x92 value.", ui::kMuted});
+    RichText(sub);
+}
+
+// Edit's DETECTION rows of 13-20 / 13-23 / 13-25: Sync point (Attack / Peak / Slice start), its Offset,
+// the hand-moved count, Divide by (a Switch Group), the Roles line + Roles..., the part list. Disabled
+// with a tip in Takes mode.
+void PartsControls(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, float label_col)
+{
+    const SoundStore& store = GetSoundStore(nullptr);
+    const SoundData&  d = Shown(n);
+    const bool        takes = d.mode == DetectMode::Takes;
+    const std::string path = m.path, lib_uid = lib.uid, uid = n.uid;
+    ImGui::BeginDisabled(takes);
+    // Sync point.
+    {
+        static const char* const kModes[3] = {"Attack", "Peak", "Slice start"};
+        static const char* const kTips[3] = {"Where the first transient crosses the threshold (default)",
+                                             "The loudest transient's peak", "The slice start, pre-roll included (as before)"};
+        static const char* const kWords[3] = {"attack", "peak", "slice start"};
+        ui::LabelRow("Sync point", ui::Dp(160.0f), label_col);
+        int sel = static_cast<int>(d.sync_mode);
+        const bool picked = ui::Segmented("##syncmode", kModes, 3, &sel);
+        const int  hov = ui::SegmentedHovered();
+        if (takes) ui::ItemTipText(kTakesPartsTip);
+        else if (hov >= 0 && hov < 3) ui::ShowTip(kTips[hov]);
+        if (picked && sel >= 0 && sel < 3 && sel != static_cast<int>(d.sync_mode)) {
+            const SyncMode mode = static_cast<SyncMode>(sel);
+            const double   off = n.sound.sync_offset_ms;
+            EditNode("Sync point", lib_uid, uid, [mode, off, path](SoundNode& x) {
+                if (!SetSyncSettings(x.sound, mode, off)) return false;
+                RefreshWith(x.sound, path);
+                return true;
+            }, std::string("Sync point: ") + kWords[sel] + " (hand-moved ones kept)");
+            ImGui::EndDisabled();
+            return;
+        }
+    }
+    // Offset (ms): before (-) / after the attack or peak; after the slice start.
+    {
+        const float fw = ui::Dp(52.0f), nw = ui::NumberFieldWidth(fw, "ms");
+        ui::LabelRow("Offset", nw + ui::Dp(40.0f), label_col);
+        const char* hint = d.sync_mode == SyncMode::SliceStart ? "after the start" : "before (\xE2\x88\x92) / after";
+        FitText(hint, ui::kMuted, std::max(1.0f, ImGui::GetContentRegionAvail().x - nw - ImGui::GetStyle().ItemSpacing.x));
+        ImGui::SameLine();
+        double v = d.sync_offset_ms;
+        const ui::DragNumberEvent e = ui::DragNumber("##syncoff", &v, 0.1, 1, "ms", fw, /*trim=*/true);
+        if (takes) ui::ItemTipText(kTakesPartsTip);
+        else ui::ItemTipText("The sync point's offset from the attack, the peak or the slice start (ms)");
+        if (e == ui::DragNumberEvent::Live || e == ui::DragNumberEvent::Commit) {
+            SoundData& dr = Live(n);
+            SetSyncSettings(dr, dr.sync_mode, std::clamp(v, -50.0, 50.0));
+            RefreshWith(dr, path);
+            if (e == ui::DragNumberEvent::Commit) {
+                if (dr.sync_offset_ms == n.sound.sync_offset_ms) {
+                    CancelLive();  // no empty undo point
+                } else {
+                    char toast[96];
+                    std::snprintf(toast, sizeof(toast), "Sync offset %+g ms on every detected sync point", dr.sync_offset_ms);
+                    CommitLive("Sync offset", lib_uid, uid, toast);
+                }
+                if (P.changed) {
+                    ImGui::EndDisabled();
+                    return;
+                }
+            }
+        } else if (e == ui::DragNumberEvent::Cancel) {
+            CancelLive();
+        }
+    }
+    {
+        const int hs = HandSyncCount(d);
+        ui::SubText(hs > 0 ? (std::to_string(hs) + (hs == 1 ? " sync point" : " sync points") + " moved by hand (kept).").c_str()
+                           : "Drag a sync flag to move it by hand.");
+    }
+    // Divide by: None (combined) or a Switch Group "Name (V1, V2...)".
+    const SwitchGroup* cg = IsDivided(d) ? FindGroup(store, d.divide_group) : nullptr;
+    {
+        auto glabel = [](const SwitchGroup& g) {
+            std::string vals;
+            for (const SwitchValue& v : g.values) vals += (vals.empty() ? "" : ", ") + v.name;
+            return g.name + " (" + vals + ")";
+        };
+        const float       w = ui::LabelRow("Divide by", ui::Dp(140.0f), label_col);
+        const std::string preview = !IsDivided(d) ? std::string("None (combined)") : cg ? glabel(*cg) : std::string("?");
+        const bool        open = ui::BeginComboStyled("##divide", preview.c_str(), w);
+        ui::ItemTipText(takes ? kTakesPartsTip : "Divide each variation into parts, one per value of a Switch Group");
+        if (open) {
+            bool        picked = false;
+            std::string gid, gname;
+            std::vector<std::string> vals, names;
+            if (ImGui::Selectable("None (combined)", !IsDivided(d)) && IsDivided(d)) picked = true;
+            for (const SwitchGroup& g : store.groups) {
+                if (g.values.empty()) continue;
+                if (ImGui::Selectable((glabel(g) + "##" + g.uid).c_str(), IsDivided(d) && d.divide_group == g.uid)) {
+                    picked = true;
+                    gid = g.uid;
+                    gname = g.name;
+                    for (const SwitchValue& v : g.values) {
+                        vals.push_back(v.uid);
+                        names.push_back(v.name);
+                    }
+                }
+            }
+            if (store.groups.empty()) ImGui::TextDisabled("No Switch Group yet");
+            ui::EndComboStyled();
+            if (picked) {
+                SoundData probe = n.sound;  // the toast tells how many cuts are to check
+                std::string toast = "Combined: each event gets the whole variation";
+                if (SetDivide(probe, gid, vals) && !gid.empty()) {
+                    RefreshWith(probe, path);
+                    std::string vs;
+                    for (const std::string& x : names) vs += (vs.empty() ? "" : " / ") + x;
+                    const int unsure = UnsureCutCount(probe);
+                    toast = "Divided by " + gname + ": " + vs + " \xC2\xB7 cuts proposed" +
+                            (unsure > 0 ? ", " + std::to_string(unsure) + " to check" : std::string());
+                }
+                P.solo = -1;
+                EditNode("Divide by", lib_uid, uid, [gid, vals, path](SoundNode& x) {
+                    if (!SetDivide(x.sound, gid, vals)) return false;
+                    if (!x.layer_part.empty() && x.layer_part != kLayerPartWhole &&
+                        std::find(vals.begin(), vals.end(), x.layer_part) == vals.end())
+                        x.layer_part.clear();  // a Blend layer's part no longer a value: back to By event
+                    RefreshWith(x.sound, path);
+                    return true;
+                }, toast);
+                ImGui::EndDisabled();
+                return;
+            }
+        }
+    }
+    if (DivideStale(store, d))
+        RichText({{cg ? cg->name + " changed: choose it again to re-divide" : std::string("Its Switch Group is gone: choose one again to re-divide"),
+                   ui::kWarn}});
+    if (IsDivided(d)) {
+        bool                                        own = false;
+        const std::vector<std::vector<std::string>> by = RolesByValue(store, d, &own);
+        std::vector<TextRun>                        runs = {{"Roles: ", ui::kMuted}};
+        for (const TextRun& r : RolesRuns(store, d, by)) runs.push_back(r);
+        runs.push_back({own ? " (this sound)" : " (group)", ui::kFaint});
+        RichText(runs);
+        if (ui::SolidButton("Roles\xE2\x80\xA6")) ImGui::OpenPopup("##rolespop");
+        ui::ItemTipText("Set which role gets which part, for this sound");
+        RolesPopup(store, lib, n);
+        if (P.changed) {
+            ImGui::EndDisabled();
+            return;
+        }
+        PartList(store, d);
+    } else {
+        ui::SubText("Combined: every event gets the whole variation. Divide by a Switch Group to give its values their own part.");
+    }
+    ImGui::EndDisabled();
+}
+
 // The Detection controls (panel Section and Edit's side strip; `label_col`: the .row > .k 80 px /
 // Edit's .edrow 70 px). 13-7b (audit C5.6): "Split by" segmented, the Silence parameters as a
 // fader with its number field, the saved-with note, Reset to detected + "edited by hand".
-void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, float label_col = ui::kLabelCol)
+void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, float label_col = ui::kLabelCol,
+                       bool edit = false)
 {
     const SoundData& d = Shown(n);
     const bool       ready = RequestPeaks(m.path, nullptr) == PeakState::Ready;
@@ -1733,11 +2597,15 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
                                                                        : std::string("Split by ") + labels[static_cast<size_t>(sel)]) +
                                                 ": the hand edits of the previous mode were dropped"
                                           : std::string();
-            EditNode("Detect", lib.uid, n.uid, [mode, frames](SoundNode& x) {
+            const std::string path = m.path;
+            EditNode("Detect", lib.uid, n.uid, [mode, frames, path](SoundNode& x) {
                 if (x.sound.mode == mode) return false;  // no empty undo point
+                const std::vector<SoundFrame> old = x.sound.frames;
                 x.sound.mode = mode;
                 x.sound.frames = frames;
                 x.sound.edited = false;
+                CarryHandMarks(x.sound.frames, old, false);  // A7: hand sync points kept while their variation exists
+                RefreshWith(x.sound, path);
                 return true;
             }, toast);
             if (P.changed) return;
@@ -1822,16 +2690,28 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
             }
         }
     }
+    if (edit) {  // 13-20 / 13-23 / 13-25
+        PartsControls(lib, n, m, label_col);
+        if (P.changed) return;
+    }
     ui::SubText(VariationCountText(DetectedCount(n.uid, m, Shown(n)), Shown(n).frames).c_str());
     ui::SubText("Saved with the sound in the library (.ravlib).");
     if (ui::SolidButton("Reset to detected")) {
         const std::vector<SoundFrame> det = Detected(m, d.mode, d.silence);
-        EditNode("Reset to detected", lib.uid, n.uid, [det](SoundNode& x) {
+        const std::string             path = m.path;
+        const int                     nx = ExcludedZoneCount(n.sound), ns = HandSyncCount(n.sound);
+        std::string                   toast = "Back to detected";
+        if (nx > 0) toast += " \xC2\xB7 " + std::to_string(nx) + (nx == 1 ? " excluded zone kept" : " excluded zones kept");
+        if (ns > 0) toast += " \xC2\xB7 " + std::to_string(ns) + (ns == 1 ? " hand-moved sync point kept" : " hand-moved sync points kept");
+        EditNode("Reset to detected", lib.uid, n.uid, [det, path](SoundNode& x) {
             ResetToDetected(x.sound, det);
+            RefreshWith(x.sound, path);
             return true;
-        });
+        }, toast);
         if (P.changed) return;
     }
+    ui::ItemTipText("Variations and cuts back to RAV's proposal. Excluded zones are kept, and sync points moved by hand stay on "
+                    "every variation that still exists.");
     if (Shown(n).edited) {
         SameLineIfFits(ui::TextWidth("edited by hand"));
         FitText("edited by hand", ui::kMuted);
@@ -1905,6 +2785,139 @@ void NormalizeControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
     if (!ready) ui::ItemTipText("Waiting for the waveform");
 }
 
+// ---- 13-20 / 13-23 / 13-25: Edit's legend and the fade at cuts ------------------------------------------
+
+enum class LegendGlyph { Swatch, Hatch, Flag, Cut };
+
+// A legend chip (.lg): its glyph (a colour swatch, a hatch, the sync flag, the cut) and its name; `on` =
+// shown alone (accent-soft). True when clicked (a clickable chip only).
+bool LegendChip(const char* id, const std::string& label, ImU32 col, LegendGlyph glyph, bool on, bool clickable, const char* tip)
+{
+    const float  gw = ui::Dp(10.0f), pad = ui::Dp(7.0f), gap = ui::Dp(5.0f), h = ui::ControlH();
+    const float  w = pad + gw + gap + ImGui::CalcTextSize(label.c_str()).x + pad;
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImGui::InvisibleButton(id, ImVec2(w, h));
+    const bool   hov = clickable && ImGui::IsItemHovered();
+    const bool   clicked = clickable && ImGui::IsItemClicked();
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const ImVec2 b(p.x + w, p.y + h);
+    if (on) {
+        dl->AddRectFilled(p, b, ui::kAccentSoft, h * 0.5f);
+        dl->AddRect(p, b, ui::kAccentLine, h * 0.5f);
+    } else if (hov) {
+        dl->AddRectFilled(p, b, ui::kHover, h * 0.5f);
+    }
+    const float  cy = p.y + h * 0.5f, gx = p.x + pad;
+    const ImVec2 g0(gx, cy - gw * 0.5f), g1(gx + gw, cy + gw * 0.5f);
+    switch (glyph) {
+    case LegendGlyph::Swatch: dl->AddRectFilled(g0, g1, col, 2.0f); break;
+    case LegendGlyph::Hatch:
+        dl->AddRectFilled(g0, g1, WithAlpha(ui::kMuted, 0x30), 2.0f);
+        Hatch(dl, g0, g1, ui::kText);
+        break;
+    case LegendGlyph::Flag:
+        dl->AddLine(ImVec2(gx + 1.0f, g0.y), ImVec2(gx + 1.0f, g1.y + 2.0f), col);
+        dl->AddRectFilled(ImVec2(gx + 1.0f, g0.y), ImVec2(gx + gw, g0.y + gw * 0.55f), col, 1.0f);
+        break;
+    case LegendGlyph::Cut:
+        for (float y = g0.y; y < g1.y - 3.0f; y += 3.0f) dl->AddLine(ImVec2(gx + gw * 0.5f, y), ImVec2(gx + gw * 0.5f, y + 1.5f), ui::kText);
+        dl->AddRectFilled(ImVec2(gx + gw * 0.5f - 2.5f, g1.y - 4.0f), ImVec2(gx + gw * 0.5f + 2.5f, g1.y + 1.0f), ui::kText, 1.0f);
+        break;
+    }
+    dl->AddText(ImVec2(gx + gw + gap, std::floor(cy - ImGui::GetTextLineHeight() * 0.5f)), hov || on ? ui::kText : ui::kMuted,
+                label.c_str());
+    if (tip) ui::ItemTipText(tip);
+    return clicked;
+}
+
+// The legend row above Edit's waveform: once divided, "Lanes [Combined | Split]" (remembered per Sound,
+// one undo point), the values' chips (Combined: click = show only that part) and "Excluded"; then the
+// keys of the two handles, "Sync point (snap offset)" and "Cut (V1 | V2)".
+void EditLegend(const SoundStore& store, const SoundLibrary& lib, const SoundNode& n)
+{
+    const SoundData& d = Shown(n);
+    const bool       div = IsDivided(d);
+    bool             any = false;
+    auto             next = [&](float w) {
+        if (any) SameLineIfFits(w);
+        any = true;
+    };
+    auto chip_w = [](const std::string& label) { return ui::Dp(29.0f) + ImGui::CalcTextSize(label.c_str()).x; };
+    std::vector<std::string> names;
+    for (const std::string& v : d.divide_values) names.push_back(ValueName(store, d.divide_group, v));
+    if (div) {
+        static const char* const kLanes[2] = {"Combined", "Split"};
+        FitText("Lanes", ui::kFaint);
+        ImGui::SameLine();
+        int sel = d.lanes_split ? 1 : 0;
+        if (ui::Segmented("##lanes", kLanes, 2, &sel) && (sel == 1) != d.lanes_split) {
+            const bool split = sel == 1;
+            P.solo = -1;
+            EditNode("Lanes", lib.uid, n.uid, [split](SoundNode& x) {
+                if (x.sound.lanes_split == split) return false;
+                x.sound.lanes_split = split;
+                return true;
+            }, split ? "Lanes: Split \xC2\xB7 one waveform per value (remembered for this sound)"
+                     : "Lanes: Combined \xC2\xB7 one coloured waveform (remembered for this sound)");
+            return;
+        }
+        ui::ItemTipText("Lane mode, remembered for this sound. Combined: one waveform coloured by part. Split: one waveform per value.");
+        any = true;
+        for (size_t k = 0; k < names.size(); ++k) {
+            next(chip_w(names[k]));
+            const std::string id = "##lg" + std::to_string(k);
+            const std::string tip = "Show only the " + names[k] + " parts (click again: all)";
+            if (LegendChip(id.c_str(), names[k], PartColor(static_cast<int>(k)), LegendGlyph::Swatch, !d.lanes_split && P.solo == static_cast<int>(k),
+                           !d.lanes_split, d.lanes_split ? nullptr : tip.c_str()))
+                P.solo = P.solo == static_cast<int>(k) ? -1 : static_cast<int>(k);
+        }
+        next(chip_w("Excluded"));
+        LegendChip("##lgx", "Excluded", 0, LegendGlyph::Hatch, false, false, "Excluded: never placed");
+    }
+    next(chip_w("Sync point (snap offset)"));
+    LegendChip("##lgsync", "Sync point (snap offset)", ui::kWarn, LegendGlyph::Flag, false, false,
+               "Sync point (snap offset): the moment placed exactly on the event. One per variation, one per part when "
+               "divided. Dashed = detected, solid = moved by hand.");
+    if (div) {
+        std::string vs;
+        for (const std::string& x : names) vs += (vs.empty() ? "" : " | ") + x;
+        const std::string label = "Cut (" + vs + ")", tip = "Cut between two parts (" + vs + "). Dashed = proposed by RAV, solid = moved by hand, ? = to check.";
+        next(chip_w(label));
+        LegendChip("##lgcut", label, 0, LegendGlyph::Cut, false, false, tip.c_str());
+    }
+    ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));
+}
+
+// FADES "At cuts [ms] each part" (divided only): the fade every part gets at a cut or a zone's edge
+// (A4, 2 ms by default). A drag previews, its release (or a typed value) is one undo point.
+void CutFadeControl(const SoundLibrary& lib, const SoundNode& n)
+{
+    const SoundData& d = Shown(n);
+    if (!IsDivided(d) || d.mode == DetectMode::Takes) return;
+    const float fw = ui::Dp(52.0f), nw = ui::NumberFieldWidth(fw, "ms");
+    ui::LabelRow("At cuts", nw + ui::Dp(40.0f));
+    FitText("each part", ui::kMuted, std::max(1.0f, ImGui::GetContentRegionAvail().x - nw - ImGui::GetStyle().ItemSpacing.x));
+    ImGui::SameLine();
+    double v = d.cut_fade * 1000.0;
+    const ui::DragNumberEvent e = ui::DragNumber("##cutfade", &v, 0.1, 1, "ms", fw, /*trim=*/true);
+    ui::ItemTipText("Each part fades in and out at a cut or at an excluded zone's edge");
+    if (e == ui::DragNumberEvent::Live || e == ui::DragNumberEvent::Commit) {
+        SoundData& dr = Live(n);
+        dr.cut_fade = std::clamp(v, 0.0, 50.0) / 1000.0;
+        if (e == ui::DragNumberEvent::Commit) {
+            if (dr.cut_fade == n.sound.cut_fade) {
+                CancelLive();  // no empty undo point
+            } else {
+                char toast[64];
+                std::snprintf(toast, sizeof(toast), "Fade at cuts: %g ms on each part", dr.cut_fade * 1000.0);
+                CommitLive("Fade at cuts", lib.uid, n.uid, toast);
+            }
+        }
+    } else if (e == ui::DragNumberEvent::Cancel) {
+        CancelLive();
+    }
+}
+
 // ---- the Edit overlay -------------------------------------------------------------------------------
 
 void DrawEditOverlay()
@@ -1973,12 +2986,26 @@ void DrawEditOverlay()
             toggle_play();
         ui::ItemTipText("Play the whole file (Space) \xC2\xB7 Esc stops");
         ImGui::SameLine(0.0f, ui::Dp(10.0f));
-        const std::string count = VariationCountText(DetectedCount(n->uid, m, Shown(*n)), Shown(*n).frames);
+        std::string count = VariationCountText(DetectedCount(n->uid, m, Shown(*n)), Shown(*n).frames);
+        {  // 13-20 / 13-23: "· z excluded zones · divided by G"
+            const SoundData& sd = Shown(*n);
+            const int        nx = ExcludedZoneCount(sd);
+            if (nx > 0) count += " \xC2\xB7 " + std::to_string(nx) + (nx == 1 ? " excluded zone" : " excluded zones");
+            if (IsDivided(sd)) {
+                const SwitchGroup* dg = FindGroup(store, sd.divide_group);
+                count += " \xC2\xB7 divided by " + (dg ? dg->name : std::string("?"));
+            }
+        }
         static const char* const kHelpPlain =
             "Click a variation: play and select (Ctrl-click adds)\nDrag an edge: trim\nDrag up / down inside: its dB\n"
             "Alt-click: off / on\nS: split under the mouse\nDouble-click empty space: add a variation\n"
+            "Top flag: the sync point (snap offset), the moment placed on the event: drag it\n"
+            "Bottom handle: the cut between two parts: drag it\n"
+            "Drag across the waveform: select a zone, then right-click it: Exclude / \xE2\x86\x92 value\n"
+            "Right-click a variation: play it or a part, exclude it, reset its sync point or cuts\n"
+            "Click: listen (the part under the mouse)\n"
             "Zoom and scroll: your REAPER mouse wheel and zoom keys, middle-drag, the scrollbar\n"
-            "Drag the threshold line (Silence)\nSpace: play / stop, Esc: stop, then close";
+            "Drag the threshold line (Silence)\nSpace: play / stop, Esc: clear the zone, stop, then close";
         static const char* const kHelpTakes =
             "Click a variation: play and select (Ctrl-click adds)\nDrag an edge: trim (inside its take)\n"
             "Drag up / down inside: its dB\nAlt-click: off / on\nSplit and add: not in Takes mode\n"
@@ -2048,7 +3075,10 @@ void DrawEditOverlay()
         if (!m.ok) {
             FitText("Source not found", ui::kMissText);
         } else {
-            DrawSoundWaves("editwave", *lib, *n, m, wave_h - 24.0f, true, nullptr);
+            const float y0 = ImGui::GetCursorScreenPos().y;
+            if (Shown(*n).mode != DetectMode::Takes) EditLegend(store, *lib, *n);  // 13-20 / 13-23 / 13-25
+            const float used = ImGui::GetCursorScreenPos().y - y0;
+            if (!P.changed) DrawSoundWaves("editwave", *lib, *n, m, std::max(ui::Dp(60.0f), wave_h - 24.0f - used), true, nullptr);
         }
         ImGui::EndChild();
         if (!P.changed) {
@@ -2061,7 +3091,7 @@ void DrawEditOverlay()
             side.radius = 0.0f;
             ui::BeginPane("##editside", ImVec2(side_w, wave_h), side);
             ui::GroupCaption("Detection \xC2\xB7 this sound only", ui::kMuted);
-            if (m.ok) DetectionControls(*lib, *n, m, ui::Dp(70.0f));
+            if (m.ok) DetectionControls(*lib, *n, m, ui::Dp(70.0f), /*edit=*/true);
             if (!P.changed) {
                 ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));
                 const float  y = ImGui::GetCursorScreenPos().y;
@@ -2075,6 +3105,7 @@ void DrawEditOverlay()
                     ImGui::Dummy(ImVec2(1.0f, ui::Dp(6.0f)));
                     ui::GroupCaption("Fades", ui::kMuted);
                     DefaultFadeControls(*lib, *n);
+                    if (!P.changed) CutFadeControl(*lib, *n);  // 13-23 (A4)
                     if (!P.changed) SelectedFadeControls(*lib, *n);
                 }
                 ui::SubText("Every change is saved at once (Ctrl+Z to undo), with the sound in the library (.ravlib).");
@@ -2084,7 +3115,8 @@ void DrawEditOverlay()
         if (keys && !P.changed) {
             if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) toggle_play();
             if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-                if (AuditionPlaying()) StopAudition();
+                if (P.zone_len > 0.0) P.zone_len = 0.0;  // 13-20: Esc clears the zone selected first
+                else if (AuditionPlaying()) StopAudition();
                 else close = true;
             }
             if (ImGui::IsKeyPressed(ImGuiKey_E, false)) close = true;
@@ -2404,6 +3436,50 @@ bool VolumeNumber(const char* id, const std::string& key, double stored, double*
     return commit;
 }
 
+// 13-23 (A9): a Blend layer's part (the Part column): By event (default: the part the event's role asks
+// for), Whole, or one "<V> part" of the layer's divide values. Greyed with a tip when the layer is not a
+// divided Sound. One undo point.
+void BlendLayerPart(const SoundStore& store, const SoundLibrary& lib, const SoundNode& k, float w)
+{
+    const bool  can = k.type == SoundNodeType::Sound && IsDivided(k.sound) && k.sound.mode != DetectMode::Takes;
+    std::string preview = "By event";
+    if (can && !k.layer_part.empty())
+        preview = k.layer_part == kLayerPartWhole || PartIndex(k.sound, k.layer_part) < 0
+                      ? std::string("Whole")
+                      : ValueName(store, k.sound.divide_group, k.layer_part) + " part";
+    if (ui::BeginChipCombo("##part", preview.c_str(), w, !can)) {
+        bool        picked = false;
+        std::string pick, toast;
+        if (ImGui::Selectable("By event", k.layer_part.empty()) && !k.layer_part.empty()) {
+            picked = true;
+            toast = "Layer follows the event (by its role)";
+        }
+        if (ImGui::Selectable("Whole", preview == "Whole") && k.layer_part != kLayerPartWhole) {
+            picked = true;
+            pick = kLayerPartWhole;
+            toast = "Layer always plays the whole variation";
+        }
+        for (const std::string& v : k.sound.divide_values) {
+            const std::string nm = ValueName(store, k.sound.divide_group, v);
+            if (ImGui::Selectable((nm + " part##" + v).c_str(), k.layer_part == v) && k.layer_part != v) {
+                picked = true;
+                pick = v;
+                toast = "Layer always plays the " + nm + " part (offset kept)";
+            }
+        }
+        ui::EndChipCombo();
+        if (picked)
+            EditNode("Layer part", lib.uid, k.uid, [pick](SoundNode& x) {
+                if (x.layer_part == pick) return false;
+                x.layer_part = pick;
+                return true;
+            }, toast);
+    }
+    ui::ItemTipText(can ? "Part played by this layer. By event: the part the event's role asks for (default); Whole or one part: "
+                          "always that, its offset kept"
+                        : "Divide this sound by a Switch Group to pick a part");
+}
+
 // 13-7b (audit C4.8): the Blend layer view (.blendview) -- a dark box (r7, pad 6); a header row
 // with the "ms" caption, the ruler (mono 10 faint, labels centred on their time) and the
 // "offset" / "volume" captions; then one row per layer: its icon and name, its track (surface,
@@ -2430,9 +3506,9 @@ void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const Sound
     const float  box_x1 = std::max(box0.x + ui::Dp(60.0f), ui::LineRight());
     const float  x0 = box0.x + pad;
     const float  fh = ImGui::GetFrameHeight();
-    const float  ms_w = ui::Dp(52.0f), db_w = ui::Dp(46.0f);
+    const float  ms_w = ui::Dp(52.0f), db_w = ui::Dp(46.0f), part_w = ui::Dp(92.0f);  // 13-23: the Part column
     const float  ms_full = ui::NumberFieldWidth(ms_w, "ms"), db_full = ui::NumberFieldWidth(db_w, "dB");
-    const float  fields_w = ms_full + gap + db_full;
+    const float  fields_w = ms_full + gap + db_full + gap + part_w;
     const float  head_h = ui::Dp(16.0f);
     const float  rgap = ui::Dp(2.0f);
     // 13-14 (C4.8): the lanes take at most 196 px (.lanes { max-height:196px; overflow-y:auto }) and
@@ -2470,7 +3546,8 @@ void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const Sound
         ui::AddTextIn(dl, cf, ImVec2(x0, cy), ui::kFaint, "ms");
         if (!stacked) {
             ui::AddTextIn(dl, cf, ImVec2(x1 - fields_w, cy), ui::kFaint, "offset");
-            ui::AddTextIn(dl, cf, ImVec2(x1 - db_full, cy), ui::kFaint, "volume");
+            ui::AddTextIn(dl, cf, ImVec2(x1 - fields_w + ms_full + gap, cy), ui::kFaint, "volume");
+            ui::AddTextIn(dl, cf, ImVec2(x1 - part_w, cy), ui::kFaint, "part");
         }
         dl->PushClipRect(ImVec2(lane_x0 - ui::Dp(20.0f), y), ImVec2(lane_x0 + lane_w + ui::Dp(20.0f), y + head_h), true);
         for (double t = 0.0; t <= total_ms + 1e-6; t += step) {
@@ -2595,6 +3672,16 @@ void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const Sound
                 x.volume_db = v;
                 return true;
             });
+        if (P.changed) {
+            ImGui::PopID();
+            break;
+        }
+        ImGui::SetCursorScreenPos(ImVec2((stacked ? lane_x0 : x1 - fields_w) + ms_full + gap + db_full + gap, fy));
+        BlendLayerPart(store, lib, *k, part_w);
+        if (P.changed) {
+            ImGui::PopID();
+            break;
+        }
         ImGui::PopID();
         y += row_h + rgap;
     }
@@ -2721,10 +3808,12 @@ void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
             const DetectMode mode = DefaultDetectMode(m.facts, ready);
             const std::vector<SoundFrame> frames = DetectFrames(m.facts, mode, n.sound.silence, ready ? &pk : nullptr);
             if (!frames.empty()) {
-                EditNode("Detect", lib_uid, uid, [mode, frames](SoundNode& x) {
+                const std::string path = m.path;
+                EditNode("Detect", lib_uid, uid, [mode, frames, path](SoundNode& x) {
                     x.sound.mode = mode;
                     x.sound.frames = frames;
                     x.sound.edited = false;
+                    RefreshWith(x.sound, path);  // 13-25: the sync points measured at once
                     return true;
                 });
                 return;

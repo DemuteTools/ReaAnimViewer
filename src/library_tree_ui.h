@@ -63,6 +63,12 @@ bool LibraryTreeTakesArrows();
 // re-applies its media fields over what another story set).
 const LibraryTreeHooks& GetLibraryTreeHooks();
 
+// 13-23 (D9): the role keys a role map offers (RoleMenuKeys: the built-in families, then the user's
+// custom roles), the custom roles re-read at most once a second.
+const std::vector<std::string>& LibraryRoleKeys();
+// How many of LibraryRoleKeys() are built-in (the custom ones follow).
+size_t LibraryBuiltinRoleCount();
+
 }  // namespace rav
 
 #endif  // _WIN32

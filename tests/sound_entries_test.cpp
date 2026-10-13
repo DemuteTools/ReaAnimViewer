@@ -4,6 +4,7 @@
 // silence split, frame clamping and hand edits, normalize. Pure: any C++17 compiler.
 
 #include "sound_entries.h"
+#include "sound_record.h"
 
 #include "sound_draw.h"  // ActiveVariationsFor
 
@@ -738,6 +739,110 @@ void TestSetDivideAndRoles()
     CHECK(SetDivide(d, "", {kBack}) && d.divide_values.empty() && d.role_map.empty() && d.zones.size() == 1);
 }
 
+// Part C: the Edit window's counts and its role gestures.
+void TestEditCounts()
+{
+    SoundData d;
+    d.frames = {F(0, 1), F(2, 1), F(4, 1)};
+    d.frames[2].on = false;
+    CHECK(ExcludedZoneCount(d) == 0 && ExcludedStretchCount(d) == 1 && VariationsWithPart(d, "") == 2);
+    d.zones = {{0.2, 0.1, "", {}}, {0.9, 0.5, "", {}}, {2.5, 0.1, kFront, {}}};
+    // Frame 0 loses [0.2, 0.3] and [0.9, 1]: two stretches; frame 1 only has a "-> Front" zone; frame 2 is off.
+    CHECK(ExcludedZoneCount(d) == 2 && ExcludedStretchCount(d) == 3);
+    CHECK(SetDivide(d, "g", {kBack, kFront}));
+    d.frames[0].cuts = {0.5};
+    d.frames[1].cuts = {2.7};
+    d.frames[1].cut_unsure = true;
+    d.frames[0].cuts_hand = true;
+    d.frames[2].cut_unsure = true;  // off: not counted
+    d.frames[2].cuts = {4.5};
+    d.frames[2].cuts_hand = true;   // off: not counted
+    CHECK(HandCutCount(d) == 1 && UnsureCutCount(d) == 1);
+    CHECK(VariationsWithPart(d, kBack) == 2 && VariationsWithPart(d, kFront) == 2);
+    // The whole Back part of frame 1 excluded: Back is in frame 0 only.
+    d.zones.push_back({2.0, 0.7, "", {}});
+    CHECK(VariationsWithPart(d, kBack) == 1);
+    // Sync points moved by hand: inside the part's spans only.
+    d.frames[0].hand_syncs = {0.6};
+    d.frames[1].hand_syncs = {2.1, 2.8};
+    CHECK(HandSyncCount(d) == 3);
+    d.frames[1].hand_syncs.clear();
+    CHECK(HandSyncCount(d) == 1 && SyncIsHand(d, 0, 1) && !SyncIsHand(d, 0, 0) && !SyncIsHand(d, 1, 1));
+    CHECK(!SyncIsHand(d, 7, 0) && !SyncIsHand(d, 0, 2));
+}
+
+void TestRoleToggles()
+{
+    SoundStore  st;
+    SwitchGroup g;
+    g.uid = "g";
+    g.name = "Contact";
+    g.values = {{kBack, "Back", {}, {"heel"}}, {kFront, "Front", {}, {"toe", "toe_end"}}};
+    st.groups.push_back(g);
+    // The group's map: a role belongs to one value; turning it on elsewhere moves it.
+    std::string from;
+    CHECK(ToggleGroupRole(st, "g", kBack, "toe", &from) && from == kFront);
+    CHECK(st.groups[0].values[0].roles == std::vector<std::string>({"heel", "toe"}) &&
+          st.groups[0].values[1].roles == std::vector<std::string>({"toe_end"}));
+    CHECK(ToggleGroupRole(st, "g", kBack, "toe", &from) && from.empty() && st.groups[0].values[0].roles.size() == 1);
+    CHECK(ToggleGroupRole(st, "g", kFront, "hand", &from) && from.empty() && st.groups[0].values[1].roles.back() == "hand");
+    CHECK(!ToggleGroupRole(st, "g", "nope", "hand") && !ToggleGroupRole(st, "x", kBack, "hand") &&
+          !ToggleGroupRole(st, "g", kBack, ""));
+
+    SoundData d;
+    d.frames = {F(0, 1)};
+    CHECK(!ToggleSoundRole(st, d, kBack, "heel"));  // combined
+    CHECK(SetDivide(d, "g", {kBack, kFront}));
+    bool own = true;
+    std::vector<std::vector<std::string>> by = RolesByValue(st, d, &own);
+    CHECK(!own && by.size() == 2 && by[0] == std::vector<std::string>({"heel"}) && by[1].size() == 2);
+    CHECK(!DivideStale(st, d));
+    // This sound: heel -> Front, seeded from the group's (Back: heel; Front: toe end, hand) so the others
+    // keep their part.
+    CHECK(ToggleSoundRole(st, d, kFront, "heel"));
+    by = RolesByValue(st, d, &own);
+    CHECK(own && by[0].empty() && by[1].size() == 3);
+    CHECK(PartOfRole(st, d, "heel") == kFront && PartOfRole(st, d, "toe_end") == kFront && PartOfRole(st, d, "hand") == kFront &&
+          PartOfRole(st, d, "toe").empty());
+    CHECK(st.groups[0].values[0].roles == std::vector<std::string>({"heel"}));  // the group is untouched
+    // Every role taken off: the Sound keeps its own (empty) map, never falls back on the group's.
+    for (const char* r : {"heel", "toe_end", "hand"}) CHECK(ToggleSoundRole(st, d, kFront, r));
+    by = RolesByValue(st, d, &own);
+    CHECK(own && by[0].empty() && by[1].empty() && PartOfRole(st, d, "heel").empty());
+    // The mark survives the record.
+    {
+        SoundStore    s2 = st;
+        SoundLibrary  lib;
+        lib.uid = "b000000000000001";
+        lib.name = "L";
+        lib.root = "c000000000000001";
+        SoundNode n;
+        n.uid = "c000000000000001";
+        n.type = SoundNodeType::Sound;
+        n.name = "S";
+        n.sound = d;
+        lib.nodes.push_back(n);
+        s2.libraries.push_back(lib);
+        SoundStore back;
+        CHECK(ParseSoundStore(SerializeSoundStore(s2), &back) && back.libraries.size() == 1 &&
+              back.libraries[0].nodes.size() == 1);
+        if (back.libraries.size() == 1 && back.libraries[0].nodes.size() == 1) {
+            const SoundData& b = back.libraries[0].nodes[0].sound;
+            bool o2 = false;
+            RolesByValue(back, b, &o2);
+            CHECK(o2 && b.role_map.size() == 1 && PartOfRole(back, b, "heel").empty());
+        }
+    }
+    CHECK(ToggleSoundRole(st, d, kBack, "heel") && d.role_map.size() == 1 && PartOfRole(st, d, "heel") == kBack);
+    // A value not divided by, and the mark itself, are refused.
+    CHECK(!ToggleSoundRole(st, d, "v0000000000000z1", "heel") && !ToggleSoundRole(st, d, kBack, kNoRolesMark));
+    // The group's values changed after dividing: the amber note.
+    st.groups[0].values.push_back({"v0000000000000z1", "Ball", {}, {}});
+    CHECK(DivideStale(st, d));
+    st.groups.clear();
+    CHECK(DivideStale(st, d));
+}
+
 }  // namespace
 
 int main()
@@ -749,6 +854,8 @@ int main()
     TestAttackVsPeak();
     TestHandMarks();
     TestSetDivideAndRoles();
+    TestEditCounts();
+    TestRoleToggles();
     TestTakes();
     TestWholeClamp();
     TestPlayrate();

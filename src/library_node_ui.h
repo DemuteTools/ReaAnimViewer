@@ -33,6 +33,19 @@ void SettleNodePanelFaders();
 
 // ---- 13-7b additions ----------------------------------------------------------------------------
 
+// 13-20 / 13-23 / 13-25 (Edit only): a Sound's parts drawn over its variations -- the peaks coloured by
+// part (Combined: one waveform and a ribbon under it; Split: one lane per value), excluded stretches
+// hatched, the cuts (a grab at the bottom: dashed proposed, solid moved by hand, amber "?" unsure) and the
+// sync points (a flag at the top: dashed detected, solid moved by hand), and the zone selected.
+struct WaveParts {
+    const SoundData*         data = nullptr;
+    std::vector<ImU32>       colors;  // one per divide value
+    std::vector<std::string> names;   // one per divide value
+    bool                     split = false;  // one lane per value
+    int                      solo = -1;      // Combined: only this part bright (-1 = all)
+    double                   sel_start = 0.0, sel_len = 0.0;  // the zone selected (length 0 = none)
+};
+
 // A waveform with its variations framed (the Sound panel, Edit, the Media Explorer preview).
 struct WaveformOptions {
     ImVec2 size = ImVec2(0.0f, 90.0f);  // x 0 = the available width
@@ -51,6 +64,9 @@ struct WaveformOptions {
     std::vector<FrameFades> fades;
     // The frames' numbers in mono 11 (Edit's large waveform) instead of mono 9 (the panel's).
     bool   big_numbers = false;
+    // 13-20 / 13-23 / 13-25: the parts drawn, with their gestures (drag a cut or a sync flag, a
+    // horizontal drag selects a zone); null = none.
+    const WaveParts* parts = nullptr;
 };
 
 struct WaveformEvents {
@@ -81,6 +97,17 @@ struct WaveformEvents {
     int    fade_reset = -1;     // Alt-click on a fade handle: that frame's side back to the default
     int    fade_reset_side = 0; // -1 fade in, +1 fade out
     ImVec2 min, max;            // the waveform's rectangle
+    // 13-20 / 13-23 / 13-25 (with `parts`).
+    double click_at = 0.0;      // the source time of `clicked`
+    double right_at = 0.0;      // the source time right-clicked
+    int    cut_frame = -1, cut_k = -1;     // a cut dragged: its frame, its index and its time
+    double cut_t = 0.0;
+    bool   cut_done = false;
+    int    sync_frame = -1, sync_part = -1;  // a sync flag dragged: its frame, its part and its time
+    double sync_t = 0.0;
+    bool   sync_done = false;
+    bool   zone_live = false, zone_done = false;  // a zone being selected (a horizontal drag)
+    double zone_start = 0.0, zone_len = 0.0;
 };
 
 WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::vector<SoundFrame>& frames,

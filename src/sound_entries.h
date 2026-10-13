@@ -201,4 +201,39 @@ bool ResetCuts(SoundData& data, int variation);
 // role, a role no entry lists, or a value that is not one of its divide values.
 std::string PartOfRole(const SoundStore& store, const SoundData& data, const std::string& role);
 
+// ---- 13-20 / 13-23 / 13-25 part C: what the Edit window shows and its role gestures ------------------
+
+// The excluded zones (`to` "") of the Sound.
+int ExcludedZoneCount(const SoundData& data);
+// The excluded stretches of the variations (the part list's "Excluded" count): an off variation counts
+// one, an on one each stretch of it its spans leave out.
+int ExcludedStretchCount(const SoundData& data);
+// The variations holding at least one span of `value_uid` ("" = any span: not fully excluded).
+int VariationsWithPart(const SoundData& data, const std::string& value_uid);
+// The sync points moved by hand (every hand sync), the cuts moved by hand (of the on variations; 0 when
+// combined), and the on variations with an unsure cut RAV proposed.
+int HandSyncCount(const SoundData& data);
+int HandCutCount(const SoundData& data);
+int UnsureCutCount(const SoundData& data);
+// Whether part `part`'s sync point of the variation was moved by hand (a hand sync inside its spans).
+bool SyncIsHand(const SoundData& data, int variation, int part);
+// True when the Sound's divide values are no longer its group's values (a value added, removed or
+// reordered after dividing; the group deleted): the Divide row's amber note.
+bool DivideStale(const SoundStore& store, const SoundData& data);
+// The roles of each divide value (index k = divide_values[k]), from the Sound's own map, else its
+// group's; `own` gets whether the Sound's own map is used. {} when combined.
+std::vector<std::vector<std::string>> RolesByValue(const SoundStore& store, const SoundData& data, bool* own = nullptr);
+// The mark kept in a Sound's own role map when the user took every role off it ("no role maps to a
+// part for this sound", which an empty map cannot say: empty = the group's). Never a role key.
+constexpr const char kNoRolesMark[] = "-";
+// Toggles `role` on value `value_uid` in the Sound's own map (Roles... in Edit): the map is first
+// seeded from the group's when the Sound has none; a role belongs to one value (it moves). False when
+// the Sound is not divided or the value is not one of its divide values.
+bool ToggleSoundRole(const SoundStore& store, SoundData& data, const std::string& value_uid, const std::string& role);
+// Toggles `role` on a value of a Switch Group (Switch Groups > Roles): off when it has it, else on and
+// off every other value of the group. `moved_from` gets the value uid it left ("" = none). False for an
+// unknown group / value or an empty role.
+bool ToggleGroupRole(SoundStore& store, const std::string& group_uid, const std::string& value_uid, const std::string& role,
+                     std::string* moved_from = nullptr);
+
 }  // namespace rav

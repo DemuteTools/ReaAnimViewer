@@ -1069,4 +1069,148 @@ std::string PartOfRole(const SoundStore& store, const SoundData& data, const std
     return PartIndex(data, value) >= 0 ? value : std::string();
 }
 
+
+// ---- part C: what the Edit window shows and its role gestures -----------------------------------------
+
+int ExcludedZoneCount(const SoundData& data)
+{
+    int n = 0;
+    for (const SoundZone& z : data.zones) n += z.to.empty() && z.length > 0.0 ? 1 : 0;
+    return n;
+}
+
+int ExcludedStretchCount(const SoundData& data)
+{
+    int n = 0;
+    for (size_t i = 0; i < data.frames.size(); ++i) {
+        const SoundFrame& f = data.frames[i];
+        if (!(f.length > 0.0)) continue;
+        if (!f.on) {
+            ++n;
+            continue;
+        }
+        double at = f.start;  // the end of what the spans covered so far
+        for (const PartSpan& s : PlacedSpans(data, static_cast<int>(i), std::string())) {
+            if (s.start - at > kTimeEps) ++n;
+            at = s.start + s.length;
+        }
+        if (FrameEnd(f) - at > kTimeEps) ++n;
+    }
+    return n;
+}
+
+int VariationsWithPart(const SoundData& data, const std::string& value_uid)
+{
+    int n = 0;
+    for (size_t i = 0; i < data.frames.size(); ++i) n += PlacedSpans(data, static_cast<int>(i), value_uid).empty() ? 0 : 1;
+    return n;
+}
+
+int HandSyncCount(const SoundData& data)
+{
+    int n = 0;
+    for (const SoundFrame& f : data.frames) n += static_cast<int>(f.hand_syncs.size());
+    return n;
+}
+
+int HandCutCount(const SoundData& data)
+{
+    int n = 0;
+    if (!IsDivided(data)) return 0;
+    for (const SoundFrame& f : data.frames) n += f.on && f.cuts_hand ? static_cast<int>(f.cuts.size()) : 0;
+    return n;
+}
+
+int UnsureCutCount(const SoundData& data)
+{
+    int n = 0;
+    if (!IsDivided(data)) return 0;
+    for (const SoundFrame& f : data.frames) n += f.on && f.cut_unsure && !f.cuts_hand ? 1 : 0;
+    return n;
+}
+
+bool SyncIsHand(const SoundData& data, int variation, int part)
+{
+    if (!ValidIndex(data, variation) || part < 0 || part >= PartCount(data)) return false;
+    const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    if (f.hand_syncs.empty()) return false;
+    const std::vector<PartSpan> spans = SpansOfPart(data, variation, part);
+    for (double h : f.hand_syncs)
+        if (InSpans(spans, h)) return true;
+    return false;
+}
+
+bool DivideStale(const SoundStore& store, const SoundData& data)
+{
+    if (!IsDivided(data)) return false;
+    const SwitchGroup* g = FindGroup(store, data.divide_group);
+    if (!g || g->values.size() != data.divide_values.size()) return true;
+    for (size_t k = 0; k < g->values.size(); ++k)
+        if (g->values[k].uid != data.divide_values[k]) return true;
+    return false;
+}
+
+std::vector<std::vector<std::string>> RolesByValue(const SoundStore& store, const SoundData& data, bool* own)
+{
+    std::vector<std::vector<std::string>> out;
+    if (own) *own = !data.role_map.empty();
+    if (!IsDivided(data)) return out;
+    out.resize(data.divide_values.size());
+    if (!data.role_map.empty()) {
+        for (const RoleValue& r : data.role_map) {
+            const int k = PartIndex(data, r.value);
+            if (k >= 0 && r.role != kNoRolesMark) out[static_cast<size_t>(k)].push_back(r.role);
+        }
+        return out;
+    }
+    if (const SwitchGroup* g = FindGroup(store, data.divide_group))
+        for (const SwitchValue& v : g->values) {
+            const int k = PartIndex(data, v.uid);
+            if (k >= 0) out[static_cast<size_t>(k)] = v.roles;
+        }
+    return out;
+}
+
+bool ToggleSoundRole(const SoundStore& store, SoundData& data, const std::string& value_uid, const std::string& role)
+{
+    if (!IsDivided(data) || PartIndex(data, value_uid) < 0 || role.empty() || role == kNoRolesMark) return false;
+    std::vector<RoleValue> m;
+    if (data.role_map.empty()) {  // seeded from the group's, so the other roles keep their part
+        const std::vector<std::vector<std::string>> by = RolesByValue(store, data);
+        for (size_t k = 0; k < by.size(); ++k)
+            for (const std::string& r : by[k]) m.push_back({r, data.divide_values[k]});
+    } else {
+        for (const RoleValue& r : data.role_map)
+            if (r.role != kNoRolesMark) m.push_back(r);
+    }
+    bool had = false;
+    for (const RoleValue& r : m) had = had || (r.role == role && r.value == value_uid);
+    m.erase(std::remove_if(m.begin(), m.end(), [&](const RoleValue& r) { return r.role == role; }), m.end());
+    if (!had) m.push_back({role, value_uid});
+    if (m.empty()) m.push_back({kNoRolesMark, data.divide_values.front()});
+    data.role_map = m;
+    return true;
+}
+
+bool ToggleGroupRole(SoundStore& store, const std::string& group_uid, const std::string& value_uid, const std::string& role,
+                     std::string* moved_from)
+{
+    if (moved_from) moved_from->clear();
+    SwitchGroup* g = FindGroup(store, group_uid);
+    if (!g || role.empty() || role == kNoRolesMark) return false;
+    SwitchValue* target = nullptr;
+    for (SwitchValue& v : g->values)
+        if (v.uid == value_uid) target = &v;
+    if (!target) return false;
+    const bool had = std::find(target->roles.begin(), target->roles.end(), role) != target->roles.end();
+    for (SwitchValue& v : g->values) {
+        const auto it = std::find(v.roles.begin(), v.roles.end(), role);
+        if (it == v.roles.end()) continue;
+        if (&v != target && moved_from) *moved_from = v.uid;
+        v.roles.erase(it);
+    }
+    if (!had) target->roles.push_back(role);
+    return true;
+}
+
 }  // namespace rav

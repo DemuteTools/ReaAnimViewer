@@ -7,6 +7,7 @@
 #ifdef _WIN32
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 #include <imgui_internal.h>  // ImGuiWindow flags (a window that sizes itself)
@@ -165,6 +166,15 @@ bool FittedButtonBody(const char* label, const ImVec2& size)
     const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
     const float  px = ImGui::GetStyle().FramePadding.x;
     const std::string text(label, VisibleEnd(label));
+    // A label that fits once the padding is given up (a "−" / "+" on a square button) is drawn whole and
+    // centred, never cut to "..".
+    const float tw = ImGui::CalcTextSize(text.c_str()).x;
+    if (tw + 2.0f <= b.x - a.x) {
+        ImGui::GetWindowDrawList()->AddText(
+            ImVec2(std::floor(a.x + (b.x - a.x - tw) * 0.5f), a.y + (b.y - a.y - ImGui::GetTextLineHeight()) * 0.5f), ink,
+            text.c_str());
+        return pressed;
+    }
     EllipsisText(ImGui::GetWindowDrawList(), ImVec2(a.x + px, a.y + (b.y - a.y - ImGui::GetTextLineHeight()) * 0.5f),
                  b.x - px, ink, text);
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip | ImGuiHoveredFlags_AllowWhenDisabled))

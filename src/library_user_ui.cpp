@@ -119,6 +119,9 @@ struct State {
     std::unordered_map<std::string, std::string> resolved;  // asset key -> path ("" = missing)
     std::unordered_set<std::string>              live_guids;
     int                                          live_state = -1;
+    // A missing file found in another project item playing it (asset key -> path, "" = none): read
+    // again when the project changes.
+    std::unordered_map<std::string, std::string> from_items;
     ReaProject*                                  live_proj = nullptr;
     // Lands in "New folder..." field.
     bool        new_folder = false;
@@ -269,21 +272,54 @@ void RefreshCaches()
         g.live_state = st;
         g.live_proj = proj;
         g.live_guids.clear();
+        g.from_items.clear();
         const int n = CountMediaItems(proj);
         for (int i = 0; i < n; ++i)
             if (MediaItem* it = GetMediaItem(proj, i)) g.live_guids.insert(LowerAscii(ItemGuidOf(it)));
     }
 }
 
+std::string ProjectFolder();  // below
+
+// The file of a project item that plays the same file (same name, same size when known, still on
+// disk), "" when none: a Sound whose own item was deleted finds its audio in a copy kept elsewhere.
+std::string FileFromProjectItems(const AssetIdentity& a)
+{
+    if (a.name.empty()) return {};
+    const std::string name = LowerAscii(a.name);
+    const std::string dir = ProjectFolder();
+    const int         n = CountMediaItems(nullptr);
+    for (int i = 0; i < n; ++i) {
+        MediaItem*      it = GetMediaItem(nullptr, i);
+        MediaItem_Take* t = it ? GetActiveTake(it) : nullptr;
+        PCM_source*     src = t ? GetMediaItemTake_Source(t) : nullptr;
+        const char*     fn = src ? src->GetFileName() : nullptr;
+        if (!fn || !fn[0] || LowerAscii(BaseNameOf(fn)) != name) continue;
+        const std::string path = AbsoluteMediaPath(fn, dir);
+        const int64_t     size = FileSize(path);
+        if (size < 0 || (a.size >= 0 && size != a.size)) continue;
+        return path;
+    }
+    return {};
+}
+
 std::string ResolvedPath(const AssetIdentity& a)
 {
     const std::string key = AssetKey(a);
-    const auto it = g.resolved.find(key);
-    if (it != g.resolved.end()) return it->second;
-    const std::shared_ptr<const MediaDbIndex> idx = MediaDbGet();
-    const std::string path = ResolveAssetPath(a, &FileSize, idx.get());
-    g.resolved[key] = path;
-    return path;
+    std::string       path;
+    const auto        it = g.resolved.find(key);
+    if (it != g.resolved.end()) {
+        path = it->second;
+    } else {
+        const std::shared_ptr<const MediaDbIndex> idx = MediaDbGet();
+        path = ResolveAssetPath(a, &FileSize, idx.get());
+        g.resolved[key] = path;
+    }
+    if (!path.empty()) return path;
+    // Not at its last path nor in the Media Explorer: another item of the project that plays it.
+    const auto hit = g.from_items.find(key);
+    if (hit != g.from_items.end()) return hit->second;
+    return g.from_items[key] = FileFromProjectItems(a);
 }
 
 bool LiveItem(const std::string& guid)

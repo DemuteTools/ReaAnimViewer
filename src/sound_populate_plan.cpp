@@ -45,16 +45,18 @@ const SoundDraw* FindDraw(const std::vector<SoundDraw>* draws, const std::string
     return nullptr;
 }
 
-int Draw(PopulateDrawState& st, EventDraw& ev, const SoundNode& n, const std::vector<int>& active, int avoid)
+int Draw(PopulateDrawState& st, EventDraw& ev, const SoundNode& n, const std::vector<int>& active, int avoid,
+         const std::string& part = std::string())
 {
     const SoundDraw* prev = FindDraw(ev.prev, n.uid);
-    std::vector<int>& hist = st.history[n.uid];
+    std::vector<int>& hist = st.history[part.empty() ? n.uid : n.uid + "|" + part];  // 13-23: per part
     const int pick = KeepOrDraw(prev, active, avoid, hist, st.seed, NodeSalt(ev.rid, ev.t, n.uid));
     if (pick < 0) return -1;
     hist.push_back(pick);
     SoundDraw d;
     d.node = n.uid;
     d.pick = pick;
+    d.part = part;
     if (prev && prev->pick == pick) {
         d.hand = prev->hand;
         d.kept = prev->kept;
@@ -174,6 +176,21 @@ ResolveHooks MakeDrawHooks(PopulateDrawState& state, EventDraw& ev, std::functio
         }
         return Draw(*st, *e, n, active, n.avoid_repeat);
     };
+    h.part_variation = [st, e](const SoundNode& n, const std::string& part) -> int {
+        if (n.sound.frames.empty()) return -1;
+        if (ActiveVariations(n.sound).empty()) {
+            e->no_active.insert(n.uid);
+            return -1;
+        }
+        // Takes mode places the take whole (A8): every on take can play.
+        const std::vector<int> active =
+            n.sound.mode == DetectMode::Takes ? ActiveVariations(n.sound) : ActiveVariationsFor(n.sound, part);
+        if (active.empty()) {
+            e->no_part[n.uid] = part;
+            return -1;
+        }
+        return Draw(*st, *e, n, active, n.avoid_repeat, part);
+    };
     h.is_missing = std::move(is_missing);
     return h;
 }
@@ -217,8 +234,14 @@ std::vector<SlotStep> PlanEventSlots(const std::vector<DesiredSlot>& desired, co
                 SlotStep st;
                 st.desired = di;
                 st.existing = slots[s].second;
-                const int var = existing[static_cast<size_t>(st.existing.front())].variation;
-                st.act = var == desired[static_cast<size_t>(di)].variation ? SlotAction::Keep : SlotAction::SetVariation;
+                const ExistingSlot& first = existing[static_cast<size_t>(st.existing.front())];
+                const DesiredSlot&  want_d = desired[static_cast<size_t>(di)];
+                const bool same = first.variation == want_d.variation && first.part == want_d.part &&
+                                  // a piece deleted by hand is not placed again: its count is not compared
+                                  (want_d.pieces <= 0 || deleted.count(want_d.node) ||
+                                   static_cast<int>(st.existing.size()) == want_d.pieces) &&
+                                  (want_d.sync < 0.0 || (first.sync >= 0.0 && std::fabs(first.sync - want_d.sync) <= 1e-6));
+                st.act = same ? SlotAction::Keep : SlotAction::SetVariation;
                 steps.push_back(st);
                 matched = true;
                 break;
@@ -322,6 +345,12 @@ int CountEvents(const std::vector<int>& event_blocks, const std::vector<char>& r
     for (int b : event_blocks)
         if (b >= 0 && static_cast<size_t>(b) < rule_ok.size() && rule_ok[static_cast<size_t>(b)]) ++n;
     return n;
+}
+
+std::string NoPartText(const std::string& sound_name, const std::string& value_name)
+{
+    if (value_name.empty()) return "Nothing placed: " + sound_name + " has nothing left to place";
+    return "Nothing placed: " + sound_name + " has no " + value_name + " part left";
 }
 
 std::string ReportSummary(const SoundReport& report, int events)

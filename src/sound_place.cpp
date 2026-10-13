@@ -380,7 +380,9 @@ std::string OwnerGuid(const PlaceRequest& req, const std::string& fallback)
 }
 
 // Antho 2026-10-12 (13-11): a File Sound's item, made straight from its file on `req.track` (no
-// source item). `kept` non-null = rewritten in place (its GUID kept, its takes replaced).
+// source item). `kept` non-null = rewritten in place (its GUID kept, its takes replaced). 13-20 / 13-23:
+// one item per piece (req.pieces; none = one item from req.slice), all positioned from the anchor
+// piece; `kept` becomes the first.
 PlaceResult PlaceFileImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept, const std::string& kept_owner,
                           const std::string& kept_tk)
 {
@@ -393,103 +395,153 @@ PlaceResult PlaceFileImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* 
         r.error = req.file_path.empty() ? "no file to place" : "no track to place the file on";
         return r;
     }
-    PCM_source* src = f_create_source(req.file_path.c_str());
-    if (!src) {
-        r.error = "could not read the file";
-        return r;
+    std::vector<PieceApply> pieces = req.pieces;
+    if (pieces.empty()) {
+        PieceApply one;
+        one.slice = req.slice;
+        one.fades = req.fades;
+        one.anchor = true;
+        pieces.push_back(one);
     }
-    auto drop_source = [&src]() {
-        if (src && f_destroy_source) f_destroy_source(src);
-        src = nullptr;
-    };
-    bool                 qn = false;
-    const double         file_len = GetMediaSourceLength(src, &qn);
-    const FileItemFields fld = FileItemFieldsFor(qn ? 0.0 : file_len, req.slice, req.fades, req.gain_db, req.project_t,
-                                                 req.blend_ms, req.offset_s);
-    if (!fld.ok) {
-        drop_source();
+    double file_len = 0.0;
+    {
+        PCM_source* probe = f_create_source(req.file_path.c_str());
+        if (!probe) {
+            r.error = "could not read the file";
+            return r;
+        }
+        bool qn = false;
+        file_len = GetMediaSourceLength(probe, &qn);
+        if (qn) file_len = 0.0;
+        if (f_destroy_source) f_destroy_source(probe);
+    }
+    std::vector<FileItemFields> fields;
+    size_t                      anchor = 0;
+    for (size_t k = 0; k < pieces.size(); ++k) {
+        fields.push_back(FileItemFieldsFor(file_len, pieces[k].slice, pieces[k].fades, req.gain_db, req.project_t,
+                                           req.blend_ms, req.offset_s));
+        if (pieces[k].anchor) anchor = k;
+    }
+    if (!fields[anchor].ok) {
         r.error = "the variation lies outside the file";
         return r;
     }
-    MediaItem* item = kept;
-    std::string saved;
-    const bool  user_moved = MovedByUser(proj, kept, kept_tk);
-    if (kept) {
-        if (!user_moved && GetMediaItem_Track(kept) != req.track && !f_move_to_track(kept, req.track)) {
-            drop_source();
-            r.error = "could not move the kept item to its track";
-            return r;
-        }
-        // A fresh item with the same GUID: the old takes, their sources and FX go. The old
-        // chunk is kept so a failure below puts the item back as it was.
-        saved = ReadChunk(kept);
-        const std::string fresh = "<ITEM\nPOSITION 0\nSNAPOFFS 0\nLENGTH 1\nLOOP 0\nALLTAKES 0\nMUTE 0 0\nSEL 0\nIGUID " +
-                                  ItemGuid(kept) + "\n>\n";
-        if (!f_set_chunk(kept, fresh.c_str(), false)) {
-            drop_source();
-            r.error = "could not rewrite the kept item";
-            return r;
-        }
-    } else {
-        item = f_add_item(req.track);
-        if (!item) {
-            drop_source();
-            r.error = "could not add an item";
-            return r;
-        }
-    }
-    MediaItem_Take* take = f_add_take(item);
-    if (!take || !f_set_take_source(take, src)) {
-        drop_source();
-        if (!kept) {
-            ForgetDeleted(item);
-            f_delete_item(req.track, item);
-        }
-        else if (!saved.empty()) f_set_chunk(kept, saved.c_str(), false);  // back as it was
-        r.error = "could not give the item its file";
-        return r;
-    }
-    src = nullptr;  // the take owns it now
-    f_set_active_take(take);
-    {
-        std::string name = std::filesystem::u8path(req.file_path).filename().u8string();
-        if (name.empty()) name = req.file_path;
-        std::vector<char> buf(name.begin(), name.end());
-        buf.push_back('\0');
-        GetSetMediaItemTakeInfo_String(take, "P_NAME", buf.data(), true);
-    }
-    f_set_take(take, "D_STARTOFFS", fld.start_offs);
-    f_set_take(take, "D_PLAYRATE", 1.0);
-    f_set_item(item, "B_LOOPSRC", 0.0);
-    f_set_item(item, "B_MUTE", 0.0);
-    f_set_item(item, "D_LENGTH", fld.length);
-    f_set_item(item, "D_SNAPOFFSET", fld.snap_offset);
-    f_set_item(item, "D_POSITION", fld.position);
-    f_set_item(item, "D_VOL", fld.volume);
-    f_set_item(item, "D_FADEINLEN", fld.fade_in);
-    f_set_item(item, "D_FADEOUTLEN", fld.fade_out);
-    f_set_item(item, "D_FADEINLEN_AUTO", -1.0);  // REAPER's auto-fade would override the length
-    f_set_item(item, "D_FADEOUTLEN_AUTO", -1.0);
-    f_set_item(item, "D_FADEINDIR", 0.0);
-    f_set_item(item, "D_FADEOUTDIR", 0.0);
-    if (req.fades.shape_in) f_set_item(item, "C_FADEINSHAPE", static_cast<double>(req.fades.in_shape));
-    if (req.fades.shape_out) f_set_item(item, "C_FADEOUTSHAPE", static_cast<double>(req.fades.out_shape));
+    const double anchor_pos = fields[anchor].position;
+    const double sync = fields[anchor].snap_offset;
+    const bool   user_moved = MovedByUser(proj, kept, kept_tk);
+    const std::string owner = kept_owner.empty() ? OwnerGuid(req, {}) : OwnerGuid(req, kept_owner);
+    std::string name = std::filesystem::u8path(req.file_path).filename().u8string();
+    if (name.empty()) name = req.file_path;
 
-    PlacedTag tag;
-    tag.owner = kept_owner.empty() ? OwnerGuid(req, {}) : OwnerGuid(req, kept_owner);
-    tag.rid = req.rid;
-    tag.t = req.event_t;
-    tag.node = req.node;
-    tag.own = req.own;
-    tag.has_anchor = true;
-    tag.ao = 0.0;
-    tag.sy = fld.snap_offset;
-    tag.tk = Land(proj, item, req.track, req.track_mark, user_moved, kept_tk);
-    WritePlacedTag(item, tag);
-    r.item_guids.push_back(ItemGuid(item));
-    r.items.push_back(item);
-    r.ok = true;
+    for (size_t k = 0; k < pieces.size(); ++k) {
+        const FileItemFields& fld = fields[k];
+        if (!fld.ok) continue;  // a piece outside the file: the others still play
+        PCM_source* src = f_create_source(req.file_path.c_str());
+        if (!src) {
+            r.error = "could not read the file";
+            return r;
+        }
+        auto drop_source = [&src]() {
+            if (src && f_destroy_source) f_destroy_source(src);
+            src = nullptr;
+        };
+        MediaItem*  reuse = r.items.empty() ? kept : nullptr;  // the kept item becomes the first piece
+        MediaItem*  item = reuse;
+        std::string saved;
+        if (reuse) {
+            if (!user_moved && GetMediaItem_Track(reuse) != req.track && !f_move_to_track(reuse, req.track)) {
+                drop_source();
+                r.error = "could not move the kept item to its track";
+                return r;
+            }
+            // A fresh item with the same GUID: the old takes, their sources and FX go. The old
+            // chunk is kept so a failure below puts the item back as it was.
+            saved = ReadChunk(reuse);
+            const std::string fresh = "<ITEM\nPOSITION 0\nSNAPOFFS 0\nLENGTH 1\nLOOP 0\nALLTAKES 0\nMUTE 0 0\nSEL 0\nIGUID " +
+                                      ItemGuid(reuse) + "\n>\n";
+            if (!f_set_chunk(reuse, fresh.c_str(), false)) {
+                drop_source();
+                r.error = "could not rewrite the kept item";
+                return r;
+            }
+        } else {
+            item = f_add_item(req.track);
+            if (!item) {
+                drop_source();
+                r.error = "could not add an item";
+                return r;
+            }
+        }
+        MediaItem_Take* take = f_add_take(item);
+        if (!take || !f_set_take_source(take, src)) {
+            drop_source();
+            if (!reuse) {
+                ForgetDeleted(item);
+                f_delete_item(req.track, item);
+            } else if (!saved.empty()) {
+                f_set_chunk(reuse, saved.c_str(), false);  // back as it was
+            }
+            r.error = "could not give the item its file";
+            return r;
+        }
+        src = nullptr;  // the take owns it now
+        f_set_active_take(take);
+        {
+            std::vector<char> buf(name.begin(), name.end());
+            buf.push_back('\0');
+            GetSetMediaItemTakeInfo_String(take, "P_NAME", buf.data(), true);
+        }
+        const double pos = k == anchor ? anchor_pos : PiecePosition(anchor_pos, pieces[k].from_anchor, 1.0);
+        f_set_take(take, "D_STARTOFFS", fld.start_offs);
+        f_set_take(take, "D_PLAYRATE", 1.0);
+        f_set_item(item, "B_LOOPSRC", 0.0);
+        f_set_item(item, "B_MUTE", 0.0);
+        f_set_item(item, "D_LENGTH", fld.length);
+        f_set_item(item, "D_SNAPOFFSET", k == anchor ? fld.snap_offset : 0.0);
+        f_set_item(item, "D_POSITION", pos);
+        f_set_item(item, "D_VOL", fld.volume);
+        f_set_item(item, "D_FADEINLEN", fld.fade_in);
+        f_set_item(item, "D_FADEOUTLEN", fld.fade_out);
+        f_set_item(item, "D_FADEINLEN_AUTO", -1.0);  // REAPER's auto-fade would override the length
+        f_set_item(item, "D_FADEOUTLEN_AUTO", -1.0);
+        f_set_item(item, "D_FADEINDIR", 0.0);
+        f_set_item(item, "D_FADEOUTDIR", 0.0);
+        if (pieces[k].fades.shape_in) f_set_item(item, "C_FADEINSHAPE", static_cast<double>(pieces[k].fades.in_shape));
+        if (pieces[k].fades.shape_out) f_set_item(item, "C_FADEOUTSHAPE", static_cast<double>(pieces[k].fades.out_shape));
+
+        PlacedTag tag;
+        tag.owner = owner;
+        tag.rid = req.rid;
+        tag.t = req.event_t;
+        tag.node = req.node;
+        tag.own = req.own;
+        tag.has_anchor = true;
+        tag.ao = pos - anchor_pos;
+        tag.sy = sync;
+        tag.pt = req.part;
+        tag.tk = Land(proj, item, req.track, req.track_mark, reuse != nullptr && user_moved, kept_tk);
+        WritePlacedTag(item, tag);
+        r.item_guids.push_back(ItemGuid(item));
+        r.items.push_back(item);
+    }
+    r.ok = !r.items.empty();
+    if (!r.ok && r.error.empty()) r.error = "the variation lies outside the file";
     return r;
+}
+
+// 13-20 / 13-23: one piece of a variation on a copied plain item: its span (D_STARTOFFS, D_LENGTH in
+// item seconds), its snap (the anchor piece only) and its fades.
+void ApplyPiece(MediaItem* item, const PieceApply& piece)
+{
+    MediaItem_Take* take = GetActiveTake(item);
+    double          rate = take ? GetMediaItemTakeInfo_Value(take, "D_PLAYRATE") : 1.0;
+    if (!(rate > 0.0) || !std::isfinite(rate)) rate = 1.0;
+    if (take) {
+        f_set_take(take, "D_STARTOFFS", piece.slice.start_offs);
+        f_set_item(item, "D_LENGTH", piece.slice.length / rate);
+    }
+    f_set_item(item, "D_SNAPOFFSET", piece.anchor ? piece.slice.snap_offset / rate : 0.0);
+    ApplyFades(item, piece.fades);
 }
 
 // The shared place/replace body. `kept` non-null = rewrite it as the first member.
@@ -507,6 +559,9 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
     bool                folder = false;
     std::vector<Member> members;
     if (!CollectMembers(proj, req, &anchor_src, &folder, &members, &r.error)) return r;
+    // 13-20 / 13-23: a plain item is placed as its pieces (one copy each); a folder pile ignores them.
+    const bool by_pieces = !folder && !req.pieces.empty();
+    if (by_pieces) members.assign(req.pieces.size(), members.front());
 
     const double src_anchor_pos = GetMediaItemInfo_Value(anchor_src, "D_POSITION");
     const std::string owner = kept_owner.empty() ? OwnerGuid(req, req.source.item_guid) : OwnerGuid(req, kept_owner);
@@ -541,7 +596,9 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
             r.error = "could not copy the source item";
             return r;
         }
-        if (!folder) {
+        if (by_pieces) {
+            ApplyPiece(item, req.pieces[i]);
+        } else if (!folder) {
             ApplyVariation(item, req);
             ApplyFades(item, req.fades);
         }
@@ -561,13 +618,24 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
         r.items.push_back(item);
     }
 
-    // E2: sync = the source (topmost) item's snap, read after the variation.
+    // E2: sync = the source (topmost) item's snap, read after the variation. 13-20 / 13-23: the anchor
+    // piece's (the one holding the sync point); every piece is placed from it.
+    size_t anchor_piece = 0;
+    if (by_pieces)
+        for (size_t i = 0; i < req.pieces.size(); ++i)
+            if (req.pieces[i].anchor) anchor_piece = i;
     const double sync = folder ? GetMediaItemInfo_Value(anchor_src, "D_SNAPOFFSET")
-                               : GetMediaItemInfo_Value(placed.front(), "D_SNAPOFFSET");
+                               : GetMediaItemInfo_Value(placed[anchor_piece], "D_SNAPOFFSET");
     const double anchor = PlacementPosition(req.project_t, sync, req.blend_ms, req.offset_s);
     for (size_t i = 0; i < placed.size(); ++i) {
         const double src_pos = GetMediaItemInfo_Value(members[i].src, "D_POSITION");
-        const double pos = folder ? std::max(0.0, PileMemberPosition(anchor, src_anchor_pos, src_pos)) : anchor;
+        double       pos = anchor;
+        if (folder) {
+            pos = std::max(0.0, PileMemberPosition(anchor, src_anchor_pos, src_pos));
+        } else if (by_pieces && i != anchor_piece) {
+            MediaItem_Take* take = GetActiveTake(placed[i]);
+            pos = PiecePosition(anchor, req.pieces[i].from_anchor, take ? GetMediaItemTakeInfo_Value(take, "D_PLAYRATE") : 1.0);
+        }
         f_set_item(placed[i], "D_POSITION", pos);
         PlacedTag tag;
         tag.owner = owner;
@@ -578,6 +646,7 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
         tag.has_anchor = true;
         tag.ao = pos - anchor;  // as placed: a member clamped at 0 still gives the anchor back
         tag.sy = sync;
+        tag.pt = req.part;
         tag.tk = Land(proj, placed[i], members[i].track, members[i].mark, i == 0 && user_moved, kept_tk);
         WritePlacedTag(placed[i], tag);
     }

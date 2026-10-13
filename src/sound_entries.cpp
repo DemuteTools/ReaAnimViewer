@@ -847,6 +847,49 @@ bool SyncsStale(const SoundData& data, int variation)
     return false;
 }
 
+bool MeasureSyncs(SoundData& data, int variation, const PeakData* peaks)
+{
+    if (!ValidIndex(data, variation) || data.mode == DetectMode::Takes) return false;
+    if (data.sync_mode != SyncMode::SliceStart && !HasPeaks(peaks)) return false;
+    SoundFrame&         f = data.frames[static_cast<size_t>(variation)];
+    const int           n = PartCount(data);
+    std::vector<double> syncs(static_cast<size_t>(n), -1.0);
+    for (int k = 0; k < n; ++k) {
+        const std::vector<PartSpan> spans = SpansOfPart(data, variation, k);
+        if (spans.empty()) continue;
+        double s = -1.0;
+        for (double h : f.hand_syncs)
+            if (InSpans(spans, h)) {
+                s = h;
+                break;
+            }
+        syncs[static_cast<size_t>(k)] = s >= 0.0 ? s : AutoSync(data, peaks, spans);
+    }
+    f.syncs = syncs;
+    return true;
+}
+
+bool ApplyMeasuredSyncs(SoundStore& store, const std::string& lib_uid, const std::string& node_uid,
+                        const SoundData& measured, const std::set<int>& variations)
+{
+    SoundLibrary* lib = nullptr;
+    for (SoundLibrary& L : store.libraries)
+        if (L.uid == lib_uid) lib = &L;
+    SoundNode* n = lib ? FindNode(*lib, node_uid) : nullptr;
+    if (!n || n->type != SoundNodeType::Sound) return false;
+    bool changed = false;
+    for (int v : variations) {
+        if (v < 0 || static_cast<size_t>(v) >= n->sound.frames.size() || static_cast<size_t>(v) >= measured.frames.size())
+            continue;
+        SoundFrame&       f = n->sound.frames[static_cast<size_t>(v)];
+        const SoundFrame& g = measured.frames[static_cast<size_t>(v)];
+        if (f.start != g.start || f.length != g.length || f.syncs == g.syncs) continue;
+        f.syncs = g.syncs;
+        changed = true;
+    }
+    return changed;
+}
+
 double SyncFor(const SoundData& data, int variation, const std::string& part_value)
 {
     if (!ValidIndex(data, variation)) return -1.0;

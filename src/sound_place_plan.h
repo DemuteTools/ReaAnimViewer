@@ -8,6 +8,7 @@
 
 #include <functional>
 #include <string>
+#include <vector>
 
 #include "sound_model.h"
 
@@ -113,6 +114,29 @@ struct FileItemFields {
 };
 FileItemFields FileItemFieldsFor(double file_len, const SliceApply& slice, const FadeApply& fades, double gain_db,
                                  double project_t, double blend_ms, double offset_s);
+// ---- 13-20 / 13-23 / 13-25: pieces (spec 13-20-23-25 D7) -----------------------------------------
+// One placed item of a variation's part: a span of PlacedSpans (a part cut by an excluded zone gives 2
+// pieces, placed together with the gap left empty). Every piece of one placement is positioned from
+// the same anchor: the piece holding the sync point, whose snap offset puts the sync on the event.
+struct PieceApply {
+    SliceApply slice;          // D_STARTOFFS = the span's start, length (source s); snap_offset (source s)
+                               // = sync - span start on the anchor piece, 0 on the others
+    FadeApply  fades;          // the frame's fades on a frame-edge side, the Sound's cut_fade on a side at
+                               // a cut or a zone edge
+    bool       anchor = false; // holds the sync point
+    double     from_anchor = 0.0;  // its span start minus the anchor piece's (source s)
+};
+// The pieces of variation `variation` playing part `part_value` ("" = the whole variation minus its
+// exclusions), in time order. Fades at a frame edge: FadeApplyFor (`file` false) or FileFadeApplyFor
+// (`file` true). The sync is the stored one (SyncFor) when it lies in the spans, else AutoSync without
+// peaks (the first span's start + the offset, clamped into the spans). {} for Takes mode (A8: the
+// take keeps its item's snap), a bad index, or nothing left to play (an empty or excluded part).
+std::vector<PieceApply> PieceApplyFor(const SoundData& data, int variation, const std::string& part_value,
+                                      bool file = false);
+// Where a piece lands: the anchor piece's position plus its offset from it in item seconds
+// (from_anchor / playrate; a bad rate reads as 1), clamped at 0.
+double PiecePosition(double anchor_pos, double from_anchor, double playrate);
+
 // The name of a copy of `file_name` in the project media folder: n = 0 the name itself, n >= 1
 // "stem-001.ext" (REAPER's own numbering), the next free one when a different file has the name.
 std::string MediaCopyName(const std::string& file_name, int n);

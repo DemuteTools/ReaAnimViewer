@@ -305,10 +305,20 @@ void DrawEventSoundSection(const TaggingSoundContext& ctx, const ShownEvent& e)
         ed.prev = ev ? &ev->draws : nullptr;
         std::string part, type;
         PartOfBlock(blk, &part, &type);
-        const Resolution res = ResolveEvent(store, *lib, ResolveAssignFor(store, rec, ch, rid, part, type, t).layers,
-                                            MakeDrawHooks(st, ed, nullptr));
+        ValueLayers layers = ResolveAssignFor(store, rec, ch, rid, part, type, t).layers;
+        layers.role = EventRoleKey(blk);  // 13-23 (D1): the part a divided Sound plays, as Populate
+        const Resolution res = ResolveEvent(store, *lib, layers, MakeDrawHooks(st, ed, nullptr));
         ui::SubText(res.blocked ? ("Blocked: " + res.reason).c_str() : res.path_text.c_str());
         if (!res.blocked && !res.gap.empty()) ui::ToneText("Nothing placed: " + res.gap, ui::kWarn, true);
+        for (const auto& np : ed.no_part) {  // 13-23 (A5): a divided Sound with nothing of that part left
+            const SoundNode* sn = FindNode(*lib, np.first);
+            if (!sn || res.blocked) continue;
+            std::string value = np.second.empty() ? std::string() : "(deleted value)";
+            if (const SwitchGroup* g = np.second.empty() ? nullptr : FindGroup(store, sn->sound.divide_group))
+                for (const SwitchValue& v : g->values)
+                    if (v.uid == np.second) value = v.name.empty() ? std::string("(unnamed value)") : v.name;
+            ui::ToneText(NoPartText(sn->name, value), ui::kWarn, true);
+        }
         bool undrawn = false;  // a pick not stored yet: Populate draws it (with the item's history)
         for (const SoundDraw& d : ed.out) {
             bool stored = false;

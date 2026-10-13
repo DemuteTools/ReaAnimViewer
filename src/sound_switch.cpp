@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <set>
 
+#include "sound_entries.h"  // 13-23: PartIndex, PartOfRole
 #include "sound_record.h"
 
 namespace rav {
@@ -94,6 +95,17 @@ struct Walker {
         res.path_text += s;
     }
 
+    // 13-23 (D3): the part a Sound plays for this event: a Blend layer's own part wins ("*" = the whole
+    // variation), else the part its role map gives the event's role; "" (the whole variation) when
+    // combined, in Takes mode (A8), or for a value that is not one of its divide values.
+    std::string PartFor(const SoundNode& n) const
+    {
+        if (n.sound.mode == DetectMode::Takes || !IsDivided(n.sound)) return std::string();
+        std::string part;
+        if (LayerPartOverride(lib, n, &part)) return part;
+        return PartOfRole(store, n.sound, layers.role);
+    }
+
     void Walk(const SoundNode& n, double gain, double offset)
     {
         if (stack.count(n.uid)) return;
@@ -110,11 +122,13 @@ struct Walker {
             rs.node = n.uid;
             rs.offset_ms = offset;
             rs.gain_db = gain;
+            rs.part_value = PartFor(n);
             if (hooks.is_missing && hooks.is_missing(n)) {
                 rs.missing = true;
                 rs.variation = -1;
             } else {
-                rs.variation = hooks.variation ? hooks.variation(n) : -1;
+                if (hooks.part_variation) rs.variation = hooks.part_variation(n, rs.part_value);
+                else rs.variation = hooks.variation ? hooks.variation(n) : -1;
                 if (rs.variation >= 0 && rs.variation < (int)n.sound.frames.size())
                     rs.gain_db += n.sound.frames[(size_t)rs.variation].db;
             }
@@ -455,6 +469,18 @@ bool ConvertNodeType(SoundLibrary& lib, const std::string& uid, SoundNodeType ty
     n->cases = cases;
     n->unassigned = unassigned;
     n->group_uid = group_uid;
+    return true;
+}
+
+bool LayerPartOverride(const SoundLibrary& lib, const SoundNode& n, std::string* part)
+{
+    if (part) part->clear();
+    if (n.type != SoundNodeType::Sound || n.layer_part.empty() || n.parent.empty()) return false;
+    const SoundNode* p = FindNode(lib, n.parent);
+    if (!p || p->type != SoundNodeType::Blend) return false;
+    if (part && n.layer_part != kLayerPartWhole && n.sound.mode != DetectMode::Takes &&
+        PartIndex(n.sound, n.layer_part) >= 0)
+        *part = n.layer_part;
     return true;
 }
 

@@ -436,6 +436,68 @@ static void TestWholeFileStretches()
     CHECK(is(WholeFileStretches({a}, 0.0).back(), 2.0, 0.0, 0.0));
 }
 
+// 13-20 / 13-23: a part played alone, its pieces (the gap of an excluded zone kept), cut_fade at a cut
+// or zone edge; a zone played alone; a Blend layer's own part in a Blend audition.
+static void TestPartsAudition()
+{
+    SoundNode n = Snd("s", "", "Steps", {0.4, 0.4}, -2.0);  // frames [0, 0.4), [0.9, 1.3)
+    n.sound.mode = DetectMode::Silence;
+    n.sound.divide_group = "gc";
+    n.sound.divide_values = {"vb", "vf"};
+    n.sound.frames[0].cuts = {0.2};
+    n.sound.frames[1].cuts = {1.1};
+    AddZone(n.sound, 0.08, 0.04, "");  // inside Back of variation 0
+    SoundLibrary lib;
+    lib.uid = "L";
+    lib.root = "s";
+    lib.nodes.push_back(n);
+
+    std::vector<AuditionVoice> v = PartAuditionVoices(lib, n, 0, "vb", 10.0);
+    CHECK(v.size() == 2);
+    CHECK(Near(v[0].start_s, 0.0) && Near(v[0].length_s, 0.08) && Near(v[0].delay_ms, 10.0) && v[0].piece == 0);
+    CHECK(Near(v[1].start_s, 0.12) && Near(v[1].length_s, 0.08) && Near(v[1].delay_ms, 130.0) && v[1].piece == 1);
+    CHECK(Near(v[0].fade_out_s, kDefaultCutFade) && Near(v[1].fade_in_s, kDefaultCutFade) &&
+          Near(v[1].fade_out_s, kDefaultCutFade) && Near(v[0].fade_in_s, kDefaultFadeIn));
+    CHECK(Near(v[0].gain_db, -2.0));
+    CHECK(PlayedText(lib, v) == "Steps");  // the later piece is not named again
+    v = PartAuditionVoices(lib, n, 1, "vf");
+    CHECK(v.size() == 1 && Near(v[0].start_s, 1.1) && Near(v[0].length_s, 0.2) && Near(v[0].fade_in_s, kDefaultCutFade));
+    CHECK(PartAuditionVoices(lib, n, 1, "").size() == 1);        // the whole variation
+    CHECK(PartAuditionVoices(lib, n, 2, "vb").empty());          // a bad index
+    // A zone played alone: its stretch, cut_fade at both ends, the level of its frame.
+    AuditionVoice z = ZoneAuditionVoice(lib, n, 0.95, 0.1);
+    CHECK(Near(z.start_s, 0.95) && Near(z.length_s, 0.1) && z.variation == 1 && Near(z.gain_db, -2.0) &&
+          Near(z.fade_in_s, kDefaultCutFade) && Near(z.fade_out_s, kDefaultCutFade));
+    CHECK(Near(ZoneAuditionVoice(lib, n, 0.5, 0.2).gain_db, 0.0));   // between the variations
+    CHECK(Near(ZoneAuditionVoice(lib, n, 0.5, 0.0).length_s, 0.0));  // nothing
+    // Takes mode: the take whole.
+    SoundNode t = n;
+    t.sound.mode = DetectMode::Takes;
+    v = PartAuditionVoices(lib, t, 0, "vb");
+    CHECK(v.size() == 1 && Near(v[0].length_s, 0.4));
+
+    // A Blend layer taking only its Front part (A9): the audition plays that part.
+    SoundLibrary bl;
+    bl.uid = "B";
+    bl.root = "b";
+    bl.nodes.push_back(Node("b", "", SoundNodeType::Blend, "Blend"));
+    SoundNode layer = n;
+    layer.parent = "b";
+    layer.layer_part = "vf";
+    bl.nodes.push_back(layer);
+    SoundStore   store;
+    AuditionPlan plan = PlanAudition(store, bl, "b", First());
+    CHECK(plan.voices.size() == 1 && Near(plan.voices[0].start_s, 0.2) && Near(plan.voices[0].length_s, 0.2));
+    // The history picker never draws a variation with nothing of that part.
+    bl.nodes[1].sound.zones.clear();
+    AddZone(bl.nodes[1].sound, 0.2, 0.2, "");  // variation 0's Front excluded
+    AuditionHistory h(3);
+    for (int k = 0; k < 5; ++k) {
+        AuditionPlan p = PlanAudition(store, bl, "b", h.Picker());
+        CHECK(p.voices.size() == 1 && p.voices[0].variation == 1);
+    }
+}
+
 int main()
 {
     TestWholeFileStretches();
@@ -451,6 +513,7 @@ int main()
     TestNormalizeTakes();
     TestAuditionEnded();
     TestFades();
+    TestPartsAudition();
     if (g_fail) {
         std::printf("%d failure(s)\n", g_fail);
         return 1;

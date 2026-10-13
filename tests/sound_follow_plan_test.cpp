@@ -148,6 +148,41 @@ int main()
         CHECK(!p.record_changed);
         CheckIdempotent(in, p);
     }
+    // 13-20 / 13-23 (D7): a part cut by an excluded zone is placed as two items of one placement, tagged
+    // ao / sy from the anchor piece: an event move moves both by the same amount, the gap kept, both on
+    // the same pass at first sight.
+    {
+        FollowInput in = OneSound(Ownership::Populated);
+        SoundPlacement second = in.rec.events[0].placed[0];
+        second.item_guid = "{B}";
+        in.rec.events[0].placed.push_back(second);
+        in.events = {Ev("r1", 1.0, 11.0)};
+        in.items = {Fact("{A}", 9.982, true, 9.982, 10.0), Fact("{B}", 10.102, true, 10.102, 10.0)};
+        in.items[0].tag_has_anchor = in.items[1].tag_has_anchor = true;
+        in.items[0].tag_sy = in.items[1].tag_sy = 0.018;
+        in.items[1].tag_ao = 0.12;
+        const FollowPlan p = PlanItemFollow(in);
+        CHECK(Count(p, FollowKind::Move) == 2);
+        for (const FollowAction& a : p.actions)
+            if (a.kind == FollowKind::Move)
+                CHECK(Near(a.project_t, SameFollowGuid(a.item_guid, "{A}") ? 10.982 : 11.102, 1e-9));
+        CheckIdempotent(in, p);
+        // First sight (no store), two passes 0.2 s apart: both pieces find the pass of their anchor.
+        FollowInput first = in;
+        FollowEvent e = Ev("r1", 1.0, 10.0);
+        e.passes = {FollowPass{0, 10.0}, FollowPass{1, 10.2}};
+        first.events = {e};
+        first.items[0] = Fact("{A}", 9.982, false, 0, 0);
+        first.items[1] = Fact("{B}", 10.102, false, 0, 0);
+        first.items[0].tag_has_anchor = first.items[1].tag_has_anchor = true;
+        first.items[0].tag_sy = first.items[1].tag_sy = 0.018;
+        first.items[1].tag_ao = 0.12;  // by its own position + sync (10.12) it would be nearer pass 1
+        const FollowPlan q = PlanItemFollow(first);
+        int on0 = 0;
+        for (const FollowAction& a : q.actions)
+            if (a.kind == FollowKind::Store && a.store.has_pass && a.store.pass == 0) ++on0;
+        CHECK(on0 == 2 && Count(q, FollowKind::Move) == 0);
+    }
     // Nudge: store (9.9, 10); pos 10.0, event 10 -> no move, offset +0.1.
     {
         FollowInput in = OneSound(Ownership::Populated);

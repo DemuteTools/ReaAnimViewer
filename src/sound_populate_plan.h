@@ -66,9 +66,14 @@ struct EventDraw {
     const std::vector<SoundDraw>* prev = nullptr;
     std::vector<SoundDraw>       out;
     std::set<std::string>        no_active;
+    // 13-23 (A5): Sound uid -> the part (value uid; "" = the whole variation) none of its on variations
+    // has anything of (empty or excluded everywhere): nothing placed, a NoSound line (NoPartText).
+    std::map<std::string, std::string> no_part;
 };
 // The hooks for ResolveEvent: Random -> a child index, Sound -> a variation index (-1 = as copied:
-// no frames, or none on), through KeepOrDraw. `is_missing` is passed through.
+// no frames, or none on), through KeepOrDraw. `is_missing` is passed through. 13-23: a Sound draws
+// among the variations that can play its part (ActiveVariationsFor), its history kept per node and
+// part ("node|part"), and its draw records the part (SoundDraw::part).
 ResolveHooks MakeDrawHooks(PopulateDrawState& state, EventDraw& ev, std::function<bool(const SoundNode&)> is_missing);
 
 // ---- P9: event slots -------------------------------------------------------------------------
@@ -77,12 +82,17 @@ struct DesiredSlot {
     int         pass = 0;
     std::string node;
     int         variation = -1;
+    std::string part;    // 13-23: the part it plays (value uid, "" = the whole variation)
+    int         pieces = 0;  // 13-20: the items it is placed as (one per span); 0 = not compared (a pile)
+    double      sync = -1.0;  // 13-25: its anchor piece's snap (item s); < 0 = not compared (a pile, Takes)
 };
 struct ExistingSlot {
     int         pass = -1;  // the pass nearest the placed item
     std::string node;
     int         variation = -1;
     Ownership   own = Ownership::Populated;
+    std::string part;  // 13-23: its tag's part (PlacedTag::pt)
+    double      sync = -1.0;  // 13-25: its tag's sy (the snap it was placed by); < 0 = unknown
 };
 enum class SlotAction { Keep, SetVariation, ReplaceNode, Remove, Place };
 struct SlotStep {
@@ -92,7 +102,9 @@ struct SlotStep {
                                       // slot's items, the first one is replaced; Remove: removed)
 };
 // Per pass: an existing Populated slot (its items grouped by node) with the same node keeps it
-// (same variation) or changes the variation; the remaining desired slots take the remaining
+// (same variation, same part, as many items as the desired pieces when counted, the same anchor snap
+// within 1 us when compared: a placement made before sync points, or under another one) or is placed
+// again (SetVariation: its first item replaced, the others removed, the missing pieces added); the remaining desired slots take the remaining
 // existing slots in order (other node); the rest of the existing are removed, the rest of the
 // desired placed. A desired node that has a Deleted placement in the event is never placed again
 // (no Place, no ReplaceNode into another slot), but its live copies are kept. Attached / Spread
@@ -123,6 +135,10 @@ bool EventIsPopulated(const EventSounds& ev);
 // The events Populate places: one per event whose rule has a library that is not blocked.
 // `rule_ok` per block (index = ShownEvent::block); `event_blocks` = the blocks of the events.
 int CountEvents(const std::vector<int>& event_blocks, const std::vector<char>& rule_ok);
+// 13-23 (A5): the NoSound line of a Sound with nothing left for a part: "Nothing placed: <Sound> has
+// no <Value> part left" ("has nothing left to place" for the whole variation).
+std::string NoPartText(const std::string& sound_name, const std::string& value_name);
+
 // "Last populate: 24 events · 2 missing · 1 replaced · 1 rule gone" (events < 0: "Last change: ...").
 std::string ReportSummary(const SoundReport& report, int events);
 

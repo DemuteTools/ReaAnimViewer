@@ -9,6 +9,7 @@
 
 #include "sound_draw.h"
 #include "sound_entries.h"
+#include "sound_place_plan.h"  // 13-20 / 13-23: PieceApplyFor
 #include "sound_record.h"
 #include "sound_switch.h"
 
@@ -48,20 +49,17 @@ struct Walker {
         if (depth > kMaxDepth) return;
         switch (n.type) {
         case SoundNodeType::Sound: {
-            const int v = picker.pick_variation ? picker.pick_variation(n) : -1;
+            // 13-23 (A9): a Blend layer may play one part of its variations (no event here: no role).
+            std::string part;
+            LayerPartOverride(lib, n, &part);
+            const int v = picker.pick_part_variation ? picker.pick_part_variation(n, part)
+                          : picker.pick_variation     ? picker.pick_variation(n)
+                                                      : -1;
             if (v < 0 || static_cast<size_t>(v) >= n.sound.frames.size()) return;
-            const SoundFrame& f = n.sound.frames[static_cast<size_t>(v)];
-            AuditionVoice voice;
-            voice.node = n.uid;
-            voice.variation = v;
-            voice.start_s = f.start;
-            voice.length_s = f.length;
-            voice.delay_ms = delay_ms;
-            voice.gain_db = GainFromRoot(lib, n) + f.db;
-            AuditionFades(n.sound, v, &voice.fade_in_s, &voice.fade_out_s, &voice.fade_in_shape,
-                          &voice.fade_out_shape);
-            voice.path = std::move(path);
-            plan.voices.push_back(std::move(voice));
+            for (AuditionVoice& voice : PartAuditionVoices(lib, n, v, part, delay_ms)) {
+                voice.path = path;
+                plan.voices.push_back(std::move(voice));
+            }
             return;
         }
         case SoundNodeType::Random: {
@@ -162,6 +160,14 @@ AuditionPicker AuditionHistory::Picker()
         Remember(h, pick);
         return pick;
     };
+    p.pick_part_variation = [this](const SoundNode& n, const std::string& part) {
+        std::vector<int>& h = hist_[part.empty() ? n.uid : n.uid + "|" + part];
+        const std::vector<int> active =
+            n.sound.mode == DetectMode::Takes ? ActiveVariations(n.sound) : ActiveVariationsFor(n.sound, part);
+        const int pick = DrawPick(active, n.avoid_repeat, h, seed_, ++press_);
+        Remember(h, pick);
+        return pick;
+    };
     return p;
 }
 
@@ -197,6 +203,7 @@ std::string PlayedText(const SoundLibrary& lib, const std::vector<AuditionVoice>
 {
     std::string text;
     for (const AuditionVoice& v : voices) {
+        if (v.piece > 0) continue;  // 13-20: the same variation's later piece
         std::string one;
         const std::vector<std::string> names = v.path.empty() ? std::vector<std::string>{v.node} : v.path;
         for (const std::string& uid : names) {
@@ -209,6 +216,72 @@ std::string PlayedText(const SoundLibrary& lib, const std::vector<AuditionVoice>
         text += one;
     }
     return text.empty() ? std::string("nothing") : text;
+}
+
+std::vector<AuditionVoice> PartAuditionVoices(const SoundLibrary& lib, const SoundNode& n, int variation,
+                                              const std::string& part_value, double delay_ms)
+{
+    std::vector<AuditionVoice> out;
+    if (variation < 0 || static_cast<size_t>(variation) >= n.sound.frames.size()) return out;
+    const SoundFrame& f = n.sound.frames[static_cast<size_t>(variation)];
+    const double      gain = GainFromRoot(lib, n) + f.db;
+    if (n.sound.mode == DetectMode::Takes) {  // A8: the take whole
+        AuditionVoice voice;
+        voice.node = n.uid;
+        voice.variation = variation;
+        voice.start_s = f.start;
+        voice.length_s = f.length;
+        voice.delay_ms = delay_ms;
+        voice.gain_db = gain;
+        AuditionFades(n.sound, variation, &voice.fade_in_s, &voice.fade_out_s, &voice.fade_in_shape,
+                      &voice.fade_out_shape);
+        out.push_back(voice);
+        return out;
+    }
+    const std::vector<PieceApply> pieces = PieceApplyFor(n.sound, variation, part_value, false);
+    for (size_t k = 0; k < pieces.size(); ++k) {
+        const PieceApply& pa = pieces[k];
+        AuditionVoice     voice;
+        voice.node = n.uid;
+        voice.variation = variation;
+        voice.start_s = pa.slice.start_offs;
+        voice.length_s = pa.slice.length;
+        voice.delay_ms = delay_ms + (pa.slice.start_offs - pieces.front().slice.start_offs) * 1000.0;
+        voice.gain_db = gain;
+        voice.fade_in_s = pa.fades.set_in ? pa.fades.in : 0.0;
+        voice.fade_out_s = pa.fades.set_out ? pa.fades.out : 0.0;
+        voice.fade_in_shape = pa.fades.set_in ? pa.fades.in_shape : 0;
+        voice.fade_out_shape = pa.fades.set_out ? pa.fades.out_shape : 0;
+        voice.piece = static_cast<int>(k);
+        out.push_back(voice);
+    }
+    return out;
+}
+
+AuditionVoice ZoneAuditionVoice(const SoundLibrary& lib, const SoundNode& n, double start, double length)
+{
+    AuditionVoice voice;
+    voice.node = n.uid;
+    if (!std::isfinite(start) || !std::isfinite(length) || !(length > 0.0)) return voice;
+    voice.start_s = std::max(0.0, start);
+    voice.length_s = start + length - voice.start_s;
+    if (!(voice.length_s > 0.0)) {
+        voice.length_s = 0.0;
+        return voice;
+    }
+    double db = 0.0;
+    for (size_t i = 0; i < n.sound.frames.size(); ++i) {
+        const SoundFrame& f = n.sound.frames[i];
+        if (voice.start_s >= f.start && voice.start_s < f.start + f.length) {
+            db = f.db;
+            voice.variation = static_cast<int>(i);
+            break;
+        }
+    }
+    voice.gain_db = GainFromRoot(lib, n) + db;
+    const double cut = std::isfinite(n.sound.cut_fade) && n.sound.cut_fade > 0.0 ? n.sound.cut_fade : 0.0;
+    voice.fade_in_s = voice.fade_out_s = std::min(cut, voice.length_s / 2.0);
+    return voice;
 }
 
 double GainFromRoot(const SoundLibrary& lib, const SoundNode& n)

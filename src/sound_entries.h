@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <set>
 #include <string>
 #include <vector>
 
@@ -156,6 +157,15 @@ void RefreshParts(SoundData& data, const PeakData* peaks);
 // True when the variation's syncs must be measured again: not one per part, or a part with spans whose
 // sync is not inside them, or one without spans whose sync is set.
 bool SyncsStale(const SoundData& data, int variation);
+// 13-25 (D6): a variation's sync points measured at placement (Populate found them stale): per part, a
+// hand sync inside its spans, else AutoSync; its cuts are kept (Populate never re-detects). False (the
+// syncs left as they were) for Takes mode, a bad index, or Attack / Peak without peaks.
+bool MeasureSyncs(SoundData& data, int variation, const PeakData* peaks);
+// 13-25 (D6): writes the syncs Populate measured (`measured`, a copy of the Sound's data) back into the
+// store: Sound `node_uid` of library `lib_uid`, the given variations, each only while its frame still
+// has the same start and length. True when a sync changed (false for an unknown library or node).
+bool ApplyMeasuredSyncs(SoundStore& store, const std::string& lib_uid, const std::string& node_uid,
+                        const SoundData& measured, const std::set<int>& variations);
 // The sync point a placement of `part_value` uses: that part's; for "" the first part's that has one.
 // -1 when none (empty part, or not measured).
 double SyncFor(const SoundData& data, int variation, const std::string& part_value);

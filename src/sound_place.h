@@ -52,6 +52,11 @@ struct PlaceRequest {
     SoundSource source;  // Item: the entry's top item; File: the file (`file_path`, `track` required)
     std::string file_path;  // File: the file to place, as FileForProject gave it
     int         variation = -1;
+    // 13-20 / 13-23 / 13-25 (D7): the pieces of the variation's part (PieceApplyFor), one item each,
+    // all positioned from the anchor piece and tagged with ao / sy like a pile's members; empty = one
+    // item from `slice` (Takes, a folder pile ignores them). `part` = the part played (the tags' pt).
+    std::vector<PieceApply> pieces;
+    std::string part;
     SliceApply  slice;
     FadeApply   fades;  // the variation's fades (FadeApplyFor); nothing set = the copy's own
     double      gain_db = 0.0;

@@ -35,7 +35,7 @@ target_include_directories(picked_gestures_test PRIVATE ${CMAKE_CURRENT_SOURCE_D
 add_test(NAME picked_gestures COMMAND picked_gestures_test)
 # The same rule in the Library view: its lists, menus, rename fields and drops pick their
 # gestures over a real sound store (src/library_tree_edit.h), run after the loop.
-add_executable(library_picked_gestures_test library_picked_gestures_test.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+add_executable(library_picked_gestures_test library_picked_gestures_test.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
 target_include_directories(library_picked_gestures_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME library_picked_gestures COMMAND library_picked_gestures_test)
 
@@ -165,15 +165,15 @@ add_executable(sound_draw_test sound_draw_test.cpp ../src/sound_draw.cpp ../src/
 target_include_directories(sound_draw_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_draw COMMAND sound_draw_test)
 # Story 13-4 -- src/sound_switch.h
-add_executable(sound_switch_test sound_switch_test.cpp ../src/sound_switch.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+add_executable(sound_switch_test sound_switch_test.cpp ../src/sound_switch.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
 target_include_directories(sound_switch_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_switch COMMAND sound_switch_test)
 # Story 13-7a -- src/library_tree_edit.h
-add_executable(library_tree_edit_test library_tree_edit_test.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+add_executable(library_tree_edit_test library_tree_edit_test.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
 target_include_directories(library_tree_edit_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME library_tree_edit COMMAND library_tree_edit_test)
 # Story 13-7c -- src/library_media_plan.h
-add_executable(library_media_plan_test library_media_plan_test.cpp ../src/library_media_plan.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+add_executable(library_media_plan_test library_media_plan_test.cpp ../src/library_media_plan.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
 target_include_directories(library_media_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME library_media_plan COMMAND library_media_plan_test)
 # Story 13-5 -- src/media_db.h
@@ -192,7 +192,9 @@ target_include_directories(sound_attach_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE
 add_test(NAME sound_attach_plan COMMAND sound_attach_plan_test)
 # Story 13-8 -- src/sound_populate_plan.h
 add_executable(sound_populate_plan_test sound_populate_plan_test.cpp ../src/sound_populate_plan.cpp ../src/sound_switch.cpp
-               ../src/sound_draw.cpp ../src/sound_place_plan.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+               ../src/sound_draw.cpp ../src/sound_place_plan.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp
+               ../src/sound_assign.cpp ../src/sound_auto_assign.cpp ../src/auto_detect.cpp ../src/motion_physics.cpp
+               ../src/bone_events.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
 target_include_directories(sound_populate_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_populate_plan COMMAND sound_populate_plan_test)
 # Story 13-8, Antho 2026-10-12 -- src/sound_auto_assign.h (each auto marker type's sound)
@@ -224,7 +226,7 @@ target_link_libraries(sound_tracks_plan_test PRIVATE Threads::Threads)
 target_include_directories(sound_tracks_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_tracks_plan COMMAND sound_tracks_plan_test)
 # Story 13-7b -- src/sound_audition_plan.h
-add_executable(sound_audition_plan_test sound_audition_plan_test.cpp ../src/sound_audition_plan.cpp ../src/sound_draw.cpp ../src/sound_switch.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+add_executable(sound_audition_plan_test sound_audition_plan_test.cpp ../src/sound_audition_plan.cpp ../src/sound_place_plan.cpp ../src/sound_draw.cpp ../src/sound_switch.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
 target_include_directories(sound_audition_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_audition_plan COMMAND sound_audition_plan_test)
 # Story 13-7b -- src/reaper_view_keys.h (the Edit overlay zoom / scroll from reaper-kb.ini)

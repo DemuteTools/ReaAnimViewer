@@ -261,6 +261,57 @@ FileItemFields FileItemFieldsFor(double file_len, const SliceApply& slice, const
     return o;
 }
 
+std::vector<PieceApply> PieceApplyFor(const SoundData& data, int variation, const std::string& part_value, bool file)
+{
+    std::vector<PieceApply> out;
+    if (data.mode == DetectMode::Takes || variation < 0 || variation >= static_cast<int>(data.frames.size())) return out;
+    const std::vector<PartSpan> spans = PlacedSpans(data, variation, part_value);
+    if (spans.empty()) return out;
+    const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    constexpr double  kEps = 1e-6;
+    const FadeApply   base = file ? FileFadeApplyFor(data, variation) : FadeApplyFor(data, variation);
+    const double      cut = std::isfinite(data.cut_fade) && data.cut_fade > 0.0 ? data.cut_fade : 0.0;
+    double            sync = SyncFor(data, variation, part_value);
+    if (sync >= 0.0 && ClampIntoSpans(spans, sync) != sync) sync = -1.0;  // stale: not inside what is placed
+    if (sync < 0.0) sync = AutoSync(data, nullptr, spans);
+    size_t anchor = 0;
+    for (size_t k = 0; k < spans.size(); ++k)
+        if (sync >= spans[k].start - kEps && sync <= spans[k].start + spans[k].length + kEps) {
+            anchor = k;
+            break;
+        }
+    for (size_t k = 0; k < spans.size(); ++k) {
+        const PartSpan& sp = spans[k];
+        PieceApply      pa;
+        pa.slice.set = true;
+        pa.slice.start_offs = sp.start;
+        pa.slice.length = sp.length;
+        pa.fades = base;
+        if (sp.start > f.start + kEps) {  // at a cut or a zone edge
+            pa.fades.set_in = pa.fades.shape_in = true;
+            pa.fades.in = cut;
+            pa.fades.in_shape = 0;
+        }
+        if (sp.start + sp.length < f.start + f.length - kEps) {
+            pa.fades.set_out = pa.fades.shape_out = true;
+            pa.fades.out = cut;
+            pa.fades.out_shape = 0;
+        }
+        pa.anchor = k == anchor;
+        if (pa.anchor) pa.slice.snap_offset = std::min(std::max(sync - sp.start, 0.0), sp.length);
+        pa.from_anchor = sp.start - spans[anchor].start;
+        out.push_back(pa);
+    }
+    return out;
+}
+
+double PiecePosition(double anchor_pos, double from_anchor, double playrate)
+{
+    const double rate = (std::isfinite(playrate) && playrate > 0.0) ? playrate : 1.0;
+    const double p = anchor_pos + from_anchor / rate;
+    return (std::isfinite(p) && p > 0.0) ? p : 0.0;
+}
+
 std::string MediaCopyName(const std::string& file_name, int n)
 {
     if (n <= 0) return file_name;

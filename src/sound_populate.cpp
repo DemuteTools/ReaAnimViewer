@@ -8,10 +8,12 @@
 #ifdef _WIN32
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <functional>
 #include <map>
+#include <memory>
 #include <random>
 #include <set>
 
@@ -25,7 +27,9 @@
 #include "sound_assign.h"
 #include "sound_auto_assign.h"
 #include "sound_draw.h"
+#include "sound_entries.h"
 #include "sound_follow_plan.h"
+#include "sound_peaks.h"  // 13-25: sync points measured at placement
 #include "sound_place.h"
 #include "sound_place_plan.h"
 #include "sound_populate_plan.h"
@@ -79,6 +83,25 @@ std::string GuidKey(const std::string& g)
 }
 
 std::map<std::string, MediaItem*>* g_items = nullptr;
+// 13-25 (D6): a Sound whose stored sync points are stale (never measured, or measured under other
+// settings) is measured at placement, once a gesture: library uid + "/" + Sound uid -> its data with
+// those syncs, and the variations measured from real peaks (written back to the store when the
+// gesture ends, in its undo point: WriteMeasuredSyncs).
+struct MeasuredSound {
+    SoundData                               data;
+    std::set<int>                           measured;
+    std::set<std::pair<int, std::string>>   tried;  // (variation, file) measured in vain: not again
+};
+// The gesture's measures: the Sounds, each file's peaks read once (null = none), and the time the
+// gesture may still wait for peaks (RequestPeaks reads in slices: a cold file takes a while).
+struct MeasureCache {
+    std::map<std::string, MeasuredSound>             sounds;
+    std::map<std::string, std::unique_ptr<PeakData>> peaks;
+    bool                                             started = false;
+    std::chrono::steady_clock::time_point            deadline;
+};
+MeasureCache* g_measured = nullptr;
+void WriteMeasuredSyncs(const std::map<std::string, MeasuredSound>& measured);
 // 13-13: the gesture's Switch-named tracks, track path -> track (null = could not be made: said
 // once, the sounds on their usual tracks). Found or made once per gesture (SwitchTrackFor).
 std::map<std::string, MediaTrack*>* g_tracks = nullptr;
@@ -104,6 +127,7 @@ public:
             }
         g_items = &map_;
         g_tracks = &tracks_;
+        g_measured = &measured_;
         owner_ = true;
         SetPlaceItemFinder(&IndexedItem);
         PlaceBatch(true);  // Antho 2026-10-12: one redraw for the whole gesture, each source chunk read once
@@ -111,6 +135,11 @@ public:
     ~ItemIndexScope()
     {
         if (!owner_) return;
+        try {
+            WriteMeasuredSyncs(measured_.sounds);  // 13-25: in the gesture's undo point
+        } catch (...) {
+        }
+        g_measured = nullptr;
         PlaceBatch(false);
         SetPlaceItemFinder(nullptr);
         g_items = nullptr;
@@ -122,6 +151,7 @@ public:
 private:
     std::map<std::string, MediaItem*>  map_;
     std::map<std::string, MediaTrack*> tracks_;
+    MeasureCache                       measured_;
     bool                               owner_ = false;
 };
 
@@ -213,10 +243,91 @@ void CheckOwners(const std::vector<std::string>& guids, const std::string& owner
     }
 }
 
-// The request for one resolved sound (P11). `file` = a File Sound's target (PrepareFileSound).
-PlaceRequest RequestFor(MediaItem* owner, const std::string& rid, double event_t, double project_t,
-                        const SoundNode& n, const ResolvedSound& rs, const FileSoundTarget* file = nullptr)
+// 13-25: a whole file's peaks for measuring sync points at placement, read once a gesture. RequestPeaks
+// reads a file in bounded slices: it is called until the peaks are ready, at most ~3 s a file and ~10 s a
+// gesture (else none: the sync falls back to the first span's start + the offset, PieceApplyFor, and is
+// measured by a later gesture). Null when there are none.
+const PeakData* WholeFilePeaks(MeasureCache& cache, const std::string& path)
 {
+    if (path.empty()) return nullptr;
+    auto hit = cache.peaks.find(path);
+    if (hit != cache.peaks.end()) return hit->second.get();
+    const auto now = std::chrono::steady_clock::now();
+    if (!cache.started) {
+        cache.started = true;
+        cache.deadline = now + std::chrono::seconds(10);
+    }
+    const auto until = std::min(now + std::chrono::seconds(3), cache.deadline);
+    auto       pk = std::make_unique<PeakData>();
+    for (;;) {
+        const PeakState st = RequestPeaks(path, pk.get());
+        if (st == PeakState::Ready) break;
+        if (st == PeakState::Failed || std::chrono::steady_clock::now() > until) {
+            pk.reset();
+            break;
+        }
+    }
+    return cache.peaks.emplace(path, std::move(pk)).first->second.get();
+}
+
+// 13-25 (D6): the Sound's data a placement of variation `v` reads: its stored data, or, when the
+// variation's sync points are stale, a copy with them measured over the file's peaks (once a gesture,
+// g_measured; `local` outside a gesture). `path_of` gives the file it plays (asked only to measure).
+// A variation measured in vain from a file is not measured again from it in the gesture.
+const SoundData& PlacedDataFor(const std::string& lib_uid, const SoundNode& n, int v,
+                               const std::function<std::string()>& path_of, MeasureCache& local)
+{
+    if (v < 0 || v >= static_cast<int>(n.sound.frames.size()) || n.sound.mode == DetectMode::Takes ||
+        !SyncsStale(n.sound, v))
+        return n.sound;
+    MeasureCache&     cache = g_measured ? *g_measured : local;
+    const std::string key = lib_uid + "/" + n.uid;
+    auto              hit = cache.sounds.find(key);
+    if (hit == cache.sounds.end()) hit = cache.sounds.emplace(key, MeasuredSound{n.sound, {}, {}}).first;
+    MeasuredSound& m = hit->second;
+    if (!SyncsStale(m.data, v)) return m.data;
+    const std::string path = n.sound.sync_mode == SyncMode::SliceStart ? std::string() : path_of();
+    if (!m.tried.insert({v, path}).second) return m.data;
+    const PeakData* peaks = path.empty() ? nullptr : WholeFilePeaks(cache, path);
+    if (MeasureSyncs(m.data, v, peaks)) m.measured.insert(v);
+    return m.data;
+}
+
+void WriteMeasuredSyncs(const std::map<std::string, MeasuredSound>& measured)
+{
+    bool any = false;
+    for (const auto& kv : measured) any = any || !kv.second.measured.empty();
+    if (!any) return;
+    ModifySoundStore(nullptr, nullptr, [&](SoundStore& st) {
+        bool changed = false;
+        for (const auto& kv : measured) {
+            const size_t slash = kv.first.find('/');
+            if (slash == std::string::npos || kv.second.measured.empty()) continue;
+            changed = ApplyMeasuredSyncs(st, kv.first.substr(0, slash), kv.first.substr(slash + 1), kv.second.data,
+                                         kv.second.measured) || changed;
+        }
+        return changed;
+    });
+}
+
+// 13-23: a value's name in the Sound's divide group ("" for none).
+std::string DivideValueName(const SoundStore& store, const SoundData& data, const std::string& value)
+{
+    if (value.empty()) return {};
+    if (const SwitchGroup* g = FindGroup(store, data.divide_group))
+        for (const SwitchValue& v : g->values)
+            if (v.uid == value) return v.name.empty() ? std::string("(unnamed value)") : v.name;
+    return "(deleted value)";
+}
+
+// The request for one resolved sound (P11). `file` = a File Sound's target (PrepareFileSound). 13-20 /
+// 13-23 / 13-25: `data` = the Sound's data to place (its syncs measured, PlacedDataFor; null = its
+// own): a sliced, Whole-item or File variation is placed as the pieces of its part (PieceApplyFor).
+PlaceRequest RequestFor(MediaItem* owner, const std::string& rid, double event_t, double project_t,
+                        const SoundNode& n, const ResolvedSound& rs, const FileSoundTarget* file = nullptr,
+                        const SoundData* data = nullptr)
+{
+    const SoundData& sd = data ? *data : n.sound;
     PlaceRequest req;
     req.owner = owner;
     req.rid = rid;
@@ -230,18 +341,23 @@ PlaceRequest RequestFor(MediaItem* owner, const std::string& rid, double event_t
         // Antho 2026-10-12 (13-11): straight from the file, on its Lands-in layer track.
         req.file_path = file->path;
         req.track = file->track;
-        req.slice = FileSliceFor(n.sound, v);
-        req.fades = FileFadeApplyFor(n.sound, v);
+        req.slice = FileSliceFor(sd, v);
+        req.fades = FileFadeApplyFor(sd, v);
+        req.pieces = PieceApplyFor(sd, v, rs.part_value, true);
     } else if (n.sound.source.kind == SoundSourceKind::File && file && !file->item_guid.empty()) {
         req.source.kind = SoundSourceKind::Item;  // an older build's imported item: copied as before
         req.source.item_guid = file->item_guid;
     }
     if (req.source.kind == SoundSourceKind::Item && v >= 0 && v < static_cast<int>(n.sound.frames.size())) {
-        if (n.sound.mode == DetectMode::Takes) req.variation = v;
-        else if (n.sound.mode == DetectMode::TakeMarkers || n.sound.mode == DetectMode::Silence)
-            req.slice = SliceApplyFor(n.sound.frames[static_cast<size_t>(v)]);
-        req.fades = FadeApplyFor(n.sound, v);  // Antho 2026-10-12: fades on every placed variation
+        if (sd.mode == DetectMode::Takes) req.variation = v;
+        else if (sd.mode == DetectMode::TakeMarkers || sd.mode == DetectMode::Silence)
+            req.slice = SliceApplyFor(sd.frames[static_cast<size_t>(v)]);
+        req.fades = FadeApplyFor(sd, v);  // Antho 2026-10-12: fades on every placed variation
+        // 13-20 / 13-23 / 13-25 (D7): the part's pieces, each from the sync point (a folder pile and
+        // Takes ignore them: PlaceSounds).
+        if (sd.mode != DetectMode::Takes) req.pieces = PieceApplyFor(sd, v, rs.part_value, false);
     }
+    req.part = rs.part_value;
     req.gain_db = rs.gain_db;  // ResolveEvent already added the frame's dB
     req.blend_ms = rs.offset_ms;
     return req;
@@ -270,12 +386,15 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
     const ItemRigInfo     rig = ItemRig(item);
     const SoundCharacter* ch = CharacterFor(store, rig.skeleton, rig.model);
     std::map<std::string, std::pair<std::string, std::string>> part_of;  // rid -> body part, type
+    std::map<std::string, std::string> role_of;  // 13-23 (D1): rid -> its events' role key
     for (const Block& b : blocks)
         if (!b.rid.empty()) {
             std::pair<std::string, std::string> pt;
             PartOfBlock(b, &pt.first, &pt.second);
             part_of[b.rid] = pt;
+            role_of[b.rid] = EventRoleKey(b);
         }
+    MeasureCache measured_here;  // 13-25: outside a gesture (PlacedDataFor)
 
     // P1: assignments of rules that no longer exist.
     std::set<std::string> live;
@@ -389,7 +508,9 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
             }
             return !FindItemByGuid(n.sound.source.item_guid);
         };
-        const Resolution res = ResolveEvent(store, *lib, ea.layers, MakeDrawHooks(st, ed, is_missing));
+        ValueLayers layers = ea.layers;
+        if (const auto ro = role_of.find(rid); ro != role_of.end()) layers.role = ro->second;  // 13-23: picks the part
+        const Resolution res = ResolveEvent(store, *lib, layers, MakeDrawHooks(st, ed, is_missing));
         std::vector<SoundDraw> draws = ed.out;
         for (const SoundDraw& d : prev) {  // a hand pick on a branch not walked now is kept
             bool have = false;
@@ -427,11 +548,44 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                 hold.insert(n->uid);
                 continue;
             }
+            if (const auto np = ed.no_part.find(n->uid); np != ed.no_part.end()) {
+                // 13-23 (A5): nothing of that part left in any variation: nothing placed (what was is removed).
+                AddLine(rep, ReportKind::NoSound, NoPartText(NodeName(n), DivideValueName(store, n->sound, np->second)),
+                        n->uid, guid, e.t);
+                continue;
+            }
+            // 13-20: the items it is placed as (one per span), compared with what is placed; a folder
+            // pile and Takes are not counted (their members are the pile's). 13-25: the snap its anchor
+            // piece gets (item s), compared too, so a sync point measured or moved since is placed again.
+            int    pieces = 0;
+            double sync = -1.0;
+            if (n->sound.mode != DetectMode::Takes && s.variation >= 0) {
+                bool   pile = false;
+                double rate = 1.0;
+                if (n->sound.source.kind == SoundSourceKind::Item)
+                    if (MediaItem* src = FindItemByGuid(n->sound.source.item_guid)) {
+                        pile = IsFolderItem(src);
+                        if (MediaItem_Take* tk = GetActiveTake(src)) rate = GetMediaItemTakeInfo_Value(tk, "D_PLAYRATE");
+                    }
+                if (!pile) {
+                    const SoundData& sd = PlacedDataFor(
+                        lib_uid, *n, s.variation, [n]() { return SoundSourcePath(n->sound.source); }, measured_here);
+                    const std::vector<PieceApply> pa = PieceApplyFor(sd, s.variation, s.part_value,
+                                                                     n->sound.source.kind == SoundSourceKind::File);
+                    pieces = static_cast<int>(pa.size());
+                    if (!(rate > 0.0) || !std::isfinite(rate)) rate = 1.0;
+                    for (const PieceApply& a : pa)
+                        if (a.anchor) sync = a.slice.snap_offset / rate;
+                }
+            }
             for (size_t p = 0; p < passes.size(); ++p) {
                 DesiredSlot d;
                 d.pass = static_cast<int>(p);
                 d.node = n->uid;
                 d.variation = s.variation;
+                d.part = s.part_value;
+                d.pieces = pieces;
+                d.sync = sync;
                 desired.push_back(d);
                 desired_rs.push_back(&s);
             }
@@ -445,6 +599,11 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
             if (p.own == Ownership::Populated && hold.count(p.node)) x.own = Ownership::Attached;  // planner: leave it
             if (x.own == Ownership::Populated)
                 if (MediaItem* it = FindItemByGuid(p.item_guid)) {
+                    PlacedTag tag;
+                    if (ReadPlacedTag(it, &tag)) {
+                        x.part = tag.pt;  // 13-23: the part it plays
+                        if (tag.has_anchor) x.sync = tag.sy;  // 13-25: the snap it was placed by
+                    }
                     double anchor = 0.0, sync = 0.0;  // the pile's anchor: one pass for the whole pile
                     PlacedPileAnchor(it, &anchor, &sync);
                     x.pass = NearestPassOfItem(passes, anchor, sync, BlendOffsetMs(*lib, p.node));
@@ -525,7 +684,12 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                 if (src && !IsFolderItem(src)) switch_track = SwitchTrackFor(track_path, rep, n->uid, guid, e.t);
                 else if (src && sound_tracks.in_blend) pile_layer = SwitchTrackFor(track_path, rep, n->uid, guid, e.t);
             }
-            PlaceRequest  req = RequestFor(item, rid, ev->t, pt, *n, s, file);
+            // 13-25 (D6): stale sync points measured now, over the file it plays.
+            const SoundData& placed_data = PlacedDataFor(
+                lib_uid, *n, s.variation,
+                [file, n]() { return file && !file->path.empty() ? file->path : SoundSourcePath(n->sound.source); },
+                measured_here);
+            PlaceRequest  req = RequestFor(item, rid, ev->t, pt, *n, s, file, &placed_data);
             if (switch_track) {  // 13-13: every copy on its Switch-named track; 13-16: or its layer track
                 req.track = switch_track;
                 req.track_mark = track_mark;

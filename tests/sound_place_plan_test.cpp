@@ -4,6 +4,7 @@
 // copy chunk, pile member offset.
 
 #include "sound_place_plan.h"
+#include "sound_entries.h"
 
 #include <cmath>
 #include <cstdio>
@@ -20,6 +21,116 @@ static int g_fail = 0;
         }                                                                \
     } while (0)
 static bool Near(double a, double b, double e = 1e-9) { return std::fabs(a - b) <= e; }
+
+// 13-20 / 13-23 / 13-25 (spec 13-20-23-25 D7, matrix row 1): a sliced variation placed from its sync
+// point; stale syncs measured at placement (MeasureSyncs); File pieces; Whole-item pieces; Takes none.
+static void TestPieces()
+{
+    // Row 1: silence frame 1.000-1.400, the attack at 1.020: D_STARTOFFS 1.000, D_SNAPOFFSET 0.018.
+    SoundData d;
+    d.mode = DetectMode::Silence;
+    SoundFrame f;
+    f.start = 1.0;
+    f.length = 0.4;
+    d.frames.push_back(f);
+    CHECK(SyncsStale(d, 0));  // never measured: Populate measures it
+    PeakData pk;
+    pk.rate = 1000.0;
+    pk.max_abs.assign(2000, 0.0f);
+    for (int i = 1020; i < 1300; ++i) pk.max_abs[static_cast<size_t>(i)] = 0.5f;
+    CHECK(MeasureSyncs(d, 0, &pk));
+    CHECK(d.frames[0].syncs.size() == 1 && Near(d.frames[0].syncs[0], 1.018, 1e-9) && !SyncsStale(d, 0));
+    std::vector<PieceApply> pa = PieceApplyFor(d, 0, "");
+    CHECK(pa.size() == 1 && pa[0].anchor && Near(pa[0].slice.start_offs, 1.0) && Near(pa[0].slice.length, 0.4));
+    CHECK(Near(pa[0].slice.snap_offset, 0.018, 1e-9));
+    CHECK(Near(PlacementPosition(5.0, pa[0].slice.snap_offset, 0.0, 0.0), 4.982, 1e-9));  // the sync (attack - 2 ms) on the event
+    CHECK(pa[0].fades.set_in && pa[0].fades.set_out && Near(pa[0].fades.in, kDefaultFadeIn));  // the frame's fades
+    // Without peaks Attack cannot be measured: nothing written, the placement falls back to the
+    // first span's start + the offset, clamped into the frame (the start).
+    SoundData nd = d;
+    nd.frames[0].syncs.clear();
+    CHECK(!MeasureSyncs(nd, 0, nullptr) && nd.frames[0].syncs.empty());
+    pa = PieceApplyFor(nd, 0, "");
+    CHECK(pa.size() == 1 && Near(pa[0].slice.snap_offset, 0.0));
+    // Slice start needs no peaks: the start + 3 ms.
+    SetSyncSettings(nd, SyncMode::SliceStart, 3.0);
+    CHECK(MeasureSyncs(nd, 0, nullptr) && Near(nd.frames[0].syncs[0], 1.003, 1e-9));
+    // A hand sync inside the frame wins over the measure; a stored sync outside the spans is not used.
+    SoundData hd = d;
+    hd.frames[0].syncs.clear();
+    hd.frames[0].hand_syncs = {1.25};
+    CHECK(MeasureSyncs(hd, 0, &pk) && Near(hd.frames[0].syncs[0], 1.25));
+    hd.frames[0].syncs = {3.0};
+    CHECK(Near(PieceApplyFor(hd, 0, "")[0].slice.snap_offset, 0.0));  // stale: start + offset, clamped
+    // Takes: no pieces (the take keeps its item's snap); a bad index or an off frame: none.
+    SoundData tk = d;
+    tk.mode = DetectMode::Takes;
+    CHECK(PieceApplyFor(tk, 0, "").empty() && !MeasureSyncs(tk, 0, &pk));
+    CHECK(PieceApplyFor(d, 3, "").empty() && PieceApplyFor(d, -1, "").empty());
+    SoundData off = d;
+    off.frames[0].on = false;
+    CHECK(PieceApplyFor(off, 0, "").empty());
+    // File: frame-edge sides always set (FileFadeApplyFor); a cut side gets cut_fade, its shape linear.
+    SoundData fd = d;
+    fd.divide_group = "g";
+    fd.divide_values = {"a", "b"};
+    fd.frames[0].cuts = {1.2};
+    fd.frames[0].syncs = {1.018, 1.21};
+    fd.frames[0].fade_in = 0.004;
+    fd.frames[0].fade_in_shape = 2;
+    fd.cut_fade = 0.003;
+    pa = PieceApplyFor(fd, 0, "a", true);
+    CHECK(pa.size() == 1 && Near(pa[0].fades.in, 0.004) && pa[0].fades.in_shape == 2 && Near(pa[0].fades.out, 0.003) &&
+          pa[0].fades.out_shape == 0 && pa[0].fades.shape_out);
+    pa = PieceApplyFor(fd, 0, "b", true);
+    CHECK(pa.size() == 1 && Near(pa[0].slice.start_offs, 1.2) && Near(pa[0].slice.snap_offset, 0.01) &&
+          Near(pa[0].fades.in, 0.003));
+    const FileItemFields ff = FileItemFieldsFor(10.0, pa[0].slice, pa[0].fades, 0.0, 5.0, 0.0, 0.0);
+    CHECK(ff.ok && Near(ff.snap_offset, 0.01) && Near(ff.position, 4.99) && Near(ff.start_offs, 1.2));
+    // Whole item: its own fades only at the frame edges (the copy keeps its item's), cut_fade at a cut.
+    SoundData wd = fd;
+    wd.mode = DetectMode::Whole;
+    wd.frames[0].fade_in = -1.0;
+    pa = PieceApplyFor(wd, 0, "a");
+    CHECK(pa.size() == 1 && !pa[0].fades.set_in && pa[0].fades.set_out && Near(pa[0].fades.out, 0.003));
+    // A zone given to a part: that stretch plays with it (the later zone wins).
+    SoundData zd = fd;
+    AddZone(zd, 1.25, 0.05, "a");
+    std::vector<PieceApply> za = PieceApplyFor(zd, 0, "a");
+    CHECK(za.size() == 2 && Near(za[1].slice.start_offs, 1.25) && Near(za[1].slice.length, 0.05));
+    std::vector<PieceApply> zb = PieceApplyFor(zd, 0, "b");
+    CHECK(zb.size() == 2 && Near(zb[0].slice.length, 0.05) && Near(zb[1].slice.start_offs, 1.3));
+    // A negative or bad cut_fade reads as none.
+    zd.cut_fade = -1.0;
+    CHECK(Near(PieceApplyFor(zd, 0, "b")[0].fades.in, 0.0));
+    // ApplyMeasuredSyncs: the measured syncs written back into the store's Sound.
+    {
+        SoundStore   store;
+        SoundLibrary lib;
+        lib.uid = "L";
+        SoundNode n;
+        n.uid = "s";
+        n.type = SoundNodeType::Sound;
+        n.sound = d;  // frame [1, 1.4), syncs {1.018}
+        n.sound.frames.push_back(n.sound.frames[0]);
+        n.sound.frames[1].start = 2.0;
+        n.sound.frames[0].syncs.clear();
+        n.sound.frames[1].syncs.clear();
+        lib.nodes.push_back(n);
+        store.libraries.push_back(lib);
+        SoundData m = n.sound;
+        m.frames[0].syncs = {1.018};
+        m.frames[1].syncs = {2.018};
+        m.frames[1].start = 2.5;  // frame 1 moved meanwhile: left alone
+        CHECK(ApplyMeasuredSyncs(store, "L", "s", m, {0, 1, 7}));
+        const SoundData& w = store.libraries[0].nodes[0].sound;
+        CHECK(w.frames[0].syncs.size() == 1 && Near(w.frames[0].syncs[0], 1.018) && w.frames[1].syncs.empty());
+        CHECK(!ApplyMeasuredSyncs(store, "L", "s", m, {0}));  // equal syncs: no change
+        CHECK(!ApplyMeasuredSyncs(store, "X", "s", m, {0}) && !ApplyMeasuredSyncs(store, "L", "nope", m, {0}));
+    }
+    // PiecePosition clamps at 0 and reads a bad rate as 1.
+    CHECK(Near(PiecePosition(0.05, -0.1, 1.0), 0.0) && Near(PiecePosition(1.0, 0.5, 0.0), 1.5));
+}
 
 int main()
 {
@@ -207,6 +318,8 @@ int main()
         FadesOnItem(x, 0.0, 0.5, 0.0, 0.0, &in, &out);  // a bad rate reads as 1
         CHECK(Near(in + out, 0.5));
     }
+
+    TestPieces();
 
     if (g_fail) {
         std::printf("sound_place_plan_test: %d failure(s)\n", g_fail);

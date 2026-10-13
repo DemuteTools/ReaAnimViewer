@@ -30,6 +30,9 @@ struct ResolveHooks {
     std::function<int(const SoundNode&)>  random_child;
     std::function<int(const SoundNode&)>  variation;
     std::function<bool(const SoundNode&)> is_missing;
+    // 13-23 (D3): the variation a Sound plays for a part (a value uid; "" = the whole variation); used
+    // instead of `variation` when set (a variation whose part is empty or excluded cannot play it).
+    std::function<int(const SoundNode&, const std::string& part_value)> part_variation;
 };
 
 struct ResolvedSound {
@@ -57,6 +60,10 @@ struct Resolution {
 // Where a value came from (EffectiveValue's `from`).
 enum class ValueFrom { Default, Item, Rule, Event };
 
+// 13-23 (D3): each Sound reached gets its part (ResolvedSound::part_value): a Blend layer's own
+// (SoundNode::layer_part: "*" = the whole variation) wins, else, when the Sound is divided, the value
+// its role map (its own, else its divide group's) gives `layers.role`; else "" (the whole variation).
+// Takes mode and a value outside the Sound's divide values read as "".
 Resolution ResolveEvent(const SoundStore& store, const SoundLibrary& lib, const ValueLayers& layers,
                         const ResolveHooks& hooks);
 // The value a Switch node plays for these layers ("" = none); `from` (optional) says which layer.
@@ -73,6 +80,11 @@ bool GroupHasValue(const SwitchGroup& g, const std::string& value_uid);
 // 13-18: what a Switch with no default of its own plays: the group's default_value (when still a
 // value), else its first value; "" when it has none.
 std::string GroupDefaultValue(const SwitchGroup& g);
+
+// 13-23 (A9): whether a Sound is a Blend layer that picks its own part (SoundNode::layer_part set, its
+// parent a Blend); `part` gets it: "" for "*" (the whole variation), a value that is not one of its
+// divide values, or Takes mode, else the value uid.
+bool LayerPartOverride(const SoundLibrary& lib, const SoundNode& n, std::string* part);
 
 // 13-21: a gap that warns, not blocks: the node and why ("Mat: default Concrete has no sound").
 struct LibraryGap {

@@ -4,6 +4,7 @@
 // (gains, offsets, variations, missing media), blocked libraries, path text and type conversion.
 
 #include "sound_switch.h"
+#include "sound_record.h"  // FindNode
 
 #include <cmath>
 #include <cstdio>
@@ -611,6 +612,62 @@ static void TestConvert()
     CHECK(SwitchNameKey("\xC3\x89t\xC3\xA9") == "\xC3\x89t\xC3\xA9");
 }
 
+// 13-23 (spec 13-20-23-25 D3): each Sound reached gets its part; the part_variation hook (when set)
+// draws for it, else the plain variation hook.
+static void TestParts()
+{
+    SoundStore st = Store();
+    SwitchGroup c;
+    c.uid = "gc";
+    c.name = "Contact";
+    c.values = {{"vb", "Back", {}, {"heel"}}, {"vf", "Front", {}, {"toe", "toe_end"}}};
+    st.groups.push_back(c);
+    SoundLibrary lib = MatLib();  // Concrete -> Blend(Heel s1, Toe s2); Grass -> sg
+    for (SoundNode& n : lib.nodes)
+        if (n.type == SoundNodeType::Sound) {
+            n.sound.divide_group = "gc";
+            n.sound.divide_values = {"vb", "vf"};
+            n.sound.frames.resize(2);
+        }
+    FindNode(lib, "s2")->layer_part = "vf";  // the Toe layer always takes Front
+    ValueLayers l;
+    l.role = "heel";
+    std::vector<std::string> asked;
+    ResolveHooks h;
+    h.variation = [](const SoundNode&) { return 0; };
+    h.part_variation = [&asked](const SoundNode& n, const std::string& part) {
+        asked.push_back(n.uid + ":" + part);
+        return 1;
+    };
+    Resolution r = ResolveEvent(st, lib, l, h);  // the default value Concrete: the Blend
+    CHECK(r.sounds.size() == 2);
+    CHECK(r.sounds[0].part_value == "vb" && r.sounds[1].part_value == "vf");
+    CHECK(r.sounds[0].variation == 1 && asked.size() == 2 && asked[0] == "s1:vb" && asked[1] == "s2:vf");
+    // Without the part hook: the plain variation hook, the part still told.
+    h.part_variation = nullptr;
+    r = ResolveEvent(st, lib, l, h);
+    CHECK(r.sounds[0].variation == 0 && r.sounds[0].part_value == "vb");
+    // No role: the whole variation, except the layer's own part.
+    l.role.clear();
+    r = ResolveEvent(st, lib, l, h);
+    CHECK(r.sounds[0].part_value.empty() && r.sounds[1].part_value == "vf");
+    // A missing Sound still says its part, plays nothing.
+    h.is_missing = [](const SoundNode& n) { return n.uid == "s1"; };
+    l.role = "toe";
+    r = ResolveEvent(st, lib, l, h);
+    CHECK(r.sounds[0].missing && r.sounds[0].variation == -1 && r.sounds[0].part_value == "vf");
+    // LayerPartOverride: only a Blend's child; "*" = whole; a value outside its divide values = whole.
+    std::string part;
+    CHECK(LayerPartOverride(lib, *FindNode(lib, "s2"), &part) && part == "vf");
+    CHECK(!LayerPartOverride(lib, *FindNode(lib, "s1"), &part) && part.empty());
+    FindNode(lib, "s1")->layer_part = kLayerPartWhole;
+    CHECK(LayerPartOverride(lib, *FindNode(lib, "s1"), &part) && part.empty());
+    FindNode(lib, "sg")->layer_part = "vf";  // under a Switch: not a Blend layer
+    CHECK(!LayerPartOverride(lib, *FindNode(lib, "sg"), &part));
+    FindNode(lib, "s2")->layer_part = "gone";
+    CHECK(LayerPartOverride(lib, *FindNode(lib, "s2"), &part) && part.empty());
+}
+
 int main()
 {
     TestInheritance();
@@ -622,6 +679,7 @@ int main()
     TestBlocked();
     TestNoForeignUid();
     TestConvert();
+    TestParts();
     if (g_fail) {
         std::printf("sound_switch_test: %d failure(s)\n", g_fail);
         return 1;

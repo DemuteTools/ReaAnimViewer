@@ -23,6 +23,9 @@ struct AuditionPicker {
     std::function<int(const SoundNode& node, int count)> pick_child;
     // A Sound's variation: a frame index (-1 = none).
     std::function<int(const SoundNode& node)> pick_variation;
+    // 13-23: a Sound's variation for a part (a value uid, "" = the whole variation; -1 = none). Used
+    // instead of pick_variation when set: a variation with nothing of that part is never picked.
+    std::function<int(const SoundNode& node, const std::string& part_value)> pick_part_variation;
 };
 
 // The session's picks per node, so each press draws anew while avoiding repeats (decision 5).
@@ -52,6 +55,7 @@ struct AuditionVoice {
     int                      fade_in_shape = 0;
     int                      fade_out_shape = 0;
     std::vector<std::string> path;           // uids from the auditioned node's child to the Sound
+    int                      piece = 0;      // 13-20 / 13-23: its piece of the variation (0 = the first)
 };
 
 struct AuditionPlan {
@@ -76,7 +80,18 @@ double FadeGainAt(double t, double length, double in, double out, int in_shape =
 // What one press plays (decisions 5-6). A child with no active variation is skipped.
 AuditionPlan PlanAudition(const SoundStore& store, const SoundLibrary& lib, const std::string& node_uid,
                           const AuditionPicker& picker);
-// The "played: ..." text of these voices (decision 6): "nothing" when none.
+// 13-20 / 13-23: the voices of variation `variation` of Sound `n` playing part `part_value` ("" = the
+// whole variation minus its exclusions), as Populate places them (PieceApplyFor): one per piece, each
+// delayed by its distance from the first piece plus `delay_ms`, the Sound's cut_fade at a cut or zone
+// edge. Takes mode: the take whole (one voice). {} for a bad index or nothing left of that part.
+std::vector<AuditionVoice> PartAuditionVoices(const SoundLibrary& lib, const SoundNode& n, int variation,
+                                              const std::string& part_value, double delay_ms = 0.0);
+// 13-20: a zone of the Sound's source played alone (the Edit window's "Play zone"): one voice over
+// [start, start + length), the Sound's cut_fade at both ends, the level of the frame holding its start
+// (0 dB outside any frame). Empty voice (length 0) for a zone of 0 s or less.
+AuditionVoice ZoneAuditionVoice(const SoundLibrary& lib, const SoundNode& n, double start, double length);
+// The "played: ..." text of these voices (decision 6): "nothing" when none. 13-20: a voice of a
+// later piece (piece > 0) is not named again.
 std::string PlayedText(const SoundLibrary& lib, const std::vector<AuditionVoice>& voices);
 // Sum of volume_db from the library root down to `n` (n included): a voice's level (decision 5).
 double GainFromRoot(const SoundLibrary& lib, const SoundNode& n);

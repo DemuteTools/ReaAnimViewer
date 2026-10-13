@@ -1240,11 +1240,21 @@ void DrawGroupRow(const Frame& f, const std::vector<const av::Target*>& sel, boo
         chip(inh + (mixed && count_of(std::string()) ? "  " + std::to_string(count_of(std::string())) : std::string()), std::string(),
              !mixed && own[0].empty(), true);
     }
-    if (grp)
-        for (const SwitchValue& v : grp->values) {
+    if (grp) {
+        // Antho 2026-10-13: listed A to Z (display only; the group keeps its order).
+        std::vector<const SwitchValue*> az;
+        for (const SwitchValue& v : grp->values) az.push_back(&v);
+        auto lower = [](std::string x) {
+            for (char& ch : x) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            return x;
+        };
+        std::stable_sort(az.begin(), az.end(), [&](const SwitchValue* a, const SwitchValue* b) { return lower(a->name) < lower(b->name); });
+        for (const SwitchValue* vp : az) {
+            const SwitchValue& v = *vp;
             const int c = count_of(v.uid);
             chip(v.name + (mixed && c ? "  " + std::to_string(c) : std::string()), v.uid, !mixed && own[0] == v.uid, false);
         }
+    }
     if (unreached == static_cast<int>(sel.size())) ImGui::PopStyleVar();
     // Events that set their own value of this group.
     if (!item_row && !f.keyed) {

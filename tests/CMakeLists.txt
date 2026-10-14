@@ -310,3 +310,9 @@ add_test(NAME read_robustness COMMAND read_robustness_test)
 add_executable(sound_peaks_plan_test sound_peaks_plan_test.cpp)
 target_include_directories(sound_peaks_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_peaks_plan COMMAND sound_peaks_plan_test)
+
+# 13-57 -- a waveform sharp at every zoom (src/wave_tiles_plan.h): the detail tiles read from the
+# samples, folded to one column per pixel, joined, the sample line, the tile LRU, the read given up.
+add_executable(wave_tiles_plan_test wave_tiles_plan_test.cpp)
+target_include_directories(wave_tiles_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME wave_tiles_plan COMMAND wave_tiles_plan_test)

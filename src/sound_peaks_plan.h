@@ -124,7 +124,9 @@ inline bool PeakAbandonInFlight(double in_flight_asked_s, bool other_fresh, doub
 }
 
 // 13-55 review: which way a read went (debuglog builds say it once per read, with its time).
-enum class PeakReadPath { PeakFile, BuiltThenPeakFile, Samples, SamplesFallback };
+// 13-57: SamplesThenBuild = a long file with no peak file, read from its samples first (shown), then its
+// peak file built.
+enum class PeakReadPath { PeakFile, BuiltThenPeakFile, Samples, SamplesFallback, SamplesThenBuild };
 
 inline const char* PeakReadPathName(PeakReadPath p)
 {
@@ -133,6 +135,7 @@ inline const char* PeakReadPathName(PeakReadPath p)
     case PeakReadPath::BuiltThenPeakFile: return "built then peak file";
     case PeakReadPath::Samples: return "samples (short file)";
     case PeakReadPath::SamplesFallback: return "sample fallback (REAPER gave no peaks)";
+    case PeakReadPath::SamplesThenBuild: return "samples first, then the peak file built";
     }
     return "?";
 }

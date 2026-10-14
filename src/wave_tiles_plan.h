@@ -1,0 +1,388 @@
+// SPDX-License-Identifier: MIT
+//
+// 13-57: a waveform sharp at every zoom. The pure rules of the detail read (src/sound_peaks.cpp):
+// a view up to kWaveDetailMaxSpan long is drawn from the file's samples, read in tiles of
+// kWaveTileColumns columns at a column rate of a power of two just above the view's pixel rate
+// (capped at the file's sample rate: one column per sample). A tile keeps, per column, the signed min
+// and max of each series (all channels, L, R, (L + R) / 2), so the waveform shows its true shape.
+// Tiles are kept in a small LRU (WaveTileLru) keyed on (file, rate, index): panning reuses them,
+// a zoom step inside one power of two reuses them, a zoom step across reuses the level next to it
+// until its own tiles are read (no flicker back to the coarse peaks).
+//
+// Then the view is folded into one column per pixel (FoldWaveColumns), each column joined to the one
+// before it (JoinWaveColumns, no gaps between steep columns); at a zoom where a pixel is shorter than
+// a sample, the samples are drawn as a line instead (WaveColumns::line). The coarse peaks (PeakData,
+// max |sample| per bin) give symmetric columns meanwhile (ColumnsFromPeaks).
+// Header-only, host-tested (tests/wave_tiles_plan_test.cpp).
+
+#pragma once
+
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <iterator>
+#include <limits>
+#include <map>
+#include <string>
+#include <tuple>
+#include <vector>
+
+#include "file_change_check.h"
+#include "sound_model.h"
+#include "sound_peaks_plan.h"
+
+namespace rav {
+
+constexpr int    kWaveTileColumns = 512;
+constexpr double kWaveDetailMaxSpan = 60.0;  // a view up to this long (s) is drawn from its samples
+constexpr int    kWaveSeries = 4;            // 0 all channels, 1 L, 2 R, 3 (L + R) / 2
+constexpr size_t kWaveTileCacheTiles = 384;  // ~16 KB a stereo tile: ~6 MB at most
+
+// The series a lane draws: a mono file has series 0 only.
+enum WaveSeries { kWaveAll = 0, kWaveLeft = 1, kWaveRight = 2, kWaveSum = 3 };
+
+// The column rate (columns per second) a view of `view_len` seconds over `columns` pixels is read at
+// from a file sampled at `sample_rate`: the power of two at or above the pixel rate, capped at the
+// sample rate. 0 = no detail read: a view longer than kWaveDetailMaxSpan (the coarse peaks are at least
+// as fine as its pixels there), or nothing to read.
+inline double WaveTileRate(double view_len, int columns, double sample_rate)
+{
+    if (!(view_len > 0.0) || columns <= 0 || !(sample_rate > 0.0) || view_len > kWaveDetailMaxSpan) return 0.0;
+    const double p = static_cast<double>(columns) / view_len;
+    double       r = 1.0;
+    while (r < p && r < sample_rate) r *= 2.0;
+    return std::min(r, sample_rate);
+}
+
+// The source seconds tile `index` covers at `rate`.
+inline double WaveTileStart(double rate, int64_t index) { return static_cast<double>(index) * kWaveTileColumns / rate; }
+inline double WaveTileEnd(double rate, int64_t index) { return WaveTileStart(rate, index + 1); }
+
+// The tiles [first, last] a view needs at `rate` (clamped to the file's `source_len`); false when none.
+inline bool WaveTilesFor(double view_start, double view_len, double rate, double source_len, int64_t* first, int64_t* last)
+{
+    if (!(rate > 0.0) || !(view_len > 0.0) || !(source_len > 0.0)) return false;
+    const double  t0 = std::max(0.0, view_start), t1 = std::min(source_len, view_start + view_len);
+    if (!(t1 > t0)) return false;
+    const int64_t n = static_cast<int64_t>(std::ceil(source_len * rate / kWaveTileColumns));  // tiles in the file
+    int64_t       a = static_cast<int64_t>(std::floor(t0 * rate / kWaveTileColumns));
+    int64_t       b = static_cast<int64_t>(std::floor(t1 * rate / kWaveTileColumns));
+    a = std::clamp<int64_t>(a, 0, std::max<int64_t>(0, n - 1));
+    b = std::clamp<int64_t>(b, a, std::max<int64_t>(0, n - 1));
+    *first = a;
+    *last = b;
+    return true;
+}
+
+// One tile: per series, per column, the signed min (lo) and max (hi) of the samples in it. A column
+// no sample reached has lo > hi.
+struct WaveTile {
+    double             rate = 0.0;
+    int64_t            index = 0;
+    int                series = 1;  // 1 (a mono file) or kWaveSeries
+    std::vector<float> lo[kWaveSeries], hi[kWaveSeries];
+    FileVersion        file;  // the file's date + size it was read from
+};
+
+inline void WaveTileInit(WaveTile* t, double rate, int64_t index, int nch)
+{
+    t->rate = rate;
+    t->index = index;
+    t->series = nch >= 2 ? kWaveSeries : 1;
+    for (int s = 0; s < kWaveSeries; ++s) {
+        if (s < t->series) {
+            t->lo[s].assign(kWaveTileColumns, std::numeric_limits<float>::max());
+            t->hi[s].assign(kWaveTileColumns, -std::numeric_limits<float>::max());
+        } else {
+            std::vector<float>().swap(t->lo[s]);
+            std::vector<float>().swap(t->hi[s]);
+        }
+    }
+}
+
+// Folds the frame of sample `n` (`nch` interleaved values, the file at `sample_rate`) into its column.
+// L = the even channels, R = the odd ones (as PeakAddFrame's lanes); the sum = (ch 0 + ch 1) / 2. A
+// sample outside the tile is ignored.
+template <typename Sample>
+inline void WaveTileAddFrame(WaveTile* t, int64_t n, double sample_rate, const Sample* frame, int nch)
+{
+    if (!t || nch <= 0 || !(sample_rate > 0.0)) return;
+    // Exact for rate == sample_rate (an integer product divided back): one column per sample.
+    const int64_t col = static_cast<int64_t>(std::floor(static_cast<double>(n) * t->rate / sample_rate)) -
+                        t->index * kWaveTileColumns;
+    if (col < 0 || col >= kWaveTileColumns) return;
+    const size_t c = static_cast<size_t>(col);
+    auto put = [&](int s, float v) {
+        if (!(v == v)) return;  // NaN: skipped
+        t->lo[s][c] = std::min(t->lo[s][c], v);
+        t->hi[s][c] = std::max(t->hi[s][c], v);
+    };
+    for (int k = 0; k < nch; ++k) {
+        const float v = static_cast<float>(frame[k]);
+        put(kWaveAll, v);
+        if (t->series > 1) put(k & 1 ? kWaveRight : kWaveLeft, v);
+    }
+    if (t->series > 1) put(kWaveSum, static_cast<float>((frame[0] + frame[1]) * 0.5));
+}
+
+// A view folded to one column per pixel. Columns: lo > hi = nothing there. `line`: a pixel is shorter
+// than a sample: draw `pt_v` (each series' sample values) at `pt_x` (pixel x from the view's left
+// edge, fractional) joined by a line, instead of the columns.
+struct WaveColumns {
+    int                 columns = 0;
+    int                 series = 1;
+    bool                detail = false;  // from the samples (signed); false = the coarse peaks (symmetric)
+    std::vector<float>  lo[kWaveSeries], hi[kWaveSeries];
+    bool                line = false;
+    std::vector<double> pt_x;
+    std::vector<float>  pt_v[kWaveSeries];
+};
+
+inline bool WaveColumnHas(const WaveColumns& w, int s, size_t i)
+{
+    return s < w.series && i < w.lo[s].size() && w.lo[s][i] <= w.hi[s][i];
+}
+
+inline void WaveColumnsInit(WaveColumns* w, int columns, int series)
+{
+    *w = WaveColumns{};
+    w->columns = std::max(0, columns);
+    w->series = series;
+    for (int s = 0; s < series && s < kWaveSeries; ++s) {
+        w->lo[s].assign(static_cast<size_t>(w->columns), std::numeric_limits<float>::max());
+        w->hi[s].assign(static_cast<size_t>(w->columns), -std::numeric_limits<float>::max());
+    }
+}
+
+// The coarse peaks (max |sample| per bin, from 0 s at p.rate) over the view: symmetric columns
+// (-max..+max), the sum series as 13-41 drew it ((L + R) / 2 of the lanes' peaks).
+inline void ColumnsFromPeaks(const PeakData& p, double view_start, double view_len, int columns, WaveColumns* out)
+{
+    const int stereo = PeakChannels(p) == 2;
+    WaveColumnsInit(out, columns, stereo ? kWaveSeries : 1);
+    if (!(p.rate > 0.0) || !(view_len > 0.0) || p.max_abs.empty()) return;
+    const int64_t nb = static_cast<int64_t>(p.max_abs.size());
+    for (int c = 0; c < out->columns; ++c) {
+        const double t0 = view_start + view_len * c / out->columns, t1 = view_start + view_len * (c + 1) / out->columns;
+        int64_t      k0 = static_cast<int64_t>(std::floor(t0 * p.rate)), k1 = static_cast<int64_t>(std::floor(t1 * p.rate));
+        k1 = std::max(k1, k0 + 1);
+        k0 = std::max<int64_t>(0, k0);
+        k1 = std::min(k1, nb);
+        if (k1 <= k0) continue;
+        const size_t i = static_cast<size_t>(c);
+        float        m[3] = {0.0f, 0.0f, 0.0f};
+        for (int64_t k = k0; k < k1; ++k) {
+            const size_t b = static_cast<size_t>(k);
+            m[0] = std::max(m[0], p.max_abs[b]);
+            if (stereo) {
+                m[1] = std::max(m[1], p.lanes[0][b]);
+                m[2] = std::max(m[2], p.lanes[1][b]);
+            }
+        }
+        out->lo[0][i] = -m[0];
+        out->hi[0][i] = m[0];
+        if (stereo) {
+            const float sum = (m[1] + m[2]) * 0.5f;
+            const float v[4] = {m[0], m[1], m[2], sum};
+            for (int s = 1; s < kWaveSeries; ++s) {
+                out->lo[s][i] = -v[s];
+                out->hi[s][i] = v[s];
+            }
+        }
+    }
+}
+
+// The tile of (rate, index), or null when it is not read yet.
+using WaveTileLookup = std::function<const WaveTile*(double rate, int64_t index)>;
+
+// The view folded from the tiles: each pixel from the first rate of `rates` (the wanted one first)
+// whose tile holding it is read; a pixel no tile holds keeps the `coarse` column (pass it already
+// filled by ColumnsFromPeaks, or empty). `out->detail` = every pixel came from a tile at rates[0].
+// `series`: the tiles' (1 for a mono file, else kWaveSeries); a coarse of other lanes or width is not
+// used. `sample_rate`: when rates[0] is it and a pixel is shorter than a sample, and every tile is
+// there, the samples are given as a line (`line`).
+inline void FoldWaveColumns(const WaveTileLookup& tile, const std::vector<double>& rates, double sample_rate,
+                            int series, double view_start, double view_len, int columns, const WaveColumns& coarse,
+                            WaveColumns* out)
+{
+    *out = coarse;
+    out->detail = false;
+    out->line = false;
+    if (columns <= 0 || !(view_len > 0.0) || rates.empty()) return;
+    if (out->columns != columns || out->series != series) WaveColumnsInit(out, columns, series);
+    bool all_wanted = true;
+    for (int c = 0; c < columns; ++c) {
+        const double t0 = view_start + view_len * c / columns, t1 = view_start + view_len * (c + 1) / columns;
+        bool         done = false;
+        for (size_t r = 0; r < rates.size() && !done; ++r) {
+            const double rate = rates[r];
+            if (!(rate > 0.0)) continue;
+            int64_t k0 = static_cast<int64_t>(std::floor(t0 * rate)), k1 = static_cast<int64_t>(std::floor(t1 * rate));
+            k1 = std::max(k1, k0 + 1);
+            if (k0 < 0) k0 = 0;
+            if (k1 <= k0) continue;
+            // Every tile the pixel spans must be read for this rate to give it.
+            const int64_t ta = k0 / kWaveTileColumns, tb = (k1 - 1) / kWaveTileColumns;
+            bool          have = true;
+            for (int64_t ti = ta; ti <= tb && have; ++ti) have = tile(rate, ti) != nullptr;
+            if (!have) continue;
+            const int    ns = std::min(series, tile(rate, ta)->series);
+            const size_t i = static_cast<size_t>(c);
+            for (int s = 0; s < ns; ++s) {
+                out->lo[s][i] = std::numeric_limits<float>::max();
+                out->hi[s][i] = -std::numeric_limits<float>::max();
+            }
+            for (int64_t k = k0; k < k1; ++k) {
+                const WaveTile* t = tile(rate, k / kWaveTileColumns);
+                const size_t    j = static_cast<size_t>(k % kWaveTileColumns);
+                for (int s = 0; s < ns; ++s) {
+                    out->lo[s][i] = std::min(out->lo[s][i], t->lo[s][j]);
+                    out->hi[s][i] = std::max(out->hi[s][i], t->hi[s][j]);
+                }
+            }
+            done = true;
+            if (r != 0) all_wanted = false;
+        }
+        if (!done) all_wanted = false;
+    }
+    out->detail = all_wanted;
+    // A pixel shorter than a sample: the samples as a line (only from a complete sample-rate read).
+    const double px_rate = static_cast<double>(columns) / view_len;
+    if (all_wanted && sample_rate > 0.0 && rates[0] >= sample_rate && px_rate > sample_rate) {
+        const int64_t n0 = std::max<int64_t>(0, static_cast<int64_t>(std::floor(view_start * sample_rate)) - 1);
+        const int64_t n1 = static_cast<int64_t>(std::ceil((view_start + view_len) * sample_rate)) + 1;
+        for (int64_t n = n0; n <= n1; ++n) {
+            const WaveTile* t = tile(rates[0], n / kWaveTileColumns);
+            if (!t) continue;
+            const size_t j = static_cast<size_t>(n % kWaveTileColumns);
+            if (!(t->lo[0][j] <= t->hi[0][j])) continue;  // past the file's end
+            out->pt_x.push_back((static_cast<double>(n) / sample_rate - view_start) / view_len * columns);
+            for (int s = 0; s < series; ++s) out->pt_v[s].push_back(s < t->series ? t->lo[s][j] : t->lo[0][j]);
+        }
+        out->line = out->pt_x.size() >= 2;
+    }
+}
+
+// Each column reaches the one before it (its range is stretched up or down to touch it), so a steep
+// waveform has no gap between two columns.
+inline void JoinWaveColumns(WaveColumns* w)
+{
+    for (int s = 0; s < w->series && s < kWaveSeries; ++s) {
+        std::vector<float>& lo = w->lo[s];
+        std::vector<float>& hi = w->hi[s];
+        float pl = 0.0f, ph = 0.0f;
+        bool  prev = false;
+        for (size_t i = 0; i < lo.size(); ++i) {
+            if (!(lo[i] <= hi[i])) {
+                prev = false;
+                continue;
+            }
+            const float l = lo[i], h = hi[i];
+            if (prev) {
+                if (lo[i] > ph) lo[i] = ph;
+                if (hi[i] < pl) hi[i] = pl;
+            }
+            pl = l;
+            ph = h;
+            prev = true;
+        }
+    }
+}
+
+// The rates to try for a view read at `rate` (the wanted one, then the levels next to it: a zoom
+// step shows the level it came from until its own tiles are read), each at most `sample_rate`.
+inline std::vector<double> WaveFallbackRates(double rate, double sample_rate)
+{
+    std::vector<double> r;
+    if (!(rate > 0.0)) return r;
+    auto add = [&](double v) {
+        v = std::min(v, sample_rate);
+        if (v > 0.0 && std::find(r.begin(), r.end(), v) == r.end()) r.push_back(v);
+    };
+    add(rate);
+    add(rate * 2.0);
+    add(rate / 2.0);
+    add(rate * 4.0);
+    add(rate / 4.0);
+    add(rate / 8.0);
+    // The sample-rate level sits at the sample rate, not a power of two: its neighbours are.
+    if (rate >= sample_rate) {
+        double p = 1.0;
+        while (p * 2.0 < sample_rate) p *= 2.0;
+        add(p);
+        add(p / 2.0);
+    }
+    return r;
+}
+
+// A small LRU of tiles keyed on (file key, rate, index).
+class WaveTileLru {
+public:
+    using Key = std::tuple<std::string, double, int64_t>;
+    explicit WaveTileLru(size_t capacity = kWaveTileCacheTiles) : cap_(capacity) {}
+    const WaveTile* Get(const std::string& file, double rate, int64_t index)
+    {
+        auto it = m_.find(Key(file, rate, index));
+        if (it == m_.end()) return nullptr;
+        it->second.used = ++tick_;
+        return &it->second.tile;
+    }
+    void Put(const std::string& file, WaveTile tile)
+    {
+        Slot& s = m_[Key(file, tile.rate, tile.index)];
+        s.tile = std::move(tile);
+        s.used = ++tick_;
+        while (m_.size() > cap_) {
+            auto oldest = m_.begin();
+            for (auto it = m_.begin(); it != m_.end(); ++it)
+                if (it->second.used < oldest->second.used) oldest = it;
+            m_.erase(oldest);
+        }
+    }
+    void EraseFile(const std::string& file)
+    {
+        for (auto it = m_.begin(); it != m_.end();)
+            it = std::get<0>(it->first) == file ? m_.erase(it) : std::next(it);
+    }
+    size_t size() const { return m_.size(); }
+    void   clear() { m_.clear(); }
+
+private:
+    struct Slot {
+        WaveTile tile;
+        uint64_t used = 0;
+    };
+    std::map<Key, Slot> m_;
+    size_t              cap_;
+    uint64_t            tick_ = 0;
+};
+
+// 13-57: which running read the UI thread gives up so a waiting file is read at once when every reader
+// is busy. A read is given up when nobody asked for it these kPeakFreshSeconds while a waiting file was
+// asked within them; a read whose peaks are already shown (the .reapeaks build after a long file's
+// first pass) first; else the one asked longest ago. -1 = none.
+struct PeakRunning {
+    double asked_s = 0.0;       // when its file (or a tile of it) was last asked
+    bool   delivered = false;   // its peaks are shown: only the peak file's build goes on
+};
+
+inline int PickPeakCancel(const std::vector<PeakRunning>& running, bool readers_full, bool fresh_waiting, double now_s)
+{
+    if (!readers_full || !fresh_waiting) return -1;
+    int best = -1;
+    for (size_t i = 0; i < running.size(); ++i) {
+        const PeakRunning& r = running[i];
+        if (!r.delivered && !PeakAbandonInFlight(r.asked_s, true, now_s)) continue;  // still wanted (13-55 review)
+        if (best < 0) {
+            best = static_cast<int>(i);
+            continue;
+        }
+        const PeakRunning& b = running[static_cast<size_t>(best)];
+        if (r.delivered != b.delivered ? r.delivered : r.asked_s < b.asked_s) best = static_cast<int>(i);
+    }
+    return best;
+}
+
+}  // namespace rav

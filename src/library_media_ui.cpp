@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cfloat>
+#include <chrono>
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
@@ -39,6 +40,7 @@
 
 #include <imgui.h>
 
+#include "console_log.h"
 #include "library_media_plan.h"
 #include "library_node_ui.h"
 #include "library_tree_ui.h"
@@ -383,6 +385,7 @@ struct Analysis {
     double                  length = -1.0;
     PeakData                peaks;
     std::vector<SoundFrame> frames;
+    std::chrono::steady_clock::time_point shown_at;  // 13-57 (debuglog): when it was clicked
 };
 
 struct State {
@@ -532,6 +535,10 @@ void PreviewPeaks(bool ok, PeakData&& peaks, double length)
     g.an.frames = ok ? SplitOnSilence(g.an.peaks, SilenceParams{}, g.an.length) : std::vector<SoundFrame>{};
     g.an.failed = !ok;
     g.an.ready = true;
+#ifdef RAV_ENABLE_CONSOLE_LOG
+    LogInfo("media: %s waveform shown %.0f ms after the click", g.an.path.c_str(),
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - g.an.shown_at).count());
+#endif
     // A double-click previews and uses the same file: the use takes this read, not a second one.
     if (g.pending) MediaBatchSetRead(g.batch, g.an.path, ok, g.an.frames, length);
 }
@@ -546,6 +553,7 @@ void SetCurrent(const DbFile& f)
     g.an = Analysis{};
     g.an.path = f.path;
     g.an.length = f.length;
+    g.an.shown_at = std::chrono::steady_clock::now();
     const uint64_t gen = ++g_preview_gen;  // the previous file's read stops
     // A missing file (or no REAPER API) has nothing to read: no audio, not "Reading...". A file
     // that does not open comes back failed from the reader.
@@ -612,6 +620,11 @@ void PollWorkers()
             else g_pv.opening = false;  // missing, or it did not open
         } else if (r.owner == PeakOwner::Preview) {
             if (r.id != g_preview_gen || r.path != g.an.path) continue;
+#ifdef RAV_ENABLE_CONSOLE_LOG
+            // 13-57 (debuglog builds): the first stage of a preview's "Reading...": the file reached.
+            LogInfo("media: %s %s in %.0f ms", r.path.c_str(), r.ok ? "reached" : "missing",
+                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - g.an.shown_at).count());
+#endif
             if (r.ok) g.an.reached = true;
             else g.an.ready = true;  // missing: no audio
         } else if (g.pending && r.id == g_batch_gen) {
@@ -905,17 +918,39 @@ void DrawMediaWaveform(ImDrawList* dl, ImVec2 p0, ImVec2 p1, const Analysis& an,
     }
     if (an.ready && an.peaks.rate > 0.0 && !an.peaks.max_abs.empty()) {
         const float hh = lane_h * 0.5f - ui::Dp(lanes > 1 ? 2.0f : 4.0f);
-        for (int x = 0; x < static_cast<int>(w); ++x) {
-            const double t0 = len * x / w, t1 = len * (x + 1) / w;
-            size_t       i0 = static_cast<size_t>(t0 * an.peaks.rate), i1 = static_cast<size_t>(t1 * an.peaks.rate);
-            i1 = std::max(i1, i0 + 1);
-            const int fi = FrameAt(an.frames, (t0 + t1) * 0.5);
-            for (int l = 0; l < lanes; ++l) {
-                const float m = PeakLaneMax(an.peaks, l, i0, i1);
-                const float amp = std::min(1.0f, m) * hh;
-                const float lm = p0.y + lane_h * (static_cast<float>(l) + 0.5f);
-                const ImU32 col = m > 1.0f ? kLibMissing : (fi >= 0 && Sel(fi)) ? ui::kAccent : ui::kMuted;
-                dl->AddLine(ImVec2(p0.x + x + 0.5f, lm - amp), ImVec2(p0.x + x + 0.5f, lm + amp + 1.0f), col);
+        // 13-57: one column per pixel read at the panel's resolution from the samples (sharp, its true
+        // shape: signed min / max), the read peaks meanwhile; the samples as a line for a file so short
+        // a pixel is shorter than a sample.
+        const int   ncols = std::max(1, static_cast<int>(w));
+        WaveColumns wc;
+        if (!ReadWaveColumns(an.path, 0.0, len, ncols, &wc)) ColumnsFromPeaks(an.peaks, 0.0, len, ncols, &wc);
+        auto SeriesOf = [&](int l) {
+            return wc.series == kWaveSeries && lanes == 2 ? (l == 0 ? kWaveLeft : kWaveRight) : kWaveAll;
+        };
+        auto ColOf = [&](double t, double peak) {
+            const int fi = FrameAt(an.frames, t);
+            return peak > 1.0 ? kLibMissing : (fi >= 0 && Sel(fi)) ? ui::kAccent : ui::kMuted;
+        };
+        for (int l = 0; l < lanes; ++l) {
+            const int                 s = SeriesOf(l);
+            const float               lm = p0.y + lane_h * (static_cast<float>(l) + 0.5f);
+            auto Y = [&](double v) { return lm - static_cast<float>(std::clamp(v, -1.0, 1.0)) * hh; };
+            if (wc.line) {
+                for (size_t k = 0; k + 1 < wc.pt_x.size() && k + 1 < wc.pt_v[s].size(); ++k) {
+                    const double v0 = wc.pt_v[s][k], v1 = wc.pt_v[s][k + 1];
+                    const double t = (wc.pt_x[k] + wc.pt_x[k + 1]) * 0.5 / ncols * len;
+                    dl->AddLine(ImVec2(p0.x + static_cast<float>(wc.pt_x[k]), Y(v0)),
+                                ImVec2(p0.x + static_cast<float>(wc.pt_x[k + 1]), Y(v1)),
+                                ColOf(t, std::max(std::fabs(v0), std::fabs(v1))), ui::Dp(1.5f));
+                }
+                continue;
+            }
+            for (int x = 0; x < ncols; ++x) {
+                if (!WaveColumnHas(wc, s, static_cast<size_t>(x))) continue;
+                const double hi = wc.hi[s][static_cast<size_t>(x)], lo = wc.lo[s][static_cast<size_t>(x)];
+                const ImU32  col = ColOf(len * (x + 0.5) / ncols, std::max(hi, -lo));
+                const float  px = std::floor(p0.x) + static_cast<float>(x);
+                dl->AddRectFilled(ImVec2(px, std::floor(Y(hi))), ImVec2(px + 1.0f, std::floor(Y(lo)) + 1.0f), col);
             }
         }
         for (int l = 1; l < lanes; ++l) {

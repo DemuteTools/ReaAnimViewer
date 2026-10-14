@@ -1074,11 +1074,21 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
     // 13-14 (C5.4): a stereo source draws two lanes (L above R), each half the height with its own
     // zero line (the mockup's paintWave(..., 2)); frames, trim handles, fades and the playhead span
     // both. hh: a lane's half height; LaneMid(l): its zero line; LaneAt(y): the lane at y.
-    PeakData   pk;
-    const bool have_peaks = ReadPeaks(path, vs, vl, w / vl, &pk);
+    // 13-57: one column per pixel, read at screen resolution from the samples (sharp at every zoom;
+    // the coarse peaks show while it is read), or the samples as a line when a pixel is shorter than one.
+    const int   ncols = std::max(1, static_cast<int>(std::floor(w)));
+    WaveColumns wc;
+    const bool  have_peaks = ReadWaveColumns(path, vs, vl, ncols, &wc);
+    const bool  stereo = have_peaks && wc.series == kWaveSeries;
     // 13-41: a Sound forced to mono draws one lane, the channel (or L + R) heard.
-    const bool mono = o.mono != MonoMode::Off && have_peaks && PeakChannels(pk) == 2 && !split;
-    const int  lanes = split ? nparts : mono ? 1 : have_peaks ? PeakChannels(pk) : 1;  // Split: a mono lane per value
+    const bool mono = o.mono != MonoMode::Off && stereo && !split;
+    const int  lanes = split ? nparts : mono ? 1 : stereo ? 2 : 1;  // Split: a mono lane per value
+    // The series lane `l` draws (wave_tiles_plan.h).
+    auto SeriesOf = [&](int l) {
+        if (split || !stereo) return static_cast<int>(kWaveAll);
+        if (mono) return static_cast<int>(o.mono == MonoMode::Right ? kWaveRight : o.mono == MonoMode::Sum ? kWaveSum : kWaveLeft);
+        return static_cast<int>(l == 0 ? kWaveLeft : kWaveRight);
+    };
     const float lane_h = (b.y - a.y) / static_cast<float>(lanes), hh = std::max(1.0f, lane_h * 0.5f - 3.0f);
     auto LaneMid = [&](int l) { return a.y + lane_h * (static_cast<float>(l) + 0.5f); };
     auto LaneAt = [&](float y) { return std::clamp(static_cast<int>((y - a.y) / std::max(1.0f, lane_h)), 0, lanes - 1); };
@@ -1124,50 +1134,98 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
     // Peaks, each column scaled by its frame's dB: accent inside an active frame, muted outside;
     // the part past full scale in --bad.
     if (have_peaks) {
-        for (size_t i = 0; i < pk.max_abs.size(); ++i) {
-            const double t = vs + (static_cast<double>(i) + 0.5) / pk.rate;
-            const int    fi = FrameAt(frames, t);
-            const float  x = a.x + static_cast<float>(i) * w / static_cast<float>(pk.max_abs.size());
-            const bool   in = fi >= 0 && frames[static_cast<size_t>(fi)].on;
-            // 13-20 / 13-23: who owns the column: -2 outside / off, -1 excluded, else its part (0 combined).
-            int         own_k = in ? 0 : -2;
+        // Who plays source time t and at which gain: unchanged per column (13-20 / 13-23 / 13-28 / 13-54).
+        struct Own {
+            int         fi = -1;
+            bool        in = false;
+            int         own_k = -2;  // -2 outside / off, -1 excluded, else its part (0 combined)
+            bool        margin = false;
+            double      g = 1.0;
+        };
+        auto OwnAt = [&](double t) {
+            Own r;
+            r.fi = FrameAt(frames, t);
+            r.in = r.fi >= 0 && frames[static_cast<size_t>(r.fi)].on;
+            r.own_k = r.in ? 0 : -2;
             std::string own;
-            if (pd && in) own_k = PartAt(*pd, fi, t, &own) ? std::max(0, PartIndex(*pd, own)) : -1;
+            if (pd && r.in) r.own_k = PartAt(*pd, r.fi, t, &own) ? std::max(0, PartIndex(*pd, own)) : -1;
             // 13-54: with the parts' margins, the part playing the column (a pre-roll may reach back over
             // a cut), or none: left out by the margins.
-            bool margin = false;
-            if (in && !pieces.empty()) {
-                if (const PartSpan* sp = piece_at(fi, t)) {
+            if (r.in && !pieces.empty()) {
+                if (const PartSpan* sp = piece_at(r.fi, t)) {
                     own = sp->value_uid;
-                    if (pd) own_k = std::max(0, PartIndex(*pd, own));
-                } else if (own_k != -1) {
-                    margin = true;
+                    if (pd) r.own_k = std::max(0, PartIndex(*pd, own));
+                } else if (r.own_k != -1) {
+                    r.margin = true;
                 }
             }
             // 13-28: the column at its part's own gain (FrameGainDb), else its frame's.
-            const double g = fi >= 0 ? DbToGain(FrameGainDb(frames[static_cast<size_t>(fi)], own_k >= 0 ? own : std::string())) : 1.0;
+            r.g = r.fi >= 0 ? DbToGain(FrameGainDb(frames[static_cast<size_t>(r.fi)], r.own_k >= 0 ? own : std::string())) : 1.0;
+            return r;
+        };
+        auto ColorOf = [&](const Own& r, int l) {
+            ImU32 col = r.in ? ui::kAccent : ui::kMuted;
+            if (split) {
+                col = r.own_k == l ? wp->colors[static_cast<size_t>(l)] : WithAlpha(ui::kMuted, 0x21);  // the others: a ghost
+            } else if (pd && r.own_k == -1) {
+                col = WithAlpha(ui::kMuted, 0x4D);  // excluded
+            } else if (divided && r.own_k >= 0) {
+                col = wp->colors[static_cast<size_t>(r.own_k)];
+                if (wp->solo >= 0 && r.own_k != wp->solo) col = WithAlpha(col, 0x38);
+            }
+            if (r.margin) col = split ? WithAlpha(ui::kMuted, 0x21) : ui::kMuted;  // 13-54: not played
+            return col;
+        };
+        const float px = w / static_cast<float>(ncols);  // a column's width (1 px but for a fractional width)
+        if (wc.line) {
+            // 13-57: a pixel shorter than a sample: the samples joined by a line (a dot on each when they
+            // are far enough apart), coloured as the column they are in; past full scale in --bad.
+            const float dot = ui::Dp(2.0f), dots_from = ui::Dp(8.0f);
             for (int l = 0; l < lanes; ++l) {
-                const float  mid = LaneMid(l);
-                const double raw = mono  ? std::fabs(MonoOf(pk.lanes[0][i], pk.lanes[1][i], o.mono))
-                                   : split ? pk.max_abs[i]
-                                           : PeakLane(pk, l)[i];
-                const double amp = raw * g;
-                const float  y = static_cast<float>(std::min(amp, 1.0)) * hh;
-                ImU32 col = in ? ui::kAccent : ui::kMuted;
-                if (split) {
-                    col = own_k == l ? wp->colors[static_cast<size_t>(l)] : WithAlpha(ui::kMuted, 0x21);  // the others: a ghost
-                } else if (pd && own_k == -1) {
-                    col = WithAlpha(ui::kMuted, 0x4D);  // excluded
-                } else if (divided && own_k >= 0) {
-                    col = wp->colors[static_cast<size_t>(own_k)];
-                    if (wp->solo >= 0 && own_k != wp->solo) col = WithAlpha(col, 0x38);
+                const int                 s = SeriesOf(l);
+                const std::vector<float>& v = wc.pt_v[s];
+                const float               mid = LaneMid(l);
+                for (size_t k = 0; k < wc.pt_x.size() && k < v.size(); ++k) {
+                    const float  x = a.x + static_cast<float>(wc.pt_x[k]) * px;
+                    const Own    r = OwnAt(vs + wc.pt_x[k] / ncols * vl);
+                    const double amp = v[k] * r.g;
+                    const float  y = mid - static_cast<float>(std::clamp(amp, -1.0, 1.0)) * hh;
+                    const ImU32  col = std::fabs(amp) > 1.0 ? ui::kBad : ColorOf(r, l);
+                    if (k + 1 < wc.pt_x.size() && k + 1 < v.size()) {
+                        const float  x2 = a.x + static_cast<float>(wc.pt_x[k + 1]) * px;
+                        const Own    r2 = OwnAt(vs + (wc.pt_x[k] + wc.pt_x[k + 1]) * 0.5 / ncols * vl);
+                        const double amp2 = v[k + 1] * r2.g;
+                        const float  y2 = mid - static_cast<float>(std::clamp(amp2, -1.0, 1.0)) * hh;
+                        dl->AddLine(ImVec2(x, y), ImVec2(x2, y2), ColorOf(r2, l), ui::Dp(1.5f));
+                        if (x2 - x >= dots_from) dl->AddCircleFilled(ImVec2(x, y), dot, col);
+                    } else if (k > 0 && x - (a.x + static_cast<float>(wc.pt_x[k - 1]) * px) >= dots_from) {
+                        dl->AddCircleFilled(ImVec2(x, y), dot, col);
+                    }
                 }
-                if (margin) col = split ? WithAlpha(ui::kMuted, 0x21) : ui::kMuted;  // 13-54: not played
-                dl->AddLine(ImVec2(x, mid - y), ImVec2(x, mid + y + 1.0f), col);
-                if (amp > 1.0 && ((col >> IM_COL32_A_SHIFT) & 0xFF) == 0xFF) {  // clipped: the top and bottom of the column
-                    const float over = std::min(hh, static_cast<float>(amp - 1.0) * hh);
-                    dl->AddLine(ImVec2(x, mid - hh), ImVec2(x, mid - hh + over), ui::kBad);
-                    dl->AddLine(ImVec2(x, mid + hh - over), ImVec2(x, mid + hh + 1.0f), ui::kBad);
+            }
+        }
+        for (int i = 0; i < ncols && !wc.line; ++i) {
+            const double t = vs + (static_cast<double>(i) + 0.5) / ncols * vl;
+            const Own    r = OwnAt(t);
+            // A whole pixel column (no anti-aliased smear over two): sharp at every zoom.
+            const float  x = std::floor(a.x + static_cast<float>(i) * px);
+            for (int l = 0; l < lanes; ++l) {
+                const int s = SeriesOf(l);
+                if (!WaveColumnHas(wc, s, static_cast<size_t>(i))) continue;
+                const float  mid = LaneMid(l);
+                const double hi = wc.hi[s][static_cast<size_t>(i)] * r.g, lo = wc.lo[s][static_cast<size_t>(i)] * r.g;
+                const float  y0 = mid - static_cast<float>(std::clamp(hi, -1.0, 1.0)) * hh;
+                const float  y1 = mid - static_cast<float>(std::clamp(lo, -1.0, 1.0)) * hh;
+                const ImU32  col = ColorOf(r, l);
+                dl->AddRectFilled(ImVec2(x, std::floor(y0)), ImVec2(x + 1.0f, std::floor(y1) + 1.0f), col);
+                // Clipped: the top (and the bottom) of the column past full scale, in --bad.
+                if (hi > 1.0 && ((col >> IM_COL32_A_SHIFT) & 0xFF) == 0xFF) {
+                    const float over = std::min(hh, static_cast<float>(hi - 1.0) * hh);
+                    dl->AddRectFilled(ImVec2(x, std::floor(mid - hh)), ImVec2(x + 1.0f, std::floor(mid - hh + over) + 1.0f), ui::kBad);
+                }
+                if (lo < -1.0 && ((col >> IM_COL32_A_SHIFT) & 0xFF) == 0xFF) {
+                    const float over = std::min(hh, static_cast<float>(-lo - 1.0) * hh);
+                    dl->AddRectFilled(ImVec2(x, std::floor(mid + hh - over)), ImVec2(x + 1.0f, std::floor(mid + hh) + 1.0f), ui::kBad);
                 }
             }
         }

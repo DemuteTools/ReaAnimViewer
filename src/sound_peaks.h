@@ -23,6 +23,7 @@
 #include "reaper_api.h"
 #include "sound_entries.h"
 #include "sound_model.h"
+#include "wave_tiles_plan.h"
 
 namespace rav {
 
@@ -35,14 +36,22 @@ bool ReadPeaks(const std::string& path, double start, double length, double rate
 enum class PeakState { Ready, Building, Failed };
 // The whole file's peaks (from 0 s at out->rate: 1000/s for a file up to 10 s, ~380/s from REAPER's
 // peak file for a longer one, sound_peaks_plan.h). Building: call again on a later frame (the file is
-// read on the reader thread; a file nobody asks for ~2 s is dropped from the wait); `out` is filled
+// read on a reader thread; a file nobody asks for ~2 s is dropped from the wait); `out` is filled
 // only when Ready, `length` (seconds) once the file opened. Paths are matched ignoring case and
 // slashes. UI thread only.
 PeakState RequestPeaks(const std::string& path, PeakData* out, double* length = nullptr);
 // 13-54 review: the date + size of `path` its cached peaks were read from (zero when they are not
 // Ready), without copying them (the part trims' key, PartTrimsStale). UI thread only.
 FileVersion PeaksFileVersion(const std::string& path);
-// Unload: the reader thread stops and is joined, its source deleted.
+// 13-57: the waveform of [view_start, view_start + view_len) source seconds over `columns` pixels, one
+// column per pixel (wave_tiles_plan.h): a view up to kWaveDetailMaxSpan long is read from the file's
+// samples at screen resolution (on a reader, in tiles kept in a small LRU; the coarse peaks, or the
+// zoom level next to it, show meanwhile: `out->detail` is false until then), signed min / max per
+// column joined to the one before, or the samples as a line when a pixel is shorter than a sample.
+// False while the file's peaks are not Ready (RequestPeaks says whether they are being read). UI
+// thread only; call it each frame the waveform shows.
+bool ReadWaveColumns(const std::string& path, double view_start, double view_len, int columns, WaveColumns* out);
+// Unload: the reader threads stop and are joined, their sources deleted.
 void QuitSoundPeaks();
 // The file's length in seconds (0 when it does not open). Cached.
 double SourceFileLength(const std::string& path);

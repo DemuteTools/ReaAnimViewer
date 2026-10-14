@@ -4301,7 +4301,10 @@ void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const Sound
         const bool in_box = ImGui::IsMouseHoveringRect(box0, box1, false) && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
         for (int b = 0; b < 3; ++b)
             if (ImGui::IsMouseClicked(b)) P.blend_focus = in_box;
-        nav = ViewNavInput(hot, hot, ImGui::GetID("##blendnav"), !(P.blend_focus || P.blend_span > 0.0));
+        // 13-60b review: Scroll vertically only when the lanes scroll (Zoom vertically never): a wheel bound
+        // to a move the lanes do not have stays the Sound panel's (or REAPER's).
+        nav = ViewNavInput(hot, hot, ImGui::GetID("##blendnav"), !(P.blend_focus || P.blend_span > 0.0),
+                           scrolls ? kNavMovesScrollV : 0);
         if (nav.zoom_h != 0.0) {
             const double f = std::clamp(static_cast<double>((io.MousePos.x - lane_x0) / lane_w), 0.0, 1.0);
             const double at = bv0 + f * bspan;

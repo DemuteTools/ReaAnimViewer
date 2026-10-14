@@ -277,7 +277,15 @@ static void TestShortcutDescWheelsAndNames()
     // The keypad: REAPER's "NumPad +", Windows' English "Num +", French "+ (PAVÉ NUM.)" / "PAVE NUM. 0".
     CHECK(key("NumPad +", 0x6B, 0));
     CHECK(key("Ctrl+NumPad 3", 0x63, kViewModCtrl));
-    CHECK(key("Num Del", 0x6E, 0));
+    CHECK(key("Num .", 0x6E, 0));
+    CHECK(key("Num ,", 0x6E, 0));
+    // Names whose key is not sure are not followed (better unfollowed than wrong).
+    CHECK(!ParseReaperShortcutDesc("Num Del", &g));
+    CHECK(!ParseReaperShortcutDesc("SUPPR (PAV\xC3\x89 NUM.)", &g));
+    CHECK(!ParseReaperShortcutDesc("ATTN", &g));
+    CHECK(!ParseReaperShortcutDesc("Menu", &g));
+    CHECK(key("Pause", 0x13, 0));
+    CHECK(key("Apps", 0x5D, 0));
     CHECK(key("+ (PAV\xC3\x89 NUM.)", 0x6B, 0));
     CHECK(key("- (PAVE NUM.)", 0x6D, 0));
     CHECK(key("Alt+7 (PAV\xC3\x89 NUM.)", 0x67, kViewModAlt));
@@ -322,6 +330,33 @@ static void TestShortcutDescWheelsAndNames()
     ApplyListedViewGestures(n);
     CHECK(n.wheel[0] == ViewWheelBindingOf(990));
     CHECK(ViewCommandIds().size() == 16);
+    // 13-60b review: REAPER's lookups read for every view action, it lists Mousewheel on 989 only: the
+    // table's other defaults are not REAPER's, they go (Ctrl+wheel no longer zooms vertically).
+    ViewKeymap u = ParseViewKeymap("");
+    u.listed = {{"989", mw}};
+    for (int id : ViewCommandIds()) u.looked_up.push_back(std::to_string(id));
+    CHECK(KbGesturesOf(u, "1000").empty());
+    CHECK(KbGesturesOf(u, "990").empty());
+    CHECK(KbGesturesOf(u, "989").size() == 1);
+    ApplyListedViewGestures(u);
+    CHECK(u.wheel[kViewModCtrl].action == ViewWheelAction::None);
+    CHECK(u.wheel[kViewModAlt].action == ViewWheelAction::None);
+    CHECK(u.hwheel[0].action == ViewWheelAction::None);
+    CHECK(u.wheel[0] == ViewWheelBindingOf(989));
+    CHECK(u.zoom_in.empty() && u.zoom_out.empty());
+    // ...but a binding the file holds stays (the file decides that input), and before the lookups are
+    // read (looked_up empty) the table stands in: r above kept Ctrl+wheel.
+    ViewKeymap f = ParseViewKeymap("KEY 255 249 1000 0\n");
+    f.listed = {{"989", mw}};
+    for (int id : ViewCommandIds()) f.looked_up.push_back(std::to_string(id));
+    ApplyListedViewGestures(f);
+    CHECK(f.wheel[kViewModCtrl] == ViewWheelBindingOf(1000));
+    CHECK(KbGesturesOf(f, "1000").size() == 1);
+    // Only the commands looked up: 1000 not read, its default holds.
+    ViewKeymap o = ParseViewKeymap("");
+    o.looked_up = {"990"};
+    ApplyListedViewGestures(o);
+    CHECK(o.wheel[0].action == ViewWheelAction::None && o.wheel[kViewModCtrl] == ViewWheelBindingOf(1000));
 }
 
 int main()

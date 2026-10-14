@@ -182,6 +182,24 @@ bool GestureOfLine(const KbLine& l, KbGesture* out)
 // The lines in force: the defaults the file has not taken over, then the file's. 13-60b: a default
 // REAPER itself lists for another action (`listed`) is taken over too (REAPER's word wins over the
 // table RAV knows: a REAPER whose defaults differ, or a binding the file does not show).
+bool LookedUp(const ViewKeymap& k, const std::string& cmd)
+{
+    return std::any_of(k.looked_up.begin(), k.looked_up.end(), [&cmd](const std::string& c) { return SameCommandId(c, cmd); });
+}
+
+bool Listed(const ViewKeymap& k, const std::string& cmd, const KbGesture& g)
+{
+    return std::any_of(k.listed.begin(), k.listed.end(), [&cmd, &g](const std::pair<std::string, KbGesture>& l) {
+        return l.second == g && SameCommandId(l.first, cmd);
+    });
+}
+
+// 13-60b review: a default REAPER's list (read for its command) does not hold is not REAPER's binding.
+bool DefaultUnlisted(const ViewKeymap& k, const KbLine& d, const KbGesture& dg)
+{
+    return LookedUp(k, d.cmd) && !Listed(k, d.cmd, dg);
+}
+
 std::vector<KbLine> LinesInForce(const ViewKeymap& k)
 {
     std::vector<KbLine> all;
@@ -193,6 +211,7 @@ std::vector<KbLine> LinesInForce(const ViewKeymap& k)
             taken = std::any_of(k.listed.begin(), k.listed.end(), [&d, &dg](const std::pair<std::string, KbGesture>& l) {
                 return l.second == dg && !SameCommandId(l.first, d.cmd);
             });
+        if (!taken && GestureOfLine(d, &dg) && DefaultUnlisted(k, d, dg)) taken = true;
         if (!taken) all.push_back(d);
     }
     all.insert(all.end(), k.lines.begin(), k.lines.end());
@@ -225,6 +244,25 @@ const std::vector<int>& ViewCommandIds()
 
 void ApplyListedViewGestures(ViewKeymap& k)
 {
+    // 13-60b review: first the table's defaults REAPER's list does not hold (for a command it was read
+    // for) go, unless the file binds that input itself (the file decides it then).
+    for (const KbLine& d : DefaultKbLines()) {
+        KbGesture dg;
+        if (!GestureOfLine(d, &dg) || !DefaultUnlisted(k, d, dg)) continue;
+        if (std::any_of(k.lines.begin(), k.lines.end(), [&d](const KbLine& l) { return l.mod == d.mod && l.key == d.key; }))
+            continue;
+        const int cmd = std::atoi(d.cmd.c_str());
+        if (dg.input == KbInput::Wheel || dg.input == KbInput::HWheel) {
+            ViewWheelBinding& b = (dg.input == KbInput::Wheel ? k.wheel : k.hwheel)[dg.mods & 7];
+            if (b == ViewWheelBindingOf(cmd)) b = ViewWheelBinding{};
+        } else {
+            ViewKeyBinding b;
+            b.is_char = dg.is_char;
+            b.code = dg.code;
+            b.mods = dg.mods & 7;
+            Remove(cmd == 1012 ? k.zoom_in : k.zoom_out, b);
+        }
+    }
     for (const auto& l : k.listed) {
         const std::string id = NormalizeCommandId(l.first);
         if (id.empty() || id[0] == '_') continue;
@@ -324,13 +362,15 @@ const NamedKey kNamedKeys[] = {
     {"pg suiv", 0x22}, {"pg.suiv.", 0x22},
     {"left", 0x25}, {"gauche", 0x25}, {"up", 0x26}, {"haut", 0x26}, {"right", 0x27}, {"droite", 0x27},
     {"down", 0x28}, {"bas", 0x28},
-    {"pause", 0x13}, {"attn", 0x13},
+    {"pause", 0x13},  // not "ATTN": that key is Attn (VK_ATTN), not Pause
     {"esc", 0x1B}, {"escape", 0x1B}, {"echap", 0x1B}, {"echappement", 0x1B},
     {"help", 0x2F}, {"aide", 0x2F},
-    {"apps", 0x5D}, {"application", 0x5D}, {"menu", 0x5D},
+    {"apps", 0x5D}, {"application", 0x5D},  // not "menu": Windows calls Alt that (VK_MENU)
 };
 
-// A numeric keypad key: "Num +", "NumPad 7", "Num Del", "+ (PAVÉ NUM.)", "PAVÉ NUM. 0" (FoldName's form).
+// A numeric keypad key: "Num +", "NumPad 7", "Num .", "+ (PAVÉ NUM.)", "PAVÉ NUM. 0" (FoldName's form).
+// "Num Del" / "SUPPR (PAVÉ NUM.)" are not followed: which key they name (the keypad's decimal with
+// Num Lock off, or the Delete key it then sends) is not sure; better unfollowed than wrong.
 // 0 when the name is no keypad key (Enter on the keypad, which no virtual key tells apart, neither).
 int KeypadKey(const std::string& lk)
 {
@@ -348,7 +388,7 @@ int KeypadKey(const std::string& lk)
         if (rest == "*") return 0x6A;
         if (rest == "+") return 0x6B;
         if (rest == "-") return 0x6D;
-        if (rest == "." || rest == "," || rest == "del" || rest == "suppr" || rest == "suppr.") return 0x6E;
+        if (rest == "." || rest == ",") return 0x6E;
         if (rest == "/") return 0x6F;
         return 0;
     }

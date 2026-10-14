@@ -58,6 +58,7 @@ std::string g_refusal;
 int  g_hover_frame = -100;  // a timeline was under the mouse at this frame (ViewNavTakesKey)
 int  g_wheel_frame = -100;  // ...and took the wheel then (ViewNavClaimsWheel)
 bool g_wheel_yields = false;  // ...leaving the plain / Shift wheel to its panel
+int  g_wheel_v_moves = kNavMovesAllV;  // ...and the vertical moves it has (13-60b review)
 
 double Now()
 {
@@ -111,6 +112,7 @@ void FillListed()
             KbGesture g;
             if (ParseReaperShortcutDesc(d, &g)) g_reaper.listed.emplace_back(c, g);
         }
+        if (known) g_reaper.looked_up.push_back(c);  // 13-60b review: its list read (the table's guess goes)
     }
     ApplyListedViewGestures(g_reaper);
 }
@@ -450,7 +452,7 @@ bool KeysRowTakes(const ShortcutKeymap& keys, unsigned vk, bool ctrl, bool shift
 
 }  // namespace
 
-ViewNavStep ViewNavInput(bool wheel_on, bool keys_on, unsigned owner_id, bool panel_scroll_first)
+ViewNavStep ViewNavInput(bool wheel_on, bool keys_on, unsigned owner_id, bool panel_scroll_first, int v_moves)
 {
     // 13-60 review: one read of the map and of the KEYS rows' keymap, then a copy: nothing in the walk
     // below can replace the map it walks.
@@ -462,14 +464,15 @@ ViewNavStep ViewNavInput(bool wheel_on, bool keys_on, unsigned owner_id, bool pa
         g_hover_frame = ImGui::GetFrameCount();
         g_wheel_frame = g_hover_frame;
         g_wheel_yields = panel_scroll_first;
+        g_wheel_v_moves = v_moves;
         if (panel_scroll_first && ViewNavWheelYields(mods)) wheel_on = false;  // the panel scrolls
     }
     if (wheel_on) {
         // The wheel this view runs is not ImGui's to scroll a window with (from the next frame: the
         // owner is read when the frame starts; the view stays under the mouse meanwhile).
         if (owner_id != 0) {
-            if (ViewNavWheelBound(m, mods, false)) ImGui::SetKeyOwner(ImGuiKey_MouseWheelY, owner_id);
-            if (ViewNavWheelBound(m, mods, true)) ImGui::SetKeyOwner(ImGuiKey_MouseWheelX, owner_id);
+            if (ViewNavWheelRuns(m, mods, false, v_moves)) ImGui::SetKeyOwner(ImGuiKey_MouseWheelY, owner_id);
+            if (ViewNavWheelRuns(m, mods, true, v_moves)) ImGui::SetKeyOwner(ImGuiKey_MouseWheelX, owner_id);
         }
     }
     std::vector<int> rows;
@@ -490,7 +493,10 @@ ViewNavStep ViewNavInput(bool wheel_on, bool keys_on, unsigned owner_id, bool pa
             if (hit) rows.push_back(k.second);
         }
     }
-    return ViewNavStepFor(m, mods, wheel_on ? io.MouseWheel : 0.0f, wheel_on ? io.MouseWheelH : 0.0f, rows);
+    // 13-60b review: a wheel bound to a vertical move the view does not have is left alone (not claimed).
+    const bool wy = wheel_on && ViewNavWheelRuns(m, mods, false, v_moves);
+    const bool wx = wheel_on && ViewNavWheelRuns(m, mods, true, v_moves);
+    return ViewNavStepFor(m, mods, wy ? io.MouseWheel : 0.0f, wx ? io.MouseWheelH : 0.0f, rows);
 }
 
 int ViewNavRowForKeyDown(unsigned vk, bool ctrl, bool shift, bool alt)
@@ -524,7 +530,7 @@ bool ViewNavClaimsWheel(bool horizontal, bool ctrl, bool shift, bool alt)
     if (!ImGui::GetCurrentContext() || g_wheel_frame < ImGui::GetFrameCount() - 1) return false;
     const int mods = ModsOf(ctrl, shift, alt);
     if (g_wheel_yields && ViewNavWheelYields(mods)) return false;
-    return ViewNavWheelBound(CurrentViewNav(), mods, horizontal);
+    return ViewNavWheelRuns(CurrentViewNav(), mods, horizontal, g_wheel_v_moves);
 }
 
 }  // namespace rav

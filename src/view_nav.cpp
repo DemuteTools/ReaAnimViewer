@@ -241,6 +241,14 @@ bool ViewNavWheelBound(const ViewNavMap& m, int mods, bool horizontal)
     return (horizontal ? m.hwheel : m.wheel)[mods & 7].row >= 0;
 }
 
+bool ViewNavWheelRuns(const ViewNavMap& m, int mods, bool horizontal, int v_moves)
+{
+    const int row = (horizontal ? m.hwheel : m.wheel)[mods & 7].row;
+    if (row == kNavScrollV) return (v_moves & kNavMovesScrollV) != 0;
+    if (row == kNavZoomV) return (v_moves & kNavMovesZoomV) != 0;
+    return row >= 0;
+}
+
 bool ViewNavWheelYields(int mods)
 {
     return (mods & (kViewModCtrl | kViewModAlt)) == 0;

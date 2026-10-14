@@ -76,6 +76,17 @@ static void TestLinkedFollowsFile()
     s = ViewNavStepFor(m, kViewModShift, 1.0f, 0.0f, {});
     CHECK(Near(s.zoom_h, 1.0) && Near(s.scroll_h, 0.0));
     CHECK(ViewNavWheelBound(m, 0, false) && !ViewNavWheelBound(m, kViewModAlt, false));
+    // 13-60b review: a view without vertical moves (a strip) does not claim a wheel bound to one.
+    const ViewKeymap v = ParseViewKeymap("KEY 255 248 989 0\n");  // the plain wheel = Scroll vertically
+    const ViewNavMap vm = ResolveViewNav(v, ViewNavChoices{});
+    CHECK(ViewNavWheelRuns(vm, 0, false, kNavMovesAllV));
+    CHECK(ViewNavWheelRuns(vm, 0, false, kNavMovesScrollV));
+    CHECK(!ViewNavWheelRuns(vm, 0, false, kNavMovesZoomV));
+    CHECK(!ViewNavWheelRuns(vm, 0, false, 0));
+    CHECK(!ViewNavWheelRuns(vm, kViewModCtrl, false, 0));  // Ctrl+wheel = Zoom vertically (the table)
+    CHECK(ViewNavWheelRuns(vm, kViewModCtrl, false, kNavMovesZoomV));
+    CHECK(ViewNavWheelRuns(vm, kViewModAlt, false, 0));  // Alt+wheel = Scroll horizontally: any view
+    CHECK(!ViewNavWheelRuns(vm, kViewModShift, false, kNavMovesAllV));  // not bound
 }
 
 // Own rows: the user's gesture replaces REAPER's for that row and takes it from a linked row.

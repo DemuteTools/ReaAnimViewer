@@ -89,6 +89,10 @@ struct ViewKeymap {
     // command: they add REAPER's built-in default keys, which the file does not hold. 13-60b: its wheels
     // too, and REAPER's view actions' always (ApplyListedViewGestures).
     std::vector<std::pair<std::string, KbGesture>> listed;
+    // 13-60b review: the commands REAPER's list was read for (its lookups ready, the action found).
+    // For those, a default of the table REAPER does not list is not in force: REAPER's list is the
+    // truth once read; the table only stands in while it cannot be read.
+    std::vector<std::string> looked_up;
 };
 
 // REAPER's defaults (above).
@@ -129,7 +133,9 @@ bool ParseReaperShortcutDesc(const std::string& desc, KbGesture* out);
 const std::vector<int>& ViewCommandIds();
 // 13-60b: what REAPER lists for its view actions (`listed`) over the file and the default table: a
 // listed wheel runs that view action (whatever the table says), a listed key zooms in / out. REAPER's
-// own list is what is in force; the table is RAV's guess of its defaults.
+// own list is what is in force; the table is RAV's guess of its defaults. 13-60b review: a default of
+// the table for a command looked up (`looked_up`) that REAPER does not list for it is dropped (unless
+// reaper-kb.ini binds that input itself).
 void ApplyListedViewGestures(ViewKeymap& k);
 
 }  // namespace rav

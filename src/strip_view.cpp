@@ -96,9 +96,10 @@ StripWindow StripViewUpdate(StripViewState& s, double item_start, double item_en
     // wheel and zoom keys, or his own) anywhere over the strip window (lane, ruler, empty band); its
     // keys while it is under the mouse. Zoom about the time under the mouse (the lane's nearest edge
     // when the mouse is beside it). The viewer window keeps the wheel from the 3D view and REAPER
-    // (viewer_window.cpp). The strip has no vertical view: Scroll / Zoom vertically do nothing here.
+    // (viewer_window.cpp). The strip has no vertical view: a wheel bound to Scroll / Zoom vertically is
+    // not claimed here (13-60b review: it goes on to the panel or REAPER, never eaten).
     {
-        const ViewNavStep st = ViewNavInput(window_hovered, window_hovered);
+        const ViewNavStep st = ViewNavInput(window_hovered, window_hovered, 0, false, 0);
         if (st.zoom_h != 0.0 && !hold) {
             const double t_fixed = s.v0 + f * s.span;
             VideoStripZoom(s.v0, s.span, t_fixed, st.zoom_h, min_span, max_span, &s.v0, &s.span);

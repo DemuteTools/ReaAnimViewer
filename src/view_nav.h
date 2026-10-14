@@ -148,6 +148,13 @@ ViewNavStep ViewNavStepFor(const ViewNavMap& m, int mods, float wheel, float hwh
 // Does a wheel with these modifiers run an action? (Then the view takes it from ImGui's scrolling.)
 bool ViewNavWheelBound(const ViewNavMap& m, int mods, bool horizontal);
 
+// 13-60b review: the vertical moves a view has (ViewNavInput's `v_moves`). A view with nothing to scroll
+// (or zoom) vertically -- the Video / Tagging strips, a Blend whose lanes all fit -- does not claim a
+// wheel bound to that move: it goes on to the panel under it, or to REAPER.
+enum : int { kNavMovesScrollV = 1, kNavMovesZoomV = 2, kNavMovesAllV = 3 };
+// ViewNavWheelBound, and the action is one the view has.
+bool ViewNavWheelRuns(const ViewNavMap& m, int mods, bool horizontal, int v_moves);
+
 // A timeline inside a scrolling panel (a Blend's lanes in the Sound panel) leaves the wheel Dear
 // ImGui scrolls panels with (plain or Shift, no Ctrl / Alt) to the panel until the user works in it
 // (zoomed in, or clicked): true for those modifiers.
@@ -253,10 +260,12 @@ const char* ViewNavRefusal();
 // `keys_on` (it is hovered, or has the focus). A view hovered marks itself (the accelerator hook then
 // hands it its zoom keys: ViewNavTakesKey) and, when the wheel runs an action, takes the wheel from
 // Dear ImGui's own scrolling (`owner_id`, the view's ImGui id; 0 = no claim). `panel_scroll_first`:
-// the plain / Shift wheel stays the panel's (ViewNavWheelYields).
+// the plain / Shift wheel stays the panel's (ViewNavWheelYields). `v_moves`: the vertical moves the view
+// has (kNavMoves*): a wheel bound to another is not claimed, the view gets no move from it.
 // The claim lags one frame (ImGui reads a key's owner as the frame starts): the first notch over a
 // timeline just entered may still scroll the panel. Accepted (13-45 review).
-ViewNavStep ViewNavInput(bool wheel_on, bool keys_on, unsigned owner_id = 0, bool panel_scroll_first = false);
+ViewNavStep ViewNavInput(bool wheel_on, bool keys_on, unsigned owner_id = 0, bool panel_scroll_first = false,
+                         int v_moves = kNavMovesAllV);
 // A key a hovered timeline runs (the accelerator hook claims it for the viewer).
 bool ViewNavTakesKey(unsigned vk, bool ctrl, bool shift, bool alt);
 // The row a key down runs (its virtual key, or the character it types on this keyboard layout), -1.

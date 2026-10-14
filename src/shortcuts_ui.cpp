@@ -313,7 +313,8 @@ bool KeyRow(int id)
         v.source = std::string("RAV only") + (custom ? " \xC2\xB7 default " + FormatShortcut(def.def, &LayoutKeyName) : std::string());
     }
     v.reaper_tip = std::string("Follow REAPER: the keys you give \"") + def.action_desc +
-                   "\" in REAPER's Actions list, read live (REAPER runs it too, outside the viewer)";
+                   "\" in REAPER's Actions list, read live (REAPER runs it too, outside the viewer). A key you give "
+                   "the RAV action in REAPER is no longer REAPER's in the main window (one action per key)";
     v.own_tip = "RAV's own key (double-click the row to record one), or a REAPER action you pick with the chain";
     bool record = false;
     switch (EditRow(id, ShortcutRecordingId() == id, v)) {

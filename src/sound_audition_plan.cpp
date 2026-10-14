@@ -223,8 +223,13 @@ std::vector<AuditionVoice> PartAuditionVoices(const SoundLibrary& lib, const Sou
     std::vector<AuditionVoice> out;
     if (variation < 0 || static_cast<size_t>(variation) >= n.sound.frames.size()) return out;
     const SoundFrame& f = n.sound.frames[static_cast<size_t>(variation)];
-    const double      gain = GainFromRoot(lib, n) + FrameGainDb(f, part_value) +  // 13-28: the part's own gain
-                        PartGainDb(n.sound, part_value);                           // 13-62: its gain setting
+    // 13-62h review (B2): a Sound placed from its zones plays as Populate places it: each piece at its zone's gain
+    // (PieceApply::db) on the root's volumes, the old frame / part gains not added, spaced in heard time.
+    const bool        zoned = PlacedFromZones(n.sound) && n.sound.mode != DetectMode::Takes;
+    const double      gain = GainFromRoot(lib, n) +
+                        (zoned ? 0.0
+                               : FrameGainDb(f, part_value) +          // 13-28: the part's own gain
+                                     PartGainDb(n.sound, part_value));  // 13-62: its gain setting
     const MonoMode    mono = PartMono(n.sound, part_value);                        // 13-62: its own, else the Sound's
     if (n.sound.mode == DetectMode::Takes) {  // A8: the take whole
         AuditionVoice voice;
@@ -249,8 +254,9 @@ std::vector<AuditionVoice> PartAuditionVoices(const SoundLibrary& lib, const Sou
         voice.variation = variation;
         voice.start_s = pa.slice.start_offs;
         voice.length_s = pa.slice.length;
-        voice.delay_ms = delay_ms + (pa.slice.start_offs - pieces.front().slice.start_offs) * 1000.0;
-        voice.gain_db = gain;
+        voice.delay_ms = delay_ms + (zoned ? pa.from_anchor - pieces.front().from_anchor
+                                           : pa.slice.start_offs - pieces.front().slice.start_offs) * 1000.0;
+        voice.gain_db = gain + (zoned ? pa.db : 0.0);
         voice.fade_in_s = pa.fades.set_in ? pa.fades.in : 0.0;
         voice.fade_out_s = pa.fades.set_out ? pa.fades.out : 0.0;
         voice.fade_in_shape = pa.fades.set_in ? pa.fades.in_shape : 0;
@@ -1027,24 +1033,40 @@ EditPlay EditPlayFrom(const SoundData& d, double from, double to, const PartList
         if (z && !z->IsGap()) {
             s.z = p.z;
             // The envelope of the zone's whole heard stretch (ZoneEnv): a side a Gap holds ramps over its crossfade.
-            const EditZone* lg = ZoneOf(d, GapBefore(d, p.z));
-            const EditZone* rg = ZoneOf(d, GapAfter(d, p.z));
-            s.lo = lg ? lg->b - lg->xr : z->a;
-            s.hi = rg ? rg->a + rg->xl : z->b;
-            s.fin = lg ? lg->xl + lg->xr : ZoneFade(d, p.z, -1).s;
-            s.fout = rg ? rg->xl + rg->xr : ZoneFade(d, p.z, 1).s;
+            const ZoneRef   lgr = GapBefore(d, p.z), rgr = GapAfter(d, p.z);
+            const EditZone* lg = ZoneOf(d, lgr);
+            const EditZone* rg = ZoneOf(d, rgr);
             const SoundFrame* f = FrameOfZone(d, p.z);
+            auto heard_part = [&](const ZoneRef& q) {
+                const EditZone* qz = ZoneOf(d, q);
+                return qz && (!listening || PartHeard(*listen, qz->part));
+            };
             s.heard = f && f->on && (!listening || PartHeard(*listen, z->part));
+            // 13-62h review (R3): a heard zone whose Gap leads to a silent one (muted / not soloed) does not play into
+            // the Gap: that side is cut at the Gap's edge with the At cuts fade (as Populate does when the zone
+            // across is not placed); its heard time is kept.
+            const bool cut_in = s.heard && lg && !heard_part(GapLeft(d, lgr));
+            const bool cut_out = s.heard && rg && !heard_part(GapRight(d, rgr));
+            s.lo = lg && !cut_in ? lg->b - lg->xr : z->a;
+            s.hi = rg && !cut_out ? rg->a + rg->xl : z->b;
+            s.fin = lg && !cut_in ? lg->xl + lg->xr : (cut_in ? ZoneCutFade(d, p.z, -1).s : ZoneFade(d, p.z, -1).s);
+            s.fout = rg && !cut_out ? rg->xl + rg->xr : (cut_out ? ZoneCutFade(d, p.z, 1).s : ZoneFade(d, p.z, 1).s);
+            if (cut_in && s.a < z->a) {
+                s.at += z->a - s.a;
+                s.a = z->a;
+            }
+            if (cut_out && s.b > z->b) s.b = z->b;
+            if (s.heard && !(s.b > s.a)) s.heard = false;  // only its jumped stretch was in the range
             if (s.heard) {
                 AuditionVoice v;
                 v.variation = p.z.frame;
-                v.start_s = p.a;
-                v.length_s = p.b - p.a;
-                v.delay_ms = at * 1000.0;
+                v.start_s = s.a;
+                v.length_s = s.b - s.a;
+                v.delay_ms = s.at * 1000.0;
                 v.gain_db = z->db;
                 v.fade_in_s = s.fin;
                 v.fade_out_s = s.fout;
-                v.fade_from_s = p.a - s.lo;
+                v.fade_from_s = s.a - s.lo;
                 v.fade_span_s = s.hi - s.lo;
                 v.piece = nth[p.z.frame]++;
                 v.mono = PartMono(d, z->part);

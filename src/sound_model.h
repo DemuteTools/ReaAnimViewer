@@ -74,6 +74,20 @@ struct EditZone {
     double                                           db = 0.0;
     double                                           xl = 0.0, xr = 0.0;  // Gap crossfade sides (s)
     std::vector<std::pair<std::string, std::string>> kept;                // unknown fields of its `fzone` line
+    // 13-62h review (R2): its automatic snap as measured on the file's peaks (`t`, absolute: its part's Sync point +
+    // Offset) and what it was measured for (its edges, the Sync mode, the Attack threshold, the Offset). Used while
+    // they still hold, so a placement never depends on whether the peaks can be read (ZoneSnap; `as` in its fzone).
+    struct AutoSnap {
+        bool   set = false;
+        double t = 0.0, a = 0.0, b = 0.0, thr = 0.0, off = 0.0;
+        int    mode = 0;
+        bool operator==(const AutoSnap& o) const
+        {
+            return set == o.set && (!set || (t == o.t && a == o.a && b == o.b && thr == o.thr && off == o.off && mode == o.mode));
+        }
+        bool operator!=(const AutoSnap& o) const { return !(*this == o); }
+    };
+    AutoSnap                                         auto_snap;
     bool IsGap() const { return part.empty(); }
 };
 

@@ -501,6 +501,44 @@ static void TestLanes()
     CHECK(lanes.size() == 2 && got[0] == 0 && got[1] == 1);
 }
 
+// 13-62h review (R1): two pieces of one placement crossfading at a Gap stay on one lane whatever spills later.
+static LaneSpan Piece(double a, double b, const std::string& group, double fin, double fout)
+{
+    LaneSpan s{a, b, -1};
+    s.group = group;
+    s.fade_in = fin;
+    s.fade_out = fout;
+    return s;
+}
+
+static void TestCrossfadeButted()
+{
+    PlacedTag t;
+    t.owner = "{A}";
+    t.rid = "r1";
+    t.t = 1.25;
+    t.node = "n";
+    const std::string g = PlacementGroup(t);
+    CHECK(!g.empty() && g != PlacementGroup(PlacedTag{}) && PlacementGroup(PlacedTag{}).empty());
+    PlacedTag u = t;
+    u.t = 1.30;
+    CHECK(PlacementGroup(u) != g);
+    // Heel [10.0, 10.305] fading out over its last 10 ms, Heel [10.295, 10.55] fading in over 10 ms: one placement.
+    const LaneSpan L = Piece(10.0, 10.305, g, 0.005, 0.010), R = Piece(10.295, 10.55, g, 0.010, 0.005);
+    CHECK(MayCrossfade(L, R) && MayCrossfade(R, L) && CrossfadeButted(L, R) && !SpansOverlap(L, R) && !SpansOverlap(R, L));
+    // another placement, no group, or an overlap longer than the fades: an overlap
+    CHECK(SpansOverlap(L, Piece(10.295, 10.55, PlacementGroup(u), 0.010, 0.005)));
+    CHECK(SpansOverlap(L, Piece(10.295, 10.55, "", 0.010, 0.005)));
+    CHECK(SpansOverlap(L, Piece(10.290, 10.55, g, 0.010, 0.005)));
+    CHECK(SpansOverlap(Piece(10.0, 10.6, g, 0.0, 0.6), Piece(10.1, 10.5, g, 0.4, 0.0)));  // inside it
+    // Another event spills on the track: the pair keeps one lane, the new item goes to another.
+    std::vector<std::vector<LaneSpan>> lanes;
+    std::vector<int>                   got = SpillOnLanes({L, R, Piece(10.2, 10.4, "x", 0.0, 0.0)}, &lanes);
+    CHECK(lanes.size() == 2 && got[0] == 0 && got[1] == 0 && got[2] == 1);
+    // and a later fix of either piece finds it fits next to the other
+    CHECK(FitsLane({L}, R) && FitsLane({R}, L));
+}
+
 // The spill mover choice (B6, B6b, B7b) and the moved-by-user rule.
 static void TestSpillPlan()
 {
@@ -688,6 +726,7 @@ static void TestPlanTrackRename()
 
 int main()
 {
+    TestCrossfadeButted();
     TestPlanTrackRename();
     TestSeparator();
     TestNameForMark();

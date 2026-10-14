@@ -444,7 +444,7 @@ PlaceResult PlaceFileImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* 
 
     std::vector<PlacedTag> tags;    // landed and written once every piece is made (CrossfadeAsButted)
     std::vector<bool>      reused;  // the kept item
-    bool                   failed = false;  // r.error said; the pieces made so far are still landed and tagged
+    bool                   failed = false;  // r.error said; the pieces made so far are landed, tagged and returned
     for (size_t k = 0; k < pieces.size(); ++k) {
         const FileItemFields& fld = fields[k];
         if (!fld.ok) continue;  // a piece outside the file: the others still play
@@ -549,7 +549,12 @@ PlaceResult PlaceFileImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* 
             WritePlacedTag(r.items[k], tags[k]);
         }
     }
-    if (failed) return r;
+    // 13-62h review: on a failure part way, the pieces made so far are a placement like any other (ok, so the caller
+    // records them; r.error says what is missing), never tagged orphans. None made: not placed.
+    if (failed) {
+        r.ok = !r.items.empty();
+        return r;
+    }
     r.ok = !r.items.empty();
     if (!r.ok && r.error.empty()) r.error = "the variation lies outside the file";
     return r;

@@ -315,8 +315,8 @@ static void TestZonePlacement()
         // ItemGainFor(gain + db) is what each item gets (sound_place.cpp).
         CHECK(pa.size() == 2 && Near(ItemGainFor(0.0 + pa[1].db), std::pow(10.0, 0.1), 1e-12));
     }
-    // A whole-variation event over Heel · Gap · Toe: every part zone; a Toe event after the Gap starts xr before
-    // the Gap's end, the crossfade as its fade in, anchored on it.
+    // A whole-variation event over Heel · Gap · Toe: every part zone. 13-62h review (R3): a Toe event alone does not
+    // crossfade against nothing: its item starts at the Gap's end with the At cuts fade, anchored on it.
     {
         SoundData d = Zoned({Zn(0.10, 0.30, "heel"), Zn(0.30, 0.35, "", 0.004, 0.004), Zn(0.35, 0.60, "toe")});
         CHECK(ZonesProblem(d, 0.0).empty());
@@ -324,12 +324,16 @@ static void TestZonePlacement()
         CHECK(pa.size() == 2 && Near(pa[0].slice.length, 0.204) && Near(pa[1].slice.start_offs, 0.346) &&
               Near(pa[1].from_anchor, 0.196) && Near(pa[0].fades.out, 0.008) && Near(pa[1].fades.in, 0.008));
         pa = PieceApplyFor(d, 0, "toe");
-        CHECK(pa.size() == 1 && pa[0].anchor && Near(pa[0].slice.start_offs, 0.346) && Near(pa[0].fades.in, 0.008));
+        CHECK(pa.size() == 1 && pa[0].anchor && Near(pa[0].slice.start_offs, 0.35) && Near(pa[0].slice.length, 0.25) &&
+              Near(pa[0].fades.in, kDefaultCutFade));
+        // and the Heel event ends at the Gap's start, the At cuts fade out
+        pa = PieceApplyFor(d, 0, "heel");
+        CHECK(pa.size() == 1 && Near(pa[0].slice.start_offs + pa[0].slice.length, 0.30) && Near(pa[0].fades.out, kDefaultCutFade));
         // Its own snap, measured from the piece's start.
         d.frames[0].zones[2].snap = 0.40;
         CHECK(!PieceSnapNeedsPeaks(d, 0, "toe"));
         pa = PieceApplyFor(d, 0, "toe");
-        CHECK(pa.size() == 1 && Near(pa[0].slice.snap_offset, 0.054));
+        CHECK(pa.size() == 1 && Near(pa[0].slice.snap_offset, 0.05));
     }
     // Snap = ZoneSnap on the anchor zone: without peaks Attack = its onset + the offset (-2 ms); with peaks the
     // attack measured in it.
@@ -348,6 +352,24 @@ static void TestZonePlacement()
         // The anchor of a whole event = the first zone; the others carry no snap.
         pa = PieceApplyFor(d, 0, "", false, &pk);
         CHECK(pa.size() == 2 && pa[0].anchor && !pa[1].anchor && Near(pa[1].slice.snap_offset, 0.0));
+        // 13-62h review (R2): once the Edit window laid the zones out with the peaks, the measured snap is stored:
+        // Populate needs no peaks and places the same snap whether they can be read or not.
+        SoundData m = d;
+        for (EditZone& z : m.frames[0].zones) z.a_hand = z.b_hand = true;
+        RelayoutZones(m, &pk, 2.0);
+        CHECK(!PieceSnapNeedsPeaks(m, 0, "heel"));
+        pa = PieceApplyFor(m, 0, "heel");
+        CHECK(pa.size() == 1 && Near(pa[0].slice.snap_offset, 0.098, 1e-6));
+        pa = PieceApplyFor(m, 0, "heel", false, &pk);
+        CHECK(pa.size() == 1 && Near(pa[0].slice.snap_offset, 0.098, 1e-6));
+    }
+    // 13-62h review (R3): Toe [0.10, 0.30] · Gap [0.30, 0.35] · Heel [0.35, 0.50] · Toe [0.60, 0.80]: a Toe event's
+    // first item ends at the Gap's start (At cuts fade), the second still comes the jumped 0.05 s earlier.
+    {
+        SoundData d = Zoned({Zn(0.10, 0.30, "toe"), Zn(0.30, 0.35, "", 0.004, 0.004), Zn(0.35, 0.50, "heel"), Zn(0.60, 0.80, "toe")});
+        d.cut_fade = 0.002;
+        const std::vector<PieceApply> pa = PieceApplyFor(d, 0, "toe");
+        CHECK(pa.size() == 2 && Near(pa[0].slice.length, 0.20) && Near(pa[0].fades.out, 0.002) && Near(pa[1].from_anchor, 0.45));
     }
     // A part with no zone in a variation: nothing placed; an off variation: nothing; Takes: nothing (A8).
     {

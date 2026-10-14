@@ -93,7 +93,7 @@ bool SameZone(const EditZone& x, const EditZone& y)
     return x.a == y.a && x.b == y.b && x.part == y.part && x.slot_a == y.slot_a && x.slot_b == y.slot_b &&
            x.a_hand == y.a_hand && x.b_hand == y.b_hand && x.a_auto_cut == y.a_auto_cut && x.onset == y.onset &&
            x.snap == y.snap && x.fade_in == y.fade_in && x.fade_out == y.fade_out && x.db == y.db && x.xl == y.xl &&
-           x.xr == y.xr && x.kept == y.kept;
+           x.xr == y.xr && x.kept == y.kept && x.auto_snap == y.auto_snap;
 }
 
 // What a gesture compares to tell whether it changed anything: every frame's zones, edges and on.
@@ -409,6 +409,23 @@ void Work::sanitize()
             g.slot_b = g.b;
             ++gi;
         }
+        // 13-62h review (B3): the Gap crossfades reaching into a part zone (its left Gap's xl, its right Gap's xr)
+        // together never exceed its length: at most two voices ever overlap, no fade is ever rescaled. Both cut by
+        // the same factor (a gesture that sets one, SetGapXfade / MakeGap, gives it only the room left first).
+        for (size_t i = 0; i < zs.size(); ++i) {
+            if (zs[i].z.IsGap()) continue;
+            const int    lg = gapBefore(static_cast<int>(i)), rg = gapAfter(static_cast<int>(i));
+            const double len = zs[i].z.b - zs[i].z.a;
+            double*      xl = lg >= 0 ? &Z(lg).xl : nullptr;
+            double*      xr = rg >= 0 ? &Z(rg).xr : nullptr;
+            const double sum = (xl ? *xl : 0.0) + (xr ? *xr : 0.0);
+            if (sum > len + kTiny && sum > 0.0) {
+                const double k = std::max(len, 0.0) / sum;
+                if (xl) *xl *= k;
+                if (xr) *xr *= k;
+                changed = true;
+            }
+        }
         // A part zone's slot always holds it; its snap inside it.
         for (WZ& w : zs) {
             EditZone& z = w.z;
@@ -597,12 +614,51 @@ int IdOf(const SoundData& d, const ZoneRef& r)
     return v.empty() ? -1 : v.front();
 }
 
+// 13-62h review (R2): the zone's measured automatic snap still holds (measured for its edges, its part's Sync mode,
+// the Attack threshold and its Offset as they are now).
+bool AutoSnapHolds(const SoundData& d, const EditZone& z)
+{
+    const EditZone::AutoSnap& m = z.auto_snap;
+    if (!m.set || z.IsGap() || !std::isfinite(m.t)) return false;
+    const double off_ms = PartSyncOffsetMs(d, z.part);
+    const double off = std::isfinite(off_ms) ? off_ms : 0.0;
+    return std::fabs(m.a - z.a) <= kTiny && std::fabs(m.b - z.b) <= kTiny &&
+           m.mode == static_cast<int>(PartSyncMode(d, z.part)) && m.thr == d.silence.threshold_db && m.off == off;
+}
+
+// 13-62h review (R2): with the peaks, every part zone of an on variation that has no snap of its own (and whose
+// part's Sync point reads the audio: Attack / Peak) gets its automatic snap measured and stored, unless the stored
+// one still holds.
+void MeasureAutoSnaps(SoundData& d, const PeakView* peaks)
+{
+    if (!HasPeaks(peaks)) return;
+    for (SoundFrame& f : d.frames) {
+        if (!f.on) continue;
+        for (EditZone& z : f.zones) {
+            if (z.IsGap() || z.snap || AutoSnapHolds(d, z)) continue;  // only what moved (a drag stays cheap)
+            const SyncMode mode = PartSyncMode(d, z.part);
+            if (mode == SyncMode::SliceStart) continue;
+            const double off_ms = PartSyncOffsetMs(d, z.part);
+            EditZone::AutoSnap m;
+            m.set = true;
+            m.t = Clamp(AutoSync(d, peaks, {PartSpan{z.part, z.a, z.b - z.a}}), z.a, z.b);
+            m.a = z.a;
+            m.b = z.b;
+            m.mode = static_cast<int>(mode);
+            m.thr = d.silence.threshold_db;
+            m.off = std::isfinite(off_ms) ? off_ms : 0.0;
+            z.auto_snap = m;
+        }
+    }
+}
+
 // Ends a gesture: relayout, store, the new selection (`ids` -> refs), and whether anything changed.
 bool Finish(Work& w, const Snap& before, ZoneSel* sel, const std::vector<int>& ids)
 {
     w.relayout();
     std::map<int, ZoneRef> where;
     w.store(&where);
+    MeasureAutoSnaps(*w.d, w.peaks);
     if (sel) {
         sel->clear();
         for (int id : ids) {
@@ -702,6 +758,27 @@ std::vector<ZoneRef> ZonesOfPart(const SoundData& d, const std::string& part)
     return out;
 }
 
+namespace {
+
+// How far into the part zone `r` its side's fade reaches (side < 0 its start, > 0 its end): a Gap's crossfade
+// reaches xl into the zone after it, xr into the zone before it; any other fade its own length.
+double SideReach(const SoundData& d, const ZoneRef& r, int side)
+{
+    const EditZone* g = ZoneOf(d, side < 0 ? GapBefore(d, r) : GapAfter(d, r));
+    if (g) return side < 0 ? g->xl : g->xr;
+    return ZoneFade(d, r, side).s;
+}
+
+}  // namespace
+
+double GapReach(const SoundData& d, const ZoneRef& r, int side)
+{
+    const EditZone* z = ZoneOf(d, r);
+    if (!z || z->IsGap()) return 0.0;
+    const EditZone* g = ZoneOf(d, side < 0 ? GapBefore(d, r) : GapAfter(d, r));
+    return g ? (side < 0 ? g->xl : g->xr) : 0.0;
+}
+
 std::string ZonesProblem(const SoundData& d, double file_len)
 {
     const std::vector<ZoneRef> all = AllZones(d);
@@ -747,6 +824,13 @@ std::string ZonesProblem(const SoundData& d, double file_len)
             }
         }
     }
+    for (const ZoneRef& r : all) {  // 13-62h review (B3): what reaches into a part zone from its two sides fits in it
+        const EditZone* z = ZoneOf(d, r);
+        if (z->IsGap()) continue;
+        if (GapReach(d, r, -1) + GapReach(d, r, 1) > z->b - z->a + 1e-9 ||
+            SideReach(d, r, -1) + SideReach(d, r, 1) > z->b - z->a + 1e-9)
+            return "variation " + std::to_string(r.frame + 1) + ": a part zone's crossfades / fades together longer than it";
+    }
     if (UsesZones(d) && !d.zones.empty() && !all.empty()) return "Sound-level zones beside the variations' zones";
     for (size_t i = 0; i + 1 < all.size(); ++i) {
         const EditZone* x = ZoneOf(d, all[i]);
@@ -765,6 +849,7 @@ void RelayoutZones(SoundData& d, const PeakView* peaks, double file_len)
     Work w(d, peaks, file_len);
     w.relayout();
     w.store(nullptr);
+    MeasureAutoSnaps(d, peaks);
 }
 
 void ProposeZones(SoundData& d, int v, const PeakView* peaks)
@@ -1052,7 +1137,8 @@ ZoneFadeInfo ZoneFade(const SoundData& d, const ZoneRef& r, int side)
     const EditZone* z = ZoneOf(d, r);
     if (!z || z->IsGap()) return out;
     const bool      in = side < 0;
-    const double    half = (z->b - z->a) / 2.0;
+    // 13-62h review (B3): never more than half the zone, nor than what the other side's Gap crossfade leaves.
+    const double    half = std::max(0.0, std::min((z->b - z->a) / 2.0, (z->b - z->a) - GapReach(d, r, -side)));
     const ZoneRef   g = in ? GapBefore(d, r) : GapAfter(d, r);
     if (const EditZone* gz = ZoneOf(d, g)) {
         out.s = gz->xl + gz->xr;
@@ -1080,6 +1166,23 @@ ZoneFadeInfo ZoneFade(const SoundData& d, const ZoneRef& r, int side)
     }
     out.s = std::min(std::max(in ? d.fade_in : d.fade_out, 0.0), half);
     out.src = FadeSrc::Sound;
+    return out;
+}
+
+bool ZoneSnapStored(const SoundData& d, const ZoneRef& r)
+{
+    const EditZone* z = ZoneOf(d, r);
+    return z && !z->IsGap() && !z->snap && PartSyncMode(d, z->part) != SyncMode::SliceStart && AutoSnapHolds(d, *z);
+}
+
+ZoneFadeInfo ZoneCutFade(const SoundData& d, const ZoneRef& r, int side)
+{
+    ZoneFadeInfo    out;
+    const EditZone* z = ZoneOf(d, r);
+    if (!z || z->IsGap()) return out;
+    const double cap = std::max(0.0, std::min((z->b - z->a) / 2.0, (z->b - z->a) - GapReach(d, r, -side)));
+    out.s = std::min(std::isfinite(d.cut_fade) ? std::max(d.cut_fade, 0.0) : 0.0, cap);
+    out.src = FadeSrc::Cut;
     return out;
 }
 
@@ -1120,6 +1223,10 @@ ZoneSnapInfo ZoneSnap(const SoundData& d, const ZoneRef& r, const PeakView* peak
         return out;
     }
     const SyncMode mode = PartSyncMode(d, z->part);
+    if (mode != SyncMode::SliceStart && AutoSnapHolds(d, *z)) {  // 13-62h review (R2): as measured on the peaks
+        out.t = Clamp(z->auto_snap.t, z->a, z->b);
+        return out;
+    }
     if (HasPeaks(peaks) || mode == SyncMode::SliceStart) {
         out.t = Clamp(AutoSync(d, HasPeaks(peaks) ? peaks : nullptr, {PartSpan{z->part, z->a, z->b - z->a}}), z->a, z->b);
         return out;
@@ -1141,19 +1248,34 @@ std::vector<HeardPiece> HeardPieces(const SoundData& d, double A, double B)
     };
     bool   have = !inGap(A);  // starting inside a jump: it resumes at its exit
     double cur = A;
+    // 13-62h review (B1): a piece cut by A inside its crossfade overlaps the next one only by what is left of it;
+    // the next one starts that much later in the file (the two stay aligned: same heard time, same gains).
+    double     late = 0.0;
+    ZoneRef    late_for;  // the piece `late` applies to (the Gap's right neighbour)
     for (const ZoneRef& r : AllZones(d)) {
         const EditZone* z = ZoneOf(d, r);
         if (z->IsGap()) continue;
-        const EditZone* lg = ZoneOf(d, GapBefore(d, r));
+        const ZoneRef   lgr = GapBefore(d, r);
+        const EditZone* lg = ZoneOf(d, lgr);
         const EditZone* rg = ZoneOf(d, GapAfter(d, r));
-        const double    a = std::max(lg ? lg->b - lg->xr : z->a, A);
-        const double    b = std::min(rg ? rg->a + rg->xl : z->b, B);
-        if (b <= a) continue;
+        double          a = std::max(lg ? lg->b - lg->xr : z->a, A);
+        if (late > 0.0 && lg && late_for == r) a = std::max(a, lg->b - lg->xr + late);
+        late = 0.0;
+        const double b = std::min(rg ? rg->a + rg->xl : z->b, B);
+        if (b <= a) {
+            if (lg && !out.empty() && out.back().z == GapLeft(d, lgr)) out.back().xo = 0.0;  // nothing comes in
+            continue;
+        }
         if (have && !lg && a > cur + 1e-6) out.push_back({cur, a, 0.0, ZoneRef{}});
         HeardPiece p;
         p.a = a;
         p.b = b;
         p.xo = rg && std::fabs(b - (rg->a + rg->xl)) < 1e-9 ? rg->xl + rg->xr : 0.0;
+        if (p.xo > b - a) {
+            late = p.xo - (b - a);
+            p.xo = b - a;
+            late_for = GapRight(d, GapAfter(d, r));
+        }
         p.z = r;
         out.push_back(p);
         cur = b;
@@ -1215,7 +1337,14 @@ bool MakeGap(SoundData& d, double x0, double x1, const ZoneContext& ctx, bool* m
     const int                 l = w.byId(lr.first), r = w.byId(lr.second);
     std::vector<int>          ids;
     if (l >= 0 && r >= 0 && w.frameOf(l) == w.frameOf(r) && std::fabs(w.Z(l).b - x0) < kEps && std::fabs(w.Z(r).a - x1) < kEps) {
-        const EditZone g = w.mkGap(x0, x1);
+        EditZone g = w.mkGap(x0, x1);
+        {  // 13-62h review (B3): its crossfade gets only the room its two neighbours have left
+            const int    lgl = w.gapBefore(l), rgr = w.gapAfter(r);
+            const double room_r = (w.Z(l).b - w.Z(l).a) - (lgl >= 0 ? w.Z(lgl).xl : 0.0);
+            const double room_l = (w.Z(r).b - w.Z(r).a) - (rgr >= 0 ? w.Z(rgr).xr : 0.0);
+            g.xr = Clamp(g.xr, 0.0, std::max(room_r, 0.0));
+            g.xl = Clamp(g.xl, 0.0, std::max(room_l, 0.0));
+        }
         w.Z(l).b_hand = true;
         w.Z(r).a_hand = true;
         w.Z(r).a_auto_cut = false;
@@ -1629,8 +1758,15 @@ bool SetGapXfade(SoundData& d, const ZoneRef& gap, double xl, double xr, const Z
     if (!UsesZones(d) || !g || !g->IsGap()) return false;
     const double w = g->b - g->a;
     const Snap   before = Take(d);
-    if (Valid(xl) && xl >= 0.0) g->xl = Clamp(xl, 0.0, w / 2.0);
-    if (Valid(xr) && xr >= 0.0) g->xr = Clamp(xr, 0.0, w / 2.0);
+    // 13-62h review (B3): each side gets at most the room its zone has left (its length minus the other Gap's
+    // crossfade reaching into it from its other side).
+    const ZoneRef   L = GapLeft(d, gap), R = GapRight(d, gap);
+    const EditZone* lz = ZoneOf(d, L);
+    const EditZone* rz = ZoneOf(d, R);
+    const double    room_l = rz ? std::max(0.0, (rz->b - rz->a) - GapReach(d, R, 1)) : w / 2.0;  // xl reaches into R
+    const double    room_r = lz ? std::max(0.0, (lz->b - lz->a) - GapReach(d, L, -1)) : w / 2.0;  // xr into L
+    if (Valid(xl) && xl >= 0.0) g->xl = Clamp(xl, 0.0, std::min(w / 2.0, room_l));
+    if (Valid(xr) && xr >= 0.0) g->xr = Clamp(xr, 0.0, std::min(w / 2.0, room_r));
     Relay(d, ctx, sel);
     return !Same(before, d);
 }

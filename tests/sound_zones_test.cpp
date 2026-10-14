@@ -570,6 +570,110 @@ void TestReviewRows()
     }
 }
 
+// The heard start of each piece (HeardPieces laid end to end, each overlapping the next by its xo).
+std::vector<double> HeardStarts(const std::vector<HeardPiece>& p)
+{
+    std::vector<double> at;
+    double              t = 0.0;
+    for (const HeardPiece& q : p) {
+        at.push_back(t);
+        t += (q.b - q.a) - q.xo;
+    }
+    return at;
+}
+
+// "" when at most two pieces sound at once and no zone's fades exceed its heard stretch (none rescaled).
+std::string VoicesProblem(const SoundData& d, double A, double B)
+{
+    const std::vector<HeardPiece> p = HeardPieces(d, A, B);
+    const std::vector<double>     at = HeardStarts(p);
+    for (size_t i = 0; i + 2 < p.size(); ++i)
+        if (at[i + 2] < at[i] + (p[i].b - p[i].a) - 1e-9) return "three voices overlap";
+    for (size_t i = 0; i < p.size(); ++i)
+        if (p[i].xo < -1e-12 || p[i].xo > p[i].b - p[i].a + 1e-9) return "a piece overlaps the next by more than itself";
+    for (const ZoneRef& r : AllZones(d)) {
+        const EditZone* z = ZoneOf(d, r);
+        if (z->IsGap()) continue;
+        const EditZone* lg = ZoneOf(d, GapBefore(d, r));
+        const EditZone* rg = ZoneOf(d, GapAfter(d, r));
+        const double    heard = (z->b - z->a) + (lg ? lg->xr : 0.0) + (rg ? rg->xl : 0.0);
+        if (ZoneFade(d, r, -1).s + ZoneFade(d, r, 1).s > heard + 1e-9) return "a zone's fades longer than its heard stretch";
+        if (ZoneCutFade(d, r, -1).s + ZoneFade(d, r, 1).s > heard + 1e-9 || ZoneFade(d, r, -1).s + ZoneCutFade(d, r, 1).s > heard + 1e-9)
+            return "a zone's At cuts fade and its other fade longer than it";
+    }
+    return std::string();
+}
+
+// 13-62h review of Lots B / C: a crossfade cut by the play's start (B1), crossfades longer than a short zone (B3),
+// the measured snap kept (R2).
+void TestReviewBC()
+{
+    {  // B1: from 0.398 (inside the crossfade) and 0.402 (inside the Gap's left part): the right piece starts that much later
+        SoundData d = With({Z(kHeel, 0.10, 0.40), G(0.40, 0.45, 0.005, 0.005), Z(kHeel, 0.45, 0.70)});
+        for (double A : {0.398, 0.402}) {
+            const std::vector<HeardPiece> p = HeardPieces(d, A, 0.70);
+            CHECK(p.size() == 2);
+            if (p.size() != 2) continue;
+            CHECK(Near(p[0].a, A) && Near(p[0].b, 0.405) && Near(p[0].xo, 0.405 - A));  // overlaps by what is left of it
+            CHECK(Near(p[1].a, A + 0.05) && Near(p[1].b, 0.70));                       // aligned: same heard time
+            CHECK(Near(HeardStarts(p)[1], 0.0));
+        }
+        // ending inside the crossfade: no overlap, nothing after
+        const std::vector<HeardPiece> e = HeardPieces(d, 0.10, 0.402);
+        CHECK(e.size() == 1 && Near(e[0].xo, 0.0));
+    }
+    {  // B3: Heel [0.10, 0.30] · Gap [0.30, 0.40] xl = xr = 40 ms · Heel [0.40, 0.406]: 40 ms into a 6 ms zone
+        SoundData d = With({Z(kHeel, 0.10, 0.30), G(0.30, 0.40, 0.04, 0.04), Z(kHeel, 0.40, 0.406)});
+        CHECK(!ZonesProblem(d, 3.0).empty());  // the invariant refuses it
+        RelayoutZones(d, nullptr, 3.0);
+        CHECK(ZonesProblem(d, 3.0).empty() && Near(At(d, 0, 1).xl, 0.006) && Near(At(d, 0, 1).xr, 0.04));
+        CHECK(Near(ZoneFade(d, {0, 2}, 1).s, 0.0) && VoicesProblem(d, 0.0, 1.0).empty());
+        // the handle can not give it more
+        CHECK(!SetGapXfade(d, {0, 1}, 0.04, -1.0));
+    }
+    {  // B3: a 10 ms zone between two 100 ms Gaps of 40 / 40: both reaches cut to 5 ms, never three voices
+        SoundData d = With({Z(kHeel, 0.10, 0.30), G(0.30, 0.40, 0.04, 0.04), Z(kToe, 0.40, 0.41), G(0.41, 0.51, 0.04, 0.04),
+                            Z(kHeel, 0.51, 0.80)});
+        CHECK(!VoicesProblem(d, 0.0, 1.0).empty());  // as it was: three voices
+        RelayoutZones(d, nullptr, 3.0);
+        CHECK(ZonesProblem(d, 3.0).empty() && VoicesProblem(d, 0.0, 1.0).empty());
+        CHECK(Near(At(d, 0, 1).xl, 0.005) && Near(At(d, 0, 3).xr, 0.005) && Near(At(d, 0, 1).xr, 0.04) && Near(At(d, 0, 3).xl, 0.04));
+        // the room left: freeing one side gives the other one the whole zone
+        CHECK(SetGapXfade(d, {0, 3}, -1.0, 0.0) && SetGapXfade(d, {0, 1}, 0.04, -1.0) && Near(At(d, 0, 1).xl, 0.01));
+        CHECK(ZonesProblem(d, 3.0).empty());
+    }
+    {  // B3: MakeGap next to a Gap leaves a 5 ms zone: the new Gap gets no room there, the old one is cut to it
+        SoundData d = With({Z(kHeel, 0.10, 0.80)});
+        d.gap_xfade = 0.08;
+        CHECK(MakeGap(d, 0.30, 0.40) && MakeGap(d, 0.405, 0.50));
+        CHECK(ZonesProblem(d, 3.0).empty() && VoicesProblem(d, 0.0, 1.0).empty());
+    }
+    {  // R2: the snap measured with the peaks is stored and kept without them; stale once the Offset changes
+        SoundData d = With({Z(kHeel, 0.10, 0.30)});
+        d.sync_mode = SyncMode::Peak;
+        PeakData p2 = Peaks({{0.15, 0.25}});
+        p2.max_abs[200] = 0.99f;
+        ZoneContext ctx;
+        ctx.peaks = &p2;
+        CHECK(!ZoneSnapStored(d, {0, 0}));
+        CHECK(Near(ZoneSnap(d, {0, 0}, nullptr).t, 0.10));  // never measured: the no-peaks fallback (its start)
+        CHECK(SetZoneDb(d, {0, 0}, -1.0, ctx));
+        CHECK(ZoneSnapStored(d, {0, 0}) && Near(ZoneSnap(d, {0, 0}, nullptr).t, ZoneSnap(d, {0, 0}, &p2).t) &&
+              Near(ZoneSnap(d, {0, 0}, nullptr).t, 0.198, 1e-3));
+        CHECK(RoundTrips(d) && SerializeSoundStore(StoreOf(d)).find(" as=") != std::string::npos);
+        RelayoutZones(d, nullptr, 3.0);  // laid out again without peaks: kept
+        CHECK(ZoneSnapStored(d, {0, 0}));
+        PartSettings o;
+        o.sync_offset_ms = 0.0;
+        SetPartSetting(d, kHeel, o);
+        CHECK(!ZoneSnapStored(d, {0, 0}) && Near(ZoneSnap(d, {0, 0}, nullptr).t, 0.10));  // stale: ignored
+        RelayoutZones(d, &p2, 3.0);  // measured again
+        CHECK(ZoneSnapStored(d, {0, 0}) && Near(ZoneSnap(d, {0, 0}, nullptr).t, 0.200, 1e-3));
+        CHECK(DragZoneEdge(d, {0, 0}, -1, 0.12));  // edges moved without peaks: stale
+        CHECK(!ZoneSnapStored(d, {0, 0}));
+    }
+}
+
 void TestFuzz()
 {
     PeakData pk = Peaks({{0.15, 0.22}, {0.45, 0.50}, {0.70, 0.71}, {1.10, 1.18}, {1.45, 1.52}, {2.05, 2.12}, {2.40, 2.47}, {2.62, 2.64}});
@@ -730,7 +834,9 @@ void TestFuzz()
                 cur.clear();
                 break;
             }
-        const std::string p = ZonesProblem(d, T);
+        std::string p = ZonesProblem(d, T);
+        if (p.empty()) p = VoicesProblem(d, 0.0, T);  // 13-62h review (B3)
+        if (p.empty() && k % 3 == 0) p = VoicesProblem(d, t0, t1 + 0.2);  // a play from anywhere (B1)
         if (!p.empty()) {
             if (bad < 5) std::printf("fuzz step %d (%s): %s\n", i, names[k], p.c_str());
             ++bad;
@@ -775,6 +881,7 @@ int main()
     TestFaderAndNormalize();
     TestProposeAndRecord();
     TestReviewRows();
+    TestReviewBC();
     TestFuzz();
     if (g_fails) {
         std::printf("sound_zones_test: %d failure(s)\n", g_fails);

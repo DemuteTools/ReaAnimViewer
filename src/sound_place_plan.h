@@ -174,7 +174,9 @@ struct PieceApply {
 // heard time: a piece after a Gap comes the jumped length earlier than in the file; empty space stays. The
 // anchor = the first piece, its snap = ZoneSnap of its zone (`peaks` when given, PieceSnapNeedsPeaks). `db` =
 // its zone's gain (the lane fader is not added: it already shifted the zone gains, C3). A variation with no
-// zone of that part: none.
+// zone of that part: none. 13-62h review (R3): a side whose Gap leads to a zone this placement does not place (a
+// zone of another part, for a part event) is cut at the Gap's edge with the At cuts fade (ZoneCutFade), its
+// position still in heard time (it comes the jumped length earlier). Fades never rescaled (GapReach).
 std::vector<PieceApply> PieceApplyFor(const SoundData& data, int variation, const std::string& part_value,
                                       bool file = false, const PeakData* peaks = nullptr);
 // 13-62h: true when the anchor piece of a zoned placement (PlacedFromZones) reads the file's peaks for its snap

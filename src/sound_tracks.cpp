@@ -39,6 +39,10 @@ std::map<std::string, MediaTrack*> g_marks;  // mark -> track, the batch's (read
 struct LaneItem {
     double     start = 0.0, end = 0.0;
     MediaItem* item = nullptr;
+    // 13-62h review (R1): its fades, and the placement its tag names (read only when it may crossfade, GroupOf).
+    double      fin = 0.0, fout = 0.0;
+    std::string group;
+    bool        group_read = false;
 };
 std::map<MediaTrack*, std::vector<LaneItem>> g_lanes;  // track -> its items, the batch's
 
@@ -103,7 +107,31 @@ LaneItem SpanItem(MediaItem* it)
     li.item = it;
     li.start = GetMediaItemInfo_Value(it, "D_POSITION");
     li.end = li.start + GetMediaItemInfo_Value(it, "D_LENGTH");
+    li.fin = GetMediaItemInfo_Value(it, "D_FADEINLEN");
+    li.fout = GetMediaItemInfo_Value(it, "D_FADEOUTLEN");
     return li;
+}
+
+// 13-62h review (R1): the placement an item is a piece of (its tag), read once.
+const std::string& GroupOf(LaneItem& l)
+{
+    if (!l.group_read) {
+        PlacedTag tag;
+        l.group = l.item && ReadPlacedTag(l.item, &tag) ? PlacementGroup(tag) : std::string();
+        l.group_read = true;
+    }
+    return l.group;
+}
+
+LaneSpan SpanOf(const LaneItem& l)
+{
+    LaneSpan s;
+    s.start = l.start;
+    s.end = l.end;
+    s.fade_in = l.fin;
+    s.fade_out = l.fout;
+    if (l.group_read) s.group = l.group;
+    return s;
 }
 
 // The items of a track (cached in a batch).
@@ -130,13 +158,38 @@ void DropLaneItem(MediaItem* it)
                         kv.second.end());
 }
 
-// The spans of a track's items but `skip`.
-std::vector<LaneSpan> SpansOn(MediaTrack* tr, MediaItem* skip)
+// The spans of a track's items but `skip`, in the track's order. 13-62h review (R1): an item that may crossfade
+// with another one there or with `cand` (the item being settled) carries its placement (its tag read once), so the
+// pieces of one placement crossfading at a Gap count as butted.
+std::vector<LaneSpan> SpansOn(MediaTrack* tr, MediaItem* skip, const LaneSpan* cand = nullptr)
 {
+    std::vector<LaneItem>& items = LaneItems(tr);
+    std::vector<size_t>    idx;
+    for (size_t i = 0; i < items.size(); ++i)
+        if (items[i].item != skip) idx.push_back(i);
+    std::vector<size_t> by = idx;
+    std::stable_sort(by.begin(), by.end(), [&](size_t x, size_t y) { return items[x].start < items[y].start; });
+    std::vector<bool> need(items.size(), false);
+    for (size_t k = 0; k < by.size(); ++k) {
+        const LaneSpan x = SpanOf(items[by[k]]);
+        for (size_t j = k + 1; j < by.size() && items[by[j]].start < x.end; ++j)
+            if (MayCrossfade(x, SpanOf(items[by[j]]))) need[by[k]] = need[by[j]] = true;
+        if (cand && !cand->group.empty() && MayCrossfade(x, *cand)) need[by[k]] = true;
+    }
     std::vector<LaneSpan> out;
-    for (const LaneItem& l : LaneItems(tr))
-        if (l.item != skip) out.push_back({l.start, l.end, -1});
+    for (size_t i : idx) {
+        if (need[i]) GroupOf(items[i]);
+        out.push_back(SpanOf(items[i]));
+    }
     return out;
+}
+
+// The span of `item` as a candidate for a lane: its placement read when it has a fade (it may crossfade).
+LaneSpan CandidateSpan(MediaItem* item)
+{
+    LaneItem l = SpanItem(item);
+    if (l.fin > 0.0 || l.fout > 0.0) GroupOf(l);
+    return SpanOf(l);
 }
 
 // Moves `it` to `tr` (the lane cache in step). False when REAPER refused.
@@ -421,8 +474,7 @@ MediaTrack* EnsureMarkedChild(ReaProject* proj, MediaTrack* parent, const std::s
 std::string SettleOnLanes(ReaProject* proj, MediaItem* item, MediaTrack* base, const std::string& base_mark)
 {
     if (!item || !base || base_mark.empty() || !f_move_item) return {};
-    const LaneItem me = SpanItem(item);
-    const LaneSpan span{me.start, me.end, -1};
+    const LaneSpan span = CandidateSpan(item);
     auto stay = [&]() -> std::string {  // on the track itself
         if (!MoveToTrack(item, base)) return {};
         RefreshLaneItem(item);
@@ -432,13 +484,10 @@ std::string SettleOnLanes(ReaProject* proj, MediaItem* item, MediaTrack* base, c
     if (lanes.empty()) {
         // A plain track: the items on it and their tags' tk (PlanSpill picks who moves).
         std::vector<MediaItem*>  on;
-        std::vector<LaneSpan>    spans;
         std::vector<std::string> tks;
-        for (const LaneItem& l : LaneItems(base)) {
-            if (l.item == item) continue;
-            on.push_back(l.item);
-            spans.push_back({l.start, l.end, -1});
-        }
+        for (const LaneItem& l : LaneItems(base))
+            if (l.item != item) on.push_back(l.item);
+        const std::vector<LaneSpan> spans = SpansOn(base, item, &span);  // same order as `on`
         // 13-19: PlanSpill stays exactly when the item fits; the tags (a read per item on the track,
         // for every sound placed) are read only when it spills.
         if (FitsLane(spans, span)) return stay();
@@ -467,7 +516,7 @@ std::string SettleOnLanes(ReaProject* proj, MediaItem* item, MediaTrack* base, c
     std::vector<std::vector<LaneSpan>> lane_spans;
     for (const auto& l : lanes) {
         ks.push_back(l.first);
-        lane_spans.push_back(SpansOn(l.second, item));
+        lane_spans.push_back(SpansOn(l.second, item, &span));
     }
     bool        made = false;
     const int   k = PickLaneK(ks, lane_spans, span, &made);
@@ -490,8 +539,8 @@ bool FixLaneOverlap(ReaProject* proj, MediaItem* item)
     // On the track RAV uses for its mark (a copy carrying the same mark is not it), else theirs (B7b).
     if (!cur || PlacedSpotOf(tag.tk, cur == FindTrackByMark(proj, tag.tk), &base_mark) != PlacedSpot::OnRavTrack)
         return false;
-    const LaneItem me = SpanItem(item);
-    if (FitsLane(SpansOn(cur, item), {me.start, me.end, -1})) return false;
+    const LaneSpan me = CandidateSpan(item);
+    if (FitsLane(SpansOn(cur, item, &me), me)) return false;
     MediaTrack* base = base_mark == tag.tk ? cur : FindTrackByMark(proj, base_mark);
     if (!base) return false;
     const std::string landed = SettleOnLanes(proj, item, base, base_mark);

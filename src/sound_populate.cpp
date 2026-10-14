@@ -629,7 +629,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                         const SoundData& sd = PlacedDataFor(
                             lib_uid, *n, s.variation, [n]() { return SoundSourcePath(n->sound.source); }, measured_here);
                         const PeakData* zpk = ZoneSnapPeaks(
-                            *n, s.variation, s.part_value, [n]() { return SoundSourcePath(n->sound.source); }, measured_here);
+                            *n, s.variation, s.part_value, [n]() { return SoundSourcePath(n->sound.source); }, measured_here);  // the file the syncs above read
                         const std::vector<PieceApply> pa = PieceApplyFor(sd, s.variation, s.part_value,
                                                                          n->sound.source.kind == SoundSourceKind::File, zpk);
                         pieces = static_cast<int>(pa.size());
@@ -798,8 +798,11 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                 lib_uid, *n, s.variation,
                 [file, n]() { return file && !file->path.empty() ? file->path : SoundSourcePath(n->sound.source); },
                 measured_here);
+            // 13-62h review: measured on the file it places (as the syncs above), not the source's own path.
             const PeakData* zone_peaks = ZoneSnapPeaks(
-                *n, s.variation, s.part_value, [n]() { return SoundSourcePath(n->sound.source); }, measured_here);
+                *n, s.variation, s.part_value,
+                [file, n]() { return file && !file->path.empty() ? file->path : SoundSourcePath(n->sound.source); },
+                measured_here);
             PlaceRequest  req = RequestFor(item, rid, ev->t, pt, *n, s, file, &placed_data, zone_peaks);
             if (switch_track) {  // 13-13: every copy on its Switch-named track; 13-16: or its layer track
                 req.track = switch_track;
@@ -846,6 +849,8 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                         guid, e.t);
                 continue;
             }
+            if (!r.error.empty())  // 13-62h review: placed in part (a piece could not be made): recorded, and said
+                AddLine(rep, ReportKind::Missing, NodeName(n) + ": " + r.error, n->uid, guid, e.t);
             if (o.counts) ++(step.act == SlotAction::Place ? o.counts->placed : o.counts->replaced);  // per sound, not per pile item
             if (g_items)
                 for (size_t k = 0; k < r.item_guids.size() && k < r.items.size(); ++k)

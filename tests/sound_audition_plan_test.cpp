@@ -6,6 +6,7 @@
 
 #include "sound_audition_plan.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <limits>
@@ -13,6 +14,7 @@
 #include <string>
 
 #include "sound_entries.h"
+#include "sound_place_plan.h"  // 13-62h review: PieceApplyFor (placement / Edit parity)
 #include "sound_record.h"
 
 using namespace rav;
@@ -1364,8 +1366,214 @@ static void TestZonePlayRanges()
     CHECK(!t.loops && p.voices.size() == 2 && Near(p.map.total, 0.055 + 0.255 - 0.010));
 }
 
+// ---- 13-62h review of Lots B / C ---------------------------------------------------------------------------
+
+static bool NearMs(double a, double b) { return std::fabs(a - b) < 1e-3; }
+
+// B1: a play started inside a Gap's crossfade (or its left part): the incoming voice never starts before the play,
+// the two voices stay aligned (heard time), the heads and the engine's gains agree; a loop restart the same.
+static void TestReviewPlayInCrossfade()
+{
+    const SoundData d = Zoned({ZPart("heel", 0.10, 0.40), ZGap(0.40, 0.45, 0.005, 0.005), ZPart("heel", 0.45, 0.70)});
+    for (double A : {0.398, 0.402}) {
+        const EditPlay p = EditPlayFrom(d, A, 0.70);
+        CHECK(p.voices.size() == 2);
+        if (p.voices.size() != 2) continue;
+        const AuditionVoice &L = p.voices[0], &R = p.voices[1];
+        CHECK(Near(L.delay_ms, 0.0) && Near(R.delay_ms, 0.0));  // never negative
+        CHECK(Near(L.start_s, A) && Near(R.start_s, A + 0.05));
+        CHECK(Near(R.fade_from_s, (A + 0.05) - 0.445) && Near(R.fade_in_s, 0.010));
+        CHECK(Near(p.map.total, 0.70 - (A + 0.05)));
+        // heard 1 ms in: two heads, 0.05 s apart in the file, their gains summing to 1, as the engine's
+        const double t = 0.001;
+        const std::vector<HeardHead> h = HeardHeads(p.map, t);
+        CHECK(h.size() == 2);
+        if (h.size() == 2) {
+            CHECK(Near(h[0].file_t, A + t) && Near(h[1].file_t, A + t + 0.05) && Near(h[0].gain + h[1].gain, 1.0));
+            const double gl = FadeGainAt(t - L.delay_ms / 1000.0 + L.fade_from_s, L.fade_span_s, L.fade_in_s, L.fade_out_s);
+            const double gr = FadeGainAt(t - R.delay_ms / 1000.0 + R.fade_from_s, R.fade_span_s, R.fade_in_s, R.fade_out_s);
+            CHECK(Near(gl, h[0].gain) && Near(gr, h[1].gain));
+        }
+    }
+    // A loop over [0.402, 0.70] restarts with EditPlayFrom(loop_a, loop_b): the same voices each pass.
+    const EditTransport tp = PlanEditPlay(0.402, 0.70, true, 0.402, 0.70, true, 1.0);
+    CHECK(tp.loops && Near(EditPlayFrom(d, tp.loop_a, tp.loop_b).voices[1].delay_ms, 0.0));
+}
+
+// B2: the library tree's Play on a zoned Sound plays what Populate places: delays from from_anchor (heard time),
+// each piece at its zone's gain on the root's volumes, the old frame / part gains not added.
+static void TestReviewTreePlayZoned()
+{
+    SoundLibrary lib;
+    SoundNode    n = Node("s", "", SoundNodeType::Sound, "S");
+    n.volume_db = -3.0;
+    n.sound = Zoned({ZPart("heel", 0.10, 0.40), ZGap(0.40, 0.45, 0.005, 0.005), ZPart("heel", 0.45, 0.70), ZPart("toe", 0.80, 0.90),
+                     ZPart("heel", 1.00, 1.20)});
+    n.sound.frames[0].zones[0].db = -2.0;
+    n.sound.frames[0].zones[2].db = 1.5;
+    PartSettings ps;
+    ps.gain_db = -6.0;  // an old part gain: not added for zones
+    SetPartSetting(n.sound, "heel", ps);
+    lib.nodes.push_back(n);
+    lib.root = "s";
+    for (const std::string part : {"heel", "", "toe"}) {
+        const std::vector<PieceApply>    pa = PieceApplyFor(lib.nodes[0].sound, 0, part);
+        const std::vector<AuditionVoice> v = PartAuditionVoices(lib, lib.nodes[0], 0, part, 10.0);
+        CHECK(!pa.empty() && v.size() == pa.size());
+        for (size_t k = 0; k < v.size() && k < pa.size(); ++k) {
+            CHECK(NearMs(v[k].delay_ms, 10.0 + pa[k].from_anchor * 1000.0));
+            CHECK(Near(v[k].gain_db, -3.0 + pa[k].db));
+            CHECK(Near(v[k].start_s, pa[k].slice.start_offs) && Near(v[k].length_s, pa[k].slice.length));
+            CHECK(Near(v[k].fade_in_s, pa[k].fades.in) && Near(v[k].fade_out_s, pa[k].fades.out));
+        }
+    }
+    const std::vector<AuditionVoice> h = PartAuditionVoices(lib, lib.nodes[0], 0, "heel");
+    CHECK(h.size() == 3 && Near(h[1].delay_ms, 295.0) && Near(h[0].gain_db, -5.0) && Near(h[1].gain_db, -1.5));
+    // the Sound's Play from the tree (PlanAudition) is built on them
+    const AuditionPlan plan = PlanAudition(SoundStore{}, lib, "s", First());
+    CHECK(!plan.voices.empty());
+    for (const AuditionVoice& v : plan.voices) CHECK(v.gain_db < -0.9);  // never the old -6 dB part gain on top
+}
+
+// R3: a heard zone whose Gap leads to a muted / not soloed one starts (ends) at the Gap's edge with the At cuts fade.
+static void TestReviewListenAcrossGap()
+{
+    SoundData d = Zoned({ZPart("heel", 0.10, 0.30), ZGap(0.30, 0.35, 0.004, 0.004), ZPart("toe", 0.35, 0.60)});
+    d.cut_fade = 0.003;
+    PartListen mute;
+    mute.mute.insert("heel");
+    EditPlay p = EditPlayFrom(d, 0.10, 0.60, &mute);
+    CHECK(p.voices.size() == 1);
+    if (p.voices.size() == 1) {
+        CHECK(Near(p.voices[0].start_s, 0.35) && Near(p.voices[0].fade_in_s, 0.003) && Near(p.voices[0].fade_from_s, 0.0));
+        CHECK(Near(p.voices[0].delay_ms, 200.0));  // the heard time kept: (0.304 - 0.10) - 0.008, then 0.004 later
+    }
+    CHECK(Near(p.map.total, 0.45));
+    std::vector<HeardHead> h = HeardHeads(p.map, 0.198);  // the muted Heel's head alone in what was the crossfade
+    CHECK(h.size() == 1 && !h[0].heard);
+    PartListen solo;
+    solo.solo.insert("heel");
+    p = EditPlayFrom(d, 0.10, 0.60, &solo);
+    CHECK(p.voices.size() == 1 && Near(p.voices[0].start_s + p.voices[0].length_s, 0.30) && Near(p.voices[0].fade_out_s, 0.003));
+    // and Populate the same: a Toe event's item at the Gap's end, the At cuts fade in
+    const std::vector<PieceApply> toe = PieceApplyFor(d, 0, "toe");
+    CHECK(toe.size() == 1 && Near(toe[0].slice.start_offs, 0.35) && Near(toe[0].fades.in, 0.003));
+}
+
+// B3 / parity: a seeded mini-fuzz of zone layouts made with the Lot A gestures; for each variation, what Populate
+// places (PieceApplyFor, a whole-variation and each part event) is what Edit plays (EditPlayFrom over that variation,
+// the event's part soloed): the same file stretches, heard-time positions, fades and gains; no fade rescaled.
+static void TestReviewPlaceEditParity()
+{
+    struct Rng {
+        unsigned long long s;
+        unsigned long long Next()
+        {
+            s ^= s << 13;
+            s ^= s >> 7;
+            s ^= s << 17;
+            return s;
+        }
+        double U(double lo, double hi) { return lo + (hi - lo) * static_cast<double>(Next() % 1000000) / 1000000.0; }
+        int    I(int n) { return n <= 0 ? 0 : static_cast<int>(Next() % static_cast<unsigned long long>(n)); }
+    };
+    Rng       r{0x62B0C0FFEEULL};
+    int       bad = 0, compared = 0, gaps = 0;
+    const std::vector<std::string> parts = {"heel", "toe"};
+    for (int layout = 0; layout < 3000 && bad < 10; ++layout) {
+        SoundData d = Zoned({ZPart("heel", 0.10, 0.90)});
+        SoundFrame f2;
+        f2.zones = {ZPart(r.I(2) ? "toe" : "heel", 1.10, 1.90)};
+        f2.start = 1.10;
+        f2.length = 0.80;
+        d.frames.push_back(f2);
+        d.cut_fade = r.U(0.0, 0.02);
+        d.fade_in = r.U(0.0, 0.05);
+        d.fade_out = r.U(0.0, 0.05);
+        const ZoneContext ctx{nullptr, 3.0};
+        const int         steps = 2 + r.I(10);
+        for (int k = 0; k < steps; ++k) {
+            const double t0 = r.U(0.05, 1.95), t1 = t0 + r.U(0.004, 0.15);
+            const std::string part = parts[static_cast<size_t>(r.I(2))];
+            const std::vector<ZoneRef> all = AllZones(d);
+            const ZoneRef z = all.empty() ? ZoneRef{} : all[static_cast<size_t>(r.I(static_cast<int>(all.size())))];
+            switch (r.I(9)) {
+            case 0:
+            case 1: d.gap_xfade = r.U(0.0, 0.12); MakeGap(d, t0, t1, ctx); break;
+            case 2: SplitZoneAt(d, t0, ctx); break;
+            case 3: NewZone(d, part, t0, t1, ctx); break;
+            case 4: CutOut(d, t0, t0 + r.U(0.001, 0.05), ctx); break;
+            case 5: GiveZonesPart(d, {z}, part, ctx); break;
+            case 6: {
+                const EditZone* q = ZoneOf(d, z);
+                if (q && q->IsGap()) DragGapXfade(d, z, r.I(2) ? 1 : -1, r.U(q->a, q->b), r.I(2) == 0, ctx);
+                break;
+            }
+            case 7: SetZoneFade(d, z, r.I(2) ? 1 : -1, r.U(0.0, 0.08), ctx); break;
+            case 8: SetZoneDb(d, z, r.U(-12.0, 6.0), ctx); break;
+            }
+        }
+        if (!ZonesProblem(d, 3.0).empty()) {
+            if (bad < 5) std::printf("parity layout %d: %s\n", layout, ZonesProblem(d, 3.0).c_str());
+            ++bad;
+            continue;
+        }
+        gaps += GapCount(d) > 0 ? 1 : 0;
+        for (size_t v = 0; v < d.frames.size(); ++v) {
+            double a = 0.0, b = 0.0;
+            if (!d.frames[v].on || !VariationEdges(d, static_cast<int>(v), &a, &b)) continue;
+            bool foreign_gap = false;  // another variation's Gap inside this one: Edit jumps it, this placement does not
+            for (size_t w = 0; w < d.frames.size(); ++w)
+                for (const EditZone& q : d.frames[w].zones)
+                    foreign_gap = foreign_gap || (w != v && d.frames[w].on && q.IsGap() && q.b > a && q.a < b);
+            if (foreign_gap) continue;
+            for (const std::string ev : {"", "heel", "toe"}) {
+                const std::vector<PieceApply> pa = PieceApplyFor(d, static_cast<int>(v), ev);
+                PartListen solo;
+                if (!ev.empty()) solo.solo.insert(ev);
+                EditPlay ep = EditPlayFrom(d, a, b, ev.empty() ? nullptr : &solo);
+                ep.voices.erase(std::remove_if(ep.voices.begin(), ep.voices.end(),
+                                               [&](const AuditionVoice& x) { return x.variation != static_cast<int>(v); }),
+                                ep.voices.end());
+                bool ok = pa.size() == ep.voices.size();
+                for (size_t k = 0; ok && k < pa.size(); ++k) {
+                    const AuditionVoice& vo = ep.voices[k];
+                    ok = Near(vo.start_s, pa[k].slice.start_offs) && Near(vo.length_s, pa[k].slice.length) &&
+                         NearMs(vo.delay_ms - ep.voices[0].delay_ms, pa[k].from_anchor * 1000.0) &&
+                         Near(vo.fade_in_s, pa[k].fades.in) && Near(vo.fade_out_s, pa[k].fades.out) &&
+                         Near(vo.gain_db, pa[k].db) && pa[k].fades.in + pa[k].fades.out <= pa[k].slice.length + 1e-9;
+                }
+                for (size_t k = 0; ok && k + 2 < ep.voices.size(); ++k)  // never three voices at once
+                    ok = ep.voices[k + 2].delay_ms >= ep.voices[k].delay_ms + ep.voices[k].length_s * 1000.0 - 1e-6;
+                ++compared;
+                if (!ok) {
+                    if (bad < 5) {
+                        std::printf("parity layout %d variation %zu event '%s': placed != heard\n", layout, v, ev.c_str());
+                        for (const EditZone& q : d.frames[v].zones)
+                            std::printf("   zone %s [%.6f %.6f] xl %.6f xr %.6f fi %.4f fo %.4f\n", q.part.c_str(), q.a, q.b, q.xl, q.xr,
+                                        q.fade_in ? *q.fade_in : -1.0, q.fade_out ? *q.fade_out : -1.0);
+                        for (const PieceApply& x : pa)
+                            std::printf("   piece [%.6f +%.6f] at %.6f in %.6f out %.6f db %.2f\n", x.slice.start_offs, x.slice.length,
+                                        x.from_anchor, x.fades.in, x.fades.out, x.db);
+                        for (const AuditionVoice& x : ep.voices)
+                            std::printf("   voice [%.6f +%.6f] at %.6f in %.6f out %.6f db %.2f\n", x.start_s, x.length_s,
+                                        x.delay_ms / 1000.0, x.fade_in_s, x.fade_out_s, x.gain_db);
+                    }
+                    ++bad;
+                }
+            }
+        }
+    }
+    CHECK(bad == 0 && compared > 6000 && gaps > 1000);
+    std::printf("place / edit parity: %d comparisons, %d layouts with Gaps\n", compared, gaps);
+}
+
 int main()
 {
+    TestReviewPlayInCrossfade();
+    TestReviewTreePlayZoned();
+    TestReviewListenAcrossGap();
+    TestReviewPlaceEditParity();
     TestZonedEmptySpace();
     TestZonedGapCrossfade();
     TestZonedListen();

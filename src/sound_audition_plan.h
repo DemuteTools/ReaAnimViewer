@@ -101,6 +101,9 @@ AuditionPlan PlanAudition(const SoundStore& store, const SoundLibrary& lib, cons
 // delayed by its distance from the first piece plus `delay_ms`, the Sound's cut_fade at a cut or zone
 // edge. Takes mode: the take whole (one voice). {} for a bad index or nothing left of that part.
 // 13-62: the part's own gain (PartGainDb) on top, its mono (PartMono), its own fades per side (PieceApplyFor).
+// 13-62h review (B2): a Sound placed from its zones (PlacedFromZones) plays exactly what Populate places: each
+// piece delayed by its PieceApply::from_anchor (heard time: a Gap jumped, its two sides crossfading), at the
+// root's volumes + its zone's gain (PieceApply::db); FrameGainDb / PartGainDb are not added.
 std::vector<AuditionVoice> PartAuditionVoices(const SoundLibrary& lib, const SoundNode& n, int variation,
                                               const std::string& part_value, double delay_ms = 0.0);
 // 13-20: a zone of the Sound's source played alone (the Edit window's "Play zone"): one voice over
@@ -279,7 +282,10 @@ AuditionPlan PlanChildAudition(const SoundStore& store, const SoundLibrary& lib,
 // gain, its envelope = ZoneEnv: its own / cut / part / Sound fades, a Gap's crossfade on a side a Gap holds), laid
 // in heard time: a Gap is jumped (the two sides overlap by xl + xr: two voices crossfading), empty space is silence
 // (time passes, no voice). A part not heard under the Mute / Solo state (PartHeard), and a zone of an off
-// variation, give no voice but keep their time. Heard time 0 = `from`.
+// variation, give no voice but keep their time. Heard time 0 = `from`. 13-62h review (R3): a heard zone whose
+// Gap leads to a silent one (muted / not soloed) is cut at that Gap's edge with the At cuts fade (ZoneCutFade):
+// it never plays the jumped audio against nothing; its span and voice start / end there, the heard time kept.
+// (As Populate cuts a zone whose neighbour across a Gap is not placed in the same event.)
 
 // One stretch of heard time: [at, at + (b - a)) plays the file's [a, b].
 struct HeardSpan {

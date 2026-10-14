@@ -353,10 +353,33 @@ std::vector<TrackStep> SoundTrackPath(const std::vector<SwitchStep>& path, const
     return out;
 }
 
+bool MayCrossfade(const LaneSpan& a, const LaneSpan& b)
+{
+    constexpr double kTouch = 1e-6;
+    const bool       a_first = a.start < b.start || (a.start == b.start && a.end <= b.end);
+    const LaneSpan&  x = a_first ? a : b;
+    const LaneSpan&  y = a_first ? b : a;
+    const double     over = x.end - y.start;
+    return over > kTouch && y.end > x.end + kTouch && over <= std::min(x.fade_out, y.fade_in) + kTouch;
+}
+
+bool CrossfadeButted(const LaneSpan& a, const LaneSpan& b)
+{
+    return !a.group.empty() && a.group == b.group && MayCrossfade(a, b);
+}
+
+std::string PlacementGroup(const PlacedTag& tag)
+{
+    if (tag.owner.empty()) return {};
+    char t[64];
+    std::snprintf(t, sizeof(t), "%.9f", tag.t);
+    return tag.owner + "|" + tag.rid + "|" + t + "|" + tag.node;
+}
+
 bool SpansOverlap(const LaneSpan& a, const LaneSpan& b)
 {
     constexpr double kTouch = 1e-6;
-    return a.start < b.end - kTouch && b.start < a.end - kTouch;
+    return a.start < b.end - kTouch && b.start < a.end - kTouch && !CrossfadeButted(a, b);
 }
 
 bool FitsLane(const std::vector<LaneSpan>& lane, const LaneSpan& s, int exclude_id)

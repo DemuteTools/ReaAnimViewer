@@ -382,12 +382,18 @@ std::vector<PieceApply> ZonePieces(const SoundData& data, int variation, const s
     if (zones.empty()) return out;
     const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
     double            heard0 = 0.0;  // the anchor's start in heard time
+    auto placed = [&](const ZoneRef& q) { return std::find(zones.begin(), zones.end(), q) != zones.end(); };
     for (const ZoneRef& r : zones) {
         const EditZone& z = *ZoneOf(data, r);
-        const EditZone* lg = ZoneOf(data, GapBefore(data, r));
-        const EditZone* rg = ZoneOf(data, GapAfter(data, r));
-        const double    a = lg ? lg->b - lg->xr : z.a;  // as HeardPieces cuts it
-        const double    b = rg ? rg->a + rg->xl : z.b;
+        const ZoneRef   lgr = GapBefore(data, r), rgr = GapAfter(data, r);
+        const EditZone* lg = ZoneOf(data, lgr);
+        const EditZone* rg = ZoneOf(data, rgr);
+        // 13-62h review (R3): a side whose Gap leads to a zone this event does not place (another part) is cut at
+        // the Gap's edge with the At cuts fade: it would crossfade against nothing and play the jumped audio.
+        const bool   cut_in = lg && !placed(GapLeft(data, lgr));
+        const bool   cut_out = rg && !placed(GapRight(data, rgr));
+        const double a = lg && !cut_in ? lg->b - lg->xr : z.a;  // as HeardPieces cuts it
+        const double b = rg && !cut_out ? rg->a + rg->xl : z.b;
         if (!(b > a)) continue;
         double jumped = 0.0;  // the Gaps before it, jumped at playback
         for (const EditZone& g : f.zones)
@@ -398,8 +404,8 @@ std::vector<PieceApply> ZonePieces(const SoundData& data, int variation, const s
         pa.slice.length = b - a;
         pa.fades.set_in = pa.fades.set_out = true;
         pa.fades.shape_in = pa.fades.shape_out = true;
-        pa.fades.in = ZoneFade(data, r, -1).s;
-        pa.fades.out = ZoneFade(data, r, 1).s;
+        pa.fades.in = cut_in ? ZoneCutFade(data, r, -1).s : ZoneFade(data, r, -1).s;
+        pa.fades.out = cut_out ? ZoneCutFade(data, r, 1).s : ZoneFade(data, r, 1).s;
         pa.db = std::isfinite(z.db) ? z.db : 0.0;
         if (out.empty()) {  // the anchor: the first placed zone, at its snap offset
             pa.anchor = true;
@@ -426,7 +432,8 @@ bool PieceSnapNeedsPeaks(const SoundData& data, int variation, const std::string
     const std::vector<ZoneRef> zones = PlacedZones(data, variation, part_value);
     if (zones.empty()) return false;
     const EditZone& z = *ZoneOf(data, zones.front());
-    return !z.snap && PartSyncMode(data, z.part) != SyncMode::SliceStart;
+    // 13-62h review (R2): a snap measured and stored by the Edit window needs no peaks.
+    return !z.snap && PartSyncMode(data, z.part) != SyncMode::SliceStart && !ZoneSnapStored(data, zones.front());
 }
 
 std::vector<PieceApply> PieceApplyFor(const SoundData& data, int variation, const std::string& part_value, bool file,

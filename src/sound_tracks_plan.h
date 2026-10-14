@@ -132,13 +132,26 @@ struct TrackRename {
 TrackRename PlanTrackRename(const std::string& cur, const std::string& given, const std::string& want);
 
 // An item's time span on a track lane; `id` names the item (-1 = none).
+// 13-62h review (R1): `group` = the placement it is a piece of ("" = none known: PlacementGroup of its tag), and
+// its fades (s), so two pieces of one placement crossfading at a Gap stay on one lane (CrossfadeButted).
 struct LaneSpan {
-    double start = 0.0;
-    double end = 0.0;
-    int    id = -1;
+    double      start = 0.0;
+    double      end = 0.0;
+    int         id = -1;
+    std::string group;
+    double      fade_in = 0.0, fade_out = 0.0;
 };
-// True when they overlap: items that only touch (end = start, within 1 us) do not.
+// True when they overlap: items that only touch (end = start, within 1 us) do not, nor two pieces of one placement
+// whose overlap is their crossfade (CrossfadeButted).
 bool SpansOverlap(const LaneSpan& a, const LaneSpan& b);
+// 13-62h review (R1): the geometry of a crossfade: they overlap (more than 1 us) by no more than the earlier one's
+// fade out and the later one's fade in (within 1 us), the later one ending after the earlier one (not inside it).
+bool MayCrossfade(const LaneSpan& a, const LaneSpan& b);
+// MayCrossfade and both pieces of the same placement (same non-empty `group`): butted for the lane rules.
+bool CrossfadeButted(const LaneSpan& a, const LaneSpan& b);
+// The placement a placed item's tag names (its owner, rule id, event time and node: every piece of one placement
+// carries the same ones); "" for an empty owner.
+std::string PlacementGroup(const PlacedTag& tag);
 // True when `s` overlaps no span of `lane` but those with id `exclude_id` (the item itself).
 bool FitsLane(const std::vector<LaneSpan>& lane, const LaneSpan& s, int exclude_id = -1);
 // The first lane where `s` fits (B6), -1 = none (a new lane).

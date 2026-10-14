@@ -693,6 +693,9 @@ Fields FzoneFields(const EditZone& z)
     if (z.db != 0.0) f.push_back({"db", FormatNumber(z.db)});
     if (z.xl != 0.0) f.push_back({"xl", FormatNumber(z.xl)});
     if (z.xr != 0.0) f.push_back({"xr", FormatNumber(z.xr)});
+    if (z.auto_snap.set)  // 13-62h review (R2): its measured automatic snap and what it was measured for
+        f.push_back({"as", JoinNumbers({z.auto_snap.t, z.auto_snap.a, z.auto_snap.b, static_cast<double>(z.auto_snap.mode),
+                                        z.auto_snap.thr, z.auto_snap.off})});
     return f;
 }
 
@@ -719,6 +722,18 @@ Got SetFzone(EditZone& z, bool* has_sa, bool* has_sb, const std::string& k, cons
     if (k == "db") return G(ReadNumber(v, &z.db));
     if (k == "xl") return G(ReadNumber(v, &z.xl));
     if (k == "xr") return G(ReadNumber(v, &z.xr));
+    if (k == "as") {  // 13-62h review (R2): t, a, b, mode, threshold, offset
+        std::vector<double> n;
+        if (!SplitNumbers(v, &n) || n.size() != 6) return Got::Bad;
+        z.auto_snap.set = true;
+        z.auto_snap.t = n[0];
+        z.auto_snap.a = n[1];
+        z.auto_snap.b = n[2];
+        z.auto_snap.mode = static_cast<int>(n[3]);
+        z.auto_snap.thr = n[4];
+        z.auto_snap.off = n[5];
+        return Got::Ok;
+    }
     return Got::Unknown;
 }
 

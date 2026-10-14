@@ -108,8 +108,19 @@ struct ZoneFadeInfo {
     FadeSrc src = FadeSrc::Sound;
 };
 // A part zone's fade on `side` (< 0 = in, > 0 = out): at a Gap its crossfade (xl + xr), else its own, else "At
-// cuts" against a butted neighbour, else its part's own, else the Sound's; never more than half its length.
+// cuts" against a butted neighbour, else its part's own, else the Sound's; never more than half its length, nor
+// (13-62h review B3) than its length minus the Gap crossfade reaching into it from its other side (GapReach).
 ZoneFadeInfo ZoneFade(const SoundData& d, const ZoneRef& r, int side);
+// 13-62h review: how far the Gap on part zone r's `side` (< 0 its start, > 0 its end) reaches into it with its
+// crossfade: its left Gap's xl, its right Gap's xr; 0 without a Gap there. The invariant: the two together (and,
+// with one Gap, it plus the other side's fade) never exceed the zone's length, so at most two voices ever overlap
+// and no fade is ever rescaled (RelayoutZones cuts both by one factor; SetGapXfade / MakeGap give a Gap side only
+// the room left).
+double GapReach(const SoundData& d, const ZoneRef& r, int side);
+// 13-62h review (R3): the "At cuts" fade part zone r gets on `side` when that side, held by a Gap, is cut at the
+// Gap's edge because the zone across the Gap is not heard there (not placed in the same event, muted / not
+// soloed): the Sound's cut_fade, capped as ZoneFade.
+ZoneFadeInfo ZoneCutFade(const SoundData& d, const ZoneRef& r, int side);
 // A part zone's gain (0..1, the fades and Gap crossfades) at t; t may run into a Gap next to it (the crossfade).
 double ZoneEnv(const SoundData& d, const ZoneRef& r, double t);
 struct ZoneSnapInfo {
@@ -119,11 +130,20 @@ struct ZoneSnapInfo {
 // Where the event lands on a part zone (REAPER's snap offset): its own (clamped into it), else its part's Sync
 // point + Offset measured in it (AutoSync on the peaks; without peaks: Attack = its onset when known, else its
 // start), clamped into it.
+// 13-62h review (R2): the measured one is stored on the zone (EditZone::auto_snap, `as` in its fzone line) by every
+// gesture and RelayoutZones run with the peaks (the Edit window lays the zones out with them); while it holds (the
+// same edges, Sync mode, Attack threshold and Offset) it is used whether peaks are given or not, so Populate places
+// the same snap every time, peaks readable or not. A stale one is ignored (measured again with the next peaks); a
+// zone that was never measured falls back as above.
 ZoneSnapInfo ZoneSnap(const SoundData& d, const ZoneRef& r, const PeakView* peaks);
+// True when part zone r's automatic snap is the stored measure (no snap of its own, Attack / Peak, it holds).
+bool ZoneSnapStored(const SoundData& d, const ZoneRef& r);
 
 // What is heard over [A, B] (the mockup's pieces): the part zones in time order, each from its start (or its left
 // Gap's end minus xr) to its end (or its right Gap's start plus xl); `xo` = the crossfade it overlaps the next by
-// (its right Gap's xl + xr); empty space as silence pieces (z = {-1, -1}); Gaps jumped.
+// (its right Gap's xl + xr); empty space as silence pieces (z = {-1, -1}); Gaps jumped. 13-62h review (B1): a piece
+// A cuts inside its crossfade (A in the Gap's left part or just before it) overlaps the next one only by what is
+// left of it (xo = its length) and the next one starts that much later in the file, so the two stay aligned.
 struct HeardPiece {
     double  a = 0.0, b = 0.0, xo = 0.0;
     ZoneRef z;

@@ -169,17 +169,63 @@ int main()
         CHECK(PanelWidth(1200.0f, 1.0f) == 270.0f);
         CHECK(PanelWidth(420.0f, 1.0f) == 270.0f);         // 70 % would be 294
         CHECK(PanelWidth(360.0f, 1.0f) == 0.7f * 360.0f);  // 252
-        CHECK(PanelWidth(260.0f, 1.0f) == 244.0f);
+        CHECK(PanelWidth(260.0f, 1.0f) == 200.0f);   // at least 200 while the view has room
+        CHECK(PanelWidth(200.0f, 1.0f) == 184.0f);   // nearly the whole view (the button's 16 px)
         CHECK(PanelWidth(1200.0f, 2.0f) == 540.0f);  // a 200 % screen
-        CHECK(PanelWidth(500.0f, 2.0f) == 468.0f);   // under 600 physical px at 200 %
+        CHECK(PanelWidth(500.0f, 2.0f) == 400.0f);   // under 600 physical px at 200 %
         CHECK(PanelWidth(0.0f, 1.0f) == 0.0f);
         CHECK(PanelWidth(10.0f, 1.0f) == 0.0f);
+        // Continuous and never shrinking while the view grows (no jump at 300 px or anywhere).
+        float prev = 0.0f;
+        bool  smooth = true;
+        for (float v = 0.0f; v <= 1200.0f; v += 0.25f) {
+            const float pw = PanelWidth(v, 1.0f);
+            if (pw < prev - 1e-3f || pw - prev > 0.25f + 1e-3f || (pw > 0.0f && pw > v - 16.0f + 1e-3f)) smooth = false;
+            prev = pw;
+        }
+        CHECK(smooth);
+    }
+
+    // The flat lines and the ones on screen.
+    {
+        ListView lv;
+        lv.groups.resize(2);
+        lv.groups[0].label = "A";
+        lv.groups[0].rows = {3, 1};
+        lv.groups[1].label = "B";
+        lv.groups[1].rows = {0, 2, 4};
+        lv.order = {3, 1, 0, 2, 4};
+        const std::vector<ListLine> lines = FlattenListView(lv);
+        CHECK(lines.size() == 7u);
+        CHECK(lines[0].row == -1 && lines[0].group == 0);
+        CHECK(lines[1].row == 3 && lines[3].row == -1 && lines[3].group == 1 && lines[6].row == 4);
+        float total = 0.0f;
+        const std::vector<float> tops = LineTops(lines, 10.0f, 20.0f, &total);
+        CHECK(total == 2 * 10.0f + 5 * 20.0f);
+        CHECK(tops[1] == 10.0f && tops[3] == 50.0f && tops[4] == 60.0f);
+        int f = -1, l = -1;
+        VisibleLines(tops, total, 0.0f, 15.0f, &f, &l);
+        CHECK(f == 0 && l == 2);
+        VisibleLines(tops, total, 55.0f, 85.0f, &f, &l);  // the end of B's header to row 0's middle
+        CHECK(f == 3 && l == 6);
+        VisibleLines(tops, total, 500.0f, 600.0f, &f, &l);
+        CHECK(f == l);
+        VisibleLines(std::vector<float>(), 0.0f, 0.0f, 100.0f, &f, &l);
+        CHECK(f == 0 && l == 0);
+        ListView none;
+        none.groups.resize(1);
+        none.groups[0].rows = {0, 1};
+        CHECK(FlattenListView(none).size() == 2u);  // no header without a label
     }
 
     // The button: centred between the menu and the switch; just under the menu when they are close.
     {
         CHECK(ButtonCentreY(46.0f, 346.0f, 22.0f, 1.0f) == 196.0f);
         CHECK(ButtonCentreY(46.0f, 150.0f, 22.0f, 1.0f) == 46.0f + 6.0f + 11.0f);
+        CHECK(ButtonFits(46.0f, 150.0f, 22.0f, 1.0f));
+        CHECK(ButtonFits(46.0f, 46.0f + 32.0f, 22.0f, 1.0f));
+        CHECK(!ButtonFits(46.0f, 46.0f + 31.0f, 22.0f, 1.0f));  // it would touch the switch: not drawn
+        CHECK(!ButtonFits(46.0f, 20.0f, 22.0f, 1.0f));
     }
 
     if (g_fails == 0) std::printf("clip_list_plan: all checks passed\n");

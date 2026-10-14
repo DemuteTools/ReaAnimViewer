@@ -1753,6 +1753,12 @@ bool LibraryNodeTakesKey(unsigned vk, bool ctrl, bool shift, bool alt)
     return sound && LibraryViewFocused() && (vk == 'E' || vk == 'S');
 }
 
+bool LibraryEditUsesEsc()
+{
+    const int f = ImGui::GetCurrentContext() ? ImGui::GetFrameCount() : -100;
+    return P.edit_open && P.edit_frame >= f - 1 && P.edit_has_focus;
+}
+
 namespace {
 
 // ---- Sound panel pieces ---------------------------------------------------------------------------

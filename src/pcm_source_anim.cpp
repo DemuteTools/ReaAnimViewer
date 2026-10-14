@@ -262,7 +262,7 @@ pcmsrc_register_t* PcmSourceRegistration() { return &g_reg; }
 
 bool IsRavAnimSource(PCM_source* s) { return IsOurs(s); }
 
-bool ReadPlayCandidate(MediaItem* item, int track_rank, PlayCandidate* out, std::string* out_path)
+bool ReadPlayCandidate(MediaItem* item, int track_rank, PlayCandidate* out, std::string* out_path, bool refresh_length)
 {
     if (!item || !out) return false;
     MediaItem_Take* tk = GetActiveTake(item);
@@ -281,10 +281,12 @@ bool ReadPlayCandidate(MediaItem* item, int track_rank, PlayCandidate* out, std:
     c.start_offs = GetMediaItemTakeInfo_Value(tk, "D_STARTOFFS");
     c.rate       = GetMediaItemTakeInfo_Value(tk, "D_PLAYRATE");
     // A re-exported file: its new length (the Tagging view re-reads it too).
-    if (const char* t = src->GetType(); t && !std::strcmp(t, kSourceType))
-        static_cast<AnimSource*>(src)->RefreshLengthIfChanged();
-    else if (PCM_source* inner = src->GetSource(); inner && inner->GetType() && !std::strcmp(inner->GetType(), kSourceType))
-        static_cast<AnimSource*>(inner)->RefreshLengthIfChanged();
+    if (refresh_length) {
+        if (const char* t = src->GetType(); t && !std::strcmp(t, kSourceType))
+            static_cast<AnimSource*>(src)->RefreshLengthIfChanged();
+        else if (PCM_source* inner = src->GetSource(); inner && inner->GetType() && !std::strcmp(inner->GetType(), kSourceType))
+            static_cast<AnimSource*>(inner)->RefreshLengthIfChanged();
+    }
     c.clip_len   = src->GetLength();
     c.loop       = GetMediaItemInfo_Value(item, "B_LOOPSRC") != 0.0;
     c.muted      = GetMediaItemInfo_Value(item, "B_MUTE") != 0.0;

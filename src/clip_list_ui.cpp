@@ -57,13 +57,30 @@ struct State {
     std::vector<RowItem>             items;
     ReaProject*                      read_proj = nullptr;
     int                              read_count = INT_MIN;
+    unsigned                         read_gen = 0;          // one more at every read
+    // The list as shown (BuildListView, flattened, each line's top), built again only when the
+    // read, the grouping or the search changed: not every frame.
+    cliplist::ListView               view;
+    std::vector<cliplist::ListLine>  lines;
+    std::vector<float>               tops;
+    float                            total_h = 0.0f;
+    float                            tops_header_h = -1.0f, tops_row_h = -1.0f;
+    bool                             view_ok = false;
+    ReaProject*                      view_proj = nullptr;
+    unsigned                         view_gen = 0;
+    int                              view_grouping = -1;
+    std::string                      view_search;
+    bool                             popup_last_frame = false;  // an ImGui popup was open at the last frame's end
     ImGuiWindow*                     panel_window = nullptr;
     ImGuiWindow*                     button_window = nullptr;
 };
 State g;
 
-// The grouping of each open project (absent = the default, by track).
+// The grouping of each open project (absent = the default, by track). A project's line is
+// dropped when it loads (BeginLoadProjectState) and when its tab closes (PruneTick), so a new
+// project that gets a closed one's address starts with the default.
 std::map<ReaProject*, int> g_grouping;
+bool                       g_timer_on = false;
 
 ReaProject* CurrentProject()
 {
@@ -149,7 +166,9 @@ void ReadItems(ReaProject* proj)
         if (!it) continue;
         PlayCandidate c;
         std::string   path;
-        if (!ReadPlayCandidate(it, 0, &c, &path)) continue;  // not a RAV animation (or no file)
+        // Not a RAV animation (or no file). No length refresh: the list shows the item's own
+        // position and length, never the file's (no disk stamp check per item).
+        if (!ReadPlayCandidate(it, 0, &c, &path, /*refresh_length=*/false)) continue;
         cliplist::ClipEntry e;
         e.path = path;
         e.file = BaseName(path);
@@ -180,6 +199,56 @@ void ReadItems(ReaProject* proj)
         g.items.push_back(ri);
     }
     cliplist::NumberCopies(g.entries);
+    ++g.read_gen;
+}
+
+// The list as shown, built again only when the read, the grouping or the search changed.
+const cliplist::ListView& ShownView(ReaProject* proj, cliplist::Grouping gr)
+{
+    if (!g.view_ok || g.view_proj != proj || g.view_gen != g.read_gen || g.view_grouping != static_cast<int>(gr) ||
+        g.view_search != g.search) {
+        g.view = cliplist::BuildListView(g.entries, gr, g.search);
+        g.lines = cliplist::FlattenListView(g.view);
+        g.tops_header_h = g.tops_row_h = -1.0f;  // the tops follow (LineTopsFor)
+        g.view_ok = true;
+        g.view_proj = proj;
+        g.view_gen = g.read_gen;
+        g.view_grouping = static_cast<int>(gr);
+        g.view_search = g.search;
+    }
+    return g.view;
+}
+
+// Each line's top for these heights (they change with the UI scale): built again only then.
+void LineTopsFor(float header_h, float row_h)
+{
+    if (header_h == g.tops_header_h && row_h == g.tops_row_h) return;
+    g.tops = cliplist::LineTops(g.lines, header_h, row_h, &g.total_h);
+    g.tops_header_h = header_h;
+    g.tops_row_h = row_h;
+}
+
+// REAPER's timer: the closed project tabs' groupings are forgotten (a new project may get a closed
+// one's address), and a list read from a closed project is read again.
+void PruneTick()
+{
+    try {
+        if (g_grouping.empty() && !g.read_proj) return;
+        std::vector<ReaProject*> open;
+        for (int i = 0;; ++i) {
+            ReaProject* p = EnumProjects(i, nullptr, 0);
+            if (!p) break;
+            open.push_back(p);
+        }
+        auto is_open = [&](ReaProject* p) { return std::find(open.begin(), open.end(), p) != open.end(); };
+        for (auto it = g_grouping.begin(); it != g_grouping.end();) it = is_open(it->first) ? std::next(it) : g_grouping.erase(it);
+        if (g.read_proj && !is_open(g.read_proj)) {
+            g.read_proj = nullptr;
+            g.read_count = INT_MIN;
+            g.view_ok = false;
+        }
+    } catch (...) {
+    }
 }
 
 // Read again when the project changed (REAPER's state count) or another project tab is current.
@@ -223,7 +292,9 @@ void JumpTo(int idx)
         return;
     }
     const double pos = GetMediaItemInfo_Value(it, "D_POSITION");
-    if (f_select_all && f_set_selected) {
+    // Already the only selected item: the selection stays as it is (no undo point, no redraw).
+    const bool alone = CountSelectedMediaItems(proj) == 1 && GetSelectedMediaItem(proj, 0) == it;
+    if (!alone && f_select_all && f_set_selected) {
         f_select_all(proj, false);
         f_set_selected(it, true);
         if (UndoIncludesItemSelection()) Undo_OnStateChangeEx("Change media item selection", UNDO_STATE_ITEMS, -1);
@@ -284,6 +355,17 @@ bool RoundButton(ImVec2 centre, const char* key)
     return pressed;
 }
 
+// A row's and a group header's heights (the list's lines; ItemSpacing is 0 there).
+float RowHeight()
+{
+    return ui::Dp(4.0f) * 2.0f + ui::FontBody()->FontSize + ui::FontSmall()->FontSize;
+}
+
+float HeaderHeight()
+{
+    return ui::Dp(8.0f) + ui::FontSmall()->FontSize + ui::Dp(3.0f);
+}
+
 // A row: the clip's name (and its copy badge), its position on the right, the file (or track) and
 // its length under it. Lit when it is the item RAV shows; dashed when the arrows are on it; greyed
 // when it does not play.
@@ -294,21 +376,13 @@ void DrawRow(int idx, cliplist::Grouping gr, bool current, bool kb, int* clicked
     ImFont* const              small_font = ui::FontSmall();
     ImFont* const              mono_font = ui::FontMonoSmall();
     const float                pad_x = ui::Dp(8.0f), pad_y = ui::Dp(4.0f);
-    const float                name_h = name_font->FontSize, sub_h = small_font->FontSize;
+    const float                name_h = name_font->FontSize;
     const float                w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
-    const float                h = pad_y * 2.0f + name_h + sub_h;
+    const float                h = RowHeight();
     ImGui::PushID(idx);
     if (ImGui::InvisibleButton("##row", ImVec2(w, h))) *clicked = idx;
     const bool   hovered = ImGui::IsItemHovered();
     const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
-    if (kb && g.scroll_to_kb) {
-        ImGui::SetScrollHereY(0.5f);
-        g.scroll_to_kb = false;
-    }
-    if (current && g.scroll_to_current) {
-        ImGui::SetScrollHereY(0.5f);
-        g.scroll_to_current = false;
-    }
     ImGui::PopID();
     ImDrawList* dl = ImGui::GetWindowDrawList();
     unsigned    bits = 0;
@@ -362,8 +436,8 @@ void DrawGroupHeader(const cliplist::GroupView& gv, cliplist::Grouping gr)
 {
     ImFont* const font = ui::FontSmall();
     const float   w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
-    const float   top_pad = ui::Dp(8.0f), bottom_pad = ui::Dp(3.0f), pad_x = ui::Dp(8.0f);
-    const float   h = top_pad + font->FontSize + bottom_pad;
+    const float   top_pad = ui::Dp(8.0f), pad_x = ui::Dp(8.0f);
+    const float   h = HeaderHeight();
     const ImVec2  a = ImGui::GetCursorScreenPos();
     ImGui::Dummy(ImVec2(w, h));
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -371,8 +445,10 @@ void DrawGroupHeader(const cliplist::GroupView& gv, cliplist::Grouping gr)
     const float bar_h = ui::Dp(12.0f), bar_w = ui::Dp(4.0f);
     const float bar_y = y + (font->FontSize - bar_h) * 0.5f;
     float       x = a.x + pad_x;
-    if (gr == cliplist::Grouping::Track) {
-        dl->AddRectFilled(ImVec2(x, bar_y), ImVec2(x + bar_w, bar_y + bar_h), TrackInk(gv), ui::Dp(2.0f));
+    if (gr == cliplist::Grouping::Track || gr == cliplist::Grouping::File) {
+        // The track's colour; a file's bar is the mockup's plain grey (stroke-strong).
+        const ImU32 ink = gr == cliplist::Grouping::Track ? TrackInk(gv) : ui::kStrokeStrong;
+        dl->AddRectFilled(ImVec2(x, bar_y), ImVec2(x + bar_w, bar_y + bar_h), ink, ui::Dp(2.0f));
         x += bar_w + ui::Dp(6.0f);
     }
     const std::string count = std::to_string(gv.rows.size());
@@ -452,7 +528,9 @@ void DrawPanel(float x, float w, float h)
     const cliplist::Grouping gr = GroupingOf(proj);
     // The search field's own Esc clears a typed search; an empty one (or a row last clicked)
     // closes the list. Read before the field runs.
-    const bool esc = g.has_focus && ImGui::IsKeyPressed(ImGuiKey_Escape, false);
+    // One Esc, one thing: an Esc that closed an ImGui menu / combo / popup (open at the last
+    // frame's end; ImGui closed it before this frame's windows) is not the list's.
+    const bool esc = g.has_focus && !g.popup_last_frame && ImGui::IsKeyPressed(ImGuiKey_Escape, false);
 
     ImGui::SetNextWindowPos(ImVec2(x, 0.0f), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
@@ -475,7 +553,7 @@ void DrawPanel(float x, float w, float h)
     // Its right edge (stroke-strong), over the view.
     dl->AddLine(ImVec2(x + w - 0.5f, 0.0f), ImVec2(x + w - 0.5f, h), ui::kStrokeStrong);
 
-    const cliplist::ListView lv = cliplist::BuildListView(g.entries, gr, g.search);
+    const cliplist::ListView& lv = ShownView(proj, gr);
     int jump = PanelKeys(lv.order);
     if (esc) {
         const bool typing = ImGui::GetActiveID() != 0 && ImGui::GetIO().WantTextInput;
@@ -545,13 +623,35 @@ void DrawPanel(float x, float w, float h)
             const char* msg = g.entries.empty() ? "No animation item in this project." : "No clip matches.";
             ui::ToneText(msg, ui::kFaint, /*wrap=*/true, std::max(1.0f, ImGui::GetContentRegionAvail().x - ui::Dp(6.0f)));
         }
-        for (const cliplist::GroupView& gv : lv.groups) {
-            if (!gv.label.empty()) DrawGroupHeader(gv, gr);
-            for (int r : gv.rows) DrawRow(r, gr, r == cur, r == kb, &clicked);
+        // Only the lines on screen are drawn (a project with thousands of items stays light); the
+        // list keeps its whole height for the scrollbar.
+        const float row_h = RowHeight();
+        LineTopsFor(HeaderHeight(), row_h);
+        const float top0 = ImGui::GetCursorPosY();  // the first line's top, in the child's content
+        const float view_h = ImGui::GetWindowHeight();
+        const float scroll = ImGui::GetScrollY();
+        // The arrows' row, or the current row when the list opens: centred (SetScrollHereY's 0.5).
+        // ImGui moves the scroll (kept within the list) at the next frame's Begin, before its rows.
+        const int target = (g.scroll_to_kb && kb >= 0) ? kb : (g.scroll_to_current && cur >= 0) ? cur : -1;
+        if (target >= 0) {
+            for (size_t i = 0; i < g.lines.size(); ++i) {
+                if (g.lines[i].row != target) continue;
+                ImGui::SetScrollY(std::max(0.0f, top0 + g.tops[i] + row_h * 0.5f - view_h * 0.5f));
+                break;
+            }
         }
-        ImGui::Dummy(ImVec2(0.0f, ui::Dp(4.0f)));
-        g.scroll_to_current = false;  // the current row is not in the list (filtered out, or none)
+        g.scroll_to_current = false;  // done, or the row is not in the list (filtered out, or none)
         g.scroll_to_kb = false;
+        int first = 0, last = 0;
+        cliplist::VisibleLines(g.tops, g.total_h, scroll - top0, scroll + view_h - top0, &first, &last);
+        for (int i = first; i < last; ++i) {
+            const cliplist::ListLine& ln = g.lines[static_cast<size_t>(i)];
+            ImGui::SetCursorPosY(top0 + g.tops[static_cast<size_t>(i)]);
+            if (ln.row < 0) DrawGroupHeader(lv.groups[static_cast<size_t>(ln.group)], gr);
+            else DrawRow(ln.row, gr, ln.row == cur, ln.row == kb, &clicked);
+        }
+        ImGui::SetCursorPosY(top0 + g.total_h);
+        ImGui::Dummy(ImVec2(0.0f, ui::Dp(4.0f)));
     }
     ImGui::EndChild();
     ImGui::PopStyleColor();
@@ -581,15 +681,22 @@ void InitClipList(reaper_plugin_info_t* rec)
     if (!f_select_all || !f_set_selected) LogWarn("clip list: REAPER's item selection functions are missing; a click only moves the cursor");
     g_register = rec->Register;
     if (g_register) g_pcreg_on = g_register("projectconfig", &g_pcreg) != 0;
+    if (g_register) g_timer_on = g_register("timer", reinterpret_cast<void*>(&PruneTick)) != 0;
 }
 
 void QuitClipList()
 {
     if (g_register && g_pcreg_on) g_register("-projectconfig", &g_pcreg);
     g_pcreg_on = false;
+    if (g_register && g_timer_on) g_register("-timer", reinterpret_cast<void*>(&PruneTick));
+    g_timer_on = false;
     g_grouping.clear();
     g.entries.clear();
     g.items.clear();
+    g.view = cliplist::ListView();
+    g.lines.clear();
+    g.tops.clear();
+    g.view_ok = false;
 }
 
 bool ClipListOpen()
@@ -625,9 +732,23 @@ bool DrawClipList(float view_w, float view_h, float menu_bottom, float switch_to
     if (g.open) {
         panel_w = cliplist::PanelWidth(view_w, ui::UiScale());
         if (panel_w >= 1.0f) {
+            // A throw between the panel's Begin and End (std::bad_alloc: it throws nothing of its
+            // own) would leave Dear ImGui's window and style stacks unbalanced: its own recovery
+            // ends every window and pops every style the panel had begun, so the frame goes on.
+            ImGuiErrorRecoveryState before;
+            ImGui::ErrorRecoveryStoreState(&before);
             try {
                 DrawPanel(0.0f, panel_w, std::max(1.0f, view_h));
             } catch (...) {
+                ImGuiIO&   io = ImGui::GetIO();
+                const bool was_assert = io.ConfigErrorRecoveryEnableAssert;
+                const bool was_tip = io.ConfigErrorRecoveryEnableTooltip;
+                io.ConfigErrorRecoveryEnableAssert = false;  // expected here: no assert, no error tooltip
+                io.ConfigErrorRecoveryEnableTooltip = false;
+                ImGui::ErrorRecoveryTryToRecoverState(&before);
+                io.ConfigErrorRecoveryEnableAssert = was_assert;
+                io.ConfigErrorRecoveryEnableTooltip = was_tip;
+                g.panel_window = nullptr;
                 LogWarn("clip list: the panel could not be drawn this frame");
             }
         }
@@ -636,8 +757,13 @@ bool DrawClipList(float view_w, float view_h, float menu_bottom, float switch_to
     }
     // Closed: 6 px from the window's left edge; open: centred on the panel's right edge.
     const float cx = g.open ? panel_w : ui::Dp(6.0f) + btn * 0.5f;
-    const float cy = cliplist::ButtonCentreY(menu_bottom, switch_top, btn, ui::UiScale());
-    if (RoundButton(ImVec2(cx, cy), key)) SetClipListOpen(!g.open);
+    // Never over the Model / Skeleton switch: in a window too short for it, no button (the
+    // shortcut and Esc still open and close the list).
+    if (cliplist::ButtonFits(menu_bottom, switch_top, btn, ui::UiScale())) {
+        const float cy = cliplist::ButtonCentreY(menu_bottom, switch_top, btn, ui::UiScale());
+        if (RoundButton(ImVec2(cx, cy), key)) SetClipListOpen(!g.open);
+    }
+    g.popup_last_frame = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
     return g.open && !was_open;
 }
 

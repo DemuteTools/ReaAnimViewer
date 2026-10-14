@@ -177,17 +177,63 @@ int StepRow(const std::vector<int>& order, int kb, int cur, int delta)
     return order[static_cast<size_t>(i)];
 }
 
+std::vector<ListLine> FlattenListView(const ListView& lv)
+{
+    std::vector<ListLine> lines;
+    lines.reserve(lv.order.size() + lv.groups.size());
+    for (size_t gi = 0; gi < lv.groups.size(); ++gi) {
+        const GroupView& gv = lv.groups[gi];
+        if (!gv.label.empty()) lines.push_back(ListLine{static_cast<int>(gi), -1});
+        for (int r : gv.rows) lines.push_back(ListLine{static_cast<int>(gi), r});
+    }
+    return lines;
+}
+
+std::vector<float> LineTops(const std::vector<ListLine>& lines, float header_h, float row_h, float* total)
+{
+    std::vector<float> tops;
+    tops.reserve(lines.size());
+    float y = 0.0f;
+    for (const ListLine& l : lines) {
+        tops.push_back(y);
+        y += l.row < 0 ? header_h : row_h;
+    }
+    if (total) *total = y;
+    return tops;
+}
+
+void VisibleLines(const std::vector<float>& tops, float total, float y0, float y1, int* first, int* last)
+{
+    int f = 0, l = 0;
+    if (!tops.empty() && y1 > y0 && y1 > 0.0f && y0 < total) {
+        // The first line whose bottom is below y0: the last top at or above y0.
+        f = static_cast<int>(std::upper_bound(tops.begin(), tops.end(), y0) - tops.begin()) - 1;
+        f = std::max(0, f);
+        // The first line whose top is at or below y1 is past the end.
+        l = static_cast<int>(std::lower_bound(tops.begin(), tops.end(), y1) - tops.begin());
+        l = std::max(f, l);
+    }
+    if (first) *first = f;
+    if (last) *last = l;
+}
+
 float PanelWidth(float view_w, float dp)
 {
     if (!(view_w > 0.0f)) return 0.0f;
-    if (view_w < 300.0f * dp) return std::max(0.0f, view_w - 16.0f * dp);
-    return std::min(270.0f * dp, 0.7f * view_w);
+    // Every term is continuous in view_w, so the panel never jumps while the window is resized.
+    const float full = std::max(0.0f, view_w - 16.0f * dp);  // the view less the close button's room
+    return std::min({270.0f * dp, full, std::max(0.7f * view_w, std::min(full, 200.0f * dp))});
 }
 
 float ButtonCentreY(float menu_bottom, float switch_top, float btn, float dp)
 {
     if (switch_top - menu_bottom < 140.0f * dp) return menu_bottom + 6.0f * dp + btn * 0.5f;
     return (menu_bottom + switch_top) * 0.5f;
+}
+
+bool ButtonFits(float menu_bottom, float switch_top, float btn, float dp)
+{
+    return switch_top - menu_bottom >= 6.0f * dp + btn + 4.0f * dp;
 }
 
 }  // namespace cliplist

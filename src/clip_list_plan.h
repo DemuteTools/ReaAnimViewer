@@ -68,6 +68,21 @@ struct ListView {
 //   None:  one group with no header, every row in time order then track order.
 ListView BuildListView(const std::vector<ClipEntry>& entries, Grouping g, const std::string& query);
 
+// The list flattened for drawing only what is on screen: one line per group header (groups with a
+// label) and per row, top to bottom. `row` = -1 for a header.
+struct ListLine {
+    int group = 0;  // index into ListView::groups
+    int row = -1;   // index into the entries, or -1 for the group's header
+};
+std::vector<ListLine> FlattenListView(const ListView& lv);
+
+// Each line's top (content px from the list's top) for headers `header_h` and rows `row_h` high;
+// `*total` = the whole list's height.
+std::vector<float> LineTops(const std::vector<ListLine>& lines, float header_h, float row_h, float* total);
+
+// The lines [*first, *last) that show between y0 and y1 (content px). Empty: *first == *last.
+void VisibleLines(const std::vector<float>& tops, float total, float y0, float y1, int* first, int* last);
+
 // The small line under the clip's name: the file (the track in File grouping), then the length.
 std::string SubLine(const ClipEntry& e, Grouping g);
 
@@ -83,15 +98,20 @@ std::string CopyBadge(const ClipEntry& e);
 // row. -1 for an empty list. Stops at both ends.
 int StepRow(const std::vector<int>& order, int kb, int cur, int delta);
 
-// The panel's width in a view `view_w` px wide (`dp` = the UI scale): 270 px, never more than 70 %
-// of the view; under 300 px the whole view less the room of the close button that sticks out of
-// its right edge (16 px).
+// The panel's width in a view `view_w` px wide (`dp` = the UI scale): 270 px, 70 % of the view
+// when that is less, but never under 200 px while the view has room for it; never more than the
+// view less the room of the close button that sticks out of its right edge (16 px). Continuous:
+// no jump while the window is resized.
 float PanelWidth(float view_w, float dp);
 
 // The button's centre height: half-way between the menu button's bottom (`menu_bottom`) and the
 // Model / Skeleton switch's top (`switch_top`); when they are under 140 px apart, just under the
 // menu button (6 px gap). `btn` = its diameter.
 float ButtonCentreY(float menu_bottom, float switch_top, float btn, float dp);
+
+// True when the button fits between the menu button and the switch (6 px gap above, 4 px below);
+// otherwise it is not drawn (never over the switch) and the shortcut / Esc still open and close.
+bool ButtonFits(float menu_bottom, float switch_top, float btn, float dp);
 
 }  // namespace cliplist
 }  // namespace rav

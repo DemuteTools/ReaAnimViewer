@@ -135,6 +135,9 @@ void SetNodePanelHooks(const NodePanelHooks& hooks);
 // Space / Esc / E / S while the Edit overlay is open; 13-45: the view zoom / scroll keys
 // (view_nav.h) while the Edit overlay has the focus.
 bool LibraryNodeTakesKey(unsigned vk, bool ctrl, bool shift, bool alt);
+// Story 6-5-10: the Edit overlay is open and has the keyboard, so an Esc is its own (it clears the
+// zone, stops Play, or closes the overlay): the clip list, open over the view, waits for the next.
+bool LibraryEditUsesEsc();
 
 }  // namespace rav
 

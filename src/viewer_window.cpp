@@ -67,6 +67,7 @@
 #include "viewer_fullscreen.h"       // Story 6-5-9: out of the docker, full screen, and back
 #include "viewer_fullscreen_plan.h"  // Story 6-5-9: when Esc leaves full screen
 #include "library_view_ui.h"  // Epic 13 (D20): the Library view
+#include "library_node_ui.h"  // story 6-5-10: LibraryEditUsesEsc (the clip list's Esc waits for it)
 #include "sound_follow.h"     // Epic 13 (D20): the menu's Sounds section (13-9)
 
 #ifndef GL_CLAMP_TO_EDGE
@@ -2452,9 +2453,17 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         // frame (ImGui has the key already).
         if (ClipListTakesKey(static_cast<unsigned>(wp), ctrl, shift, alt)) return 0;
         // ...open without it (the 3D view was clicked since): Esc closes it, before leaving full screen.
+        // One Esc, one thing: an open ImGui menu / combo / popup (its state at key-down: ImGui reads
+        // the key at the next frame) or the Library's Edit overlay takes this press; the list closes
+        // at the next one (full screen stays: es.clip_list below).
         if (wp == VK_ESCAPE && ClipListOpen() && !TextInputNow()) {
-            if (!(lp & (1 << 30))) SetClipListOpen(false);
-            return 0;
+            const bool popup = ImGui::GetCurrentContext() &&
+                               ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
+            const bool library = LibraryViewActive() && LibraryEditUsesEsc();
+            if (!popup && !library) {
+                if (!(lp & (1 << 30))) SetClipListOpen(false);
+                return 0;
+            }
         }
         // A text field, or the Tagging view's preset menu (story 10-3b), takes every key.
         if (TextInputNow()) return 0;
@@ -2684,8 +2693,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
     case WM_SETTINGCHANGE:
         // Story 6-5-10 -- full screen, the work area changed (the taskbar moved, resized, or was set
-        // to hide itself or not): fit it again. Every other setting goes on as before.
-        if (FullScreenActive() && wp == SPI_SETWORKAREA) RefitFullScreen(hwnd);
+        // to hide itself or not): fit it again. Every broadcast, not only SPI_SETWORKAREA: an
+        // auto-hide taskbar moved to another edge leaves the work area as it was and Windows names
+        // no SPI for it. RefitFullScreen does nothing when the window is already where it goes.
+        // Every other setting goes on as before.
+        if (FullScreenActive()) RefitFullScreen(hwnd);
         break;
 
     case WM_DESTROY:

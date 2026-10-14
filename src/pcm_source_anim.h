@@ -65,6 +65,9 @@ bool IsRavAnimSource(PCM_source* s);
 // start offset and play rate, the source length (the loop period), loop, mute, fixed lane
 // and whether it plays, with `track_rank` as given; `out_path` (optional) gets its file.
 // False when the item's active take is not a RAV animation with a file. Main thread.
-bool ReadPlayCandidate(MediaItem* item, int track_rank, PlayCandidate* out, std::string* out_path);
+// `refresh_length` false: the source's length as last read (no file stamp check, never a re-read):
+// for a reader that needs only the item's own values (story 6-5-10's clip list).
+bool ReadPlayCandidate(MediaItem* item, int track_rank, PlayCandidate* out, std::string* out_path,
+                       bool refresh_length = true);
 
 }  // namespace rav

@@ -123,11 +123,11 @@ echo.
 if "%TESTS%"=="0" goto tests_done
 rem Host tests (tests\ folder): they never block the install, a failure is only reported.
 echo [tests] Building and running the host tests...
-cmake -S tests -B build-tests -G "Visual Studio 17 2022" -A x64 >nul
+cmake -S tests -B build\host-tests -G "Visual Studio 17 2022" -A x64 >nul
 if errorlevel 1 goto tests_failed
-cmake --build build-tests --config Release >nul
+cmake --build build\host-tests --config Release >nul
 if errorlevel 1 goto tests_failed
-ctest --test-dir build-tests -C Release --output-on-failure
+ctest --test-dir build\host-tests -C Release --output-on-failure
 if errorlevel 1 goto tests_failed
 echo [tests] All host tests passed.
 goto tests_done

@@ -9,6 +9,7 @@
 // thread on first draw, after this module writes a file, and on Refresh (decision 2).
 
 #include "library_user_ui.h"
+#include "busy_progress_ui.h"  // 13-59: the busy card of a long gesture
 
 #ifdef _WIN32
 
@@ -1130,12 +1131,17 @@ void ConvertToUserLibrary(const std::string& lib_uid)
         return;
     }
     // REAPER read once, before the gesture: every Item Sound's item.
+    BusyScope                            busy("Converting to User Library");  // 13-59: many sounds
+    busy.Phase("Reading sounds");
     const std::string                    dir = ProjectFolder();
     std::map<std::string, ItemFileFacts> facts;
-    for (const SoundNode& n : lib->nodes)
+    for (size_t k = 0; k < lib->nodes.size(); ++k) {
+        const SoundNode& n = lib->nodes[k];
+        BusyStep(static_cast<int>(k), static_cast<int>(lib->nodes.size()), "sound");
         if (n.type == SoundNodeType::Sound && n.sound.source.kind == SoundSourceKind::Item && !n.sound.source.item_guid.empty() &&
             !facts.count(n.sound.source.item_guid))
             facts[n.sound.source.item_guid] = ReadItemFileFacts(n.sound.source.item_guid, dir);
+    }
     ListUserFolder();
     // 13-24 review: the file this library was already saved to (a conversion undone, then made
     // again) is reused, never a second "<name> 2" file with the same uid.
@@ -1147,6 +1153,7 @@ void ConvertToUserLibrary(const std::string& lib_uid)
         }
     if (file.empty()) file = FreeFileName(store, lib_uid, lib->name);
     ConvertReport     rep;
+    busy.Phase("Writing");
     const char*       desc = "RAV: Convert to user library";
     const bool        ok = ModifySoundStore(nullptr, desc, [&](SoundStore& s) {
         return ConvertLibraryToUser(
@@ -1211,6 +1218,7 @@ void DrawLibraryLocateStatus()
     if (ui::SolidButton("Cancel##locate")) CancelUserLibraryLocate();
     ImGui::EndDisabled();
     ui::ItemTipText("Stop looking for the missing sounds: nothing is changed");
+    DrawBusyBar(-1.0f);  // 13-59: the busy card's bar (how many folders are left is not known)
 }
 
 int UserLibraryMissing(const std::string& lib_uid, std::string* first)

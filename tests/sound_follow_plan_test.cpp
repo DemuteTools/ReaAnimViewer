@@ -689,6 +689,23 @@ int main()
                 }
             const FollowPlan f = PlanItemFollow(full);
             CHECK(!f.populate_passes && Count(f, FollowKind::Remove) == 0 && Count(f, FollowKind::Move) == 0);
+            // 13-59: New variation per pass: a pass that drew another node (a Random container) is
+            // filled too; with Same, that node's missing passes still ask for a fill.
+            {
+                FollowInput other = full;
+                for (EventSounds& es : other.rec.events)
+                    for (SoundPlacement& sp : es.placed)
+                        if (sp.item_guid.compare(0, 3, "{P1") == 0 && sp.item_guid.size() > 4) sp.node = "n2";
+                other.pass_draws = true;
+                CHECK(!PlanItemFollow(other).populate_passes);
+                other.pass_draws = false;
+                CHECK(PlanItemFollow(other).populate_passes);
+            }
+            {  // New variation per pass, a pass with no sound at all: filled.
+                FollowInput x = next;
+                x.pass_draws = true;
+                CHECK(replan_loop(mm, x).populate_passes);
+            }
             // A sound deleted by hand on that event: its node is never placed again, nothing to fill.
             FollowInput del = next;
             for (EventSounds& es : del.rec.events) {

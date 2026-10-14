@@ -3,6 +3,7 @@
 // See item_clear.h.
 
 #include "item_clear.h"
+#include "busy_progress_ui.h"  // 13-59: the busy card of a long gesture
 
 #ifdef _WIN32
 
@@ -137,11 +138,15 @@ ItemClearResult ClearItemData(MediaItem* item)
                 ~BatchEnd() { PlaceBatch(false); }
             } batch_end;
             res.ran = true;
+            BusyScope busy("Clearing item data");  // 13-59
             // 1. The markers RAV owns, while the records still list them (10-11: a project marker
             // another item wants is handed over to it, `handoffs`).
             std::vector<MarkerHandOff> handoffs;
-            for (size_t i = 0; i < g.items.size(); ++i)
+            busy.Phase("Markers");
+            for (size_t i = 0; i < g.items.size(); ++i) {
+                BusyStep(static_cast<int>(i), static_cast<int>(g.items.size()), "item");
                 if (g.plan.markers[i]) DeleteItemMarkersNoUndo(g.items[i], g.items, &handoffs);
+            }
             // 2. The records. A failed write stops the clear (the undo block still closes).
             for (const ClearRecordWrite& w : g.plan.records) {
                 MediaItem_Take* take = g.takes[w.target];
@@ -162,7 +167,10 @@ ItemClearResult ClearItemData(MediaItem* item)
                     const auto f = g.tagged_items.find(Upper(guid));
                     if (f != g.tagged_items.end()) ClearPlacedTag(f->second);
                 }
+                busy.Phase("Sounds");
+                int done = 0;
                 for (const std::string& guid : g.plan.delete_guids) {
+                    BusyStep(done++, static_cast<int>(g.plan.delete_guids.size()), "sound");
                     const auto f = g.tagged_items.find(Upper(guid));
                     if (f == g.tagged_items.end()) continue;
                     PlacedTag  tag;

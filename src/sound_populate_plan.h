@@ -144,6 +144,33 @@ int CountEvents(const std::vector<int>& event_blocks, const std::vector<char>& r
 // no <Value> part left" ("has nothing left to place" for the whole variation).
 std::string NoPartText(const std::string& sound_name, const std::string& value_name);
 
+// ---- 13-59: the variation of each loop pass ----------------------------------------------------
+//
+// A looped animation item plays each event once per loop pass (13-56). Same: every pass places the
+// event's draw (the 13-8 behaviour). New (the default, as Populate draws every event and an animation
+// copy anew): the first pass (id 0) places the event's draw, every other pass draws its own with the
+// same rules (Random / Sound, avoid repeat), its history kept per pass, its seed the item's mixed with
+// the pass id. A pass's picks are stored in the event's draws under PassDrawKey (node uid + "#p" + id),
+// so a re-Populate, the follow and a later fill keep them; Reshuffle and Repopulate (reset) forget them
+// with the other draws not picked by hand. A pick by hand on the event (its plain node entry) is kept
+// on every pass.
+enum class LoopPassDraw { New, Same };
+// The project's choice: the store header's `loopvar=same` token (none or another value = New).
+LoopPassDraw LoopPassDrawOf(const SoundStore& store);
+// Writes the token (New removes it), the header's other tokens untouched. False when unchanged.
+bool SetLoopPassDraw(SoundStore& store, LoopPassDraw draw);
+// "uid#p3": a draw entry of pass `pass` (never 0) for node `node_uid`.
+std::string PassDrawKey(const std::string& node_uid, long long pass);
+// True when `key` is a PassDrawKey; then its pass and node.
+bool ParsePassDrawKey(const std::string& key, long long* pass, std::string* node_uid);
+// The seed pass `pass` draws with (the item's seed for pass 0).
+uint64_t PassDrawSeed(uint64_t seed, long long pass);
+// What pass `pass` reads as its stored draws: the event's picks by hand first (they win), then that
+// pass's own entries under their node uid.
+std::vector<SoundDraw> PassPrevDraws(const std::vector<SoundDraw>& draws, long long pass);
+// Replaces pass `pass`'s entries of `draws` by `out` (an EventDraw::out of that pass), never by hand.
+void MergePassDraws(std::vector<SoundDraw>& draws, long long pass, const std::vector<SoundDraw>& out);
+
 // "Last populate: 24 events · 2 missing · 1 replaced · 1 rule gone" (events < 0: "Last change: ...").
 std::string ReportSummary(const SoundReport& report, int events);
 

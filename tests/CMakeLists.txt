@@ -280,6 +280,12 @@ add_executable(populate_progress_test populate_progress_test.cpp)
 target_include_directories(populate_progress_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME populate_progress COMMAND populate_progress_test)
 
+# 13-59 -- the shared busy card: its fill, text, show threshold / repaint and the memory of a long
+# gesture (src/busy_progress.h).
+add_executable(busy_progress_test busy_progress_test.cpp)
+target_include_directories(busy_progress_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME busy_progress COMMAND busy_progress_test)
+
 # Story 13-26 -- "Clear item data": what goes, what stays, the counts (src/item_clear_plan.h).
 add_executable(item_clear_plan_test item_clear_plan_test.cpp ../src/item_clear_plan.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
 target_include_directories(item_clear_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

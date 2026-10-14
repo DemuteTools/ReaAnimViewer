@@ -55,7 +55,7 @@
 #include "tag_markers.h"       // Story 10-4: the markers option (Take / Project / Both)
 #include "tagging_view_ui.h"   // Story 10-3: its curve strip and panel
 #include "tagging_populate_ui.h"  // 13-19: Populate runs from the window procedure, with its progress
-#include "populate_progress.h"    // 13-19: the progress frames' pace, fill and text
+#include "busy_progress_ui.h"     // 13-59: the shared busy card of a long gesture (Populate's since 13-19)
 #include "texture_locate.h"    // issue #1: "Locate textures..." (folder picker + copy)
 #include "gpu_resources.h"    // Story 11-4: the Video view's render target
 #include "ui_theme.h"         // Story 11-4: the DM-XYZ-Pad theme over Dear ImGui
@@ -362,6 +362,8 @@ GLuint UploadIconTexture(const unsigned char* rgba, int w, int h)
 }
 
 void DrawToolUi();  // defined below; called from RenderTick before SwapBuffers
+void PaintBusyCard(const BusyFrame& f);  // 13-59: defined below, set as the busy painter at init
+void DropBusyInputs();
 
 double ElapsedSeconds()
 {
@@ -893,9 +895,12 @@ void RenderTick()
         }
     }
 
+    BusyTakePainted();  // 13-59: a card painted before this frame (Populate, the follow) is over
     DrawToolUi();   // Dear ImGui overlay on top of the 3D scene (Story 6.5.3 rev)
 
-    SwapBuffers(g_hdc);
+    // 13-59: a long gesture run from this frame painted its busy card over the back buffer: this
+    // frame is not presented (the next one is whole).
+    if (!BusyTakePainted()) SwapBuffers(g_hdc);
 
     // 13-15: the Sound assignment window, a window of its own anywhere on the screen (its own ImGui
     // context on the shared GL context); it puts our context back on return.
@@ -2018,6 +2023,7 @@ bool StartRendering(HWND hwnd)
         if (ImGui_ImplWin32_Init(hwnd)) {
             if (ImGui_ImplOpenGL3_Init("#version 130")) {
                 g_imgui_ready = true;
+                SetBusyPainter(&PaintBusyCard, &DropBusyInputs);  // 13-59: long gestures show their card here
                 const glm::vec3 d = glm::normalize(g_renderer.LightDir());
                 g_light_elevation = std::asin(d.y < -1.0f ? -1.0f : (d.y > 1.0f ? 1.0f : d.y));
                 g_light_azimuth   = std::atan2(d.x, d.z);
@@ -2078,6 +2084,7 @@ void StopRendering()
         if (g_icon_performance) { glDeleteTextures(1, &g_icon_performance); g_icon_performance = 0; }
         if (g_icon_keyboard) { glDeleteTextures(1, &g_icon_keyboard); g_icon_keyboard = 0; }
         if (g_imgui_ready) {
+            SetBusyPainter(nullptr, nullptr);  // 13-59: no card without the viewer
             DestroyAssignFloat();  // 13-15: its context shares our font atlas and GL context: freed first
             ImGui_ImplOpenGL3_Shutdown();
             ImGui_ImplWin32_Shutdown();
@@ -2134,13 +2141,17 @@ bool TextInputNow()
 }
 bool ViewerTakesCharNow() { return ViewerTakesChar(g_key_route, ShortcutRecordingId() >= 0, TextInputNow()); }
 
-// 13-19: one progress frame of a running Populate on RAV's window: the theme background and a centred
-// card (title, bar, "Item i of n · event j of m"). Only this card is drawn: the panels would read the
-// project while the gesture is half written. Runs outside any ImGui frame (from the window procedure),
-// on the main ImGui context; the GL context and ImGui context in place are put back. Then the thread
-// peeks its queue without taking anything (PM_NOREMOVE), so Windows does not replace REAPER by a
-// "Not responding" ghost after 5 s and hide the progress; no input is read, nothing is dispatched.
-void PaintPopulateProgress(const PopulateProgress& p)
+// 13-19 / 13-59: one frame of the busy card of a long gesture (busy_progress_ui.h) on RAV's window:
+// the theme background and a centred card (title, bar, "Item i of n · event j of m", note). Only
+// this card is drawn: the panels would read the project while the gesture is half written. 13-59:
+// the gesture may run inside an ImGui frame (a button of a panel, the assignment window's frame) or
+// outside any (Populate from the window procedure, the follow from a timer), so the card is built
+// as a draw list of its own and rendered by the main context's GL backend: no NewFrame, nothing of a
+// frame in progress is touched. The GL state it changes (framebuffer, viewport, scissor, clear colour)
+// and the GL / ImGui contexts in place are put back. Then the thread peeks its queue without taking
+// anything (PM_NOREMOVE), so Windows does not replace REAPER by a "Not responding" ghost after 5 s
+// and hide the progress; no input is read, nothing is dispatched.
+void PaintBusyCard(const BusyFrame& f)
 {
     if (g_imgui_ready && g_main_imgui_ctx && g_hwnd && g_hdc && g_hglrc && IsWindowVisible(g_hwnd) &&
         g_client_w > 0 && g_client_h > 0) {
@@ -2150,65 +2161,90 @@ void PaintPopulateProgress(const PopulateProgress& p)
         if (!switched || wglMakeCurrent(g_hdc, g_hglrc)) {
             ImGuiContext* prev_ctx = ImGui::GetCurrentContext();
             ImGui::SetCurrentContext(g_main_imgui_ctx);
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
-            glViewport(0, 0, g_client_w, g_client_h);
-            const ImVec4 bg = ui::Col(ui::kBg);
-            glClearColor(bg.x, bg.y, bg.z, 1.0f);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            ImGuiIO& io = ImGui::GetIO();
+            ImFont*  font = io.FontDefault ? io.FontDefault : (io.Fonts && !io.Fonts->Fonts.empty() ? io.Fonts->Fonts[0] : nullptr);
+            if (font && io.Fonts && ImGui::GetFrameCount() > 0) {  // a first frame built the font and its texture
+                constexpr GLenum kFramebufferBinding = 0x8CA6;  // GL_FRAMEBUFFER_BINDING
+                GLint            prev_fb = 0, prev_vp[4] = {0, 0, 0, 0};
+                GLfloat          prev_clear[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+                glGetIntegerv(kFramebufferBinding, &prev_fb);
+                glGetIntegerv(GL_VIEWPORT, prev_vp);
+                glGetFloatv(GL_COLOR_CLEAR_VALUE, prev_clear);
+                const GLboolean prev_scissor = glIsEnabled(GL_SCISSOR_TEST);
+                glBindFramebuffer(GL_FRAMEBUFFER, 0);
+                glViewport(0, 0, g_client_w, g_client_h);
+                glDisable(GL_SCISSOR_TEST);
+                const ImVec4 bg = ui::Col(ui::kBg);
+                glClearColor(bg.x, bg.y, bg.z, 1.0f);
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-            ImGui_ImplOpenGL3_NewFrame();
-            ImGui_ImplWin32_NewFrame();
-            ImGui::NewFrame();
-            const ImGuiViewport* vp = ImGui::GetMainViewport();
-            const float          card_w = std::min(ui::Dp(360.0f), std::max(ui::Dp(120.0f), vp->WorkSize.x - ui::Dp(32.0f)));
-            ImGui::SetNextWindowPos(ImVec2(vp->WorkPos.x + vp->WorkSize.x * 0.5f, vp->WorkPos.y + vp->WorkSize.y * 0.5f),
-                                    ImGuiCond_Always, ImVec2(0.5f, 0.5f));
-            // 13-19 review: an explicit height; ImGui hides a new auto-sized window for its first
-            // frame, so a 0 height left the first paint without the card.
-            const float pad_x = ui::Dp(16.0f), pad_y = ui::Dp(14.0f);
-            const float line_h = ImGui::GetTextLineHeight();
-            const float sp = ImGui::GetStyle().ItemSpacing.y;
-            const float note_h =
-                ImGui::CalcTextSize("REAPER resumes when it is done. One undo point.", nullptr, false,
-                                    std::max(1.0f, card_w - 2.0f * pad_x)).y;
-            // title, Spacing, bar, Spacing, status line, note (each item followed by ItemSpacing)
-            const float card_h = 2.0f * pad_y + line_h + sp + sp + ui::Dp(8.0f) + sp + sp + line_h + sp + note_h;
-            ImGui::SetNextWindowSize(ImVec2(card_w, card_h), ImGuiCond_Always);
-            ImGui::PushStyleColor(ImGuiCol_WindowBg, ui::Col(ui::kSurface));
-            ImGui::PushStyleColor(ImGuiCol_Border, ui::Col(ui::kStroke));
-            ImGui::PushStyleColor(ImGuiCol_FrameBg, ui::Col(ui::kBg));
-            ImGui::PushStyleColor(ImGuiCol_PlotHistogram, ui::Col(ui::kAccent));
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, ui::Dp(10.0f));
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui::Dp(16.0f), ui::Dp(14.0f)));
-            ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, ui::Dp(4.0f));
-            constexpr ImGuiWindowFlags kCard = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                                               ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoInputs |
-                                               ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav |
-                                               ImGuiWindowFlags_AlwaysAutoResize;
-            if (ImGui::Begin("##ravpopulateprogress", nullptr, kCard)) {
-                ImGui::TextUnformatted("Populating sounds");
-                ImGui::Spacing();
-                ImGui::ProgressBar(ProgressFraction(p), ImVec2(-1.0f, ui::Dp(8.0f)), "");
-                ImGui::Spacing();
-                ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kMuted));
-                ImGui::TextUnformatted(ProgressText(p).c_str());
-                ImGui::PushStyleColor(ImGuiCol_Text, ui::Col(ui::kFaint));
-                ImGui::TextWrapped("REAPER resumes when it is done. One undo point.");
-                ImGui::PopStyleColor(2);
+                const float W = static_cast<float>(g_client_w), H = static_cast<float>(g_client_h);
+                const float fs = font->FontSize;
+                const float pad_x = ui::Dp(16.0f), pad_y = ui::Dp(14.0f), gap = ui::Dp(8.0f), bar_h = ui::Dp(8.0f);
+                const float card_w = std::min(ui::Dp(360.0f), std::max(ui::Dp(120.0f), W - ui::Dp(32.0f)));
+                const float text_w = std::max(1.0f, card_w - 2.0f * pad_x);
+                const char* kNote = "REAPER resumes when it is done. One undo point.";
+                const std::string status = BusyText(f);
+                const float title_h = font->CalcTextSizeA(fs, FLT_MAX, text_w, f.title.c_str()).y;
+                const float status_h = font->CalcTextSizeA(fs, FLT_MAX, text_w, status.c_str()).y;
+                const float note_h = font->CalcTextSizeA(fs, FLT_MAX, text_w, kNote).y;
+                const float card_h = 2.0f * pad_y + title_h + gap + bar_h + gap + status_h + ui::Dp(4.0f) + note_h;
+                const ImVec2 c0(std::floor((W - card_w) * 0.5f), std::floor(std::max(0.0f, (H - card_h) * 0.5f)));
+                const ImVec2 c1(c0.x + card_w, c0.y + card_h);
+
+                ImDrawList dl(ImGui::GetDrawListSharedData());
+                dl._ResetForNewFrame();
+                dl.PushTextureID(io.Fonts->TexID);
+                dl.PushClipRect(ImVec2(0.0f, 0.0f), ImVec2(W, H));
+                dl.AddRectFilled(c0, c1, ui::kSurface, ui::Dp(10.0f));
+                dl.AddRect(c0, c1, ui::kStroke, ui::Dp(10.0f));
+                float y = c0.y + pad_y;
+                dl.AddText(font, fs, ImVec2(c0.x + pad_x, y), ui::kText, f.title.c_str(), nullptr, text_w);
+                y += title_h + gap;
+                const ImVec2 b0(c0.x + pad_x, y), b1(c1.x - pad_x, y + bar_h);
+                dl.AddRectFilled(b0, b1, ui::kBg, ui::Dp(4.0f));
+                const float fill = BusyFraction(f);
+                if (fill > 0.0f) dl.AddRectFilled(b0, ImVec2(b0.x + (b1.x - b0.x) * fill, b1.y), ui::kAccent, ui::Dp(4.0f));
+                y += bar_h + gap;
+                dl.AddText(font, fs, ImVec2(c0.x + pad_x, y), ui::kMuted, status.c_str(), nullptr, text_w);
+                y += status_h + ui::Dp(4.0f);
+                dl.AddText(font, fs, ImVec2(c0.x + pad_x, y), ui::kFaint, kNote, nullptr, text_w);
+
+                ImDrawData dd;
+                dd.Valid = true;
+                dd.DisplayPos = ImVec2(0.0f, 0.0f);
+                dd.DisplaySize = ImVec2(W, H);
+                dd.FramebufferScale = ImVec2(1.0f, 1.0f);
+                dd.AddDrawList(&dl);
+                ImGui_ImplOpenGL3_RenderDrawData(&dd);
+                SwapBuffers(g_hdc);
+
+                glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prev_fb));
+                glViewport(prev_vp[0], prev_vp[1], prev_vp[2], prev_vp[3]);
+                glClearColor(prev_clear[0], prev_clear[1], prev_clear[2], prev_clear[3]);
+                if (prev_scissor) glEnable(GL_SCISSOR_TEST);
             }
-            ImGui::End();
-            ImGui::PopStyleVar(4);
-            ImGui::PopStyleColor(4);
-            ImGui::Render();
-            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-            SwapBuffers(g_hdc);
             ImGui::SetCurrentContext(prev_ctx);
             if (switched) wglMakeCurrent(prev_dc, prev_rc);
         }
     }
     MSG peek;
     PeekMessageW(&peek, nullptr, 0, 0, PM_NOREMOVE);
+}
+
+// 13-19 review / 13-59: the clicks, wheel turns and keys made on the busy card are dropped once the
+// gesture is over, so they reach neither the widgets below nor a second run of the gesture. Only the
+// presses: a release is let through (a button pressed before the gesture must not stay held).
+void DropBusyInputs()
+{
+    if (!g_hwnd) return;
+    static const UINT kDropped[] = {WM_LBUTTONDOWN, WM_LBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONDBLCLK,
+                                    WM_MBUTTONDOWN, WM_MBUTTONDBLCLK, WM_XBUTTONDOWN, WM_XBUTTONDBLCLK,
+                                    WM_MOUSEWHEEL,  WM_MOUSEHWHEEL,   WM_KEYDOWN,     WM_SYSKEYDOWN,
+                                    WM_CHAR,        WM_SYSCHAR};
+    MSG m;
+    for (UINT msg : kDropped)
+        while (PeekMessageW(&m, g_hwnd, msg, msg, PM_REMOVE)) {}
 }
 
 // Story 6-5-9 -- full screen on / off: the same window leaves the docker or goes back to it
@@ -2606,21 +2642,17 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                 RunningGuard() { g_populate_running = true; }
                 ~RunningGuard() { g_populate_running = false; }
             } running;
-            ProgressPacer pace(0.1);
-            RunPendingPopulate([&pace](const PopulateProgress& p) {
-                if (pace.Due(ElapsedSeconds())) PaintPopulateProgress(p);
+            // 13-59: the shared busy card (shown after ~150 ms); its end drops the clicks / keys made
+            // on it (DropBusyInputs), so they reach neither the widgets below nor a second Populate.
+            BusyScope busy("Populating sounds");
+            RunPendingPopulate([&busy](const PopulateProgress& p) {
+                busy.Item(p.item, p.items);
+                BusyStep(p.event, p.events);
             });
         } catch (const std::exception& e) {
             LogError("Populate failed: %s", e.what());
         } catch (...) {
             LogError("Populate failed");
-        }
-        // 13-19 review: clicks / keys made on the progress card must not reach the widgets below
-        // nor queue Populate again.
-        if (g_hwnd) {
-            MSG m;
-            while (PeekMessageW(&m, g_hwnd, WM_MOUSEFIRST, WM_MOUSELAST, PM_REMOVE)) {}
-            while (PeekMessageW(&m, g_hwnd, WM_KEYFIRST, WM_KEYLAST, PM_REMOVE)) {}
         }
         return 0;
     }

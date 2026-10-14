@@ -11,6 +11,7 @@
 // sound_audition_plan.h (pure).
 
 #include "library_node_ui.h"
+#include "busy_progress_ui.h"  // 13-59: the busy card's bar under Normalize while it measures
 
 #ifdef _WIN32
 
@@ -3350,6 +3351,8 @@ void LevelSection(const SoundLibrary& lib, const SoundNode& n, const SoundMedia&
     ImGui::EndDisabled();
     if (need_peaks) ui::ItemTipText("Waiting for the waveform");
     else if (!busy) ui::ItemTipText("Normalize now (one undo point)");
+    if (busy && P.norm_job.total_spans > 0)  // 13-59: the busy card's bar (the measure runs a slice a frame)
+        DrawBusyBar(static_cast<float>(P.norm_job.done_spans) / static_cast<float>(P.norm_job.total_spans));
 
     // A chip applies its settings, then the same gesture with its name in the toast.
     if (apply >= 0 && !StoreReplaced()) {

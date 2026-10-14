@@ -499,6 +499,7 @@ bool PassWithoutSound(const EventSounds& ev, const FollowEvent& e, const FollowI
     const std::vector<FollowPass> passes = PassesOf(e);
     if (passes.empty()) return false;
     std::vector<std::string> done;
+    std::vector<long long>   on_any;  // 13-59: the passes some live node's sound sits on
     for (const SoundPlacement& p : ev.placed) {
         if (p.own != Ownership::Populated || Has(done, p.node)) continue;
         done.push_back(p.node);
@@ -515,9 +516,16 @@ bool PassWithoutSound(const EventSounds& ev, const FollowEvent& e, const FollowI
             if (PassOfPlacement(q, *f, passes, in, ev.rid, &pass)) on.push_back(pass);
         }
         if (deleted || !live) continue;
+        if (in.pass_draws) {  // 13-59: any node's sound fills the pass (each pass draws its own)
+            on_any.insert(on_any.end(), on.begin(), on.end());
+            continue;
+        }
         for (const FollowPass& fp : passes)
             if (std::find(on.begin(), on.end(), fp.id) == on.end()) return true;
     }
+    if (in.pass_draws && !on_any.empty())
+        for (const FollowPass& fp : passes)
+            if (std::find(on_any.begin(), on_any.end(), fp.id) == on_any.end()) return true;
     return false;
 }
 

@@ -9,6 +9,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <set>
+#include <string>
+#include <vector>
 
 #include "auto_detect.h"
 #include "bone_roles.h"
@@ -331,8 +334,109 @@ static void TestParts()
     }
 }
 
+// ---- 13-59: the variation of each loop pass ------------------------------------------------------
+static void TestLoopPassDraws()
+{
+    // The project's choice: New by default, `loopvar=same` written for Same, the other tokens kept.
+    SoundStore st;
+    st.kept = {"trk=flat"};
+    CHECK(LoopPassDrawOf(st) == LoopPassDraw::New);
+    CHECK(!SetLoopPassDraw(st, LoopPassDraw::New));
+    CHECK(SetLoopPassDraw(st, LoopPassDraw::Same));
+    CHECK(LoopPassDrawOf(st) == LoopPassDraw::Same);
+    CHECK(st.kept.size() == 2 && st.kept[0] == "trk=flat" && st.kept[1] == "loopvar=same");
+    CHECK(!SetLoopPassDraw(st, LoopPassDraw::Same));
+    CHECK(SetLoopPassDraw(st, LoopPassDraw::New));
+    CHECK(st.kept.size() == 1 && st.kept[0] == "trk=flat");
+    st.kept = {"loopvar=other"};  // an unknown value reads as the default
+    CHECK(LoopPassDrawOf(st) == LoopPassDraw::New);
+
+    // The keys of a pass's draws.
+    long long   pass = 0;
+    std::string node;
+    CHECK(PassDrawKey("0123456789abcdef", 3) == "0123456789abcdef#p3");
+    CHECK(ParsePassDrawKey("0123456789abcdef#p3", &pass, &node) && pass == 3 && node == "0123456789abcdef");
+    CHECK(ParsePassDrawKey(PassDrawKey("n", -2), &pass, &node) && pass == -2 && node == "n");
+    CHECK(!ParsePassDrawKey("0123456789abcdef", &pass, &node));
+    CHECK(!ParsePassDrawKey("#p3", &pass, &node));
+    CHECK(!ParsePassDrawKey("n#p", &pass, &node));
+    CHECK(!ParsePassDrawKey("n#px", &pass, &node));
+
+    // Seeds: pass 0 keeps the item's, the others differ from it and from each other.
+    CHECK(PassDrawSeed(42, 0) == 42);
+    CHECK(PassDrawSeed(42, 1) != 42 && PassDrawSeed(42, 1) != PassDrawSeed(42, 2));
+    CHECK(PassDrawSeed(42, 1) == PassDrawSeed(42, 1));
+
+    // What a pass reads: the event's hand picks first, then its own entries; never another pass's.
+    SoundDraw hand{"h", 2, true, {}, ""};
+    SoundDraw drawn{"s", 1, false, {}, ""};
+    SoundDraw p1{PassDrawKey("s", 1), 4, false, {}, ""};
+    SoundDraw p2{PassDrawKey("s", 2), 5, false, {}, ""};
+    const std::vector<SoundDraw> draws = {hand, drawn, p1, p2};
+    const std::vector<SoundDraw> r1 = PassPrevDraws(draws, 1);
+    CHECK(r1.size() == 2 && r1[0].node == "h" && r1[0].hand && r1[1].node == "s" && r1[1].pick == 4 && !r1[1].hand);
+    CHECK(PassPrevDraws(draws, 7).size() == 1);
+    // Merging a pass's new picks replaces only that pass's entries, never by hand.
+    std::vector<SoundDraw> merged = draws;
+    SoundDraw out{"s", 0, true, {}, ""};
+    MergePassDraws(merged, 1, {out});
+    CHECK(merged.size() == 4);
+    int found = 0;
+    for (const SoundDraw& d : merged) {
+        if (d.node == PassDrawKey("s", 1)) {
+            ++found;
+            CHECK(d.pick == 0 && !d.hand);
+        }
+        if (d.node == PassDrawKey("s", 2)) CHECK(d.pick == 5);
+    }
+    CHECK(found == 1);
+    // The record keeps them as written (round trip).
+    ItemSounds item;
+    EventSounds ev;
+    ev.rid = "r1";
+    ev.t = 1.0;
+    ev.draws = merged;
+    item.events = {ev};
+    ItemSounds back;
+    CHECK(ParseItemSounds(SerializeItemSounds(item), &back) && back.events.size() == 1 && back.events[0].draws.size() == 4);
+    // Reshuffle forgets the passes' picks with the other drawn ones (the hand pick stays).
+    Reshuffle(back, 99);
+    CHECK(back.events[0].draws.size() == 1 && back.events[0].draws[0].node == "h");
+
+    // Drawing: each pass draws on its own seed and history; a pass with its stored pick keeps it.
+    const SoundLibrary lib = OneSound(Leaf("s", "", 8));
+    const SoundStore   empty;
+    std::set<int>      picks;
+    for (long long p = 1; p <= 6; ++p) {
+        PopulateDrawState ps;
+        ps.lib = &lib;
+        ps.seed = PassDrawSeed(7, p);
+        EventDraw ed;
+        ed.rid = "r1";
+        ed.t = 1.0;
+        const Resolution res = ResolveEvent(empty, lib, ValueLayers(), MakeDrawHooks(ps, ed, nullptr));
+        CHECK(res.sounds.size() == 1);
+        if (!res.sounds.empty()) picks.insert(res.sounds[0].variation);
+        // Stored, then drawn again: the same pick.
+        std::vector<SoundDraw> stored;
+        MergePassDraws(stored, p, ed.out);
+        const std::vector<SoundDraw> prev = PassPrevDraws(stored, p);
+        PopulateDrawState ps2;
+        ps2.lib = &lib;
+        ps2.seed = PassDrawSeed(1234, p);  // another seed: the stored pick still wins
+        EventDraw ed2;
+        ed2.rid = "r1";
+        ed2.t = 1.0;
+        ed2.prev = &prev;
+        const Resolution again = ResolveEvent(empty, lib, ValueLayers(), MakeDrawHooks(ps2, ed2, nullptr));
+        CHECK(!again.sounds.empty() && !res.sounds.empty() && again.sounds[0].variation == res.sounds[0].variation);
+    }
+    CHECK(picks.size() >= 2);  // the passes do not all play one variation
+}
+
 int main()
 {
+    TestLoopPassDraws();
     // ---- P1: orphan rules ----
     {
         ItemSounds it;

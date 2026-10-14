@@ -236,6 +236,7 @@ if(WIN32)
             src/tagging_assign_ui.cpp
             src/float_ui_window.cpp
             src/sound_populate.cpp
+            src/busy_progress_ui.cpp  # 13-59: the shared busy card of a long gesture
             src/sound_populate_plan.cpp
             src/sound_auto_assign.cpp
             src/sound_assign.cpp

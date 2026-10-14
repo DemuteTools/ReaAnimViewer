@@ -12,6 +12,7 @@
 #include <cmath>
 #include <cstdio>
 #include <functional>
+#include <deque>
 #include <map>
 #include <memory>
 #include <random>
@@ -20,6 +21,7 @@
 
 #include "asset_cache.h"
 #include "asset_loader.h"
+#include "busy_progress_ui.h"  // 13-59: the busy card of a long gesture
 #include "event_list.h"
 #include "item_rules.h"
 #include "library_user_ui.h"  // 13-11: File Sounds are placed straight from their file
@@ -422,6 +424,10 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
     if (rec.seed == 0) rec.seed = RandomSeed();
     PopulateDrawState st;
     st.seed = rec.seed;
+    // 13-59: New variation per loop pass: each pass other than the first draws its own (its history
+    // kept per pass, across the item's events in time order).
+    const bool                               pass_draws = LoopPassDrawOf(store) == LoopPassDraw::New;
+    std::map<long long, PopulateDrawState>   pass_states;
     std::set<std::string> blocked_rules;
     std::set<std::string> gone_rules;
     std::map<std::string, bool>            file_missing;  // File Sound uid -> its file is gone
@@ -457,7 +463,9 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
     const int n_events = static_cast<int>(sound_events.size());
     int       handled = 0;
     for (const FollowEvent& e : sound_events) {
-        if (o.on_event) o.on_event(handled++, n_events);
+        if (o.on_event) o.on_event(handled, n_events);
+        else BusyStep(handled, n_events);  // 13-59: the busy card of the gesture running this (if any)
+        ++handled;
         const std::string& rid = e.rid;
         if (!e.enabled) continue;  // fix C 2026-10-12: a disabled rule's sounds are kept, muted by the follow
         if (!o.rid.empty() && rid != o.rid) continue;
@@ -530,7 +538,12 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                 if (x.node == d.node) have = true;
             if (!have && d.hand) draws.push_back(d);
         }
-        if (!o.fill_passes) ev->draws = draws;  // 13-56 review: a fill keeps the event's draw as it is
+        if (!o.fill_passes) {  // 13-56 review: a fill keeps the event's draw as it is
+            // 13-59: the loop passes' own picks are kept (those drawn below replace theirs).
+            for (const SoundDraw& d : prev)
+                if (ParsePassDrawKey(d.node, nullptr, nullptr)) draws.push_back(d);
+            ev->draws = draws;
+        }
         if (res.blocked) {
             AddLine(rep, ReportKind::Blocked, res.reason.empty() ? std::string("blocked") : res.reason, "", guid, e.t);
             continue;
@@ -543,64 +556,111 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
         std::vector<DesiredSlot>   desired;
         std::vector<const ResolvedSound*> desired_rs;
         std::set<std::string>      hold;  // missing / no active variation: placed copies are kept
-        for (const ResolvedSound& s : res.sounds) {
-            const SoundNode* n = FindNode(*lib, s.node);
-            if (!n) continue;
-            if (s.missing) {
-                AddLine(rep, ReportKind::Missing,
-                        n->sound.source.kind == SoundSourceKind::File
-                            ? "File not found: " + n->sound.source.asset.name
-                            : "Source item missing: " + NodeName(n),
-                        n->uid, guid, e.t);
-                hold.insert(n->uid);
-                continue;
-            }
-            if (ed.no_active.count(n->uid)) {
-                AddLine(rep, ReportKind::Missing, NodeName(n) + ": no active variation", n->uid, guid, e.t);
-                hold.insert(n->uid);
-                continue;
-            }
-            if (const auto np = ed.no_part.find(n->uid); np != ed.no_part.end()) {
-                // 13-23 (A5): nothing of that part left in any variation: nothing placed (what was is removed).
-                AddLine(rep, ReportKind::NoSound, NoPartText(NodeName(n), DivideValueName(store, n->sound, np->second)),
-                        n->uid, guid, e.t);
-                continue;
-            }
-            // 13-20: the items it is placed as (one per span), compared with what is placed; a folder
-            // pile and Takes are not counted (their members are the pile's). 13-25: the snap its anchor
-            // piece gets (item s), compared too, so a sync point measured or moved since is placed again.
-            int    pieces = 0;
-            double sync = -1.0;
-            if (n->sound.mode != DetectMode::Takes && s.variation >= 0) {
-                bool   pile = false;
-                double rate = 1.0;
-                if (n->sound.source.kind == SoundSourceKind::Item)
-                    if (MediaItem* src = FindItemByGuid(n->sound.source.item_guid)) {
-                        pile = IsFolderItem(src);
-                        if (MediaItem_Take* tk = GetActiveTake(src)) rate = GetMediaItemTakeInfo_Value(tk, "D_PLAYRATE");
+        // 13-59: each line once per event, whichever pass's draw met it.
+        std::set<std::string> said;
+        auto say = [&](ReportKind kind, const std::string& text, const std::string& node) {
+            if (said.insert(std::to_string(static_cast<int>(kind)) + "\x1f" + node + "\x1f" + text).second)
+                AddLine(rep, kind, text, node, guid, e.t);
+        };
+        // The desired slots of one draw (`r`, `edr`) on the passes `on` (indices into `passes`).
+        auto add_desired = [&](const Resolution& r, const EventDraw& edr, const std::vector<int>& on) {
+            for (const ResolvedSound& s : r.sounds) {
+                const SoundNode* n = FindNode(*lib, s.node);
+                if (!n) continue;
+                if (s.missing) {
+                    say(ReportKind::Missing,
+                        n->sound.source.kind == SoundSourceKind::File ? "File not found: " + n->sound.source.asset.name
+                                                                      : "Source item missing: " + NodeName(n),
+                        n->uid);
+                    hold.insert(n->uid);
+                    continue;
+                }
+                if (edr.no_active.count(n->uid)) {
+                    say(ReportKind::Missing, NodeName(n) + ": no active variation", n->uid);
+                    hold.insert(n->uid);
+                    continue;
+                }
+                if (const auto np = edr.no_part.find(n->uid); np != edr.no_part.end()) {
+                    // 13-23 (A5): nothing of that part left in any variation: nothing placed (what was is removed).
+                    say(ReportKind::NoSound, NoPartText(NodeName(n), DivideValueName(store, n->sound, np->second)), n->uid);
+                    continue;
+                }
+                // 13-20: the items it is placed as (one per span), compared with what is placed; a folder
+                // pile and Takes are not counted (their members are the pile's). 13-25: the snap its anchor
+                // piece gets (item s), compared too, so a sync point measured or moved since is placed again.
+                int    pieces = 0;
+                double sync = -1.0;
+                if (n->sound.mode != DetectMode::Takes && s.variation >= 0) {
+                    bool   pile = false;
+                    double rate = 1.0;
+                    if (n->sound.source.kind == SoundSourceKind::Item)
+                        if (MediaItem* src = FindItemByGuid(n->sound.source.item_guid)) {
+                            pile = IsFolderItem(src);
+                            if (MediaItem_Take* tk = GetActiveTake(src)) rate = GetMediaItemTakeInfo_Value(tk, "D_PLAYRATE");
+                        }
+                    if (!pile) {
+                        const SoundData& sd = PlacedDataFor(
+                            lib_uid, *n, s.variation, [n]() { return SoundSourcePath(n->sound.source); }, measured_here);
+                        const std::vector<PieceApply> pa = PieceApplyFor(sd, s.variation, s.part_value,
+                                                                         n->sound.source.kind == SoundSourceKind::File);
+                        pieces = static_cast<int>(pa.size());
+                        if (!(rate > 0.0) || !std::isfinite(rate)) rate = 1.0;
+                        for (const PieceApply& a : pa)
+                            if (a.anchor) sync = a.slice.snap_offset / rate;
                     }
-                if (!pile) {
-                    const SoundData& sd = PlacedDataFor(
-                        lib_uid, *n, s.variation, [n]() { return SoundSourcePath(n->sound.source); }, measured_here);
-                    const std::vector<PieceApply> pa = PieceApplyFor(sd, s.variation, s.part_value,
-                                                                     n->sound.source.kind == SoundSourceKind::File);
-                    pieces = static_cast<int>(pa.size());
-                    if (!(rate > 0.0) || !std::isfinite(rate)) rate = 1.0;
-                    for (const PieceApply& a : pa)
-                        if (a.anchor) sync = a.slice.snap_offset / rate;
+                }
+                for (int p : on) {
+                    DesiredSlot d;
+                    d.pass = p;
+                    d.node = n->uid;
+                    d.variation = s.variation;
+                    d.part = s.part_value;
+                    d.pieces = pieces;
+                    d.sync = sync;
+                    desired.push_back(d);
+                    desired_rs.push_back(&s);
                 }
             }
-            for (size_t p = 0; p < passes.size(); ++p) {
-                DesiredSlot d;
-                d.pass = static_cast<int>(p);
-                d.node = n->uid;
-                d.variation = s.variation;
-                d.part = s.part_value;
-                d.pieces = pieces;
-                d.sync = sync;
-                desired.push_back(d);
-                desired_rs.push_back(&s);
+        };
+        // 13-59: Same (or the first pass): the event's draw; New: every other pass its own.
+        std::vector<int> main_passes;
+        struct PassDraw {
+            long long              id = 0;
+            std::vector<int>       on;
+            std::vector<SoundDraw> prev;
+            EventDraw              ed;
+            Resolution             res;
+        };
+        std::deque<PassDraw> pass_draws_here;  // stable addresses: desired_rs points into their res
+        for (size_t p = 0; p < e.passes.size(); ++p) {
+            const long long id = e.passes[p].id;
+            if (!pass_draws || id == 0) {
+                main_passes.push_back(static_cast<int>(p));
+                continue;
             }
+            PassDraw* pd = nullptr;
+            for (PassDraw& x : pass_draws_here)
+                if (x.id == id) pd = &x;
+            if (!pd) {
+                pass_draws_here.emplace_back();
+                pd = &pass_draws_here.back();
+                pd->id = id;
+            }
+            pd->on.push_back(static_cast<int>(p));
+        }
+        add_desired(res, ed, main_passes);
+        for (PassDraw& pd : pass_draws_here) {
+            PopulateDrawState& ps = pass_states[pd.id];
+            ps.lib = lib;
+            ps.seed = PassDrawSeed(rec.seed, pd.id);
+            pd.prev = PassPrevDraws(prev, pd.id);
+            pd.ed.rid = rid;
+            pd.ed.t = ev->t;
+            pd.ed.prev = &pd.prev;
+            pd.res = ResolveEvent(store, *lib, layers, MakeDrawHooks(ps, pd.ed, is_missing));
+            if (pd.res.blocked) continue;
+            MergePassDraws(ev->draws, pd.id, pd.ed.out);
+            add_desired(pd.res, pd.ed, pd.on);
         }
         std::vector<ExistingSlot> existing;
         for (const SoundPlacement& p : ev->placed) {
@@ -775,6 +835,16 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
     });
 }
 
+// 13-59: PopulateOne over the members of an item's pool, under the busy card ("Updating sounds").
+void PopulateMembers(const std::vector<MediaItem*>& members, const SoundStore& store, const PopOpts& o, SoundReport& rep)
+{
+    BusyScope busy("Updating sounds");
+    for (size_t k = 0; k < members.size(); ++k) {
+        busy.Item(static_cast<int>(k), static_cast<int>(members.size()));
+        PopulateOne(members[k], store, o, rep, nullptr);
+    }
+}
+
 // Gives every block a rid (P7), pooled, inside the caller's undo scope.
 void EnsureRids(MediaItem* item)
 {
@@ -826,7 +896,7 @@ void EditAutoRules(MediaItem* item, const std::vector<std::string>& keys, const 
     PopOpts o;  // 13-8 fix: every rule of the row in one pass (one detection per member, not one per rule)
     o.only_populated = true;
     o.rids = rids;
-    for (MediaItem* m : members) PopulateOne(m, store, o, rep, nullptr);
+    PopulateMembers(members, store, o, rep);
 }
 
 // A gesture's library argument: "" = inherit, kLibNoneWord = None, else a library uid.
@@ -867,7 +937,11 @@ std::vector<MediaItem*> AllRavItems()
 void ReplaceChangedRules(const SoundStore& before, SoundReport& rep)
 {
     const SoundStore after = GetSoundStore(nullptr);
-    for (MediaItem* it : AllRavItems()) {
+    const std::vector<MediaItem*> all = AllRavItems();
+    BusyScope busy("Updating sounds");  // 13-59: a library or value change re-placing many items
+    for (size_t k = 0; k < all.size(); ++k) {
+        MediaItem* it = all[k];
+        busy.Item(static_cast<int>(k), static_cast<int>(all.size()));
         ItemRulesRead rr;
         if (!ReadItemRules(it, &rr) || !rr.valid) continue;
         const ItemRigInfo rig = ItemRig(it);
@@ -1060,6 +1134,7 @@ SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* even
     try {
         const std::vector<MediaItem*> targets = PopulateTargets(items);
         if (targets.empty()) return rep;
+        BusyScope busy("Populating sounds");  // 13-59: the busy card (Repopulate's own, for instance)
         PopulateProgress where;  // 13-19: the caller's progress frames, the first one before any work
         where.items = static_cast<int>(targets.size());
         if (progress) progress(where);
@@ -1083,6 +1158,7 @@ SoundReport PopulateItemsCounted(const std::vector<MediaItem*>& items, int* even
                 where.item = static_cast<int>(k);
                 where.event = where.events = 0;
                 if (progress) progress(where);
+                else busy.Item(where.item, where.items);  // 13-59: PopulateOne steps its events itself
                 PopulateOne(targets[k], store, o, rep, events);
             }
             RefreshRavTrackNames(nullptr);  // 13-17 N3: the RAV tracks take their Library names
@@ -1122,8 +1198,12 @@ SoundReport PopulateLoopPassesNoUndo(const std::vector<MediaItem*>& items)
         o.report_replaced = false;
         o.fill_passes = true;     // review: the missing passes placed, nothing else changed
         SoundReport quiet;        // review: no report lines (the follow's automatic fill says nothing)
-        for (MediaItem* it : items)
+        BusyScope   busy("Filling loop passes");  // 13-59: a long stretch fills many passes
+        for (size_t k = 0; k < items.size(); ++k) {
+            MediaItem* it = items[k];
+            busy.Item(static_cast<int>(k), static_cast<int>(items.size()));
             if (it && RavTakeOf(it)) PopulateOne(it, store, o, quiet, nullptr);
+        }
         RefreshRavTrackNames(nullptr);  // 13-17 N3, as Populate
         UpdateArrange();
     } catch (...) {
@@ -1142,10 +1222,13 @@ SoundReport ReshuffleItems(const std::vector<MediaItem*>& items)
         {
             SoundUndoScope undo(nullptr, "RAV: Reshuffle sounds");
             ItemIndexScope index;
+            BusyScope      busy("Reshuffling sounds");  // 13-59
             PopOpts o;
             o.only_populated = true;
             o.report_replaced = false;
-            for (MediaItem* it : targets) {
+            for (size_t k = 0; k < targets.size(); ++k) {
+                MediaItem* it = targets[k];
+                busy.Item(static_cast<int>(k), static_cast<int>(targets.size()));
                 const uint64_t seed = RandomSeed();
                 ModifyItemSounds(it, nullptr, [seed](ItemSounds& s) {
                     Reshuffle(s, seed);
@@ -1182,7 +1265,7 @@ SoundReport SetRuleLibrary(MediaItem* item, int block, std::string library_uid)
             PopOpts o;
             o.only_populated = true;
             o.rid = rid;
-            for (MediaItem* m : members) PopulateOne(m, store, o, rep, nullptr);
+            PopulateMembers(members, store, o, rep);
         }
         UpdateArrange();
     } catch (...) {
@@ -1243,7 +1326,7 @@ SoundReport SetSoundValue(MediaItem* item, SoundValueLevel level, int block, dou
             o.rid = rid;
             o.has_t = level == SoundValueLevel::Event;
             o.t = t;
-            for (MediaItem* m : members) PopulateOne(m, store, o, rep, nullptr);
+            PopulateMembers(members, store, o, rep);
         }
         UpdateArrange();
     } catch (...) {
@@ -1327,7 +1410,7 @@ void EditRules(MediaItem* item, const std::vector<std::string>& rids, const Soun
     PopOpts o;
     o.only_populated = true;
     o.rids = rids;
-    for (MediaItem* m : members) PopulateOne(m, store, o, rep, nullptr);
+    PopulateMembers(members, store, o, rep);
 }
 
 }  // namespace

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 //
 // Story 13-19: the pure pieces of a fast Populate with a progress bar (host-tested,
-// tests/populate_progress_test.cpp). No REAPER, no ImGui.
+// tests/populate_progress_test.cpp). No REAPER, no ImGui. 13-59: the card Populate shows is now the
+// shared busy card (busy_progress.h); PopulateProgress still carries Populate's item / event counts.
 
 #pragma once
 

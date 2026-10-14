@@ -162,6 +162,10 @@ struct FollowInput {
     // before (unmuted when the pass comes back). A populated event with a pass that has no sound of a
     // node gets FollowPlan::populate_passes.
     bool                         owner_loops = false;
+    // 13-59: New variation per loop pass (sound_populate_plan.h LoopPassDraw): a pass may play other
+    // nodes than the first (a Random container drew another child), so a pass needs a fill only when
+    // it has no live populated sound of the event at all.
+    bool                         pass_draws = false;
 };
 
 enum class FollowKind { Move, Remove, Detach, Forget, Mute, Unmute, Store, Retag };

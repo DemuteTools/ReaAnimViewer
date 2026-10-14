@@ -8,6 +8,7 @@
 // tick converges again). Repopulate (reset) is a gesture: one SoundUndoScope.
 
 #include "sound_follow.h"
+#include "busy_progress_ui.h"  // 13-59: the busy card of a long gesture
 
 #ifdef _WIN32
 
@@ -403,8 +404,12 @@ void Repopulate(ReaProject* proj)
     const std::vector<MediaItem*> items = RepopulateItems(proj, &placed);
     if (items.empty()) return;
     SoundUndoScope scope(proj, "RAV: Repopulate sounds (reset)");
+    BusyScope      busy("Repopulating sounds");  // 13-59: removing, then Populate counts its own items
+    busy.Phase("Removing");
     const uint64_t salt = static_cast<uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count());
-    for (MediaItem* item : items) {
+    for (size_t k = 0; k < items.size(); ++k) {
+        MediaItem*        item = items[k];
+        BusyStep(static_cast<int>(k), static_cast<int>(items.size()), "item");
         const std::string guid = ItemGuidOf(item);
         ModifyItemSounds(item, nullptr, [&](ItemSounds& rec) {
             for (EventSounds& ev : rec.events) {
@@ -422,6 +427,7 @@ void Repopulate(ReaProject* proj)
             return true;
         });
     }
+    busy.Phase("Placing");
     Report(proj, PopulateItems(items).lines);  // nested in the scope: one undo point
     UpdateArrange();
 }
@@ -510,6 +516,37 @@ void DrawSeparatorRow(ReaProject* proj)
                 });
             }
         }
+        ui::EndMenuPopup();
+    }
+}
+
+// 13-59 (Antho 2026-10-14): what each loop pass of a looped animation item plays, one undo point a
+// change (the store header, as the Tracks rows). New variation (the default) draws each pass anew.
+void DrawLoopPassRow(ReaProject* proj)
+{
+    static const char* const  kShort[2] = {"New variation", "Same variation"};
+    static const char* const  kRows[2] = {"A new variation per pass", "The same variation on every pass"};
+    static const char* const  kHints[2] = {"drawn like the next event", "as the first pass"};
+    static const LoopPassDraw kDraws[2] = {LoopPassDraw::New, LoopPassDraw::Same};
+    const int                 sel = LoopPassDrawOf(GetSoundStore(proj)) == LoopPassDraw::Same ? 1 : 0;
+    ui::LabelRow("Loop passes", ui::Dp(90.0f));
+    const std::string label = std::string(kShort[sel]) + " \xE2\x96\xBE##sndlooppass";
+    if (ui::SolidButton(label.c_str())) ImGui::OpenPopup("##sndlooppass");
+    // 13-37: what the setting changes, then when it applies.
+    ui::ItemTipText("A looped animation item (Source loop, stretched) plays each event once per loop pass:\n"
+                    "each pass draws its own variation (same rules as Populate, no repeat), or every pass\n"
+                    "plays the first pass's.\n"
+                    "Applies to new loop passes, Populate and Reshuffle.");
+    if (ui::BeginMenuPopup("##sndlooppass")) {
+        ui::MenuCaption("EACH LOOP PASS PLAYS");
+        for (int i = 0; i < 2; ++i)
+            if (ImGui::MenuItem(kRows[i], kHints[i], i == sel) && i != sel) {
+                const LoopPassDraw to = kDraws[i];
+                const std::string  undo = std::string("RAV: Loop passes: ") + kShort[i];
+                g_track_picks.Pick([proj, to, undo]() {
+                    ModifySoundStore(proj, undo.c_str(), [to](SoundStore& st) { return SetLoopPassDraw(st, to); });
+                });
+            }
         ui::EndMenuPopup();
     }
 }
@@ -666,6 +703,7 @@ void SoundFollowTick(ReaProject* proj)
 
         const bool               keep_draw = LoadPrefFloat(kKeepDrawPref, 0.0f) != 0.0f;
         const SoundStore&        store = GetSoundStore(proj);
+        const bool               pass_draws = LoopPassDrawOf(store) == LoopPassDraw::New;  // 13-59
         std::vector<std::pair<std::string, std::string>> libs;
         for (const SoundLibrary& l : store.libraries) libs.emplace_back(l.uid, l.name);
         std::vector<std::pair<std::string, double>> anim_pos;
@@ -782,6 +820,7 @@ void SoundFollowTick(ReaProject* proj)
                 in.moved_items = mv_items;
                 in.moved_delta = mv_delta;
                 in.owner_loops = clip_map.loop;  // 13-56
+                in.pass_draws = pass_draws;      // 13-59
                 if (appeared_now) {
                     in.strays = strays;
                     in.owner_positions = anim_pos;
@@ -921,6 +960,13 @@ void DrawLibraryTracksSection()
         g_track_picks.Run();      // after the menus: the gesture replaces the store
     }
     ui::EndSection(sec);
+    // 13-59: the looped items' passes, a card of its own under Tracks (same Library tab).
+    static ui::Section loop_sec;
+    if (ui::BeginSection(loop_sec, "Looped items")) {
+        DrawLoopPassRow(CurrentProject());
+        g_track_picks.Run();
+    }
+    ui::EndSection(loop_sec);
 }
 
 void DrawSoundsMenuSection()

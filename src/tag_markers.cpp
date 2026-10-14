@@ -4,6 +4,7 @@
 
 #include "tag_markers.h"
 #include "sound_follow.h"
+#include "busy_progress_ui.h"  // 13-59: the busy card of a long gesture
 
 #ifdef _WIN32
 
@@ -1558,7 +1559,10 @@ void SetTaggingMarkerMode(MarkerMode mode)
         }
         if (items.empty()) return;
         Undo_BeginBlock2(nullptr);
-        for (MediaItem* it : items) {
+        BusyScope busy("Rewriting previews");  // 13-59: every item with previews or a commit
+        for (size_t k = 0; k < items.size(); ++k) {
+            MediaItem* it = items[k];
+            busy.Item(static_cast<int>(k), static_cast<int>(items.size()));
             try {
                 RewriteItemPreviewsNoUndo(it);
             } catch (...) {
@@ -1627,8 +1631,12 @@ ApplyResult CommitTaggingMarkers()
                 }
             }
         }
+        BusyScope busy("Committing markers");  // 13-59: reading every item, then writing
+        busy.Phase("Reading");
         try {
-            for (MediaItem* it : targets) {
+            for (size_t k = 0; k < targets.size(); ++k) {
+                MediaItem* it = targets[k];
+                busy.Item(static_cast<int>(k), static_cast<int>(targets.size()));
                 Run r;
                 r.item = it;
                 r.det = DetectItem(it);
@@ -1691,7 +1699,11 @@ ApplyResult CommitTaggingMarkers()
                 }
             }
             std::vector<ExistingMarker> written_project;  // this Commit's project markers (RAV's, never foreign)
-            for (Run& r : runs) CommitItemMarkers(r.item, r.det, mode, written_project, res);
+            busy.Phase("Writing");
+            for (size_t k = 0; k < runs.size(); ++k) {
+                busy.Item(static_cast<int>(k), static_cast<int>(runs.size()));
+                CommitItemMarkers(runs[k].item, runs[k].det, mode, written_project, res);
+            }
             // A giver whose record write failed still lists what it handed over: taken back.
             RevertFailedHandOversNoUndo(handoffs);
         } catch (...) {

@@ -3,6 +3,7 @@
 // See tagging_session.h.
 
 #include "tagging_session.h"
+#include "busy_progress_ui.h"  // 13-59: the busy card of a long gesture
 
 #ifdef _WIN32
 
@@ -617,7 +618,9 @@ bool TaggingAnalyse()
         return false;
     }
     std::string why;
+    BusyScope   busy("Analysing thresholds", true);  // 13-59 (a long clip, many rules)
     const bool ok = TaggingEdit("RAV: Analyse thresholds", [&](ItemRules& r) {
+        busy.Phase("Reading bones");
         std::vector<Block> bound;
         if (!BindAndSample(r, &bound)) {
             why = "The item's bones could not be read.";
@@ -625,8 +628,10 @@ bool TaggingAnalyse()
         }
         AnalyseOptions ao = r.analyse;
         ao.smooth_ms = r.options.smooth_ms;
+        busy.Phase("Analysing");
         const std::vector<Block> analysed = Analyse(bound, g.tracks, ao);
         CopyAnalysedValues(analysed, r.blocks);
+        busy.Phase("Writing");
         return true;
     });
     if (ok && !why.empty()) {
@@ -640,13 +645,15 @@ bool TaggingDetectAuto(const AutoSettings& settings)
 {
     if (!g.model.item) return false;
     // 13-15a: Detect gives no sound to its blocks; they inherit the Character's / Project's (sound_assign.h).
-    const bool ok = TaggingEdit("RAV: Detect auto events", [settings](ItemRules& r) {
+    BusyScope  busy("Detecting events", true);  // 13-59: the sensitivity search can take a while
+    const bool ok = TaggingEdit("RAV: Detect auto events", [settings, &busy](ItemRules& r) {
         bool                   changed = false;
         const std::vector<int> map = ApplyAutoSettings(r.blocks, settings, &changed);
         if (changed) RemapEventBlocks(r.events, map);
         // Story 10-8h: a block with no detected event (before the user's Suppress edits) gets the
         // lowest sensitivity that finds one, in this undo point.
         TaggingModel& m = g.model;
+        busy.Phase("Searching");
         if (HasActiveAutoBlocks(r.blocks) && EnsureRoleTracks()) {
             std::vector<AutoSensResult> res;
             if (ApplyAutoSensSearch(r.blocks, g.role_tracks, m.role_to_bone, &res, &g.auto_cache, r.clip.loop)) changed = true;

@@ -7,6 +7,9 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <string>
+#include <vector>
 
 #include "sound_draw.h"
 #include "sound_place_plan.h"
@@ -193,6 +196,109 @@ ResolveHooks MakeDrawHooks(PopulateDrawState& state, EventDraw& ev, std::functio
     };
     h.is_missing = std::move(is_missing);
     return h;
+}
+
+// ---- 13-59: the variation of each loop pass ----------------------------------------------------
+
+namespace {
+
+constexpr const char* kLoopVarKey = "loopvar=";
+constexpr const char* kPassKeyMark = "#p";
+
+bool IsLoopVarToken(const std::string& tok)
+{
+    return tok.compare(0, std::strlen(kLoopVarKey), kLoopVarKey) == 0;
+}
+
+}  // namespace
+
+LoopPassDraw LoopPassDrawOf(const SoundStore& store)
+{
+    for (const std::string& tok : store.kept)
+        if (IsLoopVarToken(tok)) return tok.substr(std::strlen(kLoopVarKey)) == "same" ? LoopPassDraw::Same : LoopPassDraw::New;
+    return LoopPassDraw::New;
+}
+
+bool SetLoopPassDraw(SoundStore& store, LoopPassDraw draw)
+{
+    if (LoopPassDrawOf(store) == draw) return false;
+    std::vector<std::string> kept;
+    for (const std::string& tok : store.kept)
+        if (!IsLoopVarToken(tok)) kept.push_back(tok);
+    if (draw == LoopPassDraw::Same) kept.push_back(std::string(kLoopVarKey) + "same");
+    store.kept = kept;
+    return true;
+}
+
+std::string PassDrawKey(const std::string& node_uid, long long pass)
+{
+    return node_uid + kPassKeyMark + std::to_string(pass);
+}
+
+bool ParsePassDrawKey(const std::string& key, long long* pass, std::string* node_uid)
+{
+    const size_t at = key.rfind(kPassKeyMark);
+    if (at == std::string::npos || at == 0 || at + 2 >= key.size()) return false;
+    long long v = 0;
+    bool      neg = false;
+    size_t    i = at + 2;
+    if (key[i] == '-') {
+        neg = true;
+        ++i;
+    }
+    if (i >= key.size()) return false;
+    for (; i < key.size(); ++i) {
+        if (key[i] < '0' || key[i] > '9') return false;
+        if (v > 100000000000LL) return false;
+        v = v * 10 + (key[i] - '0');
+    }
+    if (pass) *pass = neg ? -v : v;
+    if (node_uid) *node_uid = key.substr(0, at);
+    return true;
+}
+
+uint64_t PassDrawSeed(uint64_t seed, long long pass)
+{
+    if (pass == 0) return seed;
+    uint64_t z = static_cast<uint64_t>(pass) + 0x9E3779B97F4A7C15ull;  // splitmix64 of the pass id
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    z ^= z >> 31;
+    const uint64_t s = seed ^ z;
+    return s ? s : 0x9E3779B97F4A7C15ull;
+}
+
+std::vector<SoundDraw> PassPrevDraws(const std::vector<SoundDraw>& draws, long long pass)
+{
+    std::vector<SoundDraw> out;
+    for (const SoundDraw& d : draws)
+        if (d.hand && !ParsePassDrawKey(d.node, nullptr, nullptr)) out.push_back(d);
+    for (const SoundDraw& d : draws) {
+        long long   p = 0;
+        std::string node;
+        if (!ParsePassDrawKey(d.node, &p, &node) || p != pass) continue;
+        SoundDraw x = d;
+        x.node = node;
+        x.hand = false;
+        out.push_back(x);
+    }
+    return out;
+}
+
+void MergePassDraws(std::vector<SoundDraw>& draws, long long pass, const std::vector<SoundDraw>& out)
+{
+    draws.erase(std::remove_if(draws.begin(), draws.end(),
+                               [pass](const SoundDraw& d) {
+                                   long long p = 0;
+                                   return ParsePassDrawKey(d.node, &p, nullptr) && p == pass;
+                               }),
+                draws.end());
+    for (const SoundDraw& d : out) {
+        SoundDraw x = d;
+        x.node = PassDrawKey(d.node, pass);
+        x.hand = false;
+        draws.push_back(x);
+    }
 }
 
 std::vector<SlotStep> PlanPassFill(const std::vector<DesiredSlot>& desired, const std::vector<ExistingSlot>& existing)

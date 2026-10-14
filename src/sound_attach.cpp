@@ -3,6 +3,7 @@
 // See sound_attach.h (13-10).
 
 #include "sound_attach.h"
+#include "busy_progress_ui.h"  // 13-59: the busy card of a long gesture
 #include "sound_peaks.h"  // ItemGainDb
 
 #ifdef _WIN32
@@ -455,7 +456,9 @@ AttachResult SpreadTo(MediaItem* anim_item, const std::vector<AttachEvent>& even
     // D6: the take pick per event (the passes of one event share it).
     const std::vector<int> picks = SpreadPicks(targets, SpreadPickTakes(facts), rec.seed, rid);
     int                    n_events = 0, n_copies = 0, n_failed = 0;
+    BusyScope              busy("Spreading sound");  // 13-59: a rule with many events
     for (size_t k = 0; k < targets.size(); ++k) {
+        BusyStep(static_cast<int>(k), static_cast<int>(targets.size()));
         const AttachEvent& ev = targets[k];
         const int          pick = picks[k];
         bool               any = false;

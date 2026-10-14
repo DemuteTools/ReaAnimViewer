@@ -28,6 +28,7 @@ using GetItemStateChunkFn = bool (*)(MediaItem*, char*, int, bool);
 using CountTakesFn = int (*)(MediaItem*);
 using GetMediaItemTakeFn = MediaItem_Take* (*)(MediaItem*, int);
 using FileForReadFn = bool (*)(char*, const char*, const char*);
+using TakeFXGetCountFn = int (*)(MediaItem_Take*);
 
 CreateFromFileFn    f_create = nullptr;
 GetNumTakeMarkersFn f_num_tm = nullptr;
@@ -36,6 +37,7 @@ GetItemStateChunkFn f_chunk = nullptr;
 CountTakesFn        f_count_takes = nullptr;
 GetMediaItemTakeFn  f_get_take = nullptr;
 FileForReadFn       f_file_read = nullptr;
+TakeFXGetCountFn    f_takefx_count = nullptr;  // 13-49 review: optional (the "Placed without" line)
 
 constexpr size_t kCacheFiles = 32;
 constexpr double kBudgetMs = 8.0;   // per window: every call of one UI frame shares it
@@ -162,6 +164,7 @@ void InitSoundPeaks(void* (*get_func)(const char* name))
     f_count_takes = reinterpret_cast<CountTakesFn>(get_func("CountTakes"));
     f_get_take = reinterpret_cast<GetMediaItemTakeFn>(get_func("GetMediaItemTake"));
     f_file_read = reinterpret_cast<FileForReadFn>(get_func("GetUserFileNameForRead"));
+    f_takefx_count = reinterpret_cast<TakeFXGetCountFn>(get_func("TakeFX_GetCount"));
 }
 
 PeakState RequestPeaks(const std::string& path, PeakData* out)
@@ -264,6 +267,13 @@ bool ReadItemMedia(MediaItem* item, SoundMedia* out)
         out->take_paths.push_back(path);
         out->take_lens.push_back(len);
         if (t == active) out->active_take = k;
+        if (t) {  // 13-49 review: what a placed copy drops (it plays its file plain)
+            const double rt = GetMediaItemTakeInfo_Value(t, "D_PLAYRATE");
+            out->drops_take_fx = out->drops_take_fx || (f_takefx_count && f_takefx_count(t) > 0);
+            out->drops_pitch = out->drops_pitch || std::fabs(GetMediaItemTakeInfo_Value(t, "D_PITCH")) > 1e-9;
+            out->drops_rate = out->drops_rate || (std::isfinite(rt) && rt > 0.0 && std::fabs(rt - 1.0) > 1e-9);
+            out->drops_pan = out->drops_pan || std::fabs(GetMediaItemTakeInfo_Value(t, "D_PAN")) > 1e-9;
+        }
         if (n >= 2) {
             SoundFrame fr;
             fr.start = t ? GetMediaItemTakeInfo_Value(t, "D_STARTOFFS") : 0.0;
@@ -282,6 +292,7 @@ bool ReadItemMedia(MediaItem* item, SoundMedia* out)
     out->source_len = out->take_lens[static_cast<size_t>(out->active_take)];
     out->facts.source_len = out->source_len;
     out->facts.start_offs = GetMediaItemTakeInfo_Value(active, "D_STARTOFFS");
+    out->chan_mode = static_cast<int>(GetMediaItemTakeInfo_Value(active, "I_CHANMODE"));
     out->facts.playrate = GetMediaItemTakeInfo_Value(active, "D_PLAYRATE");
     if (!std::isfinite(out->facts.playrate) || !(out->facts.playrate > 0.0)) out->facts.playrate = 1.0;
     // Slices: the take markers, else the chunk's text (spike 13-0 A).

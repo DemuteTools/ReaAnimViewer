@@ -49,8 +49,6 @@ using PCMSourceCreateFromFileFn = PCM_source* (*)(const char* filename);
 using PCMSourceDestroyFn = void (*)(PCM_source* src);
 using SetMediaItemTakeSourceFn = bool (*)(MediaItem_Take* take, PCM_source* source);
 using GetProjectPathExFn = void (*)(ReaProject* proj, char* buf, int buf_sz);
-using TakeFXGetCountFn = int (*)(MediaItem_Take* take);
-using TakeFXDeleteFn = bool (*)(MediaItem_Take* take, int fx);
 
 PluginRegisterFn             f_plugin_register = nullptr;
 AddMediaItemToTrackFn        f_add_item = nullptr;
@@ -77,8 +75,6 @@ PCMSourceCreateFromFileFn    f_create_source = nullptr;
 PCMSourceDestroyFn           f_destroy_source = nullptr;
 SetMediaItemTakeSourceFn     f_set_take_source = nullptr;
 GetProjectPathExFn           f_project_path = nullptr;
-TakeFXGetCountFn             f_takefx_count = nullptr;  // 13-29: optional (no FX removed without them)
-TakeFXDeleteFn               f_takefx_delete = nullptr;
 
 constexpr const char kMissingFns[] = "a REAPER function is missing";
 
@@ -314,29 +310,43 @@ void ApplyVariation(MediaItem* item, const PlaceRequest& req)
 }
 
 // 13-29 / 13-41: a library Sound's copy plays its file as the audition hears it (PlaceRequest::as_auditioned):
-// the active take's playrate folded into the item's length and snap (source seconds, as the variation was
-// measured), then every take at playrate 1, pitch 0, pan centre, no take FX, the Sound's channel mode.
+// the playrate of the take it will play (Takes mode: the variation's take, else the active one) folded into
+// the item's length and snap (FoldPlayrate: source seconds, as the variation was measured), then every take
+// at playrate 1, pitch 0, pan centre, and the Sound's channel mode when it forces mono (Off keeps the source
+// take's own mode). Called before ApplyVariation / ApplyPiece, which then read rate 1. Take FX and stretch
+// markers were already left out of the copied chunk (WriteCopy: StripTakeFxAndStretch).
 void PlayAsAuditioned(MediaItem* item, const PlaceRequest& req)
 {
     if (!req.as_auditioned || !item) return;
-    MediaItem_Take* act = GetActiveTake(item);
-    double          rate = act ? GetMediaItemTakeInfo_Value(act, "D_PLAYRATE") : 1.0;
-    if (!(rate > 0.0) || !std::isfinite(rate)) rate = 1.0;
-    if (rate != 1.0) {
-        f_set_item(item, "D_LENGTH", GetMediaItemInfo_Value(item, "D_LENGTH") * rate);
-        f_set_item(item, "D_SNAPOFFSET", GetMediaItemInfo_Value(item, "D_SNAPOFFSET") * rate);
+    const int       n = f_count_takes ? f_count_takes(item) : 0;
+    MediaItem_Take* plays = GetActiveTake(item);
+    if (!req.slice.set && req.pieces.empty() && req.variation >= 0 && req.variation < n)
+        if (MediaItem_Take* t = f_get_take(item, req.variation)) plays = t;
+    const PlayrateFold fold = FoldPlayrate(plays ? GetMediaItemTakeInfo_Value(plays, "D_PLAYRATE") : 1.0,
+                                           GetMediaItemInfo_Value(item, "D_LENGTH"),
+                                           GetMediaItemInfo_Value(item, "D_SNAPOFFSET"));
+    if (fold.rate != 1.0) {
+        f_set_item(item, "D_LENGTH", fold.length);
+        f_set_item(item, "D_SNAPOFFSET", fold.snap);
     }
-    const int n = f_count_takes ? f_count_takes(item) : 0;
     for (int k = 0; k < n; ++k) {
         MediaItem_Take* take = f_get_take(item, k);
         if (!take) continue;
         f_set_take(take, "D_PLAYRATE", 1.0);
         f_set_take(take, "D_PITCH", 0.0);
         f_set_take(take, "D_PAN", 0.0);
-        f_set_take(take, "I_CHANMODE", static_cast<double>(req.chan_mode));
-        if (f_takefx_count && f_takefx_delete)
-            for (int fx = f_takefx_count(take) - 1; fx >= 0; --fx) f_takefx_delete(take, fx);
+        if (req.chan_mode != 0) f_set_take(take, "I_CHANMODE", static_cast<double>(req.chan_mode));
     }
+}
+
+// 13-49 review: a folder pile's members are copied as they are, but a Sound forced to mono is placed mono
+// (it is heard mono): every take of the member gets the Sound's channel mode.
+void PileMemberMono(MediaItem* item, const PlaceRequest& req)
+{
+    if (!req.as_auditioned || req.chan_mode == 0 || !item) return;
+    const int n = f_count_takes ? f_count_takes(item) : 0;
+    for (int k = 0; k < n; ++k)
+        if (MediaItem_Take* take = f_get_take(item, k)) f_set_take(take, "I_CHANMODE", static_cast<double>(req.chan_mode));
 }
 
 // Antho 2026-10-12: the variation's fades on a copied plain item (after ApplyVariation: the length is final).
@@ -362,8 +372,9 @@ void ApplyFades(MediaItem* item, const FadeApply& fa)
     }
 }
 
-// Writes `src`'s chunk into `dst` with the given IGUID.
-bool WriteCopy(MediaItem* src, MediaItem* dst, const std::string& guid)
+// Writes `src`'s chunk into `dst` with the given IGUID. `plain` (13-49 review: a library Sound's copy that
+// plays its file plain) leaves the take FX and stretch markers out of it (no plugin loaded for the copy).
+bool WriteCopy(MediaItem* src, MediaItem* dst, const std::string& guid, bool plain = false)
 {
     std::string chunk;
     if (g_batch > 0) {
@@ -374,6 +385,7 @@ bool WriteCopy(MediaItem* src, MediaItem* dst, const std::string& guid)
         chunk = ReadChunk(src);
     }
     if (chunk.empty()) return false;
+    if (plain) chunk = StripTakeFxAndStretch(chunk);
     const std::string copy = PrepareCopyChunk(chunk, guid, &NewGuidString);
     return f_set_chunk(dst, copy.c_str(), false);
 }
@@ -619,7 +631,7 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
             r.error = "could not add an item";
             return r;
         }
-        if (!WriteCopy(m.src, item, guid)) {
+        if (!WriteCopy(m.src, item, guid, req.as_auditioned && !folder)) {
             if (!(i == 0 && kept)) {
                 ForgetDeleted(item);
                 f_delete_item(m.track, item);
@@ -628,12 +640,14 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
             return r;
         }
         if (by_pieces) {
-            PlayAsAuditioned(item, req);  // 13-29: before the piece's length (it reads the playrate)
+            PlayAsAuditioned(item, req);  // 13-29: before the piece's length (it then reads rate 1)
             ApplyPiece(item, req.pieces[i]);
         } else if (!folder) {
+            PlayAsAuditioned(item, req);  // before the slice / take (its snap is in source seconds)
             ApplyVariation(item, req);
-            PlayAsAuditioned(item, req);  // after the take is picked (its playrate), before the fades
             ApplyFades(item, req.fades);
+        } else {
+            PileMemberMono(item, req);
         }
         {  // 13-11 (B9): a library source is muted; its copy plays (and does not carry the mark)
             char mark[64] = {};
@@ -948,8 +962,6 @@ void InitSoundPlace(void* (*get_func)(const char* name))
     f_destroy_source = reinterpret_cast<PCMSourceDestroyFn>(get_func("PCM_Source_Destroy"));
     f_set_take_source = reinterpret_cast<SetMediaItemTakeSourceFn>(get_func("SetMediaItemTake_Source"));
     f_project_path = reinterpret_cast<GetProjectPathExFn>(get_func("GetProjectPathEx"));
-    f_takefx_count = reinterpret_cast<TakeFXGetCountFn>(get_func("TakeFX_GetCount"));
-    f_takefx_delete = reinterpret_cast<TakeFXDeleteFn>(get_func("TakeFX_Delete"));
 
     // E11: the dev action, registered here (no frozen file changes).
     if (f_plugin_register && g_test_cmd == 0) {

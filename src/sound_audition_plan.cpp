@@ -543,6 +543,25 @@ std::vector<AuditionVoice> VoicesFrom(const std::vector<AuditionVoice>& voices, 
     return out;
 }
 
+bool SettleEditPlay(EditPlaySettle& s, const std::vector<AuditionVoice>& now, const std::vector<AuditionVoice>& playing,
+                    double t, double settle_s)
+{
+    if (SameVoices(now, playing)) {
+        s.since = -1.0;
+        s.seen.clear();
+        return false;
+    }
+    if (s.since < 0.0 || !SameVoices(now, s.seen)) {
+        s.seen = now;
+        s.since = t;
+        return false;
+    }
+    if (t - s.since < settle_s) return false;
+    s.since = -1.0;
+    s.seen.clear();
+    return true;
+}
+
 bool SameVoices(const std::vector<AuditionVoice>& a, const std::vector<AuditionVoice>& b)
 {
     if (a.size() != b.size()) return false;

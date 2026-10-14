@@ -151,6 +151,17 @@ std::vector<AuditionVoice> EditPlayVoices(const SoundLibrary& lib, const SoundNo
 std::vector<AuditionVoice> VoicesFrom(const std::vector<AuditionVoice>& voices, double from_s);
 // Whether two voice lists play the same (a changed one restarts Edit's Play).
 bool SameVoices(const std::vector<AuditionVoice>& a, const std::vector<AuditionVoice>& b);
+// 13-49 review: when Edit's Play restarts on a change heard live. `playing` = the voices it plays, `now` =
+// the Sound as shown. The voices last seen different from `playing` are kept with the time they appeared;
+// any new change resets that time, so Play restarts (true) only once `now` stayed the same `settle_s`
+// (a long drag restarts when it pauses or ends, never every `settle_s` during it). Back to `playing`
+// (an undone change) = nothing pending.
+struct EditPlaySettle {
+    std::vector<AuditionVoice> seen;
+    double                     since = -1.0;  // < 0 = no change pending
+};
+bool SettleEditPlay(EditPlaySettle& s, const std::vector<AuditionVoice>& now, const std::vector<AuditionVoice>& playing,
+                    double t, double settle_s = 0.15);
 // 13-41: a voice's sample forced to mono from its left / right samples: Left l, Right r, Sum (l + r) / 2;
 // Off l (the caller keeps the channels). The peaks drawn use it too (per column, on the lanes' max abs).
 double MonoOf(double l, double r, MonoMode mono);

@@ -405,8 +405,11 @@ std::vector<NewNodeSpec> SelectedItemSounds()
         sp.sound.source.kind = SoundSourceKind::Item;
         sp.sound.mode = DetectMode::Whole;
         sp.sound.source.item_db = ItemGainDb(item);  // kept with the source (it outlives a conversion to a file)
-        if (MediaItem_Take* take = GetActiveTake(item))
+        if (MediaItem_Take* take = GetActiveTake(item)) {
             if (const char* nm = GetTakeName(take)) sp.name = nm;
+            // 13-49 review: a take that plays mono (its channel mode) makes a Sound heard mono in RAV too.
+            sp.sound.mono = MonoForChanMode(static_cast<int>(GetMediaItemTakeInfo_Value(take, "I_CHANMODE")));
+        }
         if (sp.name.empty()) sp.name = "Sound";
         out.push_back(sp);
     }

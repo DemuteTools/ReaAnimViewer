@@ -714,9 +714,38 @@ static void TestPartsAudition()
     CHECK(Near(plan.voices[0].start_s, 0.0) && Near(plan.voices[0].delay_ms, 30.0));
 }
 
+// 13-49 review: a long drag restarts Play once it pauses 0.15 s, never every 0.15 s while it moves.
+static void TestSettleEditPlay()
+{
+    auto voice = [](double db) {
+        AuditionVoice v;
+        v.node = "s";
+        v.length_s = 1.0;
+        v.gain_db = db;
+        return std::vector<AuditionVoice>{v};
+    };
+    const std::vector<AuditionVoice> playing = voice(0.0);
+    EditPlaySettle s;
+    CHECK(!SettleEditPlay(s, playing, playing, 0.0));  // nothing changed
+    // A drag: a new value every frame (60 fps) for 1 s: never a restart.
+    bool restarted = false;
+    for (int f = 1; f <= 60; ++f) restarted |= SettleEditPlay(s, voice(-0.1 * f), playing, f / 60.0);
+    CHECK(!restarted);
+    // It pauses: the same value 0.15 s later restarts once.
+    CHECK(!SettleEditPlay(s, voice(-7.0), playing, 1.10));
+    CHECK(!SettleEditPlay(s, voice(-7.0), playing, 1.20));
+    CHECK(SettleEditPlay(s, voice(-7.0), playing, 1.26));
+    CHECK(s.since < 0.0);
+    // Undone back to what plays: nothing pending.
+    CHECK(!SettleEditPlay(s, voice(-3.0), playing, 2.0));
+    CHECK(!SettleEditPlay(s, playing, playing, 2.1));
+    CHECK(s.since < 0.0 && !SettleEditPlay(s, playing, playing, 3.0));
+}
+
 int main()
 {
     TestEditPlay();
+    TestSettleEditPlay();
     TestMono();
     TestChildAudition();
     TestDividedByText();

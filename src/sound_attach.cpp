@@ -315,6 +315,8 @@ SoundData PromotedSoundData(MediaItem* item)
     f.item_db = ItemGainDb(item);  // the item's gain: its variations' (DetectFrames)
     d.source.item_db = f.item_db;  // kept with the source (it outlives a conversion to a file)
     if (take) {
+        // 13-49 review: a take that plays mono (REAPER's channel mode) makes a Sound heard mono in RAV too.
+        d.mono = MonoForChanMode(static_cast<int>(GetMediaItemTakeInfo_Value(take, "I_CHANMODE")));
         f.start_offs = GetMediaItemTakeInfo_Value(take, "D_STARTOFFS");
         PCM_source* src = GetMediaItemTake_Source(take);
         bool        qn = false;

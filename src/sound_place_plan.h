@@ -85,6 +85,25 @@ double ItemGainFor(double gain_db);
 // 13-41: the take channel mode (I_CHANMODE) a placed item of a Sound forced to `mono` gets: Off 0
 // (normal), Sum 2 (mono downmix), Left 3, Right 4.
 int ChanModeFor(MonoMode mono);
+// 13-49 review: the Sound's mono a take channel mode reads as (a Sound made from an item whose take
+// plays mono is heard mono in RAV too): 2 Sum, 3 Left, 4 Right, anything else Off (Reverse, normal...).
+MonoMode MonoForChanMode(int chan_mode);
+// 13-49 review: a placed copy plays at playrate 1, its active take's rate folded into the item: the item's
+// length and snap in source seconds (as the variation was measured). A rate that is not > 0 or not finite
+// reads 1 (nothing folded).
+struct PlayrateFold {
+    double rate = 1.0;    // the rate folded (sanitized)
+    double length = 0.0;  // the item's new D_LENGTH
+    double snap = 0.0;    // its new D_SNAPOFFSET
+};
+PlayrateFold FoldPlayrate(double rate, double item_len, double snap);
+// 13-49 review: an item chunk as a placed copy that plays its file plain gets it: every take's <TAKEFX
+// block (with its nested blocks), TAKE_FX_HAVE lines and stretch markers (SM lines) removed at the item
+// level; every other line byte-identical (no plugin is loaded for a copy). A chunk without them is unchanged.
+std::string StripTakeFxAndStretch(const std::string& chunk);
+// 13-49 review: the Sound panel's read-only line when the source item carries what placement drops:
+// "Placed without the source item's take FX, pitch and rate (RAV plays the file itself)"; "" for none.
+std::string PlacementDropsText(bool take_fx, bool pitch, bool rate, bool pan);
 
 // 13-10 (Antho 2026-10-12): why the engine refuses to move (`edit` false) or replace / remove
 // (`edit` true) a placed item; "" = allowed. An attached sound is never replaced or removed.

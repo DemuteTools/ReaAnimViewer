@@ -47,6 +47,10 @@ struct SoundMedia {
     int                      active_take = 0;
     EntryFacts               facts;             // what detection reads
     double                   item_pos = 0.0;    // Item: its position in the project
+    // 13-49 review (Item): what a placed copy of a library Sound leaves out (it plays its file plain):
+    // a take with FX, a pitch, a playrate other than 1, a pan; the active take's channel mode (I_CHANMODE).
+    bool                     drops_take_fx = false, drops_pitch = false, drops_rate = false, drops_pan = false;
+    int                      chan_mode = 0;
 };
 // Item: the item of that GUID in the current project (take markers, then the chunk's slices);
 // File: asset.last_path. False (ok = false) when the source is not found.

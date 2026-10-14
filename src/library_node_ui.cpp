@@ -161,11 +161,19 @@ struct PanelState {
     bool                  roles_more = false;
     bool                  layer_roles_more = false;  // 13-31: the "plays on" list's own "More roles"
     // 13-29: Edit's Play -- the voices it plays (EditPlayVoices), the audition's clock offset into them at its
-    // last (re)start, the file time at clock 0 (a take's start in Takes mode), when the Sound shown first
-    // differed from them (a restart waits for the change to settle; < 0 = none).
+    // last (re)start, the file time at clock 0 (a take's start in Takes mode), the change waiting to settle
+    // (SettleEditPlay). 13-49 review: EditVoicesNow's plan kept until the project, the live draft or the
+    // selection changes (no re-plan every frame while Play plays).
     std::vector<AuditionVoice> edit_voices;
     double                edit_from = 0.0, edit_head0 = 0.0;
-    double                edit_changed_at = -1.0;
+    EditPlaySettle        edit_settle;
+    std::vector<AuditionVoice> ev_voices;
+    std::string           ev_uid, ev_lib;
+    int                   ev_scc = -1;
+    unsigned              ev_draft_rev = 0;
+    bool                  ev_live = false;
+    std::vector<int>      ev_sel;
+    unsigned              draft_rev = 0;  // bumped each time the live draft is rewritten or ends
     // 13-40: the Mix row selected (its parent and the child): Play / Space plays that child.
     std::string           mix_parent, mix_child;
 };
@@ -258,6 +266,7 @@ SoundData& Live(const SoundNode& n)
         P.snap = n.sound;
     }
     P.draft = P.snap;
+    ++P.draft_rev;
     return P.draft;
 }
 
@@ -266,13 +275,18 @@ void CommitLive(const std::string& name, const std::string& lib_uid, const std::
     if (!P.live || P.draft_uid != uid) return;
     const SoundData d = P.draft;
     P.live = false;
+    ++P.draft_rev;
     EditNode(name, lib_uid, uid, [d](SoundNode& n) {
         n.sound = d;
         return true;
     }, toast);
 }
 
-void CancelLive() { P.live = false; }
+void CancelLive()
+{
+    P.live = false;
+    ++P.draft_rev;
+}
 
 // ---- media and detection --------------------------------------------------------------------------
 
@@ -2227,9 +2241,10 @@ void ReplaceFromSelected(const std::string& lib_uid, const std::string& uid, con
     if (n > 1) toast += " (the first of " + std::to_string(n) + " selected items)";
     const std::string path = m.path;
     const double      item_db = m.facts.item_db;
+    const MonoMode    item_mono = MonoForChanMode(m.chan_mode);  // 13-49 review: a take that plays mono
     EditNode(
         gesture, lib_uid, uid,
-        [guid, mode, frames, path, item_db](SoundNode& x) {
+        [guid, mode, frames, path, item_db, item_mono](SoundNode& x) {
             x.sound.source = SoundSource{};
             x.sound.source.kind = SoundSourceKind::Item;
             x.sound.source.item_guid = guid;
@@ -2237,6 +2252,7 @@ void ReplaceFromSelected(const std::string& lib_uid, const std::string& uid, con
             x.sound.mode = mode;
             x.sound.frames = frames;
             x.sound.edited = false;
+            if (x.sound.mono == MonoMode::Off) x.sound.mono = item_mono;  // heard as the copy will play it
             RefreshWith(x.sound, path);  // 13-20 / 13-23 / 13-25: the parts on the new audio
             return true;
         },
@@ -3373,6 +3389,17 @@ void CutFadeControl(const SoundLibrary& lib, const SoundNode& n)
 // first selected take that is on, else the first take that is on.
 std::vector<AuditionVoice> EditVoicesNow(const SoundLibrary& lib, const SoundNode& n)
 {
+    const int  scc = GetProjectStateChangeCount(nullptr);
+    const bool live = P.live && P.draft_uid == n.uid;
+    if (P.ev_uid == n.uid && P.ev_lib == lib.uid && P.ev_scc == scc && P.ev_live == live &&
+        (!live || P.ev_draft_rev == P.draft_rev) && P.ev_sel == P.sel)
+        return P.ev_voices;
+    P.ev_uid = n.uid;
+    P.ev_lib = lib.uid;
+    P.ev_scc = scc;
+    P.ev_live = live;
+    P.ev_draft_rev = P.draft_rev;
+    P.ev_sel = P.sel;
     SoundNode shown = n;
     shown.sound = Shown(n);
     const SoundData& d = shown.sound;
@@ -3386,6 +3413,7 @@ std::vector<AuditionVoice> EditVoicesNow(const SoundLibrary& lib, const SoundNod
     std::vector<AuditionVoice> v = EditPlayVoices(lib, shown, take);
     if (FolderSourced(d))
         for (AuditionVoice& x : v) x.fade_in_s = x.fade_out_s = 0.0;  // a folder pile is placed without fades
+    P.ev_voices = v;
     return v;
 }
 
@@ -3398,7 +3426,7 @@ bool StartEditPlay(const SoundNode& n, const SoundMedia& m, const std::vector<Au
         pv.push_back(ToPlayVoice(v, v.variation >= 0 ? VariationPath(m, d, v.variation) : m.path));
     P.edit_voices = voices;
     P.edit_from = from_s;
-    P.edit_changed_at = -1.0;
+    P.edit_settle = EditPlaySettle{};
     P.edit_head0 = d.mode == DetectMode::Takes && !voices.empty() ? voices.front().start_s : 0.0;
     return !pv.empty() && PlayVoices(pv, "whole:" + n.uid);
 }
@@ -3465,17 +3493,12 @@ void DrawEditOverlay()
         const bool keys = focused && !ImGui::GetIO().WantTextInput && !ui::DragNumberActive() &&
                           P.edit_opened != ImGui::GetFrameCount();  // the E that opened it
         const bool whole_playing = AuditionPlaying() && AuditionTag() == "whole:" + n->uid;
-        // 13-29: a change made while Play plays is heard: once the Sound shown has settled (0.15 s, a drag
-        // restarts only when it pauses or ends), Play restarts from where it was.
+        // 13-29: a change made while Play plays is heard: once the Sound shown has stayed the same 0.15 s
+        // (SettleEditPlay: a drag restarts only when it pauses or ends), Play restarts from where it was.
         if (whole_playing) {
             const std::vector<AuditionVoice> now = EditVoicesNow(*lib, *n);
-            if (SameVoices(now, P.edit_voices)) {
-                P.edit_changed_at = -1.0;
-            } else if (P.edit_changed_at < 0.0) {
-                P.edit_changed_at = ImGui::GetTime();
-            } else if (ImGui::GetTime() - P.edit_changed_at >= 0.15) {
+            if (SettleEditPlay(P.edit_settle, now, P.edit_voices, ImGui::GetTime()))
                 if (!StartEditPlay(*n, m, now, P.edit_from + AuditionPosition())) StopAudition();
-            }
         }
         auto toggle_play = [&] {
             if (AuditionPlaying()) {
@@ -4479,6 +4502,17 @@ void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
             }
         }
         DrawSourceLine(lib, n, m);
+        // 13-49 review: what a placed copy leaves out of its source item (read with the media, once per
+        // project change): it plays its file plain, as RAV hears it. A folder pile is copied as it is.
+        if (m.ok && d.source.kind == SoundSourceKind::Item && !FolderSourced(d)) {
+            const std::string drops = PlacementDropsText(m.drops_take_fx, m.drops_pitch, m.drops_rate, m.drops_pan);
+            if (!drops.empty()) {
+                FitText(drops, ui::kMuted);
+                ui::ItemTipText("RAV hears the file itself, so a placed copy plays it plain: the source item's take FX, "
+                                "pitch, playrate and pan are not on it (its length follows the rate, so the attack still "
+                                "lands on the event). Mono is set in Edit.");
+            }
+        }
     }
     ui::EndSection(src_sec);
     if (StoreReplaced()) return;

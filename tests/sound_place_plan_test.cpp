@@ -139,9 +139,50 @@ static void TestChanMode()
           ChanModeFor(MonoMode::Right) == 4);
 }
 
+// 13-49 review: mono read from a take's channel mode, the playrate fold, the chunk stripping, the drops line.
+static void TestAsAuditioned()
+{
+    CHECK(MonoForChanMode(2) == MonoMode::Sum && MonoForChanMode(3) == MonoMode::Left &&
+          MonoForChanMode(4) == MonoMode::Right && MonoForChanMode(0) == MonoMode::Off &&
+          MonoForChanMode(1) == MonoMode::Off && MonoForChanMode(67) == MonoMode::Off);
+    for (MonoMode m : {MonoMode::Sum, MonoMode::Left, MonoMode::Right}) CHECK(MonoForChanMode(ChanModeFor(m)) == m);
+
+    // A 2 s item at rate 1.5 plays 3 s of its source; its snap 0.4 s (item time) is 0.6 s into the source.
+    PlayrateFold f = FoldPlayrate(1.5, 2.0, 0.4);
+    CHECK(Near(f.rate, 1.5) && Near(f.length, 3.0) && Near(f.snap, 0.6));
+    f = FoldPlayrate(0.5, 2.0, 1.0);
+    CHECK(Near(f.length, 1.0) && Near(f.snap, 0.5));
+    for (double bad : {0.0, -2.0, std::nan(""), static_cast<double>(INFINITY)}) {
+        f = FoldPlayrate(bad, 2.0, 0.4);
+        CHECK(Near(f.rate, 1.0) && Near(f.length, 2.0) && Near(f.snap, 0.4));
+    }
+
+    const std::string chunk =
+        "<ITEM\r\nPOSITION 1\r\nIGUID {A}\r\nNAME a\r\nTAKE_FX_HAVE 1\r\n<SOURCE WAVE\r\nFILE \"a.wav\"\r\n>\r\n"
+        "<TAKEFX\r\nWNDRECT 0 0 0 0\r\n<VST \"VST: ReaEQ\" reaeq.dll 0 \"\" 1919247729\r\nabc=\r\n>\r\n"
+        "FXID {F}\r\n<JS foo \"\"\r\n<NESTED\r\nx\r\n>\r\n>\r\n>\r\n"
+        "SM 0 0 + 1.5 1.2\r\nTAKE\r\nNAME b\r\n<SOURCE WAVE\r\nFILE \"b.wav\"\r\n>\r\n<TAKEFX\r\n>\r\n"
+        "<VOLENV\r\nPT 0 1 0\r\n>\r\n>\r\n";
+    const std::string want =
+        "<ITEM\r\nPOSITION 1\r\nIGUID {A}\r\nNAME a\r\n<SOURCE WAVE\r\nFILE \"a.wav\"\r\n>\r\n"
+        "TAKE\r\nNAME b\r\n<SOURCE WAVE\r\nFILE \"b.wav\"\r\n>\r\n"
+        "<VOLENV\r\nPT 0 1 0\r\n>\r\n>\r\n";
+    CHECK(StripTakeFxAndStretch(chunk) == want);
+    CHECK(StripTakeFxAndStretch(want) == want);  // nothing to drop: byte-identical
+    // SMOOTH / SMTH-like words and a nested SM are kept; only the item-level SM word goes.
+    const std::string other = "<ITEM\nSMOOTH 1\n<SOURCE X\nSM 1\n>\nSM 0 0\n>";
+    CHECK(StripTakeFxAndStretch(other) == "<ITEM\nSMOOTH 1\n<SOURCE X\nSM 1\n>\n>");
+
+    CHECK(PlacementDropsText(false, false, false, false).empty());
+    CHECK(PlacementDropsText(true, true, true, false) ==
+          "Placed without the source item's take FX, pitch and rate (RAV plays the file itself)");
+    CHECK(PlacementDropsText(false, false, false, true) == "Placed without the source item's pan (RAV plays the file itself)");
+}
+
 int main()
 {
     TestChanMode();
+    TestAsAuditioned();
     // Position (Blend offset + nudge) and clamp.
     CHECK(Near(PlacementPosition(10.0, 0.25, 12.0, 0.1), 9.862));
     CHECK(Near(PlacementPosition(0.1, 0.5, 0.0, 0.0), 0.0));

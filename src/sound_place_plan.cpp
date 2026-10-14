@@ -208,6 +208,77 @@ int ChanModeFor(MonoMode mono)
     return 0;
 }
 
+MonoMode MonoForChanMode(int chan_mode)
+{
+    switch (chan_mode) {
+    case 2: return MonoMode::Sum;
+    case 3: return MonoMode::Left;
+    case 4: return MonoMode::Right;
+    default: break;
+    }
+    return MonoMode::Off;
+}
+
+PlayrateFold FoldPlayrate(double rate, double item_len, double snap)
+{
+    PlayrateFold f;
+    f.rate = (std::isfinite(rate) && rate > 0.0) ? rate : 1.0;
+    f.length = item_len * f.rate;
+    f.snap = snap * f.rate;
+    return f;
+}
+
+std::string StripTakeFxAndStretch(const std::string& chunk)
+{
+    const std::vector<std::string> lines = SplitLines(chunk);
+    std::string                    out;
+    out.reserve(chunk.size());
+    int  depth = 0;       // block depth (the <ITEM block = 1)
+    int  skip_depth = -1; // depth of the <TAKEFX block being dropped
+    bool first = true;
+    for (const std::string& raw : lines) {
+        const std::string line = StripCr(raw);
+        const size_t      i = IndentOf(line);
+        bool              keep = skip_depth < 0;
+        if (i < line.size() && line[i] == '<') {
+            ++depth;
+            if (skip_depth < 0 && depth == 2 && StartsWithWord(line, i + 1, "TAKEFX")) {
+                skip_depth = depth;
+                keep = false;
+            }
+        } else if (i < line.size() && line[i] == '>') {
+            if (depth == skip_depth) {
+                skip_depth = -1;
+                keep = false;
+            }
+            --depth;
+        } else if (keep && depth == 1 && (StartsWithWord(line, i, "TAKE_FX_HAVE") || StartsWithWord(line, i, "SM"))) {
+            keep = false;
+        }
+        if (!keep) continue;
+        if (!first) out += '\n';
+        out += raw;
+        first = false;
+    }
+    return out;
+}
+
+std::string PlacementDropsText(bool take_fx, bool pitch, bool rate, bool pan)
+{
+    std::vector<std::string> what;
+    if (take_fx) what.push_back("take FX");
+    if (pitch) what.push_back("pitch");
+    if (rate) what.push_back("rate");
+    if (pan) what.push_back("pan");
+    if (what.empty()) return {};
+    std::string list;
+    for (size_t k = 0; k < what.size(); ++k) {
+        if (k > 0) list += k + 1 == what.size() ? " and " : ", ";
+        list += what[k];
+    }
+    return "Placed without the source item's " + list + " (RAV plays the file itself)";
+}
+
 std::string PlacedItemRefusal(bool found, bool has_tag, bool folder, Ownership own, bool edit)
 {
     if (!found) return "item missing";

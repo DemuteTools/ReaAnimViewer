@@ -50,6 +50,7 @@
 #include "view_nav.h"          // 13-45: the timelines' wheel / zoom keys, the Shortcuts rows' recording
 #include "skeleton_view.h"     // spec 10-3c: the Model / Skeleton switch and its overlay
 #include "clip_list_ui.h"      // story 6-5-10: the animation clip list (left of every view)
+#include "clip_list_plan.h"    // 6-5-10c: the menu button above it (cliplist::MenuButtonAt)
 #include "tagging_assign_ui.h"  // 13-15b: the Sound assignment window takes the keys while it has the focus
 #include "tagging_session.h"   // Story 10-3: the Tagging view's model (item, rules, detection)
 #include "tag_markers.h"       // Story 10-4: the markers option (Take / Project / Both)
@@ -1271,6 +1272,15 @@ void NavCubeWidget(const OrbitCamera& cam, bool video, float right_x, float bott
     ui::EndOverlay();
 }
 
+// The viewer's top row: the FPS readout's window sits kTopRowTop down (the theme's padding inside);
+// the keyboard and full screen icons are centred on its text line, and (6-5-10c) so is the menu
+// button. TopRowMid is that line's middle (inside the ImGui frame: the style and font are set).
+constexpr ui::DpPx kTopRowTop{14.0f};
+float TopRowMid()
+{
+    return static_cast<float>(kTopRowTop) + ImGui::GetStyle().WindowPadding.y + ImGui::GetTextLineHeight() * 0.5f;
+}
+
 // Builds + renders the Dear ImGui tool UI for this frame, on top of the 3D scene (called
 // between RenderFrame and SwapBuffers). A FRAMELESS hamburger menu (Antho's icons) that
 // shows / hides the options panel: REAPER-style vertical tabs (Global, RAV view, Tagging
@@ -1310,42 +1320,56 @@ void DrawToolUi()
 
     // Spec 11-fb-11: open, the menu stops 10 px above the window's bottom (its tab content
     // scrolls, the tab column stays); closed, it is the bare button.
-    const float kMenuMargin = ui::Dp(10.0f);  // its gap to the window's top and bottom edges
-    ImGui::SetNextWindowPos(ImVec2(kMenuMargin, kMenuMargin), ImGuiCond_Always);
-    const float menu_max_h = std::max(ui::Dp(48.0f), static_cast<float>(g_client_h) - 2.0f * kMenuMargin);
+    // 6-5-10c (Antho 2026-10-14: the burger's frame was far too big for its three lines, and the clip
+    // list sat against it): the burger is the corner icons' 24 px button (an 18 px icon), centred on
+    // the top row like the keyboard and full screen icons; closed, its frame is the button's own
+    // (tight, the .colbtn over the 3D view); open, the menu's panel holds it at the same place.
+    const cliplist::MenuButtonBox burger = cliplist::MenuButtonAt(TopRowMid(), ui::UiScale());
+    const float kMenuMargin = ui::Dp(10.0f);  // the open menu's gap to the window's bottom edge
+    const bool  menu_began_open = g_menu_open;  // a click on the burger below toggles g_menu_open
+    ImGui::SetNextWindowPos(menu_began_open ? ImVec2(burger.panel_x, burger.panel_y) : ImVec2(burger.x, burger.y),
+                            ImGuiCond_Always);
+    const float menu_max_h = std::max(ui::Dp(48.0f), static_cast<float>(g_client_h) - burger.panel_y - kMenuMargin);
     constexpr ImGuiWindowFlags kFlags =
         ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
         ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
         ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing;
-    // Open, the whole menu can still scroll on a viewer too short for its tabs and footer.
-    constexpr ImGuiWindowFlags kClosedFlags = ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+    // Open, the whole menu can still scroll on a viewer too short for its tabs and footer. Closed,
+    // the window is just the button (no padding, no fill or edge of its own: the button's frame).
+    constexpr ImGuiWindowFlags kClosedFlags =
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBackground;
     ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, menu_max_h));
 
     // Story 11-4: the theme (ui_theme.h) styles the menu. Open, it is a panel like the
     // Tagging and Video panels (ui::PushPanelStyle), its settings in ui::Section cards.
-    // Closed, the bare button over the 3D view (ui::PushOverlayPanelStyle).
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui::Dp(8.0f), ui::Dp(8.0f)));
-    if (g_menu_open) {
+    // Closed, the bare button over the 3D view (its own .colbtn frame).
+    if (menu_began_open) {
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(burger.x - burger.panel_x, burger.y - burger.panel_y));
         ui::PushPanelStyle();
     } else {
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
         ui::PushOverlayPanelStyle();
     }
-    ImGui::Begin("##tools", nullptr, g_menu_open ? kFlags : (kFlags | kClosedFlags));
+    ImGui::Begin("##tools", nullptr, menu_began_open ? kFlags : (kFlags | kClosedFlags));
     ImGuiWindow* const menu_window = ImGui::GetCurrentWindow();
 
-    // Hamburger button — frameless icon (the window behind is its frame); toggles the option list.
-    // 13-7 (audit C0.3): the mockup's burger is 28 x 26, its 22 px icon bright (kText).
+    // Hamburger button; toggles the option list. 13-7 (audit C0.3): its icon bright (kText).
+    // 6-5-10c: 24 x 24 with an 18 px icon (the keyboard icon's size); closed, framed over the 3D view.
     {
         ui::IconOnlyOpts o;
-        o.w = ui::Dp(28.0f);
-        o.h = ui::Dp(26.0f);
-        o.icon_px = ui::Dp(22.0f);
+        o.w = burger.size;
+        o.h = burger.size;
+        o.icon_px = ui::Dp(18.0f);
         o.tint = ui::kText;
+        o.framed = !menu_began_open;
         if (ui::IconOnlyButton("##menu", IconTex(g_icon_menu), g_menu_open ? "Close the options" : "Options", o))
             g_menu_open = !g_menu_open;
     }
 
-    if (g_menu_open) {
+    // 6-5-10c: the options only in a window that began open (the frame of the click shows the button
+    // alone: a closed window has no panel behind its content).
+    if (g_menu_open && menu_began_open) {
         const ImGuiStyle& st = ImGui::GetStyle();
         ImGui::Spacing();
 
@@ -1364,7 +1388,7 @@ void DrawToolUi()
         const float footer_h = 2.0f * st.ItemSpacing.y + 1.0f + ImGui::GetFrameHeightWithSpacing() +
                                ui::Dp(4.0f) + st.ItemSpacing.y + ImGui::GetTextLineHeight() + st.WindowPadding.y;
         const float content_max_h =
-            std::max(tabs_bottom - tabs_top, kMenuMargin + menu_max_h - tabs_top - footer_h);
+            std::max(tabs_bottom - tabs_top, burger.panel_y + menu_max_h - tabs_top - footer_h);
         ImGui::SetNextWindowSizeConstraints(ImVec2(kContentW, 0.0f), ImVec2(kContentW, content_max_h));
         // No fill of its own: the menu's panel shows through.
         ImGui::BeginChild("##menutab", ImVec2(kContentW, 0.0f), ImGuiChildFlags_AutoResizeY,
@@ -1593,7 +1617,7 @@ void DrawToolUi()
 
     ImGui::End();
     ImGui::PopStyleColor(2);
-    ImGui::PopStyleVar();
+    ImGui::PopStyleVar(menu_began_open ? 1 : 2);  // the padding (and closed, the border)
 
     // Story 6.5.5 — extra frameless read-out overlays, drawn in the SAME NewFrame/Render pair
     // (never a second NewFrame). NoInputs so they can NEVER steal the mouse from the camera
@@ -1630,11 +1654,12 @@ void DrawToolUi()
     // The switch's size is the one it had last frame (it does not depend on where it is drawn).
     const ImVec2 toggle_size = VideoViewToggleSize();
     bool         corner_below = false;
-    // Never left of the closed menu button's card (x 10, 28 px button + 2 x 8 padding) + 8 px.
-    const float  toggle_x = flow::CentreBesideTrail(ui::Dp(10.0f + 44.0f + 8.0f), area_right * 0.5f, toggle_size.x,
+    // Never left of the closed menu button + 8 px (6-5-10c: its own 24 px frame, cliplist::MenuButtonAt).
+    const float  toggle_x = flow::CentreBesideTrail(burger.trail, area_right * 0.5f, toggle_size.x,
                                                     fps_w + keys_w + ui::Dp(24.0f), corner_x, ui::Dp(8.0f),
                                                     &corner_below);
-    const float readout_top = corner_below ? ui::Dp(8.0f) + toggle_size.y + ui::Dp(4.0f) : ui::Dp(14.0f);
+    // On the top row, its text line's middle is TopRowMid() (the menu button is centred on it too).
+    const float readout_top = corner_below ? ui::Dp(8.0f) + toggle_size.y + ui::Dp(4.0f) : static_cast<float>(kTopRowTop);
     const float text_mid = readout_top + st.WindowPadding.y + ImGui::GetTextLineHeight() * 0.5f;
 
     // Epic 13 (D20, 13-2) -- Library view: one full-area window under the view toggle, drawn
@@ -1747,18 +1772,20 @@ void DrawToolUi()
     StatusIconWidget();
 
     // Story 6-5-10 -- the clip list: its round button on the left of every view, half-way between
-    // the menu button (its bottom: 10 + 8 + 26 px) and the Model / Skeleton switch's slot (above the
-    // strip in Tagging / Video view); open, the panel over the left of the view (never the Tagging /
-    // Video panel). 6-5-10b: it covers the 3D view only: from under the menu button to above the
-    // switch (RAV, Tagging) or the status icon (Video, Library: no switch there), so never the strip
-    // or the timeline, whose top it follows when they are resized. Opening it closes the options menu.
+    // the menu button and the Model / Skeleton switch's slot (above the strip in Tagging / Video
+    // view); open, the panel over the left of the view (never the Tagging / Video panel). 6-5-10b: it
+    // covers the 3D view only: from under the menu button to above the switch (RAV, Tagging) or the
+    // status icon (Video, Library: no switch there), so never the strip or the timeline, whose top it
+    // follows when they are resized. Opening it closes the options menu. 6-5-10c: its top 8 px under
+    // the menu button's own frame (the burger's bottom), which nothing larger surrounds any more.
     {
         const float icon_top = ViewBottom() - kStatusIconMargin - kStatusIconSize;
         const float switch_bottom = icon_top - ui::Dp(6.0f);
         const float switch_top = switch_bottom - ui::ControlH() - ui::Dp(4.0f);
         const bool  switch_shown = !video_view && !library_view;
-        if (DrawClipList(area_right, ui::Dp(10.0f + 8.0f + 26.0f), switch_shown ? switch_top : icon_top, ViewBottom(),
-                         ShortcutKeyLabel(kShortcutClipList)))
+        const char* view_name = library_view ? "Library" : video_view ? "Video" : tagging_view ? "Tagging" : "Main";
+        if (DrawClipList(area_right, burger.bottom, switch_shown ? switch_top : icon_top, ViewBottom(),
+                         ShortcutKeyLabel(kShortcutClipList), view_name))
             g_menu_open = false;
     }
 
@@ -1771,6 +1798,8 @@ void DrawToolUi()
     if (ImGuiWindow* w = ClipListPanelWindow()) KeepMenuInFront(w);
     if (ImGuiWindow* w = ClipListButtonWindow()) KeepMenuInFront(w);
     if (g_menu_open) KeepMenuInFront(menu_window);
+    // 6-5-10c: the open list's panel shown and in front, or the log says what hid it.
+    ClipListAfterFrame(g_menu_open ? menu_window : nullptr);
 
     ImGui::Render();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
@@ -2280,15 +2309,16 @@ void SetFullScreenMode(bool on)
 }
 
 // What a KEYS row does (src/shortcuts.h), from its key in the viewer or (13-60b) from its action in
-// REAPER's list (RunViewerShortcut). The caller checked the row's context.
-void RunShortcutAction(int action)
+// REAPER's list (RunViewerShortcut). The caller checked the row's context. `origin` says which, for
+// the clip list's log (6-5-10c).
+void RunShortcutAction(int action, const char* origin)
 {
     if (action == kShortcutFullScreen) {  // story 6-5-9 (F11)
         SetFullScreenMode(!FullScreenActive());
         return;
     }
     if (action == kShortcutClipList) {  // story 6-5-10 (L): the clip list, every view
-        SetClipListOpen(!ClipListOpen(), "its shortcut");
+        SetClipListOpen(!ClipListOpen(), origin);
         if (ClipListOpen()) g_menu_open = false;
         return;
     }
@@ -2359,6 +2389,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         io.AddKeyEvent(ImGuiMod_Ctrl, GetKeyState(VK_CONTROL) < 0);
         io.AddKeyEvent(ImGuiMod_Shift, GetKeyState(VK_SHIFT) < 0);
         io.AddKeyEvent(ImGuiMod_Alt, GetKeyState(VK_MENU) < 0);
+    }
+    // 6-5-10c: while the clip list is open, an Esc key message the keyboard did not send (Esc is not
+    // down: a message another program posted) reaches neither Dear ImGui nor the viewer, where it
+    // would close the list. The log says so.
+    if ((msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) && wp == VK_ESCAPE && ClipListOpen() && GetKeyState(VK_ESCAPE) >= 0) {
+        LogWarn("clip list: an Esc message the keyboard did not send was ignored (the list stays open)");
+        return 0;
     }
     // 13-45: a "View: scroll and zoom" row of the Shortcuts popup records the wheel; the notch is the
     // recording's only (not fed to Dear ImGui: the popup does not scroll under it).
@@ -2602,7 +2639,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         if (lp & (1 << 30)) return 0;  // auto-repeat of a held key: one toggle per press
         if (VideoDeleteConfirmOpen()) return 0;  // spec 11-fb-11: no shortcut runs behind the confirmation
-        RunShortcutAction(action);  // 13-60b: shared with REAPER's own actions for these keys
+        // 6-5-10c: a clip list toggle by a key message the keyboard did not send (the key is not down:
+        // a message another program posted) is not run; the log says so.
+        if (action == kShortcutClipList && GetKeyState(static_cast<int>(wp)) >= 0) {
+            LogWarn("clip list: its key (%s) came as a message the keyboard did not send: ignored (the list stays %s)",
+                    ShortcutKeyLabel(kShortcutClipList), ClipListOpen() ? "open" : "closed");
+            return 0;
+        }
+        RunShortcutAction(action, "its key in the viewer");  // 13-60b: shared with REAPER's own actions
         return 0;
     }
 
@@ -3063,7 +3107,7 @@ void RunViewerShortcut(int id)
     if (g_main_imgui_ctx) ImGui::SetCurrentContext(g_main_imgui_ctx);
     const bool busy = TextInputNow() || (TaggingViewActive() && TaggingAssignWindowOpen());
     try {
-        if (!busy) RunShortcutAction(id);
+        if (!busy) RunShortcutAction(id, (std::string("its REAPER action \"") + kShortcutTable[id].action_desc + "\"").c_str());
     } catch (...) {  // AR18: never into REAPER's message pump
         LogError("viewer shortcut %s failed (Reaper is unaffected)", kShortcutTable[id].id);
     }

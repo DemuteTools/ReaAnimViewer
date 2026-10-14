@@ -22,8 +22,10 @@ namespace rav {
 // The band above the Video view frame: the overlay row (menu button, view toggle, keyboard
 // icon, FPS, panel button; its bottom is kVideoOverlayRowBottom) and, under it, the caption
 // line (size / fps / catch-up readout, shot name), so captions never sit under an overlay
-// (spec 11-fb-8). The row's lowest overlay is the ##tools menu card: y 10 + padding 8 +
-// 22 px icon + 2 x 3 frame padding + padding 8 = 54. Change it with those values.
+// (spec 11-fb-8). 6-5-10c: the row's lowest overlay is now the FPS readout's card: y 14 +
+// padding 10 + its 16 px text line + padding 10 = 50 (the menu button, the keyboard and full
+// screen icons end at 44: 24 px centred on that text line, cliplist::MenuButtonAt); 54 keeps the
+// captions 4 px clear of it, as before. Change it with those values.
 constexpr float kVideoOverlayRowBottom = 54.0f;
 constexpr float kVideoCaptionGap = 5.0f;  // captions sit this far above the frame
 // Called before ImGui's frame starts (RenderVideoView): uses the font size of the last

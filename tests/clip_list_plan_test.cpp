@@ -7,7 +7,10 @@
 
 #include "clip_list_plan.h"
 
+#include <cmath>
 #include <cstdio>
+#include <initializer_list>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -351,6 +354,89 @@ int main()
             prev_b = t.bottom;
         }
         CHECK(smooth);
+    }
+
+    // 6-5-10c: the spans with no Model / Skeleton switch (Video, Library: the status icon's top is the
+    // bottom-left controls' top, 12 + 22 px over the view's bottom), and with an edge not known yet.
+    {
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        // Video view, 600 px viewer, a 64 + 16 px strip band: the view's bottom at 520, the icon at 486.
+        PanelSpan s = PanelVerticalSpan(44.0f, 520.0f - 34.0f, 520.0f, 1.0f);
+        CHECK(s.top == 52.0f && s.bottom == 478.0f);
+        // Library view: no strip, the icon over the window's bottom.
+        s = PanelVerticalSpan(44.0f, 600.0f - 34.0f, 600.0f, 1.0f);
+        CHECK(s.top == 52.0f && s.bottom == 558.0f);
+        // The switch's place not known (not a number): the view's bottom stands in (never a 1 px panel).
+        s = PanelVerticalSpan(44.0f, nan, 600.0f, 1.0f);
+        CHECK(s.top == 52.0f && s.bottom == 592.0f);
+        s = PanelVerticalSpan(44.0f, 560.0f, nan, 1.0f);
+        CHECK(s.top == 52.0f && s.bottom == 552.0f);
+        s = PanelVerticalSpan(nan, nan, nan, 1.0f);
+        CHECK(std::isfinite(s.top) && std::isfinite(s.bottom) && s.bottom - s.top >= 160.0f);
+        // The switch's top 0 (laid out nowhere): the panel still gets its usable height in the view.
+        s = PanelVerticalSpan(44.0f, 0.0f, 600.0f, 1.0f);
+        CHECK(s.top == 52.0f && s.bottom == 212.0f);
+    }
+
+    // 6-5-10c: the menu button: the corner icons' 24 px button, centred on the top row, 18 px in; the
+    // open menu's panel 8 px around it; the list 8 px under it, at every scale.
+    {
+        MenuButtonBox b = MenuButtonAt(32.0f, 1.0f);  // 100 %: 14 + 10 + 16 / 2
+        CHECK(b.x == 18.0f && b.y == 20.0f && b.size == 24.0f && b.bottom == 44.0f);
+        CHECK(b.panel_x == 10.0f && b.panel_y == 12.0f && b.trail == 50.0f);
+        b = MenuButtonAt(48.0f, 1.5f);  // 150 %
+        CHECK(b.x == 27.0f && b.y == 30.0f && b.size == 36.0f && b.bottom == 66.0f);
+        CHECK(b.panel_x == 15.0f && b.panel_y == 18.0f && b.trail == 75.0f);
+        b = MenuButtonAt(30.5f, 1.0f);  // a smaller font: whole pixels, still centred
+        CHECK(b.y == 19.0f || b.y == 18.0f);
+        b = MenuButtonAt(4.0f, 1.0f);   // never closer than 10 px to the window's top
+        CHECK(b.y == 10.0f && b.panel_y == 2.0f);
+        for (float dp : {1.0f, 1.25f, 1.5f, 2.0f}) {
+            const MenuButtonBox m = MenuButtonAt(32.0f * dp, dp);
+            const PanelSpan     s = PanelVerticalSpan(m.bottom, 600.0f * dp, 700.0f * dp, dp);
+            CHECK(s.top - m.bottom == 8.0f * dp);       // the gap Antho asked for (~8 px)
+            CHECK(m.y + m.size * 0.5f == 32.0f * dp);   // centred on the top row
+            CHECK(m.trail - (m.x + m.size) == 8.0f * dp);
+        }
+    }
+
+    // 6-5-10c: a project load REAPER reports closes the list only when another project shows.
+    {
+        int        a = 0, b = 0;
+        ProjectLook before;
+        before.proj = &a;
+        before.path = "C:\\proj\\walk.rpp";
+        before.items = 12;
+        ProjectLook now = before;
+        CHECK(ProjectLoadVerdict(before, now, 9, 9) == LoadVerdict::Stays);   // same file, same items
+        CHECK(ProjectLoadVerdict(before, now, 9, 5) == LoadVerdict::Stays);   // most still there
+        CHECK(ProjectLoadVerdict(before, now, 9, 4) == LoadVerdict::Replaced);  // the same file read again
+        CHECK(ProjectLoadVerdict(before, now, 9, 0) == LoadVerdict::Replaced);
+        CHECK(ProjectLoadVerdict(before, now, 0, 0) == LoadVerdict::Stays);   // the list was closed: no rows
+        now.path = "C:\\proj\\run.rpp";
+        CHECK(ProjectLoadVerdict(before, now, 9, 9) == LoadVerdict::OtherFile);
+        now = before;
+        now.path = "";                                                       // File > New after a saved one
+        now.items = 0;
+        CHECK(ProjectLoadVerdict(before, now, 9, 0) == LoadVerdict::OtherFile);
+        before.path = "";                                                    // File > New, never saved
+        CHECK(ProjectLoadVerdict(before, now, 0, 0) == LoadVerdict::Emptied);
+        now = before;
+        now.proj = &b;                                                       // a project opened in a new tab
+        CHECK(ProjectLoadVerdict(before, now, 9, 9) == LoadVerdict::OtherTab);
+        ProjectLook none;                                                    // nothing seen before (viewer never drawn)
+        CHECK(ProjectLoadVerdict(none, before, 0, 0) == LoadVerdict::OtherTab);
+        CHECK(std::string(LoadVerdictText(LoadVerdict::OtherFile)) == "another file");
+        CHECK(std::string(LoadVerdictText(LoadVerdict::Stays)) == "nothing opened");
+    }
+
+    // 6-5-10c: the log's note on a close.
+    {
+        CHECK(CloseNote("Main", -1, -1.0) == "Main view");
+        CHECK(CloseNote("Tagging", 3, 0.214) == "Tagging view, 3 frames (0.21 s) after a row click");
+        CHECK(CloseNote("Video", 1, 0.0) == "Video view, 1 frame (0.00 s) after a row click");
+        CHECK(CloseNote("Main", 900, 12.0) == "Main view");  // long after: not the click's
+        CHECK(CloseNote("", -1, -1.0) == "viewer");
     }
 
     if (g_fails == 0) std::printf("clip_list_plan: all checks passed\n");

@@ -7,6 +7,7 @@
 #ifdef _WIN32
 
 #include <algorithm>
+#include <chrono>
 #include <climits>
 #include <cmath>
 #include <cstdio>
@@ -87,8 +88,44 @@ struct State {
     bool                             popup_last_frame = false;  // an ImGui popup was open at the last frame's end
     ImGuiWindow*                     panel_window = nullptr;
     ImGuiWindow*                     button_window = nullptr;
+    // 6-5-10c: what the log says about a close (the view, the frames and seconds since the last row
+    // click: a click jumps, then the item under the cursor loads).
+    unsigned long long               frame = 0;              // one more at every DrawClipList
+    long long                        click_frame = -1;       // the frame of the last row click (-1: none)
+    double                           click_time = 0.0;       // its time (NowSeconds)
+    std::string                      view_name;              // the view shown
+    // 6-5-10c: a project load REAPER reported for the tab shown (or a load it does not name), decided
+    // at the next frame (ProjectLoadVerdict): what the tab showed at the last frame, the items the
+    // list showed then, and the grouping and folds the load dropped (back when nothing was opened).
+    cliplist::ProjectLook            look;                   // the tab shown, read at every frame
+    bool                             load_pending = false;
+    cliplist::ProjectLook            load_before;
+    std::vector<MediaItem*>          load_listed;
+    ReaProject*                      load_proj = nullptr;
+    int                              load_grouping = -1;     // -1: the default (no line)
+    bool                             load_grouping_read = false;  // the load read the project's line
+    cliplist::FoldSet                load_folds;
+    // 6-5-10c: the "open, but not shown" warnings, each written once until it no longer holds.
+    bool                             warned_narrow = false, warned_short = false, warned_skipped = false;
+    bool                             warned_covered = false, warned_alpha = false;
 };
 State g;
+// 6-5-10c: the open state SetClipListOpen last set. Only SetClipListOpen opens or closes the list; a
+// frame that finds `g.open` otherwise says so in the log and puts it back (DrawClipList).
+bool g_open_wanted = false;
+
+// 6-5-10c: seconds on a steady clock (the log's "s after a row click"; no ImGui context needed).
+double NowSeconds()
+{
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// 6-5-10c: the note after a close's cause in the log.
+std::string CloseNoteNow()
+{
+    const long long frames = g.click_frame < 0 ? -1 : static_cast<long long>(g.frame) - g.click_frame;
+    return cliplist::CloseNote(g.view_name, frames, g.click_frame < 0 ? -1.0 : NowSeconds() - g.click_time);
+}
 
 // The grouping of each open project (absent = the default, by track). A project's line is
 // dropped when it loads (BeginLoadProjectState) and when its tab closes (PruneTick), so a new
@@ -129,7 +166,9 @@ bool ProcessExtensionLine(const char* line, ProjectStateContext*, bool is_undo, 
         const size_t n = std::strlen(kLineKey);
         if (std::strncmp(line, kLineKey, n) != 0 || (line[n] != ' ' && line[n] != '\t')) return false;
         if (is_undo) return true;  // never written in an undo state; ours all the same
-        g_grouping[LoadSaveProject()] = static_cast<int>(cliplist::GroupingFromInt(std::atoi(line + n + 1)));
+        ReaProject* const proj = LoadSaveProject();
+        g_grouping[proj] = static_cast<int>(cliplist::GroupingFromInt(std::atoi(line + n + 1)));
+        if (g.load_pending && proj == g.load_proj) g.load_grouping_read = true;  // 6-5-10c: the load's own
         return true;
     } catch (...) {
         return true;
@@ -153,27 +192,34 @@ void BeginLoadProjectState(bool is_undo, project_config_extension_t*)
 {
     try {
         if (is_undo) return;
-        ReaProject* proj = LoadSaveProject();
+        ReaProject* const named = f_project_in_load_save ? f_project_in_load_save() : nullptr;
+        ReaProject* const cur = CurrentProject();
+        ReaProject* const proj = named ? named : cur;  // LoadSaveProject()
+        // A project (re)opened in the tab shown: the list starts closed with an empty search (Antho,
+        // 2026-10-14), and the list stays open until the user closes it otherwise (6-5-10b). REAPER
+        // also loads project states that are not the tab shown (another tab, a project read for
+        // another purpose): those never touch the list. 6-5-10c: a load REAPER says is the tab shown's,
+        // or does not name (File > New may load its template unnamed), no longer closes the list
+        // here: REAPER reports more loads than the user's (the list kept vanishing after a row click,
+        // 2026-10-14). The next frame closes it only when another project shows once the load is over
+        // (CheckProjectLoad); otherwise nothing changed.
+        if ((!named || named == cur) && !g.load_pending) {
+            g.load_pending = true;
+            g.load_proj = proj;
+            g.load_before = g.look;  // what the tab showed at the last frame
+            g.load_listed.clear();
+            if (g.open)
+                for (const RowItem& r : g.items) g.load_listed.push_back(r.item);
+            const auto gi = g_grouping.find(proj);
+            g.load_grouping = gi == g_grouping.end() ? -1 : gi->second;
+            const auto fi = g_folds.find(proj);
+            g.load_folds = fi == g_folds.end() ? cliplist::FoldSet() : fi->second;
+        }
+        if (g.load_pending && proj == g.load_proj) g.load_grouping_read = false;  // its own line, if any, follows
         g_grouping.erase(proj);  // the project's own line (if any) follows
         g_folds.erase(proj);
         ++g_fold_gen;
         g.read_count = INT_MIN;
-        // A project (re)opened in the current tab: the panel starts closed with an empty search
-        // (Antho, 2026-10-14). 6-5-10b: only then. REAPER also loads project states that are not the
-        // tab shown (another tab, a project read for another purpose); those never close the list,
-        // which stays open until the user closes it. A load REAPER does not name is not ours either.
-        // 6-5-10b review: File > New may load its (empty) template without naming the project: a load
-        // REAPER does not name, while the tab shown has no item, is that tab's.
-        ReaProject* const named = f_project_in_load_save ? f_project_in_load_save() : nullptr;
-        ReaProject* const cur = CurrentProject();
-        const bool        this_tab = named ? named == cur : CountMediaItems(cur) == 0;
-        if (!this_tab) return;
-        if (g.open) LogInfo("clip list: closed (a project was opened in this tab)");
-        g.open = false;
-        g.search[0] = '\0';
-        g.kb = nullptr;
-        g.scroll_to = nullptr;
-        g.sel_primed = false;
     } catch (...) {
     }
 }
@@ -347,6 +393,9 @@ void JumpTo(int idx)
         return;
     }
     const double pos = GetMediaItemInfo_Value(it, "D_POSITION");
+    // 6-5-10c: when the click was, for the log of a close that follows it.
+    g.click_frame = static_cast<long long>(g.frame);
+    g.click_time = NowSeconds();
     // Already the only selected item: the selection stays as it is (no undo point, no redraw).
     const bool alone = CountSelectedMediaItems(proj) == 1 && GetSelectedMediaItem(proj, 0) == it;
     if (!alone && f_select_all && f_set_selected) {
@@ -653,6 +702,10 @@ void DrawPanel(float x, float top, float w, float h)
     const bool shown = ImGui::Begin("##cliplist", nullptr, kFlags);
     ImGui::PopStyleVar(3);
     ImGui::PopStyleColor();
+    // 6-5-10c: Dear ImGui skipping or hiding the open panel is written to the log (once while it lasts).
+    const bool skipped = !shown || ImGui::GetCurrentWindow()->Hidden;
+    if (skipped && !g.warned_skipped) LogWarn("clip list: open, but Dear ImGui did not show its panel [%s]", CloseNoteNow().c_str());
+    g.warned_skipped = skipped;
     if (!shown) {
         ImGui::End();
         return;
@@ -859,6 +912,93 @@ void DrawPanel(float x, float top, float w, float h)
     if (jump >= 0) JumpTo(jump);
 }
 
+// 6-5-10c: what the tab shows now (ProjectLoadVerdict compares it with what it showed before a load).
+cliplist::ProjectLook LookNow(ReaProject** out_proj)
+{
+    cliplist::ProjectLook l;
+    char                  path[4096] = {};
+    ReaProject* const     proj = EnumProjects(-1, path, static_cast<int>(sizeof(path)));
+    path[sizeof(path) - 1] = '\0';
+    l.proj = proj;
+    l.path = path;
+    l.items = proj ? CountMediaItems(proj) : 0;
+    if (out_proj) *out_proj = proj;
+    return l;
+}
+
+// 6-5-10c: the project load REAPER reported (BeginLoadProjectState), once it is over: the list starts
+// afresh (closed, empty search) only when another project shows in the tab; otherwise nothing was
+// opened, and the grouping and folds the load dropped come back. Either way the log says so while the
+// list is open (a load REAPER reports right after a row click is the first suspect of a vanishing list).
+void CheckProjectLoad(const cliplist::ProjectLook& now, ReaProject* proj)
+{
+    if (!g.load_pending) return;
+    g.load_pending = false;
+    int still = 0;
+    for (MediaItem* it : g.load_listed)
+        if (it && proj && ValidatePtr2(proj, it, "MediaItem*")) ++still;
+    const cliplist::LoadVerdict v =
+        cliplist::ProjectLoadVerdict(g.load_before, now, static_cast<int>(g.load_listed.size()), still);
+    g.load_listed.clear();
+    if (v == cliplist::LoadVerdict::Stays) {
+        if (!g.load_grouping_read && g.load_grouping >= 0) g_grouping[g.load_proj] = g.load_grouping;
+        if (!g.load_folds.empty()) {
+            g_folds[g.load_proj] = g.load_folds;
+            ++g_fold_gen;
+        }
+        g.load_folds.clear();
+        if (g.open)
+            LogWarn("clip list: REAPER reloaded the project state of the tab shown, but no other project shows "
+                    "(same file, same items): the list stays open [%s]",
+                    CloseNoteNow().c_str());
+        return;
+    }
+    g.load_folds.clear();
+    g.search[0] = '\0';
+    g.kb = nullptr;
+    g.scroll_to = nullptr;
+    g.sel_primed = false;
+    const std::string why = std::string("a project was opened in this tab: ") + cliplist::LoadVerdictText(v);
+    SetClipListOpen(false, why.c_str());
+}
+
+// 6-5-10c: the open panel is checked once the frame's windows are in their final order: shown, and
+// under no other viewer window (only its button, the open menu, popups and tooltips may be above it).
+// Each finding is written once while it lasts.
+void CheckPanelShown(ImGuiWindow* menu_open)
+{
+    ImGuiWindow* const p = g.panel_window;
+    if (!g.open || !p) {
+        g.warned_covered = false;
+        return;
+    }
+    ImGuiContext&     c = *ImGui::GetCurrentContext();
+    const char*       cover = nullptr;
+    const float       px0 = p->Pos.x, py0 = p->Pos.y, px1 = p->Pos.x + p->Size.x, py1 = p->Pos.y + p->Size.y;
+    bool              above = false;
+    for (ImGuiWindow* w : c.Windows) {
+        if (w == p) {
+            above = true;
+            continue;
+        }
+        if (!above || !w->Active || w->Hidden || (w->Flags & ImGuiWindowFlags_ChildWindow)) continue;
+        if (w == g.button_window || w == menu_open) continue;
+        if (w->Flags & (ImGuiWindowFlags_Popup | ImGuiWindowFlags_Tooltip)) continue;
+        const float wx0 = w->Pos.x, wy0 = w->Pos.y, wx1 = w->Pos.x + w->Size.x, wy1 = w->Pos.y + w->Size.y;
+        if (wx1 <= px0 || wx0 >= px1 || wy1 <= py0 || wy0 >= py1) continue;
+        cover = w->Name;
+        break;
+    }
+    const bool gone = !p->Active || p->Hidden || px1 <= 0.0f || py1 <= 0.0f || px1 - px0 < 2.0f || py1 - py0 < 2.0f;
+    const bool bad = gone || cover;
+    if (bad && !g.warned_covered) {
+        if (cover) LogWarn("clip list: open, but its panel is under another window (%s) [%s]", cover, CloseNoteNow().c_str());
+        else LogWarn("clip list: open, but its panel is not on screen (%.0f, %.0f  %.0f x %.0f) [%s]", px0, py0, px1 - px0,
+                     py1 - py0, CloseNoteNow().c_str());
+    }
+    g.warned_covered = bad;
+}
+
 }  // namespace
 
 void InitClipList(reaper_plugin_info_t* rec)
@@ -893,6 +1033,9 @@ void QuitClipList()
     g.lines.clear();
     g.tops.clear();
     g.view_ok = false;
+    g.load_pending = false;  // 6-5-10c
+    g.load_listed.clear();
+    g.load_folds.clear();
 }
 
 bool ClipListOpen()
@@ -902,8 +1045,13 @@ bool ClipListOpen()
 
 void SetClipListOpen(bool open, const char* reason)
 {
+    g_open_wanted = open;
     if (open == g.open) return;
-    LogInfo("clip list: %s (%s)", open ? "opened" : "closed", reason && reason[0] ? reason : "?");
+    // 6-5-10c: a close is kept in the "Copy error log" ring (LogWarn: a release build writes no
+    // info line), with the view and how soon after a row click it came: a list that vanishes says why.
+    const char* why = reason && reason[0] ? reason : "?";
+    if (open) LogInfo("clip list: opened (%s)", why);
+    else LogWarn("clip list: closed (%s) [%s]", why, CloseNoteNow().c_str());
     g.open = open;
     g.search_active = false;
     g.caret_to_end = false;
@@ -923,15 +1071,47 @@ void ClipListSetCurrentItem(MediaItem* item)
     g.current = item;
 }
 
-bool DrawClipList(float view_w, float menu_bottom, float ui_top, float view_bottom, const char* key)
+bool DrawClipList(float view_w, float menu_bottom, float ui_top, float view_bottom, const char* key, const char* view)
 {
     g.panel_window = nullptr;
     g.button_window = nullptr;
+    ++g.frame;
+    g.view_name = view ? view : "";
+    // 6-5-10c: only SetClipListOpen opens or closes the list; anything else that changed it (no such
+    // path is known) is written to the log and undone.
+    if (g.open != g_open_wanted) {
+        LogWarn("clip list: found %s without being %s; %s again [%s]", g.open ? "open" : "closed",
+                g.open ? "opened" : "closed", g_open_wanted ? "opened" : "closed", CloseNoteNow().c_str());
+        g.open = g_open_wanted;
+    }
+    // 6-5-10c: what the tab shows, then the verdict on a project load REAPER reported since the last
+    // frame (before the panel reads its grouping and folds).
+    {
+        ReaProject*                 proj = nullptr;
+        const cliplist::ProjectLook now = LookNow(&proj);
+        CheckProjectLoad(now, proj);
+        g.look = now;
+    }
     const bool  was_open = g.open;
     const float btn = ui::Dp(22.0f);
     float       panel_w = 0.0f;
+    // 6-5-10c: drawn opaque whatever an earlier window left in the style (a leftover alpha is logged).
+    {
+        const bool see_through = ImGui::GetStyle().Alpha < 0.99f || ImGui::GetCurrentContext()->DisabledStackSize > 0;
+        if (g.open && see_through && !g.warned_alpha)
+            LogWarn("clip list: an earlier window left the style see-through or disabled (alpha %.2f) [%s]",
+                    ImGui::GetStyle().Alpha, CloseNoteNow().c_str());
+        g.warned_alpha = g.open && see_through;
+    }
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 1.0f);
     if (g.open) {
         panel_w = cliplist::PanelWidth(view_w, ui::UiScale());
+        // 6-5-10c: an open list with no room for its panel says so in the log (once while it lasts).
+        const bool narrow = panel_w < 1.0f;
+        if (narrow && !g.warned_narrow)
+            LogWarn("clip list: open, but the view (%.0f px wide) has no room for its panel [%s]", view_w,
+                    CloseNoteNow().c_str());
+        g.warned_narrow = narrow;
         if (panel_w >= 1.0f) {
             // A throw between the panel's Begin and End (std::bad_alloc: it throws nothing of its
             // own) would leave Dear ImGui's window and style stacks unbalanced: its own recovery
@@ -941,6 +1121,12 @@ bool DrawClipList(float view_w, float menu_bottom, float ui_top, float view_bott
             try {
                 const cliplist::PanelSpan span =
                     cliplist::PanelVerticalSpan(menu_bottom, ui_top, view_bottom, ui::UiScale());
+                // 6-5-10c: and with too little height to show its rows.
+                const bool low = span.bottom - span.top < ui::Dp(60.0f);
+                if (low && !g.warned_short)
+                    LogWarn("clip list: open, but its panel is only %.0f px high (the view's bottom at %.0f px) [%s]",
+                            span.bottom - span.top, view_bottom, CloseNoteNow().c_str());
+                g.warned_short = low;
                 DrawPanel(0.0f, span.top, panel_w, std::max(1.0f, span.bottom - span.top));
             } catch (...) {
                 ImGuiIO&   io = ImGui::GetIO();
@@ -952,11 +1138,12 @@ bool DrawClipList(float view_w, float menu_bottom, float ui_top, float view_bott
                 io.ConfigErrorRecoveryEnableAssert = was_assert;
                 io.ConfigErrorRecoveryEnableTooltip = was_tip;
                 g.panel_window = nullptr;
-                LogWarn("clip list: the panel could not be drawn this frame");
+                LogWarn("clip list: the panel could not be drawn this frame [%s]", CloseNoteNow().c_str());
             }
         }
     } else {
         g.has_focus = false;
+        g.warned_narrow = g.warned_short = g.warned_skipped = false;
     }
     // Closed: 6 px from the window's left edge; open: 6-5-10b review: wholly outside the panel, 2 px
     // right of its edge (centred on it, it covered the rows' right end and the scrollbar, and a
@@ -968,8 +1155,14 @@ bool DrawClipList(float view_w, float menu_bottom, float ui_top, float view_bott
         const float cy = cliplist::ButtonCentreY(menu_bottom, ui_top, btn, ui::UiScale());
         if (RoundButton(ImVec2(cx, cy), key)) SetClipListOpen(!g.open, "the round button");
     }
+    ImGui::PopStyleVar();  // Alpha
     g.popup_last_frame = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
     return g.open && !was_open;
+}
+
+void ClipListAfterFrame(ImGuiWindow* menu_open)
+{
+    CheckPanelShown(menu_open);
 }
 
 ImGuiWindow* ClipListPanelWindow()

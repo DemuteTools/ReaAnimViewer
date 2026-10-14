@@ -15,8 +15,9 @@
 // Muted items and items on muted tracks (or on a lane that does not play) are listed greyed. The
 // list is read again only when REAPER's project state count changes (or the project tab), and
 // only while the panel is open. The grouping is kept in the project (a line of the .rpp written
-// when the project is saved: no undo point, no unsaved-change mark); the panel opens closed with an
-// empty search after a project load. The pure half is src/clip_list_plan.h.
+// when the project is saved: no undo point, no unsaved-change mark); the panel starts closed with
+// an empty search when another project is opened in the tab (6-5-10c: decided once REAPER's load is
+// over, cliplist::ProjectLoadVerdict). The pure half is src/clip_list_plan.h.
 
 #pragma once
 
@@ -34,9 +35,10 @@ void InitClipList(reaper_plugin_info_t* rec);
 void QuitClipList();
 
 bool ClipListOpen();
-// Opens (the search takes the keyboard) or closes the panel. `reason`: what asked (the button, the
-// shortcut, Esc...), written to REAPER's console with every open and close (6-5-10b review: a list
-// that vanishes says why).
+// Opens (the search takes the keyboard) or closes the panel: the only way the list opens or closes.
+// `reason`: what asked (the button, the shortcut, Esc...). 6-5-10c: every close is kept in the
+// "Copy error log" ring (a warning line, so a release build keeps it too) with the view and how
+// soon after a row click it came: a list that vanishes says why.
 void SetClipListOpen(bool open, const char* reason);
 
 // The item RAV shows this frame (nullptr = none): the lit row. Called by the render tick.
@@ -48,13 +50,18 @@ void ClipListSetCurrentItem(MediaItem* item);
 // `view_bottom`: the view's bottom (the Tagging strip's / Video timeline's top, else the window's).
 // 6-5-10b: the panel covers the 3D view only, between `menu_bottom` and `ui_top`
 // (cliplist::PanelVerticalSpan), and the button goes half-way between them. `key`: the shortcut's
-// label for the tooltip. True when the panel opened this frame (the menu closes).
-bool DrawClipList(float view_w, float menu_bottom, float ui_top, float view_bottom, const char* key);
+// label for the tooltip. `view`: the view shown, named in the log ("Main", "Tagging"...). True when
+// the panel opened this frame (the menu closes).
+bool DrawClipList(float view_w, float menu_bottom, float ui_top, float view_bottom, const char* key, const char* view);
 
 // The panel's and the button's windows this frame (nullptr when not drawn): kept above the other
 // viewer windows after EndFrame.
 ImGuiWindow* ClipListPanelWindow();
 ImGuiWindow* ClipListButtonWindow();
+// 6-5-10c: once the windows are in their final order (after the above), the open panel is checked:
+// shown, and under no other window but its button, `menu_open` (the options menu when open, else
+// nullptr), popups and tooltips. A finding is written to the log once while it lasts.
+void ClipListAfterFrame(ImGuiWindow* menu_open);
 
 // True when the panel has the keyboard (its search field or a row was the last thing clicked) and
 // this key, without Ctrl / Alt, is one of its own: Up, Down, Enter, Esc, and (6-5-10b review) a

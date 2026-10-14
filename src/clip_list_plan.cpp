@@ -238,6 +238,10 @@ int SelectionFocus(const std::vector<int>& before, const std::vector<int>& now)
 
 PanelSpan PanelVerticalSpan(float menu_bottom, float ui_top, float view_bottom, float dp)
 {
+    // 6-5-10c: an edge not known (not a number) is the next one known: never a 1 px panel.
+    if (!std::isfinite(menu_bottom)) menu_bottom = 0.0f;
+    if (!std::isfinite(view_bottom)) view_bottom = std::isfinite(ui_top) ? ui_top : menu_bottom + 168.0f * dp;
+    if (!std::isfinite(ui_top)) ui_top = view_bottom;
     PanelSpan s;
     const float floor_y = std::max(1.0f, view_bottom);  // never over the strip / the timeline
     const float min_h = 160.0f * dp;
@@ -326,6 +330,54 @@ bool ListTypesKey(unsigned vk, bool ctrl, bool alt)
 bool ButtonFits(float menu_bottom, float switch_top, float btn, float dp)
 {
     return switch_top - menu_bottom >= 6.0f * dp + btn + 4.0f * dp;
+}
+
+MenuButtonBox MenuButtonAt(float row_mid, float dp)
+{
+    MenuButtonBox b;
+    b.size = 24.0f * dp;
+    b.x = 18.0f * dp;
+    // Centred on the row (whole pixels), never closer than 10 px to the window's top.
+    b.y = std::max(10.0f * dp, std::round(row_mid - b.size * 0.5f));
+    b.bottom = b.y + b.size;
+    b.panel_x = b.x - 8.0f * dp;
+    b.panel_y = b.y - 8.0f * dp;
+    b.trail = b.x + b.size + 8.0f * dp;
+    return b;
+}
+
+LoadVerdict ProjectLoadVerdict(const ProjectLook& before, const ProjectLook& now, int listed, int listed_still)
+{
+    if (now.proj != before.proj) return LoadVerdict::OtherTab;
+    if (now.path != before.path) return LoadVerdict::OtherFile;
+    if (before.items > 0 && now.items == 0) return LoadVerdict::Emptied;
+    // A real load makes new items: the list's old ones are gone (a few may come back at the same
+    // address; most do not).
+    if (listed > 0 && 2 * std::max(0, listed_still) < listed) return LoadVerdict::Replaced;
+    return LoadVerdict::Stays;
+}
+
+const char* LoadVerdictText(LoadVerdict v)
+{
+    switch (v) {
+    case LoadVerdict::OtherTab: return "another project tab";
+    case LoadVerdict::OtherFile: return "another file";
+    case LoadVerdict::Emptied: return "an empty project";
+    case LoadVerdict::Replaced: return "the same file opened again";
+    default: return "nothing opened";
+    }
+}
+
+std::string CloseNote(const std::string& view, long long frames_since_click, double seconds_since_click)
+{
+    std::string s = view.empty() ? std::string("viewer") : view + " view";
+    if (frames_since_click >= 0 && seconds_since_click >= 0.0 && seconds_since_click < 10.0) {
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), ", %lld frame%s (%.2f s) after a row click", frames_since_click,
+                      frames_since_click == 1 ? "" : "s", seconds_since_click);
+        s += buf;
+    }
+    return s;
 }
 
 }  // namespace cliplist

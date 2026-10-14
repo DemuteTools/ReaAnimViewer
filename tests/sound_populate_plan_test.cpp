@@ -283,14 +283,16 @@ static void TestParts()
         const double anchor = PlacementPosition(10.0, pa[0].slice.snap_offset, 0.0, 0.0);
         CHECK(Near(anchor, 9.982) && Near(PiecePosition(anchor, pa[1].from_anchor, 1.0), 10.102));
         CHECK(Near(PiecePosition(anchor, pa[1].from_anchor, 2.0), 10.042));  // playrate 2: item seconds
-        // The anchor is always the first placed zone: a snap set on the second one is not the event's.
+        // 13-62h final review: a snap set by hand on the second zone is the event's (it lands there), the first one
+        // placed before it.
         n.sound.frames[0].zones[1].snap = 0.13;
         const std::vector<PieceApply> pb = PieceApplyFor(n.sound, 0, "vb");
-        CHECK(pb.size() == 2 && pb[0].anchor && !pb[1].anchor && Near(pb[0].slice.snap_offset, 0.018));
-        // The whole variation: its three zones, each its own item.
+        CHECK(pb.size() == 2 && !pb[0].anchor && pb[1].anchor && Near(pb[1].slice.snap_offset, 0.01) &&
+              Near(pb[0].from_anchor, -0.12));
+        // The whole variation: its three zones, each its own item (from the same anchor).
         const std::vector<PieceApply> pw = PieceApplyFor(n.sound, 0, "");
         CHECK(pw.size() == 3 && Near(pw[2].slice.length, 0.2) && Near(pw[2].fades.out, kDefaultFadeOut) &&
-              Near(pw[2].from_anchor, 0.2));
+              Near(pw[2].from_anchor, 0.08));
         // The slot is placed again when the piece count or the part changes (re-Populate).
         std::vector<DesiredSlot>  d = {De(0, "s", 0)};
         std::vector<ExistingSlot> x = {Ex(0, "s", 0)};

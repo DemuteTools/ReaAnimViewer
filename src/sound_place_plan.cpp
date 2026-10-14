@@ -373,6 +373,15 @@ std::vector<ZoneRef> PlacedZones(const SoundData& data, int variation, const std
     return out;
 }
 
+// 13-62h: the zone an event lands by: the first placed zone with a snap offset of its own (a hand sync point, also
+// one migrated from the old model), else the first placed zone.
+ZoneRef AnchorZone(const SoundData& data, const std::vector<ZoneRef>& zones)
+{
+    for (const ZoneRef& r : zones)
+        if (ZoneOf(data, r)->snap) return r;
+    return zones.front();
+}
+
 // 13-62h: the pieces of a zoned placement (PieceApplyFor).
 std::vector<PieceApply> ZonePieces(const SoundData& data, int variation, const std::string& part_value,
                                    const PeakData* peaks)
@@ -381,7 +390,8 @@ std::vector<PieceApply> ZonePieces(const SoundData& data, int variation, const s
     const std::vector<ZoneRef> zones = PlacedZones(data, variation, part_value);
     if (zones.empty()) return out;
     const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
-    double            heard0 = 0.0;  // the anchor's start in heard time
+    const ZoneRef     anchor = AnchorZone(data, zones);
+    std::vector<double> heard;  // each piece's start in heard time
     auto placed = [&](const ZoneRef& q) { return std::find(zones.begin(), zones.end(), q) != zones.end(); };
     for (const ZoneRef& r : zones) {
         const EditZone& z = *ZoneOf(data, r);
@@ -407,15 +417,22 @@ std::vector<PieceApply> ZonePieces(const SoundData& data, int variation, const s
         pa.fades.in = cut_in ? ZoneCutFade(data, r, -1).s : ZoneFade(data, r, -1).s;
         pa.fades.out = cut_out ? ZoneCutFade(data, r, 1).s : ZoneFade(data, r, 1).s;
         pa.db = std::isfinite(z.db) ? z.db : 0.0;
-        if (out.empty()) {  // the anchor: the first placed zone, at its snap offset
+        if (r == anchor) {  // the anchor, at its snap offset
             pa.anchor = true;
             const double t = ZoneSnap(data, r, peaks).t;
             pa.slice.snap_offset = std::isfinite(t) ? std::min(std::max(t - a, 0.0), b - a) : 0.0;
-            heard0 = a - jumped;
         }
-        pa.from_anchor = (a - jumped) - heard0;
+        heard.push_back(a - jumped);
         out.push_back(pa);
     }
+    double heard0 = heard.empty() ? 0.0 : heard.front();
+    for (size_t k = 0; k < out.size(); ++k)
+        if (out[k].anchor) heard0 = heard[k];
+    if (!out.empty() && std::none_of(out.begin(), out.end(), [](const PieceApply& q) { return q.anchor; })) {
+        out.front().anchor = true;  // the anchor zone gave no piece: the first one, at its start
+        out.front().slice.snap_offset = 0.0;
+    }
+    for (size_t k = 0; k < out.size(); ++k) out[k].from_anchor = heard[k] - heard0;
     return out;
 }
 
@@ -431,9 +448,10 @@ bool PieceSnapNeedsPeaks(const SoundData& data, int variation, const std::string
     if (!ZonedPlacement(data, variation)) return false;
     const std::vector<ZoneRef> zones = PlacedZones(data, variation, part_value);
     if (zones.empty()) return false;
-    const EditZone& z = *ZoneOf(data, zones.front());
+    const ZoneRef   anchor = AnchorZone(data, zones);
+    const EditZone& z = *ZoneOf(data, anchor);
     // 13-62h review (R2): a snap measured and stored by the Edit window needs no peaks.
-    return !z.snap && PartSyncMode(data, z.part) != SyncMode::SliceStart && !ZoneSnapStored(data, zones.front());
+    return !z.snap && PartSyncMode(data, z.part) != SyncMode::SliceStart && !ZoneSnapStored(data, anchor);
 }
 
 std::vector<PieceApply> PieceApplyFor(const SoundData& data, int variation, const std::string& part_value, bool file,

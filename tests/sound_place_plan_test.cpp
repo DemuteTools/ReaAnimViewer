@@ -197,6 +197,22 @@ static SoundData Zoned(const std::vector<EditZone>& zones)
     return d;
 }
 
+// 13-62h final review: the event lands by the first placed zone with a snap offset of its own (a hand sync point,
+// also one migrated from the old model), else by the first zone.
+static void TestZoneAnchorOwnSnap()
+{
+    SoundData d = Zoned({Zn(1.0, 1.2, "heel"), Zn(1.3, 1.6, "heel")});
+    d.frames[0].zones[1].snap = 1.4;
+    std::vector<PieceApply> p = PieceApplyFor(d, 0, "heel");
+    CHECK(p.size() == 2 && !p[0].anchor && p[1].anchor);
+    if (p.size() == 2) {
+        CHECK(Near(p[1].slice.snap_offset, 0.1) && Near(p[1].from_anchor, 0.0) && Near(p[0].from_anchor, -0.3));
+    }
+    d.frames[0].zones[1].snap.reset();
+    p = PieceApplyFor(d, 0, "heel");
+    CHECK(p.size() == 2 && p[0].anchor && !p[1].anchor && Near(p[1].from_anchor, 0.3));
+}
+
 // 13-62 (decision 6) on zones (13-62h): a part owning a fade gets it on each of its zones' edges (a zone's own
 // fade wins; at a cut the At cuts fade comes before the part's own, mockup fadeOf); a part without: the Sound's.
 static void TestPartFadesOnPieces()
@@ -388,6 +404,7 @@ int main()
     TestPartPieceFades();
     TestPartFadesOnPieces();
     TestZonePlacement();
+    TestZoneAnchorOwnSnap();
     TestChanMode();
     TestAsAuditioned();
     // Position (Blend offset + nudge) and clamp.

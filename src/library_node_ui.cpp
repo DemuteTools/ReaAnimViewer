@@ -507,7 +507,7 @@ bool SameZoneEdit(const SoundData& x, const SoundData& y)
     for (size_t i = 0; i < x.frames.size(); ++i) {
         const std::vector<EditZone>& a = x.frames[i].zones;
         const std::vector<EditZone>& b = y.frames[i].zones;
-        if (a.size() != b.size()) return false;
+        if (a.size() != b.size() || x.frames[i].on != y.frames[i].on) return false;  // a variation turned off meanwhile
         for (size_t k = 0; k < a.size(); ++k)
             if (!SameEditZone(a[k], b[k])) return false;
     }
@@ -2404,6 +2404,7 @@ void HandleWave(const WaveformEvents& ev, const SoundLibrary& lib, const SoundNo
     const DetectMode mode = n.sound.mode;
     const std::string path = m.path;  // the parts are measured on it (RefreshWith)
     if (HandleWaveFades(ev, lib, n, fi)) return;
+    if (UsesZones(n.sound) && (ev.trim >= 0 || ev.db_frame >= 0)) return;  // 13-62h: the zones are edited in Edit
     if (ev.trim >= 0) {
         const int i = map(ev.trim);
         SoundData& d = Live(n);
@@ -3795,7 +3796,8 @@ void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n,
     WaveformOptions o;
     o.size = ImVec2(0.0f, height);
     o.source_len = m.source_len;
-    o.gestures = true;
+    // 13-62h: a zoned Sound's variations are its zones, edited in the Edit window only: no trim / dB / split here.
+    o.gestures = !UsesZones(d);
     o.select = in_edit;
     o.ruler = in_edit;
     o.pan = in_edit;  // middle-drag (13-45: the wheel and keys are Edit's, EditNavigate)
@@ -4599,7 +4601,7 @@ bool SameZoneSpans(const SoundData& x, const SoundData& y)
     for (size_t i = 0; i < x.frames.size(); ++i) {
         const std::vector<EditZone>& a = x.frames[i].zones;
         const std::vector<EditZone>& b = y.frames[i].zones;
-        if (a.size() != b.size()) return false;
+        if (a.size() != b.size() || x.frames[i].on != y.frames[i].on) return false;  // a variation turned off meanwhile
         for (size_t k = 0; k < a.size(); ++k)
             if (a[k].a != b[k].a || a[k].b != b[k].b || a[k].part != b[k].part) return false;
     }

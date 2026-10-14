@@ -217,7 +217,9 @@ bool AddRavlibLibrary(SoundStore& store, const SoundStore& file, const std::stri
             std::map<std::string, double> pdb;
             for (const auto& kv : f.part_db) pdb[Mapped(vmap, kv.first)] = kv.second;
             f.part_db = pdb;
+            for (std::string& o : f.owners) o = Mapped(vmap, o);  // 13-62: who owns each piece
         }
+        for (PartSettings& ps : d.parts) ps.value = Mapped(vmap, ps.value);  // 13-62: the parts' own settings
     }
     std::vector<std::string> names;
     for (const SoundLibrary& l : s.libraries) names.push_back(l.name);

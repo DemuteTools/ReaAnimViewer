@@ -784,6 +784,49 @@ static SoundStore DividedStore()
     return s;
 }
 
+// 13-62 (matrix ".ravlib"): a divided Sound with owners and part settings, opened in another project:
+// the same owners and settings, their value uids remapped to the project's group.
+static void TestPartsTravel()
+{
+    SoundStore src = DividedStore();
+    SoundData& d = src.libraries[0].nodes[3].sound;
+    d.frames[0].owners = {"v000000000000091", "v000000000000092"};
+    PartSettings front;
+    front.value = "v000000000000092";
+    front.gain_db = -3.0;
+    front.tail_ms = 40.0;
+    front.mono = MonoMode::Left;
+    d.parts = {front};
+    const std::string text = SerializeRavlib(RavlibOf(src, "l000000000000001", nullptr));
+    CHECK(text.find("part v=v000000000000092 tail=40 gain=-3 mono=left\n") != std::string::npos);
+    CHECK(text.find(" own=v000000000000091,v000000000000092") != std::string::npos);
+    SoundStore back;
+    CHECK(ParseRavlib(text, &back) && SerializeRavlib(back) == text);
+    // Into a project whose Contact group has other uids: owners and settings follow the merged values.
+    SoundStore  proj;
+    SwitchGroup pc;
+    pc.uid = "p000000000000009";
+    pc.name = "contact";
+    pc.values = {{"p000000000000091", "Back", {}, {"heel"}}, {"p000000000000092", "Front", {}, {"toe"}}};
+    proj.groups.push_back(pc);
+    std::string uid;
+    CHECK(AddRavlibLibrary(proj, back, "Steps.ravlib", &uid, nullptr));
+    const SoundLibrary* lib = FindLibrary(proj, uid);
+    const SoundNode*    snd = nullptr;
+    if (lib)
+        for (const SoundNode& n : lib->nodes)
+            if (n.name == "wood1.wav") snd = &n;
+    CHECK(snd != nullptr);
+    if (!snd) return;
+    const SoundData& q = snd->sound;
+    CHECK((q.divide_values == std::vector<std::string>{"p000000000000091", "p000000000000092"}));
+    CHECK((q.frames[0].owners == std::vector<std::string>{"p000000000000091", "p000000000000092"}));
+    CHECK(q.parts.size() == 1 && q.parts[0].value == "p000000000000092" && PartGainDb(q, "p000000000000092") == -3.0 &&
+          PartTailMs(q, "p000000000000092") == 40.0 && PartMono(q, "p000000000000092") == MonoMode::Left);
+    std::string v;
+    CHECK(PartAt(q, 0, 0.05, &v) && v == "p000000000000091");
+}
+
 static void TestDividedTravels()
 {
     const SoundStore one = RavlibOf(DividedStore(), "l000000000000001", nullptr);
@@ -877,6 +920,7 @@ static void TestDividedTravels()
 int main()
 {
     TestDividedTravels();
+    TestPartsTravel();  // 13-62
     TestFileSourceFromItem();
     TestConvertLibrary();
     TestConvertFreezesFrames();

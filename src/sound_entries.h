@@ -49,7 +49,7 @@ std::vector<SoundFrame> DetectFrames(const EntryFacts& facts, DetectMode mode, c
 void ClampFrames(std::vector<SoundFrame>& frames, double source_len);
 // Back to the detected frames (hand edits dropped, `edited` cleared). 13-20/23/25 (A7): the hand
 // sync points go to the new frame that holds them (CarryHandMarks without cuts), excluded zones stay,
-// "-> value" zones and hand cuts go. The caller runs RefreshParts after (it has the peaks).
+// "-> value" zones and hand cuts go. The caller runs RefreshParts after (it has the peaks). 13-62: owners go too.
 void ResetToDetected(SoundData& data, const std::vector<SoundFrame>& detected);
 // The frame's peak (dBFS), -inf when the peaks do not cover it.
 double FramePeakDb(const PeakData& peaks, const SoundFrame& frame);
@@ -69,6 +69,8 @@ void TrimFrame(SoundData& data, int i, double start, double length, double sourc
 // frame or there is no room.
 int AddFrame(SoundData& data, double start, double length, double source_len);
 // Splits frame i at source time `at` into 2 frames (on and db kept); false when `at` is outside it.
+// 13-62: a frame with owners gives each half the cuts and owners on its side (the piece holding `at` is
+// in both); without owners both halves keep every cut as before (RefreshParts drops the ones outside).
 bool SplitFrame(SoundData& data, int i, double at);
 void SetFrameOn(SoundData& data, int i, bool on);
 // 13-28: a frame with per-part gains moves them by the same step (their balance kept).
@@ -117,6 +119,8 @@ int PartIndex(const SoundData& data, const std::string& value_uid);
 // Who owns source time `t` of variation `variation`: false when it is outside the frame or excluded
 // (frame off, or the last zone over it excludes it); else `value` gets the owner: the last zone's `to`
 // when it is a divide value, else the part by cuts (divided) or "" (combined).
+// 13-62: the part by cuts is the piece's owner (SoundFrame::owners) when the frame has them (one per
+// piece, each a divide value), else the legacy rule (piece k -> divide_values[min(k, n - 1)]).
 bool PartAt(const SoundData& data, int variation, double t, std::string* value);
 // Every non-excluded contiguous stretch of the variation with its owner, in time order (a part cut by
 // an excluded zone gives 2 spans; an empty part gives none). {} for a bad index or an off frame.
@@ -137,6 +141,7 @@ bool PartMarginsApply(const SoundData& data);
 // zone a span never grows past its own edge. A span with no loud bin plays nothing when its part sounds
 // elsewhere in the variation (dropped, its silence shared like a gap), else it is kept as it is (a part
 // quiet all along still plays, a wall its neighbours stop at). Parts never overlap.
+// 13-62: each span uses its own part's pre-roll and tail (PartPrerollMs / PartTailMs).
 std::vector<PartSpan> PartPieces(const SoundData& data, int variation);
 // What a placement of `part_value` plays: the pieces of that part (PartPieces: its margins applied), or
 // for "" every non-excluded stretch of the frame (raw, adjacent spans merged: the whole variation minus
@@ -146,6 +151,8 @@ std::vector<PartSpan> PlacedSpans(const SoundData& data, int variation, const st
 // measured by an older rule are stale): the Silence threshold, pre-roll and tail, the
 // variation's raw spans (bounds to the microsecond and owners, hashed) and `file`, the version of the
 // file the peaks were read from (date + size; zero = unknown). Stored as SoundFrame::part_trim_key.
+// 13-62: the parts' own pre-roll / tail are in the key too (only when a part owns one: same key as before
+// otherwise).
 std::string PartTrimKey(const SoundData& data, int variation, const FileVersion& file);
 // 13-54 review: true when the variation's trims must be measured again while the margins apply: missing,
 // not fitting the spans, or measured with another threshold / pre-roll / tail / raw spans; with `file`
@@ -172,13 +179,16 @@ std::vector<double> AutoCuts(const PeakData* peaks, const SoundFrame& frame, int
 // has an attack), Peak = the loudest bin, Slice start = the first span's start,
 // then + the offset, clamped into a span. Attack / Peak without peaks (or silent spans): the first span's
 // start + offset. -1 when `spans` is empty.
+// 13-62: the mode and offset are the spans' part's (PartSyncMode / PartSyncOffsetMs of the first span's
+// value_uid; "" = the Sound's).
 double AutoSync(const SoundData& data, const PeakData* peaks, const std::vector<PartSpan>& spans);
 // Keeps a time inside the spans (the nearest span edge when it falls between or outside them).
 double ClampIntoSpans(const std::vector<PartSpan>& spans, double t);
 // Refreshes one variation's cuts and sync points (every write that changes frames, detection, divide,
 // sync settings or zones runs RefreshParts). Cuts: hand ones kept while there are parts - 1 of them,
 // else AutoCuts (no peaks: the stored ones while their count fits, else an even split); none when
-// combined. Syncs: per part, a hand sync inside its spans wins, else AutoSync; -1 for a part with no
+// combined. 13-62: a variation with sane owners (one per piece, each a divide value) keeps its cuts,
+// whatever their count; owners that do not fit are dropped. Syncs: per part, a hand sync inside its spans wins, else AutoSync; -1 for a part with no
 // span. Without peaks, Attack / Peak syncs that cannot be kept (a stored one still inside its part)
 // leave `syncs` empty: measured at placement (SyncsStale). Takes mode: no cuts, no syncs (A8).
 void RefreshFrame(SoundData& data, int variation, const PeakData* peaks);
@@ -201,11 +211,13 @@ bool ApplyMeasuredSyncs(SoundStore& store, const std::string& lib_uid, const std
 double SyncFor(const SoundData& data, int variation, const std::string& part_value);
 // Carries the hand marks of `old` frames onto `now` (after MergeHandFrames or a Reset): each hand sync
 // goes to the new frame holding it; a frame's hand cuts follow when they all fall inside one new frame
-// (only when `with_cuts`). The marks `now` held are replaced.
+// (only when `with_cuts`). The marks `now` held are replaced. 13-62: a frame's owners travel with its cuts (and are cleared
+// with them); a frame whose owners hold no cut follows its middle.
 void CarryHandMarks(std::vector<SoundFrame>& now, const std::vector<SoundFrame>& old, bool with_cuts = true);
 // Divides the Sound by `group` with its value uids (in the group's order); group "" = combined. Cuts and
 // syncs are dropped (RefreshParts measures them), and so are the "-> value" zones and role map entries
 // whose value is not one of `values`. Excluded zones and hand syncs stay. False when nothing changed.
+// 13-62 (decision 8): every part setting (`parts`) and every frame's owners are cleared too.
 bool SetDivide(SoundData& data, const std::string& group, const std::vector<std::string>& values);
 // Sets the sync point mode and offset (ms). The measured syncs go, so a stored one is never kept under
 // the old settings (RefreshParts measures them again; without peaks, placement does). Hand syncs stay.
@@ -217,6 +229,9 @@ bool AddZone(SoundData& data, double start, double length, const std::string& to
 bool IncludeAgain(SoundData& data, double t);
 // Moves cut `k` of variation `variation` by hand (kept between its neighbours and inside the frame, 1
 // ms apart): `cuts_hand` set, `cut_unsure` cleared. False when nothing moved.
+// 13-62 (C4): on a variation with owners, a cut dragged so a piece next to it would be under 4 ms removes
+// that piece and the cut (the piece on the other side takes its place); a legacy variation (no owners)
+// keeps the 1 ms clamp.
 bool MoveCut(SoundData& data, int variation, int k, double t);
 // Sets part `part`'s sync point by hand (clamped into its spans, 1 us inside an edge so a sync on a cut
 // belongs to one part only; part 0 when combined): its other hand
@@ -228,12 +243,72 @@ bool MoveCut(SoundData& data, int variation, int k, double t);
 bool MoveSync(SoundData& data, int variation, int part, double t);
 // Back to RAV's sync points / cuts for that variation (the caller runs RefreshParts). False when
 // nothing was moved by hand.
+// 13-62: ResetCuts also clears the variation's owners (back to the legacy rule).
 bool ResetSyncs(SoundData& data, int variation);
 bool ResetCuts(SoundData& data, int variation);
 // The part (value uid) an event of side-free role `role` gets from this Sound: its own role map, else
 // its divide group's (SwitchValue::roles in `store`); "" (= the whole variation) when combined, for no
 // role, a role no entry lists, or a value that is not one of its divide values.
 std::string PartOfRole(const SoundStore& store, const SoundData& data, const std::string& role);
+
+// ---- 13-62: per-part settings and comping (spec 13-62 Contract, decisions 1-14) ----------------------
+// A divided Sound's part may own any of its settings (PartSettings, SoundData::parts); an unset one follows
+// the Sound's. Each piece between two cuts has one owner (SoundFrame::owners; empty = the legacy k-th piece
+// rule, PartAt); a part may own several separate pieces of a variation.
+
+// The part's settings entry, nullptr when none (or value "").
+const PartSettings* PartSettingsOf(const SoundData& data, const std::string& value);
+// Effective values of a part: its own, else the Sound's (value "" = the Sound's). Gain: its own, else 0 dB
+// (on top of the variation dB and the per-part Normalize).
+double   PartGainDb(const SoundData& data, const std::string& value);
+double   PartPrerollMs(const SoundData& data, const std::string& value);
+double   PartTailMs(const SoundData& data, const std::string& value);
+SyncMode PartSyncMode(const SoundData& data, const std::string& value);
+double   PartSyncOffsetMs(const SoundData& data, const std::string& value);
+MonoMode PartMono(const SoundData& data, const std::string& value);
+// True when the part owns at least one fade (decision 6: then both edges of each of its pieces get its
+// fades). `in` / `out` (s) get its own, else the Sound's default fade for that side.
+bool PartFades(const SoundData& data, const std::string& value, double* in, double* out);
+
+// Which setting of a part (ResetPartSetting).
+enum class PartField { Preroll, Tail, SyncMode, SyncOffset, Gain, NormMode, NormTarget, Mono, FadeIn, FadeOut };
+// Every field set in `patch` becomes the part's own (its `value` and `kept` ignored); non-finite numbers are
+// ignored, margins / fades / norm mode kept >= 0 (norm mode < kNormModeCount). Nothing for a value that is
+// not a divide value. A sync change drops the measured syncs, a pre-roll / tail change the part trims
+// (RefreshParts measures them again, as SetSyncSettings).
+void SetPartSetting(SoundData& data, const std::string& value, const PartSettings& patch);
+// Back to the Sound's for one field / every field of the part (an entry left with nothing is removed).
+void ResetPartSetting(SoundData& data, const std::string& value, PartField field);
+void ResetPartAll(SoundData& data, const std::string& value);
+// How many settings the part owns (0 = "same as the Sound").
+int OwnSettingCount(const SoundData& data, const std::string& value);
+
+// One piece of a variation as the Edit window shows it (decision 10: never merged): between two
+// boundaries (the frame's edges, its cuts, the zones' edges). `owner` = PartAt's ("" when combined or
+// excluded); `index` = its place in EditPiecesOf's list.
+struct EditPiece {
+    double      start = 0.0;
+    double      length = 0.0;
+    std::string owner;
+    bool        excluded = false;
+    int         index = 0;
+};
+// The unmerged pieces of a variation in time order (excluded ones included, flagged); {} for a bad index,
+// an empty or an off frame.
+std::vector<EditPiece> EditPiecesOf(const SoundData& data, int variation);
+// Comping (decision 9): gives [a, b] of the variation to part `value`: cuts at a and b when inside the
+// frame and not already there (an edge within 4 ms of a cut or the frame's edge lands on it), the owners of
+// the pieces it covers = value, any zone coverage inside [a, b] removed (an excluded stretch there is
+// included again). The variation's owners are filled first (from the legacy rule) when empty; the cuts
+// become hand cuts. False (nothing changed) when [a, b] inside the frame is under 4 ms, the value is not a
+// divide value, the frame is off, Takes mode, or nothing changed.
+bool AssignRange(SoundData& data, int variation, double a, double b, const std::string& value);
+// The nearest cut or frame edge of the variation within `tolerance_s` of `t`, else `t` (the swipe's
+// 6 px snap).
+double SnapToCut(const SoundData& data, int variation, double t, double tolerance_s);
+// Excludes [a, b] of the variation (AddZone with "", clipped to the frame). False when that leaves 1 ms or
+// less or the index is bad.
+bool ExcludeRange(SoundData& data, int variation, double a, double b);
 
 // ---- 13-20 / 13-23 / 13-25 part C: what the Edit window shows and its role gestures ------------------
 
@@ -279,7 +354,7 @@ double FrameGainDb(const SoundFrame& frame, const std::string& part_value);
 // else the frame's dB.
 double FrameLabelDb(const SoundData& data, int variation);
 // True when a stretch of variation `variation` plays past 0 dBFS: a span's peak (cached peaks of its file)
-// plus the gain it plays at (its part's, else the frame's). An off frame never.
+// plus the gain it plays at (its part's, else the frame's; 13-62: plus the part's own gain). An off frame never.
 bool FrameClips(const SoundData& data, int variation, const PeakData& peaks);
 // True when "Per part" is offered: a Sound divided by a Switch Group, not in Takes mode (a take plays whole).
 bool NormPartsAvailable(const SoundData& data);

@@ -14,8 +14,12 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <optional>
 #include <set>
 #include <sstream>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace rav {
 
@@ -294,6 +298,7 @@ void ResetToDetected(SoundData& data, const std::vector<SoundFrame>& detected)
     const std::vector<SoundFrame> old = data.frames;
     data.frames = detected;
     CarryHandMarks(data.frames, old, false);  // A7: hand sync points survive, hand cuts go
+    for (SoundFrame& f : data.frames) f.owners.clear();  // 13-62: and the owners with them
     data.zones.erase(std::remove_if(data.zones.begin(), data.zones.end(), [](const SoundZone& z) { return !z.to.empty(); }),
                      data.zones.end());  // excluded zones stay, "-> value" ones go
     data.edited = false;
@@ -460,6 +465,22 @@ bool SplitFrame(SoundData& data, int i, double at)
     a.fade_out_shape = 0;
     b.fade_in = -1.0;
     b.fade_in_shape = 0;
+    // 13-62: a comped frame gives each half the cuts and owners on its side (the piece holding `at` is in
+    // both; a cut on `at` goes). Without owners both keep every cut (RefreshParts drops the ones outside).
+    if (!a.owners.empty() && a.owners.size() == a.cuts.size() + 1) {
+        const std::vector<double>      cuts = a.cuts;
+        const std::vector<std::string> owners = a.owners;
+        a.cuts.clear();
+        b.cuts.clear();
+        for (double c : cuts) {
+            if (c < at - kMinLen) a.cuts.push_back(c);
+            if (c > at + kMinLen) b.cuts.push_back(c);
+        }
+        a.owners.assign(owners.begin(), owners.begin() + static_cast<std::ptrdiff_t>(a.cuts.size() + 1));
+        b.owners.assign(owners.end() - static_cast<std::ptrdiff_t>(b.cuts.size() + 1), owners.end());
+        a.part_trims.clear();
+        b.part_trims.clear();
+    }
     ClampOwnFades(a);
     ClampOwnFades(b);
     data.frames[k] = a;
@@ -561,6 +582,50 @@ bool SaneCuts(const SoundFrame& f, std::vector<double>& cuts)
     return true;
 }
 
+constexpr double kMinPiece = 0.004;  // 13-62: a comped piece is at least 4 ms (AssignRange, MoveCut C4)
+
+}  // namespace
+
+namespace {
+
+// 13-62: the frame's owners give each piece between its cuts a divide value.
+bool OwnersSane(const SoundData& data, const SoundFrame& f)
+{
+    if (f.owners.empty() || f.owners.size() != f.cuts.size() + 1) return false;
+    for (const std::string& o : f.owners)
+        if (PartIndex(data, o) < 0) return false;
+    return true;
+}
+
+// 13-62: the owners the legacy rule gives the frame's pieces (piece k -> divide_values[min(k, n - 1)]).
+std::vector<std::string> LegacyOwners(const SoundData& data, const SoundFrame& f)
+{
+    std::vector<std::string> out;
+    const size_t             n = data.divide_values.size();
+    if (n == 0) return out;
+    for (size_t k = 0; k <= f.cuts.size(); ++k) out.push_back(data.divide_values[std::min(k, n - 1)]);
+    return out;
+}
+
+// Where a variation's pieces start and end: its edges, its cuts (divided) and the zones' edges inside it,
+// sorted.
+std::vector<double> PieceBounds(const SoundData& data, const SoundFrame& f)
+{
+    const double        fs = f.start, fe = FrameEnd(f);
+    std::vector<double> b = {fs, fe};
+    auto                add = [&](double t) {
+        if (t > fs && t < fe) b.push_back(t);
+    };
+    if (IsDivided(data))
+        for (double c : f.cuts) add(c);
+    for (const SoundZone& z : data.zones) {
+        add(z.start);
+        add(z.start + z.length);
+    }
+    std::sort(b.begin(), b.end());
+    return b;
+}
+
 }  // namespace
 
 bool IsDivided(const SoundData& data)
@@ -596,8 +661,12 @@ bool PartAt(const SoundData& data, int variation, double t, std::string* value)
     } else if (IsDivided(data)) {
         size_t k = 0;
         while (k < f.cuts.size() && t >= f.cuts[k]) ++k;
-        k = std::min(k, data.divide_values.size() - 1);
-        owner = data.divide_values[k];
+        if (OwnersSane(data, f)) {  // 13-62: the piece's own owner
+            owner = f.owners[k];
+        } else {
+            k = std::min(k, data.divide_values.size() - 1);
+            owner = data.divide_values[k];
+        }
     }
     if (value) *value = owner;
     return true;
@@ -609,18 +678,7 @@ std::vector<PartSpan> PartSpansOf(const SoundData& data, int variation)
     if (!ValidIndex(data, variation)) return out;
     const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
     if (!f.on || !(f.length > 0.0)) return out;
-    const double        fs = f.start, fe = FrameEnd(f);
-    std::vector<double> b = {fs, fe};
-    auto                add = [&](double t) {
-        if (t > fs && t < fe) b.push_back(t);
-    };
-    if (IsDivided(data))
-        for (double c : f.cuts) add(c);
-    for (const SoundZone& z : data.zones) {
-        add(z.start);
-        add(z.start + z.length);
-    }
-    std::sort(b.begin(), b.end());
+    const std::vector<double> b = PieceBounds(data, f);
     for (size_t k = 0; k + 1 < b.size(); ++k) {
         const double a = b[k], e = b[k + 1];
         if (e - a <= kTimeEps) continue;
@@ -673,9 +731,14 @@ std::vector<PartSpan> MarginsPerRaw(const SoundData& data, int variation, const 
     std::vector<PartSpan> raw = PartSpansOf(data, variation);
     const SoundFrame&     fr = data.frames[static_cast<size_t>(variation)];
     const double          fs = fr.start, fe = FrameEnd(fr);
-    const double          pre = MarginS(data.silence.preroll_ms), tail = MarginS(data.silence.tail_ms);
     const double          thr = data.silence.threshold_db;
     const size_t          n = raw.size();
+    // 13-62: each span's own part's pre-roll and tail (the Sound's when the part has none of its own).
+    std::vector<double>   pre(n, 0.0), tail(n, 0.0);
+    for (size_t i = 0; i < n; ++i) {
+        pre[i] = MarginS(PartPrerollMs(data, raw[i].value_uid));
+        tail[i] = MarginS(PartTailMs(data, raw[i].value_uid));
+    }
     // Each span's own sound: its first loud bin's start, its last loud bin's end (inside the span).
     std::vector<double>   a(n, 0.0), b(n, 0.0);
     std::vector<bool>     loud(n, false), keep(n, true);
@@ -709,7 +772,7 @@ std::vector<PartSpan> MarginsPerRaw(const SoundData& data, int variation, const 
     // back over the cut into the previous part's tail.
     std::vector<double> own(n, 0.0);
     for (size_t i = 0; i < n; ++i)
-        if (loud[i]) own[i] = std::min(std::max(a[i] - pre, raw[i].start), a[i]);
+        if (loud[i]) own[i] = std::min(std::max(a[i] - pre[i], raw[i].start), a[i]);
     for (size_t i = n; i-- > 0;) {
         if (!loud[i]) continue;
         double upper = raw[i].start + raw[i].length;
@@ -728,7 +791,7 @@ std::vector<PartSpan> MarginsPerRaw(const SoundData& data, int variation, const 
             inner = false;
         }
         // The variation's own end (no cut, no zone after): kept as the frame has it.
-        const double end = !inner && std::fabs(upper - fe) <= kTimeEps ? fe : std::max(std::min(b[i] + tail, upper), b[i]);
+        const double end = !inner && std::fabs(upper - fe) <= kTimeEps ? fe : std::max(std::min(b[i] + tail[i], upper), b[i]);
         out[i].length = end - out[i].start;
     }
     // Then starts: the pre-roll, back to the previous sounding part's end (or a wall's edge).
@@ -753,7 +816,7 @@ std::vector<PartSpan> MarginsPerRaw(const SoundData& data, int variation, const 
         }
         // The variation's own start (no cut, no zone before): kept as the frame has it.
         if (!inner && std::fabs(lower - fs) <= kTimeEps) out[i].start = fs;
-        else out[i].start = std::min(std::max(a[i] - pre, lower), a[i]);
+        else out[i].start = std::min(std::max(a[i] - pre[i], lower), a[i]);
         out[i].length = end - out[i].start;
     }
     for (size_t i = 0; i < n; ++i)
@@ -817,9 +880,17 @@ std::string PartTrimKey(const SoundData& data, int variation, const FileVersion&
     // The settings in millionths (dB, ms): stable through the record's shortest round-trip numbers.
     // 13-58: led by the margin rule's version ("r2": tails served before pre-rolls); trims measured with
     // the 13-54 rule (no version) are stale and measured again.
-    std::snprintf(buf, sizeof(buf), "r2,%lld,%lld,%lld,%016llx|%lld,%llu", us(data.silence.threshold_db), us(data.silence.preroll_ms),
-                  us(data.silence.tail_ms), static_cast<unsigned long long>(h), file.time, file.size);
-    return buf;
+    std::snprintf(buf, sizeof(buf), "r2,%lld,%lld,%lld,%016llx", us(data.silence.threshold_db), us(data.silence.preroll_ms),
+                  us(data.silence.tail_ms), static_cast<unsigned long long>(h));
+    std::string key = buf;
+    // 13-62: the parts' own pre-roll / tail ("-" = the Sound's); nothing added when no part owns one.
+    for (const PartSettings& p : data.parts) {
+        if (!p.preroll_ms && !p.tail_ms) continue;
+        key += "," + p.value + ":" + (p.preroll_ms ? std::to_string(us(*p.preroll_ms)) : std::string("-")) + ":" +
+               (p.tail_ms ? std::to_string(us(*p.tail_ms)) : std::string("-"));
+    }
+    std::snprintf(buf, sizeof(buf), "|%lld,%llu", file.time, file.size);
+    return key + buf;
 }
 
 bool PartTrimsStale(const SoundData& data, int variation, const FileVersion* file)
@@ -947,8 +1018,9 @@ double ClampIntoSpans(const std::vector<PartSpan>& spans, double t)
 double AutoSync(const SoundData& data, const PeakData* peaks, const std::vector<PartSpan>& spans)
 {
     if (spans.empty()) return -1.0;
-    double base = spans.front().start;
-    if (data.sync_mode != SyncMode::SliceStart && HasPeaks(peaks)) {
+    double         base = spans.front().start;
+    const SyncMode mode = PartSyncMode(data, spans.front().value_uid);  // 13-62: the part's own, else the Sound's
+    if (mode != SyncMode::SliceStart && HasPeaks(peaks)) {
         double top = kSilentDb;
         for (const PartSpan& s : spans) {
             long long lo = 0, hi = 0;
@@ -958,7 +1030,7 @@ double AutoSync(const SoundData& data, const PeakData* peaks, const std::vector<
         if (top > kSilentDb) {
             // Attack: the first bin reaching the threshold, or 20 dB under the peak when that is higher
             // (never above the peak: a part quieter than the threshold still has an attack).
-            const double want = data.sync_mode == SyncMode::Peak
+            const double want = mode == SyncMode::Peak
                                     ? top
                                     : std::min(top, std::max(data.silence.threshold_db, top - kAttackBelowPeakDb));
             bool found = false;
@@ -974,7 +1046,8 @@ double AutoSync(const SoundData& data, const PeakData* peaks, const std::vector<
             }
         }
     }
-    const double off = std::isfinite(data.sync_offset_ms) ? data.sync_offset_ms / 1000.0 : 0.0;
+    const double off_ms = PartSyncOffsetMs(data, spans.front().value_uid);
+    const double off = std::isfinite(off_ms) ? off_ms / 1000.0 : 0.0;
     return ClampIntoSpans(spans, base + off);
 }
 
@@ -1046,12 +1119,19 @@ void RefreshFrame(SoundData& data, int variation, const PeakData* peaks)
         f.cuts_hand = f.cut_unsure = false;
         f.syncs.clear();
         f.part_trims.clear();
+        f.owners.clear();  // 13-62
         return;
     }
-    const int n = PartCount(data);
+    const int  n = PartCount(data);
+    // 13-62: a comped variation keeps its cuts, whatever their count; owners that do not fit go (the
+    // legacy rule then applies).
+    const bool comped = n >= 2 && OwnersSane(data, f) && SaneCuts(f, f.cuts);
+    if (!comped) f.owners.clear();
     if (n < 2) {
         f.cuts.clear();
         f.cuts_hand = f.cut_unsure = false;
+    } else if (comped) {
+        f.cut_unsure = false;
     } else if (f.cuts_hand && f.cuts.size() == static_cast<size_t>(n - 1) && SaneCuts(f, f.cuts)) {
         f.cut_unsure = false;
     } else if (HasPeaks(peaks)) {
@@ -1067,11 +1147,12 @@ void RefreshFrame(SoundData& data, int variation, const PeakData* peaks)
     RefreshTrims(data, variation, peaks);  // 13-54: before the syncs, measured over the trimmed parts
     const std::vector<double> old = f.syncs;
     std::vector<double>       syncs(static_cast<size_t>(n), -1.0);
-    const bool                measurable = data.sync_mode == SyncMode::SliceStart || HasPeaks(peaks);
     for (int k = 0; k < n; ++k) {
         const std::vector<PartSpan> spans = SpansOfPart(data, variation, k);
         if (spans.empty()) continue;
-        double s = HandSyncOf(data, variation, k, spans);  // 13-54 review: by its raw owner
+        // 13-62: measurable with the part's own sync mode.
+        const bool measurable = PartSyncMode(data, spans.front().value_uid) == SyncMode::SliceStart || HasPeaks(peaks);
+        double     s = HandSyncOf(data, variation, k, spans);  // 13-54 review: by its raw owner
         if (s < 0.0 && measurable) s = AutoSync(data, peaks, spans);
         if (s < 0.0 && old.size() == static_cast<size_t>(n) && old[static_cast<size_t>(k)] >= 0.0 &&
             InSpans(spans, old[static_cast<size_t>(k)]))
@@ -1108,7 +1189,11 @@ bool SyncsStale(const SoundData& data, int variation)
 bool MeasureSyncs(SoundData& data, int variation, const PeakData* peaks)
 {
     if (!ValidIndex(data, variation) || data.mode == DetectMode::Takes) return false;
-    if (data.sync_mode != SyncMode::SliceStart && !HasPeaks(peaks)) return false;
+    if (!HasPeaks(peaks)) {  // 13-62: every part (its own sync mode) must be measurable without peaks
+        if (PartSyncMode(data, std::string()) != SyncMode::SliceStart) return false;
+        for (const PartSettings& p : data.parts)
+            if (PartIndex(data, p.value) >= 0 && PartSyncMode(data, p.value) != SyncMode::SliceStart) return false;
+    }
     RefreshTrims(data, variation, peaks);  // 13-54
     SoundFrame&         f = data.frames[static_cast<size_t>(variation)];
     const int           n = PartCount(data);
@@ -1171,9 +1256,10 @@ void CarryHandMarks(std::vector<SoundFrame>& now, const std::vector<SoundFrame>&
     };
     for (SoundFrame& f : now) {
         f.hand_syncs.clear();
-        if (with_cuts && f.cuts_hand) {
+        if (with_cuts && (f.cuts_hand || !f.owners.empty())) {
             f.cuts.clear();
             f.cuts_hand = f.cut_unsure = false;
+            f.owners.clear();  // 13-62: the owners go with their cuts
         }
     }
     for (const SoundFrame& o : old) {
@@ -1181,14 +1267,18 @@ void CarryHandMarks(std::vector<SoundFrame>& now, const std::vector<SoundFrame>&
             SoundFrame* f = holder(h);
             if (f && std::find(f->hand_syncs.begin(), f->hand_syncs.end(), h) == f->hand_syncs.end()) f->hand_syncs.push_back(h);
         }
-        if (!with_cuts || !o.cuts_hand || o.cuts.empty()) continue;
-        SoundFrame* f = holder(o.cuts.front());
-        bool        all = f != nullptr;
-        for (double c : o.cuts) all = all && holder(c) == f;
-        if (all && !f->cuts_hand) {
+        // 13-62: a comped frame's owners travel with its cuts (no cut: by its middle).
+        const bool own = !o.owners.empty() && o.owners.size() == o.cuts.size() + 1;
+        if (!with_cuts || (!o.cuts_hand && !own) || (o.cuts.empty() && !own)) continue;
+        const std::vector<double> marks = o.cuts.empty() ? std::vector<double>{o.start + o.length * 0.5} : o.cuts;
+        SoundFrame*               f = holder(marks.front());
+        bool                      all = f != nullptr;
+        for (double c : marks) all = all && holder(c) == f;
+        if (all && !f->cuts_hand && f->owners.empty()) {
             f->cuts = o.cuts;
             f->cuts_hand = true;
             f->cut_unsure = false;
+            if (own) f->owners = o.owners;
         }
     }
 }
@@ -1204,7 +1294,9 @@ bool SetDivide(SoundData& data, const std::string& group, const std::vector<std:
         f.cuts_hand = f.cut_unsure = false;
         f.syncs.clear();
         f.part_trims.clear();  // 13-54: measured again with the new parts
+        f.owners.clear();      // 13-62 (decision 8)
     }
+    data.parts.clear();  // 13-62 (decision 8): the parts' own settings go with the old division
     auto known = [&](const std::string& v) { return std::find(vals.begin(), vals.end(), v) != vals.end(); };
     data.zones.erase(std::remove_if(data.zones.begin(), data.zones.end(),
                                     [&](const SoundZone& z) { return !z.to.empty() && !known(z.to); }),
@@ -1261,6 +1353,22 @@ bool MoveCut(SoundData& data, int variation, int k, double t)
     SoundFrame& f = data.frames[static_cast<size_t>(variation)];
     if (k < 0 || static_cast<size_t>(k) >= f.cuts.size()) return false;
     const size_t i = static_cast<size_t>(k);
+    // 13-62 (C4): on a comped variation, a cut dragged so a piece next to it would be under 4 ms removes
+    // that piece and the cut; the piece on its other side takes the room.
+    if (OwnersSane(data, f)) {
+        const double left = i > 0 ? f.cuts[i - 1] : f.start, right = i + 1 < f.cuts.size() ? f.cuts[i + 1] : FrameEnd(f);
+        const double c = std::min(std::max(t, left), right);
+        const bool   left_small = c - left < kMinPiece, right_small = right - c < kMinPiece;
+        if (left_small || right_small) {
+            const bool drop_left = left_small && (!right_small || c <= f.cuts[i]);
+            f.cuts.erase(f.cuts.begin() + static_cast<std::ptrdiff_t>(i));
+            f.owners.erase(f.owners.begin() + static_cast<std::ptrdiff_t>(drop_left ? i : i + 1));
+            f.cuts_hand = true;
+            f.cut_unsure = false;
+            f.part_trims.clear();
+            return true;
+        }
+    }
     const double lo = (i > 0 ? f.cuts[i - 1] : f.start) + kMinLen;
     const double hi = (i + 1 < f.cuts.size() ? f.cuts[i + 1] : FrameEnd(f)) - kMinLen;
     if (lo > hi) return false;
@@ -1324,10 +1432,11 @@ bool ResetCuts(SoundData& data, int variation)
 {
     if (!ValidIndex(data, variation)) return false;
     SoundFrame& f = data.frames[static_cast<size_t>(variation)];
-    if (!f.cuts_hand) return false;
+    if (!f.cuts_hand && f.owners.empty()) return false;
     f.cuts.clear();
     f.cuts_hand = f.cut_unsure = false;
     f.part_trims.clear();
+    f.owners.clear();  // 13-62: back to the legacy rule
     return true;
 }
 
@@ -1349,6 +1458,314 @@ std::string PartOfRole(const SoundStore& store, const SoundData& data, const std
             }
     }
     return PartIndex(data, value) >= 0 ? value : std::string();
+}
+
+
+// ---- 13-62: per-part settings and comping ----------------------------------------------------------------
+
+namespace {
+
+PartSettings* FindPart(SoundData& data, const std::string& value)
+{
+    if (value.empty()) return nullptr;
+    for (PartSettings& p : data.parts)
+        if (p.value == value) return &p;
+    return nullptr;
+}
+
+int OwnCount(const PartSettings& p)
+{
+    return (p.preroll_ms ? 1 : 0) + (p.tail_ms ? 1 : 0) + (p.sync_mode ? 1 : 0) + (p.sync_offset_ms ? 1 : 0) +
+           (p.gain_db ? 1 : 0) + (p.norm_mode ? 1 : 0) + (p.norm_target ? 1 : 0) + (p.mono ? 1 : 0) + (p.fade_in ? 1 : 0) +
+           (p.fade_out ? 1 : 0);
+}
+
+// What a setting change asks of the measured data: a sync change drops the measured syncs, a pre-roll /
+// tail change the part trims (RefreshParts measures them again; without peaks, placement does).
+void Remeasure(SoundData& data, bool syncs, bool trims)
+{
+    for (SoundFrame& f : data.frames) {
+        if (syncs) f.syncs.clear();
+        if (trims) f.part_trims.clear();
+    }
+}
+
+// An entry left with nothing of its own (and no unknown field) goes.
+void PruneParts(SoundData& data)
+{
+    data.parts.erase(std::remove_if(data.parts.begin(), data.parts.end(),
+                                    [](const PartSettings& p) { return OwnCount(p) == 0 && p.kept.empty(); }),
+                     data.parts.end());
+}
+
+bool Finite(const std::optional<double>& v)
+{
+    return v && std::isfinite(*v);
+}
+
+}  // namespace
+
+const PartSettings* PartSettingsOf(const SoundData& data, const std::string& value)
+{
+    if (value.empty()) return nullptr;
+    for (const PartSettings& p : data.parts)
+        if (p.value == value) return &p;
+    return nullptr;
+}
+
+double PartGainDb(const SoundData& data, const std::string& value)
+{
+    const PartSettings* p = PartSettingsOf(data, value);
+    return p && p->gain_db ? *p->gain_db : 0.0;
+}
+
+double PartPrerollMs(const SoundData& data, const std::string& value)
+{
+    const PartSettings* p = PartSettingsOf(data, value);
+    return p && p->preroll_ms ? *p->preroll_ms : data.silence.preroll_ms;
+}
+
+double PartTailMs(const SoundData& data, const std::string& value)
+{
+    const PartSettings* p = PartSettingsOf(data, value);
+    return p && p->tail_ms ? *p->tail_ms : data.silence.tail_ms;
+}
+
+SyncMode PartSyncMode(const SoundData& data, const std::string& value)
+{
+    const PartSettings* p = PartSettingsOf(data, value);
+    return p && p->sync_mode ? *p->sync_mode : data.sync_mode;
+}
+
+double PartSyncOffsetMs(const SoundData& data, const std::string& value)
+{
+    const PartSettings* p = PartSettingsOf(data, value);
+    return p && p->sync_offset_ms ? *p->sync_offset_ms : data.sync_offset_ms;
+}
+
+MonoMode PartMono(const SoundData& data, const std::string& value)
+{
+    const PartSettings* p = PartSettingsOf(data, value);
+    return p && p->mono ? *p->mono : data.mono;
+}
+
+bool PartFades(const SoundData& data, const std::string& value, double* in, double* out)
+{
+    const PartSettings* p = PartSettingsOf(data, value);
+    const bool          own_in = p && p->fade_in, own_out = p && p->fade_out;
+    if (in) *in = own_in ? *p->fade_in : data.fade_in;
+    if (out) *out = own_out ? *p->fade_out : data.fade_out;
+    return own_in || own_out;
+}
+
+void SetPartSetting(SoundData& data, const std::string& value, const PartSettings& patch)
+{
+    if (PartIndex(data, value) < 0) return;
+    PartSettings* p = FindPart(data, value);
+    if (!p) {
+        data.parts.emplace_back();
+        p = &data.parts.back();
+        p->value = value;
+    }
+    bool syncs = false, trims = false;
+    if (Finite(patch.preroll_ms)) {
+        p->preroll_ms = std::max(*patch.preroll_ms, 0.0);
+        trims = true;
+    }
+    if (Finite(patch.tail_ms)) {
+        p->tail_ms = std::max(*patch.tail_ms, 0.0);
+        trims = true;
+    }
+    if (patch.sync_mode) {
+        p->sync_mode = patch.sync_mode;
+        syncs = true;
+    }
+    if (Finite(patch.sync_offset_ms)) {
+        p->sync_offset_ms = patch.sync_offset_ms;
+        syncs = true;
+    }
+    if (Finite(patch.gain_db)) p->gain_db = patch.gain_db;
+    if (patch.norm_mode && *patch.norm_mode >= 0 && *patch.norm_mode < kNormModeCount) p->norm_mode = patch.norm_mode;
+    if (Finite(patch.norm_target)) p->norm_target = std::min(std::max(*patch.norm_target, kNormTargetMin), kNormTargetMax);
+    if (patch.mono) p->mono = patch.mono;
+    if (Finite(patch.fade_in)) p->fade_in = std::max(*patch.fade_in, 0.0);
+    if (Finite(patch.fade_out)) p->fade_out = std::max(*patch.fade_out, 0.0);
+    PruneParts(data);
+    Remeasure(data, syncs, trims);
+}
+
+void ResetPartSetting(SoundData& data, const std::string& value, PartField field)
+{
+    PartSettings* p = FindPart(data, value);
+    if (!p) return;
+    bool syncs = false, trims = false;
+    switch (field) {
+    case PartField::Preroll: trims = p->preroll_ms.has_value(); p->preroll_ms.reset(); break;
+    case PartField::Tail: trims = p->tail_ms.has_value(); p->tail_ms.reset(); break;
+    case PartField::SyncMode: syncs = p->sync_mode.has_value(); p->sync_mode.reset(); break;
+    case PartField::SyncOffset: syncs = p->sync_offset_ms.has_value(); p->sync_offset_ms.reset(); break;
+    case PartField::Gain: p->gain_db.reset(); break;
+    case PartField::NormMode: p->norm_mode.reset(); break;
+    case PartField::NormTarget: p->norm_target.reset(); break;
+    case PartField::Mono: p->mono.reset(); break;
+    case PartField::FadeIn: p->fade_in.reset(); break;
+    case PartField::FadeOut: p->fade_out.reset(); break;
+    }
+    PruneParts(data);
+    Remeasure(data, syncs, trims);
+}
+
+void ResetPartAll(SoundData& data, const std::string& value)
+{
+    PartSettings* p = FindPart(data, value);
+    if (!p) return;
+    const bool syncs = p->sync_mode || p->sync_offset_ms, trims = p->preroll_ms || p->tail_ms;
+    data.parts.erase(data.parts.begin() + (p - data.parts.data()));
+    Remeasure(data, syncs, trims);
+}
+
+int OwnSettingCount(const SoundData& data, const std::string& value)
+{
+    const PartSettings* p = PartSettingsOf(data, value);
+    return p ? OwnCount(*p) : 0;
+}
+
+std::vector<EditPiece> EditPiecesOf(const SoundData& data, int variation)
+{
+    std::vector<EditPiece> out;
+    if (!ValidIndex(data, variation)) return out;
+    const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    if (!f.on || !(f.length > 0.0)) return out;
+    const std::vector<double> b = PieceBounds(data, f);
+    for (size_t k = 0; k + 1 < b.size(); ++k) {
+        const double a = b[k], e = b[k + 1];
+        if (e - a <= kTimeEps) continue;
+        EditPiece p;
+        p.start = a;
+        p.length = e - a;
+        p.excluded = !PartAt(data, variation, (a + e) * 0.5, &p.owner);
+        if (p.excluded) p.owner.clear();
+        p.index = static_cast<int>(out.size());
+        out.push_back(p);
+    }
+    return out;
+}
+
+bool AssignRange(SoundData& data, int variation, double a, double b, const std::string& value)
+{
+    if (!ValidIndex(data, variation) || data.mode == DetectMode::Takes || PartIndex(data, value) < 0 || !std::isfinite(a) ||
+        !std::isfinite(b))
+        return false;
+    SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    if (!f.on) return false;
+    if (a > b) std::swap(a, b);
+    const double fs = f.start, fe = FrameEnd(f);
+    // An edge within 4 ms of a cut or the frame's edge lands on it (no sliver piece).
+    auto land = [&](double t) {
+        t = std::min(std::max(t, fs), fe);
+        double best = t, best_d = kMinPiece;
+        std::vector<double> marks = f.cuts;
+        marks.push_back(fs);
+        marks.push_back(fe);
+        for (double m : marks)
+            if (std::fabs(m - t) < best_d) {
+                best_d = std::fabs(m - t);
+                best = m;
+            }
+        return best;
+    };
+    a = land(a);
+    b = land(b);
+    if (b - a < kMinPiece - kTimeEps) return false;
+    const SoundFrame             before = f;
+    const std::vector<SoundZone> zones_before = data.zones;
+    if (!OwnersSane(data, f)) f.owners = LegacyOwners(data, f);  // what PartAt shows now
+    // Cuts at a and b (each piece split keeps its owner on both sides).
+    for (double t : {a, b}) {
+        if (t <= fs + kTimeEps || t >= fe - kTimeEps) continue;
+        size_t k = 0;
+        while (k < f.cuts.size() && f.cuts[k] < t - kTimeEps) ++k;
+        if (k < f.cuts.size() && std::fabs(f.cuts[k] - t) <= kTimeEps) continue;
+        const std::string o = f.owners[k];
+        f.cuts.insert(f.cuts.begin() + static_cast<std::ptrdiff_t>(k), t);
+        f.owners.insert(f.owners.begin() + static_cast<std::ptrdiff_t>(k), o);
+    }
+    for (size_t k = 0; k < f.owners.size(); ++k) {
+        const double lo = k > 0 ? f.cuts[k - 1] : fs, hi = k < f.cuts.size() ? f.cuts[k] : fe;
+        const double mid = (lo + hi) * 0.5;
+        if (mid > a && mid < b) f.owners[k] = value;
+    }
+    // Zones lose what they cover inside [a, b] (an exclusion there is included again; a legacy "-> value"
+    // zone no longer overrides the new owner).
+    std::vector<SoundZone> zones;
+    for (const SoundZone& z : data.zones) {
+        const double zs = z.start, ze = z.start + z.length;
+        if (ze <= a + kTimeEps || zs >= b - kTimeEps) {
+            zones.push_back(z);
+            continue;
+        }
+        if (a - zs > kMinLen) {
+            SoundZone l = z;
+            l.length = a - zs;
+            zones.push_back(l);
+        }
+        if (ze - b > kMinLen) {
+            SoundZone r = z;
+            r.start = b;
+            r.length = ze - b;
+            zones.push_back(r);
+        }
+    }
+    data.zones = zones;
+    bool zones_same = zones.size() == zones_before.size();
+    for (size_t i = 0; zones_same && i < zones.size(); ++i)
+        zones_same = zones[i].start == zones_before[i].start && zones[i].length == zones_before[i].length &&
+                     zones[i].to == zones_before[i].to;
+    // No owner changes (a swipe over the lane's own part): left exactly as it was, no new cut, no undo point.
+    bool same = zones_same;
+    if (same) {
+        SoundData probe = data;
+        probe.frames[static_cast<size_t>(variation)] = before;
+        probe.zones = zones_before;
+        for (const EditPiece& p : EditPiecesOf(data, variation)) {
+            std::string was;
+            const bool  in = PartAt(probe, variation, p.start + p.length * 0.5, &was);
+            same = same && in == !p.excluded && (!in || was == p.owner);
+        }
+    }
+    if (same) {
+        f = before;
+        return false;
+    }
+    f.cuts_hand = true;
+    f.cut_unsure = false;
+    for (SoundFrame& x : data.frames) x.part_trims.clear();  // 13-54: the spans changed
+    return true;
+}
+
+double SnapToCut(const SoundData& data, int variation, double t, double tolerance_s)
+{
+    if (!ValidIndex(data, variation) || !std::isfinite(t)) return t;
+    const SoundFrame&   f = data.frames[static_cast<size_t>(variation)];
+    std::vector<double> marks = {f.start, FrameEnd(f)};
+    if (IsDivided(data)) marks.insert(marks.end(), f.cuts.begin(), f.cuts.end());
+    double best = t, best_d = std::isfinite(tolerance_s) ? std::max(tolerance_s, 0.0) : 0.0;
+    for (double m : marks)
+        if (std::fabs(m - t) <= best_d) {
+            best_d = std::fabs(m - t);
+            best = m;
+        }
+    return best;
+}
+
+bool ExcludeRange(SoundData& data, int variation, double a, double b)
+{
+    if (!ValidIndex(data, variation) || !std::isfinite(a) || !std::isfinite(b)) return false;
+    const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    if (a > b) std::swap(a, b);
+    a = std::max(a, f.start);
+    b = std::min(b, FrameEnd(f));
+    return b > a && AddZone(data, a, b - a, std::string());
 }
 
 
@@ -1542,7 +1959,8 @@ bool FrameClips(const SoundData& data, int variation, const PeakData& peaks)
     else spans = PartSpansOf(data, variation);
     for (const PartSpan& sp : spans) {
         const double pk = SpanPeakDb(peaks, sp.start, sp.length);
-        if (std::isfinite(pk) && pk + FrameGainDb(f, sp.value_uid) > 1e-9) return true;
+        // 13-62: plus the part's own gain (decision 3).
+        if (std::isfinite(pk) && pk + FrameGainDb(f, sp.value_uid) + PartGainDb(data, sp.value_uid) > 1e-9) return true;
     }
     return false;
 }
@@ -1560,7 +1978,9 @@ bool SameNormMeasured(const SoundData& x, const SoundData& y)
         x.divide_group != y.divide_group || x.divide_values != y.divide_values || x.mode != y.mode)
         return false;
     for (size_t i = 0; i < a.size(); ++i)
-        if (a[i].start != b[i].start || a[i].length != b[i].length || a[i].on != b[i].on || a[i].cuts != b[i].cuts) return false;
+        if (a[i].start != b[i].start || a[i].length != b[i].length || a[i].on != b[i].on || a[i].cuts != b[i].cuts ||
+            a[i].owners != b[i].owners)  // 13-62
+            return false;
     for (size_t i = 0; i < x.zones.size(); ++i)
         if (x.zones[i].start != y.zones[i].start || x.zones[i].length != y.zones[i].length || x.zones[i].to != y.zones[i].to)
             return false;

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 //
 // Host test of src/sound_entries.h (Epic 13 story 13-3): detection per mode, the two slice readers,
-// silence split, frame clamping and hand edits, normalize. Pure: any C++17 compiler.
+// silence split, frame clamping and hand edits, normalize; 13-62 per-part settings and comping. Pure:
+// any C++17 compiler.
 
 #include "sound_entries.h"
 #include "sound_record.h"
@@ -1258,8 +1259,313 @@ void TestRoleToggles()
 
 }  // namespace
 
+// ---- 13-62: per-part settings and comping (spec 13-62 I/O matrix, Lot A rows) ---------------------------
+
+// A divided footstep (Back | Front, the cut at 1.145) measured on the peaks.
+SoundData Divided(PeakData* pk)
+{
+    SoundData d = Step(pk);
+    SetDivide(d, "g", {kBack, kFront});
+    RefreshParts(d, pk);
+    return d;
+}
+
+PartSettings Patch()
+{
+    return PartSettings();
+}
+
+void TestPartSettings()
+{
+    PeakData  pk;
+    SoundData d = Divided(&pk);
+    // No settings of its own: every part reads the Sound's.
+    CHECK(d.parts.empty() && PartSettingsOf(d, kFront) == nullptr && OwnSettingCount(d, kFront) == 0);
+    CHECK(PartGainDb(d, kFront) == 0.0 && PartTailMs(d, kFront) == d.silence.tail_ms && PartMono(d, kFront) == d.mono);
+    CHECK(PartSyncMode(d, kFront) == d.sync_mode && PartSyncOffsetMs(d, kFront) == d.sync_offset_ms);
+    // Matrix "Part gain": Toe -3 dB on top of what the part plays at (FrameGainDb: its per-part Normalize
+    // gain, else the variation dB; 13-28 keeps part_db absolute): variation +2 -> -1; part_db +1 -> -2.
+    PartSettings g = Patch();
+    g.gain_db = -3.0;
+    SetPartSetting(d, kFront, g);
+    d.frames[0].db = 2.0;
+    CHECK(PartGainDb(d, kFront) == -3.0 && PartGainDb(d, kBack) == 0.0 && PartGainDb(d, "") == 0.0);
+    CHECK(Near(FrameGainDb(d.frames[0], kFront) + PartGainDb(d, kFront), -1.0));
+    d.frames[0].part_db[kFront] = 1.0;
+    CHECK(Near(FrameGainDb(d.frames[0], kFront) + PartGainDb(d, kFront), -2.0));
+    CHECK(OwnSettingCount(d, kFront) == 1 && d.parts.size() == 1 && d.parts[0].value == kFront);
+    // Not a divide value, or the Sound itself: nothing written.
+    SetPartSetting(d, "elsewhere", g);
+    SetPartSetting(d, "", g);
+    CHECK(d.parts.size() == 1);
+    // Matrix "Part follows Sound": Heel with no Tail of its own follows the Sound's; Toe keeps its own.
+    d.silence.tail_ms = 100.0;
+    PartSettings t = Patch();
+    t.tail_ms = 40.0;
+    SetPartSetting(d, kFront, t);
+    CHECK(PartTailMs(d, kBack) == 100.0 && PartTailMs(d, kFront) == 40.0);
+    d.silence.tail_ms = 60.0;
+    CHECK(PartTailMs(d, kBack) == 60.0 && PartTailMs(d, kFront) == 40.0 && OwnSettingCount(d, kFront) == 2);
+    // One field back to the Sound's; "All" back to the Sound's (matrix "Revert": the entry goes).
+    ResetPartSetting(d, kFront, PartField::Gain);
+    CHECK(PartGainDb(d, kFront) == 0.0 && PartTailMs(d, kFront) == 40.0 && OwnSettingCount(d, kFront) == 1);
+    SetPartSetting(d, kFront, g);
+    CHECK(OwnSettingCount(d, kFront) == 2);
+    ResetPartAll(d, kFront);
+    CHECK(d.parts.empty() && PartGainDb(d, kFront) == 0.0 && PartTailMs(d, kFront) == 60.0);
+    ResetPartSetting(d, kFront, PartField::Tail);  // nothing to reset: no entry made
+    CHECK(d.parts.empty());
+    // Matrix "Part fades own": Toe's own 4 ms fade in, the other side the Sound's default; Heel has none.
+    PartSettings f = Patch();
+    f.fade_in = 0.004;
+    SetPartSetting(d, kFront, f);
+    double in = -1.0, out = -1.0;
+    CHECK(PartFades(d, kFront, &in, &out) && in == 0.004 && out == d.fade_out);
+    CHECK(!PartFades(d, kBack, &in, &out) && in == d.fade_in && out == d.fade_out);
+    // Mono, Normalize mode / target (kept in range), non-finite values ignored.
+    PartSettings m = Patch();
+    m.mono = MonoMode::Left;
+    m.norm_mode = static_cast<int>(NormMode::LufsI);
+    m.norm_target = -100.0;
+    m.preroll_ms = std::nan("");
+    SetPartSetting(d, kFront, m);
+    const PartSettings* fp = PartSettingsOf(d, kFront);
+    CHECK(fp && PartMono(d, kFront) == MonoMode::Left && PartMono(d, kBack) == MonoMode::Off);
+    CHECK(fp && fp->norm_mode == static_cast<int>(NormMode::LufsI) && fp->norm_target == kNormTargetMin && !fp->preroll_ms);
+    m = Patch();
+    m.norm_mode = kNormModeCount;
+    SetPartSetting(d, kFront, m);
+    CHECK(PartSettingsOf(d, kFront)->norm_mode == static_cast<int>(NormMode::LufsI) && OwnSettingCount(d, kFront) == 4);
+    // Matrix "Divide by changed": every part setting and owner cleared (one gesture).
+    CHECK(AssignRange(d, 0, 1.3, 1.4, kBack) && !d.frames[0].owners.empty());
+    CHECK(SetDivide(d, "g2", {kBack, kFront}) && d.parts.empty() && d.frames[0].owners.empty());
+}
+
+void TestPartSyncAndMargins()
+{
+    PeakData  pk;
+    SoundData d = Divided(&pk);
+    CHECK(Near(d.frames[0].syncs[0], 1.018) && Near(d.frames[0].syncs[1], 1.148));
+    // Toe's own sync offset (0 ms): its sync moves, Heel's stays; the measured syncs go until measured again.
+    PartSettings s;
+    s.sync_offset_ms = 0.0;
+    SetPartSetting(d, kFront, s);
+    CHECK(d.frames[0].syncs.empty());
+    RefreshParts(d, &pk);
+    CHECK(Near(d.frames[0].syncs[0], 1.018) && Near(d.frames[0].syncs[1], 1.150));
+    // Toe's own Peak mode: AutoSync reads the spans' part.
+    PartSettings pm;
+    pm.sync_mode = SyncMode::SliceStart;
+    SetPartSetting(d, kFront, pm);
+    CHECK(PartSyncMode(d, kFront) == SyncMode::SliceStart && PartSyncMode(d, kBack) == SyncMode::Attack);
+    RefreshParts(d, &pk);
+    CHECK(Near(d.frames[0].syncs[0], 1.018) && Near(d.frames[0].syncs[1], PlacedSpans(d, 0, kFront)[0].start));
+    ResetPartAll(d, kFront);
+    RefreshParts(d, &pk);
+    CHECK(Near(d.frames[0].syncs[1], 1.148));
+    // Per-part margins (13-54 rule, each span with its own part's pre-roll / tail): tail 0, Toe's own 50 ms
+    // pre-roll reaches back to 1.100 while Heel's ends with its sound; the Sound's pre-roll is 5 ms.
+    d.silence.preroll_ms = 5.0;
+    d.silence.tail_ms = 0.0;
+    RefreshParts(d, &pk);
+    const std::string key0 = PartTrimKey(d, 0, FileVersion{});
+    CHECK(Near(PartPieces(d, 0)[1].start, 1.145));
+    PartSettings gain;
+    gain.gain_db = 1.0;  // not a margin: the key does not change
+    SetPartSetting(d, kBack, gain);
+    CHECK(PartTrimKey(d, 0, FileVersion{}) == key0 && !d.frames[0].part_trims.empty());
+    PartSettings pre;
+    pre.preroll_ms = 50.0;
+    SetPartSetting(d, kFront, pre);
+    CHECK(d.frames[0].part_trims.empty() && PartTrimKey(d, 0, FileVersion{}) != key0);
+    RefreshParts(d, &pk);
+    std::vector<PartSpan> m = PartPieces(d, 0);
+    CHECK(m.size() == 2 && Near(m[0].start + m[0].length, 1.061) && Near(m[1].start, 1.1) && !PartTrimsStale(d, 0));
+    // Heel's own tail 50 ms: Heel ends at 1.111, Toe's pre-roll butts on it (13-58), Toe unchanged otherwise.
+    PartSettings tail;
+    tail.tail_ms = 50.0;
+    SetPartSetting(d, kBack, tail);
+    RefreshParts(d, &pk);
+    m = PartPieces(d, 0);
+    CHECK(m.size() == 2 && Near(m[0].start + m[0].length, 1.111) && Near(m[1].start, 1.111));
+    // A stored key without the parts' margins is stale.
+    SoundData stale = d;
+    stale.parts.clear();
+    CHECK(PartTrimsStale(stale, 0));
+    // The red dB label counts the part's own gain: Toe at -7 dBFS + 8 dB clips.
+    SoundData clip = Divided(&pk);
+    CHECK(!FrameClips(clip, 0, pk));
+    PartSettings loud;
+    loud.gain_db = 8.0;
+    SetPartSetting(clip, kFront, loud);
+    CHECK(FrameClips(clip, 0, pk));
+}
+
+void TestComping()
+{
+    PeakData  pk;
+    SoundData d = Divided(&pk);
+    d.mode = DetectMode::TakeMarkers;  // no 13-54 margins: the pieces as cut
+    RefreshParts(d, &pk);
+    // Legacy (no owners): the pieces between cuts, unmerged, in time order.
+    std::vector<EditPiece> p = EditPiecesOf(d, 0);
+    CHECK(p.size() == 2 && p[0].owner == kBack && p[1].owner == kFront && !p[0].excluded && p[1].index == 1);
+    CHECK(Near(p[1].start, 1.145) && Near(p[1].length, 0.255) && d.frames[0].owners.empty());
+    CHECK(EditPiecesOf(d, 3).empty());
+    // Under 4 ms, not a divide value, Takes mode: nothing.
+    CHECK(!AssignRange(d, 0, 1.2, 1.203, kBack) && !AssignRange(d, 0, 1.2, 1.3, "elsewhere") && !AssignRange(d, 0, 1.2, 1.3, ""));
+    {
+        SoundData tk = d;
+        tk.mode = DetectMode::Takes;
+        CHECK(!AssignRange(tk, 0, 1.2, 1.3, kBack));
+    }
+    // A swipe over the lane's own part changes nothing: no cut, no owners, no undo point.
+    CHECK(!AssignRange(d, 0, 1.2, 1.3, kFront) && d.frames[0].cuts.size() == 1 && d.frames[0].owners.empty());
+    // Matrix "Two ranges one part": Heel, Toe, Heel. The Heel event places 2 items from Heel's sync point.
+    CHECK(AssignRange(d, 0, 1.3, 1.5, kBack));  // clipped to the frame's end: one new cut
+    CHECK(d.frames[0].cuts.size() == 2 && Near(d.frames[0].cuts[1], 1.3) && d.frames[0].cuts_hand);
+    CHECK((d.frames[0].owners == std::vector<std::string>{kBack, kFront, kBack}));
+    RefreshParts(d, &pk);  // a comped variation keeps its cut count
+    CHECK(d.frames[0].cuts.size() == 2 && d.frames[0].owners.size() == 3);
+    std::vector<PartSpan> heel = PlacedSpans(d, 0, kBack);
+    CHECK(heel.size() == 2 && Near(heel[0].start, 1.0) && Near(heel[1].start, 1.3) && Near(heel[1].length, 0.1));
+    CHECK(Near(SyncFor(d, 0, kBack), 1.018) && Near(SyncFor(d, 0, kFront), 1.148));
+    std::string v;
+    CHECK(PartAt(d, 0, 1.35, &v) && v == kBack && PartAt(d, 0, 1.2, &v) && v == kFront);
+    // Matrix "Comp click": Toe's lane over Heel's last range (between the cut and the frame end): that range
+    // goes to Toe, the cuts unchanged.
+    {
+        SoundData c = d;
+        CHECK(AssignRange(c, 0, 1.3, 1.4, kFront) && c.frames[0].cuts == d.frames[0].cuts);
+        CHECK((c.frames[0].owners == std::vector<std::string>{kBack, kFront, kFront}));
+        // Decision 10, no merge: two Toe pieces in Edit, one placed stretch.
+        CHECK(EditPiecesOf(c, 0).size() == 3 && PlacedSpans(c, 0, kFront).size() == 1 &&
+              Near(PlacedSpans(c, 0, kFront)[0].length, 0.255));
+    }
+    // Matrix "No merge": Heel | Toe | Heel, the Toe range given to Heel: three Heel pieces in Edit (both cuts
+    // kept, each piece on its own), Populate's spans one Heel stretch.
+    {
+        SoundData n = d;
+        CHECK(AssignRange(n, 0, 1.145, 1.3, kBack) && n.frames[0].cuts.size() == 2);
+        p = EditPiecesOf(n, 0);
+        CHECK(p.size() == 3 && p[0].owner == kBack && p[1].owner == kBack && p[2].owner == kBack);
+        CHECK(PlacedSpans(n, 0, kBack).size() == 1 && Near(PlacedSpans(n, 0, kBack)[0].length, 0.4));
+        CHECK(PlacedSpans(n, 0, kFront).empty());
+        RefreshParts(n, &pk);
+        CHECK(n.frames[0].cuts.size() == 2 && n.frames[0].syncs.size() == 2 && n.frames[0].syncs[1] < 0.0);
+    }
+    // Matrix "Swipe": across three ranges, the near edge snapped to the cut (6 px = 5 ms here): the span
+    // goes to Toe, its edges become cuts.
+    {
+        SoundData w = d;
+        CHECK(Near(SnapToCut(w, 0, 1.297, 0.005), 1.3) && Near(SnapToCut(w, 0, 1.25, 0.005), 1.25));
+        CHECK(Near(SnapToCut(w, 0, 1.003, 0.005), 1.0) && Near(SnapToCut(w, 0, 1.399, 0.005), 1.4) &&
+              Near(SnapToCut(w, 9, 1.3, 0.005), 1.3));
+        CHECK(AssignRange(w, 0, 1.05, SnapToCut(w, 0, 1.352, 0.005), kFront));
+        CHECK((w.frames[0].cuts == std::vector<double>{1.05, 1.145, 1.3, 1.352}));
+        CHECK((w.frames[0].owners == std::vector<std::string>{kBack, kFront, kFront, kFront, kBack}));
+        // An edge within 4 ms of a cut lands on it (no sliver piece).
+        SoundData l = d;
+        CHECK(AssignRange(l, 0, 1.147, 1.302, kBack) && l.frames[0].cuts.size() == 2);
+    }
+    // Matrix "Hatched click" and "Alt+drag": an excluded span (hatched on every lane) given back to a lane.
+    {
+        SoundData h = d;
+        CHECK(ExcludeRange(h, 0, 1.25, 1.2) && h.zones.size() == 1 && Near(h.zones[0].start, 1.2));
+        CHECK(!PartAt(h, 0, 1.22, &v));
+        p = EditPiecesOf(h, 0);
+        CHECK(p.size() == 5 && p[2].excluded && p[2].owner.empty() && Near(p[2].start, 1.2) && p[4].index == 4);
+        CHECK(AssignRange(h, 0, 1.2, 1.25, kBack) && h.zones.empty() && PartAt(h, 0, 1.22, &v) && v == kBack);
+        // Clipped to the frame; a part of the exclusion outside [a, b] stays.
+        CHECK(ExcludeRange(h, 0, 1.35, 2.0) && Near(h.zones.back().start + h.zones.back().length, 1.4));
+        CHECK(AssignRange(h, 0, 1.37, 1.4, kFront) && h.zones.size() == 1 && Near(h.zones[0].length, 0.02));
+        CHECK(!ExcludeRange(h, 0, 1.5, 2.0) && !ExcludeRange(h, 7, 1.0, 1.1));
+        // A legacy "-> value" zone inside the range no longer overrides the new owner.
+        SoundData z = d;
+        CHECK(AddZone(z, 1.2, 0.02, kBack) && AssignRange(z, 0, 1.15, 1.25, kFront) && z.zones.empty());
+    }
+    // An off variation is not comped.
+    {
+        SoundData off = d;
+        off.frames[0].on = false;
+        CHECK(!AssignRange(off, 0, 1.2, 1.3, kBack) && EditPiecesOf(off, 0).empty());
+    }
+    // C4: a cut dragged onto its neighbour (a piece under 4 ms) removes that piece and the cut.
+    {
+        SoundData c = d;
+        CHECK(MoveCut(c, 0, 1, 1.146));  // the Toe piece squashed: Heel takes the room
+        CHECK((c.frames[0].cuts == std::vector<double>{1.145}) && (c.frames[0].owners == std::vector<std::string>{kBack, kBack}));
+        SoundData e = d;
+        CHECK(MoveCut(e, 0, 0, 0.5));  // onto the frame's start: the first Heel piece goes
+        CHECK((e.frames[0].cuts == std::vector<double>{1.3}) && (e.frames[0].owners == std::vector<std::string>{kFront, kBack}));
+        SoundData r = d;
+        CHECK(MoveCut(r, 0, 1, 1.398));  // the last Heel piece squashed against the frame's end
+        CHECK((r.frames[0].owners == std::vector<std::string>{kBack, kFront}) && r.frames[0].cuts.size() == 1);
+        SoundData ok = d;
+        CHECK(MoveCut(ok, 0, 1, 1.25) && ok.frames[0].cuts.size() == 2 && Near(ok.frames[0].cuts[1], 1.25));
+        // Every cut gone: the whole variation is one part's.
+        CHECK(MoveCut(c, 0, 0, 1.0) && c.frames[0].cuts.empty() && (c.frames[0].owners == std::vector<std::string>{kBack}));
+        RefreshParts(c, &pk);
+        CHECK(c.frames[0].cuts.empty() && PlacedSpans(c, 0, kBack).size() == 1 && PlacedSpans(c, 0, kFront).empty());
+    }
+    // Split: each half keeps the cuts and owners on its side.
+    {
+        SoundData s = d;
+        CHECK(SplitFrame(s, 0, 1.2) && s.frames.size() == 2);
+        CHECK((s.frames[0].cuts == std::vector<double>{1.145}) && (s.frames[0].owners == std::vector<std::string>{kBack, kFront}));
+        CHECK((s.frames[1].cuts == std::vector<double>{1.3}) && (s.frames[1].owners == std::vector<std::string>{kFront, kBack}));
+        RefreshParts(s, &pk);
+        CHECK(PartAt(s, 1, 1.35, &v) && v == kBack && PartAt(s, 0, 1.1, &v) && v == kBack);
+        // On a cut: the cut goes, each half its own side.
+        SoundData c = d;
+        CHECK(SplitFrame(c, 0, 1.3) && c.frames[0].owners.size() == 2 && c.frames[1].cuts.empty() &&
+              (c.frames[1].owners == std::vector<std::string>{kBack}));
+    }
+    // Carried with the hand marks (cuts + owners together); a one-part frame by its middle.
+    {
+        std::vector<SoundFrame> now = {F(0.9, 0.6)};
+        CarryHandMarks(now, d.frames);
+        CHECK(now[0].cuts == d.frames[0].cuts && now[0].owners == d.frames[0].owners && now[0].cuts_hand);
+        SoundFrame one = F(1.0, 0.4);
+        one.owners = {kFront};
+        one.cuts_hand = true;
+        std::vector<SoundFrame> now2 = {F(0.9, 0.6)};
+        CarryHandMarks(now2, {one});
+        CHECK(now2[0].cuts.empty() && (now2[0].owners == std::vector<std::string>{kFront}));
+        std::vector<SoundFrame> reset = d.frames;  // a copy holding them: replaced, not doubled
+        CarryHandMarks(reset, d.frames);
+        CHECK(reset[0].owners.size() == 3);
+    }
+    // SameNormMeasured sees the owners; Reset its cuts / Reset to detected go back to the legacy rule.
+    {
+        SoundData legacy = d;
+        legacy.frames[0].owners.clear();
+        CHECK(!SameNormMeasured(d, legacy) && SameNormMeasured(d, d));
+        SoundData c = d;
+        c.frames[0].cuts_hand = false;
+        CHECK(ResetCuts(c, 0) && c.frames[0].owners.empty() && c.frames[0].cuts.empty());
+        RefreshParts(c, &pk);
+        CHECK(c.frames[0].cuts.size() == 1 && Near(c.frames[0].cuts[0], 1.145));
+        SoundData r = d;
+        ResetToDetected(r, {r.frames[0]});
+        CHECK(r.frames[0].owners.empty());
+    }
+    // Owners that do not fit (another cut count, an unknown value) read the legacy rule and are dropped by
+    // a refresh.
+    {
+        SoundData bad = d;
+        bad.frames[0].owners = {kBack, "elsewhere", kBack};
+        CHECK(PartAt(bad, 0, 1.35, &v) && v == kFront);
+        RefreshParts(bad, &pk);
+        CHECK(bad.frames[0].owners.empty() && bad.frames[0].cuts.size() == 1);
+    }
+}
+
 int main()
 {
+    TestPartSettings();  // 13-62
+    TestPartSyncAndMargins();
+    TestComping();
     TestSyncSliced();
     TestOnsetsAndCuts();
     TestOwnershipAndSpans();

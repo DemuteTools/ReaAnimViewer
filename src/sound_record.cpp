@@ -9,9 +9,12 @@
 #include <cstdint>
 #include <cstdlib>
 #include <functional>
+#include <optional>
+#include <string>
 #include <system_error>
 #include <algorithm>
 #include <utility>
+#include <vector>
 
 namespace rav {
 namespace {
@@ -459,7 +462,7 @@ Fields SoundFields(const SoundData& s);
 bool HasSoundLine(const SoundNode& n)
 {
     const SoundData& s = n.sound;
-    return n.type == SoundNodeType::Sound || !s.kept.empty() || !s.frames.empty() || !s.zones.empty() ||
+    return n.type == SoundNodeType::Sound || !s.kept.empty() || !s.frames.empty() || !s.zones.empty() || !s.parts.empty() ||
            SoundFields(s) != SoundFields(SoundData{});
 }
 
@@ -554,6 +557,60 @@ Got SetZone(SoundZone& z, const std::string& k, const std::string& v)
     return Got::Unknown;
 }
 
+// 13-62: a part's own settings (only the fields it owns).
+Fields PartFields(const PartSettings& p)
+{
+    Fields f = {{"v", Enc(p.value)}};
+    if (p.preroll_ms) f.push_back({"pre", FormatNumber(*p.preroll_ms)});
+    if (p.tail_ms) f.push_back({"tail", FormatNumber(*p.tail_ms)});
+    if (p.sync_mode) f.push_back({"sync", kSyncWords[static_cast<int>(*p.sync_mode)]});
+    if (p.sync_offset_ms) f.push_back({"soff", FormatNumber(*p.sync_offset_ms)});
+    if (p.gain_db) f.push_back({"gain", FormatNumber(*p.gain_db)});
+    if (p.norm_mode) f.push_back({"nmode", FmtInt(*p.norm_mode)});
+    if (p.norm_target) f.push_back({"ntgt", FormatNumber(*p.norm_target)});
+    if (p.mono) f.push_back({"mono", kMonoWords[static_cast<int>(*p.mono)]});
+    if (p.fade_in) f.push_back({"fin", FormatNumber(*p.fade_in)});
+    if (p.fade_out) f.push_back({"fout", FormatNumber(*p.fade_out)});
+    return f;
+}
+
+Got SetPart(PartSettings& p, const std::string& k, const std::string& v)
+{
+    auto num = [&](std::optional<double>* out) {
+        double x = 0.0;
+        if (!ReadNumber(v, &x)) return Got::Bad;
+        *out = x;
+        return Got::Ok;
+    };
+    if (k == "v") return G(ReadStr(v, &p.value));
+    if (k == "pre") return num(&p.preroll_ms);
+    if (k == "tail") return num(&p.tail_ms);
+    if (k == "sync") {
+        SyncMode m = SyncMode::Attack;
+        if (!SyncFromWord(v, &m)) return Got::Bad;
+        p.sync_mode = m;
+        return Got::Ok;
+    }
+    if (k == "soff") return num(&p.sync_offset_ms);
+    if (k == "gain") return num(&p.gain_db);
+    if (k == "nmode") {
+        int m = 0;
+        if (!ReadInt(v, &m) || m < 0) return Got::Bad;
+        p.norm_mode = m;
+        return Got::Ok;
+    }
+    if (k == "ntgt") return num(&p.norm_target);
+    if (k == "mono") {
+        MonoMode m = MonoMode::Off;
+        if (!MonoFromWord(v, &m)) return Got::Bad;
+        p.mono = m;
+        return Got::Ok;
+    }
+    if (k == "fin") return num(&p.fade_in);
+    if (k == "fout") return num(&p.fade_out);
+    return Got::Unknown;
+}
+
 Fields FrameFields(const SoundFrame& fr)
 {
     Fields f = {{"start", FormatNumber(fr.start)}, {"len", FormatNumber(fr.length)}};
@@ -572,6 +629,7 @@ Fields FrameFields(const SoundFrame& fr)
     if (!fr.part_trims.empty()) f.push_back({"ptrim", JoinNumbers(fr.part_trims)});  // 13-54
     if (!fr.part_trims.empty() && !fr.part_trim_key.empty()) f.push_back({"ptrimk", Enc(fr.part_trim_key)});
     for (const auto& pd : fr.part_db) f.push_back({"pdb." + Enc(pd.first), FormatNumber(pd.second)});  // 13-28
+    if (!fr.owners.empty()) f.push_back({"own", JoinEncoded(fr.owners)});  // 13-62
     return f;
 }
 
@@ -593,6 +651,7 @@ Got SetFrame(SoundFrame& fr, const std::string& k, const std::string& v)
     if (k == "hsync") return G(SplitNumbers(v, &fr.hand_syncs));
     if (k == "ptrim") return G(SplitNumbers(v, &fr.part_trims));
     if (k == "ptrimk") return G(Dec(v, &fr.part_trim_key));  // 13-54 review: what they were measured with
+    if (k == "own") return G(SplitDecoded(v, &fr.owners));    // 13-62: who owns each piece
     if (k.size() > 4 && k.compare(0, 4, "pdb.") == 0) {  // 13-28: a part's gain, pdb.<value uid>
         std::string uid;
         double      db = 0.0;
@@ -960,6 +1019,10 @@ bool ParseStoreCore(const std::string& text, SoundStore& s)
         } else if (kind == "sound" && node) {
             ReadFields(t, 1, node->sound.kept,
                        [&](const std::string& k, const std::string& v) { return SetSound(node->sound, k, v); });
+        } else if (kind == "part" && node) {  // 13-62: a part's own settings
+            node->sound.parts.emplace_back();
+            PartSettings& ps = node->sound.parts.back();
+            ReadFields(t, 1, ps.kept, [&](const std::string& k, const std::string& v) { return SetPart(ps, k, v); });
         } else if (kind == "frame" && node) {
             node->sound.frames.emplace_back();
             SoundFrame& fr = node->sound.frames.back();
@@ -1126,6 +1189,7 @@ std::string SerializeSoundStore(const SoundStore& s)
             for (const std::string& u : n.unassigned) WriteLine(out, "unassigned", {{"child", Enc(u)}}, {});
             if (HasSoundLine(n)) {
                 WriteLine(out, "sound", SoundFields(n.sound), n.sound.kept);
+                for (const PartSettings& ps : n.sound.parts) WriteLine(out, "part", PartFields(ps), ps.kept);  // 13-62
                 for (const SoundFrame& fr : n.sound.frames) WriteLine(out, "frame", FrameFields(fr), fr.kept);
                 for (const SoundZone& z : n.sound.zones) WriteLine(out, "zone", ZoneFields(z), z.kept);
             }

@@ -39,8 +39,15 @@
 //         [div=<group id>] [divv=<id>,<id>] [rmap=<role>:<id>,...] [lanes=split] [sync=peak|start]
 //         [soff=<ms>] [cfade=<s>]                    -- 13-23/25: divided by a group (its values at divide
 //                                                       time), its own role map, lane mode, sync point, cut fade
+//   part v=<id> [pre=<ms>] [tail=<ms>] [sync=attack|peak|start] [soff=<ms>] [gain=<dB>] [nmode=<0-5>]
+//        [ntgt=<dB>] [mono=off|left|right|sum] [fin=<s>] [fout=<s>]
+//                                                    -- 13-62: a part's own settings (one line per part
+//                                                       owning one, right after the sound line; only the
+//                                                       fields it owns: an absent one = the Sound's)
 //   frame start=<s> len=<s> [on=0] [db=<dB>] [hand=1] [fin=<s>] [fout=<s>] [fish=<n>] [fosh=<n>]
 //         [cuts=<s>,<s>] [cutsh=1] [cutq=1] [sync=<s>,<s>] [hsync=<s>,<s>] [ptrim=<s>,<s>,...] [ptrimk=<key>]
+//         [own=<id>,<id>,...]                        -- 13-62: who owns each piece between the cuts (cuts + 1
+//                                                       of them; none = piece k is the k-th divide value)
 //                                                    -- a variation of that Sound (no fin/fout = the Sound's fades;
 //                                                       13-23/25: its cuts, hand / unsure flags, one sync per
 //                                                       part and the hand sync points, absolute source s;

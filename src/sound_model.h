@@ -13,6 +13,7 @@
 // 13-20/23/25 (spec 13-20-23-25 D4): append-only extension (parts, zones, sync points, roles):
 // SoundFrame cuts / syncs, SoundData divide / roles / sync / zones, SwitchValue::roles,
 // SoundDraw::part, PlacedTag::pt. 13-31: SoundNode::layer_roles / layer_keep_offset.
+// 13-62 (spec 13-62 Contract): SoundFrame::owners, PartSettings, SoundData::parts.
 //
 // Every `kept` member holds text this version did not understand, written back as read:
 // unknown fields ("key=value" tokens) of the object's own line, and `kept_lines` the unknown
@@ -23,6 +24,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -92,6 +94,11 @@ struct SoundFrame {
     // 13-54 review: what `part_trims` were measured with (PartTrimKey: the threshold, pre-roll, tail, the
     // raw spans and the file's date + size). Another key = stale trims (PartTrimsStale).
     std::string              part_trim_key;
+    // 13-62 (appended): who owns each piece between the cuts (decision 11, comping): one value uid per piece,
+    // `cuts.size() + 1` of them, in time order. Empty = the legacy rule (piece k -> divide_values[min(k, n-1)],
+    // with parts - 1 cuts). Any comp gesture (AssignRange, a cut removed by MoveCut) fills it; with it set, a
+    // variation may hold any number of cuts and a part several separate pieces.
+    std::vector<std::string> owners;
 };
 
 // The Sound-level default fades (s): every variation with no fade of its own gets them.
@@ -137,6 +144,23 @@ struct RoleValue {
 // Sum = L + R mixed. Placed as the take's channel mode (I_CHANMODE, ChanModeFor), heard on audition.
 enum class MonoMode { Off, Left, Right, Sum };
 
+// 13-62 (decisions 2-8): one part's own settings on a divided Sound, keyed by its Switch value uid. A
+// field left unset follows the Sound's (PartPrerollMs ... in sound_entries.h); touching it in the Edit
+// window makes it the part's own, its revert arrow unsets it. Saved with the Sound (project + .ravlib, a `part` line),
+// cleared when Divide by changes (SetDivide).
+struct PartSettings {
+    std::string              value;  // the divide value uid
+    std::optional<double>    preroll_ms, tail_ms;
+    std::optional<SyncMode>  sync_mode;
+    std::optional<double>    sync_offset_ms;
+    std::optional<double>    gain_db;      // on top of the variation dB and the per-part Normalize (decision 3)
+    std::optional<int>       norm_mode;    // a NormMode index (normalize_presets.h)
+    std::optional<double>    norm_target;  // dB
+    std::optional<MonoMode>  mono;
+    std::optional<double>    fade_in, fade_out;  // s: on both edges of each of its pieces (decision 6)
+    std::vector<std::string> kept;               // unknown fields of its `part` line
+};
+
 // A Sound leaf's data. `frames` = the detected (pre-edit) variations, stored: Populate never
 // re-detects (D6).
 struct SoundData {
@@ -164,6 +188,8 @@ struct SoundData {
     std::vector<SoundZone>   zones;
     // 13-41 (appended): forced to mono.
     MonoMode                 mono = MonoMode::Off;
+    // 13-62 (appended): the parts' own settings (at most one entry per divide value).
+    std::vector<PartSettings> parts;
 };
 
 // A Switch's value -> child.

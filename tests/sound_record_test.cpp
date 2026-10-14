@@ -32,7 +32,20 @@ bool SameFrames(const std::vector<SoundFrame>& a, const std::vector<SoundFrame>&
             a[i].fade_out != b[i].fade_out || a[i].fade_in_shape != b[i].fade_in_shape ||
             a[i].fade_out_shape != b[i].fade_out_shape || a[i].cuts != b[i].cuts || a[i].cuts_hand != b[i].cuts_hand ||
             a[i].cut_unsure != b[i].cut_unsure || a[i].syncs != b[i].syncs || a[i].hand_syncs != b[i].hand_syncs || a[i].part_db != b[i].part_db ||
-            a[i].part_trims != b[i].part_trims || a[i].part_trim_key != b[i].part_trim_key)
+            a[i].part_trims != b[i].part_trims || a[i].part_trim_key != b[i].part_trim_key || a[i].owners != b[i].owners)
+            return false;
+    return true;
+}
+
+// 13-62: a part's own settings.
+bool SamePartSettings(const std::vector<PartSettings>& a, const std::vector<PartSettings>& b)
+{
+    if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (a[i].value != b[i].value || a[i].preroll_ms != b[i].preroll_ms || a[i].tail_ms != b[i].tail_ms ||
+            a[i].sync_mode != b[i].sync_mode || a[i].sync_offset_ms != b[i].sync_offset_ms || a[i].gain_db != b[i].gain_db ||
+            a[i].norm_mode != b[i].norm_mode || a[i].norm_target != b[i].norm_target || a[i].mono != b[i].mono ||
+            a[i].fade_in != b[i].fade_in || a[i].fade_out != b[i].fade_out || a[i].kept != b[i].kept)
             return false;
     return true;
 }
@@ -43,7 +56,7 @@ bool SameParts(const SoundData& x, const SoundData& y)
     if (x.divide_group != y.divide_group || x.divide_values != y.divide_values || x.lanes_split != y.lanes_split ||
         x.sync_mode != y.sync_mode || x.sync_offset_ms != y.sync_offset_ms || x.cut_fade != y.cut_fade || x.mono != y.mono ||
         x.fade_in != y.fade_in || x.fade_out != y.fade_out || x.role_map.size() != y.role_map.size() ||
-        x.zones.size() != y.zones.size())
+        x.zones.size() != y.zones.size() || !SamePartSettings(x.parts, y.parts))
         return false;
     for (size_t i = 0; i < x.role_map.size(); ++i)
         if (x.role_map[i].role != y.role_map[i].role || x.role_map[i].value != y.role_map[i].value) return false;
@@ -494,6 +507,49 @@ int main()
                               "frame start=0 len=1 pdb.x=abc\n", &bad));
         CHECK(bad.libraries[0].nodes[0].sound.frames[0].part_db.empty() &&
               SerializeSoundStore(bad).find(" pdb.x=abc\n") != std::string::npos);
+    }
+
+    // ---- 13-62: a part's own settings (`part` lines after the sound line) and the pieces' owners ------
+    {
+        SoundStore s = BigStore();
+        SoundData& d = s.libraries[0].nodes[3].sound;
+        PartSettings toe;
+        toe.value = "a000000000000003";
+        toe.preroll_ms = 12.0;
+        toe.sync_mode = SyncMode::Attack;  // own even when it equals the Sound's default: written
+        toe.gain_db = -3.0;
+        toe.norm_mode = 3;
+        toe.norm_target = -23.0;
+        toe.mono = MonoMode::Left;
+        toe.fade_in = 0.004;
+        PartSettings heel;
+        heel.value = "a 2";  // a uid that needs escaping
+        heel.tail_ms = 40.0;
+        heel.sync_offset_ms = 0.0;
+        heel.mono = MonoMode::Off;
+        heel.fade_out = 0.01;
+        d.parts = {toe, heel};
+        d.frames[0].owners = {"a000000000000002", "a 2"};
+        const std::string t = SerializeSoundStore(s);
+        CHECK(t.find(" mono=right\npart v=a000000000000003 pre=12 sync=attack gain=-3 nmode=3 ntgt=-23 mono=left fin=0.004\n"
+                     "part v=a%202 tail=40 soff=0 mono=off fout=0.01\nframe start=0 ") != std::string::npos);
+        CHECK(t.find(" hsync=0.13 own=a000000000000002,a%202\n") != std::string::npos);
+        SoundStore p;
+        CHECK(ParseSoundStore(t, &p) && SameStore(p, s) && SerializeSoundStore(p) == t);
+        const SoundData& q = p.libraries[0].nodes[3].sound;
+        CHECK(q.parts.size() == 2 && q.parts[1].value == "a 2" && q.parts[1].mono == MonoMode::Off && !q.parts[1].gain_db &&
+              q.parts[0].sync_mode == SyncMode::Attack && !q.parts[0].tail_ms);
+        CHECK((q.frames[0].owners == std::vector<std::string>{"a000000000000002", "a 2"}) && q.frames[1].owners.empty());
+        // Nothing of the kind: no part line, no own field (the text of a Sound without them is unchanged).
+        const std::string plain = SerializeSoundStore(BigStore());
+        CHECK(plain.find("\npart ") == std::string::npos && plain.find(" own=") == std::string::npos);
+        // Unknown fields of a part line and values that do not read are kept as written.
+        SoundStore k;
+        CHECK(ParseSoundStore("RAVSOUNDS 1\nlibrary uid=l name=L root=n\nnode uid=n type=sound\nsound kind=item\n"
+                              "part v=a gain=x future=1 mono=sum\nframe start=0 len=1\n", &k));
+        const SoundData& kd = k.libraries[0].nodes[0].sound;
+        CHECK(kd.parts.size() == 1 && kd.parts[0].mono == MonoMode::Sum && !kd.parts[0].gain_db && kd.frames.size() == 1);
+        CHECK(SerializeSoundStore(k).find("part v=a mono=sum gain=x future=1\nframe start=0 len=1\n") != std::string::npos);
     }
 
     // ---- 13-54: a frame's part trims (ptrim), none written for a frame without -----------------------

@@ -176,6 +176,13 @@ struct PanelState {
     double                edit_cursor = -1.0;
     int                   trim_request = -1;
     int                   solo = -1;
+    // 13-62: the selected part ("" = the Sound), the parts muted / soloed for listening, the selected piece
+    // (its variation and EditPiecesOf index; -1 = none) and a Solo / Mute key waiting for the overlay (1 =
+    // solo, 2 = mute, 0 = none). View state: never saved, no undo point; reset with the shown Sound (C5).
+    std::string           part_sel;
+    std::set<std::string> part_mute, part_solo;
+    int                   piece_frame = -1, piece_index = -1;
+    int                   listen_request = 0;
     double                menu_at = 0.0;
     int                   menu_frame = -1, menu_kind = 0;
     bool                  roles_more = false;
@@ -232,6 +239,11 @@ void OpenEdit(const std::string& lib_uid, const std::string& uid)
     P.edit_cursor = -1.0;  // 13-61
     P.trim_request = -1;
     P.solo = -1;
+    P.part_sel.clear();  // 13-62 (C5): listening and selection are per Sound
+    P.part_mute.clear();
+    P.part_solo.clear();
+    P.piece_frame = P.piece_index = -1;
+    P.listen_request = 0;
     P.roles_more = false;
     P.layer_roles_more = false;
     CancelNormJob();          // 13-28: switching Sound cancels a measuring
@@ -2093,6 +2105,41 @@ std::string ValueName(const SoundStore& store, const std::string& group_uid, con
 // A part's colour: the curve palette by the value's index (ui::kCurvePalette).
 ImU32 PartColor(int k) { return ui::kCurvePalette[static_cast<size_t>(std::max(0, k)) % 8]; }
 
+// ---- 13-62: per-part controls (stubs of Lot A; the next lots fill them, their signatures are fixed) -----
+
+// Split view: the lane header of part `part_k` (dot, name, M, S, gain, Normalize target, "..."), drawn in
+// [min, max]; `narrow` = name + M + S only (C6). Returns the width it used (Lot E2 draws it, E1 calls it).
+[[maybe_unused]] static float PartLaneHeader(const char* id, const SoundData& d, int part_k, ImVec2 min, ImVec2 max,
+                                             bool narrow)
+{
+    (void)id;
+    (void)d;
+    (void)part_k;
+    (void)min;
+    (void)max;
+    (void)narrow;
+    return 0.0f;
+}
+
+// The selected part's setting rows (Detection / Level / Fades), each own or "= Sound" with its revert
+// (Lot E2).
+[[maybe_unused]] static void PartSettingsRows(const char* id, int lib, const std::string& node_uid, const std::string& value)
+{
+    (void)id;
+    (void)lib;
+    (void)node_uid;
+    (void)value;
+}
+
+// The Normalize button of a part's Level rows: "" = the Sound's "Normalize per part" button, else
+// "Normalize <Part>" (Lot C fills it, Lot E2 calls it).
+[[maybe_unused]] static void PartNormalizeButton(int lib, const std::string& node_uid, const std::string& value)
+{
+    (void)lib;
+    (void)node_uid;
+    (void)value;
+}
+
 // What Edit draws of a Sound's parts.
 WaveParts EditParts(const SoundStore& store, const SoundData& d)
 {
@@ -2905,6 +2952,10 @@ void PartsControls(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
                             (unsure > 0 ? ", " + std::to_string(unsure) + " to check" : std::string());
                 }
                 P.solo = -1;
+                P.part_sel.clear();  // 13-62: the parts are other values now
+                P.part_mute.clear();
+                P.part_solo.clear();
+                P.piece_frame = P.piece_index = -1;
                 EditNode("Divide by", lib_uid, uid, [gid, vals, path](SoundNode& x) {
                     if (!SetDivide(x.sound, gid, vals)) return false;
                     RefreshWith(x.sound, path);

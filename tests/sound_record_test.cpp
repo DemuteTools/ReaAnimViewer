@@ -550,6 +550,20 @@ int main()
         const SoundData& kd = k.libraries[0].nodes[0].sound;
         CHECK(kd.parts.size() == 1 && kd.parts[0].mono == MonoMode::Sum && !kd.parts[0].gain_db && kd.frames.size() == 1);
         CHECK(SerializeSoundStore(k).find("part v=a mono=sum gain=x future=1\nframe start=0 len=1\n") != std::string::npos);
+        // 13-62 review: SetPartSetting's bounds on read: an unknown Normalize mode and a non-finite number are
+        // kept as written (not read); negative margins / fades read as 0, the target clamped to -60..0 dB.
+        SoundStore b;
+        CHECK(ParseSoundStore("RAVSOUNDS 1\nlibrary uid=l name=L root=n\nnode uid=n type=sound\nsound kind=item\n"
+                              "part v=a nmode=6 gain=inf pre=-5 tail=-1 fin=-0.1 fout=-2 ntgt=-80\n"
+                              "part v=b nmode=5 ntgt=3\nframe start=0 len=1\n",
+                              &b));
+        const SoundData& bd = b.libraries[0].nodes[0].sound;
+        CHECK(bd.parts.size() == 2 && !bd.parts[0].norm_mode && !bd.parts[0].gain_db && *bd.parts[0].preroll_ms == 0.0 &&
+              *bd.parts[0].tail_ms == 0.0 && *bd.parts[0].fade_in == 0.0 && *bd.parts[0].fade_out == 0.0 &&
+              *bd.parts[0].norm_target == -60.0);
+        CHECK(*bd.parts[1].norm_mode == 5 && *bd.parts[1].norm_target == 0.0);
+        const std::string bt = SerializeSoundStore(b);
+        CHECK(bt.find("part v=a pre=0 tail=0 ntgt=-60 fin=0 fout=0 nmode=6 gain=inf\n") != std::string::npos);
     }
 
     // ---- 13-54: a frame's part trims (ptrim), none written for a frame without -----------------------

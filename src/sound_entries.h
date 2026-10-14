@@ -187,8 +187,9 @@ double ClampIntoSpans(const std::vector<PartSpan>& spans, double t);
 // Refreshes one variation's cuts and sync points (every write that changes frames, detection, divide,
 // sync settings or zones runs RefreshParts). Cuts: hand ones kept while there are parts - 1 of them,
 // else AutoCuts (no peaks: the stored ones while their count fits, else an even split); none when
-// combined. 13-62: a variation with sane owners (one per piece, each a divide value) keeps its cuts,
-// whatever their count; owners that do not fit are dropped. Syncs: per part, a hand sync inside its spans wins, else AutoSync; -1 for a part with no
+// combined. 13-62: a variation with sane owners (one per piece, each a divide value, cuts in order) keeps its
+// cuts, whatever their count; owners that do not fit are dropped. A cut within 4 ms of the frame's edge (a
+// trim moved past it) goes with the piece it cut off there. Syncs: per part, a hand sync inside its spans wins, else AutoSync; -1 for a part with no
 // span. Without peaks, Attack / Peak syncs that cannot be kept (a stored one still inside its part)
 // leave `syncs` empty: measured at placement (SyncsStale). Takes mode: no cuts, no syncs (A8).
 void RefreshFrame(SoundData& data, int variation, const PeakData* peaks);
@@ -212,7 +213,9 @@ double SyncFor(const SoundData& data, int variation, const std::string& part_val
 // Carries the hand marks of `old` frames onto `now` (after MergeHandFrames or a Reset): each hand sync
 // goes to the new frame holding it; a frame's hand cuts follow when they all fall inside one new frame
 // (only when `with_cuts`). The marks `now` held are replaced. 13-62: a frame's owners travel with its cuts (and are cleared
-// with them); a frame whose owners hold no cut follows its middle.
+// with them); a frame whose owners hold no cut follows its middle. Several comped frames landing in one new
+// frame give it all their pieces in time order, with a cut at each later old frame's start inside it; when
+// one of them has hand cuts but no owners, the first one's cuts alone are kept (as before 13-62).
 void CarryHandMarks(std::vector<SoundFrame>& now, const std::vector<SoundFrame>& old, bool with_cuts = true);
 // Divides the Sound by `group` with its value uids (in the group's order); group "" = combined. Cuts and
 // syncs are dropped (RefreshParts measures them), and so are the "-> value" zones and role map entries
@@ -297,14 +300,15 @@ struct EditPiece {
 // an empty or an off frame.
 std::vector<EditPiece> EditPiecesOf(const SoundData& data, int variation);
 // Comping (decision 9): gives [a, b] of the variation to part `value`: cuts at a and b when inside the
-// frame and not already there (an edge within 4 ms of a cut or the frame's edge lands on it), the owners of
-// the pieces it covers = value, any zone coverage inside [a, b] removed (an excluded stretch there is
-// included again). The variation's owners are filled first (from the legacy rule) when empty; the cuts
+// frame and not already there (an edge within 4 ms of a cut, a zone's edge or the frame's edge lands on it),
+// the owners of the pieces it covers = value, any zone coverage inside [a, b] removed (an excluded stretch
+// there is included again; a zone remnant under 4 ms outside [a, b] goes too). The variation's owners are filled first (from the legacy rule) when empty; the cuts
 // become hand cuts. False (nothing changed) when [a, b] inside the frame is under 4 ms, the value is not a
 // divide value, the frame is off, Takes mode, or nothing changed.
 bool AssignRange(SoundData& data, int variation, double a, double b, const std::string& value);
-// The nearest cut or frame edge of the variation within `tolerance_s` of `t`, else `t` (the swipe's
-// 6 px snap).
+// The nearest cut, frame edge or zone edge (an excluded / "-> value" zone's start or end inside the frame)
+// of the variation within `tolerance_s` of `t`, else `t` (the swipe's 6 px snap: so a swipe started next
+// to an excluded stretch leaves no sliver).
 double SnapToCut(const SoundData& data, int variation, double t, double tolerance_s);
 // Excludes [a, b] of the variation (AddZone with "", clipped to the frame). False when that leaves 1 ms or
 // less or the index is bad.

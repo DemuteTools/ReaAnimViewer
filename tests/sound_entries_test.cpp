@@ -1561,11 +1561,88 @@ void TestComping()
     }
 }
 
+// 13-62 review: a trim past a cut, zone edges in the comp gestures, several comped frames merged.
+void TestCompingReview()
+{
+    PeakData  pk;
+    SoundData d = Divided(&pk);
+    d.mode = DetectMode::TakeMarkers;
+    RefreshParts(d, &pk);
+    CHECK(AssignRange(d, 0, 1.3, 1.5, kBack));  // [1, 1.4]: Back | 1.145 Front | 1.3 Back
+    RefreshParts(d, &pk);
+    CHECK((d.frames[0].owners == std::vector<std::string>{kBack, kFront, kBack}));
+    // Finding 1: a trim that moves an edge onto / past a cut drops the cut and the sliver piece it bounded
+    // (no 1 ms piece placed).
+    {
+        SoundData t = d;
+        TrimFrame(t, 0, 1.0, 0.25, 3.0);  // end 1.25: the cut at 1.3 is past it
+        RefreshParts(t, &pk);
+        CHECK(t.frames[0].cuts.size() == 1 && Near(t.frames[0].cuts[0], 1.145));
+        CHECK((t.frames[0].owners == std::vector<std::string>{kBack, kFront}));
+        const std::vector<PartSpan> back = PlacedSpans(t, 0, kBack);
+        CHECK(back.size() == 1 && Near(back[0].start, 1.0) && Near(back[0].length, 0.145));
+        SoundData u = d;
+        TrimFrame(u, 0, 1.0, 0.302, 3.0);  // end 2 ms after the cut at 1.3: under 4 ms, the piece goes
+        RefreshParts(u, &pk);
+        CHECK((u.frames[0].owners == std::vector<std::string>{kBack, kFront}) && u.frames[0].cuts.size() == 1);
+        SoundData w = d;
+        TrimFrame(w, 0, 1.2, 0.2, 3.0);  // start 1.2, past the cut at 1.145: the frame starts Front
+        RefreshParts(w, &pk);
+        CHECK((w.frames[0].owners == std::vector<std::string>{kFront, kBack}) && w.frames[0].cuts.size() == 1 &&
+              Near(w.frames[0].cuts[0], 1.3));
+        SoundData x = d;
+        TrimFrame(x, 0, 1.0, 0.1, 3.0);  // end 1.1: both cuts out, the first piece's owner alone
+        RefreshParts(x, &pk);
+        CHECK(x.frames[0].cuts.empty() && (x.frames[0].owners == std::vector<std::string>{kBack}));
+        std::string v;
+        CHECK(PartAt(x, 0, 1.05, &v) && v == kBack && PlacedSpans(x, 0, kFront).empty());
+    }
+    // Finding 2: an excluded zone's edges are marks for the swipe's snap and AssignRange's landing.
+    {
+        SoundData t = d;
+        CHECK(ExcludeRange(t, 0, 1.2, 1.25));
+        CHECK(Near(SnapToCut(t, 0, 1.2012, 0.005), 1.2) && Near(SnapToCut(t, 0, 1.2488, 0.005), 1.25));
+        CHECK(Near(SnapToCut(t, 0, 1.22, 0.005), 1.22));
+        CHECK(AssignRange(t, 0, 1.2012, 1.29, kBack));  // lands on the zone's start: no 1.2 ms sliver
+        for (const EditPiece& p : EditPiecesOf(t, 0)) CHECK(p.length >= 0.004 - 1e-9);
+        CHECK(t.frames[0].cuts.size() == 4 && Near(t.frames[0].cuts[1], 1.2));
+        // A zone remnant under 4 ms goes: the range's start lands on the cut at 1.145 (nearer than the
+        // zone's start at 1.142), which would leave [1.142, 1.145] excluded.
+        SoundData r = d;
+        CHECK(ExcludeRange(r, 0, 1.142, 1.25));
+        CHECK(AssignRange(r, 0, 1.1455, 1.29, kBack));
+        CHECK(ExcludedZoneCount(r) == 0);
+        for (const EditPiece& p : EditPiecesOf(r, 0)) CHECK(p.length >= 0.004 - 1e-9 && !p.excluded);
+    }
+    // Finding 4: two comped frames merged into one keep both pieces lists, with a cut at the boundary.
+    {
+        SoundData t = d;
+        CHECK(SplitFrame(t, 0, 1.2));
+        RefreshParts(t, &pk);
+        std::vector<SoundFrame> now = {F(1.0, 0.4)};
+        CarryHandMarks(now, t.frames);
+        CHECK(now[0].cuts.size() == 3 && Near(now[0].cuts[0], 1.145) && Near(now[0].cuts[1], 1.2) && Near(now[0].cuts[2], 1.3));
+        CHECK((now[0].owners == std::vector<std::string>{kBack, kFront, kFront, kBack}) && now[0].cuts_hand);
+        SoundData m = t;
+        m.frames = now;
+        RefreshParts(m, &pk);
+        std::string v;
+        CHECK(m.frames[0].owners.size() == 4 && PartAt(m, 0, 1.25, &v) && v == kFront && PartAt(m, 0, 1.35, &v) && v == kBack);
+        // One of them with hand cuts but no owners: the first one's cuts alone (as before).
+        std::vector<SoundFrame> old = t.frames;
+        old[1].owners.clear();
+        std::vector<SoundFrame> now2 = {F(1.0, 0.4)};
+        CarryHandMarks(now2, old);
+        CHECK(now2[0].cuts.size() == 1 && (now2[0].owners == std::vector<std::string>{kBack, kFront}));
+    }
+}
+
 int main()
 {
     TestPartSettings();  // 13-62
     TestPartSyncAndMargins();
     TestComping();
+    TestCompingReview();
     TestSyncSliced();
     TestOnsetsAndCuts();
     TestOwnershipAndSpans();

@@ -2958,6 +2958,7 @@ void PartsControls(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
                 P.part_mute.clear();
                 P.part_solo.clear();
                 P.piece_frame = P.piece_index = -1;
+                P.listen_request = 0;
                 EditNode("Divide by", lib_uid, uid, [gid, vals, path](SoundNode& x) {
                     if (!SetDivide(x.sound, gid, vals)) return false;
                     RefreshWith(x.sound, path);

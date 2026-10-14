@@ -4,6 +4,8 @@
 
 #include "sound_record.h"
 
+#include "normalize_presets.h"  // kNormModeCount, kNormTargetMin / Max (13-62 review)
+
 #include <charconv>
 #include <cmath>
 #include <cstdint>
@@ -574,40 +576,43 @@ Fields PartFields(const PartSettings& p)
     return f;
 }
 
+// 13-62 review: the bounds SetPartSetting keeps (margins / fades >= 0, the target in -60..0 dB, a known
+// Normalize mode); a non-finite or unreadable number is Bad (kept as written).
 Got SetPart(PartSettings& p, const std::string& k, const std::string& v)
 {
-    auto num = [&](std::optional<double>* out) {
+    auto num = [&](std::optional<double>* out, double lo, double hi) {
         double x = 0.0;
-        if (!ReadNumber(v, &x)) return Got::Bad;
-        *out = x;
+        if (!ReadNumber(v, &x)) return Got::Bad;  // non-finite refused there
+        *out = std::min(std::max(x, lo), hi);
         return Got::Ok;
     };
+    constexpr double kAny = 1e300;
     if (k == "v") return G(ReadStr(v, &p.value));
-    if (k == "pre") return num(&p.preroll_ms);
-    if (k == "tail") return num(&p.tail_ms);
+    if (k == "pre") return num(&p.preroll_ms, 0.0, kAny);
+    if (k == "tail") return num(&p.tail_ms, 0.0, kAny);
     if (k == "sync") {
         SyncMode m = SyncMode::Attack;
         if (!SyncFromWord(v, &m)) return Got::Bad;
         p.sync_mode = m;
         return Got::Ok;
     }
-    if (k == "soff") return num(&p.sync_offset_ms);
-    if (k == "gain") return num(&p.gain_db);
+    if (k == "soff") return num(&p.sync_offset_ms, -kAny, kAny);
+    if (k == "gain") return num(&p.gain_db, -kAny, kAny);
     if (k == "nmode") {
         int m = 0;
-        if (!ReadInt(v, &m) || m < 0) return Got::Bad;
+        if (!ReadInt(v, &m) || m < 0 || m >= kNormModeCount) return Got::Bad;
         p.norm_mode = m;
         return Got::Ok;
     }
-    if (k == "ntgt") return num(&p.norm_target);
+    if (k == "ntgt") return num(&p.norm_target, kNormTargetMin, kNormTargetMax);
     if (k == "mono") {
         MonoMode m = MonoMode::Off;
         if (!MonoFromWord(v, &m)) return Got::Bad;
         p.mono = m;
         return Got::Ok;
     }
-    if (k == "fin") return num(&p.fade_in);
-    if (k == "fout") return num(&p.fade_out);
+    if (k == "fin") return num(&p.fade_in, 0.0, kAny);
+    if (k == "fout") return num(&p.fade_out, 0.0, kAny);
     return Got::Unknown;
 }
 

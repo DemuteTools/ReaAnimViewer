@@ -1125,7 +1125,21 @@ void RefreshFrame(SoundData& data, int variation, const PeakData* peaks)
     const int  n = PartCount(data);
     // 13-62: a comped variation keeps its cuts, whatever their count; owners that do not fit go (the
     // legacy rule then applies).
-    const bool comped = n >= 2 && OwnersSane(data, f) && SaneCuts(f, f.cuts);
+    bool comped = n >= 2 && OwnersSane(data, f) && std::is_sorted(f.cuts.begin(), f.cuts.end());
+    if (comped) {
+        // 13-62 review: a trim that left a cut within 4 ms of the frame's edge (or past it) drops it with
+        // the sliver piece it bounds, so no 1 ms piece is ever placed (SaneCuts would clamp it 1 ms in).
+        const double fs = f.start, fe = FrameEnd(f);
+        while (!f.cuts.empty() && f.cuts.front() <= fs + kMinPiece + kTimeEps) {
+            f.cuts.erase(f.cuts.begin());
+            f.owners.erase(f.owners.begin());  // the piece on its left
+        }
+        while (!f.cuts.empty() && f.cuts.back() >= fe - kMinPiece - kTimeEps) {
+            f.cuts.pop_back();
+            f.owners.pop_back();  // the piece on its right
+        }
+        comped = SaneCuts(f, f.cuts);
+    }
     if (!comped) f.owners.clear();
     if (n < 2) {
         f.cuts.clear();
@@ -1262,23 +1276,54 @@ void CarryHandMarks(std::vector<SoundFrame>& now, const std::vector<SoundFrame>&
             f.owners.clear();  // 13-62: the owners go with their cuts
         }
     }
+    auto owned = [](const SoundFrame& o) { return !o.owners.empty() && o.owners.size() == o.cuts.size() + 1; };
+    std::vector<std::vector<const SoundFrame*>> into(now.size());  // the old frames whose cuts land in each
     for (const SoundFrame& o : old) {
         for (double h : o.hand_syncs) {
             SoundFrame* f = holder(h);
             if (f && std::find(f->hand_syncs.begin(), f->hand_syncs.end(), h) == f->hand_syncs.end()) f->hand_syncs.push_back(h);
         }
         // 13-62: a comped frame's owners travel with its cuts (no cut: by its middle).
-        const bool own = !o.owners.empty() && o.owners.size() == o.cuts.size() + 1;
+        const bool own = owned(o);
         if (!with_cuts || (!o.cuts_hand && !own) || (o.cuts.empty() && !own)) continue;
         const std::vector<double> marks = o.cuts.empty() ? std::vector<double>{o.start + o.length * 0.5} : o.cuts;
         SoundFrame*               f = holder(marks.front());
         bool                      all = f != nullptr;
         for (double c : marks) all = all && holder(c) == f;
-        if (all && !f->cuts_hand && f->owners.empty()) {
-            f->cuts = o.cuts;
-            f->cuts_hand = true;
-            f->cut_unsure = false;
-            if (own) f->owners = o.owners;
+        if (all) into[static_cast<size_t>(f - now.data())].push_back(&o);
+    }
+    for (size_t i = 0; i < now.size(); ++i) {
+        std::vector<const SoundFrame*>& from = into[i];
+        if (from.empty()) continue;
+        SoundFrame& f = now[i];
+        f.cuts_hand = true;
+        f.cut_unsure = false;
+        bool all_owned = true;
+        for (const SoundFrame* o : from) all_owned = all_owned && owned(*o);
+        if (from.size() == 1 || !all_owned) {  // one frame (or hand cuts with no owners): the first one's
+            f.cuts = from.front()->cuts;
+            if (owned(*from.front())) f.owners = from.front()->owners;
+            continue;
+        }
+        // 13-62 review: several comped frames merged into one: their pieces in time order, a cut at each old
+        // frame's start inside the new one (the stretch between two old frames stays with the earlier one's
+        // last piece). A boundary that cannot be a cut (on or before the last one, or at the frame's edge)
+        // joins the two pieces around it under the earlier owner.
+        std::stable_sort(from.begin(), from.end(), [](const SoundFrame* x, const SoundFrame* y) { return x->start < y->start; });
+        f.cuts = from.front()->cuts;
+        f.owners = from.front()->owners;
+        for (size_t k = 1; k < from.size(); ++k) {
+            const SoundFrame& o = *from[k];
+            const double      at = o.start;
+            const bool        cut = at > f.start + kTimeEps && at < FrameEnd(f) - kTimeEps &&
+                             (f.cuts.empty() || at > f.cuts.back() + kTimeEps) &&
+                             (o.cuts.empty() || at < o.cuts.front() - kTimeEps);
+            if (cut) {
+                f.cuts.push_back(at);
+                f.owners.push_back(o.owners.front());
+            }
+            f.cuts.insert(f.cuts.end(), o.cuts.begin(), o.cuts.end());
+            f.owners.insert(f.owners.end(), o.owners.begin() + 1, o.owners.end());
         }
     }
 }
@@ -1667,6 +1712,9 @@ bool AssignRange(SoundData& data, int variation, double a, double b, const std::
         std::vector<double> marks = f.cuts;
         marks.push_back(fs);
         marks.push_back(fe);
+        for (const SoundZone& z : data.zones)  // 13-62 review: and a zone's edge inside the frame
+            for (double e : {z.start, z.start + z.length})
+                if (e > fs && e < fe) marks.push_back(e);
         for (double m : marks)
             if (std::fabs(m - t) < best_d) {
                 best_d = std::fabs(m - t);
@@ -1696,7 +1744,7 @@ bool AssignRange(SoundData& data, int variation, double a, double b, const std::
         if (mid > a && mid < b) f.owners[k] = value;
     }
     // Zones lose what they cover inside [a, b] (an exclusion there is included again; a legacy "-> value"
-    // zone no longer overrides the new owner).
+    // zone no longer overrides the new owner). 13-62 review: a remnant under 4 ms goes too (no sliver).
     std::vector<SoundZone> zones;
     for (const SoundZone& z : data.zones) {
         const double zs = z.start, ze = z.start + z.length;
@@ -1704,12 +1752,12 @@ bool AssignRange(SoundData& data, int variation, double a, double b, const std::
             zones.push_back(z);
             continue;
         }
-        if (a - zs > kMinLen) {
+        if (a - zs >= kMinPiece - kTimeEps) {
             SoundZone l = z;
             l.length = a - zs;
             zones.push_back(l);
         }
-        if (ze - b > kMinLen) {
+        if (ze - b >= kMinPiece - kTimeEps) {
             SoundZone r = z;
             r.start = b;
             r.length = ze - b;
@@ -1749,6 +1797,9 @@ double SnapToCut(const SoundData& data, int variation, double t, double toleranc
     const SoundFrame&   f = data.frames[static_cast<size_t>(variation)];
     std::vector<double> marks = {f.start, FrameEnd(f)};
     if (IsDivided(data)) marks.insert(marks.end(), f.cuts.begin(), f.cuts.end());
+    for (const SoundZone& z : data.zones)  // 13-62 review: a zone's edge inside the frame snaps too
+        for (double e : {z.start, z.start + z.length})
+            if (e > f.start && e < FrameEnd(f)) marks.push_back(e);
     double best = t, best_d = std::isfinite(tolerance_s) ? std::max(tolerance_s, 0.0) : 0.0;
     for (double m : marks)
         if (std::fabs(m - t) <= best_d) {

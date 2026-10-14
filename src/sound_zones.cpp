@@ -643,6 +643,14 @@ bool UsesZones(const SoundData& d)
     return IsDivided(d) && d.mode != DetectMode::Takes;
 }
 
+bool PlacedFromZones(const SoundData& d)
+{
+    if (!UsesZones(d)) return false;
+    for (const SoundFrame& f : d.frames)
+        if (!f.zones.empty()) return true;
+    return false;
+}
+
 const EditZone* ZoneOf(const SoundData& d, const ZoneRef& r)
 {
     if (r.frame < 0 || static_cast<size_t>(r.frame) >= d.frames.size()) return nullptr;

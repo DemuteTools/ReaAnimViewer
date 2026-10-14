@@ -5,10 +5,12 @@
 
 #include "sound_place_plan.h"
 #include "sound_entries.h"
+#include "sound_zones.h"
 
 #include <cmath>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 using namespace rav;
 
@@ -70,55 +72,30 @@ static void TestPieces()
     SoundData off = d;
     off.frames[0].on = false;
     CHECK(PieceApplyFor(off, 0, "").empty());
-    // File: frame-edge sides always set (FileFadeApplyFor); a cut side gets cut_fade, its shape linear.
+    // File: the frame's own fade (its shape) on both sides (FileFadeApplyFor); undivided: one piece, no zone gain.
     SoundData fd = d;
-    fd.divide_group = "g";
-    fd.divide_values = {"a", "b"};
-    fd.frames[0].cuts = {1.2};
-    fd.frames[0].syncs = {1.018, 1.21};
     fd.frames[0].fade_in = 0.004;
     fd.frames[0].fade_in_shape = 2;
-    fd.cut_fade = 0.003;
-    pa = PieceApplyFor(fd, 0, "a", true);
-    CHECK(pa.size() == 1 && Near(pa[0].fades.in, 0.004) && pa[0].fades.in_shape == 2 && Near(pa[0].fades.out, 0.003) &&
-          pa[0].fades.out_shape == 0 && pa[0].fades.shape_out);
-    pa = PieceApplyFor(fd, 0, "b", true);
-    CHECK(pa.size() == 1 && Near(pa[0].slice.start_offs, 1.2) && Near(pa[0].slice.snap_offset, 0.01) &&
-          Near(pa[0].fades.in, 0.003));
+    pa = PieceApplyFor(fd, 0, "", true);
+    CHECK(pa.size() == 1 && Near(pa[0].fades.in, 0.004) && pa[0].fades.in_shape == 2 && pa[0].fades.set_out &&
+          Near(pa[0].db, 0.0) && Near(pa[0].from_anchor, 0.0));
     const FileItemFields ff = FileItemFieldsFor(10.0, pa[0].slice, pa[0].fades, 0.0, 5.0, 0.0, 0.0);
-    CHECK(ff.ok && Near(ff.snap_offset, 0.01) && Near(ff.position, 4.99) && Near(ff.start_offs, 1.2));
-    // Whole item: its own fades only at the frame edges (the copy keeps its item's), cut_fade at a cut.
+    CHECK(ff.ok && Near(ff.snap_offset, 0.018) && Near(ff.position, 4.982) && Near(ff.start_offs, 1.0));
+    // Whole item, undivided: its own fades only where the frame set them (the copy keeps its item's).
     SoundData wd = fd;
     wd.mode = DetectMode::Whole;
     wd.frames[0].fade_in = -1.0;
-    pa = PieceApplyFor(wd, 0, "a");
-    CHECK(pa.size() == 1 && !pa[0].fades.set_in && pa[0].fades.set_out && Near(pa[0].fades.out, 0.003));
-    // A zone given to a part: that stretch plays with it (the later zone wins).
-    SoundData zd = fd;
-    AddZone(zd, 1.25, 0.05, "a");
-    std::vector<PieceApply> za = PieceApplyFor(zd, 0, "a");
-    CHECK(za.size() == 2 && Near(za[1].slice.start_offs, 1.25) && Near(za[1].slice.length, 0.05));
-    std::vector<PieceApply> zb = PieceApplyFor(zd, 0, "b");
-    CHECK(zb.size() == 2 && Near(zb[0].slice.length, 0.05) && Near(zb[1].slice.start_offs, 1.3));
-    // 13-54: a part trimmed by its margins (Silence, stored trims): the piece is the trimmed stretch, the
-    // cut fade on its trimmed sides, the frame's fade where it still starts the frame.
-    {
-        SoundData md = fd;
-        md.frames[0].part_trims = {1.0, 1.1, 1.2, 1.35};
-        md.frames[0].part_trim_key = PartTrimKey(md, 0, FileVersion{});  // 13-54 review: as measured
-        std::vector<PieceApply> ma = PieceApplyFor(md, 0, "a", true);
-        CHECK(ma.size() == 1 && Near(ma[0].slice.start_offs, 1.0) && Near(ma[0].slice.length, 0.1) &&
-              Near(ma[0].fades.in, 0.004) && Near(ma[0].fades.out, 0.003));
-        ma = PieceApplyFor(md, 0, "b", true);
-        CHECK(ma.size() == 1 && Near(ma[0].slice.start_offs, 1.2) && Near(ma[0].slice.length, 0.15) &&
-              Near(ma[0].fades.out, 0.003) && Near(ma[0].slice.snap_offset, 0.01));
-        // The whole variation (a combined event) is untouched.
-        ma = PieceApplyFor(md, 0, "", true);
-        CHECK(ma.size() == 1 && Near(ma[0].slice.length, 0.4));
-    }
+    pa = PieceApplyFor(wd, 0, "");
+    CHECK(pa.size() == 1 && !pa[0].fades.set_in && !pa[0].fades.set_out);
+    // Undivided Sound-level zones still cut the variation as before (13-20).
+    SoundData zd = d;
+    AddZone(zd, 1.25, 0.05, "");
+    std::vector<PieceApply> za = PieceApplyFor(zd, 0, "");
+    CHECK(za.size() == 2 && Near(za[0].slice.length, 0.25) && Near(za[1].slice.start_offs, 1.3) &&
+          Near(za[1].from_anchor, 0.3) && Near(za[0].fades.out, kDefaultCutFade));
     // A negative or bad cut_fade reads as none.
     zd.cut_fade = -1.0;
-    CHECK(Near(PieceApplyFor(zd, 0, "b")[0].fades.in, 0.0));
+    CHECK(Near(PieceApplyFor(zd, 0, "")[1].fades.in, 0.0));
     // ApplyMeasuredSyncs: the measured syncs written back into the store's Sound.
     {
         SoundStore   store;
@@ -195,107 +172,200 @@ static void TestAsAuditioned()
     CHECK(PlacementDropsText(false, false, false, true) == "Placed without the source item's pan (RAV plays the file itself)");
 }
 
-// 13-62 (decision 6, matrix row "Part fades own"): a part owning a fade gets its fades on both edges of
-// each of its pieces (at a cut too, not cut_fade); a part without keeps today's rule.
-static void TestPartFadesOnPieces()
+// 13-62h: a divided Sound (heel / toe) whose variation 0 is the given zones (Silence mode, edited as zones).
+static EditZone Zn(double a, double b, const std::string& part, double xl = 0.0, double xr = 0.0)
+{
+    EditZone z;
+    z.a = z.slot_a = a;
+    z.b = z.slot_b = b;
+    z.part = part;
+    z.xl = xl;
+    z.xr = xr;
+    return z;
+}
+static SoundData Zoned(const std::vector<EditZone>& zones)
 {
     SoundData d;
     d.mode = DetectMode::Silence;
     d.divide_group = "g";
     d.divide_values = {"heel", "toe"};
     SoundFrame f;
-    f.start = 1.0;
-    f.length = 1.0;
-    f.cuts = {1.4};
-    f.fade_in = 0.03;   // the variation's own frame fades (13-62 review: an unowned side keeps them)
-    f.fade_out = 0.05;
-    f.fade_out_shape = 2;
+    f.zones = zones;
+    f.start = zones.front().a;
+    f.length = zones.back().b - zones.front().a;
     d.frames.push_back(f);
+    return d;
+}
+
+// 13-62 (decision 6) on zones (13-62h): a part owning a fade gets it on each of its zones' edges (a zone's own
+// fade wins; at a cut the At cuts fade comes before the part's own, mockup fadeOf); a part without: the Sound's.
+static void TestPartFadesOnPieces()
+{
+    SoundData d = Zoned({Zn(1.0, 1.4, "heel"), Zn(1.4, 2.0, "toe")});
+    d.fade_in = 0.03;
+    d.fade_out = 0.05;
+    CHECK(ZonesProblem(d, 0.0).empty());
     PartSettings own;
-    own.fade_in = 0.004;
+    own.fade_out = 0.004;
     SetPartSetting(d, "toe", own);
     std::vector<PieceApply> toe = PieceApplyFor(d, 0, "toe");
-    CHECK(toe.size() == 1 && Near(toe[0].slice.start_offs, 1.4));
+    CHECK(toe.size() == 1 && Near(toe[0].slice.start_offs, 1.4) && Near(toe[0].slice.length, 0.6));
     if (toe.size() == 1) {
-        CHECK(toe[0].fades.set_in && Near(toe[0].fades.in, 0.004) && toe[0].fades.in_shape == 0);
-        // Its unowned side at the variation's edge: the frame fade (its shape too), not a Sound default.
-        CHECK(toe[0].fades.set_out && Near(toe[0].fades.out, 0.05) && toe[0].fades.out_shape == 2);
+        CHECK(toe[0].fades.set_in && Near(toe[0].fades.in, kDefaultCutFade) && toe[0].fades.in_shape == 0);  // at the cut
+        CHECK(toe[0].fades.set_out && Near(toe[0].fades.out, 0.004) && toe[0].fades.out_shape == 0);       // the part's
     }
-    // Heel owns nothing: its frame fade in at the variation edge, cut_fade at the cut.
+    // Heel owns nothing: the Sound's fade in at its free edge, At cuts at the cut.
     std::vector<PieceApply> heel = PieceApplyFor(d, 0, "heel");
     CHECK(heel.size() == 1 && Near(heel[0].fades.in, 0.03) && Near(heel[0].fades.out, kDefaultCutFade));
-    // Heel owns only its fade out: the cut side gets it, its variation-edge fade in stays the frame's.
-    own = PartSettings{};
-    own.fade_out = 0.008;
-    SetPartSetting(d, "heel", own);
-    heel = PieceApplyFor(d, 0, "heel");
-    CHECK(heel.size() == 1 && Near(heel[0].fades.in, 0.03) && Near(heel[0].fades.out, 0.008));
-    ResetPartSetting(d, "heel", PartField::FadeOut);
-    // Toe owns only its fade out: its in side at the cut keeps cut_fade.
-    ResetPartSetting(d, "toe", PartField::FadeIn);
-    own = PartSettings{};
-    own.fade_out = 0.02;
-    SetPartSetting(d, "toe", own);
+    // A zone's own fade wins over everything but a Gap.
+    d.frames[0].zones[1].fade_in = 0.012;
     toe = PieceApplyFor(d, 0, "toe");
-    CHECK(toe.size() == 1 && Near(toe[0].fades.in, kDefaultCutFade) && Near(toe[0].fades.out, 0.02));
-    own = PartSettings{};
-    own.fade_in = 0.004;
-    SetPartSetting(d, "toe", own);
-    // Its own fade out too, on the variation's edge: the part's, not the frame's.
-    own = PartSettings{};
-    own.fade_out = 0.02;
-    SetPartSetting(d, "toe", own);
-    toe = PieceApplyFor(d, 0, "toe");
-    CHECK(toe.size() == 1 && Near(toe[0].fades.in, 0.004) && Near(toe[0].fades.out, 0.02));
-    // Per-part sync (decision 7): Slice start + its own offset, from the part's own span.
+    CHECK(toe.size() == 1 && Near(toe[0].fades.in, 0.012) && Near(toe[0].fades.out, 0.004));
+    // Per-part sync (decision 7): Slice start + its own offset, from the part's own zone.
     own = PartSettings{};
     own.sync_mode = SyncMode::SliceStart;
     own.sync_offset_ms = 10.0;
     SetPartSetting(d, "toe", own);
+    CHECK(!PieceSnapNeedsPeaks(d, 0, "toe") && PieceSnapNeedsPeaks(d, 0, "heel"));
     toe = PieceApplyFor(d, 0, "toe");
     CHECK(toe.size() == 1 && Near(toe[0].slice.snap_offset, 0.01, 1e-9));
 }
 
-// 13-62F (F1): the Lane view's fades per piece, as placed.
+// 13-62F (F1) on zones (13-62h): the Lane view's fades per piece, as placed; own = the zone's or its part's.
 static void TestPartPieceFades()
 {
-    SoundData d;
-    d.mode = DetectMode::Silence;
-    d.divide_group = "g";
-    d.divide_values = {"heel", "toe"};
-    SoundFrame f;
-    f.start = 1.0;
-    f.length = 1.0;
-    f.cuts = {1.4};
-    f.fade_in = 0.03;
-    f.fade_out = 0.05;
-    d.frames.push_back(f);
-    // Nothing owned: heel = the variation's fade in, cut_fade at the cut; toe = cut_fade, then the fade out.
+    SoundData d = Zoned({Zn(1.0, 1.4, "heel"), Zn(1.4, 2.0, "toe")});
+    d.fade_in = 0.03;
+    d.fade_out = 0.05;
     std::vector<PieceFade> heel = PartPieceFades(d, 0, "heel"), toe = PartPieceFades(d, 0, "toe");
     CHECK(heel.size() == 1 && Near(heel[0].start, 1.0) && Near(heel[0].length, 0.4) && Near(heel[0].in, 0.03) &&
           Near(heel[0].out, kDefaultCutFade) && !heel[0].own_in && !heel[0].own_out);
-    CHECK(toe.size() == 1 && Near(toe[0].in, kDefaultCutFade) && Near(toe[0].out, 0.05));
-    // Toe owns its fade in: on its cut side; heel unchanged.
+    CHECK(toe.size() == 1 && Near(toe[0].in, kDefaultCutFade) && Near(toe[0].out, 0.05) && !toe[0].own_out);
     PartSettings own;
-    own.fade_in = 0.004;
+    own.fade_out = 0.004;
     SetPartSetting(d, "toe", own);
     toe = PartPieceFades(d, 0, "toe");
-    CHECK(toe.size() == 1 && Near(toe[0].in, 0.004) && toe[0].own_in && !toe[0].own_out && Near(toe[0].out, 0.05));
+    CHECK(toe.size() == 1 && Near(toe[0].out, 0.004) && toe[0].own_out && !toe[0].own_in);
+    d.frames[0].zones[0].fade_in = 0.01;
     heel = PartPieceFades(d, 0, "heel");
-    CHECK(heel.size() == 1 && Near(heel[0].out, kDefaultCutFade));
-    // An owned fade longer than the piece: in + out kept within it.
-    own = PartSettings{};
-    own.fade_out = 2.0;
-    SetPartSetting(d, "heel", own);
-    heel = PartPieceFades(d, 0, "heel");
-    CHECK(heel.size() == 1 && heel[0].in + heel[0].out <= 0.4 + 1e-9 && heel[0].own_out);
+    CHECK(heel.size() == 1 && Near(heel[0].in, 0.01) && heel[0].own_in);
     CHECK(PartPieceFades(d, 5, "heel").empty());
 }
 
+// 13-62h (spec Lot B, I/O matrix rows "Placement" and "Empty space", C2, C3): a divided Sound placed from its
+// zones only.
+static void TestZonePlacement()
+{
+    // Row "Placement": Heel [0.10, 0.40] · Gap [0.40, 0.45] xl = xr = 5 ms · Heel [0.45, 0.70]: a Heel event places
+    // 2 items overlapping by 10 ms, the left one ends at 0.405, the right one starts at 0.445, 0.05 s earlier.
+    {
+        SoundData d = Zoned({Zn(0.10, 0.40, "heel"), Zn(0.40, 0.45, "", 0.005, 0.005), Zn(0.45, 0.70, "heel")});
+        CHECK(ZonesProblem(d, 1.0).empty());
+        const std::vector<PieceApply> pa = PieceApplyFor(d, 0, "heel");
+        CHECK(pa.size() == 2);
+        if (pa.size() == 2) {
+            CHECK(pa[0].anchor && !pa[1].anchor && Near(pa[0].slice.start_offs, 0.10) &&
+                  Near(pa[0].slice.start_offs + pa[0].slice.length, 0.405));
+            CHECK(Near(pa[1].slice.start_offs, 0.445) && Near(pa[1].slice.length, 0.255));
+            CHECK(Near(pa[0].fades.out, 0.010) && Near(pa[1].fades.in, 0.010));  // the crossfade, xl + xr
+            CHECK(Near(pa[1].from_anchor, 0.295));  // in the file 0.345 after the anchor's start: 0.05 s earlier
+            const double p0 = PiecePosition(10.0, pa[0].from_anchor, 1.0), p1 = PiecePosition(10.0, pa[1].from_anchor, 1.0);
+            CHECK(Near(p0 + pa[0].slice.length - p1, 0.010));  // they overlap by 10 ms
+            // The whole variation (a combined event): the same two pieces (a Gap is never placed).
+            const std::vector<PieceApply> whole = PieceApplyFor(d, 0, "");
+            CHECK(whole.size() == 2 && Near(whole[1].from_anchor, 0.295));
+        }
+    }
+    // Row "Empty space": Heel [0.10, 0.30], Toe [0.40, 0.60]: Populate keeps the 0.10 s space.
+    {
+        SoundData d = Zoned({Zn(0.10, 0.30, "heel"), Zn(0.40, 0.60, "toe")});
+        const std::vector<PieceApply> pa = PieceApplyFor(d, 0, "");
+        CHECK(pa.size() == 2 && Near(pa[1].from_anchor, 0.30) && Near(pa[0].slice.length, 0.20) &&
+              Near(pa[1].slice.start_offs, 0.40));
+        if (pa.size() == 2) CHECK(Near(pa[1].from_anchor - (pa[0].from_anchor + pa[0].slice.length), 0.10));
+        // Free edges: the Sound's fades (no cut, no Gap).
+        CHECK(pa.size() == 2 && Near(pa[0].fades.out, kDefaultFadeOut) && Near(pa[1].fades.in, kDefaultFadeIn));
+        // A part event: that part's zone alone, anchored on it.
+        const std::vector<PieceApply> toe = PieceApplyFor(d, 0, "toe");
+        CHECK(toe.size() == 1 && toe[0].anchor && Near(toe[0].slice.start_offs, 0.40) && Near(toe[0].from_anchor, 0.0));
+    }
+    // C2: a split Heel | Heel = 2 butted items, each with the At cuts fade at the split, never merged.
+    {
+        SoundData d = Zoned({Zn(0.10, 0.30, "heel"), Zn(0.30, 0.50, "heel")});
+        d.cut_fade = 0.003;
+        const std::vector<PieceApply> pa = PieceApplyFor(d, 0, "heel");
+        CHECK(pa.size() == 2 && Near(pa[0].slice.length, 0.20) && Near(pa[1].slice.start_offs, 0.30) &&
+              Near(pa[1].from_anchor, 0.20) && Near(pa[0].fades.out, 0.003) && Near(pa[1].fades.in, 0.003));
+    }
+    // A zone with its own fades and gain; the lane fader (what it shifted into the zone gains, C3) is not added.
+    {
+        SoundData d = Zoned({Zn(0.10, 0.40, "heel"), Zn(0.50, 0.80, "heel")});
+        d.frames[0].zones[0].fade_in = 0.007;
+        d.frames[0].zones[0].fade_out = 0.009;
+        d.frames[0].zones[0].db = -4.5;
+        d.frames[0].zones[1].db = 2.0;
+        PartSettings p;
+        p.fader_db = 2.0;
+        SetPartSetting(d, "heel", p);
+        d.frames[0].db = -6.0;                        // an old variation dB: not read for zones
+        d.frames[0].part_db = {{"heel", 3.0}};        // nor part_db
+        const std::vector<PieceApply> pa = PieceApplyFor(d, 0, "heel");
+        CHECK(pa.size() == 2 && Near(pa[0].fades.in, 0.007) && Near(pa[0].fades.out, 0.009) && Near(pa[0].db, -4.5) &&
+              Near(pa[1].db, 2.0));
+        // ItemGainFor(gain + db) is what each item gets (sound_place.cpp).
+        CHECK(pa.size() == 2 && Near(ItemGainFor(0.0 + pa[1].db), std::pow(10.0, 0.1), 1e-12));
+    }
+    // A whole-variation event over Heel · Gap · Toe: every part zone; a Toe event after the Gap starts xr before
+    // the Gap's end, the crossfade as its fade in, anchored on it.
+    {
+        SoundData d = Zoned({Zn(0.10, 0.30, "heel"), Zn(0.30, 0.35, "", 0.004, 0.004), Zn(0.35, 0.60, "toe")});
+        CHECK(ZonesProblem(d, 0.0).empty());
+        std::vector<PieceApply> pa = PieceApplyFor(d, 0, "");
+        CHECK(pa.size() == 2 && Near(pa[0].slice.length, 0.204) && Near(pa[1].slice.start_offs, 0.346) &&
+              Near(pa[1].from_anchor, 0.196) && Near(pa[0].fades.out, 0.008) && Near(pa[1].fades.in, 0.008));
+        pa = PieceApplyFor(d, 0, "toe");
+        CHECK(pa.size() == 1 && pa[0].anchor && Near(pa[0].slice.start_offs, 0.346) && Near(pa[0].fades.in, 0.008));
+        // Its own snap, measured from the piece's start.
+        d.frames[0].zones[2].snap = 0.40;
+        CHECK(!PieceSnapNeedsPeaks(d, 0, "toe"));
+        pa = PieceApplyFor(d, 0, "toe");
+        CHECK(pa.size() == 1 && Near(pa[0].slice.snap_offset, 0.054));
+    }
+    // Snap = ZoneSnap on the anchor zone: without peaks Attack = its onset + the offset (-2 ms); with peaks the
+    // attack measured in it.
+    {
+        SoundData d = Zoned({Zn(1.0, 1.4, "heel"), Zn(1.4, 2.0, "toe")});
+        d.frames[0].zones[0].onset = 1.05;
+        CHECK(PieceSnapNeedsPeaks(d, 0, "heel"));
+        std::vector<PieceApply> pa = PieceApplyFor(d, 0, "heel");
+        CHECK(pa.size() == 1 && Near(pa[0].slice.snap_offset, 0.048, 1e-9));
+        PeakData pk;
+        pk.rate = 1000.0;
+        pk.max_abs.assign(2000, 0.0f);
+        for (int i = 1100; i < 1300; ++i) pk.max_abs[static_cast<size_t>(i)] = 0.5f;
+        pa = PieceApplyFor(d, 0, "heel", false, &pk);
+        CHECK(pa.size() == 1 && Near(pa[0].slice.snap_offset, 0.098, 1e-6));
+        // The anchor of a whole event = the first zone; the others carry no snap.
+        pa = PieceApplyFor(d, 0, "", false, &pk);
+        CHECK(pa.size() == 2 && pa[0].anchor && !pa[1].anchor && Near(pa[1].slice.snap_offset, 0.0));
+    }
+    // A part with no zone in a variation: nothing placed; an off variation: nothing; Takes: nothing (A8).
+    {
+        SoundData d = Zoned({Zn(0.10, 0.30, "heel")});
+        CHECK(PieceApplyFor(d, 0, "toe").empty() && PieceApplyFor(d, 0, "heel").size() == 1);
+        CHECK(!PieceSnapNeedsPeaks(d, 0, "toe"));
+        d.frames[0].on = false;
+        CHECK(PieceApplyFor(d, 0, "heel").empty());
+        d.frames[0].on = true;
+        d.mode = DetectMode::Takes;
+        CHECK(PieceApplyFor(d, 0, "heel").empty() && !PieceSnapNeedsPeaks(d, 0, "heel"));
+    }
+}
 int main()
 {
     TestPartPieceFades();
     TestPartFadesOnPieces();
+    TestZonePlacement();
     TestChanMode();
     TestAsAuditioned();
     // Position (Blend offset + nudge) and clamp.

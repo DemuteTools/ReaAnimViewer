@@ -309,6 +309,18 @@ const SoundData& PlacedDataFor(const std::string& lib_uid, const SoundNode& n, i
     return m.data;
 }
 
+// 13-62h: the peaks a zoned placement's snap reads (ZoneSnap on its anchor zone: Attack / Peak without a snap of
+// its own, PieceSnapNeedsPeaks), read once a gesture like the syncs above; null when it needs none or none could
+// be read (the zone's detected onset, else its start). Nothing is detected here (D6): the zones are as stored.
+const PeakData* ZoneSnapPeaks(const SoundNode& n, int v, const std::string& part, const std::function<std::string()>& path_of,
+                              MeasureCache& local)
+{
+    if (!PieceSnapNeedsPeaks(n.sound, v, part)) return nullptr;
+    MeasureCache&     cache = g_measured ? *g_measured : local;
+    const std::string path = path_of();
+    return path.empty() ? nullptr : WholeFilePeaks(cache, path);
+}
+
 void WriteMeasuredSyncs(const std::map<std::string, MeasuredSound>& measured)
 {
     bool any = false;
@@ -338,10 +350,11 @@ std::string DivideValueName(const SoundStore& store, const SoundData& data, cons
 
 // The request for one resolved sound (P11). `file` = a File Sound's target (PrepareFileSound). 13-20 /
 // 13-23 / 13-25: `data` = the Sound's data to place (its syncs measured, PlacedDataFor; null = its
-// own): a sliced, Whole-item or File variation is placed as the pieces of its part (PieceApplyFor).
+// own): a sliced, Whole-item or File variation is placed as the pieces of its part (PieceApplyFor). 13-62h:
+// `zone_peaks` = what a zoned anchor's snap reads (ZoneSnapPeaks).
 PlaceRequest RequestFor(MediaItem* owner, const std::string& rid, double event_t, double project_t,
                         const SoundNode& n, const ResolvedSound& rs, const FileSoundTarget* file = nullptr,
-                        const SoundData* data = nullptr)
+                        const SoundData* data = nullptr, const PeakData* zone_peaks = nullptr)
 {
     const SoundData& sd = data ? *data : n.sound;
     PlaceRequest req;
@@ -359,7 +372,7 @@ PlaceRequest RequestFor(MediaItem* owner, const std::string& rid, double event_t
         req.track = file->track;
         req.slice = FileSliceFor(sd, v);
         req.fades = FileFadeApplyFor(sd, v);
-        req.pieces = PieceApplyFor(sd, v, rs.part_value, true);
+        req.pieces = PieceApplyFor(sd, v, rs.part_value, true, zone_peaks);
     } else if (n.sound.source.kind == SoundSourceKind::File && file && !file->item_guid.empty()) {
         req.source.kind = SoundSourceKind::Item;  // an older build's imported item: copied as before
         req.source.item_guid = file->item_guid;
@@ -371,7 +384,7 @@ PlaceRequest RequestFor(MediaItem* owner, const std::string& rid, double event_t
         req.fades = FadeApplyFor(sd, v);  // Antho 2026-10-12: fades on every placed variation
         // 13-20 / 13-23 / 13-25 (D7): the part's pieces, each from the sync point (a folder pile and
         // Takes ignore them: PlaceSounds).
-        if (sd.mode != DetectMode::Takes) req.pieces = PieceApplyFor(sd, v, rs.part_value, false);
+        if (sd.mode != DetectMode::Takes) req.pieces = PieceApplyFor(sd, v, rs.part_value, false, zone_peaks);
     }
     req.part = rs.part_value;
     req.gain_db = rs.gain_db;  // ResolveEvent already added the frame's dB
@@ -615,8 +628,10 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                     if (!pile) {
                         const SoundData& sd = PlacedDataFor(
                             lib_uid, *n, s.variation, [n]() { return SoundSourcePath(n->sound.source); }, measured_here);
+                        const PeakData* zpk = ZoneSnapPeaks(
+                            *n, s.variation, s.part_value, [n]() { return SoundSourcePath(n->sound.source); }, measured_here);
                         const std::vector<PieceApply> pa = PieceApplyFor(sd, s.variation, s.part_value,
-                                                                         n->sound.source.kind == SoundSourceKind::File);
+                                                                         n->sound.source.kind == SoundSourceKind::File, zpk);
                         pieces = static_cast<int>(pa.size());
                         if (!(rate > 0.0) || !std::isfinite(rate)) rate = 1.0;
                         for (const PieceApply& a : pa)
@@ -718,8 +733,12 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                 if (o.counts) ++o.counts->kept;
                 // 13-16 (B7c): a kept item still on its RAV track that now overlaps (a follow
                 // move) goes to a free spill child of the same track.
+                // 13-62h: its pieces crossfading at a Gap are not an overlap (CrossfadeAsButted).
+                std::vector<MediaItem*> kept_items;
                 for (int i : step.existing)
-                    if (MediaItem* it = FindItemByGuid(ev->placed[static_cast<size_t>(i)].item_guid)) FixLaneOverlap(nullptr, it);
+                    if (MediaItem* it = FindItemByGuid(ev->placed[static_cast<size_t>(i)].item_guid)) kept_items.push_back(it);
+                CrossfadeAsButted as_butted(kept_items);
+                for (MediaItem* it : kept_items) FixLaneOverlap(nullptr, it);
                 continue;
             }
             if (step.act == SlotAction::Remove) {
@@ -779,7 +798,9 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                 lib_uid, *n, s.variation,
                 [file, n]() { return file && !file->path.empty() ? file->path : SoundSourcePath(n->sound.source); },
                 measured_here);
-            PlaceRequest  req = RequestFor(item, rid, ev->t, pt, *n, s, file, &placed_data);
+            const PeakData* zone_peaks = ZoneSnapPeaks(
+                *n, s.variation, s.part_value, [n]() { return SoundSourcePath(n->sound.source); }, measured_here);
+            PlaceRequest  req = RequestFor(item, rid, ev->t, pt, *n, s, file, &placed_data, zone_peaks);
             if (switch_track) {  // 13-13: every copy on its Switch-named track; 13-16: or its layer track
                 req.track = switch_track;
                 req.track_mark = track_mark;

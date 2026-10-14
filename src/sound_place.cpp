@@ -426,8 +426,9 @@ PlaceResult PlaceFileImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* 
     std::vector<FileItemFields> fields;
     size_t                      anchor = 0;
     for (size_t k = 0; k < pieces.size(); ++k) {
-        fields.push_back(FileItemFieldsFor(file_len, pieces[k].slice, pieces[k].fades, req.gain_db, req.project_t,
-                                           req.blend_ms, req.offset_s));
+        // 13-62h: each piece of a zoned Sound at its zone's own gain on top (db 0 otherwise).
+        fields.push_back(FileItemFieldsFor(file_len, pieces[k].slice, pieces[k].fades, req.gain_db + pieces[k].db,
+                                           req.project_t, req.blend_ms, req.offset_s));
         if (pieces[k].anchor) anchor = k;
     }
     if (!fields[anchor].ok) {
@@ -441,13 +442,17 @@ PlaceResult PlaceFileImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* 
     std::string name = std::filesystem::u8path(req.file_path).filename().u8string();
     if (name.empty()) name = req.file_path;
 
+    std::vector<PlacedTag> tags;    // landed and written once every piece is made (CrossfadeAsButted)
+    std::vector<bool>      reused;  // the kept item
+    bool                   failed = false;  // r.error said; the pieces made so far are still landed and tagged
     for (size_t k = 0; k < pieces.size(); ++k) {
         const FileItemFields& fld = fields[k];
         if (!fld.ok) continue;  // a piece outside the file: the others still play
         PCM_source* src = f_create_source(req.file_path.c_str());
         if (!src) {
             r.error = "could not read the file";
-            return r;
+            failed = true;
+            break;
         }
         auto drop_source = [&src]() {
             if (src && f_destroy_source) f_destroy_source(src);
@@ -460,7 +465,8 @@ PlaceResult PlaceFileImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* 
             if (!user_moved && GetMediaItem_Track(reuse) != req.track && !f_move_to_track(reuse, req.track)) {
                 drop_source();
                 r.error = "could not move the kept item to its track";
-                return r;
+                failed = true;
+                break;
             }
             // A fresh item with the same GUID: the old takes, their sources and FX go. The old
             // chunk is kept so a failure below puts the item back as it was.
@@ -470,14 +476,16 @@ PlaceResult PlaceFileImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* 
             if (!f_set_chunk(reuse, fresh.c_str(), false)) {
                 drop_source();
                 r.error = "could not rewrite the kept item";
-                return r;
+                failed = true;
+                break;
             }
         } else {
             item = f_add_item(req.track);
             if (!item) {
                 drop_source();
                 r.error = "could not add an item";
-                return r;
+                failed = true;
+                break;
             }
         }
         MediaItem_Take* take = f_add_take(item);
@@ -490,7 +498,8 @@ PlaceResult PlaceFileImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* 
                 f_set_chunk(reuse, saved.c_str(), false);  // back as it was
             }
             r.error = "could not give the item its file";
-            return r;
+            failed = true;
+            break;
         }
         src = nullptr;  // the take owns it now
         f_set_active_take(take);
@@ -528,11 +537,19 @@ PlaceResult PlaceFileImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* 
         tag.ao = pos - anchor_pos;
         tag.sy = sync;
         tag.pt = req.part;
-        tag.tk = Land(proj, item, req.track, req.track_mark, reuse != nullptr && user_moved, kept_tk);
-        WritePlacedTag(item, tag);
+        tags.push_back(tag);
+        reused.push_back(reuse != nullptr);
         r.item_guids.push_back(ItemGuidOf(item));
         r.items.push_back(item);
     }
+    {  // 13-62h: pieces crossfading at a Gap land as butted (one track), then get their overlap back.
+        CrossfadeAsButted as_butted(r.items);
+        for (size_t k = 0; k < r.items.size(); ++k) {
+            tags[k].tk = Land(proj, r.items[k], req.track, req.track_mark, reused[k] && user_moved, kept_tk);
+            WritePlacedTag(r.items[k], tags[k]);
+        }
+    }
+    if (failed) return r;
     r.ok = !r.items.empty();
     if (!r.ok && r.error.empty()) r.error = "the variation lies outside the file";
     return r;
@@ -629,8 +646,10 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
         // own volume (an item placed earlier and taken as a source gave +24.3 dB in the library, +47 dB on
         // the track). PlacedCopyVolumes.
         MediaItem_Take*     tk = GetActiveTake(item);
+        // 13-62h: each piece of a zoned Sound at its zone's own gain on top.
+        const double        piece_gain = by_pieces ? ItemGainFor(req.gain_db + req.pieces[i].db) : gain;
         const PlacedVolumes vol = PlacedCopyVolumes(folder, GetMediaItemInfo_Value(m.src, "D_VOL"),
-                                                    tk ? GetMediaItemTakeInfo_Value(tk, "D_VOL") : 1.0, gain);
+                                                    tk ? GetMediaItemTakeInfo_Value(tk, "D_VOL") : 1.0, piece_gain);
         f_set_item(item, "D_VOL", vol.item);
         if (vol.set_take && tk) f_set_take(tk, "D_VOL", vol.take);
         placed.push_back(item);
@@ -647,6 +666,7 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
     const double sync = folder ? GetMediaItemInfo_Value(anchor_src, "D_SNAPOFFSET")
                                : GetMediaItemInfo_Value(placed[anchor_piece], "D_SNAPOFFSET");
     const double anchor = PlacementPosition(req.project_t, sync, req.blend_ms, req.offset_s);
+    std::vector<double> positions;
     for (size_t i = 0; i < placed.size(); ++i) {
         const double src_pos = GetMediaItemInfo_Value(members[i].src, "D_POSITION");
         double       pos = anchor;
@@ -657,6 +677,12 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
             pos = PiecePosition(anchor, req.pieces[i].from_anchor, take ? GetMediaItemTakeInfo_Value(take, "D_PLAYRATE") : 1.0);
         }
         f_set_item(placed[i], "D_POSITION", pos);
+        positions.push_back(pos);
+    }
+    // 13-62h: pieces crossfading at a Gap land as butted (one track), then get their overlap back.
+    CrossfadeAsButted as_butted(by_pieces ? placed : std::vector<MediaItem*>());
+    for (size_t i = 0; i < placed.size(); ++i) {
+        const double pos = positions[i];
         PlacedTag tag;
         tag.owner = owner;
         tag.rid = req.rid;
@@ -998,6 +1024,37 @@ bool PlacedPileAnchor(MediaItem* item, double* anchor_pos, double* sync)
         return true;
     } catch (...) {
         return false;
+    }
+}
+
+CrossfadeAsButted::CrossfadeAsButted(const std::vector<MediaItem*>& items)
+{
+    if (!f_set_item || items.size() < 2) return;
+    std::vector<Was> all;
+    for (MediaItem* it : items)
+        if (it) all.push_back({it, GetMediaItemInfo_Value(it, "D_POSITION"), GetMediaItemInfo_Value(it, "D_LENGTH")});
+    std::stable_sort(all.begin(), all.end(), [](const Was& x, const Was& y) { return x.pos < y.pos; });
+    for (size_t k = 1; k < all.size(); ++k) {
+        // The one before it on its track (a pile's members on other tracks are not its neighbours).
+        size_t j = k;
+        while (j > 0 && GetMediaItem_Track(all[j - 1].item) != GetMediaItem_Track(all[k].item)) --j;
+        if (j == 0) continue;
+        const double prev_end = all[j - 1].pos + all[j - 1].len;  // as it was (its own start may have moved)
+        const double over = prev_end - all[k].pos;
+        if (!(over > 1e-9) || !(all[k].len - over > 1e-6)) continue;  // butted, or wholly inside it (left alone)
+        was_.push_back(all[k]);
+        f_set_item(all[k].item, "D_POSITION", prev_end);
+        f_set_item(all[k].item, "D_LENGTH", all[k].len - over);
+        RefreshLaneItem(all[k].item);
+    }
+}
+
+CrossfadeAsButted::~CrossfadeAsButted()
+{
+    for (const Was& w : was_) {
+        f_set_item(w.item, "D_POSITION", w.pos);
+        f_set_item(w.item, "D_LENGTH", w.len);
+        RefreshLaneItem(w.item);
     }
 }
 

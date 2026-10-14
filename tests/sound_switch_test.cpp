@@ -647,33 +647,47 @@ static void TestParts()
     h.part_variation = nullptr;
     r = ResolveEvent(st, lib, l, h);
     CHECK(r.sounds[0].variation == 0 && r.sounds[0].part_value == "vb");
-    // 13-28: after a Per part Normalize, the event's part plays at its own gain; a whole placement at the
-    // variation's dB.
+    // 13-62h (spec Lot B): a Sound edited as zones carries its gains in its zones (each piece its own,
+    // PieceApply::db): an old frame dB, part_db or part gain setting adds nothing to the event's gain.
     const double g0 = r.sounds[0].gain_db;
+    {
+        EditZone z;  // laid out as zones (PlacedFromZones)
+        z.a = z.slot_a = 0.0;
+        z.b = z.slot_b = 0.1;
+        z.part = "vb";
+        z.db = 5.0;  // placed on its piece (PieceApply::db), never in the event's gain
+        FindNode(lib, "s1")->sound.frames[0].zones = {z};
+    }
     FindNode(lib, "s1")->sound.frames[0].db = -1.0;
     FindNode(lib, "s1")->sound.frames[0].part_db = {{"vb", 4.0}, {"vf", -6.0}};
     r = ResolveEvent(st, lib, l, h);
-    CHECK(std::fabs(r.sounds[0].gain_db - (g0 + 4.0)) < 1e-9);
-    // 13-62 (decision 3): the part's own gain setting adds on top of its part_db (matrix row "Part gain", as
-    // amended: + FrameGainDb + PartGainDb); a part without one adds 0.
+    CHECK(std::fabs(r.sounds[0].gain_db - g0) < 1e-9);
     {
         PartSettings g;
         g.gain_db = -3.0;
         SetPartSetting(FindNode(lib, "s1")->sound, "vb", g);
         r = ResolveEvent(st, lib, l, h);
-        CHECK(std::fabs(r.sounds[0].gain_db - (g0 + 4.0 - 3.0)) < 1e-9);
-        CHECK(std::fabs(r.sounds[1].gain_db - g0) < 1e-9);  // s2: no part setting
-        FindNode(lib, "s1")->sound.frames[0].part_db.clear();
+        CHECK(std::fabs(r.sounds[0].gain_db - g0) < 1e-9 && std::fabs(r.sounds[1].gain_db - g0) < 1e-9);
+        // Takes mode and undivided (not zones): unchanged, the variation's dB (the whole variation).
+        SoundData& sd = FindNode(lib, "s1")->sound;
+        h.part_variation = nullptr;  // variation 0
+        sd.mode = DetectMode::Takes;
         r = ResolveEvent(st, lib, l, h);
-        CHECK(std::fabs(r.sounds[0].gain_db - (g0 - 1.0 - 3.0)) < 1e-9);  // the variation dB + the part's gain
-        FindNode(lib, "s1")->sound.frames[0].part_db = {{"vb", 4.0}, {"vf", -6.0}};
-        ResetPartAll(FindNode(lib, "s1")->sound, "vb");
+        CHECK(r.sounds[0].part_value.empty() && std::fabs(r.sounds[0].gain_db - (g0 - 1.0)) < 1e-9);
+        sd.mode = SoundData{}.mode;
+        sd.divide_group.clear();
+        sd.divide_values.clear();
+        r = ResolveEvent(st, lib, l, h);
+        CHECK(r.sounds[0].part_value.empty() && std::fabs(r.sounds[0].gain_db - (g0 - 1.0)) < 1e-9);
+        sd.divide_group = "gc";
+        sd.divide_values = {"vb", "vf"};
+        ResetPartAll(sd, "vb");
     }
-    // No role: the whole variation.
+    // No role: the whole variation (zoned: no frame dB either).
     l.role.clear();
     r = ResolveEvent(st, lib, l, h);
     CHECK(r.sounds[0].part_value.empty() && r.sounds[1].part_value.empty());
-    CHECK(std::fabs(r.sounds[0].gain_db - (g0 - 1.0)) < 1e-9);
+    CHECK(std::fabs(r.sounds[0].gain_db - g0) < 1e-9);
     FindNode(lib, "s1")->sound.frames[0] = SoundFrame{};
     // A missing Sound still says its part, plays nothing.
     h.is_missing = [](const SoundNode& n) { return n.uid == "s1"; };

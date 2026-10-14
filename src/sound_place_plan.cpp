@@ -5,6 +5,7 @@
 #include "sound_place_plan.h"
 
 #include "sound_entries.h"
+#include "sound_zones.h"  // 13-62h: a divided Sound placed from its zones
 
 #include <algorithm>
 #include <cmath>
@@ -357,10 +358,83 @@ FileItemFields FileItemFieldsFor(double file_len, const SliceApply& slice, const
     return o;
 }
 
-std::vector<PieceApply> PieceApplyFor(const SoundData& data, int variation, const std::string& part_value, bool file)
+namespace {
+
+// 13-62h: the part zones of variation `variation` placed for `part_value` ("" = every part zone), in time order.
+std::vector<ZoneRef> PlacedZones(const SoundData& data, int variation, const std::string& part_value)
+{
+    std::vector<ZoneRef> out;
+    const SoundFrame&    f = data.frames[static_cast<size_t>(variation)];
+    if (!f.on) return out;
+    for (size_t k = 0; k < f.zones.size(); ++k) {
+        const EditZone& z = f.zones[k];
+        if (!z.IsGap() && (part_value.empty() || z.part == part_value)) out.push_back({variation, static_cast<int>(k)});
+    }
+    return out;
+}
+
+// 13-62h: the pieces of a zoned placement (PieceApplyFor).
+std::vector<PieceApply> ZonePieces(const SoundData& data, int variation, const std::string& part_value,
+                                   const PeakData* peaks)
+{
+    std::vector<PieceApply>    out;
+    const std::vector<ZoneRef> zones = PlacedZones(data, variation, part_value);
+    if (zones.empty()) return out;
+    const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    double            heard0 = 0.0;  // the anchor's start in heard time
+    for (const ZoneRef& r : zones) {
+        const EditZone& z = *ZoneOf(data, r);
+        const EditZone* lg = ZoneOf(data, GapBefore(data, r));
+        const EditZone* rg = ZoneOf(data, GapAfter(data, r));
+        const double    a = lg ? lg->b - lg->xr : z.a;  // as HeardPieces cuts it
+        const double    b = rg ? rg->a + rg->xl : z.b;
+        if (!(b > a)) continue;
+        double jumped = 0.0;  // the Gaps before it, jumped at playback
+        for (const EditZone& g : f.zones)
+            if (g.IsGap() && g.a < a - 1e-9) jumped += g.b - g.a;
+        PieceApply pa;
+        pa.slice.set = true;
+        pa.slice.start_offs = a;
+        pa.slice.length = b - a;
+        pa.fades.set_in = pa.fades.set_out = true;
+        pa.fades.shape_in = pa.fades.shape_out = true;
+        pa.fades.in = ZoneFade(data, r, -1).s;
+        pa.fades.out = ZoneFade(data, r, 1).s;
+        pa.db = std::isfinite(z.db) ? z.db : 0.0;
+        if (out.empty()) {  // the anchor: the first placed zone, at its snap offset
+            pa.anchor = true;
+            const double t = ZoneSnap(data, r, peaks).t;
+            pa.slice.snap_offset = std::isfinite(t) ? std::min(std::max(t - a, 0.0), b - a) : 0.0;
+            heard0 = a - jumped;
+        }
+        pa.from_anchor = (a - jumped) - heard0;
+        out.push_back(pa);
+    }
+    return out;
+}
+
+bool ZonedPlacement(const SoundData& data, int variation)
+{
+    return PlacedFromZones(data) && variation >= 0 && variation < static_cast<int>(data.frames.size());
+}
+
+}  // namespace
+
+bool PieceSnapNeedsPeaks(const SoundData& data, int variation, const std::string& part_value)
+{
+    if (!ZonedPlacement(data, variation)) return false;
+    const std::vector<ZoneRef> zones = PlacedZones(data, variation, part_value);
+    if (zones.empty()) return false;
+    const EditZone& z = *ZoneOf(data, zones.front());
+    return !z.snap && PartSyncMode(data, z.part) != SyncMode::SliceStart;
+}
+
+std::vector<PieceApply> PieceApplyFor(const SoundData& data, int variation, const std::string& part_value, bool file,
+                                      const PeakData* peaks)
 {
     std::vector<PieceApply> out;
     if (data.mode == DetectMode::Takes || variation < 0 || variation >= static_cast<int>(data.frames.size())) return out;
+    if (ZonedPlacement(data, variation)) return ZonePieces(data, variation, part_value, peaks);  // 13-62h: zones only
     const std::vector<PartSpan> spans = PlacedSpans(data, variation, part_value);
     if (spans.empty()) return out;
     const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
@@ -422,7 +496,11 @@ std::vector<PieceFade> PartPieceFades(const SoundData& data, int variation, cons
     const PartSettings*    own = part_value.empty() ? nullptr : PartSettingsOf(data, part_value);
     const bool             own_in = own && own->fade_in && std::isfinite(*own->fade_in);
     const bool             own_out = own && own->fade_out && std::isfinite(*own->fade_out);
-    for (const PieceApply& pa : PieceApplyFor(data, variation, part_value, false)) {
+    const bool             zoned = ZonedPlacement(data, variation);
+    const std::vector<ZoneRef> zones = zoned ? PlacedZones(data, variation, part_value) : std::vector<ZoneRef>();
+    const std::vector<PieceApply> pieces = PieceApplyFor(data, variation, part_value, false);
+    for (size_t k = 0; k < pieces.size(); ++k) {
+        const PieceApply& pa = pieces[k];
         PieceFade f;
         f.start = pa.slice.start_offs;
         f.length = pa.slice.length;
@@ -432,6 +510,11 @@ std::vector<PieceFade> PartPieceFades(const SoundData& data, int variation, cons
         f.out_shape = pa.fades.set_out ? pa.fades.out_shape : 0;
         f.own_in = own_in;
         f.own_out = own_out;
+        if (zoned && k < zones.size()) {  // 13-62h: the zone's own fade, or its part's
+            const FadeSrc si = ZoneFade(data, zones[k], -1).src, so = ZoneFade(data, zones[k], 1).src;
+            f.own_in = si == FadeSrc::Own || si == FadeSrc::Part;
+            f.own_out = so == FadeSrc::Own || so == FadeSrc::Part;
+        }
         ClampFadePair(f.length, &f.in, &f.out);
         out.push_back(f);
     }

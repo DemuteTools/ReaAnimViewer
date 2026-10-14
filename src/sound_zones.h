@@ -48,6 +48,10 @@ inline bool operator!=(const ZoneRef& x, const ZoneRef& y) { return !(x == y); }
 
 // True when the Sound is edited as zones: divided and not in Takes mode.
 bool UsesZones(const SoundData& d);
+// 13-62h (Lot B): true when the Sound is placed, drawn and gained from its zones: UsesZones and at least one
+// zone. A divided Sound always has zones in the tool (migration, SetDivide / RefreshParts); one with none at all
+// (never laid out) keeps the old pieces.
+bool PlacedFromZones(const SoundData& d);
 // The zone `r` points at, nullptr when none.
 const EditZone* ZoneOf(const SoundData& d, const ZoneRef& r);
 EditZone*       ZoneOf(SoundData& d, const ZoneRef& r);

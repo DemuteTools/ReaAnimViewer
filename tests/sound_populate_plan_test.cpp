@@ -20,6 +20,7 @@
 #include "sound_entries.h"
 #include "sound_record.h"
 #include "sound_switch.h"
+#include "sound_zones.h"
 
 using namespace rav;
 
@@ -102,15 +103,32 @@ static SoundNode DividedSteps(const std::string& uid, const std::string& parent)
     n.sound.mode = DetectMode::Silence;
     n.sound.divide_group = "gc";
     n.sound.divide_values = {"vb", "vf"};
+    // 13-62h: a divided Sound is its zones: Back [i, i + 0.2] | Front [i + 0.2, i + 0.4], each with its detected
+    // onset 20 ms in (Attack - 2 ms = 18 ms in, without peaks).
     for (int i = 0; i < 3; ++i) {
         SoundFrame f;
         f.start = i;
         f.length = 0.4;
-        f.cuts = {i + 0.2};
-        f.syncs = {i + 0.018, i + 0.218};
+        for (int k = 0; k < 2; ++k) {
+            EditZone z;
+            z.a = z.slot_a = i + 0.2 * k;
+            z.b = z.slot_b = i + 0.2 * (k + 1);
+            z.part = k == 0 ? "vb" : "vf";
+            z.onset = z.a + 0.02;
+            f.zones.push_back(z);
+        }
         n.sound.frames.push_back(f);
     }
     return n;
+}
+
+// 13-62h: variation v's zones as given (its start / length their extent).
+static void SetZones(SoundData& d, int v, const std::vector<EditZone>& zones)
+{
+    SoundFrame& f = d.frames[static_cast<size_t>(v)];
+    f.zones = zones;
+    f.start = zones.front().a;
+    f.length = zones.back().b - zones.front().a;
 }
 
 static SoundLibrary OneSound(const SoundNode& n)
@@ -177,14 +195,19 @@ static void TestParts()
         // Slide / pivot heel kinds read as heel too.
         CHECK(ResolveFor(st, lib, Auto(AutoKind::PivotHeel)).res.sounds[0].part_value == "vb");
     }
-    // Row 3: a combined step (FS) gets the whole variation, its first part's sync.
+    // Row 3: a combined step (FS) gets the whole variation, its first part's sync. 13-62h (C2): one item per
+    // zone, never merged: Back and Front butted, At cuts at the cut.
     {
         Resolved r = ResolveFor(st, lib, Auto(AutoKind::Step));
         CHECK(r.res.sounds.size() == 1 && r.res.sounds[0].part_value.empty() && r.ed.out[0].part.empty());
         const int                     v = r.res.sounds[0].variation;
         const std::vector<PieceApply> pa = PieceApplyFor(sd, v, "");
-        CHECK(pa.size() == 1 && Near(pa[0].slice.length, 0.4) && Near(pa[0].slice.snap_offset, 0.018));
-        CHECK(Near(pa[0].fades.in, kDefaultFadeIn) && Near(pa[0].fades.out, kDefaultFadeOut));  // no cut side
+        CHECK(pa.size() == 2 && pa[0].anchor && Near(pa[0].slice.length, 0.2) && Near(pa[0].slice.snap_offset, 0.018));
+        if (pa.size() == 2) {
+            CHECK(Near(pa[0].fades.in, kDefaultFadeIn) && Near(pa[1].fades.out, kDefaultFadeOut));
+            CHECK(Near(pa[0].fades.out, kDefaultCutFade) && Near(pa[1].fades.in, kDefaultCutFade) &&
+                  Near(pa[1].from_anchor, 0.2));
+        }
     }
     // Row 4: a rule whose first condition reads a toe end bone: Front.
     {
@@ -211,10 +234,11 @@ static void TestParts()
         CHECK(ResolveFor(hands, lib, Auto(AutoKind::Grab)).res.sounds[0].part_value == "vf");
         CHECK(ResolveFor(hands, lib, Auto(AutoKind::Release, 'R')).res.sounds[0].part_value == "vf");
     }
-    // Row 7: every Front part excluded: nothing placed for toe events, NoSound text; heels still play.
+    // Row 7: no Front zone left in any variation: nothing placed for toe events, NoSound text; heels still play.
+    // 13-62h: a variation can play a part when it has a zone of it (ActiveVariationsFor).
     {
         SoundNode n = DividedSteps("s", "");
-        for (int i = 0; i < 3; ++i) AddZone(n.sound, i + 0.2, 0.2, "");
+        for (int i = 0; i < 3; ++i) SetZones(n.sound, i, {n.sound.frames[static_cast<size_t>(i)].zones[0]});
         const SoundLibrary ex = OneSound(n);
         Resolved           r = ResolveFor(st, ex, Auto(AutoKind::Toe));
         CHECK(r.res.sounds.size() == 1 && r.res.sounds[0].variation == -1);
@@ -225,8 +249,8 @@ static void TestParts()
         CHECK(h.res.sounds[0].variation >= 0 && h.ed.no_part.empty());
         // One variation with its Front part left: always that one.
         SoundNode m = DividedSteps("s", "");
-        AddZone(m.sound, 0.2, 0.2, "");
-        AddZone(m.sound, 2.2, 0.2, "");
+        SetZones(m.sound, 0, {m.sound.frames[0].zones[0]});
+        SetZones(m.sound, 2, {m.sound.frames[2].zones[0]});
         const SoundLibrary one = OneSound(m);
         for (int k = 0; k < 4; ++k) CHECK(ResolveFor(st, one, Auto(AutoKind::Toe)).res.sounds[0].variation == 1);
         // A variation turned off is not drawn for a part either; all off = no active variation.
@@ -236,30 +260,37 @@ static void TestParts()
         Resolved           z = ResolveFor(st, none, Auto(AutoKind::Toe));
         CHECK(z.ed.no_active.count("s") == 1 && z.ed.no_part.empty());
     }
-    // Row 8: an excluded zone inside Back: two pieces, the gap empty, both placed from Back's sync.
+    // Row 8 (13-62h: on zones): empty space inside Back (two Back zones [0, 0.08] and [0.12, 0.2]): two pieces,
+    // the space kept, both placed from the first one's snap.
     {
-        SoundNode n = DividedSteps("s", "");
-        AddZone(n.sound, 0.08, 0.04, "");  // Back of variation 0 = [0, 0.08) + [0.12, 0.2)
+        SoundNode     n = DividedSteps("s", "");
+        std::vector<EditZone> z = n.sound.frames[0].zones;
+        EditZone      b2 = z[0];
+        z[0].b = z[0].slot_b = 0.08;
+        b2.a = b2.slot_a = 0.12;
+        b2.onset = -1.0;
+        SetZones(n.sound, 0, {z[0], b2, z[1]});
+        CHECK(ZonesProblem(n.sound, 0.0).empty());
         const std::vector<PieceApply> pa = PieceApplyFor(n.sound, 0, "vb");
         CHECK(pa.size() == 2);
         CHECK(Near(pa[0].slice.start_offs, 0.0) && Near(pa[0].slice.length, 0.08) && pa[0].anchor);
         CHECK(Near(pa[1].slice.start_offs, 0.12) && Near(pa[1].slice.length, 0.08) && !pa[1].anchor);
         CHECK(Near(pa[0].slice.snap_offset, 0.018) && Near(pa[1].slice.snap_offset, 0.0));
         CHECK(Near(pa[1].from_anchor, 0.12) && Near(pa[0].from_anchor, 0.0));
-        CHECK(Near(pa[0].fades.out, kDefaultCutFade) && Near(pa[1].fades.in, kDefaultCutFade) &&
-              Near(pa[1].fades.out, kDefaultCutFade));  // zone edge, zone edge, cut
-        // On the timeline: the anchor at event - snap, the second piece 0.12 s later (the gap kept).
+        CHECK(Near(pa[0].fades.out, kDefaultFadeOut) && Near(pa[1].fades.in, kDefaultFadeIn) &&
+              Near(pa[1].fades.out, kDefaultCutFade));  // free edge, free edge, cut
+        // On the timeline: the anchor at event - snap, the second piece 0.12 s later (the space kept).
         const double anchor = PlacementPosition(10.0, pa[0].slice.snap_offset, 0.0, 0.0);
         CHECK(Near(anchor, 9.982) && Near(PiecePosition(anchor, pa[1].from_anchor, 1.0), 10.102));
         CHECK(Near(PiecePosition(anchor, pa[1].from_anchor, 2.0), 10.042));  // playrate 2: item seconds
-        // The sync in the second piece: the first piece sits before the anchor.
-        n.sound.frames[0].syncs = {0.13, 0.218};
+        // The anchor is always the first placed zone: a snap set on the second one is not the event's.
+        n.sound.frames[0].zones[1].snap = 0.13;
         const std::vector<PieceApply> pb = PieceApplyFor(n.sound, 0, "vb");
-        CHECK(pb.size() == 2 && !pb[0].anchor && pb[1].anchor && Near(pb[0].from_anchor, -0.12) &&
-              Near(pb[1].slice.snap_offset, 0.01));
-        // The whole variation around it: two pieces too, the cut inside the second one keeps no fade.
+        CHECK(pb.size() == 2 && pb[0].anchor && !pb[1].anchor && Near(pb[0].slice.snap_offset, 0.018));
+        // The whole variation: its three zones, each its own item.
         const std::vector<PieceApply> pw = PieceApplyFor(n.sound, 0, "");
-        CHECK(pw.size() == 2 && Near(pw[1].slice.length, 0.28) && Near(pw[1].fades.out, kDefaultFadeOut));
+        CHECK(pw.size() == 3 && Near(pw[2].slice.length, 0.2) && Near(pw[2].fades.out, kDefaultFadeOut) &&
+              Near(pw[2].from_anchor, 0.2));
         // The slot is placed again when the piece count or the part changes (re-Populate).
         std::vector<DesiredSlot>  d = {De(0, "s", 0)};
         std::vector<ExistingSlot> x = {Ex(0, "s", 0)};
@@ -324,7 +355,7 @@ static void TestParts()
         n.sound.divide_group.clear();
         n.sound.divide_values.clear();
         for (SoundFrame& f : n.sound.frames) {
-            f.cuts.clear();
+            f.zones.clear();
             f.syncs = {f.start + 0.018};
         }
         CHECK(ResolveFor(st, OneSound(n), Auto(AutoKind::Heel)).res.sounds[0].part_value.empty());

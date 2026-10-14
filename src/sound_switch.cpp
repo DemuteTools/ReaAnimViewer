@@ -11,6 +11,7 @@
 
 #include "sound_entries.h"  // 13-23: PartIndex, PartOfRole
 #include "sound_record.h"
+#include "sound_zones.h"  // 13-62h: PlacedFromZones (a zoned Sound's gains are its zones')
 
 namespace rav {
 
@@ -139,10 +140,12 @@ struct Walker {
             } else {
                 if (hooks.part_variation) rs.variation = hooks.part_variation(n, rs.part_value);
                 else rs.variation = hooks.variation ? hooks.variation(n) : -1;
-                if (rs.variation >= 0 && rs.variation < (int)n.sound.frames.size())
+                // 13-62h: a Sound edited as zones carries its gains in its zones (each piece its own, PieceApply::db).
+                if (!PlacedFromZones(n.sound) && rs.variation >= 0 && rs.variation < (int)n.sound.frames.size())
                     rs.gain_db += FrameGainDb(n.sound.frames[(size_t)rs.variation], rs.part_value);  // 13-28: a part's own gain
             }
-            rs.gain_db += PartGainDb(n.sound, rs.part_value);  // 13-62 (decision 3): the part's own gain setting
+            if (!PlacedFromZones(n.sound))
+                rs.gain_db += PartGainDb(n.sound, rs.part_value);  // 13-62 (decision 3): the part's own gain setting
             res.sounds.push_back(rs);
             break;
         }

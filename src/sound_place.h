@@ -99,6 +99,24 @@ bool        RemovePlacedAny(ReaProject* proj, MediaItem* item);
 // `anchor_pos` = the position its anchor lands at, `sync` = the snap it was placed by. A tag
 // without them: the item's own position and snap. False when `item` is null.
 bool PlacedPileAnchor(MediaItem* item, double* anchor_pos, double* sync);
+// 13-62h: the pieces of one placement that overlap in a Gap's crossfade count as butted for the lane rules
+// (SettleOnLanes, FixLaneOverlap: they stay on one track). While it lives, each item that starts before the end
+// of the one before it on its track (by position) starts at that end instead, its length shortened by as much; put back as
+// they were when it goes. Items that do not overlap are left alone.
+class CrossfadeAsButted {
+public:
+    explicit CrossfadeAsButted(const std::vector<MediaItem*>& items);
+    ~CrossfadeAsButted();
+    CrossfadeAsButted(const CrossfadeAsButted&) = delete;
+    CrossfadeAsButted& operator=(const CrossfadeAsButted&) = delete;
+
+private:
+    struct Was {
+        MediaItem* item;
+        double     pos, len;
+    };
+    std::vector<Was> was_;
+};
 // A gesture's GUID -> item lookup (no scan; null = none) the engine asks before scanning the
 // project; a hit is checked with ValidatePtr2. Null clears it.
 void SetPlaceItemFinder(MediaItem* (*finder)(const std::string& guid));

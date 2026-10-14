@@ -22,6 +22,7 @@ int DrawPick(const std::vector<int>& active, int avoid_n, const std::vector<int>
 std::vector<int> ActiveVariations(const SoundData& data);
 // 13-23 (A5): the frames that can play part `part_value` (a value uid; "" = the whole variation): on,
 // with at least one span of it (PlacedSpans). A variation whose part is empty or excluded is skipped.
+// 13-62h: a Sound edited as zones (PlacedFromZones): on, with at least one zone of that part ("": any part zone).
 std::vector<int> ActiveVariationsFor(const SoundData& data, const std::string& part_value);
 // An event's salt: rule id + clip time in 100 ms bins (llround(t * 10)). It only seeds a first
 // draw; an event keeps its pick across re-detection through its stored draw (+-30 ms match).

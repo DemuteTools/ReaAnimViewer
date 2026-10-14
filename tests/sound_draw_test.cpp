@@ -7,6 +7,8 @@
 
 #include <cstdio>
 #include <set>
+#include <string>
+#include <vector>
 
 using namespace rav;
 
@@ -114,6 +116,35 @@ void TestSalt()
     CHECK(EventSalt("", 0.0) == 6566800829925814604ULL);
 }
 
+// 13-62h (Lot B): a Sound edited as zones: a variation plays a part when it has a zone of it (and is on); a whole
+// event: any part zone. A Gap is no part zone.
+void TestZonedActive()
+{
+    SoundData d;
+    d.mode = DetectMode::Silence;
+    d.divide_group = "g";
+    d.divide_values = {"heel", "toe"};
+    auto zone = [](double a, double b, const std::string& part) {
+        EditZone z;
+        z.a = z.slot_a = a;
+        z.b = z.slot_b = b;
+        z.part = part;
+        return z;
+    };
+    for (int i = 0; i < 4; ++i) d.frames.push_back(SoundFrame{});
+    d.frames[0].zones = {zone(0.0, 0.2, "heel"), zone(0.2, 0.4, "toe")};
+    d.frames[1].zones = {zone(1.0, 1.2, "heel"), zone(1.2, 1.25, ""), zone(1.25, 1.4, "heel")};  // no toe
+    d.frames[2].zones = {zone(2.0, 2.2, "toe")};
+    d.frames[3].zones = {zone(3.0, 3.2, "toe")};
+    d.frames[3].on = false;
+    CHECK((ActiveVariationsFor(d, "heel") == std::vector<int>{0, 1}));
+    CHECK((ActiveVariationsFor(d, "toe") == std::vector<int>{0, 2}));
+    CHECK((ActiveVariationsFor(d, "") == std::vector<int>{0, 1, 2}));
+    d.frames[2].zones.clear();  // a variation with no zone at all
+    CHECK((ActiveVariationsFor(d, "") == std::vector<int>{0, 1}));
+    CHECK((ActiveVariationsFor(d, "toe") == std::vector<int>{0}));
+}
+
 }  // namespace
 
 int main()
@@ -122,6 +153,7 @@ int main()
     TestActiveKeep();
     TestTree();
     TestSalt();
+    TestZonedActive();
     if (g_fails) {
         std::printf("sound_draw_test: %d failure(s)\n", g_fails);
         return 1;

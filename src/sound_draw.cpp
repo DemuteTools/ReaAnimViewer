@@ -5,6 +5,7 @@
 #include "sound_draw.h"
 
 #include "sound_entries.h"  // PlacedSpans
+#include "sound_zones.h"    // 13-62h: PlacedFromZones
 
 #include <algorithm>
 #include <cmath>
@@ -54,8 +55,17 @@ std::vector<int> ActiveVariations(const SoundData& data)
 std::vector<int> ActiveVariationsFor(const SoundData& data, const std::string& part_value)
 {
     std::vector<int> out;
-    for (int i : ActiveVariations(data))
-        if (!PlacedSpans(data, i, part_value).empty()) out.push_back(i);
+    const bool zoned = PlacedFromZones(data);  // 13-62h: a variation with at least one zone of that part (any part zone)
+    for (int i : ActiveVariations(data)) {
+        bool has = false;
+        if (zoned) {
+            for (const EditZone& z : data.frames[static_cast<size_t>(i)].zones)
+                has = has || (!z.IsGap() && (part_value.empty() || z.part == part_value));
+        } else {
+            has = !PlacedSpans(data, i, part_value).empty();
+        }
+        if (has) out.push_back(i);
+    }
     return out;
 }
 

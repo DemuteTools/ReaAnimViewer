@@ -156,7 +156,8 @@ struct PieceApply {
     FadeApply  fades;          // the frame's fades on a frame-edge side, the Sound's cut_fade on a side at
                                // a cut or a zone edge
     bool       anchor = false; // holds the sync point
-    double     from_anchor = 0.0;  // its span start minus the anchor piece's (source s)
+    double     from_anchor = 0.0;  // its span start minus the anchor piece's (source s; 13-62h: heard time)
+    double     db = 0.0;           // 13-62h: its zone's own gain (dB), on top of the placement's gain
 };
 // The pieces of variation `variation` playing part `part_value` ("" = the whole variation minus its
 // exclusions), in time order. Fades at a frame edge: FadeApplyFor (`file` false) or FileFadeApplyFor
@@ -165,8 +166,20 @@ struct PieceApply {
 // frame fade at a variation edge, cut_fade at a cut / zone edge. The sync is the stored one (SyncFor) when it lies in the spans, else AutoSync without
 // peaks (the first span's start + the offset, clamped into the spans). {} for Takes mode (A8: the
 // take keeps its item's snap), a bad index, or nothing left to play (an empty or excluded part).
+// 13-62h (spec 13-62h Lot B, C2): a Sound edited as zones (PlacedFromZones) is placed from its zones only: one
+// piece per part zone of `part_value` in the variation ("" = every part zone), in time order, never merged (a split
+// Heel|Heel = 2 butted items). Each piece is cut as HeardPieces cuts it: at a Gap it runs into the Gap by xl on
+// its right / starts xr before the Gap's end on its left, its fade on that side = xl + xr (the two items overlap
+// by xl + xr and crossfade); every other side ZoneFade (own / At cuts / part / Sound), linear. Positions are
+// heard time: a piece after a Gap comes the jumped length earlier than in the file; empty space stays. The
+// anchor = the first piece, its snap = ZoneSnap of its zone (`peaks` when given, PieceSnapNeedsPeaks). `db` =
+// its zone's gain (the lane fader is not added: it already shifted the zone gains, C3). A variation with no
+// zone of that part: none.
 std::vector<PieceApply> PieceApplyFor(const SoundData& data, int variation, const std::string& part_value,
-                                      bool file = false);
+                                      bool file = false, const PeakData* peaks = nullptr);
+// 13-62h: true when the anchor piece of a zoned placement (PlacedFromZones) reads the file's peaks for its snap
+// (its zone has no snap of its own and its part's Sync point is Attack or Peak); false for a Sound not edited as zones.
+bool PieceSnapNeedsPeaks(const SoundData& data, int variation, const std::string& part_value);
 // 13-62F (F1, Antho 2026-10-14): the fades each piece of part `part_value` gets on variation `variation`, as
 // placed and heard (PieceApplyFor, `file` false; a side it leaves unset = no fade, as the audition reads it),
 // for the Edit window's Lane view: per side the part's own fade (`own_*`), else the variation's fade at a

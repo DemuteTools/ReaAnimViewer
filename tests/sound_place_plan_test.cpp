@@ -105,6 +105,7 @@ static void TestPieces()
     {
         SoundData md = fd;
         md.frames[0].part_trims = {1.0, 1.1, 1.2, 1.35};
+        md.frames[0].part_trim_key = PartTrimKey(md, 0, FileVersion{});  // 13-54 review: as measured
         std::vector<PieceApply> ma = PieceApplyFor(md, 0, "a", true);
         CHECK(ma.size() == 1 && Near(ma[0].slice.start_offs, 1.0) && Near(ma[0].slice.length, 0.1) &&
               Near(ma[0].fades.in, 0.004) && Near(ma[0].fades.out, 0.003));

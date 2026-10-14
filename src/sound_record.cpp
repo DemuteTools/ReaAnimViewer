@@ -570,6 +570,7 @@ Fields FrameFields(const SoundFrame& fr)
     if (!fr.syncs.empty()) f.push_back({"sync", JoinNumbers(fr.syncs)});
     if (!fr.hand_syncs.empty()) f.push_back({"hsync", JoinNumbers(fr.hand_syncs)});
     if (!fr.part_trims.empty()) f.push_back({"ptrim", JoinNumbers(fr.part_trims)});  // 13-54
+    if (!fr.part_trims.empty() && !fr.part_trim_key.empty()) f.push_back({"ptrimk", Enc(fr.part_trim_key)});
     for (const auto& pd : fr.part_db) f.push_back({"pdb." + Enc(pd.first), FormatNumber(pd.second)});  // 13-28
     return f;
 }
@@ -591,6 +592,7 @@ Got SetFrame(SoundFrame& fr, const std::string& k, const std::string& v)
     if (k == "sync") return G(SplitNumbers(v, &fr.syncs));
     if (k == "hsync") return G(SplitNumbers(v, &fr.hand_syncs));
     if (k == "ptrim") return G(SplitNumbers(v, &fr.part_trims));
+    if (k == "ptrimk") return G(Dec(v, &fr.part_trim_key));  // 13-54 review: what they were measured with
     if (k.size() > 4 && k.compare(0, 4, "pdb.") == 0) {  // 13-28: a part's gain, pdb.<value uid>
         std::string uid;
         double      db = 0.0;

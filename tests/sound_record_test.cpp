@@ -32,7 +32,7 @@ bool SameFrames(const std::vector<SoundFrame>& a, const std::vector<SoundFrame>&
             a[i].fade_out != b[i].fade_out || a[i].fade_in_shape != b[i].fade_in_shape ||
             a[i].fade_out_shape != b[i].fade_out_shape || a[i].cuts != b[i].cuts || a[i].cuts_hand != b[i].cuts_hand ||
             a[i].cut_unsure != b[i].cut_unsure || a[i].syncs != b[i].syncs || a[i].hand_syncs != b[i].hand_syncs || a[i].part_db != b[i].part_db ||
-            a[i].part_trims != b[i].part_trims)
+            a[i].part_trims != b[i].part_trims || a[i].part_trim_key != b[i].part_trim_key)
             return false;
     return true;
 }
@@ -505,6 +505,13 @@ int main()
         CHECK(t.find("hsync=0.13\nframe start=0.5") != std::string::npos);  // frame 0: none
         SoundStore p;
         CHECK(ParseSoundStore(t, &p) && SameStore(p, s) && SerializeSoundStore(p) == t);
+        // 13-54 review: the key they were measured with (ptrimk, encoded), kept through a round trip.
+        s.libraries[0].nodes[3].sound.frames[1].part_trim_key = "-45000000,5000000,100000000,00ff00ff00ff00ff|132,4096";
+        const std::string tk = SerializeSoundStore(s);
+        CHECK(tk.find(" ptrim=0.5,0.55,0.5625,0.625 ptrimk=-45000000%2C5000000%2C100000000%2C00ff00ff00ff00ff|132%2C4096\n") !=
+              std::string::npos);
+        SoundStore pk;
+        CHECK(ParseSoundStore(tk, &pk) && SameStore(pk, s) && SerializeSoundStore(pk) == tk);
     }
 
     // ---- 13-20 / 13-23 / 13-25: parts, zones, sync points, roles, a layer's / draw's / tag's part ---

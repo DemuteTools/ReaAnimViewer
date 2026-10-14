@@ -180,6 +180,7 @@ struct PanelState {
     int                   ev_scc = -1;
     unsigned              ev_draft_rev = 0;
     bool                  ev_live = false;
+    bool                  ev_measured = false;  // 13-54 review: planned from MeasuredShown's copy
     std::vector<int>      ev_sel;
     unsigned              draft_rev = 0;  // bumped each time the live draft is rewritten or ends
     // 13-40: the Mix row selected (its parent and the child): Play / Space plays that child.
@@ -378,6 +379,47 @@ void RefreshOne(SoundData& d, int i, const std::string& path)
 {
     PeakData pk;
     RefreshFrame(d, i, !path.empty() && RequestPeaks(path, &pk) == PeakState::Ready ? &pk : nullptr);
+}
+
+// 13-54 review: the Sound as shown (Shown) with its sync points and part trims measured on the file's
+// peaks when they were never measured or are stale (a Sound saved before 13-54, its file re-rendered at
+// the same path, margins changed elsewhere): an unsaved copy, the next write or Populate stores them
+// (D6). The waveform (panel and Edit), Edit's Play and its part clicks read it, so what is heard is what
+// is drawn. The shown data itself during a live drag, in Takes mode, or until the peaks are read.
+const SoundData& MeasuredShown(const SoundNode& n, const std::string& path)
+{
+    const SoundData& d = Shown(n);
+    if (d.mode == DetectMode::Takes || path.empty() || P.phase.Live()) return d;
+    const FileVersion file = PeaksFileVersion(path);  // zero until they are read
+    const bool        margins = PartMarginsApply(d);
+    bool              stale = false;
+    for (size_t i = 0; i < d.frames.size() && !stale; ++i)
+        stale = SyncsStale(d, static_cast<int>(i)) || (margins && PartTrimsStale(d, static_cast<int>(i), &file));
+    if (!stale || RequestPeaks(path, nullptr) != PeakState::Ready) return d;
+    struct Copy {
+        std::string key;
+        SoundData   data;
+    };
+    static std::map<std::string, Copy> copies;  // per Sound uid (the panel and Edit may show two)
+    if (copies.size() >= 8 && copies.find(n.uid) == copies.end()) copies.clear();
+    const std::string key = path + "|" + std::to_string(GetProjectStateChangeCount(nullptr)) + "|" +
+                            std::to_string(SoundStoreGeneration()) + "|" + std::to_string(file.time) + "|" +
+                            std::to_string(file.size);
+    Copy& c = copies[n.uid];
+    if (c.key != key) {
+        c.key = key;
+        c.data = d;
+        RefreshWith(c.data, path);
+    }
+    return c.data;
+}
+
+// 13-54 review: `n` with MeasuredShown's data (what a click in Edit plays).
+SoundNode MeasuredNode(const SoundNode& n, const std::string& path)
+{
+    SoundNode out = n;
+    out.sound = MeasuredShown(n, path);
+    return out;
 }
 
 // A re-detection that keeps the hand frames (decision 7), their hand sync points and cuts carried to the
@@ -590,22 +632,29 @@ void PlaySoundVoices(const SoundNode& n, const SoundMedia& m, const std::vector<
 // A part of variation i ("" = the whole variation minus its exclusions), as Populate places it.
 void PlayPart(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, int i, const std::string& part)
 {
-    PlaySoundVoices(n, m, PartAuditionVoices(lib, n, i, part));
+    const SoundNode shown = MeasuredNode(n, m.path);  // 13-54 review: its pieces as drawn
+    PlaySoundVoices(shown, m, PartAuditionVoices(lib, shown, i, part));
 }
 
 // A click at source time t of variation i in Edit: the part there (an off variation: the whole of it).
 void PlayAt(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, int i, double t)
 {
-    const SoundData& d = n.sound;
+    const SoundData& d = MeasuredShown(n, m.path);  // 13-54 review: the parts as drawn
     if (i < 0 || static_cast<size_t>(i) >= d.frames.size()) return;
     std::string own;
     if (!d.frames[static_cast<size_t>(i)].on) PlayFrame(lib, n, m, i);
     else if (!PartAt(d, i, t, &own)) ShowLibraryToast("Excluded: never placed (right-click \xE2\x80\xBA Include again)", false);
     else {
         // 13-54: the part that plays there once the margins apply (a pre-roll may reach back over a cut).
+        bool played = !PartMarginsApply(d);
         for (const PartSpan& sp : PartPieces(d, i))
-            if (t >= sp.start && t < sp.start + sp.length) own = sp.value_uid;
-        PlayPart(lib, n, m, i, own);
+            if (t >= sp.start && t < sp.start + sp.length) {
+                own = sp.value_uid;
+                played = true;
+            }
+        // 13-54 review: a grey stretch (left out by the margins) plays nothing.
+        if (!played) ShowLibraryToast("Not played: outside the part's pre-roll / tail", false);
+        else PlayPart(lib, n, m, i, own);
     }
 }
 
@@ -2233,7 +2282,7 @@ void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n,
     o.big_numbers = in_edit;
     o.fades = fades;
     o.mono = d.mono;  // 13-41
-    o.margins = &d;   // 13-54: the panel shows the parts' margins (Edit: its parts' data)
+    o.margins = &MeasuredShown(n, m.path);  // 13-54: the panel shows the parts' margins (Edit: its parts' data)
     if (in_edit) {
         o.view_start = P.view_start;
         o.view_len = P.view_len;
@@ -2247,21 +2296,11 @@ void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n,
     WaveParts parts;
     if (in_edit && d.mode != DetectMode::Takes) {
         parts = EditParts(GetSoundStore(nullptr), d);
-        // A Sound whose sync points were never measured (an older .ravlib, the peaks not read at its last
-        // write) shows them measured, unsaved: the next write, or Populate, stores them (D6).
-        static SoundData measured;
-        static std::string measured_key;
-        bool stale = false;
-        for (size_t i = 0; i < d.frames.size() && !stale; ++i) stale = SyncsStale(d, static_cast<int>(i));
-        if (stale && !P.phase.Live() && RequestPeaks(m.path, nullptr) == PeakState::Ready) {
-            const std::string key = n.uid + "|" + std::to_string(GetProjectStateChangeCount(nullptr));
-            if (key != measured_key) {
-                measured_key = key;
-                measured = d;
-                RefreshWith(measured, m.path);
-            }
-            parts.data = &measured;
-        }
+        // A Sound whose sync points (13-54: or part trims) were never measured or are stale (an older
+        // .ravlib, the peaks not read at its last write, a re-rendered file) shows them measured, unsaved:
+        // the next write, or Populate, stores them (D6). Its Play and part clicks read the same copy.
+        const SoundData& measured = MeasuredShown(n, m.path);
+        if (&measured != &d) parts.data = &measured;
         o.parts = &parts;
     }
     if (in_edit) GainLabels(d, m.path, -1, &o);  // 13-28
@@ -3453,12 +3492,14 @@ void CutFadeControl(const SoundLibrary& lib, const SoundNode& n)
 
 // What Edit's Play plays now: the Sound as shown (a live drag included), EditPlayVoices; Takes mode the
 // first selected take that is on, else the first take that is on.
-std::vector<AuditionVoice> EditVoicesNow(const SoundLibrary& lib, const SoundNode& n)
+std::vector<AuditionVoice> EditVoicesNow(const SoundLibrary& lib, const SoundNode& n, const std::string& path)
 {
-    const int  scc = GetProjectStateChangeCount(nullptr);
-    const bool live = P.phase.Shows(n.uid);
+    const int        scc = GetProjectStateChangeCount(nullptr);
+    const bool       live = P.phase.Shows(n.uid);
+    const SoundData& sd = MeasuredShown(n, path);  // 13-54 review: as drawn (an older Sound measured)
+    const bool       measured = &sd != &Shown(n);
     if (P.ev_uid == n.uid && P.ev_lib == lib.uid && P.ev_scc == scc && P.ev_live == live &&
-        (!live || P.ev_draft_rev == P.draft_rev) && P.ev_sel == P.sel)
+        (!live || P.ev_draft_rev == P.draft_rev) && P.ev_sel == P.sel && P.ev_measured == measured)
         return P.ev_voices;
     P.ev_uid = n.uid;
     P.ev_lib = lib.uid;
@@ -3466,8 +3507,9 @@ std::vector<AuditionVoice> EditVoicesNow(const SoundLibrary& lib, const SoundNod
     P.ev_live = live;
     P.ev_draft_rev = P.draft_rev;
     P.ev_sel = P.sel;
+    P.ev_measured = measured;
     SoundNode shown = n;
-    shown.sound = Shown(n);
+    shown.sound = sd;
     const SoundData& d = shown.sound;
     int              take = -1;
     if (d.mode == DetectMode::Takes) {
@@ -3562,7 +3604,7 @@ void DrawEditOverlay()
         // 13-29: a change made while Play plays is heard: once the Sound shown has stayed the same 0.15 s
         // (SettleEditPlay: a drag restarts only when it pauses or ends), Play restarts from where it was.
         if (whole_playing) {
-            const std::vector<AuditionVoice> now = EditVoicesNow(*lib, *n);
+            const std::vector<AuditionVoice> now = EditVoicesNow(*lib, *n, m.path);
             if (SettleEditPlay(P.edit_settle, now, P.edit_voices, ImGui::GetTime()))
                 if (!StartEditPlay(*n, m, now, P.edit_from + AuditionPosition())) StopAudition();
         }
@@ -3572,7 +3614,7 @@ void DrawEditOverlay()
                 return;
             }
             // 13-29 (Antho 2026-10-13): what is shown, as placed -- EditPlayVoices.
-            const std::vector<AuditionVoice> v = EditVoicesNow(*lib, *n);
+            const std::vector<AuditionVoice> v = EditVoicesNow(*lib, *n, m.path);
             if (v.empty())
                 ShowLibraryToast(Shown(*n).mode == DetectMode::Takes ? "Nothing to play: select a take that is on"
                                                                      : "Nothing to play: every variation is off",

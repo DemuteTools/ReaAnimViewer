@@ -78,6 +78,8 @@ struct MeasuredSound {
 struct MeasureCache {
     std::map<std::string, MeasuredSound>             sounds;
     std::map<std::string, std::unique_ptr<PeakData>> peaks;
+    std::map<std::string, FileVersion>               versions;  // 13-54 review: each file's date + size, read once
+    std::map<std::string, std::string>               files;     // 13-54 review: each margin Sound's file, asked once
     bool                                             started = false;
     std::chrono::steady_clock::time_point            deadline;
 };
@@ -256,23 +258,38 @@ const PeakData* WholeFilePeaks(MeasureCache& cache, const std::string& path)
 
 // 13-25 (D6): the Sound's data a placement of variation `v` reads: its stored data, or, when the
 // variation's sync points are stale, a copy with them measured over the file's peaks (once a gesture,
-// g_measured; `local` outside a gesture). `path_of` gives the file it plays (asked only to measure).
-// A variation measured in vain from a file is not measured again from it in the gesture.
+// g_measured; `local` outside a gesture). `path_of` gives the file it plays (asked only to measure;
+// 13-54 review: asked once a gesture for a Sound with part margins, whose trims are checked against the
+// file's date + size too). A variation measured in vain from a file is not measured again from it in the gesture.
 const SoundData& PlacedDataFor(const std::string& lib_uid, const SoundNode& n, int v,
                                const std::function<std::string()>& path_of, MeasureCache& local)
 {
-    if (v < 0 || v >= static_cast<int>(n.sound.frames.size()) || n.sound.mode == DetectMode::Takes ||
-        !SyncsStale(n.sound, v))
-        return n.sound;
-    MeasureCache&     cache = g_measured ? *g_measured : local;
+    if (v < 0 || v >= static_cast<int>(n.sound.frames.size()) || n.sound.mode == DetectMode::Takes) return n.sound;
+    MeasureCache& cache = g_measured ? *g_measured : local;
+    // 13-54 review: a divided Silence Sound's part trims are also stale when measured on another version
+    // of its file (re-rendered at the same path): its date + size asked once per gesture.
+    const bool        margins = PartMarginsApply(n.sound);
     const std::string key = lib_uid + "/" + n.uid;
-    auto              hit = cache.sounds.find(key);
+    std::string       file;
+    FileVersion       version;
+    if (margins) {
+        auto fh = cache.files.find(key);
+        if (fh == cache.files.end()) fh = cache.files.emplace(key, path_of()).first;
+        file = fh->second;
+        if (!file.empty()) {
+            auto vh = cache.versions.find(file);
+            if (vh == cache.versions.end()) vh = cache.versions.emplace(file, SourceFileVersion(file)).first;
+            version = vh->second;
+        }
+    }
+    auto stale = [&](const SoundData& d) { return SyncsStale(d, v) || (margins && PartTrimsStale(d, v, &version)); };
+    if (!stale(n.sound)) return n.sound;
+    auto hit = cache.sounds.find(key);
     if (hit == cache.sounds.end()) hit = cache.sounds.emplace(key, MeasuredSound{n.sound, {}, {}}).first;
     MeasuredSound& m = hit->second;
-    if (!SyncsStale(m.data, v)) return m.data;
+    if (!stale(m.data)) return m.data;
     // 13-54: the part margins are measured on the peaks too, whatever the sync mode.
-    const std::string path =
-        n.sound.sync_mode == SyncMode::SliceStart && !PartMarginsApply(n.sound) ? std::string() : path_of();
+    const std::string path = margins ? file : n.sound.sync_mode == SyncMode::SliceStart ? std::string() : path_of();
     if (!m.tried.insert({v, path}).second) return m.data;
     const PeakData* peaks = path.empty() ? nullptr : WholeFilePeaks(cache, path);
     if (MeasureSyncs(m.data, v, peaks)) m.measured.insert(v);

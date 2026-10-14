@@ -860,22 +860,33 @@ void TestPartMargins()
     CHECK(!PartMarginsApply(d));
     RefreshParts(d, &pk);
     CHECK(d.frames[0].part_trims.empty());
-    std::vector<PartSpan> c = PartMarginSpans(d, 0, &pk);
+    std::vector<PartSpan> c = PartPieces(d, 0);
     CHECK(c.size() == 1 && Near(c[0].start, 1.0) && Near(c[0].length, 0.4));
     CHECK(PlacedSpans(d, 0, "").size() == 1 && Near(PlacedSpans(d, 0, "")[0].length, 0.4));
     SetDivide(d, "g", {kBack, kFront});
     CHECK(PartMarginsApply(d));
-    // Tail 0: each part ends with its sound; pre-roll 5 ms before each.
+    // Tail 0: Back ends with its sound, Front's pre-roll 5 ms before it; review: the margins apply at the
+    // cut only, the variation's own start and end stay (Back starts at 1.0, Front ends at 1.4).
     std::vector<PartSpan> m = Margins(d, pk, 5.0, 0.0);
     CHECK(m.size() == 2 && m[0].value_uid == kBack && m[1].value_uid == kFront);
-    CHECK(Near(m[0].start, 1.015) && Near(m[0].start + m[0].length, 1.061));
-    CHECK(Near(m[1].start, 1.145) && Near(m[1].start + m[1].length, 1.188));
-    // Tail 300 ms: Back's tail stops at Front's start, Front's at the variation's end.
+    CHECK(Near(m[0].start, 1.0) && Near(m[0].start + m[0].length, 1.061));
+    CHECK(Near(m[1].start, 1.145) && Near(m[1].start + m[1].length, 1.4));
+    // Tail 300 ms: Back's tail stops at Front's start, Front keeps the variation's end.
     m = Margins(d, pk, 5.0, 300.0);
     CHECK(m.size() == 2 && Near(m[0].start + m[0].length, 1.145) && Near(m[1].start + m[1].length, 1.4));
-    // Tail 100 ms: Front ends 100 ms after its sound.
-    m = Margins(d, pk, 5.0, 100.0);
-    CHECK(m.size() == 2 && Near(m[1].start + m[1].length, 1.288));
+    // Tail 50 ms: Back ends 50 ms after its sound.
+    m = Margins(d, pk, 5.0, 50.0);
+    CHECK(m.size() == 2 && Near(m[0].start + m[0].length, 1.111) && Near(m[1].start, 1.145));
+    // Review: a hand-stretched variation (0.9 .. 1.5) keeps its stretched start and end, whatever the margins.
+    {
+        SoundData h = d;
+        h.frames[0] = F(0.9, 0.6);
+        h.frames[0].cuts = {1.145};
+        h.frames[0].cuts_hand = true;
+        m = Margins(h, pk, 5.0, 0.0);
+        CHECK(m.size() == 2 && Near(m[0].start, 0.9) && Near(m[0].start + m[0].length, 1.061) && Near(m[1].start, 1.145) &&
+              Near(m[1].start + m[1].length, 1.5));
+    }
     // Adjacent parts share the silent gap: a 50 ms pre-roll reaches back over the cut (1.145) to 1.100,
     // Back's tail stops there; parts never overlap.
     m = Margins(d, pk, 50.0, 300.0);
@@ -890,7 +901,7 @@ void TestPartMargins()
     RefreshParts(s, &pk);
     CHECK(s.frames[0].part_trims.size() == 4 && !SyncsStale(s, 0));
     const std::vector<PartSpan> front = PlacedSpans(s, 0, kFront);
-    CHECK(front.size() == 1 && Near(front[0].start, 1.1) && Near(front[0].start + front[0].length, 1.188));
+    CHECK(front.size() == 1 && Near(front[0].start, 1.1) && Near(front[0].start + front[0].length, 1.4));
     CHECK(Near(SyncFor(s, 0, kFront), 1.148));
     // A whole (combined event) placement keeps the whole variation.
     CHECK(PlacedSpans(s, 0, "").size() == 1 && Near(PlacedSpans(s, 0, "")[0].length, 0.4));
@@ -908,6 +919,66 @@ void TestPartMargins()
     st = s;
     RefreshParts(st, nullptr);
     CHECK(st.frames[0].part_trims == s.frames[0].part_trims);
+    // Review: stored with the key they were measured with. Another tail, threshold or pre-roll, or no key
+    // (an older build): stale, the raw spans until measured again; without peaks they are dropped.
+    CHECK(!s.frames[0].part_trim_key.empty() && !PartTrimsStale(s, 0));
+    st = s;
+    st.silence.tail_ms = 300.0;
+    CHECK(PartTrimsStale(st, 0) && SyncsStale(st, 0) && Near(PlacedSpans(st, 0, kFront)[0].start, 1.145));
+    RefreshParts(st, nullptr);
+    CHECK(st.frames[0].part_trims.empty());
+    st = s;
+    st.silence.threshold_db = -30.0;
+    CHECK(PartTrimsStale(st, 0));
+    st = s;
+    st.frames[0].part_trim_key.clear();
+    CHECK(PartTrimsStale(st, 0) && SyncsStale(st, 0));
+    // A cut written elsewhere (an older RAV keeps ptrim as read) changes the spans: stale.
+    st = s;
+    st.frames[0].cuts = {1.146};
+    CHECK(PartTrimsStale(st, 0));
+    // The file they were measured on: the same version is fresh, another one (re-rendered) is stale; an
+    // unknown version (no file to compare with) is not.
+    {
+        PeakData pv = pk;
+        pv.file.time = 100;
+        pv.file.size = 2000;
+        SoundData sv = s;
+        RefreshParts(sv, &pv);
+        FileVersion same, other;
+        same.time = 100;
+        same.size = 2000;
+        other.time = 101;
+        other.size = 2000;
+        CHECK(!PartTrimsStale(sv, 0, &same) && PartTrimsStale(sv, 0, &other) && !PartTrimsStale(sv, 0) &&
+              !PartTrimsStale(sv, 0, nullptr) && !PartTrimsStale(sv, 0, &pk.file));
+        CHECK(MeasureSyncs(sv, 0, &pv) && !PartTrimsStale(sv, 0, &same));
+    }
+    // Review: a hand sync belongs to the part owning its spot by the cut (pre-roll 50 ms: Front plays from
+    // 1.100, the cut is at 1.145). Back's hand sync at 1.12 (in Front's pre-roll) stays Back's, clamped to
+    // the end of Back's piece; Front keeps its own attack.
+    {
+        SoundData hs = s;
+        hs.silence.tail_ms = 300.0;
+        hs.frames[0].hand_syncs = {1.12};
+        RefreshParts(hs, &pk);
+        CHECK(hs.frames[0].syncs.size() == 2 && Near(hs.frames[0].syncs[0], 1.1, 1e-5) && hs.frames[0].syncs[0] < 1.1 &&
+              Near(hs.frames[0].syncs[1], 1.148) && !SyncsStale(hs, 0));
+        // Front's sync dragged into its pre-roll (Back's spot by the cut): kept inside Front's own spans,
+        // Back's hand sync not taken away.
+        CHECK(MoveSync(hs, 0, 1, 1.11) && hs.frames[0].hand_syncs.size() == 2 && Near(hs.frames[0].syncs[1], 1.145, 1e-5) &&
+              hs.frames[0].syncs[1] > 1.145);
+        RefreshParts(hs, &pk);
+        CHECK(Near(hs.frames[0].syncs[0], 1.1, 1e-5) && Near(hs.frames[0].syncs[1], 1.145, 1e-5));
+        // Back's sync moved: only Back's hand sync is replaced.
+        CHECK(MoveSync(hs, 0, 0, 1.05) && hs.frames[0].hand_syncs.size() == 2 && Near(hs.frames[0].syncs[0], 1.05));
+        RefreshParts(hs, &pk);
+        CHECK(Near(hs.frames[0].syncs[0], 1.05) && Near(hs.frames[0].syncs[1], 1.145, 1e-5));
+        // The cut moved past Back's hand sync: that spot is Front's now, Front keeps its own (first) one.
+        CHECK(MoveCut(hs, 0, 0, 1.03));
+        RefreshParts(hs, &pk);
+        CHECK(hs.frames[0].syncs.size() == 2 && Near(hs.frames[0].syncs[1], 1.145, 1e-5) && hs.frames[0].syncs[0] < 1.03);
+    }
     // A part at the file's end: its tail stops there (the frame ends with the file).
     {
         PeakData  e = Quiet(3.0);

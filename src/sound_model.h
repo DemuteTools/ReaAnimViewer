@@ -26,6 +26,8 @@
 #include <string>
 #include <vector>
 
+#include "file_change_check.h"  // FileVersion (13-54 review: what peaks were read from)
+
 namespace rav {
 
 enum class SoundNodeType { Sound, Random, Blend, Switch };
@@ -83,10 +85,13 @@ struct SoundFrame {
     std::map<std::string, double> part_db;
     // 13-54: each part as a section inside the variation: per raw span of the variation (PartSpansOf, in
     // time order), the start and end (absolute source s) of what is placed once the Sound's pre-roll and
-    // tail are applied around the part's own sound (PartMarginSpans). Silence mode + divided only; empty
+    // tail are applied around the part's own sound (PartPieces). Silence mode + divided only; empty
     // or stale (another span count, out of bounds) = the raw spans. Measured by RefreshParts /
     // MeasureSyncs from the peaks, never edited by hand.
     std::vector<double>      part_trims;
+    // 13-54 review: what `part_trims` were measured with (PartTrimKey: the threshold, pre-roll, tail, the
+    // raw spans and the file's date + size). Another key = stale trims (PartTrimsStale).
+    std::string              part_trim_key;
 };
 
 // The Sound-level default fades (s): every variation with no fade of its own gets them.
@@ -387,6 +392,7 @@ struct PeakData {
     std::vector<float> max_abs;
     int                channels = 1;  // lanes: 1 (mono) or 2 (L, R)
     std::vector<float> lanes[2];      // channels == 2: max |sample| of each lane; else empty
+    FileVersion        file;          // 13-54 review: the file's date + size they were read from (0 = unknown)
 };
 
 // ---- Peak lanes (13-14): pure helpers shared by the peak readers and the waveform drawers ----

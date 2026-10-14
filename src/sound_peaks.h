@@ -39,6 +39,9 @@ enum class PeakState { Ready, Building, Failed };
 // only when Ready, `length` (seconds) once the file opened. Paths are matched ignoring case and
 // slashes. UI thread only.
 PeakState RequestPeaks(const std::string& path, PeakData* out, double* length = nullptr);
+// 13-54 review: the date + size of `path` its cached peaks were read from (zero when they are not
+// Ready), without copying them (the part trims' key, PartTrimsStale). UI thread only.
+FileVersion PeaksFileVersion(const std::string& path);
 // Unload: the reader thread stops and is joined, its source deleted.
 void QuitSoundPeaks();
 // The file's length in seconds (0 when it does not open). Cached.

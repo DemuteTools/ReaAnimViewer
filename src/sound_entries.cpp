@@ -10,6 +10,8 @@
 #include <charconv>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <set>
@@ -663,10 +665,14 @@ double RunEnd(const std::vector<PartSpan>& raw, size_t i)
     return raw[i].start + raw[i].length;
 }
 
-// 13-54: PartMarginSpans, one entry per raw span (a dropped silent span: length 0 at its start).
+// 13-54: the trims PartPieces applies, measured: one entry per raw span (a dropped silent span: length 0
+// at its start). 13-54 review: the margins apply at the inner edges only (cuts, excluded zones); a run
+// that reaches the variation's own start or end keeps it (the frame already has its pre-roll / tail).
 std::vector<PartSpan> MarginsPerRaw(const SoundData& data, int variation, const PeakData& peaks)
 {
     std::vector<PartSpan> raw = PartSpansOf(data, variation);
+    const SoundFrame&     fr = data.frames[static_cast<size_t>(variation)];
+    const double          fs = fr.start, fe = FrameEnd(fr);
     const double          pre = MarginS(data.silence.preroll_ms), tail = MarginS(data.silence.tail_ms);
     const double          thr = data.silence.threshold_db;
     const size_t          n = raw.size();
@@ -697,8 +703,10 @@ std::vector<PartSpan> MarginsPerRaw(const SoundData& data, int variation, const 
     for (size_t i = 0; i < n; ++i) {
         if (!loud[i]) continue;
         double lower = raw[i].start;
+        bool   inner = false;  // stopped at another part's sound or a wall (else: a zone or the frame's start)
         for (size_t j = i; j > 0 && Touches(raw[j - 1], raw[j]); --j) {
             const size_t p = j - 1;
+            inner = true;
             if (loud[p]) {
                 lower = b[p];
                 break;
@@ -708,14 +716,19 @@ std::vector<PartSpan> MarginsPerRaw(const SoundData& data, int variation, const 
                 break;
             }
             lower = raw[p].start;
+            inner = false;
         }
-        out[i].start = std::min(std::max(a[i] - pre, lower), a[i]);
+        // The variation's own start (no cut, no zone before): kept as the frame has it.
+        if (!inner && std::fabs(lower - fs) <= kTimeEps) out[i].start = fs;
+        else out[i].start = std::min(std::max(a[i] - pre, lower), a[i]);
     }
     // Then ends: the tail, up to the next sounding part's start (or a wall's edge).
     for (size_t i = n; i-- > 0;) {
         if (!loud[i]) continue;
         double upper = raw[i].start + raw[i].length;
+        bool   inner = false;
         for (size_t j = i + 1; j < n && Touches(raw[j - 1], raw[j]); ++j) {
+            inner = true;
             if (loud[j]) {
                 upper = out[j].start;
                 break;
@@ -725,8 +738,11 @@ std::vector<PartSpan> MarginsPerRaw(const SoundData& data, int variation, const 
                 break;
             }
             upper = raw[j].start + raw[j].length;
+            inner = false;
         }
-        out[i].length = std::max(std::min(b[i] + tail, upper), b[i]) - out[i].start;
+        // The variation's own end (no cut, no zone after): kept as the frame has it.
+        const double end = !inner && std::fabs(upper - fe) <= kTimeEps ? fe : std::max(std::min(b[i] + tail, upper), b[i]);
+        out[i].length = end - out[i].start;
     }
     for (size_t i = 0; i < n; ++i)
         if (!keep[i]) out[i].length = 0.0;
@@ -770,16 +786,47 @@ std::vector<PartSpan> WithoutDropped(const std::vector<PartSpan>& spans)
 
 }  // namespace
 
-std::vector<PartSpan> PartMarginSpans(const SoundData& data, int variation, const PeakData* peaks)
+std::string PartTrimKey(const SoundData& data, int variation, const FileVersion& file)
 {
-    if (!PartMarginsApply(data) || !HasPeaks(peaks)) return PartSpansOf(data, variation);
-    return WithoutDropped(MarginsPerRaw(data, variation, *peaks));
+    // The raw spans to the microsecond with their owners (FNV-1a): a moved cut, a zone, another divide
+    // makes another key, even when written by a RAV that does not know the trims (it keeps them as read).
+    auto us = [](double t) { return std::isfinite(t) ? static_cast<long long>(std::llround(t * 1e6)) : 0LL; };
+    uint64_t h = 1469598103934665603ULL;
+    auto mix = [&](const std::string& text) {
+        for (unsigned char c : text) {
+            h ^= c;
+            h *= 1099511628211ULL;
+        }
+    };
+    if (ValidIndex(data, variation))
+        for (const PartSpan& sp : PartSpansOf(data, variation))
+            mix(std::to_string(us(sp.start)) + ":" + std::to_string(us(sp.start + sp.length)) + ":" + sp.value_uid + ";");
+    char buf[160];
+    // The settings in millionths (dB, ms): stable through the record's shortest round-trip numbers.
+    std::snprintf(buf, sizeof(buf), "%lld,%lld,%lld,%016llx|%lld,%llu", us(data.silence.threshold_db), us(data.silence.preroll_ms),
+                  us(data.silence.tail_ms), static_cast<unsigned long long>(h), file.time, file.size);
+    return buf;
+}
+
+bool PartTrimsStale(const SoundData& data, int variation, const FileVersion* file)
+{
+    if (!ValidIndex(data, variation) || !PartMarginsApply(data)) return false;
+    const std::vector<PartSpan> raw = PartSpansOf(data, variation);
+    if (raw.empty()) return false;
+    std::vector<PartSpan> per;
+    if (!TrimmedPerRaw(data, variation, raw, &per)) return true;
+    const std::string& have = data.frames[static_cast<size_t>(variation)].part_trim_key;
+    const std::string  want = PartTrimKey(data, variation, file ? *file : FileVersion{});
+    const size_t       hb = have.find('|'), wb = want.find('|');
+    if (hb == std::string::npos || have.compare(0, hb, want, 0, wb) != 0) return true;  // settings or spans
+    if (!file || *file == FileVersion{}) return false;
+    return have.compare(hb, std::string::npos, want, wb, std::string::npos) != 0;      // another file version
 }
 
 std::vector<PartSpan> PartPieces(const SoundData& data, int variation)
 {
     std::vector<PartSpan> raw = PartSpansOf(data, variation);
-    if (!PartMarginsApply(data) || raw.empty()) return raw;
+    if (!PartMarginsApply(data) || raw.empty() || PartTrimsStale(data, variation)) return raw;
     std::vector<PartSpan> per;
     return TrimmedPerRaw(data, variation, raw, &per) ? WithoutDropped(per) : raw;
 }
@@ -935,6 +982,7 @@ void RefreshTrims(SoundData& data, int variation, const PeakData* peaks)
     SoundFrame& f = data.frames[static_cast<size_t>(variation)];
     if (!PartMarginsApply(data)) {
         f.part_trims.clear();
+        f.part_trim_key.clear();
         return;
     }
     if (HasPeaks(peaks)) {
@@ -943,18 +991,34 @@ void RefreshTrims(SoundData& data, int variation, const PeakData* peaks)
             f.part_trims.push_back(sp.start);
             f.part_trims.push_back(sp.start + sp.length);
         }
+        f.part_trim_key = PartTrimKey(data, variation, peaks->file);  // 13-54 review
         return;
     }
-    std::vector<PartSpan> per;
-    if (!TrimmedPerRaw(data, variation, PartSpansOf(data, variation), &per)) f.part_trims.clear();
+    if (PartTrimsStale(data, variation)) {  // another threshold / margin / spans: measured at placement
+        f.part_trims.clear();
+        f.part_trim_key.clear();
+    }
 }
 
-bool TrimsStale(const SoundData& data, int variation)
+// 13-54 review: part `part`'s hand sync: the first hand sync its raw owner (PartAt: the cuts and zones,
+// not the margins) gives to that part, clamped into `spans` (its pieces) 1 us inside an edge; -1 when
+// none. A margin trimming its spot away keeps it in its own part, never hands it to a neighbour.
+double HandSyncOf(const SoundData& data, int variation, int part, const std::vector<PartSpan>& spans)
 {
-    if (!PartMarginsApply(data)) return false;
-    const std::vector<PartSpan> raw = PartSpansOf(data, variation);
-    std::vector<PartSpan>       per;
-    return !raw.empty() && !TrimmedPerRaw(data, variation, raw, &per);
+    const SoundFrame&  f = data.frames[static_cast<size_t>(variation)];
+    const std::string& value = IsDivided(data) ? data.divide_values[static_cast<size_t>(part)] : std::string();
+    for (double h : f.hand_syncs) {
+        std::string own;
+        if (!PartAt(data, variation, h, &own) || own != value) continue;
+        double s = ClampIntoSpans(spans, h);
+        for (const PartSpan& sp : spans)
+            if (InSpans({sp}, s)) {
+                if (sp.length > 2.0 * kEdgeNudge) s = std::min(std::max(s, sp.start + kEdgeNudge), sp.start + sp.length - kEdgeNudge);
+                break;
+            }
+        return s;
+    }
+    return -1.0;
 }
 
 }  // namespace
@@ -993,12 +1057,7 @@ void RefreshFrame(SoundData& data, int variation, const PeakData* peaks)
     for (int k = 0; k < n; ++k) {
         const std::vector<PartSpan> spans = SpansOfPart(data, variation, k);
         if (spans.empty()) continue;
-        double s = -1.0;
-        for (double h : f.hand_syncs)
-            if (InSpans(spans, h)) {
-                s = h;
-                break;
-            }
+        double s = HandSyncOf(data, variation, k, spans);  // 13-54 review: by its raw owner
         if (s < 0.0 && measurable) s = AutoSync(data, peaks, spans);
         if (s < 0.0 && old.size() == static_cast<size_t>(n) && old[static_cast<size_t>(k)] >= 0.0 &&
             InSpans(spans, old[static_cast<size_t>(k)]))
@@ -1023,7 +1082,7 @@ bool SyncsStale(const SoundData& data, int variation)
     const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
     const int         n = PartCount(data);
     if (f.syncs.size() != static_cast<size_t>(n)) return true;
-    if (TrimsStale(data, variation)) return true;
+    if (PartTrimsStale(data, variation)) return true;
     for (int k = 0; k < n; ++k) {
         const std::vector<PartSpan> spans = SpansOfPart(data, variation, k);
         const double                s = f.syncs[static_cast<size_t>(k)];
@@ -1043,12 +1102,7 @@ bool MeasureSyncs(SoundData& data, int variation, const PeakData* peaks)
     for (int k = 0; k < n; ++k) {
         const std::vector<PartSpan> spans = SpansOfPart(data, variation, k);
         if (spans.empty()) continue;
-        double s = -1.0;
-        for (double h : f.hand_syncs)
-            if (InSpans(spans, h)) {
-                s = h;
-                break;
-            }
+        const double s = HandSyncOf(data, variation, k, spans);  // 13-54 review: by its raw owner
         syncs[static_cast<size_t>(k)] = s >= 0.0 ? s : AutoSync(data, peaks, spans);
     }
     f.syncs = syncs;
@@ -1069,9 +1123,12 @@ bool ApplyMeasuredSyncs(SoundStore& store, const std::string& lib_uid, const std
             continue;
         SoundFrame&       f = n->sound.frames[static_cast<size_t>(v)];
         const SoundFrame& g = measured.frames[static_cast<size_t>(v)];
-        if (f.start != g.start || f.length != g.length || (f.syncs == g.syncs && f.part_trims == g.part_trims)) continue;
+        if (f.start != g.start || f.length != g.length ||
+            (f.syncs == g.syncs && f.part_trims == g.part_trims && f.part_trim_key == g.part_trim_key))
+            continue;
         f.syncs = g.syncs;
         f.part_trims = g.part_trims;  // 13-54
+        f.part_trim_key = g.part_trim_key;
         changed = true;
     }
     return changed;
@@ -1205,17 +1262,35 @@ bool MoveCut(SoundData& data, int variation, int k, double t)
 bool MoveSync(SoundData& data, int variation, int part, double t)
 {
     if (!ValidIndex(data, variation) || !std::isfinite(t) || part < 0 || part >= PartCount(data)) return false;
-    const std::vector<PartSpan> spans = SpansOfPart(data, variation, part);
-    if (spans.empty()) return false;
-    SoundFrame& f = data.frames[static_cast<size_t>(variation)];
-    double      s = ClampIntoSpans(spans, t);
+    const std::vector<PartSpan> pieces = SpansOfPart(data, variation, part);
+    if (pieces.empty()) return false;
+    SoundFrame&       f = data.frames[static_cast<size_t>(variation)];
+    const std::string value = IsDivided(data) ? data.divide_values[static_cast<size_t>(part)] : std::string();
+    // 13-54 review: kept where the part both plays (its pieces) and owns the spot by the cuts and zones
+    // (its raw spans), so the refresh gives it back to this part (a pre-roll reaching back over a cut
+    // plays a neighbour's spot).
+    std::vector<PartSpan> spans;
+    for (const PartSpan& r : PartSpansOf(data, variation)) {
+        if (r.value_uid != value) continue;
+        for (const PartSpan& p : pieces) {
+            const double a = std::max(r.start, p.start), b = std::min(r.start + r.length, p.start + p.length);
+            if (b - a > kTimeEps) spans.push_back({value, a, b - a});
+        }
+    }
+    if (spans.empty()) spans = pieces;
+    double s = ClampIntoSpans(spans, t);
     // On a span edge (a cut) the sync would sit in both neighbouring parts: keep it 1 us inside its own.
     for (const PartSpan& sp : spans)
         if (InSpans({sp}, s)) {
             s = std::min(std::max(s, sp.start + kEdgeNudge), sp.start + sp.length - kEdgeNudge);
             break;
         }
-    f.hand_syncs.erase(std::remove_if(f.hand_syncs.begin(), f.hand_syncs.end(), [&](double h) { return InSpans(spans, h); }),
+    // Only the hand syncs this part owns go (13-54 review: by their raw owner, as HandSyncOf reads them).
+    f.hand_syncs.erase(std::remove_if(f.hand_syncs.begin(), f.hand_syncs.end(),
+                                      [&](double h) {
+                                          std::string own;
+                                          return PartAt(data, variation, h, &own) && own == value;
+                                      }),
                        f.hand_syncs.end());
     f.hand_syncs.push_back(s);
     if (f.syncs.size() == static_cast<size_t>(PartCount(data))) f.syncs[static_cast<size_t>(part)] = s;

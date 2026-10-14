@@ -456,11 +456,20 @@ PeakState RequestPeaks(const std::string& path, PeakData* out, double* length)
     it = g_cache.find(key);
     if (it == g_cache.end()) return PeakState::Building;
     const Entry& e = it->second;
-    if (e.state == PeakState::Ready && out) *out = e.peaks;
+    if (e.state == PeakState::Ready && out) {
+        *out = e.peaks;
+        out->file = e.version;  // 13-54 review: the part trims are keyed on it
+    }
     if (length) *length = e.length;
     const PeakState st = e.state;
     Evict();
     return st;
+}
+
+FileVersion PeaksFileVersion(const std::string& path)
+{
+    const auto it = g_cache.find(PeakCacheKey(path));
+    return it != g_cache.end() && it->second.state == PeakState::Ready ? it->second.version : FileVersion{};
 }
 
 bool ReadPeaks(const std::string& path, double start, double length, double rate, PeakData* out)

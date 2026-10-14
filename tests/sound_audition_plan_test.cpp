@@ -432,6 +432,7 @@ static void TestPartGains()
         SoundNode t = sn;
         t.sound.frames[0].part_db.clear();
         t.sound.frames[0].part_trims = {1.0, 1.2, 1.5, 2.0};
+        t.sound.frames[0].part_trim_key = PartTrimKey(t.sound, 0, FileVersion{});  // 13-54 review: as measured
         const std::vector<AuditionVoice> sm = EditPlayVoices(lib, t);
         CHECK(sm.size() == 2);
         if (sm.size() == 2) {

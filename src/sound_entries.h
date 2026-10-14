@@ -124,25 +124,32 @@ std::vector<PartSpan> PartSpansOf(const SoundData& data, int variation);
 // 13-54 (Antho 2026-10-14, "each part is a section inside the section"): true when a Sound's detection
 // margins also apply to each part: Silence detection and divided. Combined Sounds: never.
 bool PartMarginsApply(const SoundData& data);
-// 13-54: the variation's raw spans (PartSpansOf) with the Sound's pre-roll and tail applied around each
-// span's own sound (the bins at or above the threshold), as a variation's are around its sound:
-// start = max(first loud bin - pre-roll, lower), end = min(last loud bin's end + tail, upper). Next to a
-// span of another part (touching it), the silent gap between their sounds is shared as SplitOnSilence
-// shares it between variations: the later part's pre-roll comes first (it may reach back across the cut
-// into that silence, never into the earlier part's sound), the earlier part's tail fills what is left
-// up to it. Next to an excluded zone or the variation's edge, a span never grows past its own edge (it
-// stays inside the variation, so inside the file). A span with no loud bin plays nothing when its part
-// sounds elsewhere in the variation (dropped, its silence shared like a gap), else it is kept as it is
-// (a part quiet all along still plays, a wall its neighbours stop at). Parts never overlap. The raw
-// spans when the margins do not apply or without peaks.
-std::vector<PartSpan> PartMarginSpans(const SoundData& data, int variation, const PeakData* peaks);
 // 13-54: the spans each part plays: PartSpansOf with the stored `part_trims` applied (when the margins
-// apply and the trims fit the spans), else PartSpansOf.
+// apply and the trims fit the spans and their key, PartTrimsStale), else PartSpansOf. The trims are
+// measured on the peaks by RefreshFrame / MeasureSyncs: the Sound's pre-roll and tail around each raw
+// span's own sound (the bins at or above the threshold), at the INNER edges only (13-54 review): a cut
+// or an excluded zone. The variation's own start and end stay where they are (a detected frame already
+// carries the pre-roll and tail there; a hand-stretched one stays as stretched). Between two touching
+// parts the silent gap between their sounds is shared as SplitOnSilence shares it between variations:
+// the later part's pre-roll comes first (it may reach back across the cut into that silence, never into
+// the earlier part's sound), the earlier part's tail fills what is left up to it. Next to an excluded
+// zone a span never grows past its own edge. A span with no loud bin plays nothing when its part sounds
+// elsewhere in the variation (dropped, its silence shared like a gap), else it is kept as it is (a part
+// quiet all along still plays, a wall its neighbours stop at). Parts never overlap.
 std::vector<PartSpan> PartPieces(const SoundData& data, int variation);
 // What a placement of `part_value` plays: the pieces of that part (PartPieces: its margins applied), or
 // for "" every non-excluded stretch of the frame (raw, adjacent spans merged: the whole variation minus
 // its exclusions, value_uid "" -- a whole variation keeps its own margins).
 std::vector<PartSpan> PlacedSpans(const SoundData& data, int variation, const std::string& part_value);
+// 13-54 review: the key part trims are measured with: the Silence threshold, pre-roll and tail, the
+// variation's raw spans (bounds to the microsecond and owners, hashed) and `file`, the version of the
+// file the peaks were read from (date + size; zero = unknown). Stored as SoundFrame::part_trim_key.
+std::string PartTrimKey(const SoundData& data, int variation, const FileVersion& file);
+// 13-54 review: true when the variation's trims must be measured again while the margins apply: missing,
+// not fitting the spans, or measured with another threshold / pre-roll / tail / raw spans; with `file`
+// (known, non-zero), also when they were measured on another version of the file (re-rendered at the
+// same path). False when the margins do not apply.
+bool PartTrimsStale(const SoundData& data, int variation, const FileVersion* file = nullptr);
 
 // One onset of a variation: the peak bin's time, its level, and where its rise starts (the last
 // minimum of the 15 ms before it).
@@ -175,8 +182,8 @@ double ClampIntoSpans(const std::vector<PartSpan>& spans, double t);
 void RefreshFrame(SoundData& data, int variation, const PeakData* peaks);
 void RefreshParts(SoundData& data, const PeakData* peaks);
 // True when the variation's syncs must be measured again: not one per part, or a part with spans whose
-// sync is not inside them, or one without spans whose sync is set; 13-54: or its part trims are missing
-// or stale while the margins apply.
+// sync is not inside them, or one without spans whose sync is set; 13-54: or its part trims are stale
+// (PartTrimsStale without a file: the caller that knows the file checks it too).
 bool SyncsStale(const SoundData& data, int variation);
 // 13-25 (D6): a variation's sync points measured at placement (Populate found them stale): per part, a
 // hand sync inside its spans, else AutoSync; its cuts are kept (Populate never re-detects). False (the
@@ -211,7 +218,11 @@ bool IncludeAgain(SoundData& data, double t);
 bool MoveCut(SoundData& data, int variation, int k, double t);
 // Sets part `part`'s sync point by hand (clamped into its spans, 1 us inside an edge so a sync on a cut
 // belongs to one part only; part 0 when combined): its other hand
-// syncs go, `syncs[part]` follows. False for a bad index or an empty part.
+// syncs go, `syncs[part]` follows. False for a bad index or an empty part. 13-54 review: a hand sync
+// belongs to the part owning its spot by the cuts and zones (PartAt, the raw owner), whatever the
+// margins: it is kept inside both that part's raw spans and its pieces, only the hand syncs that part
+// owns are replaced, and a refresh clamps each hand sync into its owner's pieces (a margin that trims
+// its spot away moves it to the nearest edge of its own part, never to a neighbour).
 bool MoveSync(SoundData& data, int variation, int part, double t);
 // Back to RAV's sync points / cuts for that variation (the caller runs RefreshParts). False when
 // nothing was moved by hand.

@@ -40,10 +40,16 @@
 //         [soff=<ms>] [cfade=<s>]                    -- 13-23/25: divided by a group (its values at divide
 //                                                       time), its own role map, lane mode, sync point, cut fade
 //   frame start=<s> len=<s> [on=0] [db=<dB>] [hand=1] [fin=<s>] [fout=<s>] [fish=<n>] [fosh=<n>]
-//         [cuts=<s>,<s>] [cutsh=1] [cutq=1] [sync=<s>,<s>] [hsync=<s>,<s>] [ptrim=<s>,<s>,...]
+//         [cuts=<s>,<s>] [cutsh=1] [cutq=1] [sync=<s>,<s>] [hsync=<s>,<s>] [ptrim=<s>,<s>,...] [ptrimk=<key>]
 //                                                    -- a variation of that Sound (no fin/fout = the Sound's fades;
 //                                                       13-23/25: its cuts, hand / unsure flags, one sync per
-//                                                       part and the hand sync points, absolute source s)
+//                                                       part and the hand sync points, absolute source s;
+//                                                       13-54: each part's span after its pre-roll / tail and
+//                                                       the key they were measured with. A RAV older than
+//                                                       13-54 keeps ptrim / ptrimk as unknown fields and
+//                                                       writes them back as read, even after it moved a cut
+//                                                       or changed the margins: their key then no longer
+//                                                       matches and this version measures them again)
 //   zone start=<s> len=<s> [to=<id>]                 -- 13-20: a zone of that Sound (no to = excluded; later win)
 // The auto / assign / character lines come first (a version without them keeps them as the header's
 // unknown lines), then the groups, then the libraries, each library's nodes in order.

@@ -27,6 +27,7 @@
 #include <cfloat>      // FLT_MAX (spec 11-fb-11: the menu's height cap)
 #include <cstdio>      // std::snprintf (13-14: the FPS readout)
 #include <algorithm>   // std::min/max — the load message's wrap width
+#include <cstring>     // std::strncmp (6-5-10c: the clip list close origin)
 #include <exception>   // std::exception — the no-throw host boundary (AR18)
 #include <initializer_list>  // 13-7: the UI font fallback chains
 #include <filesystem>  // issue #1: the item folder for "Locate textures..."
@@ -1666,7 +1667,7 @@ void DrawToolUi()
     // before the readouts and overlays (which stay on top of it). Story 6-5-9: under the corner
     // icons too when they went under the switch.
     if (library_view) {
-        const float lib_top = std::max(ui::Dp(44.0f), corner_below ? text_mid + ui::Dp(12.0f + 6.0f) : 0.0f);
+        const float lib_top = std::max(burger.bottom, corner_below ? text_mid + ui::Dp(12.0f + 6.0f) : 0.0f);
         DrawLibraryView(ui::Dp(8.0f), lib_top, std::max(1.0f, static_cast<float>(g_client_w) - ui::Dp(16.0f)),
                         std::max(1.0f, static_cast<float>(g_client_h) - lib_top - ui::Dp(8.0f)));
     }
@@ -2318,7 +2319,7 @@ void RunShortcutAction(int action, const char* origin)
         return;
     }
     if (action == kShortcutClipList) {  // story 6-5-10 (L): the clip list, every view
-        SetClipListOpen(!ClipListOpen(), origin);
+        SetClipListOpen(!ClipListOpen(), origin, std::strncmp(origin, "its key", 7) == 0);  // a REAPER action may be a hook: warn
         if (ClipListOpen()) g_menu_open = false;
         return;
     }
@@ -2596,7 +2597,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                                ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
             const bool library = LibraryViewActive() && LibraryEditUsesEsc();
             if (!popup && !library) {
-                if (!(lp & (1 << 30))) SetClipListOpen(false, "Esc in the viewer");
+                if (!(lp & (1 << 30))) SetClipListOpen(false, "Esc in the viewer", true);
                 return 0;
             }
         }

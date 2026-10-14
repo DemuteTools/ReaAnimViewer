@@ -335,8 +335,8 @@ bool ButtonFits(float menu_bottom, float switch_top, float btn, float dp)
 MenuButtonBox MenuButtonAt(float row_mid, float dp)
 {
     MenuButtonBox b;
-    b.size = 24.0f * dp;
-    b.x = 18.0f * dp;
+    b.size = std::round(24.0f * dp);
+    b.x = std::round(18.0f * dp);  // whole pixels: crisp at 125 %
     // Centred on the row (whole pixels), never closer than 10 px to the window's top.
     b.y = std::max(10.0f * dp, std::round(row_mid - b.size * 0.5f));
     b.bottom = b.y + b.size;

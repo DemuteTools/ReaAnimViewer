@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <utility>
 #include <map>
 #include <string>
 #include <unordered_map>
@@ -100,7 +101,9 @@ struct State {
     cliplist::ProjectLook            look;                   // the tab shown, read at every frame
     bool                             load_pending = false;
     cliplist::ProjectLook            load_before;
-    std::vector<MediaItem*>          load_listed;
+    // 6-5-10c review: a handful of the tab's items (pointer and GUID), open or closed: a load where
+    // most are gone (or another item took the address) opened the same file again.
+    std::vector<std::pair<MediaItem*, std::string>> load_listed;
     ReaProject*                      load_proj = nullptr;
     int                              load_grouping = -1;     // -1: the default (no line)
     bool                             load_grouping_read = false;  // the load read the project's line
@@ -108,8 +111,11 @@ struct State {
     // 6-5-10c: the "open, but not shown" warnings, each written once until it no longer holds.
     bool                             warned_narrow = false, warned_short = false, warned_skipped = false;
     bool                             warned_covered = false, warned_alpha = false;
+    bool                             warned_draw = false;  // "could not be drawn": once per episode
 };
 State g;
+// 6-5-10c review: the items sampled before a load (CheckProjectLoad tests these, not every item).
+constexpr int kLoadSample = 32;
 // 6-5-10c: the open state SetClipListOpen last set. Only SetClipListOpen opens or closes the list; a
 // frame that finds `g.open` otherwise says so in the log and puts it back (DrawClipList).
 bool g_open_wanted = false;
@@ -208,8 +214,15 @@ void BeginLoadProjectState(bool is_undo, project_config_extension_t*)
             g.load_proj = proj;
             g.load_before = g.look;  // what the tab showed at the last frame
             g.load_listed.clear();
-            if (g.open)
-                for (const RowItem& r : g.items) g.load_listed.push_back(r.item);
+            if (proj) {
+                const int n = CountMediaItems(proj);
+                const int k = std::min(n, kLoadSample);
+                for (int j = 0; j < k; ++j) {
+                    MediaItem* const it = GetMediaItem(proj, static_cast<int>((static_cast<long long>(j) * n) / k));
+                    char             guid[64] = {};
+                    if (it && GetSetMediaItemInfo_String(it, "GUID", guid, false)) g.load_listed.emplace_back(it, guid);
+                }
+            }
             const auto gi = g_grouping.find(proj);
             g.load_grouping = gi == g_grouping.end() ? -1 : gi->second;
             const auto fi = g_folds.find(proj);
@@ -725,7 +738,7 @@ void DrawPanel(float x, float top, float w, float h)
     if (esc) {
         const bool typing = ImGui::GetActiveID() != 0 && ImGui::GetIO().WantTextInput;
         if (g.search[0] && !typing) g.search[0] = '\0';  // a row had the keyboard: clear here
-        else if (!g.search[0]) SetClipListOpen(false, "Esc in the list");  // empty: close (typing: the field clears it)
+        else if (!g.search[0]) SetClipListOpen(false, "Esc in the list", true);  // empty: close (typing: the field clears it)
     }
 
     // Header: the title and the count (8 18 6 10).
@@ -935,8 +948,12 @@ void CheckProjectLoad(const cliplist::ProjectLook& now, ReaProject* proj)
     if (!g.load_pending) return;
     g.load_pending = false;
     int still = 0;
-    for (MediaItem* it : g.load_listed)
-        if (it && proj && ValidatePtr2(proj, it, "MediaItem*")) ++still;
+    for (const auto& li : g.load_listed) {
+        char guid[64] = {};
+        if (li.first && proj && ValidatePtr2(proj, li.first, "MediaItem*") &&
+            GetSetMediaItemInfo_String(li.first, "GUID", guid, false) && li.second == guid)
+            ++still;
+    }
     const cliplist::LoadVerdict v =
         cliplist::ProjectLoadVerdict(g.load_before, now, static_cast<int>(g.load_listed.size()), still);
     g.load_listed.clear();
@@ -1043,14 +1060,16 @@ bool ClipListOpen()
     return g.open;
 }
 
-void SetClipListOpen(bool open, const char* reason)
+void SetClipListOpen(bool open, const char* reason, bool gesture)
 {
     g_open_wanted = open;
     if (open == g.open) return;
     // 6-5-10c: a close is kept in the "Copy error log" ring (LogWarn: a release build writes no
     // info line), with the view and how soon after a row click it came: a list that vanishes says why.
     const char* why = reason && reason[0] ? reason : "?";
-    if (open) LogInfo("clip list: opened (%s)", why);
+    // 6-5-10c review: a user's gesture (round button, L, Esc) is an info line, so the ring's 64 lines
+    // keep the closes nobody asked for (a hook, an unknown cause) with their timing.
+    if (open || gesture) LogInfo("clip list: %s (%s)", open ? "opened" : "closed", why);
     else LogWarn("clip list: closed (%s) [%s]", why, CloseNoteNow().c_str());
     g.open = open;
     g.search_active = false;
@@ -1128,6 +1147,7 @@ bool DrawClipList(float view_w, float menu_bottom, float ui_top, float view_bott
                             span.bottom - span.top, view_bottom, CloseNoteNow().c_str());
                 g.warned_short = low;
                 DrawPanel(0.0f, span.top, panel_w, std::max(1.0f, span.bottom - span.top));
+                g.warned_draw = false;
             } catch (...) {
                 ImGuiIO&   io = ImGui::GetIO();
                 const bool was_assert = io.ConfigErrorRecoveryEnableAssert;
@@ -1138,7 +1158,8 @@ bool DrawClipList(float view_w, float menu_bottom, float ui_top, float view_bott
                 io.ConfigErrorRecoveryEnableAssert = was_assert;
                 io.ConfigErrorRecoveryEnableTooltip = was_tip;
                 g.panel_window = nullptr;
-                LogWarn("clip list: the panel could not be drawn this frame [%s]", CloseNoteNow().c_str());
+                if (!g.warned_draw) LogWarn("clip list: the panel could not be drawn (the frame went on)");
+                g.warned_draw = true;
             }
         }
     } else {
@@ -1153,7 +1174,7 @@ bool DrawClipList(float view_w, float menu_bottom, float ui_top, float view_bott
     // shortcut and Esc still open and close the list).
     if (cliplist::ButtonFits(menu_bottom, ui_top, btn, ui::UiScale())) {
         const float cy = cliplist::ButtonCentreY(menu_bottom, ui_top, btn, ui::UiScale());
-        if (RoundButton(ImVec2(cx, cy), key)) SetClipListOpen(!g.open, "the round button");
+        if (RoundButton(ImVec2(cx, cy), key)) SetClipListOpen(!g.open, "the round button", true);
     }
     ImGui::PopStyleVar();  // Alpha
     g.popup_last_frame = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);

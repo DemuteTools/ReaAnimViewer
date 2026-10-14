@@ -391,6 +391,8 @@ int main()
         CHECK(b.y == 19.0f || b.y == 18.0f);
         b = MenuButtonAt(4.0f, 1.0f);   // never closer than 10 px to the window's top
         CHECK(b.y == 10.0f && b.panel_y == 2.0f);
+        b = MenuButtonAt(40.0f, 1.25f);  // 125 %: whole pixels on x too (18 * 1.25 = 22.5)
+        CHECK(b.x == std::round(b.x) && b.y == std::round(b.y) && b.size == std::round(b.size));
         for (float dp : {1.0f, 1.25f, 1.5f, 2.0f}) {
             const MenuButtonBox m = MenuButtonAt(32.0f * dp, dp);
             const PanelSpan     s = PanelVerticalSpan(m.bottom, 600.0f * dp, 700.0f * dp, dp);

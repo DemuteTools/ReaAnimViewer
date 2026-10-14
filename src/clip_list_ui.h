@@ -39,7 +39,7 @@ bool ClipListOpen();
 // `reason`: what asked (the button, the shortcut, Esc...). 6-5-10c: every close is kept in the
 // "Copy error log" ring (a warning line, so a release build keeps it too) with the view and how
 // soon after a row click it came: a list that vanishes says why.
-void SetClipListOpen(bool open, const char* reason);
+void SetClipListOpen(bool open, const char* reason, bool gesture = false);  // gesture: the user's own (info line)
 
 // The item RAV shows this frame (nullptr = none): the lit row. Called by the render tick.
 void ClipListSetCurrentItem(MediaItem* item);

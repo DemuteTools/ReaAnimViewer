@@ -227,7 +227,9 @@ void CheckOwners(const std::vector<std::string>& guids, const std::string& owner
 // 13-25: a whole file's peaks for measuring sync points at placement, read once a gesture. RequestPeaks
 // reads a file on its reader thread: it is called until the peaks are ready, at most ~3 s a file and ~10 s a
 // gesture (else none: the sync falls back to the first span's start + the offset, PieceApplyFor, and is
-// measured by a later gesture). Null when there are none.
+// measured by a later gesture). Null when there are none. 13-55 review: while this waits, the file the
+// reader is on (a long file another panel asked for) is no longer asked: about half a second in, it is
+// given up between two build steps and this file is read (RequestPeaks, PeakAbandonInFlight).
 const PeakData* WholeFilePeaks(MeasureCache& cache, const std::string& path)
 {
     if (path.empty()) return nullptr;

@@ -47,7 +47,9 @@ inline size_t PeakBins(double length, double rate)
 }
 
 // The cache key of a path: one entry per file on Windows, whatever the case or the slashes a caller
-// spells it with (the Media Explorer's database and an item's source may differ).
+// spells it with (the Media Explorer's database and an item's source may differ). Only ASCII letters
+// are folded (accepted, 13-55 review): two spellings differing only in the case of an accented
+// letter are two entries, which costs a second read of the file, nothing else.
 inline std::string PeakCacheKey(const std::string& path)
 {
     std::string k = path;
@@ -112,12 +114,27 @@ inline void FoldPeakPoints(PeakData* p, size_t first, const Sample* maxv, const 
     }
 }
 
-// True when no bin of `p` holds anything (REAPER answered without peaks: read the samples instead).
-inline bool PeaksAllZero(const PeakData& p)
+// 13-55 review: whether the file the reader is on is given up for another one (its build stops
+// between two steps; it waits again if still asked): nobody asked for it these kPeakFreshSeconds
+// (the panel that showed it moved on, or a placement holds the UI waiting for another file) while
+// another waiting file was asked within them. A clock that went back keeps it.
+inline bool PeakAbandonInFlight(double in_flight_asked_s, bool other_fresh, double now_s)
 {
-    for (float v : p.max_abs)
-        if (v > 0.0f) return false;
-    return true;
+    return other_fresh && now_s - in_flight_asked_s > kPeakFreshSeconds;
+}
+
+// 13-55 review: which way a read went (debuglog builds say it once per read, with its time).
+enum class PeakReadPath { PeakFile, BuiltThenPeakFile, Samples, SamplesFallback };
+
+inline const char* PeakReadPathName(PeakReadPath p)
+{
+    switch (p) {
+    case PeakReadPath::PeakFile: return "peak file";
+    case PeakReadPath::BuiltThenPeakFile: return "built then peak file";
+    case PeakReadPath::Samples: return "samples (short file)";
+    case PeakReadPath::SamplesFallback: return "sample fallback (REAPER gave no peaks)";
+    }
+    return "?";
 }
 
 }  // namespace rav

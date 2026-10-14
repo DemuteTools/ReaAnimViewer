@@ -6,6 +6,7 @@
 #include "sound_peaks_plan.h"
 
 #include <cstdio>
+#include <string>
 
 using namespace rav;
 
@@ -103,15 +104,15 @@ int main()
         CHECK(p.max_abs[0] == 0.0f);
     }
 
-    // ---- PeaksAllZero ----
-    {
-        PeakData p;
-        CHECK(PeaksAllZero(p));
-        PeakInit(&p, 1, 3);
-        CHECK(PeaksAllZero(p));
-        p.max_abs[2] = 0.01f;
-        CHECK(!PeaksAllZero(p));
-    }
+    // ---- PeakAbandonInFlight (13-55 review) ----
+    CHECK(PeakAbandonInFlight(10.0, true, 10.0 + kPeakFreshSeconds + 0.01));   // left, another wanted
+    CHECK(!PeakAbandonInFlight(10.0, true, 10.0 + kPeakFreshSeconds - 0.01));  // still shown
+    CHECK(!PeakAbandonInFlight(10.0, false, 100.0));                            // nobody else waits
+    CHECK(!PeakAbandonInFlight(10.0, true, 5.0));                               // clock went back
+
+    // ---- PeakReadPathName ----
+    CHECK(std::string(PeakReadPathName(PeakReadPath::PeakFile)) == "peak file");
+    CHECK(std::string(PeakReadPathName(PeakReadPath::BuiltThenPeakFile)) == "built then peak file");
 
     if (g_fail) std::printf("%d failure(s)\n", g_fail);
     else std::printf("sound_peaks_plan_test: all passed\n");

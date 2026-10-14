@@ -28,6 +28,7 @@
 #include <system_error>
 #include <thread>
 
+#include "console_log.h"
 #include "file_change_check.h"
 #include "reaper_item_read.h"
 #include "sound_peaks_plan.h"
@@ -82,10 +83,16 @@ struct JobResult {
     uint64_t    seq = 0;
     PCM_source* src = nullptr;
     bool        ok = false;
+    bool        abandoned = false;  // 13-55 review: given up for another file (it waits again)
     PeakData    peaks;
+    PeakReadPath how = PeakReadPath::Samples;
+    double       ms = 0.0;  // the read's time (debuglog builds say it)
 };
 
 std::atomic<bool> g_quit{false};
+// 13-55 review: the seq of the read the UI thread gave up (0 = none): the reader stops it between two
+// steps of its build or its read.
+std::atomic<uint64_t> g_abandon_seq{0};
 
 // Never destroyed: a building entry's REAPER source is not deleted from static destructors at
 // unload (the process is going away; REAPER may already be gone).
@@ -93,7 +100,7 @@ std::map<std::string, Entry>& g_cache = *new std::map<std::string, Entry>();  //
 uint64_t                      g_tick = 0;
 uint64_t                      g_seq = 0;
 bool                          g_reading = false;  // a read is out on the reader thread
-std::map<std::string, double> g_len;
+std::map<std::string, double> g_len;  // by PeakCacheKey (13-55 review), as g_cache
 uint64_t                      g_len_gen = 0;  // bumped when a g_len entry is dropped
 
 double NowSeconds()
@@ -132,7 +139,14 @@ void Evict()
 
 // ---- The reader thread (it only calls the source it was handed) ----------------------------------
 
-// A long file: REAPER's peaks (from its .reapeaks file) at `rate`. False when REAPER gave none.
+// The read in progress stops: unload, or given up for another file.
+bool Stopped(const Job& j)
+{
+    return g_quit || g_abandon_seq.load() == j.seq;
+}
+
+// A long file: REAPER's peaks (from its .reapeaks file) at `rate`. False when REAPER gave no point
+// at all (13-55 review: a silent file's zero peaks are its peaks, not a reason to read its samples).
 bool ReadPeakInfo(PCM_source* s, const Job& j, double rate, PeakData* out)
 {
     const size_t n = PeakBins(j.length, rate);
@@ -140,7 +154,8 @@ bool ReadPeakInfo(PCM_source* s, const Job& j, double rate, PeakData* out)
     PeakInit(out, j.nch, n);  // lanes: stereo only
     const size_t           per = static_cast<size_t>(kPeakChunk) * static_cast<size_t>(j.nch);
     std::vector<ReaSample> mx(per), mn(per);
-    for (size_t i = 0; i < n && !g_quit;) {
+    bool any = false;
+    for (size_t i = 0; i < n && !Stopped(j);) {
         const int                 want = static_cast<int>(std::min<size_t>(kPeakChunk, n - i));
         PCM_source_peaktransfer_t pt = {};
         pt.start_time = static_cast<double>(i) / rate;
@@ -153,11 +168,12 @@ bool ReadPeakInfo(PCM_source* s, const Job& j, double rate, PeakData* out)
         pt.samplerate = j.sr;
         s->GetPeakInfo(&pt);
         const int got = std::max(0, std::min(pt.peaks_out, want));
-        if (got == 0) break;  // the end (or no peaks at all: PeaksAllZero below)
+        if (got == 0) break;  // the end (or no peaks at all)
+        any = true;
         FoldPeakPoints(out, i, mx.data(), pt.peaks_minvals_used ? mn.data() : nullptr, got, j.nch);
         i += static_cast<size_t>(got);
     }
-    return !g_quit && !PeaksAllZero(*out);
+    return !Stopped(j) && any;
 }
 
 // A short file (or REAPER gave no peaks): its samples at kPeakHiResRate (13-7b's read).
@@ -168,7 +184,7 @@ bool ReadSamples(PCM_source* s, const Job& j, PeakData* out)
     PeakInit(out, j.nch, PeakBins(j.length, kPeakHiResRate));  // lanes: stereo only
     std::vector<ReaSample> buf(static_cast<size_t>(kBlock) * static_cast<size_t>(j.nch));
     for (int64_t done = 0; done < total;) {
-        if (g_quit) return false;
+        if (Stopped(j)) return false;
         PCM_source_transfer_t tr = {};
         tr.time_s = static_cast<double>(done) / j.sr;
         tr.samplerate = j.sr;
@@ -186,19 +202,32 @@ bool ReadSamples(PCM_source* s, const Job& j, PeakData* out)
     return true;
 }
 
-// REAPER's own peak file first (PeaksBuild_Begin answers 0 when it is there and up to date; else it
-// is built and written where REAPER keeps its peaks, as REAPER does for a file it plays), then the
-// peaks: from the peak file for a long file, from the samples for a short one.
-bool ReadJob(const Job& j, PeakData* out)
+// A short file (up to 10 s) is read from its samples alone: no peak file is built for it (13-55
+// review). A long one: REAPER's own peak file first (PeaksBuild_Begin answers 0 when it is there and
+// up to date; else it is built and written where REAPER keeps its peaks, as REAPER does for a file it
+// plays), then its peaks; its samples only when REAPER gave no peak point at all.
+//
+// A build stopped part way (unload, or given up for another file) is NOT finished: the SDK only says
+// PeaksBuild_Finish is "called when done", not whether it would keep a part-built peak file as
+// complete, so the source is deleted with its build open and nothing is deleted on disk (13-55
+// review); the next read of that file builds it again.
+bool ReadJob(const Job& j, PeakData* out, PeakReadPath* how)
 {
     PCM_source* s = j.src;
+    *how = PeakReadPath::Samples;
+    if (PeakReadsSamples(j.length)) return ReadSamples(s, j, out);
+    *how = PeakReadPath::PeakFile;
     if (s->PeaksBuild_Begin()) {
-        while (!g_quit && s->PeaksBuild_Run()) {
-        }
+        *how = PeakReadPath::BuiltThenPeakFile;
+        bool more = true;
+        while (more && !Stopped(j)) more = s->PeaksBuild_Run() != 0;
+        if (more) return false;  // stopped mid-build: not finished (above)
         s->PeaksBuild_Finish();
     }
-    if (g_quit) return false;
-    if (!PeakReadsSamples(j.length) && ReadPeakInfo(s, j, ChoosePeakRate(j.length), out)) return true;
+    if (Stopped(j)) return false;
+    if (ReadPeakInfo(s, j, ChoosePeakRate(j.length), out)) return true;
+    if (Stopped(j)) return false;
+    *how = PeakReadPath::SamplesFallback;
     *out = PeakData{};
     return ReadSamples(s, j, out);
 }
@@ -255,11 +284,14 @@ private:
             r.seq = j.seq;
             r.src = j.src;
             // Nothing may escape this thread (a throw would end REAPER): a failed read still answers.
+            const auto t0 = std::chrono::steady_clock::now();
             try {
-                r.ok = j.src && ReadJob(j, &r.peaks);
+                r.ok = j.src && ReadJob(j, &r.peaks, &r.how);
             } catch (...) {
                 r.ok = false;
             }
+            r.ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            r.abandoned = !r.ok && !g_quit && g_abandon_seq.load() == j.seq;
             if (!r.ok) r.peaks = PeakData{};
             std::lock_guard<std::mutex> lk(m_);
             out_.push_back(std::move(r));
@@ -284,10 +316,16 @@ void Collect()
     for (JobResult& r : g_reader.Take()) {
         delete r.src;
         g_reading = false;
+        if (g_abandon_seq.load() == r.seq) g_abandon_seq = 0;  // asked again, the file is read again
         auto it = g_cache.find(r.key);
         if (it == g_cache.end() || it->second.seq != r.seq) continue;  // dropped meanwhile
         Entry& e = it->second;
         e.in_flight = false;
+        if (r.abandoned) continue;  // 13-55 review: waits again (dropped if nobody asks for it)
+#ifdef RAV_ENABLE_CONSOLE_LOG
+        // 13-55 review (debuglog builds only): which way this file's read went, and its time.
+        if (r.ok) LogInfo("peaks: %s: %s, %.0f ms", e.path.c_str(), PeakReadPathName(r.how), r.ms);
+#endif
         e.state = r.ok ? PeakState::Ready : PeakState::Failed;
         if (r.ok) e.peaks = std::move(r.peaks);
         e.used = ++g_tick;  // just read: not the first evicted before its asker takes it
@@ -298,7 +336,22 @@ void Collect()
 // read next is opened here (PCM_Source_CreateFromFile stays on the UI thread) and handed over.
 void Feed()
 {
-    if (g_reading || g_quit) return;
+    if (g_quit) return;
+    if (g_reading) {
+        // 13-55 review: the file on the reader nobody asks for any more while another one waits
+        // (asked just now) is given up, so the wanted file is read next (PeakAbandonInFlight).
+        const double now = NowSeconds();
+        const Entry* busy = nullptr;
+        bool         other_fresh = false;
+        for (const auto& kv : g_cache) {
+            const Entry& e = kv.second;
+            if (e.state != PeakState::Building) continue;
+            if (e.in_flight) busy = &e;
+            else if (now >= e.asked_s && now - e.asked_s <= kPeakFreshSeconds) other_fresh = true;
+        }
+        if (busy && PeakAbandonInFlight(busy->asked_s, other_fresh, now)) g_abandon_seq = busy->seq;
+        return;
+    }
     std::vector<PeakWaiting>                            w;
     std::vector<std::map<std::string, Entry>::iterator> its;
     for (auto it = g_cache.begin(); it != g_cache.end(); ++it)
@@ -322,7 +375,7 @@ void Feed()
         return;
     }
     e.length = len;
-    g_len[e.path] = len;
+    g_len[key] = len;
     e.in_flight = true;
     Job j;
     j.key = key;
@@ -383,7 +436,7 @@ PeakState RequestPeaks(const std::string& path, PeakData* out, double* length)
         if (FileRecheckDue(it->second.checked_s, now)) {
             it->second.checked_s = now;
             if (FileReadStale(it->second.version, VersionOf(path))) {
-                if (g_len.erase(it->second.path) + g_len.erase(path)) ++g_len_gen;
+                if (g_len.erase(key)) ++g_len_gen;
                 g_cache.erase(it);
                 it = g_cache.end();
             }
@@ -444,7 +497,8 @@ bool ReadPeaks(const std::string& path, double start, double length, double rate
 double SourceFileLength(const std::string& path)
 {
     if (path.empty()) return 0.0;
-    auto it = g_len.find(path);
+    const std::string key = PeakCacheKey(path);
+    auto              it = g_len.find(key);
     if (it != g_len.end()) return it->second;
     double len = 0.0;
     if (f_create) {
@@ -453,7 +507,7 @@ double SourceFileLength(const std::string& path)
             delete s;
         }
     }
-    if (len > 0.0) g_len[path] = len;  // a missing file is looked for again (restored, located)
+    if (len > 0.0) g_len[key] = len;  // a missing file is looked for again (restored, located)
     return len;
 }
 
@@ -464,7 +518,7 @@ FileVersion SourceFileVersion(const std::string& path)
 
 void ForgetSourceFileLength(const std::string& path)
 {
-    if (g_len.erase(path)) ++g_len_gen;
+    if (g_len.erase(PeakCacheKey(path))) ++g_len_gen;
 }
 
 uint64_t SourceLengthGeneration()

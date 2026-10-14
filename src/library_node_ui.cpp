@@ -26,6 +26,7 @@
 #include <limits>
 #include <map>
 #include <set>
+#include <utility>  // std::exchange (13-61)
 
 #include <imgui_internal.h>  // BeginDragDropTargetCustom, ImRect
 
@@ -169,6 +170,10 @@ struct PanelState {
     // waveform's right-click (its time, frame, and kind: 0 outside, 1 a variation, 2 the zone), the
     // Roles... popup's "More roles".
     double                zone_start = 0.0, zone_len = 0.0;
+    // 13-61: the edit cursor (where the last click on the waveform landed; < 0 = none) and a trim row's key
+    // waiting for the overlay's next frame (a kShortcutEditTrim* id, -1 = none). View state: no undo point.
+    double                edit_cursor = -1.0;
+    int                   trim_request = -1;
     int                   solo = -1;
     double                menu_at = 0.0;
     int                   menu_frame = -1, menu_kind = 0;
@@ -223,6 +228,8 @@ void OpenEdit(const std::string& lib_uid, const std::string& uid)
     P.view_len = 0.0;
     P.sel.clear();
     P.zone_start = P.zone_len = 0.0;
+    P.edit_cursor = -1.0;  // 13-61
+    P.trim_request = -1;
     P.solo = -1;
     P.roles_more = false;
     P.layer_roles_more = false;
@@ -1438,6 +1445,12 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
         dl->AddRect(c0, c1, ui::kStrokeStrong, 3.0f);
         ui::AddTextIn(dl, cf, ImVec2(c0.x + 4.0f, c0.y + 1.0f), ui::kText, lab);
     }
+    // 13-61: the edit cursor (where the trims cut), REAPER's: a line with a small flag at the top.
+    if (o.cursor_s >= vs && o.cursor_s <= vs + vl) {
+        const float cx = std::floor(X(o.cursor_s)) + 0.5f;
+        dl->AddLine(ImVec2(cx, a.y), ImVec2(cx, b.y), ui::kAccent, 1.0f);
+        dl->AddTriangleFilled(ImVec2(cx - 4.0f, a.y), ImVec2(cx + 4.0f, a.y), ImVec2(cx, a.y + 5.0f), ui::kAccent);
+    }
     if (playhead_s >= vs && playhead_s <= vs + vl) dl->AddLine(ImVec2(X(playhead_s), a.y), ImVec2(X(playhead_s), b.y), ui::kText, 1.0f);
     dl->PopClipRect();
     const bool fade_hot = WaveFades(dl, gid, hovered, frames, o, a, b, vs, vl, &ev);  // Antho 2026-10-12
@@ -1760,6 +1773,18 @@ bool LibraryEditUsesEsc()
     return P.edit_open && P.edit_frame >= f - 1 && P.edit_has_focus;
 }
 
+bool LibraryEditKeysActive()
+{
+    return LibraryEditUsesEsc();  // the same: open, drawn last frame, focused
+}
+
+void RequestLibraryEditTrim(int shortcut_id)
+{
+    if (!P.edit_open) return;
+    if (shortcut_id == kShortcutEditTrimLeft || shortcut_id == kShortcutEditTrimRight || shortcut_id == kShortcutEditTrimZone)
+        P.trim_request = shortcut_id;
+}
+
 namespace {
 
 // ---- Sound panel pieces ---------------------------------------------------------------------------
@@ -1974,6 +1999,10 @@ void HandleWave(const WaveformEvents& ev, const SoundLibrary& lib, const SoundNo
         }
         return;
     }
+    // 13-61: a click on Edit's waveform (a variation or the space between) puts the edit cursor there (not in
+    // Takes mode: each take has its own time).
+    if (in_edit && take_len <= 0.0 && mode != DetectMode::Takes && (ev.clicked >= 0 || ev.clicked_empty))
+        P.edit_cursor = ev.click_at;
     if (ev.clicked >= 0) {
         const int i = map(ev.clicked);
         if (in_edit) {
@@ -2108,6 +2137,71 @@ void PartsEdit(const std::string& name, const SoundLibrary& lib, const SoundNode
     }, toast);
 }
 
+// ---- 13-61: REAPER's item trims (40511 / 40512 / 40508) on Edit's variations ------------------------------
+
+const char* EditTrimName(EditTrimKind k)
+{
+    return k == EditTrimKind::LeftOfCursor ? "Trim left of cursor" : k == EditTrimKind::RightOfCursor ? "Trim right of cursor"
+                                                                                                    : "Trim to zone";
+}
+
+int EditTrimShortcut(EditTrimKind k)
+{
+    return k == EditTrimKind::LeftOfCursor ? kShortcutEditTrimLeft : k == EditTrimKind::RightOfCursor ? kShortcutEditTrimRight
+                                                                                                    : kShortcutEditTrimZone;
+}
+
+// What a trim would do now, on `sel` (Edit's selection, or the variation right-clicked).
+EditTrimPlan EditTrimNow(const SoundNode& n, EditTrimKind kind, const std::vector<int>& sel)
+{
+    if (n.sound.mode == DetectMode::Takes) {
+        EditTrimPlan p;
+        p.why = kTakesTip;
+        return p;
+    }
+    return PlanEditTrim(n.sound.frames, sel, kind, P.edit_cursor, P.zone_start, P.zone_len);
+}
+
+// One trim: each variation as an edge drag moves it (TrimFrame, the parts measured again), one undo point.
+// Nothing to trim: a toast says why.
+void EditTrim(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, EditTrimKind kind, const std::vector<int>& sel)
+{
+    const EditTrimPlan plan = EditTrimNow(n, kind, sel);
+    if (plan.steps.empty()) {
+        ShowLibraryToast(plan.why, false);
+        return;
+    }
+    const std::vector<EditTrimStep> steps = plan.steps;
+    const std::string               path = m.path;
+    const double                    len = m.source_len;
+    const std::string               name = EditTrimName(kind);
+    const std::string toast = name + " \xC2\xB7 " +
+                              (steps.size() == 1 ? "variation " + std::to_string(steps.front().frame + 1)
+                                                 : std::to_string(steps.size()) + " variations");
+    EditNode(name, lib.uid, n.uid, [steps, path, len](SoundNode& x) {
+        bool changed = false;
+        for (const EditTrimStep& s : steps) {
+            if (s.frame < 0 || static_cast<size_t>(s.frame) >= x.sound.frames.size()) continue;
+            const SoundFrame& f = x.sound.frames[static_cast<size_t>(s.frame)];
+            const double      s0 = f.start, l0 = f.length;
+            TrimFrame(x.sound, s.frame, s.start, s.length, len);
+            if (f.start == s0 && f.length == l0) continue;
+            RefreshOne(x.sound, s.frame, path);
+            changed = true;
+        }
+        return changed;
+    }, toast);
+}
+
+// A trim entry of the waveform's menu, with its key (Shortcuts); greyed with why when it has nothing to do.
+void EditTrimEntry(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, EditTrimKind kind, const std::vector<int>& sel)
+{
+    const EditTrimPlan plan = EditTrimNow(n, kind, sel);
+    const char*        key = ShortcutKeyLabel(EditTrimShortcut(kind));
+    if (ui::MenuEntry(EditTrimName(kind), key[0] ? key : nullptr, false, !plan.steps.empty())) EditTrim(lib, n, m, kind, sel);
+    if (plan.steps.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ui::ShowTip(plan.why.c_str());
+}
+
 // The waveform's right-click menu in Edit (the mockup's zone / variation / outside menus).
 void EditWaveMenu(const SoundStore& store, const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m)
 {
@@ -2125,6 +2219,7 @@ void EditWaveMenu(const SoundStore& store, const SoundLibrary& lib, const SoundN
             PartsEdit("Exclude zone", lib, n, path, [zs, zl](SoundData& x) { return AddZone(x, zs, zl, std::string()); },
                       "Zone excluded: never placed");
         }
+        EditTrimEntry(lib, n, m, EditTrimKind::ToZone, P.sel);  // 13-61 (REAPER's 40508)
         ui::MenuSeparator();
         if (IsDivided(d)) {
             for (size_t k = 0; k < d.divide_values.size(); ++k) {
@@ -2154,6 +2249,10 @@ void EditWaveMenu(const SoundStore& store, const SoundLibrary& lib, const SoundN
             const std::string label = "\xE2\x96\xB6 Play its " + ValueName(store, d.divide_group, own) + " part";
             if (ui::MenuEntry(label.c_str())) PlayPart(lib, n, m, i, own);
         }
+        ui::MenuSeparator();
+        // 13-61: REAPER's 40511 / 40512 on this variation, at the edit cursor (the last click).
+        EditTrimEntry(lib, n, m, EditTrimKind::LeftOfCursor, {i});
+        EditTrimEntry(lib, n, m, EditTrimKind::RightOfCursor, {i});
         ui::MenuSeparator();
         bool in_excluded = false;
         for (const SoundZone& z : d.zones) in_excluded = in_excluded || (z.to.empty() && at >= z.start && at <= z.start + z.length);
@@ -2300,6 +2399,7 @@ void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n,
         o.view_start = P.view_start;
         o.view_len = P.view_len;
         if (d.mode == DetectMode::Silence) o.threshold_db = d.silence.threshold_db;
+        if (d.mode != DetectMode::Takes) o.cursor_s = P.edit_cursor;  // 13-61
     }
     if (in_edit) o.size.y = std::max(16.0f, height - kScrollbarH - 4.0f);
     // 13-20 / 13-23 / 13-25: Edit draws the parts (not in Takes mode: a take keeps its item's snap).
@@ -3663,13 +3763,15 @@ void DrawEditOverlay()
             "Bottom handle: the cut between two parts: drag it\n"
             "Drag across the waveform: select a zone, then right-click it: Exclude / \xE2\x86\x92 value\n"
             "Right-click a variation: play it or a part, exclude it, reset its sync point or cuts\n"
-            "Click: listen (the part under the mouse)\n"
+            "Click: listen (the part under the mouse) and put the edit cursor there\n"
+            "Trim left / right of the cursor, trim to the zone: your REAPER keys for its item trims (40511, 40512,\n"
+            "40508; KEYS: SOUND EDIT in Shortcuts), or right-click a variation / the zone\n"
             "Zoom and scroll: the View actions in Shortcuts (your REAPER wheel and zoom keys unless you set your\n"
             "own), middle-drag, the scrollbar; Zoom vertically makes the lanes taller\n"
             "Drag the threshold line (Silence)\nSpace: play / stop, Esc: clear the zone, stop, then close";
         static const char* const kHelpTakes =
             "Click a variation: play and select (Ctrl-click adds)\nDrag an edge: trim (inside its take)\n"
-            "Drag up / down inside: its dB\nAlt-click: off / on\nSplit and add: not in Takes mode\n"
+            "Drag up / down inside: its dB\nAlt-click: off / on\nSplit, add and the cursor / zone trims: not in Takes mode\n"
             "Zoom / Scroll vertically (Shortcuts): the takes taller, scrolled\n"
             "Space: play / stop, Esc: stop, then close";
         // The tools sit at the top right; the name and count take what they leave (shortened),
@@ -3779,6 +3881,13 @@ void DrawEditOverlay()
                 ui::SubText("Every change is saved at once (Ctrl+Z to undo), with the sound in the library (.ravlib).");
             }
             ui::EndPane();
+        }
+        // 13-61: a trim row's key (Shortcuts, KEYS: SOUND EDIT), on Edit's selection.
+        if (const int trim = std::exchange(P.trim_request, -1); trim >= 0 && m.ok && !StoreReplaced()) {
+            const EditTrimKind k = trim == kShortcutEditTrimLeft    ? EditTrimKind::LeftOfCursor
+                                   : trim == kShortcutEditTrimRight ? EditTrimKind::RightOfCursor
+                                                                    : EditTrimKind::ToZone;
+            EditTrim(*lib, *n, m, k, P.sel);
         }
         if (keys && !StoreReplaced()) {
             if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) toggle_play();

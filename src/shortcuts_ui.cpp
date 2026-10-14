@@ -299,7 +299,9 @@ bool KeyRow(int id)
     const bool         custom = !reaper && link.empty() && CurrentShortcuts()[static_cast<size_t>(id)] != def.def;
     EditRowView        v;
     v.label = def.label;
-    if (def.context != ShortcutContext::Anywhere) v.context = def.context == ShortcutContext::VideoView ? "Video" : "Tagging";
+    if (def.context == ShortcutContext::VideoView) v.context = "Video";
+    else if (def.context == ShortcutContext::TaggingView) v.context = "Tagging";
+    else if (def.context == ShortcutContext::LibraryEdit) v.context = "Sound Edit";
     // The keys in force (REAPER's or a linked action's; a key another row takes, faint).
     const ShortcutKeymap& km = CurrentShortcutKeymap();
     for (const KeyBinding& k : km.keys[static_cast<size_t>(id)])
@@ -310,16 +312,32 @@ bool KeyRow(int id)
     v.linked = !reaper && !link.empty();
     v.link_id = reaper ? ShortcutReaperActionId(id) : link;
     if (v.link_id.empty()) {
-        v.source = std::string("RAV only") + (custom ? " \xC2\xB7 default " + FormatShortcut(def.def, &LayoutKeyName) : std::string());
+        if (def.reaper_cmd)  // 13-61: its default is REAPER's action
+            v.source = std::string("RAV only \xC2\xB7 default: REAPER's ") + def.reaper_cmd;
+        else
+            v.source = std::string("RAV only") + (custom ? " \xC2\xB7 default " + FormatShortcut(def.def, &LayoutKeyName) : std::string());
     }
-    v.reaper_tip = std::string("Follow REAPER: the keys you give \"") + def.action_desc +
-                   "\" in REAPER's Actions list, read live (REAPER runs it too, outside the viewer). A key you give "
-                   "the RAV action in REAPER is no longer REAPER's in the main window (one action per key)";
-    v.own_tip = "RAV's own key (double-click the row to record one), or a REAPER action you pick with the chain";
+    if (def.reaper_cmd) {  // 13-61: one of REAPER's own actions (the default)
+        v.reaper_tip = std::string("Follow REAPER: your keys for \"") + (def.reaper_name ? def.reaper_name : def.reaper_cmd) +
+                       "\" (" + def.reaper_cmd + "), read live: they do this in the Sound Edit window while it has the "
+                       "focus, and still trim REAPER's items everywhere else (the default)";
+        v.own_tip = "RAV's own key for the Sound Edit window only (double-click the row to record one), or a REAPER "
+                    "action you pick with the chain";
+    } else {
+        v.reaper_tip = std::string("Follow REAPER: the keys you give \"") + def.action_desc +
+                       "\" in REAPER's Actions list, read live (REAPER runs it too, outside the viewer). A key you give "
+                       "the RAV action in REAPER is no longer REAPER's in the main window (one action per key)";
+        v.own_tip = "RAV's own key (double-click the row to record one), or a REAPER action you pick with the chain";
+    }
     bool record = false;
     switch (EditRow(id, ShortcutRecordingId() == id, v)) {
     case RowClick::Record: record = true; break;
     case RowClick::Reset:
+        if (ShortcutDefaultFollowsReaper(id)) {  // 13-61: its default is REAPER
+            SetShortcutFollowsReaper(id);
+            break;
+        }
+        [[fallthrough]];
     case RowClick::Own: {
         // 10-11 review: an action without a key cannot take back a default that is your own key for
         // another action: refused, and the popup says why. 13-60: a linked row is unlinked; 13-60b: a
@@ -757,7 +775,15 @@ void PopupBody()
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ui::Dp(8.0f), ui::Dp(2.0f)));
     int record = -1;
     for (int i = 0; i < kShortcutCount; ++i)
-        if (KeyRow(i)) record = i;
+        if (kShortcutTable[i].context != ShortcutContext::LibraryEdit && KeyRow(i)) record = i;
+    ImGui::PopStyleVar();
+    // 13-61: the Sound Edit window's trims, on REAPER's own item trims by default.
+    Header("KEYS: SOUND EDIT", "Library \xE2\x80\xBA Edit window");
+    Note("On REAPER, your keys for REAPER's own item trims trim the variations while the Sound Edit window has the "
+         "focus. The edit cursor is where you last clicked the waveform; the zone is a drag across it.");
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ui::Dp(8.0f), ui::Dp(2.0f)));
+    for (int i = 0; i < kShortcutCount; ++i)
+        if (kShortcutTable[i].context == ShortcutContext::LibraryEdit && KeyRow(i)) record = i;
     ImGui::PopStyleVar();
     if (record >= 0) {
         BeginShortcutRecording(record);

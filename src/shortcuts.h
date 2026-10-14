@@ -42,10 +42,11 @@ enum class ShortcutContext {
     Anywhere,     // the viewer has the focus
     VideoView,    // ...and Video view is on (in RAV view the key stays REAPER's)
     TaggingView,  // ...and Tagging view is on (story 10-4)
+    LibraryEdit,  // 13-61: ...and the Library's Sound Edit window has the focus
 };
 
 // Two contexts can be on at once (then their actions cannot share a key): Anywhere overlaps
-// every context; Video view and Tagging view never are on together.
+// every context; Video view, Tagging view and the Library's Edit window never are on together.
 inline bool ShortcutContextsOverlap(ShortcutContext a, ShortcutContext b)
 {
     return a == ShortcutContext::Anywhere || b == ShortcutContext::Anywhere || a == b;
@@ -74,6 +75,12 @@ struct ShortcutDef {
     // user gives that action in REAPER's Actions window; REAPER runs it too (outside the viewer).
     const char*     action;
     const char*     action_desc;
+    // 13-61: a row whose REAPER mode follows one of REAPER's own actions (its command id, "40511")
+    // instead of a RAV action: it has none of its own (action / action_desc null), its REAPER mode is
+    // its default (no key of its own: `def` is none), and REAPER's keys for that action run it in RAV
+    // while its context is on (in REAPER's main window they still run REAPER's action).
+    const char*     reaper_cmd = nullptr;
+    const char*     reaper_name = nullptr;  // ...and REAPER's name of it, for the tips
 };
 
 enum ShortcutId : int {
@@ -87,7 +94,11 @@ enum ShortcutId : int {
     kShortcutTagDelEvent = 7,  // story 10-4: suppress / restore / delete the selected event (Tagging view only)
     kShortcutFullScreen  = 8,  // story 6-5-9: the viewer full screen on / off (Esc leaves it too)
     kShortcutClipList    = 9,  // story 6-5-10: the animation clip list open / closed (every view)
-    kShortcutCount       = 10,
+    // 13-61: the Sound Edit window's trims (Library Edit only), on REAPER's 40511 / 40512 / 40508 keys.
+    kShortcutEditTrimLeft  = 10,  // the variation under the edit cursor starts at the cursor
+    kShortcutEditTrimRight = 11,  // ...ends at the cursor
+    kShortcutEditTrimZone  = 12,  // the selected variation(s) trimmed to the zone selected
+    kShortcutCount       = 13,
 };
 
 inline const ShortcutDef kShortcutTable[kShortcutCount] = {
@@ -112,16 +123,34 @@ inline const ShortcutDef kShortcutTable[kShortcutCount] = {
      "RAV_VIEWER_FULLSCREEN", "RAV: Viewer full screen (toggle)"},
     {"clip_list",    "Clip list: open / close",      {'L', false, false, false}, ShortcutContext::Anywhere,
      "RAV_KEY_CLIP_LIST", "RAV: Viewer key: Clip list open / close"},
+    // 13-61 (Antho 2026-10-14): REAPER's item trims, on the Sound Edit window's variations.
+    {"edit_trim_left", "Trim left of cursor", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "40511", "Item: Trim items left of cursor"},
+    {"edit_trim_right", "Trim right of cursor", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "40512", "Item: Trim items right of cursor"},
+    {"edit_trim_zone", "Trim to selected zone", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "40508", "Item: Trim items to selected area"},
 };
 
-// 13-60b: REAPER's id of a row's own action ("_RAV_KEY_VIDEO_CUT"), "" out of range.
+// 13-60b: REAPER's id of a row's own action ("_RAV_KEY_VIDEO_CUT"), "" out of range. 13-61: a row on one
+// of REAPER's own actions, its id ("40511").
 inline std::string ShortcutReaperActionId(int id)
 {
-    return (id < 0 || id >= kShortcutCount) ? std::string() : std::string("_") + kShortcutTable[id].action;
+    if (id < 0 || id >= kShortcutCount) return std::string();
+    if (kShortcutTable[id].reaper_cmd) return kShortcutTable[id].reaper_cmd;
+    return kShortcutTable[id].action ? std::string("_") + kShortcutTable[id].action : std::string();
+}
+
+// 13-61: a row whose default is REAPER (it follows one of REAPER's own actions, ShortcutDef::reaper_cmd).
+inline bool ShortcutDefaultFollowsReaper(int id)
+{
+    return id >= 0 && id < kShortcutCount && kShortcutTable[id].reaper_cmd != nullptr;
 }
 
 // 13-60b: a row on "REAPER" (following its own action's keys in REAPER) is stored as this.
 constexpr char kShortcutFollowsReaper[] = "reaper";
+// 13-61: a row whose default is REAPER, set to Own with no key yet, is stored as this.
+constexpr char kShortcutOwnNoKey[] = "own";
 
 // The mouse gestures the popup lists (fixed, never rebindable), by group.
 struct MouseGestureGroup {
@@ -189,14 +218,23 @@ inline bool ShortcutMatches(const KeyBinding& b, unsigned key, bool ctrl, bool s
     return b.vk != 0 && b.vk == key && b.ctrl == ctrl && b.shift == shift && b.alt == alt;
 }
 
+// Whether a row's context is on (13-61: `library_edit` = the Library's Sound Edit window has the focus).
+inline bool ShortcutContextOn(ShortcutContext c, bool video_view, bool tagging_view, bool library_edit)
+{
+    if (c == ShortcutContext::VideoView) return video_view;
+    if (c == ShortcutContext::TaggingView) return tagging_view;
+    if (c == ShortcutContext::LibraryEdit) return library_edit;
+    return true;
+}
+
 // The action this key press runs, or -1. An action whose context is Video view only
-// matches in Video view; Tagging view only, in Tagging view.
+// matches in Video view; Tagging view only, in Tagging view; 13-61: Library Edit only, while the
+// Sound Edit window has the focus.
 inline int ShortcutActionFor(const ShortcutBindings& b, unsigned key, bool ctrl, bool shift, bool alt,
-                             bool video_view, bool tagging_view = false)
+                             bool video_view, bool tagging_view = false, bool library_edit = false)
 {
     for (int i = 0; i < kShortcutCount; ++i) {
-        if (kShortcutTable[i].context == ShortcutContext::VideoView && !video_view) continue;
-        if (kShortcutTable[i].context == ShortcutContext::TaggingView && !tagging_view) continue;
+        if (!ShortcutContextOn(kShortcutTable[i].context, video_view, tagging_view, library_edit)) continue;
         if (ShortcutMatches(b[static_cast<size_t>(i)], key, ctrl, shift, alt)) return i;
     }
     return -1;
@@ -207,6 +245,7 @@ inline int ShortcutActionFor(const ShortcutBindings& b, unsigned key, bool ctrl,
 // Delete never clash.
 inline int ShortcutOwner(const ShortcutBindings& b, const KeyBinding& key, int except)
 {
+    if (key.vk == 0) return -1;  // 13-61: no key (a row without one) is nobody's
     for (int i = 0; i < kShortcutCount; ++i) {
         if (i == except || !(b[static_cast<size_t>(i)] == key)) continue;
         if (except >= 0 && except < kShortcutCount &&
@@ -270,11 +309,10 @@ inline ShortcutKeymap ShortcutKeymapOf(const ShortcutBindings& b)
 
 // ShortcutActionFor over the keys in force.
 inline int ShortcutActionFor(const ShortcutKeymap& m, unsigned key, bool ctrl, bool shift, bool alt, bool video_view,
-                             bool tagging_view = false)
+                             bool tagging_view = false, bool library_edit = false)
 {
     for (int i = 0; i < kShortcutCount; ++i) {
-        if (kShortcutTable[i].context == ShortcutContext::VideoView && !video_view) continue;
-        if (kShortcutTable[i].context == ShortcutContext::TaggingView && !tagging_view) continue;
+        if (!ShortcutContextOn(kShortcutTable[i].context, video_view, tagging_view, library_edit)) continue;
         for (const KeyBinding& k : m.keys[static_cast<size_t>(i)])
             if (ShortcutMatches(k, key, ctrl, shift, alt)) return i;
     }
@@ -318,6 +356,7 @@ struct KeyRouteInput {
     bool     ctrl = false, shift = false, alt = false;
     bool     video_view = false;
     bool     tagging_view = false;    // story 10-4: E / Del in Tagging view
+    bool     library_edit = false;    // 13-61: the Library's Sound Edit window has the focus (its trims)
     bool     recording = false;   // a new key is being recorded: the viewer takes every key
     bool     text_input = false;  // an ImGui text field is active: the viewer takes every key
     bool     popup_open = false;  // the Shortcuts popup (or the delete confirmation) is open: Esc closes it
@@ -416,7 +455,8 @@ inline int RouteViewerKey(const ShortcutKeymap& b, const KeyRouteInput& in, KeyR
         // Story 6-5-9: full screen, Esc is the viewer's (it leaves full screen).
         const bool ours = (in.key == vk::kEscape && (in.popup_open || in.full_screen)) ||
                           (in.key == vk::kReturn && in.confirm_open) ||
-                          ShortcutActionFor(b, in.key, in.ctrl, in.shift, in.alt, in.video_view, in.tagging_view) >= 0;
+                          ShortcutActionFor(b, in.key, in.ctrl, in.shift, in.alt, in.video_view, in.tagging_view,
+                                            in.library_edit) >= 0;
         if (!ours) {
             st.claimed_vk = 0;  // a lost release (focus moved) must not keep claiming characters
             return to_reaper;
@@ -495,7 +535,7 @@ inline std::vector<int> ResetShortcut(ShortcutBindings& b, int id)
             changed.push_back(k);
         }
         for (int j = 0; j < kShortcutCount; ++j)
-            if (j != k && b[static_cast<size_t>(j)] == d &&
+            if (j != k && d.vk != 0 && b[static_cast<size_t>(j)] == d &&  // 13-61: no key holds nothing
                 ShortcutContextsOverlap(kShortcutTable[j].context, kShortcutTable[k].context))
                 todo.push_back(j);
     }
@@ -702,7 +742,8 @@ void LoadShortcuts();
 const ShortcutBindings& CurrentShortcuts();
 
 // The action a key press runs in the viewer (Ctrl / Shift / Alt held as given), or -1.
-int ShortcutActionForKey(unsigned key, bool ctrl, bool shift, bool alt, bool video_view, bool tagging_view = false);
+int ShortcutActionForKey(unsigned key, bool ctrl, bool shift, bool alt, bool video_view, bool tagging_view = false,
+                         bool library_edit = false);
 
 // The current key of an action as text ("C", "Shift+V"), for key caps and the popup.
 const char* ShortcutKeyLabel(int id);

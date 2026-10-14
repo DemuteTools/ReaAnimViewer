@@ -925,10 +925,12 @@ int main()
     // name, REAPER's id "_" + it, a text naming RAV; full screen keeps story 6-5-9's action.
     {
         for (int i = 0; i < kShortcutCount; ++i) {
+            if (kShortcutTable[i].reaper_cmd) continue;  // 13-61: on one of REAPER's own actions (below)
             CHECK(std::strncmp(kShortcutTable[i].action, "RAV_", 4) == 0);
             CHECK(std::strncmp(kShortcutTable[i].action_desc, "RAV: ", 5) == 0);
             CHECK(ShortcutReaperActionId(i) == std::string("_") + kShortcutTable[i].action);
-            for (int j = 0; j < i; ++j) CHECK(std::strcmp(kShortcutTable[i].action, kShortcutTable[j].action) != 0);
+            for (int j = 0; j < i; ++j)
+                if (kShortcutTable[j].action) CHECK(std::strcmp(kShortcutTable[i].action, kShortcutTable[j].action) != 0);
         }
         CHECK(std::strcmp(kShortcutTable[kShortcutFullScreen].action, "RAV_VIEWER_FULLSCREEN") == 0);
         CHECK(ShortcutReaperActionId(-1).empty() && ShortcutReaperActionId(kShortcutCount).empty());
@@ -949,6 +951,61 @@ int main()
         CHECK(ShortcutActionFor(m, 'P', false, false, false, true) == kShortcutTogglePanel);
         CHECK(m.shadowed[kShortcutCut].size() == 1);
         CHECK(Contains(RebindFreedDefaults(b, linked), kShortcutCut) == false);
+    }
+
+    // 13-61: the Sound Edit window's trims -- on REAPER's own 40511 / 40512 / 40508 by default (no RAV action,
+    // no key of their own), run only while the Edit window has the focus (Library Edit).
+    {
+        CHECK(ShortcutReaperActionId(kShortcutEditTrimLeft) == "40511");
+        CHECK(ShortcutReaperActionId(kShortcutEditTrimRight) == "40512");
+        CHECK(ShortcutReaperActionId(kShortcutEditTrimZone) == "40508");
+        for (int i = kShortcutEditTrimLeft; i <= kShortcutEditTrimZone; ++i) {
+            CHECK(ShortcutDefaultFollowsReaper(i));
+            CHECK(kShortcutTable[i].action == nullptr && kShortcutTable[i].def.vk == 0);
+            CHECK(kShortcutTable[i].context == ShortcutContext::LibraryEdit);
+        }
+        CHECK(!ShortcutDefaultFollowsReaper(kShortcutCut) && !ShortcutDefaultFollowsReaper(-1));
+        KeyBinding k;
+        CHECK(!DecodeShortcut(kShortcutOwnNoKey, &k));
+        // The defaults are still valid: nothing reset, no unbound row, no blocker for a keyless row.
+        ShortcutBindings b = DefaultShortcutBindings();
+        bool             linked[kShortcutCount] = {};
+        for (int i = kShortcutEditTrimLeft; i <= kShortcutEditTrimZone; ++i) linked[i] = true;
+        CHECK(SanitizeShortcuts(b, nullptr, nullptr, linked).empty());
+        CHECK(ShortcutResetBlocker(b, kShortcutEditTrimLeft) == -1);
+        CHECK(ShortcutOwner(b, KeyBinding{}, -1) == -1);  // no key is nobody's
+        CHECK(RebindFreedDefaults(b, linked).empty());
+        // Own with no key (unlinked, vk 0): still valid, no cascade into another keyless row.
+        bool own_linked[kShortcutCount] = {};
+        CHECK(SanitizeShortcuts(b, nullptr, nullptr, own_linked).empty());
+        CHECK(ResetShortcut(b, kShortcutEditTrimLeft).empty());
+        // On REAPER: the keys REAPER gives 40511 (here Alt+[ as 0xDB) run it in Edit only.
+        ShortcutKeyLists lk;
+        lk[kShortcutEditTrimLeft] = {KeyBinding{0xDB, false, false, true}};
+        lk[kShortcutEditTrimZone] = {Key('L')};  // the clip list's own key (Anywhere): stays the clip list's
+        const ShortcutKeymap m = ResolveShortcutKeys(b, lk, linked);
+        CHECK(ShortcutActionFor(m, 0xDB, false, false, true, false, false, true) == kShortcutEditTrimLeft);
+        CHECK(ShortcutActionFor(m, 0xDB, false, false, true, false, false, false) == -1);  // Edit not focused: REAPER's
+        CHECK(ShortcutActionFor(m, 0xDB, false, false, true, true, false, false) == -1);   // Video view: REAPER's
+        CHECK(m.shadowed[kShortcutEditTrimZone].size() == 1);
+        CHECK(ShortcutActionFor(m, 'L', false, false, false, false, false, true) == kShortcutClipList);
+        // Routing: the hook hands the key to the viewer only while the Edit window has the focus.
+        KeyRouteState st;
+        KeyRouteInput in;
+        in.msg = KeyMsg::SysKeyDown;
+        in.key = 0xDB;
+        in.alt = true;
+        CHECK(RouteViewerKey(m, in, st) == kRouteReaper);
+        in.library_edit = true;
+        CHECK(RouteViewerKey(m, in, st) == kRouteViewerSys);
+        // Its own key: a Video view key (C) does not clash with a Library Edit row; an Anywhere one does.
+        ShortcutBindings o = DefaultShortcutBindings();
+        CHECK(ShortcutRecordStep(o, kShortcutEditTrimRight, 'C', false, false, false) == RecordOutcome::Assigned);
+        int owner = -1;
+        CHECK(ShortcutRecordStep(o, kShortcutEditTrimLeft, 'L', false, false, false, &owner) == RecordOutcome::Conflict);
+        CHECK(owner == kShortcutClipList);
+        CHECK(ShortcutActionFor(o, 'C', false, false, false, false, false, true) == kShortcutEditTrimRight);
+        CHECK(ShortcutActionFor(o, 'C', false, false, false, true, false, false) == kShortcutCut);
     }
 
     if (g_fails == 0) std::printf("shortcuts: all checks passed\n");

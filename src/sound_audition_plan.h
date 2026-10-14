@@ -134,6 +134,29 @@ enum class FrameEdit { Trim, Add, Split, Toggle, Db };
 // Decision 3: Takes mode refuses Add and Split.
 bool FrameEditAllowed(DetectMode mode, FrameEdit edit);
 
+// ---- 13-61: REAPER's item trims in the Sound Edit window ----------------------------------------------
+// "Trim left of cursor" (REAPER 40511): a variation that holds the edit cursor starts there; "right of
+// cursor" (40512): it ends there; "to selected zone" (40508): each variation the zone crosses keeps only
+// what is inside the zone. The variations: the selected ones (Edit's selection), else -- nothing selected
+// -- the one under the cursor (the cursor trims) or every one the zone crosses. Trims only shrink a
+// variation (never past its neighbours, never 1 ms or less: that one is left as it is). Not in Takes
+// mode (each take has its own time: the caller refuses it).
+enum class EditTrimKind { LeftOfCursor, RightOfCursor, ToZone };
+
+struct EditTrimStep {
+    int    frame = -1;
+    double start = 0.0, length = 0.0;  // its new stretch (source seconds)
+};
+
+struct EditTrimPlan {
+    std::vector<EditTrimStep> steps;  // in frame order; empty = nothing to do (`why` says what is missing)
+    std::string               why;
+};
+
+// `cursor` < 0 = no edit cursor; `zone_len` <= 0 = no zone.
+EditTrimPlan PlanEditTrim(const std::vector<SoundFrame>& frames, const std::vector<int>& selected, EditTrimKind kind,
+                          double cursor, double zone_start, double zone_len);
+
 // The selection Normalize works on: the selected frames (NormalizeRegions keeps the on ones); {} =
 // every frame (no selection); {-1} = none when only off frames are selected.
 std::vector<int> NormalizeSelection(const std::vector<SoundFrame>& frames, const std::vector<int>& selected);

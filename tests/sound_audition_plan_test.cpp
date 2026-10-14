@@ -769,8 +769,74 @@ static void TestSettleEditPlay()
     CHECK(s.since < 0.0 && !SettleEditPlay(s, playing, playing, 3.0));
 }
 
+// 13-61: REAPER's item trims in the Sound Edit window (40511 / 40512 / 40508), the pure plan.
+static void TestEditTrim()
+{
+    auto fr = [](double s, double l) {
+        SoundFrame f;
+        f.start = s;
+        f.length = l;
+        return f;
+    };
+    const std::vector<SoundFrame> frames = {fr(0.0, 1.0), fr(1.5, 1.0), fr(3.0, 1.0)};
+    // Nothing selected: the variation under the cursor.
+    EditTrimPlan p = PlanEditTrim(frames, {}, EditTrimKind::LeftOfCursor, 1.8, 0.0, 0.0);
+    CHECK(p.steps.size() == 1 && p.steps[0].frame == 1 && Near(p.steps[0].start, 1.8) && Near(p.steps[0].length, 0.7));
+    p = PlanEditTrim(frames, {}, EditTrimKind::RightOfCursor, 1.8, 0.0, 0.0);
+    CHECK(p.steps.size() == 1 && p.steps[0].frame == 1 && Near(p.steps[0].start, 1.5) && Near(p.steps[0].length, 0.3));
+    // No cursor; a cursor between variations or on an edge: nothing, and why.
+    p = PlanEditTrim(frames, {}, EditTrimKind::LeftOfCursor, -1.0, 0.0, 0.0);
+    CHECK(p.steps.empty() && !p.why.empty());
+    p = PlanEditTrim(frames, {}, EditTrimKind::LeftOfCursor, 1.2, 0.0, 0.0);
+    CHECK(p.steps.empty() && p.why == "The edit cursor is not inside a variation");
+    p = PlanEditTrim(frames, {}, EditTrimKind::RightOfCursor, 1.5, 0.0, 0.0);
+    CHECK(p.steps.empty());
+    // A selection: only the selected variations the cursor is in.
+    p = PlanEditTrim(frames, {0}, EditTrimKind::LeftOfCursor, 1.8, 0.0, 0.0);
+    CHECK(p.steps.empty() && p.why == "The edit cursor is not inside a selected variation");
+    p = PlanEditTrim(frames, {2, 1}, EditTrimKind::RightOfCursor, 3.25, 0.0, 0.0);
+    CHECK(p.steps.size() == 1 && p.steps[0].frame == 2 && Near(p.steps[0].length, 0.25));
+    // Never 1 ms or less left (no negative or empty length).
+    p = PlanEditTrim(frames, {}, EditTrimKind::LeftOfCursor, 0.9995, 0.0, 0.0);
+    CHECK(p.steps.empty() && p.why == "Nothing to trim there");
+    p = PlanEditTrim(frames, {}, EditTrimKind::RightOfCursor, 0.0005, 0.0, 0.0);
+    CHECK(p.steps.empty());
+    // To the zone: nothing selected = every variation it crosses (an edge each; the one inside untouched).
+    p = PlanEditTrim(frames, {}, EditTrimKind::ToZone, -1.0, 0.5, 3.0);  // 0.5 .. 3.5
+    CHECK(p.steps.size() == 2);
+    CHECK(p.steps[0].frame == 0 && Near(p.steps[0].start, 0.5) && Near(p.steps[0].length, 0.5));
+    CHECK(p.steps[1].frame == 2 && Near(p.steps[1].start, 3.0) && Near(p.steps[1].length, 0.5));
+    // Inside one variation: both its edges.
+    p = PlanEditTrim(frames, {}, EditTrimKind::ToZone, 2.0, 1.6, 0.2);
+    CHECK(p.steps.size() == 1 && p.steps[0].frame == 1 && Near(p.steps[0].start, 1.6) && Near(p.steps[0].length, 0.2));
+    // A selection: only the selected variations the zone crosses.
+    p = PlanEditTrim(frames, {2}, EditTrimKind::ToZone, -1.0, 0.5, 3.0);
+    CHECK(p.steps.size() == 1 && p.steps[0].frame == 2);
+    p = PlanEditTrim(frames, {1}, EditTrimKind::ToZone, -1.0, 0.2, 0.5);
+    CHECK(p.steps.empty() && p.why == "The zone crosses no selected variation");
+    // No zone; a zone over a whole variation (already inside it); a zone in a gap.
+    p = PlanEditTrim(frames, {}, EditTrimKind::ToZone, 0.5, 0.0, 0.0);
+    CHECK(p.steps.empty() && !p.why.empty());
+    p = PlanEditTrim(frames, {1}, EditTrimKind::ToZone, -1.0, 1.2, 2.0);
+    CHECK(p.steps.empty() && p.why == "Already inside the zone");
+    p = PlanEditTrim(frames, {}, EditTrimKind::ToZone, -1.0, 1.1, 0.3);
+    CHECK(p.steps.empty() && p.why == "The zone crosses no variation");
+    // A selection index out of range is ignored.
+    p = PlanEditTrim(frames, {7}, EditTrimKind::LeftOfCursor, 0.5, 0.0, 0.0);
+    CHECK(p.steps.size() == 1 && p.steps[0].frame == 0);
+    // Applied with TrimFrame (as the edge drag), a plan step lands exactly (it only shrinks).
+    SoundData d;
+    d.frames = frames;
+    p = PlanEditTrim(d.frames, {}, EditTrimKind::ToZone, -1.0, 0.5, 3.0);
+    for (const EditTrimStep& s : p.steps) TrimFrame(d, s.frame, s.start, s.length, 5.0);
+    CHECK(Near(d.frames[0].start, 0.5) && Near(d.frames[0].length, 0.5) && d.frames[0].hand && d.edited);
+    CHECK(Near(d.frames[1].start, 1.5) && Near(d.frames[1].length, 1.0));
+    CHECK(Near(d.frames[2].start, 3.0) && Near(d.frames[2].length, 0.5));
+}
+
 int main()
 {
+    TestEditTrim();
     TestEditPlay();
     TestSettleEditPlay();
     TestMono();

@@ -366,6 +366,56 @@ bool FrameEditAllowed(DetectMode mode, FrameEdit edit)
     return true;
 }
 
+EditTrimPlan PlanEditTrim(const std::vector<SoundFrame>& frames, const std::vector<int>& selected, EditTrimKind kind,
+                          double cursor, double zone_start, double zone_len)
+{
+    EditTrimPlan plan;
+    const bool   zone = kind == EditTrimKind::ToZone;
+    if (zone && !(zone_len > 0.0)) {
+        plan.why = "Select a zone first: drag across the waveform";
+        return plan;
+    }
+    if (!zone && !(cursor >= 0.0)) {
+        plan.why = "Click the waveform first: the edit cursor sets where to trim";
+        return plan;
+    }
+    const double ze = zone_start + zone_len;
+    auto valid = [&](int i) { return i >= 0 && static_cast<size_t>(i) < frames.size(); };
+    // The variations it may touch: the selected ones, else every one (the cursor / zone picks among them).
+    std::vector<int> pool;
+    for (int i : selected)
+        if (valid(i) && std::find(pool.begin(), pool.end(), i) == pool.end()) pool.push_back(i);
+    const bool any_selected = !pool.empty();
+    if (!any_selected)
+        for (size_t i = 0; i < frames.size(); ++i) pool.push_back(static_cast<int>(i));
+    std::sort(pool.begin(), pool.end());
+    bool touched = false;  // a variation the cursor / zone is on (even if nothing changes)
+    for (int i : pool) {
+        const SoundFrame& f = frames[static_cast<size_t>(i)];
+        const double      fe = f.start + f.length;
+        double            s = f.start, e = fe;
+        if (zone) {
+            if (!(ze > f.start && zone_start < fe)) continue;  // the zone does not cross it
+            s = std::max(f.start, zone_start);
+            e = std::min(fe, ze);
+        } else {
+            if (!(cursor > f.start && cursor < fe)) continue;  // the cursor is not inside it
+            if (kind == EditTrimKind::LeftOfCursor) s = cursor;
+            else e = cursor;
+        }
+        touched = true;
+        if (e - s <= kMinFrame) continue;  // nothing would be left: unchanged
+        if (std::fabs(s - f.start) < 1e-9 && std::fabs(e - fe) < 1e-9) continue;  // already so
+        plan.steps.push_back(EditTrimStep{i, s, e - s});
+    }
+    if (plan.steps.empty()) {
+        if (touched) plan.why = zone ? "Already inside the zone" : "Nothing to trim there";
+        else if (zone) plan.why = any_selected ? "The zone crosses no selected variation" : "The zone crosses no variation";
+        else plan.why = any_selected ? "The edit cursor is not inside a selected variation" : "The edit cursor is not inside a variation";
+    }
+    return plan;
+}
+
 std::vector<int> NormalizeSelection(const std::vector<SoundFrame>& frames, const std::vector<int>& selected)
 {
     if (selected.empty()) return {};

@@ -264,8 +264,8 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     SetViewerFullScreenCommandId(g_full_screen_id);
     // Lot 13-60b -- the viewer keys' actions (no default key: the user gives them one in REAPER). A
     // failure only loses that action (its row's "REAPER" then finds no action in REAPER's list).
-    for (int i = 0; i < kShortcutCount; ++i)
-        if (std::strcmp(kShortcutTable[i].action, kFullScreenName) != 0)
+    for (int i = 0; i < kShortcutCount; ++i)  // 13-61: a row on one of REAPER's own actions has none
+        if (kShortcutTable[i].action && std::strcmp(kShortcutTable[i].action, kFullScreenName) != 0)
             g_key_ids[i] = RegisterAction(rec, kShortcutTable[i].action, kShortcutTable[i].action_desc, &g_key_accels[i]);
 
     // Story 11-2 -- the video FX background option. A failure only loses that action.

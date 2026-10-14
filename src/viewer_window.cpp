@@ -2319,6 +2319,11 @@ void RunShortcutAction(int action)
     // suppresses / restores / deletes the selected event (one undo point each).
     if (action == kShortcutTagAddEvent) { TaggingAddEventAtPlayhead(); return; }
     if (action == kShortcutTagDelEvent) { TaggingDeleteSelectedEvent(); return; }
+    // 13-61 -- the Sound Edit window's trims (Library Edit only): done by its next frame.
+    if (action == kShortcutEditTrimLeft || action == kShortcutEditTrimRight || action == kShortcutEditTrimZone) {
+        RequestLibraryEditTrim(action);
+        return;
+    }
 }
 
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
@@ -2588,7 +2593,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             LibraryViewActive() && LibraryViewTakesKey(static_cast<unsigned>(wp), ctrl, shift, alt);
         const int action = library_key ? -1
                                        : ShortcutActionForKey(static_cast<unsigned>(wp), ctrl, shift, alt,
-                                                              VideoViewActive(), TaggingViewActive());
+                                                              VideoViewActive(), TaggingViewActive(),
+                                                              LibraryViewActive() && LibraryEditKeysActive());  // 13-61
         if (action < 0) {
             // The auto-repeat of a key the hook took (it may map to no action now): ours.
             if ((lp & (1 << 30)) && g_key_route.claimed_vk != 0 && wp == g_key_route.claimed_vk) return 0;
@@ -2855,6 +2861,7 @@ int ViewerTranslateAccel(MSG* msg, accelerator_register_t* /*ctx*/)
     in.alt        = GetKeyState(VK_MENU) < 0;
     in.video_view = VideoViewActive();
     in.tagging_view = TaggingViewActive();  // Story 10-4: E / Del
+    in.library_edit = LibraryViewActive() && LibraryEditKeysActive();  // 13-61: the Sound Edit window's trims
     in.recording  = ShortcutRecordingId() >= 0;
     in.text_input = TextInputNow();  // story 10-3b: the preset menu open counts
     // Esc closes either; Story 10-3: Esc also cancels a Tagging view drag.
@@ -3050,6 +3057,7 @@ void RunViewerShortcut(int id)
     if (id < 0 || id >= kShortcutCount || !ViewerWindowIsVisible()) return;
     if (kShortcutTable[id].context == ShortcutContext::VideoView && !VideoViewActive()) return;
     if (kShortcutTable[id].context == ShortcutContext::TaggingView && !TaggingViewActive()) return;
+    if (kShortcutTable[id].context == ShortcutContext::LibraryEdit && !(LibraryViewActive() && LibraryEditKeysActive())) return;
     if (VideoDeleteConfirmOpen() || ShortcutRecordingId() >= 0) return;
     ImGuiContext* prev = ImGui::GetCurrentContext();
     if (g_main_imgui_ctx) ImGui::SetCurrentContext(g_main_imgui_ctx);

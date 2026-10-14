@@ -77,6 +77,8 @@ struct WaveformOptions {
     std::vector<bool>   gain_clip;
     // 13-41: the Sound forced to mono: one lane, the channel (or L + R) heard (MonoOf).
     MonoMode mono = MonoMode::Off;
+    // 13-61: Edit's edit cursor (source seconds, < 0 = none): where the last click landed, drawn as a line.
+    double cursor_s = -1.0;
 };
 
 struct WaveformEvents {
@@ -138,6 +140,12 @@ bool LibraryNodeTakesKey(unsigned vk, bool ctrl, bool shift, bool alt);
 // Story 6-5-10: the Edit overlay is open and has the keyboard, so an Esc is its own (it clears the
 // zone, stops Play, or closes the overlay): the clip list, open over the view, waits for the next.
 bool LibraryEditUsesEsc();
+// 13-61: the Edit overlay is open and has the keyboard: the Shortcuts rows of the Sound Edit window (the
+// trims, ShortcutContext::LibraryEdit) run on their keys.
+bool LibraryEditKeysActive();
+// 13-61: a trim row's key ran (kShortcutEditTrimLeft / Right / Zone): the Edit overlay does it on its next
+// frame (one undo point), or says why it cannot. Ignored while the overlay is closed.
+void RequestLibraryEditTrim(int shortcut_id);
 
 }  // namespace rav
 

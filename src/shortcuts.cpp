@@ -144,14 +144,22 @@ void RefreshLabels()
 
 // Only custom keys are stored: a default deletes the entry (10-11: so does unbound, which
 // gives the default back on the next load once its key is free). 13-60: a link is "link:<id>".
-// 13-60b: a row on REAPER is "reaper".
+// 13-60b: a row on REAPER is "reaper". 13-61: a row whose default is REAPER (ShortcutDefaultFollowsReaper)
+// stores nothing on REAPER, and "own" when Own with no key yet.
 void Save(int id)
 {
     if (id < 0 || id >= kShortcutCount) return;
     const KeyBinding& b = g_bindings[static_cast<size_t>(id)];
     const std::string key = ExtKey(id);
+    const bool        reaper_default = ShortcutDefaultFollowsReaper(id);
     if (g_follow_reaper[static_cast<size_t>(id)]) {
-        if (SetExtState) SetExtState(kExtSection, key.c_str(), kShortcutFollowsReaper, true);
+        if (reaper_default) {
+            if (DeleteExtState) DeleteExtState(kExtSection, key.c_str(), true);
+        } else if (SetExtState) {
+            SetExtState(kExtSection, key.c_str(), kShortcutFollowsReaper, true);
+        }
+    } else if (reaper_default && g_links[static_cast<size_t>(id)].empty() && b.vk == 0) {
+        if (SetExtState) SetExtState(kExtSection, key.c_str(), kShortcutOwnNoKey, true);
     } else if (!g_links[static_cast<size_t>(id)].empty()) {
         if (SetExtState) SetExtState(kExtSection, key.c_str(), EncodeActionLink(g_links[static_cast<size_t>(id)]).c_str(), true);
     } else if (b == kShortcutTable[id].def || b.vk == 0) {
@@ -170,6 +178,8 @@ void LoadShortcuts()
     g_follow_reaper = {};
     bool bad[kShortcutCount] = {};
     bool stored[kShortcutCount] = {};  // 10-11: the key comes from the user's settings
+    for (int i = 0; i < kShortcutCount; ++i)  // 13-61: a row whose default is REAPER starts on it
+        g_follow_reaper[static_cast<size_t>(i)] = ShortcutDefaultFollowsReaper(i);
     for (int i = 0; i < kShortcutCount; ++i) {
         if (!GetExtState) break;
         const std::string key = ExtKey(i);
@@ -177,14 +187,19 @@ void LoadShortcuts()
         if (!v || !v[0]) continue;
         KeyBinding b;
         std::string link;
-        if (std::strcmp(v, kShortcutFollowsReaper) == 0) {  // 13-60b: on REAPER, no key of its own
+        if (ShortcutDefaultFollowsReaper(i) && std::strcmp(v, kShortcutOwnNoKey) == 0) {  // 13-61: Own, no key yet
+            g_follow_reaper[static_cast<size_t>(i)] = false;
+            g_bindings[static_cast<size_t>(i)] = KeyBinding{};
+        } else if (std::strcmp(v, kShortcutFollowsReaper) == 0) {  // 13-60b: on REAPER, no key of its own
             g_follow_reaper[static_cast<size_t>(i)] = true;
             g_bindings[static_cast<size_t>(i)] = KeyBinding{};
         } else if (DecodeActionLink(v, &link)) {  // 13-60: linked to a REAPER action, no key of its own
             g_links[static_cast<size_t>(i)] = link;
+            g_follow_reaper[static_cast<size_t>(i)] = false;
             g_bindings[static_cast<size_t>(i)] = KeyBinding{};
         } else if (DecodeShortcut(v, &b)) {
             g_bindings[static_cast<size_t>(i)] = b;
+            g_follow_reaper[static_cast<size_t>(i)] = false;
             stored[i] = true;
         } else {
             LogWarn("shortcut \"%s\": stored key \"%s\" is not valid, using %s", kShortcutTable[i].label, v,
@@ -270,6 +285,15 @@ void SetShortcutFollowsReaper(int id)
 int SetShortcutOwn(int id)
 {
     if (id < 0 || id >= kShortcutCount || !g_follow_reaper[static_cast<size_t>(id)]) return -1;
+    if (ShortcutDefaultFollowsReaper(id)) {  // 13-61: its default is REAPER: Own with no key yet
+        g_follow_reaper[static_cast<size_t>(id)] = false;
+        g_links[static_cast<size_t>(id)].clear();
+        g_bindings[static_cast<size_t>(id)] = KeyBinding{};
+        Save(id);
+        g_keymap_dirty = true;
+        RebuildKeymap();
+        return -1;
+    }
     return ResetShortcutToDefault(id);  // ends REAPER: its default key back
 }
 
@@ -283,9 +307,10 @@ std::string ShortcutBindingLabel(const KeyBinding& b)
     return FormatShortcut(b, &LayoutKeyName);
 }
 
-int ShortcutActionForKey(unsigned key, bool ctrl, bool shift, bool alt, bool video_view, bool tagging_view)
+int ShortcutActionForKey(unsigned key, bool ctrl, bool shift, bool alt, bool video_view, bool tagging_view,
+                         bool library_edit)
 {
-    return ShortcutActionFor(Keymap(), key, ctrl, shift, alt, video_view, tagging_view);
+    return ShortcutActionFor(Keymap(), key, ctrl, shift, alt, video_view, tagging_view, library_edit);
 }
 
 void RefreshShortcutLabels()
@@ -304,6 +329,12 @@ const char* ShortcutKeyLabel(int id)
 int ResetShortcutToDefault(int id)
 {
     if (id < 0 || id >= kShortcutCount) return -1;
+    if (ShortcutDefaultFollowsReaper(id)) {  // 13-61: its default is REAPER
+        g_links[static_cast<size_t>(id)].clear();
+        g_follow_reaper[static_cast<size_t>(id)] = false;  // so the call below runs
+        SetShortcutFollowsReaper(id);
+        return -1;
+    }
     std::vector<int> changed;
     if (!g_links[static_cast<size_t>(id)].empty() || g_follow_reaper[static_cast<size_t>(id)]) {  // 13-60: back to a key of its own
         g_links[static_cast<size_t>(id)].clear();

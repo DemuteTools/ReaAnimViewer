@@ -416,6 +416,37 @@ EditTrimPlan PlanEditTrim(const std::vector<SoundFrame>& frames, const std::vect
     return plan;
 }
 
+EditSplitPlan PlanEditSplit(const std::vector<SoundFrame>& frames, const std::vector<int>& selected, double cursor)
+{
+    EditSplitPlan plan;
+    if (!(cursor >= 0.0)) {
+        plan.why = "Click the waveform first: the edit cursor sets where to split";
+        return plan;
+    }
+    auto valid = [&](int i) { return i >= 0 && static_cast<size_t>(i) < frames.size(); };
+    std::vector<int> pool;  // the selected ones, else every one (the cursor picks among them)
+    for (int i : selected)
+        if (valid(i) && std::find(pool.begin(), pool.end(), i) == pool.end()) pool.push_back(i);
+    const bool any_selected = !pool.empty();
+    if (!any_selected)
+        for (size_t i = 0; i < frames.size(); ++i) pool.push_back(static_cast<int>(i));
+    std::sort(pool.begin(), pool.end());
+    bool touched = false;
+    for (int i : pool) {
+        const SoundFrame& f = frames[static_cast<size_t>(i)];
+        const double      fe = f.start + f.length;
+        if (!(cursor > f.start && cursor < fe)) continue;  // the cursor is not inside it
+        touched = true;
+        if (cursor - f.start <= kMinFrame || fe - cursor <= kMinFrame) continue;  // a piece would be empty (SplitFrame)
+        plan.frames.push_back(i);
+    }
+    if (plan.frames.empty())
+        plan.why = touched ? "Too close to the variation's edge to split"
+                           : any_selected ? "The edit cursor is not inside a selected variation"
+                                          : "The edit cursor is not inside a variation";
+    return plan;
+}
+
 std::vector<int> NormalizeSelection(const std::vector<SoundFrame>& frames, const std::vector<int>& selected)
 {
     if (selected.empty()) return {};

@@ -95,8 +95,6 @@ struct WaveformEvents {
     int    db_frame = -1;       // a vertical drag inside a frame: its new dB
     double db = 0.0;
     bool   db_done = false;
-    int    split = -1;          // S over a frame
-    double split_at = 0.0;
     bool   threshold_live = false, threshold_done = false;
     double threshold_db = 0.0;
     bool   right_clicked = false;
@@ -133,8 +131,8 @@ struct NodePanelHooks {
 };
 void SetNodePanelHooks(const NodePanelHooks& hooks);
 
-// Decision 9: E and S (no modifier) while a Sound panel shows in the focused Library view, and
-// Space / Esc / E / S while the Edit overlay is open; 13-45: the view zoom / scroll keys
+// Decision 9: E (no modifier) while a Sound panel shows in the focused Library view, and
+// Space / Esc / E while the Edit overlay is open (13-63: S is free, the split is a Shortcuts row); 13-45: the view zoom / scroll keys
 // (view_nav.h) while the Edit overlay has the focus.
 bool LibraryNodeTakesKey(unsigned vk, bool ctrl, bool shift, bool alt);
 // Story 6-5-10: the Edit overlay is open and has the keyboard, so an Esc is its own (it clears the
@@ -143,9 +141,9 @@ bool LibraryEditUsesEsc();
 // 13-61: the Edit overlay is open and has the keyboard: the Shortcuts rows of the Sound Edit window (the
 // trims, ShortcutContext::LibraryEdit) run on their keys.
 bool LibraryEditKeysActive();
-// 13-61: a trim row's key ran (kShortcutEditTrimLeft / Right / Zone): the Edit overlay does it on its next
-// frame (one undo point), or says why it cannot. Ignored while the overlay is closed.
-void RequestLibraryEditTrim(int shortcut_id);
+// 13-61: a trim row's key ran (kShortcutEditTrimLeft / Right / Zone; 13-63: or kShortcutEditSplit): the Edit
+// overlay does it on its next frame (one undo point), or says why it cannot. Ignored while the overlay is closed.
+void RequestLibraryEditKey(int shortcut_id);
 
 }  // namespace rav
 

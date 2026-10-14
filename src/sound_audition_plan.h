@@ -157,6 +157,18 @@ struct EditTrimPlan {
 EditTrimPlan PlanEditTrim(const std::vector<SoundFrame>& frames, const std::vector<int>& selected, EditTrimKind kind,
                           double cursor, double zone_start, double zone_len);
 
+// 13-63: REAPER's "Split items at edit cursor" (40757) in the Sound Edit window: each variation that holds the
+// edit cursor -- among the selected ones, else (nothing selected) among them all -- split there, as the
+// waveform's S used to split the one under the mouse. A piece of 1 ms or less would be left: that one stays
+// whole. Not in Takes mode (the caller refuses it).
+struct EditSplitPlan {
+    std::vector<int> frames;  // ascending; empty = nothing to do (`why` says what is missing)
+    std::string      why;
+};
+
+// `cursor` < 0 = no edit cursor.
+EditSplitPlan PlanEditSplit(const std::vector<SoundFrame>& frames, const std::vector<int>& selected, double cursor);
+
 // The selection Normalize works on: the selected frames (NormalizeRegions keeps the on ones); {} =
 // every frame (no selection); {-1} = none when only off frames are selected.
 std::vector<int> NormalizeSelection(const std::vector<SoundFrame>& frames, const std::vector<int>& selected);

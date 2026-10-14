@@ -81,6 +81,10 @@ struct ShortcutDef {
     // while its context is on (in REAPER's main window they still run REAPER's action).
     const char*     reaper_cmd = nullptr;
     const char*     reaper_name = nullptr;  // ...and REAPER's name of it, for the tips
+    // 13-63: a REAPER-default row's fallback key: on REAPER, it runs the row while REAPER lists no key for
+    // reaper_cmd (live: once REAPER lists one, that key takes over and this one is free again); Own starts
+    // on it (when free). vk 0 = none (the trims: no key at all while REAPER has none).
+    KeyBinding      reaper_fallback = {};
 };
 
 enum ShortcutId : int {
@@ -98,7 +102,9 @@ enum ShortcutId : int {
     kShortcutEditTrimLeft  = 10,  // the variation under the edit cursor starts at the cursor
     kShortcutEditTrimRight = 11,  // ...ends at the cursor
     kShortcutEditTrimZone  = 12,  // the selected variation(s) trimmed to the zone selected
-    kShortcutCount       = 13,
+    // 13-63: the Sound Edit window's split, on REAPER's 40757 keys (B while REAPER gives 40757 none).
+    kShortcutEditSplit     = 13,  // the variation(s) under the edit cursor split there
+    kShortcutCount       = 14,
 };
 
 inline const ShortcutDef kShortcutTable[kShortcutCount] = {
@@ -130,6 +136,9 @@ inline const ShortcutDef kShortcutTable[kShortcutCount] = {
      "40512", "Item: Trim items right of cursor"},
     {"edit_trim_zone", "Trim to selected zone", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
      "40508", "Item: Trim items to selected area"},
+    // 13-63 (Antho 2026-10-14): REAPER's split at the edit cursor; B when REAPER gives 40757 no key.
+    {"edit_split", "Split at cursor", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "40757", "Item: Split items at edit cursor (no change selection)", {'B', false, false, false}},
 };
 
 // 13-60b: REAPER's id of a row's own action ("_RAV_KEY_VIDEO_CUT"), "" out of range. 13-61: a row on one
@@ -145,6 +154,13 @@ inline std::string ShortcutReaperActionId(int id)
 inline bool ShortcutDefaultFollowsReaper(int id)
 {
     return id >= 0 && id < kShortcutCount && kShortcutTable[id].reaper_cmd != nullptr;
+}
+
+// 13-63: the key a REAPER-default row runs on while REAPER lists none for its action (vk 0 = none), and
+// the key it starts on when made Own. Other rows: none.
+inline KeyBinding ShortcutReaperFallback(int id)
+{
+    return ShortcutDefaultFollowsReaper(id) ? kShortcutTable[id].reaper_fallback : KeyBinding{};
 }
 
 // 13-60b: a row on "REAPER" (following its own action's keys in REAPER) is stored as this.
@@ -305,6 +321,21 @@ inline ShortcutKeymap ResolveShortcutKeys(const ShortcutBindings& own, const Sho
 inline ShortcutKeymap ShortcutKeymapOf(const ShortcutBindings& b)
 {
     return ResolveShortcutKeys(b, ShortcutKeyLists{}, nullptr);
+}
+
+// 13-63: `linked_keys` (the keys REAPER gives each followed action) with each fallback put in: a row on
+// REAPER (`on_reaper[i]`) whose own REAPER action has no key gets its fallback key. `used` (optional): the
+// rows that run on their fallback now. The fallback then resolves as a linked key (ResolveShortcutKeys):
+// a row's own key on it wins (the fallback is shown shadowed).
+inline void ApplyReaperFallbacks(ShortcutKeyLists& linked_keys, const bool* on_reaper, bool* used = nullptr)
+{
+    for (int i = 0; i < kShortcutCount; ++i) {
+        if (used) used[i] = false;
+        const KeyBinding fb = ShortcutReaperFallback(i);
+        if (!on_reaper || !on_reaper[i] || fb.vk == 0 || !linked_keys[static_cast<size_t>(i)].empty()) continue;
+        linked_keys[static_cast<size_t>(i)].push_back(fb);
+        if (used) used[i] = true;
+    }
 }
 
 // ShortcutActionFor over the keys in force.
@@ -790,9 +821,12 @@ void LinkShortcutToAction(int id, const std::string& cmd);
 // Actions window, followed live; it holds no key of its own then (like a linked row). Own: its own key,
 // or a REAPER action the user picked (the chain). Stored in the same ExtState entry ("reaper").
 bool ShortcutFollowsReaper(int id);
+// 13-63: the row is on REAPER and runs on its fallback key (ShortcutReaperFallback): REAPER lists no key
+// for its action now.
+bool ShortcutOnReaperFallback(int id);
 void SetShortcutFollowsReaper(int id);
 // Back to Own from REAPER: the row's default key (ResetShortcutToDefault: the action whose own key holds
-// it, else -1).
+// it, else -1). 13-61 / 13-63: a REAPER-default row: its fallback key when free, else no key (-1).
 int SetShortcutOwn(int id);
 // The action whose keys run the row ("" = its own key): the picked one, or its own on REAPER.
 std::string ShortcutFollowedAction(int id);

@@ -376,7 +376,7 @@ bool LibraryViewFocused() { return g_view.focused; }
 
 bool LibraryViewTakesKey(unsigned vk, bool ctrl, bool shift, bool alt)
 {
-    if (LibraryNodeTakesKey(vk, ctrl, shift, alt)) return true;  // 13-7b: E, S (and the Edit overlay's keys)
+    if (LibraryNodeTakesKey(vk, ctrl, shift, alt)) return true;  // 13-7b: E (and the Edit overlay's keys; 13-63: S is free)
     // 13-48: the claim itself is pure (library_view_keys.h, host-tested).
     LibraryKeyState st;
     st.focused = g_view.focused;

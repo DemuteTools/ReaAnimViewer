@@ -2,7 +2,7 @@
 //
 // 13-48 (13-7a review G-d): the Library view's key claim as a pure predicate (host-tested by
 // tests/library_tree_nav_test.cpp). LibraryViewTakesKey (library_view_ui.cpp) fills the state from
-// the view's Win32 focus and the panels; the node panel's own keys (E, S) are asked before it.
+// the view's Win32 focus and the panels; the node panel's own key (E) is asked before it.
 
 #pragma once
 
@@ -29,14 +29,15 @@ inline bool LibraryViewClaimsKey(const LibraryKeyState& s, unsigned vk, bool ctr
 }
 
 // 13-60 review: a key the Library view uses when it has the focus (any panel: the claim above with
-// every panel taking its keys, plus the Sound panel's and Edit's E / S). A RAV shortcut on such a key
+// every panel taking its keys, plus the Sound panel's and Edit's E; 13-63: S is no longer theirs, the
+// split is a Shortcuts row). A RAV shortcut on such a key
 // does not run while the Library view takes it (the focused view wins); the Link modal warns about it.
 inline bool LibraryViewUsesKey(unsigned vk, bool ctrl, bool shift, bool alt)
 {
     LibraryKeyState all;
     all.focused = all.media_takes_arrows = all.tree_takes_arrows = true;
     if (LibraryViewClaimsKey(all, vk, ctrl, shift, alt)) return true;
-    return !ctrl && !shift && !alt && (vk == 'E' || vk == 'S');
+    return !ctrl && !shift && !alt && vk == 'E';
 }
 
 }  // namespace rav

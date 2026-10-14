@@ -171,7 +171,8 @@ struct PanelState {
     // Roles... popup's "More roles".
     double                zone_start = 0.0, zone_len = 0.0;
     // 13-61: the edit cursor (where the last click on the waveform landed; < 0 = none) and a trim row's key
-    // waiting for the overlay's next frame (a kShortcutEditTrim* id, -1 = none). View state: no undo point.
+    // waiting for the overlay's next frame (a kShortcutEditTrim* id; 13-63: or kShortcutEditSplit; -1 = none).
+    // View state: no undo point.
     double                edit_cursor = -1.0;
     int                   trim_request = -1;
     int                   solo = -1;
@@ -1735,11 +1736,6 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
         ev.right_clicked = true;
         ev.right_at = T(m.x);
     }
-    if (hovered && o.gestures && under >= 0 && !io.WantTextInput && !io.KeyCtrl && !io.KeyAlt && !io.KeyShift &&
-        ImGui::IsKeyPressed(ImGuiKey_S, false)) {
-        ev.split = under;
-        ev.split_at = T(m.x);
-    }
     // Middle-drag pans (REAPER's default middle-drag in the arrange view: hand scroll).
     if (o.pan) {
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Middle)) P.pan_id = gid;
@@ -1762,9 +1758,10 @@ bool LibraryNodeTakesKey(unsigned vk, bool ctrl, bool shift, bool alt)
         if (ViewNavRowForKeyDown(vk, ctrl, shift, alt) >= 0) return true;  // 13-45 (a character binding too)
     }
     if (ctrl || shift || alt) return false;
-    if (edit) return vk == 0x20 || vk == 0x1B || vk == 'E' || vk == 'S';
+    // 13-63: S is free (the split is the "Split at cursor" Shortcuts row, KEYS: SOUND EDIT).
+    if (edit) return vk == 0x20 || vk == 0x1B || vk == 'E';
     const bool sound = P.sound_frame >= f - 1;
-    return sound && LibraryViewFocused() && (vk == 'E' || vk == 'S');
+    return sound && LibraryViewFocused() && vk == 'E';
 }
 
 bool LibraryEditUsesEsc()
@@ -1778,10 +1775,11 @@ bool LibraryEditKeysActive()
     return LibraryEditUsesEsc();  // the same: open, drawn last frame, focused
 }
 
-void RequestLibraryEditTrim(int shortcut_id)
+void RequestLibraryEditKey(int shortcut_id)
 {
     if (!P.edit_open) return;
-    if (shortcut_id == kShortcutEditTrimLeft || shortcut_id == kShortcutEditTrimRight || shortcut_id == kShortcutEditTrimZone)
+    if (shortcut_id == kShortcutEditTrimLeft || shortcut_id == kShortcutEditTrimRight || shortcut_id == kShortcutEditTrimZone ||
+        shortcut_id == kShortcutEditSplit)
         P.trim_request = shortcut_id;
 }
 
@@ -1965,20 +1963,6 @@ void HandleWave(const WaveformEvents& ev, const SoundLibrary& lib, const SoundNo
             RefreshOne(x.sound, i, path);
             return true;
         }, was_on ? "Variation excluded: never placed" : "Variation included");
-        return;
-    }
-    if (ev.split >= 0) {
-        if (!FrameEditAllowed(mode, FrameEdit::Split)) {
-            ShowLibraryToast(kTakesTip, false);
-            return;
-        }
-        const int    i = map(ev.split);
-        const double at = ev.split_at;
-        EditNode("Split variation", c.lib_uid, c.uid, [i, at, path](SoundNode& x) {
-            if (!SplitFrame(x.sound, i, at)) return false;
-            RefreshWith(x.sound, path);
-            return true;
-        });
         return;
     }
     if (ev.double_clicked != -1) {
@@ -2193,6 +2177,42 @@ void EditTrim(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, 
     }, toast);
 }
 
+// ---- 13-63: REAPER's split at the edit cursor (40757) on Edit's variations -----------------------------------
+
+EditSplitPlan EditSplitNow(const SoundNode& n, const std::vector<int>& sel)
+{
+    if (!FrameEditAllowed(n.sound.mode, FrameEdit::Split)) {
+        EditSplitPlan p;
+        p.why = kTakesTip;
+        return p;
+    }
+    return PlanEditSplit(n.sound.frames, sel, P.edit_cursor);
+}
+
+// One split: each variation holding the edit cursor cut there (SplitFrame, as the old S did), one undo point.
+// Nothing to split: a toast says why.
+void EditSplit(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, const std::vector<int>& sel)
+{
+    const EditSplitPlan plan = EditSplitNow(n, sel);
+    if (plan.frames.empty()) {
+        ShowLibraryToast(plan.why, false);
+        return;
+    }
+    const std::vector<int> frames = plan.frames;
+    const double           at = P.edit_cursor;
+    const std::string      path = m.path;
+    const std::string      toast = std::string("Split at cursor \xC2\xB7 ") +
+                              (frames.size() == 1 ? "variation " + std::to_string(frames.front() + 1)
+                                                  : std::to_string(frames.size()) + " variations");
+    EditNode("Split variation", lib.uid, n.uid, [frames, at, path](SoundNode& x) {
+        bool changed = false;
+        for (auto it = frames.rbegin(); it != frames.rend(); ++it)  // last first: a split shifts the ones after it
+            changed = SplitFrame(x.sound, *it, at) || changed;
+        if (changed) RefreshWith(x.sound, path);
+        return changed;
+    }, toast);
+}
+
 // A trim entry of the waveform's menu, with its key (Shortcuts); greyed with why when it has nothing to do.
 void EditTrimEntry(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, EditTrimKind kind, const std::vector<int>& sel)
 {
@@ -2253,6 +2273,12 @@ void EditWaveMenu(const SoundStore& store, const SoundLibrary& lib, const SoundN
         // 13-61: REAPER's 40511 / 40512 on this variation, at the edit cursor (the last click).
         EditTrimEntry(lib, n, m, EditTrimKind::LeftOfCursor, {i});
         EditTrimEntry(lib, n, m, EditTrimKind::RightOfCursor, {i});
+        {  // 13-63: REAPER's 40757 on this variation, at the edit cursor
+            const EditSplitPlan sp = EditSplitNow(n, {i});
+            const char*         key = ShortcutKeyLabel(kShortcutEditSplit);
+            if (ui::MenuEntry("Split at cursor", key[0] ? key : nullptr, false, !sp.frames.empty())) EditSplit(lib, n, m, {i});
+            if (sp.frames.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ui::ShowTip(sp.why.c_str());
+        }
         ui::MenuSeparator();
         bool in_excluded = false;
         for (const SoundZone& z : d.zones) in_excluded = in_excluded || (z.to.empty() && at >= z.start && at <= z.start + z.length);
@@ -3758,7 +3784,7 @@ void DrawEditOverlay()
         }
         static const char* const kHelpPlain =
             "Click a variation: play and select (Ctrl-click adds)\nDrag an edge: trim\nDrag up / down inside: its dB\n"
-            "Alt-click: off / on\nS: split under the mouse\nDouble-click empty space: add a variation\n"
+            "Alt-click: off / on\nDouble-click empty space: add a variation\n"
             "Top flag: the sync point (snap offset), the moment placed on the event: drag it\n"
             "Bottom handle: the cut between two parts: drag it\n"
             "Drag across the waveform: select a zone, then right-click it: Exclude / \xE2\x86\x92 value\n"
@@ -3766,6 +3792,7 @@ void DrawEditOverlay()
             "Click: listen (the part under the mouse) and put the edit cursor there\n"
             "Trim left / right of the cursor, trim to the zone: your REAPER keys for its item trims (40511, 40512,\n"
             "40508; KEYS: SOUND EDIT in Shortcuts), or right-click a variation / the zone\n"
+            "Split at the cursor: your REAPER key for 40757 (B while it has none; Shortcuts), or right-click a variation\n"
             "Trim to zone acts on the selected variations (click empty space first to select by zone), as REAPER does\n"
             "Zoom and scroll: the View actions in Shortcuts (your REAPER wheel and zoom keys unless you set your\n"
             "own), middle-drag, the scrollbar; Zoom vertically makes the lanes taller\n"
@@ -3883,19 +3910,23 @@ void DrawEditOverlay()
             }
             ui::EndPane();
         }
-        // 13-61: a trim row's key (Shortcuts, KEYS: SOUND EDIT), on Edit's selection.
+        // 13-61: a trim row's key (Shortcuts, KEYS: SOUND EDIT), on Edit's selection. 13-63: the split's too.
         // Review: taken only when it can run (a key while a drag is live waits for its commit; the media not
         // read, a toast says so), never dropped silently.
         if (P.trim_request >= 0 && !StoreReplaced() && !P.phase.Live() && !m.ok) {
-            P.trim_request = -1;
-            ShowLibraryToast("Cannot trim: the sound file is not read", false);
+            const bool split = std::exchange(P.trim_request, -1) == kShortcutEditSplit;
+            ShowLibraryToast(split ? "Cannot split: the sound file is not read" : "Cannot trim: the sound file is not read", false);
         }
         if (P.trim_request >= 0 && m.ok && !StoreReplaced() && !P.phase.Live()) {
-            const int          trim = std::exchange(P.trim_request, -1);
-            const EditTrimKind k = trim == kShortcutEditTrimLeft    ? EditTrimKind::LeftOfCursor
-                                   : trim == kShortcutEditTrimRight ? EditTrimKind::RightOfCursor
-                                                                    : EditTrimKind::ToZone;
-            EditTrim(*lib, *n, m, k, P.sel);
+            const int trim = std::exchange(P.trim_request, -1);
+            if (trim == kShortcutEditSplit) {
+                EditSplit(*lib, *n, m, P.sel);
+            } else {
+                const EditTrimKind k = trim == kShortcutEditTrimLeft    ? EditTrimKind::LeftOfCursor
+                                       : trim == kShortcutEditTrimRight ? EditTrimKind::RightOfCursor
+                                                                        : EditTrimKind::ToZone;
+                EditTrim(*lib, *n, m, k, P.sel);
+            }
         }
         if (keys && !StoreReplaced()) {
             if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) toggle_play();

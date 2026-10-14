@@ -307,18 +307,26 @@ bool KeyRow(int id)
     else if (def.context == ShortcutContext::LibraryEdit) v.context = "Sound Edit";
     // The keys in force (REAPER's or a linked action's; a key another row takes, faint).
     const ShortcutKeymap& km = CurrentShortcutKeymap();
-    // Review (13-61): a Sound Edit key the Edit window itself takes (Space, Esc, E, S, a view key) never trims: faint.
+    // Review (13-61): a Sound Edit key the Edit window itself takes (Space, Esc, E, a view key) never runs the
+    // row: faint. 13-63: S is no longer the Edit window's (the split is a row now).
     std::string edit_lost;
     for (const KeyBinding& k : km.keys[static_cast<size_t>(id)]) {
         const bool lost = def.context == ShortcutContext::LibraryEdit &&
                           (ViewNavRowForKeyDown(k.vk, k.ctrl, k.shift, k.alt) >= 0 ||
-                           (!k.ctrl && !k.shift && !k.alt && (k.vk == 0x20 || k.vk == 0x1B || k.vk == 'E' || k.vk == 'S')));
+                           (!k.ctrl && !k.shift && !k.alt && (k.vk == 0x20 || k.vk == 0x1B || k.vk == 'E')));
         if (lost) edit_lost += (edit_lost.empty() ? "" : ", ") + ShortcutBindingLabel(k);
         v.caps.push_back(Cap{ShortcutBindingLabel(k), lost ? ui::kFaint : (custom ? ui::kAccent : ui::kText)});
     }
     for (const KeyBinding& k : km.shadowed[static_cast<size_t>(id)]) v.caps.push_back(Cap{ShortcutBindingLabel(k), ui::kFaint});
+    // 13-63: on REAPER with no key there for its action, the row's fallback key runs it: "B · REAPER has none".
+    const bool fallback = reaper && ShortcutOnReaperFallback(id);
+    if (fallback) v.caps.push_back(Cap{"REAPER has none", ui::kFaint});
     if (v.caps.empty()) v.caps.push_back((reaper || !link.empty()) ? Cap{"no shortcut in REAPER", ui::kFaint} : Cap{"None", ui::kText});  // 10-11: unbound
-    if (!edit_lost.empty()) v.caps_tip = edit_lost + ": used by the Edit window here (it never trims): pick another key";
+    if (!edit_lost.empty()) v.caps_tip = edit_lost + ": used by the Edit window here (it never runs this): pick another key";
+    else if (fallback)
+        v.caps_tip = std::string("REAPER gives \"") + (def.reaper_name ? def.reaper_name : def.reaper_cmd) + "\" (" +
+                     def.reaper_cmd + ") no key, so RAV's " + ShortcutBindingLabel(def.reaper_fallback) +
+                     " runs it here. Give it a key in REAPER's Actions window and that key takes over at once.";
     v.reaper = reaper;
     v.linked = !reaper && !link.empty();
     v.link_id = reaper ? ShortcutReaperActionId(id) : link;
@@ -331,9 +339,14 @@ bool KeyRow(int id)
     if (def.reaper_cmd) {  // 13-61: one of REAPER's own actions (the default)
         v.reaper_tip = std::string("Follow REAPER: your keys for \"") + (def.reaper_name ? def.reaper_name : def.reaper_cmd) +
                        "\" (" + def.reaper_cmd + "), read live: they do this in the Sound Edit window while it has the "
-                       "focus, and still trim REAPER's items everywhere else (the default)";
+                       "focus, and still act on REAPER's items everywhere else (the default)";
+        if (def.reaper_fallback.vk != 0)  // 13-63
+            v.reaper_tip += std::string(". While REAPER gives it no key, ") + ShortcutBindingLabel(def.reaper_fallback) +
+                            " does it here";
         v.own_tip = "RAV's own key for the Sound Edit window only (double-click the row to record one), or a REAPER "
                     "action you pick with the chain";
+        if (def.reaper_fallback.vk != 0)
+            v.own_tip += std::string(". Own starts on ") + ShortcutBindingLabel(def.reaper_fallback) + " when it is free";
     } else {
         v.reaper_tip = std::string("Follow REAPER: the keys you give \"") + def.action_desc +
                        "\" in REAPER's Actions list, read live (REAPER runs it too, outside the viewer). A key you give "
@@ -788,10 +801,11 @@ void PopupBody()
     for (int i = 0; i < kShortcutCount; ++i)
         if (kShortcutTable[i].context != ShortcutContext::LibraryEdit && KeyRow(i)) record = i;
     ImGui::PopStyleVar();
-    // 13-61: the Sound Edit window's trims, on REAPER's own item trims by default.
+    // 13-61: the Sound Edit window's trims, on REAPER's own item trims by default. 13-63: and its split.
     Header("KEYS: SOUND EDIT", "Library \xE2\x80\xBA Edit window");
-    Note("On REAPER, your keys for REAPER's own item trims trim the variations while the Sound Edit window has the "
-         "focus. The edit cursor is where you last clicked the waveform; the zone is a drag across it.");
+    Note("On REAPER, your keys for REAPER's own item trims and split act on the variations while the Sound Edit "
+         "window has the focus (the split uses B while REAPER gives its action no key). The edit cursor is where you "
+         "last clicked the waveform; the zone is a drag across it.");
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ui::Dp(8.0f), ui::Dp(2.0f)));
     for (int i = 0; i < kShortcutCount; ++i)
         if (kShortcutTable[i].context == ShortcutContext::LibraryEdit && KeyRow(i)) record = i;

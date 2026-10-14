@@ -769,6 +769,50 @@ static void TestSettleEditPlay()
     CHECK(s.since < 0.0 && !SettleEditPlay(s, playing, playing, 3.0));
 }
 
+// 13-63: REAPER's split at the edit cursor in the Sound Edit window (40757), the pure plan, then applied as
+// the window does (last first, SplitFrame).
+static void TestEditSplit()
+{
+    auto fr = [](double s, double l) {
+        SoundFrame f;
+        f.start = s;
+        f.length = l;
+        return f;
+    };
+    const std::vector<SoundFrame> frames = {fr(0.0, 1.0), fr(1.5, 1.0), fr(2.0, 1.0)};  // 1 and 2 overlap
+    // No cursor; a cursor between variations: nothing, and why.
+    EditSplitPlan p = PlanEditSplit(frames, {}, -1.0);
+    CHECK(p.frames.empty() && p.why == "Click the waveform first: the edit cursor sets where to split");
+    p = PlanEditSplit(frames, {}, 1.2);
+    CHECK(p.frames.empty() && p.why == "The edit cursor is not inside a variation");
+    // Nothing selected: every variation holding the cursor (as REAPER splits every item under it).
+    p = PlanEditSplit(frames, {}, 0.4);
+    CHECK(p.frames.size() == 1 && p.frames[0] == 0);
+    p = PlanEditSplit(frames, {}, 2.2);
+    CHECK(p.frames.size() == 2 && p.frames[0] == 1 && p.frames[1] == 2);
+    // A selection: only the selected ones the cursor is in.
+    p = PlanEditSplit(frames, {2}, 2.2);
+    CHECK(p.frames.size() == 1 && p.frames[0] == 2);
+    p = PlanEditSplit(frames, {0}, 2.2);
+    CHECK(p.frames.empty() && p.why == "The edit cursor is not inside a selected variation");
+    // On an edge, or a piece of 1 ms or less: whole.
+    p = PlanEditSplit(frames, {}, 1.0);
+    CHECK(p.frames.empty() && p.why == "The edit cursor is not inside a variation");
+    p = PlanEditSplit(frames, {}, 0.0005);
+    CHECK(p.frames.empty() && p.why == "Too close to the variation's edge to split");
+    // Applied as the Edit window does it: last first, so each index still names its variation.
+    SoundData d;
+    d.frames = frames;
+    p = PlanEditSplit(d.frames, {}, 2.2);
+    bool changed = false;
+    for (auto it = p.frames.rbegin(); it != p.frames.rend(); ++it) changed = SplitFrame(d, *it, 2.2) || changed;
+    CHECK(changed && d.frames.size() == 5);
+    CHECK(Near(d.frames[1].start, 1.5) && Near(d.frames[1].length, 0.7) && Near(d.frames[2].start, 2.2) &&
+          Near(d.frames[2].length, 0.3));
+    CHECK(Near(d.frames[3].start, 2.0) && Near(d.frames[3].length, 0.2) && Near(d.frames[4].start, 2.2) &&
+          Near(d.frames[4].length, 0.8));
+}
+
 // 13-61: REAPER's item trims in the Sound Edit window (40511 / 40512 / 40508), the pure plan.
 static void TestEditTrim()
 {
@@ -837,6 +881,7 @@ static void TestEditTrim()
 int main()
 {
     TestEditTrim();
+    TestEditSplit();
     TestEditPlay();
     TestSettleEditPlay();
     TestMono();

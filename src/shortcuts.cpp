@@ -36,6 +36,7 @@ std::array<std::string, kShortcutCount> g_links;
 std::array<bool, kShortcutCount>        g_follow_reaper{};  // 13-60b: the row is on REAPER (its own action's keys)
 ShortcutKeymap                          g_keymap = ShortcutKeymapOf(DefaultShortcutBindings());
 bool                                    g_keymap_dirty = true;
+std::array<bool, kShortcutCount>        g_on_fallback{};  // 13-63: the row runs on its fallback key (REAPER has none)
 int                                     g_keymap_kb_gen = -1;
 
 std::string ExtKey(int id)
@@ -121,6 +122,7 @@ void RebuildKeymap()
     const std::array<bool, kShortcutCount> linked = LinkedFlags();
     for (int i = 0; i < kShortcutCount; ++i)
         if (linked[static_cast<size_t>(i)]) linked_keys[static_cast<size_t>(i)] = LinkedKeys(Followed(i));
+    ApplyReaperFallbacks(linked_keys, g_follow_reaper.data(), g_on_fallback.data());  // 13-63
     g_keymap = ResolveShortcutKeys(g_bindings, linked_keys, linked.data());
     g_keymap_dirty = false;
     g_keymap_kb_gen = ReaperKbGeneration();
@@ -263,6 +265,13 @@ void LinkShortcutToAction(int id, const std::string& cmd)
     RebuildKeymap();
 }
 
+bool ShortcutOnReaperFallback(int id)
+{
+    if (id < 0 || id >= kShortcutCount) return false;
+    Keymap();  // follows reaper-kb.ini
+    return g_on_fallback[static_cast<size_t>(id)];
+}
+
 bool ShortcutFollowsReaper(int id)
 {
     return id >= 0 && id < kShortcutCount && g_follow_reaper[static_cast<size_t>(id)];
@@ -288,7 +297,9 @@ int SetShortcutOwn(int id)
     if (ShortcutDefaultFollowsReaper(id)) {  // 13-61: its default is REAPER: Own with no key yet
         g_follow_reaper[static_cast<size_t>(id)] = false;
         g_links[static_cast<size_t>(id)].clear();
-        g_bindings[static_cast<size_t>(id)] = KeyBinding{};
+        // 13-63: ...or on its fallback key (the split's B) when no other row holds it.
+        const KeyBinding fb = ShortcutReaperFallback(id);
+        g_bindings[static_cast<size_t>(id)] = (fb.vk != 0 && ShortcutOwner(g_bindings, fb, id) < 0) ? fb : KeyBinding{};
         Save(id);
         g_keymap_dirty = true;
         RebuildKeymap();

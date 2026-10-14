@@ -1008,6 +1008,59 @@ int main()
         CHECK(ShortcutActionFor(o, 'C', false, false, false, true, false, false) == kShortcutCut);
     }
 
+    // 13-63: the Sound Edit window's split -- on REAPER's 40757 by default; while REAPER lists no key for 40757
+    // it runs on B (live: a key REAPER gives 40757 takes over); Own starts on B.
+    {
+        CHECK(ShortcutReaperActionId(kShortcutEditSplit) == "40757");
+        CHECK(ShortcutDefaultFollowsReaper(kShortcutEditSplit));
+        CHECK(kShortcutTable[kShortcutEditSplit].action == nullptr && kShortcutTable[kShortcutEditSplit].def.vk == 0);
+        CHECK(kShortcutTable[kShortcutEditSplit].context == ShortcutContext::LibraryEdit);
+        CHECK(ShortcutReaperFallback(kShortcutEditSplit) == Key('B'));
+        for (int i = kShortcutEditTrimLeft; i <= kShortcutEditTrimZone; ++i) CHECK(ShortcutReaperFallback(i).vk == 0);
+        CHECK(ShortcutReaperFallback(kShortcutCut).vk == 0 && ShortcutReaperFallback(-1).vk == 0);
+        // No row has S any more (the Edit window's old hard-coded split): it is free in every context.
+        const ShortcutBindings b = DefaultShortcutBindings();
+        CHECK(ShortcutOwner(b, Key('S'), -1) == -1);
+        // B is no other row's default where the Edit window's keys run (Anywhere or Library Edit).
+        CHECK(ShortcutOwner(b, Key('B'), kShortcutEditSplit) == -1);
+        bool on_reaper[kShortcutCount] = {};
+        for (int i = kShortcutEditTrimLeft; i <= kShortcutEditSplit; ++i) on_reaper[i] = true;
+        // REAPER lists no key for 40757: B runs the split, in Edit only; the trims (no fallback) stay keyless.
+        ShortcutKeyLists lk;
+        bool             used[kShortcutCount] = {};
+        ApplyReaperFallbacks(lk, on_reaper, used);
+        CHECK(used[kShortcutEditSplit] && !used[kShortcutEditTrimLeft] && lk[kShortcutEditTrimLeft].empty());
+        ShortcutKeymap m = ResolveShortcutKeys(b, lk, on_reaper);
+        CHECK(ShortcutActionFor(m, 'B', false, false, false, false, false, true) == kShortcutEditSplit);
+        CHECK(ShortcutActionFor(m, 'B', false, false, false, false, false, false) == -1);  // Edit not focused: REAPER's
+        CHECK(ShortcutActionFor(m, 'S', false, false, false, false, false, true) == -1);
+        // REAPER lists Shift+S for 40757: that key runs it, B is free again.
+        ShortcutKeyLists lk2;
+        lk2[kShortcutEditSplit] = {Key('S', false, true)};
+        ApplyReaperFallbacks(lk2, on_reaper, used);
+        CHECK(!used[kShortcutEditSplit] && lk2[kShortcutEditSplit].size() == 1);
+        m = ResolveShortcutKeys(b, lk2, on_reaper);
+        CHECK(ShortcutActionFor(m, 'S', false, true, false, false, false, true) == kShortcutEditSplit);
+        CHECK(ShortcutActionFor(m, 'B', false, false, false, false, false, true) == -1);
+        // Own (not on REAPER): no fallback from REAPER's side (the row's own key, B when free, is in `b`).
+        bool             own[kShortcutCount] = {};
+        ShortcutKeyLists lk3;
+        ApplyReaperFallbacks(lk3, own, used);
+        CHECK(!used[kShortcutEditSplit] && lk3[kShortcutEditSplit].empty());
+        ShortcutBindings ob = DefaultShortcutBindings();
+        CHECK(ShortcutRecordStep(ob, kShortcutEditSplit, 'B', false, false, false) == RecordOutcome::Assigned);
+        CHECK(ShortcutActionFor(ob, 'B', false, false, false, false, false, true) == kShortcutEditSplit);
+        CHECK(SanitizeShortcuts(ob).empty());
+        // An Anywhere row's own key on B wins over the fallback (shown shadowed, never runs the split).
+        ShortcutBindings cb = DefaultShortcutBindings();
+        cb[kShortcutClipList] = Key('B');
+        ShortcutKeyLists lk4;
+        ApplyReaperFallbacks(lk4, on_reaper, used);
+        m = ResolveShortcutKeys(cb, lk4, on_reaper);
+        CHECK(ShortcutActionFor(m, 'B', false, false, false, false, false, true) == kShortcutClipList);
+        CHECK(m.shadowed[kShortcutEditSplit].size() == 1 && m.keys[kShortcutEditSplit].empty());
+    }
+
     if (g_fails == 0) std::printf("shortcuts: all checks passed\n");
     return g_fails == 0 ? 0 : 1;
 }

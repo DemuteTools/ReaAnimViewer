@@ -2350,9 +2350,10 @@ void RunShortcutAction(int action, const char* origin)
     // suppresses / restores / deletes the selected event (one undo point each).
     if (action == kShortcutTagAddEvent) { TaggingAddEventAtPlayhead(); return; }
     if (action == kShortcutTagDelEvent) { TaggingDeleteSelectedEvent(); return; }
-    // 13-61 -- the Sound Edit window's trims (Library Edit only): done by its next frame.
-    if (action == kShortcutEditTrimLeft || action == kShortcutEditTrimRight || action == kShortcutEditTrimZone) {
-        RequestLibraryEditTrim(action);
+    // 13-61 -- the Sound Edit window's trims (Library Edit only): done by its next frame. 13-63: its split too.
+    if (action == kShortcutEditTrimLeft || action == kShortcutEditTrimRight || action == kShortcutEditTrimZone ||
+        action == kShortcutEditSplit) {
+        RequestLibraryEditKey(action);
         return;
     }
 }

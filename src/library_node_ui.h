@@ -174,7 +174,8 @@ bool LibraryEditKeysActive();
 // overlay does it on its next frame (one undo point), or says why it cannot. Ignored while the overlay is closed.
 // 13-62: kShortcutEditSolo / Mute toggle the selected part's Solo / Mute there (view state, no undo point;
 // nothing when no part is selected). 13-62F: kShortcutEditNextVar / PrevVar select the next / previous variation,
-// the edit cursor at its start, the view centred on it (PlanEditNav; view state, no undo point).
+// the edit cursor at its start, the view centred on it (PlanEditNav; view state, no undo point). 13-62h:
+// kShortcutEditHeal heals the selected zones, kShortcutEditLoop toggles Loop (view state).
 void RequestLibraryEditKey(int shortcut_id);
 
 }  // namespace rav

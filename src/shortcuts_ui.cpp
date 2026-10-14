@@ -347,7 +347,9 @@ bool KeyRow(int id)
     if (def.reaper_cmd) {  // 13-61: one of REAPER's own actions (the default)
         v.reaper_tip = std::string("Follow REAPER: your keys for \"") + (def.reaper_name ? def.reaper_name : def.reaper_cmd) +
                        "\" (" + def.reaper_cmd + "), read live: they do this in the Sound Edit window while it has the "
-                       "focus, and still act on REAPER's " + (listen ? "tracks" : "items") + " everywhere else (the default)";
+                       "focus, and still act on REAPER's " +
+                       (listen ? "tracks" : id == kShortcutEditLoop ? "transport" : "items") +  // 13-62h: 1068 is a transport toggle
+                       " everywhere else (the default)";
         if (def.reaper_fallback.vk != 0)  // 13-63
             v.reaper_tip += std::string(". While REAPER gives it no key, ") + ShortcutBindingLabel(def.reaper_fallback) +
                             " does it here";
@@ -811,10 +813,12 @@ void PopupBody()
     ImGui::PopStyleVar();
     // 13-61: the Sound Edit window's trims, on REAPER's own item trims by default. 13-63: and its split.
     Header("KEYS: SOUND EDIT", "Library \xE2\x80\xBA Edit window");
-    Note("On REAPER, your keys for REAPER's own item trims and split act on the variations while the Sound Edit "
-         "window has the focus (the split uses B while REAPER gives its action no key), and your keys for its track "
-         "Solo / Mute toggle the selected part's. The edit cursor is where you last clicked the waveform; the zone is "
-         "a drag across it.");
+    // 13-62h: and its heal (H) and Loop (R); 40508 trims to the ruler's time selection.
+    Note("On REAPER, your keys for REAPER's own item trims, split and heal act on the zones while the Sound Edit "
+         "window has the focus (split, heal and Loop use B, H and R while REAPER gives their action no key), your "
+         "keys for its track Solo / Mute toggle the selected part's, and your key for Transport: Toggle repeat turns "
+         "Loop on / off. The edit cursor is where you last clicked the waveform; the time selection is a drag on the "
+         "ruler.");
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ui::Dp(8.0f), ui::Dp(2.0f)));
     for (int i = 0; i < kShortcutCount; ++i)
         if (kShortcutTable[i].context == ShortcutContext::LibraryEdit && KeyRow(i)) record = i;

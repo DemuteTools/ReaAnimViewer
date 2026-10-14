@@ -101,7 +101,7 @@ enum ShortcutId : int {
     // 13-61: the Sound Edit window's trims (Library Edit only), on REAPER's 40511 / 40512 / 40508 keys.
     kShortcutEditTrimLeft  = 10,  // the variation under the edit cursor starts at the cursor
     kShortcutEditTrimRight = 11,  // ...ends at the cursor
-    kShortcutEditTrimZone  = 12,  // the selected variation(s) trimmed to the zone selected
+    kShortcutEditTrimZone  = 12,  // 13-62h: the selected zones (else the zones under it) trimmed to the time selection
     // 13-63: the Sound Edit window's split, on REAPER's 40757 keys (B while REAPER gives 40757 none).
     kShortcutEditSplit     = 13,  // the variation(s) under the edit cursor split there
     // 13-62: the Sound Edit window's listening, on REAPER's 40281 / 40280 keys (no key while REAPER has none).
@@ -110,7 +110,10 @@ enum ShortcutId : int {
     // 13-62F (F5): chain editing, on REAPER's 40417 / 40416 keys (no key while REAPER has none).
     kShortcutEditNextVar   = 16,  // the next variation selected, the cursor at its start, the view centred on it
     kShortcutEditPrevVar   = 17,  // ...the previous one
-    kShortcutCount       = 18,
+    // 13-62h: zone editing, on REAPER's 40548 / 1068 keys (H / R while REAPER gives them none).
+    kShortcutEditHeal      = 18,  // the selected zones that are edge to edge healed into one
+    kShortcutEditLoop      = 19,  // Loop on / off (view state, never saved)
+    kShortcutCount       = 20,
 };
 
 inline const ShortcutDef kShortcutTable[kShortcutCount] = {
@@ -140,7 +143,8 @@ inline const ShortcutDef kShortcutTable[kShortcutCount] = {
      "40511", "Item: Trim items left of cursor"},
     {"edit_trim_right", "Trim right of cursor", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
      "40512", "Item: Trim items right of cursor"},
-    {"edit_trim_zone", "Trim to selected zone", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+    // 13-62h (Antho 2026-10-14): kept, retargeted on the ruler's time selection.
+    {"edit_trim_zone", "Trim to time selection", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
      "40508", "Item: Trim items to selected area"},
     // 13-63 (Antho 2026-10-14): REAPER's split at the edit cursor; B when REAPER gives 40757 no key.
     {"edit_split", "Split at cursor", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
@@ -155,6 +159,12 @@ inline const ShortcutDef kShortcutTable[kShortcutCount] = {
      "40417", "Item navigation: Select and move to next item"},
     {"edit_prev_variation", "Previous variation", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
      "40416", "Item navigation: Select and move to previous item"},
+    // 13-62h (decisions "Keys / playback"): REAPER's heal splits on the selected zones (H while REAPER gives
+    // 40548 no key), and its repeat toggle on the Edit window's Loop (R while REAPER gives 1068 no key).
+    {"edit_heal", "Heal selected zones", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "40548", "Item: Heal splits in items", {'H', false, false, false}},
+    {"edit_loop", "Loop on / off", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "1068", "Transport: Toggle repeat", {'R', false, false, false}},
 };
 
 // 13-60b: REAPER's id of a row's own action ("_RAV_KEY_VIDEO_CUT"), "" out of range. 13-61: a row on one

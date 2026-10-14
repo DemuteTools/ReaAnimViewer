@@ -2351,10 +2351,11 @@ void RunShortcutAction(int action, const char* origin)
     if (action == kShortcutTagAddEvent) { TaggingAddEventAtPlayhead(); return; }
     if (action == kShortcutTagDelEvent) { TaggingDeleteSelectedEvent(); return; }
     // 13-61 -- the Sound Edit window's trims (Library Edit only): done by its next frame. 13-63: its split too.
-    // 13-62: and the selected part's Solo / Mute. 13-62F: and the next / previous variation.
+    // 13-62: and the selected part's Solo / Mute. 13-62F: and the next / previous variation. 13-62h: Heal, Loop.
     if (action == kShortcutEditTrimLeft || action == kShortcutEditTrimRight || action == kShortcutEditTrimZone ||
         action == kShortcutEditSplit || action == kShortcutEditSolo || action == kShortcutEditMute ||
-        action == kShortcutEditNextVar || action == kShortcutEditPrevVar) {
+        action == kShortcutEditNextVar || action == kShortcutEditPrevVar || action == kShortcutEditHeal ||
+        action == kShortcutEditLoop) {
         RequestLibraryEditKey(action);
         return;
     }

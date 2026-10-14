@@ -1140,6 +1140,78 @@ int main()
         CHECK(ShortcutActionFor(m, 'B', false, false, false, false, false, true) == kShortcutEditSplit);
     }
 
+    // 13-62h: Heal / Loop in the Sound Edit window -- on REAPER's 40548 (Item: Heal splits in items) / 1068
+    // (Transport: Toggle repeat) by default, H / R while REAPER lists no key for them; 40508 retargeted.
+    {
+        CHECK(kShortcutCount == 20 && kShortcutEditHeal == 18 && kShortcutEditLoop == 19);
+        CHECK(ShortcutReaperActionId(kShortcutEditHeal) == "40548");
+        CHECK(ShortcutReaperActionId(kShortcutEditLoop) == "1068");
+        CHECK(std::string(kShortcutTable[kShortcutEditHeal].id) == "edit_heal");
+        CHECK(std::string(kShortcutTable[kShortcutEditLoop].id) == "edit_loop");
+        CHECK(std::string(kShortcutTable[kShortcutEditHeal].label) == "Heal selected zones");
+        CHECK(std::string(kShortcutTable[kShortcutEditLoop].label) == "Loop on / off");
+        CHECK(std::string(kShortcutTable[kShortcutEditHeal].reaper_name) == "Item: Heal splits in items");
+        CHECK(std::string(kShortcutTable[kShortcutEditLoop].reaper_name) == "Transport: Toggle repeat");
+        for (int i = kShortcutEditHeal; i <= kShortcutEditLoop; ++i) {
+            CHECK(ShortcutDefaultFollowsReaper(i));
+            CHECK(kShortcutTable[i].action == nullptr && kShortcutTable[i].def.vk == 0);
+            CHECK(kShortcutTable[i].context == ShortcutContext::LibraryEdit);
+        }
+        CHECK(ShortcutReaperFallback(kShortcutEditHeal) == Key('H'));
+        CHECK(ShortcutReaperFallback(kShortcutEditLoop) == Key('R'));
+        // 40508 keeps its id, now trims to the ruler's time selection.
+        CHECK(std::string(kShortcutTable[kShortcutEditTrimZone].id) == "edit_trim_zone");
+        CHECK(std::string(kShortcutTable[kShortcutEditTrimZone].label) == "Trim to time selection");
+        CHECK(ShortcutReaperActionId(kShortcutEditTrimZone) == "40508");
+        // H and R clash with no default where the Edit window's keys run (Anywhere or Library Edit): no Anywhere
+        // row has them, nor any other row's fallback.
+        const ShortcutBindings b = DefaultShortcutBindings();
+        CHECK(ShortcutOwner(b, Key('H'), kShortcutEditHeal) == -1);
+        CHECK(ShortcutOwner(b, Key('R'), kShortcutEditLoop) == -1);
+        for (int i = 0; i < kShortcutCount; ++i) {
+            if (kShortcutTable[i].context == ShortcutContext::Anywhere)
+                CHECK(!(kShortcutTable[i].def == Key('H')) && !(kShortcutTable[i].def == Key('R')));
+            if (i != kShortcutEditHeal) CHECK(!(ShortcutReaperFallback(i) == Key('H')));
+            if (i != kShortcutEditLoop) CHECK(!(ShortcutReaperFallback(i) == Key('R')));
+        }
+        // The defaults stay valid with every Edit row on REAPER.
+        bool on_reaper[kShortcutCount] = {};
+        for (int i = kShortcutEditTrimLeft; i <= kShortcutEditLoop; ++i) on_reaper[i] = true;
+        ShortcutBindings sb = DefaultShortcutBindings();
+        CHECK(SanitizeShortcuts(sb, nullptr, nullptr, on_reaper).empty());
+        CHECK(RebindFreedDefaults(sb, on_reaper).empty());
+        // REAPER lists no key for them: H / R run them, in Edit only; B stays the split's.
+        ShortcutKeyLists lk;
+        bool             used[kShortcutCount] = {};
+        ApplyReaperFallbacks(lk, on_reaper, used);
+        CHECK(used[kShortcutEditHeal] && used[kShortcutEditLoop]);
+        ShortcutKeymap m = ResolveShortcutKeys(b, lk, on_reaper);
+        CHECK(ShortcutActionFor(m, 'H', false, false, false, false, false, true) == kShortcutEditHeal);
+        CHECK(ShortcutActionFor(m, 'R', false, false, false, false, false, true) == kShortcutEditLoop);
+        CHECK(ShortcutActionFor(m, 'H', false, false, false, false, false, false) == -1);  // Edit not focused: REAPER's
+        CHECK(ShortcutActionFor(m, 'R', false, false, false, true, false, false) == -1);   // Video view: REAPER's
+        CHECK(ShortcutActionFor(m, 'B', false, false, false, false, false, true) == kShortcutEditSplit);
+        CHECK(m.shadowed[kShortcutEditHeal].empty() && m.shadowed[kShortcutEditLoop].empty());
+        // REAPER gives 40548 Alt+H and 1068 Ctrl+R: those keys run them, H / R are free again.
+        ShortcutKeyLists lk2;
+        lk2[kShortcutEditHeal] = {KeyBinding{'H', false, false, true}};
+        lk2[kShortcutEditLoop] = {KeyBinding{'R', true, false, false}};
+        ApplyReaperFallbacks(lk2, on_reaper, used);
+        CHECK(!used[kShortcutEditHeal] && !used[kShortcutEditLoop]);
+        m = ResolveShortcutKeys(b, lk2, on_reaper);
+        CHECK(ShortcutActionFor(m, 'H', false, false, true, false, false, true) == kShortcutEditHeal);
+        CHECK(ShortcutActionFor(m, 'R', true, false, false, false, false, true) == kShortcutEditLoop);
+        CHECK(ShortcutActionFor(m, 'H', false, false, false, false, false, true) == -1);
+        CHECK(ShortcutActionFor(m, 'R', false, false, false, false, false, true) == -1);
+        // Own: H / R are free to record (no conflict).
+        ShortcutBindings ob = DefaultShortcutBindings();
+        CHECK(ShortcutRecordStep(ob, kShortcutEditHeal, 'H', false, false, false) == RecordOutcome::Assigned);
+        CHECK(ShortcutRecordStep(ob, kShortcutEditLoop, 'R', false, false, false) == RecordOutcome::Assigned);
+        CHECK(SanitizeShortcuts(ob).empty());
+        CHECK(ShortcutActionFor(ob, 'H', false, false, false, false, false, true) == kShortcutEditHeal);
+        CHECK(ShortcutActionFor(ob, 'R', false, false, false, false, false, true) == kShortcutEditLoop);
+    }
+
     if (g_fails == 0) std::printf("shortcuts: all checks passed\n");
     return g_fails == 0 ? 0 : 1;
 }

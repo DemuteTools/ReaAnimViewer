@@ -190,6 +190,10 @@ struct PanelState {
     double                piece_t = 0.0;
     int                   listen_request = 0;
     int                   nav_request = 0;  // 13-62F (F5): a Next (+1) / Previous (-1) variation key waiting (0 = none)
+    // 13-62h: a Heal / Loop key waiting for the overlay's next frame (kShortcutEditHeal / kShortcutEditLoop;
+    // -1 = none). Lot E consumes it: Heal = HealZones on the selected zones (one undo point, or a toast when they
+    // are not edge to edge); Loop = the Loop toggle (view state, no undo point).
+    int                   zone_request = -1;
     double                menu_at = 0.0;
     int                   menu_frame = -1, menu_kind = 0;
     bool                  roles_more = false;
@@ -256,6 +260,7 @@ void OpenEdit(const std::string& lib_uid, const std::string& uid)
     P.piece_frame = P.piece_index = -1;
     P.listen_request = 0;
     P.nav_request = 0;
+    P.zone_request = -1;  // 13-62h
     ClearWaveDrags();  // 13-62F review: a drag cut by the switch never fires on this Sound
     P.roles_more = false;
     P.layer_roles_more = false;
@@ -2100,6 +2105,8 @@ void RequestLibraryEditKey(int shortcut_id)
         P.listen_request = shortcut_id == kShortcutEditSolo ? 1 : 2;
     else if (shortcut_id == kShortcutEditNextVar || shortcut_id == kShortcutEditPrevVar)  // 13-62F (F5)
         P.nav_request = shortcut_id == kShortcutEditNextVar ? 1 : -1;
+    else if (shortcut_id == kShortcutEditHeal || shortcut_id == kShortcutEditLoop)  // 13-62h (Lot D; Lot E does them)
+        P.zone_request = shortcut_id;
 }
 
 namespace {

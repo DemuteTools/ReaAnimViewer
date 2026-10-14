@@ -41,7 +41,7 @@ constexpr int kItemChunkCap = 64 << 20;
 
 }  // namespace rav
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(RAV_HOST_TEST)  // host tests on Windows: no REAPER SDK
 
 #include "reaper_api.h"
 
@@ -63,4 +63,4 @@ std::string ReadItemStateChunk(ItemStateChunkFn get_chunk, MediaItem* item);
 
 }  // namespace rav
 
-#endif  // _WIN32
+#endif  // _WIN32 && !RAV_HOST_TEST

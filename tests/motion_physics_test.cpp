@@ -1068,7 +1068,7 @@ int main()
     }
 
     // ---- Hands (story 10-8c) -------------------------------------------------------------------
-    constexpr double kLeg = 0.87;  // the rig's leg (m): hand speeds below in leg/s x kLeg
+    static constexpr double kLeg = 0.87;  // the rig's leg (m): hand speeds below in leg/s x kLeg (static: MSVC C3493 in the lambdas)
     {
         // Grab: the right hand moves at 1.5 leg/s, lands at 1.0 s and rests 500 ms: one Grab at
         // 1.0, one Release at the end of its rest (1.5). The left hand hangs still: nothing.

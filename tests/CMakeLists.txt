@@ -6,6 +6,8 @@ project(rav_host_tests LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# The REAPER-only parts of shared sources stay out (they test _WIN32, which MSVC also defines here).
+add_compile_definitions(RAV_HOST_TEST)
 
 enable_testing()
 

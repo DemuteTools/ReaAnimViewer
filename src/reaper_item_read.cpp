@@ -55,7 +55,7 @@ std::vector<int> DoublingSizes(int first, int cap)
 
 }  // namespace rav
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(RAV_HOST_TEST)  // host tests on Windows: no REAPER SDK
 
 namespace rav {
 
@@ -89,4 +89,4 @@ std::string ReadItemStateChunk(ItemStateChunkFn get_chunk, MediaItem* item)
 
 }  // namespace rav
 
-#endif  // _WIN32
+#endif  // _WIN32 && !RAV_HOST_TEST

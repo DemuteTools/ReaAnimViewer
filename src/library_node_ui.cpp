@@ -1196,7 +1196,12 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
                         const Own    r2 = OwnAt(vs + (wc.pt_x[k] + wc.pt_x[k + 1]) * 0.5 / ncols * vl);
                         const double amp2 = v[k + 1] * r2.g;
                         const float  y2 = mid - static_cast<float>(std::clamp(amp2, -1.0, 1.0)) * hh;
-                        dl->AddLine(ImVec2(x, y), ImVec2(x2, y2), ColorOf(r2, l), ui::Dp(1.5f));
+                        // 13-57 review: a segment reaching past full scale is in --bad too (as a clipped
+                        // column: on a part drawn at full opacity).
+                        const ImU32 base = ColorOf(r2, l);
+                        const bool  clip = std::fabs(amp) > 1.0 || std::fabs(amp2) > 1.0;
+                        const ImU32 seg = clip && ((base >> IM_COL32_A_SHIFT) & 0xFF) == 0xFF ? ui::kBad : base;
+                        dl->AddLine(ImVec2(x, y), ImVec2(x2, y2), seg, ui::Dp(1.5f));
                         if (x2 - x >= dots_from) dl->AddCircleFilled(ImVec2(x, y), dot, col);
                     } else if (k > 0 && x - (a.x + static_cast<float>(wc.pt_x[k - 1]) * px) >= dots_from) {
                         dl->AddCircleFilled(ImVec2(x, y), dot, col);

@@ -54,6 +54,7 @@ using GetItemStateChunkFn = bool (*)(MediaItem*, char*, int, bool);
 using CountTakesFn = int (*)(MediaItem*);
 using GetMediaItemTakeFn = MediaItem_Take* (*)(MediaItem*, int);
 using TakeFXGetCountFn = int (*)(MediaItem_Take*);
+using GetPeakFileNameExFn = void (*)(const char*, char*, int, bool);
 
 CreateFromFileFn    f_create = nullptr;
 GetNumTakeMarkersFn f_num_tm = nullptr;
@@ -62,15 +63,20 @@ GetItemStateChunkFn f_chunk = nullptr;
 CountTakesFn        f_count_takes = nullptr;
 GetMediaItemTakeFn  f_get_take = nullptr;
 TakeFXGetCountFn    f_takefx_count = nullptr;  // 13-49 review: optional (the "Placed without" line)
+GetPeakFileNameExFn f_peak_name = nullptr;     // 13-57 review: optional (a long file's second source)
 
 constexpr size_t kCacheFiles = 32;
-constexpr int    kBlock = 65536;     // frames per GetSamples call (13-57: was 8192; fewer calls a read)
+// Frames per GetSamples call: PeakBlockFrames (13-57: was 8192; fewer calls a read, capped by channels).
 constexpr int    kPeakChunk = 4096;  // points per GetPeakInfo call (a long file)
 // 13-57: reads run side by side (each on a source of its own): the file just clicked starts at once
 // instead of waiting behind another file's read or a long file's peak build. The detail tiles use at
 // most kPeakReaders - 1 of them: one reader is always there for a file's peaks.
 constexpr size_t kPeakReaders = 3;
 constexpr size_t kTilesPerJob = 16;
+// 13-57 review: a file's detail reads reuse one source kept between them (no open on the UI thread per
+// tile read), for at most this many files.
+constexpr size_t kIdleSources = 4;
+constexpr size_t kWaveMemos = 8;  // the last waveforms built (one per waveform on screen)
 
 struct Entry {
     std::string path;  // as first asked: the file is opened with it
@@ -119,6 +125,7 @@ struct JobResult {
     PeakData    peaks;
     PeakReadPath how = PeakReadPath::Samples;
     std::vector<WaveTile> tiles;
+    FileVersion version;            // Tiles: the file's version its source was opened at
     double      wait_ms = 0.0, ms = 0.0, open_ms = 0.0;  // debuglog builds say them
 };
 
@@ -132,11 +139,31 @@ struct Running {
     std::shared_ptr<std::atomic<bool>> cancel;
 };
 
-// A detail tile asked by a waveform: when last asked, and whether a reader has it.
-using TileKey = std::tuple<std::string, double, int64_t>;
+// A detail tile asked by a waveform: when last asked, and whether a reader has it. By file, then
+// (rate, index): a lookup copies no path (13-57 review).
+using TileId = std::pair<double, int64_t>;
 struct TileAsk {
     double asked_s = 0.0;
     bool   in_flight = false;
+};
+using FileAsks = std::map<TileId, TileAsk>;
+
+// 13-57 review: a file's source kept between its detail reads (opened at `version`).
+struct IdleSource {
+    PCM_source* src = nullptr;
+    FileVersion version;
+    uint64_t    used = 0;
+};
+
+// 13-57 review: a waveform built (ReadWaveColumns), kept while nothing it was built from changed.
+struct WaveMemo {
+    std::string key;
+    uint64_t    seq = 0;  // the entry's read (its peaks and version)
+    double      vs = 0.0, vl = 0.0;
+    int         cols = 0;
+    uint64_t    gen = 0;  // g_tiles.generation()
+    uint64_t    used = 0;
+    WaveColumns wc;
 };
 
 std::atomic<bool> g_quit{false};
@@ -148,8 +175,11 @@ uint64_t                      g_tick = 0;
 uint64_t                      g_seq = 0;
 uint64_t                      g_job_id = 0;
 std::map<uint64_t, Running>&  g_running = *new std::map<uint64_t, Running>();  // by job id
-std::map<TileKey, TileAsk>&   g_tile_ask = *new std::map<TileKey, TileAsk>();
+std::map<std::string, FileAsks>& g_tile_ask = *new std::map<std::string, FileAsks>();  // by PeakCacheKey
 WaveTileLru&                  g_tiles = *new WaveTileLru();  // by PeakCacheKey
+std::map<std::string, IdleSource>& g_idle = *new std::map<std::string, IdleSource>();  // by PeakCacheKey
+std::vector<WaveMemo>&        g_wave_memo = *new std::vector<WaveMemo>();
+uint64_t                      g_memo_tick = 0;
 std::map<std::string, double> g_len;  // by PeakCacheKey (13-55 review), as g_cache
 uint64_t                      g_len_gen = 0;  // bumped when a g_len entry is dropped
 
@@ -180,24 +210,81 @@ FileVersion VersionOf(const std::string& path)
     return v;
 }
 
+// 13-57 review: a peaks read of `key` is out on a reader (a long file's .reapeaks build goes on after
+// its first pass is shown): no second read of that file starts meanwhile (two builds of one peak file).
+bool PeaksRunning(const std::string& key)
+{
+    for (const auto& kv : g_running)
+        if (kv.second.kind == JobKind::Peaks && kv.second.key == key) return true;
+    return false;
+}
+
+void DropIdleSource(const std::string& key)
+{
+    const auto it = g_idle.find(key);
+    if (it == g_idle.end()) return;
+    delete it->second.src;
+    g_idle.erase(it);
+}
+
+// The kept source of `key` for a detail read (null when none, or the file changed since).
+PCM_source* TakeIdleSource(const std::string& key, const FileVersion& version)
+{
+    const auto it = g_idle.find(key);
+    if (it == g_idle.end()) return nullptr;
+    PCM_source* s = it->second.src;
+    const bool  same = it->second.version == version;
+    g_idle.erase(it);
+    if (same) return s;
+    delete s;
+    return nullptr;
+}
+
+// A detail read's source back from its reader: kept for the next one (the least used dropped past
+// kIdleSources), or deleted when one is kept already.
+void KeepIdleSource(const std::string& key, PCM_source* s, const FileVersion& version)
+{
+    if (!s) return;
+    if (g_idle.count(key)) {
+        delete s;
+        return;
+    }
+    static uint64_t tick = 0;
+    g_idle[key] = IdleSource{s, version, ++tick};
+    while (g_idle.size() > kIdleSources) {
+        auto oldest = g_idle.begin();
+        for (auto it = g_idle.begin(); it != g_idle.end(); ++it)
+            if (it->second.used < oldest->second.used) oldest = it;
+        delete oldest->second.src;
+        g_idle.erase(oldest);
+    }
+}
+
 void Evict()
 {
     while (g_cache.size() > kCacheFiles) {
         auto oldest = g_cache.end();
         for (auto it = g_cache.begin(); it != g_cache.end(); ++it)
-            if (it->second.state != PeakState::Building && (oldest == g_cache.end() || it->second.used < oldest->second.used))
+            if (it->second.state != PeakState::Building && !PeaksRunning(it->first) &&
+                (oldest == g_cache.end() || it->second.used < oldest->second.used))
                 oldest = it;
         if (oldest == g_cache.end()) return;
+        DropIdleSource(oldest->first);
         g_cache.erase(oldest);
     }
 }
 
-// A file's detail is dropped (it changed on disk): its tiles and the tiles waiting for a reader.
+// A file's detail is dropped (it changed on disk): its tiles, the tiles waiting for a reader, its kept
+// source.
 void ForgetTiles(const std::string& key)
 {
     g_tiles.EraseFile(key);
-    for (auto it = g_tile_ask.begin(); it != g_tile_ask.end();)
-        it = std::get<0>(it->first) == key && !it->second.in_flight ? g_tile_ask.erase(it) : std::next(it);
+    DropIdleSource(key);
+    const auto f = g_tile_ask.find(key);
+    if (f == g_tile_ask.end()) return;
+    for (auto it = f->second.begin(); it != f->second.end();)
+        it = !it->second.in_flight ? f->second.erase(it) : std::next(it);
+    if (f->second.empty()) g_tile_ask.erase(f);
 }
 
 // ---- The readers (each only calls the sources it was handed) -------------------------------------
@@ -239,18 +326,19 @@ bool ReadPeakInfo(PCM_source* s, const Job& j, double rate, PeakData* out)
     return !Stopped(j) && any;
 }
 
-// The frames [n0, n1) of `s` in blocks of kBlock, each handed to `each(n, frame)`. False when stopped.
+// The frames [n0, n1) of `s` in blocks of PeakBlockFrames, each handed to `each(n, frame)`. False when stopped.
 template <typename Each>
 bool ForEachFrame(PCM_source* s, const Job& j, int64_t n0, int64_t n1, std::vector<ReaSample>& buf, Each each)
 {
-    buf.resize(static_cast<size_t>(kBlock) * static_cast<size_t>(j.nch));
+    const int block = PeakBlockFrames(j.nch);
+    buf.resize(static_cast<size_t>(block) * static_cast<size_t>(j.nch));
     for (int64_t done = n0; done < n1;) {
         if (Stopped(j)) return false;
         PCM_source_transfer_t tr = {};
         tr.time_s = static_cast<double>(done) / j.sr;
         tr.samplerate = j.sr;
         tr.nch = j.nch;
-        tr.length = static_cast<int>(std::min<int64_t>(kBlock, n1 - done));
+        tr.length = static_cast<int>(std::min<int64_t>(block, n1 - done));
         tr.samples = buf.data();
         s->GetSamples(&tr);
         const int got = tr.samples_out > 0 ? std::min(tr.samples_out, tr.length) : 0;
@@ -404,6 +492,7 @@ private:
             r.seq = j.seq;
             r.src = j.src;
             r.src2 = j.src2;
+            r.version = j.version;
             r.open_ms = j.open_ms;
             r.wait_ms = MsSince(j.pushed);
             const Post post = [this](JobResult&& x) {
@@ -448,7 +537,12 @@ void Collect()
     for (JobResult& r : g_reader.Take()) {
         std::vector<std::pair<double, int64_t>> asked_tiles;  // a detail read's tiles
         if (r.final) {
-            delete r.src;
+            const auto e = g_cache.find(r.key);
+            if (r.kind == JobKind::Tiles && e != g_cache.end() && e->second.state == PeakState::Ready &&
+                e->second.version == r.version)
+                KeepIdleSource(r.key, r.src, r.version);  // 13-57 review: the next detail read reuses it
+            else
+                delete r.src;
             delete r.src2;
             auto run = g_running.find(r.id);
             if (run != g_running.end()) {
@@ -461,7 +555,11 @@ void Collect()
         }
         if (r.kind == JobKind::Tiles) {
             // Its tiles leave the wait (the ones not read, given up, wait again when asked again).
-            for (const auto& t : asked_tiles) g_tile_ask.erase(TileKey(r.key, t.first, t.second));
+            const auto fa = g_tile_ask.find(r.key);
+            if (fa != g_tile_ask.end()) {
+                for (const auto& t : asked_tiles) fa->second.erase(t);
+                if (fa->second.empty()) g_tile_ask.erase(fa);
+            }
             const auto it = g_cache.find(r.key);
             for (WaveTile& t : r.tiles)
                 if (it != g_cache.end() && it->second.state == PeakState::Ready && it->second.version == t.file)
@@ -496,13 +594,14 @@ void Collect()
 
 // The reads nobody waits for any more are given up: a detail read whose tiles nobody asked for these
 // kPeakFreshSeconds (the view moved on); when every reader is busy and a waiting file was just asked,
-// the read nobody asks for (PickPeakCancel: a long file's peak build after its first pass first).
+// the read nobody asks for (PickPeakCancel: a detail read first, then a long file's peak build after its
+// first pass).
 void CancelUnwanted(double now)
 {
     bool fresh_waiting = false;
     for (const auto& kv : g_cache)
         if (kv.second.state == PeakState::Building && !kv.second.in_flight && now >= kv.second.asked_s &&
-            now - kv.second.asked_s <= kPeakFreshSeconds)
+            now - kv.second.asked_s <= kPeakFreshSeconds && !PeaksRunning(kv.first))
             fresh_waiting = true;
     std::vector<PeakRunning>    runs;
     std::vector<const Running*> who;
@@ -513,25 +612,53 @@ void CancelUnwanted(double now)
             stopping = true;
             continue;
         }
+        PeakRunning p;
         if (r.kind == JobKind::Tiles) {
-            double last = 0.0;
-            for (const auto& t : r.tiles) {
-                const auto a = g_tile_ask.find(TileKey(r.key, t.first, t.second));
-                if (a != g_tile_ask.end()) last = std::max(last, a->second.asked_s);
+            double     last = 0.0;
+            const auto fa = g_tile_ask.find(r.key);
+            if (fa != g_tile_ask.end())
+                for (const auto& t : r.tiles) {
+                    const auto a = fa->second.find(t);
+                    if (a != fa->second.end()) last = std::max(last, a->second.asked_s);
+                }
+            if (now - last > kPeakFreshSeconds) {
+                r.cancel->store(true);
+                stopping = true;
+                continue;
             }
-            if (now - last > kPeakFreshSeconds) r.cancel->store(true);
-            continue;
+            p.tiles = true;  // 13-57 review: given up first for a clicked file (its tiles are asked again)
+            p.asked_s = last;
+        } else {
+            const auto e = g_cache.find(r.key);
+            p.delivered = r.delivered;
+            p.asked_s = e != g_cache.end() && e->second.seq == r.seq ? e->second.asked_s : 0.0;
         }
-        const auto   e = g_cache.find(r.key);
-        PeakRunning  p;
-        p.delivered = r.delivered;
-        p.asked_s = e != g_cache.end() && e->second.seq == r.seq ? e->second.asked_s : 0.0;
         runs.push_back(p);
         who.push_back(&r);
     }
     // One at a time: the reader it frees takes the waiting file.
     const int k = stopping ? -1 : PickPeakCancel(runs, g_running.size() >= kPeakReaders, fresh_waiting, now);
     if (k >= 0) who[static_cast<size_t>(k)]->cancel->store(true);
+}
+
+// 13-57 review: REAPER's peak file of `path` is there and not older than the file (a cheap look on the
+// UI thread: its name and its date). False when unknown (the second source is opened, as before).
+bool HasPeakFile(const std::string& path)
+{
+    if (!f_peak_name) return false;
+    char buf[4096] = {};
+    f_peak_name(path.c_str(), buf, static_cast<int>(sizeof(buf)), false);
+    if (!buf[0]) return false;
+    try {
+        std::error_code             ec;
+        const std::filesystem::path pk = std::filesystem::u8path(buf);
+        const auto                  tp = std::filesystem::last_write_time(pk, ec);
+        if (ec || std::filesystem::file_size(pk, ec) == 0 || ec) return false;
+        const auto ts = std::filesystem::last_write_time(std::filesystem::u8path(path), ec);
+        return !ec && tp >= ts;
+    } catch (...) {
+        return false;  // a malformed path
+    }
 }
 
 // Opens `path` on the UI thread (PCM_Source_CreateFromFile stays here); its time for the log.
@@ -548,8 +675,9 @@ bool StartPeaksJob(double now)
 {
     std::vector<PeakWaiting>                            w;
     std::vector<std::map<std::string, Entry>::iterator> its;
+    // 13-57 review: a file whose earlier read is still out (its .reapeaks build) waits for it to end.
     for (auto it = g_cache.begin(); it != g_cache.end(); ++it)
-        if (it->second.state == PeakState::Building && !it->second.in_flight) {
+        if (it->second.state == PeakState::Building && !it->second.in_flight && !PeaksRunning(it->first)) {
             w.push_back(PeakWaiting{it->second.seq, it->second.asked_s});
             its.push_back(it);
         }
@@ -580,8 +708,9 @@ bool StartPeaksJob(double now)
     j.key = key;
     j.seq = e.seq;
     j.src = s;
-    // 13-57: a long file gets a second source for its first pass, used only if its peak file is missing.
-    if (!PeakReadsSamples(len)) j.src2 = OpenSource(e.path, &open_ms);
+    // 13-57: a long file gets a second source for its first pass, used only if its peak file is missing
+    // (13-57 review: not opened when REAPER's peak file is there, newer than the file).
+    if (!PeakReadsSamples(len) && !HasPeakFile(e.path)) j.src2 = OpenSource(e.path, &open_ms);
     j.length = len;
     j.sr = sr;
     j.nch = nch;
@@ -602,34 +731,54 @@ bool StartPeaksJob(double now)
 bool StartTilesJob(double now)
 {
     // The tiles nobody asked for these kPeakFreshSeconds are dropped (the view moved on).
-    const TileKey* best = nullptr;
-    for (auto it = g_tile_ask.begin(); it != g_tile_ask.end();) {
-        if (!it->second.in_flight && now - it->second.asked_s > kPeakFreshSeconds) {
-            it = g_tile_ask.erase(it);
-            continue;
+    const std::string* best = nullptr;
+    double             best_s = 0.0;
+    for (auto f = g_tile_ask.begin(); f != g_tile_ask.end();) {
+        for (auto it = f->second.begin(); it != f->second.end();) {
+            if (!it->second.in_flight && now - it->second.asked_s > kPeakFreshSeconds) {
+                it = f->second.erase(it);
+                continue;
+            }
+            if (!it->second.in_flight && (!best || it->second.asked_s > best_s)) {
+                best = &f->first;
+                best_s = it->second.asked_s;
+            }
+            ++it;
         }
-        if (!it->second.in_flight && (!best || it->second.asked_s > g_tile_ask[*best].asked_s)) best = &it->first;
-        ++it;
+        if (f->second.empty()) {
+            if (best == &f->first) best = nullptr;  // (cannot happen: a best tile keeps its file)
+            f = g_tile_ask.erase(f);
+        } else {
+            ++f;
+        }
     }
     if (!best) return false;
-    const std::string key = std::get<0>(*best);
+    const std::string key = *best;
     const auto        e = g_cache.find(key);
     if (e == g_cache.end() || e->second.state != PeakState::Ready || !(e->second.sr > 0.0) || e->second.nch < 1) {
         ForgetTiles(key);  // its peaks are gone: asked again, they are read first
         return true;
     }
-    Job j;
-    for (auto& kv : g_tile_ask) {
-        if (std::get<0>(kv.first) != key || kv.second.in_flight || j.tiles.size() >= kTilesPerJob) continue;
-        j.tiles.emplace_back(std::get<1>(kv.first), std::get<2>(kv.first));
+    // 13-57 review: the tiles asked last first (the zoom the view is at now, not the levels a zoom
+    // passed through), PickTilesForJob.
+    FileAsks&                 asks = g_tile_ask[key];
+    std::vector<WaveTileWant> want;
+    std::vector<TileId>       ids;
+    for (const auto& kv : asks) {
+        if (kv.second.in_flight) continue;
+        want.push_back(WaveTileWant{kv.first.first, kv.first.second, kv.second.asked_s});
+        ids.push_back(kv.first);
     }
+    Job j;
+    for (size_t k : PickTilesForJob(want, kTilesPerJob)) j.tiles.push_back(ids[k]);
     double      open_ms = 0.0;
-    PCM_source* s = OpenSource(e->second.path, &open_ms);
+    PCM_source* s = TakeIdleSource(key, e->second.version);
+    if (!s) s = OpenSource(e->second.path, &open_ms);
     if (!s) {
         ForgetTiles(key);
         return true;
     }
-    for (const auto& t : j.tiles) g_tile_ask[TileKey(key, t.first, t.second)].in_flight = true;
+    for (const auto& t : j.tiles) asks[t].in_flight = true;
     j.id = ++g_job_id;
     j.kind = JobKind::Tiles;
     j.key = key;
@@ -690,6 +839,7 @@ void InitSoundPeaks(void* (*get_func)(const char* name))
     f_count_takes = reinterpret_cast<CountTakesFn>(get_func("CountTakes"));
     f_get_take = reinterpret_cast<GetMediaItemTakeFn>(get_func("GetMediaItemTake"));
     f_takefx_count = reinterpret_cast<TakeFXGetCountFn>(get_func("TakeFX_GetCount"));
+    f_peak_name = reinterpret_cast<GetPeakFileNameExFn>(get_func("GetPeakFileNameEx"));
 }
 
 void QuitSoundPeaks()
@@ -699,6 +849,9 @@ void QuitSoundPeaks()
     g_running.clear();
     g_tile_ask.clear();
     g_tiles.clear();
+    for (auto& kv : g_idle) delete kv.second.src;  // 13-57 review: the kept detail sources
+    g_idle.clear();
+    g_wave_memo.clear();
     for (auto it = g_cache.begin(); it != g_cache.end();)  // an unfinished read is not left waiting
         it = it->second.state == PeakState::Building ? g_cache.erase(it) : std::next(it);
 }
@@ -795,39 +948,91 @@ bool ReadWaveColumns(const std::string& path, double view_start, double view_len
     const auto        it = g_cache.find(key);
     if (it == g_cache.end()) return false;
     const Entry& e = it->second;
-    WaveColumns  coarse;
-    ColumnsFromPeaks(e.peaks, view_start, view_len, columns, &coarse);
     const double rate = WaveTileRate(view_len, columns, e.sr);
     int64_t      first = 0, last = -1;
-    if (!(rate > 0.0) || !WaveTilesFor(view_start, view_len, rate, e.length, &first, &last)) {
-        *out = std::move(coarse);  // a long view: the peaks are at least as fine as its pixels
-        return true;
-    }
-    // The tiles the view wants are asked (read on a reader, the newest asked first); meanwhile the
-    // levels next to it, then the coarse peaks, draw what they hold (no flicker on a zoom step).
-    const double now = NowSeconds();
-    for (int64_t i = first; i <= last; ++i) {
-        const WaveTile* t = g_tiles.Get(key, rate, i);
-        if (t && t->file == e.version) continue;
-        TileAsk& a = g_tile_ask[TileKey(key, rate, i)];
-        a.asked_s = now;
-    }
-    const std::vector<double>                        rates = WaveFallbackRates(rate, e.sr);
-    std::map<std::pair<double, int64_t>, const WaveTile*> have;  // one LRU lookup per tile a frame
-    for (double r : rates) {
-        int64_t a = 0, b = -1;
-        if (!WaveTilesFor(view_start, view_len, r, e.length, &a, &b)) continue;
-        for (int64_t i = a; i <= b; ++i) {
-            const WaveTile* t = g_tiles.Get(key, r, i);
-            if (t && t->file == e.version) have[std::make_pair(r, i)] = t;
+    const bool   detail = rate > 0.0 && WaveTilesFor(view_start, view_len, rate, e.length, &first, &last);
+    // The tiles the view wants are asked (read on a reader, the newest asked first) and kept fresh in
+    // the LRU; meanwhile the levels next to it, then the coarse peaks, draw what they hold (no flicker
+    // on a zoom step).
+    WaveTileLru::FileTiles* have_file = g_tiles.Of(key);
+    if (detail) {
+        const double now = NowSeconds();
+        FileAsks*    asks = nullptr;
+        for (int64_t i = first; i <= last; ++i) {
+            const WaveTile* t = have_file ? g_tiles.Get(*have_file, rate, i) : nullptr;
+            if (t && t->file == e.version) continue;
+            if (!asks) asks = &g_tile_ask[key];
+            (*asks)[TileId(rate, i)].asked_s = now;
         }
     }
-    const WaveTileLookup look = [&have](double r, int64_t i) -> const WaveTile* {
-        const auto h = have.find(std::make_pair(r, i));
-        return h == have.end() ? nullptr : h->second;
+    // 13-57 review: the waveform is built again only when its view or what it is built from changed
+    // (the entry's read, a tile come or gone); else the one built last for this view is given.
+    const uint64_t gen = g_tiles.generation();
+    WaveMemo*      memo = nullptr;
+    for (WaveMemo& m : g_wave_memo)
+        if (m.seq == e.seq && m.cols == columns && m.vs == view_start && m.vl == view_len && m.key == key) memo = &m;
+    if (memo && memo->gen == gen) {
+        memo->used = ++g_memo_tick;
+        *out = memo->wc;
+        if (detail) Feed();
+        return true;
+    }
+    if (!memo) {
+        if (g_wave_memo.size() < kWaveMemos) {
+            g_wave_memo.emplace_back();
+            memo = &g_wave_memo.back();
+        } else {
+            memo = &g_wave_memo.front();
+            for (WaveMemo& m : g_wave_memo)
+                if (m.used < memo->used) memo = &m;
+        }
+        memo->key = key;
+        memo->seq = e.seq;
+        memo->vs = view_start;
+        memo->vl = view_len;
+        memo->cols = columns;
+    }
+    memo->gen = gen;
+    memo->used = ++g_memo_tick;
+    WaveColumns coarse;
+    ColumnsFromPeaks(e.peaks, view_start, view_len, columns, &coarse);
+    if (!detail) {
+        memo->wc = coarse;  // a long view: the peaks are at least as fine as its pixels
+        *out = std::move(coarse);
+        return true;
+    }
+    // The tiles of the view at each level tried, in a flat list per level (one LRU lookup per tile).
+    struct Level {
+        double                       rate = 0.0;
+        int64_t                      a = 0;
+        std::vector<const WaveTile*> t;
     };
-    FoldWaveColumns(look, rates, e.sr, e.nch >= 2 ? kWaveSeries : 1, view_start, view_len, columns, coarse, out);
+    const std::vector<double> rates = WaveFallbackRates(rate, e.sr);
+    std::vector<Level>        levels;
+    levels.reserve(rates.size());
+    for (double r : rates) {
+        Level   lv;
+        int64_t a = 0, b = -1;
+        lv.rate = r;
+        if (have_file && WaveTilesFor(view_start, view_len, r, e.length, &a, &b)) {
+            lv.a = a;
+            lv.t.assign(static_cast<size_t>(b - a + 1), nullptr);
+            for (int64_t i = a; i <= b; ++i) {
+                const WaveTile* t = g_tiles.Get(*have_file, r, i);
+                if (t && t->file == e.version) lv.t[static_cast<size_t>(i - a)] = t;
+            }
+        }
+        levels.push_back(std::move(lv));
+    }
+    const WaveTileLookup look = [&levels](double r, int64_t i) -> const WaveTile* {
+        for (const Level& lv : levels)
+            if (lv.rate == r)
+                return i >= lv.a && i - lv.a < static_cast<int64_t>(lv.t.size()) ? lv.t[static_cast<size_t>(i - lv.a)] : nullptr;
+        return nullptr;
+    };
+    FoldWaveColumns(look, rates, e.sr, e.nch >= 2 ? kWaveSeries : 1, view_start, view_len, columns, coarse, out, e.length);
     if (!out->line) JoinWaveColumns(out);
+    memo->wc = *out;
     Feed();  // the tiles just asked may go to a free reader now
     return true;
 }

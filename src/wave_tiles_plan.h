@@ -27,6 +27,7 @@
 #include <map>
 #include <string>
 #include <tuple>
+#include <utility>
 #include <vector>
 
 #include "file_change_check.h"
@@ -202,10 +203,13 @@ using WaveTileLookup = std::function<const WaveTile*(double rate, int64_t index)
 // filled by ColumnsFromPeaks, or empty). `out->detail` = every pixel came from a tile at rates[0].
 // `series`: the tiles' (1 for a mono file, else kWaveSeries); a coarse of other lanes or width is not
 // used. `sample_rate`: when rates[0] is it and a pixel is shorter than a sample, and every tile is
-// there, the samples are given as a line (`line`).
+// there, the samples are given as a line (`line`). 13-57 review: `source_len` (the file's length, 0 =
+// unknown): a pixel entirely before 0 s or past the file's end has nothing to draw and needs no tile
+// (the sample line still shows at the file's edges), and a pixel over the end needs only the tiles
+// the file has.
 inline void FoldWaveColumns(const WaveTileLookup& tile, const std::vector<double>& rates, double sample_rate,
                             int series, double view_start, double view_len, int columns, const WaveColumns& coarse,
-                            WaveColumns* out)
+                            WaveColumns* out, double source_len = 0.0)
 {
     *out = coarse;
     out->detail = false;
@@ -215,6 +219,14 @@ inline void FoldWaveColumns(const WaveTileLookup& tile, const std::vector<double
     bool all_wanted = true;
     for (int c = 0; c < columns; ++c) {
         const double t0 = view_start + view_len * c / columns, t1 = view_start + view_len * (c + 1) / columns;
+        if (t1 <= 0.0 || (source_len > 0.0 && t0 >= source_len)) {
+            const size_t i = static_cast<size_t>(c);  // outside the file: nothing there, nothing to wait for
+            for (int s = 0; s < out->series && s < kWaveSeries; ++s) {
+                out->lo[s][i] = std::numeric_limits<float>::max();
+                out->hi[s][i] = -std::numeric_limits<float>::max();
+            }
+            continue;
+        }
         bool         done = false;
         for (size_t r = 0; r < rates.size() && !done; ++r) {
             const double rate = rates[r];
@@ -222,6 +234,7 @@ inline void FoldWaveColumns(const WaveTileLookup& tile, const std::vector<double
             int64_t k0 = static_cast<int64_t>(std::floor(t0 * rate)), k1 = static_cast<int64_t>(std::floor(t1 * rate));
             k1 = std::max(k1, k0 + 1);
             if (k0 < 0) k0 = 0;
+            if (source_len > 0.0) k1 = std::min(k1, std::max<int64_t>(k0 + 1, static_cast<int64_t>(std::ceil(source_len * rate))));
             if (k1 <= k0) continue;
             // Every tile the pixel spans must be read for this rate to give it.
             const int64_t ta = k0 / kWaveTileColumns, tb = (k1 - 1) / kWaveTileColumns;
@@ -317,72 +330,136 @@ inline std::vector<double> WaveFallbackRates(double rate, double sample_rate)
     return r;
 }
 
-// A small LRU of tiles keyed on (file key, rate, index).
+// A small LRU of tiles keyed on (file key, rate, index). 13-57 review: one map per file (a lookup
+// copies no path), and a generation bumped whenever a tile comes or goes (a waveform built from the
+// tiles is built again only then).
+struct WaveTileSlot {
+    WaveTile tile;
+    uint64_t used = 0;
+};
+
 class WaveTileLru {
 public:
-    using Key = std::tuple<std::string, double, int64_t>;
+    using FileTiles = std::map<std::pair<double, int64_t>, WaveTileSlot>;
     explicit WaveTileLru(size_t capacity = kWaveTileCacheTiles) : cap_(capacity) {}
-    const WaveTile* Get(const std::string& file, double rate, int64_t index)
+    // The tiles of one file (null when it has none): several of its tiles for one path lookup.
+    FileTiles* Of(const std::string& file)
     {
-        auto it = m_.find(Key(file, rate, index));
-        if (it == m_.end()) return nullptr;
+        auto f = m_.find(file);
+        return f == m_.end() ? nullptr : &f->second;
+    }
+    const WaveTile* Get(FileTiles& tiles, double rate, int64_t index)
+    {
+        auto it = tiles.find(std::make_pair(rate, index));
+        if (it == tiles.end()) return nullptr;
         it->second.used = ++tick_;
         return &it->second.tile;
     }
+    const WaveTile* Get(const std::string& file, double rate, int64_t index)
+    {
+        FileTiles* f = Of(file);
+        return f ? Get(*f, rate, index) : nullptr;
+    }
     void Put(const std::string& file, WaveTile tile)
     {
-        Slot& s = m_[Key(file, tile.rate, tile.index)];
+        FileTiles&    f = m_[file];
+        const auto    k = std::make_pair(tile.rate, tile.index);
+        if (f.find(k) == f.end()) ++n_;
+        WaveTileSlot& s = f[k];
         s.tile = std::move(tile);
         s.used = ++tick_;
-        while (m_.size() > cap_) {
-            auto oldest = m_.begin();
-            for (auto it = m_.begin(); it != m_.end(); ++it)
-                if (it->second.used < oldest->second.used) oldest = it;
-            m_.erase(oldest);
+        ++gen_;
+        while (n_ > cap_) {
+            auto                of = m_.end();
+            FileTiles::iterator oldest;
+            for (auto fi = m_.begin(); fi != m_.end(); ++fi)
+                for (auto it = fi->second.begin(); it != fi->second.end(); ++it)
+                    if (of == m_.end() || it->second.used < oldest->second.used) {
+                        of = fi;
+                        oldest = it;
+                    }
+            if (of == m_.end()) break;
+            of->second.erase(oldest);
+            --n_;
+            if (of->second.empty()) m_.erase(of);
         }
     }
     void EraseFile(const std::string& file)
     {
-        for (auto it = m_.begin(); it != m_.end();)
-            it = std::get<0>(it->first) == file ? m_.erase(it) : std::next(it);
+        auto f = m_.find(file);
+        if (f == m_.end()) return;
+        n_ -= f->second.size();
+        m_.erase(f);
+        ++gen_;
     }
-    size_t size() const { return m_.size(); }
-    void   clear() { m_.clear(); }
+    size_t   size() const { return n_; }
+    void     clear()
+    {
+        m_.clear();
+        n_ = 0;
+        ++gen_;
+    }
+    uint64_t generation() const { return gen_; }
 
 private:
-    struct Slot {
-        WaveTile tile;
-        uint64_t used = 0;
-    };
-    std::map<Key, Slot> m_;
-    size_t              cap_;
-    uint64_t            tick_ = 0;
+    std::map<std::string, FileTiles> m_;
+    size_t                           cap_;
+    size_t                           n_ = 0;
+    uint64_t                         tick_ = 0;
+    uint64_t                         gen_ = 0;
 };
 
 // 13-57: which running read the UI thread gives up so a waiting file is read at once when every reader
 // is busy. A read is given up when nobody asked for it these kPeakFreshSeconds while a waiting file was
-// asked within them; a read whose peaks are already shown (the .reapeaks build after a long file's
-// first pass) first; else the one asked longest ago. -1 = none.
+// asked within them; 13-57 review: a detail read first (its tiles are asked again on the next frame,
+// nothing is lost), then a read whose peaks are already shown (the .reapeaks build after a long file's
+// first pass), else the one asked longest ago. -1 = none.
 struct PeakRunning {
     double asked_s = 0.0;       // when its file (or a tile of it) was last asked
     bool   delivered = false;   // its peaks are shown: only the peak file's build goes on
+    bool   tiles = false;       // a detail read (always given up first)
 };
 
 inline int PickPeakCancel(const std::vector<PeakRunning>& running, bool readers_full, bool fresh_waiting, double now_s)
 {
     if (!readers_full || !fresh_waiting) return -1;
-    int best = -1;
+    auto rank = [](const PeakRunning& r) { return r.tiles ? 0 : r.delivered ? 1 : 2; };
+    int  best = -1;
     for (size_t i = 0; i < running.size(); ++i) {
         const PeakRunning& r = running[i];
-        if (!r.delivered && !PeakAbandonInFlight(r.asked_s, true, now_s)) continue;  // still wanted (13-55 review)
+        if (!r.tiles && !r.delivered && !PeakAbandonInFlight(r.asked_s, true, now_s)) continue;  // still wanted (13-55 review)
         if (best < 0) {
             best = static_cast<int>(i);
             continue;
         }
         const PeakRunning& b = running[static_cast<size_t>(best)];
-        if (r.delivered != b.delivered ? r.delivered : r.asked_s < b.asked_s) best = static_cast<int>(i);
+        if (rank(r) != rank(b) ? rank(r) < rank(b) : r.asked_s < b.asked_s) best = static_cast<int>(i);
     }
     return best;
+}
+
+// 13-57 review: the detail tiles one reader takes for a file, at most `max`: the ones asked last first
+// (the current frame's zoom level before the levels a zoom passed through), the finer level first
+// among those asked together, then left to right. Returns indices into `w`.
+struct WaveTileWant {
+    double  rate = 0.0;
+    int64_t index = 0;
+    double  asked_s = 0.0;
+};
+
+inline std::vector<size_t> PickTilesForJob(const std::vector<WaveTileWant>& w, size_t max)
+{
+    std::vector<size_t> k(w.size());
+    for (size_t i = 0; i < k.size(); ++i) k[i] = i;
+    std::sort(k.begin(), k.end(), [&w](size_t a, size_t b) {
+        const WaveTileWant& x = w[a];
+        const WaveTileWant& y = w[b];
+        if (x.asked_s != y.asked_s) return x.asked_s > y.asked_s;
+        if (x.rate != y.rate) return x.rate > y.rate;
+        return x.index < y.index;
+    });
+    if (k.size() > max) k.resize(max);
+    return k;
 }
 
 }  // namespace rav

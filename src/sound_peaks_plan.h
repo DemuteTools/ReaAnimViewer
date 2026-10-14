@@ -29,6 +29,17 @@ constexpr double kPeakHiResMaxSeconds = 10.0;  // up to this length a file is re
 constexpr double kPeakFreshSeconds = 0.5;      // a waiting file asked this recently goes first
 constexpr double kPeakDropSeconds = 2.0;       // a waiting file nobody asked for this long is dropped
 
+// 13-57 review: the frames one GetSamples call reads for a file of `nch` channels: up to 65536, but
+// never more than kPeakBlockSamples values in all (a 64-channel file does not ask REAPER for 4 M at once).
+constexpr int kPeakBlockFrames = 65536;
+constexpr int kPeakBlockSamples = 524288;
+inline int PeakBlockFrames(int nch)
+{
+    if (nch <= 1) return kPeakBlockFrames;
+    const int f = kPeakBlockSamples / nch;
+    return f < 256 ? 256 : (f > kPeakBlockFrames ? kPeakBlockFrames : f);
+}
+
 // The rate a file of `length` seconds is read at (0 for no length: nothing to read).
 inline double ChoosePeakRate(double length)
 {

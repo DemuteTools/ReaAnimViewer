@@ -275,6 +275,71 @@ int main()
         std::vector<PeakRunning> back = {{200.0, false}};
         CHECK(PickPeakCancel(back, true, true, now) == -1);  // a clock that went back keeps it
         CHECK(std::string(PeakReadPathName(PeakReadPath::SamplesThenBuild)).find("first") != std::string::npos);
+        // 13-57 review: a detail read is given up first, even one asked just now (its tiles come back).
+        std::vector<PeakRunning> mix = {{98.0, false, false}, {99.0, true, false}, {99.95, false, true}};
+        CHECK(PickPeakCancel(mix, true, true, now) == 2);
+        std::vector<PeakRunning> two = {{99.95, false, true}, {99.5, false, true}, {99.99, false, false}};
+        CHECK(PickPeakCancel(two, true, true, now) == 1);  // of two detail reads, the one asked longer ago
+        CHECK(PickPeakCancel(two, false, true, now) == -1);  // a reader is free: nothing given up
+    }
+
+    // ---- PickTilesForJob (13-57 review) ----
+    {
+        // A zoom passed through 256 and 512 (asked earlier) to 1024 (asked this frame).
+        std::vector<WaveTileWant> w = {{256.0, 0, 10.0}, {256.0, 1, 10.0}, {512.0, 3, 10.2},
+                                       {1024.0, 7, 10.4}, {1024.0, 6, 10.4}, {2048.0, 1, 10.4}};
+        const std::vector<size_t> k = PickTilesForJob(w, 4);
+        CHECK(k.size() == 4);
+        CHECK(k[0] == 5);                // asked now, the finer level first
+        CHECK(k[1] == 4 && k[2] == 3);   // then the current level left to right
+        CHECK(k[3] == 2);                // then the level asked just before
+        CHECK(PickTilesForJob(w, 16).size() == w.size() && PickTilesForJob({}, 4).empty());
+    }
+
+    // ---- FoldWaveColumns at the file's edges (13-57 review) ----
+    {
+        // A 0.1 s file at 48 kHz viewed at extreme zoom over its end: the pixels past the end need no
+        // tile, so the read is complete and the samples still show as a line.
+        auto tiles = ReadTiles(sr, sr, 4800, 1, saw);
+        auto look = [&](double rate, int64_t i) -> const WaveTile* {
+            if (rate != sr) return nullptr;
+            auto it = tiles.find(i);
+            return it == tiles.end() ? nullptr : &it->second;
+        };
+        WaveColumns  coarse, out;
+        const double vs = 0.0998, vl = 0.01;  // 0.2 ms of file then 9.8 ms past its end (past its last tile)
+        FoldWaveColumns(look, WaveFallbackRates(sr, sr), sr, 1, vs, vl, 1000, coarse, &out, 0.1);
+        CHECK(out.detail && out.line);
+        CHECK(!WaveColumnHas(out, 0, 999));  // past the end: nothing drawn
+        // Without the length the pixels past the end wait for a tile that never comes (the old rule).
+        FoldWaveColumns(look, WaveFallbackRates(sr, sr), sr, 1, vs, vl, 1000, coarse, &out);
+        CHECK(!out.detail && !out.line);
+        // Before 0 s: the view starts left of the file.
+        FoldWaveColumns(look, WaveFallbackRates(sr, sr), sr, 1, -0.0003, 0.0005, 1000, coarse, &out, 0.1);
+        CHECK(out.detail && out.line && !WaveColumnHas(out, 0, 0));
+    }
+
+    // ---- WaveTileLru generation (13-57 review) ----
+    {
+        WaveTileLru lru(2);
+        const uint64_t g0 = lru.generation();
+        CHECK(lru.Get("a", 1.0, 0) == nullptr && lru.generation() == g0);  // a lookup changes nothing
+        WaveTile t;
+        WaveTileInit(&t, 1024.0, 0, 1);
+        lru.Put("a", t);
+        CHECK(lru.generation() > g0);
+        const uint64_t g1 = lru.generation();
+        lru.EraseFile("zzz");
+        CHECK(lru.generation() == g1);  // nothing erased
+        lru.EraseFile("a");
+        CHECK(lru.generation() > g1 && lru.size() == 0 && lru.Of("a") == nullptr);
+    }
+
+    // ---- PeakBlockFrames (13-57 review) ----
+    {
+        CHECK(PeakBlockFrames(1) == 65536 && PeakBlockFrames(2) == 65536 && PeakBlockFrames(8) == 65536);
+        CHECK(PeakBlockFrames(16) == 32768 && PeakBlockFrames(64) == 8192);
+        CHECK(PeakBlockFrames(100000) == 256 && PeakBlockFrames(0) == 65536);
     }
 
     if (g_fail) std::printf("%d check(s) failed\n", g_fail);

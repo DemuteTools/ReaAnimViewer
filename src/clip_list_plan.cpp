@@ -297,7 +297,7 @@ float PanelWidth(float view_w, float dp)
 {
     if (!(view_w > 0.0f)) return 0.0f;
     // Every term is continuous in view_w, so the panel never jumps while the window is resized.
-    const float full = std::max(0.0f, view_w - 16.0f * dp);  // the view less the close button's room
+    const float full = std::max(0.0f, view_w - 28.0f * dp);  // the view less the close button's room
     return std::min({270.0f * dp, full, std::max(0.7f * view_w, std::min(full, 200.0f * dp))});
 }
 
@@ -305,6 +305,22 @@ float ButtonCentreY(float menu_bottom, float switch_top, float btn, float dp)
 {
     if (switch_top - menu_bottom < 140.0f * dp) return menu_bottom + 6.0f * dp + btn * 0.5f;
     return (menu_bottom + switch_top) * 0.5f;
+}
+
+float OpenButtonCentreX(float panel_w, float btn, float dp)
+{
+    return panel_w + 2.0f * dp + btn * 0.5f;
+}
+
+bool ListTypesKey(unsigned vk, bool ctrl, bool alt)
+{
+    if (ctrl || alt) return false;
+    if (vk >= 0x30 && vk <= 0x39) return true;  // 0-9
+    if (vk >= 0x41 && vk <= 0x5A) return true;  // A-Z
+    // The punctuation keys (VK_OEM_1..VK_OEM_3, VK_OEM_4..VK_OEM_8, VK_OEM_102): ; = , - . / ` [ \ ] ' < >
+    if (vk >= 0xBA && vk <= 0xC0) return true;
+    if (vk >= 0xDB && vk <= 0xDF) return true;
+    return vk == 0xE2;
 }
 
 bool ButtonFits(float menu_bottom, float switch_top, float btn, float dp)

@@ -34,8 +34,10 @@ void InitClipList(reaper_plugin_info_t* rec);
 void QuitClipList();
 
 bool ClipListOpen();
-// Opens (the search takes the keyboard) or closes the panel.
-void SetClipListOpen(bool open);
+// Opens (the search takes the keyboard) or closes the panel. `reason`: what asked (the button, the
+// shortcut, Esc...), written to REAPER's console with every open and close (6-5-10b review: a list
+// that vanishes says why).
+void SetClipListOpen(bool open, const char* reason);
 
 // The item RAV shows this frame (nullptr = none): the lit row. Called by the render tick.
 void ClipListSetCurrentItem(MediaItem* item);
@@ -55,7 +57,8 @@ ImGuiWindow* ClipListPanelWindow();
 ImGuiWindow* ClipListButtonWindow();
 
 // True when the panel has the keyboard (its search field or a row was the last thing clicked) and
-// this key, without Ctrl / Alt, is one of its own: Up, Down, Enter, Esc. The viewer takes it then.
+// this key, without Ctrl / Alt, is one of its own: Up, Down, Enter, Esc, and (6-5-10b review) a
+// character key (cliplist::ListTypesKey), typed into the search. The viewer takes it then.
 bool ClipListTakesKey(unsigned vk, bool ctrl, bool shift, bool alt);
 // True when the panel has the keyboard (see above).
 bool ClipListHasFocus();

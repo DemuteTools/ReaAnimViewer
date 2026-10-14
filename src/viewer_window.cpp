@@ -2508,7 +2508,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
                                ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
             const bool library = LibraryViewActive() && LibraryEditUsesEsc();
             if (!popup && !library) {
-                if (!(lp & (1 << 30))) SetClipListOpen(false);
+                if (!(lp & (1 << 30))) SetClipListOpen(false, "Esc in the viewer");
                 return 0;
             }
         }
@@ -2555,7 +2555,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             return 0;
         }
         if (action == kShortcutClipList) {  // story 6-5-10 (L): the clip list, every view
-            SetClipListOpen(!ClipListOpen());
+            SetClipListOpen(!ClipListOpen(), "its shortcut");
             if (ClipListOpen()) g_menu_open = false;
             return 0;
         }

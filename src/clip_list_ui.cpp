@@ -51,6 +51,8 @@ struct State {
     bool                             scroll_to_current = false;
     bool                             scroll_to_kb = false;
     bool                             has_focus = false;     // last frame: the panel had the keyboard
+    bool                             search_active = false; // last frame: the search field had the keyboard
+    bool                             caret_to_end = false;  // the search, focused for typed characters: no select-all
     char                             search[160] = {};
     MediaItem*                       kb = nullptr;          // the arrows' dashed row
     MediaItem*                       current = nullptr;     // the item RAV shows
@@ -160,9 +162,13 @@ void BeginLoadProjectState(bool is_undo, project_config_extension_t*)
         // (Antho, 2026-10-14). 6-5-10b: only then. REAPER also loads project states that are not the
         // tab shown (another tab, a project read for another purpose); those never close the list,
         // which stays open until the user closes it. A load REAPER does not name is not ours either.
+        // 6-5-10b review: File > New may load its (empty) template without naming the project: a load
+        // REAPER does not name, while the tab shown has no item, is that tab's.
         ReaProject* const named = f_project_in_load_save ? f_project_in_load_save() : nullptr;
-        if (!named || named != CurrentProject()) return;
-        if (g.open) LogInfo("clip list: closed, a project was opened in this tab");
+        ReaProject* const cur = CurrentProject();
+        const bool        this_tab = named ? named == cur : CountMediaItems(cur) == 0;
+        if (!this_tab) return;
+        if (g.open) LogInfo("clip list: closed (a project was opened in this tab)");
         g.open = false;
         g.search[0] = '\0';
         g.kb = nullptr;
@@ -207,12 +213,10 @@ void ReadItems(ReaProject* proj)
         e.len = c.len;
         MediaTrack* tr = GetMediaItem_Track(it);
         e.track_num = tr ? static_cast<int>(GetMediaTrackInfo_Value(tr, "IP_TRACKNUMBER")) : 0;
-        // 6-5-10b: its group's fold follows the track (the session's folds: its address will do),
-        // through a rename or a move.
+        // 6-5-10b: its group's fold follows the track (its GUID), through a rename or a move.
         if (tr) {
-            char key[32] = {};
-            std::snprintf(key, sizeof(key), "%p", static_cast<void*>(tr));
-            e.track_key = key;
+            char guid[64] = {};
+            if (GetSetMediaTrackInfo_String(tr, "GUID", guid, false)) e.track_key = guid;
         }
         if (e.track_num <= 0) e.track_num = INT_MAX;
         char name[512] = {};
@@ -668,7 +672,7 @@ void DrawPanel(float x, float top, float w, float h)
     if (esc) {
         const bool typing = ImGui::GetActiveID() != 0 && ImGui::GetIO().WantTextInput;
         if (g.search[0] && !typing) g.search[0] = '\0';  // a row had the keyboard: clear here
-        else if (!g.search[0]) g.open = false;           // empty: close (typing: the field clears it)
+        else if (!g.search[0]) SetClipListOpen(false, "Esc in the list");  // empty: close (typing: the field clears it)
     }
 
     // Header: the title and the count (8 18 6 10).
@@ -694,6 +698,28 @@ void DrawPanel(float x, float top, float w, float h)
         ImGui::PushStyleColor(ImGuiCol_ChildBg, IM_COL32(0, 0, 0, 0));
         if (ImGui::BeginChild("##cliptools", ImVec2(inner_w, 0.0f), ImGuiChildFlags_AutoResizeY,
                               ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse)) {
+            // 6-5-10b review: a row had the keyboard and characters were typed (the viewer took their
+            // keys, ListTypesKey): they go on the search's end and the field takes the keyboard, so
+            // "walk" searches and L does not close the list. Taken from Dear ImGui's queue here, or
+            // the field would type them twice once it is active.
+            ImGuiIO& io = ImGui::GetIO();
+            if (g.has_focus && !g.search_active && !io.KeyCtrl && !io.KeyAlt && io.InputQueueCharacters.Size > 0) {
+                size_t len = std::strlen(g.search);
+                for (const ImWchar c : io.InputQueueCharacters) {
+                    if (c < 0x20 || c == 0x7F) continue;
+                    char      utf8[5] = {};
+                    ImTextCharToUtf8(utf8, static_cast<unsigned int>(c));
+                    const size_t n = std::strlen(utf8);
+                    if (n == 0 || len + n >= sizeof(g.search)) continue;
+                    std::memcpy(g.search + len, utf8, n);
+                    len += n;
+                    g.search[len] = '\0';
+                    g.kb = nullptr;
+                    g.focus_search = true;
+                    g.caret_to_end = true;
+                }
+                io.InputQueueCharacters.resize(0);
+            }
             if (g.focus_search) {
                 ImGui::SetKeyboardFocusHere();
                 g.focus_search = false;
@@ -701,6 +727,13 @@ void DrawPanel(float x, float top, float w, float h)
             ui::TextField("##clipsearch", "Search a clip, a file, a track", g.search, sizeof(g.search), 0.0f,
                           ImGuiInputTextFlags_EscapeClearsAll);
             if (ImGui::IsItemEdited()) g.kb = nullptr;
+            g.search_active = ImGui::IsItemActive();
+            // Focused for typed characters: the caret after them (a keyboard focus selects all, and
+            // the next character would replace what was typed).
+            if (g.caret_to_end && g.search_active) {
+                if (ImGuiInputTextState* st = ImGui::GetInputTextState(ImGui::GetItemID())) st->ReloadUserBufAndMoveToEnd();
+                g.caret_to_end = false;
+            }
             const float gap = ui::Dp(6.0f) - 2.0f * ImGui::GetStyle().ItemSpacing.y;
             if (gap > 0.0f) ImGui::Dummy(ImVec2(0.0f, gap));
             static const char* const kGroupings[cliplist::kGroupingCount] = {"Track", "File", "None"};
@@ -867,10 +900,13 @@ bool ClipListOpen()
     return g.open;
 }
 
-void SetClipListOpen(bool open)
+void SetClipListOpen(bool open, const char* reason)
 {
     if (open == g.open) return;
+    LogInfo("clip list: %s (%s)", open ? "opened" : "closed", reason && reason[0] ? reason : "?");
     g.open = open;
+    g.search_active = false;
+    g.caret_to_end = false;
     g.kb = nullptr;
     g.scroll_to = nullptr;
     g.has_focus = false;
@@ -922,13 +958,15 @@ bool DrawClipList(float view_w, float menu_bottom, float ui_top, float view_bott
     } else {
         g.has_focus = false;
     }
-    // Closed: 6 px from the window's left edge; open: centred on the panel's right edge.
-    const float cx = g.open ? panel_w : ui::Dp(6.0f) + btn * 0.5f;
+    // Closed: 6 px from the window's left edge; open: 6-5-10b review: wholly outside the panel, 2 px
+    // right of its edge (centred on it, it covered the rows' right end and the scrollbar, and a
+    // click there closed the list).
+    const float cx = g.open ? cliplist::OpenButtonCentreX(panel_w, btn, ui::UiScale()) : ui::Dp(6.0f) + btn * 0.5f;
     // Never over the Model / Skeleton switch: in a window too short for it, no button (the
     // shortcut and Esc still open and close the list).
     if (cliplist::ButtonFits(menu_bottom, ui_top, btn, ui::UiScale())) {
         const float cy = cliplist::ButtonCentreY(menu_bottom, ui_top, btn, ui::UiScale());
-        if (RoundButton(ImVec2(cx, cy), key)) SetClipListOpen(!g.open);
+        if (RoundButton(ImVec2(cx, cy), key)) SetClipListOpen(!g.open, "the round button");
     }
     g.popup_last_frame = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
     return g.open && !was_open;
@@ -952,7 +990,7 @@ bool ClipListHasFocus()
 bool ClipListTakesKey(unsigned vk, bool ctrl, bool /*shift*/, bool alt)
 {
     if (!ClipListHasFocus() || ctrl || alt) return false;
-    return vk == VK_UP || vk == VK_DOWN || vk == VK_RETURN || vk == VK_ESCAPE;
+    return vk == VK_UP || vk == VK_DOWN || vk == VK_RETURN || vk == VK_ESCAPE || cliplist::ListTypesKey(vk, ctrl, alt);
 }
 
 }  // namespace rav

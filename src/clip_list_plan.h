@@ -21,8 +21,8 @@ struct ClipEntry {
     std::string file;              // its file's name, without the folder
     std::string path;              // its file's full path (copies: the same path and clip)
     std::string track;             // its track's name ("Track 3" when it has none, as REAPER shows it)
-    std::string track_key;         // 6-5-10b: the track's identity for its group's fold (its GUID);
-                                   //   "" = its number
+    std::string track_key;         // 6-5-10b: the track's identity for its group's fold (its GUID,
+                                   //   kept through a rename or a move); "" = its number
     int         track_num = 0;     // the track's 1-based number (the arrange's order)
     unsigned    track_rgb = 0;     // its colour 0xRRGGBB when has_color
     bool        has_color = false;
@@ -148,9 +148,21 @@ PanelSpan PanelVerticalSpan(float menu_bottom, float ui_top, float view_bottom, 
 
 // The panel's width in a view `view_w` px wide (`dp` = the UI scale): 270 px, 70 % of the view
 // when that is less, but never under 200 px while the view has room for it; never more than the
-// view less the room of the close button that sticks out of its right edge (16 px). Continuous:
-// no jump while the window is resized.
+// view less the room of the close button beside its right edge (28 px: the button, its gap and a
+// margin). Continuous: no jump while the window is resized.
 float PanelWidth(float view_w, float dp);
+
+// 6-5-10b review: the open list's round button sits wholly OUTSIDE the panel, 2 px right of its
+// right edge (`panel_w`), so it never covers the rows' right end nor the scrollbar (a click there
+// closed the list). Its centre's x; `btn` = its diameter.
+float OpenButtonCentreX(float panel_w, float btn, float dp);
+
+// 6-5-10b review: while the list has the keyboard (a row was the last thing clicked), a character
+// key (a letter, a digit, the punctuation keys; with or without Shift; never with Ctrl / Alt) is
+// typed into the search, not run as a RAV or REAPER shortcut: typing "walk" searches, L does not
+// close the list. Space (play), the numpad and the function / edit keys stay shortcuts. `vk` = the
+// Windows virtual-key code.
+bool ListTypesKey(unsigned vk, bool ctrl, bool alt);
 
 // The button's centre height: half-way between the menu button's bottom (`menu_bottom`) and the
 // Model / Skeleton switch's top (`switch_top`; the status icon's in Video / Library view); when they are under 140 px apart, just under the

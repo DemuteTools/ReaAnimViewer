@@ -170,7 +170,7 @@ int main()
         CHECK(PanelWidth(420.0f, 1.0f) == 270.0f);         // 70 % would be 294
         CHECK(PanelWidth(360.0f, 1.0f) == 0.7f * 360.0f);  // 252
         CHECK(PanelWidth(260.0f, 1.0f) == 200.0f);   // at least 200 while the view has room
-        CHECK(PanelWidth(200.0f, 1.0f) == 184.0f);   // nearly the whole view (the button's 16 px)
+        CHECK(PanelWidth(200.0f, 1.0f) == 172.0f);   // nearly the whole view (the button's 28 px)
         CHECK(PanelWidth(1200.0f, 2.0f) == 540.0f);  // a 200 % screen
         CHECK(PanelWidth(500.0f, 2.0f) == 400.0f);   // under 600 physical px at 200 %
         CHECK(PanelWidth(0.0f, 1.0f) == 0.0f);
@@ -180,7 +180,7 @@ int main()
         bool  smooth = true;
         for (float v = 0.0f; v <= 1200.0f; v += 0.25f) {
             const float pw = PanelWidth(v, 1.0f);
-            if (pw < prev - 1e-3f || pw - prev > 0.25f + 1e-3f || (pw > 0.0f && pw > v - 16.0f + 1e-3f)) smooth = false;
+            if (pw < prev - 1e-3f || pw - prev > 0.25f + 1e-3f || (pw > 0.0f && pw > v - 28.0f + 1e-3f)) smooth = false;
             prev = pw;
         }
         CHECK(smooth);
@@ -226,6 +226,37 @@ int main()
         CHECK(ButtonFits(46.0f, 46.0f + 32.0f, 22.0f, 1.0f));
         CHECK(!ButtonFits(46.0f, 46.0f + 31.0f, 22.0f, 1.0f));  // it would touch the switch: not drawn
         CHECK(!ButtonFits(46.0f, 20.0f, 22.0f, 1.0f));
+        // 6-5-10b review: open, the button is wholly outside the panel (its left edge 2 px right of
+        // the panel's right edge, never over the rows or the scrollbar), and still in the view.
+        for (float v = 0.0f; v <= 1200.0f; v += 0.5f) {
+            for (float dp : {1.0f, 1.5f, 2.0f}) {
+                const float pw = PanelWidth(v, dp);
+                if (pw <= 0.0f) continue;
+                const float cx = OpenButtonCentreX(pw, 22.0f * dp, dp);
+                CHECK(cx - 11.0f * dp >= pw + 2.0f * dp - 1e-3f);
+                CHECK(cx + 11.0f * dp <= v + 1e-3f);
+            }
+        }
+    }
+
+    // 6-5-10b review: the keys a list with the keyboard types into its search (not shortcuts).
+    {
+        CHECK(ListTypesKey('L', false, false));
+        CHECK(ListTypesKey('L', false, false) && ListTypesKey('W', false, false) && ListTypesKey('0', false, false));
+        CHECK(ListTypesKey(0xBD, false, false));   // '-'
+        CHECK(ListTypesKey(0xDE, false, false));   // quote
+        CHECK(ListTypesKey(0xE2, false, false));   // < > (ISO keyboards)
+        CHECK(!ListTypesKey('L', true, false));    // Ctrl+L: a shortcut
+        CHECK(!ListTypesKey('L', false, true));    // Alt+L: a shortcut
+        CHECK(!ListTypesKey(0x20, false, false));  // Space plays
+        CHECK(!ListTypesKey(0x1B, false, false));  // Esc: the list's own
+        CHECK(!ListTypesKey(0x0D, false, false));  // Enter: the list's own
+        CHECK(!ListTypesKey(0x26, false, false));  // Up
+        CHECK(!ListTypesKey(0x60, false, false));  // numpad 0
+        CHECK(!ListTypesKey(0x6A, false, false));  // numpad *
+        CHECK(!ListTypesKey(0x7A, false, false));  // F11 (full screen)
+        CHECK(!ListTypesKey(0x2E, false, false));  // Delete
+        CHECK(!ListTypesKey(0x08, false, false));  // Backspace
     }
 
     // 6-5-10b: folded groups. A fold keeps only the header, the arrows skip its rows, a search opens

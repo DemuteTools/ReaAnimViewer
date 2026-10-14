@@ -752,10 +752,10 @@ bool ChipButton(const char* label, const ImVec2& size, bool on)
     return clicked;
 }
 
-bool HelpMark(const char* id, const char* tip)
+bool HelpMark(const char* id, const char* tip, float line_h)
 {
     const float s = Dp(18.0f);
-    const float h = std::max(s, ImGui::GetFrameHeight());
+    const float h = std::max(s, line_h > 0.0f ? line_h : ImGui::GetFrameHeight());
     const bool  clicked = ImGui::InvisibleButton(id, ImVec2(s, h));
     const bool  hovered = ImGui::IsItemHovered();
     const ImVec2 a = ImGui::GetItemRectMin();
@@ -1688,17 +1688,27 @@ bool BeginOverlayPanel(const char* id, ImVec2 pos, ImVec2 size, int extra_flags)
     ImGui::SetNextWindowSize(size, ImGuiCond_Always);
     ImGui::PushStyleColor(ImGuiCol_WindowBg, Col(kBg));
     ImGui::PushStyleColor(ImGuiCol_Border, Col(kStrokeStrong));
+    // 13-53: pad 0 (the content sets its own insets, its body runs edge to edge), kept for the child
+    // windows inside, with the theme's spacing and frame padding: never the caller's (the Library's
+    // panes push a 0 padding around the code that opens Edit).
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, Dp(kRadiusLg));
     const ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
                                    ImGuiWindowFlags_NoMove | extra_flags;
     const bool shown = ImGui::Begin(id, nullptr, flags);
-    ImGui::PopStyleVar();
+    ImGui::PopStyleVar();  // WindowRounding
+    PushThemeMetrics();
     ImGui::PopStyleColor(2);
     if (shown) WindowShadow(0.7f);  // a little heavier than a menu (the mockup's .edbox .7)
     return shown;
 }
 
-void EndOverlayPanel() { ImGui::End(); }
+void EndOverlayPanel()
+{
+    PopThemeMetrics();
+    ImGui::PopStyleVar();  // WindowPadding
+    ImGui::End();
+}
 
 void EndMenuPopup()
 {

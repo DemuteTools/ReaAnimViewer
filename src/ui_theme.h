@@ -402,8 +402,9 @@ bool ConfirmButton(const char* label, const ImVec2& size = ImVec2(0.0f, 0.0f));
 // stroke-strong under the mouse), text muted (kText under the mouse); `on` = accent-soft, accent-line,
 // kAccentText. Natural width = label + 7 px each side; ControlH() high; shrinks and ellipsizes.
 bool ChipButton(const char* label, const ImVec2& size = ImVec2(0.0f, 0.0f), bool on = false);
-// The help mark (.qmark): an 18 px circle with "?"; `tip` shown on hover. True when clicked.
-bool HelpMark(const char* id, const char* tip = nullptr);
+// The help mark (.qmark): an 18 px circle with "?"; `tip` shown on hover. True when clicked. Centred on
+// a `line_h` high line (13-53: its toolbar's button height), the frame height by default.
+bool HelpMark(const char* id, const char* tip = nullptr, float line_h = 0.0f);
 
 // A pill with a coloured dot and a label (the mock-up's .tag with .dot). 11 px.
 void StateTag(ImU32 dot, const char* text);
@@ -682,7 +683,8 @@ bool BeginOverlay(const char* id, ImVec2 pos, ImVec2 pivot = ImVec2(0.0f, 0.0f),
 void EndOverlay();
 // 13-14 (G-19): a panel over the view at `pos`, `size` (the Library's Edit overlay, .edbox): kBg, 1 px
 // stroke-strong edge, r10, the shadow; no decoration, never moved or saved. Call EndOverlayPanel
-// whatever it returns.
+// whatever it returns. 13-53: inside, pad 0 (the content sets its own insets) and the theme's item
+// spacing and frame padding, whatever its caller had pushed.
 bool BeginOverlayPanel(const char* id, ImVec2 pos, ImVec2 size, int extra_flags = 0);
 void EndOverlayPanel();
 

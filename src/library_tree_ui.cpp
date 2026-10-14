@@ -58,6 +58,7 @@ struct TreeState {
     // 13-17d: the row an arrow key moved to, scrolled into view when drawn.
     LibraryRow               scroll_to;
     bool                     has_scroll_to = false;
+    bool                     scroll_centre = false;  // 13-53: a reveal centres its row (the arrow keys scroll just enough)
     // 13-17b: the tree's height on the last full frame (kept on a gesture's frame, so the scroll is
     // not clamped), and the shown library's node uids last frame (a node not in it is new).
     float                    rows_h = 0.0f;
@@ -1073,8 +1074,14 @@ void DrawRow(const SoundLibrary& lib, const TreeRow& r, size_t index)
         const float  y1 = std::max(y0 + 1.0f, ImGui::GetCursorScreenPos().y);
         const ImVec2 wp = ImGui::GetWindowPos();
         const float  wh = ImGui::GetWindowHeight();
-        if (y0 < wp.y) ImGui::SetScrollFromPosY(y0 - wp.y, 0.0f);
-        else if (y1 > wp.y + wh) ImGui::SetScrollFromPosY(y1 - wp.y, 1.0f);
+        if (g.scroll_centre) {  // 13-53: a reveal (Tagging's arrow, Populate's Open...) puts its row mid-list
+            g.scroll_centre = false;
+            ImGui::SetScrollFromPosY((y0 + y1) * 0.5f - wp.y, 0.5f);
+        } else if (y0 < wp.y) {
+            ImGui::SetScrollFromPosY(y0 - wp.y, 0.0f);
+        } else if (y1 > wp.y + wh) {
+            ImGui::SetScrollFromPosY(y1 - wp.y, 1.0f);
+        }
     }
     ImGui::PopID();
     ImGui::PopID();
@@ -1357,6 +1364,7 @@ void ArrowKeys()
         SelectOnly(g.rows[static_cast<size_t>(i)].row);
         g.scroll_to = g.rows[static_cast<size_t>(i)].row;
         g.has_scroll_to = true;
+        g.scroll_centre = false;
     };
     if (cur < 0) {
         for (int i = 0; i < n; ++i)
@@ -2348,6 +2356,7 @@ void LibraryTreeWidgets()
                 if (!r.node.empty() && !g.known_nodes.count(r.node)) {
                     g.scroll_to = r.row;
                     g.has_scroll_to = true;
+                    g.scroll_centre = false;
                     break;
                 }
         g.known_lib = lib->uid;
@@ -2582,6 +2591,7 @@ void SelectLibraryRow(const std::string& lib_uid, const LibraryRow& row)
     g.search[0] = '\0';  // 13-21: a search would prune the row picked here
     g.scroll_to = row;
     g.has_scroll_to = true;
+    g.scroll_centre = true;
     if (const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), lib_uid)) {
         ReadTreeFolds(*lib);  // 13-32: before the reveal opens its way (a later first read would fold it again)
         const std::string n = RowNode(*lib, row);

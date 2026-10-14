@@ -34,6 +34,7 @@
 #include "library_tree_ui.h"
 #include "library_user_ui.h"  // 13-50: DrawLocateButtons (a missing File Sound)
 #include "library_view_ui.h"
+#include "live_draft_phase.h"
 #include "picked_gestures.h"
 #include "reaper_api.h"
 #include "shortcuts.h"
@@ -94,9 +95,9 @@ struct PanelState {
     FileVersion           media_ver;
     double                media_checked_s = 0.0;
     uint64_t              media_len_gen = 0;
-    // A live sound edit: `draft` is shown instead of the store until it is written.
-    bool                  live = false;
-    std::string           draft_uid;
+    // A live sound edit: `draft` is shown instead of the store until it is written (13-53: until the
+    // write has run, and on the frame its drag is released: LiveDraftPhase).
+    LiveDraftPhase        phase;
     SoundData             snap, draft;
     // A live volume (fader / dB field) or Blend offset.
     std::string           vol_key;
@@ -262,16 +263,12 @@ void EditNode(const std::string& name, const std::string& lib_uid, const std::st
     Gesture(name, NodeEdit(lib_uid, uid, std::move(f)), toast);
 }
 
-const SoundData& Shown(const SoundNode& n) { return (P.live && P.draft_uid == n.uid) ? P.draft : n.sound; }
+const SoundData& Shown(const SoundNode& n) { return P.phase.Shows(n.uid) ? P.draft : n.sound; }
 
 // Starts (or continues) a live edit of the Sound: the draft restarts from the snapshot each call.
 SoundData& Live(const SoundNode& n)
 {
-    if (!P.live || P.draft_uid != n.uid) {
-        P.live = true;
-        P.draft_uid = n.uid;
-        P.snap = n.sound;
-    }
+    if (P.phase.Touch(n.uid)) P.snap = n.sound;
     P.draft = P.snap;
     ++P.draft_rev;
     return P.draft;
@@ -279,19 +276,25 @@ SoundData& Live(const SoundNode& n)
 
 void CommitLive(const std::string& name, const std::string& lib_uid, const std::string& uid, const std::string& toast = {})
 {
-    if (!P.live || P.draft_uid != uid) return;
+    const unsigned token = P.phase.Commit(uid);
+    if (!token) return;
     const SoundData d = P.draft;
-    P.live = false;
-    ++P.draft_rev;
-    EditNode(name, lib_uid, uid, [d](SoundNode& n) {
+    // 13-53: the draft stays drawn until this write has run (the rest of this frame drew the old store:
+    // what was dragged jumped back for a frame on release).
+    auto edit = NodeEdit(lib_uid, uid, [d](SoundNode& n) {
         n.sound = d;
         return true;
-    }, toast);
+    });
+    g_picks.Pick([name, edit, toast, token]() {
+        WriteNow(name, edit, toast);
+        P.phase.Written(token);
+        ++P.draft_rev;
+    });
 }
 
 void CancelLive()
 {
-    P.live = false;
+    P.phase.Cancel();
     ++P.draft_rev;
 }
 
@@ -2208,7 +2211,7 @@ void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n,
         static std::string measured_key;
         bool stale = false;
         for (size_t i = 0; i < d.frames.size() && !stale; ++i) stale = SyncsStale(d, static_cast<int>(i));
-        if (stale && !P.live && RequestPeaks(m.path, nullptr) == PeakState::Ready) {
+        if (stale && !P.phase.Live() && RequestPeaks(m.path, nullptr) == PeakState::Ready) {
             const std::string key = n.uid + "|" + std::to_string(GetProjectStateChangeCount(nullptr));
             if (key != measured_key) {
                 measured_key = key;
@@ -2996,7 +2999,7 @@ void PumpNormJob(const SoundLibrary& lib, const SoundNode& n)
         ShowLibraryToast("The variations changed while measuring: Normalize again", false);
         return;
     }
-    if (P.live && P.draft_uid == n.uid) return;  // a drag in progress: its commit would write over the result
+    if (P.phase.Shows(n.uid)) return;  // a drag in progress: its commit would write over the result
     using Clock = std::chrono::steady_clock;
     const Clock::time_point t0 = Clock::now();
     bool                    first = true;
@@ -3411,7 +3414,7 @@ void CutFadeControl(const SoundLibrary& lib, const SoundNode& n)
 std::vector<AuditionVoice> EditVoicesNow(const SoundLibrary& lib, const SoundNode& n)
 {
     const int  scc = GetProjectStateChangeCount(nullptr);
-    const bool live = P.live && P.draft_uid == n.uid;
+    const bool live = P.phase.Shows(n.uid);
     if (P.ev_uid == n.uid && P.ev_lib == lib.uid && P.ev_scc == scc && P.ev_live == live &&
         (!live || P.ev_draft_rev == P.draft_rev) && P.ev_sel == P.sel)
         return P.ev_voices;
@@ -3537,14 +3540,21 @@ void DrawEditOverlay()
         };
         // Header (13-7b, the mockup's .edhead): "▶ Play" / "■ Stop", the name (15 px semibold) and the
         // count (muted), then the tools at the top right: − + Fit, ?, Done (primary), ✕.
+        // 13-53 (Antho 2026-10-14): the header sits 10 px in from the box's sides and 8 px under its top
+        // (.edhead padding 8 10); every button of it is one height (bh, the Play button's) with its label
+        // centred, the tools ItemSpacing apart, the groups (Play | name | tools) 10 px apart.
+        const float bh = ui::LargeH();
+        const float hpad_x = ui::Dp(10.0f), hpad_y = ui::Dp(8.0f), group_gap = ui::Dp(10.0f);
+        ImGui::Indent(hpad_x);
+        ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, ImGui::GetCursorScreenPos().y + hpad_y));
         if (ui::ToggleButton(whole_playing ? "\xE2\x96\xA0 Stop##editplay" : "\xE2\x96\xB6 Play##editplay", whole_playing,
-                             ImVec2(0.0f, ui::LargeH())))
+                             ImVec2(0.0f, bh)))
             toggle_play();
         ui::ItemTipText(Shown(*n).mode == DetectMode::Takes
                             ? "Play the selected take as placed (Space) \xC2\xB7 Esc stops"
                             : "Play the variations as placed, on the file's time: fades, dB, cuts, excluded zones, mono "
                               "(Space) \xC2\xB7 a change is heard at once \xC2\xB7 Esc stops");
-        ImGui::SameLine(0.0f, ui::Dp(10.0f));
+        ImGui::SameLine(0.0f, group_gap);
         std::string count = VariationCountText(DetectedCount(n->uid, m, Shown(*n)), Shown(*n).frames);
         {  // 13-20 / 13-23: "· z excluded zones · divided by G"
             const SoundData& sd = Shown(*n);
@@ -3572,14 +3582,15 @@ void DrawEditOverlay()
         // The tools sit at the top right; the name and count take what they leave (shortened),
         // and go above them only when the panel is too narrow for both (Antho, 13-7b).
         const float sp = ImGui::GetStyle().ItemSpacing.x;
-        const float side_btn = ui::ControlH();
+        const float side_btn = bh;  // − + ✕: squares of the header's height
         const float tools_w = side_btn * 2.0f + ui::ButtonWidth("Fit") + ui::Dp(18.0f) + ui::ButtonWidth("Done") + side_btn +
-                              sp * 5.0f + ui::Dp(10.0f);
+                              sp * 5.0f;
         bool        tools_beside = true;
-        const float room = flow::StretchBeside(ImGui::GetContentRegionAvail().x, ui::Dp(80.0f), tools_w, sp, &tools_beside);
+        const float head_w = std::max(1.0f, ImGui::GetContentRegionAvail().x - hpad_x);  // the right inset too
+        const float room = flow::StretchBeside(head_w, ui::Dp(80.0f), tools_w, group_gap, &tools_beside);
         {
             const ImVec2 p = ImGui::GetCursorScreenPos();
-            const float  h = ui::LargeH();
+            const float  h = bh;
             ImDrawList*  dl = ImGui::GetWindowDrawList();
             ImFont*      tf = ui::FontPaneTitle();
             const float  name_w = std::min(ui::TextSizeIn(tf, n->name.c_str()).x + 1.0f, room * 0.6f);
@@ -3592,32 +3603,28 @@ void DrawEditOverlay()
                                 p.x + room, ui::kMuted, count);
             ImGui::Dummy(ImVec2(room, h));
         }
-        if (tools_beside) ImGui::SameLine(0.0f, sp);
-        else ImGui::SetCursorScreenPos(ImVec2(std::max(ImGui::GetCursorScreenPos().x, ui::LineRight() - tools_w),
+        if (tools_beside) ImGui::SameLine(0.0f, group_gap);
+        else ImGui::SetCursorScreenPos(ImVec2(std::max(ImGui::GetCursorScreenPos().x, ui::LineRight() - hpad_x - tools_w),
                                               ImGui::GetCursorScreenPos().y));
-        {
-            // The tools' 22 px buttons centred on the 26 px header line.
-            const float dy = std::floor((ui::LargeH() - ui::ControlH()) * 0.5f);
-            ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, ImGui::GetCursorScreenPos().y + (tools_beside ? dy : 0.0f)));
-        }
-        if (ui::SolidButton("\xE2\x88\x92##zoomout", ImVec2(side_btn, 0.0f)))
+        if (ui::SolidButton("\xE2\x88\x92##zoomout", ImVec2(side_btn, bh)))
             ZoomView(1.5, P.view_start + (P.view_len > 0.0 ? P.view_len : m.source_len) * 0.5, m.source_len);
         ui::ItemTipText("Zoom out (your REAPER 'View: Zoom out horizontal' keys)");
         SameLineIfFits(side_btn);
-        if (ui::SolidButton("+##zoomin", ImVec2(side_btn, 0.0f)))
+        if (ui::SolidButton("+##zoomin", ImVec2(side_btn, bh)))
             ZoomView(1.0 / 1.5, P.view_start + (P.view_len > 0.0 ? P.view_len : m.source_len) * 0.5, m.source_len);
         ui::ItemTipText("Zoom in (your REAPER 'View: Zoom in horizontal' keys)");
         SameLineIfFits(ui::ButtonWidth("Fit"));
-        if (ui::SolidButton("Fit")) {
+        if (ui::SolidButton("Fit", ImVec2(0.0f, bh))) {
             P.view_start = 0.0;
             P.view_len = 0.0;
         }
         SameLineIfFits(ui::Dp(18.0f));
-        ui::HelpMark("##edithelp", Shown(*n).mode == DetectMode::Takes ? kHelpTakes : kHelpPlain);
+        ui::HelpMark("##edithelp", Shown(*n).mode == DetectMode::Takes ? kHelpTakes : kHelpPlain, bh);
         SameLineIfFits(ui::ButtonWidth("Done"));
-        if (ui::PrimaryButton("Done")) close = true;
+        if (ui::PrimaryButton("Done", ImVec2(0.0f, bh))) close = true;
         SameLineIfFits(side_btn);
-        if (ui::IconOnlyButton("##editclose", "\xE2\x9C\x95", "Close (Esc)")) close = true;
+        if (ui::IconOnlyButton("##editclose", "\xE2\x9C\x95", "Close (Esc)", side_btn)) close = true;
+        ImGui::Unindent(hpad_x);
         {
             // The header's bottom line (.edhead border-bottom), across the whole box.
             const float  y = ImGui::GetCursorScreenPos().y + ui::Dp(1.0f);
@@ -4625,7 +4632,7 @@ void SettleLostFaders()
         const bool fresh = P.detf_seen >= frame - 1;
         P.detf_gid = 0;
         P.detf_key.clear();
-        if (!P.live || P.draft_uid != P.detf_uid || !P.detf_field) return;
+        if (!P.phase.Shows(P.detf_uid) || !P.detf_field) return;
         const SoundLibrary* l = fresh ? FindLibrary(GetSoundStore(nullptr), P.detf_lib) : nullptr;
         const SoundNode*    nd = l ? FindNode(*l, P.detf_uid) : nullptr;
         if (nd && P.draft.silence.*(P.detf_field) != nd->sound.silence.*(P.detf_field))
@@ -4641,15 +4648,18 @@ void NodePanelWidgets()
     SettleLostFaders();
     if (StoreReplaced()) return;
     // A live edit only lasts while its drag does (an unfinished one never shadows the store).
-    // (13-14: a fader typed into holds no mouse button either.)
-    if (P.live && !ImGui::IsMouseDown(ImGuiMouseButton_Left) && !ui::DragNumberActive() && !ui::FaderTyping()) CancelLive();
+    // (13-14: a fader typed into holds no mouse button either. 13-53: kept on the release frame, whose
+    // "done" commits it as the waveform draws.)
+    if (P.phase.EndsAtFrameStart(ImGui::IsMouseDown(ImGuiMouseButton_Left), ImGui::IsMouseReleased(ImGuiMouseButton_Left),
+                                 ui::DragNumberActive(), ui::FaderTyping()))
+        CancelLive();
     MergeTreeHooks();
     AuditionPlaying();  // frees an audition that has played to its end
     const SoundStore&   store = GetSoundStore(nullptr);
     const SoundLibrary* lib = FindLibrary(store, SelectedLibraryUid());
     const std::string   uid = lib ? LibraryRowNode() : std::string();
     const SoundNode*    n = lib && !uid.empty() ? FindNode(*lib, uid) : nullptr;
-    if (P.live && (!n || P.draft_uid != uid)) CancelLive();
+    if (P.phase.Live() && (!n || P.phase.Uid() != uid)) CancelLive();
     if (!n) {
         ImGui::Dummy(ImVec2(0.0f, ui::Dp(4.0f)));
         ImGui::Indent(ui::Dp(6.0f));

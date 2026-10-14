@@ -3766,6 +3766,7 @@ void DrawEditOverlay()
             "Click: listen (the part under the mouse) and put the edit cursor there\n"
             "Trim left / right of the cursor, trim to the zone: your REAPER keys for its item trims (40511, 40512,\n"
             "40508; KEYS: SOUND EDIT in Shortcuts), or right-click a variation / the zone\n"
+            "Trim to zone acts on the selected variations (click empty space first to select by zone), as REAPER does\n"
             "Zoom and scroll: the View actions in Shortcuts (your REAPER wheel and zoom keys unless you set your\n"
             "own), middle-drag, the scrollbar; Zoom vertically makes the lanes taller\n"
             "Drag the threshold line (Silence)\nSpace: play / stop, Esc: clear the zone, stop, then close";
@@ -3883,7 +3884,14 @@ void DrawEditOverlay()
             ui::EndPane();
         }
         // 13-61: a trim row's key (Shortcuts, KEYS: SOUND EDIT), on Edit's selection.
-        if (const int trim = std::exchange(P.trim_request, -1); trim >= 0 && m.ok && !StoreReplaced()) {
+        // Review: taken only when it can run (a key while a drag is live waits for its commit; the media not
+        // read, a toast says so), never dropped silently.
+        if (P.trim_request >= 0 && !StoreReplaced() && !P.phase.Live() && !m.ok) {
+            P.trim_request = -1;
+            ShowLibraryToast("Cannot trim: the sound file is not read", false);
+        }
+        if (P.trim_request >= 0 && m.ok && !StoreReplaced() && !P.phase.Live()) {
+            const int          trim = std::exchange(P.trim_request, -1);
             const EditTrimKind k = trim == kShortcutEditTrimLeft    ? EditTrimKind::LeftOfCursor
                                    : trim == kShortcutEditTrimRight ? EditTrimKind::RightOfCursor
                                                                     : EditTrimKind::ToZone;
@@ -3903,6 +3911,7 @@ void DrawEditOverlay()
     if (close) {
         P.edit_open = false;
         P.sel.clear();
+        P.trim_request = -1;  // review (13-61): a key held for a drag never fires on the next Edit
         CancelLive();
         CancelNormJob();  // 13-28: nothing written, no undo point
         g_wd = WaveDrag{};  // a drag cut by the close never fires on the next Edit

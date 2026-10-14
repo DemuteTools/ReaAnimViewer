@@ -211,6 +211,7 @@ struct EditRowView {
     std::string      link_id;             // the action named on line 2 (looked up): REAPER's own, or the picked one
     std::string      source;              // ...else this text (faint)
     std::string      reaper_tip, own_tip;
+    std::string      caps_tip;            // review (13-61): a tip over the caps (keys another window takes)
 };
 
 enum class RowClick { None, Record, Reset, Reaper, Own, Chain };
@@ -238,6 +239,8 @@ RowClick EditRow(int imgui_id, bool recording, const EditRowView& v)
     // giving way to them.
     const float lw = std::min(ImGui::CalcTextSize(v.label).x, ui::Dp(90.0f));
     const float cap_x = DrawCaps(dl, v.caps, a.x + ui::Dp(8.0f) + lw + ui::Dp(6.0f), CapRight(b.x), cy - th * 0.5f - ui::Dp(1.5f), row_hover);
+    if (!v.caps_tip.empty() && row_hover && ImGui::GetIO().MousePos.x >= cap_x && ImGui::GetIO().MousePos.x <= CapRight(b.x))
+        ui::ShowTip(v.caps_tip.c_str());
     dl->PushClipRect(a, ImVec2(std::max(a.x, cap_x - ui::Dp(6.0f)), b.y), true);
     dl->AddText(ImVec2(a.x + ui::Dp(8.0f), cy - th * 0.5f), ui::kText, v.label);
     if (v.context)
@@ -304,10 +307,18 @@ bool KeyRow(int id)
     else if (def.context == ShortcutContext::LibraryEdit) v.context = "Sound Edit";
     // The keys in force (REAPER's or a linked action's; a key another row takes, faint).
     const ShortcutKeymap& km = CurrentShortcutKeymap();
-    for (const KeyBinding& k : km.keys[static_cast<size_t>(id)])
-        v.caps.push_back(Cap{ShortcutBindingLabel(k), custom ? ui::kAccent : ui::kText});
+    // Review (13-61): a Sound Edit key the Edit window itself takes (Space, Esc, E, S, a view key) never trims: faint.
+    std::string edit_lost;
+    for (const KeyBinding& k : km.keys[static_cast<size_t>(id)]) {
+        const bool lost = def.context == ShortcutContext::LibraryEdit &&
+                          (ViewNavRowForKeyDown(k.vk, k.ctrl, k.shift, k.alt) >= 0 ||
+                           (!k.ctrl && !k.shift && !k.alt && (k.vk == 0x20 || k.vk == 0x1B || k.vk == 'E' || k.vk == 'S')));
+        if (lost) edit_lost += (edit_lost.empty() ? "" : ", ") + ShortcutBindingLabel(k);
+        v.caps.push_back(Cap{ShortcutBindingLabel(k), lost ? ui::kFaint : (custom ? ui::kAccent : ui::kText)});
+    }
     for (const KeyBinding& k : km.shadowed[static_cast<size_t>(id)]) v.caps.push_back(Cap{ShortcutBindingLabel(k), ui::kFaint});
     if (v.caps.empty()) v.caps.push_back((reaper || !link.empty()) ? Cap{"no shortcut in REAPER", ui::kFaint} : Cap{"None", ui::kText});  // 10-11: unbound
+    if (!edit_lost.empty()) v.caps_tip = edit_lost + ": used by the Edit window here (it never trims): pick another key";
     v.reaper = reaper;
     v.linked = !reaper && !link.empty();
     v.link_id = reaper ? ShortcutReaperActionId(id) : link;

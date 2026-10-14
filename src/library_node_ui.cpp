@@ -25,6 +25,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <optional>  // 13-62: PartSettings' own values
 #include <set>
 #include <utility>  // std::exchange (13-61)
 
@@ -2117,28 +2118,725 @@ ImU32 PartColor(int k) { return ui::kCurvePalette[static_cast<size_t>(std::max(0
 
 // ---- 13-62: per-part controls (stubs of Lot A; the next lots fill them, their signatures are fixed) -----
 
-// Split view: the lane header of part `part_k` (dot, name, M, S, gain, Normalize target, "..."), drawn in
-// [min, max]; `narrow` = name + M + S only (C6). Returns the width it used (Lot E2 draws it, E1 calls it).
+// ---- 13-62 (Lot E2): the per-part settings UI ---------------------------------------------------------
+// A divided Sound's part owns a setting by touching it (decision 2): its row then shows a bar in the part's
+// colour and a ↺ (back to the Sound's); an untouched row shows the Sound's value, muted, "= Sound". Every
+// change is one undo point (EditNode; a drag: Live + CommitLive). Mute / Solo / the selected part are view
+// state (P.part_*): never saved, no undo point. The part rows and the lane headers write to the Sound of the
+// Edit window's library (P.edit_lib): the Contract's `int lib` carries nothing.
+
+void LoadNormalizePrefs();  // 13-28 (below)
+void PartDot(ImU32 col);    // (below)
+static void PartNormalizeButton(int lib, const std::string& node_uid, const std::string& value);  // Lot C (below)
+
+// The Sound `uid` of the Edit window's library and that library (nullptr when gone).
+const SoundNode* EditSoundOf(const std::string& uid, const SoundLibrary** lib_out)
+{
+    const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), P.edit_lib);
+    const SoundNode*    n = lib ? FindNode(*lib, uid) : nullptr;
+    if (lib_out) *lib_out = lib;
+    return n && n->type == SoundNodeType::Sound ? n : nullptr;
+}
+
+std::string PartName(const SoundData& d, const std::string& value)
+{
+    return ValueName(GetSoundStore(nullptr), d.divide_group, value);
+}
+
+// C1: a part's Normalize mode / target: its own, else the Sound's (the user's Normalize settings, Level).
+NormMode PartNormModeOf(const SoundData& d, const std::string& value)
+{
+    const PartSettings* p = PartSettingsOf(d, value);
+    return p && p->norm_mode && *p->norm_mode >= 0 && *p->norm_mode < kNormModeCount ? static_cast<NormMode>(*p->norm_mode)
+                                                                                     : P.norm_mode;
+}
+
+double PartNormTargetOf(const SoundData& d, const std::string& value)
+{
+    const PartSettings* p = PartSettingsOf(d, value);
+    return p && p->norm_target ? *p->norm_target : P.norm_db;
+}
+
+// Two entries own the same settings (nullptr = none): a gesture that changed nothing writes nothing.
+bool SamePartSettings(const PartSettings* a, const PartSettings* b)
+{
+    if (!a || !b) return !a && !b;
+    return a->preroll_ms == b->preroll_ms && a->tail_ms == b->tail_ms && a->sync_mode == b->sync_mode &&
+           a->sync_offset_ms == b->sync_offset_ms && a->gain_db == b->gain_db && a->norm_mode == b->norm_mode &&
+           a->norm_target == b->norm_target && a->mono == b->mono && a->fade_in == b->fade_in && a->fade_out == b->fade_out;
+}
+
+// A setting the parts' sync points or margins are measured with: its change measures them again.
+bool PartFieldRemeasures(PartField f)
+{
+    return f == PartField::Preroll || f == PartField::Tail || f == PartField::SyncMode || f == PartField::SyncOffset;
+}
+
+// A number row (the mockup's FIELDS, part side). `unit` nullptr = the Normalize mode's.
+struct PartNum {
+    PartField   field;
+    const char* id;
+    const char* label;
+    const char* unit;
+    double      step, lo, hi;
+    const char* tip;
+};
+
+// The part's own value of a number row, in the row's unit (fades: ms); none while it follows the Sound.
+std::optional<double> OwnPartNumber(const PartSettings* p, PartField f)
+{
+    if (!p) return std::nullopt;
+    switch (f) {
+        case PartField::Preroll: return p->preroll_ms;
+        case PartField::Tail: return p->tail_ms;
+        case PartField::SyncOffset: return p->sync_offset_ms;
+        case PartField::Gain: return p->gain_db;
+        case PartField::NormTarget: return p->norm_target;
+        case PartField::FadeIn: return p->fade_in ? std::optional<double>(*p->fade_in * 1000.0) : std::nullopt;
+        case PartField::FadeOut: return p->fade_out ? std::optional<double>(*p->fade_out * 1000.0) : std::nullopt;
+        default: return std::nullopt;
+    }
+}
+
+// What a part follows on a row it does not own: the Sound's (gain: 0 dB; Normalize target: C1).
+double SoundPartNumber(const SoundData& d, PartField f)
+{
+    switch (f) {
+        case PartField::Preroll: return d.silence.preroll_ms;
+        case PartField::Tail: return d.silence.tail_ms;
+        case PartField::SyncOffset: return d.sync_offset_ms;
+        case PartField::NormTarget: return P.norm_db;
+        case PartField::FadeIn: return d.fade_in * 1000.0;
+        case PartField::FadeOut: return d.fade_out * 1000.0;
+        default: return 0.0;
+    }
+}
+
+PartSettings PartNumberPatch(PartField f, double v)
+{
+    PartSettings p;
+    switch (f) {
+        case PartField::Preroll: p.preroll_ms = v; break;
+        case PartField::Tail: p.tail_ms = v; break;
+        case PartField::SyncOffset: p.sync_offset_ms = v; break;
+        case PartField::Gain: p.gain_db = v; break;
+        case PartField::NormTarget: p.norm_target = v; break;
+        case PartField::FadeIn: p.fade_in = v / 1000.0; break;
+        case PartField::FadeOut: p.fade_out = v / 1000.0; break;
+        default: break;
+    }
+    return p;
+}
+
+// The row's bar (.prow .bar: 4 px in the part's colour, left of its label) when the part owns the row.
+void PartRowBar(bool own, ImU32 col)
+{
+    if (!own) return;
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const float  h = ImGui::GetFrameHeight();
+    ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(p.x - ui::Dp(7.0f), p.y + 1.0f), ImVec2(p.x - ui::Dp(3.0f), p.y + h - 1.0f),
+                                              col, ui::Dp(2.0f));
+}
+
+// "= Sound" (.inh): a faint pill after a value the part follows (left out when its line has no room).
+void InheritHint(const std::string& pname)
+{
+    const char* text = "= Sound";
+    const float w = ui::TextWidth(text) + ui::Dp(12.0f), h = ImGui::GetFrameHeight();
+    if (!ui::SameLineIfFits(w)) return;  // its line has no room: the muted value says it already
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const float  th = ImGui::GetTextLineHeight(), ph = th + ui::Dp(2.0f);
+    const ImVec2 a(p.x, p.y + std::floor((h - ph) * 0.5f)), b(p.x + w, a.y + ph);
+    dl->AddRect(a, b, ui::kStroke, ph * 0.5f);
+    dl->AddText(ImVec2(p.x + ui::Dp(6.0f), a.y + ui::Dp(1.0f)), ui::kFaint, text);
+    ImGui::Dummy(ImVec2(w, h));
+    ui::ItemTip("Follows the Sound: type here to give %s its own", pname.c_str());
+}
+
+// The row's ↺ at the right end of its line, the part owning the row. True when clicked.
+bool PartResetButton(const char* id, bool own)
+{
+    if (!own) return false;
+    const float side = ui::ControlH();
+    const bool  beside = ui::SameLineIfFits(side);
+    const float y = ImGui::GetCursorScreenPos().y;
+    const float x = beside ? std::max(ImGui::GetCursorScreenPos().x, ui::LineRight() - side) : ui::LineRight() - side;
+    ImGui::SetCursorScreenPos(ImVec2(x, y));
+    const bool clicked = ui::SolidButton((std::string("\xE2\x86\xBA##rst") + id).c_str(), ImVec2(side, side));
+    ui::ItemTipText("Same as the Sound again");
+    return clicked;
+}
+
+// ↺: one setting of the part back to the Sound's (one undo point; none when nothing changes).
+void ResetPartField(const SoundLibrary& lib, const SoundNode& n, const std::string& path, const std::string& value,
+                    PartField f, const std::string& pname)
+{
+    const bool remeasure = PartFieldRemeasures(f);
+    EditNode("Part setting", lib.uid, n.uid, [value, f, path, remeasure](SoundNode& x) {
+        const PartSettings* p = PartSettingsOf(x.sound, value);
+        const PartSettings  before = p ? *p : PartSettings{};
+        const bool          had = p != nullptr;
+        ResetPartSetting(x.sound, value, f);
+        if (SamePartSettings(had ? &before : nullptr, PartSettingsOf(x.sound, value))) return false;
+        if (remeasure) RefreshWith(x.sound, path);
+        return true;
+    }, pname + ": same as the Sound again");
+}
+
+// A picked setting (a segment, the Normalize mode): the part's own from now on (one undo point).
+void SetPartNow(const SoundLibrary& lib, const SoundNode& n, const std::string& path, const std::string& value,
+                const PartSettings& patch, bool remeasure, const std::string& toast)
+{
+    EditNode("Part setting", lib.uid, n.uid, [value, patch, path, remeasure](SoundNode& x) {
+        const PartSettings* p = PartSettingsOf(x.sound, value);
+        const PartSettings  before = p ? *p : PartSettings{};
+        const bool          had = p != nullptr;
+        SetPartSetting(x.sound, value, patch);
+        if (SamePartSettings(had ? &before : nullptr, PartSettingsOf(x.sound, value))) return false;
+        if (remeasure) RefreshWith(x.sound, path);
+        return true;
+    }, toast);
+}
+
+// A dragged / typed number of a part (`v` in the row's unit): live while dragged, one undo point at its end
+// (none when nothing changed). True when the drawing must stop (the store replaced).
+bool PartNumberEdit(ui::DragNumberEvent e, double v, const SoundLibrary& lib, const SoundNode& n, const std::string& path,
+                    const std::string& value, PartField f, const std::string& toast)
+{
+    if (e == ui::DragNumberEvent::Live || e == ui::DragNumberEvent::Commit) {
+        SoundData& dr = Live(n);
+        SetPartSetting(dr, value, PartNumberPatch(f, v));
+        if (PartFieldRemeasures(f)) RefreshWith(dr, path);
+        if (e == ui::DragNumberEvent::Commit) {
+            if (SamePartSettings(PartSettingsOf(dr, value), PartSettingsOf(n.sound, value))) CancelLive();
+            else CommitLive("Part setting", lib.uid, n.uid, toast);
+            return StoreReplaced();
+        }
+    } else if (e == ui::DragNumberEvent::Cancel) {
+        CancelLive();
+    }
+    return false;
+}
+
+// "Toe · Tail: 40 ms (its own)" (the mockup's toast).
+std::string PartNumberToast(const std::string& pname, const char* label, PartField f, double v, const char* unit)
+{
+    char buf[48];
+    std::snprintf(buf, sizeof(buf), f == PartField::Gain ? "%+g" : "%g", std::round(v * 10.0) / 10.0);
+    return pname + " \xC2\xB7 " + label + ": " + buf + " " + unit + " (its own)";
+}
+
+// One number row of a part (the mockup's .prow). True when the drawing must stop.
+bool PartNumberRow(const SoundLibrary& lib, const SoundNode& n, const std::string& path, const std::string& value,
+                   const std::string& pname, ImU32 col, const PartNum& f)
+{
+    const SoundData&            d = Shown(n);
+    const std::optional<double> own = OwnPartNumber(PartSettingsOf(d, value), f.field);
+    const char*                 unit = f.unit ? f.unit : NormModeUnit(PartNormModeOf(d, value));
+    const float                 fw = ui::Dp(52.0f), nw = ui::NumberFieldWidth(fw, unit);
+    ImGui::PushID(f.id);
+    PartRowBar(own.has_value(), col);
+    ui::LabelRow(f.label, nw, ui::Dp(64.0f), own ? ui::kText : ui::kMuted);
+    double                    v = own ? *own : SoundPartNumber(d, f.field);
+    const ui::DragNumberEvent e = ui::DragNumber("##num", &v, f.step, 1, unit, fw, /*trim=*/true, own ? 0 : ui::kMuted);
+    if (f.tip) ui::ItemTipText(f.tip);
+    v = std::clamp(v, f.lo, f.hi);
+    if (PartNumberEdit(e, v, lib, n, path, value, f.field, PartNumberToast(pname, f.label, f.field, v, unit))) {
+        ImGui::PopID();
+        return true;
+    }
+    if (!own) InheritHint(pname);
+    if (PartResetButton(f.id, own.has_value())) ResetPartField(lib, n, path, value, f.field, pname);
+    ImGui::PopID();
+    return false;
+}
+
+// A segment row of a part (Sync point, Mono). `*picked` = the option picked (-1 = none): a pick makes it the
+// part's own, even the value it follows (decision 2). True when its ↺ was clicked.
+bool PartSegmentRow(const char* id, const char* label, const char* const* labels, const char* const* tips, int count,
+                    int current, bool own, ImU32 col, int* picked)
+{
+    ImGui::PushID(id);
+    PartRowBar(own, col);
+    ui::LabelRow(label, ui::Dp(120.0f), ui::Dp(64.0f), own ? ui::kText : ui::kMuted);
+    int        sel = current;
+    const bool hit = ui::Segmented("##seg", labels, count, &sel);
+    const int  hov = ui::SegmentedHovered();
+    if (hov >= 0 && hov < count) ui::ShowTip(tips[hov]);
+    const bool reset = PartResetButton(id, own);
+    ImGui::PopID();
+    *picked = hit && sel >= 0 && sel < count && (sel != current || !own) ? sel : -1;
+    return reset;
+}
+
+// The rows of part `value` (the mockup's partRowsHTML, part side): Detection (Pre-roll and Tail in Silence
+// mode, where the Sound has its margins; Sync point, Offset), Level (Gain, Normalize, Target, Mono, then
+// its Normalize button), Fades (Fade in, Fade out). Threshold, Min gap, Divide by and At cuts stay the
+// Sound's.
+static void PartSettingsRows(const char* id, int lib, const std::string& node_uid, const std::string& value)
+{
+    (void)lib;  // the Edit window's library (see above)
+    const SoundLibrary* l = nullptr;
+    const SoundNode*    n = EditSoundOf(node_uid, &l);
+    if (!n || !l) return;
+    const SoundData& d = Shown(*n);
+    const int        k = PartIndex(d, value);
+    if (k < 0 || d.mode == DetectMode::Takes) return;
+    LoadNormalizePrefs();  // C1: the Normalize rows' "= Sound" are the Level section's settings
+    const SoundMedia&   m = MediaOf(*n);
+    const std::string   path = m.path, pname = PartName(d, value);
+    const ImU32         col = PartColor(k);
+    const PartSettings* ps = PartSettingsOf(d, value);
+    ImGui::PushID(id);
+    ImGui::PushID(value.c_str());
+    auto stop = [] {
+        ImGui::PopID();
+        ImGui::PopID();
+    };
+
+    ui::GroupCaption("Detection", ui::kMuted);
+    if (d.mode == DetectMode::Silence) {
+        static const PartNum kPre = {PartField::Preroll, "##pre", "Pre-roll", "ms", 0.5, 0.0, 1000.0, nullptr};
+        static const PartNum kTail = {PartField::Tail, "##tail", "Tail", "ms", 1.0, 0.0, 5000.0, nullptr};
+        if (PartNumberRow(*l, *n, path, value, pname, col, kPre) || PartNumberRow(*l, *n, path, value, pname, col, kTail))
+            return stop();
+    }
+    {
+        static const char* const kModes[3] = {"Attack", "Peak", "Start"};
+        static const char* const kTips[3] = {"Where the first transient crosses the threshold", "The loudest transient's peak",
+                                             "The slice start, pre-roll included"};
+        static const char* const kWords[3] = {"attack", "peak", "slice start"};
+        const bool own = ps && ps->sync_mode;
+        int        picked = -1;
+        if (PartSegmentRow("##sync", "Sync point", kModes, kTips, 3, static_cast<int>(PartSyncMode(d, value)), own, col, &picked))
+            ResetPartField(*l, *n, path, value, PartField::SyncMode, pname);
+        if (picked >= 0) {
+            PartSettings patch;
+            patch.sync_mode = static_cast<SyncMode>(picked);
+            SetPartNow(*l, *n, path, value, patch, true, pname + " \xC2\xB7 Sync point: " + kWords[picked] + " (its own)");
+        }
+    }
+    {
+        static const PartNum kOff = {PartField::SyncOffset, "##soff", "Offset", "ms", 0.1, -50.0, 50.0,
+                                     "The sync point's offset from the attack, the peak or the slice start (ms)"};
+        if (PartNumberRow(*l, *n, path, value, pname, col, kOff)) return stop();
+    }
+
+    ImGui::Dummy(ImVec2(1.0f, ui::Dp(4.0f)));
+    ui::GroupCaption("Level", ui::kMuted);
+    {
+        static const PartNum kGain = {PartField::Gain, "##gain", "Gain", "dB", 0.1, kMinDb, kMaxDb,
+                                      "Added to every variation of this part"};
+        if (PartNumberRow(*l, *n, path, value, pname, col, kGain)) return stop();
+    }
+    {
+        const bool     own = ps && ps->norm_mode;
+        const NormMode cur = PartNormModeOf(d, value);
+        PartRowBar(own, col);
+        const float w = ui::LabelRow("Normalize", ui::Dp(110.0f), ui::Dp(64.0f), own ? ui::kText : ui::kMuted);
+        const float side = own ? ui::ControlH() + ImGui::GetStyle().ItemSpacing.x : 0.0f;
+        if (ui::BeginComboStyled("##nmode", NormModeLabel(cur), std::max(ui::Dp(60.0f), w - side))) {
+            for (int j = 0; j < kNormModeCount; ++j) {
+                const NormMode md = static_cast<NormMode>(j);
+                if (ImGui::Selectable(NormModeLabel(md), md == cur) && (md != cur || !own)) {
+                    PartSettings patch;
+                    patch.norm_mode = j;
+                    SetPartNow(*l, *n, path, value, patch, false, pname + " \xC2\xB7 Normalize: " + NormModeLabel(md) + " (its own)");
+                }
+            }
+            ui::EndComboStyled();
+        }
+        ui::ItemTipText(own ? "Its own Normalize mode (REAPER's)" : "Normalize mode (REAPER's): the Sound's; pick one to give it its own");
+        if (PartResetButton("##nmode", own)) ResetPartField(*l, *n, path, value, PartField::NormMode, pname);
+    }
+    {
+        static const PartNum kTgt = {PartField::NormTarget, "##ntgt", "Target", nullptr, 0.1, kNormTargetMin, kNormTargetMax,
+                                     "Its Normalize target"};
+        if (PartNumberRow(*l, *n, path, value, pname, col, kTgt)) return stop();
+    }
+    {
+        static const char* const kLabels[4] = {"Off", "L", "R", "Sum"};
+        static const char* const kTips[4] = {"As the file: a stereo file stays stereo", "The left channel alone, on both sides",
+                                             "The right channel alone, on both sides", "Left + right mixed into one channel"};
+        static const char* const kWords[4] = {"off (as the file)", "left", "right", "sum L+R"};
+        const bool own = ps && ps->mono;
+        int        picked = -1;
+        if (PartSegmentRow("##mono", "Mono", kLabels, kTips, 4, static_cast<int>(PartMono(d, value)), own, col, &picked))
+            ResetPartField(*l, *n, path, value, PartField::Mono, pname);
+        if (picked >= 0) {
+            PartSettings patch;
+            patch.mono = static_cast<MonoMode>(picked);
+            SetPartNow(*l, *n, path, value, patch, false, pname + " \xC2\xB7 Mono: " + kWords[picked] + " (its own)");
+        }
+    }
+    PartNormalizeButton(0, node_uid, value);  // Lot C: "Normalize <Part>"
+    if (StoreReplaced()) return stop();
+
+    if (!FolderSourced(d)) {  // a folder pile is placed without fades
+        ImGui::Dummy(ImVec2(1.0f, ui::Dp(4.0f)));
+        ui::GroupCaption("Fades", ui::kMuted);
+        static const PartNum kIn = {PartField::FadeIn, "##fin", "Fade in", "ms", 0.1, 0.0, 10000.0,
+                                    "Its start, at the variation's edge or at a cut"};
+        static const PartNum kOut = {PartField::FadeOut, "##fout", "Fade out", "ms", 0.1, 0.0, 10000.0,
+                                     "Its end, at the variation's edge or at a cut"};
+        if (PartNumberRow(*l, *n, path, value, pname, col, kIn) || PartNumberRow(*l, *n, path, value, pname, col, kOut))
+            return stop();
+    }
+    stop();
+}
+
+// Mute / Solo of a part (decision 5): listening only, never saved, no undo point; Solo adds to the other
+// soloed parts (REAPER).
+void ToggleListen(bool solo, const SoundData& d, const std::string& value)
+{
+    std::set<std::string>& s = solo ? P.part_solo : P.part_mute;
+    const bool             on = s.insert(value).second;
+    if (!on) s.erase(value);
+    const std::string name = PartName(d, value);
+    std::string       toast;
+    if (solo && on) {
+        std::string all;
+        for (const std::string& v : d.divide_values)
+            if (P.part_solo.count(v)) all += (all.empty() ? "" : " + ") + PartName(d, v);
+        toast = "Solo " + name + ": Play hears " + all + " only (listening, not saved)";
+    } else if (solo) {
+        toast = name + " unsoloed";
+    } else {
+        toast = on ? name + " muted on Play (listening, not saved)" : name + " heard again";
+    }
+    ShowLibraryToast(toast, false);
+}
+
+// The M / S (Mute / Solo) button (.btn.mute / .btn.solo): raised; on = tinted red (mute) / amber (solo).
+bool ListenButton(const char* id, const char* label, bool solo, bool on, ImVec2 size)
+{
+    const float  w = size.x > 0.0f ? size.x : ui::ButtonWidth(label), h = size.y > 0.0f ? size.y : ui::ControlH();
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const bool   clicked = ImGui::InvisibleButton(id, ImVec2(w, h));
+    const bool   hov = ImGui::IsItemHovered();
+    ImU32        fill = hov ? ui::kHover : ui::kRaised, edge = ui::kStrokeStrong, ink = ui::kText;
+    if (on) {
+        fill = solo ? WithAlpha(ui::kWarn, 0x2E) : ui::kBadSoft;
+        edge = solo ? WithAlpha(ui::kWarn, 0x99) : WithAlpha(ui::kBad, 0x99);
+        ink = solo ? ui::kWarn : ui::kBadInk;
+    }
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), fill, ui::Dp(ui::kRadiusSm));
+    dl->AddRect(p, ImVec2(p.x + w, p.y + h), edge, ui::Dp(ui::kRadiusSm));
+    const ImVec2 ts = ImGui::CalcTextSize(label);
+    ui::EllipsisText(dl, ImVec2(p.x + std::max(ui::Dp(2.0f), std::floor((w - ts.x) * 0.5f)), p.y + std::floor((h - ts.y) * 0.5f)),
+                     p.x + w - ui::Dp(2.0f), ink, label);
+    ui::ItemTipText(solo ? "Solo the selected part (your REAPER key for 40281). Listening only, not saved."
+                         : "Mute the selected part (your REAPER key for 40280). Listening only, not saved.");
+    return clicked;
+}
+
+// A "Settings of" chip (.pchip): the part's dot, its name, S / M when soloed / muted, its own-setting count
+// (amber). `on` = selected, tinted in its colour. PartChipWidth = its natural width.
+struct PartChipLook {
+    bool dot = false, solo = false, mute = false;
+    int  count = 0;
+};
+
+float PartChipExtras(const PartChipLook& k, float* right)
+{
+    const float gap = ui::Dp(6.0f), r = ui::Dp(4.0f);
+    const float bw = ui::TextSizeIn(ui::FontMonoMicro(), "S").x + ui::Dp(6.0f);
+    const float cw = k.count > 0 ? ui::TextSizeIn(ui::FontMonoTiny(), std::to_string(k.count).c_str()).x + ui::Dp(10.0f) : 0.0f;
+    const float rx = (k.solo ? gap + bw : 0.0f) + (k.mute ? gap + bw : 0.0f) + (k.count > 0 ? gap + cw : 0.0f);
+    if (right) *right = rx;
+    return (k.dot ? r * 2.0f + gap : 0.0f) + rx;
+}
+
+float PartChipWidth(const std::string& name, const PartChipLook& k)
+{
+    return ui::Dp(17.0f) + PartChipExtras(k, nullptr) + ImGui::CalcTextSize(name.c_str()).x;
+}
+
+bool PartChip(const char* id, const std::string& name, ImU32 col, const PartChipLook& k, bool on, const char* tip)
+{
+    float       right_x = 0.0f;
+    const float extras = PartChipExtras(k, &right_x);
+    const float h = ui::FieldH(), padl = ui::Dp(8.0f), padr = ui::Dp(9.0f), gap = ui::Dp(6.0f), r = ui::Dp(4.0f);
+    const float w = std::max(padl + extras + padr + ui::Dp(12.0f),
+                             std::min(PartChipWidth(name, k), std::max(1.0f, ImGui::GetContentRegionAvail().x)));
+    const ImVec2 p = ImGui::GetCursorScreenPos();
+    const bool   clicked = ImGui::InvisibleButton(id, ImVec2(w, h));
+    const bool   hov = ImGui::IsItemHovered();
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const ImVec2 b(p.x + w, p.y + h);
+    dl->AddRectFilled(p, b, on ? WithAlpha(col, 0x2E) : hov ? ui::kHover : ui::kRaised, h * 0.5f);
+    dl->AddRect(p, b, on ? col : ui::kStrokeStrong, h * 0.5f);
+    float       x = p.x + padl;
+    const float cy = p.y + h * 0.5f;
+    if (k.dot) {
+        dl->AddCircleFilled(ImVec2(x + r, cy), r, col);
+        x += r * 2.0f + gap;
+    }
+    const float name_max = b.x - padr - right_x;
+    ui::EllipsisText(dl, ImVec2(x, std::floor(cy - ImGui::GetTextLineHeight() * 0.5f)), name_max, ui::kText, name);
+    x = std::min(x + ImGui::CalcTextSize(name.c_str()).x, name_max);
+    ImFont* badge = ui::FontMonoMicro();
+    auto    badge_at = [&](const char* t, ImU32 bg, ImU32 ink) {
+        x += gap;
+        const float bw = ui::TextSizeIn(badge, t).x + ui::Dp(6.0f), bh = badge->FontSize + ui::Dp(4.0f);
+        dl->AddRectFilled(ImVec2(x, cy - bh * 0.5f), ImVec2(x + bw, cy + bh * 0.5f), bg, ui::Dp(3.0f));
+        ui::AddTextIn(dl, badge, ImVec2(x + ui::Dp(3.0f), std::floor(cy - badge->FontSize * 0.5f)), ink, t);
+        x += bw;
+    };
+    if (k.solo) badge_at("S", WithAlpha(ui::kWarn, 0x40), ui::kWarn);
+    if (k.mute) badge_at("M", ui::kBadSoft, ui::kBadInk);
+    if (k.count > 0) {
+        ImFont*           cf = ui::FontMonoTiny();
+        const std::string cs = std::to_string(k.count);
+        const float       cw = ui::TextSizeIn(cf, cs.c_str()).x + ui::Dp(10.0f), ch = cf->FontSize + ui::Dp(4.0f);
+        x += gap;
+        dl->AddRectFilled(ImVec2(x, cy - ch * 0.5f), ImVec2(x + cw, cy + ch * 0.5f), ui::kWarn, ch * 0.5f);
+        ui::AddTextIn(dl, cf, ImVec2(x + ui::Dp(5.0f), std::floor(cy - cf->FontSize * 0.5f)), IM_COL32(0x10, 0x13, 0x1A, 0xFF),
+                      cs.c_str());
+    }
+    if (tip) ui::ItemTipText(tip);
+    return clicked;
+}
+
+// Edit's side strip, a divided Sound (decision 1): "Settings of [Sound] [Heel] [Toe]", then the selected
+// part's header (dot, name, "n own settings" / "same as the Sound", Mute, Solo, "↺ All"). Returns the part
+// selected ("" = the Sound: its own controls follow, as before 13-62).
+std::string PartPicker(const SoundLibrary& lib, const SoundNode& n, const std::string& path)
+{
+    const SoundData& d = Shown(n);
+    if (!IsDivided(d) || d.mode == DetectMode::Takes) return std::string();
+    if (!P.part_sel.empty() && PartIndex(d, P.part_sel) < 0) P.part_sel.clear();  // not one of its values now
+    ui::GroupCaption("Settings of", ui::kMuted);
+    if (PartChip("##pchip_sound", "Sound", ui::kAccent, PartChipLook{}, P.part_sel.empty(),
+                 "The whole Sound: every part follows it unless it has its own"))
+        P.part_sel.clear();
+    for (size_t k = 0; k < d.divide_values.size(); ++k) {
+        const std::string& v = d.divide_values[k];
+        const std::string  name = PartName(d, v);
+        PartChipLook       look;
+        look.dot = true;
+        look.solo = P.part_solo.count(v) > 0;
+        look.mute = P.part_mute.count(v) > 0;
+        look.count = OwnSettingCount(d, v);
+        ImGui::PushID(static_cast<int>(k));
+        ui::SameLineIfFits(PartChipWidth(name, look));
+        const std::string tip = name + ": its settings (same as clicking its lane in Split)";
+        if (PartChip("##pchip", name, PartColor(static_cast<int>(k)), look, P.part_sel == v, tip.c_str())) P.part_sel = v;
+        ImGui::PopID();
+    }
+    if (P.part_sel.empty()) return std::string();
+
+    // The selected part's header (.parthead): tinted in its colour, its items wrapping at any width.
+    const std::string value = P.part_sel;
+    const ImU32       col = PartColor(PartIndex(d, value));
+    const std::string name = PartName(d, value);
+    const int         own = OwnSettingCount(d, value);
+    ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));
+    ImDrawList*  dl = ImGui::GetWindowDrawList();
+    const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const float  right = ui::LineRight(), padx = ui::Dp(8.0f), pady = ui::Dp(6.0f);
+    const float  inner = right - padx;
+    dl->ChannelsSplit(2);
+    dl->ChannelsSetCurrent(1);
+    ImGui::SetCursorScreenPos(ImVec2(p0.x + padx, p0.y + pady));
+    ImGui::BeginGroup();
+    PartDot(col);
+    {
+        ui::FontScope fs(ui::FontSemibold());
+        FitText(name, ui::kText, std::max(1.0f, std::min(ImGui::CalcTextSize(name.c_str()).x + 1.0f, inner - ImGui::GetCursorScreenPos().x)));
+    }
+    const std::string sub = own > 0 ? std::to_string(own) + (own == 1 ? " own setting" : " own settings") : "same as the Sound";
+    ui::SameLineIfFits(std::min(ui::Dp(60.0f), ImGui::CalcTextSize(sub.c_str()).x), inner);
+    FitText(sub, ui::kMuted, std::max(1.0f, std::min(ImGui::CalcTextSize(sub.c_str()).x + 1.0f, inner - ImGui::GetCursorScreenPos().x)));
+    const float mw = ui::ButtonWidth("Mute"), sw = ui::ButtonWidth("Solo"), aw = ui::ButtonWidth("\xE2\x86\xBA All");
+    ui::SameLineIfFits(mw, inner);
+    const bool mute = ListenButton("##pmute", "Mute", false, P.part_mute.count(value) > 0, ImVec2(mw, 0.0f));
+    ui::SameLineIfFits(sw, inner);
+    const bool solo = ListenButton("##psolo", "Solo", true, P.part_solo.count(value) > 0, ImVec2(sw, 0.0f));
+    bool       all = false;
+    if (own > 0) {
+        ui::SameLineIfFits(aw, inner);
+        all = ui::SolidButton("\xE2\x86\xBA All##pall");
+        ui::ItemTipText("Every setting same as the Sound again (one undo point)");
+    }
+    ImGui::EndGroup();
+    const float bottom = ImGui::GetItemRectMax().y + pady;
+    dl->ChannelsSetCurrent(0);
+    dl->AddRectFilled(p0, ImVec2(right, bottom), WithAlpha(col, 0x1F), ui::Dp(ui::kRadiusMd));
+    dl->AddRect(p0, ImVec2(right, bottom), WithAlpha(col, 0x73), ui::Dp(ui::kRadiusMd));
+    dl->ChannelsMerge();
+    ImGui::SetCursorScreenPos(ImVec2(p0.x, bottom));
+    ImGui::Dummy(ImVec2(std::max(1.0f, right - p0.x), ui::Dp(4.0f)));
+    if (mute) ToggleListen(false, d, value);
+    if (solo) ToggleListen(true, d, value);
+    if (all)
+        EditNode("Part settings", lib.uid, n.uid, [value, path](SoundNode& x) {
+            if (OwnSettingCount(x.sound, value) == 0) return false;
+            ResetPartAll(x.sound, value);
+            RefreshWith(x.sound, path);
+            return true;
+        }, name + ": every setting same as the Sound again");
+    return value;
+}
+
+// The lane header's gain fader being dragged (its Sound uid + "|" + part) and its live value.
+std::string g_lane_gain_key;
+double      g_lane_gain_live = 0.0;
+bool        g_lane_gain_moved = false;
+
+// Split view: the lane header of part `part_k` (the mockup's laneHeadHTML), drawn in [min, max]: its colour
+// bar, the dot, the name, M, S; then (wide) the gain fader + its dB field and the Normalize target ("= -1
+// dBFS" while it follows the Sound) with "⋯ n" (every setting of the part in a popup: PartSettingsRows).
+// `narrow` (C6) = name + M + S only. A click elsewhere on it selects the part (like a REAPER track). Rows that
+// do not fit the lane's height are left out. The cursor is left where it was. Returns the width it used.
+// Its items are submitted here: an item of the caller over [min, max] submitted before would take the mouse.
 [[maybe_unused]] static float PartLaneHeader(const char* id, const SoundData& d, int part_k, ImVec2 min, ImVec2 max,
                                              bool narrow)
 {
-    (void)id;
-    (void)d;
-    (void)part_k;
-    (void)min;
-    (void)max;
-    (void)narrow;
-    return 0.0f;
-}
-
-// The selected part's setting rows (Detection / Level / Fades), each own or "= Sound" with its revert
-// (Lot E2).
-[[maybe_unused]] static void PartSettingsRows(const char* id, int lib, const std::string& node_uid, const std::string& value)
-{
-    (void)id;
-    (void)lib;
-    (void)node_uid;
-    (void)value;
+    if (!IsDivided(d) || part_k < 0 || part_k >= PartCount(d) || max.x - min.x < 4.0f || max.y - min.y < 4.0f)
+        return 0.0f;
+    const SoundLibrary* lib = nullptr;
+    const SoundNode*    n = EditSoundOf(P.edit_uid, &lib);
+    if (!n || !lib) return 0.0f;
+    const std::string value = d.divide_values[static_cast<size_t>(part_k)];
+    const std::string name = PartName(d, value);
+    const ImU32       col = PartColor(part_k);
+    const bool        sel = P.part_sel == value;
+    const ImVec2      cursor0 = ImGui::GetCursorScreenPos();
+    ImDrawList*       dl = ImGui::GetWindowDrawList();
+    ImGui::PushID(id);
+    ImGui::PushID(part_k);
+    // .lhead: surface (selected: #26324c), its colour bar on the left (3 px at .55; selected 4 px), its right edge.
+    dl->AddRectFilled(min, max, sel ? IM_COL32(0x26, 0x32, 0x4C, 0xFF) : ui::kSurface);
+    dl->AddRectFilled(min, ImVec2(min.x + ui::Dp(sel ? 4.0f : 3.0f), max.y), sel ? col : WithAlpha(col, 0x8C));
+    dl->AddLine(ImVec2(max.x - 0.5f, min.y), ImVec2(max.x - 0.5f, max.y), ui::kStrokeStrong);
+    const float padl = ui::Dp(9.0f), padr = ui::Dp(6.0f), padt = ui::Dp(5.0f), gap = ui::Dp(4.0f);
+    const float x0 = min.x + padl, x1 = std::max(x0 + 1.0f, max.x - padr), bottom = max.y - ui::Dp(3.0f);
+    const float bw = ui::Dp(22.0f), bh = ui::Dp(20.0f), ms_w = bw * 2.0f + ui::Dp(3.0f), th = ImGui::GetTextLineHeight();
+    float       y = min.y + padt;
+    bool        mute = false, solo = false;
+    auto        name_at = [&](float ny, float right) {
+        const float r = ui::Dp(4.0f);
+        dl->AddCircleFilled(ImVec2(x0 + r, ny + th * 0.5f), r, col);
+        ui::FontScope fs(ui::FontSemibold());
+        ui::EllipsisTextTip(dl, ImVec2(x0 + r * 2.0f + ui::Dp(5.0f), ny), right, ui::kText, name);
+    };
+    auto ms_at = [&](float mx, float my) {
+        ImGui::SetCursorScreenPos(ImVec2(mx, my));
+        mute = ListenButton("##lmute", "M", false, P.part_mute.count(value) > 0, ImVec2(bw, bh));
+        ImGui::SetCursorScreenPos(ImVec2(mx + bw + ui::Dp(3.0f), my));
+        solo = ListenButton("##lsolo", "S", true, P.part_solo.count(value) > 0, ImVec2(bw, bh));
+    };
+    if (narrow || x1 - x0 < ms_w + ui::Dp(30.0f)) {
+        // Name over M S when both fit the lane's height, else M S alone (the colour bar names the lane).
+        if (y + th + gap + bh <= bottom) {
+            name_at(y, x1);
+            y += th + gap;
+        }
+        ms_at(x0, y);
+    } else {
+        name_at(y + std::floor((bh - th) * 0.5f), x1 - ms_w - gap);
+        ms_at(x1 - ms_w, y);
+        y += bh + gap;
+        const float row_h = ui::ControlH();
+        // Gain: the fader (-24..+12 dB, live, one undo point on release) and its dB field.
+        if (y + row_h <= bottom) {
+            const float fw = ui::Dp(46.0f), fader_w = x1 - x0 - fw - gap;
+            const bool  own = PartSettingsOf(d, value) && PartSettingsOf(d, value)->gain_db;
+            const double stored = PartGainDb(d, value);
+            if (fader_w >= ui::Dp(24.0f)) {
+                const std::string key = n->uid + "|" + value;
+                const bool        live = g_lane_gain_key == key;
+                float             fv = static_cast<float>(live ? g_lane_gain_live : stored);
+                ImGui::SetCursorScreenPos(ImVec2(x0, y));
+                const bool moved = ui::Fader("##lgain", &fv, -24.0f, 12.0f, fader_w);
+                const bool active = ImGui::IsItemActive(), released = ImGui::IsItemDeactivated();
+                const bool cancelled = released && ui::FaderCancelled();
+                ui::ItemTip("%s gain (dB): added to every variation of this part", name.c_str());
+                if (cancelled && live) {
+                    g_lane_gain_key.clear();
+                    CancelLive();
+                } else if (active || (released && live)) {
+                    if (!live) {
+                        g_lane_gain_live = stored;
+                        g_lane_gain_moved = false;
+                    }
+                    if (moved) {
+                        g_lane_gain_live = std::clamp(std::round(static_cast<double>(fv) * 2.0) / 2.0, -24.0, 12.0);
+                        g_lane_gain_moved = true;
+                    }
+                    g_lane_gain_key = key;
+                    SoundData& dr = Live(*n);
+                    if (g_lane_gain_moved) {  // a click alone gives the part nothing of its own
+                        PartSettings patch;
+                        patch.gain_db = g_lane_gain_live;
+                        SetPartSetting(dr, value, patch);
+                    }
+                    if (released) {
+                        g_lane_gain_key.clear();
+                        if (SamePartSettings(PartSettingsOf(dr, value), PartSettingsOf(n->sound, value))) CancelLive();
+                        else CommitLive("Part setting", lib->uid, n->uid,
+                                        PartNumberToast(name, "Gain", PartField::Gain, g_lane_gain_live, "dB"));
+                    }
+                }
+            }
+            double v = g_lane_gain_key == n->uid + "|" + value ? g_lane_gain_live : stored;
+            ImGui::SetCursorScreenPos(ImVec2(x1 - fw, y));
+            const ui::DragNumberEvent e = ui::DragNumber("##lgaindb", &v, 0.1, 1, "", fw, /*trim=*/true, own ? 0 : ui::kMuted);
+            ui::ItemTip("%s gain (dB)%s", name.c_str(), own ? "" : ": = Sound (0 dB) until you set it");
+            v = std::clamp(v, kMinDb, kMaxDb);
+            PartNumberEdit(e, v, *lib, *n, std::string(), value, PartField::Gain, PartNumberToast(name, "Gain", PartField::Gain, v, "dB"));
+            y += row_h + gap;
+        }
+        // The Normalize target ("= -1 dBFS" while it follows the Sound) and "⋯ n": every setting in a popup.
+        if (y + row_h <= bottom) {
+            LoadNormalizePrefs();
+            const PartSettings* ps = PartSettingsOf(d, value);
+            const bool          nown = ps && (ps->norm_mode || ps->norm_target);
+            const int           cnt = OwnSettingCount(d, value);
+            char                tgt[48];
+            std::snprintf(tgt, sizeof(tgt), "%s%g %s", nown ? "" : "= ", std::round(PartNormTargetOf(d, value) * 10.0) / 10.0,
+                          NormModeUnit(PartNormModeOf(d, value)));
+            const std::string more = "\xE2\x8B\xAF" + (cnt > 0 ? " " + std::to_string(cnt) : std::string());
+            const float       mw = std::min(ui::ButtonWidth(more.c_str()), x1 - x0);
+            ui::EllipsisTextTip(dl, ImVec2(x0, y + std::floor((row_h - th) * 0.5f)), x1 - mw - gap, ui::kMuted, tgt,
+                                nown ? "Normalize target (its own)" : "Normalize target (= Sound)");
+            ImGui::SetCursorScreenPos(ImVec2(x1 - mw, y));
+            if (ui::SolidButton((more + "##lmore").c_str(), ImVec2(mw, 0.0f))) {
+                P.part_sel = value;
+                ImGui::OpenPopup("##lanepop");
+            }
+            ui::ItemTip("All of %s's settings", name.c_str());
+        }
+    }
+    // A click on the header elsewhere selects the part (its items above take the mouse first).
+    ImGui::SetCursorScreenPos(min);
+    if (ImGui::InvisibleButton("##lhead", ImVec2(max.x - min.x, max.y - min.y))) P.part_sel = value;
+    if (ImGui::IsItemHovered()) ui::ItemTip("%s: click to select (like a REAPER track)", name.c_str());
+    if (mute) ToggleListen(false, d, value);
+    if (solo) ToggleListen(true, d, value);
+    // "⋯": the part's settings (the mockup's cpopHTML), the rows of the side strip.
+    ImGui::SetNextWindowSizeConstraints(ImVec2(ui::Dp(290.0f), 0.0f), ImVec2(ui::Dp(290.0f), std::numeric_limits<float>::max()));
+    if (ui::BeginPanelPopup("##lanepop")) {
+        const float side = ui::ControlH();
+        PartDot(col);
+        FitText(name + " \xC2\xB7 its settings", ui::kText,
+                std::max(1.0f, ImGui::GetContentRegionAvail().x - side - ImGui::GetStyle().ItemSpacing.x));
+        ImGui::SameLine();
+        ImGui::SetCursorScreenPos(ImVec2(std::max(ImGui::GetCursorScreenPos().x, ui::LineRight() - side), ImGui::GetCursorScreenPos().y));
+        if (ui::IconOnlyButton("##lpclose", "\xE2\x9C\x95", "Close", side)) ImGui::CloseCurrentPopup();
+        ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));
+        ImGui::Indent(ui::Dp(8.0f));  // room for the own bars left of the labels
+        PartSettingsRows("lanepop", 0, n->uid, value);
+        ImGui::Unindent(ui::Dp(8.0f));
+        ui::EndPanelPopup();
+    }
+    ImGui::PopID();
+    ImGui::PopID();
+    ImGui::SetCursorScreenPos(cursor0);
+    return max.x - min.x;
 }
 
 // The Normalize button of a part's Level rows: "" = the Sound's "Normalize per part" button, else
@@ -4062,9 +4760,24 @@ void DrawEditOverlay()
             side.pad = 10.0f;
             side.radius = 0.0f;
             ui::BeginPane("##editside", ImVec2(side_w, wave_h), side);
-            ui::GroupCaption("Detection \xC2\xB7 this sound only", ui::kMuted);
-            if (m.ok) DetectionControls(*lib, *n, m, ui::Dp(70.0f), /*edit=*/true);
-            if (!StoreReplaced()) {
+            // 13-62 (decision 1): a divided Sound's "Settings of [Sound] [Heel] [Toe]"; a part picked shows its
+            // rows instead of the Sound's controls.
+            const std::string part = m.ok ? PartPicker(*lib, *n, m.path) : std::string();
+            if (!part.empty()) {
+                LoadNormalizePrefs();
+                PumpNormJob(*lib, *n);  // a Normalize started from the Sound's Level keeps measuring
+                if (!StoreReplaced()) PartSettingsRows("sidepart", 0, n->uid, part);
+                if (!StoreReplaced()) {
+                    ImGui::Dummy(ImVec2(1.0f, ui::Dp(4.0f)));
+                    RichText({{"Threshold, Min gap, Divide by and At cuts: for the whole Sound (pick ", ui::kFaint},
+                              {"Sound", ui::kText},
+                              {").", ui::kFaint}});
+                    ui::SubText("Every change is saved at once (Ctrl+Z to undo), with the sound in the library (.ravlib).");
+                }
+            }
+            if (part.empty()) ui::GroupCaption("Detection \xC2\xB7 this sound only", ui::kMuted);
+            if (part.empty() && m.ok) DetectionControls(*lib, *n, m, ui::Dp(70.0f), /*edit=*/true);
+            if (part.empty() && !StoreReplaced()) {
                 ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));
                 const float  y = ImGui::GetCursorScreenPos().y;
                 const ImVec2 wp = ImGui::GetWindowPos();

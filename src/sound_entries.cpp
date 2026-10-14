@@ -699,16 +699,49 @@ std::vector<PartSpan> MarginsPerRaw(const SoundData& data, int variation, const 
     // there is shared like any gap); a part silent all along keeps its spans as they are (a wall).
     for (size_t i = 0; i < n; ++i) keep[i] = loud[i] || sounding.count(raw[i].value_uid) == 0;
     std::vector<PartSpan> out = raw;
-    // Starts first: the pre-roll wins the shared gap (never into the previous part's sound).
+    // 13-58 (Antho 2026-10-14, "the pre-roll must butt on the previous zone, without changing its size"):
+    // the zones never overlap and never shrink each other, the margins only fill the free space. Each part
+    // owns its side of the cut: its pre-roll and tail inside its own span come first (`own`). Only then
+    // may a margin cross the cut, into what the neighbour leaves free: ends first, each tail up to the
+    // next sounding part's own start (its sound minus the pre-roll its span holds) or a wall's edge; then
+    // each pre-roll back to the previous part's end as just set (its sound plus its tail), so it gets what
+    // is left of the gap, possibly nothing. Before 13-58 the pre-roll was served first and could reach
+    // back over the cut into the previous part's tail.
+    std::vector<double> own(n, 0.0);
+    for (size_t i = 0; i < n; ++i)
+        if (loud[i]) own[i] = std::min(std::max(a[i] - pre, raw[i].start), a[i]);
+    for (size_t i = n; i-- > 0;) {
+        if (!loud[i]) continue;
+        double upper = raw[i].start + raw[i].length;
+        bool   inner = false;  // stopped at another part's sound or a wall (else: a zone or the frame's end)
+        for (size_t j = i + 1; j < n && Touches(raw[j - 1], raw[j]); ++j) {
+            inner = true;
+            if (loud[j]) {
+                upper = own[j];
+                break;
+            }
+            if (keep[j]) {
+                upper = raw[j].start;
+                break;
+            }
+            upper = raw[j].start + raw[j].length;
+            inner = false;
+        }
+        // The variation's own end (no cut, no zone after): kept as the frame has it.
+        const double end = !inner && std::fabs(upper - fe) <= kTimeEps ? fe : std::max(std::min(b[i] + tail, upper), b[i]);
+        out[i].length = end - out[i].start;
+    }
+    // Then starts: the pre-roll, back to the previous sounding part's end (or a wall's edge).
     for (size_t i = 0; i < n; ++i) {
         if (!loud[i]) continue;
-        double lower = raw[i].start;
-        bool   inner = false;  // stopped at another part's sound or a wall (else: a zone or the frame's start)
+        const double end = out[i].start + out[i].length;
+        double       lower = raw[i].start;
+        bool         inner = false;
         for (size_t j = i; j > 0 && Touches(raw[j - 1], raw[j]); --j) {
             const size_t p = j - 1;
             inner = true;
             if (loud[p]) {
-                lower = b[p];
+                lower = out[p].start + out[p].length;
                 break;
             }
             if (keep[p]) {
@@ -721,27 +754,6 @@ std::vector<PartSpan> MarginsPerRaw(const SoundData& data, int variation, const 
         // The variation's own start (no cut, no zone before): kept as the frame has it.
         if (!inner && std::fabs(lower - fs) <= kTimeEps) out[i].start = fs;
         else out[i].start = std::min(std::max(a[i] - pre, lower), a[i]);
-    }
-    // Then ends: the tail, up to the next sounding part's start (or a wall's edge).
-    for (size_t i = n; i-- > 0;) {
-        if (!loud[i]) continue;
-        double upper = raw[i].start + raw[i].length;
-        bool   inner = false;
-        for (size_t j = i + 1; j < n && Touches(raw[j - 1], raw[j]); ++j) {
-            inner = true;
-            if (loud[j]) {
-                upper = out[j].start;
-                break;
-            }
-            if (keep[j]) {
-                upper = raw[j].start;
-                break;
-            }
-            upper = raw[j].start + raw[j].length;
-            inner = false;
-        }
-        // The variation's own end (no cut, no zone after): kept as the frame has it.
-        const double end = !inner && std::fabs(upper - fe) <= kTimeEps ? fe : std::max(std::min(b[i] + tail, upper), b[i]);
         out[i].length = end - out[i].start;
     }
     for (size_t i = 0; i < n; ++i)
@@ -803,7 +815,9 @@ std::string PartTrimKey(const SoundData& data, int variation, const FileVersion&
             mix(std::to_string(us(sp.start)) + ":" + std::to_string(us(sp.start + sp.length)) + ":" + sp.value_uid + ";");
     char buf[160];
     // The settings in millionths (dB, ms): stable through the record's shortest round-trip numbers.
-    std::snprintf(buf, sizeof(buf), "%lld,%lld,%lld,%016llx|%lld,%llu", us(data.silence.threshold_db), us(data.silence.preroll_ms),
+    // 13-58: led by the margin rule's version ("r2": tails served before pre-rolls); trims measured with
+    // the 13-54 rule (no version) are stale and measured again.
+    std::snprintf(buf, sizeof(buf), "r2,%lld,%lld,%lld,%016llx|%lld,%llu", us(data.silence.threshold_db), us(data.silence.preroll_ms),
                   us(data.silence.tail_ms), static_cast<unsigned long long>(h), file.time, file.size);
     return buf;
 }

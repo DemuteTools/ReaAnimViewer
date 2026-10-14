@@ -887,13 +887,28 @@ void TestPartMargins()
         CHECK(m.size() == 2 && Near(m[0].start, 0.9) && Near(m[0].start + m[0].length, 1.061) && Near(m[1].start, 1.145) &&
               Near(m[1].start + m[1].length, 1.5));
     }
-    // Adjacent parts share the silent gap: a 50 ms pre-roll reaches back over the cut (1.145) to 1.100,
-    // Back's tail stops there; parts never overlap.
+    // 13-58 (Antho 2026-10-14): a pre-roll butts on the previous part's zone and never shrinks it. Tail
+    // 300 ms: Back keeps its whole side of the cut (1.0 .. 1.145) whatever Front's pre-roll (5, 50 or
+    // 300 ms): Front's pre-roll is clamped at the cut; parts never overlap.
     m = Margins(d, pk, 50.0, 300.0);
-    CHECK(m.size() == 2 && Near(m[0].start, 1.0) && Near(m[0].start + m[0].length, 1.1) && Near(m[1].start, 1.1));
-    // A pre-roll longer than the gap stops at Back's sound (never into it).
+    CHECK(m.size() == 2 && Near(m[0].start, 1.0) && Near(m[0].start + m[0].length, 1.145) && Near(m[1].start, 1.145));
     m = Margins(d, pk, 300.0, 300.0);
+    CHECK(m.size() == 2 && Near(m[0].start, 1.0) && Near(m[0].start + m[0].length, 1.145) && Near(m[1].start, 1.145) &&
+          Near(m[1].start + m[1].length, 1.4));
+    // Tail 50 ms (Back's zone ends at 1.111): a 50 ms pre-roll crosses the cut into the free silence
+    // (1.100 wanted), butting on Back's zone at 1.111, Back unchanged.
+    m = Margins(d, pk, 50.0, 50.0);
+    CHECK(m.size() == 2 && Near(m[0].start + m[0].length, 1.111) && Near(m[1].start, 1.111));
+    // Tail 0: the same pre-roll gets its whole 50 ms (1.100); a longer one stops at Back's sound (never
+    // into it).
+    m = Margins(d, pk, 50.0, 0.0);
+    CHECK(m.size() == 2 && Near(m[0].start + m[0].length, 1.061) && Near(m[1].start, 1.1));
+    m = Margins(d, pk, 300.0, 0.0);
     CHECK(m.size() == 2 && Near(m[0].start + m[0].length, 1.061) && Near(m[1].start, 1.061));
+    // The other way round: Front's pre-roll inside its own side of the cut comes first too; Back's tail
+    // may cross the cut only into what Front leaves free (pre-roll 0: up to Front's sound, 1.150).
+    m = Margins(d, pk, 0.0, 300.0);
+    CHECK(m.size() == 2 && Near(m[0].start + m[0].length, 1.15) && Near(m[1].start, 1.15));
     // Stored with the frame: Front's sync on its attack, inside its piece; the placement plays the piece.
     SoundData s = d;
     s.silence.preroll_ms = 50.0;
@@ -933,6 +948,12 @@ void TestPartMargins()
     st = s;
     st.frames[0].part_trim_key.clear();
     CHECK(PartTrimsStale(st, 0) && SyncsStale(st, 0));
+    // 13-58: a key from the 13-54 rule (same settings, no "r2," version): stale, measured again.
+    st = s;
+    CHECK(st.frames[0].part_trim_key.compare(0, 3, "r2,") == 0);
+    st.frames[0].part_trim_key.erase(0, 3);
+    CHECK(PartTrimsStale(st, 0) && SyncsStale(st, 0));
+    CHECK(MeasureSyncs(st, 0, &pk) && !PartTrimsStale(st, 0) && st.frames[0].part_trim_key == s.frames[0].part_trim_key);
     // A cut written elsewhere (an older RAV keeps ptrim as read) changes the spans: stale.
     st = s;
     st.frames[0].cuts = {1.146};
@@ -954,22 +975,21 @@ void TestPartMargins()
               !PartTrimsStale(sv, 0, nullptr) && !PartTrimsStale(sv, 0, &pk.file));
         CHECK(MeasureSyncs(sv, 0, &pv) && !PartTrimsStale(sv, 0, &same));
     }
-    // Review: a hand sync belongs to the part owning its spot by the cut (pre-roll 50 ms: Front plays from
-    // 1.100, the cut is at 1.145). Back's hand sync at 1.12 (in Front's pre-roll) stays Back's, clamped to
+    // Review: a hand sync belongs to the part owning its spot by the cut (pre-roll 50 ms, tail 0: Back
+    // plays to 1.061, Front from 1.100, the cut is at 1.145). Back's hand sync at 1.12 (in Front's pre-roll) stays Back's, clamped to
     // the end of Back's piece; Front keeps its own attack.
     {
-        SoundData hs = s;
-        hs.silence.tail_ms = 300.0;
+        SoundData hs = s;  // tail 0 (13-58: with a long tail Back's zone would reach the cut, Front's pre-roll 0)
         hs.frames[0].hand_syncs = {1.12};
         RefreshParts(hs, &pk);
-        CHECK(hs.frames[0].syncs.size() == 2 && Near(hs.frames[0].syncs[0], 1.1, 1e-5) && hs.frames[0].syncs[0] < 1.1 &&
+        CHECK(hs.frames[0].syncs.size() == 2 && Near(hs.frames[0].syncs[0], 1.061, 1e-5) && hs.frames[0].syncs[0] < 1.061 &&
               Near(hs.frames[0].syncs[1], 1.148) && !SyncsStale(hs, 0));
         // Front's sync dragged into its pre-roll (Back's spot by the cut): kept inside Front's own spans,
         // Back's hand sync not taken away.
         CHECK(MoveSync(hs, 0, 1, 1.11) && hs.frames[0].hand_syncs.size() == 2 && Near(hs.frames[0].syncs[1], 1.145, 1e-5) &&
               hs.frames[0].syncs[1] > 1.145);
         RefreshParts(hs, &pk);
-        CHECK(Near(hs.frames[0].syncs[0], 1.1, 1e-5) && Near(hs.frames[0].syncs[1], 1.145, 1e-5));
+        CHECK(Near(hs.frames[0].syncs[0], 1.061, 1e-5) && Near(hs.frames[0].syncs[1], 1.145, 1e-5));
         // Back's sync moved: only Back's hand sync is replaced.
         CHECK(MoveSync(hs, 0, 0, 1.05) && hs.frames[0].hand_syncs.size() == 2 && Near(hs.frames[0].syncs[0], 1.05));
         RefreshParts(hs, &pk);

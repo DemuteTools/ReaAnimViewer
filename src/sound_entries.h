@@ -130,9 +130,10 @@ bool PartMarginsApply(const SoundData& data);
 // span's own sound (the bins at or above the threshold), at the INNER edges only (13-54 review): a cut
 // or an excluded zone. The variation's own start and end stay where they are (a detected frame already
 // carries the pre-roll and tail there; a hand-stretched one stays as stretched). Between two touching
-// parts the silent gap between their sounds is shared as SplitOnSilence shares it between variations:
-// the later part's pre-roll comes first (it may reach back across the cut into that silence, never into
-// the earlier part's sound), the earlier part's tail fills what is left up to it. Next to an excluded
+// parts (13-58, Antho 2026-10-14): zones never overlap and never shrink each other, margins only fill
+// free space. The earlier part keeps its full zone (its sound plus its tail, which may run on across the
+// cut up to the later part's sound); the later part's pre-roll butts on it, getting what is left of the
+// gap (possibly nothing). Next to an excluded
 // zone a span never grows past its own edge. A span with no loud bin plays nothing when its part sounds
 // elsewhere in the variation (dropped, its silence shared like a gap), else it is kept as it is (a part
 // quiet all along still plays, a wall its neighbours stop at). Parts never overlap.
@@ -141,7 +142,8 @@ std::vector<PartSpan> PartPieces(const SoundData& data, int variation);
 // for "" every non-excluded stretch of the frame (raw, adjacent spans merged: the whole variation minus
 // its exclusions, value_uid "" -- a whole variation keeps its own margins).
 std::vector<PartSpan> PlacedSpans(const SoundData& data, int variation, const std::string& part_value);
-// 13-54 review: the key part trims are measured with: the Silence threshold, pre-roll and tail, the
+// 13-54 review: the key part trims are measured with (13-58: led by the margin rule's version, so trims
+// measured by an older rule are stale): the Silence threshold, pre-roll and tail, the
 // variation's raw spans (bounds to the microsecond and owners, hashed) and `file`, the version of the
 // file the peaks were read from (date + size; zero = unknown). Stored as SoundFrame::part_trim_key.
 std::string PartTrimKey(const SoundData& data, int variation, const FileVersion& file);

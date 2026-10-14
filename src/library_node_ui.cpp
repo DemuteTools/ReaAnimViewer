@@ -3988,6 +3988,8 @@ void DrawEditOverlay()
             if (IsDivided(n->sound) && PartIndex(n->sound, P.part_sel) >= 0) {
                 std::set<std::string>& on = listen == 1 ? P.part_solo : P.part_mute;
                 if (!on.erase(P.part_sel)) on.insert(P.part_sel);
+            } else if (IsDivided(n->sound)) {  // review: the mockup's toast (an undivided Sound: nothing)
+                ShowLibraryToast("Select a part first: click its lane (Split) or its chip (Combined)", false);
             }
         }
         if (keys && !StoreReplaced()) {

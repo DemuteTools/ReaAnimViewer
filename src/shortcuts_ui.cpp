@@ -339,8 +339,8 @@ bool KeyRow(int id)
     // 13-62: the Solo / Mute rows act on REAPER's tracks outside, and say what they do over their keys.
     const bool listen = id == kShortcutEditSolo || id == kShortcutEditMute;
     if (listen && v.caps_tip.empty())
-        v.caps_tip = std::string(id == kShortcutEditSolo ? "Solo" : "Mute") + " the selected part (your REAPER key for " +
-                     def.reaper_cmd + ") while the Sound Edit window has the focus. Listening only, not saved. No part "
+        v.caps_tip = std::string(id == kShortcutEditSolo ? "Solo" : "Mute") + " the selected part (" +
+                     (reaper ? std::string("your REAPER key for ") + def.reaper_cmd : std::string("your key")) + ") while the Sound Edit window has the focus. Listening only, not saved. No part "
                      "selected: nothing";
     if (def.reaper_cmd) {  // 13-61: one of REAPER's own actions (the default)
         v.reaper_tip = std::string("Follow REAPER: your keys for \"") + (def.reaper_name ? def.reaper_name : def.reaper_cmd) +

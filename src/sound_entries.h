@@ -374,11 +374,27 @@ struct NormRegion {
     std::string           part;
     std::vector<PartSpan> spans;
     std::string           path;
+    // 13-62: what it is measured and normalized to (the caller's settings; a part's own: PartNormRegions).
+    NormMode mode = NormMode::Peak;
+    double   target = -1.0;
 };
 // The regions of a Normalize: each on frame of `selection` (NormalizeSelection's: {} = every frame, {-1} =
 // none) once (Per variation, Whole sound), or once per part with something left (Per part; on an undivided
 // Sound, as Per variation). A frame with nothing left gives none.
 std::vector<NormRegion> NormalizeRegions(const SoundData& data, NormScope scope, const std::vector<int>& selection);
+// 13-62 (C1): a part's Normalize mode and target: its own, else the Sound-level ones given (the user's
+// LEVEL settings). value "" = the given ones.
+NormMode PartNormMode(const SoundData& data, const std::string& value, NormMode sound_mode);
+double   PartNormTarget(const SoundData& data, const std::string& value, double sound_target);
+// 13-62: the regions of a Normalize per part: `value` "" = every part (each to its own target), else that
+// part only; each region carries its part's mode and target. {} when parts are not available (undivided,
+// Takes mode).
+std::vector<NormRegion> PartNormRegions(const SoundData& data, const std::string& value, const std::vector<int>& selection,
+                                        NormMode sound_mode, double sound_target);
+// 13-62: after a Per part ApplyNormalize, each changed frame keeps the gain its other parts played at: a
+// part with something in that frame and no part_db of its own gets the frame's dB from before (else the
+// frame's dB moving to its smallest part dB would move them too); frame.db is the smallest part dB again.
+void KeepOtherPartGains(const SoundData& before, std::vector<SoundFrame>& frames);
 // REAPER's CalculateNormalization answer (a linear volume factor) in dB; NaN when it means silence (<= 0,
 // not finite, or more than +60 dB).
 double NormAdjustmentDb(double factor);

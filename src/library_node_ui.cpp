@@ -71,9 +71,10 @@ struct NormJob {
     bool                             active = false;
     std::string                      lib, uid, label;
     NormScope                        scope = NormScope::Variation;  // the effective one
-    NormMode                         mode = NormMode::Peak;
-    double                           target = -1.0;
-    std::vector<NormRegion>          regions;
+    std::vector<NormRegion>          regions;   // 13-62: each with its own mode and target
+    std::vector<double>              peak_adj;  // 13-62: per region, a Peak region's adjustment (cached peaks)
+    std::vector<char>                by_peaks;  // 13-62: per region, 1 = Peak (not measured by the job)
+    int                              pump_frame = -1;  // 13-62: pumped once per frame (two buttons may)
     std::vector<std::vector<double>> span_adj;  // per region, per span (dB, NaN = silent)
     size_t                           region = 0, span = 0, done_spans = 0, total_spans = 0;
     std::map<std::string, PCM_source*> sources;
@@ -2135,11 +2136,10 @@ ImU32 PartColor(int k) { return ui::kCurvePalette[static_cast<size_t>(std::max(0
 
 // The Normalize button of a part's Level rows: "" = the Sound's "Normalize per part" button, else
 // "Normalize <Part>" (Lot C fills it, Lot E2 calls it).
+void PartNormalizeNow(int lib, const std::string& node_uid, const std::string& value);  // 13-62 C (LEVEL, below)
 [[maybe_unused]] static void PartNormalizeButton(int lib, const std::string& node_uid, const std::string& value)
 {
-    (void)lib;
-    (void)node_uid;
-    (void)value;
+    PartNormalizeNow(lib, node_uid, value);
 }
 
 // What Edit draws of a Sound's parts.
@@ -3192,9 +3192,10 @@ void CancelNormJob()
 }
 
 // Writes the measured adjustments: one undo point and the toast; "Nothing to normalize" (no undo point)
-// when no gain changes.
-void FinishNormalize(const SoundLibrary& lib, const SoundNode& n, NormScope scope, NormMode mode, double target,
-                     const std::string& label, const std::vector<NormRegion>& regions, const std::vector<double>& adj)
+// when no gain changes. 13-62: the toast names the target when every region shares it, else "each to its
+// own target"; Per part keeps the gain of the parts not normalized (KeepOtherPartGains).
+void FinishNormalize(const SoundLibrary& lib, const SoundNode& n, NormScope scope, const std::string& label,
+                     const std::vector<NormRegion>& regions, const std::vector<double>& adj)
 {
     std::vector<SoundFrame> frames = n.sound.frames;
     const NormalizeOutcome  o = ApplyNormalize(frames, scope, regions, adj);
@@ -3203,39 +3204,58 @@ void FinishNormalize(const SoundLibrary& lib, const SoundNode& n, NormScope scop
                          false);  // no empty undo point
         return;
     }
+    if (scope == NormScope::Part) KeepOtherPartGains(n.sound, frames);
+    bool same = true;
+    for (const NormRegion& r : regions)
+        same = same && r.mode == regions.front().mode && std::fabs(r.target - regions.front().target) < 0.05;
+    std::string toast;
+    if (same) {
+        toast = NormalizeToastText(label, o.done, o.skipped, scope, regions.front().mode, regions.front().target);
+    } else {
+        toast = (label.empty() ? std::string() : label + ": ") + std::to_string(o.done) + (o.done == 1 ? " part" : " parts") +
+                " normalized, each to its own target";
+        if (o.skipped > 0) toast += ", " + std::to_string(o.skipped) + " silent, left as is";
+    }
     EditNode("Normalize", lib.uid, n.uid, [frames](SoundNode& x) {
         x.sound.frames = frames;
         x.sound.edited = true;
         return true;
-    }, NormalizeToastText(label, o.done, o.skipped, scope, mode, target));
+    }, toast);
 }
 
-// The Normalize gesture (the button or a preset chip) with the current settings: Peak is measured at
-// once on the cached peaks; the other modes start the time-sliced job (REAPER's CalculateNormalization).
-void StartNormalize(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, const std::string& label)
+// Measures and writes `regions` (each with its mode and target, 13-62): Peak regions at once on the cached
+// peaks, the others in the time-sliced job (REAPER's CalculateNormalization).
+void StartNormalizeRegions(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, NormScope scope,
+                           std::vector<NormRegion> regions, const std::string& label)
 {
     CancelNormJob();
-    const SoundData&        d = n.sound;
-    const NormScope         scope = EffectiveNormScope(P.norm_scope, NormPartsAvailable(d));
-    std::vector<NormRegion> regions = NormalizeRegions(d, scope, NormalizeSelection(d.frames, P.sel));
+    const SoundData& d = n.sound;
     if (regions.empty()) {
         ShowLibraryToast("Nothing to normalize", false);
         return;
     }
-    for (NormRegion& r : regions) r.path = VariationPath(m, d, r.frame);
-    if (P.norm_mode == NormMode::Peak) {
-        std::vector<double>             adj;
-        std::map<std::string, PeakData> peaks;
-        for (const NormRegion& r : regions) {
-            auto it = peaks.find(r.path);
-            if (it == peaks.end()) {
-                PeakData pk;
-                if (RequestPeaks(r.path, &pk) != PeakState::Ready) pk = PeakData{};
-                it = peaks.emplace(r.path, std::move(pk)).first;
-            }
-            adj.push_back(RegionPeakAdjDb(it->second, r, P.norm_db));
+    std::vector<double>             peak_adj(regions.size(), std::numeric_limits<double>::quiet_NaN());
+    std::vector<char>               by_peaks(regions.size(), 0);
+    std::map<std::string, PeakData> peaks;
+    bool                            measure = false;
+    for (size_t i = 0; i < regions.size(); ++i) {
+        NormRegion& r = regions[i];
+        r.path = VariationPath(m, d, r.frame);
+        if (r.mode != NormMode::Peak) {
+            measure = true;
+            continue;
         }
-        FinishNormalize(lib, n, scope, P.norm_mode, P.norm_db, label, regions, adj);
+        auto it = peaks.find(r.path);
+        if (it == peaks.end()) {
+            PeakData pk;
+            if (RequestPeaks(r.path, &pk) != PeakState::Ready) pk = PeakData{};
+            it = peaks.emplace(r.path, std::move(pk)).first;
+        }
+        peak_adj[i] = RegionPeakAdjDb(it->second, r, r.target);
+        by_peaks[i] = 1;
+    }
+    if (!measure) {
+        FinishNormalize(lib, n, scope, label, regions, peak_adj);
         return;
     }
     NormJob& j = P.norm_job;
@@ -3244,22 +3264,36 @@ void StartNormalize(const SoundLibrary& lib, const SoundNode& n, const SoundMedi
     j.uid = n.uid;
     j.label = label;
     j.scope = scope;
-    j.mode = P.norm_mode;
-    j.target = P.norm_db;
     j.regions = std::move(regions);
+    j.peak_adj = std::move(peak_adj);
+    j.by_peaks = std::move(by_peaks);
     j.data0 = d;
     j.span_adj.resize(j.regions.size());
     for (size_t i = 0; i < j.regions.size(); ++i) {
         j.span_adj[i].assign(j.regions[i].spans.size(), std::numeric_limits<double>::quiet_NaN());
-        j.total_spans += j.regions[i].spans.size();
+        if (!j.by_peaks[i]) j.total_spans += j.regions[i].spans.size();
     }
+}
+
+// The Normalize gesture (the button or a preset chip) with the current settings, on every region.
+void StartNormalize(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, const std::string& label)
+{
+    const SoundData&        d = n.sound;
+    const NormScope         scope = EffectiveNormScope(P.norm_scope, NormPartsAvailable(d));
+    std::vector<NormRegion> regions = NormalizeRegions(d, scope, NormalizeSelection(d.frames, P.sel));
+    for (NormRegion& r : regions) {
+        r.mode = P.norm_mode;
+        r.target = P.norm_db;
+    }
+    StartNormalizeRegions(lib, n, m, scope, std::move(regions), label);
 }
 
 // One frame of the job: spans measured until ~8 ms are spent (at least one), then the write once all are.
 void PumpNormJob(const SoundLibrary& lib, const SoundNode& n)
 {
     NormJob& j = P.norm_job;
-    if (!j.active) return;
+    if (!j.active || j.pump_frame == ImGui::GetFrameCount()) return;
+    j.pump_frame = ImGui::GetFrameCount();
     if (j.lib != lib.uid || j.uid != n.uid) {
         CancelNormJob();
         return;
@@ -3274,20 +3308,20 @@ void PumpNormJob(const SoundLibrary& lib, const SoundNode& n)
     const Clock::time_point t0 = Clock::now();
     bool                    first = true;
     while (j.region < j.regions.size()) {
-        if (!first && Clock::now() - t0 > std::chrono::milliseconds(8)) return;
-        first = false;
         const NormRegion& r = j.regions[j.region];
-        if (j.span >= r.spans.size()) {
+        if (j.by_peaks[j.region] || j.span >= r.spans.size()) {
             ++j.region;
             j.span = 0;
             continue;
         }
+        if (!first && Clock::now() - t0 > std::chrono::milliseconds(8)) return;
+        first = false;
         auto it = j.sources.find(r.path);
         if (it == j.sources.end()) it = j.sources.emplace(r.path, r.path.empty() ? nullptr : PCM_Source_CreateFromFile(r.path.c_str())).first;
         const PartSpan& sp = r.spans[j.span];
         double          adj = std::numeric_limits<double>::quiet_NaN();
         if (it->second && sp.length > 0.0)
-            adj = NormAdjustmentDb(CalculateNormalization(it->second, NormModeReaperIndex(j.mode), j.target, sp.start,
+            adj = NormAdjustmentDb(CalculateNormalization(it->second, NormModeReaperIndex(r.mode), r.target, sp.start,
                                                           sp.start + sp.length));
         j.span_adj[j.region][j.span] = adj;
         ++j.span;
@@ -3295,17 +3329,84 @@ void PumpNormJob(const SoundLibrary& lib, const SoundNode& n)
     }
     std::vector<double> adj(j.regions.size());
     for (size_t i = 0; i < j.regions.size(); ++i) {
+        if (j.by_peaks[i]) {
+            adj[i] = j.peak_adj[i];
+            continue;
+        }
         std::vector<double> dur;
         for (const PartSpan& sp : j.regions[i].spans) dur.push_back(sp.length);
-        adj[i] = CombineSpanAdjustments(j.mode, j.target, j.span_adj[i], dur);
+        adj[i] = CombineSpanAdjustments(j.regions[i].mode, j.regions[i].target, j.span_adj[i], dur);
     }
     const NormScope               scope = j.scope;
-    const NormMode                mode = j.mode;
-    const double                  target = j.target;
     const std::string             label = j.label;
     const std::vector<NormRegion> regions = j.regions;
     CancelNormJob();  // the sources deleted
-    FinishNormalize(lib, n, scope, mode, target, label, regions, adj);
+    FinishNormalize(lib, n, scope, label, regions, adj);
+}
+
+// Peak reads RAV's cached peaks: true when the Sound's file(s) are read (the waveform first).
+bool NormPeaksReady(const SoundData& d, const SoundMedia& m)
+{
+    if (d.mode != DetectMode::Takes) return RequestPeaks(m.path, nullptr) == PeakState::Ready;
+    bool ready = true;
+    for (const std::string& p : m.take_paths) ready = ready && RequestPeaks(p, nullptr) == PeakState::Ready;
+    return ready;
+}
+
+// 13-62 (C1): the per-part Normalize button. value "" = the Sound's Per part button (every part, each to
+// its own mode and target, else the LEVEL settings); a value = "Normalize <Part>", that part only. The
+// selected variations when any, else every on one; one undo point and the toast. `lib` = the library's
+// index in the store (else Edit's library).
+void PartNormalizeNow(int lib_index, const std::string& node_uid, const std::string& value)
+{
+    const SoundStore&   store = GetSoundStore(nullptr);
+    const SoundLibrary* lib = lib_index >= 0 && static_cast<size_t>(lib_index) < store.libraries.size()
+                                  ? &store.libraries[static_cast<size_t>(lib_index)]
+                                  : nullptr;
+    if (!lib || !FindNode(*lib, node_uid)) lib = FindLibrary(store, P.edit_lib);
+    const SoundNode* n = lib ? FindNode(*lib, node_uid) : nullptr;
+    if (!n || n->type != SoundNodeType::Sound || !NormPartsAvailable(n->sound)) return;
+    LoadNormalizePrefs();
+    PumpNormJob(*lib, *n);  // once per frame (LevelSection may have)
+    if (StoreReplaced()) return;
+    const SoundData&  d = n->sound;
+    const SoundMedia& m = MediaOf(*n);
+    const bool        busy = P.norm_job.active;
+    bool              need_peaks = false;
+    for (const std::string& v : d.divide_values)
+        if ((value.empty() || v == value) && PartNormMode(d, v, P.norm_mode) == NormMode::Peak) need_peaks = true;
+    need_peaks = need_peaks && m.ok && !NormPeaksReady(d, m);
+    const std::string name = value.empty() ? std::string() : ValueName(store, d.divide_group, value);
+    std::string       label = value.empty() ? std::string("Normalize per part") : "Normalize " + name;
+    if (busy) {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "Measuring %d / %d\xE2\x80\xA6", static_cast<int>(P.norm_job.done_spans),
+                      static_cast<int>(P.norm_job.total_spans));
+        label = buf;
+    } else if (!P.sel.empty()) {
+        label += " (" + std::to_string(P.sel.size()) + " selected)";
+    }
+    label += "##pnorm" + value;
+    ImGui::BeginDisabled(busy || need_peaks || !m.ok);
+    const bool go = ui::SolidButton(label.c_str());
+    ImGui::EndDisabled();
+    if (need_peaks) {
+        ui::ItemTipText("Waiting for the waveform");
+    } else if (!busy) {
+        std::string tip;
+        if (value.empty()) {
+            tip = "Each part to its own target: its own Normalize mode and target, else these (one undo point)";
+        } else {
+            const NormMode md = PartNormMode(d, value, P.norm_mode);
+            tip = "Normalize " + name + " only, to " + FormatNormTarget(PartNormTarget(d, value, P.norm_db)) + " " + NormModeUnit(md) + " (" +
+                  NormModeLabel(md) + ") (one undo point)";
+        }
+        ui::ItemTipText(tip.c_str());
+    }
+    if (go && !StoreReplaced())
+        StartNormalizeRegions(*lib, *n, m, NormScope::Part,
+                              PartNormRegions(d, value, NormalizeSelection(d.frames, P.sel), P.norm_mode, P.norm_db),
+                              value.empty() ? std::string("Normalize per part") : name);
 }
 
 // Saves the presets; a failure says so (the list in memory is kept).
@@ -3387,13 +3488,7 @@ void LevelSection(const SoundLibrary& lib, const SoundNode& n, const SoundMedia&
     const SoundData& d = n.sound;
     const bool       divided = NormPartsAvailable(d);
     const bool       busy = P.norm_job.active;
-    // Peak reads RAV's cached peaks: the waveform first.
-    bool peaks_ready = true;
-    if (d.mode == DetectMode::Takes) {
-        for (const std::string& p : m.take_paths) peaks_ready = peaks_ready && RequestPeaks(p, nullptr) == PeakState::Ready;
-    } else {
-        peaks_ready = RequestPeaks(m.path, nullptr) == PeakState::Ready;
-    }
+    const bool       peaks_ready = NormPeaksReady(d, m);  // Peak reads RAV's cached peaks: the waveform first
 
     // Preset chips (.pchips): lit = the settings they hold; click = apply; right-click = its menu.
     int apply = -1, update = -1, remove = -1;
@@ -3524,13 +3619,23 @@ void LevelSection(const SoundLibrary& lib, const SoundNode& n, const SoundMedia&
         label += " (" + std::to_string(P.sel.size()) + " selected)";
     }
     const bool need_peaks = P.norm_mode == NormMode::Peak && !peaks_ready;
-    ImGui::BeginDisabled(busy || need_peaks);
-    if (ui::SolidButton(label.c_str())) {
-        StartNormalize(lib, n, m, std::string());
+    if (divided && EffectiveNormScope(P.norm_scope, divided) == NormScope::Part) {
+        // 13-62 (C1): Per part = each part to its own mode and target (else these).
+        int li = -1;
+        for (size_t k = 0; k < GetSoundStore(nullptr).libraries.size(); ++k)
+            if (GetSoundStore(nullptr).libraries[k].uid == lib.uid) li = static_cast<int>(k);
+        const std::string uid = n.uid;  // n may go with a write below
+        PartNormalizeButton(li, uid, std::string());
+        if (StoreReplaced()) return;
+    } else {
+        ImGui::BeginDisabled(busy || need_peaks);
+        if (ui::SolidButton(label.c_str())) {
+            StartNormalize(lib, n, m, std::string());
+        }
+        ImGui::EndDisabled();
+        if (need_peaks) ui::ItemTipText("Waiting for the waveform");
+        else if (!busy) ui::ItemTipText("Normalize now (one undo point)");
     }
-    ImGui::EndDisabled();
-    if (need_peaks) ui::ItemTipText("Waiting for the waveform");
-    else if (!busy) ui::ItemTipText("Normalize now (one undo point)");
     if (busy && P.norm_job.total_spans > 0)  // 13-59: the busy card's bar (the measure runs a slice a frame)
         DrawBusyBar(static_cast<float>(P.norm_job.done_spans) / static_cast<float>(P.norm_job.total_spans));
 

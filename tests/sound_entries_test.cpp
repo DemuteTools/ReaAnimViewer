@@ -1637,9 +1637,58 @@ void TestCompingReview()
     }
 }
 
+// 13-62 Lot C: Normalize per part, each part to its own mode and target (C1), or one part only.
+void TestPartNormalize()
+{
+    const std::string heel = "vh", toe = "vt";
+    SoundData d;
+    d.divide_group = "g";
+    d.divide_values = {heel, toe};
+    d.frames = {F(0, 1), F(1, 1), F(2, 1)};
+    for (size_t i = 0; i < 3; ++i) d.frames[i].cuts = {d.frames[i].start + 0.4};
+    // No own setting: the Sound-level ones (the LEVEL prefs); "" = those too.
+    CHECK(PartNormMode(d, toe, NormMode::Peak) == NormMode::Peak && Near(PartNormTarget(d, toe, -1.0), -1.0));
+    PartSettings own;
+    own.norm_mode = static_cast<int>(NormMode::LufsSMax);
+    own.norm_target = -18.0;
+    SetPartSetting(d, toe, own);
+    CHECK(PartNormMode(d, toe, NormMode::Peak) == NormMode::LufsSMax && Near(PartNormTarget(d, toe, -1.0), -18.0));
+    CHECK(PartNormMode(d, heel, NormMode::RmsI) == NormMode::RmsI && Near(PartNormTarget(d, "", -3.0), -3.0));
+    // "" = every part, each with its own mode / target; a value = that part only.
+    std::vector<NormRegion> all = PartNormRegions(d, "", {}, NormMode::Peak, -1.0);
+    CHECK(all.size() == 6);
+    for (const NormRegion& r : all) {
+        CHECK(!r.part.empty());
+        if (r.part == toe) CHECK(r.mode == NormMode::LufsSMax && Near(r.target, -18.0));
+        if (r.part == heel) CHECK(r.mode == NormMode::Peak && Near(r.target, -1.0));
+    }
+    std::vector<NormRegion> one = PartNormRegions(d, toe, {1}, NormMode::Peak, -1.0);  // the selection only
+    CHECK(one.size() == 1 && one[0].frame == 1 && one[0].part == toe && one[0].mode == NormMode::LufsSMax);
+    CHECK(PartNormRegions(d, "nope", {}, NormMode::Peak, -1.0).empty());
+    // Toe alone on frames at +2 dB: Toe's part_db written, Heel keeps +2 (pinned), frame dB = the smallest.
+    for (SoundFrame& f : d.frames) f.db = 2.0;
+    std::vector<NormRegion> toes = PartNormRegions(d, toe, {}, NormMode::Peak, -1.0);
+    std::vector<SoundFrame> fr = d.frames;
+    CHECK(ApplyNormalize(fr, NormScope::Part, toes, {5.0, -4.0, 6.0}).changed);
+    KeepOtherPartGains(d, fr);
+    CHECK(Near(fr[0].part_db[toe], 5.0) && Near(fr[0].part_db[heel], 2.0) && Near(fr[0].db, 2.0));
+    CHECK(Near(fr[1].part_db[toe], -4.0) && Near(fr[1].part_db[heel], 2.0) && Near(fr[1].db, -4.0));
+    CHECK(Near(FrameGainDb(fr[2], heel), 2.0));  // Heel plays as before
+    // A frame not acted on is left alone (a silent region: no part_db added).
+    fr = d.frames;
+    ApplyNormalize(fr, NormScope::Part, toes, {5.0, std::nan(""), 6.0});
+    KeepOtherPartGains(d, fr);
+    CHECK(fr[1].part_db.empty() && Near(fr[1].db, 2.0) && fr[0].part_db.size() == 2);
+    // Not available: undivided or Takes.
+    SoundData u;
+    u.frames = {F(0, 1)};
+    CHECK(PartNormRegions(u, "", {}, NormMode::Peak, -1.0).empty());
+}
+
 int main()
 {
     TestPartSettings();  // 13-62
+    TestPartNormalize();
     TestPartSyncAndMargins();
     TestComping();
     TestCompingReview();

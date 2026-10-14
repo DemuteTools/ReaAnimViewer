@@ -2083,6 +2083,49 @@ std::vector<NormRegion> NormalizeRegions(const SoundData& data, NormScope scope,
     return out;
 }
 
+NormMode PartNormMode(const SoundData& data, const std::string& value, NormMode sound_mode)
+{
+    const PartSettings* p = value.empty() ? nullptr : PartSettingsOf(data, value);
+    if (!p || !p->norm_mode || *p->norm_mode < 0 || *p->norm_mode >= kNormModeCount) return sound_mode;
+    return static_cast<NormMode>(*p->norm_mode);
+}
+
+double PartNormTarget(const SoundData& data, const std::string& value, double sound_target)
+{
+    const PartSettings* p = value.empty() ? nullptr : PartSettingsOf(data, value);
+    return p && p->norm_target && std::isfinite(*p->norm_target) ? *p->norm_target : sound_target;
+}
+
+std::vector<NormRegion> PartNormRegions(const SoundData& data, const std::string& value, const std::vector<int>& selection,
+                                        NormMode sound_mode, double sound_target)
+{
+    std::vector<NormRegion> out;
+    if (!NormPartsAvailable(data)) return out;
+    for (NormRegion& r : NormalizeRegions(data, NormScope::Part, selection)) {
+        if (r.part.empty() || (!value.empty() && r.part != value)) continue;
+        r.mode = PartNormMode(data, r.part, sound_mode);
+        r.target = PartNormTarget(data, r.part, sound_target);
+        out.push_back(std::move(r));
+    }
+    return out;
+}
+
+void KeepOtherPartGains(const SoundData& before, std::vector<SoundFrame>& frames)
+{
+    for (size_t i = 0; i < frames.size() && i < before.frames.size(); ++i) {
+        SoundFrame&       f = frames[i];
+        const SoundFrame& b = before.frames[i];
+        if (f.part_db == b.part_db && std::fabs(f.db - b.db) <= 1e-9) continue;  // not acted on
+        for (const PartSpan& sp : PartSpansOf(before, static_cast<int>(i)))
+            if (!sp.value_uid.empty() && !f.part_db.count(sp.value_uid)) f.part_db[sp.value_uid] = b.db;
+        bool any = false;
+        for (const auto& kv : f.part_db) {
+            f.db = any ? std::min(f.db, kv.second) : kv.second;
+            any = true;
+        }
+    }
+}
+
 double NormAdjustmentDb(double factor)
 {
     if (!std::isfinite(factor) || factor <= 0.0) return std::numeric_limits<double>::quiet_NaN();

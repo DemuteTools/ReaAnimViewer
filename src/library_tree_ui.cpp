@@ -1517,16 +1517,28 @@ void LibraryMenuItems(const SoundLibrary& lib, std::string* to_delete, bool rena
     const int   miss = UserLibraryMissing(lib.uid, &first);
     int         miss_all = 0;
     for (const SoundLibrary& l : GetSoundStore(nullptr).libraries) miss_all += UserLibraryMissing(l.uid, nullptr);
-    if (ImGui::MenuItem("Locate missing files in a folder...", nullptr, false, miss_all > 0))
-        RequestLibraryLocateFolder();
-    ui::ItemTipText(miss_all > 0 ? "Pick the folder that holds the sounds (for example the soundbank's parent): RAV "
-                                   "searches it and its subfolders for the missing sounds of every library"
-                                 : "No missing sound in any library");
+    const bool  locating = UserLibraryLocating();  // 13-50: one scan at a time, Cancel in its place
+    if (locating) {
+        if (ImGui::MenuItem("Cancel locating")) CancelUserLibraryLocate();
+        ui::ItemTipText("Stop looking for the missing sounds: nothing is changed");
+    } else {
+        if (ImGui::MenuItem("Locate missing files in a folder...", nullptr, false, miss_all > 0))
+            RequestLibraryLocateFolder();
+        ui::ItemTipText(miss_all > 0 ? "Pick the folder that holds the sounds (for example the soundbank's parent): RAV "
+                                       "searches it and its subfolders for the missing sounds of every library"
+                                     : "No missing sound in any library");
+    }
     if (lib.user) {
         if (ImGui::MenuItem("Export .ravlib...")) RequestUserLibraryExport(lib.uid);
-        if (ImGui::MenuItem("Locate a missing file...", nullptr, false, miss > 0)) RequestUserLibraryLocate(lib.uid, first);
-        ui::ItemTipText(miss > 0 ? "Pick the file of its first missing sound: the others are looked for near it"
-                                 : "No missing sound");
+        ui::ItemTipText("Save a copy of this library's file anywhere, to share it");
+        // 13-36: the file itself, selected in File Explorer (to copy, send or back it up).
+        if (ImGui::MenuItem("Show in Explorer")) RequestUserLibraryReveal(lib.uid);
+        ui::ItemTipText("Open the User Library folder in File Explorer, this library's .ravlib selected");
+        if (!locating) {
+            if (ImGui::MenuItem("Locate a missing file...", nullptr, false, miss > 0)) RequestUserLibraryLocate(lib.uid, first);
+            ui::ItemTipText(miss > 0 ? "Pick the file of its first missing sound: the others are looked for near it"
+                                     : "No missing sound");
+        }
         if (ImGui::MenuItem("Refresh the User Library folder")) RefreshUserLibraries();
     } else {
         // 13-24: reusable in other projects; its item Sounds become File Sounds of their files.
@@ -1730,6 +1742,7 @@ void LibrariesSectionWidgets()
         ui::ItemTipText("A library saved in its own file in the User Library folder, for every project");
         if (ui::SolidButton("Import .ravlib...", ImVec2(avail, 0.0f))) RequestUserLibraryImport();
         ui::ItemTipText("Add a .ravlib file: it is copied into the User Library folder");
+        DrawLibraryLocateStatus();  // 13-50 (13-11): a Locate scan in progress, with its Cancel
     }
     ui::EndSection(sec);
 }

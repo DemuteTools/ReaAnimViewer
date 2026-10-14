@@ -614,6 +614,26 @@ std::vector<LookupResult> LocateUnderRoot(const std::string& root, const std::ve
     return out;
 }
 
+LocateOutcome ClassifyLocate(const std::vector<AssetIdentity>& missing, const std::vector<LookupResult>& res,
+                             const AssetIdentity* self, const std::string& self_path)
+{
+    LocateOutcome out;
+    if (self) out.found.push_back({*self, self_path});
+    for (size_t i = 0; i < res.size() && i < missing.size(); ++i) {
+        if (res[i].status == LookupStatus::Found && !res[i].path.empty()) out.found.push_back({missing[i], res[i].path});
+        else if (res[i].status == LookupStatus::Ambiguous) ++out.ambiguous;
+    }
+    return out;
+}
+
+std::string LocateToastText(int changed, int missing, int ambiguous)
+{
+    const int   m = std::max(missing, changed);
+    std::string msg = "Located " + std::to_string(changed) + " of " + std::to_string(m) + " sounds";
+    if (ambiguous > 0) msg += ", " + std::to_string(ambiguous) + " ambiguous";
+    return msg;
+}
+
 // ---------------------------------------------------------------- folder index (D7)
 
 std::vector<DbFile> ScanFolder(const std::string& folder, const std::vector<DbFile>& cached,

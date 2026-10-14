@@ -3,8 +3,9 @@
 // See library_user_ui.h. Spec 13-11 (decisions 2, 5, 8 to 13).
 //
 // Threads: the UI thread draws, runs the pickers and the autosave from this module's REAPER timer
-// and applies a published Locate result; the Locate worker only runs RelocateFolder through the
-// folder cache (media_db.h). Listing RAV's own Libraries folder (non-recursive) is done on the UI
+// and applies a published Locate result; the Locate worker (StartLocateJob) runs RelocateFolder or
+// LocateUnderRoot through the folder cache (media_db.h), the only recursive folder scans: none runs
+// on the UI thread, and Cancel / unload stop them (13-50, 13-5 review). Listing RAV's own Libraries folder (non-recursive) is done on the UI
 // thread on first draw, after this module writes a file, and on Refresh (decision 2).
 
 #include "library_user_ui.h"
@@ -18,6 +19,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -90,7 +92,7 @@ struct UserFile {
     SoundStore  store;  // parsed
 };
 
-enum class PickKind { None, Import, Export, Locate, LocateFolder };
+enum class PickKind { None, Import, Export, Reveal, Locate, LocateFolder };
 
 struct LocateJob {
     std::thread                                       worker;
@@ -486,6 +488,63 @@ std::vector<AssetIdentity> MissingIdentities()
     return out;
 }
 
+// One search of the Locate worker: one result per missing identity, through the folder lister;
+// returns early when `cancel` is set.
+using FolderLister = std::function<std::vector<DbFile>(const std::string&)>;
+using LocateSearch = std::function<std::vector<LookupResult>(const std::vector<AssetIdentity>& missing,
+                                                             const FolderLister& list_folder,
+                                                             const std::atomic<bool>* cancel)>;
+
+// 13-50 (13-38 review): the one Locate worker, for the single-file Locate and "Locate in a folder".
+// `picked` = the file the user picked (ApplyLocated gets it; empty last_path = none); `self` = the
+// picked Sound, put first in the found pairs (null = a folder locate). False when nothing started.
+bool StartLocateJob(const std::vector<AssetIdentity>& missing, const AssetIdentity& picked,
+                    const AssetIdentity* self, const LocateSearch& search)
+{
+    if (g_job.running) {
+        ShowToastNoUndo("Already locating...");
+        return false;
+    }
+    JoinLocate();
+    g_job.missing = static_cast<int>(missing.size());
+    g_job.picked = picked;
+    g_job.done = false;
+    g_job.cancel = false;
+    g_job.running = true;
+    {
+        std::lock_guard<std::mutex> lk(g_job.mu);
+        g_job.found.clear();
+        g_job.ambiguous = 0;
+    }
+    const std::string   resource = ResourcePath();
+    const bool          has_self = self != nullptr;
+    const AssetIdentity self_id = self ? *self : AssetIdentity{};
+    const std::string   self_path = picked.last_path;
+    try {
+        g_job.worker = std::thread([missing, has_self, self_id, self_path, search, resource]() {
+            LocateOutcome out;
+            if (has_self) out.found.push_back({self_id, self_path});
+            try {
+                const std::vector<LookupResult> res =
+                    search(missing, MakeCachedFolderLister(resource, nullptr, &g_job.cancel), &g_job.cancel);
+                out = ClassifyLocate(missing, res, has_self ? &self_id : nullptr, self_path);
+            } catch (...) {
+            }
+            {
+                std::lock_guard<std::mutex> lk(g_job.mu);
+                g_job.found = std::move(out.found);
+                g_job.ambiguous = out.ambiguous;
+            }
+            g_job.done = true;
+        });
+    } catch (...) {
+        g_job.running = false;
+        ShowToastNoUndo("Could not start locating");
+        return false;
+    }
+    return true;
+}
+
 void StartLocate(const std::string& lib_uid, const std::string& node_uid, const std::string& picked)
 {
     const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), lib_uid);
@@ -494,6 +553,10 @@ void StartLocate(const std::string& lib_uid, const std::string& node_uid, const 
     const AssetIdentity stored = n->sound.source.asset;
     if (LowerAscii(BaseNameOf(picked)) != LowerAscii(BaseNameOf(stored.name))) {
         ShowToastNoUndo("That is not " + stored.name);
+        return;
+    }
+    if (g_job.running) {  // before the PCM_source below
+        ShowToastNoUndo("Already locating...");
         return;
     }
     AssetIdentity located;
@@ -513,54 +576,15 @@ void StartLocate(const std::string& lib_uid, const std::string& node_uid, const 
     if (self.length < 0.0) self.length = located.length;
 
     // 13-38: RelocateFolder maps the stored OLD folder to the picked one (the other missing sounds
-    // are then looked for in their mapped folders); ApplyLocated still gets the picked path.
+    // are then looked for in their mapped folders); ApplyLocated still gets the picked path (and sets
+    // the Sound's size and length from it, so a file of another size no longer stays red, 13-7b).
     AssetIdentity old_id = located;
     old_id.last_path = stored.last_path;
-
-    if (g_job.running) {
-        ShowToastNoUndo("Already locating...");
-        return;
-    }
-    JoinLocate();
-    std::vector<AssetIdentity> missing = MissingIdentities();
-    g_job.missing = static_cast<int>(missing.size());
-    g_job.picked = located;
-    g_job.done = false;
-    g_job.cancel = false;
-    g_job.running = true;
-    {
-        std::lock_guard<std::mutex> lk(g_job.mu);
-        g_job.found.clear();
-        g_job.ambiguous = 0;
-    }
-    const std::string resource = ResourcePath();
-    try {
-        g_job.worker = std::thread([old_id, picked, self, missing, resource]() {
-            std::vector<std::pair<AssetIdentity, std::string>> found;
-            found.push_back({self, picked});
-            int ambiguous = 0;
-            try {
-                const std::vector<LookupResult> res = RelocateFolder(
-                    old_id, picked, missing, MakeCachedFolderLister(resource, nullptr, &g_job.cancel));
-                for (size_t i = 0; i < res.size() && i < missing.size(); ++i) {
-                    if (res[i].status == LookupStatus::Found) found.push_back({missing[i], res[i].path});
-                    else if (res[i].status == LookupStatus::Ambiguous) ++ambiguous;
-                }
-            } catch (...) {
-            }
-            {
-                std::lock_guard<std::mutex> lk(g_job.mu);
-                g_job.found = std::move(found);
-                g_job.ambiguous = ambiguous;
-            }
-            g_job.done = true;
-        });
-    } catch (...) {
-        g_job.running = false;
-        ShowToastNoUndo("Could not start locating");
-        return;
-    }
-    ShowToastNoUndo("Locating...");
+    const LocateSearch search = [old_id, picked](const std::vector<AssetIdentity>& missing,
+                                                 const FolderLister& lister, const std::atomic<bool>*) {
+        return RelocateFolder(old_id, picked, missing, lister);  // the lister stops on cancel
+    };
+    if (StartLocateJob(MissingIdentities(), located, &self, search)) ShowToastNoUndo("Locating...");
 }
 
 // 13-38: "Locate in a folder": every missing File Sound (all libraries) is looked for under `root`
@@ -572,49 +596,16 @@ void StartLocateFolder(const std::string& root)
         ShowToastNoUndo("Already locating...");
         return;
     }
-    JoinLocate();
-    std::vector<AssetIdentity> missing = MissingIdentities();
+    const std::vector<AssetIdentity> missing = MissingIdentities();
     if (missing.empty()) {
         ShowToastNoUndo("No missing sound");
         return;
     }
-    g_job.missing = static_cast<int>(missing.size());
-    g_job.picked = AssetIdentity{};  // no picked file: ApplyLocated gets no picked identity
-    g_job.done = false;
-    g_job.cancel = false;
-    g_job.running = true;
-    {
-        std::lock_guard<std::mutex> lk(g_job.mu);
-        g_job.found.clear();
-        g_job.ambiguous = 0;
-    }
-    const std::string resource = ResourcePath();
-    try {
-        g_job.worker = std::thread([root, missing, resource]() {
-            std::vector<std::pair<AssetIdentity, std::string>> found;
-            int ambiguous = 0;
-            try {
-                const std::vector<LookupResult> res = LocateUnderRoot(
-                    root, missing, MakeCachedFolderLister(resource, nullptr, &g_job.cancel), &g_job.cancel);
-                for (size_t i = 0; i < res.size() && i < missing.size(); ++i) {
-                    if (res[i].status == LookupStatus::Found) found.push_back({missing[i], res[i].path});
-                    else if (res[i].status == LookupStatus::Ambiguous) ++ambiguous;
-                }
-            } catch (...) {
-            }
-            {
-                std::lock_guard<std::mutex> lk(g_job.mu);
-                g_job.found = std::move(found);
-                g_job.ambiguous = ambiguous;
-            }
-            g_job.done = true;
-        });
-    } catch (...) {
-        g_job.running = false;
-        ShowToastNoUndo("Could not start locating");
-        return;
-    }
-    ShowToastNoUndo("Locating in " + root + "...");
+    const LocateSearch search = [root](const std::vector<AssetIdentity>& m, const FolderLister& lister,
+                                       const std::atomic<bool>* cancel) {
+        return LocateUnderRoot(root, m, lister, cancel);
+    };
+    if (StartLocateJob(missing, AssetIdentity{}, nullptr, search)) ShowToastNoUndo("Locating in " + root + "...");
 }
 
 void ApplyLocateResult()
@@ -628,6 +619,10 @@ void ApplyLocateResult()
         found.swap(g_job.found);
         ambiguous = g_job.ambiguous;
     }
+    if (g_job.cancel) {  // 13-50 (13-11): Cancel keeps nothing, not even what was found before it
+        ShowToastNoUndo("Locate cancelled: nothing changed");
+        return;
+    }
     int changed = 0;
     const AssetIdentity* picked = g_job.picked.last_path.empty() ? nullptr : &g_job.picked;
     ModifySoundStore(nullptr, "RAV: Locate sounds", [&](SoundStore& s) {
@@ -635,10 +630,7 @@ void ApplyLocateResult()
         return changed > 0;
     });
     g.resolved.clear();
-    const int m = std::max(g_job.missing, changed);
-    std::string msg = "Located " + std::to_string(changed) + " of " + std::to_string(m) + " sounds";
-    if (ambiguous > 0) msg += ", " + std::to_string(ambiguous) + " ambiguous";
-    ShowLibraryToast(msg, changed > 0, "RAV: Locate sounds");
+    ShowLibraryToast(LocateToastText(changed, g_job.missing, ambiguous), changed > 0, "RAV: Locate sounds");
 }
 
 // ---- Pickers (run by the timer) -----------------------------------------------------------------
@@ -704,6 +696,33 @@ void RunExport(const std::string& lib_uid)
     ShowToastNoUndo(msg);
 }
 
+// 13-36: the library's .ravlib selected in a File Explorer window (the folder alone when the file
+// is not written yet). The autosave runs first, so the file shown holds the latest change.
+void RunReveal(const std::string& lib_uid)
+{
+    Autosave(EnumProjects(-1, nullptr, 0));
+    const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), lib_uid);
+    if (!lib || !lib->user) return;
+    std::error_code ec;
+    fs::create_directories(UserFolder(), ec);
+    const fs::path file = lib->ravlib_path.empty() ? fs::path() : FileOf(lib->ravlib_path);
+    const bool     has_file = !file.empty() && fs::exists(file, ec);
+    std::wstring   cmd = L"explorer.exe ";
+    if (has_file) cmd += L"/select,\"" + file.lexically_normal().wstring() + L"\"";
+    else cmd += L"\"" + UserFolder().lexically_normal().wstring() + L"\"";
+    STARTUPINFOW        si = {};
+    PROCESS_INFORMATION pi = {};
+    si.cb = sizeof si;
+    std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+    buf.push_back(L'\0');
+    if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+        ShowToastNoUndo("Could not open " + UserFolderText());
+        return;
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+}
+
 void RunLocatePick(const std::string& lib_uid, const std::string& node_uid)
 {
     std::string path;
@@ -728,6 +747,7 @@ void OnTimer()
         g.pick = PickKind::None;
         if (k == PickKind::Import) RunImport();
         else if (k == PickKind::Export) RunExport(lib);
+        else if (k == PickKind::Reveal) RunReveal(lib);
         else if (k == PickKind::Locate) RunLocatePick(lib, node);
         else if (k == PickKind::LocateFolder) RunLocateFolderPick();
 
@@ -1089,6 +1109,39 @@ void RequestUserLibraryExport(const std::string& lib_uid)
     g.pick_lib = lib_uid;
 }
 
+void RequestUserLibraryReveal(const std::string& lib_uid)
+{
+    g.pick = PickKind::Reveal;
+    g.pick_lib = lib_uid;
+}
+
+bool UserLibraryLocating()
+{
+    return g_job.running;
+}
+
+void CancelUserLibraryLocate()
+{
+    if (g_job.running) g_job.cancel = true;  // the worker returns early; the timer then discards it
+}
+
+void DrawLibraryLocateStatus()
+{
+    if (!g_job.running) return;
+    const bool  stopping = g_job.cancel.load();
+    const char* text = stopping ? "Cancelling..." : "Locating missing sounds...";
+    const float bw = ui::ButtonWidth("Cancel");
+    bool        beside = true;
+    const float room = flow::StretchBeside(ImGui::GetContentRegionAvail().x, ui::Dp(60.0f), bw,
+                                           ImGui::GetStyle().ItemSpacing.x, &beside);
+    ui::FitText(text, ui::kMuted, room);
+    if (beside) ImGui::SameLine();
+    ImGui::BeginDisabled(stopping);
+    if (ui::SolidButton("Cancel##locate")) CancelUserLibraryLocate();
+    ImGui::EndDisabled();
+    ui::ItemTipText("Stop looking for the missing sounds: nothing is changed");
+}
+
 int UserLibraryMissing(const std::string& lib_uid, std::string* first)
 {
     const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), lib_uid);
@@ -1112,28 +1165,45 @@ void RefreshUserLibraries()
 
 std::string UserLibraryFolderText() { return UserFolderText(); }
 
+void DrawLocateButtons(const std::string& lib_uid, const std::string& node_uid)
+{
+    if (g_job.running) {  // 13-50 (13-11): the scan in progress, with its Cancel
+        DrawLibraryLocateStatus();
+        return;
+    }
+    if (ui::SolidButton("Locate file...")) RequestLocate(lib_uid, node_uid);
+    ui::ItemTipText("Pick this file: the other missing sounds are looked for in the same folders");
+    ui::SameLineIfFits(ui::ButtonWidth("Locate in a folder..."));
+    if (ui::SolidButton("Locate in a folder...")) RequestLibraryLocateFolder();
+    ui::ItemTipText("Pick the folder that holds the sounds (for example the soundbank's parent): RAV searches "
+                    "it and its subfolders for the missing sounds of every library");
+}
+
 void DrawUserLibraryNodeSection()
 {
     const SoundStore&   store = GetSoundStore(nullptr);
     const SoundLibrary* lib = FindLibrary(store, SelectedLibraryUid());
     const std::string   node_uid = LibraryRowNode();
     const SoundNode*    n = lib && !node_uid.empty() ? FindNode(*lib, node_uid) : nullptr;
-    if (!lib || !n) return;
-    const bool file_missing = FileSoundMissing(*n);
-    if (!lib->user && !file_missing) return;
+    // 13-50 (13-7b review): a missing File Sound's Locate buttons sit on the Sound panel's red Source
+    // line only (DrawLocateButtons), never twice in the column.
+    if (!lib || !n || !lib->user) return;
     ui::Section sec;
-    if (ui::BeginSection(sec, lib->user ? "User Library" : "File", ImTextureID(), false)) {
-        if (file_missing) {
-            ui::ToneText("File not found: " + n->sound.source.asset.name, kLibMissing, true);
-            if (ui::SolidButton("Locate file...")) RequestLocate(lib->uid, n->uid);
-            ui::ItemTipText("Pick this file: the other missing sounds are looked for in the same folders");
-            ImGui::SameLine();
-            if (ui::SolidButton("Locate in a folder...")) RequestLibraryLocateFolder();
-            ui::ItemTipText("Pick the folder that holds the sounds (for example the soundbank's parent): RAV searches "
-                            "it and its subfolders for the missing sounds of every library");
-        }
-        if (lib->user) {
+    if (ui::BeginSection(sec, "User Library", ImTextureID(), false)) {
+        {
             const bool        is_root = n->uid == lib->root || n->parent.empty();
+            if (is_root) {
+                // 13-36: its file, to share: a copy saved anywhere, or the file shown in File Explorer.
+                const std::string file = lib->ravlib_path.empty() ? RavlibFileName(lib->name, {}) : lib->ravlib_path;
+                const float       fw = ui::LabelRow("File", ui::Dp(80.0f));
+                ui::FitText(file, ui::kText, fw);
+                ui::ItemTipText(("In " + UserFolderText()).c_str());
+                if (ui::SolidButton("Export .ravlib...")) RequestUserLibraryExport(lib->uid);
+                ui::ItemTipText("Save a copy of this library's file anywhere, to share it");
+                ui::SameLineIfFits(ui::ButtonWidth("Show in Explorer"));
+                if (ui::SolidButton("Show in Explorer")) RequestUserLibraryReveal(lib->uid);
+                ui::ItemTipText("Open its folder in File Explorer, its file selected");
+            }
             const std::string inherit =
                 is_root ? std::string() : "Inherit (" + EffectiveLandsIn(*lib, n->parent) + ")";
             std::string shown = n->lands_in.empty() ? (is_root ? std::string(kDefaultLandsIn) : inherit) : n->lands_in;

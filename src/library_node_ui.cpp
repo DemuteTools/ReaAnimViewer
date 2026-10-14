@@ -32,6 +32,7 @@
 #include "normalize_presets.h"
 #include "library_icons.h"
 #include "library_tree_ui.h"
+#include "library_user_ui.h"  // 13-50: DrawLocateButtons (a missing File Sound)
 #include "library_view_ui.h"
 #include "picked_gestures.h"
 #include "reaper_api.h"
@@ -2366,30 +2367,6 @@ std::string FileName(const std::string& path)
     return k == std::string::npos ? path : path.substr(k + 1);
 }
 
-// Run as a picked gesture (after the panel): the file dialog lets REAPER's timers run, and a
-// timer may write the store (the User Library's autosave, a Locate result), so no panel reference
-// may be held across it. Writes at once (it already runs after the panel).
-void Locate(const std::string& lib_uid, const std::string& uid, const SoundSource& src)
-{
-    std::string path = src.asset.last_path;
-    if (!ChooseSoundFile("Locate " + src.asset.name, &path)) return;
-    const double len = SourceFileLength(path);
-    std::error_code ec;  // the size too, so the file is found again by name, size and length (13-11)
-    const auto fsize = std::filesystem::file_size(std::filesystem::u8path(path), ec);
-    const int64_t size = ec ? int64_t(-1) : int64_t(fsize);
-    WriteNow("Locate sound file",
-             NodeEdit(lib_uid, uid,
-                      [path, len, size](SoundNode& x) {
-                          x.sound.source.kind = SoundSourceKind::File;
-                          x.sound.source.asset.last_path = path;
-                          x.sound.source.asset.name = FileName(path);
-                          if (len > 0.0) x.sound.source.asset.length = len;
-                          x.sound.source.asset.size = size;
-                          return true;
-                      }),
-             "Located " + FileName(path));
-}
-
 void ShowInReaper(const SoundSource& src)
 {
     MediaItem* it = src.item_guid.empty() ? nullptr : FindItemByGuid(src.item_guid);
@@ -4377,20 +4354,20 @@ void DrawSourceLine(const SoundLibrary& lib, const SoundNode& n, const SoundMedi
     const float        sp = ui::Dp(8.0f);
     if (!m.ok) {
         const bool        item = src.kind == SoundSourceKind::Item;
-        const char*       btn = item ? "Set from selected item" : "Locate\xE2\x80\xA6";
         const std::string msg = item ? std::string("Its item is no longer on the tracks.")
                                      : (src.asset.last_path.empty() ? std::string("Its file") : src.asset.last_path) + " not found on this PC.";
+        if (!item) {  // 13-50: the User Library's Locate pair (name, size and length re-read; the others too)
+            FitText(msg, ui::kMissName, ImGui::GetContentRegionAvail().x);
+            DrawLocateButtons(lib_uid, uid);
+            return;
+        }
+        const char* btn = "Set from selected item";
         const float bw = ui::ButtonWidth(btn);
         bool        beside = true;
         const float room = flow::StretchBeside(ImGui::GetContentRegionAvail().x, ui::Dp(60.0f), bw, sp, &beside);
         FitText(msg, ui::kMissName, room);
         if (beside) ImGui::SameLine(0.0f, sp);
-        if (ui::SolidButton(btn)) {
-            if (item) ReplaceFromSelected(lib_uid, uid, "Set from selected item");
-            else {
-                g_picks.Pick([lib_uid, uid, src]() { Locate(lib_uid, uid, src); });
-            }
-        }
+        if (ui::SolidButton(btn)) ReplaceFromSelected(lib_uid, uid, "Set from selected item");
         return;
     }
     if (src.kind == SoundSourceKind::Item) {

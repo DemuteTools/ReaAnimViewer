@@ -99,6 +99,20 @@ std::vector<LookupResult> LocateUnderRoot(const std::string& root, const std::ve
                                           const std::function<std::vector<DbFile>(const std::string&)>& list_folder,
                                           const std::atomic<bool>* cancel = nullptr);
 
+// 13-50 (13-38 review): what a Locate run found, shared by the single-file Locate and "Locate in a
+// folder". `found` pairs each missing identity with its new path (the picked Sound first when
+// `self` is given: the file the user picked, `self_path`); `ambiguous` counts the results with
+// several equally good candidates (never re-linked). `res` holds one result per `missing` entry.
+struct LocateOutcome {
+    std::vector<std::pair<AssetIdentity, std::string>> found;
+    int                                                ambiguous = 0;
+};
+LocateOutcome ClassifyLocate(const std::vector<AssetIdentity>& missing, const std::vector<LookupResult>& res,
+                             const AssetIdentity* self = nullptr, const std::string& self_path = {});
+// The toast once the result is applied: "Located N of M sounds", plus ", K ambiguous" when K > 0.
+// M is never below N (the picked Sound counts even when it was not missing).
+std::string LocateToastText(int changed, int missing, int ambiguous);
+
 // Fallback folder index (D7). Lists the audio files under `folder` (recursive) with their size;
 // the length comes from `cached` when path + size + mtime are unchanged, else from `length_of`
 // (null -> -1). `calls` (optional) counts the length_of calls. `cancel` (optional): the walk stops

@@ -442,6 +442,36 @@ static void TestLocateUnderRoot()
     }
 }
 
+// 13-50 (13-38 review): the shared Locate outcome (found pairs, ambiguous count) and its toast.
+static void TestLocateOutcome()
+{
+    const std::string old = "D:/SFX/Bank/Foot/";
+    FakeTree t;
+    t.files = {F("E:/Lib/Bank/Foot/a.wav", 10, -1), F("E:/Lib/X/b.wav", 7, -1), F("E:/Lib/Y/b.wav", 7, -1),
+               F("E:/Lib/Z/c.wav", 99, -1)};
+    const std::vector<AssetIdentity> missing = {Id("a.wav", 10, 1.0, old + "a.wav"), Id("b.wav", 7, 1.0, "D:/Q/b.wav"),
+                                                Id("c.wav", 3, 1.0, old + "c.wav"), Id("d.wav", 1, 1.0, old + "d.wav")};
+    const auto r = LocateUnderRoot("E:/Lib", missing, t.Lister());
+    {  // folder locate: no picked Sound
+        const LocateOutcome o = ClassifyLocate(missing, r);
+        CHECK(o.found.size() == 1 && o.found[0].first.name == "a.wav" && o.found[0].second == "E:/Lib/Bank/Foot/a.wav");
+        CHECK(o.ambiguous == 1);  // b.wav: a tie; c.wav: other size (missing); d.wav: absent
+        CHECK(LocateToastText(1, 4, o.ambiguous) == "Located 1 of 4 sounds, 1 ambiguous");
+    }
+    {  // single-file locate: the picked Sound first
+        const AssetIdentity self = Id("p.wav", 5, 2.0, "D:/old/p.wav");
+        const LocateOutcome o = ClassifyLocate(missing, r, &self, "E:/new/p.wav");
+        CHECK(o.found.size() == 2 && o.found[0].first.name == "p.wav" && o.found[0].second == "E:/new/p.wav");
+        CHECK(o.found[1].first.name == "a.wav");
+    }
+    {  // results shorter than missing (a cancelled run): only what is there counts
+        const LocateOutcome o = ClassifyLocate(missing, {});
+        CHECK(o.found.empty() && o.ambiguous == 0);
+    }
+    CHECK(LocateToastText(0, 3, 0) == "Located 0 of 3 sounds");
+    CHECK(LocateToastText(2, 1, 0) == "Located 2 of 2 sounds");  // M never below N
+}
+
 static void TestLoad()
 {
     const fs::path res = TempDir("load");
@@ -541,6 +571,7 @@ int main(int argc, char** argv)
     TestSearch();
     TestRelocateAndScan();
     TestLocateUnderRoot();
+    TestLocateOutcome();
     TestLoad();
     TestFavourites();
     Bench();

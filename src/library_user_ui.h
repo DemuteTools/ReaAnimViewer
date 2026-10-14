@@ -54,6 +54,17 @@ void RequestUserLibraryLocate(const std::string& lib_uid, const std::string& nod
 // 13-38: "Locate in a folder...": picks a folder (timer), then every missing File Sound of every
 // library is looked for under it and its subfolders on the worker; one undo point "RAV: Locate sounds".
 void RequestLibraryLocateFolder();
+// 13-36: the User Library's .ravlib selected in a File Explorer window (its folder when the file is
+// not written yet; the autosave runs first). Run by the timer, like the pickers.
+void RequestUserLibraryReveal(const std::string& lib_uid);
+// 13-50 (13-11): a Locate scan is running; Cancel stops it (its results are dropped, nothing changes).
+bool UserLibraryLocating();
+void CancelUserLibraryLocate();
+// While a Locate scan runs: "Locating missing sounds..." and [Cancel] (draws nothing otherwise).
+void DrawLibraryLocateStatus();
+// 13-50 (13-7b review): a missing File Sound's [Locate file...] [Locate in a folder...] (the status
+// and Cancel while a scan runs). The one place they are drawn: the Sound panel's red Source line.
+void DrawLocateButtons(const std::string& lib_uid, const std::string& node_uid);
 // A library's missing File Sounds (any library, Project Libraries included); `first` = the first
 // one's node uid.
 int UserLibraryMissing(const std::string& lib_uid, std::string* first);

@@ -41,8 +41,12 @@ struct WaveParts {
     std::vector<ImU32>       colors;  // one per divide value
     std::vector<std::string> names;   // one per divide value
     bool                     split = false;  // one lane per value
-    int                      solo = -1;      // Combined: only this part bright (-1 = all)
     double                   sel_start = 0.0, sel_len = 0.0;  // the zone selected (length 0 = none)
+    // 13-62 (decision 9, Split = REAPER's fixed lanes with comping): the selected part (its lane tinted, the
+    // others dimmed on the comp strip / ribbon; "" = none) and, per divide value, whether Play hears it (Mute /
+    // Solo: a part not heard is drawn faint; empty = all heard).
+    std::string              sel_part;
+    std::vector<bool>        heard;
 };
 
 // A waveform with its variations framed (the Sound panel, Edit, the Media Explorer preview).
@@ -116,6 +120,21 @@ struct WaveformEvents {
     bool   sync_done = false;
     bool   zone_live = false, zone_done = false;  // a zone being selected (a horizontal drag)
     double zone_start = 0.0, zone_len = 0.0;
+    // 13-62 (Split comping, decision 9). `lane`: where the click / drag / right-click began: a Split lane (its
+    // part's index), -1 the Combined waveform or its ribbon, -2 Split's "Placed" comp strip.
+    int    lane = -1;
+    // A horizontal drag on a Split lane (a swipe: [span_a, span_b] goes to `lane`'s part) or an Alt+drag in
+    // either view (`span_alt`: the span is excluded); its edges snapped to a cut, a variation's or a zone's
+    // edge within 6 px. Done = released (write it).
+    bool   span_done = false, span_alt = false;
+    double span_a = 0.0, span_b = 0.0;
+    // Split: the lane header column on the left of the lanes (C6: 116 px, 64 px when the lanes are under
+    // 420 px wide: name + M + S only), each lane's top and height, the comp strip's rows; the caller draws the
+    // headers there (PartLaneHeader). head_w 0 = no column (Combined).
+    float  head_x = 0.0f, head_w = 0.0f;
+    bool   head_narrow = false;
+    float  lanes_y = 0.0f, lane_h = 0.0f;
+    float  strip_y0 = 0.0f, strip_y1 = 0.0f;
 };
 
 WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::vector<SoundFrame>& frames,

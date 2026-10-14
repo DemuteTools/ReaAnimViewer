@@ -2243,6 +2243,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         io.AddKeyEvent(ImGuiMod_Shift, GetKeyState(VK_SHIFT) < 0);
         io.AddKeyEvent(ImGuiMod_Alt, GetKeyState(VK_MENU) < 0);
     }
+    // 13-45: a "View: scroll and zoom" row of the Shortcuts popup records the wheel; the notch is the
+    // recording's only (not fed to Dear ImGui: the popup does not scroll under it).
+    if ((msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL) && ViewNavRecordingRow() >= 0) {
+        ViewNavRecordWheel(msg == WM_MOUSEHWHEEL, GetKeyState(VK_CONTROL) < 0, GetKeyState(VK_SHIFT) < 0, GetKeyState(VK_MENU) < 0);
+        return 0;
+    }
     if (g_imgui_ready && ImGui_ImplWin32_WndProcHandler(hwnd, msg, wp, lp))
         return true;
 
@@ -2360,11 +2366,6 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
 
     case WM_MOUSEWHEEL: {
-        // 13-45: a "View: scroll and zoom" row of the Shortcuts popup records the wheel.
-        if (ViewNavRecordingRow() >= 0) {
-            ViewNavRecordWheel(false, GetKeyState(VK_CONTROL) < 0, GetKeyState(VK_SHIFT) < 0, GetKeyState(VK_MENU) < 0);
-            return 0;
-        }
         // Let ImGui have the wheel when the cursor is over its UI (e.g. scrolling a
         // slider's value); otherwise it zooms the camera. Spec 11-fb-12: Alt + wheel there
         // (the shot strip's zoom) also keeps Alt's release from REAPER's menu bar.
@@ -2384,11 +2385,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         // 13-45: the horizontal wheel (a tilt wheel, a trackpad's sideways swipe). ImGui has it
         // already (io.MouseWheelH): over the UI it is the timelines' (view_nav.h), and it must not
         // reach DefWindowProc, which hands it to the parent (REAPER would scroll its arrange view).
-        // Over the 3D view it does nothing. A Shortcuts row being recorded takes it.
-        if (ViewNavRecordingRow() >= 0) {
-            ViewNavRecordWheel(true, GetKeyState(VK_CONTROL) < 0, GetKeyState(VK_SHIFT) < 0, GetKeyState(VK_MENU) < 0);
-            return 0;
-        }
+        // Over the 3D view it does nothing. (A Shortcuts row being recorded took it above.)
         if (ImGuiWantsMouse() && GetKeyState(VK_MENU) < 0) g_key_route.alt_wheel_taken = true;
         return 0;
 
@@ -2756,6 +2753,8 @@ int ViewerTranslateAccel(MSG* msg, accelerator_register_t* /*ctx*/)
     in.confirm_open = VideoDeleteConfirmOpen();  // Enter confirms the delete
     in.imgui_mouse = ImGuiWantsMouse();          // spec 11-fb-12: Alt + wheel over the UI
     in.full_screen = FullScreenActive();         // story 6-5-9: Esc leaves, other keys reach REAPER
+    in.horizontal = msg->message == WM_MOUSEHWHEEL;
+    if (in.msg == KeyMsg::Wheel) in.view_wheel = ViewNavClaimsWheel(in.horizontal, in.ctrl, in.shift, in.alt);  // 13-45
     // Story 13-7a (decision 7): the Library view's keys (Delete, F2, Space, Esc, Ctrl+B / D / X / V)
     // reach the viewer while its window has the focus; the key's character and release follow it.
     if (in.msg == KeyMsg::KeyDown && LibraryViewActive() && LibraryViewTakesKey(in.key, in.ctrl, in.shift, in.alt)) {

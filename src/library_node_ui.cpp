@@ -117,6 +117,7 @@ struct PanelState {
     std::string           blend_uid;
     double                blend_v0 = 0.0, blend_span = 0.0;
     bool                  blend_pan = false;
+    bool                  blend_focus = false;  // 13-45 review: clicked in, the plain wheel is the lanes' (not the panel's)
     // The Edit overlay.
     bool                  edit_open = false;
     bool                  edit_focus = false;
@@ -1681,8 +1682,7 @@ bool LibraryNodeTakesKey(unsigned vk, bool ctrl, bool shift, bool alt)
     const int  f = ImGui::GetCurrentContext() ? ImGui::GetFrameCount() : -100;
     const bool edit = P.edit_open && P.edit_frame >= f - 1;
     if (edit && P.edit_has_focus) {  // the view keys (Up / Down zoom too) zoom Edit, not the arrange view
-        const int mods = (ctrl ? kViewModCtrl : 0) | (alt ? kViewModAlt : 0) | (shift ? kViewModShift : 0);
-        if (ViewNavKeyRow(CurrentViewNav(), static_cast<int>(vk), mods) >= 0) return true;  // 13-45
+        if (ViewNavRowForKeyDown(vk, ctrl, shift, alt) >= 0) return true;  // 13-45 (a character binding too)
     }
     if (ctrl || shift || alt) return false;
     if (edit) return vk == 0x20 || vk == 0x1B || vk == 'E' || vk == 'S';
@@ -4180,6 +4180,7 @@ void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const Sound
         P.blend_v0 = 0.0;
         P.blend_span = 0.0;
         P.blend_pan = false;
+        P.blend_focus = false;
     }
     double bspan = P.blend_span > 0.0 ? std::min(P.blend_span, total_ms) : total_ms;
     double bv0 = std::clamp(P.blend_v0, 0.0, std::max(0.0, total_ms - bspan));
@@ -4223,7 +4224,12 @@ void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const Sound
         const ImVec2 box1(box_x1, box0.y + box_h);
         const bool   hot = P.off_uid.empty() && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) &&
                          ImGui::IsMouseHoveringRect(box0, box1, false);
-        nav = ViewNavInput(hot, hot, ImGui::GetID("##blendnav"));
+        // 13-45 review: the box sits in the scrolling Sound panel: until it is zoomed in or clicked, the
+        // plain / Shift wheel scrolls the panel (as before), Ctrl / Alt wheels still run their action.
+        const bool in_box = ImGui::IsMouseHoveringRect(box0, box1, false) && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
+        for (int b = 0; b < 3; ++b)
+            if (ImGui::IsMouseClicked(b)) P.blend_focus = in_box;
+        nav = ViewNavInput(hot, hot, ImGui::GetID("##blendnav"), !(P.blend_focus || P.blend_span > 0.0));
         if (nav.zoom_h != 0.0) {
             const double f = std::clamp(static_cast<double>((io.MousePos.x - lane_x0) / lane_w), 0.0, 1.0);
             const double at = bv0 + f * bspan;

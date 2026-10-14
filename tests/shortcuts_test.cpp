@@ -551,9 +551,31 @@ int main()
         KeyRouteInput plain = wheel;
         plain.alt = false;
         CHECK(RouteViewerKey(b, plain, st2) == kRouteViewer);
+        // 13-45 review: a Ctrl+wheel over the UI is the viewer's only when a timeline under the mouse
+        // runs it (view_wheel); otherwise REAPER's, as before. The horizontal wheel without Ctrl is the
+        // viewer's anywhere (over the 3D view too: REAPER's arrange must not scroll behind).
         KeyRouteInput ctrl_wheel = plain;
         ctrl_wheel.ctrl = true;
+        CHECK(RouteViewerKey(b, ctrl_wheel, st2) == kRouteReaper);
+        ctrl_wheel.view_wheel = true;
         CHECK(RouteViewerKey(b, ctrl_wheel, st2) == kRouteViewer);
+        KeyRouteInput ctrl_shift = ctrl_wheel;
+        ctrl_shift.shift = true;
+        ctrl_shift.view_wheel = false;
+        CHECK(RouteViewerKey(b, ctrl_shift, st2) == kRouteReaper);
+        KeyRouteInput bound_off_ui = ctrl_wheel;  // the hook never sets view_wheel off the UI; still the viewer's
+        bound_off_ui.imgui_mouse = false;
+        CHECK(RouteViewerKey(b, bound_off_ui, st2) == kRouteViewer);
+        KeyRouteInput hwheel = plain;
+        hwheel.horizontal = true;
+        CHECK(RouteViewerKey(b, hwheel, st2) == kRouteViewer);
+        hwheel.imgui_mouse = false;  // over the 3D view
+        CHECK(RouteViewerKey(b, hwheel, st2) == kRouteViewer);
+        hwheel.ctrl = true;
+        CHECK(RouteViewerKey(b, hwheel, st2) == kRouteReaper);
+        KeyRouteInput plain_off = plain;
+        plain_off.imgui_mouse = false;  // the 3D view's own wheel: as before
+        CHECK(RouteViewerKey(b, plain_off, st2) == kRouteReaper);
         CHECK(!st2.alt_wheel_taken);
         KeyRouteInput off_ui = wheel;
         off_ui.imgui_mouse = false;

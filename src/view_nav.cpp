@@ -156,6 +156,15 @@ int ViewNavKeyRow(const ViewNavMap& m, int vk, int mods)
     return -1;
 }
 
+int ViewNavCharRow(const ViewNavMap& m, int ch, int mods)
+{
+    if (ch <= 0) return -1;
+    const int need = mods & (kViewModCtrl | kViewModAlt);
+    for (const auto& k : m.keys)
+        if (k.first.is_char && k.first.code == ch && (k.first.mods & (kViewModCtrl | kViewModAlt)) == need) return k.second;
+    return -1;
+}
+
 namespace {
 
 void AddWheel(ViewNavStep& s, const ViewNavWheel& w, double v)
@@ -196,6 +205,34 @@ ViewNavStep ViewNavStepFor(const ViewNavMap& m, int mods, float wheel, float hwh
 bool ViewNavWheelBound(const ViewNavMap& m, int mods, bool horizontal)
 {
     return (horizontal ? m.hwheel : m.wheel)[mods & 7].row >= 0;
+}
+
+bool ViewNavWheelYields(int mods)
+{
+    return (mods & (kViewModCtrl | kViewModAlt)) == 0;
+}
+
+bool KbShouldRead(KbWatch& w, const KbStamp& st, double now, double settle)
+{
+    if (!w.applied_once) return true;
+    if (st == w.applied) {
+        w.waiting = false;  // back as it was: nothing to read
+        return false;
+    }
+    if (!w.waiting || st != w.seen) {  // a new stamp: wait until it stops changing
+        w.waiting = true;
+        w.seen = st;
+        w.seen_at = now;
+        return false;
+    }
+    return now - w.seen_at >= settle;
+}
+
+void KbApplied(KbWatch& w, const KbStamp& stamp)
+{
+    w.applied_once = true;
+    w.applied = stamp;
+    w.waiting = false;
 }
 
 NavRecordOutcome ViewNavRecordStep(const ViewNavMap& m, int row, const ViewGesture& g, int* owner)

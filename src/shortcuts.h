@@ -218,6 +218,8 @@ struct KeyRouteInput {
     bool     confirm_open = false;  // the delete confirmation is open: Enter confirms it (spec 11-fb-11)
     bool     imgui_mouse = false;   // the viewer's UI wants the mouse (spec 11-fb-12: Alt + wheel zooms the strip)
     bool     full_screen = false;   // story 6-5-9: Esc is the viewer's (it leaves), other keys go to REAPER's main shortcuts
+    bool     horizontal = false;    // 13-45: the wheel message is the horizontal wheel (WM_MOUSEHWHEEL)
+    bool     view_wheel = false;    // 13-45: a RAV timeline under the mouse runs this wheel (view_nav.h)
 };
 
 struct KeyRouteState {
@@ -242,16 +244,21 @@ inline int RouteViewerKey(const ShortcutBindings& b, const KeyRouteInput& in, Ke
     // window swallows it: REAPER's menu bar does not open). Alt's next press starts afresh.
     // Spec 11-fb-14: Shift + wheel over the UI (the strip's scroll) is the viewer's too (Shift's
     // release opens no menu: nothing to swallow).
-    // 13-45: any wheel over the UI is the viewer's, with any modifiers, and the horizontal wheel too
-    // (KeyMsg::Wheel covers WM_MOUSEHWHEEL): RAV's timelines run the user's REAPER view bindings
-    // themselves (src/view_nav.h), so REAPER must not run them on its arrange view instead (a
-    // modified wheel bound in reaper-kb.ini never reached the Sound Edit window).
+    // 13-45: KeyMsg::Wheel covers the horizontal wheel too. A wheel a RAV timeline under the mouse
+    // runs (the user's REAPER view bindings, src/view_nav.h) is the viewer's, whatever its modifiers:
+    // REAPER must not run it on its arrange view instead. Over the UI, the plain and Shift wheel are
+    // the viewer's too (Dear ImGui scrolls the panel under the mouse with them). Any other wheel (a
+    // Ctrl+wheel over a panel RAV does not use it on) goes on to REAPER, as before. The horizontal
+    // wheel without Ctrl is the viewer's anywhere (over the 3D view it does nothing): it must not
+    // scroll REAPER's arrange behind.
     if (in.msg == KeyMsg::Wheel) {
         if (in.alt && in.imgui_mouse) {
             st.alt_wheel_taken = true;
             return kRouteViewer;
         }
-        if (in.imgui_mouse) return kRouteViewer;
+        if (in.view_wheel) return kRouteViewer;
+        if (in.imgui_mouse && !in.ctrl) return kRouteViewer;
+        if (in.horizontal && !in.ctrl) return kRouteViewer;
         return (in.recording || in.text_input) ? kRouteViewer : kRouteReaper;
     }
     if (down && in.key == vk::kMenu && !in.repeat) st.alt_wheel_taken = false;

@@ -113,6 +113,9 @@ std::vector<ViewGesture> ReaperViewGestures(const ViewKeymap& reaper, int row);
 int ViewNavOwner(const ViewNavMap& m, const ViewGesture& g);
 // The row a virtual key with these modifiers runs (key gestures that are characters aside), or -1.
 int ViewNavKeyRow(const ViewNavMap& m, int vk, int mods);
+// The row a typed character runs (a key REAPER binds as a character, e.g. "+"), or -1. Shift is part
+// of the character, so only Ctrl and Alt must match.
+int ViewNavCharRow(const ViewNavMap& m, int ch, int mods);
 
 // ---- one frame's input -> the view's moves ---------------------------------------------
 
@@ -133,6 +136,35 @@ ViewNavStep ViewNavStepFor(const ViewNavMap& m, int mods, float wheel, float hwh
 
 // Does a wheel with these modifiers run an action? (Then the view takes it from ImGui's scrolling.)
 bool ViewNavWheelBound(const ViewNavMap& m, int mods, bool horizontal);
+
+// A timeline inside a scrolling panel (a Blend's lanes in the Sound panel) leaves the wheel Dear
+// ImGui scrolls panels with (plain or Shift, no Ctrl / Alt) to the panel until the user works in it
+// (zoomed in, or clicked): true for those modifiers.
+bool ViewNavWheelYields(int mods);
+
+// ---- reaper-kb.ini re-read only once it stopped changing -----------------------------------
+
+// The file's stamp (exists, date, size) as last applied, and a newer one waiting to settle: REAPER
+// may be writing it, a half-written file is never read.
+struct KbStamp {
+    bool               exists = false;
+    long long          time = 0;
+    unsigned long long size = 0;
+    bool operator==(const KbStamp& o) const { return exists == o.exists && time == o.time && size == o.size; }
+    bool operator!=(const KbStamp& o) const { return !(*this == o); }
+};
+struct KbWatch {
+    bool    applied_once = false;
+    KbStamp applied;
+    bool    waiting = false;
+    KbStamp seen;
+    double  seen_at = 0.0;
+};
+// One check at `now` (seconds) with the file's stamp: true when it must be read now -- the first time,
+// or a stamp other than the applied one seen unchanged for at least `settle` seconds. The caller reads
+// it, then calls KbApplied.
+bool KbShouldRead(KbWatch& w, const KbStamp& now_stamp, double now, double settle = 1.0);
+void KbApplied(KbWatch& w, const KbStamp& stamp);
 
 // ---- recording an Own gesture -----------------------------------------------------------
 
@@ -200,9 +232,17 @@ const char* ViewNavRefusal();
 // This frame's moves for a view: the wheel when `wheel_on` (the mouse over it), the keys when
 // `keys_on` (it is hovered, or has the focus). A view hovered marks itself (the accelerator hook then
 // hands it its zoom keys: ViewNavTakesKey) and, when the wheel runs an action, takes the wheel from
-// Dear ImGui's own scrolling (`owner_id`, the view's ImGui id; 0 = no claim).
-ViewNavStep ViewNavInput(bool wheel_on, bool keys_on, unsigned owner_id = 0);
+// Dear ImGui's own scrolling (`owner_id`, the view's ImGui id; 0 = no claim). `panel_scroll_first`:
+// the plain / Shift wheel stays the panel's (ViewNavWheelYields).
+// The claim lags one frame (ImGui reads a key's owner as the frame starts): the first notch over a
+// timeline just entered may still scroll the panel. Accepted (13-45 review).
+ViewNavStep ViewNavInput(bool wheel_on, bool keys_on, unsigned owner_id = 0, bool panel_scroll_first = false);
 // A key a hovered timeline runs (the accelerator hook claims it for the viewer).
 bool ViewNavTakesKey(unsigned vk, bool ctrl, bool shift, bool alt);
+// The row a key down runs (its virtual key, or the character it types on this keyboard layout), -1.
+int ViewNavRowForKeyDown(unsigned vk, bool ctrl, bool shift, bool alt);
+// Does a timeline under the mouse (last frame) run this wheel? The accelerator hook then keeps it from
+// REAPER (a Ctrl+wheel RAV does not use goes on to REAPER).
+bool ViewNavClaimsWheel(bool horizontal, bool ctrl, bool shift, bool alt);
 
 }  // namespace rav

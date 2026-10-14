@@ -192,6 +192,57 @@ static void TestEncoding()
     CHECK(!DecodeViewNavChoice("own:999", &d));
 }
 
+// 13-45 review: a character binding is claimed by its character (Ctrl / Alt must match, Shift is in
+// the character); the Blend box leaves plain / Shift wheels to its panel; reaper-kb.ini is read again
+// only once its stamp held still for a second.
+static void TestReviewRules()
+{
+    ViewKeymap k = DefaultViewKeymap();
+    ViewKeyBinding plus;
+    plus.is_char = true;
+    plus.code = '+';
+    k.zoom_in.push_back(plus);
+    const ViewNavMap m = ResolveViewNav(k, ViewNavChoices{});
+    CHECK(ViewNavCharRow(m, '+', 0) == kNavZoomIn);
+    CHECK(ViewNavCharRow(m, '+', kViewModShift) == kNavZoomIn);  // Shift typed it
+    CHECK(ViewNavCharRow(m, '+', kViewModCtrl) == -1);
+    CHECK(ViewNavCharRow(m, '*', 0) == -1);
+    CHECK(ViewNavCharRow(m, 0, 0) == -1);
+
+    CHECK(ViewNavWheelYields(0));
+    CHECK(ViewNavWheelYields(kViewModShift));
+    CHECK(!ViewNavWheelYields(kViewModCtrl));
+    CHECK(!ViewNavWheelYields(kViewModAlt));
+    CHECK(!ViewNavWheelYields(kViewModCtrl | kViewModShift));
+
+    KbWatch w;
+    KbStamp a;
+    a.exists = true;
+    a.time = 100;
+    a.size = 50;
+    CHECK(KbShouldRead(w, a, 0.0));  // the first time: at once
+    KbApplied(w, a);
+    CHECK(!KbShouldRead(w, a, 5.0));  // unchanged
+    KbStamp b = a;
+    b.time = 200;
+    b.size = 10;  // REAPER starts writing
+    CHECK(!KbShouldRead(w, b, 10.0));
+    KbStamp c = b;
+    c.size = 80;  // still writing
+    CHECK(!KbShouldRead(w, c, 10.6));
+    CHECK(!KbShouldRead(w, c, 11.2));  // 0.6 s still
+    CHECK(KbShouldRead(w, c, 11.7));   // a second unchanged: read
+    KbApplied(w, c);
+    CHECK(!KbShouldRead(w, c, 20.0));
+    KbStamp gone;  // deleted: a change like any other, settled first
+    CHECK(!KbShouldRead(w, gone, 30.0));
+    CHECK(KbShouldRead(w, gone, 31.0));
+    KbApplied(w, gone);
+    CHECK(!KbShouldRead(w, c, 40.0));
+    CHECK(!KbShouldRead(w, gone, 40.5));  // back as applied: the wait is dropped
+    CHECK(!w.waiting);
+}
+
 int main()
 {
     TestTable();
@@ -201,6 +252,7 @@ int main()
     TestSteps();
     TestRecord();
     TestEncoding();
+    TestReviewRules();
     if (g_fail) {
         std::printf("%d failure(s)\n", g_fail);
         return 1;

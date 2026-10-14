@@ -19,6 +19,8 @@
 #include <iterator>
 #include <system_error>
 
+#include <windows.h>
+
 #include "console_log.h"
 #include "reaper_api.h"
 #include "shortcuts.h"
@@ -33,12 +35,11 @@ ViewNavChoices g_choices{};
 ViewNavMap     g_map = ResolveViewNav(g_reaper, g_choices);
 bool           g_choices_loaded = false;
 
-// reaper-kb.ini: when it was last checked / read (steady seconds), and what it was then.
-bool                            g_kb_known = false;  // read once at least (or found absent)
-double                          g_kb_checked = -1.0e9;
-double                          g_kb_read_at = -1.0;  // -1: not found (REAPER's defaults)
-std::filesystem::file_time_type g_kb_time{};
-std::uintmax_t                  g_kb_size = 0;
+// reaper-kb.ini: when it was last checked / read (steady seconds), its stamp as read and a newer one
+// settling (13-45 review: read only once it stopped changing for a second, never half-written).
+double  g_kb_checked = -1.0e9;
+double  g_kb_read_at = -1.0;  // -1: not found (REAPER's defaults)
+KbWatch g_kb_watch;
 
 // Recording.
 int         g_rec_row = -1;
@@ -47,7 +48,9 @@ ViewGesture g_pending;
 int         g_pending_owner = -1;
 std::string g_refusal;
 
-int g_hover_frame = -100;  // a timeline was under the mouse at this frame (ViewNavTakesKey)
+int  g_hover_frame = -100;  // a timeline was under the mouse at this frame (ViewNavTakesKey)
+int  g_wheel_frame = -100;  // ...and took the wheel then (ViewNavClaimsWheel)
+bool g_wheel_yields = false;  // ...leaving the plain / Shift wheel to its panel
 
 double Now()
 {
@@ -102,33 +105,39 @@ void LoadChoices()
     }
 }
 
-// Reads reaper-kb.ini when it changed (or the first time); REAPER's defaults when it is absent.
+KbStamp StampOf(const std::filesystem::path& p)
+{
+    KbStamp         st;
+    std::error_code ec;
+    st.exists = !p.empty() && std::filesystem::is_regular_file(p, ec);
+    if (st.exists) {
+        const auto t = std::filesystem::last_write_time(p, ec);
+        if (!ec) st.time = static_cast<long long>(t.time_since_epoch().count());
+        const std::uintmax_t size = std::filesystem::file_size(p, ec);
+        if (!ec) st.size = static_cast<unsigned long long>(size);
+    }
+    return st;
+}
+
+// Reads reaper-kb.ini the first time, then when it changed and has stayed the same for a second
+// (REAPER's defaults when it is absent). Checked at most once a second (twice while a change settles).
 void PollKb()
 {
     const double now = Now();
-    if (g_kb_known && now - g_kb_checked < 1.0) return;
+    if (now - g_kb_checked < (g_kb_watch.waiting ? 0.5 : 1.0)) return;
     g_kb_checked = now;
     const std::filesystem::path p = KbPath();
-    std::error_code ec;
-    const bool exists = !p.empty() && std::filesystem::is_regular_file(p, ec);
-    std::filesystem::file_time_type t{};
-    std::uintmax_t                  size = 0;
-    if (exists) {
-        t = std::filesystem::last_write_time(p, ec);
-        if (!ec) size = std::filesystem::file_size(p, ec);
-    }
-    const bool changed = !g_kb_known || exists != (g_kb_read_at >= 0.0) || (exists && (t != g_kb_time || size != g_kb_size));
-    if (!changed) return;
-    g_kb_known = true;
+    const KbStamp               st = StampOf(p);
+    if (!KbShouldRead(g_kb_watch, st, now)) return;
     std::string text;
-    if (exists) {
+    if (st.exists) {
         std::ifstream f(p, std::ios::binary);
         if (f) text.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
     }
+    if (StampOf(p) != st) return;  // changed while it was read: wait for it to settle again
     g_reaper = ParseViewKeymap(text);
-    g_kb_time = t;
-    g_kb_size = size;
-    g_kb_read_at = exists ? now : -1.0;
+    KbApplied(g_kb_watch, st);
+    g_kb_read_at = st.exists ? now : -1.0;
     Rebuild();
 }
 
@@ -347,7 +356,7 @@ const char* ViewNavRefusal()
     return g_refusal.c_str();
 }
 
-ViewNavStep ViewNavInput(bool wheel_on, bool keys_on, unsigned owner_id)
+ViewNavStep ViewNavInput(bool wheel_on, bool keys_on, unsigned owner_id, bool panel_scroll_first)
 {
     const ViewNavMap& m = CurrentViewNav();
     if (!ImGui::GetCurrentContext()) return ViewNavStep{};
@@ -355,6 +364,11 @@ ViewNavStep ViewNavInput(bool wheel_on, bool keys_on, unsigned owner_id)
     const int mods = ModsOf(io.KeyCtrl, io.KeyShift, io.KeyAlt);
     if (wheel_on) {
         g_hover_frame = ImGui::GetFrameCount();
+        g_wheel_frame = g_hover_frame;
+        g_wheel_yields = panel_scroll_first;
+        if (panel_scroll_first && ViewNavWheelYields(mods)) wheel_on = false;  // the panel scrolls
+    }
+    if (wheel_on) {
         // The wheel this view runs is not ImGui's to scroll a window with (from the next frame: the
         // owner is read when the frame starts; the view stays under the mouse meanwhile).
         if (owner_id != 0) {
@@ -367,6 +381,7 @@ ViewNavStep ViewNavInput(bool wheel_on, bool keys_on, unsigned owner_id)
         for (const auto& k : m.keys) {
             bool hit = false;
             if (k.first.is_char) {
+                if ((k.first.mods & (kViewModCtrl | kViewModAlt)) != (mods & (kViewModCtrl | kViewModAlt))) continue;
                 for (int i = 0; i < io.InputQueueCharacters.Size && !hit; ++i)
                     hit = static_cast<int>(io.InputQueueCharacters[i]) == k.first.code;
             } else if (k.first.mods == mods) {
@@ -379,10 +394,37 @@ ViewNavStep ViewNavInput(bool wheel_on, bool keys_on, unsigned owner_id)
     return ViewNavStepFor(m, mods, wheel_on ? io.MouseWheel : 0.0f, wheel_on ? io.MouseWheelH : 0.0f, rows);
 }
 
+int ViewNavRowForKeyDown(unsigned vk, bool ctrl, bool shift, bool alt)
+{
+    const ViewNavMap& m = CurrentViewNav();
+    const int         mods = ModsOf(ctrl, shift, alt);
+    const int         row = ViewNavKeyRow(m, static_cast<int>(vk), mods);
+    if (row >= 0) return row;
+    bool any_char = false;
+    for (const auto& k : m.keys) any_char = any_char || k.first.is_char;
+    if (!any_char) return -1;
+    // The character this key types with Shift as held (Ctrl / Alt left out: REAPER's character
+    // bindings carry them as modifiers). Flag 4: the keyboard state (dead keys) is left untouched.
+    BYTE ks[256] = {};
+    if (shift) ks[VK_SHIFT] = 0x80;
+    if (GetKeyState(VK_CAPITAL) & 1) ks[VK_CAPITAL] = 0x01;
+    wchar_t   buf[4] = {};
+    const int n = ToUnicodeEx(vk, MapVirtualKeyW(vk, 0 /*MAPVK_VK_TO_VSC*/), ks, buf, 4, 4, GetKeyboardLayout(0));
+    return n == 1 ? ViewNavCharRow(m, static_cast<int>(buf[0]), mods) : -1;
+}
+
 bool ViewNavTakesKey(unsigned vk, bool ctrl, bool shift, bool alt)
 {
     if (!ImGui::GetCurrentContext() || g_hover_frame < ImGui::GetFrameCount() - 1) return false;
-    return ViewNavKeyRow(CurrentViewNav(), static_cast<int>(vk), ModsOf(ctrl, shift, alt)) >= 0;
+    return ViewNavRowForKeyDown(vk, ctrl, shift, alt) >= 0;
+}
+
+bool ViewNavClaimsWheel(bool horizontal, bool ctrl, bool shift, bool alt)
+{
+    if (!ImGui::GetCurrentContext() || g_wheel_frame < ImGui::GetFrameCount() - 1) return false;
+    const int mods = ModsOf(ctrl, shift, alt);
+    if (g_wheel_yields && ViewNavWheelYields(mods)) return false;
+    return ViewNavWheelBound(CurrentViewNav(), mods, horizontal);
 }
 
 }  // namespace rav

@@ -192,6 +192,85 @@ inline int ShortcutOwner(const ShortcutBindings& b, const KeyBinding& key, int e
     return -1;
 }
 
+// ---- lot 13-60: rows linked to a REAPER action -------------------------------------------
+//
+// A row can follow a REAPER action the user picks instead of its own key (action_link.h): it then
+// runs on every key REAPER gives that action (reaper-kb.ini, live; the wheel is not a key action's).
+// Such a row holds no key of its own in ShortcutBindings (vk 0, never given its default back: the
+// `linked` flags below). The keys in force (ShortcutKeymap) are each row's own key, or its action's
+// keys; a key the user gave a row in RAV wins over a linked action's, and of two linked rows sharing a
+// key (in contexts that can be on together) the first one in the table takes it. The others are
+// "shadowed": shown, but they run nothing.
+
+using ShortcutKeyLists = std::array<std::vector<KeyBinding>, kShortcutCount>;
+
+struct ShortcutKeymap {
+    ShortcutKeyLists keys;      // what runs each row
+    ShortcutKeyLists shadowed;  // a linked row's keys another row takes
+};
+
+// The keys in force. `linked[i]` (optional): row i follows `linked_keys[i]` (its action's keys).
+inline ShortcutKeymap ResolveShortcutKeys(const ShortcutBindings& own, const ShortcutKeyLists& linked_keys,
+                                          const bool* linked)
+{
+    ShortcutKeymap m;
+    for (int i = 0; i < kShortcutCount; ++i)
+        if (!(linked && linked[i]) && own[static_cast<size_t>(i)].vk != 0)
+            m.keys[static_cast<size_t>(i)].push_back(own[static_cast<size_t>(i)]);
+    for (int i = 0; i < kShortcutCount; ++i) {
+        if (!(linked && linked[i])) continue;
+        for (const KeyBinding& k : linked_keys[static_cast<size_t>(i)]) {
+            if (!IsBindableKey(k.vk)) continue;
+            std::vector<KeyBinding>& mine = m.keys[static_cast<size_t>(i)];
+            if (std::find(mine.begin(), mine.end(), k) != mine.end()) continue;
+            bool taken = false;
+            for (int j = 0; j < kShortcutCount && !taken; ++j) {
+                if (j == i || !ShortcutContextsOverlap(kShortcutTable[j].context, kShortcutTable[i].context)) continue;
+                const std::vector<KeyBinding>& other = m.keys[static_cast<size_t>(j)];
+                // An own key wins; of two linked rows, the earlier one (already resolved).
+                if (std::find(other.begin(), other.end(), k) != other.end() && (!(linked && linked[j]) || j < i))
+                    taken = true;
+            }
+            (taken ? m.shadowed[static_cast<size_t>(i)] : mine).push_back(k);
+        }
+    }
+    return m;
+}
+
+// Every row on its own key (no link): the keymap of plain bindings.
+inline ShortcutKeymap ShortcutKeymapOf(const ShortcutBindings& b)
+{
+    return ResolveShortcutKeys(b, ShortcutKeyLists{}, nullptr);
+}
+
+// ShortcutActionFor over the keys in force.
+inline int ShortcutActionFor(const ShortcutKeymap& m, unsigned key, bool ctrl, bool shift, bool alt, bool video_view,
+                             bool tagging_view = false)
+{
+    for (int i = 0; i < kShortcutCount; ++i) {
+        if (kShortcutTable[i].context == ShortcutContext::VideoView && !video_view) continue;
+        if (kShortcutTable[i].context == ShortcutContext::TaggingView && !tagging_view) continue;
+        for (const KeyBinding& k : m.keys[static_cast<size_t>(i)])
+            if (ShortcutMatches(k, key, ctrl, shift, alt)) return i;
+    }
+    return -1;
+}
+
+// ShortcutOwner over the keys in force (`except` < 0: any row, any context).
+inline int ShortcutKeyOwner(const ShortcutKeymap& m, const KeyBinding& key, int except)
+{
+    for (int i = 0; i < kShortcutCount; ++i) {
+        if (i == except) continue;
+        const std::vector<KeyBinding>& ks = m.keys[static_cast<size_t>(i)];
+        if (std::find(ks.begin(), ks.end(), key) == ks.end()) continue;
+        if (except >= 0 && except < kShortcutCount &&
+            !ShortcutContextsOverlap(kShortcutTable[i].context, kShortcutTable[except].context))
+            continue;
+        return i;
+    }
+    return -1;
+}
+
 // ---- key routing (the accelerator hook's decision) -------------------------------------
 
 // What the hook says to REAPER: keep the key (0), or hand it to the viewer window (-1;
@@ -236,7 +315,8 @@ struct KeyRouteState {
 };
 
 // Which keys reach the viewer, and how the claim follows a taken key to its release.
-inline int RouteViewerKey(const ShortcutBindings& b, const KeyRouteInput& in, KeyRouteState& st)
+// 13-60: `b` is the keys in force (own keys and linked actions' keys, ShortcutKeymap).
+inline int RouteViewerKey(const ShortcutKeymap& b, const KeyRouteInput& in, KeyRouteState& st)
 {
     const int to_viewer = IsSysKeyMsg(in.msg) ? kRouteViewerSys : kRouteViewer;
     const bool down = in.msg == KeyMsg::KeyDown || in.msg == KeyMsg::SysKeyDown;
@@ -332,6 +412,12 @@ inline int RouteViewerKey(const ShortcutBindings& b, const KeyRouteInput& in, Ke
     return kRouteReaper;
 }
 
+// The same with each row on its own key (no linked action).
+inline int RouteViewerKey(const ShortcutBindings& b, const KeyRouteInput& in, KeyRouteState& st)
+{
+    return RouteViewerKey(ShortcutKeymapOf(b), in, st);
+}
+
 // Spec 11-fb-17 -- whether a WM_CHAR / WM_SYSCHAR / WM_DEADCHAR reaching the viewer window is
 // the viewer's: the character of a key it took (claimed_vk, still set until that key's
 // release), any character while a new key is recorded, or while an ImGui text field is
@@ -398,9 +484,9 @@ inline std::vector<int> ResetShortcut(ShortcutBindings& b, int id)
 // added or changed by a newer RAV) wins: that action goes unbound (vk 0, listed in `unbound`,
 // never saved), so it gets its default back by itself on a later load once the key is free.
 // Two stored keys (or no `stored`) keep the old rule: the custom one is reset, the later one
-// when both are custom.
+// when both are custom. 13-60: a row `linked` to a REAPER action (optional flags) holds no key (vk 0): left as is.
 inline std::vector<int> SanitizeShortcuts(ShortcutBindings& b, const bool* stored = nullptr,
-                                          std::vector<int>* unbound = nullptr)
+                                          std::vector<int>* unbound = nullptr, const bool* linked = nullptr)
 {
     std::vector<int> reset;
     auto note = [&reset](const std::vector<int>& v) {
@@ -408,7 +494,7 @@ inline std::vector<int> SanitizeShortcuts(ShortcutBindings& b, const bool* store
             if (std::find(reset.begin(), reset.end(), x) == reset.end()) reset.push_back(x);
     };
     for (int i = 0; i < kShortcutCount; ++i)
-        if (!IsBindableKey(b[static_cast<size_t>(i)].vk)) note(ResetShortcut(b, i));
+        if (!(linked && linked[i]) && !IsBindableKey(b[static_cast<size_t>(i)].vk)) note(ResetShortcut(b, i));
     auto on_default = [&b](int k) { return b[static_cast<size_t>(k)] == kShortcutTable[k].def; };
     for (int pass = 0; pass < 2 * kShortcutCount; ++pass) {
         bool clash = false;
@@ -445,13 +531,14 @@ inline int ShortcutResetBlocker(const ShortcutBindings& b, int id)
 }
 
 // 10-11 review: every unbound action whose default key is free again (the action that held it
-// took another key or went back to its own default) gets it back at once. Returns them.
-inline std::vector<int> RebindFreedDefaults(ShortcutBindings& b)
+// took another key or went back to its own default) gets it back at once. Returns them. 13-60: never a
+// row `linked` to a REAPER action (optional flags).
+inline std::vector<int> RebindFreedDefaults(ShortcutBindings& b, const bool* linked = nullptr)
 {
     std::vector<int> back;
     for (int i = 0; i < kShortcutCount; ++i) {
         const KeyBinding& d = kShortcutTable[i].def;
-        if (b[static_cast<size_t>(i)].vk != 0 || !IsBindableKey(d.vk) || ShortcutOwner(b, d, i) >= 0) continue;
+        if ((linked && linked[i]) || b[static_cast<size_t>(i)].vk != 0 || !IsBindableKey(d.vk) || ShortcutOwner(b, d, i) >= 0) continue;
         b[static_cast<size_t>(i)] = d;
         back.push_back(i);
     }
@@ -618,6 +705,20 @@ int  ShortcutRecordingId();                // -1 when not recording
 const char* ShortcutRecordingConflict();   // the label of the action that holds the last key, or nullptr
 // A key down while recording (always consumed). Esc cancels.
 void ShortcutRecordKey(unsigned key, bool ctrl, bool shift, bool alt);
+
+// ---- lot 13-60: a row linked to a REAPER action ------------------------------------------
+// Stored in the row's ExtState entry as "link:<id>" (action_link.h); the action's keys are read from
+// reaper-kb.ini, again whenever REAPER saves it (view_nav.h ReaperKbGeneration). A character key REAPER
+// binds ("+") is the key that types it on this keyboard layout. Recording a key, or right-click (back to
+// the default), ends the link.
+const ShortcutKeymap& CurrentShortcutKeymap();
+// Any row (own key or linked action's key, any context) runs this key.
+bool IsRavShortcutKey(unsigned key, bool ctrl, bool shift, bool alt);
+// The row's action id ("" = its own key).
+const std::string& ShortcutLink(int id);
+void LinkShortcutToAction(int id, const std::string& cmd);
+// "Ctrl+K" of a key (the layout's names).
+std::string ShortcutBindingLabel(const KeyBinding& b);
 
 // ---- small persisted settings (spec 11-fb-11) ------------------------------------------
 // One persistence path for the viewer's own settings: REAPER ExtState, the same section as

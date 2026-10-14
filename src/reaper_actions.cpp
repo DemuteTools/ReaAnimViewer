@@ -7,9 +7,13 @@
 #ifdef _WIN32
 
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <string>
+#include <utility>
+#include <vector>
 
+#include "action_link.h"
 #include "console_log.h"
 #include "reaper_api.h"
 
@@ -19,10 +23,18 @@ namespace {
 using GetTextFromCmdFn = const char* (*)(int cmd, KbdSectionInfo* section);
 using EnumerateActionsFn = int (*)(KbdSectionInfo* section, int idx, const char** name_out);
 using SectionFromUniqueIdFn = KbdSectionInfo* (*)(int unique_id);
+using NamedLookupFn = int (*)(const char* name);                       // 13-60
+using ReverseNamedLookupFn = const char* (*)(int cmd);
+using CountShortcutsFn = int (*)(KbdSectionInfo* section, int cmd);
+using ShortcutDescFn = bool (*)(KbdSectionInfo* section, int cmd, int idx, char* out, int out_sz);
 
 GetTextFromCmdFn      g_get_text = nullptr;
 EnumerateActionsFn    g_enumerate = nullptr;
 SectionFromUniqueIdFn g_section = nullptr;
+NamedLookupFn         g_named = nullptr;
+ReverseNamedLookupFn  g_reverse = nullptr;
+CountShortcutsFn      g_count_shortcuts = nullptr;
+ShortcutDescFn        g_shortcut_desc = nullptr;
 bool                  g_lookup_ready = false;  // InitReaperActionLookup ran
 
 constexpr int kRegionRenderMatrixId = 41888;  // View: Show region render matrix window
@@ -104,6 +116,10 @@ void InitReaperActionLookup(void* (*get_func)(const char* name))
     g_get_text = reinterpret_cast<GetTextFromCmdFn>(get_func("kbd_getTextFromCmd"));
     g_enumerate = reinterpret_cast<EnumerateActionsFn>(get_func("kbd_enumerateActions"));
     g_section = reinterpret_cast<SectionFromUniqueIdFn>(get_func("SectionFromUniqueID"));
+    g_named = reinterpret_cast<NamedLookupFn>(get_func("NamedCommandLookup"));
+    g_reverse = reinterpret_cast<ReverseNamedLookupFn>(get_func("ReverseNamedCommandLookup"));
+    g_count_shortcuts = reinterpret_cast<CountShortcutsFn>(get_func("CountActionShortcuts"));
+    g_shortcut_desc = reinterpret_cast<ShortcutDescFn>(get_func("GetActionShortcutDesc"));
     g_lookup_ready = true;
 }
 
@@ -150,6 +166,91 @@ bool ReaperVideoWindowOpen(bool* known)
     }
     if (known) *known = state >= 0;
     return state == 1;
+}
+
+// ---- 13-60 ---------------------------------------------------------------------------
+
+namespace {
+
+// "_" + REAPER's name for a named action's number, "" for a native one.
+std::string NamedIdOf(int cmd)
+{
+    const char* r = (g_reverse && cmd > 0) ? g_reverse(cmd) : nullptr;
+    return (r && r[0]) ? std::string("_") + r : std::string();
+}
+
+std::string NameOf(int cmd)
+{
+    const char* n = (g_get_text && cmd > 0) ? g_get_text(cmd, nullptr) : nullptr;
+    return n ? std::string(n) : std::string();
+}
+
+}  // namespace
+
+bool ReaperActionLookupReady()
+{
+    return g_lookup_ready;
+}
+
+ReaperActionInfo LookupReaperAction(const std::string& text)
+{
+    ReaperActionInfo info;
+    info.id = NormalizeCommandId(text);
+    if (info.id.empty()) return info;
+    if (info.id[0] != '_') {
+        const int n = std::atoi(info.id.c_str());
+        info.checked = g_get_text != nullptr;
+        info.name = NameOf(n);
+        const std::string named = NamedIdOf(n);  // a named action's number: kb.ini names it by its string
+        if (!named.empty()) info.id = named;
+        info.cmd = (!info.name.empty() || !named.empty()) ? n : 0;
+        return info;
+    }
+    if (!g_named) return info;
+    info.checked = true;
+    int cmd = g_named(info.id.c_str());
+    if (cmd <= 0) cmd = g_named(info.id.c_str() + 1);  // without its underscore
+    if (cmd <= 0) return info;
+    info.cmd = cmd;
+    info.name = NameOf(cmd);
+    const std::string named = NamedIdOf(cmd);  // REAPER's own spelling
+    if (!named.empty()) info.id = named;
+    return info;
+}
+
+std::vector<ReaperActionEntry> ListReaperActions()
+{
+    std::vector<ReaperActionEntry> out;
+    KbdSectionInfo* main = (g_enumerate && g_section) ? g_section(0) : nullptr;
+    if (!main) return out;
+    for (int i = 0; i < kMaxActionsScanned; ++i) {
+        const char* n = nullptr;
+        const int   id = g_enumerate(main, i, &n);
+        if (id <= 0) break;
+        ReaperActionEntry e;
+        e.id = NamedIdOf(id);
+        if (e.id.empty()) e.id = std::to_string(id);
+        e.name = n ? n : "";
+        out.push_back(std::move(e));
+    }
+    return out;
+}
+
+std::vector<std::string> ReaperActionShortcuts(int cmd, bool* known)
+{
+    std::vector<std::string> out;
+    KbdSectionInfo* main = (g_count_shortcuts && g_section && cmd > 0) ? g_section(0) : nullptr;
+    if (known) *known = main != nullptr;
+    if (!main) return out;
+    const int n = g_count_shortcuts(main, cmd);
+    for (int i = 0; i < n && i < 64; ++i) {
+        char buf[128] = {};
+        if (g_shortcut_desc && g_shortcut_desc(main, cmd, i, buf, static_cast<int>(sizeof(buf))) && buf[0])
+            out.emplace_back(buf);
+        else
+            out.emplace_back("?");
+    }
+    return out;
 }
 
 }  // namespace rav

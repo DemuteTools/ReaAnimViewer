@@ -243,8 +243,68 @@ static void TestReviewRules()
     CHECK(!w.waiting);
 }
 
+// 13-60: a row linked to a REAPER action the user picks (Antho's _WOL_ADJENVTRHMOUSE on Zoom V).
+static void TestLinkedAction()
+{
+    // 253 = 0xF0 | 8 | 5: the wheel with Ctrl + Shift (REAPER's default there, 972, is not a view row's).
+    const ViewKeymap k = ParseViewKeymap("KEY 255 253 _WOL_ADJENVTRHMOUSE 0\n"
+                                         "KEY 9 74 _WOL_ADJENVTRHMOUSE 0\n");  // Ctrl+J
+    ViewNavChoices c{};
+    c[kNavZoomV].cmd = "_WOL_ADJENVTRHMOUSE";
+    const ViewNavMap m = ResolveViewNav(k, c);
+    CHECK(ViewNavOwner(m, WheelGesture(false, kViewModCtrl | kViewModShift)) == kNavZoomV);
+    CHECK(ViewNavOwner(m, KeyGesture('J', kViewModCtrl)) == kNavZoomV);
+    // 1000's own wheel (Ctrl+wheel by default) no longer runs Zoom V: the row follows the picked action only.
+    CHECK(ViewNavOwner(m, WheelGesture(false, kViewModCtrl)) == -1);
+    // The other rows are untouched (REAPER's defaults).
+    CHECK(ViewNavOwner(m, WheelGesture(false, 0)) == kNavZoomH);
+    CHECK(ViewNavOwner(m, WheelGesture(false, kViewModAlt)) == kNavScrollH);
+    // A wheel step on it: zoom V, forward (a non-view action is never reversed).
+    const ViewNavStep s = ViewNavStepFor(m, kViewModCtrl | kViewModShift, 1.0f, 0.0f, {});
+    CHECK(Near(s.zoom_v, 1.0) && !s.any_h());
+    // Picking a REAPER view action keeps its reversed / page: Scroll H linked to 977 (reversed), on Alt+wheel.
+    ViewNavChoices r{};
+    r[kNavScrollH].cmd = "977";
+    const ViewNavMap mr = ResolveViewNav(ParseViewKeymap("KEY 255 250 977 0\n"), r);
+    CHECK(mr.wheel[kViewModAlt].row == kNavScrollH && mr.wheel[kViewModAlt].reversed);
+    // A picked action's gesture taken from a default-linked row: the user's choice wins.
+    ViewNavChoices t{};
+    t[kNavScrollV].cmd = "990";  // Scroll V follows Zoom H's action: the plain wheel scrolls V now
+    const ViewNavMap mt = ResolveViewNav(DefaultViewKeymap(), t);
+    CHECK(ViewNavOwner(mt, WheelGesture(false, 0)) == kNavScrollV);
+    // An Own row takes a gesture from a linked-to-action row.
+    t[kNavZoomH].own = true;
+    t[kNavZoomH].g = WheelGesture(false, 0);
+    CHECK(ViewNavOwner(ResolveViewNav(DefaultViewKeymap(), t), WheelGesture(false, 0)) == kNavZoomH);
+    // Zoom in / out linked to an action take its keys only.
+    ViewNavChoices z{};
+    z[kNavZoomIn].cmd = "_WOL_ADJENVTRHMOUSE";
+    const ViewNavMap mz = ResolveViewNav(k, z);
+    CHECK(ViewNavOwner(mz, KeyGesture('J', kViewModCtrl)) == kNavZoomIn);
+    CHECK(ViewNavOwner(mz, WheelGesture(false, kViewModCtrl | kViewModShift)) == -1);
+    // Recording an own gesture the linked row runs: a conflict, "linked to REAPER".
+    int owner = -1;
+    CHECK(ViewNavRecordStep(m, kNavScrollH, KeyGesture('J', kViewModCtrl), &owner) == NavRecordOutcome::Conflict &&
+          owner == kNavZoomV);
+    // Assigning an own gesture ends the link.
+    ViewNavChoices a = c;
+    ViewNavAssign(a, kNavZoomV, KeyGesture('K', 0));
+    CHECK(a[kNavZoomV].own && a[kNavZoomV].cmd.empty());
+    // ExtState: "link:<id>", the old values unchanged.
+    CHECK(EncodeViewNavChoice(c[kNavZoomV]) == "link:_WOL_ADJENVTRHMOUSE");
+    ViewNavChoice d;
+    CHECK(DecodeViewNavChoice("link:_WOL_ADJENVTRHMOUSE", &d) && d == c[kNavZoomV] && !d.own);
+    CHECK(DecodeViewNavChoice("link: 0991", &d) && d.cmd == "991");
+    CHECK(DecodeViewNavChoice("link:WOL_X", &d) && d.cmd == "_WOL_X");
+    const ViewNavChoice keep = d;
+    CHECK(!DecodeViewNavChoice("link:", &d) && d == keep);
+    CHECK(!DecodeViewNavChoice("link:0", &d));
+    CHECK(DecodeViewNavChoice("", &d) && d.linked_default());
+}
+
 int main()
 {
+    TestLinkedAction();
     TestTable();
     TestLinkedDefaults();
     TestLinkedFollowsFile();

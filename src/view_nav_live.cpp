@@ -17,11 +17,15 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <string>
 #include <system_error>
+#include <vector>
 
 #include <windows.h>
 
+#include "action_link.h"
 #include "console_log.h"
+#include "reaper_actions.h"  // 13-60: the keys REAPER lists for a linked action
 #include "reaper_api.h"
 #include "shortcuts.h"
 
@@ -40,6 +44,7 @@ bool           g_choices_loaded = false;
 double  g_kb_checked = -1.0e9;
 double  g_kb_read_at = -1.0;  // -1: not found (REAPER's defaults)
 KbWatch g_kb_watch;
+int     g_kb_generation = 0;  // 13-60: moves on each read (ReaperKbGeneration)
 
 // Recording.
 int         g_rec_row = -1;
@@ -68,6 +73,40 @@ std::filesystem::path KbPath()
 void Rebuild()
 {
     g_map = ResolveViewNav(g_reaper, g_choices);
+}
+
+// 13-60: the keys REAPER lists for every linked action (a view row's or a KEYS row's), into
+// g_reaper.listed: they add REAPER's built-in default keys, which reaper-kb.ini does not hold. Before
+// REAPER's lookups are ready it waits (g_listed_pending: done on a later CurrentViewNav).
+bool g_listed_pending = false;
+
+void FillListed()
+{
+    g_reaper.listed.clear();
+    if (!ReaperActionLookupReady()) {
+        g_listed_pending = true;
+        return;
+    }
+    g_listed_pending = false;
+    std::vector<std::string> cmds;
+    auto add = [&cmds](const std::string& c) {
+        if (c.empty()) return;
+        for (const std::string& x : cmds)
+            if (SameCommandId(x, c)) return;
+        cmds.push_back(c);
+    };
+    for (const ViewNavChoice& c : g_choices)
+        if (!c.own) add(c.cmd);
+    for (int i = 0; i < kShortcutCount; ++i) add(ShortcutLink(i));
+    for (const std::string& c : cmds) {
+        const ReaperActionInfo info = LookupReaperAction(c);
+        if (info.cmd <= 0) continue;
+        bool known = false;
+        for (const std::string& d : ReaperActionShortcuts(info.cmd, &known)) {
+            KbGesture g;
+            if (ParseReaperShortcutDesc(d, &g)) g_reaper.listed.emplace_back(c, g);
+        }
+    }
 }
 
 std::string ExtKey(int row)
@@ -136,6 +175,8 @@ void PollKb()
     }
     if (StampOf(p) != st) return;  // changed while it was read: wait for it to settle again
     g_reaper = ParseViewKeymap(text);
+    FillListed();  // 13-60
+    ++g_kb_generation;
     KbApplied(g_kb_watch, st);
     g_kb_read_at = st.exists ? now : -1.0;
     Rebuild();
@@ -235,6 +276,11 @@ const ViewNavMap& CurrentViewNav()
         Rebuild();
     }
     PollKb();
+    if (g_listed_pending && ReaperActionLookupReady()) {  // 13-60: REAPER's lookups are ready now
+        FillListed();
+        ++g_kb_generation;
+        Rebuild();
+    }
     return g_map;
 }
 
@@ -272,7 +318,35 @@ void SetViewNavOwn(int row)
     if (g_choices[static_cast<size_t>(row)].own) return;
     g_choices[static_cast<size_t>(row)].own = true;  // not set yet: the user records it (double-click)
     g_choices[static_cast<size_t>(row)].g = ViewGesture{};
+    g_choices[static_cast<size_t>(row)].cmd.clear();
     Save(row);
+    Rebuild();
+}
+
+void SetViewNavAction(int row, const std::string& cmd)
+{
+    if (row < 0 || row >= kNavRowCount) return;
+    CurrentViewNav();
+    const std::string id = NormalizeCommandId(cmd);
+    if (id.empty()) return;
+    ViewNavChoice c;
+    c.cmd = id;
+    g_choices[static_cast<size_t>(row)] = c;
+    Save(row);
+    RefreshReaperListedKeys();  // its keys in REAPER's own list too
+}
+
+int ReaperKbGeneration()
+{
+    CurrentViewNav();
+    return g_kb_generation;
+}
+
+void RefreshReaperListedKeys()
+{
+    CurrentViewNav();
+    FillListed();
+    ++g_kb_generation;
     Rebuild();
 }
 
@@ -320,8 +394,9 @@ void ViewNavRecordKey(unsigned vk, bool ctrl, bool shift, bool alt)
         return;
     }
     if (!IsBindableKey(vk)) return;  // a modifier on its own: still waiting
-    // A key of RAV's own table (V, C, Delete...) stays its own: refused, still waiting.
-    const int rav = ShortcutOwner(CurrentShortcuts(), KeyBinding{vk, ctrl, shift, alt}, -1);
+    // A key of RAV's own table (V, C, Delete...) stays its own: refused, still waiting. 13-60: a KEYS
+    // row's key from the REAPER action it is linked to too.
+    const int rav = ShortcutKeyOwner(CurrentShortcutKeymap(), KeyBinding{vk, ctrl, shift, alt}, -1);
     if (rav >= 0) {
         g_has_pending = false;
         g_refusal = std::string("That key is RAV's \"") + kShortcutTable[rav].label + "\": pick another.";
@@ -387,6 +462,10 @@ ViewNavStep ViewNavInput(bool wheel_on, bool keys_on, unsigned owner_id, bool pa
             } else if (k.first.mods == mods) {
                 const ImGuiKey key = KeyOfVk(k.first.code);
                 hit = key != ImGuiKey_None && ImGui::IsKeyPressed(key, true);
+                // 13-60: a key one of RAV's KEYS rows runs (its own, or its linked REAPER action's) is that
+                // row's, not a view move.
+                if (hit && IsRavShortcutKey(static_cast<unsigned>(k.first.code), io.KeyCtrl, io.KeyShift, io.KeyAlt))
+                    hit = false;
             }
             if (hit) rows.push_back(k.second);
         }
@@ -398,6 +477,7 @@ int ViewNavRowForKeyDown(unsigned vk, bool ctrl, bool shift, bool alt)
 {
     const ViewNavMap& m = CurrentViewNav();
     const int         mods = ModsOf(ctrl, shift, alt);
+    if (IsRavShortcutKey(vk, ctrl, shift, alt)) return -1;  // 13-60: a KEYS row's key stays its own
     const int         row = ViewNavKeyRow(m, static_cast<int>(vk), mods);
     if (row >= 0) return row;
     bool any_char = false;

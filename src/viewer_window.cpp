@@ -2869,7 +2869,7 @@ int ViewerTranslateAccel(MSG* msg, accelerator_register_t* /*ctx*/)
         g_key_route.claimed_vk = in.key;
     }
     // The decision itself is pure (src/shortcuts.h RouteViewerKey, host-tested).
-    return RouteViewerKey(CurrentShortcuts(), in, g_key_route);
+    return RouteViewerKey(CurrentShortcutKeymap(), in, g_key_route);  // 13-60: linked actions' keys too
 }
 
 accelerator_register_t g_accel_reg = { &ViewerTranslateAccel, true, nullptr };

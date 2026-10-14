@@ -1,15 +1,23 @@
 // SPDX-License-Identifier: MIT
 //
 // See shortcuts.h -- the live half: the current bindings, REAPER ExtState, the
-// recording session and the key names of the user's keyboard layout.
+// recording session and the key names of the user's keyboard layout. 13-60: the rows linked
+// to a REAPER action, their keys read from reaper-kb.ini (through view_nav's watch).
 
 #include "shortcuts.h"
 
+#include <algorithm>
+#include <array>
+#include <string>
+#include <vector>
+
 #include <windows.h>
 
+#include "action_link.h"
 #include "console_log.h"
 #include "reaper_api.h"
-#include "view_nav.h"  // 13-45: the view rows' recording
+#include "reaper_view_keys.h"
+#include "view_nav.h"  // 13-45: the view rows' recording; 13-60: reaper-kb.ini as read
 
 namespace rav {
 namespace {
@@ -21,9 +29,23 @@ std::string      g_labels[kShortcutCount];
 int              g_recording_id = -1;
 int              g_conflict_id  = -1;
 
+// 13-60: the rows linked to a REAPER action ("" = own key), and the keys in force built from them
+// (again when a binding, a link or reaper-kb.ini changes).
+std::array<std::string, kShortcutCount> g_links;
+ShortcutKeymap                          g_keymap = ShortcutKeymapOf(DefaultShortcutBindings());
+bool                                    g_keymap_dirty = true;
+int                                     g_keymap_kb_gen = -1;
+
 std::string ExtKey(int id)
 {
     return std::string("shortcut.") + kShortcutTable[id].id;
+}
+
+std::array<bool, kShortcutCount> LinkedFlags()
+{
+    std::array<bool, kShortcutCount> f{};
+    for (int i = 0; i < kShortcutCount; ++i) f[static_cast<size_t>(i)] = !g_links[static_cast<size_t>(i)].empty();
+    return f;
 }
 
 }  // namespace
@@ -48,20 +70,72 @@ std::string LayoutKeyName(unsigned key)
 
 namespace {
 
+// 13-60: the keys REAPER gives a linked row's action. A character binding ("+") is the key typing it
+// on this layout (VkKeyScanEx: its Shift / Ctrl / Alt added); the wheel is not a key row's.
+std::vector<KeyBinding> LinkedKeys(const std::string& cmd)
+{
+    std::vector<KeyBinding> out;
+    for (const KbGesture& g : KbGesturesOf(CurrentReaperViewKeys(), cmd)) {
+        if (g.input != KbInput::Key) continue;
+        KeyBinding b;
+        b.ctrl = (g.mods & kViewModCtrl) != 0;
+        b.alt = (g.mods & kViewModAlt) != 0;
+        b.shift = (g.mods & kViewModShift) != 0;
+        if (g.is_char) {
+            if (g.code <= 0 || g.code > 0xFFFF) continue;
+            const SHORT scan = VkKeyScanExW(static_cast<WCHAR>(g.code), GetKeyboardLayout(0));
+            if (scan == -1) continue;  // no key types it on this layout
+            b.vk = static_cast<unsigned>(scan & 0xFF);
+            b.shift = b.shift || (scan & 0x100);
+            b.ctrl = b.ctrl || (scan & 0x200);
+            b.alt = b.alt || (scan & 0x400);
+        } else {
+            b.vk = static_cast<unsigned>(g.code);
+        }
+        if (IsBindableKey(b.vk) && std::find(out.begin(), out.end(), b) == out.end()) out.push_back(b);
+    }
+    return out;
+}
+
+void RefreshLabels();
+
+void RebuildKeymap()
+{
+    ShortcutKeyLists linked_keys;
+    const std::array<bool, kShortcutCount> linked = LinkedFlags();
+    for (int i = 0; i < kShortcutCount; ++i)
+        if (linked[static_cast<size_t>(i)]) linked_keys[static_cast<size_t>(i)] = LinkedKeys(g_links[static_cast<size_t>(i)]);
+    g_keymap = ResolveShortcutKeys(g_bindings, linked_keys, linked.data());
+    g_keymap_dirty = false;
+    g_keymap_kb_gen = ReaperKbGeneration();
+    RefreshLabels();
+}
+
+const ShortcutKeymap& Keymap()
+{
+    if (g_keymap_dirty || g_keymap_kb_gen != ReaperKbGeneration()) RebuildKeymap();
+    return g_keymap;
+}
+
 void RefreshLabels()
 {
-    for (int i = 0; i < kShortcutCount; ++i)
-        g_labels[i] = FormatShortcut(g_bindings[static_cast<size_t>(i)], &LayoutKeyName);
+    // The first key in force (a linked row: its action's first key; none: "").
+    for (int i = 0; i < kShortcutCount; ++i) {
+        const std::vector<KeyBinding>& ks = g_keymap.keys[static_cast<size_t>(i)];
+        g_labels[i] = ks.empty() ? std::string() : FormatShortcut(ks.front(), &LayoutKeyName);
+    }
 }
 
 // Only custom keys are stored: a default deletes the entry (10-11: so does unbound, which
-// gives the default back on the next load once its key is free).
+// gives the default back on the next load once its key is free). 13-60: a link is "link:<id>".
 void Save(int id)
 {
     if (id < 0 || id >= kShortcutCount) return;
     const KeyBinding& b = g_bindings[static_cast<size_t>(id)];
     const std::string key = ExtKey(id);
-    if (b == kShortcutTable[id].def || b.vk == 0) {
+    if (!g_links[static_cast<size_t>(id)].empty()) {
+        if (SetExtState) SetExtState(kExtSection, key.c_str(), EncodeActionLink(g_links[static_cast<size_t>(id)]).c_str(), true);
+    } else if (b == kShortcutTable[id].def || b.vk == 0) {
         if (DeleteExtState) DeleteExtState(kExtSection, key.c_str(), true);
     } else if (SetExtState) {
         SetExtState(kExtSection, key.c_str(), EncodeShortcut(b).c_str(), true);
@@ -73,6 +147,7 @@ void Save(int id)
 void LoadShortcuts()
 {
     g_bindings = DefaultShortcutBindings();
+    g_links = {};
     bool bad[kShortcutCount] = {};
     bool stored[kShortcutCount] = {};  // 10-11: the key comes from the user's settings
     for (int i = 0; i < kShortcutCount; ++i) {
@@ -81,7 +156,11 @@ void LoadShortcuts()
         const char* v = GetExtState(kExtSection, key.c_str());
         if (!v || !v[0]) continue;
         KeyBinding b;
-        if (DecodeShortcut(v, &b)) {
+        std::string link;
+        if (DecodeActionLink(v, &link)) {  // 13-60: linked to a REAPER action, no key of its own
+            g_links[static_cast<size_t>(i)] = link;
+            g_bindings[static_cast<size_t>(i)] = KeyBinding{};
+        } else if (DecodeShortcut(v, &b)) {
             g_bindings[static_cast<size_t>(i)] = b;
             stored[i] = true;
         } else {
@@ -90,8 +169,9 @@ void LoadShortcuts()
             bad[i] = true;
         }
     }
+    const std::array<bool, kShortcutCount> linked = LinkedFlags();
     std::vector<int> unbound;
-    for (int i : SanitizeShortcuts(g_bindings, stored, &unbound)) {
+    for (int i : SanitizeShortcuts(g_bindings, stored, &unbound, linked.data())) {
         LogWarn("shortcut \"%s\": stored key clashes with another action, using %s", kShortcutTable[i].label,
                 FormatShortcut(kShortcutTable[i].def, &LayoutKeyName).c_str());
         Save(i);
@@ -107,7 +187,9 @@ void LoadShortcuts()
     }
     for (int i = 0; i < kShortcutCount; ++i)
         if (bad[i]) Save(i);  // the default now: the stale entry goes
-    RefreshLabels();
+    RefreshReaperListedKeys();  // 13-60: the keys REAPER lists for the linked actions (once its lookups are ready)
+    g_keymap_dirty = true;
+    RebuildKeymap();
 }
 
 const ShortcutBindings& CurrentShortcuts()
@@ -115,33 +197,83 @@ const ShortcutBindings& CurrentShortcuts()
     return g_bindings;
 }
 
+const ShortcutKeymap& CurrentShortcutKeymap()
+{
+    return Keymap();
+}
+
+bool IsRavShortcutKey(unsigned key, bool ctrl, bool shift, bool alt)
+{
+    return ShortcutKeyOwner(Keymap(), KeyBinding{key, ctrl, shift, alt}, -1) >= 0;
+}
+
+const std::string& ShortcutLink(int id)
+{
+    static const std::string kNone;
+    return (id < 0 || id >= kShortcutCount) ? kNone : g_links[static_cast<size_t>(id)];
+}
+
+void LinkShortcutToAction(int id, const std::string& cmd)
+{
+    if (id < 0 || id >= kShortcutCount) return;
+    const std::string n = NormalizeCommandId(cmd);
+    if (n.empty()) return;
+    g_links[static_cast<size_t>(id)] = n;
+    g_bindings[static_cast<size_t>(id)] = KeyBinding{};  // no key of its own while linked
+    Save(id);
+    // Its own key is free now: an action waiting for that default gets it back.
+    const std::array<bool, kShortcutCount> linked = LinkedFlags();
+    for (int i : RebindFreedDefaults(g_bindings, linked.data())) Save(i);
+    RefreshReaperListedKeys();  // 13-60: its keys in REAPER's own list too
+    g_keymap_dirty = true;
+    RebuildKeymap();
+}
+
+std::string ShortcutBindingLabel(const KeyBinding& b)
+{
+    return FormatShortcut(b, &LayoutKeyName);
+}
+
 int ShortcutActionForKey(unsigned key, bool ctrl, bool shift, bool alt, bool video_view, bool tagging_view)
 {
-    return ShortcutActionFor(g_bindings, key, ctrl, shift, alt, video_view, tagging_view);
+    return ShortcutActionFor(Keymap(), key, ctrl, shift, alt, video_view, tagging_view);
 }
 
 void RefreshShortcutLabels()
 {
-    RefreshLabels();
+    g_keymap_dirty = true;  // 13-60: a character key of a linked action may be another key now
+    RebuildKeymap();
 }
 
 const char* ShortcutKeyLabel(int id)
 {
     if (id < 0 || id >= kShortcutCount) return "";
-    if (g_labels[id].empty()) RefreshLabels();
+    Keymap();  // 13-60: follows reaper-kb.ini (the labels with it)
     return g_labels[id].c_str();
 }
 
 int ResetShortcutToDefault(int id)
 {
     if (id < 0 || id >= kShortcutCount) return -1;
+    std::vector<int> changed;
+    if (!g_links[static_cast<size_t>(id)].empty()) {  // 13-60: back to a key of its own
+        g_links[static_cast<size_t>(id)].clear();
+        changed.push_back(id);
+    }
     const int blocker = ShortcutResetBlocker(g_bindings, id);
-    if (blocker >= 0) return blocker;  // the user's own key stays
-    std::vector<int> changed = ResetShortcut(g_bindings, id);
+    if (blocker >= 0) {  // the user's own key stays
+        for (int i : changed) Save(i);
+        g_keymap_dirty = true;
+        RebuildKeymap();
+        return blocker;
+    }
+    for (int i : ResetShortcut(g_bindings, id)) changed.push_back(i);
     changed.push_back(id);  // its entry goes even if it already held the default
-    for (int i : RebindFreedDefaults(g_bindings)) changed.push_back(i);
+    const std::array<bool, kShortcutCount> linked = LinkedFlags();
+    for (int i : RebindFreedDefaults(g_bindings, linked.data())) changed.push_back(i);
     for (int i : changed) Save(i);
-    RefreshLabels();
+    g_keymap_dirty = true;
+    RebuildKeymap();
     return -1;
 }
 
@@ -189,12 +321,16 @@ void ShortcutRecordKey(unsigned key, bool ctrl, bool shift, bool alt)
     case RecordOutcome::Cancelled:
         CancelShortcutRecording();
         break;
-    case RecordOutcome::Assigned:
+    case RecordOutcome::Assigned: {
+        g_links[static_cast<size_t>(g_recording_id)].clear();  // 13-60: a key of its own ends the link
         Save(g_recording_id);
-        for (int i : RebindFreedDefaults(g_bindings)) Save(i);  // its old key may be another's default
-        RefreshLabels();
+        const std::array<bool, kShortcutCount> linked = LinkedFlags();
+        for (int i : RebindFreedDefaults(g_bindings, linked.data())) Save(i);  // its old key may be another's default
+        g_keymap_dirty = true;
+        RebuildKeymap();
         CancelShortcutRecording();
         break;
+    }
     }
 }
 

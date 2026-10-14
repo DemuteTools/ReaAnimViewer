@@ -32,6 +32,7 @@
 #pragma once
 
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace rav {
@@ -57,10 +58,36 @@ struct ViewKeyBinding {
     bool operator==(const ViewKeyBinding& o) const { return is_char == o.is_char && code == o.code && mods == o.mods; }
 };
 
+// Lot 13-60: one gesture REAPER runs an action on (KbGesturesOf below).
+enum class KbInput { Wheel, HWheel, Key };
+
+struct KbGesture {
+    KbInput input = KbInput::Key;
+    int     code = 0;         // Key: a virtual key, or a character when is_char
+    bool    is_char = false;
+    int     mods = 0;         // kViewMod* bits
+    bool operator==(const KbGesture& o) const
+    {
+        return input == o.input && code == o.code && is_char == o.is_char && mods == o.mods;
+    }
+};
+
+// Lot 13-60: one KEY line of the Main section, as the file writes it (the command as text: "990",
+// "_WOL_ADJENVTRHMOUSE"). A later line for the same <mod> <key> replaces an earlier one.
+struct KbLine {
+    int         mod = 0;
+    int         key = 0;
+    std::string cmd;
+};
+
 struct ViewKeymap {
     ViewWheelBinding wheel[8] = {};   // by modifier bits
     ViewWheelBinding hwheel[8] = {};
     std::vector<ViewKeyBinding> zoom_in, zoom_out;
+    std::vector<KbLine> lines;  // 13-60: every Main-section KEY line of the file (any command)
+    // 13-60: keys REAPER itself lists for a linked action (its live list, ParseReaperShortcutDesc), by
+    // command: they add REAPER's built-in default keys, which the file does not hold.
+    std::vector<std::pair<std::string, KbGesture>> listed;
 };
 
 // REAPER's defaults (above).
@@ -70,5 +97,30 @@ ViewKeymap ParseViewKeymap(const std::string& kb_ini_text);
 // What a REAPER command does on the wheel (action None = not a view wheel command).
 ViewWheelBinding ViewWheelBindingOf(int command);
 ViewWheelAction  ViewWheelActionOf(int command);
+
+// ---- lot 13-60: the gestures of any REAPER action (a Shortcuts row linked to it) -----------------
+
+// REAPER's own default bindings that RAV knows (the view table above), as KEY lines: they hold until
+// the file binds that <mod> <key> to something else (or to 0, disabled). REAPER's other built-in
+// defaults are not in reaper-kb.ini (it holds the user's changes only): REAPER's own list of an
+// action's shortcuts gives their keys (ViewKeymap::listed, ParseReaperShortcutDesc).
+std::vector<KbLine> DefaultKbLines();
+
+// Every key and wheel gesture REAPER runs `command` on ("990", "_WOL_ADJENVTRHMOUSE": action_link.h
+// NormalizeCommandId's form, any case): the defaults above the file has not taken over, then the file's
+// KEY lines for it, then the keys REAPER lists for it (`listed`) not found so. The wheel and the
+// horizontal wheel by modifiers, the keys (none with Win); MIDI / OSC bindings and the special inputs
+// other than the two wheels are not gestures RAV reads.
+std::vector<KbGesture> KbGesturesOf(const ViewKeymap& k, const std::string& command);
+
+// One shortcut as REAPER words it in its Actions list (GetActionShortcutDesc): "S", "Ctrl+Shift+F5",
+// "Alt+Num +", "Shift+=", "Space", "PageDown". Keys only (a key with Ctrl / Alt / Shift; a letter,
+// digit, F-key, arrow or named key as a virtual key, another single character as a character); false
+// for anything else (the wheel -- the file and the defaults give those --, MIDI, OSC, Win / Cmd keys,
+// a name RAV does not know).
+bool ParseReaperShortcutDesc(const std::string& desc, KbGesture* out);
+// How many Main-section bindings the file and the defaults give `command` in all, read or not (MIDI,
+// OSC, MultiZoom, Win...): KbGesturesOf has fewer when some are not gestures RAV reads.
+int KbBindingCount(const ViewKeymap& k, const std::string& command);
 
 }  // namespace rav

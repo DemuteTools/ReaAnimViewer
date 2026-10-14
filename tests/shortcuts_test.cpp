@@ -847,6 +847,80 @@ int main()
         CHECK(RouteViewerKey(b, v, st) == kRouteViewer);
     }
 
+    // 13-60 -- a row linked to a REAPER action runs on that action's keys; it has no key of its own.
+    {
+        ShortcutBindings b = DefaultShortcutBindings();
+        bool             linked[kShortcutCount] = {};
+        ShortcutKeyLists lk;
+        // Cut (Video view) linked to an action REAPER gives X and C: both run Cut (no own key while linked).
+        linked[kShortcutCut] = true;
+        b[kShortcutCut] = KeyBinding{};
+        lk[kShortcutCut] = {Key('X'), Key('C'), Key(vk::kEscape)};  // Esc is never a key: dropped
+        ShortcutKeymap m = ResolveShortcutKeys(b, lk, linked);
+        CHECK(m.keys[kShortcutCut].size() == 2);
+        CHECK(ShortcutActionFor(m, 'X', false, false, false, true) == kShortcutCut);
+        CHECK(ShortcutActionFor(m, 'C', false, false, false, true) == kShortcutCut);
+        CHECK(ShortcutActionFor(m, 'X', false, false, false, false) == -1);  // its context: Video view only
+        CHECK(ShortcutKeyOwner(m, Key('X'), -1) == kShortcutCut);
+        // A key RAV gives another row (V: Next view, Anywhere) wins over the linked action's.
+        lk[kShortcutCut].push_back(Key('V'));
+        m = ResolveShortcutKeys(b, lk, linked);
+        CHECK(ShortcutActionFor(m, 'V', false, false, false, true) == kShortcutToggleView);
+        CHECK(m.shadowed[kShortcutCut].size() == 1 && m.shadowed[kShortcutCut][0] == Key('V'));
+        // Two linked rows on one key: the first in the table keeps it; contexts that never meet share it.
+        linked[kShortcutTagAddEvent] = true;
+        b[kShortcutTagAddEvent] = KeyBinding{};
+        lk[kShortcutTagAddEvent] = {Key('X')};  // Tagging view vs Video view: no clash
+        linked[kShortcutTogglePanel] = true;
+        b[kShortcutTogglePanel] = KeyBinding{};
+        lk[kShortcutTogglePanel] = {Key('X', true)};
+        lk[kShortcutFullScreen] = {Key('X', true)};  // not linked: ignored
+        m = ResolveShortcutKeys(b, lk, linked);
+        CHECK(ShortcutActionFor(m, 'X', false, false, false, false, true) == kShortcutTagAddEvent);
+        CHECK(ShortcutActionFor(m, 'X', false, false, false, true, false) == kShortcutCut);
+        CHECK(ShortcutActionFor(m, 'X', true, false, false, false) == kShortcutTogglePanel);
+        CHECK(ShortcutActionFor(m, vk::kF11, false, false, false, false) == kShortcutFullScreen);  // its own key
+        linked[kShortcutPasteCamera] = true;  // Ctrl+V's row, linked to Ctrl+X too: Toggle panel (earlier) keeps it
+        b[kShortcutPasteCamera] = KeyBinding{};
+        lk[kShortcutPasteCamera] = {Key('X', true)};
+        m = ResolveShortcutKeys(b, lk, linked);
+        CHECK(ShortcutActionFor(m, 'X', true, false, false, true) == kShortcutTogglePanel);
+        CHECK(m.shadowed[kShortcutPasteCamera].size() == 1);
+        // Routing: the hook hands a linked key to the viewer, and its release follows it.
+        KeyRouteState st;
+        KeyRouteInput x;
+        x.msg = KeyMsg::KeyDown;
+        x.key = 'X';
+        x.video_view = true;
+        CHECK(RouteViewerKey(m, x, st) == kRouteViewer);
+        x.msg = KeyMsg::KeyUp;
+        CHECK(RouteViewerKey(m, x, st) == kRouteViewer);
+        x.msg = KeyMsg::KeyDown;
+        x.video_view = false;  // RAV view: Cut is not on, X goes to REAPER
+        CHECK(RouteViewerKey(m, x, st) == kRouteReaper);
+        // The plain bindings' overload is unchanged (no link).
+        CHECK(RouteViewerKey(DefaultShortcutBindings(), x, st) == kRouteReaper);
+    }
+    // 13-60 -- load / reset rules leave a linked row alone: no default given back while it is linked.
+    {
+        ShortcutBindings b = DefaultShortcutBindings();
+        bool             linked[kShortcutCount] = {};
+        linked[kShortcutCut] = true;
+        b[kShortcutCut] = KeyBinding{};
+        CHECK(SanitizeShortcuts(b, nullptr, nullptr, linked).empty());
+        CHECK(b[kShortcutCut].vk == 0);
+        CHECK(RebindFreedDefaults(b, linked).empty());
+        CHECK(b[kShortcutCut].vk == 0);
+        // Without the flags (unlinked) the old rules give its default back.
+        CHECK(Contains(RebindFreedDefaults(b), kShortcutCut));
+        CHECK(b[kShortcutCut] == Key('C'));
+        // A linked row's own key C is now free: another row can record it.
+        b = DefaultShortcutBindings();
+        b[kShortcutCut] = KeyBinding{};
+        int owner = -1;
+        CHECK(ShortcutRecordStep(b, kShortcutDeleteShot, 'C', false, false, false, &owner) == RecordOutcome::Assigned);
+    }
+
     if (g_fails == 0) std::printf("shortcuts: all checks passed\n");
     return g_fails == 0 ? 0 : 1;
 }

@@ -19,6 +19,9 @@
 
 #ifdef _WIN32
 
+#include <string>
+#include <vector>
+
 namespace rav {
 
 // Called once at load with REAPER's GetFunc (resolves the optional lookup functions).
@@ -38,6 +41,34 @@ bool OpenRenderDialog();
 // InitReaperActionLookup (retried on a later call): the caller falls back on something else
 // and the return value is false. Cheap: called every frame.
 bool ReaperVideoWindowOpen(bool* known);
+
+// ---- lot 13-60: any REAPER action, for a Shortcuts row linked to it -----------------------------
+// Through the same optional lookups (plus NamedCommandLookup / ReverseNamedCommandLookup and the
+// action shortcut functions).
+
+struct ReaperActionInfo {
+    std::string id;       // as reaper-kb.ini writes it: "990", "_WOL_ADJENVTRHMOUSE" ("" = not an id)
+    std::string name;     // REAPER's name for it ("" = none)
+    int         cmd = 0;  // its command number now (0 = REAPER does not know it)
+    bool        checked = false;  // false: no lookup function to check it with
+};
+// A typed id ("990", "_WOL_ADJENVTRHMOUSE", "WOL_ADJENVTRHMOUSE", a named action's number). A named id
+// can get a number and no name: REAPER keeps a number for an action a toolbar or menu names even when
+// its extension or script is not loaded (cmd != 0, name "").
+ReaperActionInfo LookupReaperAction(const std::string& text);
+// InitReaperActionLookup has run (before it, nothing can be looked up).
+bool ReaperActionLookupReady();
+
+struct ReaperActionEntry {
+    std::string id;
+    std::string name;
+};
+// Every action of the Main section (kbd_enumerateActions), in REAPER's order; empty without it.
+std::vector<ReaperActionEntry> ListReaperActions();
+
+// The shortcuts REAPER lists for an action (keys, wheel, MIDI..., its built-in defaults too), as
+// REAPER words them; *known = false when REAPER cannot say.
+std::vector<std::string> ReaperActionShortcuts(int cmd, bool* known);
 
 }  // namespace rav
 

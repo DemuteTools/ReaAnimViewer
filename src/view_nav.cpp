@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "action_link.h"  // 13-60
 #include "shortcuts.h"  // ShortcutKeyName, vk::
 
 namespace rav {
@@ -38,6 +39,20 @@ ViewGesture KeyGesture(int vk, int mods)
     g.kind = GestureKind::Key;
     g.code = vk;
     g.mods = mods & 7;
+    return g;
+}
+
+ViewGesture ViewGestureOf(const KbGesture& k)
+{
+    ViewGesture g;
+    g.mods = k.mods & 7;
+    if (k.input == KbInput::Key) {
+        g.kind = GestureKind::Key;
+        g.code = k.code;
+        g.is_char = k.is_char;
+    } else {
+        g.kind = k.input == KbInput::Wheel ? GestureKind::Wheel : GestureKind::HWheel;
+    }
     return g;
 }
 
@@ -94,7 +109,7 @@ std::string FormatViewGesture(const ViewGesture& g, std::string (*fallback)(unsi
 ViewNavMap ResolveViewNav(const ViewKeymap& reaper, const ViewNavChoices& c)
 {
     ViewNavMap m;
-    auto linked = [&c](int row) { return row >= 0 && row < kNavRowCount && !c[static_cast<size_t>(row)].own; };
+    auto linked = [&c](int row) { return row >= 0 && row < kNavRowCount && c[static_cast<size_t>(row)].linked_default(); };
     for (int i = 0; i < 8; ++i) {
         const ViewWheelBinding& w = reaper.wheel[i];
         const ViewWheelBinding& h = reaper.hwheel[i];
@@ -106,6 +121,25 @@ ViewNavMap ResolveViewNav(const ViewKeymap& reaper, const ViewNavChoices& c)
         for (const ViewKeyBinding& b : reaper.zoom_in) m.keys.emplace_back(KeyOf(b), kNavZoomIn);
     if (linked(kNavZoomOut))
         for (const ViewKeyBinding& b : reaper.zoom_out) m.keys.emplace_back(KeyOf(b), kNavZoomOut);
+    // 13-60: rows linked to an action the user picked, over the default-linked ones.
+    for (int row = 0; row < kNavRowCount; ++row) {
+        const ViewNavChoice& ch = c[static_cast<size_t>(row)];
+        if (ch.own || ch.cmd.empty()) continue;
+        // A REAPER view action keeps its reversed / one-page (the user may pick 977, 976...).
+        const std::string id = NormalizeCommandId(ch.cmd);
+        const ViewWheelBinding vb =
+            (!id.empty() && id[0] != '_') ? ViewWheelBindingOf(std::atoi(id.c_str())) : ViewWheelBinding{};
+        for (const KbGesture& kg : KbGesturesOf(reaper, ch.cmd)) {
+            const ViewGesture g = ViewGestureOf(kg);
+            if (g.kind != GestureKind::Key && !kViewNavTable[row].wheel_ok) continue;
+            DropGesture(m, g);
+            const ViewNavWheel w{row, vb.action != ViewWheelAction::None && vb.reversed,
+                                 vb.action != ViewWheelAction::None && vb.page};
+            if (g.kind == GestureKind::Wheel) m.wheel[g.mods] = w;
+            else if (g.kind == GestureKind::HWheel) m.hwheel[g.mods] = w;
+            else m.keys.emplace_back(g, row);
+        }
+    }
     for (int row = 0; row < kNavRowCount; ++row) {
         const ViewNavChoice& ch = c[static_cast<size_t>(row)];
         if (!ch.own || ch.g.kind == GestureKind::None) continue;
@@ -257,11 +291,12 @@ void ViewNavAssign(ViewNavChoices& c, int row, const ViewGesture& g)
         if (i != row && c[static_cast<size_t>(i)].own && c[static_cast<size_t>(i)].g == g) c[static_cast<size_t>(i)].g = ViewGesture{};
     c[static_cast<size_t>(row)].own = true;
     c[static_cast<size_t>(row)].g = g;
+    c[static_cast<size_t>(row)].cmd.clear();  // 13-60: no longer linked to an action
 }
 
 std::string EncodeViewNavChoice(const ViewNavChoice& c)
 {
-    if (!c.own) return std::string();
+    if (!c.own) return c.cmd.empty() ? std::string() : EncodeActionLink(c.cmd);
     if (c.g.kind == GestureKind::None) return "own";
     std::string s = "own:" + ModsText(c.g.mods);
     if (c.g.kind == GestureKind::Wheel) s += "Wheel";
@@ -276,6 +311,12 @@ bool DecodeViewNavChoice(const char* text, ViewNavChoice* out)
     if (!text || !out) return false;
     if (!text[0]) {
         *out = ViewNavChoice{};
+        return true;
+    }
+    std::string cmd;
+    if (DecodeActionLink(text, &cmd)) {  // 13-60
+        *out = ViewNavChoice{};
+        out->cmd = cmd;
         return true;
     }
     if (std::strcmp(text, "own") == 0) {

@@ -150,8 +150,85 @@ static void TestKeys()
     CHECK(Has(k.zoom_out, false, 189, 0));
 }
 
+// 13-60: the gestures of any action, named ones by their string id (any case), with REAPER's known
+// view defaults until the file takes their input over.
+static void TestAnyActionGestures()
+{
+    const std::string kb =
+        "ACT 0 0 \"abc\" \"Custom: x\" 40001\n"
+        "KEY 255 249 _WOL_ADJENVTRHMOUSE 0\n"    // Ctrl+wheel: no longer 1000's
+        "KEY 9 70 _WOL_ADJENVTRHMOUSE 0\n"       // Ctrl+F (virtual key)
+        "KEY 0 43 _wol_adjenvtrhmouse 0\n"       // the character "+", same id in another case
+        "KEY 33 71 _WOL_ADJENVTRHMOUSE 0\n"      // Win+G: never matched
+        "KEY 176 7 _WOL_ADJENVTRHMOUSE 0\n"      // a MIDI CC: not a gesture RAV reads
+        "KEY 255 240 _WOL_ADJENVTRHMOUSE 0\n"    // Win+wheel
+        "KEY 9 70 _WOL_ADJENVTRHMOUSE 1\n"       // another section
+        "KEY 255 218 0 0\n"                      // Alt+H-wheel disabled
+        "KEY 1 72 40044 0\n"
+        "KEY 1 72 _RS1234 0\n";                  // the same key later: the script's now
+    const ViewKeymap k = ParseViewKeymap(kb);
+    const std::vector<KbGesture> g = KbGesturesOf(k, "_WOL_ADJENVTRHMOUSE");
+    CHECK(g.size() == 3);
+    if (g.size() == 3) {
+        CHECK(g[0].input == KbInput::Wheel && g[0].mods == kViewModCtrl);
+        CHECK(g[1].input == KbInput::Key && !g[1].is_char && g[1].code == 'F' && g[1].mods == kViewModCtrl);
+        CHECK(g[2].input == KbInput::Key && g[2].is_char && g[2].code == '+' && g[2].mods == 0);
+    }
+    CHECK(KbGesturesOf(k, "WOL_ADJENVTRHMOUSE").size() == 3);  // typed without its underscore
+    CHECK(KbBindingCount(k, "_WOL_ADJENVTRHMOUSE") == 6);      // the MIDI, Win+G and Win+wheel ones too
+    CHECK(KbGesturesOf(k, "1000").empty());                    // its wheel went to the script action
+    CHECK(KbGesturesOf(k, "40044").empty());                   // its key went to the script
+    CHECK(KbGesturesOf(k, "_RS1234").size() == 1);
+    // REAPER's defaults that RAV knows: 990 on the wheel, Alt+H-wheel disabled here.
+    const std::vector<KbGesture> z = KbGesturesOf(k, "990");
+    CHECK(z.size() == 1 && z[0].input == KbInput::Wheel && z[0].mods == 0);
+    const std::vector<KbGesture> s = KbGesturesOf(ParseViewKeymap(""), "988");
+    CHECK(s.size() == 2 && s[0].input == KbInput::Wheel && s[0].mods == kViewModAlt && s[1].input == KbInput::HWheel);
+    CHECK(KbGesturesOf(ParseViewKeymap(""), "1012").size() == 4);
+    CHECK(KbGesturesOf(k, "").empty());
+    CHECK(KbGesturesOf(k, "0").empty());
+}
+
+// 13-60: REAPER's own wording of a shortcut (its built-in defaults are not in reaper-kb.ini).
+static void TestShortcutDesc()
+{
+    KbGesture g;
+    CHECK(ParseReaperShortcutDesc("S", &g) && g.input == KbInput::Key && !g.is_char && g.code == 'S' && g.mods == 0);
+    CHECK(ParseReaperShortcutDesc("Ctrl+Shift+s", &g) && g.code == 'S' && g.mods == (kViewModCtrl | kViewModShift));
+    CHECK(ParseReaperShortcutDesc("Shift+Ctrl+Alt+F5", &g) && g.code == 0x74 && g.mods == 7);
+    CHECK(ParseReaperShortcutDesc("F24", &g) && g.code == 0x87);
+    CHECK(!ParseReaperShortcutDesc("F25", &g));
+    CHECK(ParseReaperShortcutDesc("Alt+Num +", &g) && g.code == 0x6B && g.mods == kViewModAlt && !g.is_char);
+    CHECK(ParseReaperShortcutDesc("Num 7", &g) && g.code == 0x67);
+    CHECK(ParseReaperShortcutDesc("Ctrl++", &g) && g.is_char && g.code == '+' && g.mods == kViewModCtrl);
+    CHECK(ParseReaperShortcutDesc("Shift+=", &g) && g.is_char && g.code == '=' && g.mods == kViewModShift);
+    CHECK(ParseReaperShortcutDesc(" Space ", &g) && g.code == 0x20);
+    CHECK(ParseReaperShortcutDesc("PageDown", &g) && g.code == 0x22);
+    CHECK(ParseReaperShortcutDesc("Page Up", &g) && g.code == 0x21);
+    CHECK(ParseReaperShortcutDesc("Ctrl+Delete", &g) && g.code == 0x2E && g.mods == kViewModCtrl);
+    CHECK(ParseReaperShortcutDesc("7", &g) && g.code == '7' && !g.is_char);
+    CHECK(!ParseReaperShortcutDesc("Mousewheel", &g));
+    CHECK(!ParseReaperShortcutDesc("Ctrl+Mousewheel", &g));
+    CHECK(!ParseReaperShortcutDesc("Win+S", &g));
+    CHECK(!ParseReaperShortcutDesc("CC 7", &g));
+    CHECK(!ParseReaperShortcutDesc("Ctrl+", &g));
+    CHECK(!ParseReaperShortcutDesc("", &g));
+    CHECK(!ParseReaperShortcutDesc("Ctrl+Ctrl+S", &g));
+    // The keys REAPER lists for an action add to the file's (once each).
+    ViewKeymap k = ParseViewKeymap("KEY 1 83 40759 0\n");  // S, in the file too
+    KbGesture s;
+    ParseReaperShortcutDesc("S", &s);
+    KbGesture cs;
+    ParseReaperShortcutDesc("Ctrl+S", &cs);
+    k.listed = {{"40759", s}, {"40759", cs}, {"40044", s}};
+    const std::vector<KbGesture> got = KbGesturesOf(k, "40759");
+    CHECK(got.size() == 2 && got[0] == s && got[1] == cs);
+}
+
 int main()
 {
+    TestShortcutDesc();
+    TestAnyActionGestures();
     TestDefaults();
     TestWheelOverrides();
     TestKeys();

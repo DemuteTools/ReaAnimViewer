@@ -74,6 +74,8 @@ struct ViewGesture {
 
 ViewGesture WheelGesture(bool horizontal, int mods);
 ViewGesture KeyGesture(int vk, int mods);
+// 13-60: a gesture of reaper-kb.ini (reaper_view_keys.h KbGesturesOf) as one of ours.
+ViewGesture ViewGestureOf(const KbGesture& g);
 
 // "Ctrl+Shift+Alt+Wheel", "Alt+H-wheel", "Ctrl+Up" (FormatShortcut's modifier order). A key's name:
 // ShortcutKeyName (shortcuts.h), else `fallback` (the keyboard layout's name). "" for None.
@@ -84,7 +86,11 @@ std::string FormatViewGesture(const ViewGesture& g, std::string (*fallback)(unsi
 struct ViewNavChoice {
     bool        own = false;  // false: linked to REAPER (the default)
     ViewGesture g;            // Own: the user's gesture (None = not set yet)
-    bool operator==(const ViewNavChoice& o) const { return own == o.own && g == o.g; }
+    // 13-60: linked (own false) to this REAPER action instead of the row's own (kViewNavTable), its id
+    // as action_link.h NormalizeCommandId writes it ("_WOL_ADJENVTRHMOUSE", "991"); "" = the row's own.
+    std::string cmd;
+    bool operator==(const ViewNavChoice& o) const { return own == o.own && g == o.g && cmd == o.cmd; }
+    bool linked_default() const { return !own && cmd.empty(); }
 };
 using ViewNavChoices = std::array<ViewNavChoice, kNavRowCount>;
 
@@ -102,6 +108,11 @@ struct ViewNavMap {
 
 // A linked row takes REAPER's gestures for its action (all of them); an Own row only its own
 // gesture, which it takes from any linked row that had it (the user's choice wins).
+// 13-60: a row linked to an action the user picked (choice.cmd) takes every gesture REAPER runs that
+// action on (KbGesturesOf: the file's KEY lines, any action): the wheels by modifiers (a REAPER view
+// action's reversed / one-page kept; any other action = forward, one notch), and its keys (a key = one
+// notch forward, as a key on the default actions). It takes them from a default-linked row (the user's
+// choice wins), and an Own row from it. Zoom in / out take keys only.
 ViewNavMap ResolveViewNav(const ViewKeymap& reaper, const ViewNavChoices& choices);
 
 // The gestures that run `row` (the wheel ones first, by modifiers, then the keys).
@@ -183,7 +194,8 @@ void ViewNavAssign(ViewNavChoices& c, int row, const ViewGesture& g);
 // ---- ExtState encoding ------------------------------------------------------------------
 
 // Linked = "" (no entry); Own not set = "own"; Own = "own:" + the gesture ("Ctrl+Shift+Alt+" then
-// "Wheel", "HWheel", a decimal virtual key, or "char" + a decimal character).
+// "Wheel", "HWheel", a decimal virtual key, or "char" + a decimal character). 13-60: linked to an
+// action the user picked = "link:" + its id (action_link.h).
 std::string EncodeViewNavChoice(const ViewNavChoice& c);
 // False when the text is not valid (then *out is untouched). "" decodes to linked.
 bool DecodeViewNavChoice(const char* text, ViewNavChoice* out);
@@ -206,6 +218,14 @@ double ViewNavKbAge();
 // (ExtState, no undo point: a viewer setting, like the keys).
 void SetViewNavLinked(int row);
 void SetViewNavOwn(int row);
+// 13-60: linked to the REAPER action `cmd` (an id action_link.h NormalizeCommandId accepts).
+void SetViewNavAction(int row, const std::string& cmd);
+// A counter that moves each time reaper-kb.ini is read again (the KEYS rows linked to an action follow it).
+int ReaperKbGeneration();
+// Asks REAPER again for the keys it lists for every linked action (view rows and KEYS rows: its built-in
+// defaults, which reaper-kb.ini does not hold); moves ReaperKbGeneration. Called when a link changes,
+// when the Shortcuts popup opens and after each read of reaper-kb.ini.
+void RefreshReaperListedKeys();
 
 // The gesture's label, with the keyboard layout's key names.
 std::string ViewGestureLabel(const ViewGesture& g);

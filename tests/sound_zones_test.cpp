@@ -564,6 +564,14 @@ void TestReviewRows()
         SoundData d = With({Z(kHeel, 0.10, 0.30)});
         CHECK(PlacedSpans(d, 0, kToe).empty() && ZonesOfPart(d, kToe).empty());
     }
+    {  // a gesture marks its variation as edited by hand (a re-detection keeps it); a refresh does not
+        SoundData d = With({Z(kHeel, 0.10, 0.30), Z(kToe, 0.40, 0.60)});
+        RelayoutZones(d, &pk);
+        CHECK(!d.frames[0].hand && !d.edited);
+        CHECK(SetZoneDb(d, {0, 1}, 2.0) && d.frames[0].hand && d.edited);
+        SoundData e = With({Z(kHeel, 0.10, 0.30)});
+        CHECK(!SetZoneDb(e, {0, 0}, 0.0) && !e.frames[0].hand);
+    }
     {  // 40508 without a time selection: nothing
         SoundData d = With({Z(kHeel, 0.10, 0.30)});
         CHECK(!TrimZonesTo(d, {{0, 0}}, 0.2, 0.2));

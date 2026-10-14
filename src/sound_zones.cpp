@@ -659,6 +659,16 @@ bool Finish(Work& w, const Snap& before, ZoneSel* sel, const std::vector<int>& i
     std::map<int, ZoneRef> where;
     w.store(&where);
     MeasureAutoSnaps(*w.d, w.peaks);
+    // A variation whose zones a gesture changed is edited by hand: a re-detection (threshold, min gap) keeps it.
+    for (size_t f = 0; f < w.d->frames.size(); ++f) {
+        SoundFrame& fr = w.d->frames[f];
+        bool        diff = f >= before.zones.size() || fr.zones.size() != before.zones[f].size();
+        for (size_t k = 0; !diff && k < fr.zones.size(); ++k) diff = !SameZone(fr.zones[k], before.zones[f][k]);
+        if (diff) {
+            fr.hand = true;
+            w.d->edited = true;
+        }
+    }
     if (sel) {
         sel->clear();
         for (int id : ids) {
@@ -682,12 +692,12 @@ bool FinishKeep(Work& w, const Snap& before, const ZoneSel* in, ZoneSel* out)
 }
 
 // A direct edit's relayout (the zone count unchanged by the edit itself), the selection re-resolved.
-void Relay(SoundData& d, const ZoneContext& ctx, ZoneSel* sel)
+void Relay(SoundData& d, const ZoneContext& ctx, ZoneSel* sel, const Snap* before = nullptr)
 {
     Work                   w(d, ctx.peaks, ctx.file_len);
     const std::vector<int> ids = sel ? IdsOf(d, *sel) : std::vector<int>();
-    const Snap             unused = Take(d);
-    Finish(w, unused, sel, ids);
+    const Snap             now = Take(d);
+    Finish(w, before ? *before : now, sel, ids);
 }
 
 }  // namespace
@@ -1767,7 +1777,7 @@ bool SetGapXfade(SoundData& d, const ZoneRef& gap, double xl, double xr, const Z
     const double    room_r = lz ? std::max(0.0, (lz->b - lz->a) - GapReach(d, L, -1)) : w / 2.0;  // xr into L
     if (Valid(xl) && xl >= 0.0) g->xl = Clamp(xl, 0.0, std::min(w / 2.0, room_l));
     if (Valid(xr) && xr >= 0.0) g->xr = Clamp(xr, 0.0, std::min(w / 2.0, room_r));
-    Relay(d, ctx, sel);
+    Relay(d, ctx, sel, &before);
     return !Same(before, d);
 }
 
@@ -1778,7 +1788,7 @@ bool SetZoneFade(SoundData& d, const ZoneRef& r, int side, double s, const ZoneC
     if (ZoneOf(d, side < 0 ? GapBefore(d, r) : GapAfter(d, r))) return false;  // the Gap's crossfade
     const Snap before = Take(d);
     (side < 0 ? z->fade_in : z->fade_out) = std::max(s, 0.0);
-    Relay(d, ctx, sel);
+    Relay(d, ctx, sel, &before);
     return !Same(before, d);
 }
 
@@ -1788,7 +1798,7 @@ bool SetZoneSnap(SoundData& d, const ZoneRef& r, double t, const ZoneContext& ct
     if (!UsesZones(d) || !z || z->IsGap() || !Valid(t)) return false;
     const Snap before = Take(d);
     z->snap = Clamp(t, z->a, z->b);
-    Relay(d, ctx, sel);
+    Relay(d, ctx, sel, &before);
     return !Same(before, d);
 }
 
@@ -1798,7 +1808,7 @@ bool SetZoneDb(SoundData& d, const ZoneRef& r, double db, const ZoneContext& ctx
     if (!UsesZones(d) || !z || z->IsGap() || !Valid(db)) return false;
     const Snap before = Take(d);
     z->db = ClampDb(db);
-    Relay(d, ctx, sel);
+    Relay(d, ctx, sel, &before);
     return !Same(before, d);
 }
 
@@ -1813,7 +1823,7 @@ bool ShiftZonesDb(SoundData& d, const ZoneSel& sel, double delta, const std::vec
         z->db = ClampDb(b0 + delta);
     }
     if (out) *out = sel;
-    Relay(d, ctx, out);
+    Relay(d, ctx, out, &before);
     return !Same(before, d);
 }
 
@@ -1823,8 +1833,9 @@ bool ResetZoneEdge(SoundData& d, const ZoneRef& r, int side, const ZoneContext& 
     if (!UsesZones(d) || !z || z->IsGap() || side == 0) return false;
     bool& h = side < 0 ? z->a_hand : z->b_hand;
     if (!h) return false;
+    const Snap before = Take(d);
     h = false;
-    Relay(d, ctx, sel);
+    Relay(d, ctx, sel, &before);
     return true;  // the flag itself changed
 }
 
@@ -1834,8 +1845,9 @@ bool ResetZoneFade(SoundData& d, const ZoneRef& r, int side, const ZoneContext& 
     if (!UsesZones(d) || !z || z->IsGap() || side == 0) return false;
     std::optional<double>& f = side < 0 ? z->fade_in : z->fade_out;
     if (!f) return false;
+    const Snap before = Take(d);
     f.reset();
-    Relay(d, ctx, sel);
+    Relay(d, ctx, sel, &before);
     return true;
 }
 
@@ -1843,8 +1855,9 @@ bool ResetZoneSnap(SoundData& d, const ZoneRef& r, const ZoneContext& ctx, ZoneS
 {
     EditZone* z = ZoneOf(d, r);
     if (!UsesZones(d) || !z || z->IsGap() || !z->snap) return false;
+    const Snap before = Take(d);
     z->snap.reset();
-    Relay(d, ctx, sel);
+    Relay(d, ctx, sel, &before);
     return true;
 }
 
@@ -1881,7 +1894,7 @@ bool ShiftPartGain(SoundData& d, const std::string& part, double delta, const Zo
                                             !q.fader_db && q.kept.empty();
                                  }),
                   d.parts.end());
-    Relay(d, ctx, sel);
+    Relay(d, ctx, sel, &before);
     return fader_changed || !Same(before, d);
 }
 

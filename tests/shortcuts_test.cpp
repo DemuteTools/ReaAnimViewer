@@ -8,6 +8,7 @@
 #include "shortcuts.h"
 
 #include <cstdio>
+#include <string>
 
 using namespace rav;
 
@@ -1059,6 +1060,48 @@ int main()
         m = ResolveShortcutKeys(cb, lk4, on_reaper);
         CHECK(ShortcutActionFor(m, 'B', false, false, false, false, false, true) == kShortcutClipList);
         CHECK(m.shadowed[kShortcutEditSplit].size() == 1 && m.keys[kShortcutEditSplit].empty());
+    }
+
+    // 13-62: the selected part's Solo / Mute in the Sound Edit window -- on REAPER's 40281 / 40280 (track
+    // Solo/unsolo, Mute/unmute) by default; no RAV action, no key of their own, no fallback.
+    {
+        CHECK(ShortcutReaperActionId(kShortcutEditSolo) == "40281");
+        CHECK(ShortcutReaperActionId(kShortcutEditMute) == "40280");
+        CHECK(std::string(kShortcutTable[kShortcutEditSolo].id) == "edit_solo_part");
+        CHECK(std::string(kShortcutTable[kShortcutEditMute].id) == "edit_mute_part");
+        for (int i = kShortcutEditSolo; i <= kShortcutEditMute; ++i) {
+            CHECK(ShortcutDefaultFollowsReaper(i));
+            CHECK(kShortcutTable[i].action == nullptr && kShortcutTable[i].def.vk == 0);
+            CHECK(kShortcutTable[i].context == ShortcutContext::LibraryEdit);
+            CHECK(ShortcutReaperFallback(i).vk == 0);
+        }
+        // The defaults stay valid with every Edit row on REAPER.
+        const ShortcutBindings b = DefaultShortcutBindings();
+        bool on_reaper[kShortcutCount] = {};
+        for (int i = kShortcutEditTrimLeft; i <= kShortcutEditMute; ++i) on_reaper[i] = true;
+        ShortcutBindings sb = DefaultShortcutBindings();
+        CHECK(SanitizeShortcuts(sb, nullptr, nullptr, on_reaper).empty());
+        CHECK(RebindFreedDefaults(sb, on_reaper).empty());
+        // REAPER lists no key for them: nothing runs them (no fallback).
+        ShortcutKeyLists lk;
+        bool             used[kShortcutCount] = {};
+        ApplyReaperFallbacks(lk, on_reaper, used);
+        CHECK(!used[kShortcutEditSolo] && !used[kShortcutEditMute] && lk[kShortcutEditSolo].empty() && lk[kShortcutEditMute].empty());
+        // REAPER gives 40281 Alt+S and 40280 Alt+M: they run the rows, in Edit only; B stays the split's.
+        ShortcutKeyLists lk2;
+        lk2[kShortcutEditSolo] = {KeyBinding{'S', false, false, true}};
+        lk2[kShortcutEditMute] = {KeyBinding{'M', false, false, true}};
+        ApplyReaperFallbacks(lk2, on_reaper, used);
+        const ShortcutKeymap m = ResolveShortcutKeys(b, lk2, on_reaper);
+        CHECK(ShortcutActionFor(m, 'S', false, false, true, false, false, true) == kShortcutEditSolo);
+        CHECK(ShortcutActionFor(m, 'M', false, false, true, false, false, true) == kShortcutEditMute);
+        CHECK(ShortcutActionFor(m, 'S', false, false, true, false, false, false) == -1);  // Edit not focused: REAPER's
+        CHECK(ShortcutActionFor(m, 'B', false, false, false, false, false, true) == kShortcutEditSplit);
+        // Own: a key of its own, in Edit only.
+        ShortcutBindings ob = DefaultShortcutBindings();
+        CHECK(ShortcutRecordStep(ob, kShortcutEditMute, 'M', false, false, false) == RecordOutcome::Assigned);
+        CHECK(ShortcutActionFor(ob, 'M', false, false, false, false, false, true) == kShortcutEditMute);
+        CHECK(ShortcutActionFor(ob, 'M', false, false, false, false, false, false) == -1);
     }
 
     if (g_fails == 0) std::printf("shortcuts: all checks passed\n");

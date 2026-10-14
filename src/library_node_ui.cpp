@@ -1793,6 +1793,8 @@ void RequestLibraryEditKey(int shortcut_id)
     if (shortcut_id == kShortcutEditTrimLeft || shortcut_id == kShortcutEditTrimRight || shortcut_id == kShortcutEditTrimZone ||
         shortcut_id == kShortcutEditSplit)
         P.trim_request = shortcut_id;
+    else if (shortcut_id == kShortcutEditSolo || shortcut_id == kShortcutEditMute)  // 13-62 (D)
+        P.listen_request = shortcut_id == kShortcutEditSolo ? 1 : 2;
 }
 
 namespace {
@@ -3977,6 +3979,15 @@ void DrawEditOverlay()
                                        : trim == kShortcutEditTrimRight ? EditTrimKind::RightOfCursor
                                                                         : EditTrimKind::ToZone;
                 EditTrim(*lib, *n, m, k, P.sel);
+            }
+        }
+        // 13-62 (D): the Solo / Mute row's key toggles the selected part's listening (view state: no undo
+        // point, nothing written, so no media / live gating). No part selected, or not divided: nothing.
+        if (P.listen_request != 0 && !StoreReplaced()) {
+            const int listen = std::exchange(P.listen_request, 0);
+            if (IsDivided(n->sound) && PartIndex(n->sound, P.part_sel) >= 0) {
+                std::set<std::string>& on = listen == 1 ? P.part_solo : P.part_mute;
+                if (!on.erase(P.part_sel)) on.insert(P.part_sel);
             }
         }
         if (keys && !StoreReplaced()) {

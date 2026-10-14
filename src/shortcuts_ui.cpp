@@ -336,10 +336,16 @@ bool KeyRow(int id)
         else
             v.source = std::string("RAV only") + (custom ? " \xC2\xB7 default " + FormatShortcut(def.def, &LayoutKeyName) : std::string());
     }
+    // 13-62: the Solo / Mute rows act on REAPER's tracks outside, and say what they do over their keys.
+    const bool listen = id == kShortcutEditSolo || id == kShortcutEditMute;
+    if (listen && v.caps_tip.empty())
+        v.caps_tip = std::string(id == kShortcutEditSolo ? "Solo" : "Mute") + " the selected part (your REAPER key for " +
+                     def.reaper_cmd + ") while the Sound Edit window has the focus. Listening only, not saved. No part "
+                     "selected: nothing";
     if (def.reaper_cmd) {  // 13-61: one of REAPER's own actions (the default)
         v.reaper_tip = std::string("Follow REAPER: your keys for \"") + (def.reaper_name ? def.reaper_name : def.reaper_cmd) +
                        "\" (" + def.reaper_cmd + "), read live: they do this in the Sound Edit window while it has the "
-                       "focus, and still act on REAPER's items everywhere else (the default)";
+                       "focus, and still act on REAPER's " + (listen ? "tracks" : "items") + " everywhere else (the default)";
         if (def.reaper_fallback.vk != 0)  // 13-63
             v.reaper_tip += std::string(". While REAPER gives it no key, ") + ShortcutBindingLabel(def.reaper_fallback) +
                             " does it here";
@@ -804,8 +810,9 @@ void PopupBody()
     // 13-61: the Sound Edit window's trims, on REAPER's own item trims by default. 13-63: and its split.
     Header("KEYS: SOUND EDIT", "Library \xE2\x80\xBA Edit window");
     Note("On REAPER, your keys for REAPER's own item trims and split act on the variations while the Sound Edit "
-         "window has the focus (the split uses B while REAPER gives its action no key). The edit cursor is where you "
-         "last clicked the waveform; the zone is a drag across it.");
+         "window has the focus (the split uses B while REAPER gives its action no key), and your keys for its track "
+         "Solo / Mute toggle the selected part's. The edit cursor is where you last clicked the waveform; the zone is "
+         "a drag across it.");
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ui::Dp(8.0f), ui::Dp(2.0f)));
     for (int i = 0; i < kShortcutCount; ++i)
         if (kShortcutTable[i].context == ShortcutContext::LibraryEdit && KeyRow(i)) record = i;

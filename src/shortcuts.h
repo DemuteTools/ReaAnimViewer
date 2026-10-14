@@ -104,7 +104,10 @@ enum ShortcutId : int {
     kShortcutEditTrimZone  = 12,  // the selected variation(s) trimmed to the zone selected
     // 13-63: the Sound Edit window's split, on REAPER's 40757 keys (B while REAPER gives 40757 none).
     kShortcutEditSplit     = 13,  // the variation(s) under the edit cursor split there
-    kShortcutCount       = 14,
+    // 13-62: the Sound Edit window's listening, on REAPER's 40281 / 40280 keys (no key while REAPER has none).
+    kShortcutEditSolo      = 14,  // the selected part soloed / unsoloed (view state, never saved)
+    kShortcutEditMute      = 15,  // ...muted / unmuted
+    kShortcutCount       = 16,
 };
 
 inline const ShortcutDef kShortcutTable[kShortcutCount] = {
@@ -139,6 +142,11 @@ inline const ShortcutDef kShortcutTable[kShortcutCount] = {
     // 13-63 (Antho 2026-10-14): REAPER's split at the edit cursor; B when REAPER gives 40757 no key.
     {"edit_split", "Split at cursor", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
      "40757", "Item: Split items at edit cursor (no change selection)", {'B', false, false, false}},
+    // 13-62 (decision 12, ids checked in REAPER 7.81): REAPER's track solo / mute toggles, on the selected part.
+    {"edit_solo_part", "Solo selected part", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "40281", "Track: Solo/unsolo tracks"},
+    {"edit_mute_part", "Mute selected part", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "40280", "Track: Mute/unmute tracks"},
 };
 
 // 13-60b: REAPER's id of a row's own action ("_RAV_KEY_VIDEO_CUT"), "" out of range. 13-61: a row on one

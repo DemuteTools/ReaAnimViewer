@@ -143,6 +143,8 @@ bool LibraryEditUsesEsc();
 bool LibraryEditKeysActive();
 // 13-61: a trim row's key ran (kShortcutEditTrimLeft / Right / Zone; 13-63: or kShortcutEditSplit): the Edit
 // overlay does it on its next frame (one undo point), or says why it cannot. Ignored while the overlay is closed.
+// 13-62: kShortcutEditSolo / Mute toggle the selected part's Solo / Mute there (view state, no undo point;
+// nothing when no part is selected).
 void RequestLibraryEditKey(int shortcut_id);
 
 }  // namespace rav

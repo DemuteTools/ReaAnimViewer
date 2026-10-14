@@ -140,9 +140,12 @@ struct ViewNavStep {
 };
 
 // `wheel` / `hwheel`: Dear ImGui's io.MouseWheel (> 0 up) / io.MouseWheelH (> 0 left), `mods`
-// held; `key_rows`: the rows whose key was pressed this frame. The wheel up and the horizontal
-// wheel left both mean "back / in": scroll left or up, zoom in (a reversed command the other
-// way). A key press: zoom in / out by two notches (1.25 x 1.25), scroll by one notch forward.
+// held; `key_rows`: the rows whose key was pressed this frame. 13-61, REAPER's signs (Windows'
+// own): the wheel up and the horizontal wheel RIGHT both count forward -- zoom in, scroll right
+// (later), scroll up; a reversed command the other way. So, as in REAPER, the wheel down on
+// Scroll horizontally (988) goes left and on its reversed 977 right; a tilt / swipe right on 988
+// goes right. A key press: zoom in / out by two notches (1.25 x 1.25), scroll by one notch forward
+// (right / down, unchanged).
 ViewNavStep ViewNavStepFor(const ViewNavMap& m, int mods, float wheel, float hwheel, const std::vector<int>& key_rows);
 
 // Does a wheel with these modifiers run an action? (Then the view takes it from ImGui's scrolling.)

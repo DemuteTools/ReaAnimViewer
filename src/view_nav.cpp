@@ -201,16 +201,22 @@ int ViewNavCharRow(const ViewNavMap& m, int ch, int mods)
 
 namespace {
 
-void AddWheel(ViewNavStep& s, const ViewNavWheel& w, double v)
+// 13-61: `d` is the notches as REAPER hands them to its "(MIDI CC relative/mousewheel)" actions, Windows'
+// own sign: > 0 = the wheel up (WM_MOUSEWHEEL), or the horizontal wheel RIGHT (WM_MOUSEHWHEEL). REAPER
+// does not turn either: d > 0 zooms in, scrolls RIGHT (later) and scrolls UP; a "reversed" command the
+// other way. So in REAPER the wheel down on 988 (Alt+wheel) goes left, which is why it lists
+// Shift+Mousewheel on 977 (reversed): Shift+wheel down = right, a tilt right on 988 (HorizWheel) = right.
+// (Before 13-61 the wheel up counted as the tilt LEFT, Dear ImGui's way: every vertical wheel on a
+// scroll-horizontally action went the other way to REAPER's.)
+void AddWheel(ViewNavStep& s, const ViewNavWheel& w, double d)
 {
-    if (w.row < 0 || v == 0.0) return;
-    if (w.reversed) v = -v;
-    // v > 0: the wheel up (or the horizontal wheel left): back / in.
+    if (w.row < 0 || d == 0.0) return;
+    if (w.reversed) d = -d;
     switch (w.row) {
-    case kNavZoomH: s.zoom_h += v; break;
-    case kNavZoomV: s.zoom_v += v; break;
-    case kNavScrollH: (w.page ? s.scroll_h_pages : s.scroll_h) -= v; break;
-    case kNavScrollV: (w.page ? s.scroll_v_pages : s.scroll_v) -= v; break;
+    case kNavZoomH: s.zoom_h += d; break;
+    case kNavZoomV: s.zoom_v += d; break;
+    case kNavScrollH: (w.page ? s.scroll_h_pages : s.scroll_h) += d; break;
+    case kNavScrollV: (w.page ? s.scroll_v_pages : s.scroll_v) -= d; break;
     default: break;
     }
 }
@@ -221,7 +227,9 @@ ViewNavStep ViewNavStepFor(const ViewNavMap& m, int mods, float wheel, float hwh
 {
     ViewNavStep s;
     AddWheel(s, m.wheel[mods & 7], static_cast<double>(wheel));
-    AddWheel(s, m.hwheel[mods & 7], static_cast<double>(hwheel));
+    // Dear ImGui's io.MouseWheelH is > 0 for the tilt LEFT (its Win32 backend turns WM_MOUSEHWHEEL):
+    // turned back to REAPER's (Windows') sign.
+    AddWheel(s, m.hwheel[mods & 7], -static_cast<double>(hwheel));
     for (int row : key_rows) {
         switch (row) {
         case kNavZoomIn:

@@ -70,9 +70,9 @@ static void TestLinkedFollowsFile()
     CHECK(ViewNavOwner(m, WheelGesture(false, 0)) == kNavScrollH);
     CHECK(ViewNavOwner(m, WheelGesture(false, kViewModShift)) == kNavZoomH);
     CHECK(ViewNavOwner(m, WheelGesture(false, kViewModAlt)) == -1);  // disabled in REAPER
-    // The wheel up scrolls left; Shift+wheel up zooms in.
+    // The wheel up on 988 scrolls right (REAPER's sign, 13-61); Shift+wheel up zooms in.
     ViewNavStep s = ViewNavStepFor(m, 0, 1.0f, 0.0f, {});
-    CHECK(Near(s.scroll_h, -1.0) && Near(s.zoom_h, 0.0));
+    CHECK(Near(s.scroll_h, 1.0) && Near(s.zoom_h, 0.0));
     s = ViewNavStepFor(m, kViewModShift, 1.0f, 0.0f, {});
     CHECK(Near(s.zoom_h, 1.0) && Near(s.scroll_h, 0.0));
     CHECK(ViewNavWheelBound(m, 0, false) && !ViewNavWheelBound(m, kViewModAlt, false));
@@ -143,16 +143,16 @@ static void TestSteps()
     CHECK(Near(s.zoom_h, 1.0) && !s.any_v());
     s = ViewNavStepFor(m, kViewModCtrl, 1.0f, 0.0f, {});  // 979 reversed: zoom out
     CHECK(Near(s.zoom_h, -1.0));
-    s = ViewNavStepFor(m, kViewModShift, -2.0f, 0.0f, {});  // 981 one page: wheel down = two pages right
-    CHECK(Near(s.scroll_h_pages, 2.0) && Near(s.scroll_h, 0.0));
+    s = ViewNavStepFor(m, kViewModShift, -2.0f, 0.0f, {});  // 981 one page: wheel down = two pages left
+    CHECK(Near(s.scroll_h_pages, -2.0) && Near(s.scroll_h, 0.0));
     s = ViewNavStepFor(m, kViewModCtrl | kViewModShift, 1.0f, 0.0f, {});  // 978 reversed: up = down
     CHECK(Near(s.scroll_v, 1.0) && !s.any_h());
-    s = ViewNavStepFor(m, kViewModAlt, -1.0f, 0.0f, {});  // Alt+wheel down: right
-    CHECK(Near(s.scroll_h, 1.0));
+    s = ViewNavStepFor(m, kViewModAlt, -1.0f, 0.0f, {});  // Alt+wheel down on 988: left, as REAPER
+    CHECK(Near(s.scroll_h, -1.0));
     s = ViewNavStepFor(m, 0, 0.0f, -0.5f, {});  // a trackpad swipe right (ImGui H < 0): right
     CHECK(Near(s.scroll_h, 0.5));
-    s = ViewNavStepFor(m, kViewModAlt, 0.0f, 1.0f, {});  // Alt+H-wheel left: zoom in
-    CHECK(Near(s.zoom_h, 1.0));
+    s = ViewNavStepFor(m, kViewModAlt, 0.0f, 1.0f, {});  // Alt+H-wheel left (ImGui H > 0): zoom out
+    CHECK(Near(s.zoom_h, -1.0));
     s = ViewNavStepFor(m, 0, 0.0f, 0.0f, {kNavZoomIn, kNavZoomOut, kNavZoomOut});
     CHECK(Near(s.zoom_h, -2.0));
     s = ViewNavStepFor(m, kViewModShift | kViewModAlt | kViewModCtrl, 3.0f, 0.0f, {});  // unbound
@@ -327,8 +327,8 @@ static void TestLinkedListedWheel()
     const ViewNavMap m = ResolveViewNav(k, c);
     CHECK(m.wheel[kViewModShift].row == kNavScrollH && m.wheel[kViewModShift].reversed);
     CHECK(ViewNavWheelBound(m, kViewModShift, false));
-    const ViewNavStep s = ViewNavStepFor(m, kViewModShift, 1.0f, 0.0f, {});
-    CHECK(Near(s.scroll_h, 1.0) && !s.any_v());  // wheel up, reversed: right
+    const ViewNavStep s = ViewNavStepFor(m, kViewModShift, -1.0f, 0.0f, {});
+    CHECK(Near(s.scroll_h, 1.0) && !s.any_v());  // wheel down, reversed: right (13-61, as REAPER)
     // Its own row on REAPER would follow 988: with REAPER listing HorizWheel on 988 and Mousewheel on 989,
     // the REAPER rows run what REAPER lists.
     KbGesture mw, hw;
@@ -342,8 +342,63 @@ static void TestLinkedListedWheel()
     CHECK(mr.wheel[kViewModShift].row == kNavScrollH && mr.wheel[kViewModShift].reversed);
 }
 
+// 13-61: Antho's REAPER test (2026-10-14): the horizontal scroll went the other way to REAPER's. The
+// sign table, gesture x action -> direction, as REAPER runs its "(MIDI CC relative/mousewheel)" actions:
+// the notch as Windows gives it (wheel up > 0, horizontal wheel RIGHT > 0) is the action's value; > 0
+// scrolls right / up and zooms in, a reversed action the other way.
+static void TestReaperSignTable()
+{
+    struct Row {
+        const char* kb;      // the binding
+        int         mods;
+        float       wheel;   // io.MouseWheel (> 0 up)
+        float       hwheel;  // io.MouseWheelH (> 0 LEFT: Dear ImGui's Win32 backend turns WM_MOUSEHWHEEL)
+        double      sh, sv, zh, zv, shp;
+    };
+    const Row rows[] = {
+        // 988 Scroll horizontally on the wheel (Alt), then on the horizontal wheel.
+        {"KEY 255 250 988 0\n", kViewModAlt, 1.0f, 0.0f, 1, 0, 0, 0, 0},     // wheel up: right
+        {"KEY 255 250 988 0\n", kViewModAlt, -1.0f, 0.0f, -1, 0, 0, 0, 0},   // wheel down: left
+        {"KEY 255 216 988 0\n", 0, 0.0f, -1.0f, 1, 0, 0, 0, 0},              // tilt / swipe right: right
+        {"KEY 255 216 988 0\n", 0, 0.0f, 1.0f, -1, 0, 0, 0, 0},              // tilt / swipe left: left
+        // 977 reversed: Shift+wheel (Antho's REAPER), then on the horizontal wheel.
+        {"KEY 255 252 977 0\n", kViewModShift, -1.0f, 0.0f, 1, 0, 0, 0, 0},  // Shift+wheel down: right
+        {"KEY 255 252 977 0\n", kViewModShift, 1.0f, 0.0f, -1, 0, 0, 0, 0},  // Shift+wheel up: left
+        {"KEY 255 216 977 0\n", 0, 0.0f, -1.0f, -1, 0, 0, 0, 0},             // tilt right: left
+        // 981 / 975 one page.
+        {"KEY 255 248 981 0\n", 0, -1.0f, 0.0f, 0, 0, 0, 0, -1},             // wheel down: a page left
+        {"KEY 255 248 975 0\n", 0, -1.0f, 0.0f, 0, 0, 0, 0, 1},              // reversed: a page right
+        // 989 / 978 Scroll vertically (scroll_v > 0 = down).
+        {"KEY 255 248 989 0\n", 0, 1.0f, 0.0f, 0, -1, 0, 0, 0},              // wheel up: up
+        {"KEY 255 248 989 0\n", 0, -1.0f, 0.0f, 0, 1, 0, 0, 0},              // wheel down: down
+        {"KEY 255 248 978 0\n", 0, -1.0f, 0.0f, 0, -1, 0, 0, 0},             // reversed: wheel down = up
+        {"KEY 255 216 989 0\n", 0, 0.0f, -1.0f, 0, -1, 0, 0, 0},             // tilt right: up
+        // 990 / 979 Zoom horizontally, 1000 / 1001 Zoom vertically.
+        {"KEY 255 248 990 0\n", 0, 1.0f, 0.0f, 0, 0, 1, 0, 0},               // wheel up: in
+        {"KEY 255 248 979 0\n", 0, 1.0f, 0.0f, 0, 0, -1, 0, 0},              // reversed: out
+        {"KEY 255 218 990 0\n", kViewModAlt, 0.0f, -1.0f, 0, 0, 1, 0, 0},    // Alt+tilt right: in
+        {"KEY 255 249 1000 0\n", kViewModCtrl, 1.0f, 0.0f, 0, 0, 0, 1, 0},   // Ctrl+wheel up: taller
+        {"KEY 255 249 1001 0\n", kViewModCtrl, 1.0f, 0.0f, 0, 0, 0, -1, 0},  // reversed
+    };
+    for (const Row& r : rows) {
+        const ViewNavMap  m = ResolveViewNav(ParseViewKeymap(r.kb), ViewNavChoices{});
+        const ViewNavStep s = ViewNavStepFor(m, r.mods, r.wheel, r.hwheel, {});
+        const bool ok = Near(s.scroll_h, r.sh) && Near(s.scroll_v, r.sv) && Near(s.zoom_h, r.zh) &&
+                        Near(s.zoom_v, r.zv) && Near(s.scroll_h_pages, r.shp);
+        if (!ok) std::printf("  sign table: %s mods %d wheel %g hwheel %g\n", r.kb, r.mods, r.wheel, r.hwheel);
+        CHECK(ok);
+    }
+    // REAPER's defaults (no reaper-kb.ini): Alt+wheel down and the tilt left both go left.
+    const ViewNavMap d = ResolveViewNav(DefaultViewKeymap(), ViewNavChoices{});
+    CHECK(Near(ViewNavStepFor(d, kViewModAlt, -1.0f, 0.0f, {}).scroll_h, -1.0));
+    CHECK(Near(ViewNavStepFor(d, 0, 0.0f, 1.0f, {}).scroll_h, -1.0));
+    // A key on Scroll horizontally: one notch right (unchanged).
+    CHECK(Near(ViewNavStepFor(d, 0, 0.0f, 0.0f, {kNavScrollH}).scroll_h, 1.0));
+}
+
 int main()
 {
+    TestReaperSignTable();
     TestLinkedListedWheel();
     TestLinkedAction();
     TestTable();

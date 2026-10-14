@@ -138,6 +138,12 @@ struct WaveformEvents {
     // a variation's or a zone's edge within 6 px (SnapSpanEdge). Done = released (write it).
     bool   span_done = false, span_alt = false;
     double span_a = 0.0, span_b = 0.0;
+    // 13-62g: a placed piece's edge dragged on its part's lane (REAPER: an item edge trimmed in place): its frame,
+    // side (-1 start, +1 end), a time inside its section (SetPieceEdge's `at`) and the edge's new time; done =
+    // released (write it). `piece_edge_reset`: double-click on it, back to its automatic edge.
+    int    piece_edge_frame = -1, piece_edge_side = 0;
+    double piece_edge_at = 0.0, piece_edge_t = 0.0;
+    bool   piece_edge_done = false, piece_edge_reset = false;
     // Split (13-62F: "Lane"): the lane header column on the left of the lanes (13-62F F3: WaveParts::head_px,
     // 104 px .. half the box; head_narrow under 116 px: no gain fader), each lane's top and height, the comp
     // strip's rows; the caller draws the headers there (PartLaneHeader). head_w 0 = no column (Combined).

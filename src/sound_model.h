@@ -99,6 +99,12 @@ struct SoundFrame {
     // with parts - 1 cuts). Any comp gesture (AssignRange, a cut removed by MoveCut) fills it; with it set, a
     // variation may hold any number of cuts and a part several separate pieces.
     std::vector<std::string> owners;
+    // 13-62g (appended): piece edges moved by hand (absolute source s), as a REAPER item's edge trimmed in
+    // place: a start in `edge_in` / an end in `edge_out` overrides the automatic edge (pre-roll / tail) of the
+    // section holding it (PartSectionsOf). Kept across a threshold / margin change (CarryHandMarks), cleared by
+    // Reset to detected. Record keys `ein` / `eout`.
+    std::vector<double>      edge_in;
+    std::vector<double>      edge_out;
 };
 
 // The Sound-level default fades (s): every variation with no fade of its own gets them.

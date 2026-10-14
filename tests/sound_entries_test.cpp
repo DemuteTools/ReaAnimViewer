@@ -792,8 +792,9 @@ void TestOwnershipAndSpans()
     // An excluded zone inside Back: 2 Back spans, the gap empty; the whole placement keeps the hole.
     CHECK(AddZone(d, 1.05, 0.03, ""));
     CHECK(!PartAt(d, 0, 1.06, &v));
+    // 13-62g: Back's piece (from 5 ms before its sound to the cut) minus the excluded stretch.
     std::vector<PartSpan> back = PlacedSpans(d, 0, kBack);
-    CHECK(back.size() == 2 && Near(back[0].start, 1.0) && Near(back[0].length, 0.05) && Near(back[1].start, 1.08) &&
+    CHECK(back.size() == 2 && Near(back[0].start, 1.015) && Near(back[0].length, 0.035) && Near(back[1].start, 1.08) &&
           Near(back[1].length, 0.065));
     std::vector<PartSpan> whole = PlacedSpans(d, 0, "");
     CHECK(whole.size() == 2 && whole[0].value_uid.empty() && Near(whole[1].start, 1.08) && Near(whole[1].length, 0.32));
@@ -866,50 +867,48 @@ void TestPartMargins()
     CHECK(PlacedSpans(d, 0, "").size() == 1 && Near(PlacedSpans(d, 0, "")[0].length, 0.4));
     SetDivide(d, "g", {kBack, kFront});
     CHECK(PartMarginsApply(d));
-    // Tail 0: Back ends with its sound, Front's pre-roll 5 ms before it; review: the margins apply at the
-    // cut only, the variation's own start and end stay (Back starts at 1.0, Front ends at 1.4).
+    // Tail 0: Back ends with its sound, Front's pre-roll 5 ms before it. 13-62g: the margins apply at the
+    // variation's own edges too (Back starts 5 ms before its sound at 1.015, Front ends with its sound at 1.188):
+    // a detected frame carries the largest margin, each part takes its own (DetectionSilence).
     std::vector<PartSpan> m = Margins(d, pk, 5.0, 0.0);
     CHECK(m.size() == 2 && m[0].value_uid == kBack && m[1].value_uid == kFront);
-    CHECK(Near(m[0].start, 1.0) && Near(m[0].start + m[0].length, 1.061));
-    CHECK(Near(m[1].start, 1.145) && Near(m[1].start + m[1].length, 1.4));
-    // Tail 300 ms: Back's tail stops at Front's start, Front keeps the variation's end.
+    CHECK(Near(m[0].start, 1.015) && Near(m[0].start + m[0].length, 1.061));
+    CHECK(Near(m[1].start, 1.145) && Near(m[1].start + m[1].length, 1.188));
+    // Tail 300 ms: Back's tail stops at the cut, Front's at the variation's end.
     m = Margins(d, pk, 5.0, 300.0);
     CHECK(m.size() == 2 && Near(m[0].start + m[0].length, 1.145) && Near(m[1].start + m[1].length, 1.4));
     // Tail 50 ms: Back ends 50 ms after its sound.
     m = Margins(d, pk, 5.0, 50.0);
     CHECK(m.size() == 2 && Near(m[0].start + m[0].length, 1.111) && Near(m[1].start, 1.145));
-    // Review: a hand-stretched variation (0.9 .. 1.5) keeps its stretched start and end, whatever the margins.
+    // A variation stretched by hand (0.9 .. 1.5, its edge handles): its outer pieces' edges are pinned there by
+    // hand (13-62g, REAPER's item edge), whatever the margins.
     {
         SoundData h = d;
-        h.frames[0] = F(0.9, 0.6);
         h.frames[0].cuts = {1.145};
         h.frames[0].cuts_hand = true;
+        TrimFrame(h, 0, 0.9, 0.6, 3.0);
+        CHECK(h.frames[0].edge_in.size() == 1 && Near(h.frames[0].edge_in[0], 0.9) && h.frames[0].edge_out.size() == 1 &&
+              Near(h.frames[0].edge_out[0], 1.5));
         m = Margins(h, pk, 5.0, 0.0);
         CHECK(m.size() == 2 && Near(m[0].start, 0.9) && Near(m[0].start + m[0].length, 1.061) && Near(m[1].start, 1.145) &&
               Near(m[1].start + m[1].length, 1.5));
     }
-    // 13-58 (Antho 2026-10-14): a pre-roll butts on the previous part's zone and never shrinks it. Tail
-    // 300 ms: Back keeps its whole side of the cut (1.0 .. 1.145) whatever Front's pre-roll (5, 50 or
-    // 300 ms): Front's pre-roll is clamped at the cut; parts never overlap.
+    // 13-62g (Antho 2026-10-14, "if there is a cut, it is a section of its own"; replaces 13-58's crossing): a
+    // margin never crosses a cut, either way. Back keeps its side whatever Front's pre-roll; Front's pre-roll stops
+    // at the cut; Back's tail stops at the cut even when Front's side is silent there.
     m = Margins(d, pk, 50.0, 300.0);
     CHECK(m.size() == 2 && Near(m[0].start, 1.0) && Near(m[0].start + m[0].length, 1.145) && Near(m[1].start, 1.145));
     m = Margins(d, pk, 300.0, 300.0);
     CHECK(m.size() == 2 && Near(m[0].start, 1.0) && Near(m[0].start + m[0].length, 1.145) && Near(m[1].start, 1.145) &&
           Near(m[1].start + m[1].length, 1.4));
-    // Tail 50 ms (Back's zone ends at 1.111): a 50 ms pre-roll crosses the cut into the free silence
-    // (1.100 wanted), butting on Back's zone at 1.111, Back unchanged.
     m = Margins(d, pk, 50.0, 50.0);
-    CHECK(m.size() == 2 && Near(m[0].start + m[0].length, 1.111) && Near(m[1].start, 1.111));
-    // Tail 0: the same pre-roll gets its whole 50 ms (1.100); a longer one stops at Back's sound (never
-    // into it).
+    CHECK(m.size() == 2 && Near(m[0].start + m[0].length, 1.111) && Near(m[1].start, 1.145));
     m = Margins(d, pk, 50.0, 0.0);
-    CHECK(m.size() == 2 && Near(m[0].start + m[0].length, 1.061) && Near(m[1].start, 1.1));
+    CHECK(m.size() == 2 && Near(m[0].start + m[0].length, 1.061) && Near(m[1].start, 1.145));
     m = Margins(d, pk, 300.0, 0.0);
-    CHECK(m.size() == 2 && Near(m[0].start + m[0].length, 1.061) && Near(m[1].start, 1.061));
-    // The other way round: Front's pre-roll inside its own side of the cut comes first too; Back's tail
-    // may cross the cut only into what Front leaves free (pre-roll 0: up to Front's sound, 1.150).
+    CHECK(m.size() == 2 && Near(m[0].start + m[0].length, 1.061) && Near(m[1].start, 1.145));
     m = Margins(d, pk, 0.0, 300.0);
-    CHECK(m.size() == 2 && Near(m[0].start + m[0].length, 1.15) && Near(m[1].start, 1.15));
+    CHECK(m.size() == 2 && Near(m[0].start + m[0].length, 1.145) && Near(m[1].start, 1.15));
     // Stored with the frame: Front's sync on its attack, inside its piece; the placement plays the piece.
     SoundData s = d;
     s.silence.preroll_ms = 50.0;
@@ -917,7 +916,7 @@ void TestPartMargins()
     RefreshParts(s, &pk);
     CHECK(s.frames[0].part_trims.size() == 4 && !SyncsStale(s, 0));
     const std::vector<PartSpan> front = PlacedSpans(s, 0, kFront);
-    CHECK(front.size() == 1 && Near(front[0].start, 1.1) && Near(front[0].start + front[0].length, 1.4));
+    CHECK(front.size() == 1 && Near(front[0].start, 1.145) && Near(front[0].start + front[0].length, 1.188));
     CHECK(Near(SyncFor(s, 0, kFront), 1.148));
     // A whole (combined event) placement keeps the whole variation.
     CHECK(PlacedSpans(s, 0, "").size() == 1 && Near(PlacedSpans(s, 0, "")[0].length, 0.4));
@@ -949,9 +948,9 @@ void TestPartMargins()
     st = s;
     st.frames[0].part_trim_key.clear();
     CHECK(PartTrimsStale(st, 0) && SyncsStale(st, 0));
-    // 13-58: a key from the 13-54 rule (same settings, no "r2," version): stale, measured again.
+    // 13-58 / 13-62g: a key from an older rule (same settings, no "r3," version): stale, measured again.
     st = s;
-    CHECK(st.frames[0].part_trim_key.compare(0, 3, "r2,") == 0);
+    CHECK(st.frames[0].part_trim_key.compare(0, 3, "r3,") == 0);
     st.frames[0].part_trim_key.erase(0, 3);
     CHECK(PartTrimsStale(st, 0) && SyncsStale(st, 0));
     CHECK(MeasureSyncs(st, 0, &pk) && !PartTrimsStale(st, 0) && st.frames[0].part_trim_key == s.frames[0].part_trim_key);
@@ -977,7 +976,7 @@ void TestPartMargins()
         CHECK(MeasureSyncs(sv, 0, &pv) && !PartTrimsStale(sv, 0, &same));
     }
     // Review: a hand sync belongs to the part owning its spot by the cut (pre-roll 50 ms, tail 0: Back
-    // plays to 1.061, Front from 1.100, the cut is at 1.145). Back's hand sync at 1.12 (in Front's pre-roll) stays Back's, clamped to
+    // plays to 1.061, Front from the cut at 1.145). Back's hand sync at 1.12 (in Front's pre-roll) stays Back's, clamped to
     // the end of Back's piece; Front keeps its own attack.
     {
         SoundData hs = s;  // tail 0 (13-58: with a long tail Back's zone would reach the cut, Front's pre-roll 0)
@@ -1012,19 +1011,20 @@ void TestPartMargins()
         const std::vector<PartSpan> me = Margins(d2, e, 5.0, 300.0);
         CHECK(me.size() == 2 && Near(me[1].start + me[1].length, 3.0) && Near(me[0].start + me[0].length, 2.845));
     }
-    // An excluded zone between the parts: no part grows into it; Back's silent stretch past the zone plays
-    // nothing (Back sounds before it), its silence goes to Front's pre-roll.
+    // An excluded zone inside Back's tail (13-62g): it takes its own stretch away and nothing more; Back's tail
+    // goes on after it up to the cut, Front's pre-roll stops at the cut.
     {
         SoundData z = d;
         CHECK(AddZone(z, 1.08, 0.04, ""));
         const std::vector<PartSpan> mz = Margins(z, pk, 50.0, 300.0);
-        CHECK(mz.size() == 2 && mz[0].value_uid == kBack && Near(mz[0].start, 1.0) && Near(mz[0].start + mz[0].length, 1.08));
-        CHECK(mz[1].value_uid == kFront && Near(mz[1].start, 1.12) && Near(mz[1].start + mz[1].length, 1.4));
+        CHECK(mz.size() == 3 && mz[0].value_uid == kBack && Near(mz[0].start, 1.0) && Near(mz[0].start + mz[0].length, 1.08));
+        CHECK(mz[1].value_uid == kBack && Near(mz[1].start, 1.12) && Near(mz[1].start + mz[1].length, 1.145));
+        CHECK(mz[2].value_uid == kFront && Near(mz[2].start, 1.145) && Near(mz[2].start + mz[2].length, 1.4));
         SoundData zz = z;
         zz.silence.preroll_ms = 50.0;
         zz.silence.tail_ms = 300.0;
         RefreshParts(zz, &pk);
-        CHECK(PlacedSpans(zz, 0, kBack).size() == 1 && !SyncsStale(zz, 0));
+        CHECK(PlacedSpans(zz, 0, kBack).size() == 2 && !SyncsStale(zz, 0));
     }
     // A part quiet all along keeps its spans as they are (still placed), its neighbour stops at it.
     {
@@ -1363,8 +1363,8 @@ void TestPartSyncAndMargins()
     ResetPartAll(d, kFront);
     RefreshParts(d, &pk);
     CHECK(Near(d.frames[0].syncs[1], 1.148));
-    // Per-part margins (13-54 rule, each span with its own part's pre-roll / tail): tail 0, Toe's own 50 ms
-    // pre-roll reaches back to 1.100 while Heel's ends with its sound; the Sound's pre-roll is 5 ms.
+    // Per-part margins (each section with its own part's pre-roll / tail): tail 0, Toe's own 50 ms pre-roll
+    // stops at the cut (13-62g) while Heel's ends with its sound; the Sound's pre-roll is 5 ms.
     d.silence.preroll_ms = 5.0;
     d.silence.tail_ms = 0.0;
     RefreshParts(d, &pk);
@@ -1380,14 +1380,14 @@ void TestPartSyncAndMargins()
     CHECK(d.frames[0].part_trims.empty() && PartTrimKey(d, 0, FileVersion{}) != key0);
     RefreshParts(d, &pk);
     std::vector<PartSpan> m = PartPieces(d, 0);
-    CHECK(m.size() == 2 && Near(m[0].start + m[0].length, 1.061) && Near(m[1].start, 1.1) && !PartTrimsStale(d, 0));
-    // Heel's own tail 50 ms: Heel ends at 1.111, Toe's pre-roll butts on it (13-58), Toe unchanged otherwise.
+    CHECK(m.size() == 2 && Near(m[0].start + m[0].length, 1.061) && Near(m[1].start, 1.145) && !PartTrimsStale(d, 0));
+    // Heel's own tail 50 ms: Heel ends at 1.111; Toe unchanged (13-62g: neither crosses the cut).
     PartSettings tail;
     tail.tail_ms = 50.0;
     SetPartSetting(d, kBack, tail);
     RefreshParts(d, &pk);
     m = PartPieces(d, 0);
-    CHECK(m.size() == 2 && Near(m[0].start + m[0].length, 1.111) && Near(m[1].start, 1.111));
+    CHECK(m.size() == 2 && Near(m[0].start + m[0].length, 1.111) && Near(m[1].start, 1.145));
     // A stored key without the parts' margins is stale.
     SoundData stale = d;
     stale.parts.clear();
@@ -1807,8 +1807,306 @@ void TestPartRowHelpers()
     CHECK(RoundedNumberText(-2.5, true) == "-2.5" && RoundedNumberText(2.54, true) == "+2.5" && RoundedNumberText(3.0, false) == "3");
 }
 
+// ---- 13-62g: sections (Antho 2026-10-14: "the same control as cutting an item into several items in REAPER") ----
+
+// The placed part at source time t of variation v ("" = nothing placed there).
+std::string PlacedAt(const SoundData& d, int v, double t)
+{
+    for (const PartSpan& s : PartPieces(d, v))
+        if (t >= s.start && t < s.start + s.length) return s.value_uid;
+    return std::string();
+}
+
+// Antho's screenshot: a variation comped Heel | Toe | Heel (the Toe section 1.590 .. 1.840), Toe's sound at 1.600.
+SoundData Comped(PeakData* pk)
+{
+    *pk = Quiet(3.0);
+    Hit(*pk, 1.45, -6.0);
+    Hit(*pk, 1.60, -15.0);  // loud (>= -45 dB) up to 1.631
+    Hit(*pk, 1.845, -6.0);
+    SoundData d;
+    d.mode = DetectMode::Silence;
+    d.frames = {F(1.40, 0.70)};
+    SetDivide(d, "g", {kBack, kFront});
+    RefreshParts(d, pk);
+    AssignRange(d, 0, 1.59, 1.84, kFront);
+    AssignRange(d, 0, 1.84, 2.1, kBack);
+    RefreshParts(d, pk);
+    return d;
+}
+
+double PartEnd(const SoundData& d, const std::string& v)
+{
+    const std::vector<PartSpan> p = PlacedSpans(d, 0, v);
+    return p.empty() ? -1.0 : p.back().start + p.back().length;
+}
+
+void TestTailAndGaps()
+{
+    // Root cause 1: a part's own Tail did nothing on the variation's last part (Toe after Heel): the 13-54 review
+    // kept the variation's own end whatever the part's margins. Now Toe's Tail sets Toe's end (up to the
+    // variation's end), lowered or raised, and the Sound's Tail too while Toe follows it.
+    {
+        PeakData  pk;
+        SoundData d = Step(&pk);
+        SetDivide(d, "g", {kBack, kFront});
+        RefreshParts(d, &pk);
+        CHECK(Near(PartEnd(d, kFront), 1.288));  // the Sound's 100 ms after Toe's sound (1.188), not the frame's 1.4
+        PartSettings t;
+        t.tail_ms = 40.0;
+        SetPartSetting(d, kFront, t);
+        RefreshParts(d, &pk);
+        CHECK(Near(PartEnd(d, kFront), 1.228) && Near(PartEnd(d, kBack), 1.145));
+        t.tail_ms = 150.0;
+        SetPartSetting(d, kFront, t);
+        RefreshParts(d, &pk);
+        CHECK(Near(PartEnd(d, kFront), 1.338));
+        t.tail_ms = 5000.0;  // never past the variation's own end
+        SetPartSetting(d, kFront, t);
+        RefreshParts(d, &pk);
+        CHECK(Near(PartEnd(d, kFront), 1.4));
+        // The variation is detected with the largest margin of all (so the part's own fits in it).
+        CHECK(Near(DetectionSilence(d).tail_ms, 5000.0) && Near(DetectionSilence(d).preroll_ms, 5.0));
+        ResetPartAll(d, kFront);
+        CHECK(Near(DetectionSilence(d).tail_ms, 100.0));
+        d.silence.tail_ms = 60.0;  // the Sound's Tail, Toe following it
+        RefreshParts(d, &pk);
+        CHECK(Near(PartEnd(d, kFront), 1.248) && Near(PartEnd(d, kBack), 1.121));
+        // Combined: the Sound's own (no part margins).
+        SoundData c = Step(&pk);
+        CHECK(Near(DetectionSilence(c).tail_ms, c.silence.tail_ms));
+    }
+    // The screenshot's Toe (a comped section between two Heel ones): its tail fills its section up to the cut.
+    PeakData  pk;
+    SoundData d = Comped(&pk);
+    CHECK(PartsProblem(d).empty());
+    CHECK(Near(PartEnd(d, kFront), 1.730) && Near(PlacedSpans(d, 0, kFront)[0].start, 1.595));
+    {
+        SoundData r = d;
+        PartSettings t;
+        t.tail_ms = 200.0;
+        SetPartSetting(r, kFront, t);
+        RefreshParts(r, &pk);
+        CHECK(Near(PartEnd(r, kFront), 1.830));
+        t.tail_ms = 400.0;  // up to the cut, never across it
+        SetPartSetting(r, kFront, t);
+        RefreshParts(r, &pk);
+        CHECK(Near(PartEnd(r, kFront), 1.84) && PlacedAt(r, 0, 1.839) == kFront && PlacedAt(r, 0, 1.841) == kBack);
+    }
+    // The stretch after Toe's tail (1.730 .. 1.840) is a gap of Toe's section: why, and what it holds.
+    GapInfo g = GapAt(d, 0, 1.79);
+    CHECK(g.kind == GapKind::AfterSound && g.value == kFront && Near(g.start, 1.730) && Near(g.end, 1.84) && Near(g.margin_ms, 100.0));
+    CHECK(GapAt(d, 0, 1.70).kind == GapKind::None && GapAt(d, 0, 1.592).kind == GapKind::BeforeSound);
+    CHECK(GapAt(d, 0, 5.0).kind == GapKind::None);
+    // Root cause 2: a gesture there acted on the whole Toe section (EditPiecesOf: 1.590 .. 1.840): right-click >
+    // Exclude excluded the whole Toe. Its range is now the gap only.
+    EditPiece r;
+    CHECK(EditRangeAt(d, 0, 1.79, &r) && !r.excluded && r.owner == kFront && Near(r.start, 1.730) && Near(r.start + r.length, 1.84));
+    CHECK(EditRangeAt(d, 0, 1.70, &r) && Near(r.start, 1.59) && Near(r.start + r.length, 1.84));  // on the piece: all of it
+    {
+        SoundData x = d;
+        CHECK(EditRangeAt(x, 0, 1.79, &r) && ExcludeRange(x, 0, r.start, r.start + r.length));
+        RefreshParts(x, &pk);
+        CHECK(Near(PlacedSpans(x, 0, kFront)[0].start, 1.595) && Near(PartEnd(x, kFront), 1.730) && PartsProblem(x).empty());
+        CHECK(GapAt(x, 0, 1.79).kind == GapKind::Excluded);
+        // Excluding a stretch inside Toe's piece takes that stretch only: its tail goes on after it.
+        SoundData y = d;
+        CHECK(ExcludeRange(y, 0, 1.65, 1.68));
+        RefreshParts(y, &pk);
+        const std::vector<PartSpan> toe = PlacedSpans(y, 0, kFront);
+        CHECK(toe.size() == 2 && Near(toe[0].start, 1.595) && Near(toe[0].start + toe[0].length, 1.65) && Near(toe[1].start, 1.68) &&
+              Near(toe[1].start + toe[1].length, 1.730));
+        // Excluding Toe's own sound keeps its edges (the sound is measured with the exclusion ignored).
+        SoundData z = d;
+        CHECK(ExcludeRange(z, 0, 1.595, 1.64));
+        RefreshParts(z, &pk);
+        CHECK(PlacedSpans(z, 0, kFront).size() == 1 && Near(PlacedSpans(z, 0, kFront)[0].start, 1.64) && Near(PartEnd(z, kFront), 1.730));
+    }
+    // A click on the Heel lane in the gap takes the gap, never Toe's sound.
+    CompClickPlan c = PlanCompClick(d, 0, 1.79, kBack, false, false);
+    CHECK(c.take && Near(c.piece.start, 1.730) && Near(c.piece.start + c.piece.length, 1.84));
+    {
+        SoundData x = d;
+        CHECK(AssignRange(x, 0, c.piece.start, c.piece.start + c.piece.length, kBack));
+        RefreshParts(x, &pk);
+        CHECK(Near(PlacedSpans(x, 0, kFront)[0].start, 1.595) && Near(PartEnd(x, kFront), 1.730) && PartsProblem(x).empty());
+    }
+    // Piece edges moved by hand (REAPER: an item's edge trimmed in place): Toe's end dragged into its gap.
+    PieceEdgeHit h;
+    CHECK(PieceEdgeAt(d, 0, kFront, 1.7302, 0.002, &h) && h.side == 1 && Near(h.edge, 1.730) && !h.hand && Near(h.hi, 1.84));
+    CHECK(!PieceEdgeAt(d, 0, kBack, 1.7302, 0.002, &h));  // another part's lane
+    CHECK(SetPieceEdge(d, 0, h.at, 1, 1.80) && !SetPieceEdge(d, 0, h.at, 1, 1.80));
+    RefreshParts(d, &pk);
+    CHECK(Near(PartEnd(d, kFront), 1.80) && GapAt(d, 0, 1.82).kind == GapKind::HandEdge && PartsProblem(d).empty());
+    CHECK(SetPieceEdge(d, 0, h.at, 1, 1.95) && Near(PartEnd(d, kFront), 1.84));  // never across the cut
+    CHECK(SetPieceEdge(d, 0, h.at, 1, 1.80));
+    // Kept across a margin or threshold change.
+    PartSettings t0;
+    t0.tail_ms = 0.0;
+    SetPartSetting(d, kFront, t0);
+    d.silence.threshold_db = -40.0;
+    RefreshParts(d, &pk);
+    CHECK(Near(PartEnd(d, kFront), 1.80));
+    // The start too, 4 ms from the other edge at least.
+    CHECK(SetPieceEdge(d, 0, h.at, -1, 1.799) && Near(PlacedSpans(d, 0, kFront)[0].start, 1.796));
+    CHECK(ResetPieceEdge(d, 0, h.at, -1) && !ResetPieceEdge(d, 0, h.at, -1));
+    // Through a re-detection (CarryHandMarks), and its record.
+    {
+        std::vector<SoundFrame> now = {F(1.38, 0.75)};
+        CarryHandMarks(now, d.frames);
+        CHECK(now[0].edge_out.size() == 1 && Near(now[0].edge_out[0], 1.80) && now[0].cuts.size() == 2);
+        std::vector<SoundFrame> reset = {F(1.38, 0.75)};
+        CarryHandMarks(reset, d.frames, false);  // Reset to detected: gone
+        CHECK(reset[0].edge_out.empty() && reset[0].edge_in.empty());
+        SoundStore   st;
+        SoundLibrary lib;
+        lib.uid = "b000000000000002";
+        lib.name = "L";
+        lib.root = "c000000000000002";
+        SoundNode n;
+        n.uid = "c000000000000002";
+        n.type = SoundNodeType::Sound;
+        n.name = "S";
+        n.sound = d;
+        lib.nodes.push_back(n);
+        st.libraries.push_back(lib);
+        SoundStore back;
+        CHECK(ParseSoundStore(SerializeSoundStore(st), &back) && back.libraries.size() == 1 && back.libraries[0].nodes.size() == 1);
+        if (back.libraries.size() == 1 && back.libraries[0].nodes.size() == 1)
+            CHECK(back.libraries[0].nodes[0].sound.frames[0].edge_out == d.frames[0].edge_out);
+    }
+    CHECK(ResetPieceEdge(d, 0, h.at, 1));
+    RefreshParts(d, &pk);
+    CHECK(Near(PartEnd(d, kFront), 1.625));  // tail 0: its sound's end (threshold -40 dB)
+    // A variation's edge dragged by hand pins its outer piece there (and a split pins both halves at the split).
+    {
+        SoundData x = Comped(&pk);
+        TrimFrame(x, 0, 1.40, 0.80, 3.0);  // end 2.10 -> 2.20
+        RefreshParts(x, &pk);
+        CHECK(Near(PartEnd(x, kBack), 2.2) && PartsProblem(x).empty());
+        SoundData s = Comped(&pk);
+        CHECK(SplitFrame(s, 0, 1.70));
+        RefreshParts(s, &pk);
+        CHECK(Near(PartEnd(s, kFront), 1.70) && PartsProblem(s).empty());
+        CHECK(Near(PlacedSpans(s, 1, kFront)[0].start, 1.70));
+    }
+}
+
+// The parts' invariant through random gesture sequences (seeded, reproducible): every stretch of a divided variation
+// is a piece that is excluded or owned, what is placed stays in its own part's stretches without overlapping, an
+// exclusion takes its own stretch away and nothing more, and a part's tail raised high fills each of its sections
+// up to its end.
+void TestPartsFuzz()
+{
+    PeakData pk = Quiet(4.0);
+    for (double t : {0.21, 0.36, 0.52, 0.80, 1.02, 1.15, 1.31, 1.60, 1.845, 2.30, 2.47, 2.90, 3.20})
+        Hit(pk, t, -3.0 - std::fmod(t * 37.0, 20.0));
+    const std::string vals[3] = {kBack, kFront, "v0000000000000c1"};
+    int               broken = 0;
+    for (unsigned seed = 1; seed <= 40 && broken == 0; ++seed) {
+        unsigned state = seed * 2654435761u;
+        auto     rnd = [&]() {
+            state = state * 1664525u + 1013904223u;
+            return static_cast<double>(state >> 8) / 16777216.0;
+        };
+        auto pick = [&](int n) { return std::min(n - 1, static_cast<int>(rnd() * n)); };
+        SoundData d;
+        d.mode = DetectMode::Silence;
+        d.frames = {F(0.15, 0.95), F(1.25, 0.9), F(2.25, 1.2)};
+        SetDivide(d, "g", {vals[0], vals[1], seed % 2 ? vals[2] : vals[1]});
+        if (seed % 2 == 0) SetDivide(d, "g", {vals[0], vals[1]});
+        RefreshParts(d, &pk);
+        for (int step = 0; step < 60 && broken == 0; ++step) {
+            if (d.frames.empty()) break;
+            const int    v = pick(static_cast<int>(d.frames.size()));
+            const double fs = d.frames[static_cast<size_t>(v)].start, fl = d.frames[static_cast<size_t>(v)].length;
+            const double a = fs - 0.05 + rnd() * (fl + 0.1), b = a + rnd() * 0.4;
+            const std::string val = d.divide_values[static_cast<size_t>(pick(static_cast<int>(d.divide_values.size())))];
+            const int    op = pick(12);
+            SoundData    before = d;
+            switch (op) {
+            case 0: AssignRange(d, v, a, b, val); break;
+            case 1: ExcludeRange(d, v, a, b); break;
+            case 2:
+                if (!d.frames[static_cast<size_t>(v)].cuts.empty())
+                    MoveCut(d, v, pick(static_cast<int>(d.frames[static_cast<size_t>(v)].cuts.size())), a);
+                break;
+            case 3: SplitFrame(d, v, fs + rnd() * fl); break;
+            case 4: TrimFrame(d, v, fs + (rnd() - 0.5) * 0.1, fl + (rnd() - 0.5) * 0.2, 4.0); break;
+            case 5: ResetCuts(d, v); break;
+            case 6: IncludeAgain(d, a); break;
+            case 7: {
+                PieceEdgeHit h;
+                for (const PartSection& s : PartSectionsOf(d, v))
+                    if (s.placed_end > s.placed_start && PieceEdgeAt(d, v, s.value_uid, rnd() < 0.5 ? s.placed_start : s.placed_end, 1e-6, &h))
+                        SetPieceEdge(d, v, h.at, h.side, h.edge + (rnd() - 0.5) * 0.2);
+                break;
+            }
+            case 8: ResetPieceEdge(d, v, a, rnd() < 0.5 ? -1 : 1); break;
+            case 9: d.silence.threshold_db = -55.0 + rnd() * 25.0; break;
+            case 10: {
+                PartSettings p;
+                if (rnd() < 0.5) p.tail_ms = rnd() * 300.0;
+                else p.preroll_ms = rnd() * 80.0;
+                SetPartSetting(d, val, p);
+                break;
+            }
+            default: SetFrameOn(d, v, rnd() < 0.85); break;
+            }
+            RefreshParts(d, rnd() < 0.9 ? &pk : nullptr);
+            const std::string why = PartsProblem(d);
+            if (!why.empty()) {
+                std::printf("seed %u step %d op %d: %s\n", seed, step, op, why.c_str());
+                for (const SoundData* x : {&before, &d})
+                    for (const SoundFrame& f : x->frames) {
+                        std::printf("  [%.4f %.4f] on%d hand%d ch%d cuts:", f.start, f.start + f.length, f.on, f.hand, f.cuts_hand);
+                        for (double c : f.cuts) std::printf(" %.4f", c);
+                        std::printf(" own %d\n", static_cast<int>(f.owners.size()));
+                    }
+                ++broken;
+            }
+            // An exclusion (same frames) changes what is placed inside [a, b] only.
+            if (op == 1 && d.frames.size() == before.frames.size()) {
+                RefreshParts(before, &pk);
+                RefreshParts(d, &pk);
+                auto at = [](const std::vector<PartSpan>& ps, double t) {
+                    for (const PartSpan& s : ps)
+                        if (t >= s.start && t < s.start + s.length) return s.value_uid;
+                    return std::string();
+                };
+                for (size_t i = 0; i < d.frames.size() && broken == 0; ++i) {
+                    const std::vector<PartSpan> p0 = PartPieces(before, static_cast<int>(i)), p1 = PartPieces(d, static_cast<int>(i));
+                    for (double t = d.frames[i].start; t < d.frames[i].start + d.frames[i].length; t += 0.0007)
+                        if ((t < a - 1e-6 || t > b + 1e-6) && at(p0, t) != at(p1, t)) {
+                            std::printf("seed %u step %d: excluding %.4f..%.4f changed %.4f\n", seed, step, a, b, t);
+                            ++broken;
+                            break;
+                        }
+                }
+            }
+        }
+        // A part's tail raised high fills each of its sounding sections up to its end (unless moved by hand).
+        if (broken == 0) {
+            PartSettings p;
+            p.tail_ms = 5000.0;
+            SetPartSetting(d, vals[1], p);
+            RefreshParts(d, &pk);
+            for (size_t i = 0; i < d.frames.size(); ++i)
+                for (const PartSection& s : PartSectionsOf(d, static_cast<int>(i)))
+                    if (s.value_uid == vals[1] && !s.hand_end && s.placed_end > s.placed_start && s.measured &&
+                        std::fabs(s.placed_end - s.end) > 1e-9) {
+                        std::printf("seed %u: a raised tail left %.4f..%.4f out\n", seed, s.placed_end, s.end);
+                        ++broken;
+                    }
+        }
+    }
+    CHECK(broken == 0);
+}
+
 int main()
 {
+    TestTailAndGaps();  // 13-62g
+    TestPartsFuzz();
     TestPartSettings();  // 13-62
     TestPartRowHelpers();
     TestPartNormalize();

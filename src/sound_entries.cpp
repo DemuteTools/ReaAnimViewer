@@ -407,6 +407,11 @@ void SetDefaultFades(SoundData& data, double in, double out)
     data.fade_out = std::isfinite(out) ? std::max(out, 0.0) : kDefaultFadeOut;
 }
 
+namespace {
+// 13-62g (below, with the sections): the frame's outer pieces' edges pinned at its start / end by hand.
+void PinOuterEdges(SoundData& data, int variation, bool start, bool end);
+}  // namespace
+
 void TrimFrame(SoundData& data, int i, double start, double length, double source_len)
 {
     if (!ValidIndex(data, i)) return;
@@ -416,10 +421,14 @@ void TrimFrame(SoundData& data, int i, double start, double length, double sourc
     const double s = std::min(std::max(start, lo), hi);
     const double e = std::min(std::max(start + length, s), hi);
     if (e - s <= kMinLen) return;  // no room: the frame stays as it was
+    const double s0 = data.frames[k].start, e0 = s0 + data.frames[k].length;
     data.frames[k].start = s;
     data.frames[k].length = e - s;
     ClampOwnFades(data.frames[k]);
     MarkHand(data, i);
+    // 13-62g: a divided variation's edge dragged by hand is its outer piece's edge moved by hand (REAPER: the item
+    // edge trimmed): the piece there follows it exactly, whatever its margins.
+    if (IsDivided(data) && data.mode != DetectMode::Takes) PinOuterEdges(data, i, s != s0, e != e0);
 }
 
 int AddFrame(SoundData& data, double start, double length, double source_len)
@@ -480,6 +489,19 @@ bool SplitFrame(SoundData& data, int i, double at)
         b.owners.assign(owners.end() - static_cast<std::ptrdiff_t>(b.cuts.size() + 1), owners.end());
         a.part_trims.clear();
         b.part_trims.clear();
+    }
+    // 13-62g: each half keeps the hand-moved piece edges on its side; a divided Sound's halves are pinned at the
+    // split (REAPER's split: both items keep the audio up to it, whatever the margins).
+    auto keep = [](std::vector<double>& v, double lo, double hi) {
+        v.erase(std::remove_if(v.begin(), v.end(), [&](double h) { return !(h >= lo && h <= hi); }), v.end());
+    };
+    keep(a.edge_in, a.start, at);
+    keep(a.edge_out, a.start, at);
+    keep(b.edge_in, at, end);
+    keep(b.edge_out, at, end);
+    if (IsDivided(data) && data.mode != DetectMode::Takes) {  // after any of their own (the first one held wins)
+        a.edge_out.push_back(at);
+        b.edge_in.push_back(at);
     }
     ClampOwnFades(a);
     ClampOwnFades(b);
@@ -699,52 +721,76 @@ bool PartMarginsApply(const SoundData& data)
 
 namespace {
 
-bool Touches(const PartSpan& a, const PartSpan& b)
-{
-    return std::fabs(a.start + a.length - b.start) <= kTimeEps;
-}
-
 double MarginS(double ms)
 {
     return std::isfinite(ms) && ms > 0.0 ? ms / 1000.0 : 0.0;
 }
 
-// Where the run of touching spans holding raw[i] starts / ends (an excluded zone or the frame's edge
-// beyond).
-double RunStart(const std::vector<PartSpan>& raw, size_t i)
+// 13-62g: who owns source time `t` of frame `f` with the excluded zones ignored: the last "-> value" zone over
+// it (when a divide value), else the piece's owner by the cuts. The section `t` belongs to, excluded or not.
+std::string OwnerIgnoringExclusions(const SoundData& data, const SoundFrame& f, double t)
 {
-    while (i > 0 && Touches(raw[i - 1], raw[i])) --i;
-    return raw[i].start;
+    const SoundZone* last = nullptr;
+    for (const SoundZone& z : data.zones)
+        if (z.length > 0.0 && !z.to.empty() && t >= z.start && t < z.start + z.length) last = &z;
+    if (last && PartIndex(data, last->to) >= 0) return last->to;
+    size_t k = 0;
+    while (k < f.cuts.size() && t >= f.cuts[k]) ++k;
+    if (OwnersSane(data, f)) return f.owners[k];
+    return data.divide_values[std::min(k, data.divide_values.size() - 1)];
 }
 
-double RunEnd(const std::vector<PartSpan>& raw, size_t i)
+// 13-62g: the sections of a divided variation (exclusions ignored), as PartSpan {owner, start, length}: the
+// stretches between its edges, its cuts and its "-> value" zones' edges, touching stretches of one owner
+// joined. {} when combined, in Takes mode, for an off or empty frame.
+std::vector<PartSpan> SectionBounds(const SoundData& data, int variation)
 {
-    while (i + 1 < raw.size() && Touches(raw[i], raw[i + 1])) ++i;
-    return raw[i].start + raw[i].length;
-}
-
-// 13-54: the trims PartPieces applies, measured: one entry per raw span (a dropped silent span: length 0
-// at its start). 13-54 review: the margins apply at the inner edges only (cuts, excluded zones); a run
-// that reaches the variation's own start or end keeps it (the frame already has its pre-roll / tail).
-std::vector<PartSpan> MarginsPerRaw(const SoundData& data, int variation, const PeakData& peaks)
-{
-    std::vector<PartSpan> raw = PartSpansOf(data, variation);
-    const SoundFrame&     fr = data.frames[static_cast<size_t>(variation)];
-    const double          fs = fr.start, fe = FrameEnd(fr);
-    const double          thr = data.silence.threshold_db;
-    const size_t          n = raw.size();
-    // 13-62: each span's own part's pre-roll and tail (the Sound's when the part has none of its own).
-    std::vector<double>   pre(n, 0.0), tail(n, 0.0);
-    for (size_t i = 0; i < n; ++i) {
-        pre[i] = MarginS(PartPrerollMs(data, raw[i].value_uid));
-        tail[i] = MarginS(PartTailMs(data, raw[i].value_uid));
+    std::vector<PartSpan> out;
+    if (!ValidIndex(data, variation) || !IsDivided(data) || data.mode == DetectMode::Takes) return out;
+    const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    if (!f.on || !(f.length > 0.0)) return out;
+    const double        fs = f.start, fe = FrameEnd(f);
+    std::vector<double> b = {fs, fe};
+    auto                add = [&](double t) {
+        if (t > fs && t < fe) b.push_back(t);
+    };
+    for (double c : f.cuts) add(c);
+    for (const SoundZone& z : data.zones)
+        if (!z.to.empty()) {
+            add(z.start);
+            add(z.start + z.length);
+        }
+    std::sort(b.begin(), b.end());
+    for (size_t k = 0; k + 1 < b.size(); ++k) {
+        const double a = b[k], e = b[k + 1];
+        if (e - a <= kTimeEps) continue;
+        const std::string owner = OwnerIgnoringExclusions(data, f, (a + e) * 0.5);
+        if (!out.empty() && out.back().value_uid == owner && std::fabs(out.back().start + out.back().length - a) <= kTimeEps)
+            out.back().length = e - out.back().start;
+        else
+            out.push_back({owner, a, e - a});
     }
-    // Each span's own sound: its first loud bin's start, its last loud bin's end (inside the span).
+    return out;
+}
+
+// 13-62g (Antho 2026-10-14, "if there is a cut, it is a section of its own"): each section's automatic piece,
+// one entry per section (start == end: nothing placed). Its own sound = its first to last bin at or above the
+// threshold, over the whole section (an excluded stretch inside it counts: excluding never moves the edges,
+// it only takes its own stretch away). start = sound start - its part's pre-roll, end = sound end + its part's
+// tail, never past the section's edges (a cut is a wall both ways: no margin crosses it into a neighbour,
+// which 13-58 allowed). The variation's own edges are walls like any other: the margins apply there too (the
+// frame is detected with the largest margin any part has, DetectionSilence). A section with no loud bin plays
+// nothing when its part sounds elsewhere in the variation, else it plays whole (a part quiet all along).
+std::vector<PartSpan> MeasureSections(const SoundData& data, int variation, const PeakData& peaks)
+{
+    std::vector<PartSpan> secs = SectionBounds(data, variation);
+    const double          thr = data.silence.threshold_db;
+    const size_t          n = secs.size();
     std::vector<double>   a(n, 0.0), b(n, 0.0);
-    std::vector<bool>     loud(n, false), keep(n, true);
-    std::set<std::string> sounding;  // the parts with a loud span here
+    std::vector<bool>     loud(n, false);
+    std::set<std::string> sounding;
     for (size_t i = 0; i < n; ++i) {
-        const PartSpan& s = raw[i];
+        const PartSpan& s = secs[i];
         long long       lo = 0, hi = 0, first = -1, last = -1;
         BinRange(peaks, s.start, s.start + s.length, &lo, &hi);
         for (long long k = lo; k < hi; ++k)
@@ -758,113 +804,52 @@ std::vector<PartSpan> MarginsPerRaw(const SoundData& data, int variation, const 
         a[i] = std::max(static_cast<double>(first) / peaks.rate, s.start);
         b[i] = std::max(std::min(static_cast<double>(last + 1) / peaks.rate, s.start + s.length), a[i]);
     }
-    // A silent span of a part that sounds elsewhere in the variation plays nothing (dropped: the silence
-    // there is shared like any gap); a part silent all along keeps its spans as they are (a wall).
-    for (size_t i = 0; i < n; ++i) keep[i] = loud[i] || sounding.count(raw[i].value_uid) == 0;
-    std::vector<PartSpan> out = raw;
-    // 13-58 (Antho 2026-10-14, "the pre-roll must butt on the previous zone, without changing its size"):
-    // the zones never overlap and never shrink each other, the margins only fill the free space. Each part
-    // owns its side of the cut: its pre-roll and tail inside its own span come first (`own`). Only then
-    // may a margin cross the cut, into what the neighbour leaves free: ends first, each tail up to the
-    // next sounding part's own start (its sound minus the pre-roll its span holds) or a wall's edge; then
-    // each pre-roll back to the previous part's end as just set (its sound plus its tail), so it gets what
-    // is left of the gap, possibly nothing. Before 13-58 the pre-roll was served first and could reach
-    // back over the cut into the previous part's tail.
-    std::vector<double> own(n, 0.0);
-    for (size_t i = 0; i < n; ++i)
-        if (loud[i]) own[i] = std::min(std::max(a[i] - pre[i], raw[i].start), a[i]);
-    for (size_t i = n; i-- > 0;) {
-        if (!loud[i]) continue;
-        double upper = raw[i].start + raw[i].length;
-        bool   inner = false;  // stopped at another part's sound or a wall (else: a zone or the frame's end)
-        for (size_t j = i + 1; j < n && Touches(raw[j - 1], raw[j]); ++j) {
-            inner = true;
-            if (loud[j]) {
-                upper = own[j];
-                break;
-            }
-            if (keep[j]) {
-                upper = raw[j].start;
-                break;
-            }
-            upper = raw[j].start + raw[j].length;
-            inner = false;
-        }
-        // The variation's own end (no cut, no zone after): kept as the frame has it.
-        const double end = !inner && std::fabs(upper - fe) <= kTimeEps ? fe : std::max(std::min(b[i] + tail[i], upper), b[i]);
-        out[i].length = end - out[i].start;
-    }
-    // Then starts: the pre-roll, back to the previous sounding part's end (or a wall's edge).
+    std::vector<PartSpan> out = secs;
     for (size_t i = 0; i < n; ++i) {
-        if (!loud[i]) continue;
-        const double end = out[i].start + out[i].length;
-        double       lower = raw[i].start;
-        bool         inner = false;
-        for (size_t j = i; j > 0 && Touches(raw[j - 1], raw[j]); --j) {
-            const size_t p = j - 1;
-            inner = true;
-            if (loud[p]) {
-                lower = out[p].start + out[p].length;
-                break;
-            }
-            if (keep[p]) {
-                lower = raw[p].start + raw[p].length;
-                break;
-            }
-            lower = raw[p].start;
-            inner = false;
+        const double ss = secs[i].start, se = secs[i].start + secs[i].length;
+        if (loud[i]) {
+            const double st = std::min(std::max(a[i] - MarginS(PartPrerollMs(data, secs[i].value_uid)), ss), a[i]);
+            const double en = std::max(std::min(b[i] + MarginS(PartTailMs(data, secs[i].value_uid)), se), b[i]);
+            out[i].start = st;
+            out[i].length = en - st;
+        } else if (sounding.count(secs[i].value_uid) != 0) {
+            out[i].length = 0.0;  // its part sounds elsewhere here: nothing placed
         }
-        // The variation's own start (no cut, no zone before): kept as the frame has it.
-        if (!inner && std::fabs(lower - fs) <= kTimeEps) out[i].start = fs;
-        else out[i].start = std::min(std::max(a[i] - pre[i], lower), a[i]);
-        out[i].length = end - out[i].start;
     }
-    for (size_t i = 0; i < n; ++i)
-        if (!keep[i]) out[i].length = 0.0;
     return out;
 }
 
-// 13-54: the stored trims applied to the raw spans, one entry per raw span (length 0 = dropped); false
-// when they do not fit (another span count, out of their run, overlapping): stale.
-bool TrimmedPerRaw(const SoundData& data, int variation, const std::vector<PartSpan>& raw, std::vector<PartSpan>* out)
+// 13-62g: the stored trims fit the sections (one start / end pair each, inside it, start <= end).
+bool TrimsFit(const SoundData& data, int variation, const std::vector<PartSpan>& secs)
 {
     const std::vector<double>& t = data.frames[static_cast<size_t>(variation)].part_trims;
-    if (t.size() != raw.size() * 2) return false;
-    *out = raw;
-    double prev_end = -std::numeric_limits<double>::infinity();
-    for (size_t i = 0; i < raw.size(); ++i) {
+    if (t.size() != secs.size() * 2) return false;
+    for (size_t i = 0; i < secs.size(); ++i) {
         const double s = t[2 * i], e = t[2 * i + 1];
-        const double rs = raw[i].start, re = raw[i].start + raw[i].length;
-        if (!std::isfinite(s) || !std::isfinite(e)) return false;
-        if (std::fabs(e - s) <= kTimeEps) {  // dropped
-            if (s < rs - kTimeEps || s > re + kTimeEps) return false;
-            (*out)[i].length = 0.0;
-            continue;
-        }
-        if (!(e > s) || s < RunStart(raw, i) - kTimeEps || e > RunEnd(raw, i) + kTimeEps || s < prev_end - kTimeEps ||
-            !(s < re) || !(e > rs))
+        if (!std::isfinite(s) || !std::isfinite(e) || e < s - kTimeEps || s < secs[i].start - kTimeEps ||
+            e > secs[i].start + secs[i].length + kTimeEps)
             return false;
-        (*out)[i].start = s;
-        (*out)[i].length = e - s;
-        prev_end = e;
     }
     return true;
 }
 
-std::vector<PartSpan> WithoutDropped(const std::vector<PartSpan>& spans)
+// 13-62g: the hand edge of `edges` that section [s, e] holds (a start in [s, e), an end in (s, e]); NaN when none.
+double HandEdgeIn(const std::vector<double>& edges, double s, double e, bool is_start)
 {
-    std::vector<PartSpan> out;
-    for (const PartSpan& s : spans)
-        if (s.length > kTimeEps) out.push_back(s);
-    return out;
+    for (double h : edges) {
+        if (!std::isfinite(h)) continue;
+        if (is_start ? (h >= s - kTimeEps && h < e - kTimeEps) : (h > s + kTimeEps && h <= e + kTimeEps)) return h;
+    }
+    return std::numeric_limits<double>::quiet_NaN();
 }
 
 }  // namespace
 
 std::string PartTrimKey(const SoundData& data, int variation, const FileVersion& file)
 {
-    // The raw spans to the microsecond with their owners (FNV-1a): a moved cut, a zone, another divide
+    // The sections to the microsecond with their owners (FNV-1a): a moved cut, a "-> value" zone, another divide
     // makes another key, even when written by a RAV that does not know the trims (it keeps them as read).
+    // 13-62g: the sections, not the spans: an excluded zone never changes what is measured.
     auto us = [](double t) { return std::isfinite(t) ? static_cast<long long>(std::llround(t * 1e6)) : 0LL; };
     uint64_t h = 1469598103934665603ULL;
     auto mix = [&](const std::string& text) {
@@ -874,13 +859,14 @@ std::string PartTrimKey(const SoundData& data, int variation, const FileVersion&
         }
     };
     if (ValidIndex(data, variation))
-        for (const PartSpan& sp : PartSpansOf(data, variation))
+        for (const PartSpan& sp : SectionBounds(data, variation))
             mix(std::to_string(us(sp.start)) + ":" + std::to_string(us(sp.start + sp.length)) + ":" + sp.value_uid + ";");
     char buf[160];
     // The settings in millionths (dB, ms): stable through the record's shortest round-trip numbers.
-    // 13-58: led by the margin rule's version ("r2": tails served before pre-rolls); trims measured with
-    // the 13-54 rule (no version) are stale and measured again.
-    std::snprintf(buf, sizeof(buf), "r2,%lld,%lld,%lld,%016llx", us(data.silence.threshold_db), us(data.silence.preroll_ms),
+    // Led by the margin rule's version: 13-58 "r2" (tails served before pre-rolls), 13-62g "r3" (one piece per
+    // section, the margins never cross a cut, applied at the variation's edges too). Trims measured by an
+    // older rule are stale and measured again.
+    std::snprintf(buf, sizeof(buf), "r3,%lld,%lld,%lld,%016llx", us(data.silence.threshold_db), us(data.silence.preroll_ms),
                   us(data.silence.tail_ms), static_cast<unsigned long long>(h));
     std::string key = buf;
     // 13-62: the parts' own pre-roll / tail ("-" = the Sound's); nothing added when no part owns one.
@@ -896,24 +882,73 @@ std::string PartTrimKey(const SoundData& data, int variation, const FileVersion&
 bool PartTrimsStale(const SoundData& data, int variation, const FileVersion* file)
 {
     if (!ValidIndex(data, variation) || !PartMarginsApply(data)) return false;
-    const std::vector<PartSpan> raw = PartSpansOf(data, variation);
-    if (raw.empty()) return false;
-    std::vector<PartSpan> per;
-    if (!TrimmedPerRaw(data, variation, raw, &per)) return true;
+    const std::vector<PartSpan> secs = SectionBounds(data, variation);
+    if (secs.empty()) return false;
+    if (!TrimsFit(data, variation, secs)) return true;
     const std::string& have = data.frames[static_cast<size_t>(variation)].part_trim_key;
     const std::string  want = PartTrimKey(data, variation, file ? *file : FileVersion{});
     const size_t       hb = have.find('|'), wb = want.find('|');
-    if (hb == std::string::npos || have.compare(0, hb, want, 0, wb) != 0) return true;  // settings or spans
+    if (hb == std::string::npos || have.compare(0, hb, want, 0, wb) != 0) return true;  // settings or sections
     if (!file || *file == FileVersion{}) return false;
     return have.compare(hb, std::string::npos, want, wb, std::string::npos) != 0;      // another file version
 }
 
+std::vector<PartSection> PartSectionsOf(const SoundData& data, int variation)
+{
+    std::vector<PartSection>    out;
+    const std::vector<PartSpan> secs = SectionBounds(data, variation);
+    if (secs.empty()) return out;
+    const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    // The automatic edges: measured (the trims, while they fit and are not stale) when the margins apply, else
+    // the whole section (not measured yet, or a mode without margins).
+    const bool measured = PartMarginsApply(data) && !PartTrimsStale(data, variation);
+    for (size_t i = 0; i < secs.size(); ++i) {
+        PartSection s;
+        s.value_uid = secs[i].value_uid;
+        s.start = secs[i].start;
+        s.end = secs[i].start + secs[i].length;
+        s.measured = measured;
+        s.placed_start = measured ? f.part_trims[2 * i] : s.start;
+        s.placed_end = measured ? f.part_trims[2 * i + 1] : s.end;
+        const bool   dropped = s.placed_end - s.placed_start <= kTimeEps;
+        const double hs = HandEdgeIn(f.edge_in, s.start, s.end, true), he = HandEdgeIn(f.edge_out, s.start, s.end, false);
+        if (dropped && (std::isfinite(hs) || std::isfinite(he))) {  // a hand edge brings a silent section back
+            s.placed_start = s.start;
+            s.placed_end = s.end;
+        }
+        if (std::isfinite(hs)) {
+            s.placed_start = std::min(std::max(hs, s.start), s.end);
+            s.hand_start = true;
+        }
+        if (std::isfinite(he)) {
+            s.placed_end = std::min(std::max(he, s.start), s.end);
+            s.hand_end = true;
+        }
+        if (s.placed_end < s.placed_start) s.placed_end = s.placed_start;  // the edges crossed: nothing placed
+        out.push_back(s);
+    }
+    return out;
+}
+
 std::vector<PartSpan> PartPieces(const SoundData& data, int variation)
 {
-    std::vector<PartSpan> raw = PartSpansOf(data, variation);
-    if (!PartMarginsApply(data) || raw.empty() || PartTrimsStale(data, variation)) return raw;
-    std::vector<PartSpan> per;
-    return TrimmedPerRaw(data, variation, raw, &per) ? WithoutDropped(per) : raw;
+    if (!IsDivided(data) || data.mode == DetectMode::Takes) return PartSpansOf(data, variation);
+    // 13-62g: each section's piece (its margins or hand edges), minus the excluded stretches inside it.
+    std::vector<PartSpan>        out;
+    const std::vector<EditPiece> edit = EditPiecesOf(data, variation);
+    for (const PartSection& s : PartSectionsOf(data, variation)) {
+        if (s.placed_end - s.placed_start <= kTimeEps) continue;
+        for (const EditPiece& ep : edit) {
+            if (ep.excluded) continue;
+            const double a = std::max(s.placed_start, ep.start), e = std::min(s.placed_end, ep.start + ep.length);
+            if (e - a <= kTimeEps) continue;
+            if (!out.empty() && out.back().value_uid == s.value_uid && std::fabs(out.back().start + out.back().length - a) <= kTimeEps)
+                out.back().length = e - out.back().start;
+            else
+                out.push_back({s.value_uid, a, e - a});
+        }
+    }
+    return out;
 }
 
 std::vector<PartSpan> PlacedSpans(const SoundData& data, int variation, const std::string& part_value)
@@ -931,6 +966,281 @@ std::vector<PartSpan> PlacedSpans(const SoundData& data, int variation, const st
             out.push_back({std::string(), s.start, s.length});
     }
     return out;
+}
+
+
+// ---- 13-62g: sections, gaps, piece edges moved by hand, the parts' invariant ---------------------------------
+
+namespace {
+
+// The hand edges of one side held by section [s, e] removed; how many went.
+size_t EraseHandEdges(std::vector<double>& edges, double s, double e, bool is_start)
+{
+    const size_t before = edges.size();
+    edges.erase(std::remove_if(edges.begin(), edges.end(),
+                               [&](double h) {
+                                   return !std::isfinite(h) ||
+                                          (is_start ? (h >= s - kTimeEps && h < e - kTimeEps) : (h > s + kTimeEps && h <= e + kTimeEps));
+                               }),
+                edges.end());
+    return before - edges.size();
+}
+
+void PinOuterEdges(SoundData& data, int variation, bool start, bool end)
+{
+    if (!ValidIndex(data, variation)) return;
+    SoundFrame&  f = data.frames[static_cast<size_t>(variation)];
+    const double fs = f.start, fe = FrameEnd(f);
+    auto         outside = [&](double h) { return !(h >= fs - kTimeEps && h <= fe + kTimeEps); };
+    f.edge_in.erase(std::remove_if(f.edge_in.begin(), f.edge_in.end(), outside), f.edge_in.end());
+    f.edge_out.erase(std::remove_if(f.edge_out.begin(), f.edge_out.end(), outside), f.edge_out.end());
+    const std::vector<PartSpan> secs = SectionBounds(data, variation);
+    if (secs.empty()) return;
+    if (start) {
+        EraseHandEdges(f.edge_in, secs.front().start, secs.front().start + secs.front().length, true);
+        f.edge_in.push_back(fs);
+    }
+    if (end) {
+        EraseHandEdges(f.edge_out, secs.back().start, secs.back().start + secs.back().length, false);
+        f.edge_out.push_back(fe);
+    }
+}
+
+// The section of the variation holding `t` (index into PartSectionsOf), -1 when none.
+int SectionIndexAt(const std::vector<PartSection>& secs, double t)
+{
+    for (size_t i = 0; i < secs.size(); ++i)
+        if (t >= secs[i].start - kTimeEps && t < secs[i].end - kTimeEps) return static_cast<int>(i);
+    if (!secs.empty() && std::fabs(t - secs.back().end) <= kTimeEps) return static_cast<int>(secs.size()) - 1;
+    return -1;
+}
+
+}  // namespace
+
+SilenceParams DetectionSilence(const SoundData& data)
+{
+    SilenceParams sp = data.silence;
+    if (!PartMarginsApply(data)) return sp;
+    for (const PartSettings& p : data.parts) {
+        if (PartIndex(data, p.value) < 0) continue;
+        if (p.preroll_ms && std::isfinite(*p.preroll_ms)) sp.preroll_ms = std::max(sp.preroll_ms, *p.preroll_ms);
+        if (p.tail_ms && std::isfinite(*p.tail_ms)) sp.tail_ms = std::max(sp.tail_ms, *p.tail_ms);
+    }
+    return sp;
+}
+
+GapInfo GapAt(const SoundData& data, int variation, double t)
+{
+    GapInfo g;
+    if (!ValidIndex(data, variation) || !std::isfinite(t)) return g;
+    const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    if (!f.on || t < f.start || t >= FrameEnd(f)) return g;
+    std::string own;
+    if (!PartAt(data, variation, t, &own)) {  // excluded: the run of excluded pieces around t
+        g.kind = GapKind::Excluded;
+        g.start = g.end = t;
+        const std::vector<EditPiece> ps = EditPiecesOf(data, variation);
+        for (size_t k = 0; k < ps.size(); ++k) {
+            if (!(t >= ps[k].start && t < ps[k].start + ps[k].length)) continue;
+            size_t lo = k, hi = k;
+            while (lo > 0 && ps[lo - 1].excluded) --lo;
+            while (hi + 1 < ps.size() && ps[hi + 1].excluded) ++hi;
+            g.start = ps[lo].start;
+            g.end = ps[hi].start + ps[hi].length;
+        }
+        return g;
+    }
+    const std::vector<PartSection> secs = PartSectionsOf(data, variation);
+    const int                      i = SectionIndexAt(secs, t);
+    if (i < 0) return g;
+    const PartSection& s = secs[static_cast<size_t>(i)];
+    if (t >= s.placed_start && t < s.placed_end) return g;  // placed
+    g.value = s.value_uid;
+    if (s.placed_end - s.placed_start <= kTimeEps) {
+        g.kind = GapKind::NoSound;
+        g.start = s.start;
+        g.end = s.end;
+    } else if (t < s.placed_start) {
+        g.kind = s.hand_start ? GapKind::HandEdge : GapKind::BeforeSound;
+        g.start = s.start;
+        g.end = s.placed_start;
+        g.margin_ms = PartPrerollMs(data, s.value_uid);
+    } else {
+        g.kind = s.hand_end ? GapKind::HandEdge : GapKind::AfterSound;
+        g.start = s.placed_end;
+        g.end = s.end;
+        g.margin_ms = PartTailMs(data, s.value_uid);
+    }
+    return g;
+}
+
+std::string GapTip(const GapInfo& gap, const std::string& part_name)
+{
+    const std::string& p = part_name;
+    char               ms[32];
+    std::snprintf(ms, sizeof(ms), "%.0f ms", gap.margin_ms);
+    switch (gap.kind) {
+        case GapKind::Excluded:
+            return "Gap: excluded, never placed. Click it on a lane to give it to that part, or right-click \xE2\x80\xBA Include again.";
+        case GapKind::AfterSound:
+            return "Gap: after " + p + "'s sound and its Tail (" + ms + "), not placed. Raise " + p +
+                   "'s Tail or drag its edge to fill it; click it on another lane to give it to that part.";
+        case GapKind::BeforeSound:
+            return "Gap: before " + p + "'s sound and its Pre-roll (" + ms + "), not placed. Raise " + p +
+                   "'s Pre-roll or drag its edge to fill it; click it on another lane to give it to that part.";
+        case GapKind::NoSound:
+            return "Gap: " + p + " has nothing above the threshold here (it sounds elsewhere in this variation), not placed. "
+                   "Lower the Threshold, or click it on another lane to give it to that part.";
+        case GapKind::HandEdge:
+            return "Gap: " + p + "'s edge was moved by hand, not placed. Drag the edge back, or double-click it for the "
+                   "automatic edge.";
+        case GapKind::None: break;
+    }
+    return std::string();
+}
+
+bool EditRangeAt(const SoundData& data, int variation, double t, EditPiece* out)
+{
+    for (const EditPiece& p : EditPiecesOf(data, variation)) {
+        if (!(t >= p.start && t < p.start + p.length)) continue;
+        EditPiece r = p;
+        if (!p.excluded) {
+            const GapInfo g = GapAt(data, variation, t);
+            if (g.kind != GapKind::None && g.kind != GapKind::Excluded) {
+                const double a = std::max(p.start, g.start), e = std::min(p.start + p.length, g.end);
+                if (e - a > kTimeEps) {
+                    r.start = a;
+                    r.length = e - a;
+                }
+            }
+        }
+        if (out) *out = r;
+        return true;
+    }
+    return false;
+}
+
+bool PieceEdgeAt(const SoundData& data, int variation, const std::string& value, double t, double tol, PieceEdgeHit* out)
+{
+    if (!ValidIndex(data, variation) || value.empty() || !std::isfinite(t)) return false;
+    const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    const double      fs = f.start, fe = FrameEnd(f);
+    double            best = std::isfinite(tol) ? std::max(tol, 0.0) : 0.0;
+    bool              found = false;
+    for (const PartSection& s : PartSectionsOf(data, variation)) {
+        if (s.value_uid != value || s.placed_end - s.placed_start <= kTimeEps) continue;
+        for (int side : {-1, 1}) {
+            const double edge = side < 0 ? s.placed_start : s.placed_end;
+            if (std::fabs(edge - fs) <= 1e-6 || std::fabs(edge - fe) <= 1e-6) continue;  // the variation's trim handle
+            const double d = std::fabs(t - edge);
+            if (d > best) continue;
+            best = d;
+            found = true;
+            if (out) {
+                out->variation = variation;
+                out->side = side;
+                out->edge = edge;
+                out->at = (s.start + s.end) * 0.5;
+                out->lo = side < 0 ? s.start : std::min(s.placed_start + kMinPiece, s.end);
+                out->hi = side < 0 ? std::max(s.placed_end - kMinPiece, s.start) : s.end;
+                out->hand = side < 0 ? s.hand_start : s.hand_end;
+                out->value = value;
+            }
+        }
+    }
+    return found;
+}
+
+bool SetPieceEdge(SoundData& data, int variation, double at, int side, double to)
+{
+    if (!ValidIndex(data, variation) || side == 0 || !std::isfinite(to)) return false;
+    const std::vector<PartSection> secs = PartSectionsOf(data, variation);
+    const int                      i = SectionIndexAt(secs, at);
+    if (i < 0) return false;
+    const PartSection& s = secs[static_cast<size_t>(i)];
+    // Inside its section (never across a cut), and at least 4 ms from its other edge.
+    const double lo = side < 0 ? s.start : std::min(s.placed_start + kMinPiece, s.end);
+    const double hi = side < 0 ? std::max(s.placed_end - kMinPiece, s.start) : s.end;
+    to = std::min(std::max(to, lo), hi);
+    const double cur = side < 0 ? s.placed_start : s.placed_end;
+    const bool   hand = side < 0 ? s.hand_start : s.hand_end;
+    if (hand && std::fabs(cur - to) <= 1e-9) return false;
+    SoundFrame&          f = data.frames[static_cast<size_t>(variation)];
+    std::vector<double>& edges = side < 0 ? f.edge_in : f.edge_out;
+    EraseHandEdges(edges, s.start, s.end, side < 0);
+    edges.push_back(to);
+    data.edited = true;
+    return true;
+}
+
+bool ResetPieceEdge(SoundData& data, int variation, double at, int side)
+{
+    if (!ValidIndex(data, variation) || side == 0) return false;
+    const std::vector<PartSection> secs = PartSectionsOf(data, variation);
+    const int                      i = SectionIndexAt(secs, at);
+    if (i < 0) return false;
+    const PartSection& s = secs[static_cast<size_t>(i)];
+    SoundFrame&        f = data.frames[static_cast<size_t>(variation)];
+    return EraseHandEdges(side < 0 ? f.edge_in : f.edge_out, s.start, s.end, side < 0) > 0;
+}
+
+std::string PartsProblem(const SoundData& data)
+{
+    char msg[256];
+    for (size_t v = 0; v < data.frames.size(); ++v) {
+        const SoundFrame& f = data.frames[v];
+        const int         vi = static_cast<int>(v);
+        const double      fs = f.start, fe = FrameEnd(f);
+        if (v > 0 && f.start < FrameEnd(data.frames[v - 1]) - 1e-9) {
+            std::snprintf(msg, sizeof(msg), "variation %d overlaps the previous one", vi);
+            return msg;
+        }
+        if (!IsDivided(data) || data.mode == DetectMode::Takes || !f.on) continue;
+        for (size_t k = 0; k < f.cuts.size(); ++k)
+            if (!(f.cuts[k] > fs && f.cuts[k] < fe) || (k > 0 && !(f.cuts[k] > f.cuts[k - 1]))) {
+                std::snprintf(msg, sizeof(msg), "variation %d: cut %d out of order or outside", vi, static_cast<int>(k));
+                return msg;
+            }
+        if (!f.owners.empty() && !OwnersSane(data, f)) {
+            std::snprintf(msg, sizeof(msg), "variation %d: owners do not fit its cuts", vi);
+            return msg;
+        }
+        // Every stretch is a piece that is either excluded or owned by a divide value; the pieces tile the frame.
+        const std::vector<EditPiece> ep = EditPiecesOf(data, vi);
+        double                       at = fs;
+        for (const EditPiece& p : ep) {
+            if (std::fabs(p.start - at) > 1e-9 || !(p.length > 0.0) || (!p.excluded && PartIndex(data, p.owner) < 0) ||
+                (p.excluded && !p.owner.empty())) {
+                std::snprintf(msg, sizeof(msg), "variation %d: piece at %.6f is nobody's or leaves a hole", vi, p.start);
+                return msg;
+            }
+            at = p.start + p.length;
+        }
+        if (!ep.empty() && std::fabs(at - fe) > 1e-9) {
+            std::snprintf(msg, sizeof(msg), "variation %d: its pieces stop before its end", vi);
+            return msg;
+        }
+        // What is placed: in time order, never overlapping, inside the variation, each wholly owned by its part
+        // (never over an excluded stretch or another part's section).
+        double prev = -std::numeric_limits<double>::infinity();
+        for (const PartSpan& s : PartPieces(data, vi)) {
+            const double a = s.start, e = s.start + s.length;
+            if (!(s.length > 0.0) || a < prev - 1e-9 || a < fs - 1e-9 || e > fe + 1e-9 || PartIndex(data, s.value_uid) < 0) {
+                std::snprintf(msg, sizeof(msg), "variation %d: placed piece at %.6f overlaps or leaves its variation", vi, a);
+                return msg;
+            }
+            double covered = 0.0;
+            for (const EditPiece& p : ep)
+                if (!p.excluded && p.owner == s.value_uid)
+                    covered += std::max(0.0, std::min(e, p.start + p.length) - std::max(a, p.start));
+            if (covered < s.length - 1e-7) {
+                std::snprintf(msg, sizeof(msg), "variation %d: placed piece at %.6f covers what its part does not own", vi, a);
+                return msg;
+            }
+            prev = e;
+        }
+    }
+    return std::string();
 }
 
 std::vector<Onset> FindOnsets(const PeakData& peaks, double start, double length)
@@ -1074,7 +1384,7 @@ void RefreshTrims(SoundData& data, int variation, const PeakData* peaks)
     }
     if (HasPeaks(peaks)) {
         f.part_trims.clear();
-        for (const PartSpan& sp : MarginsPerRaw(data, variation, *peaks)) {
+        for (const PartSpan& sp : MeasureSections(data, variation, *peaks)) {  // 13-62g: one pair per section
             f.part_trims.push_back(sp.start);
             f.part_trims.push_back(sp.start + sp.length);
         }
@@ -1157,6 +1467,18 @@ void RefreshFrame(SoundData& data, int variation, const PeakData* peaks)
         f.cuts = EvenCuts(f, n);
         SaneCuts(f, f.cuts);
         f.cuts_hand = f.cut_unsure = false;
+    }
+    {   // 13-62g (the parts' invariant, PartsProblem): every cut strictly inside the frame, in order. A frame too
+        // short for its parts' cuts keeps the ones that fit; owners that no longer fit go (the legacy rule).
+        const double        fs = f.start, fe = FrameEnd(f);
+        std::vector<double> kept;
+        for (double c : f.cuts)
+            if (std::isfinite(c) && c > fs + kTimeEps && c < fe - kTimeEps && (kept.empty() || c > kept.back() + kTimeEps))
+                kept.push_back(c);
+        if (kept.size() != f.cuts.size()) {
+            f.cuts = kept;
+            if (!f.owners.empty() && f.owners.size() != f.cuts.size() + 1) f.owners.clear();
+        }
     }
     RefreshTrims(data, variation, peaks);  // 13-54: before the syncs, measured over the trimmed parts
     const std::vector<double> old = f.syncs;
@@ -1270,6 +1592,8 @@ void CarryHandMarks(std::vector<SoundFrame>& now, const std::vector<SoundFrame>&
     };
     for (SoundFrame& f : now) {
         f.hand_syncs.clear();
+        f.edge_in.clear();  // 13-62g: carried below with the cuts (a Reset clears them)
+        f.edge_out.clear();
         if (with_cuts && (f.cuts_hand || !f.owners.empty())) {
             f.cuts.clear();
             f.cuts_hand = f.cut_unsure = false;
@@ -1282,6 +1606,14 @@ void CarryHandMarks(std::vector<SoundFrame>& now, const std::vector<SoundFrame>&
         for (double h : o.hand_syncs) {
             SoundFrame* f = holder(h);
             if (f && std::find(f->hand_syncs.begin(), f->hand_syncs.end(), h) == f->hand_syncs.end()) f->hand_syncs.push_back(h);
+        }
+        // 13-62g: a piece edge moved by hand goes to the new frame holding it (as the hand cuts: kept across a
+        // threshold or margin change, gone on Reset to detected).
+        if (with_cuts) {
+            for (double h : o.edge_in)
+                if (SoundFrame* f = holder(h)) f->edge_in.push_back(h);
+            for (double h : o.edge_out)
+                if (SoundFrame* f = holder(h)) f->edge_out.push_back(h);
         }
         // 13-62: a comped frame's owners travel with its cuts (no cut: by its middle).
         const bool own = owned(o);
@@ -1375,7 +1707,8 @@ bool AddZone(SoundData& data, double start, double length, const std::string& to
     z.length = length;
     z.to = to;
     data.zones.push_back(z);
-    for (SoundFrame& f : data.frames) f.part_trims.clear();  // 13-54: the spans changed
+    // 13-62g: the trims are measured per section, which an excluded zone never changes (PartTrimKey tells when a
+    // "-> value" zone did): an exclusion only takes its own stretch away, even before the peaks are read.
     return true;
 }
 
@@ -1388,8 +1721,7 @@ bool IncludeAgain(SoundData& data, double t)
                                     }),
                      data.zones.end());
     if (data.zones.size() == before) return false;
-    for (SoundFrame& f : data.frames) f.part_trims.clear();  // 13-54: the spans changed
-    return true;
+    return true;  // 13-62g: the per-section trims still hold (an excluded zone never changes them)
 }
 
 bool MoveCut(SoundData& data, int variation, int k, double t)
@@ -1863,12 +2195,8 @@ CompClickPlan PlanCompClick(const SoundData& data, int variation, double t, cons
                             bool clicked_empty)
 {
     CompClickPlan plan;
-    if (variation >= 0)
-        for (const EditPiece& p : EditPiecesOf(data, variation))
-            if (t >= p.start && t < p.start + p.length) {
-                plan.on_piece = true;
-                plan.piece = p;
-            }
+    // 13-62g: in a stretch its part leaves out (after its tail...), the range is that gap only.
+    if (variation >= 0) plan.on_piece = EditRangeAt(data, variation, t, &plan.piece);
     if (!lane_value.empty()) {  // a Split lane: its part, and a range it does not own taken whole
         plan.set_part = true;
         plan.part = lane_value;

@@ -239,11 +239,9 @@ bool IncludeAgain(SoundData& data, double t);
 // owns are replaced, and a refresh clamps each hand sync into its owner's pieces (a margin that trims
 // its spot away moves it to the nearest edge of its own part, never to a neighbour).
 bool MoveSync(SoundData& data, int variation, int part, double t);
-// Back to RAV's sync points / cuts for that variation (the caller runs RefreshParts). False when
-// nothing was moved by hand.
-// 13-62: ResetCuts also clears the variation's owners (back to the legacy rule).
+// Back to RAV's sync points for that variation (the caller runs RefreshParts). False when nothing was
+// moved by hand.
 bool ResetSyncs(SoundData& data, int variation);
-bool ResetCuts(SoundData& data, int variation);
 // The part (value uid) an event of side-free role `role` gets from this Sound: its own role map, else
 // its divide group's (SwitchValue::roles in `store`); "" (= the whole variation) when combined, for no
 // role, a role no entry lists, or a value that is not one of its divide values.
@@ -311,13 +309,9 @@ std::vector<EditPiece> EditPiecesOf(const SoundData& data, int variation);
 // of the variation within `tolerance_s` of `t`, else `t` (the swipe's 6 px snap: so a swipe started next
 // to an excluded stretch leaves no sliver).
 double SnapToCut(const SoundData& data, int variation, double t, double tolerance_s);
-// Excludes [a, b] of the variation (AddZone with "", clipped to the frame). False (nothing written) when that
-// leaves 1 ms or less, the index is bad, the variation is off or nothing in [a, b] is played (already excluded).
-bool ExcludeRange(SoundData& data, int variation, double a, double b);
 // The frame's owners give each of its pieces between cuts a divide value (one more than its cuts, each a
-// divide value); LegacyOwners = what the legacy rule gives them (piece k -> divide_values[min(k, n - 1)]).
+// divide value).
 bool OwnersSane(const SoundData& data, const SoundFrame& f);
-std::vector<std::string> LegacyOwners(const SoundData& data, const SoundFrame& f);
 // The swipe's / Alt+drag's edge (decision 9): the nearest cut or edge of any variation (SnapToCut) or any zone
 // edge within `tolerance_s` of `t`, else `t`.
 double SnapSpanEdge(const SoundData& data, double t, double tolerance_s);

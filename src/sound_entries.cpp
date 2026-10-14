@@ -606,16 +606,6 @@ bool OwnersSane(const SoundData& data, const SoundFrame& f)
     return true;
 }
 
-// 13-62: the owners the legacy rule gives the frame's pieces (piece k -> divide_values[min(k, n - 1)]).
-std::vector<std::string> LegacyOwners(const SoundData& data, const SoundFrame& f)
-{
-    std::vector<std::string> out;
-    const size_t             n = data.divide_values.size();
-    if (n == 0) return out;
-    for (size_t k = 0; k <= f.cuts.size(); ++k) out.push_back(data.divide_values[std::min(k, n - 1)]);
-    return out;
-}
-
 namespace {
 
 // Where a variation's pieces start and end: its edges, its cuts (divided) and the zones' edges inside it,
@@ -1509,18 +1499,6 @@ bool ResetSyncs(SoundData& data, int variation)
     return true;
 }
 
-bool ResetCuts(SoundData& data, int variation)
-{
-    if (!ValidIndex(data, variation)) return false;
-    SoundFrame& f = data.frames[static_cast<size_t>(variation)];
-    if (!f.cuts_hand && f.owners.empty()) return false;
-    f.cuts.clear();
-    f.cuts_hand = f.cut_unsure = false;
-    f.part_trims.clear();
-    f.owners.clear();  // 13-62: back to the legacy rule
-    return true;
-}
-
 std::string PartOfRole(const SoundStore& store, const SoundData& data, const std::string& role)
 {
     if (role.empty() || !IsDivided(data)) return std::string();
@@ -1756,23 +1734,6 @@ double SnapToCut(const SoundData& data, int variation, double t, double toleranc
             best = m;
         }
     return best;
-}
-
-bool ExcludeRange(SoundData& data, int variation, double a, double b)
-{
-    if (!ValidIndex(data, variation) || !std::isfinite(a) || !std::isfinite(b)) return false;
-    if (ZonedFrame(data, variation)) return false;  // 13-62h: DeleteZones / MakeGap
-    const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
-    if (!f.on) return false;  // 13-62 review: an off variation is excluded whole already
-    if (a > b) std::swap(a, b);
-    a = std::max(a, f.start);
-    b = std::min(b, FrameEnd(f));
-    if (!(b > a)) return false;
-    // 13-62 review: nothing played left in [a, b] (already excluded): nothing to write, no undo point.
-    bool played = false;
-    for (const EditPiece& p : EditPiecesOf(data, variation))
-        if (!p.excluded && std::min(b, p.start + p.length) - std::max(a, p.start) > 1e-4) played = true;
-    return played && AddZone(data, a, b - a, std::string());
 }
 
 double SnapSpanEdge(const SoundData& data, double t, double tolerance_s)

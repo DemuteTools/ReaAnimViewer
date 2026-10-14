@@ -963,62 +963,10 @@ static void TestPartListen()
         std::vector<AuditionVoice> w = EditPlayVoices(lib, ao);
         CHECK(w.size() == 2);
         if (w.size() == 2) CHECK(Near(w[0].fade_in_s, kDefaultFadeIn) && Near(w[0].fade_out_s, 0.006) && Near(w[0].fade_span_s, 0.0));
-        std::vector<AuditionVoice> pa = PiecePlayVoices(lib, ao, 0, 0);
-        CHECK(pa.size() == 1 && Near(pa[0].fade_in_s, kDefaultFadeIn) && Near(pa[0].fade_out_s, 0.006));
     }
-
-    // Space: one piece (never filtered); index past the end: nothing.
-    std::vector<AuditionVoice> one = PiecePlayVoices(lib, sn, 0, 0);
-    CHECK(one.size() == 1 && Near(one[0].start_s, 1.0) && Near(one[0].length_s, 0.5) && Near(one[0].gain_db, 2.0) &&
-          Near(one[0].fade_in_s, kDefaultFadeIn) && Near(one[0].fade_out_s, kDefaultCutFade) && one[0].part == "a");
-    one = PiecePlayVoices(lib, sn, 0, 1);
-    CHECK(one.size() == 1 && Near(one[0].start_s, 1.5) && Near(one[0].gain_db, -1.0) && Near(one[0].fade_in_s, 0.004) &&
-          Near(one[0].fade_out_s, 0.05) && one[0].mono == MonoMode::Sum && Near(one[0].delay_ms, 0.0));
-    sn.sound.frames[0].fade_out = -1.0;
-    CHECK(PiecePlayVoices(lib, sn, 0, 2).empty() && PiecePlayVoices(lib, sn, 1, 0).empty());
-
-    // No merge in Edit (decision 10): a | b | a, b's range given to a: three pieces, Space plays the middle one
-    // alone; Shift+Space plays a's stretch as placed (one merged piece, C3).
-    SoundNode cm = sn;
-    cm.sound.frames[0].cuts = {1.3, 1.6};
-    cm.sound.frames[0].owners = {"a", "a", "a"};
-    CHECK(EditPiecesOf(cm.sound, 0).size() == 3);
-    one = PiecePlayVoices(lib, cm, 0, 1);
-    CHECK(one.size() == 1 && Near(one[0].start_s, 1.3) && Near(one[0].length_s, 0.3));
-    CHECK(PartPiecesVoices(lib, cm, "a").size() == 1);
-
-    // Shift+Space: every piece of b in file order, on the file's clock from the first.
-    SoundNode two = sn;
-    SoundFrame f2 = f;
-    f2.start = 3.0;
-    f2.cuts = {3.25};
-    two.sound.frames = {f2, f};  // listed out of file order
-    std::vector<AuditionVoice> all = PartPiecesVoices(lib, two, "b");
-    CHECK(all.size() == 2);
-    if (all.size() == 2)
-        CHECK(Near(all[0].start_s, 1.5) && Near(all[0].delay_ms, 0.0) && Near(all[1].start_s, 3.25) &&
-              Near(all[1].delay_ms, 1750.0) && all[1].part == "b" && Near(all[1].gain_db, -1.0));
-    CHECK(PartPiecesVoices(lib, two, "").empty());
-    // 13-62 review: overlapping variations are not summed: the earlier one wins until it ends.
-    SoundNode ov = sn;
-    SoundFrame f3 = f;  // 1.0-2.0, b from 1.5
-    f3.start = 1.7;     // 1.7-2.7, b from 1.8
-    f3.cuts = {1.8};
-    ov.sound.frames = {f, f3};
-    all = PartPiecesVoices(lib, ov, "b");
-    CHECK(all.size() == 2);
-    if (all.size() == 2)
-        CHECK(Near(all[0].start_s, 1.5) && Near(all[0].length_s, 0.5) && Near(all[1].start_s, 2.0) &&
-              Near(all[1].length_s, 0.7) && Near(all[1].fade_from_s, 0.2) && Near(all[1].fade_span_s, 0.9) &&
-              Near(all[1].delay_ms, 500.0));
-    f3.start = 1.1;  // wholly under the first variation: dropped
-    f3.length = 0.8;
-    f3.cuts = {1.2};
-    ov.sound.frames = {f, f3};
-    CHECK(PartPiecesVoices(lib, ov, "b").size() == 1);
 }
 
-// 13-62F (F4): on a divided Sound the cursor trims stop at the piece under the cursor.
+// 13-62h: the Sound's trim plan is its variations' (a divided Sound trims its zones: ZoneTrimAt).
 static void TestPieceTrim()
 {
     SoundData d;
@@ -1027,67 +975,12 @@ static void TestPieceTrim()
     f.length = 1.0;
     f.cuts = {1.5};
     d.frames = {f};
-    // Undivided: the variation's trim, as before.
     EditTrimPlan p = PlanEditTrim(d, {}, EditTrimKind::RightOfCursor, 1.2, 0.0, 0.0);
-    CHECK(p.excludes.empty() && p.steps.size() == 1 && Near(p.steps[0].length, 0.2));
-    d.divide_group = "g";
-    d.divide_values = {"a", "b"};
-    // Right of the cursor in the first piece: only up to the cut, excluded; the variation untouched.
-    p = PlanEditTrim(d, {}, EditTrimKind::RightOfCursor, 1.2, 0.0, 0.0);
-    CHECK(p.steps.empty() && p.excludes.size() == 1 && p.excludes[0].frame == 0 && Near(p.excludes[0].a, 1.2) &&
-          Near(p.excludes[0].b, 1.5) && p.why.empty());
-    // Left of the cursor in the first piece: its outer side is the variation's start, the variation trimmed.
+    CHECK(p.steps.size() == 1 && Near(p.steps[0].length, 0.2));
     p = PlanEditTrim(d, {}, EditTrimKind::LeftOfCursor, 1.2, 0.0, 0.0);
-    CHECK(p.excludes.empty() && p.steps.size() == 1 && Near(p.steps[0].start, 1.2) && Near(p.steps[0].length, 0.8));
-    // In the second piece: left = from the cut to the cursor, right = the variation's end.
-    p = PlanEditTrim(d, {}, EditTrimKind::LeftOfCursor, 1.7, 0.0, 0.0);
-    CHECK(p.steps.empty() && p.excludes.size() == 1 && Near(p.excludes[0].a, 1.5) && Near(p.excludes[0].b, 1.7));
-    p = PlanEditTrim(d, {}, EditTrimKind::RightOfCursor, 1.7, 0.0, 0.0);
-    CHECK(p.excludes.empty() && p.steps.size() == 1 && Near(p.steps[0].start, 1.0) && Near(p.steps[0].length, 0.7));
-    // On the cut: nothing either way.
-    p = PlanEditTrim(d, {}, EditTrimKind::LeftOfCursor, 1.5, 0.0, 0.0);
-    CHECK(p.Empty() && p.why == "Nothing to trim there");
-    p = PlanEditTrim(d, {}, EditTrimKind::RightOfCursor, 1.5, 0.0, 0.0);
-    CHECK(p.Empty() && p.why == "Nothing to trim there");
-    // Outside every variation / a selection without the cursor: the frames' why.
+    CHECK(p.steps.size() == 1 && Near(p.steps[0].start, 1.2) && Near(p.steps[0].length, 0.8));
     p = PlanEditTrim(d, {}, EditTrimKind::RightOfCursor, 2.5, 0.0, 0.0);
     CHECK(p.Empty() && p.why == "The edit cursor is not inside a variation");
-    // Applied: [1.2, 1.5] excluded, the other part's piece untouched.
-    p = PlanEditTrim(d, {}, EditTrimKind::RightOfCursor, 1.2, 0.0, 0.0);
-    for (const EditTrimExclude& x : p.excludes) CHECK(ExcludeRange(d, x.frame, x.a, x.b));
-    const std::vector<EditPiece> pcs = EditPiecesOf(d, 0);
-    CHECK(pcs.size() == 3 && pcs[1].excluded && Near(pcs[1].start, 1.2) && Near(pcs[1].length, 0.3));
-    CHECK(pcs[2].owner == "b" && Near(pcs[2].start, 1.5) && Near(pcs[2].length, 0.5));
-    // Inside that excluded stretch (away from the variation's edge): nothing.
-    p = PlanEditTrim(d, {}, EditTrimKind::RightOfCursor, 1.3, 0.0, 0.0);
-    CHECK(p.Empty() && p.why == "Nothing to trim there");
-    // Trim left in the second piece now stops at the cut, the excluded stretch and the first piece untouched.
-    p = PlanEditTrim(d, {}, EditTrimKind::LeftOfCursor, 1.6, 0.0, 0.0);
-    CHECK(p.excludes.size() == 1 && Near(p.excludes[0].a, 1.5) && Near(p.excludes[0].b, 1.6));
-    // Trim to zone: the variations, as before.
-    p = PlanEditTrim(d, {}, EditTrimKind::ToZone, -1.0, 1.1, 0.5);
-    CHECK(p.excludes.empty() && p.steps.size() == 1 && Near(p.steps[0].start, 1.1));
-
-    // Adjacent pieces of the same part read as one: a cut between two "a" pieces does not stop the trim.
-    SoundData e;
-    e.divide_group = "g";
-    e.divide_values = {"a", "b"};
-    SoundFrame g;
-    g.start = 1.0;
-    g.length = 1.0;
-    g.cuts = {1.3, 1.6};
-    g.owners = {"a", "a", "b"};
-    e.frames = {g};
-    p = PlanEditTrim(e, {}, EditTrimKind::RightOfCursor, 1.1, 0.0, 0.0);  // up to the part change, not the cut
-    CHECK(p.steps.empty() && p.excludes.size() == 1 && Near(p.excludes[0].a, 1.1) && Near(p.excludes[0].b, 1.6));
-    p = PlanEditTrim(e, {}, EditTrimKind::LeftOfCursor, 1.3, 0.0, 0.0);  // on that cut: inside the merged piece
-    CHECK(p.excludes.empty() && p.steps.size() == 1 && Near(p.steps[0].start, 1.3));
-    p = PlanEditTrim(e, {}, EditTrimKind::LeftOfCursor, 1.8, 0.0, 0.0);  // the "b" piece: from the part change
-    CHECK(p.excludes.size() == 1 && Near(p.excludes[0].a, 1.6) && Near(p.excludes[0].b, 1.8));
-    // An excluded stretch between two "a" pieces still stops it.
-    CHECK(ExcludeRange(e, 0, 1.25, 1.35));
-    p = PlanEditTrim(e, {}, EditTrimKind::RightOfCursor, 1.1, 0.0, 0.0);
-    CHECK(p.excludes.size() == 1 && Near(p.excludes[0].a, 1.1) && Near(p.excludes[0].b, 1.25));
 }
 
 // 13-62F (F5): Next / Previous variation (REAPER's 40417 / 40416) at a fixed zoom.

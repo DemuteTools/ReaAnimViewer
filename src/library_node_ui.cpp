@@ -3421,22 +3421,14 @@ void EditTrim(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, 
         ShowLibraryToast(plan.why, false);
         return;
     }
-    const std::vector<EditTrimStep>    steps = plan.steps;
-    const std::vector<EditTrimExclude> excludes = plan.excludes;  // 13-62F (F4): a divided Sound's piece-bounded trims
-    const std::string                  path = m.path;
-    const double                       len = m.source_len;
-    const std::string                  name = EditTrimName(kind);
-    std::vector<int>                   touched;
-    for (const EditTrimStep& s : steps) touched.push_back(s.frame);
-    for (const EditTrimExclude& e : excludes)
-        if (std::find(touched.begin(), touched.end(), e.frame) == touched.end()) touched.push_back(e.frame);
-    const std::string toast = name + " \xC2\xB7 " +
-                              (touched.size() == 1 ? "variation " + std::to_string(touched.front() + 1)
-                                                   : std::to_string(touched.size()) + " variations") +
-                              (excludes.empty() ? std::string()
-                                               : kind == EditTrimKind::LeftOfCursor ? " (up to the previous piece, excluded)"
-                                                                                    : " (up to the next piece, excluded)");
-    EditNode(name, lib.uid, n.uid, [steps, excludes, path, len](SoundNode& x) {
+    const std::vector<EditTrimStep> steps = plan.steps;
+    const std::string               path = m.path;
+    const double                    len = m.source_len;
+    const std::string               name = EditTrimName(kind);
+    const std::string               toast = name + " \xC2\xB7 " +
+                              (steps.size() == 1 ? "variation " + std::to_string(steps.front().frame + 1)
+                                                 : std::to_string(steps.size()) + " variations");
+    EditNode(name, lib.uid, n.uid, [steps, path, len](SoundNode& x) {
         bool changed = false;
         for (const EditTrimStep& s : steps) {
             if (s.frame < 0 || static_cast<size_t>(s.frame) >= x.sound.frames.size()) continue;
@@ -3447,10 +3439,7 @@ void EditTrim(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, 
             RefreshOne(x.sound, s.frame, path);
             changed = true;
         }
-        bool excluded = false;
-        for (const EditTrimExclude& e : excludes) excluded = ExcludeRange(x.sound, e.frame, e.a, e.b) || excluded;
-        if (excluded) RefreshWith(x.sound, path);  // as the Exclude range gesture (PartsEdit)
-        return changed || excluded;
+        return changed;
     }, toast);
 }
 

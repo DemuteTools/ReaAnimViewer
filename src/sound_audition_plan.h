@@ -163,29 +163,16 @@ struct EditTrimStep {
     double start = 0.0, length = 0.0;  // its new stretch (source seconds)
 };
 
-// 13-62F (F4): a stretch of a variation excluded (ExcludeRange) by a piece-bounded trim.
-struct EditTrimExclude {
-    int    frame = -1;
-    double a = 0.0, b = 0.0;  // source seconds, a < b
-};
-
 struct EditTrimPlan {
-    std::vector<EditTrimStep>    steps;     // in frame order; empty with `excludes` = nothing to do (`why` says what is missing)
-    std::vector<EditTrimExclude> excludes;  // 13-62F (F4), in frame order
-    std::string                  why;
-    bool Empty() const { return steps.empty() && excludes.empty(); }
+    std::vector<EditTrimStep> steps;  // in frame order; empty = nothing to do (`why` says what is missing)
+    std::string               why;
+    bool Empty() const { return steps.empty(); }
 };
 
 // `cursor` < 0 = no edit cursor; `zone_len` <= 0 = no zone.
 EditTrimPlan PlanEditTrim(const std::vector<SoundFrame>& frames, const std::vector<int>& selected, EditTrimKind kind,
                           double cursor, double zone_start, double zone_len);
-// 13-62F (F4, Antho 2026-10-14): on a divided Sound the cursor trims act on the piece under the edit cursor
-// only (EditPiecesOf: between the frame's edges, its cuts and the zones' edges; adjacent placed pieces of the
-// same part read as one, so it stops only at a visible part change or an excluded stretch). Trim left: when that piece
-// starts at the variation's start, the variation starts at the cursor (as above); else [piece start, cursor]
-// is excluded (hatched on every lane, the other pieces untouched). Trim right: the same at the piece's end.
-// A cursor on a piece boundary, an excluded stretch away from the variation's edge, or 1 ms or less:
-// nothing. Trim to zone, an off variation and an undivided Sound: the frames' plan above.
+// The Sound's variations (13-62h: a divided Sound trims its zones instead, ZoneTrimAt / ZoneTrimToTsel).
 EditTrimPlan PlanEditTrim(const SoundData& data, const std::vector<int>& selected, EditTrimKind kind, double cursor,
                           double zone_start, double zone_len);
 
@@ -240,16 +227,6 @@ std::vector<int> NormalizeSelection(const std::vector<SoundFrame>& frames, const
 // before.
 std::vector<AuditionVoice> EditPlayVoices(const SoundLibrary& lib, const SoundNode& n, int take = -1,
                                           const PartListen* listen = nullptr);
-// 13-62 (decision 13, Space): piece `piece_index` of variation `variation` (EditPiecesOf's index: unmerged,
-// an excluded piece too) alone, delay 0: its part's gain and mono; per side its part's own fade, else
-// the variation's fade at a variation edge and the Sound's cut_fade at a cut / zone edge. Never filtered by
-// Mute / Solo (an explicit pick). {} for a bad index, Takes mode or a piece of 0 s.
-std::vector<AuditionVoice> PiecePlayVoices(const SoundLibrary& lib, const SoundNode& n, int variation, int piece_index);
-// 13-62 (decision 13, Shift+Space): every piece of part `value` in file order: each on variation's
-// PartAuditionVoices (as placed), delayed by its distance in the file from the first one (the playhead walks
-// the file; the other parts' stretches are silent). Overlapping variations: the earlier one wins until it ends
-// (as EditPlayVoices), never summed. {} for value "", Takes mode or no piece of that part.
-std::vector<AuditionVoice> PartPiecesVoices(const SoundLibrary& lib, const SoundNode& n, const std::string& value);
 // The voices as heard from `from_s` s into them (a Play restarted where it was): those over are dropped,
 // the one under it cut (start, length, fade_from_s moved), every delay shifted back by from_s.
 std::vector<AuditionVoice> VoicesFrom(const std::vector<AuditionVoice>& voices, double from_s);

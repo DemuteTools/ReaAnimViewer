@@ -8,6 +8,8 @@
 #include <cmath>
 #include <cstdio>
 #include <map>
+#include <set>
+#include <string>
 #include <utility>
 
 namespace rav {
@@ -98,6 +100,7 @@ ListView BuildListView(const std::vector<ClipEntry>& entries, Grouping g, const 
                 nums.push_back(e.track_num);
                 GroupView gv;
                 gv.label = e.track;
+                gv.key = GroupKey(e, g);
                 gv.rgb = e.track_rgb;
                 gv.has_color = e.has_color;
                 v.groups.push_back(std::move(gv));
@@ -117,6 +120,7 @@ ListView BuildListView(const std::vector<ClipEntry>& entries, Grouping g, const 
                 at[key] = v.groups.size();
                 GroupView gv;
                 gv.label = e.file;
+                gv.key = GroupKey(e, g);
                 v.groups.push_back(std::move(gv));
             }
             v.groups[at[key]].rows.push_back(r);
@@ -177,6 +181,77 @@ int StepRow(const std::vector<int>& order, int kb, int cur, int delta)
     return order[static_cast<size_t>(i)];
 }
 
+std::string GroupKey(const ClipEntry& e, Grouping g)
+{
+    if (g == Grouping::Track) return "t:" + (e.track_key.empty() ? "#" + std::to_string(e.track_num) : e.track_key);
+    if (g == Grouping::File) return "f:" + Lower(e.file);
+    return std::string();
+}
+
+void ApplyFolds(ListView& lv, const FoldSet& folded, bool searching)
+{
+    lv.order.clear();
+    for (GroupView& gv : lv.groups) {
+        gv.folded = !searching && !gv.key.empty() && !gv.label.empty() && folded.count(gv.key) != 0;
+        if (!gv.folded) lv.order.insert(lv.order.end(), gv.rows.begin(), gv.rows.end());
+    }
+}
+
+bool CanExpandAll(const ListView& lv, const FoldSet& folded, bool searching)
+{
+    if (searching) return false;
+    for (const GroupView& gv : lv.groups)
+        if (!gv.key.empty() && folded.count(gv.key) != 0) return true;
+    return false;
+}
+
+bool CanCollapseAll(const ListView& lv, const FoldSet& folded, bool searching)
+{
+    if (searching) return false;
+    for (const GroupView& gv : lv.groups)
+        if (!gv.key.empty() && !gv.label.empty() && folded.count(gv.key) == 0) return true;
+    return false;
+}
+
+void SetAllFolds(const ListView& lv, bool fold, FoldSet* folded)
+{
+    if (!folded) return;
+    for (const GroupView& gv : lv.groups) {
+        if (gv.key.empty() || gv.label.empty()) continue;
+        if (fold) folded->insert(gv.key);
+        else folded->erase(gv.key);
+    }
+}
+
+void ToggleFold(const std::string& key, FoldSet* folded)
+{
+    if (!folded || key.empty()) return;
+    if (!folded->erase(key)) folded->insert(key);
+}
+
+int SelectionFocus(const std::vector<int>& before, const std::vector<int>& now)
+{
+    for (int r : now)
+        if (r >= 0 && std::find(before.begin(), before.end(), r) == before.end()) return r;
+    return -1;
+}
+
+PanelSpan PanelVerticalSpan(float menu_bottom, float ui_top, float view_bottom, float dp)
+{
+    PanelSpan s;
+    const float floor_y = std::max(1.0f, view_bottom);  // never over the strip / the timeline
+    const float min_h = 160.0f * dp;
+    s.top = std::max(0.0f, menu_bottom + 8.0f * dp);
+    s.bottom = std::min(floor_y, ui_top - 8.0f * dp);
+    if (s.bottom - s.top < min_h) {
+        // Too short: over the bottom-left controls first (down to the strip), then over the menu.
+        s.bottom = std::min(floor_y, std::max(s.bottom, s.top + min_h));
+        if (s.bottom - s.top < min_h) s.top = std::max(0.0f, s.bottom - min_h);
+    }
+    if (s.top > s.bottom - 1.0f) s.top = std::max(0.0f, s.bottom - 1.0f);
+    return s;
+}
+
 std::vector<ListLine> FlattenListView(const ListView& lv)
 {
     std::vector<ListLine> lines;
@@ -184,6 +259,7 @@ std::vector<ListLine> FlattenListView(const ListView& lv)
     for (size_t gi = 0; gi < lv.groups.size(); ++gi) {
         const GroupView& gv = lv.groups[gi];
         if (!gv.label.empty()) lines.push_back(ListLine{static_cast<int>(gi), -1});
+        if (gv.folded) continue;
         for (int r : gv.rows) lines.push_back(ListLine{static_cast<int>(gi), r});
     }
     return lines;

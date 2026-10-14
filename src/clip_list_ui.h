@@ -3,11 +3,14 @@
 // Story 6-5-10 -- the animation clip list, the REAPER and Dear ImGui side (the validated mockup
 // _bmad-output/planning-artifacts/ux-designs/maquette-liste-clips-animation.html). A small round
 // button on the left of every view (RAV, Tagging, Video, Library), half-way between the menu and
-// the Model / Skeleton switch, opens a panel over the left of the view (never reframing it): every
+// the Model / Skeleton switch, opens a panel over the left of the view (never reframing it, never
+// over the menu button, the bottom-left controls, the strip or the right-hand panels): every
 // RAV item of the project, grouped by track (default), by file or not at all, with a search. A
 // click on a row (or Enter on the arrows' dashed row) puts the edit cursor at the item's start and
 // selects that item alone in REAPER, so it becomes RAV's current item in every view; the panel
-// stays open. The row RAV shows (the current item, story 11-7's rule) is lit and follows REAPER.
+// stays open until the user closes it. The row RAV shows (the current item, story 11-7's rule) is
+// lit and follows REAPER; an item selected in REAPER gets the dashed row and comes into view
+// (6-5-10b). Track and File groups fold (session view state; a search opens those with matches).
 //
 // Muted items and items on muted tracks (or on a lane that does not play) are listed greyed. The
 // list is read again only when REAPER's project state count changes (or the project tab), and
@@ -38,10 +41,13 @@ void SetClipListOpen(bool open);
 void ClipListSetCurrentItem(MediaItem* item);
 
 // The button and, open, the panel. `view_w`: the view's width from the window's left edge (left
-// of the Tagging / Video panel), `view_h`: the window's height; `menu_bottom` / `switch_top`: the
-// menu button's bottom and the Model / Skeleton switch's top (the button goes half-way); `key`: the
-// shortcut's label for the tooltip. True when the panel opened this frame (the menu closes).
-bool DrawClipList(float view_w, float view_h, float menu_bottom, float switch_top, const char* key);
+// of the Tagging / Video panel); `menu_bottom`: the menu button's bottom; `ui_top`: the top of the
+// bottom-left controls (the Model / Skeleton switch, or the status icon where there is no switch);
+// `view_bottom`: the view's bottom (the Tagging strip's / Video timeline's top, else the window's).
+// 6-5-10b: the panel covers the 3D view only, between `menu_bottom` and `ui_top`
+// (cliplist::PanelVerticalSpan), and the button goes half-way between them. `key`: the shortcut's
+// label for the tooltip. True when the panel opened this frame (the menu closes).
+bool DrawClipList(float view_w, float menu_bottom, float ui_top, float view_bottom, const char* key);
 
 // The panel's and the button's windows this frame (nullptr when not drawn): kept above the other
 // viewer windows after EndFrame.

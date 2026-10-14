@@ -1745,11 +1745,15 @@ void DrawToolUi()
     // Story 6-5-10 -- the clip list: its round button on the left of every view, half-way between
     // the menu button (its bottom: 10 + 8 + 26 px) and the Model / Skeleton switch's slot (above the
     // strip in Tagging / Video view); open, the panel over the left of the view (never the Tagging /
-    // Video panel), its whole height. Opening it closes the options menu (the panel covers it).
+    // Video panel). 6-5-10b: it covers the 3D view only: from under the menu button to above the
+    // switch (RAV, Tagging) or the status icon (Video, Library: no switch there), so never the strip
+    // or the timeline, whose top it follows when they are resized. Opening it closes the options menu.
     {
-        const float switch_bottom = ViewBottom() - kStatusIconMargin - kStatusIconSize - ui::Dp(6.0f);
+        const float icon_top = ViewBottom() - kStatusIconMargin - kStatusIconSize;
+        const float switch_bottom = icon_top - ui::Dp(6.0f);
         const float switch_top = switch_bottom - ui::ControlH() - ui::Dp(4.0f);
-        if (DrawClipList(area_right, static_cast<float>(g_client_h), ui::Dp(10.0f + 8.0f + 26.0f), switch_top,
+        const bool  switch_shown = !video_view && !library_view;
+        if (DrawClipList(area_right, ui::Dp(10.0f + 8.0f + 26.0f), switch_shown ? switch_top : icon_top, ViewBottom(),
                          ShortcutKeyLabel(kShortcutClipList)))
             g_menu_open = false;
     }

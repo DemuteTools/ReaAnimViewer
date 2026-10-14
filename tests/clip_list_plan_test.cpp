@@ -228,6 +228,100 @@ int main()
         CHECK(!ButtonFits(46.0f, 20.0f, 22.0f, 1.0f));
     }
 
+    // 6-5-10b: folded groups. A fold keeps only the header, the arrows skip its rows, a search opens
+    // every group it kept, Expand / Collapse all, one header's click.
+    {
+        std::vector<ClipEntry> v = Mockup();
+        v[1].track_key = v[2].track_key = v[3].track_key = v[4].track_key = v[5].track_key = v[6].track_key = "{H}";
+        CHECK(GroupKey(v[1], Grouping::Track) == "t:{H}");
+        CHECK(GroupKey(v[0], Grouping::Track) == "t:#2");  // no GUID: its number
+        CHECK(GroupKey(v[4], Grouping::File) == "f:hero_combat.glb");
+        CHECK(GroupKey(v[4], Grouping::None).empty());
+        ListView lv = BuildListView(v, Grouping::Track, "");
+        CHECK(lv.groups.size() == 3u && lv.groups[0].key == "t:{H}" && lv.groups[1].key == "t:#2");
+        FoldSet folded;
+        CHECK(!CanExpandAll(lv, folded, false) && CanCollapseAll(lv, folded, false));
+        ToggleFold("t:{H}", &folded);
+        ApplyFolds(lv, folded, false);
+        CHECK(lv.groups[0].folded && !lv.groups[1].folded);
+        CHECK(lv.order.size() == 3u && lv.order[0] == 0);  // Heros' six rows are out of the arrows' walk
+        std::vector<ListLine> lines = FlattenListView(lv);
+        CHECK(lines.size() == 3u + 3u);                    // three headers, Ennemi's two rows, Armes' one
+        CHECK(lines[0].row == -1 && lines[1].row == -1 && lines[1].group == 1);
+        CHECK(CanExpandAll(lv, folded, false) && CanCollapseAll(lv, folded, false));
+        CHECK(!CanExpandAll(lv, folded, true) && !CanCollapseAll(lv, folded, true));  // off while searching
+        // A search opens the folded group that holds a match; the fold is kept for later.
+        ListView found = BuildListView(v, Grouping::Track, "run");
+        ApplyFolds(found, folded, /*searching=*/true);
+        CHECK(found.groups.size() == 1u && !found.groups[0].folded && found.order.size() == 3u);
+        CHECK(folded.count("t:{H}") == 1u);
+        ApplyFolds(lv, folded, false);
+        CHECK(lv.groups[0].folded);
+        SetAllFolds(lv, true, &folded);
+        ApplyFolds(lv, folded, false);
+        CHECK(lv.order.empty() && FlattenListView(lv).size() == 3u && !CanCollapseAll(lv, folded, false));
+        SetAllFolds(lv, false, &folded);
+        ApplyFolds(lv, folded, false);
+        CHECK(folded.empty() && lv.order.size() == 9u && FlattenListView(lv).size() == 12u);
+        ToggleFold("t:{H}", &folded);
+        ToggleFold("t:{H}", &folded);
+        CHECK(folded.empty());
+        // A file group's fold is its own (Track's folds stay when File is shown).
+        folded.insert("t:{H}");
+        ListView by_file = BuildListView(v, Grouping::File, "");
+        ApplyFolds(by_file, folded, false);
+        CHECK(by_file.order.size() == 9u);
+        SetAllFolds(by_file, true, &folded);
+        CHECK(folded.count("t:{H}") == 1u && folded.count("f:golem.fbx") == 1u && folded.size() == 1u + 4u);
+        // No grouping: nothing folds, no Expand / Collapse all.
+        ListView flat = BuildListView(v, Grouping::None, "");
+        ApplyFolds(flat, folded, false);
+        CHECK(flat.order.size() == 9u && !CanExpandAll(flat, folded, false) && !CanCollapseAll(flat, folded, false));
+    }
+
+    // 6-5-10b: REAPER's selection focused in the list: the first row newly selected.
+    {
+        CHECK(SelectionFocus({}, {4}) == 4);
+        CHECK(SelectionFocus({4}, {4}) == -1);          // same selection: nothing moves
+        CHECK(SelectionFocus({4, 7}, {4}) == -1);       // a deselection: nothing moves
+        CHECK(SelectionFocus({4}, {4, 7, 2}) == 7);     // the first one added (REAPER's order)
+        CHECK(SelectionFocus({4}, {}) == -1);
+        CHECK(SelectionFocus({}, {-1, 3}) == 3);        // a selected item that is not in the list
+    }
+
+    // 6-5-10b: the panel's height: between the menu button and the bottom-left controls, never over
+    // the strip; a short window reaches over the controls, then over the menu.
+    {
+        PanelSpan s = PanelVerticalSpan(44.0f, 600.0f, 700.0f, 1.0f);
+        CHECK(s.top == 52.0f && s.bottom == 592.0f);
+        s = PanelVerticalSpan(88.0f, 1200.0f, 1400.0f, 2.0f);  // 200 % UI scale
+        CHECK(s.top == 104.0f && s.bottom == 1184.0f);
+        // Tagging: the switch sits above the strip (view_bottom = the strip's top); a taller strip
+        // moves the switch up and the panel's bottom with it.
+        const PanelSpan a = PanelVerticalSpan(44.0f, 400.0f, 450.0f, 1.0f);
+        const PanelSpan b = PanelVerticalSpan(44.0f, 300.0f, 350.0f, 1.0f);
+        CHECK(a.bottom == 392.0f && b.bottom == 292.0f && a.top == b.top);
+        // Short: over the controls (down to the strip's top), never past it.
+        s = PanelVerticalSpan(44.0f, 180.0f, 230.0f, 1.0f);
+        CHECK(s.top == 52.0f && s.bottom == 212.0f);
+        s = PanelVerticalSpan(44.0f, 150.0f, 180.0f, 1.0f);
+        CHECK(s.bottom == 180.0f && s.top == 20.0f);  // then over the menu
+        s = PanelVerticalSpan(44.0f, 60.0f, 100.0f, 1.0f);
+        CHECK(s.bottom == 100.0f && s.top == 0.0f);
+        s = PanelVerticalSpan(44.0f, 0.0f, 0.0f, 1.0f);  // no room at all: still a valid 1 px span
+        CHECK(s.bottom == 1.0f && s.top == 0.0f);
+        // Continuous while the window grows (no jump at the 160 px threshold).
+        float prev_b = -1.0f;
+        bool  smooth = true;
+        for (float h = 50.0f; h < 900.0f; h += 0.5f) {
+            const PanelSpan t = PanelVerticalSpan(44.0f, h - 60.0f, h - 20.0f, 1.0f);
+            if (t.bottom > h - 20.0f + 1e-3f || t.top < 0.0f || t.bottom <= t.top) smooth = false;
+            if (prev_b >= 0.0f && (t.bottom < prev_b - 1e-3f || t.bottom - prev_b > 0.5f + 1e-3f)) smooth = false;
+            prev_b = t.bottom;
+        }
+        CHECK(smooth);
+    }
+
     if (g_fails == 0) std::printf("clip_list_plan: all checks passed\n");
     return g_fails == 0 ? 0 : 1;
 }

@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <set>
 #include <string>
 #include <vector>
 
@@ -20,6 +21,8 @@ struct ClipEntry {
     std::string file;              // its file's name, without the folder
     std::string path;              // its file's full path (copies: the same path and clip)
     std::string track;             // its track's name ("Track 3" when it has none, as REAPER shows it)
+    std::string track_key;         // 6-5-10b: the track's identity for its group's fold (its GUID);
+                                   //   "" = its number
     int         track_num = 0;     // the track's 1-based number (the arrange's order)
     unsigned    track_rgb = 0;     // its colour 0xRRGGBB when has_color
     bool        has_color = false;
@@ -50,6 +53,8 @@ bool MatchesQuery(const ClipEntry& e, const std::string& query);
 
 struct GroupView {
     std::string      label;              // "" = no header (Grouping::None)
+    std::string      key;                // 6-5-10b: the group's fold key (GroupKey); "" = never folds
+    bool             folded = false;     // 6-5-10b: only its header shows (ApplyFolds)
     unsigned         rgb = 0;            // the header's colour bar when has_color
     bool             has_color = false;
     std::vector<int> rows;               // indexes into the entries, in display order
@@ -57,7 +62,8 @@ struct GroupView {
 
 struct ListView {
     std::vector<GroupView> groups;  // only groups with a row
-    std::vector<int>       order;   // every shown row, top to bottom (the arrows walk it)
+    std::vector<int>       order;   // every shown row, top to bottom (the arrows walk it; a folded
+                                    //   group's rows are not shown)
     int                    shown = 0;
     int                    total = 0;
 };
@@ -68,8 +74,38 @@ struct ListView {
 //   None:  one group with no header, every row in time order then track order.
 ListView BuildListView(const std::vector<ClipEntry>& entries, Grouping g, const std::string& query);
 
+// ---- 6-5-10b: folded groups -------------------------------------------------------------------
+// A group folds to its header (a click on it, or its triangle). The folds are view state: kept for
+// the session, per project, never in the project and no undo point. A typed search opens every group
+// it kept (they hold its matches) without changing the folds: cleared, the folded groups fold again.
+
+// The keys of the folded groups ("t:" + a track's key, "f:" + a file's name without case).
+using FoldSet = std::set<std::string>;
+
+// A row's group key in this grouping: "t:" + track_key (or its number when it has none), "f:" + its
+// file's name without case; "" in Grouping::None (no header, nothing to fold).
+std::string GroupKey(const ClipEntry& e, Grouping g);
+
+// Marks the folded groups of the list (none while `searching`) and takes their rows out of `order`.
+void ApplyFolds(ListView& lv, const FoldSet& folded, bool searching);
+
+// Expand all / Collapse all: whether either has something to do (both off while searching), and
+// the folds after one (`fold` true = Collapse all). Only the groups of the list change; a group of
+// another grouping keeps its fold.
+bool CanExpandAll(const ListView& lv, const FoldSet& folded, bool searching);
+bool CanCollapseAll(const ListView& lv, const FoldSet& folded, bool searching);
+void SetAllFolds(const ListView& lv, bool fold, FoldSet* folded);
+// One group's header clicked: folds it or opens it.
+void ToggleFold(const std::string& key, FoldSet* folded);
+
+// ---- 6-5-10b: REAPER's selection, focused in the list --------------------------------------------
+// The row to focus after REAPER's item selection changed from `before` to `now` (rows of the list,
+// in REAPER's order): the first row newly selected; -1 when no row was added (a deselection, or the
+// same selection), or none is selected.
+int SelectionFocus(const std::vector<int>& before, const std::vector<int>& now);
+
 // The list flattened for drawing only what is on screen: one line per group header (groups with a
-// label) and per row, top to bottom. `row` = -1 for a header.
+// label) and per row of an open group, top to bottom. `row` = -1 for a header.
 struct ListLine {
     int group = 0;  // index into ListView::groups
     int row = -1;   // index into the entries, or -1 for the group's header
@@ -98,6 +134,18 @@ std::string CopyBadge(const ClipEntry& e);
 // row. -1 for an empty list. Stops at both ends.
 int StepRow(const std::vector<int>& order, int kb, int cur, int delta);
 
+// 6-5-10b: the panel's height. It covers the 3D view, never the viewer's own controls: its top just
+// under the menu button (`menu_bottom` + 8 px), its bottom just above the bottom-left controls
+// (`ui_top`: the Model / Skeleton switch, or the status icon where there is no switch; the Tagging
+// strip and the Video timeline are under them) less 8 px. In a window too short for a usable list
+// (under 160 px between them), it reaches down over the bottom-left controls, then up over the menu
+// button, but never under `view_bottom` (the strip's top: the strip is never covered) nor above 0.
+struct PanelSpan {
+    float top = 0.0f;
+    float bottom = 0.0f;
+};
+PanelSpan PanelVerticalSpan(float menu_bottom, float ui_top, float view_bottom, float dp);
+
 // The panel's width in a view `view_w` px wide (`dp` = the UI scale): 270 px, 70 % of the view
 // when that is less, but never under 200 px while the view has room for it; never more than the
 // view less the room of the close button that sticks out of its right edge (16 px). Continuous:
@@ -105,7 +153,7 @@ int StepRow(const std::vector<int>& order, int kb, int cur, int delta);
 float PanelWidth(float view_w, float dp);
 
 // The button's centre height: half-way between the menu button's bottom (`menu_bottom`) and the
-// Model / Skeleton switch's top (`switch_top`); when they are under 140 px apart, just under the
+// Model / Skeleton switch's top (`switch_top`; the status icon's in Video / Library view); when they are under 140 px apart, just under the
 // menu button (6 px gap). `btn` = its diameter.
 float ButtonCentreY(float menu_bottom, float switch_top, float btn, float dp);
 

@@ -14,6 +14,7 @@
 #include <cstring>
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <imgui.h>
@@ -22,6 +23,7 @@
 #include "clip_list_plan.h"
 #include "console_log.h"
 #include "pcm_source_anim.h"  // ReadPlayCandidate (story 11-7)
+#include "ui_fold_all.h"
 #include "ui_theme.h"
 
 namespace rav {
@@ -52,9 +54,11 @@ struct State {
     char                             search[160] = {};
     MediaItem*                       kb = nullptr;          // the arrows' dashed row
     MediaItem*                       current = nullptr;     // the item RAV shows
+    MediaItem*                       scroll_to = nullptr;   // 6-5-10b: a row to bring into view (REAPER's selection)
     // The list as read, and what it was read at.
     std::vector<cliplist::ClipEntry> entries;
     std::vector<RowItem>             items;
+    std::unordered_map<MediaItem*, int> index_of;           // item -> its row (IndexOf)
     ReaProject*                      read_proj = nullptr;
     int                              read_count = INT_MIN;
     unsigned                         read_gen = 0;          // one more at every read
@@ -70,6 +74,14 @@ struct State {
     unsigned                         view_gen = 0;
     int                              view_grouping = -1;
     std::string                      view_search;
+    unsigned                         view_fold_gen = 0;
+    // 6-5-10b: REAPER's item selection as last seen (its RAV items), what it was read at, and when
+    // it is read again at the latest (a selection change may not move the project's state count).
+    std::vector<MediaItem*>          sel_before;
+    bool                             sel_primed = false;    // false: the next read only records it
+    ReaProject*                      sel_proj = nullptr;
+    int                              sel_count = INT_MIN;
+    double                           sel_next = 0.0;
     bool                             popup_last_frame = false;  // an ImGui popup was open at the last frame's end
     ImGuiWindow*                     panel_window = nullptr;
     ImGuiWindow*                     button_window = nullptr;
@@ -81,6 +93,11 @@ State g;
 // project that gets a closed one's address starts with the default.
 std::map<ReaProject*, int> g_grouping;
 bool                       g_timer_on = false;
+
+// 6-5-10b: the folded groups of each open project, for the session (view state: never written in
+// the project, no undo point); one more g_fold_gen at every change (the shown list follows).
+std::map<ReaProject*, cliplist::FoldSet> g_folds;
+unsigned                                 g_fold_gen = 0;
 
 ReaProject* CurrentProject()
 {
@@ -136,11 +153,21 @@ void BeginLoadProjectState(bool is_undo, project_config_extension_t*)
         if (is_undo) return;
         ReaProject* proj = LoadSaveProject();
         g_grouping.erase(proj);  // the project's own line (if any) follows
-        // A project (re)opened: the panel starts closed with an empty search (Antho, 2026-10-14).
+        g_folds.erase(proj);
+        ++g_fold_gen;
+        g.read_count = INT_MIN;
+        // A project (re)opened in the current tab: the panel starts closed with an empty search
+        // (Antho, 2026-10-14). 6-5-10b: only then. REAPER also loads project states that are not the
+        // tab shown (another tab, a project read for another purpose); those never close the list,
+        // which stays open until the user closes it. A load REAPER does not name is not ours either.
+        ReaProject* const named = f_project_in_load_save ? f_project_in_load_save() : nullptr;
+        if (!named || named != CurrentProject()) return;
+        if (g.open) LogInfo("clip list: closed, a project was opened in this tab");
         g.open = false;
         g.search[0] = '\0';
         g.kb = nullptr;
-        g.read_count = INT_MIN;
+        g.scroll_to = nullptr;
+        g.sel_primed = false;
     } catch (...) {
     }
 }
@@ -160,6 +187,7 @@ void ReadItems(ReaProject* proj)
 {
     g.entries.clear();
     g.items.clear();
+    g.index_of.clear();
     const int n = CountMediaItems(proj);
     for (int i = 0; i < n; ++i) {
         MediaItem* it = GetMediaItem(proj, i);
@@ -179,6 +207,13 @@ void ReadItems(ReaProject* proj)
         e.len = c.len;
         MediaTrack* tr = GetMediaItem_Track(it);
         e.track_num = tr ? static_cast<int>(GetMediaTrackInfo_Value(tr, "IP_TRACKNUMBER")) : 0;
+        // 6-5-10b: its group's fold follows the track (the session's folds: its address will do),
+        // through a rename or a move.
+        if (tr) {
+            char key[32] = {};
+            std::snprintf(key, sizeof(key), "%p", static_cast<void*>(tr));
+            e.track_key = key;
+        }
         if (e.track_num <= 0) e.track_num = INT_MAX;
         char name[512] = {};
         if (tr) GetSetMediaTrackInfo_String(tr, "P_NAME", name, false);
@@ -196,18 +231,34 @@ void ReadItems(ReaProject* proj)
         g.entries.push_back(std::move(e));
         RowItem ri;
         ri.item = it;
+        g.index_of[it] = static_cast<int>(g.items.size());
         g.items.push_back(ri);
     }
     cliplist::NumberCopies(g.entries);
     ++g.read_gen;
 }
 
-// The list as shown, built again only when the read, the grouping or the search changed.
+// True when a search is typed (spaces alone search nothing): it opens every group it keeps.
+bool Searching()
+{
+    for (const char* c = g.search; *c; ++c)
+        if (*c != ' ' && *c != '\t') return true;
+    return false;
+}
+
+cliplist::FoldSet& FoldsOf(ReaProject* proj)
+{
+    return g_folds[proj];
+}
+
+// The list as shown, built again only when the read, the grouping, the search or a fold changed.
 const cliplist::ListView& ShownView(ReaProject* proj, cliplist::Grouping gr)
 {
     if (!g.view_ok || g.view_proj != proj || g.view_gen != g.read_gen || g.view_grouping != static_cast<int>(gr) ||
-        g.view_search != g.search) {
+        g.view_search != g.search || g.view_fold_gen != g_fold_gen) {
         g.view = cliplist::BuildListView(g.entries, gr, g.search);
+        cliplist::ApplyFolds(g.view, FoldsOf(proj), Searching());
+        g.view_fold_gen = g_fold_gen;
         g.lines = cliplist::FlattenListView(g.view);
         g.tops_header_h = g.tops_row_h = -1.0f;  // the tops follow (LineTopsFor)
         g.view_ok = true;
@@ -233,7 +284,7 @@ void LineTopsFor(float header_h, float row_h)
 void PruneTick()
 {
     try {
-        if (g_grouping.empty() && !g.read_proj) return;
+        if (g_grouping.empty() && g_folds.empty() && !g.read_proj) return;
         std::vector<ReaProject*> open;
         for (int i = 0;; ++i) {
             ReaProject* p = EnumProjects(i, nullptr, 0);
@@ -242,6 +293,7 @@ void PruneTick()
         }
         auto is_open = [&](ReaProject* p) { return std::find(open.begin(), open.end(), p) != open.end(); };
         for (auto it = g_grouping.begin(); it != g_grouping.end();) it = is_open(it->first) ? std::next(it) : g_grouping.erase(it);
+        for (auto it = g_folds.begin(); it != g_folds.end();) it = is_open(it->first) ? std::next(it) : g_folds.erase(it);
         if (g.read_proj && !is_open(g.read_proj)) {
             g.read_proj = nullptr;
             g.read_count = INT_MIN;
@@ -265,9 +317,8 @@ void RefreshItems()
 int IndexOf(MediaItem* item)
 {
     if (!item) return -1;
-    for (size_t i = 0; i < g.items.size(); ++i)
-        if (g.items[i].item == item) return static_cast<int>(i);
-    return -1;
+    const auto it = g.index_of.find(item);
+    return it == g.index_of.end() ? -1 : it->second;
 }
 
 // REAPER's "Include selection: item" undo preference (undomask bit 1).
@@ -302,6 +353,42 @@ void JumpTo(int idx)
     }
     SetEditCurPos(pos, true, true);
     g.kb = nullptr;
+    // 6-5-10b: the selection this click made is not a selection to focus (the row is already here).
+    g.sel_before.assign(1, it);
+}
+
+// 6-5-10b: REAPER's selection, followed while the list is open. An item newly selected in REAPER
+// (the arrange, an action, a script) gets the dashed row (Enter goes there; the arrows go on from
+// it), comes into view and opens its folded group; the item RAV shows stays lit. Read when the
+// project's state count moves, and at least every 0.2 s (a selection change may not count): a few
+// selected items read, a lookup each.
+void PollSelection(ReaProject* proj)
+{
+    const int    count = GetProjectStateChangeCount(proj);
+    const double now = ImGui::GetTime();
+    if (g.sel_primed && proj == g.sel_proj && count == g.sel_count && now < g.sel_next) return;
+    const bool record_only = !g.sel_primed || proj != g.sel_proj;  // the list opened, or another tab
+    g.sel_proj = proj;
+    g.sel_count = count;
+    g.sel_next = now + 0.2;
+    g.sel_primed = true;
+    std::vector<MediaItem*> sel;
+    const int n = std::min(CountSelectedMediaItems(proj), 64);  // the focus needs the first few only
+    for (int i = 0; i < n; ++i)
+        if (MediaItem* it = GetSelectedMediaItem(proj, i); it && IndexOf(it) >= 0) sel.push_back(it);
+    std::vector<int> before, after;
+    for (MediaItem* it : g.sel_before) before.push_back(IndexOf(it));
+    for (MediaItem* it : sel) after.push_back(IndexOf(it));
+    g.sel_before = std::move(sel);
+    if (record_only) return;
+    const int focus = cliplist::SelectionFocus(before, after);
+    if (focus < 0) return;
+    MediaItem* const item = g.items[static_cast<size_t>(focus)].item;
+    // Its group opens (a fold must not hide what REAPER just selected); a search that hides it stays.
+    const std::string key = cliplist::GroupKey(g.entries[static_cast<size_t>(focus)], GroupingOf(proj));
+    if (!key.empty() && FoldsOf(proj).erase(key)) ++g_fold_gen;
+    g.kb = (item == g.current) ? nullptr : item;  // the item shown is lit already
+    g.scroll_to = item;
 }
 
 // ---- drawing -----------------------------------------------------------------------------------
@@ -431,20 +518,36 @@ void DrawRow(int idx, cliplist::Grouping gr, bool current, bool kb, int* clicked
     }
 }
 
-// The group header: the track's colour bar, its name in capitals, its count.
-void DrawGroupHeader(const cliplist::GroupView& gv, cliplist::Grouping gr)
+// The group header: its fold triangle, the track's colour bar, its name in capitals, its count.
+// 6-5-10b: a click anywhere on it folds the group to this line, or opens it (`searching`: every
+// group the search kept is open, the triangle says so, and a click does nothing).
+// Returns true when clicked.
+bool DrawGroupHeader(int gi, const cliplist::GroupView& gv, cliplist::Grouping gr, bool searching)
 {
     ImFont* const font = ui::FontSmall();
     const float   w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
-    const float   top_pad = ui::Dp(8.0f), pad_x = ui::Dp(8.0f);
+    const float   top_pad = ui::Dp(8.0f), pad_x = ui::Dp(4.0f);
     const float   h = HeaderHeight();
     const ImVec2  a = ImGui::GetCursorScreenPos();
-    ImGui::Dummy(ImVec2(w, h));
+    ImGui::PushID(gi + 1000000);
+    const bool clicked = ImGui::InvisibleButton("##grp", ImVec2(w, h)) && !searching;
+    const bool hovered = ImGui::IsItemHovered();
+    ImGui::PopID();
+    if (hovered && !searching)
+        ui::ItemTipText(gv.folded ? "Show this group's clips" : "Fold this group (only its title stays)");
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float y = a.y + top_pad;
+    if (hovered && !searching)
+        dl->AddRectFilled(ImVec2(a.x, a.y + top_pad - ui::Dp(3.0f)), ImVec2(a.x + w, a.y + h), ui::kHover, ui::kRadiusSm);
     const float bar_h = ui::Dp(12.0f), bar_w = ui::Dp(4.0f);
     const float bar_y = y + (font->FontSize - bar_h) * 0.5f;
     float       x = a.x + pad_x;
+    {
+        const float tri = ui::Dp(10.0f);
+        ui::DrawFoldTriangle(dl, ImVec2(x + tri * 0.5f, y + font->FontSize * 0.5f), !gv.folded,
+                             hovered && !searching ? ui::kText : ui::kMuted);
+        x += tri + ui::Dp(4.0f);
+    }
     if (gr == cliplist::Grouping::Track || gr == cliplist::Grouping::File) {
         // The track's colour; a file's bar is the mockup's plain grey (stroke-strong).
         const ImU32 ink = gr == cliplist::Grouping::Track ? TrackInk(gv) : ui::kStrokeStrong;
@@ -453,13 +556,14 @@ void DrawGroupHeader(const cliplist::GroupView& gv, cliplist::Grouping gr)
     }
     const std::string count = std::to_string(gv.rows.size());
     const float       count_w = ui::TextSizeIn(font, count.c_str()).x;
-    const float       right = a.x + w - pad_x;
+    const float       right = a.x + w - ui::Dp(8.0f);
     ui::AddTextIn(dl, font, ImVec2(right - count_w, y), ui::kFaint, count.c_str());
     std::string label = gv.label;
     for (char& c : label)
         if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A');
     const std::string shown = ui::EllipsizeToWidth(font, label, std::max(0.0f, right - count_w - ui::Dp(6.0f) - x));
     ui::AddTextIn(dl, font, ImVec2(x, y), ui::kMuted, shown.c_str());
+    return clicked;
 }
 
 // The footer's hints: [up][down] browse, [Enter] go (the second goes under the first when narrow).
@@ -521,10 +625,12 @@ int PanelKeys(const std::vector<int>& order)
     return -1;
 }
 
-void DrawPanel(float x, float w, float h)
+// The panel, `w` x `h` at (x, top): 6-5-10b: between the menu button and the bottom-left controls.
+void DrawPanel(float x, float top, float w, float h)
 {
     RefreshItems();
     ReaProject* const        proj = CurrentProject();
+    PollSelection(proj);
     const cliplist::Grouping gr = GroupingOf(proj);
     // The search field's own Esc clears a typed search; an empty one (or a row last clicked)
     // closes the list. Read before the field runs.
@@ -532,7 +638,7 @@ void DrawPanel(float x, float w, float h)
     // frame's end; ImGui closed it before this frame's windows) is not the list's.
     const bool esc = g.has_focus && !g.popup_last_frame && ImGui::IsKeyPressed(ImGuiKey_Escape, false);
 
-    ImGui::SetNextWindowPos(ImVec2(x, 0.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowPos(ImVec2(x, top), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(w, h), ImGuiCond_Always);
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ui::Col(ui::kSurface));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
@@ -550,8 +656,12 @@ void DrawPanel(float x, float w, float h)
     g.panel_window = ImGui::GetCurrentWindow();
     ui::WindowShadow(0.6f);
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    // Its right edge (stroke-strong), over the view.
-    dl->AddLine(ImVec2(x + w - 0.5f, 0.0f), ImVec2(x + w - 0.5f, h), ui::kStrokeStrong);
+    // Its right edge (stroke-strong), over the view; 6-5-10b: and its top and bottom edges, now that
+    // the view shows above and under it.
+    const float bottom = top + h;
+    dl->AddLine(ImVec2(x + w - 0.5f, top), ImVec2(x + w - 0.5f, bottom), ui::kStrokeStrong);
+    dl->AddLine(ImVec2(x, top + 0.5f), ImVec2(x + w, top + 0.5f), ui::kStrokeStrong);
+    dl->AddLine(ImVec2(x, bottom - 0.5f), ImVec2(x + w, bottom - 0.5f), ui::kStrokeStrong);
 
     const cliplist::ListView& lv = ShownView(proj, gr);
     int jump = PanelKeys(lv.order);
@@ -569,7 +679,7 @@ void DrawPanel(float x, float w, float h)
         ImFont* const     nf = ui::FontSmall();
         const std::string count = std::to_string(lv.shown) + " / " + std::to_string(lv.total);
         const float       count_w = ui::TextSizeIn(nf, count.c_str()).x;
-        const float       y = ui::Dp(8.0f);
+        const float       y = top + ui::Dp(8.0f);
         const float       title_room = std::max(0.0f, inner_w - count_w - ui::Dp(6.0f));
         const std::string title = ui::EllipsizeToWidth(tf, "Project clips", title_room);
         ui::AddTextIn(dl, tf, ImVec2(x + pad_l, y), ui::kText, title.c_str());
@@ -597,6 +707,31 @@ void DrawPanel(float x, float w, float h)
             int sel = static_cast<int>(gr);
             // Kept in the project for its next save (view state: no undo point, no unsaved mark).
             if (ui::Segmented("##clipgrouping", kGroupings, cliplist::kGroupingCount, &sel)) g_grouping[proj] = sel;
+            // 6-5-10b: Expand all / Collapse all (13-33's pair), right-aligned after the grouping (under
+            // it when narrow); none without groups. View only, for the session.
+            if (gr != cliplist::Grouping::None) {
+                const float fw = ui::FoldAllButtonsWidth();
+                const float seg_right = ImGui::GetItemRectMax().x;
+                const float room_right = ImGui::GetWindowPos().x + ImGui::GetWindowWidth();
+                const float sp = ImGui::GetStyle().ItemSpacing.x;
+                if (room_right - seg_right - sp >= fw) {
+                    ImGui::SameLine(0.0f, 0.0f);  // centred on the segments' well (2 px around them)
+                    ImGui::SetCursorScreenPos(ImVec2(room_right - fw, ImGui::GetCursorScreenPos().y + ui::Dp(2.0f)));
+                } else {
+                    ImGui::SetCursorScreenPos(ImVec2(std::max(ImGui::GetCursorScreenPos().x, room_right - fw),
+                                                     ImGui::GetCursorScreenPos().y));
+                }
+                const bool searching = Searching();
+                cliplist::FoldSet& folds = FoldsOf(proj);
+                const int r = ui::FoldAllButtons(
+                    "##clipfoldall", cliplist::CanExpandAll(lv, folds, searching), cliplist::CanCollapseAll(lv, folds, searching),
+                    searching ? "Off while a search is typed: the search opens every group with a match (clear it to fold)"
+                              : nullptr);
+                if (r != 0) {
+                    cliplist::SetAllFolds(lv, r < 0, &folds);
+                    ++g_fold_gen;
+                }
+            }
         }
         ImGui::EndChild();
         ImGui::PopStyleColor();
@@ -608,7 +743,7 @@ void DrawPanel(float x, float w, float h)
     // The rows (4 4 8), scrolling between the tools and the footer.
     const float foot_h = FooterHeight(w);
     const float list_top = ImGui::GetCursorScreenPos().y;
-    const float list_h = std::max(1.0f, h - list_top - foot_h);
+    const float list_h = std::max(1.0f, bottom - list_top - foot_h);
     int         clicked = -1;
     ImGui::SetCursorScreenPos(ImVec2(x, list_top));
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(ui::Dp(4.0f), ui::Dp(4.0f)));
@@ -617,7 +752,7 @@ void DrawPanel(float x, float w, float h)
     if (ImGui::BeginChild("##cliprows", ImVec2(w - 1.0f, list_h), ImGuiChildFlags_AlwaysUseWindowPadding)) {
         const int cur = IndexOf(g.current);
         const int kb = IndexOf(g.kb);
-        if (lv.order.empty()) {
+        if (lv.groups.empty()) {
             ImGui::Dummy(ImVec2(0.0f, ui::Dp(10.0f)));
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ui::Dp(6.0f));
             const char* msg = g.entries.empty() ? "No animation item in this project." : "No clip matches.";
@@ -632,7 +767,19 @@ void DrawPanel(float x, float w, float h)
         const float scroll = ImGui::GetScrollY();
         // The arrows' row, or the current row when the list opens: centred (SetScrollHereY's 0.5).
         // ImGui moves the scroll (kept within the list) at the next frame's Begin, before its rows.
+        // 6-5-10b: a row REAPER just selected only comes into view (no scroll when it shows already).
+        const int sel_row = IndexOf(g.scroll_to);
         const int target = (g.scroll_to_kb && kb >= 0) ? kb : (g.scroll_to_current && cur >= 0) ? cur : -1;
+        if (target < 0 && sel_row >= 0) {
+            for (size_t i = 0; i < g.lines.size(); ++i) {
+                if (g.lines[i].row != sel_row) continue;
+                const float y0 = top0 + g.tops[i], y1 = y0 + row_h;
+                if (y0 < scroll || y1 > scroll + view_h)
+                    ImGui::SetScrollY(std::max(0.0f, y0 + row_h * 0.5f - view_h * 0.5f));
+                break;
+            }
+        }
+        g.scroll_to = nullptr;
         if (target >= 0) {
             for (size_t i = 0; i < g.lines.size(); ++i) {
                 if (g.lines[i].row != target) continue;
@@ -644,20 +791,33 @@ void DrawPanel(float x, float w, float h)
         g.scroll_to_kb = false;
         int first = 0, last = 0;
         cliplist::VisibleLines(g.tops, g.total_h, scroll - top0, scroll + view_h - top0, &first, &last);
+        const bool searching = Searching();
+        std::string fold_click;  // a header clicked: its group folds or opens after the loop
         for (int i = first; i < last; ++i) {
             const cliplist::ListLine& ln = g.lines[static_cast<size_t>(i)];
             ImGui::SetCursorPosY(top0 + g.tops[static_cast<size_t>(i)]);
-            if (ln.row < 0) DrawGroupHeader(lv.groups[static_cast<size_t>(ln.group)], gr);
-            else DrawRow(ln.row, gr, ln.row == cur, ln.row == kb, &clicked);
+            if (ln.row < 0) {
+                const cliplist::GroupView& gv = lv.groups[static_cast<size_t>(ln.group)];
+                if (DrawGroupHeader(ln.group, gv, gr, searching)) fold_click = gv.key;
+            } else {
+                DrawRow(ln.row, gr, ln.row == cur, ln.row == kb, &clicked);
+            }
         }
         ImGui::SetCursorPosY(top0 + g.total_h);
         ImGui::Dummy(ImVec2(0.0f, ui::Dp(4.0f)));
+        if (!fold_click.empty()) {
+            cliplist::ToggleFold(fold_click, &FoldsOf(proj));
+            ++g_fold_gen;  // the list is built again next frame (lv and the lines stay as drawn here)
+            // The dashed row in a group just folded: the arrows go on from the current row.
+            const int kb_now = IndexOf(g.kb);
+            if (kb_now >= 0 && cliplist::GroupKey(g.entries[static_cast<size_t>(kb_now)], gr) == fold_click) g.kb = nullptr;
+        }
     }
     ImGui::EndChild();
     ImGui::PopStyleColor();
     ImGui::PopStyleVar(2);
 
-    DrawFooter(ImVec2(x, h - foot_h), w - 1.0f);
+    DrawFooter(ImVec2(x, bottom - foot_h), w - 1.0f);
 
     g.has_focus = g.open && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     ImGui::End();
@@ -691,8 +851,11 @@ void QuitClipList()
     if (g_register && g_timer_on) g_register("-timer", reinterpret_cast<void*>(&PruneTick));
     g_timer_on = false;
     g_grouping.clear();
+    g_folds.clear();
     g.entries.clear();
     g.items.clear();
+    g.index_of.clear();
+    g.sel_before.clear();
     g.view = cliplist::ListView();
     g.lines.clear();
     g.tops.clear();
@@ -709,7 +872,9 @@ void SetClipListOpen(bool open)
     if (open == g.open) return;
     g.open = open;
     g.kb = nullptr;
+    g.scroll_to = nullptr;
     g.has_focus = false;
+    g.sel_primed = false;  // 6-5-10b: opened, the selection then is recorded, not focused
     if (open) {
         g.focus_search = true;  // type at once (the mockup)
         g.scroll_to_current = true;
@@ -722,7 +887,7 @@ void ClipListSetCurrentItem(MediaItem* item)
     g.current = item;
 }
 
-bool DrawClipList(float view_w, float view_h, float menu_bottom, float switch_top, const char* key)
+bool DrawClipList(float view_w, float menu_bottom, float ui_top, float view_bottom, const char* key)
 {
     g.panel_window = nullptr;
     g.button_window = nullptr;
@@ -738,7 +903,9 @@ bool DrawClipList(float view_w, float view_h, float menu_bottom, float switch_to
             ImGuiErrorRecoveryState before;
             ImGui::ErrorRecoveryStoreState(&before);
             try {
-                DrawPanel(0.0f, panel_w, std::max(1.0f, view_h));
+                const cliplist::PanelSpan span =
+                    cliplist::PanelVerticalSpan(menu_bottom, ui_top, view_bottom, ui::UiScale());
+                DrawPanel(0.0f, span.top, panel_w, std::max(1.0f, span.bottom - span.top));
             } catch (...) {
                 ImGuiIO&   io = ImGui::GetIO();
                 const bool was_assert = io.ConfigErrorRecoveryEnableAssert;
@@ -759,8 +926,8 @@ bool DrawClipList(float view_w, float view_h, float menu_bottom, float switch_to
     const float cx = g.open ? panel_w : ui::Dp(6.0f) + btn * 0.5f;
     // Never over the Model / Skeleton switch: in a window too short for it, no button (the
     // shortcut and Esc still open and close the list).
-    if (cliplist::ButtonFits(menu_bottom, switch_top, btn, ui::UiScale())) {
-        const float cy = cliplist::ButtonCentreY(menu_bottom, switch_top, btn, ui::UiScale());
+    if (cliplist::ButtonFits(menu_bottom, ui_top, btn, ui::UiScale())) {
+        const float cy = cliplist::ButtonCentreY(menu_bottom, ui_top, btn, ui::UiScale());
         if (RoundButton(ImVec2(cx, cy), key)) SetClipListOpen(!g.open);
     }
     g.popup_last_frame = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);

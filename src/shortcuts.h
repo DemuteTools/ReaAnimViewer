@@ -712,8 +712,10 @@ void ShortcutRecordKey(unsigned key, bool ctrl, bool shift, bool alt);
 // binds ("+") is the key that types it on this keyboard layout. Recording a key, or right-click (back to
 // the default), ends the link.
 const ShortcutKeymap& CurrentShortcutKeymap();
-// Any row (own key or linked action's key, any context) runs this key.
-bool IsRavShortcutKey(unsigned key, bool ctrl, bool shift, bool alt);
+struct KbGesture;  // reaper_view_keys.h
+// The key a REAPER key gesture is on this keyboard: a character binding ("+") is the key typing it on this
+// layout (VkKeyScanEx: its Shift / Ctrl / Alt added). False for the wheel, or a character no key types.
+bool KeyBindingOfGesture(const KbGesture& g, KeyBinding* out);
 // The row's action id ("" = its own key).
 const std::string& ShortcutLink(int id);
 void LinkShortcutToAction(int id, const std::string& cmd);

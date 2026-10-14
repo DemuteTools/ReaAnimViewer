@@ -175,7 +175,6 @@ static void TestAnyActionGestures()
         CHECK(g[2].input == KbInput::Key && g[2].is_char && g[2].code == '+' && g[2].mods == 0);
     }
     CHECK(KbGesturesOf(k, "WOL_ADJENVTRHMOUSE").size() == 3);  // typed without its underscore
-    CHECK(KbBindingCount(k, "_WOL_ADJENVTRHMOUSE") == 6);      // the MIDI, Win+G and Win+wheel ones too
     CHECK(KbGesturesOf(k, "1000").empty());                    // its wheel went to the script action
     CHECK(KbGesturesOf(k, "40044").empty());                   // its key went to the script
     CHECK(KbGesturesOf(k, "_RS1234").size() == 1);

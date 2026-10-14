@@ -119,8 +119,5 @@ std::vector<KbGesture> KbGesturesOf(const ViewKeymap& k, const std::string& comm
 // for anything else (the wheel -- the file and the defaults give those --, MIDI, OSC, Win / Cmd keys,
 // a name RAV does not know).
 bool ParseReaperShortcutDesc(const std::string& desc, KbGesture* out);
-// How many Main-section bindings the file and the defaults give `command` in all, read or not (MIDI,
-// OSC, MultiZoom, Win...): KbGesturesOf has fewer when some are not gestures RAV reads.
-int KbBindingCount(const ViewKeymap& k, const std::string& command);
 
 }  // namespace rav

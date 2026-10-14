@@ -68,31 +68,38 @@ std::string LayoutKeyName(unsigned key)
     return std::string(name);
 }
 
+bool KeyBindingOfGesture(const KbGesture& g, KeyBinding* out)
+{
+    if (g.input != KbInput::Key) return false;
+    KeyBinding b;
+    b.ctrl = (g.mods & kViewModCtrl) != 0;
+    b.alt = (g.mods & kViewModAlt) != 0;
+    b.shift = (g.mods & kViewModShift) != 0;
+    if (g.is_char) {
+        if (g.code <= 0 || g.code > 0xFFFF) return false;
+        const SHORT scan = VkKeyScanExW(static_cast<WCHAR>(g.code), GetKeyboardLayout(0));
+        if (scan == -1) return false;  // no key types it on this layout
+        b.vk = static_cast<unsigned>(scan & 0xFF);
+        b.shift = b.shift || (scan & 0x100);
+        b.ctrl = b.ctrl || (scan & 0x200);
+        b.alt = b.alt || (scan & 0x400);
+    } else {
+        b.vk = static_cast<unsigned>(g.code);
+    }
+    if (!IsBindableKey(b.vk)) return false;
+    if (out) *out = b;
+    return true;
+}
+
 namespace {
 
-// 13-60: the keys REAPER gives a linked row's action. A character binding ("+") is the key typing it
-// on this layout (VkKeyScanEx: its Shift / Ctrl / Alt added); the wheel is not a key row's.
+// 13-60: the keys REAPER gives a linked row's action (the wheel is not a key row's).
 std::vector<KeyBinding> LinkedKeys(const std::string& cmd)
 {
     std::vector<KeyBinding> out;
     for (const KbGesture& g : KbGesturesOf(CurrentReaperViewKeys(), cmd)) {
-        if (g.input != KbInput::Key) continue;
         KeyBinding b;
-        b.ctrl = (g.mods & kViewModCtrl) != 0;
-        b.alt = (g.mods & kViewModAlt) != 0;
-        b.shift = (g.mods & kViewModShift) != 0;
-        if (g.is_char) {
-            if (g.code <= 0 || g.code > 0xFFFF) continue;
-            const SHORT scan = VkKeyScanExW(static_cast<WCHAR>(g.code), GetKeyboardLayout(0));
-            if (scan == -1) continue;  // no key types it on this layout
-            b.vk = static_cast<unsigned>(scan & 0xFF);
-            b.shift = b.shift || (scan & 0x100);
-            b.ctrl = b.ctrl || (scan & 0x200);
-            b.alt = b.alt || (scan & 0x400);
-        } else {
-            b.vk = static_cast<unsigned>(g.code);
-        }
-        if (IsBindableKey(b.vk) && std::find(out.begin(), out.end(), b) == out.end()) out.push_back(b);
+        if (KeyBindingOfGesture(g, &b) && std::find(out.begin(), out.end(), b) == out.end()) out.push_back(b);
     }
     return out;
 }
@@ -200,11 +207,6 @@ const ShortcutBindings& CurrentShortcuts()
 const ShortcutKeymap& CurrentShortcutKeymap()
 {
     return Keymap();
-}
-
-bool IsRavShortcutKey(unsigned key, bool ctrl, bool shift, bool alt)
-{
-    return ShortcutKeyOwner(Keymap(), KeyBinding{key, ctrl, shift, alt}, -1) >= 0;
 }
 
 const std::string& ShortcutLink(int id)

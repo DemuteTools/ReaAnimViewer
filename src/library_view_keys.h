@@ -28,4 +28,15 @@ inline bool LibraryViewClaimsKey(const LibraryKeyState& s, unsigned vk, bool ctr
     return vk == kDelete || vk == kF2 || vk == kSpace || vk == kEscape;
 }
 
+// 13-60 review: a key the Library view uses when it has the focus (any panel: the claim above with
+// every panel taking its keys, plus the Sound panel's and Edit's E / S). A RAV shortcut on such a key
+// does not run while the Library view takes it (the focused view wins); the Link modal warns about it.
+inline bool LibraryViewUsesKey(unsigned vk, bool ctrl, bool shift, bool alt)
+{
+    LibraryKeyState all;
+    all.focused = all.media_takes_arrows = all.tree_takes_arrows = true;
+    if (LibraryViewClaimsKey(all, vk, ctrl, shift, alt)) return true;
+    return !ctrl && !shift && !alt && (vk == 'E' || vk == 'S');
+}
+
 }  // namespace rav

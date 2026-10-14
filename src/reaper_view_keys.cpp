@@ -276,13 +276,4 @@ bool ParseReaperShortcutDesc(const std::string& desc, KbGesture* out)
     return false;
 }
 
-int KbBindingCount(const ViewKeymap& k, const std::string& command)
-{
-    if (NormalizeCommandId(command).empty()) return 0;
-    int n = 0;
-    for (const KbLine& l : LinesInForce(k))
-        if (SameCommandId(l.cmd, command)) ++n;
-    return n;
-}
-
 }  // namespace rav

@@ -2532,8 +2532,13 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             if (!(lp & (1 << 30))) SetFullScreenMode(false);
             return 0;
         }
-        const int action =
-            ShortcutActionForKey(static_cast<unsigned>(wp), ctrl, shift, alt, VideoViewActive(), TaggingViewActive());
+        // 13-60 review: a key the focused Library view (or its Edit) takes is its own: a RAV shortcut on
+        // the same key (Space linked to an action REAPER gives Space) does not run as well.
+        const bool library_key =
+            LibraryViewActive() && LibraryViewTakesKey(static_cast<unsigned>(wp), ctrl, shift, alt);
+        const int action = library_key ? -1
+                                       : ShortcutActionForKey(static_cast<unsigned>(wp), ctrl, shift, alt,
+                                                              VideoViewActive(), TaggingViewActive());
         if (action < 0) {
             // The auto-repeat of a key the hook took (it may map to no action now): ours.
             if ((lp & (1 << 30)) && g_key_route.claimed_vk != 0 && wp == g_key_route.claimed_vk) return 0;

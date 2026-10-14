@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "action_link.h"      // 13-60
+#include "library_view_keys.h" // 13-60 review: the keys the Library view uses
 #include "reaper_actions.h"   // 13-60: REAPER's actions (names, the list)
 #include "reaper_view_keys.h" // 13-60: an action's gestures in reaper-kb.ini
 #include "shortcuts.h"
@@ -274,7 +275,7 @@ bool NavRow(int row)
     for (const ViewGesture& g : ViewNavGestures(CurrentViewNav(), row))
         caps.push_back(Cap{ViewGestureLabel(g), ch.own ? ui::kAccent : ui::kText});
     if (caps.empty())
-        caps.push_back(Cap{ch.own ? "double-click to set" : (ch.cmd.empty() ? "not bound in REAPER" : "not bound in reaper-kb.ini"),
+        caps.push_back(Cap{ch.own ? "double-click to set" : (ch.cmd.empty() ? "not bound in REAPER" : "no shortcut in REAPER"),
                            ui::kFaint});
     const float lw = std::min(ImGui::CalcTextSize(def.label).x, ui::Dp(90.0f));
     const float caps_x = DrawCaps(dl, caps, a.x + ui::Dp(8.0f) + lw + ui::Dp(6.0f), b.x - ui::Dp(8.0f), cy - th * 0.5f - ui::Dp(1.5f), row_hover);
@@ -463,6 +464,7 @@ std::string                    g_preview_id;
 int                            g_preview_gen = -1;
 std::vector<KbGesture>         g_preview;
 std::vector<std::string>       g_preview_listed;
+int                            g_preview_unread = 0;  // listed shortcuts that are no key or wheel (MIDI, OSC...)
 bool                           g_preview_known = false;
 
 const char* LinkTargetLabel(int t)
@@ -575,10 +577,11 @@ void LinkModal(bool open_now)
             g_preview_gen = ReaperKbGeneration();
             g_preview = KbGesturesOf(CurrentReaperViewKeys(), g_typed.id);
             g_preview_listed = ReaperActionShortcuts(g_typed.cmd, &g_preview_known);
+            g_preview_unread = 0;
             for (const std::string& d : g_preview_listed) {
                 KbGesture g;
-                if (ParseReaperShortcutDesc(d, &g) && std::find(g_preview.begin(), g_preview.end(), g) == g_preview.end())
-                    g_preview.push_back(g);
+                if (!ParseReaperShortcutDesc(d, &g)) ++g_preview_unread;
+                else if (std::find(g_preview.begin(), g_preview.end(), g) == g_preview.end()) g_preview.push_back(g);
             }
         }
         const std::vector<KbGesture>& gs = g_preview;
@@ -592,26 +595,37 @@ void LinkModal(bool open_now)
                                        " in REAPER yet: give it one in REAPER's Actions list, RAV follows it live."
                                  : "RAV will run on: " + got,
                      got.empty() ? ui::kWarn : ui::kText, true, wrap);
-        if (!skipped.empty()) ui::ToneText("Not used here (a key action takes keys only): " + skipped, ui::kFaint, true, wrap);
-        if (g_preview_known && g_preview_listed.size() > gs.size()) {
+        if (!skipped.empty())
+            ui::ToneText(std::string("Not used here (") + (t < kShortcutCount ? "a key action" : LinkTargetLabel(t)) +
+                             " takes keys only): " + skipped,
+                         ui::kFaint, true, wrap);
+        // Some of what REAPER lists is no key or wheel RAV can read (MIDI, OSC...): say what it lists.
+        if (g_preview_known && g_preview_unread > 0) {
             std::string all;
             for (const std::string& d : g_preview_listed) all += (all.empty() ? "" : ", ") + d;
             ui::ToneText("REAPER lists " + all + ". RAV follows its keys and wheels; MIDI, OSC and other inputs are not "
                              "followed.",
                          ui::kFaint, true, wrap);
         }
-        // A KEYS row: a key another RAV action holds stays that one's.
+        // A KEYS row: a key another RAV action holds stays that one's (a character binding too: the key
+        // typing it here); a key the Library view uses stays the Library's while it has the focus.
         if (t < kShortcutCount) {
-            std::string held;
+            std::string held, library;
             for (const KbGesture& g : gs) {
-                if (g.input != KbInput::Key || g.is_char) continue;
-                const KeyBinding kb{static_cast<unsigned>(g.code), (g.mods & kViewModCtrl) != 0, (g.mods & kViewModShift) != 0,
-                                    (g.mods & kViewModAlt) != 0};
+                KeyBinding kb;
+                if (!KeyBindingOfGesture(g, &kb)) continue;
                 const int o = ShortcutKeyOwner(CurrentShortcutKeymap(), kb, t);
                 if (o >= 0 && ShortcutLink(o).empty())
                     held += (held.empty() ? "" : ", ") + ShortcutBindingLabel(kb) + " (\"" + kShortcutTable[o].label + "\")";
+                if (LibraryViewUsesKey(kb.vk, kb.ctrl, kb.shift, kb.alt))
+                    library += (library.empty() ? "" : ", ") + ShortcutBindingLabel(kb);
             }
             if (!held.empty()) ui::ToneText("Keys RAV already gives another action keep running it: " + held, ui::kWarn, true, wrap);
+            if (!library.empty())
+                ui::ToneText("The Library view uses " + library + " itself: while it has the focus, " +
+                                 (library.find(',') == std::string::npos ? "that key does" : "those keys do") +
+                                 " what the Library does, not this action.",
+                             ui::kWarn, true, wrap);
         }
     }
 

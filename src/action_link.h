@@ -18,7 +18,8 @@ namespace rav {
 
 // The id as reaper-kb.ini writes it: a native action as its decimal number ("990", leading zeros and
 // blanks dropped), a named one with its leading underscore ("_WOL_ADJENVTRHMOUSE": one typed without
-// it, as ReverseNamedCommandLookup gives it, gets it back). Quotes and blanks around it go. "" when the
+// it, as ReverseNamedCommandLookup gives it, gets it back; "_40044", a number typed with one, is the
+// native "40044"). Quotes and blanks around it go. "" when the
 // text cannot be an id (empty, "0" -- REAPER's "no action" --, a blank inside, too long).
 inline std::string NormalizeCommandId(const std::string& text)
 {
@@ -41,7 +42,11 @@ inline std::string NormalizeCommandId(const std::string& text)
         if (n == "0" || n.size() > 9) return std::string();
         return n;
     }
-    if (s[0] == '_') return s.size() > 1 ? s : std::string();
+    if (s[0] == '_') {
+        // 13-60 review: "_40044" is a native action typed with an underscore: its number.
+        if (s.size() > 1 && s.find_first_not_of("0123456789", 1) == std::string::npos) return NormalizeCommandId(s.substr(1));
+        return s.size() > 1 ? s : std::string();
+    }
     return "_" + s;
 }
 

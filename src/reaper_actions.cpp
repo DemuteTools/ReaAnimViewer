@@ -208,13 +208,12 @@ ReaperActionInfo LookupReaperAction(const std::string& text)
     }
     if (!g_named) return info;
     info.checked = true;
-    int cmd = g_named(info.id.c_str());
-    if (cmd <= 0) cmd = g_named(info.id.c_str() + 1);  // without its underscore
+    const int cmd = g_named(info.id.c_str());  // "_40044" never comes here: NormalizeCommandId gives "40044"
     if (cmd <= 0) return info;
     info.cmd = cmd;
     info.name = NameOf(cmd);
     const std::string named = NamedIdOf(cmd);  // REAPER's own spelling
-    if (!named.empty()) info.id = named;
+    info.id = named.empty() ? std::to_string(cmd) : named;  // 13-60 review: a native number, never "_<number>"
     return info;
 }
 

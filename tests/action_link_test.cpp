@@ -29,6 +29,11 @@ static void TestNormalize()
     CHECK(NormalizeCommandId("").empty());
     CHECK(NormalizeCommandId("   ").empty());
     CHECK(NormalizeCommandId("0").empty());     // REAPER's "no action"
+    CHECK(NormalizeCommandId("_40044") == "40044");  // 13-60 review: a native action typed with "_"
+    CHECK(NormalizeCommandId("_0040044") == "40044");
+    CHECK(NormalizeCommandId("_0").empty());
+    CHECK(LooksLikeCommandId("_40044"));
+    CHECK(SameCommandId("_40044", "40044"));
     CHECK(NormalizeCommandId("000").empty());
     CHECK(NormalizeCommandId("_").empty());
     CHECK(NormalizeCommandId("zoom in").empty());  // a blank inside: words, not an id

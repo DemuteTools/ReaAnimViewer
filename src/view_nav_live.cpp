@@ -28,6 +28,7 @@
 #include "reaper_actions.h"  // 13-60: the keys REAPER lists for a linked action
 #include "reaper_api.h"
 #include "shortcuts.h"
+#include "video_view.h"  // 13-60 review: the view shown, for the KEYS rows' contexts
 
 namespace rav {
 namespace {
@@ -338,7 +339,9 @@ void SetViewNavAction(int row, const std::string& cmd)
 
 int ReaperKbGeneration()
 {
-    CurrentViewNav();
+    // 13-60 review: no poll here. Keymap() asks this while ViewNavInput walks the view keys; a poll that
+    // read reaper-kb.ini again would replace the map under that walk. The next CurrentViewNav (each
+    // frame's timeline) reads the file and moves the counter.
     return g_kb_generation;
 }
 
@@ -431,9 +434,22 @@ const char* ViewNavRefusal()
     return g_refusal.c_str();
 }
 
+namespace {
+
+// 13-60 review: a key one of RAV's KEYS rows runs in the context shown now (its own, or its linked REAPER
+// action's) is that row's, not a view move. A Video-only / Tagging-only row leaves it to the view elsewhere.
+bool KeysRowTakes(const ShortcutKeymap& keys, unsigned vk, bool ctrl, bool shift, bool alt)
+{
+    return ShortcutActionFor(keys, vk, ctrl, shift, alt, VideoViewActive(), TaggingViewActive()) >= 0;
+}
+
+}  // namespace
+
 ViewNavStep ViewNavInput(bool wheel_on, bool keys_on, unsigned owner_id, bool panel_scroll_first)
 {
-    const ViewNavMap& m = CurrentViewNav();
+    // 13-60 review: one read of the map and of the KEYS rows' keymap, then a copy: nothing in the walk
+    // below can replace the map it walks.
+    const ViewNavMap m = CurrentViewNav();
     if (!ImGui::GetCurrentContext()) return ViewNavStep{};
     ImGuiIO&  io = ImGui::GetIO();
     const int mods = ModsOf(io.KeyCtrl, io.KeyShift, io.KeyAlt);
@@ -453,6 +469,7 @@ ViewNavStep ViewNavInput(bool wheel_on, bool keys_on, unsigned owner_id, bool pa
     }
     std::vector<int> rows;
     if (keys_on && !io.WantTextInput && ShortcutRecordingId() < 0) {
+        const ShortcutKeymap keys = CurrentShortcutKeymap();
         for (const auto& k : m.keys) {
             bool hit = false;
             if (k.first.is_char) {
@@ -462,9 +479,7 @@ ViewNavStep ViewNavInput(bool wheel_on, bool keys_on, unsigned owner_id, bool pa
             } else if (k.first.mods == mods) {
                 const ImGuiKey key = KeyOfVk(k.first.code);
                 hit = key != ImGuiKey_None && ImGui::IsKeyPressed(key, true);
-                // 13-60: a key one of RAV's KEYS rows runs (its own, or its linked REAPER action's) is that
-                // row's, not a view move.
-                if (hit && IsRavShortcutKey(static_cast<unsigned>(k.first.code), io.KeyCtrl, io.KeyShift, io.KeyAlt))
+                if (hit && KeysRowTakes(keys, static_cast<unsigned>(k.first.code), io.KeyCtrl, io.KeyShift, io.KeyAlt))
                     hit = false;
             }
             if (hit) rows.push_back(k.second);
@@ -475,9 +490,9 @@ ViewNavStep ViewNavInput(bool wheel_on, bool keys_on, unsigned owner_id, bool pa
 
 int ViewNavRowForKeyDown(unsigned vk, bool ctrl, bool shift, bool alt)
 {
-    const ViewNavMap& m = CurrentViewNav();
-    const int         mods = ModsOf(ctrl, shift, alt);
-    if (IsRavShortcutKey(vk, ctrl, shift, alt)) return -1;  // 13-60: a KEYS row's key stays its own
+    const ViewNavMap m = CurrentViewNav();  // 13-60 review: a copy (see ViewNavInput)
+    const int        mods = ModsOf(ctrl, shift, alt);
+    if (KeysRowTakes(CurrentShortcutKeymap(), vk, ctrl, shift, alt)) return -1;  // 13-60: a KEYS row's key stays its own
     const int         row = ViewNavKeyRow(m, static_cast<int>(vk), mods);
     if (row >= 0) return row;
     bool any_char = false;

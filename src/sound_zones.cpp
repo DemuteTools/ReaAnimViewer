@@ -1978,13 +1978,14 @@ int ApplyZoneNormalize(SoundData& d, const std::vector<std::vector<ZoneRef>>& gr
                        bool reset_faders)
 {
     int                   done = 0;
-    std::set<std::string> touched;
+    std::set<std::string> touched, skipped;  // 13-62h review: a part with a silent group keeps its fader
     for (size_t i = 0; i < groups.size(); ++i) {
+        const bool silent = i >= adj_db.size() || !std::isfinite(adj_db[i]) || adj_db[i] > 60.0;
         for (const ZoneRef& q : groups[i]) {
             const EditZone* z = ZoneOf(d, q);
-            if (z && !z->IsGap()) touched.insert(z->part);
+            if (z && !z->IsGap()) (silent ? skipped : touched).insert(z->part);
         }
-        if (i >= adj_db.size() || !std::isfinite(adj_db[i]) || adj_db[i] > 60.0) continue;
+        if (silent) continue;
         for (const ZoneRef& q : groups[i]) {
             EditZone* z = ZoneOf(d, q);
             if (z && !z->IsGap()) z->db = ClampDb(adj_db[i]);
@@ -1993,7 +1994,7 @@ int ApplyZoneNormalize(SoundData& d, const std::vector<std::vector<ZoneRef>>& gr
     }
     if (reset_faders)
         for (PartSettings& p : d.parts)
-            if (touched.count(p.value)) p.fader_db.reset();
+            if (touched.count(p.value) && !skipped.count(p.value)) p.fader_db.reset();
     d.parts.erase(std::remove_if(d.parts.begin(), d.parts.end(),
                                  [](const PartSettings& q) {
                                      return !q.preroll_ms && !q.tail_ms && !q.sync_mode && !q.sync_offset_ms && !q.gain_db &&

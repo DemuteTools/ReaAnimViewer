@@ -443,23 +443,54 @@ void RefreshOne(SoundData& d, int i, const std::string& path)
 }
 
 // 13-62h (Lot E2): the file's peaks for this frame's zone gestures (null while they are read), and the context a
-// zone gesture of the panels runs in.
+// zone gesture of the panels runs in. 13-62h review: kept between frames (copied again only when the file's peaks
+// change, as the zone waveform's PeaksOf), never copied each frame.
 const PeakView* EditPeaks(const std::string& path)
 {
     static PeakData    pk;
     static std::string at;
+    static FileVersion file;
     static int         frame = -1;
     static bool        ok = false;
     const int          f = ImGui::GetFrameCount();
     if (frame != f || at != path) {
         frame = f;
+        const bool ready = !path.empty() && RequestPeaks(path, nullptr) == PeakState::Ready;
+        if (!ready) {
+            ok = false;
+        } else {
+            const FileVersion fv = PeaksFileVersion(path);
+            if (!ok || at != path || fv != file) {
+                ok = RequestPeaks(path, &pk) == PeakState::Ready;
+                file = fv;
+            }
+        }
         at = path;
-        ok = !path.empty() && RequestPeaks(path, &pk) == PeakState::Ready;
     }
     return ok ? &pk : nullptr;
 }
 
 ZoneContext ZoneCtxOf(const SoundMedia& m) { return ZoneContext{EditPeaks(m.path), m.source_len}; }
+
+// 13-62h review: a write of the panels is on its way (the zone waveform does not carry the selection over again when
+// the store moves: the panel already resolved it).
+void MarkZoneOwn()
+{
+    P.zv.own_pending = true;
+    P.zv.own_frame = ImGui::GetFrameCount();
+}
+
+bool SameZoneEdit(const SoundData& x, const SoundData& y);  // (below)
+
+// 13-62h review: a write of the panels that lays the zones out again without a selection of its own (a part's
+// settings back to the Sound's, the Sync point, Normalize): `probe` = that write run on a copy of `before`; the
+// selection carried over by time and part (SelFollow) and the write marked ours.
+void ZoneSelAfter(const SoundData& before, const SoundData& probe)
+{
+    if (!UsesZones(before) || SameZoneEdit(before, probe)) return;
+    P.zv.sel = SelFollow(before, P.zv.sel, probe);
+    MarkZoneOwn();
+}
 
 // Two zones alike as the user sees them (edges, part, cuts, hand flags, own snap / fades / gain, crossfade).
 bool SameEditZone(const EditZone& x, const EditZone& y)
@@ -2653,10 +2684,12 @@ void ResetPartField(const SoundLibrary& lib, const SoundNode& n, const std::stri
     const bool pretail = (f == PartField::Preroll || f == PartField::Tail) && UsesZones(n.sound);
     const bool wins = ZoneTailWins();
     int        hand = 0;
-    if (pretail) {
+    if (UsesZones(n.sound)) {  // 13-62h review: the write probed on a copy, the selection carried over
         SoundData probe = n.sound;
         ResetPartSetting(probe, value, f);
-        hand = ApplyPreTailChange(probe, value, wins, f, ZoneCtxOf(MediaOf(n)));
+        if (remeasure) RefreshWith(probe, path);
+        if (pretail) hand = ApplyPreTailChange(probe, value, wins, f, ZoneCtxOf(MediaOf(n)));
+        ZoneSelAfter(n.sound, probe);
     }
     const double len = MediaOf(n).source_len;
     EditNode("Part setting", lib.uid, n.uid, [value, f, path, remeasure, pretail, wins, len](SoundNode& x) {
@@ -2705,15 +2738,19 @@ bool PartNumberEdit(ui::DragNumberEvent e, double v, const SoundLibrary& lib, co
         if (PartFieldRemeasures(f)) RefreshWith(dr, path);
         // 13-62h (decision 7): a zoned Sound's Pre-roll / Tail moves its hand edges again (option), in the same write.
         int hand = 0;
-        if ((f == PartField::Preroll || f == PartField::Tail) && UsesZones(dr)) {
-            ZoneSel s = P.zedit_sel;
-            hand = ApplyPreTailChange(dr, value, ZoneTailWins(), f, ZoneCtxOf(MediaOf(n)), &s);
-            P.zv.sel = s;
-        }
+        if ((f == PartField::Preroll || f == PartField::Tail) && UsesZones(dr))
+            hand = ApplyPreTailChange(dr, value, ZoneTailWins(), f, ZoneCtxOf(MediaOf(n)));
+        // 13-62h review: the selection of the gesture's start carried over by time and part (the relayout may drop or
+        // shift zones).
+        if (UsesZones(dr)) P.zv.sel = SelFollow(n.sound, P.zedit_sel, dr);
         if (e == ui::DragNumberEvent::Commit) {
             P.zedit_on = false;
-            if (SamePartSettings(PartSettingsOf(dr, value), PartSettingsOf(n.sound, value))) CancelLive();
-            else CommitLive("Part setting", lib.uid, n.uid, toast + PreTailToastExtra(hand, ZoneTailWins()));
+            if (SamePartSettings(PartSettingsOf(dr, value), PartSettingsOf(n.sound, value))) {
+                CancelLive();
+            } else {
+                if (UsesZones(dr)) MarkZoneOwn();
+                CommitLive("Part setting", lib.uid, n.uid, toast + PreTailToastExtra(hand, ZoneTailWins()));
+            }
             return StoreReplaced();
         }
     } else if (e == ui::DragNumberEvent::Cancel) {
@@ -2775,7 +2812,8 @@ std::string FaderToast(const std::string& pname, double value, double delta)
 
 // 13-62h: a part's fader dragged / typed (dB): every zone of the part moved by the same amount, live while dragged
 // (SetPartFader on the draft, from the stored value), one undo point at its end (none when nothing changed). True
-// when the drawing must stop.
+// when the drawing must stop. 13-62h review: one range for every box of it (the lane header's, Settings of's Gain):
+// -60..+24 dB, a zone's gain range; the lane fader itself drags over -24..+12 and shows its end pinned past it.
 bool PartFaderEdit(ui::DragNumberEvent e, double v, const SoundLibrary& lib, const SoundNode& n, const std::string& value,
                    const std::string& pname)
 {
@@ -3149,7 +3187,8 @@ ZoneWaveHost ZoneHost(const SoundLibrary& lib, const SoundNode& n, const SoundMe
             const bool   live = g_lane_gain.gid != 0 && g_lane_gain.uid == n->uid && g_lane_gain.value == value;
             const SoundMedia&  med = MediaOf(*n);
             const std::string  fader_tip = "Every " + name + " zone together (= select them all and drag their gain): they keep their "
-                                          "differences. Shows what it has applied to them. Double-click: back to 0 dB (takes it off again)";
+                                          "differences. Shows what it has applied to them (-24..+12 dB here; type in its box for -60..+24). "
+                                          "Double-click: back to 0 dB (takes it off again)";
             bool         zero = false;
             if (fader_w >= ui::Dp(24.0f)) {
                 float fv = static_cast<float>(live ? g_lane_gain.live : stored);
@@ -3172,7 +3211,10 @@ ZoneWaveHost ZoneHost(const SoundLibrary& lib, const SoundNode& n, const SoundMe
                 }
                 if (!zero && !cancelled && (active || released) && g_lane_gain.gid == gid && g_lane_gain.uid == n->uid &&
                     g_lane_gain.value == value) {
-                    if (moved) {
+                    // 13-62h review: the fader jumps to a click; only a drag past ImGui's threshold (or a typed value:
+                    // no button held) counts, so a plain click writes nothing and a double-click is one undo point (0 dB).
+                    const bool counts = ImGui::IsMouseDragging(ImGuiMouseButton_Left) || !ImGui::IsMouseDown(ImGuiMouseButton_Left);
+                    if (moved && counts) {
                         g_lane_gain.live = std::clamp(std::round(static_cast<double>(fv) * 2.0) / 2.0, -24.0, 12.0);
                         g_lane_gain.moved = true;
                     }
@@ -3195,7 +3237,7 @@ ZoneWaveHost ZoneHost(const SoundLibrary& lib, const SoundNode& n, const SoundMe
                 ImGui::SetCursorScreenPos(ImVec2(fader_w >= ui::Dp(24.0f) ? x1 - fw : x0, y));
                 const ui::DragNumberEvent e = ui::DragNumber("##lgaindb", &v, 0.1, 1, "", fw, /*trim=*/true, 0, /*sign=*/true);
                 zero = ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && e == ui::DragNumberEvent::None;
-                const std::string box_tip = "What this fader has applied to every " + name + " zone";
+                const std::string box_tip = "What this fader has applied to every " + name + " zone (-60..+24 dB, as a zone's gain)";
                 ui::ItemTipText(box_tip.c_str());
                 if (!zero && PartFaderEdit(e, v, *lib, *n, value, name)) {
                     ImGui::PopID();
@@ -4104,7 +4146,46 @@ void RolesPopup(const SoundStore& store, const SoundLibrary& lib, const SoundNod
 }
 
 // The part list: a row per value (its dot, name and "n/N" variations holding it), "Excluded" and its
-// count, then what was moved by hand / is to check.
+// count, then what was moved by hand / is to check. 13-62h: a Takes-mode divided Sound only (drawn disabled);
+// a zoned Sound's parts are its lanes and Settings of chips.
+void PartList(const SoundStore& store, const SoundData& d)
+{
+    ImDrawList* dl = ImGui::GetWindowDrawList();
+    const float lh = ImGui::GetTextLineHeight() + ui::Dp(4.0f);
+    auto        row = [&](ImU32 dot, bool hatch, const std::string& name, const std::string& count) {
+        const ImVec2 p = ImGui::GetCursorScreenPos();
+        const float  right = std::max(p.x + ui::Dp(60.0f), ui::LineRight());
+        const float  r = ui::Dp(4.0f), cy = p.y + lh * 0.5f;
+        if (hatch) {
+            const ImVec2 a(p.x, cy - r), b(p.x + r * 2.0f, cy + r);
+            dl->AddRectFilled(a, b, WithAlpha(ui::kMuted, 0x30), 2.0f);
+            Hatch(dl, a, b, ui::kText);
+        } else {
+            dl->AddCircleFilled(ImVec2(p.x + r, cy), r, dot);
+        }
+        const float cw = ImGui::CalcTextSize(count.c_str()).x;
+        const float ty = std::floor(cy - ImGui::GetTextLineHeight() * 0.5f);
+        dl->AddText(ImVec2(right - cw, ty), ui::kMuted, count.c_str());
+        ui::EllipsisTextTip(dl, ImVec2(p.x + r * 2.0f + ui::Dp(6.0f), ty), right - cw - ui::Dp(8.0f), ui::kText, name);
+        ImGui::Dummy(ImVec2(right - p.x, lh));
+    };
+    const std::string total = "/" + std::to_string(d.frames.size());
+    for (size_t k = 0; k < d.divide_values.size(); ++k)
+        row(PartColor(static_cast<int>(k)), false, ValueName(store, d.divide_group, d.divide_values[k]),
+            std::to_string(VariationsWithPart(d, d.divide_values[k])) + total);
+    const int nx = ExcludedStretchCount(d);
+    if (nx > 0) row(0, true, "Excluded", std::to_string(nx));
+    std::vector<TextRun> sub;
+    const int            moved = HandCutCount(d), unsure = UnsureCutCount(d);
+    if (moved > 0) sub.push_back({std::to_string(moved) + (moved == 1 ? " cut" : " cuts") + " moved by hand \xC2\xB7 ", ui::kMuted});
+    if (unsure > 0) {
+        sub.push_back({std::to_string(unsure) + " to check (?)", ui::kWarn});
+        sub.push_back({" \xC2\xB7 ", ui::kMuted});
+    }
+    sub.push_back({"Drag a cut to correct it. Right-click a zone: Exclude / \xE2\x86\x92 value.", ui::kMuted});
+    RichText(sub);
+}
+
 // Edit's DETECTION rows of 13-20 / 13-23 / 13-25: Sync point (Attack / Peak / Slice start), its Offset,
 // the hand-moved count, Divide by (a Switch Group), the Roles line + Roles..., the part list. Disabled
 // with a tip in Takes mode.
@@ -4252,6 +4333,7 @@ void PartsControls(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
             ImGui::EndDisabled();
             return;
         }
+        if (takes) PartList(store, d);  // 13-62h review: kept for Takes (a zoned Sound shows its zones instead)
     } else {
         ui::SubText("Combined: every event gets the whole variation. Divide by a Switch Group to give its values their own part.");
     }
@@ -4403,6 +4485,8 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
     if (edit) {  // 13-20 / 13-23 / 13-25
         PartsControls(lib, n, m, label_col);
         if (StoreReplaced()) return;
+    } else if (UsesZones(Shown(n))) {  // 13-62h review: where they went
+        ui::SubText("Pre-roll, Tail, Sync point: in the Edit window (Settings of)");
     }
     ui::SubText(VariationCountText(DetectedCount(n.uid, m, Shown(n)), Shown(n).frames).c_str());
     ui::SubText("Saved with the sound in the library (.ravlib).");
@@ -4495,16 +4579,23 @@ void FinishZoneNormalize(const SoundLibrary& lib, const SoundNode& n, const std:
         ShowLibraryToast(silent ? "Nothing to normalize: silent" : "Nothing to normalize", false);
         return;
     }
-    int                   nz = 0;
-    std::set<std::string> parts;
-    for (size_t i = 0; i < groups.size() && i < adj.size(); ++i) {
-        if (!std::isfinite(adj[i]) || adj[i] > 60.0) continue;
+    int nz = 0, silent = 0;
+    for (size_t i = 0; i < groups.size(); ++i) {
+        if (i >= adj.size() || !std::isfinite(adj[i]) || adj[i] > 60.0) {
+            ++silent;
+            continue;
+        }
         nz += static_cast<int>(groups[i].size());
-        for (const ZoneRef& r : groups[i])
-            if (const EditZone* z = ZoneOf(n.sound, r)) parts.insert(z->part);
     }
-    std::string toast = "Normalized " + std::to_string(nz) + (nz == 1 ? " zone" : " zones") + ": each zone's gain written";
-    if (reset_faders) toast += parts.size() > 1 ? "; the faders are back to 0 dB" : "; the fader is back to 0 dB";
+    // 13-62h review: only the faders the write really put back to 0 are named (a part with a silent group keeps its).
+    int faders = 0;
+    for (const std::string& v : n.sound.divide_values)
+        if (std::fabs(PartFaderDb(n.sound, v)) >= 0.05 && std::fabs(PartFaderDb(probe, v)) < 0.05) ++faders;
+    std::string toast = nz > 0 ? "Normalized " + std::to_string(nz) + (nz == 1 ? " zone" : " zones") + ": each zone's gain written"
+                               : std::string("Normalize");
+    if (silent > 0) toast += " \xC2\xB7 " + std::to_string(silent) + " silent, skipped";
+    if (reset_faders && faders > 0) toast += faders > 1 ? "; the faders are back to 0 dB" : "; the fader is back to 0 dB";
+    ZoneSelAfter(n.sound, probe);
     EditNode("Normalize", lib.uid, n.uid, [groups, adj, reset_faders](SoundNode& x) {
         const SoundData before = x.sound;
         ApplyZoneNormalize(x.sound, groups, adj, reset_faders);
@@ -4669,6 +4760,16 @@ bool NormPeaksReady(const SoundData& d, const SoundMedia& m)
 // together, one gain each) each to its part's target (its own Normalize mode / target, else the Level settings);
 // `reset_faders` = the parts' faders back to 0 (the part / Sound buttons, not one zone). Disabled while it measures
 // ("Measuring n / m...") or while Peak waits for the waveform. Nothing to normalize: a toast, no undo point.
+// What a zone Normalize button reads: its label, "Measuring n / m…" while the job measures (its width is that).
+std::string ZoneNormalizeText(const std::string& label)
+{
+    if (!P.norm_job.active) return label;
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "Measuring %d / %d\xE2\x80\xA6", static_cast<int>(P.norm_job.done_spans),
+                  static_cast<int>(P.norm_job.total_spans));
+    return buf;
+}
+
 void ZoneNormalizeButton(const char* id, const std::string& label, const char* tip, const SoundLibrary& lib, const SoundNode& n,
                          const SoundMedia& m, const std::vector<std::vector<ZoneRef>>& groups, bool reset_faders, bool stretch)
 {
@@ -4680,14 +4781,7 @@ void ZoneNormalizeButton(const char* id, const std::string& label, const char* t
         if (const EditZone* z = g.empty() ? nullptr : ZoneOf(d, g.front()))
             need_peaks = need_peaks || PartNormMode(d, z->part, P.norm_mode) == NormMode::Peak;
     need_peaks = need_peaks && m.ok && !NormPeaksReady(d, m);
-    std::string text = label;
-    if (busy) {
-        char buf[64];
-        std::snprintf(buf, sizeof(buf), "Measuring %d / %d\xE2\x80\xA6", static_cast<int>(P.norm_job.done_spans),
-                      static_cast<int>(P.norm_job.total_spans));
-        text = buf;
-    }
-    text += std::string("##") + id;
+    std::string text = ZoneNormalizeText(label) + std::string("##") + id;
     ImGui::BeginDisabled(busy || need_peaks || !m.ok);
     const bool go = ui::SolidButton(text.c_str(), ImVec2(stretch ? std::max(1.0f, ImGui::GetContentRegionAvail().x) : 0.0f, 0.0f));
     ImGui::EndDisabled();
@@ -5299,6 +5393,7 @@ bool ZoneWriteNow(const SoundLibrary& lib, const SoundNode& n, const SoundMedia&
     ZoneSel   out = P.zv.sel;
     if (!f(probe, ZoneCtxOf(m), &out)) return false;
     P.zv.sel = SelValid(probe, out);
+    MarkZoneOwn();
     const std::string path = m.path;
     const double      len = m.source_len;
     EditNode(name, lib.uid, n.uid, [f, path, len](SoundNode& x) {
@@ -5371,8 +5466,12 @@ bool ZoneNumberEdit(const ZoneRowOut& o, const SoundLibrary& lib, const SoundNod
         P.zv.sel = SelValid(dr, s);
         if (o.e == ui::DragNumberEvent::Commit) {
             P.zedit_on = false;
-            if (SameZoneEdit(dr, n.sound)) CancelLive();
-            else CommitLive(name, lib.uid, n.uid, toast);
+            if (SameZoneEdit(dr, n.sound)) {
+                CancelLive();
+            } else {
+                MarkZoneOwn();
+                CommitLive(name, lib.uid, n.uid, toast);
+            }
             return StoreReplaced();
         }
     } else if (o.e == ui::DragNumberEvent::Cancel) {
@@ -5482,6 +5581,17 @@ void ZoneHeardBlock(const SoundData& d, const ZoneRef& r, const ZoneWaveHost& zh
                   lbl.c_str());
 }
 
+// 13-62h review: the Selection panel's rows keyed by their zone (its variation, index and stored start), so a value
+// typed or dragged never lands on another zone picked meanwhile. The caller pops it.
+void ZoneRowsId(const SoundNode& n, const ZoneRef& r, const EditZone* shown)
+{
+    const EditZone* st = ZoneOf(n.sound, r);  // the stored start: a live drag of the Start row keeps its id
+    const double    a = st ? st->a : (shown ? shown->a : 0.0);
+    char            id[64];
+    std::snprintf(id, sizeof(id), "zrow%d:%d:%lld", r.frame, r.index, static_cast<long long>(std::llround(a * 1e6)));
+    ImGui::PushID(id);
+}
+
 // The Selection panel UNDER the waveform (the mockup's selHTML): nothing selected (the hint), one zone (its part,
 // gain, edges, snap offset, fades and what is heard), a Gap (its crossfade and what is heard), several (Play, Heal,
 // Delete, Give them to). Its height is kept for the next frame (the waveform leaves it room).
@@ -5518,6 +5628,23 @@ void ZoneSelectionPanel(const SoundLibrary& lib, const SoundNode& n, const Sound
         edge = 0;
         line = nm(L.front()) + " \xC2\xB7 variation " + std::to_string(ZoneVariationNumber(d, L.front())) + " \xC2\xB7 " + ZoneRangeMs(z->a, z->b);
     }
+    if (L.empty()) {
+        // 13-62h review: nothing selected = the mockup's .sect.sel.empty -- a dashed card, no fill, its grey tag and
+        // the hint on the header line.
+        ImDrawList*  dl = ImGui::GetWindowDrawList();
+        const ImVec2 p0 = ImGui::GetCursorScreenPos();
+        const float  w = std::max(1.0f, ImGui::GetContentRegionAvail().x), pad = ui::kCardPad, hh = ui::SectionHeaderH();
+        const ImVec2 p1(p0.x + w, p0.y + hh + pad * 2.0f);
+        const float  tw = ZoneTagPill(dl, ImVec2(p0.x + pad, p0.y + pad), hh, tag, ui::kStrokeStrong, ui::kMuted);
+        ImGui::Dummy(ImVec2(w, p1.y - p0.y));
+        ui::EllipsisTextTip(dl, ImVec2(p0.x + pad + tw + ui::Dp(8.0f), std::floor(p0.y + pad + (hh - ImGui::GetTextLineHeight()) * 0.5f)),
+                            p1.x - pad, ui::kMuted,
+                            "Click a zone or a Gap (Ctrl+click: several). Shift+drag: a new zone \xC2\xB7 Alt+drag: a Gap.");
+        ui::DashedRect(dl, p0, p1, ui::kStrokeStrong, ui::kRadiusLg);
+        ImGui::Dummy(ImVec2(w, std::max(0.0f, ui::kCardGap - ImGui::GetStyle().ItemSpacing.y)));
+        P.zsel_h = ImGui::GetCursorScreenPos().y - y0;
+        return;
+    }
     ui::Section       s;
     ui::SectionOpts   so;
     so.foldable = false;
@@ -5535,9 +5662,7 @@ void ZoneSelectionPanel(const SoundLibrary& lib, const SoundNode& n, const Sound
     auto play_btn = [&](const char* label) {
         if (ui::SolidButton(label)) ZonePlaySelection(zh);
     };
-    if (L.empty()) {
-        ui::SubText("Click a zone or a Gap (Ctrl+click: several). Shift+drag: a new zone \xC2\xB7 Alt+drag: a Gap.");
-    } else if (L.size() > 1) {
+    if (L.size() > 1) {
         int nh = 0;
         for (size_t i = 0; i + 1 < L.size(); ++i) nh += Butted(d, L[i], L[i + 1]) ? 1 : 0;
         const std::string key = ShortcutKeyLabel(kShortcutEditHeal)[0] ? ShortcutKeyLabel(kShortcutEditHeal) : "H";
@@ -5583,6 +5708,7 @@ void ZoneSelectionPanel(const SoundLibrary& lib, const SoundNode& n, const Sound
         if (ui::ToneButton(give.c_str(), ui::TagTone::Bad)) ZoneDelete(zh);
         ui::ItemTipText("Delete");
         const double xl = z->xl, xr = z->xr;
+        ZoneRowsId(n, r, z);
         if (!StoreReplaced())
             ZoneColumns({[&]() {
                              ui::GroupCaption("Crossfade", ui::kMuted);
@@ -5620,6 +5746,7 @@ void ZoneSelectionPanel(const SoundLibrary& lib, const SoundNode& n, const Sound
                              return false;
                          }},
                         ui::Dp(230.0f));
+        ImGui::PopID();
     } else if (z) {
         const ZoneRef     r = L.front();
         const std::string part = z->part, pname = zname;
@@ -5629,10 +5756,11 @@ void ZoneSelectionPanel(const SoundLibrary& lib, const SoundNode& n, const Sound
         if (ui::SolidButton("Split at cursor##zssplit")) ZoneSplit(zh);
         {
             const std::string key = ShortcutKeyLabel(kShortcutEditSplit)[0] ? ShortcutKeyLabel(kShortcutEditSplit) : "B";
-            const std::string tip = "Split at the edit cursor (your REAPER key for 40757; " + key + " here)";
+            const std::string tip = std::string("Split at the edit cursor (your REAPER key for 40757") +
+                                    (ShortcutKeyLabel(kShortcutEditSplit)[0] ? ": " + key : std::string("; B while it has none")) + ")";
             ui::ItemTipText(tip.c_str());
         }
-        SameLineIfFits(ui::ButtonWidth("Normalize"));
+        SameLineIfFits(ui::ButtonWidth(ZoneNormalizeText("Normalize").c_str()));
         {
             const std::string tip = "Writes this zone's gain so it reaches " + pname + "'s target";
             ZoneNormalizeButton("znormz", "Normalize", tip.c_str(), lib, n, m, NormGroups(n.sound, ZoneSel{r}), false, false);
@@ -5642,6 +5770,7 @@ void ZoneSelectionPanel(const SoundLibrary& lib, const SoundNode& n, const Sound
             if (ui::ToneButton("Delete##zsdel", ui::TagTone::Bad)) ZoneDelete(zh);
             ui::ItemTipText("Remove it (Delete): empty space remains");
         }
+        ZoneRowsId(n, r, z);
         if (!StoreReplaced())
             ZoneColumns(
                 {[&]() {
@@ -5722,6 +5851,8 @@ void ZoneSelectionPanel(const SoundLibrary& lib, const SoundNode& n, const Sound
                              k.pill_tip = "Automatic: follows " + pname + "'s " + what + ", never past a cut";
                          }
                          const ZoneRowOut o = ZoneNumRow(k);
+                         // 13-62h review: an edge held by a Gap is not set by number (SetZoneEdge refuses it): say why.
+                         if (gap && o.e == ui::DragNumberEvent::Commit) ShowLibraryToast("It touches a Gap: drag the Gap's edge", false);
                          if (ZoneNumberEdit(o, lib, n, m, r,
                                             [side](SoundData& x, const ZoneRef& q, double v, const ZoneContext& c, ZoneSel* sl) {
                                                 return SetZoneEdge(x, q, side, v / 1000.0, c, sl);
@@ -5812,6 +5943,7 @@ void ZoneSelectionPanel(const SoundLibrary& lib, const SoundNode& n, const Sound
                      return false;
                  }},
                 ui::Dp(230.0f));
+        ImGui::PopID();
     }
     ui::EndSection(s);
     P.zsel_h = ImGui::GetCursorScreenPos().y - y0;
@@ -5841,11 +5973,13 @@ bool SoundZoneNumberRow(const char* id, const char* label, const char* unit, dou
         }
         SoundData& dr = Live(n);
         const int  hand = apply(dr, v);
+        if (UsesZones(dr)) P.zv.sel = SelFollow(n.sound, P.zedit_sel, dr);  // 13-62h review: carried over by time and part
         if (e == ui::DragNumberEvent::Commit) {
             P.zedit_on = false;
             if (get(dr) == get(n.sound)) {
                 CancelLive();
             } else {
+                if (UsesZones(dr)) MarkZoneOwn();
                 const std::string toast = std::string(label) + ": " + RoundedNumberText(get(dr), false) + " " + unit +
                                           PreTailToastExtra(hand, ZoneTailWins());
                 CommitLive(label, lib.uid, n.uid, toast);
@@ -5878,10 +6012,7 @@ bool SoundZoneRows(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
                                [pre, f, path, len](SoundData& x, double v) {
                                    (pre ? x.silence.preroll_ms : x.silence.tail_ms) = v;
                                    RefreshWith(x, path);
-                                   ZoneSel s = P.zedit_sel;
-                                   const int hand = ApplyPreTailChange(x, std::string(), ZoneTailWins(), f, ZoneContext{EditPeaks(path), len}, &s);
-                                   P.zv.sel = s;
-                                   return hand;
+                                   return ApplyPreTailChange(x, std::string(), ZoneTailWins(), f, ZoneContext{EditPeaks(path), len});
                                }))
             return true;
     }
@@ -5899,12 +6030,17 @@ bool SoundZoneRows(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
         if (picked && sel >= 0 && sel < 3 && sel != static_cast<int>(d.sync_mode)) {
             const SyncMode mode = static_cast<SyncMode>(sel);
             const double   off = n.sound.sync_offset_ms;
+            {  // 13-62h review: probed on a copy, the selection carried over
+                SoundData probe = n.sound;
+                if (SetSyncSettings(probe, mode, off)) RefreshWith(probe, path);
+                ZoneSelAfter(n.sound, probe);
+            }
             EditNode("Sync point", lib.uid, n.uid, [mode, off, path](SoundNode& x) {
                 if (!SetSyncSettings(x.sound, mode, off)) return false;
                 RefreshWith(x.sound, path);
                 return true;
             }, std::string("Sync point: ") + kModes[sel]);
-            return true;
+            return StoreReplaced();  // the write is picked at the frame's end: the rest is still drawn
         }
     }
     if (SoundZoneNumberRow("##soff", "Offset", "ms", 0.1, -50.0, 50.0, "Added to the sync point", lib, n,
@@ -6055,13 +6191,31 @@ void ZoneSettingsColumn(const SoundLibrary& lib, const SoundNode& n, const Sound
     if (mute) ToggleListen(false, d, part);
     if (solo) ToggleListen(true, d, part);
     if (all) {
-        const std::string path = m.path, name = PartName(d, part), value = part;
-        EditNode("Part settings", lib.uid, n.uid, [value, path](SoundNode& x) {
+        // 13-62h review: the settings back to the Sound's (the fader stays); a Pre-roll / Tail the part owned moves its
+        // hand edges again per the option (decision 7), in the same write.
+        const std::string   path = m.path, name = PartName(d, part), value = part;
+        const double        len = m.source_len;
+        const bool          wins = ZoneTailWins();
+        const PartSettings* ps = PartSettingsOf(n.sound, value);
+        const bool          pre = ps && ps->preroll_ms.has_value(), tail = ps && ps->tail_ms.has_value();
+        auto                write = [value, path, pre, tail, wins](SoundData& x, const ZoneContext& c) {
+            ResetPartAll(x, value);
+            RefreshWith(x, path);
+            int hand = 0;
+            if (pre) hand += ApplyPreTailChange(x, value, wins, PartField::Preroll, c);
+            if (tail) hand += ApplyPreTailChange(x, value, wins, PartField::Tail, c);
+            return hand;
+        };
+        SoundData probe = n.sound;
+        const int hand = write(probe, ZoneCtxOf(m));
+        ZoneSelAfter(n.sound, probe);
+        EditNode("Part settings", lib.uid, n.uid, [value, path, len, write](SoundNode& x) {
             if (OwnSettingCount(x.sound, value) == 0) return false;
-            ResetPartAll(x.sound, value);
-            RefreshWith(x.sound, path);
+            PeakData   pk;
+            const bool has = !path.empty() && RequestPeaks(path, &pk) == PeakState::Ready;
+            write(x.sound, ZoneContext{has ? &pk : nullptr, len});
             return true;
-        }, name + ": every setting same as the Sound again");
+        }, name + ": every setting same as the Sound again" + PreTailToastExtra(hand, wins));
     }
     ui::SubText("Every change is saved at once (Ctrl+Z to undo), with the sound.");
     if (part.empty()) {
@@ -7542,6 +7696,15 @@ void SettleLostFaders()
 {
     const ImGuiID active = ImGui::GetCurrentContext()->ActiveId;
     const int     frame = ImGui::GetFrameCount();
+    // 13-62h review: a number of the zone panels dragged whose row went away mid-gesture (Delete / Heal / a key /
+    // Ctrl+Z / another zone selected): its zone and selection are forgotten and its draft dropped (never entered on
+    // zones that changed under it); the next gesture starts afresh.
+    if (P.zedit_on && !ui::DragNumberActive()) {
+        P.zedit_on = false;
+        P.zedit_ref = ZoneRef{};
+        P.zedit_sel.clear();
+        if (P.phase.Live()) CancelLive();
+    }
     if (P.vol_gid != 0 && active != P.vol_gid) {
         const std::string lib_uid = P.vol_lib, uid = P.vol_key;
         const double      v = P.vol_live;

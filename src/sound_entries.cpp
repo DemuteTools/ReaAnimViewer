@@ -1702,7 +1702,14 @@ void ResetPartAll(SoundData& data, const std::string& value)
     PartSettings* p = FindPart(data, value);
     if (!p) return;
     const bool syncs = p->sync_mode || p->sync_offset_ms, trims = p->preroll_ms || p->tail_ms;
-    data.parts.erase(data.parts.begin() + (p - data.parts.data()));
+    // 13-62h review: only the settings go back to the Sound's; the lane fader (what it applied to the zones,
+    // fader_db) and the unknown fields stay (PruneParts drops the entry when nothing is left).
+    PartSettings keep;
+    keep.value = p->value;
+    keep.kept = p->kept;
+    keep.fader_db = p->fader_db;
+    *p = keep;
+    PruneParts(data);
     Remeasure(data, syncs, trims);
 }
 

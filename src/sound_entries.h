@@ -275,7 +275,8 @@ enum class PartField { Preroll, Tail, SyncMode, SyncOffset, Gain, NormMode, Norm
 // not a divide value. A sync change drops the measured syncs, a pre-roll / tail change the part trims
 // (RefreshParts measures them again, as SetSyncSettings).
 void SetPartSetting(SoundData& data, const std::string& value, const PartSettings& patch);
-// Back to the Sound's for one field / every field of the part (an entry left with nothing is removed).
+// Back to the Sound's for one field / every field of the part (an entry left with nothing is removed). "All"
+// keeps the lane fader (fader_db) and the unknown fields: they are not settings.
 void ResetPartSetting(SoundData& data, const std::string& value, PartField field);
 void ResetPartAll(SoundData& data, const std::string& value);
 // How many settings the part owns (0 = "same as the Sound").

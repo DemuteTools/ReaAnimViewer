@@ -977,6 +977,15 @@ void TestPartSettings()
     CHECK(OwnSettingCount(d, kFront) == 2);
     ResetPartAll(d, kFront);
     CHECK(d.parts.empty() && PartGainDb(d, kFront) == 0.0 && PartTailMs(d, kFront) == 60.0);
+    // 13-62h review: "All" keeps the lane fader (what it applied to the zones), only the settings go.
+    SetPartSetting(d, kFront, g);
+    CHECK(d.parts.size() == 1);
+    d.parts[0].fader_db = -4.5;
+    ResetPartAll(d, kFront);
+    CHECK(d.parts.size() == 1 && OwnSettingCount(d, kFront) == 0 && d.parts[0].fader_db == -4.5);
+    d.parts[0].fader_db.reset();
+    ResetPartAll(d, kFront);  // nothing left: the entry goes
+    CHECK(d.parts.empty());
     ResetPartSetting(d, kFront, PartField::Tail);  // nothing to reset: no entry made
     CHECK(d.parts.empty());
     // Matrix "Part fades own": Toe's own 4 ms fade in, the other side the Sound's default; Heel has none.

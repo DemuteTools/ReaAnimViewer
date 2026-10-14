@@ -265,7 +265,8 @@ std::vector<std::vector<ZoneRef>> NormGroups(const SoundData& d, const std::stri
 std::vector<NormRegion> NormGroupRegions(const SoundData& d, const std::vector<std::vector<ZoneRef>>& groups,
                                          NormMode sound_mode, double sound_target);
 // Writes each group's gain (adj_db[i] for groups[i]; NaN or > +60 dB = silent, skipped) into its zones' db
-// (-60..+24, 0.1 dB); `reset_faders`: the faders of the parts touched back to 0 (nothing applied on top). Returns
+// (-60..+24, 0.1 dB); `reset_faders`: the faders of the parts whose groups all got a gain back to 0 (nothing applied
+// on top; a part with a silent group keeps its fader: those zones still carry it). Returns
 // how many groups got a gain.
 int ApplyZoneNormalize(SoundData& d, const std::vector<std::vector<ZoneRef>>& groups, const std::vector<double>& adj_db,
                        bool reset_faders);

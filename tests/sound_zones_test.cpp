@@ -390,6 +390,11 @@ void TestFaderAndNormalize()
     CHECK(Near(At(n, 0, 0).db, 4.0) && Near(At(n, 0, 2).db, 4.0) && Near(At(n, 0, 3).db, -2.0) && PartFaderDb(n, kHeel) == 0.0);
     // A silent group is skipped.
     CHECK(ApplyZoneNormalize(n, groups, {std::nan(""), 1.0}, false) == 1 && Near(At(n, 0, 0).db, 4.0));
+    // 13-62h review: a part with a silent group keeps its fader (those zones still carry it); all groups measured:
+    // back to 0.
+    SetPartFader(n, kHeel, 3.0);
+    CHECK(ApplyZoneNormalize(n, groups, {std::nan(""), 1.0}, true) == 1 && Near(PartFaderDb(n, kHeel), 3.0));
+    CHECK(ApplyZoneNormalize(n, groups, {0.5, 1.0}, true) == 2 && PartFaderDb(n, kHeel) == 0.0);
     // From a selection: the lone zone only.
     CHECK(NormGroups(n, ZoneSel{{0, 3}}).size() == 1);
 }

@@ -361,8 +361,8 @@ void CutAtPlayhead(float full)
     if (ui::AddButton("+ Cut at playhead##cutpanel", ImVec2(full, ui::Dp(30.0f)), cut_key)) QueueVideoCut();
     if (!can_cut) ImGui::EndDisabled();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-        ImGui::SetTooltip("A new shot starts on the playhead's frame, with the camera shown there (%s in Video view)",
-                          cut_key);
+        ImGui::SetTooltip("A new shot starts on the playhead's frame, with the camera shown there%s",
+                          ShortcutSuffix(cut_key, " (", " in Video view)").c_str());
     NoticeLine();
 }
 
@@ -658,7 +658,7 @@ void DrawVideoPanelButton(float right_x)
         o.framed = true;
         o.tint = ui::kKnob;
         if (ui::IconOnlyButton("##panel", ui::Icon{&PanelIcon, 0, ui::kKnob}, nullptr, o)) SetVideoPanelVisible(!on);
-        ui::ItemTip("Show / hide the video settings (%s)", ShortcutKeyLabel(kShortcutTogglePanel));
+        ui::ItemTip("Show / hide the video settings%s", ShortcutSuffix(ShortcutKeyLabel(kShortcutTogglePanel)).c_str());
     }
     ui::EndOverlay();
 }
@@ -859,7 +859,7 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
         const char* cut_key = ShortcutKeyLabel(kShortcutCut);
         // A long custom key must not widen the button past the strip: it gets the room left.
         const float cut_w =
-            std::max(ui::Dp(20.0f), std::min(ImGui::CalcTextSize("Cut").x + ImGui::CalcTextSize(cut_key).x + ui::Dp(8.0f + 26.0f),
+            std::max(ui::Dp(20.0f), std::min(ImGui::CalcTextSize("Cut").x + (cut_key[0] ? ImGui::CalcTextSize(cut_key).x + ui::Dp(14.0f) : 0.0f) + ui::Dp(20.0f),
                                              avail - tc_w - ui::Dp(20.0f) - snap_gap - snap_w - cut_gap));
         const float lane_w = std::max(ui::Dp(20.0f), avail - tc_w - cut_w - snap_gap - snap_w - cut_gap);
         const ImVec2 l0(tc_pos.x + tc_w, top);
@@ -1232,16 +1232,16 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
         if (ui::SolidButton("##stripcut", ImVec2(cut_w, kCtrlH))) QueueVideoCut();
         if (!can_cut) ImGui::EndDisabled();
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
-            ImGui::SetTooltip("New shot on the playhead's frame, with the camera shown (%s)", cut_key);
+            ImGui::SetTooltip("New shot on the playhead's frame, with the camera shown%s", ShortcutSuffix(cut_key).c_str());
         // The button has no label of its own: "Cut" + the key cap are drawn over it.
         const float label_w = ImGui::CalcTextSize("Cut").x;
-        const float key_w = ImGui::CalcTextSize(cut_key).x + ui::Dp(8.0f);
-        const float key_gap = ui::Dp(6.0f);
+        const float key_w = cut_key[0] ? ImGui::CalcTextSize(cut_key).x + ui::Dp(8.0f) : 0.0f;  // no key: no cap
+        const float key_gap = cut_key[0] ? ui::Dp(6.0f) : 0.0f;
         const float lx = std::max(b0.x + ui::Dp(4.0f), b0.x + (cut_w - label_w - key_gap - key_w) * 0.5f);
         const float ly = ctrl_y + (kCtrlH - th) * 0.5f;
         dl->PushClipRect(b0, ImVec2(b0.x + cut_w, b0.y + kCtrlH), true);  // a squeezed button clips its key
         dl->AddText(ImVec2(lx, ly), can_cut ? ui::kText : ui::kFaint, "Cut");
-        ui::KeyCap(dl, ImVec2(lx + label_w + key_gap, ly - ui::Dp(1.5f)), cut_key);
+        if (cut_key[0]) ui::KeyCap(dl, ImVec2(lx + label_w + key_gap, ly - ui::Dp(1.5f)), cut_key);
         dl->PopClipRect();
     }
     ImGui::End();

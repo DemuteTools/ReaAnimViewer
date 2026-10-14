@@ -144,9 +144,11 @@ ItemClearResult ClearItemData(MediaItem* item)
                 ~BatchEnd() { PlaceBatch(false); }
             } batch_end;
             res.ran = true;
-            // 1. The markers RAV owns, while the records still list them.
+            // 1. The markers RAV owns, while the records still list them (10-11: a project marker
+            // another item wants is handed over to it, `handoffs`).
+            std::vector<MarkerHandOff> handoffs;
             for (size_t i = 0; i < g.items.size(); ++i)
-                if (g.plan.markers[i]) DeleteItemMarkersNoUndo(g.items[i], g.items);
+                if (g.plan.markers[i]) DeleteItemMarkersNoUndo(g.items[i], g.items, &handoffs);
             // 2. The records. A failed write stops the clear (the undo block still closes).
             for (const ClearRecordWrite& w : g.plan.records) {
                 MediaItem_Take* take = g.takes[w.target];
@@ -159,6 +161,8 @@ ItemClearResult ClearItemData(MediaItem* item)
                     break;
                 }
             }
+            // A record not cleared still lists what it handed over: taken back (one owner per marker).
+            if (!res.error.empty()) RevertFailedHandOversNoUndo(handoffs);
             if (res.error.empty()) {
                 // 3. The sounds: library sources untagged (they stay), the others deleted.
                 for (const std::string& guid : g.plan.untag_guids) {

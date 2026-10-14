@@ -1541,8 +1541,9 @@ void DrawToolUi()
                 // this gives the question back (or takes it away).
                 bool ask = VideoAskBeforeDeleteShot();
                 if (ui::Checkbox("Ask before deleting a shot", &ask)) SetVideoAskBeforeDeleteShot(ask);
-                ui::ItemTip("The %s key in Video view deletes the current shot: ask first, or delete at once",
-                            ShortcutKeyLabel(kShortcutDeleteShot));
+                ui::ItemTip("The \"Delete current shot\" shortcut%s in Video view deletes the current shot: ask "
+                            "first, or delete at once",
+                            ShortcutSuffix(ShortcutKeyLabel(kShortcutDeleteShot)).c_str());
             }
             ui::EndSection(sec);
             if (ui::BeginSection(sec, "REAPER's Video window")) {

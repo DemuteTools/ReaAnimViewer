@@ -258,14 +258,19 @@ void DeleteItemOwnMarkers(MediaItem* item, const ItemRules& rules, const std::se
 }
 
 bool MirrorClipMap(MediaItem* item, MediaItem_Take* take, ItemClipMap* out);  // below (the mirror)
+void MirrorNoteOwner(const std::string& marker, const std::string& item);       // below (the mirror)
 
 // 10-11: before committed project markers (`leaving`) are deleted, each one another RAV item of
 // the current project still wants (its last Commit planned a twin inside it, it owns none; not
 // an item of `skip`, not a copy) goes to that item's record instead (event_list.h
 // HandOverProjectMarkers); `rewritten` = this Commit's new plans (a twin there is written again).
 // Returns the GUIDs handed over (to keep). No undo point: the caller's block holds it.
-std::set<std::string> HandOverNoUndo(const std::vector<ProjectMarkerRef>& leaving,
-                                     const std::vector<PlannedMarker>& rewritten, const std::vector<MediaItem*>& skip)
+// `from[i]` = the item `leaving[i]` comes from; each hand-over written goes to `log` (optional),
+// and the mirror's last-scan owner of the marker becomes the receiver (else, while the giver
+// still owns other markers, the mirror would take the receiver for a copy).
+std::set<std::string> HandOverNoUndo(const std::vector<ProjectMarkerRef>& leaving, const std::vector<MediaItem*>& from,
+                                     const std::vector<PlannedMarker>& rewritten, const std::vector<MediaItem*>& skip,
+                                     std::vector<MarkerHandOff>* log)
 {
     std::set<std::string> kept;
     try {
@@ -310,7 +315,13 @@ std::set<std::string> HandOverNoUndo(const std::vector<ProjectMarkerRef>& leavin
                 },
                 nullptr);
             if (!ok) continue;  // not recorded: the marker is deleted as before
-            for (const ProjectMarkerRef& r : mine) kept.insert(r.guid);
+            const std::string receiver = ItemGuidOf(items[k]);
+            for (size_t i = 0; i < to.size(); ++i) {
+                if (to[i] != static_cast<int>(k)) continue;
+                kept.insert(given[i].guid);
+                if (!receiver.empty()) MirrorNoteOwner(given[i].guid, receiver);
+                if (log) log->push_back({given[i].guid, i < from.size() ? from[i] : nullptr, items[k]});
+            }
         }
     } catch (...) {
     }
@@ -560,6 +571,15 @@ struct MirrorProject {
 std::map<ReaProject*, MirrorProject> g_mirror;
 int (*g_mirror_register)(const char*, void*) = nullptr;
 bool g_mirror_on = false;
+
+// 10-11 review: a hand-over moved `marker` to `item` (both GUIDs): the current project's last
+// scan says so, so the next scan arbitrates with the new owner.
+void MirrorNoteOwner(const std::string& marker, const std::string& item)
+{
+    if (marker.empty() || item.empty()) return;
+    const auto f = g_mirror.find(EnumProjects(-1, nullptr, 0));
+    if (f != g_mirror.end()) f->second.owners[marker] = item;
+}
 
 bool MirrorApiReady()
 {
@@ -1555,21 +1575,24 @@ ApplyResult CommitTaggingMarkers()
         try {
             // 10-11: a committed project marker another item still wants (and this Commit does not
             // write again) goes to that item instead of being deleted.
-            std::set<std::string> handed;
+            std::set<std::string>      handed;
+            std::vector<MarkerHandOff> handoffs;
             {
                 std::vector<ProjectMarkerRef> leaving;
+                std::vector<MediaItem*>       from;
                 std::vector<PlannedMarker>    rewritten;
                 std::vector<MediaItem*>       committing;
                 for (const Run& r : runs) {
                     committing.push_back(r.item);
                     leaving.insert(leaving.end(), r.det.rules.pmarkers.begin(), r.det.rules.pmarkers.end());
+                    from.insert(from.end(), r.det.rules.pmarkers.size(), r.item);
                     if (mode == MarkerMode::Take) continue;
                     const std::vector<ShownEvent> list =
                         BuildEventList(r.det.events, r.det.rules.events, r.det.rules.blocks.size());
                     const std::vector<PlannedMarker> plan = PlanMarkers(list, r.det.rules.blocks, r.det.map);
                     rewritten.insert(rewritten.end(), plan.begin(), plan.end());
                 }
-                handed = HandOverNoUndo(leaving, rewritten, committing);
+                handed = HandOverNoUndo(leaving, from, rewritten, committing, &handoffs);
             }
             // First every item's previous RAV markers (committed and previews) go, so no item
             // takes another's old RAV marker for a foreign one.
@@ -1581,6 +1604,8 @@ ApplyResult CommitTaggingMarkers()
             }
             std::vector<ExistingMarker> written_project;  // this Commit's project markers (RAV's, never foreign)
             for (Run& r : runs) CommitItemMarkers(r.item, r.det, mode, written_project, res);
+            // A giver whose record write failed still lists what it handed over: taken back.
+            RevertFailedHandOversNoUndo(handoffs);
         } catch (...) {
             Undo_EndBlock2(nullptr, kUndoCommit, UNDO_STATE_ALL);
             throw;
@@ -1746,16 +1771,44 @@ void StopMarkerMirror()
     g_mirror.clear();
 }
 
-void DeleteItemMarkersNoUndo(MediaItem* item, const std::vector<MediaItem*>& clearing)
+void DeleteItemMarkersNoUndo(MediaItem* item, const std::vector<MediaItem*>& clearing,
+                             std::vector<MarkerHandOff>* handed_log)
 {
     try {
         ItemRulesRead rd;
         if (!item || !ReadItemRules(item, &rd) || !rd.present || !rd.valid) return;
         std::vector<MediaItem*> skip = clearing;
         skip.push_back(item);
-        const std::set<std::string> handed = HandOverNoUndo(rd.rules.pmarkers, {}, skip);
+        const std::vector<MediaItem*> from(rd.rules.pmarkers.size(), item);
+        const std::set<std::string>   handed = HandOverNoUndo(rd.rules.pmarkers, from, {}, skip, handed_log);
         DeleteItemOwnMarkers(item, rd.rules, &handed);
     } catch (...) {
+    }
+}
+
+void RevertFailedHandOversNoUndo(const std::vector<MarkerHandOff>& handed)
+{
+    for (const MarkerHandOff& h : handed) {
+        try {
+            if (!h.from || !h.to || h.guid.empty()) continue;
+            ItemRulesRead rd;
+            if (!ReadItemRules(h.from, &rd) || !rd.present || !rd.valid) continue;  // cleared: it stands
+            const bool still = std::any_of(rd.rules.pmarkers.begin(), rd.rules.pmarkers.end(),
+                                           [&](const ProjectMarkerRef& r) { return r.guid == h.guid; });
+            if (!still) continue;  // the giver's record was written: the hand-over stands
+            ModifyItemRulesNoUndo(
+                h.to,
+                [&](ItemRules& rec) {
+                    const auto end = std::remove_if(rec.pmarkers.begin(), rec.pmarkers.end(),
+                                                    [&](const ProjectMarkerRef& r) { return r.guid == h.guid; });
+                    if (end == rec.pmarkers.end()) return false;  // nothing to drop
+                    rec.pmarkers.erase(end, rec.pmarkers.end());
+                    return true;
+                },
+                nullptr);
+            MirrorNoteOwner(h.guid, ItemGuidOf(h.from));
+        } catch (...) {
+        }
     }
 }
 

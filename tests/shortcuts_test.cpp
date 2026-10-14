@@ -328,6 +328,28 @@ int main()
         std::vector<int> none;
         CHECK(SanitizeShortcuts(later, stored2, &none).empty() && none.empty());
         CHECK(later[kShortcutCut] == Key('C'));
+        // 10-11 review: restoring the unbound action is refused while its default is your key
+        // (Cut cannot take C back from Next view); a bound action never has a blocker.
+        CHECK(ShortcutResetBlocker(b, kShortcutCut) == kShortcutToggleView);
+        CHECK(ShortcutResetBlocker(b, kShortcutToggleView) == -1);
+        CHECK(RebindFreedDefaults(b).empty() && b[kShortcutCut].vk == 0);  // C still yours
+        // Next view takes another key: Cut gets C back at once (no reload), and is no longer blocked.
+        b[kShortcutToggleView] = Key('K');
+        const std::vector<int> back = RebindFreedDefaults(b);
+        CHECK(back.size() == 1 && back[0] == kShortcutCut && b[kShortcutCut] == Key('C'));
+        CHECK(ShortcutResetBlocker(b, kShortcutCut) == -1);
+        // ... and the same when Next view goes back to its own default (ResetShortcut, then rebind).
+        b[kShortcutToggleView] = Key('C');
+        b[kShortcutCut] = KeyBinding{};
+        ResetShortcut(b, kShortcutToggleView);
+        CHECK(RebindFreedDefaults(b).size() == 1 && b == DefaultShortcutBindings());
+        // An unbound default whose key another context holds stays free to come back: Delete
+        // in Tagging view while Video view's Delete is bound (contexts never on together).
+        ShortcutBindings ctx = DefaultShortcutBindings();
+        ctx[kShortcutTagDelEvent] = KeyBinding{};
+        CHECK(RebindFreedDefaults(ctx).size() == 1 && ctx == DefaultShortcutBindings());
+        // The suffix that names a key in a text: nothing for an action without a key.
+        CHECK(ShortcutSuffix("").empty() && ShortcutSuffix("E") == " (E)" && ShortcutSuffix("E", "  (") == "  (E)");
         // Two stored keys that clash: the old rule (the later custom one is reset).
         ShortcutBindings two = DefaultShortcutBindings();
         bool stored3[kShortcutCount] = {};

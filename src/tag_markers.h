@@ -103,7 +103,18 @@ void ClearLastApplyResult();
 // (inside the caller's). Nothing when the item has no RAV take or its record does not read.
 // 10-11: a committed project marker another item still wants (not one of `clearing`, the items
 // cleared with it) is handed over to that item instead (event_list.h HandOverProjectMarkers).
-void DeleteItemMarkersNoUndo(MediaItem* item, const std::vector<MediaItem*>& clearing = {});
+// `handed` (optional) receives each hand-over written, for RevertFailedHandOversNoUndo.
+struct MarkerHandOff {
+    std::string guid;            // the project marker's GUID
+    MediaItem*  from = nullptr;  // the item that let it go
+    MediaItem*  to = nullptr;    // the item whose record now lists it
+};
+void DeleteItemMarkersNoUndo(MediaItem* item, const std::vector<MediaItem*>& clearing = {},
+                             std::vector<MarkerHandOff>* handed = nullptr);
+// 10-11 review: after the givers' records were written, a hand-over whose giver still lists the
+// marker (its record write failed) is taken back: the receiver's ref is dropped, so one GUID is
+// never listed by two items. No undo point (inside the caller's).
+void RevertFailedHandOversNoUndo(const std::vector<MarkerHandOff>& handed);
 
 // The timer callback (main thread). No-throw.
 void MarkerMirrorTick();

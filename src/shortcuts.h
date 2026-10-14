@@ -421,6 +421,29 @@ inline std::vector<int> SanitizeShortcuts(ShortcutBindings& b, const bool* store
     return reset;
 }
 
+// 10-11 review: the action that keeps `id` from getting its default back: `id` has no key
+// (SanitizeShortcuts left it unbound) and its default is another action's key, the user's own.
+// A reset then is refused (ResetShortcut would take the user's key away). -1 = no blocker.
+inline int ShortcutResetBlocker(const ShortcutBindings& b, int id)
+{
+    if (id < 0 || id >= kShortcutCount || b[static_cast<size_t>(id)].vk != 0) return -1;
+    return ShortcutOwner(b, kShortcutTable[id].def, id);
+}
+
+// 10-11 review: every unbound action whose default key is free again (the action that held it
+// took another key or went back to its own default) gets it back at once. Returns them.
+inline std::vector<int> RebindFreedDefaults(ShortcutBindings& b)
+{
+    std::vector<int> back;
+    for (int i = 0; i < kShortcutCount; ++i) {
+        const KeyBinding& d = kShortcutTable[i].def;
+        if (b[static_cast<size_t>(i)].vk != 0 || !IsBindableKey(d.vk) || ShortcutOwner(b, d, i) >= 0) continue;
+        b[static_cast<size_t>(i)] = d;
+        back.push_back(i);
+    }
+    return back;
+}
+
 // ---- ExtState encoding: "Ctrl+Shift+Alt+<decimal vk>", modifiers optional ---------------
 
 inline std::string EncodeShortcut(const KeyBinding& b)
@@ -536,6 +559,14 @@ inline std::string FormatShortcut(const KeyBinding& b, std::string (*fallback)(u
     return s + ShortcutKeyName(b.vk, fallback);
 }
 
+// 10-11 review: the key in brackets after a text that names it (" (C)"), "" for an action
+// without a key (unbound), so no text ever shows an empty "()". Every text that names an
+// action's key goes through it (key caps simply show nothing).
+inline std::string ShortcutSuffix(const std::string& key, const char* open = " (", const char* close = ")")
+{
+    return key.empty() ? std::string() : std::string(open) + key + close;
+}
+
 // ---- live state (src/shortcuts.cpp, REAPER + Windows) ----------------------------------
 
 // Reads the custom keys from REAPER ExtState (section ReaAnimViewer, key shortcut.<id>).
@@ -554,7 +585,10 @@ const char* ShortcutKeyLabel(int id);
 void RefreshShortcutLabels();
 
 // Right-click in the popup: back to the default (and whatever held it), ExtState cleared.
-void ResetShortcutToDefault(int id);
+// 10-11 review: refused for an action without a key whose default is the user's own key for
+// another action (ShortcutResetBlocker): returns that action, else -1. Any reset or new key
+// that frees an unbound action's default gives it back at once (RebindFreedDefaults).
+int ResetShortcutToDefault(int id);
 
 // Recording (double-click in the popup): the next non-modifier key down becomes the
 // binding. While it runs, the accelerator hook passes every key to the viewer.

@@ -3667,7 +3667,7 @@ void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const Sho
 
     const char* dk = ShortcutKeyLabel(kShortcutTagDelEvent);
     const std::string act = std::string(e.kind == ShownKind::Detected ? "Suppress" : e.kind == ShownKind::User ? "Delete" : "Restore") +
-                            "  (" + dk + ")##evact";
+                            ShortcutSuffix(dk, "  (") + "##evact";
     if (!editable) ImGui::BeginDisabled();
     if (ui::SolidButton(act.c_str())) {
         const ShownEvent copy = e;

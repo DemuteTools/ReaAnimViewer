@@ -827,6 +827,15 @@ int main()
             // ... its holder deleted: it adopts.
             MirrorOwnerResult r5 = ArbitrateMirrorOwnership({in("{I2}", "", {"{A}"})}, {{"{A}", "{I1}"}}, {"{I2}"});
             CHECK(r5.own[0] == MirrorOwnership::Adopt && r5.claimed["{A}"] == "{I2}");
+            // 10-11 review: a hand-over moved {M} from I1 (which keeps {N}) to I2. With the last
+            // scan's owner of {M} updated to I2 (tag_markers MirrorNoteOwner), I2 keeps it ...
+            MirrorOwnerResult h6 = ArbitrateMirrorOwnership({in("{I1}", "{I1}", {"{N}"}), in("{I2}", "{I2}", {"{M}"})},
+                                                            {{"{M}", "{I2}"}, {"{N}", "{I1}"}}, {"{I1}", "{I2}"});
+            CHECK(h6.own[0] == MirrorOwnership::Own && h6.own[1] == MirrorOwnership::Own && h6.claimed["{M}"] == "{I2}");
+            // ... where the stale map (still {M} -> I1) would have made I2 a copy.
+            MirrorOwnerResult h7 = ArbitrateMirrorOwnership({in("{I1}", "{I1}", {"{N}"}), in("{I2}", "{I2}", {"{M}"})},
+                                                            {{"{M}", "{I1}"}, {"{N}", "{I1}"}}, {"{I1}", "{I2}"});
+            CHECK(h7.own[1] == MirrorOwnership::Copy);
             // Unmanaged items are left out.
             MirrorOwnerInput um = in("{I3}", "", {"{A}"});
             um.managed = false;

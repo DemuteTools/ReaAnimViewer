@@ -28,6 +28,8 @@ constexpr float kRowH     = 26.0f;
 bool g_open          = false;  // the popup was open last frame
 bool g_open_at_press = false;  // ...when the icon was pressed (a second click closes it)
 bool g_close_request = false;  // Esc from the viewer's key handling
+int  g_reset_refused = -1;     // 10-11 review: the action whose restore was refused (or -1)
+int  g_reset_blocker = -1;     // ...the action that holds its default as your own key
 
 // The fallback glyph when the icon texture is missing: a keyboard outline, keys, space bar.
 void DrawKeyboardGlyph(ImDrawList* dl, ImVec2 c, float s, ImU32 col)
@@ -75,7 +77,13 @@ bool KeyRow(int id)
                   ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_NoAutoClosePopups);
     bool record = false;
     if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) record = true;
-    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) ResetShortcutToDefault(id);
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+        // 10-11 review: an action without a key cannot take back a default that is your own
+        // key for another action: refused, and the popup says why.
+        const int blocker = ResetShortcutToDefault(id);
+        g_reset_refused = blocker >= 0 ? id : -1;
+        g_reset_blocker = blocker;
+    }
     const ImVec2 a = ImGui::GetItemRectMin();
     const ImVec2 b = ImGui::GetItemRectMax();
     ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -158,7 +166,20 @@ void PopupBody()
     for (int i = 0; i < kShortcutCount; ++i)
         if (KeyRow(i)) record = i;
     ImGui::PopStyleVar();
-    if (record >= 0) BeginShortcutRecording(record);
+    if (record >= 0) {
+        BeginShortcutRecording(record);
+        g_reset_refused = -1;
+    }
+    // A refused restore stays explained while that action still has no key.
+    if (g_reset_refused >= 0 && CurrentShortcuts()[static_cast<size_t>(g_reset_refused)].vk == 0 && g_reset_blocker >= 0) {
+        const std::string def = FormatShortcut(kShortcutTable[g_reset_refused].def);
+        ui::ToneText(std::string("\"") + kShortcutTable[g_reset_refused].label + "\" cannot get " + def +
+                         " back: it is your key for \"" + kShortcutTable[g_reset_blocker].label +
+                         "\". Give that action another key first, or double-click to pick another key.",
+                     ui::kWarn, /*wrap=*/true, ui::Dp(kRowW));
+    } else {
+        g_reset_refused = -1;
+    }
 
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ui::Dp(8.0f), ui::Dp(2.0f)));
     constexpr int kGroups = static_cast<int>(sizeof(kMouseGestureGroups) / sizeof(kMouseGestureGroups[0]));

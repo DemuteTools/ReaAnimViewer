@@ -127,13 +127,17 @@ const char* ShortcutKeyLabel(int id)
     return g_labels[id].c_str();
 }
 
-void ResetShortcutToDefault(int id)
+int ResetShortcutToDefault(int id)
 {
-    if (id < 0 || id >= kShortcutCount) return;
+    if (id < 0 || id >= kShortcutCount) return -1;
+    const int blocker = ShortcutResetBlocker(g_bindings, id);
+    if (blocker >= 0) return blocker;  // the user's own key stays
     std::vector<int> changed = ResetShortcut(g_bindings, id);
     changed.push_back(id);  // its entry goes even if it already held the default
+    for (int i : RebindFreedDefaults(g_bindings)) changed.push_back(i);
     for (int i : changed) Save(i);
     RefreshLabels();
+    return -1;
 }
 
 void BeginShortcutRecording(int id)
@@ -174,6 +178,7 @@ void ShortcutRecordKey(unsigned key, bool ctrl, bool shift, bool alt)
         break;
     case RecordOutcome::Assigned:
         Save(g_recording_id);
+        for (int i : RebindFreedDefaults(g_bindings)) Save(i);  // its old key may be another's default
         RefreshLabels();
         CancelShortcutRecording();
         break;

@@ -105,6 +105,15 @@ struct SoundFrame {
     // Reset to detected. Record keys `ein` / `eout`.
     std::vector<double>      edge_in;
     std::vector<double>      edge_out;
+    // 13-62g review (appended): the part each hand edge belongs to (its section's owner when it was moved; same index
+    // as edge_in / edge_out; "" = not known yet, adopted by the next refresh). A hand edge acts only in a section of
+    // its own part, so a moved cut or a comp never hands it to another part. Record keys `einp` / `eoutp`.
+    std::vector<std::string> edge_in_part;
+    std::vector<std::string> edge_out_part;
+    // 13-62g review (appended): the variation's own edges were trimmed by hand (an edge dragged, a split, a variation
+    // drawn): only that keeps its range through a re-detection (`hand` alone, a gain / fade / on-off / Normalize
+    // edit, now follows the detection's range and keeps its edits). Record key `trim`.
+    bool                     trimmed = false;
 };
 
 // The Sound-level default fades (s): every variation with no fade of its own gets them.

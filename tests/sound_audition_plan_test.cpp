@@ -235,6 +235,7 @@ static void TestRedetect()
     prev[3].start = 2.9;
     prev[3].length = 0.9;  // hand-trimmed over [2.9, 3.8)
     prev[3].hand = true;
+    prev[3].trimmed = true;
     std::vector<SoundFrame> det;
     for (int i = 0; i < 8; ++i) {
         SoundFrame f;
@@ -252,6 +253,34 @@ static void TestRedetect()
     }
     CHECK(kept);
     for (size_t i = 1; i < out.size(); ++i) CHECK(out[i - 1].start <= out[i].start);
+
+    // 13-62g review: a hand frame never trimmed (its gain or a fade edited) takes the range of the detected frame it
+    // overlaps most, its edits kept; the detected frame is not doubled.
+    {
+        std::vector<SoundFrame> p2 = prev;
+        p2[3].trimmed = false;
+        p2[3].db = -4.0;
+        const std::vector<SoundFrame> o2 = MergeHandFrames(det, p2);
+        CHECK(o2.size() == 8);
+        bool moved = false;
+        for (const SoundFrame& f : o2)
+            if (f.hand && Near(f.start, 3.75) && Near(f.length, 0.4) && Near(f.db, -4.0)) moved = true;
+        CHECK(moved);
+        // Two never-trimmed hand frames over one detected frame: taking it would overlap the other one, so both keep
+        // their own range (and the detected frame is dropped as before).
+        std::vector<SoundFrame> p3(2), d3(1);
+        p3[0].start = 1.0;
+        p3[0].length = 0.3;
+        p3[0].hand = true;
+        p3[1].start = 1.35;
+        p3[1].length = 0.3;
+        p3[1].hand = true;
+        d3[0].start = 0.95;
+        d3[0].length = 0.8;
+        const std::vector<SoundFrame> o3 = MergeHandFrames(d3, p3);
+        CHECK(o3.size() == 2 && Near(o3[0].start, 1.0) && Near(o3[1].start, 1.35) && Near(o3[1].length, 0.3));
+        for (size_t i = 1; i < o3.size(); ++i) CHECK(o3[i - 1].start + o3[i - 1].length <= o3[i].start + 1e-9);
+    }
 
     // Takes: by index.
     std::vector<SoundFrame> takes_prev(3), takes_det(3);

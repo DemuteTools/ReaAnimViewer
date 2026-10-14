@@ -127,7 +127,10 @@ struct LengthRange {
 // parts); Switch: the preview child. An empty container: {0, 0}.
 LengthRange NodeLengthRange(const SoundStore& store, const SoundLibrary& lib, const std::string& uid);
 
-// Decision 7: a re-detection keeps the hand frames; detected frames overlapping one are dropped.
+// Decision 7: a re-detection keeps the hand frames; detected frames overlapping one are dropped. 13-62g review: a
+// hand frame not `trimmed` (its edges never moved by hand: a gain, fade, on / off or Normalize edit) takes the range
+// of the detected frame it overlaps most, its edits kept (none overlapping, or the range overlapping another hand
+// frame: its own range).
 // `by_index` (Takes mode, frame i = take i): a hand frame replaces the detected frame at its index.
 std::vector<SoundFrame> MergeHandFrames(const std::vector<SoundFrame>& detected,
                                         const std::vector<SoundFrame>& previous, bool by_index = false);

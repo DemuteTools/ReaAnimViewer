@@ -637,6 +637,16 @@ Fields FrameFields(const SoundFrame& fr)
     if (!fr.owners.empty()) f.push_back({"own", JoinEncoded(fr.owners)});  // 13-62
     if (!fr.edge_in.empty()) f.push_back({"ein", JoinNumbers(fr.edge_in)});  // 13-62g: piece edges moved by hand
     if (!fr.edge_out.empty()) f.push_back({"eout", JoinNumbers(fr.edge_out)});
+    // 13-62g review: their parts, while each is known (one per edge, none empty; else adopted again on refresh).
+    auto known = [](const std::vector<double>& e, const std::vector<std::string>& p) {
+        if (e.empty() || p.size() != e.size()) return false;
+        for (const std::string& v : p)
+            if (v.empty()) return false;
+        return true;
+    };
+    if (known(fr.edge_in, fr.edge_in_part)) f.push_back({"einp", JoinEncoded(fr.edge_in_part)});
+    if (known(fr.edge_out, fr.edge_out_part)) f.push_back({"eoutp", JoinEncoded(fr.edge_out_part)});
+    if (fr.trimmed) f.push_back({"trim", "1"});  // 13-62g review: its own edges trimmed by hand
     return f;
 }
 
@@ -661,6 +671,9 @@ Got SetFrame(SoundFrame& fr, const std::string& k, const std::string& v)
     if (k == "own") return G(SplitDecoded(v, &fr.owners));    // 13-62: who owns each piece
     if (k == "ein") return G(SplitNumbers(v, &fr.edge_in));   // 13-62g: piece edges moved by hand
     if (k == "eout") return G(SplitNumbers(v, &fr.edge_out));
+    if (k == "einp") return G(SplitDecoded(v, &fr.edge_in_part));  // 13-62g review
+    if (k == "eoutp") return G(SplitDecoded(v, &fr.edge_out_part));
+    if (k == "trim") return G(ReadFlag(v, &fr.trimmed));
     if (k.size() > 4 && k.compare(0, 4, "pdb.") == 0) {  // 13-28: a part's gain, pdb.<value uid>
         std::string uid;
         double      db = 0.0;

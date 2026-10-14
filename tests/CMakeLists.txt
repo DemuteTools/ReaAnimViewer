@@ -161,7 +161,8 @@ add_test(NAME sound_record COMMAND sound_record_test)
 
 # Epic 13 -- one target per pure module (13-2 placeholders; each wave story replaces its own test).
 # Story 13-3 -- src/sound_entries.h
-add_executable(sound_entries_test sound_entries_test.cpp ../src/sound_entries.cpp ../src/sound_draw.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+add_executable(sound_entries_test sound_entries_test.cpp ../src/sound_entries.cpp ../src/sound_draw.cpp ../src/sound_record.cpp ../src/rule_record.cpp
+               ../src/sound_audition_plan.cpp ../src/sound_place_plan.cpp ../src/sound_switch.cpp)  # 13-62g review: MergeHandFrames (re-detection)
 target_include_directories(sound_entries_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_entries COMMAND sound_entries_test)
 

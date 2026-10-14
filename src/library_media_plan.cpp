@@ -86,6 +86,7 @@ NewNodeSpec SoundSpecFor(const MediaPick& pick)
         d.mode = DetectMode::Silence;
         SoundFrame f = pick.frame;
         f.hand = true;
+        f.trimmed = true;  // 13-62g review: a slice picked by hand keeps its range
         d.frames = {f};
         d.edited = true;
     } else if (!pick.frames.empty()) {

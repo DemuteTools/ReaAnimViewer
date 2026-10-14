@@ -1401,6 +1401,59 @@ void TestPartSyncAndMargins()
     CHECK(FrameClips(clip, 0, pk));
 }
 
+// 13-62 review (lot E1): the swipe snap over every variation, the "nothing changes" check, the comp click's
+// decision, the owners exposed for the first cut drag.
+void TestCompGestures()
+{
+    PeakData  pk;
+    SoundData d = Divided(&pk);
+    d.mode = DetectMode::TakeMarkers;
+    RefreshParts(d, &pk);
+    // SnapSpanEdge: a cut, a frame edge, a zone edge, else t unchanged.
+    CHECK(Near(SnapSpanEdge(d, 1.143, 0.005), 1.145) && Near(SnapSpanEdge(d, 0.998, 0.005), 1.0));
+    CHECK(Near(SnapSpanEdge(d, 1.25, 0.005), 1.25) && Near(SnapSpanEdge(d, 1.25, 0.0), 1.25));
+    {
+        SoundData z = d;
+        CHECK(ExcludeRange(z, 0, 1.2, 1.25));
+        CHECK(Near(SnapSpanEdge(z, 1.248, 0.005), 1.25) && Near(SnapSpanEdge(z, 1.203, 0.005), 1.2));
+    }
+    // SameEditPieces: a write that changes only hidden state (owners filled as shown) is "the same".
+    {
+        SoundData o = d;
+        CHECK(SameEditPieces(o, d));
+        o.frames[0].owners = LegacyOwners(o, o.frames[0]);
+        CHECK(!OwnersSane(d, d.frames[0]) && OwnersSane(o, o.frames[0]) && SameEditPieces(o, d));
+        CHECK(AssignRange(o, 0, 1.3, 1.4, kBack) && !SameEditPieces(o, d));
+        SoundData x = d;
+        CHECK(ExcludeRange(x, 0, 1.2, 1.25) && !SameEditPieces(x, d));
+    }
+    // PlanCompClick. A Split lane on another part's range: select the lane, take the range.
+    CompClickPlan c = PlanCompClick(d, 0, 1.2, kBack, false, false);
+    CHECK(c.on_piece && c.piece.index == 1 && c.set_part && c.part == kBack && c.take);
+    // Its own range: selected, not taken (it plays); with Ctrl: never taken.
+    c = PlanCompClick(d, 0, 1.2, kFront, false, false);
+    CHECK(c.on_piece && c.set_part && c.part == kFront && !c.take);
+    CHECK(!PlanCompClick(d, 0, 1.2, kBack, true, false).take);
+    // An excluded range on a lane: taken (included again).
+    {
+        SoundData x = d;
+        CHECK(ExcludeRange(x, 0, 1.2, 1.25));
+        c = PlanCompClick(x, 0, 1.22, kFront, false, false);
+        CHECK(c.on_piece && c.piece.excluded && c.take && c.part == kFront);
+        // Combined / the strip on it: the part kept (nothing to select).
+        c = PlanCompClick(x, 0, 1.22, "", false, false);
+        CHECK(c.on_piece && !c.set_part && !c.take);
+    }
+    // Combined / the strip: the part under the click; outside every variation: the Sound.
+    c = PlanCompClick(d, 0, 1.05, "", false, false);
+    CHECK(c.on_piece && c.set_part && c.part == kBack && !c.take);
+    c = PlanCompClick(d, -1, 5.0, "", false, true);
+    CHECK(!c.on_piece && c.set_part && c.part.empty() && !c.take);
+    // A lane click outside the variations: the lane selected, nothing taken.
+    c = PlanCompClick(d, -1, 5.0, kBack, false, true);
+    CHECK(!c.on_piece && c.set_part && c.part == kBack && !c.take);
+}
+
 void TestComping()
 {
     PeakData  pk;
@@ -1480,6 +1533,15 @@ void TestComping()
         CHECK(ExcludeRange(h, 0, 1.35, 2.0) && Near(h.zones.back().start + h.zones.back().length, 1.4));
         CHECK(AssignRange(h, 0, 1.37, 1.4, kFront) && h.zones.size() == 1 && Near(h.zones[0].length, 0.02));
         CHECK(!ExcludeRange(h, 0, 1.5, 2.0) && !ExcludeRange(h, 7, 1.0, 1.1));
+        // Review: a range already excluded whole writes nothing (no undo point); one partly played still does.
+        {
+            SoundData x = h;
+            CHECK(!ExcludeRange(x, 0, 1.352, 1.368) && x.zones.size() == h.zones.size());
+            CHECK(ExcludeRange(x, 0, 1.36, 1.4));
+            SoundData off = d;
+            off.frames[0].on = false;
+            CHECK(!ExcludeRange(off, 0, 1.2, 1.3) && off.zones.empty());
+        }
         // A legacy "-> value" zone inside the range no longer overrides the new owner.
         SoundData z = d;
         CHECK(AddZone(z, 1.2, 0.02, kBack) && AssignRange(z, 0, 1.15, 1.25, kFront) && z.zones.empty());
@@ -1752,6 +1814,7 @@ int main()
     TestPartNormalize();
     TestPartSyncAndMargins();
     TestComping();
+    TestCompGestures();
     TestCompingReview();
     TestSyncSliced();
     TestOnsetsAndCuts();

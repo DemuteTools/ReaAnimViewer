@@ -121,15 +121,15 @@ struct WaveformEvents {
     bool   zone_live = false, zone_done = false;  // a zone being selected (a horizontal drag)
     double zone_start = 0.0, zone_len = 0.0;
     // 13-62 (Split comping, decision 9). `lane`: where the click / drag / right-click began: a Split lane (its
-    // part's index), -1 the Combined waveform or its ribbon, -2 Split's "Placed" comp strip.
+    // part's index), -1 the Combined waveform, its ribbon or the ruler, -2 Split's "Placed" comp strip.
     int    lane = -1;
-    // A horizontal drag on a Split lane (a swipe: [span_a, span_b] goes to `lane`'s part) or an Alt+drag in
-    // either view (`span_alt`: the span is excluded); its edges snapped to a cut, a variation's or a zone's
-    // edge within 6 px. Done = released (write it).
+    // A horizontal drag past 8 px on a Split lane (a swipe: [span_a, span_b] goes to `lane`'s part) or an
+    // Alt+drag on a divided Sound in either view (`span_alt`: the span is excluded); its edges snapped to a cut,
+    // a variation's or a zone's edge within 6 px (SnapSpanEdge). Done = released (write it).
     bool   span_done = false, span_alt = false;
     double span_a = 0.0, span_b = 0.0;
-    // Split: the lane header column on the left of the lanes (C6: 116 px, 64 px when the lanes are under
-    // 420 px wide: name + M + S only), each lane's top and height, the comp strip's rows; the caller draws the
+    // Split: the lane header column on the left of the lanes (C6 as the mockup: 116 px, 112 px when the lanes
+    // are under 420 px wide: no range slider), each lane's top and height, the comp strip's rows; the caller draws the
     // headers there (PartLaneHeader). head_w 0 = no column (Combined).
     float  head_x = 0.0f, head_w = 0.0f;
     bool   head_narrow = false;

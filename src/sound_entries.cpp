@@ -586,8 +586,6 @@ constexpr double kMinPiece = 0.004;  // 13-62: a comped piece is at least 4 ms (
 
 }  // namespace
 
-namespace {
-
 // 13-62: the frame's owners give each piece between its cuts a divide value.
 bool OwnersSane(const SoundData& data, const SoundFrame& f)
 {
@@ -606,6 +604,8 @@ std::vector<std::string> LegacyOwners(const SoundData& data, const SoundFrame& f
     for (size_t k = 0; k <= f.cuts.size(); ++k) out.push_back(data.divide_values[std::min(k, n - 1)]);
     return out;
 }
+
+namespace {
 
 // Where a variation's pieces start and end: its edges, its cuts (divided) and the zones' edges inside it,
 // sorted.
@@ -1813,10 +1813,73 @@ bool ExcludeRange(SoundData& data, int variation, double a, double b)
 {
     if (!ValidIndex(data, variation) || !std::isfinite(a) || !std::isfinite(b)) return false;
     const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    if (!f.on) return false;  // 13-62 review: an off variation is excluded whole already
     if (a > b) std::swap(a, b);
     a = std::max(a, f.start);
     b = std::min(b, FrameEnd(f));
-    return b > a && AddZone(data, a, b - a, std::string());
+    if (!(b > a)) return false;
+    // 13-62 review: nothing played left in [a, b] (already excluded): nothing to write, no undo point.
+    bool played = false;
+    for (const EditPiece& p : EditPiecesOf(data, variation))
+        if (!p.excluded && std::min(b, p.start + p.length) - std::max(a, p.start) > 1e-4) played = true;
+    return played && AddZone(data, a, b - a, std::string());
+}
+
+double SnapSpanEdge(const SoundData& data, double t, double tolerance_s)
+{
+    if (!std::isfinite(t)) return t;
+    const double tol = std::isfinite(tolerance_s) ? std::max(tolerance_s, 0.0) : 0.0;
+    double       best = t, best_d = tol;
+    auto         consider = [&](double c) {
+        const double d = std::fabs(c - t);
+        if (c != t && d <= best_d) {
+            best_d = d;
+            best = c;
+        }
+    };
+    for (size_t i = 0; i < data.frames.size(); ++i) consider(SnapToCut(data, static_cast<int>(i), t, tol));
+    for (const SoundZone& z : data.zones) {
+        consider(z.start);
+        consider(z.start + z.length);
+    }
+    return best;
+}
+
+bool SameEditPieces(const SoundData& a, const SoundData& b)
+{
+    if (a.frames.size() != b.frames.size()) return false;
+    for (size_t i = 0; i < a.frames.size(); ++i) {
+        const std::vector<EditPiece> pa = EditPiecesOf(a, static_cast<int>(i)), pb = EditPiecesOf(b, static_cast<int>(i));
+        if (pa.size() != pb.size()) return false;
+        for (size_t k = 0; k < pa.size(); ++k)
+            if (std::fabs(pa[k].start - pb[k].start) > 1e-9 || std::fabs(pa[k].length - pb[k].length) > 1e-9 ||
+                pa[k].owner != pb[k].owner || pa[k].excluded != pb[k].excluded)
+                return false;
+    }
+    return true;
+}
+
+CompClickPlan PlanCompClick(const SoundData& data, int variation, double t, const std::string& lane_value, bool ctrl,
+                            bool clicked_empty)
+{
+    CompClickPlan plan;
+    if (variation >= 0)
+        for (const EditPiece& p : EditPiecesOf(data, variation))
+            if (t >= p.start && t < p.start + p.length) {
+                plan.on_piece = true;
+                plan.piece = p;
+            }
+    if (!lane_value.empty()) {  // a Split lane: its part, and a range it does not own taken whole
+        plan.set_part = true;
+        plan.part = lane_value;
+        plan.take = plan.on_piece && !ctrl && (plan.piece.excluded || plan.piece.owner != lane_value);
+    } else if (plan.on_piece && !plan.piece.excluded) {  // Combined / the comp strip: the part under the click
+        plan.set_part = true;
+        plan.part = plan.piece.owner;
+    } else if (clicked_empty) {  // outside every variation: the Sound
+        plan.set_part = true;
+    }
+    return plan;
 }
 
 

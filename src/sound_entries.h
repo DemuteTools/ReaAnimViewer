@@ -323,9 +323,32 @@ bool AssignRange(SoundData& data, int variation, double a, double b, const std::
 // of the variation within `tolerance_s` of `t`, else `t` (the swipe's 6 px snap: so a swipe started next
 // to an excluded stretch leaves no sliver).
 double SnapToCut(const SoundData& data, int variation, double t, double tolerance_s);
-// Excludes [a, b] of the variation (AddZone with "", clipped to the frame). False when that leaves 1 ms or
-// less or the index is bad.
+// Excludes [a, b] of the variation (AddZone with "", clipped to the frame). False (nothing written) when that
+// leaves 1 ms or less, the index is bad, the variation is off or nothing in [a, b] is played (already excluded).
 bool ExcludeRange(SoundData& data, int variation, double a, double b);
+// The frame's owners give each of its pieces between cuts a divide value (one more than its cuts, each a
+// divide value); LegacyOwners = what the legacy rule gives them (piece k -> divide_values[min(k, n - 1)]).
+bool OwnersSane(const SoundData& data, const SoundFrame& f);
+std::vector<std::string> LegacyOwners(const SoundData& data, const SoundFrame& f);
+// The swipe's / Alt+drag's edge (decision 9): the nearest cut or edge of any variation (SnapToCut) or any zone
+// edge within `tolerance_s` of `t`, else `t`.
+double SnapSpanEdge(const SoundData& data, double t, double tolerance_s);
+// Whether the two show the same Edit pieces (EditPiecesOf of every variation: bounds, owners, exclusions): a
+// gesture that leaves them alike writes nothing (no undo point).
+bool SameEditPieces(const SoundData& a, const SoundData& b);
+// What a click on a divided Sound's waveform in Edit does (decisions 1, 9): `lane_value` = the Split lane's
+// part ("" on the Combined waveform or the comp strip). The piece under `t` of the variation selected; on a
+// lane its part selected and a range it does not own (another part's or excluded) taken whole (`take`; never
+// with Ctrl); elsewhere the part under the click selected, outside every variation the Sound ("").
+struct CompClickPlan {
+    bool        on_piece = false;
+    EditPiece   piece;
+    bool        set_part = false;  // the selected part becomes `part`
+    std::string part;
+    bool        take = false;      // [piece.start, its end] goes to `part`
+};
+CompClickPlan PlanCompClick(const SoundData& data, int variation, double t, const std::string& lane_value, bool ctrl,
+                            bool clicked_empty);
 
 // ---- 13-20 / 13-23 / 13-25 part C: what the Edit window shows and its role gestures ------------------
 

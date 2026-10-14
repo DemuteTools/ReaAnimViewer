@@ -88,6 +88,12 @@ struct PanelState {
     int                   media_scc = -1;
     SoundSource           media_src;
     SoundMedia            media;
+    // 13-51 review (File Sound): the watched file's date + size when the media was read, when the disk
+    // was last asked, and the length cache's generation then (a file renamed back or re-rendered
+    // outside REAPER refreshes the panel within a second).
+    FileVersion           media_ver;
+    double                media_checked_s = 0.0;
+    uint64_t              media_len_gen = 0;
     // A live sound edit: `draft` is shown instead of the store until it is written.
     bool                  live = false;
     std::string           draft_uid;
@@ -296,14 +302,52 @@ bool SameSource(const SoundSource& a, const SoundSource& b)
     return a.kind == b.kind && a.item_guid == b.item_guid && a.asset.last_path == b.asset.last_path;
 }
 
+// The file a File Sound's panel watches: the one read, else (missing) its last path.
+std::string WatchedFile(const SoundMedia& m, const SoundSource& src)
+{
+    if (src.kind != SoundSourceKind::File) return {};
+    return m.ok ? m.path : src.asset.last_path;
+}
+
+double PanelNowSeconds()
+{
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 const SoundMedia& MediaOf(const SoundNode& n)
 {
     const int scc = GetProjectStateChangeCount(nullptr);
-    if (P.media_uid != n.uid || P.media_scc != scc || !SameSource(P.media_src, n.sound.source)) {
+    bool      reread = P.media_uid != n.uid || P.media_scc != scc || !SameSource(P.media_src, n.sound.source);
+    // 13-51 review: a File Sound's file changed outside REAPER (renamed back, re-rendered with another
+    // length) or its cached length was dropped (the peak cache saw a change): read it again. Only the
+    // shown Sound, the disk asked at most once a second.
+    if (!reread && n.sound.source.kind == SoundSourceKind::File) {
+        if (P.media_len_gen != SourceLengthGeneration()) {
+            reread = true;
+        } else {
+            const double now = PanelNowSeconds();
+            if (FileRecheckDue(P.media_checked_s, now)) {
+                P.media_checked_s = now;
+                const std::string f = WatchedFile(P.media, n.sound.source);
+                if (FileReadStale(P.media_ver, SourceFileVersion(f))) {
+                    ForgetSourceFileLength(f);  // its length is read again
+                    reread = true;
+                }
+            }
+        }
+    }
+    if (reread) {
         P.media_uid = n.uid;
         P.media_scc = scc;
         P.media_src = n.sound.source;
+        const bool        file = n.sound.source.kind == SoundSourceKind::File;
+        const std::string last = file ? n.sound.source.asset.last_path : std::string();
+        const FileVersion before = SourceFileVersion(last);  // before the read: a write during it is seen after
         ReadSoundMedia(n.sound.source, &P.media);
+        const std::string watched = WatchedFile(P.media, n.sound.source);
+        P.media_ver = watched == last ? before : SourceFileVersion(watched);
+        P.media_len_gen = SourceLengthGeneration();
+        P.media_checked_s = PanelNowSeconds();
     }
     return P.media;
 }

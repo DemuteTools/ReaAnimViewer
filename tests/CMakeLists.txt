@@ -217,7 +217,7 @@ add_executable(sound_assign_test sound_assign_test.cpp ../src/sound_assign.cpp .
 target_include_directories(sound_assign_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_assign COMMAND sound_assign_test)
 # Story 13-9 -- src/sound_follow_plan.h
-add_executable(sound_follow_plan_test sound_follow_plan_test.cpp ../src/sound_follow_plan.cpp ../src/sound_record.cpp ../src/rule_record.cpp ../src/sound_draw.cpp ../src/sound_entries.cpp ../src/event_list.cpp ../src/tagging_signal.cpp ../src/auto_detect.cpp ../src/motion_physics.cpp ../src/bone_events.cpp)
+add_executable(sound_follow_plan_test sound_follow_plan_test.cpp ../src/sound_follow_plan.cpp ../src/reaper_item_read.cpp ../src/sound_record.cpp ../src/rule_record.cpp ../src/sound_draw.cpp ../src/sound_entries.cpp ../src/event_list.cpp ../src/tagging_signal.cpp ../src/auto_detect.cpp ../src/motion_physics.cpp ../src/bone_events.cpp)
 target_include_directories(sound_follow_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_follow_plan COMMAND sound_follow_plan_test)
 # Story 13-11 -- src/ravlib.h

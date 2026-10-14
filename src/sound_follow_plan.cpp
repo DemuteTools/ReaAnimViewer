@@ -11,6 +11,7 @@
 #include <sstream>
 
 #include "event_list.h"
+#include "reaper_item_read.h"  // SameGuid (13-51)
 #include "rule_record.h"
 #include "sound_draw.h"
 #include "sound_record.h"
@@ -430,14 +431,7 @@ void FollowPlacement(SoundPlacement& p, const FollowEvent& ev, const FollowInput
 
 bool SameFollowGuid(const std::string& a, const std::string& b)
 {
-    if (a.size() != b.size() || a.empty()) return false;
-    for (size_t i = 0; i < a.size(); ++i) {
-        char x = a[i], y = b[i];
-        if (x >= 'a' && x <= 'z') x = static_cast<char>(x - 32);
-        if (y >= 'a' && y <= 'z') y = static_cast<char>(y - 32);
-        if (x != y) return false;
-    }
-    return true;
+    return SameGuid(a, b);  // reaper_item_read.h (host-safe part)
 }
 
 uint64_t FollowGuidHash(const std::string& guid)

@@ -5,7 +5,7 @@
 // and size did not. A parse the video thread started BEFORE that eviction still holds the
 // texture-less model: it must not be stored back once it finishes. Each eviction bumps the
 // path's generation; a parse remembers the generation it started at and is stored only if it is
-// still the same. Pure, header-only, host-tested (tests/evict_generation_test.cpp); the caller
+// still the same. Pure, header-only, host-tested (tests/read_robustness_test.cpp); the caller
 // holds its own lock around every call.
 
 #pragma once

@@ -2,7 +2,7 @@
 //
 // When a cached read of a file must be done again (13-51, for 13-7b's peak cache): a file
 // re-rendered at the same path, or one that could not be read and is now there. Pure,
-// header-only, host-tested (tests/file_change_check_test.cpp).
+// header-only, host-tested (tests/read_robustness_test.cpp).
 //
 // One version of a file = its date and size (both zero when it cannot be read). A cached entry
 // keeps the version read BEFORE its file was read, so a write during the read is seen as a change

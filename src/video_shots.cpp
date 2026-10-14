@@ -5,6 +5,7 @@
 #include "video_shots.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -294,12 +295,28 @@ bool ReadVideoFxState(MediaTrack* track, int fx, VideoFxState* out)
     // 13-51: the small buffer, then the large one when the small came back full OR REAPER said
     // false (it may refuse a buffer too small instead of cutting the text). Two calls at most:
     // the panel reads this every frame.
+    // 13-51 review: when the large try failed too, the same FX skips it for about a second, so a
+    // failing per-frame read does not allocate 4 MB every frame.
     static const std::vector<int> sizes = {kChunkBufferSmall, kChunkBufferLarge};
-    std::string                   b64;
+    static const std::vector<int> small_only = {kChunkBufferSmall};
+    static MediaTrack*            failed_track = nullptr;
+    static int                    failed_fx = -1;
+    static std::chrono::steady_clock::time_point failed_at{};
+    const auto now = std::chrono::steady_clock::now();
+    const bool skip_large = failed_track == track && failed_fx == fx && now >= failed_at &&
+                            now - failed_at < std::chrono::seconds(1);
+    std::string b64;
     if (!ReadGrowingText(
             [&](char* buf, int size) { return TrackFX_GetNamedConfigParm(track, fx, "clap_chunk", buf, size); },
-            sizes, &b64))
+            skip_large ? small_only : sizes, &b64)) {
+        if (!skip_large) {
+            failed_track = track;
+            failed_fx = fx;
+            failed_at = now;
+        }
         return false;
+    }
+    if (failed_track == track && failed_fx == fx) failed_track = nullptr;
     const std::string bytes = Base64Decode(b64.c_str());
     return ParseVideoFxState(bytes.data(), bytes.size(), out);
 }

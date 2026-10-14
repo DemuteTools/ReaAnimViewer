@@ -10,6 +10,7 @@
 #include <map>
 
 #include "item_rules.h"
+#include "reaper_item_read.h"  // ItemGuidOf (13-51)
 #include "sound_model.h"
 #include "sound_place.h"
 #include "sound_project.h"
@@ -26,14 +27,6 @@ std::string Upper(const std::string& s)
     for (char& c : u)
         if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 32);
     return u;
-}
-
-std::string GuidOf(MediaItem* item)
-{
-    char buf[128] = {};
-    if (!item || !GetSetMediaItemInfo_String(item, "GUID", buf, false)) return {};
-    buf[sizeof(buf) - 1] = '\0';
-    return buf;
 }
 
 // A take key's text ("" when none). The records are at most 1 MB (item_rules.h, sound_project.h).
@@ -82,7 +75,7 @@ bool Gather(MediaItem* item, Gathered* g)
         MediaItem_Take* take = RavTakeOf(it);
         if (!take) continue;
         ClearTarget t;
-        t.guid = GuidOf(it);
+        t.guid = ItemGuidOf(it);  // reaper_item_read.h
         t.rules_raw = TakeText(take, kItemRulesKey);
         t.committed_raw = TakeText(take, kItemRulesCommittedKey);
         t.sounds_raw = TakeText(take, kItemSoundsKey);
@@ -100,7 +93,7 @@ bool Gather(MediaItem* item, Gathered* g)
         std::string tag = ItemText(it, kPlacedTagKey);
         if (tag.empty()) continue;
         ClearTagged t;
-        t.guid = GuidOf(it);
+        t.guid = ItemGuidOf(it);  // reaper_item_read.h
         if (t.guid.empty()) continue;
         t.tag_raw = std::move(tag);
         g->tagged_items[Upper(t.guid)] = it;

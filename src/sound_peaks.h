@@ -12,10 +12,12 @@
 
 #ifdef _WIN32
 
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
 
+#include "file_change_check.h"
 #include "reaper_api.h"
 #include "sound_entries.h"
 #include "sound_model.h"
@@ -36,6 +38,13 @@ enum class PeakState { Ready, Building, Failed };
 PeakState RequestPeaks(const std::string& path, PeakData* out);
 // The file's length in seconds (0 when it does not open). Cached.
 double SourceFileLength(const std::string& path);
+// 13-51 review: the file's date and size (both zero when it cannot be read), for a caller that keeps
+// what it read of the file (the Sound panel) and asks again at most once a second.
+FileVersion SourceFileVersion(const std::string& path);
+// Drops the cached length of `path` (the file changed on disk: its length is read again).
+void ForgetSourceFileLength(const std::string& path);
+// Bumped each time a cached length is dropped (by ForgetSourceFileLength or the peak cache's check).
+uint64_t SourceLengthGeneration();
 
 // What the panel reads of a Sound's media.
 struct SoundMedia {

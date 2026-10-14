@@ -23,6 +23,7 @@
 #include "event_list.h"
 #include "item_rules.h"
 #include "reaper_api.h"
+#include "reaper_item_read.h"  // ItemGuidOf (13-51)
 #include "shortcuts.h"  // LoadPrefFloat / SavePrefFloat
 #include "tagging_session.h"
 
@@ -208,16 +209,6 @@ std::string AddProjectMarker(double pos, const std::string& name, int color, Rea
             return MarkerGuid(m, proj);
     }
     return "";
-}
-
-// The item's GUID ("" when it cannot be read).
-std::string ItemGuidOf(MediaItem* item)
-{
-    if (!item) return "";
-    char buf[128] = {};
-    if (!GetSetMediaItemInfo_String(item, "GUID", buf, false)) return "";
-    buf[sizeof(buf) - 1] = '\0';
-    return buf;
 }
 
 // Removes from `existing` the markers this run wrote (they are RAV's, not foreign).

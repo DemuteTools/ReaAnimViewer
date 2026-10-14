@@ -67,6 +67,7 @@ uint64_t                     g_tick = 0;
 std::chrono::steady_clock::time_point g_win_start{};
 double                                g_win_spent = 0.0;
 std::map<std::string, double> g_len;
+uint64_t                      g_len_gen = 0;  // bumped when a g_len entry is dropped
 
 double NowSeconds()
 {
@@ -204,7 +205,7 @@ PeakState RequestPeaks(const std::string& path, PeakData* out)
             it->second.checked_s = now;
             if (FileReadStale(it->second.version, VersionOf(path))) {
                 g_cache.erase(it);
-                g_len.erase(path);
+                if (g_len.erase(path)) ++g_len_gen;
                 it = g_cache.end();
             }
         }
@@ -274,6 +275,21 @@ double SourceFileLength(const std::string& path)
     }
     if (len > 0.0) g_len[path] = len;  // a missing file is looked for again (restored, located)
     return len;
+}
+
+FileVersion SourceFileVersion(const std::string& path)
+{
+    return path.empty() ? FileVersion{} : VersionOf(path);
+}
+
+void ForgetSourceFileLength(const std::string& path)
+{
+    if (g_len.erase(path)) ++g_len_gen;
+}
+
+uint64_t SourceLengthGeneration()
+{
+    return g_len_gen;
 }
 
 double ItemTakeGainDb(MediaItem* item, MediaItem_Take* take)

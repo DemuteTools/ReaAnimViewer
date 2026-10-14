@@ -70,15 +70,40 @@ bool ReadTakeExt(MediaItem_Take* take, const char* key, std::string* out)
 {
     out->clear();
     if (!take) return false;
+    static std::vector<char> buf(kItemRulesMaxBytes + 1, '\0');
+#ifdef RAV_ENABLE_CONSOLE_LOG
+    // 13-51 review (debuglog builds only): on the first take with a record, say which read REAPER
+    // answered and, for the pointer read, whether the _String read gives the same text.
+    static bool checked = false;
+#endif
     if (const char* p = static_cast<const char*>(GetSetMediaItemTakeInfo(take, key, nullptr))) {
         out->assign(p);
+#ifdef RAV_ENABLE_CONSOLE_LOG
+        if (!checked && !out->empty()) {
+            checked = true;
+            if (out->size() < kItemRulesMaxBytes) {
+                buf[0] = '\0';
+                const bool ok = GetSetMediaItemTakeInfo_String(take, key, buf.data(), false);
+                buf[kItemRulesMaxBytes] = '\0';
+                LogInfo("P_EXT read: pointer path used (%zu bytes); _String read %s", out->size(),
+                        !ok ? "refused" : (*out == buf.data() ? "gives the same text" : "gives a DIFFERENT text"));
+            } else {
+                LogInfo("P_EXT read: pointer path used (%zu bytes, too large to compare)", out->size());
+            }
+        }
+#endif
         return true;
     }
-    static std::vector<char> buf(kItemRulesMaxBytes + 1, '\0');
     buf[0] = '\0';
     if (!GetSetMediaItemTakeInfo_String(take, key, buf.data(), false)) return false;
     buf[kItemRulesMaxBytes] = '\0';
     out->assign(buf.data());
+#ifdef RAV_ENABLE_CONSOLE_LOG
+    if (!checked && !out->empty()) {
+        checked = true;
+        LogInfo("P_EXT read: pointer read gave nothing, _String path used (%zu bytes)", out->size());
+    }
+#endif
     return true;
 }
 

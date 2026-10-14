@@ -231,12 +231,6 @@ bool SetSyncSettings(SoundData& data, SyncMode mode, double offset_ms);
 bool AddZone(SoundData& data, double start, double length, const std::string& to);
 // Removes every excluded zone over source time `t` ("Include again"). False when none.
 bool IncludeAgain(SoundData& data, double t);
-// Moves cut `k` of variation `variation` by hand (kept between its neighbours and inside the frame, 1
-// ms apart): `cuts_hand` set, `cut_unsure` cleared. False when nothing moved.
-// 13-62 (C4): on a variation with owners, a cut dragged so a piece next to it would be under 4 ms removes
-// that piece and the cut (the piece on the other side takes its place); a legacy variation (no owners)
-// keeps the 1 ms clamp.
-bool MoveCut(SoundData& data, int variation, int k, double t);
 // Sets part `part`'s sync point by hand (clamped into its spans, 1 us inside an edge so a sync on a cut
 // belongs to one part only; part 0 when combined): its other hand
 // syncs go, `syncs[part]` follows. False for a bad index or an empty part. 13-54 review: a hand sync
@@ -312,13 +306,6 @@ struct EditPiece {
 // The unmerged pieces of a variation in time order (excluded ones included, flagged); {} for a bad index,
 // an empty or an off frame.
 std::vector<EditPiece> EditPiecesOf(const SoundData& data, int variation);
-// Comping (decision 9): gives [a, b] of the variation to part `value`: cuts at a and b when inside the
-// frame and not already there (an edge within 4 ms of a cut, a zone's edge or the frame's edge lands on it),
-// the owners of the pieces it covers = value, any zone coverage inside [a, b] removed (an excluded stretch
-// there is included again; a zone remnant under 4 ms outside [a, b] goes too). The variation's owners are filled first (from the legacy rule) when empty; the cuts
-// become hand cuts. False (nothing changed) when [a, b] inside the frame is under 4 ms, the value is not a
-// divide value, the frame is off, Takes mode, or nothing changed.
-bool AssignRange(SoundData& data, int variation, double a, double b, const std::string& value);
 // The nearest cut, frame edge or zone edge (an excluded / "-> value" zone's start or end inside the frame)
 // of the variation within `tolerance_s` of `t`, else `t` (the swipe's 6 px snap: so a swipe started next
 // to an excluded stretch leaves no sliver).
@@ -333,22 +320,6 @@ std::vector<std::string> LegacyOwners(const SoundData& data, const SoundFrame& f
 // The swipe's / Alt+drag's edge (decision 9): the nearest cut or edge of any variation (SnapToCut) or any zone
 // edge within `tolerance_s` of `t`, else `t`.
 double SnapSpanEdge(const SoundData& data, double t, double tolerance_s);
-// Whether the two show the same Edit pieces (EditPiecesOf of every variation: bounds, owners, exclusions): a
-// gesture that leaves them alike writes nothing (no undo point).
-bool SameEditPieces(const SoundData& a, const SoundData& b);
-// What a click on a divided Sound's waveform in Edit does (decisions 1, 9): `lane_value` = the Split lane's
-// part ("" on the Combined waveform or the comp strip). The piece under `t` of the variation selected; on a
-// lane its part selected and a range it does not own (another part's or excluded) taken whole (`take`; never
-// with Ctrl); elsewhere the part under the click selected, outside every variation the Sound ("").
-struct CompClickPlan {
-    bool        on_piece = false;
-    EditPiece   piece;
-    bool        set_part = false;  // the selected part becomes `part`
-    std::string part;
-    bool        take = false;      // [piece.start, its end] goes to `part`
-};
-CompClickPlan PlanCompClick(const SoundData& data, int variation, double t, const std::string& lane_value, bool ctrl,
-                            bool clicked_empty);
 
 // ---- 13-20 / 13-23 / 13-25 part C: what the Edit window shows and its role gestures ------------------
 

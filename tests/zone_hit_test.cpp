@@ -1,0 +1,341 @@
+// SPDX-License-Identifier: MIT
+//
+// Host test of src/zone_hit.h (13-62h Lot E1): the zone waveform's pure decisions -- hit testing (the mockup's
+// hitAt), what a press becomes (startDrag), the Shift+drag part, the ruler snap, our double-click, onDouble, the
+// tooltips, the Variations strip and the selection carried across a write.
+
+#include "sound_zones.h"
+#include "zone_hit.h"
+
+#include <cmath>
+#include <cstdio>
+#include <string>
+#include <vector>
+
+using namespace rav;
+
+namespace {
+
+int g_fails = 0;
+
+#define CHECK(c)                                             \
+    do {                                                     \
+        if (!(c)) {                                          \
+            std::printf("FAIL line %d: %s\n", __LINE__, #c); \
+            ++g_fails;                                       \
+        }                                                    \
+    } while (0)
+
+EditZone Z(const std::string& part, double a, double b)
+{
+    EditZone z;
+    z.part = part;
+    z.a = z.slot_a = a;
+    z.b = z.slot_b = b;
+    z.a_hand = z.b_hand = true;
+    return z;
+}
+
+EditZone G(double a, double b, double xl, double xr)
+{
+    EditZone g;
+    g.a = g.slot_a = a;
+    g.b = g.slot_b = b;
+    g.xl = xl;
+    g.xr = xr;
+    return g;
+}
+
+// Variation 1: Heel [0.10, 0.40] | Gap [0.40, 0.45] | Heel [0.45, 0.70] | Toe [0.70, 0.90] (butted);
+// variation 2: Toe [1.20, 1.60]. View 0..2 s over 2000 px: 1 px = 1 ms.
+SoundData Sample()
+{
+    SoundData d;
+    d.mode = DetectMode::Silence;
+    d.divide_group = "g";
+    d.divide_values = {"heel", "toe"};
+    SoundFrame f1;
+    f1.zones = {Z("heel", 0.10, 0.40), G(0.40, 0.45, 0.005, 0.005), Z("heel", 0.45, 0.70), Z("toe", 0.70, 0.90)};
+    f1.start = 0.10;
+    f1.length = 0.80;
+    SoundFrame f2;
+    f2.zones = {Z("toe", 1.20, 1.60)};
+    f2.start = 1.20;
+    f2.length = 0.40;
+    d.frames = {f1, f2};
+    return d;
+}
+
+ZoneHitView Lane(int lane, float h = 100.0f)
+{
+    ZoneHitView v;
+    v.v0 = 0.0;
+    v.vl = 2.0;
+    v.w = 2000.0f;
+    v.h = h;
+    v.row = ZoneRow::Lane;
+    v.lane = lane;
+    v.file_len = 2.0;
+    return v;
+}
+
+void TestHitLane()
+{
+    const SoundData d = Sample();
+    CHECK(ZonesProblem(d, 2.0).empty());
+    ZoneHitView v = Lane(-1);
+    // Inside the first Heel, top / bottom halves.
+    ZoneHit h = HitZones(d, v, 250.0f, 30.0f);
+    CHECK(h.kind == ZoneHitKind::Zone && h.z == (ZoneRef{0, 0}) && h.top);
+    h = HitZones(d, v, 250.0f, 70.0f);
+    CHECK(h.kind == ZoneHitKind::Zone && !h.top);
+    CHECK(std::fabs(h.t - 0.25) < 1e-9);
+    // Its start edge (no Gap there).
+    h = HitZones(d, v, 102.0f, 60.0f);
+    CHECK(h.kind == ZoneHitKind::Edge && h.z == (ZoneRef{0, 0}) && h.side < 0);
+    // A Gap's edge, not the zone's (held by the Gap).
+    h = HitZones(d, v, 400.0f, 60.0f);
+    CHECK(h.kind == ZoneHitKind::GapEdge && h.side < 0);
+    // A Gap's crossfade handles in the top band: a + xl, b - xr.
+    h = HitZones(d, v, 405.0f, 5.0f);
+    CHECK(h.kind == ZoneHitKind::Xf && h.side < 0);
+    h = HitZones(d, v, 445.0f, 5.0f);
+    CHECK(h.kind == ZoneHitKind::Xf && h.side > 0);
+    // Inside the Gap: the Gap.
+    h = HitZones(d, v, 425.0f, 60.0f);
+    CHECK(h.kind == ZoneHitKind::Zone && h.z == (ZoneRef{0, 1}));
+    // The cut grab between butted Heel | Toe at the bottom; higher up it is an edge.
+    h = HitZones(d, v, 700.0f, 95.0f);
+    CHECK(h.kind == ZoneHitKind::Cut && h.z == (ZoneRef{0, 2}) && h.z2 == (ZoneRef{0, 3}));
+    h = HitZones(d, v, 701.0f, 60.0f);
+    CHECK(h.kind == ZoneHitKind::Edge && h.z == (ZoneRef{0, 3}) && h.side < 0);  // the one the mouse is inside
+    // A fade handle: Heel 1's fade in (Sound default 1 ms) at 0.101.
+    h = HitZones(d, v, 101.0f, 5.0f);
+    CHECK(h.kind == ZoneHitKind::Fade && h.side < 0);
+    // Empty space.
+    h = HitZones(d, v, 1000.0f, 60.0f);
+    CHECK(h.kind == ZoneHitKind::None);
+    // Snap tag (no peaks: its start + the -2 ms offset, clamped into it: its start) in its band.
+    h = HitZones(d, v, 1201.0f, 30.0f);
+    CHECK(h.kind == ZoneHitKind::Snap && h.z == (ZoneRef{1, 0}));
+    // Lane view: the Toe lane sees the Heels greyed; Gaps everybody's.
+    ZoneHitView vt = Lane(1);
+    h = HitZones(d, vt, 250.0f, 60.0f);
+    CHECK(h.kind == ZoneHitKind::Grey && h.z == (ZoneRef{0, 0}));
+    h = HitZones(d, vt, 425.0f, 60.0f);
+    CHECK(h.kind == ZoneHitKind::Zone);
+    h = HitZones(d, vt, 102.0f, 60.0f);  // no edge of a greyed zone
+    CHECK(h.kind == ZoneHitKind::Grey);
+    CHECK(ZoneMine(d, ZoneRef{0, 3}, 1) && !ZoneMine(d, ZoneRef{0, 0}, 1) && ZoneMine(d, ZoneRef{0, 0}, -1));
+}
+
+void TestHitStrips()
+{
+    const SoundData d = Sample();
+    ZoneHitView     v = Lane(-1, 20.0f);
+    v.row = ZoneRow::Ruler;
+    ZoneHit h = HitZones(d, v, 500.0f, 10.0f);
+    CHECK(h.kind == ZoneHitKind::Ruler);
+    v.has_tsel = true;
+    v.ts_a = 0.2;
+    v.ts_b = 0.5;
+    h = HitZones(d, v, 203.0f, 10.0f);
+    CHECK(h.kind == ZoneHitKind::TselEdge && h.side < 0);
+    h = HitZones(d, v, 498.0f, 10.0f);
+    CHECK(h.kind == ZoneHitKind::TselEdge && h.side > 0);
+    v.row = ZoneRow::Vars;
+    h = HitZones(d, v, 300.0f, 10.0f);
+    CHECK(h.kind == ZoneHitKind::Var && h.var == 0);
+    h = HitZones(d, v, 1300.0f, 10.0f);
+    CHECK(h.kind == ZoneHitKind::Var && h.var == 1);
+    h = HitZones(d, v, 1000.0f, 10.0f);
+    CHECK(h.kind == ZoneHitKind::None);
+    v.row = ZoneRow::Placed;
+    h = HitZones(d, v, 800.0f, 5.0f);
+    CHECK(h.kind == ZoneHitKind::Pick && h.z == (ZoneRef{0, 3}));
+    const std::vector<ZoneVarBlock> b = ZoneVarBlocks(d);
+    CHECK(b.size() == 2 && std::fabs(b[0].a - 0.10) < 1e-9 && std::fabs(b[0].b - 0.90) < 1e-9 && b[1].frame == 1);
+    CHECK(ZoneVarLabel(1, 0.10, 0.90) == "1 \xC2\xB7 100\xE2\x80\x93" "900 ms");
+}
+
+void TestDrags()
+{
+    const SoundData d = Sample();
+    ZoneHit         h;
+    h.row = ZoneRow::Lane;
+    h.kind = ZoneHitKind::Zone;
+    h.z = {0, 0};
+    h.top = true;
+    CHECK(StartZoneDrag(h, false, false) == ZoneDragKind::Move);
+    h.top = false;
+    CHECK(StartZoneDrag(h, false, false) == ZoneDragKind::Scrub);
+    CHECK(StartZoneDrag(h, true, false) == ZoneDragKind::MkZone);
+    CHECK(StartZoneDrag(h, false, true) == ZoneDragKind::MkGap);
+    h.kind = ZoneHitKind::Grey;
+    CHECK(StartZoneDrag(h, false, false) == ZoneDragKind::Swipe);
+    h.kind = ZoneHitKind::None;
+    CHECK(StartZoneDrag(h, false, false) == ZoneDragKind::Scrub);  // empty space: the cursor (the mockup)
+    h.row = ZoneRow::Ruler;
+    h.kind = ZoneHitKind::Ruler;
+    CHECK(StartZoneDrag(h, true, true) == ZoneDragKind::Tsel);
+    h.row = ZoneRow::Vars;
+    CHECK(StartZoneDrag(h, false, false) == ZoneDragKind::None);
+    // Handles drag at the press; Ctrl / Alt reserved (but Alt on a crossfade handle = one side).
+    ZoneHit e;
+    e.kind = ZoneHitKind::Edge;
+    CHECK(PressDragKind(e, false, false) == ZoneDragKind::Edge);
+    CHECK(PressDragKind(e, false, true) == ZoneDragKind::Reserved);
+    CHECK(PressDragKind(e, true, false) == ZoneDragKind::Reserved);
+    e.kind = ZoneHitKind::Xf;
+    CHECK(PressDragKind(e, false, true) == ZoneDragKind::Xf);
+    e.kind = ZoneHitKind::Fade;
+    CHECK(PressDragKind(e, true, false) == ZoneDragKind::Reserved);
+    e.kind = ZoneHitKind::Zone;
+    CHECK(PressDragKind(e, false, false) == ZoneDragKind::Pending);
+    // Gain: vertical first on a part zone; never on a Gap or with Shift / Alt.
+    ZoneHit g;
+    g.row = ZoneRow::Lane;
+    g.kind = ZoneHitKind::Zone;
+    g.z = {0, 0};
+    CHECK(PendingBecomesGain(d, g, 1.0f, -5.0f, false, false));
+    CHECK(!PendingBecomesGain(d, g, 6.0f, -5.0f, false, false));
+    CHECK(!PendingBecomesGain(d, g, 0.0f, -2.0f, false, false));
+    CHECK(!PendingBecomesGain(d, g, 0.0f, -5.0f, true, false));
+    g.z = {0, 1};
+    CHECK(!PendingBecomesGain(d, g, 0.0f, -5.0f, false, false));
+    CHECK(std::fabs(GainDragDb(-15.0f) - 1.5) < 1e-9 && std::fabs(GainDragDb(20.0f) + 2.0) < 1e-9);
+}
+
+void TestNewPartAndSnap()
+{
+    const SoundData d = Sample();
+    ZoneHit         h;
+    h.lane = 1;
+    h.t = 0.2;
+    CHECK(NewZonePart(d, h, "heel") == "toe");  // Lane: the lane's part
+    h.lane = -1;
+    CHECK(NewZonePart(d, h, "toe") == "toe");    // Combined: Settings of
+    CHECK(NewZonePart(d, h, "") == "heel");      // else the zone under the start
+    h.t = 0.8;
+    CHECK(NewZonePart(d, h, "") == "toe");
+    h.t = 1.0;
+    CHECK(NewZonePart(d, h, "") == "heel");      // empty space: the first part
+    // Snap to a zone edge / the cursor within 6 px (1 px = 1 ms).
+    CHECK(std::fabs(SnapZoneTime(d, 0.403, 1000.0, -1.0, 6.0f) - 0.40) < 1e-9);
+    CHECK(std::fabs(SnapZoneTime(d, 1.0, 1000.0, -1.0, 6.0f) - 1.0) < 1e-9);
+    CHECK(std::fabs(SnapZoneTime(d, 1.004, 1000.0, 1.0, 6.0f) - 1.0) < 1e-9);
+}
+
+void TestDouble()
+{
+    ZoneTap tap;
+    CHECK(!ZoneDoubleTap(tap, "a", 1.0, 10.0f, 10.0f));
+    CHECK(ZoneDoubleTap(tap, "a", 1.2, 12.0f, 10.0f));
+    CHECK(!ZoneDoubleTap(tap, "a", 1.3, 12.0f, 10.0f));  // a third press starts again
+    CHECK(!ZoneDoubleTap(tap, "b", 1.4, 12.0f, 10.0f));  // another thing
+    CHECK(!ZoneDoubleTap(tap, "b", 2.0, 12.0f, 10.0f));  // too late
+    CHECK(!ZoneDoubleTap(tap, "b", 2.1, 30.0f, 10.0f));  // too far
+    ZoneHit h;
+    h.kind = ZoneHitKind::None;
+    CHECK(DoubleActionOf(h) == ZoneDoubleAction::RemoveTsel);
+    h.kind = ZoneHitKind::Ruler;
+    CHECK(DoubleActionOf(h) == ZoneDoubleAction::RemoveTsel);
+    h.kind = ZoneHitKind::Var;
+    CHECK(DoubleActionOf(h) == ZoneDoubleAction::TselVariation);
+    h.kind = ZoneHitKind::Zone;
+    CHECK(DoubleActionOf(h) == ZoneDoubleAction::TselZone);
+    h.kind = ZoneHitKind::Pick;
+    CHECK(DoubleActionOf(h) == ZoneDoubleAction::TselZone);
+    h.kind = ZoneHitKind::Edge;
+    CHECK(DoubleActionOf(h) == ZoneDoubleAction::ResetEdge);
+    h.kind = ZoneHitKind::Fade;
+    CHECK(DoubleActionOf(h) == ZoneDoubleAction::ResetFade);
+    h.kind = ZoneHitKind::Snap;
+    CHECK(DoubleActionOf(h) == ZoneDoubleAction::ResetSnap);
+    h.kind = ZoneHitKind::Cut;
+    CHECK(DoubleActionOf(h) == ZoneDoubleAction::None);
+    ZoneHit a, b;
+    a.kind = b.kind = ZoneHitKind::Zone;
+    a.z = {0, 0};
+    b.z = {0, 2};
+    CHECK(ZoneTapKey(a) != ZoneTapKey(b));
+    b.z = {0, 0};
+    b.t = 0.3;
+    CHECK(ZoneTapKey(a) == ZoneTapKey(b));
+}
+
+void TestTipsAndCursors()
+{
+    const SoundData                d = Sample();
+    const std::vector<std::string> names = {"Heel", "Toe"};
+    ZoneHit                        h;
+    h.row = ZoneRow::Lane;
+    h.kind = ZoneHitKind::Grey;
+    h.lane = 1;
+    h.z = {0, 0};
+    CHECK(ZoneTip(d, h, names, true) == "Played by Heel: click to give it to Toe; drag: swipe a range to Toe");
+    h.kind = ZoneHitKind::Zone;
+    h.top = true;
+    CHECK(ZoneTip(d, h, names, true).find("Click: select and play") != std::string::npos);
+    CHECK(ZoneTip(d, h, names, false).find("and play") == std::string::npos);
+    CHECK(ZoneCursorOf(h) == ZoneCursor::Grab);
+    h.top = false;
+    CHECK(ZoneCursorOf(h) == ZoneCursor::Text);
+    h.z = {0, 1};
+    CHECK(ZoneTip(d, h, names, true) == "Gap: drag to move it (its neighbours follow). Click: select");
+    CHECK(ZoneName(d, ZoneRef{0, 3}, names) == "Toe" && ZoneName(d, ZoneRef{0, 1}, names) == "Gap");
+    h.kind = ZoneHitKind::Edge;
+    h.z = {0, 0};
+    h.side = 1;
+    CHECK(ZoneTip(d, h, names, true) == "Heel end: drag (double-click: automatic, follows Tail)");
+    CHECK(ZoneCursorOf(h) == ZoneCursor::ResizeEW);
+    h.kind = ZoneHitKind::None;
+    CHECK(ZoneTip(d, h, names, true).find("Nothing placed here") == 0);
+    h.row = ZoneRow::Vars;
+    CHECK(ZoneTip(d, h, names, true).empty());
+}
+
+void TestSelection()
+{
+    SoundData d = Sample();
+    ZoneSel   sel;
+    SelToggle(sel, {0, 0});
+    SelToggle(sel, {0, 3});
+    CHECK(sel.size() == 2 && SelHas(sel, ZoneRef{0, 3}));
+    SelToggle(sel, {0, 0});
+    CHECK(sel.size() == 1 && !SelHas(sel, ZoneRef{0, 0}));
+    CHECK(SelValid(d, {{0, 9}, {0, 3}, {0, 3}}).size() == 1);
+    CHECK(SelFrames({{1, 0}, {0, 2}, {0, 3}}) == (std::vector<int>{0, 1}));
+    CHECK(ZonesOfFrame(d, 0).size() == 4 && FirstZoneOf(d, 0) == (ZoneRef{0, 0}) && FirstZoneOf(d, 1) == (ZoneRef{1, 0}));
+    CHECK(SelSorted(d, {{1, 0}, {0, 2}}) == (ZoneSel{{0, 2}, {1, 0}}));
+    // A write that removes the first Heel: the Toe selected stays itself at its new index.
+    SoundData before = d;
+    ZoneSel   del = {{0, 0}};
+    CHECK(DeleteZones(d, del, {}));
+    const ZoneSel kept = SelFollow(before, {{0, 3}}, d);
+    CHECK(kept.size() == 1 && ZoneOf(d, kept.front()) && ZoneOf(d, kept.front())->part == "toe" &&
+          std::fabs(ZoneOf(d, kept.front())->a - 0.70) < 1e-9);
+    // A zone gone: dropped.
+    CHECK(SelFollow(before, {{0, 0}}, d).empty());
+    CHECK(ZoneRangeMs(0.1, 0.25) == "100\xE2\x80\x93" "250 ms");
+    CHECK(ZoneDbText(1.54) == "+1.5 dB" && ZoneDbText(-3.0) == "-3.0 dB" && ZoneDbText(-0.01) == "0.0 dB");
+}
+
+}  // namespace
+
+int main()
+{
+    TestHitLane();
+    TestHitStrips();
+    TestDrags();
+    TestNewPartAndSnap();
+    TestDouble();
+    TestTipsAndCursors();
+    TestSelection();
+    if (g_fails) {
+        std::printf("zone_hit_test: %d failure(s)\n", g_fails);
+        return 1;
+    }
+    std::printf("zone_hit_test: all passed\n");
+    return 0;
+}

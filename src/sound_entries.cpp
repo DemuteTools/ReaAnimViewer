@@ -585,7 +585,7 @@ bool SaneCuts(const SoundFrame& f, std::vector<double>& cuts)
     return true;
 }
 
-constexpr double kMinPiece = 0.004;  // 13-62: a comped piece is at least 4 ms (AssignRange, MoveCut C4)
+constexpr double kMinPiece = 0.004;  // 13-62: a comped piece is at least 4 ms
 
 // 13-62h: the variation is edited as zones (a divided Sound, not Takes mode, with zones): the queries below read
 // its zones, never its cuts / owners / Sound-level zones.
@@ -1462,41 +1462,6 @@ bool IncludeAgain(SoundData& data, double t)
     return true;
 }
 
-bool MoveCut(SoundData& data, int variation, int k, double t)
-{
-    if (!ValidIndex(data, variation) || !std::isfinite(t)) return false;
-    if (ZonedFrame(data, variation)) return false;  // 13-62h: DragCut
-    SoundFrame& f = data.frames[static_cast<size_t>(variation)];
-    if (k < 0 || static_cast<size_t>(k) >= f.cuts.size()) return false;
-    const size_t i = static_cast<size_t>(k);
-    // 13-62 (C4): on a comped variation, a cut dragged so a piece next to it would be under 4 ms removes
-    // that piece and the cut; the piece on its other side takes the room.
-    if (OwnersSane(data, f)) {
-        const double left = i > 0 ? f.cuts[i - 1] : f.start, right = i + 1 < f.cuts.size() ? f.cuts[i + 1] : FrameEnd(f);
-        const double c = std::min(std::max(t, left), right);
-        const bool   left_small = c - left < kMinPiece, right_small = right - c < kMinPiece;
-        if (left_small || right_small) {
-            const bool drop_left = left_small && (!right_small || c <= f.cuts[i]);
-            f.cuts.erase(f.cuts.begin() + static_cast<std::ptrdiff_t>(i));
-            f.owners.erase(f.owners.begin() + static_cast<std::ptrdiff_t>(drop_left ? i : i + 1));
-            f.cuts_hand = true;
-            f.cut_unsure = false;
-            f.part_trims.clear();
-            return true;
-        }
-    }
-    const double lo = (i > 0 ? f.cuts[i - 1] : f.start) + kMinLen;
-    const double hi = (i + 1 < f.cuts.size() ? f.cuts[i + 1] : FrameEnd(f)) - kMinLen;
-    if (lo > hi) return false;
-    const double c = std::min(std::max(t, lo), hi);
-    if (std::fabs(c - f.cuts[i]) <= kTimeEps && f.cuts_hand) return false;
-    f.cuts[i] = c;
-    f.cuts_hand = true;
-    f.cut_unsure = false;
-    f.part_trims.clear();  // 13-54: measured again around the moved cut (RefreshOne)
-    return true;
-}
-
 bool MoveSync(SoundData& data, int variation, int part, double t)
 {
     if (!ValidIndex(data, variation) || !std::isfinite(t) || part < 0 || part >= PartCount(data)) return false;
@@ -1768,102 +1733,6 @@ std::vector<EditPiece> EditPiecesOf(const SoundData& data, int variation)
     return out;
 }
 
-bool AssignRange(SoundData& data, int variation, double a, double b, const std::string& value)
-{
-    if (!ValidIndex(data, variation) || data.mode == DetectMode::Takes || PartIndex(data, value) < 0 || !std::isfinite(a) ||
-        !std::isfinite(b))
-        return false;
-    if (ZonedFrame(data, variation)) return false;  // 13-62h: GiveZonesPart / NewZone
-    SoundFrame& f = data.frames[static_cast<size_t>(variation)];
-    if (!f.on) return false;
-    if (a > b) std::swap(a, b);
-    const double fs = f.start, fe = FrameEnd(f);
-    // An edge within 4 ms of a cut or the frame's edge lands on it (no sliver piece).
-    auto land = [&](double t) {
-        t = std::min(std::max(t, fs), fe);
-        double best = t, best_d = kMinPiece;
-        std::vector<double> marks = f.cuts;
-        marks.push_back(fs);
-        marks.push_back(fe);
-        for (const SoundZone& z : data.zones)  // 13-62 review: and a zone's edge inside the frame
-            for (double e : {z.start, z.start + z.length})
-                if (e > fs && e < fe) marks.push_back(e);
-        for (double m : marks)
-            if (std::fabs(m - t) < best_d) {
-                best_d = std::fabs(m - t);
-                best = m;
-            }
-        return best;
-    };
-    a = land(a);
-    b = land(b);
-    if (b - a < kMinPiece - kTimeEps) return false;
-    const SoundFrame             before = f;
-    const std::vector<SoundZone> zones_before = data.zones;
-    if (!OwnersSane(data, f)) f.owners = LegacyOwners(data, f);  // what PartAt shows now
-    // Cuts at a and b (each piece split keeps its owner on both sides).
-    for (double t : {a, b}) {
-        if (t <= fs + kTimeEps || t >= fe - kTimeEps) continue;
-        size_t k = 0;
-        while (k < f.cuts.size() && f.cuts[k] < t - kTimeEps) ++k;
-        if (k < f.cuts.size() && std::fabs(f.cuts[k] - t) <= kTimeEps) continue;
-        const std::string o = f.owners[k];
-        f.cuts.insert(f.cuts.begin() + static_cast<std::ptrdiff_t>(k), t);
-        f.owners.insert(f.owners.begin() + static_cast<std::ptrdiff_t>(k), o);
-    }
-    for (size_t k = 0; k < f.owners.size(); ++k) {
-        const double lo = k > 0 ? f.cuts[k - 1] : fs, hi = k < f.cuts.size() ? f.cuts[k] : fe;
-        const double mid = (lo + hi) * 0.5;
-        if (mid > a && mid < b) f.owners[k] = value;
-    }
-    // Zones lose what they cover inside [a, b] (an exclusion there is included again; a legacy "-> value"
-    // zone no longer overrides the new owner). 13-62 review: a remnant under 4 ms goes too (no sliver).
-    std::vector<SoundZone> zones;
-    for (const SoundZone& z : data.zones) {
-        const double zs = z.start, ze = z.start + z.length;
-        if (ze <= a + kTimeEps || zs >= b - kTimeEps) {
-            zones.push_back(z);
-            continue;
-        }
-        if (a - zs >= kMinPiece - kTimeEps) {
-            SoundZone l = z;
-            l.length = a - zs;
-            zones.push_back(l);
-        }
-        if (ze - b >= kMinPiece - kTimeEps) {
-            SoundZone r = z;
-            r.start = b;
-            r.length = ze - b;
-            zones.push_back(r);
-        }
-    }
-    data.zones = zones;
-    bool zones_same = zones.size() == zones_before.size();
-    for (size_t i = 0; zones_same && i < zones.size(); ++i)
-        zones_same = zones[i].start == zones_before[i].start && zones[i].length == zones_before[i].length &&
-                     zones[i].to == zones_before[i].to;
-    // No owner changes (a swipe over the lane's own part): left exactly as it was, no new cut, no undo point.
-    bool same = zones_same;
-    if (same) {
-        SoundData probe = data;
-        probe.frames[static_cast<size_t>(variation)] = before;
-        probe.zones = zones_before;
-        for (const EditPiece& p : EditPiecesOf(data, variation)) {
-            std::string was;
-            const bool  in = PartAt(probe, variation, p.start + p.length * 0.5, &was);
-            same = same && in == !p.excluded && (!in || was == p.owner);
-        }
-    }
-    if (same) {
-        f = before;
-        return false;
-    }
-    f.cuts_hand = true;
-    f.cut_unsure = false;
-    for (SoundFrame& x : data.frames) x.part_trims.clear();  // 13-54: the spans changed
-    return true;
-}
-
 double SnapToCut(const SoundData& data, int variation, double t, double tolerance_s)
 {
     if (!ValidIndex(data, variation) || !std::isfinite(t)) return t;
@@ -1918,44 +1787,6 @@ double SnapSpanEdge(const SoundData& data, double t, double tolerance_s)
     }
     return best;
 }
-
-bool SameEditPieces(const SoundData& a, const SoundData& b)
-{
-    if (a.frames.size() != b.frames.size()) return false;
-    for (size_t i = 0; i < a.frames.size(); ++i) {
-        const std::vector<EditPiece> pa = EditPiecesOf(a, static_cast<int>(i)), pb = EditPiecesOf(b, static_cast<int>(i));
-        if (pa.size() != pb.size()) return false;
-        for (size_t k = 0; k < pa.size(); ++k)
-            if (std::fabs(pa[k].start - pb[k].start) > 1e-9 || std::fabs(pa[k].length - pb[k].length) > 1e-9 ||
-                pa[k].owner != pb[k].owner || pa[k].excluded != pb[k].excluded)
-                return false;
-    }
-    return true;
-}
-
-CompClickPlan PlanCompClick(const SoundData& data, int variation, double t, const std::string& lane_value, bool ctrl,
-                            bool clicked_empty)
-{
-    CompClickPlan plan;
-    if (variation >= 0)
-        for (const EditPiece& p : EditPiecesOf(data, variation))
-            if (t >= p.start && t < p.start + p.length) {
-                plan.on_piece = true;
-                plan.piece = p;
-            }
-    if (!lane_value.empty()) {  // a Split lane: its part, and a range it does not own taken whole
-        plan.set_part = true;
-        plan.part = lane_value;
-        plan.take = plan.on_piece && !ctrl && (plan.piece.excluded || plan.piece.owner != lane_value);
-    } else if (plan.on_piece && !plan.piece.excluded) {  // Combined / the comp strip: the part under the click
-        plan.set_part = true;
-        plan.part = plan.piece.owner;
-    } else if (clicked_empty) {  // outside every variation: the Sound
-        plan.set_part = true;
-    }
-    return plan;
-}
-
 
 // ---- part C: what the Edit window shows and its role gestures -----------------------------------------
 

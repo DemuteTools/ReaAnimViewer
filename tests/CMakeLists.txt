@@ -338,3 +338,7 @@ add_test(NAME wave_tiles_plan COMMAND wave_tiles_plan_test)
 add_executable(sound_zones_test sound_zones_test.cpp ../src/sound_zones.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp ../src/normalize_presets.cpp)
 target_include_directories(sound_zones_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_zones COMMAND sound_zones_test)
+# 13-62h (Lot E1) -- src/zone_hit.h (the zone waveform's hit testing and gesture decisions).
+add_executable(zone_hit_test zone_hit_test.cpp ../src/zone_hit.cpp ../src/sound_zones.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp ../src/normalize_presets.cpp)
+target_include_directories(zone_hit_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME zone_hit COMMAND zone_hit_test)

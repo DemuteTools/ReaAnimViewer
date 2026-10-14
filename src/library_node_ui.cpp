@@ -42,6 +42,7 @@
 #include "reaper_api.h"
 #include "shortcuts.h"
 #include "view_nav.h"  // 13-45: Edit's wheel and zoom keys, as every timeline's
+#include "zone_wave_ui.h"  // 13-62h (Lot E1): a zoned Sound's waveform
 #include "sound_assign.h"  // RoleKeyLabel (13-23 role maps)
 #include "sound_audition.h"
 #include "sound_audition_plan.h"
@@ -127,7 +128,7 @@ struct PanelState {
     bool                  edit_open = false;
     bool                  edit_focus = false;
     bool                  edit_has_focus = false;  // the Edit overlay window is focused (its zoom keys)
-    bool                  edit_divided = false;    // 13-62 review: the Sound it shows is divided (not Takes): Shift+Space
+    bool                  edit_divided = false;    // 13-62h: the Sound it shows is zoned (divided, not Takes): Delete is Edit's
     int                   edit_opened = -1;  // the frame Edit opened (its E is not read again then)
     std::string           edit_lib, edit_uid;
     double                view_start = 0.0, view_len = 0.0;
@@ -179,15 +180,14 @@ struct PanelState {
     // View state: no undo point.
     double                edit_cursor = -1.0;
     int                   trim_request = -1;
-    // 13-62: the selected part ("" = the Sound), the parts muted / soloed for listening, the selected piece
-    // (its variation and EditPiecesOf index; -1 = none) and a Solo / Mute key waiting for the overlay (1 =
-    // solo, 2 = mute, 0 = none). View state: never saved, no undo point; reset with the shown Sound (C5).
-    // piece_t: a source time inside the selected piece; each Edit frame finds the piece again from it
-    // (ResolvePiece), so a write, a cut moved or Ctrl+Z never leaves Space on another piece.
+    // 13-62: the selected part ("" = the Sound), the parts muted / soloed for listening and a Solo / Mute key
+    // waiting for the overlay (1 = solo, 2 = mute, 0 = none). View state: never saved, no undo point; reset with
+    // the shown Sound (C5).
     std::string           part_sel;
     std::set<std::string> part_mute, part_solo;
-    int                   piece_frame = -1, piece_index = -1;
-    double                piece_t = 0.0;
+    // 13-62h (Lot E1): a zoned Sound's Edit view state -- the selected zones, the time selection, Loop, the drag,
+    // the zone audition (zone_wave_ui.h). Never saved, no undo point; reset in OpenEdit.
+    ZoneEditView          zv;
     int                   listen_request = 0;
     int                   nav_request = 0;  // 13-62F (F5): a Next (+1) / Previous (-1) variation key waiting (0 = none)
     // 13-62h: a Heal / Loop key waiting for the overlay's next frame (kShortcutEditHeal / kShortcutEditLoop;
@@ -257,10 +257,10 @@ void OpenEdit(const std::string& lib_uid, const std::string& uid)
     P.part_sel.clear();  // 13-62 (C5): listening and selection are per Sound
     P.part_mute.clear();
     P.part_solo.clear();
-    P.piece_frame = P.piece_index = -1;
     P.listen_request = 0;
     P.nav_request = 0;
     P.zone_request = -1;  // 13-62h
+    ZoneEditReset(P.zv);  // 13-62h (Lot E1)
     ClearWaveDrags();  // 13-62F review: a drag cut by the switch never fires on this Sound
     P.roles_more = false;
     P.layer_roles_more = false;
@@ -2075,8 +2075,8 @@ bool LibraryNodeTakesKey(unsigned vk, bool ctrl, bool shift, bool alt)
     if (edit && P.edit_has_focus) {  // the view keys (Up / Down zoom too) zoom Edit, not the arrange view
         if (ViewNavRowForKeyDown(vk, ctrl, shift, alt) >= 0) return true;  // 13-45 (a character binding too)
     }
-    // 13-62: Shift+Space plays the selected part, only while Edit has the focus on a divided Sound (else REAPER's).
-    if (edit && P.edit_has_focus && P.edit_divided && shift && !ctrl && !alt && vk == 0x20) return true;
+    // 13-62h: Delete removes the selected zones while Edit has the focus on a zoned Sound (else REAPER's).
+    if (edit && P.edit_has_focus && P.edit_divided && !ctrl && !shift && !alt && vk == 0x2E) return true;
     if (ctrl || shift || alt) return false;
     // 13-63: S is free (the split is the "Split at cursor" Shortcuts row, KEYS: SOUND EDIT).
     if (edit) return vk == 0x20 || vk == 0x1B || vk == 'E';
@@ -2294,9 +2294,6 @@ void SelectedFadeControls(const SoundLibrary& lib, const SoundNode& n)
     }
 }
 
-// 13-62: a click on a divided Sound's waveform in Edit (below, with the comping).
-bool CompClick(const WaveformEvents& ev, const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, int i);
-
 // Applies a waveform's events to the Sound (live draft or one write). `fi` maps the waveform's
 // frame index to the Sound's (Takes lanes show one frame each); `take_len` > 0 = a Takes lane.
 void HandleWave(const WaveformEvents& ev, const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m,
@@ -2351,13 +2348,6 @@ void HandleWave(const WaveformEvents& ev, const SoundLibrary& lib, const SoundNo
         }
         return;
     }
-    // 13-62 (decisions 1, 9): on a divided Sound a click selects a part and the piece under it; on a Split lane
-    // a range it does not own (dimmed or hatched) goes to it instead of playing (one undo point). Review: a click
-    // on Split's "Placed" strip only selects the part (no variation selected, nothing played, no edit cursor).
-    const bool comp = in_edit && take_len <= 0.0 && mode != DetectMode::Takes && IsDivided(n.sound) && (ev.clicked >= 0 || ev.clicked_empty);
-    bool       took = false;
-    if (comp) took = CompClick(ev, lib, n, m, map(ev.clicked));
-    if (comp && ev.lane == -2) return;
     // 13-61: a click on Edit's waveform (a variation or the space between) puts the edit cursor there (not in
     // Takes mode: each take has its own time).
     if (in_edit && take_len <= 0.0 && mode != DetectMode::Takes && (ev.clicked >= 0 || ev.clicked_empty))
@@ -2376,7 +2366,7 @@ void HandleWave(const WaveformEvents& ev, const SoundLibrary& lib, const SoundNo
         // 13-20 / 13-23: in Edit a click plays the part under it (the variation minus its exclusions
         // when combined); Takes mode the take.
         if (in_edit && take_len <= 0.0 && mode != DetectMode::Takes) {
-            if (!took) PlayAt(lib, n, m, i, ev.click_at);
+            PlayAt(lib, n, m, i, ev.click_at);
         } else {
             PlayFrame(lib, n, m, i);
         }
@@ -3258,39 +3248,6 @@ std::string LaneValue(const SoundData& d, int lane)
     return lane >= 0 && static_cast<size_t>(lane) < d.divide_values.size() ? d.divide_values[static_cast<size_t>(lane)] : std::string();
 }
 
-// The piece of variation i holding source time t (EditPiecesOf, never merged); false when none.
-bool PieceAt(const SoundData& d, int i, double t, EditPiece* out)
-{
-    for (const EditPiece& p : EditPiecesOf(d, i))
-        if (t >= p.start && t < p.start + p.length) {
-            *out = p;
-            return true;
-        }
-    return false;
-}
-
-// 13-62 review: the selected piece found again on `d` from its source time (P.piece_t), so a write, a cut
-// moved or Ctrl+Z never leaves it on another piece; cleared when its variation or the piece there is gone.
-void ResolvePiece(const SoundData& d)
-{
-    if (P.piece_frame < 0) return;
-    EditPiece p;
-    if (IsDivided(d) && d.mode != DetectMode::Takes && PieceAt(d, P.piece_frame, P.piece_t, &p)) {
-        P.piece_index = p.index;
-    } else {
-        P.piece_frame = P.piece_index = -1;
-    }
-}
-
-// "120–260 ms".
-std::string RangeMs(double a, double b)
-{
-    char buf[64];
-    std::snprintf(buf, sizeof(buf), "%.0f\xE2\x80\x93%.0f ms", a * 1000.0, b * 1000.0);
-    return buf;
-}
-
-
 // "Reset sync point" / "Reset its cut(s)" / zone writes: one undo point, the parts measured again.
 void PartsEdit(const std::string& name, const SoundLibrary& lib, const SoundNode& n, const std::string& path,
                std::function<bool(SoundData&)> f, const std::string& toast)
@@ -3300,45 +3257,6 @@ void PartsEdit(const std::string& name, const SoundLibrary& lib, const SoundNode
         RefreshWith(x.sound, path);
         return true;
     }, toast);
-}
-
-// Gives [a, b] of variation i to `value` (one undo point, the parts measured again) and selects that part and
-// the piece holding `sel_t` once written. False (nothing written, no undo point) when nothing would change.
-bool CompRange(const SoundLibrary& lib, const SoundNode& n, const std::string& path, int i, double a,
-               double b, const std::string& value, double sel_t, const std::string& toast)
-{
-    SoundData probe = Shown(n);
-    if (!AssignRange(probe, i, a, b, value)) return false;
-    EditPiece p;
-    P.part_sel = value;
-    P.piece_frame = PieceAt(probe, i, sel_t, &p) ? i : -1;
-    P.piece_index = P.piece_frame >= 0 ? p.index : -1;
-    P.piece_t = sel_t;
-    PartsEdit("Comp range", lib, n, path, [i, a, b, value](SoundData& x) { return AssignRange(x, i, a, b, value); }, toast);
-    return true;
-}
-
-// 13-62: a click on a divided Sound's waveform: the piece under it selected (Space plays it); on a Split lane
-// its part selected and a range that lane does not own (dimmed: another part's; hatched: excluded) taken whole,
-// from one cut to the next (decision 9, a click on a REAPER comp area); on the Combined waveform or the comp
-// strip the part under the mouse selected (outside every variation: the Sound). True when a range was taken.
-bool CompClick(const WaveformEvents& ev, const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, int i)
-{
-    const SoundData&    d = Shown(n);
-    const std::string   lv = LaneValue(d, ev.lane);
-    const CompClickPlan c = PlanCompClick(d, i, ev.click_at, lv, ev.ctrl, ev.clicked_empty);
-    const EditPiece&    p = c.piece;
-    P.piece_frame = c.on_piece ? i : -1;
-    P.piece_index = c.on_piece ? p.index : -1;
-    P.piece_t = ev.click_at;
-    if (c.set_part) P.part_sel = c.part;
-    if (!c.take) return false;
-    const SoundStore& store = GetSoundStore(nullptr);
-    const std::string nm = ValueName(store, d.divide_group, lv), range = RangeMs(p.start, p.start + p.length);
-    const std::string toast = p.excluded ? range + " \xE2\x86\x92 " + nm + " (included again)"
-                                         : range + " \xE2\x86\x92 " + nm + " \xC2\xB7 " + ValueName(store, d.divide_group, p.owner) +
-                                               "'s copy is now inactive";
-    return CompRange(lib, n, m.path, i, p.start, p.start + p.length, lv, ev.click_at, toast);
 }
 
 // ---- 13-61: REAPER's item trims (40511 / 40512 / 40508) on Edit's variations ------------------------------
@@ -3390,7 +3308,6 @@ void EditTrim(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, 
                               (excludes.empty() ? std::string()
                                                : kind == EditTrimKind::LeftOfCursor ? " (up to the previous piece, excluded)"
                                                                                     : " (up to the next piece, excluded)");
-    if (!excludes.empty()) P.piece_frame = P.piece_index = -1;  // the pieces' indices move (as the Alt+drag exclude)
     EditNode(name, lib.uid, n.uid, [steps, excludes, path, len](SoundNode& x) {
         bool changed = false;
         for (const EditTrimStep& s : steps) {
@@ -3473,27 +3390,9 @@ void EditWaveMenu(const SoundStore& store, const SoundLibrary& lib, const SoundN
         }
         EditTrimEntry(lib, n, m, EditTrimKind::ToZone, P.sel);  // 13-61 (REAPER's 40508)
         ui::MenuSeparator();
-        if (IsDivided(d)) {
-            for (size_t k = 0; k < d.divide_values.size(); ++k) {
-                const std::string v = d.divide_values[k], nm = ValueName(store, d.divide_group, v);
-                const std::string label = "\xE2\x86\x92 " + nm + "##zoneto" + std::to_string(k);
-                if (ui::MenuEntry(label.c_str())) {
-                    // 13-62: the zone's stretch of each variation goes to that part (comping: owners and cuts, an
-                    // exclusion there included again), one undo point.
-                    P.zone_len = 0.0;
-                    P.part_sel = v;
-                    PartsEdit("Zone to part", lib, n, path, [zs, zl, v](SoundData& x) {
-                        bool changed = false;
-                        for (size_t i = 0; i < x.frames.size(); ++i)
-                            changed = AssignRange(x, static_cast<int>(i), zs, zs + zl, v) || changed;
-                        return changed;
-                    }, RangeMs(zs, zs + zl) + " \xE2\x86\x92 " + nm);
-                }
-            }
-        } else {
-            ui::MenuEntry("\xE2\x86\x92 a part", "divide first", false, false);
-            ui::ToneText("Divide by a Switch Group to assign a zone to one of its values.", ui::kFaint, true, note_w);
-        }
+        // 13-62h: a divided Sound is edited as zones (zone_wave_ui.cpp): this menu only shows undivided ones.
+        ui::MenuEntry("\xE2\x86\x92 a part", "divide first", false, false);
+        ui::ToneText("Divide by a Switch Group to assign a zone to one of its values.", ui::kFaint, true, note_w);
         ui::MenuSeparator();
         if (ui::MenuEntry("\xE2\x96\xB6 Play zone")) PlaySoundVoices(n, m, {ZoneAuditionVoice(lib, n, zs, zl)});
     } else if (P.menu_kind == 1 && P.menu_frame >= 0 && static_cast<size_t>(P.menu_frame) < d.frames.size()) {
@@ -3501,34 +3400,8 @@ void EditWaveMenu(const SoundStore& store, const SoundLibrary& lib, const SoundN
         const SoundFrame& f = d.frames[static_cast<size_t>(i)];
         const double      at = P.menu_at;
         const std::string num = std::to_string(i + 1);
-        // 13-62 (decision 9): the range right-clicked (between two cuts / zone edges): to each part, Exclude, Play.
-        EditPiece  rp;
-        const bool range = IsDivided(d) && d.mode != DetectMode::Takes && PieceAt(d, i, at, &rp);
-        if (range) {
-            const std::string cur = rp.excluded ? std::string("Excluded") : ValueName(store, d.divide_group, rp.owner);
-            const double      ra = rp.start, rb = rp.start + rp.length;
-            ui::MenuCaption(("Variation " + num + " \xC2\xB7 " + RangeMs(ra, rb) + " \xC2\xB7 " + cur).c_str());
-            for (size_t k = 0; k < d.divide_values.size(); ++k) {
-                const std::string v = d.divide_values[k], nm = ValueName(store, d.divide_group, v);
-                const bool        now = !rp.excluded && rp.owner == v;
-                const std::string label = "\xE2\x86\x92 " + nm + "##rangeto" + std::to_string(k);
-                if (ui::MenuEntry(label.c_str(), now ? "\xE2\x9C\x93 now" : nullptr, false, !now))
-                    CompRange(lib, n, path, i, ra, rb, v, (ra + rb) * 0.5, RangeMs(ra, rb) + " \xE2\x86\x92 " + nm);
-            }
-            if (ui::MenuEntry("Exclude##range", rp.excluded ? "\xE2\x9C\x93 now" : "Alt+drag", false, !rp.excluded))
-                PartsEdit("Exclude range", lib, n, path, [i, ra, rb](SoundData& x) { return ExcludeRange(x, i, ra, rb); },
-                          RangeMs(ra, rb) + " excluded: never placed");
-            ui::MenuSeparator();
-            if (ui::MenuEntry("\xE2\x96\xB6 Play range")) PlaySoundVoices(n, m, {ZoneAuditionVoice(lib, n, ra, rb - ra)});
-        } else {
-            ui::MenuCaption(("Variation " + num).c_str());
-        }
+        ui::MenuCaption(("Variation " + num).c_str());
         if (ui::MenuEntry(("\xE2\x96\xB6 Play variation " + num).c_str())) PlayFrame(lib, n, m, i);
-        std::string own;
-        if (IsDivided(d) && PartAt(d, i, at, &own) && !own.empty()) {
-            const std::string label = "\xE2\x96\xB6 Play its " + ValueName(store, d.divide_group, own) + " part";
-            if (ui::MenuEntry(label.c_str())) PlayPart(lib, n, m, i, own);
-        }
         ui::MenuSeparator();
         // 13-61: REAPER's 40511 / 40512 on this variation, at the edit cursor (the last click).
         EditTrimEntry(lib, n, m, EditTrimKind::LeftOfCursor, {i});
@@ -3553,12 +3426,9 @@ void EditWaveMenu(const SoundStore& store, const SoundLibrary& lib, const SoundN
             }, on ? "Variation included" : "Variation excluded: never placed");
         }
         const bool moved = !f.hand_syncs.empty();
-        if (ui::MenuEntry(IsDivided(d) ? "Reset sync points" : "Reset sync point", moved ? nullptr : "detected", false, moved))
+        if (ui::MenuEntry("Reset sync point", moved ? nullptr : "detected", false, moved))
             PartsEdit("Reset sync point", lib, n, path, [i](SoundData& x) { return ResetSyncs(x, i); }, "Sync point back to detected");
-        if (IsDivided(d) && f.cuts_hand &&
-            ui::MenuEntry(PartCount(d) > 2 ? "Reset its cuts" : "Reset its cut"))
-            PartsEdit("Reset cut", lib, n, path, [i](SoundData& x) { return ResetCuts(x, i); }, "Cut back to RAV's proposal");
-        if (!IsDivided(d) && d.mode != DetectMode::Takes)
+        if (d.mode != DetectMode::Takes)
             ui::ToneText("Drag across the waveform to select a zone, then right-click it.", ui::kFaint, true, note_w);
     } else {
         ui::MenuEntry("Outside the variations", nullptr, false, false);
@@ -3567,8 +3437,8 @@ void EditWaveMenu(const SoundStore& store, const SoundLibrary& lib, const SoundN
     ui::EndMenuPopup();
 }
 
-// The parts' own events in Edit (a cut / sync flag dragged, a zone selected, the right-click menu).
-// True when the event was one of them.
+// The parts' own events in Edit on an undivided Sound (a sync flag dragged, a zone selected, the right-click menu;
+// 13-62h: a divided Sound is edited as zones, zone_wave_ui.cpp). True when the event was one of them.
 bool HandleWaveParts(const WaveformEvents& ev, const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m)
 {
     const SoundData& d = Shown(n);
@@ -3584,62 +3454,6 @@ bool HandleWaveParts(const WaveformEvents& ev, const SoundLibrary& lib, const So
         const SoundFrame &a = dr.frames[static_cast<size_t>(i)], &b = n.sound.frames[static_cast<size_t>(i)];
         return a.cuts == b.cuts && a.cuts_hand == b.cuts_hand && a.hand_syncs == b.hand_syncs && a.syncs == b.syncs;
     };
-    // 13-62 (decision 9): a swipe on a Split lane gives the span to its part; an Alt+drag excludes it (every
-    // variation it crosses, one undo point). Nothing to change: a toast, no undo point.
-    if (ev.span_done) {
-        const double a = ev.span_a, b = ev.span_b;
-        if (!(b - a > 0.001)) return true;
-        if (ev.span_alt) {
-            auto f = [a, b](SoundData& x) {
-                bool changed = false;
-                for (size_t i = 0; i < x.frames.size(); ++i) changed = ExcludeRange(x, static_cast<int>(i), a, b) || changed;
-                return changed;
-            };
-            SoundData probe = d;
-            if (!f(probe) || SameEditPieces(probe, d)) {  // review: nothing shown changes, no undo point
-                ShowLibraryToast("Nothing to exclude there: already excluded, or outside the variations", false);
-                return true;
-            }
-            P.piece_frame = P.piece_index = -1;
-            PartsEdit("Exclude range", lib, n, m.path, f, RangeMs(a, b) + " excluded: never placed");
-            return true;
-        }
-        const std::string v = LaneValue(d, ev.lane);
-        if (v.empty()) return true;
-        auto f = [a, b, v](SoundData& x) {
-            bool changed = false;
-            for (size_t i = 0; i < x.frames.size(); ++i) changed = AssignRange(x, static_cast<int>(i), a, b, v) || changed;
-            return changed;
-        };
-        P.part_sel = v;  // a swipe selects its lane, as a click does
-        SoundData probe = d;
-        if (!f(probe) || SameEditPieces(probe, d)) {  // review: nothing shown changes, no undo point
-            ShowLibraryToast("Nothing to take there: already " + ValueName(GetSoundStore(nullptr), d.divide_group, v) +
-                             "'s, or outside the variations", false);
-            return true;
-        }
-        P.piece_frame = P.piece_index = -1;
-        PartsEdit("Swipe to part", lib, n, m.path, f,
-                  "Swipe: " + RangeMs(a, b) + " \xE2\x86\x92 " + ValueName(GetSoundStore(nullptr), d.divide_group, v) +
-                      " (the other lanes' copy is now inactive)");
-        return true;
-    }
-    if (ev.cut_frame >= 0) {
-        SoundData& dr = Live(n);
-        if (SyncsStale(dr, ev.cut_frame)) RefreshOne(dr, ev.cut_frame, m.path);  // never measured yet: as drawn
-        // 13-62 (C4): a divided variation never comped gets its owners (what it shows now) on its first cut drag,
-        // so a cut dragged onto its neighbour removes that piece as on a comped one.
-        if (IsDivided(dr) && ev.cut_frame < static_cast<int>(dr.frames.size())) {
-            SoundFrame& f = dr.frames[static_cast<size_t>(ev.cut_frame)];
-            if (!OwnersSane(dr, f)) f.owners = LegacyOwners(dr, f);
-        }
-        if (MoveCut(dr, ev.cut_frame, ev.cut_k, ev.cut_t)) RefreshOne(dr, ev.cut_frame, m.path);
-        if (ev.cut_done) {
-            if (same_frame(dr, ev.cut_frame)) CancelLive();
-            else CommitLive("Move cut", lib.uid, n.uid, "Cut moved \xC2\xB7 variation " + std::to_string(ev.cut_frame + 1));
-        }
-        return true;
-    }
     if (ev.sync_frame >= 0) {
         SoundData& dr = Live(n);
         if (SyncsStale(dr, ev.sync_frame)) RefreshOne(dr, ev.sync_frame, m.path);  // never measured yet
@@ -3653,8 +3467,6 @@ bool HandleWaveParts(const WaveformEvents& ev, const SoundLibrary& lib, const So
     if (ev.right_clicked) {
         P.menu_at = ev.right_at;
         P.menu_frame = FrameAt(d.frames, ev.right_at);
-        // 13-62: a right-click on a Split lane selects its part, as a click does.
-        if (IsDivided(d) && !LaneValue(d, ev.lane).empty()) P.part_sel = LaneValue(d, ev.lane);
         if (P.zone_len > 0.0 && ev.right_at >= P.zone_start && ev.right_at <= P.zone_start + P.zone_len) {
             P.menu_kind = 2;
         } else {
@@ -3757,11 +3569,79 @@ void LaneHeaders(const WaveformEvents& ev, const SoundData& d, const WaveParts& 
     ImGui::SetCursorScreenPos(back);
 }
 
+// 13-62h (Lot E1): what the zone waveform of a zoned Sound needs of the Edit window (zone_wave_ui.h): the view
+// state in P.zv, the edit cursor, Settings of, Mute / Solo, the view, the Live / CommitLive / CancelLive drafts and
+// one-write gestures (EditNode, one undo point each). Built each frame; `n` stays valid for that frame.
+ZoneWaveHost ZoneHost(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m)
+{
+    ZoneWaveHost h;
+    h.view = &P.zv;
+    h.lib = &lib;
+    h.node = &n;
+    const SoundNode* np = &n;
+    h.shown = [np]() -> const SoundData& { return Shown(*np); };
+    h.path = m.path;
+    h.file_len = m.source_len;
+    const SoundStore& store = GetSoundStore(nullptr);
+    for (size_t k = 0; k < n.sound.divide_values.size(); ++k) {
+        h.names.push_back(ValueName(store, n.sound.divide_group, n.sound.divide_values[k]));
+        h.colors.push_back(PartColor(static_cast<int>(k)));
+    }
+    h.cursor = &P.edit_cursor;
+    h.part_sel = &P.part_sel;
+    h.mute = &P.part_mute;
+    h.solo = &P.part_solo;
+    h.view_start = &P.view_start;
+    h.view_len = &P.view_len;
+    h.head_px = LaneHeadPref();
+    const std::string lib_uid = lib.uid, uid = n.uid;
+    h.live = [np]() -> SoundData& { return Live(*np); };
+    h.commit = [lib_uid, uid](const std::string& name, const std::string& toast) { CommitLive(name, lib_uid, uid, toast); };
+    h.cancel = [] { CancelLive(); };
+    h.live_now = [uid] { return P.phase.Shows(uid); };
+    h.edit = [lib_uid, uid](const std::string& name, std::function<bool(SoundData&)> f, const std::string& toast) {
+        EditNode(name, lib_uid, uid, [f](SoundNode& x) { return f(x.sound); }, toast);
+    };
+    h.store_replaced = [] { return StoreReplaced(); };
+    return h;
+}
+
+// 13-62h (Lot E1): Edit's waveform of a zoned Sound: the zone rows (DrawZoneWave), the lane headers in its
+// column (Lane), the scrollbar.
+void DrawZoneSoundWave(const char* id, const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, float height)
+{
+    const ZoneWaveHost   zh = ZoneHost(lib, n, m);
+    const ZoneWaveEvents ev = DrawZoneWave(id, zh, std::max(16.0f, height - kScrollbarH - 4.0f));
+    P.wave_x0 = ev.min.x;
+    P.wave_x1 = ev.max.x;
+    P.wave_len = m.source_len;
+    if (StoreReplaced()) return;
+    if (ev.lanes > 0) {  // the lane headers (M S, the fader, ...: PartLaneHeader) and the column's splitter
+        WaveformEvents wev;
+        wev.head_x = ev.head_x;
+        wev.head_w = ev.head_w;
+        wev.head_narrow = ev.head_narrow;
+        wev.lanes_y = ev.lanes_y;
+        wev.lane_h = ev.lane_h;
+        wev.min = ev.min;
+        wev.max = ev.max;
+        const SoundData& d = Shown(n);
+        LaneHeaders(wev, d, EditParts(GetSoundStore(nullptr), d));
+        if (StoreReplaced()) return;
+    }
+    if (ev.scroll_s != 0.0) ScrollView(ev.scroll_s, m.source_len);
+    ViewScrollbar(m.source_len);
+}
+
 // The Sound's waveform(s): one lane, or one lane per take in Takes mode.
 void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, float height,
                     bool in_edit, WaveformEvents* first_ev)
 {
     const SoundData& d = Shown(n);
+    if (in_edit && UsesZones(d)) {  // 13-62h: a divided Sound is edited as zones
+        DrawZoneSoundWave(id, lib, n, m, height);
+        return;
+    }
     const double     ph = SoundPlayhead(n);
     const std::vector<FrameFades> fades = ShownFades(d);
     if (d.mode == DetectMode::Takes && m.take_paths.size() >= 2) {
@@ -4288,7 +4168,7 @@ void PartsControls(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
                 P.part_sel.clear();  // 13-62: the parts are other values now
                 P.part_mute.clear();
                 P.part_solo.clear();
-                P.piece_frame = P.piece_index = -1;
+                P.zv.sel.clear();  // 13-62h: other zones now
                 P.listen_request = 0;
                 EditNode("Divide by", lib_uid, uid, [gid, vals, path](SoundNode& x) {
                     if (!SetDivide(x.sound, gid, vals)) return false;
@@ -4979,7 +4859,7 @@ void LevelSection(const SoundLibrary& lib, const SoundNode& n, const SoundMedia&
 
 // ---- 13-20 / 13-23 / 13-25: Edit's legend and the fade at cuts ------------------------------------------
 
-enum class LegendGlyph { Swatch, Hatch, Flag, Cut };
+enum class LegendGlyph { Swatch, Hatch, Flag, Cut, Pin };
 
 // A legend chip (.lg): its glyph (a colour swatch, a hatch, the sync flag, the cut) and its name; `on` =
 // shown alone (accent-soft). True when clicked (a clickable chip only).
@@ -5011,6 +4891,9 @@ bool LegendChip(const char* id, const std::string& label, ImU32 col, LegendGlyph
         dl->AddLine(ImVec2(gx + 1.0f, g0.y), ImVec2(gx + 1.0f, g1.y + 2.0f), col);
         dl->AddRectFilled(ImVec2(gx + 1.0f, g0.y), ImVec2(gx + gw, g0.y + gw * 0.55f), col, 1.0f);
         break;
+    case LegendGlyph::Pin:  // 13-62h: an edge dragged by hand (the zones' amber triangle)
+        dl->AddTriangleFilled(ImVec2(gx, g0.y + 1.0f), ImVec2(gx + gw, g0.y + 1.0f), ImVec2(gx + gw * 0.5f, g1.y), ui::kWarn);
+        break;
     case LegendGlyph::Cut:
         for (float y = g0.y; y < g1.y - 3.0f; y += 3.0f) dl->AddLine(ImVec2(gx + gw * 0.5f, y), ImVec2(gx + gw * 0.5f, y + 1.5f), ui::kText);
         dl->AddRectFilled(ImVec2(gx + gw * 0.5f - 2.5f, g1.y - 4.0f), ImVec2(gx + gw * 0.5f + 2.5f, g1.y + 1.0f), ui::kText, 1.0f);
@@ -5026,7 +4909,7 @@ bool LegendChip(const char* id, const std::string& label, ImU32 col, LegendGlyph
 // one undo point), the values' chips (13-62: click = select that part, as its lane or its chip in the right
 // column; no undo point) and "Excluded"; then the
 // keys of the two handles, "Sync point (snap offset)" and "Cut (V1 | V2)".
-void EditLegend(const SoundStore& store, const SoundLibrary& lib, const SoundNode& n)
+void EditLegend(const SoundStore& store, const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m)
 {
     const SoundData& d = Shown(n);
     const bool       div = IsDivided(d);
@@ -5060,9 +4943,45 @@ void EditLegend(const SoundStore& store, const SoundLibrary& lib, const SoundNod
             next(chip_w(names[k]));
             const std::string id = "##lg" + std::to_string(k);
             const std::string tip = names[k] + ": select it (its settings, Mute / Solo; same as clicking its lane in Lane view)";
+            const bool zoned = UsesZones(d) && m.ok;
+            const std::string ztip = names[k] + ": click to pick it; double-click: select all its zones";
             if (LegendChip(id.c_str(), names[k], PartColor(static_cast<int>(k)), LegendGlyph::Swatch, P.part_sel == d.divide_values[k], true,
-                           tip.c_str()))
+                           zoned ? ztip.c_str() : tip.c_str()))
                 P.part_sel = d.divide_values[k];
+            // 13-62h: double-click a part's chip (Combined; Lane: its lane header): every zone of it selected.
+            if (zoned && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+                ZoneSelectPart(ZoneHost(lib, n, m), d.divide_values[k]);
+        }
+        if (UsesZones(d)) {  // 13-62h: the zones' legend, then the zoom on a variation (All, V1, V2...)
+            next(chip_w("Gap"));
+            LegendChip("##lggap", "Gap", 0, LegendGlyph::Hatch, false, false, "A Gap: playback jumps over it and glues its two neighbours");
+            next(chip_w("By hand"));
+            LegendChip("##lghand", "By hand", 0, LegendGlyph::Pin, false, false, "An edge dragged by hand (double-click: automatic again)");
+            const double len = m.ok ? m.source_len : 0.0;
+            if (len > 0.0) {
+                const float bh = ui::Dp(22.0f);
+                next(ui::ButtonWidth("All"));
+                const bool all = P.view_len <= 0.0;
+                if (ui::ToggleButton("All##zvall", all, ImVec2(0.0f, bh))) {
+                    P.view_start = 0.0;
+                    P.view_len = 0.0;
+                }
+                int vi = 0;
+                for (const ZoneVarBlock& b : ZoneVarBlocks(d)) {
+                    ++vi;
+                    const std::string lbl = "V" + std::to_string(vi) + "##zv" + std::to_string(vi);
+                    const double      a0 = std::max(0.0, b.a - 0.03), b0 = std::min(len, b.b + 0.03);
+                    const bool        on = P.view_len > 0.0 && std::fabs(P.view_start - a0) < 1e-6 && std::fabs(P.view_len - (b0 - a0)) < 1e-6;
+                    next(ui::ButtonWidth(("V" + std::to_string(vi)).c_str()));
+                    if (ui::ToggleButton(lbl.c_str(), on, ImVec2(0.0f, bh))) {
+                        P.view_start = a0;
+                        P.view_len = b0 - a0 >= len ? 0.0 : b0 - a0;
+                    }
+                    ui::ItemTip("Zoom on variation %d", vi);
+                }
+            }
+            ImGui::Dummy(ImVec2(1.0f, ui::Dp(2.0f)));
+            return;
         }
         next(chip_w("Excluded"));
         LegendChip("##lgx", "Excluded", 0, LegendGlyph::Hatch, false, false, "Excluded: nobody's, never placed (hatched on every lane)");
@@ -5209,7 +5128,11 @@ void DrawEditOverlay()
     }
     P.edit_frame = ImGui::GetFrameCount();
     const SoundMedia& m = MediaOf(*n);
-    P.edit_divided = IsDivided(Shown(*n)) && Shown(*n).mode != DetectMode::Takes;
+    P.edit_divided = UsesZones(Shown(*n));
+    // 13-62h (Lot E1): a zoned Sound's waveform, keys and play (zone_wave_ui.h); the media must be read.
+    const bool         zoned = P.edit_divided && m.ok;
+    const ZoneWaveHost zh = ZoneHost(*lib, *n, m);
+    if (zoned) ZonePumpPlay(zh);  // Loop restarts (C4)
     const ImVec2      ds = ImGui::GetIO().DisplaySize;
     if (P.edit_focus) {
         ImGui::SetNextWindowFocus();
@@ -5225,15 +5148,19 @@ void DrawEditOverlay()
         P.edit_has_focus = focused;
         const bool keys = focused && !ImGui::GetIO().WantTextInput && !ui::DragNumberActive() &&
                           P.edit_opened != ImGui::GetFrameCount();  // the E that opened it
-        const bool whole_playing = AuditionPlaying() && AuditionTag() == "whole:" + n->uid;
+        const bool whole_playing = zoned ? ZonePlaying(zh) : AuditionPlaying() && AuditionTag() == "whole:" + n->uid;
         // 13-29: a change made while Play plays is heard: once the Sound shown has stayed the same 0.15 s
         // (SettleEditPlay: a drag restarts only when it pauses or ends), Play restarts from where it was.
-        if (whole_playing) {
+        if (whole_playing && !zoned) {
             const std::vector<AuditionVoice> now = EditVoicesNow(*lib, *n, m.path);
             if (SettleEditPlay(P.edit_settle, now, P.edit_voices, ImGui::GetTime()))
                 if (!StartEditPlay(*n, m, now, P.edit_from + AuditionPosition())) StopAudition();
         }
         auto toggle_play = [&] {
+            if (zoned) {  // 13-62h: from the edit cursor (time selection, Loop), Gaps jumped
+                ZoneTransport(zh);
+                return;
+            }
             if (AuditionPlaying()) {
                 StopAudition();
                 return;
@@ -5276,7 +5203,12 @@ void DrawEditOverlay()
         std::string count = VariationCountText(DetectedCount(n->uid, m, Shown(*n)), Shown(*n).frames);
         {  // 13-20 / 13-23: "· z excluded zones · divided by G"
             const SoundData& sd = Shown(*n);
-            const int        nx = ExcludedZoneCount(sd);
+            const int        nx = UsesZones(sd) ? 0 : ExcludedZoneCount(sd);
+            if (UsesZones(sd)) {  // 13-62h: "· n zones · n Gaps"
+                const int nz = PartZoneCount(sd), ng = GapCount(sd);
+                count += " \xC2\xB7 " + std::to_string(nz) + (nz == 1 ? " zone" : " zones");
+                if (ng > 0) count += " \xC2\xB7 " + std::to_string(ng) + (ng == 1 ? " Gap" : " Gaps");
+            }
             if (nx > 0) count += " \xC2\xB7 " + std::to_string(nx) + (nx == 1 ? " excluded zone" : " excluded zones");
             if (IsDivided(sd)) {
                 const SwitchGroup* dg = FindGroup(store, sd.divide_group);
@@ -5374,7 +5306,7 @@ void DrawEditOverlay()
             FitText("Source not found", ui::kMissText);
         } else {
             const float y0 = ImGui::GetCursorScreenPos().y;
-            if (Shown(*n).mode != DetectMode::Takes) EditLegend(store, *lib, *n);  // 13-20 / 13-23 / 13-25
+            if (Shown(*n).mode != DetectMode::Takes) EditLegend(store, *lib, *n, m);  // 13-20 / 13-23 / 13-25
             const float used = ImGui::GetCursorScreenPos().y - y0;
             if (!StoreReplaced())
                 DrawSoundWaves("editwave", *lib, *n, m, std::max(ui::Dp(60.0f), wave_h - 24.0f - used) * static_cast<float>(P.vzoom), true,
@@ -5438,7 +5370,9 @@ void DrawEditOverlay()
         }
         if (P.trim_request >= 0 && m.ok && !StoreReplaced() && !P.phase.Live()) {
             const int trim = std::exchange(P.trim_request, -1);
-            if (trim == kShortcutEditSplit) {
+            if (zoned) {  // 13-62h: on the zones (split / trims / 40508 to the time selection)
+                ZoneEditRequest(zh, trim);
+            } else if (trim == kShortcutEditSplit) {
                 EditSplit(*lib, *n, m, P.sel);
             } else {
                 const EditTrimKind k = trim == kShortcutEditTrimLeft    ? EditTrimKind::LeftOfCursor
@@ -5461,6 +5395,14 @@ void DrawEditOverlay()
         // 13-62F (F5): Next / Previous variation (REAPER's 40417 / 40416 keys): select it, the edit cursor at its
         // start, the view centred on it at the same zoom. View state: no undo point, nothing written. At the
         // last / first one nothing moves. Takes mode: the selection only (each take has its own time).
+        if (P.nav_request != 0 && zoned && !StoreReplaced()) {  // 13-62h: its first zone, the cursor at its start
+            ZoneStepVariation(zh, std::exchange(P.nav_request, 0));
+        }
+        // 13-62h (Lot D keys): Heal (one undo point, or a toast) and Loop (view state), once no drag is live.
+        if (P.zone_request >= 0 && !StoreReplaced() && !P.phase.Live()) {
+            const int zr = std::exchange(P.zone_request, -1);
+            if (zoned) ZoneEditRequest(zh, zr);
+        }
         if (P.nav_request != 0 && !StoreReplaced()) {
             const bool        next = std::exchange(P.nav_request, 0) > 0;
             const SoundData&  d = Shown(*n);
@@ -5469,36 +5411,22 @@ void DrawEditOverlay()
             const EditNavPlan nav = PlanEditNav(d.frames, P.sel, P.edit_cursor, next, P.view_len, len, takes);
             if (nav.frame >= 0) {
                 P.sel = {nav.frame};
-                P.piece_frame = P.piece_index = -1;  // 13-62F review: Space then plays the new selection
                 if (d.mode != DetectMode::Takes) {
                     P.edit_cursor = nav.cursor;
                     if (P.view_len > 0.0 && len > 0.0) P.view_start = nav.view_start;
                 }
             }
         }
-        if (!StoreReplaced()) ResolvePiece(Shown(*n));  // 13-62 review: before any use this frame
         if (keys && !StoreReplaced()) {
-            if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) {
-                // 13-62 (decision 13): Space plays the selected piece (else Edit's Play), Shift+Space every piece
-                // of the selected part; either stops what plays.
-                const SoundNode shown = MeasuredNode(*n, m.path);
-                const bool      divided = IsDivided(shown.sound) && shown.sound.mode != DetectMode::Takes;
+            // 13-62h: a zoned Sound's Delete, Space (from the edit cursor; again = stop) and Esc (the selection,
+            // then the time selection, before Stop / close).
+            bool esc_used = false;
+            if (zoned) ZoneEditKeys(zh, &esc_used);
+            else if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) {
                 if (AuditionPlaying()) StopAudition();
-                else if (ImGui::GetIO().KeyShift) {
-                    if (divided && !P.part_sel.empty()) PlaySoundVoices(shown, m, PartPiecesVoices(*lib, shown, P.part_sel));
-                } else {
-                    std::vector<AuditionVoice> pv;
-                    ResolvePiece(shown.sound);  // the pieces as measured (what PiecePlayVoices reads)
-                    if (divided && P.piece_frame >= 0 && P.piece_index >= 0)
-                        pv = PiecePlayVoices(*lib, shown, P.piece_frame, P.piece_index);
-                    if (!pv.empty()) PlaySoundVoices(shown, m, pv);
-                    else {  // 13-62 review: a stale piece selection (gone after an edit) is dropped: Edit's Play
-                        if (divided && P.piece_frame >= 0) P.piece_frame = P.piece_index = -1;
-                        toggle_play();
-                    }
-                }
+                else toggle_play();
             }
-            if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
+            if (!esc_used && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
                 if (P.zone_len > 0.0) P.zone_len = 0.0;  // 13-20: Esc clears the zone selected first
                 else if (AuditionPlaying()) StopAudition();
                 else close = true;
@@ -5515,6 +5443,7 @@ void DrawEditOverlay()
         CancelLive();
         CancelNormJob();  // 13-28: nothing written, no undo point
         ClearWaveDrags();  // a drag (13-62F review: or a fade handle's) cut by the close never fires on the next Edit
+        P.zv.drag = ZoneDrag{};  // 13-62h: a zone drag too
     }
 }
 

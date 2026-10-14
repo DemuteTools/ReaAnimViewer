@@ -625,10 +625,10 @@ Fields FrameFields(const SoundFrame& fr)
 {
     Fields f = {{"start", FormatNumber(fr.start)}, {"len", FormatNumber(fr.length)}};
     if (!fr.on) f.push_back({"on", "0"});
-    if (fr.db != 0.0) f.push_back({"db", FormatNumber(fr.db)});
+    if (fr.db != 0.0 && fr.zones.empty()) f.push_back({"db", FormatNumber(fr.db)});  // 13-62h: zoned = the zones' gains
     if (fr.hand) f.push_back({"hand", "1"});
-    if (fr.fade_in >= 0.0) f.push_back({"fin", FormatNumber(fr.fade_in)});
-    if (fr.fade_out >= 0.0) f.push_back({"fout", FormatNumber(fr.fade_out)});
+    if (fr.zones.empty() && fr.fade_in >= 0.0) f.push_back({"fin", FormatNumber(fr.fade_in)});
+    if (fr.zones.empty() && fr.fade_out >= 0.0) f.push_back({"fout", FormatNumber(fr.fade_out)});
     if (fr.fade_in_shape != 0) f.push_back({"fish", FmtInt(fr.fade_in_shape)});
     if (fr.fade_out_shape != 0) f.push_back({"fosh", FmtInt(fr.fade_out_shape)});
     // 13-62h: a frame laid out as zones writes its zones (fzone lines), never the old model's keys.
@@ -1105,7 +1105,8 @@ bool ParseStoreCore(const std::string& text, SoundStore& s)
             node->sound.frames.emplace_back();
             SoundFrame& fr = node->sound.frames.back();
             ReadFields(t, 1, fr.kept, [&](const std::string& k, const std::string& v) { return SetFrame(fr, k, v); });
-        } else if (kind == "fzone" && node && !node->sound.frames.empty()) {  // 13-62h: a zone of the last frame
+        } else if (kind == "fzone" && node && node->sound.frames.empty()) {  // 13-62h: a zone before any frame: dropped
+        } else if (kind == "fzone" && node) {  // 13-62h: a zone of the last frame
             EditZone z;
             bool     has_sa = false, has_sb = false;
             Kept     kept;

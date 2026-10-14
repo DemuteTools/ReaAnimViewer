@@ -376,6 +376,7 @@ FrameFades EffectiveFades(const SoundData& data, const SoundFrame& frame)
 void SetFrameFades(SoundData& data, int i, double in, double out)
 {
     if (!ValidIndex(data, i)) return;
+    if (UsesZones(data) && !data.frames[static_cast<size_t>(i)].zones.empty()) return;  // 13-62h: its zones' own
     SoundFrame& f = data.frames[static_cast<size_t>(i)];
     const double len = std::max(f.length, 0.0);
     const bool   set_in = std::isfinite(in) && in >= 0.0, set_out = std::isfinite(out) && out >= 0.0;
@@ -500,6 +501,7 @@ void SetFrameOn(SoundData& data, int i, bool on)
 void SetFrameDb(SoundData& data, int i, double db)
 {
     if (!ValidIndex(data, i)) return;
+    if (UsesZones(data) && !data.frames[static_cast<size_t>(i)].zones.empty()) return;  // 13-62h: its zones' own
     SoundFrame&  f = data.frames[static_cast<size_t>(i)];
     const double delta = db - f.db;
     f.db = db;
@@ -1148,7 +1150,7 @@ void RefreshFrame(SoundData& data, int variation, const PeakData* peaks)
         return;
     }
     if (UsesZones(data)) {  // 13-62h: zones (proposed when it has none), laid out again; no cuts, no syncs
-        if (f.on && f.zones.empty()) ProposeZones(data, variation, peaks);
+        if (f.zones.empty()) ProposeZones(data, variation, peaks);
         f.cuts.clear();
         f.cuts_hand = f.cut_unsure = false;
         f.syncs.clear();
@@ -1429,6 +1431,9 @@ bool SetSyncSettings(SoundData& data, SyncMode mode, double offset_ms)
 bool AddZone(SoundData& data, double start, double length, const std::string& to)
 {
     if (!std::isfinite(start) || !std::isfinite(length) || length <= kMinLen) return false;
+    if (UsesZones(data))  // 13-62h: a Sound edited as zones has no Sound-level zones
+        for (const SoundFrame& f : data.frames)
+            if (!f.zones.empty()) return false;
     const double end = start + length;
     data.zones.erase(std::remove_if(data.zones.begin(), data.zones.end(),
                                     [&](const SoundZone& z) {
@@ -1460,6 +1465,7 @@ bool IncludeAgain(SoundData& data, double t)
 bool MoveCut(SoundData& data, int variation, int k, double t)
 {
     if (!ValidIndex(data, variation) || !std::isfinite(t)) return false;
+    if (ZonedFrame(data, variation)) return false;  // 13-62h: DragCut
     SoundFrame& f = data.frames[static_cast<size_t>(variation)];
     if (k < 0 || static_cast<size_t>(k) >= f.cuts.size()) return false;
     const size_t i = static_cast<size_t>(k);
@@ -1767,6 +1773,7 @@ bool AssignRange(SoundData& data, int variation, double a, double b, const std::
     if (!ValidIndex(data, variation) || data.mode == DetectMode::Takes || PartIndex(data, value) < 0 || !std::isfinite(a) ||
         !std::isfinite(b))
         return false;
+    if (ZonedFrame(data, variation)) return false;  // 13-62h: GiveZonesPart / NewZone
     SoundFrame& f = data.frames[static_cast<size_t>(variation)];
     if (!f.on) return false;
     if (a > b) std::swap(a, b);
@@ -1878,6 +1885,7 @@ double SnapToCut(const SoundData& data, int variation, double t, double toleranc
 bool ExcludeRange(SoundData& data, int variation, double a, double b)
 {
     if (!ValidIndex(data, variation) || !std::isfinite(a) || !std::isfinite(b)) return false;
+    if (ZonedFrame(data, variation)) return false;  // 13-62h: DeleteZones / MakeGap
     const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
     if (!f.on) return false;  // 13-62 review: an off variation is excluded whole already
     if (a > b) std::swap(a, b);

@@ -132,12 +132,16 @@ bool VariationEdges(const SoundData& d, int v, double* a, double* b);
 int NearestVariation(const SoundData& d, double t);
 
 // ---- Gestures (false = nothing changed: no undo point) ----------------------------------------------------
-// A selection: zones (re-resolved by the gesture into `sel` when given).
+// A selection: zones. Every gesture takes an optional `ZoneSel* sel`: the selection, re-resolved after the gesture
+// (relayout may drop a Gap or a short zone and shift indices); a gesture that makes a zone (MakeGap, NewZone,
+// SplitZoneAt, MoveZone, HealZones) puts its result there instead. Gestures that also take `const ZoneSel& sel` as
+// their input write that selection re-resolved into the out `sel`.
 using ZoneSel = std::vector<ZoneRef>;
 
 // Clears [x0, x1]: zones inside go, zones across are trimmed or split (a Gap partly covered keeps its pieces with
 // their outer crossfade).
-bool CutOut(SoundData& d, double x0, double x1, const ZoneContext& ctx = {});
+bool CutOut(SoundData& d, double x0, double x1, const ZoneContext& ctx = {},
+    ZoneSel* sel = nullptr);
 // A Gap over [x0, x1] between the zones it then touches on both sides (same variation); without a zone on a side
 // it is only a trim (empty space). `made` gets whether a Gap was made; `sel` the new Gap.
 bool MakeGap(SoundData& d, double x0, double x1, const ZoneContext& ctx = {}, bool* made = nullptr, ZoneSel* sel = nullptr);
@@ -145,21 +149,25 @@ bool MakeGap(SoundData& d, double x0, double x1, const ZoneContext& ctx = {}, bo
 // variation nearest to x0. `sel` gets it.
 bool NewZone(SoundData& d, const std::string& part, double x0, double x1, const ZoneContext& ctx = {}, ZoneSel* sel = nullptr);
 // The Gap goes to the zone on its left (it extends over it).
-bool FillGap(SoundData& d, const ZoneRef& gap, const ZoneContext& ctx = {});
+bool FillGap(SoundData& d, const ZoneRef& gap, const ZoneContext& ctx = {},
+    ZoneSel* sel = nullptr);
 // Splits the part zone under t into two butted zones (none within 4 ms of an edge). `sel` gets the right one.
 bool SplitZoneAt(SoundData& d, double t, const ZoneContext& ctx = {}, ZoneSel* sel = nullptr);
 // REAPER's trims at the edit cursor (40511 side < 0: left of it / 40512 side > 0: right of it): the selected part
 // zones holding t, else the part zone under t.
-bool TrimZonesAt(SoundData& d, const ZoneSel& sel, double t, int side, const ZoneContext& ctx = {});
+bool TrimZonesAt(SoundData& d, const ZoneSel& sel, double t, int side, const ZoneContext& ctx = {},
+    ZoneSel* out = nullptr);
 // 40508 Trim to selected area: the selected part zones (else the part zones under [a, b]) trimmed to [a, b] ∩ zone.
-bool TrimZonesTo(SoundData& d, const ZoneSel& sel, double a, double b, const ZoneContext& ctx = {});
+bool TrimZonesTo(SoundData& d, const ZoneSel& sel, double a, double b, const ZoneContext& ctx = {},
+    ZoneSel* out = nullptr);
 // REAPER's 40548 Heal: the selected zones edge to edge become one (it keeps the first one's part; a selected Gap
 // between them is absorbed). `sel` (in / out) becomes the healed zone. `mixed` gets whether parts differed.
 bool HealZones(SoundData& d, ZoneSel& sel, const ZoneContext& ctx = {}, bool* mixed = nullptr);
 // Delete: selected part zones removed (empty space), a selected Gap given to the zone on its left. `sel` emptied.
 bool DeleteZones(SoundData& d, ZoneSel& sel, const ZoneContext& ctx = {});
 // The selected part zones become `part` (Lane comping; Selection panel "Give them to").
-bool GiveZonesPart(SoundData& d, const ZoneSel& sel, const std::string& part, const ZoneContext& ctx = {});
+bool GiveZonesPart(SoundData& d, const ZoneSel& sel, const std::string& part, const ZoneContext& ctx = {},
+    ZoneSel* out = nullptr);
 // How far zone r can move by `delta` (its touching neighbours following, a neighbour across empty space stopping
 // it, the file's edges).
 double MoveRange(const SoundData& d, const ZoneRef& r, double delta, double file_len = 0.0);
@@ -168,45 +176,61 @@ double MoveRange(const SoundData& d, const ZoneRef& r, double delta, double file
 bool MoveZone(SoundData& d, const ZoneRef& r, double delta, const ZoneContext& ctx = {}, ZoneSel* sel = nullptr);
 // One edge of a part zone (side < 0 start, > 0 end) to t, alone: it stops on its neighbour (opening empty space
 // backing off); by hand (▼). An edge held by a Gap: false (DragGapEdge).
-bool DragZoneEdge(SoundData& d, const ZoneRef& r, int side, double t, const ZoneContext& ctx = {});
+bool DragZoneEdge(SoundData& d, const ZoneRef& r, int side, double t, const ZoneContext& ctx = {},
+    ZoneSel* sel = nullptr);
 // The cut between part zone r and the part zone butted after it, to t: both edges.
-bool DragCut(SoundData& d, const ZoneRef& r, double t, const ZoneContext& ctx = {});
+bool DragCut(SoundData& d, const ZoneRef& r, double t, const ZoneContext& ctx = {},
+    ZoneSel* sel = nullptr);
 // A Gap's edge (side < 0 start, > 0 end) to t: the zone beside it follows.
-bool DragGapEdge(SoundData& d, const ZoneRef& gap, int side, double t, const ZoneContext& ctx = {});
+bool DragGapEdge(SoundData& d, const ZoneRef& gap, int side, double t, const ZoneContext& ctx = {},
+    ZoneSel* sel = nullptr);
 // A Gap's crossfade handle (side < 0 the left one: xl = t - start; > 0 the right one: xr = end - t), each side
 // <= half the Gap; `both`: the two sides together (linked; Alt = one side).
-bool DragGapXfade(SoundData& d, const ZoneRef& gap, int side, double t, bool both, const ZoneContext& ctx = {});
+bool DragGapXfade(SoundData& d, const ZoneRef& gap, int side, double t, bool both, const ZoneContext& ctx = {},
+    ZoneSel* sel = nullptr);
 // A Gap's sides set (s, each clamped into [0, half its length]); < 0 = keep.
-bool SetGapXfade(SoundData& d, const ZoneRef& gap, double xl, double xr, const ZoneContext& ctx = {});
+bool SetGapXfade(SoundData& d, const ZoneRef& gap, double xl, double xr, const ZoneContext& ctx = {},
+    ZoneSel* sel = nullptr);
 // A part zone's own fade (side < 0 in, > 0 out; s >= 0); a side held by a Gap: false.
-bool SetZoneFade(SoundData& d, const ZoneRef& r, int side, double s, const ZoneContext& ctx = {});
+bool SetZoneFade(SoundData& d, const ZoneRef& r, int side, double s, const ZoneContext& ctx = {},
+    ZoneSel* sel = nullptr);
 // A part zone's own snap offset (clamped into it).
-bool SetZoneSnap(SoundData& d, const ZoneRef& r, double t, const ZoneContext& ctx = {});
+bool SetZoneSnap(SoundData& d, const ZoneRef& r, double t, const ZoneContext& ctx = {},
+    ZoneSel* sel = nullptr);
 // A part zone's own gain (dB, -60..+24, 0.1 dB).
-bool SetZoneDb(SoundData& d, const ZoneRef& r, double db, const ZoneContext& ctx = {});
+bool SetZoneDb(SoundData& d, const ZoneRef& r, double db, const ZoneContext& ctx = {},
+    ZoneSel* sel = nullptr);
 // Several part zones' gains moved by the same `delta` from `base` (their gains when the gesture began; empty =
 // their gains now): the vertical drag on a selection.
 bool ShiftZonesDb(SoundData& d, const ZoneSel& sel, double delta, const std::vector<double>& base = {},
-                  const ZoneContext& ctx = {});
+                  const ZoneContext& ctx = {},
+    ZoneSel* out = nullptr);
 // A part zone's start / end set by number (as DragZoneEdge).
-bool SetZoneEdge(SoundData& d, const ZoneRef& r, int side, double t, const ZoneContext& ctx = {});
+bool SetZoneEdge(SoundData& d, const ZoneRef& r, int side, double t, const ZoneContext& ctx = {},
+    ZoneSel* sel = nullptr);
 // Back to automatic (= double-click): an edge, a fade side, the snap offset.
-bool ResetZoneEdge(SoundData& d, const ZoneRef& r, int side, const ZoneContext& ctx = {});
-bool ResetZoneFade(SoundData& d, const ZoneRef& r, int side, const ZoneContext& ctx = {});
-bool ResetZoneSnap(SoundData& d, const ZoneRef& r, const ZoneContext& ctx = {});
+bool ResetZoneEdge(SoundData& d, const ZoneRef& r, int side, const ZoneContext& ctx = {},
+    ZoneSel* sel = nullptr);
+bool ResetZoneFade(SoundData& d, const ZoneRef& r, int side, const ZoneContext& ctx = {},
+    ZoneSel* sel = nullptr);
+bool ResetZoneSnap(SoundData& d, const ZoneRef& r, const ZoneContext& ctx = {},
+    ZoneSel* sel = nullptr);
 
 // The lane fader (C3, Antho 2026-10-14): not a gain of its own; it moves the gain of every zone of `part` by
 // `delta` (they keep their differences) and shows what it has applied (PartFaderDb). Double-click = minus it.
-bool   ShiftPartGain(SoundData& d, const std::string& part, double delta, const ZoneContext& ctx = {});
+bool   ShiftPartGain(SoundData& d, const std::string& part, double delta, const ZoneContext& ctx = {},
+    ZoneSel* sel = nullptr);
 // The fader set to `value` (dB): ShiftPartGain by value - what it shows.
-bool   SetPartFader(SoundData& d, const std::string& part, double value, const ZoneContext& ctx = {});
+bool   SetPartFader(SoundData& d, const std::string& part, double value, const ZoneContext& ctx = {},
+    ZoneSel* sel = nullptr);
 double PartFaderDb(const SoundData& d, const std::string& part);
 
 // Decision 7: after `part`'s ("" = the Sound's: every part that does not own it) Pre-roll (field Preroll) or Tail
 // (field Tail) changed: with `tail_wins` every edge of those parts dragged by hand follows it again (an edge held by
 // a Gap never moves); off: they stay. Returns how many hand edges there were (touched or kept); RelayoutZones runs
 // after when some were released.
-int ApplyPreTailChange(SoundData& d, const std::string& part, bool tail_wins, PartField field, const ZoneContext& ctx = {});
+int ApplyPreTailChange(SoundData& d, const std::string& part, bool tail_wins, PartField field, const ZoneContext& ctx = {},
+    ZoneSel* sel = nullptr);
 
 // Normalize: the groups measured together and given one gain: zones of one part glued by Gaps (ChainOf, same part).
 // From a selection (part zones of it), or every part zone of `part` ("" = every part zone of the Sound).

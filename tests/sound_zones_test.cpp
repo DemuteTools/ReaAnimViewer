@@ -145,7 +145,8 @@ bool RoundTrips(const SoundData& d)
     SoundStore back;
     if (!ParseSoundStore(SerializeSoundStore(StoreOf(d)), &back) || back.libraries.size() != 1 || back.libraries[0].nodes.empty())
         return false;
-    return SameZones(d, back.libraries[0].nodes[0].sound);
+    // and written again, the same text
+    return SameZones(d, back.libraries[0].nodes[0].sound) && SerializeSoundStore(back) == SerializeSoundStore(StoreOf(d));
 }
 
 // ---- Matrix rows ----------------------------------------------------------------------------------------------
@@ -492,68 +493,177 @@ ZoneSel AnySel(const SoundData& d, Rng& r)
     return s;
 }
 
+
+// Lot A review: the migrated spans survive a relayout with peaks; zones proposed before the peaks get RAV's cuts once
+// they are read; an off variation is out of the model; snap modes; a part with no zone; 40508 without a time selection.
+void TestReviewRows()
+{
+    PeakData pk = Peaks({{0.12, 0.20}, {0.35, 0.40}, {0.60, 0.66}});
+    {  // TakeMarkers migration: every edge kept by hand (the old model never trimmed there)
+        SoundData  d = Base();
+        d.mode = DetectMode::TakeMarkers;
+        SoundFrame f;
+        f.start = 0.1;
+        f.length = 0.9;
+        f.cuts = {0.30};
+        f.owners = {kHeel, kToe};
+        d.frames.push_back(f);
+        SoundZone ex;
+        ex.start = 0.50;
+        ex.length = 0.05;
+        d.zones.push_back(ex);
+        CHECK(MigrateLegacyZones(d));
+        ZoneContext ctx;
+        ctx.peaks = &pk;
+        CHECK(SetZoneDb(d, {0, 0}, -1.0, ctx));
+        CHECK(Near(At(d, 0, 0).a, 0.1) && Near(At(d, 0, 0).b, 0.3) && Near(At(d, 0, 1).a, 0.3) && Near(At(d, 0, 2).b, 1.0));
+        // the old part gain shows on the fader
+        SoundData g = Base();
+        g.frames.push_back(f);
+        PartSettings ps;
+        ps.value = kToe;
+        ps.gain_db = -3.0;
+        g.parts.push_back(ps);
+        CHECK(MigrateLegacyZones(g) && Near(PartFaderDb(g, kToe), -3.0) && Near(At(g, 0, 1).db, -3.0));
+    }
+    {  // proposed blind (no peaks: an even split), then the peaks arrive: RAV's cut before Toe's onset
+        SoundData  d = Base();
+        SoundFrame f;
+        f.start = 0.1;
+        f.length = 0.6;
+        d.frames.push_back(f);
+        RefreshParts(d, nullptr);
+        CHECK(d.frames[0].zones.size() == 2 && Near(At(d, 0, 1).slot_a, 0.4));
+        RefreshParts(d, &pk);
+        CHECK(d.frames[0].zones.size() == 2 && At(d, 0, 1).onset > 0.0 && At(d, 0, 1).slot_a > 0.3 && At(d, 0, 1).slot_a < 0.36);
+    }
+    {  // an off variation: out of the heard pieces, out of NewZone's reach, zones kept
+        SoundData d = With({Z(kHeel, 0.10, 0.30)});
+        SoundFrame f;
+        f.on = false;
+        f.zones = {Z(kToe, 0.50, 0.70)};
+        f.start = 0.5;
+        f.length = 0.2;
+        d.frames.push_back(f);
+        CHECK(HeardPieces(d, 0.0, 1.0).size() == 3 && AllZones(d).size() == 1);  // silence, heel, silence
+        CHECK(NewZone(d, kHeel, 0.55, 0.60) && d.frames[1].zones.size() == 1 && !d.frames[1].on && d.frames[0].zones.size() == 2);
+        CHECK(ZonesProblem(d, 3.0).empty());
+    }
+    {  // snap: Peak mode on the peaks, a part's own offset
+        SoundData d = With({Z(kHeel, 0.10, 0.30)});
+        d.sync_mode = SyncMode::Peak;
+        PeakData p2 = Peaks({{0.15, 0.25}});
+        p2.max_abs[200] = 0.99f;
+        CHECK(Near(ZoneSnap(d, {0, 0}, &p2).t, 0.198, 1e-3));
+        PartSettings o;
+        o.sync_offset_ms = 0.0;
+        SetPartSetting(d, kHeel, o);
+        CHECK(Near(ZoneSnap(d, {0, 0}, &p2).t, 0.200, 1e-3));
+    }
+    {  // a part with no zone in a variation: nothing placed for it there
+        SoundData d = With({Z(kHeel, 0.10, 0.30)});
+        CHECK(PlacedSpans(d, 0, kToe).empty() && ZonesOfPart(d, kToe).empty());
+    }
+    {  // 40508 without a time selection: nothing
+        SoundData d = With({Z(kHeel, 0.10, 0.30)});
+        CHECK(!TrimZonesTo(d, {{0, 0}}, 0.2, 0.2));
+    }
+}
+
 void TestFuzz()
 {
     PeakData pk = Peaks({{0.15, 0.22}, {0.45, 0.50}, {0.70, 0.71}, {1.10, 1.18}, {1.45, 1.52}, {2.05, 2.12}, {2.40, 2.47}, {2.62, 2.64}});
     const double T = 3.0;
-    ZoneContext  ctx;
-    ctx.peaks = &pk;
-    ctx.file_len = T;
     Rng       r{0x13628D5EEDULL};
     SoundData d = FuzzSound(pk);
-    int       bad = 0, steps = 0, changed = 0, with_gaps = 0, multi = 0;
+    ZoneSel   cur;  // the selection a UI keeps: passed to every gesture, re-resolved by it
+    int       bad = 0, steps = 0, changed = 0, with_gaps = 0, multi = 0, lied = 0;
     const char* names[] = {"CutOut", "MakeGap", "NewZone", "FillGap", "Split", "TrimAt", "TrimTo", "Heal", "Delete", "Give",
                            "Move", "Edge", "Cut", "GapEdge", "Xfade", "Fade", "Snap", "Db", "ShiftDb", "ResetEdge", "ResetFade",
-                           "ResetSnap", "Fader", "PreTail", "Relayout", "NoPeaks", "Gxfade"};
+                           "ResetSnap", "Fader", "PreTail", "Relayout", "NoPeaks", "Gxfade", "OnOff", "Redivide", "NaN"};
     const int   kinds = static_cast<int>(sizeof(names) / sizeof(names[0]));
+    const int   kGestures = 23;  // kinds below this are gestures: false = nothing changed
+    std::vector<int> ok_count(static_cast<size_t>(kinds), 0);
     for (int i = 0; i < 24000; ++i) {
-        if (i % 1500 == 0) d = FuzzSound(pk);
+        if (i % 1500 == 0) {
+            d = FuzzSound(pk);
+            cur.clear();
+        }
+        ZoneContext ctx;  // with the peaks most of the time; sometimes none (edges stay); the length sometimes from the peaks
+        ctx.peaks = r.I(5) == 0 ? nullptr : &pk;
+        ctx.file_len = ctx.peaks && r.I(4) == 0 ? 0.0 : T;
         const int    k = r.I(kinds);
         const double t0 = r.U(0.0, T), t1 = t0 + r.U(0.0, 0.3);
-        const std::string part = r.I(2) ? kHeel : kToe;
-        ZoneSel      sel = AnySel(d, r);
+        const std::string part = d.divide_values[static_cast<size_t>(r.I(static_cast<int>(d.divide_values.size())))];
+        ZoneSel      sel = r.I(3) == 0 && !cur.empty() ? cur : AnySel(d, r);
         const ZoneRef z = AnyZone(d, r);
         const int    side = r.I(2) ? 1 : -1;
+        const std::string before = SerializeSoundStore(StoreOf(d));
         bool         ch = false;
         switch (k) {
-        case 0: ch = CutOut(d, t0, t1, ctx); break;
+        case 0: ch = CutOut(d, t0, t1, ctx, &cur); break;
         case 1: {  // mostly inside a part zone (a real wormhole), else anywhere
             const EditZone* q = ZoneOf(d, z);
             if (q && !q->IsGap() && r.I(4) != 0 && q->b - q->a > 0.03) {
                 const double a = r.U(q->a + 0.006, q->b - 0.02);
-                ch = MakeGap(d, a, a + r.U(0.004, std::min(0.08, q->b - a - 0.006)), ctx);
+                ch = MakeGap(d, a, a + r.U(0.004, std::min(0.08, q->b - a - 0.006)), ctx, nullptr, &cur);
             } else {
-                ch = MakeGap(d, t0, t1, ctx);
+                ch = MakeGap(d, t0, t1, ctx, nullptr, &cur);
             }
             break;
         }
-        case 2: ch = NewZone(d, part, t0, t1, ctx); break;
+        case 2: ch = NewZone(d, part, t0, t1, ctx, &cur); break;
         case 3: {
             ZoneRef g = {};
             for (const ZoneRef& q : AllZones(d))
-                if (ZoneOf(d, q)->IsGap()) g = q;
-            ch = FillGap(d, g, ctx);
+                if (ZoneOf(d, q)->IsGap() && (g.frame < 0 || r.I(2))) g = q;
+            ch = FillGap(d, g, ctx, &cur);
             break;
         }
-        case 4: ch = SplitZoneAt(d, t0, ctx); break;
-        case 5: ch = TrimZonesAt(d, sel, t0, side, ctx); break;
-        case 6: ch = TrimZonesTo(d, r.I(2) ? sel : ZoneSel{}, t0, t1, ctx); break;
-        case 7: ch = HealZones(d, sel, ctx); break;
-        case 8: ch = DeleteZones(d, sel, ctx); break;
-        case 9: ch = GiveZonesPart(d, sel, part, ctx); break;
-        case 10: ch = MoveZone(d, z, r.U(-0.2, 0.2), ctx); break;
-        case 11: ch = DragZoneEdge(d, z, side, t0, ctx); break;
-        case 12: ch = DragCut(d, z, ZoneOf(d, z) ? ZoneOf(d, z)->b + r.U(-0.05, 0.05) : t0, ctx); break;
-        case 13: ch = DragGapEdge(d, z, side, ZoneOf(d, z) ? (side < 0 ? ZoneOf(d, z)->a : ZoneOf(d, z)->b) + r.U(-0.05, 0.05) : t0, ctx); break;
-        case 14: ch = DragGapXfade(d, z, side, ZoneOf(d, z) ? r.U(ZoneOf(d, z)->a, ZoneOf(d, z)->b) : t0, r.I(2) == 0, ctx); break;
-        case 15: ch = SetZoneFade(d, z, side, r.U(0.0, 0.05), ctx); break;
-        case 16: ch = SetZoneSnap(d, z, ZoneOf(d, z) ? r.U(ZoneOf(d, z)->a - 0.05, ZoneOf(d, z)->b + 0.05) : t0, ctx); break;
-        case 17: ch = SetZoneDb(d, z, r.U(-30.0, 30.0), ctx); break;
-        case 18: ch = ShiftZonesDb(d, sel, r.U(-6.0, 6.0), {}, ctx); break;
-        case 19: ch = ResetZoneEdge(d, z, side, ctx); break;
-        case 20: ch = ResetZoneFade(d, z, side, ctx); break;
-        case 21: ch = ResetZoneSnap(d, z, ctx); break;
-        case 22: ch = r.I(3) ? SetPartFader(d, part, r.U(-24.0, 12.0), ctx) : SetPartFader(d, part, 0.0, ctx); break;
+        case 4: ch = SplitZoneAt(d, ZoneOf(d, z) && r.I(2) ? (ZoneOf(d, z)->a + ZoneOf(d, z)->b) / 2 : t0, ctx, &cur); break;
+        case 5: ch = TrimZonesAt(d, sel, ZoneOf(d, z) && r.I(2) ? r.U(ZoneOf(d, z)->a, ZoneOf(d, z)->b) : t0, side, ctx, &cur); break;
+        case 6: ch = TrimZonesTo(d, r.I(2) ? sel : ZoneSel{}, t0, r.I(8) == 0 ? t0 : t1, ctx, &cur); break;
+        case 7: {  // often a run of consecutive zones (with a Gap inside when there is one)
+            ZoneSel h = sel;
+            const std::vector<ZoneRef> all = AllZones(d);
+            for (size_t q = 0; q + 2 < all.size() && r.I(2); ++q)
+                if (ZoneOf(d, all[q + 1])->IsGap()) {
+                    h = {all[q], all[q + 1], all[q + 2]};
+                    break;
+                }
+            ch = HealZones(d, h, ctx);
+            cur = h;
+            break;
+        }
+        case 8: ch = DeleteZones(d, sel, ctx); cur = sel; break;
+        case 9: ch = GiveZonesPart(d, sel, part, ctx, &cur); break;
+        case 10: ch = MoveZone(d, z, r.U(-0.2, 0.2), ctx, &cur); break;
+        case 11: ch = DragZoneEdge(d, z, side, ZoneOf(d, z) && r.I(2) ? (side < 0 ? ZoneOf(d, z)->a : ZoneOf(d, z)->b) + r.U(-0.05, 0.05) : t0, ctx, &cur); break;
+        case 12: ch = DragCut(d, z, ZoneOf(d, z) ? ZoneOf(d, z)->b + r.U(-0.05, 0.05) : t0, ctx, &cur); break;
+        case 13: {
+            ZoneRef g = z;
+            for (const ZoneRef& q : AllZones(d))
+                if (ZoneOf(d, q)->IsGap() && r.I(2)) g = q;
+            const EditZone* q = ZoneOf(d, g);
+            ch = DragGapEdge(d, g, side, q ? (side < 0 ? q->a : q->b) + r.U(-0.03, 0.03) : t0, ctx, &cur);
+            break;
+        }
+        case 14: {
+            ZoneRef g = z;
+            for (const ZoneRef& q : AllZones(d))
+                if (ZoneOf(d, q)->IsGap() && r.I(2)) g = q;
+            const EditZone* q = ZoneOf(d, g);
+            ch = DragGapXfade(d, g, side, q ? r.U(q->a, q->b) : t0, r.I(2) == 0, ctx, &cur);
+            break;
+        }
+        case 15: ch = SetZoneFade(d, z, side, r.U(0.0, 0.05), ctx, &cur); break;
+        case 16: ch = SetZoneSnap(d, z, ZoneOf(d, z) ? r.U(ZoneOf(d, z)->a - 0.05, ZoneOf(d, z)->b + 0.05) : t0, ctx, &cur); break;
+        case 17: ch = SetZoneDb(d, z, r.U(-30.0, 30.0), ctx, &cur); break;
+        case 18: ch = ShiftZonesDb(d, sel, r.U(-6.0, 6.0), {}, ctx, &cur); break;
+        case 19: ch = ResetZoneEdge(d, z, side, ctx, &cur); break;
+        case 20: ch = ResetZoneFade(d, z, side, ctx, &cur); break;
+        case 21: ch = ResetZoneSnap(d, z, ctx, &cur); break;
+        case 22: ch = r.I(3) ? SetPartFader(d, part, r.U(-24.0, 12.0), ctx, &cur) : SetPartFader(d, part, 0.0, ctx, &cur); break;
         case 23: {
             PartSettings ps;
             const bool   pre = r.I(2) == 0;
@@ -566,19 +676,60 @@ void TestFuzz()
             } else {
                 SetPartSetting(d, who, ps);
             }
-            ApplyPreTailChange(d, who, r.I(2) == 0, pre ? PartField::Preroll : PartField::Tail, ctx);
+            ApplyPreTailChange(d, who, r.I(2) == 0, pre ? PartField::Preroll : PartField::Tail, ctx, &cur);
             ch = true;
             break;
         }
         case 24: RelayoutZones(d, &pk, T); break;
         case 25: RelayoutZones(d, nullptr, T); break;
         case 26: d.gap_xfade = r.U(0.0, 0.05); break;
+        case 27: {  // a variation switched off / on (the UI then refreshes the parts)
+            if (!d.frames.empty()) {
+                SoundFrame& f = d.frames[static_cast<size_t>(r.I(static_cast<int>(d.frames.size())))];
+                f.on = !f.on;
+                RefreshParts(d, r.I(2) ? &pk : nullptr);
+            }
+            cur.clear();
+            break;
+        }
+        case 28: {  // divided again (2 or 3 parts), zones proposed again
+            if (r.I(6) == 0) {
+                if (d.divide_values.size() == 2) SetDivide(d, "g3", {kHeel, kToe, "ball"});
+                else SetDivide(d, "g", {kHeel, kToe});
+                RefreshParts(d, r.I(3) ? &pk : nullptr);
+                cur.clear();
+            }
+            break;
+        }
+        case 29: {  // bad numbers: nothing changes
+            const double nan = std::nan("");
+            ch = CutOut(d, nan, t1, ctx) || NewZone(d, part, t0, nan, ctx) || MoveZone(d, z, nan, ctx) ||
+                 DragZoneEdge(d, z, side, nan, ctx) || SetZoneDb(d, z, nan, ctx) || SplitZoneAt(d, nan, ctx) ||
+                 SetPartFader(d, part, nan, ctx) || NewZone(d, part, t0, t0, ctx);
+            if (ch || SerializeSoundStore(StoreOf(d)) != before) {
+                if (bad < 5) std::printf("fuzz step %d: a bad number changed something\n", i);
+                ++bad;
+            }
+            break;
+        }
         default: break;
         }
         ++steps;
         changed += ch ? 1 : 0;
+        if (ch) ++ok_count[static_cast<size_t>(k)];
         with_gaps += GapCount(d) > 0 ? 1 : 0;
         multi += PartZoneCount(d) > 8 ? 1 : 0;
+        if (k < kGestures && !ch && SerializeSoundStore(StoreOf(d)) != before) {  // false = nothing changed
+            if (lied < 5) std::printf("fuzz step %d (%s): returned false but changed the Sound\n", i, names[k]);
+            ++lied;
+        }
+        for (const ZoneRef& q : cur)
+            if (!ZoneOf(d, q) || !d.frames[static_cast<size_t>(q.frame)].on) {
+                if (bad < 5) std::printf("fuzz step %d (%s): the selection points at no zone\n", i, names[k]);
+                ++bad;
+                cur.clear();
+                break;
+            }
         const std::string p = ZonesProblem(d, T);
         if (!p.empty()) {
             if (bad < 5) std::printf("fuzz step %d (%s): %s\n", i, names[k], p.c_str());
@@ -586,14 +737,27 @@ void TestFuzz()
         }
         if (!RoundTrips(d)) {
             if (bad < 5) std::printf("fuzz step %d (%s): parse(write(d)) != d\n", i, names[k]);
+
             ++bad;
+        }
+        {  // relayout is stable: twice = once
+            SoundData once = d;
+            RelayoutZones(once, &pk, T);
+            SoundData twice = once;
+            RelayoutZones(twice, &pk, T);
+            if (!SameZones(once, twice)) {
+                if (bad < 5) std::printf("fuzz step %d (%s): relayout is not stable\n", i, names[k]);
+                ++bad;
+            }
         }
         if (bad > 20) break;
     }
-    CHECK(bad == 0);
+    CHECK(bad == 0 && lied == 0);
     CHECK(steps >= 20000);
     CHECK(changed > steps / 5);  // the gestures did things
     CHECK(with_gaps > steps / 10 && multi > steps / 20);  // with Gaps and many zones a good part of the time
+    for (int k = 0; k < kGestures; ++k)
+        if (ok_count[static_cast<size_t>(k)] < 40) std::printf("fuzz: gesture %s rarely did something (%d)\n", names[k], ok_count[static_cast<size_t>(k)]);
     std::printf("sound_zones fuzz: %d gestures, %d changed something, %d with Gaps, %d with > 8 zones\n", steps, changed,
                 with_gaps, multi);
 }
@@ -610,6 +774,7 @@ int main()
     TestTailWins();
     TestFaderAndNormalize();
     TestProposeAndRecord();
+    TestReviewRows();
     TestFuzz();
     if (g_fails) {
         std::printf("sound_zones_test: %d failure(s)\n", g_fails);

@@ -285,6 +285,11 @@ add_executable(item_clear_plan_test item_clear_plan_test.cpp ../src/item_clear_p
 target_include_directories(item_clear_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME item_clear_plan COMMAND item_clear_plan_test)
 
+# Story 6-5-10 -- the animation clip list's plan (src/clip_list_plan.h).
+add_executable(clip_list_plan_test clip_list_plan_test.cpp ../src/clip_list_plan.cpp)
+target_include_directories(clip_list_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME clip_list_plan COMMAND clip_list_plan_test)
+
 # Story 11-7 -- which item REAPER plays at p, at which clip time (src/play_item_plan.h).
 add_executable(play_item_plan_test play_item_plan_test.cpp ../src/play_item_plan.cpp ../src/tagging_signal.cpp)
 target_include_directories(play_item_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)

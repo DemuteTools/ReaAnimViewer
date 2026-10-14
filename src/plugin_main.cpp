@@ -3,6 +3,7 @@
 // Reaper extension entry point. Phase 0: registers a single action that
 // opens an empty WGL viewer window. No mesh loading, no transport sync.
 
+#include "clip_list_ui.h"  // Story 6-5-10: the clip list (its grouping in the project)
 #include "console_log.h"
 #include "detection_measure.h"
 #include "item_rules.h"  // Story 10-6: Make tagging unique
@@ -197,6 +198,8 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
         CloseViewerWindow();
         // Epic 13 (D20) -- the sound store's projectconfig.
         QuitSoundProject();
+        // Story 6-5-10 -- the clip list's projectconfig line (its grouping).
+        QuitClipList();
         // 13-7c -- stops the media preview, joins the peak reader and the database load.
         QuitLibraryMedia();
         // 13-55 -- the one peak reader's thread (Sound panel, Edit, Media Explorer).
@@ -269,6 +272,8 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     // Epic 13 (D20) -- the sound store (projectconfig), each sound module's own functions (D7), and
     // the storage check action (D10). A failure only loses that part.
     InitSoundProject(rec);
+    // Story 6-5-10 -- the clip list: its grouping in the project, REAPER's item selection functions.
+    InitClipList(rec);
     InitSoundPlace(rec->GetFunc);
     InitSoundPopulate(rec->GetFunc);
     InitSoundPeaks(rec->GetFunc);

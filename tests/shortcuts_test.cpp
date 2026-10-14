@@ -747,6 +747,27 @@ int main()
         CHECK(FormatShortcut(b[kShortcutTagAddEvent]) == "E");
     }
 
+    // Story 6-5-10 -- the clip list: L in every view, rebindable, clashing with no default.
+    {
+        const ShortcutBindings b = DefaultShortcutBindings();
+        CHECK(b[kShortcutClipList] == Key('L'));
+        CHECK(std::string(kShortcutTable[kShortcutClipList].id) == "clip_list");
+        CHECK(kShortcutTable[kShortcutClipList].context == ShortcutContext::Anywhere);
+        CHECK(ShortcutActionFor(b, 'L', false, false, false, false, false) == kShortcutClipList);
+        CHECK(ShortcutActionFor(b, 'L', false, false, false, true, false) == kShortcutClipList);
+        CHECK(ShortcutActionFor(b, 'L', false, false, false, false, true) == kShortcutClipList);
+        CHECK(ShortcutActionFor(b, 'L', true, false, false, false, false) == -1);  // Ctrl+L stays REAPER's
+        for (int i = 0; i < kShortcutCount; ++i)
+            if (i != kShortcutClipList) CHECK(!(b[i] == Key('L')));
+        ShortcutBindings d = b;
+        CHECK(SanitizeShortcuts(d).empty());
+        int owner = -1;
+        CHECK(ShortcutRecordStep(d, kShortcutClipList, 'P', false, false, false, &owner) == RecordOutcome::Conflict);
+        CHECK(owner == kShortcutTogglePanel);
+        CHECK(ShortcutRecordStep(d, kShortcutClipList, 'K', false, false, false) == RecordOutcome::Assigned);
+        CHECK(ResetShortcut(d, kShortcutClipList).size() == 1 && d[kShortcutClipList] == Key('L'));
+    }
+
     // Story 6-5-9 -- full screen: F11 (anywhere, rebindable), Esc is the viewer's while full
     // screen, and a key it does not take goes to REAPER's main shortcuts (-666), Alt ones excepted.
     {

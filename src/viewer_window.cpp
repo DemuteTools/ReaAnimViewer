@@ -49,6 +49,7 @@
 #include "shortcuts_ui.h"      // spec 11-fb-3: the keyboard icon + Shortcuts popup
 #include "view_nav.h"          // 13-45: the timelines' wheel / zoom keys, the Shortcuts rows' recording
 #include "skeleton_view.h"     // spec 10-3c: the Model / Skeleton switch and its overlay
+#include "clip_list_ui.h"      // story 6-5-10: the animation clip list (left of every view)
 #include "tagging_assign_ui.h"  // 13-15b: the Sound assignment window takes the keys while it has the focus
 #include "tagging_session.h"   // Story 10-3: the Tagging view's model (item, rules, detection)
 #include "tag_markers.h"       // Story 10-4: the markers option (Take / Project / Both)
@@ -737,6 +738,7 @@ void RenderTick()
     const bool item_found = GetCurrentAnimItemOn(VideoViewPinnedTrack(), item_path, item_time, &item_track,
                                                  &item_media, &item_skipped);
     if (item_found) g_view_cleared = false;
+    ClipListSetCurrentItem(item_found ? item_media : nullptr);  // story 6-5-10: the lit row
     if (item_found) {
         if (item_path != g_current_anim_path) {
             // Item changed (first item, or a scrub onto a DIFFERENT source) → (re)load
@@ -1734,10 +1736,26 @@ void DrawToolUi()
     // Bottom-left status icon + its hover panel (re-shows the load message on demand).
     StatusIconWidget();
 
+    // Story 6-5-10 -- the clip list: its round button on the left of every view, half-way between
+    // the menu button (its bottom: 10 + 8 + 26 px) and the Model / Skeleton switch's slot (above the
+    // strip in Tagging / Video view); open, the panel over the left of the view (never the Tagging /
+    // Video panel), its whole height. Opening it closes the options menu (the panel covers it).
+    {
+        const float switch_bottom = ViewBottom() - kStatusIconMargin - kStatusIconSize - ui::Dp(6.0f);
+        const float switch_top = switch_bottom - ui::ControlH() - ui::Dp(4.0f);
+        if (DrawClipList(area_right, static_cast<float>(g_client_h), ui::Dp(10.0f + 8.0f + 26.0f), switch_top,
+                         ShortcutKeyLabel(kShortcutClipList)))
+            g_menu_open = false;
+    }
+
     // Spec viewer-options-menu-tabs: open, the menu is drawn above every other viewer window
     // (strip, panels, switches, nav cube), even one clicked this frame; popups, modals and
     // tooltips stay above it. EndFrame first: a click focuses (brings to front) its window there.
     ImGui::EndFrame();
+    // Story 6-5-10: the clip list over every other viewer window (its button over its panel); the
+    // menu, open, stays above both.
+    if (ImGuiWindow* w = ClipListPanelWindow()) KeepMenuInFront(w);
+    if (ImGuiWindow* w = ClipListButtonWindow()) KeepMenuInFront(w);
     if (g_menu_open) KeepMenuInFront(menu_window);
 
     ImGui::Render();
@@ -2430,6 +2448,14 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         // Story 10-3: Esc during a Tagging view drag cancels it (ImGui has the key already).
         if (wp == VK_ESCAPE && TaggingViewActive() && TaggingGestureActive()) return 0;
+        // Story 6-5-10: the clip list has the keyboard: its arrows, Enter and Esc are read by its
+        // frame (ImGui has the key already).
+        if (ClipListTakesKey(static_cast<unsigned>(wp), ctrl, shift, alt)) return 0;
+        // ...open without it (the 3D view was clicked since): Esc closes it, before leaving full screen.
+        if (wp == VK_ESCAPE && ClipListOpen() && !TextInputNow()) {
+            if (!(lp & (1 << 30))) SetClipListOpen(false);
+            return 0;
+        }
         // A text field, or the Tagging view's preset menu (story 10-3b), takes every key.
         if (TextInputNow()) return 0;
         // 13-15b: no viewer shortcut (Del, E, V...) runs while the Sound assignment window has the focus;
@@ -2444,6 +2470,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             es.tagging_gesture = TaggingViewActive() && TaggingGestureActive();
             es.text_input = TextInputNow();
             es.recording = ShortcutRecordingId() >= 0;
+            es.clip_list = ClipListOpen();  // story 6-5-10 (closed above already; kept for the rule)
             es.library_takes_esc = LibraryViewActive() && LibraryViewTakesKey(VK_ESCAPE, ctrl, shift, alt);
             // Under the main ImGui context (MainContext above); ImGui reads this key only at the next
             // frame, so this is the popup state at key-down: an open menu / combo closes, full screen stays.
@@ -2464,6 +2491,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (VideoDeleteConfirmOpen()) return 0;  // spec 11-fb-11: no shortcut runs behind the confirmation
         if (action == kShortcutFullScreen) {  // story 6-5-9 (F11)
             SetFullScreenMode(!FullScreenActive());
+            return 0;
+        }
+        if (action == kShortcutClipList) {  // story 6-5-10 (L): the clip list, every view
+            SetClipListOpen(!ClipListOpen());
+            if (ClipListOpen()) g_menu_open = false;
             return 0;
         }
         if (action == kShortcutToggleView || (action == kShortcutTogglePanel && !VideoViewActive())) {
@@ -2507,7 +2539,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         // key it took); otherwise the docker keeps its own handling of them. Keys the viewer
         // does not take are still returned to REAPER (0) by the accelerator hook.
         const bool takes_keys = TextInputNow() || ShortcutRecordingId() >= 0 || ShortcutsPopupOpen() ||
-                                VideoDeleteConfirmOpen() || g_key_route.claimed_vk != 0;
+                                VideoDeleteConfirmOpen() || g_key_route.claimed_vk != 0 || ClipListOpen();
         return DLGC_WANTCHARS | (takes_keys ? (DLGC_WANTALLKEYS | DLGC_WANTARROWS | DLGC_WANTTAB) : 0);
     }
 
@@ -2755,12 +2787,19 @@ int ViewerTranslateAccel(MSG* msg, accelerator_register_t* /*ctx*/)
     in.recording  = ShortcutRecordingId() >= 0;
     in.text_input = TextInputNow();  // story 10-3b: the preset menu open counts
     // Esc closes either; Story 10-3: Esc also cancels a Tagging view drag.
-    in.popup_open = ShortcutsPopupOpen() || VideoDeleteConfirmOpen() || (TaggingViewActive() && TaggingGestureActive());
+    in.popup_open = ShortcutsPopupOpen() || VideoDeleteConfirmOpen() || (TaggingViewActive() && TaggingGestureActive()) ||
+                    ClipListOpen();  // story 6-5-10: Esc closes the clip list
     in.confirm_open = VideoDeleteConfirmOpen();  // Enter confirms the delete
     in.imgui_mouse = ImGuiWantsMouse();          // spec 11-fb-12: Alt + wheel over the UI
     in.full_screen = FullScreenActive();         // story 6-5-9: Esc leaves, other keys reach REAPER
     in.horizontal = msg->message == WM_MOUSEHWHEEL;
     if (in.msg == KeyMsg::Wheel) in.view_wheel = ViewNavClaimsWheel(in.horizontal, in.ctrl, in.shift, in.alt);  // 13-45
+    // Story 6-5-10: the clip list's own keys (Up, Down, Enter, Esc) while it has the keyboard, before the
+    // Library view's (the list is over it); the key's release follows it.
+    if (in.msg == KeyMsg::KeyDown && ClipListTakesKey(in.key, in.ctrl, in.shift, in.alt)) {
+        in.text_input = true;
+        g_key_route.claimed_vk = in.key;
+    }
     // Story 13-7a (decision 7): the Library view's keys (Delete, F2, Space, Esc, Ctrl+B / D / X / V)
     // reach the viewer while its window has the focus; the key's character and release follow it.
     if (in.msg == KeyMsg::KeyDown && LibraryViewActive() && LibraryViewTakesKey(in.key, in.ctrl, in.shift, in.alt)) {

@@ -100,6 +100,7 @@ struct EscState {
     bool text_input = false;        // a text field (or the preset menu) takes every key
     bool recording = false;         // a new key is being recorded (Esc cancels it)
     bool library_takes_esc = false; // the Library view uses Esc itself
+    bool clip_list = false;         // story 6-5-10: the clip list is open (Esc closes it first)
     bool imgui_popup = false;       // an ImGui menu / combo / popup was open when Esc went down: it
                                     // closes that popup only (one Esc, one thing)
 };
@@ -109,7 +110,7 @@ inline bool EscLeavesFullScreen(const EscState& s)
 {
     if (!s.full_screen) return false;
     return !(s.shortcuts_popup || s.delete_confirm || s.tagging_gesture || s.text_input || s.recording ||
-             s.library_takes_esc || s.imgui_popup);
+             s.library_takes_esc || s.imgui_popup || s.clip_list);
 }
 
 }  // namespace fullscreen

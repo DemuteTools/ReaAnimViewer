@@ -81,7 +81,8 @@ enum ShortcutId : int {
     kShortcutTagAddEvent = 6,  // story 10-4: add an event at the playhead on the selected rule (Tagging view only)
     kShortcutTagDelEvent = 7,  // story 10-4: suppress / restore / delete the selected event (Tagging view only)
     kShortcutFullScreen  = 8,  // story 6-5-9: the viewer full screen on / off (Esc leaves it too)
-    kShortcutCount       = 9,
+    kShortcutClipList    = 9,  // story 6-5-10: the animation clip list open / closed (every view)
+    kShortcutCount       = 10,
 };
 
 inline const ShortcutDef kShortcutTable[kShortcutCount] = {
@@ -94,6 +95,7 @@ inline const ShortcutDef kShortcutTable[kShortcutCount] = {
     {"tag_add_event", "Add event at playhead",       {'E', false, false, false}, ShortcutContext::TaggingView},
     {"tag_del_event", "Suppress / delete event",     {vk::kDelete, false, false, false}, ShortcutContext::TaggingView},
     {"full_screen",  "Full screen on / off",         {vk::kF11, false, false, false}, ShortcutContext::Anywhere},
+    {"clip_list",    "Clip list: open / close",      {'L', false, false, false}, ShortcutContext::Anywhere},
 };
 
 // The mouse gestures the popup lists (fixed, never rebindable), by group.

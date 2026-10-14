@@ -153,6 +153,13 @@ int main()
         t.library_takes_esc = true;
         CHECK(!EscLeavesFullScreen(t));
     }
+    {
+        EscState t = e;  // story 6-5-10: the clip list open closes first; the next Esc leaves
+        t.clip_list = true;
+        CHECK(!EscLeavesFullScreen(t));
+        t.clip_list = false;
+        CHECK(EscLeavesFullScreen(t));
+    }
 
     if (g_fails == 0) std::printf("viewer_fullscreen_plan: all checks passed\n");
     return g_fails == 0 ? 0 : 1;

@@ -24,9 +24,28 @@ int g_fails = 0;
         }                                                    \
     } while (0)
 
+// 13-62h: every field of a zone.
+bool SameZone(const EditZone& p, const EditZone& q)
+{
+    return p.a == q.a && p.b == q.b && p.part == q.part && p.slot_a == q.slot_a && p.slot_b == q.slot_b &&
+           p.a_hand == q.a_hand && p.b_hand == q.b_hand && p.a_auto_cut == q.a_auto_cut && p.onset == q.onset &&
+           p.snap == q.snap && p.fade_in == q.fade_in && p.fade_out == q.fade_out && p.db == q.db && p.xl == q.xl &&
+           p.xr == q.xr && p.kept == q.kept && p.auto_snap == q.auto_snap;
+}
+
+bool SameZones(const std::vector<EditZone>& a, const std::vector<EditZone>& b)
+{
+    if (a.size() != b.size()) return false;
+    for (size_t k = 0; k < a.size(); ++k)
+        if (!SameZone(a[k], b[k])) return false;
+    return true;
+}
+
 bool SameFrames(const std::vector<SoundFrame>& a, const std::vector<SoundFrame>& b)
 {
     if (a.size() != b.size()) return false;
+    for (size_t i = 0; i < a.size(); ++i)
+        if (!SameZones(a[i].zones, b[i].zones)) return false;
     for (size_t i = 0; i < a.size(); ++i)
         if (a[i].start != b[i].start || a[i].length != b[i].length || a[i].on != b[i].on || a[i].db != b[i].db ||
             a[i].hand != b[i].hand || a[i].kept != b[i].kept || a[i].fade_in != b[i].fade_in ||
@@ -525,6 +544,58 @@ int main()
                               "frame start=0 len=1 pdb.x=abc\n", &bad));
         CHECK(bad.libraries[0].nodes[0].sound.frames[0].part_db.empty() &&
               SerializeSoundStore(bad).find(" pdb.x=abc\n") != std::string::npos);
+    }
+
+    // ---- 13-62h: zones (fzone lines), the lane fader (fdr), At Gaps (gxfade) ------------------------
+    {
+        const std::string head =
+            "RAVSOUNDS 1\ngroup uid=g name=G\nvalue uid=heel name=Heel\nvalue uid=toe name=Toe\nlibrary uid=l name=L root=n\n"
+            "node uid=n type=sound\nsound kind=item mode=silence div=g divv=heel,toe gxfade=0.02\npart v=toe fdr=-1.5\n";
+        const std::string text = head +
+            "fzone a=0.01 b=0.02 p=heel\n"  // before any frame: dropped
+            "frame start=0.1 len=0.6\n"
+            "fzone a=0.1 b=0.3 p=heel sa=0.05 ah=1 bh=1 on=0.12 snap=0.15 fin=0.004 fout=0.006 db=-2.5 as=0.13,0.1,0.3,0,-45,-2 zz=1\n"
+            "fzone a=0.3 b=0.35 xl=0.005 xr=0.004\n"
+            "fzone a=0.35 b=0.7 p=toe acut=1 bh=1\n";
+        SoundStore s;
+        CHECK(ParseSoundStore(text, &s));
+        const SoundData& d = s.libraries[0].nodes[0].sound;
+        CHECK(d.frames.size() == 1 && d.frames[0].zones.size() == 3 && d.gap_xfade == 0.02 && d.parts.size() == 1 &&
+              d.parts[0].fader_db && *d.parts[0].fader_db == -1.5);
+        if (d.frames.size() == 1 && d.frames[0].zones.size() == 3) {
+            const EditZone& h = d.frames[0].zones[0];
+            CHECK(h.part == "heel" && h.slot_a == 0.05 && h.slot_b == 0.3 && h.a_hand && h.b_hand && h.onset == 0.12 && *h.snap == 0.15 &&
+                  *h.fade_in == 0.004 && *h.fade_out == 0.006 && h.db == -2.5 && h.auto_snap.set && h.auto_snap.t == 0.13);
+            CHECK(h.kept.size() == 1 && h.kept[0].first == "zz" && h.kept[0].second == "1");
+            const EditZone& g = d.frames[0].zones[1];
+            CHECK(g.IsGap() && g.xl == 0.005 && g.xr == 0.004 && g.slot_a == g.a && g.slot_b == g.b);
+            CHECK(d.frames[0].zones[2].a_auto_cut && ZonesProblem(d, 0.0).empty());
+        }
+        const std::string t = SerializeSoundStore(s);
+        CHECK(t.find("fzone a=0.01 ") == std::string::npos);  // the orphan is gone
+        CHECK(t.find(" zz=1\n") != std::string::npos && t.find(" gxfade=0.02") != std::string::npos && t.find(" fdr=-1.5") != std::string::npos);
+        CHECK(t.find("fzone a=0.3 b=0.35 xl=0.005 xr=0.004\n") != std::string::npos);  // a Gap: no p, no sa / sb
+        SoundStore back;
+        CHECK(ParseSoundStore(t, &back) && SameStore(back, s) && SerializeSoundStore(back) == t);
+        // Corrupt zones and values: read sane (the invariant holds), bad values kept as written, never read.
+        const std::string bad = head +
+            "frame start=0.1 len=0.6\n"
+            "fzone a=0.3 b=0.1 p=heel\n"                  // b < a
+            "fzone a=0.1 b=0.4 p=heel\n"
+            "fzone a=0.2 b=0.5 p=toe\n"                   // overlaps
+            "fzone a=0.5 b=0.6 p=nobody\n"                // not a divide value
+            "fzone a=0.6 b=0.62 xl=-1 xr=5\n"             // a Gap with nothing after it, bad crossfade
+            "fzone a=0.62 b=0.7 p=toe as=nan,0,1,7,0,0\n";  // a bad measured snap
+        SoundStore c;
+        CHECK(ParseSoundStore(bad, &c));
+        const SoundData& cd = c.libraries[0].nodes[0].sound;
+        CHECK(ZonesProblem(cd, 0.0).empty());
+        bool bad_as = false;
+        for (const EditZone& z : cd.frames[0].zones) bad_as = bad_as || z.auto_snap.set;
+        CHECK(!bad_as);
+        SoundStore gx;
+        CHECK(ParseSoundStore(head.substr(0, head.find("gxfade=")) + "gxfade=9\nframe start=0 len=1\n", &gx));
+        CHECK(gx.libraries[0].nodes[0].sound.gap_xfade == kDefaultGapXfade);  // out of range: not read
     }
 
     // ---- 13-62: a part's own settings (`part` lines after the sound line) and the pieces' owners ------

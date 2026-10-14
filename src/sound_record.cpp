@@ -541,7 +541,12 @@ Got SetSound(SoundData& s, const std::string& k, const std::string& v)
     if (k == "sync") return G(SyncFromWord(v, &s.sync_mode));
     if (k == "soff") return G(ReadNumber(v, &s.sync_offset_ms));
     if (k == "cfade") return G(ReadNumber(v, &s.cut_fade));
-    if (k == "gxfade") return G(ReadNumber(v, &s.gap_xfade));  // 13-62h
+    if (k == "gxfade") {  // 13-62h: as the At Gaps row allows (0..200 ms)
+        double x = 0.0;
+        if (!ReadNumber(v, &x) || x < 0.0 || x > 0.2) return Got::Bad;
+        s.gap_xfade = x;
+        return Got::Ok;
+    }
     if (k == "mono") return G(MonoFromWord(v, &s.mono));
     return Got::Unknown;
 }
@@ -725,6 +730,9 @@ Got SetFzone(EditZone& z, bool* has_sa, bool* has_sb, const std::string& k, cons
     if (k == "as") {  // 13-62h review (R2): t, a, b, mode, threshold, offset
         std::vector<double> n;
         if (!SplitNumbers(v, &n) || n.size() != 6) return Got::Bad;
+        for (double x : n)
+            if (!std::isfinite(x)) return Got::Bad;
+        if (n[3] != std::floor(n[3]) || n[3] < 0.0 || n[3] > 2.0) return Got::Bad;  // a SyncMode index
         z.auto_snap.set = true;
         z.auto_snap.t = n[0];
         z.auto_snap.a = n[1];
@@ -1140,9 +1148,14 @@ bool ParseStoreCore(const std::string& text, SoundStore& s)
     }
     // 13-62h: a divided Sound of an old project / .ravlib (cuts, owners, Sound-level zones, part gains) becomes
     // zones, once, on read.
+    // Zones read are made sane (b < a, overlaps, crossfades out of range, unknown parts): the invariant holds
+    // after any read; zones on a Sound that is not edited as zones (undivided, Takes) are dropped.
     for (SoundLibrary& l : s.libraries)
         for (SoundNode& n : l.nodes)
-            if (n.type == SoundNodeType::Sound) MigrateLegacyZones(n.sound);
+            if (n.type == SoundNodeType::Sound) {
+                MigrateLegacyZones(n.sound);
+                SanitizeZones(n.sound);
+            }
     return true;
 }
 

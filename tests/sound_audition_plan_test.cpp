@@ -1065,6 +1065,27 @@ static void TestPieceTrim()
     // Trim to zone: the variations, as before.
     p = PlanEditTrim(d, {}, EditTrimKind::ToZone, -1.0, 1.1, 0.5);
     CHECK(p.excludes.empty() && p.steps.size() == 1 && Near(p.steps[0].start, 1.1));
+
+    // Adjacent pieces of the same part read as one: a cut between two "a" pieces does not stop the trim.
+    SoundData e;
+    e.divide_group = "g";
+    e.divide_values = {"a", "b"};
+    SoundFrame g;
+    g.start = 1.0;
+    g.length = 1.0;
+    g.cuts = {1.3, 1.6};
+    g.owners = {"a", "a", "b"};
+    e.frames = {g};
+    p = PlanEditTrim(e, {}, EditTrimKind::RightOfCursor, 1.1, 0.0, 0.0);  // up to the part change, not the cut
+    CHECK(p.steps.empty() && p.excludes.size() == 1 && Near(p.excludes[0].a, 1.1) && Near(p.excludes[0].b, 1.6));
+    p = PlanEditTrim(e, {}, EditTrimKind::LeftOfCursor, 1.3, 0.0, 0.0);  // on that cut: inside the merged piece
+    CHECK(p.excludes.empty() && p.steps.size() == 1 && Near(p.steps[0].start, 1.3));
+    p = PlanEditTrim(e, {}, EditTrimKind::LeftOfCursor, 1.8, 0.0, 0.0);  // the "b" piece: from the part change
+    CHECK(p.excludes.size() == 1 && Near(p.excludes[0].a, 1.6) && Near(p.excludes[0].b, 1.8));
+    // An excluded stretch between two "a" pieces still stops it.
+    CHECK(ExcludeRange(e, 0, 1.25, 1.35));
+    p = PlanEditTrim(e, {}, EditTrimKind::RightOfCursor, 1.1, 0.0, 0.0);
+    CHECK(p.excludes.size() == 1 && Near(p.excludes[0].a, 1.1) && Near(p.excludes[0].b, 1.25));
 }
 
 // 13-62F (F5): Next / Previous variation (REAPER's 40417 / 40416) at a fixed zoom.
@@ -1095,14 +1116,29 @@ static void TestEditNav()
     p = PlanEditNav(frames, {2}, -1.0, true, 2.0, 3.5);
     CHECK(p.frame == 0 && Near(p.view_start, 1.5));
     CHECK(Near(PlanEditNav(frames, {2}, -1.0, true, 0.0, 10.0).view_start, 0.0));
-    // Nothing selected: the one under the cursor, else the first after it (next) / the last before it (previous).
-    CHECK(PlanEditNav(frames, {}, 1.7, true, 2.0, 10.0).frame == 2);
+    // Nothing selected, as REAPER: next = the first starting after the cursor, previous = the last starting
+    // before it (the one under the cursor only when the cursor is past its start).
+    CHECK(PlanEditNav(frames, {}, 1.7, true, 2.0, 10.0).frame == 0);   // under variation 2: the next one starts at 3
+    CHECK(PlanEditNav(frames, {}, 1.7, false, 2.0, 10.0).frame == 2);  // past its start: it counts for previous
     CHECK(PlanEditNav(frames, {}, 1.2, true, 2.0, 10.0).frame == 2);
     CHECK(PlanEditNav(frames, {}, 1.2, false, 2.0, 10.0).frame == 1);
-    CHECK(PlanEditNav(frames, {}, -1.0, true, 2.0, 10.0).frame == 1);
+    CHECK(PlanEditNav(frames, {}, 1.5, false, 2.0, 10.0).frame == 1);  // on its start: not before the cursor
+    CHECK(PlanEditNav(frames, {}, 1.5, true, 2.0, 10.0).frame == 0);   // nor after it
+    CHECK(PlanEditNav(frames, {}, 0.0, true, 2.0, 10.0).frame == 2);
+    CHECK(PlanEditNav(frames, {}, -1.0, true, 2.0, 10.0).frame == 1);  // no cursor: the first / the last
+    CHECK(PlanEditNav(frames, {}, -1.0, false, 2.0, 10.0).frame == 0);
     CHECK(PlanEditNav(frames, {}, 4.5, true, 2.0, 10.0).frame == -1);
+    CHECK(PlanEditNav(frames, {}, 4.5, false, 2.0, 10.0).frame == 0);
     CHECK(PlanEditNav({}, {}, 0.0, true, 2.0, 10.0).frame == -1);
     CHECK(PlanEditNav(frames, {9}, 4.5, false, 2.0, 10.0).frame == 0);  // a bad index: as nothing selected
+    // Takes mode (by index: each take has its own time): index order, never the starts.
+    CHECK(PlanEditNav(frames, {0}, -1.0, true, 0.0, 0.0, true).frame == 1);
+    CHECK(PlanEditNav(frames, {1}, -1.0, true, 0.0, 0.0, true).frame == 2);
+    CHECK(PlanEditNav(frames, {1}, -1.0, false, 0.0, 0.0, true).frame == 0);
+    CHECK(PlanEditNav(frames, {2}, -1.0, true, 0.0, 0.0, true).frame == -1);
+    CHECK(PlanEditNav(frames, {0}, -1.0, false, 0.0, 0.0, true).frame == -1);
+    CHECK(PlanEditNav(frames, {}, 3.5, true, 0.0, 0.0, true).frame == 0);  // nothing selected: first / last
+    CHECK(PlanEditNav(frames, {}, 3.5, false, 0.0, 0.0, true).frame == 2);
 }
 
 int main()

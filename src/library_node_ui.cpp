@@ -231,6 +231,7 @@ double DbToGain(double db) { return std::pow(10.0, db / 20.0); }
 using ui::WithAlpha;
 
 void ClearLaneGain();  // 13-62 (below): the lane header's gain drag forgotten
+void ClearWaveDrags();  // 13-62F review (below): the waveform's and the fade handles' drags forgotten
 
 void OpenEdit(const std::string& lib_uid, const std::string& uid)
 {
@@ -255,6 +256,7 @@ void OpenEdit(const std::string& lib_uid, const std::string& uid)
     P.piece_frame = P.piece_index = -1;
     P.listen_request = 0;
     P.nav_request = 0;
+    ClearWaveDrags();  // 13-62F review: a drag cut by the switch never fires on this Sound
     P.roles_more = false;
     P.layer_roles_more = false;
     CancelNormJob();          // 13-28: switching Sound cancels a measuring
@@ -961,11 +963,18 @@ struct FadeDrag {
     float   x0 = 0.0f;
     int     lane = -1;                       // 13-62F (F1): a Lane view piece's handle (its part's index); -1 = a variation's
     double  box_start = 0.0, box_len = 0.0;  // the variation, or the lane's piece, it was grabbed on
+    double  grab_s = 0.0;                    // 13-62F review: a lane's: the value shown on that side at the grab
 };
 FadeDrag g_fd;
 
-constexpr float kFadeGrab = 5.0f;   // a handle's grab half-width (px)
-constexpr float kFadeBand = 10.0f;  // the top band a handle is grabbed in (px)
+void ClearWaveDrags()
+{
+    g_wd = WaveDrag{};
+    g_fd = FadeDrag{};
+}
+
+constexpr float kFadeGrab = 5.0f;   // a handle's grab half-width (logical px, ui::Dp)
+constexpr float kFadeBand = 10.0f;  // the top band a handle is grabbed in (logical px, ui::Dp)
 
 // What carries fades on the waveform: a variation over the whole height (lane -1), or (13-62F, F1: the Lane
 // view) a piece of a part on its own lane, with the fades it is placed with (PartPieceFades).
@@ -991,8 +1000,9 @@ bool WaveFades(ImDrawList* dl, ImGuiID gid, bool hovered, const std::vector<Soun
     auto        T = [&](float x) { return vs + static_cast<double>(x - a.x) / w * vl; };
     const ImU32 shade = WithAlpha(ui::kBg, 0x90), line = WithAlpha(ui::kText, 0xB0);
     const ImVec2 m = ImGui::GetIO().MousePos;
-    int   hot_box = -1, hot_side = 0;
-    float hot_d = kFadeGrab + 1.0f;
+    int         hot_box = -1, hot_side = 0;
+    const float grab = ui::Dp(kFadeGrab), band = ui::Dp(kFadeBand);  // 13-62F review: DPI-scaled
+    float       hot_d = grab + 1.0f;
     dl->PushClipRect(a, b, true);
     for (size_t bi = 0; bi < boxes.size(); ++bi) {
         const FadeBox&    bx = boxes[bi];
@@ -1021,11 +1031,11 @@ bool WaveFades(ImDrawList* dl, ImGuiID gid, bool hovered, const std::vector<Soun
             if (!o.gestures) continue;
             const float  hx = X(side < 0 ? bx.start + fd.in : end - fd.out);
             const bool   own = side < 0 ? fd.own_in : fd.own_out;
-            const ImVec2 c(hx, bx.y0 + 4.0f);
-            if (own) dl->AddCircleFilled(c, 3.5f, ui::kAccent);
-            else dl->AddCircle(c, 3.5f, ui::kFaint);
+            const ImVec2 c(hx, bx.y0 + ui::Dp(4.0f));
+            if (own) dl->AddCircleFilled(c, ui::Dp(3.5f), ui::kAccent);
+            else dl->AddCircle(c, ui::Dp(3.5f), ui::kFaint);
             const float d = std::fabs(m.x - hx);
-            if (hovered && m.y >= bx.y0 && m.y <= bx.y0 + kFadeBand && d < hot_d) {
+            if (hovered && m.y >= bx.y0 && m.y <= bx.y0 + band && d < hot_d) {
                 hot_d = d;
                 hot_box = static_cast<int>(bi);
                 hot_side = side;
@@ -1056,6 +1066,7 @@ bool WaveFades(ImDrawList* dl, ImGuiID gid, bool hovered, const std::vector<Soun
             g_fd.box_len = hb->length;
             g_fd.in = hb->lane >= 0 ? hb->fd.in : f.fade_in;
             g_fd.out = hb->lane >= 0 ? hb->fd.out : f.fade_out;
+            g_fd.grab_s = hot_side < 0 ? hb->fd.in : hb->fd.out;
             g_fd.x0 = m.x;
         }
     }
@@ -1069,6 +1080,8 @@ bool WaveFades(ImDrawList* dl, ImGuiID gid, bool hovered, const std::vector<Soun
                 ev->part_fade_side = g_fd.side;
                 ev->part_fade_s = g_fd.side < 0 ? g_fd.in : g_fd.out;
                 ev->part_fade_done = done;
+                // 13-62F review: let go on the value shown at the grab (within a pixel): nothing changed.
+                ev->part_fade_same = std::fabs(ev->part_fade_s - g_fd.grab_s) <= vl / std::max(1.0f, w);
             } else {
                 ev->fade_frame = g_fd.frame;
                 ev->fade_in = g_fd.in;
@@ -2139,6 +2152,10 @@ bool HandleWaveFades(const WaveformEvents& ev, const SoundLibrary& lib, const So
         else patch.fade_out = ev.part_fade_s;
         SetPartSetting(Live(n), value, patch);
         if (ev.part_fade_done) {
+            if (ev.part_fade_same) {  // 13-62F review: back on the grab value: nothing written, no undo point
+                CancelLive();
+                return true;
+            }
             const SoundData&  dr = Shown(n);
             const PartField   pf = ev.part_fade_side < 0 ? PartField::FadeIn : PartField::FadeOut;
             const std::string toast = PartNumberToast(PartName(dr, value), ev.part_fade_side < 0 ? "Fade in" : "Fade out", pf,
@@ -3190,6 +3207,12 @@ void PartNormalizeNow(int lib, const std::string& node_uid, const std::string& v
 // like the Normalize ones): view state, no undo point.
 constexpr float kLaneHeadDefault = 160.0f, kLaneHeadMin = 104.0f;
 float           g_lane_head = -1.0f;  // < 0 = not read yet
+// 13-62F review: a drag of the column's edge: the width and the mouse at the grab, and whether it moved yet.
+struct LaneHeadGrab {
+    bool  on = false, moved = false;
+    float w = 0.0f, x0 = 0.0f;
+};
+LaneHeadGrab g_lane_grab;
 
 float LaneHeadPref()
 {
@@ -3357,7 +3380,9 @@ void EditTrim(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, 
     const std::string toast = name + " \xC2\xB7 " +
                               (touched.size() == 1 ? "variation " + std::to_string(touched.front() + 1)
                                                    : std::to_string(touched.size()) + " variations") +
-                              (excludes.empty() ? std::string() : " (up to the next piece, excluded)");
+                              (excludes.empty() ? std::string()
+                                               : kind == EditTrimKind::LeftOfCursor ? " (up to the previous piece, excluded)"
+                                                                                    : " (up to the next piece, excluded)");
     if (!excludes.empty()) P.piece_frame = P.piece_index = -1;  // the pieces' indices move (as the Alt+drag exclude)
     EditNode(name, lib.uid, n.uid, [steps, excludes, path, len](SoundNode& x) {
         bool changed = false;
@@ -3696,13 +3721,30 @@ void LaneHeaders(const WaveformEvents& ev, const SoundData& d, const WaveParts& 
         const ui::SplitterState sp = ui::SplitterBar("##laneheadw", ImVec2(gap, lanes_h));
         const float             scale = std::max(0.01f, ui::Dp(1.0f));
         const float             hi = std::max(kLaneHeadMin, (ev.max.x - ev.head_x) * 0.5f / scale);
+        // 13-62F review: the width moves by the mouse's travel from the grab, only once it really moved (a plain
+        // click, or a double-click's first click, never changes nor saves it).
+        const float mx = ImGui::GetIO().MousePos.x;
         if (sp.double_clicked) {
             g_lane_head = kLaneHeadDefault;
             SavePrefFloat("lib_lane_head_w", g_lane_head);
+            g_lane_grab = LaneHeadGrab{};
+            g_lane_grab.on = true;
+            g_lane_grab.w = g_lane_head;
+            g_lane_grab.x0 = mx;
         } else if (sp.active) {
-            g_lane_head = std::clamp((ImGui::GetIO().MousePos.x - ev.head_x + gap * 0.5f) / scale, kLaneHeadMin, hi);
+            if (!g_lane_grab.on) {
+                g_lane_grab = LaneHeadGrab{};
+                g_lane_grab.on = true;
+                g_lane_grab.w = g_lane_head;
+                g_lane_grab.x0 = mx;
+            }
+            if (std::fabs(mx - g_lane_grab.x0) > ui::Dp(3.0f)) g_lane_grab.moved = true;
+            if (g_lane_grab.moved) g_lane_head = std::clamp(g_lane_grab.w + (mx - g_lane_grab.x0) / scale, kLaneHeadMin, hi);
         }
-        if (sp.released) SavePrefFloat("lib_lane_head_w", g_lane_head);
+        if (sp.released || (!sp.active && g_lane_grab.on)) {
+            if (g_lane_grab.moved) SavePrefFloat("lib_lane_head_w", g_lane_head);
+            g_lane_grab = LaneHeadGrab{};
+        }
         if (sp.hovered && !sp.active) ui::ItemTipText("Drag: the lane headers' width. Double-click: back to the default");
     }
     ImGui::SetCursorScreenPos(back);
@@ -5416,9 +5458,11 @@ void DrawEditOverlay()
             const bool        next = std::exchange(P.nav_request, 0) > 0;
             const SoundData&  d = Shown(*n);
             const double      len = m.ok ? m.source_len : 0.0;
-            const EditNavPlan nav = PlanEditNav(d.frames, P.sel, P.edit_cursor, next, P.view_len, len);
+            const bool        takes = d.mode == DetectMode::Takes;
+            const EditNavPlan nav = PlanEditNav(d.frames, P.sel, P.edit_cursor, next, P.view_len, len, takes);
             if (nav.frame >= 0) {
                 P.sel = {nav.frame};
+                P.piece_frame = P.piece_index = -1;  // 13-62F review: Space then plays the new selection
                 if (d.mode != DetectMode::Takes) {
                     P.edit_cursor = nav.cursor;
                     if (P.view_len > 0.0 && len > 0.0) P.view_start = nav.view_start;
@@ -5463,7 +5507,7 @@ void DrawEditOverlay()
         P.trim_request = -1;  // review (13-61): a key held for a drag never fires on the next Edit
         CancelLive();
         CancelNormJob();  // 13-28: nothing written, no undo point
-        g_wd = WaveDrag{};  // a drag cut by the close never fires on the next Edit
+        ClearWaveDrags();  // a drag (13-62F review: or a fade handle's) cut by the close never fires on the next Edit
     }
 }
 

@@ -116,6 +116,7 @@ struct WaveformEvents {
     int    part_fade_lane = -1, part_fade_side = 0;
     double part_fade_s = 0.0;
     bool   part_fade_done = false;
+    bool   part_fade_same = false;  // 13-62F review: released within a pixel of the value shown at the grab
     int    part_fade_reset_lane = -1, part_fade_reset_side = 0;
     ImVec2 min, max;            // the waveform's rectangle
     // 13-20 / 13-23 / 13-25 (with `parts`).

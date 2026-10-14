@@ -421,14 +421,15 @@ EditTrimPlan PlanEditTrim(const std::vector<SoundFrame>& frames, const std::vect
 }
 
 EditNavPlan PlanEditNav(const std::vector<SoundFrame>& frames, const std::vector<int>& selected, double cursor, bool next,
-                        double view_len, double source_len)
+                        double view_len, double source_len, bool by_index)
 {
     EditNavPlan plan;
-    std::vector<int> order;  // time order (start, then index)
+    std::vector<int> order;  // time order (start, then index); Takes mode: index order
     for (size_t i = 0; i < frames.size(); ++i) order.push_back(static_cast<int>(i));
-    std::stable_sort(order.begin(), order.end(), [&](int x, int y) {
-        return frames[static_cast<size_t>(x)].start < frames[static_cast<size_t>(y)].start;
-    });
+    if (!by_index)
+        std::stable_sort(order.begin(), order.end(), [&](int x, int y) {
+            return frames[static_cast<size_t>(x)].start < frames[static_cast<size_t>(y)].start;
+        });
     const int n = static_cast<int>(order.size());
     int       from = -1;  // the selected variation's place in `order`
     for (auto it = selected.rbegin(); it != selected.rend() && from < 0; ++it)
@@ -437,20 +438,19 @@ EditNavPlan PlanEditNav(const std::vector<SoundFrame>& frames, const std::vector
     int to = -1;
     if (from >= 0) {
         to = next ? from + 1 : from - 1;
+    } else if (by_index || !(cursor >= 0.0)) {
+        // No time to start from (a take has its own; no edit cursor): the first one (next) / the last one (previous).
+        to = n > 0 ? (next ? 0 : n - 1) : -1;
     } else {
-        const double c = cursor >= 0.0 ? cursor : 0.0;
-        for (int k = 0; k < n && to < 0; ++k) {  // the one under the cursor
-            const SoundFrame& f = frames[static_cast<size_t>(order[static_cast<size_t>(k)])];
-            if (c >= f.start && c < f.start + f.length) to = k;
-        }
-        if (to < 0 && next) {
+        // As REAPER with no item selected: next = the first starting after the cursor, previous = the last starting
+        // before it (the one under the cursor counts only when the cursor is past its start).
+        constexpr double kEps = 1e-9;
+        if (next) {
             for (int k = 0; k < n && to < 0; ++k)
-                if (frames[static_cast<size_t>(order[static_cast<size_t>(k)])].start >= c) to = k;
-        } else if (to < 0) {
-            for (int k = n - 1; k >= 0 && to < 0; --k) {
-                const SoundFrame& f = frames[static_cast<size_t>(order[static_cast<size_t>(k)])];
-                if (f.start + f.length <= c) to = k;
-            }
+                if (frames[static_cast<size_t>(order[static_cast<size_t>(k)])].start > cursor + kEps) to = k;
+        } else {
+            for (int k = n - 1; k >= 0 && to < 0; --k)
+                if (frames[static_cast<size_t>(order[static_cast<size_t>(k)])].start < cursor - kEps) to = k;
         }
     }
     if (to < 0 || to >= n) return plan;
@@ -487,7 +487,16 @@ EditTrimPlan PlanEditTrim(const SoundData& data, const std::vector<int>& selecte
         const SoundFrame& f = data.frames[static_cast<size_t>(i)];
         const double      fe = f.start + f.length;
         if (!(cursor > f.start && cursor < fe)) continue;
-        const std::vector<EditPiece> pieces = EditPiecesOf(data, i);
+        // Adjacent placed pieces of the same part read as one (a cut or zone edge between them changes nothing
+        // heard): the trim stops only at a visible part change or an excluded stretch.
+        std::vector<EditPiece> pieces;
+        for (const EditPiece& p : EditPiecesOf(data, i)) {
+            if (!pieces.empty() && !p.excluded && !pieces.back().excluded && pieces.back().owner == p.owner &&
+                std::fabs(pieces.back().start + pieces.back().length - p.start) < kEdgeEps)
+                pieces.back().length = p.start + p.length - pieces.back().start;
+            else
+                pieces.push_back(p);
+        }
         touched = true;
         if (pieces.empty()) {  // an off variation: trimmed whole, as before
             keep_variation_trim(i);

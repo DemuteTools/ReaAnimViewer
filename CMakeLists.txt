@@ -215,6 +215,7 @@ if(WIN32)
             src/library_tree_nav.cpp
             src/sound_audition_plan.cpp
             src/media_db.cpp
+            src/reaper_item_read.cpp  # 13-51: shared GUID / chunk readers
             src/sound_place_plan.cpp
             src/sound_place.cpp
             src/library_view_ui.cpp

@@ -47,7 +47,9 @@ void OfferCpuAsset(const std::string& path, std::shared_ptr<const CpuAsset> asse
 
 // Drops the parse of `path` (if any), so the next AcquireCpuAsset reads the file again.
 // For a change the file's date and size do not show, e.g. texture files copied next to
-// it by "Locate textures..." (issue #1). Threads that hold the old parse keep it.
+// it by "Locate textures..." (issue #1). Threads that hold the old parse keep it. A parse
+// already running on another thread when this is called is not stored when it finishes
+// (13-51: it may predate the change).
 void EvictCpuAsset(const std::string& path);
 
 // Main thread: `wanted` = every file the video FX tracks use now. Other entries are

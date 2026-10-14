@@ -286,3 +286,13 @@ add_test(NAME play_item_plan COMMAND play_item_plan_test)
 add_executable(library_tree_nav_test library_tree_nav_test.cpp ../src/library_tree_nav.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
 target_include_directories(library_tree_nav_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME library_tree_nav COMMAND library_tree_nav_test)
+
+# 13-51 -- the shared GUID compare and growing text reader (src/reaper_item_read.h), the peak
+# cache's change check (src/file_change_check.h) and the parse cache's eviction generations
+# (src/evict_generation.h).
+add_executable(reaper_item_read_test reaper_item_read_test.cpp ../src/reaper_item_read.cpp)
+target_include_directories(reaper_item_read_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME reaper_item_read COMMAND reaper_item_read_test)
+add_executable(read_robustness_test read_robustness_test.cpp)
+target_include_directories(read_robustness_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME read_robustness COMMAND read_robustness_test)

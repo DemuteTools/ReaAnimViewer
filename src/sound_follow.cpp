@@ -137,7 +137,7 @@ std::string Upper(std::string s)
     return s;
 }
 
-// ItemGuidOf comes from sound_populate.h (13-8, merged first; same body).
+// ItemGuidOf comes from reaper_item_read.h (13-51, shared; included by sound_populate.h).
 
 std::string TrackGuidOf(MediaItem* item)
 {

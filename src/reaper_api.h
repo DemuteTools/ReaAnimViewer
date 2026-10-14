@@ -160,6 +160,8 @@
 // Story 10-2 -- an item's auto-tagging rules live in its active take's P_EXT:RAV_RULES
 // (src/item_rules.cpp). Old, safe (REAPER 5+).
 #define REAPERAPI_WANT_GetSetMediaItemTakeInfo_String
+// 13-51: the pointer getter reads a P_EXT record without a fixed-size copy (item_rules.cpp).
+#define REAPERAPI_WANT_GetSetMediaItemTakeInfo
 
 // Story 10-3 -- the Tagging view names the item under the playhead (its take's name). Old, safe.
 #define REAPERAPI_WANT_GetTakeName

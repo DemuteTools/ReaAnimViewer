@@ -15,6 +15,7 @@
 #include <utility>
 
 #include "console_log.h"
+#include "evict_generation.h"
 
 namespace rav {
 namespace {
@@ -48,6 +49,7 @@ struct Entry {
 std::mutex                              g_mutex;
 std::unordered_map<std::string, Entry>  g_entries;  // guarded by g_mutex
 std::unordered_set<std::string>         g_wanted;   // guarded by g_mutex
+EvictGenerations                        g_evicted;  // guarded by g_mutex (13-51)
 
 }  // namespace
 
@@ -60,10 +62,12 @@ std::shared_ptr<const CpuAsset> AcquireCpuAsset(const std::string& path)
 {
     if (path.empty()) return nullptr;
     try {
+        uint64_t gen = 0;  // the path's eviction generation when this parse starts
         {
             std::lock_guard<std::mutex> lock(g_mutex);
             const auto it = g_entries.find(path);
             if (it != g_entries.end()) return it->second.asset;
+            gen = g_evicted.Of(path);
         }
         // Miss: parse here, outside the lock (seconds for a big FBX), so other threads'
         // lookups never wait on it. If two threads miss the same file at once both parse
@@ -82,7 +86,10 @@ std::shared_ptr<const CpuAsset> AcquireCpuAsset(const std::string& path)
             LogInfo("video FX: parsed %s in %.0f ms", path.c_str(), ms);
         }
         std::lock_guard<std::mutex> lock(g_mutex);
-        g_entries[path] = Entry{r.asset, stamp};
+        // 13-51: evicted during the parse ("Locate textures..." copied textures meanwhile): this
+        // parse may lack them, so it is not stored; the next lookup parses the file again. The
+        // caller still draws it this once (a complete model, just maybe flat).
+        if (ParseStillCurrent(gen, g_evicted.Of(path))) g_entries[path] = Entry{r.asset, stamp};
         return r.asset;
     } catch (...) {
         return nullptr;  // bad_alloc on the map: no picture, try again next frame
@@ -112,6 +119,7 @@ void EvictCpuAsset(const std::string& path)
     try {
         std::lock_guard<std::mutex> lock(g_mutex);
         g_entries.erase(path);
+        g_evicted.Bump(path);  // a parse in flight now is stale (13-51)
     } catch (...) {
     }
 }

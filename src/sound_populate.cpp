@@ -49,28 +49,8 @@ SetMediaItemSelectedFn f_set_selected = nullptr;
 
 constexpr int kUnselectAllItems = 40289;  // Item: Unselect (clear selection of) all items
 
-bool SameGuidText(const std::string& a, const std::string& b)
-{
-    if (a.size() != b.size() || a.empty()) return false;
-    for (size_t i = 0; i < a.size(); ++i) {
-        char x = a[i], y = b[i];
-        if (x >= 'a' && x <= 'z') x = static_cast<char>(x - 32);
-        if (y >= 'a' && y <= 'z') y = static_cast<char>(y - 32);
-        if (x != y) return false;
-    }
-    return true;
-}
-
 // The project scan behind FindItemByGuid.
-MediaItem* FindPlacedItem(const std::string& guid)
-{
-    const int n = CountMediaItems(nullptr);
-    for (int i = 0; i < n; ++i) {
-        MediaItem* it = GetMediaItem(nullptr, i);
-        if (it && SameGuidText(ItemGuidOf(it), guid)) return it;
-    }
-    return nullptr;
-}
+MediaItem* FindPlacedItem(const std::string& guid) { return ScanItemByGuid(nullptr, guid); }
 
 // One gesture's GUID -> item map (built once, kept in step with the items the gesture places and
 // removes, dropped when the gesture ends: never a pointer kept across gestures).
@@ -238,7 +218,7 @@ void CheckOwners(const std::vector<std::string>& guids, const std::string& owner
     for (const std::string& g : guids) {
         PlacedTag tag;
         MediaItem* it = FindItemByGuid(g);
-        if (!it || !ReadPlacedTag(it, &tag) || !SameGuidText(tag.owner, owner))
+        if (!it || !ReadPlacedTag(it, &tag) || !SameGuid(tag.owner, owner))
             AddLine(rep, ReportKind::Blocked, "tag owner mismatch", node, owner, t);
     }
 }
@@ -913,13 +893,6 @@ void InitSoundPopulate(void* (*get_func)(const char* name))
 {
     if (!get_func) return;
     f_set_selected = reinterpret_cast<SetMediaItemSelectedFn>(get_func("SetMediaItemSelected"));
-}
-
-std::string ItemGuidOf(MediaItem* item)
-{
-    char buf[64] = {};
-    if (!item || !GetSetMediaItemInfo_String(item, "GUID", buf, false)) return {};
-    return buf;
 }
 
 ItemRigInfo ItemRig(MediaItem* item)

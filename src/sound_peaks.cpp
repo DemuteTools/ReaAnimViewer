@@ -13,9 +13,13 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
 #include <map>
 #include <memory>
+#include <system_error>
 
+#include "file_change_check.h"
+#include "reaper_item_read.h"
 #include "sound_populate.h"
 
 namespace rav {
@@ -52,6 +56,8 @@ struct Entry {
     int                         nch = 0;
     int64_t                     done = 0;  // samples read
     int64_t                     total = 0;
+    FileVersion                 version;          // 13-51: the file's date + size before it was read
+    double                      checked_s = 0.0;  // when the disk was last asked (NowSeconds)
 };
 
 // Never destroyed: a building entry's REAPER source is not deleted from static destructors at
@@ -61,6 +67,28 @@ uint64_t                     g_tick = 0;
 std::chrono::steady_clock::time_point g_win_start{};
 double                                g_win_spent = 0.0;
 std::map<std::string, double> g_len;
+
+double NowSeconds()
+{
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// The file's date and size (zero when it cannot be read).
+FileVersion VersionOf(const std::string& path)
+{
+    FileVersion v;
+    try {
+        std::error_code             ec;
+        const std::filesystem::path p = std::filesystem::u8path(path);
+        const auto                  t = std::filesystem::last_write_time(p, ec);
+        if (!ec) v.time = static_cast<long long>(t.time_since_epoch().count());
+        const auto sz = std::filesystem::file_size(p, ec);
+        if (!ec) v.size = static_cast<unsigned long long>(sz);
+    } catch (...) {
+        // a malformed path: unreadable
+    }
+    return v;
+}
 
 void Evict()
 {
@@ -168,6 +196,19 @@ PeakState RequestPeaks(const std::string& path, PeakData* out)
 {
     if (path.empty() || !f_create) return PeakState::Failed;
     auto it = g_cache.find(path);
+    // 13-51: a built (or failed) entry whose file changed on disk (re-rendered at the same path,
+    // restored, located) is read again; the disk is asked at most once a second per entry.
+    if (it != g_cache.end() && it->second.state != PeakState::Building) {
+        const double now = NowSeconds();
+        if (FileRecheckDue(it->second.checked_s, now)) {
+            it->second.checked_s = now;
+            if (FileReadStale(it->second.version, VersionOf(path))) {
+                g_cache.erase(it);
+                g_len.erase(path);
+                it = g_cache.end();
+            }
+        }
+    }
     if (it == g_cache.end()) {
         // One file builds at a time: the others wait their turn, and asking advances it (a file
         // nobody shows any more still finishes).
@@ -177,6 +218,8 @@ PeakState RequestPeaks(const std::string& path, PeakData* out)
                 if (kv.second.state == PeakState::Building) return PeakState::Building;
             }
         Entry e;
+        e.version = VersionOf(path);  // before the read: a write during it shows as a change after
+        e.checked_s = NowSeconds();
         if (!Open(path, e)) e.state = PeakState::Failed;
         it = g_cache.emplace(path, std::move(e)).first;
     }
@@ -307,9 +350,10 @@ bool ReadItemMedia(MediaItem* item, SoundMedia* out)
         if (marks.size() >= 2) out->facts.slices = SlicesFromTakeMarkers(marks, out->source_len);
     }
     if (out->facts.slices.size() < 2 && f_chunk) {
-        std::vector<char> buf(1 << 20);
-        if (f_chunk(item, buf.data(), static_cast<int>(buf.size()), false)) {
-            const std::vector<Slice> s = SlicesFromRppText(std::string(buf.data()));
+        // 13-51: the shared growing reader (no 1 MB zero-fill per read, a bigger chunk not cut).
+        const std::string chunk = ReadItemStateChunk(f_chunk, item);
+        if (!chunk.empty()) {
+            const std::vector<Slice> s = SlicesFromRppText(chunk);
             if (s.size() >= 2) out->facts.slices = s;
         }
     }

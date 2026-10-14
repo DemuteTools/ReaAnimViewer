@@ -15,6 +15,7 @@
 #include <set>
 
 #include "item_rules.h"
+#include "reaper_item_read.h"
 #include "rule_record.h"
 #include "sound_draw.h"
 #include "sound_entries.h"
@@ -50,36 +51,6 @@ bool Ready()
 
 ReaProject* CurProject() { return EnumProjects(-1, nullptr, 0); }
 
-std::string ItemGuidOf(MediaItem* item)
-{
-    char buf[64] = {};
-    if (!item || !GetSetMediaItemInfo_String(item, "GUID", buf, false)) return {};
-    return buf;
-}
-
-bool SameGuid(const std::string& a, const std::string& b)
-{
-    if (a.size() != b.size() || a.empty()) return false;
-    for (size_t i = 0; i < a.size(); ++i) {
-        char x = a[i], y = b[i];
-        if (x >= 'a' && x <= 'z') x = static_cast<char>(x - 32);
-        if (y >= 'a' && y <= 'z') y = static_cast<char>(y - 32);
-        if (x != y) return false;
-    }
-    return true;
-}
-
-MediaItem* FindItemByGuid(ReaProject* proj, const std::string& guid)
-{
-    if (guid.empty()) return nullptr;
-    const int n = CountMediaItems(proj);
-    for (int i = 0; i < n; ++i) {
-        MediaItem* it = GetMediaItem(proj, i);
-        if (it && SameGuid(ItemGuidOf(it), guid)) return it;
-    }
-    return nullptr;
-}
-
 std::string NewGuidString()
 {
     GUID g;
@@ -89,17 +60,7 @@ std::string NewGuidString()
     return buf;
 }
 
-std::string ReadChunk(MediaItem* item)
-{
-    if (!f_get_chunk || !item) return {};
-    for (int size = 64 * 1024; size <= 64 * 1024 * 1024; size *= 2) {
-        std::vector<char> buf(static_cast<size_t>(size), '\0');
-        if (!f_get_chunk(item, buf.data(), size, false)) return {};
-        const size_t len = std::strlen(buf.data());
-        if (len + 1 < static_cast<size_t>(size)) return std::string(buf.data(), len);
-    }
-    return {};
-}
+std::string ReadChunk(MediaItem* item) { return ReadItemStateChunk(f_get_chunk, item); }
 
 // One selected item.
 struct SelItem {
@@ -209,7 +170,7 @@ void LeaveOldEvent(ReaProject* proj, const SelItem& s, MediaItem* anim, const st
         DetachFromRecord(rec, s.facts.guid);
         return;
     }
-    MediaItem* owner = FindItemByGuid(proj, s.tag.owner);
+    MediaItem* owner = ScanItemByGuid(proj, s.tag.owner);
     if (!owner || owner == anim) return;
     const std::string guid = s.facts.guid;
     ModifyItemSounds(owner, nullptr, [&guid](ItemSounds& r) { return DetachFromRecord(r, guid); });

@@ -11,6 +11,7 @@
 #include <exception>
 #include <map>
 #include <memory>
+#include <utility>
 
 #include "asset_cache.h"
 #include "console_log.h"
@@ -59,16 +60,34 @@ constexpr char kUndoMakeUnique[] = "RAV: Make tagging unique";
 
 // ---- 10-6: pools ---------------------------------------------------------------------------------
 
-// A take's record text, without ReadItemRules' 1 MB zero-fill (a pool scan reads every item of
-// the file). "" when there is none.
+// 13-51: a take's P_EXT text; false when REAPER has none. The _String getter takes no buffer size
+// (the SDK states none for "stringNeedBig"), so it could write past any buffer we give it. The
+// pointer getter is asked first: GetSetMediaItemTakeInfo returns REAPER's own char* for a P_EXT
+// key (documented "char *"), copied here at its full length, no limit and no overflow. Only when
+// it gives nothing (no record, or a REAPER that does not hand out the pointer) does the _String
+// getter copy into one reused buffer of kItemRulesMaxBytes + 1 (zeroed once, never per call).
+bool ReadTakeExt(MediaItem_Take* take, const char* key, std::string* out)
+{
+    out->clear();
+    if (!take) return false;
+    if (const char* p = static_cast<const char*>(GetSetMediaItemTakeInfo(take, key, nullptr))) {
+        out->assign(p);
+        return true;
+    }
+    static std::vector<char> buf(kItemRulesMaxBytes + 1, '\0');
+    buf[0] = '\0';
+    if (!GetSetMediaItemTakeInfo_String(take, key, buf.data(), false)) return false;
+    buf[kItemRulesMaxBytes] = '\0';
+    out->assign(buf.data());
+    return true;
+}
+
+// A take's record text (a pool scan reads every item of the file). "" when there is none.
 std::string ReadRecordText(MediaItem_Take* take)
 {
-    static std::vector<char> buf;
-    if (buf.size() != kItemRulesMaxBytes + 1) buf.assign(kItemRulesMaxBytes + 1, '\0');
-    buf[0] = '\0';
-    if (!GetSetMediaItemTakeInfo_String(take, kItemRulesKey, buf.data(), false)) return "";
-    buf[kItemRulesMaxBytes] = '\0';
-    return buf.data();
+    std::string text;
+    ReadTakeExt(take, kItemRulesKey, &text);
+    return text;
 }
 
 // One member of a pool, its record as read.
@@ -268,12 +287,7 @@ bool ReadItemRules(MediaItem* item, ItemRulesRead* out)
     try {
         MediaItem_Take* take = RavTakeOf(item);
         if (!take) return false;
-        // The _String getter copies into the caller's buffer: give it the largest record.
-        static std::vector<char> buf;
-        buf.assign(kItemRulesMaxBytes + 1, '\0');
-        if (!GetSetMediaItemTakeInfo_String(take, kItemRulesKey, buf.data(), false)) return true;
-        buf[kItemRulesMaxBytes] = '\0';
-        out->raw = buf.data();
+        if (!ReadTakeExt(take, kItemRulesKey, &out->raw)) return true;
         out->present = !out->raw.empty();
         if (out->present) out->valid = ParseItemRules(out->raw, &out->rules);
         return true;
@@ -311,12 +325,9 @@ bool ReadCommittedSnapshot(MediaItem* item, std::string* text)
     try {
         MediaItem_Take* take = RavTakeOf(item);
         if (!take) return false;
-        static std::vector<char> buf;
-        buf.assign(kItemRulesMaxBytes + 1, '\0');
-        if (!GetSetMediaItemTakeInfo_String(take, kItemRulesCommittedKey, buf.data(), false)) return false;
-        buf[kItemRulesMaxBytes] = '\0';
-        if (!buf[0]) return false;
-        if (text) *text = buf.data();
+        std::string snap;
+        if (!ReadTakeExt(take, kItemRulesCommittedKey, &snap) || snap.empty()) return false;
+        if (text) *text = std::move(snap);
         return true;
     } catch (...) {
         if (text) text->clear();

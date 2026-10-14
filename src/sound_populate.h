@@ -15,6 +15,7 @@
 
 #include "populate_progress.h"
 #include "reaper_api.h"
+#include "reaper_item_read.h"
 #include "sound_assign.h"
 #include "sound_model.h"
 
@@ -142,8 +143,7 @@ std::vector<ProjectRig> ProjectRigs();
 int CountPopulateEvents(const std::vector<MediaItem*>& items);
 // The item of the current project with this GUID (nullptr when none).
 MediaItem* FindItemByGuid(const std::string& guid);
-// The item's GUID ("" when none).
-std::string ItemGuidOf(MediaItem* item);
+// ItemGuidOf: reaper_item_read.h (13-51, shared).
 // Selects this item alone in REAPER.
 void SelectOnlyItem(MediaItem* item);
 

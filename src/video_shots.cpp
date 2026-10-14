@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "console_log.h"
+#include "reaper_item_read.h"  // ReadGrowingText (13-51)
 #include "video_fx_track.h"
 #include "video_shot_timing.h"
 #include "video_timeline.h"
@@ -22,7 +23,7 @@ namespace rav {
 namespace {
 
 constexpr int kChunkBufferSmall = 64 << 10;  // the FX state is a few kB (base64 in REAPER's chunk)
-constexpr int kChunkBufferLarge = 4 << 20;   // retry size when the small buffer came back full
+constexpr int kChunkBufferLarge = 4 << 20;   // retry size when the small buffer came back full or refused
 constexpr int kListMaxShots    = 40;       // lines in the "show shots" message box
 
 // ---- base64 (REAPER's clap_chunk) -----------------------------------------------------
@@ -290,15 +291,16 @@ void FormatValues(const double v[vcam::kParamCount], char* out, size_t cap)
 bool ReadVideoFxState(MediaTrack* track, int fx, VideoFxState* out)
 {
     if (!ValidFx(track, fx) || !out) return false;
-    std::vector<char> buf(kChunkBufferSmall, '\0');
-    if (!TrackFX_GetNamedConfigParm(track, fx, "clap_chunk", buf.data(), kChunkBufferSmall)) return false;
-    buf.back() = '\0';
-    if (std::strlen(buf.data()) >= static_cast<size_t>(kChunkBufferSmall) - 2) {  // may be cut: ask again, bigger
-        buf.assign(kChunkBufferLarge, '\0');
-        if (!TrackFX_GetNamedConfigParm(track, fx, "clap_chunk", buf.data(), kChunkBufferLarge)) return false;
-        buf.back() = '\0';
-    }
-    const std::string bytes = Base64Decode(buf.data());
+    // 13-51: the small buffer, then the large one when the small came back full OR REAPER said
+    // false (it may refuse a buffer too small instead of cutting the text). Two calls at most:
+    // the panel reads this every frame.
+    static const std::vector<int> sizes = {kChunkBufferSmall, kChunkBufferLarge};
+    std::string                   b64;
+    if (!ReadGrowingText(
+            [&](char* buf, int size) { return TrackFX_GetNamedConfigParm(track, fx, "clap_chunk", buf, size); },
+            sizes, &b64))
+        return false;
+    const std::string bytes = Base64Decode(b64.c_str());
     return ParseVideoFxState(bytes.data(), bytes.size(), out);
 }
 

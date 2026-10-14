@@ -20,6 +20,7 @@
 #include <system_error>
 #include <vector>
 
+#include "reaper_item_read.h"
 #include "sound_project.h"
 #include "sound_record.h"
 #include "sound_tracks.h"
@@ -84,30 +85,11 @@ bool EngineReady()
         && f_get_take && f_count_takes && f_set_active_take && f_source_type && f_move_to_track;
 }
 
-std::string ItemGuid(MediaItem* item)
-{
-    char buf[64] = {};
-    if (!item || !GetSetMediaItemInfo_String(item, "GUID", buf, false)) return {};
-    return buf;
-}
-
 std::string TrackGuid(MediaTrack* track)
 {
     char buf[64] = {};
     if (!track || !GetSetMediaTrackInfo_String(track, "GUID", buf, false)) return {};
     return buf;
-}
-
-bool SameGuid(const std::string& a, const std::string& b)
-{
-    if (a.size() != b.size() || a.empty()) return false;
-    for (size_t i = 0; i < a.size(); ++i) {
-        char x = a[i], y = b[i];
-        if (x >= 'a' && x <= 'z') x = static_cast<char>(x - 32);
-        if (y >= 'a' && y <= 'z') y = static_cast<char>(y - 32);
-        if (x != y) return false;
-    }
-    return true;
 }
 
 std::string NewGuidString()
@@ -135,17 +117,11 @@ MediaItem* FindItem(ReaProject* proj, const std::string& guid)
     if (g_item_finder)
         if (MediaItem* hit = g_item_finder(guid))
             // 13-19: the gesture's live-item cache for the current project (ValidatePtr2 walks its items).
-            if ((proj ? ValidatePtr2(proj, hit, "MediaItem*") : IsLiveItem(hit)) && SameGuid(ItemGuid(hit), guid))
+            if ((proj ? ValidatePtr2(proj, hit, "MediaItem*") : IsLiveItem(hit)) && SameGuid(ItemGuidOf(hit), guid))
                 return hit;
-    const int n = CountMediaItems(proj);
-    for (int i = 0; i < n; ++i) {
-        MediaItem* it = GetMediaItem(proj, i);
-        if (it && SameGuid(ItemGuid(it), guid)) return it;
-    }
-    return nullptr;
+    return ScanItemByGuid(proj, guid);
 }
 
-// The item's state chunk: a doubled buffer from 64 KB to 64 MB while the text fills it.
 // True when both files hold the same bytes (read in 64 KB blocks; false on any read error).
 bool SameBytes(const std::filesystem::path& a, const std::filesystem::path& b)
 {
@@ -161,17 +137,7 @@ bool SameBytes(const std::filesystem::path& a, const std::filesystem::path& b)
     }
 }
 
-std::string ReadChunk(MediaItem* item)
-{
-    if (!f_get_chunk || !item) return {};
-    for (int size = 64 * 1024; size <= 64 * 1024 * 1024; size *= 2) {
-        std::vector<char> buf(static_cast<size_t>(size), '\0');
-        if (!f_get_chunk(item, buf.data(), size, false)) return {};
-        const size_t len = std::strlen(buf.data());
-        if (len + 1 < static_cast<size_t>(size)) return std::string(buf.data(), len);
-    }
-    return {};
-}
+std::string ReadChunk(MediaItem* item) { return ReadItemStateChunk(f_get_chunk, item); }
 
 // The child tracks of a folder track (until its folder closes).
 std::vector<MediaTrack*> ChildTracks(ReaProject* proj, MediaTrack* folder)
@@ -417,7 +383,7 @@ std::string Land(ReaProject* proj, MediaItem* item, MediaTrack* track, const std
 
 std::string OwnerGuid(const PlaceRequest& req, const std::string& fallback)
 {
-    if (req.owner) return ItemGuid(req.owner);
+    if (req.owner) return ItemGuidOf(req.owner);
     return fallback;
 }
 
@@ -500,7 +466,7 @@ PlaceResult PlaceFileImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* 
             // chunk is kept so a failure below puts the item back as it was.
             saved = ReadChunk(reuse);
             const std::string fresh = "<ITEM\nPOSITION 0\nSNAPOFFS 0\nLENGTH 1\nLOOP 0\nALLTAKES 0\nMUTE 0 0\nSEL 0\nIGUID " +
-                                      ItemGuid(reuse) + "\n>\n";
+                                      ItemGuidOf(reuse) + "\n>\n";
             if (!f_set_chunk(reuse, fresh.c_str(), false)) {
                 drop_source();
                 r.error = "could not rewrite the kept item";
@@ -564,7 +530,7 @@ PlaceResult PlaceFileImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* 
         tag.pt = req.part;
         tag.tk = Land(proj, item, req.track, req.track_mark, reuse != nullptr && user_moved, kept_tk);
         WritePlacedTag(item, tag);
-        r.item_guids.push_back(ItemGuid(item));
+        r.item_guids.push_back(ItemGuidOf(item));
         r.items.push_back(item);
     }
     r.ok = !r.items.empty();
@@ -618,7 +584,7 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
         std::string   guid;
         if (i == 0 && kept) {
             item = kept;
-            guid = ItemGuid(kept);
+            guid = ItemGuidOf(kept);
             if (!user_moved && GetMediaItem_Track(kept) != m.track && !f_move_to_track(kept, m.track)) {
                 r.error = "could not move the kept item to the source track";
                 return r;
@@ -668,7 +634,7 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
         f_set_item(item, "D_VOL", vol.item);
         if (vol.set_take && tk) f_set_take(tk, "D_VOL", vol.take);
         placed.push_back(item);
-        r.item_guids.push_back(ItemGuid(item));
+        r.item_guids.push_back(ItemGuidOf(item));
         r.items.push_back(item);
     }
 
@@ -841,7 +807,7 @@ void RunPlacementTest()
                 req.own = Ownership::Populated;
                 req.event_t = req.project_t = GetCursorPositionEx(proj);
                 req.source.kind = SoundSourceKind::Item;
-                req.source.item_guid = ItemGuid(sources.front());
+                req.source.item_guid = ItemGuidOf(sources.front());
                 req.variation = take_no - 1;
                 req.slice = SliceForMarker(sources.front(), slice_no);
                 req.gain_db = gain_db;
@@ -856,7 +822,7 @@ void RunPlacementTest()
             } else {
                 const double delta = GetCursorPositionEx(proj) - GetMediaItemInfo_Value(placed.front(), "D_POSITION");
                 for (MediaItem* it : placed) {
-                    const std::string g = ItemGuid(it);
+                    const std::string g = ItemGuidOf(it);
                     const bool ok = MovePlacement(proj, g, GetMediaItemInfo_Value(it, "D_POSITION") + delta);
                     report += ok ? DescribeItem(proj, g, "same GUID") : g + ": refused\n";
                 }
@@ -866,7 +832,7 @@ void RunPlacementTest()
                 report += "select a placed item and a source item\n";
             } else {
                 MediaItem*        old = placed.front();
-                const std::string g = ItemGuid(old);
+                const std::string g = ItemGuidOf(old);
                 PlacedTag         tag;
                 ReadPlacedTag(old, &tag);
                 PlaceRequest req;
@@ -875,7 +841,7 @@ void RunPlacementTest()
                 req.own = tag.own;
                 req.event_t = req.project_t = tag.t;
                 req.source.kind = SoundSourceKind::Item;
-                req.source.item_guid = ItemGuid(sources.front());
+                req.source.item_guid = ItemGuidOf(sources.front());
                 req.variation = take_no - 1;
                 req.slice = SliceForMarker(sources.front(), slice_no);
                 req.gain_db = gain_db;
@@ -889,7 +855,7 @@ void RunPlacementTest()
             }
         } else if (step == "remove") {
             std::vector<std::string> guids;
-            for (int i = 0; i < nsel; ++i) guids.push_back(ItemGuid(GetSelectedMediaItem(proj, i)));
+            for (int i = 0; i < nsel; ++i) guids.push_back(ItemGuidOf(GetSelectedMediaItem(proj, i)));
             for (const std::string& g : guids) {
                 PlacedTag   tag;
                 std::string why;
@@ -981,7 +947,7 @@ bool ReadItemFacts(MediaItem* item, ItemFacts* out)
     *out = ItemFacts{};
     if (!item) return false;
     try {
-        out->guid = ItemGuid(item);
+        out->guid = ItemGuidOf(item);
         out->track_guid = TrackGuid(GetMediaItem_Track(item));
         out->position = GetMediaItemInfo_Value(item, "D_POSITION");
         out->length = GetMediaItemInfo_Value(item, "D_LENGTH");

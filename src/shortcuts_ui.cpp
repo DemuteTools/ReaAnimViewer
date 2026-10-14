@@ -9,6 +9,7 @@
 #ifdef _WIN32
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <string>
 #include <vector>

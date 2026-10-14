@@ -1141,8 +1141,236 @@ static void TestEditNav()
     CHECK(PlanEditNav(frames, {}, 3.5, false, 0.0, 0.0, true).frame == 2);
 }
 
+// ---- 13-62h (Lot C): a zoned Sound's Edit playback --------------------------------------------------------
+
+static EditZone ZPart(const std::string& part, double a, double b)
+{
+    EditZone z;
+    z.part = part;
+    z.a = z.slot_a = a;
+    z.b = z.slot_b = b;
+    z.a_hand = z.b_hand = true;
+    return z;
+}
+
+static EditZone ZGap(double a, double b, double xl, double xr)
+{
+    EditZone g;
+    g.a = g.slot_a = a;
+    g.b = g.slot_b = b;
+    g.xl = xl;
+    g.xr = xr;
+    return g;
+}
+
+// A divided Sound (Heel / Toe), one variation holding `zones`, Sound fades 5 ms.
+static SoundData Zoned(std::vector<EditZone> zones)
+{
+    SoundData d;
+    d.mode = DetectMode::Silence;
+    d.divide_group = "g";
+    d.divide_values = {"heel", "toe"};
+    d.fade_in = d.fade_out = 0.005;
+    SoundFrame f;
+    f.zones = zones;
+    f.start = zones.front().a;
+    f.length = zones.back().b - f.start;
+    d.frames.push_back(f);
+    return d;
+}
+
+static void TestZonedEmptySpace()
+{
+    // Matrix "Empty space": Heel [0.10, 0.30], Toe [0.40, 0.60]; Edit Play from 0.10: 0.10 s of silence between.
+    const SoundData d = Zoned({ZPart("heel", 0.10, 0.30), ZPart("toe", 0.40, 0.60)});
+    CHECK(UsesZones(d));
+    const EditPlay p = EditPlayFrom(d, 0.10, 0.60);
+    CHECK(p.voices.size() == 2);
+    if (p.voices.size() == 2) {
+        CHECK(Near(p.voices[0].start_s, 0.10) && Near(p.voices[0].length_s, 0.20) && Near(p.voices[0].delay_ms, 0.0));
+        CHECK(p.voices[0].part == "heel" && p.voices[0].variation == 0 && p.voices[0].piece == 0);
+        CHECK(Near(p.voices[0].fade_in_s, 0.005) && Near(p.voices[0].fade_out_s, 0.005));
+        CHECK(Near(p.voices[1].start_s, 0.40) && Near(p.voices[1].length_s, 0.20));
+        CHECK(Near(p.voices[1].delay_ms, 300.0));  // 0.20 of Heel + 0.10 of silence
+        CHECK(p.voices[1].part == "toe" && p.voices[1].piece == 1);
+    }
+    CHECK(p.map.spans.size() == 3);
+    CHECK(Near(p.map.total, 0.50));
+    // In the silence: one playhead walking the empty space in file time, no zone.
+    std::vector<HeardHead> h = HeardHeads(p.map, 0.25);
+    CHECK(h.size() == 1 && Near(h[0].file_t, 0.35) && h[0].z.frame == -1 && Near(h[0].gain, 1.0) && !h[0].incoming);
+    h = HeardHeads(p.map, 0.05);
+    CHECK(h.size() == 1 && Near(h[0].file_t, 0.15) && h[0].z.index == 0 && Near(h[0].gain, 1.0));
+    h = HeardHeads(p.map, 0.001);  // inside Heel's fade in: its gain rises
+    CHECK(h.size() == 1 && Near(h[0].gain, 0.2));
+    CHECK(HeardHeads(p.map, 0.50).empty());  // the end
+    // Playing from inside Heel: its voice a window of its faded stretch.
+    const EditPlay q = EditPlayFrom(d, 0.20, 0.60);
+    CHECK(q.voices.size() == 2 && Near(q.voices[0].start_s, 0.20) && Near(q.voices[0].fade_from_s, 0.10) &&
+          Near(q.voices[0].fade_span_s, 0.20) && Near(q.voices[1].delay_ms, 200.0));
+    // Silence before the first zone and after the last one counts too (the playhead walks the file).
+    const EditPlay w = EditPlayFrom(d, 0.0, 1.0);
+    CHECK(w.voices.size() == 2 && Near(w.voices[0].delay_ms, 100.0) && Near(w.map.total, 1.0));
+    // Not zoned (undivided) or an empty range: nothing.
+    SoundData u = d;
+    u.divide_group.clear();
+    u.divide_values.clear();
+    CHECK(EditPlayFrom(u, 0.0, 1.0).voices.empty());
+    CHECK(EditPlayFrom(d, 0.5, 0.5).voices.empty());
+    // The library overload: the volumes from the root on top of the zone's gain, the node's uid.
+    SoundLibrary lib;
+    SoundNode    n = Node("s", "", SoundNodeType::Sound, "S");
+    n.volume_db = -3.0;
+    n.sound = d;
+    n.sound.frames[0].zones[1].db = 2.0;
+    lib.nodes.push_back(n);
+    lib.root = "s";
+    const EditPlay l = EditPlayFrom(lib, lib.nodes[0], 0.10, 0.60);
+    CHECK(l.voices.size() == 2 && l.voices[0].node == "s" && Near(l.voices[0].gain_db, -3.0) && Near(l.voices[1].gain_db, -1.0));
+}
+
+static void TestZonedGapCrossfade()
+{
+    // Heel [0.10, 0.40] · Gap [0.40, 0.45] xl = xr = 5 ms · Heel [0.45, 0.70]: the jump crossfaded by 10 ms.
+    const SoundData d = Zoned({ZPart("heel", 0.10, 0.40), ZGap(0.40, 0.45, 0.005, 0.005), ZPart("heel", 0.45, 0.70)});
+    const EditPlay  p = EditPlayFrom(d, 0.10, 0.70);
+    CHECK(p.voices.size() == 2);
+    if (p.voices.size() != 2) return;
+    const AuditionVoice &L = p.voices[0], &R = p.voices[1];
+    CHECK(Near(L.start_s, 0.10) && Near(L.start_s + L.length_s, 0.405));  // into the Gap by xl
+    CHECK(Near(R.start_s, 0.445));                                         // from the Gap's end minus xr
+    const double left_end_ms = L.delay_ms + L.length_s * 1000.0;
+    CHECK(Near(R.delay_ms, left_end_ms - 10.0));  // the right voice starts xl + xr before the left one ends
+    CHECK(Near(L.fade_out_s, 0.010) && Near(R.fade_in_s, 0.010));
+    CHECK(Near(p.map.total, 0.295 + 0.255));
+    // The middle of the crossfade (heard 0.300): two heads, the outgoing fading, the incoming rising, ~1 together.
+    const std::vector<HeardHead> h = HeardHeads(p.map, 0.300);
+    CHECK(h.size() == 2);
+    if (h.size() == 2) {
+        CHECK(!h[0].incoming && h[1].incoming);
+        CHECK(Near(h[0].file_t, 0.400) && Near(h[1].file_t, 0.450));
+        CHECK(Near(h[0].gain, 0.5) && Near(h[1].gain, 0.5) && Near(h[0].gain + h[1].gain, 1.0));
+        CHECK(Near(h[0].gain, ZoneEnv(d, ZoneRef{0, 0}, h[0].file_t)) && Near(h[1].gain, ZoneEnv(d, ZoneRef{0, 2}, h[1].file_t)));
+    }
+    // The engine's gains (FadeGainAt on the voices) sum to 1 there too.
+    const double gl = FadeGainAt(0.300 - L.delay_ms / 1000.0 + L.fade_from_s, L.fade_span_s, L.fade_in_s, L.fade_out_s);
+    const double gr = FadeGainAt(0.300 - R.delay_ms / 1000.0 + R.fade_from_s, R.fade_span_s, R.fade_in_s, R.fade_out_s);
+    CHECK(Near(gl + gr, 1.0));
+    // Outside the crossfade: one head.
+    CHECK(HeardHeads(p.map, 0.2).size() == 1);
+    CHECK(HeardHeads(p.map, 0.4).size() == 1 && Near(HeardHeads(p.map, 0.4)[0].file_t, 0.55));
+    // Starting inside the Gap: it resumes at its exit (no silence for the jumped stretch).
+    const EditPlay g = EditPlayFrom(d, 0.43, 0.70);
+    CHECK(g.voices.size() == 1 && Near(g.voices[0].start_s, 0.445) && Near(g.voices[0].delay_ms, 0.0));
+}
+
+static void TestZonedListen()
+{
+    // Matrix row Mute / Solo: a muted part gives no voice, its time kept.
+    const SoundData d = Zoned({ZPart("heel", 0.10, 0.30), ZPart("toe", 0.40, 0.60)});
+    PartListen      mute;
+    mute.mute.insert("heel");
+    EditPlay p = EditPlayFrom(d, 0.10, 0.60, &mute);
+    CHECK(p.voices.size() == 1 && p.voices[0].part == "toe" && Near(p.voices[0].delay_ms, 300.0));
+    CHECK(p.map.spans.size() == 3 && !p.map.spans[0].heard && Near(p.map.total, 0.50));
+    CHECK(HeardHeads(p.map, 0.05).size() == 1 && !HeardHeads(p.map, 0.05)[0].heard);  // its playhead still moves
+    PartListen solo;
+    solo.solo.insert("heel");
+    p = EditPlayFrom(d, 0.10, 0.60, &solo);
+    CHECK(p.voices.size() == 1 && p.voices[0].part == "heel" && Near(p.map.total, 0.50));
+    solo.solo.insert("toe");  // Solo adds
+    CHECK(EditPlayFrom(d, 0.10, 0.60, &solo).voices.size() == 2);
+    // An off variation: silent, its time kept.
+    SoundData off = d;
+    off.frames[0].on = false;
+    p = EditPlayFrom(off, 0.10, 0.60);
+    CHECK(p.voices.empty() && Near(p.map.total, 0.50));
+}
+
+static void TestEditTransport()
+{
+    // Matrix "Time selection": ruler drag 0.2-0.5, cursor at 0.8, Space: the cursor goes to 0.2, plays to 0.5, stops.
+    EditTransport t = PlanEditTransport(0.8, true, 0.2, 0.5, false, 1.0);
+    CHECK(Near(t.cursor, 0.2) && Near(t.from, 0.2) && Near(t.to, 0.5) && !t.loops);
+    CHECK(!EditLoopDue(t, 10.0, 0.3));
+    // Loop on: repeats 0.2-0.5.
+    t = PlanEditTransport(0.8, true, 0.2, 0.5, true, 1.0);
+    CHECK(Near(t.from, 0.2) && Near(t.to, 0.5) && t.loops && Near(t.loop_a, 0.2) && Near(t.loop_b, 0.5));
+    CHECK(!EditLoopDue(t, 0.1, 0.3) && EditLoopDue(t, 0.3, 0.3) && EditLoopDue(t, 0.29, 0.3, 0.02));
+    // The cursor inside the time selection: from it, still never out of it.
+    t = PlanEditTransport(0.3, true, 0.2, 0.5, true, 1.0);
+    CHECK(Near(t.cursor, 0.3) && Near(t.from, 0.3) && Near(t.to, 0.5) && Near(t.loop_a, 0.2));
+    t = PlanEditTransport(0.5, true, 0.2, 0.5, false, 1.0);  // at its end = outside: back to its start
+    CHECK(Near(t.from, 0.2));
+    // A zone's play with a time selection elsewhere: kept inside the selection.
+    t = PlanEditPlay(0.6, 0.9, true, 0.2, 0.5, false, 1.0);
+    CHECK(Near(t.cursor, 0.2) && Near(t.to, 0.5));
+    // No time selection: from the cursor to the end; Loop = the whole file loops.
+    t = PlanEditTransport(0.3, false, 0.0, 0.0, false, 1.0);
+    CHECK(Near(t.from, 0.3) && Near(t.to, 1.0) && !t.loops);
+    t = PlanEditTransport(0.3, false, 0.0, 0.0, true, 1.0);
+    CHECK(Near(t.from, 0.3) && t.loops && Near(t.loop_a, 0.0) && Near(t.loop_b, 1.0));
+    t = PlanEditTransport(-1.0, false, 0.0, 0.0, false, 1.0);  // no cursor: the file's start
+    CHECK(Near(t.from, 0.0) && Near(t.cursor, 0.0));
+    // A zone's play (to its chain end, not the file's end) does not loop without a time selection.
+    t = PlanEditPlay(0.1, 0.4, false, 0.0, 0.0, true, 1.0);
+    CHECK(!t.loops && Near(t.to, 0.4));
+    // The cursor clamped into the file.
+    t = PlanEditPlay(1.5, 2.0, false, 0.0, 0.0, false, 1.0);
+    CHECK(Near(t.cursor, 1.0) && Near(t.to, 1.0));
+    // With the zones: the time selection 0.2-0.5 over Heel [0.10, 0.30] · Toe [0.40, 0.60] plays 0.30 s, with
+    // 0.10 s of silence.
+    const SoundData d = Zoned({ZPart("heel", 0.10, 0.30), ZPart("toe", 0.40, 0.60)});
+    t = PlanEditTransport(0.8, true, 0.2, 0.5, true, 1.0);
+    const EditPlay p = EditPlayFrom(d, t.from, t.to);
+    CHECK(p.voices.size() == 2 && Near(p.map.total, 0.30) && Near(p.voices[1].delay_ms, 200.0));
+    CHECK(Near(EditPlayFrom(d, t.loop_a, t.loop_b).map.total, 0.30));
+}
+
+static void TestZonePlayRanges()
+{
+    // Heel [0.35, 0.40] · Gap [0.40, 0.45] · Heel [0.45, 0.70] · Toe [0.80, 0.90] · Gap [0.90, 0.95] · Toe [0.95, 1.00]
+    const SoundData d = Zoned({ZPart("heel", 0.35, 0.40), ZGap(0.40, 0.45, 0.005, 0.005), ZPart("heel", 0.45, 0.70),
+                               ZPart("toe", 0.80, 0.90), ZGap(0.90, 0.95, 0.005, 0.005), ZPart("toe", 0.95, 1.00)});
+    const ZoneRef h1{0, 0}, g1{0, 1}, h2{0, 2}, t1{0, 3}, g2{0, 4}, t2{0, 5};
+    CHECK(Near(ChainEnd(d, h1), 0.70) && Near(ChainEnd(d, h2), 0.70) && Near(ChainEnd(d, g1), 0.70));
+    CHECK(Near(ChainEnd(d, t1), 1.00));
+    // A zone's Play: its start to its chain's end (Gaps after it glued).
+    EditRange r = ZonePlayRange(d, h1);
+    CHECK(r.ok && Near(r.from, 0.35) && Near(r.to, 0.70));
+    r = ZonePlayRange(d, h2);
+    CHECK(r.ok && Near(r.from, 0.45) && Near(r.to, 0.70));
+    // Hear the jump: max(left zone start, gap.a - 0.12) .. min(right zone end, gap.b + 0.12).
+    r = ZonePlayRange(d, g1);
+    CHECK(r.ok && Near(r.from, 0.35) && Near(r.to, 0.57));
+    r = ZonePlayRange(d, g2);
+    CHECK(r.ok && Near(r.from, 0.80) && Near(r.to, 1.00));
+    // The selection's Play: from the first selected zone's start to the furthest chain end.
+    r = SelectionPlayRange(d, {t1, h2});
+    CHECK(r.ok && Near(r.from, 0.45) && Near(r.to, 1.00));
+    r = SelectionPlayRange(d, {h1});
+    CHECK(r.ok && Near(r.from, 0.35) && Near(r.to, 0.70));
+    CHECK(!SelectionPlayRange(d, {}).ok && !ZonePlayRange(d, ZoneRef{0, 9}).ok);
+    // Click plays: from the click to the chain's end; on a Gap the +-0.12 s window (inside the file).
+    r = ClickPlayRange(d, h1, 0.37, 1.0);
+    CHECK(r.ok && Near(r.from, 0.37) && Near(r.to, 0.70));
+    r = ClickPlayRange(d, g1, 0.42, 1.0);
+    CHECK(r.ok && Near(r.from, 0.28) && Near(r.to, 0.57));
+    r = ClickPlayRange(d, g2, 0.92, 1.0);
+    CHECK(r.ok && Near(r.from, 0.78) && Near(r.to, 1.00));
+    // The zone play through the transport (no time selection, Loop on): it plays its chain, no loop.
+    const EditTransport t = PlanEditPlay(ZonePlayRange(d, h1).from, ZonePlayRange(d, h1).to, false, 0, 0, true, 1.0);
+    const EditPlay      p = EditPlayFrom(d, t.from, t.to);
+    CHECK(!t.loops && p.voices.size() == 2 && Near(p.map.total, 0.055 + 0.255 - 0.010));
+}
+
 int main()
 {
+    TestZonedEmptySpace();
+    TestZonedGapCrossfade();
+    TestZonedListen();
+    TestEditTransport();
+    TestZonePlayRanges();
     TestEditNav();
     TestPieceTrim();
     TestPartListen();

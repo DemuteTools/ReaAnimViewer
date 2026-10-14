@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "sound_model.h"
+#include "sound_zones.h"  // 13-62h: ZoneRef, HeardPieces
 
 namespace rav {
 
@@ -272,6 +273,84 @@ double MonoOf(double l, double r, MonoMode mono);
 // shows Stop and "played: ..."; the child's row is lit). An unknown child: an empty plan.
 AuditionPlan PlanChildAudition(const SoundStore& store, const SoundLibrary& lib, const std::string& parent_uid,
                                const std::string& child_uid, const AuditionPicker& picker);
+
+// ---- 13-62h (Lot C): a zoned Sound's Edit playback (UsesZones) ---------------------------------------------
+// What is heard over [from, to] (HeardPieces): each part zone's piece one voice (its file stretch, its zone's
+// gain, its envelope = ZoneEnv: its own / cut / part / Sound fades, a Gap's crossfade on a side a Gap holds), laid
+// in heard time: a Gap is jumped (the two sides overlap by xl + xr: two voices crossfading), empty space is silence
+// (time passes, no voice). A part not heard under the Mute / Solo state (PartHeard), and a zone of an off
+// variation, give no voice but keep their time. Heard time 0 = `from`.
+
+// One stretch of heard time: [at, at + (b - a)) plays the file's [a, b].
+struct HeardSpan {
+    double  at = 0.0;           // heard start (s)
+    double  a = 0.0, b = 0.0;   // its file stretch (s)
+    ZoneRef z;                  // {-1, -1} = empty space (silence)
+    bool    heard = true;       // false: muted / not soloed / off variation (no voice)
+    // Its envelope (linear, as ZoneEnv): it rises over `fin` s from `lo` and falls over `fout` s to `hi`.
+    double  lo = 0.0, hi = 0.0, fin = 0.0, fout = 0.0;
+};
+// Heard time -> file time.
+struct HeardMap {
+    std::vector<HeardSpan> spans;  // in heard order (a crossfade = two spans overlapping in heard time)
+    double                 total = 0.0;  // the heard length (s)
+};
+struct EditPlay {
+    std::vector<AuditionVoice> voices;  // delay = heard start; empty when nothing is heard
+    HeardMap                   map;
+};
+// {} for a Sound that is not zoned, or to <= from. The library overload adds GainFromRoot and the node's uid.
+EditPlay EditPlayFrom(const SoundData& d, double from, double to, const PartListen* listen = nullptr);
+EditPlay EditPlayFrom(const SoundLibrary& lib, const SoundNode& n, double from, double to,
+                      const PartListen* listen = nullptr);
+
+// A playhead at heard time t: its file time, its gain (the envelope there; 1 in silence), whether it is the
+// incoming one of a crossfade (the later span: drawn dashed, rising; the outgoing one solid, fading). Up to two
+// in a crossfade, one elsewhere (in empty space too: it walks the silence in file time), none at / past the end.
+struct HeardHead {
+    double  file_t = 0.0;
+    double  gain = 1.0;
+    bool    incoming = false;
+    bool    heard = true;  // the span's (a muted part's playhead still moves)
+    ZoneRef z;             // {-1, -1} in silence
+};
+std::vector<HeardHead> HeardHeads(const HeardMap& map, double heard_t);
+
+// The play's range: from / to in the file. `ok` false = nothing to play (bad zone, empty selection).
+struct EditRange {
+    double from = 0.0, to = 0.0;
+    bool   ok = false;
+};
+// The end of the chain of part zones Gaps glue after `z` (mockup chainEnd; a Gap: its left neighbour's chain);
+// z's end when alone.
+double ChainEnd(const SoundData& d, const ZoneRef& z);
+// A zone's Play: a part zone from its start to its chain's end; a Gap's "Hear the jump": from
+// max(its left zone's start, its start - 0.12 s) to min(its right zone's end, its end + 0.12 s).
+EditRange ZonePlayRange(const SoundData& d, const ZoneRef& z);
+// The selection's Play: one zone = ZonePlayRange; several = from the first one's start to the furthest chain end.
+EditRange SelectionPlayRange(const SoundData& d, const std::vector<ZoneRef>& sel);
+// Click plays: a part zone from the click `t` to its chain's end; a Gap from its start - 0.12 s to its end +
+// 0.12 s (inside [0, file_len]; file_len <= 0 = no upper clamp).
+EditRange ClickPlayRange(const SoundData& d, const ZoneRef& z, double t, double file_len);
+
+// The transport rule (Antho 2026-10-14): every play starts at the edit cursor. A play asked over [from, to]: the
+// cursor goes to `from` (inside [0, file_len]); with a time selection the playhead never leaves it: from the
+// cursor when inside [a, b), else from a (the cursor goes there), up to b, and with Loop it repeats [a, b]; no
+// time selection + Loop: a play to the file's end repeats the whole file. REAPER's preview has no loop (C4):
+// the UI restarts EditPlayFrom(loop_a, loop_b) when the play reaches its heard end (EditLoopDue).
+struct EditTransport {
+    double from = 0.0, to = 0.0;  // what EditPlayFrom plays first
+    double cursor = 0.0;          // the edit cursor after the press
+    bool   loops = false;
+    double loop_a = 0.0, loop_b = 0.0;  // repeated after the first pass (loops only)
+};
+EditTransport PlanEditPlay(double from, double to, bool has_tsel, double tsel_a, double tsel_b, bool loop,
+                           double file_len);
+// Space / the header's Play: from the edit cursor (< 0 = none: the file's start) to the file's end.
+EditTransport PlanEditTransport(double cursor, bool has_tsel, double tsel_a, double tsel_b, bool loop, double file_len);
+// Whether a looping play at heard position `pos` of a pass `total` s long restarts now (within `block_s`, an
+// audio block, of its end).
+bool EditLoopDue(const EditTransport& tp, double pos, double total, double block_s = 0.0);
 
 // "D → N variations · K off" (decision 7): "D → " dropped when D = N, " · K off" when K = 0;
 // "1 variation" singular.

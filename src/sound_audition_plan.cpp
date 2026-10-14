@@ -997,4 +997,198 @@ AuditionPlan PlanChildAudition(const SoundStore& store, const SoundLibrary& lib,
     return plan;
 }
 
+// ---- 13-62h (Lot C): a zoned Sound's Edit playback ---------------------------------------------------------
+
+namespace {
+
+constexpr double kJumpWindow = 0.12;  // "Hear the jump": this much of each side of a Gap (mockup playZone)
+
+const SoundFrame* FrameOfZone(const SoundData& d, const ZoneRef& r)
+{
+    if (r.frame < 0 || static_cast<size_t>(r.frame) >= d.frames.size()) return nullptr;
+    return &d.frames[static_cast<size_t>(r.frame)];
+}
+
+}  // namespace
+
+EditPlay EditPlayFrom(const SoundData& d, double from, double to, const PartListen* listen)
+{
+    EditPlay out;
+    if (!UsesZones(d) || !std::isfinite(from) || !std::isfinite(to) || !(to > from)) return out;
+    const bool         listening = listen && listen->Active();
+    double             at = 0.0;
+    std::map<int, int> nth;  // voices so far per variation (PlayedText names a variation's first one)
+    for (const HeardPiece& p : HeardPieces(d, from, to)) {
+        HeardSpan s;
+        s.at = at;
+        s.a = s.lo = p.a;
+        s.b = s.hi = p.b;
+        const EditZone* z = ZoneOf(d, p.z);
+        if (z && !z->IsGap()) {
+            s.z = p.z;
+            // The envelope of the zone's whole heard stretch (ZoneEnv): a side a Gap holds ramps over its crossfade.
+            const EditZone* lg = ZoneOf(d, GapBefore(d, p.z));
+            const EditZone* rg = ZoneOf(d, GapAfter(d, p.z));
+            s.lo = lg ? lg->b - lg->xr : z->a;
+            s.hi = rg ? rg->a + rg->xl : z->b;
+            s.fin = lg ? lg->xl + lg->xr : ZoneFade(d, p.z, -1).s;
+            s.fout = rg ? rg->xl + rg->xr : ZoneFade(d, p.z, 1).s;
+            const SoundFrame* f = FrameOfZone(d, p.z);
+            s.heard = f && f->on && (!listening || PartHeard(*listen, z->part));
+            if (s.heard) {
+                AuditionVoice v;
+                v.variation = p.z.frame;
+                v.start_s = p.a;
+                v.length_s = p.b - p.a;
+                v.delay_ms = at * 1000.0;
+                v.gain_db = z->db;
+                v.fade_in_s = s.fin;
+                v.fade_out_s = s.fout;
+                v.fade_from_s = p.a - s.lo;
+                v.fade_span_s = s.hi - s.lo;
+                v.piece = nth[p.z.frame]++;
+                v.mono = PartMono(d, z->part);
+                v.part = z->part;
+                out.voices.push_back(std::move(v));
+            }
+        }
+        out.map.spans.push_back(s);
+        out.map.total = std::max(out.map.total, at + (p.b - p.a));
+        at += (p.b - p.a) - p.xo;
+    }
+    return out;
+}
+
+EditPlay EditPlayFrom(const SoundLibrary& lib, const SoundNode& n, double from, double to, const PartListen* listen)
+{
+    EditPlay     out = EditPlayFrom(n.sound, from, to, listen);
+    const double root = GainFromRoot(lib, n);
+    for (AuditionVoice& v : out.voices) {
+        v.node = n.uid;
+        v.gain_db += root;
+    }
+    return out;
+}
+
+std::vector<HeardHead> HeardHeads(const HeardMap& map, double heard_t)
+{
+    std::vector<HeardHead> out;
+    if (!std::isfinite(heard_t)) return out;
+    for (const HeardSpan& s : map.spans) {
+        if (heard_t < s.at || heard_t >= s.at + (s.b - s.a)) continue;
+        HeardHead h;
+        h.file_t = s.a + (heard_t - s.at);
+        h.heard = s.heard;
+        h.z = s.z;
+        if (s.z.frame >= 0) {
+            const double t = h.file_t;
+            double       g = 1.0;
+            if (s.fin > 0.0 && t < s.lo + s.fin) g *= (t - s.lo) / s.fin;
+            if (s.fout > 0.0 && t > s.hi - s.fout) g *= (s.hi - t) / s.fout;
+            h.gain = std::min(std::max(g, 0.0), 1.0);
+        }
+        h.incoming = !out.empty();  // the later span of a crossfade
+        out.push_back(h);
+    }
+    return out;
+}
+
+double ChainEnd(const SoundData& d, const ZoneRef& z)
+{
+    const EditZone* q = ZoneOf(d, z);
+    if (!q) return 0.0;
+    const std::vector<ZoneRef> c = ChainOf(d, z);
+    const EditZone*            last = c.empty() ? nullptr : ZoneOf(d, c.back());
+    return last ? last->b : q->b;
+}
+
+EditRange ZonePlayRange(const SoundData& d, const ZoneRef& z)
+{
+    EditRange       r;
+    const EditZone* q = ZoneOf(d, z);
+    if (!q) return r;
+    if (q->IsGap()) {
+        const EditZone* l = ZoneOf(d, GapLeft(d, z));
+        const EditZone* rt = ZoneOf(d, GapRight(d, z));
+        r.from = std::max(l ? l->a : q->a, q->a - kJumpWindow);
+        r.to = std::min(rt ? rt->b : q->b, q->b + kJumpWindow);
+    } else {
+        r.from = q->a;
+        r.to = ChainEnd(d, z);
+    }
+    r.ok = r.to > r.from;
+    return r;
+}
+
+EditRange SelectionPlayRange(const SoundData& d, const std::vector<ZoneRef>& sel)
+{
+    std::vector<ZoneRef> L;
+    for (const ZoneRef& z : sel)
+        if (ZoneOf(d, z)) L.push_back(z);
+    if (L.empty()) return {};
+    if (L.size() == 1) return ZonePlayRange(d, L.front());
+    EditRange r;
+    r.from = 1e300;
+    r.to = -1e300;
+    for (const ZoneRef& z : L) {
+        r.from = std::min(r.from, ZoneOf(d, z)->a);
+        r.to = std::max(r.to, ChainEnd(d, z));
+    }
+    r.ok = r.to > r.from;
+    return r;
+}
+
+EditRange ClickPlayRange(const SoundData& d, const ZoneRef& z, double t, double file_len)
+{
+    EditRange       r;
+    const EditZone* q = ZoneOf(d, z);
+    if (!q || !std::isfinite(t)) return r;
+    if (q->IsGap()) {
+        r.from = std::max(0.0, q->a - kJumpWindow);
+        r.to = q->b + kJumpWindow;
+        if (file_len > 0.0) r.to = std::min(r.to, file_len);
+    } else {
+        r.from = std::min(std::max(t, q->a), q->b);
+        r.to = ChainEnd(d, z);
+    }
+    r.ok = r.to > r.from;
+    return r;
+}
+
+EditTransport PlanEditPlay(double from, double to, bool has_tsel, double tsel_a, double tsel_b, bool loop, double file_len)
+{
+    EditTransport tp;
+    const double  f0 = std::isfinite(from) ? from : 0.0;
+    const double  T = file_len > 0.0 ? file_len
+                                     : std::max({std::isfinite(to) ? to : 0.0, f0, has_tsel && std::isfinite(tsel_b) ? tsel_b : 0.0});
+    const double  cur = std::min(std::max(f0, 0.0), T);
+    tp.cursor = tp.from = cur;
+    tp.to = std::isfinite(to) ? std::min(to, T) : T;
+    if (has_tsel && tsel_b > tsel_a) {
+        const double a = std::max(tsel_a, 0.0), b = std::min(tsel_b, T);
+        if (cur < a - kZoneTouch || cur >= b) tp.cursor = tp.from = a;
+        tp.to = b;
+        if (loop) {
+            tp.loops = true;
+            tp.loop_a = a;
+            tp.loop_b = b;
+        }
+    } else if (loop && tp.to >= T - 1e-9) {
+        tp.loops = true;
+        tp.loop_a = 0.0;
+        tp.loop_b = T;
+    }
+    return tp;
+}
+
+EditTransport PlanEditTransport(double cursor, bool has_tsel, double tsel_a, double tsel_b, bool loop, double file_len)
+{
+    return PlanEditPlay(cursor < 0.0 ? 0.0 : cursor, file_len, has_tsel, tsel_a, tsel_b, loop, file_len);
+}
+
+bool EditLoopDue(const EditTransport& tp, double pos, double total, double block_s)
+{
+    return tp.loops && total > 0.0 && std::isfinite(pos) && pos >= total - std::max(block_s, 0.0) - 1e-9;
+}
+
 }  // namespace rav

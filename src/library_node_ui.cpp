@@ -226,8 +226,11 @@ double DbToGain(double db) { return std::pow(10.0, db / 20.0); }
 
 using ui::WithAlpha;
 
+void ClearLaneGain();  // 13-62 (below): the lane header's gain drag forgotten
+
 void OpenEdit(const std::string& lib_uid, const std::string& uid)
 {
+    ClearLaneGain();
     P.edit_open = true;
     P.edit_focus = true;
     P.vzoom = 1.0;
@@ -2138,39 +2141,23 @@ const SoundNode* EditSoundOf(const std::string& uid, const SoundLibrary** lib_ou
     return n && n->type == SoundNodeType::Sound ? n : nullptr;
 }
 
+// The Edit window's library's index in the store (-1 when gone).
+int EditLibIndex()
+{
+    const SoundStore& store = GetSoundStore(nullptr);
+    for (size_t i = 0; i < store.libraries.size(); ++i)
+        if (store.libraries[i].uid == P.edit_lib) return static_cast<int>(i);
+    return -1;
+}
+
 std::string PartName(const SoundData& d, const std::string& value)
 {
     return ValueName(GetSoundStore(nullptr), d.divide_group, value);
 }
 
 // C1: a part's Normalize mode / target: its own, else the Sound's (the user's Normalize settings, Level).
-NormMode PartNormModeOf(const SoundData& d, const std::string& value)
-{
-    const PartSettings* p = PartSettingsOf(d, value);
-    return p && p->norm_mode && *p->norm_mode >= 0 && *p->norm_mode < kNormModeCount ? static_cast<NormMode>(*p->norm_mode)
-                                                                                     : P.norm_mode;
-}
-
-double PartNormTargetOf(const SoundData& d, const std::string& value)
-{
-    const PartSettings* p = PartSettingsOf(d, value);
-    return p && p->norm_target ? *p->norm_target : P.norm_db;
-}
-
-// Two entries own the same settings (nullptr = none): a gesture that changed nothing writes nothing.
-bool SamePartSettings(const PartSettings* a, const PartSettings* b)
-{
-    if (!a || !b) return !a && !b;
-    return a->preroll_ms == b->preroll_ms && a->tail_ms == b->tail_ms && a->sync_mode == b->sync_mode &&
-           a->sync_offset_ms == b->sync_offset_ms && a->gain_db == b->gain_db && a->norm_mode == b->norm_mode &&
-           a->norm_target == b->norm_target && a->mono == b->mono && a->fade_in == b->fade_in && a->fade_out == b->fade_out;
-}
-
-// A setting the parts' sync points or margins are measured with: its change measures them again.
-bool PartFieldRemeasures(PartField f)
-{
-    return f == PartField::Preroll || f == PartField::Tail || f == PartField::SyncMode || f == PartField::SyncOffset;
-}
+NormMode PartNormModeOf(const SoundData& d, const std::string& value) { return PartNormMode(d, value, P.norm_mode); }
+double   PartNormTargetOf(const SoundData& d, const std::string& value) { return PartNormTarget(d, value, P.norm_db); }
 
 // A number row (the mockup's FIELDS, part side). `unit` nullptr = the Normalize mode's.
 struct PartNum {
@@ -2181,22 +2168,6 @@ struct PartNum {
     double      step, lo, hi;
     const char* tip;
 };
-
-// The part's own value of a number row, in the row's unit (fades: ms); none while it follows the Sound.
-std::optional<double> OwnPartNumber(const PartSettings* p, PartField f)
-{
-    if (!p) return std::nullopt;
-    switch (f) {
-        case PartField::Preroll: return p->preroll_ms;
-        case PartField::Tail: return p->tail_ms;
-        case PartField::SyncOffset: return p->sync_offset_ms;
-        case PartField::Gain: return p->gain_db;
-        case PartField::NormTarget: return p->norm_target;
-        case PartField::FadeIn: return p->fade_in ? std::optional<double>(*p->fade_in * 1000.0) : std::nullopt;
-        case PartField::FadeOut: return p->fade_out ? std::optional<double>(*p->fade_out * 1000.0) : std::nullopt;
-        default: return std::nullopt;
-    }
-}
 
 // What a part follows on a row it does not own: the Sound's (gain: 0 dB; Normalize target: C1).
 double SoundPartNumber(const SoundData& d, PartField f)
@@ -2210,22 +2181,6 @@ double SoundPartNumber(const SoundData& d, PartField f)
         case PartField::FadeOut: return d.fade_out * 1000.0;
         default: return 0.0;
     }
-}
-
-PartSettings PartNumberPatch(PartField f, double v)
-{
-    PartSettings p;
-    switch (f) {
-        case PartField::Preroll: p.preroll_ms = v; break;
-        case PartField::Tail: p.tail_ms = v; break;
-        case PartField::SyncOffset: p.sync_offset_ms = v; break;
-        case PartField::Gain: p.gain_db = v; break;
-        case PartField::NormTarget: p.norm_target = v; break;
-        case PartField::FadeIn: p.fade_in = v / 1000.0; break;
-        case PartField::FadeOut: p.fade_out = v / 1000.0; break;
-        default: break;
-    }
-    return p;
 }
 
 // The row's bar (.prow .bar: 4 px in the part's colour, left of its label) when the part owns the row.
@@ -2322,9 +2277,7 @@ bool PartNumberEdit(ui::DragNumberEvent e, double v, const SoundLibrary& lib, co
 // "Toe · Tail: 40 ms (its own)" (the mockup's toast).
 std::string PartNumberToast(const std::string& pname, const char* label, PartField f, double v, const char* unit)
 {
-    char buf[48];
-    std::snprintf(buf, sizeof(buf), f == PartField::Gain ? "%+g" : "%g", std::round(v * 10.0) / 10.0);
-    return pname + " \xC2\xB7 " + label + ": " + buf + " " + unit + " (its own)";
+    return pname + " \xC2\xB7 " + label + ": " + RoundedNumberText(v, f == PartField::Gain) + " " + unit + " (its own)";
 }
 
 // One number row of a part (the mockup's .prow). True when the drawing must stop.
@@ -2335,11 +2288,21 @@ bool PartNumberRow(const SoundLibrary& lib, const SoundNode& n, const std::strin
     const std::optional<double> own = OwnPartNumber(PartSettingsOf(d, value), f.field);
     const char*                 unit = f.unit ? f.unit : NormModeUnit(PartNormModeOf(d, value));
     const float                 fw = ui::Dp(52.0f), nw = ui::NumberFieldWidth(fw, unit);
+    // Offset: "before (−) / after" the attack or peak, "after the start" (the Sound's row), before its field.
+    const char* hint = f.field != PartField::SyncOffset         ? nullptr
+                       : PartSyncMode(d, value) == SyncMode::SliceStart ? "after the start"
+                                                                        : "before (\xE2\x88\x92) / after";
     ImGui::PushID(f.id);
     PartRowBar(own.has_value(), col);
-    ui::LabelRow(f.label, nw, ui::Dp(64.0f), own ? ui::kText : ui::kMuted);
+    ui::LabelRow(f.label, nw + (hint ? ui::Dp(40.0f) : 0.0f), ui::Dp(64.0f), own ? ui::kText : ui::kMuted);
+    if (hint) {
+        const float rst = own ? ui::ControlH() + ImGui::GetStyle().ItemSpacing.x : 0.0f;
+        FitText(hint, ui::kMuted, std::max(1.0f, ImGui::GetContentRegionAvail().x - nw - rst - ImGui::GetStyle().ItemSpacing.x));
+        ImGui::SameLine();
+    }
     double                    v = own ? *own : SoundPartNumber(d, f.field);
-    const ui::DragNumberEvent e = ui::DragNumber("##num", &v, f.step, 1, unit, fw, /*trim=*/true, own ? 0 : ui::kMuted);
+    const ui::DragNumberEvent e = ui::DragNumber("##num", &v, f.step, 1, unit, fw, /*trim=*/true, own ? 0 : ui::kMuted,
+                                                 /*sign=*/f.field == PartField::Gain);
     if (f.tip) ui::ItemTipText(f.tip);
     v = std::clamp(v, f.lo, f.hi);
     if (PartNumberEdit(e, v, lib, n, path, value, f.field, PartNumberToast(pname, f.label, f.field, v, unit))) {
@@ -2361,7 +2324,7 @@ bool PartSegmentRow(const char* id, const char* label, const char* const* labels
     PartRowBar(own, col);
     ui::LabelRow(label, ui::Dp(120.0f), ui::Dp(64.0f), own ? ui::kText : ui::kMuted);
     int        sel = current;
-    const bool hit = ui::Segmented("##seg", labels, count, &sel);
+    const bool hit = ui::Segmented("##seg", labels, count, &sel, 0.0f, -1, nullptr, nullptr, /*follow=*/!own);
     const int  hov = ui::SegmentedHovered();
     if (hov >= 0 && hov < count) ui::ShowTip(tips[hov]);
     const bool reset = PartResetButton(id, own);
@@ -2380,14 +2343,18 @@ static void PartSettingsRows(const char* id, int lib, const std::string& node_ui
     const SoundLibrary* l = nullptr;
     const SoundNode*    n = EditSoundOf(node_uid, &l);
     if (!n || !l) return;
-    const SoundData& d = Shown(*n);
-    const int        k = PartIndex(d, value);
-    if (k < 0 || d.mode == DetectMode::Takes) return;
+    // Each row reads the Sound again (Shown(*n), PartSettingsOf): a row's Live() write before it may have
+    // moved what Shown returns, and a pointer into the part list kept across it would be stale.
+    auto own_of = [n, &value]() { return PartSettingsOf(Shown(*n), value); };
+    {
+        const SoundData& d0 = Shown(*n);
+        if (PartIndex(d0, value) < 0 || d0.mode == DetectMode::Takes) return;
+    }
     LoadNormalizePrefs();  // C1: the Normalize rows' "= Sound" are the Level section's settings
-    const SoundMedia&   m = MediaOf(*n);
-    const std::string   path = m.path, pname = PartName(d, value);
-    const ImU32         col = PartColor(k);
-    const PartSettings* ps = PartSettingsOf(d, value);
+    const SoundMedia&  m = MediaOf(*n);
+    const std::string  path = m.path, pname = PartName(Shown(*n), value);
+    const ImU32        col = PartColor(PartIndex(Shown(*n), value));
+    const DetectMode   mode = Shown(*n).mode;
     ImGui::PushID(id);
     ImGui::PushID(value.c_str());
     auto stop = [] {
@@ -2396,7 +2363,7 @@ static void PartSettingsRows(const char* id, int lib, const std::string& node_ui
     };
 
     ui::GroupCaption("Detection", ui::kMuted);
-    if (d.mode == DetectMode::Silence) {
+    if (mode == DetectMode::Silence) {
         static const PartNum kPre = {PartField::Preroll, "##pre", "Pre-roll", "ms", 0.5, 0.0, 1000.0, nullptr};
         static const PartNum kTail = {PartField::Tail, "##tail", "Tail", "ms", 1.0, 0.0, 5000.0, nullptr};
         if (PartNumberRow(*l, *n, path, value, pname, col, kPre) || PartNumberRow(*l, *n, path, value, pname, col, kTail))
@@ -2406,16 +2373,18 @@ static void PartSettingsRows(const char* id, int lib, const std::string& node_ui
         static const char* const kModes[3] = {"Attack", "Peak", "Start"};
         static const char* const kTips[3] = {"Where the first transient crosses the threshold", "The loudest transient's peak",
                                              "The slice start, pre-roll included"};
-        static const char* const kWords[3] = {"attack", "peak", "slice start"};
-        const bool own = ps && ps->sync_mode;
-        int        picked = -1;
-        if (PartSegmentRow("##sync", "Sync point", kModes, kTips, 3, static_cast<int>(PartSyncMode(d, value)), own, col, &picked))
+        const PartSettings* ps = own_of();
+        const bool          own = ps && ps->sync_mode;
+        int                 picked = -1;
+        if (PartSegmentRow("##sync", "Sync point", kModes, kTips, 3, static_cast<int>(PartSyncMode(Shown(*n), value)), own, col,
+                           &picked))
             ResetPartField(*l, *n, path, value, PartField::SyncMode, pname);
-        if (picked >= 0) {
+        else if (picked >= 0) {
             PartSettings patch;
             patch.sync_mode = static_cast<SyncMode>(picked);
-            SetPartNow(*l, *n, path, value, patch, true, pname + " \xC2\xB7 Sync point: " + kWords[picked] + " (its own)");
+            SetPartNow(*l, *n, path, value, patch, true, pname + " \xC2\xB7 Sync point: " + kModes[picked] + " (its own)");
         }
+        if (StoreReplaced()) return stop();
     }
     {
         static const PartNum kOff = {PartField::SyncOffset, "##soff", "Offset", "ms", 0.1, -50.0, 50.0,
@@ -2431,12 +2400,14 @@ static void PartSettingsRows(const char* id, int lib, const std::string& node_ui
         if (PartNumberRow(*l, *n, path, value, pname, col, kGain)) return stop();
     }
     {
-        const bool     own = ps && ps->norm_mode;
-        const NormMode cur = PartNormModeOf(d, value);
+        const PartSettings* ps = own_of();
+        const bool          own = ps && ps->norm_mode;
+        const NormMode      cur = PartNormModeOf(Shown(*n), value);
         PartRowBar(own, col);
         const float w = ui::LabelRow("Normalize", ui::Dp(110.0f), ui::Dp(64.0f), own ? ui::kText : ui::kMuted);
         const float side = own ? ui::ControlH() + ImGui::GetStyle().ItemSpacing.x : 0.0f;
-        if (ui::BeginComboStyled("##nmode", NormModeLabel(cur), std::max(ui::Dp(60.0f), w - side))) {
+        if (ui::BeginComboStyled("##nmode", NormModeLabel(cur), std::max(ui::Dp(60.0f), w - side), 0, ui::TagTone::Neutral,
+                                 /*follow=*/!own)) {
             for (int j = 0; j < kNormModeCount; ++j) {
                 const NormMode md = static_cast<NormMode>(j);
                 if (ImGui::Selectable(NormModeLabel(md), md == cur) && (md != cur || !own)) {
@@ -2447,8 +2418,10 @@ static void PartSettingsRows(const char* id, int lib, const std::string& node_ui
             }
             ui::EndComboStyled();
         }
+        if (StoreReplaced()) return stop();
         ui::ItemTipText(own ? "Its own Normalize mode (REAPER's)" : "Normalize mode (REAPER's): the Sound's; pick one to give it its own");
         if (PartResetButton("##nmode", own)) ResetPartField(*l, *n, path, value, PartField::NormMode, pname);
+        if (StoreReplaced()) return stop();
     }
     {
         static const PartNum kTgt = {PartField::NormTarget, "##ntgt", "Target", nullptr, 0.1, kNormTargetMin, kNormTargetMax,
@@ -2459,21 +2432,23 @@ static void PartSettingsRows(const char* id, int lib, const std::string& node_ui
         static const char* const kLabels[4] = {"Off", "L", "R", "Sum"};
         static const char* const kTips[4] = {"As the file: a stereo file stays stereo", "The left channel alone, on both sides",
                                              "The right channel alone, on both sides", "Left + right mixed into one channel"};
-        static const char* const kWords[4] = {"off (as the file)", "left", "right", "sum L+R"};
-        const bool own = ps && ps->mono;
-        int        picked = -1;
-        if (PartSegmentRow("##mono", "Mono", kLabels, kTips, 4, static_cast<int>(PartMono(d, value)), own, col, &picked))
+        const PartSettings* ps = own_of();
+        const bool          own = ps && ps->mono;
+        int                 picked = -1;
+        if (PartSegmentRow("##mono", "Mono", kLabels, kTips, 4, static_cast<int>(PartMono(Shown(*n), value)), own, col, &picked))
             ResetPartField(*l, *n, path, value, PartField::Mono, pname);
-        if (picked >= 0) {
+        else if (picked >= 0) {
             PartSettings patch;
             patch.mono = static_cast<MonoMode>(picked);
-            SetPartNow(*l, *n, path, value, patch, false, pname + " \xC2\xB7 Mono: " + kWords[picked] + " (its own)");
+            SetPartNow(*l, *n, path, value, patch, false, pname + " \xC2\xB7 Mono: " + kLabels[picked] + " (its own)");
         }
+        if (StoreReplaced()) return stop();
     }
-    PartNormalizeButton(0, node_uid, value);  // Lot C: "Normalize <Part>"
+    // Lot C: "Normalize <Part>" (the library's real index: Edit's).
+    PartNormalizeButton(EditLibIndex(), node_uid, value);
     if (StoreReplaced()) return stop();
 
-    if (!FolderSourced(d)) {  // a folder pile is placed without fades
+    if (!FolderSourced(Shown(*n))) {  // a folder pile is placed without fades
         ImGui::Dummy(ImVec2(1.0f, ui::Dp(4.0f)));
         ui::GroupCaption("Fades", ui::kMuted);
         static const PartNum kIn = {PartField::FadeIn, "##fin", "Fade in", "ms", 0.1, 0.0, 10000.0,
@@ -2527,8 +2502,12 @@ bool ListenButton(const char* id, const char* label, bool solo, bool on, ImVec2 
     const ImVec2 ts = ImGui::CalcTextSize(label);
     ui::EllipsisText(dl, ImVec2(p.x + std::max(ui::Dp(2.0f), std::floor((w - ts.x) * 0.5f)), p.y + std::floor((h - ts.y) * 0.5f)),
                      p.x + w - ui::Dp(2.0f), ink, label);
-    ui::ItemTipText(solo ? "Solo the selected part (your REAPER key for 40281). Listening only, not saved."
-                         : "Mute the selected part (your REAPER key for 40280). Listening only, not saved.");
+    // REAPER's key named only while the Shortcuts row follows REAPER (Lot D's rule), else "your key".
+    const bool reaper = ShortcutFollowsReaper(solo ? kShortcutEditSolo : kShortcutEditMute);
+    const std::string tip = std::string(solo ? "Solo" : "Mute") + " the selected part (" +
+                            (reaper ? std::string("your REAPER key for ") + (solo ? "40281" : "40280") : std::string("your key")) +
+                            "). Listening only, not saved.";
+    ui::ItemTipText(tip.c_str());
     return clicked;
 }
 
@@ -2681,16 +2660,25 @@ std::string PartPicker(const SoundLibrary& lib, const SoundNode& n, const std::s
     return value;
 }
 
-// The lane header's gain fader being dragged (its Sound uid + "|" + part) and its live value.
-std::string g_lane_gain_key;
-double      g_lane_gain_live = 0.0;
-bool        g_lane_gain_moved = false;
+// The lane header's gain fader being dragged: its id, Sound, part, live value, whether it moved, the
+// last frame it was drawn (SettleLostFaders ends a drag whose header went away).
+struct LaneGainDrag {
+    ImGuiID     gid = 0;
+    std::string lib, uid, value, name;
+    double      live = 0.0;
+    bool        moved = false;
+    int         seen = -1;
+};
+LaneGainDrag g_lane_gain;
+
+void ClearLaneGain() { g_lane_gain = LaneGainDrag{}; }
 
 // Split view: the lane header of part `part_k` (the mockup's laneHeadHTML), drawn in [min, max]: its colour
 // bar, the dot, the name, M, S; then (wide) the gain fader + its dB field and the Normalize target ("= -1
 // dBFS" while it follows the Sound) with "⋯ n" (every setting of the part in a popup: PartSettingsRows).
-// `narrow` (C6) = name + M + S only. A click elsewhere on it selects the part (like a REAPER track). Rows that
-// do not fit the lane's height are left out. The cursor is left where it was. Returns the width it used.
+// `narrow` = the mockup's .narrow .lhead (104-112 px): everything but the fader (name, M, S, dB field, target,
+// "⋯ n"); under ~92 px, name over M S only. A click elsewhere on it selects the part (like a REAPER track).
+// Rows that do not fit the lane's height are left out. The cursor is left where it was. Returns the width it used.
 // Its items are submitted here: an item of the caller over [min, max] submitted before would take the mouse.
 [[maybe_unused]] static float PartLaneHeader(const char* id, const SoundData& d, int part_k, ImVec2 min, ImVec2 max,
                                              bool narrow)
@@ -2729,8 +2717,9 @@ bool        g_lane_gain_moved = false;
         ImGui::SetCursorScreenPos(ImVec2(mx + bw + ui::Dp(3.0f), my));
         solo = ListenButton("##lsolo", "S", true, P.part_solo.count(value) > 0, ImVec2(bw, bh));
     };
-    if (narrow || x1 - x0 < ms_w + ui::Dp(30.0f)) {
-        // Name over M S when both fit the lane's height, else M S alone (the colour bar names the lane).
+    if (x1 - x0 < ms_w + ui::Dp(30.0f)) {
+        // Narrower than the mockup's narrowest (104 px): the name over M S when both fit the lane's height,
+        // else M S alone (the colour bar names the lane).
         if (y + th + gap + bh <= bottom) {
             name_at(y, x1);
             y += th + gap;
@@ -2741,64 +2730,85 @@ bool        g_lane_gain_moved = false;
         ms_at(x1 - ms_w, y);
         y += bh + gap;
         const float row_h = ui::ControlH();
-        // Gain: the fader (-24..+12 dB, live, one undo point on release) and its dB field.
+        // Gain: the fader (-24..+12 dB, live, one undo point on release) and its dB field ("+3"). `narrow`
+        // (the mockup's .narrow .lhead) hides only the fader.
         if (y + row_h <= bottom) {
-            const float fw = ui::Dp(46.0f), fader_w = x1 - x0 - fw - gap;
-            const bool  own = PartSettingsOf(d, value) && PartSettingsOf(d, value)->gain_db;
-            const double stored = PartGainDb(d, value);
+            const float         fw = ui::Dp(46.0f), fader_w = narrow ? 0.0f : x1 - x0 - fw - gap;
+            const PartSettings* ps = PartSettingsOf(d, value);
+            const bool          own = ps && ps->gain_db;
+            const double        stored = PartGainDb(d, value);
+            const bool          live = g_lane_gain.gid != 0 && g_lane_gain.uid == n->uid && g_lane_gain.value == value;
             if (fader_w >= ui::Dp(24.0f)) {
-                const std::string key = n->uid + "|" + value;
-                const bool        live = g_lane_gain_key == key;
-                float             fv = static_cast<float>(live ? g_lane_gain_live : stored);
+                float fv = static_cast<float>(live ? g_lane_gain.live : stored);
                 ImGui::SetCursorScreenPos(ImVec2(x0, y));
                 const bool moved = ui::Fader("##lgain", &fv, -24.0f, 12.0f, fader_w);
+                const ImGuiID gid = ImGui::GetItemID();
                 const bool active = ImGui::IsItemActive(), released = ImGui::IsItemDeactivated();
                 const bool cancelled = released && ui::FaderCancelled();
                 ui::ItemTip("%s gain (dB): added to every variation of this part", name.c_str());
+                if (live && g_lane_gain.gid == gid) g_lane_gain.seen = ImGui::GetFrameCount();
                 if (cancelled && live) {
-                    g_lane_gain_key.clear();
+                    ClearLaneGain();
                     CancelLive();
-                } else if (active || (released && live)) {
-                    if (!live) {
-                        g_lane_gain_live = stored;
-                        g_lane_gain_moved = false;
-                    }
+                } else if (active && !live) {  // a new gesture: nothing of its own until it moves
+                    g_lane_gain = LaneGainDrag{gid, lib->uid, n->uid, value, name, stored, false, ImGui::GetFrameCount()};
+                }
+                if (!cancelled && (active || released) && g_lane_gain.gid == gid && g_lane_gain.uid == n->uid &&
+                    g_lane_gain.value == value) {
                     if (moved) {
-                        g_lane_gain_live = std::clamp(std::round(static_cast<double>(fv) * 2.0) / 2.0, -24.0, 12.0);
-                        g_lane_gain_moved = true;
+                        g_lane_gain.live = std::clamp(std::round(static_cast<double>(fv) * 2.0) / 2.0, -24.0, 12.0);
+                        g_lane_gain.moved = true;
                     }
-                    g_lane_gain_key = key;
-                    SoundData& dr = Live(*n);
-                    if (g_lane_gain_moved) {  // a click alone gives the part nothing of its own
+                    if (g_lane_gain.moved) {  // a click alone gives the part nothing of its own (no Live, no write)
+                        SoundData&   dr = Live(*n);
                         PartSettings patch;
-                        patch.gain_db = g_lane_gain_live;
+                        patch.gain_db = g_lane_gain.live;
                         SetPartSetting(dr, value, patch);
                     }
                     if (released) {
-                        g_lane_gain_key.clear();
-                        if (SamePartSettings(PartSettingsOf(dr, value), PartSettingsOf(n->sound, value))) CancelLive();
-                        else CommitLive("Part setting", lib->uid, n->uid,
-                                        PartNumberToast(name, "Gain", PartField::Gain, g_lane_gain_live, "dB"));
+                        const bool   wrote = g_lane_gain.moved;
+                        const double gv = g_lane_gain.live;
+                        ClearLaneGain();
+                        if (wrote) {
+                            const SoundData& dr = Shown(*n);
+                            if (SamePartSettings(PartSettingsOf(dr, value), PartSettingsOf(n->sound, value))) CancelLive();
+                            else CommitLive("Part setting", lib->uid, n->uid, PartNumberToast(name, "Gain", PartField::Gain, gv, "dB"));
+                        }
                     }
                 }
             }
-            double v = g_lane_gain_key == n->uid + "|" + value ? g_lane_gain_live : stored;
-            ImGui::SetCursorScreenPos(ImVec2(x1 - fw, y));
-            const ui::DragNumberEvent e = ui::DragNumber("##lgaindb", &v, 0.1, 1, "", fw, /*trim=*/true, own ? 0 : ui::kMuted);
+            if (StoreReplaced()) {
+                ImGui::PopID();
+                ImGui::PopID();
+                ImGui::SetCursorScreenPos(cursor0);
+                return max.x - min.x;
+            }
+            const bool still = g_lane_gain.gid != 0 && g_lane_gain.uid == n->uid && g_lane_gain.value == value;
+            double     v = still ? g_lane_gain.live : stored;
+            ImGui::SetCursorScreenPos(ImVec2(fader_w >= ui::Dp(24.0f) ? x1 - fw : x0, y));
+            const ui::DragNumberEvent e =
+                ui::DragNumber("##lgaindb", &v, 0.1, 1, "", fw, /*trim=*/true, own ? 0 : ui::kMuted, /*sign=*/true);
             ui::ItemTip("%s gain (dB)%s", name.c_str(), own ? "" : ": = Sound (0 dB) until you set it");
             v = std::clamp(v, kMinDb, kMaxDb);
-            PartNumberEdit(e, v, *lib, *n, std::string(), value, PartField::Gain, PartNumberToast(name, "Gain", PartField::Gain, v, "dB"));
+            if (PartNumberEdit(e, v, *lib, *n, std::string(), value, PartField::Gain,
+                               PartNumberToast(name, "Gain", PartField::Gain, v, "dB"))) {
+                ImGui::PopID();
+                ImGui::PopID();
+                ImGui::SetCursorScreenPos(cursor0);
+                return max.x - min.x;
+            }
             y += row_h + gap;
         }
         // The Normalize target ("= -1 dBFS" while it follows the Sound) and "⋯ n": every setting in a popup.
         if (y + row_h <= bottom) {
             LoadNormalizePrefs();
-            const PartSettings* ps = PartSettingsOf(d, value);
+            const SoundData&    dn = Shown(*n);
+            const PartSettings* ps = PartSettingsOf(dn, value);
             const bool          nown = ps && (ps->norm_mode || ps->norm_target);
-            const int           cnt = OwnSettingCount(d, value);
+            const int           cnt = OwnSettingCount(dn, value);
             char                tgt[48];
-            std::snprintf(tgt, sizeof(tgt), "%s%g %s", nown ? "" : "= ", std::round(PartNormTargetOf(d, value) * 10.0) / 10.0,
-                          NormModeUnit(PartNormModeOf(d, value)));
+            std::snprintf(tgt, sizeof(tgt), "%s%s %s", nown ? "" : "= ", FormatNormTarget(PartNormTargetOf(dn, value)).c_str(),
+                          NormModeUnit(PartNormModeOf(dn, value)));
             const std::string more = "\xE2\x8B\xAF" + (cnt > 0 ? " " + std::to_string(cnt) : std::string());
             const float       mw = std::min(ui::ButtonWidth(more.c_str()), x1 - x0);
             ui::EllipsisTextTip(dl, ImVec2(x0, y + std::floor((row_h - th) * 0.5f)), x1 - mw - gap, ui::kMuted, tgt,
@@ -4577,6 +4587,7 @@ void DrawEditOverlay()
     const SoundNode*    n = lib ? FindNode(*lib, P.edit_uid) : nullptr;
     if (!n || n->type != SoundNodeType::Sound) {
         P.edit_open = false;
+        ClearLaneGain();
         CancelNormJob();
         return;
     }
@@ -4859,6 +4870,7 @@ void DrawEditOverlay()
     ui::EndOverlayPanel();
     if (close) {
         P.edit_open = false;
+        ClearLaneGain();
         P.sel.clear();
         P.trim_request = -1;  // review (13-61): a key held for a drag never fires on the next Edit
         CancelLive();
@@ -5865,6 +5877,22 @@ void SettleLostFaders()
                 x.volume_db = v;
                 return true;
             });
+    }
+    // 13-62: the lane header's gain fader whose header went away mid-gesture (Split -> Combined, Edit
+    // closed): a moved value drawn last frame is entered (one undo point), else dropped; never kept for a
+    // later click on that lane.
+    if (g_lane_gain.gid != 0 && active != g_lane_gain.gid) {
+        const LaneGainDrag g = g_lane_gain;
+        ClearLaneGain();
+        if (P.phase.Shows(g.uid)) {
+            const SoundLibrary* l = g.moved && g.seen >= frame - 1 ? FindLibrary(GetSoundStore(nullptr), g.lib) : nullptr;
+            const SoundNode*    nd = l ? FindNode(*l, g.uid) : nullptr;
+            if (nd && !SamePartSettings(PartSettingsOf(P.draft, g.value), PartSettingsOf(nd->sound, g.value)))
+                CommitLive("Part setting", g.lib, g.uid, PartNumberToast(g.name, "Gain", PartField::Gain, g.live, "dB"));
+            else
+                CancelLive();
+            if (StoreReplaced()) return;
+        }
     }
     if (P.detf_gid != 0 && active != P.detf_gid) {
         const bool fresh = P.detf_seen >= frame - 1;

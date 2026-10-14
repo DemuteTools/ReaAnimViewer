@@ -2262,4 +2262,62 @@ std::string DividedByText(const SoundStore& store, const SoundData& data)
     return "Divided by " + (g ? g->name : std::string("?")) + " (" + vals + ")";
 }
 
+// ---- 13-62 (E2): the part rows' pure helpers ----
+
+// Two entries own the same settings (nullptr = none): a gesture that changed nothing writes nothing.
+bool SamePartSettings(const PartSettings* a, const PartSettings* b)
+{
+    if (!a || !b) return !a && !b;
+    return a->preroll_ms == b->preroll_ms && a->tail_ms == b->tail_ms && a->sync_mode == b->sync_mode &&
+           a->sync_offset_ms == b->sync_offset_ms && a->gain_db == b->gain_db && a->norm_mode == b->norm_mode &&
+           a->norm_target == b->norm_target && a->mono == b->mono && a->fade_in == b->fade_in && a->fade_out == b->fade_out;
+}
+
+// A setting the parts' sync points or margins are measured with: its change measures them again.
+bool PartFieldRemeasures(PartField f)
+{
+    return f == PartField::Preroll || f == PartField::Tail || f == PartField::SyncMode || f == PartField::SyncOffset;
+}
+
+// The part's own value of a number row, in the row's unit (fades: ms); none while it follows the Sound.
+std::optional<double> OwnPartNumber(const PartSettings* p, PartField f)
+{
+    if (!p) return std::nullopt;
+    switch (f) {
+        case PartField::Preroll: return p->preroll_ms;
+        case PartField::Tail: return p->tail_ms;
+        case PartField::SyncOffset: return p->sync_offset_ms;
+        case PartField::Gain: return p->gain_db;
+        case PartField::NormTarget: return p->norm_target;
+        case PartField::FadeIn: return p->fade_in ? std::optional<double>(*p->fade_in * 1000.0) : std::nullopt;
+        case PartField::FadeOut: return p->fade_out ? std::optional<double>(*p->fade_out * 1000.0) : std::nullopt;
+        default: return std::nullopt;
+    }
+}
+
+PartSettings PartNumberPatch(PartField f, double v)
+{
+    PartSettings p;
+    switch (f) {
+        case PartField::Preroll: p.preroll_ms = v; break;
+        case PartField::Tail: p.tail_ms = v; break;
+        case PartField::SyncOffset: p.sync_offset_ms = v; break;
+        case PartField::Gain: p.gain_db = v; break;
+        case PartField::NormTarget: p.norm_target = v; break;
+        case PartField::FadeIn: p.fade_in = v / 1000.0; break;
+        case PartField::FadeOut: p.fade_out = v / 1000.0; break;
+        default: break;
+    }
+    return p;
+}
+
+std::string RoundedNumberText(double v, bool sign)
+{
+    double r = std::round(v * 10.0) / 10.0;
+    if (r == 0.0 || !std::isfinite(r)) r = 0.0;  // never "-0"
+    char buf[48];
+    std::snprintf(buf, sizeof(buf), sign && r > 0.0 ? "+%g" : "%g", r);
+    return buf;
+}
+
 }  // namespace rav

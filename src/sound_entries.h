@@ -6,6 +6,7 @@
 
 #pragma once
 
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -285,6 +286,18 @@ void ResetPartSetting(SoundData& data, const std::string& value, PartField field
 void ResetPartAll(SoundData& data, const std::string& value);
 // How many settings the part owns (0 = "same as the Sound").
 int OwnSettingCount(const SoundData& data, const std::string& value);
+// 13-62 (E2, the part rows): two entries own the same settings (nullptr = none; a gesture that changed
+// nothing writes nothing).
+bool SamePartSettings(const PartSettings* a, const PartSettings* b);
+// A setting the parts' sync points or margins are measured with (its change measures them again).
+bool PartFieldRemeasures(PartField f);
+// The part's own value of a number row in the row's unit (fades: ms); none while it follows the Sound
+// (and for the non-number fields).
+std::optional<double> OwnPartNumber(const PartSettings* p, PartField f);
+// A patch setting number field `f` to `v` (the row's unit: fades in ms).
+PartSettings PartNumberPatch(PartField f, double v);
+// A number rounded to 0.1 as the mockup's sgn writes a gain: "+3", "-2.5", "0" (`sign` false: no "+").
+std::string RoundedNumberText(double v, bool sign);
 
 // One piece of a variation as the Edit window shows it (decision 10: never merged): between two
 // boundaries (the frame's edges, its cuts, the zones' edges). `owner` = PartAt's ("" when combined or

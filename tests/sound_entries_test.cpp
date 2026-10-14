@@ -1705,9 +1705,50 @@ void TestPartNormalize()
     CHECK(PartNormRegions(u, "", {}, NormMode::Peak, -1.0).empty());
 }
 
+// 13-62 (E2): the part rows' pure helpers.
+void TestPartRowHelpers()
+{
+    PeakData  pk;
+    SoundData d = Divided(&pk);
+    // SamePartSettings: none == none; a field set differs; the same fields again are the same (a gesture
+    // that changed nothing writes nothing).
+    CHECK(SamePartSettings(nullptr, nullptr));
+    PartSettings a = Patch();
+    a.gain_db = 3.0;
+    CHECK(!SamePartSettings(&a, nullptr) && !SamePartSettings(nullptr, &a));
+    PartSettings b = a;
+    CHECK(SamePartSettings(&a, &b));
+    b.mono = MonoMode::Sum;
+    CHECK(!SamePartSettings(&a, &b));
+    b = a;
+    b.value = "other";  // its value is not a setting
+    CHECK(SamePartSettings(&a, &b));
+    // OwnPartNumber / PartNumberPatch round-trip in the row's unit (fades in ms, stored in s).
+    for (PartField f : {PartField::Preroll, PartField::Tail, PartField::SyncOffset, PartField::Gain, PartField::NormTarget,
+                        PartField::FadeIn, PartField::FadeOut}) {
+        const PartSettings p = PartNumberPatch(f, 12.5);
+        CHECK(OwnPartNumber(&p, f) && Near(*OwnPartNumber(&p, f), 12.5));
+        CHECK(!OwnPartNumber(nullptr, f));
+    }
+    const PartSettings fi = PartNumberPatch(PartField::FadeIn, 4.0);
+    CHECK(fi.fade_in && Near(*fi.fade_in, 0.004));
+    CHECK(!OwnPartNumber(&fi, PartField::Gain) && !OwnPartNumber(&fi, PartField::SyncMode));
+    // A patch then read back through the store's own setter.
+    SetPartSetting(d, kFront, PartNumberPatch(PartField::Tail, 40.0));
+    CHECK(OwnPartNumber(PartSettingsOf(d, kFront), PartField::Tail) == 40.0 && !OwnPartNumber(PartSettingsOf(d, kBack), PartField::Tail));
+    // Remeasuring fields: sync and margins only.
+    CHECK(PartFieldRemeasures(PartField::Preroll) && PartFieldRemeasures(PartField::Tail) &&
+          PartFieldRemeasures(PartField::SyncMode) && PartFieldRemeasures(PartField::SyncOffset));
+    CHECK(!PartFieldRemeasures(PartField::Gain) && !PartFieldRemeasures(PartField::Mono) && !PartFieldRemeasures(PartField::FadeIn));
+    // The mockup's sgn: "+3", "0" (never "+0" nor "-0"), "-2.5"; without sign no "+".
+    CHECK(RoundedNumberText(3.0, true) == "+3" && RoundedNumberText(0.0, true) == "0" && RoundedNumberText(-0.04, true) == "0");
+    CHECK(RoundedNumberText(-2.5, true) == "-2.5" && RoundedNumberText(2.54, true) == "+2.5" && RoundedNumberText(3.0, false) == "3");
+}
+
 int main()
 {
     TestPartSettings();  // 13-62
+    TestPartRowHelpers();
     TestPartNormalize();
     TestPartSyncAndMargins();
     TestComping();

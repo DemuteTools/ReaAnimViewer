@@ -352,7 +352,8 @@ void PaintIconAt(ImDrawList* dl, const Icon& icon, float x, float y, float line_
 bool Segmented(const char* id, const char* const* labels, int count, int* selected,
                float item_width = 0.0f, int disabled_index = -1,
                const Icon* icons = nullptr,             // icons: one per option, drawn before its label
-               const char* const* badges = nullptr);
+               const char* const* badges = nullptr,
+               bool follow = false);  // 13-62: the on option muted, see-through, dashed (.prow:not(.own))
 
 // Buttons: primary = accent fill, solid = raised fill with a stroke edge. Ghost (the
 // default ImGui::Button under this theme) needs no helper. Both shrink to the room left
@@ -485,8 +486,9 @@ enum class DragNumberEvent {
     Cancel,  // Esc: *value is back to its value before the gesture
 };
 // 13-14 (G-20): `text_col` (non-zero) tones the number (kWarn: a value Detect raised).
+// 13-62: `sign` writes a positive value with its "+" ("+3": a gain; 0 stays "0").
 DragNumberEvent DragNumber(const char* id, double* value, double step, int decimals, const char* unit,
-                           float width = 0.0f, bool trim = false, ImU32 text_col = 0);
+                           float width = 0.0f, bool trim = false, ImU32 text_col = 0, bool sign = false);
 // True while a DragNumber is dragged or typed into (the viewer routes Esc to it).
 bool DragNumberActive();
 // Forgets a running drag / typed value (its view went away; the caller ends the gesture).
@@ -545,8 +547,9 @@ bool AddField(const char* id, const char* hint, char* buf, size_t buf_size, floa
 // ellipsized before a drawn muted chevron; its list is styled as a menu popup. `width` 0 =
 // natural (min 150) within the room left. Call EndComboStyled only when it returned true.
 // 13-14 (G-6): `tone` Bad = a value that is missing: preview kBadInk, edge kBadLine.
+// 13-62: `follow` = a value followed from elsewhere: see-through, a dashed edge, the preview muted.
 bool BeginComboStyled(const char* id, const char* preview, float width = 0.0f, int flags = 0,
-                      TagTone tone = TagTone::Neutral);
+                      TagTone tone = TagTone::Neutral, bool follow = false);
 void EndComboStyled();
 
 // 13-14 (G-5): the small "chip" select of the Tagging rules (select.chip): ControlH() high, r7,

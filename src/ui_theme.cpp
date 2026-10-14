@@ -387,7 +387,7 @@ void PaintIconAt(ImDrawList* dl, const Icon& icon, float x, float y, float line_
 }
 
 bool Segmented(const char* id, const char* const* labels, int count, int* selected, float item_width,
-               int disabled_index, const Icon* icons, const char* const* badges)
+               int disabled_index, const Icon* icons, const char* const* badges, bool follow)
 {
     g_seg_hovered = -1;
     if (!labels || count <= 0 || !selected) return false;
@@ -445,7 +445,10 @@ bool Segmented(const char* id, const char* const* labels, int count, int* select
             changed = true;
         }
         const bool on = (*selected == i);
-        if (on) {
+        if (on && follow) {  // 13-62: followed, not its own: no fill, a dashed edge
+            if (hovered) dl->AddRectFilled(a, b, Ink(kHover), kRadiusSm);
+            DashedRect(dl, a, b, Ink(kStrokeStrong), kRadiusSm);
+        } else if (on) {
             dl->AddRectFilled(a, b, Ink(kRaised), kRadiusSm);
             dl->AddRect(a, b, Ink(kStrokeStrong), kRadiusSm);
         } else if (hovered && !disabled) {
@@ -455,7 +458,7 @@ bool Segmented(const char* id, const char* const* labels, int count, int* select
         const std::string text = end ? std::string(labels[i], end) : std::string(labels[i]);
         const float       room = icons && icons[i].fn ? icon_room : 0.0f;  // the option's icon, before its label
         const float       tw = TextWidth(labels[i]) + room + badge_w[i];
-        const ImU32       ink = Ink(disabled ? kFaint : (on ? kText : (badge_w[i] > 0.0f ? kAccentText : kMuted)));
+        const ImU32       ink = Ink(disabled ? kFaint : (on && !follow ? kText : (badge_w[i] > 0.0f ? kAccentText : kMuted)));
         const float       ty = a.y + (h - ImGui::GetTextLineHeight()) * 0.5f;
         if (tw <= widths[i] - 4.0f) {
             const float tx = a.x + (widths[i] - tw) * 0.5f;
@@ -1038,8 +1041,13 @@ bool ParseTyped(const char* text, double* out)
     return true;
 }
 
-void FormatNumber(char* out, size_t n, double v, int decimals, bool trim)
+void FormatNumber(char* out, size_t n, double v, int decimals, bool trim, bool sign = false)
 {
+    if (sign && RoundTo(v, decimals) > 0.0 && n > 1) {  // "+3" (0 stays "0", as the mockup's sgn)
+        out[0] = '+';
+        FormatNumber(out + 1, n - 1, v, decimals, trim, false);
+        return;
+    }
     if (trim) std::snprintf(out, n, "%s", flow::TrimmedNumber(RoundTo(v, decimals), decimals).c_str());
     else std::snprintf(out, n, "%.*f", decimals < 0 ? 0 : decimals, RoundTo(v, decimals));
 }
@@ -1064,7 +1072,7 @@ void DragNumberReset()
 }
 
 DragNumberEvent DragNumber(const char* id, double* value, double step, int decimals, const char* unit, float width,
-                           bool trim, ImU32 text_col)
+                           bool trim, ImU32 text_col, bool sign)
 {
     DragNumberEvent ev = DragNumberEvent::None;
     if (!value) return ev;
@@ -1078,7 +1086,7 @@ DragNumberEvent DragNumber(const char* id, double* value, double step, int decim
     if (!WindowAutoSizes())
         w = flow::FieldBeforeUnit(ImGui::GetContentRegionAvail().x, w, UnitWidth(unit), 0.0f, std::min(w, 24.0f));
     char text[64];
-    FormatNumber(text, sizeof(text), *value, decimals, trim);
+    FormatNumber(text, sizeof(text), *value, decimals, trim, sign);
 
     if (g_dn.typing == gid || g_dn.drag == gid) g_dn.seen_frame = ImGui::GetFrameCount();
     if (g_dn.typing == gid) {
@@ -1154,7 +1162,7 @@ DragNumberEvent DragNumber(const char* id, double* value, double step, int decim
         const ImVec2 p1(p0.x + w, p0.y + h);
         dl->AddRectFilled(p0, p1, Ink(kRaised), Dp(kRadiusSm));
         dl->AddRect(p0, p1, Ink((hovered || active) ? kStrokeStrong : kStroke), Dp(kRadiusSm));
-        FormatNumber(text, sizeof(text), *value, decimals, trim);
+        FormatNumber(text, sizeof(text), *value, decimals, trim, sign);
         const ImVec2 ts = TextSizeIn(mono, text);
         dl->PushClipRect(p0, p1, true);
         AddTextIn(dl, mono, ImVec2(std::max(p0.x + Dp(3.0f), p1.x - Dp(5.0f) - ts.x), std::floor(p0.y + (h - ts.y) * 0.5f)),
@@ -1727,7 +1735,7 @@ void MenuCaption(const char* text)
     ImGui::Dummy(ImVec2(std::max(1.0f, w), f->FontSize + Dp(2.0f)));
 }
 
-bool BeginComboStyled(const char* id, const char* preview, float width, int flags, TagTone tone)
+bool BeginComboStyled(const char* id, const char* preview, float width, int flags, TagTone tone, bool follow)
 {
     const bool bad = tone == TagTone::Bad;
     const float chev = Dp(16.0f);  // the chevron's room at the right
@@ -1743,9 +1751,14 @@ bool BeginComboStyled(const char* id, const char* preview, float width, int flag
     PushMenuWindowStyle();
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(Dp(6.0f), std::max(0.0f, (FieldH() - line) * 0.5f)));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Dp(kRadiusSm));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);  // Border = stroke-strong (PushMenuWindowStyle)
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, follow ? 0.0f : 1.0f);  // Border = stroke-strong (PushMenuWindowStyle)
+    if (follow) {  // 13-62: see-through (the hover tint kept), its edge dashed below
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(0, 0, 0, 0));
+        ImGui::PushStyleColor(ImGuiCol_FrameBgActive, IM_COL32(0, 0, 0, 0));
+    }
     ImGui::SetNextItemWidth(w);
     const bool open = ImGui::BeginCombo(id, nullptr, flags | ImGuiComboFlags_NoArrowButton);
+    if (follow) ImGui::PopStyleColor(2);
     ImGui::PopStyleVar(3);
     if (open) {
         PushMenuItemStyle();
@@ -1754,10 +1767,11 @@ bool BeginComboStyled(const char* id, const char* preview, float width, int flag
     // The preview, ellipsized before the chevron (a "v" in the text colour).
     const ImVec2 p1(p0.x + w, p0.y + FieldH());
     if (bad) dl->AddRect(p0, p1, Ink(kBadLine), Dp(kRadiusSm));  // 13-14 (G-6): a missing value
+    else if (follow) DashedRect(dl, p0, p1, Ink(kStrokeStrong), Dp(kRadiusSm));
     if (preview && preview[0]) {
         const std::string s(preview);
         EllipsisText(dl, ImVec2(p0.x + Dp(6.0f), p0.y + (FieldH() - ImGui::GetTextLineHeight()) * 0.5f), p1.x - chev - Dp(2.0f),
-                     Ink(bad ? kBadInk : kText), s);
+                     Ink(bad ? kBadInk : follow ? kMuted : kText), s);
     }
     const ImVec2 c(p1.x - Dp(11.0f), (p0.y + p1.y) * 0.5f);
     const float  hw = Dp(4.0f), hh = Dp(2.0f);

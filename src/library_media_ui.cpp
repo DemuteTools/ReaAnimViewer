@@ -823,7 +823,6 @@ bool DecodeMediaDrop(const void* data, int size, SoundSource* source, std::vecto
         if (p.slice) {
             SoundFrame f = p.frame;
             f.hand = true;
-            f.trimmed = true;  // 13-62g review: a slice picked by hand keeps its range
             frames->push_back(f);
         } else {
             *frames = SoundSpecFor(p).sound.frames;

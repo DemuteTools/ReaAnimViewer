@@ -165,9 +165,6 @@ struct PanelState {
     bool                  pname_open = false;  // open it on the next draw (asked from a menu)
     char                  pname_buf[128] = {};
     NormJob               norm_job;
-    // 13-62g review: a part's Pre-roll / Tail changed before the file's peaks were read (Sound uid -> its path): its
-    // variations are detected again once they are (PumpPendingRedetect).
-    std::map<std::string, std::string> pending_redetect;
     // Edit's waveform: its x span on screen and the source length (key zoom around the mouse).
     float                 wave_x0 = 0.0f, wave_x1 = 0.0f;
     double                wave_len = 0.0;
@@ -469,17 +466,9 @@ SoundNode MeasuredNode(const SoundNode& n, const std::string& path)
 void Redetect(SoundData& d, const SoundMedia& m, const std::vector<SoundFrame>& previous)
 {
     // 13-62g: a divided Sound's variations carry the largest margin of its parts (each part then takes its own).
-    SoundData before = d;  // 13-62g review: where each hand edge was
-    before.frames = previous;
     d.frames = MergeHandFrames(Detected(m, d.mode, DetectionSilence(d)), previous, d.mode == DetectMode::Takes);
     CarryHandMarks(d.frames, previous);
-    PeakData   pk;
-    const bool has = !m.path.empty() && RequestPeaks(m.path, &pk) == PeakState::Ready;
-    RefreshParts(d, has ? &pk : nullptr);
-    if (has) {  // 13-62g review: a carried hand edge never hides sound it did not hide before
-        KeepCarriedHandEdges(before, d, &pk);
-        RefreshParts(d, &pk);
-    }
+    RefreshWith(d, m.path);
 }
 
 // 13-62g: the parts measured again after a part's setting changed. A pre-roll / tail (`margins`) also detects the
@@ -489,56 +478,15 @@ void Redetect(SoundData& d, const SoundMedia& m, const std::vector<SoundFrame>& 
 void RemeasureParts(SoundData& d, const SoundNode& n, const std::string& path, bool margins,
                     const std::vector<SoundFrame>& previous)
 {
-    if (margins && d.mode == DetectMode::Silence && IsDivided(d) && !path.empty()) {
-        if (RequestPeaks(path, nullptr) != PeakState::Ready) {
-            P.pending_redetect[n.uid] = path;  // 13-62g review: once the peaks are read (PumpPendingRedetect)
-        } else {
-            const SoundMedia& m = MediaOf(n);
-            if (m.ok && m.path == path) {
-                Redetect(d, m, previous);
-                return;
-            }
+    if (margins && d.mode == DetectMode::Silence && IsDivided(d) && !path.empty() &&
+        RequestPeaks(path, nullptr) == PeakState::Ready) {
+        const SoundMedia& m = MediaOf(n);
+        if (m.ok && m.path == path) {
+            Redetect(d, m, previous);
+            return;
         }
     }
     RefreshWith(d, path);
-}
-
-// 13-62g review: the variations' ranges, cuts, owners, hand edges and part trims alike (a re-detection that changed
-// nothing writes nothing).
-bool SameDetected(const SoundData& a, const SoundData& b)
-{
-    if (a.frames.size() != b.frames.size()) return false;
-    for (size_t i = 0; i < a.frames.size(); ++i) {
-        const SoundFrame &x = a.frames[i], &y = b.frames[i];
-        if (x.start != y.start || x.length != y.length || x.cuts != y.cuts || x.owners != y.owners || x.edge_in != y.edge_in ||
-            x.edge_out != y.edge_out || x.part_trims != y.part_trims || x.syncs != y.syncs)
-            return false;
-    }
-    return true;
-}
-
-// 13-62g review: a part's Pre-roll / Tail set while the file's peaks were being read re-detects the variations once
-// they are: a follow-up undo point "Re-detect parts" (none when nothing changes; never during a drag).
-void PumpPendingRedetect(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m)
-{
-    auto it = P.pending_redetect.find(n.uid);
-    if (it == P.pending_redetect.end() || P.phase.Live()) return;
-    if (!m.ok || m.path != it->second || n.sound.mode != DetectMode::Silence || !IsDivided(n.sound)) {
-        P.pending_redetect.erase(it);
-        return;
-    }
-    if (RequestPeaks(m.path, nullptr) != PeakState::Ready) return;
-    P.pending_redetect.erase(it);
-    const std::string path = m.path;
-    EditNode("Re-detect parts", lib.uid, n.uid, [path](SoundNode& x) {
-        const SoundMedia& mm = MediaOf(x);
-        if (!mm.ok || mm.path != path) return false;
-        SoundData d = x.sound;
-        Redetect(d, mm, x.sound.frames);
-        if (SameDetected(d, x.sound)) return false;
-        x.sound = d;
-        return true;
-    }, "Variations detected again with the parts' margins");
 }
 
 bool IsMarginField(PartField f)
@@ -3487,8 +3435,7 @@ bool CompRange(const SoundLibrary& lib, const SoundNode& n, const std::string& p
 // strip the part under the mouse selected (outside every variation: the Sound). True when a range was taken.
 bool CompClick(const WaveformEvents& ev, const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, int i)
 {
-    // 13-62g review: the parts as drawn (an older Sound measured on the peaks), so a click in a gap takes that gap.
-    const SoundData&    d = MeasuredShown(n, m.path);
+    const SoundData&    d = Shown(n);
     const std::string   lv = LaneValue(d, ev.lane);
     const CompClickPlan c = PlanCompClick(d, i, ev.click_at, lv, ev.ctrl, ev.clicked_empty);
     const EditPiece&    p = c.piece;
@@ -3622,8 +3569,7 @@ void EditTrimEntry(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
 void EditWaveMenu(const SoundStore& store, const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m)
 {
     if (!ui::BeginMenuPopup("##editwavemenu")) return;
-    // 13-62g review: the parts as drawn (an older Sound measured on the peaks): its range is the gap drawn there.
-    const SoundData&  d = MeasuredShown(n, m.path);
+    const SoundData&  d = Shown(n);
     const std::string path = m.path;
     const float       note_w = ui::Dp(220.0f);
     if (P.menu_kind == 2 && P.zone_len > 0.0) {
@@ -3959,8 +3905,6 @@ void LaneHeaders(const WaveformEvents& ev, const SoundData& d, const WaveParts& 
 void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, float height,
                     bool in_edit, WaveformEvents* first_ev)
 {
-    PumpPendingRedetect(lib, n, m);  // 13-62g review
-    if (StoreReplaced()) return;
     const SoundData& d = Shown(n);
     const double     ph = SoundPlayhead(n);
     const std::vector<FrameFades> fades = ShownFades(d);

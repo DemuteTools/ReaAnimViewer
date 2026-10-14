@@ -329,65 +329,15 @@ std::vector<SoundFrame> MergeHandFrames(const std::vector<SoundFrame>& detected,
             if (previous[i].hand) out[i] = previous[i];
         return out;
     }
-    // 13-62g review: a hand frame whose own edges were not trimmed by hand (only its gain, fades, on / off or
-    // Normalize edited) takes the range of the detected frame it overlaps most (its edits kept), so a raised Tail or
-    // Pre-roll reaches it too. One detected frame goes to one hand frame; a range that would overlap another hand
-    // frame's falls back to the old one.
-    std::vector<SoundFrame> hands;
-    std::vector<int>        took;  // the detected frame each hand frame took, -1 = its own range
-    std::vector<bool>       claimed(detected.size(), false);
-    for (const SoundFrame& p : previous) {
-        if (!p.hand) continue;
-        hands.push_back(p);
-        int best = -1;
-        if (!p.trimmed) {
-            double best_ov = 0.0;
-            for (size_t i = 0; i < detected.size(); ++i) {
-                const double ov = std::min(p.start + p.length, detected[i].start + detected[i].length) -
-                                  std::max(p.start, detected[i].start);
-                if (!claimed[i] && ov > best_ov) {
-                    best_ov = ov;
-                    best = static_cast<int>(i);
-                }
-            }
-        }
-        if (best >= 0) {
-            claimed[static_cast<size_t>(best)] = true;
-            hands.back().start = detected[static_cast<size_t>(best)].start;
-            hands.back().length = detected[static_cast<size_t>(best)].length;
-        }
-        took.push_back(best);
-    }
-    for (bool again = true; again;) {  // an overlap between two hand frames: the moved one(s) back to their range
-        again = false;
-        size_t h = 0;
-        for (const SoundFrame& p : previous) {
-            if (!p.hand) continue;
-            for (size_t o = 0; o < hands.size(); ++o)
-                if (o != h && took[h] >= 0 && Overlaps(hands[h], hands[o])) {
-                    hands[h].start = p.start;
-                    hands[h].length = p.length;
-                    took[h] = -1;
-                    again = true;
-                    break;
-                }
-            ++h;
-        }
-    }
     std::vector<SoundFrame> out;
-    {
-        size_t h = 0;
-        std::vector<const SoundFrame*> olds;
+    for (const SoundFrame& d : detected) {
+        bool hit = false;
         for (const SoundFrame& p : previous)
-            if (p.hand) olds.push_back(&p);
-        for (const SoundFrame& d : detected) {
-            bool hit = false;
-            for (h = 0; h < hands.size(); ++h)
-                if (Overlaps(d, hands[h]) || Overlaps(d, *olds[h])) hit = true;
-            if (!hit) out.push_back(d);
-        }
+            if (p.hand && Overlaps(d, p)) hit = true;
+        if (!hit) out.push_back(d);
     }
-    out.insert(out.end(), hands.begin(), hands.end());
+    for (const SoundFrame& p : previous)
+        if (p.hand) out.push_back(p);
     std::stable_sort(out.begin(), out.end(), [](const SoundFrame& a, const SoundFrame& b) { return a.start < b.start; });
     return out;
 }
@@ -403,7 +353,6 @@ bool TrimTakeFrame(SoundData& data, int i, double start, double length, double t
     f.start = s;
     f.length = e - s;
     f.hand = true;
-    f.trimmed = true;  // 13-62g review
     data.edited = true;
     return true;
 }

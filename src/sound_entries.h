@@ -174,8 +174,7 @@ SilenceParams DetectionSilence(const SoundData& data);
 // None = placed (or outside the variation, or an off one); Excluded = an excluded zone (start / end: the excluded
 // run); BeforeSound / AfterSound = before its sound minus its part's pre-roll / after its sound plus its tail
 // (`margin_ms` = that pre-roll / tail); NoSound = a section with nothing above the threshold while its part sounds
-// elsewhere in the variation; HandEdge = an edge moved by hand left it out (13-62g review: also when its hand edges
-// crossed and nothing is placed). `value` = the section's part, `start` /
+// elsewhere in the variation; HandEdge = an edge moved by hand left it out. `value` = the section's part, `start` /
 // `end` = the gap's stretch inside its section.
 enum class GapKind { None, Excluded, BeforeSound, AfterSound, NoSound, HandEdge };
 struct GapInfo {
@@ -205,20 +204,14 @@ struct PieceEdgeHit {
 bool PieceEdgeAt(const SoundData& data, int variation, const std::string& value, double t, double tol, PieceEdgeHit* out);
 // 13-62g: moves the start (side -1) / end (+1) of the section holding `at` to `to` by hand (clamped as PieceEdgeAt's
 // lo / hi): it wins over the margin on that side and is kept across threshold / margin changes. False when nothing
-// changed (13-62g review: an automatic edge moved by less than 1 ms stays automatic). ResetPieceEdge: that edge back
-// to automatic (false when it was not moved by hand). 13-62g review: a hand edge belongs to its section's part
-// (SoundFrame::edge_in_part / edge_out_part): it acts only in a section of that part; MoveCut, AssignRange, AddZone
-// drop the ones whose section changed part or grew on their side, ResetCuts / SetDivide the ones inside the
-// variation, a refresh the ones no section of their part holds or that a moved RAV cut would make hide sound.
+// changed. ResetPieceEdge: that edge back to automatic (false when it was not moved by hand).
 bool SetPieceEdge(SoundData& data, int variation, double at, int side, double to);
 bool ResetPieceEdge(SoundData& data, int variation, double at, int side);
 // 13-62g: the parts' invariant, "" when it holds (else what breaks it): variations in time order, not overlapping;
 // on a divided Sound each on variation's cuts sorted and inside it, its owners fitting its cuts, its Edit pieces
 // tiling it, each either excluded or owned by a divide value (no stretch is nobody's), and its placed pieces
-// (PartPieces) in time order, not overlapping, inside it, each wholly on stretches its own part owns. 13-62g review:
-// each hand edge sits in a section of its own part; with `peaks`, no sound is lost: every bin at or above the
-// threshold of an owned, not excluded section is placed unless a hand edge of that section leaves it out.
-std::string PartsProblem(const SoundData& data, const PeakData* peaks = nullptr);
+// (PartPieces) in time order, not overlapping, inside it, each wholly on stretches its own part owns.
+std::string PartsProblem(const SoundData& data);
 // What a placement of `part_value` plays: the pieces of that part (PartPieces: its margins applied), or
 // for "" every non-excluded stretch of the frame (raw, adjacent spans merged: the whole variation minus
 // its exclusions, value_uid "" -- a whole variation keeps its own margins).
@@ -268,9 +261,6 @@ double ClampIntoSpans(const std::vector<PartSpan>& spans, double t);
 // trim moved past it) goes with the piece it cut off there. Syncs: per part, a hand sync inside its spans wins, else AutoSync; -1 for a part with no
 // span. Without peaks, Attack / Peak syncs that cannot be kept (a stored one still inside its part)
 // leave `syncs` empty: measured at placement (SyncsStale). Takes mode: no cuts, no syncs (A8).
-// 13-62g review: on a divided Silence Sound RAV's cuts sit max(5 ms, the later part's Pre-roll) before its onset's
-// rise, never before the earlier part's sound end plus its Tail (no room for both: they share the silence, the cut
-// at its middle at the earliest).
 void RefreshFrame(SoundData& data, int variation, const PeakData* peaks);
 void RefreshParts(SoundData& data, const PeakData* peaks);
 // True when the variation's syncs must be measured again: not one per part, or a part with spans whose
@@ -295,14 +285,7 @@ double SyncFor(const SoundData& data, int variation, const std::string& part_val
 // with them); a frame whose owners hold no cut follows its middle. Several comped frames landing in one new
 // frame give it all their pieces in time order, with a cut at each later old frame's start inside it; when
 // one of them has hand cuts but no owners, the first one's cuts alone are kept (as before 13-62).
-// 13-62g review: a hand start goes to the new frame with start <= h < end, a hand end to the one with start < h <= end,
-// each only into the new frame overlapping its old frame most (with its part).
 void CarryHandMarks(std::vector<SoundFrame>& now, const std::vector<SoundFrame>& old, bool with_cuts = true);
-// 13-62g review: after a re-detection (CarryHandMarks, then RefreshParts with the peaks), a carried hand edge stays only
-// while its section is of its own part and what it hides beyond its old section's wall (a variation grown over the
-// next one, a cut moved away) is silent on the peaks: it never hides sound it did not hide before. `before` = the
-// Sound with its frames before the re-detection. Nothing without peaks. Run RefreshParts after it.
-void KeepCarriedHandEdges(const SoundData& before, SoundData& data, const PeakData* peaks);
 // Divides the Sound by `group` with its value uids (in the group's order); group "" = combined. Cuts and
 // syncs are dropped (RefreshParts measures them), and so are the "-> value" zones and role map entries
 // whose value is not one of `values`. Excluded zones and hand syncs stay. False when nothing changed.
@@ -406,9 +389,7 @@ bool EditRangeAt(const SoundData& data, int variation, double t, EditPiece* out)
 // the owners of the pieces it covers = value, any zone coverage inside [a, b] removed (an excluded stretch
 // there is included again; a zone remnant under 4 ms outside [a, b] goes too). The variation's owners are filled first (from the legacy rule) when empty; the cuts
 // become hand cuts. False (nothing changed) when [a, b] inside the frame is under 4 ms, the value is not a
-// divide value, the frame is off, Takes mode, or nothing changed. 13-62g review: the range given is placed (REAPER: the
-// item covers it): on a side where its part placed nothing of that section before, the section's edge is pinned by
-// hand on the range's edge.
+// divide value, the frame is off, Takes mode, or nothing changed.
 bool AssignRange(SoundData& data, int variation, double a, double b, const std::string& value);
 // The nearest cut, frame edge or zone edge (an excluded / "-> value" zone's start or end inside the frame)
 // of the variation within `tolerance_s` of `t`, else `t` (the swipe's 6 px snap: so a swipe started next

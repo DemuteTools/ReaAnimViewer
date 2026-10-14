@@ -10,6 +10,8 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <utility>
+#include <vector>
 
 using namespace rav;
 
@@ -156,6 +158,18 @@ void TestTexts()
           "1 variation normalized to -1 dBTP (True peak)");
     CHECK(std::string(NormModeUnit(NormMode::RmsI)) == "dB" && NormModeFromIndex(9) == NormMode::Peak &&
           NormScopeFromIndex(2) == NormScope::Whole);
+    // 13-62: regions with their own targets: one shared target names it, else "each to its own target".
+    using T = std::vector<std::pair<NormMode, double>>;
+    CHECK(NormalizeRegionsToastText("Normalize per part", 4, 0, NormScope::Part,
+                                    T{{NormMode::Peak, -1.0}, {NormMode::Peak, -1.02}}) ==
+          "Normalize per part: 4 parts normalized to -1 dBFS (Peak)");
+    CHECK(NormalizeRegionsToastText("Normalize per part", 4, 1, NormScope::Part,
+                                    T{{NormMode::Peak, -1.0}, {NormMode::LufsI, -18.0}}) ==
+          "Normalize per part: 4 parts normalized, each to its own target, 1 silent, left as is");
+    CHECK(NormalizeRegionsToastText("", 1, 0, NormScope::Part, T{{NormMode::Peak, -1.0}, {NormMode::Peak, -3.0}}) ==
+          "1 part normalized, each to its own target");
+    CHECK(NormalizeRegionsToastText("Toe", 2, 0, NormScope::Part, T{{NormMode::LufsSMax, -18.0}}) ==
+          "Toe: 2 parts normalized to -18 LUFS (LUFS-S max)");
 }
 
 }  // namespace

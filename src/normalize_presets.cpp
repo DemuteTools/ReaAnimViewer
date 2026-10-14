@@ -272,4 +272,21 @@ std::string NormalizeToastText(const std::string& label, int done, int skipped, 
     return s;
 }
 
+std::string NormalizeRegionsToastText(const std::string& label, int done, int skipped, NormScope scope,
+                                      const std::vector<std::pair<NormMode, double>>& targets)
+{
+    if (targets.empty()) return NormalizeToastText(label, done, skipped, scope, NormMode::Peak, -1.0);
+    bool same = true;
+    for (const auto& t : targets)
+        same = same && t.first == targets.front().first && std::fabs(t.second - targets.front().second) < 0.05;
+    if (same) return NormalizeToastText(label, done, skipped, scope, targets.front().first, targets.front().second);
+    std::string s = label.empty() ? std::string() : label + ": ";
+    s += std::to_string(done) + " ";
+    if (scope == NormScope::Part) s += done == 1 ? "part" : "parts";
+    else s += done == 1 ? "variation" : "variations";
+    s += " normalized, each to its own target";
+    if (skipped > 0) s += ", " + std::to_string(skipped) + " silent, left as is";
+    return s;
+}
+
 }  // namespace rav

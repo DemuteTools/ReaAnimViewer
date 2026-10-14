@@ -13,6 +13,7 @@
 #pragma once
 
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace rav {
@@ -153,5 +154,10 @@ std::string NormPresetDescription(const NormPreset& p);
 // = the Normalize button (no prefix).
 std::string NormalizeToastText(const std::string& label, int done, int skipped, NormScope scope, NormMode mode,
                                double target);
+// 13-62: the toast of a Normalize whose regions carry their own (mode, target): NormalizeToastText when they
+// all share one (targets within 0.05 dB), else "<label>: N parts normalized, each to its own target" (+ the
+// silent count). `targets` = one per region; empty = Peak -1.
+std::string NormalizeRegionsToastText(const std::string& label, int done, int skipped, NormScope scope,
+                                      const std::vector<std::pair<NormMode, double>>& targets);
 
 }  // namespace rav

@@ -1670,15 +1670,35 @@ void TestPartNormalize()
     std::vector<NormRegion> toes = PartNormRegions(d, toe, {}, NormMode::Peak, -1.0);
     std::vector<SoundFrame> fr = d.frames;
     CHECK(ApplyNormalize(fr, NormScope::Part, toes, {5.0, -4.0, 6.0}).changed);
-    KeepOtherPartGains(d, fr);
+    KeepOtherPartGains(d, fr, toes, {5.0, -4.0, 6.0});
     CHECK(Near(fr[0].part_db[toe], 5.0) && Near(fr[0].part_db[heel], 2.0) && Near(fr[0].db, 2.0));
     CHECK(Near(fr[1].part_db[toe], -4.0) && Near(fr[1].part_db[heel], 2.0) && Near(fr[1].db, -4.0));
     CHECK(Near(FrameGainDb(fr[2], heel), 2.0));  // Heel plays as before
     // A frame not acted on is left alone (a silent region: no part_db added).
     fr = d.frames;
     ApplyNormalize(fr, NormScope::Part, toes, {5.0, std::nan(""), 6.0});
-    KeepOtherPartGains(d, fr);
+    KeepOtherPartGains(d, fr, toes, {5.0, std::nan(""), 6.0});
     CHECK(fr[1].part_db.empty() && Near(fr[1].db, 2.0) && fr[0].part_db.size() == 2);
+    // Full Per part pass, one part silent: the silent part keeps its gain, frame.db = the non-silent part's
+    // dB (a silent Heel at +2 does not hold the variation below Toe's +5).
+    {
+        SoundData s = d;
+        std::vector<NormRegion> both = PartNormRegions(s, "", {0}, NormMode::Peak, -1.0);
+        CHECK(both.size() == 2);
+        std::vector<double> adj;
+        for (const NormRegion& r : both) adj.push_back(r.part == toe ? 5.0 : std::nan(""));
+        std::vector<SoundFrame> g = s.frames;
+        CHECK(ApplyNormalize(g, NormScope::Part, both, adj).changed);
+        KeepOtherPartGains(s, g, both, adj);
+        CHECK(Near(g[0].part_db[toe], 5.0) && Near(g[0].part_db[heel], 2.0) && Near(g[0].db, 5.0));
+        CHECK(Near(FrameGainDb(g[0], heel), 2.0) && Near(FrameGainDb(g[0], toe), 5.0));
+        // A silent part with an own gain from before: kept, and still out of the minimum.
+        s.frames[0].part_db[heel] = -10.0;
+        g = s.frames;
+        ApplyNormalize(g, NormScope::Part, both, adj);
+        KeepOtherPartGains(s, g, both, adj);
+        CHECK(Near(g[0].part_db[heel], -10.0) && Near(g[0].db, 5.0));
+    }
     // Not available: undivided or Takes.
     SoundData u;
     u.frames = {F(0, 1)};

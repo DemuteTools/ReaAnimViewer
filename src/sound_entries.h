@@ -393,8 +393,11 @@ std::vector<NormRegion> PartNormRegions(const SoundData& data, const std::string
                                         NormMode sound_mode, double sound_target);
 // 13-62: after a Per part ApplyNormalize, each changed frame keeps the gain its other parts played at: a
 // part with something in that frame and no part_db of its own gets the frame's dB from before (else the
-// frame's dB moving to its smallest part dB would move them too); frame.db is the smallest part dB again.
-void KeepOtherPartGains(const SoundData& before, std::vector<SoundFrame>& frames);
+// frame's dB moving to its smallest part dB would move them too); frame.db is the smallest part dB again,
+// leaving out the parts found silent in this pass (`regions` / `adj_db` as given to ApplyNormalize): a
+// silent part keeps its gain but does not hold the whole variation down.
+void KeepOtherPartGains(const SoundData& before, std::vector<SoundFrame>& frames, const std::vector<NormRegion>& regions,
+                        const std::vector<double>& adj_db);
 // REAPER's CalculateNormalization answer (a linear volume factor) in dB; NaN when it means silence (<= 0,
 // not finite, or more than +60 dB).
 double NormAdjustmentDb(double factor);

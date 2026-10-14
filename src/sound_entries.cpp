@@ -2110,8 +2110,14 @@ std::vector<NormRegion> PartNormRegions(const SoundData& data, const std::string
     return out;
 }
 
-void KeepOtherPartGains(const SoundData& before, std::vector<SoundFrame>& frames)
+void KeepOtherPartGains(const SoundData& before, std::vector<SoundFrame>& frames, const std::vector<NormRegion>& regions,
+                        const std::vector<double>& adj_db)
 {
+    // The (frame, part) pairs found silent in this pass: they keep their gain but do not pull frame.db.
+    std::set<std::pair<int, std::string>> silent;
+    for (size_t k = 0; k < regions.size(); ++k)
+        if (!regions[k].part.empty() && !(k < adj_db.size() && UsableAdj(adj_db[k])))
+            silent.emplace(regions[k].frame, regions[k].part);
     for (size_t i = 0; i < frames.size() && i < before.frames.size(); ++i) {
         SoundFrame&       f = frames[i];
         const SoundFrame& b = before.frames[i];
@@ -2120,6 +2126,7 @@ void KeepOtherPartGains(const SoundData& before, std::vector<SoundFrame>& frames
             if (!sp.value_uid.empty() && !f.part_db.count(sp.value_uid)) f.part_db[sp.value_uid] = b.db;
         bool any = false;
         for (const auto& kv : f.part_db) {
+            if (silent.count({static_cast<int>(i), kv.first})) continue;
             f.db = any ? std::min(f.db, kv.second) : kv.second;
             any = true;
         }

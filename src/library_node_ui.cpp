@@ -2135,7 +2135,8 @@ ImU32 PartColor(int k) { return ui::kCurvePalette[static_cast<size_t>(std::max(0
 }
 
 // The Normalize button of a part's Level rows: "" = the Sound's "Normalize per part" button, else
-// "Normalize <Part>" (Lot C fills it, Lot E2 calls it).
+// "Normalize <Part>" (Lot C fills it, Lot E2 calls it). It draws nothing unless `node_uid` is the Sound
+// shown in Edit (it acts on Edit's selected variations and Edit's measuring job).
 void PartNormalizeNow(int lib, const std::string& node_uid, const std::string& value);  // 13-62 C (LEVEL, below)
 [[maybe_unused]] static void PartNormalizeButton(int lib, const std::string& node_uid, const std::string& value)
 {
@@ -3204,18 +3205,10 @@ void FinishNormalize(const SoundLibrary& lib, const SoundNode& n, NormScope scop
                          false);  // no empty undo point
         return;
     }
-    if (scope == NormScope::Part) KeepOtherPartGains(n.sound, frames);
-    bool same = true;
-    for (const NormRegion& r : regions)
-        same = same && r.mode == regions.front().mode && std::fabs(r.target - regions.front().target) < 0.05;
-    std::string toast;
-    if (same) {
-        toast = NormalizeToastText(label, o.done, o.skipped, scope, regions.front().mode, regions.front().target);
-    } else {
-        toast = (label.empty() ? std::string() : label + ": ") + std::to_string(o.done) + (o.done == 1 ? " part" : " parts") +
-                " normalized, each to its own target";
-        if (o.skipped > 0) toast += ", " + std::to_string(o.skipped) + " silent, left as is";
-    }
+    if (scope == NormScope::Part) KeepOtherPartGains(n.sound, frames, regions, adj);
+    std::vector<std::pair<NormMode, double>> targets;
+    for (const NormRegion& r : regions) targets.emplace_back(r.mode, r.target);
+    const std::string toast = NormalizeRegionsToastText(label, o.done, o.skipped, scope, targets);
     EditNode("Normalize", lib.uid, n.uid, [frames](SoundNode& x) {
         x.sound.frames = frames;
         x.sound.edited = true;
@@ -3356,15 +3349,18 @@ bool NormPeaksReady(const SoundData& d, const SoundMedia& m)
 // 13-62 (C1): the per-part Normalize button. value "" = the Sound's Per part button (every part, each to
 // its own mode and target, else the LEVEL settings); a value = "Normalize <Part>", that part only. The
 // selected variations when any, else every on one; one undo point and the toast. `lib` = the library's
-// index in the store (else Edit's library).
+// index in the store (else Edit's library). Nothing (no button) when `node_uid` is not the Sound shown in
+// Edit: the selection and the measuring job are Edit's.
 void PartNormalizeNow(int lib_index, const std::string& node_uid, const std::string& value)
 {
+    if (!P.edit_open || node_uid != P.edit_uid) return;
     const SoundStore&   store = GetSoundStore(nullptr);
     const SoundLibrary* lib = lib_index >= 0 && static_cast<size_t>(lib_index) < store.libraries.size()
                                   ? &store.libraries[static_cast<size_t>(lib_index)]
                                   : nullptr;
     if (!lib || !FindNode(*lib, node_uid)) lib = FindLibrary(store, P.edit_lib);
-    const SoundNode* n = lib ? FindNode(*lib, node_uid) : nullptr;
+    if (!lib || lib->uid != P.edit_lib) return;
+    const SoundNode* n = FindNode(*lib, node_uid);
     if (!n || n->type != SoundNodeType::Sound || !NormPartsAvailable(n->sound)) return;
     LoadNormalizePrefs();
     PumpNormJob(*lib, *n);  // once per frame (LevelSection may have)

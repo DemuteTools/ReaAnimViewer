@@ -8,6 +8,8 @@
 
 #ifdef _WIN32
 
+#include <shellapi.h>  // SHAppBarMessage: the auto-hide taskbar
+
 #include <algorithm>
 #include <string>
 
@@ -31,14 +33,33 @@ void ToPlan(const RECT& r, fullscreen::ScreenRect* out)
     out->bottom = r.bottom;
 }
 
+// True when an auto-hide app bar (the taskbar set to hide itself) sits on `edge` (ABE_*) of the
+// monitor whose rect is `mon`.
+bool AutoHideBarOn(UINT edge, const RECT& mon)
+{
+    APPBARDATA abd = {};
+    abd.cbSize = sizeof(abd);
+    abd.uEdge = edge;
+    abd.rc = mon;
+    return reinterpret_cast<HWND>(SHAppBarMessage(ABM_GETAUTOHIDEBAREX, &abd)) != nullptr;
+}
+
+// Story 6-5-10 -- where the full screen window goes on `mon`: its work area (the taskbar stays
+// visible wherever it is docked), off the edges an auto-hide taskbar slides out of.
 bool MonitorRect(HMONITOR mon, fullscreen::Placement* out)
 {
     MONITORINFO mi = {};
     mi.cbSize = sizeof(mi);
     if (!mon || !GetMonitorInfoW(mon, &mi)) return false;
-    fullscreen::ScreenRect r;
-    ToPlan(mi.rcMonitor, &r);
-    *out = fullscreen::CoverMonitor(r);
+    fullscreen::ScreenRect m, w;
+    ToPlan(mi.rcMonitor, &m);
+    ToPlan(mi.rcWork, &w);
+    fullscreen::AutoHideEdges ah;
+    ah.left = AutoHideBarOn(ABE_LEFT, mi.rcMonitor);
+    ah.top = AutoHideBarOn(ABE_TOP, mi.rcMonitor);
+    ah.right = AutoHideBarOn(ABE_RIGHT, mi.rcMonitor);
+    ah.bottom = AutoHideBarOn(ABE_BOTTOM, mi.rcMonitor);
+    *out = fullscreen::CoverWorkArea(m, w, ah);
     return true;
 }
 
@@ -165,6 +186,10 @@ void RefitFullScreen(HWND hwnd)
     if (!g_active || !hwnd || !IsWindow(hwnd)) return;
     fullscreen::Placement at;
     if (!MonitorRect(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &at)) return;
+    RECT now = {};
+    if (GetWindowRect(hwnd, &now) && now.left == at.x && now.top == at.y && now.right - now.left == at.w &&
+        now.bottom - now.top == at.h)
+        return;  // already there (a settings broadcast that changed nothing of ours)
     SetWindowPos(hwnd, nullptr, at.x, at.y, at.w, at.h, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 

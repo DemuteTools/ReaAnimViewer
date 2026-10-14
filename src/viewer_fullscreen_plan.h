@@ -50,7 +50,7 @@ struct Placement {
     int x = 0, y = 0, w = 1, h = 1;
 };
 
-// The whole monitor (not its work area: the taskbar is covered too), at least 1 x 1.
+// The whole monitor, at least 1 x 1.
 inline Placement CoverMonitor(const ScreenRect& monitor)
 {
     Placement p;
@@ -59,6 +59,34 @@ inline Placement CoverMonitor(const ScreenRect& monitor)
     p.w = monitor.right > monitor.left ? static_cast<int>(monitor.right - monitor.left) : 1;
     p.h = monitor.bottom > monitor.top ? static_cast<int>(monitor.bottom - monitor.top) : 1;
     return p;
+}
+
+// The monitor edges an auto-hide taskbar (or another auto-hide app bar) sits on.
+struct AutoHideEdges {
+    bool left = false, top = false, right = false, bottom = false;
+};
+
+// How far the full screen window stays off an auto-hide bar's edge: the strip the mouse touches
+// to make the bar slide out (a window covering the whole monitor would be taken by Windows as a
+// full screen game and keep the bar hidden).
+constexpr long kAutoHideGap = 2;
+
+// Story 6-5-10 -- the full screen window never covers the taskbar, wherever it is: it covers the
+// monitor's work area (the monitor minus the docked taskbar and app bars), and stays kAutoHideGap
+// pixels off each edge an auto-hide bar sits on (the work area does not leave it out). A work area
+// outside the monitor or empty (a bad reading) falls back to the whole monitor.
+inline Placement CoverWorkArea(const ScreenRect& monitor, const ScreenRect& work, const AutoHideEdges& autohide)
+{
+    ScreenRect r = work;
+    const bool usable = r.right > r.left && r.bottom > r.top && r.left >= monitor.left && r.top >= monitor.top &&
+                        r.right <= monitor.right && r.bottom <= monitor.bottom;
+    if (!usable) r = monitor;
+    // Only where the work area reaches the monitor's edge (a docked bar already leaves that edge free).
+    if (autohide.left && r.left == monitor.left) r.left += kAutoHideGap;
+    if (autohide.top && r.top == monitor.top) r.top += kAutoHideGap;
+    if (autohide.right && r.right == monitor.right) r.right -= kAutoHideGap;
+    if (autohide.bottom && r.bottom == monitor.bottom) r.bottom -= kAutoHideGap;
+    return CoverMonitor(r);
 }
 
 // What else wants an Esc pressed in the viewer. Each of them keeps it, as before full screen.

@@ -2650,6 +2650,12 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         break;
 
+    case WM_SETTINGCHANGE:
+        // Story 6-5-10 -- full screen, the work area changed (the taskbar moved, resized, or was set
+        // to hide itself or not): fit it again. Every other setting goes on as before.
+        if (FullScreenActive() && wp == SPI_SETWORKAREA) RefitFullScreen(hwnd);
+        break;
+
     case WM_DESTROY:
         // Reached only on the paths WE initiate (CloseViewerWindow → DestroyWindow,
         // and unload) — NOT the docker tab X, which merely hides us (see header). Tear

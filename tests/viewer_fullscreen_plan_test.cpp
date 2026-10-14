@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //
 // Host test of the viewer's full screen plan (src/viewer_fullscreen_plan.h, story 6-5-9): the
-// window styles of each mode, the monitor cover, and when Esc leaves full screen.
+// window styles of each mode, the monitor / work area cover, and when Esc leaves full screen.
 //   c++ -std=c++17 -I src tests/viewer_fullscreen_plan_test.cpp -o t && ./t
 
 #include "viewer_fullscreen_plan.h"
@@ -66,6 +66,49 @@ int main()
     m.left = 10, m.top = 10, m.right = 10, m.bottom = 5;  // degenerate: at least 1 x 1
     p = CoverMonitor(m);
     CHECK(p.w == 1 && p.h == 1);
+
+    // Story 6-5-10 -- the work area: the taskbar is never covered, wherever it is.
+    {
+        ScreenRect mon{0, 0, 1920, 1080};
+        AutoHideEdges none;
+        Placement w = CoverWorkArea(mon, ScreenRect{0, 0, 1920, 1040}, none);  // bottom taskbar
+        CHECK(w.x == 0 && w.y == 0 && w.w == 1920 && w.h == 1040);
+        w = CoverWorkArea(mon, ScreenRect{0, 40, 1920, 1080}, none);  // top
+        CHECK(w.x == 0 && w.y == 40 && w.w == 1920 && w.h == 1040);
+        w = CoverWorkArea(mon, ScreenRect{62, 0, 1920, 1080}, none);  // left
+        CHECK(w.x == 62 && w.y == 0 && w.w == 1858 && w.h == 1080);
+        w = CoverWorkArea(mon, ScreenRect{0, 0, 1858, 1080}, none);  // right
+        CHECK(w.x == 0 && w.w == 1858 && w.h == 1080);
+        // A secondary monitor at negative coordinates, its own taskbar at the bottom.
+        w = CoverWorkArea(ScreenRect{-1920, -200, 0, 880}, ScreenRect{-1920, -200, 0, 840}, none);
+        CHECK(w.x == -1920 && w.y == -200 && w.w == 1920 && w.h == 1040);
+        // Auto-hide at the bottom: the work area is the whole monitor; 2 px stay free at the bottom.
+        AutoHideEdges ah;
+        ah.bottom = true;
+        w = CoverWorkArea(mon, mon, ah);
+        CHECK(w.x == 0 && w.y == 0 && w.w == 1920 && w.h == 1080 - kAutoHideGap);
+        // Auto-hide on the left, the right, the top.
+        AutoHideEdges l;
+        l.left = true;
+        w = CoverWorkArea(mon, mon, l);
+        CHECK(w.x == kAutoHideGap && w.w == 1920 - kAutoHideGap && w.h == 1080);
+        AutoHideEdges r;
+        r.right = true;
+        w = CoverWorkArea(mon, mon, r);
+        CHECK(w.x == 0 && w.w == 1920 - kAutoHideGap);
+        AutoHideEdges t;
+        t.top = true;
+        w = CoverWorkArea(mon, mon, t);
+        CHECK(w.y == kAutoHideGap && w.h == 1080 - kAutoHideGap);
+        // An auto-hide bar on an edge a docked bar already keeps free: nothing more taken.
+        w = CoverWorkArea(mon, ScreenRect{0, 0, 1920, 1040}, ah);
+        CHECK(w.h == 1040);
+        // A bad work area (empty, or outside the monitor): the whole monitor.
+        w = CoverWorkArea(mon, ScreenRect{0, 0, 0, 0}, none);
+        CHECK(w.x == 0 && w.y == 0 && w.w == 1920 && w.h == 1080);
+        w = CoverWorkArea(mon, ScreenRect{-5, 0, 1920, 1080}, none);
+        CHECK(w.w == 1920 && w.x == 0);
+    }
 
     // Esc: leaves only full screen, and only when nothing else takes it.
     EscState e;

@@ -2,7 +2,8 @@
 //
 // Story 6-5-9 -- the viewer's full screen, its Win32 half. The SAME window (HWND, CS_OWNDC DC,
 // pixel format, WGL context, ImGui contexts) leaves REAPER's docker (DockWindowRemove), becomes a
-// borderless top-level popup owned by REAPER's main window over the whole monitor it was on, then
+// borderless top-level popup owned by REAPER's main window over the monitor it was on (its work
+// area since 6-5-10: the taskbar stays visible), then
 // goes back to the docker as a child of REAPER's main window (DockWindowAddEx with the same ident:
 // the docker REAPER remembers, the path every reopen takes). It is never destroyed to change mode
 // (a docked window is never destroyed on a hide either: see viewer_window.cpp's header). REAPER
@@ -32,7 +33,8 @@ bool EnterFullScreen(HWND hwnd, HWND reaper_main, const char* dock_name, const c
 // the keyboard focus. Nothing when it is not full screen.
 void LeaveFullScreen(HWND hwnd, HWND reaper_main, const char* dock_name, const char* dock_ident);
 
-// Fits the full screen window to its monitor again (a display or DPI change). Nothing when docked.
+// Fits the full screen window to its monitor's work area again (a display, DPI or taskbar change).
+// Nothing when docked or already in place.
 void RefitFullScreen(HWND hwnd);
 
 // The window is closing while full screen (the viewer's close, or REAPER destroying its owner):

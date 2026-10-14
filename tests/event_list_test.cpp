@@ -1569,6 +1569,162 @@ int main()
         CHECK(HandOverProjectMarkers({other_name}, {}, claimants, nullptr)[0] == -1);
     }
 
+    // ---- 13-56: every loop pass of a looped item ------------------------------------------------
+    {
+        ItemClipMap m;  // a 1 s clip looped from 10 s for 3.5 s: passes 0, 1, 2 and half of 3
+        m.item_pos = 10.0;
+        m.item_len = 3.5;
+        m.clip_len = 1.0;
+        m.loop = true;
+        std::vector<LoopPassTime> lp = LoopPassTimes(m, 0.25);
+        CHECK(lp.size() == 4);
+        for (size_t k = 0; k < lp.size(); ++k) CHECK(lp[k].id == static_cast<long long>(k) && Near(lp[k].project_t, 10.25 + k));
+        CHECK(LoopPassTimes(m, 0.75).size() == 3);  // the half pass does not reach 0.75
+        // The same pass ids however the item moves, is trimmed at its start or changes rate.
+        ItemClipMap tr = m;
+        tr.item_pos = 11.0;
+        tr.item_len = 2.5;
+        tr.start_offs = 1.0;  // trimmed by one loop: pass 0 is gone
+        lp = LoopPassTimes(tr, 0.25);
+        CHECK(lp.size() == 3 && lp[0].id == 1 && Near(lp[0].project_t, 11.25) && lp[2].id == 3);
+        ItemClipMap fast = m;
+        fast.rate = 2.0;
+        lp = LoopPassTimes(fast, 0.5);
+        CHECK(lp.size() == 7 && lp[1].id == 1 && Near(lp[1].project_t, 10.75));
+        // Not looped: the first pass only, id 0.
+        ItemClipMap once = m;
+        once.loop = false;
+        lp = LoopPassTimes(once, 0.25);
+        CHECK(lp.size() == 1 && lp[0].id == 0 && Near(lp[0].project_t, 10.25));
+        // ClipPassId of each pass.
+        const std::vector<ClipPass> cp = ClipPasses(tr);
+        CHECK(cp.size() == 3 && ClipPassId(tr, cp[0]) == 1 && ClipPassId(tr, cp[2]) == 3);
+        CHECK(ClipPassId(once, ClipPasses(once)[0]) == 0);
+
+        // Pass project time / clip time: id 0 is the first pass (FirstPassProjectTime).
+        double t = 0.0, c = 0.0;
+        CHECK(PassProjectTime(m, 0.25, 0, &t) && Near(t, 10.25));
+        CHECK(PassProjectTime(m, 0.25, 2, &t) && Near(t, 12.25));
+        CHECK(!PassProjectTime(m, 0.75, 3, &t));  // cut off
+        CHECK(!PassProjectTime(once, 0.25, 1, &t));
+        CHECK(!PassProjectTime(tr, 0.25, 0, &t) && PassProjectTime(tr, 0.25, 1, &t) && Near(t, 11.25));
+        CHECK(PassClipTime(m, 12.6, 2, &c) && Near(c, 0.6));
+        CHECK(!PassClipTime(m, 11.6, 2, &c));  // on pass 1, not 2
+        CHECK(PassClipTime(m, 10.6, 0, &c) && Near(c, 0.6));
+        CHECK(!PassClipTime(once, 10.6, 1, &c));
+
+        // The echoes: a first-pass ref on every other pass that shows its clip time.
+        auto pref = [](const char* guid, double c0, double t0, const char* name, long long pass) {
+            ProjectMarkerRef r;
+            r.guid = guid;
+            r.t = t0;
+            r.c = c0;
+            r.has_c = true;
+            r.color = 0x1FF0000;
+            r.has_color = true;
+            r.name = name;
+            r.has_name = true;
+            r.pass = pass;
+            return r;
+        };
+        std::vector<ProjectMarkerRef> refs = {pref("{A}", 0.25, 10.25, "Step", 0), pref("{B}", 0.75, 10.75, "Land", 0)};
+        std::vector<EchoStep> es = PlanLoopEchoes(refs, m);
+        CHECK(es.size() == 5);  // A on 1, 2, 3; B on 1, 2
+        int adds = 0;
+        for (const EchoStep& s : es) {
+            CHECK(!s.drop && s.add.pass != 0 && s.add.has_c && s.add.has_name && s.add.color == 0x1FF0000);
+            double want = 0.0;
+            CHECK(PassProjectTime(m, s.add.c, s.add.pass, &want) && Near(s.add.t, want));
+            ++adds;
+        }
+        CHECK(adds == 5 && es[0].add.name == "Step" && es[0].add.pass == 1 && Near(es[0].add.t, 11.25));
+        // Not looped: nothing to add.
+        CHECK(PlanLoopEchoes(refs, once).empty());
+        // All written: nothing to do (a hidden first-pass ref keeps its echoes).
+        std::vector<ProjectMarkerRef> full = refs;
+        int g = 0;
+        for (const EchoStep& s : es) {
+            ProjectMarkerRef r = s.add;
+            r.guid = "{E" + std::to_string(g++) + "}";
+            full.push_back(r);
+        }
+        CHECK(PlanLoopEchoes(full, m).empty());
+        std::vector<ProjectMarkerRef> hidden = full;
+        hidden[0].guid.clear();
+        CHECK(PlanLoopEchoes(hidden, m).empty());
+        // Shortened to two passes: A's echoes on 2 and 3 and B's on 2 go, the others stay.
+        ItemClipMap two = m;
+        two.item_len = 2.0;
+        es = PlanLoopEchoes(full, two);
+        int drops = 0;
+        size_t last = full.size();
+        for (const EchoStep& s : es) {
+            CHECK(s.drop && s.ref < last && full[s.ref].pass >= 2);  // descending order
+            last = s.ref;
+            ++drops;
+        }
+        CHECK(drops == 3);
+        // Loop turned off: every echo goes.
+        es = PlanLoopEchoes(full, once);
+        CHECK(es.size() == 5);
+        for (const EchoStep& s : es) CHECK(s.drop);
+        // The first-pass ref moved to another clip time (a drag): its old echoes go, new ones come.
+        std::vector<ProjectMarkerRef> moved = full;
+        moved[0].c = 0.5;
+        es = PlanLoopEchoes(moved, m);
+        drops = adds = 0;
+        for (const EchoStep& s : es) {
+            if (s.drop) {
+                CHECK(moved[s.ref].name == "Step");
+                ++drops;
+            } else {
+                CHECK(s.add.name == "Step" && Near(s.add.c, 0.5));
+                ++adds;
+            }
+        }
+        CHECK(drops == 3 && adds == 2);  // 0.5 is past the half pass 3
+        // An echo without a GUID (a copy's that could not be made) and a duplicate are dropped; the
+        // missing one is added again.
+        std::vector<ProjectMarkerRef> odd = full;
+        odd[2].guid.clear();
+        odd.push_back(full[3]);
+        odd.back().guid = "{DUP}";
+        es = PlanLoopEchoes(odd, m);
+        drops = adds = 0;
+        for (const EchoStep& s : es) {
+            if (s.drop) CHECK(s.ref == 2 || s.ref == odd.size() - 1);
+            drops += s.drop ? 1 : 0;
+            adds += s.drop ? 0 : 1;
+        }
+        CHECK(drops == 2 && adds == 1);
+
+        // The mirror places an echo on its own pass, reads a drag inside its pass, hides it outside.
+        auto at = [](double t0) {
+            MirrorRefState s;
+            s.exists = true;
+            s.now_t = t0;
+            return s;
+        };
+        const std::vector<ProjectMarkerRef> one = {pref("{A}", 0.25, 10.25, "Step", 0), pref("{E}", 0.25, 12.25, "Step", 2)};
+        ItemClipMap mv = m;
+        mv.item_pos = 20.0;
+        std::vector<MirrorStep> st = MirrorPlan(one, {at(10.25), at(12.25)}, mv, true, false);
+        CHECK(st[0].action == MirrorAction::Move && Near(st[0].new_t, 20.25));
+        CHECK(st[1].action == MirrorAction::Move && Near(st[1].new_t, 22.25));
+        st = MirrorPlan(one, {at(10.25), at(12.6)}, m, false, false);  // dragged inside pass 2
+        CHECK(st[0].action == MirrorAction::Keep && st[1].action == MirrorAction::UserDrag && Near(st[1].new_c, 0.6));
+        st = MirrorPlan(one, {at(10.25), at(13.6)}, m, false, false);  // dragged onto pass 3: the user's
+        CHECK(st[1].action == MirrorAction::UserDisown);
+        st = MirrorPlan(one, {at(10.25), at(12.25)}, two, true, false);  // shortened: hidden
+        CHECK(st[1].action == MirrorAction::Hide && st[1].delete_old);
+        st = MirrorPlan(one, {at(10.25), MirrorRefState{}}, m, false, false);  // deleted by the user
+        CHECK(st[1].action == MirrorAction::UserDelete);
+        // Both: the take marker's project twin is the first pass's, never an echo.
+        const std::vector<ProjectMarkerRef> echo_first = {pref("{E}", 0.25, 12.25, "Step", 2), pref("{A}", 0.25, 10.25, "Step", 0)};
+        CHECK(FindProjectTwin(echo_first, 0.25, "Step", 1e-6, {}) == 1);
+        CHECK(FindProjectTwin({echo_first[0]}, 0.25, "Step", 1e-6, {}) == -1);
+    }
+
     if (g_fails) {
         std::printf("event_list_test: %d failure(s)\n", g_fails);
         return 1;

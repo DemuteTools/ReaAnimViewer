@@ -226,6 +226,116 @@ bool FirstPassClipTime(const ItemClipMap& m, double project_t, double* clip_t)
     return true;
 }
 
+long long ClipPassId(const ItemClipMap& m, const ClipPass& p)
+{
+    if (!m.loop || !(m.clip_len > 0.0) || !std::isfinite(m.clip_len)) return 0;
+    const double offs = std::isfinite(m.start_offs) ? m.start_offs : 0.0;
+    // The pass starts at source time offs + (p0 - item_pos) * rate = id * clip_len + clip0.
+    const double ks = offs + (p.p0 - m.item_pos) * SafeRate(m) - p.clip0;
+    const double id = std::round(ks / m.clip_len);
+    return std::isfinite(id) ? static_cast<long long>(id) : 0;
+}
+
+std::vector<LoopPassTime> LoopPassTimes(const ItemClipMap& m, double clip_t)
+{
+    std::vector<LoopPassTime> out;
+    if (!std::isfinite(clip_t)) return out;
+    const double rate = SafeRate(m);
+    for (const ClipPass& p : ClipPasses(m)) {
+        // ClipToProjectTimes' test, pass for pass.
+        const double t = p.p0 + (clip_t - p.clip0) / rate;
+        if (!(t >= p.p0 - 1e-9 && t < p.p1 - 1e-12)) continue;
+        out.push_back(LoopPassTime{ClipPassId(m, p), t});
+    }
+    return out;
+}
+
+bool PassProjectTime(const ItemClipMap& m, double clip_t, long long id, double* project_t)
+{
+    if (id == 0) return FirstPassProjectTime(m, clip_t, project_t);
+    if (!m.loop) return false;
+    for (const LoopPassTime& lp : LoopPassTimes(m, clip_t))
+        if (lp.id == id) {
+            if (project_t) *project_t = lp.project_t;
+            return true;
+        }
+    return false;
+}
+
+bool PassClipTime(const ItemClipMap& m, double project_t, long long id, double* clip_t)
+{
+    if (id == 0) return FirstPassClipTime(m, project_t, clip_t);
+    if (!m.loop || !std::isfinite(project_t)) return false;
+    for (const ClipPass& p : ClipPasses(m)) {
+        if (ClipPassId(m, p) != id) continue;
+        if (project_t < p.p0 - 1e-9 || project_t > p.p1 + 1e-9) return false;
+        if (clip_t) *clip_t = p.clip0 + (project_t - p.p0) * SafeRate(m);
+        return true;
+    }
+    return false;
+}
+
+std::vector<EchoStep> PlanLoopEchoes(const std::vector<ProjectMarkerRef>& refs, const ItemClipMap& map)
+{
+    // The echoes wanted: every other loop pass of each first-pass ref with a clip time and a name.
+    struct Want {
+        size_t    base = 0;
+        long long id = 0;
+        double    t = 0.0;
+        bool      matched = false;
+    };
+    std::vector<Want> want;
+    if (map.loop)
+        for (size_t i = 0; i < refs.size(); ++i) {
+            const ProjectMarkerRef& b = refs[i];
+            if (b.pass != 0 || !b.has_c || !b.has_name) continue;
+            for (const LoopPassTime& lp : LoopPassTimes(map, b.c)) {
+                if (lp.id == 0) continue;
+                bool twin = false;  // two first-pass refs of one place (never written so): one echo
+                for (const Want& w : want)
+                    twin |= w.id == lp.id && refs[w.base].name == b.name && std::fabs(refs[w.base].c - b.c) <= kEchoMatchTolS;
+                if (!twin) want.push_back(Want{i, lp.id, lp.project_t, false});
+            }
+        }
+    std::vector<EchoStep> out;
+    std::vector<size_t>   drops;
+    for (size_t i = 0; i < refs.size(); ++i) {
+        const ProjectMarkerRef& e = refs[i];
+        if (e.pass == 0) continue;
+        bool keep = false;
+        if (!e.guid.empty() && e.has_c && e.has_name)
+            for (Want& w : want) {
+                const ProjectMarkerRef& b = refs[w.base];
+                if (w.matched || w.id != e.pass || b.name != e.name || std::fabs(b.c - e.c) > kEchoMatchTolS) continue;
+                w.matched = keep = true;
+                break;
+            }
+        if (!keep) drops.push_back(i);
+    }
+    for (auto it = drops.rbegin(); it != drops.rend(); ++it) {
+        EchoStep s;
+        s.drop = true;
+        s.ref = *it;
+        out.push_back(s);
+    }
+    for (const Want& w : want) {
+        if (w.matched) continue;
+        const ProjectMarkerRef& b = refs[w.base];
+        EchoStep s;
+        s.ref = w.base;
+        s.add.t = w.t;
+        s.add.c = b.c;
+        s.add.has_c = true;
+        s.add.color = b.color;
+        s.add.has_color = b.has_color;
+        s.add.name = b.name;
+        s.add.has_name = true;
+        s.add.pass = w.id;
+        out.push_back(s);
+    }
+    return out;
+}
+
 std::vector<PlannedMarker> PlanMarkers(const std::vector<ShownEvent>& list, const std::vector<Block>& blocks,
                                        const ItemClipMap& map)
 {
@@ -501,7 +611,7 @@ std::vector<MirrorStep> MirrorPlan(const std::vector<ProjectMarkerRef>& refs, co
             continue;
         }
         double     pt = 0.0;
-        const bool in = FirstPassProjectTime(map, r.c, &pt);
+        const bool in = PassProjectTime(map, r.c, r.pass, &pt);  // 13-56: an echo on its own loop pass
         if (copy) {
             // A copy: never touches the original's markers.
             if (in) {
@@ -574,7 +684,7 @@ std::vector<MirrorStep> MirrorPlan(const std::vector<ProjectMarkerRef>& refs, co
         // The item unchanged: the user dragged it (10-4c). Outside the item: theirs.
         if (!r.has_name) continue;
         double nc = 0.0;
-        if (FirstPassClipTime(map, st.now_t, &nc)) {
+        if (PassClipTime(map, st.now_t, r.pass, &nc)) {  // 13-56: dropped inside its own pass
             step.action = MirrorAction::UserDrag;
             step.new_t = st.now_t;
             step.new_c = nc;
@@ -701,7 +811,7 @@ int FindProjectTwin(const std::vector<ProjectMarkerRef>& pmarkers, double c, con
 {
     for (size_t i = 0; i < pmarkers.size(); ++i) {
         const ProjectMarkerRef& p = pmarkers[i];
-        if (!(i < skip.size() && skip[i]) && p.has_c && p.name == name && std::fabs(p.c - c) <= tol)
+        if (!(i < skip.size() && skip[i]) && p.pass == 0 && p.has_c && p.name == name && std::fabs(p.c - c) <= tol)
             return static_cast<int>(i);
     }
     return -1;

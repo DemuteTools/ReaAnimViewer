@@ -1106,6 +1106,25 @@ SoundReport PopulateItems(const std::vector<MediaItem*>& items)
     return PopulateItemsCounted(items, nullptr);
 }
 
+SoundReport PopulateLoopPassesNoUndo(const std::vector<MediaItem*>& items)
+{
+    SoundReport rep;
+    try {
+        const SoundStore store = GetSoundStore(nullptr);
+        ItemIndexScope   index;
+        PopOpts          o;
+        o.only_populated = true;  // the events that already have their sounds, never a new one
+        o.report_replaced = false;
+        for (MediaItem* it : items)
+            if (it && RavTakeOf(it)) PopulateOne(it, store, o, rep, nullptr);
+        RefreshRavTrackNames(nullptr);  // 13-17 N3, as Populate
+        UpdateArrange();
+    } catch (...) {
+        AddLine(rep, ReportKind::Blocked, "Internal error: the loop passes were not all filled", "", "", 0.0);
+    }
+    return rep;
+}
+
 SoundReport ReshuffleItems(const std::vector<MediaItem*>& items)
 {
     SoundReport rep;

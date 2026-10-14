@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <initializer_list>
@@ -115,7 +116,26 @@ struct FollowProject {
     // Fix C review 2: owners whose deletion was handled, latest first: a copy pasted from one of
     // them later finds the sound items pasted with it.
     std::deque<OwnerSnap>              recent;
+    // 13-56: owner GUID (upper) -> what its last loop-pass fill saw (PassFillKey): a fill that left a
+    // pass empty (a missing file...) is not tried again until the item or its sounds change.
+    std::map<std::string, std::string> pass_fills;
 };
+
+// 13-56: the state a loop-pass fill ran on: the item's clip map and its live placed items.
+std::string PassFillKey(const ItemClipMap& m, const ItemSounds& rec)
+{
+    char buf[200];
+    std::snprintf(buf, sizeof(buf), "%.9g %.9g %.9g %.9g %.9g %d|", m.item_pos, m.item_len, m.start_offs, m.rate,
+                  m.clip_len, m.loop ? 1 : 0);
+    std::vector<std::string> g;
+    for (const EventSounds& ev : rec.events)
+        for (const SoundPlacement& p : ev.placed)
+            if (p.own != Ownership::Deleted) g.push_back(p.item_guid);
+    std::sort(g.begin(), g.end());
+    std::string out = buf;
+    for (const std::string& x : g) out += x;
+    return out;
+}
 
 void Remember(FollowProject& fp, const OwnerSnap& snap)
 {
@@ -175,7 +195,7 @@ std::map<ReaProject*, std::map<std::string, DetectedEvents>> g_detected;  // own
 // The item's sound events now, as PopulateOne builds them. False when its detection does not run
 // (nothing is decided then, as Populate places nothing).
 bool FollowEventsOf(ReaProject* proj, MediaItem* item, const std::string& key, const ItemRulesRead& rr,
-                    std::vector<FollowEvent>* out)
+                    std::vector<FollowEvent>* out, ItemClipMap* map_out)
 {
     MediaItem_Take*   take = RavTakeOf(item);
     const std::string path = take ? AnimPathOf(take) : std::string();
@@ -196,6 +216,7 @@ bool FollowEventsOf(ReaProject* proj, MediaItem* item, const std::string& key, c
     if (!d.ok) return false;
     const ItemClipMap map = ItemClipMapOf(item, d.clip_len);  // DetectItem's own map, now
     *out = SoundEventsOf(BuildEventList(d.events, d.rules.events, d.rules.blocks.size()), d.rules.blocks, map);
+    if (map_out) *map_out = map;
     return true;
 }
 
@@ -667,6 +688,7 @@ void SoundFollowTick(ReaProject* proj)
 
         bool                    arrange = false;
         std::vector<MediaItem*> copies;
+        std::vector<MediaItem*> pass_fill;  // 13-56: looped items with a loop pass to populate
         std::set<std::string>   owners_now;
         for (const Anim& an : anims) {
             try {
@@ -734,7 +756,8 @@ void SoundFollowTick(ReaProject* proj)
                     continue;  // unreadable rules: nothing is decided
                 }
                 FollowInput in;
-                if (!FollowEventsOf(proj, item, key, an.rr, &in.events)) {
+                ItemClipMap clip_map;
+                if (!FollowEventsOf(proj, item, key, an.rr, &in.events, &clip_map)) {
                     fp.owners[key] = snap;
                     continue;  // its detection does not run: nothing is decided
                 }
@@ -757,6 +780,7 @@ void SoundFollowTick(ReaProject* proj)
                 in.moved_also = mv_also;
                 in.moved_items = mv_items;
                 in.moved_delta = mv_delta;
+                in.owner_loops = clip_map.loop;  // 13-56
                 if (appeared_now) {
                     in.strays = strays;
                     in.owner_positions = anim_pos;
@@ -777,7 +801,19 @@ void SoundFollowTick(ReaProject* proj)
                 snap.facts = FactsFor(all, snap.placed);
                 FactsAfterPlan(plan, &snap.facts);  // positions as this tick's moves left them
                 fp.owners[key] = snap;
-                if (plan.populate_copy) copies.push_back(item);
+                if (plan.populate_copy) {
+                    copies.push_back(item);
+                } else if (plan.populate_passes) {
+                    // 13-56: a looped item extended: its populated events placed on the new passes,
+                    // once per state (a pass left empty is not tried again on every tick).
+                    const std::string fill = PassFillKey(clip_map, plan.record);
+                    if (fp.pass_fills[key] != fill) {
+                        fp.pass_fills[key] = fill;
+                        pass_fill.push_back(item);
+                    }
+                } else {
+                    fp.pass_fills.erase(key);
+                }
             } catch (...) {
             }
         }
@@ -844,8 +880,20 @@ void SoundFollowTick(ReaProject* proj)
         auto& det = g_detected[proj];
         for (auto it = det.begin(); it != det.end();) it = owners_now.count(it->first) ? std::next(it) : det.erase(it);
 
+        for (auto it = fp.pass_fills.begin(); it != fp.pass_fills.end();)
+            it = owners_now.count(it->first) ? std::next(it) : fp.pass_fills.erase(it);
+
         if (arrange) UpdateArrange();
         if (!copies.empty()) Report(proj, PopulateItems(copies).lines);  // 13-8's own undo point
+        // 13-56: no undo point: it rides the gesture that extended the item (F4); Populate works on
+        // the current project only, so another tab's item waits for its next change seen there.
+        if (!pass_fill.empty()) {
+            if (proj == CurrentProject()) {
+                Report(proj, PopulateLoopPassesNoUndo(pass_fill).lines);
+            } else {
+                for (MediaItem* item : pass_fill) fp.pass_fills.erase(Upper(ItemGuidOf(item)));
+            }
+        }
     } catch (...) {
     }
 }

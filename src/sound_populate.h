@@ -29,6 +29,12 @@ SoundReport PopulateItems(const std::vector<MediaItem*>& items);
 // Resolves this module's extra REAPER functions (D7).
 void InitSoundPopulate(void* (*get_func)(const char* name));
 
+// 13-56: a looped animation item extended (sound_follow.cpp): its populated events (those with a live
+// populated sound) placed again on every loop pass, the passes that have their sounds kept as they are
+// (PlanEventSlots), a node deleted by hand never placed again. The given items only (not their pools),
+// on the current project. NO undo point: the follow runs after the user's gesture and rides it (13-9 F4).
+SoundReport PopulateLoopPassesNoUndo(const std::vector<MediaItem*>& items);
+
 // PopulateItems, with the number of events it handled (`events`, optional).
 // Antho 2026-10-12: what it did (placed / replaced / already in place / deleted by hand, not added back),
 // also given as Info lines of the report.

@@ -964,6 +964,28 @@ int main()
         ItemRules cb;
         CHECK(ParseItemRules(ct, &cb) && SerializeItemRules(cb) == ct && cb.pmarkers.size() == 2);
 
+        // 13-56: a loop echo's pass, written before the free-text name, read back; 0 writes nothing.
+        {
+            ItemRules e = c;
+            ProjectMarkerRef echo;
+            echo.guid = "{E}";
+            echo.t = 3.5;
+            echo.c = 0.5;
+            echo.has_c = true;
+            echo.name = "Step L";
+            echo.has_name = true;
+            echo.pass = -2;
+            e.pmarkers.push_back(echo);
+            const std::string et = SerializeItemRules(e);
+            CHECK(et.find("pmarker guid={E} t=3.5 c=0.5 pass=-2 name=Step L\n") != std::string::npos);
+            ItemRules eb;
+            CHECK(ParseItemRules(et, &eb) && SerializeItemRules(eb) == et && eb.pmarkers.back().pass == -2 &&
+                  eb.pmarkers.back().name == "Step L" && eb.pmarkers.front().pass == 0);
+            ItemRules bad;  // an unreadable pass: kept as text, the ref on the first pass
+            CHECK(ParseItemRules("RAVRULES 1\npmarker guid={E} t=1 pass=x\n", &bad) && bad.pmarkers.size() == 1 &&
+                  bad.pmarkers[0].pass == 0);
+        }
+
         // Unknown fields on event lines (and an unknown kind) are kept, in place; an unknown
         // line after a pmarker stays with it.
         const std::string fut = "RAVRULES 3\n"

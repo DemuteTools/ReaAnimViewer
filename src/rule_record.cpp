@@ -957,6 +957,7 @@ Fields ProjectMarkerFields(const ProjectMarkerRef& m)
     Fields f = {{"guid", EncodeKey(m.guid)}, {"t", FormatNumber(m.t)}};
     if (m.has_c) f.push_back({"c", FormatNumber(m.c)});
     if (m.has_color) f.push_back({"color", FormatColor(m.color)});
+    if (m.pass != 0) f.push_back({"pass", std::to_string(m.pass)});  // 13-56, before the free-text name
     if (m.has_name) f.push_back({"name", CleanFreeText(m.name)});
     return f;
 }
@@ -967,6 +968,15 @@ Set SetProjectMarkerRef(ProjectMarkerRef& m, const std::string& k, const std::st
     if (k == "t") return R(ReadNumber(v, &m.t));
     if (k == "c") return R(m.has_c = ReadNumber(v, &m.c));
     if (k == "color") return R(m.has_color = ReadColor(v, &m.color));
+    if (k == "pass") {  // 13-56
+        long long         id = 0;
+        const char*       b = v.data();
+        const char*       e = b + v.size();
+        const auto        r = std::from_chars(b, e, id);
+        if (v.empty() || r.ec != std::errc() || r.ptr != e) return R(false);
+        m.pass = id;
+        return Set::Ok;
+    }
     if (k == "name") {
         m.name = v;
         m.has_name = true;

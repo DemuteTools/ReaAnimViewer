@@ -780,6 +780,37 @@ bool ApplyMirrorStep(ProjectMarkerRef& r, const MirrorStep& st, bool copy, Mirro
     }
 }
 
+// 13-56: the loop echoes of one ref list made and dropped (event_list.h PlanLoopEchoes): a dropped
+// echo's marker deleted (marked as the mirror's own delete), a new one written. True when the list
+// changed. An echo whose marker could not be written is not recorded (tried again next scan).
+bool ApplyLoopEchoes(std::vector<ProjectMarkerRef>& refs, const ItemClipMap& map, MirrorProject& mp, ReaProject* proj,
+                     bool* timeline_changed, std::vector<std::string>& created)
+{
+    const std::vector<EchoStep>   steps = PlanLoopEchoes(refs, map);
+    bool                          changed = false;
+    std::vector<ProjectMarkerRef> added;
+    for (const EchoStep& st : steps) {
+        if (st.drop) {  // descending indices: the erase keeps the next ones valid
+            const std::string g = refs[st.ref].guid;
+            if (!g.empty()) {
+                if (DeleteProjectMarkerByGuid(g, proj)) *timeline_changed = true;
+                mp.deleted.insert(g);
+            }
+            refs.erase(refs.begin() + static_cast<long>(st.ref));
+            changed = true;
+            continue;
+        }
+        ProjectMarkerRef r = st.add;
+        r.guid = AddProjectMarker(r.t, r.name, NativeColor(r.color), proj);
+        if (r.guid.empty()) continue;
+        created.push_back(r.guid);
+        *timeline_changed = true;
+        added.push_back(r);
+    }
+    refs.insert(refs.end(), added.begin(), added.end());
+    return changed || !added.empty();
+}
+
 // The record written back after a scan changed it (no undo point); false (and the markers just
 // created deleted again) when REAPER refused it.
 bool StoreMirroredRecord(MirrorItem& mi, MediaItem_Take* take, const ItemRules& rules,
@@ -827,9 +858,12 @@ bool MirrorCopyItem(MirrorItem& mi, MediaItem_Take* take, const std::map<std::st
     ItemRules                rules = *mi.seen.rules;
     bool                     changed = false;
     std::vector<std::string> created;
-    for (std::vector<ProjectMarkerRef>* refs : {&rules.pmarkers, &rules.ppmarkers})
+    for (std::vector<ProjectMarkerRef>* refs : {&rules.pmarkers, &rules.ppmarkers}) {
         for (const MirrorStep& st : MirrorPlan(*refs, RefStates(*refs, now, mp), mi.seen.map, false, true))
             changed |= ApplyMirrorStep((*refs)[st.ref], st, true, mp, proj, timeline_changed, created);
+        // 13-56: its loop echoes now hold its own markers (or none): made and dropped as on any item.
+        changed |= ApplyLoopEchoes(*refs, mi.seen.map, mp, proj, timeline_changed, created);
+    }
     if (RecordOwner(rules) != mi.guid) changed |= SetRecordOwner(rules, mi.guid);
     if (!changed) return false;
     if (!StoreMirroredRecord(mi, take, rules, created, proj)) {
@@ -876,6 +910,8 @@ void MirrorOwnItem(MirrorItem& mi, MediaItem_Take* take, const std::map<std::str
     for (const MirrorStep& st : ps) any |= st.action != MirrorAction::Keep;
     for (const MirrorStep& st : pps) any |= st.action != MirrorAction::Keep;
     for (const TakeRefMatch& m : tms) any |= m.fate != TakeRefFate::InPlace;
+    // 13-56: the loop echoes (their refs as they are when no step above changes them).
+    if (!any) any = !PlanLoopEchoes(base.pmarkers, map).empty() || !PlanLoopEchoes(base.ppmarkers, map).empty();
     if (!any) return;  // the usual case: everything where it belongs
 
     ItemRules                rules = base;
@@ -943,8 +979,51 @@ void MirrorOwnItem(MirrorItem& mi, MediaItem_Take* take, const std::map<std::str
         return true;
     };
 
+    // 13-56: the user edited a loop echo (`pass` != 0): the event's first-pass marker takes the
+    // edit (moved to the new clip time, hidden outside the first pass, shown back inside it; deleted
+    // with its ref on a delete or a rename); the other echoes follow once the edits are read
+    // (ApplyLoopEchoes).
+    std::vector<char> done_pp(rules.ppmarkers.size(), 0);
+    auto follow_base = [&](std::vector<ProjectMarkerRef>& refs, std::vector<char>& erase, std::vector<char>& done,
+                           double c, const std::string& name, MarkerEditKind k, double new_c) {
+        const int b = FindProjectTwin(refs, c, name, kOwnTakeTolS, either(erase, done));
+        if (b < 0) return;
+        ProjectMarkerRef& first = refs[static_cast<size_t>(b)];
+        done[static_cast<size_t>(b)] = 1;
+        if (k != MarkerEditKind::Drag) {
+            if (!first.guid.empty()) {
+                if (DeleteProjectMarkerByGuid(first.guid, proj)) *timeline_changed = true;
+                mp.deleted.insert(first.guid);
+            }
+            erase[static_cast<size_t>(b)] = 1;
+            return;
+        }
+        first.c = new_c;
+        double     t = 0.0;
+        const bool in = PassProjectTime(map, new_c, 0, &t);
+        if (!first.guid.empty() && in) {
+            if (MoveProjectMarker(first.guid, t, proj)) {
+                first.t = t;
+                *timeline_changed = true;
+            }
+        } else if (!first.guid.empty()) {
+            if (DeleteProjectMarkerByGuid(first.guid, proj)) *timeline_changed = true;
+            mp.deleted.insert(first.guid);
+            first.guid.clear();  // hidden: its event is outside the first pass now
+        } else if (in) {
+            const std::string g = AddProjectMarker(t, first.has_name ? first.name : "", NativeColor(first.color), proj);
+            if (!g.empty()) {
+                created.push_back(g);
+                first.guid = g;
+                first.t = t;
+                *timeline_changed = true;
+            }
+        }
+    };
+
     // Committed project markers.
     for (const MirrorStep& st : ps) {
+        if (erase_p[st.ref] || twin_done_p[st.ref]) continue;  // 13-56: taken by an echo's edit above
         ProjectMarkerRef& r = rules.pmarkers[st.ref];
         switch (st.action) {
         case MirrorAction::Keep: break;
@@ -960,7 +1039,8 @@ void MirrorOwnItem(MirrorItem& mi, MediaItem_Take* take, const std::map<std::str
             committed.push_back(e);
             what.push_back("project");
             edited_events.push_back({r.name, r.c});
-            const int tw = TakeApiReady() ? take_twin(r.c, r.name) : -1;  // Both: the take marker follows
+            const int    tw = TakeApiReady() ? take_twin(r.c, r.name) : -1;  // Both: the take marker follows
+            const double old_c = r.c;
             if (k == MarkerEditKind::Drag) {
                 if (tw >= 0) {
                     set_take_marker_time(rules.tmarkers[static_cast<size_t>(tw)].t, r.name, st.new_c);
@@ -977,6 +1057,7 @@ void MirrorOwnItem(MirrorItem& mi, MediaItem_Take* take, const std::map<std::str
                 erase_p[st.ref] = 1;  // deleted, or the user's now
             }
             twin_done_p[st.ref] = 1;
+            if (r.pass != 0) follow_base(rules.pmarkers, erase_p, twin_done_p, old_c, r.name, k, st.new_c);
             changed = true;
             break;
         }
@@ -985,6 +1066,7 @@ void MirrorOwnItem(MirrorItem& mi, MediaItem_Take* take, const std::map<std::str
     }
     // Preview project markers: their edits change the events only (the previews are rewritten).
     for (const MirrorStep& st : pps) {
+        if (erase_pp[st.ref] || done_pp[st.ref]) continue;  // 13-56: taken by an echo's edit above
         ProjectMarkerRef& r = rules.ppmarkers[st.ref];
         switch (st.action) {
         case MirrorAction::Keep: break;
@@ -999,12 +1081,15 @@ void MirrorOwnItem(MirrorItem& mi, MediaItem_Take* take, const std::map<std::str
             }
             previews.push_back(e);
             what_prev.push_back("project preview");
+            const double old_c = r.c;
             if (k == MarkerEditKind::Drag) {
                 r.c = st.new_c;  // still RAV's: the rewrite replaces it
                 r.t = st.new_t;
             } else {
                 erase_pp[st.ref] = 1;
             }
+            done_pp[st.ref] = 1;
+            if (r.pass != 0) follow_base(rules.ppmarkers, erase_pp, done_pp, old_c, r.name, k, st.new_c);
             changed = true;
             break;
         }
@@ -1069,7 +1154,6 @@ void MirrorOwnItem(MirrorItem& mi, MediaItem_Take* take, const std::map<std::str
         changed = true;
     }
     if (adopt) changed |= SetRecordOwner(rules, mi.guid);
-    if (!changed) return;
 
     // Refs of markers deleted by the user or given to them: no longer RAV's.
     auto compact = [](auto& v, const std::vector<char>& erase) {
@@ -1082,6 +1166,10 @@ void MirrorOwnItem(MirrorItem& mi, MediaItem_Take* take, const std::map<std::str
     compact(rules.ppmarkers, erase_pp);
     compact(rules.tmarkers, erase_t);
     compact(rules.ptmarkers, erase_pt);
+    // 13-56: the loop echoes follow their first-pass refs as they are now.
+    changed |= ApplyLoopEchoes(rules.pmarkers, map, mp, proj, timeline_changed, created);
+    changed |= ApplyLoopEchoes(rules.ppmarkers, map, mp, proj, timeline_changed, created);
+    if (!changed) return;
 
     // The event list (and, when the item was up to date, the commit's signature).
     std::string new_sig;

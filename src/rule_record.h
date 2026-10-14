@@ -275,6 +275,11 @@ struct ProjectMarkerRef {
     bool        has_c = false;
     bool        has_color = false;
     bool        has_name = false;
+    // 13-56: the loop pass the marker sits on (FollowPass id, event_list.h LoopPassTimes): 0 = the
+    // item's first pass (what Commit writes); another = an echo of the first pass's ref on a later
+    // (or earlier) loop pass of a looped item, made and dropped by the marker mirror. Written as
+    // `pass=` only when not 0.
+    long long   pass = 0;
     KeptText    kept;
 };
 

@@ -325,33 +325,51 @@ double BlendOf(const FollowInput& in, const std::string& rid, const std::string&
     return 0.0;
 }
 
-// F3 / F5: a kept placement of a matched event.
-void FollowPlacement(SoundPlacement& p, const FollowEvent& ev, const FollowInput& in, bool disabled, FollowPlan* plan)
+// The passes of an event as a placement sees them (an event read without them: its first pass).
+std::vector<FollowPass> PassesOf(const FollowEvent& ev)
 {
-    const std::vector<FollowItemFacts>& items = in.items;
-    if (p.own == Ownership::Deleted) return;
-    const FollowItemFacts* f = FactsOf(items, p.item_guid);
-    if (!f || !f->present) return;  // handled by the caller (F6)
-
-    // Fix 2026-10-12: the pass this sound sits on (13-8 places one per loop pass). Its stored
-    // pass; at first sight (or an older line) the pass nearest its sync point, as Populate finds
-    // it (NearestPassOfItem). The event as this sound sees it: that pass's project time, or
-    // outside the item when the pass is gone.
     std::vector<FollowPass> passes = ev.passes;
     if (passes.empty() && ev.in_item) passes.push_back(FollowPass{0, ev.project_t});
-    bool      have_pass = f->has_store && f->store.has_pass;
-    long long pass = have_pass ? f->store.pass : 0;
-    if (!have_pass && !passes.empty()) {
-        // The pile's anchor (13-8 tag ao / sy), as Populate finds it: one pile, one pass.
-        const double apos = f->tag_has_anchor ? f->pos - f->tag_ao : f->pos;
-        const double sync = f->tag_has_anchor ? f->tag_sy : f->sync_offset;
-        const double anchor = apos + sync - BlendOf(in, ev.rid, p.node) / 1000.0;
-        size_t       best = 0;
-        for (size_t k = 1; k < passes.size(); ++k)
-            if (std::fabs(passes[k].project_t - anchor) < std::fabs(passes[best].project_t - anchor)) best = k;
-        pass = passes[best].id;
-        have_pass = true;
+    return passes;
+}
+
+// Fix 2026-10-12: the pass a sound sits on (13-8 places one per loop pass). Its stored pass; at
+// first sight (or an older line) the pass nearest its sync point, as Populate finds it
+// (NearestPassOfItem). False when it has none (no store, and its event shows on no pass).
+bool PassOfPlacement(const SoundPlacement& p, const FollowItemFacts& f, const std::vector<FollowPass>& passes,
+                     const FollowInput& in, const std::string& rid, long long* out)
+{
+    if (f.has_store && f.store.has_pass) {
+        *out = f.store.pass;
+        return true;
     }
+    if (passes.empty()) return false;
+    // The pile's anchor (13-8 tag ao / sy), as Populate finds it: one pile, one pass.
+    const double apos = f.tag_has_anchor ? f.pos - f.tag_ao : f.pos;
+    const double sync = f.tag_has_anchor ? f.tag_sy : f.sync_offset;
+    const double anchor = apos + sync - BlendOf(in, rid, p.node) / 1000.0;
+    size_t       best = 0;
+    for (size_t k = 1; k < passes.size(); ++k)
+        if (std::fabs(passes[k].project_t - anchor) < std::fabs(passes[best].project_t - anchor)) best = k;
+    *out = passes[best].id;
+    return true;
+}
+
+// F3 / F5: a kept placement of a matched event. True (13-56) when it must go: a populated or spread
+// sound on a loop pass other than the first, the item looping, and that pass no longer showing its
+// event (the Remove action is planned here; the caller drops the placement).
+bool FollowPlacement(SoundPlacement& p, const FollowEvent& ev, const FollowInput& in, bool disabled, FollowPlan* plan)
+{
+    const std::vector<FollowItemFacts>& items = in.items;
+    if (p.own == Ownership::Deleted) return false;
+    const FollowItemFacts* f = FactsOf(items, p.item_guid);
+    if (!f || !f->present) return false;  // handled by the caller (F6)
+
+    // The event as this sound sees it: its pass's project time, or outside the item when the pass
+    // is gone.
+    const std::vector<FollowPass> passes = PassesOf(ev);
+    long long                     pass = 0;
+    const bool                    have_pass = PassOfPlacement(p, *f, passes, in, ev.rid, &pass);
     FollowEvent e = ev;
     e.in_item = false;
     e.project_t = 0.0;
@@ -361,6 +379,13 @@ void FollowPlacement(SoundPlacement& p, const FollowEvent& ev, const FollowInput
                 e.in_item = true;
                 e.project_t = fp.project_t;
             }
+    // 13-56: its loop pass was cut off (the looped item shortened): removed, like a gone event's
+    // sound (F5). Only a pass the follow stored (a first-sight pass is always one shown now).
+    if (in.owner_loops && !e.in_item && have_pass && pass != 0 && f->has_store && f->store.has_pass &&
+        (p.own == Ownership::Populated || p.own == Ownership::Spread)) {
+        plan->actions.push_back(Act(FollowKind::Remove, p.item_guid));
+        return true;
+    }
     // F6: a track move.
     if (!f->track_guid.empty() && f->track_guid != p.track_guid) {
         p.track_guid = f->track_guid;
@@ -377,7 +402,7 @@ void FollowPlacement(SoundPlacement& p, const FollowEvent& ev, const FollowInput
     if (p.own == Ownership::Attached) {
         // Never moved, nor muted for an event outside the item; muted while its rule is disabled
         // (fix C 2026-10-12), unmuted when it is enabled again.
-        if (!disabled && !(f->has_store && (f->store.mute || f->store.hand))) return;
+        if (!disabled && !(f->has_store && (f->store.mute || f->store.hand))) return false;
         FollowStore st = f->store;
         if (!f->has_store) {
             st.pos = f->pos;
@@ -385,11 +410,11 @@ void FollowPlacement(SoundPlacement& p, const FollowEvent& ev, const FollowInput
         }
         MuteStep(disabled ? kMuteDisabled : 0, *f, st, plan);
         StoreIfChanged(*f, st, plan);
-        return;
+        return false;
     }
     // First sight while the event is outside the item: its project time is unknown, nothing is
     // stored nor muted until the event is back in the item.
-    if (!f->has_store && !e.in_item) return;
+    if (!f->has_store && !e.in_item) return false;
 
     FollowStore st = f->store;
     st.has_pass = have_pass;
@@ -425,6 +450,39 @@ void FollowPlacement(SoundPlacement& p, const FollowEvent& ev, const FollowInput
     // stays theirs, and so does an unmute of a sound the follow muted (fix C 2026-10-12).
     MuteStep(disabled ? kMuteDisabled : (!e.in_item ? kMuteOutside : 0), *f, st, plan);
     StoreIfChanged(*f, st, plan);
+    return false;
+}
+
+// 13-56: a populated event of a looped item (a live Populated placement, no Attached or Spread
+// one) with a loop pass where a node it plays has no sound, no sound of that node deleted by hand
+// (Populate never places that node again: nothing to fill).
+bool PassWithoutSound(const EventSounds& ev, const FollowEvent& e, const FollowInput& in)
+{
+    for (const SoundPlacement& p : ev.placed)
+        if (p.own == Ownership::Attached || p.own == Ownership::Spread) return false;  // Populate leaves it alone
+    const std::vector<FollowPass> passes = PassesOf(e);
+    if (passes.empty()) return false;
+    std::vector<std::string> done;
+    for (const SoundPlacement& p : ev.placed) {
+        if (p.own != Ownership::Populated || Has(done, p.node)) continue;
+        done.push_back(p.node);
+        bool deleted = false, live = false;
+        std::vector<long long> on;  // the passes the node's sounds sit on
+        for (const SoundPlacement& q : ev.placed) {
+            if (q.node != p.node) continue;
+            if (q.own == Ownership::Deleted) deleted = true;
+            if (q.own != Ownership::Populated) continue;
+            const FollowItemFacts* f = FactsOf(in.items, q.item_guid);
+            if (!f || !f->present) continue;
+            live = true;
+            long long pass = 0;
+            if (PassOfPlacement(q, *f, passes, in, ev.rid, &pass)) on.push_back(pass);
+        }
+        if (deleted || !live) continue;
+        for (const FollowPass& fp : passes)
+            if (std::find(on.begin(), on.end(), fp.id) == on.end()) return true;
+    }
+    return false;
 }
 
 }  // namespace
@@ -488,23 +546,9 @@ bool ParseFollowStore(const std::string& text, FollowStore* out)
 
 std::vector<FollowPass> FollowPassesOf(const ItemClipMap& m, double clip_t)
 {
+    // 13-56: the one pass list the marker mirror's loop echoes read too (event_list.h).
     std::vector<FollowPass> out;
-    if (!std::isfinite(clip_t)) return out;
-    const double rate = (m.rate > 0.0 && std::isfinite(m.rate)) ? m.rate : 1.0;
-    const double offs = std::isfinite(m.start_offs) ? m.start_offs : 0.0;
-    for (const ClipPass& p : ClipPasses(m)) {
-        // ClipToProjectTimes' test, pass for pass.
-        const double t = p.p0 + (clip_t - p.clip0) / rate;
-        if (!(t >= p.p0 - 1e-9 && t < p.p1 - 1e-12)) continue;
-        FollowPass fp;
-        fp.project_t = t;
-        if (m.loop && m.clip_len > 0.0) {
-            // The pass starts at source time offs + (p0 - item_pos) * rate = id * clip_len + clip0.
-            const double ks = offs + (p.p0 - m.item_pos) * rate - p.clip0;
-            fp.id = static_cast<long long>(std::llround(ks / m.clip_len));
-        }
-        out.push_back(fp);
-    }
+    for (const LoopPassTime& lp : LoopPassTimes(m, clip_t)) out.push_back(FollowPass{lp.id, lp.project_t});
     return out;
 }
 
@@ -808,11 +852,15 @@ FollowPlan PlanItemFollow(const FollowInput& in0)
                     continue;
                 }
                 p.own = Ownership::Deleted;
-            } else {
-                FollowPlacement(p, e, in, disabled, &plan);
+            } else if (FollowPlacement(p, e, in, disabled, &plan)) {
+                // 13-56: its loop pass was cut off: removed (planned), dropped from the record.
+                ev.placed.erase(ev.placed.begin() + static_cast<long>(i));
+                plan.record_changed = true;
+                continue;
             }
             ++i;
         }
+        if (in.owner_loops && !disabled && !plan.populate_passes && PassWithoutSound(ev, e, in)) plan.populate_passes = true;
         kept.push_back(std::move(ev));
     }
     rec.events = std::move(kept);

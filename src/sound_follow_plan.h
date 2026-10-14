@@ -154,6 +154,12 @@ struct FollowInput {
     double                       moved_delta = 0.0;
     // GUIDs it had before that (a paste undone then pasted again): items tagged for them are its too.
     std::vector<std::string>     moved_also;
+    // 13-56: the animation item loops its source (B_LOOPSRC). A populated or spread sound on a loop
+    // pass other than the first (FollowPass id != 0) whose pass no longer shows its event (the item
+    // shortened, its rate or offset changed) is removed, its placement dropped from the record, like
+    // a gone event's (F5); on the first pass, and on an item that does not loop, it is muted as
+    // before. A populated event with a pass that has no sound of a node gets FollowPlan::populate_passes.
+    bool                         owner_loops = false;
 };
 
 enum class FollowKind { Move, Remove, Detach, Forget, Mute, Unmute, Store, Retag };
@@ -173,6 +179,11 @@ struct FollowPlan {
     bool                      record_changed = false;
     std::vector<ReportLine>   report;
     bool                      populate_copy = false;  // F8: the item is a copy, populate it
+    // 13-56: the item loops and a populated event (a live Populated placement, no Attached or Spread
+    // one, its rule enabled) has a loop pass where a node it plays has no sound, and no sound of
+    // that node was deleted by hand (Populate never places such a node again): the caller fills the
+    // passes (Populate on the populated events, no undo point).
+    bool                      populate_passes = false;
 };
 
 FollowPlan PlanItemFollow(const FollowInput& in);

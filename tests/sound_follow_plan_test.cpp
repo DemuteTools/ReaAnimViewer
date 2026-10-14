@@ -621,6 +621,117 @@ int main()
             CHECK(Count(q, FollowKind::Mute) == 2 && Count(q, FollowKind::Move) == 0);
             CHECK(Count(q, FollowKind::Remove) == 0);
         }
+        // 13-56: a looped item stretched or shortened in REAPER (Source loop mode).
+        auto replan_loop = [&](const ItemClipMap& mm, FollowInput x) {
+            x.owner_loops = mm.loop;
+            x.events = SoundEventsOf(BuildEventList(dets, r.events, r.blocks.size()), r.blocks, mm);
+            return PlanItemFollow(x);
+        };
+        {  // shortened to two loops: the third pass's sounds removed and dropped, the others kept
+            ItemClipMap mm = m;
+            mm.item_len = 2.0;
+            const FollowPlan q = replan_loop(mm, next);
+            CHECK(Count(q, FollowKind::Remove) == 2 && Count(q, FollowKind::Mute) == 0 && Count(q, FollowKind::Move) == 0);
+            for (const FollowAction& a : q.actions)
+                if (a.kind == FollowKind::Remove) CHECK(a.item_guid == "{P2}" || a.item_guid == "{P5}");
+            CHECK(q.record_changed && !q.populate_passes);
+            CHECK(q.record.events.size() == 2);
+            for (const EventSounds& es : q.record.events) {
+                CHECK(es.placed.size() == 2);
+                for (const SoundPlacement& sp : es.placed) CHECK(sp.item_guid != "{P2}" && sp.item_guid != "{P5}");
+            }
+            FollowInput x = next;
+            x.owner_loops = true;
+            x.events = SoundEventsOf(BuildEventList(dets, r.events, r.blocks.size()), r.blocks, mm);
+            CheckIdempotent(x, q);
+            // Cut in the middle of the third loop: the event at 0.25 still shows there, 0.8 does not.
+            mm.item_len = 2.5;
+            const FollowPlan h = replan_loop(mm, next);
+            CHECK(Count(h, FollowKind::Remove) == 1 && Find(h, FollowKind::Remove)->item_guid == "{P5}");
+            // The same on an item that does not loop (its first pass only): muted as before, nothing removed.
+            FollowInput y = next;
+            y.events = SoundEventsOf(BuildEventList(dets, r.events, r.blocks.size()), r.blocks, mm);
+            CHECK(!y.owner_loops && Count(PlanItemFollow(y), FollowKind::Remove) == 0);
+        }
+        {  // trimmed at its start by one loop: the first pass's sounds are muted (as before), not removed
+            ItemClipMap mm = m;
+            mm.item_pos = 11.0;
+            mm.item_len = 2.0;
+            mm.start_offs = 1.0;
+            const FollowPlan q = replan_loop(mm, next);
+            CHECK(Count(q, FollowKind::Mute) == 2 && Count(q, FollowKind::Remove) == 0 && !q.populate_passes);
+        }
+        {  // stretched to five loops: nothing moves, the new passes are to be populated
+            ItemClipMap mm = m;
+            mm.item_len = 5.0;
+            const FollowPlan q = replan_loop(mm, next);
+            CHECK(q.actions.empty() && !q.record_changed && q.populate_passes);
+            // Not looped: never.
+            FollowInput y = next;
+            y.events = SoundEventsOf(BuildEventList(dets, r.events, r.blocks.size()), r.blocks, mm);
+            CHECK(!PlanItemFollow(y).populate_passes);
+            // Once filled (a sound on every pass of each event): nothing more to populate.
+            FollowInput full = next;
+            full.owner_loops = true;
+            full.events = SoundEventsOf(BuildEventList(dets, r.events, r.blocks.size()), r.blocks, mm);
+            int g = 100;
+            for (size_t k = 0; k < full.events.size(); ++k)
+                for (const FollowPass& fp : full.events[k].passes) {
+                    if (fp.id < 3) continue;
+                    const std::string guid = "{P" + std::to_string(g++) + "}";
+                    SoundPlacement sp;
+                    sp.item_guid = guid;
+                    sp.node = "n1";
+                    sp.own = Ownership::Populated;
+                    sp.track_guid = "{T1}";
+                    full.rec.events[k].placed.push_back(sp);
+                    full.items.push_back(Fact(guid.c_str(), fp.project_t + 0.03, false, 0.0, 0.0, full.events[k].t));
+                }
+            const FollowPlan f = PlanItemFollow(full);
+            CHECK(!f.populate_passes && Count(f, FollowKind::Remove) == 0 && Count(f, FollowKind::Move) == 0);
+            // A sound deleted by hand on that event: its node is never placed again, nothing to fill.
+            FollowInput del = next;
+            for (EventSounds& es : del.rec.events) {
+                SoundPlacement gone;
+                gone.item_guid = "{GONE}";
+                gone.node = "n1";
+                gone.own = Ownership::Deleted;
+                es.placed.push_back(gone);
+            }
+            CHECK(!replan_loop(mm, del).populate_passes);
+            // Only one of the two events has one: the other still fills its passes.
+            del = next;
+            SoundPlacement gone;
+            gone.item_guid = "{GONE}";
+            gone.node = "n1";
+            gone.own = Ownership::Deleted;
+            del.rec.events[0].placed.push_back(gone);
+            CHECK(replan_loop(mm, del).populate_passes);
+            // An event with an attached or spread sound is left to the user (Populate skips it).
+            FollowInput att = next;
+            for (EventSounds& es : att.rec.events) {
+                SoundPlacement a;
+                a.item_guid = "{ATT}";
+                a.node = "n1";
+                a.own = Ownership::Spread;
+                es.placed.push_back(a);
+            }
+            CHECK(!replan_loop(mm, att).populate_passes);
+            // A disabled rule's events are paused: nothing to fill.
+            FollowInput dis = next;
+            dis.disabled_rids = {"a"};
+            CHECK(!replan_loop(mm, dis).populate_passes);
+        }
+        {  // a spread sound on a pass cut off goes like a populated one; an attached one is never touched
+            ItemClipMap mm = m;
+            mm.item_len = 2.0;
+            FollowInput x = next;
+            x.rec.events[0].placed[2].own = Ownership::Spread;     // {P2}, pass 2
+            x.rec.events[1].placed[2].own = Ownership::Attached;   // {P5}, pass 2
+            const FollowPlan q = replan_loop(mm, x);
+            CHECK(Count(q, FollowKind::Remove) == 1 && Find(q, FollowKind::Remove)->item_guid == "{P2}");
+            CHECK(Count(q, FollowKind::Detach) == 0 && Count(q, FollowKind::Mute) == 0);
+        }
         // An older store line (no pass) is read, and the pass round-trips.
         FollowStore st;
         CHECK(ParseFollowStore("RAVSNDFOLLOW 1 pos=1 pt=2 pass=-3", &st) && st.has_pass && st.pass == -3);

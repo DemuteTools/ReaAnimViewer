@@ -97,6 +97,14 @@ void ClearLastApplyResult();
 // snapshot take the edit, so the item stays "markers up to date"; for a preview only the events
 // change and the previews are rewritten. Written without an undo point: it rides the edit's own
 // (state-based, so Ctrl+Z / Ctrl+Y converge again). One console_log info line per edit.
+//
+// 13-56: on a looped item (Source loop) every project marker of the first pass, committed or
+// preview, gets an echo on each other loop pass that shows its event (event_list.h
+// PlanLoopEchoes): made when the item is stretched, deleted when it is shortened or stops
+// looping, moved with the item; Commit still writes the first pass, the next scan adds the
+// echoes. A drag, delete or rename of an echo in REAPER is read like one of its first-pass
+// marker (the event moves or is suppressed, the first-pass marker follows, the echoes are
+// made again). Take markers are not echoed: REAPER repeats them on each loop itself.
 
 // Story 13-26 (Clear item data): deletes the markers RAV owns on this item, committed and previews
 // (take markers on its take, project markers by GUID), as its record lists them. No undo point

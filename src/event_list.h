@@ -9,7 +9,8 @@
 //     fixed in time: detection never moves them).
 //   - Apply writes the Detected and User events of the rules that are on, at their project
 //     time on the item's FIRST pass of the clip only (RAV plays the clip once then holds its
-//     last frame), inside the item's bounds.
+//     last frame), inside the item's bounds. 13-56: on a looped item the marker mirror adds a
+//     project marker on every other loop pass (PlanLoopEchoes).
 //   - Deleting or duplicating a rule remaps the entries' rule indices (a deleted rule's user
 //     events and suppressions go with it).
 //   - The event list belongs to the take, like REAPER's take markers and P_EXT: a changed
@@ -96,6 +97,25 @@ bool FirstClipPass(const ItemClipMap& m, ClipPass* out);
 bool FirstPassProjectTime(const ItemClipMap& m, double clip_t, double* project_t);
 // Project time -> clip time on the first pass. False outside it.
 bool FirstPassClipTime(const ItemClipMap& m, double project_t, double* clip_t);
+
+// ---- 13-56: every loop pass of a looped item -----------------------------------------------------
+
+// The id of a pass of the clip (ClipPasses): the clip loop it plays, its source time being
+// id * clip_len + clip time. It stays the same when the item moves, is trimmed at its start or
+// changes rate. 0 when the item does not loop (and for the first pass, FirstClipPass).
+long long ClipPassId(const ItemClipMap& m, const ClipPass& p);
+// Where clip time `clip_t` shows on the timeline, one per pass inside the item, in time order
+// (ClipToProjectTimes' test): the pass id and the project time.
+struct LoopPassTime {
+    long long id = 0;
+    double    project_t = 0.0;
+};
+std::vector<LoopPassTime> LoopPassTimes(const ItemClipMap& m, double clip_t);
+// Clip time -> project time on pass `id` (0: FirstPassProjectTime). False when that pass does not
+// show it (or the item does not loop and id is not 0).
+bool PassProjectTime(const ItemClipMap& m, double clip_t, long long id, double* project_t);
+// Project time -> clip time on pass `id` (0: FirstPassClipTime). False outside that pass.
+bool PassClipTime(const ItemClipMap& m, double project_t, long long id, double* clip_t);
 
 // ---- Apply (Commit since 10-4 fb-4) ------------------------------------------------------------
 
@@ -251,7 +271,8 @@ std::vector<int> HandOverProjectMarkers(const std::vector<ProjectMarkerRef>& lea
 //
 // RAV's project markers (committed and previews) follow their item: a main-thread timer
 // (tag_markers.h) places each one from its event's clip time (ProjectMarkerRef::c) and the
-// item's current position, start offset, rate and length (FirstPassProjectTime, Commit's rule).
+// item's current position, start offset, rate and length (FirstPassProjectTime, Commit's rule;
+// 13-56: a loop echo on its own pass, PassProjectTime).
 //
 // 10-4c: two-way. State-based, not cache-based: each ref says where RAV last put its marker
 // (`t`) and where its event belongs (`c`). A marker at its expected place is in place (a ripple:
@@ -303,6 +324,28 @@ struct MirrorRefState {
 std::vector<MirrorStep> MirrorPlan(const std::vector<ProjectMarkerRef>& refs, const std::vector<MirrorRefState>& state,
                                    const ItemClipMap& map, bool map_changed, bool copy);
 
+// ---- 13-56: project markers on every loop pass ----------------------------------------------------
+//
+// On a looped item each first-pass ref (pass 0) with a clip time and a name has an echo (the same
+// clip time, name and colour, `pass` = the pass id) on every other loop pass that shows its clip
+// time; Commit writes the first pass only, the mirror makes and drops the echoes (no undo point,
+// like its other writes). A not-looped item has none. Take markers are not echoed: REAPER shows a
+// take marker on every loop of its item by itself.
+
+constexpr double kEchoMatchTolS = 1e-6;  // an echo this close to its first-pass ref's clip time is its
+
+struct EchoStep {
+    bool             drop = false;  // drop refs[ref] (its marker deleted when it has a GUID)
+    size_t           ref = 0;
+    ProjectMarkerRef add;           // !drop: a new echo, its marker to write at add.t (GUID by the writer)
+};
+// What the echoes of `refs` (one list: committed or previews) must do on `map`: an echo whose first-
+// pass ref is gone, whose pass no longer shows its clip time, without a GUID (hidden, or a copy's
+// that could not be made), or a second one for the same place, is dropped; a missing one is added.
+// Drops first (descending ref index), then adds in ref order then pass order. Empty when all are
+// in place (always, for a not-looped item without echoes).
+std::vector<EchoStep> PlanLoopEchoes(const std::vector<ProjectMarkerRef>& refs, const ItemClipMap& map);
+
 // ---- 10-4c: REAPER-side edits of RAV's markers -> the event list ---------------------------------
 
 enum class MarkerEditKind {
@@ -338,7 +381,8 @@ ItemRules ApplyMarkerEdits(const ItemRules& rules, const std::vector<MarkerEdit>
                            const std::vector<Event>* detections = nullptr, std::vector<int>* blocks = nullptr);
 
 // Both: the other marker of one event. The committed take ref at clip time c (+-tol) with this
-// name, or the project ref with a clip time at c (+-tol) and this name; -1 when none. A ref whose
+// name, or the project ref with a clip time at c (+-tol) and this name (13-56: on the first pass,
+// never a loop echo); -1 when none. A ref whose
 // `skip` entry is non-zero (already handled or dropped this scan) is passed over; `skip` may be
 // shorter than the refs (missing entries = not skipped).
 int FindTakeTwin(const std::vector<TakeMarkerRef>& tmarkers, double c, const std::string& name, double tol,

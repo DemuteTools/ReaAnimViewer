@@ -28,6 +28,8 @@
 #include "shortcuts.h"
 #include "viewer_window.h"
 
+#include <cstring>
+
 namespace rav {
 namespace {
 
@@ -79,6 +81,11 @@ constexpr const char kSoundStoreCheckDesc[] = "RAV: Sound library storage check"
 int                  g_sound_check_id    = 0;
 gaccel_register_t    g_sound_check_accel = {};
 
+// Lot 13-60b -- one action per viewer key (src/shortcuts.h ShortcutDef::action): a Shortcuts row on
+// "REAPER" runs on the keys the user gives it in REAPER's Actions window. Full screen has its own above.
+int                     g_key_ids[kShortcutCount]    = {};
+gaccel_register_t       g_key_accels[kShortcutCount] = {};
+
 int                     g_command_id      = 0;
 gaccel_register_t       g_accel           = {};
 int                     g_add_fx_id       = 0;
@@ -100,6 +107,11 @@ int (*g_register)(const char*, void*) = nullptr;
 bool OnHookCommand(int command, int /*flag*/)
 {
     if (command == 0) return false;
+    for (int i = 0; i < kShortcutCount; ++i)  // 13-60b: a viewer key's action
+        if (g_key_ids[i] != 0 && command == g_key_ids[i]) {
+            RunViewerShortcut(i);
+            return true;
+        }
     if (command == g_video_bg_id) {
         ToggleVideoBackgroundOnSelectedTracks();
         RefreshToolbar(g_video_bg_id);
@@ -215,6 +227,8 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
             g_register("-toggleaction", (void*)&OnToggleAction);
             g_register("-hookcommand",  (void*)&OnHookCommand);
             if (g_full_screen_id) g_register("-gaccel", &g_full_screen_accel);
+            for (int i = 0; i < kShortcutCount; ++i)  // 13-60b
+                if (g_key_ids[i]) g_register("-gaccel", &g_key_accels[i]);
             if (g_sound_check_id) g_register("-gaccel", &g_sound_check_accel);
             if (g_make_unique_id) g_register("-gaccel", &g_make_unique_accel);
             if (g_measure_detection_id) g_register("-gaccel", &g_measure_detection_accel);
@@ -248,6 +262,11 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
     // viewer's button still work).
     g_full_screen_id = RegisterAction(rec, kFullScreenName, kFullScreenDesc, &g_full_screen_accel);
     SetViewerFullScreenCommandId(g_full_screen_id);
+    // Lot 13-60b -- the viewer keys' actions (no default key: the user gives them one in REAPER). A
+    // failure only loses that action (its row's "REAPER" then finds no action in REAPER's list).
+    for (int i = 0; i < kShortcutCount; ++i)
+        if (std::strcmp(kShortcutTable[i].action, kFullScreenName) != 0)
+            g_key_ids[i] = RegisterAction(rec, kShortcutTable[i].action, kShortcutTable[i].action_desc, &g_key_accels[i]);
 
     // Story 11-2 -- the video FX background option. A failure only loses that action.
     g_video_bg_id = RegisterAction(rec, kVideoBgName, kVideoBgDesc, &g_video_bg_accel);

@@ -10,6 +10,7 @@
 #ifdef _WIN32
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <string>
@@ -164,105 +165,68 @@ float DrawCaps(ImDrawList* dl, const std::vector<Cap>& caps, float left, float r
     return x0;
 }
 
-// 13-60: the small chain-link button of a KEYS row (lit while it is linked): opens the Link modal.
-bool ChainButton(const char* id, ImVec2 c, bool on)
+// 13-60: the small chain-link button of a row (lit while it is linked to an action the user picked):
+// opens the Link modal. 13-60b: on every row, active in Own, greyed in REAPER (a click does nothing).
+bool ChainButton(const char* id, ImVec2 c, bool on, bool enabled, bool takes_wheel)
 {
     const float s = ui::Dp(20.0f);
     ImGui::SetCursorScreenPos(ImVec2(c.x - s * 0.5f, c.y - s * 0.5f));
     const bool  pressed = ImGui::InvisibleButton(id, ImVec2(s, s));
     const bool  hot = ImGui::IsItemHovered();
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    if (hot) dl->AddRectFilled(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), ui::kRaised, ui::Dp(4.0f));
-    const ImU32 col = on ? ui::kAccent : (hot ? ui::kText : ui::kFaint);
+    if (hot && enabled) dl->AddRectFilled(ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), ui::kRaised, ui::Dp(4.0f));
+    ImU32 col = on ? ui::kAccent : (hot ? ui::kText : ui::kFaint);
+    if (!enabled) col = (ui::kFaint & 0x00FFFFFFu) | 0x70000000u;  // greyed
     // Two links, slanted: rounded outlines overlapping in the middle.
     const float w = s * 0.42f, h = s * 0.26f, r = h * 0.5f, t = ui::Dp(1.4f);
     dl->AddRect(ImVec2(c.x - w + ui::Dp(1.0f), c.y - h * 0.5f + ui::Dp(2.0f)), ImVec2(c.x + ui::Dp(1.0f), c.y + h * 0.5f + ui::Dp(2.0f)), col, r, 0, t);
     dl->AddRect(ImVec2(c.x - ui::Dp(1.0f), c.y - h * 0.5f - ui::Dp(2.0f)), ImVec2(c.x + w - ui::Dp(1.0f), c.y + h * 0.5f - ui::Dp(2.0f)), col, r, 0, t);
-    if (hot)
-        ui::ItemTipText(on ? "Linked to a REAPER action: click to pick another. Right-click the row: back to a key of its own. "
-                             "A faint key is another RAV action's: that one runs it."
-                           : "Link to a REAPER action: RAV runs this on that action's keys in REAPER, followed live.");
-    return pressed;
+    if (hot) {
+        if (!enabled)
+            ui::ItemTipText("Switch to Own to link this row to a REAPER action of your choice.");
+        else if (on)
+            ui::ItemTipText("Linked to a REAPER action: click to pick another, or unlink it. Right-click the row: back to "
+                            "its default. A faint key is another RAV action's: that one runs it.");
+        else
+            ui::ItemTipText(takes_wheel ? "Link to a REAPER action of your choice: RAV runs this on that action's keys and "
+                                          "wheel in REAPER, followed live."
+                                        : "Link to a REAPER action of your choice: RAV runs this on that action's keys in "
+                                          "REAPER, followed live.");
+    }
+    return pressed && enabled;
 }
 
-// One key action. Returns true when a double-click asked to record it. 13-60: or linked to a REAPER
-// action (the chain button, in the column the mouse rows say "fixed" in): its keys, then a second line
-// naming the action.
-bool KeyRow(int id)
+// 13-60b -- every editable row (KEYS and VIEW) is drawn the same: line 1, the label, the gestures that
+// run it now (key caps, whatever the mode) and the chain in the right column (where the mouse rows say
+// "fixed"); line 2, the REAPER | Own switch and what the row follows ("⛓ <REAPER's name> · <id>", or
+// "RAV only"). Double-click = record an own key / gesture (it makes the row Own), right-click = the
+// row's default. The caller acts on what was clicked.
+struct EditRowView {
+    const char*      label = "";
+    const char*      context = nullptr;  // "Video" / "Tagging", faint after the label
+    std::vector<Cap> caps;
+    bool             reaper = false;      // the switch's state
+    bool             linked = false;      // Own, linked to an action the user picked (the chain lit)
+    bool             takes_wheel = false;
+    std::string      link_id;             // the action named on line 2 (looked up): REAPER's own, or the picked one
+    std::string      source;              // ...else this text (faint)
+    std::string      reaper_tip, own_tip;
+};
+
+enum class RowClick { None, Record, Reset, Reaper, Own, Chain };
+
+RowClick EditRow(int imgui_id, bool recording, const EditRowView& v)
 {
-    const ShortcutDef& def = kShortcutTable[id];
-    const bool recording = (ShortcutRecordingId() == id);
-    const std::string link = ShortcutLink(id);
-    const bool linked = !link.empty();
-    const bool custom = !linked && CurrentShortcuts()[static_cast<size_t>(id)] != def.def;
     const float line_h = ui::Dp(kRowH);
-    const float sub_h = linked ? ui::Dp(18.0f) : 0.0f;
-    ImGui::PushID(id);
-    ImGui::SetNextItemAllowOverlap();  // the chain button sits on the row
+    const float sub_h = ui::Dp(18.0f);
+    RowClick    click = RowClick::None;
+    ImGui::PushID(imgui_id);
+    ImGui::SetNextItemAllowOverlap();  // the switch and the chain sit on the row
     // On the popup's kRaised the row's hover is kHover (kRowHoverStrong).
-    ui::SelectRow("##key", recording, ui::kRowHoverStrong, line_h + sub_h,
+    ui::SelectRow("##row", recording, ui::kRowHoverStrong, line_h + sub_h,
                   ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_NoAutoClosePopups | ImGuiSelectableFlags_AllowOverlap);
-    bool record = false;
-    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) record = true;
-    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
-        // 10-11 review: an action without a key cannot take back a default that is your own
-        // key for another action: refused, and the popup says why. 13-60: a linked row is unlinked.
-        const int blocker = ResetShortcutToDefault(id);
-        g_reset_refused = blocker >= 0 ? id : -1;
-        g_reset_blocker = blocker;
-    }
-    const bool   row_hover = ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip);
-    const ImVec2 a = ImGui::GetItemRectMin();
-    const ImVec2 b = ImGui::GetItemRectMax();
-    ImDrawList* dl = ImGui::GetWindowDrawList();
-    const float th = ImGui::GetTextLineHeight();
-    const float cy = a.y + line_h * 0.5f;
-    // The keys in force (a linked row: its action's; a key another row takes, faint).
-    std::vector<Cap>      caps;
-    const ShortcutKeymap& km = CurrentShortcutKeymap();
-    for (const KeyBinding& k : km.keys[static_cast<size_t>(id)])
-        caps.push_back(Cap{ShortcutBindingLabel(k), custom ? ui::kAccent : ui::kText});
-    for (const KeyBinding& k : km.shadowed[static_cast<size_t>(id)]) caps.push_back(Cap{ShortcutBindingLabel(k), ui::kFaint});
-    if (caps.empty()) caps.push_back(linked ? Cap{"no key", ui::kFaint} : Cap{"None", ui::kText});  // 10-11: unbound
-    const float lw = std::min(ImGui::CalcTextSize(def.label).x, ui::Dp(90.0f));
-    const float cap_x = DrawCaps(dl, caps, a.x + ui::Dp(8.0f) + lw + ui::Dp(6.0f), CapRight(b.x), cy - th * 0.5f - ui::Dp(1.5f), row_hover);
-    // The label gives way to the keys ("Ctrl+Shift+Alt+PageDown").
-    dl->PushClipRect(a, ImVec2(std::max(a.x, cap_x - ui::Dp(6.0f)), b.y), true);
-    dl->AddText(ImVec2(a.x + ui::Dp(8.0f), cy - th * 0.5f), ui::kText, def.label);
-    if (def.context != ShortcutContext::Anywhere) {
-        const float lw_full = ImGui::CalcTextSize(def.label).x;
-        dl->AddText(ImVec2(a.x + ui::Dp(8.0f) + lw_full + ui::Dp(6.0f), cy - th * 0.5f), ui::kFaint,
-                    def.context == ShortcutContext::VideoView ? "Video" : "Tagging");
-    }
-    dl->PopClipRect();
-    if (linked) LinkLine(dl, ImVec2(a.x + ui::Dp(8.0f), a.y + line_h - ui::Dp(2.0f)), b.x - ui::Dp(8.0f), link);
-    // The chain, in the "fixed" column.
-    const float fw = ImGui::CalcTextSize("fixed").x;
-    if (ChainButton("##link", ImVec2(b.x - ui::Dp(10.0f) - fw * 0.5f, cy), linked)) OpenLink(id);
-    ImGui::SetCursorScreenPos(ImVec2(a.x, b.y));
-    ImGui::Dummy(ImVec2(0.0f, 0.0f));
-    ImGui::PopID();
-    return record;
-}
-
-// 13-45 -- one "View: scroll and zoom" row (the mockup's option A): the label and the gestures that
-// run it now on the first line; under them the REAPER | Action | Own switch and what the row follows
-// (the REAPER action and its id, or "RAV only" and what REAPER binds). Double-click = record an own
-// gesture, right-click = linked to REAPER's matching action again. Returns true when a double-click
-// asked to record. 13-60: "Action" = linked to a REAPER action the user picks (the Link modal).
-bool NavRow(int row)
-{
-    const ViewNavDef&    def = kViewNavTable[row];
-    const ViewNavChoice  ch = CurrentViewNavChoices()[static_cast<size_t>(row)];
-    const bool           recording = ViewNavRecordingRow() == row;
-    const float          line_h = ui::Dp(kRowH);
-    const float          sub_h = ui::Dp(18.0f);
-    ImGui::PushID(1000 + row);
-    ImGui::SetNextItemAllowOverlap();  // the switch's buttons sit on the row
-    ui::SelectRow("##nav", recording, ui::kRowHoverStrong, line_h + sub_h,
-                  ImGuiSelectableFlags_AllowDoubleClick | ImGuiSelectableFlags_NoAutoClosePopups | ImGuiSelectableFlags_AllowOverlap);
-    bool record = ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
-    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) SetViewNavLinked(row);
+    if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) click = RowClick::Record;
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) click = RowClick::Reset;
     const bool   row_hover = ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip);
     const ImVec2 a = ImGui::GetItemRectMin();
     const ImVec2 b = ImGui::GetItemRectMax();
@@ -270,78 +234,147 @@ bool NavRow(int row)
     const float  th = ImGui::GetTextLineHeight();
     const float  cy = a.y + line_h * 0.5f;
 
-    // The gestures, right-aligned; as many as leave the label some room, then "+N".
-    std::vector<Cap> caps;
-    for (const ViewGesture& g : ViewNavGestures(CurrentViewNav(), row))
-        caps.push_back(Cap{ViewGestureLabel(g), ch.own ? ui::kAccent : ui::kText});
-    if (caps.empty())
-        caps.push_back(Cap{ch.own ? "double-click to set" : (ch.cmd.empty() ? "not bound in REAPER" : "no shortcut in REAPER"),
-                           ui::kFaint});
-    const float lw = std::min(ImGui::CalcTextSize(def.label).x, ui::Dp(90.0f));
-    const float caps_x = DrawCaps(dl, caps, a.x + ui::Dp(8.0f) + lw + ui::Dp(6.0f), b.x - ui::Dp(8.0f), cy - th * 0.5f - ui::Dp(1.5f), row_hover);
-    // The label gives way to the gestures.
-    dl->PushClipRect(a, ImVec2(std::max(a.x, caps_x - ui::Dp(6.0f)), b.y), true);
-    dl->AddText(ImVec2(a.x + ui::Dp(8.0f), cy - th * 0.5f), ui::kText, def.label);
+    // Line 1: the gestures right-aligned (as many as leave the label some room, then "+N"), the label
+    // giving way to them.
+    const float lw = std::min(ImGui::CalcTextSize(v.label).x, ui::Dp(90.0f));
+    const float cap_x = DrawCaps(dl, v.caps, a.x + ui::Dp(8.0f) + lw + ui::Dp(6.0f), CapRight(b.x), cy - th * 0.5f - ui::Dp(1.5f), row_hover);
+    dl->PushClipRect(a, ImVec2(std::max(a.x, cap_x - ui::Dp(6.0f)), b.y), true);
+    dl->AddText(ImVec2(a.x + ui::Dp(8.0f), cy - th * 0.5f), ui::kText, v.label);
+    if (v.context)
+        dl->AddText(ImVec2(a.x + ui::Dp(8.0f) + ImGui::CalcTextSize(v.label).x + ui::Dp(6.0f), cy - th * 0.5f), ui::kFaint, v.context);
     dl->PopClipRect();
+    const float fw = ImGui::CalcTextSize("fixed").x;
+    if (ChainButton("##link", ImVec2(b.x - ui::Dp(10.0f) - fw * 0.5f, cy), v.linked, !v.reaper, v.takes_wheel)) click = RowClick::Chain;
 
-    // Second line: the REAPER | Action | Own switch (a pill of small buttons), then what the row follows.
-    ImFont*     sf = ui::FontSmall();
-    const float seg_h = ui::Dp(16.0f);
-    const float sy = a.y + line_h + std::floor((sub_h - seg_h) * 0.5f) - ui::Dp(3.0f);
-    float       sx = a.x + ui::Dp(8.0f);
-    const char* const segs[3] = {"REAPER", "Action", "Own"};
-    const int   mode = ch.own ? 2 : (ch.cmd.empty() ? 0 : 1);
-    float       seg_w[3];
-    float       pill_w = 0.0f;
-    for (int i = 0; i < 3; ++i) pill_w += (seg_w[i] = ui::TextSizeIn(sf, segs[i]).x + ui::Dp(14.0f));
+    // Line 2: the REAPER | Own switch (a pill of two small buttons), then what the row follows.
+    ImFont*           sf = ui::FontSmall();
+    const float       seg_h = ui::Dp(16.0f);
+    const float       sy = a.y + line_h + std::floor((sub_h - seg_h) * 0.5f) - ui::Dp(3.0f);
+    float             sx = a.x + ui::Dp(8.0f);
+    const char* const segs[2] = {"REAPER", "Own"};
+    const int         mode = v.reaper ? 0 : 1;
+    float             seg_w[2];
+    float             pill_w = 0.0f;
+    for (int i = 0; i < 2; ++i) pill_w += (seg_w[i] = ui::TextSizeIn(sf, segs[i]).x + ui::Dp(14.0f));
     dl->AddRect(ImVec2(sx, sy), ImVec2(sx + pill_w, sy + seg_h), ui::kStroke, seg_h * 0.5f);
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < 2; ++i) {
         const bool on = i == mode;
         ImGui::SetCursorScreenPos(ImVec2(sx, sy));
-        static const char* const ids[3] = {"##reaper", "##action", "##own"};
-        if (ImGui::InvisibleButton(ids[i], ImVec2(seg_w[i], seg_h))) {
-            if (i == 0 && !on) SetViewNavLinked(row);
-            else if (i == 1) OpenLink(kShortcutCount + row);  // on too: pick another action
-            else if (i == 2 && !on) SetViewNavOwn(row);
-        }
+        if (ImGui::InvisibleButton(i == 0 ? "##reaper" : "##own", ImVec2(seg_w[i], seg_h)) && !on)
+            click = i == 0 ? RowClick::Reaper : RowClick::Own;
         const bool hot = ImGui::IsItemHovered();
-        if (hot) {
-            if (i == 0) ui::ItemTipText("Follow REAPER: your binding of its matching action, read live");
-            else if (i == 1)
-                ui::ItemTipText("Follow a REAPER action you pick (its command ID, e.g. _WOL_ADJENVTRHMOUSE): its keys and "
-                                "wheel in REAPER, read live");
-            else ui::ItemTipText("Your own gesture for RAV only (double-click the row to record it)");
-        }
+        if (hot) ui::ItemTipText(i == 0 ? v.reaper_tip.c_str() : v.own_tip.c_str());
         if (on)
             dl->AddRectFilled(ImVec2(sx + 1.0f, sy + 1.0f), ImVec2(sx + seg_w[i] - 1.0f, sy + seg_h - 1.0f),
-                              i == 2 ? ui::kRaised : ui::kAccentSoft, seg_h * 0.5f);
-        const ImU32 ink = on ? (i == 2 ? ui::kText : ui::kAccentText) : (hot ? ui::kText : ui::kFaint);
+                              i == 1 ? ui::kRaised : ui::kAccentSoft, seg_h * 0.5f);
+        const ImU32  ink = on ? (i == 1 ? ui::kText : ui::kAccentText) : (hot ? ui::kText : ui::kFaint);
         const ImVec2 ts = ui::TextSizeIn(sf, segs[i]);
         ui::AddTextIn(dl, sf, ImVec2(sx + std::floor((seg_w[i] - ts.x) * 0.5f), sy + std::floor((seg_h - ts.y) * 0.5f)), ink, segs[i]);
         sx += seg_w[i];
     }
-    if (mode == 1) {
-        LinkLine(dl, ImVec2(sx + ui::Dp(6.0f), sy + std::floor((seg_h - ui::TextSizeIn(sf, "A").y) * 0.5f)), b.x - ui::Dp(8.0f), ch.cmd);
+    if (!v.link_id.empty()) {
+        LinkLine(dl, ImVec2(sx + ui::Dp(6.0f), sy + std::floor((seg_h - ui::TextSizeIn(sf, "A").y) * 0.5f)), b.x - ui::Dp(8.0f), v.link_id);
     } else {
-        std::string src;
-        if (mode == 0) {
-            src = std::string("\xE2\x9B\x93 ") + def.reaper_name + " \xC2\xB7 " + std::to_string(def.reaper_cmd);
-        } else {
-            std::string re;
-            for (const ViewGesture& g : ReaperViewGestures(CurrentReaperViewKeys(), row)) re += (re.empty() ? "" : ", ") + ViewGestureLabel(g);
-            src = "RAV only \xC2\xB7 REAPER's would be " + (re.empty() ? std::string("none") : re);
-        }
         ImGui::PushFont(sf);
         const ImVec2 tp(sx + ui::Dp(6.0f), sy + std::floor((seg_h - ImGui::GetTextLineHeight()) * 0.5f));
-        const bool   cut = ui::EllipsisText(dl, tp, b.x - ui::Dp(8.0f), ui::kFaint, src);
+        const bool   cut = ui::EllipsisText(dl, tp, b.x - ui::Dp(8.0f), ui::kFaint, v.source);
         ImGui::PopFont();
-        if (cut && ImGui::IsMouseHoveringRect(ImVec2(tp.x, sy), ImVec2(b.x, sy + seg_h)) && ImGui::IsWindowHovered()) {
-            ImGui::SetTooltip("%s", src.c_str());
-        }
+        if (cut && ImGui::IsMouseHoveringRect(ImVec2(tp.x, sy), ImVec2(b.x, sy + seg_h)) && ImGui::IsWindowHovered())
+            ui::ShowTip(v.source.c_str());
     }
     ImGui::SetCursorScreenPos(ImVec2(a.x, b.y));
     ImGui::Dummy(ImVec2(0.0f, 0.0f));
     ImGui::PopID();
+    return click;
+}
+
+// One key action. Returns true when a double-click asked to record it. 13-60b: REAPER = the keys REAPER
+// gives RAV's own action for it (ShortcutDef::action, set in REAPER's Actions window); Own = its own key,
+// or an action the user picked (the chain).
+bool KeyRow(int id)
+{
+    const ShortcutDef& def = kShortcutTable[id];
+    const bool         reaper = ShortcutFollowsReaper(id);
+    const std::string  link = ShortcutLink(id);
+    const bool         custom = !reaper && link.empty() && CurrentShortcuts()[static_cast<size_t>(id)] != def.def;
+    EditRowView        v;
+    v.label = def.label;
+    if (def.context != ShortcutContext::Anywhere) v.context = def.context == ShortcutContext::VideoView ? "Video" : "Tagging";
+    // The keys in force (REAPER's or a linked action's; a key another row takes, faint).
+    const ShortcutKeymap& km = CurrentShortcutKeymap();
+    for (const KeyBinding& k : km.keys[static_cast<size_t>(id)])
+        v.caps.push_back(Cap{ShortcutBindingLabel(k), custom ? ui::kAccent : ui::kText});
+    for (const KeyBinding& k : km.shadowed[static_cast<size_t>(id)]) v.caps.push_back(Cap{ShortcutBindingLabel(k), ui::kFaint});
+    if (v.caps.empty()) v.caps.push_back((reaper || !link.empty()) ? Cap{"no shortcut in REAPER", ui::kFaint} : Cap{"None", ui::kText});  // 10-11: unbound
+    v.reaper = reaper;
+    v.linked = !reaper && !link.empty();
+    v.link_id = reaper ? ShortcutReaperActionId(id) : link;
+    if (v.link_id.empty()) {
+        v.source = std::string("RAV only") + (custom ? " \xC2\xB7 default " + FormatShortcut(def.def, &LayoutKeyName) : std::string());
+    }
+    v.reaper_tip = std::string("Follow REAPER: the keys you give \"") + def.action_desc +
+                   "\" in REAPER's Actions list, read live (REAPER runs it too, outside the viewer)";
+    v.own_tip = "RAV's own key (double-click the row to record one), or a REAPER action you pick with the chain";
+    bool record = false;
+    switch (EditRow(id, ShortcutRecordingId() == id, v)) {
+    case RowClick::Record: record = true; break;
+    case RowClick::Reset:
+    case RowClick::Own: {
+        // 10-11 review: an action without a key cannot take back a default that is your own key for
+        // another action: refused, and the popup says why. 13-60: a linked row is unlinked; 13-60b: a
+        // row on REAPER is Own again (its default key).
+        const int blocker = reaper ? SetShortcutOwn(id) : ResetShortcutToDefault(id);
+        g_reset_refused = blocker >= 0 ? id : -1;
+        g_reset_blocker = blocker;
+        break;
+    }
+    case RowClick::Reaper: SetShortcutFollowsReaper(id); break;
+    case RowClick::Chain: OpenLink(id); break;
+    case RowClick::None: break;
+    }
+    return record;
+}
+
+// 13-45 -- one "View: scroll and zoom" row (the mockup's option A). 13-60b: drawn as a KEYS row. REAPER =
+// the user's binding of REAPER's matching action (kViewNavTable); Own = his own gesture for RAV only, or
+// an action he picks (the chain). Double-click = record an own gesture, right-click = REAPER again.
+// Returns true when a double-click asked to record.
+bool NavRow(int row)
+{
+    const ViewNavDef&   def = kViewNavTable[row];
+    const ViewNavChoice ch = CurrentViewNavChoices()[static_cast<size_t>(row)];
+    const bool          reaper = ch.linked_default();
+    const bool          linked = !ch.own && !ch.cmd.empty();
+    EditRowView         v;
+    v.label = def.label;
+    for (const ViewGesture& g : ViewNavGestures(CurrentViewNav(), row))
+        v.caps.push_back(Cap{ViewGestureLabel(g), ch.own ? ui::kAccent : ui::kText});
+    if (v.caps.empty())
+        v.caps.push_back(Cap{ch.own ? "double-click to set" : (reaper ? "not bound in REAPER" : "no shortcut in REAPER"), ui::kFaint});
+    v.reaper = reaper;
+    v.linked = linked;
+    v.takes_wheel = def.wheel_ok;
+    if (linked) {
+        v.link_id = ch.cmd;
+    } else if (reaper) {
+        v.source = std::string("\xE2\x9B\x93 ") + def.reaper_name + " \xC2\xB7 " + std::to_string(def.reaper_cmd);
+    } else {
+        std::string re;
+        for (const ViewGesture& g : ReaperViewGestures(CurrentReaperViewKeys(), row)) re += (re.empty() ? "" : ", ") + ViewGestureLabel(g);
+        v.source = "RAV only \xC2\xB7 REAPER's would be " + (re.empty() ? std::string("none") : re);
+    }
+    v.reaper_tip = std::string("Follow REAPER: your binding of \"") + def.reaper_name + "\", read live";
+    v.own_tip = std::string("Your own ") + (def.wheel_ok ? "key or wheel" : "key") +
+                " for RAV only (double-click the row to record it), or a REAPER action you pick with the chain";
+    bool record = false;
+    switch (EditRow(1000 + row, ViewNavRecordingRow() == row, v)) {
+    case RowClick::Record: record = true; break;
+    case RowClick::Reset:
+    case RowClick::Reaper: SetViewNavLinked(row); break;
+    case RowClick::Own: SetViewNavOwn(row); break;
+    case RowClick::Chain: OpenLink(kShortcutCount + row); break;
+    case RowClick::None: break;
+    }
     return record;
 }
 
@@ -362,9 +395,10 @@ void NavRecordBody(int row)
         const ImVec2 p = ImGui::GetCursorScreenPos();
         const float  w = ui::KeyCap(ImGui::GetWindowDrawList(), p, label.c_str(), ui::kAccent);
         ImGui::Dummy(ImVec2(w, ImGui::GetTextLineHeight() + ui::Dp(3.0f)));
-        const bool linked = owner >= 0 && !CurrentViewNavChoices()[static_cast<size_t>(owner)].own;
-        ui::ToneText(std::string("Already used by ") + (owner >= 0 ? kViewNavTable[owner].label : "another action") +
-                         (linked ? " (linked to REAPER)" : " (your own)") + ". Keeping it takes it from that one.",
+        const ViewNavChoice* oc = owner >= 0 ? &CurrentViewNavChoices()[static_cast<size_t>(owner)] : nullptr;
+        const char* how = !oc ? "" : oc->linked_default() ? " (on REAPER)" : (!oc->own ? " (linked to a REAPER action)" : " (your own)");
+        ui::ToneText(std::string("Already used by ") + (owner >= 0 ? kViewNavTable[owner].label : "another action") + how +
+                         ". Keeping it takes it from that one.",
                      ui::kWarn, /*wrap=*/true, wrap);
     } else if (ViewNavRefusal()[0]) {
         ui::ToneText(ViewNavRefusal(), ui::kWarn, /*wrap=*/true, wrap);
@@ -386,13 +420,13 @@ void NavRecordBody(int row)
 std::string NavKbNote()
 {
     const double age = ViewNavKbAge();
-    if (age < 0.0) return "Linked rows follow REAPER: no reaper-kb.ini found, so REAPER's default bindings.";
+    if (age < 0.0) return "REAPER and linked rows follow REAPER: no reaper-kb.ini found, so REAPER's own list of each action's shortcuts.";
     char when[48];
     if (age < 60.0) std::snprintf(when, sizeof(when), "%d s ago", static_cast<int>(age));
     else if (age < 3600.0) std::snprintf(when, sizeof(when), "%d min ago", static_cast<int>(age / 60.0));
     else std::snprintf(when, sizeof(when), "%d h ago", static_cast<int>(age / 3600.0));
-    return std::string("Linked rows follow REAPER: read from reaper-kb.ini ") + when +
-           " (it is read again when REAPER saves it).";
+    return std::string("REAPER and linked rows follow REAPER: read from reaper-kb.ini ") + when +
+           " (again when REAPER saves it) and from REAPER's own list of each action's shortcuts.";
 }
 
 // One mouse gesture: read-only, greyed, "fixed".
@@ -603,8 +637,8 @@ void LinkModal(bool open_now)
         if (g_preview_known && g_preview_unread > 0) {
             std::string all;
             for (const std::string& d : g_preview_listed) all += (all.empty() ? "" : ", ") + d;
-            ui::ToneText("REAPER lists " + all + ". RAV follows its keys and wheels; MIDI, OSC and other inputs are not "
-                             "followed.",
+            ui::ToneText("REAPER lists " + all + ". RAV follows its keys and wheels; MIDI, OSC, trackpad gestures and the "
+                             "Win key are not followed.",
                          ui::kFaint, true, wrap);
         }
         // A KEYS row: a key another RAV action holds stays that one's (a character binding too: the key
@@ -615,7 +649,7 @@ void LinkModal(bool open_now)
                 KeyBinding kb;
                 if (!KeyBindingOfGesture(g, &kb)) continue;
                 const int o = ShortcutKeyOwner(CurrentShortcutKeymap(), kb, t);
-                if (o >= 0 && ShortcutLink(o).empty())
+                if (o >= 0 && ShortcutFollowedAction(o).empty())
                     held += (held.empty() ? "" : ", ") + ShortcutBindingLabel(kb) + " (\"" + kShortcutTable[o].label + "\")";
                 if (LibraryViewUsesKey(kb.vk, kb.ctrl, kb.shift, kb.alt))
                     library += (library.empty() ? "" : ", ") + ShortcutBindingLabel(kb);
@@ -678,6 +712,25 @@ void LinkModal(bool open_now)
         g_link_target = -1;
         ImGui::CloseCurrentPopup();
     }
+    // 13-60b: a linked row can be unlinked here: Own, its default key (KEYS) / no gesture yet (VIEW).
+    const bool linked_now = t < kShortcutCount ? !ShortcutLink(t).empty()
+                                               : !CurrentViewNavChoices()[static_cast<size_t>(t - kShortcutCount)].cmd.empty();
+    if (linked_now) {
+        ImGui::SameLine();
+        if (ui::SolidButton("Unlink", ImVec2(ui::Dp(90.0f), 0.0f))) {
+            if (t < kShortcutCount) {
+                const int blocker = ResetShortcutToDefault(t);
+                g_reset_refused = blocker >= 0 ? t : -1;
+                g_reset_blocker = blocker;
+            } else {
+                SetViewNavOwn(t - kShortcutCount);
+            }
+            g_link_target = -1;
+            ImGui::CloseCurrentPopup();
+        }
+        if (ImGui::IsItemHovered())
+            ui::ItemTipText(t < kShortcutCount ? "Back to its own key (its default)" : "Back to an own gesture (double-click the row to record it)");
+    }
     ImGui::SameLine();
     ImGui::BeginDisabled(!ok);
     if ((ui::PrimaryButton("Link", ImVec2(ui::Dp(90.0f), 0.0f)) || enter) && ok) {
@@ -694,8 +747,10 @@ void LinkModal(bool open_now)
 void PopupBody()
 {
     ImGui::TextUnformatted("Shortcuts");
-    Note("Double-click a key to change it, right-click it to restore its default. The chain links it to a "
-         "REAPER action instead: RAV runs it on that action's keys. Keys work while the viewer has the focus.");
+    Note("Every row: REAPER follows REAPER, live (a key: the keys you give its \"RAV: Viewer key\" action in REAPER's "
+         "Actions list; a view row: your binding of REAPER's matching action). Own: RAV's own, double-click to record "
+         "it, or the chain: a REAPER action of your choice. Right-click: back to the default. Keys work while the "
+         "viewer has the focus.");
 
     Header("KEYS", nullptr);
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ui::Dp(8.0f), ui::Dp(2.0f)));
@@ -709,7 +764,7 @@ void PopupBody()
     }
     // A refused restore stays explained while that action still has no key.
     if (g_reset_refused >= 0 && CurrentShortcuts()[static_cast<size_t>(g_reset_refused)].vk == 0 && g_reset_blocker >= 0 &&
-        ShortcutLink(g_reset_refused).empty()) {
+        ShortcutFollowedAction(g_reset_refused).empty()) {
         const std::string def = FormatShortcut(kShortcutTable[g_reset_refused].def);
         ui::ToneText(std::string("\"") + kShortcutTable[g_reset_refused].label + "\" cannot get " + def +
                          " back: it is your key for \"" + kShortcutTable[g_reset_blocker].label +
@@ -721,9 +776,8 @@ void PopupBody()
 
     // 13-45: the six view actions of every timeline (the mockup's option A).
     Header("VIEW: SCROLL AND ZOOM", "every timeline in RAV");
-    Note("Sound Edit, Blend lanes, the Video and Tagging strips. REAPER: your binding of that REAPER action, "
-         "live. Action: the binding of a REAPER action you pick (e.g. _WOL_ADJENVTRHMOUSE), live. Own: yours, for "
-         "RAV only (double-click to record it; right-click: back to REAPER).");
+    Note("Sound Edit, Blend lanes, the Video and Tagging strips. Own can also take a REAPER action of your choice "
+         "with the chain (e.g. _WOL_ADJENVTRHMOUSE).");
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ui::Dp(8.0f), ui::Dp(2.0f)));
     int nav_record = -1;
     for (int r = 0; r < kNavRowCount; ++r)
@@ -783,6 +837,10 @@ void DrawShortcutsButton(float right_x, float centre_y, ImTextureID icon)
         const ImVec2 bmax = ImGui::GetItemRectMax();
 
         ImGui::SetNextWindowPos(ImVec2(bmax.x, bmax.y + ui::Dp(6.0f)), ImGuiCond_Always, ImVec2(1.0f, 0.0f));
+        // 13-60b: every row is two lines now: below the button, it scrolls rather than run off the viewer.
+        const ImGuiViewport* vp = ImGui::GetMainViewport();
+        const float          room = vp->WorkPos.y + vp->WorkSize.y - (bmax.y + ui::Dp(6.0f)) - ui::Dp(8.0f);
+        ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, std::max(room, ui::Dp(160.0f))));
         const bool open = ui::BeginPanelPopup(kPopupId);
         if (open) {
             // 13-60: Esc in the Link modal closes that modal only (LinkModal takes the request).

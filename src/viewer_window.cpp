@@ -1286,6 +1286,10 @@ void DrawToolUi()
     ImGui_ImplWin32_NewFrame();
     ImGui::NewFrame();
 
+    // 13-60b: reaper-kb.ini is checked each frame (at most once a second), not only while a timeline is
+    // drawn: a KEYS row on REAPER follows a key just given in REAPER's Actions window in any view.
+    CurrentViewNav();
+
     // Spec viewer-options-menu-tabs: the menu's tab follows the view when it changes (toggle
     // or V); otherwise the picked tab stays.
     {
@@ -2275,6 +2279,48 @@ void SetFullScreenMode(bool on)
     if (g_full_screen_cmd) RefreshToolbar(g_full_screen_cmd);
 }
 
+// What a KEYS row does (src/shortcuts.h), from its key in the viewer or (13-60b) from its action in
+// REAPER's list (RunViewerShortcut). The caller checked the row's context.
+void RunShortcutAction(int action)
+{
+    if (action == kShortcutFullScreen) {  // story 6-5-9 (F11)
+        SetFullScreenMode(!FullScreenActive());
+        return;
+    }
+    if (action == kShortcutClipList) {  // story 6-5-10 (L): the clip list, every view
+        SetClipListOpen(!ClipListOpen(), "its shortcut");
+        if (ClipListOpen()) g_menu_open = false;
+        return;
+    }
+    if (action == kShortcutToggleView || (action == kShortcutTogglePanel && !VideoViewActive())) {
+        // A running drag ends before the view changes (a Video view drag is written).
+        // The panel key from RAV view opens the panel, which enters Video view: same rule.
+        if (g_drag != DragMode::None) {
+            if (g_drag_video) VideoViewEndDrag();
+            g_drag_video = false;
+            g_drag = DragMode::None;
+            ReleaseCapture();
+        }
+        // Story 10-3: V cycles RAV view -> Tagging view -> Video view -> RAV view. A Tagging
+        // view drag ends as shown (RenderTick sees the view change).
+        if (action == kShortcutToggleView) SetViewMode(NextViewMode(GetViewMode()));
+        else                               SetVideoPanelVisible(true);
+        return;
+    }
+    if (action == kShortcutTogglePanel) { SetVideoPanelVisible(!VideoPanelVisible()); return; }
+    // Story 11-5 -- cut a new shot at the playhead (Video view only: the table's context).
+    if (action == kShortcutCut) { QueueVideoCut(); return; }
+    // Spec 11-fb-11 -- delete the current shot (Video view only), after a confirmation.
+    if (action == kShortcutDeleteShot) { RequestVideoDeleteCurrentShot(); return; }
+    // The shot camera clipboard, on the current shot (Video view only).
+    if (action == kShortcutCopyCamera) { QueueVideoCopyShotCamera(-1); return; }
+    if (action == kShortcutPasteCamera) { QueueVideoPasteShotCamera(-1); return; }
+    // Story 10-4 -- Tagging view: E adds an event at the playhead on the selected rule, Del
+    // suppresses / restores / deletes the selected event (one undo point each).
+    if (action == kShortcutTagAddEvent) { TaggingAddEventAtPlayhead(); return; }
+    if (action == kShortcutTagDelEvent) { TaggingDeleteSelectedEvent(); return; }
+}
+
 LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
     // Only when another context is current (then put back): WM_CREATE makes ours, WM_DESTROY frees it.
@@ -2550,42 +2596,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         if (lp & (1 << 30)) return 0;  // auto-repeat of a held key: one toggle per press
         if (VideoDeleteConfirmOpen()) return 0;  // spec 11-fb-11: no shortcut runs behind the confirmation
-        if (action == kShortcutFullScreen) {  // story 6-5-9 (F11)
-            SetFullScreenMode(!FullScreenActive());
-            return 0;
-        }
-        if (action == kShortcutClipList) {  // story 6-5-10 (L): the clip list, every view
-            SetClipListOpen(!ClipListOpen(), "its shortcut");
-            if (ClipListOpen()) g_menu_open = false;
-            return 0;
-        }
-        if (action == kShortcutToggleView || (action == kShortcutTogglePanel && !VideoViewActive())) {
-            // A running drag ends before the view changes (a Video view drag is written).
-            // The panel key from RAV view opens the panel, which enters Video view: same rule.
-            if (g_drag != DragMode::None) {
-                if (g_drag_video) VideoViewEndDrag();
-                g_drag_video = false;
-                g_drag = DragMode::None;
-                ReleaseCapture();
-            }
-            // Story 10-3: V cycles RAV view -> Tagging view -> Video view -> RAV view. A Tagging
-            // view drag ends as shown (RenderTick sees the view change).
-            if (action == kShortcutToggleView) SetViewMode(NextViewMode(GetViewMode()));
-            else                               SetVideoPanelVisible(true);
-            return 0;
-        }
-        if (action == kShortcutTogglePanel) { SetVideoPanelVisible(!VideoPanelVisible()); return 0; }
-        // Story 11-5 -- cut a new shot at the playhead (Video view only: the table's context).
-        if (action == kShortcutCut) { QueueVideoCut(); return 0; }
-        // Spec 11-fb-11 -- delete the current shot (Video view only), after a confirmation.
-        if (action == kShortcutDeleteShot) { RequestVideoDeleteCurrentShot(); return 0; }
-        // The shot camera clipboard, on the current shot (Video view only).
-        if (action == kShortcutCopyCamera) { QueueVideoCopyShotCamera(-1); return 0; }
-        if (action == kShortcutPasteCamera) { QueueVideoPasteShotCamera(-1); return 0; }
-        // Story 10-4 -- Tagging view: E adds an event at the playhead on the selected rule, Del
-        // suppresses / restores / deletes the selected event (one undo point each).
-        if (action == kShortcutTagAddEvent) { TaggingAddEventAtPlayhead(); return 0; }
-        if (action == kShortcutTagDelEvent) { TaggingDeleteSelectedEvent(); return 0; }
+        RunShortcutAction(action);  // 13-60b: shared with REAPER's own actions for these keys
         return 0;
     }
 
@@ -3029,6 +3040,26 @@ bool ViewerIsFullScreen()
 void SetViewerFullScreenCommandId(int command_id)
 {
     g_full_screen_cmd = command_id;
+}
+
+void RunViewerShortcut(int id)
+{
+    // 13-60b: REAPER runs a KEYS row's action (its key in REAPER, a toolbar, the Actions list). The viewer
+    // does it when it is open and the row's view is shown, as its key would; nothing behind a confirmation,
+    // a recording, a text field or the Sound assignment window. Under the viewer's ImGui context.
+    if (id < 0 || id >= kShortcutCount || !ViewerWindowIsVisible()) return;
+    if (kShortcutTable[id].context == ShortcutContext::VideoView && !VideoViewActive()) return;
+    if (kShortcutTable[id].context == ShortcutContext::TaggingView && !TaggingViewActive()) return;
+    if (VideoDeleteConfirmOpen() || ShortcutRecordingId() >= 0) return;
+    ImGuiContext* prev = ImGui::GetCurrentContext();
+    if (g_main_imgui_ctx) ImGui::SetCurrentContext(g_main_imgui_ctx);
+    const bool busy = TextInputNow() || (TaggingViewActive() && TaggingAssignWindowOpen());
+    try {
+        if (!busy) RunShortcutAction(id);
+    } catch (...) {  // AR18: never into REAPER's message pump
+        LogError("viewer shortcut %s failed (Reaper is unaffected)", kShortcutTable[id].id);
+    }
+    if (g_main_imgui_ctx) ImGui::SetCurrentContext(prev);
 }
 
 }  // namespace rav

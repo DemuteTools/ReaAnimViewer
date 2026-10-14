@@ -36,6 +36,7 @@ namespace {
 constexpr char kExtSection[] = "ReaAnimViewer";
 
 ViewKeymap     g_reaper = DefaultViewKeymap();
+ViewKeymap     g_reaper_file = DefaultViewKeymap();  // 13-60b: as reaper-kb.ini gives it (g_reaper adds REAPER's list)
 ViewNavChoices g_choices{};
 ViewNavMap     g_map = ResolveViewNav(g_reaper, g_choices);
 bool           g_choices_loaded = false;
@@ -83,7 +84,7 @@ bool g_listed_pending = false;
 
 void FillListed()
 {
-    g_reaper.listed.clear();
+    g_reaper = g_reaper_file;
     if (!ReaperActionLookupReady()) {
         g_listed_pending = true;
         return;
@@ -96,9 +97,12 @@ void FillListed()
             if (SameCommandId(x, c)) return;
         cmds.push_back(c);
     };
+    // 13-60b: REAPER's view actions always (the REAPER rows follow what REAPER lists for them), the KEYS
+    // rows' actions (picked, or RAV's own in REAPER's list for a row on REAPER).
+    for (int id : ViewCommandIds()) add(std::to_string(id));
     for (const ViewNavChoice& c : g_choices)
         if (!c.own) add(c.cmd);
-    for (int i = 0; i < kShortcutCount; ++i) add(ShortcutLink(i));
+    for (int i = 0; i < kShortcutCount; ++i) add(ShortcutFollowedAction(i));
     for (const std::string& c : cmds) {
         const ReaperActionInfo info = LookupReaperAction(c);
         if (info.cmd <= 0) continue;
@@ -108,6 +112,7 @@ void FillListed()
             if (ParseReaperShortcutDesc(d, &g)) g_reaper.listed.emplace_back(c, g);
         }
     }
+    ApplyListedViewGestures(g_reaper);
 }
 
 std::string ExtKey(int row)
@@ -175,8 +180,8 @@ void PollKb()
         if (f) text.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
     }
     if (StampOf(p) != st) return;  // changed while it was read: wait for it to settle again
-    g_reaper = ParseViewKeymap(text);
-    FillListed();  // 13-60
+    g_reaper_file = ParseViewKeymap(text);
+    FillListed();  // 13-60 (g_reaper: the file, then what REAPER lists)
     ++g_kb_generation;
     KbApplied(g_kb_watch, st);
     g_kb_read_at = st.exists ? now : -1.0;

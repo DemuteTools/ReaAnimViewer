@@ -32,6 +32,10 @@ bool ViewerIsFullScreen();
 // Esc change the mode (0 = none).
 void SetViewerFullScreenCommandId(int command_id);
 
+// Lot 13-60b -- a KEYS row's action run from REAPER (src/shortcuts.h ShortcutDef::action): what its
+// key does in the viewer, when the viewer is open and the row's view is shown; otherwise nothing.
+void RunViewerShortcut(int id);
+
 // Story 11-4 — the keyboard hook that gives the focused viewer its own keys (V: RAV view /
 // Video view, P: Video panel, and every key while a panel text field is active).
 // plugin_main registers it ("accelerator") at load and unregisters it at unload with this

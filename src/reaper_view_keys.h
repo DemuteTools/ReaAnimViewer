@@ -86,7 +86,8 @@ struct ViewKeymap {
     std::vector<ViewKeyBinding> zoom_in, zoom_out;
     std::vector<KbLine> lines;  // 13-60: every Main-section KEY line of the file (any command)
     // 13-60: keys REAPER itself lists for a linked action (its live list, ParseReaperShortcutDesc), by
-    // command: they add REAPER's built-in default keys, which the file does not hold.
+    // command: they add REAPER's built-in default keys, which the file does not hold. 13-60b: its wheels
+    // too, and REAPER's view actions' always (ApplyListedViewGestures).
     std::vector<std::pair<std::string, KbGesture>> listed;
 };
 
@@ -114,10 +115,21 @@ std::vector<KbLine> DefaultKbLines();
 std::vector<KbGesture> KbGesturesOf(const ViewKeymap& k, const std::string& command);
 
 // One shortcut as REAPER words it in its Actions list (GetActionShortcutDesc): "S", "Ctrl+Shift+F5",
-// "Alt+Num +", "Shift+=", "Space", "PageDown". Keys only (a key with Ctrl / Alt / Shift; a letter,
-// digit, F-key, arrow or named key as a virtual key, another single character as a character); false
-// for anything else (the wheel -- the file and the defaults give those --, MIDI, OSC, Win / Cmd keys,
-// a name RAV does not know).
+// "Alt+Num +", "Shift+=", "Space", "PageDown", and (13-60b) the wheels: "Mousewheel",
+// "Shift+Mousewheel", "Ctrl+Alt+Mousewheel", "HorizWheel". A key with Ctrl / Alt / Shift (also "Maj",
+// "Strg", "Umschalt"): a letter, digit, F-key, arrow or named key as a virtual key, another single
+// character (",", "=", "ù") as a character. Key names as REAPER, Windows' layouts or a LangPack write
+// them, English or French ("GAUCHE", "PAGE SUIVANTE", "SUPPR", "+ (PAVÉ NUM.)", "PAVÉ NUM. 0"), any
+// case, accents or not. False for anything else: MIDI, OSC, a trackpad's own gestures (MultiZoom,
+// MultiRotate, MultiHorz, MultiVert), the Win key, the keypad's Enter, a name RAV does not know.
 bool ParseReaperShortcutDesc(const std::string& desc, KbGesture* out);
+
+// 13-60b: REAPER's view actions (the wheel ones of ViewWheelBindingOf, Zoom in / out 1012 / 1011): the
+// shortcuts REAPER lists for them are asked for always (ViewKeymap::listed).
+const std::vector<int>& ViewCommandIds();
+// 13-60b: what REAPER lists for its view actions (`listed`) over the file and the default table: a
+// listed wheel runs that view action (whatever the table says), a listed key zooms in / out. REAPER's
+// own list is what is in force; the table is RAV's guess of its defaults.
+void ApplyListedViewGestures(ViewKeymap& k);
 
 }  // namespace rav

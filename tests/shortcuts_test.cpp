@@ -921,6 +921,36 @@ int main()
         CHECK(ShortcutRecordStep(b, kShortcutDeleteShot, 'C', false, false, false, &owner) == RecordOutcome::Assigned);
     }
 
+    // 13-60b: every row has its own action in REAPER's list (a row on REAPER follows its keys): a distinct
+    // name, REAPER's id "_" + it, a text naming RAV; full screen keeps story 6-5-9's action.
+    {
+        for (int i = 0; i < kShortcutCount; ++i) {
+            CHECK(std::strncmp(kShortcutTable[i].action, "RAV_", 4) == 0);
+            CHECK(std::strncmp(kShortcutTable[i].action_desc, "RAV: ", 5) == 0);
+            CHECK(ShortcutReaperActionId(i) == std::string("_") + kShortcutTable[i].action);
+            for (int j = 0; j < i; ++j) CHECK(std::strcmp(kShortcutTable[i].action, kShortcutTable[j].action) != 0);
+        }
+        CHECK(std::strcmp(kShortcutTable[kShortcutFullScreen].action, "RAV_VIEWER_FULLSCREEN") == 0);
+        CHECK(ShortcutReaperActionId(-1).empty() && ShortcutReaperActionId(kShortcutCount).empty());
+        // A row on REAPER is stored as "reaper": never a key, never a link.
+        KeyBinding k;
+        CHECK(!DecodeShortcut(kShortcutFollowsReaper, &k));
+        // On REAPER, a row is linked to its own action: its keys (here F2 given in REAPER) run it, and a key
+        // REAPER gives it that another row holds as its own stays that row's.
+        ShortcutBindings b = DefaultShortcutBindings();
+        b[kShortcutCut] = KeyBinding{};  // on REAPER: no key of its own
+        bool linked[kShortcutCount] = {};
+        linked[kShortcutCut] = true;
+        ShortcutKeyLists lk;
+        lk[kShortcutCut] = {Key(vk::kF1 + 1), Key('P')};
+        const ShortcutKeymap m = ResolveShortcutKeys(b, lk, linked);
+        CHECK(ShortcutActionFor(m, vk::kF1 + 1, false, false, false, true) == kShortcutCut);
+        CHECK(ShortcutActionFor(m, vk::kF1 + 1, false, false, false, false) == -1);  // Video only, as its own key
+        CHECK(ShortcutActionFor(m, 'P', false, false, false, true) == kShortcutTogglePanel);
+        CHECK(m.shadowed[kShortcutCut].size() == 1);
+        CHECK(Contains(RebindFreedDefaults(b, linked), kShortcutCut) == false);
+    }
+
     if (g_fails == 0) std::printf("shortcuts: all checks passed\n");
     return g_fails == 0 ? 0 : 1;
 }

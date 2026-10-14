@@ -69,6 +69,11 @@ struct ShortcutDef {
     const char*     label;  // shown in the popup and in "Already used by <label>"
     KeyBinding      def;    // the default key
     ShortcutContext context;
+    // Lot 13-60b: the action RAV registers in REAPER's action list for it (Main section): its name
+    // (REAPER's id is "_" + it) and the text REAPER lists it by. A row on "REAPER" runs on the keys the
+    // user gives that action in REAPER's Actions window; REAPER runs it too (outside the viewer).
+    const char*     action;
+    const char*     action_desc;
 };
 
 enum ShortcutId : int {
@@ -86,17 +91,37 @@ enum ShortcutId : int {
 };
 
 inline const ShortcutDef kShortcutTable[kShortcutCount] = {
-    {"toggle_view",  "Next view: RAV / Tagging / Video", {'V', false, false, false}, ShortcutContext::Anywhere},
-    {"toggle_panel", "Show / hide the Video panel",  {'P', false, false, false}, ShortcutContext::Anywhere},
-    {"cut",          "Cut at playhead",              {'C', false, false, false}, ShortcutContext::VideoView},
-    {"delete_shot",  "Delete current shot",          {vk::kDelete, false, false, false}, ShortcutContext::VideoView},
-    {"copy_camera",  "Copy shot camera",             {'C', true, false, false}, ShortcutContext::VideoView},
-    {"paste_camera", "Paste shot camera",            {'V', true, false, false}, ShortcutContext::VideoView},
-    {"tag_add_event", "Add event at playhead",       {'E', false, false, false}, ShortcutContext::TaggingView},
-    {"tag_del_event", "Suppress / delete event",     {vk::kDelete, false, false, false}, ShortcutContext::TaggingView},
-    {"full_screen",  "Full screen on / off",         {vk::kF11, false, false, false}, ShortcutContext::Anywhere},
-    {"clip_list",    "Clip list: open / close",      {'L', false, false, false}, ShortcutContext::Anywhere},
+    {"toggle_view",  "Next view: RAV / Tagging / Video", {'V', false, false, false}, ShortcutContext::Anywhere,
+     "RAV_KEY_NEXT_VIEW", "RAV: Viewer key: Next view (RAV / Tagging / Video)"},
+    {"toggle_panel", "Show / hide the Video panel",  {'P', false, false, false}, ShortcutContext::Anywhere,
+     "RAV_KEY_VIDEO_PANEL", "RAV: Viewer key: Show / hide the Video panel"},
+    {"cut",          "Cut at playhead",              {'C', false, false, false}, ShortcutContext::VideoView,
+     "RAV_KEY_VIDEO_CUT", "RAV: Viewer key: Cut at playhead (Video view)"},
+    {"delete_shot",  "Delete current shot",          {vk::kDelete, false, false, false}, ShortcutContext::VideoView,
+     "RAV_KEY_VIDEO_DELETE_SHOT", "RAV: Viewer key: Delete current shot (Video view)"},
+    {"copy_camera",  "Copy shot camera",             {'C', true, false, false}, ShortcutContext::VideoView,
+     "RAV_KEY_VIDEO_COPY_CAMERA", "RAV: Viewer key: Copy shot camera (Video view)"},
+    {"paste_camera", "Paste shot camera",            {'V', true, false, false}, ShortcutContext::VideoView,
+     "RAV_KEY_VIDEO_PASTE_CAMERA", "RAV: Viewer key: Paste shot camera (Video view)"},
+    {"tag_add_event", "Add event at playhead",       {'E', false, false, false}, ShortcutContext::TaggingView,
+     "RAV_KEY_TAG_ADD_EVENT", "RAV: Viewer key: Add event at playhead (Tagging view)"},
+    {"tag_del_event", "Suppress / delete event",     {vk::kDelete, false, false, false}, ShortcutContext::TaggingView,
+     "RAV_KEY_TAG_DELETE_EVENT", "RAV: Viewer key: Suppress / delete event (Tagging view)"},
+    // Story 6-5-9's own action (plugin_main.cpp registers it, with REAPER's toolbar toggle state).
+    {"full_screen",  "Full screen on / off",         {vk::kF11, false, false, false}, ShortcutContext::Anywhere,
+     "RAV_VIEWER_FULLSCREEN", "RAV: Viewer full screen (toggle)"},
+    {"clip_list",    "Clip list: open / close",      {'L', false, false, false}, ShortcutContext::Anywhere,
+     "RAV_KEY_CLIP_LIST", "RAV: Viewer key: Clip list open / close"},
 };
+
+// 13-60b: REAPER's id of a row's own action ("_RAV_KEY_VIDEO_CUT"), "" out of range.
+inline std::string ShortcutReaperActionId(int id)
+{
+    return (id < 0 || id >= kShortcutCount) ? std::string() : std::string("_") + kShortcutTable[id].action;
+}
+
+// 13-60b: a row on "REAPER" (following its own action's keys in REAPER) is stored as this.
+constexpr char kShortcutFollowsReaper[] = "reaper";
 
 // The mouse gestures the popup lists (fixed, never rebindable), by group.
 struct MouseGestureGroup {
@@ -719,6 +744,17 @@ bool KeyBindingOfGesture(const KbGesture& g, KeyBinding* out);
 // The row's action id ("" = its own key).
 const std::string& ShortcutLink(int id);
 void LinkShortcutToAction(int id, const std::string& cmd);
+// ---- lot 13-60b: every row REAPER | Own ---------------------------------------------------------
+// REAPER: the row runs on the keys REAPER gives its own action (ShortcutReaperActionId), set in REAPER's
+// Actions window, followed live; it holds no key of its own then (like a linked row). Own: its own key,
+// or a REAPER action the user picked (the chain). Stored in the same ExtState entry ("reaper").
+bool ShortcutFollowsReaper(int id);
+void SetShortcutFollowsReaper(int id);
+// Back to Own from REAPER: the row's default key (ResetShortcutToDefault: the action whose own key holds
+// it, else -1).
+int SetShortcutOwn(int id);
+// The action whose keys run the row ("" = its own key): the picked one, or its own on REAPER.
+std::string ShortcutFollowedAction(int id);
 // "Ctrl+K" of a key (the layout's names).
 std::string ShortcutBindingLabel(const KeyBinding& b);
 

@@ -206,8 +206,6 @@ static void TestShortcutDesc()
     CHECK(ParseReaperShortcutDesc("Page Up", &g) && g.code == 0x21);
     CHECK(ParseReaperShortcutDesc("Ctrl+Delete", &g) && g.code == 0x2E && g.mods == kViewModCtrl);
     CHECK(ParseReaperShortcutDesc("7", &g) && g.code == '7' && !g.is_char);
-    CHECK(!ParseReaperShortcutDesc("Mousewheel", &g));
-    CHECK(!ParseReaperShortcutDesc("Ctrl+Mousewheel", &g));
     CHECK(!ParseReaperShortcutDesc("Win+S", &g));
     CHECK(!ParseReaperShortcutDesc("CC 7", &g));
     CHECK(!ParseReaperShortcutDesc("Ctrl+", &g));
@@ -224,8 +222,111 @@ static void TestShortcutDesc()
     CHECK(got.size() == 2 && got[0] == s && got[1] == cs);
 }
 
+// 13-60b: Antho's REAPER (2026-10-14): the wheels as REAPER words them, the key names of a French Windows /
+// LangPack, and REAPER's list taking over the default table.
+static void TestShortcutDescWheelsAndNames()
+{
+    KbGesture g;
+    auto wheel = [&g](const char* d, KbInput in, int mods) {
+        return ParseReaperShortcutDesc(d, &g) && g.input == in && g.mods == mods && g.code == 0 && !g.is_char;
+    };
+    CHECK(wheel("Mousewheel", KbInput::Wheel, 0));
+    CHECK(wheel("Shift+Mousewheel", KbInput::Wheel, kViewModShift));
+    CHECK(wheel("Ctrl+Alt+Mousewheel", KbInput::Wheel, kViewModCtrl | kViewModAlt));
+    CHECK(wheel("Ctrl+Mousewheel", KbInput::Wheel, kViewModCtrl));
+    CHECK(wheel("Alt+Shift+Mousewheel", KbInput::Wheel, kViewModAlt | kViewModShift));
+    CHECK(wheel("HorizWheel", KbInput::HWheel, 0));
+    CHECK(wheel("Alt+HorizWheel", KbInput::HWheel, kViewModAlt));
+    CHECK(wheel("MOUSEWHEEL", KbInput::Wheel, 0));
+    CHECK(wheel("Maj+Mousewheel", KbInput::Wheel, kViewModShift));  // a LangPack's Shift
+    // Not followed: a trackpad's own gestures, the Win key, MIDI.
+    CHECK(!ParseReaperShortcutDesc("MultiZoom", &g));
+    CHECK(!ParseReaperShortcutDesc("Ctrl+MultiRotate", &g));
+    CHECK(!ParseReaperShortcutDesc("MultiHorz", &g));
+    CHECK(!ParseReaperShortcutDesc("MultiVert", &g));
+    CHECK(!ParseReaperShortcutDesc("Win+Mousewheel", &g));
+    CHECK(!ParseReaperShortcutDesc("MIDI Chan 1 CC 7", &g));
+    CHECK(!ParseReaperShortcutDesc("NumPad Enter", &g));
+    CHECK(!ParseReaperShortcutDesc("Num Lock", &g));
+    // French key names (Windows' layout, the LangPack), with or without accents, any case.
+    auto key = [&g](const char* d, int vk, int mods) {
+        return ParseReaperShortcutDesc(d, &g) && g.input == KbInput::Key && !g.is_char && g.code == vk && g.mods == mods;
+    };
+    CHECK(key("GAUCHE", 0x25, 0));
+    CHECK(key("Ctrl+DROITE", 0x27, kViewModCtrl));
+    CHECK(key("HAUT", 0x26, 0));
+    CHECK(key("Shift+BAS", 0x28, kViewModShift));
+    CHECK(key("ESPACE", 0x20, 0));
+    CHECK(key("ENTREE", 0x0D, 0));
+    CHECK(key("ENTR\xC3\x89" "E", 0x0D, 0));  // ENTRÉE
+    CHECK(key("SUPPR", 0x2E, 0));
+    CHECK(key("SUPPRIMER", 0x2E, 0));
+    CHECK(key("ECHAP", 0x1B, 0));
+    CHECK(key("PAGE PRECEDENTE", 0x21, 0));
+    CHECK(key("PAGE PR\xC3\x89\x43\xC3\x89\x44\x45NTE", 0x21, 0));  // PAGE PRÉCÉDENTE
+    CHECK(key("PAGE SUIVANTE", 0x22, 0));
+    CHECK(key("PG.SUIV", 0x22, 0));
+    CHECK(key("DEBUT", 0x24, 0));
+    CHECK(key("D\xC3\x89\x42UT", 0x24, 0));  // DÉBUT
+    CHECK(key("ORIGINE", 0x24, 0));
+    CHECK(key("FIN", 0x23, 0));
+    CHECK(key("INSER", 0x2D, 0));
+    CHECK(key("Alt+INS\xC3\x89RER", 0x2D, kViewModAlt));  // INSÉRER
+    CHECK(key("RET.ARR", 0x08, 0));
+    CHECK(key("Escape", 0x1B, 0));
+    // The keypad: REAPER's "NumPad +", Windows' English "Num +", French "+ (PAVÉ NUM.)" / "PAVE NUM. 0".
+    CHECK(key("NumPad +", 0x6B, 0));
+    CHECK(key("Ctrl+NumPad 3", 0x63, kViewModCtrl));
+    CHECK(key("Num Del", 0x6E, 0));
+    CHECK(key("+ (PAV\xC3\x89 NUM.)", 0x6B, 0));
+    CHECK(key("- (PAVE NUM.)", 0x6D, 0));
+    CHECK(key("Alt+7 (PAV\xC3\x89 NUM.)", 0x67, kViewModAlt));
+    CHECK(key("PAVE NUM. +", 0x6B, 0));
+    CHECK(key("PAVE NUM. 0", 0x60, 0));
+    CHECK(key("Shift+PAV\xC3\x89 NUM. *", 0x6A, kViewModShift));
+    CHECK(key(". (PAVE NUM.)", 0x6E, 0));
+    // A layout's own character, as Windows names its key ("Ù", "²"): the character it types.
+    CHECK(ParseReaperShortcutDesc("\xC3\x99", &g) && g.is_char && g.code == 0xF9);  // Ù -> ù
+    CHECK(ParseReaperShortcutDesc("Ctrl+\xC2\xB2", &g) && g.is_char && g.code == 0xB2 && g.mods == kViewModCtrl);
+    CHECK(ParseReaperShortcutDesc("Ctrl+,", &g) && g.is_char && g.code == ',');
+    // Antho's case: 977 is listed with Shift+Mousewheel (not in reaper-kb.ini): it is a gesture of 977's.
+    ViewKeymap k = ParseViewKeymap("");
+    KbGesture  sw;
+    CHECK(ParseReaperShortcutDesc("Shift+Mousewheel", &sw));
+    k.listed = {{"977", sw}};
+    const std::vector<KbGesture> got = KbGesturesOf(k, "977");
+    CHECK(got.size() == 1 && got[0].input == KbInput::Wheel && got[0].mods == kViewModShift);
+    // REAPER's list over the default table: Mousewheel listed on 989 takes the plain wheel from 990 (the
+    // table's default), HorizWheel on 988 keeps it.
+    KbGesture mw, hw;
+    CHECK(ParseReaperShortcutDesc("Mousewheel", &mw) && ParseReaperShortcutDesc("HorizWheel", &hw));
+    ViewKeymap r = ParseViewKeymap("");
+    r.listed = {{"989", mw}, {"988", hw}, {"977", sw}};
+    CHECK(KbGesturesOf(r, "990").size() == 1);  // Alt+HorizWheel only (the table's), no longer the plain wheel
+    CHECK(KbGesturesOf(r, "989").size() == 2);  // Ctrl+Alt+wheel (table) + Mousewheel (listed)
+    ApplyListedViewGestures(r);
+    CHECK(r.wheel[0] == ViewWheelBindingOf(989));
+    CHECK(r.wheel[kViewModShift] == ViewWheelBindingOf(977) && r.wheel[kViewModShift].reversed);
+    CHECK(r.hwheel[0] == ViewWheelBindingOf(988));
+    CHECK(r.wheel[kViewModCtrl] == ViewWheelBindingOf(1000));  // untouched
+    // A listed key zooms in / out (taken from the other list).
+    KbGesture f5;
+    CHECK(ParseReaperShortcutDesc("F5", &f5));
+    ViewKeymap z = ParseViewKeymap("KEY 1 116 1011 0\n");  // F5 = zoom out in the file
+    z.listed = {{"1012", f5}};
+    ApplyListedViewGestures(z);
+    CHECK(Has(z.zoom_in, false, 0x74, 0) && !Has(z.zoom_out, false, 0x74, 0));
+    // Not a view action, or a named one: nothing applied.
+    ViewKeymap n = ParseViewKeymap("");
+    n.listed = {{"40044", mw}, {"_SWS_X", mw}};
+    ApplyListedViewGestures(n);
+    CHECK(n.wheel[0] == ViewWheelBindingOf(990));
+    CHECK(ViewCommandIds().size() == 16);
+}
+
 int main()
 {
+    TestShortcutDescWheelsAndNames();
     TestShortcutDesc();
     TestAnyActionGestures();
     TestDefaults();

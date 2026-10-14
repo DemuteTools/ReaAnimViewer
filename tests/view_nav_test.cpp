@@ -302,8 +302,38 @@ static void TestLinkedAction()
     CHECK(DecodeViewNavChoice("", &d) && d.linked_default());
 }
 
+// 13-60b: Antho's REAPER test (2026-10-14): Scroll horizontally linked to 977, which REAPER lists with
+// Shift+Mousewheel (not in reaper-kb.ini): Shift+wheel scrolls, reversed.
+static void TestLinkedListedWheel()
+{
+    ViewKeymap k = ParseViewKeymap("");
+    KbGesture  sw;
+    CHECK(ParseReaperShortcutDesc("Shift+Mousewheel", &sw));
+    k.listed = {{"977", sw}};
+    ApplyListedViewGestures(k);
+    ViewNavChoices c{};
+    c[kNavScrollH].cmd = "977";
+    const ViewNavMap m = ResolveViewNav(k, c);
+    CHECK(m.wheel[kViewModShift].row == kNavScrollH && m.wheel[kViewModShift].reversed);
+    CHECK(ViewNavWheelBound(m, kViewModShift, false));
+    const ViewNavStep s = ViewNavStepFor(m, kViewModShift, 1.0f, 0.0f, {});
+    CHECK(Near(s.scroll_h, 1.0) && !s.any_v());  // wheel up, reversed: right
+    // Its own row on REAPER would follow 988: with REAPER listing HorizWheel on 988 and Mousewheel on 989,
+    // the REAPER rows run what REAPER lists.
+    KbGesture mw, hw;
+    CHECK(ParseReaperShortcutDesc("Mousewheel", &mw) && ParseReaperShortcutDesc("HorizWheel", &hw));
+    ViewKeymap r = ParseViewKeymap("");
+    r.listed = {{"989", mw}, {"988", hw}, {"977", sw}};
+    ApplyListedViewGestures(r);
+    const ViewNavMap mr = ResolveViewNav(r, ViewNavChoices{});
+    CHECK(ViewNavOwner(mr, WheelGesture(false, 0)) == kNavScrollV);
+    CHECK(ViewNavOwner(mr, WheelGesture(true, 0)) == kNavScrollH);
+    CHECK(mr.wheel[kViewModShift].row == kNavScrollH && mr.wheel[kViewModShift].reversed);
+}
+
 int main()
 {
+    TestLinkedListedWheel();
     TestLinkedAction();
     TestTable();
     TestLinkedDefaults();

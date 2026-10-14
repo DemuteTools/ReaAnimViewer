@@ -5,6 +5,7 @@
 #include "sound_record.h"
 
 #include "normalize_presets.h"  // kNormModeCount, kNormTargetMin / Max (13-62 review)
+#include "sound_zones.h"       // MigrateLegacyZones (13-62h)
 
 #include <charconv>
 #include <cmath>
@@ -497,6 +498,7 @@ Fields SoundFields(const SoundData& s)
     if (s.sync_mode != d.sync_mode) f.push_back({"sync", kSyncWords[static_cast<int>(s.sync_mode)]});
     if (s.sync_offset_ms != d.sync_offset_ms) f.push_back({"soff", FormatNumber(s.sync_offset_ms)});
     if (s.cut_fade != d.cut_fade) f.push_back({"cfade", FormatNumber(s.cut_fade)});
+    if (s.gap_xfade != d.gap_xfade) f.push_back({"gxfade", FormatNumber(s.gap_xfade)});  // 13-62h
     if (s.mono != d.mono) f.push_back({"mono", kMonoWords[static_cast<int>(s.mono)]});
     return f;
 }
@@ -539,6 +541,7 @@ Got SetSound(SoundData& s, const std::string& k, const std::string& v)
     if (k == "sync") return G(SyncFromWord(v, &s.sync_mode));
     if (k == "soff") return G(ReadNumber(v, &s.sync_offset_ms));
     if (k == "cfade") return G(ReadNumber(v, &s.cut_fade));
+    if (k == "gxfade") return G(ReadNumber(v, &s.gap_xfade));  // 13-62h
     if (k == "mono") return G(MonoFromWord(v, &s.mono));
     return Got::Unknown;
 }
@@ -573,6 +576,7 @@ Fields PartFields(const PartSettings& p)
     if (p.mono) f.push_back({"mono", kMonoWords[static_cast<int>(*p.mono)]});
     if (p.fade_in) f.push_back({"fin", FormatNumber(*p.fade_in)});
     if (p.fade_out) f.push_back({"fout", FormatNumber(*p.fade_out)});
+    if (p.fader_db) f.push_back({"fdr", FormatNumber(*p.fader_db)});  // 13-62h
     return f;
 }
 
@@ -613,6 +617,7 @@ Got SetPart(PartSettings& p, const std::string& k, const std::string& v)
     }
     if (k == "fin") return num(&p.fade_in, 0.0, kAny);
     if (k == "fout") return num(&p.fade_out, 0.0, kAny);
+    if (k == "fdr") return num(&p.fader_db, -kAny, kAny);  // 13-62h
     return Got::Unknown;
 }
 
@@ -626,6 +631,9 @@ Fields FrameFields(const SoundFrame& fr)
     if (fr.fade_out >= 0.0) f.push_back({"fout", FormatNumber(fr.fade_out)});
     if (fr.fade_in_shape != 0) f.push_back({"fish", FmtInt(fr.fade_in_shape)});
     if (fr.fade_out_shape != 0) f.push_back({"fosh", FmtInt(fr.fade_out_shape)});
+    // 13-62h: a frame laid out as zones writes its zones (fzone lines), never the old model's keys.
+    const bool zoned = !fr.zones.empty();
+    if (zoned) return f;
     if (!fr.cuts.empty()) f.push_back({"cuts", JoinNumbers(fr.cuts)});
     if (fr.cuts_hand) f.push_back({"cutsh", "1"});
     if (fr.cut_unsure) f.push_back({"cutq", "1"});
@@ -665,6 +673,71 @@ Got SetFrame(SoundFrame& fr, const std::string& k, const std::string& v)
         return Got::Ok;
     }
     return Got::Unknown;
+}
+
+// 13-62h: a zone of the variation above (`fzone`, after its `frame` line): only the set fields; `p` absent = a
+// Gap; sa / sb only when they differ from a / b.
+Fields FzoneFields(const EditZone& z)
+{
+    Fields f = {{"a", FormatNumber(z.a)}, {"b", FormatNumber(z.b)}};
+    if (!z.part.empty()) f.push_back({"p", Enc(z.part)});
+    if (z.slot_a != z.a) f.push_back({"sa", FormatNumber(z.slot_a)});
+    if (z.slot_b != z.b) f.push_back({"sb", FormatNumber(z.slot_b)});
+    if (z.a_hand) f.push_back({"ah", "1"});
+    if (z.b_hand) f.push_back({"bh", "1"});
+    if (z.a_auto_cut) f.push_back({"acut", "1"});
+    if (z.onset >= 0.0) f.push_back({"on", FormatNumber(z.onset)});
+    if (z.snap) f.push_back({"snap", FormatNumber(*z.snap)});
+    if (z.fade_in) f.push_back({"fin", FormatNumber(*z.fade_in)});
+    if (z.fade_out) f.push_back({"fout", FormatNumber(*z.fade_out)});
+    if (z.db != 0.0) f.push_back({"db", FormatNumber(z.db)});
+    if (z.xl != 0.0) f.push_back({"xl", FormatNumber(z.xl)});
+    if (z.xr != 0.0) f.push_back({"xr", FormatNumber(z.xr)});
+    return f;
+}
+
+Got SetFzone(EditZone& z, bool* has_sa, bool* has_sb, const std::string& k, const std::string& v)
+{
+    auto opt = [&](std::optional<double>* out) {
+        double x = 0.0;
+        if (!ReadNumber(v, &x)) return Got::Bad;
+        *out = x;
+        return Got::Ok;
+    };
+    if (k == "a") return G(ReadNumber(v, &z.a));
+    if (k == "b") return G(ReadNumber(v, &z.b));
+    if (k == "p") return G(ReadStr(v, &z.part));
+    if (k == "sa") return (*has_sa = ReadNumber(v, &z.slot_a)) ? Got::Ok : Got::Bad;
+    if (k == "sb") return (*has_sb = ReadNumber(v, &z.slot_b)) ? Got::Ok : Got::Bad;
+    if (k == "ah") return G(ReadFlag(v, &z.a_hand));
+    if (k == "bh") return G(ReadFlag(v, &z.b_hand));
+    if (k == "acut") return G(ReadFlag(v, &z.a_auto_cut));
+    if (k == "on") return G(ReadNumber(v, &z.onset));
+    if (k == "snap") return opt(&z.snap);
+    if (k == "fin") return opt(&z.fade_in);
+    if (k == "fout") return opt(&z.fade_out);
+    if (k == "db") return G(ReadNumber(v, &z.db));
+    if (k == "xl") return G(ReadNumber(v, &z.xl));
+    if (k == "xr") return G(ReadNumber(v, &z.xr));
+    return Got::Unknown;
+}
+
+// EditZone keeps its unknown fields as (key, value) pairs: a token without '=' (or "key=") as (token, "").
+Kept ZoneKept(const EditZone& z)
+{
+    Kept k;
+    for (const auto& kv : z.kept) k.push_back(kv.second.empty() ? kv.first : kv.first + "=" + kv.second);
+    return k;
+}
+
+void ReadZoneKept(const Kept& k, EditZone& z)
+{
+    z.kept.clear();
+    for (const std::string& tok : k) {
+        const size_t eq = tok.find('=');
+        if (eq == std::string::npos || eq == 0 || eq + 1 >= tok.size()) z.kept.push_back({tok, std::string()});
+        else z.kept.push_back({tok.substr(0, eq), tok.substr(eq + 1)});
+    }
 }
 
 // ---- Item record: fields ----------------------------------------------------------------------
@@ -1032,6 +1105,15 @@ bool ParseStoreCore(const std::string& text, SoundStore& s)
             node->sound.frames.emplace_back();
             SoundFrame& fr = node->sound.frames.back();
             ReadFields(t, 1, fr.kept, [&](const std::string& k, const std::string& v) { return SetFrame(fr, k, v); });
+        } else if (kind == "fzone" && node && !node->sound.frames.empty()) {  // 13-62h: a zone of the last frame
+            EditZone z;
+            bool     has_sa = false, has_sb = false;
+            Kept     kept;
+            ReadFields(t, 1, kept, [&](const std::string& k, const std::string& v) { return SetFzone(z, &has_sa, &has_sb, k, v); });
+            if (!has_sa) z.slot_a = z.a;
+            if (!has_sb) z.slot_b = z.b;
+            ReadZoneKept(kept, z);
+            node->sound.frames.back().zones.push_back(z);
         } else if (kind == "zone" && node) {
             node->sound.zones.emplace_back();
             SoundZone& z = node->sound.zones.back();
@@ -1040,6 +1122,11 @@ bool ParseStoreCore(const std::string& text, SoundStore& s)
             unknown_to->push_back(lines[i]);
         }
     }
+    // 13-62h: a divided Sound of an old project / .ravlib (cuts, owners, Sound-level zones, part gains) becomes
+    // zones, once, on read.
+    for (SoundLibrary& l : s.libraries)
+        for (SoundNode& n : l.nodes)
+            if (n.type == SoundNodeType::Sound) MigrateLegacyZones(n.sound);
     return true;
 }
 
@@ -1195,7 +1282,10 @@ std::string SerializeSoundStore(const SoundStore& s)
             if (HasSoundLine(n)) {
                 WriteLine(out, "sound", SoundFields(n.sound), n.sound.kept);
                 for (const PartSettings& ps : n.sound.parts) WriteLine(out, "part", PartFields(ps), ps.kept);  // 13-62
-                for (const SoundFrame& fr : n.sound.frames) WriteLine(out, "frame", FrameFields(fr), fr.kept);
+                for (const SoundFrame& fr : n.sound.frames) {
+                    WriteLine(out, "frame", FrameFields(fr), fr.kept);
+                    for (const EditZone& z : fr.zones) WriteLine(out, "fzone", FzoneFields(z), ZoneKept(z));  // 13-62h
+                }
                 for (const SoundZone& z : n.sound.zones) WriteLine(out, "zone", ZoneFields(z), z.kept);
             }
             WriteLines(out, n.kept_lines);

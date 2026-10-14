@@ -1,0 +1,620 @@
+// SPDX-License-Identifier: MIT
+//
+// Host test of src/sound_zones.h (13-62h): the zone model of a divided Sound (the validated mockup's relayout,
+// cutOut, makeGap, fillGap, splitAt, trimAt, heal, move, fades, env, snap, heard pieces, normalize groups), the
+// spec's I/O matrix rows about the model, the record round trip and the migration of the old model, and a seeded
+// gesture fuzz (>= 20 000 gestures) that checks the invariant (ZonesProblem) and parse(write(d)) == d after each.
+
+#include "sound_entries.h"
+#include "sound_record.h"
+#include "sound_zones.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <string>
+#include <vector>
+
+using namespace rav;
+
+namespace {
+
+int g_fails = 0;
+
+#define CHECK(c)                                             \
+    do {                                                     \
+        if (!(c)) {                                          \
+            std::printf("FAIL line %d: %s\n", __LINE__, #c); \
+            ++g_fails;                                       \
+        }                                                    \
+    } while (0)
+
+bool Near(double a, double b, double eps = 1e-6)
+{
+    return std::fabs(a - b) <= eps;
+}
+
+const char* const kHeel = "heel";
+const char* const kToe = "toe";
+
+// A divided Sound (Heel / Toe) with no zones and no frames.
+SoundData Base()
+{
+    SoundData d;
+    d.mode = DetectMode::Silence;
+    d.divide_group = "g";
+    d.divide_values = {kHeel, kToe};
+    return d;
+}
+
+EditZone Z(const std::string& part, double a, double b)
+{
+    EditZone z;
+    z.part = part;
+    z.a = z.slot_a = a;
+    z.b = z.slot_b = b;
+    z.a_hand = z.b_hand = true;  // no peaks in most tests: edges stay
+    return z;
+}
+
+EditZone G(double a, double b, double xl, double xr)
+{
+    EditZone g;
+    g.a = g.slot_a = a;
+    g.b = g.slot_b = b;
+    g.xl = xl;
+    g.xr = xr;
+    return g;
+}
+
+// One variation holding `zones` (start / length = their extent).
+SoundData With(std::vector<EditZone> zones)
+{
+    SoundData  d = Base();
+    SoundFrame f;
+    f.zones = zones;
+    f.start = zones.front().a;
+    f.length = zones.back().b - f.start;
+    d.frames.push_back(f);
+    return d;
+}
+
+const EditZone& At(const SoundData& d, int f, int k)
+{
+    return d.frames[static_cast<size_t>(f)].zones[static_cast<size_t>(k)];
+}
+
+// Peaks: rate 1000 bins/s over 3 s, silence (-90 dB) except where `loud` says (dBFS).
+PeakData Peaks(const std::vector<std::pair<double, double>>& loud_spans, double db = -6.0)
+{
+    PeakData p;
+    p.rate = 1000.0;
+    p.max_abs.assign(3000, static_cast<float>(std::pow(10.0, -90.0 / 20.0)));
+    for (const auto& s : loud_spans)
+        for (long long i = static_cast<long long>(std::llround(s.first * 1000.0)); i < static_cast<long long>(std::llround(s.second * 1000.0)) && i < 3000; ++i)
+            p.max_abs[static_cast<size_t>(i)] = static_cast<float>(std::pow(10.0, db / 20.0));
+    return p;
+}
+
+bool SameZones(const SoundData& x, const SoundData& y)
+{
+    if (x.frames.size() != y.frames.size()) return false;
+    for (size_t f = 0; f < x.frames.size(); ++f) {
+        const SoundFrame &a = x.frames[f], &b = y.frames[f];
+        if (a.start != b.start || a.length != b.length || a.on != b.on || a.zones.size() != b.zones.size()) return false;
+        for (size_t k = 0; k < a.zones.size(); ++k) {
+            const EditZone &p = a.zones[k], &q = b.zones[k];
+            if (p.a != q.a || p.b != q.b || p.part != q.part || p.slot_a != q.slot_a || p.slot_b != q.slot_b ||
+                p.a_hand != q.a_hand || p.b_hand != q.b_hand || p.a_auto_cut != q.a_auto_cut || p.onset != q.onset ||
+                p.snap != q.snap || p.fade_in != q.fade_in || p.fade_out != q.fade_out || p.db != q.db || p.xl != q.xl ||
+                p.xr != q.xr || p.kept != q.kept)
+                return false;
+        }
+    }
+    if (x.parts.size() != y.parts.size()) return false;
+    for (size_t i = 0; i < x.parts.size(); ++i)
+        if (x.parts[i].value != y.parts[i].value || x.parts[i].fader_db != y.parts[i].fader_db) return false;
+    return x.gap_xfade == y.gap_xfade;
+}
+
+SoundStore StoreOf(const SoundData& d)
+{
+    SoundStore   s;
+    SwitchGroup  g;
+    g.uid = "g";
+    g.name = "FootPart";
+    g.values = {{kHeel, "Heel", {}, {}}, {kToe, "Toe", {}, {}}};
+    s.groups.push_back(g);
+    SoundLibrary lib;
+    lib.uid = "lib";
+    lib.name = "L";
+    SoundNode n;
+    n.uid = "n1";
+    n.type = SoundNodeType::Sound;
+    n.name = "FS";
+    n.sound = d;
+    lib.nodes.push_back(n);
+    lib.root = n.uid;
+    s.libraries.push_back(lib);
+    return s;
+}
+
+bool RoundTrips(const SoundData& d)
+{
+    SoundStore back;
+    if (!ParseSoundStore(SerializeSoundStore(StoreOf(d)), &back) || back.libraries.size() != 1 || back.libraries[0].nodes.empty())
+        return false;
+    return SameZones(d, back.libraries[0].nodes[0].sound);
+}
+
+// ---- Matrix rows ----------------------------------------------------------------------------------------------
+
+void TestMigration()
+{
+    // Old frame: cuts 0.30, own heel,toe, an excluded zone 0.50-0.55 inside Toe, part_db toe -2.
+    SoundData  d = Base();
+    d.mode = DetectMode::TakeMarkers;  // no margins: the raw pieces
+    SoundFrame f;
+    f.start = 0.1;
+    f.length = 0.9;
+    f.cuts = {0.30};
+    f.owners = {kHeel, kToe};
+    f.part_db[kToe] = -2.0;
+    f.fade_in = 0.003;
+    d.frames.push_back(f);
+    SoundZone ex;
+    ex.start = 0.50;
+    ex.length = 0.05;
+    d.zones.push_back(ex);
+    SoundStore s = StoreOf(d);
+    s.libraries[0].nodes[0].name = "FS_keep";
+    const std::string text = SerializeSoundStore(s);
+    CHECK(text.find("own=") != std::string::npos && text.find("fzone") == std::string::npos);
+    SoundStore back;
+    CHECK(ParseSoundStore(text, &back));
+    const SoundData& m = back.libraries[0].nodes[0].sound;
+    CHECK(m.frames.size() == 1 && m.frames[0].zones.size() == 3);
+    if (m.frames.size() == 1 && m.frames[0].zones.size() == 3) {
+        CHECK(At(m, 0, 0).part == kHeel && Near(At(m, 0, 0).a, 0.1) && Near(At(m, 0, 0).b, 0.30) && At(m, 0, 0).db == 0.0);
+        CHECK(At(m, 0, 1).part == kToe && Near(At(m, 0, 1).a, 0.30) && Near(At(m, 0, 1).b, 0.50) && Near(At(m, 0, 1).db, -2.0));
+        CHECK(At(m, 0, 2).part == kToe && Near(At(m, 0, 2).a, 0.55) && Near(At(m, 0, 2).b, 1.0) && Near(At(m, 0, 2).db, -2.0));
+        CHECK(At(m, 0, 0).fade_in && Near(*At(m, 0, 0).fade_in, 0.003));
+    }
+    // The old keys are gone, nothing else changed (the node's name, the frame's extent); written again: zones only.
+    CHECK(m.zones.empty() && m.frames[0].cuts.empty() && m.frames[0].owners.empty() && m.frames[0].part_db.empty());
+    CHECK(back.libraries[0].nodes[0].name == "FS_keep" && Near(m.frames[0].start, 0.1) && Near(m.frames[0].length, 0.9));
+    const std::string again = SerializeSoundStore(back);
+    CHECK(again.find("own=") == std::string::npos && again.find("cuts=") == std::string::npos && again.find("fzone") != std::string::npos);
+    SoundStore twice;
+    CHECK(ParseSoundStore(again, &twice) && SerializeSoundStore(twice) == again);
+    CHECK(ZonesProblem(m, 0.0).empty());
+    // The same spans the old model placed: Heel [0.1, 0.3], Toe [0.3, 0.5] + [0.55, 1.0].
+    CHECK(PlacedSpans(m, 0, kToe).size() == 2 && PlacedSpans(m, 0, kHeel).size() == 1);
+    // A .ravlib reads the same (ParseRavlib uses the store parser).
+}
+
+void TestHeardPieces()
+{
+    // Placement / heard row: Heel [0.10, 0.40] Gap [0.40, 0.45] xl = xr = 5 ms Heel [0.45, 0.70].
+    SoundData d = With({Z(kHeel, 0.10, 0.40), G(0.40, 0.45, 0.005, 0.005), Z(kHeel, 0.45, 0.70)});
+    CHECK(ZonesProblem(d, 3.0).empty());
+    std::vector<HeardPiece> p = HeardPieces(d, 0.10, 0.70);
+    CHECK(p.size() == 2);
+    if (p.size() == 2) {
+        CHECK(Near(p[0].a, 0.10) && Near(p[0].b, 0.405) && Near(p[0].xo, 0.010) && p[0].z.index == 0);
+        CHECK(Near(p[1].a, 0.445) && Near(p[1].b, 0.70) && Near(p[1].xo, 0.0) && p[1].z.index == 2);
+        // heard: the second one starts (0.405 - 0.10) - 0.010 = 0.295 after the first, 0.05 s earlier than in the file
+        CHECK(Near((p[0].b - p[0].a - p[0].xo) - (p[1].a - p[0].a), -0.05));
+    }
+    // The crossfade: Heel 1 fades out over the 10 ms, Heel 2 fades in.
+    CHECK(Near(ZoneFade(d, {0, 0}, 1).s, 0.010) && ZoneFade(d, {0, 0}, 1).src == FadeSrc::Gap);
+    CHECK(Near(ZoneEnv(d, {0, 0}, 0.395), 1.0) && Near(ZoneEnv(d, {0, 0}, 0.400), 0.5) && ZoneEnv(d, {0, 0}, 0.406) == 0.0);
+    CHECK(Near(ZoneEnv(d, {0, 2}, 0.445), 0.0) && Near(ZoneEnv(d, {0, 2}, 0.450), 0.5));
+    // Empty space: Heel [0.10, 0.30], Toe [0.40, 0.60]: a 0.10 s silence between them.
+    SoundData e = With({Z(kHeel, 0.10, 0.30), Z(kToe, 0.40, 0.60)});
+    p = HeardPieces(e, 0.10, 0.60);
+    CHECK(p.size() == 3 && p[1].z.frame < 0 && Near(p[1].a, 0.30) && Near(p[1].b, 0.40));
+    // From inside a Gap: it resumes at the jump's exit.
+    p = HeardPieces(d, 0.42, 0.70);
+    CHECK(p.size() == 1 && Near(p[0].a, 0.445));
+    // Chains and Gap neighbours.
+    CHECK(ChainOf(d, {0, 0}).size() == 2 && ChainOf(d, {0, 1}).size() == 2 && ChainOf(e, {0, 0}).size() == 1);
+    CHECK(GapLeft(d, {0, 1}).index == 0 && GapRight(d, {0, 1}).index == 2);
+}
+
+void TestGapGestures()
+{
+    // Gap delete: Heel · Gap · Toe, Delete on the Gap: Heel extends over it, Toe untouched.
+    SoundData d = With({Z(kHeel, 0.10, 0.40), G(0.40, 0.45, 0.005, 0.005), Z(kToe, 0.45, 0.70)});
+    ZoneSel   sel = {{0, 1}};
+    CHECK(DeleteZones(d, sel));
+    CHECK(d.frames[0].zones.size() == 2 && Near(At(d, 0, 0).b, 0.45) && At(d, 0, 1).part == kToe && Near(At(d, 0, 1).a, 0.45) &&
+          Near(At(d, 0, 1).b, 0.70));
+    CHECK(sel.empty() && ZonesProblem(d, 3.0).empty());
+    // Gap without neighbour: Alt+drag over a zone's end into empty space: trimmed, no Gap.
+    SoundData e = With({Z(kHeel, 0.10, 0.40)});
+    bool      made = true;
+    CHECK(MakeGap(e, 0.35, 0.50, {}, &made) && !made);
+    CHECK(e.frames[0].zones.size() == 1 && Near(At(e, 0, 0).b, 0.35) && GapCount(e) == 0);
+    // A Gap between two zones: made, both edges held, crossfade = At Gaps (10 ms, half each side).
+    SoundData f = With({Z(kHeel, 0.10, 0.70)});
+    ZoneSel   gs;
+    CHECK(MakeGap(f, 0.40, 0.45, {}, &made, &gs) && made && gs.size() == 1);
+    CHECK(f.frames[0].zones.size() == 3 && At(f, 0, 1).IsGap() && Near(At(f, 0, 1).xl, 0.005) && Near(At(f, 0, 1).xr, 0.005));
+    CHECK(ZonesProblem(f, 3.0).empty() && RoundTrips(f));
+    // Zone in a Gap: Shift+drag inside it: Gap | new zone | Gap, each outer crossfade kept.
+    SoundData g = With({Z(kHeel, 0.10, 0.40), G(0.40, 0.60, 0.007, 0.003), Z(kToe, 0.60, 0.90)});
+    ZoneSel   nz;
+    CHECK(NewZone(g, kToe, 0.45, 0.55, {}, &nz) && nz.size() == 1);
+    CHECK(g.frames[0].zones.size() == 5 && At(g, 0, 1).IsGap() && At(g, 0, 3).IsGap() && At(g, 0, 2).part == kToe);
+    CHECK(Near(At(g, 0, 1).a, 0.40) && Near(At(g, 0, 1).b, 0.45) && Near(At(g, 0, 1).xl, 0.007));
+    CHECK(Near(At(g, 0, 3).a, 0.55) && Near(At(g, 0, 3).b, 0.60) && Near(At(g, 0, 3).xr, 0.003));
+    CHECK(ZonesProblem(g, 3.0).empty());
+    // FillGap: the zone on the left takes it.
+    SoundData h = With({Z(kHeel, 0.10, 0.40), G(0.40, 0.45, 0.005, 0.005), Z(kToe, 0.45, 0.70)});
+    CHECK(FillGap(h, {0, 1}) && h.frames[0].zones.size() == 2 && Near(At(h, 0, 0).b, 0.45));
+    // Gap crossfade handles: each side <= half the Gap; linked or one side.
+    SoundData x = With({Z(kHeel, 0.10, 0.40), G(0.40, 0.45, 0.005, 0.005), Z(kToe, 0.45, 0.70)});
+    CHECK(DragGapXfade(x, {0, 1}, -1, 0.41, true) && Near(At(x, 0, 1).xl, 0.01) && Near(At(x, 0, 1).xr, 0.01));
+    CHECK(DragGapXfade(x, {0, 1}, 1, 0.40, false) && Near(At(x, 0, 1).xr, 0.025) && Near(At(x, 0, 1).xl, 0.01));
+    CHECK(!DragGapXfade(x, {0, 1}, 1, 0.40, false));  // nothing changed
+    // Gap edge: the zone beside it follows.
+    CHECK(DragGapEdge(x, {0, 1}, -1, 0.38) && Near(At(x, 0, 0).b, 0.38) && Near(At(x, 0, 1).a, 0.38));
+    CHECK(ZonesProblem(x, 3.0).empty());
+}
+
+void TestHealSplitTrim()
+{
+    // Heal: Toe · Gap · Toe butted, selected: one Toe zone over the three.
+    SoundData d = With({Z(kToe, 0.10, 0.40), G(0.40, 0.45, 0.005, 0.005), Z(kToe, 0.45, 0.70)});
+    ZoneSel   sel = {{0, 0}, {0, 1}, {0, 2}};
+    CHECK(HealZones(d, sel) && d.frames[0].zones.size() == 1 && Near(At(d, 0, 0).a, 0.10) && Near(At(d, 0, 0).b, 0.70));
+    CHECK(sel.size() == 1 && sel[0].index == 0);
+    // Not edge to edge: nothing.
+    SoundData e = With({Z(kHeel, 0.10, 0.30), Z(kToe, 0.40, 0.60)});
+    ZoneSel   s2 = {{0, 0}, {0, 1}};
+    CHECK(!HealZones(e, s2) && e.frames[0].zones.size() == 2);
+    // Heal keeps the first one's part.
+    SoundData m = With({Z(kHeel, 0.10, 0.30), Z(kToe, 0.30, 0.60)});
+    ZoneSel   s3 = {{0, 0}, {0, 1}};
+    bool      mixed = false;
+    CHECK(HealZones(m, s3, {}, &mixed) && mixed && m.frames[0].zones.size() == 1 && At(m, 0, 0).part == kHeel);
+    // Split at the cursor: two butted zones, At cuts fades.
+    SoundData s = With({Z(kHeel, 0.10, 0.70)});
+    ZoneSel   r;
+    CHECK(SplitZoneAt(s, 0.30, {}, &r) && s.frames[0].zones.size() == 2 && r.size() == 1 && r[0].index == 1);
+    CHECK(ZoneFade(s, {0, 0}, 1).src == FadeSrc::Cut && ZoneFade(s, {0, 1}, -1).src == FadeSrc::Cut);
+    CHECK(Near(ZoneFade(s, {0, 0}, 1).s, kDefaultCutFade));
+    CHECK(!SplitZoneAt(s, 0.302));  // too close to an edge
+    // Trims at the cursor: the selected zones under it, else the one under it.
+    SoundData t = With({Z(kHeel, 0.10, 0.70)});
+    CHECK(TrimZonesAt(t, {}, 0.20, -1) && Near(At(t, 0, 0).a, 0.20) && Near(t.frames[0].start, 0.20));
+    CHECK(TrimZonesAt(t, {{0, 0}}, 0.50, 1) && Near(At(t, 0, 0).b, 0.50));
+    CHECK(!TrimZonesAt(t, {}, 0.90, 1));
+    // 40508: time selection 0.2-0.5 over two selected zones: both trimmed to [0.2, 0.5] ∩ zone.
+    SoundData q = With({Z(kHeel, 0.10, 0.30), Z(kToe, 0.35, 0.60), Z(kToe, 0.70, 0.80)});
+    CHECK(TrimZonesTo(q, {{0, 0}, {0, 1}}, 0.2, 0.5));
+    CHECK(Near(At(q, 0, 0).a, 0.2) && Near(At(q, 0, 0).b, 0.3) && Near(At(q, 0, 1).a, 0.35) && Near(At(q, 0, 1).b, 0.5));
+    CHECK(Near(At(q, 0, 2).a, 0.70) && Near(At(q, 0, 2).b, 0.80));  // not selected: untouched
+    // Nothing selected: the zones under it.
+    SoundData q2 = With({Z(kHeel, 0.10, 0.30), Z(kToe, 0.35, 0.60), Z(kToe, 0.70, 0.80)});
+    CHECK(TrimZonesTo(q2, {}, 0.2, 0.5) && Near(At(q2, 0, 2).b, 0.80) && Near(At(q2, 0, 0).a, 0.2));
+}
+
+void TestMoveAndEdges()
+{
+    // A butted edge moves alone (stops on the neighbour, opens empty space backing off).
+    SoundData d = With({Z(kHeel, 0.10, 0.30), Z(kToe, 0.30, 0.60)});
+    CHECK(!DragZoneEdge(d, {0, 0}, 1, 0.40) && Near(At(d, 0, 0).b, 0.30));  // stopped on Toe: nothing moved
+    CHECK(DragZoneEdge(d, {0, 0}, 1, 0.25) && Near(At(d, 0, 0).b, 0.25) && Near(At(d, 0, 1).a, 0.30));
+    // The cut grab moves both.
+    SoundData c = With({Z(kHeel, 0.10, 0.30), Z(kToe, 0.30, 0.60)});
+    CHECK(DragCut(c, {0, 0}, 0.35) && Near(At(c, 0, 0).b, 0.35) && Near(At(c, 0, 1).a, 0.35));
+    // Moving a zone drags a butted neighbour; empty space stops it.
+    SoundData m = With({Z(kHeel, 0.10, 0.30), Z(kToe, 0.30, 0.60), Z(kHeel, 0.70, 0.80)});
+    CHECK(MoveZone(m, {0, 1}, 0.05) && Near(At(m, 0, 1).a, 0.35) && Near(At(m, 0, 1).b, 0.65) && Near(At(m, 0, 0).b, 0.35));
+    CHECK(Near(MoveRange(m, {0, 1}, 1.0), 0.05));  // up to the next zone across empty space
+    CHECK(MoveZone(m, {0, 1}, 1.0) && Near(At(m, 0, 1).b, 0.70));
+    CHECK(ZonesProblem(m, 3.0).empty());
+    // Double-click an edge: automatic again (with peaks it follows Pre-roll / Tail).
+    PeakData  pk = Peaks({{0.15, 0.25}});
+    SoundData a = With({Z(kHeel, 0.10, 0.50)});
+    a.silence.tail_ms = 20.0;
+    ZoneContext ctx;
+    ctx.peaks = &pk;
+    CHECK(ResetZoneEdge(a, {0, 0}, 1, ctx) && !At(a, 0, 0).b_hand && Near(At(a, 0, 0).b, 0.27, 1e-3));
+    // Fades, snap, gain.
+    CHECK(SetZoneFade(a, {0, 0}, -1, 0.004) && At(a, 0, 0).fade_in && ZoneFade(a, {0, 0}, -1).src == FadeSrc::Own);
+    CHECK(ResetZoneFade(a, {0, 0}, -1) && ZoneFade(a, {0, 0}, -1).src == FadeSrc::Sound);
+    CHECK(SetZoneSnap(a, {0, 0}, 0.2) && ZoneSnap(a, {0, 0}, &pk).own && Near(ZoneSnap(a, {0, 0}, &pk).t, 0.2));
+    CHECK(ResetZoneSnap(a, {0, 0}) && !ZoneSnap(a, {0, 0}, &pk).own);
+    CHECK(Near(ZoneSnap(a, {0, 0}, &pk).t, 0.15 - 0.002, 1e-3));  // Attack, -2 ms
+    CHECK(SetZoneDb(a, {0, 0}, 3.04) && Near(At(a, 0, 0).db, 3.0) && !SetZoneDb(a, {0, 0}, 3.0));
+}
+
+void TestTailWins()
+{
+    PeakData    pk = Peaks({{0.15, 0.20}, {0.40, 0.45}});
+    SoundData   d = Base();
+    SoundFrame  f;
+    f.start = 0.10;
+    f.length = 0.60;
+    d.frames.push_back(f);
+    ZoneContext ctx;
+    ctx.peaks = &pk;
+    RefreshParts(d, &pk);  // proposes: Heel, Toe cut before Toe's onset
+    CHECK(d.frames[0].zones.size() == 2 && ZonesProblem(d, 3.0).empty());
+    PartSettings t;
+    t.tail_ms = 40.0;
+    SetPartSetting(d, kToe, t);
+    RelayoutZones(d, &pk);
+    CHECK(Near(At(d, 0, 1).b, 0.49, 1e-3));
+    // Toe's end dragged by hand, then its Tail 40 -> 80 ms.
+    CHECK(DragZoneEdge(d, {0, 1}, 1, 0.60, ctx) && At(d, 0, 1).b_hand);
+    SoundData off = d;
+    t.tail_ms = 80.0;
+    SetPartSetting(d, kToe, t);
+    CHECK(ApplyPreTailChange(d, kToe, true, PartField::Tail, ctx) == 1 && !At(d, 0, 1).b_hand && Near(At(d, 0, 1).b, 0.53, 1e-3));
+    SetPartSetting(off, kToe, t);
+    CHECK(ApplyPreTailChange(off, kToe, false, PartField::Tail, ctx) == 1 && At(off, 0, 1).b_hand && Near(At(off, 0, 1).b, 0.60));
+    // An edge held by a Gap never moves.
+    SoundData g = With({Z(kToe, 0.10, 0.30), G(0.30, 0.35, 0.005, 0.005), Z(kToe, 0.35, 0.60)});
+    CHECK(ApplyPreTailChange(g, kToe, true, PartField::Tail, ctx) == 1);  // only the last zone's free end
+    CHECK(Near(At(g, 0, 0).b, 0.30) && At(g, 0, 1).IsGap());
+}
+
+void TestFaderAndNormalize()
+{
+    // Fader: Heel zones at -1 and +2 dB; fader 0 -> +2: +1 / +4; to +3: +2 / +5; double-click: back.
+    SoundData d = With({Z(kHeel, 0.10, 0.30), Z(kToe, 0.30, 0.40), Z(kHeel, 0.50, 0.60)});
+    d.frames[0].zones[0].db = -1.0;
+    d.frames[0].zones[2].db = 2.0;
+    CHECK(SetPartFader(d, kHeel, 2.0) && Near(At(d, 0, 0).db, 1.0) && Near(At(d, 0, 2).db, 4.0) && Near(PartFaderDb(d, kHeel), 2.0));
+    CHECK(At(d, 0, 1).db == 0.0);
+    CHECK(SetPartFader(d, kHeel, 3.0) && Near(At(d, 0, 0).db, 2.0) && Near(At(d, 0, 2).db, 5.0));
+    CHECK(SetPartFader(d, kHeel, 0.0) && Near(At(d, 0, 0).db, -1.0) && Near(At(d, 0, 2).db, 2.0) && PartFaderDb(d, kHeel) == 0.0);
+    CHECK(d.parts.empty() && !SetPartFader(d, kHeel, 0.0));
+    // The fader round-trips.
+    SetPartFader(d, kHeel, 1.5);
+    CHECK(RoundTrips(d));
+    // Normalize: two Heel zones glued by a Gap + one lone Heel zone: 2 groups, one gain each, the fader back to 0.
+    SoundData n = With({Z(kHeel, 0.10, 0.30), G(0.30, 0.35, 0.005, 0.005), Z(kHeel, 0.35, 0.50), Z(kHeel, 0.60, 0.70)});
+    SetPartFader(n, kHeel, 2.0);
+    const std::vector<std::vector<ZoneRef>> groups = NormGroups(n, std::string(kHeel));
+    CHECK(groups.size() == 2 && groups[0].size() == 2 && groups[1].size() == 1);
+    const std::vector<NormRegion> regs = NormGroupRegions(n, groups, NormMode::Peak, -1.0);
+    CHECK(regs.size() == 2 && regs[0].spans.size() == 2 && regs[0].part == kHeel && Near(regs[0].target, -1.0));
+    CHECK(ApplyZoneNormalize(n, groups, {4.0, -2.0}, true) == 2);
+    CHECK(Near(At(n, 0, 0).db, 4.0) && Near(At(n, 0, 2).db, 4.0) && Near(At(n, 0, 3).db, -2.0) && PartFaderDb(n, kHeel) == 0.0);
+    // A silent group is skipped.
+    CHECK(ApplyZoneNormalize(n, groups, {std::nan(""), 1.0}, false) == 1 && Near(At(n, 0, 0).db, 4.0));
+    // From a selection: the lone zone only.
+    CHECK(NormGroups(n, ZoneSel{{0, 3}}).size() == 1);
+}
+
+void TestProposeAndRecord()
+{
+    // SetDivide + RefreshParts propose one zone per part; undivided: no zones.
+    PeakData   pk = Peaks({{0.15, 0.20}, {0.40, 0.45}, {1.20, 1.25}, {1.40, 1.45}});
+    SoundData  d;
+    d.mode = DetectMode::Silence;
+    SoundFrame f1, f2;
+    f1.start = 0.10;
+    f1.length = 0.60;
+    f1.db = 1.5;
+    f2.start = 1.10;
+    f2.length = 0.60;
+    d.frames = {f1, f2};
+    CHECK(SetDivide(d, "g", {kHeel, kToe}));
+    RefreshParts(d, &pk);
+    CHECK(d.frames[0].zones.size() == 2 && d.frames[1].zones.size() == 2 && ZonesProblem(d, 3.0).empty());
+    CHECK(At(d, 0, 1).a_auto_cut && At(d, 0, 1).onset > 0.0 && Near(At(d, 0, 0).db, 1.5) && d.frames[0].db == 0.0);
+    CHECK(Near(At(d, 0, 1).slot_a, At(d, 0, 1).onset - 0.005, 1e-6));
+    CHECK(PartZoneCount(d) == 4 && GapCount(d) == 0 && ZonesOfPart(d, kToe).size() == 2);
+    // Toe's own Pre-roll 50 ms: RAV's cut follows it before Toe's onset.
+    PartSettings pre;
+    pre.preroll_ms = 50.0;
+    SetPartSetting(d, kToe, pre);
+    RelayoutZones(d, &pk);
+    CHECK(Near(At(d, 0, 1).slot_a, At(d, 0, 1).onset - 0.05, 1e-6));
+    CHECK(RoundTrips(d));
+    // Unknown fzone fields are kept.
+    SoundData u = d;
+    u.frames[0].zones[0].kept = {{"zz", "1"}, {"bare", ""}};
+    CHECK(RoundTrips(u));
+    // Undivided: the zones go.
+    CHECK(SetDivide(d, "", {}));
+    RefreshParts(d, &pk);
+    CHECK(d.frames[0].zones.empty() && !UsesZones(d));
+    // Takes mode: no zones.
+    SoundData tk = Base();
+    tk.mode = DetectMode::Takes;
+    tk.frames = {f1};
+    RefreshParts(tk, &pk);
+    CHECK(tk.frames[0].zones.empty());
+}
+
+// ---- The seeded fuzz --------------------------------------------------------------------------------------------
+
+struct Rng {
+    uint64_t s;
+    uint64_t Next()
+    {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        return s;
+    }
+    double U(double lo, double hi) { return lo + (hi - lo) * static_cast<double>(Next() % 1000000) / 1000000.0; }
+    int    I(int n) { return n <= 0 ? 0 : static_cast<int>(Next() % static_cast<uint64_t>(n)); }
+};
+
+SoundData FuzzSound(const PeakData& pk)
+{
+    SoundData d;
+    d.mode = DetectMode::Silence;
+    d.divide_group = "g";
+    d.divide_values = {kHeel, kToe};
+    for (double s : {0.10, 1.04, 1.98}) {
+        SoundFrame f;
+        f.start = s;
+        f.length = 0.76;
+        d.frames.push_back(f);
+    }
+    RefreshParts(d, &pk);
+    return d;
+}
+
+ZoneRef AnyZone(const SoundData& d, Rng& r)
+{
+    const std::vector<ZoneRef> all = AllZones(d);
+    if (all.empty()) return {};
+    return all[static_cast<size_t>(r.I(static_cast<int>(all.size())))];
+}
+
+ZoneSel AnySel(const SoundData& d, Rng& r)
+{
+    ZoneSel s;
+    const int n = 1 + r.I(3);
+    for (int k = 0; k < n; ++k) {
+        const ZoneRef z = AnyZone(d, r);
+        if (z.frame >= 0) s.push_back(z);
+    }
+    if (r.I(4) == 0) {  // consecutive zones (heal-able)
+        const std::vector<ZoneRef> all = AllZones(d);
+        if (all.size() >= 2) {
+            const int i = r.I(static_cast<int>(all.size()) - 1);
+            s = {all[static_cast<size_t>(i)], all[static_cast<size_t>(i + 1)]};
+            if (i + 2 < static_cast<int>(all.size()) && r.I(2)) s.push_back(all[static_cast<size_t>(i + 2)]);
+        }
+    }
+    return s;
+}
+
+void TestFuzz()
+{
+    PeakData pk = Peaks({{0.15, 0.22}, {0.45, 0.50}, {0.70, 0.71}, {1.10, 1.18}, {1.45, 1.52}, {2.05, 2.12}, {2.40, 2.47}, {2.62, 2.64}});
+    const double T = 3.0;
+    ZoneContext  ctx;
+    ctx.peaks = &pk;
+    ctx.file_len = T;
+    Rng       r{0x13628D5EEDULL};
+    SoundData d = FuzzSound(pk);
+    int       bad = 0, steps = 0, changed = 0, with_gaps = 0, multi = 0;
+    const char* names[] = {"CutOut", "MakeGap", "NewZone", "FillGap", "Split", "TrimAt", "TrimTo", "Heal", "Delete", "Give",
+                           "Move", "Edge", "Cut", "GapEdge", "Xfade", "Fade", "Snap", "Db", "ShiftDb", "ResetEdge", "ResetFade",
+                           "ResetSnap", "Fader", "PreTail", "Relayout", "NoPeaks", "Gxfade"};
+    const int   kinds = static_cast<int>(sizeof(names) / sizeof(names[0]));
+    for (int i = 0; i < 24000; ++i) {
+        if (i % 1500 == 0) d = FuzzSound(pk);
+        const int    k = r.I(kinds);
+        const double t0 = r.U(0.0, T), t1 = t0 + r.U(0.0, 0.3);
+        const std::string part = r.I(2) ? kHeel : kToe;
+        ZoneSel      sel = AnySel(d, r);
+        const ZoneRef z = AnyZone(d, r);
+        const int    side = r.I(2) ? 1 : -1;
+        bool         ch = false;
+        switch (k) {
+        case 0: ch = CutOut(d, t0, t1, ctx); break;
+        case 1: {  // mostly inside a part zone (a real wormhole), else anywhere
+            const EditZone* q = ZoneOf(d, z);
+            if (q && !q->IsGap() && r.I(4) != 0 && q->b - q->a > 0.03) {
+                const double a = r.U(q->a + 0.006, q->b - 0.02);
+                ch = MakeGap(d, a, a + r.U(0.004, std::min(0.08, q->b - a - 0.006)), ctx);
+            } else {
+                ch = MakeGap(d, t0, t1, ctx);
+            }
+            break;
+        }
+        case 2: ch = NewZone(d, part, t0, t1, ctx); break;
+        case 3: {
+            ZoneRef g = {};
+            for (const ZoneRef& q : AllZones(d))
+                if (ZoneOf(d, q)->IsGap()) g = q;
+            ch = FillGap(d, g, ctx);
+            break;
+        }
+        case 4: ch = SplitZoneAt(d, t0, ctx); break;
+        case 5: ch = TrimZonesAt(d, sel, t0, side, ctx); break;
+        case 6: ch = TrimZonesTo(d, r.I(2) ? sel : ZoneSel{}, t0, t1, ctx); break;
+        case 7: ch = HealZones(d, sel, ctx); break;
+        case 8: ch = DeleteZones(d, sel, ctx); break;
+        case 9: ch = GiveZonesPart(d, sel, part, ctx); break;
+        case 10: ch = MoveZone(d, z, r.U(-0.2, 0.2), ctx); break;
+        case 11: ch = DragZoneEdge(d, z, side, t0, ctx); break;
+        case 12: ch = DragCut(d, z, ZoneOf(d, z) ? ZoneOf(d, z)->b + r.U(-0.05, 0.05) : t0, ctx); break;
+        case 13: ch = DragGapEdge(d, z, side, ZoneOf(d, z) ? (side < 0 ? ZoneOf(d, z)->a : ZoneOf(d, z)->b) + r.U(-0.05, 0.05) : t0, ctx); break;
+        case 14: ch = DragGapXfade(d, z, side, ZoneOf(d, z) ? r.U(ZoneOf(d, z)->a, ZoneOf(d, z)->b) : t0, r.I(2) == 0, ctx); break;
+        case 15: ch = SetZoneFade(d, z, side, r.U(0.0, 0.05), ctx); break;
+        case 16: ch = SetZoneSnap(d, z, ZoneOf(d, z) ? r.U(ZoneOf(d, z)->a - 0.05, ZoneOf(d, z)->b + 0.05) : t0, ctx); break;
+        case 17: ch = SetZoneDb(d, z, r.U(-30.0, 30.0), ctx); break;
+        case 18: ch = ShiftZonesDb(d, sel, r.U(-6.0, 6.0), {}, ctx); break;
+        case 19: ch = ResetZoneEdge(d, z, side, ctx); break;
+        case 20: ch = ResetZoneFade(d, z, side, ctx); break;
+        case 21: ch = ResetZoneSnap(d, z, ctx); break;
+        case 22: ch = r.I(3) ? SetPartFader(d, part, r.U(-24.0, 12.0), ctx) : SetPartFader(d, part, 0.0, ctx); break;
+        case 23: {
+            PartSettings ps;
+            const bool   pre = r.I(2) == 0;
+            if (pre) ps.preroll_ms = r.U(0.0, 60.0);
+            else ps.tail_ms = r.U(0.0, 200.0);
+            const std::string who = r.I(3) == 0 ? std::string() : part;
+            if (who.empty()) {
+                if (pre) d.silence.preroll_ms = *ps.preroll_ms;
+                else d.silence.tail_ms = *ps.tail_ms;
+            } else {
+                SetPartSetting(d, who, ps);
+            }
+            ApplyPreTailChange(d, who, r.I(2) == 0, pre ? PartField::Preroll : PartField::Tail, ctx);
+            ch = true;
+            break;
+        }
+        case 24: RelayoutZones(d, &pk, T); break;
+        case 25: RelayoutZones(d, nullptr, T); break;
+        case 26: d.gap_xfade = r.U(0.0, 0.05); break;
+        default: break;
+        }
+        ++steps;
+        changed += ch ? 1 : 0;
+        with_gaps += GapCount(d) > 0 ? 1 : 0;
+        multi += PartZoneCount(d) > 8 ? 1 : 0;
+        const std::string p = ZonesProblem(d, T);
+        if (!p.empty()) {
+            if (bad < 5) std::printf("fuzz step %d (%s): %s\n", i, names[k], p.c_str());
+            ++bad;
+        }
+        if (!RoundTrips(d)) {
+            if (bad < 5) std::printf("fuzz step %d (%s): parse(write(d)) != d\n", i, names[k]);
+            ++bad;
+        }
+        if (bad > 20) break;
+    }
+    CHECK(bad == 0);
+    CHECK(steps >= 20000);
+    CHECK(changed > steps / 5);  // the gestures did things
+    CHECK(with_gaps > steps / 10 && multi > steps / 20);  // with Gaps and many zones a good part of the time
+    std::printf("sound_zones fuzz: %d gestures, %d changed something, %d with Gaps, %d with > 8 zones\n", steps, changed,
+                with_gaps, multi);
+}
+
+}  // namespace
+
+int main()
+{
+    TestMigration();
+    TestHeardPieces();
+    TestGapGestures();
+    TestHealSplitTrim();
+    TestMoveAndEdges();
+    TestTailWins();
+    TestFaderAndNormalize();
+    TestProposeAndRecord();
+    TestFuzz();
+    if (g_fails) {
+        std::printf("sound_zones_test: %d failure(s)\n", g_fails);
+        return 1;
+    }
+    std::printf("sound_zones_test: all passed\n");
+    return 0;
+}

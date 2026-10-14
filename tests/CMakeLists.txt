@@ -46,7 +46,7 @@ target_include_directories(live_draft_phase_test PRIVATE ${CMAKE_CURRENT_SOURCE_
 add_test(NAME live_draft_phase COMMAND live_draft_phase_test)
 # The same rule in the Library view: its lists, menus, rename fields and drops pick their
 # gestures over a real sound store (src/library_tree_edit.h), run after the loop.
-add_executable(library_picked_gestures_test library_picked_gestures_test.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+add_executable(library_picked_gestures_test library_picked_gestures_test.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp)
 target_include_directories(library_picked_gestures_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME library_picked_gestures COMMAND library_picked_gestures_test)
 
@@ -157,13 +157,13 @@ target_include_directories(preset_menu_model_test PRIVATE ${CMAKE_CURRENT_SOURCE
 add_test(NAME preset_menu_model COMMAND preset_menu_model_test)
 
 # Epic 13 (D20, story 13-2) -- the sound model's text (src/sound_record.h).
-add_executable(sound_record_test sound_record_test.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+add_executable(sound_record_test sound_record_test.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/sound_entries.cpp ../src/rule_record.cpp)
 target_include_directories(sound_record_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_record COMMAND sound_record_test)
 
 # Epic 13 -- one target per pure module (13-2 placeholders; each wave story replaces its own test).
 # Story 13-3 -- src/sound_entries.h
-add_executable(sound_entries_test sound_entries_test.cpp ../src/sound_entries.cpp ../src/sound_draw.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+add_executable(sound_entries_test sound_entries_test.cpp ../src/sound_entries.cpp ../src/sound_draw.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp)
 target_include_directories(sound_entries_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_entries COMMAND sound_entries_test)
 
@@ -172,19 +172,19 @@ add_executable(peak_lanes_test peak_lanes_test.cpp)
 target_include_directories(peak_lanes_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME peak_lanes COMMAND peak_lanes_test)
 # Story 13-3 -- src/sound_draw.h
-add_executable(sound_draw_test sound_draw_test.cpp ../src/sound_draw.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+add_executable(sound_draw_test sound_draw_test.cpp ../src/sound_draw.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp)
 target_include_directories(sound_draw_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_draw COMMAND sound_draw_test)
 # Story 13-4 -- src/sound_switch.h
-add_executable(sound_switch_test sound_switch_test.cpp ../src/sound_switch.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+add_executable(sound_switch_test sound_switch_test.cpp ../src/sound_switch.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp)
 target_include_directories(sound_switch_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_switch COMMAND sound_switch_test)
 # Story 13-7a -- src/library_tree_edit.h
-add_executable(library_tree_edit_test library_tree_edit_test.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+add_executable(library_tree_edit_test library_tree_edit_test.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp)
 target_include_directories(library_tree_edit_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME library_tree_edit COMMAND library_tree_edit_test)
 # Story 13-7c -- src/library_media_plan.h
-add_executable(library_media_plan_test library_media_plan_test.cpp ../src/library_media_plan.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+add_executable(library_media_plan_test library_media_plan_test.cpp ../src/library_media_plan.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp)
 target_include_directories(library_media_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME library_media_plan COMMAND library_media_plan_test)
 # Story 13-5 -- src/media_db.h
@@ -194,16 +194,16 @@ target_link_libraries(media_db_test PRIVATE Threads::Threads)
 target_compile_definitions(media_db_test PRIVATE RAV_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
 add_test(NAME media_db COMMAND media_db_test)
 # Story 13-6 -- src/sound_place_plan.h
-add_executable(sound_place_plan_test sound_place_plan_test.cpp ../src/sound_place_plan.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+add_executable(sound_place_plan_test sound_place_plan_test.cpp ../src/sound_place_plan.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp)
 target_include_directories(sound_place_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_place_plan COMMAND sound_place_plan_test)
 # Story 13-10 -- src/sound_attach_plan.h
-add_executable(sound_attach_plan_test sound_attach_plan_test.cpp ../src/sound_attach_plan.cpp ../src/sound_draw.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+add_executable(sound_attach_plan_test sound_attach_plan_test.cpp ../src/sound_attach_plan.cpp ../src/sound_draw.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp)
 target_include_directories(sound_attach_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_attach_plan COMMAND sound_attach_plan_test)
 # Story 13-8 -- src/sound_populate_plan.h
 add_executable(sound_populate_plan_test sound_populate_plan_test.cpp ../src/sound_populate_plan.cpp ../src/sound_switch.cpp
-               ../src/sound_draw.cpp ../src/sound_place_plan.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp
+               ../src/sound_draw.cpp ../src/sound_place_plan.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp
                ../src/sound_assign.cpp ../src/sound_auto_assign.cpp ../src/auto_detect.cpp ../src/motion_physics.cpp
                ../src/bone_events.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
 target_include_directories(sound_populate_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
@@ -211,28 +211,28 @@ add_test(NAME sound_populate_plan COMMAND sound_populate_plan_test)
 # Story 13-8, Antho 2026-10-12 -- src/sound_auto_assign.h (each auto marker type's sound)
 add_executable(sound_auto_assign_test sound_auto_assign_test.cpp ../src/sound_auto_assign.cpp ../src/sound_assign.cpp ../src/sound_populate_plan.cpp
                ../src/sound_switch.cpp ../src/sound_draw.cpp ../src/sound_place_plan.cpp ../src/sound_entries.cpp
-               ../src/sound_record.cpp ../src/rule_record.cpp ../src/auto_detect.cpp ../src/motion_physics.cpp
+               ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp ../src/auto_detect.cpp ../src/motion_physics.cpp
                ../src/bone_events.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
 target_include_directories(sound_auto_assign_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_auto_assign COMMAND sound_auto_assign_test)
 # Story 13-15a -- src/sound_assign.h (layered sound assignment) and its text
 add_executable(sound_assign_test sound_assign_test.cpp ../src/sound_assign.cpp ../src/sound_auto_assign.cpp
                ../src/sound_populate_plan.cpp ../src/sound_switch.cpp ../src/sound_draw.cpp ../src/sound_place_plan.cpp
-               ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp ../src/auto_detect.cpp
+               ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp ../src/auto_detect.cpp
                ../src/motion_physics.cpp ../src/bone_events.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
 target_include_directories(sound_assign_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_assign COMMAND sound_assign_test)
 # Story 13-9 -- src/sound_follow_plan.h
-add_executable(sound_follow_plan_test sound_follow_plan_test.cpp ../src/sound_follow_plan.cpp ../src/reaper_item_read.cpp ../src/sound_record.cpp ../src/rule_record.cpp ../src/sound_draw.cpp ../src/sound_entries.cpp ../src/event_list.cpp ../src/tagging_signal.cpp ../src/auto_detect.cpp ../src/motion_physics.cpp ../src/bone_events.cpp)
+add_executable(sound_follow_plan_test sound_follow_plan_test.cpp ../src/sound_follow_plan.cpp ../src/reaper_item_read.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp ../src/sound_draw.cpp ../src/sound_entries.cpp ../src/event_list.cpp ../src/tagging_signal.cpp ../src/auto_detect.cpp ../src/motion_physics.cpp ../src/bone_events.cpp)
 target_include_directories(sound_follow_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_follow_plan COMMAND sound_follow_plan_test)
 # Story 13-11 -- src/ravlib.h
-add_executable(ravlib_test ravlib_test.cpp ../src/ravlib.cpp ../src/sound_entries.cpp ../src/sound_place_plan.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/media_db.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+add_executable(ravlib_test ravlib_test.cpp ../src/ravlib.cpp ../src/sound_entries.cpp ../src/sound_place_plan.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/media_db.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp)
 target_link_libraries(ravlib_test PRIVATE Threads::Threads)
 target_include_directories(ravlib_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME ravlib COMMAND ravlib_test)
 # Story 13-13 -- src/sound_tracks_plan.h (Switch-named tracks)
-add_executable(sound_tracks_plan_test sound_tracks_plan_test.cpp ../src/sound_tracks_plan.cpp ../src/ravlib.cpp ../src/sound_entries.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/media_db.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+add_executable(sound_tracks_plan_test sound_tracks_plan_test.cpp ../src/sound_tracks_plan.cpp ../src/ravlib.cpp ../src/sound_entries.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/media_db.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp)
 target_link_libraries(sound_tracks_plan_test PRIVATE Threads::Threads)
 target_include_directories(sound_tracks_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_tracks_plan COMMAND sound_tracks_plan_test)
@@ -242,7 +242,7 @@ target_include_directories(normalize_presets_test PRIVATE ${CMAKE_CURRENT_SOURCE
 add_test(NAME normalize_presets COMMAND normalize_presets_test)
 
 # Story 13-7b -- src/sound_audition_plan.h
-add_executable(sound_audition_plan_test sound_audition_plan_test.cpp ../src/sound_audition_plan.cpp ../src/sound_place_plan.cpp ../src/sound_draw.cpp ../src/sound_switch.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+add_executable(sound_audition_plan_test sound_audition_plan_test.cpp ../src/sound_audition_plan.cpp ../src/sound_place_plan.cpp ../src/sound_draw.cpp ../src/sound_switch.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp)
 target_include_directories(sound_audition_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME sound_audition_plan COMMAND sound_audition_plan_test)
 # Story 13-7b -- src/reaper_view_keys.h (the Edit overlay zoom / scroll from reaper-kb.ini)
@@ -274,7 +274,7 @@ add_test(NAME ui_flow COMMAND ui_flow_test)
 # Story 13-15b -- src/assign_view_model.h (the sound assignment window's targets, summaries, selection)
 add_executable(assign_view_model_test assign_view_model_test.cpp ../src/assign_view_model.cpp ../src/sound_assign.cpp
                ../src/sound_auto_assign.cpp ../src/sound_populate_plan.cpp ../src/sound_switch.cpp ../src/sound_draw.cpp
-               ../src/sound_place_plan.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp
+               ../src/sound_place_plan.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp
                ../src/auto_detect.cpp ../src/motion_physics.cpp ../src/bone_events.cpp ../src/event_list.cpp
                ../src/tagging_signal.cpp)
 target_include_directories(assign_view_model_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
@@ -293,7 +293,7 @@ target_include_directories(busy_progress_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR
 add_test(NAME busy_progress COMMAND busy_progress_test)
 
 # Story 13-26 -- "Clear item data": what goes, what stays, the counts (src/item_clear_plan.h).
-add_executable(item_clear_plan_test item_clear_plan_test.cpp ../src/item_clear_plan.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+add_executable(item_clear_plan_test item_clear_plan_test.cpp ../src/item_clear_plan.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/sound_entries.cpp ../src/rule_record.cpp)
 target_include_directories(item_clear_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME item_clear_plan COMMAND item_clear_plan_test)
 
@@ -308,7 +308,7 @@ target_include_directories(play_item_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DI
 add_test(NAME play_item_plan COMMAND play_item_plan_test)
 
 # 13-48 -- src/library_tree_nav.h, src/library_view_keys.h
-add_executable(library_tree_nav_test library_tree_nav_test.cpp ../src/library_tree_nav.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp)
+add_executable(library_tree_nav_test library_tree_nav_test.cpp ../src/library_tree_nav.cpp ../src/library_tree_edit.cpp ../src/sound_switch.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/sound_zones.cpp ../src/rule_record.cpp)
 target_include_directories(library_tree_nav_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME library_tree_nav COMMAND library_tree_nav_test)
 
@@ -333,3 +333,8 @@ add_test(NAME sound_peaks_plan COMMAND sound_peaks_plan_test)
 add_executable(wave_tiles_plan_test wave_tiles_plan_test.cpp)
 target_include_directories(wave_tiles_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME wave_tiles_plan COMMAND wave_tiles_plan_test)
+
+# 13-62h -- src/sound_zones.h (a divided Sound's zones: the model, its gestures, the migration, the seeded fuzz).
+add_executable(sound_zones_test sound_zones_test.cpp ../src/sound_zones.cpp ../src/sound_entries.cpp ../src/sound_record.cpp ../src/rule_record.cpp ../src/normalize_presets.cpp)
+target_include_directories(sound_zones_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME sound_zones COMMAND sound_zones_test)

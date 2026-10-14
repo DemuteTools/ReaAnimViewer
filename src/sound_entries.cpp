@@ -5,6 +5,7 @@
 #include "sound_entries.h"
 
 #include "sound_record.h"  // FindGroup
+#include "sound_zones.h"   // 13-62h: a divided Sound's zones
 
 #include <algorithm>
 #include <charconv>
@@ -584,6 +585,14 @@ bool SaneCuts(const SoundFrame& f, std::vector<double>& cuts)
 
 constexpr double kMinPiece = 0.004;  // 13-62: a comped piece is at least 4 ms (AssignRange, MoveCut C4)
 
+// 13-62h: the variation is edited as zones (a divided Sound, not Takes mode, with zones): the queries below read
+// its zones, never its cuts / owners / Sound-level zones.
+bool ZonedFrame(const SoundData& data, int variation)
+{
+    return variation >= 0 && static_cast<size_t>(variation) < data.frames.size() && UsesZones(data) &&
+           !data.frames[static_cast<size_t>(variation)].zones.empty();
+}
+
 }  // namespace
 
 // 13-62: the frame's owners give each piece between its cuts a divide value.
@@ -650,6 +659,15 @@ bool PartAt(const SoundData& data, int variation, double t, std::string* value)
 {
     if (!ValidIndex(data, variation)) return false;
     const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    if (ZonedFrame(data, variation)) {  // 13-62h: the part zone holding t
+        if (!f.on) return false;
+        for (const EditZone& z : f.zones)
+            if (!z.IsGap() && t >= z.a && t < z.b) {
+                if (value) *value = z.part;
+                return true;
+            }
+        return false;
+    }
     if (!f.on || t < f.start - kTimeEps || t > FrameEnd(f) + kTimeEps) return false;
     const SoundZone* last = nullptr;
     for (const SoundZone& z : data.zones)
@@ -678,6 +696,11 @@ std::vector<PartSpan> PartSpansOf(const SoundData& data, int variation)
     if (!ValidIndex(data, variation)) return out;
     const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
     if (!f.on || !(f.length > 0.0)) return out;
+    if (ZonedFrame(data, variation)) {  // 13-62h: its part zones, in time order (Gaps left out)
+        for (const EditZone& z : f.zones)
+            if (!z.IsGap()) out.push_back({z.part, z.a, z.b - z.a});
+        return out;
+    }
     const std::vector<double> b = PieceBounds(data, f);
     for (size_t k = 0; k + 1 < b.size(); ++k) {
         const double a = b[k], e = b[k + 1];
@@ -895,7 +918,7 @@ std::string PartTrimKey(const SoundData& data, int variation, const FileVersion&
 
 bool PartTrimsStale(const SoundData& data, int variation, const FileVersion* file)
 {
-    if (!ValidIndex(data, variation) || !PartMarginsApply(data)) return false;
+    if (!ValidIndex(data, variation) || !PartMarginsApply(data) || ZonedFrame(data, variation)) return false;
     const std::vector<PartSpan> raw = PartSpansOf(data, variation);
     if (raw.empty()) return false;
     std::vector<PartSpan> per;
@@ -911,6 +934,7 @@ bool PartTrimsStale(const SoundData& data, int variation, const FileVersion* fil
 std::vector<PartSpan> PartPieces(const SoundData& data, int variation)
 {
     std::vector<PartSpan> raw = PartSpansOf(data, variation);
+    if (ZonedFrame(data, variation)) return raw;  // 13-62h: the zones are what is placed
     if (!PartMarginsApply(data) || raw.empty() || PartTrimsStale(data, variation)) return raw;
     std::vector<PartSpan> per;
     return TrimmedPerRaw(data, variation, raw, &per) ? WithoutDropped(per) : raw;
@@ -1120,8 +1144,21 @@ void RefreshFrame(SoundData& data, int variation, const PeakData* peaks)
         f.syncs.clear();
         f.part_trims.clear();
         f.owners.clear();  // 13-62
+        f.zones.clear();   // 13-62h: a take plays whole
         return;
     }
+    if (UsesZones(data)) {  // 13-62h: zones (proposed when it has none), laid out again; no cuts, no syncs
+        if (f.on && f.zones.empty()) ProposeZones(data, variation, peaks);
+        f.cuts.clear();
+        f.cuts_hand = f.cut_unsure = false;
+        f.syncs.clear();
+        f.part_trims.clear();
+        f.part_trim_key.clear();
+        f.owners.clear();
+        RelayoutZones(data, peaks);
+        return;
+    }
+    f.zones.clear();  // 13-62h: zones only on a divided Sound
     const int  n = PartCount(data);
     // 13-62: a comped variation keeps its cuts, whatever their count; owners that do not fit go (the
     // legacy rule then applies).
@@ -1182,12 +1219,24 @@ void RefreshFrame(SoundData& data, int variation, const PeakData* peaks)
 
 void RefreshParts(SoundData& data, const PeakData* peaks)
 {
+    if (UsesZones(data)) {  // 13-62h: every on variation with no zone gets them, then one layout
+        for (SoundFrame& f : data.frames) {
+            f.cuts.clear();
+            f.cuts_hand = f.cut_unsure = false;
+            f.syncs.clear();
+            f.part_trims.clear();
+            f.part_trim_key.clear();
+            f.owners.clear();
+        }
+        EnsureZones(data, peaks);
+        return;
+    }
     for (size_t i = 0; i < data.frames.size(); ++i) RefreshFrame(data, static_cast<int>(i), peaks);
 }
 
 bool SyncsStale(const SoundData& data, int variation)
 {
-    if (!ValidIndex(data, variation) || data.mode == DetectMode::Takes) return false;
+    if (!ValidIndex(data, variation) || data.mode == DetectMode::Takes || ZonedFrame(data, variation)) return false;
     const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
     const int         n = PartCount(data);
     if (f.syncs.size() != static_cast<size_t>(n)) return true;
@@ -1202,7 +1251,7 @@ bool SyncsStale(const SoundData& data, int variation)
 
 bool MeasureSyncs(SoundData& data, int variation, const PeakData* peaks)
 {
-    if (!ValidIndex(data, variation) || data.mode == DetectMode::Takes) return false;
+    if (!ValidIndex(data, variation) || data.mode == DetectMode::Takes || ZonedFrame(data, variation)) return false;
     if (!HasPeaks(peaks)) {  // 13-62: every part (its own sync mode) must be measurable without peaks
         if (PartSyncMode(data, std::string()) != SyncMode::SliceStart) return false;
         for (const PartSettings& p : data.parts)
@@ -1251,6 +1300,12 @@ double SyncFor(const SoundData& data, int variation, const std::string& part_val
 {
     if (!ValidIndex(data, variation)) return -1.0;
     const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    if (ZonedFrame(data, variation)) {  // 13-62h: the snap offset of the part's first zone (no peaks here)
+        for (size_t k = 0; k < f.zones.size(); ++k)
+            if (!f.zones[k].IsGap() && (part_value.empty() || f.zones[k].part == part_value))
+                return ZoneSnap(data, {variation, static_cast<int>(k)}, nullptr).t;
+        return -1.0;
+    }
     if (f.syncs.size() != static_cast<size_t>(PartCount(data))) return -1.0;
     if (part_value.empty()) {
         for (double s : f.syncs)
@@ -1335,6 +1390,16 @@ bool SetDivide(SoundData& data, const std::string& group, const std::vector<std:
     data.divide_group = group;
     data.divide_values = vals;
     for (SoundFrame& f : data.frames) {
+        // 13-62h: the zones go with the old division (RefreshParts proposes new ones); the variation keeps their
+        // extent and the first part zone's gain.
+        if (!f.zones.empty()) {
+            for (const EditZone& z : f.zones)
+                if (!z.IsGap()) {
+                    f.db = z.db;
+                    break;
+                }
+            f.zones.clear();
+        }
         f.cuts.clear();
         f.cuts_hand = f.cut_unsure = false;
         f.syncs.clear();
@@ -1520,6 +1585,7 @@ PartSettings* FindPart(SoundData& data, const std::string& value)
 
 int OwnCount(const PartSettings& p)
 {
+    // 13-62h: fader_db is no setting (a view of what the lane fader applied): not counted, but it keeps the entry.
     return (p.preroll_ms ? 1 : 0) + (p.tail_ms ? 1 : 0) + (p.sync_mode ? 1 : 0) + (p.sync_offset_ms ? 1 : 0) +
            (p.gain_db ? 1 : 0) + (p.norm_mode ? 1 : 0) + (p.norm_target ? 1 : 0) + (p.mono ? 1 : 0) + (p.fade_in ? 1 : 0) +
            (p.fade_out ? 1 : 0);
@@ -1539,7 +1605,7 @@ void Remeasure(SoundData& data, bool syncs, bool trims)
 void PruneParts(SoundData& data)
 {
     data.parts.erase(std::remove_if(data.parts.begin(), data.parts.end(),
-                                    [](const PartSettings& p) { return OwnCount(p) == 0 && p.kept.empty(); }),
+                                    [](const PartSettings& p) { return OwnCount(p) == 0 && p.kept.empty() && !p.fader_db; }),
                      data.parts.end());
 }
 

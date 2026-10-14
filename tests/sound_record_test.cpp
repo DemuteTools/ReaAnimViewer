@@ -5,6 +5,7 @@
 // text, the lookups. No REAPER, no Windows: any C++17 compiler.
 
 #include "sound_record.h"
+#include "sound_zones.h"  // MigrateLegacyZones (13-62h)
 
 #include <cstdio>
 #include <string>
@@ -88,6 +89,15 @@ bool SameNode(const SoundNode& a, const SoundNode& b)
            x.silence.min_gap_ms == y.silence.min_gap_ms && x.silence.preroll_ms == y.silence.preroll_ms &&
            x.silence.tail_ms == y.silence.tail_ms && x.edited == y.edited && x.linked_copies == y.linked_copies &&
            x.kept == y.kept && SameFrames(x.frames, y.frames) && SameParts(x, y);
+}
+
+// 13-62h: what a store reads back as: its divided Sounds with the old model's keys migrated into zones.
+SoundStore Migrated(SoundStore s)
+{
+    for (SoundLibrary& l : s.libraries)
+        for (SoundNode& n : l.nodes)
+            if (n.type == SoundNodeType::Sound) MigrateLegacyZones(n.sound);
+    return s;
 }
 
 bool SameStore(const SoundStore& a, const SoundStore& b)
@@ -229,8 +239,12 @@ int main()
         CHECK(text.compare(0, 12, "RAVSOUNDS 1\n") == 0);
         SoundStore p;
         CHECK(ParseSoundStore(text, &p));
-        CHECK(SameStore(p, s));
-        CHECK(SerializeSoundStore(p) == text);
+        // 13-62h: the divided Sound with the old model's keys reads back as zones.
+        CHECK(SameStore(p, Migrated(s)));
+        CHECK(SerializeSoundStore(p) == SerializeSoundStore(Migrated(s)));
+        CHECK(!p.libraries[0].nodes[3].sound.frames[0].zones.empty() && p.libraries[0].nodes[3].sound.frames[0].cuts.empty());
+        SoundStore p2;
+        CHECK(ParseSoundStore(SerializeSoundStore(p), &p2) && SerializeSoundStore(p2) == SerializeSoundStore(p));
         // Strings are encoded: no raw space inside a value.
         CHECK(text.find("name=Wet%20concrete") != std::string::npos);
         CHECK(text.find("name=Speed%3Dfast%20%25") != std::string::npos);
@@ -249,7 +263,7 @@ int main()
     }
     // ---- Store: unknown lines and fields kept, written back in place -----------------------------
     {
-        SoundStore s = BigStore();
+        SoundStore s = Migrated(BigStore());  // 13-62h: as a project of this version writes it
         std::string text = SerializeSoundStore(s);
         // An unknown field at the end of a node line, an unknown line after a node, after the header.
         const std::string node_line = "node uid=c000000000000002 type=random parent=c000000000000001 name=Wood avoid=3\n";
@@ -497,9 +511,13 @@ int main()
         CHECK(t.find(" pdb.a%203=-1.25 pdb.a000000000000002=3.5\n") != std::string::npos);
         CHECK(t.find("frame start=0 len=0.25 cuts=0.125 cutsh=1 sync=0.018,0.13 hsync=0.13\n") != std::string::npos);
         SoundStore p;
-        CHECK(ParseSoundStore(t, &p) && SameStore(p, s) && SerializeSoundStore(p) == t);
-        CHECK(p.libraries[0].nodes[3].sound.frames[1].part_db.size() == 2 &&
-              p.libraries[0].nodes[3].sound.frames[1].part_db.at("a 3") == -1.25);
+        CHECK(ParseSoundStore(t, &p) && SameStore(p, Migrated(s)) && SerializeSoundStore(p) == SerializeSoundStore(Migrated(s)));
+        // 13-62h: read back as zones: frame 1's Wood zones carry Wood's part gain, no part_db kept.
+        const SoundFrame& pf = p.libraries[0].nodes[3].sound.frames[1];
+        bool              wood = false;
+        for (const EditZone& z : pf.zones)
+            if (z.part == "a000000000000002") wood = z.db == 3.5;
+        CHECK(pf.part_db.empty() && wood);
         CHECK(p.libraries[0].nodes[3].sound.frames[0].part_db.empty());
         // A pdb that does not read is kept as written.
         SoundStore bad;
@@ -535,11 +553,12 @@ int main()
                      "part v=a%202 tail=40 soff=0 mono=off fout=0.01\nframe start=0 ") != std::string::npos);
         CHECK(t.find(" hsync=0.13 own=a000000000000002,a%202\n") != std::string::npos);
         SoundStore p;
-        CHECK(ParseSoundStore(t, &p) && SameStore(p, s) && SerializeSoundStore(p) == t);
+        CHECK(ParseSoundStore(t, &p) && SameStore(p, Migrated(s)) && SerializeSoundStore(p) == SerializeSoundStore(Migrated(s)));
         const SoundData& q = p.libraries[0].nodes[3].sound;
         CHECK(q.parts.size() == 2 && q.parts[1].value == "a 2" && q.parts[1].mono == MonoMode::Off && !q.parts[1].gain_db &&
               q.parts[0].sync_mode == SyncMode::Attack && !q.parts[0].tail_ms);
-        CHECK((q.frames[0].owners == std::vector<std::string>{"a000000000000002", "a 2"}) && q.frames[1].owners.empty());
+        // 13-62h: the owners are read (not sane here: "a 2" is no divide value) and become zones.
+        CHECK(q.frames[0].owners.empty() && !q.frames[0].zones.empty() && q.frames[1].owners.empty());
         // Nothing of the kind: no part line, no own field (the text of a Sound without them is unchanged).
         const std::string plain = SerializeSoundStore(BigStore());
         CHECK(plain.find("\npart ") == std::string::npos && plain.find(" own=") == std::string::npos);
@@ -574,14 +593,14 @@ int main()
         CHECK(t.find(" sync=-1,0.57 ptrim=0.5,0.55,0.5625,0.625\n") != std::string::npos);
         CHECK(t.find("hsync=0.13\nframe start=0.5") != std::string::npos);  // frame 0: none
         SoundStore p;
-        CHECK(ParseSoundStore(t, &p) && SameStore(p, s) && SerializeSoundStore(p) == t);
+        CHECK(ParseSoundStore(t, &p) && SameStore(p, Migrated(s)) && SerializeSoundStore(p) == SerializeSoundStore(Migrated(s)));
         // 13-54 review: the key they were measured with (ptrimk, encoded), kept through a round trip.
         s.libraries[0].nodes[3].sound.frames[1].part_trim_key = "-45000000,5000000,100000000,00ff00ff00ff00ff|132,4096";
         const std::string tk = SerializeSoundStore(s);
         CHECK(tk.find(" ptrim=0.5,0.55,0.5625,0.625 ptrimk=-45000000%2C5000000%2C100000000%2C00ff00ff00ff00ff|132%2C4096\n") !=
               std::string::npos);
         SoundStore pk;
-        CHECK(ParseSoundStore(tk, &pk) && SameStore(pk, s) && SerializeSoundStore(pk) == tk);
+        CHECK(ParseSoundStore(tk, &pk) && SameStore(pk, Migrated(s)) && SerializeSoundStore(pk) == SerializeSoundStore(Migrated(s)));
     }
 
     // ---- 13-20 / 13-23 / 13-25: parts, zones, sync points, roles, a layer's / draw's / tag's part ---
@@ -603,18 +622,19 @@ int main()
         CHECK(t.find(" lands=Foley%2FSteps roles=heel,toe_end koff=1\n") != std::string::npos ||
               t.find(" lands=Foley/Steps roles=heel,toe_end koff=1\n") != std::string::npos);  // 13-31
         SoundStore p;
-        CHECK(ParseSoundStore(t, &p) && SameStore(p, s) && SerializeSoundStore(p) == t);
+        CHECK(ParseSoundStore(t, &p) && SameStore(p, Migrated(s)) && SerializeSoundStore(p) == SerializeSoundStore(Migrated(s)));
         {  // 13-31: the retired 13-23 layer part (part=*) is read and dropped, never kept
             std::string old_t = t;
             const size_t at = old_t.find(" koff=1\n");
             CHECK(at != std::string::npos);
             if (at != std::string::npos) old_t.insert(at, " part=*");
             SoundStore q;
-            CHECK(old_t != t && ParseSoundStore(old_t, &q) && SerializeSoundStore(q) == t);
+            CHECK(old_t != t && ParseSoundStore(old_t, &q) && SerializeSoundStore(q) == SerializeSoundStore(Migrated(s)));
             CHECK(SerializeSoundStore(q).find("part=") == std::string::npos);
         }
         const SoundData& d = p.libraries[0].nodes[3].sound;
-        CHECK(d.sync_mode == SyncMode::SliceStart && d.zones.size() == 2 && d.zones[1].to == "a000000000000002");
+        // 13-62h: the Sound-level zones are read and folded into the zones of its variations.
+        CHECK(d.sync_mode == SyncMode::SliceStart && d.zones.empty() && !d.frames[0].zones.empty());
         CHECK(d.role_map.size() == 2 && d.role_map[1].role == "hand");
         CHECK(p.groups[1 - 1].values[1].roles == std::vector<std::string>{"my role"});
         // Each sync word reads; defaults are not written (an old Sound line is unchanged).

@@ -14,6 +14,7 @@
 // SoundFrame cuts / syncs, SoundData divide / roles / sync / zones, SwitchValue::roles,
 // SoundDraw::part, PlacedTag::pt. 13-31: SoundNode::layer_roles / layer_keep_offset.
 // 13-62 (spec 13-62 Contract): SoundFrame::owners, PartSettings, SoundData::parts.
+// 13-62h (spec 13-62h Contract): EditZone, SoundFrame::zones, PartSettings::fader_db, SoundData::gap_xfade.
 //
 // Every `kept` member holds text this version did not understand, written back as read:
 // unknown fields ("key=value" tokens) of the object's own line, and `kept_lines` the unknown
@@ -26,6 +27,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "file_change_check.h"  // FileVersion (13-54 review: what peaks were read from)
@@ -53,6 +55,26 @@ struct SilenceParams {  // 13-17b (Antho 2026-10-12): -45 dB, 200 ms gap, 100 ms
     double min_gap_ms = 200.0;
     double preroll_ms = 5.0;
     double tail_ms = 100.0;
+};
+
+// 13-62h (spec 13-62h Contract): one zone of a divided Sound's variation, laid on the file (absolute source
+// seconds). A part zone (`part` = a divide value uid) is the REAPER item Populate places; a Gap (`part` "") is
+// a wormhole between the two zones it touches: playback jumps it and glues them with a crossfade of xl + xr
+// (its left / right sides). `slot_a` / `slot_b`: the cuts around a part zone (its automatic edges never cross
+// them); `a_hand` / `b_hand`: an edge dragged by hand (else it follows its part's Pre-roll / Tail);
+// `a_auto_cut`: its left cut is RAV's and follows its Pre-roll before `onset` (the detected onset, -1 none).
+// `snap`, `fade_in`, `fade_out`: its own (none = automatic / default). `db`: its own gain. sound_zones.h.
+struct EditZone {
+    double                                           a = 0.0, b = 0.0;
+    std::string                                      part;  // value uid; "" = Gap
+    double                                           slot_a = 0.0, slot_b = 0.0;
+    bool                                             a_hand = false, b_hand = false, a_auto_cut = false;
+    double                                           onset = -1.0;
+    std::optional<double>                            snap, fade_in, fade_out;  // s (snap: absolute)
+    double                                           db = 0.0;
+    double                                           xl = 0.0, xr = 0.0;  // Gap crossfade sides (s)
+    std::vector<std::pair<std::string, std::string>> kept;                // unknown fields of its `fzone` line
+    bool IsGap() const { return part.empty(); }
 };
 
 // One variation of a Sound: a stretch of its source (source seconds).
@@ -99,6 +121,9 @@ struct SoundFrame {
     // with parts - 1 cuts). Any comp gesture (AssignRange, a cut removed by MoveCut) fills it; with it set, a
     // variation may hold any number of cuts and a part several separate pieces.
     std::vector<std::string> owners;
+    // 13-62h (appended): a divided Sound's zones (sound_zones.h), time ordered; the frame's start / length are
+    // its first zone's start and its last zone's end. Empty on undivided and Takes-mode Sounds.
+    std::vector<EditZone>    zones;
 };
 
 // The Sound-level default fades (s): every variation with no fade of its own gets them.
@@ -124,6 +149,8 @@ enum class SyncMode { Attack, Peak, SliceStart };
 constexpr double kDefaultSyncOffsetMs = -2.0;
 // 13-23 (A4): the fade each part gets at a cut or zone edge (s).
 constexpr double kDefaultCutFade = 0.002;
+// 13-62h: the crossfade a new Gap gets (s, total of both sides).
+constexpr double kDefaultGapXfade = 0.010;
 
 // 13-20: a zone of a Sound's source (source seconds). `to` "" = excluded (never placed), else a value
 // uid of the Sound's divide group: that stretch belongs to that part. Later zones win.
@@ -159,6 +186,9 @@ struct PartSettings {
     std::optional<MonoMode>  mono;
     std::optional<double>    fade_in, fade_out;  // s: on both edges of each of its pieces (decision 6)
     std::vector<std::string> kept;               // unknown fields of its `part` line
+    // 13-62h (appended): what the lane fader has applied to every zone of this part (dB, a view: never added at
+    // placement; ShiftPartGain).
+    std::optional<double>    fader_db;
 };
 
 // A Sound leaf's data. `frames` = the detected (pre-edit) variations, stored: Populate never
@@ -190,6 +220,8 @@ struct SoundData {
     MonoMode                 mono = MonoMode::Off;
     // 13-62 (appended): the parts' own settings (at most one entry per divide value).
     std::vector<PartSettings> parts;
+    // 13-62h (appended): the crossfade of a new Gap (s, half on each side: "At Gaps").
+    double                   gap_xfade = kDefaultGapXfade;
 };
 
 // A Switch's value -> child.

@@ -801,7 +801,10 @@ static void TestPartsTravel()
     CHECK(text.find("part v=v000000000000092 tail=40 gain=-3 mono=left\n") != std::string::npos);
     CHECK(text.find(" own=v000000000000091,v000000000000092") != std::string::npos);
     SoundStore back;
-    CHECK(ParseRavlib(text, &back) && SerializeRavlib(back) == text);
+    // 13-62h: read back as zones (the old keys migrated once); written again, it reads the same.
+    CHECK(ParseRavlib(text, &back) && !back.libraries[0].nodes[3].sound.frames[0].zones.empty());
+    SoundStore again;
+    CHECK(ParseRavlib(SerializeRavlib(back), &again) && SerializeRavlib(again) == SerializeRavlib(back));
     // Into a project whose Contact group has other uids: owners and settings follow the merged values.
     SoundStore  proj;
     SwitchGroup pc;
@@ -820,8 +823,14 @@ static void TestPartsTravel()
     if (!snd) return;
     const SoundData& q = snd->sound;
     CHECK((q.divide_values == std::vector<std::string>{"p000000000000091", "p000000000000092"}));
-    CHECK((q.frames[0].owners == std::vector<std::string>{"p000000000000091", "p000000000000092"}));
-    CHECK(q.parts.size() == 1 && q.parts[0].value == "p000000000000092" && PartGainDb(q, "p000000000000092") == -3.0 &&
+    // 13-62h: each zone's part follows the merged values; Front's gain is in its zones.
+    bool remapped = !q.frames[0].zones.empty(), front_db = false;
+    for (const EditZone& z : q.frames[0].zones) {
+        remapped = remapped && (z.part == "p000000000000091" || z.part == "p000000000000092");
+        if (z.part == "p000000000000092") front_db = z.db == -1.5 - 3.0;  // its part_db + its own gain
+    }
+    CHECK(remapped && front_db);
+    CHECK(q.parts.size() == 1 && q.parts[0].value == "p000000000000092" && PartGainDb(q, "p000000000000092") == 0.0 &&
           PartTailMs(q, "p000000000000092") == 40.0 && PartMono(q, "p000000000000092") == MonoMode::Left);
     std::string v;
     CHECK(PartAt(q, 0, 0.05, &v) && v == "p000000000000091");
@@ -838,7 +847,9 @@ static void TestDividedTravels()
     CHECK(text.find(" roles=toe,toe_end koff=1") != std::string::npos);  // 13-31
     CHECK(text.find(" mono=sum") != std::string::npos);                  // 13-41
     SoundStore back;
-    CHECK(ParseRavlib(text, &back) && SerializeRavlib(back) == text);
+    CHECK(ParseRavlib(text, &back));  // 13-62h: migrated into zones; a second round trip is stable
+    SoundStore again;
+    CHECK(ParseRavlib(SerializeRavlib(back), &again) && SerializeRavlib(again) == SerializeRavlib(back));
 
     // Into a new project: a fresh group with its roles, every uid of the Sound follows.
     SoundStore  proj;
@@ -865,17 +876,25 @@ static void TestDividedTravels()
         CHECK(d.divide_group == g->uid);
         CHECK(d.divide_values == (std::vector<std::string>{g->values[0].uid, g->values[1].uid}));
         CHECK(d.role_map.size() == 1 && d.role_map[0].role == "hand" && d.role_map[0].value == g->values[1].uid);
-        CHECK(d.zones.size() == 2 && d.zones[0].to.empty() && d.zones[1].to == g->values[0].uid);
+        CHECK(d.zones.empty() && !d.frames[0].zones.empty());  // 13-62h: folded into the variations' zones
         CHECK(d.lanes_split && d.sync_mode == SyncMode::Peak && d.sync_offset_ms == -5.0 && d.cut_fade == 0.003 &&
               d.mono == MonoMode::Sum);
-        CHECK(d.frames[0].cuts == std::vector<double>{0.2} && d.frames[0].cuts_hand);
-        CHECK(d.frames[0].syncs == (std::vector<double>{0.01, 0.21}) && d.frames[0].hand_syncs == std::vector<double>{0.21});
+        // 13-62h: the cut is now a zone edge; the hand sync point the zone's own snap offset.
+        CHECK(d.frames[0].cuts.empty() && d.frames[0].hand_syncs.empty());
+        bool snap = false, edge = false;
+        for (const EditZone& z : d.frames[0].zones) {
+            snap = snap || (z.snap && std::fabs(*z.snap - 0.21) < 1e-9);
+            edge = edge || std::fabs(z.a - 0.2) < 1e-9;
+        }
+        CHECK(snap && edge);
         CHECK(lay->layer_roles == (std::vector<std::string>{"toe", "toe_end"}) && lay->layer_keep_offset);
         CHECK(whole->layer_roles == std::vector<std::string>{"heel"} && !whole->layer_keep_offset);
         // 13-28: the per-part gains follow their values; a frame without writes none.
-        CHECK(d.frames[0].part_db.size() == 2 && d.frames[0].part_db.at(g->values[0].uid) == 2.5 &&
-              d.frames[0].part_db.at(g->values[1].uid) == -1.5);
-        CHECK(d.frames.size() < 2 || d.frames[1].part_db.empty());
+        // 13-62h: the per-part gains are the zones' own gains.
+        bool gains = !d.frames[0].zones.empty();
+        for (const EditZone& z : d.frames[0].zones)
+            gains = gains && (z.part == g->values[0].uid ? z.db == 2.5 : z.db == -1.5);
+        CHECK(d.frames[0].part_db.empty() && gains);
         // The same parts: Back owns the start (the excluded zone a hole in it) and the zone given to it
         // inside Front.
         const std::vector<PartSpan> back_spans = PlacedSpans(d, 0, g->values[0].uid);
@@ -903,8 +922,11 @@ static void TestDividedTravels()
             if (n.name == "wood1.wav") s2 = &n;
     CHECK(m && s2 && s2->sound.divide_group == m->uid && s2->sound.divide_values[0] == "p000000000000091" &&
           s2->sound.divide_values[1] == m->values[1].uid);
-    CHECK(m && s2 && s2->sound.frames[0].part_db.count("p000000000000091") == 1 &&
-          s2->sound.frames[0].part_db.count(m->values[1].uid) == 1);
+    bool parts_follow = s2 && m && !s2->sound.frames[0].zones.empty();  // 13-62h: each zone's part follows
+    if (s2 && m)
+        for (const EditZone& z : s2->sound.frames[0].zones)
+            parts_follow = parts_follow && (z.part == "p000000000000091" || z.part == m->values[1].uid);
+    CHECK(parts_follow);
 
     // A v1 file (written before parts) still reads: combined, no syncs.
     SoundStore v1;

@@ -218,6 +218,8 @@ bool AddRavlibLibrary(SoundStore& store, const SoundStore& file, const std::stri
             for (const auto& kv : f.part_db) pdb[Mapped(vmap, kv.first)] = kv.second;
             f.part_db = pdb;
             for (std::string& o : f.owners) o = Mapped(vmap, o);  // 13-62: who owns each piece
+            for (EditZone& z : f.zones)                            // 13-62h: each zone's part
+                if (!z.part.empty()) z.part = Mapped(vmap, z.part);
         }
         for (PartSettings& ps : d.parts) ps.value = Mapped(vmap, ps.value);  // 13-62: the parts' own settings
     }

@@ -1,0 +1,1760 @@
+// SPDX-License-Identifier: MIT
+//
+// See sound_zones.h. A 1:1 port of the validated mockup's zone model (maquette-zones-13-62h-v3.html) on
+// SoundData: the gestures load every zone of the Sound into one working list (each zone remembering its
+// variation), run the mockup's algorithm on it, then store the zones back into their variations.
+
+#include "sound_zones.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <limits>
+#include <map>
+#include <optional>
+#include <set>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace rav {
+
+namespace {
+
+constexpr double kEps = kZoneTouch;      // the mockup's EPS: two edges this close touch
+constexpr double kTiny = 1e-9;
+constexpr double kMoveMinPart = 0.006;   // the mockup's minLen of a part zone a move / cut drag keeps
+constexpr double kCutWall = 0.01;        // RAV's cut stays this far inside its two zones (relayout)
+constexpr double kSilentDb = -200.0;
+constexpr double kInf = std::numeric_limits<double>::infinity();
+
+double Clamp(double v, double lo, double hi)
+{
+    return std::max(lo, std::min(hi, v));
+}
+
+double Round01(double v)
+{
+    return std::round(v * 10.0) / 10.0;
+}
+
+double ClampDb(double v)
+{
+    return Clamp(Round01(v), -60.0, 24.0);
+}
+
+bool HasPeaks(const PeakView* p)
+{
+    return p && p->rate > 0.0 && !p->max_abs.empty();
+}
+
+double BinDb(const PeakView& p, long long i)
+{
+    if (i < 0 || i >= static_cast<long long>(p.max_abs.size())) return kSilentDb;
+    const double v = static_cast<double>(p.max_abs[static_cast<size_t>(i)]);
+    return v > 0.0 && std::isfinite(v) ? std::max(20.0 * std::log10(v), kSilentDb) : kSilentDb;
+}
+
+// The mockup's detect(a, b): the first and last moment at or above the Silence threshold in [a, b); nothing
+// there: {a, b}.
+void Detect(const SoundData& d, const PeakView& p, double a, double b, double* on, double* off)
+{
+    *on = a;
+    *off = b;
+    if (!(b > a)) return;
+    const long long n = static_cast<long long>(p.max_abs.size());
+    const long long lo = std::max(0LL, static_cast<long long>(std::floor(a * p.rate)));
+    const long long hi = std::min(n, static_cast<long long>(std::ceil(b * p.rate)));
+    long long       first = -1, last = -1;
+    for (long long i = lo; i < hi; ++i)
+        if (BinDb(p, i) >= d.silence.threshold_db) {
+            if (first < 0) first = i;
+            last = i;
+        }
+    if (first < 0) return;
+    *on = Clamp(static_cast<double>(first) / p.rate, a, b);
+    *off = Clamp(static_cast<double>(last + 1) / p.rate, *on, b);
+}
+
+double PreS(const SoundData& d, const std::string& part)
+{
+    const double ms = PartPrerollMs(d, part);
+    return std::isfinite(ms) && ms > 0.0 ? ms / 1000.0 : 0.0;
+}
+
+double TailS(const SoundData& d, const std::string& part)
+{
+    const double ms = PartTailMs(d, part);
+    return std::isfinite(ms) && ms > 0.0 ? ms / 1000.0 : 0.0;
+}
+
+bool SameZone(const EditZone& x, const EditZone& y)
+{
+    return x.a == y.a && x.b == y.b && x.part == y.part && x.slot_a == y.slot_a && x.slot_b == y.slot_b &&
+           x.a_hand == y.a_hand && x.b_hand == y.b_hand && x.a_auto_cut == y.a_auto_cut && x.onset == y.onset &&
+           x.snap == y.snap && x.fade_in == y.fade_in && x.fade_out == y.fade_out && x.db == y.db && x.xl == y.xl &&
+           x.xr == y.xr && x.kept == y.kept;
+}
+
+// What a gesture compares to tell whether it changed anything: every frame's zones, edges and on.
+struct Snap {
+    std::vector<std::vector<EditZone>> zones;
+    std::vector<double>                start, length;
+    std::vector<bool>                  on;
+};
+
+Snap Take(const SoundData& d)
+{
+    Snap s;
+    for (const SoundFrame& f : d.frames) {
+        s.zones.push_back(f.zones);
+        s.start.push_back(f.start);
+        s.length.push_back(f.length);
+        s.on.push_back(f.on);
+    }
+    return s;
+}
+
+bool Same(const Snap& s, const SoundData& d)
+{
+    if (s.zones.size() != d.frames.size()) return false;
+    for (size_t i = 0; i < d.frames.size(); ++i) {
+        const SoundFrame& f = d.frames[i];
+        if (f.start != s.start[i] || f.length != s.length[i] || f.on != s.on[i] || f.zones.size() != s.zones[i].size())
+            return false;
+        for (size_t k = 0; k < f.zones.size(); ++k)
+            if (!SameZone(f.zones[k], s.zones[i][k])) return false;
+    }
+    return true;
+}
+
+bool ZoneLess(const EditZone& x, const EditZone& y)
+{
+    if (x.a != y.a) return x.a < y.a;
+    return !x.IsGap() && y.IsGap();  // a Gap after a part zone starting there
+}
+
+// ---- The working list ----------------------------------------------------------------------------------------
+
+struct WZ {
+    int      frame = 0;
+    int      id = 0;
+    EditZone z;
+};
+
+struct Work {
+    SoundData*      d = nullptr;
+    const PeakView* peaks = nullptr;
+    double          T = kInf;  // the file's length (inf = unknown)
+    std::vector<WZ> zs;
+    int             nid = 0;
+
+    Work(SoundData& data, const PeakView* p, double file_len) : d(&data), peaks(p), T(file_len > 0.0 ? file_len : kInf)
+    {
+        for (size_t f = 0; f < data.frames.size(); ++f)
+            for (const EditZone& z : data.frames[f].zones) zs.push_back({static_cast<int>(f), nid++, z});
+    }
+
+    bool gap(int i) const { return zs[static_cast<size_t>(i)].z.IsGap(); }
+    EditZone& Z(int i) { return zs[static_cast<size_t>(i)].z; }
+    const EditZone& Z(int i) const { return zs[static_cast<size_t>(i)].z; }
+    int frameOf(int i) const { return zs[static_cast<size_t>(i)].frame; }
+
+    int byId(int id) const
+    {
+        for (size_t i = 0; i < zs.size(); ++i)
+            if (zs[i].id == id) return static_cast<int>(i);
+        return -1;
+    }
+    std::vector<int> ord() const
+    {
+        std::vector<int> o(zs.size());
+        for (size_t i = 0; i < zs.size(); ++i) o[i] = static_cast<int>(i);
+        std::stable_sort(o.begin(), o.end(), [&](int x, int y) { return ZoneLess(Z(x), Z(y)); });
+        return o;
+    }
+    std::vector<int> partsOrd() const
+    {
+        std::vector<int> o;
+        for (int i : ord())
+            if (!gap(i)) o.push_back(i);
+        return o;
+    }
+    int prevOf(int i) const
+    {
+        const std::vector<int> L = ord();
+        for (size_t k = 0; k < L.size(); ++k)
+            if (L[k] == i) return k > 0 ? L[k - 1] : -1;
+        return -1;
+    }
+    int nextOf(int i) const
+    {
+        const std::vector<int> L = ord();
+        for (size_t k = 0; k < L.size(); ++k)
+            if (L[k] == i) return k + 1 < L.size() ? L[k + 1] : -1;
+        return -1;
+    }
+    bool butted(int x, int y) const { return x >= 0 && y >= 0 && std::fabs(Z(x).b - Z(y).a) < kEps; }
+    int zoneAt(double t) const
+    {
+        for (int i : ord())
+            if (t >= Z(i).a && t < Z(i).b) return i;
+        return -1;
+    }
+    int gapBefore(int i) const
+    {
+        for (size_t g = 0; g < zs.size(); ++g)
+            if (static_cast<int>(g) != i && zs[g].z.IsGap() && std::fabs(zs[g].z.b - Z(i).a) < kEps) return static_cast<int>(g);
+        return -1;
+    }
+    int gapAfter(int i) const
+    {
+        for (size_t g = 0; g < zs.size(); ++g)
+            if (static_cast<int>(g) != i && zs[g].z.IsGap() && std::fabs(zs[g].z.a - Z(i).b) < kEps) return static_cast<int>(g);
+        return -1;
+    }
+    // A Gap's neighbours: the part zone of its variation ending / starting on it.
+    int gapLeft(int g) const
+    {
+        for (int i : partsOrd())
+            if (frameOf(i) == frameOf(g) && std::fabs(Z(i).b - Z(g).a) < kEps) return i;
+        return -1;
+    }
+    int gapRight(int g) const
+    {
+        for (int i : partsOrd())
+            if (frameOf(i) == frameOf(g) && std::fabs(Z(i).a - Z(g).b) < kEps) return i;
+        return -1;
+    }
+    void erase(int i) { zs.erase(zs.begin() + i); }
+    int push(int frame, const EditZone& z)
+    {
+        zs.push_back({frame, nid++, z});
+        return static_cast<int>(zs.size()) - 1;
+    }
+
+    EditZone mkZone(const std::string& part, double ca, double cb) const
+    {
+        EditZone z;
+        z.part = part;
+        z.slot_a = z.a = ca;
+        z.slot_b = z.b = cb;
+        return z;
+    }
+    EditZone mkGap(double a, double b) const
+    {
+        EditZone g;
+        g.slot_a = g.a = a;
+        g.slot_b = g.b = b;
+        const double w = b - a;
+        const double hx = std::min(std::max(d->gap_xfade, 0.0) / 2.0, w / 2.0);
+        g.xl = g.xr = std::max(hx, 0.0);
+        return g;
+    }
+
+    void relayout();
+    void sanitize();
+    void store(std::map<int, ZoneRef>* where);
+    int  nearestFrame(double t) const;
+    std::pair<int, int> cutOut(double x0, double x1);  // ids of l / r (-1 none)
+};
+
+void Work::relayout()
+{
+    std::vector<int> L = partsOrd();
+    for (size_t i = 1; i < L.size(); ++i) {  // RAV's cuts follow the right part's Pre-roll
+        EditZone& x = Z(L[i - 1]);
+        EditZone& y = Z(L[i]);
+        if (y.a_auto_cut && y.onset >= 0.0 && std::fabs(x.slot_b - y.slot_a) < kEps && frameOf(L[i - 1]) == frameOf(L[i])) {
+            const double lo = x.a + kCutWall, hi = y.slot_b - kCutWall;
+            if (hi > lo) {
+                const double c = Clamp(y.onset - PreS(*d, y.part), lo, hi);
+                x.slot_b = c;
+                y.slot_a = c;
+            }
+        }
+    }
+    for (int i : L) {
+        EditZone& z = Z(i);
+        if (HasPeaks(peaks)) {
+            double on = 0.0, off = 0.0;
+            Detect(*d, *peaks, z.slot_a, z.slot_b, &on, &off);
+            if (!z.a_hand) z.a = z.a_auto_cut ? z.slot_a : std::max(z.slot_a, on - PreS(*d, z.part));
+            if (!z.b_hand) z.b = std::min(z.slot_b, off + TailS(*d, z.part));
+        } else {  // no peaks: automatic edges stay where they are, inside their slot
+            if (!z.a_hand) z.a = z.a_auto_cut ? z.slot_a : Clamp(z.a, z.slot_a, z.slot_b);
+            if (!z.b_hand) z.b = std::min(z.b, z.slot_b);
+        }
+        if (z.b < z.a + kMinZone) {
+            if (!z.b_hand) z.b = z.a + kMinZone;
+            else z.a = z.b - kMinZone;
+        }
+    }
+    // A Gap holds its two neighbours: their edges sit on it, whatever Pre-roll / Tail say.
+    for (size_t gi = 0; gi < zs.size();) {
+        if (!zs[gi].z.IsGap()) {
+            ++gi;
+            continue;
+        }
+        const EditZone g = zs[gi].z;
+        int            l = -1, r = -1;
+        for (int i : partsOrd()) {
+            if (frameOf(i) != zs[gi].frame) continue;
+            if (l < 0 && (std::fabs(Z(i).slot_b - g.a) < kEps || std::fabs(Z(i).b - g.a) < kEps)) l = i;
+            if (r < 0 && (std::fabs(Z(i).slot_a - g.b) < kEps || std::fabs(Z(i).a - g.b) < kEps)) r = i;
+        }
+        if (l < 0 || r < 0 || l == r) {  // touches nothing on one side: empty space
+            erase(static_cast<int>(gi));
+            continue;
+        }
+        Z(l).b = g.a;
+        Z(l).slot_b = g.a;
+        Z(r).a = g.b;
+        Z(r).slot_a = g.b;
+        const double w = g.b - g.a;
+        zs[gi].z.xl = Clamp(zs[gi].z.xl, 0.0, w / 2.0);
+        zs[gi].z.xr = Clamp(zs[gi].z.xr, 0.0, w / 2.0);
+        ++gi;
+    }
+    const std::vector<int> A = ord();
+    for (size_t i = 0; i + 1 < A.size(); ++i) {  // never overlap
+        EditZone& x = Z(A[i]);
+        EditZone& y = Z(A[i + 1]);
+        if (x.b > y.a + kTiny) {
+            if (y.IsGap() || (!x.IsGap() && !x.b_hand)) x.b = y.a;
+            else if (x.IsGap() || !y.a_hand) y.a = x.b;
+            else {
+                const double m = (x.b + y.a) / 2.0;
+                x.b = m;
+                y.a = m;
+            }
+        }
+    }
+    for (WZ& w : zs) {
+        w.z.a = std::max(0.0, w.z.a);
+        w.z.b = std::min(T, w.z.b);
+    }
+    sanitize();
+}
+
+// What the mockup leaves to chance, made sure: no zone under 4 ms, Gaps touching a part zone of their variation on
+// both sides (their neighbours' edges exactly on them), no overlap, everything inside the file.
+void Work::sanitize()
+{
+    for (int pass = 0; pass < 64; ++pass) {
+        bool changed = false;
+        for (size_t i = 0; i < zs.size();) {
+            EditZone& z = zs[i].z;
+            z.a = std::max(0.0, z.a);
+            z.b = std::min(T, z.b);
+            if (!(z.b - z.a >= kMinZone - kTiny) || !std::isfinite(z.a) || !std::isfinite(z.b)) {
+                erase(static_cast<int>(i));
+                changed = true;
+                continue;
+            }
+            ++i;
+        }
+        const std::vector<int> A = ord();
+        for (size_t i = 0; i + 1 < A.size(); ++i) {
+            EditZone& x = Z(A[i]);
+            EditZone& y = Z(A[i + 1]);
+            if (x.b > y.a + kTiny) {
+                if (y.IsGap() || x.b_hand || x.IsGap()) {
+                    if (x.IsGap() && !y.IsGap()) y.a = x.b;
+                    else x.b = y.a;
+                } else {
+                    x.b = y.a;
+                }
+                changed = true;
+            }
+        }
+        for (size_t gi = 0; gi < zs.size();) {
+            if (!zs[gi].z.IsGap()) {
+                ++gi;
+                continue;
+            }
+            const int l = gapLeft(static_cast<int>(gi)), r = gapRight(static_cast<int>(gi));
+            if (l < 0 || r < 0) {
+                erase(static_cast<int>(gi));
+                changed = true;
+                continue;
+            }
+            EditZone& g = zs[gi].z;
+            if (Z(l).b != g.a || Z(l).slot_b != g.a) {
+                Z(l).b = g.a;
+                Z(l).slot_b = g.a;
+                changed = true;
+            }
+            if (Z(r).a != g.b || Z(r).slot_a != g.b) {
+                Z(r).a = g.b;
+                Z(r).slot_a = g.b;
+                changed = true;
+            }
+            const double w = g.b - g.a;
+            const double xl = Clamp(g.xl, 0.0, w / 2.0), xr = Clamp(g.xr, 0.0, w / 2.0);
+            if (xl != g.xl || xr != g.xr || !std::isfinite(g.xl) || !std::isfinite(g.xr)) {
+                g.xl = std::isfinite(xl) ? xl : 0.0;
+                g.xr = std::isfinite(xr) ? xr : 0.0;
+            }
+            g.slot_a = g.a;
+            g.slot_b = g.b;
+            ++gi;
+        }
+        // A part zone's slot always holds it; its snap inside it.
+        for (WZ& w : zs) {
+            EditZone& z = w.z;
+            if (z.IsGap()) continue;
+            if (z.slot_a > z.a) z.slot_a = z.a;
+            if (z.slot_b < z.b) z.slot_b = z.b;
+            if (z.snap && !(*z.snap >= z.a && *z.snap <= z.b)) z.snap = Clamp(*z.snap, z.a, z.b);
+            if (z.fade_in && !(*z.fade_in >= 0.0)) z.fade_in = 0.0;
+            if (z.fade_out && !(*z.fade_out >= 0.0)) z.fade_out = 0.0;
+        }
+        if (!changed) return;
+    }
+    // Last resort (never seen): clip every overlap and drop what is too short.
+    const std::vector<int> A = ord();
+    for (size_t i = 0; i + 1 < A.size(); ++i)
+        if (Z(A[i]).b > Z(A[i + 1]).a) Z(A[i]).b = Z(A[i + 1]).a;
+    for (size_t i = zs.size(); i-- > 0;)
+        if (zs[i].z.b - zs[i].z.a < kMinZone - kTiny || (zs[i].z.IsGap() && (gapLeft(static_cast<int>(i)) < 0 || gapRight(static_cast<int>(i)) < 0)))
+            erase(static_cast<int>(i));
+}
+
+int Work::nearestFrame(double t) const
+{
+    int    best = -1;
+    double bd = kInf;
+    for (const WZ& w : zs) {
+        const double dist = t < w.z.a ? w.z.a - t : (t >= w.z.b ? t - w.z.b : 0.0);
+        if (dist < bd) {
+            bd = dist;
+            best = w.frame;
+        }
+    }
+    if (best >= 0) return best;
+    for (size_t f = 0; f < d->frames.size(); ++f) {
+        const SoundFrame& fr = d->frames[f];
+        const double      dist = t < fr.start ? fr.start - t : (t >= fr.start + fr.length ? t - fr.start - fr.length : 0.0);
+        if (dist < bd) {
+            bd = dist;
+            best = static_cast<int>(f);
+        }
+    }
+    return best;
+}
+
+std::pair<int, int> Work::cutOut(double x0, double x1)
+{
+    int lid = -1, rid = -1;
+    std::vector<int> ids;
+    for (const WZ& w : zs) ids.push_back(w.id);
+    for (int id : ids) {
+        const int i = byId(id);
+        if (i < 0) continue;
+        EditZone z = Z(i);
+        if (z.b <= x0 + kEps || z.a >= x1 - kEps) continue;
+        const int frame = frameOf(i);
+        if (z.IsGap()) {  // Antho 2026-10-14: a zone made inside a Gap splits it; only a Gap wholly covered goes
+            erase(i);
+            if (z.a >= x0 - kEps && z.b <= x1 + kEps) continue;
+            std::vector<EditZone> keep;
+            if (z.a < x0) {
+                EditZone g = mkGap(z.a, x0);
+                g.xl = z.xl;
+                keep.push_back(g);
+            }
+            if (z.b > x1) {
+                EditZone g = mkGap(x1, z.b);
+                g.xr = z.xr;
+                keep.push_back(g);
+            }
+            for (EditZone& g : keep)
+                if (g.b - g.a >= kMinZone) {
+                    const double w = g.b - g.a;
+                    g.xl = std::min(g.xl, w / 2.0);
+                    g.xr = std::min(g.xr, w / 2.0);
+                    push(frame, g);
+                }
+            continue;
+        }
+        if (z.a >= x0 - kEps && z.b <= x1 + kEps) {
+            erase(i);
+            continue;
+        }
+        if (z.a < x0 && z.b > x1) {
+            EditZone r = mkZone(z.part, x1, z.slot_b);
+            r.db = z.db;
+            r.a = x1;
+            r.b = z.b;
+            r.a_hand = true;
+            r.b_hand = z.b_hand;
+            r.fade_out = z.fade_out;
+            r.snap = z.snap && *z.snap > x1 ? z.snap : std::nullopt;
+            EditZone& l = Z(i);
+            l.b = x0;
+            l.slot_b = x0;
+            l.b_hand = true;
+            l.fade_out.reset();
+            if (l.snap && *l.snap > x0) l.snap.reset();
+            lid = zs[static_cast<size_t>(i)].id;
+            const int ri = push(frame, r);
+            rid = zs[static_cast<size_t>(ri)].id;
+            continue;
+        }
+        EditZone& m = Z(i);
+        if (m.a < x0) {
+            m.b = x0;
+            m.slot_b = std::min(m.slot_b, x0);
+            m.b_hand = true;
+            lid = id;
+        } else {
+            m.a = x1;
+            m.slot_a = std::max(m.slot_a, x1);
+            m.a_hand = true;
+            m.a_auto_cut = false;
+            rid = id;
+        }
+    }
+    if (lid < 0)
+        for (const WZ& w : zs)
+            if (!w.z.IsGap() && std::fabs(w.z.b - x0) < kEps) {
+                lid = w.id;
+                break;
+            }
+    if (rid < 0)
+        for (const WZ& w : zs)
+            if (!w.z.IsGap() && std::fabs(w.z.a - x1) < kEps) {
+                rid = w.id;
+                break;
+            }
+    return {lid, rid};
+}
+
+void Work::store(std::map<int, ZoneRef>* where)
+{
+    std::vector<bool> had(d->frames.size(), false);
+    for (size_t f = 0; f < d->frames.size(); ++f) {
+        had[f] = !d->frames[f].zones.empty();
+        d->frames[f].zones.clear();
+    }
+    std::vector<std::vector<std::pair<int, EditZone>>> by(d->frames.size());
+    for (const WZ& w : zs)
+        if (w.frame >= 0 && static_cast<size_t>(w.frame) < by.size()) by[static_cast<size_t>(w.frame)].push_back({w.id, w.z});
+    for (size_t f = 0; f < by.size(); ++f) {
+        std::stable_sort(by[f].begin(), by[f].end(), [](const auto& x, const auto& y) { return ZoneLess(x.second, y.second); });
+        SoundFrame& fr = d->frames[f];
+        for (size_t k = 0; k < by[f].size(); ++k) {
+            fr.zones.push_back(by[f][k].second);
+            if (where) (*where)[by[f][k].first] = {static_cast<int>(f), static_cast<int>(k)};
+        }
+        if (!fr.zones.empty()) {
+            double lo = kInf, hi = -kInf;
+            for (const EditZone& z : fr.zones) {
+                lo = std::min(lo, z.a);
+                hi = std::max(hi, z.b);
+            }
+            fr.start = lo;
+            fr.length = hi - lo;
+        } else if (had[f]) {
+            fr.on = false;  // a variation left with no zone plays nothing
+        }
+    }
+}
+
+// Ids of a selection (valid refs only, once each).
+std::vector<int> IdsOf(const SoundData& d, const ZoneSel& sel)
+{
+    std::vector<int> out;
+    for (const ZoneRef& r : sel) {
+        if (r.frame < 0 || static_cast<size_t>(r.frame) >= d.frames.size()) continue;
+        const SoundFrame& f = d.frames[static_cast<size_t>(r.frame)];
+        if (r.index < 0 || static_cast<size_t>(r.index) >= f.zones.size()) continue;
+        int id = 0;
+        for (int k = 0; k < r.frame; ++k) id += static_cast<int>(d.frames[static_cast<size_t>(k)].zones.size());
+        id += r.index;
+        if (std::find(out.begin(), out.end(), id) == out.end()) out.push_back(id);
+    }
+    return out;
+}
+
+int IdOf(const SoundData& d, const ZoneRef& r)
+{
+    const std::vector<int> v = IdsOf(d, {r});
+    return v.empty() ? -1 : v.front();
+}
+
+// Ends a gesture: relayout, store, the new selection (`ids` -> refs), and whether anything changed.
+bool Finish(Work& w, const Snap& before, ZoneSel* sel, const std::vector<int>& ids)
+{
+    w.relayout();
+    std::map<int, ZoneRef> where;
+    w.store(&where);
+    if (sel) {
+        sel->clear();
+        for (int id : ids) {
+            const auto it = where.find(id);
+            if (it != where.end()) sel->push_back(it->second);
+        }
+    }
+    return !Same(before, *w.d);
+}
+
+bool Valid(double v)
+{
+    return std::isfinite(v);
+}
+
+}  // namespace
+
+// ---- Basics ------------------------------------------------------------------------------------------------
+
+bool UsesZones(const SoundData& d)
+{
+    return IsDivided(d) && d.mode != DetectMode::Takes;
+}
+
+const EditZone* ZoneOf(const SoundData& d, const ZoneRef& r)
+{
+    if (r.frame < 0 || static_cast<size_t>(r.frame) >= d.frames.size()) return nullptr;
+    const SoundFrame& f = d.frames[static_cast<size_t>(r.frame)];
+    if (r.index < 0 || static_cast<size_t>(r.index) >= f.zones.size()) return nullptr;
+    return &f.zones[static_cast<size_t>(r.index)];
+}
+
+EditZone* ZoneOf(SoundData& d, const ZoneRef& r)
+{
+    return const_cast<EditZone*>(ZoneOf(static_cast<const SoundData&>(d), r));
+}
+
+std::vector<ZoneRef> AllZones(const SoundData& d)
+{
+    std::vector<ZoneRef> out;
+    for (size_t f = 0; f < d.frames.size(); ++f)
+        for (size_t k = 0; k < d.frames[f].zones.size(); ++k) out.push_back({static_cast<int>(f), static_cast<int>(k)});
+    std::stable_sort(out.begin(), out.end(), [&](const ZoneRef& x, const ZoneRef& y) { return ZoneLess(*ZoneOf(d, x), *ZoneOf(d, y)); });
+    return out;
+}
+
+int PartZoneCount(const SoundData& d)
+{
+    int n = 0;
+    for (const SoundFrame& f : d.frames)
+        for (const EditZone& z : f.zones) n += z.IsGap() ? 0 : 1;
+    return n;
+}
+
+int GapCount(const SoundData& d)
+{
+    int n = 0;
+    for (const SoundFrame& f : d.frames)
+        for (const EditZone& z : f.zones) n += z.IsGap() ? 1 : 0;
+    return n;
+}
+
+std::vector<ZoneRef> ZonesOfPart(const SoundData& d, const std::string& part)
+{
+    std::vector<ZoneRef> out;
+    for (const ZoneRef& r : AllZones(d)) {
+        const EditZone* z = ZoneOf(d, r);
+        if (!z->IsGap() && (part.empty() || z->part == part)) out.push_back(r);
+    }
+    return out;
+}
+
+std::string ZonesProblem(const SoundData& d, double file_len)
+{
+    const std::vector<ZoneRef> all = AllZones(d);
+    for (size_t f = 0; f < d.frames.size(); ++f) {
+        const SoundFrame& fr = d.frames[f];
+        const std::string at = "variation " + std::to_string(f + 1) + ": ";
+        for (size_t k = 0; k + 1 < fr.zones.size(); ++k)
+            if (ZoneLess(fr.zones[k + 1], fr.zones[k])) return at + "zones not in time order";
+        if (!fr.zones.empty()) {
+            double lo = kInf, hi = -kInf;
+            for (const EditZone& z : fr.zones) {
+                lo = std::min(lo, z.a);
+                hi = std::max(hi, z.b);
+            }
+            if (std::fabs(fr.start - lo) > 1e-9 || std::fabs(fr.start + fr.length - hi) > 1e-9)
+                return at + "start / length are not its zones' extent";
+        }
+        if (!UsesZones(d) && !fr.zones.empty()) return at + "zones on a Sound that is not edited as zones";
+        for (const EditZone& z : fr.zones) {
+            if (!std::isfinite(z.a) || !std::isfinite(z.b)) return at + "a zone edge is not finite";
+            if (z.b - z.a < kMinZone - 1e-9) return at + (z.IsGap() ? "a Gap under 4 ms" : "a part zone under 4 ms");
+            if (z.a < -1e-9 || (file_len > 0.0 && z.b > file_len + 1e-9)) return at + "a zone outside the file";
+            if (!z.IsGap() && PartIndex(d, z.part) < 0) return at + "a zone of a part that is not a divide value";
+            if (z.IsGap()) {
+                const double w = z.b - z.a;
+                if (z.xl < 0.0 || z.xr < 0.0 || z.xl > w / 2.0 + 1e-9 || z.xr > w / 2.0 + 1e-9)
+                    return at + "a Gap's crossfade out of [0, half its length]";
+                bool l = false, r = false;
+                for (const EditZone& q : fr.zones) {
+                    if (q.IsGap()) continue;
+                    l = l || std::fabs(q.b - z.a) < kEps;
+                    r = r || std::fabs(q.a - z.b) < kEps;
+                }
+                if (!l || !r) return at + "a Gap that does not touch a part zone on both sides";
+            }
+        }
+    }
+    for (size_t i = 0; i + 1 < all.size(); ++i) {
+        const EditZone* x = ZoneOf(d, all[i]);
+        const EditZone* y = ZoneOf(d, all[i + 1]);
+        if (x->b > y->a + 1e-9) return "two zones overlap (variations " + std::to_string(all[i].frame + 1) + " and " +
+                                       std::to_string(all[i + 1].frame + 1) + ")";
+    }
+    return std::string();
+}
+
+// ---- Layout ----------------------------------------------------------------------------------------------------
+
+void RelayoutZones(SoundData& d, const PeakView* peaks, double file_len)
+{
+    if (!UsesZones(d)) return;
+    Work w(d, peaks, file_len);
+    w.relayout();
+    w.store(nullptr);
+}
+
+void ProposeZones(SoundData& d, int v, const PeakView* peaks)
+{
+    if (!UsesZones(d) || v < 0 || static_cast<size_t>(v) >= d.frames.size()) return;
+    SoundFrame& f = d.frames[static_cast<size_t>(v)];
+    if (!(f.length > 0.0)) return;
+    const int           n = PartCount(d);
+    bool                unsure = false;
+    std::vector<double> cuts = AutoCuts(peaks, f, n, &unsure);
+    std::vector<Onset>  ons;
+    if (HasPeaks(peaks)) ons = FindOnsets(*peaks, f.start, f.length);
+    const double fs = f.start, fe = f.start + f.length;
+    f.zones.clear();
+    for (int k = 0; k < n; ++k) {
+        EditZone z;
+        z.part = d.divide_values[static_cast<size_t>(k)];
+        z.slot_a = z.a = k == 0 ? fs : cuts[static_cast<size_t>(k - 1)];
+        z.slot_b = z.b = k == n - 1 ? fe : cuts[static_cast<size_t>(k)];
+        z.a_auto_cut = k > 0;
+        z.db = f.db;  // C3: the variation's gain goes into its zones
+        if (k == 0) {
+            if (!ons.empty()) z.onset = ons.front().rise;
+            if (f.fade_in >= 0.0) z.fade_in = f.fade_in;
+        } else {
+            // the onset RAV cut before (AutoCuts: 5 ms before its rise)
+            double best = 0.003;
+            for (const Onset& o : ons)
+                if (std::fabs(o.rise - 0.005 - z.slot_a) < best) {
+                    best = std::fabs(o.rise - 0.005 - z.slot_a);
+                    z.onset = o.rise;
+                }
+        }
+        if (k == n - 1 && f.fade_out >= 0.0) z.fade_out = f.fade_out;
+        if (z.b - z.a >= kMinZone) f.zones.push_back(z);
+    }
+    f.db = 0.0;
+    f.fade_in = f.fade_out = -1.0;
+    f.cuts.clear();
+    f.cuts_hand = f.cut_unsure = false;
+    f.syncs.clear();
+    f.part_trims.clear();
+    f.part_trim_key.clear();
+    f.owners.clear();
+    f.part_db.clear();
+}
+
+void EnsureZones(SoundData& d, const PeakView* peaks, double file_len)
+{
+    if (!UsesZones(d)) return;
+    for (size_t v = 0; v < d.frames.size(); ++v)
+        if (d.frames[v].on && d.frames[v].zones.empty()) ProposeZones(d, static_cast<int>(v), peaks);
+    RelayoutZones(d, peaks, file_len);
+}
+
+bool MigrateLegacyZones(SoundData& d)
+{
+    if (!UsesZones(d) || d.frames.empty()) return false;
+    for (const SoundFrame& f : d.frames)
+        if (!f.zones.empty()) return false;
+    bool legacy = !d.zones.empty();
+    for (const SoundFrame& f : d.frames)
+        legacy = legacy || !f.cuts.empty() || !f.owners.empty() || !f.part_db.empty() || !f.hand_syncs.empty() ||
+                 !f.part_trims.empty() || !f.syncs.empty() || f.db != 0.0;
+    for (const PartSettings& p : d.parts) legacy = legacy || p.gain_db.has_value();
+    if (!legacy) return false;
+    std::vector<std::vector<EditZone>> made(d.frames.size());
+    for (size_t i = 0; i < d.frames.size(); ++i) {
+        SoundData tmp = d;  // the old model's pieces, as if on (an off variation keeps its zones for later)
+        tmp.frames[i].on = true;
+        const SoundFrame&           f = d.frames[i];
+        const std::vector<PartSpan> pieces = PartPieces(tmp, static_cast<int>(i));
+        const std::vector<PartSpan> raw = PartSpansOf(tmp, static_cast<int>(i));
+        const double                fs = f.start, fe = f.start + f.length;
+        for (const PartSpan& p : pieces) {
+            if (p.length < kMinZone - 1e-9 || PartIndex(d, p.value_uid) < 0) continue;
+            EditZone z;
+            z.part = p.value_uid;
+            z.a = p.start;
+            z.b = p.start + p.length;
+            z.slot_a = z.a;
+            z.slot_b = z.b;
+            const double mid = (z.a + z.b) / 2.0;
+            for (const PartSpan& s : raw)
+                if (mid >= s.start && mid <= s.start + s.length) {
+                    z.slot_a = std::min(s.start, z.a);
+                    z.slot_b = std::max(s.start + s.length, z.b);
+                }
+            z.db = FrameGainDb(f, p.value_uid) + PartGainDb(d, p.value_uid);
+            if (f.fade_in >= 0.0 && std::fabs(z.a - fs) < 1e-9) z.fade_in = f.fade_in;
+            if (f.fade_out >= 0.0 && std::fabs(z.b - fe) < 1e-9) z.fade_out = f.fade_out;
+            if (f.hand && std::fabs(z.a - fs) < 1e-9) z.a_hand = true;
+            if (f.hand && std::fabs(z.b - fe) < 1e-9) z.b_hand = true;
+            for (double h : f.hand_syncs)
+                if (h >= z.a && h <= z.b) {
+                    std::string own;
+                    if (PartAt(tmp, static_cast<int>(i), h, &own) && own == z.part) {
+                        z.snap = h;
+                        break;
+                    }
+                }
+            made[i].push_back(z);
+        }
+    }
+    for (size_t i = 0; i < d.frames.size(); ++i) {
+        SoundFrame& f = d.frames[i];
+        f.zones = made[i];
+        std::stable_sort(f.zones.begin(), f.zones.end(), ZoneLess);
+        if (f.zones.empty()) f.on = false;
+        else {
+            f.start = f.zones.front().a;
+            f.length = f.zones.back().b - f.start;
+            for (const EditZone& z : f.zones) f.length = std::max(f.length, z.b - f.start);
+        }
+        f.db = 0.0;
+        f.fade_in = f.fade_out = -1.0;
+        f.cuts.clear();
+        f.cuts_hand = f.cut_unsure = false;
+        f.syncs.clear();
+        f.hand_syncs.clear();
+        f.part_db.clear();
+        f.part_trims.clear();
+        f.part_trim_key.clear();
+        f.owners.clear();
+    }
+    d.zones.clear();
+    for (PartSettings& p : d.parts) p.gain_db.reset();
+    d.parts.erase(std::remove_if(d.parts.begin(), d.parts.end(),
+                                 [](const PartSettings& p) {
+                                     return !p.preroll_ms && !p.tail_ms && !p.sync_mode && !p.sync_offset_ms && !p.gain_db &&
+                                            !p.norm_mode && !p.norm_target && !p.mono && !p.fade_in && !p.fade_out &&
+                                            !p.fader_db && p.kept.empty();
+                                 }),
+                  d.parts.end());
+    return true;
+}
+
+// ---- Queries ----------------------------------------------------------------------------------------------------
+
+ZoneRef ZoneAt(const SoundData& d, double t)
+{
+    for (const ZoneRef& r : AllZones(d)) {
+        const EditZone* z = ZoneOf(d, r);
+        if (t >= z->a && t < z->b) return r;
+    }
+    return {};
+}
+
+ZoneRef PrevZone(const SoundData& d, const ZoneRef& r)
+{
+    const std::vector<ZoneRef> L = AllZones(d);
+    for (size_t k = 0; k < L.size(); ++k)
+        if (L[k] == r) return k > 0 ? L[k - 1] : ZoneRef{};
+    return {};
+}
+
+ZoneRef NextZone(const SoundData& d, const ZoneRef& r)
+{
+    const std::vector<ZoneRef> L = AllZones(d);
+    for (size_t k = 0; k < L.size(); ++k)
+        if (L[k] == r) return k + 1 < L.size() ? L[k + 1] : ZoneRef{};
+    return {};
+}
+
+bool Butted(const SoundData& d, const ZoneRef& x, const ZoneRef& y)
+{
+    const EditZone* a = ZoneOf(d, x);
+    const EditZone* b = ZoneOf(d, y);
+    return a && b && std::fabs(a->b - b->a) < kEps;
+}
+
+ZoneRef GapBefore(const SoundData& d, const ZoneRef& r)
+{
+    const EditZone* z = ZoneOf(d, r);
+    if (!z) return {};
+    for (const ZoneRef& g : AllZones(d))
+        if (g != r && ZoneOf(d, g)->IsGap() && std::fabs(ZoneOf(d, g)->b - z->a) < kEps) return g;
+    return {};
+}
+
+ZoneRef GapAfter(const SoundData& d, const ZoneRef& r)
+{
+    const EditZone* z = ZoneOf(d, r);
+    if (!z) return {};
+    for (const ZoneRef& g : AllZones(d))
+        if (g != r && ZoneOf(d, g)->IsGap() && std::fabs(ZoneOf(d, g)->a - z->b) < kEps) return g;
+    return {};
+}
+
+ZoneRef GapLeft(const SoundData& d, const ZoneRef& gap)
+{
+    const EditZone* g = ZoneOf(d, gap);
+    if (!g || !g->IsGap()) return {};
+    const SoundFrame& f = d.frames[static_cast<size_t>(gap.frame)];
+    for (size_t k = 0; k < f.zones.size(); ++k)
+        if (!f.zones[k].IsGap() && std::fabs(f.zones[k].b - g->a) < kEps) return {gap.frame, static_cast<int>(k)};
+    return {};
+}
+
+ZoneRef GapRight(const SoundData& d, const ZoneRef& gap)
+{
+    const EditZone* g = ZoneOf(d, gap);
+    if (!g || !g->IsGap()) return {};
+    const SoundFrame& f = d.frames[static_cast<size_t>(gap.frame)];
+    for (size_t k = 0; k < f.zones.size(); ++k)
+        if (!f.zones[k].IsGap() && std::fabs(f.zones[k].a - g->b) < kEps) return {gap.frame, static_cast<int>(k)};
+    return {};
+}
+
+std::vector<ZoneRef> ChainOf(const SoundData& d, const ZoneRef& r)
+{
+    const EditZone* z = ZoneOf(d, r);
+    if (!z) return {};
+    ZoneRef s = z->IsGap() ? GapLeft(d, r) : r;
+    if (!ZoneOf(d, s)) return {};
+    for (int guard = 0; guard < 10000; ++guard) {
+        const ZoneRef g = GapBefore(d, s);
+        if (!ZoneOf(d, g)) break;
+        const ZoneRef l = GapLeft(d, g);
+        if (!ZoneOf(d, l)) break;
+        s = l;
+    }
+    std::vector<ZoneRef> out = {s};
+    for (int guard = 0; guard < 10000; ++guard) {
+        const ZoneRef g = GapAfter(d, out.back());
+        if (!ZoneOf(d, g)) break;
+        const ZoneRef rr = GapRight(d, g);
+        if (!ZoneOf(d, rr) || std::find(out.begin(), out.end(), rr) != out.end()) break;
+        out.push_back(rr);
+    }
+    return out;
+}
+
+ZoneFadeInfo ZoneFade(const SoundData& d, const ZoneRef& r, int side)
+{
+    ZoneFadeInfo    out;
+    const EditZone* z = ZoneOf(d, r);
+    if (!z || z->IsGap()) return out;
+    const bool      in = side < 0;
+    const double    half = (z->b - z->a) / 2.0;
+    const ZoneRef   g = in ? GapBefore(d, r) : GapAfter(d, r);
+    if (const EditZone* gz = ZoneOf(d, g)) {
+        out.s = gz->xl + gz->xr;
+        out.src = FadeSrc::Gap;
+        return out;
+    }
+    const std::optional<double>& own = in ? z->fade_in : z->fade_out;
+    if (own) {
+        out.s = std::min(std::max(*own, 0.0), half);
+        out.src = FadeSrc::Own;
+        return out;
+    }
+    const ZoneRef nb = in ? PrevZone(d, r) : NextZone(d, r);
+    if (ZoneOf(d, nb) && (in ? Butted(d, nb, r) : Butted(d, r, nb))) {
+        out.s = std::min(std::max(d.cut_fade, 0.0), half);
+        out.src = FadeSrc::Cut;
+        return out;
+    }
+    const PartSettings* p = PartSettingsOf(d, z->part);
+    const std::optional<double> pf = p ? (in ? p->fade_in : p->fade_out) : std::nullopt;
+    if (pf) {
+        out.s = std::min(std::max(*pf, 0.0), half);
+        out.src = FadeSrc::Part;
+        return out;
+    }
+    out.s = std::min(std::max(in ? d.fade_in : d.fade_out, 0.0), half);
+    out.src = FadeSrc::Sound;
+    return out;
+}
+
+double ZoneEnv(const SoundData& d, const ZoneRef& r, double t)
+{
+    const EditZone* z = ZoneOf(d, r);
+    if (!z || z->IsGap()) return 0.0;
+    const EditZone* lg = ZoneOf(d, GapBefore(d, r));
+    const EditZone* rg = ZoneOf(d, GapAfter(d, r));
+    const double    lo = lg ? lg->b - lg->xr : z->a, hi = rg ? rg->a + rg->xl : z->b;
+    if (t < lo || t >= hi) return 0.0;
+    double g = 1.0;
+    if (lg) {
+        const double L = lg->xl + lg->xr;
+        if (L > 0.0 && t < lg->b + lg->xl) g *= (t - lo) / L;
+    } else {
+        const double fi = ZoneFade(d, r, -1).s;
+        if (fi > 0.0 && t < z->a + fi) g *= (t - z->a) / fi;
+    }
+    if (rg) {
+        const double L = rg->xl + rg->xr;
+        if (L > 0.0 && t > rg->a - rg->xr) g *= (hi - t) / L;
+    } else {
+        const double fo = ZoneFade(d, r, 1).s;
+        if (fo > 0.0 && t > z->b - fo) g *= (z->b - t) / fo;
+    }
+    return Clamp(g, 0.0, 1.0);
+}
+
+ZoneSnapInfo ZoneSnap(const SoundData& d, const ZoneRef& r, const PeakView* peaks)
+{
+    ZoneSnapInfo    out;
+    const EditZone* z = ZoneOf(d, r);
+    if (!z) return out;
+    if (z->snap) {
+        out.t = Clamp(*z->snap, z->a, z->b);
+        out.own = true;
+        return out;
+    }
+    const SyncMode mode = PartSyncMode(d, z->part);
+    if (HasPeaks(peaks) || mode == SyncMode::SliceStart) {
+        out.t = Clamp(AutoSync(d, HasPeaks(peaks) ? peaks : nullptr, {PartSpan{z->part, z->a, z->b - z->a}}), z->a, z->b);
+        return out;
+    }
+    const double off_ms = PartSyncOffsetMs(d, z->part);
+    const double off = std::isfinite(off_ms) ? off_ms / 1000.0 : 0.0;
+    const double base = mode == SyncMode::Attack && z->onset >= z->a && z->onset <= z->b ? z->onset : z->a;
+    out.t = Clamp(base + off, z->a, z->b);
+    return out;
+}
+
+std::vector<HeardPiece> HeardPieces(const SoundData& d, double A, double B)
+{
+    std::vector<HeardPiece> out;
+    if (!(B > A)) return out;
+    auto inGap = [&](double t) {
+        const EditZone* z = ZoneOf(d, ZoneAt(d, t));
+        return z && z->IsGap();
+    };
+    bool   have = !inGap(A);  // starting inside a jump: it resumes at its exit
+    double cur = A;
+    for (const ZoneRef& r : AllZones(d)) {
+        const EditZone* z = ZoneOf(d, r);
+        if (z->IsGap()) continue;
+        const EditZone* lg = ZoneOf(d, GapBefore(d, r));
+        const EditZone* rg = ZoneOf(d, GapAfter(d, r));
+        const double    a = std::max(lg ? lg->b - lg->xr : z->a, A);
+        const double    b = std::min(rg ? rg->a + rg->xl : z->b, B);
+        if (b <= a) continue;
+        if (have && !lg && a > cur + 1e-6) out.push_back({cur, a, 0.0, ZoneRef{}});
+        HeardPiece p;
+        p.a = a;
+        p.b = b;
+        p.xo = rg && std::fabs(b - (rg->a + rg->xl)) < 1e-9 ? rg->xl + rg->xr : 0.0;
+        p.z = r;
+        out.push_back(p);
+        cur = b;
+        have = true;
+    }
+    if (!have) cur = A;
+    if (B > cur + 1e-6 && !inGap(B - 1e-6)) out.push_back({cur, B, 0.0, ZoneRef{}});  // the silence up to the end
+    return out;
+}
+
+bool VariationEdges(const SoundData& d, int v, double* a, double* b)
+{
+    if (v < 0 || static_cast<size_t>(v) >= d.frames.size()) return false;
+    const SoundFrame& f = d.frames[static_cast<size_t>(v)];
+    double            lo = f.start, hi = f.start + f.length;
+    if (!f.zones.empty()) {
+        lo = kInf;
+        hi = -kInf;
+        for (const EditZone& z : f.zones) {
+            lo = std::min(lo, z.a);
+            hi = std::max(hi, z.b);
+        }
+    }
+    if (a) *a = lo;
+    if (b) *b = hi;
+    return true;
+}
+
+int NearestVariation(const SoundData& d, double t)
+{
+    SoundData& m = const_cast<SoundData&>(d);  // Work reads only
+    Work       w(m, nullptr, 0.0);
+    return w.nearestFrame(t);
+}
+
+// ---- Gestures ----------------------------------------------------------------------------------------------------
+
+bool CutOut(SoundData& d, double x0, double x1, const ZoneContext& ctx)
+{
+    if (!UsesZones(d) || !Valid(x0) || !Valid(x1) || !(x1 > x0)) return false;
+    const Snap before = Take(d);
+    Work       w(d, ctx.peaks, ctx.file_len);
+    w.cutOut(x0, x1);
+    return Finish(w, before, nullptr, {});
+}
+
+bool MakeGap(SoundData& d, double x0, double x1, const ZoneContext& ctx, bool* made, ZoneSel* sel)
+{
+    if (made) *made = false;
+    if (!UsesZones(d) || !Valid(x0) || !Valid(x1) || !(x1 - x0 >= kMinZone)) return false;
+    const Snap before = Take(d);
+    Work       w(d, ctx.peaks, ctx.file_len);
+    for (const WZ& z : w.zs)  // a Gap over Gaps: one Gap
+        if (z.z.IsGap() && z.z.b >= x0 && z.z.a <= x1) {
+            x0 = std::min(x0, z.z.a);
+            x1 = std::max(x1, z.z.b);
+        }
+    const std::pair<int, int> lr = w.cutOut(x0, x1);
+    const int                 l = w.byId(lr.first), r = w.byId(lr.second);
+    std::vector<int>          ids;
+    if (l >= 0 && r >= 0 && w.frameOf(l) == w.frameOf(r) && std::fabs(w.Z(l).b - x0) < kEps && std::fabs(w.Z(r).a - x1) < kEps) {
+        const EditZone g = w.mkGap(x0, x1);
+        w.Z(l).b_hand = true;
+        w.Z(r).a_hand = true;
+        w.Z(r).a_auto_cut = false;
+        const int gi = w.push(w.frameOf(l), g);
+        ids.push_back(w.zs[static_cast<size_t>(gi)].id);
+        if (made) *made = true;
+    }
+    const bool changed = Finish(w, before, sel, ids);
+    if (made && *made && sel && sel->empty()) *made = false;  // relayout removed it
+    return changed;
+}
+
+bool NewZone(SoundData& d, const std::string& part, double x0, double x1, const ZoneContext& ctx, ZoneSel* sel)
+{
+    if (!UsesZones(d) || PartIndex(d, part) < 0 || !Valid(x0) || !Valid(x1)) return false;
+    if (x1 < x0) std::swap(x0, x1);
+    x0 = std::max(0.0, x0);
+    if (ctx.file_len > 0.0) x1 = std::min(ctx.file_len, x1);
+    if (!(x1 - x0 >= kMinZone)) return false;
+    const Snap before = Take(d);
+    Work       w(d, ctx.peaks, ctx.file_len);
+    int        frame = w.nearestFrame(x0);
+    if (frame < 0) {  // no variation at all: a new one
+        SoundFrame f;
+        f.start = x0;
+        f.length = x1 - x0;
+        d.frames.push_back(f);
+        frame = static_cast<int>(d.frames.size()) - 1;
+    }
+    w.cutOut(x0, x1);
+    EditZone z = w.mkZone(part, x0, x1);
+    z.a_hand = z.b_hand = true;
+    const int zi = w.push(frame, z);
+    const int id = w.zs[static_cast<size_t>(zi)].id;
+    if (!d.frames[static_cast<size_t>(frame)].on) d.frames[static_cast<size_t>(frame)].on = true;
+    return Finish(w, before, sel, {id});
+}
+
+bool FillGap(SoundData& d, const ZoneRef& gap, const ZoneContext& ctx)
+{
+    const EditZone* gz = ZoneOf(d, gap);
+    if (!UsesZones(d) || !gz || !gz->IsGap()) return false;
+    const Snap before = Take(d);
+    Work       w(d, ctx.peaks, ctx.file_len);
+    const int  g = w.byId(IdOf(d, gap));
+    const int  l = w.gapLeft(g);
+    const EditZone gg = w.Z(g);
+    const int  lid = l >= 0 ? w.zs[static_cast<size_t>(l)].id : -1;
+    w.erase(g);
+    const int li = w.byId(lid);
+    if (li >= 0) {
+        w.Z(li).b = gg.b;
+        w.Z(li).slot_b = gg.b;
+        w.Z(li).b_hand = true;
+    }
+    return Finish(w, before, nullptr, {});
+}
+
+bool SplitZoneAt(SoundData& d, double t, const ZoneContext& ctx, ZoneSel* sel)
+{
+    if (!UsesZones(d) || !Valid(t)) return false;
+    const ZoneRef   r = ZoneAt(d, t);
+    const EditZone* z = ZoneOf(d, r);
+    if (!z || z->IsGap() || t - z->a < kMinZone || z->b - t < kMinZone) return false;
+    const Snap before = Take(d);
+    Work       w(d, ctx.peaks, ctx.file_len);
+    const int  i = w.byId(IdOf(d, r));
+    EditZone   rz = w.mkZone(w.Z(i).part, t, w.Z(i).slot_b);
+    rz.db = w.Z(i).db;
+    rz.a = t;
+    rz.b = w.Z(i).b;
+    rz.a_hand = true;
+    rz.b_hand = w.Z(i).b_hand;
+    rz.fade_out = w.Z(i).fade_out;
+    rz.snap = w.Z(i).snap && *w.Z(i).snap > t ? w.Z(i).snap : std::nullopt;
+    EditZone& lz = w.Z(i);
+    lz.slot_b = t;
+    lz.b = t;
+    lz.b_hand = true;
+    lz.fade_out.reset();
+    if (lz.snap && *lz.snap >= t) lz.snap.reset();
+    const int ri = w.push(w.frameOf(i), rz);
+    return Finish(w, before, sel, {w.zs[static_cast<size_t>(ri)].id});
+}
+
+bool TrimZonesAt(SoundData& d, const ZoneSel& sel, double t, int side, const ZoneContext& ctx)
+{
+    if (!UsesZones(d) || !Valid(t) || side == 0) return false;
+    const Snap       before = Take(d);
+    Work             w(d, ctx.peaks, ctx.file_len);
+    std::vector<int> L;
+    for (int id : IdsOf(d, sel)) {
+        const int i = w.byId(id);
+        if (i >= 0 && !w.gap(i) && t > w.Z(i).a && t < w.Z(i).b) L.push_back(i);
+    }
+    if (L.empty()) {
+        const int i = w.zoneAt(t);
+        if (i >= 0 && !w.gap(i)) L.push_back(i);
+    }
+    for (int i : L) {
+        EditZone& z = w.Z(i);
+        if (side < 0) {
+            if (z.b - t < kMinZone) continue;
+            z.a = t;
+            z.slot_a = t;
+            z.a_hand = true;
+            z.a_auto_cut = false;
+        } else {
+            if (t - z.a < kMinZone) continue;
+            z.b = t;
+            z.slot_b = t;
+            z.b_hand = true;
+        }
+    }
+    return Finish(w, before, nullptr, {});
+}
+
+bool TrimZonesTo(SoundData& d, const ZoneSel& sel, double a, double b, const ZoneContext& ctx)
+{
+    if (!UsesZones(d) || !Valid(a) || !Valid(b)) return false;
+    if (b < a) std::swap(a, b);
+    if (b - a < kMinZone) return false;
+    const Snap       before = Take(d);
+    Work             w(d, ctx.peaks, ctx.file_len);
+    std::vector<int> L;
+    for (int id : IdsOf(d, sel)) {
+        const int i = w.byId(id);
+        if (i >= 0 && !w.gap(i)) L.push_back(i);
+    }
+    if (L.empty())
+        for (size_t i = 0; i < w.zs.size(); ++i)
+            if (!w.zs[i].z.IsGap() && w.zs[i].z.b > a && w.zs[i].z.a < b) L.push_back(static_cast<int>(i));
+    for (int i : L) {
+        EditZone&    z = w.Z(i);
+        const double na = std::max(z.a, a), nb = std::min(z.b, b);
+        if (nb - na < kMinZone) continue;
+        if (na > z.a) {
+            z.a = na;
+            z.slot_a = na;
+            z.a_hand = true;
+            z.a_auto_cut = false;
+        }
+        if (nb < z.b) {
+            z.b = nb;
+            z.slot_b = nb;
+            z.b_hand = true;
+        }
+    }
+    return Finish(w, before, nullptr, {});
+}
+
+bool HealZones(SoundData& d, ZoneSel& sel, const ZoneContext& ctx, bool* mixed)
+{
+    if (mixed) *mixed = false;
+    if (!UsesZones(d)) return false;
+    const std::vector<int> ids = IdsOf(d, sel);
+    if (ids.size() < 2) return false;
+    const Snap       before = Take(d);
+    Work             w(d, ctx.peaks, ctx.file_len);
+    std::vector<int> L;  // ids, time order
+    for (int id : ids)
+        if (w.byId(id) >= 0) L.push_back(id);
+    std::stable_sort(L.begin(), L.end(), [&](int x, int y) { return ZoneLess(w.Z(w.byId(x)), w.Z(w.byId(y))); });
+    std::vector<std::pair<int, int>> plan;
+    int                              cur = -1;
+    for (int z : L) {
+        if (cur >= 0 && w.butted(w.byId(cur), w.byId(z))) plan.push_back({cur, z});
+        cur = z;
+    }
+    if (plan.empty()) return false;
+    int head = -1;
+    for (const auto& xy : plan) {
+        const int x = w.byId(xy.first), y = w.byId(xy.second);
+        if (y < 0) continue;
+        const int hi = head >= 0 ? w.byId(head) : -1;
+        int       into = -1;
+        if (hi >= 0 && w.butted(hi, y)) into = head;
+        else if (x >= 0 && !w.gap(x)) into = xy.first;
+        if (into < 0) continue;
+        const int ii = w.byId(into);
+        const EditZone yz = w.Z(y);
+        EditZone& iz = w.Z(ii);
+        if (yz.IsGap()) {
+            iz.b = yz.b;
+            iz.slot_b = yz.b;
+        } else {
+            if (yz.part != iz.part && mixed) *mixed = true;
+            iz.b = yz.b;
+            iz.b_hand = yz.b_hand;
+            iz.slot_b = yz.slot_b;
+            iz.fade_out = yz.fade_out;
+        }
+        w.erase(y);
+        head = into;
+    }
+    if (head < 0) return false;
+    return Finish(w, before, &sel, {head});
+}
+
+bool DeleteZones(SoundData& d, ZoneSel& sel, const ZoneContext& ctx)
+{
+    if (!UsesZones(d)) return false;
+    const std::vector<int> ids = IdsOf(d, sel);
+    if (ids.empty()) return false;
+    const Snap before = Take(d);
+    Work       w(d, ctx.peaks, ctx.file_len);
+    for (int id : ids) {  // Gaps first: given to the zone on their left
+        const int g = w.byId(id);
+        if (g < 0 || !w.gap(g)) continue;
+        const int      l = w.gapLeft(g);
+        const int      lid = l >= 0 ? w.zs[static_cast<size_t>(l)].id : -1;
+        const EditZone gg = w.Z(g);
+        w.erase(g);
+        const int li = w.byId(lid);
+        if (li >= 0) {
+            w.Z(li).b = gg.b;
+            w.Z(li).slot_b = gg.b;
+            w.Z(li).b_hand = true;
+        }
+    }
+    for (int id : ids) {
+        const int i = w.byId(id);
+        if (i >= 0 && !w.gap(i)) w.erase(i);
+    }
+    return Finish(w, before, &sel, {});
+}
+
+bool GiveZonesPart(SoundData& d, const ZoneSel& sel, const std::string& part, const ZoneContext& ctx)
+{
+    if (!UsesZones(d) || PartIndex(d, part) < 0) return false;
+    const Snap before = Take(d);
+    Work       w(d, ctx.peaks, ctx.file_len);
+    for (int id : IdsOf(d, sel)) {
+        const int i = w.byId(id);
+        if (i >= 0 && !w.gap(i)) w.Z(i).part = part;
+    }
+    return Finish(w, before, nullptr, {});
+}
+
+double MoveRange(const SoundData& d, const ZoneRef& r, double delta, double file_len)
+{
+    const EditZone* z0 = ZoneOf(d, r);
+    if (!z0 || !Valid(delta)) return 0.0;
+    const ZoneRef   pr = PrevZone(d, r), nr = NextZone(d, r);
+    const EditZone* pv = ZoneOf(d, pr);
+    const EditZone* nx = ZoneOf(d, nr);
+    auto            minLen = [](const EditZone& z) { return z.IsGap() ? kMinZone : kMoveMinPart; };
+    double          lo = -z0->a, hi = file_len > 0.0 ? file_len - z0->b : kInf;
+    if (pv) lo = std::fabs(pv->b - z0->a) < kEps ? std::max(lo, pv->a + minLen(*pv) - z0->a) : std::max(lo, pv->b - z0->a);
+    if (nx) hi = std::fabs(z0->b - nx->a) < kEps ? std::min(hi, nx->b - minLen(*nx) - z0->b) : std::min(hi, nx->a - z0->b);
+    if (hi < lo) return 0.0;
+    return Clamp(delta, std::min(lo, 0.0), std::max(hi, 0.0));
+}
+
+bool MoveZone(SoundData& d, const ZoneRef& r, double delta, const ZoneContext& ctx, ZoneSel* sel)
+{
+    if (!UsesZones(d) || !ZoneOf(d, r)) return false;
+    const double dd = MoveRange(d, r, delta, ctx.file_len);
+    if (std::fabs(dd) < 1e-12) return false;
+    const Snap before = Take(d);
+    Work       w(d, ctx.peaks, ctx.file_len);
+    const int  id = IdOf(d, r);
+    const int  i = w.byId(id);
+    const int  pv = w.prevOf(i), nx = w.nextOf(i);
+    const bool pb = pv >= 0 && w.butted(pv, i), nb = nx >= 0 && w.butted(i, nx);
+    EditZone&  z = w.Z(i);
+    z.a += dd;
+    z.b += dd;
+    if (!z.IsGap()) {
+        z.a_hand = z.b_hand = true;
+        z.a_auto_cut = false;
+        z.slot_a = z.a;
+        z.slot_b = z.b;
+        if (z.snap) *z.snap += dd;
+    } else {
+        z.slot_a = z.a;
+        z.slot_b = z.b;
+    }
+    const double za = z.a, zb = z.b;
+    if (pb) {  // a Gap beside it stretches, still touching
+        EditZone& p = w.Z(pv);
+        p.b = za;
+        if (!p.IsGap()) {
+            p.slot_b = za;
+            p.b_hand = true;
+        } else {
+            p.slot_b = za;
+        }
+    }
+    if (nb) {
+        EditZone& n = w.Z(nx);
+        n.a = zb;
+        if (!n.IsGap()) {
+            n.slot_a = zb;
+            n.a_hand = true;
+            n.a_auto_cut = false;
+        } else {
+            n.slot_a = zb;
+        }
+    }
+    return Finish(w, before, sel, {id});
+}
+
+bool DragZoneEdge(SoundData& d, const ZoneRef& r, int side, double t, const ZoneContext& ctx)
+{
+    const EditZone* zz = ZoneOf(d, r);
+    if (!UsesZones(d) || !zz || zz->IsGap() || !Valid(t) || side == 0) return false;
+    if (ZoneOf(d, side < 0 ? GapBefore(d, r) : GapAfter(d, r))) return false;  // held by a Gap
+    const Snap before = Take(d);
+    Work       w(d, ctx.peaks, ctx.file_len);
+    const int  i = w.byId(IdOf(d, r));
+    const std::vector<int> L = w.ord();
+    size_t     k = 0;
+    while (k < L.size() && L[k] != i) ++k;
+    EditZone& z = w.Z(i);
+    if (side < 0) {
+        const double lo = k > 0 ? w.Z(L[k - 1]).b : 0.0;
+        const double hi = z.b - kMinZone;
+        if (hi < lo) return false;
+        z.a = Clamp(t, lo, hi);
+        z.a_hand = true;
+        z.a_auto_cut = false;
+        if (z.a < z.slot_a) z.slot_a = z.a;
+    } else {
+        const double hi = k + 1 < L.size() ? w.Z(L[k + 1]).a : w.T;
+        const double lo = z.a + kMinZone;
+        if (hi < lo) return false;
+        z.b = Clamp(t, lo, hi);
+        z.b_hand = true;
+        if (z.b > z.slot_b) z.slot_b = z.b;
+    }
+    return Finish(w, before, nullptr, {});
+}
+
+bool SetZoneEdge(SoundData& d, const ZoneRef& r, int side, double t, const ZoneContext& ctx)
+{
+    return DragZoneEdge(d, r, side, t, ctx);
+}
+
+bool DragCut(SoundData& d, const ZoneRef& r, double t, const ZoneContext& ctx)
+{
+    const EditZone* x0 = ZoneOf(d, r);
+    if (!UsesZones(d) || !x0 || x0->IsGap() || !Valid(t)) return false;
+    const ZoneRef   nr = NextZone(d, r);
+    const EditZone* y0 = ZoneOf(d, nr);
+    if (!y0 || y0->IsGap() || !Butted(d, r, nr)) return false;
+    const double lo = x0->a + kMoveMinPart, hi = y0->b - kMoveMinPart;
+    if (hi < lo) return false;
+    const double c = Clamp(t, lo, hi);
+    const Snap   before = Take(d);
+    Work         w(d, ctx.peaks, ctx.file_len);
+    EditZone&    x = w.Z(w.byId(IdOf(d, r)));
+    x.b = c;
+    x.slot_b = c;
+    x.b_hand = true;
+    EditZone& y = w.Z(w.byId(IdOf(d, nr)));
+    y.a = c;
+    y.slot_a = c;
+    y.a_hand = true;
+    y.a_auto_cut = false;
+    return Finish(w, before, nullptr, {});
+}
+
+bool DragGapEdge(SoundData& d, const ZoneRef& gap, int side, double t, const ZoneContext& ctx)
+{
+    const EditZone* g0 = ZoneOf(d, gap);
+    if (!UsesZones(d) || !g0 || !g0->IsGap() || !Valid(t) || side == 0) return false;
+    const Snap before = Take(d);
+    Work       w(d, ctx.peaks, ctx.file_len);
+    const int  g = w.byId(IdOf(d, gap));
+    const int  l = w.gapLeft(g), r = w.gapRight(g);
+    if (side < 0) {
+        const double lo = (l >= 0 ? w.Z(l).a : 0.0) + kMoveMinPart, hi = w.Z(g).b - kMinZone;
+        if (hi < lo) return false;
+        const double c = Clamp(t, lo, hi);
+        w.Z(g).a = c;
+        w.Z(g).slot_a = c;
+        if (l >= 0) {
+            w.Z(l).b = c;
+            w.Z(l).slot_b = c;
+        }
+    } else {
+        const double lo = w.Z(g).a + kMinZone, hi = (r >= 0 ? w.Z(r).b : w.T) - kMoveMinPart;
+        if (hi < lo) return false;
+        const double c = Clamp(t, lo, hi);
+        w.Z(g).b = c;
+        w.Z(g).slot_b = c;
+        if (r >= 0) {
+            w.Z(r).a = c;
+            w.Z(r).slot_a = c;
+        }
+    }
+    return Finish(w, before, nullptr, {});
+}
+
+bool DragGapXfade(SoundData& d, const ZoneRef& gap, int side, double t, bool both, const ZoneContext& ctx)
+{
+    const EditZone* g = ZoneOf(d, gap);
+    if (!UsesZones(d) || !g || !g->IsGap() || !Valid(t) || side == 0) return false;
+    const double w = g->b - g->a;
+    const double v = side < 0 ? Clamp(t - g->a, 0.0, w / 2.0) : Clamp(g->b - t, 0.0, w / 2.0);
+    double       xl = g->xl, xr = g->xr;
+    if (side < 0 || both) xl = v;
+    if (side > 0 || both) xr = v;
+    return SetGapXfade(d, gap, xl, xr, ctx);
+}
+
+bool SetGapXfade(SoundData& d, const ZoneRef& gap, double xl, double xr, const ZoneContext& ctx)
+{
+    EditZone* g = ZoneOf(d, gap);
+    if (!UsesZones(d) || !g || !g->IsGap()) return false;
+    const double w = g->b - g->a;
+    const Snap   before = Take(d);
+    if (Valid(xl) && xl >= 0.0) g->xl = Clamp(xl, 0.0, w / 2.0);
+    if (Valid(xr) && xr >= 0.0) g->xr = Clamp(xr, 0.0, w / 2.0);
+    RelayoutZones(d, ctx.peaks, ctx.file_len);
+    return !Same(before, d);
+}
+
+bool SetZoneFade(SoundData& d, const ZoneRef& r, int side, double s, const ZoneContext& ctx)
+{
+    EditZone* z = ZoneOf(d, r);
+    if (!UsesZones(d) || !z || z->IsGap() || !Valid(s) || side == 0) return false;
+    if (ZoneOf(d, side < 0 ? GapBefore(d, r) : GapAfter(d, r))) return false;  // the Gap's crossfade
+    const Snap before = Take(d);
+    (side < 0 ? z->fade_in : z->fade_out) = std::max(s, 0.0);
+    RelayoutZones(d, ctx.peaks, ctx.file_len);
+    return !Same(before, d);
+}
+
+bool SetZoneSnap(SoundData& d, const ZoneRef& r, double t, const ZoneContext& ctx)
+{
+    EditZone* z = ZoneOf(d, r);
+    if (!UsesZones(d) || !z || z->IsGap() || !Valid(t)) return false;
+    const Snap before = Take(d);
+    z->snap = Clamp(t, z->a, z->b);
+    RelayoutZones(d, ctx.peaks, ctx.file_len);
+    return !Same(before, d);
+}
+
+bool SetZoneDb(SoundData& d, const ZoneRef& r, double db, const ZoneContext& ctx)
+{
+    EditZone* z = ZoneOf(d, r);
+    if (!UsesZones(d) || !z || z->IsGap() || !Valid(db)) return false;
+    const Snap before = Take(d);
+    z->db = ClampDb(db);
+    RelayoutZones(d, ctx.peaks, ctx.file_len);
+    return !Same(before, d);
+}
+
+bool ShiftZonesDb(SoundData& d, const ZoneSel& sel, double delta, const std::vector<double>& base, const ZoneContext& ctx)
+{
+    if (!UsesZones(d) || !Valid(delta)) return false;
+    const Snap before = Take(d);
+    for (size_t k = 0; k < sel.size(); ++k) {
+        EditZone* z = ZoneOf(d, sel[k]);
+        if (!z || z->IsGap()) continue;
+        const double b0 = k < base.size() && Valid(base[k]) ? base[k] : z->db;
+        z->db = ClampDb(b0 + delta);
+    }
+    RelayoutZones(d, ctx.peaks, ctx.file_len);
+    return !Same(before, d);
+}
+
+bool ResetZoneEdge(SoundData& d, const ZoneRef& r, int side, const ZoneContext& ctx)
+{
+    EditZone* z = ZoneOf(d, r);
+    if (!UsesZones(d) || !z || z->IsGap() || side == 0) return false;
+    bool& h = side < 0 ? z->a_hand : z->b_hand;
+    if (!h) return false;
+    h = false;
+    RelayoutZones(d, ctx.peaks, ctx.file_len);
+    return true;  // the flag itself changed
+}
+
+bool ResetZoneFade(SoundData& d, const ZoneRef& r, int side, const ZoneContext& ctx)
+{
+    EditZone* z = ZoneOf(d, r);
+    if (!UsesZones(d) || !z || z->IsGap() || side == 0) return false;
+    std::optional<double>& f = side < 0 ? z->fade_in : z->fade_out;
+    if (!f) return false;
+    f.reset();
+    RelayoutZones(d, ctx.peaks, ctx.file_len);
+    return true;
+}
+
+bool ResetZoneSnap(SoundData& d, const ZoneRef& r, const ZoneContext& ctx)
+{
+    EditZone* z = ZoneOf(d, r);
+    if (!UsesZones(d) || !z || z->IsGap() || !z->snap) return false;
+    z->snap.reset();
+    RelayoutZones(d, ctx.peaks, ctx.file_len);
+    return true;
+}
+
+double PartFaderDb(const SoundData& d, const std::string& part)
+{
+    const PartSettings* p = PartSettingsOf(d, part);
+    return p && p->fader_db ? *p->fader_db : 0.0;
+}
+
+bool ShiftPartGain(SoundData& d, const std::string& part, double delta, const ZoneContext& ctx)
+{
+    if (!UsesZones(d) || PartIndex(d, part) < 0 || !Valid(delta) || std::fabs(delta) < 1e-9) return false;
+    const Snap before = Take(d);
+    for (SoundFrame& f : d.frames)
+        for (EditZone& z : f.zones)
+            if (!z.IsGap() && z.part == part) z.db = ClampDb(z.db + delta);
+    PartSettings* p = nullptr;
+    for (PartSettings& q : d.parts)
+        if (q.value == part) p = &q;
+    if (!p) {
+        d.parts.emplace_back();
+        p = &d.parts.back();
+        p->value = part;
+    }
+    const double was = p->fader_db ? *p->fader_db : 0.0;
+    const double now = Round01(was + delta);
+    const bool   fader_changed = now != was;
+    if (std::fabs(now) < 1e-9) p->fader_db.reset();
+    else p->fader_db = now;
+    d.parts.erase(std::remove_if(d.parts.begin(), d.parts.end(),
+                                 [](const PartSettings& q) {
+                                     return !q.preroll_ms && !q.tail_ms && !q.sync_mode && !q.sync_offset_ms && !q.gain_db &&
+                                            !q.norm_mode && !q.norm_target && !q.mono && !q.fade_in && !q.fade_out &&
+                                            !q.fader_db && q.kept.empty();
+                                 }),
+                  d.parts.end());
+    RelayoutZones(d, ctx.peaks, ctx.file_len);
+    return fader_changed || !Same(before, d);
+}
+
+bool SetPartFader(SoundData& d, const std::string& part, double value, const ZoneContext& ctx)
+{
+    if (!Valid(value)) return false;
+    return ShiftPartGain(d, part, Round01(value) - PartFaderDb(d, part), ctx);
+}
+
+int ApplyPreTailChange(SoundData& d, const std::string& part, bool tail_wins, PartField field, const ZoneContext& ctx)
+{
+    if (!UsesZones(d) || (field != PartField::Preroll && field != PartField::Tail)) return 0;
+    const bool pre = field == PartField::Preroll;
+    auto       touched = [&](const std::string& p) {
+        if (!part.empty()) return p == part;
+        const PartSettings* s = PartSettingsOf(d, p);
+        return !(s && (pre ? s->preroll_ms.has_value() : s->tail_ms.has_value()));
+    };
+    std::vector<ZoneRef> hand;
+    for (const ZoneRef& r : AllZones(d)) {
+        const EditZone* z = ZoneOf(d, r);
+        if (z->IsGap() || !touched(z->part) || !(pre ? z->a_hand : z->b_hand)) continue;
+        if (ZoneOf(d, pre ? GapBefore(d, r) : GapAfter(d, r))) continue;  // held by a Gap: never moves
+        hand.push_back(r);
+    }
+    if (tail_wins)
+        for (const ZoneRef& r : hand) (pre ? ZoneOf(d, r)->a_hand : ZoneOf(d, r)->b_hand) = false;
+    RelayoutZones(d, ctx.peaks, ctx.file_len);
+    return static_cast<int>(hand.size());
+}
+
+std::vector<std::vector<ZoneRef>> NormGroups(const SoundData& d, const ZoneSel& sel)
+{
+    std::vector<std::vector<ZoneRef>> groups;
+    std::vector<ZoneRef>              seen;
+    std::vector<ZoneRef>              L;
+    for (const ZoneRef& r : sel) {
+        const EditZone* z = ZoneOf(d, r);
+        if (z && !z->IsGap() && std::find(L.begin(), L.end(), r) == L.end()) L.push_back(r);
+    }
+    std::stable_sort(L.begin(), L.end(), [&](const ZoneRef& x, const ZoneRef& y) { return ZoneLess(*ZoneOf(d, x), *ZoneOf(d, y)); });
+    for (const ZoneRef& r : L) {
+        if (std::find(seen.begin(), seen.end(), r) != seen.end()) continue;
+        const std::string&   p = ZoneOf(d, r)->part;
+        std::vector<ZoneRef> g;
+        for (const ZoneRef& q : ChainOf(d, r))
+            if (ZoneOf(d, q)->part == p) g.push_back(q);
+        if (g.empty()) g.push_back(r);
+        for (const ZoneRef& q : g) seen.push_back(q);
+        groups.push_back(g);
+    }
+    return groups;
+}
+
+std::vector<std::vector<ZoneRef>> NormGroups(const SoundData& d, const std::string& part)
+{
+    return NormGroups(d, ZonesOfPart(d, part));
+}
+
+std::vector<NormRegion> NormGroupRegions(const SoundData& d, const std::vector<std::vector<ZoneRef>>& groups,
+                                         NormMode sound_mode, double sound_target)
+{
+    std::vector<NormRegion> out;
+    for (const std::vector<ZoneRef>& g : groups) {
+        if (g.empty() || !ZoneOf(d, g.front())) continue;
+        NormRegion r;
+        r.frame = g.front().frame;
+        r.part = ZoneOf(d, g.front())->part;
+        for (const ZoneRef& q : g) {
+            const EditZone* z = ZoneOf(d, q);
+            if (z) r.spans.push_back({z->part, z->a, z->b - z->a});
+        }
+        r.mode = PartNormMode(d, r.part, sound_mode);
+        r.target = PartNormTarget(d, r.part, sound_target);
+        out.push_back(r);
+    }
+    return out;
+}
+
+int ApplyZoneNormalize(SoundData& d, const std::vector<std::vector<ZoneRef>>& groups, const std::vector<double>& adj_db,
+                       bool reset_faders)
+{
+    int                   done = 0;
+    std::set<std::string> touched;
+    for (size_t i = 0; i < groups.size(); ++i) {
+        for (const ZoneRef& q : groups[i]) {
+            const EditZone* z = ZoneOf(d, q);
+            if (z && !z->IsGap()) touched.insert(z->part);
+        }
+        if (i >= adj_db.size() || !std::isfinite(adj_db[i]) || adj_db[i] > 60.0) continue;
+        for (const ZoneRef& q : groups[i]) {
+            EditZone* z = ZoneOf(d, q);
+            if (z && !z->IsGap()) z->db = ClampDb(adj_db[i]);
+        }
+        ++done;
+    }
+    if (reset_faders)
+        for (PartSettings& p : d.parts)
+            if (touched.count(p.value)) p.fader_db.reset();
+    d.parts.erase(std::remove_if(d.parts.begin(), d.parts.end(),
+                                 [](const PartSettings& q) {
+                                     return !q.preroll_ms && !q.tail_ms && !q.sync_mode && !q.sync_offset_ms && !q.gain_db &&
+                                            !q.norm_mode && !q.norm_target && !q.mono && !q.fade_in && !q.fade_out &&
+                                            !q.fader_db && q.kept.empty();
+                                 }),
+                  d.parts.end());
+    return done;
+}
+
+}  // namespace rav

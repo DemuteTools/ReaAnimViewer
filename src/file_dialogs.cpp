@@ -9,7 +9,7 @@
 #include <filesystem>
 
 #include <windows.h>
-#include <shobjidl.h>  // IFileOpenDialog, IFileSaveDialog
+#include <shobjidl.h>  // IFileOpenDialog, IFileSaveDialog, SHCreateItemFromParsingName
 
 namespace rav {
 namespace {
@@ -48,9 +48,38 @@ void SetUp(IFileDialog* dlg, const wchar_t* title, const FileDialogFilter& filte
     if (filter.default_ext) dlg->SetDefaultExtension(filter.default_ext);
 }
 
+// Opens the picker in `folder_utf8`, or its nearest existing parent (a missing file's folder is
+// often gone too); nothing when none exists.
+void SetStartFolder(IFileDialog* dlg, const std::string& folder_utf8)
+{
+    if (folder_utf8.empty()) return;
+    try {
+        std::error_code       ec;
+        std::filesystem::path p = std::filesystem::u8path(folder_utf8);
+        while (!p.empty() && !std::filesystem::is_directory(p, ec)) {
+            const std::filesystem::path up = p.parent_path();
+            if (up == p) return;
+            p = up;
+        }
+        if (p.empty()) return;
+        IShellItem* item = nullptr;
+        if (SUCCEEDED(SHCreateItemFromParsingName(p.wstring().c_str(), nullptr, IID_PPV_ARGS(&item)))) {
+            dlg->SetFolder(item);
+            item->Release();
+        }
+    } catch (...) {
+    }
+}
+
 }  // namespace
 
 bool PickOpenFile(HWND__* owner, const wchar_t* title, const FileDialogFilter& filter, std::string& out_utf8)
+{
+    return PickOpenFile(owner, title, filter, std::string(), out_utf8);
+}
+
+bool PickOpenFile(HWND__* owner, const wchar_t* title, const FileDialogFilter& filter, const std::string& folder_utf8,
+                  std::string& out_utf8)
 {
     // Balanced: S_OK and S_FALSE both need a CoUninitialize. RPC_E_CHANGED_MODE (the thread
     // is already multithreaded) is used as it is, without one.
@@ -59,6 +88,7 @@ bool PickOpenFile(HWND__* owner, const wchar_t* title, const FileDialogFilter& f
     IFileOpenDialog* dlg = nullptr;
     if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dlg)))) {
         SetUp(dlg, title, filter, FOS_FILEMUSTEXIST | FOS_PATHMUSTEXIST);
+        SetStartFolder(dlg, folder_utf8);
         if (SUCCEEDED(dlg->Show(owner))) ok = ResultPath(dlg, out_utf8);
         dlg->Release();
     }

@@ -324,6 +324,30 @@ int ApplyLocated(SoundStore& store, const std::vector<std::pair<AssetIdentity, s
     return changed;
 }
 
+int ApplyRelinked(SoundStore& store, const std::string& lib_uid, const std::string& node_uid,
+                  const AssetIdentity& old_id, const AssetIdentity& now)
+{
+    if (now.last_path.empty()) return 0;
+    int changed = 0;
+    for (SoundLibrary& lib : store.libraries)
+        for (SoundNode& n : lib.nodes) {
+            if (n.type != SoundNodeType::Sound || n.sound.source.kind != SoundSourceKind::File) continue;
+            AssetIdentity& a = n.sound.source.asset;
+            const bool self = lib.uid == lib_uid && n.uid == node_uid;
+            const bool shares = !old_id.last_path.empty() && LowerAscii(a.last_path) == LowerAscii(old_id.last_path) &&
+                                SameAssetIdentity(a, old_id);
+            if (!self && !shares) continue;
+            if (a.name == now.name && a.last_path == now.last_path && a.size == now.size && a.length == now.length)
+                continue;
+            a.name = now.name;
+            a.last_path = now.last_path;
+            a.size = now.size;
+            a.length = now.length;
+            ++changed;
+        }
+    return changed;
+}
+
 int FolderChildren(const std::vector<int>& depths, int fi, std::vector<int>* kids, int* last)
 {
     if (kids) kids->clear();

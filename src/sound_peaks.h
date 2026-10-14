@@ -70,8 +70,6 @@ bool ReadItemMedia(MediaItem* item, SoundMedia* out);
 double ItemGainDb(MediaItem* item);
 // The same with a given take's volume (Takes mode: each take is a variation at its own gain).
 double ItemTakeGainDb(MediaItem* item, MediaItem_Take* take);
-// Locate...: one sound file chosen in REAPER's file dialog (false when cancelled or unavailable).
-bool ChooseSoundFile(const std::string& title, std::string* path);
 
 }  // namespace rav
 

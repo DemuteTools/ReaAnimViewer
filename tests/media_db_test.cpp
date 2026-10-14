@@ -470,6 +470,20 @@ static void TestLocateOutcome()
     }
     CHECK(LocateToastText(0, 3, 0) == "Located 0 of 3 sounds");
     CHECK(LocateToastText(2, 1, 0) == "Located 2 of 2 sounds");  // M never below N
+
+    // 13-50 review: a renamed file picked (foot_01.wav is now foot_01_v2.wav, in a moved folder): the
+    // old folder still maps to the new one for the others.
+    AssetIdentity picked = Id("foot_01_v2.wav", 10, 1.0, "E:/Lib/Bank/Foot/foot_01_v2.wav");
+    const AssetIdentity key = RenamedLocateKey(old + "foot_01.wav", picked);
+    CHECK(key.last_path == old + "foot_01_v2.wav" && key.name == "foot_01_v2.wav" && key.size == 10);
+    CHECK(RenamedLocateKey("D:\\X\\a.wav", picked).last_path == "D:\\X\\foot_01_v2.wav");
+    CHECK(RenamedLocateKey("", picked).last_path == "foot_01_v2.wav");
+    const auto rr = RelocateFolder(key, picked.last_path, {Id("a.wav", 10, 1.0, old + "a.wav")}, t.Lister());
+    CHECK(rr.size() == 1 && rr[0].status == LookupStatus::Found && rr[0].path == "E:/Lib/Bank/Foot/a.wav");
+    CHECK(RelinkToastText("foot_01.wav", "foot_01_v2.wav", 0, 0, 0) ==
+          "Relinked foot_01.wav under a new name: foot_01_v2.wav");
+    CHECK(RelinkToastText("a.wav", "b.wav", 2, 3, 1) ==
+          "Relinked a.wav under a new name: b.wav; located 2 of 3 other sounds, 1 ambiguous");
 }
 
 static void TestLoad()

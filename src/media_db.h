@@ -112,6 +112,14 @@ LocateOutcome ClassifyLocate(const std::vector<AssetIdentity>& missing, const st
 // The toast once the result is applied: "Located N of M sounds", plus ", K ambiguous" when K > 0.
 // M is never below N (the picked Sound counts even when it was not missing).
 std::string LocateToastText(int changed, int missing, int ambiguous);
+// 13-50 review: the file the user picked under a NEW name (`located`, its path in last_path) as the
+// key RelocateFolder maps from: the stored old folder (`stored_path`'s parent) + the new name, so
+// the old folder still maps to the picked one for the other missing sounds.
+AssetIdentity RenamedLocateKey(const std::string& stored_path, const AssetIdentity& located);
+// 13-50 review: the toast of a Locate that relinked a Sound to a renamed file: "Relinked <old> under a
+// new name: <now>", plus "; located N of M other sounds" (and ", K ambiguous") when others were missing.
+std::string RelinkToastText(const std::string& old_name, const std::string& new_name, int others_changed,
+                            int others_missing, int ambiguous);
 
 // Fallback folder index (D7). Lists the audio files under `folder` (recursive) with their size;
 // the length comes from `cached` when path + size + mtime are unchanged, else from `length_of`

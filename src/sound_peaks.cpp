@@ -27,7 +27,6 @@ using GetTakeMarkerFn = double (*)(MediaItem_Take*, int, char*, int, int*);
 using GetItemStateChunkFn = bool (*)(MediaItem*, char*, int, bool);
 using CountTakesFn = int (*)(MediaItem*);
 using GetMediaItemTakeFn = MediaItem_Take* (*)(MediaItem*, int);
-using FileForReadFn = bool (*)(char*, const char*, const char*);
 using TakeFXGetCountFn = int (*)(MediaItem_Take*);
 
 CreateFromFileFn    f_create = nullptr;
@@ -36,7 +35,6 @@ GetTakeMarkerFn     f_get_tm = nullptr;
 GetItemStateChunkFn f_chunk = nullptr;
 CountTakesFn        f_count_takes = nullptr;
 GetMediaItemTakeFn  f_get_take = nullptr;
-FileForReadFn       f_file_read = nullptr;
 TakeFXGetCountFn    f_takefx_count = nullptr;  // 13-49 review: optional (the "Placed without" line)
 
 constexpr size_t kCacheFiles = 32;
@@ -163,7 +161,6 @@ void InitSoundPeaks(void* (*get_func)(const char* name))
     f_chunk = reinterpret_cast<GetItemStateChunkFn>(get_func("GetItemStateChunk"));
     f_count_takes = reinterpret_cast<CountTakesFn>(get_func("CountTakes"));
     f_get_take = reinterpret_cast<GetMediaItemTakeFn>(get_func("GetMediaItemTake"));
-    f_file_read = reinterpret_cast<FileForReadFn>(get_func("GetUserFileNameForRead"));
     f_takefx_count = reinterpret_cast<TakeFXGetCountFn>(get_func("TakeFX_GetCount"));
 }
 
@@ -353,16 +350,6 @@ bool ReadSoundMedia(const SoundSource& source, SoundMedia* out)
     out->facts.item_db = source.item_db;  // the item it was imported from (DetectFrames)
     out->ok = true;
     return true;
-}
-
-bool ChooseSoundFile(const std::string& title, std::string* path)
-{
-    if (!f_file_read || !path) return false;
-    std::vector<char> buf(4096, '\0');
-    if (!path->empty()) std::snprintf(buf.data(), buf.size(), "%s", path->c_str());
-    if (!f_file_read(buf.data(), title.c_str(), "")) return false;  // any audio type, not only .wav
-    *path = buf.data();
-    return !path->empty();
 }
 
 std::string VariationPath(const SoundMedia& media, const SoundData& data, int variation)

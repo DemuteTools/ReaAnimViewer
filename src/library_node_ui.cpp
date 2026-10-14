@@ -4346,7 +4346,8 @@ void DrawPlays(const SoundStore& store, const SoundLibrary& lib, const SoundNode
 
 // 13-7b (audit C5.3): the source's state under its waveform -- an item: [Show in REAPER] at the
 // right; a file: its name (text) and [Show in Media Explorer] at the right. Missing: the red line
-// (#ffc4c4) with [Set from selected item] / [Locate…].
+// (#ffc4c4) with [Set from selected item] (an item) or [Locate file...] [Locate in a folder...]
+// (a file, DrawLocateButtons, 13-50).
 void DrawSourceLine(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m)
 {
     const SoundSource& src = n.sound.source;
@@ -4454,6 +4455,14 @@ void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
             const ImVec2 ts = ImGui::CalcTextSize(t);
             dl->AddText(ImVec2(std::max(a.x + 4.0f, (a.x + b.x - ts.x) * 0.5f), (a.y + b.y - ts.y) * 0.5f), ui::kMissText, t);
             ImGui::Dummy(ImVec2(b.x - a.x, wave_h));
+            // 13-50 review: its audio can still be replaced there (a renamed or re-rendered file, or
+            // another sound): a Media Explorer drop and the right-click "Replace with selected items".
+            const bool rclick = ImGui::IsItemClicked(ImGuiMouseButton_Right);
+            if (MediaDropTarget(ImGui::GetID("##wavedrop"), a, b, lib, n, "Replace", MediaDropKind::Replace)) {
+                ui::EndSection(src_sec);
+                return;
+            }
+            if (rclick) ImGui::OpenPopup("##wavemenu");
         } else {
             WaveformEvents ev;
             DrawSoundWaves("panelwave", lib, n, m, wave_h, false, &ev);
@@ -4468,14 +4477,14 @@ void DrawSoundPanel(const SoundLibrary& lib, const SoundNode& n)
                 return;
             }
             if (ev.right_clicked) ImGui::OpenPopup("##wavemenu");
-            if (ui::BeginMenuPopup("##wavemenu")) {
-                const bool go = ImGui::MenuItem("Replace with selected items");
-                ui::EndMenuPopup();
-                if (go) {
-                    ReplaceFromSelected(lib_uid, uid, "Replace audio");
-                    ui::EndSection(src_sec);
-                    return;
-                }
+        }
+        if (ui::BeginMenuPopup("##wavemenu")) {
+            const bool go = ImGui::MenuItem("Replace with selected items");
+            ui::EndMenuPopup();
+            if (go) {
+                ReplaceFromSelected(lib_uid, uid, "Replace audio");
+                ui::EndSection(src_sec);
+                return;
             }
         }
         DrawSourceLine(lib, n, m);

@@ -23,6 +23,10 @@ struct FileDialogFilter {
 
 // Picks an existing file. True with its path in out_utf8; false when cancelled or unavailable.
 bool PickOpenFile(HWND__* owner, const wchar_t* title, const FileDialogFilter& filter, std::string& out_utf8);
+// The same, opened in `folder_utf8` (or its nearest existing parent; the picker's own choice when
+// none exists or it is empty). 13-50 review: Locate opens where the missing file was.
+bool PickOpenFile(HWND__* owner, const wchar_t* title, const FileDialogFilter& filter, const std::string& folder_utf8,
+                  std::string& out_utf8);
 
 // Picks where to write a file, `default_name_utf8` proposed (the picker asks before
 // replacing a file). True with its path in out_utf8; false when cancelled or unavailable.

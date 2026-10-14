@@ -260,8 +260,9 @@ if(WIN32)
         "${imgui_SOURCE_DIR}/backends")
     # comdlg32: GetOpenFileNameW — the native "choose a model" dialog (Story 2.1).
     # imgui: vendored in-viewport tool UI (Story 6.5.3 rev).
-    # ole32 + uuid: IFileOpenDialog, the "Locate textures..." folder picker (issue #1).
-    target_link_libraries(animviewer PRIVATE assimp opengl32 gdi32 user32 comdlg32 ole32 uuid imgui)
+    # ole32 + uuid: IFileOpenDialog, the "Locate textures..." folder picker (issue #1); shell32:
+    # SHCreateItemFromParsingName (a picker opened in a given folder, 13-50).
+    target_link_libraries(animviewer PRIVATE assimp opengl32 gdi32 user32 comdlg32 ole32 shell32 uuid imgui)
 
     # The video FX (Epic 11, Story 11-1): rav_video_fx.clap, a thin CLAP shim that
     # hands REAPER's video frames to the frame-render API reaper_animviewer.dll

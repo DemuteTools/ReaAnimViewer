@@ -104,6 +104,11 @@ struct LocateJob {
     int                                               missing = 0;
     int                                               ambiguous = 0;  // under mu
     AssetIdentity                                     picked;  // the file the user picked (UI thread)
+    ReaProject*                                       proj = nullptr;  // the project it was started in (UI thread)
+    // 13-50 review: the picked Sound's file was renamed: that Sound takes `relink_now` whole (UI thread).
+    bool          relink = false;
+    std::string   relink_lib, relink_node;
+    AssetIdentity relink_old, relink_now;
 };
 
 struct State {
@@ -114,6 +119,7 @@ struct State {
     PickKind    pick = PickKind::None;
     std::string pick_lib;
     std::string pick_node;
+    bool        pick_rename = false;  // Locate: a file of another name relinks the Sound (13-50 review)
     bool        in_timer = false;
     // Autosave: per (project, its file + library uid) the text last written / seen (SavedKey).
     std::map<std::pair<ReaProject*, std::string>, std::string> saved;
@@ -508,6 +514,8 @@ bool StartLocateJob(const std::vector<AssetIdentity>& missing, const AssetIdenti
     JoinLocate();
     g_job.missing = static_cast<int>(missing.size());
     g_job.picked = picked;
+    g_job.proj = EnumProjects(-1, nullptr, 0);
+    g_job.relink = false;  // set by StartLocate once started
     g_job.done = false;
     g_job.cancel = false;
     g_job.running = true;
@@ -545,13 +553,17 @@ bool StartLocateJob(const std::vector<AssetIdentity>& missing, const AssetIdenti
     return true;
 }
 
-void StartLocate(const std::string& lib_uid, const std::string& node_uid, const std::string& picked)
+// `allow_rename` (the Sound's own Locate, 13-50 review): a file of another name is that Sound's file
+// renamed: the Sound takes it whole (name, path, size, length) in the same undo point as the others
+// found through its old folder. Otherwise (the library menu's "first missing sound") it is refused.
+void StartLocate(const std::string& lib_uid, const std::string& node_uid, const std::string& picked, bool allow_rename)
 {
     const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), lib_uid);
     const SoundNode*    n = lib ? FindNode(*lib, node_uid) : nullptr;
     if (!n || n->sound.source.kind != SoundSourceKind::File) return;
     const AssetIdentity stored = n->sound.source.asset;
-    if (LowerAscii(BaseNameOf(picked)) != LowerAscii(BaseNameOf(stored.name))) {
+    const bool renamed = LowerAscii(BaseNameOf(picked)) != LowerAscii(BaseNameOf(stored.name));
+    if (renamed && !allow_rename) {
         ShowToastNoUndo("That is not " + stored.name);
         return;
     }
@@ -570,6 +582,27 @@ void StartLocate(const std::string& lib_uid, const std::string& node_uid, const 
             if (!qn && len > 0.0) located.length = len;
             delete src;
         }
+    }
+    if (renamed) {
+        // The others: those sharing the Sound's old file are relinked with it (ApplyRelinked), not
+        // looked for; the rest through the old folder mapped to the picked one.
+        std::vector<AssetIdentity> others;
+        for (const AssetIdentity& id : MissingIdentities())
+            if (!(LowerAscii(id.last_path) == LowerAscii(stored.last_path) && SameAssetIdentity(id, stored)))
+                others.push_back(id);
+        const AssetIdentity key = RenamedLocateKey(stored.last_path, located);
+        const LocateSearch  search = [key, picked](const std::vector<AssetIdentity>& missing,
+                                                  const FolderLister& lister, const std::atomic<bool>*) {
+            return RelocateFolder(key, picked, missing, lister);
+        };
+        if (!StartLocateJob(others, located, nullptr, search)) return;
+        g_job.relink = true;
+        g_job.relink_lib = lib_uid;
+        g_job.relink_node = node_uid;
+        g_job.relink_old = stored;
+        g_job.relink_now = located;
+        ShowToastNoUndo("Locating...");
+        return;
     }
     AssetIdentity self = stored;  // the picked Sound itself: its unknown fields filled
     if (self.size < 0) self.size = located.size;
@@ -623,14 +656,24 @@ void ApplyLocateResult()
         ShowToastNoUndo("Locate cancelled: nothing changed");
         return;
     }
-    int changed = 0;
+    // 13-50 review: the result belongs to the project the scan started in; another tab now shown
+    // (or that project closed) drops it rather than writing it into the wrong project.
+    if (g_job.proj != EnumProjects(-1, nullptr, 0)) {
+        ShowToastNoUndo("Locate dropped: the project changed while it ran (nothing changed)");
+        return;
+    }
+    int changed = 0, relinked = 0;
     const AssetIdentity* picked = g_job.picked.last_path.empty() ? nullptr : &g_job.picked;
     ModifySoundStore(nullptr, "RAV: Locate sounds", [&](SoundStore& s) {
+        if (g_job.relink) relinked = ApplyRelinked(s, g_job.relink_lib, g_job.relink_node, g_job.relink_old, g_job.relink_now);
         changed = ApplyLocated(s, found, picked);
-        return changed > 0;
+        return changed + relinked > 0;
     });
     g.resolved.clear();
-    ShowLibraryToast(LocateToastText(changed, g_job.missing, ambiguous), changed > 0, "RAV: Locate sounds");
+    const std::string msg = relinked > 0 ? RelinkToastText(g_job.relink_old.name, g_job.relink_now.name, changed,
+                                                           g_job.missing, ambiguous)
+                                         : LocateToastText(changed, g_job.missing, ambiguous);
+    ShowLibraryToast(msg, changed + relinked > 0, "RAV: Locate sounds");
 }
 
 // ---- Pickers (run by the timer) -----------------------------------------------------------------
@@ -707,7 +750,15 @@ void RunReveal(const std::string& lib_uid)
     fs::create_directories(UserFolder(), ec);
     const fs::path file = lib->ravlib_path.empty() ? fs::path() : FileOf(lib->ravlib_path);
     const bool     has_file = !file.empty() && fs::exists(file, ec);
-    std::wstring   cmd = L"explorer.exe ";
+    // 13-50 review: explorer.exe by its full path (Windows folder), never searched for on the PATH.
+    wchar_t      win[MAX_PATH] = {};
+    const UINT   wn = GetWindowsDirectoryW(win, MAX_PATH);
+    if (wn == 0 || wn >= MAX_PATH) {
+        ShowToastNoUndo("Could not open " + UserFolderText());
+        return;
+    }
+    const std::wstring exe = std::wstring(win, wn) + L"\\explorer.exe";
+    std::wstring       cmd = L"\"" + exe + L"\" ";
     if (has_file) cmd += L"/select,\"" + file.lexically_normal().wstring() + L"\"";
     else cmd += L"\"" + UserFolder().lexically_normal().wstring() + L"\"";
     STARTUPINFOW        si = {};
@@ -715,7 +766,7 @@ void RunReveal(const std::string& lib_uid)
     si.cb = sizeof si;
     std::vector<wchar_t> buf(cmd.begin(), cmd.end());
     buf.push_back(L'\0');
-    if (!CreateProcessW(nullptr, buf.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
+    if (!CreateProcessW(exe.c_str(), buf.data(), nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi)) {
         ShowToastNoUndo("Could not open " + UserFolderText());
         return;
     }
@@ -723,11 +774,29 @@ void RunReveal(const std::string& lib_uid)
     CloseHandle(pi.hProcess);
 }
 
-void RunLocatePick(const std::string& lib_uid, const std::string& node_uid)
+// 13-50 review: titled "Locate <its name>", opened in the folder it was in (or its nearest parent
+// still there).
+void RunLocatePick(const std::string& lib_uid, const std::string& node_uid, bool allow_rename)
 {
+    std::string name, folder;
+    {
+        const SoundLibrary* lib = FindLibrary(GetSoundStore(nullptr), lib_uid);
+        const SoundNode*    n = lib ? FindNode(*lib, node_uid) : nullptr;
+        if (!n) return;
+        name = n->sound.source.asset.name.empty() ? BaseNameOf(n->sound.source.asset.last_path) : n->sound.source.asset.name;
+        try {
+            folder = fs::u8path(n->sound.source.asset.last_path).parent_path().u8string();
+        } catch (...) {
+        }
+    }  // no store reference across the dialog (REAPER's timers run while it is open)
+    std::wstring title = L"Locate a missing sound";
+    try {
+        if (!name.empty()) title = L"Locate " + fs::u8path(name).wstring();
+    } catch (...) {
+    }
     std::string path;
-    if (!PickOpenFile(Owner(), L"Locate a missing sound", kAudioFilter, path)) return;
-    StartLocate(lib_uid, node_uid, path);
+    if (!PickOpenFile(Owner(), title.c_str(), kAudioFilter, folder, path)) return;
+    StartLocate(lib_uid, node_uid, path, allow_rename);
 }
 
 void RunLocateFolderPick()
@@ -744,11 +813,12 @@ void OnTimer()
     try {
         const PickKind    k = g.pick;
         const std::string lib = g.pick_lib, node = g.pick_node;
+        const bool        rename = g.pick_rename;
         g.pick = PickKind::None;
         if (k == PickKind::Import) RunImport();
         else if (k == PickKind::Export) RunExport(lib);
         else if (k == PickKind::Reveal) RunReveal(lib);
-        else if (k == PickKind::Locate) RunLocatePick(lib, node);
+        else if (k == PickKind::Locate) RunLocatePick(lib, node, rename);
         else if (k == PickKind::LocateFolder) RunLocateFolderPick();
 
         ApplyLocateResult();
@@ -765,11 +835,12 @@ void OnTimer()
     g.in_timer = false;
 }
 
-void RequestLocate(const std::string& lib_uid, const std::string& node_uid)
+void RequestLocate(const std::string& lib_uid, const std::string& node_uid, bool allow_rename)
 {
     g.pick = PickKind::Locate;
     g.pick_lib = lib_uid;
     g.pick_node = node_uid;
+    g.pick_rename = allow_rename;
 }
 
 // ---- Lands-in tracks (decision 12) ----------------------------------------------------------------
@@ -1148,7 +1219,10 @@ int UserLibraryMissing(const std::string& lib_uid, std::string* first)
     return lib ? MissingIn(*lib, first) : 0;
 }
 
-void RequestUserLibraryLocate(const std::string& lib_uid, const std::string& node_uid) { RequestLocate(lib_uid, node_uid); }
+void RequestUserLibraryLocate(const std::string& lib_uid, const std::string& node_uid, bool allow_rename)
+{
+    RequestLocate(lib_uid, node_uid, allow_rename);
+}
 
 void RequestLibraryLocateFolder()
 {
@@ -1171,8 +1245,9 @@ void DrawLocateButtons(const std::string& lib_uid, const std::string& node_uid)
         DrawLibraryLocateStatus();
         return;
     }
-    if (ui::SolidButton("Locate file...")) RequestLocate(lib_uid, node_uid);
-    ui::ItemTipText("Pick this file: the other missing sounds are looked for in the same folders");
+    if (ui::SolidButton("Locate file...")) RequestLocate(lib_uid, node_uid, true);
+    ui::ItemTipText("Pick this file where it is now (renamed too: this Sound then takes the new file): the other "
+                    "missing sounds are looked for in the same folders");
     ui::SameLineIfFits(ui::ButtonWidth("Locate in a folder..."));
     if (ui::SolidButton("Locate in a folder...")) RequestLibraryLocateFolder();
     ui::ItemTipText("Pick the folder that holds the sounds (for example the soundbank's parent): RAV searches "
@@ -1194,7 +1269,8 @@ void DrawUserLibraryNodeSection()
             const bool        is_root = n->uid == lib->root || n->parent.empty();
             if (is_root) {
                 // 13-36: its file, to share: a copy saved anywhere, or the file shown in File Explorer.
-                const std::string file = lib->ravlib_path.empty() ? RavlibFileName(lib->name, {}) : lib->ravlib_path;
+                // Not saved yet (no file name given): said so, never a guessed name (13-50 review).
+                const std::string file = lib->ravlib_path.empty() ? std::string("(not saved yet)") : lib->ravlib_path;
                 const float       fw = ui::LabelRow("File", ui::Dp(80.0f));
                 ui::FitText(file, ui::kText, fw);
                 ui::ItemTipText(("In " + UserFolderText()).c_str());

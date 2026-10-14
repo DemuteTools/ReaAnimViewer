@@ -75,6 +75,11 @@ bool SameAssetIdentity(const AssetIdentity& a, const AssetIdentity& b);
 // length, so a re-rendered file of another size is found again. How many Sounds changed.
 int ApplyLocated(SoundStore& store, const std::vector<std::pair<AssetIdentity, std::string>>& found,
                  const AssetIdentity* picked = nullptr);
+// 13-50 review: a File Sound's file was renamed and the user picked it under its new name. The Sound
+// (`lib_uid` / `node_uid`) and every File Sound sharing its old file (`old_id`, same last_path ignoring
+// case) take `now` whole: name, last_path, size and length. How many Sounds changed.
+int ApplyRelinked(SoundStore& store, const std::string& lib_uid, const std::string& node_uid,
+                  const AssetIdentity& old_id, const AssetIdentity& now);
 
 // Folder track layout (decision 12), `depths` = every track's I_FOLDERDEPTH in project order and
 // `fi` a folder track (depth >= 1): fills its direct children (indices) and its last descendant

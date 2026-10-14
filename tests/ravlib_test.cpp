@@ -422,6 +422,29 @@ static void TestApplyLocated()
     auto sized = [](const std::string& path) { return path == "F:/re/wood1.wav" ? int64_t(2000) : int64_t(-1); };
     CHECK(ResolveAssetPath(now, sized, nullptr) == picked.last_path);
     CHECK(ApplyLocated(p, {{now, picked.last_path}}, &picked) == 0);
+
+    // 13-50 review: renamed (wood1.wav is now wood1_v2.wav): the Sound and those sharing its old file
+    // take the new identity whole; another Sound of the same name elsewhere is left alone.
+    SoundStore q = RichStore();
+    SoundLibrary q2 = q.libraries[0];
+    q2.uid = "l000000000000002";
+    q.libraries.push_back(q2);
+    const AssetIdentity old_id = FindNode(q.libraries[0], "n000000000000004")->sound.source.asset;
+    FindNode(q.libraries[1], "n000000000000006")->sound.source.asset.name = "wood1.wav";
+    FindNode(q.libraries[1], "n000000000000006")->sound.source.asset.last_path = "Z:/elsewhere/wood1.wav";
+    AssetIdentity renamed;
+    renamed.name = "wood1_v2.wav";
+    renamed.size = 3000;
+    renamed.length = -1.0;
+    renamed.last_path = "F:/re/wood1_v2.wav";
+    const int r = ApplyRelinked(q, q.libraries[0].uid, "n000000000000004", old_id, renamed);
+    const AssetIdentity& self = FindNode(q.libraries[0], "n000000000000004")->sound.source.asset;
+    CHECK(self.name == "wood1_v2.wav" && self.last_path == renamed.last_path && self.size == 3000 && self.length < 0.0);
+    CHECK(FindNode(q.libraries[1], "n000000000000004")->sound.source.asset.name == "wood1_v2.wav");
+    CHECK(FindNode(q.libraries[1], "n000000000000006")->sound.source.asset.last_path == "Z:/elsewhere/wood1.wav");
+    CHECK(r == 2);
+    CHECK(ApplyRelinked(q, q.libraries[0].uid, "n000000000000004", old_id, renamed) == 0);
+    CHECK(ApplyRelinked(q, "nolib", "nonode", AssetIdentity{}, renamed) == 0);
 }
 
 static void TestFolderChildren()

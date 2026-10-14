@@ -634,6 +634,28 @@ std::string LocateToastText(int changed, int missing, int ambiguous)
     return msg;
 }
 
+AssetIdentity RenamedLocateKey(const std::string& stored_path, const AssetIdentity& located)
+{
+    AssetIdentity key = located;
+    size_t        cut = stored_path.size();
+    while (cut > 0 && (stored_path[cut - 1] == '/' || stored_path[cut - 1] == '\\')) --cut;
+    while (cut > 0 && stored_path[cut - 1] != '/' && stored_path[cut - 1] != '\\') --cut;
+    key.last_path = stored_path.substr(0, cut) + located.name;  // keeps the old folder's separator
+    return key;
+}
+
+std::string RelinkToastText(const std::string& old_name, const std::string& new_name, int others_changed,
+                            int others_missing, int ambiguous)
+{
+    std::string msg = "Relinked " + old_name + " under a new name: " + new_name;
+    const int   m = std::max(others_missing, others_changed);
+    if (m > 0) {
+        msg += "; located " + std::to_string(others_changed) + " of " + std::to_string(m) + " other sounds";
+        if (ambiguous > 0) msg += ", " + std::to_string(ambiguous) + " ambiguous";
+    }
+    return msg;
+}
+
 // ---------------------------------------------------------------- folder index (D7)
 
 std::vector<DbFile> ScanFolder(const std::string& folder, const std::vector<DbFile>& cached,

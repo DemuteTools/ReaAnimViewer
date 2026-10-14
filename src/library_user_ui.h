@@ -50,7 +50,10 @@ void ConvertToUserLibrary(const std::string& lib_uid);
 // The pickers (run by this module's timer, never inside the frame).
 void RequestUserLibraryImport();
 void RequestUserLibraryExport(const std::string& lib_uid);
-void RequestUserLibraryLocate(const std::string& lib_uid, const std::string& node_uid);
+// Locate: pick the Sound's file (the dialog titled with its name, opened in its old folder); the
+// other missing sounds are looked for through the same folders. `allow_rename` (a Sound's own
+// Locate): a file of another name relinks that Sound to it (13-50 review); otherwise refused.
+void RequestUserLibraryLocate(const std::string& lib_uid, const std::string& node_uid, bool allow_rename = false);
 // 13-38: "Locate in a folder...": picks a folder (timer), then every missing File Sound of every
 // library is looked for under it and its subfolders on the worker; one undo point "RAV: Locate sounds".
 void RequestLibraryLocateFolder();

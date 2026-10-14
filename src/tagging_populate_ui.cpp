@@ -576,7 +576,7 @@ void DrawSoundReportLine(const TaggingSoundContext& ctx)
                     if (!n) continue;
                     if (FileSoundMissing(*n)) {
                         ImGui::SameLine();
-                        if (ui::LinkButton("Locate...")) RequestUserLibraryLocate(lib.uid, n->uid);
+                        if (ui::LinkButton("Locate...")) RequestUserLibraryLocate(lib.uid, n->uid, true);
                         ui::ItemTipText("Pick this file where it is now. RAV also looks in its folder for\n"
                                         "the other missing sounds (one undo step).");
                     }

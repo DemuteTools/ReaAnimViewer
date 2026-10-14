@@ -300,3 +300,9 @@ add_test(NAME reaper_item_read COMMAND reaper_item_read_test)
 add_executable(read_robustness_test read_robustness_test.cpp)
 target_include_directories(read_robustness_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 add_test(NAME read_robustness COMMAND read_robustness_test)
+
+# 13-55 -- the one peak reader's pure rules (src/sound_peaks_plan.h): the rate a file is read at,
+# its cache key, which waiting file is read next, REAPER's peak points folded into PeakData.
+add_executable(sound_peaks_plan_test sound_peaks_plan_test.cpp)
+target_include_directories(sound_peaks_plan_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME sound_peaks_plan COMMAND sound_peaks_plan_test)

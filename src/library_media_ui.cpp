@@ -2,18 +2,17 @@
 //
 // See library_media_ui.h. Spec 13-7c (DECISIONS section 6, mockup renderMediaExplorer / useFiles).
 //
-// Threads: the database load is media_db's worker (MediaDbStartLoad). This file has three more:
+// Threads: the database load is media_db's worker (MediaDbStartLoad). This file has two more:
 // the row checker (are the files of the rows on screen on this PC: one batch at a time, each path
-// once per session, MediaExistsCache), the probe worker (can the previewed / used file be reached:
-// plain std::filesystem, exists and size, no REAPER call) and the peak reader (only GetSamples on a
-// source the UI thread made). The list itself comes straight from the index: a row is drawn at
-// once and only dims once its file is known missing; the row checks never delay a preview or a use
-// (their own worker). Every REAPER call (PCM_Source_CreateFromFile, deleting a source) stays on the
-// UI thread, made only once the probe answered that the file is reachable, so an offline network
-// share only leaves the preview "opening..." or a use "Reading N files...". Results come back
-// through a locked queue the draw polls; the UI thread deletes every source it takes back (stale or
-// not); both workers are joined by QuitLibraryMedia, which deletes the sources nobody took.
-// No folder is ever walked here.
+// once per session, MediaExistsCache) and the probe worker (can the previewed / used file be
+// reached: plain std::filesystem, exists and size, no REAPER call). The peaks are read by the one
+// peak reader of sound_peaks (13-55: REAPER's .reapeaks file, on its own thread), asked only once
+// the probe answered that the file is reachable, so an offline network share only leaves the
+// preview "opening..." or a use "Reading N files...". The list itself comes straight from the index:
+// a row is drawn at once and only dims once its file is known missing; the row checks never delay a
+// preview or a use (their own worker). Every REAPER call (PCM_Source_CreateFromFile, deleting a
+// source) stays on the UI thread. Results come back through a locked queue the draw polls; both
+// workers are joined by QuitLibraryMedia. No folder is ever walked here.
 
 #include "library_media_ui.h"
 
@@ -49,6 +48,7 @@
 #include "shortcuts.h"
 #include "sound_audition.h"
 #include "sound_entries.h"
+#include "sound_peaks.h"
 #include "sound_project.h"
 #include "sound_record.h"
 #include "ui_flow.h"
@@ -71,7 +71,6 @@ const char* const kPayload = "RAV_MEDIA";
 const char* const kAutoPref = "lib_media_autoplay";
 constexpr size_t  kMaxResults = 1000;
 constexpr double  kDebounce = 0.2;
-constexpr double  kPeakRate = 200.0;
 
 // ---- A clip of a file: [start, end) of the inner source, silence after (decision 10) -----------
 
@@ -134,9 +133,9 @@ private:
 
 // ---- Disk workers --------------------------------------------------------------------------------
 
-// Exists: the rows' missing checks (a batch of paths). Reach: the file is there and answers a short read (then the UI
-// thread opens it). Peaks: GetSamples over a source the UI thread opened.
-enum class TaskKind { Exists, Reach, Peaks };
+// Exists: the rows' missing checks (a batch of paths). Reach: the file is there and answers a short
+// read (then the UI thread opens it, or asks its peaks of sound_peaks).
+enum class TaskKind { Exists, Reach };
 enum class PeakOwner { Open, Preview, Batch };  // Open: the preview's playback (Reach only)
 
 struct Task {
@@ -144,7 +143,6 @@ struct Task {
     std::string path;
     uint64_t    id = 0;  // its owner's generation
     PeakOwner   owner = PeakOwner::Preview;
-    PCM_source* src = nullptr;  // Peaks: made and deleted by the UI thread
     std::vector<std::string> paths;  // Exists: the batch
 };
 
@@ -153,16 +151,12 @@ struct TaskResult {
     std::string path;
     uint64_t    id = 0;
     PeakOwner   owner = PeakOwner::Preview;
-    bool        ok = false;       // Exists / Reach: the file is there; Peaks: it was read
-    bool        done = true;      // Peaks: false when stopped (stale)
-    PCM_source* src = nullptr;    // Peaks: handed back, the UI thread deletes it
-    PeakData    peaks;
-    double      length = 0.0;
+    bool        ok = false;  // the file is there
     std::vector<std::string> paths;  // Exists: the batch, and whether each file is there
     std::vector<char>        found;
 };
 
-// A newer request makes an older one stale: a stale Open deletes its source, a stale read stops.
+// A newer request makes an older one stale: its answer is ignored.
 std::atomic<uint64_t> g_open_gen{0};
 std::atomic<uint64_t> g_preview_gen{0};
 std::atomic<uint64_t> g_batch_gen{0};
@@ -179,46 +173,12 @@ bool TaskStale(const Task& t)
     }
 }
 
-// The whole file's peaks (max |sample| over the channels, and per lane L / R for a stereo file)
-// at ~kPeakRate; false when cancelled.
-bool ReadFilePeaks(PCM_source* s, const Task& t, PeakData* peaks, double* length)
-{
-    const int    nch = s->GetNumChannels();
-    const double sr = s->GetSampleRate();
-    const double len = s->GetLength();
-    if (nch < 1 || sr < 1.0 || !(len > 0.0)) return true;
-    const int     per = std::max(1, static_cast<int>(std::lround(sr / kPeakRate)));
-    const int     block = per * 64;
-    const int64_t total = static_cast<int64_t>(len * sr);
-    std::vector<ReaSample> buf(static_cast<size_t>(block) * nch);
-    peaks->rate = sr / per;
-    PeakInit(peaks, nch, static_cast<size_t>((total + per - 1) / per));  // lanes: stereo only (13-14)
-    for (int64_t pos = 0; pos < total; pos += block) {
-        if (TaskStale(t)) return false;
-        PCM_source_transfer_t tr{};
-        tr.time_s = pos / sr;
-        tr.samplerate = sr;
-        tr.nch = nch;
-        tr.length = static_cast<int>(std::min<int64_t>(block, total - pos));
-        tr.samples = buf.data();
-        s->GetSamples(&tr);
-        const int out = std::max(0, std::min(tr.length, tr.samples_out));  // the rest is silence
-        for (int i = 0; i < out; ++i)
-            PeakAddFrame(peaks, static_cast<size_t>((pos + i) / per), buf.data() + static_cast<size_t>(i) * nch, nch);
-    }
-    *length = len;
-    return true;
-}
-
 // One thread running tasks in order (front pushes first); results wait in `out_` for the draw.
 class DiskWorker {
 public:
     void Push(Task t, bool front)
     {
-        if (g_quitting) {
-            delete t.src;
-            return;
-        }
+        if (g_quitting) return;
         {
             std::lock_guard<std::mutex> lk(m_);
             if (front) q_.push_front(std::move(t));
@@ -234,25 +194,17 @@ public:
         r.swap(out_);
         return r;
     }
-    // Unload: the queued tasks are dropped, the running one stops (g_quitting), the thread joined,
-    // and the sources nobody took are deleted.
+    // Unload: the queued tasks are dropped, the running one stops (g_quitting), the thread joined.
     void Stop()
     {
         {
             std::lock_guard<std::mutex> lk(m_);
             stop_ = true;
-            for (Task& t : q_) dropped_.push_back(std::move(t));
             q_.clear();
         }
         cv_.notify_all();
         if (th_.joinable()) th_.join();
-        for (TaskResult& r : Take()) delete r.src;
-        std::deque<Task> left;
-        {
-            std::lock_guard<std::mutex> lk(m_);
-            left.swap(dropped_);
-        }
-        for (Task& t : left) delete t.src;
+        Take();
         std::lock_guard<std::mutex> lk(m_);
         stop_ = false;
     }
@@ -269,14 +221,12 @@ private:
                 t = std::move(q_.front());
                 q_.pop_front();
             }
-            // A source always comes back to the UI thread (it deletes it), stale or not.
-            if (TaskStale(t) && !t.src) continue;
+            if (TaskStale(t)) continue;
             TaskResult r;
             r.kind = t.kind;
             r.path = t.path;
             r.id = t.id;
             r.owner = t.owner;
-            r.src = t.src;
             // Nothing may escape this thread (a throw would end REAPER): a failed task still answers,
             // so a waiting use never waits forever.
             try {
@@ -287,10 +237,6 @@ private:
                         std::error_code ec;
                         r.found[i] = std::filesystem::exists(std::filesystem::u8path(r.paths[i]), ec) ? 1 : 0;
                     }
-                } else if (t.kind == TaskKind::Peaks) {
-                    r.done = !TaskStale(t);
-                    if (r.done && t.src) r.done = ReadFilePeaks(t.src, t, &r.peaks, &r.length);
-                    r.ok = r.done && t.src && r.length > 0.0;
                 } else {
                     std::error_code ec;
                     const std::filesystem::path fp = std::filesystem::u8path(t.path);
@@ -300,8 +246,6 @@ private:
                 }
             } catch (...) {
                 r.ok = false;
-                r.peaks = PeakData{};
-                r.length = 0.0;
             }
             std::lock_guard<std::mutex> lk(m_);
             out_.push_back(std::move(r));
@@ -312,14 +256,12 @@ private:
     std::mutex              m_;
     std::condition_variable cv_;
     std::deque<Task>        q_;
-    std::deque<Task>        dropped_;  // queued at Stop: their sources are deleted after the join
     std::vector<TaskResult> out_;
     bool                    stop_ = false;
 };
 
 DiskWorker g_rows;    // Exists: the rows' checks, never ahead of a preview or a use
 DiskWorker g_probe;   // Reach (quick, but may stall on an offline share)
-DiskWorker g_reader;  // Peaks
 
 // ---- Preview (REAPER's preview API, one sound at a time) -----------------------------------------
 
@@ -437,6 +379,7 @@ struct Analysis {
     std::string             path;
     bool                    ready = false;
     bool                    failed = false;  // ready, but not read (a use reads it again and names it)
+    bool                    reached = false; // the probe found it: its peaks are asked of sound_peaks
     double                  length = -1.0;
     PeakData                peaks;
     std::vector<SoundFrame> frames;
@@ -473,6 +416,7 @@ struct State {
     std::string                         pend_lib;
     bool                                pend_has_row = false;
     LibraryRow                          pend_row;
+    std::vector<std::string>            pend_reached;  // its files reached: peaks asked of sound_peaks
     ReaProject*                         pend_proj = nullptr;  // the project the use was made in
     int                                 last_frame = -1;  // the last frame the panel was drawn
     int                                 scroll_to = -1;   // a result row to bring into view (arrow keys)
@@ -580,26 +524,19 @@ bool IsSelected(const std::string& path)
     return false;
 }
 
-// A file's peaks (read, or failed to open / read) for the preview or the waiting use.
-void PeakResult(TaskResult& r)
+// The previewed file's peaks (read, or failed to open / read).
+void PreviewPeaks(bool ok, PeakData&& peaks, double length)
 {
-    if (r.owner == PeakOwner::Preview) {
-        if (r.id != g_preview_gen || r.path != g.an.path) return;
-        g.an.peaks = std::move(r.peaks);
-        if (r.length > 0.0) g.an.length = r.length;
-        g.an.frames = r.ok ? SplitOnSilence(g.an.peaks, SilenceParams{}, g.an.length) : std::vector<SoundFrame>{};
-        g.an.failed = !r.ok;
-        g.an.ready = true;
-        // A double-click previews and uses the same file: the use takes this read, not a second one.
-        if (g.pending) MediaBatchSetRead(g.batch, r.path, r.ok, g.an.frames, r.length);
-    } else if (r.owner == PeakOwner::Batch && g.pending && r.id == g_batch_gen) {
-        std::vector<SoundFrame> frames;
-        if (r.ok) frames = SplitOnSilence(r.peaks, SilenceParams{}, r.length);
-        MediaBatchSetRead(g.batch, r.path, r.ok, frames, r.length);
-    }
+    g.an.peaks = std::move(peaks);
+    if (length > 0.0) g.an.length = length;
+    g.an.frames = ok ? SplitOnSilence(g.an.peaks, SilenceParams{}, g.an.length) : std::vector<SoundFrame>{};
+    g.an.failed = !ok;
+    g.an.ready = true;
+    // A double-click previews and uses the same file: the use takes this read, not a second one.
+    if (g.pending) MediaBatchSetRead(g.batch, g.an.path, ok, g.an.frames, length);
 }
 
-// Shows a file in the preview (its peaks read on the worker).
+// Shows a file in the preview (reached on the probe, then its peaks asked of sound_peaks).
 void SetCurrent(const DbFile& f)
 {
     if (g.has_cur && g.cur.path == f.path) return;
@@ -624,31 +561,39 @@ void SetCurrent(const DbFile& f)
     g_probe.Push(std::move(t), true);  // then read before any file of a waiting use
 }
 
-// A file reached: opened here (UI thread), its peaks read on the reader.
-void ReadReached(const TaskResult& r, bool front)
+// 13-55: the peaks of the files reached, asked of the one peak reader (sound_peaks) each frame until
+// it answers (a map lookup per file: the reading is on its thread). A file nobody asks for any more
+// (another file previewed, the use cancelled) is dropped from its wait.
+void AskPeaks()
 {
-    Task t;
-    t.kind = TaskKind::Peaks;
-    t.path = r.path;
-    t.id = r.id;
-    t.owner = r.owner;
-    t.src = f_create ? f_create(r.path.c_str()) : nullptr;
-    if (!t.src) {  // did not open: answered at once, not read
-        TaskResult f;
-        f.kind = TaskKind::Peaks;
-        f.path = r.path;
-        f.id = r.id;
-        f.owner = r.owner;
-        f.ok = false;
-        PeakResult(f);
-        return;
+    if (g.has_cur && g.an.reached && !g.an.ready) {
+        PeakData        pk;
+        double          len = 0.0;
+        const PeakState st = RequestPeaks(g.an.path, &pk, &len);
+        if (st != PeakState::Building) PreviewPeaks(st == PeakState::Ready && len > 0.0, std::move(pk), len);
     }
-    g_reader.Push(std::move(t), front);
+    if (!g.pending) return;
+    for (size_t i = 0; i < g.pend_reached.size();) {
+        const std::string path = g.pend_reached[i];
+        PeakData          pk;
+        double            len = 0.0;
+        const PeakState   st = RequestPeaks(path, &pk, &len);
+        if (st == PeakState::Building) {
+            ++i;
+            continue;
+        }
+        const bool              ok = st == PeakState::Ready && len > 0.0;
+        std::vector<SoundFrame> frames;
+        if (ok) frames = SplitOnSilence(pk, SilenceParams{}, len);
+        MediaBatchSetRead(g.batch, path, ok, frames, len);
+        g.pend_reached.erase(g.pend_reached.begin() + static_cast<std::ptrdiff_t>(i));
+    }
 }
 
 void CommitPending();
 
-// The workers' results: rows found or missing, the preview's source, the peaks read.
+// The workers' results (rows found or missing, the preview's source, the files reached) and the
+// peaks read.
 void PollWorkers()
 {
     for (TaskResult& r : g_rows.Take()) {
@@ -667,19 +612,14 @@ void PollWorkers()
             else g_pv.opening = false;  // missing, or it did not open
         } else if (r.owner == PeakOwner::Preview) {
             if (r.id != g_preview_gen || r.path != g.an.path) continue;
-            if (r.ok) ReadReached(r, true);
+            if (r.ok) g.an.reached = true;
             else g.an.ready = true;  // missing: no audio
         } else if (g.pending && r.id == g_batch_gen) {
-            if (r.ok) ReadReached(r, false);
+            if (r.ok) g.pend_reached.push_back(r.path);
             else MediaBatchSetMissing(g.batch, r.path);  // dropped from the use, named in the toast
         }
     }
-    for (TaskResult& r : g_reader.Take()) {
-        PCM_source* src = r.src;  // the UI thread deletes every source it takes back
-        r.src = nullptr;
-        delete src;
-        if (r.kind == TaskKind::Peaks && r.done) PeakResult(r);
-    }
+    AskPeaks();
     if (g.pending && MediaBatchLeft(g.batch) == 0) CommitPending();
 }
 
@@ -756,6 +696,7 @@ void CancelPending()
     if (!g.pending) return;
     g.pending = false;
     g.batch = MediaBatch{};
+    g.pend_reached.clear();
     ++g_batch_gen;
 }
 
@@ -1501,11 +1442,11 @@ void QuitLibraryMedia()
 {
     StopPreviewNow();
     CancelPending();
-    // Both workers stop (a read in progress sees g_quitting) and are joined; untaken sources deleted.
+    // Both workers stop (a check in progress sees g_quitting) and are joined (the peak reader is
+    // sound_peaks', stopped by QuitSoundPeaks).
     g_quitting = true;
     g_rows.Stop();
     g_probe.Stop();
-    g_reader.Stop();
     g.exists.Clear();
     MediaDbStop();
     if (g_pv.cs_ready) {

@@ -199,6 +199,8 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(
         QuitSoundProject();
         // 13-7c -- stops the media preview, joins the peak reader and the database load.
         QuitLibraryMedia();
+        // 13-55 -- the one peak reader's thread (Sound panel, Edit, Media Explorer).
+        QuitSoundPeaks();
         // 13-11 -- the User Library timer and the Locate worker.
         QuitLibraryUser();
         if (g_register) {

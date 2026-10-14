@@ -1,25 +1,36 @@
 // SPDX-License-Identifier: MIT
 //
-// See sound_peaks.h. The peaks are read from the file's own samples (a PCM_source made with
-// PCM_Source_CreateFromFile, read with GetSamples on the main thread, a bounded slice per call):
-// no peak file is written and nothing waits on REAPER's peak builder.
+// See sound_peaks.h. 13-55: the one peak reader of the Sound panel, Edit and the Media Explorer
+// (13-7c's own reader folded in). Threads: the UI thread opens a file (PCM_Source_CreateFromFile)
+// and deletes its source; one reader thread, given that source alone, makes sure REAPER's .reapeaks
+// file is there (PeaksBuild_Begin / Run / Finish: read when it is there, built and written as REAPER
+// does when not) and reads the peaks (GetPeakInfo for a long file, GetSamples for a short one,
+// sound_peaks_plan.h). One file at a time; the UI thread polls the results in RequestPeaks (a map
+// lookup and a locked swap: no REAPER call per frame) and hands the next waiting file over.
 
 #include "sound_peaks.h"
 
 #ifdef _WIN32
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
+#include <deque>
 #include <filesystem>
+#include <iterator>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <system_error>
+#include <thread>
 
 #include "file_change_check.h"
 #include "reaper_item_read.h"
+#include "sound_peaks_plan.h"
 #include "sound_populate.h"
 
 namespace rav {
@@ -42,30 +53,46 @@ GetMediaItemTakeFn  f_get_take = nullptr;
 TakeFXGetCountFn    f_takefx_count = nullptr;  // 13-49 review: optional (the "Placed without" line)
 
 constexpr size_t kCacheFiles = 32;
-constexpr double kBudgetMs = 8.0;   // per window: every call of one UI frame shares it
-constexpr double kWindowMs = 16.0;
-constexpr int    kBlock = 8192;
+constexpr int    kBlock = 8192;      // samples per GetSamples call (a short file)
+constexpr int    kPeakChunk = 4096;  // points per GetPeakInfo call (a long file)
 
 struct Entry {
-    PeakState                   state = PeakState::Building;
-    PeakData                    peaks;
-    double                      length = 0.0;
-    uint64_t                    used = 0;
-    std::unique_ptr<PCM_source> src;  // while building
-    double                      sr = 0.0;
-    int                         nch = 0;
-    int64_t                     done = 0;  // samples read
-    int64_t                     total = 0;
-    FileVersion                 version;          // 13-51: the file's date + size before it was read
-    double                      checked_s = 0.0;  // when the disk was last asked (NowSeconds)
+    std::string path;  // as first asked: the file is opened with it
+    PeakState   state = PeakState::Building;
+    PeakData    peaks;
+    double      length = 0.0;
+    uint64_t    used = 0;
+    uint64_t    seq = 0;            // the order it was asked in: its read's id
+    double      asked_s = 0.0;      // Building: when it was last asked (NowSeconds)
+    bool        in_flight = false;  // Building: the reader thread has it
+    FileVersion version;            // 13-51: the file's date + size before it was read
+    double      checked_s = 0.0;    // when the disk was last asked (NowSeconds)
 };
+
+// The reader thread's work: a source the UI thread opened, handed back (the UI thread deletes it).
+struct Job {
+    std::string key;
+    uint64_t    seq = 0;
+    PCM_source* src = nullptr;
+    double      length = 0.0, sr = 0.0;
+    int         nch = 0;
+};
+struct JobResult {
+    std::string key;
+    uint64_t    seq = 0;
+    PCM_source* src = nullptr;
+    bool        ok = false;
+    PeakData    peaks;
+};
+
+std::atomic<bool> g_quit{false};
 
 // Never destroyed: a building entry's REAPER source is not deleted from static destructors at
 // unload (the process is going away; REAPER may already be gone).
-std::map<std::string, Entry>& g_cache = *new std::map<std::string, Entry>();
-uint64_t                     g_tick = 0;
-std::chrono::steady_clock::time_point g_win_start{};
-double                                g_win_spent = 0.0;
+std::map<std::string, Entry>& g_cache = *new std::map<std::string, Entry>();  // by PeakCacheKey
+uint64_t                      g_tick = 0;
+uint64_t                      g_seq = 0;
+bool                          g_reading = false;  // a read is out on the reader thread
 std::map<std::string, double> g_len;
 uint64_t                      g_len_gen = 0;  // bumped when a g_len entry is dropped
 
@@ -103,50 +130,209 @@ void Evict()
     }
 }
 
-bool Open(const std::string& path, Entry& e)
+// ---- The reader thread (it only calls the source it was handed) ----------------------------------
+
+// A long file: REAPER's peaks (from its .reapeaks file) at `rate`. False when REAPER gave none.
+bool ReadPeakInfo(PCM_source* s, const Job& j, double rate, PeakData* out)
 {
-    if (!f_create || path.empty()) return false;
-    PCM_source* s = f_create(path.c_str());
-    if (!s) return false;
-    e.src.reset(s);
-    e.sr = s->GetSampleRate();
-    e.nch = s->GetNumChannels();
-    e.length = s->GetLength();
-    if (e.sr < 1.0 || e.nch < 1 || !(e.length > 0.0)) {
-        e.src.reset();
-        return false;
+    const size_t n = PeakBins(j.length, rate);
+    out->rate = rate;
+    PeakInit(out, j.nch, n);  // lanes: stereo only
+    const size_t           per = static_cast<size_t>(kPeakChunk) * static_cast<size_t>(j.nch);
+    std::vector<ReaSample> mx(per), mn(per);
+    for (size_t i = 0; i < n && !g_quit;) {
+        const int                 want = static_cast<int>(std::min<size_t>(kPeakChunk, n - i));
+        PCM_source_peaktransfer_t pt = {};
+        pt.start_time = static_cast<double>(i) / rate;
+        pt.peakrate = rate;
+        pt.numpeak_points = want;
+        pt.nchpeaks = j.nch;
+        pt.peaks = mx.data();
+        pt.peaks_minvals = mn.data();
+        pt.output_mode = PCM_source_peaktransfer_t::PEAKTRANSFER_PEAKS_MODE;
+        pt.samplerate = j.sr;
+        s->GetPeakInfo(&pt);
+        const int got = std::max(0, std::min(pt.peaks_out, want));
+        if (got == 0) break;  // the end (or no peaks at all: PeaksAllZero below)
+        FoldPeakPoints(out, i, mx.data(), pt.peaks_minvals_used ? mn.data() : nullptr, got, j.nch);
+        i += static_cast<size_t>(got);
     }
-    e.total = static_cast<int64_t>(std::ceil(e.length * e.sr));
-    e.peaks.rate = kPeakRate;
-    PeakInit(&e.peaks, e.nch, static_cast<size_t>(std::ceil(e.length * kPeakRate)) + 1);  // lanes: stereo only
-    g_len[path] = e.length;
+    return !g_quit && !PeaksAllZero(*out);
+}
+
+// A short file (or REAPER gave no peaks): its samples at kPeakHiResRate (13-7b's read).
+bool ReadSamples(PCM_source* s, const Job& j, PeakData* out)
+{
+    const int64_t total = static_cast<int64_t>(std::ceil(j.length * j.sr));
+    out->rate = kPeakHiResRate;
+    PeakInit(out, j.nch, PeakBins(j.length, kPeakHiResRate));  // lanes: stereo only
+    std::vector<ReaSample> buf(static_cast<size_t>(kBlock) * static_cast<size_t>(j.nch));
+    for (int64_t done = 0; done < total;) {
+        if (g_quit) return false;
+        PCM_source_transfer_t tr = {};
+        tr.time_s = static_cast<double>(done) / j.sr;
+        tr.samplerate = j.sr;
+        tr.nch = j.nch;
+        tr.length = static_cast<int>(std::min<int64_t>(kBlock, total - done));
+        tr.samples = buf.data();
+        s->GetSamples(&tr);
+        const int got = tr.samples_out > 0 ? std::min(tr.samples_out, tr.length) : 0;
+        for (int k = 0; k < got; ++k) {
+            const size_t bin = static_cast<size_t>(static_cast<double>(done + k) * kPeakHiResRate / j.sr);
+            PeakAddFrame(out, bin, buf.data() + static_cast<size_t>(k) * static_cast<size_t>(j.nch), j.nch);
+        }
+        done += tr.length;  // a short read is silence: never stall on it
+    }
     return true;
 }
 
-// Reads blocks until the budget is spent; true when the file is done.
-bool Run(Entry& e, double budget_ms)
+// REAPER's own peak file first (PeaksBuild_Begin answers 0 when it is there and up to date; else it
+// is built and written where REAPER keeps its peaks, as REAPER does for a file it plays), then the
+// peaks: from the peak file for a long file, from the samples for a short one.
+bool ReadJob(const Job& j, PeakData* out)
 {
-    const auto t0 = std::chrono::steady_clock::now();
-    std::vector<ReaSample> buf(static_cast<size_t>(kBlock) * static_cast<size_t>(e.nch));
-    while (e.done < e.total) {
-        PCM_source_transfer_t tr = {};
-        tr.time_s = static_cast<double>(e.done) / e.sr;
-        tr.samplerate = e.sr;
-        tr.nch = e.nch;
-        tr.length = static_cast<int>(std::min<int64_t>(kBlock, e.total - e.done));
-        tr.samples = buf.data();
-        e.src->GetSamples(&tr);
-        const int got = tr.samples_out > 0 ? std::min(tr.samples_out, tr.length) : 0;
-        for (int k = 0; k < got; ++k) {
-            const size_t bin = static_cast<size_t>(static_cast<double>(e.done + k) * kPeakRate / e.sr);
-            PeakAddFrame(&e.peaks, bin, buf.data() + static_cast<size_t>(k) * static_cast<size_t>(e.nch), e.nch);
+    PCM_source* s = j.src;
+    if (s->PeaksBuild_Begin()) {
+        while (!g_quit && s->PeaksBuild_Run()) {
         }
-        e.done += tr.length;  // a short read is silence: never stall on it
-        const double ms =
-            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
-        if (ms > budget_ms) break;
+        s->PeaksBuild_Finish();
     }
-    return e.done >= e.total;
+    if (g_quit) return false;
+    if (!PeakReadsSamples(j.length) && ReadPeakInfo(s, j, ChoosePeakRate(j.length), out)) return true;
+    *out = PeakData{};
+    return ReadSamples(s, j, out);
+}
+
+// One thread, one read at a time (the UI thread hands it the next only once this one came back).
+class PeakReader {
+public:
+    void Push(Job j)
+    {
+        {
+            std::lock_guard<std::mutex> lk(m_);
+            q_.push_back(std::move(j));
+            if (!th_.joinable()) th_ = std::thread([this] { Run(); });
+        }
+        cv_.notify_one();
+    }
+    std::vector<JobResult> Take()
+    {
+        std::lock_guard<std::mutex> lk(m_);
+        std::vector<JobResult>      r;
+        r.swap(out_);
+        return r;
+    }
+    // Unload: the read in progress stops (g_quit), the thread is joined, every source deleted.
+    void Stop()
+    {
+        {
+            std::lock_guard<std::mutex> lk(m_);
+            stop_ = true;
+        }
+        cv_.notify_all();
+        if (th_.joinable()) th_.join();
+        for (JobResult& r : Take()) delete r.src;
+        std::lock_guard<std::mutex> lk(m_);
+        for (Job& j : q_) delete j.src;
+        q_.clear();
+        stop_ = false;
+    }
+
+private:
+    void Run()
+    {
+        for (;;) {
+            Job j;
+            {
+                std::unique_lock<std::mutex> lk(m_);
+                cv_.wait(lk, [this] { return stop_ || !q_.empty(); });
+                if (stop_) return;
+                j = std::move(q_.front());
+                q_.pop_front();
+            }
+            JobResult r;
+            r.key = j.key;
+            r.seq = j.seq;
+            r.src = j.src;
+            // Nothing may escape this thread (a throw would end REAPER): a failed read still answers.
+            try {
+                r.ok = j.src && ReadJob(j, &r.peaks);
+            } catch (...) {
+                r.ok = false;
+            }
+            if (!r.ok) r.peaks = PeakData{};
+            std::lock_guard<std::mutex> lk(m_);
+            out_.push_back(std::move(r));
+        }
+    }
+
+    std::thread             th_;
+    std::mutex              m_;
+    std::condition_variable cv_;
+    std::deque<Job>         q_;
+    std::vector<JobResult>  out_;
+    bool                    stop_ = false;
+};
+
+PeakReader& g_reader = *new PeakReader();  // never destroyed: joined by QuitSoundPeaks
+
+// ---- The UI thread's side ------------------------------------------------------------------------
+
+// The reads that came back: their entries are Ready (or Failed); every source is deleted here.
+void Collect()
+{
+    for (JobResult& r : g_reader.Take()) {
+        delete r.src;
+        g_reading = false;
+        auto it = g_cache.find(r.key);
+        if (it == g_cache.end() || it->second.seq != r.seq) continue;  // dropped meanwhile
+        Entry& e = it->second;
+        e.in_flight = false;
+        e.state = r.ok ? PeakState::Ready : PeakState::Failed;
+        if (r.ok) e.peaks = std::move(r.peaks);
+        e.used = ++g_tick;  // just read: not the first evicted before its asker takes it
+    }
+}
+
+// When the reader is free: the waiting files nobody asks for any more are dropped, and the one to
+// read next is opened here (PCM_Source_CreateFromFile stays on the UI thread) and handed over.
+void Feed()
+{
+    if (g_reading || g_quit) return;
+    std::vector<PeakWaiting>                            w;
+    std::vector<std::map<std::string, Entry>::iterator> its;
+    for (auto it = g_cache.begin(); it != g_cache.end(); ++it)
+        if (it->second.state == PeakState::Building && !it->second.in_flight) {
+            w.push_back(PeakWaiting{it->second.seq, it->second.asked_s});
+            its.push_back(it);
+        }
+    if (w.empty()) return;
+    const PeakPick    pick = PickNextPeakJob(w, NowSeconds());
+    const std::string key = pick.next >= 0 ? its[static_cast<size_t>(pick.next)]->first : std::string();
+    for (int d : pick.drop) g_cache.erase(its[static_cast<size_t>(d)]);
+    if (key.empty()) return;
+    Entry&       e = g_cache[key];
+    PCM_source*  s = f_create ? f_create(e.path.c_str()) : nullptr;
+    const double sr = s ? s->GetSampleRate() : 0.0;
+    const int    nch = s ? s->GetNumChannels() : 0;
+    const double len = s ? s->GetLength() : 0.0;
+    if (!s || sr < 1.0 || nch < 1 || !(len > 0.0)) {
+        delete s;
+        e.state = PeakState::Failed;
+        return;
+    }
+    e.length = len;
+    g_len[e.path] = len;
+    e.in_flight = true;
+    Job j;
+    j.key = key;
+    j.seq = e.seq;
+    j.src = s;
+    j.length = len;
+    j.sr = sr;
+    j.nch = nch;
+    g_reading = true;
+    g_reader.Push(std::move(j));
 }
 
 std::string RootFileOf(PCM_source* src, double* len)
@@ -159,31 +345,13 @@ std::string RootFileOf(PCM_source* src, double* len)
     return fn ? std::string(fn) : std::string();
 }
 
-// Advances the one building entry within what is left of the window's budget (one UI frame
-// calls RequestPeaks many times: together they spend kBudgetMs at most).
-void Advance(Entry& e)
-{
-    if (e.state != PeakState::Building) return;
-    const auto now = std::chrono::steady_clock::now();
-    if (std::chrono::duration<double, std::milli>(now - g_win_start).count() > kWindowMs) {
-        g_win_start = now;
-        g_win_spent = 0.0;
-    }
-    const double left = kBudgetMs - g_win_spent;
-    if (left <= 0.0) return;
-    const bool done = Run(e, left);
-    g_win_spent += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - now).count();
-    if (done) {
-        e.state = PeakState::Ready;
-        e.src.reset();
-    }
-}
 
 }  // namespace
 
 void InitSoundPeaks(void* (*get_func)(const char* name))
 {
     if (!get_func) return;
+    g_quit = false;
     f_create = reinterpret_cast<CreateFromFileFn>(get_func("PCM_Source_CreateFromFile"));
     f_num_tm = reinterpret_cast<GetNumTakeMarkersFn>(get_func("GetNumTakeMarkers"));
     f_get_tm = reinterpret_cast<GetTakeMarkerFn>(get_func("GetTakeMarker"));
@@ -193,10 +361,21 @@ void InitSoundPeaks(void* (*get_func)(const char* name))
     f_takefx_count = reinterpret_cast<TakeFXGetCountFn>(get_func("TakeFX_GetCount"));
 }
 
-PeakState RequestPeaks(const std::string& path, PeakData* out)
+void QuitSoundPeaks()
+{
+    g_quit = true;
+    g_reader.Stop();
+    g_reading = false;
+    for (auto it = g_cache.begin(); it != g_cache.end();)  // an unfinished read is not left waiting
+        it = it->second.state == PeakState::Building ? g_cache.erase(it) : std::next(it);
+}
+
+PeakState RequestPeaks(const std::string& path, PeakData* out, double* length)
 {
     if (path.empty() || !f_create) return PeakState::Failed;
-    auto it = g_cache.find(path);
+    Collect();
+    const std::string key = PeakCacheKey(path);
+    auto              it = g_cache.find(key);
     // 13-51: a built (or failed) entry whose file changed on disk (re-rendered at the same path,
     // restored, located) is read again; the disk is asked at most once a second per entry.
     if (it != g_cache.end() && it->second.state != PeakState::Building) {
@@ -204,30 +383,28 @@ PeakState RequestPeaks(const std::string& path, PeakData* out)
         if (FileRecheckDue(it->second.checked_s, now)) {
             it->second.checked_s = now;
             if (FileReadStale(it->second.version, VersionOf(path))) {
+                if (g_len.erase(it->second.path) + g_len.erase(path)) ++g_len_gen;
                 g_cache.erase(it);
-                if (g_len.erase(path)) ++g_len_gen;
                 it = g_cache.end();
             }
         }
     }
     if (it == g_cache.end()) {
-        // One file builds at a time: the others wait their turn, and asking advances it (a file
-        // nobody shows any more still finishes).
-        for (auto& kv : g_cache)
-            if (kv.second.state == PeakState::Building) {
-                Advance(kv.second);
-                if (kv.second.state == PeakState::Building) return PeakState::Building;
-            }
         Entry e;
+        e.path = path;
+        e.seq = ++g_seq;
         e.version = VersionOf(path);  // before the read: a write during it shows as a change after
         e.checked_s = NowSeconds();
-        if (!Open(path, e)) e.state = PeakState::Failed;
-        it = g_cache.emplace(path, std::move(e)).first;
+        it = g_cache.emplace(key, std::move(e)).first;
     }
-    Entry& e = it->second;
-    e.used = ++g_tick;
-    Advance(e);
+    it->second.used = ++g_tick;
+    if (it->second.state == PeakState::Building) it->second.asked_s = NowSeconds();
+    Feed();  // may hand this file to the reader (or find it does not open)
+    it = g_cache.find(key);
+    if (it == g_cache.end()) return PeakState::Building;
+    const Entry& e = it->second;
     if (e.state == PeakState::Ready && out) *out = e.peaks;
+    if (length) *length = e.length;
     const PeakState st = e.state;
     Evict();
     return st;
@@ -238,14 +415,17 @@ bool ReadPeaks(const std::string& path, double start, double length, double rate
     if (out) *out = PeakData{};
     if (!out || !(length > 0.0) || !(rate > 0.0)) return false;
     if (RequestPeaks(path, nullptr) != PeakState::Ready) return false;
-    const PeakData& p = g_cache[path].peaks;
+    auto it = g_cache.find(PeakCacheKey(path));
+    if (it == g_cache.end()) return false;
+    const PeakData& p = it->second.peaks;
+    const double    pr = p.rate > 0.0 ? p.rate : kPeakHiResRate;  // the file's own rate (13-55)
     const size_t    n = static_cast<size_t>(std::max(1.0, std::floor(length * rate)));
     const int       lanes = PeakChannels(p);
     PeakInit(out, lanes, n);
     out->rate = rate;
     for (size_t i = 0; i < n; ++i) {
-        const double a = (start + static_cast<double>(i) / rate) * kPeakRate;
-        const double b = (start + static_cast<double>(i + 1) / rate) * kPeakRate;
+        const double a = (start + static_cast<double>(i) / rate) * pr;
+        const double b = (start + static_cast<double>(i + 1) / rate) * pr;
         int64_t      lo = static_cast<int64_t>(std::floor(a)), hi = static_cast<int64_t>(std::ceil(b));
         if (hi <= lo) hi = lo + 1;
         float m = 0.0f;

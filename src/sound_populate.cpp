@@ -16,6 +16,7 @@
 #include <memory>
 #include <random>
 #include <set>
+#include <thread>
 
 #include "asset_cache.h"
 #include "asset_loader.h"
@@ -73,7 +74,7 @@ struct MeasuredSound {
     std::set<std::pair<int, std::string>>   tried;  // (variation, file) measured in vain: not again
 };
 // The gesture's measures: the Sounds, each file's peaks read once (null = none), and the time the
-// gesture may still wait for peaks (RequestPeaks reads in slices: a cold file takes a while).
+// gesture may still wait for peaks (RequestPeaks reads on its thread: a cold file takes a while).
 struct MeasureCache {
     std::map<std::string, MeasuredSound>             sounds;
     std::map<std::string, std::unique_ptr<PeakData>> peaks;
@@ -224,7 +225,7 @@ void CheckOwners(const std::vector<std::string>& guids, const std::string& owner
 }
 
 // 13-25: a whole file's peaks for measuring sync points at placement, read once a gesture. RequestPeaks
-// reads a file in bounded slices: it is called until the peaks are ready, at most ~3 s a file and ~10 s a
+// reads a file on its reader thread: it is called until the peaks are ready, at most ~3 s a file and ~10 s a
 // gesture (else none: the sync falls back to the first span's start + the offset, PieceApplyFor, and is
 // measured by a later gesture). Null when there are none.
 const PeakData* WholeFilePeaks(MeasureCache& cache, const std::string& path)
@@ -246,6 +247,7 @@ const PeakData* WholeFilePeaks(MeasureCache& cache, const std::string& path)
             pk.reset();
             break;
         }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));  // 13-55: read on the reader thread
     }
     return cache.peaks.emplace(path, std::move(pk)).first->second.get();
 }

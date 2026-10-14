@@ -4,9 +4,11 @@
 // Epic 13 (D20). Created by 13-2 with declared interfaces and neutral stub bodies; story 13-7b
 // owns this file: it fills the stubs and may ADD declarations. Shared types: sound_model.h.
 //
-// 13-7b: a file's peaks are read once for the whole file at kPeakRate peaks/s (max |sample| over
-// its channels, plus one series per lane L / R for a stereo file: PeakData), incrementally (a bounded slice of work per call, one file at a time) and kept
-// in a cache of the last 32 files. Seams for 13-7c: RequestPeaks / ReadPeaks / ReadSoundMedia.
+// 13-7b: a file's peaks are read once for the whole file (max |sample| over its channels, plus one
+// series per lane L / R for a stereo file: PeakData), one file at a time, and kept in a cache of
+// the last 32 files. Seams for 13-7c: RequestPeaks / ReadPeaks / ReadSoundMedia.
+// 13-55: one reader for the Sound panel, Edit and the Media Explorer, on its own thread, reading
+// REAPER's .reapeaks peak file (built and written when missing); see sound_peaks.cpp.
 
 #pragma once
 
@@ -30,12 +32,15 @@ bool ReadPeaks(const std::string& path, double start, double length, double rate
 
 // ---- 13-7b additions ----------------------------------------------------------------------------
 
-constexpr double kPeakRate = 1000.0;
-
 enum class PeakState { Ready, Building, Failed };
-// The whole file's peaks (from 0 s at kPeakRate). Building: call again on a later frame (each
-// call does at most ~8 ms of reading); `out` is filled only when Ready.
-PeakState RequestPeaks(const std::string& path, PeakData* out);
+// The whole file's peaks (from 0 s at out->rate: 1000/s for a file up to 10 s, ~380/s from REAPER's
+// peak file for a longer one, sound_peaks_plan.h). Building: call again on a later frame (the file is
+// read on the reader thread; a file nobody asks for ~2 s is dropped from the wait); `out` is filled
+// only when Ready, `length` (seconds) once the file opened. Paths are matched ignoring case and
+// slashes. UI thread only.
+PeakState RequestPeaks(const std::string& path, PeakData* out, double* length = nullptr);
+// Unload: the reader thread stops and is joined, its source deleted.
+void QuitSoundPeaks();
 // The file's length in seconds (0 when it does not open). Cached.
 double SourceFileLength(const std::string& path);
 // 13-51 review: the file's date and size (both zero when it cannot be read), for a caller that keeps

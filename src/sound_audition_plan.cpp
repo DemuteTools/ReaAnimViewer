@@ -223,7 +223,9 @@ std::vector<AuditionVoice> PartAuditionVoices(const SoundLibrary& lib, const Sou
     std::vector<AuditionVoice> out;
     if (variation < 0 || static_cast<size_t>(variation) >= n.sound.frames.size()) return out;
     const SoundFrame& f = n.sound.frames[static_cast<size_t>(variation)];
-    const double      gain = GainFromRoot(lib, n) + FrameGainDb(f, part_value);  // 13-28: the part's own gain
+    const double      gain = GainFromRoot(lib, n) + FrameGainDb(f, part_value) +  // 13-28: the part's own gain
+                        PartGainDb(n.sound, part_value);                           // 13-62: its gain setting
+    const MonoMode    mono = PartMono(n.sound, part_value);                        // 13-62: its own, else the Sound's
     if (n.sound.mode == DetectMode::Takes) {  // A8: the take whole
         AuditionVoice voice;
         voice.node = n.uid;
@@ -232,7 +234,8 @@ std::vector<AuditionVoice> PartAuditionVoices(const SoundLibrary& lib, const Sou
         voice.length_s = f.length;
         voice.delay_ms = delay_ms;
         voice.gain_db = gain;
-        voice.mono = n.sound.mono;
+        voice.mono = mono;
+        voice.part = part_value;
         AuditionFades(n.sound, variation, &voice.fade_in_s, &voice.fade_out_s, &voice.fade_in_shape,
                       &voice.fade_out_shape);
         out.push_back(voice);
@@ -253,7 +256,8 @@ std::vector<AuditionVoice> PartAuditionVoices(const SoundLibrary& lib, const Sou
         voice.fade_in_shape = pa.fades.set_in ? pa.fades.in_shape : 0;
         voice.fade_out_shape = pa.fades.set_out ? pa.fades.out_shape : 0;
         voice.piece = static_cast<int>(k);
-        voice.mono = n.sound.mono;
+        voice.mono = mono;
+        voice.part = part_value;
         out.push_back(voice);
     }
     return out;
@@ -564,7 +568,7 @@ std::vector<AuditionVoice> MarginVoices(const std::vector<AuditionVoice>& voices
 
 }  // namespace
 
-std::vector<AuditionVoice> EditPlayVoices(const SoundLibrary& lib, const SoundNode& n, int take)
+std::vector<AuditionVoice> EditPlayVoices(const SoundLibrary& lib, const SoundNode& n, int take, const PartListen* listen)
 {
     std::vector<AuditionVoice> out;
     const SoundData&           d = n.sound;
@@ -595,7 +599,8 @@ std::vector<AuditionVoice> EditPlayVoices(const SoundLibrary& lib, const SoundNo
     };
     for (int i : order) {
         const SoundFrame& f = d.frames[static_cast<size_t>(i)];
-        const bool        by_part = IsDivided(d) && !f.part_db.empty();
+        const bool        listening = listen && listen->Active();
+        const bool        by_part = IsDivided(d) && (!f.part_db.empty() || !d.parts.empty() || listening);  // 13-62
         // 13-54: with the parts' margins, only what the parts play (PartPieces), owned by the part playing it.
         const bool                  margins = PartMarginsApply(d);
         const std::vector<PartSpan> owners = margins ? PartPieces(d, i) : std::vector<PartSpan>();
@@ -627,35 +632,126 @@ std::vector<AuditionVoice> EditPlayVoices(const SoundLibrary& lib, const SoundNo
                 for (double t : {sp.start, sp.start + sp.length})
                     if (t > s0 && t < s1) b.push_back(t);
             std::sort(b.begin(), b.end());
-            AuditionVoice cur;
-            bool          open = false;
+            // 13-62: each stretch's owner, level, mono, own fades and whether it is heard (Mute / Solo).
+            struct Stretch {
+                double      a, b, db;
+                std::string own;
+                MonoMode    mono;
+                bool        heard, fades;
+                double      in, out;
+            };
+            std::vector<Stretch> st;
             for (size_t k = 0; k + 1 < b.size(); ++k) {
                 if (b[k + 1] - b[k] <= 1e-9) continue;
-                std::string  own;
-                const double db = root + (owner_at((b[k] + b[k + 1]) * 0.5, &own) ? FrameGainDb(f, own) : f.db);
-                if (open && std::fabs(cur.gain_db - db) < 1e-12) {
-                    cur.length_s = b[k + 1] - cur.start_s;
+                Stretch    x{b[k], b[k + 1], 0.0, std::string(), d.mono, true, false, 0.0, 0.0};
+                const bool known = owner_at((b[k] + b[k + 1]) * 0.5, &x.own);
+                if (!known) x.own.clear();
+                x.db = root + (known ? FrameGainDb(f, x.own) + PartGainDb(d, x.own) : f.db);
+                x.mono = PartMono(d, x.own);
+                x.heard = !listening || PartHeard(*listen, x.own);
+                x.fades = known && PartFades(d, x.own, &x.in, &x.out);
+                st.push_back(x);
+            }
+            // Runs: neighbouring heard stretches at one level and mono play on as one voice (a part with its
+            // own fades only with itself, so they land on its edges).
+            for (size_t k = 0; k < st.size();) {
+                if (!st[k].heard) {
+                    ++k;
                     continue;
                 }
-                if (open) push(cur);
-                cur = piece;
-                cur.start_s = b[k];
-                cur.length_s = b[k + 1] - b[k];
-                cur.gain_db = db;
-                cur.fade_from_s = b[k] - s0;
-                cur.fade_span_s = piece.length_s;
-                open = true;
-            }
-            if (open) {
-                if (std::fabs(cur.start_s - s0) < 1e-12 && std::fabs(cur.length_s - piece.length_s) < 1e-12) {
-                    cur.fade_from_s = 0.0;  // one part all along: the piece itself
-                    cur.fade_span_s = 0.0;
+                size_t e = k + 1;
+                while (e < st.size() && st[e].heard && std::fabs(st[e].db - st[k].db) < 1e-12 && st[e].mono == st[k].mono &&
+                       (st[e].own == st[k].own || (!st[e].fades && !st[k].fades)))
+                    ++e;
+                const double  a = st[k].a, z = st[e - 1].b;
+                const bool    at_start = k == 0, at_end = e == st.size();
+                const bool    silent_before = !at_start && !st[k - 1].heard;
+                const bool    silent_after = !at_end && !st[e].heard;
+                AuditionVoice cur = piece;
+                cur.start_s = a;
+                cur.length_s = z - a;
+                cur.gain_db = st[k].db;
+                cur.mono = st[k].mono;
+                cur.part = st[k].own;
+                for (size_t j = k; j < e; ++j)
+                    if (st[j].own != cur.part) cur.part.clear();
+                if (st[k].fades || silent_before || silent_after) {  // a voice of its own: its edges faded here
+                    const double cutf = std::isfinite(d.cut_fade) && d.cut_fade > 0.0 ? d.cut_fade : 0.0;
+                    cur.fade_from_s = cur.fade_span_s = 0.0;
+                    if (st[k].fades || !at_start) {
+                        cur.fade_in_s = st[k].fades ? st[k].in : silent_before ? cutf : 0.0;
+                        cur.fade_in_shape = 0;
+                    }
+                    if (st[k].fades || !at_end) {
+                        cur.fade_out_s = st[k].fades ? st[k].out : silent_after ? cutf : 0.0;
+                        cur.fade_out_shape = 0;
+                    }
+                } else if (!(at_start && at_end)) {  // a window of the piece: its fades kept across the voices
+                    cur.fade_from_s = a - s0;
+                    cur.fade_span_s = piece.length_s;
                 }
                 push(cur);
+                k = e;
             }
         }
         covered = std::max(covered, f.start + f.length);
     }
+    return out;
+}
+
+bool PartHeard(const PartListen& listen, const std::string& value)
+{
+    if (!listen.solo.empty()) return listen.solo.count(value) > 0;
+    return listen.mute.count(value) == 0;
+}
+
+std::vector<AuditionVoice> PiecePlayVoices(const SoundLibrary& lib, const SoundNode& n, int variation, int piece_index)
+{
+    const SoundData& d = n.sound;
+    if (d.mode == DetectMode::Takes || variation < 0 || static_cast<size_t>(variation) >= d.frames.size()) return {};
+    const std::vector<EditPiece> pieces = EditPiecesOf(d, variation);
+    if (piece_index < 0 || static_cast<size_t>(piece_index) >= pieces.size()) return {};
+    const EditPiece&  p = pieces[static_cast<size_t>(piece_index)];
+    const SoundFrame& f = d.frames[static_cast<size_t>(variation)];
+    if (!(p.length > 0.0)) return {};
+    AuditionVoice v;
+    v.node = n.uid;
+    v.variation = variation;
+    v.start_s = p.start;
+    v.length_s = p.length;
+    v.part = p.owner;
+    v.gain_db = GainFromRoot(lib, n) + (p.owner.empty() ? f.db : FrameGainDb(f, p.owner) + PartGainDb(d, p.owner));
+    v.mono = PartMono(d, p.owner);
+    double in = 0.0, out = 0.0;
+    if (!p.owner.empty() && PartFades(d, p.owner, &in, &out)) {  // decision 6: its own on both edges
+        v.fade_in_s = in;
+        v.fade_out_s = out;
+    } else {
+        AuditionFades(d, variation, &v.fade_in_s, &v.fade_out_s, &v.fade_in_shape, &v.fade_out_shape);
+        const double cut = std::isfinite(d.cut_fade) && d.cut_fade > 0.0 ? d.cut_fade : 0.0;
+        if (p.start > f.start + 1e-6) {  // at a cut or a zone edge
+            v.fade_in_s = cut;
+            v.fade_in_shape = 0;
+        }
+        if (p.start + p.length < f.start + f.length - 1e-6) {
+            v.fade_out_s = cut;
+            v.fade_out_shape = 0;
+        }
+    }
+    return {v};
+}
+
+std::vector<AuditionVoice> PartPiecesVoices(const SoundLibrary& lib, const SoundNode& n, const std::string& value)
+{
+    std::vector<AuditionVoice> out;
+    const SoundData&           d = n.sound;
+    if (value.empty() || d.mode == DetectMode::Takes) return out;
+    for (size_t i = 0; i < d.frames.size(); ++i)
+        if (d.frames[i].on)
+            for (AuditionVoice& v : PartAuditionVoices(lib, n, static_cast<int>(i), value)) out.push_back(std::move(v));
+    std::stable_sort(out.begin(), out.end(),
+                     [](const AuditionVoice& a, const AuditionVoice& b) { return a.start_s < b.start_s; });
+    for (AuditionVoice& v : out) v.delay_ms = (v.start_s - out.front().start_s) * 1000.0;  // the file's clock
     return out;
 }
 
@@ -711,7 +807,8 @@ bool SameVoices(const std::vector<AuditionVoice>& a, const std::vector<AuditionV
         if (x.node != y.node || x.variation != y.variation || !eq(x.start_s, y.start_s) || !eq(x.length_s, y.length_s) ||
             !eq(x.delay_ms, y.delay_ms) || !eq(x.gain_db, y.gain_db) || !eq(x.fade_in_s, y.fade_in_s) ||
             !eq(x.fade_out_s, y.fade_out_s) || x.fade_in_shape != y.fade_in_shape || x.fade_out_shape != y.fade_out_shape ||
-            !eq(x.fade_from_s, y.fade_from_s) || !eq(x.fade_span_s, y.fade_span_s) || x.mono != y.mono)
+            !eq(x.fade_from_s, y.fade_from_s) || !eq(x.fade_span_s, y.fade_span_s) || x.mono != y.mono ||
+            x.part != y.part)
             return false;
     }
     return true;

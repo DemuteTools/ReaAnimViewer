@@ -142,6 +142,7 @@ struct Walker {
                 if (rs.variation >= 0 && rs.variation < (int)n.sound.frames.size())
                     rs.gain_db += FrameGainDb(n.sound.frames[(size_t)rs.variation], rs.part_value);  // 13-28: a part's own gain
             }
+            rs.gain_db += PartGainDb(n.sound, rs.part_value);  // 13-62 (decision 3): the part's own gain setting
             res.sounds.push_back(rs);
             break;
         }

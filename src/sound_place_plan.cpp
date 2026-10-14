@@ -367,6 +367,8 @@ std::vector<PieceApply> PieceApplyFor(const SoundData& data, int variation, cons
     constexpr double  kEps = 1e-6;
     const FadeApply   base = file ? FileFadeApplyFor(data, variation) : FadeApplyFor(data, variation);
     const double      cut = std::isfinite(data.cut_fade) && data.cut_fade > 0.0 ? data.cut_fade : 0.0;
+    double            own_in = 0.0, own_out = 0.0;  // 13-62 (decision 6): a part owning a fade gets it on both edges
+    const bool        own = PartFades(data, part_value, &own_in, &own_out);
     double            sync = SyncFor(data, variation, part_value);
     if (sync >= 0.0 && ClampIntoSpans(spans, sync) != sync) sync = -1.0;  // stale: not inside what is placed
     if (sync < 0.0) sync = AutoSync(data, nullptr, spans);
@@ -392,6 +394,12 @@ std::vector<PieceApply> PieceApplyFor(const SoundData& data, int variation, cons
             pa.fades.set_out = pa.fades.shape_out = true;
             pa.fades.out = cut;
             pa.fades.out_shape = 0;
+        }
+        if (own) {
+            pa.fades.set_in = pa.fades.shape_in = pa.fades.set_out = pa.fades.shape_out = true;
+            pa.fades.in = own_in;
+            pa.fades.out = own_out;
+            pa.fades.in_shape = pa.fades.out_shape = 0;
         }
         pa.anchor = k == anchor;
         if (pa.anchor) pa.slice.snap_offset = std::min(std::max(sync - sp.start, 0.0), sp.length);

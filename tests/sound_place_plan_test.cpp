@@ -195,8 +195,48 @@ static void TestAsAuditioned()
     CHECK(PlacementDropsText(false, false, false, true) == "Placed without the source item's pan (RAV plays the file itself)");
 }
 
+// 13-62 (decision 6, matrix row "Part fades own"): a part owning a fade gets its fades on both edges of
+// each of its pieces (at a cut too, not cut_fade); a part without keeps today's rule.
+static void TestPartFadesOnPieces()
+{
+    SoundData d;
+    d.mode = DetectMode::Silence;
+    d.divide_group = "g";
+    d.divide_values = {"heel", "toe"};
+    SoundFrame f;
+    f.start = 1.0;
+    f.length = 1.0;
+    f.cuts = {1.4};
+    d.frames.push_back(f);
+    PartSettings own;
+    own.fade_in = 0.004;
+    SetPartSetting(d, "toe", own);
+    std::vector<PieceApply> toe = PieceApplyFor(d, 0, "toe");
+    CHECK(toe.size() == 1 && Near(toe[0].slice.start_offs, 1.4));
+    if (toe.size() == 1) {
+        CHECK(toe[0].fades.set_in && Near(toe[0].fades.in, 0.004) && toe[0].fades.in_shape == 0);
+        CHECK(toe[0].fades.set_out && Near(toe[0].fades.out, kDefaultFadeOut));  // its unset side: the Sound's default
+    }
+    std::vector<PieceApply> heel = PieceApplyFor(d, 0, "heel");
+    CHECK(heel.size() == 1 && Near(heel[0].fades.in, kDefaultFadeIn) && Near(heel[0].fades.out, kDefaultCutFade));
+    // Its own fade out too, on the variation's edge: the part's, not the frame's.
+    own = PartSettings{};
+    own.fade_out = 0.02;
+    SetPartSetting(d, "toe", own);
+    toe = PieceApplyFor(d, 0, "toe");
+    CHECK(toe.size() == 1 && Near(toe[0].fades.in, 0.004) && Near(toe[0].fades.out, 0.02));
+    // Per-part sync (decision 7): Slice start + its own offset, from the part's own span.
+    own = PartSettings{};
+    own.sync_mode = SyncMode::SliceStart;
+    own.sync_offset_ms = 10.0;
+    SetPartSetting(d, "toe", own);
+    toe = PieceApplyFor(d, 0, "toe");
+    CHECK(toe.size() == 1 && Near(toe[0].slice.snap_offset, 0.01, 1e-9));
+}
+
 int main()
 {
+    TestPartFadesOnPieces();
     TestChanMode();
     TestAsAuditioned();
     // Position (Blend offset + nudge) and clamp.

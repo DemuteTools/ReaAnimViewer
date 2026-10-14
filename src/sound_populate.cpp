@@ -378,7 +378,7 @@ PlaceRequest RequestFor(MediaItem* owner, const std::string& rid, double event_t
     // 13-29 / 13-41: placed as the audition plays it (no take FX, pan, playrate / pitch of the source item),
     // forced to mono as the Sound says.
     req.as_auditioned = true;
-    req.chan_mode = ChanModeFor(sd.mono);
+    req.chan_mode = ChanModeFor(PartMono(sd, rs.part_value));  // 13-62 (decision 7): the part's own, else the Sound's
     req.blend_ms = rs.offset_ms;
     return req;
 }

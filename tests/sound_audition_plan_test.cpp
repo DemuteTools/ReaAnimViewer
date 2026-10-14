@@ -878,8 +878,116 @@ static void TestEditTrim()
     CHECK(Near(d.frames[2].start, 3.0) && Near(d.frames[2].length, 0.5));
 }
 
+// 13-62: per-part gain / mono / fades heard in Edit's Play and auditions; Mute / Solo (decision 5); Space
+// (one piece) and Shift+Space (every piece of a part) of decision 13.
+static void TestPartListen()
+{
+    PartListen l;
+    CHECK(!l.Active() && PartHeard(l, "a") && PartHeard(l, ""));
+    l.mute = {"b"};
+    CHECK(l.Active() && PartHeard(l, "a") && !PartHeard(l, "b"));
+    l.solo = {"b"};  // a solo wins over the mutes, adds to other solos
+    CHECK(PartHeard(l, "b") && !PartHeard(l, "a") && !PartHeard(l, ""));
+
+    SoundLibrary lib;
+    lib.uid = "L";
+    lib.root = "s";
+    SoundNode sn = Node("s", "", SoundNodeType::Sound, "S");
+    sn.sound.mode = DetectMode::Silence;
+    sn.sound.divide_group = "g";
+    sn.sound.divide_values = {"a", "b"};
+    SoundFrame f;
+    f.start = 1.0;
+    f.length = 1.0;
+    f.db = 2.0;
+    f.cuts = {1.5};
+    sn.sound.frames = {f};
+    lib.nodes.push_back(sn);
+    const std::vector<AuditionVoice> legacy = EditPlayVoices(lib, sn);
+    PartListen none;
+    CHECK(legacy.size() == 1 && SameVoices(legacy, EditPlayVoices(lib, sn, -1, &none)));  // no setting, no filter: as before
+
+    // b: -3 dB and Sum of its own.
+    PartSettings g;
+    g.gain_db = -3.0;
+    g.mono = MonoMode::Sum;
+    SetPartSetting(sn.sound, "b", g);
+    std::vector<AuditionVoice> v = EditPlayVoices(lib, sn);
+    CHECK(v.size() == 2);
+    if (v.size() == 2) {
+        CHECK(Near(v[0].gain_db, 2.0) && v[0].mono == MonoMode::Off && v[0].part == "a" && Near(v[0].fade_span_s, 1.0));
+        CHECK(Near(v[1].gain_db, -1.0) && v[1].mono == MonoMode::Sum && v[1].part == "b" && Near(v[1].fade_from_s, 0.5));
+    }
+    std::vector<AuditionVoice> pv = PartAuditionVoices(lib, sn, 0, "b");
+    CHECK(pv.size() == 1 && Near(pv[0].gain_db, -1.0) && pv[0].mono == MonoMode::Sum && pv[0].part == "b");
+    sn.sound.frames[0].part_db["b"] = 1.0;  // 13-28's part_db replaces the frame dB for its part: 1 - 3
+    v = EditPlayVoices(lib, sn);
+    CHECK(v.size() == 2 && Near(v[1].gain_db, -2.0));
+    sn.sound.frames[0].part_db.clear();
+
+    // Mute b: only a, the cut faded where b is silent.
+    l = PartListen{};
+    l.mute = {"b"};
+    v = EditPlayVoices(lib, sn, -1, &l);
+    CHECK(v.size() == 1);
+    if (v.size() == 1)
+        CHECK(Near(v[0].start_s, 1.0) && Near(v[0].length_s, 0.5) && Near(v[0].fade_in_s, kDefaultFadeIn) &&
+              Near(v[0].fade_out_s, kDefaultCutFade) && Near(v[0].fade_span_s, 0.0) && Near(v[0].delay_ms, 1000.0));
+    // Solo b: only b.
+    l = PartListen{};
+    l.solo = {"b"};
+    v = EditPlayVoices(lib, sn, -1, &l);
+    CHECK(v.size() == 1 && Near(v[0].start_s, 1.5) && Near(v[0].fade_in_s, kDefaultCutFade) &&
+          Near(v[0].fade_out_s, kDefaultFadeOut));
+    l.solo = {"a", "b"};  // Solo adds
+    CHECK(EditPlayVoices(lib, sn, -1, &l).size() == 2);
+
+    // b's own fade in (4 ms): its own voice, its fades on both edges (the out = the Sound's default).
+    PartSettings fi;
+    fi.fade_in = 0.004;
+    SetPartSetting(sn.sound, "b", fi);
+    v = EditPlayVoices(lib, sn);
+    CHECK(v.size() == 2);
+    if (v.size() == 2)
+        CHECK(Near(v[1].fade_in_s, 0.004) && Near(v[1].fade_out_s, kDefaultFadeOut) && Near(v[1].fade_span_s, 0.0) &&
+              Near(v[0].fade_span_s, 1.0));
+
+    // Space: one piece (never filtered); index past the end: nothing.
+    std::vector<AuditionVoice> one = PiecePlayVoices(lib, sn, 0, 0);
+    CHECK(one.size() == 1 && Near(one[0].start_s, 1.0) && Near(one[0].length_s, 0.5) && Near(one[0].gain_db, 2.0) &&
+          Near(one[0].fade_in_s, kDefaultFadeIn) && Near(one[0].fade_out_s, kDefaultCutFade) && one[0].part == "a");
+    one = PiecePlayVoices(lib, sn, 0, 1);
+    CHECK(one.size() == 1 && Near(one[0].start_s, 1.5) && Near(one[0].gain_db, -1.0) && Near(one[0].fade_in_s, 0.004) &&
+          one[0].mono == MonoMode::Sum && Near(one[0].delay_ms, 0.0));
+    CHECK(PiecePlayVoices(lib, sn, 0, 2).empty() && PiecePlayVoices(lib, sn, 1, 0).empty());
+
+    // No merge in Edit (decision 10): a | b | a, b's range given to a: three pieces, Space plays the middle one
+    // alone; Shift+Space plays a's stretch as placed (one merged piece, C3).
+    SoundNode cm = sn;
+    cm.sound.frames[0].cuts = {1.3, 1.6};
+    cm.sound.frames[0].owners = {"a", "a", "a"};
+    CHECK(EditPiecesOf(cm.sound, 0).size() == 3);
+    one = PiecePlayVoices(lib, cm, 0, 1);
+    CHECK(one.size() == 1 && Near(one[0].start_s, 1.3) && Near(one[0].length_s, 0.3));
+    CHECK(PartPiecesVoices(lib, cm, "a").size() == 1);
+
+    // Shift+Space: every piece of b in file order, on the file's clock from the first.
+    SoundNode two = sn;
+    SoundFrame f2 = f;
+    f2.start = 3.0;
+    f2.cuts = {3.25};
+    two.sound.frames = {f2, f};  // listed out of file order
+    std::vector<AuditionVoice> all = PartPiecesVoices(lib, two, "b");
+    CHECK(all.size() == 2);
+    if (all.size() == 2)
+        CHECK(Near(all[0].start_s, 1.5) && Near(all[0].delay_ms, 0.0) && Near(all[1].start_s, 3.25) &&
+              Near(all[1].delay_ms, 1750.0) && all[1].part == "b" && Near(all[1].gain_db, -1.0));
+    CHECK(PartPiecesVoices(lib, two, "").empty());
+}
+
 int main()
 {
+    TestPartListen();
     TestEditTrim();
     TestEditSplit();
     TestEditPlay();

@@ -5,6 +5,7 @@
 
 #include "sound_switch.h"
 #include "sound_record.h"  // FindNode
+#include "sound_entries.h"  // 13-62: SetPartSetting
 
 #include <cmath>
 #include <cstdio>
@@ -653,6 +654,21 @@ static void TestParts()
     FindNode(lib, "s1")->sound.frames[0].part_db = {{"vb", 4.0}, {"vf", -6.0}};
     r = ResolveEvent(st, lib, l, h);
     CHECK(std::fabs(r.sounds[0].gain_db - (g0 + 4.0)) < 1e-9);
+    // 13-62 (decision 3): the part's own gain setting adds on top of its part_db (matrix row "Part gain", as
+    // amended: + FrameGainDb + PartGainDb); a part without one adds 0.
+    {
+        PartSettings g;
+        g.gain_db = -3.0;
+        SetPartSetting(FindNode(lib, "s1")->sound, "vb", g);
+        r = ResolveEvent(st, lib, l, h);
+        CHECK(std::fabs(r.sounds[0].gain_db - (g0 + 4.0 - 3.0)) < 1e-9);
+        CHECK(std::fabs(r.sounds[1].gain_db - g0) < 1e-9);  // s2: no part setting
+        FindNode(lib, "s1")->sound.frames[0].part_db.clear();
+        r = ResolveEvent(st, lib, l, h);
+        CHECK(std::fabs(r.sounds[0].gain_db - (g0 - 1.0 - 3.0)) < 1e-9);  // the variation dB + the part's gain
+        FindNode(lib, "s1")->sound.frames[0].part_db = {{"vb", 4.0}, {"vf", -6.0}};
+        ResetPartAll(FindNode(lib, "s1")->sound, "vb");
+    }
     // No role: the whole variation.
     l.role.clear();
     r = ResolveEvent(st, lib, l, h);

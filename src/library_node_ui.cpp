@@ -202,6 +202,7 @@ struct PanelState {
     bool                  ev_live = false;
     bool                  ev_measured = false;  // 13-54 review: planned from MeasuredShown's copy
     std::vector<int>      ev_sel;
+    std::set<std::string> ev_mute, ev_solo;  // 13-62: planned under this Mute / Solo
     unsigned              draft_rev = 0;  // bumped each time the live draft is rewritten or ends
     // 13-40: the Mix row selected (its parent and the child): Play / Space plays that child.
     std::string           mix_parent, mix_child;
@@ -681,6 +682,9 @@ void PlayAt(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, in
             }
         // 13-54 review: a grey stretch (left out by the margins) plays nothing.
         if (!played) ShowLibraryToast("Not played: outside the part's pre-roll / tail", false);
+        else if (!PartHeard(PartListen{P.part_mute, P.part_solo}, own))  // 13-62 (decision 5)
+            ShowLibraryToast(P.part_solo.empty() ? "Not played: this part is muted (M)" : "Not played: another part is soloed (S)",
+                             false);
         else PlayPart(lib, n, m, i, own);
     }
 }
@@ -1770,6 +1774,7 @@ bool LibraryNodeTakesKey(unsigned vk, bool ctrl, bool shift, bool alt)
     if (edit && P.edit_has_focus) {  // the view keys (Up / Down zoom too) zoom Edit, not the arrange view
         if (ViewNavRowForKeyDown(vk, ctrl, shift, alt) >= 0) return true;  // 13-45 (a character binding too)
     }
+    if (edit && shift && !ctrl && !alt && vk == 0x20) return true;  // 13-62: Shift+Space plays the selected part
     if (ctrl || shift || alt) return false;
     // 13-63: S is free (the split is the "Split at cursor" Shortcuts row, KEYS: SOUND EDIT).
     if (edit) return vk == 0x20 || vk == 0x1B || vk == 'E';
@@ -3791,8 +3796,11 @@ std::vector<AuditionVoice> EditVoicesNow(const SoundLibrary& lib, const SoundNod
     const SoundData& sd = MeasuredShown(n, path);  // 13-54 review: as drawn (an older Sound measured)
     const bool       measured = &sd != &Shown(n);
     if (P.ev_uid == n.uid && P.ev_lib == lib.uid && P.ev_scc == scc && P.ev_live == live &&
-        (!live || P.ev_draft_rev == P.draft_rev) && P.ev_sel == P.sel && P.ev_measured == measured)
+        (!live || P.ev_draft_rev == P.draft_rev) && P.ev_sel == P.sel && P.ev_measured == measured &&
+        P.ev_mute == P.part_mute && P.ev_solo == P.part_solo)
         return P.ev_voices;
+    P.ev_mute = P.part_mute;
+    P.ev_solo = P.part_solo;
     P.ev_uid = n.uid;
     P.ev_lib = lib.uid;
     P.ev_scc = scc;
@@ -3810,7 +3818,8 @@ std::vector<AuditionVoice> EditVoicesNow(const SoundLibrary& lib, const SoundNod
         const std::vector<int> act = ActiveVariations(d);
         if (take < 0 && !act.empty()) take = act.front();
     }
-    std::vector<AuditionVoice> v = EditPlayVoices(lib, shown, take);
+    const PartListen           listen{P.part_mute, P.part_solo};  // 13-62 (decision 5): M / S filter Play
+    std::vector<AuditionVoice> v = EditPlayVoices(lib, shown, take, &listen);
     if (FolderSourced(d))
         for (AuditionVoice& x : v) x.fade_in_s = x.fade_out_s = 0.0;  // a folder pile is placed without fades
     P.ev_voices = v;
@@ -3925,7 +3934,8 @@ void DrawEditOverlay()
         ui::ItemTipText(Shown(*n).mode == DetectMode::Takes
                             ? "Play the selected take as placed (Space) \xC2\xB7 Esc stops"
                             : "Play the variations as placed, on the file's time: fades, dB, cuts, excluded zones, mono "
-                              "(Space) \xC2\xB7 a change is heard at once \xC2\xB7 Esc stops");
+                              "(Space; a piece selected: Space plays it \xC2\xB7 Shift+Space: every piece of the selected part) \xC2\xB7 a change is "
+                              "heard at once \xC2\xB7 Esc stops");
         ImGui::SameLine(0.0f, group_gap);
         std::string count = VariationCountText(DetectedCount(n->uid, m, Shown(*n)), Shown(*n).frames);
         {  // 13-20 / 13-23: "· z excluded zones · divided by G"
@@ -4095,7 +4105,18 @@ void DrawEditOverlay()
             }
         }
         if (keys && !StoreReplaced()) {
-            if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) toggle_play();
+            if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) {
+                // 13-62 (decision 13): Space plays the selected piece (else Edit's Play), Shift+Space every piece
+                // of the selected part; either stops what plays.
+                const SoundNode shown = MeasuredNode(*n, m.path);
+                const bool      divided = IsDivided(shown.sound) && shown.sound.mode != DetectMode::Takes;
+                if (AuditionPlaying()) StopAudition();
+                else if (ImGui::GetIO().KeyShift) {
+                    if (divided && !P.part_sel.empty()) PlaySoundVoices(shown, m, PartPiecesVoices(*lib, shown, P.part_sel));
+                } else if (divided && P.piece_frame >= 0 && P.piece_index >= 0)
+                    PlaySoundVoices(shown, m, PiecePlayVoices(*lib, shown, P.piece_frame, P.piece_index));
+                else toggle_play();
+            }
             if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
                 if (P.zone_len > 0.0) P.zone_len = 0.0;  // 13-20: Esc clears the zone selected first
                 else if (AuditionPlaying()) StopAudition();

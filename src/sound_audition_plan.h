@@ -60,8 +60,18 @@ struct AuditionVoice {
     // mid-way): its fades are those of [fade_from_s, ...) inside a stretch of fade_span_s (0 = itself).
     double                   fade_from_s = 0.0;
     double                   fade_span_s = 0.0;
-    MonoMode                 mono = MonoMode::Off;  // 13-41: the Sound's
+    MonoMode                 mono = MonoMode::Off;  // 13-41: the Sound's (13-62: its part's own, PartMono)
+    std::string              part;           // 13-62: the part it plays (a value uid; "" = the whole / mixed)
 };
+
+// 13-62 (decision 5): the Edit window's Mute / Solo (view state, never saved): Solo adds (REAPER), and while
+// any part is soloed only soloed parts are heard; else every part but the muted ones.
+struct PartListen {
+    std::set<std::string> mute, solo;
+    bool                  Active() const { return !mute.empty() || !solo.empty(); }
+};
+// Whether part `value` is heard under `listen` ("" = no part: heard unless a part is soloed).
+bool PartHeard(const PartListen& listen, const std::string& value);
 
 struct AuditionPlan {
     std::string                root;  // the auditioned node
@@ -89,6 +99,7 @@ AuditionPlan PlanAudition(const SoundStore& store, const SoundLibrary& lib, cons
 // whole variation minus its exclusions), as Populate places them (PieceApplyFor): one per piece, each
 // delayed by its distance from the first piece plus `delay_ms`, the Sound's cut_fade at a cut or zone
 // edge. Takes mode: the take whole (one voice). {} for a bad index or nothing left of that part.
+// 13-62: the part's own gain (PartGainDb) on top, its mono (PartMono), its own fades (PieceApplyFor).
 std::vector<AuditionVoice> PartAuditionVoices(const SoundLibrary& lib, const SoundNode& n, int variation,
                                               const std::string& part_value, double delay_ms = 0.0);
 // 13-20: a zone of the Sound's source played alone (the Edit window's "Play zone"): one voice over
@@ -183,7 +194,22 @@ std::vector<int> NormalizeSelection(const std::vector<SoundFrame>& frames, const
 // the sides they cut; touching parts play on as one voice (split only for part gains).
 // Overlapping variations: the earlier one wins until it ends. Takes mode: take `take` whole as placed
 // (each take is its own file), at delay 0; -1 or a bad index = nothing.
-std::vector<AuditionVoice> EditPlayVoices(const SoundLibrary& lib, const SoundNode& n, int take = -1);
+// 13-62: a divided variation with part settings or a `listen` filter is played per owner too: each stretch
+// at FrameGainDb + PartGainDb of its part, in its part's mono; a part owning a fade (PartFades) plays its
+// stretch as its own voice with its fades at both edges (decision 6); a part not heard (PartHeard) is
+// silent, the Sound's cut_fade on the sides of what plays next to it. No part settings and no filter = as
+// before.
+std::vector<AuditionVoice> EditPlayVoices(const SoundLibrary& lib, const SoundNode& n, int take = -1,
+                                          const PartListen* listen = nullptr);
+// 13-62 (decision 13, Space): piece `piece_index` of variation `variation` (EditPiecesOf's index: unmerged,
+// an excluded piece too) alone, delay 0: its part's gain and mono, its part's own fades on both edges, else
+// the variation's fade at a variation edge and the Sound's cut_fade at a cut / zone edge. Never filtered by
+// Mute / Solo (an explicit pick). {} for a bad index, Takes mode or a piece of 0 s.
+std::vector<AuditionVoice> PiecePlayVoices(const SoundLibrary& lib, const SoundNode& n, int variation, int piece_index);
+// 13-62 (decision 13, Shift+Space): every piece of part `value` in file order: each on variation's
+// PartAuditionVoices (as placed), delayed by its distance in the file from the first one (the playhead walks
+// the file; the other parts' stretches are silent). {} for value "", Takes mode or no piece of that part.
+std::vector<AuditionVoice> PartPiecesVoices(const SoundLibrary& lib, const SoundNode& n, const std::string& value);
 // The voices as heard from `from_s` s into them (a Play restarted where it was): those over are dropped,
 // the one under it cut (start, length, fade_from_s moved), every delay shifted back by from_s.
 std::vector<AuditionVoice> VoicesFrom(const std::vector<AuditionVoice>& voices, double from_s);

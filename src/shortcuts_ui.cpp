@@ -308,12 +308,14 @@ bool KeyRow(int id)
     // The keys in force (REAPER's or a linked action's; a key another row takes, faint).
     const ShortcutKeymap& km = CurrentShortcutKeymap();
     // Review (13-61): a Sound Edit key the Edit window itself takes (Space, Esc, E, a view key) never runs the
-    // row: faint. 13-63: S is no longer the Edit window's (the split is a row now).
+    // row: faint. 13-63: S is no longer the Edit window's (the split is a row now). 13-62: Shift+Space is (it
+    // plays the selected part's pieces).
     std::string edit_lost;
     for (const KeyBinding& k : km.keys[static_cast<size_t>(id)]) {
         const bool lost = def.context == ShortcutContext::LibraryEdit &&
                           (ViewNavRowForKeyDown(k.vk, k.ctrl, k.shift, k.alt) >= 0 ||
-                           (!k.ctrl && !k.shift && !k.alt && (k.vk == 0x20 || k.vk == 0x1B || k.vk == 'E')));
+                           (!k.ctrl && !k.shift && !k.alt && (k.vk == 0x20 || k.vk == 0x1B || k.vk == 'E')) ||
+                           (k.shift && !k.ctrl && !k.alt && k.vk == 0x20));
         if (lost) edit_lost += (edit_lost.empty() ? "" : ", ") + ShortcutBindingLabel(k);
         v.caps.push_back(Cap{ShortcutBindingLabel(k), lost ? ui::kFaint : (custom ? ui::kAccent : ui::kText)});
     }

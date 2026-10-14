@@ -125,6 +125,7 @@ struct PanelState {
     bool                  edit_open = false;
     bool                  edit_focus = false;
     bool                  edit_has_focus = false;  // the Edit overlay window is focused (its zoom keys)
+    bool                  edit_divided = false;    // 13-62 review: the Sound it shows is divided (not Takes): Shift+Space
     int                   edit_opened = -1;  // the frame Edit opened (its E is not read again then)
     std::string           edit_lib, edit_uid;
     double                view_start = 0.0, view_len = 0.0;
@@ -1774,7 +1775,8 @@ bool LibraryNodeTakesKey(unsigned vk, bool ctrl, bool shift, bool alt)
     if (edit && P.edit_has_focus) {  // the view keys (Up / Down zoom too) zoom Edit, not the arrange view
         if (ViewNavRowForKeyDown(vk, ctrl, shift, alt) >= 0) return true;  // 13-45 (a character binding too)
     }
-    if (edit && shift && !ctrl && !alt && vk == 0x20) return true;  // 13-62: Shift+Space plays the selected part
+    // 13-62: Shift+Space plays the selected part, only while Edit has the focus on a divided Sound (else REAPER's).
+    if (edit && P.edit_has_focus && P.edit_divided && shift && !ctrl && !alt && vk == 0x20) return true;
     if (ctrl || shift || alt) return false;
     // 13-63: S is free (the split is the "Split at cursor" Shortcuts row, KEYS: SOUND EDIT).
     if (edit) return vk == 0x20 || vk == 0x1B || vk == 'E';
@@ -3882,6 +3884,7 @@ void DrawEditOverlay()
     }
     P.edit_frame = ImGui::GetFrameCount();
     const SoundMedia& m = MediaOf(*n);
+    P.edit_divided = IsDivided(Shown(*n)) && Shown(*n).mode != DetectMode::Takes;
     const ImVec2      ds = ImGui::GetIO().DisplaySize;
     if (P.edit_focus) {
         ImGui::SetNextWindowFocus();
@@ -3912,7 +3915,15 @@ void DrawEditOverlay()
             }
             // 13-29 (Antho 2026-10-13): what is shown, as placed -- EditPlayVoices.
             const std::vector<AuditionVoice> v = EditVoicesNow(*lib, *n, m.path);
-            if (v.empty())
+            const bool listening = !P.part_mute.empty() || !P.part_solo.empty();
+            if (v.empty() && listening && Shown(*n).mode != DetectMode::Takes) {
+                // 13-62 review: only Mute / Solo leave nothing (the Sound unfiltered plays something)?
+                SoundNode shown = *n;
+                shown.sound = MeasuredShown(*n, m.path);
+                ShowLibraryToast(EditPlayVoices(*lib, shown).empty() ? "Nothing to play: every variation is off"
+                                                                     : "Nothing to play: every part is muted / not soloed",
+                                 false);
+            } else if (v.empty())
                 ShowLibraryToast(Shown(*n).mode == DetectMode::Takes ? "Nothing to play: select a take that is on"
                                                                      : "Nothing to play: every variation is off",
                                  false);
@@ -4113,9 +4124,16 @@ void DrawEditOverlay()
                 if (AuditionPlaying()) StopAudition();
                 else if (ImGui::GetIO().KeyShift) {
                     if (divided && !P.part_sel.empty()) PlaySoundVoices(shown, m, PartPiecesVoices(*lib, shown, P.part_sel));
-                } else if (divided && P.piece_frame >= 0 && P.piece_index >= 0)
-                    PlaySoundVoices(shown, m, PiecePlayVoices(*lib, shown, P.piece_frame, P.piece_index));
-                else toggle_play();
+                } else {
+                    std::vector<AuditionVoice> pv;
+                    if (divided && P.piece_frame >= 0 && P.piece_index >= 0)
+                        pv = PiecePlayVoices(*lib, shown, P.piece_frame, P.piece_index);
+                    if (!pv.empty()) PlaySoundVoices(shown, m, pv);
+                    else {  // 13-62 review: a stale piece selection (gone after an edit) is dropped: Edit's Play
+                        if (divided && P.piece_frame >= 0) P.piece_frame = P.piece_index = -1;
+                        toggle_play();
+                    }
+                }
             }
             if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
                 if (P.zone_len > 0.0) P.zone_len = 0.0;  // 13-20: Esc clears the zone selected first

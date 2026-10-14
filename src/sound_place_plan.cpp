@@ -367,8 +367,11 @@ std::vector<PieceApply> PieceApplyFor(const SoundData& data, int variation, cons
     constexpr double  kEps = 1e-6;
     const FadeApply   base = file ? FileFadeApplyFor(data, variation) : FadeApplyFor(data, variation);
     const double      cut = std::isfinite(data.cut_fade) && data.cut_fade > 0.0 ? data.cut_fade : 0.0;
-    double            own_in = 0.0, own_out = 0.0;  // 13-62 (decision 6): a part owning a fade gets it on both edges
-    const bool        own = PartFades(data, part_value, &own_in, &own_out);
+    // 13-62 (decision 6, per side): a part owning its fade in gets it at the start of every piece, its fade out
+    // at the end of every piece; a side it does not own keeps the rule below (frame fade / cut_fade).
+    const PartSettings* own = part_value.empty() ? nullptr : PartSettingsOf(data, part_value);
+    const bool          own_in = own && own->fade_in && std::isfinite(*own->fade_in);
+    const bool          own_out = own && own->fade_out && std::isfinite(*own->fade_out);
     double            sync = SyncFor(data, variation, part_value);
     if (sync >= 0.0 && ClampIntoSpans(spans, sync) != sync) sync = -1.0;  // stale: not inside what is placed
     if (sync < 0.0) sync = AutoSync(data, nullptr, spans);
@@ -395,11 +398,15 @@ std::vector<PieceApply> PieceApplyFor(const SoundData& data, int variation, cons
             pa.fades.out = cut;
             pa.fades.out_shape = 0;
         }
-        if (own) {
-            pa.fades.set_in = pa.fades.shape_in = pa.fades.set_out = pa.fades.shape_out = true;
-            pa.fades.in = own_in;
-            pa.fades.out = own_out;
-            pa.fades.in_shape = pa.fades.out_shape = 0;
+        if (own_in) {
+            pa.fades.set_in = pa.fades.shape_in = true;
+            pa.fades.in = std::max(*own->fade_in, 0.0);
+            pa.fades.in_shape = 0;
+        }
+        if (own_out) {
+            pa.fades.set_out = pa.fades.shape_out = true;
+            pa.fades.out = std::max(*own->fade_out, 0.0);
+            pa.fades.out_shape = 0;
         }
         pa.anchor = k == anchor;
         if (pa.anchor) pa.slice.snap_offset = std::min(std::max(sync - sp.start, 0.0), sp.length);

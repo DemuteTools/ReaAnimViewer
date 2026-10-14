@@ -942,15 +942,28 @@ static void TestPartListen()
     l.solo = {"a", "b"};  // Solo adds
     CHECK(EditPlayVoices(lib, sn, -1, &l).size() == 2);
 
-    // b's own fade in (4 ms): its own voice, its fades on both edges (the out = the Sound's default).
+    // b's own fade in (4 ms): its own voice, its in side the part's; its unowned out side at the variation's
+    // edge keeps the frame fade (13-62 review: decision 6 per side).
+    sn.sound.frames[0].fade_out = 0.05;
     PartSettings fi;
     fi.fade_in = 0.004;
     SetPartSetting(sn.sound, "b", fi);
     v = EditPlayVoices(lib, sn);
     CHECK(v.size() == 2);
     if (v.size() == 2)
-        CHECK(Near(v[1].fade_in_s, 0.004) && Near(v[1].fade_out_s, kDefaultFadeOut) && Near(v[1].fade_span_s, 0.0) &&
+        CHECK(Near(v[1].fade_in_s, 0.004) && Near(v[1].fade_out_s, 0.05) && Near(v[1].fade_span_s, 0.0) &&
               Near(v[0].fade_span_s, 1.0));
+    {  // a owns only its fade out: its in side at the variation's edge keeps the frame fade in
+        SoundNode ao = sn;
+        PartSettings fo;
+        fo.fade_out = 0.006;
+        SetPartSetting(ao.sound, "a", fo);
+        std::vector<AuditionVoice> w = EditPlayVoices(lib, ao);
+        CHECK(w.size() == 2);
+        if (w.size() == 2) CHECK(Near(w[0].fade_in_s, kDefaultFadeIn) && Near(w[0].fade_out_s, 0.006) && Near(w[0].fade_span_s, 0.0));
+        std::vector<AuditionVoice> pa = PiecePlayVoices(lib, ao, 0, 0);
+        CHECK(pa.size() == 1 && Near(pa[0].fade_in_s, kDefaultFadeIn) && Near(pa[0].fade_out_s, 0.006));
+    }
 
     // Space: one piece (never filtered); index past the end: nothing.
     std::vector<AuditionVoice> one = PiecePlayVoices(lib, sn, 0, 0);
@@ -958,7 +971,8 @@ static void TestPartListen()
           Near(one[0].fade_in_s, kDefaultFadeIn) && Near(one[0].fade_out_s, kDefaultCutFade) && one[0].part == "a");
     one = PiecePlayVoices(lib, sn, 0, 1);
     CHECK(one.size() == 1 && Near(one[0].start_s, 1.5) && Near(one[0].gain_db, -1.0) && Near(one[0].fade_in_s, 0.004) &&
-          one[0].mono == MonoMode::Sum && Near(one[0].delay_ms, 0.0));
+          Near(one[0].fade_out_s, 0.05) && one[0].mono == MonoMode::Sum && Near(one[0].delay_ms, 0.0));
+    sn.sound.frames[0].fade_out = -1.0;
     CHECK(PiecePlayVoices(lib, sn, 0, 2).empty() && PiecePlayVoices(lib, sn, 1, 0).empty());
 
     // No merge in Edit (decision 10): a | b | a, b's range given to a: three pieces, Space plays the middle one
@@ -983,6 +997,23 @@ static void TestPartListen()
         CHECK(Near(all[0].start_s, 1.5) && Near(all[0].delay_ms, 0.0) && Near(all[1].start_s, 3.25) &&
               Near(all[1].delay_ms, 1750.0) && all[1].part == "b" && Near(all[1].gain_db, -1.0));
     CHECK(PartPiecesVoices(lib, two, "").empty());
+    // 13-62 review: overlapping variations are not summed: the earlier one wins until it ends.
+    SoundNode ov = sn;
+    SoundFrame f3 = f;  // 1.0-2.0, b from 1.5
+    f3.start = 1.7;     // 1.7-2.7, b from 1.8
+    f3.cuts = {1.8};
+    ov.sound.frames = {f, f3};
+    all = PartPiecesVoices(lib, ov, "b");
+    CHECK(all.size() == 2);
+    if (all.size() == 2)
+        CHECK(Near(all[0].start_s, 1.5) && Near(all[0].length_s, 0.5) && Near(all[1].start_s, 2.0) &&
+              Near(all[1].length_s, 0.7) && Near(all[1].fade_from_s, 0.2) && Near(all[1].fade_span_s, 0.9) &&
+              Near(all[1].delay_ms, 500.0));
+    f3.start = 1.1;  // wholly under the first variation: dropped
+    f3.length = 0.8;
+    f3.cuts = {1.2};
+    ov.sound.frames = {f, f3};
+    CHECK(PartPiecesVoices(lib, ov, "b").size() == 1);
 }
 
 int main()

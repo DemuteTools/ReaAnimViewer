@@ -207,6 +207,9 @@ static void TestPartFadesOnPieces()
     f.start = 1.0;
     f.length = 1.0;
     f.cuts = {1.4};
+    f.fade_in = 0.03;   // the variation's own frame fades (13-62 review: an unowned side keeps them)
+    f.fade_out = 0.05;
+    f.fade_out_shape = 2;
     d.frames.push_back(f);
     PartSettings own;
     own.fade_in = 0.004;
@@ -215,10 +218,29 @@ static void TestPartFadesOnPieces()
     CHECK(toe.size() == 1 && Near(toe[0].slice.start_offs, 1.4));
     if (toe.size() == 1) {
         CHECK(toe[0].fades.set_in && Near(toe[0].fades.in, 0.004) && toe[0].fades.in_shape == 0);
-        CHECK(toe[0].fades.set_out && Near(toe[0].fades.out, kDefaultFadeOut));  // its unset side: the Sound's default
+        // Its unowned side at the variation's edge: the frame fade (its shape too), not a Sound default.
+        CHECK(toe[0].fades.set_out && Near(toe[0].fades.out, 0.05) && toe[0].fades.out_shape == 2);
     }
+    // Heel owns nothing: its frame fade in at the variation edge, cut_fade at the cut.
     std::vector<PieceApply> heel = PieceApplyFor(d, 0, "heel");
-    CHECK(heel.size() == 1 && Near(heel[0].fades.in, kDefaultFadeIn) && Near(heel[0].fades.out, kDefaultCutFade));
+    CHECK(heel.size() == 1 && Near(heel[0].fades.in, 0.03) && Near(heel[0].fades.out, kDefaultCutFade));
+    // Heel owns only its fade out: the cut side gets it, its variation-edge fade in stays the frame's.
+    own = PartSettings{};
+    own.fade_out = 0.008;
+    SetPartSetting(d, "heel", own);
+    heel = PieceApplyFor(d, 0, "heel");
+    CHECK(heel.size() == 1 && Near(heel[0].fades.in, 0.03) && Near(heel[0].fades.out, 0.008));
+    ResetPartSetting(d, "heel", PartField::FadeOut);
+    // Toe owns only its fade out: its in side at the cut keeps cut_fade.
+    ResetPartSetting(d, "toe", PartField::FadeIn);
+    own = PartSettings{};
+    own.fade_out = 0.02;
+    SetPartSetting(d, "toe", own);
+    toe = PieceApplyFor(d, 0, "toe");
+    CHECK(toe.size() == 1 && Near(toe[0].fades.in, kDefaultCutFade) && Near(toe[0].fades.out, 0.02));
+    own = PartSettings{};
+    own.fade_in = 0.004;
+    SetPartSetting(d, "toe", own);
     // Its own fade out too, on the variation's edge: the part's, not the frame's.
     own = PartSettings{};
     own.fade_out = 0.02;

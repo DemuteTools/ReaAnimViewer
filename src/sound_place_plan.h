@@ -160,8 +160,9 @@ struct PieceApply {
 };
 // The pieces of variation `variation` playing part `part_value` ("" = the whole variation minus its
 // exclusions), in time order. Fades at a frame edge: FadeApplyFor (`file` false) or FileFadeApplyFor
-// (`file` true). 13-62 (decision 6): a part owning a fade (PartFades) gets its fades on both edges of
-// every piece instead (linear shape; its unset side = the Sound's default fade). The sync is the stored one (SyncFor) when it lies in the spans, else AutoSync without
+// (`file` true). 13-62 (decision 6, per side): a part owning its fade in (PartSettingsOf) gets it at the
+// start of every piece, its fade out at the end of every piece (linear); a side it does not own keeps the
+// frame fade at a variation edge, cut_fade at a cut / zone edge. The sync is the stored one (SyncFor) when it lies in the spans, else AutoSync without
 // peaks (the first span's start + the offset, clamped into the spans). {} for Takes mode (A8: the
 // take keeps its item's snap), a bad index, or nothing left to play (an empty or excluded part).
 std::vector<PieceApply> PieceApplyFor(const SoundData& data, int variation, const std::string& part_value,

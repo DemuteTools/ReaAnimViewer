@@ -42,7 +42,8 @@ bool WindowAutoSizes();
 // Measure before place: call after an item, before the next one (`next_w` wide). The next item
 // goes beside the last one when it fits, else on the next line. True when beside. Measured from
 // where the line really ends (a Fader's value readout included, though the track is the last item).
-bool SameLineIfFits(float next_w);
+// right_limit > 0: the line ends there instead of LineRight() (a box inset from its window edge).
+bool SameLineIfFits(float next_w, float right_limit = 0.0f);
 
 // One line of text (aligned with the frame widgets), ellipsized to `width` (0 = the room left),
 // its full text as a tooltip when shortened. An item of the width it takes. True when shortened.

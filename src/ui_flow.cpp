@@ -58,14 +58,14 @@ bool WindowAutoSizes()
            !(w->Flags & ImGuiWindowFlags_ChildWindow);
 }
 
-bool SameLineIfFits(float next_w)
+bool SameLineIfFits(float next_w, float right_limit)
 {
     // The line ends where the last ItemSize left it (DC.CursorPosPrevLine), not at the last item's
     // rect: a Fader's value readout takes room after its track without being the last item. For a
     // plain item both are the same; the larger one is kept (an item drawn past its size).
     const ImGuiWindow* win = ImGui::GetCurrentWindowRead();
     const float        end = std::max(ImGui::GetItemRectMax().x, win ? win->DC.CursorPosPrevLine.x : 0.0f);
-    const bool         fits = WindowAutoSizes() || flow::FitsAfter(end, ImGui::GetStyle().ItemSpacing.x, next_w, LineRight());
+    const bool         fits = WindowAutoSizes() || flow::FitsAfter(end, ImGui::GetStyle().ItemSpacing.x, next_w, right_limit > 0.0f ? right_limit : LineRight());
     if (fits) ImGui::SameLine();
     return fits;
 }

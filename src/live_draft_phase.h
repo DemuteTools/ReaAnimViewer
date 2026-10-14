@@ -26,15 +26,17 @@ public:
     const std::string& Uid() const { return uid_; }
 
     // Starts or continues the draft of `uid`; true when it starts (the caller snapshots the store).
-    // An edit after a commit in the same frame continues the draft, which no longer waits for that write.
+    // An edit after a commit in the same frame restarts the draft (true: snapshot again, from the committed
+    // draft), which no longer waits for that write.
     bool Touch(const std::string& uid)
     {
         if (live_ && uid_ == uid) {
-            if (committing_) {
-                committing_ = false;
-                ++token_;
-            }
-            return false;
+            if (!committing_) return false;
+            // Committed this frame: the store now holds (or will hold) the draft, so the next edit
+            // starts over from it -- the caller re-snapshots.
+            committing_ = false;
+            ++token_;
+            return true;
         }
         live_ = true;
         uid_ = uid;

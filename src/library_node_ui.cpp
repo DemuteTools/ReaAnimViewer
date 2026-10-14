@@ -268,7 +268,10 @@ const SoundData& Shown(const SoundNode& n) { return P.phase.Shows(n.uid) ? P.dra
 // Starts (or continues) a live edit of the Sound: the draft restarts from the snapshot each call.
 SoundData& Live(const SoundNode& n)
 {
-    if (P.phase.Touch(n.uid)) P.snap = n.sound;
+    // After a commit this frame its write has not run yet: the next edit starts from the committed
+    // draft, not from the store.
+    const bool after_commit = P.phase.Committing() && P.phase.Uid() == n.uid;
+    if (P.phase.Touch(n.uid)) P.snap = after_commit ? P.draft : n.sound;
     P.draft = P.snap;
     ++P.draft_rev;
     return P.draft;
@@ -3606,23 +3609,24 @@ void DrawEditOverlay()
         if (tools_beside) ImGui::SameLine(0.0f, group_gap);
         else ImGui::SetCursorScreenPos(ImVec2(std::max(ImGui::GetCursorScreenPos().x, ui::LineRight() - hpad_x - tools_w),
                                               ImGui::GetCursorScreenPos().y));
+        const float tools_right = ui::LineRight() - hpad_x;  // the tools wrap inside the header inset
         if (ui::SolidButton("\xE2\x88\x92##zoomout", ImVec2(side_btn, bh)))
             ZoomView(1.5, P.view_start + (P.view_len > 0.0 ? P.view_len : m.source_len) * 0.5, m.source_len);
         ui::ItemTipText("Zoom out (your REAPER 'View: Zoom out horizontal' keys)");
-        SameLineIfFits(side_btn);
+        SameLineIfFits(side_btn, tools_right);
         if (ui::SolidButton("+##zoomin", ImVec2(side_btn, bh)))
             ZoomView(1.0 / 1.5, P.view_start + (P.view_len > 0.0 ? P.view_len : m.source_len) * 0.5, m.source_len);
         ui::ItemTipText("Zoom in (your REAPER 'View: Zoom in horizontal' keys)");
-        SameLineIfFits(ui::ButtonWidth("Fit"));
+        SameLineIfFits(ui::ButtonWidth("Fit"), tools_right);
         if (ui::SolidButton("Fit", ImVec2(0.0f, bh))) {
             P.view_start = 0.0;
             P.view_len = 0.0;
         }
-        SameLineIfFits(ui::Dp(18.0f));
+        SameLineIfFits(ui::Dp(18.0f), tools_right);
         ui::HelpMark("##edithelp", Shown(*n).mode == DetectMode::Takes ? kHelpTakes : kHelpPlain, bh);
-        SameLineIfFits(ui::ButtonWidth("Done"));
+        SameLineIfFits(ui::ButtonWidth("Done"), tools_right);
         if (ui::PrimaryButton("Done", ImVec2(0.0f, bh))) close = true;
-        SameLineIfFits(side_btn);
+        SameLineIfFits(side_btn, tools_right);
         if (ui::IconOnlyButton("##editclose", "\xE2\x9C\x95", "Close (Esc)", side_btn)) close = true;
         ImGui::Unindent(hpad_x);
         {

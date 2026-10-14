@@ -114,8 +114,9 @@ int main()
         LiveDraftPhase ph;
         ph.Touch("a");
         const unsigned t = ph.Commit("a");
-        CHECK(!ph.Touch("a"));
+        CHECK(ph.Touch("a"));  // a second edit in the same frame re-snapshots from the committed draft
         CHECK(!ph.Committing());
+        CHECK(!ph.Touch("a"));
         ph.Written(t);
         CHECK(ph.Shows("a"));
     }

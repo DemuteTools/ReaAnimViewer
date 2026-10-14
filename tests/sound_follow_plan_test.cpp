@@ -722,15 +722,66 @@ int main()
             dis.disabled_rids = {"a"};
             CHECK(!replan_loop(mm, dis).populate_passes);
         }
-        {  // a spread sound on a pass cut off goes like a populated one; an attached one is never touched
+        // The plan applied as the REAPER side would (CheckIdempotent's rules), the record taken.
+        auto applied = [](FollowInput x, const FollowPlan& q) {
+            x.rec = q.record;
+            for (const FollowAction& a : q.actions)
+                for (FollowItemFacts& f : x.items) {
+                    if (!SameFollowGuid(f.item_guid, a.item_guid)) continue;
+                    if (a.kind == FollowKind::Move) f.pos = a.project_t;
+                    if (a.kind == FollowKind::Store) { f.has_store = true; f.store = a.store; }
+                    if (a.kind == FollowKind::Mute) f.muted = true;
+                    if (a.kind == FollowKind::Unmute) f.muted = false;
+                    if (a.kind == FollowKind::Remove) f.present = false;
+                }
+            x.appeared = false;
+            return x;
+        };
+        {  // review: a spread sound on a pass cut off is muted (Populate never places it again), then
+           // unmuted when the item is stretched again; an attached one is never touched
             ItemClipMap mm = m;
             mm.item_len = 2.0;
             FollowInput x = next;
             x.rec.events[0].placed[2].own = Ownership::Spread;     // {P2}, pass 2
             x.rec.events[1].placed[2].own = Ownership::Attached;   // {P5}, pass 2
             const FollowPlan q = replan_loop(mm, x);
-            CHECK(Count(q, FollowKind::Remove) == 1 && Find(q, FollowKind::Remove)->item_guid == "{P2}");
-            CHECK(Count(q, FollowKind::Detach) == 0 && Count(q, FollowKind::Mute) == 0);
+            CHECK(Count(q, FollowKind::Remove) == 0 && Count(q, FollowKind::Detach) == 0);
+            CHECK(Count(q, FollowKind::Mute) == 1 && Find(q, FollowKind::Mute)->item_guid == "{P2}");
+            FollowInput after = applied(x, q);
+            after.events = SoundEventsOf(BuildEventList(dets, r.events, r.blocks.size()), r.blocks, mm);
+            after.owner_loops = true;
+            CheckIdempotent(after, replan_loop(mm, after));
+            // Stretched back to three loops: unmuted, in place.
+            const FollowPlan b = replan_loop(m, after);
+            CHECK(Count(b, FollowKind::Unmute) == 1 && Find(b, FollowKind::Unmute)->item_guid == "{P2}");
+            CHECK(Count(b, FollowKind::Remove) == 0);
+        }
+        {  // review: the last live sound of a node in an event, on a cut pass, is muted (not removed),
+           // so stretching again fills the event: event 0's n1 lives on pass 2 only (passes 0 and 1
+           // play n2).
+            ItemClipMap mm = m;
+            mm.item_len = 2.0;
+            FollowInput x = next;
+            x.rec.events[0].placed[0].node = "n2";  // {P0}, pass 0
+            x.rec.events[0].placed[1].node = "n2";  // {P1}, pass 1
+            const std::set<std::string> last =
+                LastOfNodeKept(x.rec.events[0], SoundEventsOf(BuildEventList(dets, r.events, r.blocks.size()), r.blocks, mm)[0],
+                               [&] {
+                                   FollowInput y = x;
+                                   y.owner_loops = true;
+                                   return y;
+                               }());
+            CHECK(last.size() == 1 && last.count("{P2}"));
+            const FollowPlan q = replan_loop(mm, x);
+            CHECK(Count(q, FollowKind::Remove) == 1 && Find(q, FollowKind::Remove)->item_guid == "{P5}");
+            CHECK(Count(q, FollowKind::Mute) == 1 && Find(q, FollowKind::Mute)->item_guid == "{P2}");
+            // Stretched again to five loops: {P2} back in its pass (unmuted), and the passes to fill.
+            FollowInput after = applied(x, q);
+            ItemClipMap five = m;
+            five.item_len = 5.0;
+            const FollowPlan b = replan_loop(five, after);
+            CHECK(Count(b, FollowKind::Unmute) == 1 && Find(b, FollowKind::Unmute)->item_guid == "{P2}");
+            CHECK(b.populate_passes);
         }
         // An older store line (no pass) is read, and the pass round-trips.
         FollowStore st;

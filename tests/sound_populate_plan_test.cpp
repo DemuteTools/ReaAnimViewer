@@ -718,6 +718,26 @@ int main()
 
     TestParts();
 
+    // 13-56 review: a looped item's new passes filled: Place steps only.
+    {
+        // Pass 0 has n1 at variation 2 (the draw now says 3: a Populate would SetVariation it), pass 1
+        // has nothing, pass 2 has another node (a Populate would ReplaceNode it), and an extra n1 on
+        // pass 3 the draw does not want (a Populate would remove it).
+        const std::vector<DesiredSlot>  d = {De(0, "n1", 3), De(1, "n1", 3), De(2, "n1", 3)};
+        const std::vector<ExistingSlot> x = {Ex(0, "n1", 2), Ex(2, "n9", 0), Ex(3, "n1", 3)};
+        bool place1 = false, other = false;
+        for (const SlotStep& st : PlanEventSlots(d, x)) {
+            if (st.act == SlotAction::Place && d[static_cast<size_t>(st.desired)].pass == 1) place1 = true;
+            if (st.act != SlotAction::Place && st.act != SlotAction::Keep) other = true;
+        }
+        CHECK(place1 && other);
+        const std::vector<SlotStep> f = PlanPassFill(d, x);
+        CHECK(f.size() == 1 && f[0].act == SlotAction::Place && d[static_cast<size_t>(f[0].desired)].pass == 1);
+        // Every pass filled: nothing to do. A node deleted by hand: never placed again.
+        CHECK(PlanPassFill({De(0, "n1", 2)}, {Ex(0, "n1", 2)}).empty());
+        CHECK(PlanPassFill({De(0, "n1", 2), De(1, "n1", 2)}, {Ex(0, "n1", 2), Ex(-1, "n1", 2, Ownership::Deleted)}).empty());
+    }
+
     if (g_fail) {
         std::printf("%d check(s) failed\n", g_fail);
         return 1;

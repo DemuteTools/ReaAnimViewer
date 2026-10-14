@@ -154,11 +154,13 @@ struct FollowInput {
     double                       moved_delta = 0.0;
     // GUIDs it had before that (a paste undone then pasted again): items tagged for them are its too.
     std::vector<std::string>     moved_also;
-    // 13-56: the animation item loops its source (B_LOOPSRC). A populated or spread sound on a loop
-    // pass other than the first (FollowPass id != 0) whose pass no longer shows its event (the item
-    // shortened, its rate or offset changed) is removed, its placement dropped from the record, like
-    // a gone event's (F5); on the first pass, and on an item that does not loop, it is muted as
-    // before. A populated event with a pass that has no sound of a node gets FollowPlan::populate_passes.
+    // 13-56: the animation item loops its source (B_LOOPSRC). A populated sound on a loop pass other
+    // than the first (FollowPass id != 0) whose pass no longer shows its event (the item shortened,
+    // its rate or offset changed) is removed, its placement dropped from the record, like a gone
+    // event's (F5), unless it is the last live one of its node in the event (LastOfNodeKept: muted).
+    // A spread sound there, one on the first pass, and one on an item that does not loop are muted as
+    // before (unmuted when the pass comes back). A populated event with a pass that has no sound of a
+    // node gets FollowPlan::populate_passes.
     bool                         owner_loops = false;
 };
 
@@ -187,6 +189,11 @@ struct FollowPlan {
 };
 
 FollowPlan PlanItemFollow(const FollowInput& in);
+// 13-56 review: the populated sounds of event `ev` (matched to `e`) on a cut loop pass that are the
+// last live populated sound of their node in the event (one per node): PlanItemFollow mutes them
+// instead of removing them, so stretching the item again fills the event's passes (and unmutes that
+// one when its pass comes back).
+std::set<std::string> LastOfNodeKept(const EventSounds& ev, const FollowEvent& e, const FollowInput& in);
 
 // F9: the owner is gone; what its placements (as cached) must do. `also_owners`: other GUIDs the
 // owner had (a move, fix C 2026-10-12): items still tagged for one of them are handled too.

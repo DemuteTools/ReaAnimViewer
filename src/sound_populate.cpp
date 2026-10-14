@@ -161,6 +161,10 @@ struct PopOpts {
     bool        revive_deleted = false;
     bool        only_populated = false;  // P8: only the events that already have a live placement
     bool        report_replaced = true;
+    // 13-56 review: a looped item's new passes filled by the follow (PopulateLoopPassesNoUndo): only
+    // the Place steps of the events that already have their sounds (PlanPassFill); nothing removed,
+    // replaced or re-drawn, no orphan prune.
+    bool        fill_passes = false;
     std::string rid;                      // "" = every rule
     std::vector<std::string> rids;        // 13-8 fix: when not empty, only these rules (one detection for all)
     bool        has_t = false;
@@ -407,7 +411,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
     std::set<std::string> live;
     for (const Block& b : blocks)
         if (!b.rid.empty()) live.insert(b.rid);
-    const OrphanPrune pr = PruneOrphanRules(rec, live);
+    const OrphanPrune pr = o.fill_passes ? OrphanPrune{} : PruneOrphanRules(rec, live);
     for (const std::string& g : pr.remove_guids) RemoveIndexed(g);
     for (const RuleSounds& r : pr.rules) {  // Antho 2026-10-12: removed and listed, by every gesture
         if (r.library.empty()) continue;  // 13-15a: inherit / None: no library was unassigned
@@ -468,6 +472,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                                        ? EffectiveAssign()
                                        : ResolveAssignFor(store, rec, ch, rid, po->second.first, po->second.second, e.t);
         const SoundLibrary*   lib = !ea.library.empty() ? FindLibrary(store, ea.library) : nullptr;
+        if (!lib && o.fill_passes) continue;  // 13-56 review: a fill never removes
         if (!lib) {  // P8: library None (or nothing set) removes the populated sounds
             const bool had = ev && EventIsPopulated(*ev);
             if (ev) RemovePopulated(*ev);
@@ -525,7 +530,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                 if (x.node == d.node) have = true;
             if (!have && d.hand) draws.push_back(d);
         }
-        ev->draws = draws;
+        if (!o.fill_passes) ev->draws = draws;  // 13-56 review: a fill keeps the event's draw as it is
         if (res.blocked) {
             AddLine(rep, ReportKind::Blocked, res.reason.empty() ? std::string("blocked") : res.reason, "", guid, e.t);
             continue;
@@ -630,7 +635,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
             for (const DesiredSlot& d : desired)
                 if (deleted.count(d.node) && !live.count(d.node)) ++o.counts->deleted_kept;
         }
-        for (const SlotStep& step : PlanEventSlots(desired, existing)) {
+        for (const SlotStep& step : o.fill_passes ? PlanPassFill(desired, existing) : PlanEventSlots(desired, existing)) {
             if (step.act == SlotAction::Keep) {
                 if (o.counts) ++o.counts->kept;
                 // 13-16 (B7c): a kept item still on its RAV track that now overlaps (a follow
@@ -1115,8 +1120,10 @@ SoundReport PopulateLoopPassesNoUndo(const std::vector<MediaItem*>& items)
         PopOpts          o;
         o.only_populated = true;  // the events that already have their sounds, never a new one
         o.report_replaced = false;
+        o.fill_passes = true;     // review: the missing passes placed, nothing else changed
+        SoundReport quiet;        // review: no report lines (the follow's automatic fill says nothing)
         for (MediaItem* it : items)
-            if (it && RavTakeOf(it)) PopulateOne(it, store, o, rep, nullptr);
+            if (it && RavTakeOf(it)) PopulateOne(it, store, o, quiet, nullptr);
         RefreshRavTrackNames(nullptr);  // 13-17 N3, as Populate
         UpdateArrange();
     } catch (...) {

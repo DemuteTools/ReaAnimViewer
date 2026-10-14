@@ -355,10 +355,47 @@ bool PassOfPlacement(const SoundPlacement& p, const FollowItemFacts& f, const st
     return true;
 }
 
-// F3 / F5: a kept placement of a matched event. True (13-56) when it must go: a populated or spread
-// sound on a loop pass other than the first, the item looping, and that pass no longer showing its
-// event (the Remove action is planned here; the caller drops the placement).
-bool FollowPlacement(SoundPlacement& p, const FollowEvent& ev, const FollowInput& in, bool disabled, FollowPlan* plan)
+// 13-56: a populated sound on a loop pass other than the first, the item looping, its pass (the one
+// the follow stored: a first-sight pass is always one shown now) no longer showing its event (the
+// item shortened, its rate or offset changed). Review: a spread sound is never cut (muted, as before:
+// Populate does not place spread sounds again, so it comes back unmuted when the pass does).
+bool OnCutPass(const SoundPlacement& p, const FollowEvent& ev, const FollowInput& in)
+{
+    if (!in.owner_loops || p.own != Ownership::Populated) return false;
+    const FollowItemFacts* f = FactsOf(in.items, p.item_guid);
+    if (!f || !f->present || !f->has_store || !f->store.has_pass || f->store.pass == 0) return false;
+    for (const FollowPass& fp : PassesOf(ev))
+        if (fp.id == f->store.pass) return false;
+    return true;
+}
+
+}  // namespace
+
+std::set<std::string> LastOfNodeKept(const EventSounds& ev, const FollowEvent& e, const FollowInput& in)
+{
+    std::set<std::string> out;
+    std::set<std::string> nodes_done;
+    for (const SoundPlacement& p : ev.placed) {
+        if (!OnCutPass(p, e, in) || nodes_done.count(p.node)) continue;
+        nodes_done.insert(p.node);
+        bool live_left = false;  // a live populated sound of that node not cut
+        for (const SoundPlacement& q : ev.placed) {
+            if (q.node != p.node || q.own != Ownership::Populated || OnCutPass(q, e, in)) continue;
+            const FollowItemFacts* f = FactsOf(in.items, q.item_guid);
+            if (f && f->present) live_left = true;
+        }
+        if (!live_left) out.insert(p.item_guid);
+    }
+    return out;
+}
+
+namespace {
+
+// F3 / F5: a kept placement of a matched event. True (13-56) when it must go: OnCutPass and
+// `remove_cut` (not the last live sound of its node in the event, LastOfNodeKept) (the Remove action
+// is planned here; the caller drops the placement). Otherwise a sound on a cut pass is muted.
+bool FollowPlacement(SoundPlacement& p, const FollowEvent& ev, const FollowInput& in, bool disabled, bool remove_cut,
+                     FollowPlan* plan)
 {
     const std::vector<FollowItemFacts>& items = in.items;
     if (p.own == Ownership::Deleted) return false;
@@ -380,9 +417,8 @@ bool FollowPlacement(SoundPlacement& p, const FollowEvent& ev, const FollowInput
                 e.project_t = fp.project_t;
             }
     // 13-56: its loop pass was cut off (the looped item shortened): removed, like a gone event's
-    // sound (F5). Only a pass the follow stored (a first-sight pass is always one shown now).
-    if (in.owner_loops && !e.in_item && have_pass && pass != 0 && f->has_store && f->store.has_pass &&
-        (p.own == Ownership::Populated || p.own == Ownership::Spread)) {
+    // sound (F5).
+    if (remove_cut && OnCutPass(p, ev, in)) {
         plan->actions.push_back(Act(FollowKind::Remove, p.item_guid));
         return true;
     }
@@ -841,6 +877,7 @@ FollowPlan PlanItemFollow(const FollowInput& in0)
             ev.t = e.t;
             plan.record_changed = true;
         }
+        const std::set<std::string> kept_last = LastOfNodeKept(ev, e, in);  // 13-56 review
         for (size_t i = 0; i < ev.placed.size();) {
             SoundPlacement&        p = ev.placed[i];
             const FollowItemFacts* f = FactsOf(in.items, p.item_guid);
@@ -852,7 +889,7 @@ FollowPlan PlanItemFollow(const FollowInput& in0)
                     continue;
                 }
                 p.own = Ownership::Deleted;
-            } else if (FollowPlacement(p, e, in, disabled, &plan)) {
+            } else if (FollowPlacement(p, e, in, disabled, !kept_last.count(p.item_guid), &plan)) {
                 // 13-56: its loop pass was cut off: removed (planned), dropped from the record.
                 ev.placed.erase(ev.placed.begin() + static_cast<long>(i));
                 plan.record_changed = true;

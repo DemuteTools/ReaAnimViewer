@@ -236,80 +236,145 @@ long long ClipPassId(const ItemClipMap& m, const ClipPass& p)
     return std::isfinite(id) ? static_cast<long long>(id) : 0;
 }
 
-std::vector<LoopPassTime> LoopPassTimes(const ItemClipMap& m, double clip_t)
+namespace {
+
+// A pass and its id.
+struct IdPass {
+    ClipPass  p;
+    long long id = 0;
+};
+
+// The item's passes with their ids, the first kMaxLoopPasses only (`capped` set when more show).
+std::vector<IdPass> IdPasses(const ItemClipMap& m, bool* capped)
+{
+    std::vector<IdPass>         out;
+    const std::vector<ClipPass> ps = ClipPasses(m);
+    const size_t                n = std::min(ps.size(), kMaxLoopPasses);
+    if (capped && ps.size() > kMaxLoopPasses) *capped = true;
+    out.reserve(n);
+    for (size_t k = 0; k < n; ++k) out.push_back(IdPass{ps[k], ClipPassId(m, ps[k])});
+    return out;
+}
+
+// LoopPassTimes over passes already cut.
+void PassTimesIn(const std::vector<IdPass>& ps, double rate, double clip_t, std::vector<LoopPassTime>* out)
+{
+    out->clear();
+    if (!std::isfinite(clip_t)) return;
+    for (const IdPass& ip : ps) {
+        // ClipToProjectTimes' test, pass for pass.
+        const double t = ip.p.p0 + (clip_t - ip.p.clip0) / rate;
+        if (!(t >= ip.p.p0 - 1e-9 && t < ip.p.p1 - 1e-12)) continue;
+        out->push_back(LoopPassTime{ip.id, t});
+    }
+}
+
+// Review 13-56: pass `id` of a looped item straight from its id (no walk over the passes), as
+// ClipPasses cuts it; false when the item does not show it or it is past kMaxLoopPasses.
+bool LoopPassOfId(const ItemClipMap& m, long long id, ClipPass* out)
+{
+    if (!m.loop || !(m.item_len > 0.0) || !(m.clip_len > 0.0) || !std::isfinite(m.item_pos) ||
+        !std::isfinite(m.item_len) || !std::isfinite(m.clip_len))
+        return false;
+    const double rate = SafeRate(m);
+    const double offs = std::isfinite(m.start_offs) ? m.start_offs : 0.0;
+    const double L = m.clip_len;
+    const double k0 = std::floor(offs / L);  // ClipPasses' first pass
+    if (!std::isfinite(k0) || static_cast<double>(id) < k0 || static_cast<double>(id) - k0 >= static_cast<double>(kMaxLoopPasses))
+        return false;
+    auto         p_of = [&](double s) { return m.item_pos + (s - offs) / rate; };
+    const double ks = static_cast<double>(id) * L;
+    if (!(ks < offs + m.item_len * rate)) return false;
+    const double a = std::max(m.item_pos, p_of(ks));
+    const double b = std::min(m.item_pos + m.item_len, p_of(ks + L));
+    if (!(b > a)) return false;
+    if (out) *out = ClipPass{a, b, offs + (a - m.item_pos) * rate - ks};
+    return true;
+}
+
+}  // namespace
+
+std::vector<LoopPassTime> LoopPassTimes(const ItemClipMap& m, double clip_t, bool* capped)
 {
     std::vector<LoopPassTime> out;
     if (!std::isfinite(clip_t)) return out;
-    const double rate = SafeRate(m);
-    for (const ClipPass& p : ClipPasses(m)) {
-        // ClipToProjectTimes' test, pass for pass.
-        const double t = p.p0 + (clip_t - p.clip0) / rate;
-        if (!(t >= p.p0 - 1e-9 && t < p.p1 - 1e-12)) continue;
-        out.push_back(LoopPassTime{ClipPassId(m, p), t});
-    }
+    PassTimesIn(IdPasses(m, capped), SafeRate(m), clip_t, &out);
     return out;
 }
 
 bool PassProjectTime(const ItemClipMap& m, double clip_t, long long id, double* project_t)
 {
     if (id == 0) return FirstPassProjectTime(m, clip_t, project_t);
-    if (!m.loop) return false;
-    for (const LoopPassTime& lp : LoopPassTimes(m, clip_t))
-        if (lp.id == id) {
-            if (project_t) *project_t = lp.project_t;
-            return true;
-        }
-    return false;
+    ClipPass p;
+    if (!std::isfinite(clip_t) || !LoopPassOfId(m, id, &p)) return false;
+    // LoopPassTimes' test.
+    const double t = p.p0 + (clip_t - p.clip0) / SafeRate(m);
+    if (!(t >= p.p0 - 1e-9 && t < p.p1 - 1e-12)) return false;
+    if (project_t) *project_t = t;
+    return true;
 }
 
 bool PassClipTime(const ItemClipMap& m, double project_t, long long id, double* clip_t)
 {
     if (id == 0) return FirstPassClipTime(m, project_t, clip_t);
-    if (!m.loop || !std::isfinite(project_t)) return false;
-    for (const ClipPass& p : ClipPasses(m)) {
-        if (ClipPassId(m, p) != id) continue;
-        if (project_t < p.p0 - 1e-9 || project_t > p.p1 + 1e-9) return false;
-        if (clip_t) *clip_t = p.clip0 + (project_t - p.p0) * SafeRate(m);
-        return true;
-    }
-    return false;
+    ClipPass p;
+    if (!std::isfinite(project_t) || !LoopPassOfId(m, id, &p)) return false;
+    if (project_t < p.p0 - 1e-9 || project_t > p.p1 + 1e-9) return false;
+    if (clip_t) *clip_t = p.clip0 + (project_t - p.p0) * SafeRate(m);
+    return true;
 }
 
-std::vector<EchoStep> PlanLoopEchoes(const std::vector<ProjectMarkerRef>& refs, const ItemClipMap& map)
+EchoKey EchoKeyOf(long long pass, const std::string& name, double c)
+{
+    // Rounded to the match tolerance: an echo and its first-pass ref share one key.
+    const double q = std::round(c / kEchoMatchTolS);
+    return EchoKey{pass, name, std::isfinite(q) ? static_cast<long long>(q) : 0};
+}
+
+std::vector<EchoStep> PlanLoopEchoes(const std::vector<ProjectMarkerRef>& refs, const ItemClipMap& map, bool* capped)
 {
     // The echoes wanted: every other loop pass of each first-pass ref with a clip time and a name.
+    // Review 13-56: one walk over the refs and one over the passes per ref (cut once, at most
+    // kMaxLoopPasses), keyed by (pass, name, clip time) instead of comparing every pair; at most
+    // kMaxLoopEchoes in all.
     struct Want {
         size_t    base = 0;
         long long id = 0;
         double    t = 0.0;
         bool      matched = false;
     };
-    std::vector<Want> want;
-    if (map.loop)
+    std::vector<Want>      want;
+    std::map<EchoKey, size_t> want_at;  // key -> index into want
+    if (map.loop) {
+        const std::vector<IdPass> ps = IdPasses(map, capped);
+        const double              rate = SafeRate(map);
+        std::vector<LoopPassTime> lps;
         for (size_t i = 0; i < refs.size(); ++i) {
             const ProjectMarkerRef& b = refs[i];
             if (b.pass != 0 || !b.has_c || !b.has_name) continue;
-            for (const LoopPassTime& lp : LoopPassTimes(map, b.c)) {
+            PassTimesIn(ps, rate, b.c, &lps);
+            for (const LoopPassTime& lp : lps) {
                 if (lp.id == 0) continue;
-                bool twin = false;  // two first-pass refs of one place (never written so): one echo
-                for (const Want& w : want)
-                    twin |= w.id == lp.id && refs[w.base].name == b.name && std::fabs(refs[w.base].c - b.c) <= kEchoMatchTolS;
-                if (!twin) want.push_back(Want{i, lp.id, lp.project_t, false});
+                if (want.size() >= kMaxLoopEchoes) {
+                    if (capped) *capped = true;
+                    break;
+                }
+                // Two first-pass refs of one place (never written so): one echo.
+                if (want_at.emplace(EchoKeyOf(lp.id, b.name, b.c), want.size()).second)
+                    want.push_back(Want{i, lp.id, lp.project_t, false});
             }
         }
+    }
     std::vector<EchoStep> out;
     std::vector<size_t>   drops;
     for (size_t i = 0; i < refs.size(); ++i) {
         const ProjectMarkerRef& e = refs[i];
         if (e.pass == 0) continue;
         bool keep = false;
-        if (!e.guid.empty() && e.has_c && e.has_name)
-            for (Want& w : want) {
-                const ProjectMarkerRef& b = refs[w.base];
-                if (w.matched || w.id != e.pass || b.name != e.name || std::fabs(b.c - e.c) > kEchoMatchTolS) continue;
-                w.matched = keep = true;
-                break;
-            }
+        if (!e.guid.empty() && e.has_c && e.has_name) {
+            const auto hit = want_at.find(EchoKeyOf(e.pass, e.name, e.c));
+            if (hit != want_at.end() && !want[hit->second].matched) want[hit->second].matched = keep = true;
+        }
         if (!keep) drops.push_back(i);
     }
     for (auto it = drops.rbegin(); it != drops.rend(); ++it) {

@@ -121,12 +121,13 @@ struct FollowProject {
     std::map<std::string, std::string> pass_fills;
 };
 
-// 13-56: the state a loop-pass fill ran on: the item's clip map and its live placed items.
+// 13-56: the state a loop-pass fill ran on: the item's clip map and its live placed items. Review: not
+// its position (a move shows no new pass), so a pass the fill could not fill is not tried on every move.
 std::string PassFillKey(const ItemClipMap& m, const ItemSounds& rec)
 {
     char buf[200];
-    std::snprintf(buf, sizeof(buf), "%.9g %.9g %.9g %.9g %.9g %d|", m.item_pos, m.item_len, m.start_offs, m.rate,
-                  m.clip_len, m.loop ? 1 : 0);
+    std::snprintf(buf, sizeof(buf), "%.9g %.9g %.9g %.9g %d|", m.item_len, m.start_offs, m.rate, m.clip_len,
+                  m.loop ? 1 : 0);
     std::vector<std::string> g;
     for (const EventSounds& ev : rec.events)
         for (const SoundPlacement& p : ev.placed)

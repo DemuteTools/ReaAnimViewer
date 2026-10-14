@@ -1723,6 +1723,90 @@ int main()
         const std::vector<ProjectMarkerRef> echo_first = {pref("{E}", 0.25, 12.25, "Step", 2), pref("{A}", 0.25, 10.25, "Step", 0)};
         CHECK(FindProjectTwin(echo_first, 0.25, "Step", 1e-6, {}) == 1);
         CHECK(FindProjectTwin({echo_first[0]}, 0.25, "Step", 1e-6, {}) == -1);
+
+        // ---- 13-56 review: pass times read from the id, capped passes, keyed echo planning ----------
+        // PassProjectTime / PassClipTime (now read from the id) agree with LoopPassTimes on odd maps:
+        // a negative offset, a rate, a trimmed start, a partial last pass.
+        {
+            std::vector<ItemClipMap> maps;
+            ItemClipMap a = m;
+            a.start_offs = -0.4;
+            maps.push_back(a);
+            a = m;
+            a.rate = 1.7;
+            a.start_offs = 2.35;
+            a.item_len = 4.1;
+            maps.push_back(a);
+            a = m;
+            a.clip_len = 0.37;
+            a.item_len = 3.0;
+            a.start_offs = 0.1;
+            maps.push_back(a);
+            for (const ItemClipMap& mm : maps)
+                for (double c0 = 0.0; c0 < mm.clip_len; c0 += mm.clip_len / 7.0) {
+                    const std::vector<LoopPassTime> lt = LoopPassTimes(mm, c0);
+                    for (const LoopPassTime& x : lt) {
+                        if (x.id == 0) continue;
+                        double t = 0.0, back = 0.0;
+                        CHECK(PassProjectTime(mm, c0, x.id, &t) && Near(t, x.project_t));
+                        CHECK(PassClipTime(mm, x.project_t, x.id, &back) && Near(back, c0));
+                    }
+                    for (long long id = -3; id < 20; ++id) {  // no pass the walk does not show
+                        if (id == 0) continue;
+                        bool shown = false;
+                        for (const LoopPassTime& x : lt) shown |= x.id == id;
+                        CHECK(PassProjectTime(mm, c0, id, nullptr) == shown);
+                    }
+                }
+        }
+        // A long stretch: 1000 loops of a 1 s clip. Only the first kMaxLoopPasses passes are looped
+        // over; past them, no pass time, no echo.
+        {
+            ItemClipMap lng = m;
+            lng.item_len = 1000.0;
+            bool capped = false;
+            CHECK(LoopPassTimes(lng, 0.25, &capped).size() == kMaxLoopPasses && capped);
+            capped = false;
+            CHECK(LoopPassTimes(m, 0.25, &capped).size() == 4 && !capped);
+            double t = 0.0;
+            CHECK(PassProjectTime(lng, 0.25, static_cast<long long>(kMaxLoopPasses) - 1, &t) &&
+                  Near(t, 10.25 + static_cast<double>(kMaxLoopPasses) - 1.0));
+            CHECK(!PassProjectTime(lng, 0.25, static_cast<long long>(kMaxLoopPasses), &t));
+            CHECK(!PassClipTime(lng, 10.25 + static_cast<double>(kMaxLoopPasses), static_cast<long long>(kMaxLoopPasses), &t));
+            capped = false;
+            std::vector<EchoStep> big = PlanLoopEchoes(refs, lng, &capped);
+            CHECK(capped && big.size() == 2 * (kMaxLoopPasses - 1));
+            for (const EchoStep& e : big) CHECK(!e.drop && e.add.pass > 0 && e.add.pass < static_cast<long long>(kMaxLoopPasses));
+            // An echo already written past the cap (an older stretch) is dropped.
+            std::vector<ProjectMarkerRef> past = refs;
+            past.push_back(pref("{FAR}", 0.25, 10.25 + 300.0, "Step", 300));
+            bool dropped = false;
+            for (const EchoStep& e : PlanLoopEchoes(past, lng)) dropped |= e.drop && e.ref == 2;
+            CHECK(dropped);
+            // The total budget: many first-pass refs on many passes stop at kMaxLoopEchoes.
+            std::vector<ProjectMarkerRef> many;
+            for (int i = 0; i < 40; ++i)
+                many.push_back(pref(("{M" + std::to_string(i) + "}").c_str(), 0.01 + i * 0.02, 10.01 + i * 0.02, "Step", 0));
+            capped = false;
+            const std::vector<EchoStep> lots = PlanLoopEchoes(many, lng, &capped);
+            CHECK(capped && lots.size() == kMaxLoopEchoes);
+        }
+        // Keyed matching: an echo whose clip time is within the tolerance of its ref's is kept; one
+        // with another name, or a clip time further off, is dropped and made again.
+        {
+            std::vector<ProjectMarkerRef> k = {pref("{A}", 0.25, 10.25, "Step", 0), pref("{E1}", 0.25 + 2e-7, 11.25, "Step", 1),
+                                               pref("{E2}", 0.25, 12.25, "Land", 2), pref("{E3}", 0.2501, 13.25, "Step", 3)};
+            int drops = 0, adds = 0;
+            for (const EchoStep& e : PlanLoopEchoes(k, m)) {
+                if (e.drop) CHECK(e.ref == 2 || e.ref == 3);
+                else CHECK(e.add.pass == 2 || e.add.pass == 3);
+                drops += e.drop ? 1 : 0;
+                adds += e.drop ? 0 : 1;
+            }
+            CHECK(drops == 2 && adds == 2);
+            CHECK(EchoKeyOf(1, "Step", 0.25).c == EchoKeyOf(1, "Step", 0.25 + 2e-7).c);
+            CHECK(EchoKeyOf(1, "Step", 0.25) < EchoKeyOf(2, "Step", 0.25));
+        }
     }
 
     if (g_fails) {

@@ -195,6 +195,14 @@ ResolveHooks MakeDrawHooks(PopulateDrawState& state, EventDraw& ev, std::functio
     return h;
 }
 
+std::vector<SlotStep> PlanPassFill(const std::vector<DesiredSlot>& desired, const std::vector<ExistingSlot>& existing)
+{
+    std::vector<SlotStep> out;
+    for (const SlotStep& st : PlanEventSlots(desired, existing))
+        if (st.act == SlotAction::Place) out.push_back(st);
+    return out;
+}
+
 std::vector<SlotStep> PlanEventSlots(const std::vector<DesiredSlot>& desired, const std::vector<ExistingSlot>& existing)
 {
     std::vector<SlotStep> steps;

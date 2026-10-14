@@ -30,9 +30,10 @@ SoundReport PopulateItems(const std::vector<MediaItem*>& items);
 void InitSoundPopulate(void* (*get_func)(const char* name));
 
 // 13-56: a looped animation item extended (sound_follow.cpp): its populated events (those with a live
-// populated sound) placed again on every loop pass, the passes that have their sounds kept as they are
-// (PlanEventSlots), a node deleted by hand never placed again. The given items only (not their pools),
-// on the current project. NO undo point: the follow runs after the user's gesture and rides it (13-9 F4).
+// populated sound) placed on the loop passes that miss a sound (review: PlanPassFill, Place steps only:
+// nothing replaced, re-drawn or removed, no orphan prune, no report line), a node deleted by hand never
+// placed again. The given items only (not their pools), on the current project. NO undo point: the
+// follow runs after the user's gesture and rides it (13-9 F4).
 SoundReport PopulateLoopPassesNoUndo(const std::vector<MediaItem*>& items);
 
 // PopulateItems, with the number of events it handled (`events`, optional).

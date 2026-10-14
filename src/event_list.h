@@ -110,11 +110,17 @@ struct LoopPassTime {
     long long id = 0;
     double    project_t = 0.0;
 };
-std::vector<LoopPassTime> LoopPassTimes(const ItemClipMap& m, double clip_t);
+// Review 13-56: only the item's first kMaxLoopPasses passes (time order) are looped over, so a long
+// stretch does not write thousands of markers and sounds; `capped` (optional) is set when the item
+// shows more.
+constexpr size_t kMaxLoopPasses = 256;
+std::vector<LoopPassTime> LoopPassTimes(const ItemClipMap& m, double clip_t, bool* capped = nullptr);
 // Clip time -> project time on pass `id` (0: FirstPassProjectTime). False when that pass does not
-// show it (or the item does not loop and id is not 0).
+// show it (or the item does not loop and id is not 0, or the pass is past kMaxLoopPasses). Read
+// from the id (no walk over the passes).
 bool PassProjectTime(const ItemClipMap& m, double clip_t, long long id, double* project_t);
-// Project time -> clip time on pass `id` (0: FirstPassClipTime). False outside that pass.
+// Project time -> clip time on pass `id` (0: FirstPassClipTime). False outside that pass (or past
+// kMaxLoopPasses).
 bool PassClipTime(const ItemClipMap& m, double project_t, long long id, double* clip_t);
 
 // ---- Apply (Commit since 10-4 fb-4) ------------------------------------------------------------
@@ -333,6 +339,24 @@ std::vector<MirrorStep> MirrorPlan(const std::vector<ProjectMarkerRef>& refs, co
 // take marker on every loop of its item by itself.
 
 constexpr double kEchoMatchTolS = 1e-6;  // an echo this close to its first-pass ref's clip time is its
+// Review 13-56: at most this many echoes per ref list (committed, previews) of one item, on top of
+// kMaxLoopPasses: the first refs in list order on the first passes get theirs.
+constexpr size_t kMaxLoopEchoes = 4096;
+
+// An echo's place: its pass, its name and its clip time rounded to kEchoMatchTolS. A first-pass ref
+// wants one echo per key; an existing echo is kept when its key is wanted (and not taken already).
+struct EchoKey {
+    long long   pass = 0;
+    std::string name;
+    long long   c = 0;
+    bool operator<(const EchoKey& o) const
+    {
+        if (pass != o.pass) return pass < o.pass;
+        if (c != o.c) return c < o.c;
+        return name < o.name;
+    }
+};
+EchoKey EchoKeyOf(long long pass, const std::string& name, double c);
 
 struct EchoStep {
     bool             drop = false;  // drop refs[ref] (its marker deleted when it has a GUID)
@@ -343,8 +367,10 @@ struct EchoStep {
 // pass ref is gone, whose pass no longer shows its clip time, without a GUID (hidden, or a copy's
 // that could not be made), or a second one for the same place, is dropped; a missing one is added.
 // Drops first (descending ref index), then adds in ref order then pass order. Empty when all are
-// in place (always, for a not-looped item without echoes).
-std::vector<EchoStep> PlanLoopEchoes(const std::vector<ProjectMarkerRef>& refs, const ItemClipMap& map);
+// in place (always, for a not-looped item without echoes). `capped` (optional) is set when the item
+// shows more passes than kMaxLoopPasses or wants more echoes than kMaxLoopEchoes (the rest not echoed).
+std::vector<EchoStep> PlanLoopEchoes(const std::vector<ProjectMarkerRef>& refs, const ItemClipMap& map,
+                                     bool* capped = nullptr);
 
 // ---- 10-4c: REAPER-side edits of RAV's markers -> the event list ---------------------------------
 

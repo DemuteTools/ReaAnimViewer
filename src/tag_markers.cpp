@@ -783,10 +783,19 @@ bool ApplyMirrorStep(ProjectMarkerRef& r, const MirrorStep& st, bool copy, Mirro
 // 13-56: the loop echoes of one ref list made and dropped (event_list.h PlanLoopEchoes): a dropped
 // echo's marker deleted (marked as the mirror's own delete), a new one written. True when the list
 // changed. An echo whose marker could not be written is not recorded (tried again next scan).
+// Review 13-56: an item looped past kMaxLoopPasses (or kMaxLoopEchoes) gets echoes on its first passes
+// only; debuglog builds say so once per item.
 bool ApplyLoopEchoes(std::vector<ProjectMarkerRef>& refs, const ItemClipMap& map, MirrorProject& mp, ReaProject* proj,
-                     bool* timeline_changed, std::vector<std::string>& created)
+                     bool* timeline_changed, std::vector<std::string>& created, const std::string& item_guid)
 {
-    const std::vector<EchoStep>   steps = PlanLoopEchoes(refs, map);
+    bool                          capped = false;
+    const std::vector<EchoStep>   steps = PlanLoopEchoes(refs, map, &capped);
+    if (capped) {
+        static std::set<std::string> said;
+        if (said.size() < 1024 && said.insert(item_guid).second)
+            LogInfo("loop echoes capped on item %s: its first %d passes / %d markers only", item_guid.c_str(),
+                    static_cast<int>(kMaxLoopPasses), static_cast<int>(kMaxLoopEchoes));
+    }
     bool                          changed = false;
     std::vector<ProjectMarkerRef> added;
     for (const EchoStep& st : steps) {
@@ -862,7 +871,7 @@ bool MirrorCopyItem(MirrorItem& mi, MediaItem_Take* take, const std::map<std::st
         for (const MirrorStep& st : MirrorPlan(*refs, RefStates(*refs, now, mp), mi.seen.map, false, true))
             changed |= ApplyMirrorStep((*refs)[st.ref], st, true, mp, proj, timeline_changed, created);
         // 13-56: its loop echoes now hold its own markers (or none): made and dropped as on any item.
-        changed |= ApplyLoopEchoes(*refs, mi.seen.map, mp, proj, timeline_changed, created);
+        changed |= ApplyLoopEchoes(*refs, mi.seen.map, mp, proj, timeline_changed, created, mi.guid);
     }
     if (RecordOwner(rules) != mi.guid) changed |= SetRecordOwner(rules, mi.guid);
     if (!changed) return false;
@@ -1167,8 +1176,8 @@ void MirrorOwnItem(MirrorItem& mi, MediaItem_Take* take, const std::map<std::str
     compact(rules.tmarkers, erase_t);
     compact(rules.ptmarkers, erase_pt);
     // 13-56: the loop echoes follow their first-pass refs as they are now.
-    changed |= ApplyLoopEchoes(rules.pmarkers, map, mp, proj, timeline_changed, created);
-    changed |= ApplyLoopEchoes(rules.ppmarkers, map, mp, proj, timeline_changed, created);
+    changed |= ApplyLoopEchoes(rules.pmarkers, map, mp, proj, timeline_changed, created, mi.guid);
+    changed |= ApplyLoopEchoes(rules.ppmarkers, map, mp, proj, timeline_changed, created, mi.guid);
     if (!changed) return;
 
     // The event list (and, when the item was up to date, the commit's signature).

@@ -110,6 +110,9 @@ struct SlotStep {
 // (no Place, no ReplaceNode into another slot), but its live copies are kept. Attached / Spread
 // entries are ignored.
 std::vector<SlotStep> PlanEventSlots(const std::vector<DesiredSlot>& desired, const std::vector<ExistingSlot>& existing);
+// 13-56 review: a looped item's new passes filled (sound_follow): PlanEventSlots' Place steps only,
+// the passes that have their sound left exactly as they are (no SetVariation, ReplaceNode or Remove).
+std::vector<SlotStep> PlanPassFill(const std::vector<DesiredSlot>& desired, const std::vector<ExistingSlot>& existing);
 // The index of the pass time nearest `pos` (-1 when none).
 int NearestPass(const std::vector<double>& pass_times, double pos);
 // The pass of a placed item: the pass nearest where its sync point lands (its position plus its

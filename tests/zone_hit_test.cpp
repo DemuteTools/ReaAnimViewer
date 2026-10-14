@@ -412,6 +412,12 @@ void TestSelection()
     SelToggle(sel, {0, 0});
     CHECK(sel.size() == 1 && !SelHas(sel, ZoneRef{0, 0}));
     CHECK(SelValid(d, {{0, 9}, {0, 3}, {0, 3}}).size() == 1);
+    {  // 13-62h final review: a ref into an off variation is dropped (valid and followed)
+        SoundData off = d;
+        off.frames[1].on = false;
+        CHECK(SelValid(off, {{1, 0}, {0, 3}}) == (ZoneSel{{0, 3}}));
+        CHECK(SelFollow(d, {{1, 0}}, off).empty());
+    }
     CHECK(SelFrames({{1, 0}, {0, 2}, {0, 3}}) == (std::vector<int>{0, 1}));
     CHECK(ZonesOfFrame(d, 0).size() == 4 && FirstZoneOf(d, 0) == (ZoneRef{0, 0}) && FirstZoneOf(d, 1) == (ZoneRef{1, 0}));
     CHECK(SelSorted(d, {{1, 0}, {0, 2}}) == (ZoneSel{{0, 2}, {1, 0}}));

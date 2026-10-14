@@ -252,6 +252,10 @@ std::string PartOfRole(const SoundStore& store, const SoundData& data, const std
 // the Sound's. Each piece between two cuts has one owner (SoundFrame::owners; empty = the legacy k-th piece
 // rule, PartAt); a part may own several separate pieces of a variation.
 
+// 13-62h: an entry with nothing of its own (no setting, no lane fader, no unknown field); PruneEmptyParts removes
+// every such entry.
+bool PartSettingsEmpty(const PartSettings& p);
+void PruneEmptyParts(SoundData& data);
 // The part's settings entry, nullptr when none (or value "").
 const PartSettings* PartSettingsOf(const SoundData& data, const std::string& value);
 // Effective values of a part: its own, else the Sound's (value "" = the Sound's). Gain: its own, else 0 dB

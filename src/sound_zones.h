@@ -76,6 +76,9 @@ std::string ZonesProblem(const SoundData& d, double file_len);
 // overlap; everything inside the file; a zone under 4 ms goes. Each variation's start / length follow its zones;
 // a variation left with no zone is turned off.
 void RelayoutZones(SoundData& d, const PeakView* peaks, double file_len = 0.0);
+// After a read: every zone made sane (RelayoutZones without peaks; an off variation's zones too, on their own);
+// zones on a Sound that is not edited as zones dropped. ZonesProblem is "" after it.
+void SanitizeZones(SoundData& d);
 // The mockup's initZones for variation `v` (its zones replaced): one zone per part, cut at RAV's cuts (AutoCuts
 // on the peaks, else an even split), each later part's cut following its Pre-roll before its onset.
 void ProposeZones(SoundData& d, int v, const PeakView* peaks);

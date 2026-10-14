@@ -496,6 +496,12 @@ void SetFrameOn(SoundData& data, int i, bool on)
     if (!ValidIndex(data, i)) return;
     data.frames[static_cast<size_t>(i)].on = on;
     MarkHand(data, i);
+    // 13-62h: its zones come back into the model: laid out with the others (zones grown into its stretch meanwhile
+    // never overlap them).
+    if (on && UsesZones(data)) {
+        if (data.frames[static_cast<size_t>(i)].zones.empty()) ProposeZones(data, i, nullptr);
+        RelayoutZones(data, nullptr);
+    }
 }
 
 void SetFrameDb(SoundData& data, int i, double db)
@@ -1292,12 +1298,7 @@ double SyncFor(const SoundData& data, int variation, const std::string& part_val
 {
     if (!ValidIndex(data, variation)) return -1.0;
     const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
-    if (ZonedFrame(data, variation)) {  // 13-62h: the snap offset of the part's first zone (no peaks here)
-        for (size_t k = 0; k < f.zones.size(); ++k)
-            if (!f.zones[k].IsGap() && (part_value.empty() || f.zones[k].part == part_value))
-                return ZoneSnap(data, {variation, static_cast<int>(k)}, nullptr).t;
-        return -1.0;
-    }
+
     if (f.syncs.size() != static_cast<size_t>(PartCount(data))) return -1.0;
     if (part_value.empty()) {
         for (double s : f.syncs)
@@ -1554,7 +1555,7 @@ void Remeasure(SoundData& data, bool syncs, bool trims)
 void PruneParts(SoundData& data)
 {
     data.parts.erase(std::remove_if(data.parts.begin(), data.parts.end(),
-                                    [](const PartSettings& p) { return OwnCount(p) == 0 && p.kept.empty() && !p.fader_db; }),
+                                    [](const PartSettings& p) { return PartSettingsEmpty(p); }),
                      data.parts.end());
 }
 
@@ -1564,6 +1565,16 @@ bool Finite(const std::optional<double>& v)
 }
 
 }  // namespace
+
+bool PartSettingsEmpty(const PartSettings& p)
+{
+    return OwnCount(p) == 0 && p.kept.empty() && !p.fader_db;
+}
+
+void PruneEmptyParts(SoundData& data)
+{
+    PruneParts(data);
+}
 
 const PartSettings* PartSettingsOf(const SoundData& data, const std::string& value)
 {

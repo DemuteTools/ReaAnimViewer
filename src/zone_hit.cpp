@@ -596,7 +596,7 @@ ZoneSel SelValid(const SoundData& d, const ZoneSel& sel)
 {
     ZoneSel out;
     for (const ZoneRef& r : sel)
-        if (Valid(d, r) && !SelHas(out, r)) out.push_back(r);
+        if (Valid(d, r) && d.frames[static_cast<size_t>(r.frame)].on && !SelHas(out, r)) out.push_back(r);  // off: out of the model
     return out;
 }
 
@@ -610,6 +610,7 @@ ZoneSel SelFollow(const SoundData& before, const ZoneSel& sel, const SoundData& 
         auto same = [&](const EditZone& y) { return y.IsGap() == z->IsGap() && y.part == z->part; };
         auto overlap = [&](const EditZone& y) { return std::min(y.b, z->b) - std::max(y.a, z->a); };
         const EditZone* here = ZoneOf(after, r);
+        if (here && !after.frames[static_cast<size_t>(r.frame)].on) here = nullptr;  // an off variation: out of the model
         if (here && same(*here) && overlap(*here) > 0.0) {
             if (!SelHas(out, r)) out.push_back(r);
             continue;

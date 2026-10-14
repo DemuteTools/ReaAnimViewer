@@ -430,9 +430,17 @@ void TestProposeAndRecord()
     u.frames[0].zones[0].kept = {{"zz", "1"}, {"bare", ""}};
     CHECK(RoundTrips(u));
     // Undivided: the zones go.
+    SetZoneDb(d, {0, 0}, 4.5);
     CHECK(SetDivide(d, "", {}));
+    CHECK(Near(d.frames[0].db, 4.5));  // the first part zone's gain is the variation's again
     RefreshParts(d, &pk);
     CHECK(d.frames[0].zones.empty() && !UsesZones(d));
+    {  // divided again: the proposed zones take the variation's gain, the variation none
+        SoundData r = d;
+        CHECK(SetDivide(r, "g", {kHeel, kToe}));
+        RefreshParts(r, &pk);
+        CHECK(r.frames[0].zones.size() == 2 && Near(At(r, 0, 0).db, 4.5) && Near(At(r, 0, 1).db, 4.5) && r.frames[0].db == 0.0);
+    }
     // Takes mode: no zones.
     SoundData tk = Base();
     tk.mode = DetectMode::Takes;
@@ -501,6 +509,76 @@ ZoneSel AnySel(const SoundData& d, Rng& r)
 
 // Lot A review: the migrated spans survive a relayout with peaks; zones proposed before the peaks get RAV's cuts once
 // they are read; an off variation is out of the model; snap modes; a part with no zone; 40508 without a time selection.
+// Final review: a ref into an off variation is refused; Heal never crosses variations; a gesture marks only its own
+// variation as hand (a settings change none); the lane fader never clamps a zone; a variation turned back on is laid
+// out with the others.
+void TestFinalReview()
+{
+    PeakData pk = Peaks({{0.12, 0.20}, {0.35, 0.40}, {0.60, 0.66}, {1.12, 1.20}});
+    {
+        SoundData  d = With({Z(kHeel, 0.10, 0.30)});
+        SoundFrame f;
+        f.on = false;
+        f.zones = {Z(kToe, 0.50, 0.70), Z(kToe, 0.70, 0.80)};
+        f.start = 0.5;
+        f.length = 0.3;
+        d.frames.push_back(f);
+        const ZoneRef off = {1, 0};
+        ZoneSel       sel = {off, {1, 1}};
+        CHECK(!MoveZone(d, off, 0.01) && !DragZoneEdge(d, off, 1, 0.65) && !DragCut(d, off, 0.72) && !SetZoneDb(d, off, 3.0));
+        CHECK(!SetZoneFade(d, off, -1, 0.01) && !SetZoneSnap(d, off, 0.6) && !ResetZoneEdge(d, off, 1) && !FillGap(d, off));
+        CHECK(!HealZones(d, sel) && !DeleteZones(d, sel) && At(d, 1, 0).db == 0.0 && d.frames[1].zones.size() == 2);
+    }
+    {  // Heal: V1's last zone and V2's first, butted, stay apart
+        SoundData  d = With({Z(kHeel, 0.10, 0.30)});
+        SoundFrame f;
+        f.zones = {Z(kToe, 0.30, 0.50)};
+        f.start = 0.3;
+        f.length = 0.2;
+        d.frames.push_back(f);
+        ZoneSel sel = {{0, 0}, {1, 0}};
+        CHECK(!HealZones(d, sel) && d.frames[0].zones.size() == 1 && d.frames[1].zones.size() == 1 && d.frames[1].on);
+    }
+    {  // two variations, a gesture with peaks on variation 0: variation 1 not marked hand
+        SoundData  d = With({Z(kHeel, 0.10, 0.30), Z(kToe, 0.30, 0.50)});
+        SoundFrame f;
+        f.zones = {Z(kHeel, 1.10, 1.30)};
+        f.zones[0].a_hand = f.zones[0].b_hand = false;
+        f.start = 1.1;
+        f.length = 0.2;
+        d.frames.push_back(f);
+        ZoneContext ctx;
+        ctx.peaks = &pk;
+        CHECK(SetZoneDb(d, {0, 0}, 2.0, ctx) && d.frames[0].hand && !d.frames[1].hand);
+        PartSettings t;
+        t.tail_ms = 30.0;
+        SetPartSetting(d, kHeel, t);
+        SoundData e = d;
+        e.frames[0].hand = false;
+        ApplyPreTailChange(e, kHeel, true, PartField::Tail, ctx);
+        CHECK(!e.frames[0].hand && !e.frames[1].hand);
+    }
+    {  // the fader: a zone at +23 dB leaves room for +1 only; back to 0 gives +23 again
+        SoundData d = With({Z(kHeel, 0.10, 0.30), Z(kHeel, 0.40, 0.60)});
+        d.frames[0].zones[0].db = 23.0;
+        d.frames[0].zones[1].db = -2.0;
+        CHECK(SetPartFader(d, kHeel, 2.0) && Near(PartFaderDb(d, kHeel), 1.0) && Near(At(d, 0, 0).db, 24.0) && Near(At(d, 0, 1).db, -1.0));
+        CHECK(SetPartFader(d, kHeel, 0.0) && Near(At(d, 0, 0).db, 23.0) && Near(At(d, 0, 1).db, -2.0) && PartFaderDb(d, kHeel) == 0.0);
+    }
+    {  // a variation turned back on after a zone grew into its stretch
+        SoundData  d = With({Z(kHeel, 0.10, 0.30)});
+        SoundFrame f;
+        f.on = false;
+        f.zones = {Z(kToe, 0.40, 0.60)};
+        f.start = 0.4;
+        f.length = 0.2;
+        d.frames.push_back(f);
+        CHECK(DragZoneEdge(d, {0, 0}, 1, 0.50) && Near(At(d, 0, 0).b, 0.50));
+        SetFrameOn(d, 1, true);
+        CHECK(ZonesProblem(d, 3.0).empty());
+    }
+}
+
 void TestReviewRows()
 {
     PeakData pk = Peaks({{0.12, 0.20}, {0.35, 0.40}, {0.60, 0.66}});
@@ -893,6 +971,7 @@ int main()
     TestTailWins();
     TestFaderAndNormalize();
     TestProposeAndRecord();
+    TestFinalReview();
     TestReviewRows();
     TestReviewBC();
     TestFuzz();

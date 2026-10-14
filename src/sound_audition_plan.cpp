@@ -442,6 +442,47 @@ double FadeGainAt(double t, double length, double in, double out, int in_shape, 
     return g;
 }
 
+namespace {
+
+// 13-54: a variation's whole voices kept to what its parts play once their margins apply (`pieces`,
+// PartPieces; touching pieces are one stretch): a voice's own fade stays on a side it keeps, a side the
+// margins cut gets the Sound's cut fade (as Populate gives a part's cut side).
+std::vector<AuditionVoice> MarginVoices(const std::vector<AuditionVoice>& voices, const std::vector<PartSpan>& pieces,
+                                        const SoundData& d)
+{
+    std::vector<std::pair<double, double>> runs;
+    for (const PartSpan& sp : pieces) {
+        if (!runs.empty() && std::fabs(runs.back().second - sp.start) <= 1e-9)
+            runs.back().second = sp.start + sp.length;
+        else
+            runs.push_back({sp.start, sp.start + sp.length});
+    }
+    const double               cut = std::isfinite(d.cut_fade) && d.cut_fade > 0.0 ? d.cut_fade : 0.0;
+    std::vector<AuditionVoice> out;
+    for (const AuditionVoice& v : voices) {
+        const double s0 = v.start_s, s1 = v.start_s + v.length_s;
+        for (const auto& r : runs) {
+            const double a = std::max(s0, r.first), b = std::min(s1, r.second);
+            if (b - a <= 1e-9) continue;
+            AuditionVoice w = v;
+            w.start_s = a;
+            w.length_s = b - a;
+            if (a > s0 + 1e-9) {
+                w.fade_in_s = cut;
+                w.fade_in_shape = 0;
+            }
+            if (b < s1 - 1e-9) {
+                w.fade_out_s = cut;
+                w.fade_out_shape = 0;
+            }
+            out.push_back(w);
+        }
+    }
+    return out;
+}
+
+}  // namespace
+
 std::vector<AuditionVoice> EditPlayVoices(const SoundLibrary& lib, const SoundNode& n, int take)
 {
     std::vector<AuditionVoice> out;
@@ -474,7 +515,21 @@ std::vector<AuditionVoice> EditPlayVoices(const SoundLibrary& lib, const SoundNo
     for (int i : order) {
         const SoundFrame& f = d.frames[static_cast<size_t>(i)];
         const bool        by_part = IsDivided(d) && !f.part_db.empty();
-        for (const AuditionVoice& piece : PartAuditionVoices(lib, n, i, "")) {
+        // 13-54: with the parts' margins, only what the parts play (PartPieces), owned by the part playing it.
+        const bool                  margins = PartMarginsApply(d);
+        const std::vector<PartSpan> owners = margins ? PartPieces(d, i) : std::vector<PartSpan>();
+        const std::vector<AuditionVoice> whole =
+            margins ? MarginVoices(PartAuditionVoices(lib, n, i, ""), owners, d) : PartAuditionVoices(lib, n, i, "");
+        auto owner_at = [&](double t, std::string* own) {
+            if (!margins) return PartAt(d, i, t, own);
+            for (const PartSpan& sp : owners)
+                if (t >= sp.start && t < sp.start + sp.length) {
+                    *own = sp.value_uid;
+                    return true;
+                }
+            return false;
+        };
+        for (const AuditionVoice& piece : whole) {
             if (!by_part) {
                 push(piece);
                 continue;
@@ -487,13 +542,16 @@ std::vector<AuditionVoice> EditPlayVoices(const SoundLibrary& lib, const SoundNo
             for (const SoundZone& z : d.zones)
                 for (double t : {z.start, z.start + z.length})
                     if (t > s0 && t < s1) b.push_back(t);
+            for (const PartSpan& sp : owners)  // 13-54: where the playing part changes
+                for (double t : {sp.start, sp.start + sp.length})
+                    if (t > s0 && t < s1) b.push_back(t);
             std::sort(b.begin(), b.end());
             AuditionVoice cur;
             bool          open = false;
             for (size_t k = 0; k + 1 < b.size(); ++k) {
                 if (b[k + 1] - b[k] <= 1e-9) continue;
                 std::string  own;
-                const double db = root + (PartAt(d, i, (b[k] + b[k + 1]) * 0.5, &own) ? FrameGainDb(f, own) : f.db);
+                const double db = root + (owner_at((b[k] + b[k + 1]) * 0.5, &own) ? FrameGainDb(f, own) : f.db);
                 if (open && std::fabs(cur.gain_db - db) < 1e-12) {
                     cur.length_s = b[k + 1] - cur.start_s;
                     continue;

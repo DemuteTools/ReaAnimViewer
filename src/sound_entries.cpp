@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <limits>
+#include <set>
 #include <sstream>
 
 namespace rav {
@@ -631,14 +632,167 @@ std::vector<PartSpan> PartSpansOf(const SoundData& data, int variation)
     return out;
 }
 
+bool PartMarginsApply(const SoundData& data)
+{
+    return data.mode == DetectMode::Silence && PartCount(data) >= 2;
+}
+
+namespace {
+
+bool Touches(const PartSpan& a, const PartSpan& b)
+{
+    return std::fabs(a.start + a.length - b.start) <= kTimeEps;
+}
+
+double MarginS(double ms)
+{
+    return std::isfinite(ms) && ms > 0.0 ? ms / 1000.0 : 0.0;
+}
+
+// Where the run of touching spans holding raw[i] starts / ends (an excluded zone or the frame's edge
+// beyond).
+double RunStart(const std::vector<PartSpan>& raw, size_t i)
+{
+    while (i > 0 && Touches(raw[i - 1], raw[i])) --i;
+    return raw[i].start;
+}
+
+double RunEnd(const std::vector<PartSpan>& raw, size_t i)
+{
+    while (i + 1 < raw.size() && Touches(raw[i], raw[i + 1])) ++i;
+    return raw[i].start + raw[i].length;
+}
+
+// 13-54: PartMarginSpans, one entry per raw span (a dropped silent span: length 0 at its start).
+std::vector<PartSpan> MarginsPerRaw(const SoundData& data, int variation, const PeakData& peaks)
+{
+    std::vector<PartSpan> raw = PartSpansOf(data, variation);
+    const double          pre = MarginS(data.silence.preroll_ms), tail = MarginS(data.silence.tail_ms);
+    const double          thr = data.silence.threshold_db;
+    const size_t          n = raw.size();
+    // Each span's own sound: its first loud bin's start, its last loud bin's end (inside the span).
+    std::vector<double>   a(n, 0.0), b(n, 0.0);
+    std::vector<bool>     loud(n, false), keep(n, true);
+    std::set<std::string> sounding;  // the parts with a loud span here
+    for (size_t i = 0; i < n; ++i) {
+        const PartSpan& s = raw[i];
+        long long       lo = 0, hi = 0, first = -1, last = -1;
+        BinRange(peaks, s.start, s.start + s.length, &lo, &hi);
+        for (long long k = lo; k < hi; ++k)
+            if (BinDb(peaks, k) >= thr) {
+                if (first < 0) first = k;
+                last = k;
+            }
+        if (first < 0) continue;
+        loud[i] = true;
+        sounding.insert(s.value_uid);
+        a[i] = std::max(static_cast<double>(first) / peaks.rate, s.start);
+        b[i] = std::max(std::min(static_cast<double>(last + 1) / peaks.rate, s.start + s.length), a[i]);
+    }
+    // A silent span of a part that sounds elsewhere in the variation plays nothing (dropped: the silence
+    // there is shared like any gap); a part silent all along keeps its spans as they are (a wall).
+    for (size_t i = 0; i < n; ++i) keep[i] = loud[i] || sounding.count(raw[i].value_uid) == 0;
+    std::vector<PartSpan> out = raw;
+    // Starts first: the pre-roll wins the shared gap (never into the previous part's sound).
+    for (size_t i = 0; i < n; ++i) {
+        if (!loud[i]) continue;
+        double lower = raw[i].start;
+        for (size_t j = i; j > 0 && Touches(raw[j - 1], raw[j]); --j) {
+            const size_t p = j - 1;
+            if (loud[p]) {
+                lower = b[p];
+                break;
+            }
+            if (keep[p]) {
+                lower = raw[p].start + raw[p].length;
+                break;
+            }
+            lower = raw[p].start;
+        }
+        out[i].start = std::min(std::max(a[i] - pre, lower), a[i]);
+    }
+    // Then ends: the tail, up to the next sounding part's start (or a wall's edge).
+    for (size_t i = n; i-- > 0;) {
+        if (!loud[i]) continue;
+        double upper = raw[i].start + raw[i].length;
+        for (size_t j = i + 1; j < n && Touches(raw[j - 1], raw[j]); ++j) {
+            if (loud[j]) {
+                upper = out[j].start;
+                break;
+            }
+            if (keep[j]) {
+                upper = raw[j].start;
+                break;
+            }
+            upper = raw[j].start + raw[j].length;
+        }
+        out[i].length = std::max(std::min(b[i] + tail, upper), b[i]) - out[i].start;
+    }
+    for (size_t i = 0; i < n; ++i)
+        if (!keep[i]) out[i].length = 0.0;
+    return out;
+}
+
+// 13-54: the stored trims applied to the raw spans, one entry per raw span (length 0 = dropped); false
+// when they do not fit (another span count, out of their run, overlapping): stale.
+bool TrimmedPerRaw(const SoundData& data, int variation, const std::vector<PartSpan>& raw, std::vector<PartSpan>* out)
+{
+    const std::vector<double>& t = data.frames[static_cast<size_t>(variation)].part_trims;
+    if (t.size() != raw.size() * 2) return false;
+    *out = raw;
+    double prev_end = -std::numeric_limits<double>::infinity();
+    for (size_t i = 0; i < raw.size(); ++i) {
+        const double s = t[2 * i], e = t[2 * i + 1];
+        const double rs = raw[i].start, re = raw[i].start + raw[i].length;
+        if (!std::isfinite(s) || !std::isfinite(e)) return false;
+        if (std::fabs(e - s) <= kTimeEps) {  // dropped
+            if (s < rs - kTimeEps || s > re + kTimeEps) return false;
+            (*out)[i].length = 0.0;
+            continue;
+        }
+        if (!(e > s) || s < RunStart(raw, i) - kTimeEps || e > RunEnd(raw, i) + kTimeEps || s < prev_end - kTimeEps ||
+            !(s < re) || !(e > rs))
+            return false;
+        (*out)[i].start = s;
+        (*out)[i].length = e - s;
+        prev_end = e;
+    }
+    return true;
+}
+
+std::vector<PartSpan> WithoutDropped(const std::vector<PartSpan>& spans)
+{
+    std::vector<PartSpan> out;
+    for (const PartSpan& s : spans)
+        if (s.length > kTimeEps) out.push_back(s);
+    return out;
+}
+
+}  // namespace
+
+std::vector<PartSpan> PartMarginSpans(const SoundData& data, int variation, const PeakData* peaks)
+{
+    if (!PartMarginsApply(data) || !HasPeaks(peaks)) return PartSpansOf(data, variation);
+    return WithoutDropped(MarginsPerRaw(data, variation, *peaks));
+}
+
+std::vector<PartSpan> PartPieces(const SoundData& data, int variation)
+{
+    std::vector<PartSpan> raw = PartSpansOf(data, variation);
+    if (!PartMarginsApply(data) || raw.empty()) return raw;
+    std::vector<PartSpan> per;
+    return TrimmedPerRaw(data, variation, raw, &per) ? WithoutDropped(per) : raw;
+}
+
 std::vector<PartSpan> PlacedSpans(const SoundData& data, int variation, const std::string& part_value)
 {
     std::vector<PartSpan> out;
-    for (const PartSpan& s : PartSpansOf(data, variation)) {
-        if (!part_value.empty()) {
+    if (!part_value.empty()) {
+        for (const PartSpan& s : PartPieces(data, variation))
             if (s.value_uid == part_value) out.push_back(s);
-            continue;
-        }
+        return out;
+    }
+    for (const PartSpan& s : PartSpansOf(data, variation)) {
         if (!out.empty() && std::fabs(out.back().start + out.back().length - s.start) <= kTimeEps)
             out.back().length = s.start + s.length - out.back().start;
         else
@@ -772,6 +926,39 @@ std::vector<PartSpan> SpansOfPart(const SoundData& data, int variation, int part
 
 }  // namespace
 
+namespace {
+
+// 13-54: the variation's part trims measured on the peaks (none when the margins do not apply); without
+// peaks the stored ones are kept while they still fit the spans, else dropped (measured at placement).
+void RefreshTrims(SoundData& data, int variation, const PeakData* peaks)
+{
+    SoundFrame& f = data.frames[static_cast<size_t>(variation)];
+    if (!PartMarginsApply(data)) {
+        f.part_trims.clear();
+        return;
+    }
+    if (HasPeaks(peaks)) {
+        f.part_trims.clear();
+        for (const PartSpan& sp : MarginsPerRaw(data, variation, *peaks)) {
+            f.part_trims.push_back(sp.start);
+            f.part_trims.push_back(sp.start + sp.length);
+        }
+        return;
+    }
+    std::vector<PartSpan> per;
+    if (!TrimmedPerRaw(data, variation, PartSpansOf(data, variation), &per)) f.part_trims.clear();
+}
+
+bool TrimsStale(const SoundData& data, int variation)
+{
+    if (!PartMarginsApply(data)) return false;
+    const std::vector<PartSpan> raw = PartSpansOf(data, variation);
+    std::vector<PartSpan>       per;
+    return !raw.empty() && !TrimmedPerRaw(data, variation, raw, &per);
+}
+
+}  // namespace
+
 void RefreshFrame(SoundData& data, int variation, const PeakData* peaks)
 {
     if (!ValidIndex(data, variation)) return;
@@ -780,6 +967,7 @@ void RefreshFrame(SoundData& data, int variation, const PeakData* peaks)
         f.cuts.clear();
         f.cuts_hand = f.cut_unsure = false;
         f.syncs.clear();
+        f.part_trims.clear();
         return;
     }
     const int n = PartCount(data);
@@ -798,6 +986,7 @@ void RefreshFrame(SoundData& data, int variation, const PeakData* peaks)
         SaneCuts(f, f.cuts);
         f.cuts_hand = f.cut_unsure = false;
     }
+    RefreshTrims(data, variation, peaks);  // 13-54: before the syncs, measured over the trimmed parts
     const std::vector<double> old = f.syncs;
     std::vector<double>       syncs(static_cast<size_t>(n), -1.0);
     const bool                measurable = data.sync_mode == SyncMode::SliceStart || HasPeaks(peaks);
@@ -834,6 +1023,7 @@ bool SyncsStale(const SoundData& data, int variation)
     const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
     const int         n = PartCount(data);
     if (f.syncs.size() != static_cast<size_t>(n)) return true;
+    if (TrimsStale(data, variation)) return true;
     for (int k = 0; k < n; ++k) {
         const std::vector<PartSpan> spans = SpansOfPart(data, variation, k);
         const double                s = f.syncs[static_cast<size_t>(k)];
@@ -846,6 +1036,7 @@ bool MeasureSyncs(SoundData& data, int variation, const PeakData* peaks)
 {
     if (!ValidIndex(data, variation) || data.mode == DetectMode::Takes) return false;
     if (data.sync_mode != SyncMode::SliceStart && !HasPeaks(peaks)) return false;
+    RefreshTrims(data, variation, peaks);  // 13-54
     SoundFrame&         f = data.frames[static_cast<size_t>(variation)];
     const int           n = PartCount(data);
     std::vector<double> syncs(static_cast<size_t>(n), -1.0);
@@ -878,8 +1069,9 @@ bool ApplyMeasuredSyncs(SoundStore& store, const std::string& lib_uid, const std
             continue;
         SoundFrame&       f = n->sound.frames[static_cast<size_t>(v)];
         const SoundFrame& g = measured.frames[static_cast<size_t>(v)];
-        if (f.start != g.start || f.length != g.length || f.syncs == g.syncs) continue;
+        if (f.start != g.start || f.length != g.length || (f.syncs == g.syncs && f.part_trims == g.part_trims)) continue;
         f.syncs = g.syncs;
+        f.part_trims = g.part_trims;  // 13-54
         changed = true;
     }
     return changed;
@@ -940,6 +1132,7 @@ bool SetDivide(SoundData& data, const std::string& group, const std::vector<std:
         f.cuts.clear();
         f.cuts_hand = f.cut_unsure = false;
         f.syncs.clear();
+        f.part_trims.clear();  // 13-54: measured again with the new parts
     }
     auto known = [&](const std::string& v) { return std::find(vals.begin(), vals.end(), v) != vals.end(); };
     data.zones.erase(std::remove_if(data.zones.begin(), data.zones.end(),
@@ -974,6 +1167,7 @@ bool AddZone(SoundData& data, double start, double length, const std::string& to
     z.length = length;
     z.to = to;
     data.zones.push_back(z);
+    for (SoundFrame& f : data.frames) f.part_trims.clear();  // 13-54: the spans changed
     return true;
 }
 
@@ -985,7 +1179,9 @@ bool IncludeAgain(SoundData& data, double t)
                                         return z.to.empty() && t >= z.start - kTimeEps && t <= z.start + z.length + kTimeEps;
                                     }),
                      data.zones.end());
-    return data.zones.size() != before;
+    if (data.zones.size() == before) return false;
+    for (SoundFrame& f : data.frames) f.part_trims.clear();  // 13-54: the spans changed
+    return true;
 }
 
 bool MoveCut(SoundData& data, int variation, int k, double t)
@@ -1002,6 +1198,7 @@ bool MoveCut(SoundData& data, int variation, int k, double t)
     f.cuts[i] = c;
     f.cuts_hand = true;
     f.cut_unsure = false;
+    f.part_trims.clear();  // 13-54: measured again around the moved cut (RefreshOne)
     return true;
 }
 
@@ -1041,6 +1238,7 @@ bool ResetCuts(SoundData& data, int variation)
     if (!f.cuts_hand) return false;
     f.cuts.clear();
     f.cuts_hand = f.cut_unsure = false;
+    f.part_trims.clear();
     return true;
 }
 

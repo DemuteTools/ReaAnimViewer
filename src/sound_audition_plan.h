@@ -143,6 +143,9 @@ std::vector<int> NormalizeSelection(const std::vector<SoundFrame>& frames, const
 // its dB, the excluded zones silent with the Sound's cut_fade at their edges; off variations and the file
 // between variations are silent. A divided variation whose parts have their own gain (13-28 part_db) plays
 // each part at it, one voice per part, the piece's fades kept across them (fade_from_s / fade_span_s).
+// 13-54: a divided Silence-detected Sound (PartMarginsApply) plays only what its parts play once their
+// pre-roll / tail apply (PartPieces): what the margins leave out is silent, with the Sound's cut fade at
+// the sides they cut; touching parts play on as one voice (split only for part gains).
 // Overlapping variations: the earlier one wins until it ends. Takes mode: take `take` whole as placed
 // (each take is its own file), at delay 0; -1 or a bad index = nothing.
 std::vector<AuditionVoice> EditPlayVoices(const SoundLibrary& lib, const SoundNode& n, int take = -1);

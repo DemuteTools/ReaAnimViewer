@@ -270,7 +270,9 @@ const SoundData& PlacedDataFor(const std::string& lib_uid, const SoundNode& n, i
     if (hit == cache.sounds.end()) hit = cache.sounds.emplace(key, MeasuredSound{n.sound, {}, {}}).first;
     MeasuredSound& m = hit->second;
     if (!SyncsStale(m.data, v)) return m.data;
-    const std::string path = n.sound.sync_mode == SyncMode::SliceStart ? std::string() : path_of();
+    // 13-54: the part margins are measured on the peaks too, whatever the sync mode.
+    const std::string path =
+        n.sound.sync_mode == SyncMode::SliceStart && !PartMarginsApply(n.sound) ? std::string() : path_of();
     if (!m.tried.insert({v, path}).second) return m.data;
     const PeakData* peaks = path.empty() ? nullptr : WholeFilePeaks(cache, path);
     if (MeasureSyncs(m.data, v, peaks)) m.measured.insert(v);

@@ -426,6 +426,32 @@ static void TestPartGains()
             CHECK(Near(sz[2].start_s, 1.5) && Near(sz[2].gain_db, -3.0) && Near(sz[2].fade_from_s, 0.2));
         }
     }
+    // 13-54: Silence + divided with its parts' margins stored: only what the parts play is heard, the
+    // Sound's cut fade on the sides the margins cut; touching parts play on as one voice.
+    {
+        SoundNode t = sn;
+        t.sound.frames[0].part_db.clear();
+        t.sound.frames[0].part_trims = {1.0, 1.2, 1.5, 2.0};
+        const std::vector<AuditionVoice> sm = EditPlayVoices(lib, t);
+        CHECK(sm.size() == 2);
+        if (sm.size() == 2) {
+            CHECK(Near(sm[0].start_s, 1.0) && Near(sm[0].length_s, 0.2) && Near(sm[0].fade_in_s, kDefaultFadeIn) &&
+                  Near(sm[0].fade_out_s, kDefaultCutFade) && Near(sm[0].delay_ms, 1000.0));
+            CHECK(Near(sm[1].start_s, 1.5) && Near(sm[1].length_s, 0.5) && Near(sm[1].fade_in_s, kDefaultCutFade) &&
+                  Near(sm[1].fade_out_s, kDefaultFadeOut) && Near(sm[1].delay_ms, 1500.0));
+        }
+        t.sound.frames[0].part_trims = {1.0, 1.4, 1.4, 2.0};  // a pre-roll reaching back over the cut
+        const std::vector<AuditionVoice> one = EditPlayVoices(lib, t);
+        CHECK(one.size() == 1 && Near(one[0].length_s, 1.0));
+        // With part gains: split where the playing part changes (1.4, not the cut).
+        t.sound.frames[0].part_db["a"] = 4.0;
+        const std::vector<AuditionVoice> two = EditPlayVoices(lib, t);
+        CHECK(two.size() == 2 && Near(two[0].length_s, 0.4) && Near(two[0].gain_db, 4.0) && Near(two[1].gain_db, -3.0));
+        // The part's own audition (a click on it) plays its piece.
+        t.sound.frames[0].part_trims = {1.0, 1.2, 1.5, 2.0};
+        const std::vector<AuditionVoice> pa = PartAuditionVoices(lib, t, 0, "a");
+        CHECK(pa.size() == 1 && Near(pa[0].length_s, 0.2));
+    }
     // Without part gains: one voice for the variation, at its dB.
     sn.sound.frames[0].part_db.clear();
     st = EditPlayVoices(lib, sn);

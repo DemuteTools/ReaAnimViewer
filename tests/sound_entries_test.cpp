@@ -841,6 +841,122 @@ void TestEmptyPart()
     CHECK(ActiveVariationsFor(d, kBack) == std::vector<int>{0});
 }
 
+// 13-54 (Antho 2026-10-14, "each part is a section inside the section"): a divided Silence Sound's
+// pre-roll and tail apply around each part's own sound. Step(): heel loud 1.020-1.061, toe loud
+// 1.150-1.188 (-45 dB threshold), frame 1.000-1.400, the cut at 1.145.
+std::vector<PartSpan> Margins(SoundData d, const PeakData& pk, double pre_ms, double tail_ms)
+{
+    d.silence.preroll_ms = pre_ms;
+    d.silence.tail_ms = tail_ms;
+    RefreshParts(d, &pk);
+    return PartPieces(d, 0);
+}
+
+void TestPartMargins()
+{
+    PeakData  pk;
+    SoundData d = Step(&pk);
+    // Combined: exactly as before (the whole frame, no trims stored).
+    CHECK(!PartMarginsApply(d));
+    RefreshParts(d, &pk);
+    CHECK(d.frames[0].part_trims.empty());
+    std::vector<PartSpan> c = PartMarginSpans(d, 0, &pk);
+    CHECK(c.size() == 1 && Near(c[0].start, 1.0) && Near(c[0].length, 0.4));
+    CHECK(PlacedSpans(d, 0, "").size() == 1 && Near(PlacedSpans(d, 0, "")[0].length, 0.4));
+    SetDivide(d, "g", {kBack, kFront});
+    CHECK(PartMarginsApply(d));
+    // Tail 0: each part ends with its sound; pre-roll 5 ms before each.
+    std::vector<PartSpan> m = Margins(d, pk, 5.0, 0.0);
+    CHECK(m.size() == 2 && m[0].value_uid == kBack && m[1].value_uid == kFront);
+    CHECK(Near(m[0].start, 1.015) && Near(m[0].start + m[0].length, 1.061));
+    CHECK(Near(m[1].start, 1.145) && Near(m[1].start + m[1].length, 1.188));
+    // Tail 300 ms: Back's tail stops at Front's start, Front's at the variation's end.
+    m = Margins(d, pk, 5.0, 300.0);
+    CHECK(m.size() == 2 && Near(m[0].start + m[0].length, 1.145) && Near(m[1].start + m[1].length, 1.4));
+    // Tail 100 ms: Front ends 100 ms after its sound.
+    m = Margins(d, pk, 5.0, 100.0);
+    CHECK(m.size() == 2 && Near(m[1].start + m[1].length, 1.288));
+    // Adjacent parts share the silent gap: a 50 ms pre-roll reaches back over the cut (1.145) to 1.100,
+    // Back's tail stops there; parts never overlap.
+    m = Margins(d, pk, 50.0, 300.0);
+    CHECK(m.size() == 2 && Near(m[0].start, 1.0) && Near(m[0].start + m[0].length, 1.1) && Near(m[1].start, 1.1));
+    // A pre-roll longer than the gap stops at Back's sound (never into it).
+    m = Margins(d, pk, 300.0, 300.0);
+    CHECK(m.size() == 2 && Near(m[0].start + m[0].length, 1.061) && Near(m[1].start, 1.061));
+    // Stored with the frame: Front's sync on its attack, inside its piece; the placement plays the piece.
+    SoundData s = d;
+    s.silence.preroll_ms = 50.0;
+    s.silence.tail_ms = 0.0;
+    RefreshParts(s, &pk);
+    CHECK(s.frames[0].part_trims.size() == 4 && !SyncsStale(s, 0));
+    const std::vector<PartSpan> front = PlacedSpans(s, 0, kFront);
+    CHECK(front.size() == 1 && Near(front[0].start, 1.1) && Near(front[0].start + front[0].length, 1.188));
+    CHECK(Near(SyncFor(s, 0, kFront), 1.148));
+    // A whole (combined event) placement keeps the whole variation.
+    CHECK(PlacedSpans(s, 0, "").size() == 1 && Near(PlacedSpans(s, 0, "")[0].length, 0.4));
+    // Stale trims (lost, or no longer fitting the spans) read as the raw spans and ask for a measure.
+    SoundData st = s;
+    st.frames[0].part_trims.clear();
+    CHECK(SyncsStale(st, 0) && Near(PlacedSpans(st, 0, kFront)[0].start, 1.145));
+    CHECK(MeasureSyncs(st, 0, &pk) && st.frames[0].part_trims == s.frames[0].part_trims && !SyncsStale(st, 0));
+    st.frames[0].part_trims = {1.0, 1.3, 1.2, 1.4};  // overlapping
+    CHECK(SyncsStale(st, 0) && Near(PlacedSpans(st, 0, kBack)[0].length, 0.145));
+    // A moved cut drops them (measured again by RefreshOne).
+    st = s;
+    CHECK(MoveCut(st, 0, 0, 1.13) && st.frames[0].part_trims.empty());
+    // Without peaks the stored ones stay while they fit.
+    st = s;
+    RefreshParts(st, nullptr);
+    CHECK(st.frames[0].part_trims == s.frames[0].part_trims);
+    // A part at the file's end: its tail stops there (the frame ends with the file).
+    {
+        PeakData  e = Quiet(3.0);
+        SoundData d2;
+        d2.mode = DetectMode::Silence;
+        d2.frames = {F(2.6, 0.4)};
+        Hit(e, 2.620, -4.0);
+        Hit(e, 2.850, -7.0);
+        SetDivide(d2, "g", {kBack, kFront});
+        const std::vector<PartSpan> me = Margins(d2, e, 5.0, 300.0);
+        CHECK(me.size() == 2 && Near(me[1].start + me[1].length, 3.0) && Near(me[0].start + me[0].length, 2.845));
+    }
+    // An excluded zone between the parts: no part grows into it; Back's silent stretch past the zone plays
+    // nothing (Back sounds before it), its silence goes to Front's pre-roll.
+    {
+        SoundData z = d;
+        CHECK(AddZone(z, 1.08, 0.04, ""));
+        const std::vector<PartSpan> mz = Margins(z, pk, 50.0, 300.0);
+        CHECK(mz.size() == 2 && mz[0].value_uid == kBack && Near(mz[0].start, 1.0) && Near(mz[0].start + mz[0].length, 1.08));
+        CHECK(mz[1].value_uid == kFront && Near(mz[1].start, 1.12) && Near(mz[1].start + mz[1].length, 1.4));
+        SoundData zz = z;
+        zz.silence.preroll_ms = 50.0;
+        zz.silence.tail_ms = 300.0;
+        RefreshParts(zz, &pk);
+        CHECK(PlacedSpans(zz, 0, kBack).size() == 1 && !SyncsStale(zz, 0));
+    }
+    // A part quiet all along keeps its spans as they are (still placed), its neighbour stops at it.
+    {
+        PeakData  q = Quiet(3.0);
+        Hit(q, 1.020, -4.0);
+        SoundData d3;
+        d3.mode = DetectMode::Silence;
+        d3.frames = {F(1.0, 0.4)};
+        SetDivide(d3, "g", {kBack, kFront});
+        d3.frames[0].cuts = {1.2};
+        d3.frames[0].cuts_hand = true;
+        const std::vector<PartSpan> mq = Margins(d3, q, 5.0, 300.0);
+        CHECK(mq.size() == 2 && Near(mq[0].start + mq[0].length, 1.2) && Near(mq[1].start, 1.2) &&
+              Near(mq[1].start + mq[1].length, 1.4));
+    }
+    // Not Silence detection (take markers): the parts as cut, untouched.
+    {
+        SoundData tm = d;
+        tm.mode = DetectMode::TakeMarkers;
+        RefreshParts(tm, &pk);
+        CHECK(!PartMarginsApply(tm) && tm.frames[0].part_trims.empty() && Near(PlacedSpans(tm, 0, kBack)[0].length, 0.145));
+    }
+}
+
 void TestHandMarks()
 {
     PeakData  pk;
@@ -1057,6 +1173,7 @@ int main()
     TestOnsetsAndCuts();
     TestOwnershipAndSpans();
     TestEmptyPart();
+    TestPartMargins();
     TestAttackVsPeak();
     TestHandMarks();
     TestSetDivideAndRoles();

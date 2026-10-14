@@ -81,6 +81,12 @@ struct SoundFrame {
     // 13-28: per-part gains (dB) set by a "Per part" Normalize, keyed by the part's Switch value uid. A part
     // with none plays at `db` (FrameGainDb).
     std::map<std::string, double> part_db;
+    // 13-54: each part as a section inside the variation: per raw span of the variation (PartSpansOf, in
+    // time order), the start and end (absolute source s) of what is placed once the Sound's pre-roll and
+    // tail are applied around the part's own sound (PartMarginSpans). Silence mode + divided only; empty
+    // or stale (another span count, out of bounds) = the raw spans. Measured by RefreshParts /
+    // MeasureSyncs from the peaks, never edited by hand.
+    std::vector<double>      part_trims;
 };
 
 // The Sound-level default fades (s): every variation with no fade of its own gets them.

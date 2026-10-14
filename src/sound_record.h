@@ -40,7 +40,7 @@
 //         [soff=<ms>] [cfade=<s>]                    -- 13-23/25: divided by a group (its values at divide
 //                                                       time), its own role map, lane mode, sync point, cut fade
 //   frame start=<s> len=<s> [on=0] [db=<dB>] [hand=1] [fin=<s>] [fout=<s>] [fish=<n>] [fosh=<n>]
-//         [cuts=<s>,<s>] [cutsh=1] [cutq=1] [sync=<s>,<s>] [hsync=<s>,<s>]
+//         [cuts=<s>,<s>] [cutsh=1] [cutq=1] [sync=<s>,<s>] [hsync=<s>,<s>] [ptrim=<s>,<s>,...]
 //                                                    -- a variation of that Sound (no fin/fout = the Sound's fades;
 //                                                       13-23/25: its cuts, hand / unsure flags, one sync per
 //                                                       part and the hand sync points, absolute source s)

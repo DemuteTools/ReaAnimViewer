@@ -121,8 +121,27 @@ bool PartAt(const SoundData& data, int variation, double t, std::string* value);
 // Every non-excluded contiguous stretch of the variation with its owner, in time order (a part cut by
 // an excluded zone gives 2 spans; an empty part gives none). {} for a bad index or an off frame.
 std::vector<PartSpan> PartSpansOf(const SoundData& data, int variation);
-// What a placement of `part_value` plays: the spans of that part, or for "" every non-excluded stretch
-// of the frame (adjacent spans merged: the whole variation minus its exclusions, value_uid "").
+// 13-54 (Antho 2026-10-14, "each part is a section inside the section"): true when a Sound's detection
+// margins also apply to each part: Silence detection and divided. Combined Sounds: never.
+bool PartMarginsApply(const SoundData& data);
+// 13-54: the variation's raw spans (PartSpansOf) with the Sound's pre-roll and tail applied around each
+// span's own sound (the bins at or above the threshold), as a variation's are around its sound:
+// start = max(first loud bin - pre-roll, lower), end = min(last loud bin's end + tail, upper). Next to a
+// span of another part (touching it), the silent gap between their sounds is shared as SplitOnSilence
+// shares it between variations: the later part's pre-roll comes first (it may reach back across the cut
+// into that silence, never into the earlier part's sound), the earlier part's tail fills what is left
+// up to it. Next to an excluded zone or the variation's edge, a span never grows past its own edge (it
+// stays inside the variation, so inside the file). A span with no loud bin plays nothing when its part
+// sounds elsewhere in the variation (dropped, its silence shared like a gap), else it is kept as it is
+// (a part quiet all along still plays, a wall its neighbours stop at). Parts never overlap. The raw
+// spans when the margins do not apply or without peaks.
+std::vector<PartSpan> PartMarginSpans(const SoundData& data, int variation, const PeakData* peaks);
+// 13-54: the spans each part plays: PartSpansOf with the stored `part_trims` applied (when the margins
+// apply and the trims fit the spans), else PartSpansOf.
+std::vector<PartSpan> PartPieces(const SoundData& data, int variation);
+// What a placement of `part_value` plays: the pieces of that part (PartPieces: its margins applied), or
+// for "" every non-excluded stretch of the frame (raw, adjacent spans merged: the whole variation minus
+// its exclusions, value_uid "" -- a whole variation keeps its own margins).
 std::vector<PartSpan> PlacedSpans(const SoundData& data, int variation, const std::string& part_value);
 
 // One onset of a variation: the peak bin's time, its level, and where its rise starts (the last
@@ -156,7 +175,8 @@ double ClampIntoSpans(const std::vector<PartSpan>& spans, double t);
 void RefreshFrame(SoundData& data, int variation, const PeakData* peaks);
 void RefreshParts(SoundData& data, const PeakData* peaks);
 // True when the variation's syncs must be measured again: not one per part, or a part with spans whose
-// sync is not inside them, or one without spans whose sync is set.
+// sync is not inside them, or one without spans whose sync is set; 13-54: or its part trims are missing
+// or stale while the margins apply.
 bool SyncsStale(const SoundData& data, int variation);
 // 13-25 (D6): a variation's sync points measured at placement (Populate found them stale): per part, a
 // hand sync inside its spans, else AutoSync; its cuts are kept (Populate never re-detects). False (the

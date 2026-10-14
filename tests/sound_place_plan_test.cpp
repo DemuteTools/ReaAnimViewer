@@ -100,6 +100,21 @@ static void TestPieces()
     CHECK(za.size() == 2 && Near(za[1].slice.start_offs, 1.25) && Near(za[1].slice.length, 0.05));
     std::vector<PieceApply> zb = PieceApplyFor(zd, 0, "b");
     CHECK(zb.size() == 2 && Near(zb[0].slice.length, 0.05) && Near(zb[1].slice.start_offs, 1.3));
+    // 13-54: a part trimmed by its margins (Silence, stored trims): the piece is the trimmed stretch, the
+    // cut fade on its trimmed sides, the frame's fade where it still starts the frame.
+    {
+        SoundData md = fd;
+        md.frames[0].part_trims = {1.0, 1.1, 1.2, 1.35};
+        std::vector<PieceApply> ma = PieceApplyFor(md, 0, "a", true);
+        CHECK(ma.size() == 1 && Near(ma[0].slice.start_offs, 1.0) && Near(ma[0].slice.length, 0.1) &&
+              Near(ma[0].fades.in, 0.004) && Near(ma[0].fades.out, 0.003));
+        ma = PieceApplyFor(md, 0, "b", true);
+        CHECK(ma.size() == 1 && Near(ma[0].slice.start_offs, 1.2) && Near(ma[0].slice.length, 0.15) &&
+              Near(ma[0].fades.out, 0.003) && Near(ma[0].slice.snap_offset, 0.01));
+        // The whole variation (a combined event) is untouched.
+        ma = PieceApplyFor(md, 0, "", true);
+        CHECK(ma.size() == 1 && Near(ma[0].slice.length, 0.4));
+    }
     // A negative or bad cut_fade reads as none.
     zd.cut_fade = -1.0;
     CHECK(Near(PieceApplyFor(zd, 0, "b")[0].fades.in, 0.0));

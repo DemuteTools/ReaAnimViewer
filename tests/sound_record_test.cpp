@@ -31,7 +31,8 @@ bool SameFrames(const std::vector<SoundFrame>& a, const std::vector<SoundFrame>&
             a[i].hand != b[i].hand || a[i].kept != b[i].kept || a[i].fade_in != b[i].fade_in ||
             a[i].fade_out != b[i].fade_out || a[i].fade_in_shape != b[i].fade_in_shape ||
             a[i].fade_out_shape != b[i].fade_out_shape || a[i].cuts != b[i].cuts || a[i].cuts_hand != b[i].cuts_hand ||
-            a[i].cut_unsure != b[i].cut_unsure || a[i].syncs != b[i].syncs || a[i].hand_syncs != b[i].hand_syncs || a[i].part_db != b[i].part_db)
+            a[i].cut_unsure != b[i].cut_unsure || a[i].syncs != b[i].syncs || a[i].hand_syncs != b[i].hand_syncs || a[i].part_db != b[i].part_db ||
+            a[i].part_trims != b[i].part_trims)
             return false;
     return true;
 }
@@ -493,6 +494,17 @@ int main()
                               "frame start=0 len=1 pdb.x=abc\n", &bad));
         CHECK(bad.libraries[0].nodes[0].sound.frames[0].part_db.empty() &&
               SerializeSoundStore(bad).find(" pdb.x=abc\n") != std::string::npos);
+    }
+
+    // ---- 13-54: a frame's part trims (ptrim), none written for a frame without -----------------------
+    {
+        SoundStore s = BigStore();
+        s.libraries[0].nodes[3].sound.frames[1].part_trims = {0.5, 0.55, 0.5625, 0.625};
+        const std::string t = SerializeSoundStore(s);
+        CHECK(t.find(" sync=-1,0.57 ptrim=0.5,0.55,0.5625,0.625\n") != std::string::npos);
+        CHECK(t.find("hsync=0.13\nframe start=0.5") != std::string::npos);  // frame 0: none
+        SoundStore p;
+        CHECK(ParseSoundStore(t, &p) && SameStore(p, s) && SerializeSoundStore(p) == t);
     }
 
     // ---- 13-20 / 13-23 / 13-25: parts, zones, sync points, roles, a layer's / draw's / tag's part ---

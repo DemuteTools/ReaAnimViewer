@@ -67,6 +67,10 @@ struct WaveformOptions {
     // 13-20 / 13-23 / 13-25: the parts drawn, with their gestures (drag a cut or a sync flag, a
     // horizontal drag selects a zone); null = none.
     const WaveParts* parts = nullptr;
+    // 13-54: the Sound whose parts' margins (pre-roll / tail around each part, PartPieces) are drawn when
+    // `parts` is null (the panel): what a part leaves out is drawn as outside a variation. With `parts`,
+    // its data is used.
+    const SoundData* margins = nullptr;
     // 13-28: per frame, the gain from Normalize shown at the top right of its box (0 = none; empty = no
     // labels) and whether it clips (drawn in --bad).
     std::vector<double> gain_db;

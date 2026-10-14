@@ -601,7 +601,12 @@ void PlayAt(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, in
     std::string own;
     if (!d.frames[static_cast<size_t>(i)].on) PlayFrame(lib, n, m, i);
     else if (!PartAt(d, i, t, &own)) ShowLibraryToast("Excluded: never placed (right-click \xE2\x80\xBA Include again)", false);
-    else PlayPart(lib, n, m, i, own);
+    else {
+        // 13-54: the part that plays there once the margins apply (a pre-roll may reach back over a cut).
+        for (const PartSpan& sp : PartPieces(d, i))
+            if (t >= sp.start && t < sp.start + sp.length) own = sp.value_uid;
+        PlayPart(lib, n, m, i, own);
+    }
 }
 
 // The playhead in a Sound's source seconds (or < 0): its frame, or its whole file.
@@ -1027,6 +1032,22 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
     const int    under = hovered ? FrameAt(frames, T(m.x)) : -1;
     const int    playing_frame = playhead_s >= 0.0 ? FrameAt(frames, playhead_s) : -1;
     const bool   trimming = g_wd.id == gid && g_wd.kind == WaveDrag::Trim && g_wd.moved;
+    // 13-54: what each part plays once its pre-roll and tail apply (PartPieces), per frame shown; the
+    // stretches a part leaves out are drawn as outside a variation. Empty when the margins do not apply.
+    const SoundData* md = pd ? pd : o.margins;
+    std::vector<std::vector<PartSpan>> pieces;
+    if (md && PartMarginsApply(*md)) {
+        pieces.resize(frames.size());
+        for (size_t i = 0; i < frames.size() && i < md->frames.size(); ++i)
+            if (X(frames[i].start + frames[i].length) >= a.x && X(frames[i].start) <= b.x)
+                pieces[i] = PartPieces(*md, static_cast<int>(i));
+    }
+    auto piece_at = [&](int fi, double t) -> const PartSpan* {
+        if (fi < 0 || static_cast<size_t>(fi) >= pieces.size()) return nullptr;
+        for (const PartSpan& sp : pieces[static_cast<size_t>(fi)])
+            if (t >= sp.start && t < sp.start + sp.length) return &sp;
+        return nullptr;
+    };
     dl->PushClipRect(a, b, true);
 
     // Frames (.sbox): a box inset 2 px, accent 9 % (13 % under the mouse, 18 % selected / playing /
@@ -1058,6 +1079,17 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
             int         own_k = in ? 0 : -2;
             std::string own;
             if (pd && in) own_k = PartAt(*pd, fi, t, &own) ? std::max(0, PartIndex(*pd, own)) : -1;
+            // 13-54: with the parts' margins, the part playing the column (a pre-roll may reach back over
+            // a cut), or none: left out by the margins.
+            bool margin = false;
+            if (in && !pieces.empty()) {
+                if (const PartSpan* sp = piece_at(fi, t)) {
+                    own = sp->value_uid;
+                    if (pd) own_k = std::max(0, PartIndex(*pd, own));
+                } else if (own_k != -1) {
+                    margin = true;
+                }
+            }
             // 13-28: the column at its part's own gain (FrameGainDb), else its frame's.
             const double g = fi >= 0 ? DbToGain(FrameGainDb(frames[static_cast<size_t>(fi)], own_k >= 0 ? own : std::string())) : 1.0;
             for (int l = 0; l < lanes; ++l) {
@@ -1076,6 +1108,7 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
                     col = wp->colors[static_cast<size_t>(own_k)];
                     if (wp->solo >= 0 && own_k != wp->solo) col = WithAlpha(col, 0x38);
                 }
+                if (margin) col = split ? WithAlpha(ui::kMuted, 0x21) : ui::kMuted;  // 13-54: not played
                 dl->AddLine(ImVec2(x, mid - y), ImVec2(x, mid + y + 1.0f), col);
                 if (amp > 1.0 && ((col >> IM_COL32_A_SHIFT) & 0xFF) == 0xFF) {  // clipped: the top and bottom of the column
                     const float over = std::min(hh, static_cast<float>(amp - 1.0) * hh);
@@ -1311,9 +1344,15 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
                 continue;
             }
             double at = f.start;
-            for (const PartSpan& sp : PartSpansOf(*pd, static_cast<int>(i))) {
+            const std::vector<PartSpan> raw = PartSpansOf(*pd, static_cast<int>(i));
+            for (const PartSpan& sp : raw) {
                 if (sp.start - at > 1e-9) hatch(at, sp.start);
                 at = sp.start + sp.length;
+            }
+            if (f.start + f.length - at > 1e-9) hatch(at, f.start + f.length);
+            // 13-54: each part as it plays (its margins applied): what they leave out stays empty.
+            const std::vector<PartSpan>& shown = i < pieces.size() && !pieces[i].empty() ? pieces[i] : raw;
+            for (const PartSpan& sp : shown) {
                 const int k = std::max(0, PartIndex(*pd, sp.value_uid));
                 ImU32     col = static_cast<size_t>(k) < wp->colors.size() ? wp->colors[static_cast<size_t>(k)] : ui::kAccent;
                 if (wp->solo >= 0 && k != wp->solo) col = WithAlpha(col, 0x4D);
@@ -1324,7 +1363,6 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
                 if (!nm.empty() && zb.x - za.x >= ts.x + 6.0f)
                     ui::AddTextIn(dl, tf, ImVec2(za.x + 3.0f, std::floor((y0 + y1 - ts.y) * 0.5f)), ui::kBg, nm.c_str());
             }
-            if (f.start + f.length - at > 1e-9) hatch(at, f.start + f.length);
         }
         dl->PopClipRect();
     }
@@ -2195,6 +2233,7 @@ void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n,
     o.big_numbers = in_edit;
     o.fades = fades;
     o.mono = d.mono;  // 13-41
+    o.margins = &d;   // 13-54: the panel shows the parts' margins (Edit: its parts' data)
     if (in_edit) {
         o.view_start = P.view_start;
         o.view_len = P.view_len;

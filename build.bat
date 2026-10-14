@@ -125,15 +125,16 @@ rem Host tests (tests\ folder): they never block the install, a failure is only 
 echo [tests] Building and running the host tests...
 cmake -S tests -B build\host-tests -G "Visual Studio 17 2022" -A x64 >nul
 if errorlevel 1 goto tests_failed
-cmake --build build\host-tests --config Release >nul
+rem The build log stays in build\host-tests\build.log (and the test run in tests.log) for Claude to read.
+cmake --build build\host-tests --config Release > build\host-tests\build.log 2>&1
 if errorlevel 1 goto tests_failed
-ctest --test-dir build\host-tests -C Release --output-on-failure
+ctest --test-dir build\host-tests -C Release --output-on-failure > build\host-tests\tests.log 2>&1
 if errorlevel 1 goto tests_failed
 echo [tests] All host tests passed.
 goto tests_done
 :tests_failed
 set "TESTS_RESULT=1"
-echo [tests] WARNING: host tests failed. Not blocking: the install goes ahead. Tell Claude.
+echo [tests] WARNING: host tests failed. Not blocking: the install goes ahead. Tell Claude ^(logs in build\host-tests^).
 :tests_done
 
 echo.

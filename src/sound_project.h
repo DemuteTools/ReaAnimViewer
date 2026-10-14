@@ -59,8 +59,10 @@ void SetSoundStoreEditHook(bool (*hook)(ReaProject* proj));
 // The animation item's sound state (empty when none or unreadable).
 ItemSounds ReadItemSounds(MediaItem* item);
 // Same contract as ModifySoundStore, for the item's P_EXT:RAV_SOUNDS (UNDO_STATE_ITEMS). An empty
-// record removes the key.
-bool ModifyItemSounds(MediaItem* item, const char* undo_desc, const std::function<bool(ItemSounds&)>& edit);
+// record removes the key. 13-59 review: `too_large` (optional) is set when the edited record was
+// refused for its size (kItemSoundsMaxBytes): nothing written, the caller says so to the user.
+bool ModifyItemSounds(MediaItem* item, const char* undo_desc, const std::function<bool(ItemSounds&)>& edit,
+                      bool* too_large = nullptr);
 
 // The tag on a placed item. False when it has none (or it does not read).
 bool ReadPlacedTag(MediaItem* item, PlacedTag* out);

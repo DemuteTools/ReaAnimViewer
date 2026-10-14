@@ -287,8 +287,10 @@ ItemSounds ReadItemSounds(MediaItem* item)
     return s;
 }
 
-bool ModifyItemSounds(MediaItem* item, const char* undo_desc, const std::function<bool(ItemSounds&)>& edit)
+bool ModifyItemSounds(MediaItem* item, const char* undo_desc, const std::function<bool(ItemSounds&)>& edit,
+                      bool* too_large)
 {
+    if (too_large) *too_large = false;
     try {
         if (!ItemValid(item) || !edit) return false;
         MediaItem_Take* take = RavTakeOf(item);
@@ -301,6 +303,7 @@ bool ModifyItemSounds(MediaItem* item, const char* undo_desc, const std::functio
         if (after == before) return false;
         if (after.size() >= kItemSoundsMaxBytes) {
             LogInfo("RAV: the item's sound record is too large to save.");
+            if (too_large) *too_large = true;
             return false;
         }
         // A removal (empty record) REAPER may answer false to though it made it: judged by reading back.

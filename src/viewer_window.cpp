@@ -362,7 +362,7 @@ GLuint UploadIconTexture(const unsigned char* rgba, int w, int h)
 }
 
 void DrawToolUi();  // defined below; called from RenderTick before SwapBuffers
-void PaintBusyCard(const BusyFrame& f);  // 13-59: defined below, set as the busy painter at init
+bool PaintBusyCard(const BusyFrame& f);  // 13-59: defined below, set as the busy painter at init
 void DropBusyInputs();
 
 double ElapsedSeconds()
@@ -2151,8 +2151,9 @@ bool ViewerTakesCharNow() { return ViewerTakesChar(g_key_route, ShortcutRecordin
 // and the GL / ImGui contexts in place are put back. Then the thread peeks its queue without taking
 // anything (PM_NOREMOVE), so Windows does not replace REAPER by a "Not responding" ghost after 5 s
 // and hide the progress; no input is read, nothing is dispatched.
-void PaintBusyCard(const BusyFrame& f)
+bool PaintBusyCard(const BusyFrame& f)
 {
+    bool painted = false;  // 13-59 review: said back, so a card never painted changes nothing after the gesture
     if (g_imgui_ready && g_main_imgui_ctx && g_hwnd && g_hdc && g_hglrc && IsWindowVisible(g_hwnd) &&
         g_client_w > 0 && g_client_h > 0) {
         const HGLRC prev_rc = wglGetCurrentContext();
@@ -2218,6 +2219,7 @@ void PaintBusyCard(const BusyFrame& f)
                 dd.AddDrawList(&dl);
                 ImGui_ImplOpenGL3_RenderDrawData(&dd);
                 SwapBuffers(g_hdc);
+                painted = true;
 
                 glBindFramebuffer(GL_FRAMEBUFFER, static_cast<GLuint>(prev_fb));
                 glViewport(prev_vp[0], prev_vp[1], prev_vp[2], prev_vp[3]);
@@ -2230,21 +2232,26 @@ void PaintBusyCard(const BusyFrame& f)
     }
     MSG peek;
     PeekMessageW(&peek, nullptr, 0, 0, PM_NOREMOVE);
+    return painted;
 }
 
 // 13-19 review / 13-59: the clicks, wheel turns and keys made on the busy card are dropped once the
 // gesture is over, so they reach neither the widgets below nor a second run of the gesture. Only the
-// presses: a release is let through (a button pressed before the gesture must not stay held).
+// presses: a release is let through (a button pressed before the gesture must not stay held). Review:
+// on RAV's window and on the Sound assignment window (a gesture run from its frame, clicked again).
 void DropBusyInputs()
 {
-    if (!g_hwnd) return;
     static const UINT kDropped[] = {WM_LBUTTONDOWN, WM_LBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONDBLCLK,
                                     WM_MBUTTONDOWN, WM_MBUTTONDBLCLK, WM_XBUTTONDOWN, WM_XBUTTONDBLCLK,
                                     WM_MOUSEWHEEL,  WM_MOUSEHWHEEL,   WM_KEYDOWN,     WM_SYSKEYDOWN,
                                     WM_CHAR,        WM_SYSCHAR};
-    MSG m;
-    for (UINT msg : kDropped)
-        while (PeekMessageW(&m, g_hwnd, msg, msg, PM_REMOVE)) {}
+    const HWND targets[] = {g_hwnd, AssignFloatHwnd()};
+    MSG        m;
+    for (HWND h : targets) {
+        if (!h || !IsWindow(h)) continue;
+        for (UINT msg : kDropped)
+            while (PeekMessageW(&m, h, msg, msg, PM_REMOVE)) {}
+    }
 }
 
 // Story 6-5-9 -- full screen on / off: the same window leaves the docker or goes back to it

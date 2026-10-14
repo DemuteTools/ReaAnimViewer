@@ -434,9 +434,52 @@ static void TestLoopPassDraws()
     CHECK(picks.size() >= 2);  // the passes do not all play one variation
 }
 
+// 13-59 review: a fill on a pass that already has a placement keeps its record consistent (its entries
+// seeded from what plays there), and a later Populate changes nothing; the passes cut off are pruned.
+static void TestLoopPassFillRecord()
+{
+    // Random(a, b), each with 6 variations; pass 3 plays b, variation 4 (placed before any pass entry).
+    SoundLibrary lib;
+    lib.uid = "L";
+    lib.root = "r";
+    lib.nodes = {Node("r", "", SoundNodeType::Random), Leaf("a", "r", 6), Leaf("b", "r", 6)};
+    const SoundStore empty;
+    std::vector<SoundDraw> draws = {SoundDraw{"a", 2, false, {}, ""}};  // the event's own (pass 0) draw
+    CHECK(!HasPassDraws(draws, 3));
+    const std::vector<SoundDraw> seeded = PassDrawsFromPlaced(lib, {PlacedPick{"b", 4, ""}});
+    CHECK(seeded.size() == 2);
+    MergePassDraws(draws, 3, seeded);
+    CHECK(HasPassDraws(draws, 3) && !HasPassDraws(draws, 2));
+    CHECK(draws.size() == 3 && draws[0].node == "a");  // the event's draw untouched
+    // Whatever the seed, a later Populate of pass 3 draws what is placed there: nothing replaced.
+    for (uint64_t seed = 1; seed <= 20; ++seed) {
+        const std::vector<SoundDraw> prev = PassPrevDraws(draws, 3);
+        PopulateDrawState ps;
+        ps.lib = &lib;
+        ps.seed = PassDrawSeed(seed, 3);
+        EventDraw ed;
+        ed.rid = "r1";
+        ed.t = 1.0;
+        ed.prev = &prev;
+        const Resolution res = ResolveEvent(empty, lib, ValueLayers(), MakeDrawHooks(ps, ed, nullptr));
+        CHECK(res.sounds.size() == 1 && res.sounds[0].node == "b" && res.sounds[0].variation == 4);
+    }
+    // A Sound placed as copied (no variation) and a node gone add nothing of their own.
+    CHECK(PassDrawsFromPlaced(lib, {PlacedPick{"gone", 1, ""}}).empty());
+    const std::vector<SoundDraw> copied = PassDrawsFromPlaced(lib, {PlacedPick{"a", -1, ""}});
+    CHECK(copied.size() == 1 && copied[0].node == "r" && copied[0].pick == 0);
+    // Pruning keeps the passes the event still has (and every entry that is not a pass's).
+    MergePassDraws(draws, 7, seeded);
+    PrunePassDraws(draws, {3});
+    CHECK(draws.size() == 3 && HasPassDraws(draws, 3) && !HasPassDraws(draws, 7));
+    PrunePassDraws(draws, {});
+    CHECK(draws.size() == 1 && draws[0].node == "a");
+}
+
 int main()
 {
     TestLoopPassDraws();
+    TestLoopPassFillRecord();
     // ---- P1: orphan rules ----
     {
         ItemSounds it;

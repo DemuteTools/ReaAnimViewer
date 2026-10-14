@@ -28,6 +28,7 @@ BusyGate   g_gate;
 BusyMemory g_memory;
 double     g_start = 0.0;
 bool       g_painted = false;  // a gesture showed its card since the last BusyTakePainted
+bool       g_shown = false;    // 13-59 review: the running gesture's card was really painted (once at least)
 bool       g_painting = false;  // re-entry guard: a paint never paints again
 
 double NowSeconds()
@@ -37,14 +38,15 @@ double NowSeconds()
     return std::chrono::duration<double>(Clock::now() - t0).count();
 }
 
-// Paints a frame of the card when one is due (and a painter is set).
-void MaybePaint()
+// Paints a frame of the card when one is due (and a painter is set). `force`: at once, the card being
+// shown already (a new phase is not left behind its first frame's "Working...").
+void MaybePaint(bool force = false)
 {
     if (g_depth <= 0 || !g_paint || g_painting) return;
-    if (!g_gate.Due(NowSeconds())) return;
+    if (!(force && g_shown) && !g_gate.Due(NowSeconds())) return;
     g_painting = true;
     try {
-        g_paint(g_frame);
+        if (g_paint(g_frame)) g_shown = true;
     } catch (...) {
     }
     g_painting = false;
@@ -65,6 +67,7 @@ BusyScope::BusyScope(const char* title, bool eager)
     g_item_level = 0;
     g_frame = BusyFrame();
     g_frame.title = title ? title : "";
+    g_shown = false;
     g_start = NowSeconds();
     // An eager gesture that took long last time shows its card at once (its one long step says nothing).
     g_gate.Start(g_start, eager && g_memory.WasLong(g_frame.title));
@@ -77,7 +80,8 @@ BusyScope::~BusyScope()
     if (g_item_level >= level_) g_item_level = 0;  // its items are no longer counted
     if (level_ != 1) return;
     g_memory.Record(g_frame.title, NowSeconds() - g_start);
-    if (g_gate.Shown()) {
+    if (g_shown) {  // 13-59 review: only a card really painted (the gate may have been due on a hidden window)
+        g_shown = false;
         g_painted = true;
         if (g_ended) {
             try {
@@ -105,7 +109,7 @@ void BusyScope::Phase(const char* phase)
 {
     if (level_ != 1) return;
     g_frame.phase = phase ? phase : "";
-    MaybePaint();
+    MaybePaint(true);  // 13-59 review: a card already shown (an eager one) shows the phase now
 }
 
 void BusyStep(int done, int total, const char* unit)

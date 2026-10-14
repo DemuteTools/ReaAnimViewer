@@ -17,7 +17,10 @@
 #include <memory>
 #include <random>
 #include <set>
+#include <string>
 #include <thread>
+#include <utility>
+#include <vector>
 
 #include "asset_cache.h"
 #include "asset_loader.h"
@@ -51,6 +54,10 @@ using SetMediaItemSelectedFn = void (*)(MediaItem* item, bool selected);
 SetMediaItemSelectedFn f_set_selected = nullptr;
 
 constexpr int kUnselectAllItems = 40289;  // Item: Unselect (clear selection of) all items
+
+// 13-59 review: the report line of an item whose sound record would pass kItemSoundsMaxBytes.
+constexpr const char* kRecordTooLargeText =
+    "Not saved: this item's sound record is too large (too many loop passes or sounds); its new sounds are not tracked";
 
 // The project scan behind FindItemByGuid.
 MediaItem* FindPlacedItem(const std::string& guid) { return ScanItemByGuid(nullptr, guid); }
@@ -539,9 +546,16 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
             if (!have && d.hand) draws.push_back(d);
         }
         if (!o.fill_passes) {  // 13-56 review: a fill keeps the event's draw as it is
-            // 13-59: the loop passes' own picks are kept (those drawn below replace theirs).
-            for (const SoundDraw& d : prev)
-                if (ParsePassDrawKey(d.node, nullptr, nullptr)) draws.push_back(d);
+            // 13-59: the loop passes' own picks are kept (those drawn below replace theirs). Review: only
+            // those of the passes the event still has (none in Same mode), so the record does not grow
+            // with passes cut off; a pass stretched back is seeded again from what it plays (the fill).
+            std::set<long long> keep_passes;
+            if (pass_draws)
+                for (const FollowPass& fp : e.passes) keep_passes.insert(fp.id);
+            for (const SoundDraw& d : prev) {
+                long long p = 0;
+                if (ParsePassDrawKey(d.node, &p, nullptr) && keep_passes.count(p)) draws.push_back(d);
+            }
             ev->draws = draws;
         }
         if (res.blocked) {
@@ -659,10 +673,12 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
             pd.ed.prev = &pd.prev;
             pd.res = ResolveEvent(store, *lib, layers, MakeDrawHooks(ps, pd.ed, is_missing));
             if (pd.res.blocked) continue;
-            MergePassDraws(ev->draws, pd.id, pd.ed.out);
+            // Review: a fill records a pass's picks only once it knows what that pass plays (below).
+            if (!o.fill_passes) MergePassDraws(ev->draws, pd.id, pd.ed.out);
             add_desired(pd.res, pd.ed, pd.on);
         }
         std::vector<ExistingSlot> existing;
+        std::vector<std::pair<int, PlacedPick>> live_picks;  // 13-59 review: pass index -> what plays there
         for (const SoundPlacement& p : ev->placed) {
             ExistingSlot x;
             x.node = p.node;
@@ -679,12 +695,14 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                     double anchor = 0.0, sync = 0.0;  // the pile's anchor: one pass for the whole pile
                     PlacedPileAnchor(it, &anchor, &sync);
                     x.pass = NearestPassOfItem(passes, anchor, sync, BlendOffsetMs(*lib, p.node, layers.role));  // 13-31
+                    live_picks.push_back({x.pass, PlacedPick{p.node, p.variation, x.part}});
                 }
             existing.push_back(x);
         }
 
         std::set<int>               erase;
         std::vector<SoundPlacement> added;
+        std::vector<std::pair<int, PlacedPick>> filled_picks;  // 13-59 review: pass index -> placed by this fill
         if (o.counts) {  // a sound deleted by hand is never placed again (PlanEventSlots): said in the report
             std::set<std::string> deleted;
             for (const ExistingSlot& x : existing)
@@ -821,7 +839,34 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                 p.variation = s.variation;
                 added.push_back(p);
             }
+            if (step.act == SlotAction::Place) filled_picks.push_back({d.pass, PlacedPick{n->uid, s.variation, d.part}});
         }
+        // 13-59 review: a fill records only the passes it placed. A pass that played nothing gets its
+        // new draw; a pass that already played keeps its entries, or (none yet) gets them from what it
+        // plays now, so a later Populate keeps it as it is.
+        if (o.fill_passes)
+            for (const PassDraw& pd : pass_draws_here) {
+                if (pd.res.blocked) continue;
+                auto on_pass = [&pd](int p) { return std::find(pd.on.begin(), pd.on.end(), p) != pd.on.end(); };
+                std::vector<PlacedPick> playing;
+                bool                    was_live = false;
+                for (const auto& lp : live_picks)
+                    if (on_pass(lp.first)) {
+                        was_live = true;
+                        playing.push_back(lp.second);
+                    }
+                bool filled = false;
+                for (const auto& fp : filled_picks)
+                    if (on_pass(fp.first)) {
+                        filled = true;
+                        playing.push_back(fp.second);
+                    }
+                if (!was_live) {
+                    if (filled) MergePassDraws(ev->draws, pd.id, pd.ed.out);
+                } else if (!HasPassDraws(ev->draws, pd.id)) {
+                    MergePassDraws(ev->draws, pd.id, PassDrawsFromPlaced(*lib, playing));
+                }
+            }
         std::vector<SoundPlacement> placed;
         for (size_t i = 0; i < ev->placed.size(); ++i)
             if (!erase.count(static_cast<int>(i))) placed.push_back(ev->placed[i]);
@@ -829,10 +874,16 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
         ev->placed = placed;
     }
 
-    ModifyItemSounds(item, nullptr, [&](ItemSounds& s) {
-        s = rec;
-        return true;
-    });
+    bool too_large = false;
+    ModifyItemSounds(
+        item, nullptr,
+        [&](ItemSounds& s) {
+            s = rec;
+            return true;
+        },
+        &too_large);
+    if (too_large)  // 13-59 review: said to the user, not only logged (its new sounds are not recorded)
+        AddLine(rep, ReportKind::Blocked, kRecordTooLargeText, "", guid, 0.0);
 }
 
 // 13-59: PopulateOne over the members of an item's pool, under the busy card ("Updating sounds").
@@ -1198,11 +1249,15 @@ SoundReport PopulateLoopPassesNoUndo(const std::vector<MediaItem*>& items)
         o.report_replaced = false;
         o.fill_passes = true;     // review: the missing passes placed, nothing else changed
         SoundReport quiet;        // review: no report lines (the follow's automatic fill says nothing)
+        // 13-59 review: except a record too large to save, which the user must know of.
         BusyScope   busy("Filling loop passes");  // 13-59: a long stretch fills many passes
         for (size_t k = 0; k < items.size(); ++k) {
             MediaItem* it = items[k];
             busy.Item(static_cast<int>(k), static_cast<int>(items.size()));
             if (it && RavTakeOf(it)) PopulateOne(it, store, o, quiet, nullptr);
+            for (const ReportLine& l : quiet.lines)
+                if (l.text == kRecordTooLargeText) rep.lines.push_back(l);
+            quiet.lines.clear();
         }
         RefreshRavTrackNames(nullptr);  // 13-17 N3, as Populate
         UpdateArrange();

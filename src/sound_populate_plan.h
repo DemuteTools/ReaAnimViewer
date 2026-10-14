@@ -170,6 +170,21 @@ uint64_t PassDrawSeed(uint64_t seed, long long pass);
 std::vector<SoundDraw> PassPrevDraws(const std::vector<SoundDraw>& draws, long long pass);
 // Replaces pass `pass`'s entries of `draws` by `out` (an EventDraw::out of that pass), never by hand.
 void MergePassDraws(std::vector<SoundDraw>& draws, long long pass, const std::vector<SoundDraw>& out);
+// 13-59 review: true when `draws` holds entries of pass `pass`.
+bool HasPassDraws(const std::vector<SoundDraw>& draws, long long pass);
+// 13-59 review: a sound placed on a pass (its node, variation, part), read back as that pass's draws.
+struct PlacedPick {
+    std::string node;
+    int         variation = -1;
+    std::string part;
+};
+// The draws (under their node uid, never by hand) that make a pass play `placed` again: each placed
+// Sound's variation (none when -1, as copied) and, above it, each Random's child on its way. A fill that
+// finds a pass already playing seeds that pass's entries from it, so a later Populate keeps it.
+std::vector<SoundDraw> PassDrawsFromPlaced(const SoundLibrary& lib, const std::vector<PlacedPick>& placed);
+// 13-59 review: drops the pass entries whose pass is not in `keep` (a pass cut off; every pass when
+// `keep` is empty), so the record does not grow with passes that no longer play.
+void PrunePassDraws(std::vector<SoundDraw>& draws, const std::set<long long>& keep);
 
 // "Last populate: 24 events · 2 missing · 1 replaced · 1 rule gone" (events < 0: "Last change: ...").
 std::string ReportSummary(const SoundReport& report, int events);

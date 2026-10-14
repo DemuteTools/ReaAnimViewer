@@ -55,6 +55,9 @@ void HideAssignFloat();
 void DestroyAssignFloat();
 // The key routing (the viewer's accelerator hook): a message for the window, and whether it types text.
 bool AssignFloatOwns(HWND hwnd);
+// 13-59 review: the window's OS window (nullptr when it has none): the busy card's end drops the
+// presses made on it too.
+HWND AssignFloatHwnd();
 bool AssignFloatWantsText();
 
 // The Tagging strip's line for some blocks of the item: "<label> <dot> FS Hero > Run > Boots" (inherited

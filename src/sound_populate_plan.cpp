@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -299,6 +300,65 @@ void MergePassDraws(std::vector<SoundDraw>& draws, long long pass, const std::ve
         x.hand = false;
         draws.push_back(x);
     }
+}
+
+bool HasPassDraws(const std::vector<SoundDraw>& draws, long long pass)
+{
+    for (const SoundDraw& d : draws) {
+        long long p = 0;
+        if (ParsePassDrawKey(d.node, &p, nullptr) && p == pass) return true;
+    }
+    return false;
+}
+
+std::vector<SoundDraw> PassDrawsFromPlaced(const SoundLibrary& lib, const std::vector<PlacedPick>& placed)
+{
+    std::vector<SoundDraw> out;
+    auto have = [&out](const std::string& uid) {
+        for (const SoundDraw& d : out)
+            if (d.node == uid) return true;
+        return false;
+    };
+    for (const PlacedPick& pk : placed) {
+        const SoundNode* n = FindNode(lib, pk.node);
+        if (!n) continue;
+        if (pk.variation >= 0 && !have(n->uid)) {
+            SoundDraw d;
+            d.node = n->uid;
+            d.pick = pk.variation;
+            d.part = pk.part;
+            out.push_back(d);
+        }
+        // Up to the root: each Random ancestor's child on the way (a guard against a parent loop).
+        const SoundNode* child = n;
+        for (int depth = 0; depth < 64 && child && !child->parent.empty(); ++depth) {
+            const SoundNode* up = FindNode(lib, child->parent);
+            if (!up) break;
+            if (up->type == SoundNodeType::Random && !have(up->uid)) {
+                const std::vector<const SoundNode*> kids = ChildrenOf(lib, up->uid);
+                for (size_t i = 0; i < kids.size(); ++i)
+                    if (kids[i]->uid == child->uid) {
+                        SoundDraw d;
+                        d.node = up->uid;
+                        d.pick = static_cast<int>(i);
+                        out.push_back(d);
+                        break;
+                    }
+            }
+            child = up;
+        }
+    }
+    return out;
+}
+
+void PrunePassDraws(std::vector<SoundDraw>& draws, const std::set<long long>& keep)
+{
+    draws.erase(std::remove_if(draws.begin(), draws.end(),
+                               [&keep](const SoundDraw& d) {
+                                   long long p = 0;
+                                   return ParsePassDrawKey(d.node, &p, nullptr) && !keep.count(p);
+                               }),
+                draws.end());
 }
 
 std::vector<SlotStep> PlanPassFill(const std::vector<DesiredSlot>& desired, const std::vector<ExistingSlot>& existing)

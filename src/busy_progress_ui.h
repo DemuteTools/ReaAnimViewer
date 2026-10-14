@@ -17,10 +17,11 @@
 
 namespace rav {
 
-// The viewer's painter (viewer_window.cpp): `paint` draws one frame of the card on RAV's window
-// (nothing when it is hidden); `ended` runs once a gesture that showed its card is over (the clicks
-// and keys made on the card are dropped). nullptr = no card (the viewer closed).
-using BusyPaintFn = void (*)(const BusyFrame& frame);
+// The viewer's painter (viewer_window.cpp): `paint` draws one frame of the card on RAV's window and
+// says whether it did (false when the window is hidden or not ready); `ended` runs once a gesture
+// whose card was really painted is over (the clicks and keys made on the card are dropped). nullptr =
+// no card (the viewer closed).
+using BusyPaintFn = bool (*)(const BusyFrame& frame);
 using BusyEndedFn = void (*)();
 void SetBusyPainter(BusyPaintFn paint, BusyEndedFn ended);
 

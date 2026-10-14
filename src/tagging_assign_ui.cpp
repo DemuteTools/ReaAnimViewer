@@ -2450,6 +2450,11 @@ bool AssignFloatOwns(HWND hwnd)
     return h && hwnd && (hwnd == h || IsChild(h, hwnd));
 }
 
+HWND AssignFloatHwnd()
+{
+    return g_host.Hwnd();
+}
+
 bool AssignFloatWantsText()
 {
     return g_host.WantsText();

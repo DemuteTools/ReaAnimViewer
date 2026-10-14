@@ -167,6 +167,18 @@ struct PieceApply {
 // take keeps its item's snap), a bad index, or nothing left to play (an empty or excluded part).
 std::vector<PieceApply> PieceApplyFor(const SoundData& data, int variation, const std::string& part_value,
                                       bool file = false);
+// 13-62F (F1, Antho 2026-10-14): the fades each piece of part `part_value` gets on variation `variation`, as
+// placed and heard (PieceApplyFor, `file` false; a side it leaves unset = no fade, as the audition reads it),
+// for the Edit window's Lane view: per side the part's own fade (`own_*`), else the variation's fade at a
+// variation edge, else the Sound's cut_fade at a cut / zone edge. in + out kept within the piece's length
+// (ClampFadePair). {} as PieceApplyFor.
+struct PieceFade {
+    double start = 0.0, length = 0.0;  // the piece (source s)
+    double in = 0.0, out = 0.0;        // s
+    int    in_shape = 0, out_shape = 0;
+    bool   own_in = false, own_out = false;
+};
+std::vector<PieceFade> PartPieceFades(const SoundData& data, int variation, const std::string& part_value);
 // Where a piece lands: the anchor piece's position plus its offset from it in item seconds
 // (from_anchor / playrate; a bad rate reads as 1), clamped at 0.
 double PiecePosition(double anchor_pos, double from_anchor, double playrate);

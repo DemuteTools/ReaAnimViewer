@@ -1016,8 +1016,99 @@ static void TestPartListen()
     CHECK(PartPiecesVoices(lib, ov, "b").size() == 1);
 }
 
+// 13-62F (F4): on a divided Sound the cursor trims stop at the piece under the cursor.
+static void TestPieceTrim()
+{
+    SoundData d;
+    SoundFrame f;
+    f.start = 1.0;
+    f.length = 1.0;
+    f.cuts = {1.5};
+    d.frames = {f};
+    // Undivided: the variation's trim, as before.
+    EditTrimPlan p = PlanEditTrim(d, {}, EditTrimKind::RightOfCursor, 1.2, 0.0, 0.0);
+    CHECK(p.excludes.empty() && p.steps.size() == 1 && Near(p.steps[0].length, 0.2));
+    d.divide_group = "g";
+    d.divide_values = {"a", "b"};
+    // Right of the cursor in the first piece: only up to the cut, excluded; the variation untouched.
+    p = PlanEditTrim(d, {}, EditTrimKind::RightOfCursor, 1.2, 0.0, 0.0);
+    CHECK(p.steps.empty() && p.excludes.size() == 1 && p.excludes[0].frame == 0 && Near(p.excludes[0].a, 1.2) &&
+          Near(p.excludes[0].b, 1.5) && p.why.empty());
+    // Left of the cursor in the first piece: its outer side is the variation's start, the variation trimmed.
+    p = PlanEditTrim(d, {}, EditTrimKind::LeftOfCursor, 1.2, 0.0, 0.0);
+    CHECK(p.excludes.empty() && p.steps.size() == 1 && Near(p.steps[0].start, 1.2) && Near(p.steps[0].length, 0.8));
+    // In the second piece: left = from the cut to the cursor, right = the variation's end.
+    p = PlanEditTrim(d, {}, EditTrimKind::LeftOfCursor, 1.7, 0.0, 0.0);
+    CHECK(p.steps.empty() && p.excludes.size() == 1 && Near(p.excludes[0].a, 1.5) && Near(p.excludes[0].b, 1.7));
+    p = PlanEditTrim(d, {}, EditTrimKind::RightOfCursor, 1.7, 0.0, 0.0);
+    CHECK(p.excludes.empty() && p.steps.size() == 1 && Near(p.steps[0].start, 1.0) && Near(p.steps[0].length, 0.7));
+    // On the cut: nothing either way.
+    p = PlanEditTrim(d, {}, EditTrimKind::LeftOfCursor, 1.5, 0.0, 0.0);
+    CHECK(p.Empty() && p.why == "Nothing to trim there");
+    p = PlanEditTrim(d, {}, EditTrimKind::RightOfCursor, 1.5, 0.0, 0.0);
+    CHECK(p.Empty() && p.why == "Nothing to trim there");
+    // Outside every variation / a selection without the cursor: the frames' why.
+    p = PlanEditTrim(d, {}, EditTrimKind::RightOfCursor, 2.5, 0.0, 0.0);
+    CHECK(p.Empty() && p.why == "The edit cursor is not inside a variation");
+    // Applied: [1.2, 1.5] excluded, the other part's piece untouched.
+    p = PlanEditTrim(d, {}, EditTrimKind::RightOfCursor, 1.2, 0.0, 0.0);
+    for (const EditTrimExclude& x : p.excludes) CHECK(ExcludeRange(d, x.frame, x.a, x.b));
+    const std::vector<EditPiece> pcs = EditPiecesOf(d, 0);
+    CHECK(pcs.size() == 3 && pcs[1].excluded && Near(pcs[1].start, 1.2) && Near(pcs[1].length, 0.3));
+    CHECK(pcs[2].owner == "b" && Near(pcs[2].start, 1.5) && Near(pcs[2].length, 0.5));
+    // Inside that excluded stretch (away from the variation's edge): nothing.
+    p = PlanEditTrim(d, {}, EditTrimKind::RightOfCursor, 1.3, 0.0, 0.0);
+    CHECK(p.Empty() && p.why == "Nothing to trim there");
+    // Trim left in the second piece now stops at the cut, the excluded stretch and the first piece untouched.
+    p = PlanEditTrim(d, {}, EditTrimKind::LeftOfCursor, 1.6, 0.0, 0.0);
+    CHECK(p.excludes.size() == 1 && Near(p.excludes[0].a, 1.5) && Near(p.excludes[0].b, 1.6));
+    // Trim to zone: the variations, as before.
+    p = PlanEditTrim(d, {}, EditTrimKind::ToZone, -1.0, 1.1, 0.5);
+    CHECK(p.excludes.empty() && p.steps.size() == 1 && Near(p.steps[0].start, 1.1));
+}
+
+// 13-62F (F5): Next / Previous variation (REAPER's 40417 / 40416) at a fixed zoom.
+static void TestEditNav()
+{
+    auto fr = [](double s, double l, bool on = true) {
+        SoundFrame f;
+        f.start = s;
+        f.length = l;
+        f.on = on;
+        return f;
+    };
+    // Stored out of time order on purpose; variation 2 is off (still walked).
+    const std::vector<SoundFrame> frames = {fr(3.0, 1.0), fr(0.0, 1.0), fr(1.5, 1.0, false)};
+    // From the selection: next in time order, the cursor at its start, the view (2 s) centred on it.
+    EditNavPlan p = PlanEditNav(frames, {1}, -1.0, true, 2.0, 10.0);
+    CHECK(p.frame == 2 && Near(p.cursor, 1.5) && Near(p.view_start, 1.0));
+    p = PlanEditNav(frames, {1, 2}, -1.0, true, 2.0, 10.0);  // the last selected one counts
+    CHECK(p.frame == 0 && Near(p.cursor, 3.0) && Near(p.view_start, 2.5));
+    p = PlanEditNav(frames, {0}, -1.0, false, 2.0, 10.0);
+    CHECK(p.frame == 2);
+    // At the ends: nothing.
+    CHECK(PlanEditNav(frames, {0}, -1.0, true, 2.0, 10.0).frame == -1);
+    CHECK(PlanEditNav(frames, {1}, -1.0, false, 2.0, 10.0).frame == -1);
+    // The view clamped at the source's edges; the whole source shown: start 0.
+    p = PlanEditNav(frames, {2}, -1.0, false, 2.0, 10.0);
+    CHECK(p.frame == 1 && Near(p.view_start, 0.0));
+    p = PlanEditNav(frames, {2}, -1.0, true, 2.0, 3.5);
+    CHECK(p.frame == 0 && Near(p.view_start, 1.5));
+    CHECK(Near(PlanEditNav(frames, {2}, -1.0, true, 0.0, 10.0).view_start, 0.0));
+    // Nothing selected: the one under the cursor, else the first after it (next) / the last before it (previous).
+    CHECK(PlanEditNav(frames, {}, 1.7, true, 2.0, 10.0).frame == 2);
+    CHECK(PlanEditNav(frames, {}, 1.2, true, 2.0, 10.0).frame == 2);
+    CHECK(PlanEditNav(frames, {}, 1.2, false, 2.0, 10.0).frame == 1);
+    CHECK(PlanEditNav(frames, {}, -1.0, true, 2.0, 10.0).frame == 1);
+    CHECK(PlanEditNav(frames, {}, 4.5, true, 2.0, 10.0).frame == -1);
+    CHECK(PlanEditNav({}, {}, 0.0, true, 2.0, 10.0).frame == -1);
+    CHECK(PlanEditNav(frames, {9}, 4.5, false, 2.0, 10.0).frame == 0);  // a bad index: as nothing selected
+}
+
 int main()
 {
+    TestEditNav();
+    TestPieceTrim();
     TestPartListen();
     TestEditTrim();
     TestEditSplit();

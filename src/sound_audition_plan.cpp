@@ -420,6 +420,106 @@ EditTrimPlan PlanEditTrim(const std::vector<SoundFrame>& frames, const std::vect
     return plan;
 }
 
+EditNavPlan PlanEditNav(const std::vector<SoundFrame>& frames, const std::vector<int>& selected, double cursor, bool next,
+                        double view_len, double source_len)
+{
+    EditNavPlan plan;
+    std::vector<int> order;  // time order (start, then index)
+    for (size_t i = 0; i < frames.size(); ++i) order.push_back(static_cast<int>(i));
+    std::stable_sort(order.begin(), order.end(), [&](int x, int y) {
+        return frames[static_cast<size_t>(x)].start < frames[static_cast<size_t>(y)].start;
+    });
+    const int n = static_cast<int>(order.size());
+    int       from = -1;  // the selected variation's place in `order`
+    for (auto it = selected.rbegin(); it != selected.rend() && from < 0; ++it)
+        for (int k = 0; k < n; ++k)
+            if (order[static_cast<size_t>(k)] == *it) from = k;
+    int to = -1;
+    if (from >= 0) {
+        to = next ? from + 1 : from - 1;
+    } else {
+        const double c = cursor >= 0.0 ? cursor : 0.0;
+        for (int k = 0; k < n && to < 0; ++k) {  // the one under the cursor
+            const SoundFrame& f = frames[static_cast<size_t>(order[static_cast<size_t>(k)])];
+            if (c >= f.start && c < f.start + f.length) to = k;
+        }
+        if (to < 0 && next) {
+            for (int k = 0; k < n && to < 0; ++k)
+                if (frames[static_cast<size_t>(order[static_cast<size_t>(k)])].start >= c) to = k;
+        } else if (to < 0) {
+            for (int k = n - 1; k >= 0 && to < 0; --k) {
+                const SoundFrame& f = frames[static_cast<size_t>(order[static_cast<size_t>(k)])];
+                if (f.start + f.length <= c) to = k;
+            }
+        }
+    }
+    if (to < 0 || to >= n) return plan;
+    plan.frame = order[static_cast<size_t>(to)];
+    const SoundFrame& f = frames[static_cast<size_t>(plan.frame)];
+    plan.cursor = f.start;
+    if (view_len > 0.0 && source_len > 0.0)
+        plan.view_start = std::clamp(f.start + f.length * 0.5 - view_len * 0.5, 0.0, std::max(0.0, source_len - view_len));
+    return plan;
+}
+
+EditTrimPlan PlanEditTrim(const SoundData& data, const std::vector<int>& selected, EditTrimKind kind, double cursor,
+                          double zone_start, double zone_len)
+{
+    EditTrimPlan plan = PlanEditTrim(data.frames, selected, kind, cursor, zone_start, zone_len);
+    if (kind == EditTrimKind::ToZone || !IsDivided(data) || !(cursor >= 0.0)) return plan;
+    // The same variations as the frames' plan: the selected ones, else every one, the cursor inside them.
+    auto valid = [&](int i) { return i >= 0 && static_cast<size_t>(i) < data.frames.size(); };
+    std::vector<int> pool;
+    for (int i : selected)
+        if (valid(i) && std::find(pool.begin(), pool.end(), i) == pool.end()) pool.push_back(i);
+    if (pool.empty())
+        for (size_t i = 0; i < data.frames.size(); ++i) pool.push_back(static_cast<int>(i));
+    std::sort(pool.begin(), pool.end());
+    constexpr double          kEdgeEps = 1e-6;
+    const bool                left = kind == EditTrimKind::LeftOfCursor;
+    std::vector<EditTrimStep> steps;
+    bool                      touched = false;
+    auto keep_variation_trim = [&](int i) {  // the frames' plan for that variation, as before
+        for (const EditTrimStep& s : plan.steps)
+            if (s.frame == i) steps.push_back(s);
+    };
+    for (int i : pool) {
+        const SoundFrame& f = data.frames[static_cast<size_t>(i)];
+        const double      fe = f.start + f.length;
+        if (!(cursor > f.start && cursor < fe)) continue;
+        const std::vector<EditPiece> pieces = EditPiecesOf(data, i);
+        touched = true;
+        if (pieces.empty()) {  // an off variation: trimmed whole, as before
+            keep_variation_trim(i);
+            continue;
+        }
+        // The piece under the cursor: Trim left takes the one starting at or before it, Trim right the one
+        // ending at or after it, so a cursor on a boundary leaves nothing to trim.
+        const EditPiece* pc = nullptr;
+        for (const EditPiece& p : pieces) {
+            const double pe = p.start + p.length;
+            if (left ? cursor >= p.start && cursor < pe : cursor > p.start && cursor <= pe) {
+                pc = &p;
+                break;
+            }
+        }
+        if (!pc) continue;
+        const double ps = pc->start, pe = pc->start + pc->length;
+        if (left ? std::fabs(ps - f.start) < kEdgeEps : std::fabs(pe - fe) < kEdgeEps) {  // its outer side = the variation's
+            keep_variation_trim(i);
+            continue;
+        }
+        if (pc->excluded) continue;  // never placed already
+        const double a = left ? ps : cursor, b = left ? cursor : pe;
+        if (b - a <= kMinFrame) continue;
+        plan.excludes.push_back(EditTrimExclude{i, a, b});
+    }
+    plan.steps = steps;
+    if (!plan.Empty()) plan.why.clear();
+    else if (touched) plan.why = "Nothing to trim there";
+    return plan;
+}
+
 EditSplitPlan PlanEditSplit(const std::vector<SoundFrame>& frames, const std::vector<int>& selected, double cursor)
 {
     EditSplitPlan plan;

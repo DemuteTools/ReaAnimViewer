@@ -416,6 +416,28 @@ std::vector<PieceApply> PieceApplyFor(const SoundData& data, int variation, cons
     return out;
 }
 
+std::vector<PieceFade> PartPieceFades(const SoundData& data, int variation, const std::string& part_value)
+{
+    std::vector<PieceFade> out;
+    const PartSettings*    own = part_value.empty() ? nullptr : PartSettingsOf(data, part_value);
+    const bool             own_in = own && own->fade_in && std::isfinite(*own->fade_in);
+    const bool             own_out = own && own->fade_out && std::isfinite(*own->fade_out);
+    for (const PieceApply& pa : PieceApplyFor(data, variation, part_value, false)) {
+        PieceFade f;
+        f.start = pa.slice.start_offs;
+        f.length = pa.slice.length;
+        f.in = pa.fades.set_in ? pa.fades.in : 0.0;
+        f.out = pa.fades.set_out ? pa.fades.out : 0.0;
+        f.in_shape = pa.fades.set_in ? pa.fades.in_shape : 0;
+        f.out_shape = pa.fades.set_out ? pa.fades.out_shape : 0;
+        f.own_in = own_in;
+        f.own_out = own_out;
+        ClampFadePair(f.length, &f.in, &f.out);
+        out.push_back(f);
+    }
+    return out;
+}
+
 double PiecePosition(double anchor_pos, double from_anchor, double playrate)
 {
     const double rate = (std::isfinite(playrate) && playrate > 0.0) ? playrate : 1.0;

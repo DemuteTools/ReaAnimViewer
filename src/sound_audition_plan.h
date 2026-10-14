@@ -159,14 +159,45 @@ struct EditTrimStep {
     double start = 0.0, length = 0.0;  // its new stretch (source seconds)
 };
 
+// 13-62F (F4): a stretch of a variation excluded (ExcludeRange) by a piece-bounded trim.
+struct EditTrimExclude {
+    int    frame = -1;
+    double a = 0.0, b = 0.0;  // source seconds, a < b
+};
+
 struct EditTrimPlan {
-    std::vector<EditTrimStep> steps;  // in frame order; empty = nothing to do (`why` says what is missing)
-    std::string               why;
+    std::vector<EditTrimStep>    steps;     // in frame order; empty with `excludes` = nothing to do (`why` says what is missing)
+    std::vector<EditTrimExclude> excludes;  // 13-62F (F4), in frame order
+    std::string                  why;
+    bool Empty() const { return steps.empty() && excludes.empty(); }
 };
 
 // `cursor` < 0 = no edit cursor; `zone_len` <= 0 = no zone.
 EditTrimPlan PlanEditTrim(const std::vector<SoundFrame>& frames, const std::vector<int>& selected, EditTrimKind kind,
                           double cursor, double zone_start, double zone_len);
+// 13-62F (F4, Antho 2026-10-14): on a divided Sound the cursor trims act on the piece under the edit cursor
+// only (EditPiecesOf: between the frame's edges, its cuts and the zones' edges). Trim left: when that piece
+// starts at the variation's start, the variation starts at the cursor (as above); else [piece start, cursor]
+// is excluded (hatched on every lane, the other pieces untouched). Trim right: the same at the piece's end.
+// A cursor on a piece boundary, an excluded stretch away from the variation's edge, or 1 ms or less:
+// nothing. Trim to zone, an off variation and an undivided Sound: the frames' plan above.
+EditTrimPlan PlanEditTrim(const SoundData& data, const std::vector<int>& selected, EditTrimKind kind, double cursor,
+                          double zone_start, double zone_len);
+
+// 13-62F (F5, Antho 2026-10-14): REAPER's "Item navigation: Select and move to next / previous item" (40417 /
+// 40416) in the Sound Edit window, to chain through the variations at a fixed zoom. From the last selected
+// variation (`selected`'s last valid one), else the one under the edit cursor, else the first after it (next)
+// / the last before it (previous): the next / previous one in time order (off ones included, as REAPER walks
+// every item; ties in start by index). It is selected, the edit cursor goes to its start and the view
+// (`view_len` s, never changed; <= 0 = the whole source) is centred on it, clamped to [0, source_len]. At the
+// last / first one (or no variation at all): `frame` -1, nothing moves. `cursor` < 0 = none (from 0).
+struct EditNavPlan {
+    int    frame = -1;
+    double cursor = 0.0;
+    double view_start = 0.0;
+};
+EditNavPlan PlanEditNav(const std::vector<SoundFrame>& frames, const std::vector<int>& selected, double cursor, bool next,
+                        double view_len, double source_len);
 
 // 13-63: REAPER's "Split items at edit cursor" (40757) in the Sound Edit window: each variation that holds the
 // edit cursor -- among the selected ones, else (nothing selected) among them all -- split there, as the

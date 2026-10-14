@@ -107,7 +107,10 @@ enum ShortcutId : int {
     // 13-62: the Sound Edit window's listening, on REAPER's 40281 / 40280 keys (no key while REAPER has none).
     kShortcutEditSolo      = 14,  // the selected part soloed / unsoloed (view state, never saved)
     kShortcutEditMute      = 15,  // ...muted / unmuted
-    kShortcutCount       = 16,
+    // 13-62F (F5): chain editing, on REAPER's 40417 / 40416 keys (no key while REAPER has none).
+    kShortcutEditNextVar   = 16,  // the next variation selected, the cursor at its start, the view centred on it
+    kShortcutEditPrevVar   = 17,  // ...the previous one
+    kShortcutCount       = 18,
 };
 
 inline const ShortcutDef kShortcutTable[kShortcutCount] = {
@@ -147,6 +150,11 @@ inline const ShortcutDef kShortcutTable[kShortcutCount] = {
      "40281", "Track: Solo/unsolo tracks"},
     {"edit_mute_part", "Mute selected part", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
      "40280", "Track: Mute/unmute tracks"},
+    // 13-62F (F5, Antho 2026-10-14): REAPER's item navigation, to chain through the variations at a fixed zoom.
+    {"edit_next_variation", "Next variation", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "40417", "Item navigation: Select and move to next item"},
+    {"edit_prev_variation", "Previous variation", {0, false, false, false}, ShortcutContext::LibraryEdit, nullptr, nullptr,
+     "40416", "Item navigation: Select and move to previous item"},
 };
 
 // 13-60b: REAPER's id of a row's own action ("_RAV_KEY_VIDEO_CUT"), "" out of range. 13-61: a row on one

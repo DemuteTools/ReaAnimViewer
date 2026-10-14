@@ -1104,6 +1104,42 @@ int main()
         CHECK(ShortcutActionFor(ob, 'M', false, false, false, false, false, false) == -1);
     }
 
+    // 13-62F (F5): Next / Previous variation in the Sound Edit window -- on REAPER's 40417 / 40416 (item
+    // navigation) by default; no RAV action, no key of their own, no fallback.
+    {
+        CHECK(ShortcutReaperActionId(kShortcutEditNextVar) == "40417");
+        CHECK(ShortcutReaperActionId(kShortcutEditPrevVar) == "40416");
+        CHECK(std::string(kShortcutTable[kShortcutEditNextVar].id) == "edit_next_variation");
+        CHECK(std::string(kShortcutTable[kShortcutEditPrevVar].id) == "edit_prev_variation");
+        for (int i = kShortcutEditNextVar; i <= kShortcutEditPrevVar; ++i) {
+            CHECK(ShortcutDefaultFollowsReaper(i));
+            CHECK(kShortcutTable[i].action == nullptr && kShortcutTable[i].def.vk == 0);
+            CHECK(kShortcutTable[i].context == ShortcutContext::LibraryEdit);
+            CHECK(ShortcutReaperFallback(i).vk == 0);
+        }
+        const ShortcutBindings b = DefaultShortcutBindings();
+        bool on_reaper[kShortcutCount] = {};
+        for (int i = kShortcutEditTrimLeft; i <= kShortcutEditPrevVar; ++i) on_reaper[i] = true;
+        ShortcutBindings sb = DefaultShortcutBindings();
+        CHECK(SanitizeShortcuts(sb, nullptr, nullptr, on_reaper).empty());
+        CHECK(RebindFreedDefaults(sb, on_reaper).empty());
+        // REAPER lists no key for them: nothing runs them.
+        ShortcutKeyLists lk;
+        bool             used[kShortcutCount] = {};
+        ApplyReaperFallbacks(lk, on_reaper, used);
+        CHECK(!used[kShortcutEditNextVar] && !used[kShortcutEditPrevVar] && lk[kShortcutEditNextVar].empty());
+        // REAPER gives 40417 Tab and 40416 Shift+Tab: they run the rows in Edit only, REAPER's elsewhere.
+        ShortcutKeyLists lk2;
+        lk2[kShortcutEditNextVar] = {KeyBinding{vk::kTab, false, false, false}};
+        lk2[kShortcutEditPrevVar] = {KeyBinding{vk::kTab, false, true, false}};
+        ApplyReaperFallbacks(lk2, on_reaper, used);
+        const ShortcutKeymap m = ResolveShortcutKeys(b, lk2, on_reaper);
+        CHECK(ShortcutActionFor(m, vk::kTab, false, false, false, false, false, true) == kShortcutEditNextVar);
+        CHECK(ShortcutActionFor(m, vk::kTab, false, true, false, false, false, true) == kShortcutEditPrevVar);
+        CHECK(ShortcutActionFor(m, vk::kTab, false, false, false, false, false, false) == -1);
+        CHECK(ShortcutActionFor(m, 'B', false, false, false, false, false, true) == kShortcutEditSplit);
+    }
+
     if (g_fails == 0) std::printf("shortcuts: all checks passed\n");
     return g_fails == 0 ? 0 : 1;
 }

@@ -49,6 +49,7 @@
 #include "sound_entries.h"
 #include "sound_peaks.h"
 #include "sound_place.h"
+#include "sound_place_plan.h"  // 13-62F: PartPieceFades (the Lane view's fades)
 #include "sound_populate.h"
 #include "sound_project.h"
 #include "sound_record.h"
@@ -188,6 +189,7 @@ struct PanelState {
     int                   piece_frame = -1, piece_index = -1;
     double                piece_t = 0.0;
     int                   listen_request = 0;
+    int                   nav_request = 0;  // 13-62F (F5): a Next (+1) / Previous (-1) variation key waiting (0 = none)
     double                menu_at = 0.0;
     int                   menu_frame = -1, menu_kind = 0;
     bool                  roles_more = false;
@@ -252,6 +254,7 @@ void OpenEdit(const std::string& lib_uid, const std::string& uid)
     P.part_solo.clear();
     P.piece_frame = P.piece_index = -1;
     P.listen_request = 0;
+    P.nav_request = 0;
     P.roles_more = false;
     P.layer_roles_more = false;
     CancelNormJob();          // 13-28: switching Sound cancels a measuring
@@ -953,64 +956,78 @@ struct FadeDrag {
     ImGuiID id = 0;
     int     frame = -1;
     int     side = 0;  // -1 fade in, +1 fade out
-    double  in = -1.0, out = -1.0;  // the frame's own fades as dragged (s, < 0 = the Sound's default)
+    double  in = -1.0, out = -1.0;  // the frame's own fades as dragged (s, < 0 = the Sound's default); a lane: the part's
     bool    moved = false;
     float   x0 = 0.0f;
+    int     lane = -1;                       // 13-62F (F1): a Lane view piece's handle (its part's index); -1 = a variation's
+    double  box_start = 0.0, box_len = 0.0;  // the variation, or the lane's piece, it was grabbed on
 };
 FadeDrag g_fd;
 
 constexpr float kFadeGrab = 5.0f;   // a handle's grab half-width (px)
 constexpr float kFadeBand = 10.0f;  // the top band a handle is grabbed in (px)
 
-// Draws each frame's fades as REAPER draws an item's (a shaded corner over the fade curve) with a
-// handle at the frame's top corners, and drags them: `ev->fade_*` while dragging / on release,
-// Alt-click `ev->fade_reset`. True while the mouse is on a handle or drags one (the waveform's own
-// click is then not started).
+// What carries fades on the waveform: a variation over the whole height (lane -1), or (13-62F, F1: the Lane
+// view) a piece of a part on its own lane, with the fades it is placed with (PartPieceFades).
+struct FadeBox {
+    int        frame = -1;
+    int        lane = -1;
+    double     start = 0.0, length = 0.0;
+    FrameFades fd;
+    float      y0 = 0.0f, y1 = 0.0f;
+};
+
+// Draws each box's fades as REAPER draws an item's (a shaded corner over the fade curve) with a handle at
+// its top corners, and drags them: `ev->fade_*` (a variation) or `ev->part_fade_*` (a lane's piece: its
+// part's own fade) while dragging / on release, Alt-click `ev->fade_reset` / `ev->part_fade_reset_*`. True
+// while the mouse is on a handle or drags one (the waveform's own click is then not started).
 bool WaveFades(ImDrawList* dl, ImGuiID gid, bool hovered, const std::vector<SoundFrame>& frames,
-               const WaveformOptions& o, ImVec2 a, ImVec2 b, double vs, double vl, WaveformEvents* ev)
+               const std::vector<FadeBox>& boxes, const WaveformOptions& o, ImVec2 a, ImVec2 b, double vs, double vl,
+               WaveformEvents* ev)
 {
-    if (o.fades.empty() || !(vl > 0.0)) return false;
-    const float w = b.x - a.x, h = b.y - a.y;
+    if (boxes.empty() || !(vl > 0.0)) return false;
+    const float w = b.x - a.x;
     auto        X = [&](double t) { return static_cast<float>(a.x + (t - vs) / vl * w); };
     auto        T = [&](float x) { return vs + static_cast<double>(x - a.x) / w * vl; };
     const ImU32 shade = WithAlpha(ui::kBg, 0x90), line = WithAlpha(ui::kText, 0xB0);
     const ImVec2 m = ImGui::GetIO().MousePos;
-    int   hot_frame = -1, hot_side = 0;
+    int   hot_box = -1, hot_side = 0;
     float hot_d = kFadeGrab + 1.0f;
     dl->PushClipRect(a, b, true);
-    for (size_t i = 0; i < frames.size() && i < o.fades.size(); ++i) {
-        const SoundFrame& f = frames[i];
-        const FrameFades& fd = o.fades[i];
-        const double      end = f.start + f.length;
-        if (X(end) < a.x || X(f.start) > b.x) continue;
+    for (size_t bi = 0; bi < boxes.size(); ++bi) {
+        const FadeBox&    bx = boxes[bi];
+        const FrameFades& fd = bx.fd;
+        const double      end = bx.start + bx.length;
+        const float       h = bx.y1 - bx.y0;
+        if (X(end) < a.x || X(bx.start) > b.x) continue;
         constexpr int kSteps = 12;
         for (int side = -1; side <= 1; side += 2) {
             const double len = side < 0 ? fd.in : fd.out;
             if (len > 0.0) {
-                const double t0 = side < 0 ? f.start : end - len;
+                const double t0 = side < 0 ? bx.start : end - len;
                 ImVec2       prev;
                 for (int k = 0; k <= kSteps; ++k) {
                     const double t = t0 + len * k / kSteps;
-                    const double g = FadeGainAt(t - f.start, f.length, side < 0 ? fd.in : 0.0, side > 0 ? fd.out : 0.0,
+                    const double g = FadeGainAt(t - bx.start, bx.length, side < 0 ? fd.in : 0.0, side > 0 ? fd.out : 0.0,
                                                 fd.in_shape, fd.out_shape);
-                    const ImVec2 p(X(t), b.y - static_cast<float>(g) * h);
+                    const ImVec2 p(X(t), bx.y1 - static_cast<float>(g) * h);
                     if (k > 0) {
-                        dl->AddQuadFilled(ImVec2(prev.x, a.y), ImVec2(p.x, a.y), p, prev, shade);
+                        dl->AddQuadFilled(ImVec2(prev.x, bx.y0), ImVec2(p.x, bx.y0), p, prev, shade);
                         dl->AddLine(prev, p, line);
                     }
                     prev = p;
                 }
             }
             if (!o.gestures) continue;
-            const float  hx = X(side < 0 ? f.start + fd.in : end - fd.out);
+            const float  hx = X(side < 0 ? bx.start + fd.in : end - fd.out);
             const bool   own = side < 0 ? fd.own_in : fd.own_out;
-            const ImVec2 c(hx, a.y + 4.0f);
+            const ImVec2 c(hx, bx.y0 + 4.0f);
             if (own) dl->AddCircleFilled(c, 3.5f, ui::kAccent);
             else dl->AddCircle(c, 3.5f, ui::kFaint);
             const float d = std::fabs(m.x - hx);
-            if (hovered && m.y <= a.y + kFadeBand && d < hot_d) {
+            if (hovered && m.y >= bx.y0 && m.y <= bx.y0 + kFadeBand && d < hot_d) {
                 hot_d = d;
-                hot_frame = static_cast<int>(i);
+                hot_box = static_cast<int>(bi);
                 hot_side = side;
             }
         }
@@ -1018,54 +1035,81 @@ bool WaveFades(ImDrawList* dl, ImGuiID gid, bool hovered, const std::vector<Soun
     dl->PopClipRect();
     if (!o.gestures) return false;
     const ImGuiIO& io = ImGui::GetIO();
-    if (hot_frame >= 0 && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    const FadeBox* hb = hot_box >= 0 ? &boxes[static_cast<size_t>(hot_box)] : nullptr;
+    if (hb && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         if (io.KeyAlt) {
-            ev->fade_reset = hot_frame;
-            ev->fade_reset_side = hot_side;
-        } else {
+            if (hb->lane >= 0) {
+                ev->part_fade_reset_lane = hb->lane;
+                ev->part_fade_reset_side = hot_side;
+            } else {
+                ev->fade_reset = hb->frame;
+                ev->fade_reset_side = hot_side;
+            }
+        } else if (hb->frame >= 0 && static_cast<size_t>(hb->frame) < frames.size()) {
+            const SoundFrame& f = frames[static_cast<size_t>(hb->frame)];
             g_fd = FadeDrag{};
             g_fd.id = gid;
-            g_fd.frame = hot_frame;
+            g_fd.frame = hb->frame;
             g_fd.side = hot_side;
-            g_fd.in = frames[static_cast<size_t>(hot_frame)].fade_in;
-            g_fd.out = frames[static_cast<size_t>(hot_frame)].fade_out;
+            g_fd.lane = hb->lane;
+            g_fd.box_start = hb->start;
+            g_fd.box_len = hb->length;
+            g_fd.in = hb->lane >= 0 ? hb->fd.in : f.fade_in;
+            g_fd.out = hb->lane >= 0 ? hb->fd.out : f.fade_out;
             g_fd.x0 = m.x;
         }
     }
     const bool dragging = g_fd.id == gid && g_fd.frame >= 0 && static_cast<size_t>(g_fd.frame) < frames.size();
     if (dragging) {
-        const SoundFrame& f = frames[static_cast<size_t>(g_fd.frame)];
         if (std::fabs(m.x - g_fd.x0) > 1.0f) g_fd.moved = true;
-        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-            if (g_fd.moved) {
-                const double t = T(m.x);
-                if (g_fd.side < 0) g_fd.in = std::clamp(t - f.start, 0.0, std::max(0.0, f.length));
-                else g_fd.out = std::clamp(f.start + f.length - t, 0.0, std::max(0.0, f.length));
+        // What the drag reports: the variation's own fades, or the part's own fade on the side dragged.
+        auto report = [&](bool done) {
+            if (g_fd.lane >= 0) {
+                ev->part_fade_lane = g_fd.lane;
+                ev->part_fade_side = g_fd.side;
+                ev->part_fade_s = g_fd.side < 0 ? g_fd.in : g_fd.out;
+                ev->part_fade_done = done;
+            } else {
                 ev->fade_frame = g_fd.frame;
                 ev->fade_in = g_fd.in;
                 ev->fade_out = g_fd.out;
+                ev->fade_done = done;
+            }
+        };
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            if (g_fd.moved) {
+                const double t = T(m.x);
+                const double s0 = g_fd.box_start, len = std::max(0.0, g_fd.box_len);
+                if (g_fd.side < 0) g_fd.in = std::clamp(t - s0, 0.0, len);
+                else g_fd.out = std::clamp(s0 + len - t, 0.0, len);
+                report(false);
                 char tip[64];
                 std::snprintf(tip, sizeof(tip), "Fade %s %.1f ms", g_fd.side < 0 ? "in" : "out",
                               (g_fd.side < 0 ? g_fd.in : g_fd.out) * 1000.0);
                 ui::ShowTip(tip);
             }
         } else {
-            if (g_fd.moved) {
-                ev->fade_frame = g_fd.frame;
-                ev->fade_in = g_fd.in;
-                ev->fade_out = g_fd.out;
-                ev->fade_done = true;
-            }
+            if (g_fd.moved) report(true);
             g_fd = FadeDrag{};
         }
     } else if (g_fd.id == gid) {
         g_fd = FadeDrag{};  // its frame went away
     }
-    const bool hot = hot_frame >= 0 || dragging;
+    const bool hot = hb || dragging;
     if (hot) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-    if (hot_frame >= 0 && !dragging)
-        ui::ShowTip(hot_side < 0 ? "Fade in: drag to set, Alt-click for the Sound's default"
-                                 : "Fade out: drag to set, Alt-click for the Sound's default");
+    if (hb && !dragging) {
+        if (hb->lane >= 0) {
+            const std::string nm = o.parts && static_cast<size_t>(hb->lane) < o.parts->names.size()
+                                       ? o.parts->names[static_cast<size_t>(hb->lane)]
+                                       : std::string("This part");
+            const std::string tip = nm + (hot_side < 0 ? ": fade in" : ": fade out") +
+                                    " of each of its pieces. Drag to set its own, Alt-click to follow the Sound again";
+            ui::ShowTip(tip.c_str());
+        } else {
+            ui::ShowTip(hot_side < 0 ? "Fade in: drag to set, Alt-click for the Sound's default"
+                                     : "Fade out: drag to set, Alt-click for the Sound's default");
+        }
+    }
     return hot;
 }
 
@@ -1083,15 +1127,16 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
     const float  rh = o.ruler ? ui::Dp(18.0f + 4.0f) : 0.0f;  // .edruler: 18 px + 4 px under it
     // 13-20 / 13-23 / 13-25: the parts (Edit). Combined and divided: a ribbon under the waveform;
     // Split: one lane per value. 13-62: Split = REAPER's fixed lanes with comping: a lane header column on the
-    // left (C6, as the mockup: 116 px, 112 px when the lanes would be under 420 px wide; never wider than the
-    // box leaves; the caller draws the headers there) and the "Placed" comp strip above the lanes.
+    // left (the caller draws the headers there) and the "Placed" comp strip above the lanes. 13-62F (F2, F3):
+    // the view is called "Lane"; its column is as wide as the user set it (WaveParts::head_px, default 160 px),
+    // kept between 104 px and half the box's width, never wider than the box leaves.
     const WaveParts* wp = o.parts && o.parts->data ? o.parts : nullptr;
     const SoundData* pd = wp ? wp->data : nullptr;
     const bool       divided = pd && IsDivided(*pd);
     const int        nparts = pd ? PartCount(*pd) : 1;
     const bool       split = divided && wp->split;
-    const float      head_w = split ? std::clamp(tw - ui::Dp(116.0f) < ui::Dp(420.0f) ? ui::Dp(112.0f) : ui::Dp(116.0f), 0.0f,
-                                                 std::max(0.0f, tw - 8.0f))
+    const float      head_lo = ui::Dp(104.0f), head_want = ui::Dp(wp && wp->head_px > 0.0f ? wp->head_px : 160.0f);
+    const float      head_w = split ? std::min(std::clamp(head_want, head_lo, std::max(head_lo, tw * 0.5f)), std::max(0.0f, tw - 8.0f))
                                     : 0.0f;
     const float      w = std::max(8.0f, tw - head_w);
     const float      ribbon_h = divided ? ui::Dp(14.0f) : 0.0f, ribbon_gap = ribbon_h > 0.0f ? ui::Dp(3.0f) : 0.0f;
@@ -1558,7 +1603,45 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
     }
     if (playhead_s >= vs && playhead_s <= vs + vl) dl->AddLine(ImVec2(X(playhead_s), a.y), ImVec2(X(playhead_s), b.y), ui::kText, 1.0f);
     dl->PopClipRect();
-    const bool fade_hot = WaveFades(dl, gid, hovered, frames, o, a, b, vs, vl, &ev);  // Antho 2026-10-12
+    // Antho 2026-10-12: the fades. 13-62F (F1): the Lane view draws each lane's own: the fades of the pieces its
+    // part plays, as placed (PartPieceFades), on that lane only; Combined, the variations' over the whole height.
+    std::vector<FadeBox> fade_boxes;
+    if (!o.fades.empty()) {
+        for (size_t i = 0; i < frames.size(); ++i) {
+            const SoundFrame& f = frames[i];
+            if (f.start + f.length < vs || f.start > vs + vl) continue;  // out of view
+            if (!split) {
+                if (i >= o.fades.size()) break;
+                FadeBox bx;
+                bx.frame = static_cast<int>(i);
+                bx.start = f.start;
+                bx.length = f.length;
+                bx.fd = o.fades[i];
+                bx.y0 = a.y;
+                bx.y1 = b.y;
+                fade_boxes.push_back(bx);
+                continue;
+            }
+            for (int k = 0; k < nparts && static_cast<size_t>(k) < pd->divide_values.size(); ++k)
+                for (const PieceFade& pf : PartPieceFades(*pd, static_cast<int>(i), pd->divide_values[static_cast<size_t>(k)])) {
+                    FadeBox bx;
+                    bx.frame = static_cast<int>(i);
+                    bx.lane = k;
+                    bx.start = pf.start;
+                    bx.length = pf.length;
+                    bx.fd.in = pf.in;
+                    bx.fd.out = pf.out;
+                    bx.fd.in_shape = pf.in_shape;
+                    bx.fd.out_shape = pf.out_shape;
+                    bx.fd.own_in = pf.own_in;
+                    bx.fd.own_out = pf.own_out;
+                    bx.y0 = a.y + lane_h * static_cast<float>(k);
+                    bx.y1 = bx.y0 + lane_h;
+                    fade_boxes.push_back(bx);
+                }
+        }
+    }
+    const bool fade_hot = WaveFades(dl, gid, hovered, frames, fade_boxes, o, a, b, vs, vl, &ev);
     dl->AddRect(a, b, ui::kStroke, ui::kRadiusSm);
     // 13-23 (Combined, divided): the ribbon under the waveform -- each part in its colour with its name,
     // excluded stretches and off variations hatched. 13-62: Split shows it above the lanes as the "Placed" comp
@@ -2002,6 +2085,8 @@ void RequestLibraryEditKey(int shortcut_id)
         P.trim_request = shortcut_id;
     else if (shortcut_id == kShortcutEditSolo || shortcut_id == kShortcutEditMute)  // 13-62 (D)
         P.listen_request = shortcut_id == kShortcutEditSolo ? 1 : 2;
+    else if (shortcut_id == kShortcutEditNextVar || shortcut_id == kShortcutEditPrevVar)  // 13-62F (F5)
+        P.nav_request = shortcut_id == kShortcutEditNextVar ? 1 : -1;
 }
 
 namespace {
@@ -2029,8 +2114,13 @@ std::vector<FrameFades> ShownFades(const SoundData& d)
     return out;
 }
 
+std::string PartName(const SoundData& d, const std::string& value);  // 13-62F (below)
+std::string PartNumberToast(const std::string& pname, const char* label, PartField f, double v, const char* unit);
+std::string LaneValue(const SoundData& d, int lane);
+
 // A fade handle's events (drag: live then one write on release; Alt-click: that side back to the
-// Sound's default, one write). True when the event was a fade one.
+// Sound's default, one write). True when the event was a fade one. 13-62F (F1): a Lane view handle: its
+// part's own fade.
 bool HandleWaveFades(const WaveformEvents& ev, const SoundLibrary& lib, const SoundNode& n, const std::vector<int>& fi)
 {
     auto map = [&](int i) { return i >= 0 && static_cast<size_t>(i) < fi.size() ? fi[static_cast<size_t>(i)] : -1; };
@@ -2038,6 +2128,36 @@ bool HandleWaveFades(const WaveformEvents& ev, const SoundLibrary& lib, const So
         const int i = map(ev.fade_frame);
         SetFrameFades(Live(n), i, ev.fade_in, ev.fade_out);
         if (ev.fade_done) CommitLive("Variation fade", lib.uid, n.uid);
+        return true;
+    }
+    // 13-62F (F1): a Lane view handle sets / resets its part's own fade on that side (live, one undo point).
+    if (ev.part_fade_lane >= 0) {
+        const std::string value = LaneValue(Shown(n), ev.part_fade_lane);
+        if (value.empty()) return true;
+        PartSettings patch;
+        if (ev.part_fade_side < 0) patch.fade_in = ev.part_fade_s;
+        else patch.fade_out = ev.part_fade_s;
+        SetPartSetting(Live(n), value, patch);
+        if (ev.part_fade_done) {
+            const SoundData&  dr = Shown(n);
+            const PartField   pf = ev.part_fade_side < 0 ? PartField::FadeIn : PartField::FadeOut;
+            const std::string toast = PartNumberToast(PartName(dr, value), ev.part_fade_side < 0 ? "Fade in" : "Fade out", pf,
+                                                      ev.part_fade_s * 1000.0, "ms");
+            if (SamePartSettings(PartSettingsOf(dr, value), PartSettingsOf(n.sound, value))) CancelLive();
+            else CommitLive("Part fade", lib.uid, n.uid, toast);
+        }
+        return true;
+    }
+    if (ev.part_fade_reset_lane >= 0) {
+        const std::string value = LaneValue(Shown(n), ev.part_fade_reset_lane);
+        const int         side = ev.part_fade_reset_side;
+        if (value.empty()) return true;
+        EditNode("Reset part fade", lib.uid, n.uid, [value, side](SoundNode& x) {
+            const PartSettings* ps = PartSettingsOf(x.sound, value);
+            if (!ps || !(side < 0 ? ps->fade_in : ps->fade_out)) return false;  // follows the Sound already: no empty undo point
+            ResetPartSetting(x.sound, value, side < 0 ? PartField::FadeIn : PartField::FadeOut);
+            return true;
+        }, PartName(Shown(n), value) + (side < 0 ? " \xC2\xB7 Fade in" : " \xC2\xB7 Fade out") + ": = Sound");
         return true;
     }
     if (ev.fade_reset >= 0) {
@@ -2809,7 +2929,7 @@ std::string PartPicker(const SoundLibrary& lib, const SoundNode& n, const std::s
         look.count = OwnSettingCount(d, v);
         ImGui::PushID(static_cast<int>(k));
         ui::SameLineIfFits(PartChipWidth(name, look));
-        const std::string tip = name + ": its settings (same as clicking its lane in Split)";
+        const std::string tip = name + ": its settings (same as clicking its lane in Lane view)";
         if (PartChip("##pchip", name, PartColor(static_cast<int>(k)), look, P.part_sel == v, tip.c_str())) P.part_sel = v;
         ImGui::PopID();
     }
@@ -3066,6 +3186,17 @@ void PartNormalizeNow(int lib, const std::string& node_uid, const std::string& v
     PartNormalizeNow(lib, node_uid, value);
 }
 
+// 13-62F (F3): the Lane view's header column width the user dragged (logical px), remembered per user (a pref,
+// like the Normalize ones): view state, no undo point.
+constexpr float kLaneHeadDefault = 160.0f, kLaneHeadMin = 104.0f;
+float           g_lane_head = -1.0f;  // < 0 = not read yet
+
+float LaneHeadPref()
+{
+    if (g_lane_head < 0.0f) g_lane_head = std::max(kLaneHeadMin, LoadPrefFloat("lib_lane_head_w", kLaneHeadDefault));
+    return g_lane_head;
+}
+
 // What Edit draws of a Sound's parts.
 WaveParts EditParts(const SoundStore& store, const SoundData& d)
 {
@@ -3077,6 +3208,7 @@ WaveParts EditParts(const SoundStore& store, const SoundData& d)
             w.names.push_back(ValueName(store, d.divide_group, d.divide_values[k]));
         }
     w.split = d.lanes_split;
+    w.head_px = LaneHeadPref();  // 13-62F (F3)
     w.sel_start = P.zone_start;
     w.sel_len = P.zone_len;
     // 13-62: the selected part and who Play hears (Mute / Solo add up as in REAPER).
@@ -3201,7 +3333,7 @@ EditTrimPlan EditTrimNow(const SoundNode& n, EditTrimKind kind, const std::vecto
         p.why = kTakesTip;
         return p;
     }
-    return PlanEditTrim(n.sound.frames, sel, kind, P.edit_cursor, P.zone_start, P.zone_len);
+    return PlanEditTrim(n.sound, sel, kind, P.edit_cursor, P.zone_start, P.zone_len);
 }
 
 // One trim: each variation as an edge drag moves it (TrimFrame, the parts measured again), one undo point.
@@ -3209,18 +3341,25 @@ EditTrimPlan EditTrimNow(const SoundNode& n, EditTrimKind kind, const std::vecto
 void EditTrim(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, EditTrimKind kind, const std::vector<int>& sel)
 {
     const EditTrimPlan plan = EditTrimNow(n, kind, sel);
-    if (plan.steps.empty()) {
+    if (plan.Empty()) {
         ShowLibraryToast(plan.why, false);
         return;
     }
-    const std::vector<EditTrimStep> steps = plan.steps;
-    const std::string               path = m.path;
-    const double                    len = m.source_len;
-    const std::string               name = EditTrimName(kind);
+    const std::vector<EditTrimStep>    steps = plan.steps;
+    const std::vector<EditTrimExclude> excludes = plan.excludes;  // 13-62F (F4): a divided Sound's piece-bounded trims
+    const std::string                  path = m.path;
+    const double                       len = m.source_len;
+    const std::string                  name = EditTrimName(kind);
+    std::vector<int>                   touched;
+    for (const EditTrimStep& s : steps) touched.push_back(s.frame);
+    for (const EditTrimExclude& e : excludes)
+        if (std::find(touched.begin(), touched.end(), e.frame) == touched.end()) touched.push_back(e.frame);
     const std::string toast = name + " \xC2\xB7 " +
-                              (steps.size() == 1 ? "variation " + std::to_string(steps.front().frame + 1)
-                                                 : std::to_string(steps.size()) + " variations");
-    EditNode(name, lib.uid, n.uid, [steps, path, len](SoundNode& x) {
+                              (touched.size() == 1 ? "variation " + std::to_string(touched.front() + 1)
+                                                   : std::to_string(touched.size()) + " variations") +
+                              (excludes.empty() ? std::string() : " (up to the next piece, excluded)");
+    if (!excludes.empty()) P.piece_frame = P.piece_index = -1;  // the pieces' indices move (as the Alt+drag exclude)
+    EditNode(name, lib.uid, n.uid, [steps, excludes, path, len](SoundNode& x) {
         bool changed = false;
         for (const EditTrimStep& s : steps) {
             if (s.frame < 0 || static_cast<size_t>(s.frame) >= x.sound.frames.size()) continue;
@@ -3231,7 +3370,10 @@ void EditTrim(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, 
             RefreshOne(x.sound, s.frame, path);
             changed = true;
         }
-        return changed;
+        bool excluded = false;
+        for (const EditTrimExclude& e : excludes) excluded = ExcludeRange(x.sound, e.frame, e.a, e.b) || excluded;
+        if (excluded) RefreshWith(x.sound, path);  // as the Exclude range gesture (PartsEdit)
+        return changed || excluded;
     }, toast);
 }
 
@@ -3276,8 +3418,8 @@ void EditTrimEntry(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
 {
     const EditTrimPlan plan = EditTrimNow(n, kind, sel);
     const char*        key = ShortcutKeyLabel(EditTrimShortcut(kind));
-    if (ui::MenuEntry(EditTrimName(kind), key[0] ? key : nullptr, false, !plan.steps.empty())) EditTrim(lib, n, m, kind, sel);
-    if (plan.steps.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ui::ShowTip(plan.why.c_str());
+    if (ui::MenuEntry(EditTrimName(kind), key[0] ? key : nullptr, false, !plan.Empty())) EditTrim(lib, n, m, kind, sel);
+    if (plan.Empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ui::ShowTip(plan.why.c_str());
 }
 
 // The waveform's right-click menu in Edit (the mockup's zone / variation / outside menus).
@@ -3545,6 +3687,23 @@ void LaneHeaders(const WaveformEvents& ev, const SoundData& d, const WaveParts& 
             ui::ItemTipText((nm + ": click to select (like a REAPER track)").c_str());
         }
         ImGui::PopID();
+    }
+    // 13-62F (F3): the column's right edge (the 4 px between the headers and the lanes) resizes it: drag, double-click
+    // = back to 160 px. Kept between 104 px and half the waveform's width; saved on release (view state, no undo).
+    const float lanes_h = ev.lane_h * static_cast<float>(PartCount(d));
+    if (lanes_h >= 4.0f) {
+        ImGui::SetCursorScreenPos(ImVec2(ev.head_x + ev.head_w - gap, ev.lanes_y));
+        const ui::SplitterState sp = ui::SplitterBar("##laneheadw", ImVec2(gap, lanes_h));
+        const float             scale = std::max(0.01f, ui::Dp(1.0f));
+        const float             hi = std::max(kLaneHeadMin, (ev.max.x - ev.head_x) * 0.5f / scale);
+        if (sp.double_clicked) {
+            g_lane_head = kLaneHeadDefault;
+            SavePrefFloat("lib_lane_head_w", g_lane_head);
+        } else if (sp.active) {
+            g_lane_head = std::clamp((ImGui::GetIO().MousePos.x - ev.head_x + gap * 0.5f) / scale, kLaneHeadMin, hi);
+        }
+        if (sp.released) SavePrefFloat("lib_lane_head_w", g_lane_head);
+        if (sp.hovered && !sp.active) ui::ItemTipText("Drag: the lane headers' width. Double-click: back to the default");
     }
     ImGui::SetCursorScreenPos(back);
 }
@@ -4814,7 +4973,7 @@ bool LegendChip(const char* id, const std::string& label, ImU32 col, LegendGlyph
     return clicked;
 }
 
-// The legend row above Edit's waveform: once divided, "Lanes [Combined | Split]" (remembered per Sound,
+// The legend row above Edit's waveform: once divided, "Lanes [Combined | Lane]" (remembered per Sound,
 // one undo point), the values' chips (13-62: click = select that part, as its lane or its chip in the right
 // column; no undo point) and "Excluded"; then the
 // keys of the two handles, "Sync point (snap offset)" and "Cut (V1 | V2)".
@@ -4831,7 +4990,7 @@ void EditLegend(const SoundStore& store, const SoundLibrary& lib, const SoundNod
     std::vector<std::string> names;
     for (const std::string& v : d.divide_values) names.push_back(ValueName(store, d.divide_group, v));
     if (div) {
-        static const char* const kLanes[2] = {"Combined", "Split"};
+        static const char* const kLanes[2] = {"Combined", "Lane"};
         FitText("Lanes", ui::kFaint);
         ImGui::SameLine();
         int sel = d.lanes_split ? 1 : 0;
@@ -4841,17 +5000,17 @@ void EditLegend(const SoundStore& store, const SoundLibrary& lib, const SoundNod
                 if (x.sound.lanes_split == split) return false;
                 x.sound.lanes_split = split;
                 return true;
-            }, split ? "Lanes: Split \xC2\xB7 one waveform per value (remembered for this sound)"
+            }, split ? "Lanes: Lane \xC2\xB7 one waveform per value (remembered for this sound)"
                      : "Lanes: Combined \xC2\xB7 one coloured waveform (remembered for this sound)");
             return;
         }
-        ui::ItemTipText("Lane mode, remembered for this sound. Combined: one waveform coloured by part (what is placed). Split: one "
+        ui::ItemTipText("Lane mode, remembered for this sound. Combined: one waveform coloured by part (what is placed). Lane: one "
                         "lane per value, as REAPER's fixed lanes with comping.");
         any = true;
         for (size_t k = 0; k < names.size(); ++k) {
             next(chip_w(names[k]));
             const std::string id = "##lg" + std::to_string(k);
-            const std::string tip = names[k] + ": select it (its settings, Mute / Solo; same as clicking its lane in Split)";
+            const std::string tip = names[k] + ": select it (its settings, Mute / Solo; same as clicking its lane in Lane view)";
             if (LegendChip(id.c_str(), names[k], PartColor(static_cast<int>(k)), LegendGlyph::Swatch, P.part_sel == d.divide_values[k], true,
                            tip.c_str()))
                 P.part_sel = d.divide_values[k];
@@ -5080,7 +5239,7 @@ void DrawEditOverlay()
             "Alt-click: off / on\nDouble-click empty space: add a variation\n"
             "Top flag: the sync point (snap offset), the moment placed on the event: drag it\n"
             "Bottom handle: the cut between two parts: drag it (from any lane; each side keeps its part)\n"
-            "Split works like REAPER's fixed lanes with comping: click a dimmed range or drag across a lane to give it\n"
+            "Lane view works like REAPER's fixed lanes with comping: click a dimmed range or drag across a lane to give it\n"
             "to that lane. Alt+drag excludes. Every change is one undo point (Ctrl+Z)\n"
             "Combined: click a part to select it; drag across the waveform to select a zone, then right-click it\n"
             "Right-click a range: give it to a part, exclude it, play it; a variation: play it, reset its sync points or cuts\n"
@@ -5088,6 +5247,7 @@ void DrawEditOverlay()
             "Trim left / right of the cursor, trim to the zone: your REAPER keys for its item trims (40511, 40512,\n"
             "40508; KEYS: SOUND EDIT in Shortcuts), or right-click a variation / the zone\n"
             "Split at the cursor: your REAPER key for 40757 (B while it has none; Shortcuts), or right-click a variation\n"
+            "Next / previous variation: your REAPER keys for 40417 / 40416 (Shortcuts): selected, centred, same zoom\n"
             "Trim to zone acts on the selected variations (click empty space first to select by zone), as REAPER does\n"
             "Zoom and scroll: the View actions in Shortcuts (your REAPER wheel and zoom keys unless you set your\n"
             "own), middle-drag, the scrollbar; Zoom vertically makes the lanes taller\n"
@@ -5246,7 +5406,23 @@ void DrawEditOverlay()
                 std::set<std::string>& on = listen == 1 ? P.part_solo : P.part_mute;
                 if (!on.erase(P.part_sel)) on.insert(P.part_sel);
             } else if (IsDivided(n->sound)) {  // review: the mockup's toast (an undivided Sound: nothing)
-                ShowLibraryToast("Select a part first: click its lane (Split) or its chip (Combined)", false);
+                ShowLibraryToast("Select a part first: click its lane (Lane view) or its chip (Combined)", false);
+            }
+        }
+        // 13-62F (F5): Next / Previous variation (REAPER's 40417 / 40416 keys): select it, the edit cursor at its
+        // start, the view centred on it at the same zoom. View state: no undo point, nothing written. At the
+        // last / first one nothing moves. Takes mode: the selection only (each take has its own time).
+        if (P.nav_request != 0 && !StoreReplaced()) {
+            const bool        next = std::exchange(P.nav_request, 0) > 0;
+            const SoundData&  d = Shown(*n);
+            const double      len = m.ok ? m.source_len : 0.0;
+            const EditNavPlan nav = PlanEditNav(d.frames, P.sel, P.edit_cursor, next, P.view_len, len);
+            if (nav.frame >= 0) {
+                P.sel = {nav.frame};
+                if (d.mode != DetectMode::Takes) {
+                    P.edit_cursor = nav.cursor;
+                    if (P.view_len > 0.0 && len > 0.0) P.view_start = nav.view_start;
+                }
             }
         }
         if (!StoreReplaced()) ResolvePiece(Shown(*n));  // 13-62 review: before any use this frame

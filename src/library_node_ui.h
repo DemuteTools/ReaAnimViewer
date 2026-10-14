@@ -47,6 +47,9 @@ struct WaveParts {
     // Solo: a part not heard is drawn faint; empty = all heard).
     std::string              sel_part;
     std::vector<bool>        heard;
+    // 13-62F (F3): the Lane view's header column as the user set it (logical px, before the DPI; 0 = the default
+    // 160). DrawWaveform keeps it between 104 px and half the waveform's width.
+    float                    head_px = 0.0f;
 };
 
 // A waveform with its variations framed (the Sound panel, Edit, the Media Explorer preview).
@@ -108,6 +111,12 @@ struct WaveformEvents {
     bool   fade_done = false;   // released (write it)
     int    fade_reset = -1;     // Alt-click on a fade handle: that frame's side back to the default
     int    fade_reset_side = 0; // -1 fade in, +1 fade out
+    // 13-62F (F1): the Lane view's fade handles (a piece of a part, on its lane): the part's own fade on that side
+    // (`part_fade_lane` = the part's index, s), and Alt-click: that side of the part back to the Sound's.
+    int    part_fade_lane = -1, part_fade_side = 0;
+    double part_fade_s = 0.0;
+    bool   part_fade_done = false;
+    int    part_fade_reset_lane = -1, part_fade_reset_side = 0;
     ImVec2 min, max;            // the waveform's rectangle
     // 13-20 / 13-23 / 13-25 (with `parts`).
     double click_at = 0.0;      // the source time of `clicked`
@@ -128,9 +137,9 @@ struct WaveformEvents {
     // a variation's or a zone's edge within 6 px (SnapSpanEdge). Done = released (write it).
     bool   span_done = false, span_alt = false;
     double span_a = 0.0, span_b = 0.0;
-    // Split: the lane header column on the left of the lanes (C6 as the mockup: 116 px, 112 px when the lanes
-    // are under 420 px wide: no range slider), each lane's top and height, the comp strip's rows; the caller draws the
-    // headers there (PartLaneHeader). head_w 0 = no column (Combined).
+    // Split (13-62F: "Lane"): the lane header column on the left of the lanes (13-62F F3: WaveParts::head_px,
+    // 104 px .. half the box; head_narrow under 116 px: no gain fader), each lane's top and height, the comp
+    // strip's rows; the caller draws the headers there (PartLaneHeader). head_w 0 = no column (Combined).
     float  head_x = 0.0f, head_w = 0.0f;
     bool   head_narrow = false;
     float  lanes_y = 0.0f, lane_h = 0.0f;
@@ -163,7 +172,8 @@ bool LibraryEditKeysActive();
 // 13-61: a trim row's key ran (kShortcutEditTrimLeft / Right / Zone; 13-63: or kShortcutEditSplit): the Edit
 // overlay does it on its next frame (one undo point), or says why it cannot. Ignored while the overlay is closed.
 // 13-62: kShortcutEditSolo / Mute toggle the selected part's Solo / Mute there (view state, no undo point;
-// nothing when no part is selected).
+// nothing when no part is selected). 13-62F: kShortcutEditNextVar / PrevVar select the next / previous variation,
+// the edit cursor at its start, the view centred on it (PlanEditNav; view state, no undo point).
 void RequestLibraryEditKey(int shortcut_id);
 
 }  // namespace rav

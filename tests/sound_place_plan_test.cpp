@@ -256,8 +256,45 @@ static void TestPartFadesOnPieces()
     CHECK(toe.size() == 1 && Near(toe[0].slice.snap_offset, 0.01, 1e-9));
 }
 
+// 13-62F (F1): the Lane view's fades per piece, as placed.
+static void TestPartPieceFades()
+{
+    SoundData d;
+    d.mode = DetectMode::Silence;
+    d.divide_group = "g";
+    d.divide_values = {"heel", "toe"};
+    SoundFrame f;
+    f.start = 1.0;
+    f.length = 1.0;
+    f.cuts = {1.4};
+    f.fade_in = 0.03;
+    f.fade_out = 0.05;
+    d.frames.push_back(f);
+    // Nothing owned: heel = the variation's fade in, cut_fade at the cut; toe = cut_fade, then the fade out.
+    std::vector<PieceFade> heel = PartPieceFades(d, 0, "heel"), toe = PartPieceFades(d, 0, "toe");
+    CHECK(heel.size() == 1 && Near(heel[0].start, 1.0) && Near(heel[0].length, 0.4) && Near(heel[0].in, 0.03) &&
+          Near(heel[0].out, kDefaultCutFade) && !heel[0].own_in && !heel[0].own_out);
+    CHECK(toe.size() == 1 && Near(toe[0].in, kDefaultCutFade) && Near(toe[0].out, 0.05));
+    // Toe owns its fade in: on its cut side; heel unchanged.
+    PartSettings own;
+    own.fade_in = 0.004;
+    SetPartSetting(d, "toe", own);
+    toe = PartPieceFades(d, 0, "toe");
+    CHECK(toe.size() == 1 && Near(toe[0].in, 0.004) && toe[0].own_in && !toe[0].own_out && Near(toe[0].out, 0.05));
+    heel = PartPieceFades(d, 0, "heel");
+    CHECK(heel.size() == 1 && Near(heel[0].out, kDefaultCutFade));
+    // An owned fade longer than the piece: in + out kept within it.
+    own = PartSettings{};
+    own.fade_out = 2.0;
+    SetPartSetting(d, "heel", own);
+    heel = PartPieceFades(d, 0, "heel");
+    CHECK(heel.size() == 1 && heel[0].in + heel[0].out <= 0.4 + 1e-9 && heel[0].own_out);
+    CHECK(PartPieceFades(d, 5, "heel").empty());
+}
+
 int main()
 {
+    TestPartPieceFades();
     TestPartFadesOnPieces();
     TestChanMode();
     TestAsAuditioned();

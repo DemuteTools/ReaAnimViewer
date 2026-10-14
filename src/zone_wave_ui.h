@@ -24,7 +24,8 @@
 //   ZoneTrimAt(h, side)       40511 (side < 0) / 40512 (> 0) at the cursor; ZoneTrimToTsel(h): 40508
 //   ZoneGiveTo(h, part)       the selected part zones -> part ("Give them to")
 //   ZoneSelectPart(h, part)   every zone of a part selected (double-click a lane header / part chip)
-//   ZoneStepVariation(h, dir) next (+1) / previous (-1) variation: its first zone, cursor at its start, view centred
+//   ZoneStepVariation(h, dir) next (+1) / previous (-1) block of the Variations strip: its first zone, cursor at its
+//                             start, view centred (same zoom)
 //   ZoneClickPlays() / SetZoneClickPlays(on)   the Click plays pref (per user, ExtState, default on)
 //   ZoneTailWins() / SetZoneTailWins(on)       Pre-roll / Tail overwrite hand edges (per user, default on)
 //   ZoneEditView::sel / has_tsel, ts_a, ts_b / loop      the selection, the time selection, Loop
@@ -34,6 +35,7 @@
 
 #ifdef _WIN32
 
+#include <cstdint>
 #include <functional>
 #include <set>
 #include <string>
@@ -82,7 +84,18 @@ struct ZoneEditView {
     std::string   play_uid;
     EditTransport tp;
     HeardMap      map;
-    double        last_pos = 0.0;  // its heard position last seen (an end reached vs a Stop)
+    double        last_pos = 0.0;  // its heard position last seen
+    // The stored Sound as last seen (its store generation): a change we did not write (Ctrl+Z, another panel)
+    // carries the selection over by time and part (SelFollow), and drops the menu's target and the hover.
+    SoundData     seen;
+    std::string   seen_uid;
+    uint64_t      seen_gen = 0;
+    bool          own_pending = false;  // one of our writes is on its way (it moves the generation)
+    int           own_frame = 0;
+    // The right-click menu: the frame it was last drawn open, a close asked; the frame Esc was last used.
+    int           menu_frame = -1;
+    bool          menu_close = false;
+    int           esc_frame = -1;
 };
 
 // Clears the view state (a new Sound shown).
@@ -127,7 +140,8 @@ struct ZoneWaveEvents {
 // Draws the zone waveform `height` px tall at the cursor and runs its gestures and its right-click menu.
 ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height);
 // The Edit window's keys for a zoned Sound while it has the focus: Delete, Space; Esc returns true when it used
-// it (closed the selection / the time selection), else the caller's Esc runs (stop, close).
+// it (the mockup's: the right-click menu closes, and on the same press the selection goes, else the time
+// selection), else the caller's Esc runs (stop, close).
 void ZoneEditKeys(const ZoneWaveHost& h, bool* esc_used);
 // The requests of the Shortcuts rows on a zoned Sound (kShortcutEditSplit / TrimLeft / TrimRight / TrimZone,
 // kShortcutEditHeal / kShortcutEditLoop, next / previous variation): one undo point, or a toast.

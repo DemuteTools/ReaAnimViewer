@@ -180,18 +180,27 @@ void TestDrags()
     CHECK(StartZoneDrag(h, true, true) == ZoneDragKind::Tsel);
     h.row = ZoneRow::Vars;
     CHECK(StartZoneDrag(h, false, false) == ZoneDragKind::None);
-    // Handles drag at the press; Ctrl / Alt reserved (but Alt on a crossfade handle = one side).
+    // Handles drag at the press; with Ctrl / Alt (but Alt on a crossfade handle = one side) the press is Pending:
+    // released unmoved it is the click (Ctrl adds / removes), moved it is reserved.
     ZoneHit e;
     e.kind = ZoneHitKind::Edge;
     CHECK(PressDragKind(e, false, false) == ZoneDragKind::Edge);
-    CHECK(PressDragKind(e, false, true) == ZoneDragKind::Reserved);
-    CHECK(PressDragKind(e, true, false) == ZoneDragKind::Reserved);
+    CHECK(PressDragKind(e, false, true) == ZoneDragKind::Pending && ZoneReservedOnMove(e, false, true));
+    CHECK(PressDragKind(e, true, false) == ZoneDragKind::Pending && ZoneReservedOnMove(e, true, false));
+    CHECK(!ZoneReservedOnMove(e, false, false));
     e.kind = ZoneHitKind::Xf;
-    CHECK(PressDragKind(e, false, true) == ZoneDragKind::Xf);
-    e.kind = ZoneHitKind::Fade;
-    CHECK(PressDragKind(e, true, false) == ZoneDragKind::Reserved);
+    CHECK(PressDragKind(e, false, true) == ZoneDragKind::Xf && !ZoneReservedOnMove(e, false, true));
+    CHECK(PressDragKind(e, true, false) == ZoneDragKind::Pending && ZoneReservedOnMove(e, true, false));
+    for (ZoneHitKind k : {ZoneHitKind::Fade, ZoneHitKind::Cut, ZoneHitKind::GapEdge, ZoneHitKind::Snap}) {
+        e.kind = k;
+        CHECK(PressDragKind(e, true, false) == ZoneDragKind::Pending && PressDragKind(e, false, true) == ZoneDragKind::Pending);
+        CHECK(ZoneReservedOnMove(e, true, false) && ZoneReservedOnMove(e, false, true) && !ZoneReservedOnMove(e, false, false));
+    }
+    e.kind = ZoneHitKind::TselEdge;
+    CHECK(PressDragKind(e, true, true) == ZoneDragKind::TselEdge && !ZoneReservedOnMove(e, true, true));
     e.kind = ZoneHitKind::Zone;
     CHECK(PressDragKind(e, false, false) == ZoneDragKind::Pending);
+    CHECK(ZoneReservedOnMove(e, true, false) && !ZoneReservedOnMove(e, false, true));  // Alt+drag a zone: a Gap
     // Gain: vertical first on a part zone; never on a Gap or with Shift / Alt.
     ZoneHit g;
     g.row = ZoneRow::Lane;
@@ -204,6 +213,104 @@ void TestDrags()
     g.z = {0, 1};
     CHECK(!PendingBecomesGain(d, g, 0.0f, -5.0f, false, false));
     CHECK(std::fabs(GainDragDb(-15.0f) - 1.5) < 1e-9 && std::fabs(GainDragDb(20.0f) + 2.0) < 1e-9);
+    // The 3 px are logical: at 2x, 5 screen px is 2.5 px (not yet), 7 is.
+    g.z = {0, 0};
+    CHECK(!PendingBecomesGain(d, g, 0.0f, -5.0f, false, false, 2.0f));
+    CHECK(PendingBecomesGain(d, g, 0.0f, -7.0f, false, false, 2.0f));
+    // The single zone's toast (the mockup's): the fader shown as what it applied.
+    CHECK(ZoneGainToast("Heel", "Heel", 2.0, 1.0) == "Heel gain: +2.0 dB (+ Heel fader +1 dB = 2.0 dB)");
+    CHECK(ZoneGainToast("Toe", "Toe", -1.5, -0.5) == "Toe gain: -1.5 dB (+ Toe fader -0.5 dB = -1.5 dB)");
+    CHECK(ZoneGainToast("Toe", "Toe", 0.0, 0.0) == "Toe gain: 0.0 dB (+ Toe fader 0 dB = 0.0 dB)");
+}
+
+// ZoneLooks gives what the per-zone queries give (GapBefore / GapAfter / GapLeft / GapRight / ZoneFade / ZoneSnap /
+// Butted), from one sorted list.
+void TestLooks()
+{
+    SoundData d = Sample();
+    d.cut_fade = 0.003;
+    d.fade_in = 0.002;
+    d.fade_out = 0.050;
+    d.frames[0].zones[0].fade_in = 0.010;  // its own
+    PartSettings ps;
+    ps.value = "toe";
+    ps.fade_out = 0.400;  // capped at half the zone
+    d.parts.push_back(ps);
+    d.frames[1].zones[0].snap = 1.30;
+    d.frames[0].zones[2].db = 6.0;
+    // A third variation, off: out of the model.
+    SoundFrame off;
+    off.on = false;
+    off.zones = {Z("heel", 1.70, 1.90)};
+    off.start = 1.70;
+    off.length = 0.20;
+    d.frames.push_back(off);
+    const std::vector<ZoneLook> L = ZoneLooks(d, nullptr);
+    const std::vector<ZoneRef>  all = AllZones(d);
+    CHECK(L.size() == all.size() && L.size() == 5);
+    for (size_t i = 0; i < L.size() && i < all.size(); ++i) {
+        const ZoneRef& r = all[i];
+        CHECK(L[i].ref == r);
+        if (L[i].gap) {
+            CHECK(L[i].left == GapLeft(d, r) && L[i].right == GapRight(d, r));
+            CHECK(L[i].li >= 0 && L[static_cast<size_t>(L[i].li)].ref == L[i].left);
+            CHECK(L[i].ri >= 0 && L[static_cast<size_t>(L[i].ri)].ref == L[i].right);
+            continue;
+        }
+        CHECK(L[i].lg == (ZoneOf(d, GapBefore(d, r)) != nullptr) && L[i].rg == (ZoneOf(d, GapAfter(d, r)) != nullptr));
+        CHECK(std::fabs(L[i].fi_s - ZoneFade(d, r, -1).s) < 1e-12 && std::fabs(L[i].fo_s - ZoneFade(d, r, 1).s) < 1e-12);
+        CHECK(std::fabs(L[i].snap - ZoneSnap(d, r, nullptr).t) < 1e-12 && L[i].snap_own == ZoneSnap(d, r, nullptr).own);
+        CHECK(L[i].butt_next == (i + 1 < all.size() && Butted(d, r, all[i + 1])));
+        CHECK(L[i].k == PartIndex(d, ZoneOf(d, r)->part));
+    }
+    CHECK(std::fabs(L[0].fi_s - 0.010) < 1e-12);  // own
+    CHECK(std::fabs(L[3].fi_s - 0.003) < 1e-12);  // a cut: the Sound's cut fade
+    CHECK(std::fabs(L[4].fo_s - 0.200) < 1e-12);  // the part's, capped at half
+    CHECK(std::fabs(L[2].gain - std::pow(10.0, 0.3)) < 1e-9);
+    // The hits are the same with the looks given.
+    ZoneHitView v = Lane(-1);
+    for (float x = 90.0f; x < 1650.0f; x += 1.0f)
+        for (float y : {5.0f, 30.0f, 60.0f, 95.0f}) {
+            ZoneHitView vc = v;
+            vc.looks = &L;
+            const ZoneHit a = HitZones(d, v, x, y), b = HitZones(d, vc, x, y);
+            CHECK(a.kind == b.kind && a.z == b.z && a.z2 == b.z2 && a.side == b.side);
+        }
+}
+
+void TestStepAndHeal()
+{
+    SoundData d = Sample();
+    // Variation 2 off, a third on: the strip's blocks are variations 1 and 3.
+    SoundFrame f3;
+    f3.zones = {Z("heel", 1.70, 1.90)};
+    f3.start = 1.70;
+    f3.length = 0.20;
+    d.frames.push_back(f3);
+    d.frames[1].on = false;
+    const std::vector<ZoneVarBlock> B = ZoneVarBlocks(d);
+    CHECK(B.size() == 2 && B[0].frame == 0 && B[1].frame == 2);
+    CHECK(ZoneStepBlock(B, 0.2, 1) == 1);    // from variation 1: the next block (variation 3, not the off one)
+    CHECK(ZoneStepBlock(B, 0.2, -1) == -1);  // already the first
+    CHECK(ZoneStepBlock(B, 1.8, 1) == -1);   // already the last
+    CHECK(ZoneStepBlock(B, 1.8, -1) == 0);
+    CHECK(ZoneStepBlock(B, 1.4, 1) == 1);    // between blocks: the first after
+    CHECK(ZoneStepBlock(B, 1.4, -1) == 0);   // the last before
+    CHECK(ZoneStepBlock(B, -1.0, 1) == 0);   // no cursor: the first
+    CHECK(ZoneStepBlock(B, -1.0, -1) == -1);
+    CHECK(std::fabs(ZoneStepRef(d, {{2, 0}}, 0.1) - 1.80) < 1e-9);
+    CHECK(std::fabs(ZoneStepRef(d, {{9, 9}}, 0.1) - 0.1) < 1e-9 && ZoneStepRef(d, {}, -1.0) < 0.0);
+    // Heal: Heel | Gap | Heel | Toe all selected = 2 cuts (the Gap once); Heel | Gap = 1; Heel2 | Toe = 1.
+    const SoundData s = Sample();
+    CHECK(HealCutCount(s, {{0, 0}, {0, 1}, {0, 2}, {0, 3}}) == 2);
+    CHECK(HealCutCount(s, {{0, 0}, {0, 1}}) == 1);
+    CHECK(HealCutCount(s, {{0, 2}, {0, 3}}) == 1);
+    CHECK(HealCutCount(s, {{0, 3}, {0, 2}, {0, 0}, {0, 1}}) == 2);  // any order
+    CHECK(HealCutCount(s, {{0, 0}, {0, 2}}) == 0);                  // not edge to edge
+    CHECK(HealCutCount(s, {{0, 1}, {0, 2}}) == 0);                  // a Gap first heals nothing (HealZones)
+    SoundData h = s;
+    ZoneSel   all = {{0, 0}, {0, 1}, {0, 2}, {0, 3}};
+    CHECK(HealZones(h, all, {}) && h.frames[0].zones.size() == 1);
 }
 
 void TestNewPartAndSnap()
@@ -328,6 +435,8 @@ int main()
     TestHitLane();
     TestHitStrips();
     TestDrags();
+    TestLooks();
+    TestStepAndHeal();
     TestNewPartAndSnap();
     TestDouble();
     TestTipsAndCursors();

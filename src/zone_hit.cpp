@@ -7,7 +7,11 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <optional>
 #include <set>
+#include <string>
+#include <utility>
+#include <vector>
 
 #include "sound_entries.h"  // PartIndex
 
@@ -29,6 +33,84 @@ bool ZoneMine(const SoundData& d, const ZoneRef& r, int lane)
     const EditZone* z = ZoneOf(d, r);
     if (!z) return false;
     return lane < 0 || z->IsGap() || PartIndex(d, z->part) == lane;
+}
+
+std::vector<ZoneLook> ZoneLooks(const SoundData& d, const PeakView* peaks)
+{
+    const std::vector<ZoneRef> all = AllZones(d);
+    const size_t               n = all.size();
+    std::vector<const EditZone*> zs(n);
+    for (size_t i = 0; i < n; ++i) zs[i] = ZoneOf(d, all[i]);
+    auto touch = [](double x, double y) { return std::fabs(x - y) < kZoneTouch; };
+    std::vector<ZoneLook> out(n);
+    for (size_t i = 0; i < n; ++i) {
+        const EditZone& z = *zs[i];
+        ZoneLook&       L = out[i];
+        const EditZone* pv = i > 0 ? zs[i - 1] : nullptr;
+        const EditZone* nx = i + 1 < n ? zs[i + 1] : nullptr;
+        L.ref = all[i];
+        L.a = z.a;
+        L.b = z.b;
+        L.gap = z.IsGap();
+        L.butt_next = nx && touch(z.b, nx->a);
+        if (L.gap) {
+            L.xl = z.xl;
+            L.xr = z.xr;
+            // GapLeft / GapRight: the part zones of its own variation it touches (zones never overlap: the ones
+            // beside it in time order).
+            if (pv && !pv->IsGap() && all[i - 1].frame == all[i].frame && touch(pv->b, z.a)) {
+                L.left = all[i - 1];
+                L.li = static_cast<int>(i - 1);
+            }
+            if (nx && !nx->IsGap() && all[i + 1].frame == all[i].frame && touch(nx->a, z.b)) {
+                L.right = all[i + 1];
+                L.ri = static_cast<int>(i + 1);
+            }
+            continue;
+        }
+        L.k = PartIndex(d, z.part);
+        L.gain = std::pow(10.0, z.db / 20.0);
+        const EditZone* lg = pv && pv->IsGap() && touch(pv->b, z.a) ? pv : nullptr;  // GapBefore
+        const EditZone* rg = nx && nx->IsGap() && touch(nx->a, z.b) ? nx : nullptr;  // GapAfter
+        L.lg = lg != nullptr;
+        L.rg = rg != nullptr;
+        // ZoneFade, from the neighbours.
+        const double len = z.b - z.a;
+        auto fade = [&](int side) {
+            const bool   in = side < 0;
+            const double reach = in ? (rg ? rg->xr : 0.0) : (lg ? lg->xl : 0.0);  // GapReach(-side)
+            const double half = std::max(0.0, std::min(len / 2.0, len - reach));
+            if (const EditZone* g = in ? lg : rg) return g->xl + g->xr;
+            const std::optional<double>& own = in ? z.fade_in : z.fade_out;
+            if (own) return std::min(std::max(*own, 0.0), half);
+            const EditZone* nb = in ? pv : nx;
+            if (nb && (in ? touch(nb->b, z.a) : touch(z.b, nb->a))) return std::min(std::max(d.cut_fade, 0.0), half);
+            const PartSettings*         p = PartSettingsOf(d, z.part);
+            const std::optional<double> pf = p ? (in ? p->fade_in : p->fade_out) : std::nullopt;
+            if (pf) return std::min(std::max(*pf, 0.0), half);
+            return std::min(std::max(in ? d.fade_in : d.fade_out, 0.0), half);
+        };
+        L.fi_s = fade(-1);
+        L.fo_s = fade(1);
+        if (lg) {
+            L.lo = lg->b - lg->xr;
+            L.fin = lg->xl + lg->xr;
+        } else {
+            L.lo = z.a;
+            L.fin = L.fi_s;
+        }
+        if (rg) {
+            L.hi = rg->a + rg->xl;
+            L.fout = rg->xl + rg->xr;
+        } else {
+            L.hi = z.b;
+            L.fout = L.fo_s;
+        }
+        const ZoneSnapInfo sn = ZoneSnap(d, all[i], peaks);
+        L.snap = sn.t;
+        L.snap_own = sn.own;
+    }
+    return out;
 }
 
 ZoneHit HitZones(const SoundData& d, const ZoneHitView& v, float x, float y)
@@ -60,7 +142,9 @@ ZoneHit HitZones(const SoundData& d, const ZoneHitView& v, float x, float y)
         return h;
     }
     if (v.row == ZoneRow::Vars) {
-        for (const ZoneVarBlock& b : ZoneVarBlocks(d))
+        std::vector<ZoneVarBlock> own_blocks;
+        if (!v.blocks) own_blocks = ZoneVarBlocks(d);
+        for (const ZoneVarBlock& b : v.blocks ? *v.blocks : own_blocks)
             if (h.t >= b.a && h.t < b.b) {
                 h.kind = ZoneHitKind::Var;
                 h.var = b.frame;
@@ -77,98 +161,96 @@ ZoneHit HitZones(const SoundData& d, const ZoneHitView& v, float x, float y)
         return h;
     }
     // A lane.
-    std::vector<ZoneRef> parts, gaps;
-    const double         v1 = v.v0 + vl;
-    for (const ZoneRef& r : AllZones(d)) {
-        const EditZone& z = Z(d, r);
-        if (z.b < v.v0 || z.a > v1) continue;
-        if (z.IsGap()) gaps.push_back(r);
-        else if (ZoneMine(d, r, v.lane)) parts.push_back(r);
+    std::vector<ZoneLook> own_looks;
+    if (!v.looks) own_looks = ZoneLooks(d, v.peaks);
+    const std::vector<ZoneLook>& looks = v.looks ? *v.looks : own_looks;
+    auto mine = [&](const ZoneLook& L) { return v.lane < 0 || L.gap || L.k == v.lane; };
+    std::vector<const ZoneLook*> parts, gaps;
+    const double                 v1 = v.v0 + vl;
+    for (const ZoneLook& L : looks) {
+        if (L.b < v.v0 || L.a > v1) continue;
+        if (L.gap) gaps.push_back(&L);
+        else if (mine(L)) parts.push_back(&L);
     }
     if (y < 16.0f * dp) {
-        for (const ZoneRef& g : gaps) {
-            const EditZone& z = Z(d, g);
-            if (std::fabs(x - X(z.a + z.xl)) <= 5.0f * dp) {
+        for (const ZoneLook* g : gaps) {
+            if (std::fabs(x - X(g->a + g->xl)) <= 5.0f * dp) {
                 h.kind = ZoneHitKind::Xf;
-                h.z = g;
+                h.z = g->ref;
                 h.side = -1;
                 return h;
             }
-            if (std::fabs(x - X(z.b - z.xr)) <= 5.0f * dp) {
+            if (std::fabs(x - X(g->b - g->xr)) <= 5.0f * dp) {
                 h.kind = ZoneHitKind::Xf;
-                h.z = g;
+                h.z = g->ref;
                 h.side = 1;
                 return h;
             }
         }
-        for (const ZoneRef& r : parts) {
-            const EditZone& z = Z(d, r);
-            if (X(z.b) - X(z.a) <= 14.0f * dp) continue;
-            if (!Valid(d, GapBefore(d, r)) && std::fabs(x - X(z.a + ZoneFade(d, r, -1).s)) <= 5.0f * dp) {
+        for (const ZoneLook* L : parts) {
+            if (X(L->b) - X(L->a) <= 14.0f * dp) continue;
+            if (!L->lg && std::fabs(x - X(L->a + L->fi_s)) <= 5.0f * dp) {
                 h.kind = ZoneHitKind::Fade;
-                h.z = r;
+                h.z = L->ref;
                 h.side = -1;
                 return h;
             }
-            if (!Valid(d, GapAfter(d, r)) && std::fabs(x - X(z.b - ZoneFade(d, r, 1).s)) <= 5.0f * dp) {
+            if (!L->rg && std::fabs(x - X(L->b - L->fo_s)) <= 5.0f * dp) {
                 h.kind = ZoneHitKind::Fade;
-                h.z = r;
+                h.z = L->ref;
                 h.side = 1;
                 return h;
             }
         }
     }
     if (y >= 24.0f * dp && y <= 42.0f * dp)
-        for (const ZoneRef& r : parts)
-            if (std::fabs(x - X(ZoneSnap(d, r, v.peaks).t)) <= 6.0f * dp) {
+        for (const ZoneLook* L : parts)
+            if (std::fabs(x - X(L->snap)) <= 6.0f * dp) {
                 h.kind = ZoneHitKind::Snap;
-                h.z = r;
+                h.z = L->ref;
                 return h;
             }
     if (y > v.h - 16.0f * dp) {
-        const std::vector<ZoneRef> all = AllZones(d);
-        for (size_t i = 0; i + 1 < all.size(); ++i) {
-            const EditZone &a = Z(d, all[i]), &b = Z(d, all[i + 1]);
-            if (a.IsGap() || b.IsGap() || !Butted(d, all[i], all[i + 1])) continue;
-            if (!ZoneMine(d, all[i], v.lane) && !ZoneMine(d, all[i + 1], v.lane)) continue;
+        for (size_t i = 0; i + 1 < looks.size(); ++i) {
+            const ZoneLook &a = looks[i], &b = looks[i + 1];
+            if (a.gap || b.gap || !a.butt_next) continue;
+            if (!mine(a) && !mine(b)) continue;
             if (std::fabs(x - X(a.b)) <= 5.0f * dp) {
                 h.kind = ZoneHitKind::Cut;
-                h.z = all[i];
-                h.z2 = all[i + 1];
+                h.z = a.ref;
+                h.z2 = b.ref;
                 return h;
             }
         }
     }
-    for (const ZoneRef& g : gaps) {
-        const EditZone& z = Z(d, g);
-        if (std::fabs(x - X(z.a)) <= 4.0f * dp) {
+    for (const ZoneLook* g : gaps) {
+        if (std::fabs(x - X(g->a)) <= 4.0f * dp) {
             h.kind = ZoneHitKind::GapEdge;
-            h.z = g;
+            h.z = g->ref;
             h.side = -1;
             return h;
         }
-        if (std::fabs(x - X(z.b)) <= 4.0f * dp) {
+        if (std::fabs(x - X(g->b)) <= 4.0f * dp) {
             h.kind = ZoneHitKind::GapEdge;
-            h.z = g;
+            h.z = g->ref;
             h.side = 1;
             return h;
         }
     }
     struct Cand {
-        ZoneRef r;
-        int     side;
-        float   dist;
+        const ZoneLook* L;
+        int             side;
+        float           dist;
     };
     std::vector<Cand> cands;
-    for (const ZoneRef& r : parts) {
-        const EditZone& z = Z(d, r);
-        if (!Valid(d, GapBefore(d, r)) && std::fabs(x - X(z.a)) <= 5.0f * dp) cands.push_back({r, -1, std::fabs(x - X(z.a))});
-        if (!Valid(d, GapAfter(d, r)) && std::fabs(x - X(z.b)) <= 5.0f * dp) cands.push_back({r, 1, std::fabs(x - X(z.b))});
+    for (const ZoneLook* L : parts) {
+        if (!L->lg && std::fabs(x - X(L->a)) <= 5.0f * dp) cands.push_back({L, -1, std::fabs(x - X(L->a))});
+        if (!L->rg && std::fabs(x - X(L->b)) <= 5.0f * dp) cands.push_back({L, 1, std::fabs(x - X(L->b))});
     }
     if (!cands.empty()) {
         const Cand* pick = nullptr;
         for (const Cand& c : cands)
-            if (h.t >= Z(d, c.r).a && h.t < Z(d, c.r).b) {
+            if (h.t >= c.L->a && h.t < c.L->b) {
                 pick = &c;
                 break;
             }
@@ -178,7 +260,7 @@ ZoneHit HitZones(const SoundData& d, const ZoneHitView& v, float x, float y)
                 if (c.dist < pick->dist) pick = &c;
         }
         h.kind = ZoneHitKind::Edge;
-        h.z = pick->r;
+        h.z = pick->L->ref;
         h.side = pick->side;
         return h;
     }
@@ -192,15 +274,30 @@ ZoneHit HitZones(const SoundData& d, const ZoneHitView& v, float x, float y)
 
 ZoneDragKind PressDragKind(const ZoneHit& h, bool ctrl, bool alt)
 {
+    if (ZoneReservedOnMove(h, ctrl, alt)) return ZoneDragKind::Pending;  // the click, unless it moves
     switch (h.kind) {
     case ZoneHitKind::TselEdge: return ZoneDragKind::TselEdge;
-    case ZoneHitKind::Xf: return ctrl ? ZoneDragKind::Reserved : ZoneDragKind::Xf;
-    case ZoneHitKind::Edge: return ctrl || alt ? ZoneDragKind::Reserved : ZoneDragKind::Edge;
-    case ZoneHitKind::Cut: return ctrl || alt ? ZoneDragKind::Reserved : ZoneDragKind::Cut;
-    case ZoneHitKind::GapEdge: return ctrl || alt ? ZoneDragKind::Reserved : ZoneDragKind::GapEdge;
-    case ZoneHitKind::Fade: return ctrl || alt ? ZoneDragKind::Reserved : ZoneDragKind::Fade;
-    case ZoneHitKind::Snap: return ctrl || alt ? ZoneDragKind::Reserved : ZoneDragKind::Snap;
+    case ZoneHitKind::Xf: return ZoneDragKind::Xf;
+    case ZoneHitKind::Edge: return ZoneDragKind::Edge;
+    case ZoneHitKind::Cut: return ZoneDragKind::Cut;
+    case ZoneHitKind::GapEdge: return ZoneDragKind::GapEdge;
+    case ZoneHitKind::Fade: return ZoneDragKind::Fade;
+    case ZoneHitKind::Snap: return ZoneDragKind::Snap;
     default: return ZoneDragKind::Pending;
+    }
+}
+
+bool ZoneReservedOnMove(const ZoneHit& h, bool ctrl, bool alt)
+{
+    if (h.kind == ZoneHitKind::TselEdge) return false;  // the time selection's edge: like REAPER, no modifier
+    if (ctrl) return true;
+    switch (h.kind) {
+    case ZoneHitKind::Edge:
+    case ZoneHitKind::Cut:
+    case ZoneHitKind::GapEdge:
+    case ZoneHitKind::Fade:
+    case ZoneHitKind::Snap: return alt;
+    default: return false;
     }
 }
 
@@ -215,17 +312,31 @@ ZoneDragKind StartZoneDrag(const ZoneHit& h, bool shift, bool alt)
     return ZoneDragKind::Scrub;
 }
 
-bool PendingBecomesGain(const SoundData& d, const ZoneHit& h, float dx, float dy, bool shift, bool alt)
+bool PendingBecomesGain(const SoundData& d, const ZoneHit& h, float dx, float dy, bool shift, bool alt, float dp)
 {
     if (h.kind != ZoneHitKind::Zone || h.row != ZoneRow::Lane || shift || alt) return false;
     const EditZone* z = ZoneOf(d, h.z);
     if (!z || z->IsGap()) return false;
-    return std::fabs(dy) > 3.0f && std::fabs(dy) > std::fabs(dx);
+    return std::fabs(dy) > 3.0f * (dp > 0.0f ? dp : 1.0f) && std::fabs(dy) > std::fabs(dx);
 }
 
 double GainDragDb(float dy_px)
 {
     return std::round(static_cast<double>(-dy_px)) / 10.0;
+}
+
+std::string ZoneGainToast(const std::string& zone_name, const std::string& part_name, double db, double fader_db)
+{
+    // The mockup's sgn(): "+" then the number as JavaScript prints it (one decimal at most here: "+1", "+1.5", "0").
+    const double f = std::round(fader_db * 10.0) / 10.0;
+    char         num[32];
+    std::snprintf(num, sizeof(num), "%.1f", f == 0.0 ? 0.0 : f);
+    std::string fs = num;
+    if (fs.size() > 2 && fs.compare(fs.size() - 2, 2, ".0") == 0) fs.resize(fs.size() - 2);
+    char tot[32];
+    const double r = std::round(db * 10.0) / 10.0;
+    std::snprintf(tot, sizeof(tot), "%.1f", r == 0.0 ? 0.0 : r);
+    return zone_name + " gain: " + ZoneDbText(db) + " (+ " + part_name + " fader " + (f > 0.0 ? "+" : "") + fs + " dB = " + tot + " dB)";
 }
 
 std::string NewZonePart(const SoundData& d, const ZoneHit& h, const std::string& part_sel)
@@ -402,6 +513,71 @@ std::vector<int> SelFrames(const ZoneSel& sel)
     for (const ZoneRef& r : sel)
         if (r.frame >= 0) s.insert(r.frame);
     return std::vector<int>(s.begin(), s.end());
+}
+
+int ZoneStepBlock(const std::vector<ZoneVarBlock>& blocks, double ref, int dir)
+{
+    if (blocks.empty() || dir == 0) return -1;
+    const int n = static_cast<int>(blocks.size());
+    int       i = -1;
+    for (int j = 0; j < n; ++j)
+        if (ref >= blocks[static_cast<size_t>(j)].a && ref < blocks[static_cast<size_t>(j)].b) {
+            i = j;
+            break;
+        }
+    if (i >= 0) {
+        i += dir > 0 ? 1 : -1;
+    } else if (dir > 0) {
+        for (int j = 0; j < n && i < 0; ++j)
+            if (blocks[static_cast<size_t>(j)].a > ref) i = j;
+    } else {
+        for (int j = 0; j < n; ++j)
+            if (blocks[static_cast<size_t>(j)].b <= ref) i = j;
+    }
+    return i >= 0 && i < n ? i : -1;
+}
+
+double ZoneStepRef(const SoundData& d, const ZoneSel& sel, double cursor)
+{
+    for (const ZoneRef& r : sel)
+        if (const EditZone* z = ZoneOf(d, r)) return (z->a + z->b) / 2.0;
+    return cursor < 0.0 ? -1.0 : cursor;
+}
+
+int HealCutCount(const SoundData& d, const ZoneSel& sel)
+{
+    // HealZones' plan, played on the edges: each pair edge to edge merges the right one into the zone healed so
+    // far; a Gap absorbed then the zone after it is one cut healed, not two.
+    struct It {
+        double a, b;
+        bool   gap, alive;
+    };
+    std::vector<It> L;
+    for (const ZoneRef& r : SelSorted(d, SelValid(d, sel))) {
+        const EditZone& z = Z(d, r);
+        L.push_back({z.a, z.b, z.IsGap(), true});
+    }
+    auto butted = [&](size_t x, size_t y) { return std::fabs(L[x].b - L[y].a) < kZoneTouch; };
+    std::vector<std::pair<size_t, size_t>> plan;
+    for (size_t i = 0; i + 1 < L.size(); ++i)
+        if (butted(i, i + 1)) plan.push_back({i, i + 1});
+    int  n = 0, head = -1, last_into = -1;
+    bool last_gap = false;
+    for (const auto& xy : plan) {
+        const size_t x = xy.first, y = xy.second;
+        if (!L[y].alive) continue;
+        int into = -1;
+        if (head >= 0 && butted(static_cast<size_t>(head), y)) into = head;
+        else if (L[x].alive && !L[x].gap) into = static_cast<int>(x);
+        if (into < 0) continue;
+        L[static_cast<size_t>(into)].b = L[y].b;
+        L[y].alive = false;
+        if (!(last_gap && into == last_into && !L[y].gap)) ++n;  // the zone after an absorbed Gap: same cut
+        last_gap = L[y].gap;
+        last_into = into;
+        head = into;
+    }
+    return n;
 }
 
 bool SelHas(const ZoneSel& sel, const ZoneRef& r)

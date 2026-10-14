@@ -20,6 +20,31 @@ namespace rav {
 // The rows of the zone waveform: the ruler, the Variations strip, the Placed strip (Lane only), a lane.
 enum class ZoneRow { Ruler, Vars, Placed, Lane };
 
+// What a lane draws and hits of one zone (AllZones order), computed once per change of the Sound (ZoneLooks): a
+// part zone's envelope (rise from lo over fin, fall to hi over fout: a Gap's crossfade, else its fades), its gain,
+// its fades as drawn, its snap; a Gap's crossfade and its neighbours.
+struct ZoneLook {
+    ZoneRef ref;
+    double  a = 0.0, b = 0.0;
+    bool    gap = false;
+    int     k = -1;  // its part's index
+    double  lo = 0.0, hi = 0.0, fin = 0.0, fout = 0.0;
+    double  gain = 1.0;
+    bool    lg = false, rg = false;  // a Gap before / after it (GapBefore / GapAfter)
+    ZoneRef left, right;             // a Gap: its neighbours (GapLeft / GapRight)
+    int     li = -1, ri = -1;        // ... their index in the looks
+    double  xl = 0.0, xr = 0.0;      // a Gap: its crossfade sides
+    double  fi_s = 0.0, fo_s = 0.0;  // its fades as drawn (ZoneFade, s)
+    double  snap = 0.0;              // ZoneSnap
+    bool    snap_own = false;
+    bool    butt_next = false;       // the next zone starts where it ends (Butted)
+};
+// Every zone's look from one AllZones list (neighbours by index; the same values as GapBefore / GapAfter /
+// GapLeft / GapRight / ZoneFade / ZoneSnap).
+std::vector<ZoneLook> ZoneLooks(const SoundData& d, const PeakView* peaks);
+
+struct ZoneVarBlock;
+
 // What a row shows and where (pixels local to the row; `dp` = one logical pixel on screen).
 struct ZoneHitView {
     double          v0 = 0.0, vl = 1.0;   // the view: source seconds
@@ -31,6 +56,9 @@ struct ZoneHitView {
     double          file_len = 0.0;       // 0 = unknown
     const PeakView* peaks = nullptr;      // the snap tags' place (ZoneSnap)
     float           dp = 1.0f;
+    // The caller's cached ZoneLooks / ZoneVarBlocks of the Sound (null: computed here).
+    const std::vector<ZoneLook>*     looks = nullptr;
+    const std::vector<ZoneVarBlock>* blocks = nullptr;
 };
 
 enum class ZoneHitKind { None, Ruler, TselEdge, Var, Pick, Xf, Fade, Snap, Cut, GapEdge, Edge, Zone, Grey };
@@ -58,17 +86,24 @@ enum class ZoneDragKind {
     None, Pending, Reserved, Tsel, TselEdge, MkGap, MkZone, Swipe, Move, Scrub, Gain,
     Edge, Cut, GapEdge, Fade, Snap, Xf
 };
-// At the press: a handle drags at once (TselEdge, Edge, Cut, GapEdge, Fade, Snap, Xf); Ctrl+drag of anything and
-// Alt+drag of a handle (but a Gap's crossfade, where Alt = one side) are reserved (nothing); else Pending.
+// At the press: a handle drags at once (TselEdge, Edge, Cut, GapEdge, Fade, Snap, Xf); else Pending. With Ctrl,
+// or Alt on a handle (but a Gap's crossfade, where Alt = one side), it is Pending too: released unmoved it is the
+// click (Ctrl adds / removes), moved it is reserved (ZoneReservedOnMove: nothing).
 ZoneDragKind PressDragKind(const ZoneHit& h, bool ctrl, bool alt);
+// Whether a Pending press does nothing once it moves: Ctrl+drag of anything, Alt+drag of a handle but a crossfade.
+bool ZoneReservedOnMove(const ZoneHit& h, bool ctrl, bool alt);
 // A Pending press moved sideways past 4 px (the mockup's startDrag): the ruler a time selection, Alt a Gap,
 // Shift a new zone, a greyed zone a swipe, a zone's (or a Gap's) top half a move; else the cursor (scrub). The
 // Variations and Placed strips: nothing.
 ZoneDragKind StartZoneDrag(const ZoneHit& h, bool shift, bool alt);
-// A Pending press on a part zone moved more vertically than sideways past 3 px (no Shift / Alt): its gain.
-bool PendingBecomesGain(const SoundData& d, const ZoneHit& h, float dx, float dy, bool shift, bool alt);
-// The gain a vertical drag of dy px gives (0.1 dB per px, up = louder).
+// A Pending press on a part zone moved more vertically than sideways past 3 logical px (`dp` = one on screen; no
+// Shift / Alt): its gain.
+bool PendingBecomesGain(const SoundData& d, const ZoneHit& h, float dx, float dy, bool shift, bool alt, float dp = 1.0f);
+// The gain a vertical drag of dy logical px gives (0.1 dB per px, up = louder).
 double GainDragDb(float dy_px);
+// The single zone gain drag's toast (the mockup's): "Heel gain: +2.0 dB (+ Heel fader +1 dB = 2.0 dB)" -- the
+// fader is what it has applied to the zone's own gain (never added on top).
+std::string ZoneGainToast(const std::string& zone_name, const std::string& part_name, double db, double fader_db);
 
 // The part a Shift+drag makes: Lane = the lane's part; Combined = `part_sel` (Settings of) when it is a part,
 // else the part of the zone under the start, else the first part.
@@ -113,6 +148,14 @@ ZoneSel ZonesOfFrame(const SoundData& d, int frame);
 ZoneRef FirstZoneOf(const SoundData& d, int frame);
 // The frames a selection touches (once each, ascending).
 std::vector<int> SelFrames(const ZoneSel& sel);
+// Next (+1) / previous (-1) variation (the mockup's stepVariation, over the Variations strip's blocks): from the
+// one holding `ref` (the selected zone's middle, else the edit cursor; < 0 = none), else the first one after it /
+// the last one before it. The block's index, -1 when there is none that way.
+int ZoneStepBlock(const std::vector<ZoneVarBlock>& blocks, double ref, int dir);
+// The step's reference: the middle of the selection's first zone, else `cursor`.
+double ZoneStepRef(const SoundData& d, const ZoneSel& sel, double cursor);
+// How many cuts healing `sel` removes: each pair of selected zones edge to edge, a selected Gap counted once.
+int HealCutCount(const SoundData& d, const ZoneSel& sel);
 
 // Selection helpers (view state: refs into the Sound's zones).
 bool    SelHas(const ZoneSel& sel, const ZoneRef& r);

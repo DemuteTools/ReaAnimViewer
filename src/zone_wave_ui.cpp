@@ -8,6 +8,7 @@
 #ifdef _WIN32
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <memory>
@@ -20,6 +21,7 @@
 #include "sound_audition.h"
 #include "sound_entries.h"
 #include "sound_peaks.h"
+#include "sound_project.h"  // SoundStoreGeneration
 #include "ui_flow.h"
 #include "ui_theme.h"
 #include "wave_tiles_plan.h"
@@ -89,12 +91,15 @@ void TextAt(ImDrawList* dl, ImFont* f, float x, float baseline, ImU32 col, const
 
 float TextW(ImFont* f, const std::string& s) { return ui::TextSizeIn(f, s.c_str()).x; }
 
-// The file's peaks, read once per frame.
+// The file's peaks: copied once when they become Ready (or the file they were read from changed), then kept; each
+// frame only asks whether they still are. `rev` moves with each copy (the looks' cache key).
 struct PeakCache {
     int         frame = -1;
     std::string path;
     bool        ok = false;
+    FileVersion file;
     PeakData    pk;
+    uint64_t    rev = 0;
 };
 PeakCache g_pk;
 
@@ -103,8 +108,20 @@ const PeakView* PeaksOf(const std::string& path)
     const int f = ImGui::GetFrameCount();
     if (g_pk.frame != f || g_pk.path != path) {
         g_pk.frame = f;
-        g_pk.path = path;
-        g_pk.ok = !path.empty() && RequestPeaks(path, &g_pk.pk) == PeakState::Ready;
+        const bool ready = !path.empty() && RequestPeaks(path, nullptr) == PeakState::Ready;
+        if (!ready) {
+            if (g_pk.ok || g_pk.path != path) ++g_pk.rev;
+            g_pk.ok = false;
+            g_pk.path = path;
+        } else {
+            const FileVersion fv = PeaksFileVersion(path);
+            if (!g_pk.ok || g_pk.path != path || fv != g_pk.file) {
+                g_pk.ok = RequestPeaks(path, &g_pk.pk) == PeakState::Ready;
+                g_pk.file = fv;
+                g_pk.path = path;
+                ++g_pk.rev;
+            }
+        }
     }
     return g_pk.ok ? &g_pk.pk : nullptr;
 }
@@ -142,6 +159,19 @@ std::string KeyHint(int id, const char* fallback)
 
 // ---- writes ---------------------------------------------------------------------------------------------------
 
+// One of our writes is on its way: the store generation it moves is not an outside change (FollowOutside).
+void MarkOwn(ZoneEditView& v)
+{
+    v.own_pending = true;
+    v.own_frame = ImGui::GetFrameCount();
+}
+
+void Commit(const ZoneWaveHost& h, const std::string& name, const std::string& toast)
+{
+    MarkOwn(*h.view);
+    h.commit(name, toast);
+}
+
 // One zone gesture: f(data, ctx, sel_out) -> changed. It runs first on a copy of the stored Sound (nothing changed:
 // false, no undo point; the caller toasts why), then once as the write (one undo point). The selection follows: the
 // gesture's own (`own_sel`) or the zones carried over (SelFollow).
@@ -159,6 +189,7 @@ bool Write(const ZoneWaveHost& h, const std::string& name, const ZoneFn& f, cons
     const std::string msg = toast ? toast(probe, out) : name;
     const std::string path = h.path;
     const double      len = h.file_len;
+    MarkOwn(v);
     h.edit(name, [f, path, len](SoundData& x) {
         PeakData   pk;
         const bool has = !path.empty() && RequestPeaks(path, &pk) == PeakState::Ready;
@@ -241,13 +272,12 @@ void SetTsel(const ZoneWaveHost& h, double a, double b, const std::string& toast
 {
     ZoneEditView& v = *h.view;
     if (b < a) std::swap(a, b);
-    v.has_tsel = b - a > 0.002;
-    if (v.has_tsel) {
-        v.ts_a = a;
-        v.ts_b = b;
-        *h.cursor = a;  // Antho 2026-10-14: the cursor goes to its start
-        if (!toast.empty()) ShowLibraryToast(toast, false);
-    }
+    if (b - a <= 0.002) return;  // too short: the time selection there stays as it was
+    v.has_tsel = true;
+    v.ts_a = a;
+    v.ts_b = b;
+    *h.cursor = a;  // Antho 2026-10-14: the cursor goes to its start
+    if (!toast.empty()) ShowLibraryToast(toast, false);
 }
 
 // A variation's zones selected (Ctrl / Shift adds them).
@@ -390,21 +420,6 @@ struct Row {
     float   y0 = 0.0f, y1 = 0.0f;
 };
 
-// What a lane draws of a part zone: its envelope (rise from lo over fin, fall to hi over fout, as ZoneEnv), gain.
-struct ZoneLook {
-    ZoneRef ref;
-    double  a = 0.0, b = 0.0;
-    bool    gap = false;
-    int     k = -1;  // its part's index
-    double  lo = 0.0, hi = 0.0, fin = 0.0, fout = 0.0;
-    double  gain = 1.0;
-    bool    lg = false, rg = false;  // a Gap before / after it
-    ZoneRef left, right;             // a Gap: its neighbours
-    double  fi_s = 0.0, fo_s = 0.0;  // its fades as drawn (s)
-    double  snap = 0.0;
-    bool    snap_own = false;
-};
-
 double EnvOf(const ZoneLook& z, double t)
 {
     if (z.gap || t < z.lo || t >= z.hi) return 0.0;
@@ -414,57 +429,37 @@ double EnvOf(const ZoneLook& z, double t)
     return Clamp(g, 0.0, 1.0);
 }
 
-std::vector<ZoneLook> LooksOf(const SoundData& d, const PeakView* peaks)
-{
-    std::vector<ZoneLook> out;
-    for (const ZoneRef& r : AllZones(d)) {
-        const EditZone& z = *ZoneOf(d, r);
-        ZoneLook        L;
-        L.ref = r;
-        L.a = z.a;
-        L.b = z.b;
-        L.gap = z.IsGap();
-        if (L.gap) {
-            L.left = GapLeft(d, r);
-            L.right = GapRight(d, r);
-            out.push_back(L);
-            continue;
-        }
-        L.k = PartIndex(d, z.part);
-        L.gain = std::pow(10.0, z.db / 20.0);
-        const EditZone* lg = ZoneOf(d, GapBefore(d, r));
-        const EditZone* rg = ZoneOf(d, GapAfter(d, r));
-        L.lg = lg != nullptr;
-        L.rg = rg != nullptr;
-        L.fi_s = ZoneFade(d, r, -1).s;
-        L.fo_s = ZoneFade(d, r, 1).s;
-        if (lg) {
-            L.lo = lg->b - lg->xr;
-            L.fin = lg->xl + lg->xr;
-        } else {
-            L.lo = z.a;
-            L.fin = L.fi_s;
-        }
-        if (rg) {
-            L.hi = rg->a + rg->xl;
-            L.fout = rg->xl + rg->xr;
-        } else {
-            L.hi = z.b;
-            L.fout = L.fo_s;
-        }
-        const ZoneSnapInfo sn = ZoneSnap(d, r, peaks);
-        L.snap = sn.t;
-        L.snap_own = sn.own;
-        out.push_back(L);
-    }
-    return out;
-}
+// The looks of the Sound shown and its Variations strip, computed once per change: the store's generation, the
+// peaks copied, the Sound; while a live draft shows (a drag) at each call.
+struct LookCache {
+    bool                      valid = false, live = false;
+    std::string               uid;
+    uint64_t                  gen = 0, peaks_rev = 0;
+    std::vector<ZoneLook>     looks;
+    std::vector<ZoneVarBlock> blocks;
+    std::vector<ZoneSel>      by_frame;  // each frame's zones (time order)
+};
+LookCache g_lc;
 
-const ZoneLook* LookOf(const std::vector<ZoneLook>& looks, const ZoneRef& r)
+const LookCache& LooksNow(const ZoneWaveHost& h)
 {
-    for (const ZoneLook& L : looks)
-        if (L.ref == r) return &L;
-    return nullptr;
+    const PeakView* pk = PeaksOf(h.path);
+    const bool      live = h.live_now();
+    const uint64_t  gen = SoundStoreGeneration();
+    if (g_lc.valid && !live && !g_lc.live && g_lc.uid == h.node->uid && g_lc.gen == gen && g_lc.peaks_rev == g_pk.rev)
+        return g_lc;
+    const SoundData& d = Shown(h);
+    g_lc.looks = ZoneLooks(d, pk);
+    g_lc.blocks = ZoneVarBlocks(d);
+    g_lc.by_frame.assign(d.frames.size(), ZoneSel{});
+    for (const ZoneLook& L : g_lc.looks)
+        if (L.ref.frame >= 0 && static_cast<size_t>(L.ref.frame) < g_lc.by_frame.size()) g_lc.by_frame[static_cast<size_t>(L.ref.frame)].push_back(L.ref);
+    g_lc.valid = true;
+    g_lc.live = live;
+    g_lc.uid = h.node->uid;
+    g_lc.gen = gen;
+    g_lc.peaks_rev = g_pk.rev;
+    return g_lc;
 }
 
 // The peaks' series drawn (the Sound's mono, else every channel).
@@ -487,13 +482,14 @@ struct Frame {
     ImDrawList*           dl = nullptr;
     float                 cx0 = 0.0f, cw = 1.0f;  // the canvas' left edge and width
     double                v0 = 0.0, vl = 1.0;
-    std::vector<ZoneLook> looks;
+    const LookCache*      lc = nullptr;
     std::vector<HeardHead> heads;
     float                 dp = 1.0f;
     const PeakView*       peaks = nullptr;
     WaveColumns           wc;
     bool                  have_cols = false;
     int                   series = kWaveAll;
+    const std::vector<ZoneLook>& Looks() const { return lc->looks; }
     float X(double t) const { return cx0 + static_cast<float>((t - v0) / vl * cw); }
     double T(float x) const { return v0 + static_cast<double>(x - cx0) / cw * vl; }
 };
@@ -579,11 +575,12 @@ void DrawVars(const Frame& F, float y0, float y1)
     dl->AddLine(ImVec2(F.cx0, y0 + 0.5f), ImVec2(F.cx0 + F.cw, y0 + 0.5f), ui::kStroke);
     ImFont* f = ui::FontCaptionBold();
     int     i = 0;
-    for (const ZoneVarBlock& b : ZoneVarBlocks(*F.d)) {
+    for (const ZoneVarBlock& b : F.lc->blocks) {
         ++i;
         const float xa = F.X(b.a), xb = F.X(b.b);
         if (xb < F.cx0 || xa > F.cx0 + F.cw) continue;
-        const ZoneSel zs = ZonesOfFrame(*F.d, b.frame);
+        static const ZoneSel kNone;
+        const ZoneSel& zs = b.frame >= 0 && static_cast<size_t>(b.frame) < F.lc->by_frame.size() ? F.lc->by_frame[static_cast<size_t>(b.frame)] : kNone;
         bool          all = !zs.empty();
         for (const ZoneRef& r : zs) all = all && SelHas(v.sel, r);
         const bool hot = v.hover_on && v.hover.row == ZoneRow::Vars && v.hover.kind == ZoneHitKind::Var && v.hover.var == b.frame;
@@ -605,7 +602,7 @@ void DrawPlaced(const Frame& F, float y0, float y1)
     ImDrawList*         dl = F.dl;
     const ZoneWaveHost& h = *F.h;
     dl->AddRectFilled(ImVec2(F.cx0, y0), ImVec2(F.cx0 + F.cw, y1), ui::kSurface);
-    for (const ZoneLook& z : F.looks) {
+    for (const ZoneLook& z : F.Looks()) {
         const float xa = F.X(z.a), xb = F.X(z.b);
         if (xb < F.cx0 || xa > F.cx0 + F.cw) continue;
         if (z.gap) {
@@ -622,7 +619,15 @@ void DrawPlaced(const Frame& F, float y0, float y1)
     DrawOverlays(F, y0, y1, true);
 }
 
-bool Mine(const SoundData& d, const ZoneLook& z, int lane)
+// A Gap's two neighbours' looks (null when missing).
+std::array<const ZoneLook*, 2> GapSides(const Frame& F, const ZoneLook& g)
+{
+    const std::vector<ZoneLook>& L = F.Looks();
+    auto at = [&](int i) { return i >= 0 && static_cast<size_t>(i) < L.size() ? &L[static_cast<size_t>(i)] : nullptr; };
+    return {at(g.li), at(g.ri)};
+}
+
+bool Mine(const ZoneLook& z, int lane)
 {
     return lane < 0 || z.gap || z.k == lane;
 }
@@ -645,10 +650,10 @@ void DrawLane(const Frame& F, const Row& row)
     dl->AddLine(ImVec2(left, mid + 0.5f), ImVec2(right, mid + 0.5f), ui::kStroke);
     const double v1 = F.v0 + F.vl;
     // Bodies.
-    for (const ZoneLook& z : F.looks) {
+    for (const ZoneLook& z : F.Looks()) {
         if (z.gap || z.b < F.v0 || z.a > v1) continue;
         const float xa = F.X(z.a), xb = F.X(z.b);
-        if (Mine(d, z, lane)) {
+        if (Mine(z, lane)) {
             dl->AddRectFilled(ImVec2(xa, y0), ImVec2(xb, y1), Alpha(PartColOf(h, d, ZoneOf(d, z.ref)->part), 0.1f));
         } else {
             DashedRect(dl, ImVec2(xa + 0.5f, y0 + 0.5f), ImVec2(xb - 0.5f, y1 - 0.5f), Alpha(kGapCol, 0.35f), 3.0f * dp, 3.0f * dp);
@@ -669,9 +674,9 @@ void DrawLane(const Frame& F, const Row& row)
         };
         size_t zi = 0;
         auto   zone_at = [&](double t) -> const ZoneLook* {
-            while (zi < F.looks.size() && F.looks[zi].b <= t) ++zi;
-            for (size_t k = zi; k < F.looks.size() && F.looks[k].a <= t; ++k)
-                if (t >= F.looks[k].a && t < F.looks[k].b) return &F.looks[k];
+            while (zi < F.Looks().size() && F.Looks()[zi].b <= t) ++zi;
+            for (size_t k = zi; k < F.Looks().size() && F.Looks()[k].a <= t; ++k)
+                if (t >= F.Looks()[k].a && t < F.Looks()[k].b) return &F.Looks()[k];
             return nullptr;
         };
         auto column = [&](float x, double t, float lo, float hi) {
@@ -682,16 +687,15 @@ void DrawLane(const Frame& F, const Row& row)
             }
             if (z->gap) {
                 bar(x, lo, hi, kGapCol, 0.2f, 1.0, 1.0);
-                for (const ZoneRef& q : {z->left, z->right}) {
-                    const ZoneLook* L = LookOf(F.looks, q);
-                    if (!L || !Mine(d, *L, lane)) continue;
+                for (const ZoneLook* L : GapSides(F, *z)) {
+                    if (!L || !Mine(*L, lane)) continue;
                     const double e = EnvOf(*L, t);
-                    const std::string& part = ZoneOf(d, q)->part;
+                    const std::string& part = ZoneOf(d, L->ref)->part;
                     if (e > 0.001) bar(x, lo, hi, PartColOf(h, d, part), PartHeardNow(h, part) ? 0.92f : 0.28f, e, L->gain);
                 }
                 return;
             }
-            if (Mine(d, *z, lane)) {
+            if (Mine(*z, lane)) {
                 const double       e = EnvOf(*z, t);
                 const std::string& part = ZoneOf(d, z->ref)->part;
                 if (e < 0.999) bar(x, lo, hi, kGapCol, 0.14f, 1.0, z->gain);
@@ -705,19 +709,31 @@ void DrawLane(const Frame& F, const Row& row)
             // A pixel shorter than a sample: the samples joined by a line, each segment coloured as its column.
             for (size_t i = 0; i + 1 < wc.pt_x.size(); ++i) {
                 const float  xa = F.cx0 + static_cast<float>(wc.pt_x[i]), xb = F.cx0 + static_cast<float>(wc.pt_x[i + 1]);
-                const double t = F.T((xa + xb) * 0.5f);
-                zi = 0;
+                const double t = F.T((xa + xb) * 0.5f);  // grows with i: zone_at walks on
                 const ZoneLook* z = zone_at(t);
-                ImU32           col = Alpha(kGapCol, 0.5f);
-                double          g = 1.0;
-                if (z && !z->gap && Mine(d, *z, lane)) {
+                auto seg = [&](ImU32 col, double g) {
+                    const float ya = mid - static_cast<float>(Clamp(wc.pt_v[F.series][i] * g, -1.0, 1.0)) * hh;
+                    const float yb = mid - static_cast<float>(Clamp(wc.pt_v[F.series][i + 1] * g, -1.0, 1.0)) * hh;
+                    dl->AddLine(ImVec2(xa, ya), ImVec2(xb, yb), col);
+                };
+                if (z && z->gap) {  // as the columns: the file grey, each crossfading neighbour of this lane on it
+                    seg(Alpha(kGapCol, 0.5f), 1.0);
+                    for (const ZoneLook* L : GapSides(F, *z)) {
+                        if (!L || !Mine(*L, lane)) continue;
+                        const double e = EnvOf(*L, t);
+                        const std::string& part = ZoneOf(d, L->ref)->part;
+                        if (e > 0.001) seg(Alpha(PartColOf(h, d, part), PartHeardNow(h, part) ? 0.92f : 0.28f), L->gain * e);
+                    }
+                    continue;
+                }
+                ImU32  col = Alpha(kGapCol, 0.5f);
+                double g = 1.0;
+                if (z && Mine(*z, lane)) {
                     const std::string& part = ZoneOf(d, z->ref)->part;
                     col = Alpha(PartColOf(h, d, part), PartHeardNow(h, part) ? 0.92f : 0.28f);
                     g = z->gain * EnvOf(*z, t);
                 }
-                const float ya = mid - static_cast<float>(Clamp(wc.pt_v[F.series][i] * g, -1.0, 1.0)) * hh;
-                const float yb = mid - static_cast<float>(Clamp(wc.pt_v[F.series][i + 1] * g, -1.0, 1.0)) * hh;
-                dl->AddLine(ImVec2(xa, ya), ImVec2(xb, yb), col);
+                seg(col, g);
             }
         } else {
             for (int i = 0; i < wc.columns; ++i) {
@@ -730,7 +746,7 @@ void DrawLane(const Frame& F, const Row& row)
     }
     ImFont* fb = ui::FontCaptionBold();
     // Gaps: hatched on every lane, their crossfade lines and two square handles.
-    for (const ZoneLook& z : F.looks) {
+    for (const ZoneLook& z : F.Looks()) {
         if (!z.gap || z.b < F.v0 || z.a > v1) continue;
         const EditZone& g = *ZoneOf(d, z.ref);
         const float     ha = F.X(z.a), hb = F.X(z.b);
@@ -763,8 +779,8 @@ void DrawLane(const Frame& F, const Row& row)
     }
     // Zones: borders, fades, labels, hand marks, snap offsets.
     const bool gain_drag = v.drag.kind == ZoneDragKind::Gain;
-    for (const ZoneLook& z : F.looks) {
-        if (z.gap || z.b < F.v0 || z.a > v1 || !Mine(d, z, lane)) continue;
+    for (const ZoneLook& z : F.Looks()) {
+        if (z.gap || z.b < F.v0 || z.a > v1 || !Mine(z, lane)) continue;
         const EditZone&   ez = *ZoneOf(d, z.ref);
         const ImU32       pc = PartColOf(h, d, ez.part);
         const std::string pname = PartNameOf(h, ez.part);
@@ -836,9 +852,9 @@ void DrawLane(const Frame& F, const Row& row)
         }
     }
     // Cuts between two zones edge to edge: a grab at the bottom.
-    for (size_t i = 0; i + 1 < F.looks.size(); ++i) {
-        const ZoneLook &x = F.looks[i], &y = F.looks[i + 1];
-        if (x.gap || y.gap || std::fabs(x.b - y.a) >= kZoneTouch || !(Mine(d, x, lane) || Mine(d, y, lane))) continue;
+    for (size_t i = 0; i + 1 < F.Looks().size(); ++i) {
+        const ZoneLook &x = F.Looks()[i], &y = F.Looks()[i + 1];
+        if (x.gap || y.gap || std::fabs(x.b - y.a) >= kZoneTouch || !(Mine(x, lane) || Mine(y, lane))) continue;
         const float cx = std::round(F.X(x.b)) + 0.5f;
         const bool  hot = (v.hover_on && v.hover.kind == ZoneHitKind::Cut && v.hover.z == x.ref && v.hover.lane == lane) ||
                          (v.drag.kind == ZoneDragKind::Cut && v.drag.hit.z == x.ref);
@@ -892,11 +908,11 @@ void DragMove(const ZoneWaveHost& h, double t, float dx, float dy, double px_per
     ZoneDrag&     g = v.drag;
     const float   dp = ui::Dp(1.0f);
     if (g.kind == ZoneDragKind::Pending) {
-        if (g.ctrl) {  // reserved: Ctrl+drag
+        if (ZoneReservedOnMove(g.hit, g.ctrl, g.alt)) {  // reserved: Ctrl+drag, Alt+drag of a handle (unmoved: the click)
             if (std::fabs(dx) > 4.0f * dp || std::fabs(dy) > 4.0f * dp) g.kind = ZoneDragKind::Reserved;
             return;
         }
-        if (PendingBecomesGain(Stored(h), g.hit, dx, dy, g.shift, g.alt)) {
+        if (PendingBecomesGain(Stored(h), g.hit, dx, dy, g.shift, g.alt, dp)) {
             g.kind = ZoneDragKind::Gain;
             g.sel.clear();
             if (SelHas(v.sel, g.hit.z))
@@ -922,7 +938,7 @@ void DragMove(const ZoneWaveHost& h, double t, float dx, float dy, double px_per
     switch (g.kind) {
     case ZoneDragKind::Gain: {
         g.moved = true;
-        g.value = GainDragDb(dy);
+        g.value = GainDragDb(dy / dp);  // 0.1 dB per logical px
         SoundData& dr = h.live();
         g.changed = ShiftZonesDb(dr, g.sel, g.value, {}, c, &(g.after = v.sel));
         return;
@@ -950,7 +966,7 @@ void DragMove(const ZoneWaveHost& h, double t, float dx, float dy, double px_per
     }
     case ZoneDragKind::Snap: g.changed = SetZoneSnap(h.live(), g.hit.z, t, c, &(g.after = {g.hit.z})); return;
     case ZoneDragKind::Xf:
-        g.changed = DragGapXfade(h.live(), g.hit.z, g.hit.side, t, !ImGui::GetIO().KeyAlt, c, &(g.after = {g.hit.z}));
+        g.changed = DragGapXfade(h.live(), g.hit.z, g.hit.side, t, !g.alt, c, &(g.after = {g.hit.z}));
         return;
     case ZoneDragKind::Scrub:
         g.moved = true;
@@ -1024,7 +1040,7 @@ void DragRelease(const ZoneWaveHost& h, double px_per_s)
         }
         }
         v.sel = SelValid(dr, g.after);  // the zone dragged, re-resolved by its gesture
-        h.commit(name, toast);
+        Commit(h, name, toast);
         return;
     }
     switch (g.kind) {
@@ -1039,6 +1055,10 @@ void DragRelease(const ZoneWaveHost& h, double px_per_s)
     case ZoneDragKind::Tsel: {
         const double a = SnapZoneTime(Shown(h), std::min(g.t0, g.t1), px_per_s, *h.cursor, 6.0f * dp);
         const double b = SnapZoneTime(Shown(h), std::max(g.t0, g.t1), px_per_s, *h.cursor, 6.0f * dp);
+        if (b - a <= 0.002) {  // as good as a click: the cursor there, the time selection kept
+            *h.cursor = g.hit.t;
+            return;
+        }
         SetTsel(h, a, b, "Time selection " + ZoneRangeMs(a, b) + ": playback stays inside it" + (v.loop ? " (Loop: repeats)" : ""));
         return;
     }
@@ -1051,11 +1071,14 @@ void DragRelease(const ZoneWaveHost& h, double px_per_s)
         if (g.sel.size() > 1) {
             toast = std::to_string(g.sel.size()) + " zones: " + Signed(g.value) + " dB each (their own gain)";
         } else {
-            const EditZone* z = ZoneOf(Shown(h), g.sel.front());
-            toast = NameOfZone(h, Shown(h), g.sel.front()) + " gain: " + (z ? ZoneDbText(z->db) : std::string());
+            const EditZone*     z = ZoneOf(Shown(h), g.sel.front());
+            const PartSettings* ps = z ? PartSettingsOf(Shown(h), z->part) : nullptr;
+            toast = z ? ZoneGainToast(NameOfZone(h, Shown(h), g.sel.front()), PartNameOf(h, z->part), z->db,
+                                      ps && ps->fader_db ? *ps->fader_db : 0.0)
+                      : std::string("Zone gain");
         }
         v.sel = SelValid(Shown(h), g.after);
-        h.commit("Zone gain", toast);
+        Commit(h, "Zone gain", toast);
         return;
     }
     case ZoneDragKind::Move: {
@@ -1070,7 +1093,7 @@ void DragRelease(const ZoneWaveHost& h, double px_per_s)
         const std::string toast = NameOfZone(h, Shown(h), r) + " moved " + (g.value > 0 ? "+" : "") + std::to_string(Ms(g.value)) +
                                   " ms (its two edges" + (followed ? "; what touches it followed)" : ")");
         v.sel = {r};
-        h.commit("Move zone", toast);
+        Commit(h, "Move zone", toast);
         return;
     }
     case ZoneDragKind::MkGap:
@@ -1108,12 +1131,78 @@ void DragRelease(const ZoneWaveHost& h, double px_per_s)
     }
 }
 
+// ---- outside writes ---------------------------------------------------------------------------------------------
+
+// The stored Sound changed and none of our writes did it (Ctrl+Z, another panel): the selection is carried over by
+// time and part (SelFollow from what we saw last), the menu's target and the hover dropped.
+void FollowOutside(const ZoneWaveHost& h)
+{
+    ZoneEditView&  v = *h.view;
+    const uint64_t gen = SoundStoreGeneration();
+    if (v.seen_uid != h.node->uid) {
+        v.seen_uid = h.node->uid;
+        v.seen = Stored(h);
+        v.seen_gen = gen;
+        v.own_pending = false;
+        return;
+    }
+    if (gen == v.seen_gen) {
+        if (v.own_pending && ImGui::GetFrameCount() - v.own_frame > 30) v.own_pending = false;  // it changed nothing
+        return;
+    }
+    if (!v.own_pending && v.drag.kind == ZoneDragKind::None && !h.live_now()) {
+        v.sel = SelFollow(v.seen, v.sel, Stored(h));
+        v.menu_z = ZoneRef{};
+        v.menu_kind = 0;
+        v.menu_close = true;
+        v.hover_on = false;
+    }
+    v.own_pending = false;
+    v.seen = Stored(h);
+    v.seen_gen = gen;
+}
+
 // ---- the right-click menu ---------------------------------------------------------------------------------------
+
+// Esc (the mockup's keydown): the menu closes, and on the same press the selection goes, else the time selection.
+// Once per press, whether the menu or the window's keys see it first.
+bool EscStep(const ZoneWaveHost& h)
+{
+    ZoneEditView& v = *h.view;
+    const int     frame = ImGui::GetFrameCount();
+    if (v.esc_frame == frame) return true;
+    v.esc_frame = frame;
+    const bool menu = v.menu_frame >= frame - 1;
+    if (menu) v.menu_close = true;
+    if (v.drag.kind != ZoneDragKind::None) {
+        if (h.live_now()) h.cancel();
+        v.drag = ZoneDrag{};
+        return true;
+    }
+    if (!v.sel.empty()) {
+        v.sel.clear();
+        return true;
+    }
+    if (v.has_tsel) {
+        v.has_tsel = false;
+        return true;
+    }
+    return menu;
+}
 
 void ZoneMenu(const ZoneWaveHost& h)
 {
     if (!ui::BeginMenuPopup("##zonewavemenu")) return;
-    ZoneEditView&    v = *h.view;
+    ZoneEditView& v = *h.view;
+    v.menu_frame = ImGui::GetFrameCount();
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) EscStep(h);
+    if (v.menu_close) {
+        v.menu_close = false;
+        v.menu_frame = -1;
+        ImGui::CloseCurrentPopup();
+        ui::EndMenuPopup();
+        return;
+    }
     const SoundData& d = Shown(h);
     const EditZone*  z = ZoneOf(d, v.menu_z);
     if (v.menu_kind == 0 || !z) {
@@ -1268,9 +1357,13 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
         hv.file_len = h.file_len;
         hv.peaks = PeaksOf(h.path);
         hv.dp = dp;
+        const LookCache& lc = LooksNow(h);
+        hv.looks = &lc.looks;
+        hv.blocks = &lc.blocks;
         return HitZones(Shown(h), hv, p.x - cx0, p.y - r.y0);
     };
-    // Keep the selection valid (an undo, a write elsewhere).
+    // An undo or a write elsewhere: the selection follows by time and part; then keep it valid.
+    FollowOutside(h);
     v.sel = SelValid(Shown(h), v.sel);
 
     // ---- input
@@ -1317,6 +1410,7 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
             const EditZone* z = ZoneOf(Shown(h), hit.z);
             v.menu_z = hit.z;
             v.menu_kind = !z ? 0 : z->IsGap() ? 2 : 1;
+            v.menu_close = false;
             if (z) {
                 if (!SelHas(v.sel, hit.z)) v.sel = {hit.z};
                 if (!z->IsGap()) *h.part_sel = z->part;
@@ -1339,7 +1433,7 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
     F.vl = vl;
     F.dp = dp;
     F.peaks = PeaksOf(h.path);
-    F.looks = LooksOf(*F.d, F.peaks);
+    F.lc = &LooksNow(h);
     if (v.playing && AuditionPlaying() && AuditionTag() == PlayTag(h)) F.heads = HeardHeads(v.map, AuditionPosition());
     const int ncols = std::max(1, static_cast<int>(std::floor(cw)));
     F.have_cols = ReadWaveColumns(h.path, vs, vl, ncols, &F.wc);
@@ -1405,23 +1499,9 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
 void ZoneEditKeys(const ZoneWaveHost& h, bool* esc_used)
 {
     if (esc_used) *esc_used = false;
-    ZoneEditView& v = *h.view;
     if (ImGui::IsKeyPressed(ImGuiKey_Delete, false)) ZoneDelete(h);
     if (ImGui::IsKeyPressed(ImGuiKey_Space, false)) ZoneTransport(h);
-    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-        // Esc: menus close (ImGui), the selection goes; again: the time selection.
-        if (v.drag.kind != ZoneDragKind::None) {
-            if (h.live_now()) h.cancel();
-            v.drag = ZoneDrag{};
-            if (esc_used) *esc_used = true;
-        } else if (!v.sel.empty()) {
-            v.sel.clear();
-            if (esc_used) *esc_used = true;
-        } else if (v.has_tsel) {
-            v.has_tsel = false;
-            if (esc_used) *esc_used = true;
-        }
-    }
+    if (ImGui::IsKeyPressed(ImGuiKey_Escape, false) && EscStep(h) && esc_used) *esc_used = true;
 }
 
 void ZoneEditRequest(const ZoneWaveHost& h, int id)
@@ -1447,26 +1527,16 @@ void ZonePumpPlay(const ZoneWaveHost& h)
         v.playing = false;
         return;
     }
-    const bool ours = AuditionPlaying() && AuditionTag() == PlayTag(h);
-    if (AuditionPlaying() && !ours) {  // another audition took over
+    // Not ours any more: it ended, was stopped (Esc, another button) or another audition took over. Never restarted.
+    if (!(AuditionPlaying() && AuditionTag() == PlayTag(h))) {
         v.playing = false;
         return;
     }
-    if (ours) v.last_pos = AuditionPosition();
-    // Ended: it played to its heard end (a Stop elsewhere -- Esc, another button -- ends it before that).
-    const double block = std::max(0.1, 3.0 * static_cast<double>(ImGui::GetIO().DeltaTime));
-    const bool   due = ours ? EditLoopDue(v.tp, v.last_pos, v.map.total, ImGui::GetIO().DeltaTime) : v.last_pos >= v.map.total - block;
-    if (!ours && !due) {
-        v.playing = false;
-        return;
-    }
-    if (!due) return;
-    if (!v.tp.loops) {
-        v.playing = false;
-        return;
-    }
-    // C4: REAPER's preview has no loop: the looped range again from its start.
-    EditTransport tp = v.tp;
+    v.last_pos = AuditionPosition();
+    // C4: REAPER's preview has no loop: ours, looping and at its heard end (within this frame), the looped range
+    // again from its start. Without Loop it plays to its real end.
+    if (!EditLoopDue(v.tp, v.last_pos, v.map.total, ImGui::GetIO().DeltaTime)) return;
+    const EditTransport tp = v.tp;
     StartPlay(h, tp, tp.loop_a, tp.loop_b, true);
 }
 
@@ -1506,7 +1576,15 @@ void ZoneToggleLoop(const ZoneWaveHost& h)
 {
     ZoneEditView& v = *h.view;
     v.loop = !v.loop;
-    if (!v.loop) v.tp.loops = false;
+    // While it plays: what plays loops from now on (as if Play had been pressed with Loop), or stops looping.
+    if (!v.loop) {
+        v.tp.loops = false;
+    } else if (ZonePlaying(h)) {
+        const EditTransport re = PlanEditPlay(v.tp.from, v.tp.to, v.has_tsel, v.ts_a, v.ts_b, true, h.file_len);
+        v.tp.loops = re.loops;
+        v.tp.loop_a = re.loop_a;
+        v.tp.loop_b = re.loop_b;
+    }
     ShowLibraryToast(v.loop ? std::string("Loop on: ") + (v.has_tsel ? "the time selection" : "the whole file") + " repeats" : "Loop off",
                      false);
 }
@@ -1542,6 +1620,7 @@ void ZoneHeal(const ZoneWaveHost& h)
         ShowLibraryToast("Heal: select the zones to heal first (Ctrl+click adds one)", false);
         return;
     }
+    const int  cuts = std::max(1, HealCutCount(Stored(h), sel));
     const auto mixed = std::make_shared<bool>(false);
     const bool wrote = Write(
         h, "Heal zones",
@@ -1553,9 +1632,9 @@ void ZoneHeal(const ZoneWaveHost& h)
             if (s) *s = io;
             return ch;
         },
-        [&h, sel, mixed](const SoundData& after, const ZoneSel& out) {
+        [&h, cuts, mixed](const SoundData& after, const ZoneSel& out) {
             const EditZone* z = out.empty() ? nullptr : ZoneOf(after, out.front());
-            std::string     t = "Healed " + std::to_string(sel.size() - 1) + (sel.size() > 2 ? " cuts" : " cut");
+            std::string     t = "Healed " + std::to_string(cuts) + (cuts > 1 ? " cuts" : " cut");
             if (z) t += ": one " + PartNameOf(h, z->part) + " zone, " + ZoneRangeMs(z->a, z->b);
             if (*mixed) t += " (it keeps the first zone's part)";
             return t;
@@ -1640,29 +1719,28 @@ void ZoneSelectPart(const ZoneWaveHost& h, const std::string& part)
 
 void ZoneStepVariation(const ZoneWaveHost& h, int dir)
 {
-    const SoundData& d = Shown(h);
+    // The mockup's stepVariation over the Variations strip's blocks (on variations with zones; an off one is out of
+    // the zone model): its first zone selected, the cursor at its start, the view centred on it, same zoom.
+    const SoundData&                d = Shown(h);
     const std::vector<ZoneVarBlock> blocks = ZoneVarBlocks(d);
     if (blocks.empty()) return;
-    std::vector<int> sel = SelFrames(SelValid(d, h.view->sel));
-    const EditNavPlan nav = PlanEditNav(d.frames, sel, *h.cursor, dir > 0, *h.view_len, h.file_len);
-    if (nav.frame < 0) {
+    const int i = ZoneStepBlock(blocks, ZoneStepRef(d, SelValid(d, h.view->sel), *h.cursor), dir);
+    if (i < 0) {
         ShowLibraryToast(dir > 0 ? "Already the last variation" : "Already the first variation", false);
         return;
     }
-    const ZoneRef first = FirstZoneOf(d, nav.frame);
+    const ZoneVarBlock& b = blocks[static_cast<size_t>(i)];
+    const ZoneRef       first = FirstZoneOf(d, b.frame);
     h.view->sel.clear();
-    if (ZoneOf(d, first)) {
+    if (const EditZone* fz = ZoneOf(d, first)) {
         h.view->sel = {first};
-        if (!ZoneOf(d, first)->IsGap()) *h.part_sel = ZoneOf(d, first)->part;
+        if (!fz->IsGap()) *h.part_sel = fz->part;
     }
-    *h.cursor = nav.cursor;
-    if (*h.view_len > 0.0 && h.file_len > 0.0) *h.view_start = nav.view_start;
-    int n = 0, i = 0;
-    for (const ZoneVarBlock& b : blocks) {
-        ++i;
-        if (b.frame == nav.frame) n = i;
-    }
-    ShowLibraryToast("Variation " + std::to_string(n) + " of " + std::to_string(blocks.size()) + ": centred (same zoom)", false);
+    *h.cursor = b.a;  // its first zone's start
+    const double w = *h.view_len;
+    if (w > 0.0 && h.file_len > 0.0) *h.view_start = Clamp((b.a + b.b) / 2.0 - w / 2.0, 0.0, std::max(0.0, h.file_len - w));
+    // Numbered as the strip numbers it (the variation's own number), of the Sound's variations.
+    ShowLibraryToast("Variation " + std::to_string(b.frame + 1) + " of " + std::to_string(d.frames.size()) + ": centred (same zoom)", false);
 }
 
 }  // namespace rav

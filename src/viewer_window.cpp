@@ -47,6 +47,7 @@
 #include "renderer.h"
 #include "shortcuts.h"         // spec 11-fb-3: the viewer's keys, rebindable
 #include "shortcuts_ui.h"      // spec 11-fb-3: the keyboard icon + Shortcuts popup
+#include "view_nav.h"          // 13-45: the timelines' wheel / zoom keys, the Shortcuts rows' recording
 #include "skeleton_view.h"     // spec 10-3c: the Model / Skeleton switch and its overlay
 #include "tagging_assign_ui.h"  // 13-15b: the Sound assignment window takes the keys while it has the focus
 #include "tagging_session.h"   // Story 10-3: the Tagging view's model (item, rules, detection)
@@ -2359,6 +2360,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
 
     case WM_MOUSEWHEEL: {
+        // 13-45: a "View: scroll and zoom" row of the Shortcuts popup records the wheel.
+        if (ViewNavRecordingRow() >= 0) {
+            ViewNavRecordWheel(false, GetKeyState(VK_CONTROL) < 0, GetKeyState(VK_SHIFT) < 0, GetKeyState(VK_MENU) < 0);
+            return 0;
+        }
         // Let ImGui have the wheel when the cursor is over its UI (e.g. scrolling a
         // slider's value); otherwise it zooms the camera. Spec 11-fb-12: Alt + wheel there
         // (the shot strip's zoom) also keeps Alt's release from REAPER's menu bar.
@@ -2373,6 +2379,18 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         else                   g_renderer.Camera().Zoom(delta);
         return 0;
     }
+
+    case WM_MOUSEHWHEEL:
+        // 13-45: the horizontal wheel (a tilt wheel, a trackpad's sideways swipe). ImGui has it
+        // already (io.MouseWheelH): over the UI it is the timelines' (view_nav.h), and it must not
+        // reach DefWindowProc, which hands it to the parent (REAPER would scroll its arrange view).
+        // Over the 3D view it does nothing. A Shortcuts row being recorded takes it.
+        if (ViewNavRecordingRow() >= 0) {
+            ViewNavRecordWheel(true, GetKeyState(VK_CONTROL) < 0, GetKeyState(VK_SHIFT) < 0, GetKeyState(VK_MENU) < 0);
+            return 0;
+        }
+        if (ImGuiWantsMouse() && GetKeyState(VK_MENU) < 0) g_key_route.alt_wheel_taken = true;
+        return 0;
 
     case WM_CAPTURECHANGED:
         // The system can yank capture away (e.g. another window grabs it); clear the
@@ -2721,6 +2739,7 @@ int ViewerTranslateAccel(MSG* msg, accelerator_register_t* /*ctx*/)
     case WM_DEADCHAR:    in.msg = KeyMsg::DeadChar; break;
     case WM_SYSDEADCHAR: in.msg = KeyMsg::SysDeadChar; break;
     case WM_MOUSEWHEEL:  in.msg = KeyMsg::Wheel; break;  // spec 11-fb-12: Alt + wheel
+    case WM_MOUSEHWHEEL: in.msg = KeyMsg::Wheel; break;  // 13-45: the horizontal wheel too
     default:             in.msg = KeyMsg::Other; break;
     }
     in.key        = static_cast<unsigned>(msg->wParam);
@@ -2745,6 +2764,12 @@ int ViewerTranslateAccel(MSG* msg, accelerator_register_t* /*ctx*/)
     }
     // 13-15b: the same for the Tagging view's Sound assignment window while it has the focus.
     if (in.msg == KeyMsg::KeyDown && TaggingViewActive() && TaggingAssignTakesKey(in.key, in.ctrl, in.shift, in.alt)) {
+        in.text_input = true;
+        g_key_route.claimed_vk = in.key;
+    }
+    // 13-45: the view zoom / scroll keys (view_nav.h: REAPER's Zoom in / out keys, or the user's own)
+    // while a timeline (the Video / Tagging strip, a Blend's lanes) is under the mouse.
+    if (in.msg == KeyMsg::KeyDown && ViewNavTakesKey(in.key, in.ctrl, in.shift, in.alt)) {
         in.text_input = true;
         g_key_route.claimed_vk = in.key;
     }

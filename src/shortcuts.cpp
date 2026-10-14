@@ -9,6 +9,7 @@
 
 #include "console_log.h"
 #include "reaper_api.h"
+#include "view_nav.h"  // 13-45: the view rows' recording
 
 namespace rav {
 namespace {
@@ -24,6 +25,8 @@ std::string ExtKey(int id)
 {
     return std::string("shortcut.") + kShortcutTable[id].id;
 }
+
+}  // namespace
 
 // The keyboard layout's own name for a key the table does not name (e.g. ";" or "ù").
 std::string LayoutKeyName(unsigned key)
@@ -42,6 +45,8 @@ std::string LayoutKeyName(unsigned key)
     if (n <= 0) return std::string();
     return std::string(name);
 }
+
+namespace {
 
 void RefreshLabels()
 {
@@ -143,6 +148,7 @@ int ResetShortcutToDefault(int id)
 void BeginShortcutRecording(int id)
 {
     if (id < 0 || id >= kShortcutCount) return;
+    CancelViewNavRecording();  // 13-45: one recording at a time
     g_recording_id = id;
     g_conflict_id = -1;
 }
@@ -151,11 +157,14 @@ void CancelShortcutRecording()
 {
     g_recording_id = -1;
     g_conflict_id = -1;
+    CancelViewNavRecording();  // 13-45: a view row's recording too
 }
 
 int ShortcutRecordingId()
 {
-    return g_recording_id;
+    if (g_recording_id >= 0) return g_recording_id;
+    const int nav = ViewNavRecordingRow();  // 13-45: kShortcutCount + its row
+    return nav >= 0 ? kShortcutCount + nav : -1;
 }
 
 const char* ShortcutRecordingConflict()
@@ -165,6 +174,10 @@ const char* ShortcutRecordingConflict()
 
 void ShortcutRecordKey(unsigned key, bool ctrl, bool shift, bool alt)
 {
+    if (g_recording_id < 0 && ViewNavRecordingRow() >= 0) {  // 13-45: a view row records
+        ViewNavRecordKey(key, ctrl, shift, alt);
+        return;
+    }
     if (g_recording_id < 0) return;
     int owner = -1;
     switch (ShortcutRecordStep(g_bindings, g_recording_id, key, ctrl, shift, alt, &owner)) {

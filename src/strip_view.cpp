@@ -14,6 +14,7 @@
 #include "shortcuts.h"  // SavePrefFloat
 #include "ui_theme.h"
 #include "video_shot_timing.h"
+#include "view_nav.h"  // 13-45: the strip's wheel and zoom keys, as every timeline's
 
 namespace rav {
 
@@ -91,21 +92,24 @@ StripWindow StripViewUpdate(StripViewState& s, double item_start, double item_en
         s.last_playhead = playhead;
     }
     const double f = std::min(1.0, std::max(0.0, static_cast<double>((mouse_x - lane_x) / lane_w)));
-    // Alt + wheel anywhere over the strip window (lane, ruler, empty band): zoom about the
-    // time under the mouse (the lane's nearest edge when the mouse is beside it). The
-    // viewer window keeps it from the 3D view and REAPER (viewer_window.cpp).
+    // 13-45: the view actions (view_nav.h, the same for every timeline in RAV: the user's REAPER
+    // wheel and zoom keys, or his own) anywhere over the strip window (lane, ruler, empty band); its
+    // keys while it is under the mouse. Zoom about the time under the mouse (the lane's nearest edge
+    // when the mouse is beside it). The viewer window keeps the wheel from the 3D view and REAPER
+    // (viewer_window.cpp). The strip has no vertical view: Scroll / Zoom vertically do nothing here.
     {
-        const ImGuiIO& io = ImGui::GetIO();
-        if (io.KeyAlt && io.MouseWheel != 0.0f && !hold && window_hovered) {
+        const ViewNavStep st = ViewNavInput(window_hovered, window_hovered);
+        if (st.zoom_h != 0.0 && !hold) {
             const double t_fixed = s.v0 + f * s.span;
-            VideoStripZoom(s.v0, s.span, t_fixed, static_cast<double>(io.MouseWheel), min_span, max_span, &s.v0, &s.span);
+            VideoStripZoom(s.v0, s.span, t_fixed, st.zoom_h, min_span, max_span, &s.v0, &s.span);
             s.zoomed = std::fabs(s.span - def_span) > 1.0e-6 * def_span;
-        } else if (io.KeyShift && io.MouseWheel != 0.0f && !hold && !playing && window_hovered) {
+        }
+        const double notches = st.scroll_h + st.scroll_h_pages * 10.0;  // a page: the whole span (10 x 10 %)
+        if (notches != 0.0 && !hold && !playing) {
             // (Ignored while playing: the follow rule would pull the view back every frame.)
-            // Spec 11-fb-14: Shift + wheel scrolls (up: earlier, down: later), 10 % of the
-            // span per notch, never before the default margin before 0. A user view.
-            s.v0 = VideoStripScroll(s.v0, s.span, static_cast<double>(io.MouseWheel),
-                                    -VideoStripDefaultMargin(item_span, fps));
+            // Spec 11-fb-14: scrolls 10 % of the span per notch (back: earlier, forward: later),
+            // never before the default margin before 0. A user view.
+            s.v0 = VideoStripScroll(s.v0, s.span, -notches, -VideoStripDefaultMargin(item_span, fps));
             s.scrolled = true;
         }
     }

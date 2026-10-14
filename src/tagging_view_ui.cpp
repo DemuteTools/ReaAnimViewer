@@ -35,6 +35,7 @@
 #include "skeleton_view.h"  // spec 10-3c: the bone selected in the 3D view ("+")
 #include "sound_auto_assign.h"  // 13-8: each auto marker type's sound
 #include "strip_view.h"
+#include "view_nav.h"  // 13-45: the strip's zoom / scroll tip
 #include "tag_markers.h"
 #include "tagging_session.h"
 #include "tagging_signal.h"
@@ -1552,9 +1553,11 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                                 break;
                             }
                     } else {
+                        // 13-45: the zoom / scroll gestures in force (view_nav.h).
+                        const std::string nav = ViewNavTip();
                         ui::ItemTip("Click or drag to move the playhead\nDrag a threshold line (dashed: the re-arm "
-                                    "level) to tune it\nDouble-click a rule's row: add an event there\n"
-                                    "Alt+wheel: zoom  " RAV_DOT "  Shift+wheel: scroll");
+                                    "level) to tune it\nDouble-click a rule's row: add an event there%s%s",
+                                    nav.empty() ? "" : "\n", nav.c_str());
                     }
                 }
             }

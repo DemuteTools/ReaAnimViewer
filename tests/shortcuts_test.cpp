@@ -545,11 +545,16 @@ int main()
         CHECK(RouteViewerKey(b, alt_up, st) == kRouteViewerSys);
         CHECK(st.released_vk == vk::kMenu);
         CHECK(!st.alt_wheel_taken);
-        // Wheel without Alt, or not over the UI: REAPER's (as before), nothing taken.
+        // 13-45: a wheel without Alt over the UI is the viewer's too (nothing taken: no Alt release
+        // to swallow); not over the UI: REAPER's.
         KeyRouteState st2;
         KeyRouteInput plain = wheel;
         plain.alt = false;
-        CHECK(RouteViewerKey(b, plain, st2) == kRouteReaper);
+        CHECK(RouteViewerKey(b, plain, st2) == kRouteViewer);
+        KeyRouteInput ctrl_wheel = plain;
+        ctrl_wheel.ctrl = true;
+        CHECK(RouteViewerKey(b, ctrl_wheel, st2) == kRouteViewer);
+        CHECK(!st2.alt_wheel_taken);
         KeyRouteInput off_ui = wheel;
         off_ui.imgui_mouse = false;
         CHECK(RouteViewerKey(b, off_ui, st2) == kRouteReaper);

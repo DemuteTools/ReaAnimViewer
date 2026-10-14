@@ -224,6 +224,8 @@ if(WIN32)
             src/library_node_ui.cpp
             src/sound_peaks.cpp
             src/reaper_view_keys.cpp
+            src/view_nav.cpp  # 13-45: every timeline's scroll / zoom
+            src/view_nav_live.cpp
             src/sound_audition.cpp
             src/library_media_ui.cpp
             src/library_media_plan.cpp

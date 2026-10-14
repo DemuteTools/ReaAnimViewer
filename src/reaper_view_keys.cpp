@@ -34,26 +34,50 @@ void Add(std::vector<ViewKeyBinding>& v, const ViewKeyBinding& b)
 
 }  // namespace
 
+ViewWheelBinding ViewWheelBindingOf(int command)
+{
+    ViewWheelBinding b;
+    auto set = [&b](ViewWheelAction a, bool reversed, bool page) {
+        b.action = a;
+        b.reversed = reversed;
+        b.page = page;
+    };
+    switch (command) {
+    case 988: set(ViewWheelAction::ScrollH, false, false); break;
+    case 977: set(ViewWheelAction::ScrollH, true, false); break;
+    case 981: set(ViewWheelAction::ScrollH, false, true); break;
+    case 975: set(ViewWheelAction::ScrollH, true, true); break;
+    case 989: set(ViewWheelAction::ScrollV, false, false); break;
+    case 978: set(ViewWheelAction::ScrollV, true, false); break;
+    case 976: set(ViewWheelAction::ScrollV, false, true); break;
+    case 982: set(ViewWheelAction::ScrollV, true, true); break;
+    case 990: set(ViewWheelAction::ZoomH, false, false); break;
+    case 979: set(ViewWheelAction::ZoomH, true, false); break;
+    case 1000:
+    case 991: set(ViewWheelAction::ZoomV, false, false); break;
+    case 1001:
+    case 980: set(ViewWheelAction::ZoomV, true, false); break;
+    default: break;
+    }
+    return b;
+}
+
 ViewWheelAction ViewWheelActionOf(int command)
 {
-    switch (command) {
-    case 988: return ViewWheelAction::ScrollH;
-    case 989: return ViewWheelAction::ScrollV;
-    case 990: return ViewWheelAction::ZoomH;
-    case 1000: return ViewWheelAction::ZoomV;
-    default: return ViewWheelAction::None;
-    }
+    return ViewWheelBindingOf(command).action;
 }
 
 ViewKeymap DefaultViewKeymap()
 {
     ViewKeymap k;
-    k.wheel[0] = ViewWheelAction::ZoomH;
-    k.wheel[kViewModCtrl] = ViewWheelAction::ZoomV;
-    k.wheel[kViewModAlt] = ViewWheelAction::ScrollH;
-    k.wheel[kViewModCtrl | kViewModAlt] = ViewWheelAction::ScrollV;
-    k.hwheel[0] = ViewWheelAction::ScrollH;
-    k.hwheel[kViewModAlt] = ViewWheelAction::ZoomH;
+    // REAPER 7.81's default table (reaper_view_keys.h); 253 -> 972 (track heights) is not ours.
+    k.wheel[0] = ViewWheelBindingOf(990);
+    k.wheel[kViewModCtrl] = ViewWheelBindingOf(1000);
+    k.wheel[kViewModAlt] = ViewWheelBindingOf(988);
+    k.wheel[kViewModCtrl | kViewModAlt] = ViewWheelBindingOf(989);
+    k.wheel[kViewModAlt | kViewModShift] = ViewWheelBindingOf(976);
+    k.hwheel[0] = ViewWheelBindingOf(988);
+    k.hwheel[kViewModAlt] = ViewWheelBindingOf(990);
     k.zoom_in = {Vk(kVkAdd), Vk(kVkOemPlus), Vk(kVkOemPlus, kViewModShift), Vk(kVkUp)};
     k.zoom_out = {Vk(kVkSubtract), Vk(kVkOemMinus), Vk(kVkDown)};
     return k;
@@ -80,11 +104,11 @@ ViewKeymap ParseViewKeymap(const std::string& text)
             }
         }
         if (mod == 255) {
-            const ViewWheelAction a = ViewWheelActionOf(cmd);
-            if (key >= 248 && key <= 255) k.wheel[key - 248] = a;
-            else if (key >= 120 && key <= 127) k.wheel[key - 120] = a;
-            else if (key >= 216 && key <= 223) k.hwheel[key - 216] = a;
-            else if (key >= 88 && key <= 95) k.hwheel[key - 88] = a;
+            // The input in the high nibble, Ctrl / Alt / Shift in bits 0-2, bit 3 clear = Win held.
+            if (key < 0 || key > 255 || (key & 8) == 0) continue;
+            const ViewWheelBinding b = ViewWheelBindingOf(cmd);
+            if ((key & 0xF0) == 0xF0) k.wheel[key & 7] = b;
+            else if ((key & 0xF0) == 0xD0) k.hwheel[key & 7] = b;
             continue;
         }
         if (mod < 0 || mod > 127 || key <= 0) continue;

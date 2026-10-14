@@ -19,7 +19,6 @@
 
 #include <imgui.h>
 
-#include "reaper_view_keys.h"
 #include "sound_entries.h"  // FrameFades
 #include "sound_model.h"
 
@@ -56,8 +55,9 @@ struct WaveformOptions {
     bool   select = false;              // click selects (Ctrl-click adds) instead of playing
     bool   ruler = false;               // a ms / s ruler on top
     double threshold_db = std::numeric_limits<double>::quiet_NaN();  // a draggable line when finite
-    bool   wheel = false;               // the wheel zooms / scrolls (see view_keys), middle-drag pans
-    const ViewKeymap* view_keys = nullptr;  // the user's REAPER wheel bindings (null: Ctrl+wheel zooms, wheel scrolls)
+    // Middle-drag pans (REAPER's hand scroll). 13-45: the wheel and the zoom keys are the caller's
+    // (view_nav.h ViewNavInput, the same for every timeline).
+    bool   pan = false;
     std::vector<bool> solid_edges;      // per frame: drawn solid (a clamped edge); may be empty
     // Antho 2026-10-12: per frame, its fades as placed (drawn as REAPER draws an item's); empty = none.
     // With `gestures`, a handle at each top corner drags the fade, Alt-click resets it.
@@ -98,9 +98,7 @@ struct WaveformEvents {
     bool   threshold_live = false, threshold_done = false;
     double threshold_db = 0.0;
     bool   right_clicked = false;
-    double zoom = 1.0;          // a zoom wheel: multiply view_len by this around zoom_at
-    double zoom_at = 0.0;
-    double scroll_s = 0.0;      // a scroll wheel or a middle-drag: move view_start by this
+    double scroll_s = 0.0;      // a middle-drag: move view_start by this
     int    fade_frame = -1;     // a fade handle drag: the frame and its own fades (s, < 0 = the default)
     double fade_in = -1.0, fade_out = -1.0;
     bool   fade_done = false;   // released (write it)
@@ -134,7 +132,8 @@ struct NodePanelHooks {
 void SetNodePanelHooks(const NodePanelHooks& hooks);
 
 // Decision 9: E and S (no modifier) while a Sound panel shows in the focused Library view, and
-// Space / Esc / E / S while the Edit overlay is open.
+// Space / Esc / E / S while the Edit overlay is open; 13-45: the view zoom / scroll keys
+// (view_nav.h) while the Edit overlay has the focus.
 bool LibraryNodeTakesKey(unsigned vk, bool ctrl, bool shift, bool alt);
 
 }  // namespace rav

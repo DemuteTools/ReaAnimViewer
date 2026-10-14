@@ -117,6 +117,7 @@ struct MouseGestureDef {
 inline const MouseGestureDef kMouseGestureTable[] = {
     {0, "Orbit", "Right-drag"},
     {0, "Pan", "Middle-drag"},
+    {0, "Hand scroll (Sound Edit, Blend lanes)", "Middle-drag"},  // 13-45 (the mockup: fixed)
     {0, "Zoom", "Wheel"},
     {0, "Menu, buttons, nav cube", "Left-click"},
     {1, "Move the playhead", "Click / drag"},
@@ -241,12 +242,16 @@ inline int RouteViewerKey(const ShortcutBindings& b, const KeyRouteInput& in, Ke
     // window swallows it: REAPER's menu bar does not open). Alt's next press starts afresh.
     // Spec 11-fb-14: Shift + wheel over the UI (the strip's scroll) is the viewer's too (Shift's
     // release opens no menu: nothing to swallow).
+    // 13-45: any wheel over the UI is the viewer's, with any modifiers, and the horizontal wheel too
+    // (KeyMsg::Wheel covers WM_MOUSEHWHEEL): RAV's timelines run the user's REAPER view bindings
+    // themselves (src/view_nav.h), so REAPER must not run them on its arrange view instead (a
+    // modified wheel bound in reaper-kb.ini never reached the Sound Edit window).
     if (in.msg == KeyMsg::Wheel) {
         if (in.alt && in.imgui_mouse) {
             st.alt_wheel_taken = true;
             return kRouteViewer;
         }
-        if (in.shift && in.imgui_mouse) return kRouteViewer;
+        if (in.imgui_mouse) return kRouteViewer;
         return (in.recording || in.text_input) ? kRouteViewer : kRouteReaper;
     }
     if (down && in.key == vk::kMenu && !in.repeat) st.alt_wheel_taken = false;
@@ -581,6 +586,10 @@ int ShortcutActionForKey(unsigned key, bool ctrl, bool shift, bool alt, bool vid
 // The current key of an action as text ("C", "Shift+V"), for key caps and the popup.
 const char* ShortcutKeyLabel(int id);
 
+// The keyboard layout's own name for a key (GetKeyNameTextW), "" when it has none: the fallback of
+// ShortcutKeyName / FormatShortcut (13-45: the view rows' keys too).
+std::string LayoutKeyName(unsigned key);
+
 // Re-reads the key names from the keyboard layout (after a layout switch).
 void RefreshShortcutLabels();
 
@@ -592,6 +601,8 @@ int ResetShortcutToDefault(int id);
 
 // Recording (double-click in the popup): the next non-modifier key down becomes the
 // binding. While it runs, the accelerator hook passes every key to the viewer.
+// 13-45: a "View: scroll and zoom" row's recording (view_nav.h) counts too: ShortcutRecordingId()
+// is then kShortcutCount + its row, ShortcutRecordKey hands it the key, Cancel ends it.
 void BeginShortcutRecording(int id);
 void CancelShortcutRecording();  // also on focus loss / parking
 int  ShortcutRecordingId();                // -1 when not recording

@@ -17,7 +17,8 @@
 
 #include "reaper_actions.h"  // spec 11-fb-5: REAPER's Video window open
 #include "shortcuts.h"   // spec 11-fb-3: the current keys on the key caps; 11-fb-11: LoadPref*
-#include "strip_view.h"  // Story 10-3: the shared strip (grip, view window, ruler, seek)
+#include "strip_view.h"
+#include "view_nav.h"  // 13-45: the strip's zoom / scroll tip  // Story 10-3: the shared strip (grip, view window, ruler, seek)
 #include "ui_flow.h"   // 13-14: LabelRow, TextWidth
 #include "ui_theme.h"
 #include "video_preview_lag.h"
@@ -889,7 +890,7 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
         const VideoStripRange& r = VideoViewStripRange();
         // Spec 11-fb-12: the strip shows a view window of project time around the current
         // item (r.start .. r.end, the item under the playhead): by default the item plus a
-        // margin, zoomed with Alt + wheel. Session state (strip_view.h, Story 10-3).
+        // margin, zoomed and scrolled by the view actions (13-45). Session state (strip_view.h, Story 10-3).
         static StripViewState s_view;
         if (!r.valid || !(r.end > r.start)) {
             StripViewReset(s_view);
@@ -1188,9 +1189,11 @@ void DrawVideoShotStrip(float x, float y, float w, float h)
                 if (!ImGui::IsAnyMouseDown() && VideoViewCanCut() && junction_at(mx) >= 0) {
                     ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);  // the cursor says it: no tooltip
                 } else if (lane_tip) {
-                    ImGui::SetTooltip(
-                        "Click or drag to move the playhead\nMiddle-click a shot: switch Cut / Move\n"
-                        "Right-click a shot: copy / paste its camera\nAlt+wheel: zoom");
+                    // 13-45: the zoom / scroll gestures in force (view_nav.h).
+                    const std::string nav = ViewNavTip();
+                    ImGui::SetTooltip("Click or drag to move the playhead\nMiddle-click a shot: switch Cut / Move\n"
+                                      "Right-click a shot: copy / paste its camera%s%s",
+                                      nav.empty() ? "" : "\n", nav.c_str());
                 }
             }
         }

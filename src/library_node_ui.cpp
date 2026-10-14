@@ -38,6 +38,7 @@
 #include "picked_gestures.h"
 #include "reaper_api.h"
 #include "shortcuts.h"
+#include "view_nav.h"  // 13-45: Edit's wheel and zoom keys, as every timeline's
 #include "sound_assign.h"  // RoleKeyLabel (13-23 role maps)
 #include "sound_audition.h"
 #include "sound_audition_plan.h"
@@ -111,6 +112,11 @@ struct PanelState {
     double                off0 = 0.0, off_live = 0.0;
     double                off_scale = 0.0;  // the lanes' ms at the drag's start (fixed while dragging)
     float                 off_dx = 0.0f;
+    // 13-45: the Blend lanes' view window (ms) of the Blend shown: span 0 = the whole Blend; a
+    // middle-drag pans it. A view state (no undo point), dropped when another Blend shows.
+    std::string           blend_uid;
+    double                blend_v0 = 0.0, blend_span = 0.0;
+    bool                  blend_pan = false;
     // The Edit overlay.
     bool                  edit_open = false;
     bool                  edit_focus = false;
@@ -152,13 +158,11 @@ struct PanelState {
     bool                  pname_open = false;  // open it on the next draw (asked from a menu)
     char                  pname_buf[128] = {};
     NormJob               norm_job;
-    // The user's REAPER view bindings (reaper-kb.ini), read when Edit opens.
-    ViewKeymap            keys = DefaultViewKeymap();
     // Edit's waveform: its x span on screen and the source length (key zoom around the mouse).
     float                 wave_x0 = 0.0f, wave_x1 = 0.0f;
     double                wave_len = 0.0;
     ImGuiID               pan_id = 0;  // the waveform a middle-drag pans
-    bool                  keys_stale = true;  // re-read reaper-kb.ini (each time Edit opens)
+    double                vzoom = 1.0;  // 13-45: Edit's lanes taller than its box (Zoom vertically), 1 = fit
     // 13-20 / 13-23 / 13-25: Edit's parts -- the zone selected, the part shown alone (Combined), the
     // waveform's right-click (its time, frame, and kind: 0 outside, 1 a variation, 2 the zone), the
     // Roles... popup's "More roles".
@@ -207,7 +211,7 @@ void OpenEdit(const std::string& lib_uid, const std::string& uid)
 {
     P.edit_open = true;
     P.edit_focus = true;
-    P.keys_stale = true;
+    P.vzoom = 1.0;
     P.wave_len = 0.0;  // set by a Sound's waveform; Takes mode leaves it 0 (no key zoom)
     P.wave_x0 = P.wave_x1 = 0.0f;
     P.edit_opened = ImGui::GetFrameCount();
@@ -1658,27 +1662,8 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
         ev.split = under;
         ev.split_at = T(m.x);
     }
-    if (hovered && o.wheel && (io.MouseWheel != 0.0f || io.MouseWheelH != 0.0f)) {
-        // The user's REAPER bindings: the action of this wheel with these modifiers.
-        const int mods = (io.KeyCtrl ? kViewModCtrl : 0) | (io.KeyAlt ? kViewModAlt : 0) | (io.KeyShift ? kViewModShift : 0);
-        auto apply = [&](ViewWheelAction a, float wheel) {
-            if (wheel == 0.0f) return;
-            if (a == ViewWheelAction::ZoomH) {
-                ev.zoom *= std::pow(0.8, static_cast<double>(wheel));
-                ev.zoom_at = T(m.x);
-            } else if (a == ViewWheelAction::ScrollH) {
-                ev.scroll_s += -static_cast<double>(wheel) * vl * 0.1;
-            }
-        };
-        if (o.view_keys) {
-            apply(o.view_keys->wheel[mods], io.MouseWheel);
-            apply(o.view_keys->hwheel[mods], io.MouseWheelH);  // ImGui: > 0 = left, so a tilt right scrolls right
-        } else {
-            apply(io.KeyCtrl ? ViewWheelAction::ZoomH : ViewWheelAction::ScrollH, io.MouseWheel);
-        }
-    }
     // Middle-drag pans (REAPER's default middle-drag in the arrange view: hand scroll).
-    if (o.wheel) {
+    if (o.pan) {
         if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Middle)) P.pan_id = gid;
         if (P.pan_id == gid) {
             if (!ImGui::IsMouseDown(ImGuiMouseButton_Middle)) P.pan_id = 0;
@@ -1695,11 +1680,9 @@ bool LibraryNodeTakesKey(unsigned vk, bool ctrl, bool shift, bool alt)
 {
     const int  f = ImGui::GetCurrentContext() ? ImGui::GetFrameCount() : -100;
     const bool edit = P.edit_open && P.edit_frame >= f - 1;
-    if (edit && P.edit_has_focus) {  // the user's zoom keys (Up / Down too) zoom Edit, not the arrange view
+    if (edit && P.edit_has_focus) {  // the view keys (Up / Down zoom too) zoom Edit, not the arrange view
         const int mods = (ctrl ? kViewModCtrl : 0) | (alt ? kViewModAlt : 0) | (shift ? kViewModShift : 0);
-        for (const auto* list : {&P.keys.zoom_in, &P.keys.zoom_out})
-            for (const ViewKeyBinding& b : *list)
-                if (!b.is_char && b.mods == mods && b.code == static_cast<int>(vk)) return true;
+        if (ViewNavKeyRow(CurrentViewNav(), static_cast<int>(vk), mods) >= 0) return true;  // 13-45
     }
     if (ctrl || shift || alt) return false;
     if (edit) return vk == 0x20 || vk == 0x1B || vk == 'E' || vk == 'S';
@@ -1981,66 +1964,8 @@ void ViewScrollbar(double src_len)
         ScrollView(static_cast<double>(ImGui::GetIO().MouseDelta.x) / w * src_len, src_len);
 }
 
-// Reads the user's REAPER view bindings (REAPER's defaults when the file is absent).
-void LoadViewKeys()
-{
-    std::string text;
-    if (const char* rp = GetResourcePath()) {
-        std::ifstream f(std::filesystem::u8path(std::string(rp) + "/reaper-kb.ini"), std::ios::binary);
-        if (f) text.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
-    }
-    P.keys = ParseViewKeymap(text);
-}
-
-ImGuiKey KeyOfVk(int vk)
-{
-    if (vk >= 'A' && vk <= 'Z') return static_cast<ImGuiKey>(ImGuiKey_A + (vk - 'A'));
-    if (vk >= '0' && vk <= '9') return static_cast<ImGuiKey>(ImGuiKey_0 + (vk - '0'));
-    if (vk >= 0x60 && vk <= 0x69) return static_cast<ImGuiKey>(ImGuiKey_Keypad0 + (vk - 0x60));
-    if (vk >= 0x70 && vk <= 0x7B) return static_cast<ImGuiKey>(ImGuiKey_F1 + (vk - 0x70));
-    switch (vk) {
-    case 0x6B: return ImGuiKey_KeypadAdd;
-    case 0x6D: return ImGuiKey_KeypadSubtract;
-    case 0x6A: return ImGuiKey_KeypadMultiply;
-    case 0x6F: return ImGuiKey_KeypadDivide;
-    case 0xBB: return ImGuiKey_Equal;
-    case 0xBD: return ImGuiKey_Minus;
-    case 0xBC: return ImGuiKey_Comma;
-    case 0xBE: return ImGuiKey_Period;
-    case 0xBA: return ImGuiKey_Semicolon;
-    case 0xBF: return ImGuiKey_Slash;
-    case 0xDB: return ImGuiKey_LeftBracket;
-    case 0xDD: return ImGuiKey_RightBracket;
-    case 0x21: return ImGuiKey_PageUp;
-    case 0x22: return ImGuiKey_PageDown;
-    case 0x24: return ImGuiKey_Home;
-    case 0x23: return ImGuiKey_End;
-    case 0x25: return ImGuiKey_LeftArrow;
-    case 0x26: return ImGuiKey_UpArrow;
-    case 0x27: return ImGuiKey_RightArrow;
-    case 0x28: return ImGuiKey_DownArrow;
-    default: return ImGuiKey_None;
-    }
-}
-
-// True when one of `keys` was pressed this frame (exact modifiers).
-bool ViewKeyPressed(const std::vector<ViewKeyBinding>& keys)
-{
-    const ImGuiIO& io = ImGui::GetIO();
-    const int mods = (io.KeyCtrl ? kViewModCtrl : 0) | (io.KeyAlt ? kViewModAlt : 0) | (io.KeyShift ? kViewModShift : 0);
-    for (const ViewKeyBinding& b : keys) {
-        if (b.is_char) {
-            for (int i = 0; i < io.InputQueueCharacters.Size; ++i)
-                if (static_cast<int>(io.InputQueueCharacters[i]) == b.code) return true;
-        } else if (b.mods == mods) {
-            const ImGuiKey k = KeyOfVk(b.code);
-            if (k != ImGuiKey_None && ImGui::IsKeyPressed(k, true)) return true;
-        }
-    }
-    return false;
-}
-
-// A key zoom: around the mouse when it is over the waveform, else the view's middle.
+// A zoom (13-45: any view action, wheel or key): around the mouse when it is over the waveform, else
+// the view's middle.
 void KeyZoom(double factor)
 {
     const double len = P.wave_len;
@@ -2051,6 +1976,24 @@ void KeyZoom(double factor)
     if (P.wave_x1 > P.wave_x0 && mx >= P.wave_x0 && mx <= P.wave_x1)
         at = P.view_start + static_cast<double>(mx - P.wave_x0) / (P.wave_x1 - P.wave_x0) * vl;
     ZoomView(factor, at, len);
+}
+
+// 13-45: one frame's view actions in Edit (view_nav.h, the same for every timeline). Horizontal: the
+// source view, zoomed around the mouse (1.25 per notch) and scrolled by 10 % of it per notch (a page:
+// all of it) -- not in Takes mode, where each take shows whole. Vertical: the lanes taller than the box
+// (Zoom vertically, up to 8 x) and the box scrolled (Scroll vertically). Call inside ##editwave.
+void EditNavigate(const ViewNavStep& st)
+{
+    const double len = P.wave_len;
+    if (len > 0.0) {
+        if (st.zoom_h != 0.0) KeyZoom(std::pow(0.8, st.zoom_h));
+        const double vl = P.view_len > 0.0 ? P.view_len : len;
+        const double ds = (st.scroll_h * 0.1 + st.scroll_h_pages) * vl;
+        if (ds != 0.0) ScrollView(ds, len);
+    }
+    if (st.zoom_v != 0.0) P.vzoom = std::clamp(P.vzoom * std::pow(1.25, st.zoom_v), 1.0, 8.0);
+    const double dy = st.scroll_v * 0.15 + st.scroll_v_pages;
+    if (dy != 0.0) ImGui::SetScrollY(ImGui::GetScrollY() + static_cast<float>(dy) * ImGui::GetWindowHeight());
 }
 
 // ---- 13-20 / 13-23 / 13-25: parts, zones and sync points in Edit ---------------------------------------
@@ -2278,7 +2221,7 @@ void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n,
     o.gestures = true;
     o.select = in_edit;
     o.ruler = in_edit;
-    o.wheel = in_edit;
+    o.pan = in_edit;  // middle-drag (13-45: the wheel and keys are Edit's, EditNavigate)
     o.big_numbers = in_edit;
     o.fades = fades;
     o.mono = d.mono;  // 13-41
@@ -2288,10 +2231,7 @@ void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n,
         o.view_len = P.view_len;
         if (d.mode == DetectMode::Silence) o.threshold_db = d.silence.threshold_db;
     }
-    if (in_edit) {
-        o.view_keys = &P.keys;
-        o.size.y = std::max(16.0f, height - kScrollbarH - 4.0f);
-    }
+    if (in_edit) o.size.y = std::max(16.0f, height - kScrollbarH - 4.0f);
     // 13-20 / 13-23 / 13-25: Edit draws the parts (not in Takes mode: a take keeps its item's snap).
     WaveParts parts;
     if (in_edit && d.mode != DetectMode::Takes) {
@@ -2312,7 +2252,6 @@ void DrawSoundWaves(const char* id, const SoundLibrary& lib, const SoundNode& n,
         P.wave_x0 = ev.min.x;
         P.wave_x1 = ev.max.x;
         P.wave_len = m.source_len;
-        if (ev.zoom != 1.0) ZoomView(ev.zoom, ev.zoom_at, m.source_len);
         if (ev.scroll_s != 0.0) ScrollView(ev.scroll_s, m.source_len);
         ViewScrollbar(m.source_len);
         if (ev.threshold_live || ev.threshold_done) {
@@ -3580,10 +3519,6 @@ void DrawEditOverlay()
         return;
     }
     P.edit_frame = ImGui::GetFrameCount();
-    if (P.keys_stale) {
-        P.keys_stale = false;
-        LoadViewKeys();
-    }
     const SoundMedia& m = MediaOf(*n);
     const ImVec2      ds = ImGui::GetIO().DisplaySize;
     if (P.edit_focus) {
@@ -3657,11 +3592,13 @@ void DrawEditOverlay()
             "Drag across the waveform: select a zone, then right-click it: Exclude / \xE2\x86\x92 value\n"
             "Right-click a variation: play it or a part, exclude it, reset its sync point or cuts\n"
             "Click: listen (the part under the mouse)\n"
-            "Zoom and scroll: your REAPER mouse wheel and zoom keys, middle-drag, the scrollbar\n"
+            "Zoom and scroll: the View actions in Shortcuts (your REAPER wheel and zoom keys unless you set your\n"
+            "own), middle-drag, the scrollbar; Zoom vertically makes the lanes taller\n"
             "Drag the threshold line (Silence)\nSpace: play / stop, Esc: clear the zone, stop, then close";
         static const char* const kHelpTakes =
             "Click a variation: play and select (Ctrl-click adds)\nDrag an edge: trim (inside its take)\n"
             "Drag up / down inside: its dB\nAlt-click: off / on\nSplit and add: not in Takes mode\n"
+            "Zoom / Scroll vertically (Shortcuts): the takes taller, scrolled\n"
             "Space: play / stop, Esc: stop, then close";
         // The tools sit at the top right; the name and count take what they leave (shortened),
         // and go above them only when the panel is too narrow for both (Antho, 13-7b).
@@ -3693,15 +3630,16 @@ void DrawEditOverlay()
         const float tools_right = ui::LineRight() - hpad_x;  // the tools wrap inside the header inset
         if (ui::SolidButton("\xE2\x88\x92##zoomout", ImVec2(side_btn, bh)))
             ZoomView(1.5, P.view_start + (P.view_len > 0.0 ? P.view_len : m.source_len) * 0.5, m.source_len);
-        ui::ItemTipText("Zoom out (your REAPER 'View: Zoom out horizontal' keys)");
+        ui::ItemTipText(("Zoom out (" + ViewNavRowText(kNavZoomOut) + ")").c_str());
         SameLineIfFits(side_btn, tools_right);
         if (ui::SolidButton("+##zoomin", ImVec2(side_btn, bh)))
             ZoomView(1.0 / 1.5, P.view_start + (P.view_len > 0.0 ? P.view_len : m.source_len) * 0.5, m.source_len);
-        ui::ItemTipText("Zoom in (your REAPER 'View: Zoom in horizontal' keys)");
+        ui::ItemTipText(("Zoom in (" + ViewNavRowText(kNavZoomIn) + ")").c_str());
         SameLineIfFits(ui::ButtonWidth("Fit"), tools_right);
         if (ui::SolidButton("Fit", ImVec2(0.0f, bh))) {
             P.view_start = 0.0;
             P.view_len = 0.0;
+            P.vzoom = 1.0;  // 13-45
         }
         SameLineIfFits(ui::Dp(18.0f), tools_right);
         ui::HelpMark("##edithelp", Shown(*n).mode == DetectMode::Takes ? kHelpTakes : kHelpPlain, bh);
@@ -3723,13 +3661,18 @@ void DrawEditOverlay()
         const float wave_w = std::max(ui::Dp(100.0f), ImGui::GetContentRegionAvail().x - side_w - ui::Dp(8.0f));
         const float wave_h = std::max(ui::Dp(80.0f), ImGui::GetContentRegionAvail().y - ui::Dp(4.0f));
         ImGui::BeginChild("##editwave", ImVec2(wave_w, wave_h), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollWithMouse);
+        // 13-45: the view actions (your REAPER wheel and zoom keys, or your own: Shortcuts), the wheel over
+        // the waveform, the keys while Edit has the focus.
+        if (m.ok) EditNavigate(ViewNavInput(ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows), keys, ImGui::GetID("##editnav")));
         if (!m.ok) {
             FitText("Source not found", ui::kMissText);
         } else {
             const float y0 = ImGui::GetCursorScreenPos().y;
             if (Shown(*n).mode != DetectMode::Takes) EditLegend(store, *lib, *n);  // 13-20 / 13-23 / 13-25
             const float used = ImGui::GetCursorScreenPos().y - y0;
-            if (!StoreReplaced()) DrawSoundWaves("editwave", *lib, *n, m, std::max(ui::Dp(60.0f), wave_h - 24.0f - used), true, nullptr);
+            if (!StoreReplaced())
+                DrawSoundWaves("editwave", *lib, *n, m, std::max(ui::Dp(60.0f), wave_h - 24.0f - used) * static_cast<float>(P.vzoom), true,
+                               nullptr);
         }
         ImGui::EndChild();
         if (!StoreReplaced()) {
@@ -3773,8 +3716,6 @@ void DrawEditOverlay()
                 else close = true;
             }
             if (ImGui::IsKeyPressed(ImGuiKey_E, false)) close = true;
-            if (ViewKeyPressed(P.keys.zoom_in)) KeyZoom(1.0 / 1.5);
-            else if (ViewKeyPressed(P.keys.zoom_out)) KeyZoom(1.5);
         }
     }
     ui::EndOverlayPanel();
@@ -4220,6 +4161,8 @@ void BlendLayerRoles(const SoundLibrary& lib, const SoundNode& k, float w)
 // it to offset the layer, its "+12 ms" chip on it), its offset (ms) and its volume (dB) beside
 // the track. A Blend has no Mix section: the lane's dB is its child's only volume (Antho
 // 2026-10-12, one control per value). A narrow column puts the two fields under the track.
+// 13-45: the lanes zoom and scroll like every timeline (view_nav.h: the wheel over the box, the keys
+// while it is under the mouse, a middle-drag pans); a double-click on the ruler shows the whole Blend.
 void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const SoundNode& n)
 {
     const std::vector<const SoundNode*> parts = BlendParts(lib, n);
@@ -4231,6 +4174,15 @@ void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const Sound
     }
     const double step = end_ms > 1500.0 ? 500.0 : end_ms > 600.0 ? 200.0 : end_ms > 250.0 ? 100.0 : 50.0;
     const double total_ms = std::ceil((end_ms + step * 0.3) / step) * step;
+    // 13-45: the view window [bv0, bv0 + bspan] ms (the whole Blend unless zoomed).
+    if (P.blend_uid != n.uid) {
+        P.blend_uid = n.uid;
+        P.blend_v0 = 0.0;
+        P.blend_span = 0.0;
+        P.blend_pan = false;
+    }
+    double bspan = P.blend_span > 0.0 ? std::min(P.blend_span, total_ms) : total_ms;
+    double bv0 = std::clamp(P.blend_v0, 0.0, std::max(0.0, total_ms - bspan));
 
     ImDrawList*  dl = ImGui::GetWindowDrawList();
     const ImGuiIO& io = ImGui::GetIO();
@@ -4265,10 +4217,35 @@ void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const Sound
     const float lane_x0 = x0 + name_w + gap;
     const float lane_w = std::max(ui::Dp(24.0f), (stacked ? x1 : x1 - fields_w - gap) - lane_x0);
     const float box_h = pad * 2.0f + head_h + lanes_h;
+    // 13-45: the view actions over the box (not while a bar or a field is dragged), and a middle-drag.
+    ViewNavStep nav;
+    {
+        const ImVec2 box1(box_x1, box0.y + box_h);
+        const bool   hot = P.off_uid.empty() && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) &&
+                         ImGui::IsMouseHoveringRect(box0, box1, false);
+        nav = ViewNavInput(hot, hot, ImGui::GetID("##blendnav"));
+        if (nav.zoom_h != 0.0) {
+            const double f = std::clamp(static_cast<double>((io.MousePos.x - lane_x0) / lane_w), 0.0, 1.0);
+            const double at = bv0 + f * bspan;
+            const double ns = std::clamp(bspan * std::pow(0.8, nav.zoom_h), std::min(total_ms, 10.0), total_ms);
+            bv0 = at - (at - bv0) * ns / bspan;
+            bspan = ns;
+        }
+        bv0 += (nav.scroll_h * 0.1 + nav.scroll_h_pages) * bspan;
+        if (hot && ImGui::IsMouseClicked(ImGuiMouseButton_Middle)) P.blend_pan = true;
+        if (P.blend_pan) {
+            if (!ImGui::IsMouseDown(ImGuiMouseButton_Middle)) P.blend_pan = false;
+            else bv0 -= static_cast<double>(io.MouseDelta.x / lane_w) * bspan;
+        }
+        bv0 = std::clamp(bv0, 0.0, std::max(0.0, total_ms - bspan));
+        P.blend_v0 = bv0;
+        P.blend_span = bspan >= total_ms - 1e-9 ? 0.0 : bspan;
+    }
+    const bool zoomed = P.blend_span > 0.0;
     // The box behind (its height is known beforehand: one row per layer, up to the cap).
     dl->AddRectFilled(box0, ImVec2(box_x1, box0.y + box_h), ui::kBg, ui::kRadiusMd);
     dl->AddRect(box0, ImVec2(box_x1, box0.y + box_h), ui::kStroke, ui::kRadiusMd);
-    auto X = [&](double ms) { return lane_x0 + static_cast<float>(ms / total_ms) * lane_w; };
+    auto X = [&](double ms) { return lane_x0 + static_cast<float>((ms - bv0) / bspan) * lane_w; };
 
     // Header: "ms" | the ruler | "offset" | "volume".
     {
@@ -4283,20 +4260,42 @@ void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const Sound
             ui::AddTextIn(dl, cf, ImVec2(x1 - part_w, cy), ui::kFaint, "plays on");
         }
         dl->PushClipRect(ImVec2(lane_x0 - ui::Dp(20.0f), y), ImVec2(lane_x0 + lane_w + ui::Dp(20.0f), y + head_h), true);
-        for (double t = 0.0; t <= total_ms + 1e-6; t += step) {
-            if (t / total_ms > 0.94) break;  // the last label would run past the track
+        // 13-45: zoomed, finer steps over the view window (unzoomed: as before).
+        const double rstep = !zoomed            ? step
+                             : bspan > 1500.0   ? 500.0
+                             : bspan > 600.0    ? 200.0
+                             : bspan > 250.0    ? 100.0
+                             : bspan > 100.0    ? 50.0
+                             : bspan > 40.0     ? 20.0
+                             : bspan > 20.0     ? 10.0
+                                                : 5.0;
+        for (double t = std::ceil(bv0 / rstep - 1e-9) * rstep; t <= bv0 + bspan + 1e-6; t += rstep) {
+            if ((t - bv0) / bspan > 0.94) break;  // the last label would run past the track
             char lab[32];
             std::snprintf(lab, sizeof(lab), "%.0f", t);
             const ImVec2 ts = ui::TextSizeIn(rf, lab);
             ui::AddTextIn(dl, rf, ImVec2(std::floor(X(t) - ts.x * 0.5f), y + std::floor((head_h - ts.y) * 0.5f)), ui::kFaint, lab);
         }
         dl->PopClipRect();
+        // 13-45: a double-click on the ruler shows the whole Blend again.
+        ImGui::SetCursorScreenPos(ImVec2(lane_x0, y));
+        ImGui::InvisibleButton("##blendruler", ImVec2(std::max(1.0f, lane_w), head_h));
+        if (zoomed) {
+            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                P.blend_v0 = 0.0;
+                P.blend_span = 0.0;
+            }
+            ui::ItemTipText("Zoomed in: double-click to see the whole Blend");
+        }
     }
     // The lanes in a child of their own (scrolled past the cap); drawn at the same screen x.
     ImGui::SetCursorScreenPos(ImVec2(box0.x + 1.0f, box0.y + pad + head_h));
     ImGui::BeginChild("##blendlanes", ImVec2(std::max(1.0f, box_x1 - box0.x - 2.0f), lanes_h), ImGuiChildFlags_None,
                       ImGuiWindowFlags_NoBackground);
     dl = ImGui::GetWindowDrawList();
+    // 13-45: Scroll vertically scrolls the lanes (Zoom vertically: nothing, the rows keep their height).
+    if (const double dy = nav.scroll_v * 0.15 + nav.scroll_v_pages; dy != 0.0)
+        ImGui::SetScrollY(ImGui::GetScrollY() + static_cast<float>(dy) * lanes_h);
     const float lanes_top = ImGui::GetCursorScreenPos().y;
     float       y = lanes_top;
     for (const SoundNode* k : parts) {
@@ -4314,57 +4313,63 @@ void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const Sound
         // The track and its zero line.
         dl->AddRectFilled(ImVec2(lane_x0, ty), ImVec2(lane_x0 + lane_w, ty + th), ui::kSurface, ui::kRadiusSm);
         dl->AddRect(ImVec2(lane_x0, ty), ImVec2(lane_x0 + lane_w, ty + th), ui::kStroke, ui::kRadiusSm);
-        dl->AddLine(ImVec2(std::floor(X(0.0)) + 0.5f, ty), ImVec2(std::floor(X(0.0)) + 0.5f, ty + th), ui::kStrokeStrong);
+        if (bv0 <= 1e-9) dl->AddLine(ImVec2(std::floor(X(0.0)) + 0.5f, ty), ImVec2(std::floor(X(0.0)) + 0.5f, ty + th), ui::kStrokeStrong);
         // The bar.
         const LengthRange r = NodeLengthRange(store, lib, kid);
         const double      off = P.off_uid == kid ? P.off_live : k->offset_ms;
+        // 13-45: the bar within the view window (a bar outside it is not drawn, nor dragged).
         const float       bx0 = X(off);
-        const float       bx1 = std::min(lane_x0 + lane_w, bx0 + std::max(ui::Dp(3.0f), static_cast<float>(r.max_s * 1000.0 / total_ms) * lane_w));
-        const ImVec2      ba(bx0, ty + 3.0f), bb(std::max(bx0 + 3.0f, bx1), ty + th - 3.0f);
-        dl->AddRectFilled(ba, bb, ui::kAccent, 3.0f);
-        if (r.varies()) {
-            const float bmin = X(off + r.min_s * 1000.0);
-            Hatch(dl, ImVec2(std::max(ba.x, bmin), ba.y), bb, ui::kHatchLight);
-        }
-        ImGui::SetCursorScreenPos(ImVec2(bx0, ty));
-        ImGui::InvisibleButton("##bar", ImVec2(std::max(ui::Dp(6.0f), bb.x - bx0), th));
-        const bool bar_hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
-        if (bar_hot) {
-            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
-            dl->AddRect(ImVec2(ba.x - 2.0f, ba.y - 2.0f), ImVec2(bb.x + 2.0f, bb.y + 2.0f), ui::kRing, 5.0f, 0, 2.0f);
-        }
-        if (ImGui::IsItemHovered() && !ImGui::IsItemActive()) ui::ItemTipText("Drag to set the offset \xC2\xB7 Shift = free");
-        if (ImGui::IsItemActivated()) {
-            P.off_uid = kid;
-            P.off0 = k->offset_ms;
-            P.off_live = k->offset_ms;
-            P.off_scale = total_ms;
-            P.off_dx = 0.0f;
-        }
-        if (ImGui::IsItemActive() && P.off_uid == kid) {
-            P.off_dx += io.MouseDelta.x;
-            double v = P.off0 + static_cast<double>(P.off_dx) / lane_w * P.off_scale;
-            if (!io.KeyShift) v = std::round(v);
-            P.off_live = std::max(0.0, v);
-            // The .barlbl chip on the bar (mono 11, raised, stroke-strong edge, r4).
-            char lab[32];
-            std::snprintf(lab, sizeof(lab), "%s%.0f ms", P.off_live >= 0.0 ? "+" : "", P.off_live);
-            ImFont*      cf = ui::FontMonoSmall();
-            const ImVec2 ts = ui::TextSizeIn(cf, lab);
-            const ImVec2 c0(std::min(bx0 + 4.0f, lane_x0 + lane_w - ts.x - 8.0f), ty + std::floor((th - ts.y - 2.0f) * 0.5f));
-            const ImVec2 c1(c0.x + ts.x + 8.0f, c0.y + ts.y + 2.0f);
-            dl->AddRectFilled(c0, c1, ui::kRaised, 4.0f);
-            dl->AddRect(c0, c1, ui::kStrokeStrong, 4.0f);
-            ui::AddTextIn(dl, cf, ImVec2(c0.x + 4.0f, c0.y + 1.0f), ui::kText, lab);
-        }
-        if (ImGui::IsItemDeactivated() && P.off_uid == kid) {
-            const double v = P.off_live;
-            P.off_uid.clear();
-            if (std::fabs(v - k->offset_ms) > 1e-6)
-                EditNode("Offset", lib.uid, kid, [v](SoundNode& x) {
-                    x.offset_ms = v;
-                    return true;
-                });
+        const float       bx1 = bx0 + std::max(ui::Dp(3.0f), static_cast<float>(r.max_s * 1000.0 / bspan) * lane_w);
+        // (One being dragged stays, at the lane's edge if needs be: its drag must not lose its button.)
+        const float       vx0 = std::min(std::max(bx0, lane_x0), lane_x0 + lane_w - 3.0f), vx1 = std::min(bx1, lane_x0 + lane_w);
+        const bool        bar_seen = vx1 - vx0 >= 1.0f || P.off_uid == kid;
+        const ImVec2      ba(vx0, ty + 3.0f), bb(std::max(vx0 + 3.0f, vx1), ty + th - 3.0f);
+        if (bar_seen) {
+            dl->AddRectFilled(ba, bb, ui::kAccent, 3.0f);
+            if (r.varies()) {
+                const float bmin = X(off + r.min_s * 1000.0);
+                if (bmin < bb.x) Hatch(dl, ImVec2(std::max(ba.x, bmin), ba.y), bb, ui::kHatchLight);
+            }
+            ImGui::SetCursorScreenPos(ImVec2(vx0, ty));
+            ImGui::InvisibleButton("##bar", ImVec2(std::max(ui::Dp(6.0f), bb.x - vx0), th));
+            const bool bar_hot = ImGui::IsItemHovered() || ImGui::IsItemActive();
+            if (bar_hot) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+                dl->AddRect(ImVec2(ba.x - 2.0f, ba.y - 2.0f), ImVec2(bb.x + 2.0f, bb.y + 2.0f), ui::kRing, 5.0f, 0, 2.0f);
+            }
+            if (ImGui::IsItemHovered() && !ImGui::IsItemActive()) ui::ItemTipText("Drag to set the offset \xC2\xB7 Shift = free");
+            if (ImGui::IsItemActivated()) {
+                P.off_uid = kid;
+                P.off0 = k->offset_ms;
+                P.off_live = k->offset_ms;
+                P.off_scale = bspan;  // 13-45: the ms the lane shows
+                P.off_dx = 0.0f;
+            }
+            if (ImGui::IsItemActive() && P.off_uid == kid) {
+                P.off_dx += io.MouseDelta.x;
+                double v = P.off0 + static_cast<double>(P.off_dx) / lane_w * P.off_scale;
+                if (!io.KeyShift) v = std::round(v);
+                P.off_live = std::max(0.0, v);
+                // The .barlbl chip on the bar (mono 11, raised, stroke-strong edge, r4).
+                char lab[32];
+                std::snprintf(lab, sizeof(lab), "%s%.0f ms", P.off_live >= 0.0 ? "+" : "", P.off_live);
+                ImFont*      cf = ui::FontMonoSmall();
+                const ImVec2 ts = ui::TextSizeIn(cf, lab);
+                const ImVec2 c0(std::min(vx0 + 4.0f, lane_x0 + lane_w - ts.x - 8.0f), ty + std::floor((th - ts.y - 2.0f) * 0.5f));
+                const ImVec2 c1(c0.x + ts.x + 8.0f, c0.y + ts.y + 2.0f);
+                dl->AddRectFilled(c0, c1, ui::kRaised, 4.0f);
+                dl->AddRect(c0, c1, ui::kStrokeStrong, 4.0f);
+                ui::AddTextIn(dl, cf, ImVec2(c0.x + 4.0f, c0.y + 1.0f), ui::kText, lab);
+            }
+            if (ImGui::IsItemDeactivated() && P.off_uid == kid) {
+                const double v = P.off_live;
+                P.off_uid.clear();
+                if (std::fabs(v - k->offset_ms) > 1e-6)
+                    EditNode("Offset", lib.uid, kid, [v](SoundNode& x) {
+                        x.offset_ms = v;
+                        return true;
+                    });
+            }
         }
         if (StoreReplaced()) {
             ImGui::PopID();
@@ -4422,7 +4427,7 @@ void DrawBlendView(const SoundStore& store, const SoundLibrary& lib, const Sound
     }
     if (!StoreReplaced() && NodePlaying(n.uid)) {
         const float x = std::floor(X(AuditionPosition() * 1000.0)) + 0.5f;
-        if (x <= lane_x0 + lane_w) dl->AddLine(ImVec2(x, lanes_top), ImVec2(x, y), ui::kText, 1.0f);
+        if (x >= lane_x0 && x <= lane_x0 + lane_w) dl->AddLine(ImVec2(x, lanes_top), ImVec2(x, y), ui::kText, 1.0f);
     }
     ImGui::SetCursorScreenPos(ImVec2(box0.x, y));
     ImGui::Dummy(ImVec2(0.0f, 0.0f));  // the child's content ends under the last lane

@@ -6,7 +6,8 @@
 //   - the height grip on the strip window's top edge (kept in ExtState on release);
 //   - the view window [v0, v0 + span] of project time around the current item: framed by
 //     default with a margin, following the playhead, re-framed when REAPER starts playing;
-//     Alt + wheel zooms about the mouse, Shift + wheel scrolls (spec 11-fb-12 / 11-fb-14);
+//     13-45: the view actions zoom about the mouse and scroll (view_nav.h: the user's REAPER
+//     wheel and zoom keys, or his own; spec 11-fb-12 / 11-fb-14 had Alt / Shift + wheel);
 //   - time <-> x over a lane;
 //   - the seconds / frames ruler above a lane (spec 11-fb-6 / 11-fb-9);
 //   - click / drag seek.
@@ -47,8 +48,8 @@ struct StripViewState {
     bool   init = false;
     double v0 = 0.0;
     double span = 1.0;
-    bool   zoomed = false;       // Alt + wheel changed the span from the default
-    bool   scrolled = false;     // Shift + wheel moved the view
+    bool   zoomed = false;       // a zoom (view_nav.h) changed the span from the default
+    bool   scrolled = false;     // a scroll moved the view
     bool   was_playing = false;  // play start re-frames the clip
     double item_start = 0.0;     // the current item the view last followed
     double item_end = 0.0;
@@ -70,7 +71,7 @@ inline void StripViewReset(StripViewState& s)
 }
 
 // Follows the current item [item_start, item_end) and the playhead (never while `hold`, a
-// drag in the lane), then applies Alt / Shift + wheel when `window_hovered`. `mouse_x` and
+// drag in the lane), then applies the view actions (view_nav.h) when `window_hovered`. `mouse_x` and
 // the lane [lane_x, lane_x + lane_w] place the zoom's fixed time. Returns the window to draw.
 StripWindow StripViewUpdate(StripViewState& s, double item_start, double item_end, double playhead, bool playing,
                             double fps, bool hold, bool window_hovered, float mouse_x, float lane_x, float lane_w);

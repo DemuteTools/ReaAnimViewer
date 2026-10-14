@@ -441,14 +441,13 @@ static void TestPartGains()
             CHECK(Near(sm[1].start_s, 1.5) && Near(sm[1].length_s, 0.5) && Near(sm[1].fade_in_s, kDefaultCutFade) &&
                   Near(sm[1].fade_out_s, kDefaultFadeOut) && Near(sm[1].delay_ms, 1500.0));
         }
-        // 13-62g: a margin never crosses the cut; both pieces reaching it play on as one voice.
-        t.sound.frames[0].part_trims = {1.0, 1.5, 1.5, 2.0};
+        t.sound.frames[0].part_trims = {1.0, 1.4, 1.4, 2.0};  // a pre-roll reaching back over the cut
         const std::vector<AuditionVoice> one = EditPlayVoices(lib, t);
         CHECK(one.size() == 1 && Near(one[0].length_s, 1.0));
-        // With part gains: split where the playing part changes (the cut).
+        // With part gains: split where the playing part changes (1.4, not the cut).
         t.sound.frames[0].part_db["a"] = 4.0;
         const std::vector<AuditionVoice> two = EditPlayVoices(lib, t);
-        CHECK(two.size() == 2 && Near(two[0].length_s, 0.5) && Near(two[0].gain_db, 4.0) && Near(two[1].gain_db, -3.0));
+        CHECK(two.size() == 2 && Near(two[0].length_s, 0.4) && Near(two[0].gain_db, 4.0) && Near(two[1].gain_db, -3.0));
         // The part's own audition (a click on it) plays its piece.
         t.sound.frames[0].part_trims = {1.0, 1.2, 1.5, 2.0};
         const std::vector<AuditionVoice> pa = PartAuditionVoices(lib, t, 0, "a");

@@ -465,33 +465,9 @@ SoundNode MeasuredNode(const SoundNode& n, const std::string& path)
 // new frames that hold them (A7), the parts measured again.
 void Redetect(SoundData& d, const SoundMedia& m, const std::vector<SoundFrame>& previous)
 {
-    // 13-62g: a divided Sound's variations carry the largest margin of its parts (each part then takes its own).
-    d.frames = MergeHandFrames(Detected(m, d.mode, DetectionSilence(d)), previous, d.mode == DetectMode::Takes);
+    d.frames = MergeHandFrames(Detected(m, d.mode, d.silence), previous, d.mode == DetectMode::Takes);
     CarryHandMarks(d.frames, previous);
     RefreshWith(d, m.path);
-}
-
-// 13-62g: the parts measured again after a part's setting changed. A pre-roll / tail (`margins`) also detects the
-// variations again (DetectionSilence: they carry the largest margin of the parts, so a part's own tail can reach
-// past the Sound's; hand frames kept, hand cuts, owners and piece edges carried), once the peaks are read.
-// `previous` = the frames before the change.
-void RemeasureParts(SoundData& d, const SoundNode& n, const std::string& path, bool margins,
-                    const std::vector<SoundFrame>& previous)
-{
-    if (margins && d.mode == DetectMode::Silence && IsDivided(d) && !path.empty() &&
-        RequestPeaks(path, nullptr) == PeakState::Ready) {
-        const SoundMedia& m = MediaOf(n);
-        if (m.ok && m.path == path) {
-            Redetect(d, m, previous);
-            return;
-        }
-    }
-    RefreshWith(d, path);
-}
-
-bool IsMarginField(PartField f)
-{
-    return f == PartField::Preroll || f == PartField::Tail;
 }
 
 int DetectedCount(const std::string& uid, const SoundMedia& m, const SoundData& d)
@@ -503,7 +479,7 @@ int DetectedCount(const std::string& uid, const SoundMedia& m, const SoundData& 
                   P.media_scc);
     if (P.det_key != key) {
         P.det_key = key;
-        P.det_count = static_cast<int>(Detected(m, d.mode, DetectionSilence(d)).size());
+        P.det_count = static_cast<int>(Detected(m, d.mode, d.silence).size());
     }
     return P.det_count;
 }
@@ -950,7 +926,7 @@ void Hatch(ImDrawList* dl, ImVec2 a, ImVec2 b, ImU32 col)
 
 struct WaveDrag {
     ImGuiID id = 0;
-    enum Kind { None, Pending, Trim, Db, Thr, Sync, Cut, Zone, Span, Edge } kind = None;
+    enum Kind { None, Pending, Trim, Db, Thr, Sync, Cut, Zone, Span } kind = None;
     int     frame = -1;
     int     edge = 0;  // -1 left, +1 right
     double  s0 = 0.0, l0 = 0.0, db0 = 0.0;
@@ -963,8 +939,6 @@ struct WaveDrag {
     // 13-62: the lane pressed (WaveformEvents::lane) and Alt held at the press (Span: exclude).
     int     press_lane = -1;
     bool    alt = false;
-    // 13-62g (Edge): a piece's edge on its lane: side in `edge`, its section's `pe_at`, where it may go [pe_lo, pe_hi].
-    double  pe_at = 0.0, pe_lo = 0.0, pe_hi = 0.0;
 };
 WaveDrag g_wd;
 // 13-62 review: the horizontal travel past which a press on a Split lane (or an Alt press on a divided Sound)
@@ -1249,14 +1223,12 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
     // 13-62: the piece of the variation under the mouse (EditPiecesOf, never merged) and the lane it is on.
     std::vector<EditPiece> hover_pieces;
     const EditPiece*       hover_piece = nullptr;
-    GapInfo                hover_gap;  // 13-62g: the gap under the mouse (why nothing is placed there)
     const int              hover_lane = hovered ? PressLane(m.y) : -1;
     if (divided && hovered && o.gestures) {
         const int fi = FrameAt(frames, T(m.x));
-        // 13-62g: the range a click there acts on (in a gap its part leaves out: that gap only).
-        hover_pieces.resize(1);
-        if (fi >= 0 && EditRangeAt(*pd, fi, T(m.x), &hover_pieces[0])) hover_piece = &hover_pieces[0];
-        if (fi >= 0) hover_gap = GapAt(*pd, fi, T(m.x));
+        if (fi >= 0) hover_pieces = EditPiecesOf(*pd, fi);
+        for (const EditPiece& ep : hover_pieces)
+            if (T(m.x) >= ep.start && T(m.x) < ep.start + ep.length) hover_piece = &ep;
     }
     // 13-62 (decision 9): a swipe's / Alt+drag's edge lands on a cut, a variation's edge or an excluded zone's
     // edge within 6 px.
@@ -1268,7 +1240,7 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
     // stretches a part leaves out are drawn as outside a variation. Empty when the margins do not apply.
     const SoundData* md = pd ? pd : o.margins;
     std::vector<std::vector<PartSpan>> pieces;
-    if (md && (PartMarginsApply(*md) || (IsDivided(*md) && md->mode != DetectMode::Takes))) {  // 13-62g: hand edges in any mode
+    if (md && PartMarginsApply(*md)) {
         pieces.resize(frames.size());
         for (size_t i = 0; i < frames.size() && i < md->frames.size(); ++i)
             if (X(frames[i].start + frames[i].length) >= a.x && X(frames[i].start) <= b.x)
@@ -1496,18 +1468,14 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
             const SoundFrame& f = pd->frames[i];
             if (!f.on || X(f.start + f.length) < a.x || X(f.start) > b.x) continue;
             double at = f.start;
-            // 13-62g: a gap (nothing placed: excluded, or a stretch its part leaves out) is one thing, hatched the
-            // same everywhere; its label says which (the tooltip says why and how to fill it).
             auto   hatch = [&](double s0, double s1) {
                 const ImVec2 za(X(s0), by0), zb(std::max(X(s1), X(s0) + 1.0f), by1);
                 dl->AddRectFilled(za, zb, WithAlpha(ui::kBg, 0x66));
                 Hatch(dl, za, zb, ui::kHatch);
-                const char*  lab = divided && GapAt(*pd, static_cast<int>(i), (s0 + s1) * 0.5).kind != GapKind::Excluded ? "Gap" : "Excluded";
-                const ImVec2 ls = ui::TextSizeIn(tf, lab);
-                if (zb.x - za.x >= ls.x + 6.0f) ui::AddTextIn(dl, tf, ImVec2(za.x + 3.0f, zb.y - ls.y - 2.0f), ui::kMuted, lab);
+                const ImVec2 ls = ui::TextSizeIn(tf, "Excluded");
+                if (zb.x - za.x >= ls.x + 6.0f) ui::AddTextIn(dl, tf, ImVec2(za.x + 3.0f, zb.y - ls.y - 2.0f), ui::kMuted, "Excluded");
             };
-            std::vector<PartSpan> placed = divided ? PartPieces(*pd, static_cast<int>(i)) : PlacedSpans(*pd, static_cast<int>(i), std::string());
-            for (const PartSpan& sp : placed) {
+            for (const PartSpan& sp : PlacedSpans(*pd, static_cast<int>(i), std::string())) {
                 if (sp.start - at > 1e-9) hatch(at, sp.start);
                 at = sp.start + sp.length;
             }
@@ -1719,14 +1687,14 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
                 continue;
             }
             double at = f.start;
-            // 13-54: each part as it plays (its margins applied). 13-62g: what is not placed (excluded, or left out
-            // by a part's margins / hand edges) is one gap, hatched.
-            const std::vector<PartSpan> shown = PartPieces(*pd, static_cast<int>(i));
-            for (const PartSpan& sp : shown) {
+            const std::vector<PartSpan> raw = PartSpansOf(*pd, static_cast<int>(i));
+            for (const PartSpan& sp : raw) {
                 if (sp.start - at > 1e-9) hatch(at, sp.start);
                 at = sp.start + sp.length;
             }
             if (f.start + f.length - at > 1e-9) hatch(at, f.start + f.length);
+            // 13-54: each part as it plays (its margins applied): what they leave out stays empty.
+            const std::vector<PartSpan>& shown = i < pieces.size() && !pieces[i].empty() ? pieces[i] : raw;
             for (const PartSpan& sp : shown) {
                 const int k = std::max(0, PartIndex(*pd, sp.value_uid));
                 ImU32     col = static_cast<size_t>(k) < wp->colors.size() ? wp->colors[static_cast<size_t>(k)] : ui::kAccent;
@@ -1778,43 +1746,6 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
             }
         }
     }
-    // 13-62g: a placed piece's edge on its own lane (Lane view), grabbed like a REAPER item's edge; a variation's
-    // edge, a cut's grab, a sync flag, the threshold line and a fade handle keep the mouse first.
-    PieceEdgeHit pe_hit;
-    bool         pe_hot = false;
-    if (split && pd && hovered && o.gestures && !on_strip && edge_frame < 0 && hot_cut < 0 && hot_flag < 0 && !near_thr &&
-        !fade_hot && hover_lane >= 0 && static_cast<size_t>(hover_lane) < pd->divide_values.size() && g_wd.id != gid) {
-        const int fi = FrameAt(frames, T(m.x));
-        pe_hot = fi >= 0 && PieceEdgeAt(*pd, fi, pd->divide_values[static_cast<size_t>(hover_lane)], T(m.x),
-                                        static_cast<double>(ui::Dp(4.0f) / w) * vl, &pe_hit);
-    }
-    const bool pe_drag = g_wd.id == gid && g_wd.kind == WaveDrag::Edge;
-    if (split && pd) {  // each placed piece framed on its part's lane (the item), its edge lit under the mouse
-        dl->PushClipRect(a, b, true);
-        for (size_t i = 0; i < pieces.size(); ++i)
-            for (const PartSpan& sp : pieces[i]) {
-                const int k = PartIndex(*pd, sp.value_uid);
-                if (k < 0 || k >= lanes || static_cast<size_t>(k) >= wp->colors.size()) continue;
-                const float  ly0 = a.y + lane_h * static_cast<float>(k), ly1 = ly0 + lane_h;
-                const ImVec2 ra(X(sp.start), ly0 + 1.0f), rb(std::max(X(sp.start + sp.length), X(sp.start) + 1.0f), ly1 - 1.0f);
-                if (rb.x < a.x || ra.x > b.x) continue;
-                dl->AddRect(ra, rb, WithAlpha(wp->colors[static_cast<size_t>(k)], 0x8C), 2.0f);
-            }
-        int   lane = -1;
-        float ex = 0.0f;
-        if (pe_drag) {
-            lane = g_wd.press_lane;
-            ex = X(g_wd.moved ? g_wd.last_t : g_wd.s0);
-        } else if (pe_hot) {
-            lane = hover_lane;
-            ex = X(pe_hit.edge);
-        }
-        if (lane >= 0 && lane < lanes) {
-            const float ly0 = a.y + lane_h * static_cast<float>(lane), hw = o.big_numbers ? 3.0f : 2.0f;
-            dl->AddRectFilled(ImVec2(ex - hw, ly0 + 1.0f), ImVec2(ex + hw, ly0 + lane_h - 1.0f), ui::kAccentLine);
-        }
-        dl->PopClipRect();
-    }
     // A trim handle (.sh) lit under the mouse or while trimming: an accent-line band on the edge.
     {
         int   hf = edge_frame, hs = edge_side;
@@ -1835,7 +1766,7 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
         // range a click would take, outlined dashed in the lane's colour, "click -> <part>" when it fits.
         // Review: not over a trim edge, the threshold line or a fade handle (they keep the mouse).
         if (split && hover_piece && hover_lane >= 0 && hot_cut < 0 && hot_flag < 0 && g_wd.id != gid && edge_frame < 0 &&
-            !near_thr && !fade_hot && !pe_hot &&
+            !near_thr && !fade_hot &&
             static_cast<size_t>(hover_lane) < pd->divide_values.size() &&
             hover_piece->owner != pd->divide_values[static_cast<size_t>(hover_lane)]) {
             const ImU32  lc = wp->colors[static_cast<size_t>(hover_lane)];
@@ -1855,7 +1786,7 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
         dl->PopClipRect();
     }
     const bool part_hot = hot_flag >= 0 || hot_cut >= 0;
-    if (part_hot || pe_hot || (g_wd.id == gid && (g_wd.kind == WaveDrag::Sync || g_wd.kind == WaveDrag::Cut || g_wd.kind == WaveDrag::Edge)))
+    if (part_hot || (g_wd.id == gid && (g_wd.kind == WaveDrag::Sync || g_wd.kind == WaveDrag::Cut)))
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
     else if (near_thr) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
     else if (edge_frame >= 0) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
@@ -1887,19 +1818,6 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
                                                      : "Proposed by RAV (next transient). ");
         }
         ui::ShowTip(tip);
-    } else if (pe_hot && !fade_hot) {
-        // 13-62g: a piece's edge (an item's edge in REAPER).
-        const std::string nm = NameOf(pe_hit.value);
-        char              tip[320];
-        std::snprintf(tip, sizeof(tip),
-                      "%s's %s (%.0f ms)%s. Drag to trim it in place, as a REAPER item's edge (never past the cut); "
-                      "double-click: back to the automatic edge (its %s).",
-                      nm.c_str(), pe_hit.side < 0 ? "start" : "end", pe_hit.edge * 1000.0, pe_hit.hand ? ", moved by hand" : "",
-                      pe_hit.side < 0 ? "Pre-roll" : "Tail");
-        ui::ShowTip(tip);
-    } else if (divided && hover_gap.kind != GapKind::None && !fade_hot && !near_thr && edge_frame < 0 && g_wd.id != gid) {
-        // 13-62g: a gap (nothing placed there): why, and how to fill it.
-        ui::ItemTipText(GapTip(hover_gap, NameOf(hover_gap.value)).c_str());
     } else if (divided && hover_piece && !fade_hot && !near_thr && edge_frame < 0 && g_wd.id != gid) {
         // 13-62: what a click there does (the mockup's hover titles), after the usual tooltip delay.
         char         tip[256];
@@ -1948,20 +1866,11 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
             g_wd.kind = WaveDrag::Trim;
             g_wd.frame = edge_frame;
             g_wd.edge = edge_side;
-        } else if (pe_hot) {  // 13-62g: a piece's edge on its lane
-            g_wd.kind = WaveDrag::Edge;
-            g_wd.frame = pe_hit.variation;
-            g_wd.edge = pe_hit.side;
-            g_wd.pe_at = pe_hit.at;
-            g_wd.pe_lo = pe_hit.lo;
-            g_wd.pe_hi = pe_hit.hi;
         } else {
             g_wd.kind = WaveDrag::Pending;
             g_wd.frame = under;
         }
-        if (g_wd.kind == WaveDrag::Edge) {
-            g_wd.s0 = pe_hit.edge;  // the edge's time at the grab
-        } else if (g_wd.frame >= 0 && static_cast<size_t>(g_wd.frame) < frames.size()) {
+        if (g_wd.frame >= 0 && static_cast<size_t>(g_wd.frame) < frames.size()) {
             g_wd.s0 = frames[static_cast<size_t>(g_wd.frame)].start;
             g_wd.l0 = frames[static_cast<size_t>(g_wd.frame)].length;
             g_wd.db0 = frames[static_cast<size_t>(g_wd.frame)].db;
@@ -1986,19 +1895,10 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
         const bool span_short = g_wd.kind == WaveDrag::Span && dx <= kSpanPx;
         const bool moved = dx > 1.0f || dy > 1.0f;
         if (moved && (g_wd.kind == WaveDrag::Trim || g_wd.kind == WaveDrag::Thr || g_wd.kind == WaveDrag::Sync ||
-                      g_wd.kind == WaveDrag::Cut || g_wd.kind == WaveDrag::Edge))
+                      g_wd.kind == WaveDrag::Cut))
             g_wd.moved = true;
         if (down) {
-            if (g_wd.kind == WaveDrag::Edge && g_wd.moved) {  // 13-62g: live, inside its section
-                g_wd.last_t = std::clamp(T(m.x), g_wd.pe_lo, std::max(g_wd.pe_lo, g_wd.pe_hi));
-                ev.piece_edge_frame = g_wd.frame;
-                ev.piece_edge_side = g_wd.edge;
-                ev.piece_edge_at = g_wd.pe_at;
-                ev.piece_edge_t = g_wd.last_t;
-                char tip[48];
-                std::snprintf(tip, sizeof(tip), "%s %.0f ms", g_wd.edge < 0 ? "Start" : "End", g_wd.last_t * 1000.0);
-                ui::ShowTip(tip);
-            } else if ((g_wd.kind == WaveDrag::Sync || g_wd.kind == WaveDrag::Cut) && g_wd.moved) {
+            if ((g_wd.kind == WaveDrag::Sync || g_wd.kind == WaveDrag::Cut) && g_wd.moved) {
                 g_wd.last_t = std::clamp(T(m.x), 0.0, o.source_len);
                 if (g_wd.kind == WaveDrag::Sync) {
                     ev.sync_frame = g_wd.frame;
@@ -2078,14 +1978,6 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
         } else {
             if (span_short) g_wd.kind = WaveDrag::Pending;  // 13-62 review: released as a click
             switch (g_wd.kind) {
-            case WaveDrag::Edge:  // 13-62g
-                if (!g_wd.moved) break;
-                ev.piece_edge_frame = g_wd.frame;
-                ev.piece_edge_side = g_wd.edge;
-                ev.piece_edge_at = g_wd.pe_at;
-                ev.piece_edge_t = g_wd.last_t;
-                ev.piece_edge_done = true;
-                break;
             case WaveDrag::Sync:
                 if (!g_wd.moved) break;
                 ev.sync_frame = g_wd.frame;
@@ -2149,16 +2041,8 @@ WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::
         }
     }
     if (hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-        if (pe_hot || (pe_drag && !g_wd.moved)) {  // 13-62g: a piece's edge back to automatic
-            const PieceEdgeHit& h = pe_hot ? pe_hit : PieceEdgeHit{};
-            ev.piece_edge_frame = pe_hot ? h.variation : g_wd.frame;
-            ev.piece_edge_side = pe_hot ? h.side : g_wd.edge;
-            ev.piece_edge_at = pe_hot ? h.at : g_wd.pe_at;
-            ev.piece_edge_reset = true;
-        } else {
-            ev.double_clicked = under >= 0 ? under : -2;
-            ev.double_at = T(m.x);
-        }
+        ev.double_clicked = under >= 0 ? under : -2;
+        ev.double_at = T(m.x);
     }
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right)) {
         ev.right_clicked = true;
@@ -2693,10 +2577,9 @@ void ResetPartField(const SoundLibrary& lib, const SoundNode& n, const std::stri
         const PartSettings* p = PartSettingsOf(x.sound, value);
         const PartSettings  before = p ? *p : PartSettings{};
         const bool          had = p != nullptr;
-        const std::vector<SoundFrame> prev = x.sound.frames;
         ResetPartSetting(x.sound, value, f);
         if (SamePartSettings(had ? &before : nullptr, PartSettingsOf(x.sound, value))) return false;
-        if (remeasure) RemeasureParts(x.sound, x, path, IsMarginField(f), prev);  // 13-62g
+        if (remeasure) RefreshWith(x.sound, path);
         return true;
     }, pname + ": same as the Sound again");
 }
@@ -2724,7 +2607,7 @@ bool PartNumberEdit(ui::DragNumberEvent e, double v, const SoundLibrary& lib, co
     if (e == ui::DragNumberEvent::Live || e == ui::DragNumberEvent::Commit) {
         SoundData& dr = Live(n);
         SetPartSetting(dr, value, PartNumberPatch(f, v));
-        if (PartFieldRemeasures(f)) RemeasureParts(dr, n, path, IsMarginField(f), n.sound.frames);  // 13-62g
+        if (PartFieldRemeasures(f)) RefreshWith(dr, path);
         if (e == ui::DragNumberEvent::Commit) {
             if (SamePartSettings(PartSettingsOf(dr, value), PartSettingsOf(n.sound, value))) CancelLive();
             else CommitLive("Part setting", lib.uid, n.uid, toast);
@@ -3115,9 +2998,8 @@ std::string PartPicker(const SoundLibrary& lib, const SoundNode& n, const std::s
     if (all)
         EditNode("Part settings", lib.uid, n.uid, [value, path](SoundNode& x) {
             if (OwnSettingCount(x.sound, value) == 0) return false;
-            const std::vector<SoundFrame> prev = x.sound.frames;
             ResetPartAll(x.sound, value);
-            RemeasureParts(x.sound, x, path, true, prev);  // 13-62g: its margins too
+            RefreshWith(x.sound, path);
             return true;
         }, name + ": every setting same as the Sound again");
     return value;
@@ -3614,12 +3496,9 @@ void EditWaveMenu(const SoundStore& store, const SoundLibrary& lib, const SoundN
         const std::string num = std::to_string(i + 1);
         // 13-62 (decision 9): the range right-clicked (between two cuts / zone edges): to each part, Exclude, Play.
         EditPiece  rp;
-        const bool range = IsDivided(d) && d.mode != DetectMode::Takes && EditRangeAt(d, i, at, &rp);
+        const bool range = IsDivided(d) && d.mode != DetectMode::Takes && PieceAt(d, i, at, &rp);
         if (range) {
-            // 13-62g: in a stretch its part leaves out, the range is that gap only (never the whole piece).
-            const bool        gap = !rp.excluded && GapAt(d, i, at).kind != GapKind::None;
-            const std::string cur = rp.excluded ? std::string("Excluded")
-                                    : ValueName(store, d.divide_group, rp.owner) + (gap ? " \xC2\xB7 gap, not placed" : "");
+            const std::string cur = rp.excluded ? std::string("Excluded") : ValueName(store, d.divide_group, rp.owner);
             const double      ra = rp.start, rb = rp.start + rp.length;
             ui::MenuCaption(("Variation " + num + " \xC2\xB7 " + RangeMs(ra, rb) + " \xC2\xB7 " + cur).c_str());
             for (size_t k = 0; k < d.divide_values.size(); ++k) {
@@ -3751,36 +3630,6 @@ bool HandleWaveParts(const WaveformEvents& ev, const SoundLibrary& lib, const So
         if (ev.cut_done) {
             if (same_frame(dr, ev.cut_frame)) CancelLive();
             else CommitLive("Move cut", lib.uid, n.uid, "Cut moved \xC2\xB7 variation " + std::to_string(ev.cut_frame + 1));
-        }
-        return true;
-    }
-    // 13-62g: a piece's edge dragged on its lane (live, one undo point at the release; none when it ends where it
-    // began), or double-clicked back to its automatic edge (one undo point; none when it was automatic already).
-    if (ev.piece_edge_frame >= 0 && ev.piece_edge_reset) {
-        const int    i = ev.piece_edge_frame, side = ev.piece_edge_side;
-        const double at = ev.piece_edge_at;
-        const std::string path = m.path;
-        EditNode("Piece edge", lib.uid, n.uid, [i, side, at, path](SoundNode& x) {
-            if (!ResetPieceEdge(x.sound, i, at, side)) return false;
-            RefreshOne(x.sound, i, path);
-            return true;
-        }, side < 0 ? "Piece start back to its Pre-roll" : "Piece end back to its Tail");
-        return true;
-    }
-    if (ev.piece_edge_frame >= 0) {
-        const int  i = ev.piece_edge_frame;
-        SoundData& dr = Live(n);
-        if (SyncsStale(dr, i)) RefreshOne(dr, i, m.path);  // never measured yet: as drawn
-        if (SetPieceEdge(dr, i, ev.piece_edge_at, ev.piece_edge_side, ev.piece_edge_t)) RefreshOne(dr, i, m.path);
-        if (ev.piece_edge_done) {
-            const bool same = i < static_cast<int>(n.sound.frames.size()) && i < static_cast<int>(dr.frames.size()) &&
-                              dr.frames[static_cast<size_t>(i)].edge_in == n.sound.frames[static_cast<size_t>(i)].edge_in &&
-                              dr.frames[static_cast<size_t>(i)].edge_out == n.sound.frames[static_cast<size_t>(i)].edge_out;
-            if (same) CancelLive();
-            else
-                CommitLive("Piece edge", lib.uid, n.uid,
-                           std::string(ev.piece_edge_side < 0 ? "Piece start" : "Piece end") + " moved by hand \xC2\xB7 variation " +
-                               std::to_string(i + 1) + " (kept through threshold and margin changes)");
         }
         return true;
     }
@@ -4023,7 +3872,7 @@ void ReplaceFromSelected(const std::string& lib_uid, const std::string& uid, con
         const SoundStore& store = GetSoundStore(nullptr);
         const SoundLibrary* lib = FindLibrary(store, lib_uid);
         const SoundNode*    node = lib ? FindNode(*lib, uid) : nullptr;
-        if (node) sp = DetectionSilence(node->sound);  // 13-62g
+        if (node) sp = node->sound.silence;
     }
     frames = DetectFrames(m.facts, mode, sp, ready ? &pk : nullptr);
     std::string toast = "Replaced audio";
@@ -4509,9 +4358,7 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
             sel >= 0) {
             const DetectMode mode = modes[static_cast<size_t>(sel)];
             // A new mode starts from its own detection (hand frames belong to the old one).
-            SoundData probe_mode = d;  // 13-62g: the parts' margins in the new mode
-            probe_mode.mode = mode;
-            const std::vector<SoundFrame> frames = Detected(m, mode, DetectionSilence(probe_mode));
+            const std::vector<SoundFrame> frames = Detected(m, mode, d.silence);
             const std::string toast = d.edited && mode != d.mode
                                           ? (mode == DetectMode::Whole ? std::string("Whole file")
                                                                        : std::string("Split by ") + labels[static_cast<size_t>(sel)]) +
@@ -4617,7 +4464,7 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
     ui::SubText(VariationCountText(DetectedCount(n.uid, m, Shown(n)), Shown(n).frames).c_str());
     ui::SubText("Saved with the sound in the library (.ravlib).");
     if (ui::SolidButton("Reset to detected")) {
-        const std::vector<SoundFrame> det = Detected(m, d.mode, DetectionSilence(d));  // 13-62g
+        const std::vector<SoundFrame> det = Detected(m, d.mode, d.silence);
         const std::string             path = m.path;
         const int                     nx = ExcludedZoneCount(n.sound), ns = HandSyncCount(n.sound);
         std::string                   toast = "Back to detected";

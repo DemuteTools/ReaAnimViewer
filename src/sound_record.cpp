@@ -635,8 +635,6 @@ Fields FrameFields(const SoundFrame& fr)
     if (!fr.part_trims.empty() && !fr.part_trim_key.empty()) f.push_back({"ptrimk", Enc(fr.part_trim_key)});
     for (const auto& pd : fr.part_db) f.push_back({"pdb." + Enc(pd.first), FormatNumber(pd.second)});  // 13-28
     if (!fr.owners.empty()) f.push_back({"own", JoinEncoded(fr.owners)});  // 13-62
-    if (!fr.edge_in.empty()) f.push_back({"ein", JoinNumbers(fr.edge_in)});  // 13-62g: piece edges moved by hand
-    if (!fr.edge_out.empty()) f.push_back({"eout", JoinNumbers(fr.edge_out)});
     return f;
 }
 
@@ -659,8 +657,6 @@ Got SetFrame(SoundFrame& fr, const std::string& k, const std::string& v)
     if (k == "ptrim") return G(SplitNumbers(v, &fr.part_trims));
     if (k == "ptrimk") return G(Dec(v, &fr.part_trim_key));  // 13-54 review: what they were measured with
     if (k == "own") return G(SplitDecoded(v, &fr.owners));    // 13-62: who owns each piece
-    if (k == "ein") return G(SplitNumbers(v, &fr.edge_in));   // 13-62g: piece edges moved by hand
-    if (k == "eout") return G(SplitNumbers(v, &fr.edge_out));
     if (k.size() > 4 && k.compare(0, 4, "pdb.") == 0) {  // 13-28: a part's gain, pdb.<value uid>
         std::string uid;
         double      db = 0.0;

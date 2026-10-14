@@ -143,75 +143,7 @@ bool PartMarginsApply(const SoundData& data);
 // elsewhere in the variation (dropped, its silence shared like a gap), else it is kept as it is (a part
 // quiet all along still plays, a wall its neighbours stop at). Parts never overlap.
 // 13-62: each span uses its own part's pre-roll and tail (PartPrerollMs / PartTailMs).
-// 13-62g (Antho 2026-10-14: "the same control as cutting an item into several items in REAPER"; supersedes the
-// 13-54 / 13-58 crossing rules above): a divided Sound is placed section by section (PartSectionsOf): each
-// section's piece = its own sound minus its part's pre-roll .. plus its part's tail, never past the section's
-// edges (a cut, a "-> value" zone's edge or the variation's own edge: the margins apply there too); an edge moved
-// by hand (SoundFrame::edge_in / edge_out) wins over the margin on its side; then the excluded stretches are taken
-// out. Combined Sounds and Takes mode: PartSpansOf.
 std::vector<PartSpan> PartPieces(const SoundData& data, int variation);
-// 13-62g: one section of a divided variation: a stretch between two cuts (or a "-> value" zone's edges; touching
-// stretches of one part joined), the excluded zones ignored, with the piece it places before they are taken out
-// ([placed_start, placed_end); equal = nothing placed). `measured`: the automatic edges come from the measured trims
-// (else the whole section: not measured yet, or a mode without margins); `hand_*`: that edge was moved by hand.
-struct PartSection {
-    std::string value_uid;
-    double      start = 0.0;
-    double      end = 0.0;
-    double      placed_start = 0.0;
-    double      placed_end = 0.0;
-    bool        hand_start = false;
-    bool        hand_end = false;
-    bool        measured = false;
-};
-// The sections in time order; {} when combined, in Takes mode, for an off or empty variation.
-std::vector<PartSection> PartSectionsOf(const SoundData& data, int variation);
-// 13-62g: the Silence settings a divided Sound's variations are detected with: the largest pre-roll and tail any
-// part has (its own, or the Sound's), so each part's own margin fits in its variation (PartPieces then gives each
-// part its own). The Sound's own when the margins do not apply.
-SilenceParams DetectionSilence(const SoundData& data);
-// 13-62g: why source time `t` of a variation is not placed (a gap: nothing placed there, drawn hatched everywhere).
-// None = placed (or outside the variation, or an off one); Excluded = an excluded zone (start / end: the excluded
-// run); BeforeSound / AfterSound = before its sound minus its part's pre-roll / after its sound plus its tail
-// (`margin_ms` = that pre-roll / tail); NoSound = a section with nothing above the threshold while its part sounds
-// elsewhere in the variation; HandEdge = an edge moved by hand left it out. `value` = the section's part, `start` /
-// `end` = the gap's stretch inside its section.
-enum class GapKind { None, Excluded, BeforeSound, AfterSound, NoSound, HandEdge };
-struct GapInfo {
-    GapKind     kind = GapKind::None;
-    std::string value;
-    double      start = 0.0;
-    double      end = 0.0;
-    double      margin_ms = 0.0;
-};
-GapInfo GapAt(const SoundData& data, int variation, double t);
-// 13-62g: the gap's tooltip in Edit ("" for None): why nothing is placed there and how to fill it; `part_name` =
-// its part's name.
-std::string GapTip(const GapInfo& gap, const std::string& part_name);
-// 13-62g: a placed piece's edge of part `value` within `tol` of `t` (the nearest), not one on the variation's own
-// edge (its trim handle). `at` = a time inside its section (SetPieceEdge's), [lo, hi] = where it may be dragged
-// (inside its section, 4 ms from its other edge), `hand` = moved by hand already.
-struct PieceEdgeHit {
-    int         variation = -1;
-    int         side = 0;  // -1 start, +1 end
-    double      edge = 0.0;
-    double      at = 0.0;
-    double      lo = 0.0;
-    double      hi = 0.0;
-    bool        hand = false;
-    std::string value;
-};
-bool PieceEdgeAt(const SoundData& data, int variation, const std::string& value, double t, double tol, PieceEdgeHit* out);
-// 13-62g: moves the start (side -1) / end (+1) of the section holding `at` to `to` by hand (clamped as PieceEdgeAt's
-// lo / hi): it wins over the margin on that side and is kept across threshold / margin changes. False when nothing
-// changed. ResetPieceEdge: that edge back to automatic (false when it was not moved by hand).
-bool SetPieceEdge(SoundData& data, int variation, double at, int side, double to);
-bool ResetPieceEdge(SoundData& data, int variation, double at, int side);
-// 13-62g: the parts' invariant, "" when it holds (else what breaks it): variations in time order, not overlapping;
-// on a divided Sound each on variation's cuts sorted and inside it, its owners fitting its cuts, its Edit pieces
-// tiling it, each either excluded or owned by a divide value (no stretch is nobody's), and its placed pieces
-// (PartPieces) in time order, not overlapping, inside it, each wholly on stretches its own part owns.
-std::string PartsProblem(const SoundData& data);
 // What a placement of `part_value` plays: the pieces of that part (PartPieces: its margins applied), or
 // for "" every non-excluded stretch of the frame (raw, adjacent spans merged: the whole variation minus
 // its exclusions, value_uid "" -- a whole variation keeps its own margins).
@@ -380,10 +312,6 @@ struct EditPiece {
 // The unmerged pieces of a variation in time order (excluded ones included, flagged); {} for a bad index,
 // an empty or an off frame.
 std::vector<EditPiece> EditPiecesOf(const SoundData& data, int variation);
-// 13-62g: the range a gesture at `t` acts on (a lane click, the right-click Exclude / -> part): the Edit piece
-// holding `t`, narrowed to the gap when `t` is in a stretch its part leaves out (GapAt: a click in the stretch after
-// a Toe's tail takes that stretch, never the whole Toe). False when `t` is in no piece.
-bool EditRangeAt(const SoundData& data, int variation, double t, EditPiece* out);
 // Comping (decision 9): gives [a, b] of the variation to part `value`: cuts at a and b when inside the
 // frame and not already there (an edge within 4 ms of a cut, a zone's edge or the frame's edge lands on it),
 // the owners of the pieces it covers = value, any zone coverage inside [a, b] removed (an excluded stretch

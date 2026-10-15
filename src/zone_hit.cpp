@@ -314,8 +314,11 @@ ZoneDragKind StartZoneDrag(const ZoneHit& h, bool shift, bool alt)
 
 ZoneDragKind StartZoneDrag(const SoundData& d, const ZoneHit& h, bool shift, bool alt)
 {
+    // 13-62h (Antho 2026-10-15, v6 rule A "on agit sur ce qu'on attrape"): a zone of an item moves the whole item;
+    // its Gap slides alone inside it (the zones beside it follow: MoveZone).
     const ZoneDragKind k = StartZoneDrag(h, shift, alt);
-    return k == ZoneDragKind::Move && !ItemOf(d, h.z).empty() ? ZoneDragKind::MoveChain : k;
+    const EditZone*    z = ZoneOf(d, h.z);
+    return k == ZoneDragKind::Move && z && !z->IsGap() && !ItemOf(d, h.z).empty() ? ZoneDragKind::MoveChain : k;
 }
 
 bool PendingBecomesGain(const SoundData& d, const ZoneHit& h, float dx, float dy, bool shift, bool alt, float dp)
@@ -489,7 +492,9 @@ std::string ZoneTip(const SoundData& d, const ZoneHit& h, const std::vector<std:
         if (!item.empty()) {
             return ItemNames(d, item, names) + " " + ItemGlue(d, item) + ": one item. Click selects it whole" +
                    (click_plays ? " and plays it" : "") + " (Ctrl+click adds / removes it). " +
-                   (h.top ? "Drag sideways: moves it (what touches it follows). " : "Drag sideways: the cursor. ") +
+                   (!h.top ? "Drag sideways: the cursor. "
+                           : z && z->IsGap() ? "Drag sideways: slides this Gap inside it (the zones beside it follow). "
+                                             : "Drag sideways: moves it (what touches it follows). ") +
                    (z && !z->IsGap() ? "Up / down: the gain of all its zones. " : "") +
                    "Double-click: a time selection on it. Right-click: its menu";
         }

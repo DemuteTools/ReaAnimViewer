@@ -1112,10 +1112,16 @@ void DragRelease(const ZoneWaveHost& h, double px_per_s)
         const EditZone* z0 = ZoneOf(Stored(h), g.hit.z);
         const ZoneRef  pv = PrevZone(Stored(h), g.hit.z), nx = NextZone(Stored(h), g.hit.z);
         const bool     followed = (z0 && z0->IsGap()) || Butted(Stored(h), pv, g.hit.z) || Butted(Stored(h), g.hit.z, nx);
-        const std::string toast = NameOfZone(h, Shown(h), r) + " moved " + (g.value > 0 ? "+" : "") + std::to_string(Ms(g.value)) +
-                                  " ms (its two edges" + (followed ? "; what touches it followed)" : ")");
-        v.sel = {r};
-        Commit(h, "Move zone", toast);
+        // 13-62h (v6 rule A): a Gap slid inside its item leaves the whole item selected.
+        const ZoneSel     item = ItemOf(Shown(h), r);
+        const bool        slid = z0 && z0->IsGap() && !item.empty();
+        const std::string by = std::string(g.value > 0 ? "+" : "") + std::to_string(Ms(g.value)) + " ms";
+        const std::string toast = slid ? "Gap slid " + by + " inside " + ItemNames(Shown(h), item, h.names) + " (the zones beside it follow)"
+                                       : NameOfZone(h, Shown(h), r) + " moved " + by + " (its two edges" +
+                                             (followed ? "; what touches it followed)" : ")");
+        if (slid) v.sel = item;
+        else v.sel = {r};
+        Commit(h, slid ? "Slide Gap" : "Move zone", toast);
         return;
     }
     case ZoneDragKind::MoveChain: {
@@ -1266,8 +1272,15 @@ void ZoneMenu(const ZoneWaveHost& h)
         const ZoneRef     l = GapLeft(d, v.menu_z);
         const std::string ln = ZoneOf(d, l) ? NameOfZone(h, d, l) : std::string("the left");
         ui::MenuCaption(("Gap " + ZoneRangeMs(z->a, z->b)).c_str());
-        if (ui::MenuEntry(("Give it to " + ln + "##zgive").c_str(), "Delete")) ZoneDelete(h);
+        // 13-62h (v6 rule A): fills this Gap only (the zone on its left takes it), whatever else is selected; Delete
+        // does it only while the Gap is selected alone (with its item selected, Delete removes the item).
         const ZoneRef gz = v.menu_z;
+        const bool    alone = v.sel.size() == 1 && v.sel.front() == gz;
+        if (ui::MenuEntry(("Give it to " + ln + " (fill the hole)##zgive").c_str(), alone ? "Delete" : nullptr)) {
+            if (!Write(h, "Fill Gap", [gz](SoundData& x, const ZoneContext& c, ZoneSel* s) { return FillGap(x, gz, c, s); },
+                       "Hole filled: " + ln + " takes the Gap"))
+                ShowLibraryToast("Nothing to fill", false);
+        }
         if (ui::MenuEntry("\xE2\x96\xB6 Hear the jump")) ZonePlayZone(h, gz);
         if (v.sel.size() > 1) {
             ui::MenuSeparator();
@@ -1529,10 +1542,10 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
             // 13-62h (v5): on an item (but its greyed copy on another lane): it selected whole (unless it already
             // is) and its item menu.
             const ZoneSel item = hit.kind == ZoneHitKind::Grey ? ZoneSel{} : ItemOf(Shown(h), hit.z);
-            v.menu_z = item.empty() ? hit.z : item.front();
-            v.menu_kind = !z ? 0 : !item.empty() ? 3 : z->IsGap() ? 2 : 1;
+            v.menu_z = item.empty() || (z && z->IsGap()) ? hit.z : item.front();
+            v.menu_kind = !z ? 0 : z->IsGap() ? 2 : !item.empty() ? 3 : 1;  // v6 rule A: an item's Gap: the Gap menu
             v.menu_close = false;
-            if (z && !item.empty()) {
+            if (z && !item.empty() && !z->IsGap()) {
                 if (!SelHas(v.sel, hit.z)) v.sel = item;
                 *h.part_sel = ZoneOf(Shown(h), item.front())->part;
                 *h.cursor = hit.t;

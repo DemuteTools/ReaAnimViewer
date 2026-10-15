@@ -5815,34 +5815,100 @@ void ZoneSelectionPanel(const SoundLibrary& lib, const SoundNode& n, const Sound
         if (!StoreReplaced())
             ZoneColumns({[&]() {
                              ui::GroupCaption("Made of", ui::kMuted);
+                             // 13-62h (Antho 2026-10-15, v6 rule A): each member's own numbers -- a zone its gain, a Gap
+                             // its two crossfade sides and Fill (the zone on its left takes it) -- each live while dragged,
+                             // one undo point. A member's line: its glyph (part dot / Gap hatch), its name and range.
                              ImDrawList* dl = ImGui::GetWindowDrawList();
-                             const float lh = ImGui::GetTextLineHeight(), rh = lh + ui::Dp(4.0f);
+                             const float lh = ImGui::GetTextLineHeight(), rh = std::max(lh + ui::Dp(4.0f), ui::ControlH());
                              for (const ZoneRef& q : item) {
                                  const EditZone* e = ZoneOf(d, q);
                                  if (!e) continue;
+                                 ZoneRowsId(n, q, e);
                                  const float  w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+                                 const float  bw = e->IsGap() ? ui::ButtonWidth("Fill") : 0.0f;
+                                 const bool   beside = e->IsGap() && w >= bw + ui::Dp(96.0f);  // Fill on its line, else under it
+                                 const float  lw = beside ? w - bw - ImGui::GetStyle().ItemSpacing.x : w;
                                  const ImVec2 p = ImGui::GetCursorScreenPos();
-                                 ImGui::Dummy(ImVec2(w, rh));
+                                 ImGui::Dummy(ImVec2(lw, rh));
                                  const float cy = p.y + rh * 0.5f, ty = std::floor(cy - lh * 0.5f);
                                  const float gw = ui::Dp(12.0f), gx = p.x;
-                                 std::string sub;
                                  if (e->IsGap()) {
                                      const ImVec2 g0(gx, std::floor(cy - ui::Dp(4.5f))), g1(gx + gw, g0.y + ui::Dp(9.0f));
                                      dl->AddRectFilled(g0, g1, WithAlpha(ui::kMuted, 0x30), 2.0f);
                                      Hatch(dl, g0, g1, ui::kText);
-                                     char xf[32];
-                                     std::snprintf(xf, sizeof(xf), "%g", std::round((e->xl + e->xr) * 10000.0) / 10.0);
-                                     sub = "jumps " + std::to_string(ZoneMs(e->b - e->a)) + " ms \xC2\xB7 xfade " + xf + " ms";
                                  } else {
                                      dl->AddCircleFilled(ImVec2(gx + ui::Dp(4.0f), cy), ui::Dp(4.0f), PartColor(PartIndex(d, e->part)));
-                                     sub = ZoneDbText(e->db);
                                  }
-                                 const float sw = ImGui::CalcTextSize(sub.c_str()).x;
-                                 const float sx = std::max(gx + gw + ui::Dp(40.0f), p.x + w - sw);
-                                 ui::EllipsisText(dl, ImVec2(gx + gw + ui::Dp(6.0f), ty), sx - ui::Dp(8.0f), ui::kText,
-                                                  nm(q) + " \xC2\xB7 " + ZoneRangeMs(e->a, e->b));
-                                 ui::EllipsisText(dl, ImVec2(sx, ty), p.x + w, ui::kMuted, sub);
-                                 if (ImGui::IsItemHovered()) ui::ShowTip("Its edges, fades and the Gap's crossfade are dragged on the waveform");
+                                 std::string what = nm(q) + " \xC2\xB7 " + ZoneRangeMs(e->a, e->b);
+                                 if (e->IsGap()) what += " \xC2\xB7 jumps " + std::to_string(ZoneMs(e->b - e->a)) + " ms";
+                                 ui::EllipsisTextTip(dl, ImVec2(gx + gw + ui::Dp(6.0f), ty), p.x + lw, ui::kText, what);
+                                 if (e->IsGap()) {
+                                     if (beside) ImGui::SameLine();
+                                     if (ui::SolidButton("Fill##zifill")) {
+                                         const ZoneRef     gl = GapLeft(d, q);
+                                         const std::string ln = ZoneOf(d, gl) ? nm(gl) : std::string("the left zone");
+                                         const ZoneRef     gq = q;
+                                         ZoneWriteNow(lib, n, m, "Fill Gap",
+                                                      [gq](SoundData& x, const ZoneContext& c, ZoneSel* sl) { return FillGap(x, gq, c, sl); },
+                                                      "Hole filled: " + ln + " takes the Gap");
+                                         ImGui::PopID();
+                                         return true;
+                                     }
+                                     ui::ItemTipText("Fill the hole: the zone on its left takes it");
+                                     const ZoneRef     gl = GapLeft(d, q), gr = GapRight(d, q);
+                                     const std::string lo = (ZoneOf(d, gl) ? nm(gl) : std::string("Left")) + " out";
+                                     const std::string ri = (ZoneOf(d, gr) ? nm(gr) : std::string("Right")) + " in";
+                                     for (int side = -1; side <= 1; side += 2) {
+                                         ZoneRowLook k;
+                                         k.id = side < 0 ? "##zixl" : "##zixr";
+                                         k.label = side < 0 ? lo.c_str() : ri.c_str();
+                                         k.value = (side < 0 ? e->xl : e->xr) * 1000.0;
+                                         k.tip = side < 0 ? "The left zone's side of the crossfade (ms)" : "The right zone's side of the crossfade (ms)";
+                                         const ZoneRowOut o = ZoneNumRow(k);
+                                         if (ZoneNumberEdit(o, lib, n, m, q,
+                                                            [side](SoundData& x, const ZoneRef& g, double v, const ZoneContext& c, ZoneSel* sl) {
+                                                                const double sv = std::max(0.0, v) / 1000.0;
+                                                                return SetGapXfade(x, g, side < 0 ? sv : -1.0, side < 0 ? -1.0 : sv, c, sl);
+                                                            },
+                                                            "Gap crossfade", "Gap updated")) {
+                                             ImGui::PopID();
+                                             return true;
+                                         }
+                                     }
+                                 } else {
+                                     const double db = e->db;
+                                     const bool   on = std::fabs(db) >= 0.05;
+                                     ZoneRowLook  k;
+                                     k.id = "##zidb";
+                                     k.label = "Gain";
+                                     k.unit = "dB";
+                                     k.value = std::round(db * 10.0) / 10.0;
+                                     k.sign = true;
+                                     k.bar = on ? PartColor(PartIndex(d, e->part)) : 0;
+                                     k.reset = on;
+                                     k.reset_tip = "0 dB again";
+                                     k.tip = "This zone's own gain (dragging the item up / down moves all of them)";
+                                     const ZoneRowOut  o = ZoneNumRow(k);
+                                     const std::string zn = nm(q);
+                                     const ZoneRef     zq = q;
+                                     if (ZoneNumberEdit(o, lib, n, m, q,
+                                                        [](SoundData& x, const ZoneRef& r2, double v, const ZoneContext& c, ZoneSel* sl) {
+                                                            return SetZoneDb(x, r2, v, c, sl);
+                                                        },
+                                                        "Zone gain", zn + " updated")) {
+                                         ImGui::PopID();
+                                         return true;
+                                     }
+                                     if (o.reset &&
+                                         ZoneWriteNow(lib, n, m, "Zone gain",
+                                                      [zq](SoundData& x, const ZoneContext& c, ZoneSel* sl) { return SetZoneDb(x, zq, 0.0, c, sl); },
+                                                      zn + " gain: 0 dB") &&
+                                         StoreReplaced()) {
+                                         ImGui::PopID();
+                                         return true;
+                                     }
+                                 }
+                                 ImGui::PopID();
                              }
                              ui::GroupCaption("Give it to", ui::kMuted);
                              for (size_t k = 0; k < d.divide_values.size(); ++k) {

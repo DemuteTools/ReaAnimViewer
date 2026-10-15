@@ -467,12 +467,14 @@ void TestItems()
     CHECK(GainDragZones(d, {}, {0, 2}) == (ZoneSel{{0, 0}, {0, 2}}));
     CHECK(GainDragZones(d, {{0, 2}, {1, 0}}, {0, 2}) == (ZoneSel{{0, 2}, {1, 0}}));
     CHECK((GainDragZones(d, {{1, 0}}, {0, 3}) == ZoneSel{{0, 3}}));
-    // The top of a zone or of its Gap moves the whole item; a zone alone moves alone.
+    // The top of one of its zones moves the whole item; its Gap slides alone (v6 rule A); a zone alone moves alone.
     ZoneHit h;
     h.row = ZoneRow::Lane;
     h.kind = ZoneHitKind::Zone;
     h.top = true;
     h.z = {0, 1};
+    CHECK(StartZoneDrag(d, h, false, false) == ZoneDragKind::Move);
+    h.z = {0, 2};
     CHECK(StartZoneDrag(d, h, false, false) == ZoneDragKind::MoveChain);
     h.z = {0, 3};
     CHECK(StartZoneDrag(d, h, false, false) == ZoneDragKind::Move);
@@ -490,6 +492,13 @@ void TestItems()
     h.row = ZoneRow::Placed;
     h.kind = ZoneHitKind::Pick;
     CHECK(DoubleActionOf(d, h) == ZoneDoubleAction::TselZone);
+    // Over its Gap's body: the move cursor, as over a zone (v6 rule A: it slides that Gap).
+    ZoneHit gh;
+    gh.row = ZoneRow::Lane;
+    gh.kind = ZoneHitKind::Zone;
+    gh.z = {0, 1};
+    gh.top = true;
+    CHECK(ZoneCursorOf(gh) == ZoneCursor::Grab);
     // Its tooltip says it is one item.
     h.row = ZoneRow::Lane;
     h.kind = ZoneHitKind::Zone;

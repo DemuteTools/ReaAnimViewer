@@ -96,7 +96,8 @@ bool ZoneReservedOnMove(const ZoneHit& h, bool ctrl, bool alt);
 // Shift a new zone, a greyed zone a swipe, a zone's (or a Gap's) top half a move; else the cursor (scrub). The
 // Variations and Placed strips: nothing.
 ZoneDragKind StartZoneDrag(const ZoneHit& h, bool shift, bool alt);
-// 13-62h (v5): the same, a Move of a zone or a Gap of an item (ItemOf) moving the whole item (MoveChain).
+// 13-62h (v5, v6 rule A): the same, a Move of a part zone of an item (ItemOf) moving the whole item (MoveChain);
+// a Gap of an item stays a Move (it slides alone inside the item).
 ZoneDragKind StartZoneDrag(const SoundData& d, const ZoneHit& h, bool shift, bool alt);
 // A Pending press on a part zone moved more vertically than sideways past 3 logical px (`dp` = one on screen; no
 // Shift / Alt): its gain.

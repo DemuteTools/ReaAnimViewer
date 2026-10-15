@@ -21,6 +21,7 @@
 #include <imgui.h>
 
 #include "auto_detect.h"
+#include "auto_types.h"  // story 10-9-0: the types' and kinds' rows
 #include "bone_roles.h"
 #include "event_list.h"
 #include "file_dialogs.h"
@@ -827,16 +828,11 @@ bool TaggingSelectedRuleBones(std::vector<int>* bones, unsigned int* colour)
     const Block& blk = rules.blocks[static_cast<size_t>(g_sel)];
     AutoKind     auto_kind;
     char         auto_side = 'L';
-    if (bones && AutoBlockKind(blk, &auto_kind, &auto_side) &&
-        AutoCategoryOf(AutoTypeOfKind(auto_kind)) == AutoCategory::Hands) {
-        // Story 10-8c: a hand block shows its hand.
-        const size_t r = static_cast<size_t>(auto_side == 'R' ? Role::RightHand : Role::LeftHand);
-        const int    bone = r < m.role_to_bone.size() ? m.role_to_bone[r] : -1;
-        if (bone >= 0) bones->push_back(bone);
-    } else if (bones && AutoBlockKind(blk, &auto_kind, &auto_side)) {
-        // Story 10-8b: an auto block shows its foot's parts (heel, toe, toe end), each bone once.
-        for (int q = 0; q < kFootPartCount; ++q) {
-            const size_t r = static_cast<size_t>(FootPartRole(auto_side, q));
+    if (bones && AutoBlockKind(blk, &auto_kind, &auto_side)) {
+        // Stories 10-8b, 10-8c: an auto block shows its kind's roles (a foot's parts, a hand),
+        // each bone once.
+        for (Role role : AutoKindRow(auto_kind).roles(auto_side)) {
+            const size_t r = static_cast<size_t>(role);
             const int    bone = r < m.role_to_bone.size() ? m.role_to_bone[r] : -1;
             if (bone >= 0 && std::find(bones->begin(), bones->end(), bone) == bones->end()) bones->push_back(bone);
         }
@@ -3640,8 +3636,7 @@ void DrawEventInspector(const TaggingModel& m, const ItemRules& rules, const Sho
     if (e.kind != ShownKind::Orphan && IsAutoBlock(blk)) {
         // Story 10-8b: the physics' values: leg lengths per second (degrees for a pivot), m/s.
         AutoKind   k = AutoKind::Step;
-        const bool pivot = AutoBlockKind(blk, &k, nullptr) &&
-                           (AutoTypeOfKind(k) == AutoType::Pivot || k == AutoKind::HandPivot || k == AutoKind::HandPivotAny);
+        const bool pivot = AutoBlockKind(blk, &k, nullptr) && AutoKindRow(k).degrees;
         char       buf[64];
         // A user event on an auto row has no measured values (EventValuesAt: none for auto blocks).
         const bool user = e.kind == ShownKind::User;
@@ -3775,9 +3770,9 @@ double ClampAutoValue(bool sens, double v)
 // marker) names one block.
 std::string AutoValueUndo(AutoType t, bool sens, const std::string& part = std::string())
 {
-    // Story 10-8e: the hand's Pivot scuff is named with its category ("Hands Pivot scuff").
-    std::string label = t == AutoType::HandPivot ? std::string(AutoCategoryLabel(AutoCategoryOf(t))) + " " + AutoTypeLabel(t)
-                                                 : std::string(AutoTypeLabel(t));
+    // Story 10-8e: the hand's Pivot scuff is named with its category ("Hands Pivot scuff": the
+    // type's row).
+    std::string label = AutoTypeRow(t).undo_label;
     if (!part.empty()) label += ", " + part;
     return std::string(sens ? "RAV: Set auto sensitivity (" : "RAV: Set auto offset (") + label + ")";
 }
@@ -3847,19 +3842,7 @@ void AutoSensTooltip(double raised_from)
 
 const char* AutoTypeHint(AutoType t)
 {
-    switch (t) {
-    case AutoType::Step: return "A marker where the foot lands: FS L / FS R (combined: the first part to touch),\n"
-                                "or Heel and Toe separately (one marker per part).";
-    case AutoType::LiftOff: return "A marker where the foot leaves the ground: Lift L / Lift R.";
-    case AutoType::Slide: return "A marker where a planted foot slides: Slide L / Slide R (combined),\n"
-                                 "or Slide Heel L / Slide Toe L... (separate).";
-    case AutoType::Pivot: return "A marker where a planted foot turns on its ball or heel: Pivot L / Pivot R (combined),\n"
-                                 "or Pivot Heel L / Pivot Toe L... (separate).";
-    case AutoType::Grab: return "A marker where the hand lands on something: Grab L / Grab R.";
-    case AutoType::Release: return "A marker where the hand leaves its support: Release L / Release R.";
-    case AutoType::HandPivot: return "A marker where a planted hand turns: Hand Pivot L / Hand Pivot R.";
-    }
-    return "";
+    return AutoTypeRow(t).hint;
 }
 
 // Story 10-8c: a category's fold row, flat (not a card): its chevron and label, how many of its
@@ -3964,14 +3947,18 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
             ImGui::SameLine(x_off);
             ui::Caption("Offset");
         }
-        for (int ti = 0; ti < kAutoTypeCount; ++ti) {
-            const AutoType t = static_cast<AutoType>(ti);
+        // Per category, its types in enum order (story 10-9-0: a type appended to the enum joins
+        // its category's rows).
+        std::vector<AutoType> row_types;
+        for (int c = 0; c < kAutoCategoryCount; ++c)
+            for (AutoType t : AutoTypesOf(static_cast<AutoCategory>(c))) row_types.push_back(t);
+        for (size_t ri = 0; ri < row_types.size(); ++ri) {
+            const AutoType t = row_types[ri];
+            const int      ti = static_cast<int>(t);
             const int      c = static_cast<int>(AutoCategoryOf(t));
             if (!cat_shown[c]) continue;
             // The category's fold row before its first type.
-            bool first = true;
-            for (int tj = 0; tj < ti && first; ++tj)
-                if (static_cast<int>(AutoCategoryOf(static_cast<AutoType>(tj))) == c) first = false;
+            const bool first = ri == 0 || AutoCategoryOf(row_types[ri - 1]) != AutoCategoryOf(t);
             if (first) {
                 ImGui::PushID(1000 + c);
                 bool       remove = false;
@@ -4141,8 +4128,7 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
             for (int ti = 0; ti < kAutoTypeCount; ++ti) {
                 if (!g_auto_ui.type[ti].on) continue;
                 // Story 10-8m: `separate` is the type's own mode.
-                const bool separate = ti == static_cast<int>(AutoType::Slide) ? g_auto_ui.slide_parts != ScuffParts::Combined
-                                                                               : g_auto_ui.separate_steps;
+                const bool separate = AutoTypeSeparate(static_cast<AutoType>(ti), g_auto_ui);
                 for (const std::string& r : AutoMissingParts(static_cast<AutoType>(ti), separate, m.role_to_bone))
                     if (std::find(miss.begin(), miss.end(), r) == miss.end()) miss.push_back(r);
             }

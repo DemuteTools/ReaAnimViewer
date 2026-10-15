@@ -8,6 +8,7 @@
 #include <cmath>
 #include <tuple>
 
+#include "auto_types.h"  // story 10-9-0: the rows of the types and kinds
 #include "bone_roles.h"
 #include "event_list.h"   // KeepBlockEvents
 #include "rule_record.h"  // BlocksEqual
@@ -15,12 +16,6 @@
 namespace rav {
 namespace {
 
-constexpr AutoKind kKinds[kAutoKindCount] = {AutoKind::Step,  AutoKind::Heel,  AutoKind::Toe,     AutoKind::Lift,
-                                             AutoKind::Slide, AutoKind::Pivot, AutoKind::Grab,    AutoKind::Release,
-                                             AutoKind::HandPivot, AutoKind::HandPivotAny,
-                                             AutoKind::SlideHeel, AutoKind::SlideToe, AutoKind::PivotHeel, AutoKind::PivotToe,
-                                             AutoKind::SlideHeelLongest, AutoKind::SlideToeLongest,
-                                             AutoKind::PivotHeelLongest, AutoKind::PivotToeLongest};
 constexpr char     kSides[2] = {'L', 'R'};
 // The analyses a session keeps for one set of role tracks (a few sensitivities tried in a row).
 constexpr size_t kMaxCachedAnalyses = 8;
@@ -30,13 +25,13 @@ int SideIndex(char side)
     return side == 'R' ? 1 : 0;
 }
 
-// The kinds a ticked type makes, in block order.
+// The kinds a ticked type makes, in block order. The modes of steps, slides, pivots and hand
+// pivots pick among their kinds; a type with no mode makes all its kinds (story 10-9-0).
 std::vector<AutoKind> KindsOf(AutoType t, const AutoSettings& s)
 {
     switch (t) {
     case AutoType::Step:
         return s.separate_steps ? std::vector<AutoKind>{AutoKind::Heel, AutoKind::Toe} : std::vector<AutoKind>{AutoKind::Step};
-    case AutoType::LiftOff: return {AutoKind::Lift};
     case AutoType::Slide:
         switch (s.slide_parts) {
         case ScuffParts::EachPart: return {AutoKind::SlideHeel, AutoKind::SlideToe};
@@ -51,34 +46,22 @@ std::vector<AutoKind> KindsOf(AutoType t, const AutoSettings& s)
         case ScuffParts::Combined: break;
         }
         return {AutoKind::Pivot};
-    case AutoType::Grab: return {AutoKind::Grab};
-    case AutoType::Release: return {AutoKind::Release};
     case AutoType::HandPivot: return {s.hand_pivot_any ? AutoKind::HandPivotAny : AutoKind::HandPivot};
+    default: break;
     }
-    return {};
+    return AutoKindsOf(t);
 }
 
 // Story 10-8m: a slide / pivot part kind's mode (Combined for any other kind), and whether it is
-// the heel's.
+// the heel's (the kind's row).
 ScuffParts ScuffMode(AutoKind k)
 {
-    switch (k) {
-    case AutoKind::SlideHeel:
-    case AutoKind::SlideToe:
-    case AutoKind::PivotHeel:
-    case AutoKind::PivotToe: return ScuffParts::EachPart;
-    case AutoKind::SlideHeelLongest:
-    case AutoKind::SlideToeLongest:
-    case AutoKind::PivotHeelLongest:
-    case AutoKind::PivotToeLongest: return ScuffParts::Longest;
-    default: return ScuffParts::Combined;
-    }
+    return AutoKindRow(k).scuff;
 }
 
 bool ScuffHeel(AutoKind k)
 {
-    return k == AutoKind::SlideHeel || k == AutoKind::PivotHeel || k == AutoKind::SlideHeelLongest ||
-           k == AutoKind::PivotHeelLongest;
+    return AutoKindRow(k).scuff_heel;
 }
 
 // The kinds that are one block switched between modes (place, marker, colour, edits kept): the hand
@@ -90,167 +73,60 @@ int SwapGroup(AutoKind k)
     return 2 + (AutoTypeOfKind(k) == AutoType::Pivot ? 2 : 0) + (ScuffHeel(k) ? 0 : 1);
 }
 
-bool HasRole(const std::vector<int>& role_to_bone, Role r)
+bool InRange(int i, int count)
 {
-    const size_t i = static_cast<size_t>(r);
-    return i < role_to_bone.size() && role_to_bone[i] >= 0;
-}
-
-void PushOnce(std::vector<std::string>& out, const std::string& s)
-{
-    if (std::find(out.begin(), out.end(), s) == out.end()) out.push_back(s);
+    return i >= 0 && i < count;
 }
 
 }  // namespace
 
 const char* AutoTypeLabel(AutoType t)
 {
-    switch (t) {
-    case AutoType::Step: return "Step";
-    case AutoType::LiftOff: return "Lift-off";
-    case AutoType::Slide: return "Slide scuff";
-    case AutoType::Pivot: return "Pivot scuff";
-    case AutoType::Grab: return "Grab";
-    case AutoType::Release: return "Release";
-    case AutoType::HandPivot: return "Pivot scuff";
-    }
-    return "?";
+    return InRange(static_cast<int>(t), kAutoTypeCount) ? AutoTypeRow(t).label : "?";
 }
 
 AutoCategory AutoCategoryOf(AutoType t)
 {
-    switch (t) {
-    case AutoType::Step:
-    case AutoType::LiftOff:
-    case AutoType::Slide:
-    case AutoType::Pivot: return AutoCategory::Feet;
-    case AutoType::Grab:
-    case AutoType::Release:
-    case AutoType::HandPivot: return AutoCategory::Hands;
-    }
-    return AutoCategory::Feet;
+    return AutoTypeRow(t).category;
 }
 
 const char* AutoCategoryLabel(AutoCategory c)
 {
-    switch (c) {
-    case AutoCategory::Feet: return "Feet";
-    case AutoCategory::Hands: return "Hands";
-    }
-    return "?";
+    return InRange(static_cast<int>(c), kAutoCategoryCount) ? AutoCategoryRow(c).label : "?";
 }
 
 const char* AutoKindWord(AutoKind k)
 {
-    switch (k) {
-    case AutoKind::Step: return "step";
-    case AutoKind::Heel: return "heel";
-    case AutoKind::Toe: return "toe";
-    case AutoKind::Lift: return "lift";
-    case AutoKind::Slide: return "slide";
-    case AutoKind::Pivot: return "pivot";
-    case AutoKind::Grab: return "grab";
-    case AutoKind::Release: return "release";
-    case AutoKind::HandPivot: return "hand_pivot";
-    case AutoKind::HandPivotAny: return "hand_pivot_any";
-    case AutoKind::SlideHeel: return "slide_heel";
-    case AutoKind::SlideToe: return "slide_toe";
-    case AutoKind::PivotHeel: return "pivot_heel";
-    case AutoKind::PivotToe: return "pivot_toe";
-    case AutoKind::SlideHeelLongest: return "slide_heel_longest";
-    case AutoKind::SlideToeLongest: return "slide_toe_longest";
-    case AutoKind::PivotHeelLongest: return "pivot_heel_longest";
-    case AutoKind::PivotToeLongest: return "pivot_toe_longest";
-    }
-    return "?";
+    return InRange(static_cast<int>(k), kAutoKindCount) ? AutoKindRow(k).word : "?";
 }
 
 bool AutoKindFromWord(const std::string& w, AutoKind* out)
 {
-    for (AutoKind k : kKinds)
+    for (int i = 0; i < kAutoKindCount; ++i) {
+        const AutoKind k = static_cast<AutoKind>(i);
         if (w == AutoKindWord(k)) {
             if (out) *out = k;
             return true;
         }
+    }
     return false;
 }
 
 AutoType AutoTypeOfKind(AutoKind k)
 {
-    switch (k) {
-    case AutoKind::Step:
-    case AutoKind::Heel:
-    case AutoKind::Toe: return AutoType::Step;
-    case AutoKind::Lift: return AutoType::LiftOff;
-    case AutoKind::Slide:
-    case AutoKind::SlideHeel:
-    case AutoKind::SlideToe:
-    case AutoKind::SlideHeelLongest:
-    case AutoKind::SlideToeLongest: return AutoType::Slide;
-    case AutoKind::Pivot:
-    case AutoKind::PivotHeel:
-    case AutoKind::PivotToe:
-    case AutoKind::PivotHeelLongest:
-    case AutoKind::PivotToeLongest: return AutoType::Pivot;
-    case AutoKind::Grab: return AutoType::Grab;
-    case AutoKind::Release: return AutoType::Release;
-    case AutoKind::HandPivot:
-    case AutoKind::HandPivotAny: return AutoType::HandPivot;
-    }
-    return AutoType::Step;
+    return AutoKindRow(k).type;
 }
 
 std::string AutoMarkerName(AutoKind k, char side)
 {
-    const char* word = "?";
-    switch (k) {
-    case AutoKind::Step: word = "FS"; break;
-    case AutoKind::Heel: word = "Heel"; break;
-    case AutoKind::Toe: word = "Toe"; break;
-    case AutoKind::Lift: word = "Lift"; break;
-    case AutoKind::Slide: word = "Slide"; break;
-    case AutoKind::Pivot: word = "Pivot"; break;
-    case AutoKind::Grab: word = "Grab"; break;
-    case AutoKind::Release: word = "Release"; break;
-    case AutoKind::HandPivot:
-    case AutoKind::HandPivotAny: word = "Hand Pivot"; break;
-    case AutoKind::SlideHeel:
-    case AutoKind::SlideHeelLongest: word = "Slide Heel"; break;
-    case AutoKind::SlideToe:
-    case AutoKind::SlideToeLongest: word = "Slide Toe"; break;
-    case AutoKind::PivotHeel:
-    case AutoKind::PivotHeelLongest: word = "Pivot Heel"; break;
-    case AutoKind::PivotToe:
-    case AutoKind::PivotToeLongest: word = "Pivot Toe"; break;
-    }
+    const char* word = InRange(static_cast<int>(k), kAutoKindCount) ? AutoKindRow(k).marker : "?";
     return std::string(word) + ' ' + (side == 'R' ? 'R' : 'L');
 }
 
 uint32_t AutoDefaultColor(AutoKind k, char side)
 {
-    // Left in a cool hue, right in a warm one (the Footsteps presets' blue and orange for steps).
-    static const uint32_t kRgb[kAutoKindCount][2] = {
-        {0x5F9EDD, 0xDD9E5F},  // FS
-        {0x5F9EDD, 0xDD9E5F},  // Heel
-        {0x5FDDDD, 0xDDDD5F},  // Toe
-        {0x5F5FDD, 0xDD5F5F},  // Lift
-        {0x5FDD5F, 0xDD5FDD},  // Slide
-        {0x9E5FDD, 0xDD5F9E},  // Pivot
-        {0x5FDD9E, 0xDDB45F},  // Grab
-        {0x9EB4DD, 0xDD9E9E},  // Release
-        {0xA8DD3C, 0xB4643C},  // Hand Pivot
-        {0xA8DD3C, 0xB4643C},  // Hand Pivot (any resting hand)
-        {0x5FDD5F, 0xDD5FDD},  // Slide Heel (the slide's)
-        {0x9FEE9F, 0xEE9FEE},  // Slide Toe (a shade lighter)
-        {0x9E5FDD, 0xDD5F9E},  // Pivot Heel (the pivot's)
-        {0xC49FEE, 0xEE9FC4},  // Pivot Toe (a shade lighter)
-        {0x5FDD5F, 0xDD5FDD},  // Slide Heel (longest part)
-        {0x9FEE9F, 0xEE9FEE},  // Slide Toe (longest part)
-        {0x9E5FDD, 0xDD5F9E},  // Pivot Heel (longest part)
-        {0xC49FEE, 0xEE9FC4},  // Pivot Toe (longest part)
-    };
     const int ki = std::clamp(static_cast<int>(k), 0, kAutoKindCount - 1);
-    return 0x1000000u | kRgb[ki][SideIndex(side)];
+    return 0x1000000u | AutoKindRow(static_cast<AutoKind>(ki)).color[SideIndex(side)];
 }
 
 bool AutoBlockKind(const Block& b, AutoKind* kind, char* side)
@@ -342,6 +218,17 @@ bool AutoPending(const AutoSettings& ui, const AutoSettings& item)
            (ui.type[hp].on && item.type[hp].on && ui.hand_pivot_any != item.hand_pivot_any) ||
            (ui.type[sl].on && item.type[sl].on && ui.slide_parts != item.slide_parts) ||
            (ui.type[pv].on && item.type[pv].on && ui.pivot_parts != item.pivot_parts);
+}
+
+bool AutoTypeSeparate(AutoType t, const AutoSettings& s)
+{
+    switch (t) {
+    case AutoType::Step: return s.separate_steps;
+    case AutoType::Slide: return s.slide_parts != ScuffParts::Combined;
+    case AutoType::Pivot: return s.pivot_parts != ScuffParts::Combined;
+    default: break;
+    }
+    return false;
 }
 
 std::vector<Block> AutoBlocks(const AutoSettings& s)
@@ -539,30 +426,24 @@ PhysicsParams AutoPhysicsParams(AutoType t, double sens, bool looping)
     PhysicsParams p;
     p.looping = looping;
     const double  f = SensitivityFactor(sens);
-    switch (t) {
-    case AutoType::Step:
-    case AutoType::LiftOff: p.contact_speed *= f; break;
-    case AutoType::Slide: p.slide_speed /= f; break;
-    case AutoType::Pivot:
-        p.pivot_min_deg /= f;
-        p.pivot_rate_dps /= f;
-        break;
-    case AutoType::Grab:
-    case AutoType::Release: p.hand_contact_speed *= f; break;
-    case AutoType::HandPivot:
-        p.hand_pivot_min_deg /= f;
-        p.hand_pivot_rate_dps /= f;
-        break;
+    if (!InRange(static_cast<int>(t), kAutoTypeCount)) return p;
+    for (const AutoSensField& sf : AutoTypeRow(t).sens) {
+        if (!sf.field) continue;
+        if (sf.dir == AutoSensDir::Times) p.*sf.field *= f;
+        else p.*sf.field /= f;
     }
     return p;
 }
 
 bool SameAutoAnalysis(const PhysicsParams& a, const PhysicsParams& b)
 {
-    return a.contact_speed == b.contact_speed && a.slide_speed == b.slide_speed && a.pivot_min_deg == b.pivot_min_deg &&
-           a.pivot_rate_dps == b.pivot_rate_dps && a.hand_contact_speed == b.hand_contact_speed &&
-           a.hand_switch_cost == b.hand_switch_cost && a.hand_pivot_min_deg == b.hand_pivot_min_deg &&
-           a.hand_pivot_rate_dps == b.hand_pivot_rate_dps && a.looping == b.looping;
+    // Every constant a type's sensitivity moves, plus the hands' switch cost and looping. A new
+    // PhysicsParams constant that changes the analysis but no sensitivity moves must be added to
+    // the explicit comparison below.
+    for (int t = 0; t < kAutoTypeCount; ++t)
+        for (const AutoSensField& sf : AutoTypeRow(static_cast<AutoType>(t)).sens)
+            if (sf.field && !(a.*sf.field == b.*sf.field)) return false;
+    return a.hand_switch_cost == b.hand_switch_cost && a.looping == b.looping;
 }
 
 // ---- Detection ---------------------------------------------------------------------------------
@@ -596,11 +477,14 @@ std::vector<PhysicsParams> AutoParamSets(const std::vector<Block>& blocks, bool 
 std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const std::vector<Block>& blocks, bool looping)
 {
     std::vector<Event> out;
-    // Each analysis' foot and hand events, computed once (the hand's twice: pivots after a grab
-    // only, and of any resting hand).
-    std::vector<std::vector<PhysicsEvent>> foot(analyses.size()), hand(analyses.size()), hand_any(analyses.size());
-    std::vector<std::vector<PhysicsEvent>> parts(analyses.size());  // story 10-8m: the Each part scuffs
-    std::vector<char>                      done(analyses.size(), 0);
+    // Each analysis' event sources (the kinds' rows: foot events, hand events...), each computed
+    // once, when a block first reads it.
+    struct Source {
+        size_t                    analysis;
+        AutoEventSourceFn         fn;
+        std::vector<PhysicsEvent> events;
+    };
+    std::vector<Source> sources;
     for (size_t bi = 0; bi < blocks.size(); ++bi) {
         const Block& b = blocks[bi];
         AutoKind     k;
@@ -613,50 +497,13 @@ std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const s
         if (ai == analyses.size()) continue;
         const PhysicsAnalysis& a = analyses[ai].analysis;
         if (!a.ok) continue;
-        if (!done[ai]) {
-            foot[ai] = FootEvents(a, analyses[ai].params);
-            hand[ai] = HandEvents(a, analyses[ai].params);
-            PhysicsParams any = analyses[ai].params;
-            any.hand_pivot_after_grab = false;
-            hand_any[ai] = HandEvents(a, any);
-            parts[ai] = FootPartScuffEvents(a);
-            done[ai] = 1;
-        }
-        const bool                       is_hand = AutoCategoryOf(AutoTypeOfKind(k)) == AutoCategory::Hands;
-        // Separate toe steps: the ball, or the tip on a rig without a ball bone.
-        const FootTrack& ft = a.foot[SideIndex(side)];
-        const int        toe = ft.part[static_cast<int>(FootPart::Ball)].present ? static_cast<int>(FootPart::Ball)
-                                                                                  : static_cast<int>(FootPart::Tip);
-        const bool pivot = AutoTypeOfKind(k) == AutoType::Pivot || k == AutoKind::HandPivot || k == AutoKind::HandPivotAny;
-        // Story 10-8m: a scuff part block (Each part reads the part events, Longest part the
-        // combined scuffs' `longest`; the toe is any part but the heel).
-        const PhysicsKind scuff = AutoTypeOfKind(k) == AutoType::Pivot ? PhysicsKind::Pivot : PhysicsKind::Slide;
-        const int         heel = static_cast<int>(FootPart::Heel);
-        const bool        each = ScuffMode(k) == ScuffParts::EachPart;
-        for (const PhysicsEvent& e : each ? parts[ai] : !is_hand ? foot[ai] : k == AutoKind::HandPivotAny ? hand_any[ai] : hand[ai]) {
-            if (e.side != side) continue;
-            bool want = false;
-            switch (k) {
-            case AutoKind::Step: want = e.kind == PhysicsKind::FootStep; break;
-            case AutoKind::Heel: want = e.kind == PhysicsKind::Step && e.part == static_cast<int>(FootPart::Heel); break;
-            case AutoKind::Toe: want = e.kind == PhysicsKind::Step && e.part == toe; break;
-            case AutoKind::Lift: want = e.kind == PhysicsKind::LiftOff; break;
-            case AutoKind::Slide: want = e.kind == PhysicsKind::Slide; break;
-            case AutoKind::Pivot: want = e.kind == PhysicsKind::Pivot; break;
-            case AutoKind::Grab: want = e.kind == PhysicsKind::Grab; break;
-            case AutoKind::Release: want = e.kind == PhysicsKind::Release; break;
-            case AutoKind::HandPivot:
-            case AutoKind::HandPivotAny: want = e.kind == PhysicsKind::HandPivot; break;
-            case AutoKind::SlideHeel:
-            case AutoKind::PivotHeel: want = e.kind == scuff && e.part == heel; break;
-            case AutoKind::SlideToe:
-            case AutoKind::PivotToe: want = e.kind == scuff && e.part >= 0 && e.part != heel; break;
-            case AutoKind::SlideHeelLongest:
-            case AutoKind::PivotHeelLongest: want = e.kind == scuff && e.longest == heel; break;
-            case AutoKind::SlideToeLongest:
-            case AutoKind::PivotToeLongest: want = e.kind == scuff && e.longest >= 0 && e.longest != heel; break;
-            }
-            if (!want) continue;
+        const AutoKindInfo& row = AutoKindRow(k);
+        size_t              si = sources.size();
+        for (size_t j = 0; j < sources.size() && si == sources.size(); ++j)
+            if (sources[j].analysis == ai && sources[j].fn == row.source) si = j;
+        if (si == sources.size()) sources.push_back(Source{ai, row.source, row.source(a, analyses[ai].params)});
+        for (const PhysicsEvent& e : sources[si].events) {
+            if (e.side != side || !row.match(e, a, side)) continue;
             Event ev;
             ev.time_s = e.time_s + b.offset_ms / 1000.0;
             // Story 10-8i: on a loop the offset wraps round the cycle (period T = the seam), as the
@@ -671,7 +518,7 @@ std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const s
             ev.block = static_cast<int>(bi);
             ev.marker = b.marker;
             ev.strength = e.strength;
-            ev.speed = pivot ? 0.0 : e.strength * a.leg_length;
+            ev.speed = row.degrees ? 0.0 : e.strength * a.leg_length;
             out.push_back(std::move(ev));
         }
     }
@@ -796,42 +643,36 @@ bool ApplyAutoSensSearch(std::vector<Block>& blocks, const std::vector<BoneTrack
 
 // ---- Missing parts -----------------------------------------------------------------------------
 
-std::vector<std::string> AutoMissingParts(AutoType t, bool separate, const std::vector<int>& role_to_bone)
+namespace {
+
+// The body scale: heel, knee and up leg (or the hips) of one side; else knee and up leg of one
+// side (twice the thigh). `out` (optional): each side's missing heel, knee and up leg when
+// neither works.
+bool BodyScale(const std::vector<int>& role_to_bone, std::vector<std::string>* out)
 {
-    std::vector<std::string> out;
-    auto has = [&](Role r) { return HasRole(role_to_bone, r); };
+    auto       has = [&](Role r) { return AutoHasRole(role_to_bone, r); };
     const Role knee[2] = {Role::LeftKnee, Role::RightKnee};
     const Role up_leg[2] = {Role::LeftUpLeg, Role::RightUpLeg};
-    // Body scale: heel, knee and up leg (or the hips) of one side; else knee and up leg of one
-    // side (twice the thigh).
-    bool scale = false;
+    bool       scale = false;
     for (int s = 0; s < 2; ++s)
         scale = scale || (has(FootPartRole(kSides[s], 0)) && has(knee[s]) && (has(up_leg[s]) || has(Role::Hips))) ||
                 (has(knee[s]) && has(up_leg[s]));
-    if (!scale)
+    if (!scale && out)
         for (int s = 0; s < 2; ++s) {
-            if (!has(FootPartRole(kSides[s], 0))) PushOnce(out, RoleName(FootPartRole(kSides[s], 0)));
-            if (!has(knee[s])) PushOnce(out, RoleName(knee[s]));
-            if (!has(up_leg[s]) && !has(Role::Hips)) PushOnce(out, RoleName(up_leg[s]));
+            if (!has(FootPartRole(kSides[s], 0))) AutoPushOnce(*out, RoleName(FootPartRole(kSides[s], 0)));
+            if (!has(knee[s])) AutoPushOnce(*out, RoleName(knee[s]));
+            if (!has(up_leg[s]) && !has(Role::Hips)) AutoPushOnce(*out, RoleName(up_leg[s]));
         }
-    if (AutoCategoryOf(t) == AutoCategory::Hands) {
-        for (Role hand : {Role::LeftHand, Role::RightHand})
-            if (!has(hand)) PushOnce(out, RoleName(hand));
-        return out;
-    }
-    for (char side : kSides) {
-        const Role heel = FootPartRole(side, 0), ball = FootPartRole(side, 1), tip = FootPartRole(side, 2);
-        const bool any = has(heel) || has(ball) || has(tip);
-        const bool toe = has(ball) || has(tip);
-        if (t == AutoType::Pivot || ((t == AutoType::Step || t == AutoType::Slide) && separate)) {
-            if (!has(heel)) PushOnce(out, RoleName(heel));
-            if (!toe) PushOnce(out, RoleName(ball));
-        } else if (!any) {
-            PushOnce(out, RoleName(heel));
-            PushOnce(out, RoleName(ball));
-            PushOnce(out, RoleName(tip));
-        }
-    }
+    return scale;
+}
+
+}  // namespace
+
+std::vector<std::string> AutoMissingParts(AutoType t, bool separate, const std::vector<int>& role_to_bone)
+{
+    std::vector<std::string> out;
+    BodyScale(role_to_bone, &out);
+    if (InRange(static_cast<int>(t), kAutoTypeCount)) AutoTypeRow(t).parts(separate, role_to_bone, out);
     return out;
 }
 
@@ -840,37 +681,8 @@ bool AutoBlockPartMissing(const Block& b, const std::vector<int>& role_to_bone)
     AutoKind kind;
     char     side = 'L';
     if (!b.enabled || !AutoBlockKind(b, &kind, &side)) return false;
-    auto       has = [&](Role r) { return HasRole(role_to_bone, r); };
-    const Role knee[2] = {Role::LeftKnee, Role::RightKnee};
-    const Role up_leg[2] = {Role::LeftUpLeg, Role::RightUpLeg};
-    bool       scale = false;  // as AutoMissingParts
-    for (int s = 0; s < 2; ++s)
-        scale = scale || (has(FootPartRole(kSides[s], 0)) && has(knee[s]) && (has(up_leg[s]) || has(Role::Hips))) ||
-                (has(knee[s]) && has(up_leg[s]));
-    if (!scale) return true;
-    const Role heel = FootPartRole(side, 0), ball = FootPartRole(side, 1), tip = FootPartRole(side, 2);
-    const bool toe = has(ball) || has(tip);
-    switch (kind) {
-    case AutoKind::Grab:
-    case AutoKind::Release:
-    case AutoKind::HandPivot:
-    case AutoKind::HandPivotAny: return !has(side == 'R' ? Role::RightHand : Role::LeftHand);
-    case AutoKind::Heel:
-    case AutoKind::SlideHeel:
-    case AutoKind::SlideHeelLongest: return !has(heel);
-    case AutoKind::Toe:
-    case AutoKind::SlideToe:
-    case AutoKind::SlideToeLongest: return !toe;
-    case AutoKind::Pivot:
-    case AutoKind::PivotHeel:
-    case AutoKind::PivotToe:
-    case AutoKind::PivotHeelLongest:
-    case AutoKind::PivotToeLongest: return !has(heel) || !toe;
-    case AutoKind::Step:
-    case AutoKind::Lift:
-    case AutoKind::Slide: return !has(heel) && !toe;
-    }
-    return false;
+    if (!BodyScale(role_to_bone, nullptr)) return true;
+    return AutoKindRow(kind).part_missing(side, role_to_bone);
 }
 
 std::vector<char> AutoBlocksPartMissing(const std::vector<Block>& blocks, const std::vector<int>& role_to_bone)
@@ -892,26 +704,6 @@ std::vector<char> KeepUnrunnableEvents(std::vector<Event>& detections, const std
 
 // ---- Signal lanes (story 10-8s) ---------------------------------------------------------------
 
-namespace {
-
-const char* const kLanePartName[kFootPartCount] = {"Heel", "Ball", "Tip"};
-
-std::vector<double> LaneWindow(const std::vector<double>& v, size_t first, size_t n, bool absval)
-{
-    std::vector<double> out(n, 0.0);
-    for (size_t i = 0; i < n && first + i < v.size(); ++i) out[i] = absval ? std::fabs(v[first + i]) : v[first + i];
-    return out;
-}
-
-std::vector<char> LaneWindowMask(const std::vector<char>& v, size_t first, size_t n)
-{
-    std::vector<char> out(n, 0);
-    for (size_t i = 0; i < n && first + i < v.size(); ++i) out[i] = v[first + i];
-    return out;
-}
-
-}  // namespace
-
 std::vector<AutoLane> AutoBlockLanes(const AutoAnalysis& aa, const Block& b, std::string* why)
 {
     std::vector<AutoLane> out;
@@ -921,105 +713,17 @@ std::vector<AutoLane> AutoBlockLanes(const AutoAnalysis& aa, const Block& b, std
     if (why) why->clear();
     if (!AutoBlockKind(b, &k, &side)) return out;
     const PhysicsAnalysis& a = aa.analysis;
-    const PhysicsParams&   p = aa.params;
     if (!a.ok) {
         if (why) *why = a.error.empty() ? std::string("analysis failed") : a.error;
         return out;
     }
-    const size_t      first = a.window_first;
-    const size_t      n = a.window_samples;
-    const std::string sd(1, side);
-    const FootTrack&  ft = a.foot[SideIndex(side)];
-    const HandTrack&  ht = a.hand[SideIndex(side)];
-    auto part_lane = [&](const PartTrack& pt, const char* name, bool horizontal, double thr) {
-        AutoLane l;
-        l.label = std::string(name) + " " + sd + "  " + (horizontal ? "hspeed" : "speed");
-        l.unit = "leg/s";
-        l.curve = LaneWindow(horizontal ? pt.hspeed : pt.speed, first, n, false);
-        l.contact = LaneWindowMask(pt.contact, first, n);
-        l.threshold = thr;
-        l.above = horizontal;  // a slide fires above slide_speed, a contact below contact_speed
-        out.push_back(std::move(l));
-    };
-    auto foot_parts = [&](bool horizontal, double thr) {
-        for (int i = 0; i < kFootPartCount; ++i)
-            if (ft.part[i].present) part_lane(ft.part[i], kLanePartName[i], horizontal, thr);
-        if (out.empty()) reason = ft.part[0].missing;
-    };
-    const PartTrack& heel = ft.part[static_cast<int>(FootPart::Heel)];
-    const PartTrack& ball = ft.part[static_cast<int>(FootPart::Ball)];
-    const PartTrack& tip = ft.part[static_cast<int>(FootPart::Tip)];
-    switch (k) {
-    case AutoKind::Step:
-    case AutoKind::Lift: foot_parts(false, p.contact_speed); break;
-    case AutoKind::Slide: foot_parts(true, p.slide_speed); break;
-    case AutoKind::SlideHeel:
-    case AutoKind::SlideHeelLongest:  // 10-8m: the heel part of a slide
-        if (heel.present) part_lane(heel, "Heel", true, p.slide_speed);
-        else reason = heel.missing;
-        break;
-    case AutoKind::SlideToe:
-    case AutoKind::SlideToeLongest:  // 10-8m: the toe part of a slide (ball and tip)
-        if (ball.present) part_lane(ball, "Ball", true, p.slide_speed);
-        if (tip.present) part_lane(tip, "Tip", true, p.slide_speed);
-        if (out.empty()) reason = ball.missing;
-        break;
-    case AutoKind::Heel:
-        if (heel.present) part_lane(heel, "Heel", false, p.contact_speed);
-        else reason = heel.missing;
-        break;
-    case AutoKind::Toe:
-        if (ball.present) part_lane(ball, "Ball", false, p.contact_speed);
-        else if (tip.present) part_lane(tip, "Tip", false, p.contact_speed);
-        else reason = ball.missing;
-        break;
-    case AutoKind::Pivot:
-    case AutoKind::PivotHeel:  // 10-8m: a pivot part reads the same yaw rate
-    case AutoKind::PivotToe:
-    case AutoKind::PivotHeelLongest:
-    case AutoKind::PivotToeLongest: {
-        if (!ft.has_yaw) {  // FindPivots needs the heel -> toe yaw
-            reason = "pivot needs the heel and the toe";
-            break;
-        }
-        AutoLane l;
-        l.label = "Pivot " + sd + "  yaw rate";
-        l.unit = "deg/s";
-        l.curve.assign(n, 0.0);
-        for (size_t i = 0; i < n; ++i) {
-            const size_t j = first + i;
-            if (j < ft.yaw_valid.size() && ft.yaw_valid[j] && j < ft.yaw_rate_dps.size())
-                l.curve[i] = std::fabs(ft.yaw_rate_dps[j]);
-            else if (j < ft.heading_valid.size() && ft.heading_valid[j] && j < ft.heading_rate_dps.size())
-                l.curve[i] = std::fabs(ft.heading_rate_dps[j]);
-        }
-        l.threshold = p.pivot_rate_dps;
-        l.above = true;
-        out.push_back(std::move(l));
-        break;
-    }
-    case AutoKind::Grab:
-    case AutoKind::Release:
-        if (ht.part.present) part_lane(ht.part, "Hand", false, p.hand_contact_speed);
-        else reason = ht.part.missing;
-        break;
-    case AutoKind::HandPivot:
-    case AutoKind::HandPivotAny:
-        if (ht.part.present && !ht.has_heading) {
-            reason = "no usable hand rotation";
-        } else if (ht.part.present) {
-            AutoLane l;
-            l.label = "Hand " + sd + "  heading rate";
-            l.unit = "deg/s";
-            l.curve = LaneWindow(ht.heading_rate_dps, first, n, true);
-            l.threshold = p.hand_pivot_rate_dps;
-            l.above = true;
-            out.push_back(std::move(l));
-        } else {
-            reason = ht.part.missing;
-        }
-        break;
-    }
+    AutoLaneArgs args;
+    args.a = &a;
+    args.p = &aa.params;
+    args.side = side;
+    args.first = a.window_first;
+    args.n = a.window_samples;
+    AutoKindRow(k).lanes(args, out, reason);
     for (AutoLane& l : out) l.rate_hz = a.rate_hz;
     if (out.empty() && why) *why = reason.empty() ? std::string("part missing") : reason;
     return out;

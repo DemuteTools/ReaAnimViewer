@@ -72,6 +72,10 @@ constexpr int kAutoTypeCount = 7;
 // "Step", "Lift-off", "Slide scuff", "Pivot scuff", "Grab", "Release", "Pivot scuff" (the hand's)
 const char* AutoTypeLabel(AutoType t);
 
+// Story 10-9-0: every type, category and kind has one descriptor row in auto_types.cpp (labels,
+// words, marker names, colours, sensitivity constants, events, parts, lanes); the functions below
+// read it.
+
 // The section's categories (foldable groups), each holding some types.
 enum class AutoCategory : int { Feet = 0, Hands };
 constexpr int kAutoCategoryCount = 2;
@@ -158,6 +162,11 @@ void UntickAutoCategory(AutoSettings& s, AutoCategory c);
 // combined, slides or pivots between their part modes, or hand pivots between after a grab and
 // any (sensitivity and offset never wait for Detect on a detected type).
 bool AutoPending(const AutoSettings& ui, const AutoSettings& item);
+
+// A type's own "separate" mode (AutoMissingParts' `separate`): only steps, slides and pivots have
+// it (steps separate_steps, slides and pivots a part mode other than Combined); false for every
+// other type. Pivots' required parts ignore it (a pivot always needs the heel and the toe).
+bool AutoTypeSeparate(AutoType t, const AutoSettings& s);
 
 // The blocks of these settings, per ticked type x side (story 10-8h: a row's own values when the
 // type has one for that kind and side), in type order (steps: combined FS, or heel

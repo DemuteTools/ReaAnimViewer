@@ -190,6 +190,9 @@ if(WIN32)
             src/footstep_measure.cpp
             src/motion_physics.cpp
             src/auto_detect.cpp
+            src/auto_types.cpp  # 10-9-0
+            src/auto_types_feet.cpp
+            src/auto_types_hands.cpp
             src/detection_measure.cpp
             src/rule_record.cpp
             src/preset_store.cpp

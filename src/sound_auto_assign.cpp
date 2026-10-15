@@ -6,24 +6,17 @@
 
 #include <algorithm>
 
+#include "auto_types.h"          // story 10-9-0: the kinds' rows
 #include "sound_populate_plan.h"  // SetValueIn
 #include "sound_record.h"         // FindRuleSounds
 
 namespace rav {
 namespace {
 
-// The kind whose word names the key: the kinds of one marker share it.
+// The kind whose word names the key: the kinds of one marker share it (the kind's row).
 AutoKind KeyKind(AutoKind k)
 {
-    switch (k) {
-    case AutoKind::HandPivotAny: return AutoKind::HandPivot;
-    case AutoKind::SlideHeelLongest: return AutoKind::SlideHeel;
-    case AutoKind::SlideToeLongest: return AutoKind::SlideToe;
-    case AutoKind::PivotHeelLongest: return AutoKind::PivotHeel;
-    case AutoKind::PivotToeLongest: return AutoKind::PivotToe;
-    default: break;
-    }
-    return k;
+    return AutoKindRow(k).sound_key;
 }
 
 bool Listed(const std::vector<std::string>& keys, const std::string& k)

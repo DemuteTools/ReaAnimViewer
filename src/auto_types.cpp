@@ -1,0 +1,269 @@
+// SPDX-License-Identifier: MIT
+//
+// See auto_types.h. The table of the auto event types.
+//
+// How to add an auto event type (story 10-9-0). Scope: a type with no mode, in an existing
+// category, reading existing PhysicsKinds:
+//   1. auto_detect.h: append its AutoType and its AutoKind values at the end of their enums, and
+//      raise kAutoTypeCount / kAutoKindCount.
+//   2. Here: append one row per enum value to kTypeRows / kKindRows (the rows follow enum order:
+//      static_assert below; every type row needs a hint), and declare its functions in the block
+//      below.
+//   3. Its functions (event source, match, part missing, lanes, roles, type parts) in its
+//      category's file (auto_types_<category>.cpp), reusing the shared ones where they fit.
+//   4. CMakeLists.txt: a new .cpp next to auto_types.cpp; tests/CMakeLists.txt: add it to
+//      RAV_AUTO_SRCS (one edit); tests/auto_types_test.cpp: its known values.
+// Within that scope no switch is extended: the Tagging view, the sounds and the detection read
+// the rows. Beyond it:
+//   - a new category: also its AutoCategory value, kAutoCategoryCount, a kCategoryRows row and its
+//     BodyPart in sound_assign.cpp BuildParts;
+//   - a new PhysicsKind: kPhysicsKindCount and a kPhysicsKindRows row (motion_physics.cpp);
+//   - a type with a mode: code in KindsOf, AutoTypeSeparate, AutoPending, ReadAutoSettings /
+//     ApplyAutoSettings (auto_detect.cpp) and its widget in tagging_view_ui.cpp.
+// The save words (kind `word`, type `sound_word`) are saved data: never rename one.
+
+#include "auto_types.h"
+
+#include <algorithm>
+#include <cmath>
+
+namespace rav {
+
+// ---- The rows' functions, by file --------------------------------------------------------------
+
+// auto_types_feet.cpp
+std::vector<PhysicsEvent> AutoSourceFoot(const PhysicsAnalysis& a, const PhysicsParams& p);
+std::vector<PhysicsEvent> AutoSourceFootParts(const PhysicsAnalysis& a, const PhysicsParams& p);
+void AutoPartsFootAny(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out);
+void AutoPartsFootSplit(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out);
+void AutoPartsFootBoth(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out);
+bool AutoMatchStep(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchHeel(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchToe(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchLift(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchSlide(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchPivot(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchSlideHeel(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchSlideToe(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchPivotHeel(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchPivotToe(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchSlideHeelLongest(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchSlideToeLongest(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchPivotHeelLongest(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchPivotToeLongest(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMissingFootAny(char side, const std::vector<int>& role_to_bone);
+bool AutoMissingHeel(char side, const std::vector<int>& role_to_bone);
+bool AutoMissingToe(char side, const std::vector<int>& role_to_bone);
+bool AutoMissingHeelOrToe(char side, const std::vector<int>& role_to_bone);
+void AutoLanesFootContact(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+void AutoLanesFootSlide(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+void AutoLanesHeel(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+void AutoLanesToe(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+void AutoLanesSlideHeel(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+void AutoLanesSlideToe(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+void AutoLanesPivot(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+std::vector<Role> AutoRolesFoot(char side);
+
+// auto_types_hands.cpp
+std::vector<PhysicsEvent> AutoSourceHand(const PhysicsAnalysis& a, const PhysicsParams& p);
+std::vector<PhysicsEvent> AutoSourceHandAny(const PhysicsAnalysis& a, const PhysicsParams& p);
+void AutoPartsHands(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out);
+bool AutoMatchGrab(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchRelease(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchHandPivot(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMissingHand(char side, const std::vector<int>& role_to_bone);
+void AutoLanesHandContact(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+void AutoLanesHandPivot(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+std::vector<Role> AutoRolesHand(char side);
+
+namespace {
+
+using C = AutoCategory;
+using T = AutoType;
+using K = AutoKind;
+using S = AutoSensDir;
+using P = PhysicsParams;
+
+// ---- Categories --------------------------------------------------------------------------------
+
+constexpr AutoCategoryInfo kCategoryRows[] = {
+    {C::Feet, "Feet", "feet"},
+    {C::Hands, "Hands", "hands"},
+};
+
+// ---- Types -------------------------------------------------------------------------------------
+
+constexpr AutoTypeInfo kTypeRows[] = {
+    {T::Step, "Step", "Step", C::Feet,
+     "A marker where the foot lands: FS L / FS R (combined: the first part to touch),\n"
+     "or Heel and Toe separately (one marker per part).",
+     "step", {{&P::contact_speed, S::Times}, {}}, &AutoPartsFootSplit},
+    {T::LiftOff, "Lift-off", "Lift-off", C::Feet, "A marker where the foot leaves the ground: Lift L / Lift R.", "lift",
+     {{&P::contact_speed, S::Times}, {}}, &AutoPartsFootAny},
+    {T::Slide, "Slide scuff", "Slide scuff", C::Feet,
+     "A marker where a planted foot slides: Slide L / Slide R (combined),\n"
+     "or Slide Heel L / Slide Toe L... (separate).",
+     "slide", {{&P::slide_speed, S::Divide}, {}}, &AutoPartsFootSplit},
+    {T::Pivot, "Pivot scuff", "Pivot scuff", C::Feet,
+     "A marker where a planted foot turns on its ball or heel: Pivot L / Pivot R (combined),\n"
+     "or Pivot Heel L / Pivot Toe L... (separate).",
+     "pivot", {{&P::pivot_min_deg, S::Divide}, {&P::pivot_rate_dps, S::Divide}}, &AutoPartsFootBoth},
+    {T::Grab, "Grab", "Grab", C::Hands, "A marker where the hand lands on something: Grab L / Grab R.", "grab",
+     {{&P::hand_contact_speed, S::Times}, {}}, &AutoPartsHands},
+    {T::Release, "Release", "Release", C::Hands, "A marker where the hand leaves its support: Release L / Release R.",
+     "release", {{&P::hand_contact_speed, S::Times}, {}}, &AutoPartsHands},
+    // Story 10-8e: the hand's Pivot scuff is named with its category in undo names.
+    {T::HandPivot, "Pivot scuff", "Hands Pivot scuff", C::Hands,
+     "A marker where a planted hand turns: Hand Pivot L / Hand Pivot R.", "hand_pivot",
+     {{&P::hand_pivot_min_deg, S::Divide}, {&P::hand_pivot_rate_dps, S::Divide}}, &AutoPartsHands},
+};
+
+// ---- Kinds -------------------------------------------------------------------------------------
+// Default colours: left in a cool hue, right in a warm one (the Footsteps presets' blue and orange
+// for steps); a separate toe block a shade lighter than its heel's.
+
+constexpr ScuffParts kNo = ScuffParts::Combined, kEach = ScuffParts::EachPart, kLong = ScuffParts::Longest;
+
+constexpr AutoKindInfo kKindRows[] = {
+    // kind, word, type, marker, colours L/R, scuff mode, scuff heel, degrees, role key, sound key,
+    // event source, match, part missing, lanes, roles
+    {K::Step, "step", T::Step, "FS", {0x5F9EDD, 0xDD9E5F}, kNo, false, false, "", K::Step, &AutoSourceFoot,
+     &AutoMatchStep, &AutoMissingFootAny, &AutoLanesFootContact, &AutoRolesFoot},
+    {K::Heel, "heel", T::Step, "Heel", {0x5F9EDD, 0xDD9E5F}, kNo, false, false, "heel", K::Heel, &AutoSourceFoot,
+     &AutoMatchHeel, &AutoMissingHeel, &AutoLanesHeel, &AutoRolesFoot},
+    {K::Toe, "toe", T::Step, "Toe", {0x5FDDDD, 0xDDDD5F}, kNo, false, false, "toe", K::Toe, &AutoSourceFoot,
+     &AutoMatchToe, &AutoMissingToe, &AutoLanesToe, &AutoRolesFoot},
+    {K::Lift, "lift", T::LiftOff, "Lift", {0x5F5FDD, 0xDD5F5F}, kNo, false, false, "", K::Lift, &AutoSourceFoot,
+     &AutoMatchLift, &AutoMissingFootAny, &AutoLanesFootContact, &AutoRolesFoot},
+    {K::Slide, "slide", T::Slide, "Slide", {0x5FDD5F, 0xDD5FDD}, kNo, false, false, "", K::Slide, &AutoSourceFoot,
+     &AutoMatchSlide, &AutoMissingFootAny, &AutoLanesFootSlide, &AutoRolesFoot},
+    {K::Pivot, "pivot", T::Pivot, "Pivot", {0x9E5FDD, 0xDD5F9E}, kNo, false, true, "", K::Pivot, &AutoSourceFoot,
+     &AutoMatchPivot, &AutoMissingHeelOrToe, &AutoLanesPivot, &AutoRolesFoot},
+    {K::Grab, "grab", T::Grab, "Grab", {0x5FDD9E, 0xDDB45F}, kNo, false, false, "hand", K::Grab, &AutoSourceHand,
+     &AutoMatchGrab, &AutoMissingHand, &AutoLanesHandContact, &AutoRolesHand},
+    {K::Release, "release", T::Release, "Release", {0x9EB4DD, 0xDD9E9E}, kNo, false, false, "hand", K::Release,
+     &AutoSourceHand, &AutoMatchRelease, &AutoMissingHand, &AutoLanesHandContact, &AutoRolesHand},
+    {K::HandPivot, "hand_pivot", T::HandPivot, "Hand Pivot", {0xA8DD3C, 0xB4643C}, kNo, false, true, "hand",
+     K::HandPivot, &AutoSourceHand, &AutoMatchHandPivot, &AutoMissingHand, &AutoLanesHandPivot, &AutoRolesHand},
+    {K::HandPivotAny, "hand_pivot_any", T::HandPivot, "Hand Pivot", {0xA8DD3C, 0xB4643C}, kNo, false, true, "hand",
+     K::HandPivot, &AutoSourceHandAny, &AutoMatchHandPivot, &AutoMissingHand, &AutoLanesHandPivot, &AutoRolesHand},
+    {K::SlideHeel, "slide_heel", T::Slide, "Slide Heel", {0x5FDD5F, 0xDD5FDD}, kEach, true, false, "heel",
+     K::SlideHeel, &AutoSourceFootParts, &AutoMatchSlideHeel, &AutoMissingHeel, &AutoLanesSlideHeel, &AutoRolesFoot},
+    {K::SlideToe, "slide_toe", T::Slide, "Slide Toe", {0x9FEE9F, 0xEE9FEE}, kEach, false, false, "toe", K::SlideToe,
+     &AutoSourceFootParts, &AutoMatchSlideToe, &AutoMissingToe, &AutoLanesSlideToe, &AutoRolesFoot},
+    {K::PivotHeel, "pivot_heel", T::Pivot, "Pivot Heel", {0x9E5FDD, 0xDD5F9E}, kEach, true, true, "heel",
+     K::PivotHeel, &AutoSourceFootParts, &AutoMatchPivotHeel, &AutoMissingHeelOrToe, &AutoLanesPivot, &AutoRolesFoot},
+    {K::PivotToe, "pivot_toe", T::Pivot, "Pivot Toe", {0xC49FEE, 0xEE9FC4}, kEach, false, true, "toe", K::PivotToe,
+     &AutoSourceFootParts, &AutoMatchPivotToe, &AutoMissingHeelOrToe, &AutoLanesPivot, &AutoRolesFoot},
+    {K::SlideHeelLongest, "slide_heel_longest", T::Slide, "Slide Heel", {0x5FDD5F, 0xDD5FDD}, kLong, true, false,
+     "heel", K::SlideHeel, &AutoSourceFoot, &AutoMatchSlideHeelLongest, &AutoMissingHeel, &AutoLanesSlideHeel,
+     &AutoRolesFoot},
+    {K::SlideToeLongest, "slide_toe_longest", T::Slide, "Slide Toe", {0x9FEE9F, 0xEE9FEE}, kLong, false, false, "toe",
+     K::SlideToe, &AutoSourceFoot, &AutoMatchSlideToeLongest, &AutoMissingToe, &AutoLanesSlideToe, &AutoRolesFoot},
+    {K::PivotHeelLongest, "pivot_heel_longest", T::Pivot, "Pivot Heel", {0x9E5FDD, 0xDD5F9E}, kLong, true, true,
+     "heel", K::PivotHeel, &AutoSourceFoot, &AutoMatchPivotHeelLongest, &AutoMissingHeelOrToe, &AutoLanesPivot,
+     &AutoRolesFoot},
+    {K::PivotToeLongest, "pivot_toe_longest", T::Pivot, "Pivot Toe", {0xC49FEE, 0xEE9FC4}, kLong, false, true, "toe",
+     K::PivotToe, &AutoSourceFoot, &AutoMatchPivotToeLongest, &AutoMissingHeelOrToe, &AutoLanesPivot,
+     &AutoRolesFoot},
+};
+
+// One row per enum value, in enum order.
+constexpr bool CategoryRowsInOrder()
+{
+    for (int i = 0; i < kAutoCategoryCount; ++i)
+        if (static_cast<int>(kCategoryRows[i].category) != i) return false;
+    return true;
+}
+constexpr bool TypeRowsInOrder()
+{
+    for (int i = 0; i < kAutoTypeCount; ++i)
+        if (static_cast<int>(kTypeRows[i].type) != i) return false;
+    return true;
+}
+constexpr bool KindRowsInOrder()
+{
+    for (int i = 0; i < kAutoKindCount; ++i)
+        if (static_cast<int>(kKindRows[i].kind) != i) return false;
+    return true;
+}
+static_assert(sizeof(kCategoryRows) / sizeof(kCategoryRows[0]) == kAutoCategoryCount, "one row per AutoCategory");
+static_assert(sizeof(kTypeRows) / sizeof(kTypeRows[0]) == kAutoTypeCount, "one row per AutoType");
+static_assert(sizeof(kKindRows) / sizeof(kKindRows[0]) == kAutoKindCount, "one row per AutoKind");
+static_assert(CategoryRowsInOrder(), "category rows follow the AutoCategory order");
+static_assert(TypeRowsInOrder(), "type rows follow the AutoType order");
+static_assert(KindRowsInOrder(), "kind rows follow the AutoKind order");
+
+int RowIndex(int i, int count)
+{
+    return (i >= 0 && i < count) ? i : 0;
+}
+
+}  // namespace
+
+const AutoCategoryInfo& AutoCategoryRow(AutoCategory c)
+{
+    return kCategoryRows[RowIndex(static_cast<int>(c), kAutoCategoryCount)];
+}
+
+const AutoTypeInfo& AutoTypeRow(AutoType t)
+{
+    return kTypeRows[RowIndex(static_cast<int>(t), kAutoTypeCount)];
+}
+
+const AutoKindInfo& AutoKindRow(AutoKind k)
+{
+    return kKindRows[RowIndex(static_cast<int>(k), kAutoKindCount)];
+}
+
+std::vector<AutoType> AutoTypesOf(AutoCategory c)
+{
+    std::vector<AutoType> out;
+    for (const AutoTypeInfo& r : kTypeRows)
+        if (r.category == c) out.push_back(r.type);
+    return out;
+}
+
+std::vector<AutoKind> AutoKindsOf(AutoType t)
+{
+    std::vector<AutoKind> out;
+    for (const AutoKindInfo& r : kKindRows)
+        if (r.type == t) out.push_back(r.kind);
+    return out;
+}
+
+// ---- Helpers for the per-category files --------------------------------------------------------
+
+bool AutoHasRole(const std::vector<int>& role_to_bone, Role r)
+{
+    const size_t i = static_cast<size_t>(r);
+    return i < role_to_bone.size() && role_to_bone[i] >= 0;
+}
+
+void AutoPushOnce(std::vector<std::string>& out, const std::string& s)
+{
+    if (std::find(out.begin(), out.end(), s) == out.end()) out.push_back(s);
+}
+
+std::vector<double> AutoLaneWindow(const std::vector<double>& v, size_t first, size_t n, bool absval)
+{
+    std::vector<double> out(n, 0.0);
+    for (size_t i = 0; i < n && first + i < v.size(); ++i) out[i] = absval ? std::fabs(v[first + i]) : v[first + i];
+    return out;
+}
+
+void AutoPartLane(const AutoLaneArgs& args, std::vector<AutoLane>& out, const PartTrack& pt, const char* name,
+                  bool horizontal, double thr)
+{
+    AutoLane l;
+    l.label = std::string(name) + " " + std::string(1, args.side) + "  " + (horizontal ? "hspeed" : "speed");
+    l.unit = "leg/s";
+    l.curve = AutoLaneWindow(horizontal ? pt.hspeed : pt.speed, args.first, args.n, false);
+    l.contact.assign(args.n, 0);
+    for (size_t i = 0; i < args.n && args.first + i < pt.contact.size(); ++i) l.contact[i] = pt.contact[args.first + i];
+    l.threshold = thr;
+    l.above = horizontal;  // a slide fires above slide_speed, a contact below contact_speed
+    out.push_back(std::move(l));
+}
+
+}  // namespace rav

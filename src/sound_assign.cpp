@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <map>
 
+#include "auto_types.h"    // story 10-9-0: the types' rows
 #include "rule_record.h"   // kBoneRefExtra, NewSoundUid
 #include "sound_record.h"  // FindRuleSounds, FindEventSounds, FindLibrary
 
@@ -44,24 +45,23 @@ std::vector<BodyPart> BuildParts()
 {
     std::vector<BodyPart> v;
     BodyPart              feet;
-    feet.id = "feet";
+    feet.id = AutoCategoryRow(AutoCategory::Feet).sound_part;
     feet.label = "Feet";
     feet.group = RoleGroup::Legs;
     feet.has_category = true;
     feet.category = AutoCategory::Feet;
-    for (AutoType t : {AutoType::Step, AutoType::LiftOff, AutoType::Slide, AutoType::Pivot})
-        feet.types.push_back(MakeAutoType(t));
+    for (AutoType t : AutoTypesOf(AutoCategory::Feet)) feet.types.push_back(MakeAutoType(t));
     feet.types.push_back(RulesType());
     feet.roles = "heels, toes, knees, legs";
     feet.role_word = "foot";
     v.push_back(feet);
     BodyPart hands;
-    hands.id = "hands";
+    hands.id = AutoCategoryRow(AutoCategory::Hands).sound_part;
     hands.label = "Hands";
     hands.group = RoleGroup::Arms;
     hands.has_category = true;
     hands.category = AutoCategory::Hands;
-    for (AutoType t : {AutoType::Grab, AutoType::Release, AutoType::HandPivot}) hands.types.push_back(MakeAutoType(t));
+    for (AutoType t : AutoTypesOf(AutoCategory::Hands)) hands.types.push_back(MakeAutoType(t));
     hands.types.push_back(RulesType());
     hands.roles = "hands, elbows, shoulders";
     hands.role_word = "hand";
@@ -207,16 +207,7 @@ std::string TypeLabel(const std::string& part, const std::string& type)
 
 const char* AutoTypeWord(AutoType t)
 {
-    switch (t) {
-    case AutoType::Step: return "step";
-    case AutoType::LiftOff: return "lift";
-    case AutoType::Slide: return "slide";
-    case AutoType::Pivot: return "pivot";
-    case AutoType::Grab: return "grab";
-    case AutoType::Release: return "release";
-    case AutoType::HandPivot: return "hand_pivot";
-    }
-    return "step";
+    return AutoTypeRow(t).sound_word;  // an unknown type reads the first row's ("step")
 }
 
 bool AutoTypeFromWord(const std::string& w, AutoType* out)
@@ -331,15 +322,7 @@ std::string EventRoleKey(const Block& b)
         AutoKind kind;
         char     side;
         if (!AutoBlockKind(b, &kind, &side)) return std::string();
-        switch (kind) {
-        case AutoKind::Heel: case AutoKind::SlideHeel: case AutoKind::PivotHeel: case AutoKind::SlideHeelLongest:
-        case AutoKind::PivotHeelLongest: return "heel";
-        case AutoKind::Toe: case AutoKind::SlideToe: case AutoKind::PivotToe: case AutoKind::SlideToeLongest:
-        case AutoKind::PivotToeLongest: return "toe";
-        case AutoKind::Grab: case AutoKind::Release: case AutoKind::HandPivot: case AutoKind::HandPivotAny: return "hand";
-        case AutoKind::Step: case AutoKind::Slide: case AutoKind::Pivot: case AutoKind::Lift: return std::string();
-        }
-        return std::string();
+        return AutoKindRow(kind).role_key;
     }
     if (b.conditions.empty()) return std::string();
     const SignalSpec& sp = b.conditions.front().signal;

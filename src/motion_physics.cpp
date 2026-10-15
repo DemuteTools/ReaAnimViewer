@@ -1428,26 +1428,60 @@ std::vector<double> PartStepTimes(const PhysicsAnalysis& a, char side, int part,
     return t;
 }
 
+namespace {
+
+// Story 10-9-0: the dev markers' text, one row per PhysicsKind (in enum order): "PHY <side>", the
+// kind's word, its part (a foot part's word, or a pivot's part), its strength (leg/s, or degrees)
+// and its span in ms (a scuff).
+enum class PhyPart { None, Foot, Pivot };
+struct PhysicsKindRow {
+    PhysicsKind kind;
+    const char* word;  // "" = none (a part step)
+    PhyPart     part;
+    bool        degrees;
+    bool        span;
+};
+constexpr PhysicsKindRow kPhysicsKindRows[] = {
+    {PhysicsKind::Step, "", PhyPart::Foot, false, false},
+    {PhysicsKind::FootStep, "step", PhyPart::Foot, false, false},
+    {PhysicsKind::LiftOff, "lift", PhyPart::Foot, false, false},
+    {PhysicsKind::Slide, "slide", PhyPart::Foot, false, true},
+    {PhysicsKind::Pivot, "pivot", PhyPart::Pivot, true, true},
+    {PhysicsKind::Grab, "grab", PhyPart::None, false, false},
+    {PhysicsKind::Release, "release", PhyPart::None, false, false},
+    {PhysicsKind::HandPivot, "hand pivot", PhyPart::None, true, true},
+};
+constexpr bool PhysicsKindRowsInOrder()
+{
+    for (int i = 0; i < kPhysicsKindCount; ++i)
+        if (static_cast<int>(kPhysicsKindRows[i].kind) != i) return false;
+    return true;
+}
+static_assert(sizeof(kPhysicsKindRows) / sizeof(kPhysicsKindRows[0]) == kPhysicsKindCount, "one row per PhysicsKind");
+static_assert(PhysicsKindRowsInOrder(), "rows follow the PhysicsKind order");
+
+const char* PivotPartWord(int part)
+{
+    return part < 0                                     ? "neither"
+           : part == static_cast<int>(FootPart::Heel)  ? "heel"
+           : part == static_cast<int>(FootPart::Tip)   ? "tip"
+                                                        : "ball";
+}
+
+}  // namespace
+
 std::string PhysicsMarkerName(const PhysicsEvent& e)
 {
-    const int ms = static_cast<int>(std::lround((e.end_s - e.start_s) * 1000.0));
-    switch (e.kind) {
-    case PhysicsKind::Step: return Format("PHY %c %s %.1f", e.side, FootPartWord(e.part), e.strength);
-    case PhysicsKind::FootStep: return Format("PHY %c step %s %.1f", e.side, FootPartWord(e.part), e.strength);
-    case PhysicsKind::LiftOff: return Format("PHY %c lift %s %.1f", e.side, FootPartWord(e.part), e.strength);
-    case PhysicsKind::Slide: return Format("PHY %c slide %s %.1f %dms", e.side, FootPartWord(e.part), e.strength, ms);
-    case PhysicsKind::Pivot:
-        return Format("PHY %c pivot %s %.0fdeg %dms", e.side,
-                      e.part < 0                                     ? "neither"
-                      : e.part == static_cast<int>(FootPart::Heel)  ? "heel"
-                      : e.part == static_cast<int>(FootPart::Tip)   ? "tip"
-                                                                     : "ball",
-                      e.strength, ms);
-    case PhysicsKind::Grab: return Format("PHY %c grab %.1f", e.side, e.strength);
-    case PhysicsKind::Release: return Format("PHY %c release %.1f", e.side, e.strength);
-    case PhysicsKind::HandPivot: return Format("PHY %c hand pivot %.0fdeg %dms", e.side, e.strength, ms);
-    }
-    return "PHY ?";
+    const int k = static_cast<int>(e.kind);
+    if (k < 0 || k >= kPhysicsKindCount) return "PHY ?";
+    const PhysicsKindRow& row = kPhysicsKindRows[k];
+    std::string           out = Format("PHY %c", e.side);
+    if (row.word[0]) out += std::string(" ") + row.word;
+    if (row.part == PhyPart::Foot) out += std::string(" ") + FootPartWord(e.part);
+    if (row.part == PhyPart::Pivot) out += std::string(" ") + PivotPartWord(e.part);
+    out += Format(row.degrees ? " %.0fdeg" : " %.1f", e.strength);
+    if (row.span) out += Format(" %dms", static_cast<int>(std::lround((e.end_s - e.start_s) * 1000.0)));
+    return out;
 }
 
 bool IsPhysicsMarkerName(const char* name)

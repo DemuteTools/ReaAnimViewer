@@ -312,6 +312,12 @@ ZoneDragKind StartZoneDrag(const ZoneHit& h, bool shift, bool alt)
     return ZoneDragKind::Scrub;
 }
 
+ZoneDragKind StartZoneDrag(const SoundData& d, const ZoneHit& h, bool shift, bool alt)
+{
+    const ZoneDragKind k = StartZoneDrag(h, shift, alt);
+    return k == ZoneDragKind::Move && !ItemOf(d, h.z).empty() ? ZoneDragKind::MoveChain : k;
+}
+
 bool PendingBecomesGain(const SoundData& d, const ZoneHit& h, float dx, float dy, bool shift, bool alt, float dp)
 {
     if (h.kind != ZoneHitKind::Zone || h.row != ZoneRow::Lane || shift || alt) return false;
@@ -323,6 +329,18 @@ bool PendingBecomesGain(const SoundData& d, const ZoneHit& h, float dx, float dy
 double GainDragDb(float dy_px)
 {
     return std::round(static_cast<double>(-dy_px)) / 10.0;
+}
+
+ZoneSel GainDragZones(const SoundData& d, const ZoneSel& sel, const ZoneRef& r)
+{
+    const ZoneSel from = SelHas(sel, r) ? sel : ItemOf(d, r);
+    ZoneSel       out;
+    for (const ZoneRef& q : from) {
+        const EditZone* z = ZoneOf(d, q);
+        if (z && !z->IsGap() && !SelHas(out, q)) out.push_back(q);
+    }
+    if (out.empty() && ZoneOf(d, r) && !Z(d, r).IsGap()) out.push_back(r);
+    return out;
 }
 
 std::string ZoneGainToast(const std::string& zone_name, const std::string& part_name, double db, double fader_db)
@@ -406,6 +424,13 @@ ZoneDoubleAction DoubleActionOf(const ZoneHit& h)
     }
 }
 
+ZoneDoubleAction DoubleActionOf(const SoundData& d, const ZoneHit& h)
+{
+    const ZoneDoubleAction a = DoubleActionOf(h);
+    if (a == ZoneDoubleAction::TselZone && h.row == ZoneRow::Lane && !ItemOf(d, h.z).empty()) return ZoneDoubleAction::TselItem;
+    return a;
+}
+
 ZoneCursor ZoneCursorOf(const ZoneHit& h)
 {
     switch (h.kind) {
@@ -458,10 +483,20 @@ std::string ZoneTip(const SoundData& d, const ZoneHit& h, const std::vector<std:
     case ZoneHitKind::Edge:
         return n + " " + (h.side < 0 ? "start" : "end") + ": drag (double-click: automatic, follows " +
                (h.side < 0 ? "Pre-roll" : "Tail") + ")";
-    case ZoneHitKind::Zone:
+    case ZoneHitKind::Zone: {
+        // 13-62h (v5): a zone or a Gap of an item (zones joined by Gaps) is the whole item.
+        const ZoneSel item = ItemOf(d, h.z);
+        if (!item.empty()) {
+            return ItemNames(d, item, names) + " " + ItemGlue(d, item) + ": one item. Click selects it whole" +
+                   (click_plays ? " and plays it" : "") + " (Ctrl+click adds / removes it). " +
+                   (h.top ? "Drag sideways: moves it (what touches it follows). " : "Drag sideways: the cursor. ") +
+                   (z && !z->IsGap() ? "Up / down: the gain of all its zones. " : "") +
+                   "Double-click: a time selection on it. Right-click: its menu";
+        }
         if (z && z->IsGap()) return "Gap: drag to move it (its neighbours follow). Click: select";
         return h.top ? n + ": drag up / down: its gain. Drag sideways to move it (its two edges; what touches it follows). Click: select" + plays
                      : n + ": drag up / down: its gain. Drag sideways to move the cursor. Click: select" + plays;
+    }
     case ZoneHitKind::Grey:
         return "Played by " + n + ": click to give it to " + lane + "; drag: swipe a range to " + lane;
     case ZoneHitKind::None: break;
@@ -590,6 +625,58 @@ void SelToggle(ZoneSel& sel, const ZoneRef& r)
     const auto it = std::find(sel.begin(), sel.end(), r);
     if (it != sel.end()) sel.erase(it);
     else sel.push_back(r);
+}
+
+void SelToggleItem(ZoneSel& sel, const ZoneSel& item, const ZoneRef& r)
+{
+    if (SelHas(sel, r)) {
+        sel.erase(std::remove_if(sel.begin(), sel.end(), [&](const ZoneRef& q) { return SelHas(item, q); }), sel.end());
+        return;
+    }
+    for (const ZoneRef& q : item)
+        if (!SelHas(sel, q)) sel.push_back(q);
+}
+
+ZoneSel SelItem(const SoundData& d, const ZoneSel& sel)
+{
+    const ZoneSel v = SelValid(d, sel);
+    if (v.empty()) return {};
+    const ZoneSel item = ItemOf(d, v.front());
+    if (item.size() != v.size()) return {};
+    for (const ZoneRef& q : v)
+        if (!SelHas(item, q)) return {};
+    return item;
+}
+
+std::string ItemNames(const SoundData& d, const ZoneSel& item, const std::vector<std::string>& names)
+{
+    std::string out;
+    for (const ZoneRef& q : item)
+        if (ZoneOf(d, q) && !Z(d, q).IsGap()) out += (out.empty() ? "" : " + ") + ZoneName(d, q, names);
+    return out;
+}
+
+std::string ItemGlue(const SoundData& d, const ZoneSel& item)
+{
+    int ng = 0;
+    for (const ZoneRef& q : item) ng += ZoneOf(d, q) && Z(d, q).IsGap() ? 1 : 0;
+    return ng > 1 ? "glued by " + std::to_string(ng) + " Gaps" : std::string("glued by a Gap");
+}
+
+bool ItemEdges(const SoundData& d, const ZoneSel& item, double* a, double* b)
+{
+    if (item.empty() || !ZoneOf(d, item.front()) || !ZoneOf(d, item.back())) return false;
+    *a = Z(d, item.front()).a;
+    *b = Z(d, item.back()).b;
+    return true;
+}
+
+double ItemHeard(const SoundData& d, const ZoneSel& item)
+{
+    double a = 0.0, b = 0.0, s = 0.0;
+    if (!ItemEdges(d, item, &a, &b)) return 0.0;
+    for (const HeardPiece& q : HeardPieces(d, a, b)) s += (q.b - q.a) - q.xo;
+    return s;
 }
 
 ZoneSel SelValid(const SoundData& d, const ZoneSel& sel)

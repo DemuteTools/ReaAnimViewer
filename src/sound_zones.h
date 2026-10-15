@@ -101,6 +101,12 @@ ZoneRef GapBefore(const SoundData& d, const ZoneRef& r);
 ZoneRef GapAfter(const SoundData& d, const ZoneRef& r);
 // The part zones Gaps glue together around `r` (a Gap: around its left neighbour), in time order.
 std::vector<ZoneRef> ChainOf(const SoundData& d, const ZoneRef& r);
+// 13-62h (Antho 2026-10-15, maquette-zones-13-62h-v5 "Un son recollé"): zones joined by Gaps (Heel | Gap | Heel,
+// Heel | Gap | Toe) are ONE item: selected, moved, played, normalized and deleted whole; its handles (edges, fades,
+// the Gap's crossfade, snap tags, cuts) stay one by one. Its members -- its part zones and the Gaps between them, in
+// time order -- when r (a part zone or a Gap of an on variation) is in a ChainOf of two part zones or more; empty
+// otherwise (a zone alone is no item: it behaves as one zone).
+std::vector<ZoneRef> ItemOf(const SoundData& d, const ZoneRef& r);
 // A Gap's neighbours (the part zones it touches), {-1, -1} when missing.
 ZoneRef GapLeft(const SoundData& d, const ZoneRef& gap);
 ZoneRef GapRight(const SoundData& d, const ZoneRef& gap);
@@ -201,6 +207,14 @@ double MoveRange(const SoundData& d, const ZoneRef& r, double delta, double file
 // Moves zone r by `delta` (clamped by MoveRange): both edges; a butted neighbour's edge follows (a Gap's always
 // do). `sel` gets it.
 bool MoveZone(SoundData& d, const ZoneRef& r, double delta, const ZoneContext& ctx = {}, ZoneSel* sel = nullptr);
+// 13-62h (v5): how far the item of r (ItemOf) can move by `delta`: the mockup's chainDrag lo / hi -- a neighbour
+// butted to its first / last member follows (down to its 6 ms / a Gap's 4 ms), one across empty space stops it, the
+// file's edges. 0 when r is in no item.
+double MoveChainRange(const SoundData& d, const ZoneRef& r, double delta, double file_len = 0.0);
+// Moves the whole item of r by `delta` (clamped by MoveChainRange): every member by the same amount (its part zones'
+// edges by hand, their own snaps along; the Gaps keep their crossfades); a butted neighbour's edge follows. False when
+// r is in no item or it cannot move. `sel` gets every member.
+bool MoveChain(SoundData& d, const ZoneRef& r, double delta, const ZoneContext& ctx = {}, ZoneSel* sel = nullptr);
 // One edge of a part zone (side < 0 start, > 0 end) to t, alone: it stops on its neighbour (opening empty space
 // backing off); by hand (▼). An edge held by a Gap: false (DragGapEdge).
 bool DragZoneEdge(SoundData& d, const ZoneRef& r, int side, double t, const ZoneContext& ctx = {},

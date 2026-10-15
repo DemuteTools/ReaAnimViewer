@@ -83,7 +83,7 @@ ZoneHit HitZones(const SoundData& d, const ZoneHitView& v, float x, float y);
 
 // What a press does once the mouse moves.
 enum class ZoneDragKind {
-    None, Pending, Reserved, Tsel, TselEdge, MkGap, MkZone, Swipe, Move, Scrub, Gain,
+    None, Pending, Reserved, Tsel, TselEdge, MkGap, MkZone, Swipe, Move, MoveChain, Scrub, Gain,
     Edge, Cut, GapEdge, Fade, Snap, Xf
 };
 // At the press: a handle drags at once (TselEdge, Edge, Cut, GapEdge, Fade, Snap, Xf); else Pending. With Ctrl,
@@ -96,11 +96,16 @@ bool ZoneReservedOnMove(const ZoneHit& h, bool ctrl, bool alt);
 // Shift a new zone, a greyed zone a swipe, a zone's (or a Gap's) top half a move; else the cursor (scrub). The
 // Variations and Placed strips: nothing.
 ZoneDragKind StartZoneDrag(const ZoneHit& h, bool shift, bool alt);
+// 13-62h (v5): the same, a Move of a zone or a Gap of an item (ItemOf) moving the whole item (MoveChain).
+ZoneDragKind StartZoneDrag(const SoundData& d, const ZoneHit& h, bool shift, bool alt);
 // A Pending press on a part zone moved more vertically than sideways past 3 logical px (`dp` = one on screen; no
 // Shift / Alt): its gain.
 bool PendingBecomesGain(const SoundData& d, const ZoneHit& h, float dx, float dy, bool shift, bool alt, float dp = 1.0f);
 // The gain a vertical drag of dy logical px gives (0.1 dB per px, up = louder).
 double GainDragDb(float dy_px);
+// 13-62h (v5): the part zones a vertical drag on zone r moves: the selection's when r is selected (as before), else
+// all its item's (ItemOf), else r alone.
+ZoneSel GainDragZones(const SoundData& d, const ZoneSel& sel, const ZoneRef& r);
 // The single zone gain drag's toast (the mockup's): "Heel gain: +2.0 dB (+ Heel fader +1 dB = 2.0 dB)" -- the
 // fader is what it has applied to the zone's own gain (never added on top).
 std::string ZoneGainToast(const std::string& zone_name, const std::string& part_name, double db, double fader_db);
@@ -124,8 +129,11 @@ bool        ZoneDoubleTap(ZoneTap& last, const std::string& key, double now, flo
                           double max_s = 0.45);
 
 // What a double-click does (the mockup's onDouble).
-enum class ZoneDoubleAction { None, RemoveTsel, TselVariation, TselZone, ResetEdge, ResetSnap, ResetFade };
+enum class ZoneDoubleAction { None, RemoveTsel, TselVariation, TselZone, TselItem, ResetEdge, ResetSnap, ResetFade };
 ZoneDoubleAction DoubleActionOf(const ZoneHit& h);
+// 13-62h (v5): the same, a zone / Gap of an item (a lane's own or greyed one, not the Placed strip's block) = the
+// item whole selected, a time selection over it and the cursor at its start (TselItem).
+ZoneDoubleAction DoubleActionOf(const SoundData& d, const ZoneHit& h);
 
 // The hover cursor of a hit (the mockup's CURSORS: a zone's top half grabs, its bottom half is a text cursor).
 enum class ZoneCursor { Arrow, Hand, ResizeEW, Text, Grab };
@@ -161,6 +169,19 @@ int HealCutCount(const SoundData& d, const ZoneSel& sel);
 bool    SelHas(const ZoneSel& sel, const ZoneRef& r);
 // Ctrl / Shift+click: adds r, or takes it out.
 void    SelToggle(ZoneSel& sel, const ZoneRef& r);
+// 13-62h (v5): Ctrl / Shift+click on a member r of `item`: r selected = the whole item taken out, else every member
+// added (once each).
+void    SelToggleItem(ZoneSel& sel, const ZoneSel& item, const ZoneRef& r);
+// 13-62h (v5): the item the selection is, whole and alone (its members, time order; the Selection panel's item
+// card), else empty.
+ZoneSel SelItem(const SoundData& d, const ZoneSel& sel);
+// "Heel + Heel" (its part zones' names) and "glued by a Gap" / "glued by 2 Gaps".
+std::string ItemNames(const SoundData& d, const ZoneSel& item, const std::vector<std::string>& names);
+std::string ItemGlue(const SoundData& d, const ZoneSel& item);
+// What is heard of an item: its extent's HeardPieces (Gaps jumped, crossfades overlapped), seconds.
+double ItemHeard(const SoundData& d, const ZoneSel& item);
+// Its extent: its first member's start, its last member's end (false when empty).
+bool ItemEdges(const SoundData& d, const ZoneSel& item, double* a, double* b);
 // Only the refs that still point at a zone (once each).
 ZoneSel SelValid(const SoundData& d, const ZoneSel& sel);
 // The selection carried from `before` to `after` (a write that gave no selection back): each zone kept where it

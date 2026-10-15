@@ -18,7 +18,8 @@
 //   ZonePlaySelection(h)      the Selection panel's ▶ Play (one zone = ZonePlayZone; several = first start .. last chain end)
 //   ZoneTransport(h)          ▶ Play / Space: from the edit cursor (time selection and Loop rules); again = stop
 //   ZoneToggleLoop(h)         ⟳ Loop / its key (view state, toast)
-//   ZoneDelete(h)             Delete: the selected zones removed, a selected Gap given to its left zone
+//   ZoneDelete(h)             Delete: the selected zones removed, a selected Gap given to its left zone (a whole item
+//                             selected: removed whole, empty space remains)
 //   ZoneHeal(h)               H / 40548: heal the selected zones edge to edge (toast when they are not)
 //   ZoneSplit(h)              B / 40757: split the zone under the edit cursor
 //   ZoneTrimAt(h, side)       40511 (side < 0) / 40512 (> 0) at the cursor; ZoneTrimToTsel(h): 40508
@@ -77,7 +78,7 @@ struct ZoneEditView {
     // The hover (for the drawn hints), the right-click menu's target.
     bool        hover_on = false;
     ZoneHit     hover;
-    int         menu_kind = 0;  // 0 empty space, 1 a zone, 2 a Gap
+    int         menu_kind = 0;  // 0 empty space, 1 a zone, 2 a Gap, 3 an item (zones joined by Gaps, 13-62h v5)
     ZoneRef     menu_z;
     // The zone audition playing (tag "zone:<uid>"): its transport and heard map (the playheads).
     bool          playing = false;
@@ -128,6 +129,9 @@ struct ZoneWaveHost {
     // 13-62h (Antho): the detection threshold line dragged (Silence mode): `db` live while dragged, `done` on the
     // release (one undo point, the variations re-detected as the Detection row's threshold does). Null = no line.
     std::function<void(double db, bool done)> threshold;
+    // 13-62h (v5): the item menu's Normalize: the selection's part zones measured as NormGroups (one gain per part's
+    // zones glued by Gaps), one undo point when measured (a toast while measuring / waiting). Null = no entry.
+    std::function<void(const ZoneSel& sel)> normalize;
 };
 
 // What the waveform leaves for the caller: the lane header column (Lane), the canvas, a middle-drag's scroll.

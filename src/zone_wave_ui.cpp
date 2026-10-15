@@ -341,8 +341,12 @@ void Click(const ZoneWaveHost& h, const ZoneHit& hit, bool add)
         if (!add) v.sel.clear();  // empty space: nothing selected (the time selection stays)
         return;
     }
+    // 13-62h (Antho 2026-10-15, v5): zones joined by Gaps are one item: a click on any of its zones or its Gap
+    // selects it whole (Ctrl / Shift: adds or removes it whole). A greyed zone of a lane still goes alone to the lane.
+    const ZoneSel item = ItemOf(d, hit.z);
     if (add) {  // REAPER: Ctrl+click adds the zone to the selection, or takes it out
-        SelToggle(v.sel, hit.z);
+        if (!item.empty()) SelToggleItem(v.sel, item, hit.z);
+        else SelToggle(v.sel, hit.z);
         return;
     }
     if (hit.kind == ZoneHitKind::Grey && hit.lane >= 0 && static_cast<size_t>(hit.lane) < d.divide_values.size()) {
@@ -350,8 +354,13 @@ void Click(const ZoneWaveHost& h, const ZoneHit& hit, bool add)
                 "(its copy on " + PartNameOf(h, z->part) + "'s lane is now greyed)");
         return;
     }
-    v.sel = {hit.z};
-    if (!z->IsGap()) *h.part_sel = z->part;
+    if (!item.empty()) {
+        v.sel = item;
+        *h.part_sel = ZoneOf(d, item.front())->part;
+    } else {
+        v.sel = {hit.z};
+        if (!z->IsGap()) *h.part_sel = z->part;
+    }
     if (hit.row == ZoneRow::Placed) return;  // the Placed strip: click selects
     if (ZoneClickPlays()) PlayRange(h, ClickPlayRange(d, hit.z, hit.t, h.file_len));
 }
@@ -363,7 +372,7 @@ void Double(const ZoneWaveHost& h, const ZoneHit& hit)
     const SoundData& d = Shown(h);
     const EditZone*  z = ZoneOf(d, hit.z);
     const std::string nm = NameOfZone(h, d, hit.z);
-    switch (DoubleActionOf(hit)) {
+    switch (DoubleActionOf(d, hit)) {
     case ZoneDoubleAction::RemoveTsel:
         if (v.has_tsel) {
             v.has_tsel = false;
@@ -384,6 +393,15 @@ void Double(const ZoneWaveHost& h, const ZoneHit& hit)
         if (!z->IsGap()) *h.part_sel = z->part;
         SetTsel(h, z->a, z->b, nm + ": time selection " + ZoneRangeMs(z->a, z->b) + ", the cursor at its start");
         return;
+    case ZoneDoubleAction::TselItem: {  // 13-62h (v5): the item whole, a time selection over it, the cursor at its start
+        const ZoneSel item = ItemOf(d, hit.z);
+        double        a = 0.0, b = 0.0;
+        if (!ItemEdges(d, item, &a, &b)) return;
+        v.sel = item;
+        *h.part_sel = ZoneOf(d, item.front())->part;
+        SetTsel(h, a, b, ItemNames(d, item, h.names) + " (glued): time selection " + ZoneRangeMs(a, b) + ", the cursor at its start");
+        return;
+    }
     case ZoneDoubleAction::ResetEdge: {
         if (!z) return;
         const ZoneRef r = hit.z;
@@ -914,15 +932,10 @@ void DragMove(const ZoneWaveHost& h, double t, float dx, float dy, double px_per
         }
         if (PendingBecomesGain(Stored(h), g.hit, dx, dy, g.shift, g.alt, dp)) {
             g.kind = ZoneDragKind::Gain;
-            g.sel.clear();
-            if (SelHas(v.sel, g.hit.z))
-                for (const ZoneRef& r : v.sel) {
-                    const EditZone* z = ZoneOf(Stored(h), r);
-                    if (z && !z->IsGap()) g.sel.push_back(r);
-                }
+            g.sel = GainDragZones(Stored(h), v.sel, g.hit.z);  // the selection; unselected: its whole item (v5)
             if (g.sel.empty()) g.sel = {g.hit.z};
         } else if (std::fabs(dx) > 4.0f * dp) {
-            g.kind = StartZoneDrag(g.hit, g.shift, g.alt);
+            g.kind = StartZoneDrag(Stored(h), g.hit, g.shift, g.alt);
             if (g.kind == ZoneDragKind::MkZone) g.part = NewZonePart(Stored(h), g.hit, *h.part_sel);
             if (g.kind == ZoneDragKind::Swipe && g.hit.lane >= 0 && static_cast<size_t>(g.hit.lane) < Stored(h).divide_values.size())
                 g.part = Stored(h).divide_values[static_cast<size_t>(g.hit.lane)];
@@ -949,6 +962,15 @@ void DragMove(const ZoneWaveHost& h, double t, float dx, float dy, double px_per
         ZoneSel    out;
         g.value = MoveRange(Stored(h), g.hit.z, t - g.hit.t, h.file_len);
         g.changed = MoveZone(dr, g.hit.z, t - g.hit.t, c, &out);
+        if (g.changed) g.sel = out;
+        return;
+    }
+    case ZoneDragKind::MoveChain: {  // 13-62h (v5): the whole item, its members by the same delta
+        g.moved = true;
+        SoundData& dr = h.live();
+        ZoneSel    out;
+        g.value = MoveChainRange(Stored(h), g.hit.z, t - g.hit.t, h.file_len);
+        g.changed = MoveChain(dr, g.hit.z, t - g.hit.t, c, &out);
         if (g.changed) g.sel = out;
         return;
     }
@@ -1096,6 +1118,22 @@ void DragRelease(const ZoneWaveHost& h, double px_per_s)
         Commit(h, "Move zone", toast);
         return;
     }
+    case ZoneDragKind::MoveChain: {
+        if (!g.changed) {
+            h.cancel();
+            return;
+        }
+        const SoundData& st = Stored(h);
+        const ZoneSel    item = ItemOf(st, g.hit.z);
+        const ZoneRef    pv = item.empty() ? ZoneRef{} : PrevZone(st, item.front());
+        const ZoneRef    nx = item.empty() ? ZoneRef{} : NextZone(st, item.back());
+        const bool       followed = !item.empty() && (Butted(st, pv, item.front()) || Butted(st, item.back(), nx));
+        const std::string toast = ItemNames(st, item, h.names) + " moved " + (g.value > 0 ? "+" : "") + std::to_string(Ms(g.value)) +
+                                  " ms (its zones and Gaps together" + (followed ? "; what touches it followed)" : ")");
+        v.sel = SelValid(Shown(h), g.sel);
+        Commit(h, "Move item", toast);
+        return;
+    }
     case ZoneDragKind::MkGap:
     case ZoneDragKind::MkZone:
     case ZoneDragKind::Swipe: {
@@ -1209,6 +1247,21 @@ void ZoneMenu(const ZoneWaveHost& h)
         ui::MenuCaption("Nothing placed here");
         ui::MenuEntry("Shift+drag: a new zone", nullptr, false, false);
         ui::MenuEntry("Alt+drag: a Gap", nullptr, false, false);
+    } else if (v.menu_kind == 3) {  // 13-62h (v5): an item; every entry acts on the selection (the item, or more)
+        const ZoneSel item = ItemOf(d, v.menu_z);
+        double        a = z->a, b = z->b;
+        ItemEdges(d, item, &a, &b);
+        ui::MenuCaption((ItemNames(d, item, h.names) + " (glued) \xC2\xB7 " + ZoneRangeMs(a, b)).c_str());
+        if (ui::MenuEntry("\xE2\x96\xB6 Play it")) ZonePlaySelection(h);
+        if (ui::MenuEntry("Normalize (one gain)##znorm", nullptr, false, static_cast<bool>(h.normalize))) h.normalize(SelValid(d, v.sel));
+        ui::MenuSeparator();
+        for (size_t k = 0; k < d.divide_values.size(); ++k) {
+            const std::string label = "\xE2\x86\x92 " + PartNameOf(h, d.divide_values[k]) + "##zcto" + std::to_string(k);
+            if (ui::MenuEntry(label.c_str())) ZoneGiveTo(h, d.divide_values[k]);
+        }
+        ui::MenuSeparator();
+        if (ui::MenuEntry("Heal into one zone", KeyHint(kShortcutEditHeal, "H").c_str())) ZoneHeal(h);
+        if (ui::MenuEntry("Delete it", "Delete")) ZoneDelete(h);
     } else if (z->IsGap()) {
         const ZoneRef     l = GapLeft(d, v.menu_z);
         const std::string ln = ZoneOf(d, l) ? NameOfZone(h, d, l) : std::string("the left");
@@ -1474,10 +1527,17 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
         if (ri >= 0) {
             const ZoneHit   hit = hit_at(ri, m);
             const EditZone* z = ZoneOf(Shown(h), hit.z);
-            v.menu_z = hit.z;
-            v.menu_kind = !z ? 0 : z->IsGap() ? 2 : 1;
+            // 13-62h (v5): on an item (but its greyed copy on another lane): it selected whole (unless it already
+            // is) and its item menu.
+            const ZoneSel item = hit.kind == ZoneHitKind::Grey ? ZoneSel{} : ItemOf(Shown(h), hit.z);
+            v.menu_z = item.empty() ? hit.z : item.front();
+            v.menu_kind = !z ? 0 : !item.empty() ? 3 : z->IsGap() ? 2 : 1;
             v.menu_close = false;
-            if (z) {
+            if (z && !item.empty()) {
+                if (!SelHas(v.sel, hit.z)) v.sel = item;
+                *h.part_sel = ZoneOf(Shown(h), item.front())->part;
+                *h.cursor = hit.t;
+            } else if (z) {
                 if (!SelHas(v.sel, hit.z)) v.sel = {hit.z};
                 if (!z->IsGap()) *h.part_sel = z->part;
                 *h.cursor = hit.t;
@@ -1690,10 +1750,18 @@ void ZoneDelete(const ZoneWaveHost& h)
         ShowLibraryToast("Nothing selected", false);
         return;
     }
-    int nz = 0, ng = 0;
-    for (const ZoneRef& r : sel) (ZoneOf(d, r)->IsGap() ? ng : nz)++;
+    // 13-62h (v5): a Gap whose left zone goes too (a whole item deleted) goes with it, it is given to nobody.
+    int nz = 0, ng = 0, gone = 0;
+    for (const ZoneRef& r : sel) {
+        if (!ZoneOf(d, r)->IsGap()) ++nz;
+        else if (SelHas(sel, GapLeft(d, r))) ++gone;
+        else ++ng;
+    }
     std::string toast;
-    if (nz) toast = std::to_string(nz) + (nz > 1 ? " zones" : " zone") + " removed (empty space remains)";
+    const ZoneSel item = SelItem(d, sel);
+    if (!item.empty()) toast = ItemNames(d, item, h.names) + " removed with its Gap" + (gone > 1 ? "s" : "") + " (empty space remains)";
+    else if (nz) toast = std::to_string(nz) + (nz > 1 ? " zones" : " zone") + (gone ? " and " + std::to_string(gone) + (gone > 1 ? " Gaps" : " Gap") : std::string()) +
+                         " removed (empty space remains)";
     if (ng) toast += (toast.empty() ? "" : " \xC2\xB7 ") + std::to_string(ng) + (ng > 1 ? " Gaps" : " Gap") + " given back to the zone on the left";
     Write(h, "Delete zones", [sel](SoundData& x, const ZoneContext& c, ZoneSel* s) {
         ZoneSel io = sel;

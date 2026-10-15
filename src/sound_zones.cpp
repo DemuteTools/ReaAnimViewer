@@ -1213,6 +1213,21 @@ std::vector<ZoneRef> ChainOf(const SoundData& d, const ZoneRef& r)
     return out;
 }
 
+std::vector<ZoneRef> ItemOf(const SoundData& d, const ZoneRef& r)
+{
+    const EditZone* z = ZoneOf(d, r);
+    if (!z || !d.frames[static_cast<size_t>(r.frame)].on) return {};  // an off variation is out of the model
+    const std::vector<ZoneRef> c = ChainOf(d, r);
+    if (c.size() < 2) return {};
+    std::vector<ZoneRef> out;
+    for (size_t i = 0; i < c.size(); ++i) {
+        out.push_back(c[i]);
+        const ZoneRef g = i + 1 < c.size() ? GapAfter(d, c[i]) : ZoneRef{};
+        if (ZoneOf(d, g)) out.push_back(g);
+    }
+    return out;
+}
+
 ZoneFadeInfo ZoneFade(const SoundData& d, const ZoneRef& r, int side)
 {
     ZoneFadeInfo    out;
@@ -1750,6 +1765,67 @@ bool MoveZone(SoundData& d, const ZoneRef& r, double delta, const ZoneContext& c
         }
     }
     return Finish(w, before, sel, {id});
+}
+
+double MoveChainRange(const SoundData& d, const ZoneRef& r, double delta, double file_len)
+{
+    const std::vector<ZoneRef> it = ItemOf(d, r);
+    if (it.empty() || !Valid(delta)) return 0.0;
+    const EditZone* f = ZoneOf(d, it.front());
+    const EditZone* l = ZoneOf(d, it.back());
+    const EditZone* pv = LiveZone(d, PrevZone(d, it.front()));
+    const EditZone* nx = LiveZone(d, NextZone(d, it.back()));
+    auto            minLen = [](const EditZone& z) { return z.IsGap() ? kMinZone : kMoveMinPart; };
+    double          lo = -f->a, hi = file_len > 0.0 ? file_len - l->b : kInf;
+    if (pv) lo = std::fabs(pv->b - f->a) < kEps ? std::max(lo, pv->a + minLen(*pv) - f->a) : std::max(lo, pv->b - f->a);
+    if (nx) hi = std::fabs(l->b - nx->a) < kEps ? std::min(hi, nx->b - minLen(*nx) - l->b) : std::min(hi, nx->a - l->b);
+    if (hi < lo) return 0.0;
+    return Clamp(delta, std::min(lo, 0.0), std::max(hi, 0.0));
+}
+
+bool MoveChain(SoundData& d, const ZoneRef& r, double delta, const ZoneContext& ctx, ZoneSel* sel)
+{
+    if (!UsesZones(d)) return false;
+    const std::vector<ZoneRef> it = ItemOf(d, r);
+    if (it.empty()) return false;
+    const double dd = MoveChainRange(d, r, delta, ctx.file_len);
+    if (std::fabs(dd) < 1e-12) return false;
+    const Snap             before = Take(d);
+    Work                   w(d, ctx.peaks, ctx.file_len);
+    const std::vector<int> ids = IdsOf(d, it);
+    const int              fi = w.byId(IdOf(d, it.front())), li = w.byId(IdOf(d, it.back()));
+    if (fi < 0 || li < 0) return false;
+    const int  pv = w.prevOf(fi), nx = w.nextOf(li);  // its neighbours, taken before anything moves
+    const bool pb = pv >= 0 && w.butted(pv, fi), nb = nx >= 0 && w.butted(li, nx);
+    for (int id : ids) {  // every member by the same amount (as MoveZone moves one zone)
+        const int i = w.byId(id);
+        if (i < 0) continue;
+        EditZone& z = w.Z(i);
+        z.a += dd;
+        z.b += dd;
+        z.slot_a = z.a;
+        z.slot_b = z.b;
+        if (!z.IsGap()) {
+            z.a_hand = z.b_hand = true;
+            z.a_auto_cut = false;
+            if (z.snap) *z.snap += dd;
+        }
+    }
+    const double fa = w.Z(fi).a, lb = w.Z(li).b;
+    if (pb) {  // a butted neighbour's edge follows
+        EditZone& p = w.Z(pv);
+        p.b = p.slot_b = fa;
+        if (!p.IsGap()) p.b_hand = true;
+    }
+    if (nb) {
+        EditZone& n = w.Z(nx);
+        n.a = n.slot_a = lb;
+        if (!n.IsGap()) {
+            n.a_hand = true;
+            n.a_auto_cut = false;
+        }
+    }
+    return Finish(w, before, sel, ids);
 }
 
 bool DragZoneEdge(SoundData& d, const ZoneRef& r, int side, double t, const ZoneContext& ctx, ZoneSel* sel)

@@ -3208,6 +3208,8 @@ LaneGainDrag g_lane_gain;
 void ClearLaneGain() { g_lane_gain = LaneGainDrag{}; }
 
 ZoneWaveHost ZoneHost(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m);  // 13-62h (below)
+void ZoneNormalizeGo(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, const std::vector<std::vector<ZoneRef>>& groups,
+                     const std::string& label, bool reset_faders);  // 13-62h (below)
 
 // Split view: the lane header of part `part_k` (the mockup's laneHeadHTML), drawn in [min, max]: its colour
 // bar, the dot, the name, M, S; then (wide) the gain fader + its dB field and the Normalize target ("= -1
@@ -3839,6 +3841,9 @@ ZoneWaveHost ZoneHost(const SoundLibrary& lib, const SoundNode& n, const SoundMe
         Redetect(dr, m, P.snap.frames);
         if (done) CommitLive("Detection", lib_uid, uid, std::string());
     };
+    // 13-62h (v5): the item menu's Normalize (one gain): the Selection panel's rule (NormGroups), faders kept.
+    const SoundLibrary* lp = &lib;
+    h.normalize = [lp, np, m](const ZoneSel& sel) { ZoneNormalizeGo(*lp, *np, m, NormGroups(np->sound, sel), "Normalize", false); };
     return h;
 }
 
@@ -4852,6 +4857,32 @@ void ZoneNormalizeButton(const char* id, const std::string& label, const char* t
     if (need_peaks) ui::ItemTipText("Waiting for the waveform");
     else if (!busy && tip) ui::ItemTipText(tip);
     if (!go || StoreReplaced()) return;
+    ZoneNormalizeGo(lib, n, m, groups, label, reset_faders);
+}
+
+// The Normalize of `groups` itself (the buttons above, the waveform's item menu): a toast instead while it measures,
+// waits for the waveform (Peak) or has no file; nothing to normalize: a toast, no undo point.
+void ZoneNormalizeGo(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, const std::vector<std::vector<ZoneRef>>& groups,
+                     const std::string& label, bool reset_faders)
+{
+    LoadNormalizePrefs();
+    const SoundData& d = n.sound;
+    bool             need_peaks = false;
+    for (const std::vector<ZoneRef>& g : groups)
+        if (const EditZone* z = g.empty() ? nullptr : ZoneOf(d, g.front()))
+            need_peaks = need_peaks || PartNormMode(d, z->part, P.norm_mode) == NormMode::Peak;
+    if (P.norm_job.active) {
+        ShowLibraryToast("Normalize is measuring: wait for it", false);
+        return;
+    }
+    if (!m.ok) {
+        ShowLibraryToast("Cannot normalize: the sound file is not read", false);
+        return;
+    }
+    if (need_peaks && !NormPeaksReady(d, m)) {
+        ShowLibraryToast("Waiting for the waveform", false);
+        return;
+    }
     if (groups.empty()) {
         ShowLibraryToast("No zone to normalize", false);
         return;
@@ -5691,7 +5722,18 @@ void ZoneSelectionPanel(const SoundLibrary& lib, const SoundNode& n, const Sound
     std::string tag = "Selection", line;
     ImU32       fill = ui::kRaised, ink = ui::kMuted, edge = ui::kStrokeStrong;
     const EditZone* z = L.size() == 1 ? ZoneOf(d, L.front()) : nullptr;
-    if (L.size() > 1) {
+    // 13-62h (Antho 2026-10-15, v5): exactly one whole item (zones joined by Gaps) selected: shown as one zone.
+    const ZoneSel item = SelItem(d, L);
+    double        ia = 0.0, ib = 0.0;
+    if (!item.empty() && ItemEdges(d, item, &ia, &ib)) {
+        tag = "Zone";
+        fill = PartColor(PartIndex(d, ZoneOf(d, item.front())->part));
+        ink = IM_COL32(0x10, 0x13, 0x1A, 0xFF);
+        edge = 0;
+        line = ItemNames(d, item, names) + " " + ItemGlue(d, item) + " \xC2\xB7 variation " +
+               std::to_string(ZoneVariationNumber(d, item.front())) + " \xC2\xB7 " + ZoneRangeMs(ia, ib) + " \xC2\xB7 " +
+               std::to_string(ZoneMs(ItemHeard(d, item))) + " ms heard";
+    } else if (L.size() > 1) {
         tag = std::to_string(L.size()) + " selected";
         fill = ui::kAccentSoft;
         ink = ui::kAccentText;
@@ -5748,7 +5790,80 @@ void ZoneSelectionPanel(const SoundLibrary& lib, const SoundNode& n, const Sound
     auto play_btn = [&](const char* label) {
         if (ui::SolidButton(label)) ZonePlaySelection(zh);
     };
-    if (L.size() > 1) {
+    if (!item.empty()) {
+        // 13-62h (v5, the mockup's chainHTML): ▶ Play, Normalize (one gain: NormGroups), Heal into one zone, Delete;
+        // "Made of" (one row per member, not clickable: its handles are dragged on the waveform), "Give it to", Heard.
+        const std::string key = ShortcutKeyLabel(kShortcutEditHeal)[0] ? ShortcutKeyLabel(kShortcutEditHeal) : "H";
+        const std::string heal = "Heal into one zone (" + key + ")##zheal";
+        const std::string glue = ItemGlue(d, item);
+        play_btn("\xE2\x96\xB6 Play##zsplay");
+        SameLineIfFits(ui::ButtonWidth(ZoneNormalizeText("Normalize").c_str()));
+        ZoneNormalizeButton("znormi", "Normalize", "Measured as one sound: one gain for its zones of each part", lib, n, m,
+                            NormGroups(n.sound, L), false, false);
+        if (!StoreReplaced()) {
+            SameLineIfFits(ui::ButtonWidth(heal.c_str()));
+            if (ui::SolidButton(heal.c_str())) ZoneHeal(zh);
+            ui::ItemTipText(("Your REAPER key for 40548 (H if none): one zone over it all, its Gap" +
+                             std::string(glue == "glued by a Gap" ? "" : "s") + " absorbed (it keeps the first zone's part)")
+                                .c_str());
+        }
+        if (!StoreReplaced()) {
+            SameLineIfFits(ui::ButtonWidth("Delete"));
+            if (ui::ToneButton("Delete##zsdel", ui::TagTone::Bad)) ZoneDelete(zh);
+            ui::ItemTipText("Delete: its zones and Gaps removed, empty space remains");
+        }
+        if (!StoreReplaced())
+            ZoneColumns({[&]() {
+                             ui::GroupCaption("Made of", ui::kMuted);
+                             ImDrawList* dl = ImGui::GetWindowDrawList();
+                             const float lh = ImGui::GetTextLineHeight(), rh = lh + ui::Dp(4.0f);
+                             for (const ZoneRef& q : item) {
+                                 const EditZone* e = ZoneOf(d, q);
+                                 if (!e) continue;
+                                 const float  w = std::max(1.0f, ImGui::GetContentRegionAvail().x);
+                                 const ImVec2 p = ImGui::GetCursorScreenPos();
+                                 ImGui::Dummy(ImVec2(w, rh));
+                                 const float cy = p.y + rh * 0.5f, ty = std::floor(cy - lh * 0.5f);
+                                 const float gw = ui::Dp(12.0f), gx = p.x;
+                                 std::string sub;
+                                 if (e->IsGap()) {
+                                     const ImVec2 g0(gx, std::floor(cy - ui::Dp(4.5f))), g1(gx + gw, g0.y + ui::Dp(9.0f));
+                                     dl->AddRectFilled(g0, g1, WithAlpha(ui::kMuted, 0x30), 2.0f);
+                                     Hatch(dl, g0, g1, ui::kText);
+                                     char xf[32];
+                                     std::snprintf(xf, sizeof(xf), "%g", std::round((e->xl + e->xr) * 10000.0) / 10.0);
+                                     sub = "jumps " + std::to_string(ZoneMs(e->b - e->a)) + " ms \xC2\xB7 xfade " + xf + " ms";
+                                 } else {
+                                     dl->AddCircleFilled(ImVec2(gx + ui::Dp(4.0f), cy), ui::Dp(4.0f), PartColor(PartIndex(d, e->part)));
+                                     sub = ZoneDbText(e->db);
+                                 }
+                                 const float sw = ImGui::CalcTextSize(sub.c_str()).x;
+                                 const float sx = std::max(gx + gw + ui::Dp(40.0f), p.x + w - sw);
+                                 ui::EllipsisText(dl, ImVec2(gx + gw + ui::Dp(6.0f), ty), sx - ui::Dp(8.0f), ui::kText,
+                                                  nm(q) + " \xC2\xB7 " + ZoneRangeMs(e->a, e->b));
+                                 ui::EllipsisText(dl, ImVec2(sx, ty), p.x + w, ui::kMuted, sub);
+                                 if (ImGui::IsItemHovered()) ui::ShowTip("Its edges, fades and the Gap's crossfade are dragged on the waveform");
+                             }
+                             ui::GroupCaption("Give it to", ui::kMuted);
+                             for (size_t k = 0; k < d.divide_values.size(); ++k) {
+                                 const std::string lbl = "\xE2\x86\x92 " + names[k];
+                                 if (k > 0) SameLineIfFits(ui::ButtonWidth(lbl.c_str()) + ui::Dp(17.0f));
+                                 ImGui::PushID(static_cast<int>(k));
+                                 const bool go = DotButton("##zigive", lbl, PartColor(static_cast<int>(k)));
+                                 ImGui::PopID();
+                                 if (go) {
+                                     ZoneGiveTo(zh, d.divide_values[k]);
+                                     return true;
+                                 }
+                             }
+                             return false;
+                         },
+                         [&]() {
+                             ZoneHeardBlock(d, item.front(), zh, m);
+                             return false;
+                         }},
+                        ui::Dp(230.0f));
+    } else if (L.size() > 1) {
         int nh = 0;
         for (size_t i = 0; i + 1 < L.size(); ++i) nh += Butted(d, L[i], L[i + 1]) ? 1 : 0;
         const std::string key = ShortcutKeyLabel(kShortcutEditHeal)[0] ? ShortcutKeyLabel(kShortcutEditHeal) : "H";

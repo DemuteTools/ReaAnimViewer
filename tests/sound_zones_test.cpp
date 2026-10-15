@@ -449,6 +449,43 @@ void TestProposeAndRecord()
     CHECK(tk.frames[0].zones.empty());
 }
 
+// 13-62h (Antho 2026-10-15, v5): an item (zones joined by Gaps) moves whole (MoveChain): every member by the same
+// delta, a butted neighbour's edge following, one across empty space stopping it; Heal / Delete / NormGroups of it.
+void TestItems()
+{
+    // Heel | Gap | Heel, then a Toe butted to it, a Heel after empty space.
+    SoundData d = With({Z(kHeel, 0.10, 0.30), G(0.30, 0.36, 0.005, 0.005), Z(kHeel, 0.36, 0.60), Z(kToe, 0.60, 0.80), Z(kHeel, 0.90, 1.00)});
+    const ZoneSel item = {{0, 0}, {0, 1}, {0, 2}};
+    CHECK(ItemOf(d, {0, 1}) == item && ItemOf(d, {0, 3}).empty() && ItemOf(d, {0, 4}).empty());
+    CHECK(Near(MoveChainRange(d, {0, 0}, -1.0), -0.10));                // the file's start
+    CHECK(Near(MoveChainRange(d, {0, 2}, 1.0), 0.80 - 0.006 - 0.60));   // the butted Toe keeps 6 ms
+    CHECK(Near(MoveChainRange(d, {0, 2}, 0.05), 0.05) && Near(MoveChainRange(d, {0, 3}, 0.05), 0.0));
+    d.frames[0].zones[2].snap = 0.40;
+    ZoneSel sel;
+    CHECK(MoveChain(d, {0, 1}, 0.05, {}, &sel) && sel.size() == 3);
+    CHECK(Near(At(d, 0, 0).a, 0.15) && Near(At(d, 0, 0).b, 0.35) && Near(At(d, 0, 1).a, 0.35) && Near(At(d, 0, 1).b, 0.41));
+    CHECK(Near(At(d, 0, 2).a, 0.41) && Near(At(d, 0, 2).b, 0.65) && At(d, 0, 2).snap && Near(*At(d, 0, 2).snap, 0.45));
+    CHECK(Near(At(d, 0, 1).xl, 0.005) && Near(At(d, 0, 1).xr, 0.005));  // the Gap keeps its crossfade
+    CHECK(Near(At(d, 0, 3).a, 0.65) && Near(At(d, 0, 3).b, 0.80) && Near(At(d, 0, 4).a, 0.90));  // the Toe's edge followed
+    CHECK(ZonesProblem(d, 3.0).empty() && ItemOf(d, sel.front()).size() == 3);
+    CHECK(!MoveChain(d, {0, 3}, 0.05) && !MoveChain(d, {0, 0}, std::nan("")));  // a zone alone; a bad number
+    // Back across empty space: it stops on the zone before it (no zone eaten), the file's end bounds it.
+    SoundData e = With({Z(kToe, 0.00, 0.05), Z(kHeel, 0.10, 0.30), G(0.30, 0.36, 0.005, 0.005), Z(kHeel, 0.36, 0.60)});
+    CHECK(Near(MoveChainRange(e, {0, 1}, -1.0), -0.05) && Near(MoveChainRange(e, {0, 3}, 1.0, 0.70), 0.10));
+    CHECK(MoveChain(e, {0, 3}, -1.0) && Near(At(e, 0, 1).a, 0.05) && Near(At(e, 0, 0).b, 0.05) && Near(At(e, 0, 0).a, 0.0));
+    // Heal into one zone: its Gap absorbed. Delete it: empty space remains. Normalize: one group per part.
+    SoundData h = With({Z(kHeel, 0.10, 0.30), G(0.30, 0.36, 0.005, 0.005), Z(kToe, 0.36, 0.60), Z(kHeel, 0.90, 1.00)});
+    const ZoneSel it = ItemOf(h, {0, 0});
+    CHECK(it.size() == 3 && NormGroups(h, it).size() == 2);
+    ZoneSel hs = it;
+    bool    mixed = false;
+    CHECK(HealZones(h, hs, {}, &mixed) && mixed && h.frames[0].zones.size() == 2 && Near(At(h, 0, 0).b, 0.60));
+    SoundData x = With({Z(kHeel, 0.10, 0.30), G(0.30, 0.36, 0.005, 0.005), Z(kHeel, 0.36, 0.60), Z(kHeel, 0.90, 1.00)});
+    ZoneSel   xs = ItemOf(x, {0, 2});
+    CHECK(NormGroups(x, xs).size() == 1 && NormGroups(x, xs).front().size() == 2);
+    CHECK(DeleteZones(x, xs) && x.frames[0].zones.size() == 1 && Near(At(x, 0, 0).a, 0.90) && ZonesProblem(x, 3.0).empty());
+}
+
 // ---- The seeded fuzz --------------------------------------------------------------------------------------------
 
 struct Rng {
@@ -775,9 +812,9 @@ void TestFuzz()
     int       bad = 0, steps = 0, changed = 0, with_gaps = 0, multi = 0, lied = 0;
     const char* names[] = {"CutOut", "MakeGap", "NewZone", "FillGap", "Split", "TrimAt", "TrimTo", "Heal", "Delete", "Give",
                            "Move", "Edge", "Cut", "GapEdge", "Xfade", "Fade", "Snap", "Db", "ShiftDb", "ResetEdge", "ResetFade",
-                           "ResetSnap", "Fader", "PreTail", "Relayout", "NoPeaks", "Gxfade", "OnOff", "Redivide", "NaN"};
+                           "ResetSnap", "Fader", "MoveChain", "PreTail", "Relayout", "NoPeaks", "Gxfade", "OnOff", "Redivide", "NaN"};
     const int   kinds = static_cast<int>(sizeof(names) / sizeof(names[0]));
-    const int   kGestures = 23;  // kinds below this are gestures: false = nothing changed
+    const int   kGestures = 24;  // kinds below this are gestures: false = nothing changed
     std::vector<int> ok_count(static_cast<size_t>(kinds), 0);
     for (int i = 0; i < 24000; ++i) {
         if (i % 1500 == 0) {
@@ -859,7 +896,14 @@ void TestFuzz()
         case 20: ch = ResetZoneFade(d, z, side, ctx, &cur); break;
         case 21: ch = ResetZoneSnap(d, z, ctx, &cur); break;
         case 22: ch = r.I(3) ? SetPartFader(d, part, r.U(-24.0, 12.0), ctx, &cur) : SetPartFader(d, part, 0.0, ctx, &cur); break;
-        case 23: {
+        case 23: {  // 13-62h (v5): an item moved whole -- a Gap's item mostly, else any zone (none: false)
+            ZoneRef q = z;
+            for (const ZoneRef& g : AllZones(d))
+                if (ZoneOf(d, g)->IsGap() && r.I(2)) q = g;
+            ch = MoveChain(d, q, r.U(-0.2, 0.2), ctx, &cur);
+            break;
+        }
+        case 24: {
             PartSettings ps;
             const bool   pre = r.I(2) == 0;
             if (pre) ps.preroll_ms = r.U(0.0, 60.0);
@@ -875,10 +919,10 @@ void TestFuzz()
             ch = true;
             break;
         }
-        case 24: RelayoutZones(d, &pk, T); break;
-        case 25: RelayoutZones(d, nullptr, T); break;
-        case 26: d.gap_xfade = r.U(0.0, 0.05); break;
-        case 27: {  // a variation switched off / on (the UI then refreshes the parts)
+        case 25: RelayoutZones(d, &pk, T); break;
+        case 26: RelayoutZones(d, nullptr, T); break;
+        case 27: d.gap_xfade = r.U(0.0, 0.05); break;
+        case 28: {  // a variation switched off / on (the UI then refreshes the parts)
             if (!d.frames.empty()) {
                 SoundFrame& f = d.frames[static_cast<size_t>(r.I(static_cast<int>(d.frames.size())))];
                 f.on = !f.on;
@@ -887,7 +931,7 @@ void TestFuzz()
             cur.clear();
             break;
         }
-        case 28: {  // divided again (2 or 3 parts), zones proposed again
+        case 29: {  // divided again (2 or 3 parts), zones proposed again
             if (r.I(6) == 0) {
                 if (d.divide_values.size() == 2) SetDivide(d, "g3", {kHeel, kToe, "ball"});
                 else SetDivide(d, "g", {kHeel, kToe});
@@ -896,9 +940,9 @@ void TestFuzz()
             }
             break;
         }
-        case 29: {  // bad numbers: nothing changes
+        case 30: {  // bad numbers: nothing changes
             const double nan = std::nan("");
-            ch = CutOut(d, nan, t1, ctx) || NewZone(d, part, t0, nan, ctx) || MoveZone(d, z, nan, ctx) ||
+            ch = CutOut(d, nan, t1, ctx) || NewZone(d, part, t0, nan, ctx) || MoveZone(d, z, nan, ctx) || MoveChain(d, z, nan, ctx) ||
                  DragZoneEdge(d, z, side, nan, ctx) || SetZoneDb(d, z, nan, ctx) || SplitZoneAt(d, nan, ctx) ||
                  SetPartFader(d, part, nan, ctx) || NewZone(d, part, t0, t0, ctx);
             if (ch || SerializeSoundStore(StoreOf(d)) != before) {
@@ -974,6 +1018,7 @@ int main()
     TestFinalReview();
     TestReviewRows();
     TestReviewBC();
+    TestItems();
     TestFuzz();
     if (g_fails) {
         std::printf("sound_zones_test: %d failure(s)\n", g_fails);

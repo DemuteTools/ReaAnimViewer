@@ -383,13 +383,19 @@ void TestTipsAndCursors()
     CHECK(ZoneTip(d, h, names, true) == "Played by Heel: click to give it to Toe; drag: swipe a range to Toe");
     h.kind = ZoneHitKind::Zone;
     h.top = true;
+    h.z = {0, 3};  // a zone alone (13-62h v5: {0, 0} is in an item)
     CHECK(ZoneTip(d, h, names, true).find("Click: select and play") != std::string::npos);
     CHECK(ZoneTip(d, h, names, false).find("and play") == std::string::npos);
+    h.z = {0, 0};
+    CHECK(ZoneTip(d, h, names, true).find("selects it whole and plays it") != std::string::npos);
+    CHECK(ZoneTip(d, h, names, false).find("plays") == std::string::npos);
     CHECK(ZoneCursorOf(h) == ZoneCursor::Grab);
     h.top = false;
     CHECK(ZoneCursorOf(h) == ZoneCursor::Text);
     h.z = {0, 1};
-    CHECK(ZoneTip(d, h, names, true) == "Gap: drag to move it (its neighbours follow). Click: select");
+    // 13-62h (v5): a Gap glues its neighbours into an item: its tip is the item's (no gain drag on a Gap).
+    CHECK(ZoneTip(d, h, names, true).find("Heel + Heel glued by a Gap: one item") == 0);
+    CHECK(ZoneTip(d, h, names, true).find("Up / down") == std::string::npos);
     CHECK(ZoneName(d, ZoneRef{0, 3}, names) == "Toe" && ZoneName(d, ZoneRef{0, 1}, names) == "Gap");
     h.kind = ZoneHitKind::Edge;
     h.z = {0, 0};
@@ -436,6 +442,60 @@ void TestSelection()
 
 }  // namespace
 
+// 13-62h (Antho 2026-10-15, v5): zones joined by Gaps are one item -- selected, moved, gained, double-clicked whole.
+void TestItems()
+{
+    const SoundData d = Sample();
+    const ZoneSel   item = {{0, 0}, {0, 1}, {0, 2}};
+    CHECK(ItemOf(d, {0, 0}) == item && ItemOf(d, {0, 1}) == item && ItemOf(d, {0, 2}) == item);
+    CHECK(ItemOf(d, {0, 3}).empty() && ItemOf(d, {1, 0}).empty());  // butted, not glued; alone
+    // The Selection panel's card: exactly one whole item (any order).
+    CHECK(SelItem(d, {{0, 2}, {0, 0}, {0, 1}}) == item);
+    CHECK(SelItem(d, {{0, 0}, {0, 1}}).empty() && SelItem(d, {{0, 0}, {0, 1}, {0, 2}, {0, 3}}).empty() && SelItem(d, {}).empty());
+    const std::vector<std::string> names = {"Heel", "Toe"};
+    CHECK(ItemNames(d, item, names) == "Heel + Heel" && ItemGlue(d, item) == "glued by a Gap");
+    double a = 0.0, b = 0.0;
+    CHECK(ItemEdges(d, item, &a, &b) && std::fabs(a - 0.10) < 1e-9 && std::fabs(b - 0.70) < 1e-9);
+    CHECK(std::fabs(ItemHeard(d, item) - (0.60 - 0.05)) < 1e-6);  // the Gap jumped (its crossfade read past it, overlapped)
+    // Ctrl+click: the whole item added, then taken out whole (what else was selected stays).
+    ZoneSel sel = {{1, 0}};
+    SelToggleItem(sel, item, {0, 1});
+    CHECK(sel.size() == 4 && SelHas(sel, {0, 0}) && SelHas(sel, {0, 2}));
+    SelToggleItem(sel, item, {0, 2});
+    CHECK((sel == ZoneSel{{1, 0}}));
+    // A vertical drag: unselected = all its item's part zones; selected = the selection's; a zone alone = itself.
+    CHECK(GainDragZones(d, {}, {0, 2}) == (ZoneSel{{0, 0}, {0, 2}}));
+    CHECK(GainDragZones(d, {{0, 2}, {1, 0}}, {0, 2}) == (ZoneSel{{0, 2}, {1, 0}}));
+    CHECK((GainDragZones(d, {{1, 0}}, {0, 3}) == ZoneSel{{0, 3}}));
+    // The top of a zone or of its Gap moves the whole item; a zone alone moves alone.
+    ZoneHit h;
+    h.row = ZoneRow::Lane;
+    h.kind = ZoneHitKind::Zone;
+    h.top = true;
+    h.z = {0, 1};
+    CHECK(StartZoneDrag(d, h, false, false) == ZoneDragKind::MoveChain);
+    h.z = {0, 3};
+    CHECK(StartZoneDrag(d, h, false, false) == ZoneDragKind::Move);
+    h.z = {0, 0};
+    h.top = false;
+    CHECK(StartZoneDrag(d, h, false, false) == ZoneDragKind::Scrub && StartZoneDrag(d, h, false, true) == ZoneDragKind::MkGap);
+    // Double-click: the item's time selection on a lane (a greyed copy too); the Placed strip's block stays one zone.
+    h.top = true;
+    CHECK(DoubleActionOf(d, h) == ZoneDoubleAction::TselItem);
+    h.kind = ZoneHitKind::Grey;
+    CHECK(DoubleActionOf(d, h) == ZoneDoubleAction::TselItem);
+    h.z = {0, 3};
+    CHECK(DoubleActionOf(d, h) == ZoneDoubleAction::TselZone);
+    h.z = {0, 0};
+    h.row = ZoneRow::Placed;
+    h.kind = ZoneHitKind::Pick;
+    CHECK(DoubleActionOf(d, h) == ZoneDoubleAction::TselZone);
+    // Its tooltip says it is one item.
+    h.row = ZoneRow::Lane;
+    h.kind = ZoneHitKind::Zone;
+    CHECK(ZoneTip(d, h, names, true).find("Heel + Heel glued by a Gap: one item") == 0);
+}
+
 int main()
 {
     TestHitLane();
@@ -447,6 +507,7 @@ int main()
     TestDouble();
     TestTipsAndCursors();
     TestSelection();
+    TestItems();
     if (g_fails) {
         std::printf("zone_hit_test: %d failure(s)\n", g_fails);
         return 1;

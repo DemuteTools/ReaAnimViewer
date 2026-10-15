@@ -802,21 +802,34 @@ void TestReviewBC()
     }
 }
 
-void TestFuzz()
+// What the fuzz runs add up.
+struct FuzzStats {
+    int              bad = 0, steps = 0, changed = 0, with_gaps = 0, multi = 0, lied = 0;
+    std::vector<int> ok_count;
+};
+
+// One fuzz run: `count` gestures from `seed` (a fresh Sound every 1500).
+void FuzzRun(uint64_t seed, int count, FuzzStats& st)
 {
     PeakData pk = Peaks({{0.15, 0.22}, {0.45, 0.50}, {0.70, 0.71}, {1.10, 1.18}, {1.45, 1.52}, {2.05, 2.12}, {2.40, 2.47}, {2.62, 2.64}});
     const double T = 3.0;
-    Rng       r{0x13628D5EEDULL};
+    Rng       r{seed};
     SoundData d = FuzzSound(pk);
     ZoneSel   cur;  // the selection a UI keeps: passed to every gesture, re-resolved by it
-    int       bad = 0, steps = 0, changed = 0, with_gaps = 0, multi = 0, lied = 0;
+    int&      bad = st.bad;
+    int&      steps = st.steps;
+    int&      changed = st.changed;
+    int&      with_gaps = st.with_gaps;
+    int&      multi = st.multi;
+    int&      lied = st.lied;
     const char* names[] = {"CutOut", "MakeGap", "NewZone", "FillGap", "Split", "TrimAt", "TrimTo", "Heal", "Delete", "Give",
                            "Move", "Edge", "Cut", "GapEdge", "Xfade", "Fade", "Snap", "Db", "ShiftDb", "ResetEdge", "ResetFade",
                            "ResetSnap", "Fader", "MoveChain", "PreTail", "Relayout", "NoPeaks", "Gxfade", "OnOff", "Redivide", "NaN"};
     const int   kinds = static_cast<int>(sizeof(names) / sizeof(names[0]));
     const int   kGestures = 24;  // kinds below this are gestures: false = nothing changed
-    std::vector<int> ok_count(static_cast<size_t>(kinds), 0);
-    for (int i = 0; i < 24000; ++i) {
+    if (st.ok_count.empty()) st.ok_count.assign(static_cast<size_t>(kinds), 0);
+    std::vector<int>& ok_count = st.ok_count;
+    for (int i = 0; i < count; ++i) {
         if (i % 1500 == 0) {
             d = FuzzSound(pk);
             cur.clear();
@@ -919,8 +932,11 @@ void TestFuzz()
             ch = true;
             break;
         }
-        case 25: RelayoutZones(d, &pk, T); break;
-        case 26: RelayoutZones(d, nullptr, T); break;
+        case 25:
+        case 26:  // not a gesture: no selection carried (a UI's write carries it), so one it moved is dropped
+            RelayoutZones(d, k == 25 ? &pk : nullptr, T);
+            if (SerializeSoundStore(StoreOf(d)) != before) cur.clear();
+            break;
         case 27: d.gap_xfade = r.U(0.0, 0.05); break;
         case 28: {  // a variation switched off / on (the UI then refreshes the parts)
             if (!d.frames.empty()) {
@@ -946,7 +962,7 @@ void TestFuzz()
                  DragZoneEdge(d, z, side, nan, ctx) || SetZoneDb(d, z, nan, ctx) || SplitZoneAt(d, nan, ctx) ||
                  SetPartFader(d, part, nan, ctx) || NewZone(d, part, t0, t0, ctx);
             if (ch || SerializeSoundStore(StoreOf(d)) != before) {
-                if (bad < 5) std::printf("fuzz step %d: a bad number changed something\n", i);
+                if (bad < 5) std::printf("fuzz seed %llx step %d: a bad number changed something\n", static_cast<unsigned long long>(seed), i);
                 ++bad;
             }
             break;
@@ -959,12 +975,12 @@ void TestFuzz()
         with_gaps += GapCount(d) > 0 ? 1 : 0;
         multi += PartZoneCount(d) > 8 ? 1 : 0;
         if (k < kGestures && !ch && SerializeSoundStore(StoreOf(d)) != before) {  // false = nothing changed
-            if (lied < 5) std::printf("fuzz step %d (%s): returned false but changed the Sound\n", i, names[k]);
+            if (lied < 5) std::printf("fuzz seed %llx step %d (%s): returned false but changed the Sound\n", static_cast<unsigned long long>(seed), i, names[k]);
             ++lied;
         }
         for (const ZoneRef& q : cur)
             if (!ZoneOf(d, q) || !d.frames[static_cast<size_t>(q.frame)].on) {
-                if (bad < 5) std::printf("fuzz step %d (%s): the selection points at no zone\n", i, names[k]);
+                if (bad < 5) std::printf("fuzz seed %llx step %d (%s): the selection points at no zone\n", static_cast<unsigned long long>(seed), i, names[k]);
                 ++bad;
                 cur.clear();
                 break;
@@ -973,11 +989,11 @@ void TestFuzz()
         if (p.empty()) p = VoicesProblem(d, 0.0, T);  // 13-62h review (B3)
         if (p.empty() && k % 3 == 0) p = VoicesProblem(d, t0, t1 + 0.2);  // a play from anywhere (B1)
         if (!p.empty()) {
-            if (bad < 5) std::printf("fuzz step %d (%s): %s\n", i, names[k], p.c_str());
+            if (bad < 5) std::printf("fuzz seed %llx step %d (%s): %s\n", static_cast<unsigned long long>(seed), i, names[k], p.c_str());
             ++bad;
         }
         if (!RoundTrips(d)) {
-            if (bad < 5) std::printf("fuzz step %d (%s): parse(write(d)) != d\n", i, names[k]);
+            if (bad < 5) std::printf("fuzz seed %llx step %d (%s): parse(write(d)) != d\n", static_cast<unsigned long long>(seed), i, names[k]);
 
             ++bad;
         }
@@ -987,12 +1003,26 @@ void TestFuzz()
             SoundData twice = once;
             RelayoutZones(twice, &pk, T);
             if (!SameZones(once, twice)) {
-                if (bad < 5) std::printf("fuzz step %d (%s): relayout is not stable\n", i, names[k]);
+                if (bad < 5) std::printf("fuzz seed %llx step %d (%s): relayout is not stable\n", static_cast<unsigned long long>(seed), i, names[k]);
                 ++bad;
             }
         }
         if (bad > 20) break;
     }
+}
+
+// 13-62h: several fixed seeds (each a different gesture story), fewer gestures each: the same time as one long run.
+void TestFuzz()
+{
+    const char* names[] = {"CutOut", "MakeGap", "NewZone", "FillGap", "Split", "TrimAt", "TrimTo", "Heal", "Delete", "Give",
+                           "Move", "Edge", "Cut", "GapEdge", "Xfade", "Fade", "Snap", "Db", "ShiftDb", "ResetEdge", "ResetFade",
+                           "ResetSnap", "Fader", "MoveChain"};
+    const int   kGestures = 24;
+    FuzzStats   st;
+    for (uint64_t seed : {0x13628D5EEDULL, 0xABCDEF01ULL, 0x2222ULL, 0x777ULL, 0xBEEF1234ULL, 0x1111ULL, 0x5EED77ULL, 0x0D15EA5EULL})
+        FuzzRun(seed, 3000, st);
+    const int bad = st.bad, lied = st.lied, steps = st.steps, changed = st.changed, with_gaps = st.with_gaps, multi = st.multi;
+    const std::vector<int>& ok_count = st.ok_count;
     CHECK(bad == 0 && lied == 0);
     CHECK(steps >= 20000);
     CHECK(changed > steps / 5);  // the gestures did things

@@ -261,13 +261,31 @@ struct Work {
     }
 
     void relayout();
+    void relayoutPass();
     void sanitize();
     void store(std::map<int, ZoneRef>* where);
     int  nearestFrame(double t) const;
     std::pair<int, int> cutOut(double x0, double x1);  // ids of l / r (-1 none)
 };
 
+// 13-62h: the layout is run until it no longer changes anything (at most a few passes; one more pass when it moved
+// something, to check). One pass is not stable by itself: a cut's wall reads its left zone's start, which the same
+// pass then moves (an automatic start following Pre-roll), and a Gap, a zone dropped or an overlap resolved changes
+// what the next pass sees. Run once, the layout laid out again (a project read back, the next gesture) moved edges
+// and cuts that nobody touched.
 void Work::relayout()
+{
+    for (int pass = 0; pass < 8; ++pass) {
+        const std::vector<WZ> was = zs;
+        relayoutPass();
+        bool same = was.size() == zs.size();
+        for (size_t i = 0; same && i < zs.size(); ++i)
+            same = was[i].id == zs[i].id && was[i].frame == zs[i].frame && SameZone(was[i].z, zs[i].z);
+        if (same) return;
+    }
+}
+
+void Work::relayoutPass()
 {
     std::vector<int> L = partsOrd();
     // RAV's cuts follow the right part's Pre-roll: between two part zones next to each other in one variation.

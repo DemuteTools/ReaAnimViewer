@@ -270,10 +270,19 @@ struct Work {
 void Work::relayout()
 {
     std::vector<int> L = partsOrd();
-    for (size_t i = 1; i < L.size(); ++i) {  // RAV's cuts follow the right part's Pre-roll
-        EditZone& x = Z(L[i - 1]);
-        EditZone& y = Z(L[i]);
-        if (y.a_auto_cut && y.onset >= 0.0 && std::fabs(x.slot_b - y.slot_a) < kEps && frameOf(L[i - 1]) == frameOf(L[i])) {
+    // RAV's cuts follow the right part's Pre-roll: between two part zones next to each other in one variation.
+    // 13-62h (v5 fuzz): next in that variation, not in the Sound's time order -- another variation's zone sorted
+    // between them (its edge moved by this very pass) left the cut for a second pass, so a layout was not stable
+    // (a project read back laid it out differently).
+    std::vector<int> prev(d->frames.size(), -1);
+    for (int yi : L) {
+        const int f = frameOf(yi);
+        const int xi = f >= 0 && static_cast<size_t>(f) < prev.size() ? prev[static_cast<size_t>(f)] : -1;
+        if (f >= 0 && static_cast<size_t>(f) < prev.size()) prev[static_cast<size_t>(f)] = yi;
+        if (xi < 0) continue;
+        EditZone& x = Z(xi);
+        EditZone& y = Z(yi);
+        if (y.a_auto_cut && y.onset >= 0.0 && std::fabs(x.slot_b - y.slot_a) < kEps) {
             const double lo = x.a + kCutWall, hi = y.slot_b - kCutWall;
             if (hi > lo) {
                 const double c = Clamp(y.onset - PreS(*d, y.part), lo, hi);
@@ -306,11 +315,14 @@ void Work::relayout()
         }
         const EditZone g = zs[gi].z;
         int            l = -1, r = -1;
-        for (int i : partsOrd()) {
-            if (frameOf(i) != zs[gi].frame) continue;
-            if (l < 0 && (std::fabs(Z(i).slot_b - g.a) < kEps || std::fabs(Z(i).b - g.a) < kEps)) l = i;
-            if (r < 0 && (std::fabs(Z(i).slot_a - g.b) < kEps || std::fabs(Z(i).a - g.b) < kEps)) r = i;
-        }
+        // 13-62h (v5 fuzz): the zone whose edge is on the Gap first; only then one whose slot reaches it (a zone
+        // before that one, its slot running over it, was taken first and the true neighbour cut away).
+        for (int pass = 0; pass < 2; ++pass)
+            for (int i : partsOrd()) {
+                if (frameOf(i) != zs[gi].frame) continue;
+                if (l < 0 && std::fabs((pass == 0 ? Z(i).b : Z(i).slot_b) - g.a) < kEps) l = i;
+                if (r < 0 && std::fabs((pass == 0 ? Z(i).a : Z(i).slot_a) - g.b) < kEps) r = i;
+            }
         if (l < 0 || r < 0 || l == r) {  // touches nothing on one side: empty space
             erase(static_cast<int>(gi));
             continue;

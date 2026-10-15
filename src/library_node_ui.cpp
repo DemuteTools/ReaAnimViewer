@@ -197,12 +197,10 @@ struct PanelState {
     // the zone audition (zone_wave_ui.h). Never saved, no undo point; reset in OpenEdit.
     ZoneEditView          zv;
     // 13-62h (Lot E2): a number of the panels being dragged on a zoned Sound -- the zone it edits and the selection
-    // when it began (the live draft restarts from the store each frame, so does the gesture); the Selection panel's
-    // height last frame (the waveform leaves it room). View state.
+    // when it began (the live draft restarts from the store each frame, so does the gesture). View state.
     bool                  zedit_on = false;
     ZoneRef               zedit_ref;
     ZoneSel               zedit_sel;
-    float                 zsel_h = 0.0f;
     int                   listen_request = 0;
     int                   nav_request = 0;  // 13-62F (F5): a Next (+1) / Previous (-1) variation key waiting (0 = none)
     // 13-62h: a Heal / Loop key waiting for the overlay's next frame (kShortcutEditHeal / kShortcutEditLoop;
@@ -3329,21 +3327,64 @@ void PartNormalizeNow(int lib, const std::string& node_uid, const std::string& v
     PartNormalizeNow(lib, node_uid, value);
 }
 
-// 13-62F (F3): the Lane view's header column width the user dragged (logical px), remembered per user (a pref,
-// like the Normalize ones): view state, no undo point.
-constexpr float kLaneHeadDefault = 160.0f, kLaneHeadMin = 104.0f;
-float           g_lane_head = -1.0f;  // < 0 = not read yet
-// 13-62F review: a drag of the column's edge: the width and the mouse at the grab, and whether it moved yet.
-struct LaneHeadGrab {
+// 13-62F (F3) / 13-62h (Antho): a panel size the user drags by its edge (logical px), remembered per user (a pref,
+// like the Normalize ones): view state, no undo point. The lane headers' width, the Selection panel's height and
+// the right column's width.
+struct PanelSize {
+    const char* pref;
+    float       def, lo;
+    float       v = -1.0f;  // < 0 = not read yet
+    // 13-62F review: a drag of the edge: the size and the mouse at the grab, and whether it moved yet.
     bool  on = false, moved = false;
-    float w = 0.0f, x0 = 0.0f;
+    float v0 = 0.0f, m0 = 0.0f;
+    float Get()
+    {
+        if (v < 0.0f) v = std::max(lo, LoadPrefFloat(pref, def));
+        return v;
+    }
 };
-LaneHeadGrab g_lane_grab;
+constexpr float kLaneHeadDefault = 160.0f, kLaneHeadMin = 104.0f;
+PanelSize       g_lane_head{"lib_lane_head_w", kLaneHeadDefault, kLaneHeadMin};
+PanelSize       g_zsel_h{"lib_zone_sel_h", 230.0f, 90.0f};      // the Selection panel under the waveform
+PanelSize       g_side_w{"lib_edit_side_w", 270.0f, 200.0f};    // Edit's right column (.edmain: 1fr 270px)
 
 float LaneHeadPref()
 {
-    if (g_lane_head < 0.0f) g_lane_head = std::max(kLaneHeadMin, LoadPrefFloat("lib_lane_head_w", kLaneHeadDefault));
-    return g_lane_head;
+    return g_lane_head.Get();
+}
+
+// The edge of a panel (a ui::SplitterBar of `size`, the cursor at its top-left): drag = its size by the mouse's
+// travel along the bar's axis (`sign` -1: the panel grows when the mouse goes left / up), kept in [lo, hi];
+// double-click = back to its default. 13-62F review: it moves only once the mouse really moved (a plain click, or a
+// double-click's first click, never changes nor saves it); saved on release.
+void PanelSizeBar(const char* id, ImVec2 size, bool vertical, float sign, PanelSize& s, float hi, const char* tip)
+{
+    const ui::SplitterState sp = ui::SplitterBar(id, size, vertical);
+    const float             scale = std::max(0.01f, ui::Dp(1.0f));
+    const float             m = vertical ? ImGui::GetIO().MousePos.x : ImGui::GetIO().MousePos.y;
+    hi = std::max(s.lo, hi);
+    s.Get();
+    auto grab = [&]() {
+        s.on = true;
+        s.moved = false;
+        s.v0 = s.v;
+        s.m0 = m;
+    };
+    if (sp.double_clicked) {
+        s.v = s.def;
+        SavePrefFloat(s.pref, s.v);
+        grab();
+    } else if (sp.active) {
+        if (!s.on) grab();
+        if (std::fabs(m - s.m0) > ui::Dp(3.0f)) s.moved = true;
+        if (s.moved) s.v = std::clamp(s.v0 + sign * (m - s.m0) / scale, s.lo, hi);
+    }
+    if (sp.released || (!sp.active && s.on)) {
+        if (s.moved) SavePrefFloat(s.pref, s.v);
+        s.on = false;
+        s.moved = false;
+    }
+    if (sp.hovered && !sp.active) ui::ItemTipText(tip);
 }
 
 // What Edit draws of a Sound's parts.
@@ -3660,34 +3701,9 @@ void LaneHeaders(const WaveformEvents& ev, const SoundData& d, const WaveParts& 
     const float lanes_h = ev.lane_h * static_cast<float>(PartCount(d));
     if (lanes_h >= 4.0f) {
         ImGui::SetCursorScreenPos(ImVec2(ev.head_x + ev.head_w - gap, ev.lanes_y));
-        const ui::SplitterState sp = ui::SplitterBar("##laneheadw", ImVec2(gap, lanes_h));
-        const float             scale = std::max(0.01f, ui::Dp(1.0f));
-        const float             hi = std::max(kLaneHeadMin, (ev.max.x - ev.head_x) * 0.5f / scale);
-        // 13-62F review: the width moves by the mouse's travel from the grab, only once it really moved (a plain
-        // click, or a double-click's first click, never changes nor saves it).
-        const float mx = ImGui::GetIO().MousePos.x;
-        if (sp.double_clicked) {
-            g_lane_head = kLaneHeadDefault;
-            SavePrefFloat("lib_lane_head_w", g_lane_head);
-            g_lane_grab = LaneHeadGrab{};
-            g_lane_grab.on = true;
-            g_lane_grab.w = g_lane_head;
-            g_lane_grab.x0 = mx;
-        } else if (sp.active) {
-            if (!g_lane_grab.on) {
-                g_lane_grab = LaneHeadGrab{};
-                g_lane_grab.on = true;
-                g_lane_grab.w = g_lane_head;
-                g_lane_grab.x0 = mx;
-            }
-            if (std::fabs(mx - g_lane_grab.x0) > ui::Dp(3.0f)) g_lane_grab.moved = true;
-            if (g_lane_grab.moved) g_lane_head = std::clamp(g_lane_grab.w + (mx - g_lane_grab.x0) / scale, kLaneHeadMin, hi);
-        }
-        if (sp.released || (!sp.active && g_lane_grab.on)) {
-            if (g_lane_grab.moved) SavePrefFloat("lib_lane_head_w", g_lane_head);
-            g_lane_grab = LaneHeadGrab{};
-        }
-        if (sp.hovered && !sp.active) ui::ItemTipText("Drag: the lane headers' width. Double-click: back to the default");
+        const float scale = std::max(0.01f, ui::Dp(1.0f));
+        PanelSizeBar("##laneheadw", ImVec2(gap, lanes_h), true, 1.0f, g_lane_head, (ev.max.x - ev.head_x) * 0.5f / scale,
+                     "Drag: the lane headers' width. Double-click: back to the default");
     }
     ImGui::SetCursorScreenPos(back);
 }
@@ -3726,6 +3742,12 @@ ZoneWaveHost ZoneHost(const SoundLibrary& lib, const SoundNode& n, const SoundMe
         EditNode(name, lib_uid, uid, [f](SoundNode& x) { return f(x.sound); }, toast);
     };
     h.store_replaced = [] { return StoreReplaced(); };
+    h.threshold = [np, lib_uid, uid, m](double db, bool done) {
+        SoundData& dr = Live(*np);
+        dr.silence.threshold_db = db;
+        Redetect(dr, m, P.snap.frames);
+        if (done) CommitLive("Detection", lib_uid, uid, std::string());
+    };
     return h;
 }
 
@@ -5525,35 +5547,57 @@ void ZoneHeardBlock(const SoundData& d, const ZoneRef& r, const ZoneWaveHost& zh
         cap += std::to_string(ZoneMs(heard)) + " ms";
     }
     ui::GroupCaption(cap.c_str(), ui::kMuted);
-    const float  W = std::max(ui::Dp(40.0f), ImGui::GetContentRegionAvail().x), H = ui::Dp(48.0f);
+    // 13-62h (Antho): as tall as the Selection panel leaves it (its own child), at least 48 px.
+    const float  W = std::max(ui::Dp(40.0f), ImGui::GetContentRegionAvail().x);
+    const float  H = std::max(ui::Dp(48.0f), ImGui::GetContentRegionAvail().y - ui::kCardPad - ui::Dp(2.0f));
     const ImVec2 p = ImGui::GetCursorScreenPos();
     ImGui::Dummy(ImVec2(W, H));
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->AddRectFilled(p, ImVec2(p.x + W, p.y + H), ui::kBg, ui::Dp(ui::kRadiusSm));
     dl->AddRect(p, ImVec2(p.x + W, p.y + H), ui::kStroke, ui::Dp(ui::kRadiusSm));
     if (!(total > 0.0)) return;
-    const float     mid = std::floor(p.y + H * 0.5f) + 0.5f;
-    const PeakView* pk = EditPeaks(m.path);
+    const float mid = std::floor(p.y + H * 0.5f) + 0.5f;
+    const float hh = std::max(1.0f, H * 0.5f - ui::Dp(3.0f));
     dl->AddLine(ImVec2(p.x, mid), ImVec2(p.x + W, mid), ui::kStroke);
-    const int    cols = static_cast<int>(W);
-    const double du = total / std::max(1, cols);
-    for (int x = 0; x < cols && pk && pk->rate > 0.0; ++x) {
-        const double u = (x + 0.5) * du;
-        for (const Placed& q : placed) {
-            const EditZone* z = ZoneOf(d, q.q.z);
-            if (!z || u < q.at || u >= q.at + (q.q.b - q.q.a)) continue;
-            const double    t = q.q.a + (u - q.at);
-            const long long i0 = static_cast<long long>(std::floor((t - du * 0.5) * pk->rate));
-            const long long i1 = std::max(i0 + 1, static_cast<long long>(std::ceil((t + du * 0.5) * pk->rate)));
-            float           a = 0.0f;
-            for (long long i = std::max(0LL, i0); i < i1 && i < static_cast<long long>(pk->max_abs.size()); ++i)
-                a = std::max(a, pk->max_abs[static_cast<size_t>(i)]);
-            const double g = std::pow(10.0, z->db / 20.0);
-            const float  hh = static_cast<float>(std::min(1.0, a * g) * ZoneEnv(d, q.q.z, t)) * (H * 0.5f - 3.0f);
-            dl->AddRectFilled(ImVec2(p.x + x, mid - hh), ImVec2(p.x + x + 1.0f, mid + std::max(1.0f, hh)),
-                              WithAlpha(PartColor(PartIndex(d, z->part)), 0xCC));
+    // 13-62h (Antho): each piece drawn as the waveform above draws the file (ReadWaveColumns: one column per pixel
+    // from the detail tiles, the samples as a line when zoomed past them), its zone's gain and fades / crossfade on.
+    dl->PushClipRect(p, ImVec2(p.x + W, p.y + H), true);
+    for (const Placed& q : placed) {
+        const EditZone* z = ZoneOf(d, q.q.z);
+        const double    len = q.q.b - q.q.a;
+        if (!z || !(len > 0.0)) continue;  // the silence of empty space
+        const float xa = p.x + static_cast<float>(q.at / total) * W;
+        const float xb = p.x + static_cast<float>((q.at + len) / total) * W;
+        const int   cols = std::max(1, static_cast<int>(std::floor(xb - xa)));
+        WaveColumns wc;
+        if (!ReadWaveColumns(m.path, q.q.a, len, cols, &wc)) continue;
+        const int    series = ZoneWaveSeries(d.mono, wc.series);
+        const double g = std::pow(10.0, z->db / 20.0);
+        const ImU32  col = WithAlpha(PartColor(PartIndex(d, z->part)), 0xCC);
+        auto         tof = [&](double px) { return q.q.a + px / static_cast<double>(cols) * len; };
+        if (wc.line && wc.pt_x.size() >= 2 && series < kWaveSeries && wc.pt_v[series].size() == wc.pt_x.size()) {
+            for (size_t i = 0; i + 1 < wc.pt_x.size(); ++i) {
+                const double e = g * ZoneEnv(d, q.q.z, tof((wc.pt_x[i] + wc.pt_x[i + 1]) * 0.5));
+                const float  ya = mid - static_cast<float>(std::clamp(wc.pt_v[series][i] * e, -1.0, 1.0)) * hh;
+                const float  yb = mid - static_cast<float>(std::clamp(wc.pt_v[series][i + 1] * e, -1.0, 1.0)) * hh;
+                dl->AddLine(ImVec2(xa + static_cast<float>(wc.pt_x[i]), ya), ImVec2(xa + static_cast<float>(wc.pt_x[i + 1]), yb), col);
+            }
+            continue;
+        }
+        for (int i = 0; i < wc.columns; ++i) {
+            if (!WaveColumnHas(wc, series, static_cast<size_t>(i))) continue;
+            const double e = g * ZoneEnv(d, q.q.z, tof(i + 0.5));
+            float        ya = mid - static_cast<float>(std::clamp(wc.hi[series][static_cast<size_t>(i)] * e, -1.0, 1.0)) * hh;
+            float        yb = mid - static_cast<float>(std::clamp(wc.lo[series][static_cast<size_t>(i)] * e, -1.0, 1.0)) * hh;
+            if (yb - ya < 1.0f) {
+                const float c = (ya + yb) * 0.5f;
+                ya = c - 0.5f;
+                yb = c + 0.5f;
+            }
+            dl->AddRectFilled(ImVec2(xa + static_cast<float>(i), ya), ImVec2(xa + static_cast<float>(i) + 1.0f, yb), col);
         }
     }
+    dl->PopClipRect();
     for (size_t k = 1; k < placed.size(); ++k) {  // the joins
         const float x = std::floor(p.x + static_cast<float>(placed[k].at / total) * W) + 0.5f;
         for (float y = p.y; y < p.y + H; y += 4.0f) dl->AddLine(ImVec2(x, y), ImVec2(x, std::min(p.y + H, y + 2.0f)), WithAlpha(ui::kText, 0x80));
@@ -5585,10 +5629,9 @@ void ZoneRowsId(const SoundNode& n, const ZoneRef& r, const EditZone* shown)
 
 // The Selection panel UNDER the waveform (the mockup's selHTML): nothing selected (the hint), one zone (its part,
 // gain, edges, snap offset, fades and what is heard), a Gap (its crossfade and what is heard), several (Play, Heal,
-// Delete, Give them to). Its height is kept for the next frame (the waveform leaves it room).
+// Delete, Give them to). 13-62h (Antho): always shown, in its own child at the height the user dragged.
 void ZoneSelectionPanel(const SoundLibrary& lib, const SoundNode& n, const SoundMedia& m, const ZoneWaveHost& zh)
 {
-    const float                    y0 = ImGui::GetCursorScreenPos().y;
     const SoundData&               d = Shown(n);
     const ZoneSel                  L = SelSorted(d, SelValid(d, P.zv.sel));
     const std::vector<std::string> names = ZonePartNames(d);
@@ -5628,12 +5671,13 @@ void ZoneSelectionPanel(const SoundLibrary& lib, const SoundNode& n, const Sound
         const ImVec2 p1(p0.x + w, p0.y + hh + pad * 2.0f);
         const float  tw = ZoneTagPill(dl, ImVec2(p0.x + pad, p0.y + pad), hh, tag, ui::kStrokeStrong, ui::kMuted);
         ImGui::Dummy(ImVec2(w, p1.y - p0.y));
+        // 13-62h (Antho): just a short line; the gestures in its tooltip.
         ui::EllipsisTextTip(dl, ImVec2(p0.x + pad + tw + ui::Dp(8.0f), std::floor(p0.y + pad + (hh - ImGui::GetTextLineHeight()) * 0.5f)),
-                            p1.x - pad, ui::kMuted,
-                            "Click a zone or a Gap (Ctrl+click: several). Shift+drag: a new zone \xC2\xB7 Alt+drag: a Gap.");
+                            p1.x - pad, ui::kMuted, "Select a zone");
         ui::DashedRect(dl, p0, p1, ui::kStrokeStrong, ui::kRadiusLg);
+        if (ImGui::IsMouseHoveringRect(p0, p1))
+            ui::ShowTip("Click a zone or a Gap (Ctrl+click: several). Shift+drag: a new zone \xC2\xB7 Alt+drag: a Gap.");
         ImGui::Dummy(ImVec2(w, std::max(0.0f, ui::kCardGap - ImGui::GetStyle().ItemSpacing.y)));
-        P.zsel_h = ImGui::GetCursorScreenPos().y - y0;
         return;
     }
     ui::Section       s;
@@ -5937,7 +5981,6 @@ void ZoneSelectionPanel(const SoundLibrary& lib, const SoundNode& n, const Sound
         ImGui::PopID();
     }
     ui::EndSection(s);
-    P.zsel_h = ImGui::GetCursorScreenPos().y - y0;
 }
 
 // ---- Settings of (the right column of a zoned Sound) ----
@@ -6547,10 +6590,25 @@ void DrawEditOverlay()
             ImGui::Dummy(ImVec2(1.0f, ui::Dp(6.0f)));
         }
 
-        // Waveform | side strip.
-        const float side_w = ui::Dp(270.0f);  // .edmain: 1fr 270px
-        const float wave_w = std::max(ui::Dp(100.0f), ImGui::GetContentRegionAvail().x - side_w - ui::Dp(8.0f));
-        const float wave_h = std::max(ui::Dp(80.0f), ImGui::GetContentRegionAvail().y - ui::Dp(4.0f));
+        // Waveform | side strip. 13-62h (Antho): the right column's width is the user's (its left edge dragged).
+        const float scale = std::max(0.01f, ui::Dp(1.0f));
+        const float gap = ui::Dp(8.0f);
+        const float avail_x = ImGui::GetContentRegionAvail().x;
+        const float side_hi = (avail_x - ui::Dp(100.0f) - gap) / scale;
+        const float side_w = ui::Dp(std::clamp(g_side_w.Get(), g_side_w.lo, std::max(g_side_w.lo, side_hi)));
+        const float wave_w = std::max(ui::Dp(100.0f), avail_x - side_w - gap);
+        const float col_h = std::max(ui::Dp(80.0f), ImGui::GetContentRegionAvail().y - ui::Dp(4.0f));
+        // 13-62h (Antho): a zoned Sound's Selection panel is always under the waveform, outside its scroll, at the
+        // height the user dragged (its top edge), down to a waveform of 140 px.
+        const float sp_y = ImGui::GetStyle().ItemSpacing.y;
+        const bool  zsel = zoned && m.ok;
+        const float bar_h = zsel ? ui::Dp(8.0f) : 0.0f;
+        const float sel_hi = (col_h - bar_h - 2.0f * sp_y - ui::Dp(140.0f)) / scale;
+        const float sel_h = zsel ? std::min(ui::Dp(std::clamp(g_zsel_h.Get(), g_zsel_h.lo, std::max(g_zsel_h.lo, sel_hi))),
+                                             std::max(0.0f, col_h - bar_h - 2.0f * sp_y - ui::Dp(60.0f)))
+                                  : 0.0f;
+        const float wave_h = zsel ? std::max(ui::Dp(60.0f), col_h - sel_h - bar_h - 2.0f * sp_y) : col_h;
+        ImGui::BeginGroup();
         ImGui::BeginChild("##editwave", ImVec2(wave_w, wave_h), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollWithMouse);
         // 13-45: the view actions (your REAPER wheel and zoom keys, or your own: Shortcuts), the wheel over
         // the waveform, the keys while Edit has the focus.
@@ -6561,27 +6619,31 @@ void DrawEditOverlay()
             const float y0 = ImGui::GetCursorScreenPos().y;
             if (Shown(*n).mode != DetectMode::Takes) EditLegend(store, *lib, *n, m);  // 13-20 / 13-23 / 13-25
             const float used = ImGui::GetCursorScreenPos().y - y0;
-            // 13-62h (Lot E2): a zoned Sound's Selection panel goes under the waveform, which leaves it its room (its
-            // height last frame) down to a waveform of 140 px.
-            const float sel_room = zoned ? std::min(P.zsel_h + ui::Dp(8.0f), std::max(0.0f, wave_h - 24.0f - used - ui::Dp(140.0f))) : 0.0f;
             if (!StoreReplaced())
-                DrawSoundWaves("editwave", *lib, *n, m,
-                               std::max(ui::Dp(60.0f), wave_h - 24.0f - used - sel_room) * static_cast<float>(P.vzoom), true, nullptr);
-            if (zoned && !StoreReplaced()) {
-                ImGui::Dummy(ImVec2(1.0f, ui::Dp(4.0f)));
-                ZoneSelectionPanel(*lib, *n, m, zh);
-            }
+                DrawSoundWaves("editwave", *lib, *n, m, std::max(ui::Dp(60.0f), wave_h - 24.0f - used) * static_cast<float>(P.vzoom), true,
+                               nullptr);
         }
         ImGui::EndChild();
+        if (zsel && !StoreReplaced()) {
+            PanelSizeBar("##zselh", ImVec2(wave_w, bar_h), false, -1.0f, g_zsel_h, sel_hi,
+                         "Drag: the Selection panel's height. Double-click: back to the default");
+            ImGui::BeginChild("##zselpanel", ImVec2(wave_w, sel_h), ImGuiChildFlags_None, ImGuiWindowFlags_None);
+            ZoneSelectionPanel(*lib, *n, m, zh);
+            ImGui::EndChild();
+        }
+        ImGui::EndGroup();
         if (!StoreReplaced()) {
             // The side strip (.edside): surface, a stroke line on its left, the captions
             // "DETECTION · THIS SOUND ONLY" and "LEVEL" over their rows (.edrow: 70 px labels).
-            ImGui::SameLine();
+            ImGui::SameLine(0.0f, 0.0f);
+            PanelSizeBar("##editsidew", ImVec2(gap, col_h), true, -1.0f, g_side_w, side_hi,
+                         "Drag: the right column's width. Double-click: back to the default");
+            ImGui::SameLine(0.0f, 0.0f);
             ui::PaneOpts side;  // 13-14: the theme's pane, 10 px inside, square, its edge on the left only
             side.edge = ui::PaneEdge::Left;
             side.pad = 10.0f;
             side.radius = 0.0f;
-            ui::BeginPane("##editside", ImVec2(side_w, wave_h), side);
+            ui::BeginPane("##editside", ImVec2(side_w, col_h), side);
             // 13-62h (Lot E2): a zoned Sound's right column is its Settings of (the Sound or a part) and its detection;
             // an undivided Sound, a Takes-mode one or one not read: the Sound's controls.
             if (zoned) {

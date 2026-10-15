@@ -1252,6 +1252,11 @@ void ZoneMenu(const ZoneWaveHost& h)
 
 }  // namespace
 
+int ZoneWaveSeries(MonoMode m, int series)
+{
+    return SeriesFor(m, series);
+}
+
 // ---- prefs ------------------------------------------------------------------------------------------------------
 
 bool ZoneClickPlays()
@@ -1284,6 +1289,15 @@ void ZoneEditReset(ZoneEditView& v)
 }
 
 // ---- the waveform -----------------------------------------------------------------------------------------------
+
+// 13-62h (Antho): the detection threshold line's drag (Silence): the lane row it was grabbed on, whether it moved.
+struct ThrDrag {
+    bool   on = false, moved = false;
+    int    row = -1;
+    float  m0y = 0.0f;
+    double db = 0.0;
+};
+ThrDrag g_thr;
 
 ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
 {
@@ -1366,6 +1380,13 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
     FollowOutside(h);
     v.sel = SelValid(Shown(h), v.sel);
 
+    // 13-62h (Antho): the detection threshold (Silence), a dashed line above and below the middle of every zone row
+    // (Combined and Lane alike), at the peaks' scale (DrawLane: half the row less 6 px).
+    const bool thr_on = h.threshold && d0.mode == DetectMode::Silence && std::isfinite(d0.silence.threshold_db);
+    auto       row_mid = [&](const Row& r) { return r.y0 + (r.y1 - r.y0) * 0.5f; };
+    auto       row_hh = [&](const Row& r) { return std::max(1.0f, (r.y1 - r.y0) * 0.5f - 6.0f * dp); };
+    auto       thr_y = [&](const Row& r, double db) { return static_cast<float>(std::min(1.0, std::pow(10.0, db / 20.0))) * row_hh(r); };
+
     // ---- input
     v.hover_on = false;
     if (v.drag.kind == ZoneDragKind::None && hovered) {
@@ -1375,7 +1396,52 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
             v.hover_on = true;
         }
     }
-    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && v.drag.kind == ZoneDragKind::None) {
+    // The threshold line is grabbed within 4 px, where nothing else is (a zone's body, a greyed zone, empty space).
+    bool thr_hot = false;
+    if (thr_on && hovered && v.hover_on && !g_thr.on && v.drag.kind == ZoneDragKind::None) {
+        const int ri = row_at(m.y);
+        if (ri >= 0 && rows[static_cast<size_t>(ri)].row == ZoneRow::Lane &&
+            (v.hover.kind == ZoneHitKind::Zone || v.hover.kind == ZoneHitKind::Grey || v.hover.kind == ZoneHitKind::None)) {
+            const Row&  r = rows[static_cast<size_t>(ri)];
+            const float ty = thr_y(r, d0.silence.threshold_db);
+            thr_hot = std::fabs(m.y - (row_mid(r) - ty)) <= 4.0f * dp || std::fabs(m.y - (row_mid(r) + ty)) <= 4.0f * dp;
+        }
+    }
+    if (thr_hot) {
+        v.hover_on = false;  // the line, not the zone under it
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) ui::ShowTip("Detection threshold: drag it (the variations are detected again)");
+    }
+    if (thr_hot && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !io.KeyCtrl && !io.KeyShift && !io.KeyAlt) {
+        g_thr = ThrDrag{};
+        g_thr.on = true;
+        g_thr.row = row_at(m.y);
+        g_thr.m0y = m.y;
+        g_thr.db = d0.silence.threshold_db;
+    }
+    if (g_thr.on) {
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+            if (std::fabs(m.y - g_thr.m0y) > 2.0f * dp) g_thr.moved = true;
+            if (g_thr.moved && g_thr.row >= 0 && static_cast<size_t>(g_thr.row) < rows.size()) {
+                const Row&   r = rows[static_cast<size_t>(g_thr.row)];
+                const double amp = std::max(1e-4, static_cast<double>(std::fabs(row_mid(r) - m.y) / row_hh(r)));
+                g_thr.db = Clamp(20.0 * std::log10(amp), -90.0, 0.0);
+                h.threshold(g_thr.db, false);
+                char tip[32];
+                std::snprintf(tip, sizeof(tip), "%.1f dB", g_thr.db);
+                ui::ShowTip(tip);
+            }
+        } else {
+            if (g_thr.moved) h.threshold(g_thr.db, true);
+            g_thr = ThrDrag{};
+        }
+        if (h.store_replaced()) {
+            ImGui::PopID();
+            return ev;
+        }
+    }
+    if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && v.drag.kind == ZoneDragKind::None && !thr_hot && !g_thr.on) {
         const int ri = row_at(m.y);
         if (ri >= 0) {
             ZoneDrag g;
@@ -1448,6 +1514,32 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
         case ZoneRow::Lane: DrawLane(F, r); break;
         }
         if (r.row == ZoneRow::Lane && r.lane > 0) dl->AddLine(ImVec2(cx0, r.y0 - 0.5f), ImVec2(cx0 + cw, r.y0 - 0.5f), ui::kStrokeStrong);
+    }
+    // The threshold line (as the plain waveform's): dashed, the text colour at 45 % (accent grabbed or under the
+    // mouse), its dB in a chip at the right of the first zone row.
+    if (thr_on) {
+        const double thr = Shown(h).silence.threshold_db;  // a live drag shows its draft
+        const ImU32  col = (thr_hot || g_thr.on) ? ui::kAccent : Alpha(ui::kText, 0.45f);
+        const float  dash = 3.0f * dp, step = 6.0f * dp;
+        bool         chip = false;
+        for (const Row& r : rows) {
+            if (r.row != ZoneRow::Lane) continue;
+            const float mid = row_mid(r), ty = thr_y(r, thr);
+            for (float x = cx0; x < cx0 + cw; x += step)
+                for (const float yy : {std::floor(mid - ty) + 0.5f, std::floor(mid + ty) + 0.5f})
+                    dl->AddLine(ImVec2(x, yy), ImVec2(std::min(x + dash, cx0 + cw), yy), col);
+            if (chip) continue;
+            chip = true;
+            char lab[32];
+            std::snprintf(lab, sizeof(lab), "%.0f dB", thr);
+            ImFont*      cf = ui::FontMonoTiny();
+            const ImVec2 cs = ui::TextSizeIn(cf, lab);
+            const ImVec2 c1(cx0 + cw - 4.0f, std::max(r.y0 + cs.y + 2.0f, mid - ty + cs.y * 0.5f + 1.0f));
+            const ImVec2 c0(c1.x - cs.x - 8.0f, c1.y - cs.y - 2.0f);
+            dl->AddRectFilled(c0, c1, ui::kRaised, 3.0f);
+            dl->AddRect(c0, c1, ui::kStrokeStrong, 3.0f);
+            ui::AddTextIn(dl, cf, ImVec2(c0.x + 4.0f, c0.y + 1.0f), ui::kText, lab);
+        }
     }
     // Lane: the header column's captions (the lane headers are the caller's, drawn after).
     if (lane_view) {

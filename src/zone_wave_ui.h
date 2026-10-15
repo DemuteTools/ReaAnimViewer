@@ -125,6 +125,9 @@ struct ZoneWaveHost {
     // One write (one undo point): f on the stored Sound's data.
     std::function<void(const std::string& name, std::function<bool(SoundData&)> f, const std::string& toast)> edit;
     std::function<bool()>    store_replaced;
+    // 13-62h (Antho): the detection threshold line dragged (Silence mode): `db` live while dragged, `done` on the
+    // release (one undo point, the variations re-detected as the Detection row's threshold does). Null = no line.
+    std::function<void(double db, bool done)> threshold;
 };
 
 // What the waveform leaves for the caller: the lane header column (Lane), the canvas, a middle-drag's scroll.
@@ -167,6 +170,9 @@ bool ZoneClickPlays();
 void SetZoneClickPlays(bool on);
 bool ZoneTailWins();
 void SetZoneTailWins(bool on);
+
+// The peaks' series a zoned Sound's waveform draws (its mono, else every channel) of a WaveColumns with `series`.
+int ZoneWaveSeries(MonoMode m, int series);
 
 }  // namespace rav
 

@@ -152,14 +152,17 @@ struct PanelState {
     // Detected-count cache (the "D" of "D -> N variations").
     std::string           det_key;
     int                   det_count = 0;
-    // A Detection fader being dragged (its field's key) and its live value.
-    std::string           detf_key;
-    double                detf_live = 0.0;
-    // Its fader's id, library, node and field (SettleLostFaders).
-    ImGuiID               detf_gid = 0;
+    // 13-62h: a settings row's fader being dragged (SettingsNumberRow): its row's key, its live value, whether it
+    // has moved in this gesture, its id and the last frame it was drawn active (SettleLostFaders).
+    std::string           numf_key;
+    double                numf_live = 0.0;
+    bool                  numf_moved = false;
+    ImGuiID               numf_gid = 0;
+    int                   numf_seen = -1;
+    // A Detection row's fader (Threshold / Min gap): its library, node and field, to enter it when its row goes
+    // away mid-gesture (SettleLostFaders). detf_field nullptr = a Settings of row's (dropped then).
     std::string           detf_lib, detf_uid;
     double SilenceParams::*detf_field = nullptr;
-    int                   detf_seen = -1;  // the last frame its fader was drawn active
     // 13-28: Normalize's current settings (the user's, ExtState), the user's presets (reloaded when Edit
     // opens: another project may have changed them), the preset name popup and the measuring job.
     bool                  norm_loaded = false;
@@ -2600,14 +2603,107 @@ std::string PartName(const SoundData& d, const std::string& value)
 NormMode PartNormModeOf(const SoundData& d, const std::string& value) { return PartNormMode(d, value, P.norm_mode); }
 double   PartNormTargetOf(const SoundData& d, const std::string& value) { return PartNormTarget(d, value, P.norm_db); }
 
-// A number row (the mockup's FIELDS, part side). `unit` nullptr = the Normalize mode's.
-struct PartNum {
-    PartField   field;
+// 13-62h: a settings number row (the Detection card's Threshold / Min gap, every number row of Settings of): what
+// it shows and takes. The field takes lo..hi, the fader spans flo..fhi (a value past it shows the fader at its end).
+struct NumRow {
     const char* id;
     const char* label;
     const char* unit;
-    double      step, lo, hi;
+    double      step, lo, hi;  // what the field takes
+    float       flo, fhi;      // the fader's span (the mockup's ranges)
     const char* tip;
+};
+
+// How a caller draws it: its label's column and colour, its field's tone (0 = the text's), a "+" on a positive
+// value, a faint hint between label and fader ("before (-) / after"), and the room it draws after the field on the
+// same line (a pill, a reset button).
+struct NumRowLook {
+    float       label_w = 0.0f;
+    ImU32       label_col = ui::kText;
+    ImU32       text_col = 0;
+    bool        sign = false;
+    const char* hint = nullptr;
+    float       after_w = 0.0f;
+};
+
+// What the row did this frame: the event (ui::DragNumberEvent's meaning, from the fader or the field) and the value
+// (within lo..hi) to preview (Live) or enter (Commit).
+struct NumRowOut {
+    ui::DragNumberEvent e = ui::DragNumberEvent::None;
+    double              v = 0.0;
+    bool                fader = false;  // from the fader (else the field)
+};
+
+// 13-62h: the one settings number row (the Detection card's design, everywhere): its label, a fader that edits
+// live, then the typed / dragged field beside it (under it when the column is narrow: flow::StretchBeside). The
+// fader reports Live once it has moved, Commit on release, Cancel on Esc after typing; a click that never moved it
+// reports nothing (it changes nothing). The field's events are passed on. `key` names the row (node + row + part):
+// its fader's live value is shown on that row only. `value`: what the row shows when not dragged. The caller
+// applies Live on its draft (Live) and enters Commit once (CommitLive; CancelLive when nothing changed).
+NumRowOut SettingsNumberRow(const std::string& key, const NumRow& f, double value, const NumRowLook& k)
+{
+    NumRowOut   out;
+    const float sp = ImGui::GetStyle().ItemSpacing.x, fw = ui::Dp(52.0f), nw = ui::NumberFieldWidth(fw, f.unit);
+    const float fader_min = ui::Dp(40.0f), tail = nw + (k.after_w > 0.0f ? k.after_w + sp : 0.0f);
+    ImGui::PushID(f.id);
+    ui::LabelRow(f.label, nw + fader_min, k.label_w, k.label_col);
+    if (k.hint) {  // left out when the fader would get under its least
+        const float hw = std::min(ImGui::CalcTextSize(k.hint).x, ImGui::GetContentRegionAvail().x - fader_min - tail - 2.0f * sp);
+        if (hw >= ui::Dp(24.0f)) {
+            FitText(k.hint, ui::kMuted, hw);
+            ImGui::SameLine();
+        }
+    }
+    float       fv = static_cast<float>(P.numf_key == key ? P.numf_live : value);
+    bool        beside = true;
+    const float room = flow::StretchBeside(ImGui::GetContentRegionAvail().x, fader_min, tail, sp, &beside);
+    ImGui::SetNextItemWidth(std::max(1.0f, room));
+    const bool moved = ui::Fader("##fader", &fv, f.flo, f.fhi);
+    const bool active = ImGui::IsItemActive(), released = ImGui::IsItemDeactivated();
+    if (f.tip) ui::ItemTipText(f.tip);
+    if (active && P.numf_key != key) {  // a gesture begins: from the value itself (not its float)
+        P.numf_key = key;
+        P.numf_live = value;
+        P.numf_moved = false;
+        P.detf_field = nullptr;
+    }
+    if (P.numf_key == key && (active || released)) {
+        if (moved) {
+            P.numf_live = std::clamp(static_cast<double>(fv), f.lo, f.hi);
+            P.numf_moved = true;
+        }
+        if (active) {
+            P.numf_gid = ImGui::GetItemID();
+            P.numf_seen = ImGui::GetFrameCount();
+        }
+        if (P.numf_moved) {
+            out.e = !released                ? ui::DragNumberEvent::Live
+                    : ui::FaderCancelled()   ? ui::DragNumberEvent::Cancel  // Esc after typing: nothing entered
+                                             : ui::DragNumberEvent::Commit;
+            out.v = P.numf_live;
+            out.fader = true;
+        }
+        if (released) {
+            P.numf_key.clear();
+            P.numf_gid = 0;
+        }
+    }
+    if (beside) ImGui::SameLine();
+    double                    v = out.fader ? out.v : P.numf_key == key ? P.numf_live : value;
+    const ui::DragNumberEvent e = ui::DragNumber("##num", &v, f.step, 1, f.unit, fw, /*trim=*/true, k.text_col, k.sign);
+    if (f.tip) ui::ItemTipText(f.tip);
+    ImGui::PopID();
+    if (out.e == ui::DragNumberEvent::None && e != ui::DragNumberEvent::None) {
+        out.e = e;
+        out.v = std::clamp(v, f.lo, f.hi);
+    }
+    return out;
+}
+
+// A number row (the mockup's FIELDS, part side). `unit` nullptr = the Normalize mode's.
+struct PartNum {
+    PartField   field;
+    NumRow      row;
 };
 
 // What a part follows on a row it does not own: the Sound's (gain: 0 dB; Normalize target: C1).
@@ -2766,38 +2862,31 @@ std::string PartNumberToast(const std::string& pname, const char* label, PartFie
     return pname + " \xC2\xB7 " + label + ": " + RoundedNumberText(v, f == PartField::Gain) + " " + unit + " (its own)";
 }
 
-// One number row of a part (the mockup's .prow). True when the drawing must stop.
+// One number row of a part (the mockup's .prow): its own-value bar, the shared row (SettingsNumberRow), then
+// "= Sound" while it follows the Sound, else its ↺. True when the drawing must stop.
 bool PartNumberRow(const SoundLibrary& lib, const SoundNode& n, const std::string& path, const std::string& value,
                    const std::string& pname, ImU32 col, const PartNum& f)
 {
     const SoundData&            d = Shown(n);
     const std::optional<double> own = OwnPartNumber(PartSettingsOf(d, value), f.field);
-    const char*                 unit = f.unit ? f.unit : NormModeUnit(PartNormModeOf(d, value));
-    const float                 fw = ui::Dp(52.0f), nw = ui::NumberFieldWidth(fw, unit);
-    // Offset: "before (−) / after" the attack or peak, "after the start" (the Sound's row), before its field.
-    const char* hint = f.field != PartField::SyncOffset         ? nullptr
-                       : PartSyncMode(d, value) == SyncMode::SliceStart ? "after the start"
-                                                                        : "before (\xE2\x88\x92) / after";
-    ImGui::PushID(f.id);
+    NumRow                      row = f.row;
+    if (!row.unit) row.unit = NormModeUnit(PartNormModeOf(d, value));
+    NumRowLook look;
+    look.label_w = ui::Dp(64.0f);
+    look.label_col = own ? ui::kText : ui::kMuted;
+    look.text_col = own ? 0 : ui::kMuted;
+    look.sign = f.field == PartField::Gain;
+    // Offset: "before (−) / after" the attack or peak, "after the start" (the Sound's row), before its fader.
+    look.hint = f.field != PartField::SyncOffset                 ? nullptr
+                : PartSyncMode(d, value) == SyncMode::SliceStart ? "after the start"
+                                                                 : "before (\xE2\x88\x92) / after";
+    look.after_w = own ? ui::ControlH() : std::min(ImGui::CalcTextSize("= Sound").x + ui::Dp(12.0f), ui::Dp(56.0f));
     PartRowBar(own.has_value(), col);
-    ui::LabelRow(f.label, nw + (hint ? ui::Dp(40.0f) : 0.0f), ui::Dp(64.0f), own ? ui::kText : ui::kMuted);
-    if (hint) {
-        const float rst = own ? ui::ControlH() + ImGui::GetStyle().ItemSpacing.x : 0.0f;
-        FitText(hint, ui::kMuted, std::max(1.0f, ImGui::GetContentRegionAvail().x - nw - rst - ImGui::GetStyle().ItemSpacing.x));
-        ImGui::SameLine();
-    }
-    double                    v = own ? *own : SoundPartNumber(d, f.field);
-    const ui::DragNumberEvent e = ui::DragNumber("##num", &v, f.step, 1, unit, fw, /*trim=*/true, own ? 0 : ui::kMuted,
-                                                 /*sign=*/f.field == PartField::Gain);
-    if (f.tip) ui::ItemTipText(f.tip);
-    v = std::clamp(v, f.lo, f.hi);
-    if (PartNumberEdit(e, v, lib, n, path, value, f.field, PartNumberToast(pname, f.label, f.field, v, unit))) {
-        ImGui::PopID();
+    const NumRowOut o = SettingsNumberRow(n.uid + "/" + value + row.id, row, own ? *own : SoundPartNumber(d, f.field), look);
+    if (PartNumberEdit(o.e, o.v, lib, n, path, value, f.field, PartNumberToast(pname, row.label, f.field, o.v, row.unit)))
         return true;
-    }
     if (!own) InheritHint(pname);
-    if (PartResetButton(f.id, own.has_value())) ResetPartField(lib, n, path, value, f.field, pname);
-    ImGui::PopID();
+    if (PartResetButton(row.id, own.has_value())) ResetPartField(lib, n, path, value, f.field, pname);
     return false;
 }
 
@@ -2882,10 +2971,10 @@ static void PartSettingsRows(const char* id, int lib, const std::string& node_ui
     ui::GroupCaption("Detection", ui::kMuted);
     (void)mode;  // 13-62h: a zoned Sound's zone edges follow Pre-roll / Tail in every mode
     {
-        static const PartNum kPre = {PartField::Preroll, "##pre", "Pre-roll", "ms", 0.5, 0.0, 1000.0,
-                                     "Automatic zone starts: this much before the detected onset (never before a cut)"};
-        static const PartNum kTail = {PartField::Tail, "##tail", "Tail", "ms", 1.0, 0.0, 5000.0,
-                                      "Automatic zone ends: this much after the sound dies (never past a cut)"};
+        static const PartNum kPre = {PartField::Preroll, {"##pre", "Pre-roll", "ms", 0.5, 0.0, 1000.0, 0.0f, 50.0f,
+                                     "Automatic zone starts: this much before the detected onset (never before a cut)"}};
+        static const PartNum kTail = {PartField::Tail, {"##tail", "Tail", "ms", 1.0, 0.0, 5000.0, 0.0f, 300.0f,
+                                      "Automatic zone ends: this much after the sound dies (never past a cut)"}};
         if (PartNumberRow(*l, *n, path, value, pname, col, kPre) || PartNumberRow(*l, *n, path, value, pname, col, kTail))
             return stop();
     }
@@ -2907,23 +2996,23 @@ static void PartSettingsRows(const char* id, int lib, const std::string& node_ui
         if (StoreReplaced()) return stop();
     }
     {
-        static const PartNum kOff = {PartField::SyncOffset, "##soff", "Offset", "ms", 0.1, -50.0, 50.0,
-                                     "The sync point's offset from the attack, the peak or the slice start (ms)"};
+        static const PartNum kOff = {PartField::SyncOffset, {"##soff", "Offset", "ms", 0.1, -50.0, 50.0, -50.0f, 50.0f,
+                                     "The sync point's offset from the attack, the peak or the slice start (ms)"}};
         if (PartNumberRow(*l, *n, path, value, pname, col, kOff)) return stop();
     }
 
     ImGui::Dummy(ImVec2(1.0f, ui::Dp(4.0f)));
     ui::GroupCaption("Level", ui::kMuted);
-    {  // 13-62h: Gain = the part's fader (what it has applied to every zone of the part), no setting of its own
-        const float fw = ui::Dp(52.0f), nw = ui::NumberFieldWidth(fw, "dB");
-        ImGui::PushID("##gain");
-        ui::LabelRow("Gain", nw, ui::Dp(64.0f), ui::kText);
-        double                    v = PartFaderDb(Shown(*n), value);
-        const ui::DragNumberEvent e = ui::DragNumber("##num", &v, 0.1, 1, "dB", fw, /*trim=*/true, 0, /*sign=*/true);
-        ui::ItemTipText("The fader: moves the gain of every zone of this part by the same amount (they keep their differences); "
-                        "shows what it has applied");
-        ImGui::PopID();
-        if (PartFaderEdit(e, v, *l, *n, value, pname)) return stop();
+    {  // 13-62h: Gain = the part's fader (what it has applied to every zone of the part), no setting of its own; its
+       // fader spans the lane fader's -24..+12 dB, the field the zone gains' -60..+24
+        static const NumRow kGain = {"##gain", "Gain", "dB", 0.1, -60.0, 24.0, -24.0f, 12.0f,
+                                     "The fader: moves the gain of every zone of this part by the same amount (they keep "
+                                     "their differences); shows what it has applied"};
+        NumRowLook look;
+        look.label_w = ui::Dp(64.0f);
+        look.sign = true;
+        const NumRowOut o = SettingsNumberRow(n->uid + "/" + value + kGain.id, kGain, PartFaderDb(Shown(*n), value), look);
+        if (PartFaderEdit(o.e, o.v, *l, *n, value, pname)) return stop();
     }
     {
         const PartSettings* ps = own_of();
@@ -2950,8 +3039,8 @@ static void PartSettingsRows(const char* id, int lib, const std::string& node_ui
         if (StoreReplaced()) return stop();
     }
     {
-        static const PartNum kTgt = {PartField::NormTarget, "##ntgt", "Target", nullptr, 0.1, kNormTargetMin, kNormTargetMax,
-                                     "Its Normalize target"};
+        static const PartNum kTgt = {PartField::NormTarget, {"##ntgt", "Target", nullptr, 0.1, kNormTargetMin, kNormTargetMax,
+                                     -60.0f, 0.0f, "Its Normalize target"}};
         if (PartNumberRow(*l, *n, path, value, pname, col, kTgt)) return stop();
     }
     {
@@ -2977,8 +3066,10 @@ static void PartSettingsRows(const char* id, int lib, const std::string& node_ui
     if (!FolderSourced(Shown(*n))) {  // a folder pile is placed without fades
         ImGui::Dummy(ImVec2(1.0f, ui::Dp(4.0f)));
         ui::GroupCaption("Fades", ui::kMuted);
-        static const PartNum kIn = {PartField::FadeIn, "##fin", "Fade in", "ms", 0.1, 0.0, 10000.0, "Default fade in of its zones"};
-        static const PartNum kOut = {PartField::FadeOut, "##fout", "Fade out", "ms", 0.1, 0.0, 10000.0, "Default fade out of its zones"};
+        static const PartNum kIn = {PartField::FadeIn, {"##fin", "Fade in", "ms", 0.1, 0.0, 10000.0, 0.0f, 50.0f,
+                                                    "Default fade in of its zones"}};
+        static const PartNum kOut = {PartField::FadeOut, {"##fout", "Fade out", "ms", 0.1, 0.0, 10000.0, 0.0f, 50.0f,
+                                                      "Default fade out of its zones"}};
         if (PartNumberRow(*l, *n, path, value, pname, col, kIn) || PartNumberRow(*l, *n, path, value, pname, col, kOut))
             return stop();
     }
@@ -4416,82 +4507,42 @@ void DetectionControls(const SoundLibrary& lib, const SoundNode& n, const SoundM
     }
     if (d.mode == DetectMode::Silence) {
         struct F {
-            const char* id;
-            const char* label;
-            const char* unit;
+            NumRow                  row;
             double SilenceParams::*field;
-            double step;
-            double lo, hi;      // what the field takes
-            float  flo, fhi;    // the fader's span (the mockup's ranges)
         };
         static const F kFields[] = {
-            {"##thr", "Threshold", "dB", &SilenceParams::threshold_db, 0.1, -90.0, 0.0, -60.0f, 0.0f},
-            {"##gap", "Min gap", "ms", &SilenceParams::min_gap_ms, 1.0, 0.0, 5000.0, 0.0f, 400.0f},
-            {"##pre", "Pre-roll", "ms", &SilenceParams::preroll_ms, 0.5, 0.0, 1000.0, 0.0f, 50.0f},
-            {"##tail", "Tail", "ms", &SilenceParams::tail_ms, 1.0, 0.0, 5000.0, 0.0f, 300.0f},
+            {{"##thr", "Threshold", "dB", 0.1, -90.0, 0.0, -60.0f, 0.0f, nullptr}, &SilenceParams::threshold_db},
+            {{"##gap", "Min gap", "ms", 1.0, 0.0, 5000.0, 0.0f, 400.0f, nullptr}, &SilenceParams::min_gap_ms},
+            {{"##pre", "Pre-roll", "ms", 0.5, 0.0, 1000.0, 0.0f, 50.0f, nullptr}, &SilenceParams::preroll_ms},
+            {{"##tail", "Tail", "ms", 1.0, 0.0, 5000.0, 0.0f, 300.0f, nullptr}, &SilenceParams::tail_ms},
         };
-        const float field_w = ui::Dp(56.0f);
         for (const F& f : kFields) {
             // 13-62h: a zoned Sound's Pre-roll / Tail are its Settings of rows (the zones' edges, no re-detection).
             if (UsesZones(d) && (f.field == &SilenceParams::preroll_ms || f.field == &SilenceParams::tail_ms)) continue;
-            ImGui::PushID(f.id);
-            const float num_w = ui::NumberFieldWidth(field_w, f.unit);
-            ui::LabelRow(f.label, num_w + ui::Dp(40.0f), label_col);
-            // The fader (a live draft, one write on release), then the typed / dragged field.
-            const std::string key = n.uid + f.id;
-            const bool        fader_live = P.detf_key == key;
-            float             fv = static_cast<float>(fader_live ? P.detf_live : d.silence.*(f.field));
-            bool              beside = true;
-            const float room = flow::StretchBeside(ImGui::GetContentRegionAvail().x, ui::Dp(40.0f), num_w,
-                                                   ImGui::GetStyle().ItemSpacing.x, &beside);
-            ImGui::SetNextItemWidth(std::max(1.0f, room));
-            const bool moved = ui::Fader("##fader", &fv, f.flo, f.fhi);
-            const bool active = ImGui::IsItemActive(), released = ImGui::IsItemDeactivated();
-            const bool cancelled = released && ui::FaderCancelled();  // Esc after typing
-            if (cancelled && fader_live) {
-                // Esc: the draft is dropped, nothing re-detected or written (no undo point).
-                P.detf_key.clear();
-                P.detf_gid = 0;
-                CancelLive();
-            } else if (active || (released && fader_live)) {
-                // Not moved yet: the stored value itself (not its float), so a click alone changes nothing.
-                if (moved) P.detf_live = std::clamp(static_cast<double>(fv), f.lo, f.hi);
-                else if (!fader_live) P.detf_live = d.silence.*(f.field);
-                P.detf_key = key;
-                P.detf_gid = ImGui::GetItemID();
-                P.detf_lib = lib.uid;
-                P.detf_uid = n.uid;
-                P.detf_field = f.field;
-                P.detf_seen = ImGui::GetFrameCount();
+            // 13-62h: the shared row (SettingsNumberRow); its fader or field re-detects live, entered once.
+            NumRowLook look;
+            look.label_w = label_col;
+            look.label_col = ui::kMuted;
+            const NumRowOut o = SettingsNumberRow(n.uid + f.row.id, f.row, Shown(n).silence.*(f.field), look);
+            if (o.e == ui::DragNumberEvent::Live || o.e == ui::DragNumberEvent::Commit) {
+                if (o.fader) {  // its row gone mid-gesture: entered on its own node (SettleLostFaders)
+                    P.detf_lib = lib.uid;
+                    P.detf_uid = n.uid;
+                    P.detf_field = f.field;
+                }
                 // The draft restarts from the store each frame (Live): this field set again, re-detected.
                 SoundData& dr = Live(n);
-                dr.silence.*(f.field) = P.detf_live;
+                dr.silence.*(f.field) = o.v;
                 Redetect(dr, m, P.snap.frames);
-                if (released) {
-                    P.detf_key.clear();
-                    P.detf_gid = 0;
+                if (o.e == ui::DragNumberEvent::Commit) {
+                    P.detf_field = nullptr;
                     if (dr.silence.*(f.field) == n.sound.silence.*(f.field)) CancelLive();  // no empty undo point
                     else CommitLive("Detection", lib.uid, n.uid);
-                    if (StoreReplaced()) {
-                        ImGui::PopID();
-                        return;
-                    }
-                }
-            }
-            if (beside) ImGui::SameLine();
-            double v = P.detf_key == key ? P.detf_live : Shown(n).silence.*(f.field);
-            const ui::DragNumberEvent e = ui::DragNumber("##num", &v, f.step, 1, f.unit, field_w, /*trim=*/true);
-            ImGui::PopID();
-            if (e == ui::DragNumberEvent::Live || e == ui::DragNumberEvent::Commit) {
-                SoundData& dr = Live(n);
-                dr.silence.*(f.field) = std::clamp(v, f.lo, f.hi);
-                Redetect(dr, m, P.snap.frames);
-                if (e == ui::DragNumberEvent::Commit) {
-                    CommitLive("Detection", lib.uid, n.uid);
                     if (StoreReplaced()) return;
                 }
-            } else if (e == ui::DragNumberEvent::Cancel) {
-                CancelLive();
+            } else if (o.e == ui::DragNumberEvent::Cancel) {
+                P.detf_field = nullptr;
+                CancelLive();  // Esc: nothing re-detected or written (no undo point)
             }
         }
     }
@@ -5985,21 +6036,17 @@ void ZoneSelectionPanel(const SoundLibrary& lib, const SoundNode& n, const Sound
 
 // ---- Settings of (the right column of a zoned Sound) ----
 
-// A number row of the Sound (Settings of: Sound): live while dragged (`apply` on the draft; it returns the hand
-// edges a Pre-roll / Tail change met, else 0), one undo point at its end, none when `get` reads the same as stored.
-// True when the drawing must stop.
-bool SoundZoneNumberRow(const char* id, const char* label, const char* unit, double step, double lo, double hi, const char* tip,
-                        const SoundLibrary& lib, const SoundNode& n, const std::function<double(const SoundData&)>& get,
-                        const std::function<int(SoundData&, double)>& apply)
+// A number row of the Sound (Settings of: Sound; the shared row, SettingsNumberRow): live while its fader or field
+// is dragged (`apply` on the draft; it returns the hand edges a Pre-roll / Tail change met, else 0), one undo point
+// at its end, none when `get` reads the same as stored. True when the drawing must stop.
+bool SoundZoneNumberRow(const NumRow& f, const SoundLibrary& lib, const SoundNode& n,
+                        const std::function<double(const SoundData&)>& get, const std::function<int(SoundData&, double)>& apply)
 {
-    const float fw = ui::Dp(52.0f), nw = ui::NumberFieldWidth(fw, unit);
-    ImGui::PushID(id);
-    ui::LabelRow(label, nw, ui::Dp(64.0f), ui::kText);
-    double                    v = get(Shown(n));
-    const ui::DragNumberEvent e = ui::DragNumber("##num", &v, step, 1, unit, fw, /*trim=*/true);
-    if (tip) ui::ItemTipText(tip);
-    ImGui::PopID();
-    v = std::clamp(v, lo, hi);
+    NumRowLook look;
+    look.label_w = ui::Dp(64.0f);
+    const NumRowOut           o = SettingsNumberRow(n.uid + f.id, f, get(Shown(n)), look);
+    const ui::DragNumberEvent e = o.e;
+    const double              v = o.v;
     if (e == ui::DragNumberEvent::Live || e == ui::DragNumberEvent::Commit) {
         if (!P.zedit_on) {
             P.zedit_on = true;
@@ -6014,9 +6061,9 @@ bool SoundZoneNumberRow(const char* id, const char* label, const char* unit, dou
                 CancelLive();
             } else {
                 if (UsesZones(dr)) MarkZoneOwn();
-                const std::string toast = std::string(label) + ": " + RoundedNumberText(get(dr), false) + " " + unit +
+                const std::string toast = std::string(f.label) + ": " + RoundedNumberText(get(dr), false) + " " + f.unit +
                                           PreTailToastExtra(hand, ZoneTailWins());
-                CommitLive(label, lib.uid, n.uid, toast);
+                CommitLive(f.label, lib.uid, n.uid, toast);
             }
             return StoreReplaced();
         }
@@ -6039,10 +6086,12 @@ bool SoundZoneRows(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
     for (int k = 0; k < 2; ++k) {  // Pre-roll / Tail: the zones' automatic edges, then decision 7 (the hand edges)
         const bool      pre = k == 0;
         const PartField f = pre ? PartField::Preroll : PartField::Tail;
-        if (SoundZoneNumberRow(pre ? "##spre" : "##stail", pre ? "Pre-roll" : "Tail", "ms", pre ? 0.5 : 1.0, 0.0, pre ? 1000.0 : 5000.0,
-                               pre ? "Automatic zone starts: this much before the detected onset (never before a cut)"
-                                   : "Automatic zone ends: this much after the sound dies (never past a cut)",
-                               lib, n, [pre](const SoundData& x) { return pre ? x.silence.preroll_ms : x.silence.tail_ms; },
+        static const NumRow kRows[2] = {
+            {"##spre", "Pre-roll", "ms", 0.5, 0.0, 1000.0, 0.0f, 50.0f,
+             "Automatic zone starts: this much before the detected onset (never before a cut)"},
+            {"##stail", "Tail", "ms", 1.0, 0.0, 5000.0, 0.0f, 300.0f,
+             "Automatic zone ends: this much after the sound dies (never past a cut)"}};
+        if (SoundZoneNumberRow(kRows[k], lib, n, [pre](const SoundData& x) { return pre ? x.silence.preroll_ms : x.silence.tail_ms; },
                                [pre, f, path, len](SoundData& x, double v) {
                                    (pre ? x.silence.preroll_ms : x.silence.tail_ms) = v;
                                    RefreshWith(x, path);
@@ -6077,7 +6126,8 @@ bool SoundZoneRows(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
             return StoreReplaced();  // the write is picked at the frame's end: the rest is still drawn
         }
     }
-    if (SoundZoneNumberRow("##soff", "Offset", "ms", 0.1, -50.0, 50.0, "Added to the sync point", lib, n,
+    static const NumRow kOff = {"##soff", "Offset", "ms", 0.1, -50.0, 50.0, -50.0f, 50.0f, "Added to the sync point"};
+    if (SoundZoneNumberRow(kOff, lib, n,
                            [](const SoundData& x) { return x.sync_offset_ms; },
                            [path](SoundData& x, double v) {
                                SetSyncSettings(x, x.sync_mode, v);
@@ -6102,14 +6152,19 @@ bool SoundZoneRows(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
             ui::EndComboStyled();
         }
         ui::ItemTipText("Normalize mode (REAPER's): every part follows it unless it has its own (your setting, every project)");
-        const float fw = ui::Dp(52.0f);
-        ui::LabelRow("Target", ui::NumberFieldWidth(fw, NormModeUnit(P.norm_mode)), ui::Dp(64.0f), ui::kText);
-        double v = P.norm_db;
-        if (ui::DragNumber("##sntgt", &v, 0.1, 1, NormModeUnit(P.norm_mode), fw, /*trim=*/true) == ui::DragNumberEvent::Commit) {
-            P.norm_db = std::clamp(std::round(v * 10.0) / 10.0, kNormTargetMin, kNormTargetMax);
-            SaveNormalizePrefs();
+        // 13-62h: the shared row (its fader shows the value live; the setting is entered once, at the gesture's end).
+        const NumRow kTgt = {"##sntgt", "Target", NormModeUnit(P.norm_mode), 0.1, kNormTargetMin, kNormTargetMax, -60.0f, 0.0f,
+                             "Normalize target: every part follows it unless it has its own (your setting, every project)"};
+        NumRowLook look;
+        look.label_w = ui::Dp(64.0f);
+        const NumRowOut o = SettingsNumberRow(n.uid + kTgt.id, kTgt, P.norm_db, look);
+        if (o.e == ui::DragNumberEvent::Commit) {
+            const double now = std::clamp(std::round(o.v * 10.0) / 10.0, kNormTargetMin, kNormTargetMax);
+            if (now != P.norm_db) {
+                P.norm_db = now;
+                SaveNormalizePrefs();
+            }
         }
-        ui::ItemTipText("Normalize target: every part follows it unless it has its own (your setting, every project)");
     }
     PartNormalizeNow(EditLibIndex(), n.uid, std::string());
     if (StoreReplaced()) return true;
@@ -6117,25 +6172,31 @@ bool SoundZoneRows(const SoundLibrary& lib, const SoundNode& n, const SoundMedia
     if (!FolderSourced(Shown(n))) {
         ImGui::Dummy(ImVec2(1.0f, ui::Dp(4.0f)));
         ui::GroupCaption("Fades", ui::kMuted);
-        if (SoundZoneNumberRow("##sfin", "Fade in", "ms", 0.1, 0.0, 10000.0, "Default fade in of its zones", lib, n,
+        static const NumRow kIn = {"##sfin", "Fade in", "ms", 0.1, 0.0, 10000.0, 0.0f, 50.0f, "Default fade in of its zones"};
+        static const NumRow kOut = {"##sfout", "Fade out", "ms", 0.1, 0.0, 10000.0, 0.0f, 50.0f, "Default fade out of its zones"};
+        static const NumRow kCut = {"##scut", "At cuts", "ms", 0.1, 0.0, 50.0, 0.0f, 20.0f,
+                                    "Default fade of a zone edge that touches a cut"};
+        static const NumRow kGap = {"##sgap", "At Gaps", "ms", 0.1, 0.0, 200.0, 0.0f, 50.0f,
+                                    "Crossfade of a new Gap (half on each side)"};
+        if (SoundZoneNumberRow(kIn, lib, n,
                                [](const SoundData& x) { return x.fade_in * 1000.0; },
                                [](SoundData& x, double v) {
                                    SetDefaultFades(x, v / 1000.0, x.fade_out);
                                    return 0;
                                }) ||
-            SoundZoneNumberRow("##sfout", "Fade out", "ms", 0.1, 0.0, 10000.0, "Default fade out of its zones", lib, n,
+            SoundZoneNumberRow(kOut, lib, n,
                                [](const SoundData& x) { return x.fade_out * 1000.0; },
                                [](SoundData& x, double v) {
                                    SetDefaultFades(x, x.fade_in, v / 1000.0);
                                    return 0;
                                }) ||
-            SoundZoneNumberRow("##scut", "At cuts", "ms", 0.1, 0.0, 50.0, "Default fade of a zone edge that touches a cut", lib, n,
+            SoundZoneNumberRow(kCut, lib, n,
                                [](const SoundData& x) { return x.cut_fade * 1000.0; },
                                [](SoundData& x, double v) {
                                    x.cut_fade = v / 1000.0;
                                    return 0;
                                }) ||
-            SoundZoneNumberRow("##sgap", "At Gaps", "ms", 0.1, 0.0, 200.0, "Crossfade of a new Gap (half on each side)", lib, n,
+            SoundZoneNumberRow(kGap, lib, n,
                                [](const SoundData& x) { return x.gap_xfade * 1000.0; },
                                [](SoundData& x, double v) {
                                    x.gap_xfade = v / 1000.0;
@@ -7752,7 +7813,27 @@ void SettleLostFaders()
     // 13-62h review: a number of the zone panels dragged whose row went away mid-gesture (Delete / Heal / a key /
     // Ctrl+Z / another zone selected): its zone and selection are forgotten and its draft dropped (never entered on
     // zones that changed under it); the next gesture starts afresh.
-    if (P.zedit_on && !ui::DragNumberActive()) {
+    // 13-62h: a settings row's fader (SettingsNumberRow) whose row went away mid-gesture: a Detection row's moved
+    // value drawn last frame is entered on its own node (one undo point), a Settings of row's dropped (below).
+    const bool numf_held = P.numf_gid != 0 && active == P.numf_gid;
+    if (P.numf_gid != 0 && !numf_held) {
+        const bool fresh = P.numf_seen >= frame - 1 && P.numf_moved;
+        double SilenceParams::*field = P.detf_field;
+        P.numf_gid = 0;
+        P.numf_key.clear();
+        P.detf_field = nullptr;
+        if (field && P.phase.Shows(P.detf_uid)) {
+            const SoundLibrary* l = fresh ? FindLibrary(GetSoundStore(nullptr), P.detf_lib) : nullptr;
+            const SoundNode*    nd = l ? FindNode(*l, P.detf_uid) : nullptr;
+            if (nd && P.draft.silence.*field != nd->sound.silence.*field) CommitLive("Detection", P.detf_lib, P.detf_uid);
+            else CancelLive();
+            if (StoreReplaced()) return;
+        }
+    }
+    // 13-62h review: a number of the zone panels dragged whose row went away mid-gesture (Delete / Heal / a key /
+    // Ctrl+Z / another zone selected): its zone and selection are forgotten and its draft dropped (never entered on
+    // zones that changed under it); the next gesture starts afresh. (A settings row's fader held keeps it.)
+    if (P.zedit_on && !ui::DragNumberActive() && !numf_held) {
         P.zedit_on = false;
         P.zedit_ref = ZoneRef{};
         P.zedit_sel.clear();
@@ -7789,18 +7870,6 @@ void SettleLostFaders()
             }
             if (StoreReplaced()) return;
         }
-    }
-    if (P.detf_gid != 0 && active != P.detf_gid) {
-        const bool fresh = P.detf_seen >= frame - 1;
-        P.detf_gid = 0;
-        P.detf_key.clear();
-        if (!P.phase.Shows(P.detf_uid) || !P.detf_field) return;
-        const SoundLibrary* l = fresh ? FindLibrary(GetSoundStore(nullptr), P.detf_lib) : nullptr;
-        const SoundNode*    nd = l ? FindNode(*l, P.detf_uid) : nullptr;
-        if (nd && P.draft.silence.*(P.detf_field) != nd->sound.silence.*(P.detf_field))
-            CommitLive("Detection", P.detf_lib, P.detf_uid);
-        else
-            CancelLive();
     }
 }
 

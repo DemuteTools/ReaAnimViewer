@@ -160,8 +160,9 @@ bool UseMediaAt(SoundStore& store, const std::string& lib_uid, const LibraryRow*
     std::string msg;
     bool ok = false;
     if (n && (n->type == SoundNodeType::Random || n->type == SoundNodeType::Blend)) {
+        const SoundNodeType type = n->type;  // AddNodes changes `store`: `n` may not outlive it (seen under MSVC)
         ok = AddNodes(store, lib_uid, &r, specs, &made, why);
-        msg = Plural(k, "sound") + " added to the " + TypeWord(n->type);
+        msg = Plural(k, "sound") + " added to the " + TypeWord(type);
     } else if (n && n->type == SoundNodeType::Sound) {
         // Onto a sound: a new Random takes its slot, holding the old sound then the new ones.
         std::vector<std::string> wrapped;

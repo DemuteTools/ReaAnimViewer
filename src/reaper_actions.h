@@ -62,6 +62,7 @@ bool ReaperActionLookupReady();
 struct ReaperActionEntry {
     std::string id;
     std::string name;
+    int         cmd = 0;  // 13-64: its command number now (ReaperActionShortcuts)
 };
 // Every action of the Main section (kbd_enumerateActions), in REAPER's order; empty without it.
 std::vector<ReaperActionEntry> ListReaperActions();

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: MIT
 //
 // The keyboard icon, the Shortcuts popup and its record modal (spec 11-fb-3). Dear ImGui,
-// called between NewFrame and Render by the viewer (src/viewer_window.cpp).
+// called between NewFrame and Render by the viewer (src/viewer_window.cpp). 13-64: the popup is a
+// large panel over the whole viewer (a modal: dimmed backdrop; Esc, its close button or a click on the
+// backdrop closes it), with Find by key and the Link modal's search by name / ID / shortcut.
 
 #pragma once
 
@@ -20,6 +22,15 @@ bool ShortcutsPopupOpen();
 
 // Esc pressed while the popup is open (not recording): it closes on the next frame.
 void RequestCloseShortcutsPopup();
+
+// 13-64: Find by key (or the Link modal's key button) waits for a key or a wheel: while armed, the
+// accelerator hook hands the viewer every key and wheel (as while a key is recorded), and the window
+// procedure passes them here. Esc disarms. A modifier alone is not a gesture: still waiting.
+bool ShortcutsKeyCaptureArmed();
+void ShortcutsCaptureKey(unsigned vk, bool ctrl, bool shift, bool alt);
+void ShortcutsCaptureWheel(bool horizontal, bool ctrl, bool shift, bool alt);
+// Focus lost or panel parked: disarmed.
+void CancelShortcutsKeyCapture();
 
 }  // namespace rav
 

@@ -294,6 +294,7 @@ KeyRouteState g_key_route;
 void DropKeyClaims()
 {
     if (ShortcutRecordingId() >= 0) CancelShortcutRecording();
+    CancelShortcutsKeyCapture();  // 13-64: Find by key / the Link modal's key button
     g_key_route = KeyRouteState{};
 }
 
@@ -2177,7 +2178,10 @@ bool TextInputNow()
     return (g_imgui_ready && ImGui::GetIO().WantTextInput) ||
            (TaggingViewActive() && (TaggingPresetMenuOpen() || TaggingRolesWindowOpen()));
 }
-bool ViewerTakesCharNow() { return ViewerTakesChar(g_key_route, ShortcutRecordingId() >= 0, TextInputNow()); }
+bool ViewerTakesCharNow()
+{
+    return ViewerTakesChar(g_key_route, ShortcutRecordingId() >= 0 || ShortcutsKeyCaptureArmed(), TextInputNow());
+}
 
 // 13-19 / 13-59: one frame of the busy card of a long gesture (busy_progress_ui.h) on RAV's window:
 // the theme background and a centred card (title, bar, "Item i of n · event j of m", note). Only
@@ -2404,6 +2408,11 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
     // 13-45: a "View: scroll and zoom" row of the Shortcuts popup records the wheel; the notch is the
     // recording's only (not fed to Dear ImGui: the popup does not scroll under it).
+    // 13-64: Find by key (or the Link modal's key button) takes a wheel the same way.
+    if ((msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL) && ShortcutsKeyCaptureArmed()) {
+        ShortcutsCaptureWheel(msg == WM_MOUSEHWHEEL, GetKeyState(VK_CONTROL) < 0, GetKeyState(VK_SHIFT) < 0, GetKeyState(VK_MENU) < 0);
+        return 0;
+    }
     if ((msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL) && ViewNavRecordingRow() >= 0) {
         ViewNavRecordWheel(msg == WM_MOUSEHWHEEL, GetKeyState(VK_CONTROL) < 0, GetKeyState(VK_SHIFT) < 0, GetKeyState(VK_MENU) < 0);
         return 0;
@@ -2575,6 +2584,10 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             ShortcutRecordKey(static_cast<unsigned>(wp), ctrl, shift, alt);
             return 0;
         }
+        if (ShortcutsKeyCaptureArmed()) {  // 13-64: Find by key / the Link modal's key button (Esc disarms)
+            if (!(lp & (1 << 30))) ShortcutsCaptureKey(static_cast<unsigned>(wp), ctrl, shift, alt);
+            return 0;
+        }
         if (wp == VK_ESCAPE && ShortcutsPopupOpen()) {
             RequestCloseShortcutsPopup();
             return 0;
@@ -2691,7 +2704,7 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         // Spec 11-fb-17 — Alt released in a text field (or while recording) must not open
         // REAPER's menu bar (SC_KEYMENU), which would take the focus from the field.
-        if (ShortcutRecordingId() >= 0 || g_key_route.claimed_vk != 0 || TextInputNow()) return 0;
+        if (ShortcutRecordingId() >= 0 || ShortcutsKeyCaptureArmed() || g_key_route.claimed_vk != 0 || TextInputNow()) return 0;
         break;
 
     case WM_KILLFOCUS:
@@ -2911,7 +2924,7 @@ int ViewerTranslateAccel(MSG* msg, accelerator_register_t* /*ctx*/)
     in.video_view = VideoViewActive();
     in.tagging_view = TaggingViewActive();  // Story 10-4: E / Del
     in.library_edit = LibraryViewActive() && LibraryEditKeysActive();  // 13-61: the Sound Edit window's trims
-    in.recording  = ShortcutRecordingId() >= 0;
+    in.recording  = ShortcutRecordingId() >= 0 || ShortcutsKeyCaptureArmed();  // 13-64: a key / wheel captured too
     in.text_input = TextInputNow();  // story 10-3b: the preset menu open counts
     // Esc closes either; Story 10-3: Esc also cancels a Tagging view drag.
     in.popup_open = ShortcutsPopupOpen() || VideoDeleteConfirmOpen() || (TaggingViewActive() && TaggingGestureActive()) ||

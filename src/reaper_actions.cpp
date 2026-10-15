@@ -230,6 +230,7 @@ std::vector<ReaperActionEntry> ListReaperActions()
         e.id = NamedIdOf(id);
         if (e.id.empty()) e.id = std::to_string(id);
         e.name = n ? n : "";
+        e.cmd = id;
         out.push_back(std::move(e));
     }
     return out;

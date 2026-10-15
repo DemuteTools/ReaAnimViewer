@@ -1598,6 +1598,46 @@ void EndModalCard()
     ImGui::EndPopup();
 }
 
+bool BeginSheetModal(const char* id, ImVec2 pos, ImVec2 size, bool* backdrop_clicked)
+{
+    if (backdrop_clicked) *backdrop_clicked = false;
+    ImGui::SetNextWindowPos(pos, ImGuiCond_Always);
+    ImGui::SetNextWindowSize(size, ImGuiCond_Always);
+    ImGui::PushStyleColor(ImGuiCol_PopupBg, Col(kSurface));
+    ImGui::PushStyleColor(ImGuiCol_Border, Col(kStrokeStrong));
+    ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, Col(IM_COL32(0, 0, 0, 0x80)));  // read as the window begins
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_PopupRounding, Dp(kRadiusLg));
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize |
+                                   ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoScrollbar |
+                                   ImGuiWindowFlags_NoScrollWithMouse;
+    const bool open = ImGui::BeginPopupModal(id, nullptr, flags);
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(3);
+    if (!open) return false;
+    WindowShadow(0.7f);
+    PushThemeMetrics();
+    if (backdrop_clicked) {
+        // Nothing open over it, now or last frame (a menu or a modal of its own takes that click: the click
+        // that closes a menu outside it does not close the sheet too).
+        const bool    over = ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId);
+        ImGuiStorage* st = ImGui::GetStateStorage();
+        const ImGuiID key = ImGui::GetID("##sheet_over");
+        const bool    was_over = st->GetBool(key, false);
+        st->SetBool(key, over);
+        const ImVec2 a = ImGui::GetWindowPos(), b(a.x + ImGui::GetWindowWidth(), a.y + ImGui::GetWindowHeight());
+        *backdrop_clicked = !over && !was_over && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+                            !ImGui::IsMouseHoveringRect(a, b, false);
+    }
+    return true;
+}
+
+void EndSheetModal()
+{
+    PopThemeMetrics();
+    ImGui::EndPopup();
+}
+
 bool BeginFloatingCard(const char* id, ImVec2 pos, ImVec2 pivot, float width)
 {
     ImGui::SetNextWindowPos(pos, ImGuiCond_Always, pivot);

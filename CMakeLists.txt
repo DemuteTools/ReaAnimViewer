@@ -183,6 +183,7 @@ if(WIN32)
             src/reaper_actions.cpp
             src/shortcuts.cpp
             src/shortcuts_ui.cpp
+            src/shortcut_key_index.cpp
             src/texture_locate.cpp
             src/bone_events.cpp
             src/bone_sampling.cpp

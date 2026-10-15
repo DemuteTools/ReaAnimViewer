@@ -288,24 +288,55 @@ If the viewer feels slow on a laptop, lower **MSAA** and **Shadow** first.
 
 ## Shortcuts
 
-Click the **keyboard icon** in the top-right corner of the viewer (left of the FPS readout) to see every key and mouse gesture. They work while the viewer has the focus; every other key stays REAPER's. The default keys:
+Click the **keyboard icon** in the top-right corner of the viewer (left of the FPS readout) to open the **Shortcuts** window, a large panel over the viewer. **Esc**, its **✕** or a click outside it closes it. The keys work while the viewer has the focus; every other key stays REAPER's.
+
+The window has three parts:
+
+- **Sections** on the left: All, then Viewer, Video, Tagging, Sound Edit (the Library's Edit window), Timelines (scroll and zoom of every RAV timeline) and Mouse. The search field at the top filters the rows by name.
+- **The table**: one line per shortcut. *Action*, *Where* it works, the *Keys* that run it now, what it *Follows* (REAPER or Own), its *Source* (the REAPER action it follows, or "RAV only") and the chain button.
+- **The detail** on the right, for the selected row: its keys, what it follows, its default, and anything in its way (a key another row or window takes). Its buttons: **Record key…**, **Link…** and **Default**.
+
+Double-click a row to record a new key, or for a Timelines row a key or a turn of the wheel (Ctrl, Shift and Alt can be held with it; Esc cancels). Right-click a row for its menu: **Record key…**, **Link to REAPER action…**, **Back to default**. Mouse gestures are listed for reference (greyed, fixed).
+
+### REAPER or Own
+
+Every row is either:
+
+- **REAPER**: it runs on the keys you give its action in REAPER's Actions list, read live. The viewer rows have their own RAV actions ("RAV: Viewer key: …"); REAPER runs them too outside the viewer. The Sound Edit rows follow REAPER's own item actions (split, trims, heal, solo / mute, next / previous item, repeat): your REAPER keys for them do the same thing in the Sound Edit window while it has the focus. Split, Heal and Loop use **B**, **H** and **R** while REAPER gives their action no key. The Timelines rows follow your REAPER bindings of its view actions (scroll and zoom, wheel and keys).
+- **Own**: RAV's own key (or wheel, for the Timelines rows), or a REAPER action you link the row to.
+
+The footer says when `reaper-kb.ini` was last read; RAV reads it again whenever REAPER saves it.
+
+### Linking a row to any REAPER action
+
+Click a row's chain (in Own) to link it to any action of REAPER's Main section: RAV then runs the row on that action's keys (and wheels, for a Timelines row), followed live. Find the action by:
+
+- its **name** (words, any order: "split edit"),
+- its **command ID** ("40757", "_SWS_ABOUT"; REAPER's Actions list: right-click > Copy selected action command ID),
+- a **shortcut** it has, typed ("Ctrl+S", "Shift+Wheel") or pressed: click the keyboard button next to the field, then press the keys or turn the wheel.
+
+Each action in the list shows its keys. Click one to check it (its name, and the keys RAV will follow), double-click or **Link** to link it. **Unlink** (or **Default**) gives the row back its own key. A key another RAV row holds stays that row's.
+
+### Find by key
+
+**Find by key** (top bar): click it, then press a key combination or turn the wheel with its modifiers. The window lists every action of REAPER's Main section bound to it (REAPER's defaults included) and every RAV row that runs on it, plus the keys the Sound Edit window keeps for itself (Space, Shift+Space, Esc, E) and, for the plain wheel, the 3D view's fixed Zoom. **Link to…** on a REAPER result links a row to that action at once (the row becomes Own, linked); the footer's **Undo** puts the row back. **Show** selects a RAV row. Esc clears the result.
+
+### Default keys
 
 | Key | Action | Where |
 |-----|--------|-------|
 | **V** | Next view: RAV / Tagging / Video | Anywhere |
 | **P** | Show / hide the Video panel (from RAV view or Tagging view it also switches to Video view) | Anywhere |
+| **F11** | Full screen on / off (**Esc** also leaves full screen) | Anywhere |
+| **L** | Clip list: open / close | Anywhere |
 | **C** | Cut at playhead | Video view |
 | **Delete** | Delete current shot | Video view |
 | **Ctrl+C** | Copy shot camera | Video view |
 | **Ctrl+V** | Paste shot camera | Video view |
 | **E** | Add event at playhead | Tagging view |
 | **Delete** | Suppress / delete event | Tagging view |
-| **F11** | Full screen on / off (**Esc** also leaves full screen) | Anywhere |
-
-- **Double-click** a key to change it, then press the new key. Ctrl, Shift and Alt can be held with it. Esc cancels. A key already used by another RAV action is refused.
-- **Right-click** a key to restore its default.
-- Mouse gestures are listed for reference and cannot be changed.
-- **Esc** (or a click outside it, or the icon again) closes the popup.
+| your REAPER keys | Trims, split (**B**), heal (**H**), solo / mute the selected part, next / previous variation, Loop (**R**) | Sound Edit |
+| your REAPER bindings | Scroll and zoom (wheel, Alt+wheel, Ctrl+wheel, +, -, Up, Down by default) | Timelines |
 
 A key you bind is taken from REAPER while the viewer has the focus: bind Space, for example, and Space no longer starts or stops playback from the viewer. Hold Ctrl, Shift or Alt with it to keep REAPER's own key free. The key caps and tooltips in the viewer show your keys, custom ones in the accent colour. On AZERTY and other layouts with an AltGr key, Windows treats Ctrl+Alt+key as AltGr+key, so a Ctrl+Alt binding may type a character instead.
 

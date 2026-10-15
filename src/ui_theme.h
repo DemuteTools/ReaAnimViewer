@@ -663,6 +663,13 @@ void EndPanelPopup();
 // inside closes it. Call EndModalCard only when it returned true.
 bool BeginModalCard(const char* id, int window_flags = 0, float width = 0.0f);
 void EndModalCard();
+// 13-64: a large modal sheet over the whole viewer at `pos`, `size` (the Shortcuts window): kSurface, 1 px
+// stroke-strong edge, r10, the shadow, pad 0 (the content sets its own insets), the theme's item spacing
+// and frame padding inside; the rest of the viewer dimmed (black .5). Open it with ImGui::OpenPopup(id).
+// *backdrop_clicked (optional): a left click outside it this frame while nothing is open over it (a menu,
+// another modal). Call EndSheetModal only when it returned true.
+bool BeginSheetModal(const char* id, ImVec2 pos, ImVec2 size, bool* backdrop_clicked = nullptr);
+void EndSheetModal();
 // 13-14 (G-7b): the same card as a plain window (not modal, not focused when it appears) at `pos`
 // (pivot as SetNextWindowPos), `width` wide (0 = sized to its content), the theme's item spacing and
 // frame padding inside. Call EndFloatingCard whatever it returns.

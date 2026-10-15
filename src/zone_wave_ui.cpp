@@ -632,7 +632,7 @@ void DrawPlaced(const Frame& F, float y0, float y1)
             dl->AddRectFilled(ImVec2(xa + 0.5f, y0 + 1.0f), ImVec2(std::max(xa + 1.5f, xb - 0.5f), y1 - 1.0f),
                               Alpha(PartColOf(h, *F.d, part), lit ? 1.0f : 0.4f));
         }
-        if (SelHas(h.view->sel, z.ref)) dl->AddRect(ImVec2(xa + 1.0f, y0 + 1.0f), ImVec2(xb - 1.0f, y1 - 1.0f), ui::kWhite, 0.0f, 0, 1.5f);
+        if (SelHas(h.view->sel, z.ref)) dl->AddRect(ImVec2(xa + 1.0f, y0 + 1.0f), ImVec2(xb - 1.0f, y1 - 1.0f), ui::kWhite);
     }
     DrawOverlays(F, y0, y1, true);
 }
@@ -793,7 +793,7 @@ void DrawLane(const Frame& F, const Row& row)
             const std::string s = "jumps " + MsText(g.b - g.a);
             TextAt(dl, fm, (ha + hb) * 0.5f - TextW(fm, s) * 0.5f, y1 - 6.0f * dp, ui::kText, s);
         }
-        if (SelHas(v.sel, z.ref)) dl->AddRect(ImVec2(ha + 1.0f, y0 + 1.0f), ImVec2(hb - 1.0f, y1 - 1.0f), ui::kWhite, 0.0f, 0, 1.5f);
+        if (SelHas(v.sel, z.ref)) dl->AddRect(ImVec2(ha + 1.0f, y0 + 1.0f), ImVec2(hb - 1.0f, y1 - 1.0f), ui::kWhite);
     }
     // Zones: borders, fades, labels, hand marks, snap offsets.
     const bool gain_drag = v.drag.kind == ZoneDragKind::Gain;
@@ -806,7 +806,7 @@ void DrawLane(const Frame& F, const Row& row)
         const bool        sel = SelHas(v.sel, z.ref);
         const bool        hvz = v.hover_on && v.hover.z == z.ref && v.hover.kind == ZoneHitKind::Zone && v.hover.top && v.hover.lane == lane;
         dl->AddRect(ImVec2(std::round(xa) + 0.5f, y0 + 0.5f), ImVec2(std::round(xb) - 0.5f, y1 - 0.5f), sel ? ui::kWhite : Alpha(pc, hvz ? 1.0f : 0.65f),
-                    0.0f, 0, sel ? 2.0f : 1.0f);
+                    0.0f, 0, 1.0f);  // Antho 2026-10-15: a thin outline when selected
         if (v.hover_on && v.hover.kind == ZoneHitKind::Edge && v.hover.z == z.ref && v.hover.lane == lane) {
             const float ex = v.hover.side < 0 ? xa : xb;
             dl->AddRectFilled(ImVec2(ex - 1.5f * dp, y0), ImVec2(ex + 1.5f * dp, y1), ui::kWhite);
@@ -1463,7 +1463,6 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
     if (thr_hot) {
         v.hover_on = false;  // the line, not the zone under it
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-        if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) ui::ShowTip("Detection threshold: drag it (the variations are detected again)");
     }
     if (thr_hot && ImGui::IsMouseClicked(ImGuiMouseButton_Left) && !io.KeyCtrl && !io.KeyShift && !io.KeyAlt) {
         g_thr = ThrDrag{};
@@ -1605,9 +1604,6 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
     if (lane_view) {
         ImFont*                  f = ui::FontTiny();
         static const char* const kCaps[3] = {"TIME", "VARIATIONS", "PLACED"};
-        static const char* const kTips[3] = {"Click: the edit cursor. Drag: a time selection",
-                                             "One block per variation: click selects all its zones, double-click also puts the cursor at its start",
-                                             "What is placed: the zones of every lane"};
         for (int i = 0; i < 3; ++i) {
             const Row& r = rows[static_cast<size_t>(i)];
             dl->AddRectFilled(ImVec2(p0.x, r.y0), ImVec2(p0.x + head_w - 1.0f, r.y1), ui::kSurface);
@@ -1616,8 +1612,6 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
             if (ui::EllipsisTextTip(dl, ImVec2(p0.x + 9.0f * dp, std::floor((r.y0 + r.y1 - f->FontSize) * 0.5f)), p0.x + head_w - 6.0f * dp,
                                     ui::kFaint, kCaps[i]))
                 (void)0;
-            if (ImGui::IsMouseHoveringRect(ImVec2(p0.x, r.y0), ImVec2(p0.x + head_w, r.y1)) && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows))
-                ui::ShowTip(kTips[i]);
         }
     }
     dl->AddRect(ImVec2(cx0, p0.y), ImVec2(cx0 + cw, bottom), ui::kStroke);
@@ -1632,8 +1626,8 @@ ZoneWaveEvents DrawZoneWave(const char* id, const ZoneWaveHost& h, float height)
         case ZoneCursor::Grab: ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeAll); break;
         case ZoneCursor::Arrow: break;
         }
-        const std::string tip = ZoneTip(Shown(h), v.hover, h.names, ZoneClickPlays());
-        if (!tip.empty() && ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal)) ui::ShowTip(tip.c_str());
+        // Antho 2026-10-15: no tooltip over the zones and the strips (too much); ZoneTip waits for a tool-wide tips
+        // system (deferred-work.md).
     } else if (IsHandle(v.drag.kind) || v.drag.kind == ZoneDragKind::TselEdge) {
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
     } else if (v.drag.kind == ZoneDragKind::Gain) {

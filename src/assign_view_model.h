@@ -69,7 +69,7 @@ struct GroupState {
     bool        deleted = false;
     std::string value_uid;      // the effective value ("" = none)
     std::string value_name;
-    std::string from;           // "this rule", "item", "Project \xC2\xB7 Feet", "default"
+    std::string from;           // "this rule", "item", "Project \xC2\xB7 Legs", "default"
     bool        own = false;    // set at the target's own layer (the rule's, or the item's for the Item row)
     std::string own_uid;        // the own layer's value ("" = inherit)
     std::string inherit_name;   // what "inherit" gives: the value below the own layer
@@ -152,7 +152,7 @@ std::vector<PlaysLine> PlaysLines(const std::vector<const Target*>& targets);
 // nothing." ("" when it has none or is blocked).
 std::string            GapsText(const Target& t);
 std::string            PlaysText(const Target& t);  // "FS Hero \xE2\x80\xBA Run \xE2\x80\xBA Boots", "No sound", "X \xE2\x80\xBA blocked"
-// "Run: item \xC2\xB7 Boots: Hero \xC2\xB7 Feet" -- the source of each value a single target plays.
+// "Run: item \xC2\xB7 Boots: Hero \xC2\xB7 Legs" -- the source of each value a single target plays.
 std::string WhyText(const Target& t);
 // "Run-Boots-Dirt": the Switch path joined by '-' (the Flat track layout's name).
 std::string TrackNameOf(const Target& t);
@@ -161,7 +161,7 @@ int EventOverrideCount(const ItemSounds& rec, const std::vector<std::string>& ri
 
 // One level of "Where the library comes from", general first.
 struct LadderRow {
-    std::string label;     // "Project \xC2\xB7 Feet", "this rule"
+    std::string label;     // "Project \xC2\xB7 Legs", "this rule"
     bool        set = false;
     bool        none = false;
     std::string library;   // uid when set and not none
@@ -221,7 +221,7 @@ std::vector<CharEntry> BuildCharacters(const SoundStore& store, const std::vecto
 std::string RigSig(const std::string& skeleton);
 // The keys of `list` that set a library or a Switch value (what the character changes from the project).
 std::vector<std::string> OverrideKeys(const std::vector<SoundAssign>& list);
-// Every body part key then its type keys ("feet", "feet.step"... "feet.rules", "hands"...), in table order.
+// Every body part key then its type keys ("legs", "legs.step"... "legs.rules", "arms"...), in table order.
 std::vector<std::string> AllKeys();
 
 // A Project (`ch` null) or Character key read at its own level: the library and Switch values through the
@@ -239,7 +239,7 @@ struct KitPart {
 std::vector<KitPart> KitParts(const SoundStore& store, const SoundLibrary& lib, const std::vector<CharEntry>& chars);
 // "project default", "used by Hero, Creature", "not used".
 std::string KitStatusText(const KitPart& p);
-// The kit row's status line: "Feet \xC2\xB7 project default \xC2\xB7 Hands \xC2\xB7 not used".
+// The kit row's status line: "Legs \xC2\xB7 project default \xC2\xB7 Arms \xC2\xB7 not used".
 std::vector<Seg> KitRowSegs(const std::vector<KitPart>& parts);
 // "heels, toes, knees, legs" and "Step, Lift-off, Slide, Pivot and the bone rules on foot roles".
 std::string KitPartRoles(const std::string& part);
@@ -270,15 +270,15 @@ WhoCell WhoCellFor(const SoundStore& store, const SoundCharacter* ch, const std:
 // 13-43: where a library plays now, read off the "Who plays what" grid (rows: each BodyParts() part then its
 // types, as AllKeys; columns: the Project then `chars`): every cell resolving to `library_uid`, inherited ones
 // included. In the columns where a part's own row and all its type rows play it, it reads as the part alone
-// ("Feet"); a type is listed for its other columns. Consecutive keys with the same columns form one group (the
+// ("Legs"); a type is listed for its other columns. Consecutive keys with the same columns form one group (the
 // table order is kept, so a column list may come back later).
 struct PlayedByGroup {
-    std::vector<std::string> keys;     // "feet" / "feet.step"
+    std::vector<std::string> keys;     // "legs" / "legs.step"
     std::vector<std::string> columns;  // "Project", character names
 };
 std::vector<PlayedByGroup> LibraryPlayedBy(const SoundStore& store, const std::vector<CharEntry>& chars,
                                            const std::string& library_uid);
-// "Feet \xC2\xB7 Step, Feet \xC2\xB7 Scuff (Project, Hero); Hands (Hero)"; "" when it plays nowhere.
+// "Legs \xC2\xB7 Step, Legs \xC2\xB7 Scuff (Project, Hero); Arms (Hero)"; "" when it plays nowhere.
 std::string PlayedByText(const std::vector<PlayedByGroup>& groups);
 
 // ---- Last change line -----------------------------------------------------------------------------------
@@ -301,7 +301,7 @@ struct Selection {
 };
 // "item" and "rule" leaves are two kinds and are never mixed in one selection; 13-15c: nor are a kit row
 // ("kit:<uid>") or a character row ("char:...") with anything (each is picked alone). A Project / Character
-// key ("feet", "feet.step") is a Rule.
+// key ("legs", "legs.step") is a Rule.
 enum class RowKind { Item, Rule, Kit, Char };
 RowKind KindOf(const std::string& key);
 // A click on a leaf / the Item row. `visible` = the keys of the rows shown, in order. Plain: only this one.

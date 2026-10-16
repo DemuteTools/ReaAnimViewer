@@ -44,32 +44,36 @@ PartType RulesType()
 std::vector<BodyPart> BuildParts()
 {
     std::vector<BodyPart> v;
-    BodyPart              feet;
-    feet.id = AutoCategoryRow(AutoCategory::Feet).sound_part;
-    feet.label = "Feet";
-    feet.group = RoleGroup::Legs;
-    feet.has_category = true;
-    feet.category = AutoCategory::Feet;
-    for (AutoType t : AutoTypesOf(AutoCategory::Feet)) feet.types.push_back(MakeAutoType(t));
-    feet.types.push_back(RulesType());
-    feet.roles = "heels, toes, knees, legs";
-    feet.role_word = "foot";
-    v.push_back(feet);
-    BodyPart hands;
-    hands.id = AutoCategoryRow(AutoCategory::Hands).sound_part;
-    hands.label = "Hands";
-    hands.group = RoleGroup::Arms;
-    hands.has_category = true;
-    hands.category = AutoCategory::Hands;
-    for (AutoType t : AutoTypesOf(AutoCategory::Hands)) hands.types.push_back(MakeAutoType(t));
-    hands.types.push_back(RulesType());
-    hands.roles = "hands, elbows, shoulders";
-    hands.role_word = "hand";
-    v.push_back(hands);
+    BodyPart              legs;
+    legs.id = AutoCategoryRow(AutoCategory::Legs).sound_part;
+    legs.label = AutoCategoryRow(AutoCategory::Legs).label;
+    legs.group = RoleGroup::Legs;
+    legs.has_category = true;
+    legs.category = AutoCategory::Legs;
+    for (AutoType t : AutoTypesOf(AutoCategory::Legs)) legs.types.push_back(MakeAutoType(t));
+    legs.types.push_back(RulesType());
+    legs.roles = "heels, toes, knees, legs";
+    legs.role_word = "foot";
+    v.push_back(legs);
+    BodyPart arms;
+    arms.id = AutoCategoryRow(AutoCategory::Arms).sound_part;
+    arms.label = AutoCategoryRow(AutoCategory::Arms).label;
+    arms.group = RoleGroup::Arms;
+    arms.has_category = true;
+    arms.category = AutoCategory::Arms;
+    for (AutoType t : AutoTypesOf(AutoCategory::Arms)) arms.types.push_back(MakeAutoType(t));
+    arms.types.push_back(RulesType());
+    arms.roles = "hands, elbows, shoulders";
+    arms.role_word = "hand";
+    v.push_back(arms);
+    // Story 10-9-1: Body (trunk, head; was "Hips & spine") is a category with no auto type yet.
     BodyPart body;
-    body.id = "body";
-    body.label = "Hips & spine";
+    body.id = AutoCategoryRow(AutoCategory::Body).sound_part;
+    body.label = AutoCategoryRow(AutoCategory::Body).label;
     body.group = RoleGroup::Body;
+    body.has_category = true;
+    body.category = AutoCategory::Body;
+    for (AutoType t : AutoTypesOf(AutoCategory::Body)) body.types.push_back(MakeAutoType(t));
     body.types.push_back(RulesType());
     body.roles = "hips, spine, chest, neck, head";
     body.role_word = "hips and spine";
@@ -562,7 +566,7 @@ bool PartKeySet(const std::vector<SoundAssign>& list, const std::string& part)
 bool AdoptKitIn(std::vector<SoundAssign>& list, const std::string& part, const std::string& library_uid, bool replace)
 {
     if (part.empty() || library_uid.empty()) return false;
-    // Review 13-15c (the mockup's adopt): only the part's own key; its types ("feet.slide") are left as set.
+    // Review 13-15c (the mockup's adopt): only the part's own key; its types ("legs.slide") are left as set.
     if (PartKeySet(list, part) && !replace) return false;
     return SetAssignLibraryIn(list, {part}, LibState::Library, library_uid, true);
 }

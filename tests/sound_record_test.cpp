@@ -784,6 +784,74 @@ int main()
         CHECK(SerializePlacedTag(tag).find("pt=") == std::string::npos);
     }
 
+    // Story 10-9-1: the part words feet / hands are read as legs / arms (keys and kits), once.
+    {
+        // Old project: keys, alone or before a '.', at Project and Character level; saved new.
+        SoundStore s;
+        CHECK(ParseSoundStore("RAVSOUNDS 1\nassign key=feet.step lib=x\nassign key=hands.grab lib=none\n"
+                              "character uid=c name=Hero skel=0123456789abcdef\ncassign key=hands\n"
+                              "cassign key=feet lib=y\n",
+                              &s));
+        CHECK(s.project.size() == 2 && s.project[0].key == "legs.step" && s.project[0].library == "x" &&
+              s.project[1].key == "arms.grab");
+        CHECK(s.characters.size() == 1 && s.characters[0].assigns.size() == 2 && s.characters[0].assigns[0].key == "arms" &&
+              s.characters[0].assigns[1].key == "legs" && s.characters[0].assigns[1].library == "y");
+        const std::string text = SerializeSoundStore(s);
+        CHECK(text.find("assign key=legs.step lib=x\n") != std::string::npos &&
+              text.find("cassign key=arms\n") != std::string::npos && text.find("feet") == std::string::npos &&
+              text.find("hands") == std::string::npos);
+        SoundStore again;
+        CHECK(ParseSoundStore(text, &again) && SerializeSoundStore(again) == text);
+        // Old library kit; look-alikes (group uid feet, library uid hands, key feetx) untouched.
+        SoundStore k;
+        CHECK(ParseSoundStore("RAVSOUNDS 1\nassign key=feetx lib=hands\nassign key=handsome\ngroup uid=feet name=feet\n"
+                              "value uid=hands name=hands\nlibrary uid=hands name=Hand root=n\nkit parts=feet,body\n"
+                              "node uid=n type=random group=feet\n",
+                              &k));
+        CHECK(k.project.size() == 2 && k.project[0].key == "feetx" && k.project[0].library == "hands" &&
+              k.project[1].key == "handsome");
+        CHECK(k.groups.size() == 1 && k.groups[0].uid == "feet" && k.groups[0].values[0].uid == "hands");
+        CHECK(k.libraries.size() == 1 && k.libraries[0].uid == "hands" &&
+              (k.libraries[0].kit == std::vector<std::string>{"legs", "body"}));
+        SoundStore k2;
+        CHECK(ParseSoundStore(SerializeSoundStore(k), &k2) && SerializeSoundStore(k2) == SerializeSoundStore(k));
+        // Legacy auto sounds (both sides agree): migrated, then renamed.
+        SoundStore m;
+        CHECK(ParseSoundStore("RAVSOUNDS 1\nauto key=step:L lib=LL\nauto key=step:R lib=LL\n", &m));
+        CHECK(m.project.size() == 1 && m.project[0].key == "legs.step" && m.project[0].library == "LL");
+        // ...unless the project already has the new key: it wins.
+        SoundStore m2;
+        CHECK(ParseSoundStore("RAVSOUNDS 1\nauto key=step:L lib=LL\nauto key=step:R lib=LL\nassign key=legs.step lib=NEW\n", &m2));
+        CHECK(m2.project.size() == 1 && m2.project[0].key == "legs.step" && m2.project[0].library == "NEW");
+        // Both words in one list: the one read as legs wins, wherever it is; the old one is dropped.
+        SoundStore b;
+        CHECK(ParseSoundStore("RAVSOUNDS 1\nassign key=feet lib=OLD\nassign key=legs lib=NEW\n"
+                              "character uid=c name=Hero skel=0123456789abcdef\ncassign key=arms lib=NEW\ncassign key=hands lib=OLD\n",
+                              &b));
+        CHECK(b.project.size() == 1 && b.project[0].key == "legs" && b.project[0].library == "NEW");
+        CHECK(b.characters[0].assigns.size() == 1 && b.characters[0].assigns[0].key == "arms" &&
+              b.characters[0].assigns[0].library == "NEW");
+        // Two old entries of one key: the first one stays.
+        SoundStore d;
+        CHECK(ParseSoundStore("RAVSOUNDS 1\nassign key=feet lib=A\nassign key=feet lib=B\n", &d));
+        CHECK(d.project.size() == 1 && d.project[0].key == "legs" && d.project[0].library == "A");
+        // Converted twice / a new file: unchanged; a kit holds each part once, in order.
+        SoundStore n;
+        CHECK(ParseSoundStore("RAVSOUNDS 1\nassign key=legs.step lib=x\nlibrary uid=l name=L root=n\n"
+                              "kit parts=legs,legs,arms,hands,feet\nnode uid=n type=random\n",
+                              &n));
+        CHECK(n.project.size() == 1 && n.project[0].key == "legs.step");
+        CHECK((n.libraries[0].kit == std::vector<std::string>{"legs", "arms"}));
+        const std::string nt = SerializeSoundStore(n);
+        CHECK(nt.find("kit parts=legs,arms\n") != std::string::npos);
+        // A malformed dotted kit part is written in the new words too.
+        SoundStore dk;
+        CHECK(ParseSoundStore("RAVSOUNDS 1\nlibrary uid=l name=L root=n\nkit parts=feet.step\nnode uid=n type=random\n", &dk));
+        CHECK((dk.libraries[0].kit == std::vector<std::string>{"legs.step"}));
+        SoundStore n2;
+        CHECK(ParseSoundStore(nt, &n2) && SerializeSoundStore(n2) == nt);
+    }
+
     if (g_fails) {
         std::printf("sound_record_test: %d failure(s)\n", g_fails);
         return 1;

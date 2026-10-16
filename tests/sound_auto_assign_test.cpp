@@ -87,7 +87,7 @@ static void TestRulesAndShown()
     CHECK(!FindRuleSounds(item, "a2")->none);
 
     SoundStore store;
-    SetAssignLibraryIn(store.project, {"feet.step", "feet.lift", "hands.grab"}, LibState::Library, "STORE");
+    SetAssignLibraryIn(store.project, {"legs.step", "legs.lift", "arms.grab"}, LibState::Library, "STORE");
     // On the item: its rule (the same as the Sound card).
     AutoSoundShown sh = AutoSoundFor(store, item, nullptr, blocks, "step:L");
     CHECK(sh.on_item && sh.own_state == LibState::Library && sh.own_library == "LIB1" && sh.values.size() == 1);
@@ -95,7 +95,7 @@ static void TestRulesAndShown()
     // A block of the key with no rule: it inherits the Project's.
     sh = AutoSoundFor(store, item, nullptr, blocks, "lift:L");
     CHECK(sh.on_item && sh.own_state == LibState::Inherit && sh.effective.library == "STORE");
-    CHECK(sh.effective.from == "Project \xC2\xB7 Feet \xC2\xB7 Lift-off");
+    CHECK(sh.effective.from == "Project \xC2\xB7 Legs \xC2\xB7 Lift-off");
     // Not on the item: what a new block would get.
     sh = AutoSoundFor(store, item, nullptr, blocks, "grab:L");
     CHECK(!sh.on_item && sh.effective.library == "STORE");

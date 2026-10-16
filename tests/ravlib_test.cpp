@@ -248,16 +248,24 @@ static void TestImportMerge()
 static void TestKitTravels()
 {
     SoundStore rich = RichStore();
-    rich.libraries[0].kit = {"feet", "hands"};
+    rich.libraries[0].kit = {"legs", "arms"};
     rich.libraries[0].kit_offered = true;
     const SoundStore one = RavlibOf(rich, "l000000000000001", nullptr);
     CHECK(one.libraries[0].kit.size() == 2);
     const std::string text = SerializeRavlib(one);
-    CHECK(text.find("\nkit parts=feet,hands\n") != std::string::npos);  // "offered" is the project's, not exported
+    CHECK(text.find("\nkit parts=legs,arms\n") != std::string::npos);  // "offered" is the project's, not exported
     SoundStore back;
     CHECK(ParseRavlib(text, &back));
-    CHECK((back.libraries[0].kit == std::vector<std::string>{"feet", "hands"}) && !back.libraries[0].kit_offered);
+    CHECK((back.libraries[0].kit == std::vector<std::string>{"legs", "arms"}) && !back.libraries[0].kit_offered);
     CHECK(SerializeRavlib(back) == text);
+    // Story 10-9-1: an old .ravlib's kit (feet / hands) reads in the new words.
+    {
+        std::string old = text;
+        old.replace(old.find("kit parts=legs,arms"), 19, "kit parts=feet,body");
+        SoundStore o;
+        CHECK(ParseRavlib(old, &o) && (o.libraries[0].kit == std::vector<std::string>{"legs", "body"}));
+        CHECK(SerializeRavlib(o).find("\nkit parts=legs,body\n") != std::string::npos);
+    }
     SoundStore proj;
     std::string uid, why;
     CHECK(AddRavlibLibrary(proj, back, "Steps.ravlib", &uid, &why));

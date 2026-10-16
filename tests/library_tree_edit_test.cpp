@@ -298,12 +298,12 @@ static void TestLibrariesAndMisc()
     {
         SoundStore d = s;
         SoundAssign pa;
-        pa.key = "feet";
+        pa.key = "legs";
         pa.state = LibState::Library;
         pa.library = b;
         pa.kit = true;
         SoundAssign other = pa;
-        other.key = "hands";
+        other.key = "arms";
         other.library = "elsewhere";
         d.project = {pa, other};
         SoundCharacter c;

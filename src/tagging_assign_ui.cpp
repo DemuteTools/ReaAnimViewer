@@ -25,6 +25,7 @@
 #include <imgui_internal.h>  // ClosePopupToLevel (Esc closes an open menu)
 
 #include "assign_view_model.h"
+#include "auto_types.h"  // AutoCategoryRow: the default selection
 #include "float_ui_window.h"
 #include "item_rules.h"
 #include "library_icons.h"
@@ -124,7 +125,7 @@ struct KeyData {
     std::vector<av::CharEntry>        chars;
     int                               cur = -1;  // the current character (its index), -1 when the project has none
     const SoundCharacter*             scope_ch = nullptr;  // Character scope: the current character's record, else null
-    std::map<std::string, av::Target> targets;   // by key ("feet", "feet.step"); empty in the Overview
+    std::map<std::string, av::Target> targets;   // by key ("legs", "legs.step"); empty in the Overview
     std::set<std::string>             own;       // the keys this scope sets (a library or a Switch value)
 };
 
@@ -487,7 +488,7 @@ struct Row {
     int                   count = -1;
     std::vector<std::string> section_ids;  // the fold ids of a section's parent rows (Expand all)
     // 13-15c: the Project / Character scopes' rows.
-    std::string                key;      // the selection key ("kit:<uid>", "char:...", "feet", "feet.step")
+    std::string                key;      // the selection key ("kit:<uid>", "char:...", "legs", "legs.step")
     const SoundLibrary*        lib = nullptr;
     const av::CharEntry*       ce = nullptr;
     const BodyPart*            bp = nullptr;
@@ -1092,7 +1093,7 @@ std::string LibraryLabel(const SoundStore& store, const std::string& arg)
     return l ? l->name : std::string("(gone)");
 }
 
-// "inherit . FS Hero (Project . Feet)" for the targets (their inherited assignment); "Not set (nothing placed)".
+// "inherit . FS Hero (Project . Legs)" for the targets (their inherited assignment); "Not set (nothing placed)".
 std::string InheritLabel(const SoundStore& store, const std::vector<const av::Target*>& sel)
 {
     const EffectiveAssign& a = sel[0]->inherited;
@@ -1454,12 +1455,12 @@ void DrawKitDetails(const Frame& f)
         ui::EndSection(s);
         ImGui::PopID();
     }
-    ui::ToneText("When a library is added to the project, RAV offers its kit once (\"FS Hero serves Feet: use it?\"). It never "
+    ui::ToneText("When a library is added to the project, RAV offers its kit once (\"FS Hero serves Legs: use it?\"). It never "
                  "replaces a body part already set.",
                  ui::kFaint, true);
 }
 
-// "Feet \xC2\xB7 Step" as a link that selects that key in the tree.
+// "Legs \xC2\xB7 Step" as a link that selects that key in the tree.
 void GoToKey(const std::string& key)
 {
     std::string part, type;
@@ -1766,7 +1767,7 @@ void DrawDetails(const Frame& f)
 // ---- Overview -----------------------------------------------------------------------------------------------
 
 // Moves to a scope (13-15c), keeping each scope's selection: the Project and Character scopes come back as they
-// were (the first time on "Feet"), the Item scope starts empty.
+// were (the first time on "Legs"), the Item scope starts empty.
 void SwitchScope(int sc)
 {
     if (sc == g.scope) return;
@@ -1781,9 +1782,10 @@ void SwitchScope(int sc)
     g.sel = g.sel_by[sc];
     if (!g.key_init[sc]) {
         g.key_init[sc] = true;
-        g.sel.keys.assign(1, "feet");
-        g.sel.anchor = g.sel.cursor = "feet";
-        g.closed["p:feet"] = false;
+        const std::string legs = AutoCategoryRow(AutoCategory::Legs).sound_part;
+        g.sel.keys.assign(1, legs);
+        g.sel.anchor = g.sel.cursor = legs;
+        g.closed["p:" + legs] = false;
     }
 }
 

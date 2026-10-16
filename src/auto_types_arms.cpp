@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //
-// Story 10-9-0: the Hands category's types (grab, release, hand pivot) as the rows of
+// Story 10-9-0: the Arms category's types (grab, release, hand pivot) as the rows of
 // auto_types.cpp read them: their event sources, matches, required parts, lanes and roles.
 
 #include "auto_types.h"

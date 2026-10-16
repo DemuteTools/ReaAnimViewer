@@ -3770,7 +3770,7 @@ double ClampAutoValue(bool sens, double v)
 // marker) names one block.
 std::string AutoValueUndo(AutoType t, bool sens, const std::string& part = std::string())
 {
-    // Story 10-8e: the hand's Pivot scuff is named with its category ("Hands Pivot scuff": the
+    // Story 10-8e: the hand's Pivot scuff is named with its category ("Arms Pivot scuff": the
     // type's row).
     std::string label = AutoTypeRow(t).undo_label;
     if (!part.empty()) label += ", " + part;
@@ -3907,9 +3907,15 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
         bool    any_shown = false, any_hidden = false;
         ImGuiID cat_open_id[kAutoCategoryCount];
         bool    cat_open[kAutoCategoryCount] = {};
+        // Story 10-9-1 (Antho): a category with no type yet (Body) is not offered by +.
+        bool    cat_offered[kAutoCategoryCount];
         for (int c = 0; c < kAutoCategoryCount; ++c) {
             cat_shown[c] = g_auto_added[c] || AutoCategoryInBlocks(rules.blocks, static_cast<AutoCategory>(c));
-            (cat_shown[c] ? any_shown : any_hidden) = true;
+            cat_offered[c] = !AutoTypesOf(static_cast<AutoCategory>(c)).empty();
+            if (cat_shown[c])
+                any_shown = true;
+            else if (cat_offered[c])
+                any_hidden = true;
             ImGui::PushID(c);
             cat_open_id[c] = ImGui::GetID("##autocatopen");
             ImGui::PopID();
@@ -3932,7 +3938,7 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
             ui::ItemTip("Add a category of event types.");
             if (ui::BeginMenuPopup("##autocats")) {
                 for (int c = 0; c < kAutoCategoryCount; ++c)
-                    if (!cat_shown[c] && ImGui::Selectable(AutoCategoryLabel(static_cast<AutoCategory>(c)))) {
+                    if (!cat_shown[c] && cat_offered[c] && ImGui::Selectable(AutoCategoryLabel(static_cast<AutoCategory>(c)))) {
                         g_auto_added[c] = true;
                         storage->SetBool(cat_open_id[c], true);
                     }

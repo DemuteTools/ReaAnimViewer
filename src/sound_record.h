@@ -28,6 +28,9 @@
 //   library uid=<id> name=<s> root=<id> [color=<hex>] [user=1] [ravlib=<s>]
 //   kit parts=<id>,<id> [offered=1]                  -- 13-15a: the body parts the library suggests itself for
 //                                                       (right after its library line; travels in the .ravlib)
+//   Body part words (<part> of the keys, kit parts): legs, arms, body, other. Story 10-9-1: the
+//   old feet / hands are read as legs / arms (keys and kits, project chunk and .ravlib; the new
+//   key wins when both are there) and never written.
 //   node uid=<id> type=sound|random|blend|switch [parent=<id>] [name=<s>] [vol=<dB>]
 //        [offset_ms=<ms>] [avoid=<n>] [group=<id>] [default=<id>] [preview=<id>] [lands=<s>]
 //        [roles=<k>,<k>] [koff=1]                    -- 13-31: a Blend layer's role keys, keep offset on separate events

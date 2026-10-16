@@ -191,8 +191,8 @@ if(WIN32)
             src/motion_physics.cpp
             src/auto_detect.cpp
             src/auto_types.cpp  # 10-9-0
-            src/auto_types_feet.cpp
-            src/auto_types_hands.cpp
+            src/auto_types_legs.cpp
+            src/auto_types_arms.cpp
             src/detection_measure.cpp
             src/rule_record.cpp
             src/preset_store.cpp

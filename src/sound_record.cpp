@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <optional>
 #include <string>
@@ -859,8 +860,9 @@ bool HasKitLine(const SoundLibrary& l)
     return !l.kit.empty() || l.kit_offered || !l.kit_kept.empty();
 }
 
-// 13-15a: the old per-marker-type sounds become Project assignments (feet.step...). The same words
-// as sound_assign's table (a test keeps them in step); here so this file links alone.
+// 13-15a: the old per-marker-type sounds become Project assignments (feet.step...). kMap is frozen
+// legacy, in the old part words (feet / hands): RenameOldParts converts its output to legs / arms.
+// Never edit it.
 const char* MigratedTarget(const std::string& word)
 {
     static const char* const kMap[][2] = {
@@ -939,6 +941,61 @@ void MigrateAutoSounds(SoundStore& s)
         s.kept_lines.insert(s.kept_lines.end(), a.kept_lines.begin(), a.kept_lines.end());
     }
     s.auto_sounds.clear();
+}
+
+// Story 10-9-1: the body part words feet / hands became legs / arms. The old part word of `key`
+// (alone or before a '.') to the new one; false when `key` has no old part word. The only place
+// that knows the old words (with MigratedTarget's frozen map, whose output this converts).
+bool RenamedPart(const std::string& key, std::string* out)
+{
+    static const char* const kRenamed[][2] = {{"feet", "legs"}, {"hands", "arms"}};
+    for (const auto& r : kRenamed) {
+        const size_t n = std::strlen(r[0]);
+        if (key.compare(0, n, r[0]) == 0 && (key.size() == n || key[n] == '.')) {
+            *out = r[1] + key.substr(n);
+            return true;
+        }
+    }
+    return false;
+}
+
+// One list of assignments: an old key becomes the new one, unless the list already holds the new
+// one (read as such, or converted earlier in the list): then the old entry is dropped.
+void RenameAssignParts(std::vector<SoundAssign>& v)
+{
+    std::vector<std::string> kept_keys;
+    for (const SoundAssign& a : v) {
+        std::string unused;
+        if (!RenamedPart(a.key, &unused)) kept_keys.push_back(a.key);
+    }
+    std::vector<SoundAssign> out;
+    for (SoundAssign& a : v) {
+        std::string nk;
+        if (RenamedPart(a.key, &nk)) {
+            if (std::find(kept_keys.begin(), kept_keys.end(), nk) != kept_keys.end()) continue;
+            kept_keys.push_back(nk);
+            a.key = nk;
+        }
+        out.push_back(std::move(a));
+    }
+    v = std::move(out);
+}
+
+// Story 10-9-1: every part word of a store read (project chunk or .ravlib) in the new words:
+// assign / cassign keys and kit parts. Idempotent; kits keep each part once, in order.
+void RenameOldParts(SoundStore& s)
+{
+    RenameAssignParts(s.project);
+    for (SoundCharacter& c : s.characters) RenameAssignParts(c.assigns);
+    for (SoundLibrary& l : s.libraries) {
+        std::vector<std::string> kit;
+        for (const std::string& p : l.kit) {
+            std::string np = p;
+            RenamedPart(p, &np);
+            if (std::find(kit.begin(), kit.end(), np) == kit.end()) kit.push_back(np);
+        }
+        l.kit = std::move(kit);
+    }
 }
 
 Fields RuleFields(const RuleSounds& r)
@@ -1259,6 +1316,7 @@ bool ParseSoundStore(const std::string& text, SoundStore* out)
         SoundStore s;
         if (!ParseStoreCore(text, s)) return false;
         MigrateAutoSounds(s);
+        RenameOldParts(s);  // after the migration: its targets are in the old words
         *out = std::move(s);
         return true;
     } catch (...) {

@@ -4,7 +4,7 @@
 // (AutoType) and block kind (AutoKind) of auto_detect.h has one descriptor row here, in enum
 // order; the code that used to switch on them reads the rows. A type's own logic (the physics
 // events it takes, its lanes, its required parts) is reached through the function pointers of its
-// rows, in one file per category (auto_types_feet.cpp, auto_types_hands.cpp). How to add a type:
+// rows, in one file per category (auto_types_legs.cpp, auto_types_arms.cpp). How to add a type:
 // see the note at the top of auto_types.cpp.
 //
 // The modes of the existing types (steps separate, slide / pivot parts, hand pivot any) stay as
@@ -28,8 +28,8 @@ namespace rav {
 
 struct AutoCategoryInfo {
     AutoCategory category;
-    const char*  label;       // "Feet" (the section's fold row)
-    const char*  sound_part;  // "feet" (Epic 13: the body part its sounds are assigned under)
+    const char*  label;       // "Legs" (the section's fold row)
+    const char*  sound_part;  // "legs" (Epic 13: the body part its sounds are assigned under)
 };
 
 // One constant a type's sensitivity moves (AutoPhysicsParams): x f (more sensitive = more
@@ -48,7 +48,7 @@ using AutoTypePartsFn = void (*)(bool separate, const std::vector<int>& role_to_
 struct AutoTypeInfo {
     AutoType        type;
     const char*     label;       // the section's checkbox ("Slide scuff")
-    const char*     undo_label;  // in undo names ("Hands Pivot scuff")
+    const char*     undo_label;  // in undo names ("Arms Pivot scuff")
     AutoCategory    category;
     const char*     hint;        // the checkbox's tooltip
     const char*     sound_word;  // Epic 13: the stable lower-case word ("step", "hand_pivot")

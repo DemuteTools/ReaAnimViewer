@@ -5,7 +5,7 @@
 // first:   Kit > Project > Character > Item (a rule or an auto marker type) > Event.
 // - "inherit" (nothing said at a level) is not "None" (place nothing, on purpose): a None stops
 //   the search; an inherit passes it on to the level below.
-// - Project and Character assign by body part and type ("feet", "feet.step"; sides L / R stay at
+// - Project and Character assign by body part and type ("legs", "legs.step"; sides L / R stay at
 //   Item level). A target with a type wins over the same part with none.
 // - A Character is a rig recognised by its skeleton signature (SkeletonKey, role_map_store.h); a
 //   character with a model is a split of the rig (one per model: the mesh's signature, so the
@@ -44,20 +44,20 @@ struct PartType {
 };
 
 struct BodyPart {
-    std::string           id;     // "feet", "hands", "body", "other"
-    std::string           label;  // "Feet"
+    std::string           id;     // "legs", "arms", "body", "other"
+    std::string           label;  // "Legs"
     RoleGroup             group = RoleGroup::Legs;      // the roles it holds
-    bool                  has_category = false;         // feet / hands: an auto marker category
-    AutoCategory          category = AutoCategory::Feet;
+    bool                  has_category = false;         // legs / arms / body: an auto marker category
+    AutoCategory          category = AutoCategory::Legs;
     std::vector<PartType> types;  // in order; "rules" last
     std::string           roles;      // its roles as a kit sheet lists them: "heels, toes, knees, legs"
     std::string           role_word;  // "foot": "the bone rules on foot roles"
 };
 
-// The table: feet, hands, body, other.
+// The table: legs, arms, body, other.
 const std::vector<BodyPart>& BodyParts();
 const BodyPart*              FindBodyPart(const std::string& id);
-// "Feet"; the id itself for an unknown part.
+// "Legs"; the id itself for an unknown part.
 std::string PartLabel(const std::string& part);
 // "Step", "Bone rules"; the word itself for an unknown type.
 std::string TypeLabel(const std::string& part, const std::string& type);
@@ -67,10 +67,10 @@ std::string TypeLabel(const std::string& part, const std::string& type);
 const char* AutoTypeWord(AutoType t);
 bool        AutoTypeFromWord(const std::string& w, AutoType* out);
 
-// "feet" / "feet.step" (type "" = the part alone). SplitAssignKey is its inverse.
+// "legs" / "legs.step" (type "" = the part alone). SplitAssignKey is its inverse.
 std::string AssignKey(const std::string& part, const std::string& type);
 void        SplitAssignKey(const std::string& key, std::string* part, std::string* type);
-// "Feet", "Feet \xC2\xB7 Step".
+// "Legs", "Legs \xC2\xB7 Step".
 std::string AssignKeyLabel(const std::string& key);
 
 // The part and type a block's sounds are assigned under. A bone rule: the part of the first
@@ -106,16 +106,16 @@ struct EffectiveAssign {
     AssignLevel level = AssignLevel::Unset;
     bool        type_specific = false; // Character / Project: found on "part.type" (else on "part")
     bool        kit = false;           // the assignment that gave the library was adopted from a kit
-    std::string from;                  // the library's source text: "this rule", "Hero \xC2\xB7 Feet \xC2\xB7 Step",
-                                       // "Project \xC2\xB7 Feet", "nothing set"
+    std::string from;                  // the library's source text: "this rule", "Hero \xC2\xB7 Legs \xC2\xB7 Step",
+                                       // "Project \xC2\xB7 Legs", "nothing set"
     ValueLayers layers;                // item (merged over the inherited ones) and rule; event left empty
     // The source text of each Switch Group that some layer sets: "event", "this rule" / "this type",
-    // "item", "<Character> \xC2\xB7 Feet [\xC2\xB7 Step]", "Project \xC2\xB7 Feet [\xC2\xB7 Step]". A group in
+    // "item", "<Character> \xC2\xB7 Legs [\xC2\xB7 Step]", "Project \xC2\xB7 Legs [\xC2\xB7 Step]". A group in
     // no layer reads "default" (ValueFrom).
     std::vector<std::pair<std::string, std::string>> value_from;
     std::string ValueFromText(const std::string& group_uid) const;
     // The same for the item layer alone (what a rule's value inherits from): each group the item
-    // layer holds, with where it comes from ("item", "Project \xC2\xB7 Feet"...).
+    // layer holds, with where it comes from ("item", "Project \xC2\xB7 Legs"...).
     std::vector<std::pair<std::string, std::string>> item_from;
 };
 
@@ -163,7 +163,7 @@ bool SetAssignValueIn(std::vector<SoundAssign>& list, const std::vector<std::str
                       const std::string& group_uid, const std::string& value_uid);
 // True when the part (its key alone or any "part.type") has a library state other than inherit.
 bool PartIsSet(const std::vector<SoundAssign>& list, const std::string& part);
-// True when the part's own key ("feet", not a "feet.step") has a library state other than inherit.
+// True when the part's own key ("legs", not a "legs.step") has a library state other than inherit.
 bool PartKeySet(const std::vector<SoundAssign>& list, const std::string& part);
 // Adopts a library's kit for `part`: its own key gets the library (kit flag); its types are left as
 // they are. Nothing happens when that key is already set, unless `replace`. True when the list changed.

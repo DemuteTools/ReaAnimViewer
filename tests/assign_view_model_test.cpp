@@ -124,8 +124,8 @@ static void TestTargets()
 static void TestState()
 {
     SoundStore st = MakeStore();
-    SetAssignLibraryIn(st.project, {"feet"}, LibState::Library, "hero");
-    SetAssignValueIn(st.project, {"feet"}, "feet", "feet_Boots");
+    SetAssignLibraryIn(st.project, {"legs"}, LibState::Library, "hero");
+    SetAssignValueIn(st.project, {"legs"}, "feet", "feet_Boots");
     ItemSounds rec;
     rec.item_values.push_back({"loco", "loco_Run", {}});
     const Block step = Auto(AutoKind::Step, 'L', "a0");
@@ -133,11 +133,11 @@ static void TestState()
     CHECK(t.lib && t.lib->uid == "hero" && !t.lib_empty && !t.lib_blocked && !t.OwnLib() && !t.Unset());
     CHECK(t.groups.size() == 2 && t.groups[0].group_uid == "loco" && t.groups[1].group_uid == "feet");
     CHECK(t.groups[0].value_name == "Run" && t.groups[0].from == "item" && !t.groups[0].own);
-    CHECK(t.groups[1].value_name == "Boots" && t.groups[1].from == std::string("Project \xC2\xB7 Feet"));
+    CHECK(t.groups[1].value_name == "Boots" && t.groups[1].from == std::string("Project \xC2\xB7 Legs"));
     CHECK(t.groups[0].reached && t.groups[1].reached);
     CHECK(PlaysText(t) == std::string("FS Hero \xE2\x80\xBA Run \xE2\x80\xBA Boots"));
     CHECK(TrackNameOf(t) == "Run-Boots");
-    CHECK(WhyText(t) == std::string("Run: item \xC2\xB7 Boots: Project \xC2\xB7 Feet"));
+    CHECK(WhyText(t) == std::string("Run: item \xC2\xB7 Boots: Project \xC2\xB7 Legs"));
 
     // The rule's own value wins and is "own"; its inherit gives the item's.
     RuleSounds rs;
@@ -157,13 +157,13 @@ static void TestState()
     CHECK(OverviewCell(t, "feet").kind == CellKind::NotReached && OverviewCell(t, "loco").kind == CellKind::Value);
 
     // An empty library, then None, then nothing.
-    SetAssignLibraryIn(st.project, {"feet"}, LibState::Library, "hands");
+    SetAssignLibraryIn(st.project, {"legs"}, LibState::Library, "hands");
     t = MakeTarget(st, ItemSounds(), nullptr, step, "b0", "x");
     CHECK(t.lib_empty && !t.lib_blocked && t.groups.empty() && PlaysText(t) == std::string("Hands \xE2\x80\xBA empty"));
-    SetAssignLibraryIn(st.project, {"feet"}, LibState::None, "");
+    SetAssignLibraryIn(st.project, {"legs"}, LibState::None, "");
     t = MakeTarget(st, ItemSounds(), nullptr, step, "b0", "x");
     CHECK(!t.lib && t.ea.none && !t.Unset() && PlaysText(t) == "No sound");
-    SetAssignLibraryIn(st.project, {"feet"}, LibState::Inherit, "");
+    SetAssignLibraryIn(st.project, {"legs"}, LibState::Inherit, "");
     t = MakeTarget(st, ItemSounds(), nullptr, step, "b0", "x");
     CHECK(t.Unset() && Summarize(st, {&t}, true).Plain() == "nothing set");
 }
@@ -185,7 +185,7 @@ static void TestRandomReach()
     mix.nodes = {Node("r", "", SoundNodeType::Random), a, Node("sa", "swa", SoundNodeType::Sound), b,
                  Node("sb", "swb", SoundNodeType::Sound)};
     st.libraries.push_back(mix);
-    SetAssignLibraryIn(st.project, {"feet"}, LibState::Library, "mix");
+    SetAssignLibraryIn(st.project, {"legs"}, LibState::Library, "mix");
     const Target t = MakeTarget(st, ItemSounds(), nullptr, Auto(AutoKind::Step, 'L', "a0"), "b0", "x");
     CHECK(t.groups.size() == 2 && t.groups[0].reached && t.groups[1].reached);
 }
@@ -194,7 +194,7 @@ static void TestDeletedGroup()
 {
     SoundStore st = MakeStore();
     st.groups.erase(st.groups.begin() + 1);  // FeetType gone
-    SetAssignLibraryIn(st.project, {"feet"}, LibState::Library, "hero");
+    SetAssignLibraryIn(st.project, {"legs"}, LibState::Library, "hero");
     const Block step = Auto(AutoKind::Step, 'L', "a0");
     Target      t = MakeTarget(st, ItemSounds(), nullptr, step, "b0", "x");
     CHECK(t.lib_blocked && t.blocked_reason.find("Switch Group") != std::string::npos);
@@ -213,7 +213,7 @@ static void TestGaps()
     hero.nodes[0].cases.pop_back();  // Crouch: no sound
     hero.nodes.pop_back();
     hero.nodes[0].name.clear();  // unnamed: its reason names the Switch Group, never the uid
-    SetAssignLibraryIn(st.project, {"feet"}, LibState::Library, "hero");
+    SetAssignLibraryIn(st.project, {"legs"}, LibState::Library, "hero");
     Target t = MakeTarget(st, ItemSounds(), nullptr, Auto(AutoKind::Step, 'L', "a0"), "b0", "x");
     CHECK(!t.lib_blocked && t.Plays() && t.lib_warnings.size() == 1 && t.lib_warnings[0].node == "sw1");
     CHECK(GapsText(t) == "FS Hero has gaps: Loco: default Crouch has no sound. Nothing plays from them.");
@@ -238,7 +238,7 @@ static void TestGaps()
 static void TestSummaryAndMix()
 {
     SoundStore st = MakeStore();
-    SetAssignLibraryIn(st.project, {"feet"}, LibState::Library, "hero");
+    SetAssignLibraryIn(st.project, {"legs"}, LibState::Library, "hero");
     ItemSounds rec;
     RuleSounds a, b;
     a.rid = "a0";
@@ -285,12 +285,12 @@ static void TestSummaryAndMix()
 static void TestTitleAndLadder()
 {
     SoundStore st = MakeStore();
-    SetAssignLibraryIn(st.project, {"feet"}, LibState::Library, "hero", true);
-    st.libraries[0].kit = {"feet"};
+    SetAssignLibraryIn(st.project, {"legs"}, LibState::Library, "hero", true);
+    st.libraries[0].kit = {"legs"};
     SoundCharacter hero;
     hero.uid = "C";
     hero.name = "Hero";
-    SetAssignLibraryIn(hero.assigns, {"feet.step"}, LibState::Library, "hands");
+    SetAssignLibraryIn(hero.assigns, {"legs.step"}, LibState::Library, "hands");
     const std::vector<Block> blocks = {Auto(AutoKind::Step, 'L', "a0"), Auto(AutoKind::Step, 'R', "a1")};
     const Targets            tg = BuildTargets(blocks);
     const Target l = MakeTarget(st, ItemSounds(), &hero, blocks[0], "b0", "Step \xC2\xB7 FS L");
@@ -301,8 +301,8 @@ static void TestTitleAndLadder()
     CHECK(SelectionTitle(tg, {&l, &none}) == "2 targets");
     const Ladder ld = BuildLadder(st, &hero, l);
     CHECK(ld.kits.size() == 1 && ld.kits[0] == "FS Hero" && ld.rows.size() == 5);
-    CHECK(ld.rows[0].label == std::string("Project \xC2\xB7 Feet") && ld.rows[0].set && ld.rows[0].kit && !ld.rows[0].hit);
-    CHECK(ld.rows[3].label == std::string("Hero \xC2\xB7 Feet \xC2\xB7 Step") && ld.rows[3].hit && ld.rows[3].library == "hands");
+    CHECK(ld.rows[0].label == std::string("Project \xC2\xB7 Legs") && ld.rows[0].set && ld.rows[0].kit && !ld.rows[0].hit);
+    CHECK(ld.rows[3].label == std::string("Hero \xC2\xB7 Legs \xC2\xB7 Step") && ld.rows[3].hit && ld.rows[3].library == "hands");
     CHECK(ld.rows[4].label == "this type" && !ld.rows[4].set);
     CHECK(ScopeLine(true, false, "p", "Hero") == "every rule of this item, unless the rule sets its own");
     CHECK(ScopeLine(false, true, "this item + 2 pool copies", "Hero") ==
@@ -375,10 +375,10 @@ static void TestScopes()
     cr.uid = "cr";
     cr.name = "FS Creature";
     st.libraries.push_back(cr);
-    st.libraries[0].kit = {"feet"};
-    st.libraries.back().kit = {"feet"};
-    SetAssignLibraryIn(st.project, {"feet"}, LibState::Library, "hero", true);
-    SetAssignValueIn(st.project, {"feet.step"}, "feet", "feet_Boots");
+    st.libraries[0].kit = {"legs"};
+    st.libraries.back().kit = {"legs"};
+    SetAssignLibraryIn(st.project, {"legs"}, LibState::Library, "hero", true);
+    SetAssignValueIn(st.project, {"legs.step"}, "feet", "feet_Boots");
     // Characters: virtual ones named from the first file, one per rig.
     std::vector<CharEntry> ch = BuildCharacters(st, TwoRigs());
     CHECK(ch.size() == 2 && !ch[0].stored && ch[0].ch.name == "Hero" && ch[0].items == 8 && ch[0].key == "char:v:3f9ac21e00000000");
@@ -388,7 +388,7 @@ static void TestScopes()
     hero.uid = "c1";
     hero.name = "Hero";
     hero.skeleton = "3f9ac21e00000000";
-    SetAssignLibraryIn(hero.assigns, {"feet"}, LibState::Library, "cr");
+    SetAssignLibraryIn(hero.assigns, {"legs"}, LibState::Library, "cr");
     st.characters.push_back(hero);
     SoundCharacter armored = hero;
     armored.uid = "c2";
@@ -400,25 +400,25 @@ static void TestScopes()
     CHECK(ch.size() == 3 && ch[0].stored && ch[0].items == 6 && ch[0].overrides == 1 && ch[1].ch.name == "Armored" && ch[1].items == 2 &&
           ch[1].ref.model == "mB" && ch[2].ch.name == "Creature");
     // A key read at the Project level: own, with its inherit and sources.
-    Target p = MakeKeyTarget(st, nullptr, "feet");
-    CHECK(p.OwnLib() && p.own_kit && p.lib && p.lib->uid == "hero" && p.ea.from == "Project \xC2\xB7 Feet" && p.inherited.level == AssignLevel::Unset);
-    Target ps = MakeKeyTarget(st, nullptr, "feet.step");
-    CHECK(!ps.OwnLib() && ps.lib && ps.ea.from == "Project \xC2\xB7 Feet" && ps.Group("feet") && ps.Group("feet")->own &&
+    Target p = MakeKeyTarget(st, nullptr, "legs");
+    CHECK(p.OwnLib() && p.own_kit && p.lib && p.lib->uid == "hero" && p.ea.from == "Project \xC2\xB7 Legs" && p.inherited.level == AssignLevel::Unset);
+    Target ps = MakeKeyTarget(st, nullptr, "legs.step");
+    CHECK(!ps.OwnLib() && ps.lib && ps.ea.from == "Project \xC2\xB7 Legs" && ps.Group("feet") && ps.Group("feet")->own &&
           ps.Group("feet")->value_name == "Boots");
     CHECK(ps.Group("loco") && !ps.Group("loco")->own);
-    Target pt = MakeKeyTarget(st, nullptr, "hands");
+    Target pt = MakeKeyTarget(st, nullptr, "arms");
     CHECK(pt.Unset() && !pt.lib);
     // At the Character level: its own library wins, "inherit" gives the Project's.
-    Target c = MakeKeyTarget(st, &ch[0].ch, "feet");
-    CHECK(c.OwnLib() && c.lib->uid == "cr" && c.inherited.library == "hero" && c.inherited.from == "Project \xC2\xB7 Feet");
-    Target cs = MakeKeyTarget(st, &ch[0].ch, "feet.step");
-    CHECK(!cs.OwnLib() && cs.ea.from == "Hero \xC2\xB7 Feet" && cs.Group("feet")->value_name == "Boots" && !cs.Group("feet")->own);
+    Target c = MakeKeyTarget(st, &ch[0].ch, "legs");
+    CHECK(c.OwnLib() && c.lib->uid == "cr" && c.inherited.library == "hero" && c.inherited.from == "Project \xC2\xB7 Legs");
+    Target cs = MakeKeyTarget(st, &ch[0].ch, "legs.step");
+    CHECK(!cs.OwnLib() && cs.ea.from == "Hero \xC2\xB7 Legs" && cs.Group("feet")->value_name == "Boots" && !cs.Group("feet")->own);
     // The ladder of a key: no rule row, no typed rows for a part.
     Ladder ld = BuildLadder(st, nullptr, p, false);
     CHECK(ld.rows.size() == 1 && ld.rows[0].hit);
     Ladder ld2 = BuildLadder(st, &ch[0].ch, cs, false);
     CHECK(ld2.rows.size() == 4 && ld2.rows[2].set && ld2.rows[2].hit);
-    // Kits: hero's kit is the project default of Feet; cr's is used by the Hero character.
+    // Kits: hero's kit is the project default of Legs; cr's is used by the Hero character.
     std::vector<KitPart> kp = KitParts(st, st.libraries[0], ch);
     CHECK(kp.size() == 1 && kp[0].state == KitPart::State::ProjectDefault && KitStatusText(kp[0]) == "project default");
     kp = KitParts(st, st.libraries.back(), ch);
@@ -427,51 +427,51 @@ static void TestScopes()
     st2.characters.clear();
     kp = KitParts(st2, st2.libraries.back(), BuildCharacters(st2, TwoRigs()));
     CHECK(KitStatusText(kp[0]) == "not used");
-    CHECK(OtherKitsServing(st, "feet", "hero").size() == 1 && OtherKitsServing(st, "feet", "hero")[0]->uid == "cr" &&
-          OtherKitsServing(st, "hands", "").empty());
-    CHECK(KitPartWhat("feet").find("and the bone rules on foot roles") != std::string::npos);
+    CHECK(OtherKitsServing(st, "legs", "hero").size() == 1 && OtherKitsServing(st, "legs", "hero")[0]->uid == "cr" &&
+          OtherKitsServing(st, "arms", "").empty());
+    CHECK(KitPartWhat("legs").find("and the bone rules on foot roles") != std::string::npos);
     CHECK(KitPartWhat("body") == "The bone rules on hips and spine roles");
     // The kit offer: only the parts free at the Project level, and once.
-    st.libraries.back().kit = {"feet", "body"};
+    st.libraries.back().kit = {"legs", "body"};
     CHECK(KitOfferParts(st, st.libraries.back()) == std::vector<std::string>({"body"}));
     st.libraries.back().kit_offered = true;
     CHECK(KitOfferParts(st, st.libraries.back()).empty());
     // Other characters and the Who plays what cells.
-    const std::vector<OtherChar> oc = OtherCharacters(st, ch, 0, "feet");
+    const std::vector<OtherChar> oc = OtherCharacters(st, ch, 0, "legs");
     CHECK(oc.size() == 2 && oc[0].name == "Armored" && oc[0].ea.library == "hero" && oc[1].name == "Creature");
-    const WhoCell w0 = WhoCellFor(st, nullptr, "feet"), w1 = WhoCellFor(st, &ch[0].ch, "feet"), w2 = WhoCellFor(st, &ch[0].ch, "feet.slide"),
-                  w3 = WhoCellFor(st, nullptr, "hands");
+    const WhoCell w0 = WhoCellFor(st, nullptr, "legs"), w1 = WhoCellFor(st, &ch[0].ch, "legs"), w2 = WhoCellFor(st, &ch[0].ch, "legs.slide"),
+                  w3 = WhoCellFor(st, nullptr, "arms");
     CHECK(w0.own && w0.kit && w0.library == "hero" && w1.own && !w1.kit && w1.library == "cr");
-    CHECK(!w2.own && w2.library == "cr" && w2.from == "Hero \xC2\xB7 Feet" && w3.unset && !w3.own);
-    CHECK(AllKeys().size() >= 10 && AllKeys()[0] == "feet" && AllKeys()[1] == "feet.step");
+    CHECK(!w2.own && w2.library == "cr" && w2.from == "Hero \xC2\xB7 Legs" && w3.unset && !w3.own);
+    CHECK(AllKeys().size() >= 10 && AllKeys()[0] == "legs" && AllKeys()[1] == "legs.step");
     // 13-43 Played by: a whole part reads as the part; the characters that inherit the Project count.
-    CHECK(PlayedByText(LibraryPlayedBy(st, ch, "hero")) == "Feet (Project, Armored, Creature)");
-    CHECK(PlayedByText(LibraryPlayedBy(st, ch, "cr")) == "Feet (Hero)");
+    CHECK(PlayedByText(LibraryPlayedBy(st, ch, "hero")) == "Legs (Project, Armored, Creature)");
+    CHECK(PlayedByText(LibraryPlayedBy(st, ch, "cr")) == "Legs (Hero)");
     CHECK(LibraryPlayedBy(st, ch, "nope").empty() && PlayedByText({}).empty() && LibraryPlayedBy(st, ch, "").empty());
     {
         // One type taken by another library: the part is no longer whole, its other types are listed, grouped.
         SoundStore st3 = st;
-        SetAssignLibraryIn(st3.project, {"feet.step"}, LibState::Library, "cr");
+        SetAssignLibraryIn(st3.project, {"legs.step"}, LibState::Library, "cr");
         const std::vector<PlayedByGroup> h = LibraryPlayedBy(st3, ch, "hero");
-        size_t feet_types = 0;
-        for (const std::string& k : AllKeys()) feet_types += k.compare(0, 5, "feet.") == 0;
-        CHECK(h.size() == 1 && h[0].keys.size() == feet_types - 1 &&
-              std::find(h[0].keys.begin(), h[0].keys.end(), "feet") == h[0].keys.end() &&
-              std::find(h[0].keys.begin(), h[0].keys.end(), "feet.step") == h[0].keys.end() &&
+        size_t legs_types = 0;
+        for (const std::string& k : AllKeys()) legs_types += k.compare(0, 5, "legs.") == 0;
+        CHECK(h.size() == 1 && h[0].keys.size() == legs_types - 1 &&
+              std::find(h[0].keys.begin(), h[0].keys.end(), "legs") == h[0].keys.end() &&
+              std::find(h[0].keys.begin(), h[0].keys.end(), "legs.step") == h[0].keys.end() &&
               h[0].columns == std::vector<std::string>({"Project", "Armored", "Creature"}));
         // cr: the whole part in Hero's column, Step alone in the others.
-        CHECK(PlayedByText(LibraryPlayedBy(st3, ch, "cr")) == "Feet (Hero); Feet \xC2\xB7 Step (Project, Armored, Creature)");
+        CHECK(PlayedByText(LibraryPlayedBy(st3, ch, "cr")) == "Legs (Hero); Legs \xC2\xB7 Step (Project, Armored, Creature)");
     }
-    CHECK(OverrideKeys(hero.assigns) == std::vector<std::string>({"feet"}));
+    CHECK(OverrideKeys(hero.assigns) == std::vector<std::string>({"legs"}));
     // Selection: kits and characters are picked alone.
     Selection s;
-    std::vector<std::string> vis = {"kit:a", "kit:b", "feet", "feet.step", "char:c1"};
+    std::vector<std::string> vis = {"kit:a", "kit:b", "legs", "legs.step", "char:c1"};
     ClickRow(s, "kit:a", false, false, vis);
     ClickRow(s, "kit:b", false, true, vis);
     CHECK(s.keys.size() == 1 && s.keys[0] == "kit:b");
-    ClickRow(s, "feet", false, false, vis);
-    ClickRow(s, "feet.step", false, true, vis);
-    CHECK(s.keys.size() == 2 && KindOf("feet.step") == RowKind::Rule && KindOf("kit:a") == RowKind::Kit && KindOf("char:x") == RowKind::Char);
+    ClickRow(s, "legs", false, false, vis);
+    ClickRow(s, "legs.step", false, true, vis);
+    CHECK(s.keys.size() == 2 && KindOf("legs.step") == RowKind::Rule && KindOf("kit:a") == RowKind::Kit && KindOf("char:x") == RowKind::Char);
     ClickRow(s, "char:c1", false, true, vis);
     CHECK(s.keys.size() == 1 && s.keys[0] == "char:c1");
 }

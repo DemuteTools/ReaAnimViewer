@@ -429,14 +429,14 @@ To report a problem, click **Copy error log** in the viewer menu and paste it in
 
 ReaAnimViewer can find events in an animation from the way its bones move, and mark them on your timeline: footsteps, a hand hitting something, a sword swing, a body falling, a head turn, a clap... Feet, and hands that grab or let go, are found for you by **Auto detection**. For anything else you can describe as "this bone goes above or below this value", you write **rules** (or load a preset). You check the result in the **Tagging view**, and commit. Each event becomes a marker named after its rule, on the item (take marker), on the timeline (project marker), or both. Then place your sounds on the markers instead of hunting for each frame by eye.
 
-Footsteps are the ready-made starting point: under **Auto detection**, add **Feet**, tick **Step** and press **Detect** (or load the **Footsteps** preset, which does the same). Lift-offs, slides and pivots of the feet, and the hands' grabs, releases and pivots, work the same way. For everything else, you build your own rules, then save them as presets to reuse them.
+Footsteps are the ready-made starting point: under **Auto detection**, add **Legs**, tick **Step** and press **Detect** (or load the **Footsteps** preset, which does the same). Lift-offs, slides and pivots of the feet, and the hands' grabs, releases and pivots, work the same way. For everything else, you build your own rules, then save them as presets to reuse them.
 
 Each animation item keeps its rules, thresholds and corrections, saved in the project. Items that play the same animation file share them, like REAPER's pooled MIDI items (see [Copies of one animation share their tagging](#copies-of-one-animation-share-their-tagging)). Nothing is written to the animation file.
 
 ### Quick start: footsteps
 
 1. Open the viewer, then click **Tagging view** at the top (or press **V** until it shows). A strip appears under the character and a panel on the right.
-2. Put the playhead over an animation item. At the top of the panel, under **Auto detection**, click **+** and choose **Feet**, then tick **Step** and press **Detect**.
+2. Put the playhead over an animation item. At the top of the panel, under **Auto detection**, click **+** and choose **Legs**, then tick **Step** and press **Detect**.
 3. The strip shows one row per foot (`FS L`, `FS R`) with a tick for each step found. Play or scrub to check them against the character.
 4. Too many or too few? Drag the step's **Sensitivity** (higher finds more). Always a little early or late for your sounds? Drag its **Offset**. The markers follow as you drag. Then correct single steps if needed (see [Correcting events](#correcting-events)).
 5. As soon as you change something, RAV shows the result on the timeline as **preview markers** (`FS L - Preview`, in a darker colour). Nothing is final yet.
@@ -448,14 +448,14 @@ To tag several walk cycles at once, set them up one by one (steps 2 to 4), selec
 
 Auto detection reads the body as physics: it measures the legs to know the character's size, finds where each part of the foot, and each hand, comes to rest (a floor, a stair, a ledge, a hold, a table), and places the markers from that. One setting works on every clip: there are no thresholds to tune, and no **Analyse**.
 
-- The event types are grouped in categories, **Feet** and **Hands**. The section shows only the categories the item uses: click **+** to add one. Click a category's name to fold or unfold it; it shows how many of its types are ticked (`2 on`). Its **×** unticks all its types: press **Detect** to remove them. A category with detected types stays until then, with `0 on`; one added with **+** and never detected goes at once.
+- The event types are grouped in categories named after the body part that makes the sound: **Legs** and **Arms** (a **Body** category, for the trunk and the head, gets its types later). The section shows only the categories the item uses: click **+** to add one. Click a category's name to fold or unfold it; it shows how many of its types are ticked (`2 on`). Its **×** unticks all its types: press **Detect** to remove them. A category with detected types stays until then, with `0 on`; one added with **+** and never detected goes at once.
 - **Tick** the event types you want, then press **Detect** (one button for every category):
-  - **Feet**
+  - **Legs**
     - **Step**: where the foot lands. **Combined** gives one marker per landing (`FS L`, `FS R`), at the first part of the foot to touch. **Separate** gives the heel and the toe their own markers (`Heel L`, `Toe L`, `Heel R`, `Toe R`). The toe is the ball of the foot (the toe bone), or the toe tip on a rig without a toe bone. A foot that glides into place (high heels on a catwalk) gets its step where it stops.
     - **Lift-off**: where the foot leaves the ground (`Lift L`, `Lift R`).
     - **Slide scuff**: where a planted foot slides on the ground (`Slide L`, `Slide R`).
     - **Pivot scuff**: where a planted foot turns on its ball or its heel (`Pivot L`, `Pivot R`): flat, on tiptoe with the heel up, or on its heel with the toes up. A foot that turns as it rolls onto its toes and stays there (a swivel) pivots; so does a wide turn that ends as the foot leaves the ground (a spin turn, of 30° or more by default; a higher pivot sensitivity lowers that angle); a small twist as the foot leaves (a heel whip at toe-off) does not.
-  - **Hands**
+  - **Arms**
     - **Grab**: where the hand lands on something and stays: a hold, a ledge, a table, the floor (`Grab L`, `Grab R`). A hand that only slows down, or stops for an instant between two moves, is no grab.
     - **Release**: where the hand leaves what it held (`Release L`, `Release R`).
     - **Pivot scuff**: where a planted hand turns on what it rests on, a hand on the floor or a ledge while the body swings round it (`Hand Pivot L`, `Hand Pivot R`). The turn is the hand's own twist: a vault where the palm stays put gives no marker. A hand that lands turning, or leaves at once, does not pivot. **Only after a Grab** (on by default): only a hand that came down with a grab (or rests from the start of the clip) can pivot. Off: any resting hand can, a hand placed gently too, but a hand that twists while held still in the air can then give an extra marker.
@@ -635,7 +635,7 @@ Sound designers often duplicate one animation to build a longer take: a two-step
 
 ### Known limits
 
-- Auto detection covers the feet (steps, lift-offs, slides and pivots) and the hands' grabs, releases and pivots today. Every other event (a hand swing, a clap, a punch, the body) is tagged with your own rules (see [Tagging your own events](#tagging-your-own-events)), which you can save and share as presets.
+- Auto detection covers the legs (the feet's steps, lift-offs, slides and pivots) and the arms (the hands' grabs, releases and pivots) today. Every other event (a hand swing, a clap, a punch, the body) is tagged with your own rules (see [Tagging your own events](#tagging-your-own-events)), which you can save and share as presets.
 - Auto detection: a touch shorter than about a tenth of a second is not a contact, a foot held still in the air reads as planted, and an animation exported in place (walking forward, or climbing) is read right only when a foot is planted for more than half of the clip. A slide or pivot gets one marker, at its start.
 - Auto detection of pivots on a steep foot: on tiptoe, RAV reads the turn from the toe end, or, on a rig without one, from the toe bone's rotation (as long as the foot stands flat on its ball somewhere in the clip). On a rig with a toe end, a turn on the heel with the toes raised almost vertical (about 80°) is lost; with the toes lower, the heel and the toe still read it.
 - Auto detection of the hands was set on a single tagged grab (a climb), so check its markers by ear. A hand that freezes in the air after a fast move (a long dance hit) reads as a grab.

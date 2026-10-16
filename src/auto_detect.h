@@ -6,7 +6,7 @@
 //
 // The user ticks event types in the Tagging view's "Auto detection" section and presses Detect.
 // Each type belongs to one category (AutoCategory), a foldable group of the section.
-//   Feet
+//   Legs
 //   step       heel and toe separate (one marker per part contact: Heel L, Toe L...) or combined
 //              (one per landing, at the foot's first part to touch: FS L / FS R; also the part
 //              that slaps down at the end of a pivot on the foot's other end). The toe is the
@@ -27,7 +27,7 @@
 //                   pivot_heel_longest, pivot_toe_longest). A tie goes to the toe.
 //   The heel block takes the type's colour, the toe block a shade lighter. Sensitivity and offset
 //   work as for the combined type (same AutoType, same constants).
-//   Hands
+//   Arms
 //   grab       the hand lands on something (Grab L / R).
 //   release    the hand leaves its support (Release L / R).
 //   pivot      the planted hand turns (Hand Pivot L / R): only after a grab (a hand that came to
@@ -76,11 +76,12 @@ const char* AutoTypeLabel(AutoType t);
 // words, marker names, colours, sensitivity constants, events, parts, lanes); the functions below
 // read it.
 
-// The section's categories (foldable groups), each holding some types.
-enum class AutoCategory : int { Feet = 0, Hands };
-constexpr int kAutoCategoryCount = 2;
-AutoCategory AutoCategoryOf(AutoType t);              // step, lift-off, slide, pivot: Feet; grab, release, hand pivot: Hands
-const char*  AutoCategoryLabel(AutoCategory c);       // "Feet", "Hands"
+// The section's categories (foldable groups), each holding some types: the body part that makes
+// the sound (story 10-9-1). Body (trunk, head) has no type yet.
+enum class AutoCategory : int { Legs = 0, Arms, Body };
+constexpr int kAutoCategoryCount = 3;
+AutoCategory AutoCategoryOf(AutoType t);              // step, lift-off, slide, pivot: Legs; grab, release, hand pivot: Arms
+const char*  AutoCategoryLabel(AutoCategory c);       // "Legs", "Arms", "Body"
 
 // The block kinds (Block::auto_type words): a combined step, a separate heel or toe step, a
 // lift-off, a slide, a pivot, a grab, a release, a hand pivot after a grab or of any resting hand.

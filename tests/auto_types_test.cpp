@@ -95,14 +95,14 @@ void TestRowsComplete()
 }
 
 // The categories' types: each type once, under its category, in enum order; the sound parts list
-// the same types.
+// the same types. Story 10-9-1: every category but Body (no type yet) has types.
 void TestCategoryTypes()
 {
     std::vector<int> seen(kAutoTypeCount, 0);
     for (int c = 0; c < kAutoCategoryCount; ++c) {
         const AutoCategory          cat = static_cast<AutoCategory>(c);
         const std::vector<AutoType> types = AutoTypesOf(cat);
-        CHECK(!types.empty());
+        CHECK(types.empty() == (cat == AutoCategory::Body));
         for (size_t i = 0; i < types.size(); ++i) {
             CHECK(AutoCategoryOf(types[i]) == cat);
             if (i) CHECK(static_cast<int>(types[i - 1]) < static_cast<int>(types[i]));
@@ -136,9 +136,21 @@ void TestKnownValues()
     CHECK(AutoMarkerName(AutoKind::PivotToeLongest, 'R') == "Pivot Toe R");
     CHECK(AutoDefaultColor(AutoKind::Grab, 'R') == (0x1000000u | 0xDDB45Fu));
     CHECK(std::string(AutoTypeLabel(AutoType::HandPivot)) == "Pivot scuff");
-    CHECK(std::string(AutoTypeRow(AutoType::HandPivot).undo_label) == "Hands Pivot scuff");
+    CHECK(std::string(AutoTypeRow(AutoType::HandPivot).undo_label) == "Arms Pivot scuff");
     CHECK(std::string(AutoTypeWord(AutoType::LiftOff)) == "lift");
-    CHECK(std::string(AutoCategoryLabel(AutoCategory::Hands)) == "Hands");
+    CHECK(std::string(AutoCategoryLabel(AutoCategory::Arms)) == "Arms");
+    // Story 10-9-1: the categories' labels and sound parts; Body is a sound part with no type.
+    CHECK(std::string(AutoCategoryLabel(AutoCategory::Legs)) == "Legs");
+    CHECK(std::string(AutoCategoryRow(AutoCategory::Legs).sound_part) == "legs");
+    CHECK(std::string(AutoCategoryRow(AutoCategory::Arms).sound_part) == "arms");
+    CHECK(std::string(AutoCategoryLabel(AutoCategory::Body)) == "Body");
+    CHECK(std::string(AutoCategoryRow(AutoCategory::Body).sound_part) == "body");
+    CHECK(AutoTypesOf(AutoCategory::Body).empty());
+    {
+        const BodyPart* body = FindBodyPart("body");
+        CHECK(body && body->has_category && body->category == AutoCategory::Body && body->label == "Body" &&
+              body->types.size() == 1 && body->types[0].word == "rules");
+    }
     CHECK(AutoKindRow(AutoKind::PivotHeel).degrees && !AutoKindRow(AutoKind::SlideHeel).degrees);
     CHECK(AutoKindRow(AutoKind::SlideToeLongest).scuff == ScuffParts::Longest && !AutoKindRow(AutoKind::SlideToeLongest).scuff_heel);
     const PhysicsParams d;
@@ -182,7 +194,7 @@ void TestRoles()
         const AutoKindInfo& r = AutoKindRow(static_cast<AutoKind>(k));
         for (char side : {'L', 'R'}) {
             std::vector<Role> want;
-            if (AutoCategoryOf(r.type) == AutoCategory::Hands) {
+            if (AutoCategoryOf(r.type) == AutoCategory::Arms) {
                 want.push_back(side == 'R' ? Role::RightHand : Role::LeftHand);
             } else {
                 for (int q = 0; q < kFootPartCount; ++q) want.push_back(FootPartRole(side, q));
@@ -200,7 +212,7 @@ void TestRowInvariants()
         if (r.scuff_heel) CHECK(r.scuff != ScuffParts::Combined);
         if (r.scuff != ScuffParts::Combined) CHECK(r.type == AutoType::Slide || r.type == AutoType::Pivot);
         CHECK(r.degrees == (r.type == AutoType::Pivot || r.type == AutoType::HandPivot));
-        CHECK((std::string(r.role_key) == "hand") == (AutoCategoryOf(r.type) == AutoCategory::Hands));
+        CHECK((std::string(r.role_key) == "hand") == (AutoCategoryOf(r.type) == AutoCategory::Arms));
         for (int j = 0; j < kAutoKindCount; ++j) {
             const AutoKindInfo& o = AutoKindRow(static_cast<AutoKind>(j));
             if (j == k || o.type != r.type || o.scuff != r.scuff) continue;

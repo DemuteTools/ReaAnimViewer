@@ -9,7 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # The REAPER-only parts of shared sources stay out (they test _WIN32, which MSVC also defines here).
 add_compile_definitions(RAV_HOST_TEST)
 # Story 10-9-0: the auto detection and its types' table (src/auto_types*.cpp), linked together.
-set(RAV_AUTO_SRCS ../src/auto_detect.cpp ../src/auto_types.cpp ../src/auto_types_feet.cpp ../src/auto_types_hands.cpp)
+set(RAV_AUTO_SRCS ../src/auto_detect.cpp ../src/auto_types.cpp ../src/auto_types_legs.cpp ../src/auto_types_arms.cpp)
 
 enable_testing()
 

@@ -16,7 +16,10 @@
 // Within that scope no switch is extended: the Tagging view, the sounds and the detection read
 // the rows. Beyond it:
 //   - a new category: also its AutoCategory value, kAutoCategoryCount, a kCategoryRows row and its
-//     BodyPart in sound_assign.cpp BuildParts;
+//     BodyPart in sound_assign.cpp BuildParts. A category may start with no type (Body, story
+//     10-9-1): the Tagging view's + does not offer it until it has one (cat_offered). Its first
+//     type also brings its auto_types_<category>.cpp (CMakeLists.txt + RAV_AUTO_SRCS) and updates
+//     the Body-is-empty checks in tests/auto_types_test.cpp and tests/sound_assign_test.cpp;
 //   - a new PhysicsKind: kPhysicsKindCount and a kPhysicsKindRows row (motion_physics.cpp);
 //   - a type with a mode: code in KindsOf, AutoTypeSeparate, AutoPending, ReadAutoSettings /
 //     ApplyAutoSettings (auto_detect.cpp) and its widget in tagging_view_ui.cpp.
@@ -31,7 +34,7 @@ namespace rav {
 
 // ---- The rows' functions, by file --------------------------------------------------------------
 
-// auto_types_feet.cpp
+// auto_types_legs.cpp
 std::vector<PhysicsEvent> AutoSourceFoot(const PhysicsAnalysis& a, const PhysicsParams& p);
 std::vector<PhysicsEvent> AutoSourceFootParts(const PhysicsAnalysis& a, const PhysicsParams& p);
 void AutoPartsFootAny(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out);
@@ -64,7 +67,7 @@ void AutoLanesSlideToe(const AutoLaneArgs& args, std::vector<AutoLane>& out, std
 void AutoLanesPivot(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
 std::vector<Role> AutoRolesFoot(char side);
 
-// auto_types_hands.cpp
+// auto_types_arms.cpp
 std::vector<PhysicsEvent> AutoSourceHand(const PhysicsAnalysis& a, const PhysicsParams& p);
 std::vector<PhysicsEvent> AutoSourceHandAny(const PhysicsAnalysis& a, const PhysicsParams& p);
 void AutoPartsHands(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out);
@@ -87,33 +90,34 @@ using P = PhysicsParams;
 // ---- Categories --------------------------------------------------------------------------------
 
 constexpr AutoCategoryInfo kCategoryRows[] = {
-    {C::Feet, "Feet", "feet"},
-    {C::Hands, "Hands", "hands"},
+    {C::Legs, "Legs", "legs"},
+    {C::Arms, "Arms", "arms"},
+    {C::Body, "Body", "body"},
 };
 
 // ---- Types -------------------------------------------------------------------------------------
 
 constexpr AutoTypeInfo kTypeRows[] = {
-    {T::Step, "Step", "Step", C::Feet,
+    {T::Step, "Step", "Step", C::Legs,
      "A marker where the foot lands: FS L / FS R (combined: the first part to touch),\n"
      "or Heel and Toe separately (one marker per part).",
      "step", {{&P::contact_speed, S::Times}, {}}, &AutoPartsFootSplit},
-    {T::LiftOff, "Lift-off", "Lift-off", C::Feet, "A marker where the foot leaves the ground: Lift L / Lift R.", "lift",
+    {T::LiftOff, "Lift-off", "Lift-off", C::Legs, "A marker where the foot leaves the ground: Lift L / Lift R.", "lift",
      {{&P::contact_speed, S::Times}, {}}, &AutoPartsFootAny},
-    {T::Slide, "Slide scuff", "Slide scuff", C::Feet,
+    {T::Slide, "Slide scuff", "Slide scuff", C::Legs,
      "A marker where a planted foot slides: Slide L / Slide R (combined),\n"
      "or Slide Heel L / Slide Toe L... (separate).",
      "slide", {{&P::slide_speed, S::Divide}, {}}, &AutoPartsFootSplit},
-    {T::Pivot, "Pivot scuff", "Pivot scuff", C::Feet,
+    {T::Pivot, "Pivot scuff", "Pivot scuff", C::Legs,
      "A marker where a planted foot turns on its ball or heel: Pivot L / Pivot R (combined),\n"
      "or Pivot Heel L / Pivot Toe L... (separate).",
      "pivot", {{&P::pivot_min_deg, S::Divide}, {&P::pivot_rate_dps, S::Divide}}, &AutoPartsFootBoth},
-    {T::Grab, "Grab", "Grab", C::Hands, "A marker where the hand lands on something: Grab L / Grab R.", "grab",
+    {T::Grab, "Grab", "Grab", C::Arms, "A marker where the hand lands on something: Grab L / Grab R.", "grab",
      {{&P::hand_contact_speed, S::Times}, {}}, &AutoPartsHands},
-    {T::Release, "Release", "Release", C::Hands, "A marker where the hand leaves its support: Release L / Release R.",
+    {T::Release, "Release", "Release", C::Arms, "A marker where the hand leaves its support: Release L / Release R.",
      "release", {{&P::hand_contact_speed, S::Times}, {}}, &AutoPartsHands},
     // Story 10-8e: the hand's Pivot scuff is named with its category in undo names.
-    {T::HandPivot, "Pivot scuff", "Hands Pivot scuff", C::Hands,
+    {T::HandPivot, "Pivot scuff", "Arms Pivot scuff", C::Arms,
      "A marker where a planted hand turns: Hand Pivot L / Hand Pivot R.", "hand_pivot",
      {{&P::hand_pivot_min_deg, S::Divide}, {&P::hand_pivot_rate_dps, S::Divide}}, &AutoPartsHands},
 };

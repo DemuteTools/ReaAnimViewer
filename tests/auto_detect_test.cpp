@@ -841,10 +841,10 @@ int main()
         for (int t = 0; t < kAutoTypeCount; ++t) {
             const bool hand = t == static_cast<int>(AutoType::Grab) || t == static_cast<int>(AutoType::Release) ||
                               t == static_cast<int>(AutoType::HandPivot);
-            CHECK(AutoCategoryOf(static_cast<AutoType>(t)) == (hand ? AutoCategory::Hands : AutoCategory::Feet));
+            CHECK(AutoCategoryOf(static_cast<AutoType>(t)) == (hand ? AutoCategory::Arms : AutoCategory::Legs));
         }
-        CHECK(std::string(AutoCategoryLabel(AutoCategory::Feet)) == "Feet" &&
-              std::string(AutoCategoryLabel(AutoCategory::Hands)) == "Hands");
+        CHECK(std::string(AutoCategoryLabel(AutoCategory::Legs)) == "Legs" &&
+              std::string(AutoCategoryLabel(AutoCategory::Arms)) == "Arms");
         // Every kind's default colour pair differs from the others'.
         for (int k = 0; k < kAutoKindCount; ++k)
             for (int j = k + 1; j < kAutoKindCount; ++j) {
@@ -862,26 +862,26 @@ int main()
             }
     }
 
-    // Categories: a new item, + -> Hands, tick Grab, Detect: Hands shown, Feet absent; Grab L / R.
+    // Categories: a new item, + -> Arms, tick Grab, Detect: Arms shown, Legs absent; Grab L / R.
     {
         std::vector<Block> blocks;
-        CHECK(!AutoCategoryInBlocks(blocks, AutoCategory::Feet) && !AutoCategoryInBlocks(blocks, AutoCategory::Hands));
+        CHECK(!AutoCategoryInBlocks(blocks, AutoCategory::Legs) && !AutoCategoryInBlocks(blocks, AutoCategory::Arms));
         AutoSettings ui = ReadAutoSettings(blocks);
         ui.type[static_cast<int>(AutoType::Grab)].on = true;
-        CHECK(AutoCategoryOnCount(ui, AutoCategory::Hands) == 1 && AutoCategoryOnCount(ui, AutoCategory::Feet) == 0);
+        CHECK(AutoCategoryOnCount(ui, AutoCategory::Arms) == 1 && AutoCategoryOnCount(ui, AutoCategory::Legs) == 0);
         CHECK(AutoPending(ui, ReadAutoSettings(blocks)));
         bool changed = false;
         ApplyAutoSettings(blocks, ui, &changed);
         CHECK(changed && Markers(blocks) == (std::vector<std::string>{"Grab L", "Grab R"}));
-        CHECK(AutoCategoryInBlocks(blocks, AutoCategory::Hands) && !AutoCategoryInBlocks(blocks, AutoCategory::Feet));
+        CHECK(AutoCategoryInBlocks(blocks, AutoCategory::Arms) && !AutoCategoryInBlocks(blocks, AutoCategory::Legs));
         CHECK(ReadAutoSettings(blocks) == ui && !AutoPending(ui, ReadAutoSettings(blocks)));
         // An auto block of an unknown type belongs to no category.
         Block future;
         future.auto_type = "clap";
-        CHECK(!AutoCategoryInBlocks({future}, AutoCategory::Hands) && !AutoCategoryInBlocks({future}, AutoCategory::Feet));
+        CHECK(!AutoCategoryInBlocks({future}, AutoCategory::Arms) && !AutoCategoryInBlocks({future}, AutoCategory::Legs));
     }
 
-    // Remove category: x on Feet with Step on (and Grab on), Detect: the step blocks go with their
+    // Remove category: x on Legs with Step on (and Grab on), Detect: the step blocks go with their
     // edits; the Grab blocks and theirs stay.
     {
         std::vector<Block> blocks;
@@ -890,15 +890,15 @@ int main()
         std::vector<EventEntry> ev = {MakeUserEvent(0, 0.5, 0, 0), MakeSuppression(1, 1.0), MakeUserEvent(2, 1.5, 0, 0),
                                       MakeSuppression(3, 2.0)};
         AutoSettings ui = ReadAutoSettings(blocks);
-        CHECK(AutoCategoryOnCount(ui, AutoCategory::Feet) == 1);
-        UntickAutoCategory(ui, AutoCategory::Feet);
-        CHECK(AutoCategoryOnCount(ui, AutoCategory::Feet) == 0 && AutoCategoryOnCount(ui, AutoCategory::Hands) == 1);
-        // Until Detect, the item still has its step blocks: Feet stays shown ("0 on").
-        CHECK(AutoCategoryInBlocks(blocks, AutoCategory::Feet) && AutoPending(ui, ReadAutoSettings(blocks)));
+        CHECK(AutoCategoryOnCount(ui, AutoCategory::Legs) == 1);
+        UntickAutoCategory(ui, AutoCategory::Legs);
+        CHECK(AutoCategoryOnCount(ui, AutoCategory::Legs) == 0 && AutoCategoryOnCount(ui, AutoCategory::Arms) == 1);
+        // Until Detect, the item still has its step blocks: Legs stays shown ("0 on").
+        CHECK(AutoCategoryInBlocks(blocks, AutoCategory::Legs) && AutoPending(ui, ReadAutoSettings(blocks)));
         const std::vector<int> map = ApplyAutoSettings(blocks, ui);
         CHECK(map == (std::vector<int>{-1, -1, 0, 1}));
         CHECK(Markers(blocks) == (std::vector<std::string>{"Grab L", "Grab R"}));
-        CHECK(!AutoCategoryInBlocks(blocks, AutoCategory::Feet) && AutoCategoryInBlocks(blocks, AutoCategory::Hands));
+        CHECK(!AutoCategoryInBlocks(blocks, AutoCategory::Legs) && AutoCategoryInBlocks(blocks, AutoCategory::Arms));
         RemapEventBlocks(ev, map);
         CHECK(ev.size() == 2);
         if (ev.size() == 2) CHECK(ev[0].block == 0 && ev[0].t == 1.5 && ev[1].block == 1 && ev[1].t == 2.0);
@@ -1156,7 +1156,7 @@ int main()
     {
         const int hp = static_cast<int>(AutoType::HandPivot);
         CHECK(std::string(AutoTypeLabel(AutoType::HandPivot)) == "Pivot scuff");
-        CHECK(AutoCategoryOf(AutoType::HandPivot) == AutoCategory::Hands);
+        CHECK(AutoCategoryOf(AutoType::HandPivot) == AutoCategory::Arms);
         CHECK(std::string(AutoKindWord(AutoKind::HandPivot)) == "hand_pivot" &&
               std::string(AutoKindWord(AutoKind::HandPivotAny)) == "hand_pivot_any");
         CHECK(AutoTypeOfKind(AutoKind::HandPivot) == AutoType::HandPivot &&
@@ -1169,8 +1169,8 @@ int main()
         std::vector<Block> blocks = AutoBlocks(s);
         CHECK(blocks.size() == 2 && blocks[0].auto_type == "hand_pivot" && blocks[1].auto_type == "hand_pivot" &&
               blocks[0].auto_side == 'L' && blocks[1].auto_side == 'R');
-        CHECK(ReadAutoSettings(blocks) == s && AutoCategoryOnCount(s, AutoCategory::Hands) == 1 &&
-              AutoCategoryOnCount(s, AutoCategory::Feet) == 0 && AutoCategoryInBlocks(blocks, AutoCategory::Hands));
+        CHECK(ReadAutoSettings(blocks) == s && AutoCategoryOnCount(s, AutoCategory::Arms) == 1 &&
+              AutoCategoryOnCount(s, AutoCategory::Legs) == 0 && AutoCategoryInBlocks(blocks, AutoCategory::Arms));
         // Switching to any resting hand waits for Detect, and keeps the user's edits on each hand.
         std::vector<EventEntry> ev = {MakeUserEvent(0, 0.5, 0, 0), MakeSuppression(1, 1.0)};
         AutoSettings            any = s;
@@ -1195,8 +1195,8 @@ int main()
         CHECK(!ReadAutoSettings(mixed).hand_pivot_any);
         // The category's x unticks it.
         AutoSettings u = s;
-        UntickAutoCategory(u, AutoCategory::Hands);
-        CHECK(!u.type[hp].on && AutoCategoryOnCount(u, AutoCategory::Hands) == 0);
+        UntickAutoCategory(u, AutoCategory::Arms);
+        CHECK(!u.type[hp].on && AutoCategoryOnCount(u, AutoCategory::Arms) == 0);
         // Missing parts: the hand only.
         std::vector<int> roles(static_cast<size_t>(Role::Count), -1);
         for (int r = 0; r < static_cast<int>(Role::Count); ++r) roles[static_cast<size_t>(r)] = r;

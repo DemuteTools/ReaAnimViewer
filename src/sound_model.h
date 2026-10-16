@@ -332,7 +332,7 @@ struct AutoSoundAssign {
 // inherit = this level says nothing; None = place nothing, on purpose; Library = that library.
 enum class LibState { Inherit, None, Library };
 
-// One target at Project or Character level: a body part ("feet") or a part and type ("feet.step";
+// One target at Project or Character level: a body part ("legs") or a part and type ("legs.step";
 // the type is an AutoType word, or "rules" for the bone rules of that part).
 struct SoundAssign {
     std::string              key;

@@ -93,7 +93,7 @@ std::vector<MediaItem*> ProjectRavItems();
 //
 // Each gesture is one undo point; it edits the store, then re-places the populated events of every
 // RAV item whose effective library or values changed (ChangedRids). Nothing happens (no undo point)
-// when nothing changes. Keys are body parts / part.types ("feet", "feet.step"). A character is given
+// when nothing changes. Keys are body parts / part.types ("legs", "legs.step"). A character is given
 // as a CharacterRef: its uid when stored, else its rig (skeleton + model + default name), which is
 // stored at the first edit.
 SoundReport SetProjectAssignLibrary(std::vector<std::string> keys, LibState state, std::string library_uid);

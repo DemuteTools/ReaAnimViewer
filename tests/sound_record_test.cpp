@@ -499,6 +499,7 @@ int main()
         SoundData& d = s.libraries[0].nodes[0].sound;
         d.fade_in = 0.0;
         d.fade_out = 0.012;
+        d.frames[0].zones.clear();  // 13-62i: an old project's frame (read, it becomes a zone)
         d.frames[0].fade_in = 0.002;
         d.frames[0].fade_out = 0.0;  // a hand-set 0 (no fade) is not the default
         d.frames[0].fade_in_shape = 1;
@@ -510,9 +511,16 @@ int main()
         CHECK(ParseSoundStore(t, &b));
         const SoundData& bd = b.libraries[0].nodes[0].sound;
         CHECK(bd.fade_in == 0.0 && bd.fade_out == 0.012);
-        CHECK(bd.frames[0].fade_in == 0.002 && bd.frames[0].fade_out == 0.0 && bd.frames[0].fade_in_shape == 1 &&
-              bd.frames[0].fade_out_shape == 5);
-        CHECK(SerializeSoundStore(b) == t);
+        // 13-62i: read once into a zone of the implicit part (the frame's fades and shapes on its edges).
+        CHECK(bd.frames[0].fade_in < 0.0 && bd.frames[0].fade_in_shape == 0 && bd.frames[0].zones.size() == 1);
+        if (bd.frames[0].zones.size() == 1) {
+            const EditZone& z = bd.frames[0].zones[0];
+            CHECK(z.part == kWholePart && z.fade_in == 0.002 && z.fade_out == 0.0 && z.fade_in_shape == 1 && z.fade_out_shape == 5);
+        }
+        const std::string bt = SerializeSoundStore(b);
+        CHECK(bt.find("frame start=0 len=1\nfzone a=0 b=1 p=* ah=1 bh=1 fin=0.002 fout=0 fis=1 fos=5\n") != std::string::npos);
+        SoundStore b2;
+        CHECK(ParseSoundStore(bt, &b2) && SerializeSoundStore(b2) == bt);
         // A bad value is kept as text and stands for the field (the default meanwhile).
         SoundStore bad;
         CHECK(ParseSoundStore("RAVSOUNDS 1\nlibrary uid=l name=L root=n\nnode uid=n type=sound\nsound kind=item\n"
@@ -738,7 +746,7 @@ int main()
               od.mono == MonoMode::Off);
         CHECK(od.frames[0].cuts.empty() && od.frames[0].syncs.empty() && !od.frames[0].cuts_hand);
         CHECK(SerializeSoundStore(old) == "RAVSOUNDS 1\nlibrary uid=l name=L root=n\nnode uid=n type=sound\n"
-                                          "sound kind=item guid=g\nframe start=0 len=1\n");
+                                          "sound kind=item guid=g\nframe start=0 len=1\nfzone a=0 b=1 p=* ah=1 bh=1\n");  // 13-62i
         // A zone line on a node without a Sound line still reads (it makes the Sound line written).
         SoundStore z;
         CHECK(ParseSoundStore("RAVSOUNDS 1\nlibrary uid=l name=L root=n\nnode uid=n type=random\n"

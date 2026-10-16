@@ -308,6 +308,30 @@ PlacedVolumes PlacedCopyVolumes(bool folder, double src_item_vol, double take_vo
     return v;
 }
 
+KeptVolume KeptItemVolume(const std::vector<double>& piece_db, bool pile, int items, bool has_g, double g, int pi,
+                          double cur_vol)
+{
+    KeptVolume k;
+    if (piece_db.empty()) return k;
+    if (has_g) {
+        if (pi < 0 || pi >= static_cast<int>(piece_db.size()) || !std::isfinite(g)) return k;
+        const double want = piece_db[static_cast<size_t>(pi)];
+        if (!std::isfinite(want) || std::fabs(want - g) <= 1e-9 || !std::isfinite(cur_vol)) return k;
+        k.set = true;
+        k.vol = cur_vol * std::pow(10.0, (want - g) / 20.0);
+        k.g = want;
+        k.pi = pi;
+        return k;
+    }
+    // An item placed before its tag recorded its gain: only a lone plain item can be set as placed now.
+    if (pile || items != 1 || piece_db.size() != 1 || !std::isfinite(piece_db[0])) return k;
+    k.set = true;
+    k.vol = ItemGainFor(piece_db[0]);
+    k.g = piece_db[0];
+    k.pi = 0;
+    return k;
+}
+
 SliceApply FileSliceFor(const SoundData& data, int variation)
 {
     if (variation < 0 || variation >= static_cast<int>(data.frames.size())) return SliceApply{};
@@ -414,8 +438,13 @@ std::vector<PieceApply> ZonePieces(const SoundData& data, int variation, const s
         pa.slice.length = b - a;
         pa.fades.set_in = pa.fades.set_out = true;
         pa.fades.shape_in = pa.fades.shape_out = true;
-        pa.fades.in = cut_in ? ZoneCutFade(data, r, -1).s : ZoneFade(data, r, -1).s;
-        pa.fades.out = cut_out ? ZoneCutFade(data, r, 1).s : ZoneFade(data, r, 1).s;
+        const ZoneFadeInfo fi = cut_in ? ZoneCutFade(data, r, -1) : ZoneFade(data, r, -1);
+        const ZoneFadeInfo fo = cut_out ? ZoneCutFade(data, r, 1) : ZoneFade(data, r, 1);
+        pa.fades.in = fi.s;
+        pa.fades.out = fo.s;
+        // 13-62i: a zone's own fade keeps its shape (a frame's shaped fade migrated); any other is linear.
+        pa.fades.in_shape = fi.src == FadeSrc::Own ? z.fade_in_shape : 0;
+        pa.fades.out_shape = fo.src == FadeSrc::Own ? z.fade_out_shape : 0;
         pa.db = std::isfinite(z.db) ? z.db : 0.0;
         if (r == anchor) {  // the anchor, at its snap offset
             pa.anchor = true;
@@ -443,9 +472,11 @@ bool ZonedPlacement(const SoundData& data, int variation)
 
 }  // namespace
 
-bool PieceSnapNeedsPeaks(const SoundData& data, int variation, const std::string& part_value)
+bool PieceSnapNeedsPeaks(const SoundData& data0, int variation, const std::string& part_value)
 {
-    if (!ZonedPlacement(data, variation)) return false;
+    if (!ZonedPlacement(data0, variation)) return false;
+    SoundData                  tmp;
+    const SoundData&           data = ZonesLaidOut(data0, &tmp);  // 13-62i
     const std::vector<ZoneRef> zones = PlacedZones(data, variation, part_value);
     if (zones.empty()) return false;
     const ZoneRef   anchor = AnchorZone(data, zones);
@@ -454,96 +485,22 @@ bool PieceSnapNeedsPeaks(const SoundData& data, int variation, const std::string
     return !z.snap && PartSyncMode(data, z.part) != SyncMode::SliceStart && !ZoneSnapStored(data, anchor);
 }
 
-std::vector<PieceApply> PieceApplyFor(const SoundData& data, int variation, const std::string& part_value, bool file,
+std::vector<PieceApply> PieceApplyFor(const SoundData& data, int variation, const std::string& part_value, bool,
                                       const PeakData* peaks)
 {
-    std::vector<PieceApply> out;
-    if (data.mode == DetectMode::Takes || variation < 0 || variation >= static_cast<int>(data.frames.size())) return out;
-    if (ZonedPlacement(data, variation)) return ZonePieces(data, variation, part_value, peaks);  // 13-62h: zones only
-    const std::vector<PartSpan> spans = PlacedSpans(data, variation, part_value);
-    if (spans.empty()) return out;
-    const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
-    constexpr double  kEps = 1e-6;
-    const FadeApply   base = file ? FileFadeApplyFor(data, variation) : FadeApplyFor(data, variation);
-    const double      cut = std::isfinite(data.cut_fade) && data.cut_fade > 0.0 ? data.cut_fade : 0.0;
-    // 13-62 (decision 6, per side): a part owning its fade in gets it at the start of every piece, its fade out
-    // at the end of every piece; a side it does not own keeps the rule below (frame fade / cut_fade).
-    const PartSettings* own = part_value.empty() ? nullptr : PartSettingsOf(data, part_value);
-    const bool          own_in = own && own->fade_in && std::isfinite(*own->fade_in);
-    const bool          own_out = own && own->fade_out && std::isfinite(*own->fade_out);
-    double            sync = SyncFor(data, variation, part_value);
-    if (sync >= 0.0 && ClampIntoSpans(spans, sync) != sync) sync = -1.0;  // stale: not inside what is placed
-    if (sync < 0.0) sync = AutoSync(data, nullptr, spans);
-    size_t anchor = 0;
-    for (size_t k = 0; k < spans.size(); ++k)
-        if (sync >= spans[k].start - kEps && sync <= spans[k].start + spans[k].length + kEps) {
-            anchor = k;
-            break;
-        }
-    for (size_t k = 0; k < spans.size(); ++k) {
-        const PartSpan& sp = spans[k];
-        PieceApply      pa;
-        pa.slice.set = true;
-        pa.slice.start_offs = sp.start;
-        pa.slice.length = sp.length;
-        pa.fades = base;
-        if (sp.start > f.start + kEps) {  // at a cut or a zone edge
-            pa.fades.set_in = pa.fades.shape_in = true;
-            pa.fades.in = cut;
-            pa.fades.in_shape = 0;
-        }
-        if (sp.start + sp.length < f.start + f.length - kEps) {
-            pa.fades.set_out = pa.fades.shape_out = true;
-            pa.fades.out = cut;
-            pa.fades.out_shape = 0;
-        }
-        if (own_in) {
-            pa.fades.set_in = pa.fades.shape_in = true;
-            pa.fades.in = std::max(*own->fade_in, 0.0);
-            pa.fades.in_shape = 0;
-        }
-        if (own_out) {
-            pa.fades.set_out = pa.fades.shape_out = true;
-            pa.fades.out = std::max(*own->fade_out, 0.0);
-            pa.fades.out_shape = 0;
-        }
-        pa.anchor = k == anchor;
-        if (pa.anchor) pa.slice.snap_offset = std::min(std::max(sync - sp.start, 0.0), sp.length);
-        pa.from_anchor = sp.start - spans[anchor].start;
-        out.push_back(pa);
-    }
-    return out;
+    // 13-62i: every Sound is placed from its zones (Takes mode too: its take's zones; a Sound not laid out yet is laid
+    // out on a copy first, as it would be read).
+    if (variation < 0 || variation >= static_cast<int>(data.frames.size())) return {};
+    SoundData        tmp;
+    const SoundData& d = ZonesLaidOut(data, &tmp);
+    return ZonePieces(d, variation, part_value, peaks);
 }
 
-std::vector<PieceFade> PartPieceFades(const SoundData& data, int variation, const std::string& part_value)
+double PileGainDb(const std::vector<PieceApply>& pieces, double gain_db)
 {
-    std::vector<PieceFade> out;
-    const PartSettings*    own = part_value.empty() ? nullptr : PartSettingsOf(data, part_value);
-    const bool             own_in = own && own->fade_in && std::isfinite(*own->fade_in);
-    const bool             own_out = own && own->fade_out && std::isfinite(*own->fade_out);
-    const bool             zoned = ZonedPlacement(data, variation);
-    const std::vector<ZoneRef> zones = zoned ? PlacedZones(data, variation, part_value) : std::vector<ZoneRef>();
-    const std::vector<PieceApply> pieces = PieceApplyFor(data, variation, part_value, false);
-    for (size_t k = 0; k < pieces.size(); ++k) {
-        const PieceApply& pa = pieces[k];
-        PieceFade f;
-        f.start = pa.slice.start_offs;
-        f.length = pa.slice.length;
-        f.in = pa.fades.set_in ? pa.fades.in : 0.0;
-        f.out = pa.fades.set_out ? pa.fades.out : 0.0;
-        f.in_shape = pa.fades.set_in ? pa.fades.in_shape : 0;
-        f.out_shape = pa.fades.set_out ? pa.fades.out_shape : 0;
-        f.own_in = own_in;
-        f.own_out = own_out;
-        if (zoned && k < zones.size()) {  // 13-62h: the zone's own fade, or its part's
-            const FadeSrc si = ZoneFade(data, zones[k], -1).src, so = ZoneFade(data, zones[k], 1).src;
-            f.own_in = si == FadeSrc::Own || si == FadeSrc::Part;
-            f.own_out = so == FadeSrc::Own || so == FadeSrc::Part;
-        }
-        ClampFadePair(f.length, &f.in, &f.out);
-        out.push_back(f);
-    }
-    return out;
+    for (const PieceApply& p : pieces)
+        if (p.anchor) return gain_db + p.db;
+    return pieces.empty() ? gain_db : gain_db + pieces.front().db;
 }
 
 double PiecePosition(double anchor_pos, double from_anchor, double playrate)

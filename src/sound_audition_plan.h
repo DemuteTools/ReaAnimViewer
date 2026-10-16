@@ -81,12 +81,6 @@ struct AuditionPlan {
     double                     length_ms = 0.0;  // max delay + length
 };
 
-// Antho 2026-10-12: the fades an audition of variation i plays, the same as Populate places
-// (FadeApplyFor): the frame's own or the Sound's default fade; a Whole-item Sound only its own (the
-// placed copy keeps its source item's fades, which an audition of the file does not read).
-// A folder-pile source: none (its placed members keep their own fades).
-void AuditionFades(const SoundData& data, int i, double* in_s, double* out_s, int* in_shape, int* out_shape,
-                   bool folder_source = false);
 // The gain of a voice's fades at `t` s into it (0..1): ramps up over `in` s from its start and down
 // over `out` s to its `length` (in + out clamped to it; 1 between). Shapes = REAPER's index (0 linear,
 // 1 / 3 fast start, 2 / 4 fast end, 5 S-curve; anything else linear). No allocation: the audio thread
@@ -106,10 +100,6 @@ AuditionPlan PlanAudition(const SoundStore& store, const SoundLibrary& lib, cons
 // root's volumes + its zone's gain (PieceApply::db); FrameGainDb / PartGainDb are not added.
 std::vector<AuditionVoice> PartAuditionVoices(const SoundLibrary& lib, const SoundNode& n, int variation,
                                               const std::string& part_value, double delay_ms = 0.0);
-// 13-20: a zone of the Sound's source played alone (the Edit window's "Play zone"): one voice over
-// [start, start + length), the Sound's cut_fade at both ends, the level of the frame holding its start
-// (0 dB outside any frame). Empty voice (length 0) for a zone of 0 s or less.
-AuditionVoice ZoneAuditionVoice(const SoundLibrary& lib, const SoundNode& n, double start, double length);
 // The "played: ..." text of these voices (decision 6): "nothing" when none. 13-20: a voice of a
 // later piece (piece > 0) is not named again.
 std::string PlayedText(const SoundLibrary& lib, const std::vector<AuditionVoice>& voices);
@@ -136,113 +126,11 @@ LengthRange NodeLengthRange(const SoundStore& store, const SoundLibrary& lib, co
 std::vector<SoundFrame> MergeHandFrames(const std::vector<SoundFrame>& detected,
                                         const std::vector<SoundFrame>& previous, bool by_index = false);
 
-// Decision 3: Takes mode trims frame i inside [0, take_source_len] only. False when unchanged
-// (bad index, or 1 ms or less left). Sets `hand` and `data.edited`.
-bool TrimTakeFrame(SoundData& data, int i, double start, double length, double take_source_len);
-
 // Whether a playing audition has ended (the play button then shows Play again): its position
 // reached the mix's length (within an audio block), or it stopped moving for `stalled_s` seconds
 // (a preview that stops short of the end). Polled each frame.
 bool AuditionEnded(double pos, double length, double stalled_s);
 
-enum class FrameEdit { Trim, Add, Split, Toggle, Db };
-// Decision 3: Takes mode refuses Add and Split.
-bool FrameEditAllowed(DetectMode mode, FrameEdit edit);
-
-// ---- 13-61: REAPER's item trims in the Sound Edit window ----------------------------------------------
-// "Trim left of cursor" (REAPER 40511): a variation that holds the edit cursor starts there; "right of
-// cursor" (40512): it ends there; "to selected zone" (40508): each variation the zone crosses keeps only
-// what is inside the zone. The variations: the selected ones (Edit's selection), else -- nothing selected
-// -- the one under the cursor (the cursor trims) or every one the zone crosses. Trims only shrink a
-// variation (never past its neighbours, never 1 ms or less: that one is left as it is). Not in Takes
-// mode (each take has its own time: the caller refuses it).
-enum class EditTrimKind { LeftOfCursor, RightOfCursor, ToZone };
-
-struct EditTrimStep {
-    int    frame = -1;
-    double start = 0.0, length = 0.0;  // its new stretch (source seconds)
-};
-
-struct EditTrimPlan {
-    std::vector<EditTrimStep> steps;  // in frame order; empty = nothing to do (`why` says what is missing)
-    std::string               why;
-    bool Empty() const { return steps.empty(); }
-};
-
-// `cursor` < 0 = no edit cursor; `zone_len` <= 0 = no zone.
-EditTrimPlan PlanEditTrim(const std::vector<SoundFrame>& frames, const std::vector<int>& selected, EditTrimKind kind,
-                          double cursor, double zone_start, double zone_len);
-// The Sound's variations (13-62h: a divided Sound trims its zones instead, ZoneTrimAt / ZoneTrimToTsel).
-EditTrimPlan PlanEditTrim(const SoundData& data, const std::vector<int>& selected, EditTrimKind kind, double cursor,
-                          double zone_start, double zone_len);
-
-// 13-62F (F5, Antho 2026-10-14): REAPER's "Item navigation: Select and move to next / previous item" (40417 /
-// 40416) in the Sound Edit window, to chain through the variations at a fixed zoom. From the last selected
-// variation (`selected`'s last valid one): the next / previous one in time order (off ones included, as REAPER
-// walks every item; ties in start by index; `by_index` (Takes mode, each take has its own time): index order).
-// Nothing selected, as REAPER: next = the first one starting after the edit cursor, previous = the last one
-// starting before it (the one under the cursor counts for previous only when the cursor is past its start);
-// no cursor (`cursor` < 0) or `by_index`: the first / the last one. It is selected, the edit cursor goes to its
-// start and the view (`view_len` s, never changed; <= 0 = the whole source) is centred on it, clamped to
-// [0, source_len]. At the last / first one (or no variation at all): `frame` -1, nothing moves.
-struct EditNavPlan {
-    int    frame = -1;
-    double cursor = 0.0;
-    double view_start = 0.0;
-};
-EditNavPlan PlanEditNav(const std::vector<SoundFrame>& frames, const std::vector<int>& selected, double cursor, bool next,
-                        double view_len, double source_len, bool by_index = false);
-
-// 13-63: REAPER's "Split items at edit cursor" (40757) in the Sound Edit window: each variation that holds the
-// edit cursor -- among the selected ones, else (nothing selected) among them all -- split there, as the
-// waveform's S used to split the one under the mouse. A piece of 1 ms or less would be left: that one stays
-// whole. Not in Takes mode (the caller refuses it).
-struct EditSplitPlan {
-    std::vector<int> frames;  // ascending; empty = nothing to do (`why` says what is missing)
-    std::string      why;
-};
-
-// `cursor` < 0 = no edit cursor.
-EditSplitPlan PlanEditSplit(const std::vector<SoundFrame>& frames, const std::vector<int>& selected, double cursor);
-
-// The selection Normalize works on: the selected frames (NormalizeRegions keeps the on ones); {} =
-// every frame (no selection); {-1} = none when only off frames are selected.
-std::vector<int> NormalizeSelection(const std::vector<SoundFrame>& frames, const std::vector<int>& selected);
-// 13-29 (Antho 2026-10-13: Play in Edit plays exactly what is shown): the Edit window's Play, on the file's
-// clock (a voice's delay = its start in the file, so the playhead follows the file). Every variation that is
-// on plays as Populate places it on a combined event (PartAuditionVoices with part ""): its trims, its fades,
-// its dB, the excluded zones silent with the Sound's cut_fade at their edges; off variations and the file
-// between variations are silent. A divided variation whose parts have their own gain (13-28 part_db) plays
-// each part at it, one voice per part, the piece's fades kept across them (fade_from_s / fade_span_s).
-// 13-54: a divided Silence-detected Sound (PartMarginsApply) plays only what its parts play once their
-// pre-roll / tail apply (PartPieces): what the margins leave out is silent, with the Sound's cut fade at
-// the sides they cut; touching parts play on as one voice (split only for part gains).
-// Overlapping variations: the earlier one wins until it ends. Takes mode: take `take` whole as placed
-// (each take is its own file), at delay 0; -1 or a bad index = nothing.
-// 13-62: a divided variation with part settings or a `listen` filter is played per owner too: each stretch
-// at FrameGainDb + PartGainDb of its part, in its part's mono; a part owning a fade plays its stretch as
-// its own voice, its owned side(s) faded with the part's fade (decision 6, per side; an unowned side keeps
-// the piece's fade at the piece's edge, nothing inside it next to a heard part); a part not heard (PartHeard) is
-// silent, the Sound's cut_fade on the sides of what plays next to it. No part settings and no filter = as
-// before.
-std::vector<AuditionVoice> EditPlayVoices(const SoundLibrary& lib, const SoundNode& n, int take = -1,
-                                          const PartListen* listen = nullptr);
-// The voices as heard from `from_s` s into them (a Play restarted where it was): those over are dropped,
-// the one under it cut (start, length, fade_from_s moved), every delay shifted back by from_s.
-std::vector<AuditionVoice> VoicesFrom(const std::vector<AuditionVoice>& voices, double from_s);
-// Whether two voice lists play the same (a changed one restarts Edit's Play).
-bool SameVoices(const std::vector<AuditionVoice>& a, const std::vector<AuditionVoice>& b);
-// 13-49 review: when Edit's Play restarts on a change heard live. `playing` = the voices it plays, `now` =
-// the Sound as shown. The voices last seen different from `playing` are kept with the time they appeared;
-// any new change resets that time, so Play restarts (true) only once `now` stayed the same `settle_s`
-// (a long drag restarts when it pauses or ends, never every `settle_s` during it). Back to `playing`
-// (an undone change) = nothing pending.
-struct EditPlaySettle {
-    std::vector<AuditionVoice> seen;
-    double                     since = -1.0;  // < 0 = no change pending
-};
-bool SettleEditPlay(EditPlaySettle& s, const std::vector<AuditionVoice>& now, const std::vector<AuditionVoice>& playing,
-                    double t, double settle_s = 0.15);
 // 13-41: a voice's sample forced to mono from its left / right samples: Left l, Right r, Sum (l + r) / 2;
 // Off l (the caller keeps the channels). The peaks drawn use it too (per column, on the lanes' max abs).
 double MonoOf(double l, double r, MonoMode mono);
@@ -282,10 +170,11 @@ struct EditPlay {
     std::vector<AuditionVoice> voices;  // delay = heard start; empty when nothing is heard
     HeardMap                   map;
 };
-// {} for a Sound that is not zoned, or to <= from. The library overload adds GainFromRoot and the node's uid.
-EditPlay EditPlayFrom(const SoundData& d, double from, double to, const PartListen* listen = nullptr);
+// {} for to <= from. The library overload adds GainFromRoot and the node's uid. 13-62i: on timeline `tl` (a Takes-mode
+// Sound's take; sound_zones.h ZoneTimeline).
+EditPlay EditPlayFrom(const SoundData& d, double from, double to, const PartListen* listen = nullptr, int tl = -1);
 EditPlay EditPlayFrom(const SoundLibrary& lib, const SoundNode& n, double from, double to,
-                      const PartListen* listen = nullptr);
+                      const PartListen* listen = nullptr, int tl = -1);
 
 // A playhead at heard time t: its file time, its gain (the envelope there; 1 in silence), whether it is the
 // incoming one of a crossfade (the later span: drawn dashed, rising; the outgoing one solid, fading). Up to two

@@ -40,8 +40,8 @@ struct ZoneLook {
     bool    butt_next = false;       // the next zone starts where it ends (Butted)
 };
 // Every zone's look from one AllZones list (neighbours by index; the same values as GapBefore / GapAfter /
-// GapLeft / GapRight / ZoneFade / ZoneSnap).
-std::vector<ZoneLook> ZoneLooks(const SoundData& d, const PeakView* peaks);
+// GapLeft / GapRight / ZoneFade / ZoneSnap). 13-62i: of timeline `tl` (AllZones(d, tl)).
+std::vector<ZoneLook> ZoneLooks(const SoundData& d, const PeakView* peaks, int tl = -1);
 
 struct ZoneVarBlock;
 
@@ -56,6 +56,7 @@ struct ZoneHitView {
     double          file_len = 0.0;       // 0 = unknown
     const PeakView* peaks = nullptr;      // the snap tags' place (ZoneSnap)
     float           dp = 1.0f;
+    int             tl = -1;                // 13-62i: the timeline shown (a Takes-mode Sound's take; sound_zones.h)
     // The caller's cached ZoneLooks / ZoneVarBlocks of the Sound (null: computed here).
     const std::vector<ZoneLook>*     looks = nullptr;
     const std::vector<ZoneVarBlock>* blocks = nullptr;
@@ -112,11 +113,13 @@ ZoneSel GainDragZones(const SoundData& d, const ZoneSel& sel, const ZoneRef& r);
 std::string ZoneGainToast(const std::string& zone_name, const std::string& part_name, double db, double fader_db);
 
 // The part a Shift+drag makes: Lane = the lane's part; Combined = `part_sel` (Settings of) when it is a part,
-// else the part of the zone under the start, else the first part.
-std::string NewZonePart(const SoundData& d, const ZoneHit& h, const std::string& part_sel);
+// else the part of the zone under the start (on timeline `tl`), else the first part. 13-62i: an undivided Sound's
+// kWholePart.
+std::string NewZonePart(const SoundData& d, const ZoneHit& h, const std::string& part_sel, int tl = -1);
 
-// The ruler / new zone edges: t snapped to a zone edge or the cursor within `tol_px` (px_per_s = px per second).
-double SnapZoneTime(const SoundData& d, double t, double px_per_s, double cursor, float tol_px);
+// The ruler / new zone edges: t snapped to a zone edge (of timeline `tl`) or the cursor within `tol_px` (px_per_s =
+// px per second).
+double SnapZoneTime(const SoundData& d, double t, double px_per_s, double cursor, float tol_px, int tl = -1);
 
 // Our own double-click (the mockup's isDouble: two presses on the same thing within 0.45 s and 6 px).
 struct ZoneTap {
@@ -149,7 +152,8 @@ struct ZoneVarBlock {
     int    frame = -1;
     double a = 0.0, b = 0.0;
 };
-std::vector<ZoneVarBlock> ZoneVarBlocks(const SoundData& d);
+// 13-62i: `tl` >= 0: only timeline tl's (a Takes-mode Sound's take); < 0: every variation (a count).
+std::vector<ZoneVarBlock> ZoneVarBlocks(const SoundData& d, int tl = -1);
 // "n · a–b ms" (the caller shows "n" alone when it does not fit).
 std::string ZoneVarLabel(int n, double a, double b);
 // Every zone of variation `frame` (time order); its first part zone (or zone).

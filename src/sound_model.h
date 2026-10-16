@@ -15,6 +15,7 @@
 // SoundDraw::part, PlacedTag::pt. 13-31: SoundNode::layer_roles / layer_keep_offset.
 // 13-62 (spec 13-62 Contract): SoundFrame::owners, PartSettings, SoundData::parts.
 // 13-62h (spec 13-62h Contract): EditZone, SoundFrame::zones, PartSettings::fader_db, SoundData::gap_xfade.
+// 13-62i (spec 13-62i A0): kWholePart, EditZone::fade_in_shape / fade_out_shape, SoundData::fader_db.
 //
 // Every `kept` member holds text this version did not understand, written back as read:
 // unknown fields ("key=value" tokens) of the object's own line, and `kept_lines` the unknown
@@ -57,8 +58,13 @@ struct SilenceParams {  // 13-17b (Antho 2026-10-12): -45 dB, 200 ms gap, 100 ms
     double tail_ms = 100.0;
 };
 
-// 13-62h (spec 13-62h Contract): one zone of a divided Sound's variation, laid on the file (absolute source
-// seconds). A part zone (`part` = a divide value uid) is the REAPER item Populate places; a Gap (`part` "") is
+// 13-62i: the part key of an undivided Sound's zones (its one implicit part: the whole Sound). Never "" (a Gap) and
+// never a value uid (those are 16-hex). Its settings are the Sound's own (PartSettingsOf returns none for it).
+constexpr const char kWholePart[] = "*";
+
+// 13-62h (spec 13-62h Contract): one zone of a Sound's variation, laid on the file (absolute source
+// seconds; 13-62i: every Sound, a divided one's parts or an undivided one's kWholePart, in Takes mode on its take's
+// own source). A part zone (`part` = a divide value uid, or kWholePart) is the REAPER item Populate places; a Gap (`part` "") is
 // a wormhole between the two zones it touches: playback jumps it and glues them with a crossfade of xl + xr
 // (its left / right sides). `slot_a` / `slot_b`: the cuts around a part zone (its automatic edges never cross
 // them); `a_hand` / `b_hand`: an edge dragged by hand (else it follows its part's Pre-roll / Tail);
@@ -88,6 +94,9 @@ struct EditZone {
         bool operator!=(const AutoSnap& o) const { return !(*this == o); }
     };
     AutoSnap                                         auto_snap;
+    // 13-62i (appended): its own fades' shapes (REAPER's C_FADEINSHAPE / C_FADEOUTSHAPE index, 0 = linear), read only
+    // with its own fade on that side (a frame's shaped fades migrated).
+    int                                              fade_in_shape = 0, fade_out_shape = 0;
     bool IsGap() const { return part.empty(); }
 };
 
@@ -135,8 +144,9 @@ struct SoundFrame {
     // with parts - 1 cuts). Any comp gesture (AssignRange, a cut removed by MoveCut) fills it; with it set, a
     // variation may hold any number of cuts and a part several separate pieces.
     std::vector<std::string> owners;
-    // 13-62h (appended): a divided Sound's zones (sound_zones.h), time ordered; the frame's start / length are
-    // its first zone's start and its last zone's end. Empty on undivided and Takes-mode Sounds.
+    // 13-62h (appended): the variation's zones (sound_zones.h), time ordered; the frame's start / length are
+    // its first zone's start and its last zone's end. 13-62i: every Sound (undivided: kWholePart zones; Takes mode:
+    // on its take's own source, each take a timeline of its own).
     std::vector<EditZone>    zones;
 };
 
@@ -236,6 +246,9 @@ struct SoundData {
     std::vector<PartSettings> parts;
     // 13-62h (appended): the crossfade of a new Gap (s, half on each side: "At Gaps").
     double                   gap_xfade = kDefaultGapXfade;
+    // 13-62i (appended): what the fader of the implicit part (kWholePart, an undivided Sound) has applied to its zones
+    // (dB, a view: PartSettings::fader_db's home for the part that has no PartSettings).
+    std::optional<double>    fader_db;
 };
 
 // A Switch's value -> child.
@@ -443,6 +456,11 @@ struct PlacedTag {
     int         version = 2;      // a higher version is read best-effort and kept on write
     std::vector<std::string> kept;  // unknown fields, written back after the known ones
     std::string pt;                 // 13-23: the part (value uid) it plays ("" = the whole variation)
+    // 13-62i (D, P2): the library dB it was placed at (`g`, the request's gain_db + its piece's db) and its piece
+    // index (`pi`, 0 without pieces). An older tag has neither (has_g false, pi -1): its gain is unknown.
+    bool        has_g = false;
+    double      g = 0.0;
+    int         pi = -1;
 };
 
 // ---- Shared working types --------------------------------------------------------------------

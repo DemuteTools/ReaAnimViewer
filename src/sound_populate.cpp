@@ -52,6 +52,8 @@ namespace {
 
 using SetMediaItemSelectedFn = void (*)(MediaItem* item, bool selected);
 SetMediaItemSelectedFn f_set_selected = nullptr;
+using SetItemValueFn = bool (*)(MediaItem* item, const char* parmname, double newvalue);
+SetItemValueFn f_set_item_value = nullptr;  // 13-62i (D): a kept item's D_VOL
 
 constexpr int kUnselectAllItems = 40289;  // Item: Unselect (clear selection of) all items
 
@@ -309,6 +311,14 @@ const SoundData& PlacedDataFor(const std::string& lib_uid, const SoundNode& n, i
     return m.data;
 }
 
+// 13-62i: the file variation `v` of a Sound plays (Takes mode: its take's), "" when not found.
+std::string PlacedSourcePath(const SoundNode& n, int v)
+{
+    if (n.sound.mode != DetectMode::Takes) return SoundSourcePath(n.sound.source);
+    SoundMedia m;
+    return ReadSoundMedia(n.sound.source, &m) ? VariationPath(m, n.sound, v) : std::string();
+}
+
 // 13-62h: the peaks a zoned placement's snap reads (ZoneSnap on its anchor zone: Attack / Peak without a snap of
 // its own, PieceSnapNeedsPeaks), read once a gesture like the syncs above; null when it needs none or none could
 // be read (the zone's detected onset, else its start). Nothing is detected here (D6): the zones are as stored.
@@ -378,13 +388,13 @@ PlaceRequest RequestFor(MediaItem* owner, const std::string& rid, double event_t
         req.source.item_guid = file->item_guid;
     }
     if (req.source.kind == SoundSourceKind::Item && v >= 0 && v < static_cast<int>(n.sound.frames.size())) {
-        if (sd.mode == DetectMode::Takes) req.variation = v;
+        if (sd.mode == DetectMode::Takes) req.variation = v;  // 13-62i: its take, made active before its pieces
         else if (sd.mode == DetectMode::TakeMarkers || sd.mode == DetectMode::Silence)
             req.slice = SliceApplyFor(sd.frames[static_cast<size_t>(v)]);
         req.fades = FadeApplyFor(sd, v);  // Antho 2026-10-12: fades on every placed variation
-        // 13-20 / 13-23 / 13-25 (D7): the part's pieces, each from the sync point (a folder pile and
-        // Takes ignore them: PlaceSounds).
-        if (sd.mode != DetectMode::Takes) req.pieces = PieceApplyFor(sd, v, rs.part_value, false, zone_peaks);
+        // 13-20 / 13-23 / 13-25 (D7): the part's pieces, each from the sync point (a folder pile ignores them:
+        // PlaceSounds). 13-62i: every mode, Takes too (its take's zones).
+        req.pieces = PieceApplyFor(sd, v, rs.part_value, false, zone_peaks);
     }
     req.part = rs.part_value;
     req.gain_db = rs.gain_db;  // ResolveEvent already added the frame's dB
@@ -482,18 +492,37 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
         SoundEventsOf(BuildEventList(det.events, det.rules.events, blocks.size()), blocks, det.map);
     const int n_events = static_cast<int>(sound_events.size());
     int       handled = 0;
+    // 13-62i (D): what this Populate does with each event (PlanPopulateEvent: drawn, kept -- left out by the filter or
+    // placed by the user, its draws still playing --, or skipped); each draw also avoids the picks the kept events
+    // after it play (SetPopulateTimeline).
+    PopulateFilter filter;
+    filter.rid = o.rid;
+    filter.rids = o.rids;
+    filter.has_t = o.has_t;
+    filter.t = o.t;
+    filter.only_populated = o.only_populated;
+    std::vector<EventPlan> plans;
+    {
+        std::vector<const EventSounds*> evs;
+        for (const FollowEvent& e : sound_events) {
+            const EventSounds* ev = FindEventSounds(rec, e.rid, e.t);
+            evs.push_back(ev);
+            plans.push_back(PlanPopulateEvent(filter, e.rid, e.t, ev, e.enabled));
+        }
+        SetPopulateTimeline(st, pass_draws ? &pass_states : nullptr, plans, evs);
+    }
     for (const FollowEvent& e : sound_events) {
         if (o.on_event) o.on_event(handled, n_events);
         else BusyStep(handled, n_events);  // 13-59: the busy card of the gesture running this (if any)
-        ++handled;
+        const int at = handled++;  // 13-62i (D): its index in the timeline
         const std::string& rid = e.rid;
-        if (!e.enabled) continue;  // fix C 2026-10-12: a disabled rule's sounds are kept, muted by the follow
-        if (!o.rid.empty() && rid != o.rid) continue;
-        if (!o.rids.empty() && std::find(o.rids.begin(), o.rids.end(), rid) == o.rids.end()) continue;
-        if (o.has_t && std::fabs(e.t - o.t) > kEventMatchSeconds) continue;
         EventSounds* ev = FindEventSounds(rec, rid, e.t);
-        if (o.only_populated && (!ev || !EventIsPopulated(*ev))) continue;
-        if (EventSkippedByPopulate(ev)) continue;  // attached / spread: left alone
+        const EventPlan plan = static_cast<size_t>(at) < plans.size() ? plans[static_cast<size_t>(at)] : EventPlan::Skip;
+        if (plan == EventPlan::Skip) continue;
+        if (plan == EventPlan::Keep) {  // 13-62i (D): it still plays its recorded draws: they feed the history
+            if (ev) SeedHistory(st, pass_draws ? &pass_states : nullptr, ev->draws);
+            continue;
+        }
 
         const auto            po = part_of.find(rid);
         const EffectiveAssign ea = po == part_of.end()
@@ -534,6 +563,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
 
         // P10: the draw.
         st.lib = lib;
+        st.at = at;
         const std::vector<SoundDraw> prev = ev->draws;
         EventDraw ed;
         ed.rid = rid;
@@ -575,6 +605,11 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
             AddLine(rep, ReportKind::Blocked, res.reason.empty() ? std::string("blocked") : res.reason, "", guid, e.t);
             continue;
         }
+        for (const std::string& note : res.notes) {  // 13-62i (D, P1): e.g. a Blend without layer roles, once per Populate
+            const bool said = std::any_of(rep.lines.begin(), rep.lines.end(),
+                                          [&note](const ReportLine& l) { return l.kind == ReportKind::Info && l.text == note; });
+            if (!said) AddLine(rep, ReportKind::Info, note, "", guid, e.t);
+        }
         if (res.sounds.empty() && !res.gap.empty())  // 13-21: a library gap; the planner removes what it had placed
             AddLine(rep, ReportKind::NoSound, "Nothing placed: " + res.gap, res.gap_node, guid, e.t);
 
@@ -613,31 +648,36 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                     continue;
                 }
                 // 13-20: the items it is placed as (one per span), compared with what is placed; a folder
-                // pile and Takes are not counted (their members are the pile's). 13-25: the snap its anchor
+                // pile is not counted (its members are the pile's). 13-25: the snap its anchor
                 // piece gets (item s), compared too, so a sync point measured or moved since is placed again.
+                // 13-62i: Takes mode too (its take's zones).
                 int    pieces = 0;
                 double sync = -1.0;
-                if (n->sound.mode != DetectMode::Takes && s.variation >= 0) {
-                    bool   pile = false;
-                    double rate = 1.0;
-                    if (n->sound.source.kind == SoundSourceKind::Item)
-                        if (MediaItem* src = FindItemByGuid(n->sound.source.item_guid)) {
-                            pile = IsFolderItem(src);
-                            if (MediaItem_Take* tk = GetActiveTake(src)) rate = GetMediaItemTakeInfo_Value(tk, "D_PLAYRATE");
-                        }
+                bool   pile = false;
+                double rate = 1.0;
+                std::vector<PieceApply> pa;
+                if (n->sound.source.kind == SoundSourceKind::Item)
+                    if (MediaItem* src = FindItemByGuid(n->sound.source.item_guid)) {
+                        pile = IsFolderItem(src);
+                        if (MediaItem_Take* tk = GetActiveTake(src)) rate = GetMediaItemTakeInfo_Value(tk, "D_PLAYRATE");
+                    }
+                if (s.variation >= 0 && pile) pa = PieceApplyFor(n->sound, s.variation, s.part_value);  // 13-62i: its zone's gain
+                if (s.variation >= 0) {
                     if (!pile) {
                         const SoundData& sd = PlacedDataFor(
-                            lib_uid, *n, s.variation, [n]() { return SoundSourcePath(n->sound.source); }, measured_here);
+                            lib_uid, *n, s.variation, [n, &s]() { return PlacedSourcePath(*n, s.variation); }, measured_here);
                         const PeakData* zpk = ZoneSnapPeaks(
-                            *n, s.variation, s.part_value, [n]() { return SoundSourcePath(n->sound.source); }, measured_here);  // the file the syncs above read
-                        const std::vector<PieceApply> pa = PieceApplyFor(sd, s.variation, s.part_value,
-                                                                         n->sound.source.kind == SoundSourceKind::File, zpk);
+                            *n, s.variation, s.part_value, [n, &s]() { return PlacedSourcePath(*n, s.variation); }, measured_here);  // the file the syncs above read
+                        pa = PieceApplyFor(sd, s.variation, s.part_value, n->sound.source.kind == SoundSourceKind::File, zpk);
                         pieces = static_cast<int>(pa.size());
                         if (!(rate > 0.0) || !std::isfinite(rate)) rate = 1.0;
                         for (const PieceApply& a : pa)
                             if (a.anchor) sync = a.slice.snap_offset / rate;
                     }
                 }
+                // 13-62i (D, P2): each item's dB now (a pile: one, its anchor zone's gain on top).
+                const std::vector<double> piece_db =
+                    pile ? std::vector<double>{PileGainDb(pa, s.gain_db)} : PieceDbFor(pa, s.gain_db);
                 for (int p : on) {
                     DesiredSlot d;
                     d.pass = p;
@@ -646,6 +686,8 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                     d.part = s.part_value;
                     d.pieces = pieces;
                     d.sync = sync;
+                    d.piece_db = piece_db;
+                    d.pile = pile;
                     desired.push_back(d);
                     desired_rs.push_back(&s);
                 }
@@ -682,6 +724,7 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
             PopulateDrawState& ps = pass_states[pd.id];
             ps.lib = lib;
             ps.seed = PassDrawSeed(rec.seed, pd.id);
+            ps.at = at;
             pd.prev = PassPrevDraws(prev, pd.id);
             pd.ed.rid = rid;
             pd.ed.t = ev->t;
@@ -739,6 +782,20 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
                     if (MediaItem* it = FindItemByGuid(ev->placed[static_cast<size_t>(i)].item_guid)) kept_items.push_back(it);
                 CrossfadeAsButted as_butted(kept_items);
                 for (MediaItem* it : kept_items) FixLaneOverlap(nullptr, it);
+                // 13-62i (D, P2): a kept item plays at the library's gain now (a volume changed since it was placed).
+                const DesiredSlot& kd = desired[static_cast<size_t>(step.desired)];
+                for (MediaItem* it : kept_items) {
+                    PlacedTag tag;
+                    const bool       tagged = ReadPlacedTag(it, &tag);
+                    const KeptVolume kv = KeptItemVolume(kd.piece_db, kd.pile, static_cast<int>(step.existing.size()),
+                                                         tagged && tag.has_g, tag.g, tag.pi, GetMediaItemInfo_Value(it, "D_VOL"));
+                    if (!kv.set || !f_set_item_value || !f_set_item_value(it, "D_VOL", kv.vol)) continue;
+                    if (!tagged) continue;
+                    tag.has_g = true;
+                    tag.g = kv.g;
+                    tag.pi = kv.pi;
+                    WritePlacedTag(it, tag);
+                }
                 continue;
             }
             if (step.act == SlotAction::Remove) {
@@ -796,12 +853,12 @@ void PopulateOne(MediaItem* item, const SoundStore& store, const PopOpts& o, Sou
             // 13-25 (D6): stale sync points measured now, over the file it plays.
             const SoundData& placed_data = PlacedDataFor(
                 lib_uid, *n, s.variation,
-                [file, n]() { return file && !file->path.empty() ? file->path : SoundSourcePath(n->sound.source); },
+                [file, n, &s]() { return file && !file->path.empty() ? file->path : PlacedSourcePath(*n, s.variation); },
                 measured_here);
             // 13-62h review: measured on the file it places (as the syncs above), not the source's own path.
             const PeakData* zone_peaks = ZoneSnapPeaks(
                 *n, s.variation, s.part_value,
-                [file, n]() { return file && !file->path.empty() ? file->path : SoundSourcePath(n->sound.source); },
+                [file, n, &s]() { return file && !file->path.empty() ? file->path : PlacedSourcePath(*n, s.variation); },
                 measured_here);
             PlaceRequest  req = RequestFor(item, rid, ev->t, pt, *n, s, file, &placed_data, zone_peaks);
             if (switch_track) {  // 13-13: every copy on its Switch-named track; 13-16: or its layer track
@@ -1072,6 +1129,7 @@ void InitSoundPopulate(void* (*get_func)(const char* name))
 {
     if (!get_func) return;
     f_set_selected = reinterpret_cast<SetMediaItemSelectedFn>(get_func("SetMediaItemSelected"));
+    f_set_item_value = reinterpret_cast<SetItemValueFn>(get_func("SetMediaItemInfo_Value"));
 }
 
 ItemRigInfo ItemRig(MediaItem* item)

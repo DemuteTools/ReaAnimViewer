@@ -8,10 +8,11 @@
 
 #include <algorithm>
 #include <set>
+#include <string>
+#include <vector>
 
 #include "sound_entries.h"  // 13-23: PartIndex, PartOfRole
 #include "sound_record.h"
-#include "sound_zones.h"  // 13-62h: PlacedFromZones (a zoned Sound's gains are its zones')
 
 namespace rav {
 
@@ -112,11 +113,12 @@ struct Walker {
     }
 
     // 13-23 (D3): the part a Sound plays for this event: the part its role map gives the event's role;
-    // "" (the whole variation) when combined, in Takes mode (A8), or for a value that is not one of its
-    // divide values. 13-31 (d): a Blend layer reached composes with this (the Blend picks, the Sound divides).
+    // "" (the whole variation) when combined, or for a value that is not one of its divide values (13-62i: Takes mode
+    // too, its takes are zones of its parts). 13-31 (d): a Blend layer reached composes with this (the Blend picks,
+    // the Sound divides).
     std::string PartFor(const SoundNode& n) const
     {
-        if (n.sound.mode == DetectMode::Takes || !IsDivided(n.sound)) return std::string();
+        if (!IsDivided(n.sound)) return std::string();
         return PartOfRole(store, n.sound, layers.role);
     }
 
@@ -140,12 +142,9 @@ struct Walker {
             } else {
                 if (hooks.part_variation) rs.variation = hooks.part_variation(n, rs.part_value);
                 else rs.variation = hooks.variation ? hooks.variation(n) : -1;
-                // 13-62h: a Sound edited as zones carries its gains in its zones (each piece its own, PieceApply::db).
-                if (!PlacedFromZones(n.sound) && rs.variation >= 0 && rs.variation < (int)n.sound.frames.size())
-                    rs.gain_db += FrameGainDb(n.sound.frames[(size_t)rs.variation], rs.part_value);  // 13-28: a part's own gain
             }
-            if (!PlacedFromZones(n.sound))
-                rs.gain_db += PartGainDb(n.sound, rs.part_value);  // 13-62 (decision 3): the part's own gain setting
+            // 13-62h / 13-62i: every Sound carries its gains in its zones (each piece its own, PieceApply::db): the
+            // nodes' volumes alone here.
             res.sounds.push_back(rs);
             break;
         }
@@ -175,6 +174,11 @@ struct Walker {
             if (kids.empty()) Gap(n, NodeLabel(&store, n) + ": empty Blend");
             else if (play.empty())  // Q2: a role no layer holds
                 Gap(n, NodeLabel(&store, n) + ": no layer plays on " + RoleText(layers.role));
+            // 13-62i (D, P1): a role event on a Blend of several layers none of which has a role: all play, said.
+            if (!layers.role.empty() && !uses_roles && kids.size() > 1) {
+                const std::string note = RolelessBlendNote(NodeLabel(&store, n));
+                if (!Contains(res.notes, note)) res.notes.push_back(note);
+            }
             Seg(std::string("Blend ") + kTimes + std::to_string(play.size()));
             text_open = false;
             for (const SoundNode* c : play)
@@ -493,6 +497,11 @@ bool ConvertNodeType(SoundLibrary& lib, const std::string& uid, SoundNodeType ty
     n->unassigned = unassigned;
     n->group_uid = group_uid;
     return true;
+}
+
+std::string RolelessBlendNote(const std::string& blend_name)
+{
+    return "Blend " + blend_name + " has no layer roles: every layer plays on every event";
 }
 
 bool BlendUsesRoles(const SoundLibrary& lib, const SoundNode& blend)

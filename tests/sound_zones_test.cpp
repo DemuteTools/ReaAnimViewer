@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -108,14 +109,14 @@ bool SameZones(const SoundData& x, const SoundData& y)
             if (p.a != q.a || p.b != q.b || p.part != q.part || p.slot_a != q.slot_a || p.slot_b != q.slot_b ||
                 p.a_hand != q.a_hand || p.b_hand != q.b_hand || p.a_auto_cut != q.a_auto_cut || p.onset != q.onset ||
                 p.snap != q.snap || p.fade_in != q.fade_in || p.fade_out != q.fade_out || p.db != q.db || p.xl != q.xl ||
-                p.xr != q.xr || p.kept != q.kept)
+                p.xr != q.xr || p.kept != q.kept || p.fade_in_shape != q.fade_in_shape || p.fade_out_shape != q.fade_out_shape)
                 return false;
         }
     }
     if (x.parts.size() != y.parts.size()) return false;
     for (size_t i = 0; i < x.parts.size(); ++i)
         if (x.parts[i].value != y.parts[i].value || x.parts[i].fader_db != y.parts[i].fader_db) return false;
-    return x.gap_xfade == y.gap_xfade;
+    return x.gap_xfade == y.gap_xfade && x.fader_db == y.fader_db;  // 13-62i: the implicit part's fader too
 }
 
 SoundStore StoreOf(const SoundData& d)
@@ -429,24 +430,36 @@ void TestProposeAndRecord()
     SoundData u = d;
     u.frames[0].zones[0].kept = {{"zz", "1"}, {"bare", ""}};
     CHECK(RoundTrips(u));
-    // Undivided: the zones go.
+    // 13-62i (matrix "Divide by -> None"): the zones stay where they are, all of the implicit part, gains kept.
     SetZoneDb(d, {0, 0}, 4.5);
+    SetZoneDb(d, {0, 1}, -2.0);
+    const SoundData was = d;
     CHECK(SetDivide(d, "", {}));
-    CHECK(Near(d.frames[0].db, 4.5));  // the first part zone's gain is the variation's again
+    CHECK(d.frames[0].zones.size() == was.frames[0].zones.size() && d.frames[1].zones.size() == was.frames[1].zones.size());
+    for (size_t f = 0; f < d.frames.size(); ++f)
+        for (size_t k = 0; k < d.frames[f].zones.size(); ++k) {
+            const EditZone &z = d.frames[f].zones[k], &w = was.frames[f].zones[k];
+            CHECK(z.part == kWholePart && z.a == w.a && z.b == w.b && z.db == w.db);
+        }
+    CHECK(d.frames[0].db == 0.0 && d.parts.empty() && UsesZones(d) && ZonesProblem(d, 3.0).empty());
     RefreshParts(d, &pk);
-    CHECK(d.frames[0].zones.empty() && !UsesZones(d));
-    {  // divided again: the proposed zones take the variation's gain, the variation none
+    CHECK(d.frames[0].zones.size() == 2 && Near(At(d, 0, 0).db, 4.5) && Near(At(d, 0, 1).db, -2.0) && ZonesProblem(d, 3.0).empty());
+    CHECK(RoundTrips(d));
+    {  // 13-62i (matrix "None -> Divide by"): divided again: zones proposed as 13-62h (the first zone's gain)
         SoundData r = d;
         CHECK(SetDivide(r, "g", {kHeel, kToe}));
         RefreshParts(r, &pk);
         CHECK(r.frames[0].zones.size() == 2 && Near(At(r, 0, 0).db, 4.5) && Near(At(r, 0, 1).db, 4.5) && r.frames[0].db == 0.0);
+        CHECK(At(r, 0, 0).part == kHeel && At(r, 0, 1).part == kToe && ZonesProblem(r, 3.0).empty());
     }
-    // Takes mode: no zones.
+    // 13-62i: Takes mode: each take gets zones (proposed on its own timeline; the peaks of no take given: even split).
     SoundData tk = Base();
     tk.mode = DetectMode::Takes;
-    tk.frames = {f1};
+    tk.frames = {f1, f1};
     RefreshParts(tk, &pk);
-    CHECK(tk.frames[0].zones.empty());
+    CHECK(tk.frames[0].zones.size() == 2 && tk.frames[1].zones.size() == 2 && ZonesProblem(tk, 3.0).empty());
+    CHECK(At(tk, 0, 0).a_hand && At(tk, 0, 1).b_hand && !At(tk, 0, 0).b_hand);  // P7: a take keeps its outer edges
+    CHECK(ZoneTimeline(tk, 1) == 1 && AllZones(tk, 1).size() == 2 && ZoneAt(tk, 0.2, 1).frame == 1 && ZoneAt(tk, 0.2).frame < 0);
 }
 
 // 13-62h (Antho 2026-10-15, v5): an item (zones joined by Gaps) moves whole (MoveChain): every member by the same
@@ -486,6 +499,129 @@ void TestItems()
     CHECK(DeleteZones(x, xs) && x.frames[0].zones.size() == 1 && Near(At(x, 0, 0).a, 0.90) && ZonesProblem(x, 3.0).empty());
 }
 
+
+// 13-62i (spec 13-62i matrix): an undivided Sound is zones of its one implicit part, with the same gestures and
+// results; a Takes-mode Sound's takes are timelines of their own.
+EditZone W(double a, double b) { return Z(kWholePart, a, b); }
+
+SoundData Whole(std::vector<EditZone> zones)
+{
+    SoundData d = With(std::move(zones));
+    d.divide_group.clear();
+    d.divide_values.clear();
+    return d;
+}
+
+void TestUndividedAndTakes()
+{
+    {  // Split: two zones of the implicit part, butted, one change.
+        SoundData d = Whole({W(0.10, 0.70)});
+        CHECK(ZonesProblem(d, 3.0).empty() && PartIndex(d, kWholePart) == 0 && PartIndex(d, kHeel) < 0);
+        ZoneSel s;
+        CHECK(SplitZoneAt(d, 0.30, {}, &s));
+        CHECK(d.frames[0].zones.size() == 2 && At(d, 0, 0).part == kWholePart && At(d, 0, 1).part == kWholePart &&
+              Near(At(d, 0, 0).b, 0.30) && Near(At(d, 0, 1).a, 0.30) && Butted(d, {0, 0}, {0, 1}));
+        CHECK(ZoneFade(d, {0, 0}, 1).src == FadeSrc::Cut && ZonesProblem(d, 3.0).empty() && RoundTrips(d));
+        // Heal: one zone again.
+        ZoneSel h = {{0, 0}, {0, 1}};
+        CHECK(HealZones(d, h) && d.frames[0].zones.size() == 1 && Near(At(d, 0, 0).a, 0.10) && Near(At(d, 0, 0).b, 0.70));
+    }
+    {  // Gap: Alt+drag 0.40-0.45 inside the variation: zone · Gap · zone.
+        SoundData d = Whole({W(0.10, 0.70)});
+        bool      made = false;
+        CHECK(MakeGap(d, 0.40, 0.45, {}, &made) && made && d.frames[0].zones.size() == 3 && At(d, 0, 1).IsGap());
+        CHECK(ItemOf(d, {0, 0}).size() == 3 && ZonesProblem(d, 3.0).empty() && RoundTrips(d));
+        // A new zone made by Shift+drag in empty space is of the implicit part (never "": a Gap).
+        CHECK(NewZone(d, kWholePart, 1.0, 1.2) && ZonesOfPart(d, kWholePart).size() == 3);
+        CHECK(!NewZone(d, kHeel, 1.5, 1.6));  // not one of its parts
+    }
+    {  // Fader and Normalize with one part: the implicit part's fader lives on the Sound (fdr), round-trips.
+        SoundData d = Whole({W(0.10, 0.30), G(0.30, 0.35, 0.005, 0.005), W(0.35, 0.50), W(0.60, 0.70)});
+        d.frames[0].zones[0].db = -1.0;
+        CHECK(SetPartFader(d, kWholePart, 2.0) && Near(At(d, 0, 0).db, 1.0) && Near(At(d, 0, 3).db, 2.0));
+        CHECK(Near(PartFaderDb(d, kWholePart), 2.0) && d.fader_db && d.parts.empty() && RoundTrips(d));
+        const std::vector<std::vector<ZoneRef>> groups = NormGroups(d, std::string());
+        CHECK(groups.size() == 2 && groups[0].size() == 2);
+        CHECK(ApplyZoneNormalize(d, groups, {3.0, -1.0}, true) == 2 && Near(At(d, 0, 0).db, 3.0) && Near(At(d, 0, 3).db, -1.0) &&
+              !d.fader_db);
+        // Fade shapes round-trip (a migrated frame's shaped fade).
+        d.frames[0].zones[3].fade_out = 0.004;
+        d.frames[0].zones[3].fade_out_shape = 3;
+        CHECK(RoundTrips(d));
+    }
+    {  // Undivided migration: an old project's variation (trimmed, its own fade in, -3 dB) read as one zone.
+        SoundStore back;
+        CHECK(ParseSoundStore("RAVSOUNDS 1\nlibrary uid=lib name=L root=n1\nnode uid=n1 type=sound name=FS\nsound kind=item mode=silence\n"
+                              "frame start=0.1 len=0.6 db=-3 hand=1 fin=0.005 fish=2\nframe start=1 len=0.5 on=0\n",
+                              &back));
+        const SoundData& m = back.libraries[0].nodes[0].sound;
+        CHECK(m.frames.size() == 2 && m.frames[0].zones.size() == 1 && m.frames[1].zones.size() == 1 && !m.frames[1].on);
+        const EditZone& z = m.frames[0].zones[0];
+        CHECK(z.part == kWholePart && Near(z.a, 0.1) && Near(z.b, 0.7) && Near(z.db, -3.0) && z.fade_in && Near(*z.fade_in, 0.005) &&
+              z.fade_in_shape == 2 && z.a_hand && z.b_hand && m.frames[0].db == 0.0 && m.frames[0].fade_in < 0.0);
+        CHECK(ZonesProblem(m, 0.0).empty() && m.frames[0].hand);
+    }
+    {  // Divide by -> None -> Divide by (SetDivide): the hand-edited zones become the implicit part, then are proposed.
+        SoundData d = With({Z(kHeel, 0.10, 0.30), G(0.30, 0.35, 0.005, 0.005), Z(kToe, 0.35, 0.50)});
+        SetPartFader(d, kToe, 2.0);
+        CHECK(SetDivide(d, "", {}) && d.frames[0].zones.size() == 3 && At(d, 0, 2).part == kWholePart && Near(At(d, 0, 2).db, 2.0) &&
+              d.parts.empty() && ZonesProblem(d, 3.0).empty());
+    }
+    {  // The implicit part's settings are the Sound's: no parts entry ('*' read from a file is dropped), Reset = defaults.
+        SoundData d = Whole({W(0.10, 0.70)});
+        PartSettings bad;
+        bad.value = kWholePart;
+        bad.tail_ms = 9.0;
+        d.parts.push_back(bad);
+        CHECK(PartSettingsOf(d, kWholePart) == nullptr && OwnSettingCount(d, kWholePart) == 0);
+        SanitizeZones(d);
+        CHECK(d.parts.empty());
+        PartSettings g;
+        g.gain_db = 3.0;
+        g.tail_ms = 70.0;
+        SetPartSetting(d, kWholePart, g);
+        CHECK(Near(PartFaderDb(d, kWholePart), 3.0) && Near(At(d, 0, 0).db, 3.0) && Near(d.silence.tail_ms, 70.0) && d.parts.empty());
+        ResetPartSetting(d, kWholePart, PartField::Tail);
+        ResetPartSetting(d, kWholePart, PartField::Gain);
+        CHECK(d.silence.tail_ms == SilenceParams{}.tail_ms && PartFaderDb(d, kWholePart) == 0.0 && Near(At(d, 0, 0).db, 0.0));
+    }
+    {  // A divided Sound's takes read with Sound-level zones of the old model: proposed zones, the old zones gone.
+        SoundStore back;
+        CHECK(ParseSoundStore("RAVSOUNDS 1\nlibrary uid=lib name=L root=n1\nnode uid=n1 type=sound name=FS\n"
+                              "sound kind=item mode=takes div=g divv=heel,toe\nzone start=0.2 len=0.1\nframe start=0.1 len=0.6\n",
+                              &back));
+        const SoundData& m = back.libraries[0].nodes[0].sound;
+        CHECK(m.zones.empty() && m.frames[0].zones.size() == 2 && ZonesProblem(m, 0.0).empty());
+    }
+    {  // Takes: three takes over the same stretch of the file, each its own timeline (no overlap between them).
+        SoundData t = Base();
+        t.mode = DetectMode::Takes;
+        for (int k = 0; k < 3; ++k) {
+            SoundFrame f;
+            f.start = 0.10;
+            f.length = 0.60;
+            t.frames.push_back(f);
+        }
+        RefreshParts(t, nullptr);
+        CHECK(ZonesProblem(t, 3.0).empty() && PartZoneCount(t) == 6 && AllZones(t, 2).size() == 2 && AllZones(t, -1).empty());
+        // A gesture by time acts on its take only.
+        ZoneContext c;
+        c.tl = 1;
+        CHECK(SplitZoneAt(t, 0.2, c));
+        CHECK(t.frames[1].zones.size() == 3 && t.frames[0].zones.size() == 2 && t.frames[2].zones.size() == 2);
+        CHECK(!SplitZoneAt(t, 0.25, ZoneContext{}));  // no take given: nothing
+        // Moving a zone: the other takes' zones never stop it or follow it.
+        CHECK(MoveZone(t, {0, 1}, 0.1, c) && ZonesProblem(t, 3.0).empty() && t.frames[2].zones.size() == 2);
+        // A new zone joins the take it is made on (none is made for a missing take).
+        c.tl = 2;
+        CHECK(NewZone(t, kHeel, 0.80, 0.90, c) && t.frames[2].zones.size() == 3 && t.frames.size() == 3);
+        c.tl = 7;
+        CHECK(!NewZone(t, kHeel, 0.80, 0.90, c) && t.frames.size() == 3);
+        CHECK(RoundTrips(t) && HeardPieces(t, 0.0, 1.0, 2).size() >= 2 && HeardPieces(t, 0.0, 1.0).empty());
+        CHECK(NearestVariation(t, 0.5, 1) == 1 && ZoneAt(t, 0.15, 0).frame == 0 && ZoneAt(t, 0.15, 2).frame == 2);
+    }
+}
+
 // ---- The seeded fuzz --------------------------------------------------------------------------------------------
 
 struct Rng {
@@ -501,19 +637,33 @@ struct Rng {
     int    I(int n) { return n <= 0 ? 0 : static_cast<int>(Next() % static_cast<uint64_t>(n)); }
 };
 
-SoundData FuzzSound(const PeakData& pk)
+// 13-62i: `kind` 0 = divided (Heel / Toe), 1 = undivided (its implicit part; Silence mode or a whole item), 2 = a
+// divided Sound in Takes mode (three takes, each its own timeline over the same file stretch: they overlap in time),
+// 3 = an undivided Sound in Takes mode, 4 = a divided Sound in Take markers mode.
+bool TakesKind(int kind) { return kind == 2 || kind == 3; }
+bool UndividedKind(int kind) { return kind == 1 || kind == 3; }
+
+SoundData FuzzSound(const PeakData& pk, int kind = 0, int salt = 0)
 {
     SoundData d;
-    d.mode = DetectMode::Silence;
-    d.divide_group = "g";
-    d.divide_values = {kHeel, kToe};
-    for (double s : {0.10, 1.04, 1.98}) {
+    d.mode = TakesKind(kind) ? DetectMode::Takes
+           : kind == 4       ? DetectMode::TakeMarkers
+           : (kind == 1 && salt % 2 ? DetectMode::Whole : DetectMode::Silence);
+    if (!UndividedKind(kind)) {
+        d.divide_group = "g";
+        d.divide_values = {kHeel, kToe};
+    }
+    const std::vector<double> starts = TakesKind(kind) ? std::vector<double>{0.10, 0.40, 0.10} : std::vector<double>{0.10, 1.04, 1.98};
+    for (double s : starts) {
         SoundFrame f;
         f.start = s;
-        f.length = 0.76;
+        f.length = TakesKind(kind) ? 1.6 : 0.76;
         d.frames.push_back(f);
     }
-    RefreshParts(d, &pk);
+    if (TakesKind(kind))
+        for (int t = 0; t < 3; ++t) RefreshParts(d, &pk, t);
+    else
+        RefreshParts(d, &pk);
     return d;
 }
 
@@ -711,9 +861,9 @@ std::vector<double> HeardStarts(const std::vector<HeardPiece>& p)
 }
 
 // "" when at most two pieces sound at once and no zone's fades exceed its heard stretch (none rescaled).
-std::string VoicesProblem(const SoundData& d, double A, double B)
+std::string VoicesProblem(const SoundData& d, double A, double B, int tl = -1)
 {
-    const std::vector<HeardPiece> p = HeardPieces(d, A, B);
+    const std::vector<HeardPiece> p = HeardPieces(d, A, B, tl);
     const std::vector<double>     at = HeardStarts(p);
     for (size_t i = 0; i + 2 < p.size(); ++i)
         if (at[i + 2] < at[i] + (p[i].b - p[i].a) - 1e-9) return "three voices overlap";
@@ -809,12 +959,12 @@ struct FuzzStats {
 };
 
 // One fuzz run: `count` gestures from `seed` (a fresh Sound every 1500).
-void FuzzRun(uint64_t seed, int count, FuzzStats& st)
+void FuzzRun(uint64_t seed, int count, FuzzStats& st, int kind = 0)
 {
     PeakData pk = Peaks({{0.15, 0.22}, {0.45, 0.50}, {0.70, 0.71}, {1.10, 1.18}, {1.45, 1.52}, {2.05, 2.12}, {2.40, 2.47}, {2.62, 2.64}});
     const double T = 3.0;
     Rng       r{seed};
-    SoundData d = FuzzSound(pk);
+    SoundData d = FuzzSound(pk, kind);
     ZoneSel   cur;  // the selection a UI keeps: passed to every gesture, re-resolved by it
     int&      bad = st.bad;
     int&      steps = st.steps;
@@ -831,15 +981,17 @@ void FuzzRun(uint64_t seed, int count, FuzzStats& st)
     std::vector<int>& ok_count = st.ok_count;
     for (int i = 0; i < count; ++i) {
         if (i % 1500 == 0) {
-            d = FuzzSound(pk);
+            d = FuzzSound(pk, kind, i / 1500);
             cur.clear();
         }
         ZoneContext ctx;  // with the peaks most of the time; sometimes none (edges stay); the length sometimes from the peaks
         ctx.peaks = r.I(5) == 0 ? nullptr : &pk;
         ctx.file_len = ctx.peaks && r.I(4) == 0 ? 0.0 : T;
+        ctx.tl = TakesKind(kind) ? r.I(3) : -1;  // 13-62i: a take's timeline (the same peaks stand for every take's file)
         const int    k = r.I(kinds);
         const double t0 = r.U(0.0, T), t1 = t0 + r.U(0.0, 0.3);
-        const std::string part = d.divide_values[static_cast<size_t>(r.I(static_cast<int>(d.divide_values.size())))];
+        const std::vector<std::string> keys = PartKeys(d);  // 13-62i: kWholePart when undivided
+        const std::string part = keys[static_cast<size_t>(r.I(static_cast<int>(keys.size())))];
         ZoneSel      sel = r.I(3) == 0 && !cur.empty() ? cur : AnySel(d, r);
         const ZoneRef z = AnyZone(d, r);
         const int    side = r.I(2) ? 1 : -1;
@@ -934,7 +1086,7 @@ void FuzzRun(uint64_t seed, int count, FuzzStats& st)
         }
         case 25:
         case 26:  // not a gesture: no selection carried (a UI's write carries it), so one it moved is dropped
-            RelayoutZones(d, k == 25 ? &pk : nullptr, T);
+            RelayoutZones(d, k == 25 ? &pk : nullptr, T, ctx.tl);
             if (SerializeSoundStore(StoreOf(d)) != before) cur.clear();
             break;
         case 27: d.gap_xfade = r.U(0.0, 0.05); break;
@@ -942,16 +1094,22 @@ void FuzzRun(uint64_t seed, int count, FuzzStats& st)
             if (!d.frames.empty()) {
                 SoundFrame& f = d.frames[static_cast<size_t>(r.I(static_cast<int>(d.frames.size())))];
                 f.on = !f.on;
-                RefreshParts(d, r.I(2) ? &pk : nullptr);
+                RefreshParts(d, r.I(2) ? &pk : nullptr, ctx.tl);
             }
             cur.clear();
             break;
         }
         case 29: {  // divided again (2 or 3 parts), zones proposed again
             if (r.I(6) == 0) {
-                if (d.divide_values.size() == 2) SetDivide(d, "g3", {kHeel, kToe, "ball"});
-                else SetDivide(d, "g", {kHeel, kToe});
-                RefreshParts(d, r.I(3) ? &pk : nullptr);
+                if (UndividedKind(kind)) {  // 13-62i: undivided <-> divided (Divide by None keeps the zones, all of kWholePart)
+                    if (IsDivided(d)) SetDivide(d, "", {});
+                    else SetDivide(d, "g", {kHeel, kToe});
+                } else if (d.divide_values.size() == 2) {
+                    SetDivide(d, "g3", {kHeel, kToe, "ball"});
+                } else {
+                    SetDivide(d, "g", {kHeel, kToe});
+                }
+                RefreshParts(d, r.I(3) ? &pk : nullptr, ctx.tl);
                 cur.clear();
             }
             break;
@@ -986,22 +1144,29 @@ void FuzzRun(uint64_t seed, int count, FuzzStats& st)
                 break;
             }
         std::string p = ZonesProblem(d, T);
-        if (p.empty()) p = VoicesProblem(d, 0.0, T);  // 13-62h review (B3)
-        if (p.empty() && k % 3 == 0) p = VoicesProblem(d, t0, t1 + 0.2);  // a play from anywhere (B1)
+        for (int tl = 0; tl < (TakesKind(kind) ? 3 : 1) && p.empty(); ++tl) {
+            p = VoicesProblem(d, 0.0, T, tl);  // 13-62h review (B3)
+            if (p.empty() && k % 3 == 0) p = VoicesProblem(d, t0, t1 + 0.2, tl);  // a play from anywhere (B1)
+        }
         if (!p.empty()) {
             if (bad < 5) std::printf("fuzz seed %llx step %d (%s): %s\n", static_cast<unsigned long long>(seed), i, names[k], p.c_str());
             ++bad;
         }
         if (!RoundTrips(d)) {
             if (bad < 5) std::printf("fuzz seed %llx step %d (%s): parse(write(d)) != d\n", static_cast<unsigned long long>(seed), i, names[k]);
+            if (bad < 1 && std::getenv("RAV_DUMP")) {
+                SoundStore back;
+                ParseSoundStore(SerializeSoundStore(StoreOf(d)), &back);
+                std::printf("%s\n----\n%s\n", SerializeSoundStore(StoreOf(d)).c_str(), SerializeSoundStore(back).c_str());
+            }
 
             ++bad;
         }
         {  // relayout is stable: twice = once
             SoundData once = d;
-            RelayoutZones(once, &pk, T);
+            RelayoutZones(once, &pk, T, ctx.tl);
             SoundData twice = once;
-            RelayoutZones(twice, &pk, T);
+            RelayoutZones(twice, &pk, T, ctx.tl);
             if (!SameZones(once, twice)) {
                 if (bad < 5) std::printf("fuzz seed %llx step %d (%s): relayout is not stable\n", static_cast<unsigned long long>(seed), i, names[k]);
                 ++bad;
@@ -1021,6 +1186,23 @@ void TestFuzz()
     FuzzStats   st;
     for (uint64_t seed : {0x13628D5EEDULL, 0xABCDEF01ULL, 0x2222ULL, 0x777ULL, 0xBEEF1234ULL, 0x1111ULL, 0x5EED77ULL, 0x0D15EA5EULL})
         FuzzRun(seed, 3000, st);
+    // 13-62i: the same gestures on undivided Sounds (the implicit part) and on a divided Sound in Takes mode (three
+    // takes, each its own timeline).
+    FuzzStats su, sk;
+    for (uint64_t seed : {0x62199ULL, 0xFACE01ULL, 0x3141ULL}) FuzzRun(seed, 3000, su, 1);
+    for (uint64_t seed : {0x7A4E5ULL, 0xC0FFEEULL, 0x2718ULL}) FuzzRun(seed, 3000, sk, 2);
+    CHECK(su.bad == 0 && su.lied == 0 && su.changed > su.steps / 5 && su.with_gaps > su.steps / 20);
+    CHECK(sk.bad == 0 && sk.lied == 0 && sk.changed > sk.steps / 5 && sk.with_gaps > sk.steps / 20);
+    // 13-62i (review): an undivided Sound in Takes mode, a divided one in Take markers mode.
+    FuzzStats su2, sm;
+    for (uint64_t seed : {0x31415ULL, 0x2A2AULL}) FuzzRun(seed, 3000, su2, 3);
+    for (uint64_t seed : {0x7E57ULL, 0xD1CEULL}) FuzzRun(seed, 3000, sm, 4);
+    CHECK(su2.bad == 0 && su2.lied == 0 && su2.changed > su2.steps / 5 && su2.with_gaps > su2.steps / 40);
+    CHECK(sm.bad == 0 && sm.lied == 0 && sm.changed > sm.steps / 5 && sm.with_gaps > sm.steps / 20);
+    std::printf("sound_zones fuzz (undivided Takes): %d gestures, %d changed, %d with Gaps; (Take markers): %d, %d, %d\n", su2.steps,
+                su2.changed, su2.with_gaps, sm.steps, sm.changed, sm.with_gaps);
+    std::printf("sound_zones fuzz (undivided): %d gestures, %d changed, %d with Gaps; (Takes): %d gestures, %d changed, %d with Gaps\n",
+                su.steps, su.changed, su.with_gaps, sk.steps, sk.changed, sk.with_gaps);
     const int bad = st.bad, lied = st.lied, steps = st.steps, changed = st.changed, with_gaps = st.with_gaps, multi = st.multi;
     const std::vector<int>& ok_count = st.ok_count;
     CHECK(bad == 0 && lied == 0);
@@ -1049,6 +1231,7 @@ int main()
     TestReviewRows();
     TestReviewBC();
     TestItems();
+    TestUndividedAndTakes();
     TestFuzz();
     if (g_fails) {
         std::printf("sound_zones_test: %d failure(s)\n", g_fails);

@@ -8,7 +8,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -326,15 +328,16 @@ static void TestParts()
         x[2].part = "vb";
         CHECK(PlanEventSlots(d, x)[0].act == SlotAction::Keep);
     }
-    // Row 11: Takes mode: no part (the take is placed whole, its item's snap), every on take drawn.
+    // Row 11 (13-62i): Takes mode is divided too: a Heel event gets the Heel part of a take (its zones), drawn among
+    // the takes that have it.
     {
         SoundNode n = DividedSteps("s", "");
         n.sound.mode = DetectMode::Takes;
-        AddZone(n.sound, 0.0, 3.0, "");  // a zone set before switching to Takes is ignored
+        n.sound.zones.push_back({0.0, 3.0, "", {}});  // a Sound-level zone of the old model: ignored by a take
         const SoundLibrary tk = OneSound(n);
         Resolved           r = ResolveFor(st, tk, Auto(AutoKind::Heel));
-        CHECK(r.res.sounds[0].part_value.empty() && r.res.sounds[0].variation >= 0 && r.ed.no_part.empty());
-        CHECK(PieceApplyFor(n.sound, 0, "").empty());
+        CHECK(!r.res.sounds[0].part_value.empty() && r.res.sounds[0].variation >= 0 && r.ed.no_part.empty());
+        CHECK(PieceApplyFor(n.sound, 0, r.res.sounds[0].part_value).size() == 1);
     }
     // 13-31 (d): a Blend picks its layers by the event's role, then each divided layer its own part.
     {
@@ -509,8 +512,401 @@ static void TestLoopPassFillRecord()
     CHECK(draws.size() == 1 && draws[0].node == "a");
 }
 
+// ---- 13-62i (D): Blend layers placed as heard (the spec's Blend matrix rows) ------------------------
+
+// One event of the item, as Populate walks them (time order): its rule, role, stored draws, placed or not.
+struct SimEvent {
+    std::string            rid;
+    double                 t = 0.0;
+    std::string            role;
+    std::vector<SoundDraw> draws;
+    bool                   populated = false;
+    bool                   attached = false;  // a user placement (Attached): Populate leaves it alone
+};
+
+// The record PopulateOne finds for a SimEvent (its draws, a live Populated / Attached placement).
+static EventSounds RecordOf(const SimEvent& e)
+{
+    EventSounds ev;
+    ev.rid = e.rid;
+    ev.t = e.t;
+    ev.draws = e.draws;
+    if (e.populated) ev.placed.push_back({"{item}", "n", Ownership::Populated, 0.0, 0, "", {}});
+    if (e.attached) ev.placed.push_back({"{att}", "n", Ownership::Attached, 0.0, 0, "", {}});
+    return ev;
+}
+
+// The draw part of PopulateOne's event loop: an event left out (another rule than `only_rid`) feeds the
+// history from its recorded draws when it is populated, and the draws before it avoid its picks (the timeline)
+// (`seed_skipped`; false = before 13-62i); the others resolve with their stored draws (hand picks on a branch
+// not walked kept).
+static void SimPopulate(const SoundStore& st, const SoundLibrary& lib, std::vector<SimEvent>& evs, uint64_t seed,
+                        const std::string& only_rid = std::string(), bool seed_skipped = true, PopulateFilter filter = {})
+{
+    PopulateDrawState ds;
+    ds.lib = &lib;
+    ds.seed = seed;
+    std::map<long long, PopulateDrawState> passes;
+    if (!only_rid.empty()) filter.rid = only_rid;
+    // PopulateOne's own decisions (PlanPopulateEvent, SetPopulateTimeline) on these records.
+    std::vector<EventSounds> recs;
+    for (const SimEvent& e : evs) recs.push_back(RecordOf(e));
+    std::vector<EventPlan>          plans;
+    std::vector<const EventSounds*> ptrs;
+    for (size_t i = 0; i < evs.size(); ++i) {
+        ptrs.push_back(&recs[i]);
+        plans.push_back(PlanPopulateEvent(filter, evs[i].rid, evs[i].t, &recs[i]));
+    }
+    if (seed_skipped) SetPopulateTimeline(ds, &passes, plans, ptrs);
+    for (size_t i = 0; i < evs.size(); ++i) {
+        SimEvent& e = evs[i];
+        ds.at = static_cast<int>(i);
+        if (plans[i] == EventPlan::Skip) continue;
+        if (plans[i] == EventPlan::Keep) {
+            if (seed_skipped) SeedHistory(ds, &passes, e.draws);
+            continue;
+        }
+        const std::vector<SoundDraw> prev = e.draws;
+        EventDraw                    ed;
+        ed.rid = e.rid;
+        ed.t = e.t;
+        ed.prev = &prev;
+        ValueLayers l;
+        l.role = e.role;
+        ResolveEvent(st, lib, l, MakeDrawHooks(ds, ed, nullptr));
+        e.draws = ed.out;
+        for (const SoundDraw& d : prev) {
+            bool have = false;
+            for (const SoundDraw& x : e.draws) have = have || x.node == d.node;
+            if (!have && d.hand) e.draws.push_back(d);
+        }
+        e.populated = true;
+    }
+}
+
+static int PickOf(const SimEvent& e, const std::string& node)
+{
+    for (const SoundDraw& d : e.draws)
+        if (d.node == node) return d.pick;
+    return -1;
+}
+
+// The layer's picks on the events of `role` in time order: how many miss or repeat one of the 2 before.
+static int Repeats(const std::vector<SimEvent>& evs, const std::string& node, const std::string& role)
+{
+    std::vector<int> picks;
+    for (const SimEvent& e : evs)
+        if (e.role == role && e.populated) picks.push_back(PickOf(e, node));
+    int bad = 0;
+    for (size_t i = 0; i < picks.size(); ++i) {
+        if (picks[i] < 0) ++bad;
+        if (i >= 1 && picks[i] == picks[i - 1]) ++bad;
+        if (i >= 2 && picks[i] == picks[i - 2]) ++bad;
+    }
+    return bad;
+}
+
+// Blend "FS" [Heel Sound (-6 dB, role heel), Toe Sound (0 dB, role toe)], 4 variations each, Avoid repeating
+// the last 2.
+static SoundLibrary HeelToeBlend(bool roles)
+{
+    SoundLibrary lib;
+    lib.uid = "L";
+    lib.name = "Steps";
+    lib.root = "b";
+    SoundNode b = Node("b", "", SoundNodeType::Blend);
+    b.name = "FS";
+    SoundNode h = Leaf("h", "b", 4);
+    h.volume_db = -6.0;
+    h.avoid_repeat = 2;
+    SoundNode t = Leaf("t", "b", 4);
+    t.avoid_repeat = 2;
+    if (roles) {
+        h.layer_roles = {"heel"};
+        t.layer_roles = {"toe"};
+    }
+    lib.nodes = {b, h, t};
+    return lib;
+}
+
+// Steps Separate: 20 heel events (L and R alternating), each with its toe event 0.1 s later.
+static std::vector<SimEvent> SeparateSteps()
+{
+    std::vector<SimEvent> evs;
+    for (int i = 0; i < 20; ++i) {
+        const bool left = i % 2 == 0;
+        evs.push_back({left ? "heel_l" : "heel_r", 0.5 * i, "heel", {}, false});
+        evs.push_back({left ? "toe_l" : "toe_r", 0.5 * i + 0.1, "toe", {}, false});
+    }
+    return evs;
+}
+
+static const ResolvedSound* SoundOf(const Resolution& r, const std::string& node)
+{
+    for (const ResolvedSound& s : r.sounds)
+        if (s.node == node) return &s;
+    return nullptr;
+}
+
+static void TestBlendMatrix()
+{
+    const SoundStore st = ContactStore();
+    const Block      hb = Auto(AutoKind::Heel);
+    const Block      tb = Auto(AutoKind::Toe);
+    // Blend volume: Heel items at -6 dB, Toe items at 0 dB (each piece: gain + its zone's db).
+    {
+        const SoundLibrary   lib = HeelToeBlend(true);
+        const Resolved       rh = ResolveFor(st, lib, hb);
+        const Resolved       rt = ResolveFor(st, lib, tb);
+        const ResolvedSound* h = SoundOf(rh.res, "h");
+        const ResolvedSound* t = SoundOf(rt.res, "t");
+        CHECK(rh.res.sounds.size() == 1 && h && Near(h->gain_db, -6.0));
+        CHECK(rt.res.sounds.size() == 1 && t && Near(t->gain_db, 0.0));
+        if (h) {
+            const SoundNode*          hn = FindNode(lib, "h");
+            const std::vector<double> db = PieceDbFor(PieceApplyFor(hn->sound, h->variation, h->part_value), h->gain_db);
+            CHECK(!db.empty());
+            for (double d : db) CHECK(Near(d, -6.0));
+        }
+        CHECK(PieceDbFor({}, -6.0) == std::vector<double>{-6.0});  // no pieces: one item at the gain
+        // A zoned (divided) Heel layer: each piece at the layer's gain + its zone's own gain.
+        SoundLibrary zl = lib;
+        SoundNode    zh = DividedSteps("h", "b");
+        zh.volume_db = -6.0;
+        zh.layer_roles = {"heel"};
+        for (SoundFrame& f : zh.sound.frames) f.zones[0].db = 1.5;  // the Back (heel) zones
+        *FindNode(zl, "h") = zh;
+        const Resolved       rz = ResolveFor(st, zl, hb);
+        const ResolvedSound* z = SoundOf(rz.res, "h");
+        CHECK(z && z->part_value == "vb" && Near(z->gain_db, -6.0));
+        if (z) {
+            const std::vector<double> db = PieceDbFor(PieceApplyFor(zh.sound, z->variation, z->part_value), z->gain_db);
+            CHECK(db.size() == 1 && !db.empty() && Near(db[0], -4.5));
+        }
+    }
+    // Blend volume changed after Populate (P2): the Heel layer -6 -> -12 dB; at the next Populate the kept Heel
+    // items (same draw: Keep) go to -12 dB in place, the Toe items stay.
+    {
+        SoundLibrary          lib = HeelToeBlend(true);
+        std::vector<SimEvent> evs = SeparateSteps();
+        SimPopulate(st, lib, evs, 11);
+        const std::vector<SimEvent> before = evs;
+        FindNode(lib, "h")->volume_db = -12.0;
+        SimPopulate(st, lib, evs, 11);
+        for (size_t i = 0; i < evs.size(); ++i) CHECK(PickOf(evs[i], "h") == PickOf(before[i], "h"));
+        PopulateDrawState ds;
+        ds.lib = &lib;
+        ds.seed = 11;
+        for (const SimEvent& e : evs) {
+            EventDraw ed;
+            ed.rid = e.rid;
+            ed.t = e.t;
+            ed.prev = &e.draws;
+            ValueLayers l;
+            l.role = e.role;
+            const Resolution r = ResolveEvent(st, lib, l, MakeDrawHooks(ds, ed, nullptr));
+            CHECK(r.sounds.size() == 1);
+            if (r.sounds.size() != 1) continue;
+            const ResolvedSound& s = r.sounds[0];
+            DesiredSlot          d = De(0, s.node, s.variation);
+            d.piece_db = PieceDbFor({}, s.gain_db);
+            const std::vector<SlotStep> steps = PlanEventSlots({d}, {Ex(0, s.node, s.variation)});
+            CHECK(steps.size() == 1 && steps[0].act == SlotAction::Keep);
+            const double     placed_db = s.node == "h" ? -6.0 : 0.0;  // its tag's g
+            const KeptVolume kv = KeptItemVolume(d.piece_db, false, 1, true, placed_db, 0, ItemGainFor(placed_db));
+            if (s.node == "h") CHECK(kv.set && Near(kv.vol, ItemGainFor(-12.0), 1e-12) && Near(kv.g, -12.0));
+            else CHECK(!kv.set);
+        }
+    }
+    // Blend shuffle: no Heel variation repeats within any 3 consecutive Heel events (L and R) in time.
+    {
+        const SoundLibrary    lib = HeelToeBlend(true);
+        std::vector<SimEvent> evs = SeparateSteps();
+        SimPopulate(st, lib, evs, 5);
+        CHECK(Repeats(evs, "h", "heel") == 0);
+        CHECK(Repeats(evs, "t", "toe") == 0);
+        // Idempotent: a second Populate keeps every pick.
+        const std::vector<SimEvent> once = evs;
+        SimPopulate(st, lib, evs, 5);
+        for (size_t i = 0; i < evs.size(); ++i) CHECK(PickOf(evs[i], "h") == PickOf(once[i], "h"));
+    }
+    // The repro: each rule Populated alone (heel L, then heel R). Before 13-62i the skipped events fed no history
+    // and every stored pick was kept: L and R repeat each other. Now the skipped events seed the history, and a
+    // full Populate draws again the stored picks that repeat (P3).
+    {
+        const SoundLibrary    lib = HeelToeBlend(true);
+        std::vector<SimEvent> old = SeparateSteps();
+        SimPopulate(st, lib, old, 5, "heel_l", false);
+        SimPopulate(st, lib, old, 5, "heel_r", false);
+        CHECK(Repeats(old, "h", "heel") > 0);  // the bug seen: two similar variations in a row
+        std::vector<SimEvent> now = SeparateSteps();
+        SimPopulate(st, lib, now, 5, "heel_l");
+        SimPopulate(st, lib, now, 5, "heel_r");
+        CHECK(Repeats(now, "h", "heel") == 0);
+        SimPopulate(st, lib, old, 5);  // the old record Populated in full: the repeats drawn again
+        CHECK(Repeats(old, "h", "heel") == 0);
+        SimPopulate(st, lib, old, 5, "heel_r");  // then one rule again (as a setting change does): still none
+        CHECK(Repeats(old, "h", "heel") == 0);
+        // Whatever the seed: a full Populate, or one rule after the other.
+        for (uint64_t seed = 1; seed <= 40; ++seed) {
+            std::vector<SimEvent> full = SeparateSteps();
+            SimPopulate(st, lib, full, seed);
+            std::vector<SimEvent> split = SeparateSteps();
+            SimPopulate(st, lib, split, seed, "heel_r");
+            SimPopulate(st, lib, split, seed, "heel_l");
+            SimPopulate(st, lib, split, seed, "toe_l");
+            SimPopulate(st, lib, split, seed, "toe_r");
+            CHECK(Repeats(full, "h", "heel") == 0 && Repeats(full, "t", "toe") == 0);
+            CHECK(Repeats(split, "h", "heel") == 0 && Repeats(split, "t", "toe") == 0);
+        }
+    }
+    // P3: a pick by hand is always kept, the stored ones after it drawn again when they repeat.
+    {
+        const SoundLibrary    lib = HeelToeBlend(true);
+        std::vector<SimEvent> evs = SeparateSteps();
+        for (size_t i = 0; i < evs.size(); ++i) {
+            SoundDraw d;
+            d.node = evs[i].role == "heel" ? "h" : "t";
+            d.pick = 0;
+            d.hand = i == 0;
+            evs[i].draws = {d};
+            evs[i].populated = true;
+        }
+        SimPopulate(st, lib, evs, 3);
+        CHECK(PickOf(evs[0], "h") == 0 && !evs[0].draws.empty() && evs[0].draws[0].hand);
+        CHECK(Repeats(evs, "h", "heel") == 0);
+        CHECK(Repeats(evs, "t", "toe") == 0);
+    }
+    // SeedHistory: node or node|part keys, a loop pass's entries to that pass, -1 picks dropped.
+    {
+        PopulateDrawState                      ds;
+        std::map<long long, PopulateDrawState> passes;
+        SoundDraw                              a, b, c, d;
+        a.node = "h";
+        a.pick = 2;
+        b.node = "h";
+        b.part = "vb";
+        b.pick = 1;
+        c.node = PassDrawKey("h", 3);
+        c.pick = 0;
+        d.node = "x";
+        d.pick = -1;
+        SeedHistory(ds, &passes, {a, b, c, d});
+        CHECK(ds.history["h"] == std::vector<int>{2} && ds.history["h|vb"] == std::vector<int>{1});
+        CHECK(!ds.history.count("x") && passes.size() == 1 && passes[3].history["h"] == std::vector<int>{0});
+        PopulateDrawState only;
+        SeedHistory(only, nullptr, {c});
+        CHECK(only.history.empty());
+        // The timeline: the next n events of a key ahead of `at`, the kept picks only.
+        PopulateDrawState      tl;
+        std::vector<SoundDraw> e0 = {a}, e1 = {a}, e2 = {a, c}, e3 = {a};
+        e1[0].pick = 3;
+        e3[0].pick = 1;
+        SetDrawTimeline(tl, &passes, {&e0, &e1, nullptr, &e2, &e3}, {0, 1, 1, 0, 1});
+        tl.at = 0;
+        CHECK(AheadPicks(tl, "h", 2) == std::vector<int>{3});     // e1 kept (3), e2 drawn now
+        CHECK(AheadPicks(tl, "h", 3) == (std::vector<int>{3, 1}));
+        tl.at = 3;
+        CHECK(AheadPicks(tl, "h", 2) == std::vector<int>{1});
+        CHECK(AheadPicks(tl, "h", 0).empty() && AheadPicks(tl, "zz", 2).empty());
+        CHECK(passes[3].timeline["h"].size() == 1 && passes[3].timeline["h"][0].second == -1);  // e2: a pass entry, drawn
+    }
+    // Blend roles (P1): Blend children without layer roles, steps Separate: every layer plays on a Heel event,
+    // and the Populate report says so (Resolution::notes).
+    {
+        const SoundLibrary lib = HeelToeBlend(false);
+        const Resolved     r = ResolveFor(st, lib, hb);
+        CHECK(r.res.sounds.size() == 2 && SoundOf(r.res, "h") && SoundOf(r.res, "t"));
+        CHECK(r.res.notes.size() == 1 && r.res.notes[0] == "Blend FS has no layer roles: every layer plays on every event");
+        CHECK(ResolveFor(st, HeelToeBlend(true), hb).res.notes.empty());
+    }
+}
+
+// 13-62i (D review): PopulateOne's own decisions (PlanPopulateEvent, SetPopulateTimeline): the time and
+// populated-only filters, an attached event kept (its draws feed the history and are fixed ahead), and a kept
+// two-piece item following its pieces' gains.
+static void TestPopulatePlanHelpers()
+{
+    const SoundStore st = ContactStore();
+    EventSounds      none;
+    none.rid = "r";
+    EventSounds populated = none;
+    populated.placed.push_back({"{i}", "n", Ownership::Populated, 0.0, 0, "", {}});
+    EventSounds attached = none;
+    attached.placed.push_back({"{a}", "n", Ownership::Attached, 0.0, 0, "", {}});
+    PopulateFilter f;
+    CHECK(PlanPopulateEvent(f, "r", 1.0, nullptr) == EventPlan::Draw && PlanPopulateEvent(f, "r", 1.0, &attached) == EventPlan::Keep);
+    CHECK(PlanPopulateEvent(f, "r", 1.0, &populated, false) == EventPlan::Skip);  // a disabled rule
+    f.has_t = true;
+    f.t = 2.0;
+    CHECK(PlanPopulateEvent(f, "r", 2.02, nullptr) == EventPlan::Draw && PlanPopulateEvent(f, "r", 1.0, &populated) == EventPlan::Keep &&
+          PlanPopulateEvent(f, "r", 1.0, &none) == EventPlan::Skip);
+    PopulateFilter p;
+    p.only_populated = true;
+    CHECK(PlanPopulateEvent(p, "r", 1.0, &populated) == EventPlan::Draw && PlanPopulateEvent(p, "r", 1.0, &none) == EventPlan::Skip &&
+          PlanPopulateEvent(p, "r", 1.0, nullptr) == EventPlan::Skip);
+    // No kept event: no timeline (every event drawn in time order).
+    PopulateDrawState ds;
+    CHECK(!SetPopulateTimeline(ds, nullptr, {EventPlan::Draw, EventPlan::Skip}, {&none, nullptr}) && ds.timeline.empty());
+    // Attached Heel events among the 20: their picks feed the history and are avoided ahead; no repeat around them.
+    {
+        const SoundLibrary    lib = HeelToeBlend(true);
+        std::vector<SimEvent> evs = SeparateSteps();
+        SimPopulate(st, lib, evs, 7);
+        for (size_t i = 0; i < evs.size(); i += 6) evs[i].attached = true;  // some Heel events placed by the user
+        for (int seed = 1; seed <= 20; ++seed) {
+            std::vector<SimEvent> again = evs;
+            for (SimEvent& e : again)
+                if (!e.attached) e.draws.clear();  // drawn again from scratch
+            SimPopulate(st, lib, again, static_cast<uint64_t>(seed));
+            for (size_t i = 0; i < evs.size(); ++i)
+                if (evs[i].attached) CHECK(PickOf(again[i], "h") == PickOf(evs[i], "h"));  // left alone
+            CHECK(Repeats(again, "h", "heel") == 0);
+        }
+        // The time filter: only the event at 3.0 s drawn again, the others kept.
+        PopulateFilter tf;
+        tf.has_t = true;
+        tf.t = 3.0;
+        std::vector<SimEvent> one = evs;
+        SimPopulate(st, lib, one, 9, std::string(), true, tf);
+        for (size_t i = 0; i < one.size(); ++i)
+            if (std::fabs(one[i].t - 3.0) > 0.03) CHECK(one[i].draws.size() == evs[i].draws.size() && PickOf(one[i], "h") == PickOf(evs[i], "h"));
+        CHECK(Repeats(one, "h", "heel") == 0);
+    }
+    // A kept two-piece item (a Gap between two zones of the drawn part) follows each piece's own gain.
+    {
+        SoundNode n = DividedSteps("s", "");
+        EditZone  g;  // Back [0, 0.08] Gap [0.08, 0.12] Back [0.12, 0.2] in variation 0
+        g.a = g.slot_a = 0.08;
+        g.b = g.slot_b = 0.12;
+        g.xl = g.xr = 0.005;
+        EditZone b2 = n.sound.frames[0].zones[0];
+        b2.a = b2.slot_a = 0.12;
+        b2.db = 2.0;
+        n.sound.frames[0].zones[0].b = n.sound.frames[0].zones[0].slot_b = 0.08;
+        n.sound.frames[0].zones.insert(n.sound.frames[0].zones.begin() + 1, {g, b2});
+        const std::vector<PieceApply> pa = PieceApplyFor(n.sound, 0, "vb");
+        const std::vector<double>     db = PieceDbFor(pa, -6.0);
+        CHECK(pa.size() == 2 && db.size() == 2 && Near(db[0], -6.0) && Near(db[1], -4.0));
+        // Placed at -6 / -4 (tags g, pi), the layer now -12: each piece -6 dB more, in place.
+        const std::vector<double> now = PieceDbFor(pa, -12.0);
+        for (int k = 0; k < 2; ++k) {
+            const KeptVolume kv = KeptItemVolume(now, false, 2, true, db[static_cast<size_t>(k)], k, ItemGainFor(db[static_cast<size_t>(k)]));
+            CHECK(kv.set && Near(kv.g, now[static_cast<size_t>(k)]) && Near(kv.vol, ItemGainFor(now[static_cast<size_t>(k)]), 1e-12));
+        }
+    }
+    // 13-62i: a folder pile ignores its pieces: placed at the gain + its anchor zone's gain.
+    {
+        SoundNode n = DividedSteps("s", "");
+        n.sound.frames[0].zones[0].db = -3.0;
+        CHECK(Near(PileGainDb(PieceApplyFor(n.sound, 0, "vb"), -2.0), -5.0) && Near(PileGainDb({}, -2.0), -2.0));
+    }
+}
+
 int main()
 {
+    TestPopulatePlanHelpers();  // 13-62i (D review)
+    TestBlendMatrix();
     TestLoopPassDraws();
     TestLoopPassFillRecord();
     // ---- P1: orphan rules ----

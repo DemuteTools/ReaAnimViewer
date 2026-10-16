@@ -161,8 +161,7 @@ AuditionPicker AuditionHistory::Picker()
     };
     p.pick_part_variation = [this](const SoundNode& n, const std::string& part) {
         std::vector<int>& h = hist_[part.empty() ? n.uid : n.uid + "|" + part];
-        const std::vector<int> active =
-            n.sound.mode == DetectMode::Takes ? ActiveVariations(n.sound) : ActiveVariationsFor(n.sound, part);
+        const std::vector<int> active = ActiveVariationsFor(n.sound, part);  // 13-62i: Takes mode too
         const int pick = DrawPick(active, n.avoid_repeat, h, seed_, ++press_);
         Remember(h, pick);
         return pick;
@@ -222,30 +221,10 @@ std::vector<AuditionVoice> PartAuditionVoices(const SoundLibrary& lib, const Sou
 {
     std::vector<AuditionVoice> out;
     if (variation < 0 || static_cast<size_t>(variation) >= n.sound.frames.size()) return out;
-    const SoundFrame& f = n.sound.frames[static_cast<size_t>(variation)];
-    // 13-62h review (B2): a Sound placed from its zones plays as Populate places it: each piece at its zone's gain
-    // (PieceApply::db) on the root's volumes, the old frame / part gains not added, spaced in heard time.
-    const bool        zoned = PlacedFromZones(n.sound) && n.sound.mode != DetectMode::Takes;
-    const double      gain = GainFromRoot(lib, n) +
-                        (zoned ? 0.0
-                               : FrameGainDb(f, part_value) +          // 13-28: the part's own gain
-                                     PartGainDb(n.sound, part_value));  // 13-62: its gain setting
+    // 13-62h review (B2) / 13-62i: every Sound plays as Populate places it, from its zones (Takes mode too: its take's
+    // zones): each piece at its zone's gain (PieceApply::db) on the root's volumes, spaced in heard time.
+    const double      gain = GainFromRoot(lib, n);
     const MonoMode    mono = PartMono(n.sound, part_value);                        // 13-62: its own, else the Sound's
-    if (n.sound.mode == DetectMode::Takes) {  // A8: the take whole
-        AuditionVoice voice;
-        voice.node = n.uid;
-        voice.variation = variation;
-        voice.start_s = f.start;
-        voice.length_s = f.length;
-        voice.delay_ms = delay_ms;
-        voice.gain_db = gain;
-        voice.mono = mono;
-        voice.part = part_value;
-        AuditionFades(n.sound, variation, &voice.fade_in_s, &voice.fade_out_s, &voice.fade_in_shape,
-                      &voice.fade_out_shape);
-        out.push_back(voice);
-        return out;
-    }
     const std::vector<PieceApply> pieces = PieceApplyFor(n.sound, variation, part_value, false);
     for (size_t k = 0; k < pieces.size(); ++k) {
         const PieceApply& pa = pieces[k];
@@ -254,9 +233,8 @@ std::vector<AuditionVoice> PartAuditionVoices(const SoundLibrary& lib, const Sou
         voice.variation = variation;
         voice.start_s = pa.slice.start_offs;
         voice.length_s = pa.slice.length;
-        voice.delay_ms = delay_ms + (zoned ? pa.from_anchor - pieces.front().from_anchor
-                                           : pa.slice.start_offs - pieces.front().slice.start_offs) * 1000.0;
-        voice.gain_db = gain + (zoned ? pa.db : 0.0);
+        voice.delay_ms = delay_ms + (pa.from_anchor - pieces.front().from_anchor) * 1000.0;
+        voice.gain_db = gain + pa.db;
         voice.fade_in_s = pa.fades.set_in ? pa.fades.in : 0.0;
         voice.fade_out_s = pa.fades.set_out ? pa.fades.out : 0.0;
         voice.fade_in_shape = pa.fades.set_in ? pa.fades.in_shape : 0;
@@ -267,34 +245,6 @@ std::vector<AuditionVoice> PartAuditionVoices(const SoundLibrary& lib, const Sou
         out.push_back(voice);
     }
     return out;
-}
-
-AuditionVoice ZoneAuditionVoice(const SoundLibrary& lib, const SoundNode& n, double start, double length)
-{
-    AuditionVoice voice;
-    voice.node = n.uid;
-    voice.mono = n.sound.mono;
-    if (!std::isfinite(start) || !std::isfinite(length) || !(length > 0.0)) return voice;
-    voice.start_s = std::max(0.0, start);
-    voice.length_s = start + length - voice.start_s;
-    if (!(voice.length_s > 0.0)) {
-        voice.length_s = 0.0;
-        return voice;
-    }
-    double db = 0.0;
-    for (size_t i = 0; i < n.sound.frames.size(); ++i) {
-        const SoundFrame& f = n.sound.frames[i];
-        if (voice.start_s >= f.start && voice.start_s < f.start + f.length) {
-            std::string own;  // 13-28: the part there plays at its own gain
-            db = PartAt(n.sound, static_cast<int>(i), voice.start_s, &own) ? FrameGainDb(f, own) : f.db;
-            voice.variation = static_cast<int>(i);
-            break;
-        }
-    }
-    voice.gain_db = GainFromRoot(lib, n) + db;
-    const double cut = std::isfinite(n.sound.cut_fade) && n.sound.cut_fade > 0.0 ? n.sound.cut_fade : 0.0;
-    voice.fade_in_s = voice.fade_out_s = std::min(cut, voice.length_s / 2.0);
-    return voice;
 }
 
 double GainFromRoot(const SoundLibrary& lib, const SoundNode& n)
@@ -348,169 +298,11 @@ std::vector<SoundFrame> MergeHandFrames(const std::vector<SoundFrame>& detected,
     return out;
 }
 
-bool TrimTakeFrame(SoundData& data, int i, double start, double length, double take_source_len)
-{
-    if (i < 0 || static_cast<size_t>(i) >= data.frames.size() || !(take_source_len > 0.0)) return false;
-    double s = std::max(0.0, start);
-    double e = std::min(take_source_len, start + length);
-    if (e - s <= kMinFrame) return false;
-    SoundFrame& f = data.frames[static_cast<size_t>(i)];
-    if (std::fabs(f.start - s) < 1e-9 && std::fabs(f.length - (e - s)) < 1e-9) return false;
-    f.start = s;
-    f.length = e - s;
-    f.hand = true;
-    data.edited = true;
-    return true;
-}
-
 bool AuditionEnded(double pos, double length, double stalled_s)
 {
     if (!(length > 0.0)) return true;
     if (pos >= length) return true;  // stopped exactly at its end; short of it, the stall rule ends it
     return pos > 0.0 && stalled_s >= 0.5;
-}
-
-bool FrameEditAllowed(DetectMode mode, FrameEdit edit)
-{
-    if (mode == DetectMode::Takes) return edit != FrameEdit::Add && edit != FrameEdit::Split;
-    return true;
-}
-
-EditTrimPlan PlanEditTrim(const std::vector<SoundFrame>& frames, const std::vector<int>& selected, EditTrimKind kind,
-                          double cursor, double zone_start, double zone_len)
-{
-    EditTrimPlan plan;
-    const bool   zone = kind == EditTrimKind::ToZone;
-    if (zone && !(zone_len > 0.0)) {
-        plan.why = "Select a zone first: drag across the waveform";
-        return plan;
-    }
-    if (!zone && !(cursor >= 0.0)) {
-        plan.why = "Click the waveform first: the edit cursor sets where to trim";
-        return plan;
-    }
-    const double ze = zone_start + zone_len;
-    auto valid = [&](int i) { return i >= 0 && static_cast<size_t>(i) < frames.size(); };
-    // The variations it may touch: the selected ones, else every one (the cursor / zone picks among them).
-    std::vector<int> pool;
-    for (int i : selected)
-        if (valid(i) && std::find(pool.begin(), pool.end(), i) == pool.end()) pool.push_back(i);
-    const bool any_selected = !pool.empty();
-    if (!any_selected)
-        for (size_t i = 0; i < frames.size(); ++i) pool.push_back(static_cast<int>(i));
-    std::sort(pool.begin(), pool.end());
-    bool touched = false;  // a variation the cursor / zone is on (even if nothing changes)
-    for (int i : pool) {
-        const SoundFrame& f = frames[static_cast<size_t>(i)];
-        const double      fe = f.start + f.length;
-        double            s = f.start, e = fe;
-        if (zone) {
-            if (!(ze > f.start && zone_start < fe)) continue;  // the zone does not cross it
-            s = std::max(f.start, zone_start);
-            e = std::min(fe, ze);
-        } else {
-            if (!(cursor > f.start && cursor < fe)) continue;  // the cursor is not inside it
-            if (kind == EditTrimKind::LeftOfCursor) s = cursor;
-            else e = cursor;
-        }
-        touched = true;
-        if (e - s <= kMinFrame) continue;  // nothing would be left: unchanged
-        if (std::fabs(s - f.start) < 1e-9 && std::fabs(e - fe) < 1e-9) continue;  // already so
-        plan.steps.push_back(EditTrimStep{i, s, e - s});
-    }
-    if (plan.steps.empty()) {
-        if (touched) plan.why = zone ? "Already inside the zone" : "Nothing to trim there";
-        else if (zone) plan.why = any_selected ? "The zone crosses no selected variation" : "The zone crosses no variation";
-        else plan.why = any_selected ? "The edit cursor is not inside a selected variation" : "The edit cursor is not inside a variation";
-    }
-    return plan;
-}
-
-EditNavPlan PlanEditNav(const std::vector<SoundFrame>& frames, const std::vector<int>& selected, double cursor, bool next,
-                        double view_len, double source_len, bool by_index)
-{
-    EditNavPlan plan;
-    std::vector<int> order;  // time order (start, then index); Takes mode: index order
-    for (size_t i = 0; i < frames.size(); ++i) order.push_back(static_cast<int>(i));
-    if (!by_index)
-        std::stable_sort(order.begin(), order.end(), [&](int x, int y) {
-            return frames[static_cast<size_t>(x)].start < frames[static_cast<size_t>(y)].start;
-        });
-    const int n = static_cast<int>(order.size());
-    int       from = -1;  // the selected variation's place in `order`
-    for (auto it = selected.rbegin(); it != selected.rend() && from < 0; ++it)
-        for (int k = 0; k < n; ++k)
-            if (order[static_cast<size_t>(k)] == *it) from = k;
-    int to = -1;
-    if (from >= 0) {
-        to = next ? from + 1 : from - 1;
-    } else if (by_index || !(cursor >= 0.0)) {
-        // No time to start from (a take has its own; no edit cursor): the first one (next) / the last one (previous).
-        to = n > 0 ? (next ? 0 : n - 1) : -1;
-    } else {
-        // As REAPER with no item selected: next = the first starting after the cursor, previous = the last starting
-        // before it (the one under the cursor counts only when the cursor is past its start).
-        constexpr double kEps = 1e-9;
-        if (next) {
-            for (int k = 0; k < n && to < 0; ++k)
-                if (frames[static_cast<size_t>(order[static_cast<size_t>(k)])].start > cursor + kEps) to = k;
-        } else {
-            for (int k = n - 1; k >= 0 && to < 0; --k)
-                if (frames[static_cast<size_t>(order[static_cast<size_t>(k)])].start < cursor - kEps) to = k;
-        }
-    }
-    if (to < 0 || to >= n) return plan;
-    plan.frame = order[static_cast<size_t>(to)];
-    const SoundFrame& f = frames[static_cast<size_t>(plan.frame)];
-    plan.cursor = f.start;
-    if (view_len > 0.0 && source_len > 0.0)
-        plan.view_start = std::clamp(f.start + f.length * 0.5 - view_len * 0.5, 0.0, std::max(0.0, source_len - view_len));
-    return plan;
-}
-
-EditTrimPlan PlanEditTrim(const SoundData& data, const std::vector<int>& selected, EditTrimKind kind, double cursor,
-                          double zone_start, double zone_len)
-{
-    return PlanEditTrim(data.frames, selected, kind, cursor, zone_start, zone_len);
-}
-
-EditSplitPlan PlanEditSplit(const std::vector<SoundFrame>& frames, const std::vector<int>& selected, double cursor)
-{
-    EditSplitPlan plan;
-    if (!(cursor >= 0.0)) {
-        plan.why = "Click the waveform first: the edit cursor sets where to split";
-        return plan;
-    }
-    auto valid = [&](int i) { return i >= 0 && static_cast<size_t>(i) < frames.size(); };
-    std::vector<int> pool;  // the selected ones, else every one (the cursor picks among them)
-    for (int i : selected)
-        if (valid(i) && std::find(pool.begin(), pool.end(), i) == pool.end()) pool.push_back(i);
-    const bool any_selected = !pool.empty();
-    if (!any_selected)
-        for (size_t i = 0; i < frames.size(); ++i) pool.push_back(static_cast<int>(i));
-    std::sort(pool.begin(), pool.end());
-    bool touched = false;
-    for (int i : pool) {
-        const SoundFrame& f = frames[static_cast<size_t>(i)];
-        const double      fe = f.start + f.length;
-        if (!(cursor > f.start && cursor < fe)) continue;  // the cursor is not inside it
-        touched = true;
-        if (cursor - f.start <= kMinFrame || fe - cursor <= kMinFrame) continue;  // a piece would be empty (SplitFrame)
-        plan.frames.push_back(i);
-    }
-    if (plan.frames.empty())
-        plan.why = touched ? "Too close to the variation's edge to split"
-                           : any_selected ? "The edit cursor is not inside a selected variation"
-                                          : "The edit cursor is not inside a variation";
-    return plan;
-}
-
-std::vector<int> NormalizeSelection(const std::vector<SoundFrame>& frames, const std::vector<int>& selected)
-{
-    if (selected.empty()) return {};
-    for (int i : selected)
-        if (i >= 0 && static_cast<size_t>(i) < frames.size() && frames[static_cast<size_t>(i)].on) return selected;
-    return {-1};  // only off frames selected: nothing
 }
 
 std::string VariationCountText(int detected, const std::vector<SoundFrame>& frames)
@@ -524,29 +316,6 @@ std::string VariationCountText(int detected, const std::vector<SoundFrame>& fram
     s += std::to_string(n) + (n == 1 ? " variation" : " variations");
     if (off > 0) s += " \xC2\xB7 " + std::to_string(off) + " off";
     return s;
-}
-
-void AuditionFades(const SoundData& data, int i, double* in_s, double* out_s, int* in_shape, int* out_shape,
-                   bool folder_source)
-{
-    double a = 0.0, b = 0.0;
-    int    sa = 0, sb = 0;
-    if (!folder_source && i >= 0 && i < static_cast<int>(data.frames.size())) {
-        const FrameFades f = EffectiveFades(data, data.frames[static_cast<size_t>(i)]);
-        const bool       whole = data.mode == DetectMode::Whole;
-        if (!whole || f.own_in) {
-            a = f.in;
-            sa = f.in_shape;
-        }
-        if (!whole || f.own_out) {
-            b = f.out;
-            sb = f.out_shape;
-        }
-    }
-    if (in_s) *in_s = a;
-    if (out_s) *out_s = b;
-    if (in_shape) *in_shape = sa;
-    if (out_shape) *out_shape = sb;
 }
 
 namespace {
@@ -581,260 +350,11 @@ double FadeGainAt(double t, double length, double in, double out, int in_shape, 
     return g;
 }
 
-namespace {
-
-// 13-54: a variation's whole voices kept to what its parts play once their margins apply (`pieces`,
-// PartPieces; touching pieces are one stretch): a voice's own fade stays on a side it keeps, a side the
-// margins cut gets the Sound's cut fade (as Populate gives a part's cut side).
-std::vector<AuditionVoice> MarginVoices(const std::vector<AuditionVoice>& voices, const std::vector<PartSpan>& pieces,
-                                        const SoundData& d)
-{
-    std::vector<std::pair<double, double>> runs;
-    for (const PartSpan& sp : pieces) {
-        if (!runs.empty() && std::fabs(runs.back().second - sp.start) <= 1e-9)
-            runs.back().second = sp.start + sp.length;
-        else
-            runs.push_back({sp.start, sp.start + sp.length});
-    }
-    const double               cut = std::isfinite(d.cut_fade) && d.cut_fade > 0.0 ? d.cut_fade : 0.0;
-    std::vector<AuditionVoice> out;
-    for (const AuditionVoice& v : voices) {
-        const double s0 = v.start_s, s1 = v.start_s + v.length_s;
-        for (const auto& r : runs) {
-            const double a = std::max(s0, r.first), b = std::min(s1, r.second);
-            if (b - a <= 1e-9) continue;
-            AuditionVoice w = v;
-            w.start_s = a;
-            w.length_s = b - a;
-            if (a > s0 + 1e-9) {
-                w.fade_in_s = cut;
-                w.fade_in_shape = 0;
-            }
-            if (b < s1 - 1e-9) {
-                w.fade_out_s = cut;
-                w.fade_out_shape = 0;
-            }
-            out.push_back(w);
-        }
-    }
-    return out;
-}
-
-}  // namespace
-
-namespace {
-
-// 13-62 (decision 6, per side): the fades part `value` owns ("" or none owned: both false).
-void OwnPartFades(const SoundData& d, const std::string& value, bool* own_in, double* in, bool* own_out, double* out)
-{
-    const PartSettings* p = value.empty() ? nullptr : PartSettingsOf(d, value);
-    *own_in = p && p->fade_in && std::isfinite(*p->fade_in);
-    *own_out = p && p->fade_out && std::isfinite(*p->fade_out);
-    *in = *own_in ? std::max(*p->fade_in, 0.0) : 0.0;
-    *out = *own_out ? std::max(*p->fade_out, 0.0) : 0.0;
-}
-
-}  // namespace
-
-std::vector<AuditionVoice> EditPlayVoices(const SoundLibrary& lib, const SoundNode& n, int take, const PartListen* listen)
-{
-    std::vector<AuditionVoice> out;
-    const SoundData&           d = n.sound;
-    if (d.mode == DetectMode::Takes) {
-        if (take < 0 || static_cast<size_t>(take) >= d.frames.size() || !d.frames[static_cast<size_t>(take)].on) return out;
-        return PartAuditionVoices(lib, n, take, "");
-    }
-    std::vector<int> order;
-    for (size_t i = 0; i < d.frames.size(); ++i)
-        if (d.frames[i].on && d.frames[i].length > 0.0) order.push_back(static_cast<int>(i));
-    std::stable_sort(order.begin(), order.end(), [&](int a, int b) {
-        return d.frames[static_cast<size_t>(a)].start < d.frames[static_cast<size_t>(b)].start;
-    });
-    const double root = GainFromRoot(lib, n);
-    double       covered = -1e300;  // the file is heard up to here (the earlier variation wins)
-    auto         push = [&](AuditionVoice v) {
-        const double end = v.start_s + v.length_s;
-        if (end <= covered + 1e-9) return;
-        if (v.start_s < covered) {
-            const double cut = covered - v.start_s;
-            if (!(v.fade_span_s > 0.0)) v.fade_span_s = v.length_s;
-            v.start_s += cut;
-            v.length_s -= cut;
-            v.fade_from_s += cut;
-        }
-        v.delay_ms = v.start_s * 1000.0;  // the file's clock
-        out.push_back(std::move(v));
-    };
-    for (int i : order) {
-        const SoundFrame& f = d.frames[static_cast<size_t>(i)];
-        const bool        listening = listen && listen->Active();
-        const bool        by_part = IsDivided(d) && (!f.part_db.empty() || !d.parts.empty() || listening);  // 13-62
-        // 13-54: with the parts' margins, only what the parts play (PartPieces), owned by the part playing it.
-        const bool                  margins = PartMarginsApply(d);
-        const std::vector<PartSpan> owners = margins ? PartPieces(d, i) : std::vector<PartSpan>();
-        const std::vector<AuditionVoice> whole =
-            margins ? MarginVoices(PartAuditionVoices(lib, n, i, ""), owners, d) : PartAuditionVoices(lib, n, i, "");
-        auto owner_at = [&](double t, std::string* own) {
-            if (!margins) return PartAt(d, i, t, own);
-            for (const PartSpan& sp : owners)
-                if (t >= sp.start && t < sp.start + sp.length) {
-                    *own = sp.value_uid;
-                    return true;
-                }
-            return false;
-        };
-        for (const AuditionVoice& piece : whole) {
-            if (!by_part) {
-                push(piece);
-                continue;
-            }
-            // 13-28: the piece cut where its owner changes (a cut, a zone edge), each stretch at its part's gain.
-            const double        s0 = piece.start_s, s1 = piece.start_s + piece.length_s;
-            std::vector<double> b = {s0, s1};
-            for (double c : f.cuts)
-                if (c > s0 && c < s1) b.push_back(c);
-            for (const SoundZone& z : d.zones)
-                for (double t : {z.start, z.start + z.length})
-                    if (t > s0 && t < s1) b.push_back(t);
-            for (const PartSpan& sp : owners)  // 13-54: where the playing part changes
-                for (double t : {sp.start, sp.start + sp.length})
-                    if (t > s0 && t < s1) b.push_back(t);
-            std::sort(b.begin(), b.end());
-            // 13-62: each stretch's owner, level, mono, own fades and whether it is heard (Mute / Solo).
-            struct Stretch {
-                double      a, b, db;
-                std::string own;
-                MonoMode    mono;
-                bool        heard, fades;      // fades: it owns a fade in or out (13-62 decision 6)
-                bool        own_in, own_out;   // per side: an unowned side keeps today's rule
-                double      in, out;
-            };
-            std::vector<Stretch> st;
-            for (size_t k = 0; k + 1 < b.size(); ++k) {
-                if (b[k + 1] - b[k] <= 1e-9) continue;
-                Stretch    x{b[k], b[k + 1], 0.0, std::string(), d.mono, true, false, false, false, 0.0, 0.0};
-                const bool known = owner_at((b[k] + b[k + 1]) * 0.5, &x.own);
-                if (!known) x.own.clear();
-                x.db = root + (known ? FrameGainDb(f, x.own) + PartGainDb(d, x.own) : f.db);
-                x.mono = PartMono(d, x.own);
-                x.heard = !listening || PartHeard(*listen, x.own);
-                OwnPartFades(d, known ? x.own : std::string(), &x.own_in, &x.in, &x.own_out, &x.out);
-                x.fades = x.own_in || x.own_out;
-                st.push_back(x);
-            }
-            // Runs: neighbouring heard stretches at one level and mono play on as one voice (a part with its
-            // own fades only with itself, so they land on its edges).
-            for (size_t k = 0; k < st.size();) {
-                if (!st[k].heard) {
-                    ++k;
-                    continue;
-                }
-                size_t e = k + 1;
-                while (e < st.size() && st[e].heard && std::fabs(st[e].db - st[k].db) < 1e-12 && st[e].mono == st[k].mono &&
-                       (st[e].own == st[k].own || (!st[e].fades && !st[k].fades)))
-                    ++e;
-                const double  a = st[k].a, z = st[e - 1].b;
-                const bool    at_start = k == 0, at_end = e == st.size();
-                const bool    silent_before = !at_start && !st[k - 1].heard;
-                const bool    silent_after = !at_end && !st[e].heard;
-                AuditionVoice cur = piece;
-                cur.start_s = a;
-                cur.length_s = z - a;
-                cur.gain_db = st[k].db;
-                cur.mono = st[k].mono;
-                cur.part = st[k].own;
-                for (size_t j = k; j < e; ++j)
-                    if (st[j].own != cur.part) cur.part.clear();
-                if (st[k].fades || silent_before || silent_after) {  // a voice of its own: its edges faded here
-                    const double cutf = std::isfinite(d.cut_fade) && d.cut_fade > 0.0 ? d.cut_fade : 0.0;
-                    cur.fade_from_s = cur.fade_span_s = 0.0;
-                    // An owned side: the part's fade. Else at the piece's edge its own fade (the frame fade at
-                    // a variation edge, cut_fade at a zone edge); inside it cut_fade next to a silent part,
-                    // nothing next to a heard one (it plays on).
-                    if (st[k].own_in || !at_start) {
-                        cur.fade_in_s = st[k].own_in ? st[k].in : silent_before ? cutf : 0.0;
-                        cur.fade_in_shape = 0;
-                    }
-                    if (st[k].own_out || !at_end) {
-                        cur.fade_out_s = st[k].own_out ? st[k].out : silent_after ? cutf : 0.0;
-                        cur.fade_out_shape = 0;
-                    }
-                } else if (!(at_start && at_end)) {  // a window of the piece: its fades kept across the voices
-                    cur.fade_from_s = a - s0;
-                    cur.fade_span_s = piece.length_s;
-                }
-                push(cur);
-                k = e;
-            }
-        }
-        covered = std::max(covered, f.start + f.length);
-    }
-    return out;
-}
 
 bool PartHeard(const PartListen& listen, const std::string& value)
 {
     if (!listen.solo.empty()) return listen.solo.count(value) > 0;
     return listen.mute.count(value) == 0;
-}
-
-std::vector<AuditionVoice> VoicesFrom(const std::vector<AuditionVoice>& voices, double from_s)
-{
-    if (!(from_s > 0.0) || !std::isfinite(from_s)) return voices;
-    const double               from_ms = from_s * 1000.0;
-    std::vector<AuditionVoice> out;
-    for (AuditionVoice v : voices) {
-        const double end_ms = v.delay_ms + v.length_s * 1000.0;
-        if (end_ms <= from_ms + 1e-6) continue;
-        if (v.delay_ms < from_ms) {
-            const double cut = (from_ms - v.delay_ms) / 1000.0;
-            if (!(v.fade_span_s > 0.0)) v.fade_span_s = v.length_s;
-            v.start_s += cut;
-            v.length_s -= cut;
-            v.fade_from_s += cut;
-            v.delay_ms = 0.0;
-        } else {
-            v.delay_ms -= from_ms;
-        }
-        out.push_back(std::move(v));
-    }
-    return out;
-}
-
-bool SettleEditPlay(EditPlaySettle& s, const std::vector<AuditionVoice>& now, const std::vector<AuditionVoice>& playing,
-                    double t, double settle_s)
-{
-    if (SameVoices(now, playing)) {
-        s.since = -1.0;
-        s.seen.clear();
-        return false;
-    }
-    if (s.since < 0.0 || !SameVoices(now, s.seen)) {
-        s.seen = now;
-        s.since = t;
-        return false;
-    }
-    if (t - s.since < settle_s) return false;
-    s.since = -1.0;
-    s.seen.clear();
-    return true;
-}
-
-bool SameVoices(const std::vector<AuditionVoice>& a, const std::vector<AuditionVoice>& b)
-{
-    if (a.size() != b.size()) return false;
-    auto eq = [](double x, double y) { return std::fabs(x - y) <= 1e-9; };
-    for (size_t i = 0; i < a.size(); ++i) {
-        const AuditionVoice& x = a[i];
-        const AuditionVoice& y = b[i];
-        if (x.node != y.node || x.variation != y.variation || !eq(x.start_s, y.start_s) || !eq(x.length_s, y.length_s) ||
-            !eq(x.delay_ms, y.delay_ms) || !eq(x.gain_db, y.gain_db) || !eq(x.fade_in_s, y.fade_in_s) ||
-            !eq(x.fade_out_s, y.fade_out_s) || x.fade_in_shape != y.fade_in_shape || x.fade_out_shape != y.fade_out_shape ||
-            !eq(x.fade_from_s, y.fade_from_s) || !eq(x.fade_span_s, y.fade_span_s) || x.mono != y.mono ||
-            x.part != y.part)
-            return false;
-    }
-    return true;
 }
 
 double MonoOf(double l, double r, MonoMode mono)
@@ -879,14 +399,14 @@ const SoundFrame* FrameOfZone(const SoundData& d, const ZoneRef& r)
 
 }  // namespace
 
-EditPlay EditPlayFrom(const SoundData& d, double from, double to, const PartListen* listen)
+EditPlay EditPlayFrom(const SoundData& d, double from, double to, const PartListen* listen, int tl)
 {
     EditPlay out;
     if (!UsesZones(d) || !std::isfinite(from) || !std::isfinite(to) || !(to > from)) return out;
     const bool         listening = listen && listen->Active();
     double             at = 0.0;
     std::map<int, int> nth;  // voices so far per variation (PlayedText names a variation's first one)
-    for (const HeardPiece& p : HeardPieces(d, from, to)) {
+    for (const HeardPiece& p : HeardPieces(d, from, to, tl)) {
         HeardSpan s;
         s.at = at;
         s.a = s.lo = p.a;
@@ -928,6 +448,9 @@ EditPlay EditPlayFrom(const SoundData& d, double from, double to, const PartList
                 v.gain_db = z->db;
                 v.fade_in_s = s.fin;
                 v.fade_out_s = s.fout;
+                // 13-62i: a zone's own fade keeps its shape, as Populate places it (a Gap's crossfade, At cuts: linear).
+                if (!lg && !cut_in && ZoneFade(d, p.z, -1).src == FadeSrc::Own) v.fade_in_shape = z->fade_in_shape;
+                if (!rg && !cut_out && ZoneFade(d, p.z, 1).src == FadeSrc::Own) v.fade_out_shape = z->fade_out_shape;
                 v.fade_from_s = s.a - s.lo;
                 v.fade_span_s = s.hi - s.lo;
                 v.piece = nth[p.z.frame]++;
@@ -943,9 +466,10 @@ EditPlay EditPlayFrom(const SoundData& d, double from, double to, const PartList
     return out;
 }
 
-EditPlay EditPlayFrom(const SoundLibrary& lib, const SoundNode& n, double from, double to, const PartListen* listen)
+EditPlay EditPlayFrom(const SoundLibrary& lib, const SoundNode& n, double from, double to, const PartListen* listen,
+                      int tl)
 {
-    EditPlay     out = EditPlayFrom(n.sound, from, to, listen);
+    EditPlay     out = EditPlayFrom(n.sound, from, to, listen, tl);
     const double root = GainFromRoot(lib, n);
     for (AuditionVoice& v : out.voices) {
         v.node = n.uid;

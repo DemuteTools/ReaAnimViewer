@@ -12,9 +12,11 @@
 #include <map>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "sound_model.h"
+#include "sound_place_plan.h"  // 13-62i (D): PieceApply
 #include "sound_switch.h"
 
 namespace rav {
@@ -57,7 +59,20 @@ struct PopulateDrawState {
     const SoundLibrary*                     lib = nullptr;
     uint64_t                                seed = 0;
     std::map<std::string, std::vector<int>> history;  // node uid -> picks so far
+    // 13-62i (D): a filtered Populate's timeline: per history key, the events that play it (index in time order)
+    // and their pick (-1 = drawn by this Populate), so a draw also avoids the picks kept after it (AheadPicks);
+    // `at` = the index of the event being drawn. Empty = a full Populate (every event drawn in time order).
+    std::map<std::string, std::vector<std::pair<int, int>>> timeline;
+    int                                                     at = -1;
 };
+// 13-62i (D): fills the timelines of a filtered Populate: `draws[i]` = event i's recorded draws (null = none:
+// not in the timeline), `fixed[i]` = it keeps them (left out but still playing); else it is drawn now. A loop
+// pass's entry (PassDrawKey) goes to that pass's state in `passes` (made when missing; null = dropped).
+void SetDrawTimeline(PopulateDrawState& state, std::map<long long, PopulateDrawState>* passes,
+                     const std::vector<const std::vector<SoundDraw>*>& draws, const std::vector<char>& fixed);
+// 13-62i (D): the picks a draw of `key` at event `state.at` avoids ahead: the kept picks among the next `n`
+// events of the timeline that play `key` (the events drawn now avoid it by themselves).
+std::vector<int> AheadPicks(const PopulateDrawState& state, const std::string& key, int n);
 // One event's draw: reads `prev` (its stored draws), writes `out` (the draws this resolution used,
 // a hand pick kept hand), and `no_active` gets every Sound with frames but none on.
 struct EventDraw {
@@ -75,6 +90,33 @@ struct EventDraw {
 // among the variations that can play its part (ActiveVariationsFor), its history kept per node and
 // part ("node|part"), and its draw records the part (SoundDraw::part).
 ResolveHooks MakeDrawHooks(PopulateDrawState& state, EventDraw& ev, std::function<bool(const SoundNode&)> is_missing);
+// 13-62i (D): an event a filtered Populate skips (one rule, a time, only the populated ones) still plays its
+// recorded draws: they go into the history (key node, or node|part, as MakeDrawHooks), so the events drawn
+// after it avoid repeating them. A loop pass's entry (PassDrawKey) goes to that pass's state in `passes`
+// (made when missing; null = dropped).
+void SeedHistory(PopulateDrawState& state, std::map<long long, PopulateDrawState>* passes,
+                 const std::vector<SoundDraw>& draws);
+
+// 13-62i (D review): which events a Populate draws. `rid` / `rids` / `has_t` + `t` / `only_populated` = its filter (all
+// empty / false = every event).
+struct PopulateFilter {
+    std::string              rid;
+    std::vector<std::string> rids;
+    bool                     has_t = false;
+    double                   t = 0.0;
+    bool                     only_populated = false;
+    bool Active() const { return !rid.empty() || !rids.empty() || has_t || only_populated; }
+};
+// What a Populate does with one event (time order): Draw it; Keep it (left out by the filter, or attached / spread
+// by the user: it keeps the draws it plays -- they feed the history, SeedHistory, and are fixed in the timeline); Skip
+// it (a disabled rule, or left out with nothing placed: no draw of its own).
+enum class EventPlan { Draw, Keep, Skip };
+EventPlan PlanPopulateEvent(const PopulateFilter& f, const std::string& rid, double t, const EventSounds* ev, bool enabled = true);
+// The timeline of a Populate (SetDrawTimeline) from its events' plans and records (`evs[i]` null = no record):
+// a Keep event fixed with its recorded draws, a Draw event drawn now (in the timeline when it has a record). Set only
+// when some event is kept (else every event is drawn in time order: nothing to look ahead at). True when set.
+bool SetPopulateTimeline(PopulateDrawState& state, std::map<long long, PopulateDrawState>* passes,
+                         const std::vector<EventPlan>& plans, const std::vector<const EventSounds*>& evs);
 
 // ---- P9: event slots -------------------------------------------------------------------------
 
@@ -85,7 +127,15 @@ struct DesiredSlot {
     std::string part;    // 13-23: the part it plays (value uid, "" = the whole variation)
     int         pieces = 0;  // 13-20: the items it is placed as (one per span); 0 = not compared (a pile)
     double      sync = -1.0;  // 13-25: its anchor piece's snap (item s); < 0 = not compared (a pile, Takes)
+    // 13-62i (D, P2): the dB each of its items plays at now, by piece index (gain_db + the piece's db; one entry
+    // gain_db when it has no pieces: a pile, Takes, as copied). Not compared: a kept item's volume is rewritten
+    // (KeptItemVolume).
+    std::vector<double> piece_db;
+    bool                pile = false;  // a folder pile (its members' volumes are relative to their source's)
 };
+// 13-62i (D, P2): DesiredSlot::piece_db of a sound resolved at `gain_db` placed as `pieces` (PieceApplyFor):
+// gain_db + each piece's db, in piece order; {gain_db} when it has none (one item, or a pile's members).
+std::vector<double> PieceDbFor(const std::vector<PieceApply>& pieces, double gain_db);
 struct ExistingSlot {
     int         pass = -1;  // the pass nearest the placed item
     std::string node;

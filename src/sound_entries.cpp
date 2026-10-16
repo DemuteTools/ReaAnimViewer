@@ -347,18 +347,6 @@ void ClampFadePair(double length, double* in, double* out)
     if (out) *out = b;
 }
 
-namespace {
-// A frame's own fades kept inside its length (unset sides stay unset).
-void ClampOwnFades(SoundFrame& f)
-{
-    const bool has_in = f.fade_in >= 0.0, has_out = f.fade_out >= 0.0;
-    if (!has_in && !has_out) return;
-    double a = has_in ? f.fade_in : 0.0, b = has_out ? f.fade_out : 0.0;
-    ClampFadePair(f.length, &a, &b);
-    if (has_in) f.fade_in = a;
-    if (has_out) f.fade_out = b;
-}
-}  // namespace
 
 FrameFades EffectiveFades(const SoundData& data, const SoundFrame& frame)
 {
@@ -373,122 +361,10 @@ FrameFades EffectiveFades(const SoundData& data, const SoundFrame& frame)
     return r;
 }
 
-void SetFrameFades(SoundData& data, int i, double in, double out)
-{
-    if (!ValidIndex(data, i)) return;
-    if (UsesZones(data) && !data.frames[static_cast<size_t>(i)].zones.empty()) return;  // 13-62h: its zones' own
-    SoundFrame& f = data.frames[static_cast<size_t>(i)];
-    const double len = std::max(f.length, 0.0);
-    const bool   set_in = std::isfinite(in) && in >= 0.0, set_out = std::isfinite(out) && out >= 0.0;
-    // The side that changed gives way to the other one (dragging a handle never moves the other).
-    const double other_out = set_out ? out : std::max(data.fade_out, 0.0);
-    const double other_in = set_in ? in : std::max(data.fade_in, 0.0);
-    const bool   in_changed = set_in != (f.fade_in >= 0.0) || (set_in && std::fabs(in - f.fade_in) > 1e-9);
-    if (set_in) in = std::min(in, len);
-    if (set_out) out = std::min(out, len);
-    if (set_in && set_out) {
-        if (in + out > len) {
-            if (in_changed) in = std::max(len - out, 0.0);
-            else out = std::max(len - in, 0.0);
-        }
-    } else if (set_in) {
-        in = std::min(in, std::max(len - std::min(other_out, len), 0.0));
-    } else if (set_out) {
-        out = std::min(out, std::max(len - std::min(other_in, len), 0.0));
-    }
-    f.fade_in = set_in ? in : -1.0;
-    f.fade_out = set_out ? out : -1.0;
-    if (!set_in) f.fade_in_shape = 0;
-    if (!set_out) f.fade_out_shape = 0;
-    MarkHand(data, i);
-}
-
 void SetDefaultFades(SoundData& data, double in, double out)
 {
     data.fade_in = std::isfinite(in) ? std::max(in, 0.0) : kDefaultFadeIn;
     data.fade_out = std::isfinite(out) ? std::max(out, 0.0) : kDefaultFadeOut;
-}
-
-void TrimFrame(SoundData& data, int i, double start, double length, double source_len)
-{
-    if (!ValidIndex(data, i)) return;
-    const size_t k = static_cast<size_t>(i);
-    const double lo = k > 0 ? data.frames[k - 1].start + data.frames[k - 1].length : 0.0;
-    const double hi = k + 1 < data.frames.size() ? data.frames[k + 1].start : source_len;
-    const double s = std::min(std::max(start, lo), hi);
-    const double e = std::min(std::max(start + length, s), hi);
-    if (e - s <= kMinLen) return;  // no room: the frame stays as it was
-    data.frames[k].start = s;
-    data.frames[k].length = e - s;
-    ClampOwnFades(data.frames[k]);
-    MarkHand(data, i);
-}
-
-int AddFrame(SoundData& data, double start, double length, double source_len)
-{
-    double lo = 0.0, hi = source_len;
-    size_t at = 0;
-    for (size_t k = 0; k < data.frames.size(); ++k) {
-        const SoundFrame& f = data.frames[k];
-        if (f.start <= start) {
-            lo = f.start + f.length;
-            at = k + 1;
-        } else {
-            hi = std::min(hi, f.start);
-            break;
-        }
-    }
-    if (at > 0 && start < lo) return -1;  // `start` is inside an existing frame
-    const double s = std::max(start, std::max(lo, 0.0));
-    const double e = std::min(start + length, hi);
-    if (e - s <= kMinLen) return -1;
-    SoundFrame f;
-    f.start = s;
-    f.length = e - s;
-    data.frames.insert(data.frames.begin() + static_cast<std::ptrdiff_t>(at), f);
-    MarkHand(data, static_cast<int>(at));
-    return static_cast<int>(at);
-}
-
-bool SplitFrame(SoundData& data, int i, double at)
-{
-    if (!ValidIndex(data, i)) return false;
-    const size_t k = static_cast<size_t>(i);
-    SoundFrame a = data.frames[k];
-    const double end = a.start + a.length;
-    if (at - a.start <= kMinLen || end - at <= kMinLen) return false;
-    SoundFrame b = a;
-    a.length = at - a.start;
-    b.start = at;
-    b.length = end - at;
-    a.hand = b.hand = true;
-    // The cut gets the Sound's default fades: the left piece keeps its fade in, the right its fade out.
-    a.fade_out = -1.0;
-    a.fade_out_shape = 0;
-    b.fade_in = -1.0;
-    b.fade_in_shape = 0;
-    // 13-62: a comped frame gives each half the cuts and owners on its side (the piece holding `at` is in
-    // both; a cut on `at` goes). Without owners both keep every cut (RefreshParts drops the ones outside).
-    if (!a.owners.empty() && a.owners.size() == a.cuts.size() + 1) {
-        const std::vector<double>      cuts = a.cuts;
-        const std::vector<std::string> owners = a.owners;
-        a.cuts.clear();
-        b.cuts.clear();
-        for (double c : cuts) {
-            if (c < at - kMinLen) a.cuts.push_back(c);
-            if (c > at + kMinLen) b.cuts.push_back(c);
-        }
-        a.owners.assign(owners.begin(), owners.begin() + static_cast<std::ptrdiff_t>(a.cuts.size() + 1));
-        b.owners.assign(owners.end() - static_cast<std::ptrdiff_t>(b.cuts.size() + 1), owners.end());
-        a.part_trims.clear();
-        b.part_trims.clear();
-    }
-    ClampOwnFades(a);
-    ClampOwnFades(b);
-    data.frames[k] = a;
-    data.frames.insert(data.frames.begin() + static_cast<std::ptrdiff_t>(k) + 1, b);
-    data.edited = true;
-    return true;
 }
 
 void SetFrameOn(SoundData& data, int i, bool on)
@@ -502,17 +378,6 @@ void SetFrameOn(SoundData& data, int i, bool on)
         if (data.frames[static_cast<size_t>(i)].zones.empty()) ProposeZones(data, i, nullptr);
         RelayoutZones(data, nullptr);
     }
-}
-
-void SetFrameDb(SoundData& data, int i, double db)
-{
-    if (!ValidIndex(data, i)) return;
-    if (UsesZones(data) && !data.frames[static_cast<size_t>(i)].zones.empty()) return;  // 13-62h: its zones' own
-    SoundFrame&  f = data.frames[static_cast<size_t>(i)];
-    const double delta = db - f.db;
-    f.db = db;
-    for (auto& kv : f.part_db) kv.second += delta;  // 13-28: its parts' own gains move with it
-    MarkHand(data, i);
 }
 
 }  // namespace rav
@@ -647,10 +512,16 @@ int PartCount(const SoundData& data)
 
 int PartIndex(const SoundData& data, const std::string& value_uid)
 {
-    if (value_uid.empty() || !IsDivided(data)) return -1;
+    if (!IsDivided(data)) return value_uid == kWholePart ? 0 : -1;  // 13-62i: the implicit part
+    if (value_uid.empty()) return -1;
     for (size_t k = 0; k < data.divide_values.size(); ++k)
         if (data.divide_values[k] == value_uid) return static_cast<int>(k);
     return -1;
+}
+
+std::vector<std::string> PartKeys(const SoundData& data)
+{
+    return IsDivided(data) ? data.divide_values : std::vector<std::string>{kWholePart};
 }
 
 bool PartAt(const SoundData& data, int variation, double t, std::string* value)
@@ -1136,100 +1007,30 @@ void RefreshFrame(SoundData& data, int variation, const PeakData* peaks)
 {
     if (!ValidIndex(data, variation)) return;
     SoundFrame& f = data.frames[static_cast<size_t>(variation)];
-    if (data.mode == DetectMode::Takes) {  // A8: a take keeps its item's snap
-        f.cuts.clear();
-        f.cuts_hand = f.cut_unsure = false;
-        f.syncs.clear();
-        f.part_trims.clear();
-        f.owners.clear();  // 13-62
-        f.zones.clear();   // 13-62h: a take plays whole
-        return;
-    }
-    if (UsesZones(data)) {  // 13-62h: zones (proposed when it has none), laid out again; no cuts, no syncs
-        if (f.zones.empty()) ProposeZones(data, variation, peaks);
+    // 13-62h / 13-62i: every Sound is laid out as zones (proposed when it has none), laid out again; no cuts, no
+    // syncs (Takes mode too: each take on its own source, its own timeline; the peaks given are that take's).
+    if (f.zones.empty()) ProposeZones(data, variation, peaks);
+    f.cuts.clear();
+    f.cuts_hand = f.cut_unsure = false;
+    f.syncs.clear();
+    f.part_trims.clear();
+    f.part_trim_key.clear();
+    f.owners.clear();
+    RelayoutZones(data, peaks, 0.0, ZoneTimeline(data, variation));
+}
+
+void RefreshParts(SoundData& data, const PeakData* peaks, int tl)
+{
+    // 13-62h / 13-62i: every variation with no zone gets them, then one layout (the old model's keys cleared).
+    for (SoundFrame& f : data.frames) {
         f.cuts.clear();
         f.cuts_hand = f.cut_unsure = false;
         f.syncs.clear();
         f.part_trims.clear();
         f.part_trim_key.clear();
         f.owners.clear();
-        RelayoutZones(data, peaks);
-        return;
     }
-    f.zones.clear();  // 13-62h: zones only on a divided Sound
-    const int  n = PartCount(data);
-    // 13-62: a comped variation keeps its cuts, whatever their count; owners that do not fit go (the
-    // legacy rule then applies).
-    bool comped = n >= 2 && OwnersSane(data, f) && std::is_sorted(f.cuts.begin(), f.cuts.end());
-    if (comped) {
-        // 13-62 review: a trim that left a cut within 4 ms of the frame's edge (or past it) drops it with
-        // the sliver piece it bounds, so no 1 ms piece is ever placed (SaneCuts would clamp it 1 ms in).
-        const double fs = f.start, fe = FrameEnd(f);
-        while (!f.cuts.empty() && f.cuts.front() <= fs + kMinPiece + kTimeEps) {
-            f.cuts.erase(f.cuts.begin());
-            f.owners.erase(f.owners.begin());  // the piece on its left
-        }
-        while (!f.cuts.empty() && f.cuts.back() >= fe - kMinPiece - kTimeEps) {
-            f.cuts.pop_back();
-            f.owners.pop_back();  // the piece on its right
-        }
-        comped = SaneCuts(f, f.cuts);
-    }
-    if (!comped) f.owners.clear();
-    if (n < 2) {
-        f.cuts.clear();
-        f.cuts_hand = f.cut_unsure = false;
-    } else if (comped) {
-        f.cut_unsure = false;
-    } else if (f.cuts_hand && f.cuts.size() == static_cast<size_t>(n - 1) && SaneCuts(f, f.cuts)) {
-        f.cut_unsure = false;
-    } else if (HasPeaks(peaks)) {
-        bool q = false;
-        f.cuts = AutoCuts(peaks, f, n, &q);
-        f.cuts_hand = false;
-        f.cut_unsure = q;
-    } else if (!(f.cuts.size() == static_cast<size_t>(n - 1) && SaneCuts(f, f.cuts))) {
-        f.cuts = EvenCuts(f, n);
-        SaneCuts(f, f.cuts);
-        f.cuts_hand = f.cut_unsure = false;
-    }
-    RefreshTrims(data, variation, peaks);  // 13-54: before the syncs, measured over the trimmed parts
-    const std::vector<double> old = f.syncs;
-    std::vector<double>       syncs(static_cast<size_t>(n), -1.0);
-    for (int k = 0; k < n; ++k) {
-        const std::vector<PartSpan> spans = SpansOfPart(data, variation, k);
-        if (spans.empty()) continue;
-        // 13-62: measurable with the part's own sync mode.
-        const bool measurable = PartSyncMode(data, spans.front().value_uid) == SyncMode::SliceStart || HasPeaks(peaks);
-        double     s = HandSyncOf(data, variation, k, spans);  // 13-54 review: by its raw owner
-        if (s < 0.0 && measurable) s = AutoSync(data, peaks, spans);
-        if (s < 0.0 && old.size() == static_cast<size_t>(n) && old[static_cast<size_t>(k)] >= 0.0 &&
-            InSpans(spans, old[static_cast<size_t>(k)]))
-            s = old[static_cast<size_t>(k)];
-        if (s < 0.0) {  // cannot be measured here: at placement
-            f.syncs.clear();
-            return;
-        }
-        syncs[static_cast<size_t>(k)] = s;
-    }
-    f.syncs = syncs;
-}
-
-void RefreshParts(SoundData& data, const PeakData* peaks)
-{
-    if (UsesZones(data)) {  // 13-62h: every on variation with no zone gets them, then one layout
-        for (SoundFrame& f : data.frames) {
-            f.cuts.clear();
-            f.cuts_hand = f.cut_unsure = false;
-            f.syncs.clear();
-            f.part_trims.clear();
-            f.part_trim_key.clear();
-            f.owners.clear();
-        }
-        EnsureZones(data, peaks);
-        return;
-    }
-    for (size_t i = 0; i < data.frames.size(); ++i) RefreshFrame(data, static_cast<int>(i), peaks);
+    EnsureZones(data, peaks, 0.0, tl);
 }
 
 bool SyncsStale(const SoundData& data, int variation)
@@ -1376,16 +1177,66 @@ void CarryHandMarks(std::vector<SoundFrame>& now, const std::vector<SoundFrame>&
     }
 }
 
+namespace {
+
+// 13-62i (Divide by -> None): the parts' own settings go; what they gave a zone is written into the zone first, so
+// Populate places the same: a fade taken from its part becomes the zone's own; its snap when its part had its own Sync
+// point / Offset (as its measured snap); an automatic edge its part's own Pre-roll / Tail placed stays where it is (by hand). (A part's own
+// Mono has no per-zone home: the Sound's applies.)
+void BakePartsIntoZones(SoundData& d)
+{
+    std::vector<std::pair<ZoneRef, EditZone>> baked;
+    for (size_t f = 0; f < d.frames.size(); ++f)
+        for (size_t k = 0; k < d.frames[f].zones.size(); ++k) {
+            const EditZone&     z = d.frames[f].zones[k];
+            const PartSettings* p = z.IsGap() ? nullptr : PartSettingsOf(d, z.part);
+            if (!p) continue;
+            const ZoneRef r{static_cast<int>(f), static_cast<int>(k)};
+            EditZone      nz = z;
+            if (ZoneFade(d, r, -1).src == FadeSrc::Part) nz.fade_in = ZoneFade(d, r, -1).s;
+            if (ZoneFade(d, r, 1).src == FadeSrc::Part) nz.fade_out = ZoneFade(d, r, 1).s;
+            if (!z.snap && (p->sync_mode || p->sync_offset_ms)) {
+                // As its measured snap (auto_snap, held while its edges and the Sound's Sync point stay): an own snap
+                // would make it the event's anchor. A Sound in Slice start reads no measure: its own snap then.
+                const double t = ZoneSnap(d, r, nullptr).t;
+                if (d.sync_mode == SyncMode::SliceStart) {
+                    nz.snap = t;
+                } else {
+                    nz.auto_snap.set = true;
+                    nz.auto_snap.t = t;
+                    nz.auto_snap.a = z.a;
+                    nz.auto_snap.b = z.b;
+                    nz.auto_snap.mode = static_cast<int>(d.sync_mode);
+                    nz.auto_snap.thr = d.silence.threshold_db;
+                    nz.auto_snap.off = std::isfinite(d.sync_offset_ms) ? d.sync_offset_ms : 0.0;
+                }
+            }
+            if (p->preroll_ms && !ZoneOf(d, GapBefore(d, r))) nz.a_hand = true;
+            if (p->tail_ms && !ZoneOf(d, GapAfter(d, r))) nz.b_hand = true;
+            baked.push_back({r, nz});
+        }
+    for (const auto& b : baked) d.frames[static_cast<size_t>(b.first.frame)].zones[static_cast<size_t>(b.first.index)] = b.second;
+}
+
+}  // namespace
+
 bool SetDivide(SoundData& data, const std::string& group, const std::vector<std::string>& values)
 {
     const std::vector<std::string> vals = group.empty() ? std::vector<std::string>() : values;
     if (data.divide_group == group && data.divide_values == vals) return false;
+    if (vals.empty()) BakePartsIntoZones(data);  // 13-62i: before the parts' settings go
     data.divide_group = group;
     data.divide_values = vals;
+    const bool whole = vals.empty();
     for (SoundFrame& f : data.frames) {
-        // 13-62h: the zones go with the old division (RefreshParts proposes new ones); the variation keeps their
-        // extent and the first part zone's gain.
-        if (!f.zones.empty()) {
+        // 13-62i: Divide by None: the zones stay where they are (their edges, fades, snaps, gains and Gaps), all of the
+        // implicit part.
+        if (whole && !f.zones.empty()) {
+            for (EditZone& z : f.zones)
+                if (!z.IsGap()) z.part = kWholePart;
+        } else if (!f.zones.empty()) {
+            // 13-62h: the zones go with the old division (RefreshParts proposes new ones); the variation keeps their
+            // extent and the first part zone's gain.
             for (const EditZone& z : f.zones)
                 if (!z.IsGap()) {
                     f.db = z.db;
@@ -1400,6 +1251,7 @@ bool SetDivide(SoundData& data, const std::string& group, const std::vector<std:
         f.owners.clear();      // 13-62 (decision 8)
     }
     data.parts.clear();  // 13-62 (decision 8): the parts' own settings go with the old division
+    data.fader_db.reset();  // 13-62i: and the implicit part's fader (a view of what it applied)
     auto known = [&](const std::string& v) { return std::find(vals.begin(), vals.end(), v) != vals.end(); };
     data.zones.erase(std::remove_if(data.zones.begin(), data.zones.end(),
                                     [&](const SoundZone& z) { return !z.to.empty() && !known(z.to); }),
@@ -1416,87 +1268,6 @@ bool SetSyncSettings(SoundData& data, SyncMode mode, double offset_ms)
     data.sync_mode = mode;
     data.sync_offset_ms = offset_ms;
     for (SoundFrame& f : data.frames) f.syncs.clear();
-    return true;
-}
-
-bool AddZone(SoundData& data, double start, double length, const std::string& to)
-{
-    if (!std::isfinite(start) || !std::isfinite(length) || length <= kMinLen) return false;
-    if (UsesZones(data))  // 13-62h: a Sound edited as zones has no Sound-level zones
-        for (const SoundFrame& f : data.frames)
-            if (!f.zones.empty()) return false;
-    const double end = start + length;
-    data.zones.erase(std::remove_if(data.zones.begin(), data.zones.end(),
-                                    [&](const SoundZone& z) {
-                                        return z.start >= start - kTimeEps && z.start + z.length <= end + kTimeEps;
-                                    }),
-                     data.zones.end());
-    SoundZone z;
-    z.start = start;
-    z.length = length;
-    z.to = to;
-    data.zones.push_back(z);
-    for (SoundFrame& f : data.frames) f.part_trims.clear();  // 13-54: the spans changed
-    return true;
-}
-
-bool IncludeAgain(SoundData& data, double t)
-{
-    const size_t before = data.zones.size();
-    data.zones.erase(std::remove_if(data.zones.begin(), data.zones.end(),
-                                    [&](const SoundZone& z) {
-                                        return z.to.empty() && t >= z.start - kTimeEps && t <= z.start + z.length + kTimeEps;
-                                    }),
-                     data.zones.end());
-    if (data.zones.size() == before) return false;
-    for (SoundFrame& f : data.frames) f.part_trims.clear();  // 13-54: the spans changed
-    return true;
-}
-
-bool MoveSync(SoundData& data, int variation, int part, double t)
-{
-    if (!ValidIndex(data, variation) || !std::isfinite(t) || part < 0 || part >= PartCount(data)) return false;
-    const std::vector<PartSpan> pieces = SpansOfPart(data, variation, part);
-    if (pieces.empty()) return false;
-    SoundFrame&       f = data.frames[static_cast<size_t>(variation)];
-    const std::string value = IsDivided(data) ? data.divide_values[static_cast<size_t>(part)] : std::string();
-    // 13-54 review: kept where the part both plays (its pieces) and owns the spot by the cuts and zones
-    // (its raw spans), so the refresh gives it back to this part (a pre-roll reaching back over a cut
-    // plays a neighbour's spot).
-    std::vector<PartSpan> spans;
-    for (const PartSpan& r : PartSpansOf(data, variation)) {
-        if (r.value_uid != value) continue;
-        for (const PartSpan& p : pieces) {
-            const double a = std::max(r.start, p.start), b = std::min(r.start + r.length, p.start + p.length);
-            if (b - a > kTimeEps) spans.push_back({value, a, b - a});
-        }
-    }
-    if (spans.empty()) spans = pieces;
-    double s = ClampIntoSpans(spans, t);
-    // On a span edge (a cut) the sync would sit in both neighbouring parts: keep it 1 us inside its own.
-    for (const PartSpan& sp : spans)
-        if (InSpans({sp}, s)) {
-            s = std::min(std::max(s, sp.start + kEdgeNudge), sp.start + sp.length - kEdgeNudge);
-            break;
-        }
-    // Only the hand syncs this part owns go (13-54 review: by their raw owner, as HandSyncOf reads them).
-    f.hand_syncs.erase(std::remove_if(f.hand_syncs.begin(), f.hand_syncs.end(),
-                                      [&](double h) {
-                                          std::string own;
-                                          return PartAt(data, variation, h, &own) && own == value;
-                                      }),
-                       f.hand_syncs.end());
-    f.hand_syncs.push_back(s);
-    if (f.syncs.size() == static_cast<size_t>(PartCount(data))) f.syncs[static_cast<size_t>(part)] = s;
-    return true;
-}
-
-bool ResetSyncs(SoundData& data, int variation)
-{
-    if (!ValidIndex(data, variation)) return false;
-    SoundFrame& f = data.frames[static_cast<size_t>(variation)];
-    if (f.hand_syncs.empty()) return false;
-    f.hand_syncs.clear();
     return true;
 }
 
@@ -1527,7 +1298,7 @@ namespace {
 
 PartSettings* FindPart(SoundData& data, const std::string& value)
 {
-    if (value.empty()) return nullptr;
+    if (value.empty() || value == kWholePart) return nullptr;  // 13-62i: the implicit part's settings are the Sound's
     for (PartSettings& p : data.parts)
         if (p.value == value) return &p;
     return nullptr;
@@ -1578,7 +1349,7 @@ void PruneEmptyParts(SoundData& data)
 
 const PartSettings* PartSettingsOf(const SoundData& data, const std::string& value)
 {
-    if (value.empty()) return nullptr;
+    if (value.empty() || value == kWholePart) return nullptr;  // 13-62i: the implicit part's settings are the Sound's
     for (const PartSettings& p : data.parts)
         if (p.value == value) return &p;
     return nullptr;
@@ -1632,6 +1403,33 @@ bool PartFades(const SoundData& data, const std::string& value, double* in, doub
 void SetPartSetting(SoundData& data, const std::string& value, const PartSettings& patch)
 {
     if (PartIndex(data, value) < 0) return;
+    if (value == kWholePart) {  // 13-62i: the implicit part's settings are the Sound's own
+        bool syncs = false, trims = false;
+        if (Finite(patch.preroll_ms)) {
+            data.silence.preroll_ms = std::max(*patch.preroll_ms, 0.0);
+            trims = true;
+        }
+        if (Finite(patch.tail_ms)) {
+            data.silence.tail_ms = std::max(*patch.tail_ms, 0.0);
+            trims = true;
+        }
+        if (patch.sync_mode) {
+            data.sync_mode = *patch.sync_mode;
+            syncs = true;
+        }
+        if (Finite(patch.sync_offset_ms)) {
+            data.sync_offset_ms = *patch.sync_offset_ms;
+            syncs = true;
+        }
+        if (patch.mono) data.mono = *patch.mono;
+        if (Finite(patch.fade_in)) data.fade_in = std::max(*patch.fade_in, 0.0);
+        if (Finite(patch.fade_out)) data.fade_out = std::max(*patch.fade_out, 0.0);
+        // Its gain is its fader (what it applies to every zone of the Sound). Its Normalize mode / target are the
+        // user's Level settings (C1: not the Sound's data): nothing here.
+        if (Finite(patch.gain_db)) SetPartFader(data, kWholePart, *patch.gain_db);
+        Remeasure(data, syncs, trims);
+        return;
+    }
     PartSettings* p = FindPart(data, value);
     if (!p) {
         data.parts.emplace_back();
@@ -1665,8 +1463,36 @@ void SetPartSetting(SoundData& data, const std::string& value, const PartSetting
     Remeasure(data, syncs, trims);
 }
 
+namespace {
+
+// 13-62i: the implicit part's field back to the Sound's default.
+void ResetWholeField(SoundData& data, PartField field)
+{
+    const SoundData def;
+    switch (field) {
+    case PartField::Preroll: data.silence.preroll_ms = def.silence.preroll_ms; break;
+    case PartField::Tail: data.silence.tail_ms = def.silence.tail_ms; break;
+    case PartField::SyncMode: data.sync_mode = def.sync_mode; break;
+    case PartField::SyncOffset: data.sync_offset_ms = def.sync_offset_ms; break;
+    case PartField::Gain: SetPartFader(data, kWholePart, 0.0); break;
+    case PartField::Mono: data.mono = def.mono; break;
+    case PartField::FadeIn: data.fade_in = def.fade_in; break;
+    case PartField::FadeOut: data.fade_out = def.fade_out; break;
+    case PartField::NormMode:
+    case PartField::NormTarget: break;  // the user's Level settings (C1)
+    }
+    if (PartFieldRemeasures(field)) Remeasure(data, field == PartField::SyncMode || field == PartField::SyncOffset,
+                                              field == PartField::Preroll || field == PartField::Tail);
+}
+
+}  // namespace
+
 void ResetPartSetting(SoundData& data, const std::string& value, PartField field)
 {
+    if (value == kWholePart) {
+        ResetWholeField(data, field);
+        return;
+    }
     PartSettings* p = FindPart(data, value);
     if (!p) return;
     bool syncs = false, trims = false;
@@ -1688,6 +1514,12 @@ void ResetPartSetting(SoundData& data, const std::string& value, PartField field
 
 void ResetPartAll(SoundData& data, const std::string& value)
 {
+    if (value == kWholePart) {  // 13-62i: every setting of the Sound back to its default (the fader stays, as a part's)
+        for (PartField f : {PartField::Preroll, PartField::Tail, PartField::SyncMode, PartField::SyncOffset, PartField::Mono,
+                            PartField::FadeIn, PartField::FadeOut})
+            ResetWholeField(data, f);
+        return;
+    }
     PartSettings* p = FindPart(data, value);
     if (!p) return;
     const bool syncs = p->sync_mode || p->sync_offset_ms, trims = p->preroll_ms || p->tail_ms;
@@ -1708,65 +1540,6 @@ int OwnSettingCount(const SoundData& data, const std::string& value)
     return p ? OwnCount(*p) : 0;
 }
 
-std::vector<EditPiece> EditPiecesOf(const SoundData& data, int variation)
-{
-    std::vector<EditPiece> out;
-    if (!ValidIndex(data, variation)) return out;
-    const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
-    if (!f.on || !(f.length > 0.0)) return out;
-    const std::vector<double> b = PieceBounds(data, f);
-    for (size_t k = 0; k + 1 < b.size(); ++k) {
-        const double a = b[k], e = b[k + 1];
-        if (e - a <= kTimeEps) continue;
-        EditPiece p;
-        p.start = a;
-        p.length = e - a;
-        p.excluded = !PartAt(data, variation, (a + e) * 0.5, &p.owner);
-        if (p.excluded) p.owner.clear();
-        p.index = static_cast<int>(out.size());
-        out.push_back(p);
-    }
-    return out;
-}
-
-double SnapToCut(const SoundData& data, int variation, double t, double tolerance_s)
-{
-    if (!ValidIndex(data, variation) || !std::isfinite(t)) return t;
-    const SoundFrame&   f = data.frames[static_cast<size_t>(variation)];
-    std::vector<double> marks = {f.start, FrameEnd(f)};
-    if (IsDivided(data)) marks.insert(marks.end(), f.cuts.begin(), f.cuts.end());
-    for (const SoundZone& z : data.zones)  // 13-62 review: a zone's edge inside the frame snaps too
-        for (double e : {z.start, z.start + z.length})
-            if (e > f.start && e < FrameEnd(f)) marks.push_back(e);
-    double best = t, best_d = std::isfinite(tolerance_s) ? std::max(tolerance_s, 0.0) : 0.0;
-    for (double m : marks)
-        if (std::fabs(m - t) <= best_d) {
-            best_d = std::fabs(m - t);
-            best = m;
-        }
-    return best;
-}
-
-double SnapSpanEdge(const SoundData& data, double t, double tolerance_s)
-{
-    if (!std::isfinite(t)) return t;
-    const double tol = std::isfinite(tolerance_s) ? std::max(tolerance_s, 0.0) : 0.0;
-    double       best = t, best_d = tol;
-    auto         consider = [&](double c) {
-        const double d = std::fabs(c - t);
-        if (c != t && d <= best_d) {
-            best_d = d;
-            best = c;
-        }
-    };
-    for (size_t i = 0; i < data.frames.size(); ++i) consider(SnapToCut(data, static_cast<int>(i), t, tol));
-    for (const SoundZone& z : data.zones) {
-        consider(z.start);
-        consider(z.start + z.length);
-    }
-    return best;
-}
-
 // ---- part C: what the Edit window shows and its role gestures -----------------------------------------
 
 int ExcludedZoneCount(const SoundData& data)
@@ -1774,67 +1547,6 @@ int ExcludedZoneCount(const SoundData& data)
     int n = 0;
     for (const SoundZone& z : data.zones) n += z.to.empty() && z.length > 0.0 ? 1 : 0;
     return n;
-}
-
-int ExcludedStretchCount(const SoundData& data)
-{
-    int n = 0;
-    for (size_t i = 0; i < data.frames.size(); ++i) {
-        const SoundFrame& f = data.frames[i];
-        if (!(f.length > 0.0)) continue;
-        if (!f.on) {
-            ++n;
-            continue;
-        }
-        double at = f.start;  // the end of what the spans covered so far
-        for (const PartSpan& s : PlacedSpans(data, static_cast<int>(i), std::string())) {
-            if (s.start - at > kTimeEps) ++n;
-            at = s.start + s.length;
-        }
-        if (FrameEnd(f) - at > kTimeEps) ++n;
-    }
-    return n;
-}
-
-int VariationsWithPart(const SoundData& data, const std::string& value_uid)
-{
-    int n = 0;
-    for (size_t i = 0; i < data.frames.size(); ++i) n += PlacedSpans(data, static_cast<int>(i), value_uid).empty() ? 0 : 1;
-    return n;
-}
-
-int HandSyncCount(const SoundData& data)
-{
-    int n = 0;
-    for (const SoundFrame& f : data.frames) n += static_cast<int>(f.hand_syncs.size());
-    return n;
-}
-
-int HandCutCount(const SoundData& data)
-{
-    int n = 0;
-    if (!IsDivided(data)) return 0;
-    for (const SoundFrame& f : data.frames) n += f.on && f.cuts_hand ? static_cast<int>(f.cuts.size()) : 0;
-    return n;
-}
-
-int UnsureCutCount(const SoundData& data)
-{
-    int n = 0;
-    if (!IsDivided(data)) return 0;
-    for (const SoundFrame& f : data.frames) n += f.on && f.cut_unsure && !f.cuts_hand ? 1 : 0;
-    return n;
-}
-
-bool SyncIsHand(const SoundData& data, int variation, int part)
-{
-    if (!ValidIndex(data, variation) || part < 0 || part >= PartCount(data)) return false;
-    const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
-    if (f.hand_syncs.empty()) return false;
-    const std::vector<PartSpan> spans = SpansOfPart(data, variation, part);
-    for (double h : f.hand_syncs)
-        if (InSpans(spans, h)) return true;
-    return false;
 }
 
 bool DivideStale(const SoundStore& store, const SoundData& data)
@@ -1929,43 +1641,9 @@ double FrameGainDb(const SoundFrame& frame, const std::string& part_value)
     return frame.db;
 }
 
-double FrameLabelDb(const SoundData& data, int variation)
-{
-    if (!ValidIndex(data, variation)) return 0.0;
-    const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
-    if (NormPartsAvailable(data) && !f.part_db.empty()) {  // a take plays whole, at the frame's dB
-        bool   any = false;
-        double top = 0.0;
-        for (const std::string& v : data.divide_values) {
-            const auto it = f.part_db.find(v);
-            if (it == f.part_db.end()) continue;
-            top = any ? std::max(top, it->second) : it->second;
-            any = true;
-        }
-        if (any) return top;
-    }
-    return f.db;
-}
-
-bool FrameClips(const SoundData& data, int variation, const PeakData& peaks)
-{
-    if (!ValidIndex(data, variation)) return false;
-    const SoundFrame& f = data.frames[static_cast<size_t>(variation)];
-    if (!f.on) return false;
-    std::vector<PartSpan> spans;
-    if (data.mode == DetectMode::Takes) spans.push_back({std::string(), f.start, f.length});
-    else spans = PartSpansOf(data, variation);
-    for (const PartSpan& sp : spans) {
-        const double pk = SpanPeakDb(peaks, sp.start, sp.length);
-        // 13-62: plus the part's own gain (decision 3).
-        if (std::isfinite(pk) && pk + FrameGainDb(f, sp.value_uid) + PartGainDb(data, sp.value_uid) > 1e-9) return true;
-    }
-    return false;
-}
-
 bool NormPartsAvailable(const SoundData& data)
 {
-    return IsDivided(data) && data.mode != DetectMode::Takes;
+    return IsDivided(data);  // 13-62i: a take is laid out as zones too
 }
 
 bool SameNormMeasured(const SoundData& x, const SoundData& y)
@@ -1987,49 +1665,6 @@ bool SameNormMeasured(const SoundData& x, const SoundData& y)
     return true;
 }
 
-std::vector<NormRegion> NormalizeRegions(const SoundData& data, NormScope scope, const std::vector<int>& selection)
-{
-    std::vector<NormRegion> out;
-    std::vector<int>        set;
-    if (selection.empty()) {
-        for (size_t i = 0; i < data.frames.size(); ++i) set.push_back(static_cast<int>(i));
-    } else {
-        for (int i : selection)
-            if (ValidIndex(data, i) && std::find(set.begin(), set.end(), i) == set.end()) set.push_back(i);
-        std::sort(set.begin(), set.end());
-    }
-    const bool takes = data.mode == DetectMode::Takes;
-    const bool parts = scope == NormScope::Part && NormPartsAvailable(data);
-    for (int i : set) {
-        const SoundFrame& f = data.frames[static_cast<size_t>(i)];
-        if (!f.on || !(f.length > 0.0)) continue;
-        if (takes) {  // a take plays whole, in its own file
-            NormRegion r;
-            r.frame = i;
-            r.spans.push_back({std::string(), f.start, f.length});
-            out.push_back(r);
-            continue;
-        }
-        if (!parts) {
-            NormRegion r;
-            r.frame = i;
-            r.spans = PlacedSpans(data, i, std::string());
-            if (!r.spans.empty()) out.push_back(r);
-            continue;
-        }
-        const std::vector<PartSpan> spans = PartSpansOf(data, i);
-        for (const std::string& v : data.divide_values) {
-            NormRegion r;
-            r.frame = i;
-            r.part = v;
-            for (const PartSpan& sp : spans)
-                if (sp.value_uid == v) r.spans.push_back(sp);
-            if (!r.spans.empty()) out.push_back(r);
-        }
-    }
-    return out;
-}
-
 NormMode PartNormMode(const SoundData& data, const std::string& value, NormMode sound_mode)
 {
     const PartSettings* p = value.empty() ? nullptr : PartSettingsOf(data, value);
@@ -2041,43 +1676,6 @@ double PartNormTarget(const SoundData& data, const std::string& value, double so
 {
     const PartSettings* p = value.empty() ? nullptr : PartSettingsOf(data, value);
     return p && p->norm_target && std::isfinite(*p->norm_target) ? *p->norm_target : sound_target;
-}
-
-std::vector<NormRegion> PartNormRegions(const SoundData& data, const std::string& value, const std::vector<int>& selection,
-                                        NormMode sound_mode, double sound_target)
-{
-    std::vector<NormRegion> out;
-    if (!NormPartsAvailable(data)) return out;
-    for (NormRegion& r : NormalizeRegions(data, NormScope::Part, selection)) {
-        if (r.part.empty() || (!value.empty() && r.part != value)) continue;
-        r.mode = PartNormMode(data, r.part, sound_mode);
-        r.target = PartNormTarget(data, r.part, sound_target);
-        out.push_back(std::move(r));
-    }
-    return out;
-}
-
-void KeepOtherPartGains(const SoundData& before, std::vector<SoundFrame>& frames, const std::vector<NormRegion>& regions,
-                        const std::vector<double>& adj_db)
-{
-    // The (frame, part) pairs found silent in this pass: they keep their gain but do not pull frame.db.
-    std::set<std::pair<int, std::string>> silent;
-    for (size_t k = 0; k < regions.size(); ++k)
-        if (!regions[k].part.empty() && !(k < adj_db.size() && UsableAdj(adj_db[k])))
-            silent.emplace(regions[k].frame, regions[k].part);
-    for (size_t i = 0; i < frames.size() && i < before.frames.size(); ++i) {
-        SoundFrame&       f = frames[i];
-        const SoundFrame& b = before.frames[i];
-        if (f.part_db == b.part_db && std::fabs(f.db - b.db) <= 1e-9) continue;  // not acted on
-        for (const PartSpan& sp : PartSpansOf(before, static_cast<int>(i)))
-            if (!sp.value_uid.empty() && !f.part_db.count(sp.value_uid)) f.part_db[sp.value_uid] = b.db;
-        bool any = false;
-        for (const auto& kv : f.part_db) {
-            if (silent.count({static_cast<int>(i), kv.first})) continue;
-            f.db = any ? std::min(f.db, kv.second) : kv.second;
-            any = true;
-        }
-    }
 }
 
 double NormAdjustmentDb(double factor)
@@ -2118,80 +1716,6 @@ double RegionPeakAdjDb(const PeakData& peaks, const NormRegion& region, double t
     if (!std::isfinite(top)) return std::numeric_limits<double>::quiet_NaN();
     const double adj = target - top;
     return UsableAdj(adj) ? adj : std::numeric_limits<double>::quiet_NaN();
-}
-
-NormalizeOutcome ApplyNormalize(std::vector<SoundFrame>& frames, NormScope scope, const std::vector<NormRegion>& regions,
-                                const std::vector<double>& adj_db)
-{
-    NormalizeOutcome out;
-    const std::vector<SoundFrame> before = frames;
-    auto valid = [&](size_t i) {
-        return i < adj_db.size() && UsableAdj(adj_db[i]) && regions[i].frame >= 0 &&
-               static_cast<size_t>(regions[i].frame) < frames.size() && frames[static_cast<size_t>(regions[i].frame)].on;
-    };
-    if (scope == NormScope::Whole) {
-        double low = 0.0;
-        bool   any = false;
-        for (size_t i = 0; i < regions.size(); ++i) {
-            if (!valid(i)) continue;
-            low = any ? std::min(low, adj_db[i]) : adj_db[i];
-            any = true;
-        }
-        std::set<int> acted;
-        for (size_t i = 0; i < regions.size(); ++i) {
-            if (!valid(i)) {
-                ++out.skipped;
-                continue;
-            }
-            if (!acted.insert(regions[i].frame).second) continue;
-            SoundFrame& f = frames[static_cast<size_t>(regions[i].frame)];
-            f.db = low;
-            f.part_db.clear();
-            f.hand = true;
-            ++out.done;
-        }
-    } else {
-        for (size_t i = 0; i < regions.size(); ++i) {
-            if (!valid(i)) {
-                ++out.skipped;
-                continue;
-            }
-            SoundFrame& f = frames[static_cast<size_t>(regions[i].frame)];
-            if (scope == NormScope::Part && !regions[i].part.empty()) {
-                f.part_db[regions[i].part] = adj_db[i];
-            } else {
-                f.db = adj_db[i];
-                f.part_db.clear();
-            }
-            f.hand = true;
-            ++out.done;
-        }
-        // Per part: the whole variation (a combined event, an unmapped role, a Blend layer "Whole", a
-        // part not measured) plays at the frame's dB, so it follows its parts: the smallest of them,
-        // the loudest part reaching the target. Left as it was, it kept an older gain (Antho 2026-10-13:
-        // a box at +24.3 dB placed at +47).
-        if (scope == NormScope::Part)
-            for (size_t i = 0; i < regions.size(); ++i) {
-                if (!valid(i) || regions[i].part.empty()) continue;
-                SoundFrame& f = frames[static_cast<size_t>(regions[i].frame)];
-                bool        any = false;
-                for (const auto& kv : f.part_db) {
-                    f.db = any ? std::min(f.db, kv.second) : kv.second;
-                    any = true;
-                }
-            }
-    }
-    for (size_t i = 0; i < frames.size() && !out.changed; ++i) {
-        const SoundFrame& a = frames[i];
-        const SoundFrame& b = before[i];
-        out.changed = std::fabs(a.db - b.db) > 1e-9 || a.hand != b.hand || a.part_db.size() != b.part_db.size();
-        if (!out.changed)
-            for (const auto& kv : a.part_db) {
-                const auto it = b.part_db.find(kv.first);
-                if (it == b.part_db.end() || std::fabs(it->second - kv.second) > 1e-9) out.changed = true;
-            }
-    }
-    return out;
 }
 
 std::string DividedByText(const SoundStore& store, const SoundData& data)

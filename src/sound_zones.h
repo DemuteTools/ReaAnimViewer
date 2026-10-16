@@ -10,6 +10,12 @@
 // fadeOf, env, snapOf, pieces, chainOf, normalize) on SoundData: each zone belongs to its variation
 // (SoundFrame::zones, C1), the gestures see every zone of the Sound in time order. Times are absolute source
 // seconds. Every gesture returns false when it changed nothing (no undo point) and runs RelayoutZones after.
+//
+// 13-62i (spec 13-62i): every Sound is edited as zones -- an undivided one as zones of its one implicit part
+// (kWholePart), a Takes-mode one with each take a variation of zones on its own source. Each take is a timeline of its
+// own (ZoneTimeline): its zones never meet another take's (no neighbour, no overlap, no Gap between them); every other
+// Sound has one timeline (0). The peaks, the file's length and a time a gesture is given belong to one timeline
+// (ZoneContext::tl); the queries by time take it too.
 
 #pragma once
 
@@ -32,10 +38,12 @@ constexpr double kMinZone = 0.004;
 constexpr double kZoneTouch = 0.0002;
 
 // Where a gesture runs: the peaks (null = none: automatic edges keep their place) and the file's length (0 =
-// unknown: no upper clamp).
+// unknown: no upper clamp). 13-62i: `tl`, the timeline they (and a time given to the gesture) belong to: ignored but on
+// a Takes-mode Sound, where it is the take (-1 = none: no peaks, no clamp, no time-based gesture).
 struct ZoneContext {
     const PeakView* peaks = nullptr;
     double          file_len = 0.0;
+    int             tl = -1;
 };
 
 // A zone: its variation and its index in that variation's zones.
@@ -46,17 +54,28 @@ struct ZoneRef {
 inline bool operator==(const ZoneRef& x, const ZoneRef& y) { return x.frame == y.frame && x.index == y.index; }
 inline bool operator!=(const ZoneRef& x, const ZoneRef& y) { return !(x == y); }
 
-// True when the Sound is edited as zones: divided and not in Takes mode.
+// True when the Sound is edited as zones. 13-62i: every Sound.
 bool UsesZones(const SoundData& d);
-// 13-62h (Lot B): true when the Sound is placed, drawn and gained from its zones: UsesZones and at least one
-// zone. A divided Sound always has zones in the tool (migration, SetDivide / RefreshParts); one with none at all
-// (never laid out) keeps the old pieces.
+// 13-62h (Lot B): true when the Sound is placed, drawn and gained from its zones. 13-62i: every Sound (one read
+// without zones is laid out first: ZonesLaidOut).
 bool PlacedFromZones(const SoundData& d);
+// 13-62i: the timeline of variation `frame`'s zones: the take (Takes mode), else 0.
+int ZoneTimeline(const SoundData& d, int frame);
+// 13-62i: a timeline given by a caller as the Sound reads it: Takes mode = `tl` (< 0 = none: -1), else 0.
+int NormTl(const SoundData& d, int tl);
+// 13-62i: true when an on variation with a length has no zone (a Sound made or read but not laid out yet).
+bool NeedsZoneLayout(const SoundData& d);
+// 13-62i: the Sound with every variation laid out as zones: `d` itself when it is, else `*tmp` filled with a copy
+// migrated from the old model (MigrateLegacyZones) and sanitized (SanitizeZones: the rest proposed without peaks).
+const SoundData& ZonesLaidOut(const SoundData& d, SoundData* tmp);
 // The zone `r` points at, nullptr when none.
 const EditZone* ZoneOf(const SoundData& d, const ZoneRef& r);
 EditZone*       ZoneOf(SoundData& d, const ZoneRef& r);
-// Every zone of the Sound in time order (a Gap after a part zone starting at the same time).
+// Every zone of the Sound in time order (a Gap after a part zone starting at the same time). 13-62i: by timeline
+// first (a Takes-mode Sound: take by take).
 std::vector<ZoneRef> AllZones(const SoundData& d);
+// 13-62i: the zones of timeline `tl` (NormTl: a Takes-mode Sound's take; none for -1), in time order.
+std::vector<ZoneRef> AllZones(const SoundData& d, int tl);
 // Counts: part zones, Gaps.
 int PartZoneCount(const SoundData& d);
 int GapCount(const SoundData& d);
@@ -75,24 +94,34 @@ std::string ZonesProblem(const SoundData& d, double file_len);
 // holds its neighbours' edges (one that no longer touches a zone on a side is empty space: removed); zones never
 // overlap; everything inside the file; a zone under 4 ms goes. Each variation's start / length follow its zones;
 // a variation left with no zone is turned off.
-void RelayoutZones(SoundData& d, const PeakView* peaks, double file_len = 0.0);
-// After a read: every zone made sane (RelayoutZones without peaks; an off variation's zones too, on their own);
-// zones on a Sound that is not edited as zones dropped. ZonesProblem is "" after it.
+// 13-62i: `peaks` and `file_len` are timeline `tl`'s (the other timelines are laid out without them).
+void RelayoutZones(SoundData& d, const PeakView* peaks, double file_len = 0.0, int tl = -1);
+// After a read: every zone made sane (RelayoutZones without peaks; an off variation's zones too, on their own); an on
+// variation with none gets ProposeZones. ZonesProblem is "" after it.
 void SanitizeZones(SoundData& d);
 // The mockup's initZones for variation `v` (its zones replaced): one zone per part, cut at RAV's cuts (AutoCuts
-// on the peaks, else an even split), each later part's cut following its Pre-roll before its onset.
+// on the peaks, else an even split), each later part's cut following its Pre-roll before its onset. 13-62i: an
+// undivided Sound's one zone of kWholePart; the variation's own gain, fades and fade shapes go into its zones; its
+// outer edges are hand edges unless the Sound is in Silence mode (P7: a take, a whole item, a take-marker slice keep
+// their edges; Pre-roll / Tail only trim what Silence detection found). `peaks` = variation v's file's.
 void ProposeZones(SoundData& d, int v, const PeakView* peaks);
-// Every on variation of a zoned Sound with no zone gets ProposeZones, then RelayoutZones. Nothing on other Sounds.
-void EnsureZones(SoundData& d, const PeakView* peaks, double file_len = 0.0);
+// Every variation with no zone gets ProposeZones, then RelayoutZones. 13-62i: `peaks` / `file_len` are timeline
+// `tl`'s (another take is proposed and laid out without them).
+void EnsureZones(SoundData& d, const PeakView* peaks, double file_len = 0.0, int tl = -1);
 // 13-62h: a Sound read from an old project / .ravlib (divided, cuts / owners / Sound-level zones / part_db / frame
 // db, and no zone yet): each variation's placed pieces (the old model's PartPieces) become its zones, gains carried
 // (frame db, part_db, the part's gain), hand syncs as the zone's own snap, the frame's own fades on its edges. The
 // old keys are cleared. False when nothing was migrated.
+// 13-62i: an undivided Sound (any mode) with no zone: each placed stretch of each variation (the frame minus its
+// excluded Sound-level zones; a take whole) becomes one kWholePart zone with hand edges, the frame's gain, its own
+// fades + shapes on the frame's edges, the Sound's cut_fade as its own fade at an excluded zone's edge, the hand sync as
+// its own snap, else the stored sync as its measured snap (auto_snap; its own snap in a later zone). A divided Sound in
+// Takes mode is not migrated (SanitizeZones proposes its zones, the take's gain and fades carried).
 bool MigrateLegacyZones(SoundData& d);
 
 // ---- Queries ----------------------------------------------------------------------------------------------
-// The zone holding t (a <= t < b), {-1, -1} when none.
-ZoneRef ZoneAt(const SoundData& d, double t);
+// The zone holding t (a <= t < b) on timeline `tl` (13-62i), {-1, -1} when none.
+ZoneRef ZoneAt(const SoundData& d, double t, int tl = -1);
 ZoneRef PrevZone(const SoundData& d, const ZoneRef& r);
 ZoneRef NextZone(const SoundData& d, const ZoneRef& r);
 bool    Butted(const SoundData& d, const ZoneRef& x, const ZoneRef& y);
@@ -157,12 +186,14 @@ struct HeardPiece {
     double  a = 0.0, b = 0.0, xo = 0.0;
     ZoneRef z;
 };
-std::vector<HeardPiece> HeardPieces(const SoundData& d, double A, double B);
+// 13-62i: on timeline `tl`.
+std::vector<HeardPiece> HeardPieces(const SoundData& d, double A, double B, int tl = -1);
 // A variation's edges: its first zone's start, its last zone's end (its frame's when it has no zone). False for a
 // bad index.
 bool VariationEdges(const SoundData& d, int v, double* a, double* b);
-// The variation index of the zones nearest to t (inside one = distance 0); -1 when the Sound has no frame.
-int NearestVariation(const SoundData& d, double t);
+// The variation index of the zones nearest to t (inside one = distance 0); -1 when the Sound has no frame. 13-62i:
+// on timeline `tl` (a Takes-mode Sound: that take's variation when it is on).
+int NearestVariation(const SoundData& d, double t, int tl = -1);
 
 // ---- Gestures (false = nothing changed: no undo point) ----------------------------------------------------
 // A selection: zones. Every gesture takes an optional `ZoneSel* sel`: the selection, re-resolved after the gesture

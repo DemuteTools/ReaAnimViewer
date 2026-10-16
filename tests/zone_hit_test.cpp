@@ -327,6 +327,19 @@ void TestNewPartAndSnap()
     CHECK(NewZonePart(d, h, "") == "toe");
     h.t = 1.0;
     CHECK(NewZonePart(d, h, "") == "heel");      // empty space: the first part
+    // 13-62i: an undivided Sound's new zone is of its implicit part (never "": a Gap).
+    SoundData u = d;
+    u.divide_group.clear();
+    u.divide_values.clear();
+    CHECK(NewZonePart(u, h, "") == kWholePart && NewZonePart(u, h, "heel") == kWholePart);
+    // 13-62i: a Takes-mode Sound: each take its own timeline (its looks, its blocks, its hits).
+    SoundData t = d;
+    t.mode = DetectMode::Takes;
+    CHECK(ZoneLooks(t, nullptr, 1).size() == 1 && ZoneLooks(t, nullptr, 0).size() == 4 && ZoneVarBlocks(t, 1).size() == 1 &&
+          ZoneVarBlocks(t).size() == 2);
+    ZoneHitView tv = Lane(-1);
+    tv.tl = 1;
+    CHECK(HitZones(t, tv, 1300.0f, 70.0f).z.frame == 1 && HitZones(t, tv, 300.0f, 70.0f).kind == ZoneHitKind::None);
     // Snap to a zone edge / the cursor within 6 px (1 px = 1 ms).
     CHECK(std::fabs(SnapZoneTime(d, 0.403, 1000.0, -1.0, 6.0f) - 0.40) < 1e-9);
     CHECK(std::fabs(SnapZoneTime(d, 1.0, 1000.0, -1.0, 6.0f) - 1.0) < 1e-9);

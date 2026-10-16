@@ -7,6 +7,7 @@
 
 #include "sound_entries.h"
 #include "sound_record.h"
+#include "sound_zones.h"  // 13-62i: every Sound's zones
 
 #include "sound_draw.h"  // ActiveVariationsFor
 
@@ -282,87 +283,16 @@ void TestClampAndEdits()
         CHECK(Near(fr[1].start, 2) && Near(fr[1].length, 1));
         CHECK(Near(fr[2].start, 3) && Near(fr[2].length, 3));
     }
-
-    SoundData d;
-    d.frames = {F(0, 1), F(2, 1), F(3, 1)};
-    TrimFrame(d, 1, 0.5, 1.0, 4);
-    CHECK(Near(d.frames[1].start, 1) && Near(d.frames[1].length, 0.5));
-    CHECK(d.frames[1].hand && d.edited);
-    TrimFrame(d, 1, 1.5, 9, 4);
-    CHECK(Near(d.frames[1].length, 1.5));  // stops at next start
-    TrimFrame(d, 1, 1.0, 0.0, 4);
-    CHECK(Near(d.frames[1].start, 1.5) && Near(d.frames[1].length, 1.5));  // empty trim: unchanged
-
-    SoundData a;
-    a.frames = {F(0, 1), F(2, 1)};
-    SoundData full;
-    full.frames = {F(0, 1), F(1, 1)};
-    CHECK(AddFrame(full, 0.5, 1, 2) == -1);  // no gap at all
-    CHECK(!full.edited);
-    int k = AddFrame(a, 1.2, 5, 3);
-    CHECK(k == 1 && Near(a.frames[1].start, 1.2) && Near(a.frames[1].length, 0.8) && a.frames[1].hand);
-    CHECK(AddFrame(a, 1.5, 0.1, 3) == -1);     // inside the new frame
-    CHECK(AddFrame(a, 1.0, 0.0005, 3) == -1);  // gap too small
-    SoundData last;
-    last.frames = {F(0, 1)};
-    CHECK(AddFrame(last, 0.5, 1, 3) == -1);  // inside the only frame, room after it
-    CHECK(last.frames.size() == 1);
-    CHECK(AddFrame(last, 1.5, 1, 3) == 1 && Near(last.frames[1].start, 1.5));
-
+    // 13-62i: the variation trims, splits, adds and dB drags are zone gestures now (sound_zones_test). On / off and
+    // Reset to detected stay: a variation turned on gets its zones back (proposed when it has none).
     SoundData s;
+    s.mode = DetectMode::Whole;
     s.frames = {F(0, 2)};
     s.frames[0].on = false;
-    s.frames[0].db = -3;
-    CHECK(!SplitFrame(s, 0, 2.5));
-    CHECK(SplitFrame(s, 0, 0.5));
-    CHECK(s.frames.size() == 2 && Near(s.frames[1].start, 0.5) && Near(s.frames[1].length, 1.5));
-    CHECK(!s.frames[1].on && Near(s.frames[1].db, -3) && s.edited);
-    CHECK(s.frames[0].hand && s.frames[1].hand);
-
     SetFrameOn(s, 0, true);
-    SetFrameDb(s, 1, 2);
-    CHECK(s.frames[0].on && Near(s.frames[1].db, 2));
-
+    CHECK(s.frames[0].on && s.frames[0].hand && s.edited && s.frames[0].zones.size() == 1 && s.frames[0].zones[0].part == kWholePart);
     ResetToDetected(s, {F(0, 2)});
-    CHECK(s.frames.size() == 1 && !s.edited && !s.frames[0].hand);
-}
-
-// Peak Normalize as the gesture runs it (13-28): regions, cached-peak adjustments, ApplyNormalize.
-NormalizeOutcome PeakNormalize(std::vector<SoundFrame>& fr, const PeakData& p, double target, NormScope scope,
-                               const std::vector<int>& sel)
-{
-    SoundData d;
-    d.frames = fr;
-    const std::vector<NormRegion> regs = NormalizeRegions(d, scope, sel);
-    std::vector<double>           adj;
-    for (const NormRegion& r : regs) adj.push_back(RegionPeakAdjDb(p, r, target));
-    const NormalizeOutcome o = ApplyNormalize(fr, scope, regs, adj);
-    return o;
-}
-
-void TestNormalize()
-{
-    // Ported from NormalizeFrames: the Peak cases behave as before.
-    PeakData p;
-    p.rate = 10;
-    p.max_abs = {0.5f, 0.5f, 0.25f, 0.25f, 0.0f, 0.0f, 1.0f, 1.0f};
-    std::vector<SoundFrame> fr = {F(0, 0.2), F(0.2, 0.2), F(0.4, 0.2), F(0.6, 0.2)};
-    fr[3].on = false;
-    fr[3].db = 7;
-    PeakNormalize(fr, p, -1, NormScope::Variation, {});
-    CHECK(Near(FramePeakDb(p, fr[0]) + fr[0].db, -1, 0.1));
-    CHECK(Near(FramePeakDb(p, fr[1]) + fr[1].db, -1, 0.1));
-    CHECK(Near(fr[2].db, 0) && std::isinf(FramePeakDb(p, fr[2])));
-    CHECK(Near(fr[3].db, 7));
-    PeakNormalize(fr, p, -1, NormScope::Whole, {});
-    CHECK(Near(FramePeakDb(p, fr[0]) + fr[0].db, -1, 0.1));
-    CHECK(Near(fr[1].db, fr[0].db));
-    CHECK(Near(fr[3].db, 7));
-    CHECK(Near(fr[2].db, 0) && !fr[2].hand);  // -inf peak: untouched by the whole pass too
-    CHECK(fr[0].hand && !fr[3].hand);
-    PeakNormalize(fr, p, -6, NormScope::Variation, {1, 3});
-    CHECK(Near(FramePeakDb(p, fr[1]) + fr[1].db, -6, 0.1) && Near(fr[3].db, 7));
-    CHECK(std::isinf(FramePeakDb(p, F(5, 1))));
+    CHECK(s.frames.size() == 1 && !s.edited && !s.frames[0].hand && s.frames[0].zones.empty());
 }
 
 // 13-28: the modes table, the applier per scope, silent regions, per-part gains.
@@ -372,39 +302,10 @@ void TestNormalizeModes()
     const int want[kNormModeCount] = {2, 3, 1, 0, 4, 5};
     for (int i = 0; i < kNormModeCount; ++i) CHECK(NormModeReaperIndex(static_cast<NormMode>(i)) == want[i]);
 
-    // Matrix "Per variation, Peak -1": peaks -6 / -3 / -9 / -12 -> +5 / +2 / +8 / +11.
-    std::vector<SoundFrame> fr = {F(0, 1), F(1, 1), F(2, 1), F(3, 1)};
-    std::vector<NormRegion> regs(4);
-    for (int i = 0; i < 4; ++i) regs[static_cast<size_t>(i)].frame = i;
-    NormalizeOutcome o = ApplyNormalize(fr, NormScope::Variation, regs, {-1 + 6.0, -1 + 3.0, -1 + 9.0, -1 + 12.0});
-    CHECK(o.done == 4 && o.skipped == 0 && o.changed);
-    CHECK(Near(fr[0].db, 5) && Near(fr[1].db, 2) && Near(fr[2].db, 8) && Near(fr[3].db, 11) && fr[0].hand);
-    // The same again: nothing changed.
-    CHECK(!ApplyNormalize(fr, NormScope::Variation, regs, {5.0, 2.0, 8.0, 11.0}).changed);
-
-    // Matrix "Whole, LUFS-I -14": adjustments +3 / +1 / +6 -> all +1.
-    fr = {F(0, 1), F(1, 1), F(2, 1)};
-    regs.resize(3);
-    o = ApplyNormalize(fr, NormScope::Whole, regs, {3.0, 1.0, 6.0});
-    CHECK(o.done == 3 && Near(fr[0].db, 1) && Near(fr[1].db, 1) && Near(fr[2].db, 1));
-
     // Matrix "Silent region": factor <= 0, NaN, or > +60 dB -> skipped, counted out.
     CHECK(std::isnan(NormAdjustmentDb(0.0)) && std::isnan(NormAdjustmentDb(-1.0)) &&
           std::isnan(NormAdjustmentDb(std::nan(""))) && std::isnan(NormAdjustmentDb(std::pow(10.0, 61.0 / 20.0))));
     CHECK(Near(NormAdjustmentDb(2.0), 6.0206, 1e-3));
-    fr = {F(0, 1), F(1, 1), F(2, 1)};
-    o = ApplyNormalize(fr, NormScope::Variation, regs, {NormAdjustmentDb(0.0), 61.0, 4.0});
-    CHECK(o.done == 1 && o.skipped == 2 && Near(fr[0].db, 0) && !fr[0].hand && Near(fr[1].db, 0) && Near(fr[2].db, 4));
-    o = ApplyNormalize(fr, NormScope::Whole, regs, {std::nan(""), 2.0, 4.0});
-    CHECK(o.done == 2 && o.skipped == 1 && Near(fr[1].db, 2) && Near(fr[2].db, 2) && Near(fr[0].db, 0));
-
-    // An off frame is never changed (even when a region names it).
-    fr = {F(0, 1), F(1, 1)};
-    fr[1].on = false;
-    regs.resize(2);
-    o = ApplyNormalize(fr, NormScope::Variation, regs, {3.0, 3.0});
-    CHECK(o.done == 1 && Near(fr[1].db, 0) && !fr[1].hand);
-
     // Combining spans: Peak = the loudest span (smallest adjustment); LUFS-I = energy over the summed duration.
     CHECK(Near(CombineSpanAdjustments(NormMode::Peak, -1, {5.0, 2.0}, {0.1, 0.1}), 2.0));
     CHECK(Near(CombineSpanAdjustments(NormMode::LufsSMax, -18, {5.0, std::nan(""), 7.0}, {}), 5.0));
@@ -412,134 +313,6 @@ void TestNormalizeModes()
     // Two equal-length spans 10 dB apart: the energy mean is ~7.4 dB under the loud one.
     CHECK(Near(CombineSpanAdjustments(NormMode::LufsI, -14, {0.0, 10.0}, {1.0, 1.0}), 10.0 * std::log10(2.0 / 1.1), 1e-6));
     CHECK(std::isnan(CombineSpanAdjustments(NormMode::RmsI, -14, {std::nan("")}, {1.0})));
-}
-
-void TestNormalizeParts()
-{
-    const std::string back = "vb", front = "vf";
-    SoundData d;
-    d.divide_group = "g";
-    d.divide_values = {back, front};
-    d.frames = {F(0, 1), F(1, 1), F(2, 1)};
-    for (size_t i = 0; i < 3; ++i) d.frames[i].cuts = {d.frames[i].start + 0.4};
-    CHECK(NormPartsAvailable(d));
-    // Matrix "Per part": divided Back / Front, 3 variations -> 6 part dBs, frame dB = the smallest of them.
-    std::vector<NormRegion> regs = NormalizeRegions(d, NormScope::Part, {});
-    CHECK(regs.size() == 6 && regs[0].frame == 0 && regs[0].part == back && regs[1].part == front);
-    CHECK(regs[0].spans.size() == 1 && Near(regs[0].spans[0].length, 0.4) && Near(regs[1].spans[0].start, 0.4));
-    d.frames[0].db = -2;
-    std::vector<double> adj = {1, 2, 3, 4, 5, 6};
-    NormalizeOutcome    o = ApplyNormalize(d.frames, NormScope::Part, regs, adj);
-    CHECK(o.done == 6 && o.changed);
-    CHECK(Near(d.frames[0].db, 1) && d.frames[0].part_db.size() == 2 && Near(d.frames[0].part_db[back], 1) &&
-          Near(d.frames[2].part_db[front], 6) && Near(d.frames[2].db, 5));
-    // FrameGainDb: the part's own, else the frame's; "" = the frame's (the whole variation, never an older gain).
-    CHECK(Near(FrameGainDb(d.frames[0], front), 2) && Near(FrameGainDb(d.frames[0], ""), 1) &&
-          Near(FrameGainDb(d.frames[0], "other"), 1));
-    CHECK(Near(FrameLabelDb(d, 0), 2) && Near(FrameLabelDb(d, 2), 6));
-    // A hand dB drag moves the parts' own gains by the same step.
-    {
-        SoundData h = d;
-        SetFrameDb(h, 0, 4.0);  // +1 -> +4: +3
-        CHECK(Near(h.frames[0].db, 4) && Near(h.frames[0].part_db[back], 4) && Near(h.frames[0].part_db[front], 5));
-    }
-    // Matrix "Per variation after Per part": the acted frames' part dBs cleared, frame dB written.
-    regs = NormalizeRegions(d, NormScope::Variation, {1});
-    CHECK(regs.size() == 1 && regs[0].frame == 1 && regs[0].part.empty());
-    ApplyNormalize(d.frames, NormScope::Variation, regs, {7.0});
-    CHECK(d.frames[1].part_db.empty() && Near(d.frames[1].db, 7) && d.frames[0].part_db.size() == 2);
-    // An excluded zone inside Back of frame 0: Back measured over its 2 spans; a frame with nothing left gives none.
-    d.zones.push_back({0.1, 0.1, "", {}});
-    d.zones.push_back({2.0, 1.0, "", {}});  // frame 2 fully excluded
-    regs = NormalizeRegions(d, NormScope::Part, {});
-    CHECK(regs.size() == 4 && regs[0].part == back && regs[0].spans.size() == 2);
-    for (const NormRegion& r : regs) CHECK(r.frame != 2);
-    // Per variation / Whole: frame 0's spans skip the zone; the fully excluded frame 2 gives no region.
-    regs = NormalizeRegions(d, NormScope::Variation, {});
-    CHECK(regs.size() == 2 && regs[0].frame == 0 && regs[1].frame == 1);
-    if (!regs.empty())
-        CHECK(regs[0].spans.size() == 2 && Near(regs[0].spans[0].start, 0.0) && Near(regs[0].spans[0].length, 0.1) &&
-              Near(regs[0].spans[1].start, 0.2) && Near(regs[0].spans[1].length, 0.8));
-    regs = NormalizeRegions(d, NormScope::Whole, {});
-    CHECK(regs.size() == 2);
-    // Whole on a divided frame with part gains clears them.
-    CHECK(!d.frames[0].part_db.empty());
-    ApplyNormalize(d.frames, NormScope::Whole, regs, {3.0, 5.0});
-    CHECK(d.frames[0].part_db.empty() && Near(d.frames[0].db, 3) && Near(d.frames[1].db, 3));
-    // Selection: only the selected on frames; {-1} = none; an off frame none.
-    d.frames[1].on = false;
-    CHECK(NormalizeRegions(d, NormScope::Variation, {-1}).empty());
-    CHECK(NormalizeRegions(d, NormScope::Variation, {1}).empty());
-    CHECK(NormalizeRegions(d, NormScope::Variation, {0, 1}).size() == 1);
-    // Matrix "Part preset, undivided": Per part acts per variation.
-    SoundData u;
-    u.frames = {F(0, 1), F(1, 1)};
-    CHECK(!NormPartsAvailable(u));
-    regs = NormalizeRegions(u, NormScope::Part, {});
-    CHECK(regs.size() == 2 && regs[0].part.empty());
-    // Peak from cached peaks over the spans: the loudest span.
-    PeakData p;
-    p.rate = 10;
-    p.max_abs.assign(10, 0.25f);
-    p.max_abs[7] = 0.5f;
-    NormRegion r;
-    r.spans = {{"", 0.0, 0.3}, {"", 0.6, 0.3}};
-    CHECK(Near(RegionPeakAdjDb(p, r, -1), -1 - 20 * std::log10(0.5), 1e-4));
-    r.spans = {{"", 0.0, 0.3}};
-    CHECK(Near(RegionPeakAdjDb(p, r, -1), -1 - 20 * std::log10(0.25), 1e-4));
-    p.max_abs.assign(10, 0.0f);
-    CHECK(std::isnan(RegionPeakAdjDb(p, r, -1)));
-    // FrameClips: peak + the gain it plays at over 0 dBFS, part by part (the red dB label).
-    SoundData c;
-    c.divide_group = "g";
-    c.divide_values = {back, front};
-    c.frames = {F(0, 1)};
-    c.frames[0].cuts = {0.5};
-    p.rate = 10;
-    p.max_abs.assign(10, 0.5f);  // -6 dBFS
-    CHECK(!FrameClips(c, 0, p));
-    c.frames[0].part_db[front] = 7.0;
-    CHECK(FrameClips(c, 0, p));
-    c.frames[0].part_db[front] = 5.0;
-    c.frames[0].db = 7.0;  // Back plays at the frame's dB
-    CHECK(FrameClips(c, 0, p));
-    c.frames[0].db = 0.0;
-    CHECK(!FrameClips(c, 0, p) && Near(FrameLabelDb(c, 0), 5.0));
-    c.frames[0].on = false;
-    c.frames[0].db = 20.0;
-    CHECK(!FrameClips(c, 0, p));
-    // Undivided: the frame's dB; Takes: the take whole at the frame's dB, a part gain neither shown nor used.
-    SoundData w;
-    w.frames = {F(0, 1)};
-    w.frames[0].db = 5.0;
-    CHECK(!FrameClips(w, 0, p));
-    w.frames[0].db = 7.0;
-    CHECK(FrameClips(w, 0, p));
-    c.frames[0].on = true;
-    c.frames[0].db = 0.0;
-    c.frames[0].part_db[front] = 7.0;
-    c.mode = DetectMode::Takes;
-    CHECK(!FrameClips(c, 0, p) && Near(FrameLabelDb(c, 0), 0.0));
-    c.frames[0].db = 7.0;
-    CHECK(FrameClips(c, 0, p) && Near(FrameLabelDb(c, 0), 7.0));
-    // SameNormMeasured: what the regions depend on cancels the job; a gain change does not.
-    {
-        SoundData a = d, x = d;
-        CHECK(SameNormMeasured(a, x));
-        x.frames[0].db = 9.0;
-        x.frames[0].part_db[back] = 4.0;
-        CHECK(SameNormMeasured(a, x));
-        x = d; x.frames[0].start += 0.01; CHECK(!SameNormMeasured(a, x));
-        x = d; x.frames[0].cuts = {0.3}; CHECK(!SameNormMeasured(a, x));
-        x = d; x.frames[0].on = !x.frames[0].on; CHECK(!SameNormMeasured(a, x));
-        x = d; x.zones[0].start += 0.01; CHECK(!SameNormMeasured(a, x));
-        x = d; x.zones[0].to = front; CHECK(!SameNormMeasured(a, x));
-        x = d; x.zones.pop_back(); CHECK(!SameNormMeasured(a, x));
-        x = d; x.divide_values = {front, back}; CHECK(!SameNormMeasured(a, x));
-        x = d; x.divide_group = "h"; CHECK(!SameNormMeasured(a, x));
-        x = d; x.role_map.push_back({"toe", front}); CHECK(!SameNormMeasured(a, x));
-        x = d; x.mode = DetectMode::Takes; CHECK(!SameNormMeasured(a, x));
-    }
 }
 
 // Antho 2026-10-12: fades on each variation.
@@ -563,49 +336,20 @@ void TestFades()
     a = 1.0, b = 1.0;
     ClampFadePair(-3.0, &a, &b);
     CHECK(Near(a, 0.0) && Near(b, 0.0));
-    // A hand-set fade: kept, marks hand / edited; the other side stays the default.
-    SetFrameFades(d, 0, 0.02, -1.0);
-    CHECK(Near(d.frames[0].fade_in, 0.02) && d.frames[0].fade_out < 0.0 && d.frames[0].hand && d.edited);
-    f = EffectiveFades(d, d.frames[0]);
-    CHECK(f.own_in && !f.own_out && Near(f.in, 0.02) && Near(f.out, 0.005));
-    // The dragged side gives way to the other: fade out 0.9 then fade in 0.5 on a 1 s frame.
-    SetFrameFades(d, 0, 0.02, 0.9);
-    CHECK(Near(d.frames[0].fade_out, 0.9) && Near(d.frames[0].fade_in, 0.02));
-    SetFrameFades(d, 0, 0.5, 0.9);
-    CHECK(Near(d.frames[0].fade_in, 0.1) && Near(d.frames[0].fade_out, 0.9));
-    SetFrameFades(d, 0, 0.1, 2.0);  // out dragged past: it gives way to in
-    CHECK(Near(d.frames[0].fade_in, 0.1) && Near(d.frames[0].fade_out, 0.9));
-    // Back to the default (Alt-click): < 0, shape cleared.
-    d.frames[0].fade_in_shape = 3;
-    SetFrameFades(d, 0, -1.0, 0.9);
-    CHECK(d.frames[0].fade_in < 0.0 && d.frames[0].fade_in_shape == 0 && Near(d.frames[0].fade_out, 0.9));
-    SetFrameFades(d, 7, 0.1, 0.1);  // bad index: nothing
-    // Trim keeps the own fades inside the new length.
-    SoundData t;
-    t.frames = {F(0, 1)};
-    SetFrameFades(t, 0, 0.3, 0.6);
-    TrimFrame(t, 0, 0.0, 0.5, 10.0);
-    CHECK(Near(t.frames[0].length, 0.5) && Near(t.frames[0].fade_in + t.frames[0].fade_out, 0.5) &&
-          Near(t.frames[0].fade_in, 0.5 / 3.0));
-    // Split: the left piece keeps its fade in, the right its fade out; the cut gets the default.
-    SoundData s;
-    s.frames = {F(0, 1)};
-    SetFrameFades(s, 0, 0.05, 0.2);
-    CHECK(SplitFrame(s, 0, 0.5));
-    CHECK(s.frames.size() == 2 && Near(s.frames[0].fade_in, 0.05) && s.frames[0].fade_out < 0.0 &&
-          s.frames[1].fade_in < 0.0 && Near(s.frames[1].fade_out, 0.2));
-    // Split near the start: an own fade in longer than the left piece is clamped.
-    SoundData s2;
-    s2.frames = {F(0, 1)};
-    SetFrameFades(s2, 0, 0.4, -1.0);
-    CHECK(SplitFrame(s2, 0, 0.1));
-    CHECK(Near(s2.frames[0].fade_in, 0.1));
     // The Sound default: never negative.
     SetDefaultFades(d, -2.0, 0.01);
     CHECK(d.fade_in == 0.0 && Near(d.fade_out, 0.01));
     // Zero default: no fade on a frame without its own.
     f = EffectiveFades(d, d.frames[1]);
     CHECK(Near(f.in, 0.0) && Near(f.out, 0.004));
+    // 13-62i: the implicit part's fades are the Sound's (SetPartSetting on kWholePart writes them).
+    PartSettings pf;
+    pf.fade_in = 0.003;
+    pf.tail_ms = 70.0;
+    pf.gain_db = 5.0;  // no Sound-level home: ignored
+    SetPartSetting(d, kWholePart, pf);
+    CHECK(Near(d.fade_in, 0.003) && Near(d.silence.tail_ms, 70.0) && d.parts.empty() && PartSettingsOf(d, kWholePart) == nullptr);
+    CHECK(PartIndex(d, kWholePart) == 0 && PartKeys(d).size() == 1 && PartKeys(d)[0] == kWholePart && Near(PartTailMs(d, kWholePart), 70.0));
 }
 
 // ---- 13-20 / 13-23 / 13-25: parts, zones, sync points (spec 13-20-23-25 D5 / D6) -----------------
@@ -644,62 +388,40 @@ SoundData Step(PeakData* peaks)
 const char kBack[] = "v0000000000000b1";
 const char kFront[] = "v0000000000000f1";
 
+// 13-62i: an undivided Sound's sync point is its zone's snap (Settings of: Sync point, Offset), measured on the
+// peaks and stored (auto_snap) by the layout; Silence mode: the zone's automatic start follows Pre-roll (5 ms).
 void TestSyncSliced()
 {
     PeakData  pk;
     SoundData d = Step(&pk);
     RefreshParts(d, &pk);
-    // Matrix row 1: the attack at 1.020, -2 ms: the item starts at 1.000 with snap 0.018.
-    CHECK(d.frames[0].syncs.size() == 1 && Near(d.frames[0].syncs[0], 1.018));
-    CHECK(Near(SyncFor(d, 0, ""), 1.018) && !SyncsStale(d, 0));
-    CHECK(d.frames[0].cuts.empty());
+    CHECK(d.frames[0].zones.size() == 1 && d.frames[0].zones[0].part == kWholePart && d.frames[0].syncs.empty());
+    const ZoneRef z{0, 0};
+    // Matrix row 1: the attack at 1.020, -2 ms.
+    CHECK(Near(ZoneOf(d, z)->a, 1.015) && Near(ZoneSnap(d, z, nullptr).t, 1.018) && ZoneSnapStored(d, z));
     // Peak: the loudest bin (the heel's top), + the offset.
-    d.sync_mode = SyncMode::Peak;
-    d.sync_offset_ms = 0.0;
+    CHECK(SetSyncSettings(d, SyncMode::Peak, 0.0));
     RefreshParts(d, &pk);
-    CHECK(Near(d.frames[0].syncs[0], 1.020));
-    // Slice start + 3 ms; a negative offset is clamped into the frame.
-    d.sync_mode = SyncMode::SliceStart;
-    d.sync_offset_ms = 3.0;
+    CHECK(Near(ZoneSnap(d, z, nullptr).t, 1.020));
+    // Slice start (the zone's start) + 3 ms; a negative offset is clamped into the zone.
+    SetSyncSettings(d, SyncMode::SliceStart, 3.0);
     RefreshParts(d, &pk);
-    CHECK(Near(d.frames[0].syncs[0], 1.003));
-    d.sync_offset_ms = -5.0;
+    CHECK(Near(ZoneSnap(d, z, nullptr).t, 1.018));
+    SetSyncSettings(d, SyncMode::SliceStart, -5.0);
+    CHECK(Near(ZoneSnap(d, z, nullptr).t, ZoneOf(d, z)->a));
+    // Attack + a large offset is clamped to the zone's end.
+    SetSyncSettings(d, SyncMode::Attack, 1000.0);
     RefreshParts(d, &pk);
-    CHECK(Near(d.frames[0].syncs[0], 1.0));
-    // Attack + a large offset is clamped to the frame's end.
-    d.sync_mode = SyncMode::Attack;
-    d.sync_offset_ms = 1000.0;
-    RefreshParts(d, &pk);
-    CHECK(Near(d.frames[0].syncs[0], 1.4));
-    // Attack over a part quieter than the threshold: 20 dB under its peak still finds it.
-    d.sync_offset_ms = 0.0;
-    d.silence.threshold_db = 10.0;
-    RefreshParts(d, &pk);
-    CHECK(Near(d.frames[0].syncs[0], 1.020));
-    // Without peaks: Slice start is measured, Attack / Peak keep a stored sync still inside, else wait
-    // for placement (syncs empty: stale).
-    SoundData n = d;
-    RefreshParts(n, nullptr);
-    CHECK(n.frames[0].syncs.size() == 1 && Near(n.frames[0].syncs[0], 1.020));
-    n.frames[0].syncs.clear();
-    RefreshParts(n, nullptr);
-    CHECK(n.frames[0].syncs.empty() && SyncsStale(n, 0) && SyncFor(n, 0, "") < 0.0);
-    n.sync_mode = SyncMode::SliceStart;
-    RefreshParts(n, nullptr);
-    CHECK(n.frames[0].syncs.size() == 1 && Near(n.frames[0].syncs[0], 1.0));
-    // Review: changing the sync settings drops the measured syncs, so without peaks the old Attack sync
-    // is not kept under Peak: placement measures it.
-    SoundData m = d;
-    CHECK(SetSyncSettings(m, SyncMode::Peak, 0.0) && !SetSyncSettings(m, SyncMode::Peak, 0.0));
-    CHECK(m.frames[0].syncs.empty());
-    RefreshParts(m, nullptr);
-    CHECK(SyncsStale(m, 0));
-    CHECK(!SetSyncSettings(m, SyncMode::Attack, std::nan("")));
-    // Takes mode: no cuts, no syncs (A8).
-    SoundData t = d;
+    CHECK(Near(ZoneSnap(d, z, nullptr).t, ZoneOf(d, z)->b));
+    // Without peaks after a settings change: the stored measure no longer holds (the zone's onset + offset then).
+    SetSyncSettings(d, SyncMode::Attack, 0.0);
+    CHECK(!ZoneSnapStored(d, z));
+    CHECK(!SetSyncSettings(d, SyncMode::Attack, std::nan("")));
+    // Takes mode: the take's zone gets its Sync point too (P5, no longer the item's snap).
+    SoundData t = Step(&pk);
     t.mode = DetectMode::Takes;
-    RefreshParts(t, &pk);
-    CHECK(t.frames[0].syncs.empty() && t.frames[0].cuts.empty() && !SyncsStale(t, 0));
+    RefreshParts(t, &pk, 0);
+    CHECK(t.frames[0].zones.size() == 1 && t.frames[0].zones[0].a_hand && Near(ZoneSnap(t, z, &pk).t, 1.018));
 }
 
 // Review: a transient rising over 30 ms (-60 to -4 dB): Attack and Peak differ, and the threshold
@@ -711,18 +433,19 @@ void TestAttackVsPeak()
         pk.max_abs[static_cast<size_t>(1000 + k)] = static_cast<float>(std::pow(10.0, (-60.0 + 56.0 * k / 30.0) / 20.0));
     Hit(pk, 1.030, -4.0);
     SoundData d;
-    d.mode = DetectMode::Silence;
+    d.mode = DetectMode::TakeMarkers;  // 13-62i: the variation's edges kept (P7), so the measure is over all of it
     d.frames = {F(0.9, 0.4)};
     d.sync_offset_ms = 0.0;
     d.silence.threshold_db = -50.0;
     RefreshParts(d, &pk);
-    CHECK(Near(d.frames[0].syncs[0], 1.020));  // first bin >= -24 dB (peak - 20)
+    const ZoneRef z{0, 0};
+    CHECK(Near(ZoneSnap(d, z, nullptr).t, 1.020));  // first bin >= -24 dB (peak - 20)
     d.silence.threshold_db = -10.0;
     RefreshParts(d, &pk);
-    CHECK(Near(d.frames[0].syncs[0], 1.027));  // first bin >= the threshold
+    CHECK(Near(ZoneSnap(d, z, nullptr).t, 1.027));  // first bin >= the threshold
     SetSyncSettings(d, SyncMode::Peak, 0.0);
     RefreshParts(d, &pk);
-    CHECK(Near(d.frames[0].syncs[0], 1.030));
+    CHECK(Near(ZoneSnap(d, z, nullptr).t, 1.030));
 }
 
 void TestOnsetsAndCuts()
@@ -822,31 +545,9 @@ void TestEditCounts()
 {
     SoundData d;
     d.frames = {F(0, 1), F(2, 1), F(4, 1)};
-    d.frames[2].on = false;
-    CHECK(ExcludedZoneCount(d) == 0 && ExcludedStretchCount(d) == 1 && VariationsWithPart(d, "") == 2);
+    CHECK(ExcludedZoneCount(d) == 0);
     d.zones = {{0.2, 0.1, "", {}}, {0.9, 0.5, "", {}}, {2.5, 0.1, kFront, {}}};
-    // Frame 0 loses [0.2, 0.3] and [0.9, 1]: two stretches; frame 1 only has a "-> Front" zone; frame 2 is off.
-    CHECK(ExcludedZoneCount(d) == 2 && ExcludedStretchCount(d) == 3);
-    CHECK(SetDivide(d, "g", {kBack, kFront}));
-    d.frames[0].cuts = {0.5};
-    d.frames[1].cuts = {2.7};
-    d.frames[1].cut_unsure = true;
-    d.frames[0].cuts_hand = true;
-    d.frames[2].cut_unsure = true;  // off: not counted
-    d.frames[2].cuts = {4.5};
-    d.frames[2].cuts_hand = true;   // off: not counted
-    CHECK(HandCutCount(d) == 1 && UnsureCutCount(d) == 1);
-    CHECK(VariationsWithPart(d, kBack) == 2 && VariationsWithPart(d, kFront) == 2);
-    // The whole Back part of frame 1 excluded: Back is in frame 0 only.
-    d.zones.push_back({2.0, 0.7, "", {}});
-    CHECK(VariationsWithPart(d, kBack) == 1);
-    // Sync points moved by hand: inside the part's spans only.
-    d.frames[0].hand_syncs = {0.6};
-    d.frames[1].hand_syncs = {2.1, 2.8};
-    CHECK(HandSyncCount(d) == 3);
-    d.frames[1].hand_syncs.clear();
-    CHECK(HandSyncCount(d) == 1 && SyncIsHand(d, 0, 1) && !SyncIsHand(d, 0, 0) && !SyncIsHand(d, 1, 1));
-    CHECK(!SyncIsHand(d, 7, 0) && !SyncIsHand(d, 0, 2));
+    CHECK(ExcludedZoneCount(d) == 2);
 }
 
 void TestRoleToggles()
@@ -1014,7 +715,8 @@ void TestPartSettings()
     CHECK(SetDivide(d, "g2", {kBack, kFront}) && d.parts.empty() && d.frames[0].zones.empty());
 }
 
-// 13-62 Lot C: Normalize per part, each part to its own mode and target (C1), or one part only.
+// 13-62 Lot C: each part's own Normalize mode and target (C1), else the Sound-level ones (13-62i: the regions are the
+// zones', NormGroupRegions in sound_zones_test).
 void TestPartNormalize()
 {
     const std::string heel = "vh", toe = "vt";
@@ -1031,55 +733,6 @@ void TestPartNormalize()
     SetPartSetting(d, toe, own);
     CHECK(PartNormMode(d, toe, NormMode::Peak) == NormMode::LufsSMax && Near(PartNormTarget(d, toe, -1.0), -18.0));
     CHECK(PartNormMode(d, heel, NormMode::RmsI) == NormMode::RmsI && Near(PartNormTarget(d, "", -3.0), -3.0));
-    // "" = every part, each with its own mode / target; a value = that part only.
-    std::vector<NormRegion> all = PartNormRegions(d, "", {}, NormMode::Peak, -1.0);
-    CHECK(all.size() == 6);
-    for (const NormRegion& r : all) {
-        CHECK(!r.part.empty());
-        if (r.part == toe) CHECK(r.mode == NormMode::LufsSMax && Near(r.target, -18.0));
-        if (r.part == heel) CHECK(r.mode == NormMode::Peak && Near(r.target, -1.0));
-    }
-    std::vector<NormRegion> one = PartNormRegions(d, toe, {1}, NormMode::Peak, -1.0);  // the selection only
-    CHECK(one.size() == 1 && one[0].frame == 1 && one[0].part == toe && one[0].mode == NormMode::LufsSMax);
-    CHECK(PartNormRegions(d, "nope", {}, NormMode::Peak, -1.0).empty());
-    // Toe alone on frames at +2 dB: Toe's part_db written, Heel keeps +2 (pinned), frame dB = the smallest.
-    for (SoundFrame& f : d.frames) f.db = 2.0;
-    std::vector<NormRegion> toes = PartNormRegions(d, toe, {}, NormMode::Peak, -1.0);
-    std::vector<SoundFrame> fr = d.frames;
-    CHECK(ApplyNormalize(fr, NormScope::Part, toes, {5.0, -4.0, 6.0}).changed);
-    KeepOtherPartGains(d, fr, toes, {5.0, -4.0, 6.0});
-    CHECK(Near(fr[0].part_db[toe], 5.0) && Near(fr[0].part_db[heel], 2.0) && Near(fr[0].db, 2.0));
-    CHECK(Near(fr[1].part_db[toe], -4.0) && Near(fr[1].part_db[heel], 2.0) && Near(fr[1].db, -4.0));
-    CHECK(Near(FrameGainDb(fr[2], heel), 2.0));  // Heel plays as before
-    // A frame not acted on is left alone (a silent region: no part_db added).
-    fr = d.frames;
-    ApplyNormalize(fr, NormScope::Part, toes, {5.0, std::nan(""), 6.0});
-    KeepOtherPartGains(d, fr, toes, {5.0, std::nan(""), 6.0});
-    CHECK(fr[1].part_db.empty() && Near(fr[1].db, 2.0) && fr[0].part_db.size() == 2);
-    // Full Per part pass, one part silent: the silent part keeps its gain, frame.db = the non-silent part's
-    // dB (a silent Heel at +2 does not hold the variation below Toe's +5).
-    {
-        SoundData s = d;
-        std::vector<NormRegion> both = PartNormRegions(s, "", {0}, NormMode::Peak, -1.0);
-        CHECK(both.size() == 2);
-        std::vector<double> adj;
-        for (const NormRegion& r : both) adj.push_back(r.part == toe ? 5.0 : std::nan(""));
-        std::vector<SoundFrame> g = s.frames;
-        CHECK(ApplyNormalize(g, NormScope::Part, both, adj).changed);
-        KeepOtherPartGains(s, g, both, adj);
-        CHECK(Near(g[0].part_db[toe], 5.0) && Near(g[0].part_db[heel], 2.0) && Near(g[0].db, 5.0));
-        CHECK(Near(FrameGainDb(g[0], heel), 2.0) && Near(FrameGainDb(g[0], toe), 5.0));
-        // A silent part with an own gain from before: kept, and still out of the minimum.
-        s.frames[0].part_db[heel] = -10.0;
-        g = s.frames;
-        ApplyNormalize(g, NormScope::Part, both, adj);
-        KeepOtherPartGains(s, g, both, adj);
-        CHECK(Near(g[0].part_db[heel], -10.0) && Near(g[0].db, 5.0));
-    }
-    // Not available: undivided or Takes.
-    SoundData u;
-    u.frames = {F(0, 1)};
-    CHECK(PartNormRegions(u, "", {}, NormMode::Peak, -1.0).empty());
 }
 
 // 13-62 (E2): the part rows' pure helpers.
@@ -1141,9 +794,7 @@ int main()
     TestSilence();
     TestSilenceMerge();
     TestClampAndEdits();
-    TestNormalize();
     TestNormalizeModes();
-    TestNormalizeParts();
     TestFades();
     if (g_fails) {
         std::printf("sound_entries_test: %d failure(s)\n", g_fails);

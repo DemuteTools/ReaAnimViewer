@@ -264,26 +264,6 @@ static void TestRedetect()
     CHECK(t.size() == 3 && Near(t[1].length, 0.7));
 }
 
-static void TestTakesTrim()
-{
-    SoundData d;
-    d.mode = DetectMode::Takes;
-    d.frames.resize(2);
-    d.frames[0].start = 0.0;
-    d.frames[0].length = 1.0;
-    d.frames[1].start = 0.5;  // take 2's start in its own source: not a neighbour
-    d.frames[1].length = 1.0;
-    CHECK(TrimTakeFrame(d, 0, 0.0, 5.0, 1.8));
-    CHECK(Near(d.frames[0].length, 1.8) && d.frames[0].hand && d.edited);
-    CHECK(Near(d.frames[1].start, 0.5));
-    CHECK(!TrimTakeFrame(d, 0, 2.0, 1.0, 1.8));  // nothing left
-    CHECK(!TrimTakeFrame(d, 5, 0.0, 1.0, 1.8));
-    CHECK(!FrameEditAllowed(DetectMode::Takes, FrameEdit::Add));
-    CHECK(!FrameEditAllowed(DetectMode::Takes, FrameEdit::Split));
-    CHECK(FrameEditAllowed(DetectMode::Takes, FrameEdit::Trim));
-    CHECK(FrameEditAllowed(DetectMode::Silence, FrameEdit::Split));
-}
-
 static void TestCountText()
 {
     std::vector<SoundFrame> f(8);
@@ -294,97 +274,10 @@ static void TestCountText()
     CHECK(VariationCountText(1, std::vector<SoundFrame>(1)) == "1 variation");
 }
 
-// The Peak Normalize gesture: its selection (NormalizeSelection) -> regions -> ApplyNormalize.
-static void PeakNorm(std::vector<SoundFrame>& f, const PeakData& pk, double target, bool whole, const std::vector<int>& sel)
-{
-    SoundData d;
-    d.frames = f;
-    const NormScope               scope = whole ? NormScope::Whole : NormScope::Variation;
-    const std::vector<NormRegion> regs = NormalizeRegions(d, scope, sel);
-    std::vector<double>           adj;
-    for (const NormRegion& r : regs) adj.push_back(RegionPeakAdjDb(pk, r, target));
-    ApplyNormalize(f, scope, regs, adj);
-}
-
-static void TestNormalizeOnOnly()
-{
-    // Matrix "Normalize": the gesture's selection (NormalizeSelection) -> regions -> ApplyNormalize.
-    PeakData pk;
-    pk.rate = 10.0;
-    pk.max_abs.assign(30, 0.5f);
-    std::vector<SoundFrame> base(3);
-    for (int i = 0; i < 3; ++i) {
-        base[static_cast<size_t>(i)].start = i * 1.0;
-        base[static_cast<size_t>(i)].length = 1.0;
-    }
-    base[1].on = false;
-    // An off frame in the selection: only the on ones change.
-    std::vector<SoundFrame> f = base;
-    PeakNorm(f, pk, -1.0, false, NormalizeSelection(f, {0, 1, 2}));
-    CHECK(f[0].db > 4.0 && Near(f[1].db, 0.0) && f[2].db > 4.0);
-    // Only off frames selected: nothing.
-    CHECK((NormalizeSelection(base, {1}) == std::vector<int>{-1}));
-    f = base;
-    PeakNorm(f, pk, -1.0, false, NormalizeSelection(f, {1}));
-    for (const SoundFrame& x : f) CHECK(Near(x.db, 0.0) && !x.hand);
-    // No selection: every on frame.
-    CHECK(NormalizeSelection(base, {}).empty());
-    f = base;
-    PeakNorm(f, pk, -1.0, true, NormalizeSelection(f, {}));
-    CHECK(f[0].db > 4.0 && Near(f[1].db, 0.0) && f[2].db > 4.0);
-}
-
-static void TestNormalizeTakes()
-{
-    // Ported from NormalizeTakeFrames: each take measured in its own file (adjustment = target - its peak).
-    SoundData d;
-    d.mode = DetectMode::Takes;
-    d.frames.resize(3);
-    for (SoundFrame& x : d.frames) x.length = 1.0;
-    const double ninf = -std::numeric_limits<double>::infinity();
-    auto         run = [&](std::vector<SoundFrame>& f, const std::vector<double>& peak, bool whole,
-                   const std::vector<int>& sel) {
-        SoundData dd = d;
-        dd.frames = f;
-        const NormScope               scope = whole ? NormScope::Whole : NormScope::Variation;
-        const std::vector<NormRegion> regs = NormalizeRegions(dd, scope, sel);
-        std::vector<double>           adj;
-        for (const NormRegion& r : regs) {
-            const double pk = peak[static_cast<size_t>(r.frame)];
-            adj.push_back(std::isfinite(pk) ? -1.0 - pk : std::nan(""));
-        }
-        return ApplyNormalize(f, scope, regs, adj).changed;
-    };
-    // Per variation: each take to its own target.
-    std::vector<SoundFrame> f = d.frames;
-    CHECK(run(f, {-6.0, -3.0, -12.0}, false, {}));
-    CHECK(Near(f[0].db, 5.0) && Near(f[1].db, 2.0) && Near(f[2].db, 11.0) && f[0].hand);
-    // Whole: the loudest take's gain for all.
-    f = d.frames;
-    CHECK(run(f, {-6.0, -3.0, -12.0}, true, {}));
-    CHECK(Near(f[0].db, 2.0) && Near(f[1].db, 2.0) && Near(f[2].db, 2.0));
-    // A take whose peaks are not read is left as is (and does not set the loudest).
-    f = d.frames;
-    CHECK(run(f, {-6.0, ninf, -12.0}, true, {}));
-    CHECK(Near(f[0].db, 5.0) && Near(f[1].db, 0.0) && !f[1].hand && Near(f[2].db, 5.0));
-    // Selection: on ones only; {-1} = nothing.
-    f = d.frames;
-    f[2].on = false;
-    CHECK(run(f, {-6.0, -3.0, -12.0}, false, {0, 2}));
-    CHECK(Near(f[0].db, 5.0) && Near(f[1].db, 0.0) && Near(f[2].db, 0.0));
-    CHECK(!run(f, {-6.0, -3.0, -12.0}, false, {-1}));
-    // Again on the same frames: no change.
-    CHECK(!run(f, {-6.0, -3.0, -12.0}, false, {0}));
-    // Takes mode never offers Per part (a take plays whole).
-    SoundData t = d;
-    t.divide_group = "g";
-    t.divide_values = {"a", "b"};
-    CHECK(!NormPartsAvailable(t) && NormalizeRegions(t, NormScope::Part, {}).size() == 3);
-}
-
-// 13-28: FrameGainDb's fallback, and Edit's Play at each part's own gain.
+// 13-28: FrameGainDb's fallback.
 static void TestPartGains()
 {
+    // 13-28: a frame's old per-part gains (read for the migration to zones only, 13-62i).
     SoundFrame f;
     f.start = 1.0;
     f.length = 1.0;
@@ -392,73 +285,6 @@ static void TestPartGains()
     CHECK(Near(FrameGainDb(f, ""), -3.0) && Near(FrameGainDb(f, "a"), -3.0));
     f.part_db["a"] = 4.0;
     CHECK(Near(FrameGainDb(f, "a"), 4.0) && Near(FrameGainDb(f, "b"), -3.0) && Near(FrameGainDb(f, ""), -3.0));
-    SoundData d;
-    d.divide_group = "g";
-    d.divide_values = {"a", "b"};
-    f.cuts = {1.5};
-    d.frames = {f};
-    // 13-29: Edit's Play, each part at its own gain, the piece's fades kept across the parts.
-    SoundLibrary lib;
-    lib.uid = "L";
-    lib.root = "s";
-    SoundNode sn = Node("s", "", SoundNodeType::Sound, "S");
-    sn.sound = d;
-    sn.sound.mode = DetectMode::Silence;
-    lib.nodes.push_back(sn);
-    std::vector<AuditionVoice> st = EditPlayVoices(lib, sn);
-    CHECK(st.size() == 2);
-    if (st.size() == 2) {
-        CHECK(Near(st[0].start_s, 1.0) && Near(st[0].length_s, 0.5) && Near(st[0].gain_db, 4.0) && Near(st[0].delay_ms, 1000.0));
-        CHECK(Near(st[1].start_s, 1.5) && Near(st[1].length_s, 0.5) && Near(st[1].gain_db, -3.0) && Near(st[1].delay_ms, 1500.0));
-        CHECK(Near(st[0].fade_from_s, 0.0) && Near(st[0].fade_span_s, 1.0) && Near(st[1].fade_from_s, 0.5) &&
-              Near(st[1].fade_span_s, 1.0));
-        CHECK(Near(st[0].fade_in_s, kDefaultFadeIn) && Near(st[1].fade_out_s, kDefaultFadeOut));
-    }
-    // An excluded zone inside part a: silent, the Sound's cut_fade at its edges (two pieces).
-    {
-        SoundNode z = sn;
-        z.sound.zones.push_back({1.2, 0.1, "", {}});
-        const std::vector<AuditionVoice> sz = EditPlayVoices(lib, z);
-        CHECK(sz.size() == 3);
-        if (sz.size() == 3) {
-            CHECK(Near(sz[0].start_s, 1.0) && Near(sz[0].length_s, 0.2) && Near(sz[0].gain_db, 4.0) &&
-                  Near(sz[0].fade_out_s, kDefaultCutFade));
-            CHECK(Near(sz[1].start_s, 1.3) && Near(sz[1].length_s, 0.2) && Near(sz[1].gain_db, 4.0) &&
-                  Near(sz[1].fade_in_s, kDefaultCutFade) && Near(sz[1].fade_from_s, 0.0) && Near(sz[1].fade_span_s, 0.7));
-            CHECK(Near(sz[2].start_s, 1.5) && Near(sz[2].gain_db, -3.0) && Near(sz[2].fade_from_s, 0.2));
-        }
-    }
-    // 13-54: Silence + divided with its parts' margins stored: only what the parts play is heard, the
-    // Sound's cut fade on the sides the margins cut; touching parts play on as one voice.
-    {
-        SoundNode t = sn;
-        t.sound.frames[0].part_db.clear();
-        t.sound.frames[0].part_trims = {1.0, 1.2, 1.5, 2.0};
-        t.sound.frames[0].part_trim_key = PartTrimKey(t.sound, 0, FileVersion{});  // 13-54 review: as measured
-        const std::vector<AuditionVoice> sm = EditPlayVoices(lib, t);
-        CHECK(sm.size() == 2);
-        if (sm.size() == 2) {
-            CHECK(Near(sm[0].start_s, 1.0) && Near(sm[0].length_s, 0.2) && Near(sm[0].fade_in_s, kDefaultFadeIn) &&
-                  Near(sm[0].fade_out_s, kDefaultCutFade) && Near(sm[0].delay_ms, 1000.0));
-            CHECK(Near(sm[1].start_s, 1.5) && Near(sm[1].length_s, 0.5) && Near(sm[1].fade_in_s, kDefaultCutFade) &&
-                  Near(sm[1].fade_out_s, kDefaultFadeOut) && Near(sm[1].delay_ms, 1500.0));
-        }
-        t.sound.frames[0].part_trims = {1.0, 1.4, 1.4, 2.0};  // a pre-roll reaching back over the cut
-        const std::vector<AuditionVoice> one = EditPlayVoices(lib, t);
-        CHECK(one.size() == 1 && Near(one[0].length_s, 1.0));
-        // With part gains: split where the playing part changes (1.4, not the cut).
-        t.sound.frames[0].part_db["a"] = 4.0;
-        const std::vector<AuditionVoice> two = EditPlayVoices(lib, t);
-        CHECK(two.size() == 2 && Near(two[0].length_s, 0.4) && Near(two[0].gain_db, 4.0) && Near(two[1].gain_db, -3.0));
-        // The part's own audition (a click on it) plays its piece.
-        t.sound.frames[0].part_trims = {1.0, 1.2, 1.5, 2.0};
-        const std::vector<AuditionVoice> pa = PartAuditionVoices(lib, t, 0, "a");
-        CHECK(pa.size() == 1 && Near(pa[0].length_s, 0.2));
-    }
-    // Without part gains: one voice for the variation, at its dB.
-    sn.sound.frames[0].part_db.clear();
-    st = EditPlayVoices(lib, sn);
-    CHECK(st.size() == 1 && Near(st[0].length_s, 1.0) && Near(st[0].gain_db, -3.0) && Near(st[0].fade_span_s, 0.0));
 }
 
 void TestAuditionEnded()
@@ -473,128 +299,6 @@ void TestAuditionEnded()
     CHECK(AuditionEnded(0.0, 0.0, 0.0));        // nothing to play
 }
 
-// Antho 2026-10-12: the fades an audition plays (the same as placed) and their gain ramps.
-static void TestFades()
-{
-    // Linear ramps: 0 at the start, 1 after the fade in, back to 0 at the end.
-    CHECK(Near(FadeGainAt(0.0, 1.0, 0.1, 0.2), 0.0));
-    CHECK(Near(FadeGainAt(0.05, 1.0, 0.1, 0.2), 0.5));
-    CHECK(Near(FadeGainAt(0.1, 1.0, 0.1, 0.2), 1.0));
-    CHECK(Near(FadeGainAt(0.5, 1.0, 0.1, 0.2), 1.0));
-    CHECK(Near(FadeGainAt(0.9, 1.0, 0.1, 0.2), 0.5));
-    CHECK(Near(FadeGainAt(1.0, 1.0, 0.1, 0.2), 0.0));
-    CHECK(Near(FadeGainAt(-0.1, 1.0, 0.1, 0.2), 0.0));  // outside the voice: silent
-    CHECK(Near(FadeGainAt(1.5, 1.0, 0.1, 0.2), 0.0));
-    CHECK(Near(FadeGainAt(0.0, 1.0, 0.0, 0.0), 1.0));   // no fade: full gain from the first sample
-    CHECK(Near(FadeGainAt(0.3, 0.0, 0.1, 0.1), 1.0));   // no length: untouched
-    // Longer than the voice: scaled down together (0.6 + 0.6 on 0.6 s -> 0.3 + 0.3).
-    CHECK(Near(FadeGainAt(0.15, 0.6, 0.6, 0.6), 0.5));
-    CHECK(Near(FadeGainAt(0.3, 0.6, 0.6, 0.6), 1.0));
-    // Shapes: fast start above linear, fast end below, S-curve at half = half.
-    CHECK(FadeGainAt(0.025, 1.0, 0.1, 0.0, 1) > 0.25 + 1e-6);
-    CHECK(FadeGainAt(0.025, 1.0, 0.1, 0.0, 2) < 0.25 - 1e-6);
-    CHECK(Near(FadeGainAt(0.05, 1.0, 0.1, 0.0, 5), 0.5));
-    CHECK(Near(FadeGainAt(0.05, 1.0, 0.1, 0.0, 6), 0.5));  // an unknown shape: linear
-    // Monotonic across the fade in, never above 1.
-    double prev = -1.0;
-    bool   mono = true;
-    for (int k = 0; k <= 100; ++k) {
-        const double g = FadeGainAt(0.001 * k, 1.0, 0.1, 0.1, 3, 4);
-        mono = mono && g >= prev - 1e-12 && g <= 1.0;
-        prev = g;
-    }
-    CHECK(mono);
-
-    // A voice carries its frame's fades: the default on a slice, its own where set.
-    SoundLibrary lib;
-    lib.uid = "L";
-    lib.root = "s";
-    SoundNode s = Snd("s", "", "Steps", {0.5, 0.004});
-    s.sound.mode = DetectMode::Silence;
-    s.sound.frames[0].fade_out = 0.05;
-    lib.nodes = {s};
-    SoundStore store;
-    store.libraries = {lib};
-    const AuditionPlan plan = PlanAudition(store, store.libraries[0], "s", First());
-    CHECK(plan.voices.size() == 1 && Near(plan.voices[0].fade_in_s, 0.001) && Near(plan.voices[0].fade_out_s, 0.05));
-    double in = 0, out = 0;
-    int    si = -1, so = -1;
-    AuditionFades(s.sound, 1, &in, &out, &si, &so);  // 4 ms: 1 + 5 ms scaled to 4 ms
-    CHECK(Near(in + out, 0.004) && si == 0 && so == 0);
-    AuditionFades(s.sound, 9, &in, &out, &si, &so);  // out of range: none
-    CHECK(in == 0.0 && out == 0.0);
-    // Whole file: only a fade set by hand (the placed copy keeps its item's own).
-    s.sound.mode = DetectMode::Whole;
-    AuditionFades(s.sound, 0, &in, &out, &si, &so);
-    CHECK(in == 0.0 && Near(out, 0.05));
-    s.sound.mode = DetectMode::Silence;  // a folder-pile source: no fades
-    AuditionFades(s.sound, 0, &in, &out, &si, &so, true);
-    CHECK(in == 0.0 && out == 0.0);
-}
-
-// 13-29: the Edit window's Play plays what is shown, as placed: on variations only (trims, fades, dB, the
-// root's volume), on the file's clock; off variations and the gaps silent; the earlier variation wins.
-static void TestEditPlay()
-{
-    SoundLibrary lib;
-    lib.uid = "L";
-    lib.root = "r";
-    SoundNode r = Node("r", "", SoundNodeType::Random, "R");
-    r.volume_db = -1.0;
-    lib.nodes.push_back(r);
-    SoundNode n = Node("s", "r", SoundNodeType::Sound, "S");
-    n.sound.mode = DetectMode::Silence;
-    SoundFrame a, b, c, off;
-    a.start = 1.0, a.length = 1.0, a.db = -3.0;
-    a.fade_in = 0.1;
-    b.start = 0.5, b.length = 0.25, b.db = 2.0;  // listed after, starts before
-    c.start = 1.5, c.length = 1.0, c.db = -6.0;  // overlaps a: a wins until 2.0
-    off.start = 3.0, off.length = 0.5, off.on = false;
-    n.sound.frames = {a, b, c, off};
-    n.sound.mono = MonoMode::Left;
-    lib.nodes.push_back(n);
-    const std::vector<AuditionVoice> v = EditPlayVoices(lib, n);
-    CHECK(v.size() == 3);
-    if (v.size() == 3) {
-        CHECK(v[0].variation == 1 && Near(v[0].start_s, 0.5) && Near(v[0].length_s, 0.25) && Near(v[0].delay_ms, 500.0) &&
-              Near(v[0].gain_db, 1.0));
-        CHECK(v[1].variation == 0 && Near(v[1].start_s, 1.0) && Near(v[1].gain_db, -4.0) && Near(v[1].fade_in_s, 0.1) &&
-              Near(v[1].fade_out_s, kDefaultFadeOut));
-        CHECK(v[2].variation == 2 && Near(v[2].start_s, 2.0) && Near(v[2].length_s, 0.5) && Near(v[2].delay_ms, 2000.0) &&
-              Near(v[2].fade_from_s, 0.5) && Near(v[2].fade_span_s, 1.0) && Near(v[2].gain_db, -7.0));
-        for (const AuditionVoice& x : v) CHECK(x.mono == MonoMode::Left);
-    }
-    // Nothing on: nothing plays.
-    SoundNode none = n;
-    for (SoundFrame& f : none.sound.frames) f.on = false;
-    CHECK(EditPlayVoices(lib, none).empty());
-    // Takes mode: the take asked for, whole, at delay 0; an off take or a bad index: nothing.
-    SoundNode t = n;
-    t.sound.mode = DetectMode::Takes;
-    const std::vector<AuditionVoice> tv = EditPlayVoices(lib, t, 2);
-    CHECK(tv.size() == 1 && tv[0].variation == 2 && Near(tv[0].delay_ms, 0.0) && Near(tv[0].length_s, 1.0));
-    CHECK(EditPlayVoices(lib, t, 3).empty() && EditPlayVoices(lib, t, -1).empty() && EditPlayVoices(lib, t, 9).empty());
-
-    // Restarted at 1.25 s: the first voice over, the second cut (its fade-in already past), the third later.
-    const std::vector<AuditionVoice> from = VoicesFrom(v, 1.25);
-    CHECK(from.size() == 2);
-    if (from.size() == 2) {
-        CHECK(Near(from[0].start_s, 1.25) && Near(from[0].length_s, 0.75) && Near(from[0].delay_ms, 0.0) &&
-              Near(from[0].fade_from_s, 0.25) && Near(from[0].fade_span_s, 1.0));
-        CHECK(Near(from[1].delay_ms, 750.0) && Near(from[1].fade_from_s, 0.5));
-        // The fades heard after the restart are the ones of the whole variation.
-        CHECK(Near(FadeGainAt(from[0].fade_from_s + 0.0, from[0].fade_span_s, 0.1, 0.005), 1.0));
-    }
-    CHECK(VoicesFrom(v, 0.0).size() == 3 && VoicesFrom(v, 10.0).empty());
-    CHECK(SameVoices(v, EditPlayVoices(lib, n)) && !SameVoices(v, from) && !SameVoices(v, {}));
-    SoundNode louder = n;
-    louder.sound.frames[0].db = -2.5;
-    CHECK(!SameVoices(v, EditPlayVoices(lib, louder)));
-    SoundNode summed = n;
-    summed.sound.mono = MonoMode::Sum;
-    CHECK(!SameVoices(v, EditPlayVoices(lib, summed)));
-}
-
 // 13-41: a sample forced to mono, and the channel mode a placed item gets.
 static void TestMono()
 {
@@ -607,7 +311,6 @@ static void TestMono()
     n.sound.mono = MonoMode::Right;
     lib.nodes.push_back(n);
     CHECK(PartAuditionVoices(lib, n, 0, "")[0].mono == MonoMode::Right);
-    CHECK(ZoneAuditionVoice(lib, n, 0.1, 0.1).mono == MonoMode::Right);
     SoundStore store;
     const AuditionPlan p = PlanAudition(store, lib, "s", First());
     CHECK(p.voices.size() == 1 && p.voices[0].mono == MonoMode::Right);
@@ -682,7 +385,7 @@ static void TestPartsAudition()
     n.sound.divide_values = {"vb", "vf"};
     n.sound.frames[0].cuts = {0.2};
     n.sound.frames[1].cuts = {1.1};
-    AddZone(n.sound, 0.08, 0.04, "");  // inside Back of variation 0
+    n.sound.zones.push_back({0.08, 0.04, "", {}});  // an old project's excluded zone inside Back of variation 0
     SoundLibrary lib;
     lib.uid = "L";
     lib.root = "s";
@@ -692,20 +395,15 @@ static void TestPartsAudition()
     CHECK(v.size() == 2);
     CHECK(Near(v[0].start_s, 0.0) && Near(v[0].length_s, 0.08) && Near(v[0].delay_ms, 10.0) && v[0].piece == 0);
     CHECK(Near(v[1].start_s, 0.12) && Near(v[1].length_s, 0.08) && Near(v[1].delay_ms, 130.0) && v[1].piece == 1);
-    CHECK(Near(v[0].fade_out_s, kDefaultCutFade) && Near(v[1].fade_in_s, kDefaultCutFade) &&
+    // 13-62h (R17): migrated to zones, a free inner edge gets the Sound's fade (the cut at 0.2: At cuts).
+    CHECK(Near(v[0].fade_out_s, kDefaultFadeOut) && Near(v[1].fade_in_s, kDefaultFadeIn) &&
           Near(v[1].fade_out_s, kDefaultCutFade) && Near(v[0].fade_in_s, kDefaultFadeIn));
     CHECK(Near(v[0].gain_db, -2.0));
     CHECK(PlayedText(lib, v) == "Steps");  // the later piece is not named again
     v = PartAuditionVoices(lib, n, 1, "vf");
     CHECK(v.size() == 1 && Near(v[0].start_s, 1.1) && Near(v[0].length_s, 0.2) && Near(v[0].fade_in_s, kDefaultCutFade));
-    CHECK(PartAuditionVoices(lib, n, 1, "").size() == 1);        // the whole variation
+    CHECK(PartAuditionVoices(lib, n, 1, "").size() == 2);        // the whole variation: each zone an item (C2)
     CHECK(PartAuditionVoices(lib, n, 2, "vb").empty());          // a bad index
-    // A zone played alone: its stretch, cut_fade at both ends, the level of its frame.
-    AuditionVoice z = ZoneAuditionVoice(lib, n, 0.95, 0.1);
-    CHECK(Near(z.start_s, 0.95) && Near(z.length_s, 0.1) && z.variation == 1 && Near(z.gain_db, -2.0) &&
-          Near(z.fade_in_s, kDefaultCutFade) && Near(z.fade_out_s, kDefaultCutFade));
-    CHECK(Near(ZoneAuditionVoice(lib, n, 0.5, 0.2).gain_db, 0.0));   // between the variations
-    CHECK(Near(ZoneAuditionVoice(lib, n, 0.5, 0.0).length_s, 0.0));  // nothing
     // 13-28: a part with its own gain (part_db) plays at it, the others at the frame's dB; a zone in it too
     // (the root's gain is 0 here).
     {
@@ -717,14 +415,14 @@ static void TestPartsAudition()
         for (const AuditionVoice& x : vb) CHECK(Near(x.gain_db, 4.0));
         const std::vector<AuditionVoice> vf = PartAuditionVoices(lib, g, 0, "vf");
         CHECK(vf.size() == 1 && Near(vf[0].gain_db, 1.0));
-        CHECK(Near(ZoneAuditionVoice(lib, g, 0.02, 0.04).gain_db, 4.0));   // inside Back
-        CHECK(Near(ZoneAuditionVoice(lib, g, 0.25, 0.05).gain_db, 1.0));   // inside Front
     }
-    // Takes mode: the take whole.
+    // 13-62i: Takes mode: the take's zones of that part (proposed without peaks: an even split of the take).
     SoundNode t = n;
     t.sound.mode = DetectMode::Takes;
+    t.sound.zones.clear();
+    for (SoundFrame& f : t.sound.frames) f.cuts.clear();
     v = PartAuditionVoices(lib, t, 0, "vb");
-    CHECK(v.size() == 1 && Near(v[0].length_s, 0.4));
+    CHECK(v.size() == 1 && Near(v[0].start_s, 0.0) && Near(v[0].length_s, 0.2));
 
     // 13-31: a Blend layer with a role: an audition is a combined event (the whole variation, offset kept).
     SoundLibrary bl;
@@ -741,299 +439,6 @@ static void TestPartsAudition()
     const std::vector<AuditionVoice> whole = PartAuditionVoices(bl, layer, 0, "", 30.0);
     CHECK(!plan.voices.empty() && plan.voices.size() == whole.size());
     CHECK(Near(plan.voices[0].start_s, 0.0) && Near(plan.voices[0].delay_ms, 30.0));
-}
-
-// 13-49 review: a long drag restarts Play once it pauses 0.15 s, never every 0.15 s while it moves.
-static void TestSettleEditPlay()
-{
-    auto voice = [](double db) {
-        AuditionVoice v;
-        v.node = "s";
-        v.length_s = 1.0;
-        v.gain_db = db;
-        return std::vector<AuditionVoice>{v};
-    };
-    const std::vector<AuditionVoice> playing = voice(0.0);
-    EditPlaySettle s;
-    CHECK(!SettleEditPlay(s, playing, playing, 0.0));  // nothing changed
-    // A drag: a new value every frame (60 fps) for 1 s: never a restart.
-    bool restarted = false;
-    for (int f = 1; f <= 60; ++f) restarted |= SettleEditPlay(s, voice(-0.1 * f), playing, f / 60.0);
-    CHECK(!restarted);
-    // It pauses: the same value 0.15 s later restarts once.
-    CHECK(!SettleEditPlay(s, voice(-7.0), playing, 1.10));
-    CHECK(!SettleEditPlay(s, voice(-7.0), playing, 1.20));
-    CHECK(SettleEditPlay(s, voice(-7.0), playing, 1.26));
-    CHECK(s.since < 0.0);
-    // Undone back to what plays: nothing pending.
-    CHECK(!SettleEditPlay(s, voice(-3.0), playing, 2.0));
-    CHECK(!SettleEditPlay(s, playing, playing, 2.1));
-    CHECK(s.since < 0.0 && !SettleEditPlay(s, playing, playing, 3.0));
-}
-
-// 13-63: REAPER's split at the edit cursor in the Sound Edit window (40757), the pure plan, then applied as
-// the window does (last first, SplitFrame).
-static void TestEditSplit()
-{
-    auto fr = [](double s, double l) {
-        SoundFrame f;
-        f.start = s;
-        f.length = l;
-        return f;
-    };
-    const std::vector<SoundFrame> frames = {fr(0.0, 1.0), fr(1.5, 1.0), fr(2.0, 1.0)};  // 1 and 2 overlap
-    // No cursor; a cursor between variations: nothing, and why.
-    EditSplitPlan p = PlanEditSplit(frames, {}, -1.0);
-    CHECK(p.frames.empty() && p.why == "Click the waveform first: the edit cursor sets where to split");
-    p = PlanEditSplit(frames, {}, 1.2);
-    CHECK(p.frames.empty() && p.why == "The edit cursor is not inside a variation");
-    // Nothing selected: every variation holding the cursor (as REAPER splits every item under it).
-    p = PlanEditSplit(frames, {}, 0.4);
-    CHECK(p.frames.size() == 1 && p.frames[0] == 0);
-    p = PlanEditSplit(frames, {}, 2.2);
-    CHECK(p.frames.size() == 2 && p.frames[0] == 1 && p.frames[1] == 2);
-    // A selection: only the selected ones the cursor is in.
-    p = PlanEditSplit(frames, {2}, 2.2);
-    CHECK(p.frames.size() == 1 && p.frames[0] == 2);
-    p = PlanEditSplit(frames, {0}, 2.2);
-    CHECK(p.frames.empty() && p.why == "The edit cursor is not inside a selected variation");
-    // On an edge, or a piece of 1 ms or less: whole.
-    p = PlanEditSplit(frames, {}, 1.0);
-    CHECK(p.frames.empty() && p.why == "The edit cursor is not inside a variation");
-    p = PlanEditSplit(frames, {}, 0.0005);
-    CHECK(p.frames.empty() && p.why == "Too close to the variation's edge to split");
-    // Applied as the Edit window does it: last first, so each index still names its variation.
-    SoundData d;
-    d.frames = frames;
-    p = PlanEditSplit(d.frames, {}, 2.2);
-    bool changed = false;
-    for (auto it = p.frames.rbegin(); it != p.frames.rend(); ++it) changed = SplitFrame(d, *it, 2.2) || changed;
-    CHECK(changed && d.frames.size() == 5);
-    CHECK(Near(d.frames[1].start, 1.5) && Near(d.frames[1].length, 0.7) && Near(d.frames[2].start, 2.2) &&
-          Near(d.frames[2].length, 0.3));
-    CHECK(Near(d.frames[3].start, 2.0) && Near(d.frames[3].length, 0.2) && Near(d.frames[4].start, 2.2) &&
-          Near(d.frames[4].length, 0.8));
-}
-
-// 13-61: REAPER's item trims in the Sound Edit window (40511 / 40512 / 40508), the pure plan.
-static void TestEditTrim()
-{
-    auto fr = [](double s, double l) {
-        SoundFrame f;
-        f.start = s;
-        f.length = l;
-        return f;
-    };
-    const std::vector<SoundFrame> frames = {fr(0.0, 1.0), fr(1.5, 1.0), fr(3.0, 1.0)};
-    // Nothing selected: the variation under the cursor.
-    EditTrimPlan p = PlanEditTrim(frames, {}, EditTrimKind::LeftOfCursor, 1.8, 0.0, 0.0);
-    CHECK(p.steps.size() == 1 && p.steps[0].frame == 1 && Near(p.steps[0].start, 1.8) && Near(p.steps[0].length, 0.7));
-    p = PlanEditTrim(frames, {}, EditTrimKind::RightOfCursor, 1.8, 0.0, 0.0);
-    CHECK(p.steps.size() == 1 && p.steps[0].frame == 1 && Near(p.steps[0].start, 1.5) && Near(p.steps[0].length, 0.3));
-    // No cursor; a cursor between variations or on an edge: nothing, and why.
-    p = PlanEditTrim(frames, {}, EditTrimKind::LeftOfCursor, -1.0, 0.0, 0.0);
-    CHECK(p.steps.empty() && !p.why.empty());
-    p = PlanEditTrim(frames, {}, EditTrimKind::LeftOfCursor, 1.2, 0.0, 0.0);
-    CHECK(p.steps.empty() && p.why == "The edit cursor is not inside a variation");
-    p = PlanEditTrim(frames, {}, EditTrimKind::RightOfCursor, 1.5, 0.0, 0.0);
-    CHECK(p.steps.empty());
-    // A selection: only the selected variations the cursor is in.
-    p = PlanEditTrim(frames, {0}, EditTrimKind::LeftOfCursor, 1.8, 0.0, 0.0);
-    CHECK(p.steps.empty() && p.why == "The edit cursor is not inside a selected variation");
-    p = PlanEditTrim(frames, {2, 1}, EditTrimKind::RightOfCursor, 3.25, 0.0, 0.0);
-    CHECK(p.steps.size() == 1 && p.steps[0].frame == 2 && Near(p.steps[0].length, 0.25));
-    // Never 1 ms or less left (no negative or empty length).
-    p = PlanEditTrim(frames, {}, EditTrimKind::LeftOfCursor, 0.9995, 0.0, 0.0);
-    CHECK(p.steps.empty() && p.why == "Nothing to trim there");
-    p = PlanEditTrim(frames, {}, EditTrimKind::RightOfCursor, 0.0005, 0.0, 0.0);
-    CHECK(p.steps.empty());
-    // To the zone: nothing selected = every variation it crosses (an edge each; the one inside untouched).
-    p = PlanEditTrim(frames, {}, EditTrimKind::ToZone, -1.0, 0.5, 3.0);  // 0.5 .. 3.5
-    CHECK(p.steps.size() == 2);
-    CHECK(p.steps[0].frame == 0 && Near(p.steps[0].start, 0.5) && Near(p.steps[0].length, 0.5));
-    CHECK(p.steps[1].frame == 2 && Near(p.steps[1].start, 3.0) && Near(p.steps[1].length, 0.5));
-    // Inside one variation: both its edges.
-    p = PlanEditTrim(frames, {}, EditTrimKind::ToZone, 2.0, 1.6, 0.2);
-    CHECK(p.steps.size() == 1 && p.steps[0].frame == 1 && Near(p.steps[0].start, 1.6) && Near(p.steps[0].length, 0.2));
-    // A selection: only the selected variations the zone crosses.
-    p = PlanEditTrim(frames, {2}, EditTrimKind::ToZone, -1.0, 0.5, 3.0);
-    CHECK(p.steps.size() == 1 && p.steps[0].frame == 2);
-    p = PlanEditTrim(frames, {1}, EditTrimKind::ToZone, -1.0, 0.2, 0.5);
-    CHECK(p.steps.empty() && p.why == "The zone crosses no selected variation");
-    // No zone; a zone over a whole variation (already inside it); a zone in a gap.
-    p = PlanEditTrim(frames, {}, EditTrimKind::ToZone, 0.5, 0.0, 0.0);
-    CHECK(p.steps.empty() && !p.why.empty());
-    p = PlanEditTrim(frames, {1}, EditTrimKind::ToZone, -1.0, 1.2, 2.0);
-    CHECK(p.steps.empty() && p.why == "Already inside the zone");
-    p = PlanEditTrim(frames, {}, EditTrimKind::ToZone, -1.0, 1.1, 0.3);
-    CHECK(p.steps.empty() && p.why == "The zone crosses no variation");
-    // A selection index out of range is ignored.
-    p = PlanEditTrim(frames, {7}, EditTrimKind::LeftOfCursor, 0.5, 0.0, 0.0);
-    CHECK(p.steps.size() == 1 && p.steps[0].frame == 0);
-    // Applied with TrimFrame (as the edge drag), a plan step lands exactly (it only shrinks).
-    SoundData d;
-    d.frames = frames;
-    p = PlanEditTrim(d.frames, {}, EditTrimKind::ToZone, -1.0, 0.5, 3.0);
-    for (const EditTrimStep& s : p.steps) TrimFrame(d, s.frame, s.start, s.length, 5.0);
-    CHECK(Near(d.frames[0].start, 0.5) && Near(d.frames[0].length, 0.5) && d.frames[0].hand && d.edited);
-    CHECK(Near(d.frames[1].start, 1.5) && Near(d.frames[1].length, 1.0));
-    CHECK(Near(d.frames[2].start, 3.0) && Near(d.frames[2].length, 0.5));
-}
-
-// 13-62: per-part gain / mono / fades heard in Edit's Play and auditions; Mute / Solo (decision 5); Space
-// (one piece) and Shift+Space (every piece of a part) of decision 13.
-static void TestPartListen()
-{
-    PartListen l;
-    CHECK(!l.Active() && PartHeard(l, "a") && PartHeard(l, ""));
-    l.mute = {"b"};
-    CHECK(l.Active() && PartHeard(l, "a") && !PartHeard(l, "b"));
-    l.solo = {"b"};  // a solo wins over the mutes, adds to other solos
-    CHECK(PartHeard(l, "b") && !PartHeard(l, "a") && !PartHeard(l, ""));
-
-    SoundLibrary lib;
-    lib.uid = "L";
-    lib.root = "s";
-    SoundNode sn = Node("s", "", SoundNodeType::Sound, "S");
-    sn.sound.mode = DetectMode::Silence;
-    sn.sound.divide_group = "g";
-    sn.sound.divide_values = {"a", "b"};
-    SoundFrame f;
-    f.start = 1.0;
-    f.length = 1.0;
-    f.db = 2.0;
-    f.cuts = {1.5};
-    sn.sound.frames = {f};
-    lib.nodes.push_back(sn);
-    const std::vector<AuditionVoice> legacy = EditPlayVoices(lib, sn);
-    PartListen none;
-    CHECK(legacy.size() == 1 && SameVoices(legacy, EditPlayVoices(lib, sn, -1, &none)));  // no setting, no filter: as before
-
-    // b: -3 dB and Sum of its own.
-    PartSettings g;
-    g.gain_db = -3.0;
-    g.mono = MonoMode::Sum;
-    SetPartSetting(sn.sound, "b", g);
-    std::vector<AuditionVoice> v = EditPlayVoices(lib, sn);
-    CHECK(v.size() == 2);
-    if (v.size() == 2) {
-        CHECK(Near(v[0].gain_db, 2.0) && v[0].mono == MonoMode::Off && v[0].part == "a" && Near(v[0].fade_span_s, 1.0));
-        CHECK(Near(v[1].gain_db, -1.0) && v[1].mono == MonoMode::Sum && v[1].part == "b" && Near(v[1].fade_from_s, 0.5));
-    }
-    std::vector<AuditionVoice> pv = PartAuditionVoices(lib, sn, 0, "b");
-    CHECK(pv.size() == 1 && Near(pv[0].gain_db, -1.0) && pv[0].mono == MonoMode::Sum && pv[0].part == "b");
-    sn.sound.frames[0].part_db["b"] = 1.0;  // 13-28's part_db replaces the frame dB for its part: 1 - 3
-    v = EditPlayVoices(lib, sn);
-    CHECK(v.size() == 2 && Near(v[1].gain_db, -2.0));
-    sn.sound.frames[0].part_db.clear();
-
-    // Mute b: only a, the cut faded where b is silent.
-    l = PartListen{};
-    l.mute = {"b"};
-    v = EditPlayVoices(lib, sn, -1, &l);
-    CHECK(v.size() == 1);
-    if (v.size() == 1)
-        CHECK(Near(v[0].start_s, 1.0) && Near(v[0].length_s, 0.5) && Near(v[0].fade_in_s, kDefaultFadeIn) &&
-              Near(v[0].fade_out_s, kDefaultCutFade) && Near(v[0].fade_span_s, 0.0) && Near(v[0].delay_ms, 1000.0));
-    // Solo b: only b.
-    l = PartListen{};
-    l.solo = {"b"};
-    v = EditPlayVoices(lib, sn, -1, &l);
-    CHECK(v.size() == 1 && Near(v[0].start_s, 1.5) && Near(v[0].fade_in_s, kDefaultCutFade) &&
-          Near(v[0].fade_out_s, kDefaultFadeOut));
-    l.solo = {"a", "b"};  // Solo adds
-    CHECK(EditPlayVoices(lib, sn, -1, &l).size() == 2);
-
-    // b's own fade in (4 ms): its own voice, its in side the part's; its unowned out side at the variation's
-    // edge keeps the frame fade (13-62 review: decision 6 per side).
-    sn.sound.frames[0].fade_out = 0.05;
-    PartSettings fi;
-    fi.fade_in = 0.004;
-    SetPartSetting(sn.sound, "b", fi);
-    v = EditPlayVoices(lib, sn);
-    CHECK(v.size() == 2);
-    if (v.size() == 2)
-        CHECK(Near(v[1].fade_in_s, 0.004) && Near(v[1].fade_out_s, 0.05) && Near(v[1].fade_span_s, 0.0) &&
-              Near(v[0].fade_span_s, 1.0));
-    {  // a owns only its fade out: its in side at the variation's edge keeps the frame fade in
-        SoundNode ao = sn;
-        PartSettings fo;
-        fo.fade_out = 0.006;
-        SetPartSetting(ao.sound, "a", fo);
-        std::vector<AuditionVoice> w = EditPlayVoices(lib, ao);
-        CHECK(w.size() == 2);
-        if (w.size() == 2) CHECK(Near(w[0].fade_in_s, kDefaultFadeIn) && Near(w[0].fade_out_s, 0.006) && Near(w[0].fade_span_s, 0.0));
-    }
-}
-
-// 13-62h: the Sound's trim plan is its variations' (a divided Sound trims its zones: ZoneTrimAt).
-static void TestPieceTrim()
-{
-    SoundData d;
-    SoundFrame f;
-    f.start = 1.0;
-    f.length = 1.0;
-    f.cuts = {1.5};
-    d.frames = {f};
-    EditTrimPlan p = PlanEditTrim(d, {}, EditTrimKind::RightOfCursor, 1.2, 0.0, 0.0);
-    CHECK(p.steps.size() == 1 && Near(p.steps[0].length, 0.2));
-    p = PlanEditTrim(d, {}, EditTrimKind::LeftOfCursor, 1.2, 0.0, 0.0);
-    CHECK(p.steps.size() == 1 && Near(p.steps[0].start, 1.2) && Near(p.steps[0].length, 0.8));
-    p = PlanEditTrim(d, {}, EditTrimKind::RightOfCursor, 2.5, 0.0, 0.0);
-    CHECK(p.Empty() && p.why == "The edit cursor is not inside a variation");
-}
-
-// 13-62F (F5): Next / Previous variation (REAPER's 40417 / 40416) at a fixed zoom.
-static void TestEditNav()
-{
-    auto fr = [](double s, double l, bool on = true) {
-        SoundFrame f;
-        f.start = s;
-        f.length = l;
-        f.on = on;
-        return f;
-    };
-    // Stored out of time order on purpose; variation 2 is off (still walked).
-    const std::vector<SoundFrame> frames = {fr(3.0, 1.0), fr(0.0, 1.0), fr(1.5, 1.0, false)};
-    // From the selection: next in time order, the cursor at its start, the view (2 s) centred on it.
-    EditNavPlan p = PlanEditNav(frames, {1}, -1.0, true, 2.0, 10.0);
-    CHECK(p.frame == 2 && Near(p.cursor, 1.5) && Near(p.view_start, 1.0));
-    p = PlanEditNav(frames, {1, 2}, -1.0, true, 2.0, 10.0);  // the last selected one counts
-    CHECK(p.frame == 0 && Near(p.cursor, 3.0) && Near(p.view_start, 2.5));
-    p = PlanEditNav(frames, {0}, -1.0, false, 2.0, 10.0);
-    CHECK(p.frame == 2);
-    // At the ends: nothing.
-    CHECK(PlanEditNav(frames, {0}, -1.0, true, 2.0, 10.0).frame == -1);
-    CHECK(PlanEditNav(frames, {1}, -1.0, false, 2.0, 10.0).frame == -1);
-    // The view clamped at the source's edges; the whole source shown: start 0.
-    p = PlanEditNav(frames, {2}, -1.0, false, 2.0, 10.0);
-    CHECK(p.frame == 1 && Near(p.view_start, 0.0));
-    p = PlanEditNav(frames, {2}, -1.0, true, 2.0, 3.5);
-    CHECK(p.frame == 0 && Near(p.view_start, 1.5));
-    CHECK(Near(PlanEditNav(frames, {2}, -1.0, true, 0.0, 10.0).view_start, 0.0));
-    // Nothing selected, as REAPER: next = the first starting after the cursor, previous = the last starting
-    // before it (the one under the cursor only when the cursor is past its start).
-    CHECK(PlanEditNav(frames, {}, 1.7, true, 2.0, 10.0).frame == 0);   // under variation 2: the next one starts at 3
-    CHECK(PlanEditNav(frames, {}, 1.7, false, 2.0, 10.0).frame == 2);  // past its start: it counts for previous
-    CHECK(PlanEditNav(frames, {}, 1.2, true, 2.0, 10.0).frame == 2);
-    CHECK(PlanEditNav(frames, {}, 1.2, false, 2.0, 10.0).frame == 1);
-    CHECK(PlanEditNav(frames, {}, 1.5, false, 2.0, 10.0).frame == 1);  // on its start: not before the cursor
-    CHECK(PlanEditNav(frames, {}, 1.5, true, 2.0, 10.0).frame == 0);   // nor after it
-    CHECK(PlanEditNav(frames, {}, 0.0, true, 2.0, 10.0).frame == 2);
-    CHECK(PlanEditNav(frames, {}, -1.0, true, 2.0, 10.0).frame == 1);  // no cursor: the first / the last
-    CHECK(PlanEditNav(frames, {}, -1.0, false, 2.0, 10.0).frame == 0);
-    CHECK(PlanEditNav(frames, {}, 4.5, true, 2.0, 10.0).frame == -1);
-    CHECK(PlanEditNav(frames, {}, 4.5, false, 2.0, 10.0).frame == 0);
-    CHECK(PlanEditNav({}, {}, 0.0, true, 2.0, 10.0).frame == -1);
-    CHECK(PlanEditNav(frames, {9}, 4.5, false, 2.0, 10.0).frame == 0);  // a bad index: as nothing selected
-    // Takes mode (by index: each take has its own time): index order, never the starts.
-    CHECK(PlanEditNav(frames, {0}, -1.0, true, 0.0, 0.0, true).frame == 1);
-    CHECK(PlanEditNav(frames, {1}, -1.0, true, 0.0, 0.0, true).frame == 2);
-    CHECK(PlanEditNav(frames, {1}, -1.0, false, 0.0, 0.0, true).frame == 0);
-    CHECK(PlanEditNav(frames, {2}, -1.0, true, 0.0, 0.0, true).frame == -1);
-    CHECK(PlanEditNav(frames, {0}, -1.0, false, 0.0, 0.0, true).frame == -1);
-    CHECK(PlanEditNav(frames, {}, 3.5, true, 0.0, 0.0, true).frame == 0);  // nothing selected: first / last
-    CHECK(PlanEditNav(frames, {}, 3.5, false, 0.0, 0.0, true).frame == 2);
 }
 
 // ---- 13-62h (Lot C): a zoned Sound's Edit playback --------------------------------------------------------
@@ -1106,11 +511,11 @@ static void TestZonedEmptySpace()
     // Silence before the first zone and after the last one counts too (the playhead walks the file).
     const EditPlay w = EditPlayFrom(d, 0.0, 1.0);
     CHECK(w.voices.size() == 2 && Near(w.voices[0].delay_ms, 100.0) && Near(w.map.total, 1.0));
-    // Not zoned (undivided) or an empty range: nothing.
+    // 13-62i: an undivided Sound plays its zones the same way (Divide by None keeps them, of the implicit part).
     SoundData u = d;
-    u.divide_group.clear();
-    u.divide_values.clear();
-    CHECK(EditPlayFrom(u, 0.0, 1.0).voices.empty());
+    CHECK(SetDivide(u, "", {}));
+    const EditPlay uw = EditPlayFrom(u, 0.0, 1.0);
+    CHECK(uw.voices.size() == w.voices.size() && Near(uw.voices[0].delay_ms, 100.0) && uw.voices[0].part == kWholePart);
     CHECK(EditPlayFrom(d, 0.5, 0.5).voices.empty());
     // The library overload: the volumes from the root on top of the zone's gain, the node's uid.
     SoundLibrary lib;
@@ -1472,13 +877,6 @@ int main()
     TestZonedListen();
     TestEditTransport();
     TestZonePlayRanges();
-    TestEditNav();
-    TestPieceTrim();
-    TestPartListen();
-    TestEditTrim();
-    TestEditSplit();
-    TestEditPlay();
-    TestSettleEditPlay();
     TestMono();
     TestChildAudition();
     TestDividedByText();
@@ -1488,13 +886,9 @@ int main()
     TestLit();
     TestLengths();
     TestRedetect();
-    TestTakesTrim();
     TestCountText();
-    TestNormalizeOnOnly();
-    TestNormalizeTakes();
     TestPartGains();
     TestAuditionEnded();
-    TestFades();
     TestPartsAudition();
     if (g_fail) {
         std::printf("%d failure(s)\n", g_fail);

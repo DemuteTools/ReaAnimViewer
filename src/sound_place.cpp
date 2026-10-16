@@ -537,6 +537,9 @@ PlaceResult PlaceFileImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* 
         tag.ao = pos - anchor_pos;
         tag.sy = sync;
         tag.pt = req.part;
+        tag.has_g = true;  // 13-62i (D): the dB it plays at and its piece, so a re-Populate can follow the library
+        tag.g = req.gain_db + pieces[k].db;
+        tag.pi = static_cast<int>(k);
         tags.push_back(tag);
         reused.push_back(reuse != nullptr);
         r.item_guids.push_back(ItemGuidOf(item));
@@ -596,7 +599,9 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
 
     const double src_anchor_pos = GetMediaItemInfo_Value(anchor_src, "D_POSITION");
     const std::string owner = kept_owner.empty() ? OwnerGuid(req, req.source.item_guid) : OwnerGuid(req, kept_owner);
-    const double gain = ItemGainFor(req.gain_db);
+    // 13-62i: a pile ignores its pieces: its zone's gain (the variation's) on top of the placement's.
+    const double pile_db = folder ? PileGainDb(req.pieces, req.gain_db) : req.gain_db;
+    const double gain = ItemGainFor(pile_db);
 
     // Copy every member first, apply the variation, then position from the anchor's snap.
     std::vector<MediaItem*> placed;
@@ -628,6 +633,10 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
             return r;
         }
         if (by_pieces) {
+            // 13-62i: a Takes-mode Sound's variation is a take: made active before its zones are placed (each piece
+            // reads the active take's offset and rate).
+            if (req.variation >= 0 && f_count_takes && req.variation < f_count_takes(item))
+                if (MediaItem_Take* take = f_get_take(item, req.variation)) f_set_active_take(take);
             PlayAsAuditioned(item, req);  // 13-29: before the piece's length (it then reads rate 1)
             ApplyPiece(item, req.pieces[i]);
         } else if (!folder) {
@@ -698,6 +707,9 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
         tag.ao = pos - anchor;  // as placed: a member clamped at 0 still gives the anchor back
         tag.sy = sync;
         tag.pt = req.part;
+        tag.has_g = true;  // 13-62i (D): the dB it plays at (a pile member: on top of its source's) and its piece
+        tag.g = by_pieces ? req.gain_db + req.pieces[i].db : pile_db;
+        tag.pi = by_pieces ? static_cast<int>(i) : 0;
         tag.tk = Land(proj, placed[i], members[i].track, members[i].mark, i == 0 && user_moved, kept_tk);
         WritePlacedTag(placed[i], tag);
     }

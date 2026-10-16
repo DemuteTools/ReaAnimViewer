@@ -5,7 +5,7 @@
 // owns this file: it fills the stubs and may ADD declarations. Shared types: sound_model.h.
 //
 // 13-7b: the node panel (play, type, values, volume, Mix, Blend lanes), the Sound panel (Source
-// waveform with hand edits, Replace, Variations, Detection) and the Edit overlay. Seams for
+// waveform, Replace, Variations, Detection) and the Edit overlay (13-62i: every Sound's zones). Seams for
 // 13-7c: DrawWaveform, NodePanelHooks.
 
 #pragma once
@@ -32,119 +32,50 @@ void SettleNodePanelFaders();
 
 // ---- 13-7b additions ----------------------------------------------------------------------------
 
-// 13-20 / 13-23 / 13-25 (Edit only): a Sound's parts drawn over its variations -- the peaks coloured by
-// part (Combined: one waveform and a ribbon under it; Split: one lane per value), excluded stretches
-// hatched, the cuts (a grab at the bottom: dashed proposed, solid moved by hand, amber "?" unsure) and the
-// sync points (a flag at the top: dashed detected, solid moved by hand), and the zone selected.
+// 13-62 / 13-62h: a divided Sound's parts as the Edit window's Lane view headers read them (LaneHeaders): their
+// colours and names, the Lane view on, the selected part ("" = none), whether Play hears each (Mute / Solo; empty = all
+// heard), the header column's width as the user set it (logical px; 0 = the default 160).
 struct WaveParts {
     const SoundData*         data = nullptr;
     std::vector<ImU32>       colors;  // one per divide value
     std::vector<std::string> names;   // one per divide value
     bool                     split = false;  // one lane per value
-    double                   sel_start = 0.0, sel_len = 0.0;  // the zone selected (length 0 = none)
-    // 13-62 (decision 9, Split = REAPER's fixed lanes with comping): the selected part (its lane tinted, the
-    // others dimmed on the comp strip / ribbon; "" = none) and, per divide value, whether Play hears it (Mute /
-    // Solo: a part not heard is drawn faint; empty = all heard).
     std::string              sel_part;
     std::vector<bool>        heard;
-    // 13-62F (F3): the Lane view's header column as the user set it (logical px, before the DPI; 0 = the default
-    // 160). DrawWaveform keeps it between 104 px and half the waveform's width.
     float                    head_px = 0.0f;
 };
 
-// A waveform with its variations framed (the Sound panel, Edit, the Media Explorer preview).
+// A read-only waveform with its variations framed (the Sound panel, the Media Explorer preview). 13-62i: no edit
+// gesture (P4: the Edit window edits a Sound's zones, zone_wave_ui.h).
 struct WaveformOptions {
     ImVec2 size = ImVec2(0.0f, 90.0f);  // x 0 = the available width
     double view_start = 0.0;            // source seconds shown
     double view_len = 0.0;              // 0 = the whole source
     double source_len = 0.0;
-    bool   gestures = false;            // hand edits: trim, dB drag, Alt-click off, S split
-    bool   select = false;              // click selects (Ctrl-click adds) instead of playing
     bool   ruler = false;               // a ms / s ruler on top
-    double threshold_db = std::numeric_limits<double>::quiet_NaN();  // a draggable line when finite
-    // Middle-drag pans (REAPER's hand scroll). 13-45: the wheel and the zoom keys are the caller's
-    // (view_nav.h ViewNavInput, the same for every timeline).
-    bool   pan = false;
-    std::vector<bool> solid_edges;      // per frame: drawn solid (a clamped edge); may be empty
     // Antho 2026-10-12: per frame, its fades as placed (drawn as REAPER draws an item's); empty = none.
-    // With `gestures`, a handle at each top corner drags the fade, Alt-click resets it.
     std::vector<FrameFades> fades;
-    // The frames' numbers in mono 11 (Edit's large waveform) instead of mono 9 (the panel's).
+    // The frames' numbers in mono 11 instead of mono 9.
     bool   big_numbers = false;
-    // 13-20 / 13-23 / 13-25: the parts drawn, with their gestures (drag a cut or a sync flag, a
-    // horizontal drag selects a zone); null = none.
-    const WaveParts* parts = nullptr;
-    // 13-54: the Sound whose parts' margins (pre-roll / tail around each part, PartPieces) are drawn when
-    // `parts` is null (the panel): what a part leaves out is drawn as outside a variation. With `parts`,
-    // its data is used.
-    const SoundData* margins = nullptr;
-    // 13-28: per frame, the gain from Normalize shown at the top right of its box (0 = none; empty = no
-    // labels) and whether it clips (drawn in --bad).
-    std::vector<double> gain_db;
-    std::vector<bool>   gain_clip;
     // 13-41: the Sound forced to mono: one lane, the channel (or L + R) heard (MonoOf).
     MonoMode mono = MonoMode::Off;
-    // 13-61: Edit's edit cursor (source seconds, < 0 = none): where the last click landed, drawn as a line.
-    double cursor_s = -1.0;
 };
 
 struct WaveformEvents {
-    bool   reading = false;     // the peaks are still being read
-    int    clicked = -1;        // a frame clicked (no Alt, no drag)
-    bool   ctrl = false;        // ... with Ctrl held
+    bool   reading = false;        // the peaks are still being read
+    int    clicked = -1;           // a frame clicked (released where pressed)
+    bool   ctrl = false;           // ... with Ctrl held
     bool   clicked_empty = false;  // a click outside every frame
-    int    toggled = -1;        // Alt-click on a frame
-    int    double_clicked = -1; // a frame double-clicked (-2 = empty space)
-    double double_at = 0.0;     // its source time
-    int    trim = -1;           // an edge drag: the frame and its new stretch
-    double trim_start = 0.0, trim_len = 0.0;
-    bool   trim_done = false;   // released (write it)
-    int    db_frame = -1;       // a vertical drag inside a frame: its new dB
-    double db = 0.0;
-    bool   db_done = false;
-    bool   threshold_live = false, threshold_done = false;
-    double threshold_db = 0.0;
     bool   right_clicked = false;
-    double scroll_s = 0.0;      // a middle-drag: move view_start by this
-    int    fade_frame = -1;     // a fade handle drag: the frame and its own fades (s, < 0 = the default)
-    double fade_in = -1.0, fade_out = -1.0;
-    bool   fade_done = false;   // released (write it)
-    int    fade_reset = -1;     // Alt-click on a fade handle: that frame's side back to the default
-    int    fade_reset_side = 0; // -1 fade in, +1 fade out
-    // 13-62F (F1): the Lane view's fade handles (a piece of a part, on its lane): the part's own fade on that side
-    // (`part_fade_lane` = the part's index, s), and Alt-click: that side of the part back to the Sound's.
-    int    part_fade_lane = -1, part_fade_side = 0;
-    double part_fade_s = 0.0;
-    bool   part_fade_done = false;
-    bool   part_fade_same = false;  // 13-62F review: released within a pixel of the value shown at the grab
-    int    part_fade_reset_lane = -1, part_fade_reset_side = 0;
-    ImVec2 min, max;            // the waveform's rectangle
-    // 13-20 / 13-23 / 13-25 (with `parts`).
-    double click_at = 0.0;      // the source time of `clicked`
-    double right_at = 0.0;      // the source time right-clicked
-    int    cut_frame = -1, cut_k = -1;     // a cut dragged: its frame, its index and its time
-    double cut_t = 0.0;
-    bool   cut_done = false;
-    int    sync_frame = -1, sync_part = -1;  // a sync flag dragged: its frame, its part and its time
-    double sync_t = 0.0;
-    bool   sync_done = false;
-    bool   zone_live = false, zone_done = false;  // a zone being selected (a horizontal drag)
-    double zone_start = 0.0, zone_len = 0.0;
-    // 13-62 (Split comping, decision 9). `lane`: where the click / drag / right-click began: a Split lane (its
-    // part's index), -1 the Combined waveform, its ribbon or the ruler, -2 Split's "Placed" comp strip.
-    int    lane = -1;
-    // A horizontal drag past 8 px on a Split lane (a swipe: [span_a, span_b] goes to `lane`'s part) or an
-    // Alt+drag on a divided Sound in either view (`span_alt`: the span is excluded); its edges snapped to a cut,
-    // a variation's or a zone's edge within 6 px (SnapSpanEdge). Done = released (write it).
-    bool   span_done = false, span_alt = false;
-    double span_a = 0.0, span_b = 0.0;
-    // Split (13-62F: "Lane"): the lane header column on the left of the lanes (13-62F F3: WaveParts::head_px,
-    // 104 px .. half the box; head_narrow under 116 px: no gain fader), each lane's top and height, the comp
-    // strip's rows; the caller draws the headers there (PartLaneHeader). head_w 0 = no column (Combined).
+    ImVec2 min, max;               // the waveform's rectangle
+    double click_at = 0.0;         // the source time of `clicked`
+    double right_at = 0.0;         // the source time right-clicked
+    // The Edit window's Lane view (13-62h: its zone waveform fills these for LaneHeaders): the lane header column on
+    // the left of the lanes (104 px .. half the box; head_narrow under 116 px: no gain fader), each lane's top and
+    // height. head_w 0 = no column (Combined).
     float  head_x = 0.0f, head_w = 0.0f;
     bool   head_narrow = false;
     float  lanes_y = 0.0f, lane_h = 0.0f;
-    float  strip_y0 = 0.0f, strip_y1 = 0.0f;
 };
 
 WaveformEvents DrawWaveform(const char* id, const std::string& path, const std::vector<SoundFrame>& frames,

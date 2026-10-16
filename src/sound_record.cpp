@@ -501,6 +501,7 @@ Fields SoundFields(const SoundData& s)
     if (s.cut_fade != d.cut_fade) f.push_back({"cfade", FormatNumber(s.cut_fade)});
     if (s.gap_xfade != d.gap_xfade) f.push_back({"gxfade", FormatNumber(s.gap_xfade)});  // 13-62h
     if (s.mono != d.mono) f.push_back({"mono", kMonoWords[static_cast<int>(s.mono)]});
+    if (s.fader_db) f.push_back({"fdr", FormatNumber(*s.fader_db)});  // 13-62i: the implicit part's fader
     return f;
 }
 
@@ -549,6 +550,12 @@ Got SetSound(SoundData& s, const std::string& k, const std::string& v)
         return Got::Ok;
     }
     if (k == "mono") return G(MonoFromWord(v, &s.mono));
+    if (k == "fdr") {  // 13-62i
+        double x = 0.0;
+        if (!ReadNumber(v, &x)) return Got::Bad;
+        s.fader_db = x;
+        return Got::Ok;
+    }
     return Got::Unknown;
 }
 
@@ -699,6 +706,8 @@ Fields FzoneFields(const EditZone& z)
     if (z.db != 0.0) f.push_back({"db", FormatNumber(z.db)});
     if (z.xl != 0.0) f.push_back({"xl", FormatNumber(z.xl)});
     if (z.xr != 0.0) f.push_back({"xr", FormatNumber(z.xr)});
+    if (z.fade_in_shape != 0) f.push_back({"fis", FmtInt(z.fade_in_shape)});  // 13-62i
+    if (z.fade_out_shape != 0) f.push_back({"fos", FmtInt(z.fade_out_shape)});
     if (z.auto_snap.set)  // 13-62h review (R2): its measured automatic snap and what it was measured for
         f.push_back({"as", JoinNumbers({z.auto_snap.t, z.auto_snap.a, z.auto_snap.b, static_cast<double>(z.auto_snap.mode),
                                         z.auto_snap.thr, z.auto_snap.off})});
@@ -728,6 +737,12 @@ Got SetFzone(EditZone& z, bool* has_sa, bool* has_sb, const std::string& k, cons
     if (k == "db") return G(ReadNumber(v, &z.db));
     if (k == "xl") return G(ReadNumber(v, &z.xl));
     if (k == "xr") return G(ReadNumber(v, &z.xr));
+    if (k == "fis" || k == "fos") {  // 13-62i: a REAPER fade shape (0..6)
+        int x = 0;
+        if (!ReadInt(v, &x) || x < 0 || x > 6) return Got::Bad;
+        (k == "fis" ? z.fade_in_shape : z.fade_out_shape) = x;
+        return Got::Ok;
+    }
     if (k == "as") {  // 13-62h review (R2): t, a, b, mode, threshold, offset
         std::vector<double> n;
         if (!SplitNumbers(v, &n) || n.size() != 6) return Got::Bad;
@@ -1204,9 +1219,10 @@ bool ParseStoreCore(const std::string& text, SoundStore& s)
         }
     }
     // 13-62h: a divided Sound of an old project / .ravlib (cuts, owners, Sound-level zones, part gains) becomes
-    // zones, once, on read.
+    // zones, once, on read. 13-62i: an undivided Sound's variations too (any mode, Takes included), and a divided
+    // Sound's takes get proposed zones.
     // Zones read are made sane (b < a, overlaps, crossfades out of range, unknown parts): the invariant holds
-    // after any read; zones on a Sound that is not edited as zones (undivided, Takes) are dropped.
+    // after any read.
     for (SoundLibrary& l : s.libraries)
         for (SoundNode& n : l.nodes)
             if (n.type == SoundNodeType::Sound) {
@@ -1449,6 +1465,8 @@ bool ParsePlacedTag(const std::string& text, PlacedTag* out)
             if (k == "sy") return G(sy = ReadNumber(v, &t.sy));
             if (k == "tk") return G(ReadStr(v, &t.tk));
             if (k == "pt") return G(ReadStr(v, &t.pt));
+            if (k == "g") return G(t.has_g = ReadNumber(v, &t.g));  // 13-62i (D)
+            if (k == "pi") return G(ReadInt(v, &t.pi));
             return Got::Unknown;
         });
         if (!owner || t.owner.empty()) return false;
@@ -1474,6 +1492,8 @@ std::string SerializePlacedTag(const PlacedTag& t)
     }
     if (!t.tk.empty()) f.push_back({"tk", Enc(t.tk)});
     if (!t.pt.empty()) f.push_back({"pt", Enc(t.pt)});
+    if (t.has_g) f.push_back({"g", FormatNumber(t.g)});  // 13-62i (D)
+    if (t.pi >= 0) f.push_back({"pi", FmtInt(t.pi)});
     WriteHeader(out, kPlacedTagMagic, t.version, f, t.kept);
     return out;
 }

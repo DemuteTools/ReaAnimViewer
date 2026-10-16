@@ -63,6 +63,26 @@ void TestActiveKeep()
     CHECK(KeepOrDraw(&prev, {0, 1, 2}, 2, {1}, 3, 4) == 1);
     CHECK(KeepOrDraw(&prev, a, 0, {}, 3, 4) == DrawPick(a, 0, {}, 3, 4));  // pick 1 is off -> redraw
     CHECK(KeepOrDraw(nullptr, a, 0, {}, 3, 4) == DrawPick(a, 0, {}, 3, 4));
+    // 13-62i (D, P3): a stored pick (not by hand) is kept only while it is not one of the last n of the history.
+    SoundDraw stored;
+    stored.pick = 1;
+    CHECK(KeepOrDraw(&stored, {0, 1, 2, 3}, 2, {3, 0}, 3, 4) == 1);     // not in the last 2: kept
+    CHECK(KeepOrDraw(&stored, {0, 1, 2, 3}, 2, {1, 0, 3}, 3, 4) == 1);  // repeated 3 events ago: kept
+    for (uint64_t s = 0; s < 50; ++s) {
+        const int p = KeepOrDraw(&stored, {0, 1, 2, 3}, 2, {0, 1}, 3, s);  // the last one: drawn again
+        CHECK(p == 2 || p == 3);
+    }
+    CHECK(KeepOrDraw(&stored, {0, 1, 2, 3}, 0, {1}, 3, 4) == 1);  // avoid 0: nothing to avoid
+    CHECK(KeepOrDraw(&stored, {1}, 2, {1}, 3, 4) == 1);           // n clamped to 0 (one variation)
+    CHECK(KeepOrDraw(&prev, {0, 1, 2}, 2, {0, 1}, 3, 4) == 1);    // by hand: always kept
+    // 13-62i (D): `ahead` (the picks kept after it, a filtered Populate) is avoided too, while it can be.
+    for (uint64_t s = 0; s < 50; ++s) {
+        CHECK(KeepOrDraw(&stored, {0, 1, 2, 3}, 2, {0}, 3, s, {1, 3}) == 2);
+        CHECK(DrawPick({0, 1, 2, 3}, 2, {0, 2}, 3, s, {1, 3}) == 3);  // not both: the nearest one ahead (1) avoided
+        CHECK(KeepOrDraw(&stored, {0, 1, 2, 3}, 2, {0, 2}, 3, s, {1, 3}) == 3);
+    }
+    CHECK(KeepOrDraw(&stored, {0, 1, 2, 3}, 2, {0}, 3, 4, {3}) == 1);  // not ahead: kept
+    CHECK(KeepOrDraw(&prev, {0, 1, 2}, 2, {}, 3, 4, {1}) == 1);         // by hand: kept
 
     ItemSounds item;
     EventSounds ev;

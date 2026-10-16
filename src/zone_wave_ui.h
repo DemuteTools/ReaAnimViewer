@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 //
-// 13-62h (Lot E1): the Sound Edit window's waveform for a zoned Sound (UsesZones: divided, not Takes mode) --
+// 13-62h (Lot E1): the Sound Edit window's waveform of a Sound's zones (13-62i: every Sound; an undivided one has
+// one implicit part, no Lane view; a Takes-mode one is drawn one host per take, each on its own source) --
 // maquette-zones-13-62h-v3.html in Dear ImGui. Combined and Lane draw and edit the same zones with the same
 // gestures; Lane is the exploded view (one lane per part: its zones coloured, the others' greyed with a dashed
 // edge, Gaps hatched on every lane) and adds comping (click a greyed zone / drag across it). Rows: the ruler (time
 // selection), the Variations strip, in Lane the Placed strip, then the zones. The pure decisions are zone_hit.h.
-// Undivided and Takes-mode Sounds keep DrawWaveform (library_node_ui.cpp).
 //
 // Writes: a drag = one Live draft re-applied from its start each frame (MoveZone, DragZoneEdge, ... on the drag's
 // base refs) and one CommitLive on release (CancelLive when nothing changed); a click, a menu item or a key = one
@@ -66,6 +66,7 @@ struct ZoneDrag {
     ZoneSel      after;         // the selection once the live gesture ran (re-resolved by it)
     double       value = 0.0;   // Gain: the delta (dB); Move: the delta (s)
     std::string  part;          // MkZone / Swipe: the part made
+    int          tl = -1;       // 13-62i: the host (a Takes-mode Sound's take) it was pressed in: only that one runs it
 };
 
 struct ZoneEditView {
@@ -97,6 +98,10 @@ struct ZoneEditView {
     int           menu_frame = -1;
     bool          menu_close = false;
     int           esc_frame = -1;
+    // 13-62i: a Takes-mode Sound's active take (the host the edit cursor, the time selection and the keys belong to;
+    // -1 = none yet) and the take the zone audition plays.
+    int           cur_tl = -1;
+    int           play_tl = -1;
 };
 
 // Clears the view state (a new Sound shown).
@@ -108,8 +113,9 @@ struct ZoneWaveHost {
     const SoundLibrary*      lib = nullptr;
     const SoundNode*         node = nullptr;     // the stored Sound
     std::function<const SoundData&()> shown;    // as drawn now (a live draft included)
-    std::string              path;               // the file
+    std::string              path;               // the file (13-62i: a take's own in Takes mode)
     double                   file_len = 0.0;
+    int                      tl = -1;            // 13-62i: the timeline it shows (a Takes-mode Sound's take; sound_zones.h)
     std::vector<std::string> names;              // per divide value
     std::vector<ImU32>       colors;
     double*                  cursor = nullptr;   // the edit cursor (< 0 = none)

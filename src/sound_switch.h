@@ -55,7 +55,13 @@ struct Resolution {
     // Empty when a sound resolved or nothing played for another reason.
     std::string                gap;
     std::string                gap_node;  // the node of that gap
+    // 13-62i (D, P1): notes for the Populate report, in walk order, each once: a Blend without layer roles
+    // reached on an event with a role plays every layer (RolelessBlendNote).
+    std::vector<std::string>   notes;
 };
+// 13-62i (D, P1): "Blend <name> has no layer roles: every layer plays on every event" (role-free: said once per Blend
+// per Populate, whatever events reach it).
+std::string RolelessBlendNote(const std::string& blend_name);
 
 // Where a value came from (EffectiveValue's `from`).
 enum class ValueFrom { Default, Item, Rule, Event };

@@ -14,6 +14,7 @@
 #include "sound_place_plan.h"
 #include "sound_record.h"
 #include "sound_switch.h"
+#include "sound_zones.h"  // 13-62i: MigrateLegacyZones, SanitizeZones
 
 using namespace rav;
 
@@ -97,6 +98,7 @@ static SoundStore RichStore()
     f1.sound.edited = true;
     f1.sound.fade_out = 0.008;               // Antho 2026-10-12: the Sound's default fade
     f1.sound.frames[1].fade_in = 0.003;      // and a variation's own
+    f1.sound.frames[1].fade_out = 0.004;
     f1.sound.frames[1].fade_out_shape = 2;
     lib.nodes.push_back(f1);
     SoundNode f2 = FileSound("n000000000000005", b.uid, "metal1.wav");
@@ -113,9 +115,21 @@ static SoundStore RichStore()
     return s;
 }
 
+// 13-62i: every Sound laid out as zones, as a read lays it out (so a write and a read give the same text).
+static SoundStore Laid(SoundStore s)
+{
+    for (SoundLibrary& l : s.libraries)
+        for (SoundNode& n : l.nodes)
+            if (n.type == SoundNodeType::Sound) {
+                MigrateLegacyZones(n.sound);
+                SanitizeZones(n.sound);
+            }
+    return s;
+}
+
 static void TestRoundTrip()
 {
-    const SoundStore s = RichStore();
+    const SoundStore s = Laid(RichStore());
     const SoundStore one = RavlibOf(s, "l000000000000001", nullptr);
     const std::string text = SerializeRavlib(one);
     CHECK(text.rfind("RAVLIB 2\n", 0) == 0);  // 13-23: kRavlibVersion
@@ -130,9 +144,11 @@ static void TestRoundTrip()
         if (x.type == SoundNodeType::Sound && x.sound.source.kind == SoundSourceKind::File) CHECK(x.sound.source.item_db == 18.5);
     // Fades travel in the file (optional fields: a v1 reader keeps them as unknown text).
     CHECK(back.libraries[0].nodes[3].sound.fade_out == 0.008 && back.libraries[0].nodes[3].sound.fade_in == kDefaultFadeIn);
-    CHECK(back.libraries[0].nodes[3].sound.frames[1].fade_in == 0.003 &&
-          back.libraries[0].nodes[3].sound.frames[1].fade_out_shape == 2 &&
-          back.libraries[0].nodes[3].sound.frames[0].fade_in < 0.0);
+    {  // 13-62i: a variation's own fades are its zone's
+        const SoundData& fd = back.libraries[0].nodes[3].sound;
+        CHECK(fd.frames[1].zones.size() == 1 && fd.frames[1].zones[0].fade_in == 0.003 && fd.frames[1].zones[0].fade_out_shape == 2 &&
+              fd.frames[0].zones.size() == 1 && !fd.frames[0].zones[0].fade_in);
+    }
     // A .ravlib without fades (written before them) reads with the defaults.
     SoundStore plain;
     CHECK(ParseRavlib("RAVLIB 1\nlibrary uid=l000000000000009 name=P root=n000000000000009\n"
@@ -140,7 +156,8 @@ static void TestRoundTrip()
                       &plain));
     CHECK(plain.libraries.size() == 1 && plain.libraries[0].nodes[0].sound.fade_in == kDefaultFadeIn &&
           plain.libraries[0].nodes[0].sound.fade_out == kDefaultFadeOut &&
-          plain.libraries[0].nodes[0].sound.frames[0].fade_out < 0.0);
+          plain.libraries[0].nodes[0].sound.frames[0].fade_out < 0.0 &&
+          plain.libraries[0].nodes[0].sound.frames[0].zones.size() == 1);  // 13-62i: read as one zone
     // A full library (with ravlib_path) round-trips too.
     SoundStore full;
     full.groups = one.groups;
@@ -247,7 +264,7 @@ static void TestImportMerge()
 // 13-15a: a library's kit (the body parts it serves) travels in the file and back into a project.
 static void TestKitTravels()
 {
-    SoundStore rich = RichStore();
+    SoundStore rich = Laid(RichStore());
     rich.libraries[0].kit = {"legs", "arms"};
     rich.libraries[0].kit_offered = true;
     const SoundStore one = RavlibOf(rich, "l000000000000001", nullptr);
@@ -749,7 +766,8 @@ static void TestConvertFreezesFrames()
           Near(c->sound.frames[1].start, 2.0) && Near(c->sound.frames[1].length, 0.5));
     const SoundNode* d = FindNode(*out, "n000000000000104");
     CHECK(d && d->sound.mode == DetectMode::Whole && d->sound.frames.size() == 1 &&
-          Near(d->sound.frames[0].start, 12.0) && Near(d->sound.frames[0].length, 1.6) && d->sound.frames[0].db == -2.0);
+          Near(d->sound.frames[0].start, 12.0) && Near(d->sound.frames[0].length, 1.6) && d->sound.frames[0].zones.size() == 1 &&
+          d->sound.frames[0].zones[0].db == -2.0);  // 13-62i: laid out as a zone, the gain in it
     const SoundNode* e = FindNode(*out, "n000000000000105");
     CHECK(e && e->sound.frames.size() == 1 && Near(e->sound.frames[0].length, 0.8));
     const SoundNode* t = FindNode(*out, "n000000000000106");

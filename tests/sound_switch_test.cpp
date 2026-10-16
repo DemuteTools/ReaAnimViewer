@@ -211,7 +211,8 @@ static void TestNested()
     h.variation = [](const SoundNode& n) { return n.uid == "b" ? 1 : 0; };
     Resolution r = ResolveEvent(st, lib, {}, h);
     CHECK(!r.blocked && r.sounds.size() == 2);
-    CHECK(Near(r.sounds[0].gain_db, -6) && Near(r.sounds[1].gain_db, -4.5));
+    // 13-62i: a variation's gain is in its zones (PieceApply::db), never in the event's: the nodes' volumes alone.
+    CHECK(Near(r.sounds[0].gain_db, -6) && Near(r.sounds[1].gain_db, -6));
     CHECK(Near(r.sounds[0].offset_ms, 0) && Near(r.sounds[1].offset_ms, 40));
     CHECK(r.sounds[1].variation == 1);
     CHECK(r.path_text == "Material Concrete (default) \xE2\x80\xBA Random Bl \xE2\x80\xBA Blend \xC3\x97" "2");
@@ -668,17 +669,18 @@ static void TestParts()
         SetPartSetting(FindNode(lib, "s1")->sound, "vb", g);
         r = ResolveEvent(st, lib, l, h);
         CHECK(std::fabs(r.sounds[0].gain_db - g0) < 1e-9 && std::fabs(r.sounds[1].gain_db - g0) < 1e-9);
-        // Takes mode and undivided (not zones): unchanged, the variation's dB (the whole variation).
+        // 13-62i: Takes mode and undivided are zoned too: the part by the role (Takes) or the whole (undivided), the
+        // nodes' volumes alone (the variation's gain is in its zones).
         SoundData& sd = FindNode(lib, "s1")->sound;
         h.part_variation = nullptr;  // variation 0
         sd.mode = DetectMode::Takes;
         r = ResolveEvent(st, lib, l, h);
-        CHECK(r.sounds[0].part_value.empty() && std::fabs(r.sounds[0].gain_db - (g0 - 1.0)) < 1e-9);
+        CHECK(!r.sounds[0].part_value.empty() && std::fabs(r.sounds[0].gain_db - g0) < 1e-9);
         sd.mode = SoundData{}.mode;
         sd.divide_group.clear();
         sd.divide_values.clear();
         r = ResolveEvent(st, lib, l, h);
-        CHECK(r.sounds[0].part_value.empty() && std::fabs(r.sounds[0].gain_db - (g0 - 1.0)) < 1e-9);
+        CHECK(r.sounds[0].part_value.empty() && std::fabs(r.sounds[0].gain_db - g0) < 1e-9);
         sd.divide_group = "gc";
         sd.divide_values = {"vb", "vf"};
         ResetPartAll(sd, "vb");
@@ -783,6 +785,17 @@ static void TestBlendRoles()
     FindNode(lib, "l2")->layer_roles.clear();
     r = run("hand");
     CHECK(r.sounds.size() == 2 && Near(r.sounds[1].offset_ms, 90));
+    // 13-62i (D, P1): said, once per resolution; a combined event or a Blend using roles says nothing.
+    r = run("heel");
+    CHECK(r.sounds.size() == 2 && r.notes.size() == 1 &&
+          r.notes[0] == "Blend FS has no layer roles: every layer plays on every event");
+    // Two roles, one note (role-free: said once per Blend per Populate).
+    const Resolution r2 = run("toe_end");
+    CHECK(r2.notes.size() == 1 && r2.notes[0] == r.notes[0] && RolelessBlendNote("FS") == r.notes[0]);
+    CHECK(run("").notes.empty());
+    FindNode(lib, "l2")->layer_roles = {"toe"};
+    CHECK(run("heel").notes.empty());
+    FindNode(lib, "l2")->layer_roles.clear();
     // The pure helpers.
     SoundNode k = Node("k", "bl", SoundNodeType::Blend, "K");
     CHECK(!BlendUsesRoles(lib, *FindNode(lib, "bl")));

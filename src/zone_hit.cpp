@@ -35,9 +35,9 @@ bool ZoneMine(const SoundData& d, const ZoneRef& r, int lane)
     return lane < 0 || z->IsGap() || PartIndex(d, z->part) == lane;
 }
 
-std::vector<ZoneLook> ZoneLooks(const SoundData& d, const PeakView* peaks)
+std::vector<ZoneLook> ZoneLooks(const SoundData& d, const PeakView* peaks, int tl)
 {
-    const std::vector<ZoneRef> all = AllZones(d);
+    const std::vector<ZoneRef> all = AllZones(d, tl);  // 13-62i: one timeline (a Takes-mode Sound's take)
     const size_t               n = all.size();
     std::vector<const EditZone*> zs(n);
     for (size_t i = 0; i < n; ++i) zs[i] = ZoneOf(d, all[i]);
@@ -143,7 +143,7 @@ ZoneHit HitZones(const SoundData& d, const ZoneHitView& v, float x, float y)
     }
     if (v.row == ZoneRow::Vars) {
         std::vector<ZoneVarBlock> own_blocks;
-        if (!v.blocks) own_blocks = ZoneVarBlocks(d);
+        if (!v.blocks) own_blocks = ZoneVarBlocks(d, v.tl);
         for (const ZoneVarBlock& b : v.blocks ? *v.blocks : own_blocks)
             if (h.t >= b.a && h.t < b.b) {
                 h.kind = ZoneHitKind::Var;
@@ -153,7 +153,7 @@ ZoneHit HitZones(const SoundData& d, const ZoneHitView& v, float x, float y)
         return h;
     }
     if (v.row == ZoneRow::Placed) {
-        const ZoneRef r = ZoneAt(d, h.t);
+        const ZoneRef r = ZoneAt(d, h.t, v.tl);
         if (Valid(d, r)) {
             h.kind = ZoneHitKind::Pick;
             h.z = r;
@@ -162,7 +162,7 @@ ZoneHit HitZones(const SoundData& d, const ZoneHitView& v, float x, float y)
     }
     // A lane.
     std::vector<ZoneLook> own_looks;
-    if (!v.looks) own_looks = ZoneLooks(d, v.peaks);
+    if (!v.looks) own_looks = ZoneLooks(d, v.peaks, v.tl);
     const std::vector<ZoneLook>& looks = v.looks ? *v.looks : own_looks;
     auto mine = [&](const ZoneLook& L) { return v.lane < 0 || L.gap || L.k == v.lane; };
     std::vector<const ZoneLook*> parts, gaps;
@@ -264,7 +264,7 @@ ZoneHit HitZones(const SoundData& d, const ZoneHitView& v, float x, float y)
         h.side = pick->side;
         return h;
     }
-    const ZoneRef r = ZoneAt(d, h.t);
+    const ZoneRef r = ZoneAt(d, h.t, v.tl);
     if (Valid(d, r)) {
         h.z = r;
         h.kind = ZoneMine(d, r, v.lane) ? ZoneHitKind::Zone : ZoneHitKind::Grey;
@@ -360,17 +360,17 @@ std::string ZoneGainToast(const std::string& zone_name, const std::string& part_
     return zone_name + " gain: " + ZoneDbText(db) + " (+ " + part_name + " fader " + (f > 0.0 ? "+" : "") + fs + " dB = " + tot + " dB)";
 }
 
-std::string NewZonePart(const SoundData& d, const ZoneHit& h, const std::string& part_sel)
+std::string NewZonePart(const SoundData& d, const ZoneHit& h, const std::string& part_sel, int tl)
 {
-    if (d.divide_values.empty()) return {};
+    if (d.divide_values.empty()) return kWholePart;  // 13-62i: an undivided Sound's one part (never "": a Gap)
     if (h.lane >= 0 && static_cast<size_t>(h.lane) < d.divide_values.size()) return d.divide_values[static_cast<size_t>(h.lane)];
     if (PartIndex(d, part_sel) >= 0) return part_sel;
-    const EditZone* z = ZoneOf(d, ZoneAt(d, h.t));
+    const EditZone* z = ZoneOf(d, ZoneAt(d, h.t, tl));
     if (z && !z->IsGap()) return z->part;
     return d.divide_values.front();
 }
 
-double SnapZoneTime(const SoundData& d, double t, double px_per_s, double cursor, float tol_px)
+double SnapZoneTime(const SoundData& d, double t, double px_per_s, double cursor, float tol_px, int tl)
 {
     double best = t, bd = tol_px;
     auto   try_c = [&](double c) {
@@ -380,7 +380,7 @@ double SnapZoneTime(const SoundData& d, double t, double px_per_s, double cursor
             best = c;
         }
     };
-    for (const ZoneRef& r : AllZones(d)) {
+    for (const ZoneRef& r : AllZones(d, tl)) {
         try_c(Z(d, r).a);
         try_c(Z(d, r).b);
     }
@@ -511,12 +511,13 @@ std::string ZoneTip(const SoundData& d, const ZoneHit& h, const std::vector<std:
            "selection";
 }
 
-std::vector<ZoneVarBlock> ZoneVarBlocks(const SoundData& d)
+std::vector<ZoneVarBlock> ZoneVarBlocks(const SoundData& d, int tl)
 {
     std::vector<ZoneVarBlock> out;
     for (size_t f = 0; f < d.frames.size(); ++f) {
         const SoundFrame& fr = d.frames[f];
         if (!fr.on || fr.zones.empty()) continue;
+        if (tl >= 0 && ZoneTimeline(d, static_cast<int>(f)) != NormTl(d, tl)) continue;  // 13-62i: one take's
         ZoneVarBlock b;
         b.frame = static_cast<int>(f);
         if (!VariationEdges(d, b.frame, &b.a, &b.b) || !(b.b > b.a)) continue;
@@ -680,7 +681,7 @@ double ItemHeard(const SoundData& d, const ZoneSel& item)
 {
     double a = 0.0, b = 0.0, s = 0.0;
     if (!ItemEdges(d, item, &a, &b)) return 0.0;
-    for (const HeardPiece& q : HeardPieces(d, a, b)) s += (q.b - q.a) - q.xo;
+    for (const HeardPiece& q : HeardPieces(d, a, b, ZoneTimeline(d, item.front().frame))) s += (q.b - q.a) - q.xo;
     return s;
 }
 
@@ -711,7 +712,7 @@ ZoneSel SelFollow(const SoundData& before, const ZoneSel& sel, const SoundData& 
         double  bo = 0.0;
         for (const ZoneRef& q : all) {
             const EditZone& y = Z(after, q);
-            if (!same(y)) continue;
+            if (!same(y) || ZoneTimeline(after, q.frame) != ZoneTimeline(before, r.frame)) continue;  // 13-62i: its take
             const double o = overlap(y);
             if (o > bo) {
                 bo = o;

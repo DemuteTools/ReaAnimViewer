@@ -15,6 +15,7 @@
 #include "rule_record.h"
 #include "sound_record.h"
 #include "sound_switch.h"
+#include "sound_zones.h"  // 13-62i: SanitizeZones (FreezeFrames)
 
 namespace rav {
 
@@ -219,7 +220,7 @@ bool AddRavlibLibrary(SoundStore& store, const SoundStore& file, const std::stri
             f.part_db = pdb;
             for (std::string& o : f.owners) o = Mapped(vmap, o);  // 13-62: who owns each piece
             for (EditZone& z : f.zones)                            // 13-62h: each zone's part
-                if (!z.part.empty()) z.part = Mapped(vmap, z.part);
+                if (!z.part.empty() && z.part != kWholePart) z.part = Mapped(vmap, z.part);  // 13-62i: the implicit part stays
         }
         for (PartSettings& ps : d.parts) ps.value = Mapped(vmap, ps.value);  // 13-62: the parts' own settings
     }
@@ -437,6 +438,7 @@ void FreezeFrames(SoundData& d, const EntryFacts& entry)
         d.mode = mode;
         d.frames = frames;
         d.edited = false;
+        SanitizeZones(d);  // 13-62i: laid out as zones
         return;
     }
     if (d.edited || (d.mode != DetectMode::Whole && d.mode != DetectMode::Takes)) return;
@@ -444,9 +446,21 @@ void FreezeFrames(SoundData& d, const EntryFacts& entry)
     const std::vector<SoundFrame> det = DetectFrames(entry, d.mode, d.silence, nullptr);
     if (det.size() != d.frames.size()) return;
     for (size_t i = 0; i < det.size(); ++i) {
+        if (d.frames[i].start == det[i].start && d.frames[i].length == det[i].length) continue;
+        // 13-62i: a variation whose extent changes gets its zones again (never edited by hand: proposed anew, its
+        // gain carried).
+        if (!d.frames[i].zones.empty()) {
+            for (const EditZone& z : d.frames[i].zones)
+                if (!z.IsGap()) {
+                    d.frames[i].db = z.db;
+                    break;
+                }
+            d.frames[i].zones.clear();
+        }
         d.frames[i].start = det[i].start;
         d.frames[i].length = det[i].length;
     }
+    SanitizeZones(d);
 }
 
 }  // namespace

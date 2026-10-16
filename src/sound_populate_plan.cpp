@@ -52,9 +52,12 @@ const SoundDraw* FindDraw(const std::vector<SoundDraw>* draws, const std::string
 int Draw(PopulateDrawState& st, EventDraw& ev, const SoundNode& n, const std::vector<int>& active, int avoid,
          const std::string& part = std::string())
 {
-    const SoundDraw* prev = FindDraw(ev.prev, n.uid);
-    std::vector<int>& hist = st.history[part.empty() ? n.uid : n.uid + "|" + part];  // 13-23: per part
-    const int pick = KeepOrDraw(prev, active, avoid, hist, st.seed, NodeSalt(ev.rid, ev.t, n.uid));
+    const SoundDraw*  prev = FindDraw(ev.prev, n.uid);
+    const std::string key = part.empty() ? n.uid : n.uid + "|" + part;  // 13-23: per part
+    std::vector<int>& hist = st.history[key];
+    // 13-62i (D): a filtered Populate also avoids the picks the events after it keep.
+    const int         window = std::min(std::max(avoid, 0), static_cast<int>(active.size()) - 1);
+    const int pick = KeepOrDraw(prev, active, avoid, hist, st.seed, NodeSalt(ev.rid, ev.t, n.uid), AheadPicks(st, key, window));
     if (pick < 0) return -1;
     hist.push_back(pick);
     SoundDraw d;
@@ -186,9 +189,8 @@ ResolveHooks MakeDrawHooks(PopulateDrawState& state, EventDraw& ev, std::functio
             e->no_active.insert(n.uid);
             return -1;
         }
-        // Takes mode places the take whole (A8): every on take can play.
-        const std::vector<int> active =
-            n.sound.mode == DetectMode::Takes ? ActiveVariations(n.sound) : ActiveVariationsFor(n.sound, part);
+        // 13-62i: Takes mode too, a take plays the zones of that part.
+        const std::vector<int> active = ActiveVariationsFor(n.sound, part);
         if (active.empty()) {
             e->no_part[n.uid] = part;
             return -1;
@@ -197,6 +199,92 @@ ResolveHooks MakeDrawHooks(PopulateDrawState& state, EventDraw& ev, std::functio
     };
     h.is_missing = std::move(is_missing);
     return h;
+}
+
+EventPlan PlanPopulateEvent(const PopulateFilter& f, const std::string& rid, double t, const EventSounds* ev, bool enabled)
+{
+    if (!enabled) return EventPlan::Skip;  // fix C 2026-10-12: a disabled rule's sounds are kept, muted by the follow
+    const bool out = (!f.rid.empty() && rid != f.rid) ||
+                     (!f.rids.empty() && std::find(f.rids.begin(), f.rids.end(), rid) == f.rids.end()) ||
+                     (f.has_t && std::fabs(t - f.t) > kEventMatchSeconds) || (f.only_populated && (!ev || !EventIsPopulated(*ev)));
+    if (out) return ev && EventIsPopulated(*ev) ? EventPlan::Keep : EventPlan::Skip;
+    if (EventSkippedByPopulate(ev)) return EventPlan::Keep;  // attached / spread: left alone, its draws still play
+    return EventPlan::Draw;
+}
+
+bool SetPopulateTimeline(PopulateDrawState& state, std::map<long long, PopulateDrawState>* passes,
+                         const std::vector<EventPlan>& plans, const std::vector<const EventSounds*>& evs)
+{
+    bool any = false;
+    for (EventPlan p : plans) any = any || p == EventPlan::Keep;
+    if (!any) return false;
+    std::vector<const std::vector<SoundDraw>*> draws;
+    std::vector<char>                          fixed;
+    for (size_t i = 0; i < plans.size(); ++i) {
+        const EventSounds* ev = i < evs.size() ? evs[i] : nullptr;
+        draws.push_back(ev && plans[i] != EventPlan::Skip ? &ev->draws : nullptr);
+        fixed.push_back(plans[i] == EventPlan::Keep ? 1 : 0);
+    }
+    SetDrawTimeline(state, passes, draws, fixed);
+    return true;
+}
+
+std::vector<double> PieceDbFor(const std::vector<PieceApply>& pieces, double gain_db)
+{
+    std::vector<double> out;
+    for (const PieceApply& p : pieces) out.push_back(gain_db + p.db);
+    if (out.empty()) out.push_back(gain_db);
+    return out;
+}
+
+void SetDrawTimeline(PopulateDrawState& state, std::map<long long, PopulateDrawState>* passes,
+                     const std::vector<const std::vector<SoundDraw>*>& draws, const std::vector<char>& fixed)
+{
+    for (size_t i = 0; i < draws.size(); ++i) {
+        if (!draws[i]) continue;
+        const bool keeps = i < fixed.size() && fixed[i];
+        for (const SoundDraw& d : *draws[i]) {
+            long long          pass = 0;
+            std::string        node = d.node;
+            PopulateDrawState* to = &state;
+            if (ParsePassDrawKey(d.node, &pass, &node)) {
+                if (!passes) continue;
+                to = &(*passes)[pass];
+            }
+            to->timeline[d.part.empty() ? node : node + "|" + d.part].push_back(
+                {static_cast<int>(i), keeps ? d.pick : -1});
+        }
+    }
+}
+
+std::vector<int> AheadPicks(const PopulateDrawState& state, const std::string& key, int n)
+{
+    std::vector<int> out;
+    const auto       it = state.timeline.find(key);
+    if (it == state.timeline.end() || n <= 0) return out;
+    int seen = 0;
+    for (const std::pair<int, int>& e : it->second) {  // in event order
+        if (e.first <= state.at) continue;
+        if (e.second >= 0) out.push_back(e.second);
+        if (++seen >= n) break;
+    }
+    return out;
+}
+
+void SeedHistory(PopulateDrawState& state, std::map<long long, PopulateDrawState>* passes,
+                 const std::vector<SoundDraw>& draws)
+{
+    for (const SoundDraw& d : draws) {
+        if (d.pick < 0) continue;
+        long long          pass = 0;
+        std::string        node = d.node;
+        PopulateDrawState* to = &state;
+        if (ParsePassDrawKey(d.node, &pass, &node)) {
+            if (!passes) continue;
+            to = &(*passes)[pass];
+        }
+        to->history[d.part.empty() ? node : node + "|" + d.part].push_back(d.pick);
+    }
 }
 
 // ---- 13-59: the variation of each loop pass ----------------------------------------------------

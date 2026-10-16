@@ -4,8 +4,8 @@
 
 #include "sound_draw.h"
 
-#include "sound_entries.h"  // PlacedSpans
-#include "sound_zones.h"    // 13-62h: PlacedFromZones
+#include "sound_entries.h"
+#include "sound_zones.h"    // 13-62i: ZonesLaidOut
 
 #include <algorithm>
 #include <cmath>
@@ -30,17 +30,44 @@ uint64_t Mix64(uint64_t seed, uint64_t salt)
 
 }  // namespace
 
+namespace {
+
+// The last n (clamped as DrawPick: at most one less than the active count) of `history`.
+bool InLastN(const std::vector<int>& history, int avoid_n, size_t active_count, int pick)
+{
+    const int    n = std::min(std::max(avoid_n, 0), static_cast<int>(active_count) - 1);
+    const size_t from = history.size() > static_cast<size_t>(n) ? history.size() - static_cast<size_t>(n) : 0;
+    return std::find(history.begin() + static_cast<std::ptrdiff_t>(from), history.end(), pick) != history.end();
+}
+
+bool Has(const std::vector<int>& v, int x)
+{
+    return std::find(v.begin(), v.end(), x) != v.end();
+}
+
+// What a draw picks among: `active` minus the last n of the history and the nearest k of `ahead`, k as large
+// as leaves one (13-62i D: the history first, then the nearest picks after it); `active` when none is left.
+std::vector<int> Candidates(const std::vector<int>& active, int avoid_n, const std::vector<int>& history,
+                            const std::vector<int>& ahead)
+{
+    for (size_t k = ahead.size() + 1; k-- > 0;) {
+        std::vector<int> cand;
+        for (int a : active)
+            if (!InLastN(history, avoid_n, active.size(), a) &&
+                std::find(ahead.begin(), ahead.begin() + static_cast<std::ptrdiff_t>(k), a) == ahead.begin() + static_cast<std::ptrdiff_t>(k))
+                cand.push_back(a);
+        if (!cand.empty()) return cand;
+    }
+    return active;
+}
+
+}  // namespace
+
 int DrawPick(const std::vector<int>& active, int avoid_n, const std::vector<int>& history, uint64_t seed,
-             uint64_t salt)
+             uint64_t salt, const std::vector<int>& ahead)
 {
     if (active.empty()) return -1;
-    const int max_n = static_cast<int>(active.size()) - 1;
-    const int n = std::min(std::max(avoid_n, 0), max_n);
-    const size_t from = history.size() > static_cast<size_t>(n) ? history.size() - static_cast<size_t>(n) : 0;
-    std::vector<int> cand;
-    for (int a : active)
-        if (std::find(history.begin() + static_cast<std::ptrdiff_t>(from), history.end(), a) == history.end()) cand.push_back(a);
-    if (cand.empty()) cand = active;
+    const std::vector<int> cand = Candidates(active, avoid_n, history, ahead);
     return cand[static_cast<size_t>(Mix64(seed, salt) % cand.size())];
 }
 
@@ -52,18 +79,17 @@ std::vector<int> ActiveVariations(const SoundData& data)
     return out;
 }
 
-std::vector<int> ActiveVariationsFor(const SoundData& data, const std::string& part_value)
+std::vector<int> ActiveVariationsFor(const SoundData& data0, const std::string& part_value)
 {
     std::vector<int> out;
-    const bool zoned = PlacedFromZones(data);  // 13-62h: a variation with at least one zone of that part (any part zone)
+    // 13-62h / 13-62i: a variation with at least one zone of that part (any part zone), every Sound (one not laid out
+    // yet, laid out on a copy first).
+    SoundData        tmp;
+    const SoundData& data = ZonesLaidOut(data0, &tmp);
     for (int i : ActiveVariations(data)) {
         bool has = false;
-        if (zoned) {
-            for (const EditZone& z : data.frames[static_cast<size_t>(i)].zones)
-                has = has || (!z.IsGap() && (part_value.empty() || z.part == part_value));
-        } else {
-            has = !PlacedSpans(data, i, part_value).empty();
-        }
+        for (const EditZone& z : data.frames[static_cast<size_t>(i)].zones)
+            has = has || (!z.IsGap() && (part_value.empty() || z.part == part_value));
         if (has) out.push_back(i);
     }
     return out;
@@ -95,10 +121,15 @@ std::vector<const SoundNode*> BlendParts(const SoundLibrary& lib, const SoundNod
 }
 
 int KeepOrDraw(const SoundDraw* prev, const std::vector<int>& active, int avoid_n, const std::vector<int>& history,
-               uint64_t seed, uint64_t salt)
+               uint64_t seed, uint64_t salt, const std::vector<int>& ahead)
 {
-    if (prev && std::find(active.begin(), active.end(), prev->pick) != active.end()) return prev->pick;
-    return DrawPick(active, avoid_n, history, seed, salt);
+    if (prev && Has(active, prev->pick)) {
+        if (prev->hand) return prev->pick;
+        // 13-62i (D, P3): a stored pick a draw would avoid (one of the last n of the history, or of the nearest picks
+        // kept after it) is drawn again: a pick made under another history (a filtered Populate) still avoids repeating.
+        if (Has(Candidates(active, avoid_n, history, ahead), prev->pick)) return prev->pick;
+    }
+    return DrawPick(active, avoid_n, history, seed, salt, ahead);
 }
 
 void Reshuffle(ItemSounds& item, uint64_t new_seed)

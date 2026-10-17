@@ -14,7 +14,8 @@
 // its references are <fixtures>/<id>.ref.tsv (the bench creates none: clips without are listed).
 //
 // Two configurations, one matrix each: default (every AutoType at the default sensitivity in its
-// default modes) and parts (steps heel / toe separate, slides and pivots Each part). Detect's
+// default modes) and parts (steps heel / toe separate, slides and pivots Each part, story
+// 10-9a-3: lift-off, jump and land Separate). Detect's
 // raise of silent blocks (ApplyAutoSensSearch) runs on a copy of each configuration's blocks:
 // the raised blocks and their events are listed in their own section and never count in a
 // matrix. Matching (ref_file.h ScoreRow): per clip x kind x side, one-to-one, smallest |err|
@@ -209,6 +210,8 @@ AutoSettings BenchSettings(BenchConfig c)
         s.separate_steps = true;
         s.slide_parts = ScuffParts::EachPart;
         s.pivot_parts = ScuffParts::EachPart;
+        // Story 10-9a-3: lift-off, jump and land Separate.
+        for (int t = 0; t < kAutoTypeCount; ++t) s.separate_parts[t] = AutoTypeRow(static_cast<AutoType>(t)).part_split;
     }
     return s;
 }
@@ -522,7 +525,7 @@ int main(int argc, char** argv)
         const BenchConfig bc = static_cast<BenchConfig>(cfg);
         std::printf("\n--- %s matrix (%s) ---\n", BenchConfigName(bc),
                     bc == BenchConfig::Default ? "default sensitivity and modes"
-                                               : "steps heel / toe separate, slides and pivots Each part");
+                                               : "steps heel / toe separate, slides and pivots Each part, lift-off / jump / land Separate");
         std::map<std::string, RowScore> sum;
         for (const ClipResult& c : clips) {
             if (!c.read) continue;

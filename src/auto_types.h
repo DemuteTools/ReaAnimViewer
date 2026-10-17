@@ -54,9 +54,18 @@ struct AutoTypeInfo {
     const char*     sound_word;  // Epic 13: the stable lower-case word ("step", "hand_pivot")
     AutoSensField   sens[kAutoSensFields];
     AutoTypePartsFn parts;
-    // Story 10-9a: one block per kind, not per side (jump, land): saved side=B, its marker
-    // without " L/R", one colour (color[0]), one row in the Tagging view.
+    // Story 10-9a: one block per kind, not per side: saved side=B, its marker without " L/R", one
+    // colour (color[0]), one row in the Tagging view. No type since story 10-9a-3 (jump and land
+    // take the foot); kept for the Body types.
     bool            sideless = false;
+    // Story 10-9a-3: Combined / Separate (AutoSettings::separate_parts): its kinds are one combined
+    // kind (no role key) and a heel and a toe kind (role keys "heel", "toe"; the toe = the ball or
+    // the toe tip), Separate making the part kinds (lift-off, jump, land).
+    bool            part_split = false;
+    // Story 10-9a-3: one event for both feet (jump, land: one take-off / landing per jump, on the
+    // foot that names it): Detect's sensitivity search skips a block when a block of the type on
+    // either side has the event.
+    bool            shared_sides = false;
 };
 
 // An event source: the physics events of one analysis a kind reads (FootEvents, HandEvents...).

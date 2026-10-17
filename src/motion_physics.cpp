@@ -312,8 +312,9 @@ void StepCandidates(const PartTrack& pt, const PartContact& c, int lo, int rest,
     }
 }
 
-// The contacts of a part: Viterbi, slid gaps joined, supports, step and lift-off values.
-void SegmentPart(PartTrack& pt, double leg, double rate, const PhysicsParams& p)
+// The contacts of a part: Viterbi, slid gaps joined, supports, step and lift-off values. `foot`:
+// a foot part (story 10-9a-3: the clip-start contact, see "Clip start" in motion_physics.h).
+void SegmentPart(PartTrack& pt, double leg, double rate, const PhysicsParams& p, bool foot = false)
 {
     const int n = static_cast<int>(pt.speed.size());
     const double s0 = p.contact_speed > 0.0 ? p.contact_speed : 1e-9;
@@ -337,6 +338,26 @@ void SegmentPart(PartTrack& pt, double leg, double rate, const PhysicsParams& p)
         while (i < n && st[static_cast<size_t>(i)]) ++i;
         c.end = i;
         cs.push_back(c);
+    }
+
+    // Story 10-9a-3, the clip start (not looping, feet only): a part free at sample 0 that stays
+    // within slide_height of its lowest height over the clip from sample 0 and comes to rest in
+    // that run (speed under the contact speed + slack) is in contact from sample 0 to its last
+    // resting sample of that run: a take-off foot whose push the clip starts in.
+    if (foot && !p.looping && n > 2 && !st[0]) {
+        double ground = pt.y[0];
+        for (int i = 1; i < n; ++i) ground = std::min(ground, pt.y[static_cast<size_t>(i)]);
+        const int    first = cs.empty() ? n : cs.front().start;
+        const double tol = p.slide_height * leg;
+        int          last = -1;
+        for (int i = 0; i < first && std::fabs(pt.y[static_cast<size_t>(i)] - ground) <= tol; ++i)
+            if (e[static_cast<size_t>(i)] > 0.0) last = i;
+        if (last >= 1) {
+            PartContact c;
+            c.start = 0;
+            c.end = last + 1;
+            cs.insert(cs.begin(), c);
+        }
     }
 
     // A gap that stays at the first contact's support height, no faster than a slide, is a
@@ -1090,7 +1111,7 @@ PhysicsAnalysis AnalyseTrack(const std::vector<BoneTrack>& rt, const PhysicsPara
                 pt.vy[i] = dy / leg;
             }
             pt.slack = a.ground_slack;
-            SegmentPart(pt, leg, rate, p);
+            SegmentPart(pt, leg, rate, p, true);
         }
 
         // Yaw of heel -> toe (ball, else tip) seen from above.
@@ -1574,14 +1595,15 @@ std::vector<PhysicsEvent> HandEvents(const PhysicsAnalysis& a, const PhysicsPara
     return ev;
 }
 
-std::vector<PhysicsEvent> JumpEvents(const PhysicsAnalysis& a, const PhysicsParams& p)
+namespace {
+
+// Story 10-9a-3: what the jump sources share. Whether any present part of either foot is in
+// contact, per analysed sample; false (and `on` untouched) when a foot has no present part (no
+// jump).
+bool FeetOnMask(const PhysicsAnalysis& a, std::vector<char>& on)
 {
-    std::vector<PhysicsEvent> ev;
-    if (!a.ok || a.hips_vy.size() != a.samples || a.samples < 2) return ev;
-    const int    n = static_cast<int>(a.samples);
-    const double rate = a.rate_hz;
-    // Both feet off: no present part of either foot in contact (a foot with no part: no jump).
-    std::vector<char> on(static_cast<size_t>(n), 0);
+    const int n = static_cast<int>(a.samples);
+    on.assign(static_cast<size_t>(n), 0);
     for (const FootTrack& f : a.foot) {
         bool part = false;
         for (const PartTrack& pt : f.part) {
@@ -1590,23 +1612,97 @@ std::vector<PhysicsEvent> JumpEvents(const PhysicsAnalysis& a, const PhysicsPara
             for (int i = 0; i < n && static_cast<size_t>(i) < pt.contact.size(); ++i)
                 if (pt.contact[static_cast<size_t>(i)]) on[static_cast<size_t>(i)] = 1;
         }
-        if (!part) return ev;
+        if (!part) return false;
     }
+    return true;
+}
+
+// The take-off before a both-feet-off run starting at sample `fs`: the last part to leave (the
+// latest lift_s of the contacts that end at fs), its foot and part. Feet within p.jump_tie_s of
+// each other leave together (a contact ending at or before fs whose lift_s lies within
+// p.jump_tie_s of that latest lift is a candidate too): the first foot (L) names it, at its own
+// last part. False when no contact ends at fs (the clip start).
+bool TakeOffAt(const PhysicsAnalysis& a, const PhysicsParams& p, int fs, PhysicsEvent* out)
+{
+    bool   at_fs = false;
+    double latest = 0.0;
+    for (const FootTrack& f : a.foot)
+        for (const PartTrack& pt : f.part)
+            if (pt.present)
+                for (const PartContact& c : pt.contacts)
+                    if (c.end == fs && (!at_fs || c.lift_s > latest)) {
+                        latest = c.lift_s;
+                        at_fs = true;
+                    }
+    if (!at_fs) return false;
+    bool found = false;
+    for (const FootTrack& f : a.foot) {
+        PhysicsEvent mine;
+        bool         have = false;
+        for (int q = 0; q < kFootPartCount; ++q) {
+            if (!f.part[q].present) continue;
+            for (const PartContact& c : f.part[q].contacts)
+                if (c.end <= fs && c.lift_s >= latest - p.jump_tie_s - kTieS &&
+                    (!have || c.lift_s > mine.time_s + kTieS)) {
+                    mine.time_s = mine.start_s = mine.end_s = c.lift_s;
+                    mine.side = f.side;
+                    mine.part = q;
+                    have = true;
+                }
+        }
+        if (have && (!found || mine.time_s > out->time_s + p.jump_tie_s + kTieS)) {
+            *out = mine;
+            found = true;
+        }
+    }
+    if (found) out->kind = PhysicsKind::Jump;
+    return found;
+}
+
+// The peak |hips vertical speed| (leg/s) over the approach window after analysed time `t`
+// (dir +1, a take-off) or before it (dir -1, a landing), as a step's approach speed.
+double HipsPeakSpeed(const PhysicsAnalysis& a, const PhysicsParams& p, double t, int dir)
+{
+    const int  n = static_cast<int>(a.samples);
+    const int  win = std::max(1, SamplesOf(p.approach_window_s, a.rate_hz));
+    const long i = std::clamp(std::lround(t * a.rate_hz), 0L, static_cast<long>(n - 1));
+    const long j = std::clamp(i + dir * win, 0L, static_cast<long>(n - 1));
+    double     peak = 0.0;
+    for (long k = std::min(i, j); k <= std::max(i, j); ++k) peak = std::max(peak, std::fabs(a.hips_vy[static_cast<size_t>(k)]));
+    return peak;
+}
+
+// The hips' mean vertical acceleration (m/s^2) between analysed samples lo < hi.
+double HipsMeanAcc(const PhysicsAnalysis& a, int lo, int hi)
+{
+    return (a.hips_vy[static_cast<size_t>(hi)] - a.hips_vy[static_cast<size_t>(lo)]) * a.leg_length * a.rate_hz /
+           static_cast<double>(hi - lo);
+}
+
+void SortJumpEvents(std::vector<PhysicsEvent>& ev)
+{
+    std::stable_sort(ev.begin(), ev.end(), [](const PhysicsEvent& x, const PhysicsEvent& y) {
+        return std::make_tuple(std::llround(x.time_s * 1e6), static_cast<int>(x.kind), x.side) <
+               std::make_tuple(std::llround(y.time_s * 1e6), static_cast<int>(y.kind), y.side);
+    });
+}
+
+}  // namespace
+
+std::vector<PhysicsEvent> JumpEvents(const PhysicsAnalysis& a, const PhysicsParams& p)
+{
+    std::vector<PhysicsEvent> ev;
+    if (!a.ok || a.hips_vy.size() != a.samples || a.samples < 2) return ev;
+    const int    n = static_cast<int>(a.samples);
+    const double rate = a.rate_hz;
+    // Both feet off: no present part of either foot in contact (a foot with no part: no jump).
+    std::vector<char> on;
+    if (!FeetOnMask(a, on)) return ev;
     auto timed = [&](const PartContact& c, int q) {
         const int k = std::clamp(static_cast<int>(p.step_timing[q]), 0, kStepTimingCount - 1);
         return c.step_s[k] + p.step_offset_s[q];
     };
     const int edge = static_cast<int>(std::ceil(3.0 * p.smooth_ms / 1000.0 * rate));
-    // The strength: the peak |hips vertical speed| over the approach window after the take-off
-    // (dir +1) or before the landing (dir -1), as a step's approach speed.
-    const int win = std::max(1, SamplesOf(p.approach_window_s, rate));
-    auto hips_speed = [&](double t, int dir) {
-        const long i = std::clamp(std::lround(t * rate), 0L, static_cast<long>(n - 1));
-        const long j = std::clamp(i + dir * win, 0L, static_cast<long>(n - 1));
-        double     peak = 0.0;
-        for (long k = std::min(i, j); k <= std::max(i, j); ++k) peak = std::max(peak, std::fabs(a.hips_vy[static_cast<size_t>(k)]));
-        return peak;
-    };
     for (int i = 0; i < n;) {
         if (on[static_cast<size_t>(i)]) {
             ++i;
@@ -1624,55 +1720,97 @@ std::vector<PhysicsEvent> JumpEvents(const PhysicsAnalysis& a, const PhysicsPara
             lo += edge;
             hi -= edge;
         }
-        const double acc = (a.hips_vy[static_cast<size_t>(hi)] - a.hips_vy[static_cast<size_t>(lo)]) * a.leg_length *
-                           rate / static_cast<double>(hi - lo);
-        if (!(acc <= -p.jump_fall_g * kGravity)) continue;
-        if (fs > 0) {  // the take-off: the last part to leave
-            PhysicsEvent best;
-            bool         found = false;
-            for (const FootTrack& f : a.foot)
-                for (int q = 0; q < kFootPartCount; ++q) {
-                    if (!f.part[q].present) continue;
-                    for (const PartContact& c : f.part[q].contacts)
-                        if (c.end == fs && (!found || c.lift_s > best.time_s + kTieS)) {
-                            best.time_s = best.start_s = best.end_s = c.lift_s;
-                            found = true;
-                        }
-                }
-            if (found) {
-                best.kind = PhysicsKind::Jump;
-                best.side = 'B';
-                best.part = -1;
-                best.strength = hips_speed(best.time_s, 1);
-                ev.push_back(best);
-            }
+        if (!(HipsMeanAcc(a, lo, hi) <= -p.jump_fall_g * kGravity)) continue;
+        PhysicsEvent best;
+        if (fs > 0 && TakeOffAt(a, p, fs, &best)) {  // the take-off: the last part to leave
+            best.strength = HipsPeakSpeed(a, p, best.time_s, 1);
+            ev.push_back(best);
         }
-        if (fe < n) {  // the landing: the first part to touch
-            PhysicsEvent best;
+        if (fe < n) {
+            // The landing: the first foot to touch (a contact of it starts where the flight ends),
+            // as FootEvents' foot step of that foot: the earliest timed part to touch during that
+            // contact of the foot. Feet within p.jump_tie_s of each other land together: the first
+            // foot (L) names it, at its own step.
+            PhysicsEvent land;
             bool         found = false;
-            for (const FootTrack& f : a.foot)
+            const int tie = static_cast<int>(std::floor(p.jump_tie_s * rate + 1e-9));
+            for (const FootTrack& f : a.foot) {
+                PhysicsEvent mine;
+                bool         have = false;
+                std::vector<char> any(static_cast<size_t>(n), 0);
+                for (const PartTrack& pt : f.part)
+                    if (pt.present)
+                        for (int k = 0; k < n && static_cast<size_t>(k) < pt.contact.size(); ++k)
+                            if (pt.contact[static_cast<size_t>(k)]) any[static_cast<size_t>(k)] = 1;
+                // This foot's contact starting at the flight's end, or within the tie after it.
+                int us = fe;
+                while (us < n && us <= fe + tie && !any[static_cast<size_t>(us)]) ++us;
+                if (us >= n || us > fe + tie || !any[static_cast<size_t>(us)]) continue;
+                int ue = us;
+                while (ue < n && any[static_cast<size_t>(ue)]) ++ue;
                 for (int q = 0; q < kFootPartCount; ++q) {
                     if (!f.part[q].present) continue;
                     for (const PartContact& c : f.part[q].contacts)
-                        if (c.start == fe && (!found || timed(c, q) < best.time_s - kTieS)) {
-                            best.time_s = best.start_s = best.end_s = timed(c, q);
-                            found = true;
+                        if (c.start >= us && c.start < ue && (!have || timed(c, q) < mine.time_s - kTieS)) {
+                            mine.time_s = mine.start_s = mine.end_s = timed(c, q);
+                            mine.side = f.side;
+                            mine.part = q;
+                            have = true;
                         }
                 }
+                if (have && (!found || mine.time_s < land.time_s - p.jump_tie_s - kTieS)) {
+                    land = mine;
+                    found = true;
+                }
+            }
             if (found) {
-                best.kind = PhysicsKind::Land;
-                best.side = 'B';
-                best.part = -1;
-                best.strength = hips_speed(best.time_s, -1);
-                ev.push_back(best);
+                land.kind = PhysicsKind::Land;
+                land.strength = HipsPeakSpeed(a, p, land.time_s, -1);
+                ev.push_back(land);
             }
         }
     }
     ToClipTime(a, ev);
-    std::stable_sort(ev.begin(), ev.end(), [](const PhysicsEvent& x, const PhysicsEvent& y) {
-        return std::make_tuple(std::llround(x.time_s * 1e6), static_cast<int>(x.kind)) <
-               std::make_tuple(std::llround(y.time_s * 1e6), static_cast<int>(y.kind));
-    });
+    SortJumpEvents(ev);
+    return ev;
+}
+
+std::vector<PhysicsEvent> JumpFreeFallEvents(const PhysicsAnalysis& a, const PhysicsParams& p)
+{
+    std::vector<PhysicsEvent> ev;
+    if (!a.ok || a.hips_vy.size() != a.samples || a.samples < 2) return ev;
+    const int    n = static_cast<int>(a.samples);
+    const double rate = a.rate_hz;
+    std::vector<char> on;
+    if (!FeetOnMask(a, on)) return ev;
+    const int edge = static_cast<int>(std::ceil(3.0 * p.smooth_ms / 1000.0 * rate));
+    const int head = SamplesOf(p.jump_freefall_window_s, rate);
+    for (int i = 0; i < n;) {
+        if (on[static_cast<size_t>(i)]) {
+            ++i;
+            continue;
+        }
+        const int fs = i;
+        while (i < n && !on[static_cast<size_t>(i)]) ++i;
+        const int fe = i;  // both feet off: [fs, fe)
+        if (fs == 0 || fe - fs < 2 || static_cast<double>(fe - fs) / rate < p.jump_min_flight_s - kTieS) continue;
+        // The first jump_freefall_window_s of the run, read from the smoothing's reach (3 sigma)
+        // inside its start (a head shorter than that reach is read right after it, 2 samples at
+        // least; from the run's start when the run is too short for that).
+        int lo = fs + edge;
+        int hi = std::min(fe - 1, fs + head < lo + 2 ? lo + std::max(head, 2) : fs + head);
+        if (hi - lo < 2) {
+            lo = fs;
+            hi = std::min(fe - 1, fs + head);
+        }
+        if (hi <= lo || !(HipsMeanAcc(a, lo, hi) <= -p.jump_fall_g * kGravity)) continue;
+        PhysicsEvent best;
+        if (!TakeOffAt(a, p, fs, &best)) continue;
+        best.strength = HipsPeakSpeed(a, p, best.time_s, 1);
+        ev.push_back(best);
+    }
+    ToClipTime(a, ev);
+    SortJumpEvents(ev);
     return ev;
 }
 
@@ -1707,17 +1845,8 @@ std::vector<PhysicsEvent> JumpPushOffEvents(const PhysicsAnalysis& a, const Phys
     const int    n = static_cast<int>(a.samples);
     const double rate = a.rate_hz;
     // A foot on the ground: any present part of either foot in contact (a foot with no part: no jump).
-    std::vector<char> on(static_cast<size_t>(n), 0);
-    for (const FootTrack& f : a.foot) {
-        bool part = false;
-        for (const PartTrack& pt : f.part) {
-            if (!pt.present) continue;
-            part = true;
-            for (int i = 0; i < n && static_cast<size_t>(i) < pt.contact.size(); ++i)
-                if (pt.contact[static_cast<size_t>(i)]) on[static_cast<size_t>(i)] = 1;
-        }
-        if (!part) return ev;
-    }
+    std::vector<char> on;
+    if (!FeetOnMask(a, on)) return ev;
     auto hand_on = [&](int i) {
         for (const HandTrack& h : a.hand)
             if (h.part.present && static_cast<size_t>(i) < h.part.contact.size() && h.part.contact[static_cast<size_t>(i)])
@@ -1725,7 +1854,6 @@ std::vector<PhysicsEvent> JumpPushOffEvents(const PhysicsAnalysis& a, const Phys
         return false;
     };
     const int win = std::max(1, SamplesOf(p.jump_impulse_window_s, rate));
-    const int aw = std::max(1, SamplesOf(p.approach_window_s, rate));
     const double thr = p.jump_impulse_g;
     for (int i = 1; i < n;) {
         if (on[static_cast<size_t>(i)] || !on[static_cast<size_t>(i - 1)]) {
@@ -1752,31 +1880,13 @@ std::vector<PhysicsEvent> JumpPushOffEvents(const PhysicsAnalysis& a, const Phys
             if (sum / (fs - k0) >= p.jump_impulse_max_speed) continue;
         }
         PhysicsEvent best;
-        bool         found = false;
-        for (const FootTrack& f : a.foot)
-            for (int q = 0; q < kFootPartCount; ++q) {
-                if (!f.part[q].present) continue;
-                for (const PartContact& c : f.part[q].contacts)
-                    if (c.end == fs && (!found || c.lift_s > best.time_s + kTieS)) {
-                        best.time_s = best.start_s = best.end_s = c.lift_s;
-                        found = true;
-                    }
-            }
-        if (!found) continue;
-        best.kind = PhysicsKind::Jump;
-        best.side = 'B';
-        best.part = -1;
+        if (!TakeOffAt(a, p, fs, &best)) continue;
         // Strength as JumpEvents': the peak |hips vertical speed| over the approach window after it.
-        const long j0 = std::clamp(std::lround(best.time_s * rate), 0L, static_cast<long>(n - 1));
-        const long j1 = std::min(static_cast<long>(n - 1), j0 + aw);
-        for (long k = j0; k <= j1; ++k) best.strength = std::max(best.strength, std::fabs(a.hips_vy[static_cast<size_t>(k)]));
+        best.strength = HipsPeakSpeed(a, p, best.time_s, 1);
         ev.push_back(best);
     }
     ToClipTime(a, ev);
-    std::stable_sort(ev.begin(), ev.end(), [](const PhysicsEvent& x, const PhysicsEvent& y) {
-        return std::make_tuple(std::llround(x.time_s * 1e6), static_cast<int>(x.kind)) <
-               std::make_tuple(std::llround(y.time_s * 1e6), static_cast<int>(y.kind));
-    });
+    SortJumpEvents(ev);
     return ev;
 }
 
@@ -1928,6 +2038,17 @@ std::string JumpPushOffSummary(const PhysicsAnalysis& a, const std::vector<Physi
     for (const PhysicsEvent& e : ev)
         if (e.kind == PhysicsKind::Jump) ++jumps;
     std::string out = Format("jumps (push-off): %d", jumps);
+    if (!a.hips_missing.empty()) out += "; missing: hips: " + a.hips_missing;
+    return out;
+}
+
+std::string JumpFreeFallSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev)
+{
+    if (!a.ok) return "jumps (free fall): skipped: " + a.error;
+    int jumps = 0;
+    for (const PhysicsEvent& e : ev)
+        if (e.kind == PhysicsKind::Jump) ++jumps;
+    std::string out = Format("jumps (free fall): %d", jumps);
     if (!a.hips_missing.empty()) out += "; missing: hips: " + a.hips_missing;
     return out;
 }

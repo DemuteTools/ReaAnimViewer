@@ -3769,6 +3769,11 @@ void SyncAutoSettings(const TaggingModel& m)
         g_auto_ui.slide_parts = cur.slide_parts;
     if (cur.type[pv].on && (!g_auto_seen.type[pv].on || cur.pivot_parts != g_auto_seen.pivot_parts))
         g_auto_ui.pivot_parts = cur.pivot_parts;
+    // Story 10-9a-3: Combined / Separate of lift-off, jump and land, as the steps' mode.
+    for (int t = 0; t < kAutoTypeCount; ++t)
+        if (AutoTypeRow(static_cast<AutoType>(t)).part_split && cur.type[t].on &&
+            (!g_auto_seen.type[t].on || cur.separate_parts[t] != g_auto_seen.separate_parts[t]))
+            g_auto_ui.separate_parts[t] = cur.separate_parts[t];
     g_auto_seen = cur;
 }
 
@@ -4133,6 +4138,19 @@ void DrawAutoSection(const TaggingModel& m, const ItemRules& rules)
                 if (ui::Segmented("##stepmode", kStepModes, 2, &sel)) g_auto_ui.separate_steps = sel == 1;
                 ui::ItemTip("Combined: one marker per landing (FS L / FS R).\nSeparate: the heel and the toe "
                             "each get theirs (Heel L, Toe L...).");
+            }
+            if (AutoTypeRow(t).part_split) {
+                // Story 10-9a-3: lift-off, jump and land: each event on its part's block (the heel,
+                // or the toe: the ball or the tip). Waits for Detect, as the step mode.
+                static const char* const kPartModes[] = {"Combined", "Separate"};
+                const char*              word = AutoKindRow(AutoKindsOf(t).front()).marker;
+                ImGui::SetCursorPosX(x_row);
+                int sel = g_auto_ui.separate_parts[ti] ? 1 : 0;
+                const std::string id = std::string("##partmode") + std::to_string(ti);
+                if (ui::Segmented(id.c_str(), kPartModes, 2, &sel)) g_auto_ui.separate_parts[ti] = sel == 1;
+                ui::ItemTip("Combined: one marker per event (%s L / %s R).\nSeparate: on the part that %s "
+                            "(%s Heel L, %s Toe L...).",
+                            word, word, t == AutoType::Land ? "touches first" : "leaves last", word, word);
             }
             if (t == AutoType::Slide || t == AutoType::Pivot) {
                 // Story 10-8m: heel / toe separate scuffs, and Each part or Longest part while

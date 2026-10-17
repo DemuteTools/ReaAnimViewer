@@ -159,14 +159,39 @@
 // hands hold up (hanging, climbing: the hips do not fall) is no jump, and a run's short flights
 // are none at the default.
 //   jump          the take-off: the last foot part leaving before the flight (the latest lift_s
-//                 of the contacts that end where it starts), never at the clip start. Feet that
-//                 leave together give one event. Strength = the peak |hips vertical speed| over
-//                 approach_window_s after it (leg/s).
-//   land          the landing: the first foot part touching after the flight (the earliest step
-//                 of the contacts that start where it ends, timed as FootEvents' steps), never at
-//                 the clip end. Strength = the peak |hips vertical speed| over approach_window_s
-//                 before it (leg/s).
-// Both are sideless (PhysicsEvent::side 'B', part -1). Looping clips: as the other events.
+//                 of the contacts that end where it starts; take-off = the last foot leaving the
+//                 ground, Linthorne 2001), never for a flight already under way at sample 0 (no
+//                 contact ends where it starts; see "Clip start" below). Feet that leave together
+//                 give one event. Strength = the peak |hips vertical speed| over approach_window_s
+//                 after it (leg/s).
+//   land          the landing: the first foot touching after the flight (a contact of it starts
+//                 where the flight ends), timed as that foot's FootEvents foot step: the earliest
+//                 timed part (step_timing / step_offset_s) to touch during that contact of the
+//                 foot (initial contact), never at the clip end. Strength = the peak |hips
+//                 vertical speed| over approach_window_s before it (leg/s).
+// Story 10-9a-3: both carry the foot (PhysicsEvent::side L / R) and the part (FootPart) that
+// leaves last / touches first. Feet within jump_tie_s of each other (a two-footed take-off or
+// landing: the parts' 8 ms smoothing does not order them) tie, and a tie keeps the first foot
+// (L), at its own last part to leave / its own step: one event. Looping clips: as the other
+// events.
+//
+// Clip start (story 10-9a-3, not looping, feet only): a take-off whose push the clip starts in
+// has a contact too short for the Viterbi. A foot part free at sample 0 that stays within
+// slide_height x leg of its lowest height over the clip from sample 0, and comes to rest within
+// that run (speed under contact_speed + its slack), is in contact from sample 0 to its last
+// resting sample of that run (no step there; its lift-off is read as any). Measured: Running Jump
+// Over Hole R ball 0.009 L up, 0.09 leg/s; Running Jump_Long R ball 0.34 leg/s at the floor;
+// Jump_WhileRunning R ball arrives at sample 2. A swing skimming the floor never comes to rest:
+// no contact. No floor-height contact anywhere else.
+//
+// Free-fall jumps (JumpFreeFallEvents, story 10-9a-3): a third way to find a take-off, for a
+// flight that does not end on the feet (a fall on the back: the flight rule averages the fall
+// over the lying time too). Both feet off for jump_min_flight_s at least, starting after the clip
+// start; the hips' mean vertical acceleration over the first jump_freefall_window_s of the run
+// (read from 3 smoothing sigmas inside its start; a shorter head is read right after them)
+// is at most -jump_fall_g x 9.81, whatever ends the run. Measured: real jumps -0.87 to -1.71 g, every other run -0.11 g or more (the ballistic
+// phase is -1 g). Take-off only (no Land: a body landing is 10-9b's), as JumpEvents', with its
+// side and part.
 //
 // Push-off jumps (JumpPushOffEvents, story 10-9a-2): a second way to find a take-off, for jumps
 // whose flight is too short or does not fall (a leap onto a ledge, one foot to the other). The
@@ -179,7 +204,8 @@
 // jump_impulse_max_speed (a run's stride pushes as hard as a jump; a jump taken while running is
 // left to its flight).
 //   jump         the take-off as JumpEvents' (the latest lift_s of the contacts that end where
-//                 the run starts), never at the clip start. Strength as JumpEvents'.
+//                 the run starts, its side and part), never at the clip start. Strength as
+//                 JumpEvents'.
 //
 // A missing role drops only that part's events (PhysicsAnalysis::missing says why for the feet,
 // hand_missing for the hands, hips_missing for the jumps). Two parts on the same bone (an Unreal
@@ -343,6 +369,14 @@ struct PhysicsParams {
     // no jump there.
     double     jump_min_flight_s = 0.300;
     double     jump_fall_g = 0.5;
+    // Story 10-9a-3: the free-fall jumps (see "Free-fall jumps" above): the head of the
+    // both-feet-off run whose mean hips acceleration is read (s). Not moved by the sensitivity.
+    double     jump_freefall_window_s = 0.300;
+    // Story 10-9a-3: feet leaving / landing within this of each other do it together (s): the
+    // first foot (L) names the jump / land. Measured: two-footed take-offs 4-7 ms apart (Jump
+    // Attack, Jump_Small, Standing Jump), staggered ones 60 ms or more (Standing Jump02, Jump
+    // Away); landings 13 ms or more apart. Not moved by the sensitivity.
+    double     jump_tie_s = 0.010;
     // Story 10-9a-2: the push-off jumps (see "Push-off jumps" above). The hips' upward
     // acceleration peak (g) a push must reach while a foot is on the ground (the sensitivity
     // divides it), and how soon after that peak both feet must leave (s). Chosen on the fixtures
@@ -481,8 +515,8 @@ constexpr int kPhysicsKindCount = 10;  // story 10-9-0: PhysicsMarkerName's rows
 
 struct PhysicsEvent {
     PhysicsKind kind = PhysicsKind::Step;
-    char        side = 'L';      // 'B' for a sideless event (jump, land)
-    int         part = 0;        // FootPart; -1 = none (a pivot on neither, a hand event, a jump or land)
+    char        side = 'L';      // story 10-9a-3: a jump / land's foot (the one leaving last / touching first)
+    int         part = 0;        // FootPart; -1 = none (a pivot on neither, a hand event)
     double      time_s = 0.0;    // clip time (a scuff: its start)
     double      start_s = 0.0;   // a scuff's span (= time_s for the others)
     double      end_s = 0.0;
@@ -509,16 +543,19 @@ std::vector<PhysicsEvent> JumpEvents(const PhysicsAnalysis& a, const PhysicsPara
 // PhysicsAnalysis::hips_vy through the leg length, smoothed over p.jump_impulse_smooth_s).
 // Empty without hips.
 std::vector<double> HipsUpAccelerationG(const PhysicsAnalysis& a, const PhysicsParams& p = {});
-// Story 10-9a-2: the push-off take-offs (Kind Jump, sideless), by time. Uses p.jump_impulse_g,
+// Story 10-9a-2: the push-off take-offs (Kind Jump), by time. Uses p.jump_impulse_g,
 // p.jump_impulse_window_s and p.jump_impulse_smooth_s.
 std::vector<PhysicsEvent> JumpPushOffEvents(const PhysicsAnalysis& a, const PhysicsParams& p = {});
+// Story 10-9a-3: the free-fall take-offs (Kind Jump), by time. Uses p.jump_min_flight_s,
+// p.jump_fall_g and p.jump_freefall_window_s.
+std::vector<PhysicsEvent> JumpFreeFallEvents(const PhysicsAnalysis& a, const PhysicsParams& p = {});
 
 // The separate step times of one part (side 'L' / 'R'), by `timing` plus `offset_s`.
 std::vector<double> PartStepTimes(const PhysicsAnalysis& a, char side, int part, StepTiming timing, double offset_s);
 
 // "PHY L heel 1.8", "PHY R step toe 2.1", "PHY L lift tip 1.2", "PHY L slide toe 0.6 210ms",
 // "PHY R pivot ball 87deg 250ms", "PHY L grab 1.4", "PHY R release 0.9",
-// "PHY L hand pivot 87deg 250ms", "PHY B jump 1.2", "PHY B land 1.5" (strengths in leg/s or
+// "PHY L hand pivot 87deg 250ms", "PHY R jump 1.2", "PHY L land 1.5" (strengths in leg/s or
 // degrees).
 std::string PhysicsMarkerName(const PhysicsEvent& e);
 // True for a marker name this module writes ("PHY " prefix).
@@ -536,6 +573,8 @@ std::string JumpSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent
 // Story 10-9a-2: the push-off jumps' report: "jumps (push-off): 1" plus "; missing: hips: ..."
 // ("jumps (push-off): skipped: <error>" when the analysis failed).
 std::string JumpPushOffSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev);
+// Story 10-9a-3: the free-fall jumps' report: "jumps (free fall): 1", as JumpPushOffSummary.
+std::string JumpFreeFallSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev);
 // One line per event ("   1.234 s  PHY L heel 1.8", a scuff or hand pivot "... (to 1.456 s)"), each with
 // `indent` in front and '\n' after.
 std::string PhysicsEventLines(const std::vector<PhysicsEvent>& ev, const std::string& indent);

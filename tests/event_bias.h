@@ -72,7 +72,8 @@ inline bool RefEventIsFoot(RefEventKind k)
     return RefEventSourceOf(k) == RefEventSource::Foot;
 }
 
-// True: a sideless kind (story 10-9a: jump, land), its REFs and events of side 'B'.
+// True: a sideless REF kind (story 10-9a: jump, land), its REFs of side 'B'; story 10-9a-3: its
+// events carry their foot (L / R) and a REF matches either.
 inline bool RefEventIsSideless(RefEventKind k)
 {
     return RefEventSourceOf(k) == RefEventSource::Jump;

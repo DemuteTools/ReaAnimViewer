@@ -91,10 +91,11 @@ static void TestEventRoleKey()
     CHECK(RoleFamilyKey(Role::LeftToeEnd) == "toe_end" && RoleFamilyKey(Role::RightHeel) == "heel" &&
           RoleFamilyKey(Role::Hips) == "hips" && RoleFamilyKey(Role::LeftUpLeg) == "hip" &&
           RoleFamilyKey(Role::RightHand) == "hand");
-    // Every auto kind, both sides: heel kinds, toe kinds, hand kinds; combined and sideless ones have none.
+    // Every auto kind, both sides: heel kinds, toe kinds, hand kinds; combined ones have none.
     const char* want[kAutoKindCount] = {"",     "heel", "toe",  "",     "",     "",     "hand", "hand", "hand",
                                         "hand", "heel", "toe",  "heel", "toe",  "heel", "toe",  "heel", "toe",
-                                        "",     ""};  // story 10-9a: jump, land (no foot part)
+                                        "",     "",   // story 10-9a: jump, land (combined: no foot part)
+                                        "heel", "toe",  "heel", "toe",  "heel", "toe"};  // 10-9a-3: their parts
     for (int k = 0; k < kAutoKindCount; ++k)
         for (char side : {'L', 'R'}) CHECK(EventRoleKey(AutoB(static_cast<AutoKind>(k), side, "x")) == want[k]);
     Block unknown = AutoB(AutoKind::Heel, 'L', "x");
@@ -150,7 +151,8 @@ static void TestPartOfBlock()
                                         "legs.slide", "legs.pivot", "arms.grab",      "arms.release",
                                         "arms.hand_pivot", "arms.hand_pivot", "legs.slide", "legs.slide",
                                         "legs.pivot", "legs.pivot", "legs.slide",      "legs.slide",
-                                        "legs.pivot", "legs.pivot", "legs.jump", "legs.land"};
+                                        "legs.pivot", "legs.pivot", "legs.jump", "legs.land",
+                                        "legs.lift",  "legs.lift",  "legs.jump", "legs.jump", "legs.land", "legs.land"};
     for (int k = 0; k < kAutoKindCount; ++k) {
         const Block b = AutoB(static_cast<AutoKind>(k), 'L', "x");
         CHECK(PartOf(b) == want[k]);

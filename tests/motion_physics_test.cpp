@@ -1841,8 +1841,9 @@ int main()
     }
 
     // Story 10-9a: jumps. Both feet leave together at 1.0 s and fly a 0.5 s ballistic arc (31 cm):
-    // one Jump at the take-off, one Land at the landing, sideless, the hips' vertical speed as
-    // strength (2.8 leg/s at take-off before the smoothing).
+    // one Jump at the take-off, one Land at the landing, the hips' vertical speed as strength (2.8
+    // leg/s at take-off before the smoothing). Story 10-9a-3: the feet tie, so the first foot (L)
+    // names both, with the part that leaves last / touches first.
     {
         Options o;
         o.dur = 2.5;
@@ -1854,10 +1855,18 @@ int main()
         CHECK(ev.size() == 2 && jump.size() == 1 && land.size() == 1);
         if (jump.size() == 1 && land.size() == 1) {
             CHECK(std::fabs(jump[0].time_s - 1.0) < 0.03 && std::fabs(land[0].time_s - 1.5) < 0.04);
-            CHECK(jump[0].side == 'B' && jump[0].part == -1 && land[0].side == 'B' && land[0].part == -1);
+            CHECK(jump[0].side == 'L' && jump[0].part >= 0 && land[0].side == 'L' && land[0].part >= 0);
             CHECK(jump[0].strength > 1.0 && land[0].strength > 1.0);
-            CHECK(PhysicsMarkerName(jump[0]).compare(0, 11, "PHY B jump ") == 0);
-            CHECK(PhysicsMarkerName(land[0]).compare(0, 11, "PHY B land ") == 0);
+            CHECK(PhysicsMarkerName(jump[0]).compare(0, 11, "PHY L jump ") == 0);
+            CHECK(PhysicsMarkerName(land[0]).compare(0, 11, "PHY L land ") == 0);
+            // The take-off is the L foot's last part to leave, the landing its foot step.
+            const std::vector<PhysicsEvent> lifts = Of(FootEvents(a), PhysicsKind::LiftOff, 'L');
+            const std::vector<PhysicsEvent> steps = Of(FootEvents(a), PhysicsKind::FootStep, 'L');
+            CHECK(lifts.size() == 1 && steps.size() == 1);
+            if (lifts.size() == 1 && steps.size() == 1) {
+                CHECK(lifts[0].time_s == jump[0].time_s && lifts[0].part == jump[0].part);
+                CHECK(steps[0].time_s == land[0].time_s && steps[0].part == land[0].part);
+            }
         }
         CHECK(JumpSummary(a, ev) == "jumps: take-offs 1, landings 1");
         // The foot events still see two lift-offs and two foot steps (Land / Jump replace them
@@ -1865,24 +1874,60 @@ int main()
         const std::vector<PhysicsEvent> fev = FootEvents(a);
         CHECK(Of(fev, PhysicsKind::LiftOff).size() == 2 && Of(fev, PhysicsKind::FootStep).size() == 2);
 
-        // The feet 10 ms apart: one Jump at the last foot leaving, one Land at the first touching.
-        const std::vector<BoneTrack> rig2 = Rig(JumpFoot(-0.1, 1.0, 0.5), JumpFoot(0.1, 1.01, 0.5), o);
+        // The feet 30 ms apart (the right leaves last, the left lands first): one Jump on the last
+        // foot leaving (R, its lift-off), one Land on the first touching (L, its foot step).
+        const std::vector<BoneTrack> rig2 = Rig(JumpFoot(-0.1, 1.0, 0.5), JumpFoot(0.1, 1.03, 0.5), o);
         const PhysicsAnalysis        a2 = AnalyseMotion(rig2, SpeedTiming());
         const std::vector<PhysicsEvent> ev2 = JumpEvents(a2, SpeedTiming());
         const std::vector<PhysicsEvent> fev2 = FootEvents(a2, SpeedTiming());
         CHECK(Of(ev2, PhysicsKind::Jump).size() == 1 && Of(ev2, PhysicsKind::Land).size() == 1);
         if (Of(ev2, PhysicsKind::Jump).size() == 1 && Of(fev2, PhysicsKind::LiftOff, 'R').size() == 1 &&
             Of(fev2, PhysicsKind::LiftOff, 'L').size() == 1) {
+            CHECK(Of(ev2, PhysicsKind::Jump)[0].side == 'R');
             CHECK(Of(ev2, PhysicsKind::Jump)[0].time_s == Of(fev2, PhysicsKind::LiftOff, 'R')[0].time_s);
+            CHECK(Of(ev2, PhysicsKind::Jump)[0].part == Of(fev2, PhysicsKind::LiftOff, 'R')[0].part);
             CHECK(Of(fev2, PhysicsKind::LiftOff, 'L')[0].time_s < Of(fev2, PhysicsKind::LiftOff, 'R')[0].time_s);
         }
-        if (Of(ev2, PhysicsKind::Land).size() == 1 && Of(fev2, PhysicsKind::FootStep, 'L').size() == 1)
+        if (Of(ev2, PhysicsKind::Land).size() == 1 && Of(fev2, PhysicsKind::FootStep, 'L').size() == 1) {
+            CHECK(Of(ev2, PhysicsKind::Land)[0].side == 'L');
             CHECK(Of(ev2, PhysicsKind::Land)[0].time_s == Of(fev2, PhysicsKind::FootStep, 'L')[0].time_s);
+        }
+        // The right foot 5 ms behind (a two-footed take-off and landing, within jump_tie_s): the
+        // first foot (L) names both, at its own lift-off / step.
+        const std::vector<BoneTrack> rig3 = Rig(JumpFoot(-0.1, 1.0, 0.5), JumpFoot(0.1, 1.005, 0.5), o);
+        const PhysicsAnalysis        a3 = AnalyseMotion(rig3, SpeedTiming());
+        const std::vector<PhysicsEvent> ev3 = JumpEvents(a3, SpeedTiming());
+        const std::vector<PhysicsEvent> fev3 = FootEvents(a3, SpeedTiming());
+        CHECK(Of(ev3, PhysicsKind::Jump, 'L').size() == 1 && Of(ev3, PhysicsKind::Land, 'L').size() == 1 && ev3.size() == 2);
+        if (Of(ev3, PhysicsKind::Jump, 'L').size() == 1 && Of(fev3, PhysicsKind::LiftOff, 'L').size() == 1 &&
+            Of(fev3, PhysicsKind::LiftOff, 'R').size() == 1) {
+            CHECK(Of(ev3, PhysicsKind::Jump, 'L')[0].time_s == Of(fev3, PhysicsKind::LiftOff, 'L')[0].time_s);
+            CHECK(Of(fev3, PhysicsKind::LiftOff, 'L')[0].time_s < Of(fev3, PhysicsKind::LiftOff, 'R')[0].time_s);
+        }
+        PhysicsParams no_tie = SpeedTiming();
+        no_tie.jump_tie_s = 0.0;
+        CHECK(Of(JumpEvents(a3, no_tie), PhysicsKind::Jump, 'R').size() == 1);
+        // The landing tie: the right foot lands 5 ms before the left (it leaves 5 ms before too):
+        // Land L by default, Land R with no tie; 30 ms before: Land R.
+        const PhysicsAnalysis a4 = AnalyseMotion(Rig(JumpFoot(-0.1, 1.0, 0.5), JumpFoot(0.1, 0.995, 0.5), o), SpeedTiming());
+        CHECK(Of(JumpEvents(a4, SpeedTiming()), PhysicsKind::Land, 'L').size() == 1 &&
+              Of(JumpEvents(a4, SpeedTiming()), PhysicsKind::Land).size() == 1);
+        CHECK(Of(JumpEvents(a4, no_tie), PhysicsKind::Land, 'R').size() == 1 &&
+              Of(JumpEvents(a4, no_tie), PhysicsKind::Land).size() == 1);
+        const PhysicsAnalysis a5 = AnalyseMotion(Rig(JumpFoot(-0.1, 1.0, 0.5), JumpFoot(0.1, 0.97, 0.5), o), SpeedTiming());
+        CHECK(Of(JumpEvents(a5, SpeedTiming()), PhysicsKind::Land, 'R').size() == 1 &&
+              Of(JumpEvents(a5, SpeedTiming()), PhysicsKind::Land).size() == 1);
 
         // The same feet off while the hips are held up (hanging: the hands hold the body): no jump.
         std::vector<BoneTrack> held = rig;
         for (Vec3d& h : held[static_cast<size_t>(Role::Hips)].pos) h.y = 0.98;
         CHECK(JumpEvents(AnalyseMotion(held)).empty());
+        CHECK(JumpFreeFallEvents(AnalyseMotion(held)).empty());  // story 10-9a-3: nor a free fall
+        // Story 10-9a-3: the free fall finds the same take-off (and no landing).
+        const std::vector<PhysicsEvent> ff = JumpFreeFallEvents(a);
+        CHECK(ff.size() == 1 && jump.size() == 1);
+        if (ff.size() == 1 && jump.size() == 1)
+            CHECK(ff[0].kind == PhysicsKind::Jump && ff[0].time_s == jump[0].time_s && ff[0].side == jump[0].side);
 
         // No hips bone: no jump, said in the report; the foot events stay.
         std::vector<BoneTrack> nohips = rig;
@@ -1918,6 +1963,90 @@ int main()
             CHECK(std::fabs(Of(ev, PhysicsKind::Jump)[0].time_s - 1.8) < 0.03);
             CHECK(std::fabs(Of(ev, PhysicsKind::Land)[0].time_s - 0.3) < 0.04);
         }
+    }
+
+    // Story 10-9a-3: a take-off at the clip start. The right foot slides in at the floor's height
+    // (1 m/s, braking), rests 20 ms from 0.03 s and leaves at 0.05 s on a 0.5 s arc; the left one
+    // is in the air from the start and lands at 0.45 s. Not looping, the right foot's parts are in
+    // contact from sample 0: Jump R at their last lift-off, Land L. Looping (the cycle wraps), no
+    // contact from the clip start.
+    {
+        Options o;
+        o.dur = 1.5;
+        const FootFn start_r = [](double t) {
+            FootPose f;
+            f.ball = Vec3d{0.1, 0.02, 0.0};
+            if (t < 0.03) f.ball.z = -16.7 * (0.03 - t) * (0.03 - t);
+            const double u = t - 0.05;
+            if (u > 0.0 && u < 0.5) f.ball.y += 9.81 * 0.25 * u - 0.5 * 9.81 * u * u;
+            return f;
+        };
+        const std::vector<BoneTrack> rig = Rig(JumpFoot(-0.1, -0.1, 0.55), start_r, o);
+        const PhysicsAnalysis        a = AnalyseMotion(rig);
+        CHECK(a.ok);
+        bool from_start = false;
+        for (const PartTrack& pt : a.foot[1].part)
+            if (pt.present && !pt.contacts.empty() && pt.contacts[0].start == 0 && pt.contacts[0].end > 1) from_start = true;
+        CHECK(from_start);
+        const std::vector<PhysicsEvent> ev = JumpEvents(a);
+        CHECK(Of(ev, PhysicsKind::Jump, 'R').size() == 1 && Of(ev, PhysicsKind::Land, 'L').size() == 1 && ev.size() == 2);
+        if (Of(ev, PhysicsKind::Jump, 'R').size() == 1) CHECK(std::fabs(Of(ev, PhysicsKind::Jump, 'R')[0].time_s - 0.05) < 0.03);
+        // No step at the clip start (the contact has no arrival).
+        CHECK(Of(FootEvents(a), PhysicsKind::FootStep, 'R').empty() || Of(FootEvents(a), PhysicsKind::FootStep, 'R')[0].time_s > 0.4);
+        PhysicsParams loop;
+        loop.looping = true;
+        const PhysicsAnalysis al = AnalyseMotion(rig, loop);
+        CHECK(al.ok);
+        for (const PartTrack& pt : al.foot[1].part)
+            if (pt.present && !pt.contacts.empty()) CHECK(pt.contacts[0].start > 0);
+        // A foot skimming the floor at speed from the clip start never comes to rest: no contact.
+        const FootFn skim = [](double t) {
+            FootPose f;
+            f.ball = Vec3d{0.1, 0.02, 1.0 * t};
+            const double u = t - 0.05;
+            if (u > 0.0 && u < 0.5) f.ball.y += 9.81 * 0.25 * u - 0.5 * 9.81 * u * u;
+            if (u >= 0.5) f.ball.z = 0.55;
+            return f;
+        };
+        const PhysicsAnalysis as = AnalyseMotion(Rig(JumpFoot(-0.1, -0.1, 0.55), skim, o));
+        CHECK(as.ok);
+        for (const PartTrack& pt : as.foot[1].part)
+            if (pt.present && !pt.contacts.empty()) CHECK(pt.contacts[0].start > 0);
+        CHECK(Of(JumpEvents(as), PhysicsKind::Jump).empty());
+    }
+    // Story 10-9a-3: free fall. Both feet leave at 1.0 s on an arc (apex 0.25 s later), fall for
+    // 0.3 s, then glide on at that height (1 m/s, never landing: a body lying). The flight's mean
+    // fall over the whole run is too small for a flight Jump; the free fall gives the take-off
+    // (Jump L, the feet tie), and no Land.
+    {
+        Options o;
+        o.dur = 3.0;
+        auto fall = [](double x) {
+            return FootFn([x](double t) {
+                FootPose     f;
+                const double u = std::min(t - 1.0, 0.55);
+                f.ball = Vec3d{x, 0.02, 0.0};
+                if (u > 0.0) {
+                    f.ball.y += 9.81 * 0.25 * u - 0.5 * 9.81 * u * u;
+                    f.ball.z = 1.0 * (t - 1.0);
+                }
+                return f;
+            });
+        };
+        const PhysicsAnalysis a = AnalyseMotion(Rig(fall(-0.1), fall(0.1), o));
+        CHECK(a.ok);
+        CHECK(Of(JumpEvents(a), PhysicsKind::Jump).empty() && Of(JumpEvents(a), PhysicsKind::Land).empty());
+        const std::vector<PhysicsEvent> ff = JumpFreeFallEvents(a);
+        CHECK(ff.size() == 1);
+        if (ff.size() == 1) CHECK(ff[0].kind == PhysicsKind::Jump && ff[0].side == 'L' && std::fabs(ff[0].time_s - 1.0) < 0.03);
+        // A head shorter than the smoothing reach still reads (right after it); a fall softer than
+        // jump_fall_g gives none.
+        PhysicsParams head;
+        head.jump_freefall_window_s = 0.02;
+        CHECK(Of(JumpFreeFallEvents(a, head), PhysicsKind::Jump).size() == 1);
+        PhysicsParams soft;
+        soft.jump_fall_g = 1.2;
+        CHECK(JumpFreeFallEvents(a, soft).empty());
     }
 
     // Story 10-9a-2: push-off jumps, on an analysis set by hand (standing feet, then the hips'
@@ -1971,7 +2100,8 @@ int main()
         const std::vector<PhysicsEvent> ev = JumpPushOffEvents(a);
         CHECK(ev.size() == 1);
         if (ev.size() == 1) {
-            CHECK(ev[0].kind == PhysicsKind::Jump && ev[0].side == 'B' && ev[0].part == -1);
+            // Story 10-9a-3: both feet leave together: the first foot (L), its last part.
+            CHECK(ev[0].kind == PhysicsKind::Jump && ev[0].side == 'L' && ev[0].part >= 0);
             CHECK(std::fabs(ev[0].time_s - 1.0) < 1e-9 && ev[0].strength > 0.0);
         }
         CHECK(JumpPushOffSummary(a, ev) == "jumps (push-off): 1");

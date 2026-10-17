@@ -100,7 +100,11 @@ int main()
         r.kind = "lift", r.part = "toe";
         CHECK(RefTarget(r, BenchConfig::Default) == "lift" && RefTarget(r, BenchConfig::Parts) == "lift");
         r.kind = "jump", r.part = "any";
-        CHECK(RefTarget(r, BenchConfig::Default) == "jump" && RowSide("jump", 'R') == 'B' && RowSide("lift", 'R') == 'R');
+        // Story 10-9a-3: jump and land are scored per side.
+        CHECK(RefTarget(r, BenchConfig::Default) == "jump" && RowSide("jump", 'R') == 'R' && RowSide("lift", 'R') == 'R');
+        r.kind = "jump_toe", r.part = "any";
+        CHECK(RefTarget(r, BenchConfig::Default) == "jump" && RefTarget(r, BenchConfig::Parts) == "jump");
+        CHECK(FoundTarget("lift_heel") == "lift" && FoundTarget("jump_toe") == "jump" && FoundTarget("land_heel") == "land");
         r.kind = "hand_pivot_any";
         CHECK(RefTarget(r, BenchConfig::Default) == "hand_pivot");
         CHECK(FoundTarget("pivot_toe_longest") == "pivot_toe" && FoundTarget("hand_pivot_any") == "hand_pivot" &&
@@ -142,16 +146,17 @@ int main()
 
     // ---- Row match.
     {
-        // Sideless: Jump (B) at 0.575, ref Jump R 0.56 -> matched, +15 ms.
+        // Jump R at 0.575, ref Jump R 0.56 -> matched, +15 ms; the L row expects nothing.
         std::vector<RefLine> lines(1);
         lines[0].kind = "jump", lines[0].side = 'R', lines[0].time_s = 0.56, lines[0].status = "confirmed";
-        RowScore s = ScoreRow(RowRefs(lines, BenchConfig::Default, "jump", 'B'), {0.575}, 0.150, 0.0, 2.0);
+        RowScore s = ScoreRow(RowRefs(lines, BenchConfig::Default, "jump", 'R'), {0.575}, 0.150, 0.0, 2.0);
         CHECK(s.exp_c == 1 && s.matched_c == 1 && s.missed_c == 0 && s.extra == 0);
         CHECK(s.err_s.size() == 1 && Near(s.err_s[0], 0.015, 1e-9));
+        CHECK(RowRefs(lines, BenchConfig::Default, "jump", 'L').empty());
 
         // Deleted: kept in the file, never expected.
         lines[0].status = "deleted";
-        s = ScoreRow(RowRefs(lines, BenchConfig::Default, "jump", 'B'), {}, 0.150, 0.0, 2.0);
+        s = ScoreRow(RowRefs(lines, BenchConfig::Default, "jump", 'R'), {}, 0.150, 0.0, 2.0);
         CHECK(s.exp_c == 0 && s.exp_d == 0 && s.missed_c == 0);
 
         // Outside # visible: neither the ref nor the detection counts.

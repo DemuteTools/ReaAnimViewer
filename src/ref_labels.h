@@ -64,7 +64,8 @@ enum class RefEventKind { Lift, Slide, Pivot, Grab, Release, Jump, Land };
 
 // True when `key` (a label normalized by RoleKeyFromName) is an event label:
 // "<kind>_<l|r|left|right>", plus "lift_off_<side>" and "liftoff_<side>". `side` gets 'L' / 'R'.
-// Story 10-9a: "jump" and "land" are sideless (no side suffix): `side` gets 'B'.
+// Story 10-9a: "jump" and "land" are sideless (no side suffix): `side` gets 'B' (story 10-9a-3:
+// the detected Jump / Land carry a foot; a B REF matches either).
 inline bool ParseEventRefLabel(const std::string& key, RefEventKind* kind, char* side)
 {
     if (key == "jump" || key == "land") {

@@ -8,22 +8,25 @@
 // (spaces read too), '#' lines and blank lines ignored:
 //   kind  side  part  time_s  status  source
 //   kind    an auto kind word (auto_detect.h: step, heel, toe, lift, slide, pivot, grab, release,
-//           hand_pivot, jump, land, and the part kinds slide_heel, pivot_toe...; a part kind
-//           reads as its base kind + that part)
-//   side    L / R (B too for jump / land: a sideless event of no particular foot)
+//           hand_pivot, jump, land, and the part kinds slide_heel, pivot_toe, lift_heel,
+//           jump_toe...; a part kind reads as its base kind + that part)
+//   side    L / R (story 10-9a-3: jump / land too, the foot that leaves last / touches first;
+//           B is still read for them, a reference of no particular foot, scored on a row of
+//           its own that no detection fills)
 //   part    heel / toe / tip / hand / any
 //   time_s  clip time (s)
 //   status  draft (Claude, from the motion) / confirmed / deleted (kept, never expected)
 //   source  motion / REF (an old REF marker of the csv dump) / antho (the review page)
 //
 // Configurations: default = every type at the default sensitivity in its default modes (steps
-// combined, slides and pivots combined); parts = steps heel / toe separate and slides / pivots
-// Each part. A reference counts in a configuration only when it can emit its kind:
+// combined, slides and pivots combined, lift-off / jump / land combined); parts = steps heel / toe
+// separate, slides / pivots Each part, lift-off / jump / land Separate (story 10-9a-3). A
+// reference counts in a configuration only when it can emit its kind:
 //   step / slide / pivot   part any: default (step, slide, pivot); heel: parts (heel,
 //                          slide_heel, pivot_heel); toe or tip: parts (toe, slide_toe, pivot_toe)
-//   lift, grab, release, hand_pivot, jump, land   both (any part)
-// A row is clip x target kind word x side; jump and land rows are side B and take the
-// references of every side (a sideless detection matches a reference of either side).
+//   lift, grab, release, hand_pivot, jump, land   both (any part; the lift / jump / land part
+//                          kinds score as their type: FoundTarget)
+// A row is clip x target kind word x side (story 10-9a-3: jump and land per side too).
 //
 // Pure C++17, header-only.
 
@@ -83,6 +86,12 @@ inline bool NormaliseRefKind(const std::string& kind, const std::string& part, s
         p = "toe";
     } else if (kind == "hand_pivot_any") {
         b = "hand_pivot";
+    } else if (kind == "lift_heel" || kind == "jump_heel" || kind == "land_heel") {
+        b = kind.substr(0, 4);
+        p = "heel";
+    } else if (kind == "lift_toe" || kind == "jump_toe" || kind == "land_toe") {
+        b = kind.substr(0, 4);
+        p = "toe";
     } else if (!(kind == "step" || kind == "lift" || kind == "slide" || kind == "pivot" || kind == "grab" ||
                  kind == "release" || kind == "hand_pivot" || kind == "jump" || kind == "land")) {
         return false;
@@ -92,6 +101,7 @@ inline bool NormaliseRefKind(const std::string& kind, const std::string& part, s
     return true;
 }
 
+// Jump and land: the kinds whose reference may say side B (no particular foot, story 10-9a).
 inline bool SidelessTarget(const std::string& word) { return word == "jump" || word == "land"; }
 
 // One line of a reference file. False (and `err`) for a malformed line; a '#' or blank line is
@@ -213,9 +223,12 @@ inline std::string RefTarget(const RefLine& r, BenchConfig c)
 }
 
 // The row kind word of a detected block's kind word (the Longest part kinds and the any-hand
-// pivot read as their row's).
+// pivot read as their row's; story 10-9a-3: the lift-off / jump / land part kinds as their type).
 inline std::string FoundTarget(const std::string& kind_word)
 {
+    if (kind_word == "lift_heel" || kind_word == "lift_toe") return "lift";
+    if (kind_word == "jump_heel" || kind_word == "jump_toe") return "jump";
+    if (kind_word == "land_heel" || kind_word == "land_toe") return "land";
     if (kind_word == "slide_heel_longest") return "slide_heel";
     if (kind_word == "slide_toe_longest") return "slide_toe";
     if (kind_word == "pivot_heel_longest") return "pivot_heel";
@@ -224,8 +237,8 @@ inline std::string FoundTarget(const std::string& kind_word)
     return kind_word;
 }
 
-// The row's side of a reference (B for a sideless row).
-inline char RowSide(const std::string& target, char side) { return SidelessTarget(target) ? 'B' : side; }
+// The row's side of a reference: its own (story 10-9a-3: jump and land are scored per side).
+inline char RowSide(const std::string&, char side) { return side; }
 
 // ---- Old REF markers ---------------------------------------------------------------------------
 

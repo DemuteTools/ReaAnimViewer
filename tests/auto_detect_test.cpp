@@ -895,7 +895,12 @@ int main()
                     (kk == AutoKind::Pivot && (jk == AutoKind::PivotHeel || jk == AutoKind::PivotHeelLongest)) ||
                     (kk >= AutoKind::SlideHeel && kk <= AutoKind::PivotToe && j == k + 4))
                     continue;
-                CHECK(AutoDefaultColor(static_cast<AutoKind>(k), 'L') != AutoDefaultColor(static_cast<AutoKind>(j), 'L'));
+                // Story 10-9a-3: a lift-off / jump / land heel block takes its type's colour.
+                if ((kk == AutoKind::Lift && jk == AutoKind::LiftHeel) || (kk == AutoKind::Jump && jk == AutoKind::JumpHeel) ||
+                    (kk == AutoKind::Land && jk == AutoKind::LandHeel))
+                    continue;
+                for (char side : {'L', 'R'})
+                    CHECK(AutoDefaultColor(static_cast<AutoKind>(k), side) != AutoDefaultColor(static_cast<AutoKind>(j), side));
             }
     }
 
@@ -1084,7 +1089,8 @@ int main()
             for (int ki = 0; ki < kAutoKindCount; ++ki) {
                 const AutoKind k = static_cast<AutoKind>(ki);
                 const bool     sep = k == AutoKind::Heel || k == AutoKind::Toe || k == AutoKind::SlideHeel ||
-                               k == AutoKind::SlideToe || k == AutoKind::SlideHeelLongest || k == AutoKind::SlideToeLongest;
+                               k == AutoKind::SlideToe || k == AutoKind::SlideHeelLongest || k == AutoKind::SlideToeLongest ||
+                               k >= AutoKind::LiftHeel;  // story 10-9a-3: the lift-off / jump / land parts
                 const std::vector<std::string> listed = AutoMissingParts(AutoTypeOfKind(k), sep, map);
                 for (char side : {'L', 'R'}) {
                     std::vector<Role> parts;
@@ -1108,11 +1114,25 @@ int main()
                     // listed only then).
                     case AutoKind::Jump:
                     case AutoKind::Land: parts = {Role::Hips, Role::LeftHeel, Role::RightHeel}; break;
+                    // Story 10-9a-3: the lift-off parts as the step parts; a jump / land part: the
+                    // hips, its own part, or a foot with none (its heel and toe both listed, below).
+                    case AutoKind::LiftHeel: parts = {heel}; break;
+                    case AutoKind::LiftToe: parts = {toe}; break;
+                    case AutoKind::JumpHeel:
+                    case AutoKind::LandHeel: parts = {Role::Hips, heel}; break;
+                    case AutoKind::JumpToe:
+                    case AutoKind::LandToe: parts = {Role::Hips, toe}; break;
                     default: parts = {side == 'R' ? Role::RightHand : Role::LeftHand}; break;
                     }
+                    auto is_listed = [&](Role r) {
+                        return std::find(listed.begin(), listed.end(), RoleName(r)) != listed.end();
+                    };
                     bool expect = no_scale;
                     for (Role r : parts)
-                        if (std::find(listed.begin(), listed.end(), RoleName(r)) != listed.end()) expect = true;
+                        if (is_listed(r)) expect = true;
+                    if (k == AutoKind::JumpHeel || k == AutoKind::JumpToe || k == AutoKind::LandHeel || k == AutoKind::LandToe)
+                        for (char fs : {'L', 'R'})
+                            if (is_listed(FootPartRole(fs, 0)) && is_listed(FootPartRole(fs, 1))) expect = true;
                     const bool got = AutoBlockPartMissing(MakeAutoBlock(k, side, kAutoDefaultSens, 0.0), map);
                     if (got != expect) std::printf("  kind %d side %c: %d, expected %d\n", ki, side, got, expect);
                     CHECK(got == expect);
@@ -1727,44 +1747,62 @@ int main()
         CHECK(AutoBlockLanes(bad, MakeAutoBlock(AutoKind::Step, 'L', 50.0, 0.0), &why).empty() && why == "no leg");
     }
 
-    // ---- Story 10-9a: jump and land (sideless kinds) -------------------------------------------
+    // ---- Story 10-9a: jump and land (story 10-9a-3: on the foot, L / R) ------------------------
     {
         AutoSettings s;
         s.type[static_cast<int>(AutoType::Jump)].on = true;
         s.type[static_cast<int>(AutoType::Land)].on = true;
         const std::vector<Block> jl = AutoBlocks(s);
-        CHECK(jl.size() == 2);  // one block per kind, not per side
-        CHECK(Markers(jl) == (std::vector<std::string>{"Jump", "Land"}));
+        CHECK(jl.size() == 4);  // one block per kind and side
+        CHECK(Markers(jl) == (std::vector<std::string>{"Jump L", "Jump R", "Land L", "Land R"}));
         for (const Block& b : jl) {
             AutoKind k;
             char     side = 0;
-            CHECK(AutoBlockKind(b, &k, &side) && side == 'B' && AutoKindSideless(k));
+            CHECK(AutoBlockKind(b, &k, &side) && (side == 'L' || side == 'R') && !AutoKindSideless(k));
         }
-        CHECK(jl.size() == 2 && jl[0].color == AutoDefaultColor(AutoKind::Jump, 'B'));
-        CHECK(MakeAutoBlock(AutoKind::Land, 'R', 50.0, 0.0).auto_side == 'B');  // a sideless kind is always B
+        CHECK(jl.size() == 4 && jl[0].color == AutoDefaultColor(AutoKind::Jump, 'L') && jl[1].color != jl[0].color);
+        CHECK(MakeAutoBlock(AutoKind::Land, 'R', 50.0, 0.0).auto_side == 'R');
         CHECK(ReadAutoSettings(jl) == s);
-        // A sideless kind on side L, or a sided kind on side B, is no known block.
-        Block odd = jl[0];
-        odd.auto_side = 'L';
-        CHECK(!AutoBlockKind(odd, nullptr, nullptr));
+        // A sided kind on side B (a jump / land block saved side=B in development) is no known
+        // block, and Detect drops it.
+        Block jump_b = jl[0];
+        jump_b.auto_side = 'B';
+        CHECK(!AutoBlockKind(jump_b, nullptr, nullptr));
         Block step_b = MakeAutoBlock(AutoKind::Step, 'L', 50.0, 0.0);
         step_b.auto_side = 'B';
         CHECK(!AutoBlockKind(step_b, nullptr, nullptr));
+        {
+            Block land_b = jl[2];
+            land_b.auto_side = 'B';
+            land_b.marker = "Land";
+            std::vector<Block> old = {HeelRule("Rule"), jump_b, land_b};
+            CHECK(!ReadAutoSettings(old).type[static_cast<int>(AutoType::Jump)].on);
+            bool                   changed = false;
+            const std::vector<int> map = ApplyAutoSettings(old, s, &changed);
+            CHECK(changed && Markers(old) == (std::vector<std::string>{"Rule", "Jump L", "Jump R", "Land L", "Land R"}));
+            CHECK(map == (std::vector<int>{0, -1, -1}));
+            Block future;
+            future.auto_type = "tap";  // an auto type of a newer RAV still stays
+            future.auto_side = 'B';
+            std::vector<Block> keep = {future};
+            ApplyAutoSettings(keep, s);
+            CHECK(keep.size() == 5 && keep[0].auto_type == "tap");
+        }
 
-        // The record: side=B round-trips byte-identical; a pooled copy carries the blocks.
+        // The record: side=L / R round-trips byte-identical; a pooled copy carries the blocks.
         ItemRules r;
         r.blocks = {HeelRule("Rule")};
         AutoSettings both = Ticked(true, true, false, false);
         both.type[static_cast<int>(AutoType::Jump)].on = true;
         both.type[static_cast<int>(AutoType::Land)].on = true;
         ApplyAutoSettings(r.blocks, both);
-        CHECK(Markers(r.blocks) ==
-              (std::vector<std::string>{"Rule", "FS L", "FS R", "Lift L", "Lift R", "Jump", "Land"}));
-        r.blocks[6].sens = 70;
+        CHECK(Markers(r.blocks) == (std::vector<std::string>{"Rule", "FS L", "FS R", "Lift L", "Lift R", "Jump L", "Jump R",
+                                                             "Land L", "Land R"}));
+        r.blocks[8].sens = 70;
         const std::string text = SerializeItemRules(r);
-        CHECK(text.find("block auto=jump side=B sens=50 ") != std::string::npos);
-        CHECK(text.find("block auto=land side=B sens=70 ") != std::string::npos);
-        CHECK(text.find("marker=Jump\n") != std::string::npos && text.find("marker=Land\n") != std::string::npos);
+        CHECK(text.find("block auto=jump side=L sens=50 ") != std::string::npos);
+        CHECK(text.find("block auto=land side=R sens=70 ") != std::string::npos);
+        CHECK(text.find("marker=Jump L\n") != std::string::npos && text.find("marker=Land R\n") != std::string::npos);
         ItemRules back;
         CHECK(ParseItemRules(text, &back) && !HasKeptText(back));
         CHECK(BlocksEqual(back.blocks, r.blocks) && SerializeItemRules(back) == text);
@@ -1795,9 +1833,10 @@ int main()
         const std::vector<Event> ev_sl = DetectAutoEvents(sl, rig, nullptr, false);
         CHECK(count(ev_sl, "FS L") == 1 && count(ev_sl, "FS R") == 1 && count(ev_sl, "Lift L") == 1 &&
               count(ev_sl, "Lift R") == 1);
-        // Jump and land alone: one of each, at the take-off and the landing.
+        // Jump and land alone: one of each, at the take-off and the landing; the feet tie, so the
+        // first foot (L) names both.
         const std::vector<Event> ev_jl = DetectAutoEvents(jl, rig, nullptr, false);
-        CHECK(ev_jl.size() == 2 && count(ev_jl, "Jump") == 1 && count(ev_jl, "Land") == 1);
+        CHECK(ev_jl.size() == 2 && count(ev_jl, "Jump L") == 1 && count(ev_jl, "Land L") == 1);
         // Story 10-9a-2: the take-off's push is found by both signatures; merged into one, the
         // flight's (the first signature).
         {
@@ -1806,6 +1845,10 @@ int main()
             const std::vector<PhysicsEvent> push = JumpPushOffEvents(ja, jp), flight = JumpEvents(ja, jp);
             CHECK(push.size() == 1 && flight.size() == 2);
             if (push.size() == 1 && !flight.empty()) CHECK(std::fabs(push[0].time_s - flight[0].time_s) < kAutoMergeS);
+            // Story 10-9a-3: and by the free fall (the third signature), merged too.
+            const std::vector<PhysicsEvent> ff = JumpFreeFallEvents(ja, jp);
+            CHECK(ff.size() == 1);
+            if (ff.size() == 1 && !flight.empty()) CHECK(std::fabs(ff[0].time_s - flight[0].time_s) < kAutoMergeS);
         }
         for (const Event& e : ev_jl) CHECK(e.signature == 0);
         if (ev_jl.size() == 2) {
@@ -1814,17 +1857,18 @@ int main()
         }
         // All four: Land replaces the steps there, Jump the lift-offs.
         const std::vector<Event> ev_all = DetectAutoEvents(r.blocks, rig, nullptr, false);
-        CHECK(count(ev_all, "Jump") == 1 && count(ev_all, "Land") == 1);
+        CHECK(count(ev_all, "Jump L") == 1 && count(ev_all, "Land L") == 1 && count(ev_all, "Jump R") == 0);
         CHECK(count(ev_all, "FS L") == 0 && count(ev_all, "FS R") == 0 && count(ev_all, "Lift L") == 0 &&
               count(ev_all, "Lift R") == 0);
         // A block's offset moves its events but never decides the replacement (physics times).
         std::vector<Block> moved = r.blocks;
-        moved[6].offset_ms = 100.0;
+        moved[7].offset_ms = 100.0;
         const std::vector<Event> ev_moved = DetectAutoEvents(moved, rig, nullptr, false);
-        CHECK(count(ev_moved, "Land") == 1 && count(ev_moved, "FS L") == 0 && count(ev_moved, "FS R") == 0);
-        // Land off (block unticked in the list): the steps come back.
+        CHECK(count(ev_moved, "Land L") == 1 && count(ev_moved, "FS L") == 0 && count(ev_moved, "FS R") == 0);
+        // Land off (blocks unticked in the list): the steps come back.
         std::vector<Block> land_off = r.blocks;
-        land_off[6].enabled = false;
+        land_off[7].enabled = false;
+        land_off[8].enabled = false;
         const std::vector<Event> ev_lo = DetectAutoEvents(land_off, rig, nullptr, false);
         CHECK(count(ev_lo, "FS L") == 1 && count(ev_lo, "FS R") == 1 && count(ev_lo, "Lift L") == 0);
         // Walking steps before and after the jump: only the steps and lifts of the jump go.
@@ -1837,7 +1881,7 @@ int main()
             CHECK(count(plain_ev, "FS L") == 3 && count(plain_ev, "FS R") == 3 && count(plain_ev, "Lift L") == 3 &&
                   count(plain_ev, "Lift R") == 3);
             const std::vector<Event> all_ev = DetectAutoEvents(r.blocks, walk_jump, nullptr, false);
-            CHECK(count(all_ev, "Jump") == 1 && count(all_ev, "Land") == 1);
+            CHECK(count(all_ev, "Jump L") + count(all_ev, "Jump R") == 1 && count(all_ev, "Land L") + count(all_ev, "Land R") == 1);
             CHECK(count(all_ev, "FS L") == 2 && count(all_ev, "FS R") == 2 && count(all_ev, "Lift L") == 2 &&
                   count(all_ev, "Lift R") == 2);
             for (const Event& e : all_ev)
@@ -1852,7 +1896,7 @@ int main()
             const std::vector<Event> sep_ev = DetectAutoEvents(sep, walk_jump, nullptr, false);
             double land_t = -1.0;
             for (const Event& e : sep_ev)
-                if (e.marker == "Land") land_t = e.time_s;
+                if (e.marker.compare(0, 4, "Land") == 0) land_t = e.time_s;
             CHECK(land_t > 2.2 && land_t < 2.4);
             int near = 0, far = 0;
             for (const Event& e : sep_ev)
@@ -1863,7 +1907,7 @@ int main()
             CHECK(near == 0 && far == 8);
             std::vector<Block> sep_off = sep;
             for (Block& b : sep_off)
-                if (b.marker == "Land") b.enabled = false;
+                if (b.marker.compare(0, 4, "Land") == 0) b.enabled = false;
             const std::vector<Event> sep_off_ev = DetectAutoEvents(sep_off, walk_jump, nullptr, false);
             int back_near = 0;
             for (const Event& e : sep_off_ev)
@@ -1873,16 +1917,27 @@ int main()
             CHECK(back_near > 0);
         }
         // Detect's search reads each block's own detections: the replaced steps are not raised.
+        // Story 10-9a-3: nor the right foot's Jump / Land blocks, silent because the left ones hold
+        // this two-footed jump's events (one event for both feet).
         std::vector<int> full_map(static_cast<size_t>(Role::Count));
         for (size_t i = 0; i < full_map.size(); ++i) full_map[i] = static_cast<int>(i);
         std::vector<Block>          searched = r.blocks;
         std::vector<AutoSensResult> res;
         CHECK(!ApplyAutoSensSearch(searched, rig, full_map, &res, nullptr, false));
         for (const AutoSensResult& x : res) CHECK(!x.searched);
+        // With the left ones off, the right ones are searched again.
+        std::vector<Block> left_off = r.blocks;
+        for (Block& b : left_off)
+            if (b.marker == "Jump L" || b.marker == "Land L") b.enabled = false;
+        CHECK(!ApplyAutoSensSearch(left_off, rig, full_map, &res, nullptr, false));
+        for (size_t i = 0; i < res.size() && i < left_off.size(); ++i) {
+            const bool right_jl = left_off[i].marker == "Jump R" || left_off[i].marker == "Land R";
+            CHECK(res[i].searched == right_jl);
+        }
         // Hips mapped off: no Jump / Land (listed as missing), the other types unaffected.
         std::vector<int> no_hips = full_map;
         no_hips[static_cast<size_t>(Role::Hips)] = -1;
-        CHECK(AutoBlockPartMissing(jl[0], no_hips) && AutoBlockPartMissing(jl[1], no_hips));
+        for (const Block& b : jl) CHECK(AutoBlockPartMissing(b, no_hips));
         CHECK(!AutoBlockPartMissing(r.blocks[1], no_hips) && !AutoBlockPartMissing(r.blocks[3], no_hips));
         const std::vector<std::string> miss = AutoMissingParts(AutoType::Jump, false, no_hips);
         CHECK(miss.size() == 1 && miss[0] == RoleName(Role::Hips));
@@ -1890,14 +1945,15 @@ int main()
         std::vector<BoneTrack> rig_nh = rig;
         rig_nh[static_cast<size_t>(Role::Hips)] = BoneTrack{};
         const std::vector<Event> ev_nh = DetectAutoEvents(r.blocks, rig_nh, nullptr, false);
-        CHECK(count(ev_nh, "Jump") == 0 && count(ev_nh, "Land") == 0 && count(ev_nh, "FS L") == 1 &&
+        CHECK(count(ev_nh, "Jump L") + count(ev_nh, "Jump R") == 0 && count(ev_nh, "Land L") + count(ev_nh, "Land R") == 0 &&
+              count(ev_nh, "FS L") == 1 &&
               count(ev_nh, "Lift R") == 1);
         // The lane: the hips' vertical speed, no threshold, shaded over the flight.
         AutoAnalysis aa;
         aa.params = AutoPhysicsParams(AutoType::Jump, 50.0, false);
         aa.analysis = AnalyseMotion(rig, aa.params);
         // Story 10-9a-2: Jump's second lane, the hips' upward acceleration vs the push-off threshold.
-        const std::vector<AutoLane> lanes = AutoBlockLanes(aa, jl[1]);
+        const std::vector<AutoLane> lanes = AutoBlockLanes(aa, jl[2]);
         CHECK(lanes.size() == 1 && lanes[0].no_threshold && !lanes[0].shade_note.empty());
         const std::vector<AutoLane> jlanes = AutoBlockLanes(aa, jl[0]);
         CHECK(jlanes.size() == 2);
@@ -1915,7 +1971,122 @@ int main()
         nh.params = aa.params;
         nh.analysis = AnalyseMotion(rig_nh, aa.params);
         std::string why;
-        CHECK(AutoBlockLanes(nh, jl[1], &why).empty() && why == "no bone for " + std::string(RoleName(Role::Hips)));
+        CHECK(AutoBlockLanes(nh, jl[2], &why).empty() && why == "no bone for " + std::string(RoleName(Role::Hips)));
+    }
+
+    // ---- Story 10-9a-3: lift-off, jump and land Combined / Separate ----------------------------
+    {
+        const int lt = static_cast<int>(AutoType::LiftOff), jt = static_cast<int>(AutoType::Jump),
+                  dt = static_cast<int>(AutoType::Land);
+        CHECK(AutoTypeRow(AutoType::LiftOff).part_split && AutoTypeRow(AutoType::Jump).part_split &&
+              AutoTypeRow(AutoType::Land).part_split && !AutoTypeRow(AutoType::Step).part_split);
+        CHECK(AutoTypeRow(AutoType::Jump).shared_sides && AutoTypeRow(AutoType::Land).shared_sides &&
+              !AutoTypeRow(AutoType::LiftOff).shared_sides);
+        AutoSettings comb;
+        comb.type[lt].on = comb.type[jt].on = comb.type[dt].on = true;
+        AutoSettings sep = comb;
+        sep.separate_parts[lt] = sep.separate_parts[jt] = sep.separate_parts[dt] = true;
+        CHECK(Markers(AutoBlocks(comb)) ==
+              (std::vector<std::string>{"Lift L", "Lift R", "Jump L", "Jump R", "Land L", "Land R"}));
+        CHECK(Markers(AutoBlocks(sep)) ==
+              (std::vector<std::string>{"Lift Heel L", "Lift Heel R", "Lift Toe L", "Lift Toe R", "Jump Heel L",
+                                        "Jump Heel R", "Jump Toe L", "Jump Toe R", "Land Heel L", "Land Heel R",
+                                        "Land Toe L", "Land Toe R"}));
+        CHECK(ReadAutoSettings(AutoBlocks(sep)) == sep && ReadAutoSettings(AutoBlocks(comb)) == comb);
+        CHECK(AutoPending(sep, comb) && !AutoPending(sep, sep));
+        AutoSettings one = comb;
+        one.separate_parts[jt] = true;
+        CHECK(AutoPending(one, comb) && AutoTypeSeparate(AutoType::Jump, one) && !AutoTypeSeparate(AutoType::Land, one));
+        AutoSettings off = sep;
+        off.type[jt].on = false;
+        CHECK(!AutoPending(off, ReadAutoSettings(AutoBlocks(off))));  // an unticked type's mode never waits
+        // Words, keys and colours: the heel takes its type's colour, the toe a shade lighter.
+        CHECK(std::string(AutoKindWord(AutoKind::LiftHeel)) == "lift_heel" &&
+              std::string(AutoKindWord(AutoKind::LandToe)) == "land_toe");
+        CHECK(AutoDefaultColor(AutoKind::JumpHeel, 'L') == AutoDefaultColor(AutoKind::Jump, 'L') &&
+              AutoDefaultColor(AutoKind::JumpToe, 'L') != AutoDefaultColor(AutoKind::Jump, 'L'));
+        CHECK(std::string(AutoKindRow(AutoKind::LandHeel).role_key) == "heel" &&
+              std::string(AutoKindRow(AutoKind::LiftToe).role_key) == "toe");
+        // Separate needs the heel and the toe (or toe end) of each foot.
+        std::vector<int> no_heel(static_cast<size_t>(Role::Count));
+        for (size_t i = 0; i < no_heel.size(); ++i) no_heel[i] = static_cast<int>(i);
+        no_heel[static_cast<size_t>(Role::LeftHeel)] = -1;
+        const std::vector<std::string> m_sep = AutoMissingParts(AutoType::Jump, true, no_heel);
+        CHECK(std::find(m_sep.begin(), m_sep.end(), RoleName(Role::LeftHeel)) != m_sep.end());
+        CHECK(AutoMissingParts(AutoType::Jump, false, no_heel).empty());
+        CHECK(AutoBlockPartMissing(MakeAutoBlock(AutoKind::JumpHeel, 'L', 50.0, 0.0), no_heel) &&
+              !AutoBlockPartMissing(MakeAutoBlock(AutoKind::JumpToe, 'L', 50.0, 0.0), no_heel) &&
+              !AutoBlockPartMissing(MakeAutoBlock(AutoKind::JumpHeel, 'R', 50.0, 0.0), no_heel) &&
+              AutoBlockPartMissing(MakeAutoBlock(AutoKind::LiftHeel, 'L', 50.0, 0.0), no_heel));
+
+        // Detection: each event on the block of the part that leaves last / touches first (the
+        // combined event's part; the toe = the ball or the tip).
+        Options o;
+        o.dur = 2.5;
+        const std::vector<BoneTrack> rig = Rig(JumpFoot(-0.1, 1.0, 0.5), JumpFoot(0.1, 1.03, 0.5), o);
+        const PhysicsParams          jp = AutoPhysicsParams(AutoType::Jump, kAutoDefaultSens, false);
+        const std::vector<PhysicsEvent> flight = JumpEvents(AnalyseMotion(rig, jp), jp);
+        const std::vector<Event>        ev = DetectAutoEvents(AutoBlocks(sep), rig, nullptr, false);
+        const std::vector<Event>        evc = DetectAutoEvents(AutoBlocks(comb), rig, nullptr, false);
+        CHECK(flight.size() == 2 && ev.size() == evc.size());
+        for (const PhysicsEvent& f : flight) {
+            const std::string want = std::string(f.kind == PhysicsKind::Jump ? "Jump" : "Land") +
+                                     (f.part == static_cast<int>(FootPart::Heel) ? " Heel " : " Toe ") + f.side;
+            int n = 0;
+            for (const Event& e : ev) n += e.marker == want;
+            CHECK(n == 1);
+        }
+        for (size_t i = 0; i < ev.size() && i < evc.size(); ++i) CHECK(std::fabs(ev[i].time_s - evc[i].time_s) < 1e-9);
+        // Detect's search: a part block silent because its sibling (same type and side) holds the
+        // event is not raised; with the sibling off, it is searched.
+        {
+            std::vector<int> full(static_cast<size_t>(Role::Count));
+            for (size_t i = 0; i < full.size(); ++i) full[i] = static_cast<int>(i);
+            AutoSettings lift;
+            lift.type[lt].on = true;
+            lift.separate_parts[lt] = true;
+            std::vector<Block>          lb = AutoBlocks(lift);
+            std::vector<int>            counts(lb.size(), 0);
+            for (const Event& e : DetectAutoEvents(lb, rig, nullptr, false))
+                if (e.block >= 0 && e.block < static_cast<int>(counts.size())) ++counts[static_cast<size_t>(e.block)];
+            int checked = 0;
+            for (size_t i = 0; i < lb.size(); ++i) {
+                // the silent part of each foot (Lift Heel or Lift Toe), its sibling holding the lift-off
+                if (counts[i] != 0) continue;
+                ++checked;
+                size_t sib = lb.size();
+                for (size_t j = 0; j < lb.size(); ++j)
+                    if (j != i && lb[j].auto_side == lb[i].auto_side && counts[j] > 0) sib = j;
+                CHECK(sib < lb.size());
+                if (sib == lb.size()) continue;
+                std::vector<AutoSensResult> res = SearchAutoSensitivity(lb, rig, counts, full, false);
+                CHECK(res.size() == lb.size() && !res[i].searched);
+                std::vector<Block> off = lb;
+                off[sib].enabled = false;
+                res = SearchAutoSensitivity(off, rig, counts, full, false);
+                CHECK(res.size() == lb.size() && res[i].searched);
+            }
+            CHECK(checked == 2);
+        }
+
+        // Switching modes maps the edits as steps do: combined -> heel, heel / toe -> combined.
+        std::vector<Block> blocks = {HeelRule("Rule")};
+        ApplyAutoSettings(blocks, comb);
+        const std::vector<Block> before = blocks;
+        const std::vector<int>   to_sep = ApplyAutoSettings(blocks, sep);
+        auto at = [](const std::vector<Block>& b, int i) { return i >= 0 && i < static_cast<int>(b.size()) ? b[i].marker : "-"; };
+        for (size_t i = 0; i < before.size(); ++i) {
+            const std::string m = before[i].marker;
+            if (m == "Rule") CHECK(at(blocks, to_sep[i]) == "Rule");
+            else CHECK(at(blocks, to_sep[i]) == m.substr(0, m.size() - 2) + " Heel " + m.back());
+        }
+        const std::vector<Block> parts = blocks;
+        const std::vector<int>   to_comb = ApplyAutoSettings(blocks, comb);
+        for (size_t i = 0; i < parts.size(); ++i) {
+            const std::string m = parts[i].marker;
+            if (m == "Rule") continue;
+            CHECK(at(blocks, to_comb[i]) == m.substr(0, 4) + " " + m.back());  // "Jump Toe L" -> "Jump L"
+        }
     }
 
     // ---- Story 10-9a-2: several signatures per kind -----------------------------------------
@@ -1958,8 +2129,8 @@ int main()
         const std::vector<Event> ev = DetectAutoEvents(jl, rig, nullptr, false);
         CHECK(ev.size() == 1);
         if (ev.size() == 1) {
-            CHECK(ev[0].marker == "Jump" && ev[0].signature == 1 && std::fabs(ev[0].time_s - 1.0) < 0.03);
-            CHECK(AutoSignatureCount(AutoKindRow(AutoKind::Jump)) == 2 &&
+            CHECK(ev[0].marker == "Jump L" && ev[0].signature == 1 && std::fabs(ev[0].time_s - 1.0) < 0.03);
+            CHECK(AutoSignatureCount(AutoKindRow(AutoKind::Jump)) == 3 &&
                   std::string(AutoKindRow(AutoKind::Jump).sigs[ev[0].signature].name) == "push-off");
         }
         // The event list carries the signature.
@@ -1967,7 +2138,7 @@ int main()
         CHECK(shown.size() == 1 && !ev.empty() && shown[0].signature == ev[0].signature);
         // A lower Jump sensitivity raises the push-off threshold: none at 0 % (1.8 g).
         std::vector<Block> low = jl;
-        low[0].sens = 0.0;
+        for (Block& b : low) b.sens = 0.0;
         CHECK(DetectAutoEvents(low, rig, nullptr, false).empty());
         // Existing kinds (one signature): every event's signature is 0.
         std::vector<Block> sl;

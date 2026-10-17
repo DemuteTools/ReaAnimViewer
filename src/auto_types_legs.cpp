@@ -66,6 +66,12 @@ std::vector<PhysicsEvent> AutoSourceJumpPushOff(const PhysicsAnalysis& a, const 
     return JumpPushOffEvents(a, p);
 }
 
+// Story 10-9a-3: free-fall take-offs (Jump's third signature).
+std::vector<PhysicsEvent> AutoSourceJumpFreeFall(const PhysicsAnalysis& a, const PhysicsParams& p)
+{
+    return JumpFreeFallEvents(a, p);
+}
+
 // ---- Type parts (AutoMissingParts) -------------------------------------------------------------
 
 // Combined step, lift-off, slide: the heel, toe or toe end (all listed when none has a bone).
@@ -90,18 +96,19 @@ void AutoPartsFootBoth(bool, const std::vector<int>& role_to_bone, std::vector<s
     }
 }
 
-// Story 10-9a: jump and land: the hips, and each foot as a lift-off.
-void AutoPartsJump(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out)
-{
-    if (!AutoHasRole(role_to_bone, Role::Hips)) AutoPushOnce(out, RoleName(Role::Hips));
-    AutoPartsFootAny(separate, role_to_bone, out);
-}
-
-// Step and slide: separate as a pivot, combined as a lift-off.
+// Step and slide (story 10-9a-3: and lift-off): separate as a pivot, combined as a lift-off.
 void AutoPartsFootSplit(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out)
 {
     if (separate) AutoPartsFootBoth(separate, role_to_bone, out);
     else AutoPartsFootAny(separate, role_to_bone, out);
+}
+
+// Story 10-9a: jump and land: the hips, and each foot as a lift-off (story 10-9a-3: separate,
+// the heel and the toe).
+void AutoPartsJump(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out)
+{
+    if (!AutoHasRole(role_to_bone, Role::Hips)) AutoPushOnce(out, RoleName(Role::Hips));
+    AutoPartsFootSplit(separate, role_to_bone, out);
 }
 
 // ---- Matches -----------------------------------------------------------------------------------
@@ -190,6 +197,38 @@ bool AutoMatchLand(const PhysicsEvent& e, const PhysicsAnalysis&, char)
     return e.kind == PhysicsKind::Land;
 }
 
+// Story 10-9a-3: lift-off, jump and land by part: Heel = the heel, Toe = the ball or the tip (the
+// part that leaves last / touches first).
+bool AutoMatchLiftHeel(const PhysicsEvent& e, const PhysicsAnalysis&, char)
+{
+    return PartHeel(e, PhysicsKind::LiftOff);
+}
+
+bool AutoMatchLiftToe(const PhysicsEvent& e, const PhysicsAnalysis&, char)
+{
+    return PartToe(e, PhysicsKind::LiftOff);
+}
+
+bool AutoMatchJumpHeel(const PhysicsEvent& e, const PhysicsAnalysis&, char)
+{
+    return PartHeel(e, PhysicsKind::Jump);
+}
+
+bool AutoMatchJumpToe(const PhysicsEvent& e, const PhysicsAnalysis&, char)
+{
+    return PartToe(e, PhysicsKind::Jump);
+}
+
+bool AutoMatchLandHeel(const PhysicsEvent& e, const PhysicsAnalysis&, char)
+{
+    return PartHeel(e, PhysicsKind::Land);
+}
+
+bool AutoMatchLandToe(const PhysicsEvent& e, const PhysicsAnalysis&, char)
+{
+    return PartToe(e, PhysicsKind::Land);
+}
+
 // ---- Part missing (AutoBlockPartMissing) -------------------------------------------------------
 
 // Heel, slide heel: no heel.
@@ -216,11 +255,23 @@ bool AutoMissingHeelOrToe(char side, const std::vector<int>& role_to_bone)
     return AutoMissingHeel(side, role_to_bone) || AutoMissingToe(side, role_to_bone);
 }
 
-// Story 10-9a: jump and land (sideless): no hips, or a foot with no heel, toe nor toe end.
+// Story 10-9a: jump and land (either side: a jump reads both feet): no hips, or a foot with no
+// heel, toe nor toe end.
 bool AutoMissingJump(char, const std::vector<int>& role_to_bone)
 {
     return !AutoHasRole(role_to_bone, Role::Hips) || AutoMissingFootAny('L', role_to_bone) ||
            AutoMissingFootAny('R', role_to_bone);
+}
+
+// Story 10-9a-3: a jump / land part block: as a jump, or that side's part missing.
+bool AutoMissingJumpHeel(char side, const std::vector<int>& role_to_bone)
+{
+    return AutoMissingJump(side, role_to_bone) || AutoMissingHeel(side, role_to_bone);
+}
+
+bool AutoMissingJumpToe(char side, const std::vector<int>& role_to_bone)
+{
+    return AutoMissingJump(side, role_to_bone) || AutoMissingToe(side, role_to_bone);
 }
 
 // ---- Lanes -------------------------------------------------------------------------------------

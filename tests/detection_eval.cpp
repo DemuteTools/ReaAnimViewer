@@ -47,8 +47,9 @@
 // estimate (a part labelled in one clip only) prints n/a and is 0. Last, every clip's events
 // (untagged dumps too) with the module's default timing, as the measure action writes them (PHY
 // take markers), each followed by its "  hands: ..." line and hand events (story 10-8c), and its
-// "  jumps: ..." line and jump events (story 10-9a, sideless: "PHY B jump"), then its
-// "  jumps (push-off): N" line and push-off take-offs (story 10-9a-2). Then
+// "  jumps: ..." line and jump events (story 10-9a; 10-9a-3: on their foot, "PHY L jump"), then its
+// "  jumps (push-off): N" line and push-off take-offs (story 10-9a-2), then its
+// "  jumps (free fall): N" line and free-fall take-offs (story 10-9a-3). Then
 // one "HAND REF" line per REF of a label whose bone plays a hand role: the nearest Grab of that
 // side (default constants) and its signed error.
 // Story 10-8n: right after the GO line (and the "(N labels skipped)" line), a BIAS block, one
@@ -57,8 +58,8 @@
 // from false or missed events. Steps: one row per labelled foot part (its chosen timing, the
 // leave-one-clip-out offsets: the gate's data) and the combined step. Events: event labels
 // ('# ref.<kind>_<side>=', kind lift, slide, pivot, grab or release; ref_labels.h; story 10-9a:
-// the sideless '# ref.jump=' and '# ref.land=', against JumpEvents) match the events of their
-// side (lift, grab, release, jump, land: +-150 ms; slide, pivot: the REF within [start -
+// the sideless '# ref.jump=' and '# ref.land=', against JumpEvents, matching either foot's
+// events) match the events of their side (lift, grab, release, jump, land: +-150 ms; slide, pivot: the REF within [start -
 // 150 ms, end], err = start - REF). A clip counts for a kind only when it holds a REF of that
 // kind, and then every detection of that kind, on both sides, counts (an untagged side shows
 // as extra). Event labels are kept out of every other line (--single ignores them too).
@@ -738,7 +739,9 @@ int RunPhysics(const std::vector<std::string>& files, const PhysicsParams& base)
                 const char                side = sideless ? 'B' : (s ? 'R' : 'L');
                 std::vector<PhysicsEvent> det;
                 for (const PhysicsEvent& e : ev)
-                    if (e.kind == RefEventPhysicsKind(kind) && e.side == side) det.push_back(e);
+                    // Story 10-9a-3: a jump / land event has its foot now; the REFs stay sideless
+                    // (side B) and match an event of either foot.
+                    if (e.kind == RefEventPhysicsKind(kind) && (sideless || e.side == side)) det.push_back(e);
                 if (RefEventIsSpan(kind)) {
                     b.Add(MatchSpans(pc.event_refs[k][s], det, kMatchWindowS, pc.lo, pc.hi));
                 } else {
@@ -764,6 +767,8 @@ int RunPhysics(const std::vector<std::string>& files, const PhysicsParams& base)
         std::printf("  %s\n%s", JumpSummary(pc.a, jev).c_str(), PhysicsEventLines(jev, "  ").c_str());
         const std::vector<PhysicsEvent> pev = JumpPushOffEvents(pc.a, base);  // story 10-9a-2
         std::printf("  %s\n%s", JumpPushOffSummary(pc.a, pev).c_str(), PhysicsEventLines(pev, "  ").c_str());
+        const std::vector<PhysicsEvent> fev = JumpFreeFallEvents(pc.a, base);  // story 10-9a-3
+        std::printf("  %s\n%s", JumpFreeFallSummary(pc.a, fev).c_str(), PhysicsEventLines(fev, "  ").c_str());
     }
 
     // Story 10-8c: each labelled hand REF and the nearest Grab of that side.

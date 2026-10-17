@@ -170,34 +170,57 @@ void TestKnownValues()
     const PhysicsParams p = AutoPhysicsParams(AutoType::Pivot, 100.0, false);
     CHECK(p.pivot_min_deg == d.pivot_min_deg / 2.0 && p.pivot_rate_dps == d.pivot_rate_dps / 2.0);
     CHECK(p.contact_speed == d.contact_speed && p.slide_speed == d.slide_speed);
-    // Story 10-9a: jump and land, sideless Legs types; the sensitivity divides the minimum flight.
-    CHECK(AutoTypeRow(AutoType::Jump).sideless && AutoTypeRow(AutoType::Land).sideless);
-    for (int t = 0; t < static_cast<int>(AutoType::Jump); ++t) CHECK(!AutoTypeRow(static_cast<AutoType>(t)).sideless);
+    // Story 10-9a: jump and land, Legs types; the sensitivity divides the minimum flight. Story
+    // 10-9a-3: on the foot (no type is sideless), Combined / Separate on lift-off, jump and land.
+    for (int t = 0; t < kAutoTypeCount; ++t) {
+        const AutoType tt = static_cast<AutoType>(t);
+        CHECK(!AutoTypeRow(tt).sideless);
+        CHECK(AutoTypeRow(tt).part_split == (tt == AutoType::LiftOff || tt == AutoType::Jump || tt == AutoType::Land));
+    }
     CHECK(AutoCategoryOf(AutoType::Jump) == AutoCategory::Legs && AutoCategoryOf(AutoType::Land) == AutoCategory::Legs);
     CHECK(std::string(AutoKindWord(AutoKind::Jump)) == "jump" && std::string(AutoKindWord(AutoKind::Land)) == "land");
     CHECK(std::string(AutoTypeWord(AutoType::Jump)) == "jump" && std::string(AutoTypeWord(AutoType::Land)) == "land");
-    CHECK(AutoMarkerName(AutoKind::Jump, 'B') == "Jump" && AutoMarkerName(AutoKind::Land, 'L') == "Land");
-    CHECK(AutoDefaultColor(AutoKind::Jump, 'L') == AutoDefaultColor(AutoKind::Jump, 'R'));
-    CHECK(std::string(AutoKindSides(AutoKind::Jump)) == "B" && std::string(AutoKindSides(AutoKind::Step)) == "LR");
+    CHECK(AutoMarkerName(AutoKind::Jump, 'R') == "Jump R" && AutoMarkerName(AutoKind::Land, 'L') == "Land L");
+    CHECK(AutoMarkerName(AutoKind::LiftHeel, 'L') == "Lift Heel L" && AutoMarkerName(AutoKind::JumpToe, 'R') == "Jump Toe R" &&
+          AutoMarkerName(AutoKind::LandHeel, 'L') == "Land Heel L");
+    CHECK(AutoDefaultColor(AutoKind::Jump, 'L') != AutoDefaultColor(AutoKind::Jump, 'R'));
+    CHECK(std::string(AutoKindSides(AutoKind::Jump)) == "LR" && std::string(AutoKindSides(AutoKind::Step)) == "LR");
+    // The part kinds: their type's, one heel and one toe per part_split type, after its combined kind.
+    for (AutoType t : {AutoType::LiftOff, AutoType::Jump, AutoType::Land}) {
+        const std::vector<AutoKind> ks = AutoKindsOf(t);
+        CHECK(ks.size() == 3);
+        if (ks.size() == 3)
+            CHECK(std::string(AutoKindRow(ks[0]).role_key).empty() && std::string(AutoKindRow(ks[1]).role_key) == "heel" &&
+                  std::string(AutoKindRow(ks[2]).role_key) == "toe" && AutoKindRow(ks[1]).sound_key == ks[1] &&
+                  AutoKindRow(ks[2]).sound_key == ks[2]);
+    }
     const PhysicsParams j = AutoPhysicsParams(AutoType::Jump, 100.0, false);
     const PhysicsParams l = AutoPhysicsParams(AutoType::Land, 0.0, false);
     CHECK(j.jump_min_flight_s == d.jump_min_flight_s / 2.0 && l.jump_min_flight_s == d.jump_min_flight_s * 2.0);
     CHECK(j.contact_speed == d.contact_speed && !SameAutoAnalysis(j, d));
     // Story 10-9a-2: Jump has two signatures (flight, then push-off), Land one (flight); every
-    // other kind one. Jump's sensitivity also divides the push-off threshold, Land's does not.
-    CHECK(AutoSignatureCount(AutoKindRow(AutoKind::Jump)) == 2 && AutoSignatureCount(AutoKindRow(AutoKind::Land)) == 1);
-    CHECK(std::string(AutoKindRow(AutoKind::Jump).sigs[0].name) == "flight" &&
-          std::string(AutoKindRow(AutoKind::Jump).sigs[1].name) == "push-off");
+    // other kind one. Story 10-9a-3: and a third, free fall, appended (also on the jump parts).
+    // Jump's sensitivity also divides the push-off threshold, Land's does not.
+    for (AutoKind jk : {AutoKind::Jump, AutoKind::JumpHeel, AutoKind::JumpToe}) {
+        CHECK(AutoSignatureCount(AutoKindRow(jk)) == 3);
+        CHECK(std::string(AutoKindRow(jk).sigs[0].name) == "flight" && std::string(AutoKindRow(jk).sigs[1].name) == "push-off" &&
+              std::string(AutoKindRow(jk).sigs[2].name) == "free fall");
+    }
+    CHECK(AutoSignatureCount(AutoKindRow(AutoKind::Land)) == 1);
     CHECK(AutoKindRow(AutoKind::Jump).sigs[0].source == AutoKindRow(AutoKind::Land).sigs[0].source);
-    for (int k = 0; k < kAutoKindCount; ++k)
-        if (static_cast<AutoKind>(k) != AutoKind::Jump) CHECK(AutoSignatureCount(AutoKindRow(static_cast<AutoKind>(k))) == 1);
+    for (int k = 0; k < kAutoKindCount; ++k) {
+        const AutoKind kk = static_cast<AutoKind>(k);
+        if (kk != AutoKind::Jump && kk != AutoKind::JumpHeel && kk != AutoKind::JumpToe)
+            CHECK(AutoSignatureCount(AutoKindRow(kk)) == 1);
+    }
     CHECK(j.jump_impulse_g == d.jump_impulse_g / 2.0 && l.jump_impulse_g == d.jump_impulse_g);
     PhysicsParams q = d;
     q.jump_impulse_g = d.jump_impulse_g / 2.0;
     CHECK(!SameAutoAnalysis(q, d));  // the push-off threshold tells analyses apart
 }
 
-// AutoTypeSeparate: only steps, slides and pivots have the mode.
+// AutoTypeSeparate: steps, slides and pivots have the mode; story 10-9a-3: and lift-off, jump and
+// land (separate_parts).
 void TestTypeSeparate()
 {
     AutoSettings s;
@@ -223,17 +246,22 @@ void TestTypeSeparate()
     all.pivot_parts = ScuffParts::Longest;
     for (AutoType t : {AutoType::LiftOff, AutoType::Grab, AutoType::Release, AutoType::HandPivot})
         CHECK(!AutoTypeSeparate(t, all));
+    AutoSettings parts;
+    for (bool& b : parts.separate_parts) b = true;
+    for (int t = 0; t < kAutoTypeCount; ++t)
+        CHECK(AutoTypeSeparate(static_cast<AutoType>(t), parts) == AutoTypeRow(static_cast<AutoType>(t)).part_split);
 }
 
 // The kinds' highlighted roles: a hand kind its hand, a foot kind its foot's parts in order, a
-// sideless kind (story 10-9a: jump, land) the hips then both feet's parts, whatever the side.
+// jump or land kind (story 10-9a; its parts too) the hips then both feet's parts, whatever the side.
 void TestRoles()
 {
     for (int k = 0; k < kAutoKindCount; ++k) {
         const AutoKindInfo& r = AutoKindRow(static_cast<AutoKind>(k));
         for (char side : {'L', 'R', 'B'}) {
             std::vector<Role> want;
-            if (AutoTypeRow(r.type).sideless) {
+            if (r.type == AutoType::Jump || r.type == AutoType::Land) {
+                if (side == 'B') continue;
                 want.push_back(Role::Hips);
                 for (char fs : {'L', 'R'})
                     for (int q = 0; q < kFootPartCount; ++q) want.push_back(FootPartRole(fs, q));

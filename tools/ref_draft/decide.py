@@ -13,12 +13,15 @@
 #                                               time (source claude); not: nothing written
 #   far     a draft matched > 60 ms away     -> the line moved to the evidence's time, confirmed
 # Genuinely ambiguous evidence leaves the draft as it is and is listed as `unsure`. Confirmed,
-# deleted and antho lines are never touched. Every decision is logged with its numbers in
+# deleted and antho lines are never touched, except by the jump / land side, the sliding landing
+# and the part steps under a land (story 10-9a-3), which never touch an antho line either. Every decision is logged with its numbers in
 # fixtures/_bench/decisions.tsv.
 #
 # Independent of the detector on purpose: it reads only the dump's joint positions, with the
 # rules below and ref_draft's reading helpers. It never calls, ports or copies motion_physics.*,
-# auto_* or their constants (the reference must not share the bugs of what it judges).
+# auto_* or their constants (the reference must not share the bugs of what it judges). One
+# exception (story 10-9a-3): the "part steps under a land" pass reads which heel / toe lines the
+# detector misses (review.json's found_parts) to pick the lines it judges, never their evidence.
 #
 #   decide.py [--fixtures=<dir>] [--review=<review.json>] [--dry] [--clip=<id>]... [--verbose]
 #
@@ -63,6 +66,20 @@
 #   slide           a part on the local floor (within 0.015 L, |Vy| < 0.15 L/s: it stays down) moving
 #                   at 0.40 L/s or more relative to w for 60 ms or more and 0.04 L or more in all,
 #                   within 150 ms. Time: its start.
+#   jump / land side (story 10-9a-3; every jump / land line but Antho's, not only disagreements)
+#                   the foot whose part (heel, ball, tip) leaves last: the latest end of a part
+#                   contact within 300 ms before the flight's start (take-off = the last foot
+#                   leaving the ground, Linthorne 2001) / touches first: the earliest touchdown
+#                   (`impacts`) of a part from 100 ms before to 300 ms after the flight's end. Feet
+#                   within 10 ms of each other leave / land together: the first foot (L) names it.
+#   sliding landing a foot whose forefoot (ball, else tip) reaches the local floor (0.012 L) while
+#                   the hips brake upward at 1 g or more (within 25 ms), 100 ms or more before the
+#                   flight's end (the foot slides, so it holds no contact): the landing is that
+#                   foot, at that frame (Running Jump_Long: L 0.60 s, hips +2.0 g, the R foot still
+#                   0.3 L up).
+#   part steps under a land   a heel / toe step line the detector misses (a disagreement) within
+#                   30 ms of a real land is replaced by it (the product's replacement, story
+#                   10-9a): deleted.
 #   hand_pivot      always unsure (no rule).
 #   unsure          evidence on the threshold's edge (within 20% of a decisive threshold), or a
 #                   contact cut by the clip's edge; the line stays a draft.
@@ -482,6 +499,159 @@ def ev_jump(M, t, land=False, wide=False):
     return True, tt, why
 
 
+TIE = 0.010       # feet leaving / landing within this of each other do it together (s)
+
+
+def flight_near(M, t, land, wide=False):
+    """The ballistic flight (as ev_jump reads it) starting (ending) nearest t, or None."""
+    r, i0, win = M.rate, M.i(t), int((0.400 if wide else WIN) * M.rate)
+    best = None
+    for a, b, curv, fall in flights(M):
+        if not land and a == 0:
+            continue
+        dur = (b - a) / r
+        if not ((dur >= 0.200 and (curv <= -0.35 or fall >= 0.10)) or (dur >= 0.100 and curv <= -0.35 and fall >= 0.10)):
+            continue
+        d = abs((b if land else a - 1) - i0)
+        if d <= win and (best is None or d < best[0]):
+            best = (d, a, b)
+    return None if best is None else best[1:]
+
+
+def part_keys(M, s):
+    out = []
+    for p in ("heel_", "ball_", "tip_"):
+        k = p + s
+        if k in M.B:
+            if k not in M.contact:
+                M._part(k)
+            out.append(k)
+    return out
+
+
+def sliding_landing(M, a, b):
+    """The sliding landing of the flight [a, b): (side, frame, why) or None."""
+    r, L = M.rate, M.L
+    hy = M.P["hips"][:, 1]
+    acc = np.gradient(np.gradient(hy) * r) * r / 9.81
+    best = None
+    for s in "LR":
+        k = M.key("toe", s)
+        if not k:
+            continue
+        h = M.hloc[k]
+        for i in range(a + int(0.1 * r), b - int(0.1 * r)):
+            brake = float(np.max(acc[max(0, i - int(0.025 * r)):i + int(0.025 * r) + 1]))
+            if h[i] <= 0.012 * L and brake >= 1.0:
+                if best is None or i < best[1]:
+                    o = "R" if s == "L" else "L"
+                    up = min([M.hloc[q][i] for q in part_keys(M, o)] or [0.0]) / L
+                    best = (s, i, "%s reaches the floor at %.3f while the hips brake at %+.1f g (%.0f ms before the "
+                            "flight's end; the other foot %.2f L up)" % (k, M.t(i), brake, (b - i) / r * 1000, up))
+                break
+    return best
+
+
+def jump_side(M, kind, t, wide=False):
+    """(side, time or None, why) of the jump / land near t, or (None, None, why)."""
+    land = kind == "land"
+    f = flight_near(M, t, land, wide)
+    if f is None:
+        return None, None, "no ballistic flight %s within %d ms" % ("ending" if land else "starting", 400 if wide else 150)
+    a, b = f
+    r = M.rate
+    per = {}
+    if not land:
+        for s in "LR":
+            for k in part_keys(M, s):
+                for ca, cb in M.contact[k]:
+                    if a - int(0.3 * r) <= cb <= a + 2 and (s not in per or cb > per[s][0]):
+                        per[s] = (cb, k)
+        if not per:
+            return None, None, "no part contact ends before the flight (%.3f)" % M.t(a)
+        lt, rt = per.get("L", (-10 ** 9, ""))[0], per.get("R", (-10 ** 9, ""))[0]
+        side = "L" if lt >= rt - TIE * r else "R"
+        why = "flight %.3f-%.3f; last part down: %s" % (
+            M.t(a), M.t(b), ", ".join("%s %.3f" % (per[s][1], M.t(per[s][0] - 1)) for s in sorted(per)))
+        return side, None, why
+    if b >= M.n:
+        return None, None, "flight runs to the clip's end"
+    sl = sliding_landing(M, a, b)
+    if sl:
+        return sl[0], M.t(sl[1]), sl[2]
+    for s in "LR":
+        for k in part_keys(M, s):
+            for im in impacts(M, k):
+                i = im[0]
+                if b - int(0.1 * r) <= i <= b + int(0.3 * r) and (s not in per or i < per[s][0]):
+                    per[s] = (i, k)
+    if not per:
+        return None, None, "no part touches down after the flight (%.3f)" % M.t(b)
+    lt, rt = per.get("L", (10 ** 9, ""))[0], per.get("R", (10 ** 9, ""))[0]
+    side = "L" if lt <= rt + TIE * r else "R"
+    why = "flight %.3f-%.3f; first touchdown: %s" % (
+        M.t(a), M.t(b), ", ".join("%s %.3f" % (per[s][1], M.t(per[s][0])) for s in sorted(per)))
+    return side, None, why
+
+
+def unmatched(lines, clip, cfg):
+    """The ids (id()) of the non-deleted lines no found event of their row matches in `cfg` (the
+    disagreements' one-to-one match, every status)."""
+    rows = {}
+    for l in lines:
+        if l["status"] != "deleted" and emits(identity(l), cfg):
+            rows.setdefault(identity(l), ([], []))[0].append(l)
+    for f in clip.get("found_" + cfg, []):
+        i = identity({"kind": f["k"], "side": f["s"], "part": "any"})
+        if emits(i, cfg) and i in rows:
+            rows[i][1].append(f)
+    out = set()
+    for R, D in rows.values():
+        pr = sorted((abs(f["t"] - e["t"]), a, b) for a, e in enumerate(R) for b, f in enumerate(D)
+                    if abs(f["t"] - e["t"]) <= MATCH + 1e-9)
+        ur, ud = set(), set()
+        for _, a, b in pr:
+            if a not in ur and b not in ud:
+                ur.add(a)
+                ud.add(b)
+        out |= {id(e) for a, e in enumerate(R) if a not in ur}
+    return out
+
+
+def settle_jumps(cid, lines, clip, M):
+    """Story 10-9a-3: every jump / land line (not Antho's, not deleted) gets the side of its foot
+    (jump_side); a sliding landing also moves the land line to it. Then a heel / toe step line the
+    detector misses within 30 ms of a land line is replaced by it (deleted). Returns the log rows."""
+    log = []
+    for l in lines:
+        if l["kind"] not in ("jump", "land") or l["status"] == "deleted" or l["source"] == "antho":
+            continue
+        side, tt, why = jump_side(M, l["kind"], l["t"], wide=True)
+        if side is None:
+            log.append((cid, l["kind"], l["side"], "any", l["t"], "side", "unsure", why))
+            continue
+        moved = tt is not None and abs(tt - l["t"]) > 1e-4
+        if side == l["side"] and not moved:
+            continue
+        dec = "side %s->%s" % (l["side"], side) + (" moved %.3f->%.3f" % (l["t"], tt) if moved else "")
+        log.append((cid, l["kind"], l["side"], "any", l["t"], "side", dec, why))
+        l["side"], l["source"] = side, "claude"
+        if moved:
+            l["t"] = round(tt, 4)
+    lands = [l["t"] for l in lines if l["kind"] == "land" and l["status"] != "deleted"]
+    missed = unmatched(lines, clip, "parts")
+    for l in lines:
+        part = l["part"] if l["kind"] == "step" else (l["kind"] if l["kind"] in ("heel", "toe") else "")
+        if part not in ("heel", "toe", "tip") or l["status"] == "deleted" or l["source"] == "antho" or id(l) not in missed:
+            continue
+        near_ = [x for x in lands if abs(l["t"] - x) <= 0.030 + 1e-9]
+        if near_:
+            log.append((cid, "step", l["side"], part, l["t"], "under land", "deleted",
+                        "a %s step %.0f ms from the land at %.3f: replaced by it" % (part, (l["t"] - near_[0]) * 1000, near_[0])))
+            l["status"], l["source"] = "deleted", "claude"
+    return log
+
+
 def ev_hand(M, s, t, release=False):
     r, L, i0, win = M.rate, M.L, M.i(t), int(WIN * M.rate)
     k = M.key("hand", s)
@@ -707,8 +877,9 @@ def decide_clip(cid, lines, clip, M):
             if v:
                 f = x["found"]
                 at = tt if tt is not None else f["t"]
-                twin = [l for l in lines + adds if l["status"] != "deleted" and identity(l) == x["id"]
-                        and abs(l["t"] - at) <= MATCH]
+                # one take-off / landing per flight: a jump / land line of either side is its twin
+                twin = [l for l in lines + adds if l["status"] != "deleted" and abs(l["t"] - at) <= MATCH
+                        and (identity(l) == x["id"] or (kind in ("jump", "land") and l["kind"] == kind))]
                 if twin:
                     log.append((cid, kind, side, part_w, x["t"], x["type"], "not added",
                                 why + "; already a line at %.3f" % twin[0]["t"]))
@@ -760,19 +931,33 @@ def main(argv):
         if not os.path.exists(path):
             continue
         lines = read_ref(path)
-        if not disagreements(lines, clip):
+        jumps = any(l["kind"] in ("jump", "land") and l["status"] != "deleted" for l in lines)
+        if not jumps and not disagreements(lines, clip):
             continue
         M = Motion(dump_path(fixtures, cid))
-        log = decide_clip(cid, lines, clip, M)
+        log = settle_jumps(cid, lines, clip, M) if jumps else []
+        log += decide_clip(cid, lines, clip, M)
         logs.extend(log)
         if not dry:
             write_ref(path, lines)
     out = os.path.join(fixtures, "_bench", "decisions.tsv")
     if not dry and not only:
+        # Story 10-9a-3: the earlier runs' decisions are kept; this run's rows are appended (a row
+        # already logged is not repeated).
+        old = []
+        if os.path.exists(out):
+            with open(out, encoding="utf-8") as f:
+                old = [l.rstrip("\n") for l in f if l.strip() and not l.startswith("#")]
+        seen = set(old)
         with open(out, "w", encoding="utf-8", newline="\n") as f:
             f.write("# clip\tkind\tside\tpart\ttime_s\tdisagreement\tdecision\treason\n")
+            for l in old:
+                f.write(l + "\n")
             for r in logs:
-                f.write("%s\t%s\t%s\t%s\t%.4f\t%s\t%s\t%s\n" % r)
+                row = "%s\t%s\t%s\t%s\t%.4f\t%s\t%s\t%s" % r
+                if row not in seen:
+                    seen.add(row)
+                    f.write(row + "\n")
     per = {}
     for r in logs:
         c = per.setdefault(r[0], {})

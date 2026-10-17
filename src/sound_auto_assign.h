@@ -23,8 +23,9 @@
 namespace rav {
 
 // "<word>:<side>": "step:L", "heel:R", "hand_pivot:L" (both hand pivot kinds), "slide_heel:R"
-// (Each part and Longest part)...; "" for a side other than L / R. Story 10-9a: a sideless kind's
-// key is "<word>:B" ("jump:B", "land:B") for L, R or B; B with any other kind gives "".
+// (Each part and Longest part), "jump:L", "land:R", "lift_heel:L", "jump_toe:R" (story 10-9a-3)...;
+// "" for a side other than L / R. A sideless kind's key (story 10-9a; no kind since 10-9a-3) is
+// "<word>:B" for L, R or B; B with any other kind gives "".
 std::string AutoSoundKey(AutoKind k, char side);
 // The key of a known auto block, "" for a rule or an unknown auto kind.
 std::string AutoSoundKeyOf(const Block& b);

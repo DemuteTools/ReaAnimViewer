@@ -156,7 +156,7 @@ input[type=range] { width: 100%; accent-color: var(--accent) }
 (() => {
 "use strict";
 const LANES = [["step","L"],["step","R"],["lift","L"],["lift","R"],["slide","L"],["slide","R"],["pivot","L"],["pivot","R"],
-  ["jump","B"],["land","B"],["grab","L"],["grab","R"],["release","L"],["release","R"],["hand_pivot","L"],["hand_pivot","R"]];
+  ["jump","L"],["jump","R"],["land","L"],["land","R"],["grab","L"],["grab","R"],["release","L"],["release","R"],["hand_pivot","L"],["hand_pivot","R"]];
 const LANE_NAME = {step:"Step",lift:"Lift",slide:"Slide",pivot:"Pivot",jump:"Jump",land:"Land",grab:"Grab",release:"Release",hand_pivot:"Hand pivot"};
 const CURVES = [["heel_L","heel L"],["toe_L","toe L"],["heel_R","heel R"],["toe_R","toe R"],["hand_L","hand L"],["hand_R","hand R"]];
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
@@ -464,7 +464,7 @@ const qSkipped = new Set(), qExpanded = new Set();
 function ident(k, p, s) {
   let [b, pp] = base(k, p);
   if (b === "step" || b === "slide" || b === "pivot") pp = pp === "tip" ? "toe" : pp; else pp = "";
-  return [b, pp, (b === "jump" || b === "land") ? "B" : s];
+  return [b, pp, s];  // story 10-9a-3: jump / land per side too
 }
 function emits(id, cfg) {
   if (id[0] === "step" || id[0] === "slide" || id[0] === "pivot") return cfg === "default" ? id[1] === "any" : (id[1] === "heel" || id[1] === "toe");

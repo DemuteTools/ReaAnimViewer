@@ -50,8 +50,11 @@ static void TestKeys()
     CHECK(AutoSoundKey(AutoKind::Step, 'L') != AutoSoundKey(AutoKind::Heel, 'L'));
     CHECK(AutoSoundKey(AutoKind::Slide, 'L') != AutoSoundKey(AutoKind::SlideHeel, 'L'));
     CHECK(AutoSoundKey(AutoKind::Step, 'X').empty());
-    // Story 10-9a: a sideless kind has one key, side B.
-    CHECK(AutoSoundKey(AutoKind::Jump, 'L') == "jump:B" && AutoSoundKey(AutoKind::Land, 'B') == "land:B");
+    // Story 10-9a-3: jump and land take their foot's key (no kind is sideless any more); their
+    // part kinds have their own.
+    CHECK(AutoSoundKey(AutoKind::Jump, 'L') == "jump:L" && AutoSoundKey(AutoKind::Land, 'R') == "land:R");
+    CHECK(AutoSoundKey(AutoKind::Land, 'B').empty() && AutoSoundKey(AutoKind::JumpToe, 'R') == "jump_toe:R");
+    CHECK(AutoSoundKey(AutoKind::LiftHeel, 'L') == "lift_heel:L" && AutoSoundKey(AutoKind::LandHeel, 'R') == "land_heel:R");
     CHECK(AutoSoundKey(AutoKind::Step, 'B').empty() && AutoSoundKey(AutoKind::Jump, 'X').empty());
     // Every kind and side has a distinct key except the shared ones.
     for (int k = 0; k < kAutoKindCount; ++k)

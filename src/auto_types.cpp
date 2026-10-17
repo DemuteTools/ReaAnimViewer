@@ -22,7 +22,10 @@
 //     the Body-is-empty checks in tests/auto_types_test.cpp and tests/sound_assign_test.cpp;
 //   - a new PhysicsKind: kPhysicsKindCount and a kPhysicsKindRows row (motion_physics.cpp);
 //   - a type with a mode: code in KindsOf, AutoTypeSeparate, AutoPending, ReadAutoSettings /
-//     ApplyAutoSettings (auto_detect.cpp) and its widget in tagging_view_ui.cpp.
+//     ApplyAutoSettings (auto_detect.cpp) and its widget in tagging_view_ui.cpp. Except a heel /
+//     toe split (story 10-9a-3): `part_split` on the type row, a combined kind (no role key) and a
+//     heel and a toe kind (role keys "heel", "toe") appended; the Combined / Separate widget, the
+//     settings and the remap of edits follow the row.
 // Adding a signature to a kind (story 10-9a-2): a new way to recognise the same event, for an
 // edge case the kind's other signatures miss. Append {name, event source, match} to the kind's
 // `sigs` (at most kAutoMaxSignatures, contiguous); its source and match live in the category's
@@ -82,10 +85,21 @@ std::vector<Role> AutoRolesFoot(char side);
 std::vector<PhysicsEvent> AutoSourceJump(const PhysicsAnalysis& a, const PhysicsParams& p);
 // Story 10-9a-2: the push-off take-offs (Jump's second signature).
 std::vector<PhysicsEvent> AutoSourceJumpPushOff(const PhysicsAnalysis& a, const PhysicsParams& p);
+// Story 10-9a-3: the free-fall take-offs (Jump's third signature).
+std::vector<PhysicsEvent> AutoSourceJumpFreeFall(const PhysicsAnalysis& a, const PhysicsParams& p);
 void AutoPartsJump(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out);
 bool AutoMatchJump(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
 bool AutoMatchLand(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
 bool AutoMissingJump(char side, const std::vector<int>& role_to_bone);
+// Story 10-9a-3: lift-off, jump and land by part (the heel; the toe = the ball or the tip).
+bool AutoMatchLiftHeel(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchLiftToe(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchJumpHeel(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchJumpToe(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchLandHeel(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchLandToe(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMissingJumpHeel(char side, const std::vector<int>& role_to_bone);
+bool AutoMissingJumpToe(char side, const std::vector<int>& role_to_bone);
 void AutoLanesJump(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
 void AutoLanesLand(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
 std::vector<Role> AutoRolesJump(char side);
@@ -125,8 +139,10 @@ constexpr AutoTypeInfo kTypeRows[] = {
      "A marker where the foot lands: FS L / FS R (combined: the first part to touch),\n"
      "or Heel and Toe separately (one marker per part).",
      "step", {{&P::contact_speed, S::Times}, {}}, &AutoPartsFootSplit},
-    {T::LiftOff, "Lift-off", "Lift-off", C::Legs, "A marker where the foot leaves the ground: Lift L / Lift R.", "lift",
-     {{&P::contact_speed, S::Times}, {}}, &AutoPartsFootAny},
+    {T::LiftOff, "Lift-off", "Lift-off", C::Legs,
+     "A marker where the foot leaves the ground: Lift L / Lift R (combined: the last part to leave),\n"
+     "or Lift Heel L / Lift Toe L... (separate: on the part that leaves last).",
+     "lift", {{&P::contact_speed, S::Times}, {}}, &AutoPartsFootSplit, false, true},
     {T::Slide, "Slide scuff", "Slide scuff", C::Legs,
      "A marker where a planted foot slides: Slide L / Slide R (combined),\n"
      "or Slide Heel L / Slide Toe L... (separate).",
@@ -143,17 +159,20 @@ constexpr AutoTypeInfo kTypeRows[] = {
     {T::HandPivot, "Pivot scuff", "Arms Pivot scuff", C::Arms,
      "A marker where a planted hand turns: Hand Pivot L / Hand Pivot R.", "hand_pivot",
      {{&P::hand_pivot_min_deg, S::Divide}, {&P::hand_pivot_rate_dps, S::Divide}}, &AutoPartsHands},
-    // Story 10-9a: sideless (one block each). Higher sensitivity = shorter flights count; story
-    // 10-9a-2: and a softer push-off (jump_impulse_g) counts.
+    // Story 10-9a: higher sensitivity = shorter flights count; story 10-9a-2: and a softer
+    // push-off (jump_impulse_g) counts. Story 10-9a-3: on the foot that leaves last / touches
+    // first (L / R), Combined / Separate.
     {T::Jump, "Jump", "Jump", C::Legs,
-     "A marker where a jump takes off: the last foot leaving before both feet are off\n"
-     "while the body falls freely, or right after a hard push off the ground (Jump).\n"
+     "A marker where a jump takes off, on the last foot to leave (Jump L / Jump R):\n"
+     "both feet off while the body falls freely, right after a hard push off the ground,\n"
+     "or into a free fall (a fall on the back). Separate: Jump Heel L / Jump Toe L...\n"
      "With Lift-off ticked, it replaces the lifts there.",
-     "jump", {{&P::jump_min_flight_s, S::Divide}, {&P::jump_impulse_g, S::Divide}}, &AutoPartsJump, true},
+     "jump", {{&P::jump_min_flight_s, S::Divide}, {&P::jump_impulse_g, S::Divide}}, &AutoPartsJump, false, true, true},
     {T::Land, "Land", "Land", C::Legs,
-     "A marker where a jump lands: the first foot touching after the flight (Land).\n"
+     "A marker where a jump lands, on the first foot to touch, at its step (Land L / Land R).\n"
+     "Separate: Land Heel L / Land Toe L...\n"
      "With Step ticked, it replaces the steps there.",
-     "land", {{&P::jump_min_flight_s, S::Divide}, {}}, &AutoPartsJump, true},
+     "land", {{&P::jump_min_flight_s, S::Divide}, {}}, &AutoPartsJump, false, true, true},
 };
 
 // ---- Kinds -------------------------------------------------------------------------------------
@@ -207,12 +226,32 @@ constexpr AutoKindInfo kKindRows[] = {
     {K::PivotToeLongest, "pivot_toe_longest", T::Pivot, "Pivot Toe", {0xC49FEE, 0xEE9FC4}, kLong, false, true, "toe",
      K::PivotToe,
      {{"pivot", &AutoSourceFoot, &AutoMatchPivotToeLongest}}, &AutoMissingHeelOrToe, &AutoLanesPivot, &AutoRolesFoot},
-    // Story 10-9a: sideless kinds (one colour: color[0]).
-    {K::Jump, "jump", T::Jump, "Jump", {0x3CC8B4, 0x3CC8B4}, kNo, false, false, "", K::Jump,
-     {{"flight", &AutoSourceJump, &AutoMatchJump}, {"push-off", &AutoSourceJumpPushOff, &AutoMatchJump}},
+    // Story 10-9a: jump and land; story 10-9a-3: L / R colours, and the free-fall signature
+    // (appended: it never moves an existing marker).
+    {K::Jump, "jump", T::Jump, "Jump", {0x3CC8B4, 0xC8B43C}, kNo, false, false, "", K::Jump,
+     {{"flight", &AutoSourceJump, &AutoMatchJump}, {"push-off", &AutoSourceJumpPushOff, &AutoMatchJump},
+      {"free fall", &AutoSourceJumpFreeFall, &AutoMatchJump}},
      &AutoMissingJump, &AutoLanesJump, &AutoRolesJump},
-    {K::Land, "land", T::Land, "Land", {0xE0503C, 0xE0503C}, kNo, false, false, "", K::Land,
+    {K::Land, "land", T::Land, "Land", {0x1E7850, 0x8C1E50}, kNo, false, false, "", K::Land,
      {{"flight", &AutoSourceJump, &AutoMatchLand}}, &AutoMissingJump, &AutoLanesLand, &AutoRolesJump},
+    // Story 10-9a-3: lift-off, jump and land by part (Separate): the heel in the type's colour, the
+    // toe (ball or tip) a shade lighter.
+    {K::LiftHeel, "lift_heel", T::LiftOff, "Lift Heel", {0x5F5FDD, 0xDD5F5F}, kNo, false, false, "heel", K::LiftHeel,
+     {{"contact", &AutoSourceFoot, &AutoMatchLiftHeel}}, &AutoMissingHeel, &AutoLanesHeel, &AutoRolesFoot},
+    {K::LiftToe, "lift_toe", T::LiftOff, "Lift Toe", {0x9F9FEE, 0xEE9F9F}, kNo, false, false, "toe", K::LiftToe,
+     {{"contact", &AutoSourceFoot, &AutoMatchLiftToe}}, &AutoMissingToe, &AutoLanesToe, &AutoRolesFoot},
+    {K::JumpHeel, "jump_heel", T::Jump, "Jump Heel", {0x3CC8B4, 0xC8B43C}, kNo, false, false, "heel", K::JumpHeel,
+     {{"flight", &AutoSourceJump, &AutoMatchJumpHeel}, {"push-off", &AutoSourceJumpPushOff, &AutoMatchJumpHeel},
+      {"free fall", &AutoSourceJumpFreeFall, &AutoMatchJumpHeel}},
+     &AutoMissingJumpHeel, &AutoLanesJump, &AutoRolesJump},
+    {K::JumpToe, "jump_toe", T::Jump, "Jump Toe", {0x8ADED2, 0xDED28A}, kNo, false, false, "toe", K::JumpToe,
+     {{"flight", &AutoSourceJump, &AutoMatchJumpToe}, {"push-off", &AutoSourceJumpPushOff, &AutoMatchJumpToe},
+      {"free fall", &AutoSourceJumpFreeFall, &AutoMatchJumpToe}},
+     &AutoMissingJumpToe, &AutoLanesJump, &AutoRolesJump},
+    {K::LandHeel, "land_heel", T::Land, "Land Heel", {0x1E7850, 0x8C1E50}, kNo, false, false, "heel", K::LandHeel,
+     {{"flight", &AutoSourceJump, &AutoMatchLandHeel}}, &AutoMissingJumpHeel, &AutoLanesLand, &AutoRolesJump},
+    {K::LandToe, "land_toe", T::Land, "Land Toe", {0x50A07D, 0xB45078}, kNo, false, false, "toe", K::LandToe,
+     {{"flight", &AutoSourceJump, &AutoMatchLandToe}}, &AutoMissingJumpToe, &AutoLanesLand, &AutoRolesJump},
 };
 
 // One row per enum value, in enum order.

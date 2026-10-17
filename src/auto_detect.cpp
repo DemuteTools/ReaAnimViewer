@@ -26,10 +26,39 @@ int SideIndex(char side)
     return side == 'R' ? 1 : 0;
 }
 
+bool InRangeType(AutoType t)
+{
+    return static_cast<int>(t) >= 0 && static_cast<int>(t) < kAutoTypeCount;
+}
+
+// Story 10-9a-3: a kind of a `part_split` type (lift-off, jump, land): its combined kind has no
+// role key, its heel / toe kinds have theirs.
+bool PartSplitKind(AutoKind k)
+{
+    return AutoTypeRow(AutoKindRow(k).type).part_split && AutoKindRow(k).role_key[0] != '\0';
+}
+
+// The kind of a `part_split` type: its combined one (part = false), else its heel one.
+AutoKind PartSplitKindOf(AutoType t, bool heel_part)
+{
+    for (AutoKind k : AutoKindsOf(t)) {
+        const std::string key = AutoKindRow(k).role_key;
+        if (heel_part ? key == "heel" : key.empty()) return k;
+    }
+    return AutoKindsOf(t).front();
+}
+
 // The kinds a ticked type makes, in block order. The modes of steps, slides, pivots and hand
-// pivots pick among their kinds; a type with no mode makes all its kinds (story 10-9-0).
+// pivots pick among their kinds, and Combined / Separate among a `part_split` type's (story
+// 10-9a-3); a type with no mode makes all its kinds (story 10-9-0).
 std::vector<AutoKind> KindsOf(AutoType t, const AutoSettings& s)
 {
+    if (InRangeType(t) && AutoTypeRow(t).part_split) {
+        std::vector<AutoKind> out;
+        for (AutoKind k : AutoKindsOf(t))
+            if (PartSplitKind(k) == s.separate_parts[static_cast<int>(t)]) out.push_back(k);
+        return out;
+    }
     switch (t) {
     case AutoType::Step:
         return s.separate_steps ? std::vector<AutoKind>{AutoKind::Heel, AutoKind::Toe} : std::vector<AutoKind>{AutoKind::Step};
@@ -196,7 +225,7 @@ bool operator==(const AutoTypeSettings& a, const AutoTypeSettings& b)
 bool operator==(const AutoSettings& a, const AutoSettings& b)
 {
     for (int t = 0; t < kAutoTypeCount; ++t)
-        if (!(a.type[t] == b.type[t])) return false;
+        if (!(a.type[t] == b.type[t]) || a.separate_parts[t] != b.separate_parts[t]) return false;
     return a.separate_steps == b.separate_steps && a.hand_pivot_any == b.hand_pivot_any &&
            a.slide_parts == b.slide_parts && a.pivot_parts == b.pivot_parts;
 }
@@ -226,8 +255,13 @@ void UntickAutoCategory(AutoSettings& s, AutoCategory c)
 
 bool AutoPending(const AutoSettings& ui, const AutoSettings& item)
 {
-    for (int t = 0; t < kAutoTypeCount; ++t)
+    for (int t = 0; t < kAutoTypeCount; ++t) {
         if (ui.type[t].on != item.type[t].on) return true;
+        // Story 10-9a-3: a `part_split` type switched between Combined and Separate.
+        if (AutoTypeRow(static_cast<AutoType>(t)).part_split && ui.type[t].on && item.type[t].on &&
+            ui.separate_parts[t] != item.separate_parts[t])
+            return true;
+    }
     const int step = static_cast<int>(AutoType::Step), hp = static_cast<int>(AutoType::HandPivot);
     const int sl = static_cast<int>(AutoType::Slide), pv = static_cast<int>(AutoType::Pivot);
     return (ui.type[step].on && item.type[step].on && ui.separate_steps != item.separate_steps) ||
@@ -244,7 +278,7 @@ bool AutoTypeSeparate(AutoType t, const AutoSettings& s)
     case AutoType::Pivot: return s.pivot_parts != ScuffParts::Combined;
     default: break;
     }
-    return false;
+    return InRangeType(t) && AutoTypeRow(t).part_split && s.separate_parts[static_cast<int>(t)];
 }
 
 std::vector<Block> AutoBlocks(const AutoSettings& s)
@@ -268,6 +302,7 @@ AutoSettings ReadAutoSettings(const std::vector<Block>& blocks)
     AutoSettings s;
     bool combined = false, separate = false, strict = false, any = false;
     bool scuff_mode[2][3] = {};  // story 10-8m: per scuff type (slide, pivot), the modes its blocks say
+    bool split[kAutoTypeCount][2] = {};  // story 10-9a-3: per part_split type, combined / part blocks seen
     for (const Block& b : blocks) {
         AutoKind k;
         if (!AutoBlockKind(b, &k, nullptr)) continue;
@@ -281,6 +316,7 @@ AutoSettings ReadAutoSettings(const std::vector<Block>& blocks)
         if (k == AutoKind::Heel || k == AutoKind::Toe) separate = true;
         if (k == AutoKind::HandPivot) strict = true;
         if (k == AutoKind::HandPivotAny) any = true;
+        if (AutoTypeRow(AutoTypeOfKind(k)).part_split) split[t][PartSplitKind(k) ? 1 : 0] = true;
         if (t == static_cast<int>(AutoType::Slide) || t == static_cast<int>(AutoType::Pivot))
             scuff_mode[t == static_cast<int>(AutoType::Pivot) ? 1 : 0][static_cast<int>(ScuffMode(k))] = true;
     }
@@ -294,6 +330,7 @@ AutoSettings ReadAutoSettings(const std::vector<Block>& blocks)
     }
     s.separate_steps = separate && !combined;
     s.hand_pivot_any = any && !strict;
+    for (int t = 0; t < kAutoTypeCount; ++t) s.separate_parts[t] = split[t][1] && !split[t][0];
     return s;
 }
 
@@ -308,7 +345,10 @@ std::vector<int> ApplyAutoSettings(std::vector<Block>& blocks, const AutoSetting
         AutoKind k;
         char     side;
         if (!AutoBlockKind(old[i], &k, &side)) {
-            keep[i] = 1;  // a rule, or an auto type this version does not know
+            // A rule, or an auto type this version does not know, stays. Story 10-9a-3: a known
+            // kind on a side it does not have (a jump / land block saved side=B in development,
+            // never released) goes.
+            keep[i] = (IsAutoBlock(old[i]) && AutoKindFromWord(old[i].auto_type, nullptr)) ? 0 : 1;
             continue;
         }
         for (size_t j = 0; j < want.size(); ++j) {
@@ -423,6 +463,9 @@ std::vector<int> ApplyAutoSettings(std::vector<Block>& blocks, const AutoSetting
             if (map[i] < 0) map[i] = find_new(sl ? AutoKind::SlideHeelLongest : AutoKind::PivotHeelLongest, side);
         } else if (ScuffMode(k) != ScuffParts::Combined)
             map[i] = find_new(AutoTypeOfKind(k) == AutoType::Slide ? AutoKind::Slide : AutoKind::Pivot, side);
+        // Story 10-9a-3: a lift-off, jump or land switched between combined and separate, as steps.
+        else if (AutoTypeRow(AutoTypeOfKind(k)).part_split)
+            map[i] = find_new(PartSplitKindOf(AutoTypeOfKind(k), !PartSplitKind(k)), side);
     }
     if (changed) *changed = !BlocksEqual(old, out);
     blocks = std::move(out);
@@ -677,6 +720,25 @@ std::vector<Event> DetectAutoEvents(const std::vector<Block>& blocks, const std:
 
 namespace {
 
+// Story 10-9a-3: another active block of block i's group has events: the same `part_split` type
+// on the same side (combined / heel / toe), or the same `shared_sides` type on either side.
+bool GroupHasEvents(const std::vector<Block>& blocks, const std::vector<int>& event_counts, size_t i)
+{
+    AutoKind k;
+    char     side;
+    if (!AutoBlockKind(blocks[i], &k, &side)) return false;
+    const AutoType     t = AutoTypeOfKind(k);
+    const AutoTypeInfo& row = AutoTypeRow(t);
+    if (!row.part_split && !row.shared_sides) return false;
+    for (size_t j = 0; j < blocks.size() && j < event_counts.size(); ++j) {
+        AutoKind jk;
+        char     js;
+        if (j == i || event_counts[j] <= 0 || !IsActiveAutoBlock(blocks[j]) || !AutoBlockKind(blocks[j], &jk, &js)) continue;
+        if (AutoTypeOfKind(jk) == t && (row.shared_sides || js == side)) return true;
+    }
+    return false;
+}
+
 // Block `b`'s detected events at sensitivity `sens` (-1 = its analysis failed), on `runs`.
 int CountAt(const Block& b, double sens, const std::vector<BoneTrack>& role_tracks, std::vector<AutoAnalysis>& runs,
             bool looping)
@@ -709,6 +771,7 @@ std::vector<AutoSensResult> SearchAutoSensitivity(const std::vector<Block>& bloc
         r.sens = b.sens;
         if (!IsActiveAutoBlock(b) || AutoBlockPartMissing(b, role_to_bone)) continue;
         if (i >= event_counts.size() || event_counts[i] != 0) continue;  // has events (or unknown): untouched
+        if (GroupHasEvents(blocks, event_counts, i)) continue;  // story 10-9a-3: its sibling holds the event
         const double start = std::isfinite(b.sens) ? std::clamp(b.sens, 0.0, 100.0) : kAutoDefaultSens;
         if (CountAt(b, start, role_tracks, runs, looping) != 0) continue;  // a failed analysis, or events after all
         const int at100 = CountAt(b, 100.0, role_tracks, runs, looping);

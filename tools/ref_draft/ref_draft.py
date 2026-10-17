@@ -20,7 +20,8 @@
 # Merge (never overwrite): a line that is confirmed or deleted, or whose source is antho, is
 # kept as is; old draft lines (source motion) are replaced by the new draft. Lines are compared by
 # the bench's row identity (identity(): the kind as RefTarget reads it, a tip as the toe, no part
-# for lift / grab / release / hand pivot / jump / land, no side for jump / land). The old REF
+# for lift / grab / release / hand pivot / jump / land; story 10-9a-3: jump / land keep their
+# side; the merge reads a jump / land of either side as the same event: one per flight). The old REF
 # markers of a csv dump (`<bench> --old-refs <csv>`: ParseEventRefLabel and the step labels) are
 # added as confirmed REF lines unless a kept line of their identity lies within 150 ms (the
 # bench's match window: already there, or moved by Antho). A draft is dropped when a kept line or
@@ -47,7 +48,7 @@
 #   flight           no foot in contact for 0.22 s or more, the hips on a ballistic arc (fitted
 #                    parabola, curvature under -0.4 g), or falling freely over its first 0.3 s
 #                    (curvature under -0.5 g: a jump that ends on the body). jump <last foot leaving> any at its start,
-#                    land <first foot touching> any at its end when the hips are still 0.2 L above
+#                    land <first foot touching> any at its end (feet together: L) when the hips are still 0.2 L above
 #                    that foot 0.2 s later (a fall onto the body gives no Land). Within 30 ms of a
 #                    land no step line, within 30 ms of a jump no lift line (the product's
 #                    replacement: Land replaces the steps, Jump the lift-offs).
@@ -315,11 +316,12 @@ def draft(clip):
         fall = head >= 5 and np.polyfit(tt[:head], seg[:head], 2)[0] * 2.0 < -0.5 * 9.81
         if not (arc or fall):
             continue
-        lifts = [(fr_b, s) for s, fr in foot_runs.items() for fr_a, fr_b in fr if fr_b == a]
-        side = lifts[0][1] if lifts else "L"
+        # Story 10-9a-3: the last foot leaving (its run ends where the flight starts; L first).
+        lifts = sorted((s, fr_b) for s, fr in foot_runs.items() for fr_a, fr_b in fr if fr_b == a)
+        side = lifts[0][0] if lifts else "L"
         add("jump", side, "any", a - 1)
         if b < n:
-            lands = [s for s, fr in foot_runs.items() for fr_a, fr_b in fr if fr_a == b]
+            lands = sorted(s for s, fr in foot_runs.items() for fr_a, fr_b in fr if fr_a == b)
             ls = lands[0] if lands else "L"
             j = min(n - 1, b + int(0.2 * rate))
             fk = "heel_" + ls if "heel_" + ls in P else foot_parts[0]
@@ -395,8 +397,8 @@ def kept(l):
 
 def identity(l):
     """The bench's row identity of a line (RefTarget, tests/ref_file.h): the base kind; for steps,
-    slides and pivots the part, a tip reading as the toe; no part for the other kinds; no side for
-    jump / land (a sideless row)."""
+    slides and pivots the part, a tip reading as the toe; no part for the other kinds; the side
+    (story 10-9a-3: jump / land too; the merge's same_id matches them across sides)."""
     kind, part = l["kind"], l["part"]
     if kind in ("heel", "toe"):
         kind, part = "step", kind
@@ -409,13 +411,20 @@ def identity(l):
         part = "toe" if part == "tip" else part
     else:
         part = ""
-    side = "B" if kind in ("jump", "land") else l["side"]
-    return (kind, part, side)
+    return (kind, part, l["side"])
+
+
+def same_id(x, y):
+    """Two identities of one event for the merge: the same row, or a jump / land of either side (one
+    take-off / landing per flight, whichever foot a line names)."""
+    if x[:2] != y[:2]:
+        return False
+    return x[2] == y[2] or x[0] in ("jump", "land")
 
 
 def near(a, lines, window=0.150):
     ia = identity(a)
-    return any(identity(k) == ia and abs(k["t"] - a["t"]) <= window for k in lines)
+    return any(same_id(identity(k), ia) and abs(k["t"] - a["t"]) <= window for k in lines)
 
 
 def merge(old, drafts, old_refs):

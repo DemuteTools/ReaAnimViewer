@@ -166,8 +166,11 @@
 // centre of mass): the hips' upward acceleration (HipsUpAccelerationG) peaks at jump_impulse_g at
 // least while a foot is on the ground, a both-feet-off run (2 samples at least, no minimum
 // flight) starts within jump_impulse_window_s after that peak, and no hand is in contact from the
-// peak to that take-off (a push the hands share, climbing, is no jump).
-//   jump          the take-off as JumpEvents' (the latest lift_s of the contacts that end where
+// peak to that take-off (a push the hands share, climbing, is no jump), and the body is not
+// running: its mean horizontal speed over the window before the take-off (hips_vh) stays under
+// jump_impulse_max_speed (a run's stride pushes as hard as a jump; a jump taken while running is
+// left to its flight).
+//   jump         the take-off as JumpEvents' (the latest lift_s of the contacts that end where
 //                 the run starts), never at the clip start. Strength as JumpEvents'.
 //
 // A missing role drops only that part's events (PhysicsAnalysis::missing says why for the feet,
@@ -317,6 +320,13 @@ struct PhysicsParams {
     // first false Jump comes at 90 %. Jumping Down steps off a ledge (0.26 g): its flight finds it.
     double     jump_impulse_g = 0.9;
     double     jump_impulse_window_s = 0.25;
+    // The body's horizontal speed (leg/s, ground frame) at or above which a push is a running
+    // stride, not a jump. Measured (mean over the window before the take-off): the push-off jumps
+    // Jump_Small 0.45, Standing Jump 0.59 / 0.68, Jump Attack 1.06, Jumping 1.23; the strides
+    // Slow Run 3.3-3.5 leg/s (pushes 1.04 / 1.55 g), Running Jump Over Hole's stride after the
+    // landing 4.91 (1.03 g), Left Strafe 5.2 (in place: the ground's speed). 2.2 sits between; the
+    // running jumps (Running Jump Over Hole's 4.37) keep their flight.
+    double     jump_impulse_max_speed = 2.2;
     double     jump_impulse_smooth_s = 0.040;  // the acceleration's smoothing (Gaussian sigma, s)
 };
 
@@ -402,6 +412,9 @@ struct PhysicsAnalysis {
     // Story 10-9a: the hips' vertical velocity in the ground frame (smoothed as the parts, leg/s,
     // up > 0), for the jumps. Empty without a hips bone (hips_missing says why).
     std::vector<double>      hips_vy;
+    // Story 10-9a-2: the hips' horizontal speed in the ground frame (leg/s), same smoothing; the
+    // push-off jumps' running check. Empty with hips_vy.
+    std::vector<double>      hips_vh;
     std::string              hips_missing;
     // The clip inside the analysed track (story 10-8i): looping, the track is three cycles and
     // the clip is its samples [window_first, window_first + window_samples); otherwise 0 and

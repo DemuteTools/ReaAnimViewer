@@ -1800,6 +1800,13 @@ int main()
         CHECK(ev_jl.size() == 2 && count(ev_jl, "Jump") == 1 && count(ev_jl, "Land") == 1);
         // Story 10-9a-2: the take-off's push is found by both signatures; merged into one, the
         // flight's (the first signature).
+        {
+            const PhysicsParams   jp = AutoPhysicsParams(AutoType::Jump, kAutoDefaultSens, false);
+            const PhysicsAnalysis ja = AnalyseMotion(rig, jp);
+            const std::vector<PhysicsEvent> push = JumpPushOffEvents(ja, jp), flight = JumpEvents(ja, jp);
+            CHECK(push.size() == 1 && flight.size() == 2);
+            if (push.size() == 1 && !flight.empty()) CHECK(std::fabs(push[0].time_s - flight[0].time_s) < kAutoMergeS);
+        }
         for (const Event& e : ev_jl) CHECK(e.signature == 0);
         if (ev_jl.size() == 2) {
             CHECK(std::fabs(ev_jl[0].time_s - 1.0) < 0.03 && std::fabs(ev_jl[1].time_s - 1.5) < 0.04);

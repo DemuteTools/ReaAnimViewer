@@ -1782,6 +1782,12 @@ int main()
         PhysicsParams soft;
         soft.jump_impulse_g = 0.3;
         CHECK(JumpPushOffEvents(make(0.5, 0.05), soft).size() == 1);
+        // The same push while running (the body at 3 leg/s, a stride): none; at 2 leg/s: a jump.
+        PhysicsAnalysis run = a;
+        run.hips_vh.assign(run.samples, 3.0);
+        CHECK(JumpPushOffEvents(run).empty());
+        run.hips_vh.assign(run.samples, 2.0);
+        CHECK(JumpPushOffEvents(run).size() == 1);
         // The push too long before the take-off (window 0.05 s < 0.1 s): none.
         PhysicsParams tight;
         tight.jump_impulse_window_s = 0.05;

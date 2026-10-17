@@ -925,6 +925,9 @@ PhysicsAnalysis AnalyseTrack(const std::vector<BoneTrack>& rt, const PhysicsPara
         const std::vector<Vec3d> hv = Velocity(hs, rate);
         a.hips_vy.resize(n);
         for (size_t i = 0; i < n; ++i) a.hips_vy[i] = (hv[i].y - a.ground_velocity.y) / leg;
+        a.hips_vh.resize(n);  // story 10-9a-2
+        for (size_t i = 0; i < n; ++i)
+            a.hips_vh[i] = std::hypot(hv[i].x - a.ground_velocity.x, hv[i].z - a.ground_velocity.z) / leg;
     } else {
         a.hips_missing = std::string("no bone for ") + RoleName(Role::Hips);
     }
@@ -1595,6 +1598,13 @@ std::vector<PhysicsEvent> JumpPushOffEvents(const PhysicsAnalysis& a, const Phys
         bool held = false;
         for (int k = peak; k <= fs && !held; ++k) held = hand_on(k);
         if (held) continue;
+        // Running: a stride pushes as hard as a jump; the body's mean speed over the window says.
+        if (a.hips_vh.size() == a.samples) {
+            double    sum = 0.0;
+            const int k0 = std::max(0, fs - win);
+            for (int k = k0; k < fs; ++k) sum += a.hips_vh[static_cast<size_t>(k)];
+            if (sum / (fs - k0) >= p.jump_impulse_max_speed) continue;
+        }
         PhysicsEvent best;
         bool         found = false;
         for (const FootTrack& f : a.foot)

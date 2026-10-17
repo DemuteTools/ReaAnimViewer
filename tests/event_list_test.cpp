@@ -95,6 +95,8 @@ int main()
         std::vector<Event> live = {Det(0, 0.5), Det(0, 1.5), Det(2, 2.0)};
         const std::vector<char> skip_sword = {0, 1, 0};
         KeepBlockEvents(live, r.events, blocks, skip_sword);
+        // Story 10-9a-2: a kept event's signature is unknown (-1: no "Found by"); live ones keep theirs.
+        for (const Event& e : live) CHECK(e.signature == (e.block == 1 ? -1 : 0));
         const std::vector<PlannedMarker> kept = plan_of(live, r);
         // Its markers stay as the last Commit wrote them (detection and user event, values kept):
         // the plan is the committed one, so no preview and Commit writes them again.

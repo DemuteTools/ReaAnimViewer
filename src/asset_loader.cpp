@@ -1158,6 +1158,11 @@ const char* LoadErrorCategoryName(LoadErrorCategory category)
 
 CpuLoadResult LoadCpuAsset(const std::string& path)
 {
+    return LoadCpuAsset(path, CpuLoadOptions{});
+}
+
+CpuLoadResult LoadCpuAsset(const std::string& path, const CpuLoadOptions& options)
+{
     // assimp throws std::exception-derived on some malformed inputs; the whole body
     // is wrapped so nothing escapes this function (AR18). Catch std::bad_alloc as
     // OutOfMemory specifically, then any other std::exception as ParseFailed.
@@ -1208,7 +1213,10 @@ CpuLoadResult LoadCpuAsset(const std::string& path)
         // assimp's FBX importer flags a mesh-less scene (a skeleton/animation-only export)
         // INCOMPLETE without setting an error string, so name it here — otherwise the
         // copied error log would read "parse-failed" with an empty reason.
-        if (scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) {
+        // Story 10-8o: an animation-only scene kept on request (tools only, CpuLoadOptions).
+        const bool keep_no_mesh = options.allow_no_mesh && scene->mNumMeshes == 0 &&
+                                  scene->mNumAnimations > 0;
+        if ((scene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) && !keep_no_mesh) {
             if (scene->mNumMeshes == 0)
                 return {nullptr, LoadErrorCategory::UnsupportedFormat,
                         "file contains no meshes (skeleton/animation-only export?)",
@@ -1219,7 +1227,7 @@ CpuLoadResult LoadCpuAsset(const std::string& path)
                     ParseFailureHint(path, err)};
         }
 
-        if (scene->mNumMeshes == 0)
+        if (scene->mNumMeshes == 0 && !keep_no_mesh)
             return {nullptr, LoadErrorCategory::UnsupportedFormat,
                     "file contains no meshes", kNoMeshHint};
 
@@ -1246,7 +1254,10 @@ CpuLoadResult LoadCpuAsset(const std::string& path)
         WalkBake(scene, scene->mRootNode, glm::mat4(1.0f), bone_index, gltf_skins, pending,
                  aabb_min, aabb_max, aabb_seeded);
 
-        if (pending.empty())
+        if (keep_no_mesh && skeleton.bones.empty())
+            return {nullptr, LoadErrorCategory::UnsupportedFormat,
+                    "file contains no meshes and no animated skeleton", kNoMeshHint};
+        if (pending.empty() && !keep_no_mesh)
             return {nullptr, LoadErrorCategory::UnsupportedFormat,
                     "file has meshes but no drawable geometry",
                     "The mesh in this file is empty (no visible geometry)."};

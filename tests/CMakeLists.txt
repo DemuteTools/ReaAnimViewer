@@ -125,6 +125,18 @@ add_executable(detection_eval detection_eval.cpp ../src/bone_events.cpp ../src/f
                ../src/tagging_signal.cpp ../src/motion_physics.cpp)
 target_include_directories(detection_eval PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 
+# Story 10-8o -- the all-trigger bench (a tool, not a test): every auto type ticked, through Detect
+# (DetectAutoEvents), on every fixture, scored against the reference files (tests/ref_file.h):
+#   trigger_bench [--fixtures=<dir>] [--fbx-dump=<exe>] [--out=<dir>]   (tools/bench/run.sh runs it)
+add_executable(trigger_bench trigger_bench.cpp ${RAV_AUTO_SRCS} ../src/motion_physics.cpp ../src/bone_events.cpp
+               ../src/rule_record.cpp ../src/event_list.cpp ../src/tagging_signal.cpp)
+target_include_directories(trigger_bench PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+
+# Story 10-8o -- the bench's reference file and row match (tests/ref_file.h).
+add_executable(ref_file_test ref_file_test.cpp)
+target_include_directories(ref_file_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+add_test(NAME ref_file COMMAND ref_file_test)
+
 # Story 10-2 -- the rules record, presets and the role mapping (src/rule_record.h,
 # preset_store.h, role_map_store.h). The factory presets are embedded as in the DLL.
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../cmake")

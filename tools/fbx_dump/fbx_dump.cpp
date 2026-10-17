@@ -6,7 +6,8 @@
 // loads the file through the plugin's own LoadCpuAsset and samples every bone with its
 // own SampleBoneTracks at 240 Hz, then writes the same CSV (no REF markers: "# ref=" is
 // empty; "# visible=" is the whole clip, as for an item covering it). Lets detection be
-// tuned (tests/detection_eval) on clips never dumped in REAPER.
+// tuned (tests/detection_eval) on clips never dumped in REAPER. Story 10-8o: animation-only
+// files (a skeleton and an animation, no mesh) load too (CpuLoadOptions::allow_no_mesh).
 
 #include "win32_prelude.h"
 
@@ -37,7 +38,9 @@ int main(int argc, char** argv)
         return 2;
     }
     const std::filesystem::path in = std::filesystem::u8path(argv[1]);
-    const CpuLoadResult loaded = LoadCpuAsset(in.u8string());
+    CpuLoadOptions opts;
+    opts.allow_no_mesh = true;  // story 10-8o: animation-only clips (no mesh) are dumped too
+    const CpuLoadResult loaded = LoadCpuAsset(in.u8string(), opts);
     if (!loaded.asset) {
         std::fprintf(stderr, "could not load %s: %s\n", argv[1],
                      (loaded.hint.empty() ? loaded.detail : loaded.hint).c_str());

@@ -111,6 +111,14 @@ struct CpuLoadResult {
 // Logs texture warnings like LoadAsset, but no user notice (LoadAsset builds those).
 CpuLoadResult LoadCpuAsset(const std::string& path);
 
+// Story 10-8o: opt-in load options (tools only; the plugin uses the defaults above).
+struct CpuLoadOptions {
+    // Keep a scene with no mesh that has a skeleton and an animation (an animation-only
+    // export): the asset then has no mesh. Off: such a file is refused ("No mesh").
+    bool allow_no_mesh = false;
+};
+CpuLoadResult LoadCpuAsset(const std::string& path, const CpuLoadOptions& options);
+
 // Uploads `cpu` into the CURRENT GL context. False when a buffer cannot be allocated
 // (the model cannot be drawn; `out` is left untouched). A texture that fails to upload is
 // non-fatal (flat colour) and counted in *out_failed_textures (optional).

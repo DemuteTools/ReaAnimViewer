@@ -62,6 +62,16 @@ struct Seg {
     SegTone     tone = SegTone::Normal;
 };
 
+// 13-65: what Populate places for a value of a Switch Group, as ResolveEvent walks it. Own: the value's case holds
+// a Sound (through any Random / Blend and any value of a nested Switch). Default: no case, the Switch's default
+// case holds one. Nothing: neither (an empty case, or no case and an empty default). Ordered: the best is the highest.
+enum class ValueSound { Nothing = 0, Default = 1, Own = 2 };
+struct ValueSoundState {
+    std::string value_uid;
+    ValueSound  state = ValueSound::Own;
+    std::string default_name;  // Default: the default value's name ("" = differs between targets / Switches)
+};
+
 // One Switch Group of a target's library (in the library's walk order).
 struct GroupState {
     std::string group_uid;
@@ -74,9 +84,14 @@ struct GroupState {
     std::string own_uid;        // the own layer's value ("" = inherit)
     std::string inherit_name;   // what "inherit" gives: the value below the own layer
     std::string inherit_from;
+    std::string inherit_uid;    // 13-65: the value inherit gives
     bool        reached = true;
     std::string not_reached;    // "not reached under Crouch"
     const SoundNode* first_switch = nullptr;
+    // 13-65: every value of the group, in the group's order (the Switch nodes the target's walk reaches, best
+    // state across them; every Switch of the group in the library when none is reached).
+    std::vector<ValueSoundState> value_sounds;
+    const ValueSoundState* SoundOf(const std::string& value_uid) const;
 };
 
 struct Target {
@@ -108,6 +123,17 @@ Target MakeTarget(const SoundStore& store, const ItemSounds& rec, const SoundCha
 // The "Item values" row: the item's own Switch values over the Switch defaults. `others` are the item's
 // targets (the Switch Groups it shows are the ones their libraries use).
 Target MakeItemTarget(const SoundStore& store, const ItemSounds& rec, const std::vector<Target>& others);
+
+// 13-65: whether a node holds a Sound: a Sound; a Random / Blend with a child that does; a Switch with a case
+// whose child does (cycle-safe; media-missing Sounds and Blend layer roles do not matter).
+bool HoldsSound(const SoundLibrary& lib, const SoundNode& n);
+// 13-65: the state of a value chip across the targets that have the group: the best one (Own > Default >
+// Nothing); the default's name kept only when every target in Default names the same. `value_uid` "" = the
+// inherit chip: each target's own inherit value. Own when no target knows the value.
+ValueSoundState ChipSound(const std::vector<const Target*>& sel, const std::string& group_uid, const std::string& value_uid);
+// The chip's tooltip: "No sound of its own: plays the default, Wood", "No sound: events on it place nothing";
+// "" for Own.
+std::string ChipSoundTip(const ValueSoundState& s);
 
 // ---- Summary text -------------------------------------------------------------------------------------
 

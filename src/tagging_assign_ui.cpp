@@ -1228,7 +1228,16 @@ void DrawGroupRow(const Frame& f, const std::vector<const av::Target*>& sel, boo
     auto chip = [&](const std::string& label, const std::string& value, bool on, bool is_first) {
         const float cw = ui::TextWidth(label.c_str()) + ui::Dp(14.0f);
         if (!is_first) ui::SameLineIfFits(cw);
-        if (ui::ChipButton((label + "##" + value).c_str(), ImVec2(0.0f, 0.0f), on) && !on) {
+        // 13-65: a value with no sound of its own is greyed (still clickable), its tooltip says what Populate does.
+        const av::ValueSoundState vs = av::ChipSound(sel, group_uid, value);
+        const bool                grey = vs.state != av::ValueSound::Own;
+        if (grey) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.45f);
+        const bool clicked = ui::ChipButton((label + "##" + value).c_str(), ImVec2(0.0f, 0.0f), on);
+        if (grey) {
+            ImGui::PopStyleVar();
+            ui::ItemTipText(av::ChipSoundTip(vs).c_str());
+        }
+        if (clicked && !on) {
             std::string what = g0->group_name + " = " + (value.empty() ? std::string("inherit") : [&] {
                 for (const SwitchValue& v : grp->values)
                     if (v.uid == value) return v.name;

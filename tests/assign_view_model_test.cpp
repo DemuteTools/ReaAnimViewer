@@ -476,6 +476,208 @@ static void TestScopes()
     CHECK(s.keys.size() == 1 && s.keys[0] == "char:c1");
 }
 
+// 13-65: what each value of a Switch Group places (Own / Default / Nothing), greyed chips and their tooltips.
+static SoundLibrary MatLib(const std::string& uid, bool wood_empty, bool metal_sound)
+{
+    // Material Switch (default Wood): Wood -> Random (3 Sounds, or none), Metal -> Random (a Sound, or none), Grass: no case.
+    SoundLibrary lib;
+    lib.uid = uid;
+    lib.name = uid;
+    lib.root = "m";
+    SoundNode m = Node("m", "", SoundNodeType::Switch);
+    m.group_uid = "mat";
+    m.default_value = "mat_Wood";
+    m.cases = {{"mat_Wood", "rw", {}}, {"mat_Metal", "rm", {}}};
+    lib.nodes = {m, Node("rw", "m", SoundNodeType::Random), Node("rm", "m", SoundNodeType::Random)};
+    if (!wood_empty)
+        for (const char* k : {"w1", "w2", "w3"}) lib.nodes.push_back(Node(k, "rw", SoundNodeType::Sound));
+    if (metal_sound) lib.nodes.push_back(Node("m1", "rm", SoundNodeType::Sound));
+    return lib;
+}
+
+static void TestValueSounds()
+{
+    SoundStore st;
+    st.groups.push_back(Group("mat", "Material", {"Wood", "Grass", "Metal"}));
+    st.groups.push_back(Group("shoes", "Shoes", {"Barefoot", "Boots"}));
+    st.groups.push_back(Group("loco", "Loco", {"Walk", "Run"}));
+    st.libraries.push_back(MatLib("a", false, false));  // Wood own, Grass -> default Wood, Metal empty
+    st.libraries.push_back(MatLib("b", true, true));    // Wood empty: Grass places nothing (Metal own)
+    st.libraries.push_back(MatLib("c", false, true));   // Metal own
+    // Cascade: Shoes (default Boots): Barefoot -> a Material Switch whose every case is empty, Boots -> a Sound.
+    SoundLibrary cas;
+    cas.uid = "cas";
+    cas.name = "cas";
+    cas.root = "sh";
+    SoundNode sh = Node("sh", "", SoundNodeType::Switch);
+    sh.group_uid = "shoes";
+    sh.default_value = "shoes_Boots";
+    sh.cases = {{"shoes_Barefoot", "inner", {}}, {"shoes_Boots", "boot", {}}};
+    SoundNode inner = Node("inner", "sh", SoundNodeType::Switch);
+    inner.group_uid = "mat";
+    inner.cases = {{"mat_Wood", "e1", {}}, {"mat_Metal", "e2", {}}};
+    cas.nodes = {sh, inner, Node("e1", "inner", SoundNodeType::Random), Node("e2", "inner", SoundNodeType::Blend),
+                 Node("boot", "sh", SoundNodeType::Sound)};
+    st.libraries.push_back(cas);
+    // Reach: Loco (default Walk): Walk -> Material (Metal -> a Sound), Run -> Material (Metal empty).
+    SoundLibrary rch;
+    rch.uid = "rch";
+    rch.name = "rch";
+    rch.root = "lo";
+    SoundNode lo = Node("lo", "", SoundNodeType::Switch);
+    lo.group_uid = "loco";
+    lo.default_value = "loco_Walk";
+    lo.cases = {{"loco_Walk", "ma", {}}, {"loco_Run", "mb", {}}};
+    SoundNode ma = Node("ma", "lo", SoundNodeType::Switch);
+    ma.group_uid = "mat";
+    ma.default_value = "mat_Metal";
+    ma.cases = {{"mat_Metal", "sm", {}}};
+    SoundNode mb = Node("mb", "lo", SoundNodeType::Switch);
+    mb.group_uid = "mat";
+    mb.default_value = "mat_Metal";
+    mb.cases = {{"mat_Metal", "em", {}}};
+    rch.nodes = {lo, ma, Node("sm", "ma", SoundNodeType::Sound), mb, Node("em", "mb", SoundNodeType::Random)};
+    st.libraries.push_back(rch);
+
+    const Block step = Auto(AutoKind::Step, 'L', "a0");
+    auto target = [&](const std::string& lib) {
+        SetAssignLibraryIn(st.project, {"legs"}, LibState::Library, lib);
+        return MakeTarget(st, ItemSounds(), nullptr, step, "b0", "x");
+    };
+    // Null-safe reads (Own when missing, "?" for a missing name): a regression fails a CHECK, never crashes.
+    auto vs_of = [](const Target& t, const std::string& group, const std::string& value) -> const ValueSoundState* {
+        const GroupState* g = t.Group(group);
+        return g ? g->SoundOf(value) : nullptr;
+    };
+    auto state = [&](const Target& t, const std::string& group, const std::string& value) {
+        const ValueSoundState* v = vs_of(t, group, value);
+        return v ? v->state : ValueSound::Own;
+    };
+    auto def_name = [&](const Target& t, const std::string& group, const std::string& value) {
+        const ValueSoundState* v = vs_of(t, group, value);
+        return v ? v->default_name : std::string("?");
+    };
+    auto tip = [&](const Target& t, const std::string& group, const std::string& value) {
+        const ValueSoundState* v = vs_of(t, group, value);
+        return v ? ChipSoundTip(*v) : std::string("?");
+    };
+    auto inherit_uid = [](const Target& t, const std::string& group) {
+        const GroupState* g = t.Group(group);
+        return g ? g->inherit_uid : std::string("?");
+    };
+    // The states match ResolveEvent: each value set on the item layer places a sound unless Nothing; a Default
+    // one plays a sound under the default case (`default_child`).
+    auto matches_resolve = [&](const Target& t, const std::string& group, const std::string& default_child) {
+        const SwitchGroup* sg = FindGroup(st, group);
+        CHECK(t.lib && sg && t.Group(group));
+        if (!t.lib || !sg) return;
+        for (const SwitchValue& v : sg->values) {
+            const ValueSoundState* vs = vs_of(t, group, v.uid);
+            CHECK(vs);
+            if (!vs) continue;
+            ValueLayers layers;
+            layers.item.push_back({group, v.uid, {}});
+            const Resolution res = ResolveEvent(st, *t.lib, layers, ResolveHooks());
+            CHECK(res.sounds.empty() == (vs->state == ValueSound::Nothing));
+            if (vs->state != ValueSound::Default) continue;
+            for (const ResolvedSound& rs : res.sounds) {
+                bool under = false;
+                for (const SoundNode* n = FindNode(*t.lib, rs.node); n && !under; n = n->parent.empty() ? nullptr : FindNode(*t.lib, n->parent))
+                    under = n->uid == default_child;
+                CHECK(under);
+            }
+        }
+    };
+
+    // Own sound / no case with a default that has sound / empty case.
+    const Target a = target("a");
+    CHECK(state(a, "mat", "mat_Wood") == ValueSound::Own);
+    CHECK(state(a, "mat", "mat_Grass") == ValueSound::Default && def_name(a, "mat", "mat_Grass") == "Wood");
+    CHECK(state(a, "mat", "mat_Metal") == ValueSound::Nothing);
+    CHECK(tip(a, "mat", "mat_Grass") == "No sound of its own: plays the default, Wood");
+    CHECK(tip(a, "mat", "mat_Metal") == "No sound: events on it place nothing");
+    CHECK(tip(a, "mat", "mat_Wood").empty());
+    matches_resolve(a, "mat", "rw");
+    // The inherit chip: the default, Wood, has its own sound.
+    CHECK(inherit_uid(a, "mat") == "mat_Wood" && ChipSound({&a}, "mat", "").state == ValueSound::Own);
+
+    // The inherit chip of a rule whose item sets Metal: the state of Metal (Nothing).
+    {
+        ItemSounds rec;
+        rec.item_values.push_back({"mat", "mat_Metal", {}});
+        RuleSounds rs;
+        rs.rid = "r0";
+        rs.library = "a";
+        rec.rules.push_back(rs);
+        const Target t = MakeTarget(st, rec, nullptr, Rule("Scuff L", "r0", 1), "b1", "x");
+        CHECK(t.lib && t.lib->uid == "a");
+        CHECK(inherit_uid(t, "mat") == "mat_Metal" && ChipSound({&t}, "mat", "").state == ValueSound::Nothing);
+    }
+
+    // No case, default empty: the default itself is Nothing (never Default), Grass places nothing.
+    const Target b = target("b");
+    CHECK(state(b, "mat", "mat_Wood") == ValueSound::Nothing && state(b, "mat", "mat_Grass") == ValueSound::Nothing);
+    CHECK(ChipSound({&b}, "mat", "").state == ValueSound::Nothing);
+    matches_resolve(b, "mat", "rw");
+
+    // Cascade: Barefoot leads to a Switch whose every case is empty.
+    const Target c = target("cas");
+    CHECK(state(c, "shoes", "shoes_Barefoot") == ValueSound::Nothing && state(c, "shoes", "shoes_Boots") == ValueSound::Own);
+    matches_resolve(c, "shoes", "boot");
+    {
+        const SoundLibrary* cl = FindLibrary(st, "cas");
+        const SoundNode*    sh_n = cl ? FindNode(*cl, "sh") : nullptr;
+        const SoundNode*    in_n = cl ? FindNode(*cl, "inner") : nullptr;
+        CHECK(sh_n && in_n);
+        if (sh_n && in_n) CHECK(HoldsSound(*cl, *sh_n) && !HoldsSound(*cl, *in_n));
+    }
+
+    // Only the reached Switches count: the walk takes Walk, whose Material has Metal.
+    const Target r = target("rch");
+    CHECK(state(r, "mat", "mat_Metal") == ValueSound::Own && state(r, "mat", "mat_Wood") == ValueSound::Default);
+    matches_resolve(r, "mat", "sm");
+    {
+        ItemSounds run;
+        run.item_values.push_back({"loco", "loco_Run", {}});
+        SetAssignLibraryIn(st.project, {"legs"}, LibState::Library, "rch");
+        const Target rr = MakeTarget(st, run, nullptr, step, "b0", "x");
+        CHECK(state(rr, "mat", "mat_Metal") == ValueSound::Nothing);
+    }
+
+    // Every value has its own sound: nothing greyed.
+    const Target cc = target("c");
+    CHECK(cc.Group("mat") && cc.Group("mat")->value_sounds.size() == 3);
+    if (const GroupState* g = cc.Group("mat"))
+        for (const ValueSoundState& v : g->value_sounds)
+            CHECK(v.value_uid == "mat_Grass" ? v.state == ValueSound::Default : v.state == ValueSound::Own);
+
+    // Mixed selection: Metal Nothing for one target, Own for the other -> normal; Grass Default in both, same name.
+    CHECK(ChipSound({&a, &cc}, "mat", "mat_Metal").state == ValueSound::Own);
+    const ValueSoundState gr = ChipSound({&a, &cc}, "mat", "mat_Grass");
+    CHECK(gr.state == ValueSound::Default && gr.default_name == "Wood");
+    const ValueSoundState gr2 = ChipSound({&a, &r}, "mat", "mat_Wood");  // a: Own -> Own wins
+    CHECK(gr2.state == ValueSound::Own);
+    // Default names that differ: the tooltip names none.
+    const ValueSoundState gr3 = ChipSound({&a, &r}, "mat", "mat_Grass");  // a: Wood, r: Metal
+    CHECK(gr3.state == ValueSound::Default && gr3.default_name.empty() &&
+          ChipSoundTip(gr3) == "No sound of its own: plays the default");
+    // A target without the group does not count; none at all: Own.
+    CHECK(ChipSound({&a}, "shoes", "shoes_Barefoot").state == ValueSound::Own);
+    CHECK(ChipSound({&a, &c}, "shoes", "shoes_Barefoot").state == ValueSound::Nothing);
+    CHECK(ChipSound({&a, &c}, "mat", "mat_Metal").state == ValueSound::Nothing);
+
+    // Item values row: across the item's targets that use the group.
+    const Target item = MakeItemTarget(st, ItemSounds(), {a, cc, c});
+    CHECK(state(item, "mat", "mat_Metal") == ValueSound::Own && state(item, "mat", "mat_Grass") == ValueSound::Default);
+    const Target item2 = MakeItemTarget(st, ItemSounds(), {a, b});
+    CHECK(item2.Group("mat") && state(item2, "mat", "mat_Metal") == ValueSound::Own);
+    CHECK(state(item2, "mat", "mat_Grass") == ValueSound::Default);  // a plays Wood for it
+    const Target item3 = MakeItemTarget(st, ItemSounds(), {a});
+    CHECK(item3.Group("mat") && state(item3, "mat", "mat_Metal") == ValueSound::Nothing);
+    CHECK(state(item2, "mat", "mat_Wood") == ValueSound::Own);
+    CHECK(inherit_uid(item2, "mat") == "mat_Wood" && ChipSound({&item2}, "mat", "").state == ValueSound::Own);
+}
+
 int main()
 {
     TestScopes();
@@ -487,6 +689,7 @@ int main()
     TestSummaryAndMix();
     TestTitleAndLadder();
     TestSelection();
+    TestValueSounds();
     if (g_fail) {
         std::printf("%d check(s) failed\n", g_fail);
         return 1;

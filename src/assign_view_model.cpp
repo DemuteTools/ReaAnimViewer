@@ -250,6 +250,83 @@ void ReachWalk(const SoundStore& store, const SoundLibrary& lib, const ValueLaye
     }
 }
 
+// The child a Switch case plays for `value` (sound_switch.cpp's CaseChild: nullptr when it has no content).
+const SoundNode* CaseChildOf(const SoundLibrary& lib, const SoundNode& sw, const std::string& value)
+{
+    if (value.empty()) return nullptr;
+    for (const SwitchCase& c : sw.cases) {
+        if (c.value_uid != value) continue;
+        if (c.child_uid.empty() || std::find(sw.unassigned.begin(), sw.unassigned.end(), c.child_uid) != sw.unassigned.end())
+            return nullptr;
+        const SoundNode* n = FindNode(lib, c.child_uid);
+        if (!n || n->parent != sw.uid || n->uid == sw.uid) return nullptr;
+        return n;
+    }
+    return nullptr;
+}
+
+// `memo`: node uid -> whether it holds a Sound, each node evaluated once per library pass.
+bool HoldsSoundIn(const SoundLibrary& lib, const SoundNode& n, std::set<std::string>* stack, std::map<std::string, bool>* memo)
+{
+    if (n.type == SoundNodeType::Sound) return true;
+    const auto hit = memo->find(n.uid);
+    if (hit != memo->end()) return hit->second;
+    if (!stack->insert(n.uid).second) return false;
+    bool held = false;
+    if (n.type == SoundNodeType::Switch) {
+        for (const SwitchCase& c : n.cases)
+            if (const SoundNode* k = CaseChildOf(lib, n, c.value_uid))
+                if (HoldsSoundIn(lib, *k, stack, memo)) {
+                    held = true;
+                    break;
+                }
+    } else {
+        for (const SoundNode* k : ChildrenOf(lib, n.uid))
+            if (k && HoldsSoundIn(lib, *k, stack, memo)) {
+                held = true;
+                break;
+            }
+    }
+    stack->erase(n.uid);
+    (*memo)[n.uid] = held;
+    return held;
+}
+
+// What one Switch node places for `value` (ResolveEvent's choice, sound_switch.cpp).
+ValueSoundState SwitchValueSound(const SoundStore& store, const SoundLibrary& lib, const SoundNode& sw, const std::string& value,
+                                 std::map<std::string, bool>* memo)
+{
+    std::set<std::string> stack;
+    ValueSoundState out;
+    out.value_uid = value;
+    if (const SoundNode* c = CaseChildOf(lib, sw, value)) {
+        out.state = HoldsSoundIn(lib, *c, &stack, memo) ? ValueSound::Own : ValueSound::Nothing;
+        return out;
+    }
+    out.state = ValueSound::Nothing;
+    const std::string def = DefaultValue(store, sw);
+    if (def.empty() || def == value) return out;
+    if (const SoundNode* d = CaseChildOf(lib, sw, def))
+        if (HoldsSoundIn(lib, *d, &stack, memo)) {
+            out.state = ValueSound::Default;
+            out.default_name = ValueNameOf(FindGroup(store, sw.group_uid), def);
+        }
+    return out;
+}
+
+// Folds `in` into `acc` (the best state wins; a default name kept only while every Default names the same).
+void FoldSound(ValueSoundState* acc, bool* any, bool* name_mixed, const ValueSoundState& in)
+{
+    if (!*any || in.state > acc->state) {
+        acc->state = in.state;
+        acc->default_name = in.default_name;
+        *name_mixed = false;
+    } else if (in.state == acc->state && in.state == ValueSound::Default && in.default_name != acc->default_name) {
+        *name_mixed = true;
+    }
+    *any = true;
+}
+
 // The groups of `lib` as a target with these layers shows them. `own` = the target's own layer values;
 // `below` = the layers under it (what inherit gives).
 void FillGroups(const SoundStore& store, const SoundLibrary& lib, const EffectiveAssign& ea,
@@ -258,6 +335,7 @@ void FillGroups(const SoundStore& store, const SoundLibrary& lib, const Effectiv
     // `inh` (13-15c, a Project / Character key): what inherit gives is that resolution, not the item layer.
     const EffectiveAssign& below_ea = inh ? *inh : ea;
     std::set<std::string> path, reached_groups;
+    std::map<std::string, bool> holds;  // 13-65: node uid -> holds a Sound (each node once per call)
     if (!blocked)
         if (const SoundNode* root = FindNode(lib, lib.root)) {
             ReachWalk(store, lib, ea.layers, *root, &path);
@@ -296,9 +374,26 @@ void FillGroups(const SoundStore& store, const SoundLibrary& lib, const Effectiv
                 for (const auto& f : below_ea.item_from)
                     if (f.first == use.group_uid) gs.inherit_from = f.second;
             }
+            gs.inherit_uid = iv;
             if (!blocked && !reached_groups.count(use.group_uid)) {
                 gs.reached = false;
                 gs.not_reached = NotReachedText(store, lib, path, *use.first_switch);
+            }
+            // 13-65: what each value places, over the Switches of the group the walk reaches (all when none).
+            std::vector<const SoundNode*> sws, reached_sws;
+            for (const SoundNode& nd : lib.nodes)
+                if (nd.type == SoundNodeType::Switch && nd.group_uid == use.group_uid) {
+                    sws.push_back(&nd);
+                    if (path.count(nd.uid)) reached_sws.push_back(&nd);
+                }
+            if (!reached_sws.empty()) sws = reached_sws;
+            for (const SwitchValue& val : g->values) {
+                ValueSoundState acc;
+                acc.value_uid = val.uid;
+                bool any = false, name_mixed = false;
+                for (const SoundNode* sw : sws) FoldSound(&acc, &any, &name_mixed, SwitchValueSound(store, lib, *sw, val.uid, &holds));
+                if (name_mixed) acc.default_name.clear();
+                if (any) gs.value_sounds.push_back(acc);
             }
         }
         t->groups.push_back(gs);
@@ -326,6 +421,48 @@ void FinishTarget(const SoundStore& store, const std::vector<ValueSet>& own_valu
 }
 
 }  // namespace
+
+const ValueSoundState* GroupState::SoundOf(const std::string& value_uid) const
+{
+    for (const ValueSoundState& v : value_sounds)
+        if (v.value_uid == value_uid) return &v;
+    return nullptr;
+}
+
+bool HoldsSound(const SoundLibrary& lib, const SoundNode& n)
+{
+    std::set<std::string>       stack;
+    std::map<std::string, bool> memo;
+    return HoldsSoundIn(lib, n, &stack, &memo);
+}
+
+ValueSoundState ChipSound(const std::vector<const Target*>& sel, const std::string& group_uid, const std::string& value_uid)
+{
+    ValueSoundState acc;
+    acc.value_uid = value_uid;
+    bool any = false, name_mixed = false;
+    for (const Target* t : sel) {
+        const GroupState* g = t ? t->Group(group_uid) : nullptr;
+        if (!g) continue;
+        const ValueSoundState* v = g->SoundOf(value_uid.empty() ? g->inherit_uid : value_uid);
+        if (v) FoldSound(&acc, &any, &name_mixed, *v);
+    }
+    if (!any) acc.state = ValueSound::Own;
+    if (name_mixed) acc.default_name.clear();
+    return acc;
+}
+
+std::string ChipSoundTip(const ValueSoundState& s)
+{
+    switch (s.state) {
+    case ValueSound::Own: return std::string();
+    case ValueSound::Default:
+        return s.default_name.empty() ? std::string("No sound of its own: plays the default")
+                                      : "No sound of its own: plays the default, " + s.default_name;
+    case ValueSound::Nothing: break;
+    }
+    return "No sound: events on it place nothing";
+}
 
 Target MakeTarget(const SoundStore& store, const ItemSounds& rec, const SoundCharacter* ch, const Block& b,
                   const std::string& key, const std::string& title)
@@ -377,8 +514,15 @@ Target MakeItemTarget(const SoundStore& store, const ItemSounds& rec, const std:
             gs.own = true;
             gs.own_uid = o->value_uid;
         }
-        gs.inherit_name = ValueNameOf(&sg, DefaultValue(store, *src->first_switch));
+        gs.inherit_uid = DefaultValue(store, *src->first_switch);
+        gs.inherit_name = ValueNameOf(&sg, gs.inherit_uid);
         gs.inherit_from = "default";
+        // 13-65: each value as the item's targets that use the group place it.
+        std::vector<const Target*> users;
+        for (const Target& o : others)
+            if (const GroupState* og = o.Group(sg.uid))
+                if (!og->deleted && og->first_switch) users.push_back(&o);
+        for (const SwitchValue& val : sg.values) gs.value_sounds.push_back(ChipSound(users, sg.uid, val.uid));
         t.groups.push_back(gs);
     }
     return t;

@@ -37,6 +37,9 @@ struct ItemFacts {
 };
 bool ReadItemFacts(MediaItem* item, ItemFacts* out);
 bool IsFolderItem(MediaItem* item);
+// 13-68 v2: the items a folder pile places (its child items inside its span, as Populate collects them:
+// nested folder items and items RAV placed left out). Empty when `item` is not a folder item.
+std::vector<MediaItem*> FolderPileMembers(MediaItem* item);
 
 // One placement: the entry (a pile of items, by its top item's GUID, copied) or a file (Antho
 // 2026-10-12, 13-11: an item made straight from `file_path` on `track`, no source item) at the

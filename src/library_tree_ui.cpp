@@ -1715,15 +1715,20 @@ void LibrariesSectionWidgets()
     if (open) {
         std::string                        to_delete, add_file;
         const std::vector<UserLibraryFile> files = UserFilesNotInProject();
-        bool                               any_project = false, any_user = !files.empty();
-        for (const SoundLibrary& lib : store.libraries) (lib.user ? any_user : any_project) = true;
+        // 13-68 v2: the Attached libraries (made from selected sounds by the Spread actions) between them.
+        auto category = [](const SoundLibrary& lib) { return lib.user ? 2 : lib.attached ? 1 : 0; };
+        bool any[3] = {false, false, !files.empty()};
+        for (const SoundLibrary& lib : store.libraries) any[category(lib)] = true;
+        const bool any_project = any[0] || any[1], any_user = any[2];
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(ImGui::GetStyle().ItemSpacing.x, ui::Dp(1.0f)));
-        for (int user = 0; user < 2 && !StoreReplaced(); ++user) {
-            if (!(user ? any_user : any_project)) continue;
+        for (int cat = 0; cat < 3 && !StoreReplaced(); ++cat) {
+            if (!any[cat]) continue;
+            const bool        user = cat == 2;
             const std::string folder_tip = user ? "Folder: " + UserLibraryFolderText() : std::string();
-            ListCaption(user ? "User" : "Project", user ? folder_tip.c_str() : nullptr);
+            ListCaption(user ? "User" : cat == 1 ? "Attached" : "Project",
+                        user ? folder_tip.c_str() : cat == 1 ? "Made from selected sounds, one per marker type" : nullptr);
             for (const SoundLibrary& lib : store.libraries) {
-                if (lib.user != (user == 1)) continue;
+                if (category(lib) != cat) continue;
                 LibraryListRow(store, lib, &to_delete);
                 if (StoreReplaced()) break;
             }

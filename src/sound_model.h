@@ -16,6 +16,7 @@
 // 13-62 (spec 13-62 Contract): SoundFrame::owners, PartSettings, SoundData::parts.
 // 13-62h (spec 13-62h Contract): EditZone, SoundFrame::zones, PartSettings::fader_db, SoundData::gap_xfade.
 // 13-62i (spec 13-62i A0): kWholePart, EditZone::fade_in_shape / fade_out_shape, SoundData::fader_db.
+// 13-68 v2 (spec 13-68): SoundLibrary::attached / attached_type.
 //
 // Every `kept` member holds text this version did not understand, written back as read:
 // unknown fields ("key=value" tokens) of the object's own line, and `kept_lines` the unknown
@@ -319,6 +320,13 @@ struct SoundLibrary {
     std::vector<std::string> kit;
     bool                     kit_offered = false;
     std::vector<std::string> kit_kept;  // unknown fields of its `kit` line
+    // 13-68 v2 (appended): an Attached library (the "Attached" category of the Library tree): made by
+    // "RAV: Spread selected items to selected marker type" from the selected sounds, named after the
+    // marker type. A project library otherwise (never `user`).
+    bool                     attached = false;
+    // 13-68 v2 (appended): the marker type an Attached library serves (found by it, so a rename keeps it; ""
+    // = an older one, found by its name).
+    std::string              attached_type;
 };
 
 // A Switch Group's value at one level (item, rule, event, auto marker type).

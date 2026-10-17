@@ -48,11 +48,19 @@ struct SelectedSound {
     AttachItem facts;
     bool       tagged = false;  // carries RAV_SND (eligible: attached)
     PlacedTag  tag;
+    bool       folder = false;  // a folder item (an NVK pile; only with `allow_folders`)
 };
-void ReadSelectedSounds(std::vector<SelectedSound>* eligible, int* skipped, std::string* skip_note);
+// `allow_folders` (13-68 v2, Spread selection only): a folder item is eligible too (its pile is one Sound).
+void ReadSelectedSounds(std::vector<SelectedSound>* eligible, int* skipped, std::string* skip_note,
+                        bool allow_folders = false);
 // 13-68: the rid of every rule of the animation item, giving the rules ids first (inside the
 // caller's undo scope). False (and `err`) when the rules cannot be read or written.
 bool ItemRuleIds(MediaItem* anim, std::vector<std::string>* rids, std::string* err);
+
+// 13-68 v2: an item as a library Sound, as Promote reads it: its data (an item source; 2+ takes = its
+// takes as variations, Takes mode) and its name (its active take's, "Sound" when none).
+SoundData   ItemSoundData(MediaItem* item);
+std::string ItemSoundName(MediaItem* item);
 
 // A gesture's outcome: a one-line note and its report.
 struct AttachResult {

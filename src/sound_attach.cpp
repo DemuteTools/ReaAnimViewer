@@ -67,7 +67,7 @@ std::string ReadChunk(MediaItem* item) { return ReadItemStateChunk(f_get_chunk, 
 using SelItem = SelectedSound;
 
 // The selected items: the eligible ones, and how many were skipped and why.
-void ReadSelection(std::vector<SelItem>* eligible, int* skipped, std::string* note)
+void ReadSelection(std::vector<SelItem>* eligible, int* skipped, std::string* note, bool allow_folders = false)
 {
     *skipped = 0;
     std::vector<std::string> reasons;
@@ -80,7 +80,8 @@ void ReadSelection(std::vector<SelItem>* eligible, int* skipped, std::string* no
         s.tagged = ReadPlacedTag(it, &s.tag);
         const bool        rav = RavTakeOf(it) != nullptr;
         const bool        folder = !rav && IsFolderItem(it);
-        const std::string why = AttachSkipReason(rav, folder, s.tagged, s.tag.own);
+        const std::string why = AttachSkipReason(rav, folder && !allow_folders, s.tagged, s.tag.own);
+        s.folder = folder;
         if (!why.empty()) {
             ++*skipped;
             if (std::find(reasons.begin(), reasons.end(), why) == reasons.end()) reasons.push_back(why);
@@ -334,9 +335,19 @@ void InitSoundAttach(void* (*get_func)(const char* name))
     f_count_takes = reinterpret_cast<CountTakesFn>(get_func("CountTakes"));
 }
 
-void ReadSelectedSounds(std::vector<SelectedSound>* eligible, int* skipped, std::string* skip_note)
+SoundData ItemSoundData(MediaItem* item)
 {
-    ReadSelection(eligible, skipped, skip_note);
+    return PromotedSoundData(item);
+}
+
+std::string ItemSoundName(MediaItem* item)
+{
+    return TakeNameOf(item);
+}
+
+void ReadSelectedSounds(std::vector<SelectedSound>* eligible, int* skipped, std::string* skip_note, bool allow_folders)
+{
+    ReadSelection(eligible, skipped, skip_note, allow_folders);
 }
 
 bool ItemRuleIds(MediaItem* anim, std::vector<std::string>* rids, std::string* err)

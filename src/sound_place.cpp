@@ -644,6 +644,10 @@ PlaceResult PlaceImpl(ReaProject* proj, const PlaceRequest& req, MediaItem* kept
             ApplyVariation(item, req);
             ApplyFades(item, req.fades);
         } else {
+            // 13-68 v2: a pile Sound in Takes mode (its layers' takes are its variations): every member that has
+            // that take plays it, so the layers keep their takes together.
+            if (req.variation >= 0 && req.variation < f_count_takes(item))
+                if (MediaItem_Take* take = f_get_take(item, req.variation)) f_set_active_take(take);
             PileMemberMono(item, req);
         }
         {  // 13-11 (B9): a library source is muted; its copy plays (and does not carry the mark)
@@ -1005,6 +1009,22 @@ bool ReadItemFacts(MediaItem* item, ItemFacts* out)
     } catch (...) {
         return false;
     }
+}
+
+std::vector<MediaItem*> FolderPileMembers(MediaItem* item)
+{
+    std::vector<MediaItem*> out;
+    if (!item || !IsFolderItem(item)) return out;
+    PlaceRequest req;
+    req.source.kind = SoundSourceKind::Item;
+    req.source.item_guid = ItemGuidOf(item);
+    MediaItem*          anchor = nullptr;
+    bool                folder = false;
+    std::vector<Member> members;
+    std::string         err;
+    if (!CollectMembers(EnumProjects(-1, nullptr, 0), req, &anchor, &folder, &members, &err) || !folder) return out;
+    for (const Member& m : members) out.push_back(m.src);
+    return out;
 }
 
 bool IsFolderItem(MediaItem* item)

@@ -253,6 +253,7 @@ if(WIN32)
             src/sound_attach.cpp
             src/sound_attach_plan.cpp
             src/sound_spread_selection.cpp  # 13-68
+            src/sound_spread_plan.cpp       # 13-68 v2
             src/reaper_toast.cpp
             src/library_user_ui.cpp
             src/ravlib.cpp

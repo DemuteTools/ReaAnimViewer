@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT
 //
-// Spread selection to marker type (13-68, REAPER): the two REAPER actions "RAV: Spread selected items
-// to selected marker type (this animation / all instances)". The selected sound items are read as
-// blocks (items overlapping in time = one pile = one variation with its layers); the RAV project
-// marker selected in REAPER (its label clicked) gives the type (its name, sound_attach_plan.h
-// SameMarkerType). The piles are moved onto the first markers of that type of the selected marker's
-// animation item and attached; every other marker of the type (that item's, or every RAV item's)
-// gets a spread copy of one pile, its top item's snap on the marker. No Library node. One undo
-// point per run; the report shows as a toast on REAPER's main window (reaper_toast.h).
-// The pure logic: sound_attach_plan.h (PlanSpreadSelection, ChooseLane, SpreadSelectionReport).
+// Spread selection to marker type (13-68 v2, REAPER): the REAPER actions "RAV: Spread selected items to
+// selected marker type (this animation / all instances)" and "RAV: Add selected items to stack on selected
+// marker type (...)". It is Populate, told which sounds to use: the selection becomes the marker type's
+// library (category Attached, named after the type; sound_spread_plan.h builds its nodes), assigned to
+// the rules writing that type (the selected marker's animation item and its linked copies, or every RAV
+// item with that type), then Populate places it (PopulateItemsCounted). The selected originals move
+// after the project end (the source zone). The type = the RAV project marker selected in REAPER (its
+// label clicked). One undo point per run; the report shows as a toast on REAPER's main window
+// (reaper_toast.h).
 
 #pragma once
 
@@ -23,14 +23,15 @@ enum class SpreadScope { ThisAnimation, AllInstances };
 void InitSoundSpreadSelection(void* (*get_func)(const char* name));
 #endif
 
-// Runs the action: one undo point "RAV: Spread selection to <marker> (this animation)" / "(all
-// instances)" when it writes; its report (or why it cannot run) as a toast. Returns that text.
+// Runs the action: one undo point "RAV: Spread selection to <type> (this animation)" / "(all instances)":
+// the originals moved to the source zone, the type's Attached library made or its content replaced, the
+// assignment, Populate. Its report (or why it cannot run) as a toast. Returns that text.
 std::string SpreadSelectionToMarkerType(SpreadScope scope);
-// P5b: "RAV: Add selected items to stack (selected marker type)": the selection is a new layer (its
-// piles = that layer's variations); every marker of the type gets one of them, at the offset the
-// selection's top item has to its nearest marker of the type; nothing already there is removed.
-// The first piles move onto the first markers and are attached, as above. One undo point
-// "RAV: Add selection to stack on <marker> (this animation)" / "(all instances)".
+// Add to stack: the selection is a new layer of the type's Attached library: its root becomes (or stays) a
+// Blend of the existing content and a Random of the selection's piles, offset by the selection's top item's
+// snap minus its nearest marker of the type (on the selected marker's item); then Populate. No Attached
+// library for the type yet: as SpreadSelectionToMarkerType. One undo point "RAV: Add selection to stack on
+// <type> (this animation)" / "(all instances)".
 std::string AddSelectionToStack(SpreadScope scope);
 
 }  // namespace rav

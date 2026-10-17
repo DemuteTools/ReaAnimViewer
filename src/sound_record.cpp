@@ -397,6 +397,8 @@ Fields LibraryFields(const SoundLibrary& l)
     Fields f = {{"uid", Enc(l.uid)}, {"name", Enc(l.name)}, {"root", Enc(l.root)}};
     if (l.color != 0) f.push_back({"color", FmtColor(l.color)});
     if (l.user) f.push_back({"user", "1"});
+    if (l.attached) f.push_back({"attached", "1"});  // 13-68 v2
+    if (!l.attached_type.empty()) f.push_back({"atype", Enc(l.attached_type)});
     if (!l.ravlib_path.empty()) f.push_back({"ravlib", Enc(l.ravlib_path)});
     return f;
 }
@@ -408,6 +410,8 @@ Got SetLibrary(SoundLibrary& l, const std::string& k, const std::string& v)
     if (k == "root") return G(ReadStr(v, &l.root));
     if (k == "color") return G(ReadColor(v, &l.color));
     if (k == "user") return G(ReadFlag(v, &l.user));
+    if (k == "attached") return G(ReadFlag(v, &l.attached));
+    if (k == "atype") return G(ReadStr(v, &l.attached_type));
     if (k == "ravlib") return G(ReadStr(v, &l.ravlib_path));
     return Got::Unknown;
 }

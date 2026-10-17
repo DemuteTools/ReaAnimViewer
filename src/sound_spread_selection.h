@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 //
-// Spread selection to marker type (13-68 v2, REAPER): the REAPER actions "RAV: Spread selected items to
-// selected marker type (this animation / all instances)" and "RAV: Add selected items to stack on selected
-// marker type (...)". It is Populate, told which sounds to use: the selection becomes the marker type's
+// Spread selection to marker type (13-68 v2, REAPER): the REAPER actions "RAV: Tagging - Attach selected items to
+// selected marker (this animation / all instances)" and "RAV: Tagging - Add selected items to stack on
+// selected marker (...)". It is Populate, told which sounds to use: the selection becomes the marker type's
 // library (category Attached, named after the type; sound_spread_plan.h builds its nodes), assigned to
 // the rules writing that type (the selected marker's animation item and its linked copies, or every RAV
 // item with that type), then Populate places it (PopulateItemsCounted). The selected originals move

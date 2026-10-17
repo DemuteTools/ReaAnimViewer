@@ -321,7 +321,7 @@ struct SoundLibrary {
     bool                     kit_offered = false;
     std::vector<std::string> kit_kept;  // unknown fields of its `kit` line
     // 13-68 v2 (appended): an Attached library (the "Attached" category of the Library tree): made by
-    // "RAV: Spread selected items to selected marker type" from the selected sounds, named after the
+    // "RAV: Tagging - Attach selected items to selected marker" from the selected sounds, named after the
     // marker type. A project library otherwise (never `user`).
     bool                     attached = false;
     // 13-68 v2 (appended): the marker type an Attached library serves (found by it, so a rename keeps it; ""

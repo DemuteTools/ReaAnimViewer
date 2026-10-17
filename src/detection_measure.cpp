@@ -34,7 +34,7 @@
 namespace rav {
 namespace {
 
-constexpr const char kTitle[] = "RAV: Measure detection against reference markers";
+constexpr const char kTitle[] = "RAV: Dev - Measure detection against reference markers";
 constexpr const char kDetName[] = "RAV?";
 constexpr double kRateHz = kDetectRateHz;
 

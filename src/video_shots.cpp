@@ -739,7 +739,7 @@ void ShowVideoShotsOfSelectedTrack()
     MediaTrack* track = nullptr;
     int fx = -1;
     if (!FindSelectedVideoFx(&track, &fx)) {
-        ShowMessageBox("Select a track that has the RAV video FX (action \"RAV: Add video FX to selected track\").",
+        ShowMessageBox("Select a track that has the RAV video FX (action \"RAV: Video FX - Add to selected track\").",
                        "RAV: Video FX shots", 0);
         return;
     }
@@ -803,7 +803,7 @@ void AddVideoShotAtEditCursor()
     MediaTrack* track = nullptr;
     int fx = -1;
     if (!FindSelectedVideoFx(&track, &fx)) {
-        ShowMessageBox("Select a track that has the RAV video FX (action \"RAV: Add video FX to selected track\").",
+        ShowMessageBox("Select a track that has the RAV video FX (action \"RAV: Video FX - Add to selected track\").",
                        "RAV: Add video shot", 0);
         return;
     }
@@ -880,7 +880,7 @@ void SetVideoOutputAndAngleOfSelectedTrack()
     MediaTrack* track = nullptr;
     int fx = -1;
     if (!FindSelectedVideoFx(&track, &fx)) {
-        ShowMessageBox("Select a track that has the RAV video FX (action \"RAV: Add video FX to selected track\").",
+        ShowMessageBox("Select a track that has the RAV video FX (action \"RAV: Video FX - Add to selected track\").",
                        kTitle, 0);
         return;
     }

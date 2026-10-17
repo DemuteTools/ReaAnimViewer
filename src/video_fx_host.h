@@ -5,7 +5,7 @@
 // unregistered at unload. The API functions run on REAPER's video thread.
 //
 // Story 11-1: frames come from the test pattern (src/video_test_pattern.h) while the
-// "RAV: Video FX test pattern" action is on; otherwise from the content path: the FX
+// "RAV: Video FX - Test pattern" action is on; otherwise from the content path: the FX
 // track's animation (Story 11-2, src/video_render.h). Registering the API also
 // registers the main-thread timer that keeps the timeline snapshot (video_timeline.h).
 

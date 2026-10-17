@@ -79,7 +79,7 @@ void ClearVideoTimeline();
 bool VideoBackgroundTransparent(MediaTrack* track);
 void SetVideoBackgroundTransparent(MediaTrack* track, bool transparent);
 
-// Action "RAV: Video FX transparent background (selected tracks)": turns the option on
+// Action "RAV: Video FX - Transparent background (selected tracks)": turns the option on
 // for every selected track when one of them is off, else turns it off for all; one undo
 // point; a message box when no track is selected.
 void ToggleVideoBackgroundOnSelectedTracks();

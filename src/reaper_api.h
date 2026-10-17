@@ -65,7 +65,7 @@
 #define REAPERAPI_WANT_GetResourcePath
 #define REAPERAPI_WANT_ShowMessageBox
 
-// Story 11-1 -- the video FX: "RAV: Add video FX to selected track" finds or inserts
+// Story 11-1 -- the video FX: "RAV: Video FX - Add to selected track" finds or inserts
 // rav_video_fx.clap on the selected tracks (src/video_fx_track.cpp). All present in
 // REAPER 7 (REAPERAPI_LoadAPI fails the whole load if one is missing).
 #define REAPERAPI_WANT_CountSelectedTracks
@@ -144,7 +144,7 @@
 // (RENDER_BOUNDSFLAG / RENDER_STARTPOS / RENDER_ENDPOS / RENDER_SETTINGS).
 #define REAPERAPI_WANT_GetSetProjectInfo
 
-// Story 10-0 -- "RAV: Measure detection against reference markers" (src/detection_measure.cpp):
+// Story 10-0 -- "RAV: Dev - Measure detection against reference markers" (src/detection_measure.cpp):
 // the selected items, and one undo point for its RAV? take markers. Old, safe functions
 // (GetUserInputs and UpdateArrange are wanted above). The take-marker functions
 // (GetNumTakeMarkers, GetTakeMarker, SetTakeMarker, DeleteTakeMarker, REAPER 5.981+) are

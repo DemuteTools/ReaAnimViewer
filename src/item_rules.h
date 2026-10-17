@@ -174,7 +174,7 @@ std::vector<MediaItem*> WithPoolMembers(const std::vector<MediaItem*>& items, Re
 // tagging unique"). Nothing is written (true, `done` false) when no other item shares its pool,
 // or its record does not read. False with `err` when the write failed. Ctrl+Z links it back.
 bool MakeItemUnique(MediaItem* item, bool* done, std::string* err);
-// The action "RAV: Make tagging unique (selected items)": every selected RAV item that shares
+// The action "RAV: Tagging - Make tagging unique (selected items)": every selected RAV item that shares
 // its pool gets a fresh pool id of its own, all in ONE undo point. How many were made unique.
 int MakeTaggingUniqueOnSelectedItems();
 

@@ -36,50 +36,50 @@ namespace rav {
 namespace {
 
 constexpr const char kCommandName[] = "RAV_OPEN_VIEWER";
-constexpr const char kActionDesc[]  = "RAV: Open Viewer";
+constexpr const char kActionDesc[]  = "RAV: Viewer - Open viewer";
 
 // Story 6-5-9 -- the viewer full screen (a toggle: lit while full screen).
 constexpr const char kFullScreenName[] = "RAV_VIEWER_FULLSCREEN";
-constexpr const char kFullScreenDesc[] = "RAV: Viewer full screen (toggle)";
+constexpr const char kFullScreenDesc[] = "RAV: Viewer - Full screen (toggle)";
 int                  g_full_screen_id    = 0;
 gaccel_register_t    g_full_screen_accel = {};
 
 // Story 11-1 -- the video FX actions.
 constexpr const char kAddVideoFxName[]     = "RAV_VIDEOFX_ADD";
-constexpr const char kAddVideoFxDesc[]     = "RAV: Add video FX to selected track";
+constexpr const char kAddVideoFxDesc[]     = "RAV: Video FX - Add to selected track";
 constexpr const char kTestPatternName[]    = "RAV_VIDEOFX_TEST_PATTERN";
-constexpr const char kTestPatternDesc[]    = "RAV: Video FX test pattern";
+constexpr const char kTestPatternDesc[]    = "RAV: Video FX - Test pattern";
 
 // Story 11-2 -- the video FX background option (viewer background / transparent).
 constexpr const char kVideoBgName[] = "RAV_VIDEOFX_TRANSPARENT_BG";
-constexpr const char kVideoBgDesc[] = "RAV: Video FX transparent background (selected tracks)";
+constexpr const char kVideoBgDesc[] = "RAV: Video FX - Transparent background (selected tracks)";
 int                  g_video_bg_id    = 0;
 gaccel_register_t    g_video_bg_accel = {};
 
 // Story 11-3 -- click-based test hooks for the shots (11-4/11-5 call the same helpers).
 constexpr const char kAddShotName[]  = "RAV_VIDEOFX_ADD_SHOT";
-constexpr const char kAddShotDesc[]  = "RAV: Video FX: add shot at edit cursor";
+constexpr const char kAddShotDesc[]  = "RAV: Video FX - Add shot at edit cursor";
 constexpr const char kShowShotsName[] = "RAV_VIDEOFX_SHOW_SHOTS";
-constexpr const char kShowShotsDesc[] = "RAV: Video FX: show shots of selected track";
+constexpr const char kShowShotsDesc[] = "RAV: Video FX - Show shots of selected track";
 constexpr const char kOutputAngleName[] = "RAV_VIDEOFX_SET_OUTPUT_ANGLE";
-constexpr const char kOutputAngleDesc[] = "RAV: Video FX: set output size / save angle of selected track";
+constexpr const char kOutputAngleDesc[] = "RAV: Video FX - Set output size / save angle of selected track";
 
 // Story 10-0 -- the detection-accuracy measurement (click-based dev hook).
 constexpr const char kMeasureDetectionName[] = "RAV_MEASURE_DETECTION";
-constexpr const char kMeasureDetectionDesc[] = "RAV: Measure detection against reference markers";
+constexpr const char kMeasureDetectionDesc[] = "RAV: Dev - Measure detection against reference markers";
 int                  g_measure_detection_id    = 0;
 gaccel_register_t    g_measure_detection_accel = {};
 
 // Story 10-6 -- pooled copies: the selected items stop sharing their tagging with the other
 // items of their animation file (click-based hook too).
 constexpr const char kMakeUniqueName[] = "RAV_TAGGING_MAKE_UNIQUE";
-constexpr const char kMakeUniqueDesc[] = "RAV: Make tagging unique (selected items)";
+constexpr const char kMakeUniqueDesc[] = "RAV: Tagging - Make tagging unique (selected items)";
 int                  g_make_unique_id    = 0;
 gaccel_register_t    g_make_unique_accel = {};
 
 // Epic 13 (D20, D10) -- the sound library storage check (a dev check, click-based).
 constexpr const char kSoundStoreCheckName[] = "RAV_SOUND_STORE_CHECK";
-constexpr const char kSoundStoreCheckDesc[] = "RAV: Sound library storage check";
+constexpr const char kSoundStoreCheckDesc[] = "RAV: Dev - Sound library storage check";
 int                  g_sound_check_id    = 0;
 gaccel_register_t    g_sound_check_accel = {};
 
@@ -87,17 +87,17 @@ gaccel_register_t    g_sound_check_accel = {};
 // "REAPER" runs on the keys the user gives it in REAPER's Actions window. Full screen has its own above.
 // Story 13-68 -- spread the selected sounds onto every marker of the selected marker's type.
 constexpr const char kSpreadThisName[] = "RAV_SPREAD_SELECTION_THIS_ANIMATION";
-constexpr const char kSpreadThisDesc[] = "RAV: Spread selected items to selected marker type (this animation)";
+constexpr const char kSpreadThisDesc[] = "RAV: Tagging - Attach selected items to selected marker (this animation)";
 constexpr const char kSpreadAllName[]  = "RAV_SPREAD_SELECTION_ALL_INSTANCES";
-constexpr const char kSpreadAllDesc[]  = "RAV: Spread selected items to selected marker type (all instances)";
+constexpr const char kSpreadAllDesc[]  = "RAV: Tagging - Attach selected items to selected marker (all instances)";
 int                  g_spread_this_id    = 0;
 gaccel_register_t    g_spread_this_accel = {};
 int                  g_spread_all_id     = 0;
 gaccel_register_t    g_spread_all_accel  = {};
 constexpr const char kStackThisName[] = "RAV_ADD_SELECTION_TO_STACK_THIS_ANIMATION";
-constexpr const char kStackThisDesc[] = "RAV: Add selected items to stack on selected marker type (this animation)";
+constexpr const char kStackThisDesc[] = "RAV: Tagging - Add selected items to stack on selected marker (this animation)";
 constexpr const char kStackAllName[]  = "RAV_ADD_SELECTION_TO_STACK_ALL_INSTANCES";
-constexpr const char kStackAllDesc[]  = "RAV: Add selected items to stack on selected marker type (all instances)";
+constexpr const char kStackAllDesc[]  = "RAV: Tagging - Add selected items to stack on selected marker (all instances)";
 int                  g_stack_this_id    = 0;
 gaccel_register_t    g_stack_this_accel = {};
 int                  g_stack_all_id     = 0;

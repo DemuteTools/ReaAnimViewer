@@ -143,15 +143,15 @@ bool DeleteVideoAngle(MediaTrack* track, int fx, const std::string& name);
 bool SetVideoOutputOverride(MediaTrack* track, int fx, int width, int height);
 
 // ---- Click-based test hooks (actions) -------------------------------------------------------
-// "RAV: Video FX: show shots of selected track": message box with the shot list.
+// "RAV: Video FX - Show shots of selected track": message box with the shot list.
 void ShowVideoShotsOfSelectedTrack();
 
-// "RAV: Video FX: add shot at edit cursor": a Cut shot holding the camera at the edit
+// "RAV: Video FX - Add shot at edit cursor": a Cut shot holding the camera at the edit
 // cursor, name asked in a dialog, one undo point. Spec 11-fb-15: like a cut in Video view, it
 // also writes the clip's implicit first shot (same undo point); refused between clips.
 void AddVideoShotAtEditCursor();
 
-// "RAV: Video FX: set output size / save angle of selected track": a dialog that sets
+// "RAV: Video FX - Set output size / save angle of selected track": a dialog that sets
 // the output size override (empty = project size) and saves the camera at the edit
 // cursor as a named angle (empty = none), one undo point.
 void SetVideoOutputAndAngleOfSelectedTrack();

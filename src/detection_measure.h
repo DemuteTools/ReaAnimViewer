@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //
-// "RAV: Measure detection against reference markers" (Epic 10, spike 10-0): the
+// "RAV: Dev - Measure detection against reference markers" (Epic 10, spike 10-0): the
 // measurement harness behind the epic's GO/NO-GO (NFR-AT1). Dev-facing; the detection it
 // runs (bone_events / bone_roles / bone_presets) is production code.
 //

@@ -106,7 +106,7 @@ The [Demute Reaper Toolkit](https://www.demute.studio/documentation/reaper-toolk
 4. Select the **ReaAnimViewer** card and install it.
 5. Click **Run** on the card. A message confirms that ReaAnimViewer is installed.
 6. **Restart REAPER.** Extensions are only loaded at startup.
-7. Open the viewer with the action **RAV: Open Viewer**, or with **Run** on the card.
+7. Open the viewer with the action **RAV: Viewer - Open viewer**, or with **Run** on the card.
 
 You only need step 5 once. The Toolkit downloads scripts, while ReaAnimViewer is a native extension that REAPER loads from its `UserPlugins` folder: the first **Run** copies it there. From then on, the extension updates itself.
 
@@ -123,7 +123,7 @@ You only need step 5 once. The Toolkit downloads scripts, while ReaAnimViewer is
 4. Go to **Extensions > ReaPack > Browse packages...**, search for **ReaAnimViewer**.
 5. Right-click **ReaAnimViewer**, choose **Install**, then click **Apply**.
 6. **Restart REAPER.** Extensions are only loaded at startup.
-7. Open the viewer with the action **RAV: Open Viewer** (**Actions > Show action list**, search for **RAV**).
+7. Open the viewer with the action **RAV: Viewer - Open viewer** (**Actions > Show action list**, search for **RAV**).
 
 The package also installs a small **RAV_Launcher** script. It is used by the Toolkit; with ReaPack you don't need it (running it just opens the viewer).
 
@@ -163,7 +163,7 @@ If you can't use ReaPack:
 1. Download `reaper_animviewer.dll` and `rav_video_fx.clap` from the [latest release](https://github.com/DemuteTools/ReaAnimViewer/releases/latest).
 2. **Close REAPER.**
 3. In REAPER, **Options > Show REAPER resource path in explorer/finder** shows you the right folder. Copy the DLL into its `UserPlugins` subfolder (usually `%APPDATA%\REAPER\UserPlugins\`), and `rav_video_fx.clap` into `UserPlugins\FX\` (create the `FX` folder if it is missing). The `.clap` is only needed to render videos ([Rendering Video](#rendering-video)); always copy both files from the same release.
-4. Start REAPER and look for **RAV: Open Viewer** in the action list.
+4. Start REAPER and look for **RAV: Viewer - Open viewer** in the action list.
 
 A manual install does not update itself: repeat these steps for each new version.
 
@@ -171,10 +171,10 @@ A manual install does not update itself: repeat these steps for each new version
 
 | Problem | Fix |
 |---------|-----|
-| **RAV: Open Viewer** does not appear in the action list | Restart REAPER after installing. Make sure you run the 64-bit Windows version of REAPER. With the Toolkit, make sure you clicked **Run** on the card once before restarting. |
-| **Run** on the Toolkit card does nothing at all | Update the **ReaAnimViewer** card in the Toolkit (0.2.0 had this bug when a toolbar button for **RAV: Open Viewer** already existed), then click **Run** again. |
+| **RAV: Viewer - Open viewer** does not appear in the action list | Restart REAPER after installing. Make sure you run the 64-bit Windows version of REAPER. With the Toolkit, make sure you clicked **Run** on the card once before restarting. |
+| **Run** on the Toolkit card does nothing at all | Update the **ReaAnimViewer** card in the Toolkit (0.2.0 had this bug when a toolbar button for **RAV: Viewer - Open viewer** already existed), then click **Run** again. |
 | **Run** says "ReaPack still lists ReaAnimViewer as installed" | The extension was once installed with ReaPack and its file was deleted by hand, so ReaPack still thinks it is installed. In the ReaPack window that opens, right-click the **ReaAnimViewer** package named in the message, choose **Uninstall**, click **Apply**, then click **Run** again. |
-| **Run** says ReaAnimViewer is installed, but after a restart **RAV: Open Viewer** is still missing | Same cause as above with an older launcher: update the card first. If it persists, go to **Extensions > ReaPack > Browse packages...**, uninstall every installed **ReaAnimViewer** entry, click **Apply**, then click **Run** on the card and restart REAPER. |
+| **Run** says ReaAnimViewer is installed, but after a restart **RAV: Viewer - Open viewer** is still missing | Same cause as above with an older launcher: update the card first. If it persists, go to **Extensions > ReaPack > Browse packages...**, uninstall every installed **ReaAnimViewer** entry, click **Apply**, then click **Run** on the card and restart REAPER. |
 | The viewer opens but stays black / shows an error | Update your graphics driver: the viewer needs OpenGL 3.3. |
 | ReaPack reports a conflict on `reaper_animviewer.dll`, or the extension stays on 0.1.x | See [Upgrading from 0.1.x](#upgrading-from-01x). |
 | ReaPack says the file is in use when updating | Close REAPER, reopen it, and run **Synchronize packages** again before loading a project. |
@@ -187,15 +187,15 @@ A manual install does not update itself: repeat these steps for each new version
 
 ## Getting Started
 
-1. Open the viewer: **Actions > Show action list**, search **RAV**, run **RAV: Open Viewer**. Dock it wherever you like, REAPER remembers the position.
+1. Open the viewer: **Actions > Show action list**, search **RAV**, run **RAV: Viewer - Open viewer**. Dock it wherever you like, REAPER remembers the position.
 2. Drag a `.glb`, `.gltf` or `.fbx` file from Windows Explorer onto a track. An item is created with the exact length of the animation.
 3. Move the playhead over the item: the character appears in the viewer, posed at that frame.
 4. Press **Play**. The animation runs in sync with the transport: scrub, loop and stop as you would with a video.
 5. Right-click and drag in the viewer to turn around the character. Start placing your sounds.
 
-**Tip:** bind **RAV: Open Viewer** to a key or toolbar button to toggle the viewer quickly.
+**Tip:** bind **RAV: Viewer - Open viewer** to a key or toolbar button to toggle the viewer quickly.
 
-**Full screen:** the corners icon in the top-right corner of the viewer (left of the keyboard icon), **F11** while the viewer has the focus, or the action **RAV: Viewer full screen (toggle)** puts the viewer over the whole screen it is on. **Esc** (when nothing else in the viewer uses it: an open menu, a text field...), **F11** or the icon again put it back where it was docked. REAPER's keys without Alt keep working while it is full screen (Space plays).
+**Full screen:** the corners icon in the top-right corner of the viewer (left of the keyboard icon), **F11** while the viewer has the focus, or the action **RAV: Viewer - Full screen (toggle)** puts the viewer over the whole screen it is on. **Esc** (when nothing else in the viewer uses it: an open menu, a text field...), **F11** or the icon again put it back where it was docked. REAPER's keys without Alt keep working while it is full screen (Space plays).
 
 ---
 
@@ -303,7 +303,7 @@ Double-click a row to record a new key, or for a Timelines row a key or a turn o
 
 Every row is either:
 
-- **REAPER**: it runs on the keys you give its action in REAPER's Actions list, read live. The viewer rows have their own RAV actions ("RAV: Viewer key: …"); REAPER runs them too outside the viewer. The Sound Edit rows follow REAPER's own item actions (split, trims, heal, solo / mute, next / previous item, repeat): your REAPER keys for them do the same thing in the Sound Edit window while it has the focus. Split, Heal and Loop use **B**, **H** and **R** while REAPER gives their action no key. The Timelines rows follow your REAPER bindings of its view actions (scroll and zoom, wheel and keys).
+- **REAPER**: it runs on the keys you give its action in REAPER's Actions list, read live. The viewer rows have their own RAV actions ("RAV: Viewer - …", "RAV: Video - …", "RAV: Tagging - …"); REAPER runs them too outside the viewer. The Sound Edit rows follow REAPER's own item actions (split, trims, heal, solo / mute, next / previous item, repeat): your REAPER keys for them do the same thing in the Sound Edit window while it has the focus. Split, Heal and Loop use **B**, **H** and **R** while REAPER gives their action no key. The Timelines rows follow your REAPER bindings of its view actions (scroll and zoom, wheel and keys).
 - **Own**: RAV's own key (or wheel, for the Timelines rows), or a REAPER action you link the row to.
 
 The footer says when `reaper-kb.ini` was last read; RAV reads it again whenever REAPER saves it.
@@ -365,7 +365,7 @@ ReaAnimViewer can put the animation in the videos you render from REAPER, with t
 ### Adding the video FX
 
 1. Open the viewer and click **Video view** at the top (or press **V** until it shows). The **Video panel** opens on the right. **P**, the panel button at the top right, or **Video panel** in the viewer menu's **Video view** tab show or hide it.
-2. The panel follows the track of the animation shown in the viewer. When it says **No video FX on this track**, click **Add video FX to track**. The action **RAV: Add video FX to selected track** does the same from REAPER.
+2. The panel follows the track of the animation shown in the viewer. When it says **No video FX on this track**, click **Add video FX to track**. The action **RAV: Video FX - Add to selected track** does the same from REAPER.
 3. That's it. You never need the FX window: RAV drives the FX for you.
 
 One FX shows the animation items of its own track. Where that track has no item, the FX shows nothing, so the video tracks below show through. Add the FX to every animation track you want in the video. REAPER's Video window (**View > Video**) shows the result too.
@@ -419,7 +419,7 @@ While REAPER's Video window is open, the line above the Video view frame shows R
 | **Video FX inactive** | The FX and the extension come from different releases. Update ReaAnimViewer (ReaPack: **Synchronize packages**; Toolkit: **Update**, then **Run** on the card) and restart REAPER. |
 | A message says the RAV video FX is not installed | `rav_video_fx.clap` is missing from `UserPlugins\FX`. Update or reinstall ReaAnimViewer (see [Installation](#installation)) and restart REAPER. If it is there, rescan plug-ins in **Options > Preferences > Plug-ins > CLAP**. |
 | No picture over an item | The FX shows only items of its own track. Put the playhead over a RAV item on the FX track, and check that the viewer can load that file (no red message). |
-| REAPER's Video window stays black | Open it with **View > Video**. A video item on a track above can cover the FX's picture. To check that the FX works at all, turn on the action **RAV: Video FX test pattern**: an orange frame with a moving bar means the FX and the extension talk to each other. Turn it off again. |
+| REAPER's Video window stays black | Open it with **View > Video**. A video item on a track above can cover the FX's picture. To check that the FX works at all, turn on the action **RAV: Video FX - Test pattern**: an orange frame with a moving bar means the FX and the extension talk to each other. Turn it off again. |
 | The rendered video has the wrong size | Check **Output > Size** in the panel, and the video size in the render format's settings. |
 
 To report a problem, click **Copy error log** in the viewer menu and paste it into your report.
@@ -628,13 +628,13 @@ Cut a footstep (one item, or a stack of layers) and its variations, then tell RA
 
 1. Select the sound items. Items that overlap in time are one variation and its layers; items apart in time (or touching end to end) are separate variations. An item holding its variations as takes (NVK style) is one Sound whose takes are its variations. A selected NVK folder item is one variation holding its child items: when its layers hold their variations as takes, every placement plays the same take on all its layers.
 2. Click the label of one RAV project marker of the type you want, for example `FS L`. With several RAV markers selected, the first in time is used and the report says so. With **Markers written** set to **Take** only, there is no project marker to select: the action does nothing and says so.
-3. Run the action **RAV: Spread selected items to selected marker type (this animation)**, or **(all instances)** for every animation item that has that marker.
+3. Run the action **RAV: Tagging - Attach selected items to selected marker (this animation)**, or **(all instances)** for every animation item that has that marker.
 
 RAV turns your selection into a library named after the marker type (`FS L`), listed under **Attached** in the Library view: a Random of your variations, a layered variation being a Blend of its layers. Each sound is placed by its snap offset: the snap point lands on the marker, and the other layers keep their place under the top one. The library is given to the rules that write that marker, then Populate places it: every marker gets a variation drawn at random (avoiding the last two), takes included, on this animation and its linked copies (or on every animation with that marker). The sounds follow the animation item and its markers like any populated sound.
 
 Your selected items (and the child items of a selected folder item) move after the end of the project, side by side as you cut them: they are the library's sources, so keep them. Run the action again with a new selection: the same `FS L` library gets the new sounds, and every animation using it is populated again (your hand edits are kept, as with Populate). You can edit the library like any other (rename it too: it stays the `FS L` library, reshuffle, change a variation). The result shows at the bottom right of REAPER's window, and Ctrl+Z undoes the whole run (library, assignment, moved items, placed sounds). The marker type is its exact name: `FS L` and `FS R` are two types.
 
-- **Add a layer.** To add a layer to what is already there, cut the new layer's variations, put the first one where you want it against one marker (for example 20 ms after the footstep), select them, click the marker's label and run **RAV: Add selected items to stack on selected marker type (this animation)** or **(all instances)**. The `FS L` library becomes a Blend of what it held and the new layer, at that offset, and every marker gets one of the new variations on top of its sound. Without an `FS L` library yet, it does what Spread does.
+- **Add a layer.** To add a layer to what is already there, cut the new layer's variations, put the first one where you want it against one marker (for example 20 ms after the footstep), select them, click the marker's label and run **RAV: Tagging - Add selected items to stack on selected marker (this animation)** or **(all instances)**. The `FS L` library becomes a Blend of what it held and the new layer, at that offset, and every marker gets one of the new variations on top of its sound. Without an `FS L` library yet, it does what Spread does.
 
 ### Copies of one animation share their tagging
 
@@ -645,7 +645,7 @@ Sound designers often duplicate one animation to build a longer take: a two-step
 - **Commit and Cancel** act on every linked item of the selected ones, even those not selected.
 - **Edits in REAPER** reach the copies too: drag, delete or rename a RAV marker of one copy, and the event changes on every copy; their markers follow at once and stay **markers up to date**.
 - **The panel** shows the link under the item's name: **Linked · 4 other copies**. Hover it for what is shared.
-- **Make unique** (the button on that line, or the action **RAV: Make tagging unique (selected items)**) gives an item a tagging of its own, as it is now: from then on, a change on it no longer reaches the other copies, nor theirs this one. The line then reads **Not linked**, with a greyed **Unique**. Use it for a deliberate variation (a limp on one step). Duplicate a unique item and the duplicate is linked to it. To link an item back, undo the Make unique (Ctrl+Z): there is no "link again" button yet.
+- **Make unique** (the button on that line, or the action **RAV: Tagging - Make tagging unique (selected items)**) gives an item a tagging of its own, as it is now: from then on, a change on it no longer reaches the other copies, nor theirs this one. The line then reads **Not linked**, with a greyed **Unique**. Use it for a deliberate variation (a limp on one step). Duplicate a unique item and the duplicate is linked to it. To link an item back, undo the Make unique (Ctrl+Z): there is no "link again" button yet.
 - What makes copies: the same animation file (the same path, whatever its case or slashes), in the same project. Two different files never link, even with the same motion, and items in different project tabs never link. An item relinked to another file leaves its old copies and joins the new file's.
 - An item added later from the same file (no tagging of its own yet) is linked too: its panel shows the shared tagging at once, a change made on it changes the shared tagging, **Commit** writes its markers like the others', and **Make unique** keeps the shared tagging as its own.
 - Copies tagged differently by an earlier build are linked as well: the next change on one of them gives its tagging to every copy (Ctrl+Z undoes it).

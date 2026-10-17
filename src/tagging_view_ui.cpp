@@ -3044,7 +3044,7 @@ void DrawPoolLine(const TaggingModel& m)
     if (!linked) ImGui::EndDisabled();
     ui::ItemTipText(linked ? "Gives this item a tagging of its own, as it is now: from then on a change on it no\n"
                                    "longer reaches the linked items, nor theirs this one. One undo step (Ctrl+Z links it\n"
-                                   "back). A duplicate of it is linked to it. Also: action \"RAV: Make tagging unique\n"
+                                   "back). A duplicate of it is linked to it. Also: action \"RAV: Tagging - Make tagging unique\n"
                                    "(selected items)\"."
                                  : "Made unique: Ctrl+Z right after Make unique links it back.");
 }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //
-// Reference markers for "RAV: Measure detection against reference markers" (Epic 10, spike
+// Reference markers for "RAV: Dev - Measure detection against reference markers" (Epic 10, spike
 // 10-7a): "REF" marks a contact of any bone, "REF <label>" a contact of the bone that plays
 // role <label> (bone_roles.h: a built-in or a custom role key), or else of the bone named
 // <label> ("REF LeftToe_End", "REF mixamorig:LeftHand": no role needed). The label is

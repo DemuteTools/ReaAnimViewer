@@ -736,7 +736,7 @@ MediaItem* PlacedItemFor(ReaProject* proj, const std::string& guid, bool edit, P
     return item;
 }
 
-// ---- Dev action "RAV: Placement engine test" ------------------------------------------------
+// ---- Dev action "RAV: Dev - Placement engine test" ------------------------------------------------
 
 int               g_test_cmd = 0;
 gaccel_register_t g_test_accel = {};
@@ -842,7 +842,7 @@ void RunPlacementTest()
     std::string report = std::string("copyimpmedia ") + (ReadCopyImportedMedia() ? "on" : "off") + "\n";
     report += "step: " + step + "\n\n";
     {
-        const std::string undo = "RAV: Placement engine test (" + step + ")";
+        const std::string undo = "RAV: Dev - Placement engine test (" + step + ")";
         SoundUndoScope    scope(proj, undo.c_str());
         if (step == "place") {
             if (sources.empty()) {
@@ -981,7 +981,7 @@ void InitSoundPlace(void* (*get_func)(const char* name))
         g_test_cmd = f_plugin_register("command_id", const_cast<char*>("RAV_SOUND_PLACE_TEST"));
         if (g_test_cmd) {
             g_test_accel.accel.cmd = static_cast<WORD>(g_test_cmd);
-            g_test_accel.desc = "RAV: Placement engine test";
+            g_test_accel.desc = "RAV: Dev - Placement engine test";
             f_plugin_register("gaccel", &g_test_accel);
             f_plugin_register("hookcommand", reinterpret_cast<void*>(&OnPlaceTestCommand));
         }

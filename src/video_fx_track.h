@@ -24,7 +24,7 @@ enum class AddVideoFxResult { Added, AlreadyThere, NotInstalled };
 // Opens no window. `out_index` (optional) gets its index, or -1.
 AddVideoFxResult AddVideoFxToTrack(MediaTrack* track, int* out_index);
 
-// Body of the action "RAV: Add video FX to selected track": every selected track,
+// Body of the action "RAV: Video FX - Add to selected track": every selected track,
 // one undo point, a message box when no track is selected or the FX is not installed.
 void AddVideoFxToSelectedTracks();
 

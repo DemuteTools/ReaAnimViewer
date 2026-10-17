@@ -13,7 +13,7 @@ void OpenViewerWindow(REAPER_PLUGIN_HINSTANCE hInst, HWND reaper_main);
 // window is not open.
 void CloseViewerWindow();
 
-// Toggle entry point for the `RAV: Open Viewer` action: closes the panel if it
+// Toggle entry point for the `RAV: Viewer - Open viewer` action: closes the panel if it
 // is currently visible, otherwise opens (or re-shows) it.
 void ToggleViewerWindow(REAPER_PLUGIN_HINSTANCE hInst, HWND reaper_main);
 
@@ -21,7 +21,7 @@ void ToggleViewerWindow(REAPER_PLUGIN_HINSTANCE hInst, HWND reaper_main);
 // for the toggle action's toolbar/menu checkmark.
 bool ViewerWindowIsVisible();
 
-// Story 6-5-9 -- the `RAV: Viewer full screen (toggle)` action: full screen leaves it (back to
+// Story 6-5-9 -- the `RAV: Viewer - Full screen (toggle)` action: full screen leaves it (back to
 // the docker); otherwise the viewer opens if needed and goes full screen (src/viewer_fullscreen.h).
 void ToggleViewerFullScreen(REAPER_PLUGIN_HINSTANCE hInst, HWND reaper_main);
 

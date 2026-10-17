@@ -384,7 +384,7 @@ void RunSoundStoreCheck()
                                    "Switch Group \"Material\" (Wood, Concrete), library \"Test library\"\n"
                                    "(a Switch with one Sound).\n\nEdit > Undo removes it."
                                  : "The test sound library could not be added.",
-                           "RAV: Sound library storage check", 0);
+                           "RAV: Dev - Sound library storage check", 0);
             return;
         }
         size_t nodes = 0;
@@ -395,7 +395,7 @@ void RunSoundStoreCheck()
                                 (s.groups.size() == 1 ? " Switch Group\n" : " Switch Groups\n") +
                                 std::to_string(nodes) + (nodes == 1 ? " node\n" : " nodes\n") + "version " +
                                 std::to_string(s.version);
-        ShowMessageBox(msg.c_str(), "RAV: Sound library storage check", 0);
+        ShowMessageBox(msg.c_str(), "RAV: Dev - Sound library storage check", 0);
     } catch (...) {
     }
 }

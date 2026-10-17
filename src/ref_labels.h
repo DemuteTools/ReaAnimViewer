@@ -59,12 +59,19 @@ inline bool ParseRefMarkerName(const char* name, std::string* label)
     return true;
 }
 
-enum class RefEventKind { Lift, Slide, Pivot, Grab, Release };
+// Story 10-9a appends the sideless jump (take-off) and land.
+enum class RefEventKind { Lift, Slide, Pivot, Grab, Release, Jump, Land };
 
 // True when `key` (a label normalized by RoleKeyFromName) is an event label:
 // "<kind>_<l|r|left|right>", plus "lift_off_<side>" and "liftoff_<side>". `side` gets 'L' / 'R'.
+// Story 10-9a: "jump" and "land" are sideless (no side suffix): `side` gets 'B'.
 inline bool ParseEventRefLabel(const std::string& key, RefEventKind* kind, char* side)
 {
+    if (key == "jump" || key == "land") {
+        if (kind) *kind = key == "jump" ? RefEventKind::Jump : RefEventKind::Land;
+        if (side) *side = 'B';
+        return true;
+    }
     const size_t u = key.rfind('_');
     if (u == std::string::npos || u == 0) return false;
     const std::string k = key.substr(0, u), sd = key.substr(u + 1);

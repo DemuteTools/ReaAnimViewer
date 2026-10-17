@@ -14,6 +14,13 @@
 //   lift-off   the foot leaves the ground (Lift L / R).
 //   slide      a planted part slides (Slide L / R).
 //   pivot      the planted foot turns (Pivot L / R).
+//   jump       (story 10-9a) the take-off of a jump: the last foot part leaving before both feet
+//              are off long enough while the hips fall freely (Jump; sideless, see below).
+//   land       (story 10-9a) its landing: the first foot part touching after it (Land; sideless).
+//              With Step ticked too, Land replaces the steps (FS / Heel / Toe L / R) within
+//              +-30 ms of it; with Lift-off ticked too, Jump replaces the Lift L / R within +-30 ms
+//              of it (their physics times, before the blocks' offsets). Strength = the hips'
+//              vertical speed (leg/s).
 //   Story 10-8m: slide and pivot each have a "Heel / toe separate" mode (AutoSettings::slide_parts,
 //   pivot_parts). Combined (the default): one block per side, as above. Separate: a heel block and
 //   a toe block per side (Slide Heel L, Slide Toe L, Pivot Heel R, Pivot Toe R...; the toe is the
@@ -34,21 +41,24 @@
 //              rest with a grab's approach, or at rest from the clip start; kind hand_pivot, the
 //              default), or any resting hand (kind hand_pivot_any).
 // Each ticked type x side is one block of the item (Block::auto_type, auto_side, sens), with no
-// condition: the rule engine never fires it. Its marker, colour, offset_ms and on/off are the
-// block's own, so a preset, pooled copies, the Commit snapshot and Legacy carry it as any block,
-// and its events join the item's event list (edits, Commit / Cancel, markers, mirror).
+// condition: the rule engine never fires it. Story 10-9a: a sideless type (jump, land: its type
+// row's `sideless`) has one block per kind, saved side=B, its marker without " L/R" and one
+// colour. Its marker, colour, offset_ms and on/off are the block's own, so a preset, pooled
+// copies, the Commit snapshot and Legacy carry it as any block, and its events join the item's
+// event list (edits, Commit / Cancel, markers, mirror).
 //
 // Sensitivity: 0..100 %, 50 = the spike's constants (PhysicsParams defaults). It moves one
 // constant per type by f = 2^((s - 50) / 50): step and lift-off contact_speed x f (more
 // sensitive = more contacts), slide slide_speed / f, pivot pivot_min_deg and pivot_rate_dps / f,
-// grab and release hand_contact_speed x f, hand pivot hand_pivot_min_deg and hand_pivot_rate_dps / f.
+// grab and release hand_contact_speed x f, hand pivot hand_pivot_min_deg and hand_pivot_rate_dps / f,
+// jump and land jump_min_flight_s / f (story 10-9a: higher sensitivity = shorter flights count).
 // The arrival speed at the clip end (story 10-8j, 2 x the contact speed) follows contact_speed
 // and hand_contact_speed; the min approaches do not move.
 // The block's offset (ms) is added on top of the physics' own per-part step offsets.
 //
 // Values: strength is the physics strength (leg/s for steps, lift-offs, slides, grabs and
-// releases, degrees for pivots and hand pivots); speed is strength x the leg length (m/s), 0 for
-// pivots and hand pivots.
+// releases, the hips' vertical speed for jumps and lands, degrees for pivots and hand pivots); speed
+// is strength x the leg length (m/s), 0 for pivots and hand pivots.
 //
 // Pure C++17, deterministic. Host-tested (tests/auto_detect_test.cpp).
 
@@ -67,9 +77,10 @@ namespace rav {
 // ---- Types and block kinds ---------------------------------------------------------------------
 
 // The types the section ticks.
-enum class AutoType : int { Step = 0, LiftOff, Slide, Pivot, Grab, Release, HandPivot };
-constexpr int kAutoTypeCount = 7;
-// "Step", "Lift-off", "Slide scuff", "Pivot scuff", "Grab", "Release", "Pivot scuff" (the hand's)
+enum class AutoType : int { Step = 0, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land };
+constexpr int kAutoTypeCount = 9;
+// "Step", "Lift-off", "Slide scuff", "Pivot scuff", "Grab", "Release", "Pivot scuff" (the hand's),
+// "Jump", "Land"
 const char* AutoTypeLabel(AutoType t);
 
 // Story 10-9-0: every type, category and kind has one descriptor row in auto_types.cpp (labels,
@@ -80,34 +91,44 @@ const char* AutoTypeLabel(AutoType t);
 // the sound (story 10-9-1). Body (trunk, head) has no type yet.
 enum class AutoCategory : int { Legs = 0, Arms, Body };
 constexpr int kAutoCategoryCount = 3;
-AutoCategory AutoCategoryOf(AutoType t);              // step, lift-off, slide, pivot: Legs; grab, release, hand pivot: Arms
+AutoCategory AutoCategoryOf(AutoType t);              // step, lift-off, slide, pivot, jump, land: Legs; grab, release, hand pivot: Arms
 const char*  AutoCategoryLabel(AutoCategory c);       // "Legs", "Arms", "Body"
 
 // The block kinds (Block::auto_type words): a combined step, a separate heel or toe step, a
 // lift-off, a slide, a pivot, a grab, a release, a hand pivot after a grab or of any resting hand.
-// Story 10-8m appends the slides and pivots by part (Each part, then Longest part).
+// Story 10-8m appends the slides and pivots by part (Each part, then Longest part); story 10-9a
+// the sideless jump and land.
 enum class AutoKind : int {
     Step = 0, Heel, Toe, Lift, Slide, Pivot, Grab, Release, HandPivot, HandPivotAny,
-    SlideHeel, SlideToe, PivotHeel, PivotToe, SlideHeelLongest, SlideToeLongest, PivotHeelLongest, PivotToeLongest
+    SlideHeel, SlideToe, PivotHeel, PivotToe, SlideHeelLongest, SlideToeLongest, PivotHeelLongest, PivotToeLongest,
+    Jump, Land
 };
-constexpr int kAutoKindCount = 18;
+constexpr int kAutoKindCount = 20;
 // "step", "heel", "toe", "lift", "slide", "pivot", "grab", "release", "hand_pivot", "hand_pivot_any",
 // "slide_heel", "slide_toe", "pivot_heel", "pivot_toe", "slide_heel_longest", "slide_toe_longest",
-// "pivot_heel_longest", "pivot_toe_longest"
+// "pivot_heel_longest", "pivot_toe_longest", "jump", "land"
 const char* AutoKindWord(AutoKind k);
 bool AutoKindFromWord(const std::string& w, AutoKind* out);
 AutoType AutoTypeOfKind(AutoKind k);
 // The marker name: "FS L", "Heel L", "Toe L", "Lift L", "Slide L", "Pivot L", "Grab L", "Release L",
 // "Hand Pivot L" (both hand pivot kinds), "Slide Heel L", "Slide Toe L", "Pivot Heel L", "Pivot Toe L"
-// (both part modes) (and R).
+// (both part modes) (and R); a sideless kind's has no side: "Jump", "Land" (any `side`).
 std::string AutoMarkerName(AutoKind k, char side);
-// The default colour (Block::color form: 0x1000000 | 0xRRGGBB), one per kind and side.
+// The default colour (Block::color form: 0x1000000 | 0xRRGGBB), one per kind and side (a sideless
+// kind: one).
 uint32_t AutoDefaultColor(AutoKind k, char side);
 
-// A known auto block: its kind and side. False for a rule, or an auto type this version does not know.
+// Story 10-9a: a kind of a sideless type (its type row's `sideless`: jump, land).
+bool AutoKindSideless(AutoKind k);
+// The sides of a kind's blocks: "LR", or "B" for a sideless kind.
+const char* AutoKindSides(AutoKind k);
+
+// A known auto block: its kind and side. False for a rule, or an auto type this version does not
+// know, or a side its kind does not have (L / R, or B for a sideless kind).
 bool AutoBlockKind(const Block& b, AutoKind* kind, char* side);
 
-// A fresh auto block of that kind and side (default marker and colour, on, no condition).
+// A fresh auto block of that kind and side (default marker and colour, on, no condition). A
+// sideless kind's block takes side B whatever `side` says.
 Block MakeAutoBlock(AutoKind k, char side, double sens, double offset_ms);
 
 // ---- Settings ----------------------------------------------------------------------------------
@@ -169,9 +190,10 @@ bool AutoPending(const AutoSettings& ui, const AutoSettings& item);
 // other type. Pivots' required parts ignore it (a pivot always needs the heel and the toe).
 bool AutoTypeSeparate(AutoType t, const AutoSettings& s);
 
-// The blocks of these settings, per ticked type x side (story 10-8h: a row's own values when the
-// type has one for that kind and side), in type order (steps: combined FS, or heel
-// then toe; hand pivots: hand_pivot, or hand_pivot_any), left then right.
+// The blocks of these settings, per ticked type x side (a sideless kind: one, side B; story
+// 10-8h: a row's own values when the type has one for that kind and side), in type order
+// (steps: combined FS, or heel then toe; hand pivots: hand_pivot, or hand_pivot_any), left then
+// right.
 std::vector<Block> AutoBlocks(const AutoSettings& s);
 // The settings the item's known auto blocks say: a type is on when one of its blocks is there,
 // its sensitivity and offset are its first block's; steps are separate when heel or toe blocks
@@ -220,7 +242,10 @@ std::vector<PhysicsParams> AutoParamSets(const std::vector<Block>& blocks, bool 
 
 // The events of the auto blocks (Event::block = the block's index, marker = its marker), from the
 // analysis of each block's parameter set (a block whose set is not in `analyses`, or whose
-// analysis failed, has none). Sorted by time (then block).
+// analysis failed, has none). Sorted by time (then block). Story 10-9a: a Land event replaces the
+// step blocks' events (combined, heel, toe) within kAutoReplaceS of it, a Jump event the lift-off
+// blocks' events, both on their physics times (before the blocks' offsets).
+constexpr double kAutoReplaceS = 0.030;
 std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const std::vector<Block>& blocks,
                               bool looping);
 
@@ -277,13 +302,15 @@ bool HasActiveAutoBlocks(const std::vector<Block>& blocks);
 //   slide separate (story 10-8m)     the heel; the toe (or the toe end)
 // (`separate` is the type's own mode: separate_steps for steps, slide_parts != Combined for slides.)
 //   grab, release, hand pivot        the hand
+//   jump, land (story 10-9a)         the hips; per side, the heel, toe or toe end (as a lift-off)
 std::vector<std::string> AutoMissingParts(AutoType t, bool separate, const std::vector<int>& role_to_bone);
 
 // 10-8b fb-1 -- true when a known auto block that is on cannot find its events on this mapping:
 // no body scale, or its own part on its side has no bone (combined step, lift-off, slide: no heel,
 // toe nor toe end; heel, slide heel: no heel; toe, slide toe: no toe nor toe end; every pivot kind:
 // no heel, or no toe nor toe end;
-// grab, release, hand pivot: no hand). Its earlier markers are then kept (KeepBlockEvents, event_list.h).
+// grab, release, hand pivot: no hand; jump, land: no hips, or a foot with no heel, toe nor toe
+// end). Its earlier markers are then kept (KeepBlockEvents, event_list.h).
 bool AutoBlockPartMissing(const Block& b, const std::vector<int>& role_to_bone);
 // Per block: AutoBlockPartMissing (rules: 0).
 std::vector<char> AutoBlocksPartMissing(const std::vector<Block>& blocks, const std::vector<int>& role_to_bone);
@@ -308,14 +335,20 @@ struct AutoLane {
     double              threshold = 0.0;
     bool                above = false;  // the block fires above the line (slide, pivots), else below
     double              rate_hz = 0.0;  // the analysis' sample rate
+    // Story 10-9a: a lane with no threshold (the jumps' hips vertical speed, signed: no line, the
+    // range from the curve), and what its shading means ("" = the part's contact).
+    bool                no_threshold = false;
+    std::string         shade_note;
 };
 
 // The lanes of one auto block from its analysis: combined step and lift-off, each present foot
 // part's speed vs contact_speed; heel, the heel; toe, the ball (else the tip); slide, each present
 // part's hspeed vs slide_speed; pivot, |yaw rate| (yaw where valid, else heading where valid, else
 // 0) vs pivot_rate_dps; grab and release, the hand's speed vs hand_contact_speed; hand pivot (both
-// kinds), |heading rate| vs hand_pivot_rate_dps. Empty for a rule, an unknown kind, a failed
-// analysis or an absent part; `why` (optional) then gets the reason ("" for a rule or unknown kind).
+// kinds), |heading rate| vs hand_pivot_rate_dps; jump and land (story 10-9a), the hips' vertical
+// speed (no threshold), shaded over the flights both feet are off. Empty for a rule, an unknown
+// kind, a failed analysis or an absent part; `why` (optional) then gets the reason ("" for a
+// rule or unknown kind).
 std::vector<AutoLane> AutoBlockLanes(const AutoAnalysis& aa, const Block& b, std::string* why = nullptr);
 
 }  // namespace rav

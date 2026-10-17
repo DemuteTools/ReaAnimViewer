@@ -157,6 +157,19 @@ void TestKnownValues()
     const PhysicsParams p = AutoPhysicsParams(AutoType::Pivot, 100.0, false);
     CHECK(p.pivot_min_deg == d.pivot_min_deg / 2.0 && p.pivot_rate_dps == d.pivot_rate_dps / 2.0);
     CHECK(p.contact_speed == d.contact_speed && p.slide_speed == d.slide_speed);
+    // Story 10-9a: jump and land, sideless Legs types; the sensitivity divides the minimum flight.
+    CHECK(AutoTypeRow(AutoType::Jump).sideless && AutoTypeRow(AutoType::Land).sideless);
+    for (int t = 0; t < static_cast<int>(AutoType::Jump); ++t) CHECK(!AutoTypeRow(static_cast<AutoType>(t)).sideless);
+    CHECK(AutoCategoryOf(AutoType::Jump) == AutoCategory::Legs && AutoCategoryOf(AutoType::Land) == AutoCategory::Legs);
+    CHECK(std::string(AutoKindWord(AutoKind::Jump)) == "jump" && std::string(AutoKindWord(AutoKind::Land)) == "land");
+    CHECK(std::string(AutoTypeWord(AutoType::Jump)) == "jump" && std::string(AutoTypeWord(AutoType::Land)) == "land");
+    CHECK(AutoMarkerName(AutoKind::Jump, 'B') == "Jump" && AutoMarkerName(AutoKind::Land, 'L') == "Land");
+    CHECK(AutoDefaultColor(AutoKind::Jump, 'L') == AutoDefaultColor(AutoKind::Jump, 'R'));
+    CHECK(std::string(AutoKindSides(AutoKind::Jump)) == "B" && std::string(AutoKindSides(AutoKind::Step)) == "LR");
+    const PhysicsParams j = AutoPhysicsParams(AutoType::Jump, 100.0, false);
+    const PhysicsParams l = AutoPhysicsParams(AutoType::Land, 0.0, false);
+    CHECK(j.jump_min_flight_s == d.jump_min_flight_s / 2.0 && l.jump_min_flight_s == d.jump_min_flight_s * 2.0);
+    CHECK(j.contact_speed == d.contact_speed && !SameAutoAnalysis(j, d));
 }
 
 // AutoTypeSeparate: only steps, slides and pivots have the mode.
@@ -187,14 +200,21 @@ void TestTypeSeparate()
         CHECK(!AutoTypeSeparate(t, all));
 }
 
-// The kinds' highlighted roles: a hand kind its hand, a foot kind its foot's parts in order.
+// The kinds' highlighted roles: a hand kind its hand, a foot kind its foot's parts in order, a
+// sideless kind (story 10-9a: jump, land) the hips then both feet's parts, whatever the side.
 void TestRoles()
 {
     for (int k = 0; k < kAutoKindCount; ++k) {
         const AutoKindInfo& r = AutoKindRow(static_cast<AutoKind>(k));
-        for (char side : {'L', 'R'}) {
+        for (char side : {'L', 'R', 'B'}) {
             std::vector<Role> want;
-            if (AutoCategoryOf(r.type) == AutoCategory::Arms) {
+            if (AutoTypeRow(r.type).sideless) {
+                want.push_back(Role::Hips);
+                for (char fs : {'L', 'R'})
+                    for (int q = 0; q < kFootPartCount; ++q) want.push_back(FootPartRole(fs, q));
+            } else if (side == 'B') {
+                continue;  // a sided kind has no B block
+            } else if (AutoCategoryOf(r.type) == AutoCategory::Arms) {
                 want.push_back(side == 'R' ? Role::RightHand : Role::LeftHand);
             } else {
                 for (int q = 0; q < kFootPartCount; ++q) want.push_back(FootPartRole(side, q));
@@ -213,6 +233,8 @@ void TestRowInvariants()
         if (r.scuff != ScuffParts::Combined) CHECK(r.type == AutoType::Slide || r.type == AutoType::Pivot);
         CHECK(r.degrees == (r.type == AutoType::Pivot || r.type == AutoType::HandPivot));
         CHECK((std::string(r.role_key) == "hand") == (AutoCategoryOf(r.type) == AutoCategory::Arms));
+        // Story 10-9a: a sideless kind has one colour and no role key (no foot, no hand).
+        if (AutoTypeRow(r.type).sideless) CHECK(r.color[0] == r.color[1] && std::string(r.role_key).empty());
         for (int j = 0; j < kAutoKindCount; ++j) {
             const AutoKindInfo& o = AutoKindRow(static_cast<AutoKind>(j));
             if (j == k || o.type != r.type || o.scuff != r.scuff) continue;

@@ -202,10 +202,11 @@ struct Block {
     KeptText               kept;           // its `block` line (rule_record.h)
     KeptText               kept_strength;  // its `strength` line
     // Story 10-8b -- an auto-detection block (auto_detect.h): `auto_type` names its event type
-    // ("step", "heel", "toe", "lift", "slide", "pivot"; "" = a rule), `auto_side` its foot
-    // ('L' / 'R') and `sens` its sensitivity (0..100 %, 50 = the physics defaults). It has no
-    // condition and the rule engine never fires it (DetectTrace skips it): its events come from
-    // the motion physics (motion_physics.h). Marker, colour, offset_ms and enabled are its own.
+    // ("step", "heel", "toe", "lift", "slide", "pivot", "jump", "land"...; "" = a rule),
+    // `auto_side` its foot ('L' / 'R'; 'B' for a sideless kind, story 10-9a: jump, land) and
+    // `sens` its sensitivity (0..100 %, 50 = the physics defaults). It has no condition and the
+    // rule engine never fires it (DetectTrace skips it): its events come from the motion physics
+    // (motion_physics.h). Marker, colour, offset_ms and enabled are its own.
     std::string            auto_type;
     char                   auto_side = 'L';
     double                 sens = 50.0;

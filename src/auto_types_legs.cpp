@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: MIT
 //
-// Story 10-9-0: the Legs category's types (step, lift-off, slide, pivot) as the rows of
-// auto_types.cpp read them: their event sources, matches, required parts, lanes and roles.
+// Story 10-9-0: the Legs category's types (step, lift-off, slide, pivot; story 10-9a: jump, land)
+// as the rows of auto_types.cpp read them: their event sources, matches, required parts, lanes and
+// roles.
 
 #include <cmath>
+#include <cstdio>
 
 #include "auto_types.h"
 
@@ -51,6 +53,12 @@ std::vector<PhysicsEvent> AutoSourceFootParts(const PhysicsAnalysis& a, const Ph
     return FootPartScuffEvents(a);
 }
 
+// Story 10-9a: take-offs and landings.
+std::vector<PhysicsEvent> AutoSourceJump(const PhysicsAnalysis& a, const PhysicsParams& p)
+{
+    return JumpEvents(a, p);
+}
+
 // ---- Type parts (AutoMissingParts) -------------------------------------------------------------
 
 // Combined step, lift-off, slide: the heel, toe or toe end (all listed when none has a bone).
@@ -73,6 +81,13 @@ void AutoPartsFootBoth(bool, const std::vector<int>& role_to_bone, std::vector<s
         if (!AutoHasRole(role_to_bone, heel)) AutoPushOnce(out, RoleName(heel));
         if (!AutoHasRole(role_to_bone, ball) && !AutoHasRole(role_to_bone, tip)) AutoPushOnce(out, RoleName(ball));
     }
+}
+
+// Story 10-9a: jump and land: the hips, and each foot as a lift-off.
+void AutoPartsJump(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out)
+{
+    if (!AutoHasRole(role_to_bone, Role::Hips)) AutoPushOnce(out, RoleName(Role::Hips));
+    AutoPartsFootAny(separate, role_to_bone, out);
 }
 
 // Step and slide: separate as a pivot, combined as a lift-off.
@@ -158,6 +173,16 @@ bool AutoMatchPivotToeLongest(const PhysicsEvent& e, const PhysicsAnalysis&, cha
     return LongestToe(e, PhysicsKind::Pivot);
 }
 
+bool AutoMatchJump(const PhysicsEvent& e, const PhysicsAnalysis&, char)
+{
+    return e.kind == PhysicsKind::Jump;
+}
+
+bool AutoMatchLand(const PhysicsEvent& e, const PhysicsAnalysis&, char)
+{
+    return e.kind == PhysicsKind::Land;
+}
+
 // ---- Part missing (AutoBlockPartMissing) -------------------------------------------------------
 
 // Heel, slide heel: no heel.
@@ -182,6 +207,13 @@ bool AutoMissingFootAny(char side, const std::vector<int>& role_to_bone)
 bool AutoMissingHeelOrToe(char side, const std::vector<int>& role_to_bone)
 {
     return AutoMissingHeel(side, role_to_bone) || AutoMissingToe(side, role_to_bone);
+}
+
+// Story 10-9a: jump and land (sideless): no hips, or a foot with no heel, toe nor toe end.
+bool AutoMissingJump(char, const std::vector<int>& role_to_bone)
+{
+    return !AutoHasRole(role_to_bone, Role::Hips) || AutoMissingFootAny('L', role_to_bone) ||
+           AutoMissingFootAny('R', role_to_bone);
 }
 
 // ---- Lanes -------------------------------------------------------------------------------------
@@ -273,6 +305,45 @@ void AutoLanesPivot(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::s
     out.push_back(std::move(l));
 }
 
+// Story 10-9a: jump and land: the hips' vertical speed (signed, no threshold), shaded where both
+// feet are off (every present part of both feet free).
+void AutoLanesJump(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason)
+{
+    const PhysicsAnalysis& a = *args.a;
+    if (a.hips_vy.empty()) {
+        reason = a.hips_missing.empty() ? std::string("jump needs the hips") : a.hips_missing;
+        return;
+    }
+    bool feet[2] = {false, false};
+    for (int s = 0; s < 2; ++s)
+        for (const PartTrack& pt : a.foot[s].part) feet[s] = feet[s] || pt.present;
+    if (!feet[0] || !feet[1]) {
+        reason = "jump needs a heel, toe or toe end on each foot";
+        return;
+    }
+    AutoLane l;
+    l.label = "Hips  vertical speed";
+    l.unit = "leg/s";
+    l.curve = AutoLaneWindow(a.hips_vy, args.first, args.n, false);
+    l.contact.assign(args.n, 0);
+    for (size_t i = 0; i < args.n; ++i) {
+        const size_t j = args.first + i;
+        bool         on = false;
+        for (const FootTrack& f : a.foot)
+            for (const PartTrack& pt : f.part) on = on || (pt.present && j < pt.contact.size() && pt.contact[j]);
+        l.contact[i] = on ? 0 : 1;
+    }
+    l.no_threshold = true;
+    char buf[256];
+    std::snprintf(buf, sizeof(buf),
+                  "Shaded: both feet are off. A jump is a shaded run of %.0f ms at least\n"
+                  "(this sensitivity's minimum flight) where the hips fall freely\n"
+                  "(their vertical speed drops steadily).",
+                  args.p->jump_min_flight_s * 1000.0);
+    l.shade_note = buf;
+    out.push_back(std::move(l));
+}
+
 // ---- Roles -------------------------------------------------------------------------------------
 
 // Story 10-8b: an auto block shows its foot's parts (heel, toe, toe end).
@@ -280,6 +351,15 @@ std::vector<Role> AutoRolesFoot(char side)
 {
     std::vector<Role> out;
     for (int q = 0; q < kFootPartCount; ++q) out.push_back(FootPartRole(side, q));
+    return out;
+}
+
+// Story 10-9a: a jump or land block shows the hips and both feet's parts.
+std::vector<Role> AutoRolesJump(char)
+{
+    std::vector<Role> out = {Role::Hips};
+    for (char side : kSides)
+        for (int q = 0; q < kFootPartCount; ++q) out.push_back(FootPartRole(side, q));
     return out;
 }
 

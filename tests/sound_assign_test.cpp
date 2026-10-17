@@ -60,9 +60,11 @@ static void TestTable()
 {
     const std::vector<BodyPart>& parts = BodyParts();
     CHECK(parts.size() == 4);
-    CHECK(parts[0].id == "legs" && parts[0].label == "Legs" && parts[0].types.size() == 5);
+    // Story 10-9a: Legs > Jump / Land, assigned like any type.
+    CHECK(parts[0].id == "legs" && parts[0].label == "Legs" && parts[0].types.size() == 7);
     CHECK(parts[0].types[0].word == "step" && parts[0].types[1].word == "lift" && parts[0].types[2].word == "slide" &&
-          parts[0].types[3].word == "pivot" && parts[0].types[4].word == "rules");
+          parts[0].types[3].word == "pivot" && parts[0].types[4].word == "jump" && parts[0].types[5].word == "land" &&
+          parts[0].types[6].word == "rules");
     CHECK(parts[1].id == "arms" && parts[1].types.size() == 4 && parts[1].types[2].word == "hand_pivot");
     CHECK(parts[2].id == "body" && parts[2].label == "Body" && parts[2].has_category &&
           parts[2].category == AutoCategory::Body && parts[2].types.size() == 1);
@@ -89,9 +91,10 @@ static void TestEventRoleKey()
     CHECK(RoleFamilyKey(Role::LeftToeEnd) == "toe_end" && RoleFamilyKey(Role::RightHeel) == "heel" &&
           RoleFamilyKey(Role::Hips) == "hips" && RoleFamilyKey(Role::LeftUpLeg) == "hip" &&
           RoleFamilyKey(Role::RightHand) == "hand");
-    // Every auto kind, both sides: heel kinds, toe kinds, hand kinds; combined ones have none.
+    // Every auto kind, both sides: heel kinds, toe kinds, hand kinds; combined and sideless ones have none.
     const char* want[kAutoKindCount] = {"",     "heel", "toe",  "",     "",     "",     "hand", "hand", "hand",
-                                        "hand", "heel", "toe",  "heel", "toe",  "heel", "toe",  "heel", "toe"};
+                                        "hand", "heel", "toe",  "heel", "toe",  "heel", "toe",  "heel", "toe",
+                                        "",     ""};  // story 10-9a: jump, land (no foot part)
     for (int k = 0; k < kAutoKindCount; ++k)
         for (char side : {'L', 'R'}) CHECK(EventRoleKey(AutoB(static_cast<AutoKind>(k), side, "x")) == want[k]);
     Block unknown = AutoB(AutoKind::Heel, 'L', "x");
@@ -147,7 +150,7 @@ static void TestPartOfBlock()
                                         "legs.slide", "legs.pivot", "arms.grab",      "arms.release",
                                         "arms.hand_pivot", "arms.hand_pivot", "legs.slide", "legs.slide",
                                         "legs.pivot", "legs.pivot", "legs.slide",      "legs.slide",
-                                        "legs.pivot", "legs.pivot"};
+                                        "legs.pivot", "legs.pivot", "legs.jump", "legs.land"};
     for (int k = 0; k < kAutoKindCount; ++k) {
         const Block b = AutoB(static_cast<AutoKind>(k), 'L', "x");
         CHECK(PartOf(b) == want[k]);
@@ -159,8 +162,9 @@ static void TestPartOfBlock()
     std::string part, type;
     CHECK(!PartOfBlock(unknown, &part, &type) && part == "other" && type == "rules");
 
-    // The migration table (sound_record.cpp) agrees with PartOfBlock for every kind and side.
-    for (int k = 0; k < kAutoKindCount; ++k)
+    // The migration table (sound_record.cpp) agrees with PartOfBlock for every kind and side it
+    // knows (frozen legacy: the kinds before story 10-9a's jump and land).
+    for (int k = 0; k < static_cast<int>(AutoKind::Jump); ++k)
         for (char side : {'L', 'R'}) {
             const Block        b = AutoB(static_cast<AutoKind>(k), side, "x");
             const std::string  key = AutoSoundKeyOf(b);

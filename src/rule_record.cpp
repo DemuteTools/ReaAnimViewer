@@ -779,7 +779,7 @@ Set SetBlock(Block& b, const std::string& k, const std::string& v)
     // as unknown fields, so they write back as read.
     if (k == "side") {
         if (b.auto_type.empty()) return Set::Unknown;
-        if (v != "L" && v != "R") return Set::Bad;
+        if (v != "L" && v != "R" && v != "B") return Set::Bad;  // story 10-9a: B = a sideless kind
         b.auto_side = v[0];
         return Set::Ok;
     }

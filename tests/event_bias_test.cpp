@@ -50,6 +50,18 @@ int main()
     CHECK(!RefEventIsSpan(RefEventKind::Lift) && !RefEventIsSpan(RefEventKind::Grab) &&
           !RefEventIsSpan(RefEventKind::Release));
     CHECK(std::string(RefEventName(RefEventKind::Lift)) == "lift");
+    // Story 10-9a: jump and land, from JumpEvents, sideless, matched on their time.
+    CHECK(RefEventPhysicsKind(RefEventKind::Jump) == PhysicsKind::Jump);
+    CHECK(RefEventPhysicsKind(RefEventKind::Land) == PhysicsKind::Land);
+    CHECK(RefEventSourceOf(RefEventKind::Jump) == RefEventSource::Jump &&
+          RefEventSourceOf(RefEventKind::Land) == RefEventSource::Jump);
+    CHECK(RefEventSourceOf(RefEventKind::Grab) == RefEventSource::Hand &&
+          RefEventSourceOf(RefEventKind::Lift) == RefEventSource::Foot);
+    CHECK(RefEventIsSideless(RefEventKind::Jump) && RefEventIsSideless(RefEventKind::Land));
+    CHECK(!RefEventIsSideless(RefEventKind::Lift) && !RefEventIsSideless(RefEventKind::Release));
+    CHECK(!RefEventIsFoot(RefEventKind::Jump) && !RefEventIsSpan(RefEventKind::Jump) && !RefEventIsSpan(RefEventKind::Land));
+    CHECK(std::string(RefEventName(RefEventKind::Jump)) == "jump" && std::string(RefEventName(RefEventKind::Land)) == "land");
+    for (int k = 0; k < kRefEventKinds; ++k) CHECK(std::string(RefEventName(static_cast<RefEventKind>(k))) != "?");
 
     // A REF inside the span: matched, err = start - REF (the spec's scuff row: -70 ms).
     {

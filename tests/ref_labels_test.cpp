@@ -257,6 +257,29 @@ int main()
         CHECK(back.bone.count("lift_l") && back.bone.at("lift_l").empty());
     }
 
+    // Story 10-9a: the sideless "REF jump" / "REF land" (side B); a side suffix is no event label.
+    {
+        const auto ev = [](const char* name, RefEventKind want_kind) {
+            std::string  label;
+            RefEventKind k = RefEventKind::Lift;
+            char         sd = 0;
+            return ParseRefMarkerName(name, &label) && ParseEventRefLabel(label, &k, &sd) && k == want_kind && sd == 'B';
+        };
+        CHECK(ev("REF jump", RefEventKind::Jump));
+        CHECK(ev("REF Jump", RefEventKind::Jump));
+        CHECK(ev("  ref LAND ", RefEventKind::Land));
+        CHECK(IsEventRefLabel("jump") && IsEventRefLabel("land"));
+        CHECK(!IsEventRefLabel("jump_l") && !IsEventRefLabel("land_r") && !IsEventRefLabel("jumps"));
+        RefTimes t;
+        t.Add("jump", 0.5);
+        t.Add("land", 1.2);
+        t.Add("left_toe", 1.2);
+        CHECK(t.all.size() == 1 && t.by_label["jump"].size() == 1 && t.by_label["land"].size() == 1);
+        ResolveRefBones(RoleMapFile{}, {"mixamorig:Hips", "mixamorig:LeftToeBase"}, &t);
+        CHECK(t.bone.count("jump") && t.bone["jump"].empty() && t.unknown.empty());
+        CHECK(RefLabelsText(t).find("jump 1 (event)") != std::string::npos);
+    }
+
     if (g_fails) {
         std::printf("%d check(s) failed\n", g_fails);
         return 1;

@@ -119,21 +119,36 @@ AutoType AutoTypeOfKind(AutoKind k)
 
 std::string AutoMarkerName(AutoKind k, char side)
 {
-    const char* word = InRange(static_cast<int>(k), kAutoKindCount) ? AutoKindRow(k).marker : "?";
+    const bool  known = InRange(static_cast<int>(k), kAutoKindCount);
+    const char* word = known ? AutoKindRow(k).marker : "?";
+    if (known && AutoKindSideless(k)) return word;  // story 10-9a: "Jump", "Land"
     return std::string(word) + ' ' + (side == 'R' ? 'R' : 'L');
 }
 
 uint32_t AutoDefaultColor(AutoKind k, char side)
 {
-    const int ki = std::clamp(static_cast<int>(k), 0, kAutoKindCount - 1);
-    return 0x1000000u | AutoKindRow(static_cast<AutoKind>(ki)).color[SideIndex(side)];
+    const int      ki = std::clamp(static_cast<int>(k), 0, kAutoKindCount - 1);
+    const AutoKind kk = static_cast<AutoKind>(ki);
+    return 0x1000000u | AutoKindRow(kk).color[AutoKindSideless(kk) ? 0 : SideIndex(side)];
+}
+
+bool AutoKindSideless(AutoKind k)
+{
+    return InRange(static_cast<int>(k), kAutoKindCount) && AutoTypeRow(AutoKindRow(k).type).sideless;
+}
+
+const char* AutoKindSides(AutoKind k)
+{
+    return AutoKindSideless(k) ? "B" : "LR";
 }
 
 bool AutoBlockKind(const Block& b, AutoKind* kind, char* side)
 {
-    if (!IsAutoBlock(b) || (b.auto_side != 'L' && b.auto_side != 'R')) return false;
+    if (!IsAutoBlock(b)) return false;
     AutoKind k = AutoKind::Step;
     if (!AutoKindFromWord(b.auto_type, &k)) return false;
+    // Story 10-9a: a sideless kind's block is side B, the others L or R.
+    if (AutoKindSideless(k) ? b.auto_side != 'B' : (b.auto_side != 'L' && b.auto_side != 'R')) return false;
     if (kind) *kind = k;
     if (side) *side = b.auto_side;
     return true;
@@ -143,7 +158,7 @@ Block MakeAutoBlock(AutoKind k, char side, double sens, double offset_ms)
 {
     Block b;
     b.auto_type = AutoKindWord(k);
-    b.auto_side = side == 'R' ? 'R' : 'L';
+    b.auto_side = AutoKindSideless(k) ? 'B' : (side == 'R' ? 'R' : 'L');
     b.sens = sens;
     b.offset_ms = offset_ms;
     b.marker = AutoMarkerName(k, b.auto_side);
@@ -238,7 +253,8 @@ std::vector<Block> AutoBlocks(const AutoSettings& s)
         const AutoTypeSettings& ts = s.type[t];
         if (!ts.on) continue;
         for (AutoKind k : KindsOf(static_cast<AutoType>(t), s))
-            for (char side : kSides) {
+            for (const char* sp = AutoKindSides(k); *sp; ++sp) {
+                const char          side = *sp;
                 const AutoRowValue* row = FindAutoRow(ts, AutoKindWord(k), side);
                 out.push_back(MakeAutoBlock(k, side, row ? row->sens : ts.sens, row ? row->offset_ms : ts.offset_ms));
             }
@@ -474,9 +490,17 @@ std::vector<PhysicsParams> AutoParamSets(const std::vector<Block>& blocks, bool 
     return out;
 }
 
-std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const std::vector<Block>& blocks, bool looping)
+namespace {
+
+// AutoEvents; `replace` (story 10-9a): Land / Jump events replace the steps / lift-offs near them
+// (off for Detect's per-block event counts, which read each block's own detections).
+std::vector<Event> AutoEventsImpl(const std::vector<AutoAnalysis>& analyses, const std::vector<Block>& blocks,
+                                  bool looping, bool replace)
 {
     std::vector<Event> out;
+    std::vector<double>   raw;     // per event in `out`: its physics time (before the block's offset)
+    std::vector<AutoType> type;    // per event in `out`: its block's type
+    std::vector<double>   period;  // per event in `out`: its analysis' loop period (0: not looping)
     // Each analysis' event sources (the kinds' rows: foot events, hand events...), each computed
     // once, when a block first reads it.
     struct Source {
@@ -520,6 +544,40 @@ std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const s
             ev.strength = e.strength;
             ev.speed = row.degrees ? 0.0 : e.strength * a.leg_length;
             out.push_back(std::move(ev));
+            raw.push_back(e.time_s);
+            type.push_back(row.type);
+            period.push_back(looping && a.looping && a.window_samples > 1
+                                 ? static_cast<double>(a.window_samples - 1) / a.rate_hz
+                                 : 0.0);
+        }
+    }
+    // Story 10-9a: a Land replaces the steps within kAutoReplaceS of it, a Jump the lift-offs, on
+    // their physics times (a block's offset never adds or removes one). Only when both types run.
+    if (replace) {
+        std::vector<char> drop(out.size(), 0);
+        bool              any = false;
+        for (size_t i = 0; i < out.size(); ++i) {
+            if (type[i] != AutoType::Land && type[i] != AutoType::Jump) continue;
+            const AutoType replaced = type[i] == AutoType::Land ? AutoType::Step : AutoType::LiftOff;
+            for (size_t j = 0; j < out.size(); ++j) {
+                if (type[j] != replaced) continue;
+                double d = std::fabs(raw[j] - raw[i]);
+                // A loop: the distance through the seam too.
+                if (period[i] > 0.0) {
+                    d = std::fmod(d, period[i]);
+                    d = std::min(d, period[i] - d);
+                }
+                if (d <= kAutoReplaceS + 1e-9) {
+                    drop[j] = 1;
+                    any = true;
+                }
+            }
+        }
+        if (any) {
+            std::vector<Event> kept;
+            for (size_t i = 0; i < out.size(); ++i)
+                if (!drop[i]) kept.push_back(std::move(out[i]));
+            out = std::move(kept);
         }
     }
     std::stable_sort(out.begin(), out.end(), [](const Event& x, const Event& y) {
@@ -528,8 +586,9 @@ std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const s
     return out;
 }
 
-std::vector<Event> DetectAutoEvents(const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
-                                    std::vector<AutoAnalysis>* cache, bool looping)
+// DetectAutoEvents; `replace` as AutoEventsImpl.
+std::vector<Event> DetectImpl(const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
+                              std::vector<AutoAnalysis>* cache, bool looping, bool replace)
 {
     if (!HasActiveAutoBlocks(blocks)) return {};
     std::vector<AutoAnalysis>  local;
@@ -553,7 +612,20 @@ std::vector<Event> DetectAutoEvents(const std::vector<Block>& blocks, const std:
             else runs.erase(runs.begin() + static_cast<std::ptrdiff_t>(i));
         }
     }
-    return AutoEvents(runs, blocks, looping);
+    return AutoEventsImpl(runs, blocks, looping, replace);
+}
+
+}  // namespace
+
+std::vector<Event> AutoEvents(const std::vector<AutoAnalysis>& analyses, const std::vector<Block>& blocks, bool looping)
+{
+    return AutoEventsImpl(analyses, blocks, looping, true);
+}
+
+std::vector<Event> DetectAutoEvents(const std::vector<Block>& blocks, const std::vector<BoneTrack>& role_tracks,
+                                    std::vector<AutoAnalysis>* cache, bool looping)
+{
+    return DetectImpl(blocks, role_tracks, cache, looping, true);
 }
 
 // ---- Sensitivity search (story 10-8h) ---------------------------------------------------------
@@ -625,7 +697,8 @@ bool ApplyAutoSensSearch(std::vector<Block>& blocks, const std::vector<BoneTrack
     bool                        changed = false;
     if (HasActiveAutoBlocks(blocks)) {
         std::vector<int> counts(blocks.size(), 0);
-        for (const Event& e : DetectAutoEvents(blocks, role_tracks, cache, looping))
+        // Each block's own detections (story 10-9a: before Land / Jump replace steps / lift-offs).
+        for (const Event& e : DetectImpl(blocks, role_tracks, cache, looping, false))
             if (e.block >= 0 && e.block < static_cast<int>(counts.size())) ++counts[static_cast<size_t>(e.block)];
         res = SearchAutoSensitivity(blocks, role_tracks, counts, role_to_bone, looping);
         for (size_t i = 0; i < res.size() && i < blocks.size(); ++i) {

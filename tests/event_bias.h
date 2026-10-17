@@ -18,8 +18,8 @@
 
 namespace rav {
 
-constexpr int kRefEventKinds = 5;
-static_assert(static_cast<int>(RefEventKind::Release) + 1 == kRefEventKinds, "kRefEventKinds = RefEventKind's count");
+constexpr int kRefEventKinds = 7;
+static_assert(static_cast<int>(RefEventKind::Land) + 1 == kRefEventKinds, "kRefEventKinds = RefEventKind's count");
 
 inline const char* RefEventName(RefEventKind k)
 {
@@ -29,6 +29,8 @@ inline const char* RefEventName(RefEventKind k)
     case RefEventKind::Pivot: return "pivot";
     case RefEventKind::Grab: return "grab";
     case RefEventKind::Release: return "release";
+    case RefEventKind::Jump: return "jump";
+    case RefEventKind::Land: return "land";
     }
     return "?";
 }
@@ -42,14 +44,38 @@ inline PhysicsKind RefEventPhysicsKind(RefEventKind k)
     case RefEventKind::Pivot: return PhysicsKind::Pivot;
     case RefEventKind::Grab: return PhysicsKind::Grab;
     case RefEventKind::Release: return PhysicsKind::Release;
+    case RefEventKind::Jump: return PhysicsKind::Jump;
+    case RefEventKind::Land: return PhysicsKind::Land;
     }
     return PhysicsKind::Step;
 }
 
-// True: FootEvents detects it; false: HandEvents.
+// The event function that detects a REF kind: FootEvents, HandEvents or (story 10-9a) JumpEvents.
+enum class RefEventSource { Foot, Hand, Jump };
+inline RefEventSource RefEventSourceOf(RefEventKind k)
+{
+    switch (k) {
+    case RefEventKind::Lift:
+    case RefEventKind::Slide:
+    case RefEventKind::Pivot: return RefEventSource::Foot;
+    case RefEventKind::Grab:
+    case RefEventKind::Release: return RefEventSource::Hand;
+    case RefEventKind::Jump:
+    case RefEventKind::Land: return RefEventSource::Jump;
+    }
+    return RefEventSource::Foot;
+}
+
+// True: FootEvents detects it.
 inline bool RefEventIsFoot(RefEventKind k)
 {
-    return k == RefEventKind::Lift || k == RefEventKind::Slide || k == RefEventKind::Pivot;
+    return RefEventSourceOf(k) == RefEventSource::Foot;
+}
+
+// True: a sideless kind (story 10-9a: jump, land), its REFs and events of side 'B'.
+inline bool RefEventIsSideless(RefEventKind k)
+{
+    return RefEventSourceOf(k) == RefEventSource::Jump;
 }
 
 // True: a scuff, matched on its span (MatchSpans); false: on its time (MatchEvents).

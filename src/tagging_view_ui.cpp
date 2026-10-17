@@ -1242,6 +1242,20 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                                 if (std::isfinite(v)) vmax = std::max(vmax, v);
                             L.lo = 0.0;
                             L.hi = std::max(1e-6, std::min(vmax, A.threshold * 4.0)) * 1.05;
+                            if (A.no_threshold) {
+                                // Story 10-9a: a signed curve with no line (the hips' vertical
+                                // speed): the range from the curve, 0 inside it.
+                                double vmin = 0.0;
+                                vmax = 0.0;
+                                for (double v : A.curve)
+                                    if (std::isfinite(v)) {
+                                        vmin = std::min(vmin, v);
+                                        vmax = std::max(vmax, v);
+                                    }
+                                const double pad = std::max(1e-6, (vmax - vmin) * 0.05);
+                                L.lo = vmin - pad;
+                                L.hi = vmax + pad;
+                            }
                             const double rate_hz = A.rate_hz > 0.0 ? A.rate_hz : 240.0;
                             const std::vector<double>& curve = A.curve;
                             const int n = static_cast<int>(curve.size());
@@ -1281,7 +1295,7 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                                         dl->AddRectFilled(ImVec2(shade_from, L.y0), ImVec2(fx, L.y1), WithAlpha(rc, 0x24));
                                         shade_from = -1.0f;
                                     }
-                                    const bool hit = A.above ? hi > A.threshold : lo < A.threshold;  // slides, pivots fire above
+                                    const bool hit = A.no_threshold || (A.above ? hi > A.threshold : lo < A.threshold);  // slides, pivots fire above
                                     const ImU32 ink = hit ? ui::kText : ui::kFaint;
                                     const float ya = L.Y(va), yb = L.Y(vb);
                                     if (have_prev) dl->AddLine(ImVec2(fx, prev_y), ImVec2(fx + 0.5f, ya), ink, 1.3f);
@@ -1294,8 +1308,13 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                                     dl->AddRectFilled(ImVec2(shade_from, L.y0), ImVec2(static_cast<float>(xb), L.y1),
                                                       WithAlpha(rc, 0x24));
                             }
-                            const float yt = L.Y(A.threshold);
-                            dl->AddLine(ImVec2(lane_x, yt), ImVec2(lane_x + lane_w, yt), rc, 1.5f);
+                            if (A.no_threshold) {  // story 10-9a: the zero line, faint
+                                const float y0l = L.Y(0.0);
+                                dl->AddLine(ImVec2(lane_x, y0l), ImVec2(lane_x + lane_w, y0l), ui::kFaint, 1.0f);
+                            } else {
+                                const float yt = L.Y(A.threshold);
+                                dl->AddLine(ImVec2(lane_x, yt), ImVec2(lane_x + lane_w, yt), rc, 1.5f);
+                            }
                             dl->PopClipRect();
                             dim_outside(L.y0, L.y1);
                             TrackEdge(dl, c0.x, lane_x, lane_x + lane_w, L.y0, L.y1, ui::kStroke);
@@ -1305,18 +1324,23 @@ void DrawTaggingStrip(float x, float y, float w, float h)
                             const float gx = c0.x + ui::Dp(6.0f), gx1 = lane_x - ui::Dp(5.0f);
                             char buf[96];
                             std::snprintf(buf, sizeof(buf), "  %.2f %s", A.threshold, A.unit.c_str());
+                            if (A.no_threshold) std::snprintf(buf, sizeof(buf), "  %s", A.unit.c_str());
                             const std::string head = A.label + buf;  // "Heel L  speed  0.32 leg/s"
                             EllipsisText(dl, ImVec2(gx, L.y0 + ui::Dp(2.0f)), gx1, ui::kText, head);
-                            std::string tip = head + "\nThe line is the threshold this sensitivity gives.";
+                            std::string tip = head + (A.no_threshold ? "\nThe faint line is 0 (up above it, down below)."
+                                                                     : "\nThe line is the threshold this sensitivity gives.");
                             if (now_in && !curve.empty()) {
                                 const double v_now = InterpSample(curve, clip_now * rate_hz);
                                 std::snprintf(buf, sizeof(buf), "now %.2f %s", v_now, A.unit.c_str());
                                 if (L.y1 - L.y0 > th * 2.0f + ui::Dp(4.0f))
                                     EllipsisText(dl, ImVec2(gx, L.y0 + ui::Dp(3.0f) + th), gx1,
-                                                 (A.above ? v_now > A.threshold : v_now < A.threshold) ? ui::kText : ui::kFaint, buf);
+                                                 (A.no_threshold || (A.above ? v_now > A.threshold : v_now < A.threshold)) ? ui::kText : ui::kFaint,
+                                                 buf);
                                 tip += std::string("\n") + buf;
                             }
-                            if (!A.contact.empty())
+                            if (!A.contact.empty() && !A.shade_note.empty())
+                                tip += "\n" + A.shade_note;
+                            else if (!A.contact.empty())
                                 tip += A.above ? "\nShaded: the part is in contact. A slide is read where a part in contact\n"
                                                  "moves horizontally faster than the line (and slower than a swing)."
                                                : "\nShaded: the part is in contact. Contact is not a pure crossing of the\n"

@@ -37,7 +37,10 @@ RuleSounds& RuleOf(ItemSounds& item, const std::string& rid)
 
 std::string AutoSoundKey(AutoKind k, char side)
 {
-    if (side != 'L' && side != 'R') return std::string();
+    if (side != 'L' && side != 'R' && side != 'B') return std::string();
+    // Story 10-9a: a sideless kind's one key ("jump:B"), whatever side is asked.
+    if (AutoKindSideless(k)) return std::string(AutoKindWord(KeyKind(k))) + ":B";
+    if (side == 'B') return std::string();
     return std::string(AutoKindWord(KeyKind(k))) + ":" + std::string(1, side);
 }
 

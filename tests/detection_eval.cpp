@@ -46,7 +46,8 @@
 // rig, or whose clip's physics failed, counts its REFs as missed). An offset no error could
 // estimate (a part labelled in one clip only) prints n/a and is 0. Last, every clip's events
 // (untagged dumps too) with the module's default timing, as the measure action writes them (PHY
-// take markers), each followed by its "  hands: ..." line and hand events (story 10-8c). Then
+// take markers), each followed by its "  hands: ..." line and hand events (story 10-8c), and its
+// "  jumps: ..." line and jump events (story 10-9a, sideless: "PHY B jump"). Then
 // one "HAND REF" line per REF of a label whose bone plays a hand role: the nearest Grab of that
 // side (default constants) and its signed error.
 // Story 10-8n: right after the GO line (and the "(N labels skipped)" line), a BIAS block, one
@@ -54,8 +55,9 @@
 // median |err| (err = detected - REF), so a steady lead or lag (an offset fixes it) reads apart
 // from false or missed events. Steps: one row per labelled foot part (its chosen timing, the
 // leave-one-clip-out offsets: the gate's data) and the combined step. Events: event labels
-// ('# ref.<kind>_<side>=', kind lift, slide, pivot, grab or release; ref_labels.h) match the
-// events of their side (lift, grab, release: +-150 ms; slide, pivot: the REF within [start -
+// ('# ref.<kind>_<side>=', kind lift, slide, pivot, grab or release; ref_labels.h; story 10-9a:
+// the sideless '# ref.jump=' and '# ref.land=', against JumpEvents) match the events of their
+// side (lift, grab, release, jump, land: +-150 ms; slide, pivot: the REF within [start -
 // 150 ms, end], err = start - REF). A clip counts for a kind only when it holds a REF of that
 // kind, and then every detection of that kind, on both sides, counts (an untagged side shows
 // as extra). Event labels are kept out of every other line (--single ignores them too).
@@ -465,7 +467,8 @@ struct PhysClip {
     PhysicsAnalysis        a;
     std::vector<PhysLabel> labels;
     bool                   tagged = false;  // some label is a foot part
-    // Story 10-8n: the event labels' REFs, per kind (RefEventKind) and side (0 = L, 1 = R).
+    // Story 10-8n: the event labels' REFs, per kind (RefEventKind) and side (0 = L, 1 = R; a
+    // sideless kind, story 10-9a: 0).
     std::vector<double>    event_refs[kRefEventKinds][2];
 };
 
@@ -840,11 +843,19 @@ int RunPhysics(const std::vector<std::string>& files, const PhysicsParams& base)
             if (!pc.read || (pc.event_refs[k][0].empty() && pc.event_refs[k][1].empty())) continue;
             labelled = true;
             std::vector<PhysicsEvent> ev;  // physics failed: every REF of the kind is missed
-            if (pc.a.ok) ev = RefEventIsFoot(kind) ? FootEvents(pc.a, clip_params(ci)) : HandEvents(pc.a, base);
-            for (int s = 0; s < 2; ++s) {
+            if (pc.a.ok) {
+                switch (RefEventSourceOf(kind)) {
+                case RefEventSource::Foot: ev = FootEvents(pc.a, clip_params(ci)); break;
+                case RefEventSource::Hand: ev = HandEvents(pc.a, base); break;
+                case RefEventSource::Jump: ev = JumpEvents(pc.a, clip_params(ci)); break;
+                }
+            }
+            const bool sideless = RefEventIsSideless(kind);
+            for (int s = 0; s < (sideless ? 1 : 2); ++s) {
+                const char                side = sideless ? 'B' : (s ? 'R' : 'L');
                 std::vector<PhysicsEvent> det;
                 for (const PhysicsEvent& e : ev)
-                    if (e.kind == RefEventPhysicsKind(kind) && e.side == (s ? 'R' : 'L')) det.push_back(e);
+                    if (e.kind == RefEventPhysicsKind(kind) && e.side == side) det.push_back(e);
                 if (RefEventIsSpan(kind)) {
                     b.Add(MatchSpans(pc.event_refs[k][s], det, kMatchWindowS, pc.lo, pc.hi));
                 } else {
@@ -866,6 +877,8 @@ int RunPhysics(const std::vector<std::string>& files, const PhysicsParams& base)
         std::printf("%s  %s\n%s", pc.head.c_str(), PhysicsSummary(pc.a, ev).c_str(), PhysicsEventLines(ev, "  ").c_str());
         const std::vector<PhysicsEvent> hev = HandEvents(pc.a, base);
         std::printf("  %s\n%s", HandSummary(pc.a, hev).c_str(), PhysicsEventLines(hev, "  ").c_str());
+        const std::vector<PhysicsEvent> jev = JumpEvents(pc.a, base);  // story 10-9a
+        std::printf("  %s\n%s", JumpSummary(pc.a, jev).c_str(), PhysicsEventLines(jev, "  ").c_str());
     }
 
     // Story 10-8c: each labelled hand REF and the nearest Grab of that side.

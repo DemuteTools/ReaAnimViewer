@@ -54,6 +54,9 @@ struct AutoTypeInfo {
     const char*     sound_word;  // Epic 13: the stable lower-case word ("step", "hand_pivot")
     AutoSensField   sens[kAutoSensFields];
     AutoTypePartsFn parts;
+    // Story 10-9a: one block per kind, not per side (jump, land): saved side=B, its marker
+    // without " L/R", one colour (color[0]), one row in the Tagging view.
+    bool            sideless = false;
 };
 
 // An event source: the physics events of one analysis a kind reads (FootEvents, HandEvents...).
@@ -64,8 +67,9 @@ using AutoMatchFn = bool (*)(const PhysicsEvent& e, const PhysicsAnalysis& a, ch
 // Whether the kind's own part on that side has no bone (AutoBlockPartMissing, after the body scale).
 using AutoPartMissingFn = bool (*)(char side, const std::vector<int>& role_to_bone);
 
-// The lanes of one block (AutoBlockLanes): the analysis, its params, the block's side and the
-// clip window; a lanes function appends to `out`, and sets `reason` when it adds none.
+// The lanes of one block (AutoBlockLanes): the analysis, its params, the block's side (B for a
+// sideless kind) and the clip window; a lanes function appends to `out`, and sets `reason` when
+// it adds none.
 struct AutoLaneArgs {
     const PhysicsAnalysis* a = nullptr;
     const PhysicsParams*   p = nullptr;
@@ -76,7 +80,7 @@ struct AutoLaneArgs {
     const HandTrack&       Hand() const { return a->hand[side == 'R' ? 1 : 0]; }
 };
 using AutoLanesFn = void (*)(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
-// The roles the Tagging view highlights for a block of that side.
+// The roles the Tagging view highlights for a block of that side (B: a sideless kind's).
 using AutoRolesFn = std::vector<Role> (*)(char side);
 
 struct AutoKindInfo {
@@ -84,7 +88,7 @@ struct AutoKindInfo {
     const char*       word;  // the save word (Block::auto_type): never renamed
     AutoType          type;
     const char*       marker;    // the marker name's word ("FS": "FS L")
-    uint32_t          color[2];  // the default colour (0xRRGGBB), left then right
+    uint32_t          color[2];  // the default colour (0xRRGGBB), left then right (a sideless kind: color[0])
     ScuffParts        scuff;     // story 10-8m: a slide / pivot part kind's mode (Combined otherwise)
     bool              scuff_heel;  // a slide / pivot part kind: the heel's (false for the Heel step)
     bool              degrees;   // strength in degrees (a pivot): no speed

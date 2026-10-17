@@ -66,6 +66,14 @@ void AutoLanesSlideHeel(const AutoLaneArgs& args, std::vector<AutoLane>& out, st
 void AutoLanesSlideToe(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
 void AutoLanesPivot(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
 std::vector<Role> AutoRolesFoot(char side);
+// Story 10-9a: jump and land.
+std::vector<PhysicsEvent> AutoSourceJump(const PhysicsAnalysis& a, const PhysicsParams& p);
+void AutoPartsJump(bool separate, const std::vector<int>& role_to_bone, std::vector<std::string>& out);
+bool AutoMatchJump(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMatchLand(const PhysicsEvent& e, const PhysicsAnalysis& a, char side);
+bool AutoMissingJump(char side, const std::vector<int>& role_to_bone);
+void AutoLanesJump(const AutoLaneArgs& args, std::vector<AutoLane>& out, std::string& reason);
+std::vector<Role> AutoRolesJump(char side);
 
 // auto_types_arms.cpp
 std::vector<PhysicsEvent> AutoSourceHand(const PhysicsAnalysis& a, const PhysicsParams& p);
@@ -120,6 +128,15 @@ constexpr AutoTypeInfo kTypeRows[] = {
     {T::HandPivot, "Pivot scuff", "Arms Pivot scuff", C::Arms,
      "A marker where a planted hand turns: Hand Pivot L / Hand Pivot R.", "hand_pivot",
      {{&P::hand_pivot_min_deg, S::Divide}, {&P::hand_pivot_rate_dps, S::Divide}}, &AutoPartsHands},
+    // Story 10-9a: sideless (one block each). Higher sensitivity = shorter flights count.
+    {T::Jump, "Jump", "Jump", C::Legs,
+     "A marker where a jump takes off: the last foot leaving before both feet are off\n"
+     "while the body falls freely (Jump). With Lift-off ticked, it replaces the lifts there.",
+     "jump", {{&P::jump_min_flight_s, S::Divide}, {}}, &AutoPartsJump, true},
+    {T::Land, "Land", "Land", C::Legs,
+     "A marker where a jump lands: the first foot touching after the flight (Land).\n"
+     "With Step ticked, it replaces the steps there.",
+     "land", {{&P::jump_min_flight_s, S::Divide}, {}}, &AutoPartsJump, true},
 };
 
 // ---- Kinds -------------------------------------------------------------------------------------
@@ -170,6 +187,11 @@ constexpr AutoKindInfo kKindRows[] = {
     {K::PivotToeLongest, "pivot_toe_longest", T::Pivot, "Pivot Toe", {0xC49FEE, 0xEE9FC4}, kLong, false, true, "toe",
      K::PivotToe, &AutoSourceFoot, &AutoMatchPivotToeLongest, &AutoMissingHeelOrToe, &AutoLanesPivot,
      &AutoRolesFoot},
+    // Story 10-9a: sideless kinds (one colour: color[0]).
+    {K::Jump, "jump", T::Jump, "Jump", {0x3CC8B4, 0x3CC8B4}, kNo, false, false, "", K::Jump, &AutoSourceJump,
+     &AutoMatchJump, &AutoMissingJump, &AutoLanesJump, &AutoRolesJump},
+    {K::Land, "land", T::Land, "Land", {0xE0503C, 0xE0503C}, kNo, false, false, "", K::Land, &AutoSourceJump,
+     &AutoMatchLand, &AutoMissingJump, &AutoLanesJump, &AutoRolesJump},
 };
 
 // One row per enum value, in enum order.

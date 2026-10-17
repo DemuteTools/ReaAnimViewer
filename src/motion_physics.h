@@ -142,9 +142,27 @@
 // 240 Hz, 33 ms at 30 Hz, is not seen). Limit: a hand that
 // stops in the air at the end after a fast move (a dance's last pose) reads as a grab.
 //
+// Jumps (JumpEvents, story 10-9a): a flight is a run of samples where no part of either foot is in
+// contact (every present part of both feet; a foot with no part, or no hips bone, gives no jump)
+// lasting jump_min_flight_s at least, while the hips fall freely: their mean vertical acceleration
+// over the flight (the change of PhysicsAnalysis::hips_vy over its samples, in m/s^2 through the
+// leg length; read 3 smoothing sigmas inside each end, which the smoothing blurs with the push and
+// the landing, when the flight is long enough) is at most -jump_fall_g x 9.81. So a flight the
+// hands hold up (hanging, climbing: the hips do not fall) is no jump, and a run's short flights
+// are none at the default.
+//   jump          the take-off: the last foot part leaving before the flight (the latest lift_s
+//                 of the contacts that end where it starts), never at the clip start. Feet that
+//                 leave together give one event. Strength = the peak |hips vertical speed| over
+//                 approach_window_s after it (leg/s).
+//   land          the landing: the first foot part touching after the flight (the earliest step
+//                 of the contacts that start where it ends, timed as FootEvents' steps), never at
+//                 the clip end. Strength = the peak |hips vertical speed| over approach_window_s
+//                 before it (leg/s).
+// Both are sideless (PhysicsEvent::side 'B', part -1). Looping clips: as the other events.
+//
 // A missing role drops only that part's events (PhysicsAnalysis::missing says why for the feet,
-// hand_missing for the hands). Two parts on the same bone (an Unreal toe end standing in on
-// ball_l) keep the first.
+// hand_missing for the hands, hips_missing for the jumps). Two parts on the same bone (an Unreal
+// toe end standing in on ball_l) keep the first.
 //
 // Pure C++17, deterministic: no REAPER, no GL. Host-tested (tests/motion_physics_test.cpp).
 
@@ -268,6 +286,17 @@ struct PhysicsParams {
     // Story 10-8i: read the clip as a loop (see "Looping clips" above). A user setting, off by
     // default; no constant changes with it.
     bool       looping = false;
+    // Story 10-9a: jumps (see "Jumps" above). The minimum flight, both feet off, chosen on the
+    // fixtures (default analysis): Jumping Down's jump flies 675 ms (-0.89 g); the longest
+    // both-feet-off run that falls at -0.5 g or more elsewhere is Climbing Ladder's, 129 ms
+    // (-0.67 g, the hands holding); Left Strafe (221, 258 ms) and Climbing (621 ms) do not fall
+    // (> -0.25 g). 300 ms sits between, and the sensitivity (/ f) keeps it there: 150 ms at 100 %
+    // (so Detect's raise never reaches the ladder, nor a run's ~100 ms flights), 600 ms at 0 %.
+    // Limits: a hop under 300 ms (11 cm of hips rise) needs a higher sensitivity; Jumping (a leap
+    // onto a ledge, one foot to the other) is both feet off for 58 ms only, under a run's flight:
+    // no jump there.
+    double     jump_min_flight_s = 0.300;
+    double     jump_fall_g = 0.5;
 };
 
 // One contact of a part, in samples [start, end).
@@ -349,6 +378,10 @@ struct PhysicsAnalysis {
     std::vector<std::string> missing;           // one line per dropped foot part / event type
     HandTrack                hand[2];           // L, R
     std::vector<std::string> hand_missing;      // one line per dropped hand ("L hand: no bone for left hand")
+    // Story 10-9a: the hips' vertical velocity in the ground frame (smoothed as the parts, leg/s,
+    // up > 0), for the jumps. Empty without a hips bone (hips_missing says why).
+    std::vector<double>      hips_vy;
+    std::string              hips_missing;
     // The clip inside the analysed track (story 10-8i): looping, the track is three cycles and
     // the clip is its samples [window_first, window_first + window_samples); otherwise 0 and
     // `samples`. Per-sample data (PartTrack...) is indexed in the analysed track; the event
@@ -372,13 +405,13 @@ std::vector<BoneTrack> PhysicsRoleTracks(const std::vector<int>& bone_of_role,
 // hands' rot_world are read (one per sample, else ignored).
 PhysicsAnalysis AnalyseMotion(const std::vector<BoneTrack>& role_tracks, const PhysicsParams& p = {});
 
-enum class PhysicsKind { Step, FootStep, LiftOff, Slide, Pivot, Grab, Release, HandPivot };
-constexpr int kPhysicsKindCount = 8;  // story 10-9-0: PhysicsMarkerName's rows follow the enum
+enum class PhysicsKind { Step, FootStep, LiftOff, Slide, Pivot, Grab, Release, HandPivot, Jump, Land };
+constexpr int kPhysicsKindCount = 10;  // story 10-9-0: PhysicsMarkerName's rows follow the enum
 
 struct PhysicsEvent {
     PhysicsKind kind = PhysicsKind::Step;
-    char        side = 'L';
-    int         part = 0;        // FootPart; -1 = none (a pivot on neither, a hand event)
+    char        side = 'L';      // 'B' for a sideless event (jump, land)
+    int         part = 0;        // FootPart; -1 = none (a pivot on neither, a hand event, a jump or land)
     double      time_s = 0.0;    // clip time (a scuff: its start)
     double      start_s = 0.0;   // a scuff's span (= time_s for the others)
     double      end_s = 0.0;
@@ -398,12 +431,17 @@ std::vector<PhysicsEvent> FootPartScuffEvents(const PhysicsAnalysis& a);
 // (p.hand_pivot_after_grab picks the pivots; their thresholds are the analysis').
 std::vector<PhysicsEvent> HandEvents(const PhysicsAnalysis& a, const PhysicsParams& p = {});
 
+// Story 10-9a: the jumps (take-offs and landings), by time. Uses p.jump_min_flight_s,
+// p.jump_fall_g and the steps' p.step_timing / p.step_offset_s (a landing is timed as a step).
+std::vector<PhysicsEvent> JumpEvents(const PhysicsAnalysis& a, const PhysicsParams& p = {});
+
 // The separate step times of one part (side 'L' / 'R'), by `timing` plus `offset_s`.
 std::vector<double> PartStepTimes(const PhysicsAnalysis& a, char side, int part, StepTiming timing, double offset_s);
 
 // "PHY L heel 1.8", "PHY R step toe 2.1", "PHY L lift tip 1.2", "PHY L slide toe 0.6 210ms",
 // "PHY R pivot ball 87deg 250ms", "PHY L grab 1.4", "PHY R release 0.9",
-// "PHY L hand pivot 87deg 250ms" (strengths in leg/s or degrees).
+// "PHY L hand pivot 87deg 250ms", "PHY B jump 1.2", "PHY B land 1.5" (strengths in leg/s or
+// degrees).
 std::string PhysicsMarkerName(const PhysicsEvent& e);
 // True for a marker name this module writes ("PHY " prefix).
 bool IsPhysicsMarkerName(const char* name);
@@ -414,6 +452,9 @@ std::string PhysicsSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEv
 // The hands' report: "hands: grabs 2, releases 1, pivots 0" plus "; missing: ..." when a hand is
 // dropped ("hands: skipped: <error>" when the analysis failed). Counts the hand events of ev.
 std::string HandSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev);
+// Story 10-9a: the jumps' report: "jumps: take-offs 1, landings 1" plus "; missing: ..." when
+// the hips have no bone ("jumps: skipped: <error>" when the analysis failed).
+std::string JumpSummary(const PhysicsAnalysis& a, const std::vector<PhysicsEvent>& ev);
 // One line per event ("   1.234 s  PHY L heel 1.8", a scuff or hand pivot "... (to 1.456 s)"), each with
 // `indent` in front and '\n' after.
 std::string PhysicsEventLines(const std::vector<PhysicsEvent>& ev, const std::string& indent);
